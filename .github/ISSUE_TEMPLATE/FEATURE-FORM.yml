@@ -13,13 +13,10 @@ body:
           description: What component is the feature for?
           multiple: true
           options:
-              - dyn-abi
-              - json-abi
-              - primitives
-              - sol-type-parser
-              - sol-types
-              - sol! macro
-              - syn-solidity
+              - interpreter
+              - instructions
+              - gas
+              - tests
               - Other (please provide more details)
       validations:
           required: true

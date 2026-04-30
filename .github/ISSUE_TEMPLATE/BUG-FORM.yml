@@ -15,20 +15,17 @@ body:
           description: What component is the bug in?
           multiple: true
           options:
-              - dyn-abi
-              - json-abi
-              - primitives
-              - sol-type-parser
-              - sol-types
-              - sol! macro
-              - syn-solidity
+              - interpreter
+              - instructions
+              - gas
+              - tests
               - Other (please provide more details)
       validations:
           required: true
     - type: input
       attributes:
-          label: What version of Alloy are you on?
-          placeholder: "Run `carge tree | grep alloy` and paste the output here"
+          label: What version of evm2 are you on?
+          placeholder: "Run `cargo tree | grep evm2` and paste the output here"
     - type: dropdown
       attributes:
           label: Operating System

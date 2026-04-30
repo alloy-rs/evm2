@@ -710,11 +710,10 @@ mod tests {
 
         for spec in [SpecId::Frontier, SpecId::Homestead] {
             let gas_table = new_gas_table(spec);
-            for (name, table) in [
+            for (_name, table) in [
                 ("normal", Table::Normal(&DEFAULT_TABLE)),
                 ("tail", Table::Tail(&DEFAULT_TAIL_TABLE)),
             ] {
-                eprintln!("{spec:?}::{name}");
                 let mut interpreter = Interpreter::new(BASIC.into(), spec);
                 interpreter.run(table, &gas_table, &mut DummyHost);
                 assert!(interpreter.gas.remaining > 0);
