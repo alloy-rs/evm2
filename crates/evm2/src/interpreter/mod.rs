@@ -16,26 +16,32 @@ pub enum InstrErr {
 }
 
 mod gas;
+pub use gas::{Gas, GasRef};
+
 #[macro_use]
 mod utils;
-mod instruction;
-mod instructions;
-mod opcode;
-mod pc;
-mod stack;
-mod state;
 
-pub use gas::{Gas, GasRef};
+mod instruction;
 pub use instruction::*;
+
+mod instructions;
+
+mod opcode;
 pub use opcode::op;
+
+mod pc;
 pub use pc::{Pc, PcRef};
+
+mod stack;
 pub use stack::{Stack, Word};
+
+mod state;
 pub use state::{Host, State};
 
 mod runtime;
-mod table;
-
 pub use runtime::{Interpreter, Table};
+
+mod table;
 pub use table::{
     DEFAULT_GAS_TABLE, DEFAULT_TABLE, DEFAULT_TAIL_TABLE, make_table, make_tail_table, mk_dispatch,
     mk_tail_dispatch, new_gas_table,
