@@ -240,28 +240,22 @@ impl Gas {
         self.tracker.limit()
     }
 
-    /// Returns gas refund.
+    /// Sets the gas limit.
     #[inline]
-    pub const fn refunded(&self) -> i64 {
-        self.tracker.refunded()
-    }
-
-    /// Returns spent regular gas.
-    #[inline]
-    pub const fn spent(&self) -> u64 {
-        self.tracker.spent()
-    }
-
-    /// Returns used gas after refund.
-    #[inline]
-    pub const fn used(&self) -> u64 {
-        self.tracker.used()
+    pub const fn set_limit(&mut self, val: u64) {
+        self.tracker.set_limit(val);
     }
 
     /// Returns remaining regular gas.
     #[inline]
     pub const fn remaining(&self) -> u64 {
         self.tracker.remaining()
+    }
+
+    /// Sets remaining regular gas.
+    #[inline]
+    pub const fn set_remaining(&mut self, remaining: u64) {
+        self.tracker.set_remaining(remaining);
     }
 
     /// Returns available state gas reservoir.
@@ -288,46 +282,48 @@ impl Gas {
         self.tracker.set_state_gas_spent(val);
     }
 
-    /// Returns gas to the remaining counter.
+    /// Returns gas refund.
     #[inline]
-    pub const fn erase_cost(&mut self, returned: u64) {
-        self.tracker.erase_cost(returned);
+    pub const fn refunded(&self) -> i64 {
+        self.tracker.refunded()
     }
 
-    /// Spends all remaining regular gas.
+    /// Sets gas refund.
     #[inline]
-    pub const fn spend_all(&mut self) {
-        self.tracker.spend_all();
-    }
-
-    /// Adds gas refund.
-    #[inline]
-    pub const fn record_refund(&mut self, refund: i64) {
-        self.tracker.record_refund(refund);
-    }
-
-    /// Applies the final refund cap.
-    #[inline]
-    pub fn set_final_refund(&mut self, is_london: bool) {
-        self.tracker.set_final_refund(is_london);
+    pub const fn set_refunded(&mut self, val: i64) {
+        self.tracker.set_refunded(val);
     }
 
     /// Sets gas refund.
     #[inline]
     pub const fn set_refund(&mut self, refund: i64) {
-        self.tracker.set_refunded(refund);
+        self.set_refunded(refund);
     }
 
-    /// Sets remaining regular gas.
+    /// Returns spent regular gas.
     #[inline]
-    pub const fn set_remaining(&mut self, remaining: u64) {
-        self.tracker.set_remaining(remaining);
+    pub const fn spent(&self) -> u64 {
+        self.tracker.spent()
+    }
+
+    /// Returns used gas after refund.
+    #[inline]
+    pub const fn used(&self) -> u64 {
+        self.tracker.used()
     }
 
     /// Sets spent regular gas.
     #[inline]
     pub const fn set_spent(&mut self, spent: u64) {
         self.tracker.set_spent(spent);
+    }
+
+    /// Spends regular gas or returns out of gas.
+    #[doc(alias = "record_cost")]
+    #[doc(alias = "record_regular_cost")]
+    #[inline(always)]
+    pub fn spend(&mut self, amount: u64) -> Result {
+        self.tracker.spend(amount)
     }
 
     /// Spends regular gas with wrapping subtraction.
@@ -344,12 +340,28 @@ impl Gas {
         self.tracker.spend_state(cost)
     }
 
-    /// Spends regular gas or returns out of gas.
-    #[doc(alias = "record_cost")]
-    #[doc(alias = "record_regular_cost")]
-    #[inline(always)]
-    pub fn spend(&mut self, amount: u64) -> Result {
-        self.tracker.spend(amount)
+    /// Adds gas refund.
+    #[inline]
+    pub const fn record_refund(&mut self, refund: i64) {
+        self.tracker.record_refund(refund);
+    }
+
+    /// Returns gas to the remaining counter.
+    #[inline]
+    pub const fn erase_cost(&mut self, returned: u64) {
+        self.tracker.erase_cost(returned);
+    }
+
+    /// Spends all remaining regular gas.
+    #[inline]
+    pub const fn spend_all(&mut self) {
+        self.tracker.spend_all();
+    }
+
+    /// Applies the final refund cap.
+    #[inline]
+    pub fn set_final_refund(&mut self, is_london: bool) {
+        self.tracker.set_final_refund(is_london);
     }
 }
 
