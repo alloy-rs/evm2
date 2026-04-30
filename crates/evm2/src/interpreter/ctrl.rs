@@ -1,46 +1,46 @@
 #[derive(Clone, Copy)]
 pub struct Ctrl<'a> {
     pub(crate) base: *const u8,
-    pub(crate) ctrl: usize,
+    pub(crate) pc: usize,
     _marker: core::marker::PhantomData<&'a [u8]>,
 }
 
 pub struct CtrlRef<'a> {
     base: *const u8,
-    ctrl: &'a mut usize,
+    pc: &'a mut usize,
     _marker: core::marker::PhantomData<&'a [u8]>,
 }
 
 impl<'a> Ctrl<'a> {
     #[inline]
     pub fn as_mut(&mut self) -> CtrlRef<'_> {
-        CtrlRef { base: self.base, ctrl: &mut self.ctrl, _marker: core::marker::PhantomData }
+        CtrlRef { base: self.base, pc: &mut self.pc, _marker: core::marker::PhantomData }
     }
 
     #[inline]
     pub unsafe fn advance_unchecked(&mut self, n: usize) {
-        self.ctrl += n;
+        self.pc += n;
     }
 
     #[inline]
     pub fn op(&self) -> u8 {
-        unsafe { *self.base.add(self.ctrl) }
+        unsafe { *self.base.add(self.pc) }
     }
 
     #[inline]
-    pub fn ctrl(&self) -> usize {
-        self.ctrl
+    pub fn pc(&self) -> usize {
+        self.pc
     }
 
     #[inline]
     pub unsafe fn read_bytes_unchecked(&self, n: usize) -> &[u8] {
-        unsafe { core::slice::from_raw_parts(self.base.add(self.ctrl), n) }
+        unsafe { core::slice::from_raw_parts(self.base.add(self.pc), n) }
     }
 }
 
 impl<'a> CtrlRef<'a> {
-    pub(crate) fn new(bytecode: &'a [u8], ctrl: &'a mut usize) -> Self {
-        Self { base: bytecode.as_ptr(), ctrl, _marker: core::marker::PhantomData }
+    pub(crate) fn new(bytecode: &'a [u8], pc: &'a mut usize) -> Self {
+        Self { base: bytecode.as_ptr(), pc, _marker: core::marker::PhantomData }
     }
 
     #[inline]
@@ -50,21 +50,21 @@ impl<'a> CtrlRef<'a> {
 
     #[inline]
     pub unsafe fn advance_unchecked(&mut self, n: usize) {
-        *self.ctrl += n;
+        *self.pc += n;
     }
 
     #[inline]
     pub fn op(&self) -> u8 {
-        unsafe { *self.base.add(*self.ctrl) }
+        unsafe { *self.base.add(*self.pc) }
     }
 
     #[inline]
-    pub fn ctrl(&self) -> usize {
-        *self.ctrl
+    pub fn pc(&self) -> usize {
+        *self.pc
     }
 
     #[inline]
     pub unsafe fn read_bytes_unchecked(&self, n: usize) -> &[u8] {
-        unsafe { core::slice::from_raw_parts(self.base.add(*self.ctrl), n) }
+        unsafe { core::slice::from_raw_parts(self.base.add(*self.pc), n) }
     }
 }

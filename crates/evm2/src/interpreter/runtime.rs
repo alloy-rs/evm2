@@ -13,7 +13,7 @@ pub enum Table<'a> {
 
 pub struct Interpreter {
     bytecode: Vec<u8>,
-    pub(crate) ctrl: usize,
+    pub(crate) pc: usize,
     pub(crate) stack: Box<[Word; 1024]>,
     pub(crate) stack_len: usize,
     pub(crate) gas: Gas,
@@ -24,7 +24,7 @@ impl Interpreter {
     pub fn new(bytecode: Vec<u8>, spec_id: SpecId) -> Self {
         Self {
             bytecode,
-            ctrl: 0,
+            pc: 0,
             // SAFETY: `Word` is valid at any bitpattern. It's not read before init anyway.
             stack: unsafe { Box::new_uninit().assume_init() },
             stack_len: 0,
@@ -76,7 +76,7 @@ impl Interpreter {
 
     #[inline(always)]
     fn step(&mut self, table: &InstrTable, gas_table: &GasTable, host: &mut dyn Host) -> Result {
-        let mut ctrl = CtrlRef::new(&self.bytecode, &mut self.ctrl);
+        let mut ctrl = CtrlRef::new(&self.bytecode, &mut self.pc);
         let op = Self::pre_step(ctrl.reborrow(), &mut self.gas, gas_table)?;
         let r;
         (self.stack_len, r) = table[op as usize](
