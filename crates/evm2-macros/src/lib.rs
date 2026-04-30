@@ -44,13 +44,12 @@ fn expand_instruction(raw: bool, input: ItemFn) -> TokenStream2 {
         let cx = cx_arg.unwrap_or_else(|| Ident::new("cx", ident.span()));
         quote! {
             let mut ctrl = ctrl;
-            let mut #cx = InstructionCx { ctrl: &mut ctrl, gas, host: &mut *state.host };
+            let mut #cx = InstructionCx { ctrl: &mut ctrl, gas, state };
         }
     });
     quote! {
         #(#attrs)*
         #[inline]
-        #[allow(unreachable_code)]
         #vis fn #ident #generics(
             mut ctrl: CtrlRef<'_>,
             stack: &mut Stack<'_>,

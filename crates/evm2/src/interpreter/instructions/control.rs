@@ -1,7 +1,5 @@
-use super::{
-    super::{CtrlRef, Gas, InstrErr, Result, Stack, State, Word},
-    utils::as_usize,
-};
+use super::utils::as_usize;
+use crate::interpreter::{CtrlRef, Gas, InstrErr, InstructionCx, Result, Stack, State, Word};
 use core::hint::cold_path;
 use evm2_macros::instruction;
 
@@ -18,32 +16,32 @@ pub(in crate::interpreter) fn invalid() -> Result {
 }
 
 #[instruction]
-pub(in crate::interpreter) fn jump(target: &Word) -> Result {
+pub(in crate::interpreter) fn jump(cx: _, target: &Word) -> Result {
     let target = as_usize(*target).ok_or(InstrErr::Invalid)?;
-    if !ctrl.is_valid_jumpdest(target) {
+    if !cx.ctrl.is_valid_jumpdest(target) {
         cold_path();
         return Err(InstrErr::Invalid);
     }
-    unsafe { ctrl.set_unchecked(target) };
+    unsafe { cx.ctrl.set_unchecked(target) };
     Ok(())
 }
 
 #[instruction]
-pub(in crate::interpreter) fn jumpi(target: &Word, cond: &Word) -> Result {
+pub(in crate::interpreter) fn jumpi(cx: _, target: &Word, cond: &Word) -> Result {
     if !cond.is_zero() {
         let target = as_usize(*target).ok_or(InstrErr::Invalid)?;
-        if !ctrl.is_valid_jumpdest(target) {
+        if !cx.ctrl.is_valid_jumpdest(target) {
             cold_path();
             return Err(InstrErr::Invalid);
         }
-        unsafe { ctrl.set_unchecked(target) };
+        unsafe { cx.ctrl.set_unchecked(target) };
     }
     Ok(())
 }
 
 #[instruction]
-pub(in crate::interpreter) fn pc() -> Result<out> {
-    *out = Word::from(ctrl.pc() - 1);
+pub(in crate::interpreter) fn pc(cx: _) -> Result<out> {
+    *out = Word::from(cx.ctrl.pc() - 1);
 }
 
 #[instruction]
@@ -52,21 +50,21 @@ pub(in crate::interpreter) fn jumpdest() -> Result {
 }
 
 #[instruction]
-pub(in crate::interpreter) fn ret(offset: &Word, len: &Word) -> Result {
+pub(in crate::interpreter) fn ret(cx: _, offset: &Word, len: &Word) -> Result {
     let len = as_usize(*len).ok_or(InstrErr::OutOfGas)?;
     if len != 0 {
         let offset = as_usize(*offset).ok_or(InstrErr::OutOfGas)?;
-        state.memory.resize(offset, len)?;
+        cx.state.memory.resize(offset, len)?;
     }
     Err(InstrErr::Return)
 }
 
 #[instruction]
-pub(in crate::interpreter) fn revert(offset: &Word, len: &Word) -> Result {
+pub(in crate::interpreter) fn revert(cx: _, offset: &Word, len: &Word) -> Result {
     let len = as_usize(*len).ok_or(InstrErr::OutOfGas)?;
     if len != 0 {
         let offset = as_usize(*offset).ok_or(InstrErr::OutOfGas)?;
-        state.memory.resize(offset, len)?;
+        cx.state.memory.resize(offset, len)?;
     }
     Err(InstrErr::Revert)
 }

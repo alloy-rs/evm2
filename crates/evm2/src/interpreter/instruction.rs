@@ -1,4 +1,4 @@
-use super::{Ctrl, CtrlRef, Gas, GasRef, Host, InstrErr, Result, Stack, State};
+use super::{Ctrl, CtrlRef, Gas, GasRef, InstrErr, Result, Stack, State};
 
 pub type InstrFnRet = (usize, Result);
 pub type InstrFn = extern_table!(
@@ -22,8 +22,8 @@ pub type TailInstrTable = [TailInstrFn; 256];
 pub type GasTable = [u16; 256];
 
 #[allow(dead_code)]
-pub struct InstructionCx<'a, 'ctrl, 'host> {
+pub struct InstructionCx<'a, 'ctrl, 'state> {
     pub ctrl: &'a mut CtrlRef<'ctrl>,
     pub gas: GasRef<'a>,
-    pub host: &'a mut (dyn Host + 'host),
+    pub state: &'a mut State<'state>,
 }

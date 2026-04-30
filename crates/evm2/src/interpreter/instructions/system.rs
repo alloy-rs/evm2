@@ -1,25 +1,24 @@
-use super::{
-    super::{CtrlRef, Gas, InstrErr, Result, Stack, State, Word},
-    utils::as_usize,
-};
+use super::utils::as_usize;
+use crate::interpreter::{CtrlRef, Gas, InstrErr, InstructionCx, Result, Stack, State, Word};
 use alloy_primitives::keccak256;
 use evm2_macros::instruction;
 
 #[instruction]
-pub(in crate::interpreter) fn keccak256_instr(offset: &Word, len: &Word) -> Result<out> {
+pub(in crate::interpreter) fn keccak256_instr(cx: _, offset: &Word, len: &Word) -> Result<out> {
     let offset = as_usize(*offset).ok_or(InstrErr::OutOfGas)?;
     let len = as_usize(*len).ok_or(InstrErr::OutOfGas)?;
-    let hash = keccak256(state.memory.slice(offset, len)?);
+    let hash = keccak256(cx.state.memory.slice(offset, len)?);
     *out = Word::from_be_bytes(hash.0);
 }
 
 #[instruction]
-pub(in crate::interpreter) fn codesize() -> Result<out> {
-    *out = Word::from(ctrl.len());
+pub(in crate::interpreter) fn codesize(cx: _) -> Result<out> {
+    *out = Word::from(cx.ctrl.len());
 }
 
 #[instruction]
 pub(in crate::interpreter) fn codecopy(
+    cx: _,
     memory_offset: &Word,
     code_offset: &Word,
     len: &Word,
@@ -33,20 +32,20 @@ pub(in crate::interpreter) fn codecopy(
 
     let mut remaining = len;
     let mut dst = memory_offset;
-    if code_offset < ctrl.len() {
-        let available = (ctrl.len() - code_offset).min(len);
-        let bytes = unsafe { ctrl.code_slice_unchecked(code_offset, available) };
-        state.memory.set(dst, bytes)?;
+    if code_offset < cx.ctrl.len() {
+        let available = (cx.ctrl.len() - code_offset).min(len);
+        let bytes = unsafe { cx.ctrl.code_slice_unchecked(code_offset, available) };
+        cx.state.memory.set(dst, bytes)?;
         remaining -= available;
         dst += available;
     }
     if remaining != 0 {
-        state.memory.set(dst, &alloc::vec![0; remaining])?;
+        cx.state.memory.set(dst, &alloc::vec![0; remaining])?;
     }
     Ok(())
 }
 
 #[instruction]
-pub(in crate::interpreter) fn gas_instr() -> Result<out> {
-    *out = Word::from(gas.remaining);
+pub(in crate::interpreter) fn gas_instr(cx: _) -> Result<out> {
+    *out = Word::from(cx.gas.remaining);
 }

@@ -28,24 +28,26 @@ pub(in crate::interpreter) fn swap<const N: usize>() -> Result {
 }
 
 #[instruction(raw)]
-pub(in crate::interpreter) fn dupn() -> Result {
-    let n = decode_single(unsafe { ctrl.read_bytes_unchecked(1)[0] }).ok_or(InstrErr::Invalid)?;
-    unsafe { ctrl.advance_unchecked(1) };
+pub(in crate::interpreter) fn dupn(cx: _) -> Result {
+    let n =
+        decode_single(unsafe { cx.ctrl.read_bytes_unchecked(1)[0] }).ok_or(InstrErr::Invalid)?;
+    unsafe { cx.ctrl.advance_unchecked(1) };
     stack.dup(n + 1)
 }
 
 #[instruction(raw)]
-pub(in crate::interpreter) fn swapn() -> Result {
-    let n = decode_single(unsafe { ctrl.read_bytes_unchecked(1)[0] }).ok_or(InstrErr::Invalid)?;
-    unsafe { ctrl.advance_unchecked(1) };
+pub(in crate::interpreter) fn swapn(cx: _) -> Result {
+    let n =
+        decode_single(unsafe { cx.ctrl.read_bytes_unchecked(1)[0] }).ok_or(InstrErr::Invalid)?;
+    unsafe { cx.ctrl.advance_unchecked(1) };
     stack.exchange(0, n + 1)
 }
 
 #[instruction(raw)]
-pub(in crate::interpreter) fn exchange() -> Result {
+pub(in crate::interpreter) fn exchange(cx: _) -> Result {
     let (n, m) =
-        decode_pair(unsafe { ctrl.read_bytes_unchecked(1)[0] }).ok_or(InstrErr::Invalid)?;
-    unsafe { ctrl.advance_unchecked(1) };
+        decode_pair(unsafe { cx.ctrl.read_bytes_unchecked(1)[0] }).ok_or(InstrErr::Invalid)?;
+    unsafe { cx.ctrl.advance_unchecked(1) };
     stack.exchange(n, m - n)
 }
 

@@ -51,7 +51,7 @@ pub(in crate::interpreter) fn mulmod(a: &Word, b: &Word, n: &Word) -> Result<out
 
 #[instruction]
 pub(in crate::interpreter) fn exp(a: &Word, b: &Word) -> Result<out> {
-    *out = a.pow(*b);
+    *out = a.wrapping_pow(*b);
 }
 
 #[instruction]
