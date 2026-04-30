@@ -18,9 +18,6 @@ pub enum InstrErr {
 mod gas;
 pub use gas::{Gas, GasRef};
 
-#[macro_use]
-mod utils;
-
 mod instruction;
 pub use instruction::*;
 

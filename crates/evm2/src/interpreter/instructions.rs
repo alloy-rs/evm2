@@ -1,4 +1,4 @@
-use super::{GasRef, InstrErr, InstrFnRet, InstructionCx, PcRef, Result, Stack, State, Word};
+use super::{GasRef, InstrErr, InstructionCx, PcRef, Result, Stack, State, Word};
 use core::{hint::cold_path, mem};
 use evm2_macros::instruction;
 

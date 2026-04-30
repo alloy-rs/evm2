@@ -1,7 +1,7 @@
 use super::{
     SpecId,
     instruction::{GasTable, InstrTable, TailInstrTable},
-    instructions::{add, balance, invalid, push, stop},
+    instructions::{add_impl, balance_impl, invalid_impl, push_impl, stop_impl},
     opcode::{for_each_opcode, op},
 };
 
@@ -29,7 +29,7 @@ macro_rules! make_table_inner {
 }
 macro_rules! make_table_m {
     () => {{
-        let mut table: InstrTable = [invalid; 256];
+        let mut table: InstrTable = [invalid_impl; 256];
         for_each_opcode!([table] make_table_inner);
         table
     }};

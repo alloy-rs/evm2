@@ -74,13 +74,14 @@ impl Interpreter {
     fn step(&mut self, table: &InstrTable, gas_table: &GasTable, host: &mut dyn Host) -> Result {
         let mut pc = PcRef::new(&self.bytecode, &mut self.pc);
         let op = Self::pre_step(pc.reborrow(), &mut self.gas, gas_table)?;
-        let r;
-        (self.stack_len, r) = table[op as usize](
-            pc,
-            Stack::new(&mut self.stack, self.stack_len),
+        let mut stack = Stack::new(&mut self.stack, self.stack_len);
+        let r = table[op as usize](
+            &mut pc,
+            &mut stack,
             &mut self.gas,
             &mut State { host, spec: self.spec_id, raw_interp: core::ptr::null_mut() },
         );
+        self.stack_len = stack.len;
         r
     }
 }

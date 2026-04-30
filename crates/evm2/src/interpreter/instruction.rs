@@ -1,12 +1,9 @@
-use super::{GasRef, Host, InstrErr, PcRef, Result, Stack, State};
+use super::{GasRef, Host, PcRef, Result, Stack, State};
 
-pub type InstrFnRet = (usize, Result);
-pub type InstrFn = extern_table!(
-    fn(pc: PcRef<'_>, stack: Stack<'_>, gas: GasRef<'_>, state: &mut State) -> InstrFnRet
-);
+pub type InstrFn =
+    fn(pc: &mut PcRef<'_>, stack: &mut Stack<'_>, gas: GasRef<'_>, state: &mut State) -> Result;
 pub type InstrTable = [InstrFn; 256];
 
-pub type TailInstrFnRet = InstrErr;
 pub type TailInstrFn = InstrFn;
 pub type TailInstrTable = InstrTable;
 

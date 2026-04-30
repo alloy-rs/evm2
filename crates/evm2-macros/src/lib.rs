@@ -2,8 +2,8 @@ use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
 use syn::{
-    AngleBracketedGenericArguments, FnArg, GenericArgument, GenericParam, Ident, ItemFn, Pat,
-    PatIdent, PathArguments, ReturnType, Stmt, Token, Type, TypeInfer, TypePath, parse_macro_input,
+    AngleBracketedGenericArguments, FnArg, GenericArgument, Ident, ItemFn, Pat, PatIdent,
+    PathArguments, ReturnType, Stmt, Token, Type, TypeInfer, TypePath, parse_macro_input,
     punctuated::Punctuated,
 };
 
@@ -22,7 +22,6 @@ fn expand_instruction(raw: bool, input: ItemFn) -> TokenStream2 {
     let ident = sig.ident;
     let impl_ident = format_ident!("{ident}_impl");
     let generics = sig.generics;
-    let generic_args = generic_args(&generics);
     let where_clause = generics.where_clause.clone();
     let body = input.block.stmts;
 
@@ -60,9 +59,10 @@ fn expand_instruction(raw: bool, input: ItemFn) -> TokenStream2 {
     };
 
     quote! {
+        #(#attrs)*
         #[inline(always)]
         #[allow(unreachable_code)]
-        fn #impl_ident #generics(
+        #vis fn #impl_ident #generics(
             pc: &mut PcRef<'_>,
             stack: &mut Stack<'_>,
             gas: GasRef<'_>,
@@ -73,23 +73,6 @@ fn expand_instruction(raw: bool, input: ItemFn) -> TokenStream2 {
             #setup
             #(#body)*
             Ok(())
-        }
-
-        extern_table! {
-            #(#attrs)*
-            #[inline]
-            #[allow(unreachable_code)]
-            #vis fn #ident #generics(
-                mut pc: PcRef<'_>,
-                mut stack: Stack<'_>,
-                gas: GasRef<'_>,
-                state: &mut State<'_>,
-            ) -> InstrFnRet
-            #where_clause
-            {
-                let r = #impl_ident #generic_args(&mut pc, &mut stack, gas, state);
-                (stack.len, r)
-            }
         }
     }
 }
@@ -126,32 +109,6 @@ fn generic_ident(arg: &GenericArgument) -> Option<Ident> {
         return None;
     };
     path.get_ident().cloned()
-}
-
-fn generic_args(generics: &syn::Generics) -> TokenStream2 {
-    let args: Vec<_> = generics
-        .params
-        .iter()
-        .map(|param| match param {
-            GenericParam::Lifetime(param) => {
-                let lifetime = &param.lifetime;
-                quote! { #lifetime }
-            }
-            GenericParam::Type(param) => {
-                let ident = &param.ident;
-                quote! { #ident }
-            }
-            GenericParam::Const(param) => {
-                let ident = &param.ident;
-                quote! { #ident }
-            }
-        })
-        .collect();
-    if args.is_empty() {
-        quote! {}
-    } else {
-        quote! { ::<#(#args),*> }
-    }
 }
 
 fn stack_setup(inputs: &[Ident], outputs: &[Ident]) -> TokenStream2 {
