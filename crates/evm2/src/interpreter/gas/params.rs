@@ -286,19 +286,19 @@ impl GasParams {
         set_gas_param(&mut table, GasId::TxTokenCost, STANDARD_TOKEN_COST);
         set_gas_param(&mut table, GasId::TxBaseStipend, 21000);
 
-        if spec.is_enabled_in(SpecId::HOMESTEAD) {
+        if spec.enables(SpecId::HOMESTEAD) {
             set_gas_param(&mut table, GasId::TxCreateCost, CREATE);
         }
 
-        if spec.is_enabled_in(SpecId::TANGERINE) {
+        if spec.enables(SpecId::TANGERINE) {
             set_gas_param(&mut table, GasId::NewAccountCostForSelfdestruct, NEWACCOUNT);
         }
 
-        if spec.is_enabled_in(SpecId::SPURIOUS_DRAGON) {
+        if spec.enables(SpecId::SPURIOUS_DRAGON) {
             set_gas_param(&mut table, GasId::ExpByteGas, 50);
         }
 
-        if spec.is_enabled_in(SpecId::ISTANBUL) {
+        if spec.enables(SpecId::ISTANBUL) {
             set_gas_param(&mut table, GasId::SstoreStatic, ISTANBUL_SLOAD_GAS);
             set_gas_param(
                 &mut table,
@@ -319,7 +319,7 @@ impl GasParams {
             );
         }
 
-        if spec.is_enabled_in(SpecId::BERLIN) {
+        if spec.enables(SpecId::BERLIN) {
             set_gas_param(&mut table, GasId::SstoreStatic, WARM_STORAGE_READ_COST);
             set_gas_param(
                 &mut table,
@@ -353,7 +353,7 @@ impl GasParams {
             set_gas_param(&mut table, GasId::TxAccessListStorageKeyCost, ACCESS_LIST_STORAGE_KEY);
         }
 
-        if spec.is_enabled_in(SpecId::LONDON) {
+        if spec.enables(SpecId::LONDON) {
             set_gas_param(
                 &mut table,
                 GasId::SstoreClearingSlotRefund,
@@ -362,11 +362,11 @@ impl GasParams {
             set_gas_param(&mut table, GasId::SelfdestructRefund, 0);
         }
 
-        if spec.is_enabled_in(SpecId::SHANGHAI) {
+        if spec.enables(SpecId::SHANGHAI) {
             set_gas_param(&mut table, GasId::TxInitcodeCost, INITCODE_WORD_COST);
         }
 
-        if spec.is_enabled_in(SpecId::PRAGUE) {
+        if spec.enables(SpecId::PRAGUE) {
             set_gas_param(
                 &mut table,
                 GasId::TxEip7702PerEmptyAccountCost,
@@ -381,7 +381,7 @@ impl GasParams {
             set_gas_param(&mut table, GasId::TxFloorCostBaseGas, 21000);
         }
 
-        if spec.is_enabled_in(SpecId::AMSTERDAM) {
+        if spec.enables(SpecId::AMSTERDAM) {
             const CPSB: u64 = 1174;
 
             set_gas_param(&mut table, GasId::Create, 9000);

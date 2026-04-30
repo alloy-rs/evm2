@@ -102,10 +102,17 @@ impl SpecId {
         None
     }
 
+    /// Returns `true` if this specification enables `other`.
+    #[inline]
+    pub const fn enables(self, other: Self) -> bool {
+        self as u8 >= other as u8
+    }
+
     /// Returns `true` if `other` is enabled in this specification.
+    #[deprecated(note = "use SpecId::enables instead")]
     #[inline]
     pub const fn is_enabled_in(self, other: Self) -> bool {
-        self as u8 >= other as u8
+        self.enables(other)
     }
 }
 

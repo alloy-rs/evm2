@@ -95,7 +95,7 @@ impl<F: FnOnce(CtrlRef<'_>, &mut Stack<'_>, &mut Gas, &mut State<'_>) -> Result>
 pub const fn new_gas_table(spec: SpecId) -> GasTable {
     let mut table = make_gas_table();
 
-    if spec.is_enabled_in(SpecId::TANGERINE) {
+    if spec.enables(SpecId::TANGERINE) {
         table[op::SLOAD as usize] = 200;
         table[op::BALANCE as usize] = 400;
         table[op::EXTCODESIZE as usize] = 700;
@@ -107,13 +107,13 @@ pub const fn new_gas_table(spec: SpecId) -> GasTable {
         table[op::SELFDESTRUCT as usize] = 5000;
     }
 
-    if spec.is_enabled_in(SpecId::ISTANBUL) {
+    if spec.enables(SpecId::ISTANBUL) {
         table[op::SLOAD as usize] = ISTANBUL_SLOAD_GAS;
         table[op::BALANCE as usize] = 700;
         table[op::EXTCODEHASH as usize] = 700;
     }
 
-    if spec.is_enabled_in(SpecId::BERLIN) {
+    if spec.enables(SpecId::BERLIN) {
         table[op::SLOAD as usize] = WARM_STORAGE_READ_COST;
         table[op::BALANCE as usize] = WARM_STORAGE_READ_COST;
         table[op::EXTCODESIZE as usize] = WARM_STORAGE_READ_COST;
