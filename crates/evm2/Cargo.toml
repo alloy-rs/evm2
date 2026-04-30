@@ -1,5 +1,6 @@
 [package]
 name = "evm2"
+description = "Experimental EVM interpreter."
 
 version.workspace = true
 edition.workspace = true
