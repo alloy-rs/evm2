@@ -1,7 +1,7 @@
 use super::{
     CtrlRef, GasRef, InstrErr, InstructionCx, Result, SpecId, Stack, State, Word,
     instruction::{GasTable, InstrFnRet, InstrTable, TailInstrTable},
-    instructions::{add_impl, balance_impl, invalid_impl, push_impl, stop_impl},
+    instructions::{add, balance, invalid, push, stop},
     opcode::{for_each_opcode, op},
 };
 use core::hint::cold_path;

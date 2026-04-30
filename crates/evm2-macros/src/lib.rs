@@ -1,6 +1,6 @@
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
-use quote::{format_ident, quote};
+use quote::quote;
 use syn::{
     AngleBracketedGenericArguments, FnArg, GenericArgument, Ident, ItemFn, Pat, PatIdent,
     PathArguments, ReturnType, Stmt, Token, Type, TypeInfer, TypePath, parse_macro_input,
@@ -21,7 +21,6 @@ fn expand_instruction(raw: bool, input: ItemFn) -> TokenStream2 {
     let vis = input.vis;
     let sig = input.sig;
     let ident = sig.ident;
-    let impl_ident = format_ident!("{ident}_impl");
     let generics = sig.generics;
     let where_clause = generics.where_clause.clone();
     let body = input.block.stmts;
@@ -46,7 +45,7 @@ fn expand_instruction(raw: bool, input: ItemFn) -> TokenStream2 {
         #(#attrs)*
         #[inline(always)]
         #[allow(unreachable_code)]
-        #vis fn #impl_ident #generics(#(#args,)* #(#output_args),*) -> Result
+        #vis fn #ident #generics(#(#args,)* #(#output_args),*) -> Result
         #where_clause
         {
             #(#body)*
