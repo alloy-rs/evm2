@@ -1,6 +1,7 @@
 use crate::interpreter::Word;
 use core::cmp::Ordering;
 
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[allow(dead_code)]
 #[repr(i8)]

@@ -225,3 +225,57 @@ impl<'a> Stack<'a> {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run(f: impl FnOnce(&mut Stack<'_>)) {
+        let mut backing = [Word::MAX; 1024];
+        let mut stack = Stack::new(&mut backing, 0);
+        f(&mut stack);
+    }
+
+    #[test]
+    fn push_slices() {
+        run(|stack| {
+            stack.push_slice(b"").unwrap();
+            assert!(stack.as_slice().is_empty());
+        });
+
+        run(|stack| {
+            stack.push_slice(&[42]).unwrap();
+            assert_eq!(stack.as_slice(), [Word::from(42)]);
+        });
+
+        let n = 0x1111_2222_3333_4444_5555_6666_7777_8888_u128;
+        run(|stack| {
+            stack.push_slice(&n.to_be_bytes()).unwrap();
+            assert_eq!(stack.as_slice(), [Word::from(n)]);
+        });
+
+        run(|stack| {
+            let bytes = [Word::from(n).to_be_bytes::<32>(); 2].concat();
+            stack.push_slice(&bytes).unwrap();
+            assert_eq!(stack.as_slice(), [Word::from(n); 2]);
+        });
+
+        run(|stack| {
+            let bytes = [&[0; 32][..], &[42u8]].concat();
+            stack.push_slice(&bytes).unwrap();
+            assert_eq!(stack.as_slice(), [Word::ZERO, Word::from(42)]);
+        });
+
+        run(|stack| {
+            let bytes = [&[0; 32][..], &n.to_be_bytes()].concat();
+            stack.push_slice(&bytes).unwrap();
+            assert_eq!(stack.as_slice(), [Word::ZERO, Word::from(n)]);
+        });
+
+        run(|stack| {
+            let bytes = [&[0; 64][..], &n.to_be_bytes()].concat();
+            stack.push_slice(&bytes).unwrap();
+            assert_eq!(stack.as_slice(), [Word::ZERO, Word::ZERO, Word::from(n)]);
+        });
+    }
+}

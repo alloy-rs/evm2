@@ -25,6 +25,9 @@ once_cell = { workspace = true, features = ["alloc"] }
 # "serde"
 serde = { workspace = true, features = ["derive", "alloc"], optional = true }
 
+[dev-dependencies]
+serde_json.workspace = true
+
 [features]
 default = ["std"]
 std = []

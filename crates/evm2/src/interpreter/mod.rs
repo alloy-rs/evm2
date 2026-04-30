@@ -34,6 +34,7 @@ pub use runtime::{Interpreter, Table};
 pub(crate) type Result<T = (), E = InstrErr> = core::result::Result<T, E>;
 
 /// EVM hard fork identifier.
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SpecId {
     /// Frontier hard fork.
@@ -43,6 +44,7 @@ pub enum SpecId {
 }
 
 /// Instruction execution error.
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug)]
 pub enum InstrErr {
     /// Execution stopped.

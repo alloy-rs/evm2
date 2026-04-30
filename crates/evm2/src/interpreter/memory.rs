@@ -231,6 +231,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_num_words() {
+        assert_eq!(num_words(0), 0);
+        assert_eq!(num_words(1), 1);
+        assert_eq!(num_words(31), 1);
+        assert_eq!(num_words(32), 1);
+        assert_eq!(num_words(33), 2);
+        assert_eq!(num_words(63), 2);
+        assert_eq!(num_words(64), 2);
+        assert_eq!(num_words(65), 3);
+        assert_eq!(num_words(usize::MAX - 31), usize::MAX / 32);
+        assert_eq!(num_words(usize::MAX - 30), (usize::MAX / 32) + 1);
+        assert_eq!(num_words(usize::MAX), (usize::MAX / 32) + 1);
+    }
+
+    #[test]
     fn resize_memory_accounts_expansion_gas() {
         let mut gas = Gas::new(100);
         let mut memory = Memory::new();
@@ -252,12 +267,17 @@ mod tests {
 
     #[test]
     fn resize_memory_respects_memory_limit() {
-        let mut gas = Gas::new(100);
-        let mut memory = Memory::new_with_memory_limit(32);
+        let mut gas = Gas::new(100_000);
+        let mut memory = Memory::new_with_memory_limit(64);
 
         resize_memory(&mut gas, &mut memory, 0, 32).unwrap();
-        assert!(matches!(resize_memory(&mut gas, &mut memory, 0, 64), Err(InstrErr::OutOfGas)));
         assert_eq!(memory.len(), 32);
-        assert_eq!(gas.memory().words_num, 1);
+
+        resize_memory(&mut gas, &mut memory, 0, 64).unwrap();
+        assert_eq!(memory.len(), 64);
+
+        assert!(matches!(resize_memory(&mut gas, &mut memory, 0, 96), Err(InstrErr::OutOfGas)));
+        assert_eq!(memory.len(), 64);
+        assert_eq!(gas.memory().words_num, 2);
     }
 }

@@ -2,6 +2,7 @@ use super::{Bytecode, JumpTable};
 use alloy_primitives::{Address, Bytes};
 use serde::{Deserialize, Serialize};
 
+#[non_exhaustive]
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum BytecodeSerde {
@@ -9,6 +10,7 @@ enum BytecodeSerde {
     Old(BytecodeSerdeOld),
 }
 
+#[non_exhaustive]
 #[derive(Deserialize)]
 #[allow(dead_code)]
 enum BytecodeSerdeOld {

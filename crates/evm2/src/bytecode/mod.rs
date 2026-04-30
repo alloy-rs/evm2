@@ -27,6 +27,7 @@ pub const EIP7702_VERSION: u8 = 0;
 pub const EIP7702_BYTECODE_LEN: usize = 23;
 
 /// EIP-7702 decode errors.
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Eip7702DecodeError {
     /// Invalid length of the raw bytecode.
@@ -41,6 +42,7 @@ pub enum Eip7702DecodeError {
 }
 
 /// Bytecode decode errors.
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum BytecodeDecodeError {
     /// EIP-7702 decode error.
@@ -71,6 +73,7 @@ struct BytecodeInner {
 }
 
 /// The kind of bytecode.
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Ord, PartialOrd, Default)]
 pub enum BytecodeKind {
     /// Legacy analyzed bytecode with jump table.
@@ -582,5 +585,55 @@ mod tests {
         assert_eq!(bytecode.eip7702_address(), Some(address));
         assert_eq!(bytecode.original_bytes().len(), EIP7702_BYTECODE_LEN);
         assert_eq!(&bytecode.original_byte_slice()[..3], &[0xEF, 0x01, 0x00]);
+    }
+
+    #[test]
+    #[should_panic(expected = "slice bit length 8 is less than bit_len 10")]
+    fn test_jump_table_from_slice_panic() {
+        let _ = JumpTable::from_slice(&[0x00], 10);
+    }
+
+    #[test]
+    fn test_jump_table_from_slice() {
+        let jump_table = JumpTable::from_slice(&[0x00], 3);
+        assert_eq!(jump_table.len(), 3);
+    }
+
+    #[test]
+    fn test_jump_table_is_valid() {
+        let jump_table = JumpTable::from_slice(&[0x0D, 0x06], 13);
+
+        assert_eq!(jump_table.len(), 13);
+
+        assert!(jump_table.is_valid(0));
+        assert!(!jump_table.is_valid(1));
+        assert!(jump_table.is_valid(2));
+        assert!(jump_table.is_valid(3));
+        assert!(!jump_table.is_valid(4));
+        assert!(!jump_table.is_valid(5));
+        assert!(!jump_table.is_valid(6));
+        assert!(!jump_table.is_valid(7));
+        assert!(!jump_table.is_valid(8));
+        assert!(jump_table.is_valid(9));
+        assert!(jump_table.is_valid(10));
+        assert!(!jump_table.is_valid(11));
+        assert!(!jump_table.is_valid(12));
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn test_jump_table_serde_roundtrip() {
+        let original = JumpTable::from_slice(&[0x0D, 0x06], 13);
+
+        let serialized = serde_json::to_string(&original).unwrap();
+        let deserialized: JumpTable = serde_json::from_str(&serialized).unwrap();
+
+        assert_eq!(original.len(), deserialized.len());
+        assert_eq!(original.table, deserialized.table);
+        assert_eq!(original, deserialized);
+
+        for i in 0..13 {
+            assert_eq!(original.is_valid(i), deserialized.is_valid(i), "mismatch at index {i}");
+        }
     }
 }
