@@ -90,30 +90,114 @@ pub(in crate::interpreter) fn clz(value: &Word) -> out {
 
 #[cfg(test)]
 mod tests {
-    use crate::interpreter::{InstrErr, Word, instructions::tests::run_stack, op};
+    use crate::interpreter::{Word, instructions::tests::assert_stack, op};
 
-    fn assert_op(inputs: &[Word], opcode: u8, expected: Word) {
-        let interpreter = run_stack(inputs, opcode);
-        assert!(matches!(interpreter.err, InstrErr::Stop));
-        assert_eq!(interpreter.stack(), [expected]);
+    fn neg(value: u64) -> Word {
+        Word::ZERO.wrapping_sub(Word::from(value))
     }
 
     #[test]
-    fn bitwise_opcodes() {
-        assert_op(&[Word::from(1), Word::from(2)], op::LT, Word::from(1));
-        assert_op(&[Word::from(2), Word::from(1)], op::GT, Word::from(1));
-        assert_op(&[Word::MAX, Word::ZERO], op::SLT, Word::from(1));
-        assert_op(&[Word::ZERO, Word::MAX], op::SGT, Word::from(1));
-        assert_op(&[Word::from(3), Word::from(3)], op::EQ, Word::from(1));
-        assert_op(&[Word::ZERO], op::ISZERO, Word::from(1));
-        assert_op(&[Word::from(0b1100), Word::from(0b1010)], op::AND, Word::from(0b1000));
-        assert_op(&[Word::from(0b1100), Word::from(0b1010)], op::OR, Word::from(0b1110));
-        assert_op(&[Word::from(0b1100), Word::from(0b1010)], op::XOR, Word::from(0b0110));
-        assert_op(&[Word::ZERO], op::NOT, Word::MAX);
-        assert_op(&[Word::from(31), Word::from(0x1234)], op::BYTE, Word::from(0x34));
-        assert_op(&[Word::from(8), Word::from(1)], op::SHL, Word::from(256));
-        assert_op(&[Word::from(8), Word::from(256)], op::SHR, Word::from(1));
-        assert_op(&[Word::from(1), Word::MAX - Word::from(1)], op::SAR, Word::MAX);
-        assert_op(&[Word::from(1)], op::CLZ, Word::from(255));
+    fn lt_opcode() {
+        assert_stack(&[Word::from(1), Word::from(2)], op::LT, &[Word::from(1)]);
+        assert_stack(&[Word::from(2), Word::from(1)], op::LT, &[Word::ZERO]);
+        assert_stack(&[Word::from(2), Word::from(2)], op::LT, &[Word::ZERO]);
+    }
+
+    #[test]
+    fn gt_opcode() {
+        assert_stack(&[Word::from(2), Word::from(1)], op::GT, &[Word::from(1)]);
+        assert_stack(&[Word::from(1), Word::from(2)], op::GT, &[Word::ZERO]);
+        assert_stack(&[Word::from(2), Word::from(2)], op::GT, &[Word::ZERO]);
+    }
+
+    #[test]
+    fn slt_opcode() {
+        assert_stack(&[Word::MAX, Word::ZERO], op::SLT, &[Word::from(1)]);
+        assert_stack(&[Word::ZERO, Word::MAX], op::SLT, &[Word::ZERO]);
+        assert_stack(&[neg(2), neg(1)], op::SLT, &[Word::from(1)]);
+    }
+
+    #[test]
+    fn sgt_opcode() {
+        assert_stack(&[Word::ZERO, Word::MAX], op::SGT, &[Word::from(1)]);
+        assert_stack(&[Word::MAX, Word::ZERO], op::SGT, &[Word::ZERO]);
+        assert_stack(&[neg(1), neg(2)], op::SGT, &[Word::from(1)]);
+    }
+
+    #[test]
+    fn eq_opcode() {
+        assert_stack(&[Word::from(3), Word::from(3)], op::EQ, &[Word::from(1)]);
+        assert_stack(&[Word::from(3), Word::from(4)], op::EQ, &[Word::ZERO]);
+        assert_stack(&[Word::MAX, Word::MAX], op::EQ, &[Word::from(1)]);
+    }
+
+    #[test]
+    fn iszero_opcode() {
+        assert_stack(&[Word::ZERO], op::ISZERO, &[Word::from(1)]);
+        assert_stack(&[Word::from(1)], op::ISZERO, &[Word::ZERO]);
+        assert_stack(&[Word::MAX], op::ISZERO, &[Word::ZERO]);
+    }
+
+    #[test]
+    fn and_opcode() {
+        assert_stack(&[Word::from(0b1100), Word::from(0b1010)], op::AND, &[Word::from(0b1000)]);
+        assert_stack(&[Word::MAX, Word::from(0x55)], op::AND, &[Word::from(0x55)]);
+        assert_stack(&[Word::ZERO, Word::MAX], op::AND, &[Word::ZERO]);
+    }
+
+    #[test]
+    fn or_opcode() {
+        assert_stack(&[Word::from(0b1100), Word::from(0b1010)], op::OR, &[Word::from(0b1110)]);
+        assert_stack(&[Word::ZERO, Word::from(0x55)], op::OR, &[Word::from(0x55)]);
+        assert_stack(&[Word::MAX, Word::ZERO], op::OR, &[Word::MAX]);
+    }
+
+    #[test]
+    fn xor_opcode() {
+        assert_stack(&[Word::from(0b1100), Word::from(0b1010)], op::XOR, &[Word::from(0b0110)]);
+        assert_stack(&[Word::MAX, Word::MAX], op::XOR, &[Word::ZERO]);
+        assert_stack(&[Word::ZERO, Word::from(0x55)], op::XOR, &[Word::from(0x55)]);
+    }
+
+    #[test]
+    fn not_opcode() {
+        assert_stack(&[Word::ZERO], op::NOT, &[Word::MAX]);
+        assert_stack(&[Word::MAX], op::NOT, &[Word::ZERO]);
+        assert_stack(&[Word::from(0xff)], op::NOT, &[Word::MAX - Word::from(0xff)]);
+    }
+
+    #[test]
+    fn byte_opcode() {
+        assert_stack(&[Word::from(31), Word::from(0x1234)], op::BYTE, &[Word::from(0x34)]);
+        assert_stack(&[Word::from(30), Word::from(0x1234)], op::BYTE, &[Word::from(0x12)]);
+        assert_stack(&[Word::from(32), Word::from(0x1234)], op::BYTE, &[Word::ZERO]);
+    }
+
+    #[test]
+    fn shl_opcode() {
+        assert_stack(&[Word::from(8), Word::from(1)], op::SHL, &[Word::from(256)]);
+        assert_stack(&[Word::ZERO, Word::from(7)], op::SHL, &[Word::from(7)]);
+        assert_stack(&[Word::from(256), Word::from(1)], op::SHL, &[Word::ZERO]);
+    }
+
+    #[test]
+    fn shr_opcode() {
+        assert_stack(&[Word::from(8), Word::from(256)], op::SHR, &[Word::from(1)]);
+        assert_stack(&[Word::ZERO, Word::from(7)], op::SHR, &[Word::from(7)]);
+        assert_stack(&[Word::from(256), Word::MAX], op::SHR, &[Word::ZERO]);
+    }
+
+    #[test]
+    fn sar_opcode() {
+        assert_stack(&[Word::from(1), Word::MAX - Word::from(1)], op::SAR, &[Word::MAX]);
+        assert_stack(&[Word::from(1), Word::from(4)], op::SAR, &[Word::from(2)]);
+        assert_stack(&[Word::from(256), Word::MAX], op::SAR, &[Word::MAX]);
+    }
+
+    #[test]
+    fn clz_opcode() {
+        assert_stack(&[Word::from(1)], op::CLZ, &[Word::from(255)]);
+        assert_stack(&[Word::ZERO], op::CLZ, &[Word::from(256)]);
+        assert_stack(&[Word::MAX], op::CLZ, &[Word::ZERO]);
     }
 }

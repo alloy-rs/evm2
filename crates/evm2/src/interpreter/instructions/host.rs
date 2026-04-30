@@ -8,12 +8,12 @@ pub(in crate::interpreter) fn balance(cx: _, addr: &Word) -> out {
 
 #[cfg(test)]
 mod tests {
-    use crate::interpreter::{InstrErr, Word, instructions::tests::run_stack, op};
+    use crate::interpreter::{Word, instructions::tests::assert_stack, op};
 
     #[test]
     fn balance_opcode() {
-        let interpreter = run_stack(&[Word::from(0xbeef)], op::BALANCE);
-        assert!(matches!(interpreter.err, InstrErr::Stop));
-        assert_eq!(interpreter.stack(), [Word::from(0xbeef)]);
+        assert_stack(&[Word::from(0xbeef)], op::BALANCE, &[Word::from(0xbeef)]);
+        assert_stack(&[Word::ZERO], op::BALANCE, &[Word::ZERO]);
+        assert_stack(&[Word::MAX], op::BALANCE, &[Word::MAX]);
     }
 }

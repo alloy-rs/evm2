@@ -50,7 +50,7 @@ mod tests {
     use alloc::vec::Vec;
 
     #[test]
-    fn memory_opcodes() {
+    fn mload_opcode() {
         let value = Word::from(0xfeed);
         let mut code = Vec::new();
         push(&mut code, Word::ZERO);
@@ -64,18 +64,55 @@ mod tests {
         assert!(matches!(interpreter.err, InstrErr::Stop));
         assert_eq!(interpreter.stack(), [value]);
         assert_eq!(interpreter.memory(30, 2), [0xfe, 0xed]);
+    }
 
+    #[test]
+    fn mstore_opcode() {
+        let value = Word::from(0xfeed);
         let mut code = Vec::new();
-        push(&mut code, Word::from(4));
-        push(&mut code, Word::from(0xab));
-        code.push(op::MSTORE8);
+        push(&mut code, Word::from(8));
+        push(&mut code, value);
+        code.push(op::MSTORE);
         code.push(op::MSIZE);
         code.push(op::STOP);
 
         let mut interpreter = run(code);
         assert!(matches!(interpreter.err, InstrErr::Stop));
-        assert_eq!(interpreter.stack(), [Word::from(32)]);
+        assert_eq!(interpreter.stack(), [Word::from(64)]);
+        assert_eq!(interpreter.memory(38, 2), [0xfe, 0xed]);
+    }
+
+    #[test]
+    fn mstore8_opcode() {
+        let mut code = Vec::new();
+        push(&mut code, Word::from(4));
+        push(&mut code, Word::from(0x01ab));
+        code.push(op::MSTORE8);
+        push(&mut code, Word::from(4));
+        code.push(op::MLOAD);
+        code.push(op::STOP);
+
+        let mut interpreter = run(code);
+        assert!(matches!(interpreter.err, InstrErr::Stop));
         assert_eq!(interpreter.memory(4, 1), [0xab]);
+        assert_eq!(interpreter.stack()[0] >> 248, Word::from(0xab));
+    }
+
+    #[test]
+    fn msize_opcode() {
+        let interpreter = run([op::MSIZE, op::STOP]);
+        assert!(matches!(interpreter.err, InstrErr::Stop));
+        assert_eq!(interpreter.stack(), [Word::ZERO]);
+
+        let mut code = Vec::new();
+        push(&mut code, Word::from(33));
+        push(&mut code, Word::ZERO);
+        code.push(op::MSTORE);
+        code.push(op::MSIZE);
+        code.push(op::STOP);
+        let interpreter = run(code);
+        assert!(matches!(interpreter.err, InstrErr::Stop));
+        assert_eq!(interpreter.stack(), [Word::from(96)]);
     }
 
     #[test]
@@ -96,5 +133,16 @@ mod tests {
         let interpreter = run(code);
         assert!(matches!(interpreter.err, InstrErr::Stop));
         assert_eq!(interpreter.stack(), [value]);
+
+        let mut code = Vec::new();
+        push(&mut code, Word::ZERO);
+        push(&mut code, Word::from(1));
+        push(&mut code, Word::ZERO);
+        code.push(op::MCOPY);
+        code.push(op::MSIZE);
+        code.push(op::STOP);
+        let interpreter = run(code);
+        assert!(matches!(interpreter.err, InstrErr::Stop));
+        assert_eq!(interpreter.stack(), [Word::ZERO]);
     }
 }

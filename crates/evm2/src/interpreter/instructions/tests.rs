@@ -41,6 +41,12 @@ pub(super) fn run_stack(inputs: &[Word], opcode: u8) -> TestInterpreter {
     run(code)
 }
 
+pub(super) fn assert_stack(inputs: &[Word], opcode: u8, expected: &[Word]) {
+    let interpreter = run_stack(inputs, opcode);
+    assert!(matches!(interpreter.err, InstrErr::Stop));
+    assert_eq!(interpreter.stack(), expected);
+}
+
 pub(super) fn push(code: &mut Vec<u8>, value: Word) {
     if value.is_zero() {
         code.push(op::PUSH0);

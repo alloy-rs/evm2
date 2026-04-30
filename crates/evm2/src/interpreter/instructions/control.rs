@@ -82,6 +82,10 @@ mod tests {
         let interpreter = run([op::STOP]);
         assert!(matches!(interpreter.err, InstrErr::Stop));
         assert_eq!(interpreter.inner.pc, 1);
+
+        let interpreter = run([op::STOP, op::INVALID]);
+        assert!(matches!(interpreter.err, InstrErr::Stop));
+        assert_eq!(interpreter.inner.pc, 1);
     }
 
     #[test]
@@ -89,40 +93,83 @@ mod tests {
         let interpreter = run([op::INVALID]);
         assert!(matches!(interpreter.err, InstrErr::Invalid));
         assert_eq!(interpreter.inner.pc, 1);
+
+        let interpreter = run([0x0c]);
+        assert!(matches!(interpreter.err, InstrErr::Invalid));
+        assert_eq!(interpreter.inner.pc, 1);
     }
 
     #[test]
-    fn jump_opcodes() {
+    fn jump_opcode() {
         let interpreter = run([op::PUSH1, 0x03, op::JUMP, op::JUMPDEST, op::STOP]);
         assert!(matches!(interpreter.err, InstrErr::Stop));
         assert_eq!(interpreter.inner.pc, 5);
+
+        let interpreter = run([op::PUSH1, 0x00, op::JUMP, op::JUMPDEST, op::STOP]);
+        assert!(matches!(interpreter.err, InstrErr::Invalid));
+
+        let interpreter = run([op::PUSH1, 0x04, op::JUMP, op::STOP, op::JUMPDEST, op::STOP]);
+        assert!(matches!(interpreter.err, InstrErr::Stop));
+        assert_eq!(interpreter.inner.pc, 6);
+    }
+
+    #[test]
+    fn jumpi_opcode() {
+        let interpreter =
+            run([op::PUSH1, 0x06, op::PUSH1, 0x01, op::JUMPI, op::STOP, op::JUMPDEST, op::STOP]);
+        assert!(matches!(interpreter.err, InstrErr::Stop));
+        assert_eq!(interpreter.inner.pc, 8);
 
         let interpreter =
             run([op::PUSH1, 0x06, op::PUSH1, 0x00, op::JUMPI, op::JUMPDEST, op::STOP]);
         assert!(matches!(interpreter.err, InstrErr::Stop));
         assert_eq!(interpreter.inner.pc, 7);
 
-        let interpreter =
-            run([op::PUSH1, 0x06, op::PUSH1, 0x01, op::JUMPI, op::STOP, op::JUMPDEST, op::STOP]);
-        assert!(matches!(interpreter.err, InstrErr::Stop));
-        assert_eq!(interpreter.inner.pc, 8);
+        let interpreter = run([op::PUSH1, 0x05, op::PUSH1, 0x01, op::JUMPI, op::STOP, op::STOP]);
+        assert!(matches!(interpreter.err, InstrErr::Invalid));
     }
 
     #[test]
-    fn pc_and_jumpdest_opcodes() {
+    fn pc_opcode() {
         let interpreter = run([op::PC, op::JUMPDEST, op::STOP]);
         assert!(matches!(interpreter.err, InstrErr::Stop));
         assert_eq!(interpreter.stack(), [Word::ZERO]);
+
+        let interpreter = run([op::JUMPDEST, op::PC, op::STOP]);
+        assert!(matches!(interpreter.err, InstrErr::Stop));
+        assert_eq!(interpreter.stack(), [Word::from(1)]);
     }
 
     #[test]
-    fn return_opcodes() {
+    fn jumpdest_opcode() {
+        let interpreter = run([op::JUMPDEST, op::STOP]);
+        assert!(matches!(interpreter.err, InstrErr::Stop));
+        assert!(interpreter.stack().is_empty());
+
+        let interpreter = run([op::JUMPDEST, op::JUMPDEST, op::STOP]);
+        assert!(matches!(interpreter.err, InstrErr::Stop));
+        assert_eq!(interpreter.inner.pc, 3);
+    }
+
+    #[test]
+    fn return_opcode() {
         let mut interpreter = run_stack(&[Word::ZERO, Word::ZERO], op::RETURN);
         assert!(matches!(interpreter.err, InstrErr::Return));
         assert!(interpreter.memory(0, 0).is_empty());
 
+        let mut interpreter = run_stack(&[Word::ZERO, Word::from(1)], op::RETURN);
+        assert!(matches!(interpreter.err, InstrErr::Return));
+        assert_eq!(interpreter.memory(0, 1), [0]);
+    }
+
+    #[test]
+    fn revert_opcode() {
         let mut interpreter = run_stack(&[Word::ZERO, Word::ZERO], op::REVERT);
         assert!(matches!(interpreter.err, InstrErr::Revert));
         assert!(interpreter.memory(0, 0).is_empty());
+
+        let mut interpreter = run_stack(&[Word::from(2), Word::from(3)], op::REVERT);
+        assert!(matches!(interpreter.err, InstrErr::Revert));
+        assert_eq!(interpreter.memory(2, 3), [0, 0, 0]);
     }
 }

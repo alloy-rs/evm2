@@ -64,30 +64,90 @@ pub(in crate::interpreter) fn signextend(ext: &Word, value: &Word) -> out {
 
 #[cfg(test)]
 mod tests {
-    use crate::interpreter::{InstrErr, Word, instructions::tests::run_stack, op};
+    use crate::interpreter::{Word, instructions::tests::assert_stack, op};
 
-    fn assert_op(inputs: &[Word], opcode: u8, expected: Word) {
-        let interpreter = run_stack(inputs, opcode);
-        assert!(matches!(interpreter.err, InstrErr::Stop));
-        assert_eq!(interpreter.stack(), [expected]);
+    fn neg(value: u64) -> Word {
+        Word::ZERO.wrapping_sub(Word::from(value))
     }
 
     #[test]
-    fn arithmetic_opcodes() {
-        assert_op(&[Word::from(1), Word::from(2)], op::ADD, Word::from(3));
-        assert_op(&[Word::from(3), Word::from(7)], op::MUL, Word::from(21));
-        assert_op(&[Word::from(7), Word::from(3)], op::SUB, Word::from(4));
-        assert_op(&[Word::from(7), Word::from(2)], op::DIV, Word::from(3));
-        assert_op(&[Word::from(7), Word::ZERO], op::DIV, Word::ZERO);
+    fn add_opcode() {
+        assert_stack(&[Word::from(1), Word::from(2)], op::ADD, &[Word::from(3)]);
+        assert_stack(&[Word::MAX, Word::from(1)], op::ADD, &[Word::ZERO]);
+        assert_stack(&[Word::ZERO, Word::ZERO], op::ADD, &[Word::ZERO]);
+    }
 
-        let neg_four = Word::ZERO.wrapping_sub(Word::from(4));
-        let neg_two = Word::ZERO.wrapping_sub(Word::from(2));
-        assert_op(&[neg_four, Word::from(2)], op::SDIV, neg_two);
-        assert_op(&[Word::from(7), Word::from(3)], op::MOD, Word::from(1));
-        assert_op(&[neg_four, Word::from(3)], op::SMOD, Word::ZERO.wrapping_sub(Word::from(1)));
-        assert_op(&[Word::from(5), Word::from(6), Word::from(7)], op::ADDMOD, Word::from(4));
-        assert_op(&[Word::from(5), Word::from(6), Word::from(7)], op::MULMOD, Word::from(2));
-        assert_op(&[Word::from(2), Word::from(10)], op::EXP, Word::from(1024));
-        assert_op(&[Word::ZERO, Word::from(0x80)], op::SIGNEXTEND, Word::MAX - Word::from(0x7f));
+    #[test]
+    fn mul_opcode() {
+        assert_stack(&[Word::from(3), Word::from(7)], op::MUL, &[Word::from(21)]);
+        assert_stack(&[Word::MAX, Word::from(2)], op::MUL, &[Word::MAX - Word::from(1)]);
+        assert_stack(&[Word::from(123), Word::ZERO], op::MUL, &[Word::ZERO]);
+    }
+
+    #[test]
+    fn sub_opcode() {
+        assert_stack(&[Word::from(7), Word::from(3)], op::SUB, &[Word::from(4)]);
+        assert_stack(&[Word::ZERO, Word::from(1)], op::SUB, &[Word::MAX]);
+        assert_stack(&[Word::from(9), Word::from(9)], op::SUB, &[Word::ZERO]);
+    }
+
+    #[test]
+    fn div_opcode() {
+        assert_stack(&[Word::from(7), Word::from(2)], op::DIV, &[Word::from(3)]);
+        assert_stack(&[Word::from(7), Word::ZERO], op::DIV, &[Word::ZERO]);
+        assert_stack(&[Word::ZERO, Word::from(3)], op::DIV, &[Word::ZERO]);
+    }
+
+    #[test]
+    fn sdiv_opcode() {
+        assert_stack(&[neg(4), Word::from(2)], op::SDIV, &[neg(2)]);
+        assert_stack(&[Word::from(7), neg(2)], op::SDIV, &[neg(3)]);
+        assert_stack(&[Word::from(7), Word::ZERO], op::SDIV, &[Word::ZERO]);
+    }
+
+    #[test]
+    fn mod_opcode() {
+        assert_stack(&[Word::from(7), Word::from(3)], op::MOD, &[Word::from(1)]);
+        assert_stack(&[Word::from(7), Word::ZERO], op::MOD, &[Word::ZERO]);
+        assert_stack(&[Word::from(9), Word::from(3)], op::MOD, &[Word::ZERO]);
+    }
+
+    #[test]
+    fn smod_opcode() {
+        assert_stack(&[neg(4), Word::from(3)], op::SMOD, &[neg(1)]);
+        assert_stack(&[Word::from(4), neg(3)], op::SMOD, &[Word::from(1)]);
+        assert_stack(&[Word::from(4), Word::ZERO], op::SMOD, &[Word::ZERO]);
+    }
+
+    #[test]
+    fn addmod_opcode() {
+        assert_stack(&[Word::from(5), Word::from(6), Word::from(7)], op::ADDMOD, &[Word::from(4)]);
+        assert_stack(&[Word::MAX, Word::from(1), Word::from(9)], op::ADDMOD, &[Word::from(7)]);
+        assert_stack(&[Word::from(1), Word::from(2), Word::ZERO], op::ADDMOD, &[Word::ZERO]);
+    }
+
+    #[test]
+    fn mulmod_opcode() {
+        assert_stack(&[Word::from(5), Word::from(6), Word::from(7)], op::MULMOD, &[Word::from(2)]);
+        assert_stack(&[Word::MAX, Word::from(2), Word::from(9)], op::MULMOD, &[Word::from(3)]);
+        assert_stack(&[Word::from(2), Word::from(3), Word::ZERO], op::MULMOD, &[Word::ZERO]);
+    }
+
+    #[test]
+    fn exp_opcode() {
+        assert_stack(&[Word::from(2), Word::from(10)], op::EXP, &[Word::from(1024)]);
+        assert_stack(&[Word::from(5), Word::ZERO], op::EXP, &[Word::from(1)]);
+        assert_stack(&[Word::ZERO, Word::from(3)], op::EXP, &[Word::ZERO]);
+    }
+
+    #[test]
+    fn signextend_opcode() {
+        assert_stack(
+            &[Word::ZERO, Word::from(0x80)],
+            op::SIGNEXTEND,
+            &[Word::MAX - Word::from(0x7f)],
+        );
+        assert_stack(&[Word::ZERO, Word::from(0x7f)], op::SIGNEXTEND, &[Word::from(0x7f)]);
+        assert_stack(&[Word::from(31), Word::from(0x80)], op::SIGNEXTEND, &[Word::from(0x80)]);
     }
 }

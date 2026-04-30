@@ -50,16 +50,7 @@ mod tests {
     use alloy_primitives::keccak256;
 
     #[test]
-    fn system_opcodes() {
-        let interpreter = run([op::CODESIZE, op::STOP]);
-        assert!(matches!(interpreter.err, InstrErr::Stop));
-        assert_eq!(interpreter.stack(), [Word::from(2)]);
-
-        let interpreter = run([op::GAS, op::STOP]);
-        assert!(matches!(interpreter.err, InstrErr::Stop));
-        assert_eq!(interpreter.stack().len(), 1);
-        assert!(interpreter.stack()[0] < Word::from(10_000));
-
+    fn keccak256_opcode() {
         let mut code = Vec::new();
         push(&mut code, Word::ZERO);
         push(&mut code, Word::ZERO);
@@ -68,6 +59,29 @@ mod tests {
         let interpreter = run(code);
         assert!(matches!(interpreter.err, InstrErr::Stop));
         assert_eq!(interpreter.stack(), [Word::from_be_bytes(keccak256([]).0)]);
+
+        let mut code = Vec::new();
+        push(&mut code, Word::ZERO);
+        push(&mut code, Word::from(0x80));
+        code.push(op::MSTORE8);
+        push(&mut code, Word::ZERO);
+        push(&mut code, Word::from(1));
+        code.push(op::KECCAK256);
+        code.push(op::STOP);
+        let interpreter = run(code);
+        assert!(matches!(interpreter.err, InstrErr::Stop));
+        assert_eq!(interpreter.stack(), [Word::from_be_bytes(keccak256([0x80]).0)]);
+    }
+
+    #[test]
+    fn codesize_opcode() {
+        let interpreter = run([op::CODESIZE, op::STOP]);
+        assert!(matches!(interpreter.err, InstrErr::Stop));
+        assert_eq!(interpreter.stack(), [Word::from(2)]);
+
+        let interpreter = run([op::PUSH1, 0x00, op::CODESIZE, op::STOP]);
+        assert!(matches!(interpreter.err, InstrErr::Stop));
+        assert_eq!(interpreter.stack(), [Word::ZERO, Word::from(4)]);
     }
 
     #[test]
@@ -86,5 +100,30 @@ mod tests {
         expected[..2].copy_from_slice(&[op::CODECOPY, op::PUSH0]);
         assert!(matches!(interpreter.err, InstrErr::Stop));
         assert_eq!(interpreter.stack(), [Word::from_be_bytes(expected)]);
+
+        let mut code = Vec::new();
+        push(&mut code, Word::ZERO);
+        push(&mut code, Word::from(usize::MAX));
+        push(&mut code, Word::from(1));
+        code.push(op::CODECOPY);
+        push(&mut code, Word::ZERO);
+        code.push(op::MLOAD);
+        code.push(op::STOP);
+        let interpreter = run(code);
+        assert!(matches!(interpreter.err, InstrErr::Stop));
+        assert_eq!(interpreter.stack(), [Word::ZERO]);
+    }
+
+    #[test]
+    fn gas_opcode() {
+        let interpreter = run([op::GAS, op::STOP]);
+        assert!(matches!(interpreter.err, InstrErr::Stop));
+        assert_eq!(interpreter.stack().len(), 1);
+        assert!(interpreter.stack()[0] < Word::from(10_000));
+
+        let interpreter = run([op::GAS, op::GAS, op::STOP]);
+        assert!(matches!(interpreter.err, InstrErr::Stop));
+        assert_eq!(interpreter.stack().len(), 2);
+        assert!(interpreter.stack()[1] < interpreter.stack()[0]);
     }
 }
