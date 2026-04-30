@@ -2,7 +2,6 @@ use super::{
     super::{CtrlRef, Gas, InstrErr, Result, Stack, State, Word},
     utils::{i256_div, i256_mod},
 };
-use core::hint::cold_path;
 use evm2_macros::instruction;
 
 #[instruction]

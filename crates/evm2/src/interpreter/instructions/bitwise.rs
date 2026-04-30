@@ -2,7 +2,7 @@ use super::{
     super::{CtrlRef, Gas, InstrErr, Result, Stack, State, Word},
     utils::{as_usize, i256_cmp},
 };
-use core::{cmp::Ordering, hint::cold_path};
+use core::cmp::Ordering;
 use evm2_macros::instruction;
 
 #[instruction]

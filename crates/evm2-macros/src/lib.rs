@@ -139,7 +139,7 @@ fn stack_setup(inputs: &[Ident], outputs: &[Ident]) -> TokenStream2 {
             let overflow = (input_count == 0).then(|| {
                 quote! {
                     if stack.len == 1024 {
-                        cold_path();
+                        core::hint::cold_path();
                         return Err(InstrErr::StackOverflow);
                     }
                 }
@@ -170,7 +170,7 @@ fn underflow_check(required_len: usize) -> TokenStream2 {
     } else {
         quote! {
             if stack.len < #required_len {
-                cold_path();
+                core::hint::cold_path();
                 return Err(InstrErr::StackUnderflow);
             }
         }

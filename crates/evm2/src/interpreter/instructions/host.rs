@@ -1,5 +1,4 @@
 use super::super::{CtrlRef, Gas, InstrErr, InstructionCx, Result, Stack, State, Word};
-use core::hint::cold_path;
 use evm2_macros::instruction;
 
 #[instruction]
