@@ -330,7 +330,7 @@ impl Bytecode {
     /// Returns the original bytecode as a byte slice without padding.
     #[inline]
     pub fn original_byte_slice(&self) -> &[u8] {
-        &self.0.bytecode[..self.0.original_len]
+        unsafe { self.0.bytecode.get_unchecked(..self.0.original_len) }
     }
 
     /// Returns the length of the original bytes (without padding).
