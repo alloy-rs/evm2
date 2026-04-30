@@ -675,33 +675,34 @@ impl Interpreter {
     }
 }
 
-struct DummyHost;
-
-impl Host for DummyHost {
-    fn balance(&self, address: Word) -> Word {
-        address
-    }
-}
-
-fn main() {
-    #[rustfmt::skip]
-    let bytecode = core::hint::black_box(&[
-        op::PUSH1, 0x01,
-        op::PUSH1, 0x02,
-        op::ADD,
-        op::STOP,
-    ][..]);
-    let spec_id = core::hint::black_box(SpecId::Homestead);
-    let instruction_table = core::hint::black_box(Table::Tail(&DEFAULT_TAIL_TABLE));
-
-    let gas_table = new_gas_table(spec_id);
-    let mut interpreter = Interpreter::new(bytecode.into(), spec_id);
-    interpreter.run(instruction_table, &gas_table, &mut DummyHost);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct DummyHost;
+
+    impl Host for DummyHost {
+        fn balance(&self, address: Word) -> Word {
+            address
+        }
+    }
+
+    #[test]
+    fn main_smoke() {
+        #[rustfmt::skip]
+        let bytecode = core::hint::black_box(&[
+            op::PUSH1, 0x01,
+            op::PUSH1, 0x02,
+            op::ADD,
+            op::STOP,
+        ][..]);
+        let spec_id = core::hint::black_box(SpecId::Homestead);
+        let instruction_table = core::hint::black_box(Table::Tail(&DEFAULT_TAIL_TABLE));
+
+        let gas_table = new_gas_table(spec_id);
+        let mut interpreter = Interpreter::new(bytecode.into(), spec_id);
+        interpreter.run(instruction_table, &gas_table, &mut DummyHost);
+    }
 
     #[test]
     fn basic() {
