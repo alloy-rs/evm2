@@ -160,9 +160,11 @@ where
     }
 }
 
+type HandlerTable<Env, Output> = [Option<Box<dyn ErasedTxHandler<Env, Output>>>; 256];
+
 /// A type-erased transaction handler registry keyed by transaction type byte.
 pub struct TxRegistry<Env, Output = ()> {
-    handlers: [Option<Box<dyn ErasedTxHandler<Env, Output>>>; 256],
+    handlers: Box<HandlerTable<Env, Output>>,
 }
 
 impl<Env, Output> fmt::Debug for TxRegistry<Env, Output> {
@@ -181,7 +183,7 @@ impl<Env, Output> Default for TxRegistry<Env, Output> {
 impl<Env, Output> TxRegistry<Env, Output> {
     /// Creates an empty registry.
     pub fn new() -> Self {
-        Self { handlers: array::from_fn(|_| None) }
+        Self { handlers: Box::new(array::from_fn(|_| None)) }
     }
 
     /// Registers a typed handler for a transaction type byte.
