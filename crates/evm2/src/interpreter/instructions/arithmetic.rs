@@ -1,6 +1,6 @@
 use super::{
     super::{CtrlRef, Gas, InstrErr, Result, Stack, State, Word},
-    utils::{i256_div, i256_mod},
+    i256::{i256_div, i256_mod},
 };
 use evm2_macros::instruction;
 

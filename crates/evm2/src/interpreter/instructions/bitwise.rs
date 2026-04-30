@@ -1,6 +1,7 @@
 use super::{
     super::{CtrlRef, Gas, InstrErr, Result, Stack, State, Word},
-    utils::{as_usize, i256_cmp},
+    i256::i256_cmp,
+    utils::as_usize,
 };
 use core::cmp::Ordering;
 use evm2_macros::instruction;

@@ -10,6 +10,8 @@ pub(super) use control::*;
 mod host;
 pub(super) use host::*;
 
+mod i256;
+
 mod memory;
 pub(super) use memory::*;
 
