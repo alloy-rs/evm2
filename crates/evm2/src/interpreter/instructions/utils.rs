@@ -1,6 +1,11 @@
-use crate::interpreter::Word;
+use core::hint::cold_path;
+
+use crate::interpreter::{InstrErr, Result, Word};
 
 #[inline]
-pub(in crate::interpreter) fn as_usize(value: Word) -> Option<usize> {
-    value.try_into().ok()
+pub(in crate::interpreter) fn as_usize(value: Word) -> Result<usize> {
+    value.try_into().map_err(|_| {
+        cold_path();
+        InstrErr::OutOfGas
+    })
 }

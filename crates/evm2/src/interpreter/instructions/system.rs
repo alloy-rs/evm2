@@ -5,8 +5,8 @@ use evm2_macros::instruction;
 
 #[instruction]
 pub(in crate::interpreter) fn keccak256_instr(cx: _, offset: &Word, len: &Word) -> Result<out> {
-    let offset = as_usize(*offset).ok_or(InstrErr::OutOfGas)?;
-    let len = as_usize(*len).ok_or(InstrErr::OutOfGas)?;
+    let offset = as_usize(*offset)?;
+    let len = as_usize(*len)?;
     let hash = keccak256(cx.state.memory.slice(offset, len)?);
     *out = Word::from_be_bytes(hash.0);
 }
@@ -23,9 +23,9 @@ pub(in crate::interpreter) fn codecopy(
     code_offset: &Word,
     len: &Word,
 ) -> Result {
-    let memory_offset = as_usize(*memory_offset).ok_or(InstrErr::OutOfGas)?;
+    let memory_offset = as_usize(*memory_offset)?;
     let code_offset = as_usize(*code_offset).unwrap_or(usize::MAX);
-    let len = as_usize(*len).ok_or(InstrErr::OutOfGas)?;
+    let len = as_usize(*len)?;
     if len == 0 {
         return Ok(());
     }
