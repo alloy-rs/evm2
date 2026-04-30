@@ -218,10 +218,7 @@ fn resize_memory_cold(gas: &mut Gas, memory: &mut Memory, new_num_words: usize) 
     let cost = memory_cost(new_num_words);
     let cost = unsafe { gas.memory_mut().set_words_num(new_num_words, cost).unwrap_unchecked() };
 
-    if !gas.record_regular_cost(cost) {
-        cold_path();
-        return Err(InstrErr::OutOfGas);
-    }
+    gas.spend(cost)?;
     memory.resize_to(new_size);
     Ok(())
 }
