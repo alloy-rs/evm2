@@ -2,11 +2,12 @@ use super::JumpTable;
 use crate::bytecode::opcode;
 use alloc::vec::Vec;
 use alloy_primitives::Bytes;
-use bitvec::{bitvec, order::Lsb0, vec::BitVec};
 
 /// Analyzes the bytecode to produce a jump table and potentially padded bytecode.
-pub fn analyze_legacy(bytecode: Bytes) -> (JumpTable, Bytes) {
-    let mut jumps: BitVec<u8> = bitvec![u8, Lsb0; 0; bytecode.len()];
+///
+/// Prefer using [`Bytecode::new_legacy`](super::Bytecode::new_legacy) instead.
+pub(crate) fn analyze_legacy(bytecode: Bytes) -> (JumpTable, Bytes) {
+    let mut jumps = JumpTable::new(bytecode.len());
     let range = bytecode.as_ptr_range();
     let start = range.start;
     let mut iterator = start;
@@ -19,7 +20,7 @@ pub fn analyze_legacy(bytecode: Bytes) -> (JumpTable, Bytes) {
         last_byte = unsafe { *iterator };
         if last_byte == opcode::JUMPDEST {
             // SAFETY: Jumps are max length of the code.
-            unsafe { jumps.set_unchecked(iterator.offset_from_unsigned(start), true) }
+            jumps.set(unsafe { iterator.offset_from_unsigned(start) });
             iterator = unsafe { iterator.add(1) };
         } else {
             let push_offset = last_byte.wrapping_sub(opcode::PUSH1);
@@ -56,7 +57,7 @@ pub fn analyze_legacy(bytecode: Bytes) -> (JumpTable, Bytes) {
         bytecode
     };
 
-    (JumpTable::new(jumps), bytecode)
+    (jumps, bytecode)
 }
 
 /// Returns true if the opcode is DUPN, SWAPN, or EXCHANGE.
