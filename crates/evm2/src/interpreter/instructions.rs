@@ -1,4 +1,4 @@
-use super::{GasRef, InstrErr, InstructionCx, PcRef, Result, Stack, State, Word};
+use super::{InstrErr, InstructionCx, Result, Word};
 use core::{hint::cold_path, mem};
 use evm2_macros::instruction;
 
@@ -28,7 +28,7 @@ pub(super) fn balance(cx: _, addr: &Word) -> Result<out> {
 pub(super) fn push<const N: usize>(cx: _) -> Result<out> {
     // SAFETY: `PUSH<N>` is always followed by N bytes of data.
     let mut buf = [0u8; 32];
-    buf[mem::size_of::<Word>() - N..].copy_from_slice(unsafe { cx.pc.read_bytes_unchecked(N) });
-    unsafe { cx.pc.advance_unchecked(N) };
+    buf[mem::size_of::<Word>() - N..].copy_from_slice(unsafe { cx.ctrl.read_bytes_unchecked(N) });
+    unsafe { cx.ctrl.advance_unchecked(N) };
     *out = Word::from_be_bytes(buf);
 }

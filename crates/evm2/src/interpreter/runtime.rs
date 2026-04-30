@@ -1,5 +1,5 @@
 use super::{
-    Gas, Host, InstrErr, PcRef, Result, SpecId, Stack, State, Word,
+    CtrlRef, Gas, Host, InstrErr, Result, SpecId, Stack, State, Word,
     instruction::{GasTable, InstrTable, TailInstrTable},
 };
 use alloc::{boxed::Box, vec::Vec};
@@ -13,7 +13,7 @@ pub enum Table<'a> {
 
 pub struct Interpreter {
     bytecode: Vec<u8>,
-    pub(crate) pc: usize,
+    pub(crate) ctrl: usize,
     pub(crate) stack: Box<[Word; 1024]>,
     pub(crate) stack_len: usize,
     pub(crate) gas: Gas,
@@ -24,7 +24,7 @@ impl Interpreter {
     pub fn new(bytecode: Vec<u8>, spec_id: SpecId) -> Self {
         Self {
             bytecode,
-            pc: 0,
+            ctrl: 0,
             // SAFETY: `Word` is valid at any bitpattern. It's not read before init anyway.
             stack: unsafe { Box::new_uninit().assume_init() },
             stack_len: 0,
@@ -63,25 +63,28 @@ impl Interpreter {
     }
 
     #[inline(always)]
-    pub(crate) fn pre_step(mut pc: PcRef<'_>, gas: &mut Gas, gas_table: &GasTable) -> Result<u8> {
-        let op = pc.op();
-        unsafe { pc.advance_unchecked(1) };
+    pub(crate) fn pre_step(
+        mut ctrl: CtrlRef<'_>,
+        gas: &mut Gas,
+        gas_table: &GasTable,
+    ) -> Result<u8> {
+        let op = ctrl.op();
+        unsafe { ctrl.advance_unchecked(1) };
         gas.spend(gas_table[op as usize] as _)?;
         Ok(op)
     }
 
     #[inline(always)]
     fn step(&mut self, table: &InstrTable, gas_table: &GasTable, host: &mut dyn Host) -> Result {
-        let mut pc = PcRef::new(&self.bytecode, &mut self.pc);
-        let op = Self::pre_step(pc.reborrow(), &mut self.gas, gas_table)?;
-        let mut stack = Stack::new(&mut self.stack, self.stack_len);
-        let r = table[op as usize](
-            &mut pc,
-            &mut stack,
+        let mut ctrl = CtrlRef::new(&self.bytecode, &mut self.ctrl);
+        let op = Self::pre_step(ctrl.reborrow(), &mut self.gas, gas_table)?;
+        let r;
+        (self.stack_len, r) = table[op as usize](
+            ctrl,
+            Stack::new(&mut self.stack, self.stack_len),
             &mut self.gas,
             &mut State { host, spec: self.spec_id, raw_interp: core::ptr::null_mut() },
         );
-        self.stack_len = stack.len;
         r
     }
 }

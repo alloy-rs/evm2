@@ -18,13 +18,13 @@ macro_rules! opcodes {
 
         /// Higher-order macro to iterate over all opcodes.
         macro_rules! for_each_opcode {
-            ([$d ($d extra:tt)*] $d m:path) => {{
+            ([$d ($d extra:tt)*] $d m:path) => {
                 $m!{[$d($d extra)*]
                     $(
                         ($name, $f),
                     )*
                 }
-            }};
+            };
         }
     };
 }

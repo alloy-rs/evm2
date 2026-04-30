@@ -18,6 +18,9 @@ pub enum InstrErr {
 mod gas;
 pub use gas::{Gas, GasRef};
 
+#[macro_use]
+mod utils;
+
 mod instruction;
 pub use instruction::*;
 
@@ -26,8 +29,8 @@ mod instructions;
 mod opcode;
 pub use opcode::op;
 
-mod pc;
-pub use pc::{Pc, PcRef};
+mod ctrl;
+pub use ctrl::{Ctrl, CtrlRef};
 
 mod stack;
 pub use stack::{Stack, Word};
@@ -87,7 +90,7 @@ mod tests {
                 let mut interpreter = Interpreter::new(BASIC.into(), spec);
                 interpreter.run(table, &gas_table, &mut DummyHost);
                 assert!(interpreter.gas.remaining > 0);
-                assert_eq!(interpreter.pc, 6);
+                assert_eq!(interpreter.ctrl, 6);
                 assert_eq!(interpreter.stack_len, 1);
                 assert_eq!(interpreter.stack[0], U256::from(3));
             }
