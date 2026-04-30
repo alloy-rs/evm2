@@ -70,11 +70,16 @@ fn expand_instruction(raw: bool, input: ItemFn) -> TokenStream2 {
             ) -> InstrFnRet
             #where_clause
             {
-                let r = (|| -> Result {
+                #[inline(always)]
+                fn __evm2_instruction_try<T>(f: impl FnOnce() -> T) -> T {
+                    f()
+                }
+
+                let r = __evm2_instruction_try(|| -> Result {
                     #setup
                     #(#body)*
                     Ok(())
-                })();
+                });
                 (stack.len, r)
             }
         }
