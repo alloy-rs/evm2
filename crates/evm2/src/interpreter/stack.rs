@@ -1,7 +1,6 @@
+use super::{InstrErr, Result};
 use alloy_primitives::U256;
 use core::{fmt, hint::cold_path};
-
-use super::{InstrErr, Result};
 
 pub type Word = U256;
 

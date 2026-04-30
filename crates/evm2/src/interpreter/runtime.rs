@@ -1,6 +1,3 @@
-use alloc::{boxed::Box, vec::Vec};
-use core::hint::cold_path;
-
 use super::{
     DEFAULT_TABLE, Gas, Host, InstrErr, Pc, PcRef, Result, SpecId, Stack, State, Word,
     instruction::{GasTable, InstrTable, Instruction, TailInstrTable},
@@ -8,6 +5,8 @@ use super::{
     opcode::{for_each_opcode, op},
     utils::likely,
 };
+use alloc::{boxed::Box, vec::Vec};
+use core::hint::cold_path;
 
 #[derive(Clone, Copy)]
 pub enum Table<'a> {

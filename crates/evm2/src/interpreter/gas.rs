@@ -1,6 +1,5 @@
-use core::hint::cold_path;
-
 use super::{InstrErr, Result};
+use core::hint::cold_path;
 
 #[derive(Clone, Copy)]
 pub struct Gas {

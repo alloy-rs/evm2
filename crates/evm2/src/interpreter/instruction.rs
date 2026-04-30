@@ -1,6 +1,5 @@
-use core::mem;
-
 use super::{Gas, InstrErr, Pc, PcRef, Result, Stack, State};
+use core::mem;
 
 pub type InstrFnRet = (usize, Result);
 pub type InstrFn = extern_table!(

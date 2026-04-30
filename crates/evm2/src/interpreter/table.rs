@@ -1,5 +1,3 @@
-use core::mem;
-
 use super::{
     Gas, GasRef, Interpreter, Pc, PcRef, SpecId, Stack, State,
     instruction::{
@@ -9,6 +7,7 @@ use super::{
     instructions::{add, balance, invalid, push, stop},
     opcode::{for_each_opcode, op},
 };
+use core::mem;
 
 pub static DEFAULT_TABLE: InstrTable = make_table();
 pub static DEFAULT_TAIL_TABLE: TailInstrTable = make_tail_table();

@@ -49,9 +49,8 @@ pub use table::{
 
 #[cfg(test)]
 mod tests {
-    use alloy_primitives::U256;
-
     use super::*;
+    use alloy_primitives::U256;
 
     struct DummyHost;
 

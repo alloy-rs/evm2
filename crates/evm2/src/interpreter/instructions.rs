@@ -1,6 +1,5 @@
-use core::{hint::cold_path, mem};
-
 use super::{InstrErr, PcRef, Result, Stack, State, Word};
+use core::{hint::cold_path, mem};
 
 #[doc(hidden)]
 #[collapse_debuginfo(yes)]
