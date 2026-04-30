@@ -1,6 +1,5 @@
-use core::hint::cold_path;
-
 use crate::interpreter::{InstrErr, Result, Word};
+use core::hint::cold_path;
 
 #[inline]
 pub(in crate::interpreter) fn as_usize(value: Word) -> Result<usize> {
