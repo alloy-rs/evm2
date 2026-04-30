@@ -1,5 +1,5 @@
 use super::i256::{i256_div, i256_mod};
-use crate::interpreter::{CtrlRef, Gas, InstrErr, Result, Stack, State, Word};
+use crate::interpreter::{CtrlRef, Gas, Result, Stack, State, Word};
 use evm2_macros::instruction;
 
 #[instruction]

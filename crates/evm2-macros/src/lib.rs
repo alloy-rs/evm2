@@ -126,33 +126,22 @@ fn stack_setup(inputs: &[Ident], outputs: &[Ident]) -> TokenStream2 {
     match outputs {
         [] if input_count == 0 => quote! {},
         [] => {
-            let underflow = underflow_check(input_count);
             let len_update = decrease_len(input_count);
             quote! {
-                #underflow
+                stack.check_bounds(#input_count, 0)?;
                 let ptr = unsafe { stack.stack.as_mut_ptr().add(stack.len).sub(#input_count) };
                 #input_setup
                 #len_update
             }
         }
         [output] => {
-            let underflow = underflow_check(input_count);
-            let overflow = (input_count == 0).then(|| {
-                quote! {
-                    if stack.len == 1024 {
-                        core::hint::cold_path();
-                        return Err(InstrErr::StackOverflow);
-                    }
-                }
-            });
             let len_update = match input_count {
                 0 => quote! { stack.len += 1; },
                 1 => quote! {},
                 _ => decrease_len(input_count - 1),
             };
             quote! {
-                #underflow
-                #overflow
+                stack.check_bounds(#input_count, 1)?;
                 let ptr = unsafe { stack.stack.as_mut_ptr().add(stack.len).sub(#input_count) };
                 #input_setup
                 let #output = unsafe { &mut *ptr.cast::<Word>() };
@@ -162,19 +151,6 @@ fn stack_setup(inputs: &[Ident], outputs: &[Ident]) -> TokenStream2 {
         _ => quote! {
             compile_error!("multiple instruction outputs are not supported yet");
         },
-    }
-}
-
-fn underflow_check(required_len: usize) -> TokenStream2 {
-    if required_len == 0 {
-        quote! {}
-    } else {
-        quote! {
-            if stack.len < #required_len {
-                core::hint::cold_path();
-                return Err(InstrErr::StackUnderflow);
-            }
-        }
     }
 }
 

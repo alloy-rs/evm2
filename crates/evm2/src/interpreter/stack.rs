@@ -27,6 +27,19 @@ impl<'a> Stack<'a> {
     }
 
     #[inline]
+    pub fn check_bounds(&self, input: usize, output: usize) -> Result {
+        if self.len < input {
+            cold_path();
+            return Err(InstrErr::StackUnderflow);
+        }
+        if self.len - input + output > 1024 {
+            cold_path();
+            return Err(InstrErr::StackOverflow);
+        }
+        Ok(())
+    }
+
+    #[inline]
     pub fn push(&mut self, value: Word) -> Result {
         let len = self.len;
         if len == 1024 {

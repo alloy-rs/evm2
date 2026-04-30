@@ -1,5 +1,5 @@
 use super::utils::as_usize;
-use crate::interpreter::{CtrlRef, Gas, InstrErr, InstructionCx, Result, Stack, State, Word};
+use crate::interpreter::{CtrlRef, Gas, InstructionCx, Result, Stack, State, Word};
 use evm2_macros::instruction;
 
 #[instruction]

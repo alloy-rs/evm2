@@ -1,5 +1,5 @@
 use super::{i256::i256_cmp, utils::as_usize};
-use crate::interpreter::{CtrlRef, Gas, InstrErr, Result, Stack, State, Word};
+use crate::interpreter::{CtrlRef, Gas, Result, Stack, State, Word};
 use core::cmp::Ordering;
 use evm2_macros::instruction;
 
