@@ -1,4 +1,4 @@
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct Ctrl<'a> {
     pub(crate) base: *const u8,
     pub(crate) len: usize,
@@ -6,6 +6,7 @@ pub struct Ctrl<'a> {
     _marker: core::marker::PhantomData<&'a [u8]>,
 }
 
+#[derive(Debug)]
 pub struct CtrlRef<'a> {
     base: *const u8,
     len: usize,

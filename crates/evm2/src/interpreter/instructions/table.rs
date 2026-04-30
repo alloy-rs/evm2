@@ -27,6 +27,7 @@ pub type TailInstrTable = [TailInstrFn; 256];
 pub type GasTable = [u16; 256];
 
 #[allow(dead_code)]
+#[derive(Debug)]
 pub struct InstructionCx<'a, 'ctrl, 'state> {
     pub ctrl: &'a mut CtrlRef<'ctrl>,
     pub gas: GasRef<'a>,

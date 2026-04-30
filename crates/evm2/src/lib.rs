@@ -5,7 +5,6 @@
     allow(incomplete_features)
 )]
 #![allow(clippy::missing_const_for_fn)]
-#![allow(missing_debug_implementations)]
 #![allow(missing_docs)]
 #![cfg_attr(not(feature = "std"), no_std)]
 

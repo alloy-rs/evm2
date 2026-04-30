@@ -5,12 +5,13 @@ use super::{
 use alloc::{boxed::Box, vec::Vec};
 use core::hint::cold_path;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum Table<'a> {
     Normal(&'a InstrTable),
     Tail(&'a TailInstrTable),
 }
 
+#[derive(Debug)]
 pub struct Interpreter {
     bytecode: Vec<u8>,
     pub(crate) pc: usize,
