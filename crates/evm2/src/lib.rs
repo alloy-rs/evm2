@@ -11,5 +11,6 @@ extern crate alloc;
 
 pub mod bytecode;
 pub mod interpreter;
+pub mod registry;
 
 mod once_lock;
