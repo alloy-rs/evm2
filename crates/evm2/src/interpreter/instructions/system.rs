@@ -35,6 +35,6 @@ pub(in crate::interpreter) fn codecopy(
 }
 
 #[instruction]
-pub(in crate::interpreter) fn gas_instr(cx: _) -> out {
+pub(in crate::interpreter) fn gas(cx: _) -> out {
     *out = Word::from(cx.gas.remaining());
 }

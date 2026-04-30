@@ -127,7 +127,7 @@ opcodes! {$
     0x57 => JUMPI    => jumpi;
     0x58 => PC       => pc;
     0x59 => MSIZE    => msize;
-    0x5A => GAS      => gas_instr;
+    0x5A => GAS      => gas;
     0x5B => JUMPDEST => jumpdest;
     0x5C => TLOAD    => invalid;
     0x5D => TSTORE   => invalid;
