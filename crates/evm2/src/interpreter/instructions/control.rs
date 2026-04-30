@@ -1,7 +1,5 @@
 use super::utils::as_usize;
-use crate::interpreter::{
-    CtrlRef, Gas, InstrErr, InstructionCx, Result, Stack, State, Word, memory::resize_memory,
-};
+use crate::interpreter::{CtrlRef, Gas, InstrErr, InstructionCx, Result, Stack, State, Word};
 use core::hint::cold_path;
 use evm2_macros::instruction;
 
@@ -47,16 +45,14 @@ pub(in crate::interpreter) fn pc(cx: _) -> out {
 }
 
 #[instruction]
-pub(in crate::interpreter) fn jumpdest() -> Result {
-    Ok(())
-}
+pub(in crate::interpreter) fn jumpdest() {}
 
 #[instruction]
 pub(in crate::interpreter) fn ret(cx: _, offset: &Word, len: &Word) -> Result {
     let len = as_usize(*len)?;
     if len != 0 {
         let offset = as_usize(*offset)?;
-        resize_memory(cx.gas, cx.state.memory, offset, len)?;
+        crate::interpreter::memory::resize_memory(cx.gas, cx.state.memory, offset, len)?;
         cx.state.memory.resize(offset, len)?;
     }
     Err(InstrErr::Return)
@@ -67,7 +63,7 @@ pub(in crate::interpreter) fn revert(cx: _, offset: &Word, len: &Word) -> Result
     let len = as_usize(*len)?;
     if len != 0 {
         let offset = as_usize(*offset)?;
-        resize_memory(cx.gas, cx.state.memory, offset, len)?;
+        crate::interpreter::memory::resize_memory(cx.gas, cx.state.memory, offset, len)?;
         cx.state.memory.resize(offset, len)?;
     }
     Err(InstrErr::Revert)

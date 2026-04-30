@@ -229,16 +229,16 @@ mod tests {
         let mut memory = Memory::new();
 
         resize_memory(&mut gas, &mut memory, 0, 32).unwrap();
-        assert_eq!(gas.remaining, 97);
+        assert_eq!(gas.remaining(), 97);
         assert_eq!(gas.memory().words_num, 1);
         assert_eq!(memory.len(), 32);
 
         resize_memory(&mut gas, &mut memory, 0, 1).unwrap();
-        assert_eq!(gas.remaining, 97);
+        assert_eq!(gas.remaining(), 97);
         assert_eq!(memory.len(), 32);
 
         resize_memory(&mut gas, &mut memory, 0, 64).unwrap();
-        assert_eq!(gas.remaining, 94);
+        assert_eq!(gas.remaining(), 94);
         assert_eq!(gas.memory().words_num, 2);
         assert_eq!(memory.len(), 64);
     }

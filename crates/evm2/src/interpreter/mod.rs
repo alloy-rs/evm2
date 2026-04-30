@@ -18,7 +18,7 @@ pub enum InstrErr {
 }
 
 mod gas;
-pub use gas::{Gas, GasRef};
+pub use gas::{Gas, GasRef, GasTracker, MemoryExtensionResult, MemoryGas};
 
 #[macro_use]
 mod utils;
@@ -94,7 +94,7 @@ mod tests {
             ] {
                 let mut interpreter = Interpreter::new(BASIC.into(), spec);
                 interpreter.run(table, &gas_table, &mut DummyHost);
-                assert!(interpreter.gas.remaining > 0);
+                assert!(interpreter.gas.remaining() > 0);
                 assert_eq!(interpreter.pc, 6);
                 assert_eq!(interpreter.stack_len, 1);
                 assert_eq!(interpreter.stack[0], U256::from(3));

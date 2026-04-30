@@ -36,7 +36,7 @@ impl Interpreter {
     }
 
     pub fn run(&mut self, table: Table<'_>, gas_table: &GasTable, host: &mut dyn Host) {
-        let _gas_start = self.gas.remaining;
+        let _gas_start = self.gas.remaining();
 
         let _r = match table {
             Table::Tail(table) => self.step_tail(table, gas_table, host).unwrap_err(),
@@ -46,7 +46,7 @@ impl Interpreter {
         #[cfg(feature = "std")]
         {
             eprintln!("execution stopped: {_r:?}");
-            eprintln!("consumed gas: {}", _gas_start - self.gas.remaining)
+            eprintln!("consumed gas: {}", _gas_start - self.gas.remaining())
         }
     }
 
