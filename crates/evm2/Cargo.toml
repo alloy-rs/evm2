@@ -29,6 +29,5 @@ serde = { workspace = true, features = ["derive", "alloc"], optional = true }
 default = ["std"]
 std = []
 
-memory_limit = []
 nightly = []
 serde = ["dep:serde", "alloy-primitives/serde"]

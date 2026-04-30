@@ -5,7 +5,6 @@ use core::{cmp::min, fmt, hint::cold_path, ops::Range};
 /// Linear EVM memory.
 pub struct Memory {
     data: Vec<u8>,
-    #[cfg(feature = "memory_limit")]
     memory_limit: u64,
 }
 
@@ -32,15 +31,10 @@ impl Memory {
     /// Creates memory with the requested capacity.
     #[inline]
     pub fn with_capacity(capacity: usize) -> Self {
-        Self {
-            data: Vec::with_capacity(capacity),
-            #[cfg(feature = "memory_limit")]
-            memory_limit: u64::MAX,
-        }
+        Self { data: Vec::with_capacity(capacity), memory_limit: u64::MAX }
     }
 
     /// Creates memory with a byte limit.
-    #[cfg(feature = "memory_limit")]
     #[inline]
     pub fn new_with_memory_limit(memory_limit: u64) -> Self {
         Self { memory_limit, ..Self::new() }
@@ -49,11 +43,7 @@ impl Memory {
     /// Sets the memory byte limit.
     #[inline]
     pub const fn set_memory_limit(&mut self, limit: u64) {
-        #[cfg(feature = "memory_limit")]
-        {
-            self.memory_limit = limit;
-        }
-        let _ = limit;
+        self.memory_limit = limit;
     }
 
     /// Returns the memory length in bytes.
@@ -86,7 +76,6 @@ impl Memory {
     }
 
     /// Returns whether `new_words` exceeds the memory limit.
-    #[cfg(feature = "memory_limit")]
     #[inline]
     pub fn limit_reached(&self, new_words: usize) -> bool {
         new_words.saturating_mul(32) as u64 > self.memory_limit
@@ -221,7 +210,6 @@ fn resize_memory_cold(gas: &mut Gas, memory: &mut Memory, new_num_words: usize) 
         return Err(InstrErr::OutOfGas);
     };
 
-    #[cfg(feature = "memory_limit")]
     if memory.limit_reached(new_num_words) {
         cold_path();
         return Err(InstrErr::OutOfGas);
@@ -262,7 +250,6 @@ mod tests {
         assert_eq!(memory.len(), 64);
     }
 
-    #[cfg(feature = "memory_limit")]
     #[test]
     fn resize_memory_respects_memory_limit() {
         let mut gas = Gas::new(100);
