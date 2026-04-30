@@ -1,9 +1,6 @@
 use super::{
-    DEFAULT_TABLE, Gas, Host, InstrErr, Pc, PcRef, Result, SpecId, Stack, State, Word,
-    instruction::{GasTable, InstrTable, Instruction, TailInstrTable},
-    instructions::{add, balance, invalid, push, stop},
-    opcode::{for_each_opcode, op},
-    utils::likely,
+    Gas, Host, InstrErr, PcRef, Result, SpecId, Stack, State, Word,
+    instruction::{GasTable, InstrTable, TailInstrTable},
 };
 use alloc::{boxed::Box, vec::Vec};
 use core::hint::cold_path;
@@ -40,14 +37,8 @@ impl Interpreter {
         let _gas_start = self.gas.remaining;
 
         let _r = match table {
-            Table::Tail(table) => self.step_tail(table, gas_table, host).unwrap_err(),
-            Table::Normal(table) => {
-                if likely(core::ptr::eq(table, &DEFAULT_TABLE)) {
-                    self.run_match_loop(gas_table, host)
-                } else {
-                    self.run_table_loop(table, gas_table, host)
-                }
-            }
+            Table::Tail(table) => self.run_table_loop(table, gas_table, host),
+            Table::Normal(table) => self.run_table_loop(table, gas_table, host),
         };
 
         #[cfg(feature = "std")]
@@ -55,55 +46,6 @@ impl Interpreter {
             eprintln!("execution stopped: {_r:?}");
             eprintln!("consumed gas: {}", _gas_start - self.gas.remaining)
         }
-    }
-
-    #[inline(never)]
-    fn run_match_loop(&mut self, gas_table: &GasTable, host: &mut dyn Host) -> InstrErr {
-        // TODO: do these local copies do anything?
-        let mut pc_real = self.pc;
-        let mut pc = PcRef::new(&self.bytecode, &mut pc_real);
-
-        let stack = &mut Stack::new(&mut self.stack, self.stack_len);
-
-        let mut gas_real = self.gas;
-        let gas = &mut gas_real;
-
-        let state = &mut State { host, spec: self.spec_id, raw_interp: core::ptr::null_mut() };
-
-        let e = loop {
-            let op = match Self::pre_step(pc.reborrow(), gas, gas_table) {
-                Ok(op) => op,
-                Err(e) => {
-                    cold_path();
-                    break e;
-                }
-            };
-            let pc = pc.reborrow();
-
-            macro_rules! make_match {
-                ([] $(
-                    ($op:ident, $fn:expr),
-                )*) => {
-                    match op {
-                        $(op::$op => $fn.execute(pc, stack, gas, state),)*
-                        _ => {
-                            cold_path();
-                            Err(InstrErr::Invalid)
-                        }
-                    }
-                };
-            }
-            if let Err(e) = for_each_opcode!([] make_match) {
-                cold_path();
-                break e;
-            }
-        };
-
-        self.pc = pc_real;
-        self.gas = gas_real;
-        self.stack_len = stack.len;
-
-        e
     }
 
     fn run_table_loop(
@@ -140,26 +82,5 @@ impl Interpreter {
             &mut State { host, spec: self.spec_id, raw_interp: core::ptr::null_mut() },
         );
         r
-    }
-
-    #[inline(always)]
-    fn step_tail(
-        &mut self,
-        table: &TailInstrTable,
-        gas_table: &GasTable,
-        host: &mut dyn Host,
-    ) -> Result {
-        let raw = self as *mut _;
-        let mut pc = Pc::new(&self.bytecode, self.pc);
-        let op = Self::pre_step(pc.as_mut(), &mut self.gas, gas_table)?;
-        let e = table[op as usize](
-            pc,
-            Stack::new(&mut self.stack, self.stack_len),
-            self.gas,
-            &mut State { host, spec: self.spec_id, raw_interp: raw },
-            gas_table,
-            table.as_ptr().cast(),
-        );
-        Err(e)
     }
 }

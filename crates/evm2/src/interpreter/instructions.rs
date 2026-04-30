@@ -1,4 +1,6 @@
-use super::{InstrErr, PcRef, Result, Stack, State, Word};
+use evm2_macros::instruction;
+
+use super::{GasRef, Host, InstrErr, InstrFnRet, PcRef, Result, Stack, State, Word};
 use core::{hint::cold_path, mem};
 
 #[doc(hidden)]
@@ -25,33 +27,34 @@ macro_rules! popn_top {
     };
 }
 
+#[instruction(raw)]
 pub(super) fn stop() -> Result {
     cold_path();
-    Err(InstrErr::Stop)
+    return Err(InstrErr::Stop);
 }
 
+#[instruction(raw)]
 pub(super) fn invalid() -> Result {
     cold_path();
-    Err(InstrErr::Invalid)
+    return Err(InstrErr::Invalid);
 }
 
-pub(super) fn add(stack: &mut Stack<'_>) -> Result {
-    popn_top!([a], b, stack);
+#[instruction]
+pub(super) fn add(a: &Word) -> Result<b> {
     *b = a.wrapping_add(*b);
-    Ok(())
 }
 
-pub(super) fn balance(stack: &mut Stack<'_>, state: &mut State) -> Result {
-    popn_top!([], addr, stack);
-    *addr = state.host.balance(*addr);
-    Ok(())
+#[instruction]
+pub(super) fn balance(cx: _) -> Result<addr> {
+    let address = *addr;
+    *addr = cx.host.balance(address);
 }
 
-pub(super) fn push<const N: usize>(mut pc: PcRef<'_>, stack: &mut Stack<'_>) -> Result {
+#[instruction(raw)]
+pub(super) fn push<const N: usize>(cx: _) -> Result {
     // SAFETY: `PUSH<N>` is always followed by N bytes of data.
     let mut buf = [0u8; 32];
-    buf[mem::size_of::<Word>() - N..].copy_from_slice(unsafe { pc.read_bytes_unchecked(N) });
-    unsafe { pc.advance_unchecked(N) };
-    stack.push(Word::from_be_bytes(buf))?;
-    Ok(())
+    buf[mem::size_of::<Word>() - N..].copy_from_slice(unsafe { cx.pc.read_bytes_unchecked(N) });
+    unsafe { cx.pc.advance_unchecked(N) };
+    cx.stack.push(Word::from_be_bytes(buf))?;
 }

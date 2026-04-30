@@ -43,8 +43,8 @@ pub use runtime::{Interpreter, Table};
 
 mod table;
 pub use table::{
-    DEFAULT_GAS_TABLE, DEFAULT_TABLE, DEFAULT_TAIL_TABLE, make_table, make_tail_table, mk_dispatch,
-    mk_tail_dispatch, new_gas_table,
+    DEFAULT_GAS_TABLE, DEFAULT_TABLE, DEFAULT_TAIL_TABLE, make_table, make_tail_table,
+    new_gas_table,
 };
 
 #[cfg(test)]

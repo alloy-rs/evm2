@@ -12,10 +12,6 @@ pub struct PcRef<'a> {
 }
 
 impl<'a> Pc<'a> {
-    pub(crate) fn new(bytecode: &'a [u8], pc: usize) -> Self {
-        Self { base: bytecode.as_ptr(), pc, _marker: core::marker::PhantomData }
-    }
-
     #[inline]
     pub fn as_mut(&mut self) -> PcRef<'_> {
         PcRef { base: self.base, pc: &mut self.pc, _marker: core::marker::PhantomData }

@@ -1,5 +1,5 @@
 [package]
-name = "evm2"
+name = "evm2-macros"
 
 version.workspace = true
 edition.workspace = true
@@ -9,12 +9,10 @@ license.workspace = true
 homepage.workspace = true
 repository.workspace = true
 
+[lib]
+proc-macro = true
+
 [dependencies]
-alloy-primitives.workspace = true
-evm2-macros.workspace = true
-
-[features]
-default = ["std"]
-std = []
-
-nightly = []
+proc-macro2.workspace = true
+quote.workspace = true
+syn = { workspace = true, features = ["full"] }
