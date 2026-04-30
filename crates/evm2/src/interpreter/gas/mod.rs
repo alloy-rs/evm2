@@ -123,12 +123,12 @@ impl GasTracker {
 
     /// Spends regular gas with wrapping subtraction.
     #[doc(alias = "record_cost_unsafe")]
+    #[doc(alias = "spend_unsafe")]
     #[inline(always)]
-    pub fn spend_unsafe(&mut self, cost: u64) -> Result {
+    pub fn spend_wrapping(&mut self, cost: u64) -> Result {
         let remaining = self.remaining;
-        let oog = remaining < cost;
         self.remaining = remaining.wrapping_sub(cost);
-        if oog {
+        if remaining < cost {
             cold_path();
             Err(InstrErr::OutOfGas)
         } else {
@@ -328,9 +328,10 @@ impl Gas {
 
     /// Spends regular gas with wrapping subtraction.
     #[doc(alias = "record_cost_unsafe")]
+    #[doc(alias = "spend_unsafe")]
     #[inline(always)]
-    pub fn spend_unsafe(&mut self, cost: u64) -> Result {
-        self.tracker.spend_unsafe(cost)
+    pub fn spend_wrapping(&mut self, cost: u64) -> Result {
+        self.tracker.spend_wrapping(cost)
     }
 
     /// Spends state gas.
