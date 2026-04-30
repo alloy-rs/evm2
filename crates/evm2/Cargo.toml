@@ -27,7 +27,19 @@ paste.workspace = true
 serde = { workspace = true, features = ["derive", "alloc"], optional = true }
 
 [dev-dependencies]
+alloy-consensus = "2.0.4"
+alloy-eips = "2.0.4"
 serde_json.workspace = true
+
+[[example]]
+name = "registry_tx_handler"
+path = "examples/registry/tx_handler.rs"
+doc-scrape-examples = true
+
+[[example]]
+name = "registry_custom_handler"
+path = "examples/registry/custom_handler.rs"
+doc-scrape-examples = true
 
 [features]
 default = ["std"]

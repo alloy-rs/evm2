@@ -93,6 +93,18 @@ jobs:
       - name: cargo hack
         run: cargo hack check --workspace --feature-powerset --skip nightly ${{ matrix.flags }}
 
+  examples:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Check examples
+        run: cargo check --workspace --examples
+
   typos:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -148,6 +160,7 @@ jobs:
       - test
       - wasm
       - feature-checks
+      - examples
       - typos
       - clippy
       - docs
