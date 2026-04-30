@@ -2,10 +2,11 @@ use alloc::{boxed::Box, vec::Vec};
 use core::hint::cold_path;
 
 use super::{
-    DEFAULT_TABLE, Gas, Host, InstrErr, Pc, PcRef, Result, SpecId, Stack, State,
+    DEFAULT_TABLE, Gas, Host, InstrErr, Pc, PcRef, Result, SpecId, Stack, State, Word,
     instruction::{GasTable, InstrTable, Instruction, TailInstrTable},
-    instructions::{add, balance, push, stop},
-    likely, op,
+    instructions::{add, balance, invalid, push, stop},
+    opcode::{for_each_opcode, op},
+    utils::likely,
 };
 
 #[derive(Clone, Copy)]
@@ -17,7 +18,7 @@ pub enum Table<'a> {
 pub struct Interpreter {
     bytecode: Vec<u8>,
     pub(crate) pc: usize,
-    pub(crate) stack: Box<[u64; 1024]>,
+    pub(crate) stack: Box<[Word; 1024]>,
     pub(crate) stack_len: usize,
     pub(crate) gas: Gas,
     spec_id: SpecId,

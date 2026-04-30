@@ -11,6 +11,9 @@ license = "MIT OR Apache-2.0"
 homepage = "https://github.com/danipopes/evm2"
 repository = "https://github.com/danipopes/evm2"
 
+[workspace.dependencies]
+alloy-primitives = { version = "1.5.7", default-features = false }
+
 [profile.release]
 opt-level = 3
 panic = "abort"

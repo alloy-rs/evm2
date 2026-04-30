@@ -7,7 +7,7 @@ use super::{
         TailInstrTable,
     },
     instructions::{add, balance, invalid, push, stop},
-    op,
+    opcode::{for_each_opcode, op},
 };
 
 pub static DEFAULT_TABLE: InstrTable = make_table();

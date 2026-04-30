@@ -50,7 +50,7 @@ pub(super) fn balance(stack: &mut Stack<'_>, state: &mut State) -> Result {
 
 pub(super) fn push<const N: usize>(mut pc: PcRef<'_>, stack: &mut Stack<'_>) -> Result {
     // SAFETY: `PUSH<N>` is always followed by N bytes of data.
-    let mut buf = [0u8; _];
+    let mut buf = [0u8; 32];
     buf[mem::size_of::<Word>() - N..].copy_from_slice(unsafe { pc.read_bytes_unchecked(N) });
     unsafe { pc.advance_unchecked(N) };
     stack.push(Word::from_be_bytes(buf))?;
