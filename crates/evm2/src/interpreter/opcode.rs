@@ -3,8 +3,10 @@ use super::instructions::*;
 
 macro_rules! opcodes {
     ($d:tt $($val:literal => $name:ident => $f:expr;)*) => {
+        /// Opcode byte constants.
         pub mod op {
             $(
+                #[doc = concat!("Opcode byte for `", stringify!($name), "`.")]
                 pub const $name: u8 = $val;
             )*
         }

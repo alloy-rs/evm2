@@ -2,6 +2,7 @@ use super::{Gas, InstrErr, Result, Word};
 use alloc::vec::Vec;
 use core::{cmp::min, fmt, hint::cold_path, ops::Range};
 
+/// Linear EVM memory.
 pub struct Memory {
     data: Vec<u8>,
     #[cfg(feature = "memory_limit")]
@@ -22,11 +23,13 @@ impl fmt::Debug for Memory {
 }
 
 impl Memory {
+    /// Creates memory with the default capacity.
     #[inline]
     pub fn new() -> Self {
         Self::with_capacity(4 * 1024)
     }
 
+    /// Creates memory with the requested capacity.
     #[inline]
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
@@ -36,12 +39,14 @@ impl Memory {
         }
     }
 
+    /// Creates memory with a byte limit.
     #[cfg(feature = "memory_limit")]
     #[inline]
     pub fn new_with_memory_limit(memory_limit: u64) -> Self {
         Self { memory_limit, ..Self::new() }
     }
 
+    /// Sets the memory byte limit.
     #[inline]
     pub const fn set_memory_limit(&mut self, limit: u64) {
         #[cfg(feature = "memory_limit")]
@@ -51,11 +56,13 @@ impl Memory {
         let _ = limit;
     }
 
+    /// Returns the memory length in bytes.
     #[inline]
     pub fn len(&self) -> usize {
         self.data.len()
     }
 
+    /// Returns whether memory is empty.
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.data.is_empty()
@@ -66,6 +73,7 @@ impl Memory {
         self.data.resize(new_size, 0);
     }
 
+    /// Resizes memory to cover `offset..offset + len`.
     #[inline]
     pub fn resize(&mut self, offset: usize, len: usize) -> Result {
         let Some(end) = offset.checked_add(len) else {
@@ -77,6 +85,7 @@ impl Memory {
         Ok(())
     }
 
+    /// Returns whether `new_words` exceeds the memory limit.
     #[cfg(feature = "memory_limit")]
     #[inline]
     pub fn limit_reached(&self, new_words: usize) -> bool {
@@ -102,6 +111,7 @@ impl Memory {
         }
     }
 
+    /// Reads a word from memory.
     #[inline]
     #[cfg_attr(debug_assertions, track_caller)]
     pub fn get_word(&mut self, offset: usize) -> Result<Word> {
@@ -109,6 +119,7 @@ impl Memory {
         Ok(Word::from_be_slice(self.slice_range(offset..offset + 32)))
     }
 
+    /// Writes bytes into memory.
     #[inline]
     #[cfg_attr(debug_assertions, track_caller)]
     pub fn set(&mut self, offset: usize, value: &[u8]) -> Result {
@@ -120,6 +131,7 @@ impl Memory {
         Ok(())
     }
 
+    /// Writes a data slice into memory with zero padding.
     #[inline]
     #[cfg_attr(debug_assertions, track_caller)]
     pub fn set_data(
@@ -137,6 +149,7 @@ impl Memory {
         Ok(())
     }
 
+    /// Copies bytes within memory.
     #[inline]
     #[cfg_attr(debug_assertions, track_caller)]
     pub fn copy(&mut self, dst: usize, src: usize, len: usize) -> Result {
@@ -149,6 +162,7 @@ impl Memory {
         Ok(())
     }
 
+    /// Returns a memory slice.
     #[inline]
     #[cfg_attr(debug_assertions, track_caller)]
     pub fn slice(&mut self, offset: usize, len: usize) -> Result<&[u8]> {

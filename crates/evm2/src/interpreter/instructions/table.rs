@@ -5,13 +5,18 @@ use crate::interpreter::{
 };
 use core::mem;
 
+/// Normal instruction return value.
 pub type InstrFnRet = (usize, Result);
+/// Normal instruction function pointer.
 pub type InstrFn = extern_table!(
     fn(ctrl: CtrlRef<'_>, stack: Stack<'_>, gas: GasRef<'_>, state: &mut State<'_>) -> InstrFnRet
 );
+/// Normal instruction dispatch table.
 pub type InstrTable = [InstrFn; 256];
 
+/// Tail instruction return value.
 pub type TailInstrFnRet = InstrErr;
+/// Tail instruction function pointer.
 pub type TailInstrFn = extern_table!(
     fn(
         ctrl: Ctrl<'_>,
@@ -22,21 +27,30 @@ pub type TailInstrFn = extern_table!(
         instr_tablep: *const (),
     ) -> TailInstrFnRet
 );
+/// Tail instruction dispatch table.
 pub type TailInstrTable = [TailInstrFn; 256];
 
+/// Opcode gas table.
 pub type GasTable = [u16; 256];
 
+/// Instruction execution context.
 #[allow(dead_code)]
 #[derive(Debug)]
 pub struct InstructionCx<'a, 'ctrl, 'state> {
+    /// Bytecode control reference.
     pub ctrl: &'a mut CtrlRef<'ctrl>,
+    /// Gas state.
     pub gas: GasRef<'a>,
+    /// Interpreter state.
     pub state: &'a mut State<'state>,
 }
 
+/// Default normal dispatch table.
 pub static DEFAULT_TABLE: InstrTable = make_table();
+/// Default tail dispatch table.
 pub static DEFAULT_TAIL_TABLE: TailInstrTable = make_tail_table();
 
+/// Default opcode gas table.
 pub static DEFAULT_GAS_TABLE: GasTable = [3; 256];
 
 pub(crate) trait Instruction {
@@ -71,6 +85,7 @@ impl<F: FnOnce(CtrlRef<'_>, &mut Stack<'_>, &mut Gas, &mut State<'_>) -> Result>
     }
 }
 
+/// Creates a gas table for `spec`.
 pub fn new_gas_table(spec: SpecId) -> GasTable {
     let mut t = DEFAULT_GAS_TABLE;
     if spec >= SpecId::Homestead {
@@ -96,6 +111,7 @@ macro_rules! make_table_m {
     }};
 }
 
+/// Creates the normal instruction dispatch table.
 pub const fn make_table() -> InstrTable {
     make_table_m!(mk_dispatch)
 }
@@ -105,6 +121,7 @@ pub(crate) const fn mk_dispatch<I: Instruction>(f: I) -> InstrFn {
     dispatch::<I>
 }
 
+/// Creates the tail instruction dispatch table.
 pub const fn make_tail_table() -> TailInstrTable {
     make_table_m!(mk_tail_dispatch)
 }

@@ -1,3 +1,4 @@
+/// Marks a branch as unreachable in optimized builds while checking it in debug builds.
 #[macro_export]
 #[collapse_debuginfo(yes)]
 macro_rules! debug_unreachable {
@@ -10,6 +11,7 @@ macro_rules! debug_unreachable {
     };
 }
 
+/// Assumes a condition is true in optimized builds while asserting it in debug builds.
 #[macro_export]
 #[collapse_debuginfo(yes)]
 macro_rules! assume {

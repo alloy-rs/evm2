@@ -31,20 +31,31 @@ pub use runtime::{Interpreter, Table};
 
 pub(crate) type Result<T = (), E = InstrErr> = core::result::Result<T, E>;
 
+/// EVM hard fork identifier.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SpecId {
+    /// Frontier hard fork.
     Frontier,
+    /// Homestead hard fork.
     Homestead,
 }
 
+/// Instruction execution error.
 #[derive(Clone, Copy, Debug)]
 pub enum InstrErr {
+    /// Execution stopped.
     Stop = 1,
+    /// Gas was exhausted.
     OutOfGas,
+    /// Stack exceeded the maximum depth.
     StackOverflow,
+    /// Stack did not contain enough values.
     StackUnderflow,
+    /// Invalid instruction or state.
     Invalid,
+    /// Return from execution.
     Return,
+    /// Revert execution.
     Revert,
 }
 

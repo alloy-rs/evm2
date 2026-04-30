@@ -2,8 +2,10 @@ use super::{InstrErr, Result};
 use alloy_primitives::U256;
 use core::{fmt, hint::cold_path};
 
+/// EVM stack word.
 pub type Word = U256;
 
+/// EVM operand stack.
 pub struct Stack<'a> {
     pub(crate) stack: &'a mut [Word; 1024],
     pub(crate) len: usize,
@@ -26,6 +28,7 @@ impl<'a> Stack<'a> {
         unsafe { core::slice::from_raw_parts(self.stack.as_ptr(), self.len) }
     }
 
+    /// Checks that an instruction can consume `input` words and produce `output` words.
     #[inline]
     pub fn check_bounds(&self, input: usize, output: usize) -> Result {
         if self.len < input {
@@ -39,6 +42,7 @@ impl<'a> Stack<'a> {
         Ok(())
     }
 
+    /// Pushes a word onto the stack.
     #[inline]
     pub fn push(&mut self, value: Word) -> Result {
         let len = self.len;
@@ -54,6 +58,7 @@ impl<'a> Stack<'a> {
         Ok(())
     }
 
+    /// Pushes an uninitialized slot and returns it for writing.
     #[inline]
     pub fn push_slot(&mut self) -> Result<&mut Word> {
         if self.len == 1024 {
@@ -65,11 +70,13 @@ impl<'a> Stack<'a> {
         Ok(unsafe { self.stack.get_unchecked_mut(index) })
     }
 
+    /// Pops one word from the stack.
     #[inline]
     pub fn pop(&mut self) -> Result<Word> {
         self.popn().map(|[x]| x)
     }
 
+    /// Pops `N` words from the stack.
     #[inline]
     pub fn popn<const N: usize>(&mut self) -> Result<[Word; N]> {
         if self.len < N {
@@ -79,14 +86,15 @@ impl<'a> Stack<'a> {
         Ok(unsafe { self.popn_unchecked() })
     }
 
-    #[inline]
     /// # Safety
     ///
     /// Caller must ensure the stack contains at least `N` initialized words.
+    #[inline]
     pub unsafe fn popn_unchecked<const N: usize>(&mut self) -> [Word; N] {
         core::array::from_fn(|_| unsafe { self.pop_unchecked() })
     }
 
+    /// Pops `N` words and returns the new top word.
     #[inline(always)]
     pub fn popn_top<const N: usize>(&mut self) -> Result<([Word; N], &mut Word)> {
         if self.len < (N + 1) {
@@ -98,23 +106,24 @@ impl<'a> Stack<'a> {
         Ok((popped, top))
     }
 
-    #[inline]
     /// # Safety
     ///
     /// Caller must ensure the stack is not empty.
+    #[inline]
     pub unsafe fn top_unchecked(&mut self) -> &mut Word {
         unsafe { self.stack.get_unchecked_mut(self.len - 1) }
     }
 
-    #[inline]
     /// # Safety
     ///
     /// Caller must ensure the stack is not empty.
+    #[inline]
     pub unsafe fn pop_unchecked(&mut self) -> Word {
         self.len -= 1;
         unsafe { *self.stack.get_unchecked(self.len) }
     }
 
+    /// Duplicates the `n`th stack word from the top.
     #[inline]
     pub fn dup(&mut self, n: usize) -> Result {
         debug_assert!(n > 0, "attempted to dup 0");
@@ -135,11 +144,13 @@ impl<'a> Stack<'a> {
         Ok(())
     }
 
+    /// Swaps the top word with the `n`th word below it.
     #[inline(always)]
     pub fn swap(&mut self, n: usize) -> Result {
         self.exchange(0, n)
     }
 
+    /// Exchanges the `n`th and `m`th words below the top.
     #[inline]
     pub fn exchange(&mut self, n: usize, m: usize) -> Result {
         debug_assert!(n != m, "overlapping exchange");
@@ -155,6 +166,7 @@ impl<'a> Stack<'a> {
         Ok(())
     }
 
+    /// Pushes big-endian bytes as stack words.
     #[inline]
     pub fn push_slice(&mut self, slice: &[u8]) -> Result {
         if slice.is_empty() {

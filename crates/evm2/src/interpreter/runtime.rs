@@ -5,12 +5,16 @@ use super::{
 use alloc::{boxed::Box, vec::Vec};
 use core::hint::cold_path;
 
+/// Interpreter dispatch table mode.
 #[derive(Clone, Copy, Debug)]
 pub enum Table<'a> {
+    /// Normal dispatch loop.
     Normal(&'a InstrTable),
+    /// Tail-call dispatch loop.
     Tail(&'a TailInstrTable),
 }
 
+/// EVM interpreter.
 #[derive(Debug)]
 pub struct Interpreter {
     bytecode: Vec<u8>,
@@ -23,6 +27,7 @@ pub struct Interpreter {
 }
 
 impl Interpreter {
+    /// Creates an interpreter from bytecode and a spec identifier.
     pub fn new(bytecode: Vec<u8>, spec_id: SpecId) -> Self {
         Self {
             bytecode,
@@ -36,6 +41,7 @@ impl Interpreter {
         }
     }
 
+    /// Runs the interpreter until it stops.
     pub fn run(&mut self, table: Table<'_>, gas_table: &GasTable, host: &mut dyn Host) {
         let _gas_start = self.gas.remaining();
 

@@ -1,11 +1,14 @@
 use super::{Interpreter, Memory, SpecId, Word};
 use core::fmt;
 
-/// Catch all. Rest of stuff, cold.
+/// Interpreter state passed to instructions.
 #[allow(unused)]
 pub struct State<'a> {
+    /// Host implementation.
     pub host: &'a mut (dyn Host + 'a),
+    /// Linear memory.
     pub memory: &'a mut Memory,
+    /// Active spec identifier.
     pub spec: SpecId,
     pub(crate) raw_interp: *mut Interpreter,
 }
@@ -20,6 +23,8 @@ impl fmt::Debug for State<'_> {
     }
 }
 
+/// External host operations.
 pub trait Host {
+    /// Returns an account balance.
     fn balance(&self, address: Word) -> Word;
 }

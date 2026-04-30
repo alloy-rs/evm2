@@ -5,12 +5,12 @@
     allow(incomplete_features)
 )]
 #![allow(clippy::missing_const_for_fn)]
-#![allow(missing_docs)]
 #![cfg_attr(not(feature = "std"), no_std)]
 
 extern crate alloc;
 
 pub mod bytecode;
+/// EVM interpreter.
 pub mod interpreter;
 
 mod once_lock;

@@ -3,6 +3,7 @@
 use super::{InstrErr, Result};
 use core::hint::cold_path;
 
+/// Tracks regular, state, and refunded gas.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct GasTracker {
     gas_limit: u64,
@@ -13,66 +14,79 @@ pub struct GasTracker {
 }
 
 impl GasTracker {
+    /// Creates a gas tracker from its raw counters.
     #[inline]
     pub const fn new(gas_limit: u64, remaining: u64, reservoir: u64) -> Self {
         Self { gas_limit, remaining, reservoir, state_gas_spent: 0, refunded: 0 }
     }
 
+    /// Creates a gas tracker from already used gas.
     #[inline]
     pub const fn new_used_gas(gas_limit: u64, used_gas: u64, reservoir: u64) -> Self {
         Self::new(gas_limit, gas_limit - used_gas, reservoir)
     }
 
+    /// Returns the gas limit.
     #[inline]
     pub const fn limit(&self) -> u64 {
         self.gas_limit
     }
 
+    /// Sets the gas limit.
     #[inline]
     pub const fn set_limit(&mut self, val: u64) {
         self.gas_limit = val;
     }
 
+    /// Returns remaining regular gas.
     #[inline]
     pub const fn remaining(&self) -> u64 {
         self.remaining
     }
 
+    /// Sets remaining regular gas.
     #[inline]
     pub const fn set_remaining(&mut self, val: u64) {
         self.remaining = val;
     }
 
+    /// Returns available state gas reservoir.
     #[inline]
     pub const fn reservoir(&self) -> u64 {
         self.reservoir
     }
 
+    /// Sets available state gas reservoir.
     #[inline]
     pub const fn set_reservoir(&mut self, val: u64) {
         self.reservoir = val;
     }
 
+    /// Returns spent state gas.
     #[inline]
     pub const fn state_gas_spent(&self) -> u64 {
         self.state_gas_spent
     }
 
+    /// Sets spent state gas.
     #[inline]
     pub const fn set_state_gas_spent(&mut self, val: u64) {
         self.state_gas_spent = val;
     }
 
+    /// Returns gas refund.
     #[inline]
     pub const fn refunded(&self) -> i64 {
         self.refunded
     }
 
+    /// Sets gas refund.
     #[inline]
     pub const fn set_refunded(&mut self, val: i64) {
         self.refunded = val;
     }
 
+    /// Records regular gas cost.
     #[inline]
     #[must_use = "In case of not enough gas, the interpreter should halt with an out-of-gas error"]
     pub const fn record_regular_cost(&mut self, cost: u64) -> bool {
@@ -83,6 +97,7 @@ impl GasTracker {
         false
     }
 
+    /// Records state gas cost.
     #[inline]
     #[must_use = "In case of not enough gas, the interpreter should halt with an out-of-gas error"]
     pub const fn record_state_cost(&mut self, cost: u64) -> bool {
@@ -102,76 +117,91 @@ impl GasTracker {
         success
     }
 
+    /// Adds gas refund.
     #[inline]
     pub const fn record_refund(&mut self, refund: i64) {
         self.refunded += refund;
     }
 
+    /// Returns gas to the remaining counter.
     #[inline]
     pub const fn erase_cost(&mut self, returned: u64) {
         self.remaining += returned;
     }
 
+    /// Spends all remaining regular gas.
     #[inline]
     pub const fn spend_all(&mut self) {
         self.remaining = 0;
     }
 }
 
+/// Interpreter gas state.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Gas {
     tracker: GasTracker,
     memory: MemoryGas,
 }
 
+/// Mutable gas reference.
 pub type GasRef<'a> = &'a mut Gas;
 
 impl Gas {
+    /// Creates gas with `limit` regular gas.
     #[inline]
     pub const fn new(limit: u64) -> Self {
         Self { tracker: GasTracker::new(limit, limit, 0), memory: MemoryGas::new() }
     }
 
+    /// Returns the gas tracker.
     #[inline]
     pub const fn tracker(&self) -> &GasTracker {
         &self.tracker
     }
 
+    /// Returns the mutable gas tracker.
     #[inline]
     pub const fn tracker_mut(&mut self) -> &mut GasTracker {
         &mut self.tracker
     }
 
+    /// Creates gas with regular gas and a state gas reservoir.
     #[inline]
     pub const fn new_with_regular_gas_and_reservoir(limit: u64, reservoir: u64) -> Self {
         Self { tracker: GasTracker::new(limit, limit, reservoir), memory: MemoryGas::new() }
     }
 
+    /// Creates spent gas with a state gas reservoir.
     #[inline]
     pub const fn new_spent_with_reservoir(limit: u64, reservoir: u64) -> Self {
         Self { tracker: GasTracker::new(limit, 0, reservoir), memory: MemoryGas::new() }
     }
 
+    /// Returns the gas limit.
     #[inline]
     pub const fn limit(&self) -> u64 {
         self.tracker.limit()
     }
 
+    /// Returns memory gas state.
     #[inline]
     pub const fn memory(&self) -> &MemoryGas {
         &self.memory
     }
 
+    /// Returns mutable memory gas state.
     #[inline]
     pub const fn memory_mut(&mut self) -> &mut MemoryGas {
         &mut self.memory
     }
 
+    /// Returns gas refund.
     #[inline]
     pub const fn refunded(&self) -> i64 {
         self.tracker.refunded()
     }
 
+    /// Returns spent regular gas.
     #[inline]
     #[deprecated(
         since = "32.0.0",
@@ -183,61 +213,73 @@ impl Gas {
         self.tracker.limit().saturating_sub(self.tracker.remaining())
     }
 
+    /// Returns total gas spent.
     #[inline]
     pub const fn total_gas_spent(&self) -> u64 {
         self.tracker.limit().saturating_sub(self.tracker.remaining())
     }
 
+    /// Returns used gas after refund.
     #[inline]
     pub const fn used(&self) -> u64 {
         self.total_gas_spent().saturating_sub(self.refunded() as u64)
     }
 
+    /// Returns spent gas after refund.
     #[inline]
     pub const fn spent_sub_refunded(&self) -> u64 {
         self.total_gas_spent().saturating_sub(self.tracker.refunded() as u64)
     }
 
+    /// Returns remaining regular gas.
     #[inline]
     pub const fn remaining(&self) -> u64 {
         self.tracker.remaining()
     }
 
+    /// Returns available state gas reservoir.
     #[inline]
     pub const fn reservoir(&self) -> u64 {
         self.tracker.reservoir()
     }
 
+    /// Sets available state gas reservoir.
     #[inline]
     pub const fn set_reservoir(&mut self, val: u64) {
         self.tracker.set_reservoir(val);
     }
 
+    /// Returns spent state gas.
     #[inline]
     pub const fn state_gas_spent(&self) -> u64 {
         self.tracker.state_gas_spent()
     }
 
+    /// Sets spent state gas.
     #[inline]
     pub const fn set_state_gas_spent(&mut self, val: u64) {
         self.tracker.set_state_gas_spent(val);
     }
 
+    /// Returns gas to the remaining counter.
     #[inline]
     pub const fn erase_cost(&mut self, returned: u64) {
         self.tracker.erase_cost(returned);
     }
 
+    /// Spends all remaining regular gas.
     #[inline]
     pub const fn spend_all(&mut self) {
         self.tracker.spend_all();
     }
 
+    /// Adds gas refund.
     #[inline]
     pub const fn record_refund(&mut self, refund: i64) {
         self.tracker.record_refund(refund);
     }
 
+    /// Applies the final refund cap.
     #[inline]
     pub fn set_final_refund(&mut self, is_london: bool) {
         let max_refund_quotient = if is_london { 5 } else { 2 };
@@ -246,21 +288,25 @@ impl Gas {
             .set_refunded((self.refunded() as u64).min(gas_used / max_refund_quotient) as i64);
     }
 
+    /// Sets gas refund.
     #[inline]
     pub const fn set_refund(&mut self, refund: i64) {
         self.tracker.set_refunded(refund);
     }
 
+    /// Sets remaining regular gas.
     #[inline]
     pub const fn set_remaining(&mut self, remaining: u64) {
         self.tracker.set_remaining(remaining);
     }
 
+    /// Sets spent regular gas.
     #[inline]
     pub const fn set_spent(&mut self, spent: u64) {
         self.tracker.set_remaining(self.tracker.limit().saturating_sub(spent));
     }
 
+    /// Records regular gas cost.
     #[inline]
     #[must_use = "prefer using `gas!` instead to return an out-of-gas error on failure"]
     #[deprecated(since = "32.0.0", note = "use record_regular_cost instead")]
@@ -268,6 +314,7 @@ impl Gas {
         self.record_regular_cost(cost)
     }
 
+    /// Records cost with wrapping subtraction.
     #[inline(always)]
     #[must_use = "In case of not enough gas, the interpreter should halt with an out-of-gas error"]
     pub const fn record_cost_unsafe(&mut self, cost: u64) -> bool {
@@ -277,18 +324,21 @@ impl Gas {
         oog
     }
 
+    /// Records state gas cost.
     #[inline]
     #[must_use = "In case of not enough gas, the interpreter should halt with an out-of-gas error"]
     pub const fn record_state_cost(&mut self, cost: u64) -> bool {
         self.tracker.record_state_cost(cost)
     }
 
+    /// Records regular gas cost.
     #[inline]
     #[must_use = "In case of not enough gas, the interpreter should halt with an out-of-gas error"]
     pub const fn record_regular_cost(&mut self, cost: u64) -> bool {
         self.tracker.record_regular_cost(cost)
     }
 
+    /// Spends regular gas or returns out of gas.
     #[inline(always)]
     pub fn spend(&mut self, amount: u64) -> Result {
         if !self.record_regular_cost(amount) {
@@ -300,25 +350,34 @@ impl Gas {
     }
 }
 
+/// Memory expansion result.
 #[derive(Clone, Copy, Debug)]
 pub enum MemoryExtensionResult {
+    /// Memory was extended.
     Extended,
+    /// Memory size did not change.
     Same,
+    /// Memory expansion ran out of gas.
     OutOfGas,
 }
 
+/// Memory gas accounting state.
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq, Hash)]
 pub struct MemoryGas {
+    /// Current memory size in EVM words.
     pub words_num: usize,
+    /// Current total expansion cost.
     pub expansion_cost: u64,
 }
 
 impl MemoryGas {
+    /// Creates empty memory gas state.
     #[inline]
     pub const fn new() -> Self {
         Self { words_num: 0, expansion_cost: 0 }
     }
 
+    /// Sets memory word count and returns the expansion cost delta.
     #[inline]
     pub const fn set_words_num(
         &mut self,
