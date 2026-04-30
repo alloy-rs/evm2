@@ -1,36 +1,7 @@
+use super as gas;
 use crate::interpreter::SpecId;
 use alloy_primitives::U256;
 use paste::paste;
-
-const COPY: u64 = 3;
-const MEMORY: u64 = 3;
-const KECCAK256WORD: u64 = 6;
-const LOGDATA: u64 = 8;
-const LOGTOPIC: u64 = 375;
-const CREATE: u64 = 32000;
-const CALLVALUE: u64 = 9000;
-const NEWACCOUNT: u64 = 25000;
-const SSTORE_SET: u64 = 20000;
-const SSTORE_RESET: u64 = 5000;
-const REFUND_SSTORE_CLEARS: u64 = 15000;
-const SELFDESTRUCT_REFUND: u64 = 24000;
-const CODEDEPOSIT: u64 = 200;
-const STANDARD_TOKEN_COST: u64 = 4;
-const NON_ZERO_BYTE_MULTIPLIER: u64 = 17;
-const NON_ZERO_BYTE_MULTIPLIER_ISTANBUL: u64 = 4;
-const TOTAL_COST_FLOOR_PER_TOKEN: u64 = 10;
-const INITCODE_WORD_COST: u64 = 2;
-const CALL_STIPEND: u64 = 2300;
-const ISTANBUL_SLOAD_GAS: u64 = 800;
-const ACCESS_LIST_ADDRESS: u64 = 2400;
-const ACCESS_LIST_STORAGE_KEY: u64 = 1900;
-const COLD_SLOAD_COST: u64 = 2100;
-const COLD_ACCOUNT_ACCESS_COST: u64 = 2600;
-const COLD_ACCOUNT_ACCESS_COST_ADDITIONAL: u64 = COLD_ACCOUNT_ACCESS_COST - WARM_STORAGE_READ_COST;
-const WARM_STORAGE_READ_COST: u64 = 100;
-const WARM_SSTORE_RESET: u64 = SSTORE_RESET - COLD_SLOAD_COST;
-const EIP7702_PER_AUTH_BASE_COST: u64 = 12500;
-const EIP7702_PER_EMPTY_ACCOUNT_COST: u64 = 25000;
 
 macro_rules! gas_ids {
     ($($tokens:tt)*) => {
@@ -255,43 +226,51 @@ impl GasParams {
         let mut table = [0; 256];
 
         set_gas_param(&mut table, GasId::ExpByteGas, 10);
-        set_gas_param(&mut table, GasId::Logdata, LOGDATA);
-        set_gas_param(&mut table, GasId::Logtopic, LOGTOPIC);
-        set_gas_param(&mut table, GasId::CopyPerWord, COPY);
-        set_gas_param(&mut table, GasId::ExtcodecopyPerWord, COPY);
-        set_gas_param(&mut table, GasId::McopyPerWord, COPY);
-        set_gas_param(&mut table, GasId::Keccak256PerWord, KECCAK256WORD);
-        set_gas_param(&mut table, GasId::MemoryLinearCost, MEMORY);
+        set_gas_param(&mut table, GasId::Logdata, gas::LOGDATA);
+        set_gas_param(&mut table, GasId::Logtopic, gas::LOGTOPIC);
+        set_gas_param(&mut table, GasId::CopyPerWord, gas::COPY);
+        set_gas_param(&mut table, GasId::ExtcodecopyPerWord, gas::COPY);
+        set_gas_param(&mut table, GasId::McopyPerWord, gas::COPY);
+        set_gas_param(&mut table, GasId::Keccak256PerWord, gas::KECCAK256WORD);
+        set_gas_param(&mut table, GasId::MemoryLinearCost, gas::MEMORY);
         set_gas_param(&mut table, GasId::MemoryQuadraticReduction, 512);
-        set_gas_param(&mut table, GasId::InitcodePerWord, INITCODE_WORD_COST);
-        set_gas_param(&mut table, GasId::Create, CREATE);
+        set_gas_param(&mut table, GasId::InitcodePerWord, gas::INITCODE_WORD_COST);
+        set_gas_param(&mut table, GasId::Create, gas::CREATE);
         set_gas_param(&mut table, GasId::CallStipendReduction, 64);
-        set_gas_param(&mut table, GasId::TransferValueCost, CALLVALUE);
+        set_gas_param(&mut table, GasId::TransferValueCost, gas::CALLVALUE);
         set_gas_param(&mut table, GasId::ColdAccountAdditionalCost, 0);
-        set_gas_param(&mut table, GasId::NewAccountCost, NEWACCOUNT);
+        set_gas_param(&mut table, GasId::NewAccountCost, gas::NEWACCOUNT);
         set_gas_param(&mut table, GasId::WarmStorageReadCost, 0);
-        set_gas_param(&mut table, GasId::SstoreStatic, SSTORE_RESET);
-        set_gas_param(&mut table, GasId::SstoreSetWithoutLoadCost, SSTORE_SET - SSTORE_RESET);
+        set_gas_param(&mut table, GasId::SstoreStatic, gas::SSTORE_RESET);
+        set_gas_param(
+            &mut table,
+            GasId::SstoreSetWithoutLoadCost,
+            gas::SSTORE_SET - gas::SSTORE_RESET,
+        );
         set_gas_param(&mut table, GasId::SstoreResetWithoutColdLoadCost, 0);
-        set_gas_param(&mut table, GasId::SstoreSetRefund, SSTORE_SET - SSTORE_RESET);
+        set_gas_param(&mut table, GasId::SstoreSetRefund, gas::SSTORE_SET - gas::SSTORE_RESET);
         set_gas_param(&mut table, GasId::SstoreResetRefund, 0);
-        set_gas_param(&mut table, GasId::SstoreClearingSlotRefund, REFUND_SSTORE_CLEARS);
-        set_gas_param(&mut table, GasId::SelfdestructRefund, SELFDESTRUCT_REFUND);
-        set_gas_param(&mut table, GasId::CallStipend, CALL_STIPEND);
+        set_gas_param(&mut table, GasId::SstoreClearingSlotRefund, gas::REFUND_SSTORE_CLEARS);
+        set_gas_param(&mut table, GasId::SelfdestructRefund, gas::SELFDESTRUCT_REFUND);
+        set_gas_param(&mut table, GasId::CallStipend, gas::CALL_STIPEND);
         set_gas_param(&mut table, GasId::ColdStorageAdditionalCost, 0);
         set_gas_param(&mut table, GasId::ColdStorageCost, 0);
         set_gas_param(&mut table, GasId::NewAccountCostForSelfdestruct, 0);
-        set_gas_param(&mut table, GasId::CodeDepositCost, CODEDEPOSIT);
-        set_gas_param(&mut table, GasId::TxTokenNonZeroByteMultiplier, NON_ZERO_BYTE_MULTIPLIER);
-        set_gas_param(&mut table, GasId::TxTokenCost, STANDARD_TOKEN_COST);
+        set_gas_param(&mut table, GasId::CodeDepositCost, gas::CODEDEPOSIT);
+        set_gas_param(
+            &mut table,
+            GasId::TxTokenNonZeroByteMultiplier,
+            gas::NON_ZERO_BYTE_MULTIPLIER,
+        );
+        set_gas_param(&mut table, GasId::TxTokenCost, gas::STANDARD_TOKEN_COST);
         set_gas_param(&mut table, GasId::TxBaseStipend, 21000);
 
         if spec.enables(SpecId::HOMESTEAD) {
-            set_gas_param(&mut table, GasId::TxCreateCost, CREATE);
+            set_gas_param(&mut table, GasId::TxCreateCost, gas::CREATE);
         }
 
         if spec.enables(SpecId::TANGERINE) {
-            set_gas_param(&mut table, GasId::NewAccountCostForSelfdestruct, NEWACCOUNT);
+            set_gas_param(&mut table, GasId::NewAccountCostForSelfdestruct, gas::NEWACCOUNT);
         }
 
         if spec.enables(SpecId::SPURIOUS_DRAGON) {
@@ -299,85 +278,101 @@ impl GasParams {
         }
 
         if spec.enables(SpecId::ISTANBUL) {
-            set_gas_param(&mut table, GasId::SstoreStatic, ISTANBUL_SLOAD_GAS);
+            set_gas_param(&mut table, GasId::SstoreStatic, gas::ISTANBUL_SLOAD_GAS);
             set_gas_param(
                 &mut table,
                 GasId::SstoreSetWithoutLoadCost,
-                SSTORE_SET - ISTANBUL_SLOAD_GAS,
+                gas::SSTORE_SET - gas::ISTANBUL_SLOAD_GAS,
             );
             set_gas_param(
                 &mut table,
                 GasId::SstoreResetWithoutColdLoadCost,
-                SSTORE_RESET - ISTANBUL_SLOAD_GAS,
+                gas::SSTORE_RESET - gas::ISTANBUL_SLOAD_GAS,
             );
-            set_gas_param(&mut table, GasId::SstoreSetRefund, SSTORE_SET - ISTANBUL_SLOAD_GAS);
-            set_gas_param(&mut table, GasId::SstoreResetRefund, SSTORE_RESET - ISTANBUL_SLOAD_GAS);
+            set_gas_param(
+                &mut table,
+                GasId::SstoreSetRefund,
+                gas::SSTORE_SET - gas::ISTANBUL_SLOAD_GAS,
+            );
+            set_gas_param(
+                &mut table,
+                GasId::SstoreResetRefund,
+                gas::SSTORE_RESET - gas::ISTANBUL_SLOAD_GAS,
+            );
             set_gas_param(
                 &mut table,
                 GasId::TxTokenNonZeroByteMultiplier,
-                NON_ZERO_BYTE_MULTIPLIER_ISTANBUL,
+                gas::NON_ZERO_BYTE_MULTIPLIER_ISTANBUL,
             );
         }
 
         if spec.enables(SpecId::BERLIN) {
-            set_gas_param(&mut table, GasId::SstoreStatic, WARM_STORAGE_READ_COST);
+            set_gas_param(&mut table, GasId::SstoreStatic, gas::WARM_STORAGE_READ_COST);
             set_gas_param(
                 &mut table,
                 GasId::ColdAccountAdditionalCost,
-                COLD_ACCOUNT_ACCESS_COST_ADDITIONAL,
+                gas::COLD_ACCOUNT_ACCESS_COST_ADDITIONAL,
             );
             set_gas_param(
                 &mut table,
                 GasId::ColdStorageAdditionalCost,
-                COLD_SLOAD_COST - WARM_STORAGE_READ_COST,
+                gas::COLD_SLOAD_COST - gas::WARM_STORAGE_READ_COST,
             );
-            set_gas_param(&mut table, GasId::ColdStorageCost, COLD_SLOAD_COST);
-            set_gas_param(&mut table, GasId::WarmStorageReadCost, WARM_STORAGE_READ_COST);
+            set_gas_param(&mut table, GasId::ColdStorageCost, gas::COLD_SLOAD_COST);
+            set_gas_param(&mut table, GasId::WarmStorageReadCost, gas::WARM_STORAGE_READ_COST);
             set_gas_param(
                 &mut table,
                 GasId::SstoreResetWithoutColdLoadCost,
-                WARM_SSTORE_RESET - WARM_STORAGE_READ_COST,
+                gas::WARM_SSTORE_RESET - gas::WARM_STORAGE_READ_COST,
             );
             set_gas_param(
                 &mut table,
                 GasId::SstoreSetWithoutLoadCost,
-                SSTORE_SET - WARM_STORAGE_READ_COST,
+                gas::SSTORE_SET - gas::WARM_STORAGE_READ_COST,
             );
-            set_gas_param(&mut table, GasId::SstoreSetRefund, SSTORE_SET - WARM_STORAGE_READ_COST);
+            set_gas_param(
+                &mut table,
+                GasId::SstoreSetRefund,
+                gas::SSTORE_SET - gas::WARM_STORAGE_READ_COST,
+            );
             set_gas_param(
                 &mut table,
                 GasId::SstoreResetRefund,
-                WARM_SSTORE_RESET - WARM_STORAGE_READ_COST,
+                gas::WARM_SSTORE_RESET - gas::WARM_STORAGE_READ_COST,
             );
-            set_gas_param(&mut table, GasId::TxAccessListAddressCost, ACCESS_LIST_ADDRESS);
-            set_gas_param(&mut table, GasId::TxAccessListStorageKeyCost, ACCESS_LIST_STORAGE_KEY);
+            set_gas_param(&mut table, GasId::TxAccessListAddressCost, gas::ACCESS_LIST_ADDRESS);
+            set_gas_param(
+                &mut table,
+                GasId::TxAccessListStorageKeyCost,
+                gas::ACCESS_LIST_STORAGE_KEY,
+            );
         }
 
         if spec.enables(SpecId::LONDON) {
             set_gas_param(
                 &mut table,
                 GasId::SstoreClearingSlotRefund,
-                WARM_SSTORE_RESET + ACCESS_LIST_STORAGE_KEY,
+                gas::WARM_SSTORE_RESET + gas::ACCESS_LIST_STORAGE_KEY,
             );
             set_gas_param(&mut table, GasId::SelfdestructRefund, 0);
         }
 
         if spec.enables(SpecId::SHANGHAI) {
-            set_gas_param(&mut table, GasId::TxInitcodeCost, INITCODE_WORD_COST);
+            set_gas_param(&mut table, GasId::TxInitcodeCost, gas::INITCODE_WORD_COST);
         }
 
         if spec.enables(SpecId::PRAGUE) {
             set_gas_param(
                 &mut table,
                 GasId::TxEip7702PerEmptyAccountCost,
-                EIP7702_PER_EMPTY_ACCOUNT_COST,
+                gas::EIP7702_PER_EMPTY_ACCOUNT_COST,
             );
             set_gas_param(
                 &mut table,
                 GasId::TxEip7702AuthRefund,
-                EIP7702_PER_EMPTY_ACCOUNT_COST - EIP7702_PER_AUTH_BASE_COST,
+                gas::EIP7702_PER_EMPTY_ACCOUNT_COST - gas::EIP7702_PER_AUTH_BASE_COST,
             );
-            set_gas_param(&mut table, GasId::TxFloorCostPerToken, TOTAL_COST_FLOOR_PER_TOKEN);
+            set_gas_param(&mut table, GasId::TxFloorCostPerToken, gas::TOTAL_COST_FLOOR_PER_TOKEN);
             set_gas_param(&mut table, GasId::TxFloorCostBaseGas, 21000);
         }
 

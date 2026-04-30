@@ -1,6 +1,10 @@
 use super::*;
 use crate::interpreter::{
     Ctrl, CtrlRef, Gas, GasRef, InstrErr, Interpreter, Result, SpecId, Stack, State,
+    gas::{
+        BASE, BLOCKHASH, EXP, HIGH, ISTANBUL_SLOAD_GAS, JUMPDEST, KECCAK256, LOG, LOW, MID,
+        VERYLOW, WARM_STORAGE_READ_COST, ZERO,
+    },
     opcode::{for_each_opcode, op},
 };
 use core::mem;
@@ -32,12 +36,6 @@ pub type TailInstrTable = [TailInstrFn; 256];
 
 /// Opcode gas table.
 pub type GasTable = [u16; 256];
-
-const EXP: u16 = 10;
-const LOG: u16 = 375;
-const KECCAK256: u16 = 30;
-const ISTANBUL_SLOAD_GAS: u16 = 800;
-const WARM_STORAGE_READ_COST: u16 = 100;
 
 /// Instruction execution context.
 #[derive(Debug)]
@@ -108,21 +106,21 @@ pub const fn new_gas_table(spec: SpecId) -> GasTable {
     }
 
     if spec.enables(SpecId::ISTANBUL) {
-        table[op::SLOAD as usize] = ISTANBUL_SLOAD_GAS;
+        table[op::SLOAD as usize] = ISTANBUL_SLOAD_GAS as u16;
         table[op::BALANCE as usize] = 700;
         table[op::EXTCODEHASH as usize] = 700;
     }
 
     if spec.enables(SpecId::BERLIN) {
-        table[op::SLOAD as usize] = WARM_STORAGE_READ_COST;
-        table[op::BALANCE as usize] = WARM_STORAGE_READ_COST;
-        table[op::EXTCODESIZE as usize] = WARM_STORAGE_READ_COST;
-        table[op::EXTCODEHASH as usize] = WARM_STORAGE_READ_COST;
-        table[op::EXTCODECOPY as usize] = WARM_STORAGE_READ_COST;
-        table[op::CALL as usize] = WARM_STORAGE_READ_COST;
-        table[op::CALLCODE as usize] = WARM_STORAGE_READ_COST;
-        table[op::DELEGATECALL as usize] = WARM_STORAGE_READ_COST;
-        table[op::STATICCALL as usize] = WARM_STORAGE_READ_COST;
+        table[op::SLOAD as usize] = WARM_STORAGE_READ_COST as u16;
+        table[op::BALANCE as usize] = WARM_STORAGE_READ_COST as u16;
+        table[op::EXTCODESIZE as usize] = WARM_STORAGE_READ_COST as u16;
+        table[op::EXTCODEHASH as usize] = WARM_STORAGE_READ_COST as u16;
+        table[op::EXTCODECOPY as usize] = WARM_STORAGE_READ_COST as u16;
+        table[op::CALL as usize] = WARM_STORAGE_READ_COST as u16;
+        table[op::CALLCODE as usize] = WARM_STORAGE_READ_COST as u16;
+        table[op::DELEGATECALL as usize] = WARM_STORAGE_READ_COST as u16;
+        table[op::STATICCALL as usize] = WARM_STORAGE_READ_COST as u16;
     }
 
     table
@@ -133,17 +131,17 @@ pub const fn new_gas_table(spec: SpecId) -> GasTable {
 pub(crate) const fn make_gas_table() -> GasTable {
     let mut table = [0; 256];
 
-    table[op::STOP as usize] = 0;
-    table[op::ADD as usize] = 3;
-    table[op::MUL as usize] = 5;
-    table[op::SUB as usize] = 3;
+    table[op::STOP as usize] = ZERO as u16;
+    table[op::ADD as usize] = VERYLOW as u16;
+    table[op::MUL as usize] = LOW as u16;
+    table[op::SUB as usize] = VERYLOW as u16;
     table[op::DIV as usize] = 5;
     table[op::SDIV as usize] = 5;
     table[op::MOD as usize] = 5;
     table[op::SMOD as usize] = 5;
-    table[op::ADDMOD as usize] = 8;
+    table[op::ADDMOD as usize] = MID as u16;
     table[op::MULMOD as usize] = 8;
-    table[op::EXP as usize] = EXP;
+    table[op::EXP as usize] = EXP as u16;
     table[op::SIGNEXTEND as usize] = 5;
 
     table[op::LT as usize] = 3;
@@ -162,9 +160,9 @@ pub(crate) const fn make_gas_table() -> GasTable {
     table[op::SAR as usize] = 3;
     table[op::CLZ as usize] = 5;
 
-    table[op::KECCAK256 as usize] = KECCAK256;
+    table[op::KECCAK256 as usize] = KECCAK256 as u16;
 
-    table[op::ADDRESS as usize] = 2;
+    table[op::ADDRESS as usize] = BASE as u16;
     table[op::BALANCE as usize] = 20;
     table[op::ORIGIN as usize] = 2;
     table[op::CALLER as usize] = 2;
@@ -180,7 +178,7 @@ pub(crate) const fn make_gas_table() -> GasTable {
     table[op::RETURNDATASIZE as usize] = 2;
     table[op::RETURNDATACOPY as usize] = 3;
     table[op::EXTCODEHASH as usize] = 400;
-    table[op::BLOCKHASH as usize] = 20;
+    table[op::BLOCKHASH as usize] = BLOCKHASH as u16;
     table[op::COINBASE as usize] = 2;
     table[op::TIMESTAMP as usize] = 2;
     table[op::NUMBER as usize] = 2;
@@ -200,11 +198,11 @@ pub(crate) const fn make_gas_table() -> GasTable {
     table[op::SLOAD as usize] = 50;
     table[op::SSTORE as usize] = 0;
     table[op::JUMP as usize] = 8;
-    table[op::JUMPI as usize] = 10;
+    table[op::JUMPI as usize] = HIGH as u16;
     table[op::PC as usize] = 2;
     table[op::MSIZE as usize] = 2;
     table[op::GAS as usize] = 2;
-    table[op::JUMPDEST as usize] = 1;
+    table[op::JUMPDEST as usize] = JUMPDEST as u16;
     table[op::TLOAD as usize] = 100;
     table[op::TSTORE as usize] = 100;
     table[op::MCOPY as usize] = 3;
@@ -281,11 +279,11 @@ pub(crate) const fn make_gas_table() -> GasTable {
     table[op::SWAPN as usize] = 3;
     table[op::EXCHANGE as usize] = 3;
 
-    table[op::LOG0 as usize] = LOG;
-    table[op::LOG1 as usize] = LOG;
-    table[op::LOG2 as usize] = LOG;
-    table[op::LOG3 as usize] = LOG;
-    table[op::LOG4 as usize] = LOG;
+    table[op::LOG0 as usize] = LOG as u16;
+    table[op::LOG1 as usize] = LOG as u16;
+    table[op::LOG2 as usize] = LOG as u16;
+    table[op::LOG3 as usize] = LOG as u16;
+    table[op::LOG4 as usize] = LOG as u16;
 
     table[op::CREATE as usize] = 0;
     table[op::CALL as usize] = 40;

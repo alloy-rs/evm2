@@ -6,6 +6,48 @@ use core::hint::cold_path;
 mod params;
 pub use params::{GasId, GasParamTable, GasParams, num_words};
 
+pub(super) const ZERO: u64 = 0;
+pub(super) const BASE: u64 = 2;
+pub(super) const VERYLOW: u64 = 3;
+pub(super) const LOW: u64 = 5;
+pub(super) const MID: u64 = 8;
+pub(super) const HIGH: u64 = 10;
+pub(super) const JUMPDEST: u64 = 1;
+pub(super) const EXP: u64 = 10;
+pub(super) const MEMORY: u64 = 3;
+pub(super) const LOG: u64 = 375;
+pub(super) const LOGDATA: u64 = 8;
+pub(super) const LOGTOPIC: u64 = 375;
+pub(super) const KECCAK256: u64 = 30;
+pub(super) const KECCAK256WORD: u64 = 6;
+pub(super) const COPY: u64 = 3;
+pub(super) const BLOCKHASH: u64 = 20;
+pub(super) const CREATE: u64 = 32000;
+pub(super) const CALLVALUE: u64 = 9000;
+pub(super) const NEWACCOUNT: u64 = 25000;
+pub(super) const SELFDESTRUCT_REFUND: u64 = 24000;
+pub(super) const CODEDEPOSIT: u64 = 200;
+pub(super) const SSTORE_SET: u64 = 20000;
+pub(super) const SSTORE_RESET: u64 = 5000;
+pub(super) const REFUND_SSTORE_CLEARS: u64 = 15000;
+pub(super) const STANDARD_TOKEN_COST: u64 = 4;
+pub(super) const NON_ZERO_BYTE_MULTIPLIER: u64 = 17;
+pub(super) const NON_ZERO_BYTE_MULTIPLIER_ISTANBUL: u64 = 4;
+pub(super) const TOTAL_COST_FLOOR_PER_TOKEN: u64 = 10;
+pub(super) const INITCODE_WORD_COST: u64 = 2;
+pub(super) const CALL_STIPEND: u64 = 2300;
+pub(super) const ISTANBUL_SLOAD_GAS: u64 = 800;
+pub(super) const ACCESS_LIST_ADDRESS: u64 = 2400;
+pub(super) const ACCESS_LIST_STORAGE_KEY: u64 = 1900;
+pub(super) const COLD_SLOAD_COST: u64 = 2100;
+pub(super) const COLD_ACCOUNT_ACCESS_COST: u64 = 2600;
+pub(super) const COLD_ACCOUNT_ACCESS_COST_ADDITIONAL: u64 =
+    COLD_ACCOUNT_ACCESS_COST - WARM_STORAGE_READ_COST;
+pub(super) const WARM_STORAGE_READ_COST: u64 = 100;
+pub(super) const WARM_SSTORE_RESET: u64 = SSTORE_RESET - COLD_SLOAD_COST;
+pub(super) const EIP7702_PER_AUTH_BASE_COST: u64 = 12500;
+pub(super) const EIP7702_PER_EMPTY_ACCOUNT_COST: u64 = 25000;
+
 /// Tracks regular, state, and refunded gas.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct GasTracker {
