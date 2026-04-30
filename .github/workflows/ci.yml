@@ -20,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ["ubuntu-latest", "windows-latest"]
+        os: ["ubuntu-latest", "macos-latest", "windows-latest"]
         rust: [
             "stable",
             "nightly",
@@ -35,6 +35,9 @@ jobs:
         include:
           # All features
           - os: "ubuntu-latest"
+            rust: "nightly"
+            flags: "--all-features"
+          - os: "macos-latest"
             rust: "nightly"
             flags: "--all-features"
           - os: "windows-latest"
