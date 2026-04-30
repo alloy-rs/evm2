@@ -117,19 +117,47 @@ fn generic_ident(arg: &GenericArgument) -> Option<Ident> {
 
 fn stack_setup(inputs: &[Ident], outputs: &[Ident]) -> TokenStream2 {
     let input_count = inputs.len();
+    let output_count = outputs.len();
+    let input_setup = (input_count > 0).then(|| {
+        quote! {
+            let [#(#inputs),*] = unsafe { ptr.cast::<[Word; IN]>().read() };
+            #(let #inputs = &#inputs;)*
+        }
+    });
     match outputs {
         [] if input_count == 0 => quote! {},
         [] => {
             quote! {
-                let [#(#inputs),*] = cx.stack.popn::<#input_count>()?;
-                #(let #inputs = &#inputs;)*
+                const IN: usize = #input_count;
+                const OUT: usize = #output_count;
+                const REQUIRED_LEN: usize = if IN > OUT { IN } else { OUT };
+                if cx.stack.len < REQUIRED_LEN {
+                    cold_path();
+                    return Err(InstrErr::StackUnderflow);
+                }
+                let ptr = unsafe { cx.stack.stack.as_mut_ptr().add(cx.stack.len).sub(IN) };
+                #input_setup
+                cx.stack.len -= IN;
             }
         }
         [output] => {
             quote! {
-                let [#(#inputs),*] = cx.stack.popn::<#input_count>()?;
-                let #output = cx.stack.push_slot()?;
-                #(let #inputs = &#inputs;)*
+                const IN: usize = #input_count;
+                const OUT: usize = #output_count;
+                const REQUIRED_LEN: usize = if IN > OUT { IN } else { OUT };
+                if IN != 0 && cx.stack.len < REQUIRED_LEN {
+                    cold_path();
+                    return Err(InstrErr::StackUnderflow);
+                }
+                let new_len = cx.stack.len - IN + OUT;
+                if new_len > 1024 {
+                    cold_path();
+                    return Err(InstrErr::StackOverflow);
+                }
+                let ptr = unsafe { cx.stack.stack.as_mut_ptr().add(cx.stack.len).sub(IN) };
+                #input_setup
+                let #output = unsafe { &mut *ptr.cast::<Word>() };
+                cx.stack.len = new_len;
             }
         }
         _ => quote! {

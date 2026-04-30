@@ -5,7 +5,7 @@ use core::{fmt, hint::cold_path};
 pub type Word = U256;
 
 pub struct Stack<'a> {
-    stack: &'a mut [Word; 1024],
+    pub(crate) stack: &'a mut [Word; 1024],
     pub(crate) len: usize,
 }
 
