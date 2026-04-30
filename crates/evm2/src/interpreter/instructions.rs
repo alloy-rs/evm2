@@ -27,13 +27,13 @@ macro_rules! popn_top {
     };
 }
 
-#[instruction(raw)]
+#[instruction]
 pub(super) fn stop() -> Result {
     cold_path();
     return Err(InstrErr::Stop);
 }
 
-#[instruction(raw)]
+#[instruction]
 pub(super) fn invalid() -> Result {
     cold_path();
     return Err(InstrErr::Invalid);
