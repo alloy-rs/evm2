@@ -17,4 +17,5 @@ evm2-macros.workspace = true
 default = ["std"]
 std = []
 
+memory_limit = []
 nightly = []

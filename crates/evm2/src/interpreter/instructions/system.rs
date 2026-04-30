@@ -1,5 +1,7 @@
 use super::utils::as_usize;
-use crate::interpreter::{CtrlRef, Gas, InstructionCx, Result, Stack, State, Word};
+use crate::interpreter::{
+    CtrlRef, Gas, InstructionCx, Result, Stack, State, Word, memory::resize_memory,
+};
 use alloy_primitives::keccak256;
 use evm2_macros::instruction;
 
@@ -7,6 +9,7 @@ use evm2_macros::instruction;
 pub(in crate::interpreter) fn keccak256_instr(cx: _, offset: &Word, len: &Word) -> Result<out> {
     let offset = as_usize(*offset)?;
     let len = as_usize(*len)?;
+    resize_memory(cx.gas, cx.state.memory, offset, len)?;
     let hash = keccak256(cx.state.memory.slice(offset, len)?);
     *out = Word::from_be_bytes(hash.0);
 }
@@ -29,6 +32,7 @@ pub(in crate::interpreter) fn codecopy(
     if len == 0 {
         return Ok(());
     }
+    resize_memory(cx.gas, cx.state.memory, memory_offset, len)?;
     cx.state.memory.set_data(memory_offset, code_offset, len, cx.ctrl.as_slice())
 }
 
