@@ -23,4 +23,7 @@ pub(super) use system::*;
 
 pub(crate) mod table;
 
+#[cfg(test)]
+mod tests;
+
 mod utils;

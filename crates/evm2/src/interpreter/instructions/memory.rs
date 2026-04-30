@@ -39,3 +39,62 @@ pub(in crate::interpreter) fn mcopy(cx: _, dst: &Word, src: &Word, len: &Word) -
     crate::interpreter::memory::resize_memory(cx.gas, cx.state.memory, dst.max(src), len)?;
     cx.state.memory.copy(dst, src, len)
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::interpreter::{
+        InstrErr, Word,
+        instructions::tests::{push, run},
+        op,
+    };
+    use alloc::vec::Vec;
+
+    #[test]
+    fn memory_opcodes() {
+        let value = Word::from(0xfeed);
+        let mut code = Vec::new();
+        push(&mut code, Word::ZERO);
+        push(&mut code, value);
+        code.push(op::MSTORE);
+        push(&mut code, Word::ZERO);
+        code.push(op::MLOAD);
+        code.push(op::STOP);
+
+        let mut interpreter = run(code);
+        assert!(matches!(interpreter.err, InstrErr::Stop));
+        assert_eq!(interpreter.stack(), [value]);
+        assert_eq!(interpreter.memory(30, 2), [0xfe, 0xed]);
+
+        let mut code = Vec::new();
+        push(&mut code, Word::from(4));
+        push(&mut code, Word::from(0xab));
+        code.push(op::MSTORE8);
+        code.push(op::MSIZE);
+        code.push(op::STOP);
+
+        let mut interpreter = run(code);
+        assert!(matches!(interpreter.err, InstrErr::Stop));
+        assert_eq!(interpreter.stack(), [Word::from(32)]);
+        assert_eq!(interpreter.memory(4, 1), [0xab]);
+    }
+
+    #[test]
+    fn mcopy_opcode() {
+        let value = Word::from(0x1234);
+        let mut code = Vec::new();
+        push(&mut code, Word::ZERO);
+        push(&mut code, value);
+        code.push(op::MSTORE);
+        push(&mut code, Word::from(32));
+        push(&mut code, Word::ZERO);
+        push(&mut code, Word::from(32));
+        code.push(op::MCOPY);
+        push(&mut code, Word::from(32));
+        code.push(op::MLOAD);
+        code.push(op::STOP);
+
+        let interpreter = run(code);
+        assert!(matches!(interpreter.err, InstrErr::Stop));
+        assert_eq!(interpreter.stack(), [value]);
+    }
+}

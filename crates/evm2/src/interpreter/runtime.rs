@@ -43,7 +43,7 @@ impl Interpreter {
     }
 
     /// Runs the interpreter until it stops.
-    pub fn run(&mut self, table: Table<'_>, gas_table: &GasTable, host: &mut dyn Host) {
+    pub fn run(&mut self, table: Table<'_>, gas_table: &GasTable, host: &mut dyn Host) -> InstrErr {
         let _gas_start = self.gas.remaining();
 
         let _r = match table {
@@ -56,6 +56,8 @@ impl Interpreter {
             eprintln!("execution stopped: {_r:?}");
             eprintln!("consumed gas: {}", _gas_start - self.gas.remaining())
         }
+
+        _r
     }
 
     fn run_table_loop(
