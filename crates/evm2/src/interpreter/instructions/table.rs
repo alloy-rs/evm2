@@ -38,7 +38,7 @@ pub static DEFAULT_TAIL_TABLE: TailInstrTable = make_tail_table();
 
 pub static DEFAULT_GAS_TABLE: GasTable = [3; 256];
 
-pub trait Instruction {
+pub(crate) trait Instruction {
     fn new() -> Self;
     fn execute(
         self,
@@ -99,7 +99,7 @@ pub const fn make_table() -> InstrTable {
     make_table_m!(mk_dispatch)
 }
 
-pub const fn mk_dispatch<I: Instruction>(f: I) -> InstrFn {
+pub(crate) const fn mk_dispatch<I: Instruction>(f: I) -> InstrFn {
     mem::forget(f);
     dispatch::<I>
 }
@@ -108,7 +108,7 @@ pub const fn make_tail_table() -> TailInstrTable {
     make_table_m!(mk_tail_dispatch)
 }
 
-pub const fn mk_tail_dispatch<I: Instruction>(f: I) -> TailInstrFn {
+pub(crate) const fn mk_tail_dispatch<I: Instruction>(f: I) -> TailInstrFn {
     mem::forget(f);
     tail_dispatch::<I>
 }

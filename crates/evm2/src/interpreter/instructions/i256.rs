@@ -4,21 +4,21 @@ use core::cmp::Ordering;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[allow(dead_code)]
 #[repr(i8)]
-pub enum Sign {
+pub(super) enum Sign {
     Minus = -1,
     Zero = 0,
     Plus = 1,
 }
 
 #[allow(dead_code)]
-pub const MAX_POSITIVE_VALUE: Word = Word::from_limbs([
+pub(super) const MAX_POSITIVE_VALUE: Word = Word::from_limbs([
     0xffffffffffffffff,
     0xffffffffffffffff,
     0xffffffffffffffff,
     0x7fffffffffffffff,
 ]);
 
-pub const MIN_NEGATIVE_VALUE: Word = Word::from_limbs([
+pub(super) const MIN_NEGATIVE_VALUE: Word = Word::from_limbs([
     0x0000000000000000,
     0x0000000000000000,
     0x0000000000000000,
@@ -28,7 +28,7 @@ pub const MIN_NEGATIVE_VALUE: Word = Word::from_limbs([
 const FLIPH_BITMASK_U64: u64 = 0x7FFF_FFFF_FFFF_FFFF;
 
 #[inline]
-pub fn i256_sign(val: &Word) -> Sign {
+pub(super) fn i256_sign(val: &Word) -> Sign {
     if val.bit(Word::BITS - 1) {
         Sign::Minus
     } else {
@@ -37,7 +37,7 @@ pub fn i256_sign(val: &Word) -> Sign {
 }
 
 #[inline]
-pub fn i256_sign_compl(val: &mut Word) -> Sign {
+pub(super) fn i256_sign_compl(val: &mut Word) -> Sign {
     let sign = i256_sign(val);
     if sign == Sign::Minus {
         two_compl_mut(val);
@@ -53,17 +53,17 @@ const fn u256_remove_sign(val: &mut Word) {
 }
 
 #[inline]
-pub const fn two_compl_mut(op: &mut Word) {
+pub(super) const fn two_compl_mut(op: &mut Word) {
     *op = two_compl(*op);
 }
 
 #[inline]
-pub const fn two_compl(op: Word) -> Word {
+pub(super) const fn two_compl(op: Word) -> Word {
     op.wrapping_neg()
 }
 
 #[inline]
-pub fn i256_cmp(first: &Word, second: &Word) -> Ordering {
+pub(super) fn i256_cmp(first: &Word, second: &Word) -> Ordering {
     let first_sign = i256_sign(first);
     let second_sign = i256_sign(second);
     match first_sign.cmp(&second_sign) {
@@ -73,7 +73,7 @@ pub fn i256_cmp(first: &Word, second: &Word) -> Ordering {
 }
 
 #[inline]
-pub fn i256_div(mut first: Word, mut second: Word) -> Word {
+pub(super) fn i256_div(mut first: Word, mut second: Word) -> Word {
     let second_sign = i256_sign_compl(&mut second);
     if second_sign == Sign::Zero {
         return Word::ZERO;
@@ -97,7 +97,7 @@ pub fn i256_div(mut first: Word, mut second: Word) -> Word {
 }
 
 #[inline]
-pub fn i256_mod(mut first: Word, mut second: Word) -> Word {
+pub(super) fn i256_mod(mut first: Word, mut second: Word) -> Word {
     let first_sign = i256_sign_compl(&mut first);
     if first_sign == Sign::Zero {
         return Word::ZERO;

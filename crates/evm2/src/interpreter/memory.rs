@@ -174,18 +174,23 @@ unsafe fn set_data(dst: &mut [u8], src: &[u8], dst_offset: usize, src_offset: us
 }
 
 #[inline]
-pub const fn num_words(len: usize) -> usize {
+pub(super) const fn num_words(len: usize) -> usize {
     len.div_ceil(32)
 }
 
 #[inline]
-pub fn memory_cost(len: usize) -> u64 {
+pub(super) fn memory_cost(len: usize) -> u64 {
     let len = len as u64;
     3_u64.saturating_mul(len).saturating_add(len.saturating_mul(len) / 512)
 }
 
 #[inline]
-pub fn resize_memory(gas: &mut Gas, memory: &mut Memory, offset: usize, len: usize) -> Result {
+pub(super) fn resize_memory(
+    gas: &mut Gas,
+    memory: &mut Memory,
+    offset: usize,
+    len: usize,
+) -> Result {
     let new_num_words = num_words(offset.saturating_add(len));
     if new_num_words > gas.memory().words_num {
         return resize_memory_cold(gas, memory, new_num_words);

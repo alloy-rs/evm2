@@ -6,7 +6,8 @@ mod utils;
 
 mod instructions;
 pub use instructions::table::{
-    DEFAULT_GAS_TABLE, DEFAULT_TABLE, DEFAULT_TAIL_TABLE, InstructionCx, make_table,
+    DEFAULT_GAS_TABLE, DEFAULT_TABLE, DEFAULT_TAIL_TABLE, GasTable, InstrFn, InstrFnRet,
+    InstrTable, InstructionCx, TailInstrFn, TailInstrFnRet, TailInstrTable, make_table,
     make_tail_table, new_gas_table,
 };
 

@@ -8,12 +8,12 @@ use once_cell as _;
 use once_cell::race::OnceBox;
 
 #[cfg(feature = "std")]
-pub use std::sync::OnceLock;
+pub(crate) use std::sync::OnceLock;
 
 /// A thread-safe cell which can be written to only once.
 #[cfg(not(feature = "std"))]
 #[derive(Debug)]
-pub struct OnceLock<T> {
+pub(crate) struct OnceLock<T> {
     inner: OnceBox<T>,
 }
 

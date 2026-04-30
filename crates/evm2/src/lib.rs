@@ -8,7 +8,6 @@
 #![allow(clippy::missing_const_for_fn)]
 #![allow(missing_debug_implementations)]
 #![allow(missing_docs)]
-#![allow(unreachable_pub)]
 #![cfg_attr(not(feature = "std"), no_std)]
 
 extern crate alloc;
