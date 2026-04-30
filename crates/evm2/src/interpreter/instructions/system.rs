@@ -4,7 +4,7 @@ use alloy_primitives::keccak256;
 use evm2_macros::instruction;
 
 #[instruction]
-pub(in crate::interpreter) fn keccak256_instr(cx: _, offset: &Word, len: &Word) -> Result<out> {
+pub(in crate::interpreter) fn keccak256_instr(cx: _, [offset, len]: [Word]) -> Result<out> {
     let offset = as_usize(*offset)?;
     let len = as_usize(*len)?;
     crate::interpreter::memory::resize_memory(cx.gas, cx.state.memory, offset, len)?;
@@ -18,12 +18,7 @@ pub(in crate::interpreter) fn codesize(cx: _) -> out {
 }
 
 #[instruction]
-pub(in crate::interpreter) fn codecopy(
-    cx: _,
-    memory_offset: &Word,
-    code_offset: &Word,
-    len: &Word,
-) -> Result {
+pub(in crate::interpreter) fn codecopy(cx: _, [memory_offset, code_offset, len]: [Word]) -> Result {
     let memory_offset = as_usize(*memory_offset)?;
     let code_offset = as_usize(*code_offset).unwrap_or(usize::MAX);
     let len = as_usize(*len)?;

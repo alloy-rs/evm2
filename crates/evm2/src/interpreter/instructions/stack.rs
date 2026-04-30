@@ -2,7 +2,7 @@ use crate::interpreter::{CtrlRef, Gas, InstrErr, InstructionCx, Result, Stack, S
 use evm2_macros::instruction;
 
 #[instruction]
-pub(in crate::interpreter) fn pop(_value: &Word) -> Result {
+pub(in crate::interpreter) fn pop([_value]: [Word]) -> Result {
     Ok(())
 }
 

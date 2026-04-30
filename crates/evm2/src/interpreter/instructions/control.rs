@@ -16,7 +16,7 @@ pub(in crate::interpreter) fn invalid() -> Result {
 }
 
 #[instruction]
-pub(in crate::interpreter) fn jump(cx: _, target: &Word) -> Result {
+pub(in crate::interpreter) fn jump(cx: _, [target]: [Word]) -> Result {
     let target = as_usize(*target)?;
     if !cx.ctrl.is_valid_jumpdest(target) {
         cold_path();
@@ -27,7 +27,7 @@ pub(in crate::interpreter) fn jump(cx: _, target: &Word) -> Result {
 }
 
 #[instruction]
-pub(in crate::interpreter) fn jumpi(cx: _, target: &Word, cond: &Word) -> Result {
+pub(in crate::interpreter) fn jumpi(cx: _, [target, cond]: [Word]) -> Result {
     if !cond.is_zero() {
         let target = as_usize(*target)?;
         if !cx.ctrl.is_valid_jumpdest(target) {
@@ -48,7 +48,7 @@ pub(in crate::interpreter) fn pc(cx: _) -> out {
 pub(in crate::interpreter) fn jumpdest() {}
 
 #[instruction]
-pub(in crate::interpreter) fn ret(cx: _, offset: &Word, len: &Word) -> Result {
+pub(in crate::interpreter) fn ret(cx: _, [offset, len]: [Word]) -> Result {
     let len = as_usize(*len)?;
     if len != 0 {
         let offset = as_usize(*offset)?;
@@ -59,7 +59,7 @@ pub(in crate::interpreter) fn ret(cx: _, offset: &Word, len: &Word) -> Result {
 }
 
 #[instruction]
-pub(in crate::interpreter) fn revert(cx: _, offset: &Word, len: &Word) -> Result {
+pub(in crate::interpreter) fn revert(cx: _, [offset, len]: [Word]) -> Result {
     let len = as_usize(*len)?;
     if len != 0 {
         let offset = as_usize(*offset)?;

@@ -4,9 +4,9 @@ use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::{
-    AngleBracketedGenericArguments, FnArg, GenericArgument, Ident, ItemFn, Pat, PatIdent,
-    PathArguments, ReturnType, Stmt, Token, Type, TypeInfer, TypePath, parse_macro_input,
-    punctuated::Punctuated,
+    AngleBracketedGenericArguments, FnArg, GenericArgument, Ident, ItemFn, Pat, PatIdent, PatSlice,
+    PathArguments, ReturnType, Stmt, Token, Type, TypeInfer, TypePath, TypeSlice,
+    parse_macro_input, punctuated::Punctuated,
 };
 
 #[proc_macro_attribute]
@@ -33,11 +33,20 @@ fn expand_instruction(raw: bool, input: ItemFn) -> TokenStream2 {
     let mut inputs = Vec::new();
     for arg in sig.inputs {
         let FnArg::Typed(arg) = arg else { continue };
-        let Pat::Ident(PatIdent { ident, .. }) = *arg.pat else { continue };
         if is_infer(&arg.ty) {
+            let Pat::Ident(PatIdent { ident, .. }) = *arg.pat else { continue };
             has_cx = true;
             cx_arg = Some(ident);
+        } else if is_word_slice(&arg.ty) {
+            let Pat::Slice(PatSlice { elems, .. }) = *arg.pat else { continue };
+            inputs.extend(elems.into_iter().filter_map(|pat| {
+                let Pat::Ident(PatIdent { ident, .. }) = pat else {
+                    return None;
+                };
+                Some(ident)
+            }));
         } else {
+            let Pat::Ident(PatIdent { ident, .. }) = *arg.pat else { continue };
             inputs.push(ident);
         }
     }
@@ -70,6 +79,16 @@ fn expand_instruction(raw: bool, input: ItemFn) -> TokenStream2 {
 
 const fn is_infer(ty: &Type) -> bool {
     matches!(ty, Type::Infer(TypeInfer { .. }))
+}
+
+fn is_word_slice(ty: &Type) -> bool {
+    let Type::Slice(TypeSlice { elem, .. }) = ty else {
+        return false;
+    };
+    let Type::Path(TypePath { path, .. }) = &**elem else {
+        return false;
+    };
+    path.get_ident().is_some_and(|ident| ident == "Word")
 }
 
 fn parse_return(output: ReturnType) -> (bool, Vec<Ident>) {
