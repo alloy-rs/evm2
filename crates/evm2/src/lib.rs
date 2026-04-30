@@ -8,4 +8,5 @@
 
 extern crate alloc;
 
+pub mod bytecode;
 pub mod interpreter;
