@@ -10,9 +10,15 @@ homepage.workspace = true
 repository.workspace = true
 
 [dependencies]
-alloy-primitives.workspace = true
 evm2-macros.workspace = true
+
+alloy-primitives.workspace = true
+thiserror.workspace = true
+
+# no_std
 once_cell = { workspace = true, features = ["alloc"] }
+
+# "serde"
 serde = { workspace = true, features = ["derive", "alloc"], optional = true }
 
 [features]

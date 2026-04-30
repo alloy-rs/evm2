@@ -5,73 +5,50 @@ use alloc::{borrow::Cow, sync::Arc, vec::Vec};
 use alloy_primitives::{Address, B256, Bytes, keccak256};
 use analysis::analyze_legacy;
 use core::{cmp::Ordering, fmt, hash};
+use thiserror::Error;
 
 mod analysis;
 
 #[cfg(feature = "serde")]
 mod serde_impl;
 
-/// EIP-7702 Version Magic in u16 form.
+/// EIP-7702 version magic.
 pub const EIP7702_MAGIC: u16 = 0xEF01;
 
-/// EIP-7702 magic number in array form.
-pub const EIP7702_MAGIC_BYTES: &[u8] = &[0xEF, 0x01];
+/// EIP-7702 version magic bytes.
+pub const EIP7702_MAGIC_BYTES: &[u8] = &EIP7702_MAGIC.to_be_bytes();
 
-/// EIP-7702 first version of bytecode.
+/// EIP-7702 version.
 pub const EIP7702_VERSION: u8 = 0;
 
-/// EIP-7702 bytecode length: 2 (magic) + 1 (version) + 20 (address) = 23 bytes.
+/// EIP-7702 bytecode length.
+///
+/// 2 (magic) + 1 (version) + 20 (address) = 23 bytes.
 pub const EIP7702_BYTECODE_LEN: usize = 23;
 
 /// EIP-7702 decode errors.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, Error, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Eip7702DecodeError {
     /// Invalid length of the raw bytecode.
+    #[error("Eip7702 is not 23 bytes long")]
     InvalidLength,
     /// Invalid magic number.
+    #[error("Bytecode is not starting with 0xEF01")]
     InvalidMagic,
     /// Unsupported version.
+    #[error("Unsupported Eip7702 version.")]
     UnsupportedVersion,
 }
 
-impl fmt::Display for Eip7702DecodeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let s = match self {
-            Self::InvalidLength => "Eip7702 is not 23 bytes long",
-            Self::InvalidMagic => "Bytecode is not starting with 0xEF01",
-            Self::UnsupportedVersion => "Unsupported Eip7702 version.",
-        };
-        f.write_str(s)
-    }
-}
-
-impl core::error::Error for Eip7702DecodeError {}
-
 /// Bytecode decode errors.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, Error, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum BytecodeDecodeError {
     /// EIP-7702 decode error.
-    Eip7702(Eip7702DecodeError),
+    #[error(transparent)]
+    Eip7702(#[from] Eip7702DecodeError),
 }
-
-impl From<Eip7702DecodeError> for BytecodeDecodeError {
-    #[inline]
-    fn from(value: Eip7702DecodeError) -> Self {
-        Self::Eip7702(value)
-    }
-}
-
-impl fmt::Display for BytecodeDecodeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Eip7702(err) => err.fmt(f),
-        }
-    }
-}
-
-impl core::error::Error for BytecodeDecodeError {}
 
 /// Ethereum EVM bytecode.
 #[derive(Clone, Debug)]
