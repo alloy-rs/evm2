@@ -1,6 +1,6 @@
 use super::*;
 use crate::interpreter::{
-    Ctrl, CtrlRef, Gas, GasRef, InstrErr, Interpreter, Result, SpecId, Stack, State,
+    Ctrl, CtrlMut, Gas, InstrErr, Interpreter, Result, SpecId, Stack, State,
     gas::{
         BASE, BLOCKHASH, EXP, HIGH, ISTANBUL_SLOAD_GAS, JUMPDEST, KECCAK256, LOG, LOW, MID,
         VERYLOW, WARM_STORAGE_READ_COST, ZERO,
@@ -13,7 +13,7 @@ use core::mem;
 pub type InstrFnRet = (usize, Result);
 /// Normal instruction function pointer.
 pub type InstrFn = extern_table!(
-    fn(ctrl: CtrlRef<'_>, stack: Stack<'_>, gas: GasRef<'_>, state: &mut State<'_>) -> InstrFnRet
+    fn(ctrl: CtrlMut<'_>, stack: Stack<'_>, gas: &mut Gas, state: &mut State<'_>) -> InstrFnRet
 );
 /// Normal instruction dispatch table.
 pub type InstrTable = [InstrFn; 256];
@@ -41,9 +41,9 @@ pub type GasTable = [u16; 256];
 #[derive(Debug)]
 pub struct InstructionCx<'a, 'ctrl, 'state> {
     /// Bytecode control reference.
-    pub ctrl: &'a mut CtrlRef<'ctrl>,
+    pub ctrl: &'a mut CtrlMut<'ctrl>,
     /// Gas state.
-    pub gas: GasRef<'a>,
+    pub gas: &'a mut Gas,
     /// Interpreter state.
     pub state: &'a mut State<'state>,
 }
@@ -60,14 +60,14 @@ pub(crate) trait Instruction {
     fn new() -> Self;
     fn execute(
         self,
-        ctrl: CtrlRef<'_>,
+        ctrl: CtrlMut<'_>,
         stack: &mut Stack<'_>,
         gas: &mut Gas,
         state: &mut State<'_>,
     ) -> Result;
 }
 
-impl<F: FnOnce(CtrlRef<'_>, &mut Stack<'_>, &mut Gas, &mut State<'_>) -> Result> Instruction for F {
+impl<F: FnOnce(CtrlMut<'_>, &mut Stack<'_>, &mut Gas, &mut State<'_>) -> Result> Instruction for F {
     #[inline(always)]
     fn new() -> Self {
         const {
@@ -79,7 +79,7 @@ impl<F: FnOnce(CtrlRef<'_>, &mut Stack<'_>, &mut Gas, &mut State<'_>) -> Result>
     #[inline(always)]
     fn execute(
         self,
-        ctrl: CtrlRef<'_>,
+        ctrl: CtrlMut<'_>,
         stack: &mut Stack<'_>,
         gas: &mut Gas,
         state: &mut State<'_>,
@@ -338,9 +338,9 @@ pub(crate) const fn mk_tail_dispatch<I: Instruction>(f: I) -> TailInstrFn {
 
 extern_table! {
     fn dispatch<I: Instruction>(
-        ctrl: CtrlRef<'_>,
+        ctrl: CtrlMut<'_>,
         mut stack: Stack<'_>,
-        gas: GasRef<'_>,
+        gas: &mut Gas,
         state: &mut State<'_>,
     ) -> InstrFnRet {
         let r = I::new().execute(ctrl, &mut stack, gas, state);

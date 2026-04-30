@@ -1,5 +1,5 @@
 use super::{
-    Ctrl, CtrlRef, Gas, Host, InstrErr, Memory, Result, SpecId, Stack, State, Word,
+    Ctrl, CtrlMut, Gas, Host, InstrErr, Memory, Result, SpecId, Stack, State, Word,
     instructions::table::{GasTable, InstrTable, TailInstrTable},
 };
 use alloc::{boxed::Box, vec::Vec};
@@ -76,7 +76,7 @@ impl Interpreter {
 
     #[inline(always)]
     pub(crate) fn pre_step(
-        mut ctrl: CtrlRef<'_>,
+        mut ctrl: CtrlMut<'_>,
         gas: &mut Gas,
         gas_table: &GasTable,
     ) -> Result<u8> {
@@ -88,7 +88,7 @@ impl Interpreter {
 
     #[inline(always)]
     fn step(&mut self, table: &InstrTable, gas_table: &GasTable, host: &mut dyn Host) -> Result {
-        let mut ctrl = CtrlRef::new(&self.bytecode, &mut self.pc);
+        let mut ctrl = CtrlMut::new(&self.bytecode, &mut self.pc);
         let op = Self::pre_step(ctrl.reborrow(), &mut self.gas, gas_table)?;
         let r;
         (self.stack_len, r) = table[op as usize](

@@ -63,7 +63,7 @@ fn expand_instruction(raw: bool, input: ItemFn) -> TokenStream2 {
         #(#attrs)*
         #[inline]
         #vis fn #ident #generics(
-            mut ctrl: CtrlRef<'_>,
+            mut ctrl: CtrlMut<'_>,
             stack: &mut Stack<'_>,
             gas: &mut Gas,
             state: &mut State<'_>,

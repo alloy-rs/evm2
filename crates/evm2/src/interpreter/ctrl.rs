@@ -9,7 +9,7 @@ pub struct Ctrl<'a> {
 
 /// Mutable bytecode control reference.
 #[derive(Debug)]
-pub struct CtrlRef<'a> {
+pub struct CtrlMut<'a> {
     base: *const u8,
     len: usize,
     pc: &'a mut usize,
@@ -28,8 +28,8 @@ impl<'a> Ctrl<'a> {
 
     /// Returns a mutable control reference.
     #[inline]
-    pub fn as_mut(&mut self) -> CtrlRef<'_> {
-        CtrlRef {
+    pub fn as_mut(&mut self) -> CtrlMut<'_> {
+        CtrlMut {
             base: self.base,
             len: self.len,
             pc: &mut self.pc,
@@ -85,7 +85,7 @@ impl<'a> Ctrl<'a> {
     }
 }
 
-impl<'a> CtrlRef<'a> {
+impl<'a> CtrlMut<'a> {
     pub(crate) fn new(bytecode: &'a [u8], pc: &'a mut usize) -> Self {
         Self {
             base: bytecode.as_ptr(),
@@ -97,7 +97,7 @@ impl<'a> CtrlRef<'a> {
 
     /// Reborrows the control reference.
     #[inline]
-    pub fn reborrow(&mut self) -> CtrlRef<'_> {
+    pub fn reborrow(&mut self) -> CtrlMut<'_> {
         unsafe { core::ptr::read(self) }
     }
 

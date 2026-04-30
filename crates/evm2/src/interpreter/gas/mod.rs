@@ -230,9 +230,6 @@ pub struct Gas {
     memory: MemoryGas,
 }
 
-/// Mutable gas reference.
-pub type GasRef<'a> = &'a mut Gas;
-
 impl Gas {
     /// Creates gas with `limit` regular gas.
     #[inline]

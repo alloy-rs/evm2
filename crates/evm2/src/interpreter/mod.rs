@@ -2,8 +2,7 @@
 
 mod gas;
 pub use gas::{
-    Gas, GasId, GasParamTable, GasParams, GasRef, GasTracker, MemoryExtensionResult, MemoryGas,
-    num_words,
+    Gas, GasId, GasParamTable, GasParams, GasTracker, MemoryExtensionResult, MemoryGas, num_words,
 };
 
 #[macro_use]
@@ -20,7 +19,7 @@ mod opcode;
 pub use opcode::op;
 
 mod ctrl;
-pub use ctrl::{Ctrl, CtrlRef};
+pub use ctrl::{Ctrl, CtrlMut};
 
 mod stack;
 pub use stack::{Stack, Word};
