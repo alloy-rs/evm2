@@ -1,7 +1,280 @@
 //! EVM gas calculation utilities.
 
-use super::{InstrErr, Result};
+use super::{InstrErr, Result, SpecId};
+use alloy_primitives::U256;
 use core::hint::cold_path;
+
+const COPY: u64 = 3;
+const MEMORY: u64 = 3;
+const KECCAK256WORD: u64 = 6;
+const LOGDATA: u64 = 8;
+const LOGTOPIC: u64 = 375;
+const CREATE: u64 = 32000;
+const CALLVALUE: u64 = 9000;
+const NEWACCOUNT: u64 = 25000;
+const SSTORE_SET: u64 = 20000;
+const SSTORE_RESET: u64 = 5000;
+const REFUND_SSTORE_CLEARS: u64 = 15000;
+const SELFDESTRUCT_REFUND: u64 = 24000;
+const CODEDEPOSIT: u64 = 200;
+const STANDARD_TOKEN_COST: u64 = 4;
+const NON_ZERO_BYTE_MULTIPLIER: u64 = 17;
+const INITCODE_WORD_COST: u64 = 2;
+const CALL_STIPEND: u64 = 2300;
+
+macro_rules! gas_ids {
+    ($($value:literal => $variant:ident => $name:literal => $doc:literal;)*) => {
+        /// Gas parameter identifier.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+        #[non_exhaustive]
+        #[repr(u8)]
+        pub enum GasId {
+            $(
+                #[doc = $doc]
+                $variant = $value,
+            )*
+        }
+
+        impl GasId {
+            /// Returns the raw gas parameter identifier.
+            #[inline]
+            pub const fn as_u8(self) -> u8 {
+                self as u8
+            }
+
+            /// Returns the gas parameter identifier as a table index.
+            #[inline]
+            pub const fn as_usize(self) -> usize {
+                self.as_u8() as usize
+            }
+
+            /// Returns the revm gas parameter name.
+            #[inline]
+            pub const fn name(self) -> &'static str {
+                match self {
+                    $(
+                        Self::$variant => $name,
+                    )*
+                }
+            }
+
+            /// Returns the gas parameter for a raw identifier.
+            #[inline]
+            pub const fn from_u8(value: u8) -> Option<Self> {
+                match value {
+                    $(
+                        $value => Some(Self::$variant),
+                    )*
+                    _ => None,
+                }
+            }
+
+            /// Returns the gas parameter for a revm gas parameter name.
+            #[inline]
+            pub fn from_name(name: &str) -> Option<Self> {
+                match name {
+                    $(
+                        $name => Some(Self::$variant),
+                    )*
+                    _ => None,
+                }
+            }
+        }
+    };
+}
+
+gas_ids! {
+    1 => ExpByteGas => "exp_byte_gas" => "Gas charged per non-zero byte in `EXP` exponent.";
+    2 => ExtcodecopyPerWord => "extcodecopy_per_word" => "Gas charged per copied word in `EXTCODECOPY`.";
+    3 => CopyPerWord => "copy_per_word" => "Gas charged per copied word.";
+    4 => Logdata => "logdata" => "Gas charged per byte of log data.";
+    5 => Logtopic => "logtopic" => "Gas charged per log topic.";
+    6 => McopyPerWord => "mcopy_per_word" => "Gas charged per copied word in `MCOPY`.";
+    7 => Keccak256PerWord => "keccak256_per_word" => "Gas charged per hashed word in `KECCAK256`.";
+    8 => MemoryLinearCost => "memory_linear_cost" => "Linear memory gas coefficient.";
+    9 => MemoryQuadraticReduction => "memory_quadratic_reduction" => "Quadratic memory gas divisor.";
+    10 => InitcodePerWord => "initcode_per_word" => "Gas charged per initcode word.";
+    11 => Create => "create" => "Gas charged by `CREATE`.";
+    12 => CallStipendReduction => "call_stipend_reduction" => "Call gas stipend reduction divisor.";
+    13 => TransferValueCost => "transfer_value_cost" => "Gas charged when a call transfers value.";
+    14 => ColdAccountAdditionalCost => "cold_account_additional_cost" => "Additional gas charged for a cold account access.";
+    15 => NewAccountCost => "new_account_cost" => "Gas charged for creating a new account.";
+    16 => WarmStorageReadCost => "warm_storage_read_cost" => "Gas charged for a warm storage read.";
+    17 => SstoreStatic => "sstore_static" => "Static `SSTORE` gas.";
+    18 => SstoreSetWithoutLoadCost => "sstore_set_without_load_cost" => "Gas charged by `SSTORE` for setting a slot, excluding the load.";
+    19 => SstoreResetWithoutColdLoadCost => "sstore_reset_without_cold_load_cost" => "Gas charged by `SSTORE` for resetting a slot, excluding a cold load.";
+    20 => SstoreClearingSlotRefund => "sstore_clearing_slot_refund" => "Refund for clearing a storage slot.";
+    21 => SelfdestructRefund => "selfdestruct_refund" => "`SELFDESTRUCT` refund.";
+    22 => CallStipend => "call_stipend" => "Gas stipend for a value-transferring call.";
+    23 => ColdStorageAdditionalCost => "cold_storage_additional_cost" => "Additional gas charged for cold storage.";
+    24 => ColdStorageCost => "cold_storage_cost" => "Gas charged for cold storage.";
+    25 => NewAccountCostForSelfdestruct => "new_account_cost_for_selfdestruct" => "New account cost charged by `SELFDESTRUCT`.";
+    26 => CodeDepositCost => "code_deposit_cost" => "Gas charged per deposited code byte.";
+    27 => TxEip7702PerEmptyAccountCost => "tx_eip7702_per_empty_account_cost" => "EIP-7702 transaction cost per empty account.";
+    28 => TxTokenNonZeroByteMultiplier => "tx_token_non_zero_byte_multiplier" => "Transaction token multiplier for non-zero bytes.";
+    29 => TxTokenCost => "tx_token_cost" => "Transaction token base cost.";
+    30 => TxFloorCostPerToken => "tx_floor_cost_per_token" => "Transaction floor cost per token.";
+    31 => TxFloorCostBaseGas => "tx_floor_cost_base_gas" => "Transaction floor base gas.";
+    32 => TxAccessListAddressCost => "tx_access_list_address_cost" => "Transaction access-list address cost.";
+    33 => TxAccessListStorageKeyCost => "tx_access_list_storage_key_cost" => "Transaction access-list storage-key cost.";
+    34 => TxBaseStipend => "tx_base_stipend" => "Transaction base stipend.";
+    35 => TxCreateCost => "tx_create_cost" => "Transaction create cost.";
+    36 => TxInitcodeCost => "tx_initcode_cost" => "Transaction initcode cost.";
+    37 => SstoreSetRefund => "sstore_set_refund" => "`SSTORE` set refund.";
+    38 => SstoreResetRefund => "sstore_reset_refund" => "`SSTORE` reset refund.";
+    39 => TxEip7702AuthRefund => "tx_eip7702_auth_refund" => "EIP-7702 transaction authorization refund.";
+    40 => SstoreSetStateGas => "sstore_set_state_gas" => "`SSTORE` set state gas.";
+    41 => NewAccountStateGas => "new_account_state_gas" => "New account state gas.";
+    42 => CodeDepositStateGas => "code_deposit_state_gas" => "Code deposit state gas.";
+    43 => CreateStateGas => "create_state_gas" => "`CREATE` state gas.";
+    44 => TxEip7702PerAuthStateGas => "tx_eip7702_per_auth_state_gas" => "EIP-7702 transaction state gas per authorization.";
+}
+
+/// Gas parameter table.
+pub type GasParamTable = [u64; 256];
+
+/// Returns the number of EVM words needed for `len` bytes.
+#[inline]
+pub const fn num_words(len: usize) -> usize {
+    len.div_ceil(32)
+}
+
+/// Dynamic gas parameter table.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct GasParams {
+    table: GasParamTable,
+}
+
+impl Default for GasParams {
+    #[inline]
+    fn default() -> Self {
+        Self::new_spec(SpecId::Frontier)
+    }
+}
+
+impl GasParams {
+    /// Creates gas parameters from a raw table.
+    #[inline]
+    pub const fn new(table: GasParamTable) -> Self {
+        Self { table }
+    }
+
+    /// Creates gas parameters for `spec`.
+    #[inline]
+    pub fn new_spec(spec: SpecId) -> Self {
+        Self::new_spec_inner(spec)
+    }
+
+    #[inline]
+    fn new_spec_inner(spec: SpecId) -> Self {
+        let mut table = [0; 256];
+
+        set_gas_param(&mut table, GasId::ExpByteGas, 10);
+        set_gas_param(&mut table, GasId::Logdata, LOGDATA);
+        set_gas_param(&mut table, GasId::Logtopic, LOGTOPIC);
+        set_gas_param(&mut table, GasId::CopyPerWord, COPY);
+        set_gas_param(&mut table, GasId::ExtcodecopyPerWord, COPY);
+        set_gas_param(&mut table, GasId::McopyPerWord, COPY);
+        set_gas_param(&mut table, GasId::Keccak256PerWord, KECCAK256WORD);
+        set_gas_param(&mut table, GasId::MemoryLinearCost, MEMORY);
+        set_gas_param(&mut table, GasId::MemoryQuadraticReduction, 512);
+        set_gas_param(&mut table, GasId::InitcodePerWord, INITCODE_WORD_COST);
+        set_gas_param(&mut table, GasId::Create, CREATE);
+        set_gas_param(&mut table, GasId::CallStipendReduction, 64);
+        set_gas_param(&mut table, GasId::TransferValueCost, CALLVALUE);
+        set_gas_param(&mut table, GasId::ColdAccountAdditionalCost, 0);
+        set_gas_param(&mut table, GasId::NewAccountCost, NEWACCOUNT);
+        set_gas_param(&mut table, GasId::WarmStorageReadCost, 0);
+        set_gas_param(&mut table, GasId::SstoreStatic, SSTORE_RESET);
+        set_gas_param(&mut table, GasId::SstoreSetWithoutLoadCost, SSTORE_SET - SSTORE_RESET);
+        set_gas_param(&mut table, GasId::SstoreResetWithoutColdLoadCost, 0);
+        set_gas_param(&mut table, GasId::SstoreSetRefund, SSTORE_SET - SSTORE_RESET);
+        set_gas_param(&mut table, GasId::SstoreResetRefund, 0);
+        set_gas_param(&mut table, GasId::SstoreClearingSlotRefund, REFUND_SSTORE_CLEARS);
+        set_gas_param(&mut table, GasId::SelfdestructRefund, SELFDESTRUCT_REFUND);
+        set_gas_param(&mut table, GasId::CallStipend, CALL_STIPEND);
+        set_gas_param(&mut table, GasId::ColdStorageAdditionalCost, 0);
+        set_gas_param(&mut table, GasId::ColdStorageCost, 0);
+        set_gas_param(&mut table, GasId::NewAccountCostForSelfdestruct, 0);
+        set_gas_param(&mut table, GasId::CodeDepositCost, CODEDEPOSIT);
+        set_gas_param(&mut table, GasId::TxTokenNonZeroByteMultiplier, NON_ZERO_BYTE_MULTIPLIER);
+        set_gas_param(&mut table, GasId::TxTokenCost, STANDARD_TOKEN_COST);
+        set_gas_param(&mut table, GasId::TxBaseStipend, 21000);
+
+        if spec >= SpecId::Homestead {
+            set_gas_param(&mut table, GasId::TxCreateCost, CREATE);
+        }
+
+        Self::new(table)
+    }
+
+    /// Overrides gas costs by gas identifier.
+    #[inline]
+    pub fn override_gas(&mut self, values: impl IntoIterator<Item = (GasId, u64)>) {
+        for (id, value) in values {
+            self.table[id.as_usize()] = value;
+        }
+    }
+
+    /// Returns the raw gas parameter table.
+    #[inline]
+    pub const fn table(&self) -> &GasParamTable {
+        &self.table
+    }
+
+    /// Returns the gas cost for `id`.
+    #[inline]
+    pub const fn get(&self, id: GasId) -> u64 {
+        self.table[id.as_usize()]
+    }
+
+    /// Calculates memory expansion cost for `len` words.
+    #[inline]
+    pub const fn memory_cost(&self, len: usize) -> u64 {
+        let len = len as u64;
+        self.get(GasId::MemoryLinearCost)
+            .saturating_mul(len)
+            .saturating_add(len.saturating_mul(len) / self.get(GasId::MemoryQuadraticReduction))
+    }
+
+    /// Calculates dynamic `EXP` gas.
+    #[inline]
+    pub fn exp_cost(&self, power: U256) -> u64 {
+        if power.is_zero() {
+            return 0;
+        }
+        self.get(GasId::ExpByteGas).saturating_mul(power.bit_len().div_ceil(8) as u64)
+    }
+
+    /// Calculates copy gas for `len` bytes.
+    #[inline]
+    pub const fn copy_cost(&self, len: usize) -> u64 {
+        self.get(GasId::CopyPerWord).saturating_mul(num_words(len) as u64)
+    }
+
+    /// Calculates `EXTCODECOPY` copy gas for `len` bytes.
+    #[inline]
+    pub const fn extcodecopy_cost(&self, len: usize) -> u64 {
+        self.get(GasId::ExtcodecopyPerWord).saturating_mul(num_words(len) as u64)
+    }
+
+    /// Calculates `MCOPY` copy gas for `len` bytes.
+    #[inline]
+    pub const fn mcopy_cost(&self, len: usize) -> u64 {
+        self.get(GasId::McopyPerWord).saturating_mul(num_words(len) as u64)
+    }
+
+    /// Calculates `KECCAK256` word gas for `len` bytes.
+    #[inline]
+    pub const fn keccak256_word_cost(&self, len: usize) -> u64 {
+        self.get(GasId::Keccak256PerWord).saturating_mul(num_words(len) as u64)
+    }
+}
+
+#[inline]
+fn set_gas_param(table: &mut GasParamTable, id: GasId, value: u64) {
+    table[id.as_usize()] = value;
+}
 
 /// Tracks regular, state, and refunded gas.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -394,6 +667,57 @@ impl MemoryGas {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gas_id_roundtrips_names_and_values() {
+        assert_eq!(GasId::from_u8(1), Some(GasId::ExpByteGas));
+        assert_eq!(GasId::ExpByteGas.as_u8(), 1);
+        assert_eq!(GasId::ExpByteGas.name(), "exp_byte_gas");
+        assert_eq!(GasId::from_name("exp_byte_gas"), Some(GasId::ExpByteGas));
+        assert_eq!(GasId::from_u8(0), None);
+        assert_eq!(GasId::from_name("missing"), None);
+    }
+
+    #[test]
+    fn gas_params_match_frontier_defaults() {
+        let params = GasParams::new_spec(SpecId::Frontier);
+        assert_eq!(params.get(GasId::ExpByteGas), 10);
+        assert_eq!(params.get(GasId::MemoryLinearCost), 3);
+        assert_eq!(params.get(GasId::MemoryQuadraticReduction), 512);
+        assert_eq!(params.get(GasId::SstoreStatic), 5000);
+        assert_eq!(params.get(GasId::SstoreSetWithoutLoadCost), 15000);
+        assert_eq!(params.get(GasId::TxCreateCost), 0);
+    }
+
+    #[test]
+    fn gas_params_apply_homestead_defaults() {
+        let params = GasParams::new_spec(SpecId::Homestead);
+        assert_eq!(params.get(GasId::TxCreateCost), 32000);
+    }
+
+    #[test]
+    fn gas_params_override_values() {
+        let mut params = GasParams::default();
+        params
+            .override_gas([(GasId::MemoryLinearCost, 7), (GasId::MemoryQuadraticReduction, 1024)]);
+        assert_eq!(params.get(GasId::MemoryLinearCost), 7);
+        assert_eq!(params.get(GasId::MemoryQuadraticReduction), 1024);
+    }
+
+    #[test]
+    fn gas_params_calculate_costs() {
+        let params = GasParams::default();
+        assert_eq!(num_words(0), 0);
+        assert_eq!(num_words(33), 2);
+        assert_eq!(params.memory_cost(10), 30);
+        assert_eq!(params.copy_cost(33), 6);
+        assert_eq!(params.extcodecopy_cost(33), 6);
+        assert_eq!(params.mcopy_cost(33), 6);
+        assert_eq!(params.keccak256_word_cost(33), 12);
+        assert_eq!(params.exp_cost(U256::ZERO), 0);
+        assert_eq!(params.exp_cost(U256::from(0xff_u64)), 10);
+        assert_eq!(params.exp_cost(U256::from(0x100_u64)), 20);
+    }
 
     #[test]
     fn test_record_state_cost() {
