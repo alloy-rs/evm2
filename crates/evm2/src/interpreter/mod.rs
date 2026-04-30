@@ -19,7 +19,7 @@ mod opcode;
 pub use opcode::op;
 
 mod ctrl;
-pub use ctrl::{Ctrl, CtrlMut};
+pub use ctrl::{Bytecode, Pc};
 
 mod stack;
 pub use stack::{Stack, Word};

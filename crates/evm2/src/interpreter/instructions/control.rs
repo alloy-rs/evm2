@@ -1,5 +1,5 @@
 use super::utils::as_usize;
-use crate::interpreter::{CtrlMut, Gas, InstrErr, InstructionCx, Result, Stack, State, Word};
+use crate::interpreter::{Bytecode, Gas, InstrErr, InstructionCx, Pc, Result, Stack, State, Word};
 use core::hint::cold_path;
 use evm2_macros::instruction;
 
@@ -18,11 +18,11 @@ pub(in crate::interpreter) fn invalid() -> Result {
 #[instruction]
 pub(in crate::interpreter) fn jump(cx: _, [target]: [Word]) -> Result {
     let target = as_usize(*target)?;
-    if !cx.ctrl.is_valid_jumpdest(target) {
+    if !cx.bytecode.is_valid_jumpdest(target) {
         cold_path();
         return Err(InstrErr::Invalid);
     }
-    unsafe { cx.ctrl.set_unchecked(target) };
+    unsafe { cx.pc.set_unchecked(target) };
     Ok(())
 }
 
@@ -30,18 +30,18 @@ pub(in crate::interpreter) fn jump(cx: _, [target]: [Word]) -> Result {
 pub(in crate::interpreter) fn jumpi(cx: _, [target, cond]: [Word]) -> Result {
     if !cond.is_zero() {
         let target = as_usize(*target)?;
-        if !cx.ctrl.is_valid_jumpdest(target) {
+        if !cx.bytecode.is_valid_jumpdest(target) {
             cold_path();
             return Err(InstrErr::Invalid);
         }
-        unsafe { cx.ctrl.set_unchecked(target) };
+        unsafe { cx.pc.set_unchecked(target) };
     }
     Ok(())
 }
 
 #[instruction]
 pub(in crate::interpreter) fn pc(cx: _) -> out {
-    *out = Word::from(cx.ctrl.pc() - 1);
+    *out = Word::from(cx.pc.get() - 1);
 }
 
 #[instruction]

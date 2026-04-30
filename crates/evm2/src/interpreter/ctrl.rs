@@ -1,125 +1,26 @@
-/// Bytecode control state.
+/// EVM bytecode view.
 #[derive(Clone, Copy, Debug)]
-pub struct Ctrl<'a> {
-    pub(crate) base: *const u8,
-    pub(crate) len: usize,
-    pub(crate) pc: usize,
-    _marker: core::marker::PhantomData<&'a [u8]>,
-}
-
-/// Mutable bytecode control reference.
-#[derive(Debug)]
-pub struct CtrlMut<'a> {
+pub struct Bytecode<'a> {
     base: *const u8,
     len: usize,
-    pc: &'a mut usize,
     _marker: core::marker::PhantomData<&'a [u8]>,
 }
 
-impl<'a> Ctrl<'a> {
-    pub(crate) fn new(bytecode: &'a [u8], pc: usize) -> Self {
-        Self {
-            base: bytecode.as_ptr(),
-            len: bytecode.len(),
-            pc,
-            _marker: core::marker::PhantomData,
-        }
-    }
-
-    /// Returns a mutable control reference.
-    #[inline]
-    pub fn as_mut(&mut self) -> CtrlMut<'_> {
-        CtrlMut {
-            base: self.base,
-            len: self.len,
-            pc: &mut self.pc,
-            _marker: core::marker::PhantomData,
-        }
-    }
-
-    /// # Safety
-    ///
-    /// Caller must ensure advancing by `n` keeps `pc` within valid bytecode bounds for
-    /// subsequent reads.
-    #[inline]
-    pub unsafe fn advance_unchecked(&mut self, n: usize) {
-        self.pc += n;
-    }
-
-    /// Returns the opcode at the current program counter.
-    #[inline]
-    pub fn op(&self) -> u8 {
-        unsafe { *self.base.add(self.pc) }
-    }
-
-    /// Returns the current program counter.
-    #[inline]
-    pub fn pc(&self) -> usize {
-        self.pc
-    }
-
-    /// Returns the bytecode length.
-    #[inline]
-    pub fn len(&self) -> usize {
-        self.len
-    }
-
-    /// Returns whether the bytecode is empty.
-    #[inline]
-    pub fn is_empty(&self) -> bool {
-        self.len == 0
-    }
-
-    /// Returns the bytecode slice.
-    #[inline]
-    pub fn as_slice(&self) -> &[u8] {
-        unsafe { core::slice::from_raw_parts(self.base, self.len) }
-    }
-
-    /// # Safety
-    ///
-    /// Caller must ensure `self.pc..self.pc + n` is in bounds of the bytecode allocation.
-    #[inline]
-    pub unsafe fn read_bytes_unchecked(&self, n: usize) -> &[u8] {
-        unsafe { core::slice::from_raw_parts(self.base.add(self.pc), n) }
-    }
+/// Program counter state.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Pc {
+    pc: usize,
 }
 
-impl<'a> CtrlMut<'a> {
-    pub(crate) fn new(bytecode: &'a [u8], pc: &'a mut usize) -> Self {
-        Self {
-            base: bytecode.as_ptr(),
-            len: bytecode.len(),
-            pc,
-            _marker: core::marker::PhantomData,
-        }
-    }
-
-    /// Reborrows the control reference.
-    #[inline]
-    pub fn reborrow(&mut self) -> CtrlMut<'_> {
-        unsafe { core::ptr::read(self) }
-    }
-
-    /// # Safety
-    ///
-    /// Caller must ensure advancing by `n` keeps the referenced program counter within
-    /// valid bytecode bounds for subsequent reads.
-    #[inline]
-    pub unsafe fn advance_unchecked(&mut self, n: usize) {
-        *self.pc += n;
+impl<'a> Bytecode<'a> {
+    pub(crate) fn new(bytecode: &'a [u8]) -> Self {
+        Self { base: bytecode.as_ptr(), len: bytecode.len(), _marker: core::marker::PhantomData }
     }
 
     /// Returns the opcode at the current program counter.
     #[inline]
-    pub fn op(&self) -> u8 {
-        unsafe { *self.base.add(*self.pc) }
-    }
-
-    /// Returns the current program counter.
-    #[inline]
-    pub fn pc(&self) -> usize {
-        *self.pc
+    pub fn op(&self, pc: &Pc) -> u8 {
+        unsafe { *self.base.add(pc.get()) }
     }
 
     /// Returns the bytecode length.
@@ -136,16 +37,8 @@ impl<'a> CtrlMut<'a> {
 
     /// Returns the bytecode slice.
     #[inline]
-    pub fn as_slice(&self) -> &[u8] {
+    pub fn as_slice(&self) -> &'a [u8] {
         unsafe { core::slice::from_raw_parts(self.base, self.len) }
-    }
-
-    /// # Safety
-    ///
-    /// Caller must ensure `pc` is a valid program counter for this bytecode.
-    #[inline]
-    pub unsafe fn set_unchecked(&mut self, pc: usize) {
-        *self.pc = pc;
     }
 
     /// Returns whether `pc` points to a valid jump destination.
@@ -158,15 +51,44 @@ impl<'a> CtrlMut<'a> {
     ///
     /// Caller must ensure `offset..offset + len` is in bounds of the bytecode allocation.
     #[inline]
-    pub unsafe fn code_slice_unchecked(&self, offset: usize, len: usize) -> &[u8] {
+    pub unsafe fn code_slice_unchecked(&self, offset: usize, len: usize) -> &'a [u8] {
         unsafe { core::slice::from_raw_parts(self.base.add(offset), len) }
     }
 
     /// # Safety
     ///
-    /// Caller must ensure `self.pc()..self.pc() + n` is in bounds of the bytecode allocation.
+    /// Caller must ensure `pc.get()..pc.get() + n` is in bounds of the bytecode allocation.
     #[inline]
-    pub unsafe fn read_bytes_unchecked(&self, n: usize) -> &[u8] {
-        unsafe { core::slice::from_raw_parts(self.base.add(*self.pc), n) }
+    pub unsafe fn read_bytes_unchecked(&self, pc: &Pc, n: usize) -> &'a [u8] {
+        unsafe { core::slice::from_raw_parts(self.base.add(pc.get()), n) }
+    }
+}
+
+impl Pc {
+    pub(crate) const fn new(pc: usize) -> Self {
+        Self { pc }
+    }
+
+    /// Returns the current program counter.
+    #[inline]
+    pub const fn get(&self) -> usize {
+        self.pc
+    }
+
+    /// # Safety
+    ///
+    /// Caller must ensure advancing by `n` keeps `pc` within valid bytecode bounds for
+    /// subsequent reads.
+    #[inline]
+    pub unsafe fn advance_unchecked(&mut self, n: usize) {
+        self.pc += n;
+    }
+
+    /// # Safety
+    ///
+    /// Caller must ensure `pc` is valid for the current bytecode.
+    #[inline]
+    pub unsafe fn set_unchecked(&mut self, pc: usize) {
+        self.pc = pc;
     }
 }

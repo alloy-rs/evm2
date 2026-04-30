@@ -1,4 +1,4 @@
-use crate::interpreter::{CtrlMut, Gas, InstrErr, InstructionCx, Result, Stack, State, Word};
+use crate::interpreter::{Bytecode, Gas, InstrErr, InstructionCx, Pc, Result, Stack, State, Word};
 use evm2_macros::instruction;
 
 #[instruction]
@@ -11,9 +11,9 @@ pub(in crate::interpreter) fn push<const N: usize>(cx: _) -> Result {
     if N == 0 {
         return stack.push(Word::ZERO);
     }
-    let slice = unsafe { cx.ctrl.read_bytes_unchecked(N) };
+    let slice = unsafe { cx.bytecode.read_bytes_unchecked(cx.pc, N) };
     stack.push_slice(slice)?;
-    unsafe { cx.ctrl.advance_unchecked(N) };
+    unsafe { cx.pc.advance_unchecked(N) };
     Ok(())
 }
 
@@ -29,25 +29,25 @@ pub(in crate::interpreter) fn swap<const N: usize>() -> Result {
 
 #[instruction(raw)]
 pub(in crate::interpreter) fn dupn(cx: _) -> Result {
-    let n =
-        decode_single(unsafe { cx.ctrl.read_bytes_unchecked(1)[0] }).ok_or(InstrErr::Invalid)?;
-    unsafe { cx.ctrl.advance_unchecked(1) };
+    let n = decode_single(unsafe { cx.bytecode.read_bytes_unchecked(cx.pc, 1)[0] })
+        .ok_or(InstrErr::Invalid)?;
+    unsafe { cx.pc.advance_unchecked(1) };
     stack.dup(n)
 }
 
 #[instruction(raw)]
 pub(in crate::interpreter) fn swapn(cx: _) -> Result {
-    let n =
-        decode_single(unsafe { cx.ctrl.read_bytes_unchecked(1)[0] }).ok_or(InstrErr::Invalid)?;
-    unsafe { cx.ctrl.advance_unchecked(1) };
+    let n = decode_single(unsafe { cx.bytecode.read_bytes_unchecked(cx.pc, 1)[0] })
+        .ok_or(InstrErr::Invalid)?;
+    unsafe { cx.pc.advance_unchecked(1) };
     stack.exchange(0, n)
 }
 
 #[instruction(raw)]
 pub(in crate::interpreter) fn exchange(cx: _) -> Result {
-    let (n, m) =
-        decode_pair(unsafe { cx.ctrl.read_bytes_unchecked(1)[0] }).ok_or(InstrErr::Invalid)?;
-    unsafe { cx.ctrl.advance_unchecked(1) };
+    let (n, m) = decode_pair(unsafe { cx.bytecode.read_bytes_unchecked(cx.pc, 1)[0] })
+        .ok_or(InstrErr::Invalid)?;
+    unsafe { cx.pc.advance_unchecked(1) };
     stack.exchange(n, m)
 }
 

@@ -1,5 +1,5 @@
 use super::{
-    Ctrl, CtrlMut, Gas, Host, InstrErr, Memory, Result, SpecId, Stack, State, Word,
+    Bytecode, Gas, Host, InstrErr, Memory, Pc, Result, SpecId, Stack, State, Word,
     instructions::table::{GasTable, InstrTable, TailInstrTable},
 };
 use alloc::{boxed::Box, vec::Vec};
@@ -76,23 +76,26 @@ impl Interpreter {
 
     #[inline(always)]
     pub(crate) fn pre_step(
-        mut ctrl: CtrlMut<'_>,
+        bytecode: Bytecode<'_>,
+        pc: &mut Pc,
         gas: &mut Gas,
         gas_table: &GasTable,
     ) -> Result<u8> {
-        let op = ctrl.op();
-        unsafe { ctrl.advance_unchecked(1) };
+        let op = bytecode.op(pc);
+        unsafe { pc.advance_unchecked(1) };
         gas.spend(gas_table[op as usize] as _)?;
         Ok(op)
     }
 
     #[inline(always)]
     fn step(&mut self, table: &InstrTable, gas_table: &GasTable, host: &mut dyn Host) -> Result {
-        let mut ctrl = CtrlMut::new(&self.bytecode, &mut self.pc);
-        let op = Self::pre_step(ctrl.reborrow(), &mut self.gas, gas_table)?;
+        let bytecode = Bytecode::new(&self.bytecode);
+        let mut pc = Pc::new(self.pc);
+        let op = Self::pre_step(bytecode, &mut pc, &mut self.gas, gas_table)?;
         let r;
         (self.stack_len, r) = table[op as usize](
-            ctrl,
+            bytecode,
+            &mut pc,
             Stack::new(&mut self.stack, self.stack_len),
             &mut self.gas,
             &mut State {
@@ -102,6 +105,7 @@ impl Interpreter {
                 raw_interp: core::ptr::null_mut(),
             },
         );
+        self.pc = pc.get();
         r
     }
 
@@ -113,10 +117,12 @@ impl Interpreter {
         host: &mut dyn Host,
     ) -> Result {
         let raw = self as *mut _;
-        let mut ctrl = Ctrl::new(&self.bytecode, self.pc);
-        let op = Self::pre_step(ctrl.as_mut(), &mut self.gas, gas_table)?;
+        let bytecode = Bytecode::new(&self.bytecode);
+        let mut pc = Pc::new(self.pc);
+        let op = Self::pre_step(bytecode, &mut pc, &mut self.gas, gas_table)?;
         let e = table[op as usize](
-            ctrl,
+            bytecode,
+            pc,
             Stack::new(&mut self.stack, self.stack_len),
             self.gas,
             &mut State { host, memory: &mut self.memory, spec: self.spec_id, raw_interp: raw },

@@ -55,15 +55,15 @@ fn expand_instruction(raw: bool, input: ItemFn) -> TokenStream2 {
     let cx_setup = has_cx.then(|| {
         let cx = cx_arg.unwrap_or_else(|| Ident::new("cx", ident.span()));
         quote! {
-            let mut ctrl = ctrl;
-            let mut #cx = InstructionCx { ctrl: &mut ctrl, gas, state };
+            let mut #cx = InstructionCx { bytecode, pc, gas, state };
         }
     });
     quote! {
         #(#attrs)*
         #[inline]
         #vis fn #ident #generics(
-            mut ctrl: CtrlMut<'_>,
+            bytecode: Bytecode<'_>,
+            pc: &mut Pc,
             stack: &mut Stack<'_>,
             gas: &mut Gas,
             state: &mut State<'_>,

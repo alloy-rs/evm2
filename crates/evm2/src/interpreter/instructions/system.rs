@@ -1,5 +1,5 @@
 use super::utils::as_usize;
-use crate::interpreter::{CtrlMut, Gas, InstructionCx, Result, Stack, State, Word};
+use crate::interpreter::{Bytecode, Gas, InstructionCx, Pc, Result, Stack, State, Word};
 use alloy_primitives::keccak256;
 use evm2_macros::instruction;
 
@@ -14,7 +14,7 @@ pub(in crate::interpreter) fn keccak256_instr(cx: _, [offset, len]: [Word]) -> R
 
 #[instruction]
 pub(in crate::interpreter) fn codesize(cx: _) -> out {
-    *out = Word::from(cx.ctrl.len());
+    *out = Word::from(cx.bytecode.len());
 }
 
 #[instruction]
@@ -26,7 +26,7 @@ pub(in crate::interpreter) fn codecopy(cx: _, [memory_offset, code_offset, len]:
         return Ok(());
     }
     crate::interpreter::memory::resize_memory(cx.gas, cx.state.memory, memory_offset, len)?;
-    cx.state.memory.set_data(memory_offset, code_offset, len, cx.ctrl.as_slice())
+    cx.state.memory.set_data(memory_offset, code_offset, len, cx.bytecode.as_slice())
 }
 
 #[instruction]
