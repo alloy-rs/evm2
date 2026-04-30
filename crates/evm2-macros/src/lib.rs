@@ -37,57 +37,24 @@ fn expand_instruction(raw: bool, input: ItemFn) -> TokenStream2 {
     }
 
     let (_, outputs) = parse_return(sig.output);
-    let stack_setup = if raw {
-        quote! {}
-    } else {
-        stack_setup(&inputs, &outputs)
-    };
-    let cx_setup = if has_cx && raw {
+    let stack_setup = (!raw).then(|| stack_setup(&inputs, &outputs));
+    let needs_cx = raw || has_cx || stack_setup.as_ref().is_some_and(|setup| !setup.is_empty());
+    let cx_setup = needs_cx.then(|| {
         quote! {
             let mut cx =
-                __InstructionCx { pc: &mut pc, stack: &mut stack, gas, host: &mut *state.host };
+                InstructionCx { pc: &mut pc, stack: &mut stack, gas, host: &mut *state.host };
         }
-    } else if has_cx {
-        quote! {
-            let mut cx =
-                __InstructionCx { pc: &mut pc, gas, host: &mut *state.host };
-        }
-    } else {
-        quote! {}
-    };
+    });
     let body = body_with_semicolon(body);
     let setup = if raw {
         quote! {
             #cx_setup
-            #stack_setup
         }
     } else {
         quote! {
-            #stack_setup
             #cx_setup
+            #stack_setup
         }
-    };
-    let cx_struct = if has_cx && raw {
-        quote! {
-            #[allow(dead_code)]
-            struct __InstructionCx<'a, 'pc, 'stack, 'host> {
-                pc: &'a mut PcRef<'pc>,
-                stack: &'a mut Stack<'stack>,
-                gas: GasRef<'a>,
-                host: &'a mut (dyn Host + 'host),
-            }
-        }
-    } else if has_cx {
-        quote! {
-            #[allow(dead_code)]
-            struct __InstructionCx<'a, 'pc, 'host> {
-                pc: &'a mut PcRef<'pc>,
-                gas: GasRef<'a>,
-                host: &'a mut (dyn Host + 'host),
-            }
-        }
-    } else {
-        quote! {}
     };
 
     quote! {
@@ -103,8 +70,6 @@ fn expand_instruction(raw: bool, input: ItemFn) -> TokenStream2 {
             ) -> InstrFnRet
             #where_clause
             {
-                #cx_struct
-
                 let r = (|| -> Result {
                     #setup
                     #(#body)*
@@ -156,13 +121,14 @@ fn stack_setup(inputs: &[Ident], outputs: &[Ident]) -> TokenStream2 {
         [] if input_count == 0 => quote! {},
         [] => {
             quote! {
-                let [#(#inputs),*] = stack.popn::<#input_count>()?;
+                let [#(#inputs),*] = cx.stack.popn::<#input_count>()?;
                 #(let #inputs = &#inputs;)*
             }
         }
         [output] => {
             quote! {
-                popn_top!([#(#inputs),*], #output, stack);
+                let [#(#inputs),*] = cx.stack.popn::<#input_count>()?;
+                let #output = cx.stack.push_slot()?;
                 #(let #inputs = &#inputs;)*
             }
         }

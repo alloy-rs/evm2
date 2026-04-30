@@ -28,13 +28,19 @@ impl<'a> Stack<'a> {
 
     #[inline]
     pub fn push(&mut self, value: Word) -> Result {
+        *self.push_slot()? = value;
+        Ok(())
+    }
+
+    #[inline]
+    pub fn push_slot(&mut self) -> Result<&mut Word> {
         if self.len == 1024 {
             cold_path();
             return Err(InstrErr::StackOverflow);
         }
-        unsafe { *self.stack.get_unchecked_mut(self.len) = value };
+        let index = self.len;
         self.len += 1;
-        Ok(())
+        Ok(unsafe { self.stack.get_unchecked_mut(index) })
     }
 
     #[inline]
