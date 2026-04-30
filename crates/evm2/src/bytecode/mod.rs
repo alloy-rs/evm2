@@ -1,14 +1,15 @@
 //! Module that contains the bytecode struct with legacy bytecode analysis.
 
-#[cfg(feature = "serde")]
-mod serde_impl;
-
+use crate::once_lock::OnceLock;
 use alloc::{borrow::Cow, sync::Arc, vec::Vec};
 use alloy_primitives::{Address, B256, Bytes, keccak256};
 use analysis::analyze_legacy;
 use core::{cmp::Ordering, fmt, hash};
 
 mod analysis;
+
+#[cfg(feature = "serde")]
+mod serde_impl;
 
 /// EIP-7702 Version Magic in u16 form.
 pub const EIP7702_MAGIC: u16 = 0xEF01;
@@ -146,12 +147,20 @@ impl Bytecode {
     /// Creates a new legacy analyzed [`Bytecode`] with exactly one STOP opcode.
     #[inline]
     pub fn new() -> Self {
-        Self(Arc::new(BytecodeInner {
-            kind: BytecodeKind::LegacyAnalyzed,
-            bytecode: Bytes::from_static(&[crate::interpreter::op::STOP]),
-            original_len: 0,
-            jump_table: JumpTable::default(),
-        }))
+        Self::default_ref().clone()
+    }
+
+    #[inline]
+    fn default_ref() -> &'static Self {
+        static DEFAULT: OnceLock<Bytecode> = OnceLock::new();
+        DEFAULT.get_or_init(|| {
+            Self(Arc::new(BytecodeInner {
+                kind: BytecodeKind::LegacyAnalyzed,
+                bytecode: Bytes::from_static(&[crate::interpreter::op::STOP]),
+                original_len: 0,
+                jump_table: JumpTable::default(),
+            }))
+        })
     }
 
     /// Creates a new legacy [`Bytecode`] by analyzing raw bytes.

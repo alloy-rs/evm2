@@ -1,0 +1,56 @@
+//! `OnceLock` abstraction that uses [`std::sync::OnceLock`] when available, once_cell otherwise.
+
+#[cfg(not(feature = "std"))]
+use alloc::boxed::Box;
+#[cfg(feature = "std")]
+use once_cell as _;
+#[cfg(not(feature = "std"))]
+use once_cell::race::OnceBox;
+
+#[cfg(feature = "std")]
+pub use std::sync::OnceLock;
+
+/// A thread-safe cell which can be written to only once.
+#[cfg(not(feature = "std"))]
+#[derive(Debug)]
+pub struct OnceLock<T> {
+    inner: OnceBox<T>,
+}
+
+#[cfg(not(feature = "std"))]
+impl<T> Default for OnceLock<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(not(feature = "std"))]
+#[allow(dead_code)]
+impl<T> OnceLock<T> {
+    /// Creates a new empty OnceLock.
+    #[inline]
+    pub const fn new() -> Self {
+        Self { inner: OnceBox::new() }
+    }
+
+    /// Gets the contents of the OnceLock, initializing it if necessary.
+    #[inline]
+    pub fn get_or_init<F>(&self, f: F) -> &T
+    where
+        F: FnOnce() -> T,
+    {
+        self.inner.get_or_init(|| Box::new(f()))
+    }
+
+    /// Gets the contents of the OnceLock, returning None if it is not initialized.
+    #[inline]
+    pub fn get(&self) -> Option<&T> {
+        self.inner.get()
+    }
+
+    /// Sets the contents of the OnceLock.
+    #[inline]
+    pub fn set(&self, value: T) -> Result<(), T> {
+        self.inner.set(Box::new(value)).map_err(|e| *e)
+    }
+}
