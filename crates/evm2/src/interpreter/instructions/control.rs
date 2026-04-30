@@ -133,7 +133,7 @@ mod tests {
     fn pc_opcode() {
         let interpreter = run([op::PC, op::JUMPDEST, op::STOP]);
         assert!(matches!(interpreter.err, InstrErr::Stop));
-        assert_eq!(interpreter.stack(), [Word::ZERO]);
+        assert_eq!(interpreter.stack(), [0]);
 
         let interpreter = run([op::JUMPDEST, op::PC, op::STOP]);
         assert!(matches!(interpreter.err, InstrErr::Stop));
@@ -153,22 +153,22 @@ mod tests {
 
     #[test]
     fn return_opcode() {
-        let mut interpreter = run_stack(&[Word::ZERO, Word::ZERO], op::RETURN);
+        let mut interpreter = run_stack([0, 0], op::RETURN);
         assert!(matches!(interpreter.err, InstrErr::Return));
         assert!(interpreter.memory(0, 0).is_empty());
 
-        let mut interpreter = run_stack(&[Word::ZERO, Word::from(1)], op::RETURN);
+        let mut interpreter = run_stack([0, 1], op::RETURN);
         assert!(matches!(interpreter.err, InstrErr::Return));
         assert_eq!(interpreter.memory(0, 1), [0]);
     }
 
     #[test]
     fn revert_opcode() {
-        let mut interpreter = run_stack(&[Word::ZERO, Word::ZERO], op::REVERT);
+        let mut interpreter = run_stack([0, 0], op::REVERT);
         assert!(matches!(interpreter.err, InstrErr::Revert));
         assert!(interpreter.memory(0, 0).is_empty());
 
-        let mut interpreter = run_stack(&[Word::from(2), Word::from(3)], op::REVERT);
+        let mut interpreter = run_stack([2, 3], op::REVERT);
         assert!(matches!(interpreter.err, InstrErr::Revert));
         assert_eq!(interpreter.memory(2, 3), [0, 0, 0]);
     }

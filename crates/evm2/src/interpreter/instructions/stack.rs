@@ -76,7 +76,7 @@ mod tests {
 
     #[test]
     fn pop_opcode() {
-        let interpreter = run_stack(&[Word::from(1)], op::POP);
+        let interpreter = run_stack([1], op::POP);
         assert!(matches!(interpreter.err, InstrErr::Stop));
         assert!(interpreter.stack().is_empty());
 
@@ -89,11 +89,11 @@ mod tests {
     fn push0_opcode() {
         let interpreter = run([op::PUSH0, op::STOP]);
         assert!(matches!(interpreter.err, InstrErr::Stop));
-        assert_eq!(interpreter.stack(), [Word::ZERO]);
+        assert_eq!(interpreter.stack(), [0]);
 
         let interpreter = run([op::PUSH0, op::PUSH0, op::STOP]);
         assert!(matches!(interpreter.err, InstrErr::Stop));
-        assert_eq!(interpreter.stack(), [Word::ZERO, Word::ZERO]);
+        assert_eq!(interpreter.stack(), [0, 0]);
     }
 
     fn assert_push_opcode(opcode: u8, n: usize) {
@@ -259,7 +259,7 @@ mod tests {
         assert_eq!(interpreter.stack()[17], Word::from(1));
         assert_eq!(interpreter.stack()[0], Word::from(1));
         for i in 1..17 {
-            assert_eq!(interpreter.stack()[i], Word::ZERO);
+            assert_eq!(interpreter.stack()[i], 0);
         }
 
         let mut code = Vec::new();
@@ -284,7 +284,7 @@ mod tests {
         assert_eq!(interpreter.stack()[17], Word::from(1));
         assert_eq!(interpreter.stack()[0], Word::from(2));
         for i in 1..17 {
-            assert_eq!(interpreter.stack()[i], Word::ZERO);
+            assert_eq!(interpreter.stack()[i], 0);
         }
 
         let mut code = Vec::new();
@@ -295,7 +295,7 @@ mod tests {
         let interpreter = run(code);
         assert!(matches!(interpreter.err, InstrErr::Stop));
         assert_eq!(interpreter.stack()[0], Word::from(144));
-        assert_eq!(interpreter.stack()[144], Word::ZERO);
+        assert_eq!(interpreter.stack()[144], 0);
     }
 
     #[test]
@@ -303,7 +303,7 @@ mod tests {
         let interpreter =
             run([op::PUSH1, 0x00, op::PUSH1, 0x01, op::PUSH1, 0x02, op::EXCHANGE, 0x8e, op::STOP]);
         assert!(matches!(interpreter.err, InstrErr::Stop));
-        assert_eq!(interpreter.stack(), [Word::from(1), Word::ZERO, Word::from(2)]);
+        assert_eq!(interpreter.stack(), [Word::from(1), Word::from(0), Word::from(2)]);
 
         let mut code = Vec::new();
         for value in 0..23 {
@@ -313,7 +313,7 @@ mod tests {
         let interpreter = run(code);
         assert!(matches!(interpreter.err, InstrErr::Stop));
         assert_eq!(interpreter.stack()[0], Word::from(21));
-        assert_eq!(interpreter.stack()[21], Word::ZERO);
+        assert_eq!(interpreter.stack()[21], 0);
         assert_eq!(interpreter.stack()[22], Word::from(22));
     }
 }

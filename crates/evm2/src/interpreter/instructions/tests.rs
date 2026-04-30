@@ -32,17 +32,50 @@ pub(super) fn run(code: impl Into<Vec<u8>>) -> TestInterpreter {
     TestInterpreter { inner, err }
 }
 
-pub(super) fn run_stack(inputs: &[Word], opcode: u8) -> TestInterpreter {
+pub(super) trait ToWord {
+    fn to_word(self) -> Word;
+}
+
+impl ToWord for Word {
+    fn to_word(self) -> Word {
+        self
+    }
+}
+
+impl ToWord for i32 {
+    fn to_word(self) -> Word {
+        Word::from(self as u64)
+    }
+}
+
+impl ToWord for u64 {
+    fn to_word(self) -> Word {
+        Word::from(self)
+    }
+}
+
+impl ToWord for usize {
+    fn to_word(self) -> Word {
+        Word::from(self)
+    }
+}
+
+pub(super) fn run_stack<T: ToWord, const N: usize>(inputs: [T; N], opcode: u8) -> TestInterpreter {
     let mut code = Vec::new();
     for input in inputs {
-        push(&mut code, *input);
+        push(&mut code, input);
     }
     code.extend([opcode, op::STOP]);
     run(code)
 }
 
 pub(super) fn assert_stack_words(inputs: &[Word], opcode: u8, expected: &[Word]) {
-    let interpreter = run_stack(inputs, opcode);
+    let mut code = Vec::new();
+    for input in inputs {
+        push(&mut code, *input);
+    }
+    code.extend([opcode, op::STOP]);
+    let interpreter = run(code);
     assert!(matches!(interpreter.err, InstrErr::Stop));
     assert_eq!(interpreter.stack(), expected);
 }
@@ -60,7 +93,8 @@ macro_rules! assert_stack {
 }
 pub(super) use assert_stack;
 
-pub(super) fn push(code: &mut Vec<u8>, value: Word) {
+pub(super) fn push(code: &mut Vec<u8>, value: impl ToWord) {
+    let value = value.to_word();
     if value.is_zero() {
         code.push(op::PUSH0);
         return;

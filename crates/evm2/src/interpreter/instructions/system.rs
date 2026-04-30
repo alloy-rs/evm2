@@ -47,8 +47,8 @@ mod tests {
     #[test]
     fn keccak256_opcode() {
         let mut code = Vec::new();
-        push(&mut code, Word::ZERO);
-        push(&mut code, Word::ZERO);
+        push(&mut code, 0);
+        push(&mut code, 0);
         code.push(op::KECCAK256);
         code.push(op::STOP);
         let interpreter = run(code);
@@ -56,10 +56,10 @@ mod tests {
         assert_eq!(interpreter.stack(), [Word::from_be_bytes(keccak256([]).0)]);
 
         let mut code = Vec::new();
-        push(&mut code, Word::ZERO);
+        push(&mut code, 0);
         push(&mut code, Word::from(0x80));
         code.push(op::MSTORE8);
-        push(&mut code, Word::ZERO);
+        push(&mut code, 0);
         push(&mut code, Word::from(1));
         code.push(op::KECCAK256);
         code.push(op::STOP);
@@ -76,17 +76,17 @@ mod tests {
 
         let interpreter = run([op::PUSH1, 0x00, op::CODESIZE, op::STOP]);
         assert!(matches!(interpreter.err, InstrErr::Stop));
-        assert_eq!(interpreter.stack(), [Word::ZERO, Word::from(4)]);
+        assert_eq!(interpreter.stack(), [Word::from(0), Word::from(4)]);
     }
 
     #[test]
     fn codecopy_opcode() {
         let mut code = Vec::new();
-        push(&mut code, Word::ZERO);
+        push(&mut code, 0);
         push(&mut code, Word::from(5));
         push(&mut code, Word::from(2));
         code.push(op::CODECOPY);
-        push(&mut code, Word::ZERO);
+        push(&mut code, 0);
         code.push(op::MLOAD);
         code.push(op::STOP);
 
@@ -97,16 +97,16 @@ mod tests {
         assert_eq!(interpreter.stack(), [Word::from_be_bytes(expected)]);
 
         let mut code = Vec::new();
-        push(&mut code, Word::ZERO);
+        push(&mut code, 0);
         push(&mut code, Word::from(usize::MAX));
         push(&mut code, Word::from(1));
         code.push(op::CODECOPY);
-        push(&mut code, Word::ZERO);
+        push(&mut code, 0);
         code.push(op::MLOAD);
         code.push(op::STOP);
         let interpreter = run(code);
         assert!(matches!(interpreter.err, InstrErr::Stop));
-        assert_eq!(interpreter.stack(), [Word::ZERO]);
+        assert_eq!(interpreter.stack(), [0]);
     }
 
     #[test]
