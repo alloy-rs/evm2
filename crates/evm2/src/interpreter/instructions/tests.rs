@@ -27,7 +27,7 @@ impl TestInterpreter {
 }
 
 pub(super) fn run(code: impl Into<Vec<u8>>) -> TestInterpreter {
-    let mut inner = Interpreter::new(code.into(), SpecId::Homestead);
+    let mut inner = Interpreter::new(code.into(), SpecId::HOMESTEAD);
     let err = inner.run(Table::Normal(&DEFAULT_TABLE), &DEFAULT_GAS_TABLE, &mut TestHost);
     TestInterpreter { inner, err }
 }

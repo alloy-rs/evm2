@@ -17,8 +17,20 @@ const SELFDESTRUCT_REFUND: u64 = 24000;
 const CODEDEPOSIT: u64 = 200;
 const STANDARD_TOKEN_COST: u64 = 4;
 const NON_ZERO_BYTE_MULTIPLIER: u64 = 17;
+const NON_ZERO_BYTE_MULTIPLIER_ISTANBUL: u64 = 4;
+const TOTAL_COST_FLOOR_PER_TOKEN: u64 = 10;
 const INITCODE_WORD_COST: u64 = 2;
 const CALL_STIPEND: u64 = 2300;
+const ISTANBUL_SLOAD_GAS: u64 = 800;
+const ACCESS_LIST_ADDRESS: u64 = 2400;
+const ACCESS_LIST_STORAGE_KEY: u64 = 1900;
+const COLD_SLOAD_COST: u64 = 2100;
+const COLD_ACCOUNT_ACCESS_COST: u64 = 2600;
+const COLD_ACCOUNT_ACCESS_COST_ADDITIONAL: u64 = COLD_ACCOUNT_ACCESS_COST - WARM_STORAGE_READ_COST;
+const WARM_STORAGE_READ_COST: u64 = 100;
+const WARM_SSTORE_RESET: u64 = SSTORE_RESET - COLD_SLOAD_COST;
+const EIP7702_PER_AUTH_BASE_COST: u64 = 12500;
+const EIP7702_PER_EMPTY_ACCOUNT_COST: u64 = 25000;
 
 macro_rules! gas_ids {
     ($($tokens:tt)*) => {
@@ -221,7 +233,7 @@ pub struct GasParams {
 impl Default for GasParams {
     #[inline]
     fn default() -> Self {
-        Self::new_spec(SpecId::Frontier)
+        Self::new_spec(SpecId::default())
     }
 }
 
@@ -274,8 +286,122 @@ impl GasParams {
         set_gas_param(&mut table, GasId::TxTokenCost, STANDARD_TOKEN_COST);
         set_gas_param(&mut table, GasId::TxBaseStipend, 21000);
 
-        if spec >= SpecId::Homestead {
+        if spec.is_enabled_in(SpecId::HOMESTEAD) {
             set_gas_param(&mut table, GasId::TxCreateCost, CREATE);
+        }
+
+        if spec.is_enabled_in(SpecId::TANGERINE) {
+            set_gas_param(&mut table, GasId::NewAccountCostForSelfdestruct, NEWACCOUNT);
+        }
+
+        if spec.is_enabled_in(SpecId::SPURIOUS_DRAGON) {
+            set_gas_param(&mut table, GasId::ExpByteGas, 50);
+        }
+
+        if spec.is_enabled_in(SpecId::ISTANBUL) {
+            set_gas_param(&mut table, GasId::SstoreStatic, ISTANBUL_SLOAD_GAS);
+            set_gas_param(
+                &mut table,
+                GasId::SstoreSetWithoutLoadCost,
+                SSTORE_SET - ISTANBUL_SLOAD_GAS,
+            );
+            set_gas_param(
+                &mut table,
+                GasId::SstoreResetWithoutColdLoadCost,
+                SSTORE_RESET - ISTANBUL_SLOAD_GAS,
+            );
+            set_gas_param(&mut table, GasId::SstoreSetRefund, SSTORE_SET - ISTANBUL_SLOAD_GAS);
+            set_gas_param(&mut table, GasId::SstoreResetRefund, SSTORE_RESET - ISTANBUL_SLOAD_GAS);
+            set_gas_param(
+                &mut table,
+                GasId::TxTokenNonZeroByteMultiplier,
+                NON_ZERO_BYTE_MULTIPLIER_ISTANBUL,
+            );
+        }
+
+        if spec.is_enabled_in(SpecId::BERLIN) {
+            set_gas_param(&mut table, GasId::SstoreStatic, WARM_STORAGE_READ_COST);
+            set_gas_param(
+                &mut table,
+                GasId::ColdAccountAdditionalCost,
+                COLD_ACCOUNT_ACCESS_COST_ADDITIONAL,
+            );
+            set_gas_param(
+                &mut table,
+                GasId::ColdStorageAdditionalCost,
+                COLD_SLOAD_COST - WARM_STORAGE_READ_COST,
+            );
+            set_gas_param(&mut table, GasId::ColdStorageCost, COLD_SLOAD_COST);
+            set_gas_param(&mut table, GasId::WarmStorageReadCost, WARM_STORAGE_READ_COST);
+            set_gas_param(
+                &mut table,
+                GasId::SstoreResetWithoutColdLoadCost,
+                WARM_SSTORE_RESET - WARM_STORAGE_READ_COST,
+            );
+            set_gas_param(
+                &mut table,
+                GasId::SstoreSetWithoutLoadCost,
+                SSTORE_SET - WARM_STORAGE_READ_COST,
+            );
+            set_gas_param(&mut table, GasId::SstoreSetRefund, SSTORE_SET - WARM_STORAGE_READ_COST);
+            set_gas_param(
+                &mut table,
+                GasId::SstoreResetRefund,
+                WARM_SSTORE_RESET - WARM_STORAGE_READ_COST,
+            );
+            set_gas_param(&mut table, GasId::TxAccessListAddressCost, ACCESS_LIST_ADDRESS);
+            set_gas_param(&mut table, GasId::TxAccessListStorageKeyCost, ACCESS_LIST_STORAGE_KEY);
+        }
+
+        if spec.is_enabled_in(SpecId::LONDON) {
+            set_gas_param(
+                &mut table,
+                GasId::SstoreClearingSlotRefund,
+                WARM_SSTORE_RESET + ACCESS_LIST_STORAGE_KEY,
+            );
+            set_gas_param(&mut table, GasId::SelfdestructRefund, 0);
+        }
+
+        if spec.is_enabled_in(SpecId::SHANGHAI) {
+            set_gas_param(&mut table, GasId::TxInitcodeCost, INITCODE_WORD_COST);
+        }
+
+        if spec.is_enabled_in(SpecId::PRAGUE) {
+            set_gas_param(
+                &mut table,
+                GasId::TxEip7702PerEmptyAccountCost,
+                EIP7702_PER_EMPTY_ACCOUNT_COST,
+            );
+            set_gas_param(
+                &mut table,
+                GasId::TxEip7702AuthRefund,
+                EIP7702_PER_EMPTY_ACCOUNT_COST - EIP7702_PER_AUTH_BASE_COST,
+            );
+            set_gas_param(&mut table, GasId::TxFloorCostPerToken, TOTAL_COST_FLOOR_PER_TOKEN);
+            set_gas_param(&mut table, GasId::TxFloorCostBaseGas, 21000);
+        }
+
+        if spec.is_enabled_in(SpecId::AMSTERDAM) {
+            const CPSB: u64 = 1174;
+
+            set_gas_param(&mut table, GasId::Create, 9000);
+            set_gas_param(&mut table, GasId::TxCreateCost, 9000);
+            set_gas_param(&mut table, GasId::CodeDepositCost, 0);
+            set_gas_param(&mut table, GasId::NewAccountCost, 0);
+            set_gas_param(&mut table, GasId::NewAccountCostForSelfdestruct, 0);
+            set_gas_param(&mut table, GasId::SstoreSetWithoutLoadCost, 2800);
+            set_gas_param(&mut table, GasId::SstoreSetStateGas, 32 * CPSB);
+            set_gas_param(&mut table, GasId::NewAccountStateGas, 112 * CPSB);
+            set_gas_param(&mut table, GasId::CodeDepositStateGas, CPSB);
+            set_gas_param(&mut table, GasId::CreateStateGas, 112 * CPSB);
+            set_gas_param(&mut table, GasId::SstoreSetRefund, 32 * CPSB + 2800);
+            set_gas_param(
+                &mut table,
+                GasId::TxEip7702PerEmptyAccountCost,
+                7500 + (112 + 23) * CPSB,
+            );
+            set_gas_param(&mut table, GasId::TxEip7702AuthRefund, 112 * CPSB);
+            set_gas_param(&mut table, GasId::TxEip7702PerAuthStateGas, (112 + 23) * CPSB);
         }
 
         Self::new(table)
@@ -367,7 +493,7 @@ mod tests {
 
     #[test]
     fn gas_params_match_frontier_defaults() {
-        let params = GasParams::new_spec(SpecId::Frontier);
+        let params = GasParams::new_spec(SpecId::FRONTIER);
         assert_eq!(params.get(GasId::ExpByteGas), 10);
         assert_eq!(params.get(GasId::MemoryLinearCost), 3);
         assert_eq!(params.get(GasId::MemoryQuadraticReduction), 512);
@@ -378,8 +504,43 @@ mod tests {
 
     #[test]
     fn gas_params_apply_homestead_defaults() {
-        let params = GasParams::new_spec(SpecId::Homestead);
+        let params = GasParams::new_spec(SpecId::HOMESTEAD);
         assert_eq!(params.get(GasId::TxCreateCost), 32000);
+    }
+
+    #[test]
+    fn gas_params_apply_fork_defaults() {
+        let tangerine = GasParams::new_spec(SpecId::TANGERINE);
+        assert_eq!(tangerine.get(GasId::NewAccountCostForSelfdestruct), 25000);
+
+        let spurious_dragon = GasParams::new_spec(SpecId::SPURIOUS_DRAGON);
+        assert_eq!(spurious_dragon.get(GasId::ExpByteGas), 50);
+
+        let istanbul = GasParams::new_spec(SpecId::ISTANBUL);
+        assert_eq!(istanbul.get(GasId::SstoreStatic), 800);
+        assert_eq!(istanbul.get(GasId::TxTokenNonZeroByteMultiplier), 4);
+
+        let berlin = GasParams::new_spec(SpecId::BERLIN);
+        assert_eq!(berlin.get(GasId::SstoreStatic), 100);
+        assert_eq!(berlin.get(GasId::ColdAccountAdditionalCost), 2500);
+        assert_eq!(berlin.get(GasId::ColdStorageCost), 2100);
+
+        let london = GasParams::new_spec(SpecId::LONDON);
+        assert_eq!(london.get(GasId::SstoreClearingSlotRefund), 4800);
+        assert_eq!(london.get(GasId::SelfdestructRefund), 0);
+
+        let shanghai = GasParams::new_spec(SpecId::SHANGHAI);
+        assert_eq!(shanghai.get(GasId::TxInitcodeCost), 2);
+
+        let prague = GasParams::new_spec(SpecId::PRAGUE);
+        assert_eq!(prague.get(GasId::TxEip7702PerEmptyAccountCost), 25000);
+        assert_eq!(prague.get(GasId::TxEip7702AuthRefund), 12500);
+        assert_eq!(prague.get(GasId::TxFloorCostPerToken), 10);
+
+        let amsterdam = GasParams::new_spec(SpecId::AMSTERDAM);
+        assert_eq!(amsterdam.get(GasId::Create), 9000);
+        assert_eq!(amsterdam.get(GasId::SstoreSetStateGas), 37568);
+        assert_eq!(amsterdam.get(GasId::TxEip7702PerAuthStateGas), 158490);
     }
 
     #[test]
@@ -393,7 +554,7 @@ mod tests {
 
     #[test]
     fn gas_params_calculate_costs() {
-        let params = GasParams::default();
+        let params = GasParams::new_spec(SpecId::FRONTIER);
         assert_eq!(num_words(0), 0);
         assert_eq!(num_words(33), 2);
         assert_eq!(params.memory_cost(10), 30);

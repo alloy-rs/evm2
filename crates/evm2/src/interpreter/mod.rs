@@ -36,14 +36,93 @@ pub use runtime::{Interpreter, Table};
 
 pub(crate) type Result<T = (), E = InstrErr> = core::result::Result<T, E>;
 
-/// EVM hard fork identifier.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+/// Specification IDs and their activation block.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
+#[allow(non_camel_case_types)]
 pub enum SpecId {
     /// Frontier hard fork.
-    Frontier,
+    FRONTIER = 0,
+    /// Frontier Thawing hard fork.
+    FRONTIER_THAWING,
     /// Homestead hard fork.
-    Homestead,
+    HOMESTEAD,
+    /// DAO Fork hard fork.
+    DAO_FORK,
+    /// Tangerine Whistle hard fork.
+    TANGERINE,
+    /// Spurious Dragon hard fork.
+    SPURIOUS_DRAGON,
+    /// Byzantium hard fork.
+    BYZANTIUM,
+    /// Constantinople hard fork.
+    CONSTANTINOPLE,
+    /// Petersburg hard fork.
+    PETERSBURG,
+    /// Istanbul hard fork.
+    ISTANBUL,
+    /// Muir Glacier hard fork.
+    MUIR_GLACIER,
+    /// Berlin hard fork.
+    BERLIN,
+    /// London hard fork.
+    LONDON,
+    /// Arrow Glacier hard fork.
+    ARROW_GLACIER,
+    /// Gray Glacier hard fork.
+    GRAY_GLACIER,
+    /// Paris/Merge hard fork.
+    MERGE,
+    /// Shanghai hard fork.
+    SHANGHAI,
+    /// Cancun hard fork.
+    CANCUN,
+    /// Prague hard fork.
+    PRAGUE,
+    /// Osaka hard fork.
+    #[default]
+    OSAKA,
+    /// Amsterdam hard fork.
+    AMSTERDAM,
+}
+
+impl SpecId {
+    /// Latest known specification ID.
+    #[doc(alias = "MAX")]
+    pub const NEXT: Self = Self::AMSTERDAM;
+
+    /// Returns the specification ID for a raw byte.
+    #[inline]
+    pub const fn try_from_u8(spec_id: u8) -> Option<Self> {
+        if spec_id <= Self::NEXT as u8 {
+            // SAFETY: `spec_id` is within the valid variant range.
+            return Some(unsafe { core::mem::transmute::<u8, Self>(spec_id) });
+        }
+        None
+    }
+
+    /// Returns `true` if `other` is enabled in this specification.
+    #[inline]
+    pub const fn is_enabled_in(self, other: Self) -> bool {
+        self as u8 >= other as u8
+    }
+}
+
+impl From<SpecId> for u8 {
+    #[inline]
+    fn from(spec_id: SpecId) -> Self {
+        spec_id as Self
+    }
+}
+
+impl TryFrom<u8> for SpecId {
+    type Error = u8;
+
+    #[inline]
+    fn try_from(value: u8) -> core::result::Result<Self, Self::Error> {
+        Self::try_from_u8(value).ok_or(value)
+    }
 }
 
 /// Instruction execution error.
@@ -88,7 +167,7 @@ mod tests {
             op::ADD,
             op::STOP,
         ][..]);
-        let spec_id = core::hint::black_box(SpecId::Homestead);
+        let spec_id = core::hint::black_box(SpecId::HOMESTEAD);
         let instruction_table = core::hint::black_box(Table::Tail(&DEFAULT_TAIL_TABLE));
 
         let gas_table = new_gas_table(spec_id);
@@ -100,7 +179,7 @@ mod tests {
     fn basic() {
         const BASIC: &[u8] = &[op::PUSH1, 0x01, op::PUSH1, 0x02, op::ADD, op::STOP];
 
-        for spec in [SpecId::Frontier, SpecId::Homestead] {
+        for spec in [SpecId::FRONTIER, SpecId::HOMESTEAD] {
             let gas_table = new_gas_table(spec);
             for (_name, table) in [
                 ("normal", Table::Normal(&DEFAULT_TABLE)),
