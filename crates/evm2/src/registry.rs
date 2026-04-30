@@ -54,37 +54,24 @@
 
 use alloc::boxed::Box;
 use core::{array, fmt, marker::PhantomData};
+use thiserror::Error;
 
 /// Convenience result type used by the registry and handlers.
 pub type HandlerResult<T> = core::result::Result<T, HandlerError>;
 
 /// Registry and handler errors.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
 pub enum HandlerError {
     /// No handler is registered for the transaction type byte.
+    #[error("unsupported transaction type 0x{0:02x}")]
     UnsupportedTransactionType(u8),
     /// A registered handler's extractor did not match the provided envelope.
+    #[error("envelope did not contain expected transaction type 0x{expected:02x}")]
     WrongTransactionType {
         /// Expected transaction type byte.
         expected: u8,
     },
 }
-
-impl fmt::Display for HandlerError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::UnsupportedTransactionType(ty) => {
-                write!(f, "unsupported transaction type 0x{ty:02x}")
-            }
-            Self::WrongTransactionType { expected } => {
-                write!(f, "envelope did not contain expected transaction type 0x{expected:02x}")
-            }
-        }
-    }
-}
-
-#[cfg(feature = "std")]
-impl std::error::Error for HandlerError {}
 
 /// Request passed to a typed transaction handler.
 #[derive(Clone, Copy, Debug)]
