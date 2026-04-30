@@ -48,7 +48,7 @@ pub(in crate::interpreter) fn exchange(cx: _) -> Result {
     let (n, m) =
         decode_pair(unsafe { cx.ctrl.read_bytes_unchecked(1)[0] }).ok_or(InstrErr::Invalid)?;
     unsafe { cx.ctrl.advance_unchecked(1) };
-    stack.exchange(n, m - n)
+    stack.exchange(n, m)
 }
 
 const fn decode_single(x: u8) -> Option<usize> {

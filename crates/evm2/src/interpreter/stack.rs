@@ -133,16 +133,15 @@ impl<'a> Stack<'a> {
 
     #[inline]
     pub fn exchange(&mut self, n: usize, m: usize) -> Result {
-        debug_assert!(m > 0, "overlapping exchange");
+        debug_assert!(n != m, "overlapping exchange");
         let len = self.len;
-        let n_m_index = n + m;
-        if n_m_index >= len {
+        if n >= len || m >= len {
             cold_path();
             return Err(InstrErr::StackUnderflow);
         }
         unsafe {
             let top = self.stack.as_mut_ptr().add(len - 1);
-            core::ptr::swap_nonoverlapping(top.sub(n), top.sub(n_m_index), 1);
+            core::ptr::swap_nonoverlapping(top.sub(n), top.sub(m), 1);
         }
         Ok(())
     }
