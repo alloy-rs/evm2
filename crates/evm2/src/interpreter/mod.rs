@@ -36,53 +36,76 @@ pub use runtime::{Interpreter, Table};
 pub(crate) type Result<T = (), E = InstrErr> = core::result::Result<T, E>;
 
 /// Specification IDs and their activation block.
+///
+/// Information was obtained from the [Ethereum Execution Specifications](https://github.com/ethereum/execution-specs).
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
 #[allow(non_camel_case_types)]
 pub enum SpecId {
-    /// Frontier hard fork.
+    /// Frontier hard fork
+    /// Activated at block 0
     FRONTIER = 0,
-    /// Frontier Thawing hard fork.
+    /// Frontier Thawing hard fork
+    /// Activated at block 200000
     FRONTIER_THAWING,
-    /// Homestead hard fork.
+    /// Homestead hard fork
+    /// Activated at block 1150000
     HOMESTEAD,
-    /// DAO Fork hard fork.
+    /// DAO Fork hard fork
+    /// Activated at block 1920000
     DAO_FORK,
-    /// Tangerine Whistle hard fork.
+    /// Tangerine Whistle hard fork
+    /// Activated at block 2463000
     TANGERINE,
-    /// Spurious Dragon hard fork.
+    /// Spurious Dragon hard fork
+    /// Activated at block 2675000
     SPURIOUS_DRAGON,
-    /// Byzantium hard fork.
+    /// Byzantium hard fork
+    /// Activated at block 4370000
     BYZANTIUM,
-    /// Constantinople hard fork.
+    /// Constantinople hard fork
+    /// Activated at block 7280000 is overwritten with PETERSBURG
     CONSTANTINOPLE,
-    /// Petersburg hard fork.
+    /// Petersburg hard fork
+    /// Activated at block 7280000
     PETERSBURG,
-    /// Istanbul hard fork.
+    /// Istanbul hard fork
+    /// Activated at block 9069000
     ISTANBUL,
-    /// Muir Glacier hard fork.
+    /// Muir Glacier hard fork
+    /// Activated at block 9200000
     MUIR_GLACIER,
-    /// Berlin hard fork.
+    /// Berlin hard fork
+    /// Activated at block 12244000
     BERLIN,
-    /// London hard fork.
+    /// London hard fork
+    /// Activated at block 12965000
     LONDON,
-    /// Arrow Glacier hard fork.
+    /// Arrow Glacier hard fork
+    /// Activated at block 13773000
     ARROW_GLACIER,
-    /// Gray Glacier hard fork.
+    /// Gray Glacier hard fork
+    /// Activated at block 15050000
     GRAY_GLACIER,
-    /// Paris/Merge hard fork.
+    /// Paris/Merge hard fork
+    /// Activated at block 15537394 (TTD: 58750000000000000000000)
     MERGE,
-    /// Shanghai hard fork.
+    /// Shanghai hard fork
+    /// Activated at block 17034870 (Timestamp: 1681338455)
     SHANGHAI,
-    /// Cancun hard fork.
+    /// Cancun hard fork
+    /// Activated at block 19426587 (Timestamp: 1710338135)
     CANCUN,
-    /// Prague hard fork.
+    /// Prague hard fork
+    /// Activated at block 22431084 (Timestamp: 1746612311)
     PRAGUE,
-    /// Osaka hard fork.
+    /// Osaka hard fork
+    /// Activated at slot 13164544 (Timestamp: 1764798551)
     #[default]
     OSAKA,
-    /// Amsterdam hard fork.
+    /// Amsterdam hard fork
+    /// Activated at block TBD
     AMSTERDAM,
 }
 
