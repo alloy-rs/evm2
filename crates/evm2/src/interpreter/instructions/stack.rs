@@ -1,4 +1,4 @@
-use super::super::{CtrlRef, Gas, InstrErr, InstructionCx, Result, Stack, State, Word};
+use crate::interpreter::{CtrlRef, Gas, InstrErr, InstructionCx, Result, Stack, State, Word};
 use evm2_macros::instruction;
 
 #[instruction]

@@ -1,4 +1,4 @@
-use super::super::Word;
+use crate::interpreter::Word;
 use core::cmp::Ordering;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
