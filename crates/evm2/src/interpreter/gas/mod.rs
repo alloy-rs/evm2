@@ -108,6 +108,8 @@ impl GasTracker {
     }
 
     /// Spends regular gas.
+    #[doc(alias = "record_cost")]
+    #[doc(alias = "record_regular_cost")]
     #[inline]
     pub fn spend(&mut self, cost: u64) -> Result {
         if let Some(new_remaining) = self.remaining.checked_sub(cost) {
@@ -120,6 +122,7 @@ impl GasTracker {
     }
 
     /// Spends regular gas with wrapping subtraction.
+    #[doc(alias = "record_cost_unsafe")]
     #[inline(always)]
     pub fn spend_unsafe(&mut self, cost: u64) -> Result {
         let remaining = self.remaining;
@@ -134,6 +137,7 @@ impl GasTracker {
     }
 
     /// Spends state gas.
+    #[doc(alias = "record_state_cost")]
     #[inline]
     pub fn spend_state(&mut self, cost: u64) -> Result {
         if self.reservoir >= cost {
@@ -327,18 +331,22 @@ impl Gas {
     }
 
     /// Spends regular gas with wrapping subtraction.
+    #[doc(alias = "record_cost_unsafe")]
     #[inline(always)]
     pub fn spend_unsafe(&mut self, cost: u64) -> Result {
         self.tracker.spend_unsafe(cost)
     }
 
     /// Spends state gas.
+    #[doc(alias = "record_state_cost")]
     #[inline]
     pub fn spend_state(&mut self, cost: u64) -> Result {
         self.tracker.spend_state(cost)
     }
 
     /// Spends regular gas or returns out of gas.
+    #[doc(alias = "record_cost")]
+    #[doc(alias = "record_regular_cost")]
     #[inline(always)]
     pub fn spend(&mut self, amount: u64) -> Result {
         self.tracker.spend(amount)
