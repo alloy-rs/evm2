@@ -351,8 +351,8 @@ impl Gas {
 }
 
 /// Memory expansion result.
-#[non_exhaustive]
 #[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
 pub enum MemoryExtensionResult {
     /// Memory was extended.
     Extended,

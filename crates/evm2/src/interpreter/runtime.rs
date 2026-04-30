@@ -6,8 +6,8 @@ use alloc::{boxed::Box, vec::Vec};
 use core::hint::cold_path;
 
 /// Interpreter dispatch table mode.
-#[non_exhaustive]
 #[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
 pub enum Table<'a> {
     /// Normal dispatch loop.
     Normal(&'a InstrTable),

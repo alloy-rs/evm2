@@ -27,8 +27,8 @@ pub const EIP7702_VERSION: u8 = 0;
 pub const EIP7702_BYTECODE_LEN: usize = 23;
 
 /// EIP-7702 decode errors.
-#[non_exhaustive]
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[non_exhaustive]
 pub enum Eip7702DecodeError {
     /// Invalid length of the raw bytecode.
     #[error("Eip7702 is not 23 bytes long")]
@@ -42,8 +42,8 @@ pub enum Eip7702DecodeError {
 }
 
 /// Bytecode decode errors.
-#[non_exhaustive]
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[non_exhaustive]
 pub enum BytecodeDecodeError {
     /// EIP-7702 decode error.
     #[error(transparent)]
@@ -73,8 +73,8 @@ struct BytecodeInner {
 }
 
 /// The kind of bytecode.
-#[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Ord, PartialOrd, Default)]
+#[non_exhaustive]
 pub enum BytecodeKind {
     /// Legacy analyzed bytecode with jump table.
     #[default]
