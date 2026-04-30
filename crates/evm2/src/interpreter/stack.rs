@@ -80,6 +80,9 @@ impl<'a> Stack<'a> {
     }
 
     #[inline]
+    /// # Safety
+    ///
+    /// Caller must ensure the stack contains at least `N` initialized words.
     pub unsafe fn popn_unchecked<const N: usize>(&mut self) -> [Word; N] {
         core::array::from_fn(|_| unsafe { self.pop_unchecked() })
     }
@@ -96,11 +99,17 @@ impl<'a> Stack<'a> {
     }
 
     #[inline]
+    /// # Safety
+    ///
+    /// Caller must ensure the stack is not empty.
     pub unsafe fn top_unchecked(&mut self) -> &mut Word {
         unsafe { self.stack.get_unchecked_mut(self.len - 1) }
     }
 
     #[inline]
+    /// # Safety
+    ///
+    /// Caller must ensure the stack is not empty.
     pub unsafe fn pop_unchecked(&mut self) -> Word {
         self.len -= 1;
         unsafe { *self.stack.get_unchecked(self.len) }

@@ -34,6 +34,10 @@ impl<'a> Ctrl<'a> {
     }
 
     #[inline]
+    /// # Safety
+    ///
+    /// Caller must ensure advancing by `n` keeps `pc` within valid bytecode bounds for
+    /// subsequent reads.
     pub unsafe fn advance_unchecked(&mut self, n: usize) {
         self.pc += n;
     }
@@ -64,6 +68,9 @@ impl<'a> Ctrl<'a> {
     }
 
     #[inline]
+    /// # Safety
+    ///
+    /// Caller must ensure `self.pc..self.pc + n` is in bounds of the bytecode allocation.
     pub unsafe fn read_bytes_unchecked(&self, n: usize) -> &[u8] {
         unsafe { core::slice::from_raw_parts(self.base.add(self.pc), n) }
     }
@@ -85,6 +92,10 @@ impl<'a> CtrlRef<'a> {
     }
 
     #[inline]
+    /// # Safety
+    ///
+    /// Caller must ensure advancing by `n` keeps the referenced program counter within
+    /// valid bytecode bounds for subsequent reads.
     pub unsafe fn advance_unchecked(&mut self, n: usize) {
         *self.pc += n;
     }
@@ -115,6 +126,9 @@ impl<'a> CtrlRef<'a> {
     }
 
     #[inline]
+    /// # Safety
+    ///
+    /// Caller must ensure `pc` is a valid program counter for this bytecode.
     pub unsafe fn set_unchecked(&mut self, pc: usize) {
         *self.pc = pc;
     }
@@ -125,11 +139,17 @@ impl<'a> CtrlRef<'a> {
     }
 
     #[inline]
+    /// # Safety
+    ///
+    /// Caller must ensure `offset..offset + len` is in bounds of the bytecode allocation.
     pub unsafe fn code_slice_unchecked(&self, offset: usize, len: usize) -> &[u8] {
         unsafe { core::slice::from_raw_parts(self.base.add(offset), len) }
     }
 
     #[inline]
+    /// # Safety
+    ///
+    /// Caller must ensure `self.pc()..self.pc() + n` is in bounds of the bytecode allocation.
     pub unsafe fn read_bytes_unchecked(&self, n: usize) -> &[u8] {
         unsafe { core::slice::from_raw_parts(self.base.add(*self.pc), n) }
     }

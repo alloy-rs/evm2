@@ -4,7 +4,6 @@
     feature(explicit_tail_calls, rust_preserve_none_cc),
     allow(incomplete_features)
 )]
-#![allow(clippy::missing_safety_doc)]
 #![allow(clippy::missing_const_for_fn)]
 #![allow(missing_debug_implementations)]
 #![allow(missing_docs)]
