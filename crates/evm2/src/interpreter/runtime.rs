@@ -1,6 +1,6 @@
 use super::{
     Ctrl, CtrlRef, Gas, Host, InstrErr, Memory, Result, SpecId, Stack, State, Word,
-    instruction::{GasTable, InstrTable, TailInstrTable},
+    instructions::table::{GasTable, InstrTable, TailInstrTable},
 };
 use alloc::{boxed::Box, vec::Vec};
 use core::hint::cold_path;

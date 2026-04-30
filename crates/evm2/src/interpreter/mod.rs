@@ -23,10 +23,8 @@ pub use gas::{Gas, GasRef, GasTracker, MemoryExtensionResult, MemoryGas};
 #[macro_use]
 mod utils;
 
-mod instruction;
-pub use instruction::*;
-
 mod instructions;
+pub use instructions::table::InstructionCx;
 
 mod opcode;
 pub use opcode::op;
@@ -46,8 +44,7 @@ pub use state::{Host, State};
 mod runtime;
 pub use runtime::{Interpreter, Table};
 
-mod table;
-pub use table::{
+pub use instructions::table::{
     DEFAULT_GAS_TABLE, DEFAULT_TABLE, DEFAULT_TAIL_TABLE, make_table, make_tail_table,
     new_gas_table,
 };

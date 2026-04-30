@@ -21,4 +21,6 @@ pub(super) use stack::*;
 mod system;
 pub(super) use system::*;
 
+pub(crate) mod table;
+
 mod utils;

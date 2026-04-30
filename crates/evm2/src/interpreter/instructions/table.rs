@@ -1,12 +1,37 @@
-use super::{
-    Ctrl, CtrlRef, Gas, GasRef, Interpreter, Result, SpecId, Stack, State,
-    instruction::{
-        GasTable, InstrFn, InstrFnRet, InstrTable, TailInstrFn, TailInstrFnRet, TailInstrTable,
-    },
-    instructions::*,
+use super::*;
+use crate::interpreter::{
+    Ctrl, CtrlRef, Gas, GasRef, InstrErr, Interpreter, Result, SpecId, Stack, State,
     opcode::{for_each_opcode, op},
 };
 use core::mem;
+
+pub type InstrFnRet = (usize, Result);
+pub type InstrFn = extern_table!(
+    fn(ctrl: CtrlRef<'_>, stack: Stack<'_>, gas: GasRef<'_>, state: &mut State) -> InstrFnRet
+);
+pub type InstrTable = [InstrFn; 256];
+
+pub type TailInstrFnRet = InstrErr;
+pub type TailInstrFn = extern_table!(
+    fn(
+        ctrl: Ctrl<'_>,
+        stack: Stack<'_>,
+        gas: Gas,
+        state: &mut State,
+        gas_table: &GasTable,
+        instr_tablep: *const (),
+    ) -> TailInstrFnRet
+);
+pub type TailInstrTable = [TailInstrFn; 256];
+
+pub type GasTable = [u16; 256];
+
+#[allow(dead_code)]
+pub struct InstructionCx<'a, 'ctrl, 'state> {
+    pub ctrl: &'a mut CtrlRef<'ctrl>,
+    pub gas: GasRef<'a>,
+    pub state: &'a mut State<'state>,
+}
 
 pub static DEFAULT_TABLE: InstrTable = make_table();
 pub static DEFAULT_TAIL_TABLE: TailInstrTable = make_tail_table();
