@@ -505,7 +505,7 @@ mod tests {
         for bytecode in [
             Bytecode::default(),
             Bytecode::new(),
-            Bytecode::new().clone(),
+            Bytecode::new(),
             Bytecode::new_legacy(Bytes::new()),
         ] {
             assert_eq!(bytecode.kind(), BytecodeKind::LegacyAnalyzed);

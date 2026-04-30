@@ -300,7 +300,7 @@ impl Gas {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum MemoryExtensionResult {
     Extended,
     Same,

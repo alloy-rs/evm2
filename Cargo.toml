@@ -11,6 +11,27 @@ license = "MIT OR Apache-2.0"
 homepage = "https://github.com/danipopes/evm2"
 repository = "https://github.com/danipopes/evm2"
 
+[workspace.lints.clippy]
+dbg-macro = "warn"
+manual-string-new = "warn"
+uninlined-format-args = "warn"
+use-self = "warn"
+redundant-clone = "warn"
+missing-const-for-fn = "warn"
+
+[workspace.lints.rust]
+missing-copy-implementations = "warn"
+missing-debug-implementations = "warn"
+missing-docs = "warn"
+rust-2018-idioms = "warn"
+unreachable-pub = "warn"
+unused-must-use = "warn"
+redundant-lifetimes = "warn"
+unnameable-types = "warn"
+
+[workspace.lints.rustdoc]
+all = "warn"
+
 [workspace.dependencies]
 alloy-primitives = { version = "1.5.7", default-features = false }
 evm2-macros = { path = "crates/evm2-macros" }

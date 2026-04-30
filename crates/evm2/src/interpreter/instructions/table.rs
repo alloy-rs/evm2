@@ -7,7 +7,7 @@ use core::mem;
 
 pub type InstrFnRet = (usize, Result);
 pub type InstrFn = extern_table!(
-    fn(ctrl: CtrlRef<'_>, stack: Stack<'_>, gas: GasRef<'_>, state: &mut State) -> InstrFnRet
+    fn(ctrl: CtrlRef<'_>, stack: Stack<'_>, gas: GasRef<'_>, state: &mut State<'_>) -> InstrFnRet
 );
 pub type InstrTable = [InstrFn; 256];
 
@@ -17,7 +17,7 @@ pub type TailInstrFn = extern_table!(
         ctrl: Ctrl<'_>,
         stack: Stack<'_>,
         gas: Gas,
-        state: &mut State,
+        state: &mut State<'_>,
         gas_table: &GasTable,
         instr_tablep: *const (),
     ) -> TailInstrFnRet
@@ -118,7 +118,7 @@ extern_table! {
         ctrl: CtrlRef<'_>,
         mut stack: Stack<'_>,
         gas: GasRef<'_>,
-        state: &mut State,
+        state: &mut State<'_>,
     ) -> InstrFnRet {
         let r = I::new().execute(ctrl, &mut stack, gas, state);
         (stack.len, r)
@@ -130,7 +130,7 @@ extern_table! {
         mut ctrl: Ctrl<'_>,
         mut stack: Stack<'_>,
         mut gas: Gas,
-        state: &mut State,
+        state: &mut State<'_>,
         gast: &GasTable,
         instrsp: *const (),
     ) -> TailInstrFnRet {
@@ -147,7 +147,7 @@ extern_table! {
         mut ctrl: Ctrl<'_>,
         stack: Stack<'_>,
         mut gas: Gas,
-        state: &mut State,
+        state: &mut State<'_>,
         gast: &GasTable,
         instrsp: *const (),
     ) -> TailInstrFnRet {
@@ -170,7 +170,7 @@ extern_table! {
         ctrl: Ctrl<'_>,
         stack: Stack<'_>,
         gas: Gas,
-        state: &mut State,
+        state: &mut State<'_>,
         _gast: &GasTable,
         ret: *const (), // Tail calls require same function signature, this is unused so we pass the return value here.
     ) -> TailInstrFnRet {

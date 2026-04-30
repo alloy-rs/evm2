@@ -1,3 +1,5 @@
+//! Procedural macros for `evm2`.
+
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
@@ -8,6 +10,7 @@ use syn::{
 };
 
 #[proc_macro_attribute]
+/// Lowers instruction functions into the interpreter ABI.
 pub fn instruction(attr: TokenStream, item: TokenStream) -> TokenStream {
     let args = parse_macro_input!(attr with Punctuated::<Ident, Token![,]>::parse_terminated);
     let raw = args.iter().any(|arg| arg == "raw");
@@ -65,7 +68,7 @@ fn expand_instruction(raw: bool, input: ItemFn) -> TokenStream2 {
     }
 }
 
-fn is_infer(ty: &Type) -> bool {
+const fn is_infer(ty: &Type) -> bool {
     matches!(ty, Type::Infer(TypeInfer { .. }))
 }
 

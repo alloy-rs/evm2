@@ -1,22 +1,3 @@
-pub(crate) type Result<T = (), E = InstrErr> = core::result::Result<T, E>;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum SpecId {
-    Frontier,
-    Homestead,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub enum InstrErr {
-    Stop = 1,
-    OutOfGas,
-    StackOverflow,
-    StackUnderflow,
-    Invalid,
-    Return,
-    Revert,
-}
-
 mod gas;
 pub use gas::{Gas, GasRef, GasTracker, MemoryExtensionResult, MemoryGas};
 
@@ -24,7 +5,10 @@ pub use gas::{Gas, GasRef, GasTracker, MemoryExtensionResult, MemoryGas};
 mod utils;
 
 mod instructions;
-pub use instructions::table::InstructionCx;
+pub use instructions::table::{
+    DEFAULT_GAS_TABLE, DEFAULT_TABLE, DEFAULT_TAIL_TABLE, InstructionCx, make_table,
+    make_tail_table, new_gas_table,
+};
 
 mod opcode;
 pub use opcode::op;
@@ -44,10 +28,24 @@ pub use state::{Host, State};
 mod runtime;
 pub use runtime::{Interpreter, Table};
 
-pub use instructions::table::{
-    DEFAULT_GAS_TABLE, DEFAULT_TABLE, DEFAULT_TAIL_TABLE, make_table, make_tail_table,
-    new_gas_table,
-};
+pub(crate) type Result<T = (), E = InstrErr> = core::result::Result<T, E>;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum SpecId {
+    Frontier,
+    Homestead,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum InstrErr {
+    Stop = 1,
+    OutOfGas,
+    StackOverflow,
+    StackUnderflow,
+    Invalid,
+    Return,
+    Revert,
+}
 
 #[cfg(test)]
 mod tests {
