@@ -53,6 +53,8 @@ jobs:
       - uses: taiki-e/install-action@nextest
       - name: test
         run: cargo nextest run --workspace ${{ matrix.flags }}
+      - name: doctest
+        run: cargo test --workspace ${{ matrix.flags }} --doc
 
   wasm:
     runs-on: ubuntu-latest
