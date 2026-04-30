@@ -1,5 +1,5 @@
 #[cfg(test)]
-use super::instructions::{add, balance, invalid, push, stop};
+use super::instructions::*;
 
 macro_rules! opcodes {
     ($d:tt $($val:literal => $name:ident => $f:expr;)*) => {
@@ -32,39 +32,39 @@ macro_rules! opcodes {
 opcodes! {$
     0x00 => STOP       => stop;
     0x01 => ADD        => add;
-    0x02 => MUL        => invalid;
-    0x03 => SUB        => invalid;
-    0x04 => DIV        => invalid;
-    0x05 => SDIV       => invalid;
-    0x06 => MOD        => invalid;
-    0x07 => SMOD       => invalid;
-    0x08 => ADDMOD     => invalid;
-    0x09 => MULMOD     => invalid;
-    0x0A => EXP        => invalid;
-    0x0B => SIGNEXTEND => invalid;
+    0x02 => MUL        => mul;
+    0x03 => SUB        => sub;
+    0x04 => DIV        => div;
+    0x05 => SDIV       => sdiv;
+    0x06 => MOD        => rem;
+    0x07 => SMOD       => smod;
+    0x08 => ADDMOD     => addmod;
+    0x09 => MULMOD     => mulmod;
+    0x0A => EXP        => exp;
+    0x0B => SIGNEXTEND => signextend;
     // 0x0C
     // 0x0D
     // 0x0E
     // 0x0F
 
-    0x10 => LT     => invalid;
-    0x11 => GT     => invalid;
-    0x12 => SLT    => invalid;
-    0x13 => SGT    => invalid;
-    0x14 => EQ     => invalid;
-    0x15 => ISZERO => invalid;
-    0x16 => AND    => invalid;
-    0x17 => OR     => invalid;
-    0x18 => XOR    => invalid;
-    0x19 => NOT    => invalid;
-    0x1A => BYTE   => invalid;
-    0x1B => SHL    => invalid;
-    0x1C => SHR    => invalid;
-    0x1D => SAR    => invalid;
-    0x1E => CLZ    => invalid;
+    0x10 => LT     => lt;
+    0x11 => GT     => gt;
+    0x12 => SLT    => slt;
+    0x13 => SGT    => sgt;
+    0x14 => EQ     => eq;
+    0x15 => ISZERO => iszero;
+    0x16 => AND    => bitand;
+    0x17 => OR     => bitor;
+    0x18 => XOR    => bitxor;
+    0x19 => NOT    => not;
+    0x1A => BYTE   => byte;
+    0x1B => SHL    => shl;
+    0x1C => SHR    => shr;
+    0x1D => SAR    => sar;
+    0x1E => CLZ    => clz;
     // 0x1F
 
-    0x20 => KECCAK256 => invalid;
+    0x20 => KECCAK256 => keccak256_instr;
     // 0x21
     // 0x22
     // 0x23
@@ -89,8 +89,8 @@ opcodes! {$
     0x35 => CALLDATALOAD => invalid;
     0x36 => CALLDATASIZE => invalid;
     0x37 => CALLDATACOPY => invalid;
-    0x38 => CODESIZE     => invalid;
-    0x39 => CODECOPY     => invalid;
+    0x38 => CODESIZE     => codesize;
+    0x39 => CODECOPY     => codecopy;
 
     0x3A => GASPRICE       => invalid;
     0x3B => EXTCODESIZE    => invalid;
@@ -115,21 +115,21 @@ opcodes! {$
     // 0x4E
     // 0x4F
 
-    0x50 => POP      => invalid;
-    0x51 => MLOAD    => invalid;
-    0x52 => MSTORE   => invalid;
-    0x53 => MSTORE8  => invalid;
+    0x50 => POP      => pop;
+    0x51 => MLOAD    => mload;
+    0x52 => MSTORE   => mstore;
+    0x53 => MSTORE8  => mstore8;
     0x54 => SLOAD    => invalid;
     0x55 => SSTORE   => invalid;
-    0x56 => JUMP     => invalid;
-    0x57 => JUMPI    => invalid;
-    0x58 => PC       => invalid;
-    0x59 => MSIZE    => invalid;
-    0x5A => GAS      => invalid;
-    0x5B => JUMPDEST => invalid;
+    0x56 => JUMP     => jump;
+    0x57 => JUMPI    => jumpi;
+    0x58 => PC       => pc;
+    0x59 => MSIZE    => msize;
+    0x5A => GAS      => gas_instr;
+    0x5B => JUMPDEST => jumpdest;
     0x5C => TLOAD    => invalid;
     0x5D => TSTORE   => invalid;
-    0x5E => MCOPY    => invalid;
+    0x5E => MCOPY    => mcopy;
 
     0x5F => PUSH0  => push::<0>;
     0x60 => PUSH1  => push::<1>;
@@ -165,39 +165,39 @@ opcodes! {$
     0x7E => PUSH31 => push::<31>;
     0x7F => PUSH32 => push::<32>;
 
-    0x80 => DUP1  => invalid;
-    0x81 => DUP2  => invalid;
-    0x82 => DUP3  => invalid;
-    0x83 => DUP4  => invalid;
-    0x84 => DUP5  => invalid;
-    0x85 => DUP6  => invalid;
-    0x86 => DUP7  => invalid;
-    0x87 => DUP8  => invalid;
-    0x88 => DUP9  => invalid;
-    0x89 => DUP10 => invalid;
-    0x8A => DUP11 => invalid;
-    0x8B => DUP12 => invalid;
-    0x8C => DUP13 => invalid;
-    0x8D => DUP14 => invalid;
-    0x8E => DUP15 => invalid;
-    0x8F => DUP16 => invalid;
+    0x80 => DUP1  => dup::<1>;
+    0x81 => DUP2  => dup::<2>;
+    0x82 => DUP3  => dup::<3>;
+    0x83 => DUP4  => dup::<4>;
+    0x84 => DUP5  => dup::<5>;
+    0x85 => DUP6  => dup::<6>;
+    0x86 => DUP7  => dup::<7>;
+    0x87 => DUP8  => dup::<8>;
+    0x88 => DUP9  => dup::<9>;
+    0x89 => DUP10 => dup::<10>;
+    0x8A => DUP11 => dup::<11>;
+    0x8B => DUP12 => dup::<12>;
+    0x8C => DUP13 => dup::<13>;
+    0x8D => DUP14 => dup::<14>;
+    0x8E => DUP15 => dup::<15>;
+    0x8F => DUP16 => dup::<16>;
 
-    0x90 => SWAP1  => invalid;
-    0x91 => SWAP2  => invalid;
-    0x92 => SWAP3  => invalid;
-    0x93 => SWAP4  => invalid;
-    0x94 => SWAP5  => invalid;
-    0x95 => SWAP6  => invalid;
-    0x96 => SWAP7  => invalid;
-    0x97 => SWAP8  => invalid;
-    0x98 => SWAP9  => invalid;
-    0x99 => SWAP10 => invalid;
-    0x9A => SWAP11 => invalid;
-    0x9B => SWAP12 => invalid;
-    0x9C => SWAP13 => invalid;
-    0x9D => SWAP14 => invalid;
-    0x9E => SWAP15 => invalid;
-    0x9F => SWAP16 => invalid;
+    0x90 => SWAP1  => swap::<1>;
+    0x91 => SWAP2  => swap::<2>;
+    0x92 => SWAP3  => swap::<3>;
+    0x93 => SWAP4  => swap::<4>;
+    0x94 => SWAP5  => swap::<5>;
+    0x95 => SWAP6  => swap::<6>;
+    0x96 => SWAP7  => swap::<7>;
+    0x97 => SWAP8  => swap::<8>;
+    0x98 => SWAP9  => swap::<9>;
+    0x99 => SWAP10 => swap::<10>;
+    0x9A => SWAP11 => swap::<11>;
+    0x9B => SWAP12 => swap::<12>;
+    0x9C => SWAP13 => swap::<13>;
+    0x9D => SWAP14 => swap::<14>;
+    0x9E => SWAP15 => swap::<15>;
+    0x9F => SWAP16 => swap::<16>;
 
     0xA0 => LOG0 => invalid;
     0xA1 => LOG1 => invalid;
@@ -270,9 +270,9 @@ opcodes! {$
     // 0xE4
     // 0xE5
 
-    0xE6 => DUPN     => invalid;
-    0xE7 => SWAPN    => invalid;
-    0xE8 => EXCHANGE => invalid;
+    0xE6 => DUPN     => dupn;
+    0xE7 => SWAPN    => swapn;
+    0xE8 => EXCHANGE => exchange;
     // 0xE9
     // 0xEA
     // 0xEB

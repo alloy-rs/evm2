@@ -40,7 +40,7 @@ fn expand_instruction(raw: bool, input: ItemFn) -> TokenStream2 {
 
     let (_, outputs) = parse_return(sig.output);
     let stack_setup = (!raw).then(|| stack_setup(&inputs, &outputs));
-    let cx_setup = (raw || has_cx).then(|| {
+    let cx_setup = has_cx.then(|| {
         let cx = cx_arg.unwrap_or_else(|| Ident::new("cx", ident.span()));
         quote! {
             let mut ctrl = ctrl;
@@ -54,7 +54,7 @@ fn expand_instruction(raw: bool, input: ItemFn) -> TokenStream2 {
         #[inline]
         #[allow(unreachable_code)]
         #vis fn #ident #generics(
-            ctrl: CtrlRef<'_>,
+            mut ctrl: CtrlRef<'_>,
             stack: &mut Stack<'_>,
             gas: &mut Gas,
             state: &mut State<'_>,

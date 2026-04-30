@@ -35,6 +35,9 @@ pub use ctrl::{Ctrl, CtrlRef};
 mod stack;
 pub use stack::{Stack, Word};
 
+mod memory;
+pub use memory::Memory;
+
 mod state;
 pub use state::{Host, State};
 

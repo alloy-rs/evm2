@@ -1,5 +1,5 @@
 use super::{
-    Ctrl, CtrlRef, Gas, Host, InstrErr, Result, SpecId, Stack, State, Word,
+    Ctrl, CtrlRef, Gas, Host, InstrErr, Memory, Result, SpecId, Stack, State, Word,
     instruction::{GasTable, InstrTable, TailInstrTable},
 };
 use alloc::{boxed::Box, vec::Vec};
@@ -17,6 +17,7 @@ pub struct Interpreter {
     pub(crate) stack: Box<[Word; 1024]>,
     pub(crate) stack_len: usize,
     pub(crate) gas: Gas,
+    pub(crate) memory: Memory,
     spec_id: SpecId,
 }
 
@@ -29,6 +30,7 @@ impl Interpreter {
             stack: unsafe { Box::new_uninit().assume_init() },
             stack_len: 0,
             gas: Gas::new(10_000),
+            memory: Memory::new(),
             spec_id,
         }
     }
@@ -83,7 +85,12 @@ impl Interpreter {
             ctrl,
             Stack::new(&mut self.stack, self.stack_len),
             &mut self.gas,
-            &mut State { host, spec: self.spec_id, raw_interp: core::ptr::null_mut() },
+            &mut State {
+                host,
+                memory: &mut self.memory,
+                spec: self.spec_id,
+                raw_interp: core::ptr::null_mut(),
+            },
         );
         r
     }
@@ -102,7 +109,7 @@ impl Interpreter {
             ctrl,
             Stack::new(&mut self.stack, self.stack_len),
             self.gas,
-            &mut State { host, spec: self.spec_id, raw_interp: raw },
+            &mut State { host, memory: &mut self.memory, spec: self.spec_id, raw_interp: raw },
             gas_table,
             table.as_ptr().cast(),
         );
