@@ -117,52 +117,72 @@ fn generic_ident(arg: &GenericArgument) -> Option<Ident> {
 
 fn stack_setup(inputs: &[Ident], outputs: &[Ident]) -> TokenStream2 {
     let input_count = inputs.len();
-    let output_count = outputs.len();
     let input_setup = (input_count > 0).then(|| {
         quote! {
-            let [#(#inputs),*] = unsafe { ptr.cast::<[Word; IN]>().read() };
+            let [#(#inputs),*] = unsafe { ptr.cast::<[Word; #input_count]>().read() };
             #(let #inputs = &#inputs;)*
         }
     });
     match outputs {
         [] if input_count == 0 => quote! {},
         [] => {
+            let underflow = underflow_check(input_count);
+            let len_update = decrease_len(input_count);
             quote! {
-                const IN: usize = #input_count;
-                const OUT: usize = #output_count;
-                const REQUIRED_LEN: usize = if IN > OUT { IN } else { OUT };
-                if cx.stack.len < REQUIRED_LEN {
-                    cold_path();
-                    return Err(InstrErr::StackUnderflow);
-                }
-                let ptr = unsafe { cx.stack.stack.as_mut_ptr().add(cx.stack.len).sub(IN) };
+                #underflow
+                let ptr = unsafe { cx.stack.stack.as_mut_ptr().add(cx.stack.len).sub(#input_count) };
                 #input_setup
-                cx.stack.len -= IN;
+                #len_update
             }
         }
         [output] => {
+            let underflow = underflow_check(input_count);
+            let overflow = (input_count == 0).then(|| {
+                quote! {
+                    if cx.stack.len == 1024 {
+                        cold_path();
+                        return Err(InstrErr::StackOverflow);
+                    }
+                }
+            });
+            let len_update = match input_count {
+                0 => quote! { cx.stack.len += 1; },
+                1 => quote! {},
+                _ => decrease_len(input_count - 1),
+            };
             quote! {
-                const IN: usize = #input_count;
-                const OUT: usize = #output_count;
-                const REQUIRED_LEN: usize = if IN > OUT { IN } else { OUT };
-                if IN != 0 && cx.stack.len < REQUIRED_LEN {
-                    cold_path();
-                    return Err(InstrErr::StackUnderflow);
-                }
-                let new_len = cx.stack.len - IN + OUT;
-                if new_len > 1024 {
-                    cold_path();
-                    return Err(InstrErr::StackOverflow);
-                }
-                let ptr = unsafe { cx.stack.stack.as_mut_ptr().add(cx.stack.len).sub(IN) };
+                #underflow
+                #overflow
+                let ptr = unsafe { cx.stack.stack.as_mut_ptr().add(cx.stack.len).sub(#input_count) };
                 #input_setup
                 let #output = unsafe { &mut *ptr.cast::<Word>() };
-                cx.stack.len = new_len;
+                #len_update
             }
         }
         _ => quote! {
             compile_error!("multiple instruction outputs are not supported yet");
         },
+    }
+}
+
+fn underflow_check(required_len: usize) -> TokenStream2 {
+    if required_len == 0 {
+        quote! {}
+    } else {
+        quote! {
+            if cx.stack.len < #required_len {
+                cold_path();
+                return Err(InstrErr::StackUnderflow);
+            }
+        }
+    }
+}
+
+fn decrease_len(amount: usize) -> TokenStream2 {
+    if amount == 0 {
+        quote! {}
+    } else {
+        quote! { cx.stack.len -= #amount; }
     }
 }
 
