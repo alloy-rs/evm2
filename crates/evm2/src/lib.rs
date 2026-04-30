@@ -10,7 +10,6 @@
 extern crate alloc;
 
 pub mod bytecode;
-/// EVM interpreter.
 pub mod interpreter;
 
 mod once_lock;

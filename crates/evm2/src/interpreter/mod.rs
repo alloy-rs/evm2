@@ -1,3 +1,5 @@
+//! EVM interpreter.
+
 mod gas;
 pub use gas::{Gas, GasRef, GasTracker, MemoryExtensionResult, MemoryGas};
 

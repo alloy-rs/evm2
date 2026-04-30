@@ -1,4 +1,4 @@
-//! Module that contains the bytecode struct with legacy bytecode analysis.
+//! EVM bytecode.
 
 use crate::once_lock::OnceLock;
 use alloc::{borrow::Cow, sync::Arc, vec::Vec};
@@ -28,7 +28,6 @@ pub const EIP7702_BYTECODE_LEN: usize = 23;
 
 /// EIP-7702 decode errors.
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Eip7702DecodeError {
     /// Invalid length of the raw bytecode.
     #[error("Eip7702 is not 23 bytes long")]
@@ -43,7 +42,6 @@ pub enum Eip7702DecodeError {
 
 /// Bytecode decode errors.
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum BytecodeDecodeError {
     /// EIP-7702 decode error.
     #[error(transparent)]
@@ -74,7 +72,6 @@ struct BytecodeInner {
 
 /// The kind of bytecode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Ord, PartialOrd, Default)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum BytecodeKind {
     /// Legacy analyzed bytecode with jump table.
     #[default]
