@@ -41,11 +41,24 @@ pub(super) fn run_stack(inputs: &[Word], opcode: u8) -> TestInterpreter {
     run(code)
 }
 
-pub(super) fn assert_stack(inputs: &[Word], opcode: u8, expected: &[Word]) {
+pub(super) fn assert_stack_words(inputs: &[Word], opcode: u8, expected: &[Word]) {
     let interpreter = run_stack(inputs, opcode);
     assert!(matches!(interpreter.err, InstrErr::Stop));
     assert_eq!(interpreter.stack(), expected);
 }
+
+macro_rules! assert_stack {
+    ($op:ident($($input:expr),* $(,)?), $expected:expr $(,)?) => {{
+        let inputs = [$($crate::interpreter::Word::from($input)),*];
+        let expected = [$crate::interpreter::Word::from($expected)];
+        $crate::interpreter::instructions::tests::assert_stack_words(
+            &inputs,
+            $crate::interpreter::op::$op,
+            &expected,
+        );
+    }};
+}
+pub(super) use assert_stack;
 
 pub(super) fn push(code: &mut Vec<u8>, value: Word) {
     if value.is_zero() {
