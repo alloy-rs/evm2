@@ -21,6 +21,7 @@ thiserror.workspace = true
 
 # no_std
 once_cell = { workspace = true, features = ["alloc"] }
+paste.workspace = true
 
 # "serde"
 serde = { workspace = true, features = ["derive", "alloc"], optional = true }

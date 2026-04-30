@@ -3,6 +3,7 @@
 use super::{InstrErr, Result, SpecId};
 use alloy_primitives::U256;
 use core::hint::cold_path;
+use paste::paste;
 
 const COPY: u64 = 3;
 const MEMORY: u64 = 3;
@@ -23,60 +24,69 @@ const INITCODE_WORD_COST: u64 = 2;
 const CALL_STIPEND: u64 = 2300;
 
 macro_rules! gas_ids {
-    ($($value:literal => $variant:ident => $name:literal => $doc:literal;)*) => {
-        /// Gas parameter identifier.
-        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-        #[non_exhaustive]
-        #[repr(u8)]
-        pub enum GasId {
-            $(
-                #[doc = $doc]
-                $variant = $value,
-            )*
-        }
-
-        impl GasId {
-            /// Returns the raw gas parameter identifier.
-            #[inline]
-            pub const fn as_u8(self) -> u8 {
-                self as u8
+    (#[$first_doc:meta] $first_variant:ident; $(#[$doc:meta] $variant:ident;)*) => {
+        paste! {
+            /// Gas parameter identifier.
+            #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+            #[non_exhaustive]
+            #[repr(u8)]
+            pub enum GasId {
+                #[$first_doc]
+                $first_variant = 1,
+                $(
+                    #[$doc]
+                    $variant,
+                )*
             }
 
-            /// Returns the gas parameter identifier as a table index.
-            #[inline]
-            pub const fn as_usize(self) -> usize {
-                self.as_u8() as usize
-            }
-
-            /// Returns the revm gas parameter name.
-            #[inline]
-            pub const fn name(self) -> &'static str {
-                match self {
-                    $(
-                        Self::$variant => $name,
-                    )*
+            impl GasId {
+                /// Returns the raw gas parameter identifier.
+                #[inline]
+                pub const fn as_u8(self) -> u8 {
+                    self as u8
                 }
-            }
 
-            /// Returns the gas parameter for a raw identifier.
-            #[inline]
-            pub const fn from_u8(value: u8) -> Option<Self> {
-                match value {
-                    $(
-                        $value => Some(Self::$variant),
-                    )*
-                    _ => None,
+                /// Returns the gas parameter identifier as a table index.
+                #[inline]
+                pub const fn as_usize(self) -> usize {
+                    self.as_u8() as usize
                 }
-            }
 
-            /// Returns the gas parameter for a revm gas parameter name.
-            #[inline]
-            pub fn from_name(name: &str) -> Option<Self> {
-                match name {
+                /// Returns the revm gas parameter name.
+                #[inline]
+                pub const fn name(self) -> &'static str {
+                    match self {
+                        Self::$first_variant => stringify!([<$first_variant:snake>]),
+                        $(
+                            Self::$variant => stringify!([<$variant:snake>]),
+                        )*
+                    }
+                }
+
+                /// Returns the gas parameter for a raw identifier.
+                #[inline]
+                pub const fn from_u8(value: u8) -> Option<Self> {
+                    if value == Self::$first_variant as u8 {
+                        return Some(Self::$first_variant);
+                    }
                     $(
-                        $name => Some(Self::$variant),
+                        if value == Self::$variant as u8 {
+                            return Some(Self::$variant);
+                        }
                     )*
-                    _ => None,
+                    None
+                }
+
+                /// Returns the gas parameter for a revm gas parameter name.
+                #[inline]
+                pub fn from_name(name: &str) -> Option<Self> {
+                    match name {
+                        stringify!([<$first_variant:snake>]) => Some(Self::$first_variant),
+                        $(
+                            stringify!([<$variant:snake>]) => Some(Self::$variant),
+                        )*
+                        _ => None,
+                    }
                 }
             }
         }
@@ -84,50 +94,94 @@ macro_rules! gas_ids {
 }
 
 gas_ids! {
-    1 => ExpByteGas => "exp_byte_gas" => "Gas charged per non-zero byte in `EXP` exponent.";
-    2 => ExtcodecopyPerWord => "extcodecopy_per_word" => "Gas charged per copied word in `EXTCODECOPY`.";
-    3 => CopyPerWord => "copy_per_word" => "Gas charged per copied word.";
-    4 => Logdata => "logdata" => "Gas charged per byte of log data.";
-    5 => Logtopic => "logtopic" => "Gas charged per log topic.";
-    6 => McopyPerWord => "mcopy_per_word" => "Gas charged per copied word in `MCOPY`.";
-    7 => Keccak256PerWord => "keccak256_per_word" => "Gas charged per hashed word in `KECCAK256`.";
-    8 => MemoryLinearCost => "memory_linear_cost" => "Linear memory gas coefficient.";
-    9 => MemoryQuadraticReduction => "memory_quadratic_reduction" => "Quadratic memory gas divisor.";
-    10 => InitcodePerWord => "initcode_per_word" => "Gas charged per initcode word.";
-    11 => Create => "create" => "Gas charged by `CREATE`.";
-    12 => CallStipendReduction => "call_stipend_reduction" => "Call gas stipend reduction divisor.";
-    13 => TransferValueCost => "transfer_value_cost" => "Gas charged when a call transfers value.";
-    14 => ColdAccountAdditionalCost => "cold_account_additional_cost" => "Additional gas charged for a cold account access.";
-    15 => NewAccountCost => "new_account_cost" => "Gas charged for creating a new account.";
-    16 => WarmStorageReadCost => "warm_storage_read_cost" => "Gas charged for a warm storage read.";
-    17 => SstoreStatic => "sstore_static" => "Static `SSTORE` gas.";
-    18 => SstoreSetWithoutLoadCost => "sstore_set_without_load_cost" => "Gas charged by `SSTORE` for setting a slot, excluding the load.";
-    19 => SstoreResetWithoutColdLoadCost => "sstore_reset_without_cold_load_cost" => "Gas charged by `SSTORE` for resetting a slot, excluding a cold load.";
-    20 => SstoreClearingSlotRefund => "sstore_clearing_slot_refund" => "Refund for clearing a storage slot.";
-    21 => SelfdestructRefund => "selfdestruct_refund" => "`SELFDESTRUCT` refund.";
-    22 => CallStipend => "call_stipend" => "Gas stipend for a value-transferring call.";
-    23 => ColdStorageAdditionalCost => "cold_storage_additional_cost" => "Additional gas charged for cold storage.";
-    24 => ColdStorageCost => "cold_storage_cost" => "Gas charged for cold storage.";
-    25 => NewAccountCostForSelfdestruct => "new_account_cost_for_selfdestruct" => "New account cost charged by `SELFDESTRUCT`.";
-    26 => CodeDepositCost => "code_deposit_cost" => "Gas charged per deposited code byte.";
-    27 => TxEip7702PerEmptyAccountCost => "tx_eip7702_per_empty_account_cost" => "EIP-7702 transaction cost per empty account.";
-    28 => TxTokenNonZeroByteMultiplier => "tx_token_non_zero_byte_multiplier" => "Transaction token multiplier for non-zero bytes.";
-    29 => TxTokenCost => "tx_token_cost" => "Transaction token base cost.";
-    30 => TxFloorCostPerToken => "tx_floor_cost_per_token" => "Transaction floor cost per token.";
-    31 => TxFloorCostBaseGas => "tx_floor_cost_base_gas" => "Transaction floor base gas.";
-    32 => TxAccessListAddressCost => "tx_access_list_address_cost" => "Transaction access-list address cost.";
-    33 => TxAccessListStorageKeyCost => "tx_access_list_storage_key_cost" => "Transaction access-list storage-key cost.";
-    34 => TxBaseStipend => "tx_base_stipend" => "Transaction base stipend.";
-    35 => TxCreateCost => "tx_create_cost" => "Transaction create cost.";
-    36 => TxInitcodeCost => "tx_initcode_cost" => "Transaction initcode cost.";
-    37 => SstoreSetRefund => "sstore_set_refund" => "`SSTORE` set refund.";
-    38 => SstoreResetRefund => "sstore_reset_refund" => "`SSTORE` reset refund.";
-    39 => TxEip7702AuthRefund => "tx_eip7702_auth_refund" => "EIP-7702 transaction authorization refund.";
-    40 => SstoreSetStateGas => "sstore_set_state_gas" => "`SSTORE` set state gas.";
-    41 => NewAccountStateGas => "new_account_state_gas" => "New account state gas.";
-    42 => CodeDepositStateGas => "code_deposit_state_gas" => "Code deposit state gas.";
-    43 => CreateStateGas => "create_state_gas" => "`CREATE` state gas.";
-    44 => TxEip7702PerAuthStateGas => "tx_eip7702_per_auth_state_gas" => "EIP-7702 transaction state gas per authorization.";
+    /// Gas charged per non-zero byte in `EXP` exponent.
+    ExpByteGas;
+    /// Gas charged per copied word in `EXTCODECOPY`.
+    ExtcodecopyPerWord;
+    /// Gas charged per copied word.
+    CopyPerWord;
+    /// Gas charged per byte of log data.
+    Logdata;
+    /// Gas charged per log topic.
+    Logtopic;
+    /// Gas charged per copied word in `MCOPY`.
+    McopyPerWord;
+    /// Gas charged per hashed word in `KECCAK256`.
+    Keccak256PerWord;
+    /// Linear memory gas coefficient.
+    MemoryLinearCost;
+    /// Quadratic memory gas divisor.
+    MemoryQuadraticReduction;
+    /// Gas charged per initcode word.
+    InitcodePerWord;
+    /// Gas charged by `CREATE`.
+    Create;
+    /// Call gas stipend reduction divisor.
+    CallStipendReduction;
+    /// Gas charged when a call transfers value.
+    TransferValueCost;
+    /// Additional gas charged for a cold account access.
+    ColdAccountAdditionalCost;
+    /// Gas charged for creating a new account.
+    NewAccountCost;
+    /// Gas charged for a warm storage read.
+    WarmStorageReadCost;
+    /// Static `SSTORE` gas.
+    SstoreStatic;
+    /// Gas charged by `SSTORE` for setting a slot, excluding the load.
+    SstoreSetWithoutLoadCost;
+    /// Gas charged by `SSTORE` for resetting a slot, excluding a cold load.
+    SstoreResetWithoutColdLoadCost;
+    /// Refund for clearing a storage slot.
+    SstoreClearingSlotRefund;
+    /// `SELFDESTRUCT` refund.
+    SelfdestructRefund;
+    /// Gas stipend for a value-transferring call.
+    CallStipend;
+    /// Additional gas charged for cold storage.
+    ColdStorageAdditionalCost;
+    /// Gas charged for cold storage.
+    ColdStorageCost;
+    /// New account cost charged by `SELFDESTRUCT`.
+    NewAccountCostForSelfdestruct;
+    /// Gas charged per deposited code byte.
+    CodeDepositCost;
+    /// EIP-7702 transaction cost per empty account.
+    TxEip7702PerEmptyAccountCost;
+    /// Transaction token multiplier for non-zero bytes.
+    TxTokenNonZeroByteMultiplier;
+    /// Transaction token base cost.
+    TxTokenCost;
+    /// Transaction floor cost per token.
+    TxFloorCostPerToken;
+    /// Transaction floor base gas.
+    TxFloorCostBaseGas;
+    /// Transaction access-list address cost.
+    TxAccessListAddressCost;
+    /// Transaction access-list storage-key cost.
+    TxAccessListStorageKeyCost;
+    /// Transaction base stipend.
+    TxBaseStipend;
+    /// Transaction create cost.
+    TxCreateCost;
+    /// Transaction initcode cost.
+    TxInitcodeCost;
+    /// `SSTORE` set refund.
+    SstoreSetRefund;
+    /// `SSTORE` reset refund.
+    SstoreResetRefund;
+    /// EIP-7702 transaction authorization refund.
+    TxEip7702AuthRefund;
+    /// `SSTORE` set state gas.
+    SstoreSetStateGas;
+    /// New account state gas.
+    NewAccountStateGas;
+    /// Code deposit state gas.
+    CodeDepositStateGas;
+    /// `CREATE` state gas.
+    CreateStateGas;
+    /// EIP-7702 transaction state gas per authorization.
+    TxEip7702PerAuthStateGas;
 }
 
 /// Gas parameter table.
