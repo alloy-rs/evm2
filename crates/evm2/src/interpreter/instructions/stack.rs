@@ -29,37 +29,35 @@ pub(in crate::interpreter) fn swap<const N: usize>() -> Result {
 
 #[instruction(raw)]
 pub(in crate::interpreter) fn dupn() -> Result {
-    let n = decode_single(unsafe { ctrl.read_bytes_unchecked(1)[0] } as usize)
-        .ok_or(InstrErr::Invalid)?;
+    let n = decode_single(unsafe { ctrl.read_bytes_unchecked(1)[0] }).ok_or(InstrErr::Invalid)?;
     unsafe { ctrl.advance_unchecked(1) };
     stack.dup(n + 1)
 }
 
 #[instruction(raw)]
 pub(in crate::interpreter) fn swapn() -> Result {
-    let n = decode_single(unsafe { ctrl.read_bytes_unchecked(1)[0] } as usize)
-        .ok_or(InstrErr::Invalid)?;
+    let n = decode_single(unsafe { ctrl.read_bytes_unchecked(1)[0] }).ok_or(InstrErr::Invalid)?;
     unsafe { ctrl.advance_unchecked(1) };
     stack.exchange(0, n + 1)
 }
 
 #[instruction(raw)]
 pub(in crate::interpreter) fn exchange() -> Result {
-    let (n, m) = decode_pair(unsafe { ctrl.read_bytes_unchecked(1)[0] } as usize)
-        .ok_or(InstrErr::Invalid)?;
+    let (n, m) =
+        decode_pair(unsafe { ctrl.read_bytes_unchecked(1)[0] }).ok_or(InstrErr::Invalid)?;
     unsafe { ctrl.advance_unchecked(1) };
     stack.exchange(n, m - n)
 }
 
-const fn decode_single(x: usize) -> Option<usize> {
-    if x <= 90 || x >= 128 { Some((x + 145) % 256) } else { None }
+const fn decode_single(x: u8) -> Option<usize> {
+    if x <= 90 || x >= 128 { Some(x.wrapping_add(145) as usize) } else { None }
 }
 
-const fn decode_pair(x: usize) -> Option<(usize, usize)> {
+const fn decode_pair(x: u8) -> Option<(usize, usize)> {
     if x > 81 && x < 128 {
         return None;
     }
-    let k = x ^ 143;
+    let k = (x ^ 143) as usize;
     let q = k / 16;
     let r = k % 16;
     if q < r { Some((q + 1, r + 1)) } else { Some((r + 1, 29 - q)) }
