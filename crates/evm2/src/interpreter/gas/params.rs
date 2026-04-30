@@ -21,7 +21,25 @@ const INITCODE_WORD_COST: u64 = 2;
 const CALL_STIPEND: u64 = 2300;
 
 macro_rules! gas_ids {
-    (#[$first_doc:meta] $first_variant:ident; $(#[$doc:meta] $variant:ident;)*) => {
+    ($($tokens:tt)*) => {
+        gas_ids_find_last! { [] $($tokens)* }
+    };
+}
+
+macro_rules! gas_ids_find_last {
+    ([$($variants:tt)*] #[$last_doc:meta] $last_variant:ident;) => {
+        gas_ids_impl! { [$($variants)*] #[$last_doc] $last_variant; }
+    };
+    ([$($variants:tt)*] #[$doc:meta] $variant:ident; $($rest:tt)+) => {
+        gas_ids_find_last! { [$($variants)* #[$doc] $variant;] $($rest)+ }
+    };
+}
+
+macro_rules! gas_ids_impl {
+    (
+        [#[$first_doc:meta] $first_variant:ident; $(#[$doc:meta] $variant:ident;)*]
+        #[$last_doc:meta] $last_variant:ident;
+    ) => {
         paste! {
             /// Gas parameter identifier.
             #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -34,9 +52,14 @@ macro_rules! gas_ids {
                     #[$doc]
                     $variant,
                 )*
+                #[$last_doc]
+                $last_variant,
             }
 
             impl GasId {
+                /// Largest gas parameter identifier.
+                pub const MAX: u8 = Self::$last_variant as u8;
+
                 /// Returns the raw gas parameter identifier.
                 #[inline]
                 pub const fn as_u8(self) -> u8 {
@@ -57,20 +80,18 @@ macro_rules! gas_ids {
                         $(
                             Self::$variant => stringify!([<$variant:snake>]),
                         )*
+                        Self::$last_variant => stringify!([<$last_variant:snake>]),
                     }
                 }
 
                 /// Returns the gas parameter for a raw identifier.
                 #[inline]
                 pub const fn from_u8(value: u8) -> Option<Self> {
-                    if value == Self::$first_variant as u8 {
-                        return Some(Self::$first_variant);
+                    if value >= 1 && value <= Self::MAX {
+                        // SAFETY: `GasId` is `repr(u8)`, starts at 1, and every variant up to
+                        // `MAX` is assigned contiguously by the enum declaration.
+                        return Some(unsafe { core::mem::transmute::<u8, Self>(value) });
                     }
-                    $(
-                        if value == Self::$variant as u8 {
-                            return Some(Self::$variant);
-                        }
-                    )*
                     None
                 }
 
@@ -82,6 +103,7 @@ macro_rules! gas_ids {
                         $(
                             stringify!([<$variant:snake>]) => Some(Self::$variant),
                         )*
+                        stringify!([<$last_variant:snake>]) => Some(Self::$last_variant),
                         _ => None,
                     }
                 }
@@ -337,6 +359,8 @@ mod tests {
         assert_eq!(GasId::ExpByteGas.as_u8(), 1);
         assert_eq!(GasId::ExpByteGas.name(), "exp_byte_gas");
         assert_eq!(GasId::from_name("exp_byte_gas"), Some(GasId::ExpByteGas));
+        assert_eq!(GasId::from_u8(GasId::MAX), Some(GasId::TxEip7702PerAuthStateGas));
+        assert_eq!(GasId::from_u8(GasId::MAX + 1), None);
         assert_eq!(GasId::from_u8(0), None);
         assert_eq!(GasId::from_name("missing"), None);
     }
