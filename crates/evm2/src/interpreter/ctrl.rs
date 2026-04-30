@@ -59,6 +59,11 @@ impl<'a> Ctrl<'a> {
     }
 
     #[inline]
+    pub fn as_slice(&self) -> &[u8] {
+        unsafe { core::slice::from_raw_parts(self.base, self.len) }
+    }
+
+    #[inline]
     pub unsafe fn read_bytes_unchecked(&self, n: usize) -> &[u8] {
         unsafe { core::slice::from_raw_parts(self.base.add(self.pc), n) }
     }
@@ -102,6 +107,11 @@ impl<'a> CtrlRef<'a> {
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.len == 0
+    }
+
+    #[inline]
+    pub fn as_slice(&self) -> &[u8] {
+        unsafe { core::slice::from_raw_parts(self.base, self.len) }
     }
 
     #[inline]

@@ -29,20 +29,7 @@ pub(in crate::interpreter) fn codecopy(
     if len == 0 {
         return Ok(());
     }
-
-    let mut remaining = len;
-    let mut dst = memory_offset;
-    if code_offset < cx.ctrl.len() {
-        let available = (cx.ctrl.len() - code_offset).min(len);
-        let bytes = unsafe { cx.ctrl.code_slice_unchecked(code_offset, available) };
-        cx.state.memory.set(dst, bytes)?;
-        remaining -= available;
-        dst += available;
-    }
-    if remaining != 0 {
-        cx.state.memory.set(dst, &alloc::vec![0; remaining])?;
-    }
-    Ok(())
+    cx.state.memory.set_data(memory_offset, code_offset, len, cx.ctrl.as_slice())
 }
 
 #[instruction]
