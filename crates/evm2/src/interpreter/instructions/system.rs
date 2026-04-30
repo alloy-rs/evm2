@@ -5,26 +5,28 @@ use super::{
 use alloy_primitives::keccak256;
 use evm2_macros::instruction;
 
-#[instruction(raw)]
-pub(in crate::interpreter) fn keccak256_instr() -> Result {
-    let [offset, len] = stack.popn()?;
-    let offset = as_usize(offset).ok_or(InstrErr::OutOfGas)?;
-    let len = as_usize(len).ok_or(InstrErr::OutOfGas)?;
+#[instruction]
+pub(in crate::interpreter) fn keccak256_instr(offset: &Word, len: &Word) -> Result<out> {
+    let offset = as_usize(*offset).ok_or(InstrErr::OutOfGas)?;
+    let len = as_usize(*len).ok_or(InstrErr::OutOfGas)?;
     let hash = keccak256(state.memory.slice(offset, len)?);
-    return stack.push(Word::from_be_bytes(hash.0));
+    *out = Word::from_be_bytes(hash.0);
 }
 
-#[instruction(raw)]
-pub(in crate::interpreter) fn codesize() -> Result {
-    return stack.push(Word::from(ctrl.len()));
+#[instruction]
+pub(in crate::interpreter) fn codesize() -> Result<out> {
+    *out = Word::from(ctrl.len());
 }
 
-#[instruction(raw)]
-pub(in crate::interpreter) fn codecopy() -> Result {
-    let [memory_offset, code_offset, len] = stack.popn()?;
-    let memory_offset = as_usize(memory_offset).ok_or(InstrErr::OutOfGas)?;
-    let code_offset = as_usize(code_offset).unwrap_or(usize::MAX);
-    let len = as_usize(len).ok_or(InstrErr::OutOfGas)?;
+#[instruction]
+pub(in crate::interpreter) fn codecopy(
+    memory_offset: &Word,
+    code_offset: &Word,
+    len: &Word,
+) -> Result {
+    let memory_offset = as_usize(*memory_offset).ok_or(InstrErr::OutOfGas)?;
+    let code_offset = as_usize(*code_offset).unwrap_or(usize::MAX);
+    let len = as_usize(*len).ok_or(InstrErr::OutOfGas)?;
     if len == 0 {
         return Ok(());
     }
@@ -44,7 +46,7 @@ pub(in crate::interpreter) fn codecopy() -> Result {
     return Ok(());
 }
 
-#[instruction(raw)]
-pub(in crate::interpreter) fn gas_instr() -> Result {
-    return stack.push(Word::from(gas.remaining));
+#[instruction]
+pub(in crate::interpreter) fn gas_instr() -> Result<out> {
+    *out = Word::from(gas.remaining);
 }

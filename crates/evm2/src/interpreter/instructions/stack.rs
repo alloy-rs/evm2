@@ -2,9 +2,9 @@ use super::super::{CtrlRef, Gas, InstrErr, InstructionCx, Result, Stack, State, 
 use core::{hint::cold_path, mem};
 use evm2_macros::instruction;
 
-#[instruction(raw)]
-pub(in crate::interpreter) fn pop() -> Result {
-    return stack.pop().map(drop);
+#[instruction]
+pub(in crate::interpreter) fn pop(_value: &Word) -> Result {
+    return Ok(());
 }
 
 #[instruction(raw)]

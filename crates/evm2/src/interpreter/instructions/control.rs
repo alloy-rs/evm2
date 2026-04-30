@@ -5,21 +5,21 @@ use super::{
 use core::hint::cold_path;
 use evm2_macros::instruction;
 
-#[instruction(raw)]
+#[instruction]
 pub(in crate::interpreter) fn stop() -> Result {
     cold_path();
     return Err(InstrErr::Stop);
 }
 
-#[instruction(raw)]
+#[instruction]
 pub(in crate::interpreter) fn invalid() -> Result {
     cold_path();
     return Err(InstrErr::Invalid);
 }
 
-#[instruction(raw)]
-pub(in crate::interpreter) fn jump() -> Result {
-    let target = stack.pop().and_then(|target| as_usize(target).ok_or(InstrErr::Invalid))?;
+#[instruction]
+pub(in crate::interpreter) fn jump(target: &Word) -> Result {
+    let target = as_usize(*target).ok_or(InstrErr::Invalid)?;
     if !ctrl.is_valid_jumpdest(target) {
         cold_path();
         return Err(InstrErr::Invalid);
@@ -28,11 +28,10 @@ pub(in crate::interpreter) fn jump() -> Result {
     return Ok(());
 }
 
-#[instruction(raw)]
-pub(in crate::interpreter) fn jumpi() -> Result {
-    let [target, cond] = stack.popn()?;
+#[instruction]
+pub(in crate::interpreter) fn jumpi(target: &Word, cond: &Word) -> Result {
     if !cond.is_zero() {
-        let target = as_usize(target).ok_or(InstrErr::Invalid)?;
+        let target = as_usize(*target).ok_or(InstrErr::Invalid)?;
         if !ctrl.is_valid_jumpdest(target) {
             cold_path();
             return Err(InstrErr::Invalid);
@@ -42,33 +41,31 @@ pub(in crate::interpreter) fn jumpi() -> Result {
     return Ok(());
 }
 
-#[instruction(raw)]
-pub(in crate::interpreter) fn pc() -> Result {
-    return stack.push(Word::from(ctrl.pc() - 1));
+#[instruction]
+pub(in crate::interpreter) fn pc() -> Result<out> {
+    *out = Word::from(ctrl.pc() - 1);
 }
 
-#[instruction(raw)]
+#[instruction]
 pub(in crate::interpreter) fn jumpdest() -> Result {
     return Ok(());
 }
 
-#[instruction(raw)]
-pub(in crate::interpreter) fn ret() -> Result {
-    let [offset, len] = stack.popn()?;
-    let len = as_usize(len).ok_or(InstrErr::OutOfGas)?;
+#[instruction]
+pub(in crate::interpreter) fn ret(offset: &Word, len: &Word) -> Result {
+    let len = as_usize(*len).ok_or(InstrErr::OutOfGas)?;
     if len != 0 {
-        let offset = as_usize(offset).ok_or(InstrErr::OutOfGas)?;
+        let offset = as_usize(*offset).ok_or(InstrErr::OutOfGas)?;
         state.memory.resize(offset, len)?;
     }
     return Err(InstrErr::Return);
 }
 
-#[instruction(raw)]
-pub(in crate::interpreter) fn revert() -> Result {
-    let [offset, len] = stack.popn()?;
-    let len = as_usize(len).ok_or(InstrErr::OutOfGas)?;
+#[instruction]
+pub(in crate::interpreter) fn revert(offset: &Word, len: &Word) -> Result {
+    let len = as_usize(*len).ok_or(InstrErr::OutOfGas)?;
     if len != 0 {
-        let offset = as_usize(offset).ok_or(InstrErr::OutOfGas)?;
+        let offset = as_usize(*offset).ok_or(InstrErr::OutOfGas)?;
         state.memory.resize(offset, len)?;
     }
     return Err(InstrErr::Revert);
