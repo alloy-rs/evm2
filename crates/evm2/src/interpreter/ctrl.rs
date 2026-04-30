@@ -12,6 +12,10 @@ pub struct CtrlRef<'a> {
 }
 
 impl<'a> Ctrl<'a> {
+    pub(crate) fn new(bytecode: &'a [u8], pc: usize) -> Self {
+        Self { base: bytecode.as_ptr(), pc, _marker: core::marker::PhantomData }
+    }
+
     #[inline]
     pub fn as_mut(&mut self) -> CtrlRef<'_> {
         CtrlRef { base: self.base, pc: &mut self.pc, _marker: core::marker::PhantomData }

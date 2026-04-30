@@ -1,5 +1,5 @@
 use super::{
-    CtrlRef, Gas, Host, InstrErr, Result, SpecId, Stack, State, Word,
+    Ctrl, CtrlRef, Gas, Host, InstrErr, Result, SpecId, Stack, State, Word,
     instruction::{GasTable, InstrTable, TailInstrTable},
 };
 use alloc::{boxed::Box, vec::Vec};
@@ -37,7 +37,7 @@ impl Interpreter {
         let _gas_start = self.gas.remaining;
 
         let _r = match table {
-            Table::Tail(table) => self.run_table_loop(table, gas_table, host),
+            Table::Tail(table) => self.step_tail(table, gas_table, host).unwrap_err(),
             Table::Normal(table) => self.run_table_loop(table, gas_table, host),
         };
 
@@ -86,5 +86,26 @@ impl Interpreter {
             &mut State { host, spec: self.spec_id, raw_interp: core::ptr::null_mut() },
         );
         r
+    }
+
+    #[inline(always)]
+    fn step_tail(
+        &mut self,
+        table: &TailInstrTable,
+        gas_table: &GasTable,
+        host: &mut dyn Host,
+    ) -> Result {
+        let raw = self as *mut _;
+        let mut ctrl = Ctrl::new(&self.bytecode, self.pc);
+        let op = Self::pre_step(ctrl.as_mut(), &mut self.gas, gas_table)?;
+        let e = table[op as usize](
+            ctrl,
+            Stack::new(&mut self.stack, self.stack_len),
+            self.gas,
+            &mut State { host, spec: self.spec_id, raw_interp: raw },
+            gas_table,
+            table.as_ptr().cast(),
+        );
+        Err(e)
     }
 }

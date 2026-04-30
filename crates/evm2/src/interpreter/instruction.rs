@@ -1,4 +1,4 @@
-use super::{CtrlRef, GasRef, Host, Result, Stack, State};
+use super::{Ctrl, CtrlRef, Gas, GasRef, Host, InstrErr, Result, Stack, State};
 
 pub type InstrFnRet = (usize, Result);
 pub type InstrFn = extern_table!(
@@ -6,8 +6,18 @@ pub type InstrFn = extern_table!(
 );
 pub type InstrTable = [InstrFn; 256];
 
-pub type TailInstrFn = InstrFn;
-pub type TailInstrTable = InstrTable;
+pub type TailInstrFnRet = InstrErr;
+pub type TailInstrFn = extern_table!(
+    fn(
+        ctrl: Ctrl<'_>,
+        stack: Stack<'_>,
+        gas: Gas,
+        state: &mut State,
+        gas_table: &GasTable,
+        instr_tablep: *const (),
+    ) -> TailInstrFnRet
+);
+pub type TailInstrTable = [TailInstrFn; 256];
 
 pub type GasTable = [u16; 256];
 

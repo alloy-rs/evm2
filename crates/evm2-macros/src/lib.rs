@@ -16,7 +16,6 @@ pub fn instruction(attr: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 fn expand_instruction(raw: bool, input: ItemFn) -> TokenStream2 {
-    let _ = raw;
     let attrs = input.attrs;
     let vis = input.vis;
     let sig = input.sig;
@@ -25,29 +24,45 @@ fn expand_instruction(raw: bool, input: ItemFn) -> TokenStream2 {
     let where_clause = generics.where_clause.clone();
     let body = input.block.stmts;
 
-    let mut args = Vec::new();
+    let mut has_cx = false;
+    let mut cx_arg = None;
+    let mut inputs = Vec::new();
     for arg in sig.inputs {
         let FnArg::Typed(arg) = arg else { continue };
         let Pat::Ident(PatIdent { ident, .. }) = *arg.pat else { continue };
         if is_infer(&arg.ty) {
-            args.push(quote! { #ident: &mut InstructionCx<'_, '_, '_> });
+            has_cx = true;
+            cx_arg = Some(ident);
         } else {
-            let ty = arg.ty;
-            args.push(quote! { #ident: #ty });
+            inputs.push(ident);
         }
     }
 
     let (_, outputs) = parse_return(sig.output);
-    let output_args = output_args(outputs);
+    let stack_setup = (!raw).then(|| stack_setup(&inputs, &outputs));
+    let cx_setup = (raw || has_cx).then(|| {
+        let cx = cx_arg.unwrap_or_else(|| Ident::new("cx", ident.span()));
+        quote! {
+            let mut ctrl = ctrl;
+            let mut #cx = InstructionCx { ctrl: &mut ctrl, gas, host: &mut *state.host };
+        }
+    });
     let body = body_with_semicolon(body);
 
     quote! {
         #(#attrs)*
-        #[inline(always)]
+        #[inline]
         #[allow(unreachable_code)]
-        #vis fn #ident #generics(#(#args,)* #(#output_args),*) -> Result
+        #vis fn #ident #generics(
+            ctrl: CtrlRef<'_>,
+            stack: &mut Stack<'_>,
+            gas: &mut Gas,
+            state: &mut State<'_>,
+        ) -> Result
         #where_clause
         {
+            #cx_setup
+            #stack_setup
             #(#body)*
             Ok(())
         }
@@ -88,10 +103,6 @@ fn generic_ident(arg: &GenericArgument) -> Option<Ident> {
     path.get_ident().cloned()
 }
 
-fn output_args(outputs: Vec<Ident>) -> Vec<TokenStream2> {
-    outputs.into_iter().map(|output| quote! { #output: &mut Word }).collect()
-}
-
 fn body_with_semicolon(stmts: Vec<Stmt>) -> Vec<TokenStream2> {
     stmts
         .into_iter()
@@ -100,4 +111,76 @@ fn body_with_semicolon(stmts: Vec<Stmt>) -> Vec<TokenStream2> {
             stmt => quote! { #stmt },
         })
         .collect()
+}
+
+fn stack_setup(inputs: &[Ident], outputs: &[Ident]) -> TokenStream2 {
+    let input_count = inputs.len();
+    let input_setup = (input_count > 0).then(|| {
+        quote! {
+            let [#(#inputs),*] = unsafe { ptr.cast::<[Word; #input_count]>().read() };
+            #(let #inputs = &#inputs;)*
+        }
+    });
+
+    match outputs {
+        [] if input_count == 0 => quote! {},
+        [] => {
+            let underflow = underflow_check(input_count);
+            let len_update = decrease_len(input_count);
+            quote! {
+                #underflow
+                let ptr = unsafe { stack.stack.as_mut_ptr().add(stack.len).sub(#input_count) };
+                #input_setup
+                #len_update
+            }
+        }
+        [output] => {
+            let underflow = underflow_check(input_count);
+            let overflow = (input_count == 0).then(|| {
+                quote! {
+                    if stack.len == 1024 {
+                        cold_path();
+                        return Err(InstrErr::StackOverflow);
+                    }
+                }
+            });
+            let len_update = match input_count {
+                0 => quote! { stack.len += 1; },
+                1 => quote! {},
+                _ => decrease_len(input_count - 1),
+            };
+            quote! {
+                #underflow
+                #overflow
+                let ptr = unsafe { stack.stack.as_mut_ptr().add(stack.len).sub(#input_count) };
+                #input_setup
+                let #output = unsafe { &mut *ptr.cast::<Word>() };
+                #len_update
+            }
+        }
+        _ => quote! {
+            compile_error!("multiple instruction outputs are not supported yet");
+        },
+    }
+}
+
+fn underflow_check(required_len: usize) -> TokenStream2 {
+    if required_len == 0 {
+        quote! {}
+    } else {
+        quote! {
+            if stack.len < #required_len {
+                cold_path();
+                return Err(InstrErr::StackUnderflow);
+            }
+        }
+    }
+}
+
+fn decrease_len(amount: usize) -> TokenStream2 {
+    if amount == 0 {
+        quote! {}
+    } else {
+        quote! { stack.len -= #amount; }
+    }
 }
