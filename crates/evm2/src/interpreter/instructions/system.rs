@@ -12,7 +12,7 @@ pub(in crate::interpreter) fn keccak256_instr(cx: _, offset: &Word, len: &Word) 
 }
 
 #[instruction]
-pub(in crate::interpreter) fn codesize(cx: _) -> Result<out> {
+pub(in crate::interpreter) fn codesize(cx: _) -> out {
     *out = Word::from(cx.ctrl.len());
 }
 
@@ -46,6 +46,6 @@ pub(in crate::interpreter) fn codecopy(
 }
 
 #[instruction]
-pub(in crate::interpreter) fn gas_instr(cx: _) -> Result<out> {
+pub(in crate::interpreter) fn gas_instr(cx: _) -> out {
     *out = Word::from(cx.gas.remaining);
 }

@@ -21,7 +21,7 @@ pub(in crate::interpreter) fn mstore8(cx: _, offset: &Word, value: &Word) -> Res
 }
 
 #[instruction]
-pub(in crate::interpreter) fn msize(cx: _) -> Result<out> {
+pub(in crate::interpreter) fn msize(cx: _) -> out {
     *out = Word::from(cx.state.memory.len());
 }
 

@@ -40,7 +40,7 @@ pub(in crate::interpreter) fn jumpi(cx: _, target: &Word, cond: &Word) -> Result
 }
 
 #[instruction]
-pub(in crate::interpreter) fn pc(cx: _) -> Result<out> {
+pub(in crate::interpreter) fn pc(cx: _) -> out {
     *out = Word::from(cx.ctrl.pc() - 1);
 }
 
