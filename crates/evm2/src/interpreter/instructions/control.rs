@@ -51,3 +51,25 @@ pub(in crate::interpreter) fn pc() -> Result {
 pub(in crate::interpreter) fn jumpdest() -> Result {
     return Ok(());
 }
+
+#[instruction(raw)]
+pub(in crate::interpreter) fn ret() -> Result {
+    let [offset, len] = stack.popn()?;
+    let len = as_usize(len).ok_or(InstrErr::OutOfGas)?;
+    if len != 0 {
+        let offset = as_usize(offset).ok_or(InstrErr::OutOfGas)?;
+        state.memory.resize(offset, len)?;
+    }
+    return Err(InstrErr::Return);
+}
+
+#[instruction(raw)]
+pub(in crate::interpreter) fn revert() -> Result {
+    let [offset, len] = stack.popn()?;
+    let len = as_usize(len).ok_or(InstrErr::OutOfGas)?;
+    if len != 0 {
+        let offset = as_usize(offset).ok_or(InstrErr::OutOfGas)?;
+        state.memory.resize(offset, len)?;
+    }
+    return Err(InstrErr::Revert);
+}

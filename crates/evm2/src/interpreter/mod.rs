@@ -13,6 +13,8 @@ pub enum InstrErr {
     StackOverflow,
     StackUnderflow,
     Invalid,
+    Return,
+    Revert,
 }
 
 mod gas;

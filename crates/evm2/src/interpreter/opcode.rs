@@ -284,7 +284,7 @@ opcodes! {$
     0xF0 => CREATE       => invalid;
     0xF1 => CALL         => invalid;
     0xF2 => CALLCODE     => invalid;
-    0xF3 => RETURN       => invalid;
+    0xF3 => RETURN       => ret;
     0xF4 => DELEGATECALL => invalid;
     0xF5 => CREATE2      => invalid;
     // 0xF6
@@ -294,7 +294,7 @@ opcodes! {$
     0xFA => STATICCALL      => invalid;
     // 0xFB
     // 0xFC
-    0xFD => REVERT       => invalid;
+    0xFD => REVERT       => revert;
     0xFE => INVALID      => invalid;
     0xFF => SELFDESTRUCT => invalid;
 }
