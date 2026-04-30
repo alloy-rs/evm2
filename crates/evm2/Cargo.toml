@@ -12,6 +12,7 @@ repository.workspace = true
 [dependencies]
 alloy-primitives.workspace = true
 evm2-macros.workspace = true
+serde = { workspace = true, features = ["derive", "alloc"], optional = true }
 
 [features]
 default = ["std"]
@@ -19,3 +20,4 @@ std = []
 
 memory_limit = []
 nightly = []
+serde = ["dep:serde", "alloy-primitives/serde"]

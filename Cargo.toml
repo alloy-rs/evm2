@@ -16,6 +16,7 @@ alloy-primitives = { version = "1.5.7", default-features = false }
 evm2-macros = { path = "crates/evm2-macros" }
 proc-macro2 = "1.0"
 quote = "1.0"
+serde = { version = "1.0", default-features = false }
 syn = "2.0"
 
 [profile.release]

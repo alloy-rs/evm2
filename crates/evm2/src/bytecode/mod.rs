@@ -1,15 +1,76 @@
 //! Module that contains the bytecode struct with legacy bytecode analysis.
 
-mod analysis;
+#[cfg(feature = "serde")]
+mod serde_impl;
 
 use alloc::{borrow::Cow, sync::Arc, vec::Vec};
-use alloy_primitives::{B256, Bytes, keccak256};
+use alloy_primitives::{Address, B256, Bytes, keccak256};
 use analysis::analyze_legacy;
 use core::{cmp::Ordering, fmt, hash};
 
-pub mod opcode {
-    pub use crate::interpreter::op::*;
+mod analysis;
+
+/// EIP-7702 Version Magic in u16 form.
+pub const EIP7702_MAGIC: u16 = 0xEF01;
+
+/// EIP-7702 magic number in array form.
+pub const EIP7702_MAGIC_BYTES: &[u8] = &[0xEF, 0x01];
+
+/// EIP-7702 first version of bytecode.
+pub const EIP7702_VERSION: u8 = 0;
+
+/// EIP-7702 bytecode length: 2 (magic) + 1 (version) + 20 (address) = 23 bytes.
+pub const EIP7702_BYTECODE_LEN: usize = 23;
+
+/// EIP-7702 decode errors.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum Eip7702DecodeError {
+    /// Invalid length of the raw bytecode.
+    InvalidLength,
+    /// Invalid magic number.
+    InvalidMagic,
+    /// Unsupported version.
+    UnsupportedVersion,
 }
+
+impl fmt::Display for Eip7702DecodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            Self::InvalidLength => "Eip7702 is not 23 bytes long",
+            Self::InvalidMagic => "Bytecode is not starting with 0xEF01",
+            Self::UnsupportedVersion => "Unsupported Eip7702 version.",
+        };
+        f.write_str(s)
+    }
+}
+
+impl core::error::Error for Eip7702DecodeError {}
+
+/// Bytecode decode errors.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum BytecodeDecodeError {
+    /// EIP-7702 decode error.
+    Eip7702(Eip7702DecodeError),
+}
+
+impl From<Eip7702DecodeError> for BytecodeDecodeError {
+    #[inline]
+    fn from(value: Eip7702DecodeError) -> Self {
+        Self::Eip7702(value)
+    }
+}
+
+impl fmt::Display for BytecodeDecodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Eip7702(err) => err.fmt(f),
+        }
+    }
+}
+
+impl core::error::Error for BytecodeDecodeError {}
 
 /// Ethereum EVM bytecode.
 #[derive(Clone, Debug)]
@@ -35,10 +96,13 @@ struct BytecodeInner {
 
 /// The kind of bytecode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Ord, PartialOrd, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum BytecodeKind {
     /// Legacy analyzed bytecode with jump table.
     #[default]
     LegacyAnalyzed,
+    /// EIP-7702 delegated bytecode.
+    Eip7702,
 }
 
 impl Default for Bytecode {
@@ -84,7 +148,7 @@ impl Bytecode {
     pub fn new() -> Self {
         Self(Arc::new(BytecodeInner {
             kind: BytecodeKind::LegacyAnalyzed,
-            bytecode: Bytes::from_static(&[opcode::STOP]),
+            bytecode: Bytes::from_static(&[crate::interpreter::op::STOP]),
             original_len: 0,
             jump_table: JumpTable::default(),
         }))
@@ -108,9 +172,60 @@ impl Bytecode {
     }
 
     /// Creates a new raw [`Bytecode`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if bytecode is in incorrect format. If you want to handle errors use
+    /// [`Self::new_raw_checked`].
     #[inline]
     pub fn new_raw(bytecode: Bytes) -> Self {
-        Self::new_legacy(bytecode)
+        Self::new_raw_checked(bytecode).expect("Expect correct bytecode")
+    }
+
+    /// Creates a new EIP-7702 [`Bytecode`] from [`Address`].
+    #[inline]
+    pub fn new_eip7702(address: Address) -> Self {
+        let raw: Bytes = [EIP7702_MAGIC_BYTES, &[EIP7702_VERSION], &address[..]].concat().into();
+        Self(Arc::new(BytecodeInner {
+            kind: BytecodeKind::Eip7702,
+            original_len: raw.len(),
+            bytecode: raw,
+            jump_table: JumpTable::default(),
+        }))
+    }
+
+    /// Creates a new raw [`Bytecode`].
+    ///
+    /// Returns an error on incorrect bytecode format.
+    #[inline]
+    pub fn new_raw_checked(bytes: Bytes) -> Result<Self, BytecodeDecodeError> {
+        if bytes.starts_with(EIP7702_MAGIC_BYTES) {
+            Self::new_eip7702_raw(bytes).map_err(Into::into)
+        } else {
+            Ok(Self::new_legacy(bytes))
+        }
+    }
+
+    /// Creates a new EIP-7702 [`Bytecode`] from raw bytes.
+    ///
+    /// Returns an error if the bytes are not valid EIP-7702 bytecode.
+    #[inline]
+    pub fn new_eip7702_raw(bytes: Bytes) -> Result<Self, Eip7702DecodeError> {
+        if bytes.len() != EIP7702_BYTECODE_LEN {
+            return Err(Eip7702DecodeError::InvalidLength);
+        }
+        if !bytes.starts_with(EIP7702_MAGIC_BYTES) {
+            return Err(Eip7702DecodeError::InvalidMagic);
+        }
+        if bytes[2] != EIP7702_VERSION {
+            return Err(Eip7702DecodeError::UnsupportedVersion);
+        }
+        Ok(Self(Arc::new(BytecodeInner {
+            kind: BytecodeKind::Eip7702,
+            original_len: bytes.len(),
+            bytecode: bytes,
+            jump_table: JumpTable::default(),
+        })))
     }
 
     /// Create new checked bytecode from pre-analyzed components.
@@ -162,6 +277,18 @@ impl Bytecode {
     #[inline]
     pub fn is_legacy(&self) -> bool {
         self.kind() == BytecodeKind::LegacyAnalyzed
+    }
+
+    /// Returns `true` if bytecode is EIP-7702.
+    #[inline]
+    pub fn is_eip7702(&self) -> bool {
+        self.kind() == BytecodeKind::Eip7702
+    }
+
+    /// Returns the EIP-7702 delegated address if this is EIP-7702 bytecode.
+    #[inline]
+    pub fn eip7702_address(&self) -> Option<Address> {
+        if self.is_eip7702() { Some(Address::from_slice(&self.0.bytecode[3..23])) } else { None }
     }
 
     /// Returns jump table if bytecode is legacy analyzed.
@@ -236,6 +363,7 @@ impl Bytecode {
 /// A table of valid `jump` destinations.
 ///
 /// It is immutable and memory efficient, with one bit per byte in the bytecode.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct JumpTable {
     table: Cow<'static, [u8]>,
     bit_len: usize,
@@ -383,7 +511,8 @@ impl JumpTable {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::Bytes;
+    use crate::interpreter::op as opcode;
+    use alloy_primitives::{Address, Bytes};
 
     #[test]
     fn test_new_empty() {
@@ -439,5 +568,36 @@ mod tests {
         let bytecode = Bytes::from_static(&[]);
         let jump_table = JumpTable::default();
         let _ = unsafe { Bytecode::new_analyzed(bytecode, 0, jump_table) };
+    }
+
+    #[test]
+    fn eip7702_sanity_decode() {
+        let raw = Bytes::from_static(&[0xEF, 0x01, 0xDE, 0xAD, 0xBE, 0xEF]);
+        assert_eq!(Bytecode::new_eip7702_raw(raw), Err(Eip7702DecodeError::InvalidLength));
+
+        let mut raw = [0u8; EIP7702_BYTECODE_LEN];
+        raw[..2].copy_from_slice(EIP7702_MAGIC_BYTES);
+        raw[2] = 1;
+        assert_eq!(
+            Bytecode::new_eip7702_raw(Bytes::copy_from_slice(&raw)),
+            Err(Eip7702DecodeError::UnsupportedVersion)
+        );
+
+        raw[2] = EIP7702_VERSION;
+        raw[3..7].copy_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
+        let raw = Bytes::copy_from_slice(&raw);
+        let bytecode = Bytecode::new_eip7702_raw(raw.clone()).unwrap();
+        assert!(bytecode.is_eip7702());
+        assert_eq!(bytecode.eip7702_address(), Some(Address::from_slice(&raw[3..])));
+        assert_eq!(bytecode.original_bytes(), raw);
+    }
+
+    #[test]
+    fn eip7702_from_address() {
+        let address = Address::new([0x01; 20]);
+        let bytecode = Bytecode::new_eip7702(address);
+        assert_eq!(bytecode.eip7702_address(), Some(address));
+        assert_eq!(bytecode.original_bytes().len(), EIP7702_BYTECODE_LEN);
+        assert_eq!(&bytecode.original_byte_slice()[..3], &[0xEF, 0x01, 0x00]);
     }
 }

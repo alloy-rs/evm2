@@ -1,5 +1,5 @@
 use super::JumpTable;
-use crate::bytecode::opcode;
+use crate::interpreter::op as opcode;
 use alloc::vec::Vec;
 use alloy_primitives::Bytes;
 
