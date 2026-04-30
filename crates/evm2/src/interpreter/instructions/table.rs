@@ -34,7 +34,6 @@ pub type TailInstrTable = [TailInstrFn; 256];
 pub type GasTable = [u16; 256];
 
 /// Instruction execution context.
-#[allow(dead_code)]
 #[derive(Debug)]
 pub struct InstructionCx<'a, 'ctrl, 'state> {
     /// Bytecode control reference.

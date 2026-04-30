@@ -25,7 +25,6 @@ impl<T> Default for OnceLock<T> {
 }
 
 #[cfg(not(feature = "std"))]
-#[allow(dead_code)]
 impl<T> OnceLock<T> {
     /// Creates a new empty OnceLock.
     #[inline]
