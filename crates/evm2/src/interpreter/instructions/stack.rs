@@ -4,7 +4,7 @@ use evm2_macros::instruction;
 
 #[instruction]
 pub(in crate::interpreter) fn pop(_value: &Word) -> Result {
-    return Ok(());
+    Ok(())
 }
 
 #[instruction(raw)]
@@ -14,7 +14,7 @@ pub(in crate::interpreter) fn push<const N: usize>(cx: _) -> Result {
     buf[mem::size_of::<Word>() - N..].copy_from_slice(unsafe { cx.ctrl.read_bytes_unchecked(N) });
     unsafe { cx.ctrl.advance_unchecked(N) };
     *out = Word::from_be_bytes(buf);
-    return Ok(());
+    Ok(())
 }
 
 #[instruction(raw)]
@@ -28,7 +28,7 @@ pub(in crate::interpreter) fn dup<const N: usize>() -> Result {
         });
     }
     let value = unsafe { *stack.stack.get_unchecked(stack.len - N) };
-    return stack.push(value);
+    stack.push(value)
 }
 
 #[instruction(raw)]
@@ -38,7 +38,7 @@ pub(in crate::interpreter) fn swap<const N: usize>() -> Result {
         return Err(InstrErr::StackUnderflow);
     }
     stack.stack.swap(stack.len - 1, stack.len - 1 - N);
-    return Ok(());
+    Ok(())
 }
 
 #[instruction(raw)]
@@ -55,7 +55,7 @@ pub(in crate::interpreter) fn dupn() -> Result {
         });
     }
     let value = unsafe { *stack.stack.get_unchecked(stack.len - 1 - n) };
-    return stack.push(value);
+    stack.push(value)
 }
 
 #[instruction(raw)]
@@ -63,7 +63,7 @@ pub(in crate::interpreter) fn swapn() -> Result {
     let n = decode_single(unsafe { ctrl.read_bytes_unchecked(1)[0] } as usize)
         .ok_or(InstrErr::Invalid)?;
     unsafe { ctrl.advance_unchecked(1) };
-    return swap_n(stack, n + 1);
+    swap_n(stack, n + 1)
 }
 
 #[instruction(raw)]
@@ -76,7 +76,7 @@ pub(in crate::interpreter) fn exchange() -> Result {
         return Err(InstrErr::StackUnderflow);
     }
     stack.stack.swap(stack.len - 1 - n, stack.len - 1 - m);
-    return Ok(());
+    Ok(())
 }
 
 #[inline]

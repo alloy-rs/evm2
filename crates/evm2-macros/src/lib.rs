@@ -22,7 +22,8 @@ fn expand_instruction(raw: bool, input: ItemFn) -> TokenStream2 {
     let ident = sig.ident;
     let generics = sig.generics;
     let where_clause = generics.where_clause.clone();
-    let body = input.block.stmts;
+    let (_, outputs) = parse_return(sig.output);
+    let body = body(input.block.stmts, outputs.is_empty());
 
     let mut has_cx = false;
     let mut cx_arg = None;
@@ -38,7 +39,6 @@ fn expand_instruction(raw: bool, input: ItemFn) -> TokenStream2 {
         }
     }
 
-    let (_, outputs) = parse_return(sig.output);
     let stack_setup = (!raw).then(|| stack_setup(&inputs, &outputs));
     let cx_setup = has_cx.then(|| {
         let cx = cx_arg.unwrap_or_else(|| Ident::new("cx", ident.span()));
@@ -47,8 +47,6 @@ fn expand_instruction(raw: bool, input: ItemFn) -> TokenStream2 {
             let mut #cx = InstructionCx { ctrl: &mut ctrl, gas, host: &mut *state.host };
         }
     });
-    let body = body_with_semicolon(body);
-
     quote! {
         #(#attrs)*
         #[inline]
@@ -63,8 +61,7 @@ fn expand_instruction(raw: bool, input: ItemFn) -> TokenStream2 {
         {
             #cx_setup
             #stack_setup
-            #(#body)*
-            Ok(())
+            #body
         }
     }
 }
@@ -103,14 +100,19 @@ fn generic_ident(arg: &GenericArgument) -> Option<Ident> {
     path.get_ident().cloned()
 }
 
-fn body_with_semicolon(stmts: Vec<Stmt>) -> Vec<TokenStream2> {
-    stmts
-        .into_iter()
-        .map(|stmt| match stmt {
+fn body(stmts: Vec<Stmt>, allow_final_result: bool) -> TokenStream2 {
+    if allow_final_result && matches!(stmts.last(), Some(Stmt::Expr(_, None))) {
+        quote! { #(#stmts)* }
+    } else {
+        let stmts = stmts.into_iter().map(|stmt| match stmt {
             Stmt::Expr(expr, None) => quote! { #expr; },
             stmt => quote! { #stmt },
-        })
-        .collect()
+        });
+        quote! {
+            #(#stmts)*
+            Ok(())
+        }
+    }
 }
 
 fn stack_setup(inputs: &[Ident], outputs: &[Ident]) -> TokenStream2 {

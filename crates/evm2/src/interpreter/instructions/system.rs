@@ -43,7 +43,7 @@ pub(in crate::interpreter) fn codecopy(
     if remaining != 0 {
         state.memory.set(dst, &alloc::vec![0; remaining])?;
     }
-    return Ok(());
+    Ok(())
 }
 
 #[instruction]
