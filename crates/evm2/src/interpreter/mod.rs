@@ -173,11 +173,14 @@ pub enum InstrErr {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::interpreter::{
-        runtime::Table,
-        table::{DEFAULT_TABLE, DEFAULT_TAIL_TABLE, new_gas_table},
+    use crate::{
+        bytecode::Bytecode,
+        interpreter::{
+            runtime::Table,
+            table::{DEFAULT_TABLE, DEFAULT_TAIL_TABLE, new_gas_table},
+        },
     };
-    use alloy_primitives::U256;
+    use alloy_primitives::{Bytes, U256};
 
     struct DummyHost;
 
@@ -200,7 +203,8 @@ mod tests {
         let instruction_table = core::hint::black_box(Table::Tail(&DEFAULT_TAIL_TABLE));
 
         let gas_table = new_gas_table(spec_id);
-        let mut interpreter = Interpreter::new(bytecode.into(), spec_id);
+        let bytecode = Bytecode::new_legacy(Bytes::copy_from_slice(bytecode));
+        let mut interpreter = Interpreter::new(bytecode, spec_id);
         interpreter.run_with_table(instruction_table, &gas_table, &mut DummyHost);
     }
 
@@ -214,7 +218,8 @@ mod tests {
                 ("normal", Table::Normal(&DEFAULT_TABLE)),
                 ("tail", Table::Tail(&DEFAULT_TAIL_TABLE)),
             ] {
-                let mut interpreter = Interpreter::new(BASIC.into(), spec);
+                let bytecode = Bytecode::new_legacy(Bytes::from_static(BASIC));
+                let mut interpreter = Interpreter::new(bytecode, spec);
                 interpreter.run_with_table(table, &gas_table, &mut DummyHost);
                 assert!(interpreter.gas.remaining() > 0);
                 assert_eq!(interpreter.pc, 6);

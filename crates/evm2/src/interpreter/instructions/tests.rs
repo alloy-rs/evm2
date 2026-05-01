@@ -1,5 +1,9 @@
-use crate::interpreter::{Host, InstrErr, Interpreter, SpecId, Word, op};
+use crate::{
+    bytecode::Bytecode,
+    interpreter::{Host, InstrErr, Interpreter, SpecId, Word, op},
+};
 use alloc::vec::Vec;
+use alloy_primitives::Bytes;
 
 pub(super) struct TestHost;
 
@@ -25,7 +29,8 @@ impl TestInterpreter {
 }
 
 pub(super) fn run(code: impl Into<Vec<u8>>) -> TestInterpreter {
-    let mut inner = Interpreter::new(code.into(), SpecId::HOMESTEAD);
+    let bytecode = Bytecode::new_legacy(Bytes::from(code.into()));
+    let mut inner = Interpreter::new(bytecode, SpecId::HOMESTEAD);
     let err = inner.run(&mut TestHost);
     TestInterpreter { inner, err }
 }

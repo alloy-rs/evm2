@@ -5,8 +5,7 @@ use super::{
     },
 };
 use crate::bytecode::Bytecode;
-use alloc::{boxed::Box, vec::Vec};
-use alloy_primitives::Bytes;
+use alloc::boxed::Box;
 use core::hint::cold_path;
 
 /// Interpreter dispatch table mode.
@@ -32,14 +31,8 @@ pub struct Interpreter {
 }
 
 impl Interpreter {
-    /// Creates an interpreter from bytecode and a spec identifier.
-    pub fn new(bytecode: Vec<u8>, spec_id: SpecId) -> Self {
-        let bytecode = Bytecode::new_legacy(Bytes::from(bytecode));
-        Self::new_with_bytecode(bytecode, spec_id)
-    }
-
     /// Creates an interpreter from analyzed bytecode and a spec identifier.
-    pub fn new_with_bytecode(bytecode: Bytecode, spec_id: SpecId) -> Self {
+    pub fn new(bytecode: Bytecode, spec_id: SpecId) -> Self {
         Self {
             bytecode,
             pc: 0,
