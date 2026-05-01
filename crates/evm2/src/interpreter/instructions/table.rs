@@ -15,7 +15,10 @@ use crate::{
 };
 #[cfg(feature = "nightly")]
 use core::hint::cold_path;
-use core::{marker::PhantomData, ops::Index};
+use core::{
+    marker::PhantomData,
+    ops::{Index, IndexMut},
+};
 
 /// Opcode gas table.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -31,6 +34,13 @@ impl Index<usize> for GasTable {
     #[inline]
     fn index(&self, index: usize) -> &Self::Output {
         &self.0[index]
+    }
+}
+
+impl IndexMut<usize> for GasTable {
+    #[inline]
+    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
+        &mut self.0[index]
     }
 }
 
@@ -50,10 +60,35 @@ impl<C: EvmConfig> Index<usize> for InstructionImplTable<C> {
     }
 }
 
+impl<C: EvmConfig> IndexMut<usize> for InstructionImplTable<C> {
+    #[inline]
+    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
+        &mut self.0[index]
+    }
+}
+
 impl<C: EvmConfig> Default for InstructionImplTable<C> {
     #[inline]
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl<C: EvmConfig> InstructionImplTable<C> {
+    /// Returns the instruction implementation for `opcode`.
+    #[inline]
+    pub fn get(&self, opcode: u8) -> Option<&'static dyn Instruction<C>> {
+        unsafe { *self.0.get_unchecked(opcode as usize) }
+    }
+
+    /// Returns the mutable instruction implementation slot for `opcode`.
+    #[inline]
+    pub fn get_mut(&mut self, opcode: u8) -> &mut Option<&'static dyn Instruction<C>> {
+        unsafe { self.0.get_unchecked_mut(opcode as usize) }
+    }
+
+    const fn set(&mut self, opcode: u8, instr: Option<&'static dyn Instruction<C>>) {
+        self.0[opcode as usize] = instr;
     }
 }
 
@@ -181,215 +216,231 @@ pub trait Instruction<C: EvmConfig = crate::EvmVersion<()>> {
 }
 
 impl GasTable {
+    /// Returns the gas cost for `opcode`.
+    #[inline]
+    pub fn get(&self, opcode: u8) -> u16 {
+        unsafe { *self.0.get_unchecked(opcode as usize) }
+    }
+
+    /// Returns the mutable gas cost slot for `opcode`.
+    #[inline]
+    pub fn get_mut(&mut self, opcode: u8) -> &mut u16 {
+        unsafe { self.0.get_unchecked_mut(opcode as usize) }
+    }
+
+    const fn set(&mut self, opcode: u8, cost: u16) {
+        self.0[opcode as usize] = cost;
+    }
+
     /// Creates a gas table for `spec`.
     #[inline]
     pub const fn new_spec(spec: SpecId) -> Self {
-        let mut table = Self::default_static().0;
+        let mut table = Self::default_static();
 
         if spec.enables(SpecId::TANGERINE) {
-            table[op::SLOAD as usize] = 200;
-            table[op::BALANCE as usize] = 400;
-            table[op::EXTCODESIZE as usize] = 700;
-            table[op::EXTCODECOPY as usize] = 700;
-            table[op::CALL as usize] = 700;
-            table[op::CALLCODE as usize] = 700;
-            table[op::DELEGATECALL as usize] = 700;
-            table[op::STATICCALL as usize] = 700;
-            table[op::SELFDESTRUCT as usize] = 5000;
+            table.set(op::SLOAD, 200);
+            table.set(op::BALANCE, 400);
+            table.set(op::EXTCODESIZE, 700);
+            table.set(op::EXTCODECOPY, 700);
+            table.set(op::CALL, 700);
+            table.set(op::CALLCODE, 700);
+            table.set(op::DELEGATECALL, 700);
+            table.set(op::STATICCALL, 700);
+            table.set(op::SELFDESTRUCT, 5000);
         }
 
         if spec.enables(SpecId::ISTANBUL) {
-            table[op::SLOAD as usize] = ISTANBUL_SLOAD_GAS as u16;
-            table[op::BALANCE as usize] = 700;
-            table[op::EXTCODEHASH as usize] = 700;
+            table.set(op::SLOAD, ISTANBUL_SLOAD_GAS as u16);
+            table.set(op::BALANCE, 700);
+            table.set(op::EXTCODEHASH, 700);
         }
 
         if spec.enables(SpecId::BERLIN) {
-            table[op::SLOAD as usize] = WARM_STORAGE_READ_COST as u16;
-            table[op::BALANCE as usize] = WARM_STORAGE_READ_COST as u16;
-            table[op::EXTCODESIZE as usize] = WARM_STORAGE_READ_COST as u16;
-            table[op::EXTCODEHASH as usize] = WARM_STORAGE_READ_COST as u16;
-            table[op::EXTCODECOPY as usize] = WARM_STORAGE_READ_COST as u16;
-            table[op::CALL as usize] = WARM_STORAGE_READ_COST as u16;
-            table[op::CALLCODE as usize] = WARM_STORAGE_READ_COST as u16;
-            table[op::DELEGATECALL as usize] = WARM_STORAGE_READ_COST as u16;
-            table[op::STATICCALL as usize] = WARM_STORAGE_READ_COST as u16;
+            table.set(op::SLOAD, WARM_STORAGE_READ_COST as u16);
+            table.set(op::BALANCE, WARM_STORAGE_READ_COST as u16);
+            table.set(op::EXTCODESIZE, WARM_STORAGE_READ_COST as u16);
+            table.set(op::EXTCODEHASH, WARM_STORAGE_READ_COST as u16);
+            table.set(op::EXTCODECOPY, WARM_STORAGE_READ_COST as u16);
+            table.set(op::CALL, WARM_STORAGE_READ_COST as u16);
+            table.set(op::CALLCODE, WARM_STORAGE_READ_COST as u16);
+            table.set(op::DELEGATECALL, WARM_STORAGE_READ_COST as u16);
+            table.set(op::STATICCALL, WARM_STORAGE_READ_COST as u16);
         }
 
-        Self(table)
+        table
     }
 
     /// Creates the default opcode gas table.
     #[inline]
     pub const fn default_static() -> Self {
-        let mut table = [0; 256];
+        let mut table = Self([0; 256]);
 
-        table[op::STOP as usize] = ZERO as u16;
-        table[op::ADD as usize] = VERYLOW as u16;
-        table[op::MUL as usize] = LOW as u16;
-        table[op::SUB as usize] = VERYLOW as u16;
-        table[op::DIV as usize] = 5;
-        table[op::SDIV as usize] = 5;
-        table[op::MOD as usize] = 5;
-        table[op::SMOD as usize] = 5;
-        table[op::ADDMOD as usize] = MID as u16;
-        table[op::MULMOD as usize] = 8;
-        table[op::EXP as usize] = EXP as u16;
-        table[op::SIGNEXTEND as usize] = 5;
+        table.set(op::STOP, ZERO as u16);
+        table.set(op::ADD, VERYLOW as u16);
+        table.set(op::MUL, LOW as u16);
+        table.set(op::SUB, VERYLOW as u16);
+        table.set(op::DIV, 5);
+        table.set(op::SDIV, 5);
+        table.set(op::MOD, 5);
+        table.set(op::SMOD, 5);
+        table.set(op::ADDMOD, MID as u16);
+        table.set(op::MULMOD, 8);
+        table.set(op::EXP, EXP as u16);
+        table.set(op::SIGNEXTEND, 5);
 
-        table[op::LT as usize] = 3;
-        table[op::GT as usize] = 3;
-        table[op::SLT as usize] = 3;
-        table[op::SGT as usize] = 3;
-        table[op::EQ as usize] = 3;
-        table[op::ISZERO as usize] = 3;
-        table[op::AND as usize] = 3;
-        table[op::OR as usize] = 3;
-        table[op::XOR as usize] = 3;
-        table[op::NOT as usize] = 3;
-        table[op::BYTE as usize] = 3;
-        table[op::SHL as usize] = 3;
-        table[op::SHR as usize] = 3;
-        table[op::SAR as usize] = 3;
-        table[op::CLZ as usize] = 5;
+        table.set(op::LT, 3);
+        table.set(op::GT, 3);
+        table.set(op::SLT, 3);
+        table.set(op::SGT, 3);
+        table.set(op::EQ, 3);
+        table.set(op::ISZERO, 3);
+        table.set(op::AND, 3);
+        table.set(op::OR, 3);
+        table.set(op::XOR, 3);
+        table.set(op::NOT, 3);
+        table.set(op::BYTE, 3);
+        table.set(op::SHL, 3);
+        table.set(op::SHR, 3);
+        table.set(op::SAR, 3);
+        table.set(op::CLZ, 5);
 
-        table[op::KECCAK256 as usize] = KECCAK256 as u16;
+        table.set(op::KECCAK256, KECCAK256 as u16);
 
-        table[op::ADDRESS as usize] = BASE as u16;
-        table[op::BALANCE as usize] = 20;
-        table[op::ORIGIN as usize] = 2;
-        table[op::CALLER as usize] = 2;
-        table[op::CALLVALUE as usize] = 2;
-        table[op::CALLDATALOAD as usize] = 3;
-        table[op::CALLDATASIZE as usize] = 2;
-        table[op::CALLDATACOPY as usize] = 3;
-        table[op::CODESIZE as usize] = 2;
-        table[op::CODECOPY as usize] = 3;
-        table[op::GASPRICE as usize] = 2;
-        table[op::EXTCODESIZE as usize] = 20;
-        table[op::EXTCODECOPY as usize] = 20;
-        table[op::RETURNDATASIZE as usize] = 2;
-        table[op::RETURNDATACOPY as usize] = 3;
-        table[op::EXTCODEHASH as usize] = 400;
-        table[op::BLOCKHASH as usize] = BLOCKHASH as u16;
-        table[op::COINBASE as usize] = 2;
-        table[op::TIMESTAMP as usize] = 2;
-        table[op::NUMBER as usize] = 2;
-        table[op::DIFFICULTY as usize] = 2;
-        table[op::GASLIMIT as usize] = 2;
-        table[op::CHAINID as usize] = 2;
-        table[op::SELFBALANCE as usize] = 5;
-        table[op::BASEFEE as usize] = 2;
-        table[op::BLOBHASH as usize] = 3;
-        table[op::BLOBBASEFEE as usize] = 2;
-        table[op::SLOTNUM as usize] = 2;
+        table.set(op::ADDRESS, BASE as u16);
+        table.set(op::BALANCE, 20);
+        table.set(op::ORIGIN, 2);
+        table.set(op::CALLER, 2);
+        table.set(op::CALLVALUE, 2);
+        table.set(op::CALLDATALOAD, 3);
+        table.set(op::CALLDATASIZE, 2);
+        table.set(op::CALLDATACOPY, 3);
+        table.set(op::CODESIZE, 2);
+        table.set(op::CODECOPY, 3);
+        table.set(op::GASPRICE, 2);
+        table.set(op::EXTCODESIZE, 20);
+        table.set(op::EXTCODECOPY, 20);
+        table.set(op::RETURNDATASIZE, 2);
+        table.set(op::RETURNDATACOPY, 3);
+        table.set(op::EXTCODEHASH, 400);
+        table.set(op::BLOCKHASH, BLOCKHASH as u16);
+        table.set(op::COINBASE, 2);
+        table.set(op::TIMESTAMP, 2);
+        table.set(op::NUMBER, 2);
+        table.set(op::DIFFICULTY, 2);
+        table.set(op::GASLIMIT, 2);
+        table.set(op::CHAINID, 2);
+        table.set(op::SELFBALANCE, 5);
+        table.set(op::BASEFEE, 2);
+        table.set(op::BLOBHASH, 3);
+        table.set(op::BLOBBASEFEE, 2);
+        table.set(op::SLOTNUM, 2);
 
-        table[op::POP as usize] = 2;
-        table[op::MLOAD as usize] = 3;
-        table[op::MSTORE as usize] = 3;
-        table[op::MSTORE8 as usize] = 3;
-        table[op::SLOAD as usize] = 50;
-        table[op::SSTORE as usize] = 0;
-        table[op::JUMP as usize] = 8;
-        table[op::JUMPI as usize] = HIGH as u16;
-        table[op::PC as usize] = 2;
-        table[op::MSIZE as usize] = 2;
-        table[op::GAS as usize] = 2;
-        table[op::JUMPDEST as usize] = JUMPDEST as u16;
-        table[op::TLOAD as usize] = 100;
-        table[op::TSTORE as usize] = 100;
-        table[op::MCOPY as usize] = 3;
+        table.set(op::POP, 2);
+        table.set(op::MLOAD, 3);
+        table.set(op::MSTORE, 3);
+        table.set(op::MSTORE8, 3);
+        table.set(op::SLOAD, 50);
+        table.set(op::SSTORE, 0);
+        table.set(op::JUMP, 8);
+        table.set(op::JUMPI, HIGH as u16);
+        table.set(op::PC, 2);
+        table.set(op::MSIZE, 2);
+        table.set(op::GAS, 2);
+        table.set(op::JUMPDEST, JUMPDEST as u16);
+        table.set(op::TLOAD, 100);
+        table.set(op::TSTORE, 100);
+        table.set(op::MCOPY, 3);
 
-        table[op::PUSH0 as usize] = 2;
-        table[op::PUSH1 as usize] = 3;
-        table[op::PUSH2 as usize] = 3;
-        table[op::PUSH3 as usize] = 3;
-        table[op::PUSH4 as usize] = 3;
-        table[op::PUSH5 as usize] = 3;
-        table[op::PUSH6 as usize] = 3;
-        table[op::PUSH7 as usize] = 3;
-        table[op::PUSH8 as usize] = 3;
-        table[op::PUSH9 as usize] = 3;
-        table[op::PUSH10 as usize] = 3;
-        table[op::PUSH11 as usize] = 3;
-        table[op::PUSH12 as usize] = 3;
-        table[op::PUSH13 as usize] = 3;
-        table[op::PUSH14 as usize] = 3;
-        table[op::PUSH15 as usize] = 3;
-        table[op::PUSH16 as usize] = 3;
-        table[op::PUSH17 as usize] = 3;
-        table[op::PUSH18 as usize] = 3;
-        table[op::PUSH19 as usize] = 3;
-        table[op::PUSH20 as usize] = 3;
-        table[op::PUSH21 as usize] = 3;
-        table[op::PUSH22 as usize] = 3;
-        table[op::PUSH23 as usize] = 3;
-        table[op::PUSH24 as usize] = 3;
-        table[op::PUSH25 as usize] = 3;
-        table[op::PUSH26 as usize] = 3;
-        table[op::PUSH27 as usize] = 3;
-        table[op::PUSH28 as usize] = 3;
-        table[op::PUSH29 as usize] = 3;
-        table[op::PUSH30 as usize] = 3;
-        table[op::PUSH31 as usize] = 3;
-        table[op::PUSH32 as usize] = 3;
+        table.set(op::PUSH0, 2);
+        table.set(op::PUSH1, 3);
+        table.set(op::PUSH2, 3);
+        table.set(op::PUSH3, 3);
+        table.set(op::PUSH4, 3);
+        table.set(op::PUSH5, 3);
+        table.set(op::PUSH6, 3);
+        table.set(op::PUSH7, 3);
+        table.set(op::PUSH8, 3);
+        table.set(op::PUSH9, 3);
+        table.set(op::PUSH10, 3);
+        table.set(op::PUSH11, 3);
+        table.set(op::PUSH12, 3);
+        table.set(op::PUSH13, 3);
+        table.set(op::PUSH14, 3);
+        table.set(op::PUSH15, 3);
+        table.set(op::PUSH16, 3);
+        table.set(op::PUSH17, 3);
+        table.set(op::PUSH18, 3);
+        table.set(op::PUSH19, 3);
+        table.set(op::PUSH20, 3);
+        table.set(op::PUSH21, 3);
+        table.set(op::PUSH22, 3);
+        table.set(op::PUSH23, 3);
+        table.set(op::PUSH24, 3);
+        table.set(op::PUSH25, 3);
+        table.set(op::PUSH26, 3);
+        table.set(op::PUSH27, 3);
+        table.set(op::PUSH28, 3);
+        table.set(op::PUSH29, 3);
+        table.set(op::PUSH30, 3);
+        table.set(op::PUSH31, 3);
+        table.set(op::PUSH32, 3);
 
-        table[op::DUP1 as usize] = 3;
-        table[op::DUP2 as usize] = 3;
-        table[op::DUP3 as usize] = 3;
-        table[op::DUP4 as usize] = 3;
-        table[op::DUP5 as usize] = 3;
-        table[op::DUP6 as usize] = 3;
-        table[op::DUP7 as usize] = 3;
-        table[op::DUP8 as usize] = 3;
-        table[op::DUP9 as usize] = 3;
-        table[op::DUP10 as usize] = 3;
-        table[op::DUP11 as usize] = 3;
-        table[op::DUP12 as usize] = 3;
-        table[op::DUP13 as usize] = 3;
-        table[op::DUP14 as usize] = 3;
-        table[op::DUP15 as usize] = 3;
-        table[op::DUP16 as usize] = 3;
+        table.set(op::DUP1, 3);
+        table.set(op::DUP2, 3);
+        table.set(op::DUP3, 3);
+        table.set(op::DUP4, 3);
+        table.set(op::DUP5, 3);
+        table.set(op::DUP6, 3);
+        table.set(op::DUP7, 3);
+        table.set(op::DUP8, 3);
+        table.set(op::DUP9, 3);
+        table.set(op::DUP10, 3);
+        table.set(op::DUP11, 3);
+        table.set(op::DUP12, 3);
+        table.set(op::DUP13, 3);
+        table.set(op::DUP14, 3);
+        table.set(op::DUP15, 3);
+        table.set(op::DUP16, 3);
 
-        table[op::SWAP1 as usize] = 3;
-        table[op::SWAP2 as usize] = 3;
-        table[op::SWAP3 as usize] = 3;
-        table[op::SWAP4 as usize] = 3;
-        table[op::SWAP5 as usize] = 3;
-        table[op::SWAP6 as usize] = 3;
-        table[op::SWAP7 as usize] = 3;
-        table[op::SWAP8 as usize] = 3;
-        table[op::SWAP9 as usize] = 3;
-        table[op::SWAP10 as usize] = 3;
-        table[op::SWAP11 as usize] = 3;
-        table[op::SWAP12 as usize] = 3;
-        table[op::SWAP13 as usize] = 3;
-        table[op::SWAP14 as usize] = 3;
-        table[op::SWAP15 as usize] = 3;
-        table[op::SWAP16 as usize] = 3;
+        table.set(op::SWAP1, 3);
+        table.set(op::SWAP2, 3);
+        table.set(op::SWAP3, 3);
+        table.set(op::SWAP4, 3);
+        table.set(op::SWAP5, 3);
+        table.set(op::SWAP6, 3);
+        table.set(op::SWAP7, 3);
+        table.set(op::SWAP8, 3);
+        table.set(op::SWAP9, 3);
+        table.set(op::SWAP10, 3);
+        table.set(op::SWAP11, 3);
+        table.set(op::SWAP12, 3);
+        table.set(op::SWAP13, 3);
+        table.set(op::SWAP14, 3);
+        table.set(op::SWAP15, 3);
+        table.set(op::SWAP16, 3);
 
-        table[op::DUPN as usize] = 3;
-        table[op::SWAPN as usize] = 3;
-        table[op::EXCHANGE as usize] = 3;
+        table.set(op::DUPN, 3);
+        table.set(op::SWAPN, 3);
+        table.set(op::EXCHANGE, 3);
 
-        table[op::LOG0 as usize] = LOG as u16;
-        table[op::LOG1 as usize] = LOG as u16;
-        table[op::LOG2 as usize] = LOG as u16;
-        table[op::LOG3 as usize] = LOG as u16;
-        table[op::LOG4 as usize] = LOG as u16;
+        table.set(op::LOG0, LOG as u16);
+        table.set(op::LOG1, LOG as u16);
+        table.set(op::LOG2, LOG as u16);
+        table.set(op::LOG3, LOG as u16);
+        table.set(op::LOG4, LOG as u16);
 
-        table[op::CREATE as usize] = 0;
-        table[op::CALL as usize] = 40;
-        table[op::CALLCODE as usize] = 40;
-        table[op::RETURN as usize] = 0;
-        table[op::DELEGATECALL as usize] = 40;
-        table[op::CREATE2 as usize] = 0;
-        table[op::STATICCALL as usize] = 40;
-        table[op::REVERT as usize] = 0;
-        table[op::INVALID as usize] = 0;
-        table[op::SELFDESTRUCT as usize] = 0;
+        table.set(op::CREATE, 0);
+        table.set(op::CALL, 40);
+        table.set(op::CALLCODE, 40);
+        table.set(op::RETURN, 0);
+        table.set(op::DELEGATECALL, 40);
+        table.set(op::CREATE2, 0);
+        table.set(op::STATICCALL, 40);
+        table.set(op::REVERT, 0);
+        table.set(op::INVALID, 0);
+        table.set(op::SELFDESTRUCT, 0);
 
-        Self(table)
+        table
     }
 }
 
@@ -398,7 +449,7 @@ macro_rules! make_instruction_table_inner {
         ($op:ident, $instr:path),
     )*) => {
         $(
-            $table.0[op::$op as usize] = Some(&$instr as &'static dyn Instruction<$config>);
+            $table.set(op::$op, Some(&$instr as &'static dyn Instruction<$config>));
         )*
     };
 }
@@ -498,7 +549,7 @@ extern_table! {
         gas: &mut Gas,
         state: &mut State<'_>,
     ) -> InstructionFnRet {
-        let instr = C::INSTRUCTION_IMPLS[OP].unwrap_or_else(<dyn Instruction<C>>::default_unknown);
+        let instr = C::INSTRUCTION_IMPLS.get(OP as u8).unwrap_or_else(<dyn Instruction<C>>::default_unknown);
         let r = instr.execute(&mut stack, pc, gas, state);
         (stack.len, r)
     }
@@ -513,7 +564,7 @@ extern_table! {
         state: &mut State<'_>,
         ret: *const (),
     ) -> TailInstructionFnRet {
-        let instr = C::INSTRUCTION_IMPLS[OP].unwrap_or_else(<dyn Instruction<C>>::default_unknown);
+        let instr = C::INSTRUCTION_IMPLS.get(OP as u8).unwrap_or_else(<dyn Instruction<C>>::default_unknown);
         if let Err(e) = instr.execute(&mut stack, pc.as_mut(), gas, state) {
             cold_path();
             tail_return!(tail_call_restore(

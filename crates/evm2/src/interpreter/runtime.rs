@@ -75,7 +75,7 @@ impl Interpreter {
     pub(crate) fn pre_step<C: EvmConfig>(mut pc: PcMut<'_>, gas: &mut Gas) -> Result<u8> {
         let op = pc.op();
         unsafe { pc.advance_unchecked(1) };
-        gas.spend(C::GAS_TABLE[op as usize] as _)?;
+        gas.spend(C::GAS_TABLE.get(op) as _)?;
         Ok(op)
     }
 
