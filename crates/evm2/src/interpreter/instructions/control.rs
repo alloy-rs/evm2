@@ -47,7 +47,7 @@ pub(in crate::interpreter) fn gas(cx: _) -> out {
 pub(in crate::interpreter) fn jumpdest() {}
 
 #[instruction]
-pub(in crate::interpreter) fn ret(cx: _, [offset, len]: [Word]) -> Result {
+pub(in crate::interpreter) fn r#return(cx: _, [offset, len]: [Word]) -> Result {
     let len = as_usize(len)?;
     if len != 0 {
         let offset = as_usize(offset)?;

@@ -19,8 +19,6 @@ pub(super) use env::*;
 mod host;
 pub(super) use host::*;
 
-mod i256;
-
 mod memory;
 pub(super) use memory::*;
 
@@ -29,9 +27,9 @@ pub(super) use stack::*;
 
 mod system;
 
+mod i256;
 pub(in crate::interpreter) mod table;
+mod utils;
 
 #[cfg(test)]
 pub(in crate::interpreter) mod tests;
-
-mod utils;

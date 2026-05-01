@@ -83,23 +83,23 @@ opcodes! {$
     // 0x2E
     // 0x2F
 
-    0x30 => ADDRESS      => address;
-    0x31 => BALANCE      => balance;
-    0x32 => ORIGIN       => origin;
-    0x33 => CALLER       => caller;
-    0x34 => CALLVALUE    => callvalue;
-    0x35 => CALLDATALOAD => calldataload;
-    0x36 => CALLDATASIZE => calldatasize;
-    0x37 => CALLDATACOPY => calldatacopy;
-    0x38 => CODESIZE     => codesize;
-    0x39 => CODECOPY     => codecopy;
-
+    0x30 => ADDRESS        => address;
+    0x31 => BALANCE        => balance;
+    0x32 => ORIGIN         => origin;
+    0x33 => CALLER         => caller;
+    0x34 => CALLVALUE      => callvalue;
+    0x35 => CALLDATALOAD   => calldataload;
+    0x36 => CALLDATASIZE   => calldatasize;
+    0x37 => CALLDATACOPY   => calldatacopy;
+    0x38 => CODESIZE       => codesize;
+    0x39 => CODECOPY       => codecopy;
     0x3A => GASPRICE       => gasprice;
     0x3B => EXTCODESIZE    => extcodesize;
     0x3C => EXTCODECOPY    => invalid;
     0x3D => RETURNDATASIZE => invalid;
     0x3E => RETURNDATACOPY => invalid;
     0x3F => EXTCODEHASH    => extcodehash;
+
     0x40 => BLOCKHASH      => blockhash;
     0x41 => COINBASE       => coinbase;
     0x42 => TIMESTAMP      => timestamp;
@@ -286,7 +286,7 @@ opcodes! {$
     0xF0 => CREATE       => invalid;
     0xF1 => CALL         => invalid;
     0xF2 => CALLCODE     => invalid;
-    0xF3 => RETURN       => ret;
+    0xF3 => RETURN       => r#return;
     0xF4 => DELEGATECALL => invalid;
     0xF5 => CREATE2      => invalid;
     // 0xF6
