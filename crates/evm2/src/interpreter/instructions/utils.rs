@@ -8,7 +8,7 @@ pub(in crate::interpreter) fn address_to_word(address: Address) -> Word {
 }
 
 #[inline]
-pub(in crate::interpreter) fn b256_to_word(value: B256) -> Word {
+pub(in crate::interpreter) const fn b256_to_word(value: B256) -> Word {
     Word::from_be_bytes(value.0)
 }
 
@@ -26,7 +26,7 @@ pub(in crate::interpreter) fn as_usize_saturated(value: Word) -> usize {
 }
 
 #[inline]
-pub(in crate::interpreter) fn check_spec(spec: SpecId, min: SpecId) -> Result {
+pub(in crate::interpreter) const fn check_spec(spec: SpecId, min: SpecId) -> Result {
     if !spec.enables(min) {
         cold_path();
         return Err(InstrStop::NotActivated);

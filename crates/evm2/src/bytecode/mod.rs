@@ -81,7 +81,7 @@ struct BytecodeInner {
 pub enum BytecodeKind {
     /// Legacy analyzed bytecode with jump table.
     #[default]
-    LegacyAnalyzed,
+    Legacy,
     /// EIP-7702 delegated bytecode.
     Eip7702,
 }
@@ -135,7 +135,7 @@ impl Bytecode {
         static DEFAULT: OnceLock<Bytecode> = OnceLock::new();
         DEFAULT.get_or_init(|| {
             Self(Arc::new(BytecodeInner {
-                kind: BytecodeKind::LegacyAnalyzed,
+                kind: BytecodeKind::Legacy,
                 bytecode: Bytes::from_static(&[crate::interpreter::op::STOP]),
                 original_len: 0,
                 jump_table: JumpTable::default(),
@@ -153,7 +153,7 @@ impl Bytecode {
         let original_len = raw.len();
         let (jump_table, bytecode) = analyze_legacy(raw);
         Self(Arc::new(BytecodeInner {
-            kind: BytecodeKind::LegacyAnalyzed,
+            kind: BytecodeKind::Legacy,
             original_len,
             bytecode,
             jump_table,
@@ -249,7 +249,7 @@ impl Bytecode {
         assert!(original_len <= jump_table.len(), "jump table length is less than original length");
         assert!(!bytecode.is_empty(), "bytecode cannot be empty");
         Self(Arc::new(BytecodeInner {
-            kind: BytecodeKind::LegacyAnalyzed,
+            kind: BytecodeKind::Legacy,
             bytecode,
             original_len,
             jump_table,
@@ -265,7 +265,7 @@ impl Bytecode {
     /// Returns `true` if bytecode is legacy.
     #[inline]
     pub fn is_legacy(&self) -> bool {
-        self.kind() == BytecodeKind::LegacyAnalyzed
+        self.kind() == BytecodeKind::Legacy
     }
 
     /// Returns `true` if bytecode is EIP-7702.
@@ -297,29 +297,9 @@ impl Bytecode {
         keccak256(self.original_byte_slice())
     }
 
-    /// Returns a reference to the bytecode bytes.
-    ///
-    /// For legacy bytecode, this includes padding.
+    /// Returns a reference to the potentially padded bytecode bytes.
     #[inline]
-    pub fn bytecode(&self) -> &Bytes {
-        &self.0.bytecode
-    }
-
-    /// Pointer to the bytecode bytes.
-    #[inline]
-    pub fn bytecode_ptr(&self) -> *const u8 {
-        self.0.bytecode.as_ptr()
-    }
-
-    /// Returns a clone of the bytecode bytes.
-    #[inline]
-    pub fn bytes(&self) -> Bytes {
-        self.0.bytecode.clone()
-    }
-
-    /// Returns a reference to the bytecode bytes.
-    #[inline]
-    pub fn bytes_ref(&self) -> &Bytes {
+    pub fn bytes(&self) -> &Bytes {
         &self.0.bytecode
     }
 
@@ -368,7 +348,7 @@ mod tests {
             Bytecode::new(),
             Bytecode::new_legacy(Bytes::new()),
         ] {
-            assert_eq!(bytecode.kind(), BytecodeKind::LegacyAnalyzed);
+            assert_eq!(bytecode.kind(), BytecodeKind::Legacy);
             assert_eq!(bytecode.len(), 0);
             assert_eq!(bytecode.bytes_slice(), [opcode::STOP]);
         }
@@ -380,7 +360,7 @@ mod tests {
         let bytecode = Bytecode::new_legacy(raw);
         let _ = unsafe {
             Bytecode::new_analyzed(
-                bytecode.bytecode().clone(),
+                bytecode.bytes().clone(),
                 bytecode.len(),
                 bytecode.legacy_jump_table().unwrap().clone(),
             )
@@ -393,7 +373,7 @@ mod tests {
         let bytecode = Bytecode::new_legacy(Bytes::from_static(&[opcode::PUSH1, 0x01]));
         let _ = unsafe {
             Bytecode::new_analyzed(
-                bytecode.bytecode().clone(),
+                bytecode.bytes().clone(),
                 100,
                 bytecode.legacy_jump_table().unwrap().clone(),
             )
@@ -405,7 +385,7 @@ mod tests {
     fn test_panic_on_short_jump_table() {
         let bytecode = Bytecode::new_legacy(Bytes::from_static(&[opcode::PUSH1, 0x01]));
         let jump_table = JumpTable::from_slice(&[0], 1);
-        let _ = unsafe { Bytecode::new_analyzed(bytecode.bytecode().clone(), 2, jump_table) };
+        let _ = unsafe { Bytecode::new_analyzed(bytecode.bytes().clone(), 2, jump_table) };
     }
 
     #[test]

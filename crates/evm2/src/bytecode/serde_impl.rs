@@ -1,6 +1,8 @@
-use super::{Bytecode, JumpTable};
+use super::Bytecode;
 use alloy_primitives::{Address, Bytes};
 use serde::{Deserialize, Serialize};
+
+// TODO: eventually remove `BytecodeSerdeOld`.
 
 #[derive(Deserialize)]
 #[serde(untagged)]
@@ -10,10 +12,16 @@ enum BytecodeSerde {
 }
 
 #[derive(Deserialize)]
-#[allow(dead_code)]
 enum BytecodeSerdeOld {
-    LegacyAnalyzed { bytecode: Bytes, original_len: usize, jump_table: JumpTable },
-    Eip7702 { delegated_address: Address },
+    LegacyAnalyzed {
+        bytecode: Bytes,
+        original_len: usize,
+        #[allow(dead_code)]
+        jump_table: serde::de::IgnoredAny,
+    },
+    Eip7702 {
+        delegated_address: Address,
+    },
 }
 
 impl Serialize for Bytecode {
@@ -29,7 +37,7 @@ impl<'de> Deserialize<'de> for Bytecode {
                 Self::new_raw_checked(bytes).map_err(serde::de::Error::custom)
             }
             BytecodeSerde::Old(bytecode_serde_old) => match bytecode_serde_old {
-                BytecodeSerdeOld::LegacyAnalyzed { bytecode, original_len, .. } => {
+                BytecodeSerdeOld::LegacyAnalyzed { bytecode, original_len, jump_table: _ } => {
                     if original_len > bytecode.len() {
                         return Err(serde::de::Error::custom(
                             "original_len is greater than bytecode length",

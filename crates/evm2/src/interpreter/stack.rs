@@ -23,24 +23,31 @@ impl<'a> Stack<'a> {
     pub(crate) const CAPACITY: usize = STACK_CAPACITY;
 
     #[inline]
-    pub(crate) fn new(stack: &'a mut [Word; Stack::CAPACITY], len: usize) -> Self {
+    pub(crate) const fn new(stack: &'a mut [Word; Stack::CAPACITY], len: usize) -> Self {
         Self { stack, len }
     }
 
+    /// Returns the stack contents as a slice.
     #[inline]
-    fn as_slice(&self) -> &[Word] {
+    pub const fn as_slice(&self) -> &[Word] {
         unsafe { core::slice::from_raw_parts(self.stack.as_ptr(), self.len) }
+    }
+
+    /// Returns the stack contents as a slice.
+    #[inline]
+    pub const fn as_slice_mut(&mut self) -> &mut [Word] {
+        unsafe { core::slice::from_raw_parts_mut(self.stack.as_mut_ptr(), self.len) }
     }
 
     /// Checks that an instruction can consume `input` words and produce `output` words.
     #[inline]
     pub(crate) fn check_bounds(&self, input: usize, output: usize) -> Result {
-        debug_assert!(output == 0 || output == 1);
+        core::debug_assert_matches!(output, 0 | 1);
         if self.len < input {
             cold_path();
             return Err(InstrStop::StackUnderflow);
         }
-        if self.len - input == Self::CAPACITY {
+        if output > input && self.len - input == Self::CAPACITY {
             cold_path();
             return Err(InstrStop::StackOverflow);
         }
@@ -57,7 +64,7 @@ impl<'a> Stack<'a> {
         }
         unsafe {
             let end = self.stack.as_mut_ptr().add(len);
-            core::ptr::write(end, value);
+            *end = value;
             self.len = len + 1;
         }
         Ok(())
@@ -229,6 +236,100 @@ mod tests {
         f(&mut stack);
     }
 
+    fn run_with_len(len: usize, f: impl FnOnce(&mut Stack<'_>)) {
+        let mut backing = [Word::MAX; Stack::CAPACITY];
+        for (i, word) in backing.iter_mut().take(len).enumerate() {
+            *word = Word::from(i);
+        }
+        let mut stack = Stack::new(&mut backing, len);
+        f(&mut stack);
+    }
+
+    #[test]
+    fn check_bounds() {
+        run_with_len(0, |stack| {
+            assert!(stack.check_bounds(0, 0).is_ok());
+            assert!(stack.check_bounds(0, 1).is_ok());
+            core::assert_matches!(stack.check_bounds(1, 0), Err(InstrStop::StackUnderflow));
+            core::assert_matches!(stack.check_bounds(1, 1), Err(InstrStop::StackUnderflow));
+        });
+
+        run_with_len(1, |stack| {
+            assert!(stack.check_bounds(1, 0).is_ok());
+            assert!(stack.check_bounds(1, 1).is_ok());
+            core::assert_matches!(stack.check_bounds(2, 0), Err(InstrStop::StackUnderflow));
+        });
+
+        run_with_len(Stack::CAPACITY, |stack| {
+            assert!(stack.check_bounds(1, 1).is_ok());
+            core::assert_matches!(stack.check_bounds(0, 1), Err(InstrStop::StackOverflow));
+        });
+    }
+
+    #[test]
+    fn push_and_pop() {
+        run(|stack| {
+            stack.push(Word::from(1)).unwrap();
+            stack.push(Word::from(2)).unwrap();
+            assert_eq!(stack.as_slice(), [Word::from(1), Word::from(2)]);
+            assert_eq!(stack.pop().unwrap(), Word::from(2));
+            assert_eq!(stack.popn::<1>().unwrap(), [Word::from(1)]);
+            core::assert_matches!(stack.pop(), Err(InstrStop::StackUnderflow));
+        });
+
+        run_with_len(Stack::CAPACITY, |stack| {
+            core::assert_matches!(stack.push(Word::ZERO), Err(InstrStop::StackOverflow));
+        });
+    }
+
+    #[test]
+    fn popn_top() {
+        run_with_len(3, |stack| {
+            let (popped, top) = stack.popn_top::<2>().unwrap();
+            assert_eq!(popped, [Word::from(2), Word::from(1)]);
+            assert_eq!(*top, Word::from(0));
+            *top = Word::from(9);
+            assert_eq!(stack.as_slice(), [Word::from(9)]);
+        });
+
+        run_with_len(2, |stack| {
+            core::assert_matches!(stack.popn_top::<2>(), Err(InstrStop::StackUnderflow));
+        });
+    }
+
+    #[test]
+    fn dup_swap_and_exchange() {
+        run_with_len(4, |stack| {
+            stack.dup(2).unwrap();
+            assert_eq!(
+                stack.as_slice(),
+                [Word::from(0), Word::from(1), Word::from(2), Word::from(3), Word::from(2)]
+            );
+
+            stack.swap(3).unwrap();
+            assert_eq!(
+                stack.as_slice(),
+                [Word::from(0), Word::from(2), Word::from(2), Word::from(3), Word::from(1)]
+            );
+
+            stack.exchange(1, 4).unwrap();
+            assert_eq!(
+                stack.as_slice(),
+                [Word::from(3), Word::from(2), Word::from(2), Word::from(0), Word::from(1)]
+            );
+        });
+
+        run_with_len(1, |stack| {
+            core::assert_matches!(stack.dup(2), Err(InstrStop::StackUnderflow));
+            core::assert_matches!(stack.swap(1), Err(InstrStop::StackUnderflow));
+            core::assert_matches!(stack.exchange(0, 1), Err(InstrStop::StackUnderflow));
+        });
+
+        run_with_len(Stack::CAPACITY, |stack| {
+            core::assert_matches!(stack.dup(1), Err(InstrStop::StackOverflow));
+        });
+    }
+
     #[test]
     fn push_slices() {
         run(|stack| {
@@ -269,6 +370,10 @@ mod tests {
             let bytes = [&[0; 64][..], &n.to_be_bytes()].concat();
             stack.push_slice(&bytes).unwrap();
             assert_eq!(stack.as_slice(), [Word::ZERO, Word::ZERO, Word::from(n)]);
+        });
+
+        run_with_len(Stack::CAPACITY, |stack| {
+            core::assert_matches!(stack.push_slice(&[42]), Err(InstrStop::StackOverflow));
         });
     }
 }

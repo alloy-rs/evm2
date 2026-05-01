@@ -105,7 +105,7 @@ impl ToWord for usize {
 
 pub(super) fn run_stack<T: ToWord, const N: usize>(inputs: [T; N], opcode: u8) -> TestInterpreter {
     let mut code = Vec::new();
-    for input in inputs {
+    for input in inputs.into_iter().rev() {
         push(&mut code, input);
     }
     code.extend([opcode, op::STOP]);
@@ -114,12 +114,12 @@ pub(super) fn run_stack<T: ToWord, const N: usize>(inputs: [T; N], opcode: u8) -
 
 pub(super) fn assert_stack_words(inputs: &[Word], opcode: u8, expected: &[Word]) {
     let mut code = Vec::new();
-    for input in inputs {
+    for input in inputs.iter().rev() {
         push(&mut code, *input);
     }
     code.extend([opcode, op::STOP]);
     let interpreter = run(code);
-    assert!(matches!(interpreter.err, InstrStop::Stop));
+    core::assert_matches!(interpreter.err, InstrStop::Stop);
     assert_eq!(interpreter.stack(), expected);
 }
 

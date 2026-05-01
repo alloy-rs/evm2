@@ -4,7 +4,6 @@
     feature(explicit_tail_calls, rust_preserve_none_cc),
     allow(incomplete_features)
 )]
-#![allow(clippy::missing_const_for_fn)]
 #![cfg_attr(not(feature = "std"), no_std)]
 
 extern crate self as evm2;

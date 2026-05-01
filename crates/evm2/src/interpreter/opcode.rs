@@ -2,7 +2,7 @@
 use super::instructions::*;
 
 macro_rules! opcodes {
-    ($d:tt $($val:literal => $name:ident => $f:expr;)*) => {
+    ($d:tt $($val:literal => $name:ident => $instr:ty;)*) => {
         /// Opcode byte constants.
         pub mod op {
             $(
@@ -14,7 +14,7 @@ macro_rules! opcodes {
         #[cfg(test)]
         const _: () = {
             $(
-                let _ = $f;
+                let _ = core::mem::size_of::<$instr>();
             )*
         };
 
@@ -23,7 +23,7 @@ macro_rules! opcodes {
             ([$d ($d extra:tt)*] $d m:path) => {
                 $m!{[$d($d extra)*]
                     $(
-                        ($name, $f),
+                        ($name, $instr),
                     )*
                 }
             };
@@ -133,73 +133,73 @@ opcodes! {$
     0x5D => TSTORE   => invalid;
     0x5E => MCOPY    => mcopy;
 
-    0x5F => PUSH0  => push::<0>;
-    0x60 => PUSH1  => push::<1>;
-    0x61 => PUSH2  => push::<2>;
-    0x62 => PUSH3  => push::<3>;
-    0x63 => PUSH4  => push::<4>;
-    0x64 => PUSH5  => push::<5>;
-    0x65 => PUSH6  => push::<6>;
-    0x66 => PUSH7  => push::<7>;
-    0x67 => PUSH8  => push::<8>;
-    0x68 => PUSH9  => push::<9>;
-    0x69 => PUSH10 => push::<10>;
-    0x6A => PUSH11 => push::<11>;
-    0x6B => PUSH12 => push::<12>;
-    0x6C => PUSH13 => push::<13>;
-    0x6D => PUSH14 => push::<14>;
-    0x6E => PUSH15 => push::<15>;
-    0x6F => PUSH16 => push::<16>;
-    0x70 => PUSH17 => push::<17>;
-    0x71 => PUSH18 => push::<18>;
-    0x72 => PUSH19 => push::<19>;
-    0x73 => PUSH20 => push::<20>;
-    0x74 => PUSH21 => push::<21>;
-    0x75 => PUSH22 => push::<22>;
-    0x76 => PUSH23 => push::<23>;
-    0x77 => PUSH24 => push::<24>;
-    0x78 => PUSH25 => push::<25>;
-    0x79 => PUSH26 => push::<26>;
-    0x7A => PUSH27 => push::<27>;
-    0x7B => PUSH28 => push::<28>;
-    0x7C => PUSH29 => push::<29>;
-    0x7D => PUSH30 => push::<30>;
-    0x7E => PUSH31 => push::<31>;
-    0x7F => PUSH32 => push::<32>;
+    0x5F => PUSH0  => push<0>;
+    0x60 => PUSH1  => push<1>;
+    0x61 => PUSH2  => push<2>;
+    0x62 => PUSH3  => push<3>;
+    0x63 => PUSH4  => push<4>;
+    0x64 => PUSH5  => push<5>;
+    0x65 => PUSH6  => push<6>;
+    0x66 => PUSH7  => push<7>;
+    0x67 => PUSH8  => push<8>;
+    0x68 => PUSH9  => push<9>;
+    0x69 => PUSH10 => push<10>;
+    0x6A => PUSH11 => push<11>;
+    0x6B => PUSH12 => push<12>;
+    0x6C => PUSH13 => push<13>;
+    0x6D => PUSH14 => push<14>;
+    0x6E => PUSH15 => push<15>;
+    0x6F => PUSH16 => push<16>;
+    0x70 => PUSH17 => push<17>;
+    0x71 => PUSH18 => push<18>;
+    0x72 => PUSH19 => push<19>;
+    0x73 => PUSH20 => push<20>;
+    0x74 => PUSH21 => push<21>;
+    0x75 => PUSH22 => push<22>;
+    0x76 => PUSH23 => push<23>;
+    0x77 => PUSH24 => push<24>;
+    0x78 => PUSH25 => push<25>;
+    0x79 => PUSH26 => push<26>;
+    0x7A => PUSH27 => push<27>;
+    0x7B => PUSH28 => push<28>;
+    0x7C => PUSH29 => push<29>;
+    0x7D => PUSH30 => push<30>;
+    0x7E => PUSH31 => push<31>;
+    0x7F => PUSH32 => push<32>;
 
-    0x80 => DUP1  => dup::<1>;
-    0x81 => DUP2  => dup::<2>;
-    0x82 => DUP3  => dup::<3>;
-    0x83 => DUP4  => dup::<4>;
-    0x84 => DUP5  => dup::<5>;
-    0x85 => DUP6  => dup::<6>;
-    0x86 => DUP7  => dup::<7>;
-    0x87 => DUP8  => dup::<8>;
-    0x88 => DUP9  => dup::<9>;
-    0x89 => DUP10 => dup::<10>;
-    0x8A => DUP11 => dup::<11>;
-    0x8B => DUP12 => dup::<12>;
-    0x8C => DUP13 => dup::<13>;
-    0x8D => DUP14 => dup::<14>;
-    0x8E => DUP15 => dup::<15>;
-    0x8F => DUP16 => dup::<16>;
+    0x80 => DUP1  => dup<1>;
+    0x81 => DUP2  => dup<2>;
+    0x82 => DUP3  => dup<3>;
+    0x83 => DUP4  => dup<4>;
+    0x84 => DUP5  => dup<5>;
+    0x85 => DUP6  => dup<6>;
+    0x86 => DUP7  => dup<7>;
+    0x87 => DUP8  => dup<8>;
+    0x88 => DUP9  => dup<9>;
+    0x89 => DUP10 => dup<10>;
+    0x8A => DUP11 => dup<11>;
+    0x8B => DUP12 => dup<12>;
+    0x8C => DUP13 => dup<13>;
+    0x8D => DUP14 => dup<14>;
+    0x8E => DUP15 => dup<15>;
+    0x8F => DUP16 => dup<16>;
 
-    0x90 => SWAP1  => swap::<1>;
-    0x91 => SWAP2  => swap::<2>;
-    0x92 => SWAP3  => swap::<3>;
-    0x93 => SWAP4  => swap::<4>;
-    0x94 => SWAP5  => swap::<5>;
-    0x95 => SWAP6  => swap::<6>;
-    0x96 => SWAP7  => swap::<7>;
-    0x97 => SWAP8  => swap::<8>;
-    0x98 => SWAP9  => swap::<9>;
-    0x99 => SWAP10 => swap::<10>;
-    0x9A => SWAP11 => swap::<11>;
-    0x9B => SWAP12 => swap::<12>;
-    0x9C => SWAP13 => swap::<13>;
-    0x9D => SWAP14 => swap::<14>;
-    0x9E => SWAP15 => swap::<15>;
-    0x9F => SWAP16 => swap::<16>;
+    0x90 => SWAP1  => swap<1>;
+    0x91 => SWAP2  => swap<2>;
+    0x92 => SWAP3  => swap<3>;
+    0x93 => SWAP4  => swap<4>;
+    0x94 => SWAP5  => swap<5>;
+    0x95 => SWAP6  => swap<6>;
+    0x96 => SWAP7  => swap<7>;
+    0x97 => SWAP8  => swap<8>;
+    0x98 => SWAP9  => swap<9>;
+    0x99 => SWAP10 => swap<10>;
+    0x9A => SWAP11 => swap<11>;
+    0x9B => SWAP12 => swap<12>;
+    0x9C => SWAP13 => swap<13>;
+    0x9D => SWAP14 => swap<14>;
+    0x9E => SWAP15 => swap<15>;
+    0x9F => SWAP16 => swap<16>;
 
     0xA0 => LOG0 => invalid;
     0xA1 => LOG1 => invalid;

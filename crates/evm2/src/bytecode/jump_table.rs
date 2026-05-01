@@ -6,7 +6,7 @@ use std::hint::cold_path;
 /// A table of valid `jump` destinations.
 ///
 /// It is immutable and memory efficient, with one bit per byte in the bytecode.
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone)]
 pub struct JumpTable {
     table: Cow<'static, [u8]>,
     bit_len: usize,
@@ -18,19 +18,6 @@ pub struct JumpTableRef<'a> {
     base: *const u8,
     bit_len: usize,
     _marker: PhantomData<&'a [u8]>,
-}
-
-impl Clone for JumpTable {
-    #[inline]
-    fn clone(&self) -> Self {
-        Self {
-            table: match &self.table {
-                Cow::Borrowed(b) => Cow::Borrowed(b),
-                Cow::Owned(o) => Cow::Owned(o.clone()),
-            },
-            bit_len: self.bit_len,
-        }
-    }
 }
 
 impl fmt::Debug for JumpTable {
@@ -269,22 +256,5 @@ mod tests {
 
         assert_eq!(format!("{jump_table:?}"), "JumpTable { map: \"0d06\" }");
         assert_eq!(format!("{:?}", jump_table.as_ref()), "JumpTableRef { map: \"0d06\" }");
-    }
-
-    #[cfg(feature = "serde")]
-    #[test]
-    fn test_jump_table_serde_roundtrip() {
-        let original = JumpTable::from_slice(&[0x0D, 0x06], 13);
-
-        let serialized = serde_json::to_string(&original).unwrap();
-        let deserialized: JumpTable = serde_json::from_str(&serialized).unwrap();
-
-        assert_eq!(original.len(), deserialized.len());
-        assert_eq!(original.table, deserialized.table);
-        assert_eq!(original, deserialized);
-
-        for i in 0..13 {
-            assert_eq!(original.is_valid(i), deserialized.is_valid(i), "mismatch at index {i}");
-        }
     }
 }

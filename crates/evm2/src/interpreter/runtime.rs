@@ -147,7 +147,7 @@ impl Interpreter {
         let e = table[op as usize](
             Stack::new(&mut self.stack, self.stack_len),
             pc,
-            self.gas,
+            &mut self.gas,
             &mut State {
                 bytecode,
                 host,

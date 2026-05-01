@@ -6,7 +6,7 @@ use alloy_primitives::Bytes;
 /// Analyzes the bytecode to produce a jump table and potentially padded bytecode.
 ///
 /// Prefer using [`Bytecode::new_legacy`](super::Bytecode::new_legacy) instead.
-pub(crate) fn analyze_legacy(bytecode: Bytes) -> (JumpTable, Bytes) {
+pub(super) fn analyze_legacy(bytecode: Bytes) -> (JumpTable, Bytes) {
     let mut jumps = JumpTable::new(bytecode.len());
     let range = bytecode.as_ptr_range();
     let start = range.start;

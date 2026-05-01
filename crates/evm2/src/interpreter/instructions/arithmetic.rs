@@ -4,61 +4,60 @@ use evm2_macros::instruction;
 
 #[instruction]
 pub(in crate::interpreter) fn add([a, b]: [Word]) -> out {
-    *out = a.wrapping_add(*b);
+    *out = a.wrapping_add(b);
 }
 
 #[instruction]
 pub(in crate::interpreter) fn mul([a, b]: [Word]) -> out {
-    *out = a.wrapping_mul(*b);
+    *out = a.wrapping_mul(b);
 }
 
 #[instruction]
 pub(in crate::interpreter) fn sub([a, b]: [Word]) -> out {
-    *out = a.wrapping_sub(*b);
+    *out = a.wrapping_sub(b);
 }
 
 #[instruction]
 pub(in crate::interpreter) fn div([a, b]: [Word]) -> out {
-    *out = if b.is_zero() { Word::ZERO } else { a.wrapping_div(*b) };
+    *out = if b.is_zero() { Word::ZERO } else { a.wrapping_div(b) };
 }
 
 #[instruction]
 pub(in crate::interpreter) fn sdiv([a, b]: [Word]) -> out {
-    *out = i256_div(*a, *b);
+    *out = i256_div(a, b);
 }
 
 #[instruction]
 pub(in crate::interpreter) fn rem([a, b]: [Word]) -> out {
-    *out = if b.is_zero() { Word::ZERO } else { a.wrapping_rem(*b) };
+    *out = if b.is_zero() { Word::ZERO } else { a.wrapping_rem(b) };
 }
 
 #[instruction]
 pub(in crate::interpreter) fn smod([a, b]: [Word]) -> out {
-    *out = i256_mod(*a, *b);
+    *out = i256_mod(a, b);
 }
 
 #[instruction]
 pub(in crate::interpreter) fn addmod([a, b, n]: [Word]) -> out {
-    *out = a.add_mod(*b, *n);
+    *out = a.add_mod(b, n);
 }
 
 #[instruction]
 pub(in crate::interpreter) fn mulmod([a, b, n]: [Word]) -> out {
-    *out = a.mul_mod(*b, *n);
+    *out = a.mul_mod(b, n);
 }
 
 #[instruction]
 pub(in crate::interpreter) fn exp([a, b]: [Word]) -> out {
-    *out = a.wrapping_pow(*b);
+    *out = a.wrapping_pow(b);
 }
 
 #[instruction]
 pub(in crate::interpreter) fn signextend([ext, value]: [Word]) -> out {
-    *out = *value;
-    if *ext < Word::from(31) {
+    if ext < 31 {
         let bit_index = (8 * ext.as_limbs()[0] + 7) as usize;
-        let mask = (Word::from(1) << bit_index) - Word::from(1);
-        *out = if value.bit(bit_index) { *value | !mask } else { *value & mask };
+        let mask = (Word::ONE << bit_index) - Word::ONE;
+        *out = if value.bit(bit_index) { value | !mask } else { value & mask };
     }
 }
 
@@ -80,7 +79,7 @@ mod tests {
     #[test]
     fn mul_opcode() {
         assert_stack!(MUL(3, 7), 21);
-        assert_stack!(MUL(neg(1), 2), neg(1) - Word::from(1));
+        assert_stack!(MUL(neg(1), 2), neg(1) - Word::ONE);
         assert_stack!(MUL(123, 0), 0);
     }
 

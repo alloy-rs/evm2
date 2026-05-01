@@ -51,8 +51,8 @@ pub(super) const EIP7702_PER_EMPTY_ACCOUNT_COST: u32 = 25000;
 /// Tracks regular, state, and refunded gas.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct GasTracker {
-    gas_limit: u64,
     remaining: u64,
+    gas_limit: u64,
     reservoir: u64,
     state_gas_spent: u64,
     refunded: i64,
@@ -62,25 +62,13 @@ impl GasTracker {
     /// Creates a gas tracker from its raw counters.
     #[inline]
     pub const fn new(gas_limit: u64, remaining: u64, reservoir: u64) -> Self {
-        Self { gas_limit, remaining, reservoir, state_gas_spent: 0, refunded: 0 }
+        Self { remaining, gas_limit, reservoir, state_gas_spent: 0, refunded: 0 }
     }
 
     /// Creates a gas tracker from already used gas.
     #[inline]
     pub const fn new_used_gas(gas_limit: u64, used_gas: u64, reservoir: u64) -> Self {
         Self::new(gas_limit, gas_limit - used_gas, reservoir)
-    }
-
-    /// Returns the gas limit.
-    #[inline]
-    pub const fn limit(&self) -> u64 {
-        self.gas_limit
-    }
-
-    /// Sets the gas limit.
-    #[inline]
-    pub const fn set_limit(&mut self, val: u64) {
-        self.gas_limit = val;
     }
 
     /// Returns remaining regular gas.
@@ -93,6 +81,18 @@ impl GasTracker {
     #[inline]
     pub const fn set_remaining(&mut self, val: u64) {
         self.remaining = val;
+    }
+
+    /// Returns the gas limit.
+    #[inline]
+    pub const fn limit(&self) -> u64 {
+        self.gas_limit
+    }
+
+    /// Sets the gas limit.
+    #[inline]
+    pub const fn set_limit(&mut self, val: u64) {
+        self.gas_limit = val;
     }
 
     /// Returns available state gas reservoir.
@@ -153,7 +153,7 @@ impl GasTracker {
     #[doc(alias = "record_cost")]
     #[doc(alias = "record_regular_cost")]
     #[inline]
-    pub fn spend(&mut self, cost: u64) -> Result {
+    pub const fn spend(&mut self, cost: u64) -> Result {
         if let Some(new_remaining) = self.remaining.checked_sub(cost) {
             self.remaining = new_remaining;
             Ok(())
@@ -167,7 +167,7 @@ impl GasTracker {
     #[doc(alias = "record_cost_unsafe")]
     #[doc(alias = "spend_unsafe")]
     #[inline(always)]
-    pub fn spend_wrapping(&mut self, cost: u64) -> Result {
+    pub const fn spend_wrapping(&mut self, cost: u64) -> Result {
         let remaining = self.remaining;
         self.remaining = remaining.wrapping_sub(cost);
         if remaining < cost {
@@ -273,18 +273,6 @@ impl Gas {
         &mut self.memory
     }
 
-    /// Returns the gas limit.
-    #[inline]
-    pub const fn limit(&self) -> u64 {
-        self.tracker.limit()
-    }
-
-    /// Sets the gas limit.
-    #[inline]
-    pub const fn set_limit(&mut self, val: u64) {
-        self.tracker.set_limit(val);
-    }
-
     /// Returns remaining regular gas.
     #[inline]
     pub const fn remaining(&self) -> u64 {
@@ -295,6 +283,18 @@ impl Gas {
     #[inline]
     pub const fn set_remaining(&mut self, remaining: u64) {
         self.tracker.set_remaining(remaining);
+    }
+
+    /// Returns the gas limit.
+    #[inline]
+    pub const fn limit(&self) -> u64 {
+        self.tracker.limit()
+    }
+
+    /// Sets the gas limit.
+    #[inline]
+    pub const fn set_limit(&mut self, val: u64) {
+        self.tracker.set_limit(val);
     }
 
     /// Returns available state gas reservoir.
@@ -361,7 +361,7 @@ impl Gas {
     #[doc(alias = "record_cost")]
     #[doc(alias = "record_regular_cost")]
     #[inline(always)]
-    pub fn spend(&mut self, amount: u64) -> Result {
+    pub const fn spend(&mut self, amount: u64) -> Result {
         self.tracker.spend(amount)
     }
 
@@ -369,7 +369,7 @@ impl Gas {
     #[doc(alias = "record_cost_unsafe")]
     #[doc(alias = "spend_unsafe")]
     #[inline(always)]
-    pub fn spend_wrapping(&mut self, cost: u64) -> Result {
+    pub const fn spend_wrapping(&mut self, cost: u64) -> Result {
         self.tracker.spend_wrapping(cost)
     }
 
@@ -473,7 +473,7 @@ mod tests {
         assert_eq!((gas.reservoir(), gas.remaining(), gas.state_gas_spent()), (50, 100, 0));
 
         let mut gas = Gas::new_with_regular_gas_and_reservoir(100, 50);
-        assert!(matches!(gas.spend_state(200), Err(InstrStop::OutOfGas)));
+        core::assert_matches!(gas.spend_state(200), Err(InstrStop::OutOfGas));
 
         let mut gas = Gas::new_with_regular_gas_and_reservoir(2000, 1000);
         assert!(gas.spend_state(100).is_ok());
@@ -493,11 +493,11 @@ mod tests {
     #[test]
     fn test_spend_state_oog_does_not_inflate_state_gas_spent() {
         let mut gas = Gas::new(30);
-        assert!(matches!(gas.spend_state(100), Err(InstrStop::OutOfGas)));
+        core::assert_matches!(gas.spend_state(100), Err(InstrStop::OutOfGas));
         assert_eq!(gas.state_gas_spent(), 0);
 
         let mut gas = Gas::new_with_regular_gas_and_reservoir(30, 20);
-        assert!(matches!(gas.spend_state(100), Err(InstrStop::OutOfGas)));
+        core::assert_matches!(gas.spend_state(100), Err(InstrStop::OutOfGas));
         assert_eq!(gas.state_gas_spent(), 0);
         assert_eq!(gas.reservoir(), 20);
     }
@@ -511,6 +511,6 @@ mod tests {
         assert!(gas.spend_state(300).is_ok());
         assert_eq!((gas.reservoir(), gas.remaining(), gas.state_gas_spent()), (0, 0, 500));
 
-        assert!(matches!(gas.spend_state(1), Err(InstrStop::OutOfGas)));
+        core::assert_matches!(gas.spend_state(1), Err(InstrStop::OutOfGas));
     }
 }
