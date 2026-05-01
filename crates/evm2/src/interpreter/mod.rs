@@ -261,6 +261,14 @@ mod tests {
             address
         }
 
+        fn get_code_size(&self, _address: Word) -> usize {
+            0
+        }
+
+        fn get_code_hash(&self, _address: Word) -> B256 {
+            B256::ZERO
+        }
+
         fn block_hash(&self, _number: u64) -> Option<B256> {
             Some(B256::ZERO)
         }
