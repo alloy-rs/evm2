@@ -53,7 +53,6 @@ pub(in crate::interpreter) fn ret(cx: _, [offset, len]: [Word]) -> Result {
     if len != 0 {
         let offset = as_usize(*offset)?;
         crate::interpreter::memory::resize_memory(cx.gas, cx.state.memory, offset, len)?;
-        cx.state.memory.resize(offset, len)?;
     }
     Err(InstrErr::Return)
 }
@@ -64,7 +63,6 @@ pub(in crate::interpreter) fn revert(cx: _, [offset, len]: [Word]) -> Result {
     if len != 0 {
         let offset = as_usize(*offset)?;
         crate::interpreter::memory::resize_memory(cx.gas, cx.state.memory, offset, len)?;
-        cx.state.memory.resize(offset, len)?;
     }
     Err(InstrErr::Revert)
 }
