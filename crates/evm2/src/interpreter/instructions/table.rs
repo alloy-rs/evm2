@@ -1,3 +1,5 @@
+//! Instruction dispatch tables.
+
 use super::*;
 use crate::interpreter::{
     BytecodeRef, Gas, InstrErr, Interpreter, Pc, Result, SpecId, Stack, State,

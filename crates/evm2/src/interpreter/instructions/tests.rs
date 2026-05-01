@@ -1,5 +1,6 @@
 use crate::interpreter::{
-    DEFAULT_GAS_TABLE, DEFAULT_TABLE, Host, InstrErr, Interpreter, SpecId, Table, Word, op,
+    Host, InstrErr, Interpreter, SpecId, Table, Word, op,
+    table::{DEFAULT_GAS_TABLE, DEFAULT_TABLE},
 };
 use alloc::vec::Vec;
 

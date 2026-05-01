@@ -1,7 +1,5 @@
 use super::utils::as_usize;
-use crate::interpreter::{
-    BytecodeRef, Gas, InstrErr, InstructionCx, Pc, Result, Stack, State, Word,
-};
+use crate::interpreter::{InstrErr, Word};
 use core::hint::cold_path;
 use evm2_macros::instruction;
 

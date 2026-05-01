@@ -1,5 +1,5 @@
 use super::utils::as_usize;
-use crate::interpreter::{BytecodeRef, Gas, InstructionCx, Pc, Result, Stack, State, Word};
+use crate::interpreter::Word;
 use alloy_primitives::keccak256;
 use evm2_macros::instruction;
 

@@ -7,6 +7,8 @@
 #![allow(clippy::missing_const_for_fn)]
 #![cfg_attr(not(feature = "std"), no_std)]
 
+extern crate self as evm2;
+
 extern crate alloc;
 
 pub mod bytecode;

@@ -55,19 +55,19 @@ fn expand_instruction(raw: bool, input: ItemFn) -> TokenStream2 {
     let cx_setup = has_cx.then(|| {
         let cx = cx_arg.unwrap_or_else(|| Ident::new("cx", ident.span()));
         quote! {
-            let mut #cx = InstructionCx { bytecode, pc, gas, state };
+            let mut #cx = evm2::interpreter::table::InstructionCx { bytecode, pc, gas, state };
         }
     });
     quote! {
         #(#attrs)*
         #[inline]
         #vis fn #ident #generics(
-            pc: &mut Pc,
-            stack: &mut Stack<'_>,
-            gas: &mut Gas,
-            bytecode: BytecodeRef<'_>,
-            state: &mut State<'_>,
-        ) -> Result
+            pc: &mut evm2::interpreter::Pc,
+            stack: &mut evm2::interpreter::Stack<'_>,
+            gas: &mut evm2::interpreter::Gas,
+            bytecode: evm2::interpreter::BytecodeRef<'_>,
+            state: &mut evm2::interpreter::State<'_>,
+        ) -> evm2::interpreter::Result
         #where_clause
         {
             #cx_setup
