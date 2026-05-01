@@ -8,7 +8,7 @@ pub struct State<'a> {
     /// Active bytecode.
     pub bytecode: BytecodeRef<'a>,
     /// Host implementation.
-    pub host: &'a (dyn Host + 'a),
+    pub host: &'a mut (dyn Host + 'a),
     /// Cached transaction environment.
     pub tx: &'a TxEnv,
     /// Cached block environment.
@@ -36,20 +36,20 @@ impl fmt::Debug for State<'_> {
 /// External host operations.
 pub trait Host {
     /// Returns the transaction environment.
-    fn tx_env(&self) -> &TxEnv;
+    fn tx_env(&mut self) -> &TxEnv;
 
     /// Returns the block environment.
-    fn block_env(&self) -> &BlockEnv;
+    fn block_env(&mut self) -> &BlockEnv;
 
     /// Returns an account balance.
-    fn balance(&self, address: Word) -> Word;
+    fn balance(&mut self, address: Word) -> Word;
 
     /// Returns an account's code size.
-    fn get_code_size(&self, address: Word) -> usize;
+    fn get_code_size(&mut self, address: Word) -> usize;
 
     /// Returns an account's code hash.
-    fn get_code_hash(&self, address: Word) -> B256;
+    fn get_code_hash(&mut self, address: Word) -> B256;
 
     /// Returns a historical block hash.
-    fn block_hash(&self, number: u64) -> Option<B256>;
+    fn block_hash(&mut self, number: u64) -> Option<B256>;
 }

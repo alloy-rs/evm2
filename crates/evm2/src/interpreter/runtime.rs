@@ -107,15 +107,15 @@ impl Interpreter {
         use super::instructions::*;
 
         let bytecode = BytecodeRef::new(&self.bytecode);
-        let host = &*host;
-        let tx = host.tx_env();
-        let block = host.block_env();
+        let host_ptr = host as *mut dyn Host;
+        let tx = unsafe { (&mut *host_ptr).tx_env() };
+        let block = unsafe { (&mut *host_ptr).block_env() };
         let stack = &mut Stack::new(&mut self.stack, self.stack_len);
         let gas_ref = &mut self.gas;
         let pc_field = &mut self.pc;
         let state = &mut State {
             bytecode,
-            host,
+            host: unsafe { &mut *host_ptr },
             tx,
             block,
             memory: &mut self.memory,
@@ -177,9 +177,9 @@ impl Interpreter {
         let bytecode = BytecodeRef::new(&self.bytecode);
         let mut pc = PcMut::new(bytecode, &mut self.pc);
         let op = Self::pre_step(pc.reborrow(), &mut self.gas, gas_table)?;
-        let host = &*host;
-        let tx = host.tx_env();
-        let block = host.block_env();
+        let host_ptr = host as *mut dyn Host;
+        let tx = unsafe { (&mut *host_ptr).tx_env() };
+        let block = unsafe { (&mut *host_ptr).block_env() };
         let r;
         (self.stack_len, r) = table[op as usize](
             Stack::new(&mut self.stack, self.stack_len),
@@ -187,7 +187,7 @@ impl Interpreter {
             &mut self.gas,
             &mut State {
                 bytecode,
-                host,
+                host: unsafe { &mut *host_ptr },
                 tx,
                 block,
                 memory: &mut self.memory,
@@ -207,9 +207,9 @@ impl Interpreter {
     ) -> Result {
         let raw = self as *mut _;
         let bytecode = BytecodeRef::new(&self.bytecode);
-        let host = &*host;
-        let tx = host.tx_env();
-        let block = host.block_env();
+        let host_ptr = host as *mut dyn Host;
+        let tx = unsafe { (&mut *host_ptr).tx_env() };
+        let block = unsafe { (&mut *host_ptr).block_env() };
         let (op, pc) = {
             let mut pc_mut = PcMut::new(bytecode, &mut self.pc);
             let op = Self::pre_step(pc_mut.reborrow(), &mut self.gas, gas_table)?;
@@ -221,7 +221,7 @@ impl Interpreter {
             &mut self.gas,
             &mut State {
                 bytecode,
-                host,
+                host: unsafe { &mut *host_ptr },
                 tx,
                 block,
                 memory: &mut self.memory,

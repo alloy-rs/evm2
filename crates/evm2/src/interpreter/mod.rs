@@ -249,27 +249,27 @@ mod tests {
     }
 
     impl Host for DummyHost {
-        fn tx_env(&self) -> &TxEnv {
+        fn tx_env(&mut self) -> &TxEnv {
             &self.tx
         }
 
-        fn block_env(&self) -> &BlockEnv {
+        fn block_env(&mut self) -> &BlockEnv {
             &self.block
         }
 
-        fn balance(&self, address: Word) -> Word {
+        fn balance(&mut self, address: Word) -> Word {
             address
         }
 
-        fn get_code_size(&self, _address: Word) -> usize {
+        fn get_code_size(&mut self, _address: Word) -> usize {
             0
         }
 
-        fn get_code_hash(&self, _address: Word) -> B256 {
+        fn get_code_hash(&mut self, _address: Word) -> B256 {
             B256::ZERO
         }
 
-        fn block_hash(&self, _number: u64) -> Option<B256> {
+        fn block_hash(&mut self, _number: u64) -> Option<B256> {
             Some(B256::ZERO)
         }
     }
