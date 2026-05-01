@@ -76,7 +76,6 @@ pub(crate) type TailInstructionFn = extern_table!(
         pc: Pc<'_>,
         gas: &mut Gas,
         state: &mut State<'_>,
-        instr_tablep: *const (),
         ret: *const (),
     ) -> TailInstructionFnRet
 );
@@ -111,6 +110,16 @@ impl<C: EvmConfig> Copy for TailInstructionEntry<C> {}
 /// Tail instruction dispatch table.
 #[cfg(feature = "nightly")]
 pub(crate) type TailInstructionTable<C> = [TailInstructionEntry<C>; 256];
+
+pub(crate) trait InstructionTables: EvmConfig {
+    #[cfg(not(feature = "nightly"))]
+    const INSTRUCTIONS: InstructionTable<Self> = make_normal_instruction_table::<Self>();
+
+    #[cfg(feature = "nightly")]
+    const TAIL_INSTRUCTIONS: TailInstructionTable<Self> = make_tail_instruction_table::<Self>();
+}
+
+impl<C: EvmConfig> InstructionTables for C {}
 
 /// Instruction execution context.
 #[derive(Debug)]
@@ -464,7 +473,6 @@ extern_table! {
         mut pc: Pc<'_>,
         gas: &mut Gas,
         state: &mut State<'_>,
-        instrsp: *const (),
         ret: *const (),
     ) -> TailInstructionFnRet {
         let instr = C::INSTRUCTION_IMPLS[OP].unwrap_or_else(<dyn Instruction<C>>::default_unknown);
@@ -475,11 +483,10 @@ extern_table! {
                 pc,
                 gas,
                 state,
-                instrsp,
                 e as usize as *const (),
             ));
         }
-        tail_return!(tail_call_next::<C>(stack, pc, gas, state, instrsp, ret));
+        tail_return!(tail_call_next::<C>(stack, pc, gas, state, ret));
     }
 }
 
@@ -491,7 +498,6 @@ extern_table! {
         mut pc: Pc<'_>,
         gas: &mut Gas,
         state: &mut State<'_>,
-        instrsp: *const (),
         _ret: *const (),
     ) -> TailInstructionFnRet {
         let op = match Interpreter::pre_step::<C>(pc.as_mut(), gas) {
@@ -503,15 +509,12 @@ extern_table! {
                     pc,
                     gas,
                     state,
-                    instrsp,
                     e as usize as *const (),
                 ));
             }
         };
-        // SAFETY: Restoring type-erased table pointer. See [`TailInstructionFn`].
-        let instrs = unsafe { &*instrsp.cast::<TailInstructionTable<C>>() };
-        let instr = instrs[op as usize];
-        tail_return!((instr.f)(stack, pc, gas, state, instrsp, core::ptr::null()));
+        let instr = <C as InstructionTables>::TAIL_INSTRUCTIONS[op as usize];
+        tail_return!((instr.f)(stack, pc, gas, state, core::ptr::null()));
     }
 }
 
@@ -524,7 +527,6 @@ extern_table! {
         pc: Pc<'_>,
         _gas: &mut Gas,
         state: &mut State<'_>,
-        _instrsp: *const (),
         ret: *const (), // Tail calls require same function signature, this is unused so we pass the return value here.
     ) -> TailInstructionFnRet {
         // SAFETY: `raw_interp` is valid for the duration of execution.

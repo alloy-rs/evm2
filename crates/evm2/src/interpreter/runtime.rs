@@ -1,28 +1,14 @@
-#[cfg(not(feature = "nightly"))]
-use super::table::{InstructionTable, make_normal_instruction_table};
+#[cfg(feature = "nightly")]
+use super::Pc;
 use super::{
     BytecodeRef, Gas, Host, InstrStop, Memory, Message, PcMut, Result, Stack, State, Word,
-};
-#[cfg(feature = "nightly")]
-use super::{
-    Pc,
-    table::{TailInstructionTable, make_tail_instruction_table},
+    table::InstructionTables,
 };
 use crate::{EvmConfig, bytecode::Bytecode, env::TxEnv};
 use alloc::boxed::Box;
 use alloy_primitives::Bytes;
 #[cfg(not(feature = "nightly"))]
 use core::hint::cold_path;
-
-pub(crate) trait InterpreterConfig: EvmConfig {
-    #[cfg(not(feature = "nightly"))]
-    const INSTRUCTIONS: InstructionTable<Self> = make_normal_instruction_table::<Self>();
-
-    #[cfg(feature = "nightly")]
-    const TAIL_INSTRUCTIONS: TailInstructionTable<Self> = make_tail_instruction_table::<Self>();
-}
-
-impl<C: EvmConfig> InterpreterConfig for C {}
 
 /// EVM interpreter.
 #[derive(Debug)]
@@ -100,7 +86,7 @@ impl Interpreter {
         let bytecode = BytecodeRef::new(&self.bytecode);
         let mut pc = PcMut::new(bytecode, &mut self.pc);
         let op = Self::pre_step::<C>(pc.reborrow(), &mut self.gas)?;
-        let instr = <C as InterpreterConfig>::INSTRUCTIONS[op as usize];
+        let instr = <C as InstructionTables>::INSTRUCTIONS[op as usize];
         let (len, r) = (instr.f)(
             Stack::new(&mut self.stack, self.stack_len),
             pc,
@@ -130,7 +116,7 @@ impl Interpreter {
             let op = Self::pre_step::<C>(pc_mut.reborrow(), &mut self.gas)?;
             (op, Pc::new(bytecode, pc_mut.get()))
         };
-        let instr = <C as InterpreterConfig>::TAIL_INSTRUCTIONS[op as usize];
+        let instr = <C as InstructionTables>::TAIL_INSTRUCTIONS[op as usize];
         let e = (instr.f)(
             Stack::new(&mut self.stack, self.stack_len),
             pc,
@@ -145,7 +131,6 @@ impl Interpreter {
                 spec: C::SPEC_ID,
                 raw_interp: raw,
             },
-            <C as InterpreterConfig>::TAIL_INSTRUCTIONS.as_ptr().cast(),
             core::ptr::null(),
         );
         Err(e)
