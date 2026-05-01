@@ -1,5 +1,5 @@
 use super::utils::{address_to_word, as_usize_saturated, b256_to_word, check_spec};
-use crate::interpreter::{InstrStop, SpecId, Word};
+use crate::interpreter::{Host, InstrStop, SpecId, Word};
 use evm2_macros::instruction;
 
 const BLOCK_HASH_HISTORY: u64 = 256;

@@ -1,11 +1,14 @@
 use super::utils::{as_usize, check_spec};
-use crate::interpreter::{
-    GasId, InstrStop, Result, SpecId, Word, memory::resize_memory, table::InstructionCx,
+use crate::{
+    EvmConfig,
+    interpreter::{
+        GasId, Host, InstrStop, Result, SpecId, Word, memory::resize_memory, table::InstructionCx,
+    },
 };
 use alloy_primitives::{B256, Bytes, Log, LogData};
 use evm2_macros::instruction;
 
-const fn require_non_staticcall(cx: &InstructionCx<'_, '_, '_>) -> Result {
+const fn require_non_staticcall<C: EvmConfig>(cx: &InstructionCx<'_, '_, '_, C>) -> Result {
     if cx.state.message.is_static() {
         return Err(InstrStop::StateChangeDuringStaticCall);
     }

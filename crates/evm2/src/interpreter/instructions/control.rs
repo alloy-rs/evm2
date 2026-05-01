@@ -1,5 +1,5 @@
 use super::utils::{as_usize, as_usize_saturated};
-use crate::interpreter::{InstrStop, PcMut, Result, State, Word, memory::resize_memory};
+use crate::interpreter::{Host, InstrStop, PcMut, Result, State, Word, memory::resize_memory};
 use core::hint::cold_path;
 use evm2_macros::instruction;
 
@@ -23,7 +23,11 @@ pub(in crate::interpreter) fn jumpi(cx: _, [target, cond]: [Word]) -> Result {
 }
 
 #[inline(always)]
-fn jump_inner(target: Word, mut pc_mut: PcMut<'_>, state: &State<'_>) -> Result {
+fn jump_inner<H: Host + ?Sized>(
+    target: Word,
+    mut pc_mut: PcMut<'_>,
+    state: &State<'_, H>,
+) -> Result {
     let target = as_usize_saturated(target);
     if !state.bytecode.is_valid_jumpdest(target) {
         cold_path();

@@ -64,7 +64,7 @@ impl<C: EvmConfig<Tx: Typed2718>> Evm<C> {
     }
 }
 
-impl<C: EvmConfig> Host for Evm<C> {
+impl<C: EvmConfig<Host = dyn Host>> Host for Evm<C> {
     fn block_env(&mut self) -> &BlockEnv {
         &self.block
     }
@@ -108,7 +108,7 @@ impl<C: EvmConfig> Host for Evm<C> {
         bytecode: Bytecode,
         message: Message,
     ) -> Result<Word, InstrStop> {
-        let stop = execute_message_with_host::<C, _>(self, bytecode, tx_env, message);
+        let stop = execute_message_with_host::<C>(self, bytecode, tx_env, message);
         if matches!(stop, InstrStop::Stop | InstrStop::Return) {
             return Ok(Word::from(1));
         }
@@ -125,8 +125,8 @@ impl<C: EvmConfig> Host for Evm<C> {
     }
 }
 
-fn execute_message_with_host<C: EvmConfig, H: Host>(
-    host: &mut H,
+fn execute_message_with_host<C: EvmConfig>(
+    host: &mut C::Host,
     bytecode: Bytecode,
     tx_env: TxEnv,
     message: Message,

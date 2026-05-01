@@ -66,7 +66,7 @@ fn expand_instruction(raw: bool, input: ItemFn) -> TokenStream2 {
     let cx_setup = has_cx.then(|| {
         let cx = cx_arg.unwrap_or_else(|| Ident::new("cx", ident.span()));
         quote! {
-            let mut #cx = evm2::interpreter::table::InstructionCx {
+            let mut #cx: evm2::interpreter::table::InstructionCx<'_, '_, '_, C> = evm2::interpreter::table::InstructionCx {
                 pc: __evm2_pc,
                 gas: __evm2_gas,
                 gas_params: &C::GAS_PARAMS,
@@ -88,7 +88,7 @@ fn expand_instruction(raw: bool, input: ItemFn) -> TokenStream2 {
                 stack: &mut evm2::interpreter::Stack<'_>,
                 __evm2_pc: evm2::interpreter::PcMut<'_>,
                 __evm2_gas: &mut evm2::interpreter::Gas,
-                __evm2_state: &mut evm2::interpreter::State<'_>,
+                __evm2_state: &mut evm2::interpreter::State<'_, <C as evm2::EvmConfig>::Host>,
             ) -> evm2::interpreter::Result {
                 evm2::asm_comment!(#asm_comment);
                 #cx_setup

@@ -8,6 +8,9 @@ pub trait EvmConfig: Sized + 'static {
     /// Transaction type handled by this EVM.
     type Tx;
 
+    /// Host type used by this EVM.
+    type Host: crate::interpreter::Host + ?Sized;
+
     /// Active hard fork specification.
     const SPEC_ID: SpecId;
 
@@ -27,6 +30,7 @@ pub struct EvmVersion<Tx, const SPEC: u8 = { SpecId::OSAKA as u8 }>(PhantomData<
 
 impl<Tx: 'static, const SPEC: u8> EvmConfig for EvmVersion<Tx, SPEC> {
     type Tx = Tx;
+    type Host = dyn crate::interpreter::Host;
 
     const SPEC_ID: SpecId = match SpecId::try_from_u8(SPEC) {
         Some(spec_id) => spec_id,

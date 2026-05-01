@@ -1,13 +1,15 @@
 use super::utils::{address_to_word, as_usize, as_usize_saturated, b256_to_word, check_spec};
 use crate::{
-    AccountLoad,
-    interpreter::{InstrStop, Result, SpecId, Word, memory::resize_memory, table::InstructionCx},
+    AccountLoad, EvmConfig,
+    interpreter::{
+        Host, InstrStop, Result, SpecId, Word, memory::resize_memory, table::InstructionCx,
+    },
 };
 use alloy_primitives::B256;
 use evm2_macros::instruction;
 
-fn load_account(
-    cx: &mut InstructionCx<'_, '_, '_>,
+fn load_account<C: EvmConfig>(
+    cx: &mut InstructionCx<'_, '_, '_, C>,
     addr: Word,
     load_code: bool,
 ) -> Result<AccountLoad> {

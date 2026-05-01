@@ -1,15 +1,18 @@
 //! System opcode implementations.
 
 use super::utils::{address_to_word, as_usize, word_to_address};
-use crate::interpreter::{
-    GasId, InstrStop, Message, MessageKind, Result, SpecId, Word, memory::resize_memory,
-    table::InstructionCx,
+use crate::{
+    EvmConfig,
+    interpreter::{
+        GasId, Host, InstrStop, Message, MessageKind, Result, SpecId, Word, memory::resize_memory,
+        table::InstructionCx,
+    },
 };
 use alloy_primitives::{Address, Bytes};
 use core::{cmp::min, ops::Range};
 use evm2_macros::instruction;
 
-const fn require_non_staticcall(cx: &InstructionCx<'_, '_, '_>) -> Result {
+const fn require_non_staticcall<C: EvmConfig>(cx: &InstructionCx<'_, '_, '_, C>) -> Result {
     if cx.state.message.is_static() {
         return Err(InstrStop::StateChangeDuringStaticCall);
     }
@@ -21,8 +24,8 @@ const fn success(stop: InstrStop) -> bool {
     matches!(stop, InstrStop::Stop | InstrStop::Return | InstrStop::SelfDestruct)
 }
 
-fn resize_memory_range(
-    cx: &mut InstructionCx<'_, '_, '_>,
+fn resize_memory_range<C: EvmConfig>(
+    cx: &mut InstructionCx<'_, '_, '_, C>,
     offset: Word,
     len: Word,
 ) -> Result<Range<usize>> {
@@ -37,8 +40,8 @@ fn resize_memory_range(
     Ok(offset..offset + len)
 }
 
-fn get_memory_input_and_out_ranges(
-    cx: &mut InstructionCx<'_, '_, '_>,
+fn get_memory_input_and_out_ranges<C: EvmConfig>(
+    cx: &mut InstructionCx<'_, '_, '_, C>,
     input_offset: Word,
     input_len: Word,
     return_offset: Word,
@@ -49,15 +52,18 @@ fn get_memory_input_and_out_ranges(
     Ok((input, output))
 }
 
-fn memory_range_bytes(cx: &mut InstructionCx<'_, '_, '_>, range: Range<usize>) -> Result<Bytes> {
+fn memory_range_bytes<C: EvmConfig>(
+    cx: &mut InstructionCx<'_, '_, '_, C>,
+    range: Range<usize>,
+) -> Result<Bytes> {
     if range.is_empty() {
         return Ok(Bytes::new());
     }
     Ok(Bytes::copy_from_slice(cx.state.memory.slice(range.start, range.len())?))
 }
 
-fn load_acc_and_calc_gas(
-    cx: &mut InstructionCx<'_, '_, '_>,
+fn load_acc_and_calc_gas<C: EvmConfig>(
+    cx: &mut InstructionCx<'_, '_, '_, C>,
     to: Address,
     transfers_value: bool,
     create_empty_account: bool,
@@ -105,7 +111,7 @@ struct CallArgs {
     return_len: Word,
 }
 
-fn call_inner(mut cx: InstructionCx<'_, '_, '_>, args: CallArgs) -> Result<Word> {
+fn call_inner<C: EvmConfig>(mut cx: InstructionCx<'_, '_, '_, C>, args: CallArgs) -> Result<Word> {
     let CallArgs {
         kind,
         local_gas_limit,

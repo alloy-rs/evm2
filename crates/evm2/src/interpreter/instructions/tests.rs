@@ -136,7 +136,7 @@ impl TestInterpreter {
 
 pub(super) struct RunConfig<'a> {
     pub(super) code: Vec<u8>,
-    pub(super) host: Option<&'a mut dyn Host>,
+    pub(super) host: Option<&'a mut (dyn Host + 'static)>,
     pub(super) spec_id: SpecId,
     pub(super) tx_env: TxEnv,
     pub(super) message: Message,
@@ -149,7 +149,7 @@ impl<'a> RunConfig<'a> {
         Self { code: code.into(), ..Self::default() }
     }
 
-    pub(super) fn host(mut self, host: &'a mut dyn Host) -> Self {
+    pub(super) fn host(mut self, host: &'a mut (dyn Host + 'static)) -> Self {
         self.host = Some(host);
         self
     }
@@ -237,7 +237,9 @@ pub(super) fn run(config: RunConfig<'_>) -> TestInterpreter {
     )
 }
 
-fn run_with_config<C: crate::EvmConfig<Tx = ()>>(config: RunConfig<'_>) -> TestInterpreter {
+fn run_with_config<C: crate::EvmConfig<Tx = (), Host = dyn Host>>(
+    config: RunConfig<'_>,
+) -> TestInterpreter {
     let RunConfig { code, host, spec_id: _, tx_env, mut message, gas_limit, return_data } = config;
     let bytecode = Bytecode::new_legacy(Bytes::from(code));
     message.gas_limit = gas_limit;

@@ -1,7 +1,7 @@
 #[cfg(feature = "nightly")]
 use super::Pc;
 use super::{
-    BytecodeRef, Gas, Host, InstrStop, Memory, Message, PcMut, Result, Stack, State, Word,
+    BytecodeRef, Gas, InstrStop, Memory, Message, PcMut, Result, Stack, State, Word,
     table::InstructionTables,
 };
 use crate::{EvmConfig, bytecode::Bytecode, env::TxEnv};
@@ -44,7 +44,7 @@ impl Interpreter {
     }
 
     /// Runs the interpreter until it stops.
-    pub fn run<C: EvmConfig>(&mut self, host: &mut dyn Host) -> InstrStop {
+    pub fn run<C: EvmConfig>(&mut self, host: &mut C::Host) -> InstrStop {
         let _gas_start = self.gas.remaining();
 
         #[cfg(feature = "nightly")]
@@ -62,7 +62,7 @@ impl Interpreter {
     }
 
     #[cfg(not(feature = "nightly"))]
-    fn run_table_loop<C: EvmConfig>(&mut self, host: &mut dyn Host) -> InstrStop {
+    fn run_table_loop<C: EvmConfig>(&mut self, host: &mut C::Host) -> InstrStop {
         loop {
             if let Err(e) = self.step::<C>(host) {
                 cold_path();
@@ -81,7 +81,7 @@ impl Interpreter {
 
     #[inline(always)]
     #[cfg(not(feature = "nightly"))]
-    fn step<C: EvmConfig>(&mut self, host: &mut dyn Host) -> Result {
+    fn step<C: EvmConfig>(&mut self, host: &mut C::Host) -> Result {
         let raw = self as *mut Self;
         let bytecode = BytecodeRef::new(&self.bytecode);
         let mut pc = PcMut::new(bytecode, &mut self.pc);
@@ -108,7 +108,7 @@ impl Interpreter {
 
     #[inline(always)]
     #[cfg(feature = "nightly")]
-    fn step_tail<C: EvmConfig>(&mut self, host: &mut dyn Host) -> Result {
+    fn step_tail<C: EvmConfig>(&mut self, host: &mut C::Host) -> Result {
         let raw = self as *mut Self;
         let bytecode = BytecodeRef::new(&self.bytecode);
         let (op, pc) = {

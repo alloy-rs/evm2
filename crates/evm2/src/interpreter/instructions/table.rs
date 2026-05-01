@@ -97,13 +97,18 @@ pub(crate) type InstructionFnRet = (usize, Result);
 
 /// Normal instruction function pointer.
 #[cfg(not(feature = "nightly"))]
-pub(crate) type InstructionFn = extern_table!(
-    fn(stack: Stack<'_>, pc: PcMut<'_>, gas: &mut Gas, state: &mut State<'_>) -> InstructionFnRet
+pub(crate) type InstructionFn<C> = extern_table!(
+    fn(
+        stack: Stack<'_>,
+        pc: PcMut<'_>,
+        gas: &mut Gas,
+        state: &mut State<'_, <C as EvmConfig>::Host>,
+    ) -> InstructionFnRet
 );
 
 /// Normal instruction dispatch table.
 #[cfg(not(feature = "nightly"))]
-pub(crate) type InstructionTable = [InstructionFn; 256];
+pub(crate) type InstructionTable<C> = [InstructionFn<C>; 256];
 
 /// Tail instruction return value.
 #[cfg(feature = "nightly")]
@@ -111,33 +116,33 @@ pub(crate) type TailInstructionFnRet = InstrStop;
 
 /// Tail instruction function pointer.
 #[cfg(feature = "nightly")]
-pub(crate) type TailInstructionFn = extern_table!(
+pub(crate) type TailInstructionFn<C> = extern_table!(
     fn(
         stack: Stack<'_>,
         pc: Pc<'_>,
         gas: &mut Gas,
-        state: &mut State<'_>,
+        state: &mut State<'_, <C as EvmConfig>::Host>,
         ret: *const (),
     ) -> TailInstructionFnRet
 );
 
 /// Tail instruction dispatch table.
 #[cfg(feature = "nightly")]
-pub(crate) type TailInstructionTable = [TailInstructionFn; 256];
+pub(crate) type TailInstructionTable<C> = [TailInstructionFn<C>; 256];
 
 pub(crate) trait InstructionTables: EvmConfig {
     #[cfg(not(feature = "nightly"))]
-    const INSTRUCTIONS: InstructionTable = make_normal_instruction_table::<Self>();
+    const INSTRUCTIONS: InstructionTable<Self> = make_normal_instruction_table::<Self>();
 
     #[cfg(feature = "nightly")]
-    const TAIL_INSTRUCTIONS: TailInstructionTable = make_tail_instruction_table::<Self>();
+    const TAIL_INSTRUCTIONS: TailInstructionTable<Self> = make_tail_instruction_table::<Self>();
 }
 
 impl<C: EvmConfig> InstructionTables for C {}
 
 /// Instruction execution context.
 #[derive(Debug)]
-pub(crate) struct InstructionCx<'a, 'ctrl, 'state> {
+pub(crate) struct InstructionCx<'a, 'ctrl, 'state, C: EvmConfig> {
     /// Program counter state.
     pub pc: PcMut<'ctrl>,
     /// Gas state.
@@ -145,7 +150,7 @@ pub(crate) struct InstructionCx<'a, 'ctrl, 'state> {
     /// Dynamic gas parameters for the active config.
     pub gas_params: &'a GasParams,
     /// Interpreter state.
-    pub state: &'a mut State<'state>,
+    pub state: &'a mut State<'state, C::Host>,
 }
 
 /// EVM instruction implementation.
@@ -156,7 +161,7 @@ pub trait Instruction<C: EvmConfig = crate::EvmVersion<()>> {
         stack: &mut Stack<'_>,
         pc: PcMut<'_>,
         gas: &mut Gas,
-        state: &mut State<'_>,
+        state: &mut State<'_, C::Host>,
     ) -> Result;
 }
 
@@ -454,18 +459,18 @@ impl<C: EvmConfig> InstructionImplTable<C> {
 /// Converts instruction implementations to a normal instruction dispatch table.
 #[inline]
 #[cfg(not(feature = "nightly"))]
-pub(crate) const fn make_normal_instruction_table<C: EvmConfig>() -> InstructionTable {
-    let mut table = [dispatch::<C, 0> as InstructionFn; 256];
-    for_each_opcode_value!([table, C, dispatch, InstructionFn] assign_instruction_table_entries);
+pub(crate) const fn make_normal_instruction_table<C: EvmConfig>() -> InstructionTable<C> {
+    let mut table = [dispatch::<C, 0> as InstructionFn<C>; 256];
+    for_each_opcode_value!([table, C, dispatch, InstructionFn<C>] assign_instruction_table_entries);
     table
 }
 
 /// Converts instruction implementations to a tail-call instruction dispatch table.
 #[inline]
 #[cfg(feature = "nightly")]
-pub(crate) const fn make_tail_instruction_table<C: EvmConfig>() -> TailInstructionTable {
-    let mut table = [tail_dispatch::<C, 0> as TailInstructionFn; 256];
-    for_each_opcode_value!([table, C, tail_dispatch, TailInstructionFn] assign_instruction_table_entries);
+pub(crate) const fn make_tail_instruction_table<C: EvmConfig>() -> TailInstructionTable<C> {
+    let mut table = [tail_dispatch::<C, 0> as TailInstructionFn<C>; 256];
+    for_each_opcode_value!([table, C, tail_dispatch, TailInstructionFn<C>] assign_instruction_table_entries);
     table
 }
 
@@ -482,7 +487,7 @@ extern_table! {
         mut stack: Stack<'_>,
         pc: PcMut<'_>,
         gas: &mut Gas,
-        state: &mut State<'_>,
+        state: &mut State<'_, C::Host>,
     ) -> InstructionFnRet {
         let instr = C::INSTRUCTION_IMPLS.get(OP as u8).unwrap_or_else(<dyn Instruction<C>>::default_unknown);
         let r = instr.execute(&mut stack, pc, gas, state);
@@ -496,13 +501,13 @@ extern_table! {
         mut stack: Stack<'_>,
         mut pc: Pc<'_>,
         gas: &mut Gas,
-        state: &mut State<'_>,
+        state: &mut State<'_, C::Host>,
         ret: *const (),
     ) -> TailInstructionFnRet {
         let instr = C::INSTRUCTION_IMPLS.get(OP as u8).unwrap_or_else(<dyn Instruction<C>>::default_unknown);
         if let Err(e) = instr.execute(&mut stack, pc.as_mut(), gas, state) {
             cold_path();
-            tail_return!(tail_call_restore(
+            tail_return!(tail_call_restore::<C>(
                 stack,
                 pc,
                 gas,
@@ -521,14 +526,14 @@ extern_table! {
         stack: Stack<'_>,
         mut pc: Pc<'_>,
         gas: &mut Gas,
-        state: &mut State<'_>,
+        state: &mut State<'_, C::Host>,
         _ret: *const (),
     ) -> TailInstructionFnRet {
         let op = match Interpreter::pre_step::<C>(pc.as_mut(), gas) {
             Ok(op) => op,
             Err(e) => {
                 cold_path();
-                tail_return!(tail_call_restore(
+                tail_return!(tail_call_restore::<C>(
                     stack,
                     pc,
                     gas,
@@ -546,11 +551,11 @@ extern_table! {
     #[inline(never)]
     #[cold]
     #[cfg(feature = "nightly")]
-    fn tail_call_restore(
+    fn tail_call_restore<C: EvmConfig>(
         stack: Stack<'_>,
         pc: Pc<'_>,
         _gas: &mut Gas,
-        state: &mut State<'_>,
+        state: &mut State<'_, C::Host>,
         ret: *const (), // Tail calls require same function signature, this is unused so we pass the return value here.
     ) -> TailInstructionFnRet {
         // SAFETY: `raw_interp` is valid for the duration of execution.
@@ -580,6 +585,7 @@ mod tests {
 
     impl EvmConfig for CustomConfig {
         type Tx = ();
+        type Host = TestHost;
 
         const SPEC_ID: SpecId = SpecId::OSAKA;
         const INSTRUCTION_IMPLS: InstructionImplTable<Self> = {
