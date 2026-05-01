@@ -282,7 +282,10 @@ mod tests {
     use crate::{
         EvmConfig, EvmVersion,
         bytecode::Bytecode,
-        interpreter::{instructions::tests::TestHost, runtime::Table},
+        interpreter::{
+            instructions::{table::make_tail_table, tests::TestHost},
+            runtime::Table,
+        },
     };
     use alloy_primitives::{Bytes, U256};
 
@@ -297,7 +300,8 @@ mod tests {
         ][..]);
         type Config = EvmVersion<(), { SpecId::HOMESTEAD as u8 }>;
 
-        let instruction_table = core::hint::black_box(Table::Tail(&Config::INSTRUCTION_IMPLS));
+        let tail_table = make_tail_table(Config::INSTRUCTION_IMPLS);
+        let instruction_table = core::hint::black_box(Table::Tail(&tail_table));
         let bytecode = Bytecode::new_legacy(Bytes::copy_from_slice(bytecode));
         let mut interpreter = Interpreter::<Config>::new(
             bytecode,
@@ -315,9 +319,10 @@ mod tests {
         macro_rules! check {
             ($spec_id:ident) => {{
                 type Config = EvmVersion<(), { SpecId::$spec_id as u8 }>;
+                let tail_table = make_tail_table(Config::INSTRUCTION_IMPLS);
                 for (_name, table) in [
                     ("normal", Table::Normal(&Config::INSTRUCTION_IMPLS)),
-                    ("tail", Table::Tail(&Config::INSTRUCTION_IMPLS)),
+                    ("tail", Table::Tail(&tail_table)),
                 ] {
                     let bytecode = Bytecode::new_legacy(Bytes::from_static(BASIC));
                     let mut interpreter = Interpreter::<Config>::new(

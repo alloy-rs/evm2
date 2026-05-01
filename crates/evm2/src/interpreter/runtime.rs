@@ -1,7 +1,7 @@
 use super::{
     BytecodeRef, Gas, GasParams, Host, InstrStop, Memory, Message, Pc, PcMut, Result, Stack, State,
     Word,
-    instructions::table::{GasTable, InstrTable, Instruction, TailInstrTable},
+    instructions::table::{GasTable, InstrTable, Instruction, TailInstrTable, make_tail_table},
 };
 use crate::{EvmConfig, bytecode::Bytecode, env::TxEnv};
 use alloc::boxed::Box;
@@ -63,7 +63,7 @@ impl<C: EvmConfig> Interpreter<C> {
 
     /// Runs the interpreter with tail-call dispatch until it stops.
     pub fn run_tail(&mut self, host: &mut dyn Host) -> InstrStop {
-        let table = C::INSTRUCTION_IMPLS;
+        let table = make_tail_table(C::INSTRUCTION_IMPLS);
         self.run_with_table(Table::Tail(&table), &C::GAS_TABLE, host)
     }
 
@@ -76,7 +76,7 @@ impl<C: EvmConfig> Interpreter<C> {
         let _gas_start = self.gas.remaining();
 
         let _r = match table {
-            Table::Tail(table) => self.run_tail_loop(table, gas_table, host),
+            Table::Tail(table) => self.step_tail(table, gas_table, host).unwrap_err(),
             Table::Normal(table) => self.run_table_loop(table, gas_table, host),
         };
 
@@ -137,20 +137,6 @@ impl<C: EvmConfig> Interpreter<C> {
         r
     }
 
-    fn run_tail_loop(
-        &mut self,
-        table: &TailInstrTable<C>,
-        gas_table: &GasTable,
-        host: &mut dyn Host,
-    ) -> InstrStop {
-        loop {
-            if let Err(e) = self.step_tail(table, gas_table, host) {
-                cold_path();
-                return e;
-            }
-        }
-    }
-
     #[inline(always)]
     fn step_tail(
         &mut self,
@@ -160,15 +146,15 @@ impl<C: EvmConfig> Interpreter<C> {
     ) -> Result {
         let raw = self as *mut Self;
         let bytecode = BytecodeRef::new(&self.bytecode);
-        let (op, mut pc) = {
+        let (op, pc) = {
             let mut pc_mut = PcMut::new(bytecode, &mut self.pc);
             let op = Self::pre_step(pc_mut.reborrow(), &mut self.gas, gas_table)?;
             (op, Pc::new(bytecode, pc_mut.get()))
         };
-        let mut stack = Stack::new(&mut self.stack, self.stack_len);
-        let r = table[op as usize].unwrap_or_else(<dyn Instruction<C>>::default_unknown).execute(
-            &mut stack,
-            pc.as_mut(),
+        let instr = table[op as usize];
+        let e = (instr.f)(
+            Stack::new(&mut self.stack, self.stack_len),
+            pc,
             &mut self.gas,
             &mut State {
                 bytecode,
@@ -181,9 +167,10 @@ impl<C: EvmConfig> Interpreter<C> {
                 gas_params: &self.gas_params,
                 raw_interp: raw.cast(),
             },
+            gas_table,
+            instr.instr,
+            table.as_ptr().cast(),
         );
-        self.pc = pc.get();
-        self.stack_len = stack.len;
-        r
+        Err(e)
     }
 }

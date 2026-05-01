@@ -3,7 +3,7 @@
 use crate::{
     EvmConfig,
     interpreter::{
-        Gas, PcMut, Result, SpecId, Stack, State,
+        Gas, InstrStop, Interpreter, Pc, PcMut, Result, SpecId, Stack, State,
         gas::{
             BASE, BLOCKHASH, EXP, HIGH, ISTANBUL_SLOAD_GAS, JUMPDEST, KECCAK256, LOG, LOW, MID,
             VERYLOW, WARM_STORAGE_READ_COST, ZERO,
@@ -11,12 +11,46 @@ use crate::{
         opcode::{for_each_opcode, op},
     },
 };
+use core::hint::cold_path;
 
 /// Normal instruction dispatch table.
 pub(crate) type InstrTable<C> = InstructionImplTable<C>;
 
 /// Tail instruction dispatch table.
-pub(crate) type TailInstrTable<C> = InstructionImplTable<C>;
+pub(crate) type TailInstrTable<C> = [TailInstr<C>; 256];
+
+/// Tail instruction return value.
+pub(crate) type TailInstrFnRet = InstrStop;
+
+/// Tail instruction function pointer.
+pub(crate) type TailInstrFn<C> = extern_table!(
+    fn(
+        stack: Stack<'_>,
+        pc: Pc<'_>,
+        gas: &mut Gas,
+        state: &mut State<'_>,
+        gas_table: &GasTable,
+        instr: Option<&'static dyn Instruction<C>>,
+        instr_tablep: *const (),
+    ) -> TailInstrFnRet
+);
+
+/// Tail instruction table entry.
+pub(crate) struct TailInstr<C: EvmConfig> {
+    /// Tail dispatch function.
+    pub f: TailInstrFn<C>,
+    /// Instruction implementation.
+    pub instr: Option<&'static dyn Instruction<C>>,
+}
+
+impl<C: EvmConfig> Clone for TailInstr<C> {
+    #[inline]
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<C: EvmConfig> Copy for TailInstr<C> {}
 
 /// Opcode gas table.
 pub type GasTable = [u16; 256];
@@ -277,10 +311,104 @@ pub(crate) const fn make_instruction_table<C: EvmConfig>() -> InstructionImplTab
     table
 }
 
+/// Creates a tail-call instruction dispatch table.
+#[inline]
+pub(crate) const fn make_tail_table<C: EvmConfig>(
+    impls: InstructionImplTable<C>,
+) -> TailInstrTable<C> {
+    let mut table = [TailInstr { f: tail_dispatch::<C> as TailInstrFn<C>, instr: None }; 256];
+    let mut i = 0;
+    while i < table.len() {
+        table[i].instr = impls[i];
+        i += 1;
+    }
+    table
+}
+
 impl<C: EvmConfig> dyn Instruction<C> {
     #[inline(always)]
     pub(crate) fn default_unknown() -> &'static Self {
         &crate::interpreter::instructions::unknown
+    }
+}
+
+extern_table! {
+    fn tail_dispatch<C: EvmConfig>(
+        mut stack: Stack<'_>,
+        mut pc: Pc<'_>,
+        gas: &mut Gas,
+        state: &mut State<'_>,
+        gast: &GasTable,
+        instr: Option<&'static dyn Instruction<C>>,
+        instrsp: *const (),
+    ) -> TailInstrFnRet {
+        let instr = instr.unwrap_or_else(<dyn Instruction<C>>::default_unknown);
+        if let Err(e) = instr.execute(&mut stack, pc.as_mut(), gas, state) {
+            cold_path();
+            tail_return!(tail_call_restore::<C>(
+                stack,
+                pc,
+                gas,
+                state,
+                gast,
+                Some(instr),
+                e as usize as *const (),
+            ));
+        }
+        tail_return!(tail_call_next::<C>(stack, pc, gas, state, gast, Some(instr), instrsp));
+    }
+}
+
+extern_table! {
+    #[inline(never)] // TODO: bench inlining this vs having a single dispatcher for all
+    fn tail_call_next<C: EvmConfig>(
+        stack: Stack<'_>,
+        mut pc: Pc<'_>,
+        gas: &mut Gas,
+        state: &mut State<'_>,
+        gast: &GasTable,
+        _instr: Option<&'static dyn Instruction<C>>,
+        instrsp: *const (),
+    ) -> TailInstrFnRet {
+        let op = match Interpreter::<C>::pre_step(pc.as_mut(), gas, gast) {
+            Ok(op) => op,
+            Err(e) => {
+                cold_path();
+                tail_return!(tail_call_restore::<C>(
+                    stack,
+                    pc,
+                    gas,
+                    state,
+                    gast,
+                    None,
+                    e as usize as *const (),
+                ));
+            }
+        };
+        // SAFETY: Restoring type-erased table pointer. See [`TailInstrFn`].
+        let instrs = unsafe { &*instrsp.cast::<TailInstrTable<C>>() };
+        let instr = instrs[op as usize];
+        tail_return!((instr.f)(stack, pc, gas, state, gast, instr.instr, instrsp));
+    }
+}
+
+extern_table! {
+    #[inline(never)]
+    #[cold]
+    fn tail_call_restore<C: EvmConfig>(
+        stack: Stack<'_>,
+        pc: Pc<'_>,
+        _gas: &mut Gas,
+        state: &mut State<'_>,
+        _gast: &GasTable,
+        _instr: Option<&'static dyn Instruction<C>>,
+        ret: *const (), // Tail calls require same function signature, this is unused so we pass the return value here.
+    ) -> TailInstrFnRet {
+        // SAFETY: `raw_interp` is valid for the duration of execution.
+        let interp = unsafe { &mut *state.raw_interp.cast::<Interpreter<C>>() };
+        interp.pc = pc.get();
+        interp.stack_len = stack.len;
+        unsafe { core::mem::transmute::<u8, TailInstrFnRet>(ret as usize as u8) }
     }
 }
 
