@@ -87,20 +87,20 @@ pub(in crate::interpreter) fn codecopy(cx: _, [memory_offset, code_offset, len]:
 
 #[instruction]
 pub(in crate::interpreter) fn gasprice(cx: _) -> out {
-    *out = Word::from(cx.state.tx.gas_price);
+    *out = cx.state.tx.gas_price;
 }
 
 #[instruction]
 pub(in crate::interpreter) fn chainid(cx: _) -> Result<out> {
     check_spec(cx.state.spec, SpecId::ISTANBUL)?;
-    *out = Word::from(cx.state.tx.chain_id);
+    *out = cx.state.tx.chain_id;
 }
 
 #[instruction]
 pub(in crate::interpreter) fn blobhash(cx: _, [index]: [Word]) -> Result<out> {
     check_spec(cx.state.spec, SpecId::CANCUN)?;
     let index = as_usize_saturated(*index);
-    *out = cx.state.tx.blob_hashes.get(index).copied().map(b256_to_word).unwrap_or_default();
+    *out = cx.state.tx.blob_hashes.get(index).copied().unwrap_or_default();
 }
 
 #[instruction]
@@ -303,7 +303,7 @@ mod tests {
 
     #[test]
     fn gasprice_opcode() {
-        let mut host = test_host(TxEnv { gas_price: 0x1234, ..TxEnv::default() });
+        let mut host = test_host(TxEnv { gas_price: Word::from(0x1234), ..TxEnv::default() });
         let interpreter = run_with_host([op::GASPRICE, op::STOP], &mut host);
         assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.stack(), [Word::from(0x1234)]);
@@ -311,7 +311,7 @@ mod tests {
 
     #[test]
     fn chainid_opcode() {
-        let mut host = test_host(TxEnv { chain_id: 1, ..TxEnv::default() });
+        let mut host = test_host(TxEnv { chain_id: Word::from(1), ..TxEnv::default() });
         let interpreter =
             run_with_host_and_spec([op::CHAINID, op::STOP], &mut host, SpecId::ISTANBUL);
         assert!(matches!(interpreter.err, InstrStop::Stop));
@@ -321,7 +321,8 @@ mod tests {
     #[test]
     fn blobhash_opcode() {
         let hash = B256::with_last_byte(0x42);
-        let mut host = test_host(TxEnv { blob_hashes: Vec::from([hash]), ..TxEnv::default() });
+        let mut host =
+            test_host(TxEnv { blob_hashes: Vec::from([b256_to_word(hash)]), ..TxEnv::default() });
 
         let interpreter =
             run_with_host_and_spec([op::PUSH0, op::BLOBHASH, op::STOP], &mut host, SpecId::CANCUN);

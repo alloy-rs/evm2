@@ -1,5 +1,5 @@
 use alloc::{vec, vec::Vec};
-use alloy_primitives::{Address, B256, Bytes, U256};
+use alloy_primitives::{Address, Bytes, U256};
 
 /// Transaction environment values visible to opcodes.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -11,15 +11,15 @@ pub struct TxEnv {
     /// Immediate caller.
     pub caller: Address,
     /// Effective gas price.
-    pub gas_price: u128,
+    pub gas_price: U256,
     /// Call value.
     pub call_value: U256,
     /// Call input data.
     pub calldata: Bytes,
     /// Chain ID.
-    pub chain_id: u64,
+    pub chain_id: U256,
     /// Transaction blob versioned hashes.
-    pub blob_hashes: Vec<B256>,
+    pub blob_hashes: Vec<U256>,
 }
 
 impl Default for TxEnv {
@@ -29,10 +29,10 @@ impl Default for TxEnv {
             address: Address::ZERO,
             origin: Address::ZERO,
             caller: Address::ZERO,
-            gas_price: 0,
+            gas_price: U256::ZERO,
             call_value: U256::ZERO,
             calldata: Bytes::new(),
-            chain_id: 0,
+            chain_id: U256::ZERO,
             blob_hashes: vec![],
         }
     }
@@ -48,17 +48,17 @@ pub struct BlockEnv {
     /// Block timestamp.
     pub timestamp: U256,
     /// Block gas limit.
-    pub gas_limit: u64,
+    pub gas_limit: U256,
     /// Block base fee.
-    pub basefee: u64,
+    pub basefee: U256,
     /// Pre-merge block difficulty.
     pub difficulty: U256,
     /// Post-merge randomness value.
-    pub prevrandao: Option<B256>,
+    pub prevrandao: Option<U256>,
     /// Blob base fee.
-    pub blob_basefee: u128,
+    pub blob_basefee: U256,
     /// Beacon slot number.
-    pub slot_num: u64,
+    pub slot_num: U256,
 }
 
 impl Default for BlockEnv {
@@ -68,12 +68,12 @@ impl Default for BlockEnv {
             number: U256::ZERO,
             beneficiary: Address::ZERO,
             timestamp: U256::ZERO,
-            gas_limit: u64::MAX,
-            basefee: 0,
+            gas_limit: U256::from_limbs([u64::MAX, 0, 0, 0]),
+            basefee: U256::ZERO,
             difficulty: U256::ZERO,
-            prevrandao: Some(B256::ZERO),
-            blob_basefee: 0,
-            slot_num: 0,
+            prevrandao: Some(U256::ZERO),
+            blob_basefee: U256::ZERO,
+            slot_num: U256::ZERO,
         }
     }
 }

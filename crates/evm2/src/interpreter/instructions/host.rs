@@ -46,7 +46,7 @@ pub(in crate::interpreter) fn block_number(cx: _) -> out {
 #[instruction]
 pub(in crate::interpreter) fn difficulty(cx: _) -> out {
     *out = if cx.state.spec.enables(SpecId::MERGE) {
-        cx.state.block.prevrandao.map(b256_to_word).unwrap()
+        cx.state.block.prevrandao.unwrap()
     } else {
         cx.state.block.difficulty
     };
@@ -54,7 +54,7 @@ pub(in crate::interpreter) fn difficulty(cx: _) -> out {
 
 #[instruction]
 pub(in crate::interpreter) fn gaslimit(cx: _) -> out {
-    *out = Word::from(cx.state.block.gas_limit);
+    *out = cx.state.block.gas_limit;
 }
 
 #[instruction]
@@ -65,19 +65,19 @@ pub(in crate::interpreter) fn selfbalance(cx: _) -> out {
 #[instruction]
 pub(in crate::interpreter) fn basefee(cx: _) -> Result<out> {
     check_spec(cx.state.spec, SpecId::LONDON)?;
-    *out = Word::from(cx.state.block.basefee);
+    *out = cx.state.block.basefee;
 }
 
 #[instruction]
 pub(in crate::interpreter) fn blobbasefee(cx: _) -> Result<out> {
     check_spec(cx.state.spec, SpecId::CANCUN)?;
-    *out = Word::from(cx.state.block.blob_basefee);
+    *out = cx.state.block.blob_basefee;
 }
 
 #[instruction]
 pub(in crate::interpreter) fn slotnum(cx: _) -> Result<out> {
     check_spec(cx.state.spec, SpecId::AMSTERDAM)?;
-    *out = Word::from(cx.state.block.slot_num);
+    *out = cx.state.block.slot_num;
 }
 
 #[cfg(test)]
@@ -162,7 +162,7 @@ mod tests {
         let randao = B256::with_last_byte(0x55);
         let mut host = test_host(BlockEnv {
             difficulty: Word::from(14),
-            prevrandao: Some(randao),
+            prevrandao: Some(b256_to_word(randao)),
             ..BlockEnv::default()
         });
         let interpreter = run_with_host([op::DIFFICULTY, op::STOP], &mut host);
@@ -177,7 +177,7 @@ mod tests {
 
     #[test]
     fn gaslimit_opcode() {
-        let mut host = test_host(BlockEnv { gas_limit: 15, ..BlockEnv::default() });
+        let mut host = test_host(BlockEnv { gas_limit: Word::from(15), ..BlockEnv::default() });
         let interpreter = run_with_host([op::GASLIMIT, op::STOP], &mut host);
         assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.stack(), [Word::from(15)]);
@@ -195,7 +195,7 @@ mod tests {
 
     #[test]
     fn basefee_opcode() {
-        let mut host = test_host(BlockEnv { basefee: 16, ..BlockEnv::default() });
+        let mut host = test_host(BlockEnv { basefee: Word::from(16), ..BlockEnv::default() });
         let interpreter =
             run_with_host_and_spec([op::BASEFEE, op::STOP], &mut host, SpecId::LONDON);
         assert!(matches!(interpreter.err, InstrStop::Stop));
@@ -204,7 +204,7 @@ mod tests {
 
     #[test]
     fn blobbasefee_opcode() {
-        let mut host = test_host(BlockEnv { blob_basefee: 17, ..BlockEnv::default() });
+        let mut host = test_host(BlockEnv { blob_basefee: Word::from(17), ..BlockEnv::default() });
         let interpreter =
             run_with_host_and_spec([op::BLOBBASEFEE, op::STOP], &mut host, SpecId::CANCUN);
         assert!(matches!(interpreter.err, InstrStop::Stop));
@@ -213,7 +213,7 @@ mod tests {
 
     #[test]
     fn slotnum_opcode() {
-        let mut host = test_host(BlockEnv { slot_num: 18, ..BlockEnv::default() });
+        let mut host = test_host(BlockEnv { slot_num: Word::from(18), ..BlockEnv::default() });
         let interpreter =
             run_with_host_and_spec([op::SLOTNUM, op::STOP], &mut host, SpecId::AMSTERDAM);
         assert!(matches!(interpreter.err, InstrStop::Stop));
