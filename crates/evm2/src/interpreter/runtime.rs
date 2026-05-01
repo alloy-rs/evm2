@@ -1,8 +1,7 @@
 #[cfg(not(feature = "nightly"))]
 use super::table::{InstructionTable, make_normal_instruction_table};
 use super::{
-    BytecodeRef, Gas, GasParams, Host, InstrStop, Memory, Message, PcMut, Result, Stack, State,
-    Word,
+    BytecodeRef, Gas, Host, InstrStop, Memory, Message, PcMut, Result, Stack, State, Word,
 };
 #[cfg(feature = "nightly")]
 use super::{
@@ -33,7 +32,6 @@ pub struct Interpreter {
     pub(crate) stack: Box<[Word; Stack::CAPACITY]>,
     pub(crate) stack_len: usize,
     pub(crate) gas: Gas,
-    pub(crate) gas_params: GasParams,
     pub(crate) memory: Memory,
     tx_env: TxEnv,
     pub(crate) message: Message,
@@ -52,7 +50,6 @@ impl Interpreter {
             stack: unsafe { Box::new_uninit().assume_init() },
             stack_len: 0,
             gas: Gas::new(gas_limit),
-            gas_params: GasParams::new([0; 256]),
             memory: Memory::new(),
             tx_env,
             message,
@@ -62,7 +59,6 @@ impl Interpreter {
 
     /// Runs the interpreter until it stops.
     pub fn run<C: EvmConfig>(&mut self, host: &mut dyn Host) -> InstrStop {
-        self.gas_params = GasParams::new(C::GAS_PARAMS);
         let _gas_start = self.gas.remaining();
 
         #[cfg(feature = "nightly")]
@@ -117,7 +113,7 @@ impl Interpreter {
                 memory: &mut self.memory,
                 return_data: &self.return_data,
                 spec: C::SPEC_ID,
-                gas_params: &self.gas_params,
+                gas_params: &C::GAS_PARAMS,
                 raw_interp: raw,
             },
         );
@@ -148,7 +144,7 @@ impl Interpreter {
                 memory: &mut self.memory,
                 return_data: &self.return_data,
                 spec: C::SPEC_ID,
-                gas_params: &self.gas_params,
+                gas_params: &C::GAS_PARAMS,
                 raw_interp: raw,
             },
             <C as InterpreterConfig>::TAIL_INSTRUCTIONS.as_ptr().cast(),
