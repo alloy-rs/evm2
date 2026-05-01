@@ -4,10 +4,8 @@ use core::marker::PhantomData;
 /// EVM bytecode view.
 #[derive(Clone, Copy, Debug)]
 pub struct BytecodeRef<'a> {
-    base: *const u8,
-    len: usize,
+    bytecode: &'a [u8],
     jump_table: &'a JumpTable,
-    _marker: PhantomData<&'a [u8]>,
 }
 
 /// Program counter state.
@@ -28,30 +26,25 @@ pub struct PcMut<'a> {
 
 impl<'a> BytecodeRef<'a> {
     pub(crate) fn new(bytecode: &'a Bytecode) -> Self {
-        Self {
-            base: bytecode.bytecode_ptr(),
-            len: bytecode.len(),
-            jump_table: bytecode.jump_table(),
-            _marker: PhantomData,
-        }
+        Self { bytecode: bytecode.bytes_slice(), jump_table: bytecode.jump_table() }
     }
 
     /// Returns the bytecode length.
     #[inline]
     pub fn len(&self) -> usize {
-        self.len
+        self.bytecode.len()
     }
 
     /// Returns whether the bytecode is empty.
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.len == 0
+        self.bytecode.is_empty()
     }
 
     /// Returns the bytecode slice.
     #[inline]
     pub fn as_slice(&self) -> &'a [u8] {
-        unsafe { core::slice::from_raw_parts(self.base, self.len) }
+        self.bytecode
     }
 
     /// Returns whether `pc` points to a valid jump destination.
@@ -65,13 +58,13 @@ impl<'a> BytecodeRef<'a> {
     /// Caller must ensure `offset..offset + len` is in bounds of the bytecode allocation.
     #[inline]
     pub unsafe fn code_slice_unchecked(&self, offset: usize, len: usize) -> &'a [u8] {
-        unsafe { core::slice::from_raw_parts(self.base.add(offset), len) }
+        unsafe { self.bytecode.get_unchecked(offset..offset + len) }
     }
 }
 
 impl<'a> Pc<'a> {
     pub(crate) fn new(bytecode: BytecodeRef<'a>, pc: usize) -> Self {
-        Self { base: bytecode.base, pc, _marker: PhantomData }
+        Self { base: bytecode.bytecode.as_ptr(), pc, _marker: PhantomData }
     }
 
     /// Returns a mutable program counter reference.
@@ -120,7 +113,7 @@ impl<'a> Pc<'a> {
 
 impl<'a> PcMut<'a> {
     pub(crate) fn new(bytecode: BytecodeRef<'a>, pc: &'a mut usize) -> Self {
-        Self { base: bytecode.base, pc, _marker: PhantomData }
+        Self { base: bytecode.bytecode.as_ptr(), pc, _marker: PhantomData }
     }
 
     /// Returns the opcode at the current program counter.
