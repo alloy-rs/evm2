@@ -14,7 +14,7 @@ pub(in crate::interpreter) fn keccak256_instr(cx: _, [offset, len]: [Word]) -> R
 
 #[instruction]
 pub(in crate::interpreter) fn codesize(cx: _) -> out {
-    *out = Word::from(cx.bytecode.len());
+    *out = Word::from(cx.state.bytecode.len());
 }
 
 #[instruction]
@@ -26,7 +26,7 @@ pub(in crate::interpreter) fn codecopy(cx: _, [memory_offset, code_offset, len]:
         return Ok(());
     }
     crate::interpreter::memory::resize_memory(cx.gas, cx.state.memory, memory_offset, len)?;
-    cx.state.memory.set_data(memory_offset, code_offset, len, cx.bytecode.as_slice())
+    cx.state.memory.set_data(memory_offset, code_offset, len, cx.state.bytecode.as_slice())
 }
 
 #[instruction]

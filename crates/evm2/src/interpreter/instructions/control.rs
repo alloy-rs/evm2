@@ -18,7 +18,7 @@ pub(in crate::interpreter) fn invalid() -> Result {
 #[instruction]
 pub(in crate::interpreter) fn jump(cx: _, [target]: [Word]) -> Result {
     let target = as_usize(*target)?;
-    if !cx.bytecode.is_valid_jumpdest(target) {
+    if !cx.state.bytecode.is_valid_jumpdest(target) {
         cold_path();
         return Err(InstrErr::Invalid);
     }
@@ -30,7 +30,7 @@ pub(in crate::interpreter) fn jump(cx: _, [target]: [Word]) -> Result {
 pub(in crate::interpreter) fn jumpi(cx: _, [target, cond]: [Word]) -> Result {
     if !cond.is_zero() {
         let target = as_usize(*target)?;
-        if !cx.bytecode.is_valid_jumpdest(target) {
+        if !cx.state.bytecode.is_valid_jumpdest(target) {
             cold_path();
             return Err(InstrErr::Invalid);
         }

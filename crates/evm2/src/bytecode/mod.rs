@@ -283,6 +283,11 @@ impl Bytecode {
         if self.is_legacy() { Some(&self.0.jump_table) } else { None }
     }
 
+    #[inline]
+    pub(crate) fn jump_table(&self) -> &JumpTable {
+        &self.0.jump_table
+    }
+
     /// Calculates hash of the bytecode.
     #[inline]
     pub fn hash_slow(&self) -> B256 {

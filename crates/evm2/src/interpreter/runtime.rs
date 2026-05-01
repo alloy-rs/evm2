@@ -1,8 +1,10 @@
 use super::{
-    BytecodeRef, Gas, Host, InstrErr, Memory, Pc, Result, SpecId, Stack, State, Word,
+    BytecodeRef, Gas, Host, InstrErr, Memory, Pc, PcMut, Result, SpecId, Stack, State, Word,
     instructions::table::{GasTable, InstrTable, TailInstrTable},
 };
+use crate::bytecode::Bytecode;
 use alloc::{boxed::Box, vec::Vec};
+use alloy_primitives::Bytes;
 use core::hint::cold_path;
 
 /// Interpreter dispatch table mode.
@@ -18,7 +20,7 @@ pub enum Table<'a> {
 /// EVM interpreter.
 #[derive(Debug)]
 pub struct Interpreter {
-    bytecode: Vec<u8>,
+    bytecode: Bytecode,
     pub(crate) pc: usize,
     pub(crate) stack: Box<[Word; 1024]>,
     pub(crate) stack_len: usize,
@@ -30,6 +32,12 @@ pub struct Interpreter {
 impl Interpreter {
     /// Creates an interpreter from bytecode and a spec identifier.
     pub fn new(bytecode: Vec<u8>, spec_id: SpecId) -> Self {
+        let bytecode = Bytecode::new_legacy(Bytes::from(bytecode));
+        Self::new_with_bytecode(bytecode, spec_id)
+    }
+
+    /// Creates an interpreter from analyzed bytecode and a spec identifier.
+    pub fn new_with_bytecode(bytecode: Bytecode, spec_id: SpecId) -> Self {
         Self {
             bytecode,
             pc: 0,
@@ -75,13 +83,8 @@ impl Interpreter {
     }
 
     #[inline(always)]
-    pub(crate) fn pre_step(
-        pc: &mut Pc,
-        gas: &mut Gas,
-        bytecode: BytecodeRef<'_>,
-        gas_table: &GasTable,
-    ) -> Result<u8> {
-        let op = bytecode.op(pc);
+    pub(crate) fn pre_step(pc: &mut PcMut<'_>, gas: &mut Gas, gas_table: &GasTable) -> Result<u8> {
+        let op = pc.op();
         unsafe { pc.advance_unchecked(1) };
         gas.spend(gas_table[op as usize] as _)?;
         Ok(op)
@@ -90,22 +93,21 @@ impl Interpreter {
     #[inline(always)]
     fn step(&mut self, table: &InstrTable, gas_table: &GasTable, host: &mut dyn Host) -> Result {
         let bytecode = BytecodeRef::new(&self.bytecode);
-        let mut pc = Pc::new(self.pc);
-        let op = Self::pre_step(&mut pc, &mut self.gas, bytecode, gas_table)?;
+        let mut pc = PcMut::new(bytecode, &mut self.pc);
+        let op = Self::pre_step(&mut pc, &mut self.gas, gas_table)?;
         let r;
         (self.stack_len, r) = table[op as usize](
-            &mut pc,
             Stack::new(&mut self.stack, self.stack_len),
+            &mut pc,
             &mut self.gas,
-            bytecode,
             &mut State {
+                bytecode,
                 host,
                 memory: &mut self.memory,
                 spec: self.spec_id,
                 raw_interp: core::ptr::null_mut(),
             },
         );
-        self.pc = pc.get();
         r
     }
 
@@ -118,14 +120,22 @@ impl Interpreter {
     ) -> Result {
         let raw = self as *mut _;
         let bytecode = BytecodeRef::new(&self.bytecode);
-        let mut pc = Pc::new(self.pc);
-        let op = Self::pre_step(&mut pc, &mut self.gas, bytecode, gas_table)?;
+        let (op, pc) = {
+            let mut pc_mut = PcMut::new(bytecode, &mut self.pc);
+            let op = Self::pre_step(&mut pc_mut, &mut self.gas, gas_table)?;
+            (op, Pc::new(bytecode, pc_mut.get()))
+        };
         let e = table[op as usize](
-            pc,
             Stack::new(&mut self.stack, self.stack_len),
+            pc,
             self.gas,
-            bytecode,
-            &mut State { host, memory: &mut self.memory, spec: self.spec_id, raw_interp: raw },
+            &mut State {
+                bytecode,
+                host,
+                memory: &mut self.memory,
+                spec: self.spec_id,
+                raw_interp: raw,
+            },
             gas_table,
             table.as_ptr().cast(),
         );

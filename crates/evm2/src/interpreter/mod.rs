@@ -15,7 +15,7 @@ mod opcode;
 pub use opcode::op;
 
 mod ctrl;
-pub use ctrl::{BytecodeRef, Pc};
+pub use ctrl::{BytecodeRef, Pc, PcMut};
 
 mod stack;
 pub use stack::{Stack, Word};

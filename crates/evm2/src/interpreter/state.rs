@@ -1,9 +1,11 @@
-use super::{Interpreter, Memory, SpecId, Word};
+use super::{BytecodeRef, Interpreter, Memory, SpecId, Word};
 use core::fmt;
 
 /// Interpreter state passed to instructions.
 #[allow(unused)]
 pub struct State<'a> {
+    /// Active bytecode.
+    pub bytecode: BytecodeRef<'a>,
     /// Host implementation.
     pub host: &'a mut (dyn Host + 'a),
     /// Linear memory.
@@ -16,6 +18,7 @@ pub struct State<'a> {
 impl fmt::Debug for State<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("State")
+            .field("bytecode", &self.bytecode)
             .field("memory", &self.memory)
             .field("spec", &self.spec)
             .field("raw_interp", &self.raw_interp)
