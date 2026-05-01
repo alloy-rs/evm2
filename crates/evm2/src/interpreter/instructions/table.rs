@@ -77,14 +77,14 @@ impl<C: EvmConfig> Default for InstructionImplTable<C> {
 impl<C: EvmConfig> InstructionImplTable<C> {
     /// Returns the instruction implementation for `opcode`.
     #[inline]
-    pub fn get(&self, opcode: u8) -> Option<&'static dyn Instruction<C>> {
-        unsafe { *self.0.get_unchecked(opcode as usize) }
+    pub const fn get(&self, opcode: u8) -> Option<&'static dyn Instruction<C>> {
+        self.0[opcode as usize]
     }
 
     /// Returns the mutable instruction implementation slot for `opcode`.
     #[inline]
-    pub fn get_mut(&mut self, opcode: u8) -> &mut Option<&'static dyn Instruction<C>> {
-        unsafe { self.0.get_unchecked_mut(opcode as usize) }
+    pub const fn get_mut(&mut self, opcode: u8) -> &mut Option<&'static dyn Instruction<C>> {
+        &mut self.0[opcode as usize]
     }
 
     const fn set(&mut self, opcode: u8, instr: Option<&'static dyn Instruction<C>>) {
@@ -218,14 +218,14 @@ pub trait Instruction<C: EvmConfig = crate::EvmVersion<()>> {
 impl GasTable {
     /// Returns the gas cost for `opcode`.
     #[inline]
-    pub fn get(&self, opcode: u8) -> u16 {
-        unsafe { *self.0.get_unchecked(opcode as usize) }
+    pub const fn get(&self, opcode: u8) -> u16 {
+        self.0[opcode as usize]
     }
 
     /// Returns the mutable gas cost slot for `opcode`.
     #[inline]
-    pub fn get_mut(&mut self, opcode: u8) -> &mut u16 {
-        unsafe { self.0.get_unchecked_mut(opcode as usize) }
+    pub const fn get_mut(&mut self, opcode: u8) -> &mut u16 {
+        &mut self.0[opcode as usize]
     }
 
     const fn set(&mut self, opcode: u8, cost: u16) {
