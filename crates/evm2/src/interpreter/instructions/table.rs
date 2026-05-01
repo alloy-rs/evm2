@@ -14,10 +14,10 @@ pub type InstrFnRet = (usize, Result);
 /// Normal instruction function pointer.
 pub type InstrFn = extern_table!(
     fn(
-        bytecode: BytecodeRef<'_>,
         pc: &mut Pc,
         stack: Stack<'_>,
         gas: &mut Gas,
+        bytecode: BytecodeRef<'_>,
         state: &mut State<'_>,
     ) -> InstrFnRet
 );
@@ -29,10 +29,10 @@ pub type TailInstrFnRet = InstrErr;
 /// Tail instruction function pointer.
 pub type TailInstrFn = extern_table!(
     fn(
-        bytecode: BytecodeRef<'_>,
         pc: Pc,
         stack: Stack<'_>,
         gas: Gas,
+        bytecode: BytecodeRef<'_>,
         state: &mut State<'_>,
         gas_table: &GasTable,
         instr_tablep: *const (),
@@ -69,15 +69,15 @@ pub(crate) trait Instruction {
     fn new() -> Self;
     fn execute(
         self,
-        bytecode: BytecodeRef<'_>,
         pc: &mut Pc,
         stack: &mut Stack<'_>,
         gas: &mut Gas,
+        bytecode: BytecodeRef<'_>,
         state: &mut State<'_>,
     ) -> Result;
 }
 
-impl<F: FnOnce(BytecodeRef<'_>, &mut Pc, &mut Stack<'_>, &mut Gas, &mut State<'_>) -> Result>
+impl<F: FnOnce(&mut Pc, &mut Stack<'_>, &mut Gas, BytecodeRef<'_>, &mut State<'_>) -> Result>
     Instruction for F
 {
     #[inline(always)]
@@ -91,13 +91,13 @@ impl<F: FnOnce(BytecodeRef<'_>, &mut Pc, &mut Stack<'_>, &mut Gas, &mut State<'_
     #[inline(always)]
     fn execute(
         self,
-        bytecode: BytecodeRef<'_>,
         pc: &mut Pc,
         stack: &mut Stack<'_>,
         gas: &mut Gas,
+        bytecode: BytecodeRef<'_>,
         state: &mut State<'_>,
     ) -> Result {
-        self(bytecode, pc, stack, gas, state)
+        self(pc, stack, gas, bytecode, state)
     }
 }
 
@@ -351,54 +351,54 @@ pub(crate) const fn mk_tail_dispatch<I: Instruction>(f: I) -> TailInstrFn {
 
 extern_table! {
     fn dispatch<I: Instruction>(
-        bytecode: BytecodeRef<'_>,
         pc: &mut Pc,
         mut stack: Stack<'_>,
         gas: &mut Gas,
+        bytecode: BytecodeRef<'_>,
         state: &mut State<'_>,
     ) -> InstrFnRet {
-        let r = I::new().execute(bytecode, pc, &mut stack, gas, state);
+        let r = I::new().execute(pc, &mut stack, gas, bytecode, state);
         (stack.len, r)
     }
 }
 
 extern_table! {
     fn tail_dispatch<I: Instruction>(
-        bytecode: BytecodeRef<'_>,
         mut pc: Pc,
         mut stack: Stack<'_>,
         mut gas: Gas,
+        bytecode: BytecodeRef<'_>,
         state: &mut State<'_>,
         gast: &GasTable,
         instrsp: *const (),
     ) -> TailInstrFnRet {
-        if let Err(e) = I::new().execute(bytecode, &mut pc, &mut stack, &mut gas, state) {
-            tail_return!(tail_call_restore(bytecode, pc, stack, gas, state, gast, e as usize as *const ()));
+        if let Err(e) = I::new().execute(&mut pc, &mut stack, &mut gas, bytecode, state) {
+            tail_return!(tail_call_restore(pc, stack, gas, bytecode, state, gast, e as usize as *const ()));
         }
-        tail_return!(tail_call_next(bytecode, pc, stack, gas, state, gast, instrsp));
+        tail_return!(tail_call_next(pc, stack, gas, bytecode, state, gast, instrsp));
     }
 }
 
 extern_table! {
     #[inline(never)] // TODO: bench inlining this vs having a single dispatcher for all
     fn tail_call_next(
-        bytecode: BytecodeRef<'_>,
         mut pc: Pc,
         stack: Stack<'_>,
         mut gas: Gas,
+        bytecode: BytecodeRef<'_>,
         state: &mut State<'_>,
         gast: &GasTable,
         instrsp: *const (),
     ) -> TailInstrFnRet {
-        let op = match Interpreter::pre_step(bytecode, &mut pc, &mut gas, gast) {
+        let op = match Interpreter::pre_step(&mut pc, &mut gas, bytecode, gast) {
             Ok(op) => op,
             Err(e) => {
-                tail_return!(tail_call_restore(bytecode, pc, stack, gas, state, gast, e as usize as *const ()));
+                tail_return!(tail_call_restore(pc, stack, gas, bytecode, state, gast, e as usize as *const ()));
             }
         };
         // SAFETY: Restoring type-erased table pointer. See [`TailInstrFn`].
         let instrs = unsafe { &*instrsp.cast::<TailInstrTable>() };
-        tail_return!(instrs[op as usize](bytecode, pc, stack, gas, state, gast, instrsp));
+        tail_return!(instrs[op as usize](pc, stack, gas, bytecode, state, gast, instrsp));
     }
 }
 
@@ -406,10 +406,10 @@ extern_table! {
     #[inline(never)]
     #[cold]
     fn tail_call_restore(
-        _bytecode: BytecodeRef<'_>,
         pc: Pc,
         stack: Stack<'_>,
         gas: Gas,
+        _bytecode: BytecodeRef<'_>,
         state: &mut State<'_>,
         _gast: &GasTable,
         ret: *const (), // Tail calls require same function signature, this is unused so we pass the return value here.

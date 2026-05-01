@@ -62,10 +62,10 @@ fn expand_instruction(raw: bool, input: ItemFn) -> TokenStream2 {
         #(#attrs)*
         #[inline]
         #vis fn #ident #generics(
-            bytecode: BytecodeRef<'_>,
             pc: &mut Pc,
             stack: &mut Stack<'_>,
             gas: &mut Gas,
+            bytecode: BytecodeRef<'_>,
             state: &mut State<'_>,
         ) -> Result
         #where_clause

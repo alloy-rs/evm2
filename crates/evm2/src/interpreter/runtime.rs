@@ -76,9 +76,9 @@ impl Interpreter {
 
     #[inline(always)]
     pub(crate) fn pre_step(
-        bytecode: BytecodeRef<'_>,
         pc: &mut Pc,
         gas: &mut Gas,
+        bytecode: BytecodeRef<'_>,
         gas_table: &GasTable,
     ) -> Result<u8> {
         let op = bytecode.op(pc);
@@ -91,13 +91,13 @@ impl Interpreter {
     fn step(&mut self, table: &InstrTable, gas_table: &GasTable, host: &mut dyn Host) -> Result {
         let bytecode = BytecodeRef::new(&self.bytecode);
         let mut pc = Pc::new(self.pc);
-        let op = Self::pre_step(bytecode, &mut pc, &mut self.gas, gas_table)?;
+        let op = Self::pre_step(&mut pc, &mut self.gas, bytecode, gas_table)?;
         let r;
         (self.stack_len, r) = table[op as usize](
-            bytecode,
             &mut pc,
             Stack::new(&mut self.stack, self.stack_len),
             &mut self.gas,
+            bytecode,
             &mut State {
                 host,
                 memory: &mut self.memory,
@@ -119,12 +119,12 @@ impl Interpreter {
         let raw = self as *mut _;
         let bytecode = BytecodeRef::new(&self.bytecode);
         let mut pc = Pc::new(self.pc);
-        let op = Self::pre_step(bytecode, &mut pc, &mut self.gas, gas_table)?;
+        let op = Self::pre_step(&mut pc, &mut self.gas, bytecode, gas_table)?;
         let e = table[op as usize](
-            bytecode,
             pc,
             Stack::new(&mut self.stack, self.stack_len),
             self.gas,
+            bytecode,
             &mut State { host, memory: &mut self.memory, spec: self.spec_id, raw_interp: raw },
             gas_table,
             table.as_ptr().cast(),
