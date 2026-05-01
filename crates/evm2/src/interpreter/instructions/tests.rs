@@ -1,6 +1,6 @@
 use crate::{
     bytecode::Bytecode,
-    interpreter::{Host, InstrErr, Interpreter, SpecId, Word, op},
+    interpreter::{Host, InstrStop, Interpreter, SpecId, Word, op},
 };
 use alloc::vec::Vec;
 use alloy_primitives::Bytes;
@@ -15,7 +15,7 @@ impl Host for TestHost {
 
 pub(super) struct TestInterpreter {
     pub(super) inner: Interpreter,
-    pub(super) err: InstrErr,
+    pub(super) err: InstrStop,
 }
 
 impl TestInterpreter {
@@ -79,7 +79,7 @@ pub(super) fn assert_stack_words(inputs: &[Word], opcode: u8, expected: &[Word])
     }
     code.extend([opcode, op::STOP]);
     let interpreter = run(code);
-    assert!(matches!(interpreter.err, InstrErr::Stop));
+    assert!(matches!(interpreter.err, InstrStop::Stop));
     assert_eq!(interpreter.stack(), expected);
 }
 

@@ -37,7 +37,7 @@ pub(in crate::interpreter) fn gas(cx: _) -> out {
 #[cfg(test)]
 mod tests {
     use crate::interpreter::{
-        InstrErr, Word,
+        InstrStop, Word,
         instructions::tests::{push, run},
         op,
     };
@@ -52,7 +52,7 @@ mod tests {
         code.push(op::KECCAK256);
         code.push(op::STOP);
         let interpreter = run(code);
-        assert!(matches!(interpreter.err, InstrErr::Stop));
+        assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.stack(), [Word::from_be_bytes(keccak256([]).0)]);
 
         let mut code = Vec::new();
@@ -64,18 +64,18 @@ mod tests {
         code.push(op::KECCAK256);
         code.push(op::STOP);
         let interpreter = run(code);
-        assert!(matches!(interpreter.err, InstrErr::Stop));
+        assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.stack(), [Word::from_be_bytes(keccak256([0x80]).0)]);
     }
 
     #[test]
     fn codesize_opcode() {
         let interpreter = run([op::CODESIZE, op::STOP]);
-        assert!(matches!(interpreter.err, InstrErr::Stop));
+        assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.stack(), [Word::from(2)]);
 
         let interpreter = run([op::PUSH1, 0x00, op::CODESIZE, op::STOP]);
-        assert!(matches!(interpreter.err, InstrErr::Stop));
+        assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.stack(), [Word::from(0), Word::from(4)]);
     }
 
@@ -93,7 +93,7 @@ mod tests {
         let interpreter = run(code);
         let mut expected = [0u8; 32];
         expected[..2].copy_from_slice(&[op::CODECOPY, op::PUSH0]);
-        assert!(matches!(interpreter.err, InstrErr::Stop));
+        assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.stack(), [Word::from_be_bytes(expected)]);
 
         let mut code = Vec::new();
@@ -105,19 +105,19 @@ mod tests {
         code.push(op::MLOAD);
         code.push(op::STOP);
         let interpreter = run(code);
-        assert!(matches!(interpreter.err, InstrErr::Stop));
+        assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.stack(), [0]);
     }
 
     #[test]
     fn gas_opcode() {
         let interpreter = run([op::GAS, op::STOP]);
-        assert!(matches!(interpreter.err, InstrErr::Stop));
+        assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.stack().len(), 1);
         assert!(interpreter.stack()[0] < Word::from(10_000));
 
         let interpreter = run([op::GAS, op::GAS, op::STOP]);
-        assert!(matches!(interpreter.err, InstrErr::Stop));
+        assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.stack().len(), 2);
         assert!(interpreter.stack()[1] < interpreter.stack()[0]);
     }

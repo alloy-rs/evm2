@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::interpreter::{
-    Gas, InstrErr, Interpreter, Pc, PcMut, Result, SpecId, Stack, State,
+    Gas, InstrStop, Interpreter, Pc, PcMut, Result, SpecId, Stack, State,
     gas::{
         BASE, BLOCKHASH, EXP, HIGH, ISTANBUL_SLOAD_GAS, JUMPDEST, KECCAK256, LOG, LOW, MID,
         VERYLOW, WARM_STORAGE_READ_COST, ZERO,
@@ -21,7 +21,7 @@ pub(in crate::interpreter) type InstrFn = extern_table!(
 pub(in crate::interpreter) type InstrTable = [InstrFn; 256];
 
 /// Tail instruction return value.
-pub(in crate::interpreter) type TailInstrFnRet = InstrErr;
+pub(in crate::interpreter) type TailInstrFnRet = InstrStop;
 /// Tail instruction function pointer.
 pub(in crate::interpreter) type TailInstrFn = extern_table!(
     fn(
@@ -309,7 +309,7 @@ macro_rules! make_table_inner {
 }
 macro_rules! make_table_m {
     ($mk_dispatch:expr) => {{
-        let mut table = [$mk_dispatch(invalid); 256];
+        let mut table = [$mk_dispatch(opcode_not_found); 256];
         for_each_opcode!([table, $mk_dispatch] make_table_inner);
         table
     }};

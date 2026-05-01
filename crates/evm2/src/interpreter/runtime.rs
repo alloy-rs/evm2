@@ -1,5 +1,5 @@
 use super::{
-    BytecodeRef, Gas, Host, InstrErr, Memory, Pc, PcMut, Result, SpecId, Stack, State, Word,
+    BytecodeRef, Gas, Host, InstrStop, Memory, Pc, PcMut, Result, SpecId, Stack, State, Word,
     instructions::table::{
         DEFAULT_TABLE, DEFAULT_TAIL_TABLE, GasTable, InstrTable, TailInstrTable, new_gas_table,
     },
@@ -46,13 +46,13 @@ impl Interpreter {
     }
 
     /// Runs the interpreter until it stops.
-    pub fn run(&mut self, host: &mut dyn Host) -> InstrErr {
+    pub fn run(&mut self, host: &mut dyn Host) -> InstrStop {
         let gas_table = new_gas_table(self.spec_id);
         self.run_with_table(Table::Normal(&DEFAULT_TABLE), &gas_table, host)
     }
 
     /// Runs the interpreter with tail-call dispatch until it stops.
-    pub fn run_tail(&mut self, host: &mut dyn Host) -> InstrErr {
+    pub fn run_tail(&mut self, host: &mut dyn Host) -> InstrStop {
         let gas_table = new_gas_table(self.spec_id);
         self.run_with_table(Table::Tail(&DEFAULT_TAIL_TABLE), &gas_table, host)
     }
@@ -62,7 +62,7 @@ impl Interpreter {
         table: Table<'_>,
         gas_table: &GasTable,
         host: &mut dyn Host,
-    ) -> InstrErr {
+    ) -> InstrStop {
         let _gas_start = self.gas.remaining();
 
         let _r = match table {
@@ -84,7 +84,7 @@ impl Interpreter {
         table: &InstrTable,
         gas_table: &GasTable,
         host: &mut dyn Host,
-    ) -> InstrErr {
+    ) -> InstrStop {
         loop {
             if let Err(e) = self.step(table, gas_table, host) {
                 cold_path();

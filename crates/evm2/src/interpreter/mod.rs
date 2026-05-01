@@ -29,7 +29,7 @@ pub use state::{Host, State};
 mod runtime;
 pub use runtime::Interpreter;
 
-pub(crate) type Result<T = (), E = InstrErr> = core::result::Result<T, E>;
+pub(crate) type Result<T = (), E = InstrStop> = core::result::Result<T, E>;
 
 /// Specification IDs and their activation block.
 ///
@@ -150,24 +150,84 @@ impl TryFrom<u8> for SpecId {
     }
 }
 
-/// Instruction execution error.
-#[derive(Clone, Copy, Debug)]
+/// Result of executing an EVM instruction.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[non_exhaustive]
-pub enum InstrErr {
-    /// Execution stopped.
-    Stop = 1,
-    /// Gas was exhausted.
-    OutOfGas,
-    /// Stack exceeded the maximum depth.
-    StackOverflow,
-    /// Stack did not contain enough values.
-    StackUnderflow,
-    /// Invalid instruction or state.
-    Invalid,
-    /// Return from execution.
+pub enum InstrStop {
+    /// Encountered a `STOP` opcode
+    #[default]
+    Stop = 1, // Start at 1 so that `Result<(), _>::Ok(())` is 0.
+    /// Return from the current call.
     Return,
-    /// Revert execution.
-    Revert,
+    /// Self-destruct the current contract.
+    SelfDestruct,
+    /// Temporarily suspended, for CALL/CREATE.
+    Suspend,
+
+    // Revert Codes
+    /// Revert the transaction.
+    Revert = 0x10,
+    /// Exceeded maximum call depth.
+    CallTooDeep,
+    /// Insufficient funds for transfer.
+    OutOfFunds,
+    /// Revert if `CREATE`/`CREATE2` starts with `0xEF00`.
+    CreateInitCodeStartingEF00,
+    /// Invalid EVM Object Format (EOF) init code.
+    InvalidEOFInitCode,
+    /// `ExtDelegateCall` calling a non EOF contract.
+    InvalidExtDelegateCallTarget,
+
+    // Error Codes
+    /// Out of gas error.
+    OutOfGas = 0x20,
+    /// Out of gas error encountered during memory expansion.
+    MemoryOOG,
+    /// The memory limit of the EVM has been exceeded.
+    MemoryLimitOOG,
+    /// Out of gas error encountered during the execution of a precompiled contract.
+    PrecompileOOG,
+    /// Out of gas error encountered while calling an invalid operand.
+    InvalidOperandOOG,
+    /// Out of gas error encountered while checking for reentrancy sentry.
+    ReentrancySentryOOG,
+    /// Unknown or invalid opcode.
+    OpcodeNotFound,
+    /// Invalid `CALL` with value transfer in static context.
+    CallNotAllowedInsideStatic,
+    /// Invalid state modification in static call.
+    StateChangeDuringStaticCall,
+    /// An undefined bytecode value encountered during execution.
+    InvalidFEOpcode,
+    /// Invalid jump destination. Dynamic jumps points to invalid not jumpdest opcode.
+    InvalidJump,
+    /// The feature or opcode is not activated in this version of the EVM.
+    NotActivated,
+    /// Attempting to pop a value from an empty stack.
+    StackUnderflow,
+    /// Attempting to push a value onto a full stack.
+    StackOverflow,
+    /// Invalid memory or storage offset.
+    OutOfOffset,
+    /// Address collision during contract creation.
+    CreateCollision,
+    /// Payment amount overflow.
+    OverflowPayment,
+    /// Error in precompiled contract execution.
+    PrecompileError,
+    /// Nonce overflow.
+    NonceOverflow,
+    /// Exceeded contract size limit during creation.
+    CreateContractSizeLimit,
+    /// Created contract starts with invalid bytes (`0xEF`).
+    CreateContractStartingWithEF,
+    /// Exceeded init code size limit (EIP-3860:  Limit and meter initcode).
+    CreateInitCodeSizeLimit,
+    /// Fatal external error. Returned by database.
+    FatalExternalError,
+    /// Invalid encoding of an instruction's immediate operand.
+    InvalidImmediateEncoding,
 }
 
 #[cfg(test)]

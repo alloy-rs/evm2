@@ -1,4 +1,4 @@
-use super::{InstrErr, Result};
+use super::{InstrStop, Result};
 use alloy_primitives::U256;
 use core::{fmt, hint::cold_path};
 
@@ -38,11 +38,11 @@ impl<'a> Stack<'a> {
         debug_assert!(output == 0 || output == 1);
         if self.len < input {
             cold_path();
-            return Err(InstrErr::StackUnderflow);
+            return Err(InstrStop::StackUnderflow);
         }
         if self.len - input == Self::CAPACITY {
             cold_path();
-            return Err(InstrErr::StackOverflow);
+            return Err(InstrStop::StackOverflow);
         }
         Ok(())
     }
@@ -53,7 +53,7 @@ impl<'a> Stack<'a> {
         let len = self.len;
         if len == Self::CAPACITY {
             cold_path();
-            return Err(InstrErr::StackOverflow);
+            return Err(InstrStop::StackOverflow);
         }
         unsafe {
             let end = self.stack.as_mut_ptr().add(len);
@@ -74,7 +74,7 @@ impl<'a> Stack<'a> {
     pub fn popn<const N: usize>(&mut self) -> Result<[Word; N]> {
         if self.len < N {
             cold_path();
-            return Err(InstrErr::StackUnderflow);
+            return Err(InstrStop::StackUnderflow);
         }
         Ok(unsafe { self.popn_unchecked() })
     }
@@ -92,7 +92,7 @@ impl<'a> Stack<'a> {
     pub fn popn_top<const N: usize>(&mut self) -> Result<([Word; N], &mut Word)> {
         if self.len < (N + 1) {
             cold_path();
-            return Err(InstrErr::StackUnderflow);
+            return Err(InstrStop::StackUnderflow);
         }
         let popped = unsafe { self.popn_unchecked() };
         let top = unsafe { self.top_unchecked() };
@@ -124,9 +124,9 @@ impl<'a> Stack<'a> {
         if (len < n) | (len == Self::CAPACITY) {
             cold_path();
             return Err(if len == Self::CAPACITY {
-                InstrErr::StackOverflow
+                InstrStop::StackOverflow
             } else {
-                InstrErr::StackUnderflow
+                InstrStop::StackUnderflow
             });
         }
         unsafe {
@@ -150,7 +150,7 @@ impl<'a> Stack<'a> {
         let len = self.len;
         if n >= len || m >= len {
             cold_path();
-            return Err(InstrErr::StackUnderflow);
+            return Err(InstrStop::StackUnderflow);
         }
         unsafe {
             let top = self.stack.as_mut_ptr().add(len - 1);
@@ -171,7 +171,7 @@ impl<'a> Stack<'a> {
         let new_len = self.len + n_words;
         if new_len > Self::CAPACITY {
             cold_path();
-            return Err(InstrErr::StackOverflow);
+            return Err(InstrStop::StackOverflow);
         }
 
         unsafe {

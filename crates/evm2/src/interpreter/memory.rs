@@ -1,4 +1,4 @@
-use super::{Gas, InstrErr, Result, Word};
+use super::{Gas, InstrStop, Result, Word};
 use alloc::vec::Vec;
 use core::{cmp::min, fmt, hint::cold_path, ops::Range};
 
@@ -67,7 +67,7 @@ impl Memory {
     #[inline]
     pub fn resize(&mut self, offset: usize, len: usize) -> Result {
         let Some(end) = offset.checked_add(len) else {
-            return Err(InstrErr::OutOfGas);
+            return Err(InstrStop::OutOfGas);
         };
         if end > self.data.len() {
             self.resize_to(end);
@@ -207,18 +207,18 @@ pub(super) fn resize_memory(
 fn resize_memory_cold(gas: &mut Gas, memory: &mut Memory, new_num_words: usize) -> Result {
     let Some(new_size) = new_num_words.checked_mul(32) else {
         cold_path();
-        return Err(InstrErr::OutOfGas);
+        return Err(InstrStop::MemoryOOG);
     };
 
     if memory.limit_reached(new_num_words) {
         cold_path();
-        return Err(InstrErr::OutOfGas);
+        return Err(InstrStop::MemoryLimitOOG);
     }
 
     let cost = memory_cost(new_num_words);
     let cost = unsafe { gas.memory_mut().set_words_num(new_num_words, cost).unwrap_unchecked() };
 
-    gas.spend(cost)?;
+    gas.spend(cost).map_err(|_| InstrStop::MemoryOOG)?;
     memory.resize_to(new_size);
     Ok(())
 }
@@ -273,7 +273,10 @@ mod tests {
         resize_memory(&mut gas, &mut memory, 0, 64).unwrap();
         assert_eq!(memory.len(), 64);
 
-        assert!(matches!(resize_memory(&mut gas, &mut memory, 0, 96), Err(InstrErr::OutOfGas)));
+        assert!(matches!(
+            resize_memory(&mut gas, &mut memory, 0, 96),
+            Err(InstrStop::MemoryLimitOOG)
+        ));
         assert_eq!(memory.len(), 64);
         assert_eq!(gas.memory().words_num, 2);
     }

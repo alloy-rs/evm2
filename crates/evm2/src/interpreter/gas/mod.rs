@@ -1,6 +1,6 @@
 //! EVM gas calculation utilities.
 
-use super::{InstrErr, Result};
+use super::{InstrStop, Result};
 use core::hint::cold_path;
 
 mod params;
@@ -159,7 +159,7 @@ impl GasTracker {
             Ok(())
         } else {
             cold_path();
-            Err(InstrErr::OutOfGas)
+            Err(InstrStop::OutOfGas)
         }
     }
 
@@ -172,7 +172,7 @@ impl GasTracker {
         self.remaining = remaining.wrapping_sub(cost);
         if remaining < cost {
             cold_path();
-            Err(InstrErr::OutOfGas)
+            Err(InstrStop::OutOfGas)
         } else {
             Ok(())
         }
@@ -473,7 +473,7 @@ mod tests {
         assert_eq!((gas.reservoir(), gas.remaining(), gas.state_gas_spent()), (50, 100, 0));
 
         let mut gas = Gas::new_with_regular_gas_and_reservoir(100, 50);
-        assert!(matches!(gas.spend_state(200), Err(InstrErr::OutOfGas)));
+        assert!(matches!(gas.spend_state(200), Err(InstrStop::OutOfGas)));
 
         let mut gas = Gas::new_with_regular_gas_and_reservoir(2000, 1000);
         assert!(gas.spend_state(100).is_ok());
@@ -493,11 +493,11 @@ mod tests {
     #[test]
     fn test_spend_state_oog_does_not_inflate_state_gas_spent() {
         let mut gas = Gas::new(30);
-        assert!(matches!(gas.spend_state(100), Err(InstrErr::OutOfGas)));
+        assert!(matches!(gas.spend_state(100), Err(InstrStop::OutOfGas)));
         assert_eq!(gas.state_gas_spent(), 0);
 
         let mut gas = Gas::new_with_regular_gas_and_reservoir(30, 20);
-        assert!(matches!(gas.spend_state(100), Err(InstrErr::OutOfGas)));
+        assert!(matches!(gas.spend_state(100), Err(InstrStop::OutOfGas)));
         assert_eq!(gas.state_gas_spent(), 0);
         assert_eq!(gas.reservoir(), 20);
     }
@@ -511,6 +511,6 @@ mod tests {
         assert!(gas.spend_state(300).is_ok());
         assert_eq!((gas.reservoir(), gas.remaining(), gas.state_gas_spent()), (0, 0, 500));
 
-        assert!(matches!(gas.spend_state(1), Err(InstrErr::OutOfGas)));
+        assert!(matches!(gas.spend_state(1), Err(InstrStop::OutOfGas)));
     }
 }
