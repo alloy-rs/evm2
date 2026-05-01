@@ -402,89 +402,27 @@ macro_rules! make_instruction_table_inner {
         ($op:ident, $instr:path),
     )*) => {
         $(
-            if <$config as EvmConfig>::SPEC_ID.enables(opcode_min_spec!($op)) {
+            if <$config as EvmConfig>::SPEC_ID.enables(opcode_min_spec(op::$op)) {
                 $table.set(op::$op, Some(&$instr as &'static dyn Instruction<$config>));
             }
         )*
     };
 }
 
-macro_rules! opcode_min_spec {
-    (SHL) => {
-        SpecId::CONSTANTINOPLE
-    };
-    (SHR) => {
-        SpecId::CONSTANTINOPLE
-    };
-    (SAR) => {
-        SpecId::CONSTANTINOPLE
-    };
-    (EXTCODEHASH) => {
-        SpecId::CONSTANTINOPLE
-    };
-    (RETURNDATASIZE) => {
-        SpecId::BYZANTIUM
-    };
-    (RETURNDATACOPY) => {
-        SpecId::BYZANTIUM
-    };
-    (STATICCALL) => {
-        SpecId::BYZANTIUM
-    };
-    (REVERT) => {
-        SpecId::BYZANTIUM
-    };
-    (CHAINID) => {
-        SpecId::ISTANBUL
-    };
-    (SELFBALANCE) => {
-        SpecId::ISTANBUL
-    };
-    (BASEFEE) => {
-        SpecId::LONDON
-    };
-    (PUSH0) => {
-        SpecId::SHANGHAI
-    };
-    (BLOBHASH) => {
-        SpecId::CANCUN
-    };
-    (BLOBBASEFEE) => {
-        SpecId::CANCUN
-    };
-    (TLOAD) => {
-        SpecId::CANCUN
-    };
-    (TSTORE) => {
-        SpecId::CANCUN
-    };
-    (MCOPY) => {
-        SpecId::CANCUN
-    };
-    (CLZ) => {
-        SpecId::OSAKA
-    };
-    (DUPN) => {
-        SpecId::OSAKA
-    };
-    (SWAPN) => {
-        SpecId::OSAKA
-    };
-    (EXCHANGE) => {
-        SpecId::OSAKA
-    };
-    (SLOTNUM) => {
-        SpecId::AMSTERDAM
-    };
-    (DELEGATECALL) => {
-        SpecId::HOMESTEAD
-    };
-    (CREATE2) => {
-        SpecId::PETERSBURG
-    };
-    ($op:ident) => {
-        SpecId::FRONTIER
-    };
+const fn opcode_min_spec(opcode: u8) -> SpecId {
+    match opcode {
+        op::SHL | op::SHR | op::SAR | op::EXTCODEHASH => SpecId::CONSTANTINOPLE,
+        op::RETURNDATASIZE | op::RETURNDATACOPY | op::STATICCALL | op::REVERT => SpecId::BYZANTIUM,
+        op::CHAINID | op::SELFBALANCE => SpecId::ISTANBUL,
+        op::BASEFEE => SpecId::LONDON,
+        op::PUSH0 => SpecId::SHANGHAI,
+        op::BLOBHASH | op::BLOBBASEFEE | op::TLOAD | op::TSTORE | op::MCOPY => SpecId::CANCUN,
+        op::CLZ | op::DUPN | op::SWAPN | op::EXCHANGE => SpecId::OSAKA,
+        op::SLOTNUM => SpecId::AMSTERDAM,
+        op::DELEGATECALL => SpecId::HOMESTEAD,
+        op::CREATE2 => SpecId::PETERSBURG,
+        _ => SpecId::FRONTIER,
+    }
 }
 
 macro_rules! assign_instruction_table_entries {
