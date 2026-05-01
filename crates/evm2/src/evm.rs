@@ -21,18 +21,12 @@ pub struct TxResult {
 
 /// EVM host and transaction dispatcher.
 #[derive(Debug)]
-pub struct Evm<C>
-where
-    C: EvmConfig,
-{
+pub struct Evm<C: EvmConfig> {
     block: BlockEnv,
     registry: TxRegistry<C::Tx, TxResult>,
 }
 
-impl<C> Evm<C>
-where
-    C: EvmConfig,
-{
+impl<C: EvmConfig> Evm<C> {
     /// Creates an EVM with the provided transaction handler registry and hard fork specification.
     pub const fn new(block: BlockEnv, registry: TxRegistry<C::Tx, TxResult>) -> Self {
         Self { block, registry }
@@ -49,11 +43,7 @@ where
     }
 }
 
-impl<C> Evm<C>
-where
-    C: EvmConfig,
-    C::Tx: Typed2718,
-{
+impl<C: EvmConfig<Tx: Typed2718>> Evm<C> {
     /// Dispatches the transaction to the handler registered for its EIP-2718 type byte.
     pub fn transact(&self, tx: &C::Tx) -> HandlerResult<TxResult> {
         self.registry.try_get_by_type(tx.ty())?.call(tx)
@@ -74,10 +64,7 @@ where
     }
 }
 
-impl<C> Host for Evm<C>
-where
-    C: EvmConfig,
-{
+impl<C: EvmConfig> Host for Evm<C> {
     fn block_env(&mut self) -> &BlockEnv {
         &self.block
     }
@@ -138,16 +125,12 @@ where
     }
 }
 
-fn execute_message_with_host<C, H>(
+fn execute_message_with_host<C: EvmConfig, H: Host>(
     host: &mut H,
     bytecode: Bytecode,
     tx_env: TxEnv,
     message: Message,
-) -> InstrStop
-where
-    C: EvmConfig,
-    H: Host,
-{
+) -> InstrStop {
     let mut interpreter = Interpreter::<C>::new(bytecode, tx_env, message);
     interpreter.run(host)
 }

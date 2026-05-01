@@ -36,10 +36,7 @@ pub(crate) struct InstructionCx<'a, 'ctrl, 'state> {
 }
 
 /// EVM instruction implementation.
-pub trait Instruction<C = crate::EvmVersion<()>>
-where
-    C: EvmConfig,
-{
+pub trait Instruction<C: EvmConfig = crate::EvmVersion<()>> {
     /// Executes this instruction.
     fn execute(
         &self,
@@ -272,10 +269,7 @@ macro_rules! make_instruction_table_inner {
 }
 
 /// Creates an instruction implementation table.
-pub(crate) const fn make_instruction_table<C>() -> InstructionImplTable<C>
-where
-    C: EvmConfig,
-{
+pub(crate) const fn make_instruction_table<C: EvmConfig>() -> InstructionImplTable<C> {
     use crate::interpreter::instructions::*;
 
     let mut table = [None; 256];
@@ -283,10 +277,7 @@ where
     table
 }
 
-impl<C> dyn Instruction<C>
-where
-    C: EvmConfig,
-{
+impl<C: EvmConfig> dyn Instruction<C> {
     #[inline(always)]
     pub(crate) fn default_unknown() -> &'static Self {
         &crate::interpreter::instructions::unknown

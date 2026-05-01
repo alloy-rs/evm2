@@ -11,10 +11,7 @@ use core::{hint::cold_path, marker::PhantomData};
 /// Interpreter dispatch table mode.
 #[derive(Clone, Copy)]
 #[non_exhaustive]
-pub(crate) enum Table<'a, C>
-where
-    C: EvmConfig,
-{
+pub(crate) enum Table<'a, C: EvmConfig> {
     /// Normal dispatch loop.
     Normal(&'a InstrTable<C>),
     /// Tail-call dispatch loop.
@@ -23,10 +20,7 @@ where
 
 /// EVM interpreter.
 #[derive(Debug)]
-pub struct Interpreter<C = crate::EvmVersion<()>>
-where
-    C: EvmConfig,
-{
+pub struct Interpreter<C: EvmConfig = crate::EvmVersion<()>> {
     bytecode: Bytecode,
     pub(crate) pc: usize,
     pub(crate) stack: Box<[Word; Stack::CAPACITY]>,
@@ -40,10 +34,7 @@ where
     _marker: PhantomData<fn() -> C>,
 }
 
-impl<C> Interpreter<C>
-where
-    C: EvmConfig,
-{
+impl<C: EvmConfig> Interpreter<C> {
     /// Creates an interpreter from analyzed bytecode, a transaction-global environment, and a
     /// frame-local message.
     pub fn new(bytecode: Bytecode, tx_env: TxEnv, message: Message) -> Self {

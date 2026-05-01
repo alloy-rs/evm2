@@ -28,16 +28,14 @@ fn expand_instruction(raw: bool, input: ItemFn) -> TokenStream2 {
     let struct_where_clause = generics.where_clause.clone();
     let impl_params = generics.params.clone();
     let impl_generics = if impl_params.is_empty() {
-        quote! { <C> }
+        quote! { <C: evm2::EvmConfig> }
     } else {
-        quote! { <C, #impl_params> }
+        quote! { <C: evm2::EvmConfig, #impl_params> }
     };
     let (_, type_generics, _) = generics.split_for_impl();
     let where_predicates =
         struct_where_clause.as_ref().map(|where_clause| &where_clause.predicates);
-    let impl_where_clause = where_predicates
-        .map(|predicates| quote! { where C: evm2::EvmConfig, #predicates })
-        .unwrap_or_else(|| quote! { where C: evm2::EvmConfig });
+    let impl_where_clause = where_predicates.map(|predicates| quote! { where #predicates });
     let (_, outputs) = parse_return(sig.output);
     let body = body(input.block.stmts, outputs.is_empty());
 

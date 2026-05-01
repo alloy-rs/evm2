@@ -28,10 +28,7 @@ pub trait EvmConfig: Sized + 'static {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct EvmVersion<Tx, const SPEC: u8 = { SpecId::OSAKA as u8 }>(PhantomData<fn() -> Tx>);
 
-impl<Tx, const SPEC: u8> EvmConfig for EvmVersion<Tx, SPEC>
-where
-    Tx: 'static,
-{
+impl<Tx: 'static, const SPEC: u8> EvmConfig for EvmVersion<Tx, SPEC> {
     type Tx = Tx;
 
     const SPEC_ID: SpecId = match SpecId::try_from_u8(SPEC) {
