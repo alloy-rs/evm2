@@ -23,7 +23,7 @@ pub(in crate::interpreter) enum Table<'a> {
 pub struct Interpreter {
     bytecode: Bytecode,
     pub(crate) pc: usize,
-    pub(crate) stack: Box<[Word; 1024]>,
+    pub(crate) stack: Box<[Word; Stack::CAPACITY]>,
     pub(crate) stack_len: usize,
     pub(crate) gas: Gas,
     pub(crate) memory: Memory,

@@ -5,9 +5,11 @@ use core::{fmt, hint::cold_path};
 /// EVM stack word.
 pub type Word = U256;
 
+const STACK_CAPACITY: usize = 1024;
+
 /// EVM operand stack.
 pub struct Stack<'a> {
-    pub(crate) stack: &'a mut [Word; 1024],
+    pub(crate) stack: &'a mut [Word; STACK_CAPACITY],
     pub(crate) len: usize,
 }
 
@@ -18,8 +20,10 @@ impl fmt::Debug for Stack<'_> {
 }
 
 impl<'a> Stack<'a> {
+    pub(crate) const CAPACITY: usize = STACK_CAPACITY;
+
     #[inline]
-    pub(crate) fn new(stack: &'a mut [Word; 1024], len: usize) -> Self {
+    pub(crate) fn new(stack: &'a mut [Word; Stack::CAPACITY], len: usize) -> Self {
         Self { stack, len }
     }
 
@@ -36,7 +40,7 @@ impl<'a> Stack<'a> {
             cold_path();
             return Err(InstrErr::StackUnderflow);
         }
-        if self.len - input == 1024 {
+        if self.len - input == Self::CAPACITY {
             cold_path();
             return Err(InstrErr::StackOverflow);
         }
@@ -47,7 +51,7 @@ impl<'a> Stack<'a> {
     #[inline]
     pub fn push(&mut self, value: Word) -> Result {
         let len = self.len;
-        if len == 1024 {
+        if len == Self::CAPACITY {
             cold_path();
             return Err(InstrErr::StackOverflow);
         }
@@ -117,9 +121,9 @@ impl<'a> Stack<'a> {
     pub fn dup(&mut self, n: usize) -> Result {
         debug_assert!(n > 0, "attempted to dup 0");
         let len = self.len;
-        if (len < n) | (len == 1024) {
+        if (len < n) | (len == Self::CAPACITY) {
             cold_path();
-            return Err(if len == 1024 {
+            return Err(if len == Self::CAPACITY {
                 InstrErr::StackOverflow
             } else {
                 InstrErr::StackUnderflow
@@ -165,7 +169,7 @@ impl<'a> Stack<'a> {
 
         let n_words = slice.len().div_ceil(32);
         let new_len = self.len + n_words;
-        if new_len > 1024 {
+        if new_len > Self::CAPACITY {
             cold_path();
             return Err(InstrErr::StackOverflow);
         }
@@ -220,7 +224,7 @@ mod tests {
     use super::*;
 
     fn run(f: impl FnOnce(&mut Stack<'_>)) {
-        let mut backing = [Word::MAX; 1024];
+        let mut backing = [Word::MAX; Stack::CAPACITY];
         let mut stack = Stack::new(&mut backing, 0);
         f(&mut stack);
     }
