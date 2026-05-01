@@ -1,15 +1,32 @@
 use crate::{
     bytecode::Bytecode,
+    env::{BlockEnv, TxEnv},
     interpreter::{Host, InstrStop, Interpreter, SpecId, Word, op},
 };
 use alloc::vec::Vec;
-use alloy_primitives::Bytes;
+use alloy_primitives::{B256, Bytes};
 
-pub(super) struct TestHost;
+#[derive(Debug, Default)]
+pub(super) struct TestHost {
+    pub(super) tx: TxEnv,
+    pub(super) block: BlockEnv,
+}
 
 impl Host for TestHost {
+    fn tx_env(&self) -> &TxEnv {
+        &self.tx
+    }
+
+    fn block_env(&self) -> &BlockEnv {
+        &self.block
+    }
+
     fn balance(&self, address: Word) -> Word {
         address
+    }
+
+    fn block_hash(&self, number: u64) -> Option<B256> {
+        Some(B256::with_last_byte(number as u8))
     }
 }
 
@@ -29,9 +46,22 @@ impl TestInterpreter {
 }
 
 pub(super) fn run(code: impl Into<Vec<u8>>) -> TestInterpreter {
+    let mut host = TestHost::default();
+    run_with_host(code, &mut host)
+}
+
+pub(super) fn run_with_host(code: impl Into<Vec<u8>>, host: &mut dyn Host) -> TestInterpreter {
+    run_with_host_and_spec(code, host, SpecId::HOMESTEAD)
+}
+
+pub(super) fn run_with_host_and_spec(
+    code: impl Into<Vec<u8>>,
+    host: &mut dyn Host,
+    spec_id: SpecId,
+) -> TestInterpreter {
     let bytecode = Bytecode::new_legacy(Bytes::from(code.into()));
-    let mut inner = Interpreter::new(bytecode, SpecId::HOMESTEAD);
-    let err = inner.run(&mut TestHost);
+    let mut inner = Interpreter::new(bytecode, spec_id);
+    let err = inner.run(host);
     TestInterpreter { inner, err }
 }
 

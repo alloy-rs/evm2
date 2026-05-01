@@ -106,6 +106,9 @@ impl Interpreter {
         let bytecode = BytecodeRef::new(&self.bytecode);
         let mut pc = PcMut::new(bytecode, &mut self.pc);
         let op = Self::pre_step(pc.reborrow(), &mut self.gas, gas_table)?;
+        let host = &*host;
+        let tx = host.tx_env();
+        let block = host.block_env();
         let r;
         (self.stack_len, r) = table[op as usize](
             Stack::new(&mut self.stack, self.stack_len),
@@ -114,6 +117,8 @@ impl Interpreter {
             &mut State {
                 bytecode,
                 host,
+                tx,
+                block,
                 memory: &mut self.memory,
                 spec: self.spec_id,
                 raw_interp: core::ptr::null_mut(),
@@ -131,6 +136,9 @@ impl Interpreter {
     ) -> Result {
         let raw = self as *mut _;
         let bytecode = BytecodeRef::new(&self.bytecode);
+        let host = &*host;
+        let tx = host.tx_env();
+        let block = host.block_env();
         let (op, pc) = {
             let mut pc_mut = PcMut::new(bytecode, &mut self.pc);
             let op = Self::pre_step(pc_mut.reborrow(), &mut self.gas, gas_table)?;
@@ -143,6 +151,8 @@ impl Interpreter {
             &mut State {
                 bytecode,
                 host,
+                tx,
+                block,
                 memory: &mut self.memory,
                 spec: self.spec_id,
                 raw_interp: raw,

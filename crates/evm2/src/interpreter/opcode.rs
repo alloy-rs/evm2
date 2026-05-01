@@ -83,35 +83,35 @@ opcodes! {$
     // 0x2E
     // 0x2F
 
-    0x30 => ADDRESS      => invalid;
+    0x30 => ADDRESS      => address;
     0x31 => BALANCE      => balance;
-    0x32 => ORIGIN       => invalid;
-    0x33 => CALLER       => invalid;
-    0x34 => CALLVALUE    => invalid;
-    0x35 => CALLDATALOAD => invalid;
-    0x36 => CALLDATASIZE => invalid;
-    0x37 => CALLDATACOPY => invalid;
+    0x32 => ORIGIN       => origin;
+    0x33 => CALLER       => caller;
+    0x34 => CALLVALUE    => callvalue;
+    0x35 => CALLDATALOAD => calldataload;
+    0x36 => CALLDATASIZE => calldatasize;
+    0x37 => CALLDATACOPY => calldatacopy;
     0x38 => CODESIZE     => codesize;
     0x39 => CODECOPY     => codecopy;
 
-    0x3A => GASPRICE       => invalid;
+    0x3A => GASPRICE       => gasprice;
     0x3B => EXTCODESIZE    => invalid;
     0x3C => EXTCODECOPY    => invalid;
     0x3D => RETURNDATASIZE => invalid;
     0x3E => RETURNDATACOPY => invalid;
     0x3F => EXTCODEHASH    => invalid;
-    0x40 => BLOCKHASH      => invalid;
-    0x41 => COINBASE       => invalid;
-    0x42 => TIMESTAMP      => invalid;
-    0x43 => NUMBER         => invalid;
-    0x44 => DIFFICULTY     => invalid;
-    0x45 => GASLIMIT       => invalid;
-    0x46 => CHAINID        => invalid;
-    0x47 => SELFBALANCE    => invalid;
-    0x48 => BASEFEE        => invalid;
-    0x49 => BLOBHASH       => invalid;
-    0x4A => BLOBBASEFEE    => invalid;
-    0x4B => SLOTNUM        => invalid;
+    0x40 => BLOCKHASH      => blockhash;
+    0x41 => COINBASE       => coinbase;
+    0x42 => TIMESTAMP      => timestamp;
+    0x43 => NUMBER         => block_number;
+    0x44 => DIFFICULTY     => difficulty;
+    0x45 => GASLIMIT       => gaslimit;
+    0x46 => CHAINID        => chainid;
+    0x47 => SELFBALANCE    => selfbalance;
+    0x48 => BASEFEE        => basefee;
+    0x49 => BLOBHASH       => blobhash;
+    0x4A => BLOBBASEFEE    => blobbasefee;
+    0x4B => SLOTNUM        => slotnum;
     // 0x4C
     // 0x4D
     // 0x4E

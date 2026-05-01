@@ -235,18 +235,34 @@ mod tests {
     use super::*;
     use crate::{
         bytecode::Bytecode,
+        env::{BlockEnv, TxEnv},
         interpreter::{
             runtime::Table,
             table::{DEFAULT_TABLE, DEFAULT_TAIL_TABLE, new_gas_table},
         },
     };
-    use alloy_primitives::{Bytes, U256};
+    use alloy_primitives::{B256, Bytes, U256};
 
-    struct DummyHost;
+    struct DummyHost {
+        tx: TxEnv,
+        block: BlockEnv,
+    }
 
     impl Host for DummyHost {
+        fn tx_env(&self) -> &TxEnv {
+            &self.tx
+        }
+
+        fn block_env(&self) -> &BlockEnv {
+            &self.block
+        }
+
         fn balance(&self, address: Word) -> Word {
             address
+        }
+
+        fn block_hash(&self, _number: u64) -> Option<B256> {
+            Some(B256::ZERO)
         }
     }
 
@@ -265,7 +281,11 @@ mod tests {
         let gas_table = new_gas_table(spec_id);
         let bytecode = Bytecode::new_legacy(Bytes::copy_from_slice(bytecode));
         let mut interpreter = Interpreter::new(bytecode, spec_id);
-        interpreter.run_with_table(instruction_table, &gas_table, &mut DummyHost);
+        interpreter.run_with_table(
+            instruction_table,
+            &gas_table,
+            &mut DummyHost { tx: TxEnv::default(), block: BlockEnv::default() },
+        );
     }
 
     #[test]
@@ -280,7 +300,11 @@ mod tests {
             ] {
                 let bytecode = Bytecode::new_legacy(Bytes::from_static(BASIC));
                 let mut interpreter = Interpreter::new(bytecode, spec);
-                interpreter.run_with_table(table, &gas_table, &mut DummyHost);
+                interpreter.run_with_table(
+                    table,
+                    &gas_table,
+                    &mut DummyHost { tx: TxEnv::default(), block: BlockEnv::default() },
+                );
                 assert!(interpreter.gas.remaining() > 0);
                 assert_eq!(interpreter.pc, 6);
                 assert_eq!(interpreter.stack_len, 1);
