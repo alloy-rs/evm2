@@ -397,6 +397,14 @@ impl GasParams {
     pub const fn keccak256_word_cost(&self, len: usize) -> u64 {
         self.get(GasId::Keccak256PerWord).saturating_mul(num_words(len) as u64)
     }
+
+    /// Calculates dynamic `LOG` gas.
+    #[inline]
+    pub const fn log_cost(&self, n: u8, len: usize) -> u64 {
+        self.get(GasId::Logdata)
+            .saturating_mul(len as u64)
+            .saturating_add(self.get(GasId::Logtopic).saturating_mul(n as u64))
+    }
 }
 
 #[cfg(test)]

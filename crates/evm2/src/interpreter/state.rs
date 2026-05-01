@@ -1,6 +1,6 @@
 use super::{BytecodeRef, Interpreter, Memory, SpecId, Word};
 use crate::env::{BlockEnv, TxEnv};
-use alloy_primitives::B256;
+use alloy_primitives::{B256, Log};
 use core::fmt;
 
 /// Interpreter state passed to instructions.
@@ -67,4 +67,7 @@ pub trait Host {
 
     /// Stores a transient storage slot.
     fn tstore(&mut self, index: Word, value: Word);
+
+    /// Records an emitted log.
+    fn log(&mut self, log: Log);
 }

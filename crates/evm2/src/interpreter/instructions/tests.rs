@@ -4,7 +4,7 @@ use crate::{
     interpreter::{Gas, Host, InstrStop, Interpreter, SpecId, Word, op},
 };
 use alloc::vec::Vec;
-use alloy_primitives::{B256, Bytes};
+use alloy_primitives::{B256, Bytes, Log};
 use std::collections::HashMap;
 
 #[derive(Debug, Default)]
@@ -15,6 +15,7 @@ pub(in crate::interpreter) struct TestHost {
     pub(super) code_hash: B256,
     pub(super) storage: HashMap<Word, Word>,
     pub(super) transient_storage: HashMap<Word, Word>,
+    pub(super) logs: Vec<Log>,
 }
 
 impl Host for TestHost {
@@ -56,6 +57,10 @@ impl Host for TestHost {
 
     fn tstore(&mut self, index: Word, value: Word) {
         self.transient_storage.insert(index, value);
+    }
+
+    fn log(&mut self, log: Log) {
+        self.logs.push(log);
     }
 }
 

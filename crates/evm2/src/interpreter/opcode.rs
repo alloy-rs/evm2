@@ -201,11 +201,11 @@ opcodes! {$
     0x9E => SWAP15 => swap<15>;
     0x9F => SWAP16 => swap<16>;
 
-    0xA0 => LOG0 => invalid;
-    0xA1 => LOG1 => invalid;
-    0xA2 => LOG2 => invalid;
-    0xA3 => LOG3 => invalid;
-    0xA4 => LOG4 => invalid;
+    0xA0 => LOG0 => log<0>;
+    0xA1 => LOG1 => log<1>;
+    0xA2 => LOG2 => log<2>;
+    0xA3 => LOG3 => log<3>;
+    0xA4 => LOG4 => log<4>;
     // 0xA5
     // 0xA6
     // 0xA7
