@@ -399,13 +399,91 @@ impl GasTable {
 
 macro_rules! make_instruction_table_inner {
     ([$table:expr, $config:ty] $(
-        ($op:ident, $instr:path, $min:ident),
+        ($op:ident, $instr:path),
     )*) => {
         $(
-            if <$config as EvmConfig>::SPEC_ID.enables(SpecId::$min) {
+            if <$config as EvmConfig>::SPEC_ID.enables(opcode_min_spec!($op)) {
                 $table.set(op::$op, Some(&$instr as &'static dyn Instruction<$config>));
             }
         )*
+    };
+}
+
+macro_rules! opcode_min_spec {
+    (SHL) => {
+        SpecId::CONSTANTINOPLE
+    };
+    (SHR) => {
+        SpecId::CONSTANTINOPLE
+    };
+    (SAR) => {
+        SpecId::CONSTANTINOPLE
+    };
+    (EXTCODEHASH) => {
+        SpecId::CONSTANTINOPLE
+    };
+    (RETURNDATASIZE) => {
+        SpecId::BYZANTIUM
+    };
+    (RETURNDATACOPY) => {
+        SpecId::BYZANTIUM
+    };
+    (STATICCALL) => {
+        SpecId::BYZANTIUM
+    };
+    (REVERT) => {
+        SpecId::BYZANTIUM
+    };
+    (CHAINID) => {
+        SpecId::ISTANBUL
+    };
+    (SELFBALANCE) => {
+        SpecId::ISTANBUL
+    };
+    (BASEFEE) => {
+        SpecId::LONDON
+    };
+    (PUSH0) => {
+        SpecId::SHANGHAI
+    };
+    (BLOBHASH) => {
+        SpecId::CANCUN
+    };
+    (BLOBBASEFEE) => {
+        SpecId::CANCUN
+    };
+    (TLOAD) => {
+        SpecId::CANCUN
+    };
+    (TSTORE) => {
+        SpecId::CANCUN
+    };
+    (MCOPY) => {
+        SpecId::CANCUN
+    };
+    (CLZ) => {
+        SpecId::OSAKA
+    };
+    (DUPN) => {
+        SpecId::OSAKA
+    };
+    (SWAPN) => {
+        SpecId::OSAKA
+    };
+    (EXCHANGE) => {
+        SpecId::OSAKA
+    };
+    (SLOTNUM) => {
+        SpecId::AMSTERDAM
+    };
+    (DELEGATECALL) => {
+        SpecId::HOMESTEAD
+    };
+    (CREATE2) => {
+        SpecId::PETERSBURG
+    };
+    ($op:ident) => {
+        SpecId::FRONTIER
     };
 }
 
