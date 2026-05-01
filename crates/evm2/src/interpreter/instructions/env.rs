@@ -344,7 +344,7 @@ mod tests {
 
         let interpreter = run(RunConfig::new(code));
         let mut expected = [0u8; 32];
-        expected[..2].copy_from_slice(&[op::CODECOPY, op::PUSH0]);
+        expected[..2].copy_from_slice(&[0, op::CODECOPY]);
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::from_be_bytes(expected)]);
 
