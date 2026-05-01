@@ -279,7 +279,10 @@ impl InstrStop {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{EvmVersion, bytecode::Bytecode, interpreter::instructions::tests::TestHost};
+    use crate::{
+        bytecode::Bytecode,
+        interpreter::instructions::tests::{TestConfig, TestHost},
+    };
     use alloy_primitives::{Bytes, U256};
 
     #[test]
@@ -291,7 +294,7 @@ mod tests {
             op::ADD,
             op::STOP,
         ][..]);
-        type Config = EvmVersion<(), { SpecId::HOMESTEAD as u8 }>;
+        type Config = TestConfig<{ SpecId::HOMESTEAD as u8 }>;
 
         let bytecode = Bytecode::new_legacy(Bytes::copy_from_slice(bytecode));
         let mut interpreter = Interpreter::new(
@@ -309,7 +312,7 @@ mod tests {
 
         macro_rules! check {
             ($spec_id:ident) => {{
-                type Config = EvmVersion<(), { SpecId::$spec_id as u8 }>;
+                type Config = TestConfig<{ SpecId::$spec_id as u8 }>;
                 let bytecode = Bytecode::new_legacy(Bytes::from_static(BASIC));
                 let mut interpreter = Interpreter::new(
                     bytecode,

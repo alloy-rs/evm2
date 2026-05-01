@@ -64,7 +64,7 @@ impl<C: EvmConfig<Tx: Typed2718>> Evm<C> {
     }
 }
 
-impl<C: EvmConfig<Host = dyn Host>> Host for Evm<C> {
+impl<C: EvmConfig<Host = Self>> Host for Evm<C> {
     fn block_env(&mut self) -> &BlockEnv {
         &self.block
     }

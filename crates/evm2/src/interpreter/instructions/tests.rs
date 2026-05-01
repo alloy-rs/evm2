@@ -1,5 +1,5 @@
 use crate::{
-    AccountLoad, EvmVersion, SelfDestructResult,
+    AccountLoad, EvmConfig, SelfDestructResult,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
     interpreter::{Host, InstrStop, Interpreter, Message, MessageKind, SpecId, Stack, Word, op},
@@ -7,6 +7,19 @@ use crate::{
 use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::{Address, B256, Bytes, Log};
 use std::collections::HashMap;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(in crate::interpreter) struct TestConfig<const SPEC: u8 = { SpecId::OSAKA as u8 }>;
+
+impl<const SPEC: u8> EvmConfig for TestConfig<SPEC> {
+    type Tx = ();
+    type Host = TestHost;
+
+    const SPEC_ID: SpecId = match SpecId::try_from_u8(SPEC) {
+        Some(spec_id) => spec_id,
+        None => panic!("invalid EVM specification ID"),
+    };
+}
 
 #[derive(Debug)]
 pub(in crate::interpreter) struct TestHost {
@@ -136,7 +149,7 @@ impl TestInterpreter {
 
 pub(super) struct RunConfig<'a> {
     pub(super) code: Vec<u8>,
-    pub(super) host: Option<&'a mut (dyn Host + 'static)>,
+    pub(super) host: Option<&'a mut TestHost>,
     pub(super) spec_id: SpecId,
     pub(super) tx_env: TxEnv,
     pub(super) message: Message,
@@ -149,7 +162,7 @@ impl<'a> RunConfig<'a> {
         Self { code: code.into(), ..Self::default() }
     }
 
-    pub(super) fn host(mut self, host: &'a mut (dyn Host + 'static)) -> Self {
+    pub(super) fn host(mut self, host: &'a mut TestHost) -> Self {
         self.host = Some(host);
         self
     }
@@ -204,7 +217,7 @@ pub(super) fn run(config: RunConfig<'_>) -> TestInterpreter {
         ($config:expr, $spec:expr, $($spec_id:ident),* $(,)?) => {
             match $spec {
                 $(
-                    SpecId::$spec_id => run_with_config::<EvmVersion<(), { SpecId::$spec_id as u8 }>>($config),
+                    SpecId::$spec_id => run_with_config::<TestConfig<{ SpecId::$spec_id as u8 }>>($config),
                 )*
             }
         };
@@ -237,7 +250,7 @@ pub(super) fn run(config: RunConfig<'_>) -> TestInterpreter {
     )
 }
 
-fn run_with_config<C: crate::EvmConfig<Tx = (), Host = dyn Host>>(
+fn run_with_config<C: EvmConfig<Tx = (), Host = TestHost>>(
     config: RunConfig<'_>,
 ) -> TestInterpreter {
     let RunConfig { code, host, spec_id: _, tx_env, mut message, gas_limit, return_data } = config;
