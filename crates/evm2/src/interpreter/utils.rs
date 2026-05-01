@@ -51,14 +51,6 @@ macro_rules! tail_return {
     };
 }
 
-#[cfg(not(feature = "nightly"))]
-#[collapse_debuginfo(yes)]
-macro_rules! tail_return {
-    ($e:expr) => {
-        return $e;
-    };
-}
-
 #[cfg(feature = "nightly")]
 #[collapse_debuginfo(yes)]
 macro_rules! extern_table {

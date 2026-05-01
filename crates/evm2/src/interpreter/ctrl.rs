@@ -65,6 +65,12 @@ impl<'a> BytecodeRef<'a> {
 }
 
 impl<'a> Pc<'a> {
+    /// Creates a program counter from bytecode and an offset.
+    #[cfg_attr(not(feature = "nightly"), allow(dead_code))]
+    pub(crate) const fn new(bytecode: BytecodeRef<'a>, pc: usize) -> Self {
+        Self { base: bytecode.bytecode.as_ptr(), pc, _marker: PhantomData }
+    }
+
     /// Returns a mutable program counter reference.
     #[inline]
     pub const fn as_mut(&mut self) -> PcMut<'_> {

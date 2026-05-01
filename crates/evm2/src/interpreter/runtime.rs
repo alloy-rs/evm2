@@ -1,23 +1,26 @@
+#[cfg(not(feature = "nightly"))]
+use super::table::{InstructionTable, make_normal_instruction_table};
 use super::{
     BytecodeRef, Gas, GasParams, Host, InstrStop, Memory, Message, PcMut, Result, Stack, State,
     Word,
-    table::{
-        InstructionTable, TailInstructionTable, make_normal_instruction_table,
-        make_tail_instruction_table,
-    },
+};
+#[cfg(feature = "nightly")]
+use super::{
+    Pc,
+    table::{TailInstructionTable, make_tail_instruction_table},
 };
 use crate::{EvmConfig, bytecode::Bytecode, env::TxEnv};
 use alloc::boxed::Box;
 use alloy_primitives::Bytes;
+#[cfg(not(feature = "nightly"))]
 use core::hint::cold_path;
 
 pub(crate) trait InterpreterConfig: EvmConfig {
-    const INSTRUCTIONS: InstructionTable<Self> =
-        make_normal_instruction_table(Self::INSTRUCTION_IMPLS);
+    #[cfg(not(feature = "nightly"))]
+    const INSTRUCTIONS: InstructionTable<Self> = make_normal_instruction_table::<Self>();
 
-    #[allow(dead_code)]
-    const TAIL_INSTRUCTIONS: TailInstructionTable<Self> =
-        make_tail_instruction_table(Self::INSTRUCTION_IMPLS);
+    #[cfg(feature = "nightly")]
+    const TAIL_INSTRUCTIONS: TailInstructionTable<Self> = make_tail_instruction_table::<Self>();
 }
 
 impl<C: EvmConfig> InterpreterConfig for C {}
@@ -62,6 +65,9 @@ impl Interpreter {
         self.gas_params = GasParams::new(C::GAS_PARAMS);
         let _gas_start = self.gas.remaining();
 
+        #[cfg(feature = "nightly")]
+        let _r = self.step_tail::<C>(host).unwrap_err();
+        #[cfg(not(feature = "nightly"))]
         let _r = self.run_table_loop::<C>(host);
 
         #[cfg(feature = "std")]
@@ -73,6 +79,7 @@ impl Interpreter {
         _r
     }
 
+    #[cfg(not(feature = "nightly"))]
     fn run_table_loop<C: EvmConfig>(&mut self, host: &mut dyn Host) -> InstrStop {
         loop {
             if let Err(e) = self.step::<C>(host) {
@@ -91,6 +98,7 @@ impl Interpreter {
     }
 
     #[inline(always)]
+    #[cfg(not(feature = "nightly"))]
     fn step<C: EvmConfig>(&mut self, host: &mut dyn Host) -> Result {
         let raw = self as *mut Self;
         let bytecode = BytecodeRef::new(&self.bytecode);
@@ -112,9 +120,40 @@ impl Interpreter {
                 gas_params: &self.gas_params,
                 raw_interp: raw,
             },
-            instr.instr,
         );
         self.stack_len = len;
         r
+    }
+
+    #[inline(always)]
+    #[cfg(feature = "nightly")]
+    fn step_tail<C: EvmConfig>(&mut self, host: &mut dyn Host) -> Result {
+        let raw = self as *mut Self;
+        let bytecode = BytecodeRef::new(&self.bytecode);
+        let (op, pc) = {
+            let mut pc_mut = PcMut::new(bytecode, &mut self.pc);
+            let op = Self::pre_step::<C>(pc_mut.reborrow(), &mut self.gas)?;
+            (op, Pc::new(bytecode, pc_mut.get()))
+        };
+        let instr = <C as InterpreterConfig>::TAIL_INSTRUCTIONS[op as usize];
+        let e = (instr.f)(
+            Stack::new(&mut self.stack, self.stack_len),
+            pc,
+            &mut self.gas,
+            &mut State {
+                bytecode,
+                host,
+                tx: &self.tx_env,
+                message: &self.message,
+                memory: &mut self.memory,
+                return_data: &self.return_data,
+                spec: C::SPEC_ID,
+                gas_params: &self.gas_params,
+                raw_interp: raw,
+            },
+            <C as InterpreterConfig>::TAIL_INSTRUCTIONS.as_ptr().cast(),
+            core::ptr::null(),
+        );
+        Err(e)
     }
 }
