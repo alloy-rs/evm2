@@ -1,16 +1,19 @@
 //! EVM bytecode.
 
 use crate::once_lock::OnceLock;
-use alloc::{borrow::Cow, sync::Arc, vec::Vec};
+use alloc::sync::Arc;
 use alloy_primitives::{Address, B256, Bytes, keccak256};
 use analysis::analyze_legacy;
-use core::{cmp::Ordering, fmt, hash};
+use core::{cmp::Ordering, hash};
 use thiserror::Error;
 
 mod analysis;
+mod jump_table;
 
 #[cfg(feature = "serde")]
 mod serde_impl;
+
+pub use jump_table::{JumpTable, JumpTableRef};
 
 /// EIP-7702 version magic.
 pub const EIP7702_MAGIC: u16 = 0xEF01;
@@ -351,212 +354,6 @@ impl Bytecode {
     }
 }
 
-/// A table of valid `jump` destinations.
-///
-/// It is immutable and memory efficient, with one bit per byte in the bytecode.
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct JumpTable {
-    table: Cow<'static, [u8]>,
-    bit_len: usize,
-}
-
-/// Borrowed table of valid `jump` destinations.
-#[derive(Clone, Copy)]
-pub struct JumpTableRef<'a> {
-    table: &'a [u8],
-    bit_len: usize,
-}
-
-impl Clone for JumpTable {
-    #[inline]
-    fn clone(&self) -> Self {
-        Self {
-            table: match &self.table {
-                Cow::Borrowed(b) => Cow::Borrowed(b),
-                Cow::Owned(o) => Cow::Owned(o.clone()),
-            },
-            bit_len: self.bit_len,
-        }
-    }
-}
-
-impl fmt::Debug for JumpTable {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("JumpTable").field("map", &self.as_slice()).finish()
-    }
-}
-
-impl fmt::Debug for JumpTableRef<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("JumpTableRef").field("map", &self.as_slice()).finish()
-    }
-}
-
-impl PartialEq for JumpTable {
-    #[inline]
-    fn eq(&self, other: &Self) -> bool {
-        self.as_slice().eq(other.as_slice())
-    }
-}
-
-impl Eq for JumpTable {}
-
-impl PartialOrd for JumpTable {
-    #[inline]
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for JumpTable {
-    #[inline]
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.as_slice().cmp(other.as_slice())
-    }
-}
-
-impl hash::Hash for JumpTable {
-    #[inline]
-    fn hash<H: hash::Hasher>(&self, state: &mut H) {
-        self.as_slice().hash(state);
-    }
-}
-
-impl Default for JumpTable {
-    #[inline]
-    fn default() -> Self {
-        Self::from_vec(Vec::new(), 0)
-    }
-}
-
-impl JumpTable {
-    #[inline]
-    pub(crate) fn new(bit_len: usize) -> Self {
-        let bytes = bit_len.div_ceil(8);
-        Self::from_vec(alloc::vec![0; bytes], bit_len)
-    }
-
-    #[inline]
-    pub(crate) fn set(&mut self, pc: usize) {
-        debug_assert!(pc < self.bit_len);
-        self.table.to_mut()[pc >> 3] |= 1 << (pc & 7);
-    }
-
-    /// Constructs a jump map from raw bytes and length.
-    ///
-    /// Bit length represents number of used bits inside slice.
-    ///
-    /// # Panics
-    ///
-    /// Panics if number of bits in slice is less than bit_len.
-    #[inline]
-    pub fn from_slice(slice: &[u8], bit_len: usize) -> Self {
-        Self::size_assert(slice.len(), bit_len);
-        Self::from_vec(slice.to_vec(), bit_len)
-    }
-
-    #[inline]
-    fn from_vec(slice: Vec<u8>, bit_len: usize) -> Self {
-        #[cfg(debug_assertions)]
-        Self::size_assert(slice.len(), bit_len);
-        Self { table: slice.into(), bit_len }
-    }
-
-    /// Constructs a jump map from raw bytes and length.
-    ///
-    /// Bit length represents number of used bits inside slice.
-    ///
-    /// # Panics
-    ///
-    /// Panics if number of bits in slice is less than bit_len.
-    #[inline]
-    pub fn from_static_slice(slice: &'static [u8], bit_len: usize) -> Self {
-        Self::size_assert(slice.len(), bit_len);
-        Self { table: Cow::Borrowed(slice), bit_len }
-    }
-
-    #[inline]
-    fn size_assert(len: usize, bit_len: usize) {
-        const BYTE_LEN: usize = 8;
-        assert!(
-            len * BYTE_LEN >= bit_len,
-            "slice bit length {} is less than bit_len {}",
-            len * BYTE_LEN,
-            bit_len
-        );
-    }
-
-    /// Gets the raw bytes of the jump map.
-    #[inline]
-    pub fn as_slice(&self) -> &[u8] {
-        self.as_ref().as_slice()
-    }
-
-    /// Gets the bit length of the jump map.
-    #[inline]
-    pub fn len(&self) -> usize {
-        self.as_ref().len()
-    }
-
-    /// Returns true if the jump map is empty.
-    #[inline]
-    pub fn is_empty(&self) -> bool {
-        self.as_ref().is_empty()
-    }
-
-    /// Checks if `pc` is a valid jump destination.
-    #[inline]
-    pub fn is_valid(&self, pc: usize) -> bool {
-        self.as_ref().is_valid(pc)
-    }
-
-    /// Returns the borrowed jump map.
-    #[inline]
-    pub fn as_ref(&self) -> JumpTableRef<'_> {
-        JumpTableRef { table: &self.table, bit_len: self.bit_len }
-    }
-}
-
-impl<'a> JumpTableRef<'a> {
-    /// Constructs a borrowed jump map from raw bytes and length.
-    ///
-    /// Bit length represents number of used bits inside slice.
-    ///
-    /// # Panics
-    ///
-    /// Panics if number of bits in slice is less than bit_len.
-    #[inline]
-    pub fn new(slice: &'a [u8], bit_len: usize) -> Self {
-        JumpTable::size_assert(slice.len(), bit_len);
-        JumpTableRef { table: slice, bit_len }
-    }
-
-    /// Gets the raw bytes of the jump map.
-    #[inline]
-    pub const fn as_slice(&self) -> &'a [u8] {
-        self.table
-    }
-
-    /// Gets the bit length of the jump map.
-    #[inline]
-    pub const fn len(&self) -> usize {
-        self.bit_len
-    }
-
-    /// Returns true if the jump map is empty.
-    #[inline]
-    pub const fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    /// Checks if `pc` is a valid jump destination.
-    #[inline]
-    pub fn is_valid(&self, pc: usize) -> bool {
-        pc < self.bit_len
-            && unsafe { *self.as_slice().as_ptr().add(pc >> 3) & (1 << (pc & 7)) != 0 }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -648,79 +445,5 @@ mod tests {
         assert_eq!(bytecode.eip7702_address(), Some(address));
         assert_eq!(bytecode.original_bytes().len(), EIP7702_BYTECODE_LEN);
         assert_eq!(&bytecode.original_byte_slice()[..3], &[0xEF, 0x01, 0x00]);
-    }
-
-    #[test]
-    #[should_panic(expected = "slice bit length 8 is less than bit_len 10")]
-    fn test_jump_table_from_slice_panic() {
-        let _ = JumpTable::from_slice(&[0x00], 10);
-    }
-
-    #[test]
-    fn test_jump_table_from_slice() {
-        let jump_table = JumpTable::from_slice(&[0x00], 3);
-        assert_eq!(jump_table.len(), 3);
-    }
-
-    #[test]
-    fn test_jump_table_is_valid() {
-        let jump_table = JumpTable::from_slice(&[0x0D, 0x06], 13);
-
-        assert_eq!(jump_table.len(), 13);
-
-        assert!(jump_table.is_valid(0));
-        assert!(!jump_table.is_valid(1));
-        assert!(jump_table.is_valid(2));
-        assert!(jump_table.is_valid(3));
-        assert!(!jump_table.is_valid(4));
-        assert!(!jump_table.is_valid(5));
-        assert!(!jump_table.is_valid(6));
-        assert!(!jump_table.is_valid(7));
-        assert!(!jump_table.is_valid(8));
-        assert!(jump_table.is_valid(9));
-        assert!(jump_table.is_valid(10));
-        assert!(!jump_table.is_valid(11));
-        assert!(!jump_table.is_valid(12));
-    }
-
-    #[test]
-    fn test_jump_table_ref_is_valid() {
-        let jump_table = JumpTable::from_slice(&[0x0D, 0x06], 13);
-        let jump_table_ref = jump_table.as_ref();
-
-        assert_eq!(jump_table_ref.as_slice(), &[0x0D, 0x06]);
-        assert_eq!(jump_table_ref.len(), 13);
-        assert!(!jump_table_ref.is_empty());
-
-        assert!(jump_table_ref.is_valid(0));
-        assert!(!jump_table_ref.is_valid(1));
-        assert!(jump_table_ref.is_valid(2));
-        assert!(jump_table_ref.is_valid(3));
-        assert!(!jump_table_ref.is_valid(4));
-        assert!(!jump_table_ref.is_valid(5));
-        assert!(!jump_table_ref.is_valid(6));
-        assert!(!jump_table_ref.is_valid(7));
-        assert!(!jump_table_ref.is_valid(8));
-        assert!(jump_table_ref.is_valid(9));
-        assert!(jump_table_ref.is_valid(10));
-        assert!(!jump_table_ref.is_valid(11));
-        assert!(!jump_table_ref.is_valid(12));
-    }
-
-    #[cfg(feature = "serde")]
-    #[test]
-    fn test_jump_table_serde_roundtrip() {
-        let original = JumpTable::from_slice(&[0x0D, 0x06], 13);
-
-        let serialized = serde_json::to_string(&original).unwrap();
-        let deserialized: JumpTable = serde_json::from_str(&serialized).unwrap();
-
-        assert_eq!(original.len(), deserialized.len());
-        assert_eq!(original.table, deserialized.table);
-        assert_eq!(original, deserialized);
-
-        for i in 0..13 {
-            assert_eq!(original.is_valid(i), deserialized.is_valid(i), "mismatch at index {i}");
-        }
     }
 }
