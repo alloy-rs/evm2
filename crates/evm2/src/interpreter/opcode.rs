@@ -95,11 +95,11 @@ opcodes! {$
     0x39 => CODECOPY     => codecopy;
 
     0x3A => GASPRICE       => gasprice;
-    0x3B => EXTCODESIZE    => invalid;
+    0x3B => EXTCODESIZE    => extcodesize;
     0x3C => EXTCODECOPY    => invalid;
     0x3D => RETURNDATASIZE => invalid;
     0x3E => RETURNDATACOPY => invalid;
-    0x3F => EXTCODEHASH    => invalid;
+    0x3F => EXTCODEHASH    => extcodehash;
     0x40 => BLOCKHASH      => blockhash;
     0x41 => COINBASE       => coinbase;
     0x42 => TIMESTAMP      => timestamp;

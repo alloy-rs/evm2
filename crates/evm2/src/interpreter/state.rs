@@ -45,6 +45,12 @@ pub trait Host {
     /// Returns an account balance.
     fn balance(&self, address: Word) -> Word;
 
+    /// Returns an account's code size.
+    fn get_code_size(&self, address: Word) -> usize;
+
+    /// Returns an account's code hash.
+    fn get_code_hash(&self, address: Word) -> B256;
+
     /// Returns a historical block hash.
     fn block_hash(&self, number: u64) -> Option<B256>;
 }

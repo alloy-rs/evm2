@@ -10,6 +10,8 @@ use alloy_primitives::{B256, Bytes};
 pub(super) struct TestHost {
     pub(super) tx: TxEnv,
     pub(super) block: BlockEnv,
+    pub(super) code_size: usize,
+    pub(super) code_hash: B256,
 }
 
 impl Host for TestHost {
@@ -23,6 +25,14 @@ impl Host for TestHost {
 
     fn balance(&self, address: Word) -> Word {
         address
+    }
+
+    fn get_code_size(&self, _address: Word) -> usize {
+        self.code_size
+    }
+
+    fn get_code_hash(&self, _address: Word) -> B256 {
+        self.code_hash
     }
 
     fn block_hash(&self, number: u64) -> Option<B256> {

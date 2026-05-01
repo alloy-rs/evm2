@@ -10,6 +10,17 @@ pub(in crate::interpreter) fn balance(cx: _, [addr]: [Word]) -> out {
 }
 
 #[instruction]
+pub(in crate::interpreter) fn extcodesize(cx: _, [addr]: [Word]) -> out {
+    *out = Word::from(cx.state.host.get_code_size(*addr));
+}
+
+#[instruction]
+pub(in crate::interpreter) fn extcodehash(cx: _, [addr]: [Word]) -> Result<out> {
+    check_spec(cx.state.spec, SpecId::CONSTANTINOPLE)?;
+    *out = b256_to_word(cx.state.host.get_code_hash(*addr));
+}
+
+#[instruction]
 pub(in crate::interpreter) fn blockhash(cx: _, [number]: [Word]) -> Result<out> {
     *out = if let Some(diff) = cx.state.block.number.checked_sub(*number) {
         let diff = u64::try_from(diff).unwrap_or(u64::MAX);
@@ -109,6 +120,32 @@ mod tests {
         assert_stack!(BALANCE(0xbeef), 0xbeef);
         assert_stack!(BALANCE(0), 0);
         assert_stack!(BALANCE(neg(1)), neg(1));
+    }
+
+    #[test]
+    fn extcodesize_opcode() {
+        let mut host = test_host(BlockEnv::default());
+        host.code_size = 0x42;
+        let interpreter = run_with_host([op::PUSH1, 0xbe, op::EXTCODESIZE, op::STOP], &mut host);
+        assert!(matches!(interpreter.err, InstrStop::Stop));
+        assert_eq!(interpreter.stack(), [Word::from(0x42)]);
+    }
+
+    #[test]
+    fn extcodehash_opcode() {
+        let hash = B256::with_last_byte(0x77);
+        let mut host = test_host(BlockEnv::default());
+        host.code_hash = hash;
+        let interpreter = run_with_host_and_spec(
+            [op::PUSH1, 0xbe, op::EXTCODEHASH, op::STOP],
+            &mut host,
+            SpecId::CONSTANTINOPLE,
+        );
+        assert!(matches!(interpreter.err, InstrStop::Stop));
+        assert_eq!(interpreter.stack(), [b256_to_word(hash)]);
+
+        let interpreter = run_with_host([op::PUSH1, 0xbe, op::EXTCODEHASH, op::STOP], &mut host);
+        assert!(matches!(interpreter.err, InstrStop::NotActivated));
     }
 
     #[test]
