@@ -127,21 +127,21 @@ mod tests {
     #[test]
     fn jumpi_opcode() {
         let interpreter =
-            run([op::PUSH1, 0x06, op::PUSH1, 0x01, op::JUMPI, op::STOP, op::JUMPDEST, op::STOP]);
+            run([op::PUSH1, 0x01, op::PUSH1, 0x06, op::JUMPI, op::STOP, op::JUMPDEST, op::STOP]);
         assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.inner.pc, 8);
 
         let interpreter =
-            run([op::PUSH1, 0x06, op::PUSH1, 0x00, op::JUMPI, op::JUMPDEST, op::STOP]);
+            run([op::PUSH1, 0x00, op::PUSH1, 0x06, op::JUMPI, op::JUMPDEST, op::STOP]);
         assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.inner.pc, 7);
 
-        let interpreter = run([op::PUSH1, 0x05, op::PUSH1, 0x01, op::JUMPI, op::STOP, op::STOP]);
+        let interpreter = run([op::PUSH1, 0x01, op::PUSH1, 0x05, op::JUMPI, op::STOP, op::STOP]);
         assert!(matches!(interpreter.err, InstrStop::InvalidJump));
 
         let mut code = Vec::new();
-        push(&mut code, Word::MAX);
         push(&mut code, 1);
+        push(&mut code, Word::MAX);
         code.push(op::JUMPI);
         let interpreter = run(code);
         assert!(matches!(interpreter.err, InstrStop::InvalidJump));

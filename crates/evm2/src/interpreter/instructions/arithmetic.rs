@@ -54,13 +54,11 @@ pub(in crate::interpreter) fn exp([a, b]: [Word]) -> out {
 
 #[instruction]
 pub(in crate::interpreter) fn signextend([ext, value]: [Word]) -> out {
-    *out = if ext < 31 {
+    if ext < 31 {
         let bit_index = (8 * ext.as_limbs()[0] + 7) as usize;
         let mask = (Word::ONE << bit_index) - Word::ONE;
-        if value.bit(bit_index) { value | !mask } else { value & mask }
-    } else {
-        value
-    };
+        *out = if value.bit(bit_index) { value | !mask } else { value & mask };
+    }
 }
 
 #[cfg(test)]

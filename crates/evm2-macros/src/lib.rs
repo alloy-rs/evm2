@@ -137,9 +137,11 @@ fn body(stmts: Vec<Stmt>, allow_final_result: bool) -> TokenStream2 {
 
 fn stack_setup(inputs: &[Ident], outputs: &[Ident]) -> TokenStream2 {
     let input_count = inputs.len();
+    let mut input_bindings = inputs.to_vec();
+    input_bindings.reverse();
     let input_setup = (input_count > 0).then(|| {
         quote! {
-            let [#(#inputs),*] = unsafe { ptr.cast::<[Word; #input_count]>().read() };
+            let [#(#input_bindings),*] = unsafe { ptr.cast::<[Word; #input_count]>().read() };
         }
     });
 

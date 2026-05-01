@@ -130,7 +130,7 @@ mod tests {
 
     fn stack_code<const N: usize>(inputs: [Word; N], opcode: u8) -> Vec<u8> {
         let mut code = Vec::new();
-        for input in inputs {
+        for input in inputs.into_iter().rev() {
             push(&mut code, input);
         }
         code.extend([opcode, op::STOP]);
@@ -149,11 +149,11 @@ mod tests {
         assert_eq!(interpreter.stack(), [b256_to_word(keccak256([]))]);
 
         let mut code = Vec::new();
-        push(&mut code, 0);
         push(&mut code, Word::from(0x80));
-        code.push(op::MSTORE8);
         push(&mut code, 0);
+        code.push(op::MSTORE8);
         push(&mut code, Word::from(1));
+        push(&mut code, 0);
         code.push(op::KECCAK256);
         code.push(op::STOP);
         let interpreter = run(code);
@@ -233,9 +233,9 @@ mod tests {
         let calldata = Bytes::from(Vec::from([0xaa_u8, 0xbb, 0xcc]));
         let mut host = test_host(TxEnv { calldata, ..TxEnv::default() });
         let mut code = Vec::new();
-        push(&mut code, 0);
-        push(&mut code, 1);
         push(&mut code, 2);
+        push(&mut code, 1);
+        push(&mut code, 0);
         code.push(op::CALLDATACOPY);
         push(&mut code, 0);
         code.push(op::MLOAD);
@@ -268,9 +268,9 @@ mod tests {
     #[test]
     fn codecopy_opcode() {
         let mut code = Vec::new();
-        push(&mut code, 0);
-        push(&mut code, Word::from(5));
         push(&mut code, Word::from(2));
+        push(&mut code, Word::from(5));
+        push(&mut code, 0);
         code.push(op::CODECOPY);
         push(&mut code, 0);
         code.push(op::MLOAD);
@@ -283,9 +283,9 @@ mod tests {
         assert_eq!(interpreter.stack(), [Word::from_be_bytes(expected)]);
 
         let mut code = Vec::new();
-        push(&mut code, 0);
-        push(&mut code, Word::from(usize::MAX));
         push(&mut code, Word::from(1));
+        push(&mut code, Word::from(usize::MAX));
+        push(&mut code, 0);
         code.push(op::CODECOPY);
         push(&mut code, 0);
         code.push(op::MLOAD);
