@@ -1,4 +1,4 @@
-use super::utils::{as_usize, check_spec};
+use super::utils::as_usize;
 use crate::{
     EvmConfig,
     interpreter::{
@@ -37,7 +37,6 @@ pub(in crate::interpreter) fn sstore(cx: _) -> Result {
 
 #[instruction(raw)]
 pub(in crate::interpreter) fn tload(cx: _) -> Result {
-    check_spec(cx.state.spec, SpecId::CANCUN)?;
     let ([], index) = stack.popn_top()?;
     *index = cx.state.host.tload(*index);
     Ok(())
@@ -45,7 +44,6 @@ pub(in crate::interpreter) fn tload(cx: _) -> Result {
 
 #[instruction(raw)]
 pub(in crate::interpreter) fn tstore(cx: _) -> Result {
-    check_spec(cx.state.spec, SpecId::CANCUN)?;
     require_non_staticcall(&cx)?;
     let [index, value] = stack.popn()?;
     cx.state.host.tstore(index, value);
@@ -190,8 +188,10 @@ mod tests {
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::from(0xcafe)]);
 
-        let interpreter = run(RunConfig::new([op::PUSH0, op::TLOAD, op::STOP]).host(&mut host));
-        core::assert_matches!(interpreter.err, InstrStop::NotActivated);
+        let interpreter = run(RunConfig::new([op::PUSH1, 0, op::TLOAD, op::STOP])
+            .host(&mut host)
+            .spec(SpecId::SHANGHAI));
+        core::assert_matches!(interpreter.err, InstrStop::OpcodeNotFound);
         assert_eq!(interpreter.stack(), [0]);
     }
 
@@ -210,9 +210,10 @@ mod tests {
         assert_eq!(interpreter.stack(), [Word::from(0xcafe)]);
         assert_eq!(host.transient_storage.get(&Word::from(1)), Some(&Word::from(0xcafe)));
 
-        let interpreter =
-            run(RunConfig::new([op::PUSH0, op::PUSH0, op::TSTORE, op::STOP]).host(&mut host));
-        core::assert_matches!(interpreter.err, InstrStop::NotActivated);
+        let interpreter = run(RunConfig::new([op::PUSH1, 0, op::PUSH1, 0, op::TSTORE, op::STOP])
+            .host(&mut host)
+            .spec(SpecId::SHANGHAI));
+        core::assert_matches!(interpreter.err, InstrStop::OpcodeNotFound);
         assert_eq!(interpreter.stack(), [0, 0]);
     }
 

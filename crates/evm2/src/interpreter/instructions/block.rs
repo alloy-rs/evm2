@@ -1,4 +1,4 @@
-use super::utils::{address_to_word, as_usize_saturated, b256_to_word, check_spec};
+use super::utils::{address_to_word, as_usize_saturated, b256_to_word};
 use crate::interpreter::{Host, InstrStop, SpecId, Word};
 use evm2_macros::instruction;
 
@@ -54,7 +54,6 @@ pub(in crate::interpreter) fn gaslimit(cx: _) -> out {
 
 #[instruction]
 pub(in crate::interpreter) fn chainid(cx: _) -> Result<out> {
-    check_spec(cx.state.spec, SpecId::ISTANBUL)?;
     *out = cx.state.tx.chain_id;
 }
 
@@ -69,26 +68,22 @@ pub(in crate::interpreter) fn selfbalance(cx: _) -> Result<out> {
 
 #[instruction]
 pub(in crate::interpreter) fn basefee(cx: _) -> Result<out> {
-    check_spec(cx.state.spec, SpecId::LONDON)?;
     *out = cx.state.host.block_env().basefee;
 }
 
 #[instruction]
 pub(in crate::interpreter) fn blobhash(cx: _, [index]: [Word]) -> Result<out> {
-    check_spec(cx.state.spec, SpecId::CANCUN)?;
     let index = as_usize_saturated(index);
     *out = cx.state.tx.blob_hashes.get(index).copied().unwrap_or_default();
 }
 
 #[instruction]
 pub(in crate::interpreter) fn blobbasefee(cx: _) -> Result<out> {
-    check_spec(cx.state.spec, SpecId::CANCUN)?;
     *out = cx.state.host.block_env().blob_basefee;
 }
 
 #[instruction]
 pub(in crate::interpreter) fn slotnum(cx: _) -> Result<out> {
-    check_spec(cx.state.spec, SpecId::AMSTERDAM)?;
     *out = cx.state.host.block_env().slot_num;
 }
 
@@ -166,7 +161,8 @@ mod tests {
             prevrandao: b256_to_word(randao),
             ..BlockEnv::default()
         });
-        let interpreter = run(RunConfig::new([op::DIFFICULTY, op::STOP]).host(&mut host));
+        let interpreter =
+            run(RunConfig::new([op::DIFFICULTY, op::STOP]).host(&mut host).spec(SpecId::FRONTIER));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::from(14)]);
 

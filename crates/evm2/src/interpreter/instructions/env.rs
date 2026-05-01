@@ -1,9 +1,7 @@
-use super::utils::{address_to_word, as_usize, as_usize_saturated, b256_to_word, check_spec};
+use super::utils::{address_to_word, as_usize, as_usize_saturated, b256_to_word};
 use crate::{
     AccountLoad, EvmConfig,
-    interpreter::{
-        Host, InstrStop, Result, SpecId, Word, memory::resize_memory, table::InstructionCx,
-    },
+    interpreter::{Host, InstrStop, Result, Word, memory::resize_memory, table::InstructionCx},
 };
 use alloy_primitives::B256;
 use evm2_macros::instruction;
@@ -108,7 +106,6 @@ pub(in crate::interpreter) fn extcodesize(cx: _, [addr]: [Word]) -> Result<out> 
 
 #[instruction]
 pub(in crate::interpreter) fn extcodehash(cx: _, [addr]: [Word]) -> Result<out> {
-    check_spec(cx.state.spec, SpecId::CONSTANTINOPLE)?;
     let account = load_account(&mut cx, addr, false)?;
     *out = if account.is_empty { Word::ZERO } else { b256_to_word(account.code_hash) };
 }
@@ -134,7 +131,6 @@ pub(in crate::interpreter) fn extcodecopy(
 
 #[instruction]
 pub(in crate::interpreter) fn returndatasize(cx: _) -> Result<out> {
-    check_spec(cx.state.spec, SpecId::BYZANTIUM)?;
     *out = Word::from(cx.state.return_data.len());
 }
 
@@ -143,7 +139,6 @@ pub(in crate::interpreter) fn returndatacopy(
     cx: _,
     [memory_offset, data_offset, len]: [Word],
 ) -> Result {
-    check_spec(cx.state.spec, SpecId::BYZANTIUM)?;
     let len = as_usize(len)?;
     let data_offset = as_usize_saturated(data_offset);
     if data_offset.saturating_add(len) > cx.state.return_data.len() {
@@ -187,7 +182,11 @@ mod tests {
     fn stack_code<const N: usize>(inputs: [Word; N], opcode: u8) -> Vec<u8> {
         let mut code = Vec::new();
         for input in inputs.into_iter().rev() {
-            push(&mut code, input);
+            if input.is_zero() {
+                code.extend([op::PUSH1, 0]);
+            } else {
+                push(&mut code, input);
+            }
         }
         code.extend([opcode, op::STOP]);
         code
@@ -449,8 +448,8 @@ mod tests {
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::from(3)]);
 
-        let interpreter = run(RunConfig::new([op::RETURNDATASIZE]));
-        core::assert_matches!(interpreter.err, InstrStop::NotActivated);
+        let interpreter = run(RunConfig::new([op::RETURNDATASIZE]).spec(SpecId::FRONTIER));
+        core::assert_matches!(interpreter.err, InstrStop::OpcodeNotFound);
     }
 
     #[test]
@@ -464,9 +463,8 @@ mod tests {
         code.push(op::MLOAD);
         code.push(op::STOP);
 
-        let interpreter = run(RunConfig::new(code)
-            .spec(SpecId::BYZANTIUM)
-            .return_data(Bytes::from_static(&[0xaa, 0xbb, 0xcc])));
+        let interpreter =
+            run(RunConfig::new(code).return_data(Bytes::from_static(&[0xaa, 0xbb, 0xcc])));
         let mut expected = [0_u8; 32];
         expected[..2].copy_from_slice(&[0xbb, 0xcc]);
         core::assert_matches!(interpreter.err, InstrStop::Stop);
@@ -499,8 +497,9 @@ mod tests {
         let interpreter = run(RunConfig::new(stack_code(
             [Word::from(0), Word::from(0), Word::from(0)],
             op::RETURNDATACOPY,
-        )));
-        core::assert_matches!(interpreter.err, InstrStop::NotActivated);
+        ))
+        .spec(SpecId::FRONTIER));
+        core::assert_matches!(interpreter.err, InstrStop::OpcodeNotFound);
     }
 
     #[test]
@@ -513,8 +512,9 @@ mod tests {
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [b256_to_word(hash)]);
 
-        let interpreter =
-            run(RunConfig::new([op::PUSH1, 0xbe, op::EXTCODEHASH, op::STOP]).host(&mut host));
-        core::assert_matches!(interpreter.err, InstrStop::NotActivated);
+        let interpreter = run(RunConfig::new([op::PUSH1, 0xbe, op::EXTCODEHASH, op::STOP])
+            .host(&mut host)
+            .spec(SpecId::BYZANTIUM));
+        core::assert_matches!(interpreter.err, InstrStop::OpcodeNotFound);
     }
 }

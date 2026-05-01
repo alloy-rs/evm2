@@ -215,9 +215,6 @@ pub(in crate::interpreter) fn callcode(cx: _) -> Result {
 
 #[instruction(raw)]
 pub(in crate::interpreter) fn delegatecall(cx: _) -> Result {
-    if !cx.state.spec.enables(SpecId::HOMESTEAD) {
-        return Err(InstrStop::NotActivated);
-    }
     let [local_gas_limit, to, input_offset, input_len, return_offset, return_len] =
         stack.popn::<6>()?;
     let result = call_inner(
@@ -239,9 +236,6 @@ pub(in crate::interpreter) fn delegatecall(cx: _) -> Result {
 
 #[instruction(raw)]
 pub(in crate::interpreter) fn staticcall(cx: _) -> Result {
-    if !cx.state.spec.enables(SpecId::BYZANTIUM) {
-        return Err(InstrStop::NotActivated);
-    }
     let [local_gas_limit, to, input_offset, input_len, return_offset, return_len] =
         stack.popn::<6>()?;
     let result = call_inner(
@@ -264,9 +258,6 @@ pub(in crate::interpreter) fn staticcall(cx: _) -> Result {
 #[instruction(raw)]
 pub(in crate::interpreter) fn create<const IS_CREATE2: bool>(cx: _) -> Result {
     require_non_staticcall(&cx)?;
-    if IS_CREATE2 && !cx.state.spec.enables(SpecId::PETERSBURG) {
-        return Err(InstrStop::NotActivated);
-    }
 
     let [value, offset, len] = stack.popn::<3>()?;
     let salt = if IS_CREATE2 { Some(stack.pop()?) } else { None };
@@ -422,13 +413,12 @@ mod tests {
         );
         code.extend([op::DELEGATECALL, op::STOP]);
 
-        let interpreter =
-            run(RunConfig::new(code).host(&mut host).spec(SpecId::HOMESTEAD).message(Message {
-                caller,
-                value: Word::from(9),
-                gas_limit: 10_000,
-                ..Default::default()
-            }));
+        let interpreter = run(RunConfig::new(code).host(&mut host).message(Message {
+            caller,
+            value: Word::from(9),
+            gas_limit: 10_000,
+            ..Default::default()
+        }));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::from(1)]);
         assert_eq!(host.calls[0].kind, MessageKind::DelegateCall);
@@ -437,16 +427,22 @@ mod tests {
         assert_eq!(host.calls[0].code_address, code_address);
 
         let interpreter = run(RunConfig::new([
-            op::PUSH0,
-            op::PUSH0,
-            op::PUSH0,
-            op::PUSH0,
-            op::PUSH0,
-            op::PUSH0,
+            op::PUSH1,
+            0,
+            op::PUSH1,
+            0,
+            op::PUSH1,
+            0,
+            op::PUSH1,
+            0,
+            op::PUSH1,
+            0,
+            op::PUSH1,
+            0,
             op::DELEGATECALL,
         ])
         .spec(SpecId::FRONTIER));
-        core::assert_matches!(interpreter.err, InstrStop::NotActivated);
+        core::assert_matches!(interpreter.err, InstrStop::OpcodeNotFound);
     }
 
     #[test]
@@ -467,22 +463,29 @@ mod tests {
         );
         code.extend([op::STATICCALL, op::STOP]);
 
-        let interpreter = run(RunConfig::new(code).host(&mut host).spec(SpecId::BYZANTIUM));
+        let interpreter = run(RunConfig::new(code).host(&mut host));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::from(1)]);
         assert_eq!(host.calls[0].kind, MessageKind::StaticCall);
         assert!(host.calls[0].is_static());
 
         let interpreter = run(RunConfig::new([
-            op::PUSH0,
-            op::PUSH0,
-            op::PUSH0,
-            op::PUSH0,
-            op::PUSH0,
-            op::PUSH0,
+            op::PUSH1,
+            0,
+            op::PUSH1,
+            0,
+            op::PUSH1,
+            0,
+            op::PUSH1,
+            0,
+            op::PUSH1,
+            0,
+            op::PUSH1,
+            0,
             op::STATICCALL,
-        ]));
-        core::assert_matches!(interpreter.err, InstrStop::NotActivated);
+        ])
+        .spec(SpecId::HOMESTEAD));
+        core::assert_matches!(interpreter.err, InstrStop::OpcodeNotFound);
     }
 
     #[test]
@@ -510,15 +513,24 @@ mod tests {
         push_all(&mut code, [Word::from(0), Word::from(0), Word::from(0), Word::from(0)]);
         code.extend([op::CREATE2, op::STOP]);
 
-        let interpreter =
-            run(RunConfig::new(code).host(&mut host).spec(SpecId::PETERSBURG).gas_limit(50_000));
+        let interpreter = run(RunConfig::new(code).host(&mut host).gas_limit(50_000));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [address_to_word(created)]);
         assert_eq!(host.calls[0].kind, MessageKind::Create2);
 
-        let interpreter =
-            run(RunConfig::new([op::PUSH0, op::PUSH0, op::PUSH0, op::PUSH0, op::CREATE2]));
-        core::assert_matches!(interpreter.err, InstrStop::NotActivated);
+        let interpreter = run(RunConfig::new([
+            op::PUSH1,
+            0,
+            op::PUSH1,
+            0,
+            op::PUSH1,
+            0,
+            op::PUSH1,
+            0,
+            op::CREATE2,
+        ])
+        .spec(SpecId::BYZANTIUM));
+        core::assert_matches!(interpreter.err, InstrStop::OpcodeNotFound);
     }
 
     #[test]

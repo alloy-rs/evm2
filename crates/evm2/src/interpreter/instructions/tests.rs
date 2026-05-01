@@ -203,7 +203,7 @@ impl Default for RunConfig<'_> {
         Self {
             code: Vec::new(),
             host: None,
-            spec_id: SpecId::HOMESTEAD,
+            spec_id: SpecId::OSAKA,
             tx_env: TxEnv::default(),
             message: Message { gas_limit: 10_000, ..Message::default() },
             gas_limit: 10_000,

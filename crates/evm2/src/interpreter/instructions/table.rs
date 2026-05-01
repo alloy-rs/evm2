@@ -399,10 +399,12 @@ impl GasTable {
 
 macro_rules! make_instruction_table_inner {
     ([$table:expr, $config:ty] $(
-        ($op:ident, $instr:path),
+        ($op:ident, $instr:path, $min:ident),
     )*) => {
         $(
-            $table.set(op::$op, Some(&$instr as &'static dyn Instruction<$config>));
+            if <$config as EvmConfig>::SPEC_ID.enables(SpecId::$min) {
+                $table.set(op::$op, Some(&$instr as &'static dyn Instruction<$config>));
+            }
         )*
     };
 }
