@@ -138,7 +138,7 @@ impl<'a> PcMut<'a> {
     /// Caller must ensure advancing by `n` keeps `pc` within valid bytecode bounds for
     /// subsequent reads.
     #[inline]
-    pub unsafe fn advance_unchecked(self, n: usize) {
+    pub unsafe fn advance_unchecked(&mut self, n: usize) {
         *self.pc += n;
     }
 
@@ -146,7 +146,7 @@ impl<'a> PcMut<'a> {
     ///
     /// Caller must ensure `pc` is valid for the current bytecode.
     #[inline]
-    pub unsafe fn set_unchecked(self, pc: usize) {
+    pub unsafe fn set_unchecked(&mut self, pc: usize) {
         *self.pc = pc;
     }
 
@@ -154,7 +154,7 @@ impl<'a> PcMut<'a> {
     ///
     /// Caller must ensure `self.get()..self.get() + n` is in bounds of the bytecode allocation.
     #[inline]
-    pub unsafe fn read_bytes_unchecked(self, n: usize) -> &'a [u8] {
+    pub unsafe fn read_bytes_unchecked(&self, n: usize) -> &'a [u8] {
         unsafe { core::slice::from_raw_parts(self.base.add(self.get()), n) }
     }
 }

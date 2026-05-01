@@ -94,7 +94,7 @@ impl Interpreter {
     }
 
     #[inline(always)]
-    pub(crate) fn pre_step(pc: PcMut<'_>, gas: &mut Gas, gas_table: &GasTable) -> Result<u8> {
+    pub(crate) fn pre_step(mut pc: PcMut<'_>, gas: &mut Gas, gas_table: &GasTable) -> Result<u8> {
         let op = pc.op();
         unsafe { pc.advance_unchecked(1) };
         gas.spend(gas_table[op as usize] as _)?;
