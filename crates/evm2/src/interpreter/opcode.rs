@@ -2,7 +2,7 @@
 use super::instructions::*;
 
 macro_rules! opcodes {
-    ($d:tt $($val:literal => $name:ident => $instr:ty;)*) => {
+    ($d:tt $($val:literal => $name:ident => $instr:path;)*) => {
         /// Opcode byte constants.
         pub mod op {
             $(

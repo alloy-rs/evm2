@@ -1,31 +1,32 @@
 use super::{
-    BytecodeRef, Gas, GasParams, Host, InstrStop, Memory, Message, Pc, PcMut, Result, SpecId,
-    Stack, State, Word,
-    instructions::table::{
-        DEFAULT_TABLE, DEFAULT_TAIL_TABLE, GasTable, InstrTable, Instruction, TailInstrTable,
-        new_gas_table,
-    },
-    op,
-    opcode::for_each_opcode,
+    BytecodeRef, Gas, GasParams, Host, InstrStop, Memory, Message, Pc, PcMut, Result, Stack, State,
+    Word,
+    instructions::table::{GasTable, InstrTable, Instruction, TailInstrTable},
 };
-use crate::{bytecode::Bytecode, env::TxEnv};
+use crate::{EvmConfig, bytecode::Bytecode, env::TxEnv};
 use alloc::boxed::Box;
 use alloy_primitives::Bytes;
-use core::hint::cold_path;
+use core::{hint::cold_path, marker::PhantomData};
 
 /// Interpreter dispatch table mode.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 #[non_exhaustive]
-pub(crate) enum Table<'a> {
+pub(crate) enum Table<'a, C>
+where
+    C: EvmConfig,
+{
     /// Normal dispatch loop.
-    Normal(&'a InstrTable),
+    Normal(&'a InstrTable<C>),
     /// Tail-call dispatch loop.
-    Tail(&'a TailInstrTable),
+    Tail(&'a TailInstrTable<C>),
 }
 
 /// EVM interpreter.
 #[derive(Debug)]
-pub struct Interpreter {
+pub struct Interpreter<C = crate::EvmVersion<()>>
+where
+    C: EvmConfig,
+{
     bytecode: Bytecode,
     pub(crate) pc: usize,
     pub(crate) stack: Box<[Word; Stack::CAPACITY]>,
@@ -36,13 +37,16 @@ pub struct Interpreter {
     tx_env: TxEnv,
     pub(crate) message: Message,
     pub(crate) return_data: Bytes,
-    spec_id: SpecId,
+    _marker: PhantomData<fn() -> C>,
 }
 
-impl Interpreter {
-    /// Creates an interpreter from analyzed bytecode, a spec identifier, a transaction-global
-    /// environment, and a frame-local message.
-    pub fn new(bytecode: Bytecode, spec_id: SpecId, tx_env: TxEnv, message: Message) -> Self {
+impl<C> Interpreter<C>
+where
+    C: EvmConfig,
+{
+    /// Creates an interpreter from analyzed bytecode, a transaction-global environment, and a
+    /// frame-local message.
+    pub fn new(bytecode: Bytecode, tx_env: TxEnv, message: Message) -> Self {
         let gas_limit = message.gas_limit;
         Self {
             bytecode,
@@ -51,44 +55,38 @@ impl Interpreter {
             stack: unsafe { Box::new_uninit().assume_init() },
             stack_len: 0,
             gas: Gas::new(gas_limit),
-            gas_params: GasParams::new_spec(spec_id),
+            gas_params: GasParams::new(C::GAS_PARAMS),
             memory: Memory::new(),
             tx_env,
             message,
             return_data: Bytes::new(),
-            spec_id,
+            _marker: PhantomData,
         }
     }
 
     /// Runs the interpreter until it stops.
     pub fn run(&mut self, host: &mut dyn Host) -> InstrStop {
-        let gas_table = new_gas_table(self.spec_id);
-        self.run_with_table(Table::Normal(&DEFAULT_TABLE), &gas_table, host)
+        let table = C::INSTRUCTION_IMPLS;
+        self.run_with_table(Table::Normal(&table), &C::GAS_TABLE, host)
     }
 
     /// Runs the interpreter with tail-call dispatch until it stops.
     pub fn run_tail(&mut self, host: &mut dyn Host) -> InstrStop {
-        let gas_table = new_gas_table(self.spec_id);
-        self.run_with_table(Table::Tail(&DEFAULT_TAIL_TABLE), &gas_table, host)
+        let table = C::INSTRUCTION_IMPLS;
+        self.run_with_table(Table::Tail(&table), &C::GAS_TABLE, host)
     }
 
     pub(crate) fn run_with_table(
         &mut self,
-        table: Table<'_>,
+        table: Table<'_, C>,
         gas_table: &GasTable,
         host: &mut dyn Host,
     ) -> InstrStop {
         let _gas_start = self.gas.remaining();
 
         let _r = match table {
-            Table::Tail(table) => self.step_tail(table, gas_table, host).unwrap_err(),
-            Table::Normal(table) => {
-                if core::ptr::eq(table, &DEFAULT_TABLE) {
-                    self.run_match_loop(gas_table, host)
-                } else {
-                    self.run_table_loop(table, gas_table, host)
-                }
-            }
+            Table::Tail(table) => self.run_tail_loop(table, gas_table, host),
+            Table::Normal(table) => self.run_table_loop(table, gas_table, host),
         };
 
         #[cfg(feature = "std")]
@@ -102,7 +100,7 @@ impl Interpreter {
 
     fn run_table_loop(
         &mut self,
-        table: &InstrTable,
+        table: &InstrTable<C>,
         gas_table: &GasTable,
         host: &mut dyn Host,
     ) -> InstrStop {
@@ -114,67 +112,6 @@ impl Interpreter {
         }
     }
 
-    #[inline(never)]
-    fn run_match_loop(&mut self, gas_table: &GasTable, host: &mut dyn Host) -> InstrStop {
-        use super::instructions::*;
-
-        let bytecode = BytecodeRef::new(&self.bytecode);
-        let stack = &mut Stack::new(&mut self.stack, self.stack_len);
-        let gas_ref = &mut self.gas;
-        let pc_field = &mut self.pc;
-        let state = &mut State {
-            bytecode,
-            host,
-            tx: &self.tx_env,
-            message: &self.message,
-            memory: &mut self.memory,
-            return_data: &self.return_data,
-            spec: self.spec_id,
-            gas_params: &self.gas_params,
-            raw_interp: core::ptr::null_mut(),
-        };
-
-        let e = loop {
-            let mut pcm = PcMut::new(bytecode, pc_field);
-            let op_byte = match Self::pre_step(pcm.reborrow(), gas_ref, gas_table) {
-                Ok(op) => op,
-                Err(e) => {
-                    cold_path();
-                    break e;
-                }
-            };
-            let pcm = pcm.reborrow();
-
-            macro_rules! dispatch_arms {
-                ([$result:ident] $(
-                    ($op_name:ident, $instr:ty),
-                )*) => {
-                    $result = match op_byte {
-                        $(op::$op_name => {
-                            <$instr as Instruction>::execute(stack, pcm, gas_ref, state)
-                        })*
-                        _ => {
-                            cold_path();
-                            <super::instructions::unknown as Instruction>::execute(
-                                stack, pcm, gas_ref, state,
-                            )
-                        }
-                    };
-                };
-            }
-
-            let r;
-            for_each_opcode!([r] dispatch_arms);
-            if let Err(e) = r {
-                cold_path();
-                break e;
-            }
-        };
-
-        self.stack_len = stack.len;
-        e
-    }
-
     #[inline(always)]
     pub(crate) fn pre_step(mut pc: PcMut<'_>, gas: &mut Gas, gas_table: &GasTable) -> Result<u8> {
         let op = pc.op();
@@ -184,13 +121,13 @@ impl Interpreter {
     }
 
     #[inline(always)]
-    fn step(&mut self, table: &InstrTable, gas_table: &GasTable, host: &mut dyn Host) -> Result {
+    fn step(&mut self, table: &InstrTable<C>, gas_table: &GasTable, host: &mut dyn Host) -> Result {
         let bytecode = BytecodeRef::new(&self.bytecode);
         let mut pc = PcMut::new(bytecode, &mut self.pc);
         let op = Self::pre_step(pc.reborrow(), &mut self.gas, gas_table)?;
-        let r;
-        (self.stack_len, r) = table[op as usize](
-            Stack::new(&mut self.stack, self.stack_len),
+        let mut stack = Stack::new(&mut self.stack, self.stack_len);
+        let r = table[op as usize].unwrap_or_else(<dyn Instruction<C>>::default_unknown).execute(
+            &mut stack,
             pc,
             &mut self.gas,
             &mut State {
@@ -200,31 +137,47 @@ impl Interpreter {
                 message: &self.message,
                 memory: &mut self.memory,
                 return_data: &self.return_data,
-                spec: self.spec_id,
+                spec: C::SPEC_ID,
                 gas_params: &self.gas_params,
                 raw_interp: core::ptr::null_mut(),
             },
         );
+        self.stack_len = stack.len;
         r
+    }
+
+    fn run_tail_loop(
+        &mut self,
+        table: &TailInstrTable<C>,
+        gas_table: &GasTable,
+        host: &mut dyn Host,
+    ) -> InstrStop {
+        loop {
+            if let Err(e) = self.step_tail(table, gas_table, host) {
+                cold_path();
+                return e;
+            }
+        }
     }
 
     #[inline(always)]
     fn step_tail(
         &mut self,
-        table: &TailInstrTable,
+        table: &TailInstrTable<C>,
         gas_table: &GasTable,
         host: &mut dyn Host,
     ) -> Result {
-        let raw = self as *mut _;
+        let raw = self as *mut Self;
         let bytecode = BytecodeRef::new(&self.bytecode);
-        let (op, pc) = {
+        let (op, mut pc) = {
             let mut pc_mut = PcMut::new(bytecode, &mut self.pc);
             let op = Self::pre_step(pc_mut.reborrow(), &mut self.gas, gas_table)?;
             (op, Pc::new(bytecode, pc_mut.get()))
         };
-        let e = table[op as usize](
-            Stack::new(&mut self.stack, self.stack_len),
-            pc,
+        let mut stack = Stack::new(&mut self.stack, self.stack_len);
+        let r = table[op as usize].unwrap_or_else(<dyn Instruction<C>>::default_unknown).execute(
+            &mut stack,
+            pc.as_mut(),
             &mut self.gas,
             &mut State {
                 bytecode,
@@ -233,13 +186,13 @@ impl Interpreter {
                 message: &self.message,
                 memory: &mut self.memory,
                 return_data: &self.return_data,
-                spec: self.spec_id,
+                spec: C::SPEC_ID,
                 gas_params: &self.gas_params,
-                raw_interp: raw,
+                raw_interp: raw.cast(),
             },
-            gas_table,
-            table.as_ptr().cast(),
         );
-        Err(e)
+        self.pc = pc.get();
+        self.stack_len = stack.len;
+        r
     }
 }

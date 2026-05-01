@@ -25,8 +25,19 @@ fn expand_instruction(raw: bool, input: ItemFn) -> TokenStream2 {
     let ident = sig.ident;
     let asm_comment = LitStr::new(&ident.to_string(), ident.span());
     let generics = sig.generics;
-    let where_clause = generics.where_clause.clone();
-    let (impl_generics, type_generics, _) = generics.split_for_impl();
+    let struct_where_clause = generics.where_clause.clone();
+    let impl_params = generics.params.clone();
+    let impl_generics = if impl_params.is_empty() {
+        quote! { <C> }
+    } else {
+        quote! { <C, #impl_params> }
+    };
+    let (_, type_generics, _) = generics.split_for_impl();
+    let where_predicates =
+        struct_where_clause.as_ref().map(|where_clause| &where_clause.predicates);
+    let impl_where_clause = where_predicates
+        .map(|predicates| quote! { where C: evm2::EvmConfig, #predicates })
+        .unwrap_or_else(|| quote! { where C: evm2::EvmConfig });
     let (_, outputs) = parse_return(sig.output);
     let body = body(input.block.stmts, outputs.is_empty());
 
@@ -67,13 +78,14 @@ fn expand_instruction(raw: bool, input: ItemFn) -> TokenStream2 {
     quote! {
         #(#attrs)*
         #[allow(non_camel_case_types)]
-        #vis struct #ident #generics #where_clause;
+        #vis struct #ident #generics #struct_where_clause;
 
-        impl #impl_generics evm2::interpreter::table::Instruction for #ident #type_generics
-        #where_clause
+        impl #impl_generics evm2::interpreter::table::Instruction<C> for #ident #type_generics
+        #impl_where_clause
         {
             #[inline]
             fn execute(
+                &self,
                 stack: &mut evm2::interpreter::Stack<'_>,
                 __evm2_pc: evm2::interpreter::PcMut<'_>,
                 __evm2_gas: &mut evm2::interpreter::Gas,

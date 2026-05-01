@@ -1,10 +1,10 @@
 use crate::{
-    AccountLoad, SelfDestructResult,
+    AccountLoad, EvmVersion, SelfDestructResult,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
-    interpreter::{Host, InstrStop, Interpreter, Message, MessageKind, SpecId, Word, op},
+    interpreter::{Host, InstrStop, Interpreter, Message, MessageKind, SpecId, Stack, Word, op},
 };
-use alloc::vec::Vec;
+use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::{Address, B256, Bytes, Log};
 use std::collections::HashMap;
 
@@ -112,21 +112,25 @@ impl Host for TestHost {
 }
 
 pub(super) struct TestInterpreter {
-    pub(super) inner: Interpreter,
+    pub(super) pc: usize,
+    pub(super) stack: Box<[Word; Stack::CAPACITY]>,
+    pub(super) stack_len: usize,
+    pub(super) gas: crate::interpreter::Gas,
+    pub(super) memory: crate::interpreter::Memory,
     pub(super) err: InstrStop,
 }
 
 impl TestInterpreter {
     pub(super) fn stack(&self) -> &[Word] {
-        unsafe { core::slice::from_raw_parts(self.inner.stack.as_ptr(), self.inner.stack_len) }
+        unsafe { core::slice::from_raw_parts(self.stack.as_ptr(), self.stack_len) }
     }
 
     pub(super) fn memory(&mut self, offset: usize, len: usize) -> &[u8] {
-        self.inner.memory.slice(offset, len).unwrap()
+        self.memory.slice(offset, len).unwrap()
     }
 
     pub(super) fn gas_remaining(&self) -> u64 {
-        self.inner.gas.remaining()
+        self.gas.remaining()
     }
 }
 
@@ -196,15 +200,63 @@ impl Default for RunConfig<'_> {
 }
 
 pub(super) fn run(config: RunConfig<'_>) -> TestInterpreter {
-    let RunConfig { code, host, spec_id, tx_env, mut message, gas_limit, return_data } = config;
+    macro_rules! run_with_spec {
+        ($config:expr, $spec:expr, $($spec_id:ident),* $(,)?) => {
+            match $spec {
+                $(
+                    SpecId::$spec_id => run_with_config::<EvmVersion<(), { SpecId::$spec_id as u8 }>>($config),
+                )*
+            }
+        };
+    }
+
+    run_with_spec!(
+        config,
+        config.spec_id,
+        FRONTIER,
+        FRONTIER_THAWING,
+        HOMESTEAD,
+        DAO_FORK,
+        TANGERINE,
+        SPURIOUS_DRAGON,
+        BYZANTIUM,
+        CONSTANTINOPLE,
+        PETERSBURG,
+        ISTANBUL,
+        MUIR_GLACIER,
+        BERLIN,
+        LONDON,
+        ARROW_GLACIER,
+        GRAY_GLACIER,
+        MERGE,
+        SHANGHAI,
+        CANCUN,
+        PRAGUE,
+        OSAKA,
+        AMSTERDAM,
+    )
+}
+
+fn run_with_config<C>(config: RunConfig<'_>) -> TestInterpreter
+where
+    C: crate::EvmConfig<Tx = ()>,
+{
+    let RunConfig { code, host, spec_id: _, tx_env, mut message, gas_limit, return_data } = config;
     let bytecode = Bytecode::new_legacy(Bytes::from(code));
     message.gas_limit = gas_limit;
-    let mut inner = Interpreter::new(bytecode, spec_id, tx_env, message);
+    let mut inner = Interpreter::<C>::new(bytecode, tx_env, message);
     inner.return_data = return_data;
     let mut default_host = TestHost::default();
     let host = host.unwrap_or(&mut default_host);
     let err = inner.run(host);
-    TestInterpreter { inner, err }
+    TestInterpreter {
+        pc: inner.pc,
+        stack: inner.stack,
+        stack_len: inner.stack_len,
+        gas: inner.gas,
+        memory: inner.memory,
+        err,
+    }
 }
 
 pub(super) trait ToWord {

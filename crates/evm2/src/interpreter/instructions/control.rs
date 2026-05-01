@@ -91,29 +91,29 @@ mod tests {
     fn stop_opcode() {
         let interpreter = run(RunConfig::new([op::STOP]));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
-        assert_eq!(interpreter.inner.pc, 1);
+        assert_eq!(interpreter.pc, 1);
 
         let interpreter = run(RunConfig::new([op::STOP, op::INVALID]));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
-        assert_eq!(interpreter.inner.pc, 1);
+        assert_eq!(interpreter.pc, 1);
     }
 
     #[test]
     fn invalid_opcode() {
         let interpreter = run(RunConfig::new([op::INVALID]));
         core::assert_matches!(interpreter.err, InstrStop::InvalidFEOpcode);
-        assert_eq!(interpreter.inner.pc, 1);
+        assert_eq!(interpreter.pc, 1);
 
         let interpreter = run(RunConfig::new([0x0c]));
         core::assert_matches!(interpreter.err, InstrStop::OpcodeNotFound);
-        assert_eq!(interpreter.inner.pc, 1);
+        assert_eq!(interpreter.pc, 1);
     }
 
     #[test]
     fn jump_opcode() {
         let interpreter = run(RunConfig::new([op::PUSH1, 0x03, op::JUMP, op::JUMPDEST, op::STOP]));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
-        assert_eq!(interpreter.inner.pc, 5);
+        assert_eq!(interpreter.pc, 5);
 
         let interpreter = run(RunConfig::new([op::PUSH1, 0x00, op::JUMP, op::JUMPDEST, op::STOP]));
         core::assert_matches!(interpreter.err, InstrStop::InvalidJump);
@@ -127,7 +127,7 @@ mod tests {
         let interpreter =
             run(RunConfig::new([op::PUSH1, 0x04, op::JUMP, op::STOP, op::JUMPDEST, op::STOP]));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
-        assert_eq!(interpreter.inner.pc, 6);
+        assert_eq!(interpreter.pc, 6);
     }
 
     #[test]
@@ -143,7 +143,7 @@ mod tests {
             op::STOP,
         ]));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
-        assert_eq!(interpreter.inner.pc, 8);
+        assert_eq!(interpreter.pc, 8);
 
         let interpreter = run(RunConfig::new([
             op::PUSH1,
@@ -155,7 +155,7 @@ mod tests {
             op::STOP,
         ]));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
-        assert_eq!(interpreter.inner.pc, 7);
+        assert_eq!(interpreter.pc, 7);
 
         let interpreter =
             run(RunConfig::new([op::PUSH1, 0x01, op::PUSH1, 0x05, op::JUMPI, op::STOP, op::STOP]));
@@ -201,7 +201,7 @@ mod tests {
 
         let interpreter = run(RunConfig::new([op::JUMPDEST, op::JUMPDEST, op::STOP]));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
-        assert_eq!(interpreter.inner.pc, 3);
+        assert_eq!(interpreter.pc, 3);
     }
 
     #[test]

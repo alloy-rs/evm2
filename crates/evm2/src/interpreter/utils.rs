@@ -42,39 +42,3 @@ macro_rules! asm_comment {
         }
     };
 }
-
-#[cfg(feature = "nightly")]
-#[collapse_debuginfo(yes)]
-macro_rules! tail_return {
-    ($e:expr) => {
-        become $e;
-    };
-}
-#[cfg(not(feature = "nightly"))]
-#[collapse_debuginfo(yes)]
-macro_rules! tail_return {
-    ($e:expr) => {
-        return $e;
-    };
-}
-
-#[cfg(feature = "nightly")]
-#[collapse_debuginfo(yes)]
-macro_rules! extern_table {
-    ($(#[$attr:meta])* fn $($f:tt)*) => {
-        $(#[$attr])* extern "rust-preserve-none" fn $($f)*
-    };
-    ($(#[$attr:meta])* $vis:vis fn $($f:tt)*) => {
-        $(#[$attr])* $vis extern "rust-preserve-none" fn $($f)*
-    };
-}
-#[cfg(not(feature = "nightly"))]
-#[collapse_debuginfo(yes)]
-macro_rules! extern_table {
-    ($(#[$attr:meta])* fn $($f:tt)*) => {
-        $(#[$attr])* fn $($f)*
-    };
-    ($(#[$attr:meta])* $vis:vis fn $($f:tt)*) => {
-        $(#[$attr])* $vis fn $($f)*
-    };
-}

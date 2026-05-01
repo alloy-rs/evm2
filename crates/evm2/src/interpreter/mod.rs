@@ -10,6 +10,8 @@ mod utils;
 
 mod instructions;
 pub(crate) use instructions::table;
+#[doc(hidden)]
+pub use instructions::table::{GasTable, Instruction, InstructionImplTable};
 
 mod opcode;
 pub use opcode::op;
@@ -31,7 +33,6 @@ pub use state::{Host, State};
 
 mod runtime;
 pub use runtime::Interpreter;
-pub(crate) use runtime::Table;
 
 pub(crate) type Result<T = (), E = InstrStop> = core::result::Result<T, E>;
 
@@ -279,12 +280,9 @@ impl InstrStop {
 mod tests {
     use super::*;
     use crate::{
+        EvmConfig, EvmVersion,
         bytecode::Bytecode,
-        interpreter::{
-            instructions::tests::TestHost,
-            runtime::Table,
-            table::{DEFAULT_TABLE, DEFAULT_TAIL_TABLE, new_gas_table},
-        },
+        interpreter::{instructions::tests::TestHost, runtime::Table},
     };
     use alloy_primitives::{Bytes, U256};
 
@@ -297,45 +295,47 @@ mod tests {
             op::ADD,
             op::STOP,
         ][..]);
-        let spec_id = core::hint::black_box(SpecId::HOMESTEAD);
-        let instruction_table = core::hint::black_box(Table::Tail(&DEFAULT_TAIL_TABLE));
+        type Config = EvmVersion<(), { SpecId::HOMESTEAD as u8 }>;
 
-        let gas_table = new_gas_table(spec_id);
+        let instruction_table = core::hint::black_box(Table::Tail(&Config::INSTRUCTION_IMPLS));
         let bytecode = Bytecode::new_legacy(Bytes::copy_from_slice(bytecode));
-        let mut interpreter = Interpreter::new(
+        let mut interpreter = Interpreter::<Config>::new(
             bytecode,
-            spec_id,
             crate::env::TxEnv::default(),
             Message { gas_limit: 10_000, ..Message::default() },
         );
         let mut host = TestHost::default();
-        interpreter.run_with_table(instruction_table, &gas_table, &mut host);
+        interpreter.run_with_table(instruction_table, &Config::GAS_TABLE, &mut host);
     }
 
     #[test]
     fn basic() {
         const BASIC: &[u8] = &[op::PUSH1, 0x01, op::PUSH1, 0x02, op::ADD, op::STOP];
 
-        for spec in [SpecId::FRONTIER, SpecId::HOMESTEAD] {
-            let gas_table = new_gas_table(spec);
-            for (_name, table) in [
-                ("normal", Table::Normal(&DEFAULT_TABLE)),
-                ("tail", Table::Tail(&DEFAULT_TAIL_TABLE)),
-            ] {
-                let bytecode = Bytecode::new_legacy(Bytes::from_static(BASIC));
-                let mut interpreter = Interpreter::new(
-                    bytecode,
-                    spec,
-                    crate::env::TxEnv::default(),
-                    Message { gas_limit: 10_000, ..Message::default() },
-                );
-                let mut host = TestHost::default();
-                interpreter.run_with_table(table, &gas_table, &mut host);
-                assert!(interpreter.gas.remaining() > 0);
-                assert_eq!(interpreter.pc, 6);
-                assert_eq!(interpreter.stack_len, 1);
-                assert_eq!(interpreter.stack[0], U256::from(3));
-            }
+        macro_rules! check {
+            ($spec_id:ident) => {{
+                type Config = EvmVersion<(), { SpecId::$spec_id as u8 }>;
+                for (_name, table) in [
+                    ("normal", Table::Normal(&Config::INSTRUCTION_IMPLS)),
+                    ("tail", Table::Tail(&Config::INSTRUCTION_IMPLS)),
+                ] {
+                    let bytecode = Bytecode::new_legacy(Bytes::from_static(BASIC));
+                    let mut interpreter = Interpreter::<Config>::new(
+                        bytecode,
+                        crate::env::TxEnv::default(),
+                        Message { gas_limit: 10_000, ..Message::default() },
+                    );
+                    let mut host = TestHost::default();
+                    interpreter.run_with_table(table, &Config::GAS_TABLE, &mut host);
+                    assert!(interpreter.gas.remaining() > 0);
+                    assert_eq!(interpreter.pc, 6);
+                    assert_eq!(interpreter.stack_len, 1);
+                    assert_eq!(interpreter.stack[0], U256::from(3));
+                }
+            }};
         }
+
+        check!(FRONTIER);
+        check!(HOMESTEAD);
     }
 }

@@ -1,4 +1,4 @@
-use super::{BytecodeRef, GasParams, InstrStop, Interpreter, Memory, Message, SpecId, Word};
+use super::{BytecodeRef, GasParams, InstrStop, Memory, Message, SpecId, Word};
 use crate::{
     AccountLoad, SelfDestructResult,
     bytecode::Bytecode,
@@ -25,7 +25,7 @@ pub struct State<'a> {
     pub spec: SpecId,
     /// Dynamic gas parameters for the active spec.
     pub gas_params: &'a GasParams,
-    pub(crate) raw_interp: *mut Interpreter,
+    pub(crate) raw_interp: *mut (),
 }
 
 impl fmt::Debug for State<'_> {
