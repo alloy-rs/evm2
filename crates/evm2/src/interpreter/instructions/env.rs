@@ -182,11 +182,7 @@ mod tests {
     fn stack_code<const N: usize>(inputs: [Word; N], opcode: u8) -> Vec<u8> {
         let mut code = Vec::new();
         for input in inputs.into_iter().rev() {
-            if input.is_zero() {
-                code.extend([op::PUSH1, 0]);
-            } else {
-                push(&mut code, input);
-            }
+            push(&mut code, input);
         }
         code.extend([opcode, op::STOP]);
         code

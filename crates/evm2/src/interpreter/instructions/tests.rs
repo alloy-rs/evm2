@@ -335,7 +335,7 @@ pub(super) use assert_stack;
 pub(super) fn push(code: &mut Vec<u8>, value: impl ToWord) {
     let value = value.to_word();
     if value.is_zero() {
-        code.push(op::PUSH0);
+        code.extend([op::PUSH1, 0]);
         return;
     }
 

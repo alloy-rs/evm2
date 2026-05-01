@@ -350,12 +350,6 @@ impl GasParams {
         &self.table
     }
 
-    /// Returns the raw gas parameter table.
-    #[inline]
-    pub const fn into_table(self) -> GasParamTable {
-        self.table
-    }
-
     /// Returns the gas cost for `id`.
     #[inline]
     pub const fn get(&self, id: GasId) -> u64 {

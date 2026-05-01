@@ -48,17 +48,17 @@ impl Interpreter {
         let _gas_start = self.gas.remaining();
 
         #[cfg(feature = "nightly")]
-        let _r = self.step_tail::<C>(host).unwrap_err();
+        let r = self.step_tail::<C>(host).unwrap_err();
         #[cfg(not(feature = "nightly"))]
-        let _r = self.run_table_loop::<C>(host);
+        let r = self.run_table_loop::<C>(host);
 
         #[cfg(feature = "std")]
         {
-            eprintln!("execution stopped: {_r:?}");
+            eprintln!("execution stopped: {r:?}");
             eprintln!("consumed gas: {}", _gas_start - self.gas.remaining())
         }
 
-        _r
+        r
     }
 
     #[cfg(not(feature = "nightly"))]

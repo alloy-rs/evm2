@@ -51,3 +51,12 @@ pub mod registry;
 pub use config::{EvmConfig, EvmVersion};
 
 mod once_lock;
+
+/// Exposes a small interpreter run for assembly inspection.
+#[unsafe(no_mangle)]
+#[doc(hidden)]
+pub fn _get_asm() -> impl Sized {
+    let mut evm = crate::evm::Evm::<EvmVersion<()>>::new(Default::default(), Default::default());
+    crate::interpreter::Interpreter::new(Default::default(), Default::default(), Default::default())
+        .run::<EvmVersion<()>>(&mut evm)
+}
