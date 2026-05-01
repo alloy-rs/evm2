@@ -48,13 +48,13 @@ impl Memory {
 
     /// Returns the memory length in bytes.
     #[inline]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.data.len()
     }
 
     /// Returns whether memory is empty.
     #[inline]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.data.is_empty()
     }
 
@@ -77,7 +77,7 @@ impl Memory {
 
     /// Returns whether `new_words` exceeds the memory limit.
     #[inline]
-    pub fn limit_reached(&self, new_words: usize) -> bool {
+    pub const fn limit_reached(&self, new_words: usize) -> bool {
         new_words.saturating_mul(32) as u64 > self.memory_limit
     }
 
@@ -182,7 +182,7 @@ pub(super) const fn num_words(len: usize) -> usize {
 }
 
 #[inline]
-pub(super) fn memory_cost(len: usize) -> u64 {
+pub(super) const fn memory_cost(len: usize) -> u64 {
     let len = len as u64;
     3_u64.saturating_mul(len).saturating_add(len.saturating_mul(len) / 512)
 }

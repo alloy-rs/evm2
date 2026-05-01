@@ -23,13 +23,20 @@ impl<'a> Stack<'a> {
     pub(crate) const CAPACITY: usize = STACK_CAPACITY;
 
     #[inline]
-    pub(crate) fn new(stack: &'a mut [Word; Stack::CAPACITY], len: usize) -> Self {
+    pub(crate) const fn new(stack: &'a mut [Word; Stack::CAPACITY], len: usize) -> Self {
         Self { stack, len }
     }
 
+    /// Returns the stack contents as a slice.
     #[inline]
-    fn as_slice(&self) -> &[Word] {
+    pub const fn as_slice(&self) -> &[Word] {
         unsafe { core::slice::from_raw_parts(self.stack.as_ptr(), self.len) }
+    }
+
+    /// Returns the stack contents as a slice.
+    #[inline]
+    pub const fn as_slice_mut(&mut self) -> &mut [Word] {
+        unsafe { core::slice::from_raw_parts_mut(self.stack.as_mut_ptr(), self.len) }
     }
 
     /// Checks that an instruction can consume `input` words and produce `output` words.
@@ -57,7 +64,7 @@ impl<'a> Stack<'a> {
         }
         unsafe {
             let end = self.stack.as_mut_ptr().add(len);
-            core::ptr::write(end, value);
+            *end = value;
             self.len = len + 1;
         }
         Ok(())
