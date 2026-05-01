@@ -21,7 +21,7 @@ pub(super) use stack::*;
 mod system;
 pub(super) use system::*;
 
-pub mod table;
+pub(in crate::interpreter) mod table;
 
 #[cfg(test)]
 mod tests;

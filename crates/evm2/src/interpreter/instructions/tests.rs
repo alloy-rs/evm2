@@ -1,7 +1,4 @@
-use crate::interpreter::{
-    Host, InstrErr, Interpreter, SpecId, Table, Word, op,
-    table::{DEFAULT_GAS_TABLE, DEFAULT_TABLE},
-};
+use crate::interpreter::{Host, InstrErr, Interpreter, SpecId, Word, op};
 use alloc::vec::Vec;
 
 pub(super) struct TestHost;
@@ -29,7 +26,7 @@ impl TestInterpreter {
 
 pub(super) fn run(code: impl Into<Vec<u8>>) -> TestInterpreter {
     let mut inner = Interpreter::new(code.into(), SpecId::HOMESTEAD);
-    let err = inner.run(Table::Normal(&DEFAULT_TABLE), &DEFAULT_GAS_TABLE, &mut TestHost);
+    let err = inner.run(&mut TestHost);
     TestInterpreter { inner, err }
 }
 

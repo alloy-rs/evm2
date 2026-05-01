@@ -12,18 +12,18 @@ use crate::interpreter::{
 use core::mem;
 
 /// Normal instruction return value.
-pub type InstrFnRet = (usize, Result);
+pub(in crate::interpreter) type InstrFnRet = (usize, Result);
 /// Normal instruction function pointer.
-pub type InstrFn = extern_table!(
+pub(in crate::interpreter) type InstrFn = extern_table!(
     fn(stack: Stack<'_>, pc: &mut PcMut<'_>, gas: &mut Gas, state: &mut State<'_>) -> InstrFnRet
 );
 /// Normal instruction dispatch table.
-pub type InstrTable = [InstrFn; 256];
+pub(in crate::interpreter) type InstrTable = [InstrFn; 256];
 
 /// Tail instruction return value.
-pub type TailInstrFnRet = InstrErr;
+pub(in crate::interpreter) type TailInstrFnRet = InstrErr;
 /// Tail instruction function pointer.
-pub type TailInstrFn = extern_table!(
+pub(in crate::interpreter) type TailInstrFn = extern_table!(
     fn(
         stack: Stack<'_>,
         pc: Pc<'_>,
@@ -34,14 +34,14 @@ pub type TailInstrFn = extern_table!(
     ) -> TailInstrFnRet
 );
 /// Tail instruction dispatch table.
-pub type TailInstrTable = [TailInstrFn; 256];
+pub(in crate::interpreter) type TailInstrTable = [TailInstrFn; 256];
 
 /// Opcode gas table.
-pub type GasTable = [u16; 256];
+pub(in crate::interpreter) type GasTable = [u16; 256];
 
 /// Instruction execution context.
 #[derive(Debug)]
-pub struct InstructionCx<'a, 'ctrl, 'state> {
+pub(in crate::interpreter) struct InstructionCx<'a, 'ctrl, 'state> {
     /// Program counter state.
     pub pc: &'a mut PcMut<'ctrl>,
     /// Gas state.
@@ -51,12 +51,9 @@ pub struct InstructionCx<'a, 'ctrl, 'state> {
 }
 
 /// Default normal dispatch table.
-pub static DEFAULT_TABLE: InstrTable = make_table();
+pub(in crate::interpreter) static DEFAULT_TABLE: InstrTable = make_table();
 /// Default tail dispatch table.
-pub static DEFAULT_TAIL_TABLE: TailInstrTable = make_tail_table();
-
-/// Default opcode gas table.
-pub static DEFAULT_GAS_TABLE: GasTable = make_gas_table();
+pub(in crate::interpreter) static DEFAULT_TAIL_TABLE: TailInstrTable = make_tail_table();
 
 pub(crate) trait Instruction {
     fn new() -> Self;
@@ -94,7 +91,7 @@ impl<F: FnOnce(&mut Stack<'_>, &mut PcMut<'_>, &mut Gas, &mut State<'_>) -> Resu
 
 /// Creates a gas table for `spec`.
 #[inline]
-pub const fn new_gas_table(spec: SpecId) -> GasTable {
+pub(in crate::interpreter) const fn new_gas_table(spec: SpecId) -> GasTable {
     let mut table = make_gas_table();
 
     if spec.enables(SpecId::TANGERINE) {
@@ -321,7 +318,7 @@ macro_rules! make_table_m {
 }
 
 /// Creates the normal instruction dispatch table.
-pub const fn make_table() -> InstrTable {
+pub(in crate::interpreter) const fn make_table() -> InstrTable {
     make_table_m!(mk_dispatch)
 }
 
@@ -331,7 +328,7 @@ pub(crate) const fn mk_dispatch<I: Instruction>(f: I) -> InstrFn {
 }
 
 /// Creates the tail instruction dispatch table.
-pub const fn make_tail_table() -> TailInstrTable {
+pub(in crate::interpreter) const fn make_tail_table() -> TailInstrTable {
     make_table_m!(mk_tail_dispatch)
 }
 
@@ -414,19 +411,20 @@ extern_table! {
 
 #[cfg(test)]
 mod tests {
-    use super::{DEFAULT_GAS_TABLE, new_gas_table};
+    use super::{make_gas_table, new_gas_table};
     use crate::interpreter::{SpecId, op};
 
     #[test]
     fn default_gas_table_matches_revm_static_costs() {
-        assert_eq!(DEFAULT_GAS_TABLE[op::STOP as usize], 0);
-        assert_eq!(DEFAULT_GAS_TABLE[op::ADD as usize], 3);
-        assert_eq!(DEFAULT_GAS_TABLE[op::MUL as usize], 5);
-        assert_eq!(DEFAULT_GAS_TABLE[op::EXP as usize], 10);
-        assert_eq!(DEFAULT_GAS_TABLE[op::BALANCE as usize], 20);
-        assert_eq!(DEFAULT_GAS_TABLE[op::SLOAD as usize], 50);
-        assert_eq!(DEFAULT_GAS_TABLE[op::CALL as usize], 40);
-        assert_eq!(DEFAULT_GAS_TABLE[op::SELFDESTRUCT as usize], 0);
+        let default_gas_table = make_gas_table();
+        assert_eq!(default_gas_table[op::STOP as usize], 0);
+        assert_eq!(default_gas_table[op::ADD as usize], 3);
+        assert_eq!(default_gas_table[op::MUL as usize], 5);
+        assert_eq!(default_gas_table[op::EXP as usize], 10);
+        assert_eq!(default_gas_table[op::BALANCE as usize], 20);
+        assert_eq!(default_gas_table[op::SLOAD as usize], 50);
+        assert_eq!(default_gas_table[op::CALL as usize], 40);
+        assert_eq!(default_gas_table[op::SELFDESTRUCT as usize], 0);
     }
 
     #[test]

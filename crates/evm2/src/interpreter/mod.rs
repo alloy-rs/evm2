@@ -9,7 +9,7 @@ pub use gas::{
 mod utils;
 
 mod instructions;
-pub use instructions::table;
+pub(in crate::interpreter) use instructions::table;
 
 mod opcode;
 pub use opcode::op;
@@ -27,7 +27,7 @@ mod state;
 pub use state::{Host, State};
 
 mod runtime;
-pub use runtime::{Interpreter, Table};
+pub use runtime::Interpreter;
 
 pub(crate) type Result<T = (), E = InstrErr> = core::result::Result<T, E>;
 
@@ -173,7 +173,10 @@ pub enum InstrErr {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::interpreter::table::{DEFAULT_TABLE, DEFAULT_TAIL_TABLE, new_gas_table};
+    use crate::interpreter::{
+        runtime::Table,
+        table::{DEFAULT_TABLE, DEFAULT_TAIL_TABLE, new_gas_table},
+    };
     use alloy_primitives::U256;
 
     struct DummyHost;
@@ -198,7 +201,7 @@ mod tests {
 
         let gas_table = new_gas_table(spec_id);
         let mut interpreter = Interpreter::new(bytecode.into(), spec_id);
-        interpreter.run(instruction_table, &gas_table, &mut DummyHost);
+        interpreter.run_with_table(instruction_table, &gas_table, &mut DummyHost);
     }
 
     #[test]
@@ -212,7 +215,7 @@ mod tests {
                 ("tail", Table::Tail(&DEFAULT_TAIL_TABLE)),
             ] {
                 let mut interpreter = Interpreter::new(BASIC.into(), spec);
-                interpreter.run(table, &gas_table, &mut DummyHost);
+                interpreter.run_with_table(table, &gas_table, &mut DummyHost);
                 assert!(interpreter.gas.remaining() > 0);
                 assert_eq!(interpreter.pc, 6);
                 assert_eq!(interpreter.stack_len, 1);
