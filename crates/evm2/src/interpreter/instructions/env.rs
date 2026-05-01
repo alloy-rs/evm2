@@ -1,5 +1,5 @@
 use super::utils::{address_to_word, as_usize, as_usize_saturated, b256_to_word, check_spec};
-use crate::interpreter::{SpecId, Word, memory::resize_memory};
+use crate::interpreter::{GasParams, SpecId, Word, memory::resize_memory};
 use alloy_primitives::B256;
 use evm2_macros::instruction;
 
@@ -85,6 +85,25 @@ pub(in crate::interpreter) fn gasprice(cx: _) -> out {
 #[instruction]
 pub(in crate::interpreter) fn extcodesize(cx: _, [addr]: [Word]) -> out {
     *out = Word::from(cx.state.host.get_code_size(addr));
+}
+
+#[instruction]
+pub(in crate::interpreter) fn extcodecopy(
+    cx: _,
+    [addr, memory_offset, code_offset, len]: [Word],
+) -> Result {
+    let len = as_usize(len)?;
+    cx.gas.spend(GasParams::new_spec(cx.state.spec).extcodecopy_cost(len))?;
+
+    let mut memory_offset_usize = 0;
+    if len != 0 {
+        memory_offset_usize = as_usize(memory_offset)?;
+        resize_memory(cx.gas, cx.state.memory, memory_offset_usize, len)?;
+    }
+
+    let code = cx.state.host.copy_code(addr);
+    let code_offset = as_usize_saturated(code_offset).min(code.len());
+    cx.state.memory.set_data(memory_offset_usize, code_offset, len, &code)
 }
 
 #[instruction]
@@ -283,6 +302,57 @@ mod tests {
         let interpreter = run_with_host([op::PUSH1, 0xbe, op::EXTCODESIZE, op::STOP], &mut host);
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::from(0x42)]);
+    }
+
+    #[test]
+    fn extcodecopy_opcode() {
+        let mut host =
+            TestHost { code: Bytes::from_static(&[0xaa, 0xbb, 0xcc]), ..TestHost::default() };
+        let mut code = Vec::new();
+        push(&mut code, 2);
+        push(&mut code, 1);
+        push(&mut code, 0);
+        push(&mut code, 0xbeef);
+        code.push(op::EXTCODECOPY);
+        push(&mut code, 0);
+        code.push(op::MLOAD);
+        code.push(op::STOP);
+
+        let interpreter = run_with_host(code, &mut host);
+        let mut expected = [0_u8; 32];
+        expected[..2].copy_from_slice(&[0xbb, 0xcc]);
+        core::assert_matches!(interpreter.err, InstrStop::Stop);
+        assert_eq!(interpreter.stack(), [Word::from_be_bytes(expected)]);
+
+        let mut code = Vec::new();
+        push(&mut code, 4);
+        push(&mut code, 2);
+        push(&mut code, 0);
+        push(&mut code, 0xbeef);
+        code.push(op::EXTCODECOPY);
+        push(&mut code, 0);
+        code.push(op::MLOAD);
+        code.push(op::STOP);
+        let interpreter = run_with_host(code, &mut host);
+        let mut expected = [0_u8; 32];
+        expected[..1].copy_from_slice(&[0xcc]);
+        core::assert_matches!(interpreter.err, InstrStop::Stop);
+        assert_eq!(interpreter.stack(), [Word::from_be_bytes(expected)]);
+
+        let interpreter = run_with_host(
+            stack_code([Word::from(0xbeef), Word::MAX, Word::MAX, Word::from(0)], op::EXTCODECOPY),
+            &mut host,
+        );
+        core::assert_matches!(interpreter.err, InstrStop::Stop);
+
+        let interpreter = run_with_host(
+            stack_code(
+                [Word::from(0xbeef), Word::MAX, Word::from(0), Word::from(1)],
+                op::EXTCODECOPY,
+            ),
+            &mut host,
+        );
+        core::assert_matches!(interpreter.err, InstrStop::InvalidOperandOOG);
     }
 
     #[test]

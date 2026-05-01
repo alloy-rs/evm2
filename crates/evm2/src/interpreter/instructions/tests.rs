@@ -13,6 +13,7 @@ pub(in crate::interpreter) struct TestHost {
     pub(super) block: BlockEnv,
     pub(super) code_size: usize,
     pub(super) code_hash: B256,
+    pub(super) code: Bytes,
     pub(super) storage: HashMap<Word, Word>,
     pub(super) transient_storage: HashMap<Word, Word>,
     pub(super) logs: Vec<Log>,
@@ -37,6 +38,10 @@ impl Host for TestHost {
 
     fn get_code_hash(&mut self, _address: Word) -> B256 {
         self.code_hash
+    }
+
+    fn copy_code(&mut self, _address: Word) -> Bytes {
+        self.code.clone()
     }
 
     fn block_hash(&mut self, number: u64) -> Option<B256> {

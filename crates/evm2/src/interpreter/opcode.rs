@@ -95,7 +95,7 @@ opcodes! {$
     0x39 => CODECOPY       => codecopy;
     0x3A => GASPRICE       => gasprice;
     0x3B => EXTCODESIZE    => extcodesize;
-    0x3C => EXTCODECOPY    => invalid;
+    0x3C => EXTCODECOPY    => extcodecopy;
     0x3D => RETURNDATASIZE => invalid;
     0x3E => RETURNDATACOPY => invalid;
     0x3F => EXTCODEHASH    => extcodehash;

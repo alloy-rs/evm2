@@ -1,6 +1,6 @@
 use super::{BytecodeRef, Interpreter, Memory, SpecId, Word};
 use crate::env::{BlockEnv, TxEnv};
-use alloy_primitives::{B256, Log};
+use alloy_primitives::{B256, Bytes, Log};
 use core::fmt;
 
 /// Interpreter state passed to instructions.
@@ -52,6 +52,9 @@ pub trait Host {
 
     /// Returns an account's code hash.
     fn get_code_hash(&mut self, address: Word) -> B256;
+
+    /// Returns an account's code bytes.
+    fn copy_code(&mut self, address: Word) -> Bytes;
 
     /// Returns a historical block hash.
     fn block_hash(&mut self, number: u64) -> Option<B256>;
