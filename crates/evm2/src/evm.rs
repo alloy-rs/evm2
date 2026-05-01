@@ -1,6 +1,7 @@
 //! EVM execution host.
 
 use crate::{
+    AccountLoad,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
     interpreter::{
@@ -10,7 +11,7 @@ use crate::{
     registry::{HandlerResult, TxRegistry},
 };
 use alloy_eips::eip2718::Typed2718;
-use alloy_primitives::{B256, Log};
+use alloy_primitives::{B256, Bytes, Log};
 
 /// Result of executing a transaction.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -75,16 +76,19 @@ impl<Tx> Host for Evm<Tx> {
         &self.block
     }
 
-    fn balance(&mut self, _address: Word) -> Word {
-        Word::ZERO
-    }
-
-    fn get_code_size(&mut self, _address: Word) -> usize {
-        0
-    }
-
-    fn get_code_hash(&mut self, _address: Word) -> B256 {
-        B256::ZERO
+    fn load_account(
+        &mut self,
+        _address: Word,
+        _load_code: bool,
+        _skip_cold_load: bool,
+    ) -> Result<AccountLoad, InstrStop> {
+        Ok(AccountLoad {
+            balance: Word::ZERO,
+            code_hash: B256::ZERO,
+            code: Bytes::new(),
+            is_empty: true,
+            is_cold: false,
+        })
     }
 
     fn block_hash(&mut self, _number: u64) -> Option<B256> {

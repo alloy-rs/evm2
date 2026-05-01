@@ -1,7 +1,8 @@
 use crate::{
+    AccountLoad,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
-    interpreter::{Gas, Host, InstrStop, Interpreter, Message, SpecId, Word, op},
+    interpreter::{Host, InstrStop, Interpreter, Message, MessageKind, SpecId, Word, op},
 };
 use alloc::vec::Vec;
 use alloy_primitives::{B256, Bytes, Log};
@@ -10,8 +11,10 @@ use std::collections::HashMap;
 #[derive(Debug, Default)]
 pub(in crate::interpreter) struct TestHost {
     pub(super) block: BlockEnv,
-    pub(super) code_size: usize,
     pub(super) code_hash: B256,
+    pub(super) code: Bytes,
+    pub(super) is_empty: bool,
+    pub(super) is_cold: bool,
     pub(super) storage: HashMap<Word, Word>,
     pub(super) transient_storage: HashMap<Word, Word>,
     pub(super) logs: Vec<Log>,
@@ -22,16 +25,22 @@ impl Host for TestHost {
         &self.block
     }
 
-    fn balance(&mut self, address: Word) -> Word {
-        address
-    }
-
-    fn get_code_size(&mut self, _address: Word) -> usize {
-        self.code_size
-    }
-
-    fn get_code_hash(&mut self, _address: Word) -> B256 {
-        self.code_hash
+    fn load_account(
+        &mut self,
+        address: Word,
+        load_code: bool,
+        skip_cold_load: bool,
+    ) -> Result<AccountLoad, InstrStop> {
+        if skip_cold_load && self.is_cold {
+            return Err(InstrStop::OutOfGas);
+        }
+        Ok(AccountLoad {
+            balance: address,
+            code_hash: self.code_hash,
+            code: if load_code { self.code.clone() } else { Bytes::new() },
+            is_empty: self.is_empty,
+            is_cold: self.is_cold,
+        })
     }
 
     fn block_hash(&mut self, number: u64) -> Option<B256> {
@@ -78,89 +87,85 @@ impl TestInterpreter {
     }
 }
 
-pub(super) fn run(code: impl Into<Vec<u8>>) -> TestInterpreter {
-    let mut host = TestHost::default();
-    run_with_host(code, &mut host)
+pub(super) struct RunConfig<'a> {
+    pub(super) code: Vec<u8>,
+    pub(super) host: Option<&'a mut dyn Host>,
+    pub(super) spec_id: SpecId,
+    pub(super) tx_env: TxEnv,
+    pub(super) message: Message,
+    pub(super) is_static: bool,
+    pub(super) gas_limit: u64,
+    pub(super) return_data: Bytes,
 }
 
-pub(super) fn run_with_host(code: impl Into<Vec<u8>>, host: &mut dyn Host) -> TestInterpreter {
-    run_with_host_and_spec(code, host, SpecId::HOMESTEAD)
+impl<'a> RunConfig<'a> {
+    pub(super) fn new(code: impl Into<Vec<u8>>) -> Self {
+        Self { code: code.into(), ..Self::default() }
+    }
+
+    pub(super) fn host(mut self, host: &'a mut dyn Host) -> Self {
+        self.host = Some(host);
+        self
+    }
+
+    pub(super) const fn spec(mut self, spec_id: SpecId) -> Self {
+        self.spec_id = spec_id;
+        self
+    }
+
+    pub(super) fn tx_env(mut self, tx_env: TxEnv) -> Self {
+        self.tx_env = tx_env;
+        self
+    }
+
+    pub(super) fn message(mut self, message: Message) -> Self {
+        self.message = message;
+        self
+    }
+
+    pub(super) const fn staticcall(mut self) -> Self {
+        self.is_static = true;
+        self
+    }
+
+    pub(super) const fn gas_limit(mut self, gas_limit: u64) -> Self {
+        self.gas_limit = gas_limit;
+        self
+    }
+
+    pub(super) fn return_data(mut self, return_data: Bytes) -> Self {
+        self.return_data = return_data;
+        self
+    }
 }
 
-pub(super) fn run_with_host_and_spec(
-    code: impl Into<Vec<u8>>,
-    host: &mut dyn Host,
-    spec_id: SpecId,
-) -> TestInterpreter {
-    run_with_host_and_spec_config(code, host, spec_id, false, 10_000)
+impl Default for RunConfig<'_> {
+    fn default() -> Self {
+        Self {
+            code: Vec::new(),
+            host: None,
+            spec_id: SpecId::HOMESTEAD,
+            tx_env: TxEnv::default(),
+            message: Message { gas_limit: 10_000, ..Message::default() },
+            is_static: false,
+            gas_limit: 10_000,
+            return_data: Bytes::new(),
+        }
+    }
 }
 
-pub(super) fn run_with_host_tx_env(
-    code: impl Into<Vec<u8>>,
-    host: &mut dyn Host,
-    tx_env: TxEnv,
-) -> TestInterpreter {
-    run_with_host_tx_env_and_spec(code, host, tx_env, SpecId::HOMESTEAD)
-}
-
-pub(super) fn run_with_host_tx_env_and_spec(
-    code: impl Into<Vec<u8>>,
-    host: &mut dyn Host,
-    tx_env: TxEnv,
-    spec_id: SpecId,
-) -> TestInterpreter {
-    run_with_host_message_tx_env_and_spec_config(
-        code,
-        host,
-        Message { gas_limit: 10_000, ..Message::default() },
-        tx_env,
-        spec_id,
-        false,
-    )
-}
-
-pub(super) fn run_with_host_message(
-    code: impl Into<Vec<u8>>,
-    host: &mut dyn Host,
-    message: Message,
-) -> TestInterpreter {
-    run_with_host_message_tx_env_and_spec_config(
-        code,
-        host,
-        message,
-        TxEnv::default(),
-        SpecId::HOMESTEAD,
-        false,
-    )
-}
-
-pub(super) fn run_with_host_message_tx_env_and_spec_config(
-    code: impl Into<Vec<u8>>,
-    host: &mut dyn Host,
-    message: Message,
-    tx_env: TxEnv,
-    spec_id: SpecId,
-    is_static: bool,
-) -> TestInterpreter {
-    let bytecode = Bytecode::new_legacy(Bytes::from(code.into()));
+pub(super) fn run(config: RunConfig<'_>) -> TestInterpreter {
+    let RunConfig { code, host, spec_id, tx_env, mut message, is_static, gas_limit, return_data } =
+        config;
+    let bytecode = Bytecode::new_legacy(Bytes::from(code));
+    message.gas_limit = gas_limit;
+    if is_static {
+        message.kind = MessageKind::StaticCall;
+    }
     let mut inner = Interpreter::new(bytecode, spec_id, tx_env, message);
-    inner.is_static |= is_static;
-    let err = inner.run(host);
-    TestInterpreter { inner, err }
-}
-
-pub(super) fn run_with_host_and_spec_config(
-    code: impl Into<Vec<u8>>,
-    host: &mut dyn Host,
-    spec_id: SpecId,
-    is_static: bool,
-    gas_limit: u64,
-) -> TestInterpreter {
-    let bytecode = Bytecode::new_legacy(Bytes::from(code.into()));
-    let message = Message { gas_limit, ..Message::default() };
-    let mut inner = Interpreter::new(bytecode, spec_id, TxEnv::default(), message);
-    inner.is_static |= is_static;
-    inner.gas = Gas::new(gas_limit);
+    inner.return_data = return_data;
+    let mut default_host = TestHost::default();
+    let host = host.unwrap_or(&mut default_host);
     let err = inner.run(host);
     TestInterpreter { inner, err }
 }
@@ -199,7 +204,7 @@ pub(super) fn run_stack<T: ToWord, const N: usize>(inputs: [T; N], opcode: u8) -
         push(&mut code, input);
     }
     code.extend([opcode, op::STOP]);
-    run(code)
+    run(RunConfig::new(code))
 }
 
 pub(super) fn assert_stack_words(inputs: &[Word], opcode: u8, expected: &[Word]) {
@@ -208,7 +213,7 @@ pub(super) fn assert_stack_words(inputs: &[Word], opcode: u8, expected: &[Word])
         push(&mut code, *input);
     }
     code.extend([opcode, op::STOP]);
-    let interpreter = run(code);
+    let interpreter = run(RunConfig::new(code));
     core::assert_matches!(interpreter.err, InstrStop::Stop);
     assert_eq!(interpreter.stack(), expected);
 }

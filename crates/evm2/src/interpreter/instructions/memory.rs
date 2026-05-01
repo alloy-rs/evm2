@@ -44,7 +44,7 @@ pub(in crate::interpreter) fn mcopy(cx: _, [dst, src, len]: [Word]) -> Result {
 mod tests {
     use crate::interpreter::{
         InstrStop, Word,
-        instructions::tests::{push, run, run_stack},
+        instructions::tests::{RunConfig, push, run, run_stack},
         op,
     };
     use alloc::vec::Vec;
@@ -60,7 +60,7 @@ mod tests {
         code.push(op::MLOAD);
         code.push(op::STOP);
 
-        let mut interpreter = run(code);
+        let mut interpreter = run(RunConfig::new(code));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [value]);
         assert_eq!(interpreter.memory(30, 2), [0xfe, 0xed]);
@@ -79,7 +79,7 @@ mod tests {
         code.push(op::MSIZE);
         code.push(op::STOP);
 
-        let mut interpreter = run(code);
+        let mut interpreter = run(RunConfig::new(code));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::from(64)]);
         assert_eq!(interpreter.memory(38, 2), [0xfe, 0xed]);
@@ -98,7 +98,7 @@ mod tests {
         code.push(op::MLOAD);
         code.push(op::STOP);
 
-        let mut interpreter = run(code);
+        let mut interpreter = run(RunConfig::new(code));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.memory(4, 1), [0xab]);
         assert_eq!(interpreter.stack()[0] >> 248, Word::from(0xab));
@@ -109,7 +109,7 @@ mod tests {
 
     #[test]
     fn msize_opcode() {
-        let interpreter = run([op::MSIZE, op::STOP]);
+        let interpreter = run(RunConfig::new([op::MSIZE, op::STOP]));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [0]);
 
@@ -119,7 +119,7 @@ mod tests {
         code.push(op::MSTORE);
         code.push(op::MSIZE);
         code.push(op::STOP);
-        let interpreter = run(code);
+        let interpreter = run(RunConfig::new(code));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::from(96)]);
     }
@@ -139,7 +139,7 @@ mod tests {
         code.push(op::MLOAD);
         code.push(op::STOP);
 
-        let interpreter = run(code);
+        let interpreter = run(RunConfig::new(code));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [value]);
 
@@ -150,7 +150,7 @@ mod tests {
         code.push(op::MCOPY);
         code.push(op::MSIZE);
         code.push(op::STOP);
-        let interpreter = run(code);
+        let interpreter = run(RunConfig::new(code));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [0]);
 

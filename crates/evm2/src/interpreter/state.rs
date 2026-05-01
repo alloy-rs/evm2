@@ -1,9 +1,10 @@
-use super::{BytecodeRef, InstrStop, Interpreter, Memory, Message, SpecId, Word};
+use super::{BytecodeRef, GasParams, InstrStop, Interpreter, Memory, Message, SpecId, Word};
 use crate::{
+    AccountLoad,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
 };
-use alloy_primitives::{B256, Log};
+use alloy_primitives::{B256, Bytes, Log};
 use core::fmt;
 
 /// Interpreter state passed to instructions.
@@ -18,8 +19,12 @@ pub struct State<'a> {
     pub message: &'a Message,
     /// Linear memory.
     pub memory: &'a mut Memory,
+    /// Return data from the last call-like operation.
+    pub return_data: &'a Bytes,
     /// Active spec identifier.
     pub spec: SpecId,
+    /// Dynamic gas parameters for the active spec.
+    pub gas_params: &'a GasParams,
     /// Whether state-changing opcodes are forbidden.
     pub is_static: bool,
     pub(crate) raw_interp: *mut Interpreter,
@@ -32,7 +37,9 @@ impl fmt::Debug for State<'_> {
             .field("tx", &self.tx)
             .field("message", &self.message)
             .field("memory", &self.memory)
+            .field("return_data", &self.return_data)
             .field("spec", &self.spec)
+            .field("gas_params", &self.gas_params)
             .field("is_static", &self.is_static)
             .field("raw_interp", &self.raw_interp)
             .finish_non_exhaustive()
@@ -44,14 +51,13 @@ pub trait Host {
     /// Returns the block environment.
     fn block_env(&mut self) -> &BlockEnv;
 
-    /// Returns an account balance.
-    fn balance(&mut self, address: Word) -> Word;
-
-    /// Returns an account's code size.
-    fn get_code_size(&mut self, address: Word) -> usize;
-
-    /// Returns an account's code hash.
-    fn get_code_hash(&mut self, address: Word) -> B256;
+    /// Loads account information.
+    fn load_account(
+        &mut self,
+        address: Word,
+        load_code: bool,
+        skip_cold_load: bool,
+    ) -> Result<AccountLoad, InstrStop>;
 
     /// Returns a historical block hash.
     fn block_hash(&mut self, number: u64) -> Option<B256>;

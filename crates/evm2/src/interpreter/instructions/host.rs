@@ -1,6 +1,6 @@
 use super::utils::{as_usize, check_spec};
 use crate::interpreter::{
-    GasId, GasParams, InstrStop, Result, SpecId, Word, memory::resize_memory, table::InstructionCx,
+    GasId, InstrStop, Result, SpecId, Word, memory::resize_memory, table::InstructionCx,
 };
 use alloy_primitives::{B256, Bytes, Log, LogData};
 use evm2_macros::instruction;
@@ -21,7 +21,7 @@ pub(in crate::interpreter) fn sload(cx: _, [index]: [Word]) -> out {
 pub(in crate::interpreter) fn sstore(cx: _) -> Result {
     require_non_staticcall(&cx)?;
     let [index, value] = stack.popn()?;
-    let gas_params = GasParams::new_spec(cx.state.spec);
+    let gas_params = cx.state.gas_params;
     if cx.state.spec.enables(SpecId::ISTANBUL)
         && cx.gas.remaining() <= gas_params.get(GasId::CallStipend)
     {
@@ -54,8 +54,7 @@ pub(in crate::interpreter) fn log<const N: usize>(cx: _) -> Result {
     require_non_staticcall(&cx)?;
     let [offset, len] = stack.popn()?;
     let len = as_usize(len)?;
-    let gas_params = GasParams::new_spec(cx.state.spec);
-    cx.gas.spend(gas_params.log_cost(N as u8, len))?;
+    cx.gas.spend(cx.state.gas_params.log_cost(N as u8, len))?;
 
     let data = if len == 0 {
         Bytes::new()
@@ -78,10 +77,7 @@ pub(in crate::interpreter) fn log<const N: usize>(cx: _) -> Result {
 mod tests {
     use crate::interpreter::{
         InstrStop, Message, MessageKind, SpecId, Word,
-        instructions::tests::{
-            TestHost, push, run_with_host, run_with_host_and_spec, run_with_host_and_spec_config,
-            run_with_host_message,
-        },
+        instructions::tests::{RunConfig, TestHost, push, run},
         op,
     };
     use alloc::vec::Vec;
@@ -95,14 +91,14 @@ mod tests {
         let mut code = Vec::new();
         push(&mut code, 1);
         code.extend([op::SLOAD, op::STOP]);
-        let interpreter = run_with_host(code, &mut host);
+        let interpreter = run(RunConfig::new(code).host(&mut host));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::from(0xbeef)]);
 
         let mut code = Vec::new();
         push(&mut code, 2);
         code.extend([op::SLOAD, op::STOP]);
-        let interpreter = run_with_host(code, &mut host);
+        let interpreter = run(RunConfig::new(code).host(&mut host));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [0]);
     }
@@ -117,7 +113,7 @@ mod tests {
         push(&mut code, 1);
         code.extend([op::SLOAD, op::STOP]);
 
-        let interpreter = run_with_host(code, &mut host);
+        let interpreter = run(RunConfig::new(code).host(&mut host));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::from(0xbeef)]);
         assert_eq!(host.storage.get(&Word::from(1)), Some(&Word::from(0xbeef)));
@@ -131,8 +127,7 @@ mod tests {
         push(&mut code, 1);
         code.extend([op::SSTORE, op::STOP]);
 
-        let interpreter =
-            run_with_host_and_spec_config(code, &mut host, SpecId::HOMESTEAD, true, 10_000);
+        let interpreter = run(RunConfig::new(code).host(&mut host).staticcall());
         core::assert_matches!(interpreter.err, InstrStop::StateChangeDuringStaticCall);
         assert_eq!(interpreter.stack(), [Word::from(0xbeef), Word::from(1)]);
         assert_eq!(host.storage.get(&Word::from(1)), None);
@@ -148,7 +143,7 @@ mod tests {
         let message =
             Message { kind: MessageKind::StaticCall, gas_limit: 10_000, ..Default::default() };
 
-        let interpreter = run_with_host_message(code, &mut host, message);
+        let interpreter = run(RunConfig::new(code).host(&mut host).message(message));
 
         core::assert_matches!(interpreter.err, InstrStop::StateChangeDuringStaticCall);
         assert_eq!(interpreter.stack(), [Word::from(0xbeef), Word::from(1)]);
@@ -164,7 +159,7 @@ mod tests {
         code.extend([op::SSTORE, op::STOP]);
 
         let interpreter =
-            run_with_host_and_spec_config(code, &mut host, SpecId::ISTANBUL, false, 2306);
+            run(RunConfig::new(code).host(&mut host).spec(SpecId::ISTANBUL).gas_limit(2306));
         core::assert_matches!(interpreter.err, InstrStop::ReentrancySentryOOG);
         assert_eq!(host.storage.get(&Word::from(1)), None);
     }
@@ -172,13 +167,10 @@ mod tests {
     #[test]
     fn sstore_static_gas() {
         let mut host = TestHost::default();
-        let interpreter = run_with_host_and_spec_config(
-            [op::PUSH1, 0, op::PUSH1, 0, op::SSTORE, op::STOP],
-            &mut host,
-            SpecId::FRONTIER,
-            false,
-            6000,
-        );
+        let interpreter = run(RunConfig::new([op::PUSH1, 0, op::PUSH1, 0, op::SSTORE, op::STOP])
+            .host(&mut host)
+            .spec(SpecId::FRONTIER)
+            .gas_limit(6000));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.gas_remaining(), 994);
     }
@@ -191,11 +183,11 @@ mod tests {
         let mut code = Vec::new();
         push(&mut code, 1);
         code.extend([op::TLOAD, op::STOP]);
-        let interpreter = run_with_host_and_spec(code, &mut host, SpecId::CANCUN);
+        let interpreter = run(RunConfig::new(code).host(&mut host).spec(SpecId::CANCUN));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::from(0xcafe)]);
 
-        let interpreter = run_with_host([op::PUSH0, op::TLOAD, op::STOP], &mut host);
+        let interpreter = run(RunConfig::new([op::PUSH0, op::TLOAD, op::STOP]).host(&mut host));
         core::assert_matches!(interpreter.err, InstrStop::NotActivated);
         assert_eq!(interpreter.stack(), [0]);
     }
@@ -210,12 +202,13 @@ mod tests {
         push(&mut code, 1);
         code.extend([op::TLOAD, op::STOP]);
 
-        let interpreter = run_with_host_and_spec(code, &mut host, SpecId::CANCUN);
+        let interpreter = run(RunConfig::new(code).host(&mut host).spec(SpecId::CANCUN));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::from(0xcafe)]);
         assert_eq!(host.transient_storage.get(&Word::from(1)), Some(&Word::from(0xcafe)));
 
-        let interpreter = run_with_host([op::PUSH0, op::PUSH0, op::TSTORE, op::STOP], &mut host);
+        let interpreter =
+            run(RunConfig::new([op::PUSH0, op::PUSH0, op::TSTORE, op::STOP]).host(&mut host));
         core::assert_matches!(interpreter.err, InstrStop::NotActivated);
         assert_eq!(interpreter.stack(), [0, 0]);
     }
@@ -229,7 +222,7 @@ mod tests {
         code.extend([op::TSTORE, op::STOP]);
 
         let interpreter =
-            run_with_host_and_spec_config(code, &mut host, SpecId::CANCUN, true, 10_000);
+            run(RunConfig::new(code).host(&mut host).spec(SpecId::CANCUN).staticcall());
         core::assert_matches!(interpreter.err, InstrStop::StateChangeDuringStaticCall);
         assert_eq!(interpreter.stack(), [Word::from(0xcafe), Word::from(1)]);
         assert_eq!(host.transient_storage.get(&Word::from(1)), None);
@@ -259,7 +252,7 @@ mod tests {
             gas_limit: 10_000,
             ..Default::default()
         };
-        let interpreter = run_with_host_message(log_code(30, 2, []), &mut host, message);
+        let interpreter = run(RunConfig::new(log_code(30, 2, [])).host(&mut host).message(message));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert!(interpreter.stack().is_empty());
         assert_eq!(host.logs.len(), 1);
@@ -271,7 +264,7 @@ mod tests {
     #[test]
     fn log1_opcode() {
         let mut host = TestHost::default();
-        let interpreter = run_with_host(log_code(30, 2, [Word::from(1)]), &mut host);
+        let interpreter = run(RunConfig::new(log_code(30, 2, [Word::from(1)])).host(&mut host));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(host.logs[0].topics(), &[B256::from(Word::from(1).to_be_bytes::<32>())]);
         assert_eq!(host.logs[0].data.data, Bytes::from_static(&[0xbe, 0xef]));
@@ -280,7 +273,8 @@ mod tests {
     #[test]
     fn log2_opcode() {
         let mut host = TestHost::default();
-        let interpreter = run_with_host(log_code(30, 0, [Word::from(1), Word::from(2)]), &mut host);
+        let interpreter =
+            run(RunConfig::new(log_code(30, 0, [Word::from(1), Word::from(2)])).host(&mut host));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(
             host.logs[0].topics(),
@@ -295,10 +289,9 @@ mod tests {
     #[test]
     fn log3_opcode() {
         let mut host = TestHost::default();
-        let interpreter = run_with_host(
-            log_code(30, 1, [Word::from(1), Word::from(2), Word::from(3)]),
-            &mut host,
-        );
+        let interpreter =
+            run(RunConfig::new(log_code(30, 1, [Word::from(1), Word::from(2), Word::from(3)]))
+                .host(&mut host));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(host.logs[0].topics().len(), 3);
         assert_eq!(host.logs[0].data.data, Bytes::from_static(&[0xbe]));
@@ -307,10 +300,12 @@ mod tests {
     #[test]
     fn log4_opcode() {
         let mut host = TestHost::default();
-        let interpreter = run_with_host(
-            log_code(30, 1, [Word::from(1), Word::from(2), Word::from(3), Word::from(4)]),
-            &mut host,
-        );
+        let interpreter = run(RunConfig::new(log_code(
+            30,
+            1,
+            [Word::from(1), Word::from(2), Word::from(3), Word::from(4)],
+        ))
+        .host(&mut host));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(host.logs[0].topics().len(), 4);
         assert_eq!(host.logs[0].data.data, Bytes::from_static(&[0xbe]));
@@ -319,13 +314,7 @@ mod tests {
     #[test]
     fn log_staticcall_check() {
         let mut host = TestHost::default();
-        let interpreter = run_with_host_and_spec_config(
-            log_code(30, 2, []),
-            &mut host,
-            SpecId::HOMESTEAD,
-            true,
-            10_000,
-        );
+        let interpreter = run(RunConfig::new(log_code(30, 2, [])).host(&mut host).staticcall());
         core::assert_matches!(interpreter.err, InstrStop::StateChangeDuringStaticCall);
         assert!(host.logs.is_empty());
     }
@@ -337,7 +326,7 @@ mod tests {
         push(&mut code, 1);
         push(&mut code, Word::MAX);
         code.extend([op::LOG0, op::STOP]);
-        let interpreter = run_with_host(code, &mut host);
+        let interpreter = run(RunConfig::new(code).host(&mut host));
         core::assert_matches!(interpreter.err, InstrStop::InvalidOperandOOG);
         assert!(host.logs.is_empty());
     }
