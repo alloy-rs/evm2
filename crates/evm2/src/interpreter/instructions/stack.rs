@@ -68,7 +68,7 @@ const fn decode_pair(x: u8) -> Option<(usize, usize)> {
 #[cfg(test)]
 mod tests {
     use crate::interpreter::{
-        InstrStop, Word,
+        InstrStop, Stack, Word,
         instructions::tests::{push, run, run_stack},
         op,
     };
@@ -83,6 +83,47 @@ mod tests {
         let interpreter = run([op::PUSH1, 0x01, op::PUSH1, 0x02, op::POP, op::STOP]);
         assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.stack(), [Word::from(1)]);
+    }
+
+    #[test]
+    fn stack_underflow() {
+        let interpreter = run([op::POP]);
+        assert!(matches!(interpreter.err, InstrStop::StackUnderflow));
+
+        let interpreter = run([op::DUP1]);
+        assert!(matches!(interpreter.err, InstrStop::StackUnderflow));
+
+        let interpreter = run([op::PUSH0, op::SWAP1]);
+        assert!(matches!(interpreter.err, InstrStop::StackUnderflow));
+
+        let interpreter = run([op::DUPN, 0x80]);
+        assert!(matches!(interpreter.err, InstrStop::StackUnderflow));
+
+        let interpreter = run([op::PUSH0, op::SWAPN, 0x80]);
+        assert!(matches!(interpreter.err, InstrStop::StackUnderflow));
+
+        let interpreter = run([op::PUSH0, op::EXCHANGE, 0x8e]);
+        assert!(matches!(interpreter.err, InstrStop::StackUnderflow));
+    }
+
+    #[test]
+    fn stack_overflow() {
+        let mut code = vec![op::PUSH0; Stack::CAPACITY];
+        let interpreter = run(code.clone());
+        assert!(matches!(interpreter.err, InstrStop::Stop));
+        code.extend([op::PUSH0]);
+        let interpreter = run(code);
+        assert!(matches!(interpreter.err, InstrStop::StackOverflow));
+
+        let mut code = vec![op::PUSH0; Stack::CAPACITY];
+        code.extend([op::PUSH1, 0x00, op::STOP]);
+        let interpreter = run(code);
+        assert!(matches!(interpreter.err, InstrStop::StackOverflow));
+
+        let mut code = vec![op::PUSH0; Stack::CAPACITY];
+        code.extend([op::DUP1, op::STOP]);
+        let interpreter = run(code);
+        assert!(matches!(interpreter.err, InstrStop::StackOverflow));
     }
 
     #[test]
