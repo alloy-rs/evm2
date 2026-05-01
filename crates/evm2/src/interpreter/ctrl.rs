@@ -1,5 +1,5 @@
 use crate::bytecode::{Bytecode, JumpTable};
-use core::marker::PhantomData;
+use core::{marker::PhantomData, ptr};
 
 /// EVM bytecode view.
 #[derive(Clone, Copy, Debug)]
@@ -17,11 +17,10 @@ pub struct Pc<'a> {
 }
 
 /// Mutable program counter state.
-#[derive(Clone, Copy, Debug)]
+#[derive(Debug)]
 pub struct PcMut<'a> {
     base: *const u8,
-    pc: *mut usize,
-    _marker: PhantomData<&'a mut usize>,
+    pc: &'a mut usize,
 }
 
 impl<'a> BytecodeRef<'a> {
@@ -70,7 +69,7 @@ impl<'a> Pc<'a> {
     /// Returns a mutable program counter reference.
     #[inline]
     pub fn as_mut(&mut self) -> PcMut<'_> {
-        PcMut { base: self.base, pc: &mut self.pc, _marker: PhantomData }
+        PcMut { base: self.base, pc: &mut self.pc }
     }
 
     /// Returns the opcode at the current program counter.
@@ -113,7 +112,13 @@ impl<'a> Pc<'a> {
 
 impl<'a> PcMut<'a> {
     pub(crate) fn new(bytecode: BytecodeRef<'a>, pc: &'a mut usize) -> Self {
-        Self { base: bytecode.bytecode.as_ptr(), pc, _marker: PhantomData }
+        Self { base: bytecode.bytecode.as_ptr(), pc }
+    }
+
+    /// Reborrows the program counter.
+    #[inline]
+    pub fn reborrow(&mut self) -> PcMut<'_> {
+        unsafe { ptr::read(self) }
     }
 
     /// Returns the opcode at the current program counter.
@@ -125,7 +130,7 @@ impl<'a> PcMut<'a> {
     /// Returns the current program counter.
     #[inline]
     pub fn get(&self) -> usize {
-        unsafe { *self.pc }
+        *self.pc
     }
 
     /// # Safety
@@ -134,7 +139,7 @@ impl<'a> PcMut<'a> {
     /// subsequent reads.
     #[inline]
     pub unsafe fn advance_unchecked(self, n: usize) {
-        unsafe { *self.pc += n };
+        *self.pc += n;
     }
 
     /// # Safety
@@ -142,7 +147,7 @@ impl<'a> PcMut<'a> {
     /// Caller must ensure `pc` is valid for the current bytecode.
     #[inline]
     pub unsafe fn set_unchecked(self, pc: usize) {
-        unsafe { *self.pc = pc };
+        *self.pc = pc;
     }
 
     /// # Safety

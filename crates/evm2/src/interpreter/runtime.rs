@@ -104,8 +104,8 @@ impl Interpreter {
     #[inline(always)]
     fn step(&mut self, table: &InstrTable, gas_table: &GasTable, host: &mut dyn Host) -> Result {
         let bytecode = BytecodeRef::new(&self.bytecode);
-        let pc = PcMut::new(bytecode, &mut self.pc);
-        let op = Self::pre_step(pc, &mut self.gas, gas_table)?;
+        let mut pc = PcMut::new(bytecode, &mut self.pc);
+        let op = Self::pre_step(pc.reborrow(), &mut self.gas, gas_table)?;
         let r;
         (self.stack_len, r) = table[op as usize](
             Stack::new(&mut self.stack, self.stack_len),
@@ -132,8 +132,8 @@ impl Interpreter {
         let raw = self as *mut _;
         let bytecode = BytecodeRef::new(&self.bytecode);
         let (op, pc) = {
-            let pc_mut = PcMut::new(bytecode, &mut self.pc);
-            let op = Self::pre_step(pc_mut, &mut self.gas, gas_table)?;
+            let mut pc_mut = PcMut::new(bytecode, &mut self.pc);
+            let op = Self::pre_step(pc_mut.reborrow(), &mut self.gas, gas_table)?;
             (op, Pc::new(bytecode, pc_mut.get()))
         };
         let e = table[op as usize](
