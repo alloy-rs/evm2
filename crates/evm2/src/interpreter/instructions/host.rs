@@ -1,3 +1,4 @@
+use super::utils::{address_to_word, b256_to_word, check_spec};
 use crate::interpreter::{InstrStop, SpecId, Word};
 use evm2_macros::instruction;
 
@@ -19,7 +20,7 @@ pub(in crate::interpreter) fn blockhash(cx: _, [number]: [Word]) -> Result<out> 
             cx.state
                 .host
                 .block_hash(number)
-                .map(|hash| Word::from_be_bytes(hash.0))
+                .map(b256_to_word)
                 .ok_or(InstrStop::FatalExternalError)?
         }
     } else {
@@ -29,7 +30,7 @@ pub(in crate::interpreter) fn blockhash(cx: _, [number]: [Word]) -> Result<out> 
 
 #[instruction]
 pub(in crate::interpreter) fn coinbase(cx: _) -> out {
-    *out = cx.state.block.beneficiary.into_word().into();
+    *out = address_to_word(cx.state.block.beneficiary);
 }
 
 #[instruction]
@@ -45,7 +46,7 @@ pub(in crate::interpreter) fn block_number(cx: _) -> out {
 #[instruction]
 pub(in crate::interpreter) fn difficulty(cx: _) -> out {
     *out = if cx.state.spec.enables(SpecId::MERGE) {
-        cx.state.block.prevrandao.map(|value| Word::from_be_bytes(value.0)).unwrap()
+        cx.state.block.prevrandao.map(b256_to_word).unwrap()
     } else {
         cx.state.block.difficulty
     };
@@ -58,30 +59,24 @@ pub(in crate::interpreter) fn gaslimit(cx: _) -> out {
 
 #[instruction]
 pub(in crate::interpreter) fn selfbalance(cx: _) -> out {
-    *out = cx.state.host.balance(cx.state.tx.address.into_word().into());
+    *out = cx.state.host.balance(address_to_word(cx.state.tx.address));
 }
 
 #[instruction]
 pub(in crate::interpreter) fn basefee(cx: _) -> Result<out> {
-    if !cx.state.spec.enables(SpecId::LONDON) {
-        return Err(InstrStop::NotActivated);
-    }
+    check_spec(cx.state.spec, SpecId::LONDON)?;
     *out = Word::from(cx.state.block.basefee);
 }
 
 #[instruction]
 pub(in crate::interpreter) fn blobbasefee(cx: _) -> Result<out> {
-    if !cx.state.spec.enables(SpecId::CANCUN) {
-        return Err(InstrStop::NotActivated);
-    }
+    check_spec(cx.state.spec, SpecId::CANCUN)?;
     *out = Word::from(cx.state.block.blob_basefee);
 }
 
 #[instruction]
 pub(in crate::interpreter) fn slotnum(cx: _) -> Result<out> {
-    if !cx.state.spec.enables(SpecId::AMSTERDAM) {
-        return Err(InstrStop::NotActivated);
-    }
+    check_spec(cx.state.spec, SpecId::AMSTERDAM)?;
     *out = Word::from(cx.state.block.slot_num);
 }
 
@@ -91,8 +86,9 @@ mod tests {
         env::{BlockEnv, TxEnv},
         interpreter::{
             InstrStop, SpecId, Word,
-            instructions::tests::{
-                TestHost, assert_stack, push, run_with_host, run_with_host_and_spec,
+            instructions::{
+                tests::{TestHost, assert_stack, push, run_with_host, run_with_host_and_spec},
+                utils::{address_to_word, b256_to_word},
             },
             op,
         },
@@ -102,10 +98,6 @@ mod tests {
 
     fn neg(value: u64) -> Word {
         Word::from(0).wrapping_sub(Word::from(value))
-    }
-
-    fn address_word(address: Address) -> Word {
-        address.into_word().into()
     }
 
     fn test_host(block: BlockEnv) -> TestHost {
@@ -129,7 +121,7 @@ mod tests {
 
         let interpreter = run_with_host(code, &mut host);
         assert!(matches!(interpreter.err, InstrStop::Stop));
-        assert_eq!(interpreter.stack(), [Word::from_be_bytes(B256::with_last_byte(9).0)]);
+        assert_eq!(interpreter.stack(), [b256_to_word(B256::with_last_byte(9))]);
 
         let mut code = Vec::new();
         push(&mut code, 10);
@@ -146,7 +138,7 @@ mod tests {
         let mut host = test_host(BlockEnv { beneficiary, ..BlockEnv::default() });
         let interpreter = run_with_host([op::COINBASE, op::STOP], &mut host);
         assert!(matches!(interpreter.err, InstrStop::Stop));
-        assert_eq!(interpreter.stack(), [address_word(beneficiary)]);
+        assert_eq!(interpreter.stack(), [address_to_word(beneficiary)]);
     }
 
     #[test]
@@ -180,7 +172,7 @@ mod tests {
         let interpreter =
             run_with_host_and_spec([op::DIFFICULTY, op::STOP], &mut host, SpecId::MERGE);
         assert!(matches!(interpreter.err, InstrStop::Stop));
-        assert_eq!(interpreter.stack(), [Word::from_be_bytes(randao.0)]);
+        assert_eq!(interpreter.stack(), [b256_to_word(randao)]);
     }
 
     #[test]
@@ -198,7 +190,7 @@ mod tests {
             TestHost { tx: TxEnv { address, ..TxEnv::default() }, ..TestHost::default() };
         let interpreter = run_with_host([op::SELFBALANCE, op::STOP], &mut host);
         assert!(matches!(interpreter.err, InstrStop::Stop));
-        assert_eq!(interpreter.stack(), [address_word(address)]);
+        assert_eq!(interpreter.stack(), [address_to_word(address)]);
     }
 
     #[test]

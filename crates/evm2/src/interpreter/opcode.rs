@@ -66,7 +66,7 @@ opcodes! {$
     0x1E => CLZ    => clz;
     // 0x1F
 
-    0x20 => KECCAK256 => keccak256_instr;
+    0x20 => KECCAK256 => keccak256;
     // 0x21
     // 0x22
     // 0x23

@@ -1,34 +1,19 @@
-use super::utils::{as_usize, as_usize_saturated};
-use crate::interpreter::{InstrStop, Result, SpecId, Word, memory::resize_memory};
-use alloy_primitives::{B256, keccak256};
+use super::utils::{address_to_word, as_usize, as_usize_saturated, b256_to_word, check_spec};
+use crate::interpreter::{SpecId, Word, memory::resize_memory};
+use alloy_primitives::{B256, keccak256 as keccak256_hash};
 use evm2_macros::instruction;
 
-fn address_to_word(address: alloy_primitives::Address) -> Word {
-    address.into_word().into()
-}
-
-fn b256_to_word(value: B256) -> Word {
-    Word::from_be_bytes(value.0)
-}
-
-fn check_spec(spec: SpecId, min: SpecId) -> Result {
-    if !spec.enables(min) {
-        return Err(InstrStop::NotActivated);
-    }
-    Ok(())
-}
-
 #[instruction]
-pub(in crate::interpreter) fn keccak256_instr(cx: _, [offset, len]: [Word]) -> Result<out> {
+pub(in crate::interpreter) fn keccak256(cx: _, [offset, len]: [Word]) -> Result<out> {
     let len = as_usize(*len)?;
     let hash = if len == 0 {
-        keccak256([])
+        keccak256_hash([])
     } else {
         let offset = as_usize(*offset)?;
         resize_memory(cx.gas, cx.state.memory, offset, len)?;
-        keccak256(cx.state.memory.slice(offset, len)?)
+        keccak256_hash(cx.state.memory.slice(offset, len)?)
     };
-    *out = Word::from_be_bytes(hash.0);
+    *out = b256_to_word(hash);
 }
 
 #[instruction]
@@ -129,18 +114,15 @@ mod tests {
         env::TxEnv,
         interpreter::{
             InstrStop, SpecId, Word,
-            instructions::tests::{
-                TestHost, push, run, run_stack, run_with_host, run_with_host_and_spec,
+            instructions::{
+                tests::{TestHost, push, run, run_stack, run_with_host, run_with_host_and_spec},
+                utils::{address_to_word, b256_to_word},
             },
             op,
         },
     };
     use alloc::vec::Vec;
     use alloy_primitives::{Address, B256, Bytes, keccak256};
-
-    fn address_word(address: Address) -> Word {
-        address.into_word().into()
-    }
 
     fn test_host(tx: TxEnv) -> TestHost {
         TestHost { tx, ..TestHost::default() }
@@ -164,7 +146,7 @@ mod tests {
         code.push(op::STOP);
         let interpreter = run(code);
         assert!(matches!(interpreter.err, InstrStop::Stop));
-        assert_eq!(interpreter.stack(), [Word::from_be_bytes(keccak256([]).0)]);
+        assert_eq!(interpreter.stack(), [b256_to_word(keccak256([]))]);
 
         let mut code = Vec::new();
         push(&mut code, 0);
@@ -176,11 +158,11 @@ mod tests {
         code.push(op::STOP);
         let interpreter = run(code);
         assert!(matches!(interpreter.err, InstrStop::Stop));
-        assert_eq!(interpreter.stack(), [Word::from_be_bytes(keccak256([0x80]).0)]);
+        assert_eq!(interpreter.stack(), [b256_to_word(keccak256([0x80]))]);
 
         let interpreter = run_stack([Word::MAX, Word::from(0)], op::KECCAK256);
         assert!(matches!(interpreter.err, InstrStop::Stop));
-        assert_eq!(interpreter.stack(), [Word::from_be_bytes(keccak256([]).0)]);
+        assert_eq!(interpreter.stack(), [b256_to_word(keccak256([]))]);
 
         let interpreter = run_stack([Word::MAX, Word::from(1)], op::KECCAK256);
         assert!(matches!(interpreter.err, InstrStop::InvalidOperandOOG));
@@ -192,7 +174,7 @@ mod tests {
         let mut host = test_host(TxEnv { address, ..TxEnv::default() });
         let interpreter = run_with_host([op::ADDRESS, op::STOP], &mut host);
         assert!(matches!(interpreter.err, InstrStop::Stop));
-        assert_eq!(interpreter.stack(), [address_word(address)]);
+        assert_eq!(interpreter.stack(), [address_to_word(address)]);
     }
 
     #[test]
@@ -201,7 +183,7 @@ mod tests {
         let mut host = test_host(TxEnv { origin, ..TxEnv::default() });
         let interpreter = run_with_host([op::ORIGIN, op::STOP], &mut host);
         assert!(matches!(interpreter.err, InstrStop::Stop));
-        assert_eq!(interpreter.stack(), [address_word(origin)]);
+        assert_eq!(interpreter.stack(), [address_to_word(origin)]);
     }
 
     #[test]
@@ -210,7 +192,7 @@ mod tests {
         let mut host = test_host(TxEnv { caller, ..TxEnv::default() });
         let interpreter = run_with_host([op::CALLER, op::STOP], &mut host);
         assert!(matches!(interpreter.err, InstrStop::Stop));
-        assert_eq!(interpreter.stack(), [address_word(caller)]);
+        assert_eq!(interpreter.stack(), [address_to_word(caller)]);
     }
 
     #[test]
@@ -344,7 +326,7 @@ mod tests {
         let interpreter =
             run_with_host_and_spec([op::PUSH0, op::BLOBHASH, op::STOP], &mut host, SpecId::CANCUN);
         assert!(matches!(interpreter.err, InstrStop::Stop));
-        assert_eq!(interpreter.stack(), [Word::from_be_bytes(hash.0)]);
+        assert_eq!(interpreter.stack(), [b256_to_word(hash)]);
 
         let interpreter = run_with_host_and_spec(
             [op::PUSH1, 0x01, op::BLOBHASH, op::STOP],

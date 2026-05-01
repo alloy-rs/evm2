@@ -1,5 +1,16 @@
-use crate::interpreter::{InstrStop, Result, Word};
+use crate::interpreter::{InstrStop, Result, SpecId, Word};
+use alloy_primitives::{Address, B256};
 use core::hint::cold_path;
+
+#[inline]
+pub(in crate::interpreter) fn address_to_word(address: Address) -> Word {
+    address.into_word().into()
+}
+
+#[inline]
+pub(in crate::interpreter) fn b256_to_word(value: B256) -> Word {
+    Word::from_be_bytes(value.0)
+}
 
 #[inline]
 pub(in crate::interpreter) fn as_usize(value: Word) -> Result<usize> {
@@ -12,4 +23,13 @@ pub(in crate::interpreter) fn as_usize(value: Word) -> Result<usize> {
 #[inline]
 pub(in crate::interpreter) fn as_usize_saturated(value: Word) -> usize {
     value.try_into().unwrap_or(usize::MAX)
+}
+
+#[inline]
+pub(in crate::interpreter) fn check_spec(spec: SpecId, min: SpecId) -> Result {
+    if !spec.enables(min) {
+        cold_path();
+        return Err(InstrStop::NotActivated);
+    }
+    Ok(())
 }
