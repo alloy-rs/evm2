@@ -30,12 +30,13 @@ impl<'a> Stack<'a> {
 
     /// Checks that an instruction can consume `input` words and produce `output` words.
     #[inline]
-    pub fn check_bounds(&self, input: usize, output: usize) -> Result {
+    pub(crate) fn check_bounds(&self, input: usize, output: usize) -> Result {
+        debug_assert!(output == 0 || output == 1);
         if self.len < input {
             cold_path();
             return Err(InstrErr::StackUnderflow);
         }
-        if self.len - input + output > 1024 {
+        if self.len - input == 1024 {
             cold_path();
             return Err(InstrErr::StackOverflow);
         }
@@ -56,18 +57,6 @@ impl<'a> Stack<'a> {
             self.len = len + 1;
         }
         Ok(())
-    }
-
-    /// Pushes an uninitialized slot and returns it for writing.
-    #[inline]
-    pub fn push_slot(&mut self) -> Result<&mut Word> {
-        if self.len == 1024 {
-            cold_path();
-            return Err(InstrErr::StackOverflow);
-        }
-        let index = self.len;
-        self.len += 1;
-        Ok(unsafe { self.stack.get_unchecked_mut(index) })
     }
 
     /// Pops one word from the stack.
@@ -128,7 +117,7 @@ impl<'a> Stack<'a> {
     pub fn dup(&mut self, n: usize) -> Result {
         debug_assert!(n > 0, "attempted to dup 0");
         let len = self.len;
-        if (len < n) | (len + 1 > 1024) {
+        if (len < n) | (len == 1024) {
             cold_path();
             return Err(if len == 1024 {
                 InstrErr::StackOverflow

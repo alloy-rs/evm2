@@ -52,7 +52,11 @@ pub(in crate::interpreter) fn exchange(cx: _) -> Result {
 }
 
 const fn decode_single(x: u8) -> Option<usize> {
-    if x <= 90 || x >= 128 { Some(x.wrapping_add(145) as usize) } else { None }
+    if x <= 90 || x >= 128 {
+        Some(x.wrapping_add(145) as usize)
+    } else {
+        None
+    }
 }
 
 const fn decode_pair(x: u8) -> Option<(usize, usize)> {
@@ -62,15 +66,18 @@ const fn decode_pair(x: u8) -> Option<(usize, usize)> {
     let k = (x ^ 143) as usize;
     let q = k / 16;
     let r = k % 16;
-    if q < r { Some((q + 1, r + 1)) } else { Some((r + 1, 29 - q)) }
+    if q < r {
+        Some((q + 1, r + 1))
+    } else {
+        Some((r + 1, 29 - q))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use crate::interpreter::{
-        InstrErr, Word,
         instructions::tests::{push, run, run_stack},
-        op,
+        op, InstrErr, Word,
     };
     use alloc::{vec, vec::Vec};
 
