@@ -4,8 +4,8 @@ use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::{
-    AngleBracketedGenericArguments, FnArg, GenericArgument, Ident, ItemFn, Pat, PatIdent, PatSlice,
-    PathArguments, ReturnType, Stmt, Token, Type, TypeInfer, TypePath, TypeSlice,
+    AngleBracketedGenericArguments, FnArg, GenericArgument, Ident, ItemFn, LitStr, Pat, PatIdent,
+    PatSlice, PathArguments, ReturnType, Stmt, Token, Type, TypeInfer, TypePath, TypeSlice,
     parse_macro_input, punctuated::Punctuated,
 };
 
@@ -23,6 +23,7 @@ fn expand_instruction(raw: bool, input: ItemFn) -> TokenStream2 {
     let vis = input.vis;
     let sig = input.sig;
     let ident = sig.ident;
+    let asm_comment = LitStr::new(&ident.to_string(), ident.span());
     let generics = sig.generics;
     let where_clause = generics.where_clause.clone();
     let (impl_generics, type_generics, _) = generics.split_for_impl();
@@ -78,6 +79,7 @@ fn expand_instruction(raw: bool, input: ItemFn) -> TokenStream2 {
                 __evm2_gas: &mut evm2::interpreter::Gas,
                 __evm2_state: &mut evm2::interpreter::State<'_>,
             ) -> evm2::interpreter::Result {
+                evm2::asm_comment!(#asm_comment);
                 #cx_setup
                 #stack_setup
                 #body
