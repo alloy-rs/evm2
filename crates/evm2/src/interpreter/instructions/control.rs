@@ -1,5 +1,5 @@
 use super::utils::as_usize;
-use crate::interpreter::{InstrErr, Word};
+use crate::interpreter::{InstrErr, Word, memory::resize_memory};
 use core::hint::cold_path;
 use evm2_macros::instruction;
 
@@ -52,7 +52,7 @@ pub(in crate::interpreter) fn ret(cx: _, [offset, len]: [Word]) -> Result {
     let len = as_usize(*len)?;
     if len != 0 {
         let offset = as_usize(*offset)?;
-        crate::interpreter::memory::resize_memory(cx.gas, cx.state.memory, offset, len)?;
+        resize_memory(cx.gas, cx.state.memory, offset, len)?;
     }
     Err(InstrErr::Return)
 }
@@ -62,7 +62,7 @@ pub(in crate::interpreter) fn revert(cx: _, [offset, len]: [Word]) -> Result {
     let len = as_usize(*len)?;
     if len != 0 {
         let offset = as_usize(*offset)?;
-        crate::interpreter::memory::resize_memory(cx.gas, cx.state.memory, offset, len)?;
+        resize_memory(cx.gas, cx.state.memory, offset, len)?;
     }
     Err(InstrErr::Revert)
 }
