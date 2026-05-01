@@ -1,6 +1,6 @@
 use super::{
     BytecodeRef, Gas, GasParams, Host, InstrStop, Memory, Message, PcMut, Result, Stack, State,
-    Word, instructions::table::GasTable,
+    Word,
 };
 use crate::{EvmConfig, bytecode::Bytecode, env::TxEnv};
 use alloc::boxed::Box;
@@ -47,7 +47,7 @@ impl Interpreter {
         self.gas_params = GasParams::new(C::GAS_PARAMS);
         let _gas_start = self.gas.remaining();
 
-        let _r = self.run_table_loop::<C>(&C::GAS_TABLE, host);
+        let _r = self.run_table_loop::<C>(host);
 
         #[cfg(feature = "std")]
         {
@@ -58,13 +58,9 @@ impl Interpreter {
         _r
     }
 
-    fn run_table_loop<C: EvmConfig>(
-        &mut self,
-        gas_table: &GasTable,
-        host: &mut dyn Host,
-    ) -> InstrStop {
+    fn run_table_loop<C: EvmConfig>(&mut self, host: &mut dyn Host) -> InstrStop {
         loop {
-            if let Err(e) = self.step::<C>(gas_table, host) {
+            if let Err(e) = self.step::<C>(host) {
                 cold_path();
                 return e;
             }
@@ -72,19 +68,19 @@ impl Interpreter {
     }
 
     #[inline(always)]
-    pub(crate) fn pre_step(mut pc: PcMut<'_>, gas: &mut Gas, gas_table: &GasTable) -> Result<u8> {
+    pub(crate) fn pre_step<C: EvmConfig>(mut pc: PcMut<'_>, gas: &mut Gas) -> Result<u8> {
         let op = pc.op();
         unsafe { pc.advance_unchecked(1) };
-        gas.spend(gas_table[op as usize] as _)?;
+        gas.spend(C::GAS_TABLE[op as usize] as _)?;
         Ok(op)
     }
 
     #[inline(always)]
-    fn step<C: EvmConfig>(&mut self, gas_table: &GasTable, host: &mut dyn Host) -> Result {
+    fn step<C: EvmConfig>(&mut self, host: &mut dyn Host) -> Result {
         let raw = self as *mut Self;
         let bytecode = BytecodeRef::new(&self.bytecode);
         let mut pc = PcMut::new(bytecode, &mut self.pc);
-        let op = Self::pre_step(pc.reborrow(), &mut self.gas, gas_table)?;
+        let op = Self::pre_step::<C>(pc.reborrow(), &mut self.gas)?;
         let instr = C::INSTRUCTIONS[op as usize];
         let (len, r) = (instr.f)(
             Stack::new(&mut self.stack, self.stack_len),

@@ -70,7 +70,6 @@ pub(crate) type TailInstructionFn<C> = extern_table!(
         pc: Pc<'_>,
         gas: &mut Gas,
         state: &mut State<'_>,
-        gas_table: &GasTable,
         instr: Option<&'static dyn Instruction<C>>,
         instr_tablep: *const (),
     ) -> TailInstructionFnRet
@@ -412,7 +411,6 @@ extern_table! {
         mut pc: Pc<'_>,
         gas: &mut Gas,
         state: &mut State<'_>,
-        gast: &GasTable,
         instr: Option<&'static dyn Instruction<C>>,
         instrsp: *const (),
     ) -> TailInstructionFnRet {
@@ -424,12 +422,11 @@ extern_table! {
                 pc,
                 gas,
                 state,
-                gast,
                 Some(instr),
                 e as usize as *const (),
             ));
         }
-        tail_return!(tail_call_next::<C>(stack, pc, gas, state, gast, Some(instr), instrsp));
+        tail_return!(tail_call_next::<C>(stack, pc, gas, state, Some(instr), instrsp));
     }
 }
 
@@ -440,11 +437,10 @@ extern_table! {
         mut pc: Pc<'_>,
         gas: &mut Gas,
         state: &mut State<'_>,
-        gast: &GasTable,
         _instr: Option<&'static dyn Instruction<C>>,
         instrsp: *const (),
     ) -> TailInstructionFnRet {
-        let op = match Interpreter::pre_step(pc.as_mut(), gas, gast) {
+        let op = match Interpreter::pre_step::<C>(pc.as_mut(), gas) {
             Ok(op) => op,
             Err(e) => {
                 cold_path();
@@ -453,7 +449,6 @@ extern_table! {
                     pc,
                     gas,
                     state,
-                    gast,
                     None,
                     e as usize as *const (),
                 ));
@@ -462,7 +457,7 @@ extern_table! {
         // SAFETY: Restoring type-erased table pointer. See [`TailInstructionFn`].
         let instrs = unsafe { &*instrsp.cast::<TailInstructionTable<C>>() };
         let instr = instrs[op as usize];
-        tail_return!((instr.f)(stack, pc, gas, state, gast, instr.instr, instrsp));
+        tail_return!((instr.f)(stack, pc, gas, state, instr.instr, instrsp));
     }
 }
 
@@ -474,7 +469,6 @@ extern_table! {
         pc: Pc<'_>,
         _gas: &mut Gas,
         state: &mut State<'_>,
-        _gast: &GasTable,
         _instr: Option<&'static dyn Instruction<C>>,
         ret: *const (), // Tail calls require same function signature, this is unused so we pass the return value here.
     ) -> TailInstructionFnRet {
