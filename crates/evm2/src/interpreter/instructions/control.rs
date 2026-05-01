@@ -39,6 +39,11 @@ pub(in crate::interpreter) fn pc(cx: _) -> out {
 }
 
 #[instruction]
+pub(in crate::interpreter) fn gas(cx: _) -> out {
+    *out = Word::from(cx.gas.remaining());
+}
+
+#[instruction]
 pub(in crate::interpreter) fn jumpdest() {}
 
 #[instruction]
@@ -156,6 +161,19 @@ mod tests {
         let interpreter = run([op::JUMPDEST, op::PC, op::STOP]);
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::from(1)]);
+    }
+
+    #[test]
+    fn gas_opcode() {
+        let interpreter = run([op::GAS, op::STOP]);
+        core::assert_matches!(interpreter.err, InstrStop::Stop);
+        assert_eq!(interpreter.stack().len(), 1);
+        assert!(interpreter.stack()[0] < Word::from(10_000));
+
+        let interpreter = run([op::GAS, op::GAS, op::STOP]);
+        core::assert_matches!(interpreter.err, InstrStop::Stop);
+        assert_eq!(interpreter.stack().len(), 2);
+        assert!(interpreter.stack()[1] < interpreter.stack()[0]);
     }
 
     #[test]
