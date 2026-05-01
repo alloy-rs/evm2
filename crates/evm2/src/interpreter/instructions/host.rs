@@ -46,7 +46,7 @@ pub(in crate::interpreter) fn block_number(cx: _) -> out {
 #[instruction]
 pub(in crate::interpreter) fn difficulty(cx: _) -> out {
     *out = if cx.state.spec.enables(SpecId::MERGE) {
-        cx.state.block.prevrandao.unwrap()
+        cx.state.block.prevrandao
     } else {
         cx.state.block.difficulty
     };
@@ -162,7 +162,7 @@ mod tests {
         let randao = B256::with_last_byte(0x55);
         let mut host = test_host(BlockEnv {
             difficulty: Word::from(14),
-            prevrandao: Some(b256_to_word(randao)),
+            prevrandao: b256_to_word(randao),
             ..BlockEnv::default()
         });
         let interpreter = run_with_host([op::DIFFICULTY, op::STOP], &mut host);

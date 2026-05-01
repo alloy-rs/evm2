@@ -32,7 +32,7 @@ impl Default for TxEnv {
             gas_price: U256::ZERO,
             call_value: U256::ZERO,
             calldata: Bytes::new(),
-            chain_id: U256::ZERO,
+            chain_id: U256::ONE,
             blob_hashes: vec![],
         }
     }
@@ -54,7 +54,7 @@ pub struct BlockEnv {
     /// Pre-merge block difficulty.
     pub difficulty: U256,
     /// Post-merge randomness value.
-    pub prevrandao: Option<U256>,
+    pub prevrandao: U256,
     /// Blob base fee.
     pub blob_basefee: U256,
     /// Beacon slot number.
@@ -67,12 +67,12 @@ impl Default for BlockEnv {
         Self {
             number: U256::ZERO,
             beneficiary: Address::ZERO,
-            timestamp: U256::ZERO,
+            timestamp: U256::ONE,
             gas_limit: U256::from_limbs([u64::MAX, 0, 0, 0]),
             basefee: U256::ZERO,
             difficulty: U256::ZERO,
-            prevrandao: Some(U256::ZERO),
-            blob_basefee: U256::ZERO,
+            prevrandao: U256::ZERO,
+            blob_basefee: U256::ONE,
             slot_num: U256::ZERO,
         }
     }
