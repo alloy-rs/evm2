@@ -69,6 +69,7 @@ fn expand_instruction(raw: bool, input: ItemFn) -> TokenStream2 {
             let mut #cx = evm2::interpreter::table::InstructionCx {
                 pc: __evm2_pc,
                 gas: __evm2_gas,
+                gas_params: &C::GAS_PARAMS,
                 state: __evm2_state,
             };
         }

@@ -113,7 +113,6 @@ impl Interpreter {
                 memory: &mut self.memory,
                 return_data: &self.return_data,
                 spec: C::SPEC_ID,
-                gas_params: &C::GAS_PARAMS,
                 raw_interp: raw,
             },
         );
@@ -144,7 +143,6 @@ impl Interpreter {
                 memory: &mut self.memory,
                 return_data: &self.return_data,
                 spec: C::SPEC_ID,
-                gas_params: &C::GAS_PARAMS,
                 raw_interp: raw,
             },
             <C as InterpreterConfig>::TAIL_INSTRUCTIONS.as_ptr().cast(),

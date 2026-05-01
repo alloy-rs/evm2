@@ -11,7 +11,7 @@ fn load_account(
     addr: Word,
     load_code: bool,
 ) -> Result<AccountLoad> {
-    let cold_load_gas = cx.state.gas_params.cold_account_additional_cost();
+    let cold_load_gas = cx.gas_params.cold_account_additional_cost();
     let skip_cold_load = cx.gas.remaining() < cold_load_gas;
     let account = cx.state.host.load_account(addr, load_code, skip_cold_load)?;
     if account.is_cold {
@@ -117,7 +117,7 @@ pub(in crate::interpreter) fn extcodecopy(
     [addr, memory_offset, code_offset, len]: [Word],
 ) -> Result {
     let len = as_usize(len)?;
-    cx.gas.spend(cx.state.gas_params.extcodecopy_cost(len))?;
+    cx.gas.spend(cx.gas_params.extcodecopy_cost(len))?;
 
     let mut memory_offset_usize = 0;
     if len != 0 {
@@ -148,7 +148,7 @@ pub(in crate::interpreter) fn returndatacopy(
         return Err(InstrStop::OutOfOffset);
     }
 
-    cx.gas.spend(cx.state.gas_params.copy_cost(len))?;
+    cx.gas.spend(cx.gas_params.copy_cost(len))?;
     if len == 0 {
         return Ok(());
     }

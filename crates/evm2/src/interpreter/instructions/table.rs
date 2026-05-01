@@ -5,7 +5,7 @@ use crate::interpreter::{InstrStop, Interpreter, Pc};
 use crate::{
     EvmConfig,
     interpreter::{
-        Gas, PcMut, Result, SpecId, Stack, State,
+        Gas, GasParams, PcMut, Result, SpecId, Stack, State,
         gas::{
             BASE, BLOCKHASH, EXP, HIGH, ISTANBUL_SLOAD_GAS, JUMPDEST, KECCAK256, LOG, LOW, MID,
             VERYLOW, WARM_STORAGE_READ_COST, ZERO,
@@ -119,6 +119,8 @@ pub(crate) struct InstructionCx<'a, 'ctrl, 'state> {
     pub pc: PcMut<'ctrl>,
     /// Gas state.
     pub gas: &'a mut Gas,
+    /// Dynamic gas parameters for the active config.
+    pub gas_params: &'a GasParams,
     /// Interpreter state.
     pub state: &'a mut State<'state>,
 }
