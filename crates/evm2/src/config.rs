@@ -1,9 +1,6 @@
 //! EVM configuration.
 
-use crate::interpreter::{
-    GasParams, GasTable, InstructionImplTable, SpecId,
-    table::{make_instruction_table, new_gas_table},
-};
+use crate::interpreter::{GasParams, GasTable, InstructionImplTable, SpecId};
 use core::marker::PhantomData;
 
 /// EVM configuration.
@@ -15,13 +12,13 @@ pub trait EvmConfig: Sized + 'static {
     const SPEC_ID: SpecId;
 
     /// Static opcode gas table.
-    const GAS_TABLE: GasTable = new_gas_table(Self::SPEC_ID);
+    const GAS_TABLE: GasTable = GasTable::new_spec(Self::SPEC_ID);
 
     /// Dynamic gas parameter table.
     const GAS_PARAMS: GasParams = GasParams::new_spec(Self::SPEC_ID);
 
     /// Instruction implementations.
-    const INSTRUCTION_IMPLS: InstructionImplTable<Self> = make_instruction_table::<Self>();
+    const INSTRUCTION_IMPLS: InstructionImplTable<Self> = InstructionImplTable::new();
 }
 
 /// EVM configuration for a specification ID.
