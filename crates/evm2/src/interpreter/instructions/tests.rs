@@ -1,7 +1,7 @@
 use crate::{
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
-    interpreter::{Host, InstrStop, Interpreter, SpecId, Word, op},
+    interpreter::{Gas, Host, InstrStop, Interpreter, SpecId, Word, op},
 };
 use alloc::vec::Vec;
 use alloy_primitives::{B256, Bytes};
@@ -72,6 +72,10 @@ impl TestInterpreter {
     pub(super) fn memory(&mut self, offset: usize, len: usize) -> &[u8] {
         self.inner.memory.slice(offset, len).unwrap()
     }
+
+    pub(super) fn gas_remaining(&self) -> u64 {
+        self.inner.gas.remaining()
+    }
 }
 
 pub(super) fn run(code: impl Into<Vec<u8>>) -> TestInterpreter {
@@ -88,8 +92,20 @@ pub(super) fn run_with_host_and_spec(
     host: &mut dyn Host,
     spec_id: SpecId,
 ) -> TestInterpreter {
+    run_with_host_and_spec_config(code, host, spec_id, false, 10_000)
+}
+
+pub(super) fn run_with_host_and_spec_config(
+    code: impl Into<Vec<u8>>,
+    host: &mut dyn Host,
+    spec_id: SpecId,
+    is_static: bool,
+    gas_limit: u64,
+) -> TestInterpreter {
     let bytecode = Bytecode::new_legacy(Bytes::from(code.into()));
     let mut inner = Interpreter::new(bytecode, spec_id);
+    inner.is_static = is_static;
+    inner.gas = Gas::new(gas_limit);
     let err = inner.run(host);
     TestInterpreter { inner, err }
 }

@@ -17,6 +17,8 @@ pub struct State<'a> {
     pub memory: &'a mut Memory,
     /// Active spec identifier.
     pub spec: SpecId,
+    /// Whether state-changing opcodes are forbidden.
+    pub is_static: bool,
     pub(crate) raw_interp: *mut Interpreter,
 }
 
@@ -28,6 +30,7 @@ impl fmt::Debug for State<'_> {
             .field("block", &self.block)
             .field("memory", &self.memory)
             .field("spec", &self.spec)
+            .field("is_static", &self.is_static)
             .field("raw_interp", &self.raw_interp)
             .finish_non_exhaustive()
     }

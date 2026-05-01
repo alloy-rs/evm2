@@ -31,6 +31,7 @@ pub struct Interpreter {
     pub(crate) gas: Gas,
     pub(crate) memory: Memory,
     spec_id: SpecId,
+    pub(crate) is_static: bool,
 }
 
 impl Interpreter {
@@ -45,6 +46,7 @@ impl Interpreter {
             gas: Gas::new(10_000),
             memory: Memory::new(),
             spec_id,
+            is_static: false,
         }
     }
 
@@ -120,6 +122,7 @@ impl Interpreter {
             block,
             memory: &mut self.memory,
             spec: self.spec_id,
+            is_static: self.is_static,
             raw_interp: core::ptr::null_mut(),
         };
 
@@ -192,6 +195,7 @@ impl Interpreter {
                 block,
                 memory: &mut self.memory,
                 spec: self.spec_id,
+                is_static: self.is_static,
                 raw_interp: core::ptr::null_mut(),
             },
         );
@@ -226,6 +230,7 @@ impl Interpreter {
                 block,
                 memory: &mut self.memory,
                 spec: self.spec_id,
+                is_static: self.is_static,
                 raw_interp: raw,
             },
             gas_table,
