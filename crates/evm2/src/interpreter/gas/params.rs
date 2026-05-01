@@ -188,7 +188,7 @@ gas_ids! {
 }
 
 /// Gas parameter table.
-pub type GasParamTable = [u64; 256];
+pub type GasParamTable = [u32; 256];
 
 /// Returns the number of EVM words needed for `len` bytes.
 #[inline]
@@ -202,15 +202,8 @@ pub struct GasParams {
     table: GasParamTable,
 }
 
-impl Default for GasParams {
-    #[inline]
-    fn default() -> Self {
-        Self::new_spec(SpecId::default())
-    }
-}
-
 impl Index<GasId> for GasParams {
-    type Output = u64;
+    type Output = u32;
 
     #[inline]
     fn index(&self, id: GasId) -> &Self::Output {
@@ -234,122 +227,121 @@ impl GasParams {
 
     /// Creates gas parameters for `spec`.
     #[inline]
-    pub fn new_spec(spec: SpecId) -> Self {
+    pub const fn new_spec(spec: SpecId) -> Self {
         Self::new_spec_inner(spec)
     }
 
     #[inline]
-    fn new_spec_inner(spec: SpecId) -> Self {
-        let mut params = Self::new([0; 256]);
+    const fn new_spec_inner(spec: SpecId) -> Self {
+        use GasId::*;
+        use gas::*;
 
-        params[GasId::ExpByteGas] = 10;
-        params[GasId::Logdata] = gas::LOGDATA;
-        params[GasId::Logtopic] = gas::LOGTOPIC;
-        params[GasId::CopyPerWord] = gas::COPY;
-        params[GasId::ExtcodecopyPerWord] = gas::COPY;
-        params[GasId::McopyPerWord] = gas::COPY;
-        params[GasId::Keccak256PerWord] = gas::KECCAK256WORD;
-        params[GasId::MemoryLinearCost] = gas::MEMORY;
-        params[GasId::MemoryQuadraticReduction] = 512;
-        params[GasId::InitcodePerWord] = gas::INITCODE_WORD_COST;
-        params[GasId::Create] = gas::CREATE;
-        params[GasId::CallStipendReduction] = 64;
-        params[GasId::TransferValueCost] = gas::CALLVALUE;
-        params[GasId::ColdAccountAdditionalCost] = 0;
-        params[GasId::NewAccountCost] = gas::NEWACCOUNT;
-        params[GasId::WarmStorageReadCost] = 0;
-        params[GasId::SstoreStatic] = gas::SSTORE_RESET;
-        params[GasId::SstoreSetWithoutLoadCost] = gas::SSTORE_SET - gas::SSTORE_RESET;
-        params[GasId::SstoreResetWithoutColdLoadCost] = 0;
-        params[GasId::SstoreSetRefund] = gas::SSTORE_SET - gas::SSTORE_RESET;
-        params[GasId::SstoreResetRefund] = 0;
-        params[GasId::SstoreClearingSlotRefund] = gas::REFUND_SSTORE_CLEARS;
-        params[GasId::SelfdestructRefund] = gas::SELFDESTRUCT_REFUND;
-        params[GasId::CallStipend] = gas::CALL_STIPEND;
-        params[GasId::ColdStorageAdditionalCost] = 0;
-        params[GasId::ColdStorageCost] = 0;
-        params[GasId::NewAccountCostForSelfdestruct] = 0;
-        params[GasId::CodeDepositCost] = gas::CODEDEPOSIT;
-        params[GasId::TxTokenNonZeroByteMultiplier] = gas::NON_ZERO_BYTE_MULTIPLIER;
-        params[GasId::TxTokenCost] = gas::STANDARD_TOKEN_COST;
-        params[GasId::TxBaseStipend] = 21000;
+        let mut t = [0u32; 256];
+
+        t[ExpByteGas as usize] = 10;
+        t[Logdata as usize] = LOGDATA;
+        t[Logtopic as usize] = LOGTOPIC;
+        t[CopyPerWord as usize] = COPY;
+        t[ExtcodecopyPerWord as usize] = COPY;
+        t[McopyPerWord as usize] = COPY;
+        t[Keccak256PerWord as usize] = KECCAK256WORD;
+        t[MemoryLinearCost as usize] = MEMORY;
+        t[MemoryQuadraticReduction as usize] = 512;
+        t[InitcodePerWord as usize] = INITCODE_WORD_COST;
+        t[Create as usize] = CREATE;
+        t[CallStipendReduction as usize] = 64;
+        t[TransferValueCost as usize] = CALLVALUE;
+        t[ColdAccountAdditionalCost as usize] = 0;
+        t[NewAccountCost as usize] = NEWACCOUNT;
+        t[WarmStorageReadCost as usize] = 0;
+        t[SstoreStatic as usize] = SSTORE_RESET;
+        t[SstoreSetWithoutLoadCost as usize] = SSTORE_SET - SSTORE_RESET;
+        t[SstoreResetWithoutColdLoadCost as usize] = 0;
+        t[SstoreSetRefund as usize] = SSTORE_SET - SSTORE_RESET;
+        t[SstoreResetRefund as usize] = 0;
+        t[SstoreClearingSlotRefund as usize] = REFUND_SSTORE_CLEARS;
+        t[SelfdestructRefund as usize] = SELFDESTRUCT_REFUND;
+        t[CallStipend as usize] = CALL_STIPEND;
+        t[ColdStorageAdditionalCost as usize] = 0;
+        t[ColdStorageCost as usize] = 0;
+        t[NewAccountCostForSelfdestruct as usize] = 0;
+        t[CodeDepositCost as usize] = CODEDEPOSIT;
+        t[TxTokenNonZeroByteMultiplier as usize] = NON_ZERO_BYTE_MULTIPLIER;
+        t[TxTokenCost as usize] = STANDARD_TOKEN_COST;
+        t[TxBaseStipend as usize] = 21000;
 
         if spec.enables(SpecId::HOMESTEAD) {
-            params[GasId::TxCreateCost] = gas::CREATE;
+            t[TxCreateCost as usize] = CREATE;
         }
 
         if spec.enables(SpecId::TANGERINE) {
-            params[GasId::NewAccountCostForSelfdestruct] = gas::NEWACCOUNT;
+            t[NewAccountCostForSelfdestruct as usize] = NEWACCOUNT;
         }
 
         if spec.enables(SpecId::SPURIOUS_DRAGON) {
-            params[GasId::ExpByteGas] = 50;
+            t[ExpByteGas as usize] = 50;
         }
 
         if spec.enables(SpecId::ISTANBUL) {
-            params[GasId::SstoreStatic] = gas::ISTANBUL_SLOAD_GAS;
-            params[GasId::SstoreSetWithoutLoadCost] = gas::SSTORE_SET - gas::ISTANBUL_SLOAD_GAS;
-            params[GasId::SstoreResetWithoutColdLoadCost] =
-                gas::SSTORE_RESET - gas::ISTANBUL_SLOAD_GAS;
-            params[GasId::SstoreSetRefund] = gas::SSTORE_SET - gas::ISTANBUL_SLOAD_GAS;
-            params[GasId::SstoreResetRefund] = gas::SSTORE_RESET - gas::ISTANBUL_SLOAD_GAS;
-            params[GasId::TxTokenNonZeroByteMultiplier] = gas::NON_ZERO_BYTE_MULTIPLIER_ISTANBUL;
+            t[SstoreStatic as usize] = ISTANBUL_SLOAD_GAS;
+            t[SstoreSetWithoutLoadCost as usize] = SSTORE_SET - ISTANBUL_SLOAD_GAS;
+            t[SstoreResetWithoutColdLoadCost as usize] = SSTORE_RESET - ISTANBUL_SLOAD_GAS;
+            t[SstoreSetRefund as usize] = SSTORE_SET - ISTANBUL_SLOAD_GAS;
+            t[SstoreResetRefund as usize] = SSTORE_RESET - ISTANBUL_SLOAD_GAS;
+            t[TxTokenNonZeroByteMultiplier as usize] = NON_ZERO_BYTE_MULTIPLIER_ISTANBUL;
         }
 
         if spec.enables(SpecId::BERLIN) {
-            params[GasId::SstoreStatic] = gas::WARM_STORAGE_READ_COST;
-            params[GasId::ColdAccountAdditionalCost] = gas::COLD_ACCOUNT_ACCESS_COST_ADDITIONAL;
-            params[GasId::ColdStorageAdditionalCost] =
-                gas::COLD_SLOAD_COST - gas::WARM_STORAGE_READ_COST;
-            params[GasId::ColdStorageCost] = gas::COLD_SLOAD_COST;
-            params[GasId::WarmStorageReadCost] = gas::WARM_STORAGE_READ_COST;
-            params[GasId::SstoreResetWithoutColdLoadCost] =
-                gas::WARM_SSTORE_RESET - gas::WARM_STORAGE_READ_COST;
-            params[GasId::SstoreSetWithoutLoadCost] = gas::SSTORE_SET - gas::WARM_STORAGE_READ_COST;
-            params[GasId::SstoreSetRefund] = gas::SSTORE_SET - gas::WARM_STORAGE_READ_COST;
-            params[GasId::SstoreResetRefund] = gas::WARM_SSTORE_RESET - gas::WARM_STORAGE_READ_COST;
-            params[GasId::TxAccessListAddressCost] = gas::ACCESS_LIST_ADDRESS;
-            params[GasId::TxAccessListStorageKeyCost] = gas::ACCESS_LIST_STORAGE_KEY;
+            t[SstoreStatic as usize] = WARM_STORAGE_READ_COST;
+            t[ColdAccountAdditionalCost as usize] = COLD_ACCOUNT_ACCESS_COST_ADDITIONAL;
+            t[ColdStorageAdditionalCost as usize] = COLD_SLOAD_COST - WARM_STORAGE_READ_COST;
+            t[ColdStorageCost as usize] = COLD_SLOAD_COST;
+            t[WarmStorageReadCost as usize] = WARM_STORAGE_READ_COST;
+            t[SstoreResetWithoutColdLoadCost as usize] = WARM_SSTORE_RESET - WARM_STORAGE_READ_COST;
+            t[SstoreSetWithoutLoadCost as usize] = SSTORE_SET - WARM_STORAGE_READ_COST;
+            t[SstoreSetRefund as usize] = SSTORE_SET - WARM_STORAGE_READ_COST;
+            t[SstoreResetRefund as usize] = WARM_SSTORE_RESET - WARM_STORAGE_READ_COST;
+            t[TxAccessListAddressCost as usize] = ACCESS_LIST_ADDRESS;
+            t[TxAccessListStorageKeyCost as usize] = ACCESS_LIST_STORAGE_KEY;
         }
 
         if spec.enables(SpecId::LONDON) {
-            params[GasId::SstoreClearingSlotRefund] =
-                gas::WARM_SSTORE_RESET + gas::ACCESS_LIST_STORAGE_KEY;
-            params[GasId::SelfdestructRefund] = 0;
+            t[SstoreClearingSlotRefund as usize] = WARM_SSTORE_RESET + ACCESS_LIST_STORAGE_KEY;
+            t[SelfdestructRefund as usize] = 0;
         }
 
         if spec.enables(SpecId::SHANGHAI) {
-            params[GasId::TxInitcodeCost] = gas::INITCODE_WORD_COST;
+            t[TxInitcodeCost as usize] = INITCODE_WORD_COST;
         }
 
         if spec.enables(SpecId::PRAGUE) {
-            params[GasId::TxEip7702PerEmptyAccountCost] = gas::EIP7702_PER_EMPTY_ACCOUNT_COST;
-            params[GasId::TxEip7702AuthRefund] =
-                gas::EIP7702_PER_EMPTY_ACCOUNT_COST - gas::EIP7702_PER_AUTH_BASE_COST;
-            params[GasId::TxFloorCostPerToken] = gas::TOTAL_COST_FLOOR_PER_TOKEN;
-            params[GasId::TxFloorCostBaseGas] = 21000;
+            t[TxEip7702PerEmptyAccountCost as usize] = EIP7702_PER_EMPTY_ACCOUNT_COST;
+            t[TxEip7702AuthRefund as usize] =
+                EIP7702_PER_EMPTY_ACCOUNT_COST - EIP7702_PER_AUTH_BASE_COST;
+            t[TxFloorCostPerToken as usize] = TOTAL_COST_FLOOR_PER_TOKEN;
+            t[TxFloorCostBaseGas as usize] = 21000;
         }
 
         if spec.enables(SpecId::AMSTERDAM) {
-            const CPSB: u64 = 1174;
+            const CPSB: u32 = 1174;
 
-            params[GasId::Create] = 9000;
-            params[GasId::TxCreateCost] = 9000;
-            params[GasId::CodeDepositCost] = 0;
-            params[GasId::NewAccountCost] = 0;
-            params[GasId::NewAccountCostForSelfdestruct] = 0;
-            params[GasId::SstoreSetWithoutLoadCost] = 2800;
-            params[GasId::SstoreSetStateGas] = 32 * CPSB;
-            params[GasId::NewAccountStateGas] = 112 * CPSB;
-            params[GasId::CodeDepositStateGas] = CPSB;
-            params[GasId::CreateStateGas] = 112 * CPSB;
-            params[GasId::SstoreSetRefund] = 32 * CPSB + 2800;
-            params[GasId::TxEip7702PerEmptyAccountCost] = 7500 + (112 + 23) * CPSB;
-            params[GasId::TxEip7702AuthRefund] = 112 * CPSB;
-            params[GasId::TxEip7702PerAuthStateGas] = (112 + 23) * CPSB;
+            t[Create as usize] = 9000;
+            t[TxCreateCost as usize] = 9000;
+            t[CodeDepositCost as usize] = 0;
+            t[NewAccountCost as usize] = 0;
+            t[NewAccountCostForSelfdestruct as usize] = 0;
+            t[SstoreSetWithoutLoadCost as usize] = 2800;
+            t[SstoreSetStateGas as usize] = 32 * CPSB;
+            t[NewAccountStateGas as usize] = 112 * CPSB;
+            t[CodeDepositStateGas as usize] = CPSB;
+            t[CreateStateGas as usize] = 112 * CPSB;
+            t[SstoreSetRefund as usize] = 32 * CPSB + 2800;
+            t[TxEip7702PerEmptyAccountCost as usize] = 7500 + (112 + 23) * CPSB;
+            t[TxEip7702AuthRefund as usize] = 112 * CPSB;
+            t[TxEip7702PerAuthStateGas as usize] = (112 + 23) * CPSB;
         }
 
-        params
+        Self::new(t)
     }
 
     /// Returns the raw gas parameter table.
@@ -361,7 +353,7 @@ impl GasParams {
     /// Returns the gas cost for `id`.
     #[inline]
     pub const fn get(&self, id: GasId) -> u64 {
-        self.table[id.as_usize()]
+        self.table[id.as_usize()] as u64
     }
 
     /// Calculates memory expansion cost for `len` words.
@@ -375,8 +367,8 @@ impl GasParams {
 
     /// Calculates dynamic `EXP` gas.
     #[inline]
-    pub fn exp_cost(&self, power: U256) -> u64 {
-        if power.is_zero() {
+    pub const fn exp_cost(&self, power: U256) -> u64 {
+        if power.const_is_zero() {
             return 0;
         }
         self.get(GasId::ExpByteGas).saturating_mul(power.bit_len().div_ceil(8) as u64)
@@ -477,7 +469,7 @@ mod tests {
 
     #[test]
     fn gas_params_override_values() {
-        let mut params = GasParams::default();
+        let mut params = GasParams::new_spec(SpecId::default());
         params[GasId::MemoryLinearCost] = 7;
         params[GasId::MemoryQuadraticReduction] = 1024;
         assert_eq!(params[GasId::MemoryLinearCost], 7);
@@ -495,7 +487,7 @@ mod tests {
         assert_eq!(params.mcopy_cost(33), 6);
         assert_eq!(params.keccak256_word_cost(33), 12);
         assert_eq!(params.exp_cost(U256::ZERO), 0);
-        assert_eq!(params.exp_cost(U256::from(0xff_u64)), 10);
-        assert_eq!(params.exp_cost(U256::from(0x100_u64)), 20);
+        assert_eq!(params.exp_cost(U256::from(0xff)), 10);
+        assert_eq!(params.exp_cost(U256::from(0x100)), 20);
     }
 }
