@@ -8,7 +8,7 @@ use crate::{
 use alloy_primitives::{B256, Bytes, Log, LogData};
 use evm2_macros::instruction;
 
-const fn require_non_staticcall<C: EvmConfig>(cx: &InstructionCx<'_, '_, '_, C>) -> Result {
+const fn require_non_staticcall<C: EvmConfig>(cx: &InstructionCx<'_, '_, C>) -> Result {
     if cx.state.message.is_static() {
         return Err(InstrStop::StateChangeDuringStaticCall);
     }

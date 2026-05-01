@@ -151,9 +151,9 @@ impl<C: EvmConfig> InstructionTables for C {}
 
 /// Instruction execution context.
 #[derive(Debug)]
-pub(crate) struct InstructionCx<'a, 'ctrl, 'state, C: EvmConfig> {
+pub(crate) struct InstructionCx<'a, 'state, C: EvmConfig> {
     /// Program counter state.
-    pub pc: Pc<'ctrl>,
+    pub pc: Pc<'a>,
     /// Gas state.
     pub gas: &'a mut Gas,
     /// Dynamic gas parameters for the active config.

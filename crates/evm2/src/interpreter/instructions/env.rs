@@ -7,7 +7,7 @@ use alloy_primitives::B256;
 use evm2_macros::instruction;
 
 fn load_account<C: EvmConfig>(
-    cx: &mut InstructionCx<'_, '_, '_, C>,
+    cx: &mut InstructionCx<'_, '_, C>,
     addr: Word,
     load_code: bool,
 ) -> Result<AccountLoad> {
