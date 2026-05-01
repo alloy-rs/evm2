@@ -6,7 +6,6 @@ use core::marker::PhantomData;
 pub struct BytecodeRef<'a> {
     base: *const u8,
     len: usize,
-    padded_len: usize,
     jump_table: &'a JumpTable,
     _marker: PhantomData<&'a [u8]>,
 }
@@ -15,7 +14,6 @@ pub struct BytecodeRef<'a> {
 #[derive(Clone, Copy, Debug)]
 pub struct Pc<'a> {
     base: *const u8,
-    len: usize,
     pc: usize,
     _marker: PhantomData<&'a [u8]>,
 }
@@ -24,7 +22,6 @@ pub struct Pc<'a> {
 #[derive(Debug)]
 pub struct PcMut<'a> {
     base: *const u8,
-    len: usize,
     pc: &'a mut usize,
     _marker: PhantomData<&'a [u8]>,
 }
@@ -34,7 +31,6 @@ impl<'a> BytecodeRef<'a> {
         Self {
             base: bytecode.bytecode_ptr(),
             len: bytecode.len(),
-            padded_len: bytecode.bytes_slice().len(),
             jump_table: bytecode.jump_table(),
             _marker: PhantomData,
         }
@@ -75,13 +71,13 @@ impl<'a> BytecodeRef<'a> {
 
 impl<'a> Pc<'a> {
     pub(crate) fn new(bytecode: BytecodeRef<'a>, pc: usize) -> Self {
-        Self { base: bytecode.base, len: bytecode.padded_len, pc, _marker: PhantomData }
+        Self { base: bytecode.base, pc, _marker: PhantomData }
     }
 
     /// Returns a mutable program counter reference.
     #[inline]
     pub fn as_mut(&mut self) -> PcMut<'_> {
-        PcMut { base: self.base, len: self.len, pc: &mut self.pc, _marker: PhantomData }
+        PcMut { base: self.base, pc: &mut self.pc, _marker: PhantomData }
     }
 
     /// Returns the opcode at the current program counter.
@@ -94,18 +90,6 @@ impl<'a> Pc<'a> {
     #[inline]
     pub const fn get(&self) -> usize {
         self.pc
-    }
-
-    /// Returns the bytecode length.
-    #[inline]
-    pub const fn len(&self) -> usize {
-        self.len
-    }
-
-    /// Returns whether the bytecode is empty.
-    #[inline]
-    pub const fn is_empty(&self) -> bool {
-        self.len == 0
     }
 
     /// # Safety
@@ -136,7 +120,7 @@ impl<'a> Pc<'a> {
 
 impl<'a> PcMut<'a> {
     pub(crate) fn new(bytecode: BytecodeRef<'a>, pc: &'a mut usize) -> Self {
-        Self { base: bytecode.base, len: bytecode.padded_len, pc, _marker: PhantomData }
+        Self { base: bytecode.base, pc, _marker: PhantomData }
     }
 
     /// Returns the opcode at the current program counter.
@@ -149,18 +133,6 @@ impl<'a> PcMut<'a> {
     #[inline]
     pub fn get(&self) -> usize {
         *self.pc
-    }
-
-    /// Returns the bytecode length.
-    #[inline]
-    pub const fn len(&self) -> usize {
-        self.len
-    }
-
-    /// Returns whether the bytecode is empty.
-    #[inline]
-    pub const fn is_empty(&self) -> bool {
-        self.len == 0
     }
 
     /// # Safety
