@@ -10,18 +10,6 @@ pub(in crate::interpreter) fn stop() -> Result {
 }
 
 #[instruction]
-pub(in crate::interpreter) fn invalid() -> Result {
-    cold_path();
-    Err(InstrStop::InvalidFEOpcode)
-}
-
-#[instruction]
-pub(in crate::interpreter) fn unknown() -> Result {
-    cold_path();
-    Err(InstrStop::OpcodeNotFound)
-}
-
-#[instruction]
 pub(in crate::interpreter) fn jump(cx: _, [target]: [Word]) -> Result {
     let target = as_usize_saturated(target);
     if !cx.state.bytecode.is_valid_jumpdest(target) {
@@ -71,6 +59,18 @@ pub(in crate::interpreter) fn revert(cx: _, [offset, len]: [Word]) -> Result {
         resize_memory(cx.gas, cx.state.memory, offset, len)?;
     }
     Err(InstrStop::Revert)
+}
+
+#[instruction]
+pub(in crate::interpreter) fn invalid() -> Result {
+    cold_path();
+    Err(InstrStop::InvalidFEOpcode)
+}
+
+#[instruction]
+pub(in crate::interpreter) fn unknown() -> Result {
+    cold_path();
+    Err(InstrStop::OpcodeNotFound)
 }
 
 #[cfg(test)]

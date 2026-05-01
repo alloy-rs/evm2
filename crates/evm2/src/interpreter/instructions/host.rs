@@ -40,28 +40,6 @@ pub(in crate::interpreter) fn blockhash(cx: _, [number]: [Word]) -> Result<out> 
 }
 
 #[instruction]
-pub(in crate::interpreter) fn sload(cx: _, [index]: [Word]) -> out {
-    *out = cx.state.host.sload(index);
-}
-
-#[instruction]
-pub(in crate::interpreter) fn sstore(cx: _, [index, value]: [Word]) {
-    cx.state.host.sstore(index, value);
-}
-
-#[instruction]
-pub(in crate::interpreter) fn tload(cx: _, [index]: [Word]) -> Result<out> {
-    check_spec(cx.state.spec, SpecId::CANCUN)?;
-    *out = cx.state.host.tload(index);
-}
-
-#[instruction]
-pub(in crate::interpreter) fn tstore(cx: _, [index, value]: [Word]) -> Result {
-    check_spec(cx.state.spec, SpecId::CANCUN)?;
-    cx.state.host.tstore(index, value);
-}
-
-#[instruction]
 pub(in crate::interpreter) fn coinbase(cx: _) -> out {
     *out = address_to_word(cx.state.block.beneficiary);
 }
@@ -111,6 +89,28 @@ pub(in crate::interpreter) fn blobbasefee(cx: _) -> Result<out> {
 pub(in crate::interpreter) fn slotnum(cx: _) -> Result<out> {
     check_spec(cx.state.spec, SpecId::AMSTERDAM)?;
     *out = cx.state.block.slot_num;
+}
+
+#[instruction]
+pub(in crate::interpreter) fn sload(cx: _, [index]: [Word]) -> out {
+    *out = cx.state.host.sload(index);
+}
+
+#[instruction]
+pub(in crate::interpreter) fn sstore(cx: _, [index, value]: [Word]) {
+    cx.state.host.sstore(index, value);
+}
+
+#[instruction]
+pub(in crate::interpreter) fn tload(cx: _, [index]: [Word]) -> Result<out> {
+    check_spec(cx.state.spec, SpecId::CANCUN)?;
+    *out = cx.state.host.tload(index);
+}
+
+#[instruction]
+pub(in crate::interpreter) fn tstore(cx: _, [index, value]: [Word]) -> Result {
+    check_spec(cx.state.spec, SpecId::CANCUN)?;
+    cx.state.host.tstore(index, value);
 }
 
 #[cfg(test)]
