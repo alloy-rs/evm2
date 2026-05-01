@@ -11,7 +11,6 @@ extern crate self as evm2;
 extern crate alloc;
 
 pub mod bytecode;
-/// EVM environment types.
 pub mod env;
 pub mod interpreter;
 pub mod registry;
