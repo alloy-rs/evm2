@@ -273,10 +273,10 @@ mod tests {
         resize_memory(&mut gas, &mut memory, 0, 64).unwrap();
         assert_eq!(memory.len(), 64);
 
-        assert!(matches!(
+        core::assert_matches!(
             resize_memory(&mut gas, &mut memory, 0, 96),
             Err(InstrStop::MemoryLimitOOG)
-        ));
+        );
         assert_eq!(memory.len(), 64);
         assert_eq!(gas.memory().words_num, 2);
     }

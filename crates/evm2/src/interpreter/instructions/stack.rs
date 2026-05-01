@@ -77,63 +77,63 @@ mod tests {
     #[test]
     fn pop_opcode() {
         let interpreter = run_stack([1], op::POP);
-        assert!(matches!(interpreter.err, InstrStop::Stop));
+        core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert!(interpreter.stack().is_empty());
 
         let interpreter = run([op::PUSH1, 0x01, op::PUSH1, 0x02, op::POP, op::STOP]);
-        assert!(matches!(interpreter.err, InstrStop::Stop));
+        core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::from(1)]);
     }
 
     #[test]
     fn stack_underflow() {
         let interpreter = run([op::POP]);
-        assert!(matches!(interpreter.err, InstrStop::StackUnderflow));
+        core::assert_matches!(interpreter.err, InstrStop::StackUnderflow);
 
         let interpreter = run([op::DUP1]);
-        assert!(matches!(interpreter.err, InstrStop::StackUnderflow));
+        core::assert_matches!(interpreter.err, InstrStop::StackUnderflow);
 
         let interpreter = run([op::PUSH0, op::SWAP1]);
-        assert!(matches!(interpreter.err, InstrStop::StackUnderflow));
+        core::assert_matches!(interpreter.err, InstrStop::StackUnderflow);
 
         let interpreter = run([op::DUPN, 0x80]);
-        assert!(matches!(interpreter.err, InstrStop::StackUnderflow));
+        core::assert_matches!(interpreter.err, InstrStop::StackUnderflow);
 
         let interpreter = run([op::PUSH0, op::SWAPN, 0x80]);
-        assert!(matches!(interpreter.err, InstrStop::StackUnderflow));
+        core::assert_matches!(interpreter.err, InstrStop::StackUnderflow);
 
         let interpreter = run([op::PUSH0, op::EXCHANGE, 0x8e]);
-        assert!(matches!(interpreter.err, InstrStop::StackUnderflow));
+        core::assert_matches!(interpreter.err, InstrStop::StackUnderflow);
     }
 
     #[test]
     fn stack_overflow() {
         let mut code = vec![op::PUSH0; Stack::CAPACITY];
         let interpreter = run(code.clone());
-        assert!(matches!(interpreter.err, InstrStop::Stop));
+        core::assert_matches!(interpreter.err, InstrStop::Stop);
         code.extend([op::PUSH0]);
         let interpreter = run(code);
-        assert!(matches!(interpreter.err, InstrStop::StackOverflow));
+        core::assert_matches!(interpreter.err, InstrStop::StackOverflow);
 
         let mut code = vec![op::PUSH0; Stack::CAPACITY];
         code.extend([op::PUSH1, 0x00, op::STOP]);
         let interpreter = run(code);
-        assert!(matches!(interpreter.err, InstrStop::StackOverflow));
+        core::assert_matches!(interpreter.err, InstrStop::StackOverflow);
 
         let mut code = vec![op::PUSH0; Stack::CAPACITY];
         code.extend([op::DUP1, op::STOP]);
         let interpreter = run(code);
-        assert!(matches!(interpreter.err, InstrStop::StackOverflow));
+        core::assert_matches!(interpreter.err, InstrStop::StackOverflow);
     }
 
     #[test]
     fn push0_opcode() {
         let interpreter = run([op::PUSH0, op::STOP]);
-        assert!(matches!(interpreter.err, InstrStop::Stop));
+        core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [0]);
 
         let interpreter = run([op::PUSH0, op::PUSH0, op::STOP]);
-        assert!(matches!(interpreter.err, InstrStop::Stop));
+        core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [0, 0]);
     }
 
@@ -145,7 +145,7 @@ mod tests {
             code.push(op::STOP);
 
             let interpreter = run(code);
-            assert!(matches!(interpreter.err, InstrStop::Stop));
+            core::assert_matches!(interpreter.err, InstrStop::Stop);
             assert_eq!(interpreter.stack(), [Word::from_be_slice(&bytes)]);
         }
     }
@@ -206,7 +206,7 @@ mod tests {
             code.push(op::STOP);
 
             let interpreter = run(code);
-            assert!(matches!(interpreter.err, InstrStop::Stop));
+            core::assert_matches!(interpreter.err, InstrStop::Stop);
             assert_eq!(interpreter.stack().len(), 17);
             assert_eq!(interpreter.stack()[16], Word::from(17 - n + offset));
         }
@@ -252,7 +252,7 @@ mod tests {
             code.push(op::STOP);
 
             let interpreter = run(code);
-            assert!(matches!(interpreter.err, InstrStop::Stop));
+            core::assert_matches!(interpreter.err, InstrStop::Stop);
             assert_eq!(interpreter.stack().len(), 17);
             assert_eq!(interpreter.stack()[16], Word::from(17 - n + offset));
             assert_eq!(interpreter.stack()[16 - n], Word::from(17 + offset));
@@ -295,7 +295,7 @@ mod tests {
         code.extend(core::iter::repeat_n(op::DUP1, 15));
         code.extend([op::DUPN, 0x80, op::STOP]);
         let interpreter = run(code);
-        assert!(matches!(interpreter.err, InstrStop::Stop));
+        core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack().len(), 18);
         assert_eq!(interpreter.stack()[17], Word::from(1));
         assert_eq!(interpreter.stack()[0], Word::from(1));
@@ -309,7 +309,7 @@ mod tests {
         }
         code.extend([op::DUPN, 0xff, op::STOP]);
         let interpreter = run(code);
-        assert!(matches!(interpreter.err, InstrStop::Stop));
+        core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack().len(), 146);
         assert_eq!(interpreter.stack()[145], Word::from(1));
     }
@@ -320,7 +320,7 @@ mod tests {
         code.extend(core::iter::repeat_n(op::DUP1, 15));
         code.extend([op::PUSH1, 0x02, op::SWAPN, 0x80, op::STOP]);
         let interpreter = run(code);
-        assert!(matches!(interpreter.err, InstrStop::Stop));
+        core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack().len(), 18);
         assert_eq!(interpreter.stack()[17], Word::from(1));
         assert_eq!(interpreter.stack()[0], Word::from(2));
@@ -334,7 +334,7 @@ mod tests {
         }
         code.extend([op::SWAPN, 0xff, op::STOP]);
         let interpreter = run(code);
-        assert!(matches!(interpreter.err, InstrStop::Stop));
+        core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack()[0], Word::from(144));
         assert_eq!(interpreter.stack()[144], 0);
     }
@@ -343,7 +343,7 @@ mod tests {
     fn exchange_opcode() {
         let interpreter =
             run([op::PUSH1, 0x00, op::PUSH1, 0x01, op::PUSH1, 0x02, op::EXCHANGE, 0x8e, op::STOP]);
-        assert!(matches!(interpreter.err, InstrStop::Stop));
+        core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::from(1), Word::from(0), Word::from(2)]);
 
         let mut code = Vec::new();
@@ -352,7 +352,7 @@ mod tests {
         }
         code.extend([op::EXCHANGE, 0xff, op::STOP]);
         let interpreter = run(code);
-        assert!(matches!(interpreter.err, InstrStop::Stop));
+        core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack()[0], Word::from(21));
         assert_eq!(interpreter.stack()[21], 0);
         assert_eq!(interpreter.stack()[22], Word::from(22));
