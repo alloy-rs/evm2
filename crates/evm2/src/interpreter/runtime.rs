@@ -1,8 +1,11 @@
 use super::{
     BytecodeRef, Gas, Host, InstrStop, Memory, Pc, PcMut, Result, SpecId, Stack, State, Word,
     instructions::table::{
-        DEFAULT_TABLE, DEFAULT_TAIL_TABLE, GasTable, InstrTable, TailInstrTable, new_gas_table,
+        DEFAULT_TABLE, DEFAULT_TAIL_TABLE, GasTable, InstrTable, Instruction, TailInstrTable,
+        new_gas_table,
     },
+    op,
+    opcode::for_each_opcode,
 };
 use crate::bytecode::Bytecode;
 use alloc::boxed::Box;
@@ -67,7 +70,13 @@ impl Interpreter {
 
         let _r = match table {
             Table::Tail(table) => self.step_tail(table, gas_table, host).unwrap_err(),
-            Table::Normal(table) => self.run_table_loop(table, gas_table, host),
+            Table::Normal(table) => {
+                if core::ptr::eq(table, &DEFAULT_TABLE) {
+                    self.run_match_loop(gas_table, host)
+                } else {
+                    self.run_table_loop(table, gas_table, host)
+                }
+            }
         };
 
         #[cfg(feature = "std")]
@@ -91,6 +100,68 @@ impl Interpreter {
                 return e;
             }
         }
+    }
+
+    #[inline(never)]
+    fn run_match_loop(&mut self, gas_table: &GasTable, host: &mut dyn Host) -> InstrStop {
+        use super::instructions::*;
+
+        let bytecode = BytecodeRef::new(&self.bytecode);
+        let host = &*host;
+        let tx = host.tx_env();
+        let block = host.block_env();
+        let stack = &mut Stack::new(&mut self.stack, self.stack_len);
+        let gas_ref = &mut self.gas;
+        let pc_field = &mut self.pc;
+        let state = &mut State {
+            bytecode,
+            host,
+            tx,
+            block,
+            memory: &mut self.memory,
+            spec: self.spec_id,
+            raw_interp: core::ptr::null_mut(),
+        };
+
+        let e = loop {
+            let mut pcm = PcMut::new(bytecode, pc_field);
+            let op_byte = match Self::pre_step(pcm.reborrow(), gas_ref, gas_table) {
+                Ok(op) => op,
+                Err(e) => {
+                    cold_path();
+                    break e;
+                }
+            };
+            let pcm = pcm.reborrow();
+
+            macro_rules! dispatch_arms {
+                ([$result:ident] $(
+                    ($op_name:ident, $instr:ty),
+                )*) => {
+                    $result = match op_byte {
+                        $(op::$op_name => {
+                            <$instr as Instruction>::execute(stack, pcm, gas_ref, state)
+                        })*
+                        _ => {
+                            cold_path();
+                            <super::instructions::unknown as Instruction>::execute(
+                                stack, pcm, gas_ref, state,
+                            )
+                        }
+                    };
+                };
+            }
+
+            let r;
+            for_each_opcode!([r] dispatch_arms);
+            if let Err(e) = r {
+                cold_path();
+                break e;
+            }
+        };
+
+        self.stack_len = stack.len;
+        e
     }
 
     #[inline(always)]

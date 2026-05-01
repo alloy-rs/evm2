@@ -16,7 +16,7 @@ pub(in crate::interpreter) fn invalid() -> Result {
 }
 
 #[instruction]
-pub(in crate::interpreter) fn opcode_not_found() -> Result {
+pub(in crate::interpreter) fn unknown() -> Result {
     cold_path();
     Err(InstrStop::OpcodeNotFound)
 }
