@@ -1,4 +1,4 @@
-use super::{BytecodeRef, Interpreter, Memory, SpecId, Word};
+use super::{BytecodeRef, GasParams, InstrStop, Interpreter, Memory, SpecId, Word};
 use crate::{
     AccountLoad,
     env::{BlockEnv, TxEnv},
@@ -20,6 +20,8 @@ pub struct State<'a> {
     pub memory: &'a mut Memory,
     /// Active spec identifier.
     pub spec: SpecId,
+    /// Dynamic gas parameters for the active spec.
+    pub gas_params: &'a GasParams,
     /// Whether state-changing opcodes are forbidden.
     pub is_static: bool,
     pub(crate) raw_interp: *mut Interpreter,
@@ -33,6 +35,7 @@ impl fmt::Debug for State<'_> {
             .field("block", &self.block)
             .field("memory", &self.memory)
             .field("spec", &self.spec)
+            .field("gas_params", &self.gas_params)
             .field("is_static", &self.is_static)
             .field("raw_interp", &self.raw_interp)
             .finish_non_exhaustive()
@@ -48,7 +51,12 @@ pub trait Host {
     fn block_env(&mut self) -> &BlockEnv;
 
     /// Loads account information.
-    fn load_account(&mut self, address: Word, load_code: bool) -> AccountLoad;
+    fn load_account(
+        &mut self,
+        address: Word,
+        load_code: bool,
+        skip_cold_load: bool,
+    ) -> Result<AccountLoad, InstrStop>;
 
     /// Returns a historical block hash.
     fn block_hash(&mut self, number: u64) -> Option<B256>;

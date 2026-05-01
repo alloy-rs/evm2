@@ -1,6 +1,6 @@
 use super::utils::{as_usize, check_spec};
 use crate::interpreter::{
-    GasId, GasParams, InstrStop, Result, SpecId, Word, memory::resize_memory, table::InstructionCx,
+    GasId, InstrStop, Result, SpecId, Word, memory::resize_memory, table::InstructionCx,
 };
 use alloy_primitives::{B256, Bytes, Log, LogData};
 use evm2_macros::instruction;
@@ -21,7 +21,7 @@ pub(in crate::interpreter) fn sload(cx: _, [index]: [Word]) -> out {
 pub(in crate::interpreter) fn sstore(cx: _) -> Result {
     require_non_staticcall(&cx)?;
     let [index, value] = stack.popn()?;
-    let gas_params = GasParams::new_spec(cx.state.spec);
+    let gas_params = cx.state.gas_params;
     if cx.state.spec.enables(SpecId::ISTANBUL)
         && cx.gas.remaining() <= gas_params.get(GasId::CallStipend)
     {
@@ -54,8 +54,7 @@ pub(in crate::interpreter) fn log<const N: usize>(cx: _) -> Result {
     require_non_staticcall(&cx)?;
     let [offset, len] = stack.popn()?;
     let len = as_usize(len)?;
-    let gas_params = GasParams::new_spec(cx.state.spec);
-    cx.gas.spend(gas_params.log_cost(N as u8, len))?;
+    cx.gas.spend(cx.state.gas_params.log_cost(N as u8, len))?;
 
     let data = if len == 0 {
         Bytes::new()

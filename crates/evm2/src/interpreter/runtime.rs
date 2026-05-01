@@ -1,5 +1,6 @@
 use super::{
-    BytecodeRef, Gas, Host, InstrStop, Memory, Pc, PcMut, Result, SpecId, Stack, State, Word,
+    BytecodeRef, Gas, GasParams, Host, InstrStop, Memory, Pc, PcMut, Result, SpecId, Stack, State,
+    Word,
     instructions::table::{
         DEFAULT_TABLE, DEFAULT_TAIL_TABLE, GasTable, InstrTable, Instruction, TailInstrTable,
         new_gas_table,
@@ -29,6 +30,7 @@ pub struct Interpreter {
     pub(crate) stack: Box<[Word; Stack::CAPACITY]>,
     pub(crate) stack_len: usize,
     pub(crate) gas: Gas,
+    pub(crate) gas_params: GasParams,
     pub(crate) memory: Memory,
     spec_id: SpecId,
     pub(crate) is_static: bool,
@@ -44,6 +46,7 @@ impl Interpreter {
             stack: unsafe { Box::new_uninit().assume_init() },
             stack_len: 0,
             gas: Gas::new(10_000),
+            gas_params: GasParams::new_spec(spec_id),
             memory: Memory::new(),
             spec_id,
             is_static: false,
@@ -122,6 +125,7 @@ impl Interpreter {
             block,
             memory: &mut self.memory,
             spec: self.spec_id,
+            gas_params: &self.gas_params,
             is_static: self.is_static,
             raw_interp: core::ptr::null_mut(),
         };
@@ -195,6 +199,7 @@ impl Interpreter {
                 block,
                 memory: &mut self.memory,
                 spec: self.spec_id,
+                gas_params: &self.gas_params,
                 is_static: self.is_static,
                 raw_interp: core::ptr::null_mut(),
             },
@@ -230,6 +235,7 @@ impl Interpreter {
                 block,
                 memory: &mut self.memory,
                 spec: self.spec_id,
+                gas_params: &self.gas_params,
                 is_static: self.is_static,
                 raw_interp: raw,
             },

@@ -405,6 +405,12 @@ impl GasParams {
             .saturating_mul(len as u64)
             .saturating_add(self.get(GasId::Logtopic).saturating_mul(n as u64))
     }
+
+    /// Returns additional cold account access gas.
+    #[inline]
+    pub const fn cold_account_additional_cost(&self) -> u64 {
+        self.get(GasId::ColdAccountAdditionalCost)
+    }
 }
 
 #[cfg(test)]

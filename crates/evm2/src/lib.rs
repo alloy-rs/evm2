@@ -23,6 +23,8 @@ pub struct AccountLoad {
     pub code: Bytes,
     /// Whether the account is empty.
     pub is_empty: bool,
+    /// Whether the account access was cold.
+    pub is_cold: bool,
 }
 
 pub mod bytecode;

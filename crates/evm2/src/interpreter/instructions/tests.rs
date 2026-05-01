@@ -15,6 +15,7 @@ pub(in crate::interpreter) struct TestHost {
     pub(super) code_hash: B256,
     pub(super) code: Bytes,
     pub(super) is_empty: bool,
+    pub(super) is_cold: bool,
     pub(super) storage: HashMap<Word, Word>,
     pub(super) transient_storage: HashMap<Word, Word>,
     pub(super) logs: Vec<Log>,
@@ -29,13 +30,22 @@ impl Host for TestHost {
         &self.block
     }
 
-    fn load_account(&mut self, address: Word, load_code: bool) -> AccountLoad {
-        AccountLoad {
+    fn load_account(
+        &mut self,
+        address: Word,
+        load_code: bool,
+        skip_cold_load: bool,
+    ) -> Result<AccountLoad, InstrStop> {
+        if skip_cold_load && self.is_cold {
+            return Err(InstrStop::OutOfGas);
+        }
+        Ok(AccountLoad {
             balance: address,
             code_hash: self.code_hash,
             code: if load_code { self.code.clone() } else { Bytes::new() },
             is_empty: self.is_empty,
-        }
+            is_cold: self.is_cold,
+        })
     }
 
     fn block_hash(&mut self, number: u64) -> Option<B256> {

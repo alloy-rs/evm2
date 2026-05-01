@@ -1,17 +1,23 @@
 use super::utils::{address_to_word, as_usize, as_usize_saturated, b256_to_word, check_spec};
 use crate::{
     AccountLoad,
-    interpreter::{GasParams, SpecId, Word, memory::resize_memory},
+    interpreter::{Result, SpecId, Word, memory::resize_memory, table::InstructionCx},
 };
 use alloy_primitives::B256;
 use evm2_macros::instruction;
 
 fn load_account(
-    cx: &mut evm2::interpreter::table::InstructionCx<'_, '_, '_>,
+    cx: &mut InstructionCx<'_, '_, '_>,
     addr: Word,
     load_code: bool,
-) -> AccountLoad {
-    cx.state.host.load_account(addr, load_code)
+) -> Result<AccountLoad> {
+    let cold_load_gas = cx.state.gas_params.cold_account_additional_cost();
+    let skip_cold_load = cx.gas.remaining() < cold_load_gas;
+    let account = cx.state.host.load_account(addr, load_code, skip_cold_load)?;
+    if account.is_cold {
+        cx.gas.spend(cold_load_gas)?;
+    }
+    Ok(account)
 }
 
 #[instruction]
@@ -20,8 +26,8 @@ pub(in crate::interpreter) fn address(cx: _) -> out {
 }
 
 #[instruction]
-pub(in crate::interpreter) fn balance(cx: _, [addr]: [Word]) -> out {
-    *out = load_account(&mut cx, addr, false).balance;
+pub(in crate::interpreter) fn balance(cx: _, [addr]: [Word]) -> Result<out> {
+    *out = load_account(&mut cx, addr, false)?.balance;
 }
 
 #[instruction]
@@ -94,8 +100,8 @@ pub(in crate::interpreter) fn gasprice(cx: _) -> out {
 }
 
 #[instruction]
-pub(in crate::interpreter) fn extcodesize(cx: _, [addr]: [Word]) -> out {
-    *out = Word::from(load_account(&mut cx, addr, true).code.len());
+pub(in crate::interpreter) fn extcodesize(cx: _, [addr]: [Word]) -> Result<out> {
+    *out = Word::from(load_account(&mut cx, addr, true)?.code.len());
 }
 
 #[instruction]
@@ -104,7 +110,7 @@ pub(in crate::interpreter) fn extcodecopy(
     [addr, memory_offset, code_offset, len]: [Word],
 ) -> Result {
     let len = as_usize(len)?;
-    cx.gas.spend(GasParams::new_spec(cx.state.spec).extcodecopy_cost(len))?;
+    cx.gas.spend(cx.state.gas_params.extcodecopy_cost(len))?;
 
     let mut memory_offset_usize = 0;
     if len != 0 {
@@ -112,7 +118,7 @@ pub(in crate::interpreter) fn extcodecopy(
         resize_memory(cx.gas, cx.state.memory, memory_offset_usize, len)?;
     }
 
-    let code = load_account(&mut cx, addr, true).code;
+    let code = load_account(&mut cx, addr, true)?.code;
     let code_offset = as_usize_saturated(code_offset).min(code.len());
     cx.state.memory.set_data(memory_offset_usize, code_offset, len, &code)
 }
@@ -120,7 +126,7 @@ pub(in crate::interpreter) fn extcodecopy(
 #[instruction]
 pub(in crate::interpreter) fn extcodehash(cx: _, [addr]: [Word]) -> Result<out> {
     check_spec(cx.state.spec, SpecId::CONSTANTINOPLE)?;
-    let account = load_account(&mut cx, addr, false);
+    let account = load_account(&mut cx, addr, false)?;
     *out = if account.is_empty { Word::ZERO } else { b256_to_word(account.code_hash) };
 }
 
@@ -133,7 +139,7 @@ mod tests {
             instructions::{
                 tests::{
                     TestHost, assert_stack, push, run, run_stack, run_with_host,
-                    run_with_host_and_spec,
+                    run_with_host_and_spec, run_with_host_and_spec_config,
                 },
                 utils::{address_to_word, b256_to_word},
             },
@@ -174,6 +180,34 @@ mod tests {
         assert_stack!(BALANCE(0xbeef), 0xbeef);
         assert_stack!(BALANCE(0), 0);
         assert_stack!(BALANCE(neg(1)), neg(1));
+    }
+
+    #[test]
+    fn balance_cold_account_cost() {
+        let mut host = TestHost { is_cold: true, ..TestHost::default() };
+        let interpreter = run_with_host_and_spec_config(
+            [op::PUSH1, 0xbe, op::BALANCE, op::STOP],
+            &mut host,
+            SpecId::BERLIN,
+            false,
+            10_000,
+        );
+        core::assert_matches!(interpreter.err, InstrStop::Stop);
+        assert_eq!(interpreter.stack(), [Word::from(0xbe)]);
+        assert_eq!(interpreter.gas_remaining(), 7_397);
+    }
+
+    #[test]
+    fn balance_cold_account_skip_oog() {
+        let mut host = TestHost { is_cold: true, ..TestHost::default() };
+        let interpreter = run_with_host_and_spec_config(
+            [op::PUSH1, 0xbe, op::BALANCE, op::STOP],
+            &mut host,
+            SpecId::BERLIN,
+            false,
+            103,
+        );
+        core::assert_matches!(interpreter.err, InstrStop::OutOfGas);
     }
 
     #[test]
