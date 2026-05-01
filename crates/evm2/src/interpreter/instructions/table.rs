@@ -131,7 +131,7 @@ pub(crate) type TailInstructionFn<C> = extern_table!(
         pc: Pc<'_>,
         gas: &mut Gas,
         state: &mut State<'_, <C as EvmConfig>::Host>,
-        ret: *const (),
+        ret: InstrStop,
     ) -> TailInstructionFnRet
 );
 
@@ -522,18 +522,12 @@ extern_table! {
         mut pc: Pc<'_>,
         gas: &mut Gas,
         state: &mut State<'_, C::Host>,
-        ret: *const (),
+        ret: InstrStop,
     ) -> TailInstructionFnRet {
         let instr = const { C::INSTRUCTION_IMPLS.get_or_default(OP) };
         if let Err(e) = instr.execute(&mut stack, pc.as_mut(), gas, state) {
             cold_path();
-            tail_return!(tail_call_restore::<C>(
-                stack,
-                pc,
-                gas,
-                state,
-                e as usize as *const (),
-            ));
+            tail_return!(tail_call_restore::<C>(stack, pc, gas, state, e));
         }
         tail_return!(tail_call_next::<C>(stack, pc, gas, state, ret));
     }
@@ -547,23 +541,17 @@ extern_table! {
         mut pc: Pc<'_>,
         gas: &mut Gas,
         state: &mut State<'_, C::Host>,
-        _ret: *const (),
+        _ret: InstrStop,
     ) -> TailInstructionFnRet {
         let op = match Interpreter::pre_step::<C>(pc.as_mut(), gas) {
             Ok(op) => op,
             Err(e) => {
                 cold_path();
-                tail_return!(tail_call_restore::<C>(
-                    stack,
-                    pc,
-                    gas,
-                    state,
-                    e as usize as *const (),
-                ));
+                tail_return!(tail_call_restore::<C>(stack, pc, gas, state, e));
             }
         };
         let instr = <C as InstructionTables>::TAIL_INSTRUCTIONS[op as usize];
-        tail_return!(instr(stack, pc, gas, state, core::ptr::null()));
+        tail_return!(instr(stack, pc, gas, state, InstrStop::Stop));
     }
 }
 
@@ -576,13 +564,13 @@ extern_table! {
         pc: Pc<'_>,
         _gas: &mut Gas,
         state: &mut State<'_, C::Host>,
-        ret: *const (), // Tail calls require same function signature, this is unused so we pass the return value here.
+        ret: InstrStop,
     ) -> TailInstructionFnRet {
         // SAFETY: `raw_interp` is valid for the duration of execution.
         let interp = unsafe { &mut *state.raw_interp.cast::<Interpreter>() };
         interp.pc = pc.get();
         interp.stack_len = stack.len;
-        unsafe { core::mem::transmute::<u8, TailInstructionFnRet>(ret as usize as u8) }
+        ret
     }
 }
 

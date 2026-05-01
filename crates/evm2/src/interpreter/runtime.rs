@@ -131,7 +131,7 @@ impl Interpreter {
                 spec: C::SPEC_ID,
                 raw_interp: raw,
             },
-            core::ptr::null(),
+            InstrStop::Stop,
         );
         Err(e)
     }
