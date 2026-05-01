@@ -87,7 +87,7 @@ impl Interpreter {
         let mut pc = PcMut::new(bytecode, &mut self.pc);
         let op = Self::pre_step::<C>(pc.reborrow(), &mut self.gas)?;
         let instr = <C as InstructionTables>::INSTRUCTIONS[op as usize];
-        let (len, r) = (instr.f)(
+        let (len, r) = instr(
             Stack::new(&mut self.stack, self.stack_len),
             pc,
             &mut self.gas,
@@ -117,7 +117,7 @@ impl Interpreter {
             (op, Pc::new(bytecode, pc_mut.get()))
         };
         let instr = <C as InstructionTables>::TAIL_INSTRUCTIONS[op as usize];
-        let e = (instr.f)(
+        let e = instr(
             Stack::new(&mut self.stack, self.stack_len),
             pc,
             &mut self.gas,

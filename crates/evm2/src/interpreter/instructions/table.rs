@@ -15,10 +15,7 @@ use crate::{
 };
 #[cfg(feature = "nightly")]
 use core::hint::cold_path;
-use core::{
-    marker::PhantomData,
-    ops::{Index, IndexMut},
-};
+use core::ops::{Index, IndexMut};
 
 /// Opcode gas table.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -102,36 +99,9 @@ pub(crate) type InstructionFn = extern_table!(
     fn(stack: Stack<'_>, pc: PcMut<'_>, gas: &mut Gas, state: &mut State<'_>) -> InstructionFnRet
 );
 
-/// Normal instruction table entry.
-#[cfg(not(feature = "nightly"))]
-pub(crate) struct InstructionEntry<C: EvmConfig> {
-    /// Dispatch function.
-    pub(crate) f: InstructionFn,
-    _marker: PhantomData<fn() -> C>,
-}
-
-#[cfg(not(feature = "nightly"))]
-impl<C: EvmConfig> core::fmt::Debug for InstructionEntry<C> {
-    #[inline]
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("InstructionEntry").finish_non_exhaustive()
-    }
-}
-
-#[cfg(not(feature = "nightly"))]
-impl<C: EvmConfig> Clone for InstructionEntry<C> {
-    #[inline]
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-
-#[cfg(not(feature = "nightly"))]
-impl<C: EvmConfig> Copy for InstructionEntry<C> {}
-
 /// Normal instruction dispatch table.
 #[cfg(not(feature = "nightly"))]
-pub(crate) type InstructionTable<C> = [InstructionEntry<C>; 256];
+pub(crate) type InstructionTable = [InstructionFn; 256];
 
 /// Tail instruction return value.
 #[cfg(feature = "nightly")]
@@ -149,43 +119,16 @@ pub(crate) type TailInstructionFn = extern_table!(
     ) -> TailInstructionFnRet
 );
 
-/// Tail instruction table entry.
-#[cfg(feature = "nightly")]
-pub(crate) struct TailInstructionEntry<C: EvmConfig> {
-    /// Tail dispatch function.
-    pub(crate) f: TailInstructionFn,
-    _marker: PhantomData<fn() -> C>,
-}
-
-#[cfg(feature = "nightly")]
-impl<C: EvmConfig> core::fmt::Debug for TailInstructionEntry<C> {
-    #[inline]
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("TailInstructionEntry").finish_non_exhaustive()
-    }
-}
-
-#[cfg(feature = "nightly")]
-impl<C: EvmConfig> Clone for TailInstructionEntry<C> {
-    #[inline]
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-
-#[cfg(feature = "nightly")]
-impl<C: EvmConfig> Copy for TailInstructionEntry<C> {}
-
 /// Tail instruction dispatch table.
 #[cfg(feature = "nightly")]
-pub(crate) type TailInstructionTable<C> = [TailInstructionEntry<C>; 256];
+pub(crate) type TailInstructionTable = [TailInstructionFn; 256];
 
 pub(crate) trait InstructionTables: EvmConfig {
     #[cfg(not(feature = "nightly"))]
-    const INSTRUCTIONS: InstructionTable<Self> = make_normal_instruction_table::<Self>();
+    const INSTRUCTIONS: InstructionTable = make_normal_instruction_table::<Self>();
 
     #[cfg(feature = "nightly")]
-    const TAIL_INSTRUCTIONS: TailInstructionTable<Self> = make_tail_instruction_table::<Self>();
+    const TAIL_INSTRUCTIONS: TailInstructionTable = make_tail_instruction_table::<Self>();
 }
 
 impl<C: EvmConfig> InstructionTables for C {}
@@ -455,9 +398,9 @@ macro_rules! make_instruction_table_inner {
 }
 
 macro_rules! assign_instruction_table_entries {
-    ([$table:expr, $config:ty, $entry:ident, $dispatch:ident, $instr_fn:ty] $($op:literal,)*) => {
+    ([$table:expr, $config:ty, $dispatch:ident, $instr_fn:ty] $($op:literal,)*) => {
         $(
-            $table[$op] = $entry { f: $dispatch::<$config, $op> as $instr_fn, _marker: PhantomData };
+            $table[$op] = $dispatch::<$config, $op> as $instr_fn;
         )*
     };
 }
@@ -515,22 +458,18 @@ impl<C: EvmConfig> InstructionImplTable<C> {
 /// Converts instruction implementations to a normal instruction dispatch table.
 #[inline]
 #[cfg(not(feature = "nightly"))]
-pub(crate) const fn make_normal_instruction_table<C: EvmConfig>() -> InstructionTable<C> {
-    let mut table =
-        [InstructionEntry { f: dispatch::<C, 0> as InstructionFn, _marker: PhantomData }; 256];
-    for_each_opcode_value!([table, C, InstructionEntry, dispatch, InstructionFn] assign_instruction_table_entries);
+pub(crate) const fn make_normal_instruction_table<C: EvmConfig>() -> InstructionTable {
+    let mut table = [dispatch::<C, 0> as InstructionFn; 256];
+    for_each_opcode_value!([table, C, dispatch, InstructionFn] assign_instruction_table_entries);
     table
 }
 
 /// Converts instruction implementations to a tail-call instruction dispatch table.
 #[inline]
 #[cfg(feature = "nightly")]
-pub(crate) const fn make_tail_instruction_table<C: EvmConfig>() -> TailInstructionTable<C> {
-    let mut table = [TailInstructionEntry {
-        f: tail_dispatch::<C, 0> as TailInstructionFn,
-        _marker: PhantomData,
-    }; 256];
-    for_each_opcode_value!([table, C, TailInstructionEntry, tail_dispatch, TailInstructionFn] assign_instruction_table_entries);
+pub(crate) const fn make_tail_instruction_table<C: EvmConfig>() -> TailInstructionTable {
+    let mut table = [tail_dispatch::<C, 0> as TailInstructionFn; 256];
+    for_each_opcode_value!([table, C, tail_dispatch, TailInstructionFn] assign_instruction_table_entries);
     table
 }
 
@@ -603,7 +542,7 @@ extern_table! {
             }
         };
         let instr = <C as InstructionTables>::TAIL_INSTRUCTIONS[op as usize];
-        tail_return!((instr.f)(stack, pc, gas, state, core::ptr::null()));
+        tail_return!(instr(stack, pc, gas, state, core::ptr::null()));
     }
 }
 
