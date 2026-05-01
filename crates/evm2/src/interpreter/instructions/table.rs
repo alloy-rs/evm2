@@ -9,7 +9,7 @@ use crate::interpreter::{
     },
     opcode::{for_each_opcode, op},
 };
-use core::mem;
+use core::{hint::cold_path, mem};
 
 /// Normal instruction return value.
 pub(in crate::interpreter) type InstrFnRet = (usize, Result);
@@ -358,6 +358,7 @@ extern_table! {
     ) -> TailInstrFnRet {
         let pc_mut = pc.as_mut();
         if let Err(e) = I::new().execute(&mut stack, pc_mut, &mut gas, state) {
+            cold_path();
             tail_return!(tail_call_restore(stack, pc, gas, state, gast, e as usize as *const ()));
         }
         tail_return!(tail_call_next(stack, pc, gas, state, gast, instrsp));
@@ -378,6 +379,7 @@ extern_table! {
         let op = match Interpreter::pre_step(pc_mut, &mut gas, gast) {
             Ok(op) => op,
             Err(e) => {
+                cold_path();
                 tail_return!(tail_call_restore(stack, pc, gas, state, gast, e as usize as *const ()));
             }
         };
