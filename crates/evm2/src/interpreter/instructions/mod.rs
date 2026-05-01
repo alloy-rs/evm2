@@ -28,7 +28,7 @@ pub(super) use stack::*;
 mod system;
 
 mod i256;
-pub(in crate::interpreter) mod table;
+pub(crate) mod table;
 mod utils;
 
 #[cfg(test)]

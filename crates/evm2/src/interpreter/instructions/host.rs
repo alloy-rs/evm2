@@ -68,7 +68,7 @@ pub(in crate::interpreter) fn log<const N: usize>(cx: _) -> Result {
     let topics =
         stack.popn::<N>()?.into_iter().map(|topic| B256::from(topic.to_be_bytes::<32>())).collect();
     cx.state.host.log(Log {
-        address: cx.state.tx.address,
+        address: cx.state.message.destination,
         data: LogData::new(topics, data).expect("LOG opcodes cannot emit more than 4 topics"),
     });
     Ok(())
@@ -80,6 +80,7 @@ mod tests {
         InstrStop, SpecId, Word,
         instructions::tests::{
             TestHost, push, run_with_host, run_with_host_and_spec, run_with_host_and_spec_config,
+            run_with_host_message,
         },
         op,
     };
@@ -234,15 +235,18 @@ mod tests {
 
     #[test]
     fn log0_opcode() {
-        let mut host = TestHost {
-            tx: crate::env::TxEnv { address: Address::from([0x11; 20]), ..Default::default() },
+        let mut host = TestHost::default();
+        let address = Address::from([0x11; 20]);
+        let message = crate::interpreter::Message {
+            destination: address,
+            gas_limit: 10_000,
             ..Default::default()
         };
-        let interpreter = run_with_host(log_code(30, 2, []), &mut host);
+        let interpreter = run_with_host_message(log_code(30, 2, []), &mut host, message);
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert!(interpreter.stack().is_empty());
         assert_eq!(host.logs.len(), 1);
-        assert_eq!(host.logs[0].address, Address::from([0x11; 20]));
+        assert_eq!(host.logs[0].address, address);
         assert!(host.logs[0].topics().is_empty());
         assert_eq!(host.logs[0].data.data, Bytes::from_static(&[0xbe, 0xef]));
     }

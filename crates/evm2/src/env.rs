@@ -1,23 +1,15 @@
 //! EVM environment types.
 
 use alloc::{vec, vec::Vec};
-use alloy_primitives::{Address, Bytes, U256};
+use alloy_primitives::{Address, U256};
 
-/// Transaction environment values visible to opcodes.
+/// Transaction-global environment values visible to opcodes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TxEnv {
-    /// Current contract address.
-    pub address: Address,
     /// Transaction origin.
     pub origin: Address,
-    /// Immediate caller.
-    pub caller: Address,
     /// Effective gas price.
     pub gas_price: U256,
-    /// Call value.
-    pub call_value: U256,
-    /// Call input data.
-    pub calldata: Bytes,
     /// Chain ID.
     pub chain_id: U256,
     /// Transaction blob versioned hashes.
@@ -28,12 +20,8 @@ impl Default for TxEnv {
     #[inline]
     fn default() -> Self {
         Self {
-            address: Address::ZERO,
             origin: Address::ZERO,
-            caller: Address::ZERO,
             gas_price: U256::ZERO,
-            call_value: U256::ZERO,
-            calldata: Bytes::new(),
             chain_id: U256::ONE,
             blob_hashes: vec![],
         }

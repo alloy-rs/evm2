@@ -6,7 +6,7 @@ const BLOCK_HASH_HISTORY: u64 = 256;
 
 #[instruction]
 pub(in crate::interpreter) fn blockhash(cx: _, [number]: [Word]) -> Result<out> {
-    *out = if let Some(diff) = cx.state.block.number.checked_sub(number) {
+    *out = if let Some(diff) = cx.state.host.block_env().number.checked_sub(number) {
         let diff = u64::try_from(diff).unwrap_or(u64::MAX);
         if diff == 0 || diff > BLOCK_HASH_HISTORY {
             Word::ZERO
@@ -25,31 +25,31 @@ pub(in crate::interpreter) fn blockhash(cx: _, [number]: [Word]) -> Result<out> 
 
 #[instruction]
 pub(in crate::interpreter) fn coinbase(cx: _) -> out {
-    *out = address_to_word(cx.state.block.beneficiary);
+    *out = address_to_word(cx.state.host.block_env().beneficiary);
 }
 
 #[instruction]
 pub(in crate::interpreter) fn timestamp(cx: _) -> out {
-    *out = cx.state.block.timestamp;
+    *out = cx.state.host.block_env().timestamp;
 }
 
 #[instruction]
 pub(in crate::interpreter) fn block_number(cx: _) -> out {
-    *out = cx.state.block.number;
+    *out = cx.state.host.block_env().number;
 }
 
 #[instruction]
 pub(in crate::interpreter) fn difficulty(cx: _) -> out {
     *out = if cx.state.spec.enables(SpecId::MERGE) {
-        cx.state.block.prevrandao
+        cx.state.host.block_env().prevrandao
     } else {
-        cx.state.block.difficulty
+        cx.state.host.block_env().difficulty
     };
 }
 
 #[instruction]
 pub(in crate::interpreter) fn gaslimit(cx: _) -> out {
-    *out = cx.state.block.gas_limit;
+    *out = cx.state.host.block_env().gas_limit;
 }
 
 #[instruction]
@@ -60,13 +60,13 @@ pub(in crate::interpreter) fn chainid(cx: _) -> Result<out> {
 
 #[instruction]
 pub(in crate::interpreter) fn selfbalance(cx: _) -> out {
-    *out = cx.state.host.balance(address_to_word(cx.state.tx.address));
+    *out = cx.state.host.balance(address_to_word(cx.state.message.destination));
 }
 
 #[instruction]
 pub(in crate::interpreter) fn basefee(cx: _) -> Result<out> {
     check_spec(cx.state.spec, SpecId::LONDON)?;
-    *out = cx.state.block.basefee;
+    *out = cx.state.host.block_env().basefee;
 }
 
 #[instruction]
@@ -79,13 +79,13 @@ pub(in crate::interpreter) fn blobhash(cx: _, [index]: [Word]) -> Result<out> {
 #[instruction]
 pub(in crate::interpreter) fn blobbasefee(cx: _) -> Result<out> {
     check_spec(cx.state.spec, SpecId::CANCUN)?;
-    *out = cx.state.block.blob_basefee;
+    *out = cx.state.host.block_env().blob_basefee;
 }
 
 #[instruction]
 pub(in crate::interpreter) fn slotnum(cx: _) -> Result<out> {
     check_spec(cx.state.spec, SpecId::AMSTERDAM)?;
-    *out = cx.state.block.slot_num;
+    *out = cx.state.host.block_env().slot_num;
 }
 
 #[cfg(test)]
@@ -95,7 +95,10 @@ mod tests {
         interpreter::{
             InstrStop, SpecId, Word,
             instructions::{
-                tests::{TestHost, push, run_with_host, run_with_host_and_spec},
+                tests::{
+                    TestHost, push, run_with_host, run_with_host_and_spec, run_with_host_message,
+                    run_with_host_tx_env_and_spec,
+                },
                 utils::{address_to_word, b256_to_word},
             },
             op,
@@ -182,12 +185,14 @@ mod tests {
 
     #[test]
     fn chainid_opcode() {
-        let mut host = TestHost {
-            tx: TxEnv { chain_id: Word::from(1), ..TxEnv::default() },
-            ..TestHost::default()
-        };
-        let interpreter =
-            run_with_host_and_spec([op::CHAINID, op::STOP], &mut host, SpecId::ISTANBUL);
+        let mut host = TestHost::default();
+        let tx_env = TxEnv { chain_id: Word::from(1), ..TxEnv::default() };
+        let interpreter = run_with_host_tx_env_and_spec(
+            [op::CHAINID, op::STOP],
+            &mut host,
+            tx_env,
+            SpecId::ISTANBUL,
+        );
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::from(1)]);
     }
@@ -195,9 +200,13 @@ mod tests {
     #[test]
     fn selfbalance_opcode() {
         let address = Address::from([0x66; 20]);
-        let mut host =
-            TestHost { tx: TxEnv { address, ..TxEnv::default() }, ..TestHost::default() };
-        let interpreter = run_with_host([op::SELFBALANCE, op::STOP], &mut host);
+        let mut host = TestHost::default();
+        let message = crate::interpreter::Message {
+            destination: address,
+            gas_limit: 10_000,
+            ..Default::default()
+        };
+        let interpreter = run_with_host_message([op::SELFBALANCE, op::STOP], &mut host, message);
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [address_to_word(address)]);
     }
@@ -214,19 +223,22 @@ mod tests {
     #[test]
     fn blobhash_opcode() {
         let hash = B256::with_last_byte(0x42);
-        let mut host = TestHost {
-            tx: TxEnv { blob_hashes: Vec::from([b256_to_word(hash)]), ..TxEnv::default() },
-            ..TestHost::default()
-        };
+        let mut host = TestHost::default();
+        let tx_env = TxEnv { blob_hashes: Vec::from([b256_to_word(hash)]), ..TxEnv::default() };
 
-        let interpreter =
-            run_with_host_and_spec([op::PUSH0, op::BLOBHASH, op::STOP], &mut host, SpecId::CANCUN);
+        let interpreter = run_with_host_tx_env_and_spec(
+            [op::PUSH0, op::BLOBHASH, op::STOP],
+            &mut host,
+            tx_env.clone(),
+            SpecId::CANCUN,
+        );
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [b256_to_word(hash)]);
 
-        let interpreter = run_with_host_and_spec(
+        let interpreter = run_with_host_tx_env_and_spec(
             [op::PUSH1, 0x01, op::BLOBHASH, op::STOP],
             &mut host,
+            tx_env,
             SpecId::CANCUN,
         );
         core::assert_matches!(interpreter.err, InstrStop::Stop);

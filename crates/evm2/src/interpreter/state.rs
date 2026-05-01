@@ -1,5 +1,8 @@
-use super::{BytecodeRef, Interpreter, Memory, SpecId, Word};
-use crate::env::{BlockEnv, TxEnv};
+use super::{BytecodeRef, InstrStop, Interpreter, Memory, Message, SpecId, Word};
+use crate::{
+    bytecode::Bytecode,
+    env::{BlockEnv, TxEnv},
+};
 use alloy_primitives::{B256, Log};
 use core::fmt;
 
@@ -9,10 +12,10 @@ pub struct State<'a> {
     pub bytecode: BytecodeRef<'a>,
     /// Host implementation.
     pub host: &'a mut (dyn Host + 'a),
-    /// Cached transaction environment.
+    /// Cached transaction-global environment.
     pub tx: &'a TxEnv,
-    /// Cached block environment.
-    pub block: &'a BlockEnv,
+    /// Active frame-local call/create message.
+    pub message: &'a Message,
     /// Linear memory.
     pub memory: &'a mut Memory,
     /// Active spec identifier.
@@ -27,7 +30,7 @@ impl fmt::Debug for State<'_> {
         f.debug_struct("State")
             .field("bytecode", &self.bytecode)
             .field("tx", &self.tx)
-            .field("block", &self.block)
+            .field("message", &self.message)
             .field("memory", &self.memory)
             .field("spec", &self.spec)
             .field("is_static", &self.is_static)
@@ -38,9 +41,6 @@ impl fmt::Debug for State<'_> {
 
 /// External host operations.
 pub trait Host {
-    /// Returns the transaction environment.
-    fn tx_env(&mut self) -> &TxEnv;
-
     /// Returns the block environment.
     fn block_env(&mut self) -> &BlockEnv;
 
@@ -70,4 +70,14 @@ pub trait Host {
 
     /// Records an emitted log.
     fn log(&mut self, log: Log);
+
+    /// Runs an interpreter frame inside this host.
+    fn run_interpreter(
+        &mut self,
+        _tx_env: TxEnv,
+        _bytecode: Bytecode,
+        _message: Message,
+    ) -> InstrStop {
+        InstrStop::FatalExternalError
+    }
 }

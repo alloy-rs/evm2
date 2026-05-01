@@ -12,6 +12,8 @@ extern crate alloc;
 
 pub mod bytecode;
 pub mod env;
+/// EVM host and transaction dispatcher.
+pub mod evm;
 pub mod interpreter;
 pub mod registry;
 

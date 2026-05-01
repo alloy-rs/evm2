@@ -9,7 +9,7 @@ pub use gas::{
 mod utils;
 
 mod instructions;
-pub(in crate::interpreter) use instructions::table;
+pub(crate) use instructions::table;
 
 mod opcode;
 pub use opcode::op;
@@ -23,11 +23,15 @@ pub use stack::{Stack, Word};
 mod memory;
 pub use memory::Memory;
 
+mod message;
+pub use message::{Message, MessageKind};
+
 mod state;
 pub use state::{Host, State};
 
 mod runtime;
 pub use runtime::Interpreter;
+pub(crate) use runtime::Table;
 
 pub(crate) type Result<T = (), E = InstrStop> = core::result::Result<T, E>;
 
@@ -257,7 +261,12 @@ mod tests {
 
         let gas_table = new_gas_table(spec_id);
         let bytecode = Bytecode::new_legacy(Bytes::copy_from_slice(bytecode));
-        let mut interpreter = Interpreter::new(bytecode, spec_id);
+        let mut interpreter = Interpreter::new(
+            bytecode,
+            spec_id,
+            crate::env::TxEnv::default(),
+            Message { gas_limit: 10_000, ..Message::default() },
+        );
         let mut host = TestHost::default();
         interpreter.run_with_table(instruction_table, &gas_table, &mut host);
     }
@@ -273,7 +282,12 @@ mod tests {
                 ("tail", Table::Tail(&DEFAULT_TAIL_TABLE)),
             ] {
                 let bytecode = Bytecode::new_legacy(Bytes::from_static(BASIC));
-                let mut interpreter = Interpreter::new(bytecode, spec);
+                let mut interpreter = Interpreter::new(
+                    bytecode,
+                    spec,
+                    crate::env::TxEnv::default(),
+                    Message { gas_limit: 10_000, ..Message::default() },
+                );
                 let mut host = TestHost::default();
                 interpreter.run_with_table(table, &gas_table, &mut host);
                 assert!(interpreter.gas.remaining() > 0);

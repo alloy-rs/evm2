@@ -1,7 +1,7 @@
 use crate::{
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
-    interpreter::{Gas, Host, InstrStop, Interpreter, SpecId, Word, op},
+    interpreter::{Gas, Host, InstrStop, Interpreter, Message, SpecId, Word, op},
 };
 use alloc::vec::Vec;
 use alloy_primitives::{B256, Bytes, Log};
@@ -9,7 +9,6 @@ use std::collections::HashMap;
 
 #[derive(Debug, Default)]
 pub(in crate::interpreter) struct TestHost {
-    pub(super) tx: TxEnv,
     pub(super) block: BlockEnv,
     pub(super) code_size: usize,
     pub(super) code_hash: B256,
@@ -19,10 +18,6 @@ pub(in crate::interpreter) struct TestHost {
 }
 
 impl Host for TestHost {
-    fn tx_env(&mut self) -> &TxEnv {
-        &self.tx
-    }
-
     fn block_env(&mut self) -> &BlockEnv {
         &self.block
     }
@@ -100,6 +95,60 @@ pub(super) fn run_with_host_and_spec(
     run_with_host_and_spec_config(code, host, spec_id, false, 10_000)
 }
 
+pub(super) fn run_with_host_tx_env(
+    code: impl Into<Vec<u8>>,
+    host: &mut dyn Host,
+    tx_env: TxEnv,
+) -> TestInterpreter {
+    run_with_host_tx_env_and_spec(code, host, tx_env, SpecId::HOMESTEAD)
+}
+
+pub(super) fn run_with_host_tx_env_and_spec(
+    code: impl Into<Vec<u8>>,
+    host: &mut dyn Host,
+    tx_env: TxEnv,
+    spec_id: SpecId,
+) -> TestInterpreter {
+    run_with_host_message_tx_env_and_spec_config(
+        code,
+        host,
+        Message { gas_limit: 10_000, ..Message::default() },
+        tx_env,
+        spec_id,
+        false,
+    )
+}
+
+pub(super) fn run_with_host_message(
+    code: impl Into<Vec<u8>>,
+    host: &mut dyn Host,
+    message: Message,
+) -> TestInterpreter {
+    run_with_host_message_tx_env_and_spec_config(
+        code,
+        host,
+        message,
+        TxEnv::default(),
+        SpecId::HOMESTEAD,
+        false,
+    )
+}
+
+pub(super) fn run_with_host_message_tx_env_and_spec_config(
+    code: impl Into<Vec<u8>>,
+    host: &mut dyn Host,
+    message: Message,
+    tx_env: TxEnv,
+    spec_id: SpecId,
+    is_static: bool,
+) -> TestInterpreter {
+    let bytecode = Bytecode::new_legacy(Bytes::from(code.into()));
+    let mut inner = Interpreter::new(bytecode, spec_id, tx_env, message);
+    inner.is_static |= is_static;
+    let err = inner.run(host);
+    TestInterpreter { inner, err }
+}
+
 pub(super) fn run_with_host_and_spec_config(
     code: impl Into<Vec<u8>>,
     host: &mut dyn Host,
@@ -108,7 +157,8 @@ pub(super) fn run_with_host_and_spec_config(
     gas_limit: u64,
 ) -> TestInterpreter {
     let bytecode = Bytecode::new_legacy(Bytes::from(code.into()));
-    let mut inner = Interpreter::new(bytecode, spec_id);
+    let message = Message { gas_limit, ..Message::default() };
+    let mut inner = Interpreter::new(bytecode, spec_id, TxEnv::default(), message);
     inner.is_static = is_static;
     inner.gas = Gas::new(gas_limit);
     let err = inner.run(host);

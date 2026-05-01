@@ -1,5 +1,6 @@
 use super::{
-    BytecodeRef, Gas, Host, InstrStop, Memory, Pc, PcMut, Result, SpecId, Stack, State, Word,
+    BytecodeRef, Gas, Host, InstrStop, Memory, Message, MessageKind, Pc, PcMut, Result, SpecId,
+    Stack, State, Word,
     instructions::table::{
         DEFAULT_TABLE, DEFAULT_TAIL_TABLE, GasTable, InstrTable, Instruction, TailInstrTable,
         new_gas_table,
@@ -7,14 +8,14 @@ use super::{
     op,
     opcode::for_each_opcode,
 };
-use crate::bytecode::Bytecode;
+use crate::{bytecode::Bytecode, env::TxEnv};
 use alloc::boxed::Box;
 use core::hint::cold_path;
 
 /// Interpreter dispatch table mode.
 #[derive(Clone, Copy, Debug)]
 #[non_exhaustive]
-pub(in crate::interpreter) enum Table<'a> {
+pub(crate) enum Table<'a> {
     /// Normal dispatch loop.
     Normal(&'a InstrTable),
     /// Tail-call dispatch loop.
@@ -30,21 +31,28 @@ pub struct Interpreter {
     pub(crate) stack_len: usize,
     pub(crate) gas: Gas,
     pub(crate) memory: Memory,
+    tx_env: TxEnv,
+    pub(crate) message: Message,
     spec_id: SpecId,
     pub(crate) is_static: bool,
 }
 
 impl Interpreter {
-    /// Creates an interpreter from analyzed bytecode and a spec identifier.
-    pub fn new(bytecode: Bytecode, spec_id: SpecId) -> Self {
+    /// Creates an interpreter from analyzed bytecode, a spec identifier, a transaction-global
+    /// environment, and a frame-local message.
+    pub fn new(bytecode: Bytecode, spec_id: SpecId, tx_env: TxEnv, message: Message) -> Self {
+        let gas_limit = message.gas_limit;
+        let is_static = matches!(message.kind, MessageKind::StaticCall);
         Self {
             bytecode,
             pc: 0,
             // SAFETY: `Word` is valid at any bitpattern. It's not read before init anyway.
             stack: unsafe { Box::new_uninit().assume_init() },
             stack_len: 0,
-            gas: Gas::new(10_000),
+            gas: Gas::new(gas_limit),
             memory: Memory::new(),
+            tx_env,
+            message,
             spec_id,
             is_static: false,
         }
@@ -62,7 +70,7 @@ impl Interpreter {
         self.run_with_table(Table::Tail(&DEFAULT_TAIL_TABLE), &gas_table, host)
     }
 
-    pub(in crate::interpreter) fn run_with_table(
+    pub(crate) fn run_with_table(
         &mut self,
         table: Table<'_>,
         gas_table: &GasTable,
@@ -109,17 +117,14 @@ impl Interpreter {
         use super::instructions::*;
 
         let bytecode = BytecodeRef::new(&self.bytecode);
-        let host_ptr = host as *mut dyn Host;
-        let tx = unsafe { (&mut *host_ptr).tx_env() };
-        let block = unsafe { (&mut *host_ptr).block_env() };
         let stack = &mut Stack::new(&mut self.stack, self.stack_len);
         let gas_ref = &mut self.gas;
         let pc_field = &mut self.pc;
         let state = &mut State {
             bytecode,
-            host: unsafe { &mut *host_ptr },
-            tx,
-            block,
+            host,
+            tx: &self.tx_env,
+            message: &self.message,
             memory: &mut self.memory,
             spec: self.spec_id,
             is_static: self.is_static,
@@ -180,9 +185,6 @@ impl Interpreter {
         let bytecode = BytecodeRef::new(&self.bytecode);
         let mut pc = PcMut::new(bytecode, &mut self.pc);
         let op = Self::pre_step(pc.reborrow(), &mut self.gas, gas_table)?;
-        let host_ptr = host as *mut dyn Host;
-        let tx = unsafe { (&mut *host_ptr).tx_env() };
-        let block = unsafe { (&mut *host_ptr).block_env() };
         let r;
         (self.stack_len, r) = table[op as usize](
             Stack::new(&mut self.stack, self.stack_len),
@@ -190,9 +192,9 @@ impl Interpreter {
             &mut self.gas,
             &mut State {
                 bytecode,
-                host: unsafe { &mut *host_ptr },
-                tx,
-                block,
+                host,
+                tx: &self.tx_env,
+                message: &self.message,
                 memory: &mut self.memory,
                 spec: self.spec_id,
                 is_static: self.is_static,
@@ -211,9 +213,6 @@ impl Interpreter {
     ) -> Result {
         let raw = self as *mut _;
         let bytecode = BytecodeRef::new(&self.bytecode);
-        let host_ptr = host as *mut dyn Host;
-        let tx = unsafe { (&mut *host_ptr).tx_env() };
-        let block = unsafe { (&mut *host_ptr).block_env() };
         let (op, pc) = {
             let mut pc_mut = PcMut::new(bytecode, &mut self.pc);
             let op = Self::pre_step(pc_mut.reborrow(), &mut self.gas, gas_table)?;
@@ -225,9 +224,9 @@ impl Interpreter {
             &mut self.gas,
             &mut State {
                 bytecode,
-                host: unsafe { &mut *host_ptr },
-                tx,
-                block,
+                host,
+                tx: &self.tx_env,
+                message: &self.message,
                 memory: &mut self.memory,
                 spec: self.spec_id,
                 is_static: self.is_static,
