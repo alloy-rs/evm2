@@ -10,6 +10,21 @@ extern crate self as evm2;
 
 extern crate alloc;
 
+use alloy_primitives::{B256, Bytes};
+
+/// Loaded account information.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct AccountLoad {
+    /// Account balance.
+    pub balance: interpreter::Word,
+    /// Account code hash.
+    pub code_hash: B256,
+    /// Account code bytes.
+    pub code: Bytes,
+    /// Whether the account is empty.
+    pub is_empty: bool,
+}
+
 pub mod bytecode;
 pub mod env;
 pub mod interpreter;

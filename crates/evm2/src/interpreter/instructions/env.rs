@@ -1,7 +1,18 @@
 use super::utils::{address_to_word, as_usize, as_usize_saturated, b256_to_word, check_spec};
-use crate::interpreter::{GasParams, SpecId, Word, memory::resize_memory};
+use crate::{
+    AccountLoad,
+    interpreter::{GasParams, SpecId, Word, memory::resize_memory},
+};
 use alloy_primitives::B256;
 use evm2_macros::instruction;
+
+fn load_account(
+    cx: &mut evm2::interpreter::table::InstructionCx<'_, '_, '_>,
+    addr: Word,
+    load_code: bool,
+) -> AccountLoad {
+    cx.state.host.load_account(addr, load_code)
+}
 
 #[instruction]
 pub(in crate::interpreter) fn address(cx: _) -> out {
@@ -10,7 +21,7 @@ pub(in crate::interpreter) fn address(cx: _) -> out {
 
 #[instruction]
 pub(in crate::interpreter) fn balance(cx: _, [addr]: [Word]) -> out {
-    *out = cx.state.host.balance(addr);
+    *out = load_account(&mut cx, addr, false).balance;
 }
 
 #[instruction]
@@ -84,7 +95,7 @@ pub(in crate::interpreter) fn gasprice(cx: _) -> out {
 
 #[instruction]
 pub(in crate::interpreter) fn extcodesize(cx: _, [addr]: [Word]) -> out {
-    *out = Word::from(cx.state.host.get_code_size(addr));
+    *out = Word::from(load_account(&mut cx, addr, true).code.len());
 }
 
 #[instruction]
@@ -101,7 +112,7 @@ pub(in crate::interpreter) fn extcodecopy(
         resize_memory(cx.gas, cx.state.memory, memory_offset_usize, len)?;
     }
 
-    let code = cx.state.host.copy_code(addr);
+    let code = load_account(&mut cx, addr, true).code;
     let code_offset = as_usize_saturated(code_offset).min(code.len());
     cx.state.memory.set_data(memory_offset_usize, code_offset, len, &code)
 }
@@ -109,7 +120,8 @@ pub(in crate::interpreter) fn extcodecopy(
 #[instruction]
 pub(in crate::interpreter) fn extcodehash(cx: _, [addr]: [Word]) -> Result<out> {
     check_spec(cx.state.spec, SpecId::CONSTANTINOPLE)?;
-    *out = b256_to_word(cx.state.host.get_code_hash(addr));
+    let account = load_account(&mut cx, addr, false);
+    *out = if account.is_empty { Word::ZERO } else { b256_to_word(account.code_hash) };
 }
 
 #[cfg(test)]
@@ -298,7 +310,7 @@ mod tests {
 
     #[test]
     fn extcodesize_opcode() {
-        let mut host = TestHost { code_size: 0x42, ..TestHost::default() };
+        let mut host = TestHost { code: Bytes::from(vec![0; 0x42]), ..TestHost::default() };
         let interpreter = run_with_host([op::PUSH1, 0xbe, op::EXTCODESIZE, op::STOP], &mut host);
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::from(0x42)]);

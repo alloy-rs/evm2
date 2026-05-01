@@ -1,6 +1,9 @@
 use super::{BytecodeRef, Interpreter, Memory, SpecId, Word};
-use crate::env::{BlockEnv, TxEnv};
-use alloy_primitives::{B256, Bytes, Log};
+use crate::{
+    AccountLoad,
+    env::{BlockEnv, TxEnv},
+};
+use alloy_primitives::{B256, Log};
 use core::fmt;
 
 /// Interpreter state passed to instructions.
@@ -44,17 +47,8 @@ pub trait Host {
     /// Returns the block environment.
     fn block_env(&mut self) -> &BlockEnv;
 
-    /// Returns an account balance.
-    fn balance(&mut self, address: Word) -> Word;
-
-    /// Returns an account's code size.
-    fn get_code_size(&mut self, address: Word) -> usize;
-
-    /// Returns an account's code hash.
-    fn get_code_hash(&mut self, address: Word) -> B256;
-
-    /// Returns an account's code bytes.
-    fn copy_code(&mut self, address: Word) -> Bytes;
+    /// Loads account information.
+    fn load_account(&mut self, address: Word, load_code: bool) -> AccountLoad;
 
     /// Returns a historical block hash.
     fn block_hash(&mut self, number: u64) -> Option<B256>;

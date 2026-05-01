@@ -1,4 +1,5 @@
 use crate::{
+    AccountLoad,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
     interpreter::{Gas, Host, InstrStop, Interpreter, SpecId, Word, op},
@@ -11,9 +12,9 @@ use std::collections::HashMap;
 pub(in crate::interpreter) struct TestHost {
     pub(super) tx: TxEnv,
     pub(super) block: BlockEnv,
-    pub(super) code_size: usize,
     pub(super) code_hash: B256,
     pub(super) code: Bytes,
+    pub(super) is_empty: bool,
     pub(super) storage: HashMap<Word, Word>,
     pub(super) transient_storage: HashMap<Word, Word>,
     pub(super) logs: Vec<Log>,
@@ -28,20 +29,13 @@ impl Host for TestHost {
         &self.block
     }
 
-    fn balance(&mut self, address: Word) -> Word {
-        address
-    }
-
-    fn get_code_size(&mut self, _address: Word) -> usize {
-        self.code_size
-    }
-
-    fn get_code_hash(&mut self, _address: Word) -> B256 {
-        self.code_hash
-    }
-
-    fn copy_code(&mut self, _address: Word) -> Bytes {
-        self.code.clone()
+    fn load_account(&mut self, address: Word, load_code: bool) -> AccountLoad {
+        AccountLoad {
+            balance: address,
+            code_hash: self.code_hash,
+            code: if load_code { self.code.clone() } else { Bytes::new() },
+            is_empty: self.is_empty,
+        }
     }
 
     fn block_hash(&mut self, number: u64) -> Option<B256> {

@@ -60,7 +60,7 @@ pub(in crate::interpreter) fn chainid(cx: _) -> Result<out> {
 
 #[instruction]
 pub(in crate::interpreter) fn selfbalance(cx: _) -> out {
-    *out = cx.state.host.balance(address_to_word(cx.state.tx.address));
+    *out = cx.state.host.load_account(address_to_word(cx.state.tx.address), false).balance;
 }
 
 #[instruction]
