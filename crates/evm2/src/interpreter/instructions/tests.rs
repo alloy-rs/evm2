@@ -2,7 +2,7 @@ use crate::{
     AccountLoad, EvmConfig, SelfDestructResult,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
-    interpreter::{Host, InstrStop, Interpreter, Message, MessageKind, SpecId, Stack, Word, op},
+    interpreter::{Host, InstrStop, Interpreter, Message, MessageKind, SpecId, StackMut, Word, op},
 };
 use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::{Address, B256, Bytes, Log};
@@ -126,7 +126,7 @@ impl Host for TestHost {
 
 pub(super) struct TestInterpreter {
     pub(super) pc: usize,
-    pub(super) stack: Box<[Word; Stack::CAPACITY]>,
+    pub(super) stack: Box<[Word; StackMut::CAPACITY]>,
     pub(super) stack_len: usize,
     pub(super) gas: crate::interpreter::Gas,
     pub(super) memory: crate::interpreter::Memory,

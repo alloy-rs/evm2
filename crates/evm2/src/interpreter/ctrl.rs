@@ -10,7 +10,7 @@ pub struct BytecodeRef<'a> {
 
 /// Program counter state.
 #[derive(Clone, Copy, Debug)]
-pub struct Pc<'a> {
+pub struct PcMut<'a> {
     base: *const u8,
     pc: usize,
     _marker: PhantomData<&'a [u8]>,
@@ -18,7 +18,7 @@ pub struct Pc<'a> {
 
 /// Mutable program counter state.
 #[derive(Debug)]
-pub struct PcMut<'a> {
+pub struct Pc<'a> {
     base: *const u8,
     pc: &'a mut usize,
 }
@@ -64,7 +64,7 @@ impl<'a> BytecodeRef<'a> {
     }
 }
 
-impl<'a> Pc<'a> {
+impl<'a> PcMut<'a> {
     #[allow(dead_code)]
     pub(crate) const fn new(bytecode: BytecodeRef<'a>, pc: usize) -> Self {
         Self { base: bytecode.bytecode.as_ptr(), pc, _marker: PhantomData }
@@ -72,8 +72,8 @@ impl<'a> Pc<'a> {
 
     /// Returns a mutable program counter reference.
     #[inline]
-    pub const fn as_mut(&mut self) -> PcMut<'_> {
-        PcMut { base: self.base, pc: &mut self.pc }
+    pub const fn as_mut(&mut self) -> Pc<'_> {
+        Pc { base: self.base, pc: &mut self.pc }
     }
 
     /// Returns the opcode at the current program counter.
@@ -114,14 +114,14 @@ impl<'a> Pc<'a> {
     }
 }
 
-impl<'a> PcMut<'a> {
+impl<'a> Pc<'a> {
     pub(crate) const fn new(bytecode: BytecodeRef<'a>, pc: &'a mut usize) -> Self {
         Self { base: bytecode.bytecode.as_ptr(), pc }
     }
 
     /// Reborrows the program counter.
     #[inline]
-    pub const fn reborrow(&mut self) -> PcMut<'_> {
+    pub const fn reborrow(&mut self) -> Pc<'_> {
         unsafe { ptr::read(self) }
     }
 
@@ -160,5 +160,14 @@ impl<'a> PcMut<'a> {
     #[inline]
     pub const unsafe fn read_bytes_unchecked(&self, n: usize) -> &'a [u8] {
         unsafe { core::slice::from_raw_parts(self.base.add(self.get()), n) }
+    }
+
+    /// # Safety
+    ///
+    /// Caller must ensure `self.get() + offset..self.get() + offset + n` is in bounds of the
+    /// bytecode allocation.
+    #[inline]
+    pub const unsafe fn read_bytes_offset_unchecked(&self, offset: usize, n: usize) -> &'a [u8] {
+        unsafe { core::slice::from_raw_parts(self.base.add(self.get() + offset), n) }
     }
 }

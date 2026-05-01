@@ -1,11 +1,11 @@
 //! Instruction dispatch tables.
 
 #[cfg(feature = "nightly")]
-use crate::interpreter::{InstrStop, Interpreter, Pc};
+use crate::interpreter::{InstrStop, Interpreter, PcMut};
 use crate::{
     EvmConfig,
     interpreter::{
-        Gas, GasParams, PcMut, Result, SpecId, Stack, State,
+        Gas, GasParams, Pc, Result, SpecId, StackMut, State,
         gas::{
             BASE, BLOCKHASH, EXP, HIGH, ISTANBUL_SLOAD_GAS, JUMPDEST, KECCAK256, LOG, LOW, MID,
             VERYLOW, WARM_STORAGE_READ_COST, ZERO,
@@ -108,8 +108,8 @@ pub(crate) type InstructionFnRet = (usize, Result);
 #[cfg(not(feature = "nightly"))]
 pub(crate) type InstructionFn<C> = extern_table!(
     fn(
-        stack: Stack<'_>,
-        pc: PcMut<'_>,
+        pc: Pc<'_>,
+        stack: StackMut<'_>,
         gas: &mut Gas,
         state: &mut State<'_, <C as EvmConfig>::Host>,
     ) -> InstructionFnRet
@@ -127,8 +127,8 @@ pub(crate) type TailInstructionFnRet = InstrStop;
 #[cfg(feature = "nightly")]
 pub(crate) type TailInstructionFn<C> = extern_table!(
     fn(
-        stack: Stack<'_>,
-        pc: Pc<'_>,
+        pc: PcMut<'_>,
+        stack: StackMut<'_>,
         gas: &mut Gas,
         state: &mut State<'_, <C as EvmConfig>::Host>,
         ret: InstrStop,
@@ -153,7 +153,7 @@ impl<C: EvmConfig> InstructionTables for C {}
 #[derive(Debug)]
 pub(crate) struct InstructionCx<'a, 'ctrl, 'state, C: EvmConfig> {
     /// Program counter state.
-    pub pc: PcMut<'ctrl>,
+    pub pc: Pc<'ctrl>,
     /// Gas state.
     pub gas: &'a mut Gas,
     /// Dynamic gas parameters for the active config.
@@ -167,8 +167,8 @@ pub trait Instruction<C: EvmConfig = crate::EvmVersion<()>> {
     /// Executes this instruction.
     fn execute(
         &self,
-        stack: &mut Stack<'_>,
-        pc: PcMut<'_>,
+        pc: Pc<'_>,
+        stack: &mut StackMut<'_>,
         gas: &mut Gas,
         state: &mut State<'_, C::Host>,
     ) -> Result;
@@ -504,32 +504,62 @@ pub(crate) const fn make_tail_instruction_table<C: EvmConfig>() -> TailInstructi
 extern_table! {
     #[cfg(not(feature = "nightly"))]
     fn dispatch<C: EvmConfig, const OP: usize>(
-        mut stack: Stack<'_>,
-        pc: PcMut<'_>,
+        mut pc: Pc<'_>,
+        mut stack: StackMut<'_>,
         gas: &mut Gas,
         state: &mut State<'_, C::Host>,
     ) -> InstructionFnRet {
         let instr = const { C::INSTRUCTION_IMPLS.get_or_default(OP) };
-        let r = instr.execute(&mut stack, pc, gas, state);
-        (stack.len, r)
+        let r = pre_step::<C, OP>(gas).and_then(|()| {
+            let r = instr.execute(pc.reborrow(), &mut stack, gas, state);
+            inc_pc::<OP>(&mut pc);
+            r
+        });
+        (pc.get(), r)
     }
+}
+
+#[inline(always)]
+fn inc_pc<const OP: usize>(pc: &mut Pc<'_>) {
+    unsafe { pc.advance_unchecked(instruction_len(OP as u8)) };
+}
+
+#[inline(always)]
+const fn instruction_len(op: u8) -> usize {
+    match op {
+        op::JUMP | op::JUMPI => 0, // Set inside.
+        op::PUSH1..=op::PUSH32 => (op - op::PUSH1 + 2) as usize,
+        op::DUPN | op::SWAPN | op::EXCHANGE => 2,
+        _ => 1,
+    }
+}
+
+#[inline(always)]
+fn pre_step<C: EvmConfig, const OP: usize>(gas: &mut Gas) -> Result {
+    gas.spend(const { C::GAS_TABLE.get(OP as u8) } as _)
 }
 
 extern_table! {
     #[cfg(feature = "nightly")]
     fn tail_dispatch<C: EvmConfig, const OP: usize>(
-        mut stack: Stack<'_>,
-        mut pc: Pc<'_>,
+        mut pc: PcMut<'_>,
+        mut stack: StackMut<'_>,
         gas: &mut Gas,
         state: &mut State<'_, C::Host>,
         ret: InstrStop,
     ) -> TailInstructionFnRet {
-        let instr = const { C::INSTRUCTION_IMPLS.get_or_default(OP) };
-        if let Err(e) = instr.execute(&mut stack, pc.as_mut(), gas, state) {
+        if let Err(e) = pre_step::<C, OP>(gas) {
             cold_path();
-            tail_return!(tail_call_restore::<C>(stack, pc, gas, state, e));
+            tail_return!(tail_call_restore::<C>(pc, stack, gas, state, e));
         }
-        tail_return!(tail_call_next::<C>(stack, pc, gas, state, ret));
+        let instr = const { C::INSTRUCTION_IMPLS.get_or_default(OP) };
+        if let Err(e) = instr.execute(pc.as_mut(), &mut stack, gas, state) {
+            cold_path();
+            inc_pc::<OP>(&mut pc.as_mut());
+            tail_return!(tail_call_restore::<C>(pc, stack, gas, state, e));
+        }
+        inc_pc::<OP>(&mut pc.as_mut());
+        tail_return!(tail_call_next::<C>(pc, stack, gas, state, ret));
     }
 }
 
@@ -537,21 +567,15 @@ extern_table! {
     #[inline(never)] // TODO: bench inlining this vs having a single dispatcher for all
     #[cfg(feature = "nightly")]
     fn tail_call_next<C: EvmConfig>(
-        stack: Stack<'_>,
-        mut pc: Pc<'_>,
+        pc: PcMut<'_>,
+        stack: StackMut<'_>,
         gas: &mut Gas,
         state: &mut State<'_, C::Host>,
-        _ret: InstrStop,
+        ret: InstrStop,
     ) -> TailInstructionFnRet {
-        let op = match Interpreter::pre_step::<C>(pc.as_mut(), gas) {
-            Ok(op) => op,
-            Err(e) => {
-                cold_path();
-                tail_return!(tail_call_restore::<C>(stack, pc, gas, state, e));
-            }
-        };
+        let op = pc.op();
         let instr = <C as InstructionTables>::TAIL_INSTRUCTIONS[op as usize];
-        tail_return!(instr(stack, pc, gas, state, InstrStop::Stop));
+        tail_return!(instr(pc, stack, gas, state, ret));
     }
 }
 
@@ -560,8 +584,8 @@ extern_table! {
     #[cold]
     #[cfg(feature = "nightly")]
     fn tail_call_restore<C: EvmConfig>(
-        stack: Stack<'_>,
-        pc: Pc<'_>,
+        pc: PcMut<'_>,
+        stack: StackMut<'_>,
         _gas: &mut Gas,
         state: &mut State<'_, C::Host>,
         ret: InstrStop,
@@ -569,7 +593,7 @@ extern_table! {
         // SAFETY: `raw_interp` is valid for the duration of execution.
         let interp = unsafe { &mut *state.raw_interp.cast::<Interpreter>() };
         interp.pc = pc.get();
-        interp.stack_len = stack.len;
+        interp.stack_len = stack.len();
         ret
     }
 }

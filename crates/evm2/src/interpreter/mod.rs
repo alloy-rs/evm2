@@ -20,7 +20,7 @@ mod ctrl;
 pub use ctrl::{BytecodeRef, Pc, PcMut};
 
 mod stack;
-pub use stack::{Stack, Word};
+pub use stack::{StackMut, Word};
 
 mod memory;
 pub use memory::Memory;

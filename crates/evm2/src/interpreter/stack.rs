@@ -7,47 +7,60 @@ pub type Word = U256;
 
 const STACK_CAPACITY: usize = 1024;
 
-/// EVM operand stack.
-pub struct Stack<'a> {
+/// Mutable EVM operand stack.
+pub struct StackMut<'a> {
     pub(crate) stack: &'a mut [Word; STACK_CAPACITY],
-    pub(crate) len: usize,
+    pub(crate) len: &'a mut usize,
 }
 
-impl fmt::Debug for Stack<'_> {
+impl fmt::Debug for StackMut<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.as_slice().fmt(f)
     }
 }
 
-impl<'a> Stack<'a> {
+impl<'a> StackMut<'a> {
     pub(crate) const CAPACITY: usize = STACK_CAPACITY;
 
     #[inline]
-    pub(crate) const fn new(stack: &'a mut [Word; Stack::CAPACITY], len: usize) -> Self {
+    pub(crate) const fn new(stack: &'a mut [Word; StackMut::CAPACITY], len: &'a mut usize) -> Self {
         Self { stack, len }
+    }
+
+    /// Returns the stack length.
+    #[inline]
+    pub const fn len(&self) -> usize {
+        *self.len
+    }
+
+    /// Returns whether the stack is empty.
+    #[inline]
+    pub const fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     /// Returns the stack contents as a slice.
     #[inline]
     pub const fn as_slice(&self) -> &[Word] {
-        unsafe { core::slice::from_raw_parts(self.stack.as_ptr(), self.len) }
+        unsafe { core::slice::from_raw_parts(self.stack.as_ptr(), self.len()) }
     }
 
     /// Returns the stack contents as a slice.
     #[inline]
     pub const fn as_slice_mut(&mut self) -> &mut [Word] {
-        unsafe { core::slice::from_raw_parts_mut(self.stack.as_mut_ptr(), self.len) }
+        unsafe { core::slice::from_raw_parts_mut(self.stack.as_mut_ptr(), self.len()) }
     }
 
     /// Checks that an instruction can consume `input` words and produce `output` words.
     #[inline]
     pub(crate) fn check_bounds(&self, input: usize, output: usize) -> Result {
         core::debug_assert_matches!(output, 0 | 1);
-        if self.len < input {
+        let len = self.len();
+        if len < input {
             cold_path();
             return Err(InstrStop::StackUnderflow);
         }
-        if output > input && self.len - input == Self::CAPACITY {
+        if output > input && len - input == Self::CAPACITY {
             cold_path();
             return Err(InstrStop::StackOverflow);
         }
@@ -57,7 +70,7 @@ impl<'a> Stack<'a> {
     /// Pushes a word onto the stack.
     #[inline]
     pub fn push(&mut self, value: Word) -> Result {
-        let len = self.len;
+        let len = self.len();
         if len == Self::CAPACITY {
             cold_path();
             return Err(InstrStop::StackOverflow);
@@ -65,7 +78,7 @@ impl<'a> Stack<'a> {
         unsafe {
             let end = self.stack.as_mut_ptr().add(len);
             *end = value;
-            self.len = len + 1;
+            *self.len = len + 1;
         }
         Ok(())
     }
@@ -79,7 +92,7 @@ impl<'a> Stack<'a> {
     /// Pops `N` words from the stack.
     #[inline]
     pub fn popn<const N: usize>(&mut self) -> Result<[Word; N]> {
-        if self.len < N {
+        if self.len() < N {
             cold_path();
             return Err(InstrStop::StackUnderflow);
         }
@@ -97,7 +110,7 @@ impl<'a> Stack<'a> {
     /// Pops `N` words and returns the new top word.
     #[inline(always)]
     pub fn popn_top<const N: usize>(&mut self) -> Result<([Word; N], &mut Word)> {
-        if self.len < (N + 1) {
+        if self.len() < (N + 1) {
             cold_path();
             return Err(InstrStop::StackUnderflow);
         }
@@ -111,7 +124,8 @@ impl<'a> Stack<'a> {
     /// Caller must ensure the stack is not empty.
     #[inline]
     pub unsafe fn top_unchecked(&mut self) -> &mut Word {
-        unsafe { self.stack.get_unchecked_mut(self.len - 1) }
+        let len = self.len();
+        unsafe { self.stack.get_unchecked_mut(len - 1) }
     }
 
     /// # Safety
@@ -119,15 +133,15 @@ impl<'a> Stack<'a> {
     /// Caller must ensure the stack is not empty.
     #[inline]
     pub unsafe fn pop_unchecked(&mut self) -> Word {
-        self.len -= 1;
-        unsafe { *self.stack.get_unchecked(self.len) }
+        *self.len -= 1;
+        unsafe { *self.stack.get_unchecked(self.len()) }
     }
 
     /// Duplicates the `n`th stack word from the top.
     #[inline]
     pub fn dup(&mut self, n: usize) -> Result {
         debug_assert!(n > 0, "attempted to dup 0");
-        let len = self.len;
+        let len = self.len();
         if (len < n) | (len == Self::CAPACITY) {
             cold_path();
             return Err(if len == Self::CAPACITY {
@@ -139,7 +153,7 @@ impl<'a> Stack<'a> {
         unsafe {
             let ptr = self.stack.as_mut_ptr().add(len);
             *ptr = *ptr.sub(n);
-            self.len = len + 1;
+            *self.len = len + 1;
         }
         Ok(())
     }
@@ -154,7 +168,7 @@ impl<'a> Stack<'a> {
     #[inline]
     pub fn exchange(&mut self, n: usize, m: usize) -> Result {
         debug_assert!(n != m, "overlapping exchange");
-        let len = self.len;
+        let len = self.len();
         if n >= len || m >= len {
             cold_path();
             return Err(InstrStop::StackUnderflow);
@@ -175,15 +189,16 @@ impl<'a> Stack<'a> {
         }
 
         let n_words = slice.len().div_ceil(32);
-        let new_len = self.len + n_words;
+        let len = self.len();
+        let new_len = len + n_words;
         if new_len > Self::CAPACITY {
             cold_path();
             return Err(InstrStop::StackOverflow);
         }
 
         unsafe {
-            let dst = self.stack.as_mut_ptr().add(self.len).cast::<u64>();
-            self.len = new_len;
+            let dst = self.stack.as_mut_ptr().add(len).cast::<u64>();
+            *self.len = new_len;
 
             let mut i = 0;
 
@@ -230,18 +245,20 @@ impl<'a> Stack<'a> {
 mod tests {
     use super::*;
 
-    fn run(f: impl FnOnce(&mut Stack<'_>)) {
-        let mut backing = [Word::MAX; Stack::CAPACITY];
-        let mut stack = Stack::new(&mut backing, 0);
+    fn run(f: impl FnOnce(&mut StackMut<'_>)) {
+        let mut backing = [Word::MAX; StackMut::CAPACITY];
+        let mut len = 0;
+        let mut stack = StackMut::new(&mut backing, &mut len);
         f(&mut stack);
     }
 
-    fn run_with_len(len: usize, f: impl FnOnce(&mut Stack<'_>)) {
-        let mut backing = [Word::MAX; Stack::CAPACITY];
+    fn run_with_len(len: usize, f: impl FnOnce(&mut StackMut<'_>)) {
+        let mut backing = [Word::MAX; StackMut::CAPACITY];
         for (i, word) in backing.iter_mut().take(len).enumerate() {
             *word = Word::from(i);
         }
-        let mut stack = Stack::new(&mut backing, len);
+        let mut len = len;
+        let mut stack = StackMut::new(&mut backing, &mut len);
         f(&mut stack);
     }
 
@@ -260,7 +277,7 @@ mod tests {
             core::assert_matches!(stack.check_bounds(2, 0), Err(InstrStop::StackUnderflow));
         });
 
-        run_with_len(Stack::CAPACITY, |stack| {
+        run_with_len(StackMut::CAPACITY, |stack| {
             assert!(stack.check_bounds(1, 1).is_ok());
             core::assert_matches!(stack.check_bounds(0, 1), Err(InstrStop::StackOverflow));
         });
@@ -277,7 +294,7 @@ mod tests {
             core::assert_matches!(stack.pop(), Err(InstrStop::StackUnderflow));
         });
 
-        run_with_len(Stack::CAPACITY, |stack| {
+        run_with_len(StackMut::CAPACITY, |stack| {
             core::assert_matches!(stack.push(Word::ZERO), Err(InstrStop::StackOverflow));
         });
     }
@@ -325,7 +342,7 @@ mod tests {
             core::assert_matches!(stack.exchange(0, 1), Err(InstrStop::StackUnderflow));
         });
 
-        run_with_len(Stack::CAPACITY, |stack| {
+        run_with_len(StackMut::CAPACITY, |stack| {
             core::assert_matches!(stack.dup(1), Err(InstrStop::StackOverflow));
         });
     }
@@ -372,7 +389,7 @@ mod tests {
             assert_eq!(stack.as_slice(), [Word::ZERO, Word::ZERO, Word::from(n)]);
         });
 
-        run_with_len(Stack::CAPACITY, |stack| {
+        run_with_len(StackMut::CAPACITY, |stack| {
             core::assert_matches!(stack.push_slice(&[42]), Err(InstrStop::StackOverflow));
         });
     }

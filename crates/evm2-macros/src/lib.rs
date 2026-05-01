@@ -85,8 +85,8 @@ fn expand_instruction(raw: bool, input: ItemFn) -> TokenStream2 {
             #[inline]
             fn execute(
                 &self,
-                stack: &mut evm2::interpreter::Stack<'_>,
-                __evm2_pc: evm2::interpreter::PcMut<'_>,
+                __evm2_pc: evm2::interpreter::Pc<'_>,
+                stack: &mut evm2::interpreter::StackMut<'_>,
                 __evm2_gas: &mut evm2::interpreter::Gas,
                 __evm2_state: &mut evm2::interpreter::State<'_, <C as evm2::EvmConfig>::Host>,
             ) -> evm2::interpreter::Result {
@@ -170,39 +170,25 @@ fn stack_setup(inputs: &[Ident], outputs: &[Ident]) -> TokenStream2 {
 
     match outputs {
         [] if input_count == 0 => quote! {},
-        [] => {
-            let len_update = decrease_len(input_count);
-            quote! {
-                stack.check_bounds(#input_count, 0)?;
-                let ptr = unsafe { stack.stack.as_mut_ptr().add(stack.len).sub(#input_count) };
-                #input_setup
-                #len_update
-            }
-        }
+        [] => quote! {
+            stack.check_bounds(#input_count, 0)?;
+            let __evm2_stack_len = stack.len();
+            let ptr = unsafe { stack.stack.as_mut_ptr().add(__evm2_stack_len).sub(#input_count) };
+            #input_setup
+            *stack.len = __evm2_stack_len - #input_count;
+        },
         [output] => {
-            let len_update = match input_count {
-                0 => quote! { stack.len += 1; },
-                1 => quote! {},
-                _ => decrease_len(input_count - 1),
-            };
             quote! {
                 stack.check_bounds(#input_count, 1)?;
-                let ptr = unsafe { stack.stack.as_mut_ptr().add(stack.len).sub(#input_count) };
+                let __evm2_stack_len = stack.len();
+                let ptr = unsafe { stack.stack.as_mut_ptr().add(__evm2_stack_len).sub(#input_count) };
                 #input_setup
                 let #output = unsafe { &mut *ptr.cast::<Word>() };
-                #len_update
+                *stack.len = __evm2_stack_len + 1usize - #input_count;
             }
         }
         _ => quote! {
             compile_error!("multiple instruction outputs are not supported yet");
         },
-    }
-}
-
-fn decrease_len(amount: usize) -> TokenStream2 {
-    if amount == 0 {
-        quote! {}
-    } else {
-        quote! { stack.len -= #amount; }
     }
 }

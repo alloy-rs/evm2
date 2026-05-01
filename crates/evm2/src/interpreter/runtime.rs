@@ -1,7 +1,7 @@
 #[cfg(feature = "nightly")]
-use super::Pc;
+use super::PcMut;
 use super::{
-    BytecodeRef, Gas, InstrStop, Memory, Message, PcMut, Result, Stack, State, Word,
+    BytecodeRef, Gas, InstrStop, Memory, Message, Pc, Result, StackMut, State, Word,
     table::InstructionTables,
 };
 use crate::{EvmConfig, bytecode::Bytecode, env::TxEnv};
@@ -15,7 +15,7 @@ use core::hint::cold_path;
 pub struct Interpreter {
     bytecode: Bytecode,
     pub(crate) pc: usize,
-    pub(crate) stack: Box<[Word; Stack::CAPACITY]>,
+    pub(crate) stack: Box<[Word; StackMut::CAPACITY]>,
     pub(crate) stack_len: usize,
     pub(crate) gas: Gas,
     pub(crate) memory: Memory,
@@ -72,24 +72,16 @@ impl Interpreter {
     }
 
     #[inline(always)]
-    pub(crate) fn pre_step<C: EvmConfig>(mut pc: PcMut<'_>, gas: &mut Gas) -> Result<u8> {
-        let op = pc.op();
-        unsafe { pc.advance_unchecked(1) };
-        gas.spend(C::GAS_TABLE.get(op) as _)?;
-        Ok(op)
-    }
-
-    #[inline(always)]
     #[cfg(not(feature = "nightly"))]
     fn step<C: EvmConfig>(&mut self, host: &mut C::Host) -> Result {
         let raw = self as *mut Self;
         let bytecode = BytecodeRef::new(&self.bytecode);
-        let mut pc = PcMut::new(bytecode, &mut self.pc);
-        let op = Self::pre_step::<C>(pc.reborrow(), &mut self.gas)?;
+        let pc = Pc::new(bytecode, &mut self.pc);
+        let op = pc.op();
         let instr = <C as InstructionTables>::INSTRUCTIONS[op as usize];
-        let (len, r) = instr(
-            Stack::new(&mut self.stack, self.stack_len),
+        let (pc, r) = instr(
             pc,
+            StackMut::new(&mut self.stack, &mut self.stack_len),
             &mut self.gas,
             &mut State {
                 bytecode,
@@ -102,7 +94,7 @@ impl Interpreter {
                 raw_interp: raw,
             },
         );
-        self.stack_len = len;
+        self.pc = pc;
         r
     }
 
@@ -112,14 +104,14 @@ impl Interpreter {
         let raw = self as *mut Self;
         let bytecode = BytecodeRef::new(&self.bytecode);
         let (op, pc) = {
-            let mut pc_mut = PcMut::new(bytecode, &mut self.pc);
-            let op = Self::pre_step::<C>(pc_mut.reborrow(), &mut self.gas)?;
-            (op, Pc::new(bytecode, pc_mut.get()))
+            let pc_mut = Pc::new(bytecode, &mut self.pc);
+            let op = pc_mut.op();
+            (op, PcMut::new(bytecode, pc_mut.get()))
         };
         let instr = <C as InstructionTables>::TAIL_INSTRUCTIONS[op as usize];
         let e = instr(
-            Stack::new(&mut self.stack, self.stack_len),
             pc,
+            StackMut::new(&mut self.stack, &mut self.stack_len),
             &mut self.gas,
             &mut State {
                 bytecode,
