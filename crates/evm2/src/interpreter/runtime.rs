@@ -39,20 +39,26 @@ pub struct Interpreter {
 }
 
 impl Interpreter {
-    /// Creates an interpreter from analyzed bytecode and a spec identifier.
-    pub fn new(bytecode: Bytecode, spec_id: SpecId) -> Self {
+    /// Creates an interpreter from analyzed bytecode and execution parameters.
+    pub fn new(
+        bytecode: Bytecode,
+        spec_id: SpecId,
+        is_static: bool,
+        gas_limit: u64,
+        return_data: Bytes,
+    ) -> Self {
         Self {
             bytecode,
             pc: 0,
             // SAFETY: `Word` is valid at any bitpattern. It's not read before init anyway.
             stack: unsafe { Box::new_uninit().assume_init() },
             stack_len: 0,
-            gas: Gas::new(10_000),
+            gas: Gas::new(gas_limit),
             gas_params: GasParams::new_spec(spec_id),
             memory: Memory::new(),
-            return_data: Bytes::new(),
+            return_data,
             spec_id,
-            is_static: false,
+            is_static,
         }
     }
 

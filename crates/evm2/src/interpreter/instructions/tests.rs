@@ -2,7 +2,7 @@ use crate::{
     AccountLoad,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
-    interpreter::{Gas, Host, InstrStop, Interpreter, SpecId, Word, op},
+    interpreter::{Host, InstrStop, Interpreter, SpecId, Word, op},
 };
 use alloc::vec::Vec;
 use alloy_primitives::{B256, Bytes, Log};
@@ -92,55 +92,66 @@ impl TestInterpreter {
     }
 }
 
-pub(super) fn run(code: impl Into<Vec<u8>>) -> TestInterpreter {
-    let mut host = TestHost::default();
-    run_with_host(code, &mut host)
+pub(super) struct RunConfig<'a> {
+    pub(super) code: Vec<u8>,
+    pub(super) host: Option<&'a mut dyn Host>,
+    pub(super) spec_id: SpecId,
+    pub(super) is_static: bool,
+    pub(super) gas_limit: u64,
+    pub(super) return_data: Bytes,
 }
 
-pub(super) fn run_with_host(code: impl Into<Vec<u8>>, host: &mut dyn Host) -> TestInterpreter {
-    run_with_host_and_spec(code, host, SpecId::HOMESTEAD)
+impl<'a> RunConfig<'a> {
+    pub(super) fn new(code: impl Into<Vec<u8>>) -> Self {
+        Self { code: code.into(), ..Self::default() }
+    }
+
+    pub(super) fn host(mut self, host: &'a mut dyn Host) -> Self {
+        self.host = Some(host);
+        self
+    }
+
+    pub(super) const fn spec(mut self, spec_id: SpecId) -> Self {
+        self.spec_id = spec_id;
+        self
+    }
+
+    pub(super) const fn staticcall(mut self) -> Self {
+        self.is_static = true;
+        self
+    }
+
+    pub(super) const fn gas_limit(mut self, gas_limit: u64) -> Self {
+        self.gas_limit = gas_limit;
+        self
+    }
+
+    pub(super) fn return_data(mut self, return_data: Bytes) -> Self {
+        self.return_data = return_data;
+        self
+    }
 }
 
-pub(super) fn run_with_host_and_spec(
-    code: impl Into<Vec<u8>>,
-    host: &mut dyn Host,
-    spec_id: SpecId,
-) -> TestInterpreter {
-    run_with_host_and_spec_config(code, host, spec_id, false, 10_000)
+impl Default for RunConfig<'_> {
+    fn default() -> Self {
+        Self {
+            code: Vec::new(),
+            host: None,
+            spec_id: SpecId::HOMESTEAD,
+            is_static: false,
+            gas_limit: 10_000,
+            return_data: Bytes::new(),
+        }
+    }
 }
 
-pub(super) fn run_with_host_and_spec_config(
-    code: impl Into<Vec<u8>>,
-    host: &mut dyn Host,
-    spec_id: SpecId,
-    is_static: bool,
-    gas_limit: u64,
-) -> TestInterpreter {
-    let bytecode = Bytecode::new_legacy(Bytes::from(code.into()));
-    let mut inner = Interpreter::new(bytecode, spec_id);
-    inner.is_static = is_static;
-    inner.gas = Gas::new(gas_limit);
+pub(super) fn run(config: RunConfig<'_>) -> TestInterpreter {
+    let RunConfig { code, host, spec_id, is_static, gas_limit, return_data } = config;
+    let bytecode = Bytecode::new_legacy(Bytes::from(code));
+    let mut inner = Interpreter::new(bytecode, spec_id, is_static, gas_limit, return_data);
+    let mut default_host = TestHost::default();
+    let host = host.unwrap_or(&mut default_host);
     let err = inner.run(host);
-    TestInterpreter { inner, err }
-}
-
-pub(super) fn run_with_return_data(
-    code: impl Into<Vec<u8>>,
-    return_data: Bytes,
-) -> TestInterpreter {
-    run_with_return_data_and_spec(code, return_data, SpecId::HOMESTEAD)
-}
-
-pub(super) fn run_with_return_data_and_spec(
-    code: impl Into<Vec<u8>>,
-    return_data: Bytes,
-    spec_id: SpecId,
-) -> TestInterpreter {
-    let mut host = TestHost::default();
-    let bytecode = Bytecode::new_legacy(Bytes::from(code.into()));
-    let mut inner = Interpreter::new(bytecode, spec_id);
-    inner.return_data = return_data;
-    let err = inner.run(&mut host);
     TestInterpreter { inner, err }
 }
 
@@ -178,7 +189,7 @@ pub(super) fn run_stack<T: ToWord, const N: usize>(inputs: [T; N], opcode: u8) -
         push(&mut code, input);
     }
     code.extend([opcode, op::STOP]);
-    run(code)
+    run(RunConfig::new(code))
 }
 
 pub(super) fn assert_stack_words(inputs: &[Word], opcode: u8, expected: &[Word]) {
@@ -187,7 +198,7 @@ pub(super) fn assert_stack_words(inputs: &[Word], opcode: u8, expected: &[Word])
         push(&mut code, *input);
     }
     code.extend([opcode, op::STOP]);
-    let interpreter = run(code);
+    let interpreter = run(RunConfig::new(code));
     core::assert_matches!(interpreter.err, InstrStop::Stop);
     assert_eq!(interpreter.stack(), expected);
 }

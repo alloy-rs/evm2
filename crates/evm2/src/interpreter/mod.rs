@@ -257,7 +257,7 @@ mod tests {
 
         let gas_table = new_gas_table(spec_id);
         let bytecode = Bytecode::new_legacy(Bytes::copy_from_slice(bytecode));
-        let mut interpreter = Interpreter::new(bytecode, spec_id);
+        let mut interpreter = Interpreter::new(bytecode, spec_id, false, 10_000, Bytes::new());
         let mut host = TestHost::default();
         interpreter.run_with_table(instruction_table, &gas_table, &mut host);
     }
@@ -273,7 +273,7 @@ mod tests {
                 ("tail", Table::Tail(&DEFAULT_TAIL_TABLE)),
             ] {
                 let bytecode = Bytecode::new_legacy(Bytes::from_static(BASIC));
-                let mut interpreter = Interpreter::new(bytecode, spec);
+                let mut interpreter = Interpreter::new(bytecode, spec, false, 10_000, Bytes::new());
                 let mut host = TestHost::default();
                 interpreter.run_with_table(table, &gas_table, &mut host);
                 assert!(interpreter.gas.remaining() > 0);

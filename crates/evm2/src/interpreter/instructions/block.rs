@@ -95,7 +95,7 @@ mod tests {
         interpreter::{
             InstrStop, SpecId, Word,
             instructions::{
-                tests::{TestHost, push, run_with_host, run_with_host_and_spec},
+                tests::{RunConfig, TestHost, push, run},
                 utils::{address_to_word, b256_to_word},
             },
             op,
@@ -116,7 +116,7 @@ mod tests {
         code.push(op::BLOCKHASH);
         code.push(op::STOP);
 
-        let interpreter = run_with_host(code, &mut host);
+        let interpreter = run(RunConfig::new(code).host(&mut host));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [b256_to_word(B256::with_last_byte(9))]);
 
@@ -124,7 +124,7 @@ mod tests {
         push(&mut code, 10);
         code.push(op::BLOCKHASH);
         code.push(op::STOP);
-        let interpreter = run_with_host(code, &mut host);
+        let interpreter = run(RunConfig::new(code).host(&mut host));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [0]);
     }
@@ -133,7 +133,11 @@ mod tests {
     fn coinbase_opcode() {
         let beneficiary = Address::from([0x44; 20]);
         let mut host = test_host(BlockEnv { beneficiary, ..BlockEnv::default() });
-        let interpreter = run_with_host([op::COINBASE, op::STOP], &mut host);
+        let interpreter = run(RunConfig {
+            code: [op::COINBASE, op::STOP].into(),
+            host: Some(&mut host),
+            ..RunConfig::default()
+        });
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [address_to_word(beneficiary)]);
     }
@@ -141,7 +145,11 @@ mod tests {
     #[test]
     fn timestamp_opcode() {
         let mut host = test_host(BlockEnv { timestamp: Word::from(12), ..BlockEnv::default() });
-        let interpreter = run_with_host([op::TIMESTAMP, op::STOP], &mut host);
+        let interpreter = run(RunConfig {
+            code: [op::TIMESTAMP, op::STOP].into(),
+            host: Some(&mut host),
+            ..RunConfig::default()
+        });
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::from(12)]);
     }
@@ -149,7 +157,11 @@ mod tests {
     #[test]
     fn number_opcode() {
         let mut host = test_host(BlockEnv { number: Word::from(13), ..BlockEnv::default() });
-        let interpreter = run_with_host([op::NUMBER, op::STOP], &mut host);
+        let interpreter = run(RunConfig {
+            code: [op::NUMBER, op::STOP].into(),
+            host: Some(&mut host),
+            ..RunConfig::default()
+        });
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::from(13)]);
     }
@@ -162,12 +174,20 @@ mod tests {
             prevrandao: b256_to_word(randao),
             ..BlockEnv::default()
         });
-        let interpreter = run_with_host([op::DIFFICULTY, op::STOP], &mut host);
+        let interpreter = run(RunConfig {
+            code: [op::DIFFICULTY, op::STOP].into(),
+            host: Some(&mut host),
+            ..RunConfig::default()
+        });
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::from(14)]);
 
-        let interpreter =
-            run_with_host_and_spec([op::DIFFICULTY, op::STOP], &mut host, SpecId::MERGE);
+        let interpreter = run(RunConfig {
+            code: [op::DIFFICULTY, op::STOP].into(),
+            host: Some(&mut host),
+            spec_id: SpecId::MERGE,
+            ..RunConfig::default()
+        });
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [b256_to_word(randao)]);
     }
@@ -175,7 +195,11 @@ mod tests {
     #[test]
     fn gaslimit_opcode() {
         let mut host = test_host(BlockEnv { gas_limit: Word::from(15), ..BlockEnv::default() });
-        let interpreter = run_with_host([op::GASLIMIT, op::STOP], &mut host);
+        let interpreter = run(RunConfig {
+            code: [op::GASLIMIT, op::STOP].into(),
+            host: Some(&mut host),
+            ..RunConfig::default()
+        });
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::from(15)]);
     }
@@ -186,8 +210,12 @@ mod tests {
             tx: TxEnv { chain_id: Word::from(1), ..TxEnv::default() },
             ..TestHost::default()
         };
-        let interpreter =
-            run_with_host_and_spec([op::CHAINID, op::STOP], &mut host, SpecId::ISTANBUL);
+        let interpreter = run(RunConfig {
+            code: [op::CHAINID, op::STOP].into(),
+            host: Some(&mut host),
+            spec_id: SpecId::ISTANBUL,
+            ..RunConfig::default()
+        });
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::from(1)]);
     }
@@ -197,7 +225,11 @@ mod tests {
         let address = Address::from([0x66; 20]);
         let mut host =
             TestHost { tx: TxEnv { address, ..TxEnv::default() }, ..TestHost::default() };
-        let interpreter = run_with_host([op::SELFBALANCE, op::STOP], &mut host);
+        let interpreter = run(RunConfig {
+            code: [op::SELFBALANCE, op::STOP].into(),
+            host: Some(&mut host),
+            ..RunConfig::default()
+        });
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [address_to_word(address)]);
     }
@@ -205,8 +237,12 @@ mod tests {
     #[test]
     fn basefee_opcode() {
         let mut host = test_host(BlockEnv { basefee: Word::from(16), ..BlockEnv::default() });
-        let interpreter =
-            run_with_host_and_spec([op::BASEFEE, op::STOP], &mut host, SpecId::LONDON);
+        let interpreter = run(RunConfig {
+            code: [op::BASEFEE, op::STOP].into(),
+            host: Some(&mut host),
+            spec_id: SpecId::LONDON,
+            ..RunConfig::default()
+        });
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::from(16)]);
     }
@@ -219,16 +255,21 @@ mod tests {
             ..TestHost::default()
         };
 
-        let interpreter =
-            run_with_host_and_spec([op::PUSH0, op::BLOBHASH, op::STOP], &mut host, SpecId::CANCUN);
+        let interpreter = run(RunConfig {
+            code: [op::PUSH0, op::BLOBHASH, op::STOP].into(),
+            host: Some(&mut host),
+            spec_id: SpecId::CANCUN,
+            ..RunConfig::default()
+        });
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [b256_to_word(hash)]);
 
-        let interpreter = run_with_host_and_spec(
-            [op::PUSH1, 0x01, op::BLOBHASH, op::STOP],
-            &mut host,
-            SpecId::CANCUN,
-        );
+        let interpreter = run(RunConfig {
+            code: [op::PUSH1, 0x01, op::BLOBHASH, op::STOP].into(),
+            host: Some(&mut host),
+            spec_id: SpecId::CANCUN,
+            ..RunConfig::default()
+        });
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [0]);
     }
@@ -236,8 +277,12 @@ mod tests {
     #[test]
     fn blobbasefee_opcode() {
         let mut host = test_host(BlockEnv { blob_basefee: Word::from(17), ..BlockEnv::default() });
-        let interpreter =
-            run_with_host_and_spec([op::BLOBBASEFEE, op::STOP], &mut host, SpecId::CANCUN);
+        let interpreter = run(RunConfig {
+            code: [op::BLOBBASEFEE, op::STOP].into(),
+            host: Some(&mut host),
+            spec_id: SpecId::CANCUN,
+            ..RunConfig::default()
+        });
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::from(17)]);
     }
@@ -245,8 +290,12 @@ mod tests {
     #[test]
     fn slotnum_opcode() {
         let mut host = test_host(BlockEnv { slot_num: Word::from(18), ..BlockEnv::default() });
-        let interpreter =
-            run_with_host_and_spec([op::SLOTNUM, op::STOP], &mut host, SpecId::AMSTERDAM);
+        let interpreter = run(RunConfig {
+            code: [op::SLOTNUM, op::STOP].into(),
+            host: Some(&mut host),
+            spec_id: SpecId::AMSTERDAM,
+            ..RunConfig::default()
+        });
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::from(18)]);
     }

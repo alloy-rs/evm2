@@ -21,7 +21,7 @@ mod tests {
     use crate::interpreter::{
         InstrStop, Word,
         instructions::{
-            tests::{push, run, run_stack},
+            tests::{RunConfig, push, run, run_stack},
             utils::b256_to_word,
         },
         op,
@@ -36,7 +36,7 @@ mod tests {
         push(&mut code, 0);
         code.push(op::KECCAK256);
         code.push(op::STOP);
-        let interpreter = run(code);
+        let interpreter = run(RunConfig::new(code));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [b256_to_word(keccak256([]))]);
 
@@ -48,7 +48,7 @@ mod tests {
         push(&mut code, 0);
         code.push(op::KECCAK256);
         code.push(op::STOP);
-        let interpreter = run(code);
+        let interpreter = run(RunConfig::new(code));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [b256_to_word(keccak256([0x80]))]);
 
