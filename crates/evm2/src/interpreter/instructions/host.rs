@@ -6,7 +6,7 @@ use alloy_primitives::{B256, Bytes, Log, LogData};
 use evm2_macros::instruction;
 
 const fn require_non_staticcall(cx: &InstructionCx<'_, '_, '_>) -> Result {
-    if cx.state.is_static {
+    if cx.state.message.is_static() {
         return Err(InstrStop::StateChangeDuringStaticCall);
     }
     Ok(())
@@ -67,7 +67,7 @@ pub(in crate::interpreter) fn log<const N: usize>(cx: _) -> Result {
     let topics =
         stack.popn::<N>()?.into_iter().map(|topic| B256::from(topic.to_be_bytes::<32>())).collect();
     cx.state.host.log(Log {
-        address: cx.state.tx.address,
+        address: cx.state.message.destination,
         data: LogData::new(topics, data).expect("LOG opcodes cannot emit more than 4 topics"),
     });
     Ok(())
@@ -76,7 +76,7 @@ pub(in crate::interpreter) fn log<const N: usize>(cx: _) -> Result {
 #[cfg(test)]
 mod tests {
     use crate::interpreter::{
-        InstrStop, SpecId, Word,
+        InstrStop, Message, MessageKind, SpecId, Word,
         instructions::tests::{RunConfig, TestHost, push, run},
         op,
     };
@@ -128,6 +128,23 @@ mod tests {
         code.extend([op::SSTORE, op::STOP]);
 
         let interpreter = run(RunConfig::new(code).host(&mut host).staticcall());
+        core::assert_matches!(interpreter.err, InstrStop::StateChangeDuringStaticCall);
+        assert_eq!(interpreter.stack(), [Word::from(0xbeef), Word::from(1)]);
+        assert_eq!(host.storage.get(&Word::from(1)), None);
+    }
+
+    #[test]
+    fn sstore_staticcall_message_kind_check() {
+        let mut host = TestHost::default();
+        let mut code = Vec::new();
+        push(&mut code, 0xbeef);
+        push(&mut code, 1);
+        code.extend([op::SSTORE, op::STOP]);
+        let message =
+            Message { kind: MessageKind::StaticCall, gas_limit: 10_000, ..Default::default() };
+
+        let interpreter = run(RunConfig::new(code).host(&mut host).message(message));
+
         core::assert_matches!(interpreter.err, InstrStop::StateChangeDuringStaticCall);
         assert_eq!(interpreter.stack(), [Word::from(0xbeef), Word::from(1)]);
         assert_eq!(host.storage.get(&Word::from(1)), None);
@@ -228,15 +245,18 @@ mod tests {
 
     #[test]
     fn log0_opcode() {
-        let mut host = TestHost {
-            tx: crate::env::TxEnv { address: Address::from([0x11; 20]), ..Default::default() },
+        let mut host = TestHost::default();
+        let address = Address::from([0x11; 20]);
+        let message = crate::interpreter::Message {
+            destination: address,
+            gas_limit: 10_000,
             ..Default::default()
         };
-        let interpreter = run(RunConfig::new(log_code(30, 2, [])).host(&mut host));
+        let interpreter = run(RunConfig::new(log_code(30, 2, [])).host(&mut host).message(message));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert!(interpreter.stack().is_empty());
         assert_eq!(host.logs.len(), 1);
-        assert_eq!(host.logs[0].address, Address::from([0x11; 20]));
+        assert_eq!(host.logs[0].address, address);
         assert!(host.logs[0].topics().is_empty());
         assert_eq!(host.logs[0].data.data, Bytes::from_static(&[0xbe, 0xef]));
     }

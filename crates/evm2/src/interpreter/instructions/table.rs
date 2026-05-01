@@ -11,19 +11,19 @@ use crate::interpreter::{
 use core::hint::cold_path;
 
 /// Normal instruction return value.
-pub(in crate::interpreter) type InstrFnRet = (usize, Result);
+pub(crate) type InstrFnRet = (usize, Result);
 /// Normal instruction function pointer.
-pub(in crate::interpreter) type InstrFn = extern_table!(
+pub(crate) type InstrFn = extern_table!(
     fn(stack: Stack<'_>, pc: PcMut<'_>, gas: &mut Gas, state: &mut State<'_>) -> InstrFnRet
 );
 /// Normal instruction dispatch table.
-pub(in crate::interpreter) type InstrTable = [InstrFn; 256];
+pub(crate) type InstrTable = [InstrFn; 256];
 
 // TODO: consider splitting remaining gas into a separate struct passed by value.
 /// Tail instruction return value.
-pub(in crate::interpreter) type TailInstrFnRet = InstrStop;
+pub(crate) type TailInstrFnRet = InstrStop;
 /// Tail instruction function pointer.
-pub(in crate::interpreter) type TailInstrFn = extern_table!(
+pub(crate) type TailInstrFn = extern_table!(
     fn(
         stack: Stack<'_>,
         pc: Pc<'_>,
@@ -34,14 +34,14 @@ pub(in crate::interpreter) type TailInstrFn = extern_table!(
     ) -> TailInstrFnRet
 );
 /// Tail instruction dispatch table.
-pub(in crate::interpreter) type TailInstrTable = [TailInstrFn; 256];
+pub(crate) type TailInstrTable = [TailInstrFn; 256];
 
 /// Opcode gas table.
-pub(in crate::interpreter) type GasTable = [u16; 256];
+pub(crate) type GasTable = [u16; 256];
 
 /// Instruction execution context.
 #[derive(Debug)]
-pub(in crate::interpreter) struct InstructionCx<'a, 'ctrl, 'state> {
+pub(crate) struct InstructionCx<'a, 'ctrl, 'state> {
     /// Program counter state.
     pub pc: PcMut<'ctrl>,
     /// Gas state.
@@ -51,9 +51,9 @@ pub(in crate::interpreter) struct InstructionCx<'a, 'ctrl, 'state> {
 }
 
 /// Default normal dispatch table.
-pub(in crate::interpreter) static DEFAULT_TABLE: InstrTable = make_table();
+pub(crate) static DEFAULT_TABLE: InstrTable = make_table();
 /// Default tail dispatch table.
-pub(in crate::interpreter) static DEFAULT_TAIL_TABLE: TailInstrTable = make_tail_table();
+pub(crate) static DEFAULT_TAIL_TABLE: TailInstrTable = make_tail_table();
 
 pub(crate) trait Instruction {
     fn execute(
@@ -66,7 +66,7 @@ pub(crate) trait Instruction {
 
 /// Creates a gas table for `spec`.
 #[inline]
-pub(in crate::interpreter) const fn new_gas_table(spec: SpecId) -> GasTable {
+pub(crate) const fn new_gas_table(spec: SpecId) -> GasTable {
     let mut table = make_gas_table();
 
     if spec.enables(SpecId::TANGERINE) {
@@ -293,13 +293,13 @@ macro_rules! make_table_m {
 }
 
 /// Creates the normal instruction dispatch table.
-pub(in crate::interpreter) const fn make_table() -> InstrTable {
+pub(crate) const fn make_table() -> InstrTable {
     use crate::interpreter::instructions::*;
     make_table_m!(dispatch, InstrTable, InstrFn)
 }
 
 /// Creates the tail instruction dispatch table.
-pub(in crate::interpreter) const fn make_tail_table() -> TailInstrTable {
+pub(crate) const fn make_tail_table() -> TailInstrTable {
     use crate::interpreter::instructions::*;
     make_table_m!(tail_dispatch, TailInstrTable, TailInstrFn)
 }

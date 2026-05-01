@@ -22,7 +22,7 @@ fn load_account(
 
 #[instruction]
 pub(in crate::interpreter) fn address(cx: _) -> out {
-    *out = address_to_word(cx.state.tx.address);
+    *out = address_to_word(cx.state.message.destination);
 }
 
 #[instruction]
@@ -37,18 +37,18 @@ pub(in crate::interpreter) fn origin(cx: _) -> out {
 
 #[instruction]
 pub(in crate::interpreter) fn caller(cx: _) -> out {
-    *out = address_to_word(cx.state.tx.caller);
+    *out = address_to_word(cx.state.message.caller);
 }
 
 #[instruction]
 pub(in crate::interpreter) fn callvalue(cx: _) -> out {
-    *out = cx.state.tx.call_value;
+    *out = cx.state.message.value;
 }
 
 #[instruction]
 pub(in crate::interpreter) fn calldataload(cx: _, [offset]: [Word]) -> out {
     let offset = as_usize_saturated(offset);
-    let input = cx.state.tx.calldata.as_ref();
+    let input = cx.state.message.input.as_ref();
     let mut word = B256::ZERO;
     if offset < input.len() {
         let len = 32.min(input.len() - offset);
@@ -59,7 +59,7 @@ pub(in crate::interpreter) fn calldataload(cx: _, [offset]: [Word]) -> out {
 
 #[instruction]
 pub(in crate::interpreter) fn calldatasize(cx: _) -> out {
-    *out = Word::from(cx.state.tx.calldata.len());
+    *out = Word::from(cx.state.message.input.len());
 }
 
 #[instruction]
@@ -74,7 +74,7 @@ pub(in crate::interpreter) fn calldatacopy(
     let memory_offset = as_usize(memory_offset)?;
     let data_offset = as_usize_saturated(data_offset);
     resize_memory(cx.gas, cx.state.memory, memory_offset, len)?;
-    cx.state.memory.set_data(memory_offset, data_offset, len, &cx.state.tx.calldata)
+    cx.state.memory.set_data(memory_offset, data_offset, len, &cx.state.message.input)
 }
 
 #[instruction]
@@ -102,6 +102,13 @@ pub(in crate::interpreter) fn gasprice(cx: _) -> out {
 #[instruction]
 pub(in crate::interpreter) fn extcodesize(cx: _, [addr]: [Word]) -> Result<out> {
     *out = Word::from(load_account(&mut cx, addr, true)?.code.len());
+}
+
+#[instruction]
+pub(in crate::interpreter) fn extcodehash(cx: _, [addr]: [Word]) -> Result<out> {
+    check_spec(cx.state.spec, SpecId::CONSTANTINOPLE)?;
+    let account = load_account(&mut cx, addr, false)?;
+    *out = if account.is_empty { Word::ZERO } else { b256_to_word(account.code_hash) };
 }
 
 #[instruction]
@@ -151,19 +158,12 @@ pub(in crate::interpreter) fn returndatacopy(
     cx.state.memory.set_data(memory_offset, data_offset, len, cx.state.return_data)
 }
 
-#[instruction]
-pub(in crate::interpreter) fn extcodehash(cx: _, [addr]: [Word]) -> Result<out> {
-    check_spec(cx.state.spec, SpecId::CONSTANTINOPLE)?;
-    let account = load_account(&mut cx, addr, false)?;
-    *out = if account.is_empty { Word::ZERO } else { b256_to_word(account.code_hash) };
-}
-
 #[cfg(test)]
 mod tests {
     use crate::{
         env::TxEnv,
         interpreter::{
-            InstrStop, SpecId, Word,
+            InstrStop, Message, SpecId, Word,
             instructions::{
                 tests::{RunConfig, TestHost, assert_stack, push, run, run_stack},
                 utils::{address_to_word, b256_to_word},
@@ -178,8 +178,8 @@ mod tests {
         Word::from(0).wrapping_sub(Word::from(value))
     }
 
-    fn test_host(tx: TxEnv) -> TestHost {
-        TestHost { tx, ..TestHost::default() }
+    fn test_message() -> Message {
+        Message { gas_limit: 10_000, ..Message::default() }
     }
 
     fn stack_code<const N: usize>(inputs: [Word; N], opcode: u8) -> Vec<u8> {
@@ -194,8 +194,10 @@ mod tests {
     #[test]
     fn address_opcode() {
         let address = Address::from([0x11; 20]);
-        let mut host = test_host(TxEnv { address, ..TxEnv::default() });
-        let interpreter = run(RunConfig::new([op::ADDRESS, op::STOP]).host(&mut host));
+        let mut host = TestHost::default();
+        let message = Message { destination: address, ..test_message() };
+        let interpreter =
+            run(RunConfig::new([op::ADDRESS, op::STOP]).host(&mut host).message(message));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [address_to_word(address)]);
     }
@@ -231,8 +233,10 @@ mod tests {
     #[test]
     fn origin_opcode() {
         let origin = Address::from([0x22; 20]);
-        let mut host = test_host(TxEnv { origin, ..TxEnv::default() });
-        let interpreter = run(RunConfig::new([op::ORIGIN, op::STOP]).host(&mut host));
+        let mut host = TestHost::default();
+        let tx_env = TxEnv { origin, ..TxEnv::default() };
+        let interpreter =
+            run(RunConfig::new([op::ORIGIN, op::STOP]).host(&mut host).tx_env(tx_env));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [address_to_word(origin)]);
     }
@@ -240,51 +244,61 @@ mod tests {
     #[test]
     fn caller_opcode() {
         let caller = Address::from([0x33; 20]);
-        let mut host = test_host(TxEnv { caller, ..TxEnv::default() });
-        let interpreter = run(RunConfig::new([op::CALLER, op::STOP]).host(&mut host));
+        let mut host = TestHost::default();
+        let message = Message { caller, ..test_message() };
+        let interpreter =
+            run(RunConfig::new([op::CALLER, op::STOP]).host(&mut host).message(message));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [address_to_word(caller)]);
     }
 
     #[test]
     fn callvalue_opcode() {
-        let mut host = test_host(TxEnv { call_value: Word::from(0xbeef), ..TxEnv::default() });
-        let interpreter = run(RunConfig::new([op::CALLVALUE, op::STOP]).host(&mut host));
+        let mut host = TestHost::default();
+        let message = Message { value: Word::from(0xbeef), ..test_message() };
+        let interpreter =
+            run(RunConfig::new([op::CALLVALUE, op::STOP]).host(&mut host).message(message));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::from(0xbeef)]);
     }
 
     #[test]
     fn calldataload_opcode() {
-        let calldata = Bytes::from(Vec::from([1_u8, 2, 3]));
-        let mut host = test_host(TxEnv { calldata, ..TxEnv::default() });
+        let input = Bytes::from(Vec::from([1_u8, 2, 3]));
+        let mut host = TestHost::default();
+        let message = Message { input, ..test_message() };
 
-        let interpreter =
-            run(RunConfig::new([op::PUSH0, op::CALLDATALOAD, op::STOP]).host(&mut host));
+        let interpreter = run(RunConfig::new([op::PUSH0, op::CALLDATALOAD, op::STOP])
+            .host(&mut host)
+            .message(message.clone()));
         let mut expected = [0_u8; 32];
         expected[..3].copy_from_slice(&[1, 2, 3]);
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::from_be_bytes(expected)]);
 
-        let interpreter =
-            run(RunConfig::new([op::PUSH1, 0x20, op::CALLDATALOAD, op::STOP]).host(&mut host));
+        let interpreter = run(RunConfig::new([op::PUSH1, 0x20, op::CALLDATALOAD, op::STOP])
+            .host(&mut host)
+            .message(message));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [0]);
     }
 
     #[test]
     fn calldatasize_opcode() {
-        let calldata = Bytes::from(Vec::from([1_u8, 2, 3, 4]));
-        let mut host = test_host(TxEnv { calldata, ..TxEnv::default() });
-        let interpreter = run(RunConfig::new([op::CALLDATASIZE, op::STOP]).host(&mut host));
+        let input = Bytes::from(Vec::from([1_u8, 2, 3, 4]));
+        let mut host = TestHost::default();
+        let message = Message { input, ..test_message() };
+        let interpreter =
+            run(RunConfig::new([op::CALLDATASIZE, op::STOP]).host(&mut host).message(message));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::from(4)]);
     }
 
     #[test]
     fn calldatacopy_opcode() {
-        let calldata = Bytes::from(Vec::from([0xaa_u8, 0xbb, 0xcc]));
-        let mut host = test_host(TxEnv { calldata, ..TxEnv::default() });
+        let input = Bytes::from(Vec::from([0xaa_u8, 0xbb, 0xcc]));
+        let mut host = TestHost::default();
+        let message = Message { input, ..test_message() };
         let mut code = Vec::new();
         push(&mut code, 2);
         push(&mut code, 1);
@@ -294,7 +308,7 @@ mod tests {
         code.push(op::MLOAD);
         code.push(op::STOP);
 
-        let interpreter = run(RunConfig::new(code).host(&mut host));
+        let interpreter = run(RunConfig::new(code).host(&mut host).message(message.clone()));
         let mut expected = [0_u8; 32];
         expected[..2].copy_from_slice(&[0xbb, 0xcc]);
         core::assert_matches!(interpreter.err, InstrStop::Stop);
@@ -304,7 +318,8 @@ mod tests {
             [Word::MAX, Word::MAX, Word::from(0)],
             op::CALLDATACOPY,
         ))
-        .host(&mut host));
+        .host(&mut host)
+        .message(message));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
     }
 
@@ -357,8 +372,10 @@ mod tests {
 
     #[test]
     fn gasprice_opcode() {
-        let mut host = test_host(TxEnv { gas_price: Word::from(0x1234), ..TxEnv::default() });
-        let interpreter = run(RunConfig::new([op::GASPRICE, op::STOP]).host(&mut host));
+        let mut host = TestHost::default();
+        let tx_env = TxEnv { gas_price: Word::from(0x1234), ..TxEnv::default() };
+        let interpreter =
+            run(RunConfig::new([op::GASPRICE, op::STOP]).host(&mut host).tx_env(tx_env));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::from(0x1234)]);
     }

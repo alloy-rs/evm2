@@ -2,7 +2,7 @@ use crate::{
     AccountLoad,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
-    interpreter::{Host, InstrStop, Interpreter, SpecId, Word, op},
+    interpreter::{Host, InstrStop, Interpreter, Message, MessageKind, SpecId, Word, op},
 };
 use alloc::vec::Vec;
 use alloy_primitives::{B256, Bytes, Log};
@@ -10,7 +10,6 @@ use std::collections::HashMap;
 
 #[derive(Debug, Default)]
 pub(in crate::interpreter) struct TestHost {
-    pub(super) tx: TxEnv,
     pub(super) block: BlockEnv,
     pub(super) code_hash: B256,
     pub(super) code: Bytes,
@@ -22,10 +21,6 @@ pub(in crate::interpreter) struct TestHost {
 }
 
 impl Host for TestHost {
-    fn tx_env(&mut self) -> &TxEnv {
-        &self.tx
-    }
-
     fn block_env(&mut self) -> &BlockEnv {
         &self.block
     }
@@ -96,7 +91,8 @@ pub(super) struct RunConfig<'a> {
     pub(super) code: Vec<u8>,
     pub(super) host: Option<&'a mut dyn Host>,
     pub(super) spec_id: SpecId,
-    pub(super) is_static: bool,
+    pub(super) tx_env: TxEnv,
+    pub(super) message: Message,
     pub(super) gas_limit: u64,
     pub(super) return_data: Bytes,
 }
@@ -116,8 +112,18 @@ impl<'a> RunConfig<'a> {
         self
     }
 
-    pub(super) const fn staticcall(mut self) -> Self {
-        self.is_static = true;
+    pub(super) fn tx_env(mut self, tx_env: TxEnv) -> Self {
+        self.tx_env = tx_env;
+        self
+    }
+
+    pub(super) fn message(mut self, message: Message) -> Self {
+        self.message = message;
+        self
+    }
+
+    pub(super) fn staticcall(mut self) -> Self {
+        self.message.kind = MessageKind::StaticCall;
         self
     }
 
@@ -138,7 +144,8 @@ impl Default for RunConfig<'_> {
             code: Vec::new(),
             host: None,
             spec_id: SpecId::HOMESTEAD,
-            is_static: false,
+            tx_env: TxEnv::default(),
+            message: Message { gas_limit: 10_000, ..Message::default() },
             gas_limit: 10_000,
             return_data: Bytes::new(),
         }
@@ -146,9 +153,11 @@ impl Default for RunConfig<'_> {
 }
 
 pub(super) fn run(config: RunConfig<'_>) -> TestInterpreter {
-    let RunConfig { code, host, spec_id, is_static, gas_limit, return_data } = config;
+    let RunConfig { code, host, spec_id, tx_env, mut message, gas_limit, return_data } = config;
     let bytecode = Bytecode::new_legacy(Bytes::from(code));
-    let mut inner = Interpreter::new(bytecode, spec_id, is_static, gas_limit, return_data);
+    message.gas_limit = gas_limit;
+    let mut inner = Interpreter::new(bytecode, spec_id, tx_env, message);
+    inner.return_data = return_data;
     let mut default_host = TestHost::default();
     let host = host.unwrap_or(&mut default_host);
     let err = inner.run(host);
