@@ -297,29 +297,9 @@ impl Bytecode {
         keccak256(self.original_byte_slice())
     }
 
-    /// Returns a reference to the bytecode bytes.
-    ///
-    /// For legacy bytecode, this includes padding.
+    /// Returns a reference to the potentially padded bytecode bytes.
     #[inline]
-    pub fn bytecode(&self) -> &Bytes {
-        &self.0.bytecode
-    }
-
-    /// Pointer to the bytecode bytes.
-    #[inline]
-    pub fn bytecode_ptr(&self) -> *const u8 {
-        self.0.bytecode.as_ptr()
-    }
-
-    /// Returns a clone of the bytecode bytes.
-    #[inline]
-    pub fn bytes(&self) -> Bytes {
-        self.0.bytecode.clone()
-    }
-
-    /// Returns a reference to the bytecode bytes.
-    #[inline]
-    pub fn bytes_ref(&self) -> &Bytes {
+    pub fn bytes(&self) -> &Bytes {
         &self.0.bytecode
     }
 
@@ -380,7 +360,7 @@ mod tests {
         let bytecode = Bytecode::new_legacy(raw);
         let _ = unsafe {
             Bytecode::new_analyzed(
-                bytecode.bytecode().clone(),
+                bytecode.bytes().clone(),
                 bytecode.len(),
                 bytecode.legacy_jump_table().unwrap().clone(),
             )
@@ -393,7 +373,7 @@ mod tests {
         let bytecode = Bytecode::new_legacy(Bytes::from_static(&[opcode::PUSH1, 0x01]));
         let _ = unsafe {
             Bytecode::new_analyzed(
-                bytecode.bytecode().clone(),
+                bytecode.bytes().clone(),
                 100,
                 bytecode.legacy_jump_table().unwrap().clone(),
             )
@@ -405,7 +385,7 @@ mod tests {
     fn test_panic_on_short_jump_table() {
         let bytecode = Bytecode::new_legacy(Bytes::from_static(&[opcode::PUSH1, 0x01]));
         let jump_table = JumpTable::from_slice(&[0], 1);
-        let _ = unsafe { Bytecode::new_analyzed(bytecode.bytecode().clone(), 2, jump_table) };
+        let _ = unsafe { Bytecode::new_analyzed(bytecode.bytes().clone(), 2, jump_table) };
     }
 
     #[test]
