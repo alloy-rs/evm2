@@ -84,7 +84,9 @@ impl<C: EvmConfig> InstructionImplTable<C> {
         &mut self.0[opcode as usize]
     }
 
-    const fn set(&mut self, opcode: u8, instr: Option<&'static dyn Instruction<C>>) {
+    /// Sets the instruction implementation for `opcode`.
+    #[inline]
+    pub const fn set(&mut self, opcode: u8, instr: Option<&'static dyn Instruction<C>>) {
         self.0[opcode as usize] = instr;
     }
 }
@@ -171,7 +173,9 @@ impl GasTable {
         &mut self.0[opcode as usize]
     }
 
-    const fn set(&mut self, opcode: u8, cost: u16) {
+    /// Sets the gas cost for `opcode`.
+    #[inline]
+    pub const fn set(&mut self, opcode: u8, cost: u16) {
         self.0[opcode as usize] = cost;
     }
 
@@ -567,8 +571,36 @@ extern_table! {
 
 #[cfg(test)]
 mod tests {
-    use super::GasTable;
-    use crate::interpreter::{SpecId, op};
+    use super::{GasTable, InstructionImplTable};
+    use crate::{
+        EvmConfig,
+        bytecode::Bytecode,
+        env::TxEnv,
+        interpreter::{Message, SpecId, Word, instructions::tests::TestHost, op},
+    };
+    use alloy_primitives::Bytes;
+    use evm2_macros::instruction;
+
+    const CUSTOM_OPCODE: u8 = 0x0c;
+
+    #[derive(Debug)]
+    struct CustomConfig;
+
+    impl EvmConfig for CustomConfig {
+        type Tx = ();
+
+        const SPEC_ID: SpecId = SpecId::OSAKA;
+        const INSTRUCTION_IMPLS: InstructionImplTable<Self> = {
+            let mut table = InstructionImplTable::new();
+            table.set(CUSTOM_OPCODE, Some(&custom));
+            table
+        };
+    }
+
+    #[instruction]
+    fn custom() -> out {
+        *out = Word::from(0xdead_u64);
+    }
 
     #[test]
     fn default_gas_table_matches_revm_static_costs() {
@@ -598,5 +630,22 @@ mod tests {
         assert_eq!(berlin[op::SLOAD as usize], 100);
         assert_eq!(berlin[op::BALANCE as usize], 100);
         assert_eq!(berlin[op::CALL as usize], 100);
+    }
+
+    #[test]
+    fn custom_instruction_table_opcode_runs() {
+        let bytecode = Bytecode::new_legacy(Bytes::from_static(&[CUSTOM_OPCODE, op::STOP]));
+        let mut interpreter = crate::interpreter::Interpreter::new(
+            bytecode,
+            TxEnv::default(),
+            Message { gas_limit: 10_000, ..Message::default() },
+        );
+        let mut host = TestHost::default();
+
+        let stop = interpreter.run::<CustomConfig>(&mut host);
+
+        core::assert_matches!(stop, crate::interpreter::InstrStop::Stop);
+        assert_eq!(interpreter.stack_len, 1);
+        assert_eq!(interpreter.stack[0], Word::from(0xdead_u64));
     }
 }
