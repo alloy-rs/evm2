@@ -1,7 +1,7 @@
 use super::utils::{address_to_word, as_usize, as_usize_saturated, b256_to_word, check_spec};
 use crate::{
     AccountLoad,
-    interpreter::{Result, SpecId, Word, memory::resize_memory, table::InstructionCx},
+    interpreter::{InstrStop, Result, SpecId, Word, memory::resize_memory, table::InstructionCx},
 };
 use alloy_primitives::B256;
 use evm2_macros::instruction;
@@ -124,6 +124,34 @@ pub(in crate::interpreter) fn extcodecopy(
 }
 
 #[instruction]
+pub(in crate::interpreter) fn returndatasize(cx: _) -> Result<out> {
+    check_spec(cx.state.spec, SpecId::BYZANTIUM)?;
+    *out = Word::from(cx.state.return_data.len());
+}
+
+#[instruction]
+pub(in crate::interpreter) fn returndatacopy(
+    cx: _,
+    [memory_offset, data_offset, len]: [Word],
+) -> Result {
+    check_spec(cx.state.spec, SpecId::BYZANTIUM)?;
+    let len = as_usize(len)?;
+    let data_offset = as_usize_saturated(data_offset);
+    if data_offset.saturating_add(len) > cx.state.return_data.len() {
+        return Err(InstrStop::OutOfOffset);
+    }
+
+    cx.gas.spend(cx.state.gas_params.copy_cost(len))?;
+    if len == 0 {
+        return Ok(());
+    }
+
+    let memory_offset = as_usize(memory_offset)?;
+    resize_memory(cx.gas, cx.state.memory, memory_offset, len)?;
+    cx.state.memory.set_data(memory_offset, data_offset, len, cx.state.return_data)
+}
+
+#[instruction]
 pub(in crate::interpreter) fn extcodehash(cx: _, [addr]: [Word]) -> Result<out> {
     check_spec(cx.state.spec, SpecId::CONSTANTINOPLE)?;
     let account = load_account(&mut cx, addr, false)?;
@@ -139,7 +167,8 @@ mod tests {
             instructions::{
                 tests::{
                     TestHost, assert_stack, push, run, run_stack, run_with_host,
-                    run_with_host_and_spec, run_with_host_and_spec_config,
+                    run_with_host_and_spec, run_with_host_and_spec_config, run_with_return_data,
+                    run_with_return_data_and_spec,
                 },
                 utils::{address_to_word, b256_to_word},
             },
@@ -399,6 +428,70 @@ mod tests {
             &mut host,
         );
         core::assert_matches!(interpreter.err, InstrStop::InvalidOperandOOG);
+    }
+
+    #[test]
+    fn returndatasize_opcode() {
+        let interpreter = run_with_return_data_and_spec(
+            [op::RETURNDATASIZE, op::STOP],
+            Bytes::from_static(&[0xaa, 0xbb, 0xcc]),
+            SpecId::BYZANTIUM,
+        );
+        core::assert_matches!(interpreter.err, InstrStop::Stop);
+        assert_eq!(interpreter.stack(), [Word::from(3)]);
+
+        let interpreter =
+            run_with_return_data_and_spec([op::RETURNDATASIZE], Bytes::new(), SpecId::HOMESTEAD);
+        core::assert_matches!(interpreter.err, InstrStop::NotActivated);
+    }
+
+    #[test]
+    fn returndatacopy_opcode() {
+        let mut code = Vec::new();
+        push(&mut code, 2);
+        push(&mut code, 1);
+        push(&mut code, 0);
+        code.push(op::RETURNDATACOPY);
+        push(&mut code, 0);
+        code.push(op::MLOAD);
+        code.push(op::STOP);
+
+        let interpreter = run_with_return_data_and_spec(
+            code,
+            Bytes::from_static(&[0xaa, 0xbb, 0xcc]),
+            SpecId::BYZANTIUM,
+        );
+        let mut expected = [0_u8; 32];
+        expected[..2].copy_from_slice(&[0xbb, 0xcc]);
+        core::assert_matches!(interpreter.err, InstrStop::Stop);
+        assert_eq!(interpreter.stack(), [Word::from_be_bytes(expected)]);
+
+        let interpreter = run_with_return_data_and_spec(
+            stack_code([Word::from(0), Word::from(3), Word::from(0)], op::RETURNDATACOPY),
+            Bytes::from_static(&[0xaa, 0xbb, 0xcc]),
+            SpecId::BYZANTIUM,
+        );
+        core::assert_matches!(interpreter.err, InstrStop::Stop);
+
+        let interpreter = run_with_return_data_and_spec(
+            stack_code([Word::from(0), Word::from(4), Word::from(0)], op::RETURNDATACOPY),
+            Bytes::from_static(&[0xaa, 0xbb, 0xcc]),
+            SpecId::BYZANTIUM,
+        );
+        core::assert_matches!(interpreter.err, InstrStop::OutOfOffset);
+
+        let interpreter = run_with_return_data_and_spec(
+            stack_code([Word::MAX, Word::from(0), Word::from(1)], op::RETURNDATACOPY),
+            Bytes::from_static(&[0xaa]),
+            SpecId::BYZANTIUM,
+        );
+        core::assert_matches!(interpreter.err, InstrStop::InvalidOperandOOG);
+
+        let interpreter = run_with_return_data(
+            stack_code([Word::from(0), Word::from(0), Word::from(0)], op::RETURNDATACOPY),
+            Bytes::new(),
+        );
+        core::assert_matches!(interpreter.err, InstrStop::NotActivated);
     }
 
     #[test]

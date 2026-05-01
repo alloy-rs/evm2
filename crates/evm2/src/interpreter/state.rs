@@ -3,7 +3,7 @@ use crate::{
     AccountLoad,
     env::{BlockEnv, TxEnv},
 };
-use alloy_primitives::{B256, Log};
+use alloy_primitives::{B256, Bytes, Log};
 use core::fmt;
 
 /// Interpreter state passed to instructions.
@@ -18,6 +18,8 @@ pub struct State<'a> {
     pub block: &'a BlockEnv,
     /// Linear memory.
     pub memory: &'a mut Memory,
+    /// Return data from the last call-like operation.
+    pub return_data: &'a Bytes,
     /// Active spec identifier.
     pub spec: SpecId,
     /// Dynamic gas parameters for the active spec.
@@ -34,6 +36,7 @@ impl fmt::Debug for State<'_> {
             .field("tx", &self.tx)
             .field("block", &self.block)
             .field("memory", &self.memory)
+            .field("return_data", &self.return_data)
             .field("spec", &self.spec)
             .field("gas_params", &self.gas_params)
             .field("is_static", &self.is_static)

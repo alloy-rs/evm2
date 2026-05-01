@@ -10,6 +10,7 @@ use super::{
 };
 use crate::bytecode::Bytecode;
 use alloc::boxed::Box;
+use alloy_primitives::Bytes;
 use core::hint::cold_path;
 
 /// Interpreter dispatch table mode.
@@ -32,6 +33,7 @@ pub struct Interpreter {
     pub(crate) gas: Gas,
     pub(crate) gas_params: GasParams,
     pub(crate) memory: Memory,
+    pub(crate) return_data: Bytes,
     spec_id: SpecId,
     pub(crate) is_static: bool,
 }
@@ -48,6 +50,7 @@ impl Interpreter {
             gas: Gas::new(10_000),
             gas_params: GasParams::new_spec(spec_id),
             memory: Memory::new(),
+            return_data: Bytes::new(),
             spec_id,
             is_static: false,
         }
@@ -124,6 +127,7 @@ impl Interpreter {
             tx,
             block,
             memory: &mut self.memory,
+            return_data: &self.return_data,
             spec: self.spec_id,
             gas_params: &self.gas_params,
             is_static: self.is_static,
@@ -198,6 +202,7 @@ impl Interpreter {
                 tx,
                 block,
                 memory: &mut self.memory,
+                return_data: &self.return_data,
                 spec: self.spec_id,
                 gas_params: &self.gas_params,
                 is_static: self.is_static,
@@ -234,6 +239,7 @@ impl Interpreter {
                 tx,
                 block,
                 memory: &mut self.memory,
+                return_data: &self.return_data,
                 spec: self.spec_id,
                 gas_params: &self.gas_params,
                 is_static: self.is_static,

@@ -124,6 +124,26 @@ pub(super) fn run_with_host_and_spec_config(
     TestInterpreter { inner, err }
 }
 
+pub(super) fn run_with_return_data(
+    code: impl Into<Vec<u8>>,
+    return_data: Bytes,
+) -> TestInterpreter {
+    run_with_return_data_and_spec(code, return_data, SpecId::HOMESTEAD)
+}
+
+pub(super) fn run_with_return_data_and_spec(
+    code: impl Into<Vec<u8>>,
+    return_data: Bytes,
+    spec_id: SpecId,
+) -> TestInterpreter {
+    let mut host = TestHost::default();
+    let bytecode = Bytecode::new_legacy(Bytes::from(code.into()));
+    let mut inner = Interpreter::new(bytecode, spec_id);
+    inner.return_data = return_data;
+    let err = inner.run(&mut host);
+    TestInterpreter { inner, err }
+}
+
 pub(super) trait ToWord {
     fn to_word(self) -> Word;
 }
