@@ -101,7 +101,7 @@ impl Interpreter {
     }
 
     #[inline(always)]
-    pub(crate) fn pre_step(pc: &mut PcMut<'_>, gas: &mut Gas, gas_table: &GasTable) -> Result<u8> {
+    pub(crate) fn pre_step(pc: PcMut<'_>, gas: &mut Gas, gas_table: &GasTable) -> Result<u8> {
         let op = pc.op();
         unsafe { pc.advance_unchecked(1) };
         gas.spend(gas_table[op as usize] as _)?;
@@ -111,12 +111,12 @@ impl Interpreter {
     #[inline(always)]
     fn step(&mut self, table: &InstrTable, gas_table: &GasTable, host: &mut dyn Host) -> Result {
         let bytecode = BytecodeRef::new(&self.bytecode);
-        let mut pc = PcMut::new(bytecode, &mut self.pc);
-        let op = Self::pre_step(&mut pc, &mut self.gas, gas_table)?;
+        let pc = PcMut::new(bytecode, &mut self.pc);
+        let op = Self::pre_step(pc, &mut self.gas, gas_table)?;
         let r;
         (self.stack_len, r) = table[op as usize](
             Stack::new(&mut self.stack, self.stack_len),
-            &mut pc,
+            pc,
             &mut self.gas,
             &mut State {
                 bytecode,
@@ -139,8 +139,8 @@ impl Interpreter {
         let raw = self as *mut _;
         let bytecode = BytecodeRef::new(&self.bytecode);
         let (op, pc) = {
-            let mut pc_mut = PcMut::new(bytecode, &mut self.pc);
-            let op = Self::pre_step(&mut pc_mut, &mut self.gas, gas_table)?;
+            let pc_mut = PcMut::new(bytecode, &mut self.pc);
+            let op = Self::pre_step(pc_mut, &mut self.gas, gas_table)?;
             (op, Pc::new(bytecode, pc_mut.get()))
         };
         let e = table[op as usize](

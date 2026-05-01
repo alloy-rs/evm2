@@ -63,7 +63,7 @@ fn expand_instruction(raw: bool, input: ItemFn) -> TokenStream2 {
         #[inline]
         #vis fn #ident #generics(
             stack: &mut evm2::interpreter::Stack<'_>,
-            pc: &mut evm2::interpreter::PcMut<'_>,
+            pc: evm2::interpreter::PcMut<'_>,
             gas: &mut evm2::interpreter::Gas,
             state: &mut evm2::interpreter::State<'_>,
         ) -> evm2::interpreter::Result

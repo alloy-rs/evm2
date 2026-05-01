@@ -19,11 +19,11 @@ pub struct Pc<'a> {
 }
 
 /// Mutable program counter state.
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct PcMut<'a> {
     base: *const u8,
-    pc: &'a mut usize,
-    _marker: PhantomData<&'a [u8]>,
+    pc: *mut usize,
+    _marker: PhantomData<&'a mut usize>,
 }
 
 impl<'a> BytecodeRef<'a> {
@@ -126,13 +126,13 @@ impl<'a> PcMut<'a> {
     /// Returns the opcode at the current program counter.
     #[inline]
     pub fn op(&self) -> u8 {
-        unsafe { *self.base.add(*self.pc) }
+        unsafe { *self.base.add(self.get()) }
     }
 
     /// Returns the current program counter.
     #[inline]
     pub fn get(&self) -> usize {
-        *self.pc
+        unsafe { *self.pc }
     }
 
     /// # Safety
@@ -140,23 +140,23 @@ impl<'a> PcMut<'a> {
     /// Caller must ensure advancing by `n` keeps `pc` within valid bytecode bounds for
     /// subsequent reads.
     #[inline]
-    pub unsafe fn advance_unchecked(&mut self, n: usize) {
-        *self.pc += n;
+    pub unsafe fn advance_unchecked(self, n: usize) {
+        unsafe { *self.pc += n };
     }
 
     /// # Safety
     ///
     /// Caller must ensure `pc` is valid for the current bytecode.
     #[inline]
-    pub unsafe fn set_unchecked(&mut self, pc: usize) {
-        *self.pc = pc;
+    pub unsafe fn set_unchecked(self, pc: usize) {
+        unsafe { *self.pc = pc };
     }
 
     /// # Safety
     ///
     /// Caller must ensure `self.get()..self.get() + n` is in bounds of the bytecode allocation.
     #[inline]
-    pub unsafe fn read_bytes_unchecked(&self, n: usize) -> &'a [u8] {
-        unsafe { core::slice::from_raw_parts(self.base.add(*self.pc), n) }
+    pub unsafe fn read_bytes_unchecked(self, n: usize) -> &'a [u8] {
+        unsafe { core::slice::from_raw_parts(self.base.add(self.get()), n) }
     }
 }

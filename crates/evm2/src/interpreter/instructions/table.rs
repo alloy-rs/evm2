@@ -15,7 +15,7 @@ use core::mem;
 pub(in crate::interpreter) type InstrFnRet = (usize, Result);
 /// Normal instruction function pointer.
 pub(in crate::interpreter) type InstrFn = extern_table!(
-    fn(stack: Stack<'_>, pc: &mut PcMut<'_>, gas: &mut Gas, state: &mut State<'_>) -> InstrFnRet
+    fn(stack: Stack<'_>, pc: PcMut<'_>, gas: &mut Gas, state: &mut State<'_>) -> InstrFnRet
 );
 /// Normal instruction dispatch table.
 pub(in crate::interpreter) type InstrTable = [InstrFn; 256];
@@ -43,7 +43,7 @@ pub(in crate::interpreter) type GasTable = [u16; 256];
 #[derive(Debug)]
 pub(in crate::interpreter) struct InstructionCx<'a, 'ctrl, 'state> {
     /// Program counter state.
-    pub pc: &'a mut PcMut<'ctrl>,
+    pub pc: PcMut<'ctrl>,
     /// Gas state.
     pub gas: &'a mut Gas,
     /// Interpreter state.
@@ -60,15 +60,13 @@ pub(crate) trait Instruction {
     fn execute(
         self,
         stack: &mut Stack<'_>,
-        pc: &mut PcMut<'_>,
+        pc: PcMut<'_>,
         gas: &mut Gas,
         state: &mut State<'_>,
     ) -> Result;
 }
 
-impl<F: FnOnce(&mut Stack<'_>, &mut PcMut<'_>, &mut Gas, &mut State<'_>) -> Result> Instruction
-    for F
-{
+impl<F: FnOnce(&mut Stack<'_>, PcMut<'_>, &mut Gas, &mut State<'_>) -> Result> Instruction for F {
     #[inline(always)]
     fn new() -> Self {
         const {
@@ -81,7 +79,7 @@ impl<F: FnOnce(&mut Stack<'_>, &mut PcMut<'_>, &mut Gas, &mut State<'_>) -> Resu
     fn execute(
         self,
         stack: &mut Stack<'_>,
-        pc: &mut PcMut<'_>,
+        pc: PcMut<'_>,
         gas: &mut Gas,
         state: &mut State<'_>,
     ) -> Result {
@@ -340,7 +338,7 @@ pub(crate) const fn mk_tail_dispatch<I: Instruction>(f: I) -> TailInstrFn {
 extern_table! {
     fn dispatch<I: Instruction>(
         mut stack: Stack<'_>,
-        pc: &mut PcMut<'_>,
+        pc: PcMut<'_>,
         gas: &mut Gas,
         state: &mut State<'_>,
     ) -> InstrFnRet {
@@ -358,8 +356,8 @@ extern_table! {
         gast: &GasTable,
         instrsp: *const (),
     ) -> TailInstrFnRet {
-        let mut pc_mut = pc.as_mut();
-        if let Err(e) = I::new().execute(&mut stack, &mut pc_mut, &mut gas, state) {
+        let pc_mut = pc.as_mut();
+        if let Err(e) = I::new().execute(&mut stack, pc_mut, &mut gas, state) {
             tail_return!(tail_call_restore(stack, pc, gas, state, gast, e as usize as *const ()));
         }
         tail_return!(tail_call_next(stack, pc, gas, state, gast, instrsp));
@@ -376,8 +374,8 @@ extern_table! {
         gast: &GasTable,
         instrsp: *const (),
     ) -> TailInstrFnRet {
-        let mut pc_mut = pc.as_mut();
-        let op = match Interpreter::pre_step(&mut pc_mut, &mut gas, gast) {
+        let pc_mut = pc.as_mut();
+        let op = match Interpreter::pre_step(pc_mut, &mut gas, gast) {
             Ok(op) => op,
             Err(e) => {
                 tail_return!(tail_call_restore(stack, pc, gas, state, gast, e as usize as *const ()));
