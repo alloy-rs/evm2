@@ -51,8 +51,8 @@ pub(super) const EIP7702_PER_EMPTY_ACCOUNT_COST: u32 = 25000;
 /// Tracks regular, state, and refunded gas.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct GasTracker {
-    gas_limit: u64,
     remaining: u64,
+    gas_limit: u64,
     reservoir: u64,
     state_gas_spent: u64,
     refunded: i64,
@@ -62,25 +62,13 @@ impl GasTracker {
     /// Creates a gas tracker from its raw counters.
     #[inline]
     pub const fn new(gas_limit: u64, remaining: u64, reservoir: u64) -> Self {
-        Self { gas_limit, remaining, reservoir, state_gas_spent: 0, refunded: 0 }
+        Self { remaining, gas_limit, reservoir, state_gas_spent: 0, refunded: 0 }
     }
 
     /// Creates a gas tracker from already used gas.
     #[inline]
     pub const fn new_used_gas(gas_limit: u64, used_gas: u64, reservoir: u64) -> Self {
         Self::new(gas_limit, gas_limit - used_gas, reservoir)
-    }
-
-    /// Returns the gas limit.
-    #[inline]
-    pub const fn limit(&self) -> u64 {
-        self.gas_limit
-    }
-
-    /// Sets the gas limit.
-    #[inline]
-    pub const fn set_limit(&mut self, val: u64) {
-        self.gas_limit = val;
     }
 
     /// Returns remaining regular gas.
@@ -93,6 +81,18 @@ impl GasTracker {
     #[inline]
     pub const fn set_remaining(&mut self, val: u64) {
         self.remaining = val;
+    }
+
+    /// Returns the gas limit.
+    #[inline]
+    pub const fn limit(&self) -> u64 {
+        self.gas_limit
+    }
+
+    /// Sets the gas limit.
+    #[inline]
+    pub const fn set_limit(&mut self, val: u64) {
+        self.gas_limit = val;
     }
 
     /// Returns available state gas reservoir.
@@ -273,18 +273,6 @@ impl Gas {
         &mut self.memory
     }
 
-    /// Returns the gas limit.
-    #[inline]
-    pub const fn limit(&self) -> u64 {
-        self.tracker.limit()
-    }
-
-    /// Sets the gas limit.
-    #[inline]
-    pub const fn set_limit(&mut self, val: u64) {
-        self.tracker.set_limit(val);
-    }
-
     /// Returns remaining regular gas.
     #[inline]
     pub const fn remaining(&self) -> u64 {
@@ -295,6 +283,18 @@ impl Gas {
     #[inline]
     pub const fn set_remaining(&mut self, remaining: u64) {
         self.tracker.set_remaining(remaining);
+    }
+
+    /// Returns the gas limit.
+    #[inline]
+    pub const fn limit(&self) -> u64 {
+        self.tracker.limit()
+    }
+
+    /// Sets the gas limit.
+    #[inline]
+    pub const fn set_limit(&mut self, val: u64) {
+        self.tracker.set_limit(val);
     }
 
     /// Returns available state gas reservoir.

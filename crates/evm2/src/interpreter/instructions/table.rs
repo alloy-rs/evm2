@@ -20,6 +20,7 @@ pub(in crate::interpreter) type InstrFn = extern_table!(
 /// Normal instruction dispatch table.
 pub(in crate::interpreter) type InstrTable = [InstrFn; 256];
 
+// TODO: consider splitting remaining gas into a separate struct passed by value.
 /// Tail instruction return value.
 pub(in crate::interpreter) type TailInstrFnRet = InstrStop;
 /// Tail instruction function pointer.
@@ -27,7 +28,7 @@ pub(in crate::interpreter) type TailInstrFn = extern_table!(
     fn(
         stack: Stack<'_>,
         pc: Pc<'_>,
-        gas: Gas,
+        gas: &mut Gas,
         state: &mut State<'_>,
         gas_table: &GasTable,
         instr_tablep: *const (),
@@ -351,13 +352,13 @@ extern_table! {
     fn tail_dispatch<I: Instruction>(
         mut stack: Stack<'_>,
         mut pc: Pc<'_>,
-        mut gas: Gas,
+        gas: &mut Gas,
         state: &mut State<'_>,
         gast: &GasTable,
         instrsp: *const (),
     ) -> TailInstrFnRet {
         let pc_mut = pc.as_mut();
-        if let Err(e) = I::new().execute(&mut stack, pc_mut, &mut gas, state) {
+        if let Err(e) = I::new().execute(&mut stack, pc_mut, gas, state) {
             cold_path();
             tail_return!(tail_call_restore(stack, pc, gas, state, gast, e as usize as *const ()));
         }
@@ -370,13 +371,13 @@ extern_table! {
     fn tail_call_next(
         stack: Stack<'_>,
         mut pc: Pc<'_>,
-        mut gas: Gas,
+        gas: &mut Gas,
         state: &mut State<'_>,
         gast: &GasTable,
         instrsp: *const (),
     ) -> TailInstrFnRet {
         let pc_mut = pc.as_mut();
-        let op = match Interpreter::pre_step(pc_mut, &mut gas, gast) {
+        let op = match Interpreter::pre_step(pc_mut, gas, gast) {
             Ok(op) => op,
             Err(e) => {
                 cold_path();
@@ -395,7 +396,7 @@ extern_table! {
     fn tail_call_restore(
         stack: Stack<'_>,
         pc: Pc<'_>,
-        gas: Gas,
+        _gas: &mut Gas,
         state: &mut State<'_>,
         _gast: &GasTable,
         ret: *const (), // Tail calls require same function signature, this is unused so we pass the return value here.
@@ -403,7 +404,6 @@ extern_table! {
         // SAFETY: `raw_interp` is valid for the duration of execution.
         let interp = unsafe { &mut *state.raw_interp };
         interp.pc = pc.get();
-        interp.gas = gas;
         interp.stack_len = stack.len;
         unsafe { core::mem::transmute::<u8, TailInstrFnRet>(ret as usize as u8) }
     }

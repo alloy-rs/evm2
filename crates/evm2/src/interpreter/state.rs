@@ -4,7 +4,6 @@ use alloy_primitives::B256;
 use core::fmt;
 
 /// Interpreter state passed to instructions.
-#[allow(unused)]
 pub struct State<'a> {
     /// Active bytecode.
     pub bytecode: BytecodeRef<'a>,

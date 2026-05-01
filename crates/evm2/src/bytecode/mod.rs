@@ -81,7 +81,7 @@ struct BytecodeInner {
 pub enum BytecodeKind {
     /// Legacy analyzed bytecode with jump table.
     #[default]
-    LegacyAnalyzed,
+    Legacy,
     /// EIP-7702 delegated bytecode.
     Eip7702,
 }
@@ -135,7 +135,7 @@ impl Bytecode {
         static DEFAULT: OnceLock<Bytecode> = OnceLock::new();
         DEFAULT.get_or_init(|| {
             Self(Arc::new(BytecodeInner {
-                kind: BytecodeKind::LegacyAnalyzed,
+                kind: BytecodeKind::Legacy,
                 bytecode: Bytes::from_static(&[crate::interpreter::op::STOP]),
                 original_len: 0,
                 jump_table: JumpTable::default(),
@@ -153,7 +153,7 @@ impl Bytecode {
         let original_len = raw.len();
         let (jump_table, bytecode) = analyze_legacy(raw);
         Self(Arc::new(BytecodeInner {
-            kind: BytecodeKind::LegacyAnalyzed,
+            kind: BytecodeKind::Legacy,
             original_len,
             bytecode,
             jump_table,
@@ -249,7 +249,7 @@ impl Bytecode {
         assert!(original_len <= jump_table.len(), "jump table length is less than original length");
         assert!(!bytecode.is_empty(), "bytecode cannot be empty");
         Self(Arc::new(BytecodeInner {
-            kind: BytecodeKind::LegacyAnalyzed,
+            kind: BytecodeKind::Legacy,
             bytecode,
             original_len,
             jump_table,
@@ -265,7 +265,7 @@ impl Bytecode {
     /// Returns `true` if bytecode is legacy.
     #[inline]
     pub fn is_legacy(&self) -> bool {
-        self.kind() == BytecodeKind::LegacyAnalyzed
+        self.kind() == BytecodeKind::Legacy
     }
 
     /// Returns `true` if bytecode is EIP-7702.
@@ -348,7 +348,7 @@ mod tests {
             Bytecode::new(),
             Bytecode::new_legacy(Bytes::new()),
         ] {
-            assert_eq!(bytecode.kind(), BytecodeKind::LegacyAnalyzed);
+            assert_eq!(bytecode.kind(), BytecodeKind::Legacy);
             assert_eq!(bytecode.len(), 0);
             assert_eq!(bytecode.bytes_slice(), [opcode::STOP]);
         }
