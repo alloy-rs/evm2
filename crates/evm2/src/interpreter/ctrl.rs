@@ -1,9 +1,7 @@
 /// EVM bytecode view.
 #[derive(Clone, Copy, Debug)]
 pub struct Bytecode<'a> {
-    base: *const u8,
-    len: usize,
-    _marker: core::marker::PhantomData<&'a [u8]>,
+    bytecode: &'a [u8],
 }
 
 /// Program counter state.
@@ -14,37 +12,37 @@ pub struct Pc {
 
 impl<'a> Bytecode<'a> {
     pub(crate) fn new(bytecode: &'a [u8]) -> Self {
-        Self { base: bytecode.as_ptr(), len: bytecode.len(), _marker: core::marker::PhantomData }
+        Self { bytecode }
     }
 
     /// Returns the opcode at the current program counter.
     #[inline]
     pub fn op(&self, pc: &Pc) -> u8 {
-        unsafe { *self.base.add(pc.get()) }
+        self.bytecode[pc.get()]
     }
 
     /// Returns the bytecode length.
     #[inline]
     pub fn len(&self) -> usize {
-        self.len
+        self.bytecode.len()
     }
 
     /// Returns whether the bytecode is empty.
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.len == 0
+        self.bytecode.is_empty()
     }
 
     /// Returns the bytecode slice.
     #[inline]
     pub fn as_slice(&self) -> &'a [u8] {
-        unsafe { core::slice::from_raw_parts(self.base, self.len) }
+        self.bytecode
     }
 
     /// Returns whether `pc` points to a valid jump destination.
     #[inline]
     pub fn is_valid_jumpdest(&self, pc: usize) -> bool {
-        pc < self.len && unsafe { *self.base.add(pc) } == 0x5B
+        self.bytecode.get(pc) == Some(&0x5B)
     }
 
     /// # Safety
@@ -52,7 +50,7 @@ impl<'a> Bytecode<'a> {
     /// Caller must ensure `offset..offset + len` is in bounds of the bytecode allocation.
     #[inline]
     pub unsafe fn code_slice_unchecked(&self, offset: usize, len: usize) -> &'a [u8] {
-        unsafe { core::slice::from_raw_parts(self.base.add(offset), len) }
+        unsafe { self.bytecode.get_unchecked(offset..offset + len) }
     }
 
     /// # Safety
@@ -60,7 +58,7 @@ impl<'a> Bytecode<'a> {
     /// Caller must ensure `pc.get()..pc.get() + n` is in bounds of the bytecode allocation.
     #[inline]
     pub unsafe fn read_bytes_unchecked(&self, pc: &Pc, n: usize) -> &'a [u8] {
-        unsafe { core::slice::from_raw_parts(self.base.add(pc.get()), n) }
+        unsafe { self.bytecode.get_unchecked(pc.get()..pc.get() + n) }
     }
 }
 
