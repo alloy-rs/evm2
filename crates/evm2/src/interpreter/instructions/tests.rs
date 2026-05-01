@@ -159,7 +159,7 @@ pub(super) fn run_with_host_and_spec_config(
     let bytecode = Bytecode::new_legacy(Bytes::from(code.into()));
     let message = Message { gas_limit, ..Message::default() };
     let mut inner = Interpreter::new(bytecode, spec_id, TxEnv::default(), message);
-    inner.is_static = is_static;
+    inner.is_static |= is_static;
     inner.gas = Gas::new(gas_limit);
     let err = inner.run(host);
     TestInterpreter { inner, err }

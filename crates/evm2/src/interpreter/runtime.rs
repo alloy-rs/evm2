@@ -54,7 +54,7 @@ impl Interpreter {
             tx_env,
             message,
             spec_id,
-            is_static: false,
+            is_static,
         }
     }
 

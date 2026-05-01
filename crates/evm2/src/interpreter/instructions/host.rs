@@ -77,7 +77,7 @@ pub(in crate::interpreter) fn log<const N: usize>(cx: _) -> Result {
 #[cfg(test)]
 mod tests {
     use crate::interpreter::{
-        InstrStop, SpecId, Word,
+        InstrStop, Message, MessageKind, SpecId, Word,
         instructions::tests::{
             TestHost, push, run_with_host, run_with_host_and_spec, run_with_host_and_spec_config,
             run_with_host_message,
@@ -133,6 +133,23 @@ mod tests {
 
         let interpreter =
             run_with_host_and_spec_config(code, &mut host, SpecId::HOMESTEAD, true, 10_000);
+        core::assert_matches!(interpreter.err, InstrStop::StateChangeDuringStaticCall);
+        assert_eq!(interpreter.stack(), [Word::from(0xbeef), Word::from(1)]);
+        assert_eq!(host.storage.get(&Word::from(1)), None);
+    }
+
+    #[test]
+    fn sstore_staticcall_message_kind_check() {
+        let mut host = TestHost::default();
+        let mut code = Vec::new();
+        push(&mut code, 0xbeef);
+        push(&mut code, 1);
+        code.extend([op::SSTORE, op::STOP]);
+        let message =
+            Message { kind: MessageKind::StaticCall, gas_limit: 10_000, ..Default::default() };
+
+        let interpreter = run_with_host_message(code, &mut host, message);
+
         core::assert_matches!(interpreter.err, InstrStop::StateChangeDuringStaticCall);
         assert_eq!(interpreter.stack(), [Word::from(0xbeef), Word::from(1)]);
         assert_eq!(host.storage.get(&Word::from(1)), None);
