@@ -1,4 +1,4 @@
-use super::utils::as_usize;
+use super::utils::{as_usize, as_usize_saturated};
 use crate::interpreter::{InstrStop, Word, memory::resize_memory};
 use core::hint::cold_path;
 use evm2_macros::instruction;
@@ -23,7 +23,7 @@ pub(in crate::interpreter) fn opcode_not_found() -> Result {
 
 #[instruction]
 pub(in crate::interpreter) fn jump(cx: _, [target]: [Word]) -> Result {
-    let target = as_usize(*target)?;
+    let target = as_usize_saturated(*target);
     if !cx.state.bytecode.is_valid_jumpdest(target) {
         cold_path();
         return Err(InstrStop::InvalidJump);
@@ -35,7 +35,7 @@ pub(in crate::interpreter) fn jump(cx: _, [target]: [Word]) -> Result {
 #[instruction]
 pub(in crate::interpreter) fn jumpi(cx: _, [target, cond]: [Word]) -> Result {
     if !cond.is_zero() {
-        let target = as_usize(*target)?;
+        let target = as_usize_saturated(*target);
         if !cx.state.bytecode.is_valid_jumpdest(target) {
             cold_path();
             return Err(InstrStop::InvalidJump);
@@ -77,9 +77,10 @@ pub(in crate::interpreter) fn revert(cx: _, [offset, len]: [Word]) -> Result {
 mod tests {
     use crate::interpreter::{
         InstrStop, Word,
-        instructions::tests::{run, run_stack},
+        instructions::tests::{push, run, run_stack},
         op,
     };
+    use alloc::vec::Vec;
 
     #[test]
     fn stop_opcode() {
@@ -112,6 +113,12 @@ mod tests {
         let interpreter = run([op::PUSH1, 0x00, op::JUMP, op::JUMPDEST, op::STOP]);
         assert!(matches!(interpreter.err, InstrStop::InvalidJump));
 
+        let mut code = Vec::new();
+        push(&mut code, Word::MAX);
+        code.push(op::JUMP);
+        let interpreter = run(code);
+        assert!(matches!(interpreter.err, InstrStop::InvalidJump));
+
         let interpreter = run([op::PUSH1, 0x04, op::JUMP, op::STOP, op::JUMPDEST, op::STOP]);
         assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.inner.pc, 6);
@@ -130,6 +137,13 @@ mod tests {
         assert_eq!(interpreter.inner.pc, 7);
 
         let interpreter = run([op::PUSH1, 0x05, op::PUSH1, 0x01, op::JUMPI, op::STOP, op::STOP]);
+        assert!(matches!(interpreter.err, InstrStop::InvalidJump));
+
+        let mut code = Vec::new();
+        push(&mut code, Word::MAX);
+        push(&mut code, 1);
+        code.push(op::JUMPI);
+        let interpreter = run(code);
         assert!(matches!(interpreter.err, InstrStop::InvalidJump));
     }
 
@@ -164,6 +178,9 @@ mod tests {
         let mut interpreter = run_stack([0, 1], op::RETURN);
         assert!(matches!(interpreter.err, InstrStop::Return));
         assert_eq!(interpreter.memory(0, 1), [0]);
+
+        let interpreter = run_stack([Word::from(0), Word::MAX], op::RETURN);
+        assert!(matches!(interpreter.err, InstrStop::InvalidOperandOOG));
     }
 
     #[test]
@@ -175,5 +192,8 @@ mod tests {
         let mut interpreter = run_stack([2, 3], op::REVERT);
         assert!(matches!(interpreter.err, InstrStop::Revert));
         assert_eq!(interpreter.memory(2, 3), [0, 0, 0]);
+
+        let interpreter = run_stack([Word::from(0), Word::MAX], op::REVERT);
+        assert!(matches!(interpreter.err, InstrStop::InvalidOperandOOG));
     }
 }

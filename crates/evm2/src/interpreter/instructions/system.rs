@@ -1,14 +1,18 @@
-use super::utils::as_usize;
+use super::utils::{as_usize, as_usize_saturated};
 use crate::interpreter::{Word, memory::resize_memory};
 use alloy_primitives::keccak256;
 use evm2_macros::instruction;
 
 #[instruction]
 pub(in crate::interpreter) fn keccak256_instr(cx: _, [offset, len]: [Word]) -> Result<out> {
-    let offset = as_usize(*offset)?;
     let len = as_usize(*len)?;
-    resize_memory(cx.gas, cx.state.memory, offset, len)?;
-    let hash = keccak256(cx.state.memory.slice(offset, len)?);
+    let hash = if len == 0 {
+        keccak256([])
+    } else {
+        let offset = as_usize(*offset)?;
+        resize_memory(cx.gas, cx.state.memory, offset, len)?;
+        keccak256(cx.state.memory.slice(offset, len)?)
+    };
     *out = Word::from_be_bytes(hash.0);
 }
 
@@ -19,12 +23,12 @@ pub(in crate::interpreter) fn codesize(cx: _) -> out {
 
 #[instruction]
 pub(in crate::interpreter) fn codecopy(cx: _, [memory_offset, code_offset, len]: [Word]) -> Result {
-    let memory_offset = as_usize(*memory_offset)?;
-    let code_offset = as_usize(*code_offset).unwrap_or(usize::MAX);
     let len = as_usize(*len)?;
     if len == 0 {
         return Ok(());
     }
+    let memory_offset = as_usize(*memory_offset)?;
+    let code_offset = as_usize_saturated(*code_offset);
     resize_memory(cx.gas, cx.state.memory, memory_offset, len)?;
     cx.state.memory.set_data(memory_offset, code_offset, len, cx.state.bytecode.as_slice())
 }
@@ -38,7 +42,7 @@ pub(in crate::interpreter) fn gas(cx: _) -> out {
 mod tests {
     use crate::interpreter::{
         InstrStop, Word,
-        instructions::tests::{push, run},
+        instructions::tests::{push, run, run_stack},
         op,
     };
     use alloc::vec::Vec;
@@ -66,6 +70,13 @@ mod tests {
         let interpreter = run(code);
         assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.stack(), [Word::from_be_bytes(keccak256([0x80]).0)]);
+
+        let interpreter = run_stack([Word::MAX, Word::from(0)], op::KECCAK256);
+        assert!(matches!(interpreter.err, InstrStop::Stop));
+        assert_eq!(interpreter.stack(), [Word::from_be_bytes(keccak256([]).0)]);
+
+        let interpreter = run_stack([Word::MAX, Word::from(1)], op::KECCAK256);
+        assert!(matches!(interpreter.err, InstrStop::InvalidOperandOOG));
     }
 
     #[test]
@@ -107,6 +118,12 @@ mod tests {
         let interpreter = run(code);
         assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.stack(), [0]);
+
+        let interpreter = run_stack([Word::MAX, Word::MAX, Word::from(0)], op::CODECOPY);
+        assert!(matches!(interpreter.err, InstrStop::Stop));
+
+        let interpreter = run_stack([Word::MAX, Word::from(0), Word::from(1)], op::CODECOPY);
+        assert!(matches!(interpreter.err, InstrStop::InvalidOperandOOG));
     }
 
     #[test]

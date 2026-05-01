@@ -67,7 +67,7 @@ impl Memory {
     #[inline]
     pub fn resize(&mut self, offset: usize, len: usize) -> Result {
         let Some(end) = offset.checked_add(len) else {
-            return Err(InstrStop::OutOfGas);
+            return Err(InstrStop::MemoryOOG);
         };
         if end > self.data.len() {
             self.resize_to(end);
