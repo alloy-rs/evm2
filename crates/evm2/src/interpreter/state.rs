@@ -25,8 +25,6 @@ pub struct State<'a> {
     pub spec: SpecId,
     /// Dynamic gas parameters for the active spec.
     pub gas_params: &'a GasParams,
-    /// Whether state-changing opcodes are forbidden.
-    pub is_static: bool,
     pub(crate) raw_interp: *mut Interpreter,
 }
 
@@ -40,7 +38,6 @@ impl fmt::Debug for State<'_> {
             .field("return_data", &self.return_data)
             .field("spec", &self.spec)
             .field("gas_params", &self.gas_params)
-            .field("is_static", &self.is_static)
             .field("raw_interp", &self.raw_interp)
             .finish_non_exhaustive()
     }

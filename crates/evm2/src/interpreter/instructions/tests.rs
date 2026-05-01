@@ -93,7 +93,6 @@ pub(super) struct RunConfig<'a> {
     pub(super) spec_id: SpecId,
     pub(super) tx_env: TxEnv,
     pub(super) message: Message,
-    pub(super) is_static: bool,
     pub(super) gas_limit: u64,
     pub(super) return_data: Bytes,
 }
@@ -123,8 +122,8 @@ impl<'a> RunConfig<'a> {
         self
     }
 
-    pub(super) const fn staticcall(mut self) -> Self {
-        self.is_static = true;
+    pub(super) fn staticcall(mut self) -> Self {
+        self.message.kind = MessageKind::StaticCall;
         self
     }
 
@@ -147,7 +146,6 @@ impl Default for RunConfig<'_> {
             spec_id: SpecId::HOMESTEAD,
             tx_env: TxEnv::default(),
             message: Message { gas_limit: 10_000, ..Message::default() },
-            is_static: false,
             gas_limit: 10_000,
             return_data: Bytes::new(),
         }
@@ -155,13 +153,9 @@ impl Default for RunConfig<'_> {
 }
 
 pub(super) fn run(config: RunConfig<'_>) -> TestInterpreter {
-    let RunConfig { code, host, spec_id, tx_env, mut message, is_static, gas_limit, return_data } =
-        config;
+    let RunConfig { code, host, spec_id, tx_env, mut message, gas_limit, return_data } = config;
     let bytecode = Bytecode::new_legacy(Bytes::from(code));
     message.gas_limit = gas_limit;
-    if is_static {
-        message.kind = MessageKind::StaticCall;
-    }
     let mut inner = Interpreter::new(bytecode, spec_id, tx_env, message);
     inner.return_data = return_data;
     let mut default_host = TestHost::default();

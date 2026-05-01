@@ -44,6 +44,12 @@ pub struct Message {
 impl Message {
     /// EVM call depth limit.
     pub const CALL_DEPTH_LIMIT: u16 = 1024;
+
+    /// Returns whether this message forbids state-changing operations.
+    #[inline]
+    pub const fn is_static(&self) -> bool {
+        matches!(self.kind, MessageKind::StaticCall)
+    }
 }
 
 impl Default for Message {

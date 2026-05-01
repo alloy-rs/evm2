@@ -6,7 +6,7 @@ use alloy_primitives::{B256, Bytes, Log, LogData};
 use evm2_macros::instruction;
 
 const fn require_non_staticcall(cx: &InstructionCx<'_, '_, '_>) -> Result {
-    if cx.state.is_static {
+    if cx.state.message.is_static() {
         return Err(InstrStop::StateChangeDuringStaticCall);
     }
     Ok(())

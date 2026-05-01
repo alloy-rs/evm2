@@ -1,6 +1,6 @@
 use super::{
-    BytecodeRef, Gas, GasParams, Host, InstrStop, Memory, Message, MessageKind, Pc, PcMut, Result,
-    SpecId, Stack, State, Word,
+    BytecodeRef, Gas, GasParams, Host, InstrStop, Memory, Message, Pc, PcMut, Result, SpecId,
+    Stack, State, Word,
     instructions::table::{
         DEFAULT_TABLE, DEFAULT_TAIL_TABLE, GasTable, InstrTable, Instruction, TailInstrTable,
         new_gas_table,
@@ -37,7 +37,6 @@ pub struct Interpreter {
     pub(crate) message: Message,
     pub(crate) return_data: Bytes,
     spec_id: SpecId,
-    pub(crate) is_static: bool,
 }
 
 impl Interpreter {
@@ -45,7 +44,6 @@ impl Interpreter {
     /// environment, and a frame-local message.
     pub fn new(bytecode: Bytecode, spec_id: SpecId, tx_env: TxEnv, message: Message) -> Self {
         let gas_limit = message.gas_limit;
-        let is_static = matches!(message.kind, MessageKind::StaticCall);
         Self {
             bytecode,
             pc: 0,
@@ -59,7 +57,6 @@ impl Interpreter {
             message,
             return_data: Bytes::new(),
             spec_id,
-            is_static,
         }
     }
 
@@ -134,7 +131,6 @@ impl Interpreter {
             return_data: &self.return_data,
             spec: self.spec_id,
             gas_params: &self.gas_params,
-            is_static: self.is_static,
             raw_interp: core::ptr::null_mut(),
         };
 
@@ -206,7 +202,6 @@ impl Interpreter {
                 return_data: &self.return_data,
                 spec: self.spec_id,
                 gas_params: &self.gas_params,
-                is_static: self.is_static,
                 raw_interp: core::ptr::null_mut(),
             },
         );
@@ -240,7 +235,6 @@ impl Interpreter {
                 return_data: &self.return_data,
                 spec: self.spec_id,
                 gas_params: &self.gas_params,
-                is_static: self.is_static,
                 raw_interp: raw,
             },
             gas_table,
