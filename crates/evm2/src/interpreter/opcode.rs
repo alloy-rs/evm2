@@ -283,22 +283,22 @@ opcodes! {$
     // 0xEE
     // 0xEF
 
-    0xF0 => CREATE       => invalid;
-    0xF1 => CALL         => invalid;
-    0xF2 => CALLCODE     => invalid;
+    0xF0 => CREATE       => create<false>;
+    0xF1 => CALL         => call;
+    0xF2 => CALLCODE     => callcode;
     0xF3 => RETURN       => r#return;
-    0xF4 => DELEGATECALL => invalid;
-    0xF5 => CREATE2      => invalid;
+    0xF4 => DELEGATECALL => delegatecall;
+    0xF5 => CREATE2      => create<true>;
     // 0xF6
     // 0xF7
     // 0xF8
     // 0xF9
-    0xFA => STATICCALL      => invalid;
+    0xFA => STATICCALL      => staticcall;
     // 0xFB
     // 0xFC
     0xFD => REVERT       => revert;
     0xFE => INVALID      => invalid;
-    0xFF => SELFDESTRUCT => invalid;
+    0xFF => SELFDESTRUCT => selfdestruct;
 }
 
 pub(crate) use for_each_opcode;

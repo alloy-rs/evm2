@@ -1,7 +1,7 @@
 //! EVM execution host.
 
 use crate::{
-    AccountLoad,
+    AccountLoad, SelfDestructResult,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
     interpreter::{
@@ -11,7 +11,7 @@ use crate::{
     registry::{HandlerResult, TxRegistry},
 };
 use alloy_eips::eip2718::Typed2718;
-use alloy_primitives::{B256, Bytes, Log};
+use alloy_primitives::{Address, B256, Bytes, Log};
 
 /// Result of executing a transaction.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -109,17 +109,30 @@ impl<Tx> Host for Evm<Tx> {
 
     fn log(&mut self, _log: Log) {}
 
-    fn run_interpreter(
+    fn execute_message(
         &mut self,
         tx_env: TxEnv,
         bytecode: Bytecode,
         message: Message,
-    ) -> InstrStop {
-        run_interpreter_with_host(self, bytecode, self.spec_id, tx_env, message)
+    ) -> Result<Word, InstrStop> {
+        let stop = execute_message_with_host(self, bytecode, self.spec_id, tx_env, message);
+        if matches!(stop, InstrStop::Stop | InstrStop::Return) {
+            return Ok(Word::from(1));
+        }
+        Err(stop)
+    }
+
+    fn selfdestruct(
+        &mut self,
+        _contract: Address,
+        _target: Address,
+        _skip_cold_load: bool,
+    ) -> Result<SelfDestructResult, InstrStop> {
+        Ok(SelfDestructResult::default())
     }
 }
 
-fn run_interpreter_with_host<H>(
+fn execute_message_with_host<H>(
     host: &mut H,
     bytecode: Bytecode,
     spec_id: SpecId,
@@ -204,8 +217,8 @@ mod tests {
             ..Message::default()
         };
 
-        let stop = Host::run_interpreter(&mut evm, TxEnv::default(), bytecode, message);
+        let result = Host::execute_message(&mut evm, TxEnv::default(), bytecode, message);
 
-        assert!(matches!(stop, InstrStop::Stop));
+        assert_eq!(result, Ok(Word::from(1)));
     }
 }

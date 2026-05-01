@@ -27,6 +27,19 @@ pub struct AccountLoad {
     pub is_cold: bool,
 }
 
+/// Result of a `SELFDESTRUCT` host operation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct SelfDestructResult {
+    /// Whether the destroyed account had non-zero value.
+    pub had_value: bool,
+    /// Whether the beneficiary account already exists.
+    pub target_exists: bool,
+    /// Whether the beneficiary access was cold.
+    pub is_cold: bool,
+    /// Whether this account was already destroyed in this transaction.
+    pub previously_destroyed: bool,
+}
+
 pub mod bytecode;
 pub mod env;
 /// EVM host and transaction dispatcher.

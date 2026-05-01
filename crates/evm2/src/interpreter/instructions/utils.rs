@@ -13,6 +13,11 @@ pub(in crate::interpreter) const fn b256_to_word(value: B256) -> Word {
 }
 
 #[inline]
+pub(in crate::interpreter) fn word_to_address(value: Word) -> Address {
+    Address::from_word(B256::from(value.to_be_bytes::<32>()))
+}
+
+#[inline]
 pub(in crate::interpreter) fn as_usize(value: Word) -> Result<usize> {
     value.try_into().map_err(|_| {
         cold_path();

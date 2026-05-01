@@ -1,10 +1,10 @@
 use super::{BytecodeRef, GasParams, InstrStop, Interpreter, Memory, Message, SpecId, Word};
 use crate::{
-    AccountLoad,
+    AccountLoad, SelfDestructResult,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
 };
-use alloy_primitives::{B256, Bytes, Log};
+use alloy_primitives::{Address, B256, Bytes, Log};
 use core::fmt;
 
 /// Interpreter state passed to instructions.
@@ -74,13 +74,23 @@ pub trait Host {
     /// Records an emitted log.
     fn log(&mut self, log: Log);
 
-    /// Runs an interpreter frame inside this host.
-    fn run_interpreter(
+    /// Executes a message inside this host.
+    fn execute_message(
         &mut self,
         _tx_env: TxEnv,
         _bytecode: Bytecode,
         _message: Message,
-    ) -> InstrStop {
-        InstrStop::FatalExternalError
+    ) -> Result<Word, InstrStop> {
+        Err(InstrStop::FatalExternalError)
+    }
+
+    /// Registers the current contract for self-destruction.
+    fn selfdestruct(
+        &mut self,
+        _contract: Address,
+        _target: Address,
+        _skip_cold_load: bool,
+    ) -> Result<SelfDestructResult, InstrStop> {
+        Err(InstrStop::FatalExternalError)
     }
 }

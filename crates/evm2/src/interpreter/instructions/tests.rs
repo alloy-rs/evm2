@@ -1,14 +1,14 @@
 use crate::{
-    AccountLoad,
+    AccountLoad, SelfDestructResult,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
     interpreter::{Host, InstrStop, Interpreter, Message, MessageKind, SpecId, Word, op},
 };
 use alloc::vec::Vec;
-use alloy_primitives::{B256, Bytes, Log};
+use alloy_primitives::{Address, B256, Bytes, Log};
 use std::collections::HashMap;
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(in crate::interpreter) struct TestHost {
     pub(super) block: BlockEnv,
     pub(super) code_hash: B256,
@@ -18,6 +18,29 @@ pub(in crate::interpreter) struct TestHost {
     pub(super) storage: HashMap<Word, Word>,
     pub(super) transient_storage: HashMap<Word, Word>,
     pub(super) logs: Vec<Log>,
+    pub(super) execute_result: Result<Word, InstrStop>,
+    pub(super) selfdestruct_result: SelfDestructResult,
+    pub(super) calls: Vec<Message>,
+    pub(super) selfdestructs: Vec<(Address, Address, bool)>,
+}
+
+impl Default for TestHost {
+    fn default() -> Self {
+        Self {
+            block: BlockEnv::default(),
+            code_hash: B256::ZERO,
+            code: Bytes::new(),
+            is_empty: false,
+            is_cold: false,
+            storage: HashMap::new(),
+            transient_storage: HashMap::new(),
+            logs: Vec::new(),
+            execute_result: Ok(Word::from(1)),
+            selfdestruct_result: SelfDestructResult::default(),
+            calls: Vec::new(),
+            selfdestructs: Vec::new(),
+        }
+    }
 }
 
 impl Host for TestHost {
@@ -65,6 +88,26 @@ impl Host for TestHost {
 
     fn log(&mut self, log: Log) {
         self.logs.push(log);
+    }
+
+    fn execute_message(
+        &mut self,
+        _tx_env: TxEnv,
+        _bytecode: Bytecode,
+        message: Message,
+    ) -> Result<Word, InstrStop> {
+        self.calls.push(message);
+        self.execute_result
+    }
+
+    fn selfdestruct(
+        &mut self,
+        contract: Address,
+        target: Address,
+        skip_cold_load: bool,
+    ) -> Result<SelfDestructResult, InstrStop> {
+        self.selfdestructs.push((contract, target, skip_cold_load));
+        Ok(self.selfdestruct_result)
     }
 }
 

@@ -406,6 +406,45 @@ impl GasParams {
             .saturating_add(self.get(GasId::Logtopic).saturating_mul(n as u64))
     }
 
+    /// Calculates initcode word gas for `len` bytes.
+    #[inline]
+    pub const fn initcode_cost(&self, len: usize) -> u64 {
+        self.get(GasId::InitcodePerWord).saturating_mul(num_words(len) as u64)
+    }
+
+    /// Calculates dynamic `CREATE2` gas for `len` bytes.
+    #[inline]
+    pub const fn create2_cost(&self, len: usize) -> u64 {
+        self.get(GasId::Create)
+            .saturating_add(self.get(GasId::Keccak256PerWord).saturating_mul(num_words(len) as u64))
+    }
+
+    /// Returns `CALL` stipend reduction.
+    #[inline]
+    pub const fn call_stipend_reduction(&self, gas_limit: u64) -> u64 {
+        gas_limit - gas_limit / self.get(GasId::CallStipendReduction)
+    }
+
+    /// Returns `SELFDESTRUCT` cold account cost.
+    #[inline]
+    pub const fn selfdestruct_cold_cost(&self) -> u64 {
+        self.get(GasId::ColdAccountAdditionalCost)
+            .saturating_add(self.get(GasId::WarmStorageReadCost))
+    }
+
+    /// Calculates `SELFDESTRUCT` dynamic gas.
+    #[inline]
+    pub const fn selfdestruct_cost(&self, should_charge_topup: bool, is_cold: bool) -> u64 {
+        let mut gas = 0;
+        if should_charge_topup {
+            gas += self.get(GasId::NewAccountCostForSelfdestruct);
+        }
+        if is_cold {
+            gas += self.selfdestruct_cold_cost();
+        }
+        gas
+    }
+
     /// Returns additional cold account access gas.
     #[inline]
     pub const fn cold_account_additional_cost(&self) -> u64 {

@@ -26,6 +26,7 @@ mod stack;
 pub(super) use stack::*;
 
 mod system;
+pub(super) use system::*;
 
 mod i256;
 pub(crate) mod table;
