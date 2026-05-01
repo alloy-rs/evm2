@@ -34,7 +34,7 @@ pub(crate) type InstructionFn<C> = extern_table!(
 );
 
 /// Normal instruction table entry.
-pub struct InstructionEntry<C: EvmConfig> {
+pub(crate) struct InstructionEntry<C: EvmConfig> {
     /// Dispatch function.
     pub(crate) f: InstructionFn<C>,
     /// Instruction implementation.
@@ -58,12 +58,14 @@ impl<C: EvmConfig> Clone for InstructionEntry<C> {
 impl<C: EvmConfig> Copy for InstructionEntry<C> {}
 
 /// Normal instruction dispatch table.
-pub type InstructionTable<C> = [InstructionEntry<C>; 256];
+pub(crate) type InstructionTable<C> = [InstructionEntry<C>; 256];
 
 /// Tail instruction return value.
+#[allow(dead_code)]
 pub(crate) type TailInstructionFnRet = InstrStop;
 
 /// Tail instruction function pointer.
+#[allow(dead_code)]
 pub(crate) type TailInstructionFn<C> = extern_table!(
     fn(
         stack: Stack<'_>,
@@ -76,7 +78,8 @@ pub(crate) type TailInstructionFn<C> = extern_table!(
 );
 
 /// Tail instruction table entry.
-pub struct TailInstructionEntry<C: EvmConfig> {
+#[allow(dead_code)]
+pub(crate) struct TailInstructionEntry<C: EvmConfig> {
     /// Tail dispatch function.
     pub(crate) f: TailInstructionFn<C>,
     /// Instruction implementation.
@@ -100,7 +103,8 @@ impl<C: EvmConfig> Clone for TailInstructionEntry<C> {
 impl<C: EvmConfig> Copy for TailInstructionEntry<C> {}
 
 /// Tail instruction dispatch table.
-pub type TailInstructionTable<C> = [TailInstructionEntry<C>; 256];
+#[allow(dead_code)]
+pub(crate) type TailInstructionTable<C> = [TailInstructionEntry<C>; 256];
 
 /// Instruction execution context.
 #[derive(Debug)]
@@ -371,6 +375,7 @@ pub(crate) const fn make_normal_instruction_table<C: EvmConfig>(
 
 /// Converts instruction implementations to a tail-call instruction dispatch table.
 #[inline]
+#[allow(dead_code)]
 pub(crate) const fn make_tail_instruction_table<C: EvmConfig>(
     impls: InstructionImplTable<C>,
 ) -> TailInstructionTable<C> {
@@ -406,6 +411,7 @@ extern_table! {
 }
 
 extern_table! {
+    #[allow(dead_code)]
     fn tail_dispatch<C: EvmConfig>(
         mut stack: Stack<'_>,
         mut pc: Pc<'_>,
@@ -432,6 +438,7 @@ extern_table! {
 
 extern_table! {
     #[inline(never)] // TODO: bench inlining this vs having a single dispatcher for all
+    #[allow(dead_code)]
     fn tail_call_next<C: EvmConfig>(
         stack: Stack<'_>,
         mut pc: Pc<'_>,
@@ -464,6 +471,7 @@ extern_table! {
 extern_table! {
     #[inline(never)]
     #[cold]
+    #[allow(dead_code)]
     fn tail_call_restore<C: EvmConfig>(
         stack: Stack<'_>,
         pc: Pc<'_>,

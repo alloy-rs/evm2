@@ -11,10 +11,7 @@ mod utils;
 mod instructions;
 pub(crate) use instructions::table;
 #[doc(hidden)]
-pub use instructions::table::{
-    GasTable, Instruction, InstructionEntry, InstructionImplTable, InstructionTable,
-    TailInstructionEntry, TailInstructionTable,
-};
+pub use instructions::table::{GasTable, Instruction, InstructionImplTable};
 
 mod opcode;
 pub use opcode::op;

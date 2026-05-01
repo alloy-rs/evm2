@@ -1,11 +1,26 @@
 use super::{
     BytecodeRef, Gas, GasParams, Host, InstrStop, Memory, Message, PcMut, Result, Stack, State,
     Word,
+    table::{
+        InstructionTable, TailInstructionTable, make_normal_instruction_table,
+        make_tail_instruction_table,
+    },
 };
 use crate::{EvmConfig, bytecode::Bytecode, env::TxEnv};
 use alloc::boxed::Box;
 use alloy_primitives::Bytes;
 use core::hint::cold_path;
+
+pub(crate) trait InterpreterConfig: EvmConfig {
+    const INSTRUCTIONS: InstructionTable<Self> =
+        make_normal_instruction_table(Self::INSTRUCTION_IMPLS);
+
+    #[allow(dead_code)]
+    const TAIL_INSTRUCTIONS: TailInstructionTable<Self> =
+        make_tail_instruction_table(Self::INSTRUCTION_IMPLS);
+}
+
+impl<C: EvmConfig> InterpreterConfig for C {}
 
 /// EVM interpreter.
 #[derive(Debug)]
@@ -81,7 +96,7 @@ impl Interpreter {
         let bytecode = BytecodeRef::new(&self.bytecode);
         let mut pc = PcMut::new(bytecode, &mut self.pc);
         let op = Self::pre_step::<C>(pc.reborrow(), &mut self.gas)?;
-        let instr = C::INSTRUCTIONS[op as usize];
+        let instr = <C as InterpreterConfig>::INSTRUCTIONS[op as usize];
         let (len, r) = (instr.f)(
             Stack::new(&mut self.stack, self.stack_len),
             pc,

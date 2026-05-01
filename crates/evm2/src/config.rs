@@ -1,12 +1,8 @@
 //! EVM configuration.
 
 use crate::interpreter::{
-    GasParamTable, GasParams, GasTable, InstructionImplTable, InstructionTable, SpecId,
-    TailInstructionTable,
-    table::{
-        make_instruction_table, make_normal_instruction_table, make_tail_instruction_table,
-        new_gas_table,
-    },
+    GasParamTable, GasParams, GasTable, InstructionImplTable, SpecId,
+    table::{make_instruction_table, new_gas_table},
 };
 use core::marker::PhantomData;
 
@@ -26,14 +22,6 @@ pub trait EvmConfig: Sized + 'static {
 
     /// Instruction implementations.
     const INSTRUCTION_IMPLS: InstructionImplTable<Self> = make_instruction_table::<Self>();
-
-    /// Normal instruction dispatch table.
-    const INSTRUCTIONS: InstructionTable<Self> =
-        make_normal_instruction_table(Self::INSTRUCTION_IMPLS);
-
-    /// Tail-call instruction dispatch table.
-    const TAIL_INSTRUCTIONS: TailInstructionTable<Self> =
-        make_tail_instruction_table(Self::INSTRUCTION_IMPLS);
 }
 
 /// EVM configuration for a specification ID.
