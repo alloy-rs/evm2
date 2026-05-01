@@ -6,17 +6,17 @@ const BLOCK_HASH_HISTORY: u64 = 256;
 
 #[instruction]
 pub(in crate::interpreter) fn balance(cx: _, [addr]: [Word]) -> out {
-    *out = cx.state.host.balance(*addr);
+    *out = cx.state.host.balance(addr);
 }
 
 #[instruction]
 pub(in crate::interpreter) fn blockhash(cx: _, [number]: [Word]) -> Result<out> {
-    *out = if let Some(diff) = cx.state.block.number.checked_sub(*number) {
+    *out = if let Some(diff) = cx.state.block.number.checked_sub(number) {
         let diff = u64::try_from(diff).unwrap_or(u64::MAX);
         if diff == 0 || diff > BLOCK_HASH_HISTORY {
             Word::ZERO
         } else {
-            let number = u64::try_from(*number).unwrap_or(u64::MAX);
+            let number = u64::try_from(number).unwrap_or(u64::MAX);
             cx.state
                 .host
                 .block_hash(number)

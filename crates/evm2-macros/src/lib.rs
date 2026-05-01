@@ -140,7 +140,6 @@ fn stack_setup(inputs: &[Ident], outputs: &[Ident]) -> TokenStream2 {
     let input_setup = (input_count > 0).then(|| {
         quote! {
             let [#(#inputs),*] = unsafe { ptr.cast::<[Word; #input_count]>().read() };
-            #(let #inputs = &#inputs;)*
         }
     });
 

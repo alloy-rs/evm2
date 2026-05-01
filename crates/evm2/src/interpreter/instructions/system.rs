@@ -5,11 +5,11 @@ use evm2_macros::instruction;
 
 #[instruction]
 pub(in crate::interpreter) fn keccak256(cx: _, [offset, len]: [Word]) -> Result<out> {
-    let len = as_usize(*len)?;
+    let len = as_usize(len)?;
     let hash = if len == 0 {
         keccak256_hash([])
     } else {
-        let offset = as_usize(*offset)?;
+        let offset = as_usize(offset)?;
         resize_memory(cx.gas, cx.state.memory, offset, len)?;
         keccak256_hash(cx.state.memory.slice(offset, len)?)
     };
@@ -38,7 +38,7 @@ pub(in crate::interpreter) fn callvalue(cx: _) -> out {
 
 #[instruction]
 pub(in crate::interpreter) fn calldataload(cx: _, [offset]: [Word]) -> out {
-    let offset = as_usize_saturated(*offset);
+    let offset = as_usize_saturated(offset);
     let input = cx.state.tx.calldata.as_ref();
     let mut word = B256::ZERO;
     if offset < input.len() {
@@ -58,12 +58,12 @@ pub(in crate::interpreter) fn calldatacopy(
     cx: _,
     [memory_offset, data_offset, len]: [Word],
 ) -> Result {
-    let len = as_usize(*len)?;
+    let len = as_usize(len)?;
     if len == 0 {
         return Ok(());
     }
-    let memory_offset = as_usize(*memory_offset)?;
-    let data_offset = as_usize_saturated(*data_offset);
+    let memory_offset = as_usize(memory_offset)?;
+    let data_offset = as_usize_saturated(data_offset);
     resize_memory(cx.gas, cx.state.memory, memory_offset, len)?;
     cx.state.memory.set_data(memory_offset, data_offset, len, &cx.state.tx.calldata)
 }
@@ -75,12 +75,12 @@ pub(in crate::interpreter) fn codesize(cx: _) -> out {
 
 #[instruction]
 pub(in crate::interpreter) fn codecopy(cx: _, [memory_offset, code_offset, len]: [Word]) -> Result {
-    let len = as_usize(*len)?;
+    let len = as_usize(len)?;
     if len == 0 {
         return Ok(());
     }
-    let memory_offset = as_usize(*memory_offset)?;
-    let code_offset = as_usize_saturated(*code_offset);
+    let memory_offset = as_usize(memory_offset)?;
+    let code_offset = as_usize_saturated(code_offset);
     resize_memory(cx.gas, cx.state.memory, memory_offset, len)?;
     cx.state.memory.set_data(memory_offset, code_offset, len, cx.state.bytecode.as_slice())
 }
@@ -99,7 +99,7 @@ pub(in crate::interpreter) fn chainid(cx: _) -> Result<out> {
 #[instruction]
 pub(in crate::interpreter) fn blobhash(cx: _, [index]: [Word]) -> Result<out> {
     check_spec(cx.state.spec, SpecId::CANCUN)?;
-    let index = as_usize_saturated(*index);
+    let index = as_usize_saturated(index);
     *out = cx.state.tx.blob_hashes.get(index).copied().unwrap_or_default();
 }
 

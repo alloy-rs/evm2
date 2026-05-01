@@ -23,7 +23,7 @@ pub(in crate::interpreter) fn opcode_not_found() -> Result {
 
 #[instruction]
 pub(in crate::interpreter) fn jump(cx: _, [target]: [Word]) -> Result {
-    let target = as_usize_saturated(*target);
+    let target = as_usize_saturated(target);
     if !cx.state.bytecode.is_valid_jumpdest(target) {
         cold_path();
         return Err(InstrStop::InvalidJump);
@@ -35,7 +35,7 @@ pub(in crate::interpreter) fn jump(cx: _, [target]: [Word]) -> Result {
 #[instruction]
 pub(in crate::interpreter) fn jumpi(cx: _, [target, cond]: [Word]) -> Result {
     if !cond.is_zero() {
-        let target = as_usize_saturated(*target);
+        let target = as_usize_saturated(target);
         if !cx.state.bytecode.is_valid_jumpdest(target) {
             cold_path();
             return Err(InstrStop::InvalidJump);
@@ -55,9 +55,9 @@ pub(in crate::interpreter) fn jumpdest() {}
 
 #[instruction]
 pub(in crate::interpreter) fn ret(cx: _, [offset, len]: [Word]) -> Result {
-    let len = as_usize(*len)?;
+    let len = as_usize(len)?;
     if len != 0 {
-        let offset = as_usize(*offset)?;
+        let offset = as_usize(offset)?;
         resize_memory(cx.gas, cx.state.memory, offset, len)?;
     }
     Err(InstrStop::Return)
@@ -65,9 +65,9 @@ pub(in crate::interpreter) fn ret(cx: _, [offset, len]: [Word]) -> Result {
 
 #[instruction]
 pub(in crate::interpreter) fn revert(cx: _, [offset, len]: [Word]) -> Result {
-    let len = as_usize(*len)?;
+    let len = as_usize(len)?;
     if len != 0 {
-        let offset = as_usize(*offset)?;
+        let offset = as_usize(offset)?;
         resize_memory(cx.gas, cx.state.memory, offset, len)?;
     }
     Err(InstrStop::Revert)

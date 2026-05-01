@@ -15,12 +15,12 @@ pub(in crate::interpreter) fn gt([a, b]: [Word]) -> out {
 
 #[instruction]
 pub(in crate::interpreter) fn slt([a, b]: [Word]) -> out {
-    *out = Word::from(i256_cmp(a, b) == Ordering::Less);
+    *out = Word::from(i256_cmp(&a, &b) == Ordering::Less);
 }
 
 #[instruction]
 pub(in crate::interpreter) fn sgt([a, b]: [Word]) -> out {
-    *out = Word::from(i256_cmp(a, b) == Ordering::Greater);
+    *out = Word::from(i256_cmp(&a, &b) == Ordering::Greater);
 }
 
 #[instruction]
@@ -35,45 +35,45 @@ pub(in crate::interpreter) fn iszero([value]: [Word]) -> out {
 
 #[instruction]
 pub(in crate::interpreter) fn bitand([a, b]: [Word]) -> out {
-    *out = *a & *b;
+    *out = a & b;
 }
 
 #[instruction]
 pub(in crate::interpreter) fn bitor([a, b]: [Word]) -> out {
-    *out = *a | *b;
+    *out = a | b;
 }
 
 #[instruction]
 pub(in crate::interpreter) fn bitxor([a, b]: [Word]) -> out {
-    *out = *a ^ *b;
+    *out = a ^ b;
 }
 
 #[instruction]
 pub(in crate::interpreter) fn not([value]: [Word]) -> out {
-    *out = !*value;
+    *out = !value;
 }
 
 #[instruction]
 pub(in crate::interpreter) fn byte([index, value]: [Word]) -> out {
-    let index = as_usize_saturated(*index);
+    let index = as_usize_saturated(index);
     *out = if index < 32 { Word::from(value.byte(31 - index)) } else { Word::ZERO };
 }
 
 #[instruction]
 pub(in crate::interpreter) fn shl([shift, value]: [Word]) -> out {
-    let shift = as_usize_saturated(*shift);
-    *out = if shift < 256 { *value << shift } else { Word::ZERO };
+    let shift = as_usize_saturated(shift);
+    *out = if shift < 256 { value << shift } else { Word::ZERO };
 }
 
 #[instruction]
 pub(in crate::interpreter) fn shr([shift, value]: [Word]) -> out {
-    let shift = as_usize_saturated(*shift);
-    *out = if shift < 256 { *value >> shift } else { Word::ZERO };
+    let shift = as_usize_saturated(shift);
+    *out = if shift < 256 { value >> shift } else { Word::ZERO };
 }
 
 #[instruction]
 pub(in crate::interpreter) fn sar([shift, value]: [Word]) -> out {
-    let shift = as_usize_saturated(*shift);
+    let shift = as_usize_saturated(shift);
     *out = if shift < 256 {
         value.arithmetic_shr(shift)
     } else if value.bit(255) {
