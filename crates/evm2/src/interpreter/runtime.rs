@@ -1,5 +1,5 @@
 use super::{
-    Bytecode, Gas, Host, InstrErr, Memory, Pc, Result, SpecId, Stack, State, Word,
+    BytecodeRef, Gas, Host, InstrErr, Memory, Pc, Result, SpecId, Stack, State, Word,
     instructions::table::{GasTable, InstrTable, TailInstrTable},
 };
 use alloc::{boxed::Box, vec::Vec};
@@ -76,7 +76,7 @@ impl Interpreter {
 
     #[inline(always)]
     pub(crate) fn pre_step(
-        bytecode: Bytecode<'_>,
+        bytecode: BytecodeRef<'_>,
         pc: &mut Pc,
         gas: &mut Gas,
         gas_table: &GasTable,
@@ -89,7 +89,7 @@ impl Interpreter {
 
     #[inline(always)]
     fn step(&mut self, table: &InstrTable, gas_table: &GasTable, host: &mut dyn Host) -> Result {
-        let bytecode = Bytecode::new(&self.bytecode);
+        let bytecode = BytecodeRef::new(&self.bytecode);
         let mut pc = Pc::new(self.pc);
         let op = Self::pre_step(bytecode, &mut pc, &mut self.gas, gas_table)?;
         let r;
@@ -117,7 +117,7 @@ impl Interpreter {
         host: &mut dyn Host,
     ) -> Result {
         let raw = self as *mut _;
-        let bytecode = Bytecode::new(&self.bytecode);
+        let bytecode = BytecodeRef::new(&self.bytecode);
         let mut pc = Pc::new(self.pc);
         let op = Self::pre_step(bytecode, &mut pc, &mut self.gas, gas_table)?;
         let e = table[op as usize](

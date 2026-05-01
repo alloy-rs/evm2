@@ -5,6 +5,9 @@ pub use gas::{
     Gas, GasId, GasParamTable, GasParams, GasTracker, MemoryExtensionResult, MemoryGas, num_words,
 };
 
+mod ctrl;
+pub use ctrl::{BytecodeRef, Pc};
+
 #[macro_use]
 mod utils;
 
@@ -17,9 +20,6 @@ pub use instructions::table::{
 
 mod opcode;
 pub use opcode::op;
-
-mod ctrl;
-pub use ctrl::{Bytecode, Pc};
 
 mod stack;
 pub use stack::{Stack, Word};

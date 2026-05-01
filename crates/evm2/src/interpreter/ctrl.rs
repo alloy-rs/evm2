@@ -1,6 +1,6 @@
 /// EVM bytecode view.
 #[derive(Clone, Copy, Debug)]
-pub struct Bytecode<'a> {
+pub struct BytecodeRef<'a> {
     bytecode: &'a [u8],
 }
 
@@ -10,7 +10,7 @@ pub struct Pc {
     pc: usize,
 }
 
-impl<'a> Bytecode<'a> {
+impl<'a> BytecodeRef<'a> {
     pub(crate) fn new(bytecode: &'a [u8]) -> Self {
         Self { bytecode }
     }

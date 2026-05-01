@@ -1,6 +1,6 @@
 use super::*;
 use crate::interpreter::{
-    Bytecode, Gas, InstrErr, Interpreter, Pc, Result, SpecId, Stack, State,
+    BytecodeRef, Gas, InstrErr, Interpreter, Pc, Result, SpecId, Stack, State,
     gas::{
         BASE, BLOCKHASH, EXP, HIGH, ISTANBUL_SLOAD_GAS, JUMPDEST, KECCAK256, LOG, LOW, MID,
         VERYLOW, WARM_STORAGE_READ_COST, ZERO,
@@ -14,7 +14,7 @@ pub type InstrFnRet = (usize, Result);
 /// Normal instruction function pointer.
 pub type InstrFn = extern_table!(
     fn(
-        bytecode: Bytecode<'_>,
+        bytecode: BytecodeRef<'_>,
         pc: &mut Pc,
         stack: Stack<'_>,
         gas: &mut Gas,
@@ -29,7 +29,7 @@ pub type TailInstrFnRet = InstrErr;
 /// Tail instruction function pointer.
 pub type TailInstrFn = extern_table!(
     fn(
-        bytecode: Bytecode<'_>,
+        bytecode: BytecodeRef<'_>,
         pc: Pc,
         stack: Stack<'_>,
         gas: Gas,
@@ -48,7 +48,7 @@ pub type GasTable = [u16; 256];
 #[derive(Debug)]
 pub struct InstructionCx<'a, 'ctrl, 'state> {
     /// Bytecode view.
-    pub bytecode: Bytecode<'ctrl>,
+    pub bytecode: BytecodeRef<'ctrl>,
     /// Program counter state.
     pub pc: &'a mut Pc,
     /// Gas state.
@@ -69,7 +69,7 @@ pub(crate) trait Instruction {
     fn new() -> Self;
     fn execute(
         self,
-        bytecode: Bytecode<'_>,
+        bytecode: BytecodeRef<'_>,
         pc: &mut Pc,
         stack: &mut Stack<'_>,
         gas: &mut Gas,
@@ -77,7 +77,7 @@ pub(crate) trait Instruction {
     ) -> Result;
 }
 
-impl<F: FnOnce(Bytecode<'_>, &mut Pc, &mut Stack<'_>, &mut Gas, &mut State<'_>) -> Result>
+impl<F: FnOnce(BytecodeRef<'_>, &mut Pc, &mut Stack<'_>, &mut Gas, &mut State<'_>) -> Result>
     Instruction for F
 {
     #[inline(always)]
@@ -91,7 +91,7 @@ impl<F: FnOnce(Bytecode<'_>, &mut Pc, &mut Stack<'_>, &mut Gas, &mut State<'_>) 
     #[inline(always)]
     fn execute(
         self,
-        bytecode: Bytecode<'_>,
+        bytecode: BytecodeRef<'_>,
         pc: &mut Pc,
         stack: &mut Stack<'_>,
         gas: &mut Gas,
@@ -351,7 +351,7 @@ pub(crate) const fn mk_tail_dispatch<I: Instruction>(f: I) -> TailInstrFn {
 
 extern_table! {
     fn dispatch<I: Instruction>(
-        bytecode: Bytecode<'_>,
+        bytecode: BytecodeRef<'_>,
         pc: &mut Pc,
         mut stack: Stack<'_>,
         gas: &mut Gas,
@@ -364,7 +364,7 @@ extern_table! {
 
 extern_table! {
     fn tail_dispatch<I: Instruction>(
-        bytecode: Bytecode<'_>,
+        bytecode: BytecodeRef<'_>,
         mut pc: Pc,
         mut stack: Stack<'_>,
         mut gas: Gas,
@@ -382,7 +382,7 @@ extern_table! {
 extern_table! {
     #[inline(never)] // TODO: bench inlining this vs having a single dispatcher for all
     fn tail_call_next(
-        bytecode: Bytecode<'_>,
+        bytecode: BytecodeRef<'_>,
         mut pc: Pc,
         stack: Stack<'_>,
         mut gas: Gas,
@@ -406,7 +406,7 @@ extern_table! {
     #[inline(never)]
     #[cold]
     fn tail_call_restore(
-        _bytecode: Bytecode<'_>,
+        _bytecode: BytecodeRef<'_>,
         pc: Pc,
         stack: Stack<'_>,
         gas: Gas,

@@ -1,4 +1,6 @@
-use crate::interpreter::{Bytecode, Gas, InstrErr, InstructionCx, Pc, Result, Stack, State, Word};
+use crate::interpreter::{
+    BytecodeRef, Gas, InstrErr, InstructionCx, Pc, Result, Stack, State, Word,
+};
 use evm2_macros::instruction;
 
 #[instruction]

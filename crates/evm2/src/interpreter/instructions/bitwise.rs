@@ -1,5 +1,5 @@
 use super::{i256::i256_cmp, utils::as_usize};
-use crate::interpreter::{Bytecode, Gas, Pc, Result, Stack, State, Word};
+use crate::interpreter::{BytecodeRef, Gas, Pc, Result, Stack, State, Word};
 use core::cmp::Ordering;
 use evm2_macros::instruction;
 
