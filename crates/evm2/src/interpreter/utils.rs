@@ -28,6 +28,21 @@ macro_rules! assume {
     };
 }
 
+/// Emits an inline assembly comment.
+#[macro_export]
+#[collapse_debuginfo(yes)]
+macro_rules! asm_comment {
+    ($comment:literal $(,)?) => {
+        #[cfg(any(target_arch = "aarch64", target_arch = "x86", target_arch = "x86_64"))]
+        unsafe {
+            core::arch::asm!(
+                concat!("/* ", $comment, " */"),
+                options(nomem, nostack, preserves_flags)
+            );
+        }
+    };
+}
+
 #[cfg(feature = "nightly")]
 #[collapse_debuginfo(yes)]
 macro_rules! tail_return {

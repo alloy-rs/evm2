@@ -286,7 +286,7 @@ macro_rules! make_table_inner {
 }
 macro_rules! make_table_m {
     ($dispatch:ident, $instr_table:ty, $instr_fn:ty) => {{
-        let mut table: $instr_table = [$dispatch::<opcode_not_found> as $instr_fn; 256];
+        let mut table: $instr_table = [$dispatch::<unknown> as $instr_fn; 256];
         for_each_opcode!([table, $dispatch, $instr_fn] make_table_inner);
         table
     }};
