@@ -40,7 +40,7 @@ impl<'a> Stack<'a> {
             cold_path();
             return Err(InstrStop::StackUnderflow);
         }
-        if self.len - input == Self::CAPACITY {
+        if output > input && self.len - input == Self::CAPACITY {
             cold_path();
             return Err(InstrStop::StackOverflow);
         }
