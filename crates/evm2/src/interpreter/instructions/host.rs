@@ -11,13 +11,13 @@ pub(in crate::interpreter) fn balance(cx: _, [addr]: [Word]) -> out {
 
 #[instruction]
 pub(in crate::interpreter) fn extcodesize(cx: _, [addr]: [Word]) -> out {
-    *out = Word::from(cx.state.host.get_code_size(*addr));
+    *out = Word::from(cx.state.host.get_code_size(addr));
 }
 
 #[instruction]
 pub(in crate::interpreter) fn extcodehash(cx: _, [addr]: [Word]) -> Result<out> {
     check_spec(cx.state.spec, SpecId::CONSTANTINOPLE)?;
-    *out = b256_to_word(cx.state.host.get_code_hash(*addr));
+    *out = b256_to_word(cx.state.host.get_code_hash(addr));
 }
 
 #[instruction]
