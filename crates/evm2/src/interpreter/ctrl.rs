@@ -1,11 +1,11 @@
-use crate::bytecode::{Bytecode, JumpTable};
+use crate::bytecode::{Bytecode, JumpTableRef};
 use core::{marker::PhantomData, ptr};
 
 /// EVM bytecode view.
 #[derive(Clone, Copy, Debug)]
 pub struct BytecodeRef<'a> {
     bytecode: &'a [u8],
-    jump_table: &'a JumpTable,
+    jump_table: JumpTableRef<'a>,
 }
 
 /// Program counter state.
@@ -25,7 +25,7 @@ pub struct PcMut<'a> {
 
 impl<'a> BytecodeRef<'a> {
     pub(crate) fn new(bytecode: &'a Bytecode) -> Self {
-        Self { bytecode: bytecode.bytes_slice(), jump_table: bytecode.jump_table() }
+        Self { bytecode: bytecode.bytes_slice(), jump_table: bytecode.jump_table().as_ref() }
     }
 
     /// Returns the bytecode length.

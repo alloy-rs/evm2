@@ -360,6 +360,13 @@ pub struct JumpTable {
     bit_len: usize,
 }
 
+/// Borrowed table of valid `jump` destinations.
+#[derive(Clone, Copy)]
+pub struct JumpTableRef<'a> {
+    table: &'a [u8],
+    bit_len: usize,
+}
+
 impl Clone for JumpTable {
     #[inline]
     fn clone(&self) -> Self {
@@ -376,6 +383,12 @@ impl Clone for JumpTable {
 impl fmt::Debug for JumpTable {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("JumpTable").field("map", &self.as_slice()).finish()
+    }
+}
+
+impl fmt::Debug for JumpTableRef<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("JumpTableRef").field("map", &self.as_slice()).finish()
     }
 }
 
@@ -476,7 +489,52 @@ impl JumpTable {
     /// Gets the raw bytes of the jump map.
     #[inline]
     pub fn as_slice(&self) -> &[u8] {
-        &self.table
+        self.as_ref().as_slice()
+    }
+
+    /// Gets the bit length of the jump map.
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.as_ref().len()
+    }
+
+    /// Returns true if the jump map is empty.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.as_ref().is_empty()
+    }
+
+    /// Checks if `pc` is a valid jump destination.
+    #[inline]
+    pub fn is_valid(&self, pc: usize) -> bool {
+        self.as_ref().is_valid(pc)
+    }
+
+    /// Returns the borrowed jump map.
+    #[inline]
+    pub fn as_ref(&self) -> JumpTableRef<'_> {
+        JumpTableRef { table: &self.table, bit_len: self.bit_len }
+    }
+}
+
+impl<'a> JumpTableRef<'a> {
+    /// Constructs a borrowed jump map from raw bytes and length.
+    ///
+    /// Bit length represents number of used bits inside slice.
+    ///
+    /// # Panics
+    ///
+    /// Panics if number of bits in slice is less than bit_len.
+    #[inline]
+    pub fn new(slice: &'a [u8], bit_len: usize) -> Self {
+        JumpTable::size_assert(slice.len(), bit_len);
+        JumpTableRef { table: slice, bit_len }
+    }
+
+    /// Gets the raw bytes of the jump map.
+    #[inline]
+    pub const fn as_slice(&self) -> &'a [u8] {
+        self.table
     }
 
     /// Gets the bit length of the jump map.
@@ -623,6 +681,30 @@ mod tests {
         assert!(jump_table.is_valid(10));
         assert!(!jump_table.is_valid(11));
         assert!(!jump_table.is_valid(12));
+    }
+
+    #[test]
+    fn test_jump_table_ref_is_valid() {
+        let jump_table = JumpTable::from_slice(&[0x0D, 0x06], 13);
+        let jump_table_ref = jump_table.as_ref();
+
+        assert_eq!(jump_table_ref.as_slice(), &[0x0D, 0x06]);
+        assert_eq!(jump_table_ref.len(), 13);
+        assert!(!jump_table_ref.is_empty());
+
+        assert!(jump_table_ref.is_valid(0));
+        assert!(!jump_table_ref.is_valid(1));
+        assert!(jump_table_ref.is_valid(2));
+        assert!(jump_table_ref.is_valid(3));
+        assert!(!jump_table_ref.is_valid(4));
+        assert!(!jump_table_ref.is_valid(5));
+        assert!(!jump_table_ref.is_valid(6));
+        assert!(!jump_table_ref.is_valid(7));
+        assert!(!jump_table_ref.is_valid(8));
+        assert!(jump_table_ref.is_valid(9));
+        assert!(jump_table_ref.is_valid(10));
+        assert!(!jump_table_ref.is_valid(11));
+        assert!(!jump_table_ref.is_valid(12));
     }
 
     #[cfg(feature = "serde")]
