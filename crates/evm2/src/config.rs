@@ -12,7 +12,7 @@ pub trait EvmConfig: Sized + 'static {
     const SPEC_ID: SpecId;
 
     /// Static opcode gas table.
-    const GAS_TABLE: GasTable = GasTable::new_spec(Self::SPEC_ID);
+    const GAS_TABLE: GasTable = GasTable::new(Self::SPEC_ID);
 
     /// Dynamic gas parameter table.
     const GAS_PARAMS: GasParams = GasParams::new_spec(Self::SPEC_ID);

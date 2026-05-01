@@ -161,65 +161,9 @@ pub trait Instruction<C: EvmConfig = crate::EvmVersion<()>> {
 }
 
 impl GasTable {
-    /// Returns the gas cost for `opcode`.
-    #[inline]
-    pub const fn get(&self, opcode: u8) -> u16 {
-        self.0[opcode as usize]
-    }
-
-    /// Returns the mutable gas cost slot for `opcode`.
-    #[inline]
-    pub const fn get_mut(&mut self, opcode: u8) -> &mut u16 {
-        &mut self.0[opcode as usize]
-    }
-
-    /// Sets the gas cost for `opcode`.
-    #[inline]
-    pub const fn set(&mut self, opcode: u8, cost: u16) {
-        self.0[opcode as usize] = cost;
-    }
-
     /// Creates a gas table for `spec`.
     #[inline]
-    pub const fn new_spec(spec: SpecId) -> Self {
-        let mut table = Self::default_static();
-
-        if spec.enables(SpecId::TANGERINE) {
-            table.set(op::SLOAD, 200);
-            table.set(op::BALANCE, 400);
-            table.set(op::EXTCODESIZE, 700);
-            table.set(op::EXTCODECOPY, 700);
-            table.set(op::CALL, 700);
-            table.set(op::CALLCODE, 700);
-            table.set(op::DELEGATECALL, 700);
-            table.set(op::STATICCALL, 700);
-            table.set(op::SELFDESTRUCT, 5000);
-        }
-
-        if spec.enables(SpecId::ISTANBUL) {
-            table.set(op::SLOAD, ISTANBUL_SLOAD_GAS as u16);
-            table.set(op::BALANCE, 700);
-            table.set(op::EXTCODEHASH, 700);
-        }
-
-        if spec.enables(SpecId::BERLIN) {
-            table.set(op::SLOAD, WARM_STORAGE_READ_COST as u16);
-            table.set(op::BALANCE, WARM_STORAGE_READ_COST as u16);
-            table.set(op::EXTCODESIZE, WARM_STORAGE_READ_COST as u16);
-            table.set(op::EXTCODEHASH, WARM_STORAGE_READ_COST as u16);
-            table.set(op::EXTCODECOPY, WARM_STORAGE_READ_COST as u16);
-            table.set(op::CALL, WARM_STORAGE_READ_COST as u16);
-            table.set(op::CALLCODE, WARM_STORAGE_READ_COST as u16);
-            table.set(op::DELEGATECALL, WARM_STORAGE_READ_COST as u16);
-            table.set(op::STATICCALL, WARM_STORAGE_READ_COST as u16);
-        }
-
-        table
-    }
-
-    /// Creates the default opcode gas table.
-    #[inline]
-    pub const fn default_static() -> Self {
+    pub const fn new(spec: SpecId) -> Self {
         let mut table = Self([0; 256]);
 
         table.set(op::STOP, ZERO as u16);
@@ -387,7 +331,55 @@ impl GasTable {
         table.set(op::INVALID, 0);
         table.set(op::SELFDESTRUCT, 0);
 
+        if spec.enables(SpecId::TANGERINE) {
+            table.set(op::SLOAD, 200);
+            table.set(op::BALANCE, 400);
+            table.set(op::EXTCODESIZE, 700);
+            table.set(op::EXTCODECOPY, 700);
+            table.set(op::CALL, 700);
+            table.set(op::CALLCODE, 700);
+            table.set(op::DELEGATECALL, 700);
+            table.set(op::STATICCALL, 700);
+            table.set(op::SELFDESTRUCT, 5000);
+        }
+
+        if spec.enables(SpecId::ISTANBUL) {
+            table.set(op::SLOAD, ISTANBUL_SLOAD_GAS as u16);
+            table.set(op::BALANCE, 700);
+            table.set(op::EXTCODEHASH, 700);
+        }
+
+        if spec.enables(SpecId::BERLIN) {
+            table.set(op::SLOAD, WARM_STORAGE_READ_COST as u16);
+            table.set(op::BALANCE, WARM_STORAGE_READ_COST as u16);
+            table.set(op::EXTCODESIZE, WARM_STORAGE_READ_COST as u16);
+            table.set(op::EXTCODEHASH, WARM_STORAGE_READ_COST as u16);
+            table.set(op::EXTCODECOPY, WARM_STORAGE_READ_COST as u16);
+            table.set(op::CALL, WARM_STORAGE_READ_COST as u16);
+            table.set(op::CALLCODE, WARM_STORAGE_READ_COST as u16);
+            table.set(op::DELEGATECALL, WARM_STORAGE_READ_COST as u16);
+            table.set(op::STATICCALL, WARM_STORAGE_READ_COST as u16);
+        }
+
         table
+    }
+
+    /// Returns the gas cost for `opcode`.
+    #[inline]
+    pub const fn get(&self, opcode: u8) -> u16 {
+        self.0[opcode as usize]
+    }
+
+    /// Returns the mutable gas cost slot for `opcode`.
+    #[inline]
+    pub const fn get_mut(&mut self, opcode: u8) -> &mut u16 {
+        &mut self.0[opcode as usize]
+    }
+
+    /// Sets the gas cost for `opcode`.
+    #[inline]
+    pub const fn set(&mut self, opcode: u8, cost: u16) {
+        self.0[opcode as usize] = cost;
     }
 }
 
@@ -604,7 +596,7 @@ mod tests {
 
     #[test]
     fn default_gas_table_matches_revm_static_costs() {
-        let default_gas_table = GasTable::default_static();
+        let default_gas_table = GasTable::new(SpecId::FRONTIER);
         assert_eq!(default_gas_table[op::STOP as usize], 0);
         assert_eq!(default_gas_table[op::ADD as usize], 3);
         assert_eq!(default_gas_table[op::MUL as usize], 5);
@@ -617,16 +609,16 @@ mod tests {
 
     #[test]
     fn gas_table_applies_spec_static_costs() {
-        let tangerine = GasTable::new_spec(SpecId::TANGERINE);
+        let tangerine = GasTable::new(SpecId::TANGERINE);
         assert_eq!(tangerine[op::SLOAD as usize], 200);
         assert_eq!(tangerine[op::BALANCE as usize], 400);
         assert_eq!(tangerine[op::SELFDESTRUCT as usize], 5000);
 
-        let istanbul = GasTable::new_spec(SpecId::ISTANBUL);
+        let istanbul = GasTable::new(SpecId::ISTANBUL);
         assert_eq!(istanbul[op::SLOAD as usize], 800);
         assert_eq!(istanbul[op::EXTCODEHASH as usize], 700);
 
-        let berlin = GasTable::new_spec(SpecId::BERLIN);
+        let berlin = GasTable::new(SpecId::BERLIN);
         assert_eq!(berlin[op::SLOAD as usize], 100);
         assert_eq!(berlin[op::BALANCE as usize], 100);
         assert_eq!(berlin[op::CALL as usize], 100);
