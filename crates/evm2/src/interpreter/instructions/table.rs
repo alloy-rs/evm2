@@ -1,6 +1,5 @@
 //! Instruction dispatch tables.
 
-use super::*;
 use crate::interpreter::{
     Gas, InstrStop, Interpreter, Pc, PcMut, Result, SpecId, Stack, State,
     gas::{
@@ -9,7 +8,7 @@ use crate::interpreter::{
     },
     opcode::{for_each_opcode, op},
 };
-use core::{hint::cold_path, mem};
+use core::hint::cold_path;
 
 /// Normal instruction return value.
 pub(in crate::interpreter) type InstrFnRet = (usize, Result);
@@ -57,35 +56,12 @@ pub(in crate::interpreter) static DEFAULT_TABLE: InstrTable = make_table();
 pub(in crate::interpreter) static DEFAULT_TAIL_TABLE: TailInstrTable = make_tail_table();
 
 pub(crate) trait Instruction {
-    fn new() -> Self;
     fn execute(
-        self,
         stack: &mut Stack<'_>,
         pc: PcMut<'_>,
         gas: &mut Gas,
         state: &mut State<'_>,
     ) -> Result;
-}
-
-impl<F: FnOnce(&mut Stack<'_>, PcMut<'_>, &mut Gas, &mut State<'_>) -> Result> Instruction for F {
-    #[inline(always)]
-    fn new() -> Self {
-        const {
-            assert!(core::mem::size_of::<Self>() == 0);
-            unsafe { core::mem::zeroed::<Self>() }
-        }
-    }
-
-    #[inline(always)]
-    fn execute(
-        self,
-        stack: &mut Stack<'_>,
-        pc: PcMut<'_>,
-        gas: &mut Gas,
-        state: &mut State<'_>,
-    ) -> Result {
-        self(stack, pc, gas, state)
-    }
 }
 
 /// Creates a gas table for `spec`.
@@ -300,40 +276,32 @@ pub(crate) const fn make_gas_table() -> GasTable {
 }
 
 macro_rules! make_table_inner {
-    ([$table:expr, $mk_dispatch:expr] $(
-        ($op:ident, $fn:expr),
+    ([$table:expr, $dispatch:ident, $instr_fn:ty] $(
+        ($op:ident, $instr:ty),
     )*) => {
         $(
-            $table[op::$op as usize] = $mk_dispatch($fn);
+            $table[op::$op as usize] = $dispatch::<$instr> as $instr_fn;
         )*
     };
 }
 macro_rules! make_table_m {
-    ($mk_dispatch:expr) => {{
-        let mut table = [$mk_dispatch(opcode_not_found); 256];
-        for_each_opcode!([table, $mk_dispatch] make_table_inner);
+    ($dispatch:ident, $instr_table:ty, $instr_fn:ty) => {{
+        let mut table: $instr_table = [$dispatch::<opcode_not_found> as $instr_fn; 256];
+        for_each_opcode!([table, $dispatch, $instr_fn] make_table_inner);
         table
     }};
 }
 
 /// Creates the normal instruction dispatch table.
 pub(in crate::interpreter) const fn make_table() -> InstrTable {
-    make_table_m!(mk_dispatch)
-}
-
-pub(crate) const fn mk_dispatch<I: Instruction>(f: I) -> InstrFn {
-    mem::forget(f);
-    dispatch::<I>
+    use crate::interpreter::instructions::*;
+    make_table_m!(dispatch, InstrTable, InstrFn)
 }
 
 /// Creates the tail instruction dispatch table.
 pub(in crate::interpreter) const fn make_tail_table() -> TailInstrTable {
-    make_table_m!(mk_tail_dispatch)
-}
-
-pub(crate) const fn mk_tail_dispatch<I: Instruction>(f: I) -> TailInstrFn {
-    mem::forget(f);
-    tail_dispatch::<I>
+    use crate::interpreter::instructions::*;
+    make_table_m!(tail_dispatch, TailInstrTable, TailInstrFn)
 }
 
 extern_table! {
@@ -343,7 +311,7 @@ extern_table! {
         gas: &mut Gas,
         state: &mut State<'_>,
     ) -> InstrFnRet {
-        let r = I::new().execute(&mut stack, pc, gas, state);
+        let r = I::execute(&mut stack, pc, gas, state);
         (stack.len, r)
     }
 }
@@ -357,8 +325,7 @@ extern_table! {
         gast: &GasTable,
         instrsp: *const (),
     ) -> TailInstrFnRet {
-        let pc_mut = pc.as_mut();
-        if let Err(e) = I::new().execute(&mut stack, pc_mut, gas, state) {
+        if let Err(e) = I::execute(&mut stack, pc.as_mut(), gas, state) {
             cold_path();
             tail_return!(tail_call_restore(stack, pc, gas, state, gast, e as usize as *const ()));
         }
@@ -376,8 +343,7 @@ extern_table! {
         gast: &GasTable,
         instrsp: *const (),
     ) -> TailInstrFnRet {
-        let pc_mut = pc.as_mut();
-        let op = match Interpreter::pre_step(pc_mut, gas, gast) {
+        let op = match Interpreter::pre_step(pc.as_mut(), gas, gast) {
             Ok(op) => op,
             Err(e) => {
                 cold_path();

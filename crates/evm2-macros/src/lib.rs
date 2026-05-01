@@ -25,6 +25,7 @@ fn expand_instruction(raw: bool, input: ItemFn) -> TokenStream2 {
     let ident = sig.ident;
     let generics = sig.generics;
     let where_clause = generics.where_clause.clone();
+    let (impl_generics, type_generics, _) = generics.split_for_impl();
     let (_, outputs) = parse_return(sig.output);
     let body = body(input.block.stmts, outputs.is_empty());
 
@@ -55,23 +56,32 @@ fn expand_instruction(raw: bool, input: ItemFn) -> TokenStream2 {
     let cx_setup = has_cx.then(|| {
         let cx = cx_arg.unwrap_or_else(|| Ident::new("cx", ident.span()));
         quote! {
-            let mut #cx = evm2::interpreter::table::InstructionCx { pc, gas, state };
+            let mut #cx = evm2::interpreter::table::InstructionCx {
+                pc: __evm2_pc,
+                gas: __evm2_gas,
+                state: __evm2_state,
+            };
         }
     });
     quote! {
         #(#attrs)*
-        #[inline]
-        #vis fn #ident #generics(
-            stack: &mut evm2::interpreter::Stack<'_>,
-            pc: evm2::interpreter::PcMut<'_>,
-            gas: &mut evm2::interpreter::Gas,
-            state: &mut evm2::interpreter::State<'_>,
-        ) -> evm2::interpreter::Result
+        #[allow(non_camel_case_types)]
+        #vis struct #ident #generics #where_clause;
+
+        impl #impl_generics evm2::interpreter::table::Instruction for #ident #type_generics
         #where_clause
         {
-            #cx_setup
-            #stack_setup
-            #body
+            #[inline]
+            fn execute(
+                stack: &mut evm2::interpreter::Stack<'_>,
+                __evm2_pc: evm2::interpreter::PcMut<'_>,
+                __evm2_gas: &mut evm2::interpreter::Gas,
+                __evm2_state: &mut evm2::interpreter::State<'_>,
+            ) -> evm2::interpreter::Result {
+                #cx_setup
+                #stack_setup
+                #body
+            }
         }
     }
 }
