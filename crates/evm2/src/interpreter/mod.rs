@@ -234,6 +234,47 @@ pub enum InstrStop {
     InvalidImmediateEncoding,
 }
 
+impl InstrStop {
+    /// Returns whether execution completed successfully.
+    #[doc(alias = "is_ok")]
+    #[inline]
+    pub const fn is_success(self) -> bool {
+        matches!(self, Self::Stop | Self::Return | Self::SelfDestruct)
+    }
+
+    /// Returns whether execution reverted without an exceptional halt.
+    #[inline]
+    pub const fn is_revert(self) -> bool {
+        matches!(
+            self,
+            Self::Revert
+                | Self::CallTooDeep
+                | Self::OutOfFunds
+                | Self::CreateInitCodeStartingEF00
+                | Self::InvalidEOFInitCode
+                | Self::InvalidExtDelegateCallTarget
+        )
+    }
+
+    /// Returns whether execution reverted without an exceptional halt.
+    #[inline]
+    pub const fn is_reverted(self) -> bool {
+        self.is_revert()
+    }
+
+    /// Returns whether execution completed successfully or reverted.
+    #[inline]
+    pub const fn is_ok_or_revert(self) -> bool {
+        self.is_success() || self.is_revert()
+    }
+
+    /// Returns whether execution halted with an exceptional error.
+    #[inline]
+    pub const fn is_error(self) -> bool {
+        !self.is_ok_or_revert() && !matches!(self, Self::Suspend)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
