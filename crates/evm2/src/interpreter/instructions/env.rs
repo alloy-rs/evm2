@@ -210,6 +210,27 @@ mod tests {
     }
 
     #[test]
+    fn balance_cold_account_cost() {
+        let mut host = TestHost { is_cold: true, ..TestHost::default() };
+        let interpreter = run(RunConfig::new([op::PUSH1, 0xbe, op::BALANCE, op::STOP])
+            .host(&mut host)
+            .spec(SpecId::BERLIN));
+        core::assert_matches!(interpreter.err, InstrStop::Stop);
+        assert_eq!(interpreter.stack(), [Word::from(0xbe)]);
+        assert_eq!(interpreter.gas_remaining(), 7_397);
+    }
+
+    #[test]
+    fn balance_cold_account_skip_oog() {
+        let mut host = TestHost { is_cold: true, ..TestHost::default() };
+        let interpreter = run(RunConfig::new([op::PUSH1, 0xbe, op::BALANCE, op::STOP])
+            .host(&mut host)
+            .spec(SpecId::BERLIN)
+            .gas_limit(103));
+        core::assert_matches!(interpreter.err, InstrStop::OutOfGas);
+    }
+
+    #[test]
     fn origin_opcode() {
         let origin = Address::from([0x22; 20]);
         let mut host = TestHost::default();
