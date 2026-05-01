@@ -52,4 +52,16 @@ pub trait Host {
 
     /// Returns a historical block hash.
     fn block_hash(&mut self, number: u64) -> Option<B256>;
+
+    /// Loads a persistent storage slot.
+    fn sload(&mut self, index: Word) -> Word;
+
+    /// Stores a persistent storage slot.
+    fn sstore(&mut self, index: Word, value: Word);
+
+    /// Loads a transient storage slot.
+    fn tload(&mut self, index: Word) -> Word;
+
+    /// Stores a transient storage slot.
+    fn tstore(&mut self, index: Word, value: Word);
 }

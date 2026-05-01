@@ -24,6 +24,6 @@ pub(super) use system::*;
 pub(in crate::interpreter) mod table;
 
 #[cfg(test)]
-mod tests;
+pub(in crate::interpreter) mod tests;
 
 mod utils;

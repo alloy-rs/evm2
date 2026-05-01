@@ -5,13 +5,16 @@ use crate::{
 };
 use alloc::vec::Vec;
 use alloy_primitives::{B256, Bytes};
+use std::collections::HashMap;
 
 #[derive(Debug, Default)]
-pub(super) struct TestHost {
+pub(in crate::interpreter) struct TestHost {
     pub(super) tx: TxEnv,
     pub(super) block: BlockEnv,
     pub(super) code_size: usize,
     pub(super) code_hash: B256,
+    pub(super) storage: HashMap<Word, Word>,
+    pub(super) transient_storage: HashMap<Word, Word>,
 }
 
 impl Host for TestHost {
@@ -37,6 +40,22 @@ impl Host for TestHost {
 
     fn block_hash(&mut self, number: u64) -> Option<B256> {
         Some(B256::with_last_byte(number as u8))
+    }
+
+    fn sload(&mut self, index: Word) -> Word {
+        self.storage.get(&index).copied().unwrap_or_default()
+    }
+
+    fn sstore(&mut self, index: Word, value: Word) {
+        self.storage.insert(index, value);
+    }
+
+    fn tload(&mut self, index: Word) -> Word {
+        self.transient_storage.get(&index).copied().unwrap_or_default()
+    }
+
+    fn tstore(&mut self, index: Word, value: Word) {
+        self.transient_storage.insert(index, value);
     }
 }
 

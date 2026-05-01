@@ -40,6 +40,28 @@ pub(in crate::interpreter) fn blockhash(cx: _, [number]: [Word]) -> Result<out> 
 }
 
 #[instruction]
+pub(in crate::interpreter) fn sload(cx: _, [index]: [Word]) -> out {
+    *out = cx.state.host.sload(index);
+}
+
+#[instruction]
+pub(in crate::interpreter) fn sstore(cx: _, [index, value]: [Word]) {
+    cx.state.host.sstore(index, value);
+}
+
+#[instruction]
+pub(in crate::interpreter) fn tload(cx: _, [index]: [Word]) -> Result<out> {
+    check_spec(cx.state.spec, SpecId::CANCUN)?;
+    *out = cx.state.host.tload(index);
+}
+
+#[instruction]
+pub(in crate::interpreter) fn tstore(cx: _, [index, value]: [Word]) -> Result {
+    check_spec(cx.state.spec, SpecId::CANCUN)?;
+    cx.state.host.tstore(index, value);
+}
+
+#[instruction]
 pub(in crate::interpreter) fn coinbase(cx: _) -> out {
     *out = address_to_word(cx.state.block.beneficiary);
 }
@@ -167,6 +189,77 @@ mod tests {
         let interpreter = run_with_host(code, &mut host);
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [0]);
+    }
+
+    #[test]
+    fn sload_opcode() {
+        let mut host = TestHost::default();
+        host.storage.insert(Word::from(1), Word::from(0xbeef));
+
+        let mut code = Vec::new();
+        push(&mut code, 1);
+        code.extend([op::SLOAD, op::STOP]);
+        let interpreter = run_with_host(code, &mut host);
+        core::assert_matches!(interpreter.err, InstrStop::Stop);
+        assert_eq!(interpreter.stack(), [Word::from(0xbeef)]);
+
+        let mut code = Vec::new();
+        push(&mut code, 2);
+        code.extend([op::SLOAD, op::STOP]);
+        let interpreter = run_with_host(code, &mut host);
+        core::assert_matches!(interpreter.err, InstrStop::Stop);
+        assert_eq!(interpreter.stack(), [0]);
+    }
+
+    #[test]
+    fn sstore_opcode() {
+        let mut host = TestHost::default();
+        let mut code = Vec::new();
+        push(&mut code, 0xbeef);
+        push(&mut code, 1);
+        code.push(op::SSTORE);
+        push(&mut code, 1);
+        code.extend([op::SLOAD, op::STOP]);
+
+        let interpreter = run_with_host(code, &mut host);
+        core::assert_matches!(interpreter.err, InstrStop::Stop);
+        assert_eq!(interpreter.stack(), [Word::from(0xbeef)]);
+        assert_eq!(host.storage.get(&Word::from(1)), Some(&Word::from(0xbeef)));
+    }
+
+    #[test]
+    fn tload_opcode() {
+        let mut host = TestHost::default();
+        host.transient_storage.insert(Word::from(1), Word::from(0xcafe));
+
+        let mut code = Vec::new();
+        push(&mut code, 1);
+        code.extend([op::TLOAD, op::STOP]);
+        let interpreter = run_with_host_and_spec(code, &mut host, SpecId::CANCUN);
+        core::assert_matches!(interpreter.err, InstrStop::Stop);
+        assert_eq!(interpreter.stack(), [Word::from(0xcafe)]);
+
+        let interpreter = run_with_host([op::PUSH0, op::TLOAD, op::STOP], &mut host);
+        core::assert_matches!(interpreter.err, InstrStop::NotActivated);
+    }
+
+    #[test]
+    fn tstore_opcode() {
+        let mut host = TestHost::default();
+        let mut code = Vec::new();
+        push(&mut code, 0xcafe);
+        push(&mut code, 1);
+        code.push(op::TSTORE);
+        push(&mut code, 1);
+        code.extend([op::TLOAD, op::STOP]);
+
+        let interpreter = run_with_host_and_spec(code, &mut host, SpecId::CANCUN);
+        core::assert_matches!(interpreter.err, InstrStop::Stop);
+        assert_eq!(interpreter.stack(), [Word::from(0xcafe)]);
+        assert_eq!(host.transient_storage.get(&Word::from(1)), Some(&Word::from(0xcafe)));
+
+        let interpreter = run_with_host([op::PUSH0, op::PUSH0, op::TSTORE, op::STOP], &mut host);
+        core::assert_matches!(interpreter.err, InstrStop::NotActivated);
     }
 
     #[test]

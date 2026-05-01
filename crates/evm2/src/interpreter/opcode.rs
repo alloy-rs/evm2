@@ -121,16 +121,16 @@ opcodes! {$
     0x51 => MLOAD    => mload;
     0x52 => MSTORE   => mstore;
     0x53 => MSTORE8  => mstore8;
-    0x54 => SLOAD    => invalid;
-    0x55 => SSTORE   => invalid;
+    0x54 => SLOAD    => sload;
+    0x55 => SSTORE   => sstore;
     0x56 => JUMP     => jump;
     0x57 => JUMPI    => jumpi;
     0x58 => PC       => pc;
     0x59 => MSIZE    => msize;
     0x5A => GAS      => gas;
     0x5B => JUMPDEST => jumpdest;
-    0x5C => TLOAD    => invalid;
-    0x5D => TSTORE   => invalid;
+    0x5C => TLOAD    => tload;
+    0x5D => TSTORE   => tstore;
     0x5E => MCOPY    => mcopy;
 
     0x5F => PUSH0  => push<0>;
