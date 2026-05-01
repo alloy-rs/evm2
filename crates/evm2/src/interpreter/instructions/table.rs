@@ -78,6 +78,15 @@ impl<C: EvmConfig> InstructionImplTable<C> {
         self.0[opcode as usize]
     }
 
+    /// Returns the instruction implementation for `opcode`, or unknown if it is not set.
+    #[inline]
+    pub const fn get_or_default(&self, opcode: usize) -> &'static dyn Instruction<C> {
+        match self.0[opcode] {
+            Some(instr) => instr,
+            None => &crate::interpreter::instructions::unknown,
+        }
+    }
+
     /// Returns the mutable instruction implementation slot for `opcode`.
     #[inline]
     pub const fn get_mut(&mut self, opcode: u8) -> &mut Option<&'static dyn Instruction<C>> {
@@ -474,13 +483,6 @@ pub(crate) const fn make_tail_instruction_table<C: EvmConfig>() -> TailInstructi
     table
 }
 
-impl<C: EvmConfig> dyn Instruction<C> {
-    #[inline(always)]
-    pub(crate) fn default_unknown() -> &'static Self {
-        &crate::interpreter::instructions::unknown
-    }
-}
-
 extern_table! {
     #[cfg(not(feature = "nightly"))]
     fn dispatch<C: EvmConfig, const OP: usize>(
@@ -489,7 +491,7 @@ extern_table! {
         gas: &mut Gas,
         state: &mut State<'_, C::Host>,
     ) -> InstructionFnRet {
-        let instr = C::INSTRUCTION_IMPLS.get(OP as u8).unwrap_or_else(<dyn Instruction<C>>::default_unknown);
+        let instr = const { C::INSTRUCTION_IMPLS.get_or_default(OP) };
         let r = instr.execute(&mut stack, pc, gas, state);
         (stack.len, r)
     }
@@ -504,7 +506,7 @@ extern_table! {
         state: &mut State<'_, C::Host>,
         ret: *const (),
     ) -> TailInstructionFnRet {
-        let instr = C::INSTRUCTION_IMPLS.get(OP as u8).unwrap_or_else(<dyn Instruction<C>>::default_unknown);
+        let instr = const { C::INSTRUCTION_IMPLS.get_or_default(OP) };
         if let Err(e) = instr.execute(&mut stack, pc.as_mut(), gas, state) {
             cold_path();
             tail_return!(tail_call_restore::<C>(
