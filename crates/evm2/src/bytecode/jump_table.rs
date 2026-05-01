@@ -123,70 +123,57 @@ impl JumpTable {
     ///
     /// Panics if number of bits in slice is less than bit_len.
     #[inline]
-    pub fn from_static_slice(slice: &'static [u8], bit_len: usize) -> Self {
+    pub const fn from_static_slice(slice: &'static [u8], bit_len: usize) -> Self {
         Self::size_assert(slice.len(), bit_len);
         Self { table: Cow::Borrowed(slice), bit_len }
     }
 
     #[inline]
-    pub(crate) fn size_assert(len: usize, bit_len: usize) {
+    pub(crate) const fn size_assert(len: usize, bit_len: usize) {
         const BYTE_LEN: usize = 8;
-        assert!(
-            len * BYTE_LEN >= bit_len,
-            "slice bit length {} is less than bit_len {}",
-            len * BYTE_LEN,
-            bit_len
-        );
+        assert!(len * BYTE_LEN >= bit_len, "slice bit length is less than bit_len");
     }
 
     /// Gets the raw bytes of the jump map.
     #[inline]
-    pub fn as_slice(&self) -> &[u8] {
+    pub const fn as_slice(&self) -> &[u8] {
         self.as_ref().as_slice()
     }
 
     /// Gets the bit length of the jump map.
     #[inline]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.as_ref().len()
     }
 
     /// Returns true if the jump map is empty.
     #[inline]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.as_ref().is_empty()
     }
 
     /// Checks if `pc` is a valid jump destination.
     #[inline]
-    pub fn is_valid(&self, pc: usize) -> bool {
+    pub const fn is_valid(&self, pc: usize) -> bool {
         self.as_ref().is_valid(pc)
     }
 
     /// Returns the borrowed jump map.
     #[inline]
-    pub fn as_ref(&self) -> JumpTableRef<'_> {
-        JumpTableRef { base: self.table.as_ptr(), bit_len: self.bit_len, _marker: PhantomData }
+    pub const fn as_ref(&self) -> JumpTableRef<'_> {
+        let base = match &self.table {
+            Cow::Borrowed(t) => t.as_ptr(),
+            Cow::Owned(t) => t.as_ptr(),
+        };
+        JumpTableRef { base, bit_len: self.bit_len, _marker: PhantomData }
     }
 }
 
 impl<'a> JumpTableRef<'a> {
-    /// Constructs a borrowed jump map from raw bytes and length.
-    ///
-    /// Bit length represents number of used bits inside slice.
-    ///
-    /// # Panics
-    ///
-    /// Panics if number of bits in slice is less than bit_len.
-    #[inline]
-    pub fn new(slice: &'a [u8], bit_len: usize) -> Self {
-        JumpTable::size_assert(slice.len(), bit_len);
-        JumpTableRef { base: slice.as_ptr(), bit_len, _marker: PhantomData }
-    }
-
     /// Gets the raw bytes of the jump map.
     #[inline]
-    pub fn as_slice(&self) -> &'a [u8] {
+    pub const fn as_slice(&self) -> &'a [u8] {
+        // SAFETY: only constructed from a valid `JumpMap`.
         unsafe { core::slice::from_raw_parts(self.base, self.bit_len.div_ceil(8)) }
     }
 
@@ -204,7 +191,7 @@ impl<'a> JumpTableRef<'a> {
 
     /// Checks if `pc` is a valid jump destination.
     #[inline]
-    pub fn is_valid(&self, pc: usize) -> bool {
+    pub const fn is_valid(&self, pc: usize) -> bool {
         if pc >= self.bit_len {
             cold_path();
             return false;
@@ -220,7 +207,7 @@ mod tests {
     use super::*;
 
     #[test]
-    #[should_panic(expected = "slice bit length 8 is less than bit_len 10")]
+    #[should_panic(expected = "slice bit length is less than bit_len")]
     fn test_jump_table_from_slice_panic() {
         let _ = JumpTable::from_slice(&[0x00], 10);
     }
