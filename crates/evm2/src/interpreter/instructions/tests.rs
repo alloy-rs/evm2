@@ -241,11 +241,11 @@ fn run_with_config<C: crate::EvmConfig<Tx = ()>>(config: RunConfig<'_>) -> TestI
     let RunConfig { code, host, spec_id: _, tx_env, mut message, gas_limit, return_data } = config;
     let bytecode = Bytecode::new_legacy(Bytes::from(code));
     message.gas_limit = gas_limit;
-    let mut inner = Interpreter::<C>::new(bytecode, tx_env, message);
+    let mut inner = Interpreter::new(bytecode, tx_env, message);
     inner.return_data = return_data;
     let mut default_host = TestHost::default();
     let host = host.unwrap_or(&mut default_host);
-    let err = inner.run(host);
+    let err = inner.run::<C>(host);
     TestInterpreter {
         pc: inner.pc,
         stack: inner.stack,

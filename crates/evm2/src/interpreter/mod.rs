@@ -11,7 +11,10 @@ mod utils;
 mod instructions;
 pub(crate) use instructions::table;
 #[doc(hidden)]
-pub use instructions::table::{GasTable, Instruction, InstructionImplTable};
+pub use instructions::table::{
+    GasTable, Instruction, InstructionEntry, InstructionImplTable, InstructionTable,
+    TailInstructionEntry, TailInstructionTable,
+};
 
 mod opcode;
 pub use opcode::op;
@@ -279,14 +282,7 @@ impl InstrStop {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        EvmConfig, EvmVersion,
-        bytecode::Bytecode,
-        interpreter::{
-            instructions::{table::make_tail_table, tests::TestHost},
-            runtime::Table,
-        },
-    };
+    use crate::{EvmVersion, bytecode::Bytecode, interpreter::instructions::tests::TestHost};
     use alloy_primitives::{Bytes, U256};
 
     #[test]
@@ -300,16 +296,14 @@ mod tests {
         ][..]);
         type Config = EvmVersion<(), { SpecId::HOMESTEAD as u8 }>;
 
-        let tail_table = make_tail_table(Config::INSTRUCTION_IMPLS);
-        let instruction_table = core::hint::black_box(Table::Tail(&tail_table));
         let bytecode = Bytecode::new_legacy(Bytes::copy_from_slice(bytecode));
-        let mut interpreter = Interpreter::<Config>::new(
+        let mut interpreter = Interpreter::new(
             bytecode,
             crate::env::TxEnv::default(),
             Message { gas_limit: 10_000, ..Message::default() },
         );
         let mut host = TestHost::default();
-        interpreter.run_with_table(instruction_table, &Config::GAS_TABLE, &mut host);
+        interpreter.run::<Config>(&mut host);
     }
 
     #[test]
@@ -319,24 +313,18 @@ mod tests {
         macro_rules! check {
             ($spec_id:ident) => {{
                 type Config = EvmVersion<(), { SpecId::$spec_id as u8 }>;
-                let tail_table = make_tail_table(Config::INSTRUCTION_IMPLS);
-                for (_name, table) in [
-                    ("normal", Table::Normal(&Config::INSTRUCTION_IMPLS)),
-                    ("tail", Table::Tail(&tail_table)),
-                ] {
-                    let bytecode = Bytecode::new_legacy(Bytes::from_static(BASIC));
-                    let mut interpreter = Interpreter::<Config>::new(
-                        bytecode,
-                        crate::env::TxEnv::default(),
-                        Message { gas_limit: 10_000, ..Message::default() },
-                    );
-                    let mut host = TestHost::default();
-                    interpreter.run_with_table(table, &Config::GAS_TABLE, &mut host);
-                    assert!(interpreter.gas.remaining() > 0);
-                    assert_eq!(interpreter.pc, 6);
-                    assert_eq!(interpreter.stack_len, 1);
-                    assert_eq!(interpreter.stack[0], U256::from(3));
-                }
+                let bytecode = Bytecode::new_legacy(Bytes::from_static(BASIC));
+                let mut interpreter = Interpreter::new(
+                    bytecode,
+                    crate::env::TxEnv::default(),
+                    Message { gas_limit: 10_000, ..Message::default() },
+                );
+                let mut host = TestHost::default();
+                interpreter.run::<Config>(&mut host);
+                assert!(interpreter.gas.remaining() > 0);
+                assert_eq!(interpreter.pc, 6);
+                assert_eq!(interpreter.stack_len, 1);
+                assert_eq!(interpreter.stack[0], U256::from(3));
             }};
         }
 

@@ -131,8 +131,8 @@ fn execute_message_with_host<C: EvmConfig, H: Host>(
     tx_env: TxEnv,
     message: Message,
 ) -> InstrStop {
-    let mut interpreter = Interpreter::<C>::new(bytecode, tx_env, message);
-    interpreter.run(host)
+    let mut interpreter = Interpreter::new(bytecode, tx_env, message);
+    interpreter.run::<C>(host)
 }
 
 #[cfg(test)]

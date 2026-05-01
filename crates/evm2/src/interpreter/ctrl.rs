@@ -65,10 +65,6 @@ impl<'a> BytecodeRef<'a> {
 }
 
 impl<'a> Pc<'a> {
-    pub(crate) const fn new(bytecode: BytecodeRef<'a>, pc: usize) -> Self {
-        Self { base: bytecode.bytecode.as_ptr(), pc, _marker: PhantomData }
-    }
-
     /// Returns a mutable program counter reference.
     #[inline]
     pub const fn as_mut(&mut self) -> PcMut<'_> {
