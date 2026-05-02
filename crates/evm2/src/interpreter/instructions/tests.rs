@@ -64,7 +64,7 @@ impl Host for TestHost {
 
     fn load_account(
         &mut self,
-        address: Word,
+        address: Address,
         load_code: bool,
         skip_cold_load: bool,
     ) -> Result<AccountLoad, InstrStop> {
@@ -72,7 +72,7 @@ impl Host for TestHost {
             return Err(InstrStop::OutOfGas);
         }
         Ok(AccountLoad {
-            balance: address,
+            balance: address.into_word().into(),
             code_hash: self.code_hash,
             code: if load_code { self.code.clone() } else { Bytes::new() },
             is_empty: self.is_empty,

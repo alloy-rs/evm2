@@ -134,13 +134,12 @@ impl<C: EvmConfig<Host = Self>> Host for Evm<C> {
 
     fn load_account(
         &mut self,
-        address: Word,
+        address: Address,
         _load_code: bool,
         _skip_cold_load: bool,
     ) -> Result<AccountLoad, InstrStop> {
         // TODO: revm can return ColdLoadSkipped when `skip_cold_load` is true. This host does
         // not track access lists yet, so every load is treated as warm.
-        let address = Address::from_word(B256::from(address.to_be_bytes::<32>()));
         let info = self.database.basic(address).unwrap_or_default();
         Ok(AccountLoad {
             balance: info.balance,
@@ -327,7 +326,7 @@ mod tests {
             database,
         );
 
-        let load = Host::load_account(&mut evm, address.into_word().into(), true, false).unwrap();
+        let load = Host::load_account(&mut evm, address, true, false).unwrap();
 
         assert_eq!(load.balance, Word::from(0xbeef));
         assert_eq!(load.code_hash, code.hash_slow());

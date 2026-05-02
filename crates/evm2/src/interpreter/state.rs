@@ -88,7 +88,7 @@ pub trait Host {
     /// Loads account information.
     fn load_account(
         &mut self,
-        address: Word,
+        address: Address,
         load_code: bool,
         skip_cold_load: bool,
     ) -> Result<AccountLoad, InstrStop>;
