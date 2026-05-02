@@ -1,6 +1,9 @@
 //! EVM configuration.
 
-use crate::interpreter::{GasParams, GasTable, InstructionImplTable, SpecId};
+use crate::{
+    evm::MemoryDb,
+    interpreter::{GasParams, GasTable, InstructionImplTable, SpecId},
+};
 use core::marker::PhantomData;
 
 /// EVM configuration.
@@ -10,6 +13,9 @@ pub trait EvmConfig: Sized + 'static {
 
     /// Host type used by this EVM.
     type Host: crate::interpreter::Host + ?Sized;
+
+    /// Database type used by this EVM.
+    type Database: crate::evm::Database;
 
     /// Active hard fork specification.
     const SPEC_ID: SpecId;
@@ -31,6 +37,7 @@ pub struct EvmVersion<Tx, const SPEC: u8 = { SpecId::OSAKA as u8 }>(PhantomData<
 impl<Tx: 'static, const SPEC: u8> EvmConfig for EvmVersion<Tx, SPEC> {
     type Tx = Tx;
     type Host = crate::evm::Evm<Self>;
+    type Database = MemoryDb;
 
     const SPEC_ID: SpecId = match SpecId::try_from_u8(SPEC) {
         Some(spec_id) => spec_id,

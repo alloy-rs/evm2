@@ -35,30 +35,30 @@ pub struct TxResult {
 
 /// EVM host and transaction dispatcher.
 #[derive(Debug)]
-pub struct Evm<C: EvmConfig, DB = MemoryDb> {
+pub struct Evm<C: EvmConfig> {
     block: BlockEnv,
     registry: TxRegistry<C::Tx, TxResult>,
-    database: DB,
+    database: C::Database,
     transient_storage: HashMap<(Address, Word), Word>,
     logs: Vec<Log>,
     current_address: Address,
 }
 
-impl<C: EvmConfig> Evm<C> {
+impl<C: EvmConfig<Database: Default>> Evm<C> {
     /// Creates an EVM with the provided transaction handler registry and hard fork specification.
     #[inline]
     pub fn new(block: BlockEnv, registry: TxRegistry<C::Tx, TxResult>) -> Self {
-        Self::with_database(block, registry, MemoryDb::default())
+        Self::with_database(block, registry, C::Database::default())
     }
 }
 
-impl<C: EvmConfig, DB> Evm<C, DB> {
+impl<C: EvmConfig> Evm<C> {
     /// Creates an EVM with the provided database.
     #[inline]
     pub fn with_database(
         block: BlockEnv,
         registry: TxRegistry<C::Tx, TxResult>,
-        database: DB,
+        database: C::Database,
     ) -> Self {
         Self {
             block,
@@ -81,12 +81,12 @@ impl<C: EvmConfig, DB> Evm<C, DB> {
     }
 
     /// Returns the backing database.
-    pub const fn database(&self) -> &DB {
+    pub const fn database(&self) -> &C::Database {
         &self.database
     }
 
     /// Returns the backing database mutably.
-    pub const fn database_mut(&mut self) -> &mut DB {
+    pub const fn database_mut(&mut self) -> &mut C::Database {
         &mut self.database
     }
 
@@ -106,7 +106,7 @@ impl<C: EvmConfig, DB> Evm<C, DB> {
     }
 }
 
-impl<C: EvmConfig<Tx: Typed2718>, DB> Evm<C, DB> {
+impl<C: EvmConfig<Tx: Typed2718>> Evm<C> {
     /// Dispatches the transaction to the handler registered for its EIP-2718 type byte.
     pub fn transact(&self, tx: &C::Tx) -> HandlerResult<TxResult> {
         self.registry.try_get_by_type(tx.ty())?.call(tx)
@@ -127,7 +127,7 @@ impl<C: EvmConfig<Tx: Typed2718>, DB> Evm<C, DB> {
     }
 }
 
-impl<C: EvmConfig<Host = Self>, DB: Database> Host for Evm<C, DB> {
+impl<C: EvmConfig<Host = Self>> Host for Evm<C> {
     fn block_env(&mut self) -> &BlockEnv {
         &self.block
     }

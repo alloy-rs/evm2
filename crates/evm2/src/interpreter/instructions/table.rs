@@ -624,6 +624,7 @@ mod tests {
     impl EvmConfig for CustomConfig {
         type Tx = ();
         type Host = TestHost;
+        type Database = crate::evm::MemoryDb;
 
         const SPEC_ID: SpecId = SpecId::OSAKA;
         const INSTRUCTION_IMPLS: InstructionImplTable<Self> = {

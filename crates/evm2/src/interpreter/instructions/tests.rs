@@ -14,6 +14,7 @@ pub(in crate::interpreter) struct TestConfig<const SPEC: u8 = { SpecId::OSAKA as
 impl<const SPEC: u8> EvmConfig for TestConfig<SPEC> {
     type Tx = ();
     type Host = TestHost;
+    type Database = crate::evm::MemoryDb;
 
     const SPEC_ID: SpecId = match SpecId::try_from_u8(SPEC) {
         Some(spec_id) => spec_id,
