@@ -68,6 +68,13 @@ def parse_args() -> argparse.Namespace:
         help="Cargo package passed to cargo asm. Defaults to evm2.",
     )
     parser.add_argument(
+        "-F",
+        "--features",
+        action="append",
+        default=[],
+        help="Cargo feature(s) passed through to cargo asm. Can be repeated.",
+    )
+    parser.add_argument(
         "-j",
         "--jobs",
         type=int,
@@ -77,7 +84,9 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def select_opcodes(opcodes: dict[str, int], mnemonics: list[str]) -> list[tuple[str, int]]:
+def select_opcodes(
+    opcodes: dict[str, int], mnemonics: list[str]
+) -> list[tuple[str, int]]:
     if not mnemonics:
         return sorted(opcodes.items(), key=lambda item: item[1])
 
@@ -92,13 +101,20 @@ def select_opcodes(opcodes: dict[str, int], mnemonics: list[str]) -> list[tuple[
 
     if missing:
         known = " ".join(sorted(opcodes))
-        raise SystemExit(f"unknown opcode mnemonic(s): {' '.join(missing)}\nknown: {known}")
+        raise SystemExit(
+            f"unknown opcode mnemonic(s): {' '.join(missing)}\nknown: {known}"
+        )
     return selected
 
 
-def cargo_asm(package: str, spec: int, opcode: int, output: str) -> str:
+def cargo_asm(
+    package: str, features: list[str], spec: int, opcode: int, output: str
+) -> str:
     symbol = f"{DISPATCH}::<{CONFIG.format(spec=spec)}, {opcode}>"
-    cmd = ["cargo", "asm", "-q", "-s", "-p", package, "--lib", f"--{output}", symbol]
+    cmd = ["cargo", "asm", "-q", "-s", "-p", package]
+    for feature in features:
+        cmd.extend(("-F", feature))
+    cmd.extend(("--lib", f"--{output}", symbol))
     proc = subprocess.run(
         cmd,
         cwd=ROOT,
@@ -119,9 +135,15 @@ def cargo_asm(package: str, spec: int, opcode: int, output: str) -> str:
 
 
 def dump_output(
-    out: Path, package: str, spec: int, mnemonic: str, opcode: int, output: str
+    out: Path,
+    package: str,
+    features: list[str],
+    spec: int,
+    mnemonic: str,
+    opcode: int,
+    output: str,
 ) -> Path:
-    text = cargo_asm(package, spec, opcode, output)
+    text = cargo_asm(package, features, spec, opcode, output)
     suffix = "ll" if output == "llvm" else "s"
     path = out / f"{mnemonic}.{suffix}"
     path.write_text(text)
@@ -144,7 +166,14 @@ def main() -> int:
     with ThreadPoolExecutor(max_workers=workers) as executor:
         futures = {
             executor.submit(
-                dump_output, out, args.package, args.spec, mnemonic, opcode, output
+                dump_output,
+                out,
+                args.package,
+                args.features,
+                args.spec,
+                mnemonic,
+                opcode,
+                output,
             ): (mnemonic, output)
             for mnemonic, opcode, output in tasks
         }
