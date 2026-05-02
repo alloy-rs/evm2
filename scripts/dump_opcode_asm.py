@@ -25,8 +25,6 @@ from utils import cargo_env, repo_root
 ROOT = Path(repo_root())
 OPCODE_RS = ROOT / "crates" / "evm2" / "src" / "interpreter" / "opcode.rs"
 DEFAULT_OUT = ROOT / "tmp" / "dump"
-DISPATCH = "evm2::interpreter::instructions::table::dispatch"
-CONFIG = "evm2::config::EvmVersion<(), {spec}>"
 
 
 def parse_opcodes() -> dict[str, int]:
@@ -55,12 +53,6 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=DEFAULT_OUT,
         help="Output directory. Defaults to ./tmp/dump.",
-    )
-    parser.add_argument(
-        "--spec",
-        type=int,
-        default=19,
-        help="EvmVersion const SPEC used for monomorphized dispatch. Defaults to 19.",
     )
     parser.add_argument(
         "--package",
@@ -107,10 +99,8 @@ def select_opcodes(
     return selected
 
 
-def cargo_asm(
-    package: str, features: list[str], spec: int, opcode: int, output: str
-) -> str:
-    symbol = f"{DISPATCH}::<{CONFIG.format(spec=spec)}, {opcode}>"
+def cargo_asm(package: str, features: list[str], opcode: int, output: str) -> str:
+    symbol = f", {opcode}>"
     cmd = ["cargo", "asm", "-q", "-s", "-p", package]
     for feature in features:
         cmd.extend(("-F", feature))
@@ -138,12 +128,11 @@ def dump_output(
     out: Path,
     package: str,
     features: list[str],
-    spec: int,
     mnemonic: str,
     opcode: int,
     output: str,
 ) -> Path:
-    text = cargo_asm(package, features, spec, opcode, output)
+    text = cargo_asm(package, features, opcode, output)
     suffix = "ll" if output == "llvm" else "s"
     path = out / f"{mnemonic}.{suffix}"
     path.write_text(text)
@@ -170,7 +159,6 @@ def main() -> int:
                 out,
                 args.package,
                 args.features,
-                args.spec,
                 mnemonic,
                 opcode,
                 output,
