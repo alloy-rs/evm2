@@ -103,10 +103,10 @@ pub trait Host {
     fn sstore(&mut self, index: Word, value: Word);
 
     /// Loads a transient storage slot.
-    fn tload(&mut self, index: Word) -> Word;
+    fn tload(&mut self, address: Address, index: Word) -> Word;
 
     /// Stores a transient storage slot.
-    fn tstore(&mut self, index: Word, value: Word);
+    fn tstore(&mut self, address: Address, index: Word, value: Word);
 
     /// Records an emitted log.
     fn log(&mut self, log: Log);

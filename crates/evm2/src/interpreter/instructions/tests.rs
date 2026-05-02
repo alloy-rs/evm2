@@ -30,7 +30,7 @@ pub(in crate::interpreter) struct TestHost {
     pub(super) is_empty: bool,
     pub(super) is_cold: bool,
     pub(super) storage: HashMap<Word, Word>,
-    pub(super) transient_storage: HashMap<Word, Word>,
+    pub(super) transient_storage: HashMap<(Address, Word), Word>,
     pub(super) logs: Vec<Log>,
     pub(super) execute_result: Result<Word, InstrStop>,
     pub(super) selfdestruct_result: SelfDestructResult,
@@ -92,12 +92,12 @@ impl Host for TestHost {
         self.storage.insert(index, value);
     }
 
-    fn tload(&mut self, index: Word) -> Word {
-        self.transient_storage.get(&index).copied().unwrap_or_default()
+    fn tload(&mut self, address: Address, index: Word) -> Word {
+        self.transient_storage.get(&(address, index)).copied().unwrap_or_default()
     }
 
-    fn tstore(&mut self, index: Word, value: Word) {
-        self.transient_storage.insert(index, value);
+    fn tstore(&mut self, address: Address, index: Word, value: Word) {
+        self.transient_storage.insert((address, index), value);
     }
 
     fn log(&mut self, log: Log) {

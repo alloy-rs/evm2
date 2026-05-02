@@ -39,7 +39,7 @@ pub(in crate::interpreter) fn sstore(cx: _) -> Result {
 #[instruction(raw)]
 pub(in crate::interpreter) fn tload(cx: _) -> Result {
     let ([], index) = stack.popn_top()?;
-    *index = cx.state.host.tload(*index);
+    *index = cx.state.host.tload(cx.state.message().destination, *index);
     Ok(())
 }
 
@@ -47,7 +47,7 @@ pub(in crate::interpreter) fn tload(cx: _) -> Result {
 pub(in crate::interpreter) fn tstore(cx: _) -> Result {
     require_non_staticcall(&cx)?;
     let [index, value] = stack.popn()?;
-    cx.state.host.tstore(index, value);
+    cx.state.host.tstore(cx.state.message().destination, index, value);
     Ok(())
 }
 
@@ -180,7 +180,7 @@ mod tests {
     #[test]
     fn tload_opcode() {
         let mut host = TestHost::default();
-        host.transient_storage.insert(Word::from(1), Word::from(0xcafe));
+        host.transient_storage.insert((Address::ZERO, Word::from(1)), Word::from(0xcafe));
 
         let mut code = Vec::new();
         push(&mut code, 1);
@@ -209,7 +209,10 @@ mod tests {
         let interpreter = run(RunConfig::new(code).host(&mut host).spec(SpecId::CANCUN));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::from(0xcafe)]);
-        assert_eq!(host.transient_storage.get(&Word::from(1)), Some(&Word::from(0xcafe)));
+        assert_eq!(
+            host.transient_storage.get(&(Address::ZERO, Word::from(1))),
+            Some(&Word::from(0xcafe))
+        );
 
         let interpreter = run(RunConfig::new([op::PUSH1, 0, op::PUSH1, 0, op::TSTORE, op::STOP])
             .host(&mut host)
@@ -230,7 +233,7 @@ mod tests {
             run(RunConfig::new(code).host(&mut host).spec(SpecId::CANCUN).staticcall());
         core::assert_matches!(interpreter.err, InstrStop::StateChangeDuringStaticCall);
         assert_eq!(interpreter.stack(), [Word::from(0xcafe), Word::from(1)]);
-        assert_eq!(host.transient_storage.get(&Word::from(1)), None);
+        assert_eq!(host.transient_storage.get(&(Address::ZERO, Word::from(1))), None);
     }
 
     fn log_code<const N: usize>(offset: usize, len: usize, topics: [Word; N]) -> Vec<u8> {

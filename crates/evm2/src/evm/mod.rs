@@ -167,12 +167,12 @@ impl<C: EvmConfig<Host = Self>> Host for Evm<C> {
         self.database.set_storage(self.current_address, index, value);
     }
 
-    fn tload(&mut self, index: Word) -> Word {
-        self.transient_storage.get(&(self.current_address, index)).copied().unwrap_or_default()
+    fn tload(&mut self, address: Address, index: Word) -> Word {
+        self.transient_storage.get(&(address, index)).copied().unwrap_or_default()
     }
 
-    fn tstore(&mut self, index: Word, value: Word) {
-        self.transient_storage.insert((self.current_address, index), value);
+    fn tstore(&mut self, address: Address, index: Word, value: Word) {
+        self.transient_storage.insert((address, index), value);
     }
 
     fn log(&mut self, log: Log) {
@@ -394,13 +394,10 @@ mod tests {
         let address = Address::from([0x44; 20]);
         let other = Address::from([0x45; 20]);
         let mut evm = Evm::<EvmVersion<TestTx>>::new(BlockEnv::default(), TxRegistry::new());
-        evm.current_address = address;
 
-        Host::tstore(&mut evm, Word::from(1), Word::from(0xabcd));
-        assert_eq!(Host::tload(&mut evm, Word::from(1)), Word::from(0xabcd));
-
-        evm.current_address = other;
-        assert_eq!(Host::tload(&mut evm, Word::from(1)), Word::ZERO);
+        Host::tstore(&mut evm, address, Word::from(1), Word::from(0xabcd));
+        assert_eq!(Host::tload(&mut evm, address, Word::from(1)), Word::from(0xabcd));
+        assert_eq!(Host::tload(&mut evm, other, Word::from(1)), Word::ZERO);
     }
 
     #[test]
