@@ -15,7 +15,10 @@ pub mod env;
 pub mod registry;
 
 mod state;
-pub use state::{Account, Database, MemoryDb};
+pub use state::{
+    Account, AccountInfo, AccountState, Cache, CacheDb, Database, KECCAK_EMPTY, MemoryDb,
+    StorageSlot,
+};
 
 /// Result of executing a transaction.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -115,12 +118,16 @@ impl<C: EvmConfig<Host = Self>, DB: Database> Host for Evm<C, DB> {
         // TODO: revm can return ColdLoadSkipped when `skip_cold_load` is true. This host does
         // not track access lists yet, so every load is treated as warm.
         let address = Address::from_word(B256::from(address.to_be_bytes::<32>()));
-        let account = self.database.account(address).unwrap_or_default();
+        let info = self.database.basic(address).unwrap_or_default();
         Ok(AccountLoad {
-            balance: account.balance,
-            code_hash: if account.is_empty() { B256::ZERO } else { account.code_hash },
-            code: account.code.original_bytes(),
-            is_empty: account.is_empty(),
+            balance: info.balance,
+            code_hash: if info.is_empty() { B256::ZERO } else { info.code_hash },
+            code: info
+                .code
+                .clone()
+                .unwrap_or_else(|| self.database.code_by_hash(info.code_hash))
+                .original_bytes(),
+            is_empty: info.is_empty(),
             is_cold: false,
         })
     }
@@ -130,15 +137,12 @@ impl<C: EvmConfig<Host = Self>, DB: Database> Host for Evm<C, DB> {
     }
 
     fn sload(&mut self, index: Word) -> Word {
-        self.database
-            .account(self.current_address)
-            .and_then(|account| account.storage.get(&index).copied())
-            .unwrap_or_default()
+        self.database.storage(self.current_address, index)
     }
 
     fn sstore(&mut self, index: Word, value: Word) {
-        // TODO: revm records original slot values, refunds, and warm/cold status in its journal.
-        self.database.account_mut(self.current_address).storage.insert(index, value);
+        // TODO: revm records refunds and warm/cold status in its journal.
+        self.database.set_storage(self.current_address, index, value);
     }
 
     fn tload(&mut self, index: Word) -> Word {
@@ -177,20 +181,20 @@ impl<C: EvmConfig<Host = Self>, DB: Database> Host for Evm<C, DB> {
         // TODO: revm journals selfdestruct so it can be reverted, tracks cold target access, and
         // applies post-Cancun created-in-tx cleanup rules. This only marks state and transfers
         // balance in-place.
-        let target_exists =
-            self.database.account(target).is_some_and(|account| !account.is_empty());
-        let previously_destroyed =
-            self.database.account(contract).is_some_and(|account| account.selfdestructed);
-        let balance = self.database.account(contract).map_or(Word::ZERO, |account| account.balance);
+        let target_exists = self.database.basic(target).is_some_and(|info| !info.is_empty());
+        let previously_destroyed = self.database.is_selfdestructed(contract);
+        let balance = self.database.basic(contract).map_or(Word::ZERO, |info| info.balance);
 
         if contract != target && !balance.is_zero() {
-            let target_account = self.database.account_mut(target);
-            target_account.balance = target_account.balance.saturating_add(balance);
+            let mut target_info = self.database.basic(target).unwrap_or_default();
+            target_info.balance = target_info.balance.saturating_add(balance);
+            self.database.insert_account_info(target, target_info);
         }
 
-        let contract_account = self.database.account_mut(contract);
-        contract_account.balance = Word::ZERO;
-        contract_account.selfdestructed = true;
+        let mut contract_info = self.database.basic(contract).unwrap_or_default();
+        contract_info.balance = Word::ZERO;
+        self.database.insert_account_info(contract, contract_info);
+        self.database.mark_selfdestructed(contract);
 
         Ok(SelfDestructResult {
             had_value: !balance.is_zero(),
@@ -220,7 +224,7 @@ mod tests {
         interpreter::{MessageKind, op},
         registry::TxRequest,
     };
-    use alloy_primitives::{Address, B256, Bytes, Log, LogData, U256};
+    use alloy_primitives::{Address, B256, Bytes, Log, LogData, U256, keccak256};
 
     const TEST_TX_TYPE: u8 = 0x7f;
 
@@ -290,10 +294,10 @@ mod tests {
     fn host_loads_accounts_from_database() {
         let address = Address::from([0x22; 20]);
         let code = Bytecode::new_legacy(Bytes::from_static(&[op::ADDRESS, op::STOP]));
-        let mut account = Account { balance: Word::from(0xbeef), nonce: 1, ..Default::default() };
-        account.set_code(code.clone());
+        let mut info = AccountInfo { balance: Word::from(0xbeef), nonce: 1, ..Default::default() };
+        info.set_code(code.clone());
         let mut database = MemoryDb::default();
-        database.insert_account(address, account);
+        database.insert_account_info(address, info);
         let mut evm = Evm::<EvmVersion<TestTx>>::with_database(
             BlockEnv::default(),
             TxRegistry::new(),
@@ -320,7 +324,7 @@ mod tests {
         );
 
         assert_eq!(Host::block_hash(&mut evm, 42), Some(B256::with_last_byte(0x42)));
-        assert_eq!(Host::block_hash(&mut evm, 43), None);
+        assert_eq!(Host::block_hash(&mut evm, 43), Some(keccak256(b"43")));
     }
 
     #[test]
@@ -333,10 +337,33 @@ mod tests {
 
         assert_eq!(Host::sload(&mut evm, Word::from(1)), Word::from(0xcafe));
         assert_eq!(
-            evm.database()
-                .account_ref(address)
-                .and_then(|account| account.storage.get(&Word::from(1))),
-            Some(&Word::from(0xcafe))
+            evm.database().cache.storage.get(&(address, Word::from(1))),
+            Some(&StorageSlot::new_changed(Word::ZERO, Word::from(0xcafe)))
+        );
+    }
+
+    #[test]
+    fn host_storage_tracks_previous_and_original_values() {
+        let address = Address::from([0x34; 20]);
+        let mut database = MemoryDb::default();
+        database.insert_account_storage(address, Word::from(1), Word::from(10));
+        let mut evm = Evm::<EvmVersion<TestTx>>::with_database(
+            BlockEnv::default(),
+            TxRegistry::new(),
+            database,
+        );
+        evm.current_address = address;
+
+        Host::sstore(&mut evm, Word::from(1), Word::from(20));
+        Host::sstore(&mut evm, Word::from(1), Word::from(30));
+
+        assert_eq!(
+            evm.database().cache.storage.get(&(address, Word::from(1))),
+            Some(&StorageSlot {
+                original_value: Word::from(10),
+                previous_value: Word::from(20),
+                present_value: Word::from(30),
+            })
         );
     }
 
@@ -367,7 +394,7 @@ mod tests {
 
         Host::log(&mut evm, log.clone());
 
-        assert_eq!(evm.database().logs, [log]);
+        assert_eq!(evm.database().cache.logs, [log]);
     }
 
     #[test]
@@ -375,11 +402,13 @@ mod tests {
         let contract = Address::from([0x66; 20]);
         let target = Address::from([0x77; 20]);
         let mut database = MemoryDb::default();
-        database
-            .insert_account(contract, Account { balance: Word::from(100), ..Default::default() });
-        database.insert_account(
+        database.insert_account_info(
+            contract,
+            AccountInfo { balance: Word::from(100), ..Default::default() },
+        );
+        database.insert_account_info(
             target,
-            Account { balance: Word::from(1), nonce: 1, ..Default::default() },
+            AccountInfo { balance: Word::from(1), nonce: 1, ..Default::default() },
         );
         let mut evm = Evm::<EvmVersion<TestTx>>::with_database(
             BlockEnv::default(),
@@ -398,8 +427,8 @@ mod tests {
                 previously_destroyed: false,
             }
         );
-        assert_eq!(evm.database().account_ref(contract).unwrap().balance, Word::ZERO);
-        assert!(evm.database().account_ref(contract).unwrap().selfdestructed);
-        assert_eq!(evm.database().account_ref(target).unwrap().balance, Word::from(101));
+        assert_eq!(evm.database().account_info(contract).unwrap().balance, Word::ZERO);
+        assert!(evm.database().account_ref(contract).unwrap().is_selfdestructed());
+        assert_eq!(evm.database().account_info(target).unwrap().balance, Word::from(101));
     }
 }
