@@ -10,7 +10,7 @@ pub struct BytecodeRef<'a> {
 
 /// Program counter state.
 #[derive(Clone, Copy, Debug)]
-pub struct PcMut<'a> {
+pub struct Pc<'a> {
     base: *const u8,
     pc: usize,
     _marker: PhantomData<&'a [u8]>,
@@ -18,7 +18,7 @@ pub struct PcMut<'a> {
 
 /// Mutable program counter state.
 #[derive(Debug)]
-pub struct Pc<'a> {
+pub struct PcMut<'a> {
     base: *const u8,
     pc: &'a mut usize,
 }
@@ -64,7 +64,7 @@ impl<'a> BytecodeRef<'a> {
     }
 }
 
-impl<'a> PcMut<'a> {
+impl<'a> Pc<'a> {
     #[allow(dead_code)]
     pub(crate) const fn new(bytecode: BytecodeRef<'a>, pc: usize) -> Self {
         Self { base: bytecode.bytecode.as_ptr(), pc, _marker: PhantomData }
@@ -72,8 +72,8 @@ impl<'a> PcMut<'a> {
 
     /// Returns a mutable program counter reference.
     #[inline]
-    pub const fn as_mut(&mut self) -> Pc<'_> {
-        Pc { base: self.base, pc: &mut self.pc }
+    pub const fn as_mut(&mut self) -> PcMut<'_> {
+        PcMut { base: self.base, pc: &mut self.pc }
     }
 
     /// Returns the opcode at the current program counter.
@@ -114,14 +114,21 @@ impl<'a> PcMut<'a> {
     }
 }
 
-impl<'a> Pc<'a> {
+impl<'a> PcMut<'a> {
+    #[cfg(not(feature = "nightly"))]
     pub(crate) const fn new(bytecode: BytecodeRef<'a>, pc: &'a mut usize) -> Self {
         Self { base: bytecode.bytecode.as_ptr(), pc }
     }
 
+    /// Copies the program counter.
+    #[inline]
+    pub const fn copy(&self) -> Pc<'a> {
+        Pc { base: self.base, pc: *self.pc, _marker: PhantomData }
+    }
+
     /// Reborrows the program counter.
     #[inline]
-    pub const fn reborrow(&mut self) -> Pc<'_> {
+    pub const fn reborrow(&mut self) -> PcMut<'_> {
         unsafe { ptr::read(self) }
     }
 

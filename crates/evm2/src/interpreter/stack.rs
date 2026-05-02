@@ -1,6 +1,6 @@
 use super::{InstrStop, Result};
 use alloy_primitives::U256;
-use core::{fmt, hint::cold_path};
+use core::{fmt, hint::cold_path, ptr};
 
 /// EVM stack word.
 pub type Word = U256;
@@ -24,13 +24,23 @@ impl<'a> StackMut<'a> {
 
     #[inline]
     pub(crate) const fn new(stack: &'a mut [Word; StackMut::CAPACITY], len: &'a mut usize) -> Self {
+        debug_assert!(*len <= Self::CAPACITY);
         Self { stack, len }
+    }
+
+    /// Reborrows the stack.
+    #[inline]
+    pub(crate) const fn reborrow(&mut self) -> StackMut<'_> {
+        unsafe { ptr::read(self) }
     }
 
     /// Returns the stack length.
     #[inline]
     pub const fn len(&self) -> usize {
-        *self.len
+        let r = *self.len;
+        // SAFETY: Type invariant.
+        unsafe { core::hint::assert_unchecked(r <= Self::CAPACITY) };
+        r
     }
 
     /// Returns whether the stack is empty.
@@ -52,7 +62,7 @@ impl<'a> StackMut<'a> {
     }
 
     /// Checks that an instruction can consume `input` words and produce `output` words.
-    #[inline]
+    #[inline(always)]
     pub(crate) fn check_bounds(&self, input: usize, output: usize) -> Result {
         core::debug_assert_matches!(output, 0 | 1);
         let len = self.len();
@@ -65,6 +75,15 @@ impl<'a> StackMut<'a> {
             return Err(InstrStop::StackOverflow);
         }
         Ok(())
+    }
+
+    /// Checks that an instruction can consume `input` words and produce `output` words.
+    #[inline(always)]
+    pub(crate) fn instr_stack_setup(&mut self, input: usize, output: usize) -> Result<*mut Word> {
+        self.check_bounds(input, output)?;
+        let len = self.len();
+        *self.len = len - input + output;
+        Ok(unsafe { self.stack.as_mut_ptr().add(len).sub(input) })
     }
 
     /// Pushes a word onto the stack.

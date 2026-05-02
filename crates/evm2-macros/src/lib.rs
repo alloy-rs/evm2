@@ -85,8 +85,8 @@ fn expand_instruction(raw: bool, input: ItemFn) -> TokenStream2 {
             #[inline]
             fn execute(
                 &self,
-                __evm2_pc: evm2::interpreter::Pc<'_>,
-                stack: &mut evm2::interpreter::StackMut<'_>,
+                __evm2_pc: evm2::interpreter::PcMut<'_>,
+                mut stack: evm2::interpreter::StackMut<'_>,
                 __evm2_gas: &mut evm2::interpreter::Gas,
                 __evm2_state: &mut evm2::interpreter::State<'_, <C as evm2::EvmConfig>::Host>,
             ) -> evm2::interpreter::Result {
@@ -160,35 +160,24 @@ fn body(stmts: Vec<Stmt>, allow_final_result: bool) -> TokenStream2 {
 
 fn stack_setup(inputs: &[Ident], outputs: &[Ident]) -> TokenStream2 {
     let input_count = inputs.len();
-    let mut input_bindings = inputs.to_vec();
-    input_bindings.reverse();
     let input_setup = (input_count > 0).then(|| {
+        let input_bindings = inputs.iter().rev();
         quote! {
             let [#(#input_bindings),*] = unsafe { ptr.cast::<[Word; #input_count]>().read() };
         }
     });
 
-    match outputs {
-        [] if input_count == 0 => quote! {},
-        [] => quote! {
-            stack.check_bounds(#input_count, 0)?;
-            let __evm2_stack_len = stack.len();
-            let ptr = unsafe { stack.stack.as_mut_ptr().add(__evm2_stack_len).sub(#input_count) };
-            #input_setup
-            *stack.len = __evm2_stack_len - #input_count;
-        },
-        [output] => {
-            quote! {
-                stack.check_bounds(#input_count, 1)?;
-                let __evm2_stack_len = stack.len();
-                let ptr = unsafe { stack.stack.as_mut_ptr().add(__evm2_stack_len).sub(#input_count) };
-                #input_setup
-                let #output = unsafe { &mut *ptr.cast::<Word>() };
-                *stack.len = __evm2_stack_len + 1usize - #input_count;
-            }
+    let output_count = outputs.len();
+    let output_setup = (output_count > 0).then(|| {
+        let output_bindings = outputs.iter().rev();
+        quote! {
+            let [#(#output_bindings),*] = unsafe { &mut *ptr.cast::<[Word; #output_count]>() };
         }
-        _ => quote! {
-            compile_error!("multiple instruction outputs are not supported yet");
-        },
+    });
+
+    quote! {
+        let ptr = stack.instr_stack_setup(#input_count, #output_count)?;
+        #input_setup
+        #output_setup
     }
 }

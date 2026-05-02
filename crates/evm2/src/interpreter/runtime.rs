@@ -1,7 +1,9 @@
 #[cfg(feature = "nightly")]
+use super::Pc;
+#[cfg(not(feature = "nightly"))]
 use super::PcMut;
 use super::{
-    BytecodeRef, Gas, InstrStop, Memory, Message, Pc, Result, StackMut, State, Word,
+    BytecodeRef, Gas, InstrStop, Memory, Message, Result, StackMut, State, Word,
     table::InstructionTables,
 };
 use crate::{EvmConfig, bytecode::Bytecode, env::TxEnv};
@@ -76,7 +78,7 @@ impl Interpreter {
     fn step<C: EvmConfig>(&mut self, host: &mut C::Host) -> Result {
         let raw = self as *mut Self;
         let bytecode = BytecodeRef::new(&self.bytecode);
-        let pc = Pc::new(bytecode, &mut self.pc);
+        let pc = PcMut::new(bytecode, &mut self.pc);
         let op = pc.op();
         let instr = <C as InstructionTables>::INSTRUCTIONS[op as usize];
         let (pc, r) = instr(
@@ -103,11 +105,8 @@ impl Interpreter {
     fn step_tail<C: EvmConfig>(&mut self, host: &mut C::Host) -> Result {
         let raw = self as *mut Self;
         let bytecode = BytecodeRef::new(&self.bytecode);
-        let (op, pc) = {
-            let pc_mut = Pc::new(bytecode, &mut self.pc);
-            let op = pc_mut.op();
-            (op, PcMut::new(bytecode, pc_mut.get()))
-        };
+        let pc = Pc::new(bytecode, self.pc);
+        let op = pc.op();
         let instr = <C as InstructionTables>::TAIL_INSTRUCTIONS[op as usize];
         let e = instr(
             pc,
