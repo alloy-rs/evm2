@@ -1,7 +1,7 @@
 //! EVM configuration.
 
 use crate::{
-    evm::MemoryDb,
+    evm::InMemoryDB,
     interpreter::{GasParams, GasTable, InstructionImplTable, SpecId},
 };
 use core::marker::PhantomData;
@@ -37,7 +37,7 @@ pub struct EvmVersion<Tx, const SPEC: u8 = { SpecId::OSAKA as u8 }>(PhantomData<
 impl<Tx: 'static, const SPEC: u8> EvmConfig for EvmVersion<Tx, SPEC> {
     type Tx = Tx;
     type Host = crate::evm::Evm<Self>;
-    type Database = MemoryDb;
+    type Database = InMemoryDB;
 
     const SPEC_ID: SpecId = match SpecId::try_from_u8(SPEC) {
         Some(spec_id) => spec_id,

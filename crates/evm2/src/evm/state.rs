@@ -214,7 +214,7 @@ pub trait Database {
     fn block_hash(&mut self, number: u64) -> Option<B256>;
 }
 
-/// A cache used in [`CacheDb`].
+/// A cache used in [`CacheDB`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Cache {
@@ -244,18 +244,18 @@ impl Default for Cache {
     }
 }
 
+/// A database implementation that stores all state changes in memory.
+pub type InMemoryDB = CacheDB;
+
 /// In-memory cache database.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
-pub struct CacheDb {
+pub struct CacheDB {
     /// The cache that stores state changes.
     pub cache: Cache,
 }
 
-/// Backwards-compatible alias for the default in-memory database.
-pub type MemoryDb = CacheDb;
-
-impl CacheDb {
+impl CacheDB {
     /// Inserts account code into the contract cache.
     #[inline]
     pub fn insert_contract(&mut self, info: &mut AccountInfo) {
@@ -310,7 +310,7 @@ impl CacheDb {
     }
 }
 
-impl Database for CacheDb {
+impl Database for CacheDB {
     #[inline]
     fn basic(&mut self, address: Address) -> Option<AccountInfo> {
         self.cache.accounts.get(&address).and_then(Account::info)

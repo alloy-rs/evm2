@@ -20,7 +20,7 @@ pub mod registry;
 
 mod state;
 pub use state::{
-    Account, AccountInfo, AccountState, Cache, CacheDb, Database, KECCAK_EMPTY, MemoryDb,
+    Account, AccountInfo, AccountState, Cache, CacheDB, Database, InMemoryDB, KECCAK_EMPTY,
     StorageSlot,
 };
 
@@ -319,7 +319,7 @@ mod tests {
         let code = Bytecode::new_legacy(Bytes::from_static(&[op::ADDRESS, op::STOP]));
         let mut info = AccountInfo { balance: Word::from(0xbeef), nonce: 1, ..Default::default() };
         info.set_code(code.clone());
-        let mut database = MemoryDb::default();
+        let mut database = InMemoryDB::default();
         database.insert_account_info(address, info);
         let mut evm = Evm::<EvmVersion<TestTx>>::with_database(
             BlockEnv::default(),
@@ -338,7 +338,7 @@ mod tests {
 
     #[test]
     fn host_uses_database_block_hashes() {
-        let mut database = MemoryDb::default();
+        let mut database = InMemoryDB::default();
         database.insert_block_hash(42, B256::with_last_byte(0x42));
         let mut evm = Evm::<EvmVersion<TestTx>>::with_database(
             BlockEnv::default(),
@@ -368,7 +368,7 @@ mod tests {
     #[test]
     fn host_storage_tracks_previous_and_original_values() {
         let address = Address::from([0x34; 20]);
-        let mut database = MemoryDb::default();
+        let mut database = InMemoryDB::default();
         database.insert_account_storage(address, Word::from(1), Word::from(10));
         let mut evm = Evm::<EvmVersion<TestTx>>::with_database(
             BlockEnv::default(),
@@ -424,7 +424,7 @@ mod tests {
     fn host_selfdestruct_transfers_balance_and_marks_account() {
         let contract = Address::from([0x66; 20]);
         let target = Address::from([0x77; 20]);
-        let mut database = MemoryDb::default();
+        let mut database = InMemoryDB::default();
         database.insert_account_info(
             contract,
             AccountInfo { balance: Word::from(100), ..Default::default() },
