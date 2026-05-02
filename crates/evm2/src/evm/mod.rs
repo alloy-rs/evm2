@@ -9,10 +9,7 @@ use crate::{
 };
 use alloc::vec::Vec;
 use alloy_eips::eip2718::Typed2718;
-use alloy_primitives::{
-    Address, B256, Log,
-    map::{self, HashMap},
-};
+use alloy_primitives::{Address, B256, Bytes, Log};
 
 pub mod config;
 pub mod env;
@@ -20,8 +17,8 @@ pub mod registry;
 
 mod state;
 pub use state::{
-    Account, AccountInfo, AccountState, Cache, CacheDB, Database, InMemoryDB, KECCAK_EMPTY,
-    StorageSlot,
+    Account, AccountInfo, CacheDB, Database, InMemoryDB, JournalEntry, KECCAK_EMPTY, State,
+    StorageValue,
 };
 
 /// Result of executing a transaction.
@@ -38,8 +35,7 @@ pub struct TxResult {
 pub struct Evm<C: EvmConfig> {
     block: BlockEnv,
     registry: TxRegistry<C::Tx, TxResult>,
-    database: C::Database,
-    transient_storage: HashMap<(Address, Word), Word>,
+    state: State<C::Database>,
     logs: Vec<Log>,
 }
 
@@ -59,13 +55,7 @@ impl<C: EvmConfig> Evm<C> {
         registry: TxRegistry<C::Tx, TxResult>,
         database: C::Database,
     ) -> Self {
-        Self {
-            block,
-            registry,
-            database,
-            transient_storage: map::HashMap::default(),
-            logs: Vec::new(),
-        }
+        Self { block, registry, state: State::new(database), logs: Vec::new() }
     }
 
     /// Returns the transaction handler registry.
@@ -79,18 +69,18 @@ impl<C: EvmConfig> Evm<C> {
     }
 
     /// Returns the backing database.
-    pub const fn database(&self) -> &C::Database {
-        &self.database
+    pub const fn database(&self) -> &State<C::Database> {
+        &self.state
     }
 
     /// Returns the backing database mutably.
-    pub const fn database_mut(&mut self) -> &mut C::Database {
-        &mut self.database
+    pub const fn database_mut(&mut self) -> &mut State<C::Database> {
+        &mut self.state
     }
 
-    /// Returns transient storage.
-    pub const fn transient_storage(&self) -> &HashMap<(Address, Word), Word> {
-        &self.transient_storage
+    /// Returns the mutable EVM state.
+    pub const fn state(&self) -> &State<C::Database> {
+        &self.state
     }
 
     /// Returns emitted logs.
@@ -128,44 +118,43 @@ impl<C: EvmConfig<Host = Self>> Host for Evm<C> {
     fn load_account(
         &mut self,
         address: Address,
-        _load_code: bool,
+        load_code: bool,
         _skip_cold_load: bool,
     ) -> Result<AccountLoad, InstrStop> {
         // TODO: revm can return ColdLoadSkipped when `skip_cold_load` is true. This host does
         // not track access lists yet, so every load is treated as warm.
-        let info = self.database.basic(address).unwrap_or_default();
+        let info = self.state.account_info(address).unwrap_or_default();
         Ok(AccountLoad {
             balance: info.balance,
             code_hash: if info.is_empty() { B256::ZERO } else { info.code_hash },
-            code: info
-                .code
-                .clone()
-                .unwrap_or_else(|| self.database.code_by_hash(info.code_hash))
-                .original_bytes(),
+            code: if load_code {
+                self.state.get_code(address).original_bytes()
+            } else {
+                Bytes::new()
+            },
             is_empty: info.is_empty(),
             is_cold: false,
         })
     }
 
     fn block_hash(&mut self, number: u64) -> Option<B256> {
-        self.database.block_hash(number)
+        self.state.initial().get_block_hash(number)
     }
 
     fn sload(&mut self, address: Address, index: Word) -> Word {
-        self.database.storage(address, index)
+        self.state.storage(address, index)
     }
 
     fn sstore(&mut self, address: Address, index: Word, value: Word) {
-        // TODO: revm records refunds and warm/cold status in its journal.
-        self.database.set_storage(address, index, value);
+        self.state.set_storage(address, index, value);
     }
 
     fn tload(&mut self, address: Address, index: Word) -> Word {
-        self.transient_storage.get(&(address, index)).copied().unwrap_or_default()
+        self.state.transient_storage(address, index)
     }
 
     fn tstore(&mut self, address: Address, index: Word, value: Word) {
-        self.transient_storage.insert((address, index), value);
+        self.state.set_transient_storage(address, index, value);
     }
 
     fn log(&mut self, log: Log) {
@@ -191,23 +180,23 @@ impl<C: EvmConfig<Host = Self>> Host for Evm<C> {
         target: Address,
         _skip_cold_load: bool,
     ) -> Result<SelfDestructResult, InstrStop> {
-        // TODO: revm journals selfdestruct so it can be reverted, tracks cold target access, and
-        // applies post-Cancun created-in-tx cleanup rules. This only marks state and transfers
-        // balance in-place.
-        let target_exists = self.database.basic(target).is_some_and(|info| !info.is_empty());
-        let previously_destroyed = self.database.is_selfdestructed(contract);
-        let balance = self.database.basic(contract).map_or(Word::ZERO, |info| info.balance);
+        // TODO: evmone applies full SELFDESTRUCT revision rules in state transition.
+        let target_exists = self.state.account_info(target).is_some_and(|info| !info.is_empty());
+        let previously_destroyed =
+            self.state.account_ref(contract).is_some_and(|account| account.destructed);
+        let balance = self.state.account_info(contract).map_or(Word::ZERO, |info| info.balance);
 
         if contract != target && !balance.is_zero() {
-            let mut target_info = self.database.basic(target).unwrap_or_default();
-            target_info.balance = target_info.balance.saturating_add(balance);
-            self.database.insert_account_info(target, target_info);
+            let target_account = self.state.get_or_insert(target);
+            let previous = target_account.balance;
+            self.state.journal.push(JournalEntry::BalanceChange { address: target, previous });
+            self.state.get_or_insert(target).balance = previous.saturating_add(balance);
         }
 
-        let mut contract_info = self.database.basic(contract).unwrap_or_default();
-        contract_info.balance = Word::ZERO;
-        self.database.insert_account_info(contract, contract_info);
-        self.database.mark_selfdestructed(contract);
+        let previous = self.state.get_or_insert(contract).balance;
+        self.state.journal.push(JournalEntry::BalanceChange { address: contract, previous });
+        self.state.get_or_insert(contract).balance = Word::ZERO;
+        self.state.mark_destructed(contract);
 
         Ok(SelfDestructResult {
             had_value: !balance.is_zero(),
@@ -349,8 +338,8 @@ mod tests {
 
         assert_eq!(Host::sload(&mut evm, address, Word::from(1)), Word::from(0xcafe));
         assert_eq!(
-            evm.database().cache.storage.get(&(address, Word::from(1))),
-            Some(&StorageSlot::new_changed(Word::ZERO, Word::from(0xcafe)))
+            evm.database().account_ref(address).unwrap().storage.get(&Word::from(1)),
+            Some(&StorageValue { current: Word::from(0xcafe), original: Word::ZERO })
         );
     }
 
@@ -369,12 +358,8 @@ mod tests {
         Host::sstore(&mut evm, address, Word::from(1), Word::from(30));
 
         assert_eq!(
-            evm.database().cache.storage.get(&(address, Word::from(1))),
-            Some(&StorageSlot {
-                original_value: Word::from(10),
-                previous_value: Word::from(20),
-                present_value: Word::from(30),
-            })
+            evm.database().account_ref(address).unwrap().storage.get(&Word::from(1)),
+            Some(&StorageValue { current: Word::from(30), original: Word::from(10) })
         );
     }
 
@@ -436,7 +421,7 @@ mod tests {
             }
         );
         assert_eq!(evm.database().account_info(contract).unwrap().balance, Word::ZERO);
-        assert!(evm.database().account_ref(contract).unwrap().is_selfdestructed());
+        assert!(evm.database().account_ref(contract).unwrap().destructed);
         assert_eq!(evm.database().account_info(target).unwrap().balance, Word::from(101));
     }
 }
