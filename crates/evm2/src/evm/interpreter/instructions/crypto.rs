@@ -4,7 +4,7 @@ use alloy_primitives::keccak256 as keccak256_hash;
 use evm2_macros::instruction;
 
 #[instruction]
-pub(in crate::interpreter) fn keccak256(cx: _, [offset, len]: [Word]) -> Result<out> {
+pub(in crate::evm::interpreter) fn keccak256(cx: _, [offset, len]: [Word]) -> Result<out> {
     let len = as_usize(len)?;
     let hash = if len == 0 {
         keccak256_hash([])

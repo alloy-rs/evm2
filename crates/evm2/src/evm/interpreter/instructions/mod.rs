@@ -33,4 +33,4 @@ pub(crate) mod table;
 mod utils;
 
 #[cfg(test)]
-pub(in crate::interpreter) mod tests;
+pub(in crate::evm::interpreter) mod tests;

@@ -5,7 +5,7 @@ use evm2_macros::instruction;
 const BLOCK_HASH_HISTORY: u64 = 256;
 
 #[instruction]
-pub(in crate::interpreter) fn blockhash(cx: _, [number]: [Word]) -> Result<out> {
+pub(in crate::evm::interpreter) fn blockhash(cx: _, [number]: [Word]) -> Result<out> {
     *out = if let Some(diff) = cx.state.host.block_env().number.checked_sub(number) {
         let diff = u64::try_from(diff).unwrap_or(u64::MAX);
         if diff == 0 || diff > BLOCK_HASH_HISTORY {
@@ -24,22 +24,22 @@ pub(in crate::interpreter) fn blockhash(cx: _, [number]: [Word]) -> Result<out> 
 }
 
 #[instruction]
-pub(in crate::interpreter) fn coinbase(cx: _) -> out {
+pub(in crate::evm::interpreter) fn coinbase(cx: _) -> out {
     *out = address_to_word(cx.state.host.block_env().beneficiary);
 }
 
 #[instruction]
-pub(in crate::interpreter) fn timestamp(cx: _) -> out {
+pub(in crate::evm::interpreter) fn timestamp(cx: _) -> out {
     *out = cx.state.host.block_env().timestamp;
 }
 
 #[instruction]
-pub(in crate::interpreter) fn block_number(cx: _) -> out {
+pub(in crate::evm::interpreter) fn block_number(cx: _) -> out {
     *out = cx.state.host.block_env().number;
 }
 
 #[instruction]
-pub(in crate::interpreter) fn difficulty(cx: _) -> out {
+pub(in crate::evm::interpreter) fn difficulty(cx: _) -> out {
     *out = if cx.state.spec.enables(SpecId::MERGE) {
         cx.state.host.block_env().prevrandao
     } else {
@@ -48,17 +48,17 @@ pub(in crate::interpreter) fn difficulty(cx: _) -> out {
 }
 
 #[instruction]
-pub(in crate::interpreter) fn gaslimit(cx: _) -> out {
+pub(in crate::evm::interpreter) fn gaslimit(cx: _) -> out {
     *out = cx.state.host.block_env().gas_limit;
 }
 
 #[instruction]
-pub(in crate::interpreter) fn chainid(cx: _) -> Result<out> {
+pub(in crate::evm::interpreter) fn chainid(cx: _) -> Result<out> {
     *out = cx.state.tx().chain_id;
 }
 
 #[instruction]
-pub(in crate::interpreter) fn selfbalance(cx: _) -> Result<out> {
+pub(in crate::evm::interpreter) fn selfbalance(cx: _) -> Result<out> {
     *out = cx
         .state
         .host
@@ -67,23 +67,23 @@ pub(in crate::interpreter) fn selfbalance(cx: _) -> Result<out> {
 }
 
 #[instruction]
-pub(in crate::interpreter) fn basefee(cx: _) -> Result<out> {
+pub(in crate::evm::interpreter) fn basefee(cx: _) -> Result<out> {
     *out = cx.state.host.block_env().basefee;
 }
 
 #[instruction]
-pub(in crate::interpreter) fn blobhash(cx: _, [index]: [Word]) -> Result<out> {
+pub(in crate::evm::interpreter) fn blobhash(cx: _, [index]: [Word]) -> Result<out> {
     let index = as_usize_saturated(index);
     *out = cx.state.tx().blob_hashes.get(index).copied().unwrap_or_default();
 }
 
 #[instruction]
-pub(in crate::interpreter) fn blobbasefee(cx: _) -> Result<out> {
+pub(in crate::evm::interpreter) fn blobbasefee(cx: _) -> Result<out> {
     *out = cx.state.host.block_env().blob_basefee;
 }
 
 #[instruction]
-pub(in crate::interpreter) fn slotnum(cx: _) -> Result<out> {
+pub(in crate::evm::interpreter) fn slotnum(cx: _) -> Result<out> {
     *out = cx.state.host.block_env().slot_num;
 }
 

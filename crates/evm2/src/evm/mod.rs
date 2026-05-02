@@ -10,6 +10,12 @@ use crate::{
 use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{Address, B256, Bytes, Log};
 
+pub mod bytecode;
+pub mod config;
+pub mod env;
+pub mod interpreter;
+pub mod registry;
+
 /// Result of executing a transaction.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct TxResult {
