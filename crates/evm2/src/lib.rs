@@ -40,13 +40,15 @@ pub struct SelfDestructResult {
     pub previously_destroyed: bool,
 }
 
+pub mod bytecode;
 /// EVM host and transaction dispatcher.
 pub mod evm;
+pub mod interpreter;
 
 pub use evm::{
-    Evm, TxResult, bytecode, config,
+    Evm, TxResult, config,
     config::{EvmConfig, EvmVersion},
-    env, interpreter, registry,
+    env, registry,
 };
 
 mod once_lock;

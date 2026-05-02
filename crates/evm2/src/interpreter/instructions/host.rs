@@ -17,12 +17,12 @@ fn require_non_staticcall<C: EvmConfig>(cx: &InstructionCx<'_, '_, C>) -> Result
 }
 
 #[instruction]
-pub(in crate::evm::interpreter) fn sload(cx: _, [index]: [Word]) -> out {
+pub(in crate::interpreter) fn sload(cx: _, [index]: [Word]) -> out {
     *out = cx.state.host.sload(index);
 }
 
 #[instruction(raw)]
-pub(in crate::evm::interpreter) fn sstore(cx: _) -> Result {
+pub(in crate::interpreter) fn sstore(cx: _) -> Result {
     require_non_staticcall(&cx)?;
     let [index, value] = stack.popn()?;
     let gas_params = cx.gas_params;
@@ -37,14 +37,14 @@ pub(in crate::evm::interpreter) fn sstore(cx: _) -> Result {
 }
 
 #[instruction(raw)]
-pub(in crate::evm::interpreter) fn tload(cx: _) -> Result {
+pub(in crate::interpreter) fn tload(cx: _) -> Result {
     let ([], index) = stack.popn_top()?;
     *index = cx.state.host.tload(*index);
     Ok(())
 }
 
 #[instruction(raw)]
-pub(in crate::evm::interpreter) fn tstore(cx: _) -> Result {
+pub(in crate::interpreter) fn tstore(cx: _) -> Result {
     require_non_staticcall(&cx)?;
     let [index, value] = stack.popn()?;
     cx.state.host.tstore(index, value);
@@ -52,7 +52,7 @@ pub(in crate::evm::interpreter) fn tstore(cx: _) -> Result {
 }
 
 #[instruction(raw)]
-pub(in crate::evm::interpreter) fn log<const N: usize>(cx: _) -> Result {
+pub(in crate::interpreter) fn log<const N: usize>(cx: _) -> Result {
     require_non_staticcall(&cx)?;
     let [offset, len] = stack.popn()?;
     let len = as_usize(len)?;

@@ -6,18 +6,18 @@ use core::hint::cold_path;
 use evm2_macros::instruction;
 
 #[instruction]
-pub(in crate::evm::interpreter) fn stop() -> Result {
+pub(in crate::interpreter) fn stop() -> Result {
     cold_path();
     Err(InstrStop::Stop)
 }
 
 #[instruction]
-pub(in crate::evm::interpreter) fn jump(cx: _, [target]: [Word]) -> Result {
+pub(in crate::interpreter) fn jump(cx: _, [target]: [Word]) -> Result {
     jump_inner(target, cx.pc, cx.state)
 }
 
 #[instruction]
-pub(in crate::evm::interpreter) fn jumpi(cx: _, [target, cond]: [Word]) -> Result {
+pub(in crate::interpreter) fn jumpi(cx: _, [target, cond]: [Word]) -> Result {
     if !cond.is_zero() {
         jump_inner(target, cx.pc, cx.state)?;
     } else {
@@ -38,25 +38,25 @@ fn jump_inner<H: Host + ?Sized>(target: Word, pc_mut: &mut Pc, state: &State<'_,
 }
 
 #[instruction]
-pub(in crate::evm::interpreter) fn pc(cx: _) -> out {
+pub(in crate::interpreter) fn pc(cx: _) -> out {
     *out = Word::from(cx.state.bytecode.pc_offset(*cx.pc));
 }
 
 #[instruction]
-pub(in crate::evm::interpreter) fn gas(cx: _) -> out {
+pub(in crate::interpreter) fn gas(cx: _) -> out {
     *out = Word::from(cx.gas.remaining());
 }
 
 #[instruction]
-pub(in crate::evm::interpreter) fn jumpdest() {}
+pub(in crate::interpreter) fn jumpdest() {}
 
 #[instruction]
-pub(in crate::evm::interpreter) fn r#return(cx: _, [offset, len]: [Word]) -> Result {
+pub(in crate::interpreter) fn r#return(cx: _, [offset, len]: [Word]) -> Result {
     return_inner(cx, offset, len, InstrStop::Return)
 }
 
 #[instruction]
-pub(in crate::evm::interpreter) fn revert(cx: _, [offset, len]: [Word]) -> Result {
+pub(in crate::interpreter) fn revert(cx: _, [offset, len]: [Word]) -> Result {
     return_inner(cx, offset, len, InstrStop::Revert)
 }
 
@@ -81,13 +81,13 @@ fn return_inner<C: crate::EvmConfig>(
 }
 
 #[instruction]
-pub(in crate::evm::interpreter) fn invalid() -> Result {
+pub(in crate::interpreter) fn invalid() -> Result {
     cold_path();
     Err(InstrStop::InvalidFEOpcode)
 }
 
 #[instruction]
-pub(in crate::evm::interpreter) fn unknown() -> Result {
+pub(in crate::interpreter) fn unknown() -> Result {
     cold_path();
     Err(InstrStop::OpcodeNotFound)
 }

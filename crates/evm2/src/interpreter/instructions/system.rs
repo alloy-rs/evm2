@@ -173,7 +173,7 @@ fn call_inner<C: EvmConfig>(mut cx: InstructionCx<'_, '_, C>, args: CallArgs) ->
 }
 
 #[instruction(raw)]
-pub(in crate::evm::interpreter) fn call(cx: _) -> Result {
+pub(in crate::interpreter) fn call(cx: _) -> Result {
     let [local_gas_limit, to, value, input_offset, input_len, return_offset, return_len] =
         stack.popn::<7>()?;
     let result = call_inner(
@@ -194,7 +194,7 @@ pub(in crate::evm::interpreter) fn call(cx: _) -> Result {
 }
 
 #[instruction(raw)]
-pub(in crate::evm::interpreter) fn callcode(cx: _) -> Result {
+pub(in crate::interpreter) fn callcode(cx: _) -> Result {
     let [local_gas_limit, to, value, input_offset, input_len, return_offset, return_len] =
         stack.popn::<7>()?;
     let result = call_inner(
@@ -215,7 +215,7 @@ pub(in crate::evm::interpreter) fn callcode(cx: _) -> Result {
 }
 
 #[instruction(raw)]
-pub(in crate::evm::interpreter) fn delegatecall(cx: _) -> Result {
+pub(in crate::interpreter) fn delegatecall(cx: _) -> Result {
     let [local_gas_limit, to, input_offset, input_len, return_offset, return_len] =
         stack.popn::<6>()?;
     let result = call_inner(
@@ -236,7 +236,7 @@ pub(in crate::evm::interpreter) fn delegatecall(cx: _) -> Result {
 }
 
 #[instruction(raw)]
-pub(in crate::evm::interpreter) fn staticcall(cx: _) -> Result {
+pub(in crate::interpreter) fn staticcall(cx: _) -> Result {
     let [local_gas_limit, to, input_offset, input_len, return_offset, return_len] =
         stack.popn::<6>()?;
     let result = call_inner(
@@ -257,7 +257,7 @@ pub(in crate::evm::interpreter) fn staticcall(cx: _) -> Result {
 }
 
 #[instruction(raw)]
-pub(in crate::evm::interpreter) fn create<const IS_CREATE2: bool>(cx: _) -> Result {
+pub(in crate::interpreter) fn create<const IS_CREATE2: bool>(cx: _) -> Result {
     require_non_staticcall(&cx)?;
 
     let [value, offset, len] = stack.popn::<3>()?;
@@ -296,7 +296,7 @@ pub(in crate::evm::interpreter) fn create<const IS_CREATE2: bool>(cx: _) -> Resu
 }
 
 #[instruction]
-pub(in crate::evm::interpreter) fn selfdestruct(cx: _, [target]: [Word]) -> Result {
+pub(in crate::interpreter) fn selfdestruct(cx: _, [target]: [Word]) -> Result {
     require_non_staticcall(&cx)?;
     let target = word_to_address(target);
     let cold_load_gas = cx.gas_params.selfdestruct_cold_cost();
