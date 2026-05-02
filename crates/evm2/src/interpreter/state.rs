@@ -97,10 +97,10 @@ pub trait Host {
     fn block_hash(&mut self, number: u64) -> Option<B256>;
 
     /// Loads a persistent storage slot.
-    fn sload(&mut self, index: Word) -> Word;
+    fn sload(&mut self, address: Address, index: Word) -> Word;
 
     /// Stores a persistent storage slot.
-    fn sstore(&mut self, index: Word, value: Word);
+    fn sstore(&mut self, address: Address, index: Word, value: Word);
 
     /// Loads a transient storage slot.
     fn tload(&mut self, address: Address, index: Word) -> Word;

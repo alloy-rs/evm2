@@ -29,7 +29,7 @@ pub(in crate::interpreter) struct TestHost {
     pub(super) code: Bytes,
     pub(super) is_empty: bool,
     pub(super) is_cold: bool,
-    pub(super) storage: HashMap<Word, Word>,
+    pub(super) storage: HashMap<(Address, Word), Word>,
     pub(super) transient_storage: HashMap<(Address, Word), Word>,
     pub(super) logs: Vec<Log>,
     pub(super) execute_result: Result<Word, InstrStop>,
@@ -84,12 +84,12 @@ impl Host for TestHost {
         Some(B256::with_last_byte(number as u8))
     }
 
-    fn sload(&mut self, index: Word) -> Word {
-        self.storage.get(&index).copied().unwrap_or_default()
+    fn sload(&mut self, address: Address, index: Word) -> Word {
+        self.storage.get(&(address, index)).copied().unwrap_or_default()
     }
 
-    fn sstore(&mut self, index: Word, value: Word) {
-        self.storage.insert(index, value);
+    fn sstore(&mut self, address: Address, index: Word, value: Word) {
+        self.storage.insert((address, index), value);
     }
 
     fn tload(&mut self, address: Address, index: Word) -> Word {

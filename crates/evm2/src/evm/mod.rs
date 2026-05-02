@@ -41,7 +41,6 @@ pub struct Evm<C: EvmConfig> {
     database: C::Database,
     transient_storage: HashMap<(Address, Word), Word>,
     logs: Vec<Log>,
-    current_address: Address,
 }
 
 impl<C: EvmConfig<Database: Default>> Evm<C> {
@@ -66,7 +65,6 @@ impl<C: EvmConfig> Evm<C> {
             database,
             transient_storage: map::HashMap::default(),
             logs: Vec::new(),
-            current_address: Address::ZERO,
         }
     }
 
@@ -88,11 +86,6 @@ impl<C: EvmConfig> Evm<C> {
     /// Returns the backing database mutably.
     pub const fn database_mut(&mut self) -> &mut C::Database {
         &mut self.database
-    }
-
-    /// Returns the active message destination used for implicit storage host calls.
-    pub const fn current_address(&self) -> Address {
-        self.current_address
     }
 
     /// Returns transient storage.
@@ -158,13 +151,13 @@ impl<C: EvmConfig<Host = Self>> Host for Evm<C> {
         self.database.block_hash(number)
     }
 
-    fn sload(&mut self, index: Word) -> Word {
-        self.database.storage(self.current_address, index)
+    fn sload(&mut self, address: Address, index: Word) -> Word {
+        self.database.storage(address, index)
     }
 
-    fn sstore(&mut self, index: Word, value: Word) {
+    fn sstore(&mut self, address: Address, index: Word, value: Word) {
         // TODO: revm records refunds and warm/cold status in its journal.
-        self.database.set_storage(self.current_address, index, value);
+        self.database.set_storage(address, index, value);
     }
 
     fn tload(&mut self, address: Address, index: Word) -> Word {
@@ -185,9 +178,7 @@ impl<C: EvmConfig<Host = Self>> Host for Evm<C> {
         bytecode: Bytecode,
         message: Message,
     ) -> Result<Word, InstrStop> {
-        let current_address = core::mem::replace(&mut self.current_address, message.destination);
         let stop = execute_message_with_host::<C>(self, bytecode, tx_env, message);
-        self.current_address = current_address;
         if matches!(stop, InstrStop::Stop | InstrStop::Return) {
             return Ok(Word::from(1));
         }
@@ -353,11 +344,10 @@ mod tests {
     fn host_stores_persistent_storage_for_current_account() {
         let address = Address::from([0x33; 20]);
         let mut evm = Evm::<EvmVersion<TestTx>>::new(BlockEnv::default(), TxRegistry::new());
-        evm.current_address = address;
 
-        Host::sstore(&mut evm, Word::from(1), Word::from(0xcafe));
+        Host::sstore(&mut evm, address, Word::from(1), Word::from(0xcafe));
 
-        assert_eq!(Host::sload(&mut evm, Word::from(1)), Word::from(0xcafe));
+        assert_eq!(Host::sload(&mut evm, address, Word::from(1)), Word::from(0xcafe));
         assert_eq!(
             evm.database().cache.storage.get(&(address, Word::from(1))),
             Some(&StorageSlot::new_changed(Word::ZERO, Word::from(0xcafe)))
@@ -374,10 +364,9 @@ mod tests {
             TxRegistry::new(),
             database,
         );
-        evm.current_address = address;
 
-        Host::sstore(&mut evm, Word::from(1), Word::from(20));
-        Host::sstore(&mut evm, Word::from(1), Word::from(30));
+        Host::sstore(&mut evm, address, Word::from(1), Word::from(20));
+        Host::sstore(&mut evm, address, Word::from(1), Word::from(30));
 
         assert_eq!(
             evm.database().cache.storage.get(&(address, Word::from(1))),

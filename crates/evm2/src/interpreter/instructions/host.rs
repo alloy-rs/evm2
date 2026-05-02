@@ -18,7 +18,7 @@ fn require_non_staticcall<C: EvmConfig>(cx: &InstructionCx<'_, '_, C>) -> Result
 
 #[instruction]
 pub(in crate::interpreter) fn sload(cx: _, [index]: [Word]) -> out {
-    *out = cx.state.host.sload(index);
+    *out = cx.state.host.sload(cx.state.message().destination, index);
 }
 
 #[instruction(raw)]
@@ -32,7 +32,7 @@ pub(in crate::interpreter) fn sstore(cx: _) -> Result {
         return Err(InstrStop::ReentrancySentryOOG);
     }
     cx.gas.spend(gas_params.get(GasId::SstoreStatic))?;
-    cx.state.host.sstore(index, value);
+    cx.state.host.sstore(cx.state.message().destination, index, value);
     Ok(())
 }
 
@@ -88,7 +88,7 @@ mod tests {
     #[test]
     fn sload_opcode() {
         let mut host = TestHost::default();
-        host.storage.insert(Word::from(1), Word::from(0xbeef));
+        host.storage.insert((Address::ZERO, Word::from(1)), Word::from(0xbeef));
 
         let mut code = Vec::new();
         push(&mut code, 1);
@@ -118,7 +118,7 @@ mod tests {
         let interpreter = run(RunConfig::new(code).host(&mut host));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::from(0xbeef)]);
-        assert_eq!(host.storage.get(&Word::from(1)), Some(&Word::from(0xbeef)));
+        assert_eq!(host.storage.get(&(Address::ZERO, Word::from(1))), Some(&Word::from(0xbeef)));
     }
 
     #[test]
@@ -132,7 +132,7 @@ mod tests {
         let interpreter = run(RunConfig::new(code).host(&mut host).staticcall());
         core::assert_matches!(interpreter.err, InstrStop::StateChangeDuringStaticCall);
         assert_eq!(interpreter.stack(), [Word::from(0xbeef), Word::from(1)]);
-        assert_eq!(host.storage.get(&Word::from(1)), None);
+        assert_eq!(host.storage.get(&(Address::ZERO, Word::from(1))), None);
     }
 
     #[test]
@@ -149,7 +149,7 @@ mod tests {
 
         core::assert_matches!(interpreter.err, InstrStop::StateChangeDuringStaticCall);
         assert_eq!(interpreter.stack(), [Word::from(0xbeef), Word::from(1)]);
-        assert_eq!(host.storage.get(&Word::from(1)), None);
+        assert_eq!(host.storage.get(&(Address::ZERO, Word::from(1))), None);
     }
 
     #[test]
@@ -163,7 +163,7 @@ mod tests {
         let interpreter =
             run(RunConfig::new(code).host(&mut host).spec(SpecId::ISTANBUL).gas_limit(2306));
         core::assert_matches!(interpreter.err, InstrStop::ReentrancySentryOOG);
-        assert_eq!(host.storage.get(&Word::from(1)), None);
+        assert_eq!(host.storage.get(&(Address::ZERO, Word::from(1))), None);
     }
 
     #[test]
