@@ -8,8 +8,9 @@ use crate::{
 use alloy_primitives::{B256, Bytes, Log, LogData};
 use evm2_macros::instruction;
 
-const fn require_non_staticcall<C: EvmConfig>(cx: &InstructionCx<'_, '_, C>) -> Result {
-    if cx.state.message.is_static() {
+#[inline]
+fn require_non_staticcall<C: EvmConfig>(cx: &InstructionCx<'_, '_, C>) -> Result {
+    if cx.state.message().is_static() {
         return Err(InstrStop::StateChangeDuringStaticCall);
     }
     Ok(())
@@ -61,14 +62,14 @@ pub(in crate::interpreter) fn log<const N: usize>(cx: _) -> Result {
         Bytes::new()
     } else {
         let offset = as_usize(offset)?;
-        resize_memory(cx.gas, cx.state.memory, offset, len)?;
-        Bytes::copy_from_slice(cx.state.memory.slice(offset, len)?)
+        resize_memory(cx.gas, cx.state.memory(), offset, len)?;
+        Bytes::copy_from_slice(cx.state.memory().slice(offset, len))
     };
 
     let topics =
         stack.popn::<N>()?.into_iter().map(|topic| B256::from(topic.to_be_bytes::<32>())).collect();
     cx.state.host.log(Log {
-        address: cx.state.message.destination,
+        address: cx.state.message().destination,
         data: LogData::new(topics, data).expect("LOG opcodes cannot emit more than 4 topics"),
     });
     Ok(())

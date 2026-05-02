@@ -22,7 +22,7 @@ fn load_account<C: EvmConfig>(
 
 #[instruction]
 pub(in crate::interpreter) fn address(cx: _) -> out {
-    *out = address_to_word(cx.state.message.destination);
+    *out = address_to_word(cx.state.message().destination);
 }
 
 #[instruction]
@@ -32,23 +32,23 @@ pub(in crate::interpreter) fn balance(cx: _, [addr]: [Word]) -> Result<out> {
 
 #[instruction]
 pub(in crate::interpreter) fn origin(cx: _) -> out {
-    *out = address_to_word(cx.state.tx.origin);
+    *out = address_to_word(cx.state.tx().origin);
 }
 
 #[instruction]
 pub(in crate::interpreter) fn caller(cx: _) -> out {
-    *out = address_to_word(cx.state.message.caller);
+    *out = address_to_word(cx.state.message().caller);
 }
 
 #[instruction]
 pub(in crate::interpreter) fn callvalue(cx: _) -> out {
-    *out = cx.state.message.value;
+    *out = cx.state.message().value;
 }
 
 #[instruction]
 pub(in crate::interpreter) fn calldataload(cx: _, [offset]: [Word]) -> out {
     let offset = as_usize_saturated(offset);
-    let input = cx.state.message.input.as_ref();
+    let input = cx.state.message().input.as_ref();
     let mut word = B256::ZERO;
     if offset < input.len() {
         let len = 32.min(input.len() - offset);
@@ -59,7 +59,7 @@ pub(in crate::interpreter) fn calldataload(cx: _, [offset]: [Word]) -> out {
 
 #[instruction]
 pub(in crate::interpreter) fn calldatasize(cx: _) -> out {
-    *out = Word::from(cx.state.message.input.len());
+    *out = Word::from(cx.state.message().input.len());
 }
 
 #[instruction]
@@ -73,8 +73,10 @@ pub(in crate::interpreter) fn calldatacopy(
     }
     let memory_offset = as_usize(memory_offset)?;
     let data_offset = as_usize_saturated(data_offset);
-    resize_memory(cx.gas, cx.state.memory, memory_offset, len)?;
-    cx.state.memory.set_data(memory_offset, data_offset, len, &cx.state.message.input)
+    resize_memory(cx.gas, cx.state.memory(), memory_offset, len)?;
+    let input = cx.state.message().input.clone();
+    cx.state.memory().set_data(memory_offset, data_offset, len, &input);
+    Ok(())
 }
 
 #[instruction]
@@ -90,13 +92,15 @@ pub(in crate::interpreter) fn codecopy(cx: _, [memory_offset, code_offset, len]:
     }
     let memory_offset = as_usize(memory_offset)?;
     let code_offset = as_usize_saturated(code_offset);
-    resize_memory(cx.gas, cx.state.memory, memory_offset, len)?;
-    cx.state.memory.set_data(memory_offset, code_offset, len, cx.state.bytecode.as_slice())
+    resize_memory(cx.gas, cx.state.memory(), memory_offset, len)?;
+    let code = cx.state.bytecode.as_slice();
+    cx.state.memory().set_data(memory_offset, code_offset, len, code);
+    Ok(())
 }
 
 #[instruction]
 pub(in crate::interpreter) fn gasprice(cx: _) -> out {
-    *out = cx.state.tx.gas_price;
+    *out = cx.state.tx().gas_price;
 }
 
 #[instruction]
@@ -121,17 +125,18 @@ pub(in crate::interpreter) fn extcodecopy(
     let mut memory_offset_usize = 0;
     if len != 0 {
         memory_offset_usize = as_usize(memory_offset)?;
-        resize_memory(cx.gas, cx.state.memory, memory_offset_usize, len)?;
+        resize_memory(cx.gas, cx.state.memory(), memory_offset_usize, len)?;
     }
 
     let code = load_account(&mut cx, addr, true)?.code;
     let code_offset = as_usize_saturated(code_offset).min(code.len());
-    cx.state.memory.set_data(memory_offset_usize, code_offset, len, &code)
+    cx.state.memory().set_data(memory_offset_usize, code_offset, len, &code);
+    Ok(())
 }
 
 #[instruction]
 pub(in crate::interpreter) fn returndatasize(cx: _) -> Result<out> {
-    *out = Word::from(cx.state.return_data.len());
+    *out = Word::from(cx.state.return_data().len());
 }
 
 #[instruction]
@@ -141,7 +146,7 @@ pub(in crate::interpreter) fn returndatacopy(
 ) -> Result {
     let len = as_usize(len)?;
     let data_offset = as_usize_saturated(data_offset);
-    if data_offset.saturating_add(len) > cx.state.return_data.len() {
+    if data_offset.saturating_add(len) > cx.state.return_data().len() {
         return Err(InstrStop::OutOfOffset);
     }
 
@@ -151,8 +156,10 @@ pub(in crate::interpreter) fn returndatacopy(
     }
 
     let memory_offset = as_usize(memory_offset)?;
-    resize_memory(cx.gas, cx.state.memory, memory_offset, len)?;
-    cx.state.memory.set_data(memory_offset, data_offset, len, cx.state.return_data)
+    resize_memory(cx.gas, cx.state.memory(), memory_offset, len)?;
+    let return_data = cx.state.return_data().clone();
+    cx.state.memory().set_data(memory_offset, data_offset, len, &return_data);
+    Ok(())
 }
 
 #[cfg(test)]

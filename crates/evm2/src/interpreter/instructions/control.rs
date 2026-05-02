@@ -1,5 +1,7 @@
 use super::utils::{as_usize, as_usize_saturated};
-use crate::interpreter::{Host, InstrStop, Pc, Result, State, Word, memory::resize_memory};
+use crate::interpreter::{
+    Host, InstrStop, Pc, Result, State, Word, memory::resize_memory, table::InstructionCx,
+};
 use core::hint::cold_path;
 use evm2_macros::instruction;
 
@@ -50,22 +52,32 @@ pub(in crate::interpreter) fn jumpdest() {}
 
 #[instruction]
 pub(in crate::interpreter) fn r#return(cx: _, [offset, len]: [Word]) -> Result {
-    let len = as_usize(len)?;
-    if len != 0 {
-        let offset = as_usize(offset)?;
-        resize_memory(cx.gas, cx.state.memory, offset, len)?;
-    }
-    Err(InstrStop::Return)
+    return_inner(cx, offset, len, InstrStop::Return)
 }
 
 #[instruction]
 pub(in crate::interpreter) fn revert(cx: _, [offset, len]: [Word]) -> Result {
+    return_inner(cx, offset, len, InstrStop::Revert)
+}
+
+#[inline]
+fn return_inner<C: crate::EvmConfig>(
+    cx: InstructionCx<'_, '_, C>,
+    offset: Word,
+    len: Word,
+    result: InstrStop,
+) -> Result {
     let len = as_usize(len)?;
-    if len != 0 {
+    let offset = if len != 0 {
         let offset = as_usize(offset)?;
-        resize_memory(cx.gas, cx.state.memory, offset, len)?;
-    }
-    Err(InstrStop::Revert)
+        resize_memory(cx.gas, cx.state.memory(), offset, len)?;
+        offset
+    } else {
+        0
+    };
+    let output = cx.state.memory().slice(offset, len) as *const [u8];
+    cx.state.set_output(output);
+    Err(result)
 }
 
 #[instruction]
@@ -202,10 +214,23 @@ mod tests {
         let mut interpreter = run_stack([0, 0], op::RETURN);
         core::assert_matches!(interpreter.err, InstrStop::Return);
         assert!(interpreter.memory(0, 0).is_empty());
+        assert!(interpreter.output().is_empty());
 
         let mut interpreter = run_stack([0, 1], op::RETURN);
         core::assert_matches!(interpreter.err, InstrStop::Return);
         assert_eq!(interpreter.memory(0, 1), [0]);
+        assert_eq!(interpreter.output(), [0]);
+
+        let mut code = Vec::new();
+        push(&mut code, Word::from(0xab));
+        push(&mut code, Word::from(2));
+        code.push(op::MSTORE8);
+        push(&mut code, Word::from(3));
+        push(&mut code, Word::from(2));
+        code.push(op::RETURN);
+        let interpreter = run(RunConfig::new(code));
+        core::assert_matches!(interpreter.err, InstrStop::Return);
+        assert_eq!(interpreter.output(), [0xab, 0, 0]);
 
         let interpreter = run_stack([Word::from(0), Word::MAX], op::RETURN);
         core::assert_matches!(interpreter.err, InstrStop::InvalidOperandOOG);
@@ -216,10 +241,23 @@ mod tests {
         let mut interpreter = run_stack([0, 0], op::REVERT);
         core::assert_matches!(interpreter.err, InstrStop::Revert);
         assert!(interpreter.memory(0, 0).is_empty());
+        assert!(interpreter.output().is_empty());
 
         let mut interpreter = run_stack([2, 3], op::REVERT);
         core::assert_matches!(interpreter.err, InstrStop::Revert);
         assert_eq!(interpreter.memory(2, 3), [0, 0, 0]);
+        assert_eq!(interpreter.output(), [0, 0, 0]);
+
+        let mut code = Vec::new();
+        push(&mut code, Word::from(0xcd));
+        push(&mut code, Word::from(4));
+        code.push(op::MSTORE8);
+        push(&mut code, Word::from(2));
+        push(&mut code, Word::from(4));
+        code.push(op::REVERT);
+        let interpreter = run(RunConfig::new(code));
+        core::assert_matches!(interpreter.err, InstrStop::Revert);
+        assert_eq!(interpreter.output(), [0xcd, 0]);
 
         let interpreter = run_stack([Word::from(0), Word::MAX], op::REVERT);
         core::assert_matches!(interpreter.err, InstrStop::InvalidOperandOOG);

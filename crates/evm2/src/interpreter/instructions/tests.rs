@@ -129,6 +129,7 @@ pub(super) struct TestInterpreter {
     pub(super) stack_len: usize,
     pub(super) gas: crate::interpreter::Gas,
     pub(super) memory: crate::interpreter::Memory,
+    pub(super) output: *const [u8],
     pub(super) err: InstrStop,
 }
 
@@ -138,11 +139,17 @@ impl TestInterpreter {
     }
 
     pub(super) fn memory(&mut self, offset: usize, len: usize) -> &[u8] {
-        self.memory.slice(offset, len).unwrap()
+        self.memory.slice(offset, len)
     }
 
     pub(super) fn gas_remaining(&self) -> u64 {
         self.gas.remaining()
+    }
+
+    pub(super) fn output(&self) -> &[u8] {
+        // SAFETY: The output pointer is created from memory owned by this test interpreter, or is
+        // the shared empty slice pointer.
+        unsafe { &*self.output }
     }
 }
 
@@ -261,7 +268,14 @@ fn run_with_config<C: EvmConfig<Tx = (), Host = TestHost>>(
     let host = host.unwrap_or(&mut default_host);
     let err = inner.run::<C>(host);
     let stack_len = inner.stack_len();
-    TestInterpreter { stack: inner.stack, stack_len, gas: inner.gas, memory: inner.memory, err }
+    TestInterpreter {
+        stack: inner.stack,
+        stack_len,
+        gas: inner.gas,
+        memory: inner.memory,
+        output: inner.output,
+        err,
+    }
 }
 
 pub(super) trait ToWord {

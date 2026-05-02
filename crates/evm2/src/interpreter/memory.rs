@@ -101,69 +101,70 @@ impl Memory {
     }
 
     /// Reads a word from memory.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the range is out of bounds.
     #[inline]
     #[cfg_attr(debug_assertions, track_caller)]
-    pub fn get_word(&mut self, offset: usize) -> Result<Word> {
-        self.resize(offset, 32)?;
-        Ok(Word::from_be_slice(self.slice_range(offset..offset + 32)))
+    pub fn get_word(&self, offset: usize) -> Word {
+        Word::from_be_slice(self.slice_range(offset..offset + 32))
     }
 
     /// Writes bytes into memory.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the range is out of bounds.
     #[inline]
     #[cfg_attr(debug_assertions, track_caller)]
-    pub fn set(&mut self, offset: usize, value: &[u8]) -> Result {
-        if value.is_empty() {
-            return Ok(());
+    pub fn set(&mut self, offset: usize, value: &[u8]) {
+        if !value.is_empty() {
+            self.slice_range_mut(offset..offset + value.len()).copy_from_slice(value);
         }
-        self.resize(offset, value.len())?;
-        self.slice_range_mut(offset..offset + value.len()).copy_from_slice(value);
-        Ok(())
     }
 
     /// Writes a data slice into memory with zero padding.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the range is out of bounds.
     #[inline]
     #[cfg_attr(debug_assertions, track_caller)]
-    pub fn set_data(
-        &mut self,
-        memory_offset: usize,
-        data_offset: usize,
-        len: usize,
-        data: &[u8],
-    ) -> Result {
-        if len == 0 {
-            return Ok(());
-        }
-        self.resize(memory_offset, len)?;
+    pub fn set_data(&mut self, memory_offset: usize, data_offset: usize, len: usize, data: &[u8]) {
         unsafe { set_data(&mut self.data, data, memory_offset, data_offset, len) };
-        Ok(())
     }
 
     /// Copies bytes within memory.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the range is out of bounds.
     #[inline]
     #[cfg_attr(debug_assertions, track_caller)]
-    pub fn copy(&mut self, dst: usize, src: usize, len: usize) -> Result {
-        if len == 0 {
-            return Ok(());
-        }
-        let max = dst.max(src);
-        self.resize(max, len)?;
+    pub fn copy(&mut self, dst: usize, src: usize, len: usize) {
         self.data.copy_within(src..src + len, dst);
-        Ok(())
     }
 
     /// Returns a memory slice.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the range is out of bounds.
     #[inline]
     #[cfg_attr(debug_assertions, track_caller)]
-    pub fn slice(&mut self, offset: usize, len: usize) -> Result<&[u8]> {
+    pub fn slice(&self, offset: usize, len: usize) -> &[u8] {
         if len == 0 {
-            return Ok(&[]);
+            return &[];
         }
-        self.resize(offset, len)?;
-        Ok(self.slice_range(offset..offset + len))
+        self.slice_range(offset..offset + len)
     }
 }
 
 unsafe fn set_data(dst: &mut [u8], src: &[u8], dst_offset: usize, src_offset: usize, len: usize) {
+    if len == 0 {
+        return;
+    }
     if src_offset >= src.len() {
         dst.get_mut(dst_offset..dst_offset + len).unwrap().fill(0);
         return;

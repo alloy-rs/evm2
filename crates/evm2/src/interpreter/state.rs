@@ -13,27 +13,67 @@ pub struct State<'a, H: Host + ?Sized> {
     pub bytecode: BytecodeRef<'a>,
     /// Host implementation.
     pub host: &'a mut H,
-    /// Cached transaction-global environment.
-    pub tx: &'a TxEnv,
-    /// Active frame-local call/create message.
-    pub message: &'a Message,
-    /// Linear memory.
-    pub memory: &'a mut Memory,
-    /// Return data from the last call-like operation.
-    pub return_data: &'a Bytes,
     /// Active spec identifier.
     pub spec: SpecId,
     pub(crate) raw_interp: *mut Interpreter,
+}
+
+impl<H: Host + ?Sized> State<'_, H> {
+    #[inline]
+    fn interp(&self) -> &Interpreter {
+        // SAFETY: `raw_interp` is valid for the duration of instruction execution. Methods on
+        // `State` must not borrow fields already passed separately to the instruction, such as
+        // stack and gas.
+        unsafe { &*self.raw_interp }
+    }
+
+    #[inline]
+    fn interp_mut(&mut self) -> &mut Interpreter {
+        // SAFETY: `raw_interp` is valid for the duration of instruction execution. Methods on
+        // `State` must not borrow fields already passed separately to the instruction, such as
+        // stack and gas.
+        unsafe { &mut *self.raw_interp }
+    }
+
+    /// Returns the cached transaction-global environment.
+    #[inline]
+    pub(crate) fn tx(&self) -> &TxEnv {
+        self.interp().tx_env()
+    }
+
+    /// Returns the active frame-local call/create message.
+    #[inline]
+    pub(crate) fn message(&self) -> &Message {
+        self.interp().message()
+    }
+
+    /// Returns linear memory.
+    #[inline]
+    pub(crate) fn memory(&mut self) -> &mut Memory {
+        self.interp_mut().memory()
+    }
+
+    /// Returns return data from the last call-like operation.
+    #[inline]
+    pub(crate) fn return_data(&self) -> &Bytes {
+        self.interp().return_data()
+    }
+
+    /// Sets the current frame output.
+    #[inline]
+    pub(crate) fn set_output(&mut self, output: *const [u8]) {
+        self.interp_mut().set_output(output);
+    }
 }
 
 impl<H: Host + ?Sized> fmt::Debug for State<'_, H> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("State")
             .field("bytecode", &self.bytecode)
-            .field("tx", &self.tx)
-            .field("message", &self.message)
-            .field("memory", &self.memory)
-            .field("return_data", &self.return_data)
+            .field("tx", &self.tx())
+            .field("message", &self.message())
+            .field("memory", &self.interp().memory)
+            .field("return_data", &self.return_data())
             .field("spec", &self.spec)
             .field("raw_interp", &self.raw_interp)
             .finish_non_exhaustive()

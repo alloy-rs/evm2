@@ -12,8 +12,9 @@ use alloy_primitives::{Address, Bytes};
 use core::{cmp::min, ops::Range};
 use evm2_macros::instruction;
 
-const fn require_non_staticcall<C: EvmConfig>(cx: &InstructionCx<'_, '_, C>) -> Result {
-    if cx.state.message.is_static() {
+#[inline]
+fn require_non_staticcall<C: EvmConfig>(cx: &InstructionCx<'_, '_, C>) -> Result {
+    if cx.state.message().is_static() {
         return Err(InstrStop::StateChangeDuringStaticCall);
     }
     Ok(())
@@ -32,7 +33,7 @@ fn resize_memory_range<C: EvmConfig>(
     let len = as_usize(len)?;
     let offset = if len != 0 {
         let offset = as_usize(offset)?;
-        resize_memory(cx.gas, cx.state.memory, offset, len)?;
+        resize_memory(cx.gas, cx.state.memory(), offset, len)?;
         offset
     } else {
         usize::MAX
@@ -59,7 +60,7 @@ fn memory_range_bytes<C: EvmConfig>(
     if range.is_empty() {
         return Ok(Bytes::new());
     }
-    Ok(Bytes::copy_from_slice(cx.state.memory.slice(range.start, range.len())?))
+    Ok(Bytes::copy_from_slice(cx.state.memory().slice(range.start, range.len())))
 }
 
 fn load_acc_and_calc_gas<C: EvmConfig>(
@@ -124,7 +125,7 @@ fn call_inner<C: EvmConfig>(mut cx: InstructionCx<'_, '_, C>, args: CallArgs) ->
     } = args;
     let to = word_to_address(to);
     let has_transfer = !value.is_zero();
-    if cx.state.message.is_static() && has_transfer {
+    if cx.state.message().is_static() && has_transfer {
         return Err(InstrStop::CallNotAllowedInsideStatic);
     }
 
@@ -145,7 +146,7 @@ fn call_inner<C: EvmConfig>(mut cx: InstructionCx<'_, '_, C>, args: CallArgs) ->
     )?;
     let input = memory_range_bytes(&mut cx, input_range)?;
 
-    let current = cx.state.message;
+    let current = cx.state.message();
     let (destination, caller, call_value, code_address) = match kind {
         MessageKind::Call => (to, current.destination, value, to),
         MessageKind::CallCode => (current.destination, current.destination, value, to),
@@ -164,7 +165,7 @@ fn call_inner<C: EvmConfig>(mut cx: InstructionCx<'_, '_, C>, args: CallArgs) ->
         code_address,
     };
     let bytecode = crate::bytecode::Bytecode::new_legacy(code);
-    match cx.state.host.execute_message(cx.state.tx.clone(), bytecode, message) {
+    match cx.state.host.execute_message(cx.state.tx().clone(), bytecode, message) {
         Ok(_) => Ok(Word::from(1)),
         Err(stop) if success(stop) => Ok(Word::from(1)),
         Err(_) => Ok(Word::ZERO),
@@ -277,7 +278,7 @@ pub(in crate::interpreter) fn create<const IS_CREATE2: bool>(cx: _) -> Result {
     };
     cx.gas.spend(gas_limit)?;
 
-    let current = cx.state.message;
+    let current = cx.state.message();
     let message = Message {
         kind: if IS_CREATE2 { MessageKind::Create2 } else { MessageKind::Create },
         depth: current.depth.saturating_add(1),
@@ -289,7 +290,7 @@ pub(in crate::interpreter) fn create<const IS_CREATE2: bool>(cx: _) -> Result {
         code_address: current.destination,
     };
     let bytecode = crate::bytecode::Bytecode::new_legacy(input);
-    let result = cx.state.host.execute_message(cx.state.tx.clone(), bytecode, message)?;
+    let result = cx.state.host.execute_message(cx.state.tx().clone(), bytecode, message)?;
     let _ = salt;
     stack.push(result)
 }
@@ -300,7 +301,7 @@ pub(in crate::interpreter) fn selfdestruct(cx: _, [target]: [Word]) -> Result {
     let target = word_to_address(target);
     let cold_load_gas = cx.gas_params.selfdestruct_cold_cost();
     let skip_cold_load = cx.gas.remaining() < cold_load_gas;
-    let res = cx.state.host.selfdestruct(cx.state.message.destination, target, skip_cold_load)?;
+    let res = cx.state.host.selfdestruct(cx.state.message().destination, target, skip_cold_load)?;
     let should_charge_topup = if cx.state.spec.enables(SpecId::SPURIOUS_DRAGON) {
         res.had_value && !res.target_exists
     } else {

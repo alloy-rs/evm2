@@ -54,7 +54,7 @@ pub(in crate::interpreter) fn gaslimit(cx: _) -> out {
 
 #[instruction]
 pub(in crate::interpreter) fn chainid(cx: _) -> Result<out> {
-    *out = cx.state.tx.chain_id;
+    *out = cx.state.tx().chain_id;
 }
 
 #[instruction]
@@ -62,7 +62,7 @@ pub(in crate::interpreter) fn selfbalance(cx: _) -> Result<out> {
     *out = cx
         .state
         .host
-        .load_account(address_to_word(cx.state.message.destination), false, false)?
+        .load_account(address_to_word(cx.state.message().destination), false, false)?
         .balance;
 }
 
@@ -74,7 +74,7 @@ pub(in crate::interpreter) fn basefee(cx: _) -> Result<out> {
 #[instruction]
 pub(in crate::interpreter) fn blobhash(cx: _, [index]: [Word]) -> Result<out> {
     let index = as_usize_saturated(index);
-    *out = cx.state.tx.blob_hashes.get(index).copied().unwrap_or_default();
+    *out = cx.state.tx().blob_hashes.get(index).copied().unwrap_or_default();
 }
 
 #[instruction]

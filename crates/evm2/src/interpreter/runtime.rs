@@ -21,6 +21,7 @@ pub struct Interpreter {
     pub(crate) gas: Gas,
     pub(crate) memory: Memory,
     pub(crate) result: Result,
+    pub(crate) output: *const [u8],
     tx_env: TxEnv,
     pub(crate) message: Message,
     pub(crate) return_data: Bytes,
@@ -40,6 +41,7 @@ impl Interpreter {
             gas: Gas::new(gas_limit),
             memory: Memory::new(),
             result: Ok(()),
+            output: &[],
             tx_env,
             message,
             return_data: Bytes::new(),
@@ -49,6 +51,31 @@ impl Interpreter {
     #[cfg(test)]
     pub(crate) const fn stack_len(&self) -> usize {
         self.stack_len
+    }
+
+    #[inline]
+    pub(crate) const fn tx_env(&self) -> &TxEnv {
+        &self.tx_env
+    }
+
+    #[inline]
+    pub(crate) const fn message(&self) -> &Message {
+        &self.message
+    }
+
+    #[inline]
+    pub(crate) const fn memory(&mut self) -> &mut Memory {
+        &mut self.memory
+    }
+
+    #[inline]
+    pub(crate) const fn return_data(&self) -> &Bytes {
+        &self.return_data
+    }
+
+    #[inline]
+    pub(crate) const fn set_output(&mut self, output: *const [u8]) {
+        self.output = output;
     }
 
     /// Runs the interpreter until it stops.
@@ -113,16 +140,7 @@ impl Interpreter {
             pc,
             Stack::new(&mut self.stack, stack_len),
             &mut self.gas,
-            &mut State {
-                bytecode,
-                host,
-                tx: &self.tx_env,
-                message: &self.message,
-                memory: &mut self.memory,
-                return_data: &self.return_data,
-                spec: C::SPEC_ID,
-                raw_interp: raw,
-            },
+            &mut State { bytecode, host, spec: C::SPEC_ID, raw_interp: raw },
         );
         let flow = if pc.is_null() { Break(()) } else { Continue(()) };
         (pc, stack_len, flow)
@@ -140,16 +158,7 @@ impl Interpreter {
             pc,
             Stack::new(&mut self.stack, self.stack_len),
             &mut self.gas,
-            &mut State {
-                bytecode,
-                host,
-                tx: &self.tx_env,
-                message: &self.message,
-                memory: &mut self.memory,
-                return_data: &self.return_data,
-                spec: C::SPEC_ID,
-                raw_interp: raw,
-            },
+            &mut State { bytecode, host, spec: C::SPEC_ID, raw_interp: raw },
             InstrStop::Stop,
         );
         self.result
