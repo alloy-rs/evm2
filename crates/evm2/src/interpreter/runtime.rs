@@ -1,26 +1,26 @@
-#[cfg(feature = "nightly")]
-use super::Pc;
-#[cfg(not(feature = "nightly"))]
-use super::PcMut;
 use super::{
-    BytecodeRef, Gas, InstrStop, Memory, Message, Result, StackMut, State, Word,
+    BytecodeRef, Gas, InstrStop, Memory, Message, Pc, Result, Stack, State, Word,
     table::InstructionTables,
 };
 use crate::{EvmConfig, bytecode::Bytecode, env::TxEnv};
 use alloc::boxed::Box;
 use alloy_primitives::Bytes;
 #[cfg(not(feature = "nightly"))]
-use core::hint::cold_path;
+use core::{
+    hint::cold_path,
+    ops::ControlFlow::{self, Break, Continue},
+};
 
 /// EVM interpreter.
 #[derive(Debug)]
 pub struct Interpreter {
     bytecode: Bytecode,
-    pub(crate) pc: usize,
-    pub(crate) stack: Box<[Word; StackMut::CAPACITY]>,
+    pub(crate) pc: *const u8,
+    pub(crate) stack: Box<[Word; Stack::CAPACITY]>,
     pub(crate) stack_len: usize,
     pub(crate) gas: Gas,
     pub(crate) memory: Memory,
+    pub(crate) result: Result,
     tx_env: TxEnv,
     pub(crate) message: Message,
     pub(crate) return_data: Bytes,
@@ -32,17 +32,23 @@ impl Interpreter {
     pub fn new(bytecode: Bytecode, tx_env: TxEnv, message: Message) -> Self {
         let gas_limit = message.gas_limit;
         Self {
+            pc: bytecode.original_byte_slice().as_ptr(),
             bytecode,
-            pc: 0,
             // SAFETY: `Word` is valid at any bitpattern. It's not read before init anyway.
             stack: unsafe { Box::new_uninit().assume_init() },
             stack_len: 0,
             gas: Gas::new(gas_limit),
             memory: Memory::new(),
+            result: Ok(()),
             tx_env,
             message,
             return_data: Bytes::new(),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn stack_len(&self) -> usize {
+        self.stack_len
     }
 
     /// Runs the interpreter until it stops.
@@ -65,25 +71,47 @@ impl Interpreter {
 
     #[cfg(not(feature = "nightly"))]
     fn run_table_loop<C: EvmConfig>(&mut self, host: &mut C::Host) -> InstrStop {
+        let mut pc = self.pc;
+        let mut stack_len = self.stack_len;
         loop {
-            if let Err(e) = self.step::<C>(host) {
+            let (next_pc, next_stack_len, flow) = self.raw_step::<C>(host, pc, stack_len);
+            pc = next_pc;
+            stack_len = next_stack_len;
+            if flow.is_break() {
                 cold_path();
-                return e;
+                self.pc = pc;
+                self.stack_len = stack_len;
+                return self.result.unwrap_err();
             }
         }
     }
 
+    /// Executes one instruction.
     #[inline(always)]
     #[cfg(not(feature = "nightly"))]
-    fn step<C: EvmConfig>(&mut self, host: &mut C::Host) -> Result {
+    pub fn step<C: EvmConfig>(&mut self, host: &mut C::Host) -> ControlFlow<(), ()> {
+        let (pc, stack_len, flow) = self.raw_step::<C>(host, self.pc, self.stack_len);
+        self.pc = pc;
+        self.stack_len = stack_len;
+        flow
+    }
+
+    #[inline(always)]
+    #[cfg(not(feature = "nightly"))]
+    fn raw_step<C: EvmConfig>(
+        &mut self,
+        host: &mut C::Host,
+        pc: *const u8,
+        stack_len: usize,
+    ) -> (*const u8, usize, ControlFlow<(), ()>) {
         let raw = self as *mut Self;
         let bytecode = BytecodeRef::new(&self.bytecode);
-        let pc = PcMut::new(bytecode, &mut self.pc);
+        let pc = Pc::from_ptr(pc);
         let op = pc.op();
         let instr = <C as InstructionTables>::INSTRUCTIONS[op as usize];
-        let (pc, r) = instr(
+        let (pc, stack_len) = instr(
             pc,
-            StackMut::new(&mut self.stack, &mut self.stack_len),
+            Stack::new(&mut self.stack, stack_len),
             &mut self.gas,
             &mut State {
                 bytecode,
@@ -96,8 +124,8 @@ impl Interpreter {
                 raw_interp: raw,
             },
         );
-        self.pc = pc;
-        r
+        let flow = if pc.is_null() { Break(()) } else { Continue(()) };
+        (pc, stack_len, flow)
     }
 
     #[inline(always)]
@@ -105,12 +133,12 @@ impl Interpreter {
     fn step_tail<C: EvmConfig>(&mut self, host: &mut C::Host) -> Result {
         let raw = self as *mut Self;
         let bytecode = BytecodeRef::new(&self.bytecode);
-        let pc = Pc::new(bytecode, self.pc);
+        let pc = Pc::from_ptr(self.pc);
         let op = pc.op();
         let instr = <C as InstructionTables>::TAIL_INSTRUCTIONS[op as usize];
-        let e = instr(
+        instr(
             pc,
-            StackMut::new(&mut self.stack, &mut self.stack_len),
+            Stack::new(&mut self.stack, self.stack_len),
             &mut self.gas,
             &mut State {
                 bytecode,
@@ -124,6 +152,6 @@ impl Interpreter {
             },
             InstrStop::Stop,
         );
-        Err(e)
+        self.result
     }
 }

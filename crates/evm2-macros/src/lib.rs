@@ -85,7 +85,7 @@ fn expand_instruction(raw: bool, input: ItemFn) -> TokenStream2 {
             #[inline]
             fn execute(
                 &self,
-                __evm2_pc: evm2::interpreter::PcMut<'_>,
+                __evm2_pc: &mut evm2::interpreter::Pc,
                 mut stack: evm2::interpreter::StackMut<'_>,
                 __evm2_gas: &mut evm2::interpreter::Gas,
                 __evm2_state: &mut evm2::interpreter::State<'_, <C as evm2::EvmConfig>::Host>,

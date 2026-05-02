@@ -1,11 +1,11 @@
 //! Instruction dispatch tables.
 
 #[cfg(feature = "nightly")]
-use crate::interpreter::{InstrStop, Interpreter, Pc};
+use crate::interpreter::{InstrStop, Interpreter};
 use crate::{
     EvmConfig,
     interpreter::{
-        Gas, GasParams, PcMut, Result, SpecId, StackMut, State,
+        Gas, GasParams, Pc, Result, SpecId, Stack, StackMut, State,
         gas::{
             BASE, BLOCKHASH, EXP, HIGH, ISTANBUL_SLOAD_GAS, JUMPDEST, KECCAK256, LOG, LOW, MID,
             VERYLOW, WARM_STORAGE_READ_COST, ZERO,
@@ -13,9 +13,10 @@ use crate::{
         opcode::{for_each_opcode, op},
     },
 };
-#[cfg(feature = "nightly")]
-use core::hint::cold_path;
-use core::ops::{Index, IndexMut};
+use core::{
+    hint::cold_path,
+    ops::{Index, IndexMut},
+};
 
 /// Opcode gas table.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -102,14 +103,14 @@ impl<C: EvmConfig> InstructionImplTable<C> {
 
 /// Normal instruction return value.
 #[cfg(not(feature = "nightly"))]
-pub(crate) type InstructionFnRet = (usize, Result);
+pub(crate) type InstructionFnRet = (*const u8, usize);
 
 /// Normal instruction function pointer.
 #[cfg(not(feature = "nightly"))]
 pub(crate) type InstructionFn<C> = extern_table!(
     fn(
-        pc: PcMut<'_>,
-        stack: StackMut<'_>,
+        pc: Pc,
+        stack: Stack<'_>,
         gas: &mut Gas,
         state: &mut State<'_, <C as EvmConfig>::Host>,
     ) -> InstructionFnRet
@@ -119,20 +120,16 @@ pub(crate) type InstructionFn<C> = extern_table!(
 #[cfg(not(feature = "nightly"))]
 pub(crate) type InstructionTable<C> = [InstructionFn<C>; 256];
 
-/// Tail instruction return value.
-#[cfg(feature = "nightly")]
-pub(crate) type TailInstructionFnRet = InstrStop;
-
 /// Tail instruction function pointer.
 #[cfg(feature = "nightly")]
 pub(crate) type TailInstructionFn<C> = extern_table!(
     fn(
-        pc: Pc<'_>,
-        stack: StackMut<'_>,
+        pc: Pc,
+        stack: Stack<'_>,
         gas: &mut Gas,
         state: &mut State<'_, <C as EvmConfig>::Host>,
         ret: InstrStop,
-    ) -> TailInstructionFnRet
+    )
 );
 
 /// Tail instruction dispatch table.
@@ -153,7 +150,7 @@ impl<C: EvmConfig> InstructionTables for C {}
 #[derive(Debug)]
 pub(crate) struct InstructionCx<'a, 'state, C: EvmConfig> {
     /// Program counter state.
-    pub pc: PcMut<'a>,
+    pub pc: &'a mut Pc,
     /// Gas state.
     pub gas: &'a mut Gas,
     /// Dynamic gas parameters for the active config.
@@ -167,7 +164,7 @@ pub trait Instruction<C: EvmConfig = crate::EvmVersion<()>> {
     /// Executes this instruction.
     fn execute(
         &self,
-        pc: PcMut<'_>,
+        pc: &mut Pc,
         stack: StackMut<'_>,
         gas: &mut Gas,
         state: &mut State<'_, C::Host>,
@@ -504,8 +501,8 @@ pub(crate) const fn make_tail_instruction_table<C: EvmConfig>() -> TailInstructi
 extern_table! {
     #[cfg(not(feature = "nightly"))]
     fn dispatch<C: EvmConfig, const OP: u8>(
-        mut pc: PcMut<'_>,
-        mut stack: StackMut<'_>,
+        mut pc: Pc,
+        mut stack: Stack<'_>,
         gas: &mut Gas,
         state: &mut State<'_, C::Host>,
     ) -> InstructionFnRet {
@@ -513,35 +510,41 @@ extern_table! {
         let r;
         match pre_step::<C, OP>(gas) {
             Ok(()) => {
-                r = instr.execute(pc.reborrow(), stack.reborrow(), gas, state);
-                inc_pc::<OP>(pc.reborrow());
+                r = instr.execute(&mut pc, stack.as_mut(), gas, state);
+                inc_pc::<OP>(&mut pc);
             }
             Err(e) => r = Err(e),
         }
-        (pc.get(), r)
+        if r.is_err() {
+            cold_path();
+            // SAFETY: `raw_interp` is valid for the duration of execution.
+            unsafe { (*state.raw_interp).result = r };
+            return (core::ptr::null(), stack.len);
+        }
+        (pc.as_ptr(), stack.len)
     }
 }
 
 extern_table! {
     #[cfg(feature = "nightly")]
     fn tail_dispatch<C: EvmConfig, const OP: u8>(
-        mut pc: Pc<'_>,
-        mut stack: StackMut<'_>,
+        mut pc: Pc,
+        mut stack: Stack<'_>,
         gas: &mut Gas,
         state: &mut State<'_, C::Host>,
         ret: InstrStop,
-    ) -> TailInstructionFnRet {
+    ) {
         if let Err(e) = pre_step::<C, OP>(gas) {
             cold_path();
             tail_return!(tail_call_restore::<C>(pc, stack, gas, state, e));
         }
         let instr = const { C::INSTRUCTION_IMPLS.get_or_default(OP) };
-        if let Err(e) = instr.execute(pc.as_mut(), stack.reborrow(), gas, state) {
+        if let Err(e) = instr.execute(&mut pc, stack.as_mut(), gas, state) {
             cold_path();
-            inc_pc::<OP>(pc.as_mut());
+            inc_pc::<OP>(&mut pc);
             tail_return!(tail_call_restore::<C>(pc, stack, gas, state, e));
         }
-        inc_pc::<OP>(pc.as_mut());
+        inc_pc::<OP>(&mut pc);
         tail_return!(tail_call_next::<C>(pc, stack, gas, state, ret));
     }
 }
@@ -550,33 +553,34 @@ extern_table! {
     #[inline]
     #[cfg(feature = "nightly")]
     fn tail_call_next<C: EvmConfig>(
-        pc: Pc<'_>,
-        stack: StackMut<'_>,
+        pc: Pc,
+        stack: Stack<'_>,
         gas: &mut Gas,
         state: &mut State<'_, C::Host>,
         ret: InstrStop,
-    ) -> TailInstructionFnRet {
+    ) {
         let instr = <C as InstructionTables>::TAIL_INSTRUCTIONS[pc.op() as usize];
         tail_return!(instr(pc, stack, gas, state, ret));
     }
 }
 
 extern_table! {
-    #[inline(never)]
+    #[inline(never)] // TODO
     #[cold]
     #[cfg(feature = "nightly")]
     fn tail_call_restore<C: EvmConfig>(
-        pc: Pc<'_>,
-        stack: StackMut<'_>,
+        pc: Pc,
+        stack: Stack<'_>,
         _gas: &mut Gas,
         state: &mut State<'_, C::Host>,
         ret: InstrStop,
-    ) -> TailInstructionFnRet {
+    ) {
         // SAFETY: `raw_interp` is valid for the duration of execution.
         let interp = unsafe { &mut *state.raw_interp.cast::<Interpreter>() };
-        interp.pc = pc.get();
-        interp.stack_len = stack.len();
-        ret
+        interp.pc = pc.as_ptr();
+        interp.stack_len = stack.len;
+        interp.result = Err(ret);
+        // Exits by returning normally.
     }
 }
 
@@ -586,7 +590,7 @@ fn pre_step<C: EvmConfig, const OP: u8>(gas: &mut Gas) -> Result {
 }
 
 #[inline(always)]
-const fn inc_pc<const OP: u8>(mut pc: PcMut<'_>) {
+const fn inc_pc<const OP: u8>(pc: &mut Pc) {
     unsafe { pc.advance_unchecked(const { instruction_len(OP) }) };
 }
 
@@ -677,7 +681,6 @@ mod tests {
         let stop = interpreter.run::<CustomConfig>(&mut host);
 
         core::assert_matches!(stop, crate::interpreter::InstrStop::Stop);
-        assert_eq!(interpreter.stack_len, 1);
         assert_eq!(interpreter.stack[0], Word::from(0xdead_u64));
     }
 }

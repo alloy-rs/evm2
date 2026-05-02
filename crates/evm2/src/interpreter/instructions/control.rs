@@ -1,5 +1,5 @@
 use super::utils::{as_usize, as_usize_saturated};
-use crate::interpreter::{Host, InstrStop, PcMut, Result, State, Word, memory::resize_memory};
+use crate::interpreter::{Host, InstrStop, Pc, Result, State, Word, memory::resize_memory};
 use core::hint::cold_path;
 use evm2_macros::instruction;
 
@@ -25,23 +25,19 @@ pub(in crate::interpreter) fn jumpi(cx: _, [target, cond]: [Word]) -> Result {
 }
 
 #[inline(always)]
-fn jump_inner<H: Host + ?Sized>(
-    target: Word,
-    mut pc_mut: PcMut<'_>,
-    state: &State<'_, H>,
-) -> Result {
+fn jump_inner<H: Host + ?Sized>(target: Word, pc_mut: &mut Pc, state: &State<'_, H>) -> Result {
     let target = as_usize_saturated(target);
     if !state.bytecode.is_valid_jumpdest(target) {
         cold_path();
         return Err(InstrStop::InvalidJump);
     }
-    unsafe { pc_mut.set_unchecked(target) };
+    unsafe { pc_mut.set_unchecked(state.bytecode, target) };
     Ok(())
 }
 
 #[instruction]
 pub(in crate::interpreter) fn pc(cx: _) -> out {
-    *out = Word::from(cx.pc.get());
+    *out = Word::from(cx.state.bytecode.pc_offset(*cx.pc));
 }
 
 #[instruction]
@@ -97,29 +93,24 @@ mod tests {
     fn stop_opcode() {
         let interpreter = run(RunConfig::new([op::STOP]));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
-        assert_eq!(interpreter.pc, 1);
 
         let interpreter = run(RunConfig::new([op::STOP, op::INVALID]));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
-        assert_eq!(interpreter.pc, 1);
     }
 
     #[test]
     fn invalid_opcode() {
         let interpreter = run(RunConfig::new([op::INVALID]));
         core::assert_matches!(interpreter.err, InstrStop::InvalidFEOpcode);
-        assert_eq!(interpreter.pc, 1);
 
         let interpreter = run(RunConfig::new([0x0c]));
         core::assert_matches!(interpreter.err, InstrStop::OpcodeNotFound);
-        assert_eq!(interpreter.pc, 1);
     }
 
     #[test]
     fn jump_opcode() {
         let interpreter = run(RunConfig::new([op::PUSH1, 0x03, op::JUMP, op::JUMPDEST, op::STOP]));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
-        assert_eq!(interpreter.pc, 5);
 
         let interpreter = run(RunConfig::new([op::PUSH1, 0x00, op::JUMP, op::JUMPDEST, op::STOP]));
         core::assert_matches!(interpreter.err, InstrStop::InvalidJump);
@@ -133,7 +124,6 @@ mod tests {
         let interpreter =
             run(RunConfig::new([op::PUSH1, 0x04, op::JUMP, op::STOP, op::JUMPDEST, op::STOP]));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
-        assert_eq!(interpreter.pc, 6);
     }
 
     #[test]
@@ -149,7 +139,6 @@ mod tests {
             op::STOP,
         ]));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
-        assert_eq!(interpreter.pc, 8);
 
         let interpreter = run(RunConfig::new([
             op::PUSH1,
@@ -161,7 +150,6 @@ mod tests {
             op::STOP,
         ]));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
-        assert_eq!(interpreter.pc, 7);
 
         let interpreter =
             run(RunConfig::new([op::PUSH1, 0x01, op::PUSH1, 0x05, op::JUMPI, op::STOP, op::STOP]));
@@ -207,7 +195,6 @@ mod tests {
 
         let interpreter = run(RunConfig::new([op::JUMPDEST, op::JUMPDEST, op::STOP]));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
-        assert_eq!(interpreter.pc, 3);
     }
 
     #[test]

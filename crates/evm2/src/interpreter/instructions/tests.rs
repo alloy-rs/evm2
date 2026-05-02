@@ -2,7 +2,7 @@ use crate::{
     AccountLoad, EvmConfig, SelfDestructResult,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
-    interpreter::{Host, InstrStop, Interpreter, Message, MessageKind, SpecId, StackMut, Word, op},
+    interpreter::{Host, InstrStop, Interpreter, Message, MessageKind, SpecId, Stack, Word, op},
 };
 use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::{Address, B256, Bytes, Log};
@@ -125,8 +125,7 @@ impl Host for TestHost {
 }
 
 pub(super) struct TestInterpreter {
-    pub(super) pc: usize,
-    pub(super) stack: Box<[Word; StackMut::CAPACITY]>,
+    pub(super) stack: Box<[Word; Stack::CAPACITY]>,
     pub(super) stack_len: usize,
     pub(super) gas: crate::interpreter::Gas,
     pub(super) memory: crate::interpreter::Memory,
@@ -261,14 +260,8 @@ fn run_with_config<C: EvmConfig<Tx = (), Host = TestHost>>(
     let mut default_host = TestHost::default();
     let host = host.unwrap_or(&mut default_host);
     let err = inner.run::<C>(host);
-    TestInterpreter {
-        pc: inner.pc,
-        stack: inner.stack,
-        stack_len: inner.stack_len,
-        gas: inner.gas,
-        memory: inner.memory,
-        err,
-    }
+    let stack_len = inner.stack_len();
+    TestInterpreter { stack: inner.stack, stack_len, gas: inner.gas, memory: inner.memory, err }
 }
 
 pub(super) trait ToWord {

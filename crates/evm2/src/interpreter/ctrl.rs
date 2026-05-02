@@ -1,5 +1,4 @@
 use crate::bytecode::{Bytecode, JumpTableRef};
-use core::{marker::PhantomData, ptr};
 
 /// EVM bytecode view.
 #[derive(Clone, Copy, Debug)]
@@ -10,17 +9,8 @@ pub struct BytecodeRef<'a> {
 
 /// Program counter state.
 #[derive(Clone, Copy, Debug)]
-pub struct Pc<'a> {
-    base: *const u8,
-    pc: usize,
-    _marker: PhantomData<&'a [u8]>,
-}
-
-/// Mutable program counter state.
-#[derive(Debug)]
-pub struct PcMut<'a> {
-    base: *const u8,
-    pc: &'a mut usize,
+pub struct Pc {
+    pc: *const u8,
 }
 
 impl<'a> BytecodeRef<'a> {
@@ -62,29 +52,36 @@ impl<'a> BytecodeRef<'a> {
     pub unsafe fn code_slice_unchecked(&self, offset: usize, len: usize) -> &'a [u8] {
         unsafe { self.bytecode.get_unchecked(offset..offset + len) }
     }
+
+    /// Returns the bytecode-relative offset for `pc`.
+    #[inline]
+    pub const fn pc_offset(&self, pc: Pc) -> usize {
+        unsafe { pc.as_ptr().offset_from(self.bytecode.as_ptr()) as usize }
+    }
 }
 
-impl<'a> Pc<'a> {
+impl Pc {
+    /// Creates a program counter from a byte offset.
     #[allow(dead_code)]
-    pub(crate) const fn new(bytecode: BytecodeRef<'a>, pc: usize) -> Self {
-        Self { base: bytecode.bytecode.as_ptr(), pc, _marker: PhantomData }
+    pub(crate) const fn new(bytecode: BytecodeRef<'_>, pc: usize) -> Self {
+        let base = bytecode.bytecode.as_ptr();
+        Self { pc: unsafe { base.add(pc) } }
     }
 
-    /// Returns a mutable program counter reference.
-    #[inline]
-    pub const fn as_mut(&mut self) -> PcMut<'_> {
-        PcMut { base: self.base, pc: &mut self.pc }
+    /// Creates a program counter from a byte pointer.
+    pub(crate) const fn from_ptr(pc: *const u8) -> Self {
+        Self { pc }
     }
 
     /// Returns the opcode at the current program counter.
     #[inline]
     pub const fn op(&self) -> u8 {
-        unsafe { *self.base.add(self.pc) }
+        unsafe { *self.pc }
     }
 
-    /// Returns the current program counter.
+    /// Returns the current program counter pointer.
     #[inline]
-    pub const fn get(&self) -> usize {
+    pub const fn as_ptr(&self) -> *const u8 {
         self.pc
     }
 
@@ -94,87 +91,30 @@ impl<'a> Pc<'a> {
     /// subsequent reads.
     #[inline]
     pub const unsafe fn advance_unchecked(&mut self, n: usize) {
-        self.pc += n;
+        self.pc = unsafe { self.pc.add(n) };
     }
 
     /// # Safety
     ///
-    /// Caller must ensure `pc` is valid for the current bytecode.
+    /// Caller must ensure `pc` is a valid offset for the current bytecode.
     #[inline]
-    pub const unsafe fn set_unchecked(&mut self, pc: usize) {
-        self.pc = pc;
+    pub const unsafe fn set_unchecked(&mut self, bytecode: BytecodeRef<'_>, pc: usize) {
+        self.pc = unsafe { bytecode.as_slice().as_ptr().add(pc) };
     }
 
     /// # Safety
     ///
-    /// Caller must ensure `self.get()..self.get() + n` is in bounds of the bytecode allocation.
+    /// Caller must ensure the requested range is in bounds of the bytecode allocation.
     #[inline]
-    pub const unsafe fn read_bytes_unchecked(&self, n: usize) -> &'a [u8] {
-        unsafe { core::slice::from_raw_parts(self.base.add(self.pc), n) }
-    }
-}
-
-impl<'a> PcMut<'a> {
-    #[cfg(not(feature = "nightly"))]
-    pub(crate) const fn new(bytecode: BytecodeRef<'a>, pc: &'a mut usize) -> Self {
-        Self { base: bytecode.bytecode.as_ptr(), pc }
-    }
-
-    /// Copies the program counter.
-    #[inline]
-    pub const fn copy(&self) -> Pc<'a> {
-        Pc { base: self.base, pc: *self.pc, _marker: PhantomData }
-    }
-
-    /// Reborrows the program counter.
-    #[inline]
-    pub const fn reborrow(&mut self) -> PcMut<'_> {
-        unsafe { ptr::read(self) }
-    }
-
-    /// Returns the opcode at the current program counter.
-    #[inline]
-    pub const fn op(&self) -> u8 {
-        unsafe { *self.base.add(self.get()) }
-    }
-
-    /// Returns the current program counter.
-    #[inline]
-    pub const fn get(&self) -> usize {
-        *self.pc
+    pub const unsafe fn read_bytes_unchecked(&self, n: usize) -> &[u8] {
+        unsafe { core::slice::from_raw_parts(self.pc, n) }
     }
 
     /// # Safety
     ///
-    /// Caller must ensure advancing by `n` keeps `pc` within valid bytecode bounds for
-    /// subsequent reads.
+    /// Caller must ensure the requested range is in bounds of the bytecode allocation.
     #[inline]
-    pub const unsafe fn advance_unchecked(&mut self, n: usize) {
-        *self.pc += n;
-    }
-
-    /// # Safety
-    ///
-    /// Caller must ensure `pc` is valid for the current bytecode.
-    #[inline]
-    pub const unsafe fn set_unchecked(&mut self, pc: usize) {
-        *self.pc = pc;
-    }
-
-    /// # Safety
-    ///
-    /// Caller must ensure `self.get()..self.get() + n` is in bounds of the bytecode allocation.
-    #[inline]
-    pub const unsafe fn read_bytes_unchecked(&self, n: usize) -> &'a [u8] {
-        unsafe { core::slice::from_raw_parts(self.base.add(self.get()), n) }
-    }
-
-    /// # Safety
-    ///
-    /// Caller must ensure `self.get() + offset..self.get() + offset + n` is in bounds of the
-    /// bytecode allocation.
-    #[inline]
-    pub const unsafe fn read_bytes_offset_unchecked(&self, offset: usize, n: usize) -> &'a [u8] {
-        unsafe { core::slice::from_raw_parts(self.base.add(self.get() + offset), n) }
+    pub const unsafe fn read_bytes_offset_unchecked(&self, offset: usize, n: usize) -> &[u8] {
+        unsafe { core::slice::from_raw_parts(self.pc.add(offset), n) }
     }
 }

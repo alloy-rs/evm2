@@ -1,6 +1,6 @@
 use super::{InstrStop, Result};
 use alloy_primitives::U256;
-use core::{fmt, hint::cold_path, ptr};
+use core::{fmt, hint::cold_path};
 
 /// EVM stack word.
 pub type Word = U256;
@@ -8,9 +8,21 @@ pub type Word = U256;
 const STACK_CAPACITY: usize = 1024;
 
 /// Mutable EVM operand stack.
+pub struct Stack<'a> {
+    pub(crate) stack: &'a mut [Word; STACK_CAPACITY],
+    pub(crate) len: usize,
+}
+
+/// Borrowed mutable EVM operand stack.
 pub struct StackMut<'a> {
     pub(crate) stack: &'a mut [Word; STACK_CAPACITY],
     pub(crate) len: &'a mut usize,
+}
+
+impl fmt::Debug for Stack<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.as_slice().fmt(f)
+    }
 }
 
 impl fmt::Debug for StackMut<'_> {
@@ -19,25 +31,61 @@ impl fmt::Debug for StackMut<'_> {
     }
 }
 
-impl<'a> StackMut<'a> {
+impl<'a> Stack<'a> {
     pub(crate) const CAPACITY: usize = STACK_CAPACITY;
 
     #[inline]
-    pub(crate) const fn new(stack: &'a mut [Word; StackMut::CAPACITY], len: &'a mut usize) -> Self {
-        debug_assert!(*len <= Self::CAPACITY);
+    pub(crate) const fn new(stack: &'a mut [Word; Stack::CAPACITY], len: usize) -> Self {
+        debug_assert!(len <= Self::CAPACITY);
         Self { stack, len }
     }
 
-    /// Reborrows the stack.
     #[inline]
-    pub(crate) const fn reborrow(&mut self) -> StackMut<'_> {
-        unsafe { ptr::read(self) }
+    pub(crate) const fn as_mut(&mut self) -> StackMut<'_> {
+        StackMut { stack: self.stack, len: &mut self.len }
     }
 
     /// Returns the stack length.
     #[inline]
     pub const fn len(&self) -> usize {
-        *self.len
+        let len = self.len;
+        // SAFETY: Type invariant. Can be broken on overflow/underflow, so it's on the caller's to
+        // not call this after.
+        unsafe { core::hint::assert_unchecked(len <= Self::CAPACITY) };
+        len
+    }
+
+    /// Returns whether the stack is empty.
+    #[inline]
+    pub const fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Returns the stack contents as a slice.
+    #[inline]
+    pub const fn as_slice(&self) -> &[Word] {
+        unsafe { core::slice::from_raw_parts(self.stack.as_ptr(), self.len()) }
+    }
+}
+
+impl<'a> StackMut<'a> {
+    pub(crate) const CAPACITY: usize = STACK_CAPACITY;
+
+    #[inline]
+    #[cfg(test)]
+    pub(crate) const fn new(stack: &'a mut [Word; StackMut::CAPACITY], len: &'a mut usize) -> Self {
+        debug_assert!(*len <= Self::CAPACITY);
+        Self { stack, len }
+    }
+
+    /// Returns the stack length.
+    #[inline]
+    pub const fn len(&self) -> usize {
+        let len = *self.len;
+        // SAFETY: Type invariant. Can be broken on overflow/underflow, so it's on the caller's to
+        // not call this after.
+        unsafe { core::hint::assert_unchecked(len <= Self::CAPACITY) };
+        len
     }
 
     /// Returns whether the stack is empty.
@@ -67,6 +115,7 @@ impl<'a> StackMut<'a> {
 
     #[inline(always)]
     fn check_bounds_(len: usize, input: usize, output: usize) -> Result {
+        debug_assert!(len <= Self::CAPACITY);
         core::debug_assert_matches!(output, 0 | 1);
         if len < input {
             cold_path();
@@ -87,6 +136,7 @@ impl<'a> StackMut<'a> {
         // SAFETY: Assumes that the stack is never used after execution fails.
         *self.len = len.wrapping_sub(input).wrapping_add(output);
         Self::check_bounds_(len, input, output)?;
+        debug_assert!(*self.len <= Self::CAPACITY);
         Ok(unsafe { self.stack.as_mut_ptr().add(len).sub(input) })
     }
 
@@ -102,6 +152,7 @@ impl<'a> StackMut<'a> {
             let end = self.stack.as_mut_ptr().add(len);
             *end = value;
             *self.len = len + 1;
+            debug_assert!(*self.len <= Self::CAPACITY);
         }
         Ok(())
     }
@@ -127,6 +178,7 @@ impl<'a> StackMut<'a> {
     /// Caller must ensure the stack contains at least `N` initialized words.
     #[inline]
     pub unsafe fn popn_unchecked<const N: usize>(&mut self) -> [Word; N] {
+        debug_assert!(self.len() >= N);
         core::array::from_fn(|_| unsafe { self.pop_unchecked() })
     }
 
@@ -148,6 +200,7 @@ impl<'a> StackMut<'a> {
     #[inline]
     pub unsafe fn top_unchecked(&mut self) -> &mut Word {
         let len = self.len();
+        debug_assert!(len > 0);
         unsafe { self.stack.get_unchecked_mut(len - 1) }
     }
 
@@ -156,6 +209,7 @@ impl<'a> StackMut<'a> {
     /// Caller must ensure the stack is not empty.
     #[inline]
     pub unsafe fn pop_unchecked(&mut self) -> Word {
+        debug_assert!(!self.is_empty());
         *self.len -= 1;
         unsafe { *self.stack.get_unchecked(self.len()) }
     }
@@ -177,6 +231,7 @@ impl<'a> StackMut<'a> {
             let ptr = self.stack.as_mut_ptr().add(len);
             *ptr = *ptr.sub(n);
             *self.len = len + 1;
+            debug_assert!(*self.len <= Self::CAPACITY);
         }
         Ok(())
     }
@@ -222,6 +277,7 @@ impl<'a> StackMut<'a> {
         unsafe {
             let dst = self.stack.as_mut_ptr().add(len).cast::<u64>();
             *self.len = new_len;
+            debug_assert!(*self.len <= Self::CAPACITY);
 
             let mut i = 0;
 

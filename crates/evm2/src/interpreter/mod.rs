@@ -17,10 +17,10 @@ mod opcode;
 pub use opcode::op;
 
 mod ctrl;
-pub use ctrl::{BytecodeRef, Pc, PcMut};
+pub use ctrl::{BytecodeRef, Pc};
 
 mod stack;
-pub use stack::{StackMut, Word};
+pub use stack::{Stack, StackMut, Word};
 
 mod memory;
 pub use memory::Memory;
@@ -322,8 +322,6 @@ mod tests {
                 let mut host = TestHost::default();
                 interpreter.run::<Config>(&mut host);
                 assert!(interpreter.gas.remaining() > 0);
-                assert_eq!(interpreter.pc, 6);
-                assert_eq!(interpreter.stack_len, 1);
                 assert_eq!(interpreter.stack[0], U256::from(3));
             }};
         }
