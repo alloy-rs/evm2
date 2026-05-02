@@ -11,9 +11,11 @@ Examples:
 """
 
 import argparse
+import os
 import re
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from tqdm import tqdm
@@ -65,6 +67,13 @@ def parse_args() -> argparse.Namespace:
         default="evm2",
         help="Cargo package passed to cargo asm. Defaults to evm2.",
     )
+    parser.add_argument(
+        "-j",
+        "--jobs",
+        type=int,
+        default=os.cpu_count(),
+        help="Number of cargo asm jobs to run in parallel. Defaults to CPU count.",
+    )
     return parser.parse_args()
 
 
@@ -87,9 +96,9 @@ def select_opcodes(opcodes: dict[str, int], mnemonics: list[str]) -> list[tuple[
     return selected
 
 
-def cargo_asm(package: str, spec: int, opcode: int) -> str:
+def cargo_asm(package: str, spec: int, opcode: int, output: str) -> str:
     symbol = f"{DISPATCH}::<{CONFIG.format(spec=spec)}, {opcode}>"
-    cmd = ["cargo", "asm", "-q", "-s", "-p", package, "--lib", symbol]
+    cmd = ["cargo", "asm", "-q", "-s", "-p", package, "--lib", f"--{output}", symbol]
     proc = subprocess.run(
         cmd,
         cwd=ROOT,
@@ -101,12 +110,22 @@ def cargo_asm(package: str, spec: int, opcode: int) -> str:
     )
     if proc.returncode != 0:
         raise RuntimeError(
-            f"cargo asm failed for opcode {opcode:#04x}\n"
+            f"cargo asm --{output} failed for opcode {opcode:#04x}\n"
             f"command: {' '.join(cmd)}\n"
             f"stdout:\n{proc.stdout}\n"
             f"stderr:\n{proc.stderr}"
         )
     return proc.stdout
+
+
+def dump_output(
+    out: Path, package: str, spec: int, mnemonic: str, opcode: int, output: str
+) -> Path:
+    text = cargo_asm(package, spec, opcode, output)
+    suffix = "ll" if output == "llvm" else "s"
+    path = out / f"{mnemonic}.{suffix}"
+    path.write_text(text)
+    return path
 
 
 def main() -> int:
@@ -116,15 +135,31 @@ def main() -> int:
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=True)
 
-    total = len(selected)
-    progress = tqdm(selected, total=total, unit="opcode", dynamic_ncols=True)
-    for mnemonic, opcode in progress:
-        progress.set_description(mnemonic)
-        asm = cargo_asm(args.package, args.spec, opcode)
-        path = out / f"{opcode:02x}_{mnemonic}.s"
-        path.write_text(asm)
+    tasks = [
+        (mnemonic, opcode, output)
+        for mnemonic, opcode in selected
+        for output in ("asm", "llvm")
+    ]
+    workers = max(1, args.jobs)
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {
+            executor.submit(
+                dump_output, out, args.package, args.spec, mnemonic, opcode, output
+            ): (mnemonic, output)
+            for mnemonic, opcode, output in tasks
+        }
+        progress = tqdm(
+            as_completed(futures),
+            total=len(futures),
+            unit="file",
+            dynamic_ncols=True,
+        )
+        for future in progress:
+            mnemonic, output = futures[future]
+            progress.set_description(f"{mnemonic}.{output}")
+            future.result()
 
-    print(f"wrote {total} asm file(s) to {out.relative_to(ROOT)}")
+    print(f"wrote {len(tasks)} file(s) to {out.relative_to(ROOT)}")
 
     return 0
 
