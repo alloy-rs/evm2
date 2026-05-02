@@ -7,8 +7,12 @@ use crate::{
     interpreter::{Host, InstrStop, Interpreter, Message, SpecId, Word},
     registry::{HandlerResult, TxRegistry},
 };
+use alloc::vec::Vec;
 use alloy_eips::eip2718::Typed2718;
-use alloy_primitives::{Address, B256, Log};
+use alloy_primitives::{
+    Address, B256, Log,
+    map::{self, HashMap},
+};
 
 pub mod config;
 pub mod env;
@@ -35,6 +39,8 @@ pub struct Evm<C: EvmConfig, DB = MemoryDb> {
     block: BlockEnv,
     registry: TxRegistry<C::Tx, TxResult>,
     database: DB,
+    transient_storage: HashMap<(Address, Word), Word>,
+    logs: Vec<Log>,
     current_address: Address,
 }
 
@@ -49,12 +55,19 @@ impl<C: EvmConfig> Evm<C> {
 impl<C: EvmConfig, DB> Evm<C, DB> {
     /// Creates an EVM with the provided database.
     #[inline]
-    pub const fn with_database(
+    pub fn with_database(
         block: BlockEnv,
         registry: TxRegistry<C::Tx, TxResult>,
         database: DB,
     ) -> Self {
-        Self { block, registry, database, current_address: Address::ZERO }
+        Self {
+            block,
+            registry,
+            database,
+            transient_storage: map::HashMap::default(),
+            logs: Vec::new(),
+            current_address: Address::ZERO,
+        }
     }
 
     /// Returns the transaction handler registry.
@@ -80,6 +93,16 @@ impl<C: EvmConfig, DB> Evm<C, DB> {
     /// Returns the active message destination used for implicit storage host calls.
     pub const fn current_address(&self) -> Address {
         self.current_address
+    }
+
+    /// Returns transient storage.
+    pub const fn transient_storage(&self) -> &HashMap<(Address, Word), Word> {
+        &self.transient_storage
+    }
+
+    /// Returns emitted logs.
+    pub fn logs(&self) -> &[Log] {
+        &self.logs
     }
 }
 
@@ -146,15 +169,15 @@ impl<C: EvmConfig<Host = Self>, DB: Database> Host for Evm<C, DB> {
     }
 
     fn tload(&mut self, index: Word) -> Word {
-        self.database.tload(self.current_address, index)
+        self.transient_storage.get(&(self.current_address, index)).copied().unwrap_or_default()
     }
 
     fn tstore(&mut self, index: Word, value: Word) {
-        self.database.tstore(self.current_address, index, value);
+        self.transient_storage.insert((self.current_address, index), value);
     }
 
     fn log(&mut self, log: Log) {
-        self.database.log(log);
+        self.logs.push(log);
     }
 
     fn execute_message(
@@ -394,7 +417,7 @@ mod tests {
 
         Host::log(&mut evm, log.clone());
 
-        assert_eq!(evm.database().cache.logs, [log]);
+        assert_eq!(evm.logs(), [log]);
     }
 
     #[test]

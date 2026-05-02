@@ -1,9 +1,8 @@
 //! Basic in-memory EVM host state.
 
 use crate::{bytecode::Bytecode, interpreter::Word};
-use alloc::vec::Vec;
 use alloy_primitives::{
-    Address, B256, Log, U256, keccak256,
+    Address, B256, U256, keccak256,
     map::{self, HashMap},
 };
 
@@ -213,15 +212,6 @@ pub trait Database {
 
     /// Loads a historical block hash.
     fn block_hash(&mut self, number: u64) -> Option<B256>;
-
-    /// Loads a transient storage slot.
-    fn tload(&mut self, address: Address, key: Word) -> Word;
-
-    /// Stores a transient storage slot.
-    fn tstore(&mut self, address: Address, key: Word, value: Word);
-
-    /// Records an emitted log.
-    fn log(&mut self, log: Log);
 }
 
 /// A cache used in [`CacheDb`].
@@ -234,10 +224,6 @@ pub struct Cache {
     pub contracts: HashMap<B256, Bytecode>,
     /// Persistent storage keyed by account and slot.
     pub storage: HashMap<(Address, Word), StorageSlot>,
-    /// Transient storage keyed by account and slot.
-    pub transient_storage: HashMap<(Address, Word), Word>,
-    /// Logs emitted during execution.
-    pub logs: Vec<Log>,
     /// Cached block hashes keyed by block number.
     pub block_hashes: HashMap<u64, B256>,
 }
@@ -253,8 +239,6 @@ impl Default for Cache {
             accounts: map::HashMap::default(),
             contracts,
             storage: map::HashMap::default(),
-            transient_storage: map::HashMap::default(),
-            logs: Vec::new(),
             block_hashes: map::HashMap::default(),
         }
     }
@@ -389,21 +373,6 @@ impl Database for CacheDb {
             .get(&number)
             .copied()
             .or_else(|| Some(keccak256(number.to_string().as_bytes())))
-    }
-
-    #[inline]
-    fn tload(&mut self, address: Address, key: Word) -> Word {
-        self.cache.transient_storage.get(&(address, key)).copied().unwrap_or_default()
-    }
-
-    #[inline]
-    fn tstore(&mut self, address: Address, key: Word, value: Word) {
-        self.cache.transient_storage.insert((address, key), value);
-    }
-
-    #[inline]
-    fn log(&mut self, log: Log) {
-        self.cache.logs.push(log);
     }
 }
 
