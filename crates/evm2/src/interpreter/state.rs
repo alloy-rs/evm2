@@ -1,4 +1,4 @@
-use super::{BytecodeRef, GasParams, InstrStop, Interpreter, Memory, Message, SpecId, Word};
+use super::{BytecodeRef, InstrStop, Interpreter, Memory, Message, SpecId, Word};
 use crate::{
     AccountLoad, SelfDestructResult,
     bytecode::Bytecode,
@@ -8,11 +8,11 @@ use alloy_primitives::{Address, B256, Bytes, Log};
 use core::fmt;
 
 /// Interpreter state passed to instructions.
-pub struct State<'a> {
+pub struct State<'a, H: Host + ?Sized> {
     /// Active bytecode.
     pub bytecode: BytecodeRef<'a>,
     /// Host implementation.
-    pub host: &'a mut (dyn Host + 'a),
+    pub host: &'a mut H,
     /// Cached transaction-global environment.
     pub tx: &'a TxEnv,
     /// Active frame-local call/create message.
@@ -23,12 +23,10 @@ pub struct State<'a> {
     pub return_data: &'a Bytes,
     /// Active spec identifier.
     pub spec: SpecId,
-    /// Dynamic gas parameters for the active spec.
-    pub gas_params: &'a GasParams,
     pub(crate) raw_interp: *mut Interpreter,
 }
 
-impl fmt::Debug for State<'_> {
+impl<H: Host + ?Sized> fmt::Debug for State<'_, H> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("State")
             .field("bytecode", &self.bytecode)
@@ -37,7 +35,6 @@ impl fmt::Debug for State<'_> {
             .field("memory", &self.memory)
             .field("return_data", &self.return_data)
             .field("spec", &self.spec)
-            .field("gas_params", &self.gas_params)
             .field("raw_interp", &self.raw_interp)
             .finish_non_exhaustive()
     }

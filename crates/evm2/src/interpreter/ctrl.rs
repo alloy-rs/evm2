@@ -65,6 +65,7 @@ impl<'a> BytecodeRef<'a> {
 }
 
 impl<'a> Pc<'a> {
+    #[allow(dead_code)]
     pub(crate) const fn new(bytecode: BytecodeRef<'a>, pc: usize) -> Self {
         Self { base: bytecode.bytecode.as_ptr(), pc, _marker: PhantomData }
     }
@@ -114,8 +115,15 @@ impl<'a> Pc<'a> {
 }
 
 impl<'a> PcMut<'a> {
+    #[cfg(not(feature = "nightly"))]
     pub(crate) const fn new(bytecode: BytecodeRef<'a>, pc: &'a mut usize) -> Self {
         Self { base: bytecode.bytecode.as_ptr(), pc }
+    }
+
+    /// Copies the program counter.
+    #[inline]
+    pub const fn copy(&self) -> Pc<'a> {
+        Pc { base: self.base, pc: *self.pc, _marker: PhantomData }
     }
 
     /// Reborrows the program counter.
@@ -159,5 +167,14 @@ impl<'a> PcMut<'a> {
     #[inline]
     pub const unsafe fn read_bytes_unchecked(&self, n: usize) -> &'a [u8] {
         unsafe { core::slice::from_raw_parts(self.base.add(self.get()), n) }
+    }
+
+    /// # Safety
+    ///
+    /// Caller must ensure `self.get() + offset..self.get() + offset + n` is in bounds of the
+    /// bytecode allocation.
+    #[inline]
+    pub const unsafe fn read_bytes_offset_unchecked(&self, offset: usize, n: usize) -> &'a [u8] {
+        unsafe { core::slice::from_raw_parts(self.base.add(self.get() + offset), n) }
     }
 }

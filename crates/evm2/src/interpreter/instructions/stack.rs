@@ -11,10 +11,8 @@ pub(in crate::interpreter) fn push<const N: usize>(cx: _) -> Result {
     if N == 0 {
         return stack.push(Word::ZERO);
     }
-    let slice = unsafe { cx.pc.read_bytes_unchecked(N) };
-    stack.push_slice(slice)?;
-    unsafe { cx.pc.advance_unchecked(N) };
-    Ok(())
+    let slice = unsafe { cx.pc.read_bytes_offset_unchecked(1, N) };
+    stack.push_slice(slice)
 }
 
 #[instruction(raw)]
@@ -29,25 +27,22 @@ pub(in crate::interpreter) fn swap<const N: usize>() -> Result {
 
 #[instruction(raw)]
 pub(in crate::interpreter) fn dupn(cx: _) -> Result {
-    let n = decode_single(unsafe { cx.pc.read_bytes_unchecked(1)[0] })
+    let n = decode_single(unsafe { cx.pc.read_bytes_offset_unchecked(1, 1)[0] })
         .ok_or(InstrStop::InvalidImmediateEncoding)?;
-    unsafe { cx.pc.advance_unchecked(1) };
     stack.dup(n)
 }
 
 #[instruction(raw)]
 pub(in crate::interpreter) fn swapn(cx: _) -> Result {
-    let n = decode_single(unsafe { cx.pc.read_bytes_unchecked(1)[0] })
+    let n = decode_single(unsafe { cx.pc.read_bytes_offset_unchecked(1, 1)[0] })
         .ok_or(InstrStop::InvalidImmediateEncoding)?;
-    unsafe { cx.pc.advance_unchecked(1) };
     stack.exchange(0, n)
 }
 
 #[instruction(raw)]
 pub(in crate::interpreter) fn exchange(cx: _) -> Result {
-    let (n, m) = decode_pair(unsafe { cx.pc.read_bytes_unchecked(1)[0] })
+    let (n, m) = decode_pair(unsafe { cx.pc.read_bytes_offset_unchecked(1, 1)[0] })
         .ok_or(InstrStop::InvalidImmediateEncoding)?;
-    unsafe { cx.pc.advance_unchecked(1) };
     stack.exchange(n, m)
 }
 
@@ -68,7 +63,7 @@ const fn decode_pair(x: u8) -> Option<(usize, usize)> {
 #[cfg(test)]
 mod tests {
     use crate::interpreter::{
-        InstrStop, Stack, Word,
+        InstrStop, StackMut, Word,
         instructions::tests::{RunConfig, push, run, run_stack},
         op,
     };
@@ -109,19 +104,19 @@ mod tests {
 
     #[test]
     fn stack_overflow() {
-        let mut code = vec![op::PUSH0; Stack::CAPACITY];
+        let mut code = vec![op::PUSH0; StackMut::CAPACITY];
         let interpreter = run(RunConfig::new(code.clone()));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         code.extend([op::PUSH0]);
         let interpreter = run(RunConfig::new(code));
         core::assert_matches!(interpreter.err, InstrStop::StackOverflow);
 
-        let mut code = vec![op::PUSH0; Stack::CAPACITY];
+        let mut code = vec![op::PUSH0; StackMut::CAPACITY];
         code.extend([op::PUSH1, 0x00, op::STOP]);
         let interpreter = run(RunConfig::new(code));
         core::assert_matches!(interpreter.err, InstrStop::StackOverflow);
 
-        let mut code = vec![op::PUSH0; Stack::CAPACITY];
+        let mut code = vec![op::PUSH0; StackMut::CAPACITY];
         code.extend([op::DUP1, op::STOP]);
         let interpreter = run(RunConfig::new(code));
         core::assert_matches!(interpreter.err, InstrStop::StackOverflow);

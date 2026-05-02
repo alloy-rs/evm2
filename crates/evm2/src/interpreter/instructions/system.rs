@@ -1,15 +1,18 @@
 //! System opcode implementations.
 
 use super::utils::{address_to_word, as_usize, word_to_address};
-use crate::interpreter::{
-    GasId, InstrStop, Message, MessageKind, Result, SpecId, Word, memory::resize_memory,
-    table::InstructionCx,
+use crate::{
+    EvmConfig,
+    interpreter::{
+        GasId, Host, InstrStop, Message, MessageKind, Result, SpecId, Word, memory::resize_memory,
+        table::InstructionCx,
+    },
 };
 use alloy_primitives::{Address, Bytes};
 use core::{cmp::min, ops::Range};
 use evm2_macros::instruction;
 
-const fn require_non_staticcall(cx: &InstructionCx<'_, '_, '_>) -> Result {
+const fn require_non_staticcall<C: EvmConfig>(cx: &InstructionCx<'_, '_, C>) -> Result {
     if cx.state.message.is_static() {
         return Err(InstrStop::StateChangeDuringStaticCall);
     }
@@ -21,8 +24,8 @@ const fn success(stop: InstrStop) -> bool {
     matches!(stop, InstrStop::Stop | InstrStop::Return | InstrStop::SelfDestruct)
 }
 
-fn resize_memory_range(
-    cx: &mut InstructionCx<'_, '_, '_>,
+fn resize_memory_range<C: EvmConfig>(
+    cx: &mut InstructionCx<'_, '_, C>,
     offset: Word,
     len: Word,
 ) -> Result<Range<usize>> {
@@ -37,8 +40,8 @@ fn resize_memory_range(
     Ok(offset..offset + len)
 }
 
-fn get_memory_input_and_out_ranges(
-    cx: &mut InstructionCx<'_, '_, '_>,
+fn get_memory_input_and_out_ranges<C: EvmConfig>(
+    cx: &mut InstructionCx<'_, '_, C>,
     input_offset: Word,
     input_len: Word,
     return_offset: Word,
@@ -49,25 +52,28 @@ fn get_memory_input_and_out_ranges(
     Ok((input, output))
 }
 
-fn memory_range_bytes(cx: &mut InstructionCx<'_, '_, '_>, range: Range<usize>) -> Result<Bytes> {
+fn memory_range_bytes<C: EvmConfig>(
+    cx: &mut InstructionCx<'_, '_, C>,
+    range: Range<usize>,
+) -> Result<Bytes> {
     if range.is_empty() {
         return Ok(Bytes::new());
     }
     Ok(Bytes::copy_from_slice(cx.state.memory.slice(range.start, range.len())?))
 }
 
-fn load_acc_and_calc_gas(
-    cx: &mut InstructionCx<'_, '_, '_>,
+fn load_acc_and_calc_gas<C: EvmConfig>(
+    cx: &mut InstructionCx<'_, '_, C>,
     to: Address,
     transfers_value: bool,
     create_empty_account: bool,
     stack_gas_limit: u64,
 ) -> Result<(u64, Bytes)> {
     if transfers_value {
-        cx.gas.spend(cx.state.gas_params.get(GasId::TransferValueCost))?;
+        cx.gas.spend(cx.gas_params.get(GasId::TransferValueCost))?;
     }
 
-    let additional_cold_cost = cx.state.gas_params.cold_account_additional_cost();
+    let additional_cold_cost = cx.gas_params.cold_account_additional_cost();
     let skip_cold_load = cx.gas.remaining() < additional_cold_cost;
     let account = cx.state.host.load_account(address_to_word(to), true, skip_cold_load)?;
 
@@ -76,19 +82,19 @@ fn load_acc_and_calc_gas(
         cost += additional_cold_cost;
     }
     if create_empty_account && transfers_value && account.is_empty {
-        cost += cx.state.gas_params.get(GasId::NewAccountCost);
+        cost += cx.gas_params.get(GasId::NewAccountCost);
     }
     cx.gas.spend(cost)?;
 
     let mut gas_limit = if cx.state.spec.enables(SpecId::TANGERINE) {
-        min(cx.state.gas_params.call_stipend_reduction(cx.gas.remaining()), stack_gas_limit)
+        min(cx.gas_params.call_stipend_reduction(cx.gas.remaining()), stack_gas_limit)
     } else {
         stack_gas_limit
     };
     cx.gas.spend(gas_limit)?;
 
     if transfers_value {
-        gas_limit = gas_limit.saturating_add(cx.state.gas_params.get(GasId::CallStipend));
+        gas_limit = gas_limit.saturating_add(cx.gas_params.get(GasId::CallStipend));
     }
 
     Ok((gas_limit, account.code))
@@ -105,7 +111,7 @@ struct CallArgs {
     return_len: Word,
 }
 
-fn call_inner(mut cx: InstructionCx<'_, '_, '_>, args: CallArgs) -> Result<Word> {
+fn call_inner<C: EvmConfig>(mut cx: InstructionCx<'_, '_, C>, args: CallArgs) -> Result<Word> {
     let CallArgs {
         kind,
         local_gas_limit,
@@ -209,9 +215,6 @@ pub(in crate::interpreter) fn callcode(cx: _) -> Result {
 
 #[instruction(raw)]
 pub(in crate::interpreter) fn delegatecall(cx: _) -> Result {
-    if !cx.state.spec.enables(SpecId::HOMESTEAD) {
-        return Err(InstrStop::NotActivated);
-    }
     let [local_gas_limit, to, input_offset, input_len, return_offset, return_len] =
         stack.popn::<6>()?;
     let result = call_inner(
@@ -233,9 +236,6 @@ pub(in crate::interpreter) fn delegatecall(cx: _) -> Result {
 
 #[instruction(raw)]
 pub(in crate::interpreter) fn staticcall(cx: _) -> Result {
-    if !cx.state.spec.enables(SpecId::BYZANTIUM) {
-        return Err(InstrStop::NotActivated);
-    }
     let [local_gas_limit, to, input_offset, input_len, return_offset, return_len] =
         stack.popn::<6>()?;
     let result = call_inner(
@@ -258,26 +258,20 @@ pub(in crate::interpreter) fn staticcall(cx: _) -> Result {
 #[instruction(raw)]
 pub(in crate::interpreter) fn create<const IS_CREATE2: bool>(cx: _) -> Result {
     require_non_staticcall(&cx)?;
-    if IS_CREATE2 && !cx.state.spec.enables(SpecId::PETERSBURG) {
-        return Err(InstrStop::NotActivated);
-    }
 
     let [value, offset, len] = stack.popn::<3>()?;
     let salt = if IS_CREATE2 { Some(stack.pop()?) } else { None };
     let len = as_usize(len)?;
     if cx.state.spec.enables(SpecId::SHANGHAI) {
-        cx.gas.spend(cx.state.gas_params.initcode_cost(len))?;
+        cx.gas.spend(cx.gas_params.initcode_cost(len))?;
     }
     let code_range = resize_memory_range(&mut cx, offset, Word::from(len))?;
     let input = memory_range_bytes(&mut cx, code_range)?;
-    let create_cost = if IS_CREATE2 {
-        cx.state.gas_params.create2_cost(len)
-    } else {
-        cx.state.gas_params.get(GasId::Create)
-    };
+    let create_cost =
+        if IS_CREATE2 { cx.gas_params.create2_cost(len) } else { cx.gas_params.get(GasId::Create) };
     cx.gas.spend(create_cost)?;
     let gas_limit = if cx.state.spec.enables(SpecId::TANGERINE) {
-        cx.state.gas_params.call_stipend_reduction(cx.gas.remaining())
+        cx.gas_params.call_stipend_reduction(cx.gas.remaining())
     } else {
         cx.gas.remaining()
     };
@@ -304,7 +298,7 @@ pub(in crate::interpreter) fn create<const IS_CREATE2: bool>(cx: _) -> Result {
 pub(in crate::interpreter) fn selfdestruct(cx: _, [target]: [Word]) -> Result {
     require_non_staticcall(&cx)?;
     let target = word_to_address(target);
-    let cold_load_gas = cx.state.gas_params.selfdestruct_cold_cost();
+    let cold_load_gas = cx.gas_params.selfdestruct_cold_cost();
     let skip_cold_load = cx.gas.remaining() < cold_load_gas;
     let res = cx.state.host.selfdestruct(cx.state.message.destination, target, skip_cold_load)?;
     let should_charge_topup = if cx.state.spec.enables(SpecId::SPURIOUS_DRAGON) {
@@ -312,9 +306,9 @@ pub(in crate::interpreter) fn selfdestruct(cx: _, [target]: [Word]) -> Result {
     } else {
         !res.target_exists
     };
-    cx.gas.spend(cx.state.gas_params.selfdestruct_cost(should_charge_topup, res.is_cold))?;
+    cx.gas.spend(cx.gas_params.selfdestruct_cost(should_charge_topup, res.is_cold))?;
     if !res.previously_destroyed {
-        cx.gas.record_refund(cx.state.gas_params.get(GasId::SelfdestructRefund) as i64);
+        cx.gas.record_refund(cx.gas_params.get(GasId::SelfdestructRefund) as i64);
     }
     Err(InstrStop::SelfDestruct)
 }
@@ -419,13 +413,12 @@ mod tests {
         );
         code.extend([op::DELEGATECALL, op::STOP]);
 
-        let interpreter =
-            run(RunConfig::new(code).host(&mut host).spec(SpecId::HOMESTEAD).message(Message {
-                caller,
-                value: Word::from(9),
-                gas_limit: 10_000,
-                ..Default::default()
-            }));
+        let interpreter = run(RunConfig::new(code).host(&mut host).message(Message {
+            caller,
+            value: Word::from(9),
+            gas_limit: 10_000,
+            ..Default::default()
+        }));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::from(1)]);
         assert_eq!(host.calls[0].kind, MessageKind::DelegateCall);
@@ -434,16 +427,22 @@ mod tests {
         assert_eq!(host.calls[0].code_address, code_address);
 
         let interpreter = run(RunConfig::new([
-            op::PUSH0,
-            op::PUSH0,
-            op::PUSH0,
-            op::PUSH0,
-            op::PUSH0,
-            op::PUSH0,
+            op::PUSH1,
+            0,
+            op::PUSH1,
+            0,
+            op::PUSH1,
+            0,
+            op::PUSH1,
+            0,
+            op::PUSH1,
+            0,
+            op::PUSH1,
+            0,
             op::DELEGATECALL,
         ])
         .spec(SpecId::FRONTIER));
-        core::assert_matches!(interpreter.err, InstrStop::NotActivated);
+        core::assert_matches!(interpreter.err, InstrStop::OpcodeNotFound);
     }
 
     #[test]
@@ -464,22 +463,29 @@ mod tests {
         );
         code.extend([op::STATICCALL, op::STOP]);
 
-        let interpreter = run(RunConfig::new(code).host(&mut host).spec(SpecId::BYZANTIUM));
+        let interpreter = run(RunConfig::new(code).host(&mut host));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::from(1)]);
         assert_eq!(host.calls[0].kind, MessageKind::StaticCall);
         assert!(host.calls[0].is_static());
 
         let interpreter = run(RunConfig::new([
-            op::PUSH0,
-            op::PUSH0,
-            op::PUSH0,
-            op::PUSH0,
-            op::PUSH0,
-            op::PUSH0,
+            op::PUSH1,
+            0,
+            op::PUSH1,
+            0,
+            op::PUSH1,
+            0,
+            op::PUSH1,
+            0,
+            op::PUSH1,
+            0,
+            op::PUSH1,
+            0,
             op::STATICCALL,
-        ]));
-        core::assert_matches!(interpreter.err, InstrStop::NotActivated);
+        ])
+        .spec(SpecId::HOMESTEAD));
+        core::assert_matches!(interpreter.err, InstrStop::OpcodeNotFound);
     }
 
     #[test]
@@ -507,15 +513,24 @@ mod tests {
         push_all(&mut code, [Word::from(0), Word::from(0), Word::from(0), Word::from(0)]);
         code.extend([op::CREATE2, op::STOP]);
 
-        let interpreter =
-            run(RunConfig::new(code).host(&mut host).spec(SpecId::PETERSBURG).gas_limit(50_000));
+        let interpreter = run(RunConfig::new(code).host(&mut host).gas_limit(50_000));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [address_to_word(created)]);
         assert_eq!(host.calls[0].kind, MessageKind::Create2);
 
-        let interpreter =
-            run(RunConfig::new([op::PUSH0, op::PUSH0, op::PUSH0, op::PUSH0, op::CREATE2]));
-        core::assert_matches!(interpreter.err, InstrStop::NotActivated);
+        let interpreter = run(RunConfig::new([
+            op::PUSH1,
+            0,
+            op::PUSH1,
+            0,
+            op::PUSH1,
+            0,
+            op::PUSH1,
+            0,
+            op::CREATE2,
+        ])
+        .spec(SpecId::BYZANTIUM));
+        core::assert_matches!(interpreter.err, InstrStop::OpcodeNotFound);
     }
 
     #[test]

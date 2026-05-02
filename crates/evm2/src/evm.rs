@@ -1,13 +1,10 @@
 //! EVM execution host.
 
 use crate::{
-    AccountLoad, SelfDestructResult,
+    AccountLoad, EvmConfig, SelfDestructResult,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
-    interpreter::{
-        Host, InstrStop, Interpreter, Message, SpecId, Table, Word,
-        table::{DEFAULT_TABLE, new_gas_table},
-    },
+    interpreter::{Host, InstrStop, Interpreter, Message, SpecId, Word},
     registry::{HandlerResult, TxRegistry},
 };
 use alloy_eips::eip2718::Typed2718;
@@ -24,35 +21,31 @@ pub struct TxResult {
 
 /// EVM host and transaction dispatcher.
 #[derive(Debug)]
-pub struct Evm<Tx> {
+pub struct Evm<C: EvmConfig> {
     block: BlockEnv,
-    registry: TxRegistry<Tx, TxResult>,
-    spec_id: SpecId,
+    registry: TxRegistry<C::Tx, TxResult>,
 }
 
-impl<Tx> Evm<Tx> {
+impl<C: EvmConfig> Evm<C> {
     /// Creates an EVM with the provided transaction handler registry and hard fork specification.
-    pub const fn new(block: BlockEnv, registry: TxRegistry<Tx, TxResult>, spec_id: SpecId) -> Self {
-        Self { block, registry, spec_id }
+    pub const fn new(block: BlockEnv, registry: TxRegistry<C::Tx, TxResult>) -> Self {
+        Self { block, registry }
     }
 
     /// Returns the transaction handler registry.
-    pub const fn registry(&self) -> &TxRegistry<Tx, TxResult> {
+    pub const fn registry(&self) -> &TxRegistry<C::Tx, TxResult> {
         &self.registry
     }
 
     /// Returns the active hard fork specification.
     pub const fn spec_id(&self) -> SpecId {
-        self.spec_id
+        C::SPEC_ID
     }
 }
 
-impl<Tx> Evm<Tx>
-where
-    Tx: Typed2718,
-{
+impl<C: EvmConfig<Tx: Typed2718>> Evm<C> {
     /// Dispatches the transaction to the handler registered for its EIP-2718 type byte.
-    pub fn transact(&self, tx: &Tx) -> HandlerResult<TxResult> {
+    pub fn transact(&self, tx: &C::Tx) -> HandlerResult<TxResult> {
         self.registry.try_get_by_type(tx.ty())?.call(tx)
     }
 
@@ -62,16 +55,16 @@ where
         txs: I,
     ) -> impl Iterator<Item = HandlerResult<TxResult>> + 'a
     where
-        I: IntoIterator<Item = &'a Tx>,
+        I: IntoIterator<Item = &'a C::Tx>,
         I::IntoIter: 'a,
-        Tx: 'a,
+        C::Tx: 'a,
         Self: 'a,
     {
         txs.into_iter().map(move |tx| self.transact(tx))
     }
 }
 
-impl<Tx> Host for Evm<Tx> {
+impl<C: EvmConfig<Host = Self>> Host for Evm<C> {
     fn block_env(&mut self) -> &BlockEnv {
         &self.block
     }
@@ -115,7 +108,7 @@ impl<Tx> Host for Evm<Tx> {
         bytecode: Bytecode,
         message: Message,
     ) -> Result<Word, InstrStop> {
-        let stop = execute_message_with_host(self, bytecode, self.spec_id, tx_env, message);
+        let stop = execute_message_with_host::<C>(self, bytecode, tx_env, message);
         if matches!(stop, InstrStop::Stop | InstrStop::Return) {
             return Ok(Word::from(1));
         }
@@ -132,25 +125,21 @@ impl<Tx> Host for Evm<Tx> {
     }
 }
 
-fn execute_message_with_host<H>(
-    host: &mut H,
+fn execute_message_with_host<C: EvmConfig>(
+    host: &mut C::Host,
     bytecode: Bytecode,
-    spec_id: SpecId,
     tx_env: TxEnv,
     message: Message,
-) -> InstrStop
-where
-    H: Host,
-{
-    let gas_table = new_gas_table(spec_id);
-    let mut interpreter = Interpreter::new(bytecode, spec_id, tx_env, message);
-    interpreter.run_with_table(Table::Normal(&DEFAULT_TABLE), &gas_table, host)
+) -> InstrStop {
+    let mut interpreter = Interpreter::new(bytecode, tx_env, message);
+    interpreter.run::<C>(host)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{
+        EvmVersion,
         bytecode::Bytecode,
         interpreter::{MessageKind, op},
         registry::TxRequest,
@@ -182,7 +171,7 @@ mod tests {
     fn dispatches_transaction_by_typed_2718_type() {
         let registry =
             TxRegistry::new().with_handler(TEST_TX_TYPE, extract_test_tx, handle_test_tx);
-        let evm = Evm::new(BlockEnv::default(), registry, SpecId::OSAKA);
+        let evm = Evm::<EvmVersion<TestTx>>::new(BlockEnv::default(), registry);
         let tx = TestTx { value: 41 };
 
         assert_eq!(evm.transact(&tx).map(|result| result.gas_used), Ok(42));
@@ -192,7 +181,7 @@ mod tests {
     fn dispatches_transaction_iter() {
         let registry =
             TxRegistry::new().with_handler(TEST_TX_TYPE, extract_test_tx, handle_test_tx);
-        let evm = Evm::new(BlockEnv::default(), registry, SpecId::OSAKA);
+        let evm = Evm::<EvmVersion<TestTx>>::new(BlockEnv::default(), registry);
         let txs = [TestTx { value: 1 }, TestTx { value: 2 }];
         let gas_used = evm
             .transact_iter(&txs)
@@ -204,8 +193,7 @@ mod tests {
 
     #[test]
     fn runs_interpreter_with_message() {
-        let mut evm =
-            Evm::new(BlockEnv::default(), TxRegistry::<TestTx, TxResult>::new(), SpecId::OSAKA);
+        let mut evm = Evm::<EvmVersion<TestTx>>::new(BlockEnv::default(), TxRegistry::new());
         let bytecode = Bytecode::new_legacy(Bytes::from_static(&[op::ADDRESS, op::STOP]));
         let destination = Address::from([0x11; 20]);
         let message = Message {

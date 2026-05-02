@@ -50,13 +50,6 @@ macro_rules! tail_return {
         become $e;
     };
 }
-#[cfg(not(feature = "nightly"))]
-#[collapse_debuginfo(yes)]
-macro_rules! tail_return {
-    ($e:expr) => {
-        return $e;
-    };
-}
 
 #[cfg(feature = "nightly")]
 #[collapse_debuginfo(yes)]
@@ -68,6 +61,7 @@ macro_rules! extern_table {
         $(#[$attr])* $vis extern "rust-preserve-none" fn $($f)*
     };
 }
+
 #[cfg(not(feature = "nightly"))]
 #[collapse_debuginfo(yes)]
 macro_rules! extern_table {

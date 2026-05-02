@@ -1,11 +1,14 @@
-use super::utils::{as_usize, check_spec};
-use crate::interpreter::{
-    GasId, InstrStop, Result, SpecId, Word, memory::resize_memory, table::InstructionCx,
+use super::utils::as_usize;
+use crate::{
+    EvmConfig,
+    interpreter::{
+        GasId, Host, InstrStop, Result, SpecId, Word, memory::resize_memory, table::InstructionCx,
+    },
 };
 use alloy_primitives::{B256, Bytes, Log, LogData};
 use evm2_macros::instruction;
 
-const fn require_non_staticcall(cx: &InstructionCx<'_, '_, '_>) -> Result {
+const fn require_non_staticcall<C: EvmConfig>(cx: &InstructionCx<'_, '_, C>) -> Result {
     if cx.state.message.is_static() {
         return Err(InstrStop::StateChangeDuringStaticCall);
     }
@@ -21,7 +24,7 @@ pub(in crate::interpreter) fn sload(cx: _, [index]: [Word]) -> out {
 pub(in crate::interpreter) fn sstore(cx: _) -> Result {
     require_non_staticcall(&cx)?;
     let [index, value] = stack.popn()?;
-    let gas_params = cx.state.gas_params;
+    let gas_params = cx.gas_params;
     if cx.state.spec.enables(SpecId::ISTANBUL)
         && cx.gas.remaining() <= gas_params.get(GasId::CallStipend)
     {
@@ -34,7 +37,6 @@ pub(in crate::interpreter) fn sstore(cx: _) -> Result {
 
 #[instruction(raw)]
 pub(in crate::interpreter) fn tload(cx: _) -> Result {
-    check_spec(cx.state.spec, SpecId::CANCUN)?;
     let ([], index) = stack.popn_top()?;
     *index = cx.state.host.tload(*index);
     Ok(())
@@ -42,7 +44,6 @@ pub(in crate::interpreter) fn tload(cx: _) -> Result {
 
 #[instruction(raw)]
 pub(in crate::interpreter) fn tstore(cx: _) -> Result {
-    check_spec(cx.state.spec, SpecId::CANCUN)?;
     require_non_staticcall(&cx)?;
     let [index, value] = stack.popn()?;
     cx.state.host.tstore(index, value);
@@ -54,7 +55,7 @@ pub(in crate::interpreter) fn log<const N: usize>(cx: _) -> Result {
     require_non_staticcall(&cx)?;
     let [offset, len] = stack.popn()?;
     let len = as_usize(len)?;
-    cx.gas.spend(cx.state.gas_params.log_cost(N as u8, len))?;
+    cx.gas.spend(cx.gas_params.log_cost(N as u8, len))?;
 
     let data = if len == 0 {
         Bytes::new()
@@ -187,8 +188,10 @@ mod tests {
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::from(0xcafe)]);
 
-        let interpreter = run(RunConfig::new([op::PUSH0, op::TLOAD, op::STOP]).host(&mut host));
-        core::assert_matches!(interpreter.err, InstrStop::NotActivated);
+        let interpreter = run(RunConfig::new([op::PUSH1, 0, op::TLOAD, op::STOP])
+            .host(&mut host)
+            .spec(SpecId::SHANGHAI));
+        core::assert_matches!(interpreter.err, InstrStop::OpcodeNotFound);
         assert_eq!(interpreter.stack(), [0]);
     }
 
@@ -207,9 +210,10 @@ mod tests {
         assert_eq!(interpreter.stack(), [Word::from(0xcafe)]);
         assert_eq!(host.transient_storage.get(&Word::from(1)), Some(&Word::from(0xcafe)));
 
-        let interpreter =
-            run(RunConfig::new([op::PUSH0, op::PUSH0, op::TSTORE, op::STOP]).host(&mut host));
-        core::assert_matches!(interpreter.err, InstrStop::NotActivated);
+        let interpreter = run(RunConfig::new([op::PUSH1, 0, op::PUSH1, 0, op::TSTORE, op::STOP])
+            .host(&mut host)
+            .spec(SpecId::SHANGHAI));
+        core::assert_matches!(interpreter.err, InstrStop::OpcodeNotFound);
         assert_eq!(interpreter.stack(), [0, 0]);
     }
 

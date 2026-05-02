@@ -25,8 +25,17 @@ fn expand_instruction(raw: bool, input: ItemFn) -> TokenStream2 {
     let ident = sig.ident;
     let asm_comment = LitStr::new(&ident.to_string(), ident.span());
     let generics = sig.generics;
-    let where_clause = generics.where_clause.clone();
-    let (impl_generics, type_generics, _) = generics.split_for_impl();
+    let struct_where_clause = generics.where_clause.clone();
+    let impl_params = generics.params.clone();
+    let impl_generics = if impl_params.is_empty() {
+        quote! { <C: evm2::EvmConfig> }
+    } else {
+        quote! { <C: evm2::EvmConfig, #impl_params> }
+    };
+    let (_, type_generics, _) = generics.split_for_impl();
+    let where_predicates =
+        struct_where_clause.as_ref().map(|where_clause| &where_clause.predicates);
+    let impl_where_clause = where_predicates.map(|predicates| quote! { where #predicates });
     let (_, outputs) = parse_return(sig.output);
     let body = body(input.block.stmts, outputs.is_empty());
 
@@ -57,9 +66,10 @@ fn expand_instruction(raw: bool, input: ItemFn) -> TokenStream2 {
     let cx_setup = has_cx.then(|| {
         let cx = cx_arg.unwrap_or_else(|| Ident::new("cx", ident.span()));
         quote! {
-            let mut #cx = evm2::interpreter::table::InstructionCx {
+            let mut #cx: evm2::interpreter::table::InstructionCx<'_, '_, C> = evm2::interpreter::table::InstructionCx {
                 pc: __evm2_pc,
                 gas: __evm2_gas,
+                gas_params: &C::GAS_PARAMS,
                 state: __evm2_state,
             };
         }
@@ -67,17 +77,18 @@ fn expand_instruction(raw: bool, input: ItemFn) -> TokenStream2 {
     quote! {
         #(#attrs)*
         #[allow(non_camel_case_types)]
-        #vis struct #ident #generics #where_clause;
+        #vis struct #ident #generics #struct_where_clause;
 
-        impl #impl_generics evm2::interpreter::table::Instruction for #ident #type_generics
-        #where_clause
+        impl #impl_generics evm2::interpreter::table::Instruction<C> for #ident #type_generics
+        #impl_where_clause
         {
             #[inline]
             fn execute(
-                stack: &mut evm2::interpreter::Stack<'_>,
+                &self,
                 __evm2_pc: evm2::interpreter::PcMut<'_>,
+                mut stack: evm2::interpreter::StackMut<'_>,
                 __evm2_gas: &mut evm2::interpreter::Gas,
-                __evm2_state: &mut evm2::interpreter::State<'_>,
+                __evm2_state: &mut evm2::interpreter::State<'_, <C as evm2::EvmConfig>::Host>,
             ) -> evm2::interpreter::Result {
                 evm2::asm_comment!(#asm_comment);
                 #cx_setup
@@ -149,49 +160,24 @@ fn body(stmts: Vec<Stmt>, allow_final_result: bool) -> TokenStream2 {
 
 fn stack_setup(inputs: &[Ident], outputs: &[Ident]) -> TokenStream2 {
     let input_count = inputs.len();
-    let mut input_bindings = inputs.to_vec();
-    input_bindings.reverse();
     let input_setup = (input_count > 0).then(|| {
+        let input_bindings = inputs.iter().rev();
         quote! {
             let [#(#input_bindings),*] = unsafe { ptr.cast::<[Word; #input_count]>().read() };
         }
     });
 
-    match outputs {
-        [] if input_count == 0 => quote! {},
-        [] => {
-            let len_update = decrease_len(input_count);
-            quote! {
-                stack.check_bounds(#input_count, 0)?;
-                let ptr = unsafe { stack.stack.as_mut_ptr().add(stack.len).sub(#input_count) };
-                #input_setup
-                #len_update
-            }
+    let output_count = outputs.len();
+    let output_setup = (output_count > 0).then(|| {
+        let output_bindings = outputs.iter().rev();
+        quote! {
+            let [#(#output_bindings),*] = unsafe { &mut *ptr.cast::<[Word; #output_count]>() };
         }
-        [output] => {
-            let len_update = match input_count {
-                0 => quote! { stack.len += 1; },
-                1 => quote! {},
-                _ => decrease_len(input_count - 1),
-            };
-            quote! {
-                stack.check_bounds(#input_count, 1)?;
-                let ptr = unsafe { stack.stack.as_mut_ptr().add(stack.len).sub(#input_count) };
-                #input_setup
-                let #output = unsafe { &mut *ptr.cast::<Word>() };
-                #len_update
-            }
-        }
-        _ => quote! {
-            compile_error!("multiple instruction outputs are not supported yet");
-        },
-    }
-}
+    });
 
-fn decrease_len(amount: usize) -> TokenStream2 {
-    if amount == 0 {
-        quote! {}
-    } else {
-        quote! { stack.len -= #amount; }
+    quote! {
+        let ptr = stack.instr_stack_setup(#input_count, #output_count)?;
+        #input_setup
+        #output_setup
     }
 }
