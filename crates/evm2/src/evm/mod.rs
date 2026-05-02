@@ -13,8 +13,8 @@ use alloy_primitives::{Address, B256, Log};
 pub mod config;
 pub mod env;
 pub mod registry;
-mod state;
 
+mod state;
 pub use state::{Account, Database, MemoryDb};
 
 /// Result of executing a transaction.

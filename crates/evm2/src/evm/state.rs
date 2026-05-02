@@ -1,8 +1,11 @@
 //! Basic in-memory EVM host state.
 
 use crate::{bytecode::Bytecode, interpreter::Word};
-use alloc::{collections::BTreeMap, vec::Vec};
-use alloy_primitives::{Address, B256, Log, U256};
+use alloc::vec::Vec;
+use alloy_primitives::{
+    Address, B256, Log, U256,
+    map::{self, HashMap},
+};
 
 /// Persistent account state used by the basic EVM host.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -17,7 +20,7 @@ pub struct Account {
     /// Account bytecode.
     pub code: Bytecode,
     /// Persistent storage slots.
-    pub storage: BTreeMap<Word, Word>,
+    pub storage: HashMap<Word, Word>,
     /// Whether the account was marked for self-destruction.
     pub selfdestructed: bool,
 }
@@ -31,7 +34,7 @@ impl Default for Account {
             nonce: 0,
             code_hash: code.hash_slow(),
             code,
-            storage: BTreeMap::new(),
+            storage: map::HashMap::default(),
             selfdestructed: false,
         }
     }
@@ -82,11 +85,11 @@ pub trait Database {
 #[non_exhaustive]
 pub struct MemoryDb {
     /// Persistent accounts keyed by address.
-    pub accounts: BTreeMap<Address, Account>,
+    pub accounts: HashMap<Address, Account>,
     /// Historical block hashes keyed by block number.
-    pub block_hashes: BTreeMap<u64, B256>,
+    pub block_hashes: HashMap<u64, B256>,
     /// Transient storage keyed by account and slot.
-    pub transient_storage: BTreeMap<(Address, Word), Word>,
+    pub transient_storage: HashMap<(Address, Word), Word>,
     /// Logs emitted during execution.
     pub logs: Vec<Log>,
 }
