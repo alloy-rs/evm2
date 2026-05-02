@@ -37,10 +37,7 @@ impl<'a> StackMut<'a> {
     /// Returns the stack length.
     #[inline]
     pub const fn len(&self) -> usize {
-        let r = *self.len;
-        // SAFETY: Type invariant.
-        unsafe { core::hint::assert_unchecked(r <= Self::CAPACITY) };
-        r
+        *self.len
     }
 
     /// Returns whether the stack is empty.
@@ -63,9 +60,14 @@ impl<'a> StackMut<'a> {
 
     /// Checks that an instruction can consume `input` words and produce `output` words.
     #[inline(always)]
+    #[cfg(test)]
     pub(crate) fn check_bounds(&self, input: usize, output: usize) -> Result {
+        Self::check_bounds_(self.len(), input, output)
+    }
+
+    #[inline(always)]
+    fn check_bounds_(len: usize, input: usize, output: usize) -> Result {
         core::debug_assert_matches!(output, 0 | 1);
-        let len = self.len();
         if len < input {
             cold_path();
             return Err(InstrStop::StackUnderflow);
@@ -79,10 +81,12 @@ impl<'a> StackMut<'a> {
 
     /// Checks that an instruction can consume `input` words and produce `output` words.
     #[inline(always)]
-    pub(crate) fn instr_stack_setup(&mut self, input: usize, output: usize) -> Result<*mut Word> {
-        self.check_bounds(input, output)?;
+    #[doc(hidden)] // For macro only.
+    pub fn instr_stack_setup(&mut self, input: usize, output: usize) -> Result<*mut Word> {
         let len = self.len();
-        *self.len = len - input + output;
+        // SAFETY: Assumes that the stack is never used after execution fails.
+        *self.len = len.wrapping_sub(input).wrapping_add(output);
+        Self::check_bounds_(len, input, output)?;
         Ok(unsafe { self.stack.as_mut_ptr().add(len).sub(input) })
     }
 

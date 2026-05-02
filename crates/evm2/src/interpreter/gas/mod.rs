@@ -152,22 +152,10 @@ impl GasTracker {
     /// Spends regular gas.
     #[doc(alias = "record_cost")]
     #[doc(alias = "record_regular_cost")]
-    #[inline]
-    pub const fn spend(&mut self, cost: u64) -> Result {
-        if let Some(new_remaining) = self.remaining.checked_sub(cost) {
-            self.remaining = new_remaining;
-            Ok(())
-        } else {
-            cold_path();
-            Err(InstrStop::OutOfGas)
-        }
-    }
-
-    /// Spends regular gas with wrapping subtraction.
     #[doc(alias = "record_cost_unsafe")]
     #[doc(alias = "spend_unsafe")]
-    #[inline(always)]
-    pub const fn spend_wrapping(&mut self, cost: u64) -> Result {
+    #[inline]
+    pub const fn spend(&mut self, cost: u64) -> Result {
         let remaining = self.remaining;
         self.remaining = remaining.wrapping_sub(cost);
         if remaining < cost {
@@ -225,6 +213,7 @@ impl GasTracker {
 
 /// Interpreter gas state.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[repr(C)] // Puts `tracker`, and so `.remaining`, first.
 pub struct Gas {
     tracker: GasTracker,
     memory: MemoryGas,
@@ -360,17 +349,11 @@ impl Gas {
     /// Spends regular gas or returns out of gas.
     #[doc(alias = "record_cost")]
     #[doc(alias = "record_regular_cost")]
-    #[inline(always)]
-    pub const fn spend(&mut self, amount: u64) -> Result {
-        self.tracker.spend(amount)
-    }
-
-    /// Spends regular gas with wrapping subtraction.
     #[doc(alias = "record_cost_unsafe")]
     #[doc(alias = "spend_unsafe")]
     #[inline(always)]
-    pub const fn spend_wrapping(&mut self, cost: u64) -> Result {
-        self.tracker.spend_wrapping(cost)
+    pub const fn spend(&mut self, amount: u64) -> Result {
+        self.tracker.spend(amount)
     }
 
     /// Spends state gas.
