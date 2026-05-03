@@ -50,7 +50,7 @@ path = "examples/e2e_transfer_sstore.rs"
 doc-scrape-examples = true
 
 [features]
-default = ["std", "secp256k1"]
+default = ["std", "secp256k1", "blst", "c-kzg", "portable"]
 std = [
     "alloy-consensus/std",
     "alloy-eips/std",
@@ -64,7 +64,16 @@ std = [
 ]
 
 nightly = []
+hashbrown = ["evm2-precompiles/hashbrown"]
+asm-keccak = ["evm2-precompiles/asm-keccak"]
+asm-sha2 = ["evm2-precompiles/asm-sha2"]
+c-kzg = ["evm2-precompiles/c-kzg"]
+portable = ["evm2-precompiles/portable"]
 secp256k1 = ["evm2-precompiles/secp256k1"]
+blst = ["evm2-precompiles/blst"]
+bn = ["evm2-precompiles/bn"]
+gmp = ["evm2-precompiles/gmp"]
+p256-aws-lc-rs = ["evm2-precompiles/p256-aws-lc-rs"]
 serde = [
     "dep:serde",
     "alloy-consensus/serde",

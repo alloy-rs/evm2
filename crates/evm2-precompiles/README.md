@@ -1,3 +1,3 @@
 # evm2-precompiles
 
-Ethereum precompiled contracts for evm2, adapted from revm's precompile crate.
+Thin re-export of the Ethereum precompile implementations from `revm-precompile`.

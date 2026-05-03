@@ -30,49 +30,47 @@ impl<Tx: 'static, const SPEC: u8> EvmConfig for EthereumEvmVersion<Tx, SPEC> {
 /// Ethereum precompile provider.
 #[derive(Clone, Debug, Default)]
 pub struct EthereumPrecompiles {
-    fun: HashMap<evm2_precompiles::B160, evm2_precompiles::Precompile>,
+    fun: HashMap<Address, evm2_precompiles::Precompile>,
     addresses: Vec<Address>,
 }
 
 impl EthereumPrecompiles {
-    /// Creates a precompile provider from precompile address/function pairs.
-    pub fn new(precompiles: impl IntoIterator<Item = evm2_precompiles::PrecompileAddress>) -> Self {
-        let fun = precompiles.into_iter().map(From::from).collect();
+    /// Creates a precompile provider from precompile definitions.
+    pub fn new(precompiles: impl IntoIterator<Item = evm2_precompiles::Precompile>) -> Self {
+        let fun = precompiles
+            .into_iter()
+            .map(|precompile| (address(precompile.address()), precompile))
+            .collect();
         Self::from_fun(fun)
     }
 
-    /// Adds or replaces precompile address/function pairs.
-    pub fn extend(
-        &mut self,
-        precompiles: impl IntoIterator<Item = evm2_precompiles::PrecompileAddress>,
-    ) {
-        self.fun.extend(precompiles.into_iter().map(
-            |precompile| -> (evm2_precompiles::B160, evm2_precompiles::Precompile) {
-                precompile.into()
-            },
-        ));
+    /// Adds or replaces precompile definitions.
+    pub fn extend(&mut self, precompiles: impl IntoIterator<Item = evm2_precompiles::Precompile>) {
+        self.fun.extend(
+            precompiles.into_iter().map(|precompile| (address(precompile.address()), precompile)),
+        );
         self.refresh_addresses();
     }
 
-    fn from_fun(fun: HashMap<evm2_precompiles::B160, evm2_precompiles::Precompile>) -> Self {
+    fn from_fun(fun: HashMap<Address, evm2_precompiles::Precompile>) -> Self {
         let mut this = Self { fun, addresses: Vec::new() };
         this.refresh_addresses();
         this
     }
 
     fn refresh_addresses(&mut self) {
-        self.addresses = self.fun.keys().map(|address| Address::from(*address)).collect();
+        self.addresses = self.fun.keys().copied().collect();
         self.addresses.sort_unstable();
     }
 
     /// Returns whether `address` is an active precompile.
     pub fn contains(&self, address: &Address) -> bool {
-        self.fun.contains_key(&address_key(address))
+        self.fun.contains_key(address)
     }
 
     /// Returns the precompile function at `address`.
-    pub fn get(&self, address: &Address) -> Option<evm2_precompiles::Precompile> {
-        self.fun.get(&address_key(address)).copied()
+    pub fn get(&self, address: &Address) -> Option<&evm2_precompiles::Precompile> {
+        self.fun.get(address)
     }
 
     /// Returns whether no precompiles are active.
@@ -100,10 +98,16 @@ impl PrecompileProvider for EthereumPrecompiles {
         gas_limit: u64,
     ) -> Option<Result<PrecompileOutput, InstrStop>> {
         let precompile = self.get(&address)?;
-        Some(match evm2_precompiles::execute(precompile, input, gas_limit) {
-            Ok((gas_used, output)) => Ok(PrecompileOutput { gas_used, output: output.into() }),
-            Err(evm2_precompiles::PrecompileError::OutOfGas) => Err(InstrStop::PrecompileOOG),
-            Err(_) => Err(InstrStop::PrecompileError),
+        Some(match precompile.execute(input, gas_limit, 0) {
+            Ok(output) if output.is_success() => {
+                Ok(PrecompileOutput { gas_used: output.gas_used, output: output.bytes })
+            }
+            Ok(output)
+                if output.halt_reason().is_some_and(evm2_precompiles::PrecompileHalt::is_oog) =>
+            {
+                Err(InstrStop::PrecompileOOG)
+            }
+            Ok(_) | Err(_) => Err(InstrStop::PrecompileError),
         })
     }
 
@@ -129,11 +133,10 @@ pub fn precompiles_for_spec(spec: SpecId) -> EthereumPrecompiles {
         | SpecId::ARROW_GLACIER
         | SpecId::GRAY_GLACIER
         | SpecId::MERGE
-        | SpecId::SHANGHAI
-        | SpecId::CANCUN
-        | SpecId::PRAGUE
-        | SpecId::OSAKA
-        | SpecId::AMSTERDAM => berlin_precompiles(),
+        | SpecId::SHANGHAI => berlin_precompiles(),
+        SpecId::CANCUN => cancun_precompiles(),
+        SpecId::PRAGUE => prague_precompiles(),
+        SpecId::OSAKA | SpecId::AMSTERDAM => osaka_precompiles(),
     }
 }
 
@@ -149,10 +152,10 @@ fn homestead_precompiles() -> EthereumPrecompiles {
 fn byzantium_precompiles() -> EthereumPrecompiles {
     let mut precompiles = homestead_precompiles();
     precompiles.extend([
-        evm2_precompiles::bn128::add::BYZANTIUM,
-        evm2_precompiles::bn128::mul::BYZANTIUM,
-        evm2_precompiles::bn128::pair::BYZANTIUM,
         evm2_precompiles::modexp::BYZANTIUM,
+        evm2_precompiles::bn254::add::BYZANTIUM,
+        evm2_precompiles::bn254::mul::BYZANTIUM,
+        evm2_precompiles::bn254::pair::BYZANTIUM,
     ]);
     precompiles
 }
@@ -160,10 +163,10 @@ fn byzantium_precompiles() -> EthereumPrecompiles {
 fn istanbul_precompiles() -> EthereumPrecompiles {
     let mut precompiles = byzantium_precompiles();
     precompiles.extend([
+        evm2_precompiles::bn254::add::ISTANBUL,
+        evm2_precompiles::bn254::mul::ISTANBUL,
+        evm2_precompiles::bn254::pair::ISTANBUL,
         evm2_precompiles::blake2::FUN,
-        evm2_precompiles::bn128::add::ISTANBUL,
-        evm2_precompiles::bn128::mul::ISTANBUL,
-        evm2_precompiles::bn128::pair::ISTANBUL,
     ]);
     precompiles
 }
@@ -174,8 +177,25 @@ fn berlin_precompiles() -> EthereumPrecompiles {
     precompiles
 }
 
-fn address_key(address: &Address) -> evm2_precompiles::B160 {
-    let mut key = [0; 20];
-    key.copy_from_slice(address.as_slice());
-    key
+fn cancun_precompiles() -> EthereumPrecompiles {
+    let mut precompiles = berlin_precompiles();
+    precompiles.extend([evm2_precompiles::kzg_point_evaluation::POINT_EVALUATION]);
+    precompiles
+}
+
+fn prague_precompiles() -> EthereumPrecompiles {
+    let mut precompiles = cancun_precompiles();
+    precompiles.extend(evm2_precompiles::bls12_381::precompiles());
+    precompiles
+}
+
+fn osaka_precompiles() -> EthereumPrecompiles {
+    let mut precompiles = prague_precompiles();
+    precompiles
+        .extend([evm2_precompiles::modexp::OSAKA, evm2_precompiles::secp256r1::P256VERIFY_OSAKA]);
+    precompiles
+}
+
+fn address(address: &evm2_precompiles::primitives::Address) -> Address {
+    Address::from_slice(address.as_slice())
 }

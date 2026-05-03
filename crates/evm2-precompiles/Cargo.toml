@@ -14,26 +14,36 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
-alloy-primitives = { workspace = true, features = ["map"] }
-bn = { workspace = true }
-k256 = { workspace = true, features = ["ecdsa"] }
-num = { workspace = true, features = ["alloc"] }
-ripemd.workspace = true
-secp256k1 = { workspace = true, features = ["alloc", "recovery"], optional = true }
-sha2.workspace = true
-sha3.workspace = true
-
-[dev-dependencies]
-hex.workspace = true
+revm-precompile = { version = "34.0.0", default-features = false }
 
 [features]
-default = ["secp256k1"]
-std = [
-    "alloy-primitives/std",
-    "k256/std",
-    "ripemd/std",
-    "secp256k1?/std",
-    "sha2/std",
-    "sha3/std",
-]
-secp256k1 = ["dep:secp256k1"]
+default = ["std", "secp256k1", "blst", "c-kzg", "portable"]
+
+std = ["revm-precompile/std"]
+hashbrown = ["revm-precompile/hashbrown"]
+asm-keccak = ["revm-precompile/asm-keccak"]
+asm-sha2 = ["revm-precompile/asm-sha2"]
+
+# Enables the c-kzg point evaluation precompile. Enabled by default as most stable/used implementation.
+c-kzg = ["revm-precompile/c-kzg"]
+
+# Compile in portable mode, without ISA extensions.
+# Binary can be executed on all systems.
+portable = ["revm-precompile/portable"]
+
+# Use `secp256k1` as a faster alternative to `k256`.
+# The problem that `secp256k1` has is it fails to build for `wasm` target on Windows and Mac as it is c lib.
+# In Linux it passes. If you don't require to build wasm on win/mac, it is safe to use it and it is enabled by default.
+secp256k1 = ["revm-precompile/secp256k1"]
+
+# Enables the blst implementation of the BLS12-381 precompile.
+blst = ["revm-precompile/blst"]
+
+# Enables the substrate implementation of eip1962.
+bn = ["revm-precompile/bn"]
+
+# Use GMP for accelerated modexp precompile. Dynamically links to libgmp at runtime.
+gmp = ["revm-precompile/gmp"]
+
+# Use aws-lc-rs as a faster alternative to `p256` for secp256r1 signature verification.
+p256-aws-lc-rs = ["revm-precompile/p256-aws-lc-rs"]
