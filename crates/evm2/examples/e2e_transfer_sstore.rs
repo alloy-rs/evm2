@@ -53,8 +53,6 @@ fn main() {
         "status={} gas_used={} storage[1]={}",
         result.status,
         result.gas_used,
-        evm.state().account_ref(contract).expect("sample contract account should exist").storage
-            [&U256::from(1)]
-            .current
+        result.state_changes.storage[&contract].slots[&U256::from(1)].current
     );
 }

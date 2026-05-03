@@ -22,8 +22,9 @@ pub mod registry;
 
 mod state;
 pub use state::{
-    Account, AccountInfo, CacheDB, Database, InMemoryDB, JournalEntry, KECCAK_EMPTY, State,
-    StorageValue, logs_hash,
+    Account, AccountChange, AccountInfo, CacheDB, Database, InMemoryDB, JournalEntry, KECCAK_EMPTY,
+    State, StateChanges, StorageChange, StorageChangeSet, StorageOverlay, StorageValue, Tracked,
+    logs_hash,
 };
 
 const MAX_CODE_SIZE: usize = 0x6000;
@@ -39,6 +40,8 @@ pub struct TxResult {
     pub stop: InstrStop,
     /// Return or revert output.
     pub output: Bytes,
+    /// Database-visible state transition produced by this transaction.
+    pub state_changes: StateChanges,
 }
 
 /// EVM host and transaction dispatcher.
@@ -157,8 +160,15 @@ impl<T: EvmTypes<Tx: Typed2718>> Evm<T> {
     /// Dispatches the transaction to the handler registered for its EIP-2718 type byte.
     pub fn transact(&mut self, tx: &T::Tx) -> HandlerResult<TxResult> {
         let handler = self.registry.try_get_by_type(tx.ty())?;
-        let result = handler.call(tx, self);
-        self.state.clear_accesses();
+        let spec_id = self.spec_id();
+        let result = handler.call(tx, self).map(|mut result| {
+            result.state_changes = self.state.build_state_changes(spec_id);
+            self.state.accept_transaction(spec_id);
+            result
+        });
+        if result.is_err() {
+            self.state.clear_transaction_state();
+        }
         result
     }
 
@@ -414,17 +424,14 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
         }
         self.state.warm_account(target);
         let target_exists = self.state.account_info(target).is_some_and(|info| !info.is_empty());
-        let previously_destroyed =
-            self.state.account_ref(contract).is_some_and(|account| account.destructed);
+        let previously_destroyed = self.state.is_selfdestructed(contract);
         let balance = self.state.account_info(contract).map_or(Word::ZERO, |info| info.balance);
 
         if contract != target && !balance.is_zero() {
             self.state.transfer(contract, target, balance);
+        } else if !balance.is_zero() {
+            self.state.add_balance(contract, Word::ZERO.wrapping_sub(balance));
         }
-
-        let previous = self.state.get_or_insert(contract).balance;
-        self.state.journal.push(JournalEntry::BalanceChange { address: contract, previous });
-        self.state.get_or_insert(contract).balance = Word::ZERO;
         self.state.mark_destructed(contract);
 
         Ok(SelfDestructResult {

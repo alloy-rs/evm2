@@ -180,13 +180,12 @@ fn handle_legacy<T: EvmTypes<Host = Evm<T>>>(
     req.host
         .state
         .add_balance(req.host.block.beneficiary, U256::from(gas_used) * beneficiary_gas_price);
-    req.host.state.prune_empty_accounts();
-
     Ok(TxResult {
         status: result.stop.is_success(),
         gas_used,
         stop: result.stop,
         output: result.output,
+        ..TxResult::default()
     })
 }
 
