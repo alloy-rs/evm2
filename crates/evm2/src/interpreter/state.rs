@@ -1,6 +1,6 @@
 use super::{BytecodeRef, InstrStop, Interpreter, Memory, Message, SpecId, Word};
 use crate::{
-    AccountLoad, SelfDestructResult,
+    AccountLoad, SelfDestructResult, StorageLoad,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
 };
@@ -124,7 +124,7 @@ pub trait Host {
     fn block_hash(&mut self, number: u64) -> Option<B256>;
 
     /// Loads a persistent storage slot.
-    fn sload(&mut self, address: Address, key: Word) -> Word;
+    fn sload(&mut self, address: Address, key: Word) -> StorageLoad;
 
     /// Stores a persistent storage slot.
     fn sstore(&mut self, address: Address, key: Word, value: Word);

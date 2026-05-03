@@ -87,6 +87,12 @@ where
     let caller = req.tx.signer();
     let tx = req.tx.inner();
     let gas_price = U256::from(tx.gas_price);
+    if C::SPEC_ID.enables(SpecId::LONDON) && gas_price < req.host.block.basefee {
+        return Err(HandlerError::FeeCapLessThanBaseFee {
+            max_fee_per_gas: gas_price,
+            base_fee: req.host.block.basefee,
+        });
+    }
     let intrinsic = legacy_intrinsic_gas(C::SPEC_ID, tx);
     if tx.gas_limit < intrinsic {
         return Err(HandlerError::IntrinsicGasTooLow { required: intrinsic, got: tx.gas_limit });
@@ -101,6 +107,14 @@ where
     let max_upfront = max_gas_cost.saturating_add(tx.value);
     if sender_info.balance < max_upfront {
         return Err(HandlerError::InsufficientFunds);
+    }
+
+    req.host.state.warm_account(caller);
+    if C::SPEC_ID.enables(SpecId::SHANGHAI) {
+        req.host.state.warm_account(req.host.block.beneficiary);
+    }
+    if let TxKind::Call(to) = tx.to {
+        req.host.state.warm_account(to);
     }
 
     req.host.state.add_balance(caller, Word::ZERO.wrapping_sub(max_gas_cost));
@@ -160,7 +174,14 @@ where
 
     let gas_used = tx.gas_limit - result.gas_remaining;
     req.host.state.add_balance(caller, U256::from(result.gas_remaining) * gas_price);
-    req.host.state.add_balance(req.host.block.beneficiary, U256::from(gas_used) * gas_price);
+    let beneficiary_gas_price = if C::SPEC_ID.enables(SpecId::LONDON) {
+        gas_price.saturating_sub(req.host.block.basefee)
+    } else {
+        gas_price
+    };
+    req.host
+        .state
+        .add_balance(req.host.block.beneficiary, U256::from(gas_used) * beneficiary_gas_price);
     req.host.state.prune_empty_accounts();
 
     Ok(TxResult {

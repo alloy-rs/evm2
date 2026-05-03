@@ -1,5 +1,5 @@
 use crate::{
-    AccountLoad, EvmConfig, SelfDestructResult,
+    AccountLoad, EvmConfig, SelfDestructResult, StorageLoad,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
     interpreter::{
@@ -87,8 +87,11 @@ impl Host for TestHost {
         Some(B256::with_last_byte(number as u8))
     }
 
-    fn sload(&mut self, address: Address, key: Word) -> Word {
-        self.storage.get(&(address, key)).copied().unwrap_or_default()
+    fn sload(&mut self, address: Address, key: Word) -> StorageLoad {
+        StorageLoad {
+            value: self.storage.get(&(address, key)).copied().unwrap_or_default(),
+            is_cold: self.is_cold,
+        }
     }
 
     fn sstore(&mut self, address: Address, key: Word, value: Word) {

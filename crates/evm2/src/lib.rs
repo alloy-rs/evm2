@@ -27,6 +27,15 @@ pub struct AccountLoad {
     pub is_cold: bool,
 }
 
+/// Loaded storage slot value.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct StorageLoad {
+    /// Storage slot value.
+    pub value: interpreter::Word,
+    /// Whether the storage slot access was cold.
+    pub is_cold: bool,
+}
+
 /// Result of a `SELFDESTRUCT` host operation.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct SelfDestructResult {

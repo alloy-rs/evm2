@@ -4,12 +4,16 @@ use crate::{
 };
 use alloy_consensus::{TxLegacy, transaction::Recovered};
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
+use alloy_trie::{
+    TrieAccount,
+    root::{state_root_unhashed, storage_root_unhashed},
+};
 use evm2::{
     Evm, EvmVersion, TxResult,
     bytecode::Bytecode,
     env::BlockEnv,
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
-    evm::{AccountInfo as EvmAccountInfo, InMemoryDB, logs_hash},
+    evm::{AccountInfo as EvmAccountInfo, InMemoryDB, State, logs_hash},
     interpreter::SpecId,
     registry::HandlerError,
 };
@@ -242,12 +246,85 @@ where
     C: evm2::config::EvmConfig<Database = InMemoryDB>,
 {
     SpecOutcome {
-        state_root: evm.state().state_root(),
+        state_root: state_root(evm.state(), C::SPEC_ID),
         logs_root: logs_hash(evm.logs()),
         output: result.output,
         gas_used: result.gas_used,
         evm_result: format!("{:?}", result.stop),
     }
+}
+
+fn state_root(state: &State<InMemoryDB>, spec: SpecId) -> B256 {
+    let mut addresses = Vec::from_iter(state.initial.accounts.keys().copied());
+    addresses.extend(state.modified.keys().copied());
+    addresses.sort_unstable();
+    addresses.dedup();
+
+    let accounts = addresses.into_iter().filter_map(|address| {
+        let info = state.account_info(address)?;
+        let storage = storage_for_root(state, address);
+        if !include_account_in_root(state, address, &info, &storage, spec) {
+            return None;
+        }
+
+        Some((
+            address,
+            TrieAccount {
+                nonce: info.nonce,
+                balance: info.balance,
+                storage_root: storage_root_unhashed(storage),
+                code_hash: info.code_hash,
+            },
+        ))
+    });
+
+    state_root_unhashed(accounts)
+}
+
+fn include_account_in_root(
+    state: &State<InMemoryDB>,
+    address: Address,
+    info: &EvmAccountInfo,
+    storage: &[(B256, U256)],
+    spec: SpecId,
+) -> bool {
+    if !spec.enables(SpecId::SPURIOUS_DRAGON) {
+        return state.initial.accounts.contains_key(&address)
+            || state.modified.contains_key(&address);
+    }
+
+    if !info.is_empty() || !storage.is_empty() {
+        return true;
+    }
+
+    // Approximate revm's `AccountState::None` case without tracking account state locally:
+    // untouched empty accounts that existed before execution remain in the state trie.
+    state.initial.accounts.contains_key(&address) && !state.modified.contains_key(&address)
+}
+
+fn storage_for_root(state: &State<InMemoryDB>, address: Address) -> Vec<(B256, U256)> {
+    let mut storage = Vec::new();
+    for ((storage_address, key), value) in &state.initial.storage {
+        if *storage_address == address && !value.is_zero() {
+            storage.push((B256::from(key.to_be_bytes()), *value));
+        }
+    }
+
+    if let Some(account) = state.modified.get(&address) {
+        for (key, value) in &account.storage {
+            let key = B256::from(key.to_be_bytes());
+            if let Some(existing) =
+                storage.iter_mut().find(|(existing_key, _)| *existing_key == key)
+            {
+                existing.1 = value.current;
+            } else if !value.current.is_zero() {
+                storage.push((key, value.current));
+            }
+        }
+    }
+
+    storage.retain(|(_, value)| !value.is_zero());
+    storage
 }
 
 fn parse_state(pre: &BTreeMap<Address, AccountInfo>) -> Result<InMemoryDB, TestErrorKind> {

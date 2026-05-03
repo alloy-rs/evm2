@@ -4,9 +4,8 @@ use crate::{bytecode::Bytecode, interpreter::Word};
 use alloc::{string::ToString, vec::Vec};
 use alloy_primitives::{
     Address, B256, U256, keccak256,
-    map::{self, HashMap},
+    map::{self, HashMap, HashSet},
 };
-use alloy_trie::{HashBuilder, Nibbles, TrieAccount, root::storage_root_unhashed};
 
 pub use alloy_primitives::KECCAK256_EMPTY as KECCAK_EMPTY;
 
@@ -220,6 +219,18 @@ pub enum JournalEntry {
         /// Account address.
         address: Address,
     },
+    /// Account was warmed by EIP-2929 access tracking.
+    AccountWarmed {
+        /// Account address.
+        address: Address,
+    },
+    /// Storage slot was warmed by EIP-2929 access tracking.
+    StorageWarmed {
+        /// Account address.
+        address: Address,
+        /// Storage key.
+        key: Word,
+    },
     /// Account was created.
     Create {
         /// Account address.
@@ -244,13 +255,23 @@ pub struct State<D> {
     pub modified: HashMap<Address, Account>,
     /// Revert journal.
     pub journal: Vec<JournalEntry>,
+    /// Transaction-scoped warm account set.
+    pub accessed_accounts: HashSet<Address>,
+    /// Transaction-scoped warm storage slot set.
+    pub accessed_storage: HashSet<(Address, Word)>,
 }
 
 impl<D> State<D> {
     /// Creates a new state over an initial database.
     #[inline]
     pub fn new(initial: D) -> Self {
-        Self { initial, modified: map::HashMap::default(), journal: Vec::new() }
+        Self {
+            initial,
+            modified: map::HashMap::default(),
+            journal: Vec::new(),
+            accessed_accounts: map::HashSet::default(),
+            accessed_storage: map::HashSet::default(),
+        }
     }
 
     /// Returns a checkpoint for later rollback.
@@ -275,6 +296,41 @@ impl<D> State<D> {
     #[inline]
     pub fn account_ref(&self, address: Address) -> Option<&Account> {
         self.modified.get(&address)
+    }
+
+    /// Returns whether an account is warm in the current transaction.
+    #[inline]
+    pub fn is_account_warm(&self, address: Address) -> bool {
+        self.accessed_accounts.contains(&address)
+    }
+
+    /// Marks an account as warm and returns whether it was cold before this access.
+    #[inline]
+    pub fn warm_account(&mut self, address: Address) -> bool {
+        if self.accessed_accounts.insert(address) {
+            self.journal.push(JournalEntry::AccountWarmed { address });
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Marks a storage slot as warm and returns whether it was cold before this access.
+    #[inline]
+    pub fn warm_storage(&mut self, address: Address, key: Word) -> bool {
+        if self.accessed_storage.insert((address, key)) {
+            self.journal.push(JournalEntry::StorageWarmed { address, key });
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Clears all transaction-scoped warm accesses.
+    #[inline]
+    pub fn clear_accesses(&mut self) {
+        self.accessed_accounts.clear();
+        self.accessed_storage.clear();
     }
 }
 
@@ -485,6 +541,12 @@ impl<D: Database> State<D> {
                 JournalEntry::NonceBump { address } => {
                     self.get_or_insert(address).nonce -= 1;
                 }
+                JournalEntry::AccountWarmed { address } => {
+                    self.accessed_accounts.remove(&address);
+                }
+                JournalEntry::StorageWarmed { address, key } => {
+                    self.accessed_storage.remove(&(address, key));
+                }
                 JournalEntry::Create { address, existed } => {
                     if existed {
                         let account = self.get_or_insert(address);
@@ -500,72 +562,6 @@ impl<D: Database> State<D> {
                 }
             }
         }
-    }
-}
-
-impl State<CacheDB> {
-    /// Calculates the Ethereum state trie root for the cached state.
-    pub fn state_root(&self) -> B256 {
-        let mut addresses = Vec::from_iter(self.initial.accounts.keys().copied());
-        addresses.extend(self.modified.keys().copied());
-        addresses.sort_unstable();
-        addresses.dedup();
-
-        let mut accounts = Vec::with_capacity(addresses.len());
-        for address in addresses {
-            let Some(info) = self.account_info(address) else {
-                continue;
-            };
-            if info.is_empty() && !info.has_storage {
-                continue;
-            }
-
-            let storage_root = storage_root_unhashed(self.storage_for_root(address));
-            accounts.push((
-                keccak256(address),
-                TrieAccount {
-                    nonce: info.nonce,
-                    balance: info.balance,
-                    storage_root,
-                    code_hash: info.code_hash,
-                },
-            ));
-        }
-        accounts.sort_unstable_by_key(|(key, _)| *key);
-
-        let mut builder = HashBuilder::default();
-        let mut account_rlp = Vec::new();
-        for (hashed_key, account) in accounts {
-            account_rlp.clear();
-            alloy_rlp::Encodable::encode(&account, &mut account_rlp);
-            builder.add_leaf(Nibbles::unpack(hashed_key), &account_rlp);
-        }
-        builder.root()
-    }
-
-    fn storage_for_root(&self, address: Address) -> Vec<(B256, Word)> {
-        let mut storage = Vec::new();
-        for ((storage_address, key), value) in &self.initial.storage {
-            if *storage_address == address && !value.is_zero() {
-                storage.push((B256::from(key.to_be_bytes()), *value));
-            }
-        }
-
-        if let Some(account) = self.modified.get(&address) {
-            for (key, value) in &account.storage {
-                let key = B256::from(key.to_be_bytes());
-                if let Some(existing) =
-                    storage.iter_mut().find(|(existing_key, _)| *existing_key == key)
-                {
-                    existing.1 = value.current;
-                } else if !value.current.is_zero() {
-                    storage.push((key, value.current));
-                }
-            }
-        }
-
-        storage.retain(|(_, value)| !value.is_zero());
-        storage
     }
 }
 

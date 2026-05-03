@@ -2,7 +2,7 @@
 
 use self::precompile::{PrecompileOutput, PrecompileProvider};
 use crate::{
-    AccountLoad, EvmConfig, SelfDestructResult,
+    AccountLoad, EvmConfig, SelfDestructResult, StorageLoad,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
     interpreter::{
@@ -109,7 +109,9 @@ impl<C: EvmConfig<Tx: Typed2718>> Evm<C> {
     /// Dispatches the transaction to the handler registered for its EIP-2718 type byte.
     pub fn transact(&mut self, tx: &C::Tx) -> HandlerResult<TxResult> {
         let handler = self.registry.try_get_by_type(tx.ty())?;
-        handler.call(tx, self)
+        let result = handler.call(tx, self);
+        self.state.clear_accesses();
+        result
     }
 
     /// Dispatches each transaction to its registered EIP-2718 handler.
@@ -136,10 +138,13 @@ impl<C: EvmConfig<Host = Self>> Host for Evm<C> {
         &mut self,
         address: Address,
         load_code: bool,
-        _skip_cold_load: bool,
+        skip_cold_load: bool,
     ) -> Result<AccountLoad, InstrStop> {
-        // TODO: revm can return ColdLoadSkipped when `skip_cold_load` is true. This host does
-        // not track access lists yet, so every load is treated as warm.
+        let is_cold = C::SPEC_ID.enables(SpecId::BERLIN) && !self.state.is_account_warm(address);
+        if skip_cold_load && is_cold {
+            return Err(InstrStop::OutOfGas);
+        }
+        self.state.warm_account(address);
         let info = self.state.account_info(address).unwrap_or_default();
         Ok(AccountLoad {
             balance: info.balance,
@@ -150,7 +155,7 @@ impl<C: EvmConfig<Host = Self>> Host for Evm<C> {
                 Bytes::new()
             },
             is_empty: info.is_empty(),
-            is_cold: false,
+            is_cold,
         })
     }
 
@@ -158,8 +163,9 @@ impl<C: EvmConfig<Host = Self>> Host for Evm<C> {
         self.state.initial().get_block_hash(number)
     }
 
-    fn sload(&mut self, address: Address, key: Word) -> Word {
-        self.state.storage(address, key)
+    fn sload(&mut self, address: Address, key: Word) -> StorageLoad {
+        let is_cold = C::SPEC_ID.enables(SpecId::BERLIN) && self.state.warm_storage(address, key);
+        StorageLoad { value: self.state.storage(address, key), is_cold }
     }
 
     fn sstore(&mut self, address: Address, key: Word, value: Word) {
@@ -211,6 +217,8 @@ impl<C: EvmConfig<Host = Self>> Host for Evm<C> {
                 MessageKind::Create2 => message.caller.create2(message.salt, bytecode.hash_slow()),
                 _ => unreachable!("invalid create message kind"),
             };
+
+            self.state.warm_account(address);
 
             if message.depth > 0 {
                 self.state.increment_nonce(message.caller);
@@ -317,9 +325,14 @@ impl<C: EvmConfig<Host = Self>> Host for Evm<C> {
         &mut self,
         contract: Address,
         target: Address,
-        _skip_cold_load: bool,
+        skip_cold_load: bool,
     ) -> Result<SelfDestructResult, InstrStop> {
         // TODO: evmone applies full SELFDESTRUCT revision rules in state transition.
+        let is_cold = C::SPEC_ID.enables(SpecId::BERLIN) && !self.state.is_account_warm(target);
+        if skip_cold_load && is_cold {
+            return Err(InstrStop::OutOfGas);
+        }
+        self.state.warm_account(target);
         let target_exists = self.state.account_info(target).is_some_and(|info| !info.is_empty());
         let previously_destroyed =
             self.state.account_ref(contract).is_some_and(|account| account.destructed);
@@ -337,7 +350,7 @@ impl<C: EvmConfig<Host = Self>> Host for Evm<C> {
         Ok(SelfDestructResult {
             had_value: !balance.is_zero(),
             target_exists,
-            is_cold: false,
+            is_cold,
             previously_destroyed,
         })
     }
