@@ -1,5 +1,5 @@
 use super::{
-    BytecodeRef, Gas, InstrStop, Memory, Message, Pc, Result, Stack, State, Word,
+    BytecodeRef, Gas, InstrStop, Memory, Message, MessageKind, Pc, Result, Stack, State, Word,
     table::InstructionTables,
 };
 use crate::{EvmConfig, bytecode::Bytecode, env::TxEnv};
@@ -24,14 +24,21 @@ pub struct Interpreter {
     pub(crate) output: *const [u8],
     tx_env: TxEnv,
     pub(crate) message: Message,
+    pub(crate) is_static: bool,
     pub(crate) return_data: Bytes,
 }
 
 impl Interpreter {
     /// Creates an interpreter from analyzed bytecode, a transaction-global environment, and a
     /// frame-local message.
-    pub fn new(bytecode: Bytecode, tx_env: TxEnv, message: Message) -> Self {
+    pub fn new(
+        bytecode: Bytecode,
+        tx_env: TxEnv,
+        message: Message,
+        caller_is_static: bool,
+    ) -> Self {
         let gas_limit = message.gas_limit;
+        let is_static = caller_is_static || matches!(message.kind, MessageKind::StaticCall);
         Self {
             pc: bytecode.original_byte_slice().as_ptr(),
             bytecode,
@@ -44,6 +51,7 @@ impl Interpreter {
             output: &[],
             tx_env,
             message,
+            is_static,
             return_data: Bytes::new(),
         }
     }
@@ -61,6 +69,11 @@ impl Interpreter {
     #[inline]
     pub(crate) const fn message(&self) -> &Message {
         &self.message
+    }
+
+    #[inline]
+    pub(crate) const fn is_static(&self) -> bool {
+        self.is_static
     }
 
     #[inline]

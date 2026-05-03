@@ -714,6 +714,7 @@ mod tests {
             bytecode,
             TxEnv::default(),
             Message { gas_limit: 10_000, ..Message::default() },
+            false,
         );
         let mut host = TestHost::default();
 

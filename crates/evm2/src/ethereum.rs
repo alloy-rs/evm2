@@ -163,7 +163,7 @@ where
         }
     };
 
-    let mut result = req.host.execute_message(tx_env, bytecode, message);
+    let mut result = req.host.execute_message(tx_env, bytecode, message, false);
     if !result.stop.is_success() {
         req.host.state.rollback(execution_checkpoint);
         req.host.logs.truncate(log_checkpoint);

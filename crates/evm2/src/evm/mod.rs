@@ -189,6 +189,7 @@ impl<C: EvmConfig<Host = Self>> Host for Evm<C> {
         tx_env: TxEnv,
         bytecode: Bytecode,
         message: Message,
+        caller_is_static: bool,
     ) -> MessageResult {
         if message.depth >= Message::CALL_DEPTH_LIMIT {
             return MessageResult {
@@ -242,7 +243,8 @@ impl<C: EvmConfig<Host = Self>> Host for Evm<C> {
             create_message.destination = address;
             create_message.code_address = address;
             create_message.input = Bytes::new();
-            let mut interpreter = Interpreter::new(bytecode, tx_env, create_message);
+            let mut interpreter =
+                Interpreter::new(bytecode, tx_env, create_message, caller_is_static);
             let stop = interpreter.run::<C>(self);
             let mut gas = interpreter.gas();
             if stop.is_success() || stop.is_revert() {
@@ -300,7 +302,7 @@ impl<C: EvmConfig<Host = Self>> Host for Evm<C> {
             return MessageResult { stop, gas_remaining, output, created_address: None };
         }
 
-        let mut interpreter = Interpreter::new(bytecode, tx_env, message);
+        let mut interpreter = Interpreter::new(bytecode, tx_env, message, caller_is_static);
         let stop = interpreter.run::<C>(self);
         let mut gas = interpreter.gas();
         if stop.is_success() || stop.is_revert() {
@@ -443,7 +445,7 @@ mod tests {
             ..Message::default()
         };
 
-        let result = Host::execute_message(&mut evm, TxEnv::default(), bytecode, message);
+        let result = Host::execute_message(&mut evm, TxEnv::default(), bytecode, message, false);
         assert!(result.stop.is_success());
     }
 

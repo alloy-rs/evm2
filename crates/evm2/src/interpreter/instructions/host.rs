@@ -11,7 +11,7 @@ use evm2_macros::instruction;
 
 #[inline]
 fn require_non_staticcall<C: EvmConfig>(cx: &InstructionCx<'_, '_, C>) -> Result {
-    if cx.state.message().is_static() {
+    if cx.state.is_static() {
         return Err(InstrStop::StateChangeDuringStaticCall);
     }
     Ok(())
