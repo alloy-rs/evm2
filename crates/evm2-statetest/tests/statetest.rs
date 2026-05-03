@@ -6,11 +6,9 @@ use std::{
     env,
     path::{Path, PathBuf},
     process::ExitCode,
-    thread,
 };
 
 const NEXTEST_ENV: &str = "NEXTEST";
-const STATE_TEST_STACK_SIZE: usize = 64 * 1024 * 1024;
 
 fn main() -> ExitCode {
     let args = Arguments::from_args();
@@ -59,20 +57,9 @@ fn exact_trial(roots: &[evm2_statetest::StateTestRoot], name: &str) -> Option<Tr
 }
 
 fn run_file(path: PathBuf) -> Result<(), Failed> {
-    let thread_name =
-        format!("statetest-{}", path_name(path.file_name().map(Path::new).unwrap_or(&path)));
-    thread::Builder::new()
-        .name(thread_name)
-        .stack_size(STATE_TEST_STACK_SIZE)
-        .spawn(move || {
-            execute_test_suite(&path, ExecuteConfig::default())
-                .map(|_| ())
-                .map_err(|err| err.to_string())
-        })
-        .map_err(|err| format!("failed to spawn state test thread: {err}"))?
-        .join()
-        .map_err(|_| "state test thread panicked".to_string())?
-        .map_err(Failed::from)
+    execute_test_suite(&path, ExecuteConfig::default())
+        .map(|_| ())
+        .map_err(|err| err.to_string().into())
 }
 
 fn test_name(root_name: &str, root: &Path, path: &Path) -> String {

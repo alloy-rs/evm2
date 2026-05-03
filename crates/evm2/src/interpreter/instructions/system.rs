@@ -112,6 +112,7 @@ struct CallArgs {
     return_len: Word,
 }
 
+#[inline(always)]
 fn call_inner<C: EvmConfig>(mut cx: InstructionCx<'_, '_, C>, args: CallArgs) -> Result<Word> {
     let CallArgs {
         kind,
@@ -127,6 +128,9 @@ fn call_inner<C: EvmConfig>(mut cx: InstructionCx<'_, '_, C>, args: CallArgs) ->
     let has_transfer = !value.is_zero();
     if cx.state.message().is_static() && has_transfer {
         return Err(InstrStop::CallNotAllowedInsideStatic);
+    }
+    if cx.state.message().depth.saturating_add(1) >= Message::CALL_DEPTH_LIMIT {
+        return Ok(Word::ZERO);
     }
 
     let local_gas_limit = u64::try_from(local_gas_limit).unwrap_or(u64::MAX);
@@ -262,6 +266,11 @@ pub(in crate::interpreter) fn create<const IS_CREATE2: bool>(cx: _) -> Result {
 
     let [value, offset, len] = stack.popn::<3>()?;
     let salt = if IS_CREATE2 { Some(stack.pop()?) } else { None };
+    if cx.state.message().depth.saturating_add(1) >= Message::CALL_DEPTH_LIMIT {
+        stack.push(Word::ZERO)?;
+        return Ok(());
+    }
+
     let len = as_usize(len)?;
     if cx.state.spec.enables(SpecId::SHANGHAI) {
         cx.gas.spend(cx.gas_params.initcode_cost(len))?;
