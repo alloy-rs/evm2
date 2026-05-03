@@ -4,8 +4,8 @@ use super::utils::{as_usize, word_to_address};
 use crate::{
     EvmConfig,
     interpreter::{
-        GasId, Host, InstrStop, Message, MessageKind, Result, SpecId, Word, memory::resize_memory,
-        table::InstructionCx,
+        GasId, Host, InstrStop, Message, MessageKind, Result, SpecId, StackMut, Word,
+        memory::resize_memory, table::InstructionCx,
     },
 };
 use alloy_primitives::{Address, B256, Bytes};
@@ -101,36 +101,28 @@ fn load_acc_and_calc_gas<C: EvmConfig>(
     Ok((gas_limit, account.code))
 }
 
-struct CallArgs {
-    kind: MessageKind,
-    local_gas_limit: Word,
-    to: Word,
-    value: Word,
-    input_offset: Word,
-    input_len: Word,
-    return_offset: Word,
-    return_len: Word,
-}
-
 #[inline(always)]
-fn call_inner<C: EvmConfig>(mut cx: InstructionCx<'_, '_, C>, args: CallArgs) -> Result<Word> {
-    let CallArgs {
-        kind,
-        local_gas_limit,
-        to,
-        value,
-        input_offset,
-        input_len,
-        return_offset,
-        return_len,
-    } = args;
+fn call_inner<C: EvmConfig>(
+    mut stack: StackMut<'_>,
+    mut cx: InstructionCx<'_, '_, C>,
+    kind: MessageKind,
+) -> Result {
+    let has_value = match kind {
+        MessageKind::Call | MessageKind::CallCode => true,
+        MessageKind::DelegateCall | MessageKind::StaticCall => false,
+        _ => unreachable!("invalid call message kind"),
+    };
+    let [local_gas_limit, to] = stack.popn::<2>()?;
+    let value = if has_value { stack.pop()? } else { Word::ZERO };
+    let [input_offset, input_len, return_offset, return_len] = stack.popn::<4>()?;
     let to = word_to_address(to);
     let has_transfer = !value.is_zero();
     if cx.state.message().is_static() && has_transfer {
         return Err(InstrStop::CallNotAllowedInsideStatic);
     }
     if cx.state.message().depth.saturating_add(1) >= Message::CALL_DEPTH_LIMIT {
-        return Ok(Word::ZERO);
+        stack.push(Word::ZERO)?;
+        return Ok(());
     }
 
     let local_gas_limit = u64::try_from(local_gas_limit).unwrap_or(u64::MAX);
@@ -170,103 +162,49 @@ fn call_inner<C: EvmConfig>(mut cx: InstructionCx<'_, '_, C>, args: CallArgs) ->
         salt: B256::ZERO,
     };
     let bytecode = crate::bytecode::Bytecode::new_legacy(code);
-    match cx.state.host.execute_message(cx.state.tx().clone(), bytecode, message) {
-        Ok(_) => Ok(Word::from(1)),
-        Err(stop) if success(stop) => Ok(Word::from(1)),
-        Err(_) => Ok(Word::ZERO),
-    }
+    let result = match cx.state.host.execute_message(cx.state.tx().clone(), bytecode, message) {
+        Ok(_) => Word::from(1),
+        Err(stop) if success(stop) => Word::from(1),
+        Err(_) => Word::ZERO,
+    };
+    stack.push(result)
 }
 
 #[instruction(raw)]
 pub(in crate::interpreter) fn call(cx: _) -> Result {
-    let [local_gas_limit, to, value, input_offset, input_len, return_offset, return_len] =
-        stack.popn::<7>()?;
-    let result = call_inner(
-        cx,
-        CallArgs {
-            kind: MessageKind::Call,
-            local_gas_limit,
-            to,
-            value,
-            input_offset,
-            input_len,
-            return_offset,
-            return_len,
-        },
-    )?;
-    stack.push(result)?;
-    Ok(())
+    call_inner(stack, cx, MessageKind::Call)
 }
 
 #[instruction(raw)]
 pub(in crate::interpreter) fn callcode(cx: _) -> Result {
-    let [local_gas_limit, to, value, input_offset, input_len, return_offset, return_len] =
-        stack.popn::<7>()?;
-    let result = call_inner(
-        cx,
-        CallArgs {
-            kind: MessageKind::CallCode,
-            local_gas_limit,
-            to,
-            value,
-            input_offset,
-            input_len,
-            return_offset,
-            return_len,
-        },
-    )?;
-    stack.push(result)?;
-    Ok(())
+    call_inner(stack, cx, MessageKind::CallCode)
 }
 
 #[instruction(raw)]
 pub(in crate::interpreter) fn delegatecall(cx: _) -> Result {
-    let [local_gas_limit, to, input_offset, input_len, return_offset, return_len] =
-        stack.popn::<6>()?;
-    let result = call_inner(
-        cx,
-        CallArgs {
-            kind: MessageKind::DelegateCall,
-            local_gas_limit,
-            to,
-            value: Word::ZERO,
-            input_offset,
-            input_len,
-            return_offset,
-            return_len,
-        },
-    )?;
-    stack.push(result)?;
-    Ok(())
+    call_inner(stack, cx, MessageKind::DelegateCall)
 }
 
 #[instruction(raw)]
 pub(in crate::interpreter) fn staticcall(cx: _) -> Result {
-    let [local_gas_limit, to, input_offset, input_len, return_offset, return_len] =
-        stack.popn::<6>()?;
-    let result = call_inner(
-        cx,
-        CallArgs {
-            kind: MessageKind::StaticCall,
-            local_gas_limit,
-            to,
-            value: Word::ZERO,
-            input_offset,
-            input_len,
-            return_offset,
-            return_len,
-        },
-    )?;
-    stack.push(result)?;
-    Ok(())
+    call_inner(stack, cx, MessageKind::StaticCall)
 }
 
 #[instruction(raw)]
 pub(in crate::interpreter) fn create<const IS_CREATE2: bool>(cx: _) -> Result {
+    create_inner(stack, cx, IS_CREATE2)
+}
+
+#[inline]
+fn create_inner<C: EvmConfig>(
+    mut stack: StackMut<'_>,
+    mut cx: InstructionCx<'_, '_, C>,
+    is_create2: bool,
+) -> Result {
     require_non_staticcall(&cx)?;
 
     let [value, offset, len] = stack.popn::<3>()?;
-    let salt = if IS_CREATE2 { Some(stack.pop()?) } else { None };
+    let salt = if is_create2 { Some(stack.pop()?) } else { None };
     if cx.state.message().depth.saturating_add(1) >= Message::CALL_DEPTH_LIMIT {
         stack.push(Word::ZERO)?;
         return Ok(());
@@ -279,7 +217,7 @@ pub(in crate::interpreter) fn create<const IS_CREATE2: bool>(cx: _) -> Result {
     let code_range = resize_memory_range(&mut cx, offset, Word::from(len))?;
     let input = memory_range_bytes(&mut cx, code_range)?;
     let create_cost =
-        if IS_CREATE2 { cx.gas_params.create2_cost(len) } else { cx.gas_params.get(GasId::Create) };
+        if is_create2 { cx.gas_params.create2_cost(len) } else { cx.gas_params.get(GasId::Create) };
     cx.gas.spend(create_cost)?;
     let gas_limit = if cx.state.spec.enables(SpecId::TANGERINE) {
         cx.gas_params.call_stipend_reduction(cx.gas.remaining())
@@ -290,7 +228,7 @@ pub(in crate::interpreter) fn create<const IS_CREATE2: bool>(cx: _) -> Result {
 
     let current = cx.state.message();
     let message = Message {
-        kind: if IS_CREATE2 { MessageKind::Create2 } else { MessageKind::Create },
+        kind: if is_create2 { MessageKind::Create2 } else { MessageKind::Create },
         depth: current.depth.saturating_add(1),
         gas_limit,
         destination: current.destination,

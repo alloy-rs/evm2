@@ -159,13 +159,13 @@ impl Interpreter {
         let bytecode = BytecodeRef::new(&self.bytecode);
         let pc = Pc::from_ptr(self.pc);
         let op = pc.op();
-        let instr = <C as InstructionTables>::TAIL_INSTRUCTIONS[op as usize];
+        let instr = <C as InstructionTables>::INSTRUCTIONS[op as usize];
         instr(
             pc,
             Stack::new(&mut self.stack, self.stack_len),
             &mut self.gas,
             &mut State { bytecode, host, spec: C::SPEC_ID, raw_interp: raw },
-            InstrStop::Stop,
+            0,
         );
         self.result
     }
