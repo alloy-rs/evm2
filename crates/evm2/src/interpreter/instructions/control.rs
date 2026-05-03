@@ -61,8 +61,8 @@ pub(in crate::interpreter) fn revert(cx: _, [offset, len]: [Word]) -> Result {
 }
 
 #[inline]
-fn return_inner<C: crate::EvmConfig>(
-    cx: InstructionCx<'_, '_, C>,
+fn return_inner<H: Host + ?Sized>(
+    cx: InstructionCx<'_, '_, H>,
     offset: Word,
     len: Word,
     result: InstrStop,

@@ -1,16 +1,13 @@
 use super::utils::as_usize;
-use crate::{
-    EvmConfig,
-    interpreter::{
-        GasId, Host, InstrStop, Result, SpecId, StackMut, Word, memory::resize_memory,
-        table::InstructionCx,
-    },
+use crate::interpreter::{
+    GasId, Host, InstrStop, Result, SpecId, StackMut, Word, memory::resize_memory,
+    table::InstructionCx,
 };
 use alloy_primitives::{B256, Bytes, Log, LogData};
 use evm2_macros::instruction;
 
 #[inline]
-fn require_non_staticcall<C: EvmConfig>(cx: &InstructionCx<'_, '_, C>) -> Result {
+fn require_non_staticcall<H: Host + ?Sized>(cx: &InstructionCx<'_, '_, H>) -> Result {
     if cx.state.message().is_static() {
         return Err(InstrStop::StateChangeDuringStaticCall);
     }
@@ -75,8 +72,8 @@ pub(in crate::interpreter) fn log<const N: usize>(cx: _) -> Result {
 }
 
 #[inline(never)]
-fn log_common<C: EvmConfig>(
-    cx: InstructionCx<'_, '_, C>,
+fn log_common<H: Host + ?Sized>(
+    cx: InstructionCx<'_, '_, H>,
     mut stack: StackMut<'_>,
     n: usize,
 ) -> Result {

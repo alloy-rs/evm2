@@ -5,7 +5,7 @@ use crate::interpreter::{InstrStop, Interpreter};
 use crate::{
     EvmConfig,
     interpreter::{
-        Gas, GasParams, Pc, Result, SpecId, Stack, StackMut, State,
+        Gas, GasParams, Host, Pc, Result, SpecId, Stack, StackMut, State,
         gas::{
             BASE, BLOCKHASH, EXP, HIGH, ISTANBUL_SLOAD_GAS, JUMPDEST, KECCAK256, LOG, LOW, MID,
             VERYLOW, WARM_STORAGE_READ_COST, ZERO,
@@ -154,8 +154,7 @@ pub(crate) trait InstructionTables: EvmConfig {
 impl<C: EvmConfig> InstructionTables for C {}
 
 /// Instruction execution context.
-#[derive(Debug)]
-pub(crate) struct InstructionCx<'a, 'state, C: EvmConfig> {
+pub(crate) struct InstructionCx<'a, 'state, H: Host + ?Sized> {
     /// Program counter state.
     pub pc: &'a mut Pc,
     /// Gas state.
@@ -163,7 +162,7 @@ pub(crate) struct InstructionCx<'a, 'state, C: EvmConfig> {
     /// Dynamic gas parameters for the active config.
     pub gas_params: &'a GasParams,
     /// Interpreter state.
-    pub state: &'a mut State<'state, C::Host>,
+    pub state: &'a mut State<'state, H>,
 }
 
 /// EVM instruction implementation.
