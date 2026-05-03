@@ -40,39 +40,15 @@ macro_rules! gas_ids_impl {
 
             impl GasId {
                 /// Largest gas parameter identifier.
-                pub const MAX: u8 = Self::$last_variant as u8;
-
-                /// Returns the raw gas parameter identifier.
-                #[inline]
-                pub const fn as_u8(self) -> u8 {
-                    self as u8
-                }
-
-                /// Returns the gas parameter identifier as a table index.
-                #[inline]
-                pub const fn as_usize(self) -> usize {
-                    self.as_u8() as usize
-                }
-
-                /// Returns the revm gas parameter name.
-                #[inline]
-                pub const fn name(self) -> &'static str {
-                    match self {
-                        Self::$first_variant => stringify!([<$first_variant:snake>]),
-                        $(
-                            Self::$variant => stringify!([<$variant:snake>]),
-                        )*
-                        Self::$last_variant => stringify!([<$last_variant:snake>]),
-                    }
-                }
+                pub const MAX: Self = Self::$last_variant;
 
                 /// Returns the gas parameter for a raw identifier.
                 #[inline]
-                pub const fn from_u8(value: u8) -> Option<Self> {
-                    if value >= 1 && value <= Self::MAX {
+                pub const fn from_usize(value: usize) -> Option<Self> {
+                    if value >= 1 && value <= (Self::MAX as usize) {
                         // SAFETY: `GasId` is `repr(u8)`, starts at 1, and every variant up to
                         // `MAX` is assigned contiguously by the enum declaration.
-                        return Some(unsafe { core::mem::transmute::<u8, Self>(value) });
+                        return Some(unsafe { core::mem::transmute::<u8, Self>(value as u8) });
                     }
                     None
                 }
@@ -87,6 +63,24 @@ macro_rules! gas_ids_impl {
                         )*
                         stringify!([<$last_variant:snake>]) => Some(Self::$last_variant),
                         _ => None,
+                    }
+                }
+
+                /// Returns the gas parameter identifier as a table index.
+                #[inline]
+                pub const fn as_usize(self) -> usize {
+                    self as usize
+                }
+
+                /// Returns the revm gas parameter name.
+                #[inline]
+                pub const fn name(self) -> &'static str {
+                    match self {
+                        Self::$first_variant => stringify!([<$first_variant:snake>]),
+                        $(
+                            Self::$variant => stringify!([<$variant:snake>]),
+                        )*
+                        Self::$last_variant => stringify!([<$last_variant:snake>]),
                     }
                 }
             }
@@ -195,6 +189,7 @@ pub const fn num_words(len: usize) -> usize {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct GasParams {
     table: [u32; GasId::MAX as usize + 1],
+    _align: [usize; 0],
 }
 
 impl Index<GasId> for GasParams {
@@ -214,25 +209,37 @@ impl IndexMut<GasId> for GasParams {
 }
 
 impl GasParams {
-    /// Creates gas parameters from a raw table.
+    /// Creates empty gas parameters.
     #[inline]
-    pub(super) const fn from_table(table: [u32; GasId::MAX as usize + 1]) -> Self {
-        Self { table }
+    pub(super) const fn empty() -> Self {
+        Self { table: [0; GasId::MAX as usize + 1], _align: [] }
     }
 
     /// Returns the gas cost for `id`.
     #[inline]
-    pub const fn get(&self, id: GasId) -> u64 {
-        self.table[id.as_usize()] as u64
+    pub const fn get(&self, id: GasId) -> u32 {
+        self.table[id.as_usize()]
+    }
+
+    /// Returns the mutable gas cost slot for `id`.
+    #[inline]
+    pub const fn get_mut(&mut self, id: GasId) -> &mut u32 {
+        &mut self.table[id.as_usize()]
+    }
+
+    /// Sets the gas cost for `id`.
+    #[inline]
+    pub const fn set(&mut self, id: GasId, cost: u32) {
+        self.table[id.as_usize()] = cost;
     }
 
     /// Calculates memory expansion cost for `len` words.
     #[inline]
     pub const fn memory_cost(&self, len: usize) -> u64 {
         let len = len as u64;
-        self.get(GasId::MemoryLinearCost)
-            .saturating_mul(len)
-            .saturating_add(len.saturating_mul(len) / self.get(GasId::MemoryQuadraticReduction))
+        (self.get(GasId::MemoryLinearCost) as u64).saturating_mul(len).saturating_add(
+            len.saturating_mul(len) / self.get(GasId::MemoryQuadraticReduction) as u64,
+        )
     }
 
     /// Calculates dynamic `EXP` gas.
@@ -241,65 +248,66 @@ impl GasParams {
         if power.const_is_zero() {
             return 0;
         }
-        self.get(GasId::ExpByteGas).saturating_mul(power.bit_len().div_ceil(8) as u64)
+        (self.get(GasId::ExpByteGas) as u64).saturating_mul(power.bit_len().div_ceil(8) as u64)
     }
 
     /// Calculates copy gas for `len` bytes.
     #[inline]
     pub const fn copy_cost(&self, len: usize) -> u64 {
-        self.get(GasId::CopyPerWord).saturating_mul(num_words(len) as u64)
+        (self.get(GasId::CopyPerWord) as u64).saturating_mul(num_words(len) as u64)
     }
 
     /// Calculates `EXTCODECOPY` copy gas for `len` bytes.
     #[inline]
     pub const fn extcodecopy_cost(&self, len: usize) -> u64 {
-        self.get(GasId::ExtcodecopyPerWord).saturating_mul(num_words(len) as u64)
+        (self.get(GasId::ExtcodecopyPerWord) as u64).saturating_mul(num_words(len) as u64)
     }
 
     /// Calculates `MCOPY` copy gas for `len` bytes.
     #[inline]
     pub const fn mcopy_cost(&self, len: usize) -> u64 {
-        self.get(GasId::McopyPerWord).saturating_mul(num_words(len) as u64)
+        (self.get(GasId::McopyPerWord) as u64).saturating_mul(num_words(len) as u64)
     }
 
     /// Calculates `KECCAK256` word gas for `len` bytes.
     #[inline]
     pub const fn keccak256_word_cost(&self, len: usize) -> u64 {
-        self.get(GasId::Keccak256PerWord).saturating_mul(num_words(len) as u64)
+        (self.get(GasId::Keccak256PerWord) as u64).saturating_mul(num_words(len) as u64)
     }
 
     /// Calculates dynamic `LOG` gas.
     #[inline]
     pub const fn log_cost(&self, n: u8, len: usize) -> u64 {
-        self.get(GasId::Logdata)
+        (self.get(GasId::Logdata) as u64)
             .saturating_mul(len as u64)
-            .saturating_add(self.get(GasId::Logtopic).saturating_mul(n as u64))
+            .saturating_add((self.get(GasId::Logtopic) as u64).saturating_mul(n as u64))
     }
 
     /// Calculates initcode word gas for `len` bytes.
     #[inline]
     pub const fn initcode_cost(&self, len: usize) -> u64 {
-        self.get(GasId::InitcodePerWord).saturating_mul(num_words(len) as u64)
+        (self.get(GasId::InitcodePerWord) as u64).saturating_mul(num_words(len) as u64)
     }
 
     /// Calculates dynamic `CREATE2` gas for `len` bytes.
     #[inline]
     pub const fn create2_cost(&self, len: usize) -> u64 {
-        self.get(GasId::Create)
-            .saturating_add(self.get(GasId::Keccak256PerWord).saturating_mul(num_words(len) as u64))
+        (self.get(GasId::Create) as u64).saturating_add(
+            (self.get(GasId::Keccak256PerWord) as u64).saturating_mul(num_words(len) as u64),
+        )
     }
 
     /// Returns `CALL` stipend reduction.
     #[inline]
     pub const fn call_stipend_reduction(&self, gas_limit: u64) -> u64 {
-        gas_limit - gas_limit / self.get(GasId::CallStipendReduction)
+        gas_limit - gas_limit / self.get(GasId::CallStipendReduction) as u64
     }
 
     /// Returns `SELFDESTRUCT` cold account cost.
     #[inline]
     pub const fn selfdestruct_cold_cost(&self) -> u64 {
-        self.get(GasId::ColdAccountAdditionalCost)
-            .saturating_add(self.get(GasId::WarmStorageReadCost))
+        (self.get(GasId::ColdAccountAdditionalCost) as u64)
+            .saturating_add(self.get(GasId::WarmStorageReadCost) as u64)
     }
 
     /// Calculates `SELFDESTRUCT` dynamic gas.
@@ -307,7 +315,7 @@ impl GasParams {
     pub const fn selfdestruct_cost(&self, should_charge_topup: bool, is_cold: bool) -> u64 {
         let mut gas = 0;
         if should_charge_topup {
-            gas += self.get(GasId::NewAccountCostForSelfdestruct);
+            gas += self.get(GasId::NewAccountCostForSelfdestruct) as u64;
         }
         if is_cold {
             gas += self.selfdestruct_cold_cost();
@@ -318,7 +326,7 @@ impl GasParams {
     /// Returns additional cold account access gas.
     #[inline]
     pub const fn cold_account_additional_cost(&self) -> u64 {
-        self.get(GasId::ColdAccountAdditionalCost)
+        self.get(GasId::ColdAccountAdditionalCost) as u64
     }
 }
 
@@ -333,13 +341,13 @@ mod tests {
 
     #[test]
     fn gas_id_roundtrips_names_and_values() {
-        assert_eq!(GasId::from_u8(1), Some(GasId::ExpByteGas));
-        assert_eq!(GasId::ExpByteGas.as_u8(), 1);
+        assert_eq!(GasId::from_usize(1), Some(GasId::ExpByteGas));
+        assert_eq!(GasId::ExpByteGas.as_usize(), 1);
         assert_eq!(GasId::ExpByteGas.name(), "exp_byte_gas");
         assert_eq!(GasId::from_name("exp_byte_gas"), Some(GasId::ExpByteGas));
-        assert_eq!(GasId::from_u8(GasId::MAX), Some(GasId::TxEip7702PerAuthStateGas));
-        assert_eq!(GasId::from_u8(GasId::MAX + 1), None);
-        assert_eq!(GasId::from_u8(0), None);
+        assert_eq!(GasId::from_usize(GasId::MAX as usize), Some(GasId::TxEip7702PerAuthStateGas));
+        assert_eq!(GasId::from_usize(GasId::MAX as usize + 1), None);
+        assert_eq!(GasId::from_usize(0), None);
         assert_eq!(GasId::from_name("missing"), None);
     }
 

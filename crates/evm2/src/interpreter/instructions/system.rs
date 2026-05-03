@@ -68,7 +68,7 @@ fn load_acc_and_calc_gas<H: Host + ?Sized>(
     stack_gas_limit: u64,
 ) -> Result<(u64, Bytes)> {
     if transfers_value {
-        cx.gas.spend(cx.gas_params.get(GasId::TransferValueCost))?;
+        cx.gas.spend(cx.gas_params.get(GasId::TransferValueCost).into())?;
     }
 
     let additional_cold_cost = cx.gas_params.cold_account_additional_cost();
@@ -80,7 +80,7 @@ fn load_acc_and_calc_gas<H: Host + ?Sized>(
         cost += additional_cold_cost;
     }
     if create_empty_account && transfers_value && account.is_empty {
-        cost += cx.gas_params.get(GasId::NewAccountCost);
+        cost += u64::from(cx.gas_params.get(GasId::NewAccountCost));
     }
     cx.gas.spend(cost)?;
 
@@ -92,7 +92,7 @@ fn load_acc_and_calc_gas<H: Host + ?Sized>(
     cx.gas.spend(gas_limit)?;
 
     if transfers_value {
-        gas_limit = gas_limit.saturating_add(cx.gas_params.get(GasId::CallStipend));
+        gas_limit = gas_limit.saturating_add(cx.gas_params.get(GasId::CallStipend).into());
     }
 
     Ok((gas_limit, account.code))
@@ -214,8 +214,11 @@ fn create_inner<H: Host + ?Sized>(
     }
     let code_range = resize_memory_range(&mut cx, offset, Word::from(len))?;
     let input = memory_range_bytes(&mut cx, code_range)?;
-    let create_cost =
-        if is_create2 { cx.gas_params.create2_cost(len) } else { cx.gas_params.get(GasId::Create) };
+    let create_cost = if is_create2 {
+        cx.gas_params.create2_cost(len)
+    } else {
+        cx.gas_params.get(GasId::Create).into()
+    };
     cx.gas.spend(create_cost)?;
     let gas_limit = if cx.state.spec.enables(SpecId::TANGERINE) {
         cx.gas_params.call_stipend_reduction(cx.gas.remaining())

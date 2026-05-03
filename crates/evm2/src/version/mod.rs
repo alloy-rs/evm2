@@ -70,13 +70,12 @@ const fn opcode_spec(opcode: u8) -> SpecId {
 
 impl<C: EvmConfig> EvmVersion<C> {
     /// Creates the base EVM version for `spec`.
-    #[inline]
     pub const fn new_base(spec: SpecId) -> Self {
         use crate::interpreter::instructions::*;
         use GasId::*;
 
         let mut gas_table = GasTable::empty();
-        let mut gas_params = [0u32; GasId::MAX as usize + 1];
+        let mut gas_params = GasParams::empty();
         let mut instruction_impls = InstructionImplTable::empty();
 
         gas_table.set(op::STOP, ZERO as u16);
@@ -171,35 +170,35 @@ impl<C: EvmConfig> EvmVersion<C> {
         gas_table.set(op::INVALID, ZERO as u16);
         gas_table.set(op::SELFDESTRUCT, ZERO as u16);
 
-        gas_params[ExpByteGas as usize] = 10;
-        gas_params[Logdata as usize] = LOGDATA;
-        gas_params[Logtopic as usize] = LOGTOPIC;
-        gas_params[CopyPerWord as usize] = COPY;
-        gas_params[ExtcodecopyPerWord as usize] = COPY;
-        gas_params[McopyPerWord as usize] = COPY;
-        gas_params[Keccak256PerWord as usize] = KECCAK256WORD;
-        gas_params[MemoryLinearCost as usize] = MEMORY;
-        gas_params[MemoryQuadraticReduction as usize] = 512;
-        gas_params[InitcodePerWord as usize] = INITCODE_WORD_COST;
-        gas_params[Create as usize] = CREATE;
-        gas_params[CallStipendReduction as usize] = 64;
-        gas_params[TransferValueCost as usize] = CALLVALUE;
-        gas_params[NewAccountCost as usize] = NEWACCOUNT;
-        gas_params[SstoreStatic as usize] = SSTORE_RESET;
-        gas_params[SstoreSetWithoutLoadCost as usize] = SSTORE_SET - SSTORE_RESET;
-        gas_params[SstoreSetRefund as usize] = SSTORE_SET - SSTORE_RESET;
-        gas_params[SstoreClearingSlotRefund as usize] = REFUND_SSTORE_CLEARS;
-        gas_params[SelfdestructRefund as usize] = SELFDESTRUCT_REFUND;
-        gas_params[CallStipend as usize] = CALL_STIPEND;
-        gas_params[CodeDepositCost as usize] = CODEDEPOSIT;
-        gas_params[TxTokenNonZeroByteMultiplier as usize] = NON_ZERO_BYTE_MULTIPLIER;
-        gas_params[TxTokenCost as usize] = STANDARD_TOKEN_COST;
-        gas_params[TxBaseStipend as usize] = 21000;
+        gas_params.set(ExpByteGas, 10);
+        gas_params.set(Logdata, LOGDATA);
+        gas_params.set(Logtopic, LOGTOPIC);
+        gas_params.set(CopyPerWord, COPY);
+        gas_params.set(ExtcodecopyPerWord, COPY);
+        gas_params.set(McopyPerWord, COPY);
+        gas_params.set(Keccak256PerWord, KECCAK256WORD);
+        gas_params.set(MemoryLinearCost, MEMORY);
+        gas_params.set(MemoryQuadraticReduction, 512);
+        gas_params.set(InitcodePerWord, INITCODE_WORD_COST);
+        gas_params.set(Create, CREATE);
+        gas_params.set(CallStipendReduction, 64);
+        gas_params.set(TransferValueCost, CALLVALUE);
+        gas_params.set(NewAccountCost, NEWACCOUNT);
+        gas_params.set(SstoreStatic, SSTORE_RESET);
+        gas_params.set(SstoreSetWithoutLoadCost, SSTORE_SET - SSTORE_RESET);
+        gas_params.set(SstoreSetRefund, SSTORE_SET - SSTORE_RESET);
+        gas_params.set(SstoreClearingSlotRefund, REFUND_SSTORE_CLEARS);
+        gas_params.set(SelfdestructRefund, SELFDESTRUCT_REFUND);
+        gas_params.set(CallStipend, CALL_STIPEND);
+        gas_params.set(CodeDepositCost, CODEDEPOSIT);
+        gas_params.set(TxTokenNonZeroByteMultiplier, NON_ZERO_BYTE_MULTIPLIER);
+        gas_params.set(TxTokenCost, STANDARD_TOKEN_COST);
+        gas_params.set(TxBaseStipend, 21000);
         for_each_opcode!([instruction_impls, C, SpecId::FRONTIER] make_instruction_table_inner);
 
         if spec.enables(SpecId::HOMESTEAD) {
             gas_table.set(op::DELEGATECALL, 40);
-            gas_params[TxCreateCost as usize] = CREATE;
+            gas_params.set(TxCreateCost, CREATE);
             for_each_opcode!([instruction_impls, C, SpecId::HOMESTEAD] make_instruction_table_inner);
         }
 
@@ -212,11 +211,11 @@ impl<C: EvmConfig> EvmVersion<C> {
             gas_table.set(op::CALLCODE, 700);
             gas_table.set(op::DELEGATECALL, 700);
             gas_table.set(op::SELFDESTRUCT, 5000);
-            gas_params[NewAccountCostForSelfdestruct as usize] = NEWACCOUNT;
+            gas_params.set(NewAccountCostForSelfdestruct, NEWACCOUNT);
         }
 
         if spec.enables(SpecId::SPURIOUS_DRAGON) {
-            gas_params[ExpByteGas as usize] = 50;
+            gas_params.set(ExpByteGas, 50);
         }
 
         if spec.enables(SpecId::BYZANTIUM) {
@@ -249,12 +248,12 @@ impl<C: EvmConfig> EvmVersion<C> {
             gas_table.set(op::SLOAD, ISTANBUL_SLOAD_GAS as u16);
             gas_table.set(op::BALANCE, 700);
             gas_table.set(op::EXTCODEHASH, 700);
-            gas_params[SstoreStatic as usize] = ISTANBUL_SLOAD_GAS;
-            gas_params[SstoreSetWithoutLoadCost as usize] = SSTORE_SET - ISTANBUL_SLOAD_GAS;
-            gas_params[SstoreResetWithoutColdLoadCost as usize] = SSTORE_RESET - ISTANBUL_SLOAD_GAS;
-            gas_params[SstoreSetRefund as usize] = SSTORE_SET - ISTANBUL_SLOAD_GAS;
-            gas_params[SstoreResetRefund as usize] = SSTORE_RESET - ISTANBUL_SLOAD_GAS;
-            gas_params[TxTokenNonZeroByteMultiplier as usize] = NON_ZERO_BYTE_MULTIPLIER_ISTANBUL;
+            gas_params.set(SstoreStatic, ISTANBUL_SLOAD_GAS);
+            gas_params.set(SstoreSetWithoutLoadCost, SSTORE_SET - ISTANBUL_SLOAD_GAS);
+            gas_params.set(SstoreResetWithoutColdLoadCost, SSTORE_RESET - ISTANBUL_SLOAD_GAS);
+            gas_params.set(SstoreSetRefund, SSTORE_SET - ISTANBUL_SLOAD_GAS);
+            gas_params.set(SstoreResetRefund, SSTORE_RESET - ISTANBUL_SLOAD_GAS);
+            gas_params.set(TxTokenNonZeroByteMultiplier, NON_ZERO_BYTE_MULTIPLIER_ISTANBUL);
             for_each_opcode!([instruction_impls, C, SpecId::ISTANBUL] make_instruction_table_inner);
         }
 
@@ -268,32 +267,30 @@ impl<C: EvmConfig> EvmVersion<C> {
             gas_table.set(op::CALLCODE, WARM_STORAGE_READ_COST as u16);
             gas_table.set(op::DELEGATECALL, WARM_STORAGE_READ_COST as u16);
             gas_table.set(op::STATICCALL, WARM_STORAGE_READ_COST as u16);
-            gas_params[SstoreStatic as usize] = WARM_STORAGE_READ_COST;
-            gas_params[ColdAccountAdditionalCost as usize] = COLD_ACCOUNT_ACCESS_COST_ADDITIONAL;
-            gas_params[ColdStorageAdditionalCost as usize] =
-                COLD_SLOAD_COST - WARM_STORAGE_READ_COST;
-            gas_params[ColdStorageCost as usize] = COLD_SLOAD_COST;
-            gas_params[WarmStorageReadCost as usize] = WARM_STORAGE_READ_COST;
-            gas_params[SstoreResetWithoutColdLoadCost as usize] =
-                WARM_SSTORE_RESET - WARM_STORAGE_READ_COST;
-            gas_params[SstoreSetWithoutLoadCost as usize] = SSTORE_SET - WARM_STORAGE_READ_COST;
-            gas_params[SstoreSetRefund as usize] = SSTORE_SET - WARM_STORAGE_READ_COST;
-            gas_params[SstoreResetRefund as usize] = WARM_SSTORE_RESET - WARM_STORAGE_READ_COST;
-            gas_params[TxAccessListAddressCost as usize] = ACCESS_LIST_ADDRESS;
-            gas_params[TxAccessListStorageKeyCost as usize] = ACCESS_LIST_STORAGE_KEY;
+            gas_params.set(SstoreStatic, WARM_STORAGE_READ_COST);
+            gas_params.set(ColdAccountAdditionalCost, COLD_ACCOUNT_ACCESS_COST_ADDITIONAL);
+            gas_params.set(ColdStorageAdditionalCost, COLD_SLOAD_COST - WARM_STORAGE_READ_COST);
+            gas_params.set(ColdStorageCost, COLD_SLOAD_COST);
+            gas_params.set(WarmStorageReadCost, WARM_STORAGE_READ_COST);
+            gas_params
+                .set(SstoreResetWithoutColdLoadCost, WARM_SSTORE_RESET - WARM_STORAGE_READ_COST);
+            gas_params.set(SstoreSetWithoutLoadCost, SSTORE_SET - WARM_STORAGE_READ_COST);
+            gas_params.set(SstoreSetRefund, SSTORE_SET - WARM_STORAGE_READ_COST);
+            gas_params.set(SstoreResetRefund, WARM_SSTORE_RESET - WARM_STORAGE_READ_COST);
+            gas_params.set(TxAccessListAddressCost, ACCESS_LIST_ADDRESS);
+            gas_params.set(TxAccessListStorageKeyCost, ACCESS_LIST_STORAGE_KEY);
         }
 
         if spec.enables(SpecId::LONDON) {
             gas_table.set(op::BASEFEE, BASE as u16);
-            gas_params[SstoreClearingSlotRefund as usize] =
-                WARM_SSTORE_RESET + ACCESS_LIST_STORAGE_KEY;
-            gas_params[SelfdestructRefund as usize] = 0;
+            gas_params.set(SstoreClearingSlotRefund, WARM_SSTORE_RESET + ACCESS_LIST_STORAGE_KEY);
+            gas_params.set(SelfdestructRefund, 0);
             for_each_opcode!([instruction_impls, C, SpecId::LONDON] make_instruction_table_inner);
         }
 
         if spec.enables(SpecId::SHANGHAI) {
             gas_table.set(op::PUSH0, BASE as u16);
-            gas_params[TxInitcodeCost as usize] = INITCODE_WORD_COST;
+            gas_params.set(TxInitcodeCost, INITCODE_WORD_COST);
             for_each_opcode!([instruction_impls, C, SpecId::SHANGHAI] make_instruction_table_inner);
         }
 
@@ -307,11 +304,13 @@ impl<C: EvmConfig> EvmVersion<C> {
         }
 
         if spec.enables(SpecId::PRAGUE) {
-            gas_params[TxEip7702PerEmptyAccountCost as usize] = EIP7702_PER_EMPTY_ACCOUNT_COST;
-            gas_params[TxEip7702AuthRefund as usize] =
-                EIP7702_PER_EMPTY_ACCOUNT_COST - EIP7702_PER_AUTH_BASE_COST;
-            gas_params[TxFloorCostPerToken as usize] = TOTAL_COST_FLOOR_PER_TOKEN;
-            gas_params[TxFloorCostBaseGas as usize] = 21000;
+            gas_params.set(TxEip7702PerEmptyAccountCost, EIP7702_PER_EMPTY_ACCOUNT_COST);
+            gas_params.set(
+                TxEip7702AuthRefund,
+                EIP7702_PER_EMPTY_ACCOUNT_COST - EIP7702_PER_AUTH_BASE_COST,
+            );
+            gas_params.set(TxFloorCostPerToken, TOTAL_COST_FLOOR_PER_TOKEN);
+            gas_params.set(TxFloorCostBaseGas, 21000);
         }
 
         if spec.enables(SpecId::OSAKA) {
@@ -326,29 +325,24 @@ impl<C: EvmConfig> EvmVersion<C> {
             const CPSB: u32 = 1174;
 
             gas_table.set(op::SLOTNUM, BASE as u16);
-            gas_params[Create as usize] = 9000;
-            gas_params[TxCreateCost as usize] = 9000;
-            gas_params[CodeDepositCost as usize] = 0;
-            gas_params[NewAccountCost as usize] = 0;
-            gas_params[NewAccountCostForSelfdestruct as usize] = 0;
-            gas_params[SstoreSetWithoutLoadCost as usize] = 2800;
-            gas_params[SstoreSetStateGas as usize] = 32 * CPSB;
-            gas_params[NewAccountStateGas as usize] = 112 * CPSB;
-            gas_params[CodeDepositStateGas as usize] = CPSB;
-            gas_params[CreateStateGas as usize] = 112 * CPSB;
-            gas_params[SstoreSetRefund as usize] = 32 * CPSB + 2800;
-            gas_params[TxEip7702PerEmptyAccountCost as usize] = 7500 + (112 + 23) * CPSB;
-            gas_params[TxEip7702AuthRefund as usize] = 112 * CPSB;
-            gas_params[TxEip7702PerAuthStateGas as usize] = (112 + 23) * CPSB;
+            gas_params.set(Create, 9000);
+            gas_params.set(TxCreateCost, 9000);
+            gas_params.set(CodeDepositCost, 0);
+            gas_params.set(NewAccountCost, 0);
+            gas_params.set(NewAccountCostForSelfdestruct, 0);
+            gas_params.set(SstoreSetWithoutLoadCost, 2800);
+            gas_params.set(SstoreSetStateGas, 32 * CPSB);
+            gas_params.set(NewAccountStateGas, 112 * CPSB);
+            gas_params.set(CodeDepositStateGas, CPSB);
+            gas_params.set(CreateStateGas, 112 * CPSB);
+            gas_params.set(SstoreSetRefund, 32 * CPSB + 2800);
+            gas_params.set(TxEip7702PerEmptyAccountCost, 7500 + (112 + 23) * CPSB);
+            gas_params.set(TxEip7702AuthRefund, 112 * CPSB);
+            gas_params.set(TxEip7702PerAuthStateGas, (112 + 23) * CPSB);
             for_each_opcode!([instruction_impls, C, SpecId::AMSTERDAM] make_instruction_table_inner);
         }
 
-        Self {
-            spec_id: spec,
-            gas_table,
-            gas_params: GasParams::from_table(gas_params),
-            instruction_impls,
-        }
+        Self { spec_id: spec, gas_table, gas_params, instruction_impls }
     }
 
     /// Returns the hard fork specification for this version.

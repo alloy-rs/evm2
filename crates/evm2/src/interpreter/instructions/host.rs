@@ -18,7 +18,7 @@ fn require_non_staticcall<H: Host + ?Sized>(cx: &InstructionCx<'_, '_, H>) -> Re
 pub(crate) fn sload(cx: _, [key]: [Word]) -> Result<out> {
     let load = cx.state.host.sload(cx.state.message().destination, key);
     if load.is_cold {
-        cx.gas.spend(cx.gas_params.get(GasId::ColdStorageAdditionalCost))?;
+        cx.gas.spend(cx.gas_params.get(GasId::ColdStorageAdditionalCost).into())?;
     }
     *out = load.value;
 }
@@ -29,23 +29,23 @@ pub(crate) fn sstore(cx: _) -> Result {
     let [key, value] = stack.popn()?;
     let gas_params = cx.gas_params;
     if cx.state.spec.enables(SpecId::ISTANBUL)
-        && cx.gas.remaining() <= gas_params.get(GasId::CallStipend)
+        && cx.gas.remaining() <= gas_params.get(GasId::CallStipend).into()
     {
         return Err(InstrStop::ReentrancySentryOOG);
     }
     let load = cx.state.host.sload(cx.state.message().destination, key);
     let old_value = load.value;
-    cx.gas.spend(gas_params.get(GasId::SstoreStatic))?;
+    cx.gas.spend(gas_params.get(GasId::SstoreStatic).into())?;
     if load.is_cold {
-        cx.gas.spend(gas_params.get(GasId::ColdStorageCost))?;
+        cx.gas.spend(gas_params.get(GasId::ColdStorageCost).into())?;
     }
     if old_value.is_zero() && !value.is_zero() {
-        cx.gas.spend(gas_params.get(GasId::SstoreSetWithoutLoadCost))?;
+        cx.gas.spend(gas_params.get(GasId::SstoreSetWithoutLoadCost).into())?;
     } else if !old_value.is_zero() && value.is_zero() {
         cx.gas.record_refund(gas_params.get(GasId::SstoreClearingSlotRefund) as i64);
-        cx.gas.spend(gas_params.get(GasId::SstoreResetWithoutColdLoadCost))?;
+        cx.gas.spend(gas_params.get(GasId::SstoreResetWithoutColdLoadCost).into())?;
     } else {
-        cx.gas.spend(gas_params.get(GasId::SstoreResetWithoutColdLoadCost))?;
+        cx.gas.spend(gas_params.get(GasId::SstoreResetWithoutColdLoadCost).into())?;
     }
     cx.state.host.sstore(cx.state.message().destination, key, value);
     Ok(())
