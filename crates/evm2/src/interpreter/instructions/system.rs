@@ -8,7 +8,7 @@ use crate::{
         table::InstructionCx,
     },
 };
-use alloy_primitives::{Address, Bytes};
+use alloy_primitives::{Address, B256, Bytes};
 use core::{cmp::min, ops::Range};
 use evm2_macros::instruction;
 
@@ -167,7 +167,7 @@ fn call_inner<C: EvmConfig>(mut cx: InstructionCx<'_, '_, C>, args: CallArgs) ->
         input,
         value: call_value,
         code_address,
-        salt: Word::ZERO,
+        salt: B256::ZERO,
     };
     let bytecode = crate::bytecode::Bytecode::new_legacy(code);
     match cx.state.host.execute_message(cx.state.tx().clone(), bytecode, message) {
@@ -298,7 +298,7 @@ pub(in crate::interpreter) fn create<const IS_CREATE2: bool>(cx: _) -> Result {
         input: input.clone(),
         value,
         code_address: current.destination,
-        salt: salt.unwrap_or_default(),
+        salt: salt.map(|salt| B256::from(salt.to_be_bytes())).unwrap_or_default(),
     };
     let bytecode = crate::bytecode::Bytecode::new_legacy(input);
     match cx.state.host.execute_message(cx.state.tx().clone(), bytecode, message) {

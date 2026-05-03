@@ -135,7 +135,7 @@ impl<C: EvmConfig> Evm<C> {
                     input: tx.data.clone(),
                     value: tx.value,
                     code_address: to,
-                    salt: Word::ZERO,
+                    salt: B256::ZERO,
                 };
                 let result = self.execute_frame(tx_env, code, message);
                 stop = result.stop;
@@ -156,7 +156,7 @@ impl<C: EvmConfig> Evm<C> {
                 input: Bytes::new(),
                 value: tx.value,
                 code_address: created_address,
-                salt: Word::ZERO,
+                salt: B256::ZERO,
             };
             let result =
                 self.execute_create(tx_env, Bytecode::new_legacy(tx.data.clone()), message);
@@ -448,11 +448,11 @@ fn create_address(caller: Address, nonce: u64) -> Address {
     Address::from_slice(&keccak256(out)[12..])
 }
 
-fn create2_address(caller: Address, salt: Word, initcode: &[u8]) -> Address {
+fn create2_address(caller: Address, salt: B256, initcode: &[u8]) -> Address {
     let mut input = Vec::with_capacity(85);
     input.push(0xff);
     input.extend_from_slice(caller.as_slice());
-    input.extend_from_slice(&salt.to_be_bytes::<32>());
+    input.extend_from_slice(salt.as_slice());
     input.extend_from_slice(keccak256(initcode).as_slice());
     Address::from_slice(&keccak256(input)[12..])
 }
