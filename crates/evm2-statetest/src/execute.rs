@@ -9,10 +9,12 @@ use alloy_trie::{
     root::{state_root_unhashed, storage_root_unhashed},
 };
 use evm2::{
-    Evm, EvmVersion, TxResult,
+    Evm, TxResult,
     bytecode::Bytecode,
     env::BlockEnv,
-    ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
+    ethereum::{
+        EthereumEvmVersion, RecoveredTxEnvelope, ethereum_tx_registry, precompiles_for_spec,
+    },
     evm::{AccountInfo as EvmAccountInfo, InMemoryDB, State, logs_hash},
     interpreter::SpecId,
     registry::HandlerError,
@@ -205,12 +207,13 @@ fn execute_spec(
 ) -> Result<SpecOutcome, HandlerError> {
     macro_rules! run {
         ($spec:ident) => {{
-            let mut evm = Evm::<EvmVersion<RecoveredTxEnvelope, { SpecId::$spec as u8 }>>::new(
-                block,
-                ethereum_tx_registry(),
-                database,
-                Default::default(),
-            );
+            let mut evm =
+                Evm::<EthereumEvmVersion<RecoveredTxEnvelope, { SpecId::$spec as u8 }>>::new(
+                    block,
+                    ethereum_tx_registry(),
+                    database,
+                    precompiles_for_spec(SpecId::$spec),
+                );
             let result = evm.transact(tx)?;
             Ok(spec_outcome(&evm, result))
         }};

@@ -21,6 +21,12 @@ pub trait PrecompileProvider {
         input: &[u8],
         gas_limit: u64,
     ) -> Option<Result<PrecompileOutput, InstrStop>>;
+
+    /// Returns active precompile addresses that should start warm each transaction.
+    #[inline]
+    fn warm_addresses(&self) -> &[Address] {
+        &[]
+    }
 }
 
 /// Empty precompile provider.

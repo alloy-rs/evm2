@@ -15,6 +15,7 @@ workspace = true
 
 [dependencies]
 evm2-macros.workspace = true
+evm2-precompiles = { workspace = true, default-features = false }
 
 alloy-consensus.workspace = true
 alloy-eips.workspace = true
@@ -49,19 +50,21 @@ path = "examples/e2e_transfer_sstore.rs"
 doc-scrape-examples = true
 
 [features]
-default = ["std"]
+default = ["std", "secp256k1"]
 std = [
     "alloy-consensus/std",
     "alloy-eips/std",
     "alloy-primitives/std",
     "alloy-rlp/std",
     "alloy-trie/std",
+    "evm2-precompiles/std",
     "once_cell/std",
     "serde?/std",
     "thiserror/std",
 ]
 
 nightly = []
+secp256k1 = ["evm2-precompiles/secp256k1"]
 serde = [
     "dep:serde",
     "alloy-consensus/serde",
