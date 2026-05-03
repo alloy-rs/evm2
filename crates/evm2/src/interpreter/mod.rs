@@ -1,9 +1,7 @@
 //! EVM interpreter.
 
 mod gas;
-pub use gas::{
-    Gas, GasId, GasParamTable, GasParams, GasTracker, MemoryExtensionResult, MemoryGas, num_words,
-};
+pub use gas::{Gas, GasId, GasParamTable, GasParams, GasTracker, MemoryGas, num_words};
 
 #[macro_use]
 mod utils;

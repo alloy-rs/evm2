@@ -388,18 +388,6 @@ impl Gas {
     }
 }
 
-/// Memory expansion result.
-#[derive(Clone, Copy, Debug)]
-#[non_exhaustive]
-pub enum MemoryExtensionResult {
-    /// Memory was extended.
-    Extended,
-    /// Memory size did not change.
-    Same,
-    /// Memory expansion ran out of gas.
-    OutOfGas,
-}
-
 /// Memory gas accounting state.
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq, Hash)]
 pub struct MemoryGas {
