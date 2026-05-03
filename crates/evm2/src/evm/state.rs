@@ -343,17 +343,29 @@ pub enum JournalEntry {
 pub struct State<D> {
     /// Read-only initial database.
     pub initial: D,
-    /// Account overlay keyed by address.
+    /// Account data overlay keyed by address.
+    ///
+    /// Entries are created when account state is loaded or mutated. The tracked
+    /// `original`/`current` pair is used to execute against the in-memory overlay
+    /// and later derive account-level [`StateChanges`]. Presence here does not by
+    /// itself mean the account was touched or warmed.
     pub accounts: HashMap<Address, Tracked<Option<Account>>>,
     /// Persistent storage overlay keyed by account address.
     pub storage: HashMap<Address, StorageOverlay>,
     /// Revert journal.
     pub journal: Vec<JournalEntry>,
-    /// Accounts touched in the current transaction.
+    /// Accounts touched for transaction-finalization account-lifetime rules.
+    ///
+    /// This is separate from the account overlay and the EIP-2929 warm set. A
+    /// touched account may have no field changes, but can still matter for empty
+    /// account deletion/materialization rules across forks.
     pub touched: HashSet<Address>,
     /// Accounts self-destructed in the current transaction.
     pub selfdestructs: HashSet<Address>,
-    /// Transaction-scoped warm account set.
+    /// Transaction-scoped warm account set for EIP-2929 gas accounting.
+    ///
+    /// This tracks whether account access is warm or cold. It does not imply the
+    /// account was touched, changed, or should be emitted in [`StateChanges`].
     pub accessed_accounts: HashSet<Address>,
     /// Transaction-scoped warm storage slot set.
     pub accessed_storage: HashSet<(Address, Word)>,
