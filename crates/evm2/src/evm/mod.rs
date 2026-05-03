@@ -23,8 +23,7 @@ pub mod registry;
 mod state;
 pub use state::{
     Account, AccountChange, AccountInfo, CacheDB, Database, InMemoryDB, JournalEntry, KECCAK_EMPTY,
-    State, StateChanges, StorageChange, StorageChangeSet, StorageOverlay, StorageValue, Tracked,
-    logs_hash,
+    State, StateChanges, StorageChange, StorageChangeSet, StorageOverlay, Tracked, logs_hash,
 };
 
 const MAX_CODE_SIZE: usize = 0x6000;

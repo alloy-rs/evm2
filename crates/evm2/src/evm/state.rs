@@ -112,8 +112,7 @@ impl AccountInfo {
     }
 }
 
-/// Persistent storage value cached by [`State`].
-pub type StorageValue = Tracked<Word>;
+type StorageValue = Tracked<Word>;
 
 /// Mutable account state cached by [`State`].
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -174,7 +173,7 @@ pub struct StorageOverlay {
     /// before applying individual slot changes.
     pub wiped: bool,
     /// Loaded or changed storage slots.
-    pub slots: HashMap<Word, StorageValue>,
+    pub(crate) slots: HashMap<Word, StorageValue>,
 }
 
 /// Complete state transition produced by a transaction.
@@ -547,9 +546,8 @@ impl<D: Database> State<D> {
         }
     }
 
-    /// Gets a persistent storage value.
     #[inline]
-    pub fn get_storage_value(&mut self, address: Address, key: Word) -> &mut StorageValue {
+    fn get_storage_value(&mut self, address: Address, key: Word) -> &mut StorageValue {
         self.ensure_storage_slot(address, key, false);
         self.storage
             .get_mut(&address)
