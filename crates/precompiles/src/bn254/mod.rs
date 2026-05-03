@@ -2,7 +2,7 @@
 use crate::{
     Address, EthPrecompileOutput, EthPrecompileResult, Precompile, PrecompileHalt, PrecompileId,
     crypto, eth_precompile_fn,
-    utilities::{bool_to_bytes32, right_pad},
+    utils::{bool_to_bytes32, right_pad},
 };
 use alloc::vec::Vec;
 

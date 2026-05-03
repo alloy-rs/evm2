@@ -21,7 +21,7 @@ pub mod k256;
 
 use crate::{
     EthPrecompileOutput, EthPrecompileResult, Precompile, PrecompileHalt, PrecompileId, crypto,
-    eth_precompile_fn, utilities::right_pad,
+    eth_precompile_fn, utils::right_pad,
 };
 use primitives::{B256, Bytes, alloy_primitives::B512};
 

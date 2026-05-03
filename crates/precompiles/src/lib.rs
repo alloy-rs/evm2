@@ -23,7 +23,6 @@ pub mod kzg_point_evaluation;
 pub mod modexp;
 pub mod secp256k1;
 pub mod secp256r1;
-pub mod utilities;
 pub mod utils;
 
 extern crate self as primitives;

@@ -3,7 +3,7 @@
 use crate::{
     EthPrecompileOutput, EthPrecompileResult, Precompile, PrecompileHalt, PrecompileId, crypto,
     eth_precompile_fn,
-    utilities::{left_pad, left_pad_vec_be, right_pad_vec, right_pad_with_offset},
+    utils::{left_pad, left_pad_vec_be, right_pad_vec, right_pad_with_offset},
 };
 use alloc::vec::Vec;
 use core::cmp::{max, min};
