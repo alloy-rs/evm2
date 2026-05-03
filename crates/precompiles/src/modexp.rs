@@ -5,9 +5,9 @@ use crate::{
     eth_precompile_fn,
     utilities::{left_pad, left_pad_vec_be, right_pad_vec, right_pad_with_offset},
 };
+use alloc::vec::Vec;
 use core::cmp::{max, min};
 use primitives::{Bytes, U256, eip7823};
-use std::vec::Vec;
 
 eth_precompile_fn!(byzantium_precompile, byzantium_run);
 eth_precompile_fn!(berlin_precompile, berlin_run);
@@ -303,8 +303,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec::Vec;
     use primitives::hex;
-    use std::vec::Vec;
 
     struct Test {
         input: &'static str,

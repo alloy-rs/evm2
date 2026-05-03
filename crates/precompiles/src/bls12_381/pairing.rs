@@ -11,8 +11,8 @@ use crate::{
     },
     crypto, eth_precompile_fn,
 };
+use alloc::vec::Vec;
 use primitives::B256;
-use std::vec::Vec;
 
 eth_precompile_fn!(pairing_precompile, pairing);
 

@@ -4,7 +4,7 @@ use crate::{
     crypto, eth_precompile_fn,
     utilities::{bool_to_bytes32, right_pad},
 };
-use std::vec::Vec;
+use alloc::vec::Vec;
 
 #[cfg_attr(feature = "bn", expect(dead_code))]
 pub mod arkworks;

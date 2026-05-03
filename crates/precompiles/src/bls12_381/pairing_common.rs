@@ -5,7 +5,7 @@
 //! as function parameters.
 
 use crate::PrecompileHalt;
-use std::vec::Vec;
+use alloc::vec::Vec;
 
 /// Shared implementation of `pairing_check_bytes`.
 #[inline]

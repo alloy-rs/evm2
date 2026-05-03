@@ -1,8 +1,8 @@
 //! Interface for the precompiles. It contains the precompile result type,
 //! the precompile output type, and the precompile error type.
+use alloc::{borrow::Cow, boxed::Box, string::String, sync::Arc, vec::Vec};
 use core::fmt::{self, Debug};
 use primitives::{Bytes, OnceLock};
-use std::{borrow::Cow, boxed::Box, string::String, sync::Arc, vec::Vec};
 
 use crate::bls12_381::{G1Point, G1PointScalar, G2Point, G2PointScalar};
 

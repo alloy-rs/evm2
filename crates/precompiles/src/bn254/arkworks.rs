@@ -1,7 +1,7 @@
 //! BN128 precompile using Arkworks BLS12-381 implementation.
 use super::{FQ_LEN, FQ2_LEN, G1_LEN, SCALAR_LEN};
 use crate::PrecompileHalt;
-use std::vec::Vec;
+use alloc::vec::Vec;
 
 use ark_bn254::{Bn254, Fq, Fq2, Fr, G1Affine, G1Projective, G2Affine};
 use ark_ec::{AffineRepr, CurveGroup, pairing::Pairing};

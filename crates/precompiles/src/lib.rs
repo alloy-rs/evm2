@@ -4,9 +4,7 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(not(feature = "std"), no_std)]
 
-#[macro_use]
-#[cfg(not(feature = "std"))]
-extern crate alloc as std;
+extern crate alloc;
 
 #[cfg_attr(
     all(any(target_arch = "x86", target_arch = "x86_64"), target_feature = "avx2"),
@@ -48,13 +46,66 @@ pub mod hardfork {
 
 pub use alloy_primitives::{self, Address, B256, Bytes, U256, b256, hex, hex_literal, keccak256};
 
-pub use std::sync::OnceLock;
-
 pub use id::PrecompileId;
 pub use interface::*;
 #[allow(deprecated)]
 pub use utils::calc_linear_cost_u32;
 pub use utils::{calc_linear_cost, u64_to_address};
+
+#[cfg(not(feature = "std"))]
+mod once_lock {
+    use alloc::boxed::Box;
+    use once_cell::race::OnceBox;
+
+    /// A thread-safe cell which can be written to only once.
+    #[derive(Debug)]
+    pub struct OnceLock<T> {
+        inner: OnceBox<T>,
+    }
+
+    impl<T> Default for OnceLock<T> {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
+    impl<T> OnceLock<T> {
+        /// Creates a new empty OnceLock.
+        #[inline]
+        pub const fn new() -> Self {
+            Self { inner: OnceBox::new() }
+        }
+
+        /// Gets the contents of the OnceLock, initializing it if necessary.
+        #[inline]
+        pub fn get_or_init<F>(&self, f: F) -> &T
+        where
+            F: FnOnce() -> T,
+        {
+            self.inner.get_or_init(|| Box::new(f()))
+        }
+
+        /// Gets the contents of the OnceLock, returning None if it is not initialized.
+        #[inline]
+        pub fn get(&self) -> Option<&T> {
+            self.inner.get()
+        }
+
+        /// Sets the contents of the OnceLock.
+        #[inline]
+        pub fn set(&self, value: T) -> Result<(), T> {
+            self.inner.set(Box::new(value)).map_err(|e| *e)
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+use once_cell as _;
+#[cfg(feature = "std")]
+pub use std::sync::OnceLock;
+
+#[cfg(not(feature = "std"))]
+pub use once_lock::OnceLock;
 
 use core::fmt::{self, Debug};
 use hardfork::SpecId;

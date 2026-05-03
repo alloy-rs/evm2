@@ -1,6 +1,6 @@
 //! Utility function that precompiles use, padding and converting between types.
+use alloc::{borrow::Cow, vec};
 use primitives::{B256, Bytes, b256};
-use std::borrow::Cow;
 
 /// Right-pads the given slice at `offset` with zeroes until `LEN`.
 ///

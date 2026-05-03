@@ -1,4 +1,5 @@
-use std::{borrow::Cow, fmt};
+use alloc::borrow::Cow;
+use core::fmt;
 
 use crate::{Precompile, PrecompileSpecId};
 

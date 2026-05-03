@@ -12,8 +12,8 @@ use ark_ec::{
 };
 use ark_ff::{One, PrimeField, Zero};
 
+use alloc::vec::Vec;
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
-use std::vec::Vec;
 
 /// Reads a single `Fp` field element from the input slice.
 ///

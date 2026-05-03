@@ -21,6 +21,7 @@ workspace = true
 evm2.workspace = true
 alloy-primitives.workspace = true
 cfg-if.workspace = true
+once_cell = { workspace = true, features = ["alloc"] }
 
 # ecrecover
 k256 = { workspace = true, features = ["ecdsa"] }

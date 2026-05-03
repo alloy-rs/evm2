@@ -6,6 +6,7 @@ use crate::{
     bls12_381::{G1PointScalar, G2PointScalar},
     bls12_381_const::{FP_LENGTH, G1_LENGTH, G2_LENGTH, SCALAR_LENGTH, SCALAR_LENGTH_BITS},
 };
+use alloc::vec::Vec;
 use blst::{
     MultiPoint, blst_bendian_from_fp, blst_final_exp, blst_fp, blst_fp_from_bendian, blst_fp2,
     blst_fp12, blst_fp12_is_one, blst_fp12_mul, blst_map_to_g1, blst_map_to_g2, blst_miller_loop,
@@ -14,7 +15,6 @@ use blst::{
     blst_p2_add_or_double_affine, blst_p2_affine, blst_p2_affine_in_g2, blst_p2_affine_on_curve,
     blst_p2_from_affine, blst_p2_mult, blst_p2_to_affine, blst_scalar, blst_scalar_from_bendian,
 };
-use std::vec::Vec;
 
 // Big-endian non-Montgomery form.
 const MODULUS_REPR: [u8; 48] = [
