@@ -29,7 +29,7 @@ pub trait EvmConfig: EvmTypes {
 
 /// EVM version data.
 #[derive(Debug)]
-pub struct EvmVersion<C: EvmConfig = BaseEvmConfig> {
+pub struct EvmVersion<C: EvmConfig = BaseEvmTypes> {
     /// Active hard fork specification.
     pub spec_id: SpecId,
     /// Static opcode gas table.
@@ -42,18 +42,18 @@ pub struct EvmVersion<C: EvmConfig = BaseEvmConfig> {
 
 /// EVM configuration for a specification ID.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct BaseEvmConfig<const SPEC_ID: u8 = { SpecId::OSAKA as u8 }, Tx = ()>(
+pub struct BaseEvmTypes<const SPEC_ID: u8 = { SpecId::OSAKA as u8 }, Tx = ()>(
     PhantomData<fn() -> Tx>,
 );
 
-impl<Tx: 'static, const SPEC_ID: u8> EvmTypes for BaseEvmConfig<SPEC_ID, Tx> {
+impl<Tx: 'static, const SPEC_ID: u8> EvmTypes for BaseEvmTypes<SPEC_ID, Tx> {
     type Tx = Tx;
     type Host = crate::evm::Evm<Self>;
     type Database = InMemoryDB;
     type Precompiles = crate::evm::precompile::NoPrecompiles;
 }
 
-impl<Tx: 'static, const SPEC_ID: u8> EvmConfig for BaseEvmConfig<SPEC_ID, Tx> {
+impl<Tx: 'static, const SPEC_ID: u8> EvmConfig for BaseEvmTypes<SPEC_ID, Tx> {
     const VERSION: &'static EvmVersion<Self> =
         &EvmVersion::new_base(match SpecId::try_from_u8(SPEC_ID) {
             Some(spec_id) => spec_id,

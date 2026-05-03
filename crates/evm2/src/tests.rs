@@ -1,5 +1,5 @@
 use crate::{
-    BaseEvmConfig, Evm,
+    BaseEvmTypes, Evm,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
     evm::{AccountInfo, InMemoryDB},
@@ -8,7 +8,7 @@ use crate::{
 };
 use alloy_primitives::{Address, Bytes};
 
-type TestEvm = Evm<BaseEvmConfig>;
+type TestEvm = Evm<BaseEvmTypes>;
 
 fn run_tx(evm: &mut TestEvm, destination: Address, code: impl Into<Vec<u8>>) {
     let message = Message {

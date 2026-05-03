@@ -227,7 +227,7 @@ impl GasParams {
     /// Creates gas parameters for `spec`.
     #[inline]
     pub const fn new_spec(spec: SpecId) -> Self {
-        crate::EvmVersion::<crate::BaseEvmConfig>::new_base(spec).gas_params
+        crate::EvmVersion::<crate::BaseEvmTypes>::new_base(spec).gas_params
     }
 
     /// Returns the raw gas parameter table.

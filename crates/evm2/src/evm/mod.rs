@@ -366,7 +366,7 @@ impl<C: EvmConfig<Host = Self>> Host for Evm<C> {
 mod tests {
     use super::*;
     use crate::{
-        BaseEvmConfig,
+        BaseEvmTypes,
         bytecode::Bytecode,
         interpreter::{MessageKind, SpecId, op},
         registry::TxRequest,
@@ -380,7 +380,7 @@ mod tests {
         value: u64,
     }
 
-    type TestEvmConfig<Tx = ()> = BaseEvmConfig<{ SpecId::OSAKA as u8 }, Tx>;
+    type TestEvmConfig<Tx = ()> = BaseEvmTypes<{ SpecId::OSAKA as u8 }, Tx>;
 
     impl Typed2718 for TestTx {
         fn ty(&self) -> u8 {

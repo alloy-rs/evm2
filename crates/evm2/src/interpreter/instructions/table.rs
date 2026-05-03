@@ -172,7 +172,7 @@ pub(crate) struct InstructionCx<'a, 'state, H: Host + ?Sized> {
 }
 
 /// EVM instruction implementation.
-pub trait Instruction<C: EvmConfig = crate::BaseEvmConfig> {
+pub trait Instruction<C: EvmConfig = crate::BaseEvmTypes> {
     /// Executes this instruction.
     fn execute(
         &self,
@@ -187,7 +187,7 @@ impl GasTable {
     /// Creates a gas table for `spec`.
     #[inline]
     pub const fn new(spec: SpecId) -> Self {
-        EvmVersion::<crate::BaseEvmConfig>::new_base(spec).gas_table
+        EvmVersion::<crate::BaseEvmTypes>::new_base(spec).gas_table
     }
 
     /// Returns the gas cost for `opcode`.
