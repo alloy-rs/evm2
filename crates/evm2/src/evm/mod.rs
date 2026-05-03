@@ -9,8 +9,7 @@ use crate::{
 };
 use alloc::vec::Vec;
 use alloy_eips::eip2718::Typed2718;
-use alloy_primitives::{Address, B256, Bytes, Log, U256, keccak256};
-use alloy_rlp::{Encodable, Header};
+use alloy_primitives::{Address, B256, Bytes, Log, U256};
 use core::cmp::min;
 use transaction::{EvmError, ExecutionResult, Transaction, intrinsic_gas};
 
@@ -146,7 +145,7 @@ impl<C: EvmConfig> Evm<C> {
                 gas_remaining = 0;
             }
         } else {
-            let created_address = create_address(tx.caller, tx.nonce);
+            let created_address = tx.caller.create(tx.nonce);
             let message = Message {
                 kind: MessageKind::Create,
                 depth: 0,
@@ -206,9 +205,9 @@ impl<C: EvmConfig> Evm<C> {
 
         let address = match message.kind {
             MessageKind::Create if message.depth == 0 => message.destination,
-            MessageKind::Create => create_address(message.caller, caller_nonce),
+            MessageKind::Create => message.caller.create(caller_nonce),
             MessageKind::Create2 => {
-                create2_address(message.caller, message.salt, bytecode.original_byte_slice())
+                message.caller.create2_from_code(message.salt, bytecode.original_byte_slice())
             }
             _ => unreachable!("invalid create message kind"),
         };
@@ -392,10 +391,10 @@ impl<C: EvmConfig<Host = Self>> Host for Evm<C> {
                 MessageKind::Create => {
                     let nonce =
                         self.state.account_info(message.caller).map_or(0, |info| info.nonce);
-                    create_address(message.caller, nonce)
+                    message.caller.create(nonce)
                 }
                 MessageKind::Create2 => {
-                    create2_address(message.caller, message.salt, bytecode.original_byte_slice())
+                    message.caller.create2_from_code(message.salt, bytecode.original_byte_slice())
                 }
                 _ => unreachable!("checked above"),
             }
@@ -441,23 +440,6 @@ impl<C: EvmConfig<Host = Self>> Host for Evm<C> {
             previously_destroyed,
         })
     }
-}
-
-fn create_address(caller: Address, nonce: u64) -> Address {
-    let mut out = Vec::new();
-    Header { list: true, payload_length: caller.length() + nonce.length() }.encode(&mut out);
-    caller.encode(&mut out);
-    nonce.encode(&mut out);
-    Address::from_slice(&keccak256(out)[12..])
-}
-
-fn create2_address(caller: Address, salt: B256, initcode: &[u8]) -> Address {
-    let mut input = Vec::with_capacity(85);
-    input.push(0xff);
-    input.extend_from_slice(caller.as_slice());
-    input.extend_from_slice(salt.as_slice());
-    input.extend_from_slice(keccak256(initcode).as_slice());
-    Address::from_slice(&keccak256(input)[12..])
 }
 
 #[cfg(test)]
@@ -806,7 +788,7 @@ mod tests {
         let caller_info = evm.state().account_info(caller).unwrap();
         assert_eq!(caller_info.nonce, 1);
         assert!(caller_info.balance < U256::from(1_000_000));
-        let created = create_address(caller, 0);
+        let created = caller.create(0);
         let code = evm.state.get_code(created);
         assert_eq!(code.original_byte_slice(), &[0x42]);
     }
