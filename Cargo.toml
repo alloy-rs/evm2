@@ -35,6 +35,7 @@ all = "warn"
 [workspace.dependencies]
 evm2 = { path = "crates/evm2" }
 evm2-macros = { path = "crates/evm2-macros" }
+evm2-precompiles = { path = "crates/precompiles", default-features = false }
 
 alloy-consensus = { version = "2.0.4", default-features = false }
 alloy-eips = { version = "2.0.4", default-features = false }

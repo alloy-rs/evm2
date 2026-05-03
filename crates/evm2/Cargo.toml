@@ -15,6 +15,7 @@ workspace = true
 
 [dependencies]
 evm2-macros.workspace = true
+evm2-precompiles.workspace = true
 
 alloy-consensus.workspace = true
 alloy-eips.workspace = true
@@ -24,7 +25,6 @@ alloy-trie = { workspace = true, features = ["ethereum"] }
 thiserror.workspace = true
 
 # no_std
-once_cell = { workspace = true, features = ["alloc"] }
 paste.workspace = true
 
 # "serde"
@@ -56,7 +56,7 @@ std = [
     "alloy-primitives/std",
     "alloy-rlp/std",
     "alloy-trie/std",
-    "once_cell/std",
+    "evm2-precompiles/std",
     "serde?/std",
     "thiserror/std",
 ]

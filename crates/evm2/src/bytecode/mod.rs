@@ -1,10 +1,10 @@
 //! EVM bytecode.
 
-use crate::once_lock::OnceLock;
 use alloc::sync::Arc;
 use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, keccak256};
 use analysis::analyze_legacy;
 use core::{cmp::Ordering, hash};
+use evm2_precompiles::OnceLock;
 use thiserror::Error;
 
 mod analysis;

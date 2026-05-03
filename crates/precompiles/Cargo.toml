@@ -18,7 +18,6 @@ rustdoc-args = ["--cfg", "docsrs"]
 workspace = true
 
 [dependencies]
-evm2.workspace = true
 alloy-primitives.workspace = true
 cfg-if.workspace = true
 once_cell = { workspace = true, features = ["alloc"] }

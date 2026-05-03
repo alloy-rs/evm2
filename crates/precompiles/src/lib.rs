@@ -41,7 +41,57 @@ pub mod eip4844 {
 
 /// Hardfork specification IDs.
 pub mod hardfork {
-    pub use evm2::interpreter::SpecId;
+    /// Specification IDs and their activation block.
+    #[repr(u8)]
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[allow(non_camel_case_types)]
+    pub enum SpecId {
+        /// Frontier hard fork.
+        FRONTIER = 0,
+        /// Frontier Thawing hard fork.
+        FRONTIER_THAWING,
+        /// Homestead hard fork.
+        HOMESTEAD,
+        /// DAO Fork hard fork.
+        DAO_FORK,
+        /// Tangerine Whistle hard fork.
+        TANGERINE,
+        /// Spurious Dragon hard fork.
+        SPURIOUS_DRAGON,
+        /// Byzantium hard fork.
+        BYZANTIUM,
+        /// Constantinople hard fork.
+        CONSTANTINOPLE,
+        /// Petersburg hard fork.
+        PETERSBURG,
+        /// Istanbul hard fork.
+        ISTANBUL,
+        /// Muir Glacier hard fork.
+        MUIR_GLACIER,
+        /// Berlin hard fork.
+        BERLIN,
+        /// London hard fork.
+        LONDON,
+        /// Arrow Glacier hard fork.
+        ARROW_GLACIER,
+        /// Gray Glacier hard fork.
+        GRAY_GLACIER,
+        /// Paris/Merge hard fork.
+        MERGE,
+        /// Shanghai hard fork.
+        SHANGHAI,
+        /// Cancun hard fork.
+        CANCUN,
+        /// Prague hard fork.
+        PRAGUE,
+        /// Osaka hard fork.
+        #[default]
+        OSAKA,
+        /// Amsterdam hard fork.
+        AMSTERDAM,
+    }
+
+    pub use SpecId::*;
 }
 
 pub use alloy_primitives::{self, Address, B256, Bytes, U256, b256, hex, hex_literal, keccak256};
@@ -273,7 +323,6 @@ impl PrecompileSpecId {
             CANCUN => Self::CANCUN,
             PRAGUE => Self::PRAGUE,
             OSAKA | AMSTERDAM => Self::OSAKA,
-            _ => Self::OSAKA,
         }
     }
 }

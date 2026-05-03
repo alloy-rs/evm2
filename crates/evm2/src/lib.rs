@@ -62,8 +62,6 @@ pub use evm::{
     env, precompile, registry,
 };
 
-mod once_lock;
-
 #[cfg(test)]
 mod tests;
 
