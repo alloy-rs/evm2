@@ -232,9 +232,7 @@ impl<C: EvmConfig> Evm<C> {
         let address = match message.kind {
             MessageKind::Create if message.depth == 0 => message.destination,
             MessageKind::Create => message.caller.create(caller_nonce),
-            MessageKind::Create2 => {
-                message.caller.create2_from_code(message.salt, bytecode.original_byte_slice())
-            }
+            MessageKind::Create2 => message.caller.create2(message.salt, bytecode.hash_slow()),
             _ => unreachable!("invalid create message kind"),
         };
 
@@ -445,9 +443,7 @@ impl<C: EvmConfig<Host = Self>> Host for Evm<C> {
                         self.state.account_info(message.caller).map_or(0, |info| info.nonce);
                     message.caller.create(nonce)
                 }
-                MessageKind::Create2 => {
-                    message.caller.create2_from_code(message.salt, bytecode.original_byte_slice())
-                }
+                MessageKind::Create2 => message.caller.create2(message.salt, bytecode.hash_slow()),
                 _ => unreachable!("checked above"),
             }
         } else {

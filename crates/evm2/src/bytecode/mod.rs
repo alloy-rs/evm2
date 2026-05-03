@@ -2,7 +2,7 @@
 
 use crate::once_lock::OnceLock;
 use alloc::sync::Arc;
-use alloy_primitives::{Address, B256, Bytes, keccak256};
+use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, keccak256};
 use analysis::analyze_legacy;
 use core::{cmp::Ordering, hash};
 use thiserror::Error;
@@ -73,6 +73,8 @@ struct BytecodeInner {
     original_len: usize,
     /// The jump table for legacy bytecode.
     jump_table: JumpTable,
+    /// Cached hash of the original bytecode.
+    hash: OnceLock<B256>,
 }
 
 /// The kind of bytecode.
@@ -139,6 +141,11 @@ impl Bytecode {
                 bytecode: Bytes::from_static(&[crate::interpreter::op::STOP]),
                 original_len: 0,
                 jump_table: JumpTable::default(),
+                hash: {
+                    let hash = OnceLock::new();
+                    let _ = hash.set(KECCAK256_EMPTY);
+                    hash
+                },
             }))
         })
     }
@@ -157,6 +164,7 @@ impl Bytecode {
             original_len,
             bytecode,
             jump_table,
+            hash: OnceLock::new(),
         }))
     }
 
@@ -180,6 +188,7 @@ impl Bytecode {
             original_len: raw.len(),
             bytecode: raw,
             jump_table: JumpTable::default(),
+            hash: OnceLock::new(),
         }))
     }
 
@@ -214,6 +223,7 @@ impl Bytecode {
             original_len: bytes.len(),
             bytecode: bytes,
             jump_table: JumpTable::default(),
+            hash: OnceLock::new(),
         })))
     }
 
@@ -253,6 +263,7 @@ impl Bytecode {
             bytecode,
             original_len,
             jump_table,
+            hash: OnceLock::new(),
         }))
     }
 
@@ -291,10 +302,13 @@ impl Bytecode {
         &self.0.jump_table
     }
 
-    /// Calculates hash of the bytecode.
+    /// Calculates or returns cached hash of the bytecode.
     #[inline]
     pub fn hash_slow(&self) -> B256 {
-        keccak256(self.original_byte_slice())
+        if let Some(hash) = self.0.hash.get() {
+            return *hash;
+        }
+        *self.0.hash.get_or_init(|| keccak256(self.original_byte_slice()))
     }
 
     /// Returns a reference to the potentially padded bytecode bytes.

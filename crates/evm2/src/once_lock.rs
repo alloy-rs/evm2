@@ -40,4 +40,16 @@ impl<T> OnceLock<T> {
     {
         self.inner.get_or_init(|| Box::new(f()))
     }
+
+    /// Gets the contents of the OnceLock, returning None if it is not initialized.
+    #[inline]
+    pub(crate) fn get(&self) -> Option<&T> {
+        self.inner.get()
+    }
+
+    /// Sets the contents of the OnceLock.
+    #[inline]
+    pub(crate) fn set(&self, value: T) -> Result<(), T> {
+        self.inner.set(Box::new(value)).map_err(|value| *value)
+    }
 }
