@@ -1,7 +1,7 @@
 //! Basic in-memory EVM host state.
 
 use crate::{bytecode::Bytecode, interpreter::Word};
-use alloc::vec::Vec;
+use alloc::{string::ToString, vec::Vec};
 use alloy_primitives::{
     Address, B256, U256, keccak256,
     map::{self, HashMap},

@@ -56,12 +56,6 @@ jobs:
       - uses: taiki-e/install-action@nextest
       - name: test
         run: cargo nextest run --workspace ${{ matrix.flags }}
-      - name: Download state test fixtures
-        if: matrix.os == 'ubuntu-latest' && matrix.rust == 'stable' && matrix.flags == ''
-        run: ./scripts/setup-test-fixtures.sh
-      - name: Run state test smoke
-        if: matrix.os == 'ubuntu-latest' && matrix.rust == 'stable' && matrix.flags == ''
-        run: cargo nextest run -p evm2-statetest --test statetest -j28 legacy_constantinople::stExample/add11.json
       - name: doctest
         run: cargo test --workspace ${{ matrix.flags }} --doc
 
@@ -118,6 +112,22 @@ jobs:
       - uses: actions/checkout@v5
       - uses: crate-ci/typos@v1
 
+  statetest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: rui314/setup-mold@v1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - uses: taiki-e/install-action@nextest
+      - name: Download state test fixtures
+        run: ./scripts/setup-test-fixtures.sh
+      - name: Run state test smoke
+        run: cargo nextest run -p evm2-statetest --test statetest --ignore-default-filter -j28 legacy_constantinople::stExample/add11.json
+
   clippy:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -168,6 +178,7 @@ jobs:
       - feature-checks
       - examples
       - typos
+      - statetest
       - clippy
       - docs
       - fmt

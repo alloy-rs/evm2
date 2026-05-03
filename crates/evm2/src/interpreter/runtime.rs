@@ -141,7 +141,7 @@ impl Interpreter {
         let bytecode = BytecodeRef::new(&self.bytecode);
         let pc = Pc::from_ptr(pc);
         let op = pc.op();
-        let instr = const { &<C as InstructionTables>::INSTRUCTIONS }[op as usize];
+        let instr = <C as InstructionTables>::INSTRUCTIONS[op as usize];
         let (pc, stack_len) = instr(
             pc,
             Stack::new(&mut self.stack, stack_len),

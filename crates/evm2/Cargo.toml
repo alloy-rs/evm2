@@ -30,8 +30,8 @@ paste.workspace = true
 serde = { workspace = true, features = ["derive", "alloc"], optional = true }
 
 [dev-dependencies]
-alloy-consensus.workspace = true
-serde_json.workspace = true
+alloy-consensus = { workspace = true, features = ["std"] }
+serde_json = { workspace = true, features = ["std"] }
 
 [[example]]
 name = "registry_tx_handler"
@@ -50,7 +50,14 @@ doc-scrape-examples = true
 
 [features]
 default = ["std"]
-std = []
+std = [
+    "alloy-eips/std",
+    "alloy-primitives/std",
+    "alloy-rlp/std",
+    "alloy-trie/std",
+    "serde?/std",
+    "thiserror/std",
+]
 
 nightly = []
 serde = ["dep:serde", "alloy-primitives/serde"]

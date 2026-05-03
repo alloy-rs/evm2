@@ -26,30 +26,33 @@ already present.
 Run all discovered state tests with nextest:
 
 ```sh
-cargo nextest run -p evm2-statetest --test statetest -j28
+cargo nextest run -p evm2-statetest --test statetest --ignore-default-filter -j28
 ```
 
 Each JSON file is listed as a separate nextest test. `-j` controls how many
 state test files nextest runs concurrently. In CI we run a smoke test from this
 default layout without passing state-test environment variables.
 
+The default nextest profile excludes this crate from workspace runs. Pass
+`--ignore-default-filter` when running state tests explicitly.
+
 Run one subdirectory across all downloaded suites:
 
 ```sh
-SUBDIR=stRevertTest cargo nextest run -p evm2-statetest --test statetest -j28
+SUBDIR=stRevertTest cargo nextest run -p evm2-statetest --test statetest --ignore-default-filter -j28
 ```
 
 Run one explicit test file:
 
 ```sh
 cargo nextest run -p evm2-statetest --test statetest -j28 \
-  legacy_constantinople::stExample/add11.json
+  --ignore-default-filter legacy_constantinople::stExample/add11.json
 ```
 
 List all discovered state test files:
 
 ```sh
-cargo nextest list -p evm2-statetest --test statetest
+cargo nextest list -p evm2-statetest --test statetest --ignore-default-filter
 ```
 
 For local experiments, `EVM2_STATETEST_ROOT`, `ETHEREUM_TESTS`, `ETHTESTS`,

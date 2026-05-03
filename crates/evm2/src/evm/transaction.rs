@@ -69,9 +69,12 @@ pub enum EvmError {
 /// Calculates intrinsic transaction gas.
 pub fn intrinsic_gas(spec: SpecId, tx: &Transaction) -> u64 {
     let non_zero_multiplier = if spec.enables(SpecId::ISTANBUL) { 16 } else { 68 };
-    let data_gas = tx
-        .data
-        .iter()
-        .fold(0u64, |gas, byte| gas + if *byte == 0 { 4 } else { non_zero_multiplier });
-    21_000 + data_gas + if tx.to.is_none() && spec.enables(SpecId::HOMESTEAD) { 32_000 } else { 0 }
+    let mut gas = 21_000;
+    for byte in &tx.data {
+        gas += if *byte == 0 { 4 } else { non_zero_multiplier };
+    }
+    if tx.to.is_none() && spec.enables(SpecId::HOMESTEAD) {
+        gas += 32_000;
+    }
+    gas
 }

@@ -138,10 +138,11 @@ pub(crate) type TailInstructionTable<C> = [TailInstructionFn<C>; 256];
 
 pub(crate) trait InstructionTables: EvmConfig {
     #[cfg(not(feature = "nightly"))]
-    const INSTRUCTIONS: InstructionTable<Self> = make_normal_instruction_table::<Self>();
+    const INSTRUCTIONS: &'static InstructionTable<Self> = &make_normal_instruction_table::<Self>();
 
     #[cfg(feature = "nightly")]
-    const TAIL_INSTRUCTIONS: TailInstructionTable<Self> = make_tail_instruction_table::<Self>();
+    const TAIL_INSTRUCTIONS: &'static TailInstructionTable<Self> =
+        &make_tail_instruction_table::<Self>();
 }
 
 impl<C: EvmConfig> InstructionTables for C {}
@@ -506,7 +507,7 @@ extern_table! {
         gas: &mut Gas,
         state: &mut State<'_, C::Host>,
     ) -> InstructionFnRet {
-        let instr = const { C::INSTRUCTION_IMPLS.get_or_default(OP) };
+        let instr = C::INSTRUCTION_IMPLS.get_or_default(OP);
         let r;
         match pre_step::<C, OP>(gas) {
             Ok(()) => {
@@ -538,7 +539,7 @@ extern_table! {
             cold_path();
             tail_return!(tail_call_restore::<C>(pc, stack, gas, state, e));
         }
-        let instr = const { C::INSTRUCTION_IMPLS.get_or_default(OP) };
+        let instr = C::INSTRUCTION_IMPLS.get_or_default(OP);
         if let Err(e) = instr.execute(&mut pc, stack.as_mut(), gas, state) {
             cold_path();
             inc_pc::<OP>(&mut pc);
@@ -586,7 +587,7 @@ extern_table! {
 
 #[inline(always)]
 fn pre_step<C: EvmConfig, const OP: u8>(gas: &mut Gas) -> Result {
-    gas.spend(const { C::GAS_TABLE.get(OP) } as _)
+    gas.spend(C::GAS_TABLE.get(OP) as _)
 }
 
 #[inline(always)]
@@ -627,7 +628,7 @@ mod tests {
         type Database = crate::evm::InMemoryDB;
 
         const SPEC_ID: SpecId = SpecId::OSAKA;
-        const INSTRUCTION_IMPLS: InstructionImplTable<Self> = {
+        const INSTRUCTION_IMPLS: &'static InstructionImplTable<Self> = &{
             let mut table = InstructionImplTable::new();
             table.set(CUSTOM_OPCODE, Some(&custom));
             table
