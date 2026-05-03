@@ -1,7 +1,7 @@
 //! EVM configuration.
 
 use crate::{
-    evm::InMemoryDB,
+    evm::{InMemoryDB, precompile::PrecompileProvider},
     interpreter::{GasParams, GasTable, InstructionImplTable, SpecId},
 };
 use core::marker::PhantomData;
@@ -16,6 +16,9 @@ pub trait EvmConfig: Sized + 'static {
 
     /// Database type used by this EVM.
     type Database: crate::evm::Database;
+
+    /// Precompile provider used by this EVM.
+    type Precompiles: PrecompileProvider;
 
     /// Active hard fork specification.
     const SPEC_ID: SpecId;
@@ -38,6 +41,7 @@ impl<Tx: 'static, const SPEC: u8> EvmConfig for EvmVersion<Tx, SPEC> {
     type Tx = Tx;
     type Host = crate::evm::Evm<Self>;
     type Database = InMemoryDB;
+    type Precompiles = crate::evm::precompile::NoPrecompiles;
 
     const SPEC_ID: SpecId = match SpecId::try_from_u8(SPEC) {
         Some(spec_id) => spec_id,

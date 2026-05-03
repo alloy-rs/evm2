@@ -626,6 +626,7 @@ mod tests {
         type Tx = ();
         type Host = TestHost;
         type Database = crate::evm::InMemoryDB;
+        type Precompiles = crate::evm::precompile::NoPrecompiles;
 
         const SPEC_ID: SpecId = SpecId::OSAKA;
         const INSTRUCTION_IMPLS: &'static InstructionImplTable<Self> = &{

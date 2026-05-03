@@ -1,5 +1,6 @@
 //! EVM execution host.
 
+use self::precompile::{PrecompileOutput, PrecompileProvider};
 use crate::{
     AccountLoad, EvmConfig, SelfDestructResult,
     bytecode::Bytecode,
@@ -40,10 +41,11 @@ pub struct Evm<C: EvmConfig> {
     block: BlockEnv,
     registry: TxRegistry<C::Tx, TxResult>,
     state: State<C::Database>,
+    precompiles: C::Precompiles,
     logs: Vec<Log>,
 }
 
-impl<C: EvmConfig<Database: Default>> Evm<C> {
+impl<C: EvmConfig<Database: Default, Precompiles: Default>> Evm<C> {
     /// Creates an EVM with the provided transaction handler registry and hard fork specification.
     #[inline]
     pub fn new(block: BlockEnv, registry: TxRegistry<C::Tx, TxResult>) -> Self {
@@ -58,8 +60,22 @@ impl<C: EvmConfig> Evm<C> {
         block: BlockEnv,
         registry: TxRegistry<C::Tx, TxResult>,
         database: C::Database,
+    ) -> Self
+    where
+        C::Precompiles: Default,
+    {
+        Self::with_database_and_precompiles(block, registry, database, C::Precompiles::default())
+    }
+
+    /// Creates an EVM with the provided database and precompile provider.
+    #[inline]
+    pub fn with_database_and_precompiles(
+        block: BlockEnv,
+        registry: TxRegistry<C::Tx, TxResult>,
+        database: C::Database,
+        precompiles: C::Precompiles,
     ) -> Self {
-        Self { block, registry, state: State::new(database), logs: Vec::new() }
+        Self { block, registry, state: State::new(database), precompiles, logs: Vec::new() }
     }
 
     /// Returns the transaction handler registry.
@@ -90,6 +106,16 @@ impl<C: EvmConfig> Evm<C> {
     /// Returns emitted logs.
     pub fn logs(&self) -> &[Log] {
         &self.logs
+    }
+
+    /// Returns the precompile provider.
+    pub const fn precompiles(&self) -> &C::Precompiles {
+        &self.precompiles
+    }
+
+    /// Returns the precompile provider mutably.
+    pub const fn precompiles_mut(&mut self) -> &mut C::Precompiles {
+        &mut self.precompiles
     }
 
     /// Executes a transaction against the host state.
@@ -278,6 +304,24 @@ impl<C: EvmConfig> Evm<C> {
             };
         }
 
+        if let Some(result) = self.execute_precompile(&message) {
+            let (stop, gas_remaining, output) = match result {
+                Ok(output) if output.gas_used <= message.gas_limit => {
+                    (InstrStop::Return, message.gas_limit - output.gas_used, output.output)
+                }
+                Ok(_) => (InstrStop::PrecompileOOG, 0, Bytes::new()),
+                Err(stop) => {
+                    let gas_remaining = if stop.is_error() { 0 } else { message.gas_limit };
+                    (stop, gas_remaining, Bytes::new())
+                }
+            };
+            if !stop.is_success() {
+                self.state.rollback(checkpoint);
+                self.logs.truncate(log_checkpoint);
+            }
+            return FrameResult { stop, gas_remaining, output };
+        }
+
         let mut interpreter = Interpreter::new(bytecode, tx_env, message);
         let stop = interpreter.run::<C>(self);
         let mut gas = interpreter.gas();
@@ -297,6 +341,14 @@ impl<C: EvmConfig> Evm<C> {
         }
 
         FrameResult { stop, gas_remaining, output }
+    }
+
+    #[inline]
+    fn execute_precompile(
+        &mut self,
+        message: &Message,
+    ) -> Option<Result<PrecompileOutput, InstrStop>> {
+        self.precompiles.execute(message.code_address, &message.input, message.gas_limit)
     }
 }
 
@@ -474,6 +526,38 @@ mod tests {
         Ok(TxResult { status: true, gas_used: req.tx.value + 1 })
     }
 
+    #[derive(Debug, Default)]
+    struct TestPrecompiles {
+        calls: usize,
+    }
+
+    impl PrecompileProvider for TestPrecompiles {
+        fn execute(
+            &mut self,
+            address: Address,
+            input: &[u8],
+            _gas_limit: u64,
+        ) -> Option<Result<PrecompileOutput, InstrStop>> {
+            if address != Address::with_last_byte(1) {
+                return None;
+            }
+            self.calls += 1;
+            Some(Ok(PrecompileOutput { gas_used: 7, output: Bytes::copy_from_slice(input) }))
+        }
+    }
+
+    #[derive(Debug)]
+    struct PrecompileConfig;
+
+    impl EvmConfig for PrecompileConfig {
+        type Tx = TestTx;
+        type Host = Evm<Self>;
+        type Database = InMemoryDB;
+        type Precompiles = TestPrecompiles;
+
+        const SPEC_ID: SpecId = SpecId::CANCUN;
+    }
+
     #[test]
     fn dispatches_transaction_by_typed_2718_type() {
         let registry =
@@ -515,6 +599,39 @@ mod tests {
         let result = Host::execute_message(&mut evm, TxEnv::default(), bytecode, message);
 
         assert_eq!(result, Ok(Word::from(1)));
+    }
+
+    #[test]
+    fn execute_dispatches_precompile_provider() {
+        let caller = Address::from([0xaa; 20]);
+        let precompile = Address::with_last_byte(1);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(
+            caller,
+            AccountInfo { balance: U256::from(1_000_000), ..Default::default() },
+        );
+        let mut evm = Evm::<PrecompileConfig>::with_database_and_precompiles(
+            BlockEnv::default(),
+            TxRegistry::new(),
+            database,
+            TestPrecompiles::default(),
+        );
+
+        let result = evm.execute(&Transaction {
+            caller,
+            to: Some(precompile),
+            gas_limit: 100_000,
+            gas_price: U256::ONE,
+            data: Bytes::from_static(&[1, 2, 3]),
+            value: U256::from(4),
+            ..Transaction::default()
+        });
+
+        let result = result.unwrap();
+        assert!(result.is_success());
+        assert_eq!(result.output, Bytes::from_static(&[1, 2, 3]));
+        assert_eq!(evm.precompiles().calls, 1);
+        assert_eq!(evm.state().account_info(precompile).unwrap().balance, U256::from(4));
     }
 
     #[test]
