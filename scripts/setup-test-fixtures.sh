@@ -25,6 +25,16 @@ MAIN_STABLE_DIR="$FIXTURES_DIR/main/stable"
 MAIN_DEVELOP_DIR="$FIXTURES_DIR/main/develop"
 LEGACY_DIR="$FIXTURES_DIR/legacytests"
 
+if [[ -n "${EVM2_STATETEST_STABLE:-}" && "${EVM2_STATETEST_STABLE:-}" != "0" ]]; then
+    MAIN_DIR="$MAIN_STABLE_DIR"
+    MAIN_TAR="fixtures_stable.tar.gz"
+    MAIN_LABEL="main stable"
+else
+    MAIN_DIR="$MAIN_DEVELOP_DIR"
+    MAIN_TAR="fixtures_develop.tar.gz"
+    MAIN_LABEL="main develop"
+fi
+
 retry() {
     local attempts=5
     local delay=2
@@ -81,15 +91,13 @@ clone_legacy_tests() {
 }
 
 echo "=== Fetching state test fixtures ==="
-download_and_extract "$MAIN_STABLE_DIR" "fixtures_stable.tar.gz" "main stable" "$MAIN_VERSION" &
-stable_pid=$!
-download_and_extract "$MAIN_DEVELOP_DIR" "fixtures_develop.tar.gz" "main develop" "$MAIN_VERSION" &
-develop_pid=$!
+download_and_extract "$MAIN_DIR" "$MAIN_TAR" "$MAIN_LABEL" "$MAIN_VERSION" &
+main_pid=$!
 clone_legacy_tests &
 legacy_pid=$!
 
 status=0
-for pid in "$stable_pid" "$develop_pid" "$legacy_pid"; do
+for pid in "$main_pid" "$legacy_pid"; do
     if ! wait "$pid"; then
         status=1
     fi

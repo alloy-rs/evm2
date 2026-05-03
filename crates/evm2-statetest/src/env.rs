@@ -15,6 +15,9 @@ pub(crate) const ETHTESTS_ENV: &str = "ETHTESTS";
 /// Environment variable for the downloaded fixture root.
 pub(crate) const TEST_FIXTURES_ENV: &str = "EVM2_TEST_FIXTURES";
 
+/// Environment variable for selecting stable EEST fixtures instead of develop.
+pub(crate) const EEST_STABLE_ENV: &str = "EVM2_STATETEST_STABLE";
+
 /// revmc-compatible environment variable for the downloaded fixture root.
 pub(crate) const REVMC_TEST_FIXTURES_ENV: &str = "REVMC_TEST_FIXTURES";
 
@@ -82,17 +85,13 @@ pub(crate) fn state_test_roots() -> Vec<StateTestRoot> {
 pub(crate) fn default_state_test_roots() -> Vec<StateTestRoot> {
     let fixtures = fixtures_root();
     let ethereum_tests = workspace_root().join(DEFAULT_ETHEREUM_TESTS_PATH);
+    let eest_path = if env_flag(EEST_STABLE_ENV) {
+        fixtures.join("main/stable/state_tests")
+    } else {
+        fixtures.join("main/develop/state_tests")
+    };
     let mut roots = vec![
-        StateTestRoot {
-            name: "main_stable",
-            label: "execution-spec-tests stable",
-            path: fixtures.join("main/stable/state_tests"),
-        },
-        StateTestRoot {
-            name: "main_develop",
-            label: "execution-spec-tests develop",
-            path: fixtures.join("main/develop/state_tests"),
-        },
+        StateTestRoot { name: "eest", label: "execution-spec-tests", path: eest_path },
         StateTestRoot {
             name: "legacy_cancun",
             label: "legacy Cancun",
@@ -117,6 +116,10 @@ pub(crate) fn default_state_test_roots() -> Vec<StateTestRoot> {
         apply_subdir(&mut root.path);
     }
     roots
+}
+
+fn env_flag(name: &str) -> bool {
+    env::var_os(name).is_some_and(|value| !value.is_empty() && value.to_str() != Some("0"))
 }
 
 fn general_state_tests_path(root: &Path) -> Option<PathBuf> {

@@ -2,7 +2,7 @@
 
 Ethereum state test runner for evm2.
 
-The default fixture layout is repo-relative and matches revm/revmc:
+The default fixture layout is repo-relative:
 
 ```text
 test-fixtures/
@@ -29,9 +29,13 @@ Run all discovered state tests with nextest:
 cargo nextest run -p evm2-statetest --test statetest --ignore-default-filter -j28
 ```
 
-Each JSON file is listed as a separate nextest test. `-j` controls how many
-state test files nextest runs concurrently. In CI we run a smoke test from this
-default layout without passing state-test environment variables.
+By default, this runs `main/develop/state_tests` plus the legacy Cancun and
+Constantinople state tests. EEST develop includes the stable fixtures, so stable
+is not run separately. Each JSON file is listed as a separate nextest test. `-j`
+controls how many state test files nextest runs concurrently.
+
+Set `EVM2_STATETEST_STABLE=1` to download and run EEST stable fixtures instead
+of develop.
 
 The default nextest profile excludes this crate from workspace runs. Pass
 `--ignore-default-filter` when running state tests explicitly.
@@ -55,6 +59,6 @@ List all discovered state test files:
 cargo nextest list -p evm2-statetest --test statetest --ignore-default-filter
 ```
 
-For local experiments, `EVM2_STATETEST_ROOT`, `ETHEREUM_TESTS`, `ETHTESTS`,
-`EVM2_TEST_FIXTURES`, `REVMC_TEST_FIXTURES`, and `SUBDIR` are still supported as
-optional compatibility filters.
+For local experiments, `EVM2_STATETEST_ROOT`, `EVM2_STATETEST_STABLE`,
+`ETHEREUM_TESTS`, `ETHTESTS`, `EVM2_TEST_FIXTURES`, `REVMC_TEST_FIXTURES`, and
+`SUBDIR` are still supported as optional compatibility filters.
