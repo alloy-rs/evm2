@@ -241,8 +241,8 @@ impl Precompile {
     /// Returns `Ok(PrecompileOutput)` on success or non-fatal halt,
     /// or `Err(PrecompileError)` for fatal/unrecoverable errors.
     #[inline]
-    pub fn execute(&self, input: &[u8], gas_limit: u64, reservoir: u64) -> PrecompileResult {
-        (self.fn_)(input, gas_limit, reservoir)
+    pub fn execute(&self, input: &[u8], gas: &mut Gas) -> PrecompileResult {
+        (self.fn_)(input, gas)
     }
 }
 

@@ -5,8 +5,8 @@
 //! with modifications for EIP-152 variable round counts.
 
 use crate::{
-    EthPrecompileOutput, EthPrecompileResult, Precompile, PrecompileHalt, PrecompileId, crypto,
-    eth_precompile_fn,
+    EthPrecompileOutput, EthPrecompileResult, Gas, Precompile, PrecompileHalt, PrecompileId,
+    crypto, eth_precompile_fn,
 };
 
 #[cfg(all(
@@ -80,7 +80,7 @@ pub const FUN: Precompile =
 /// input format:
 /// [4 bytes for rounds][64 bytes for h][128 bytes for m][8 bytes for t_0][8 bytes for t_1][1 byte
 /// for f]
-pub fn run(input: &[u8], gas_limit: u64) -> EthPrecompileResult {
+pub fn run(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
     if input.len() != INPUT_LENGTH {
         return Err(PrecompileHalt::Blake2WrongLength);
     }
@@ -88,9 +88,7 @@ pub fn run(input: &[u8], gas_limit: u64) -> EthPrecompileResult {
     // Parse number of rounds (4 bytes)
     let rounds = u32::from_be_bytes(input[..4].try_into().unwrap());
     let gas_used = rounds as u64 * F_ROUND;
-    if gas_used > gas_limit {
-        return Err(PrecompileHalt::OutOfGas);
-    }
+    gas.spend(gas_used)?;
 
     // Parse final block flag
     let f = match input[212] {
@@ -122,5 +120,5 @@ pub fn run(input: &[u8], gas_limit: u64) -> EthPrecompileResult {
         out[i..i + 8].copy_from_slice(&h.to_le_bytes());
     }
 
-    Ok(EthPrecompileOutput::new(gas_used, out.into()))
+    Ok(EthPrecompileOutput::new(out.into()))
 }

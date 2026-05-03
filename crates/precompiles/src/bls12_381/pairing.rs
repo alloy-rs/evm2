@@ -4,7 +4,7 @@ use super::{
     utils::{remove_g1_padding, remove_g2_padding},
 };
 use crate::{
-    EthPrecompileOutput, EthPrecompileResult, Precompile, PrecompileHalt, PrecompileId,
+    EthPrecompileOutput, EthPrecompileResult, Gas, Precompile, PrecompileHalt, PrecompileId,
     bls12_381_const::{
         PADDED_G1_LENGTH, PADDED_G2_LENGTH, PAIRING_ADDRESS, PAIRING_INPUT_LENGTH,
         PAIRING_MULTIPLIER_BASE, PAIRING_OFFSET_BASE,
@@ -32,7 +32,7 @@ pub const PRECOMPILE: Precompile =
 /// target field and 0x00 otherwise.
 ///
 /// See also: <https://eips.ethereum.org/EIPS/eip-2537#abi-for-pairing>
-pub fn pairing(input: &[u8], gas_limit: u64) -> EthPrecompileResult {
+pub fn pairing(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
     let input_len = input.len();
     if input_len == 0 || !input_len.is_multiple_of(PAIRING_INPUT_LENGTH) {
         return Err(PrecompileHalt::Bls12381PairingInputLength);
@@ -40,9 +40,7 @@ pub fn pairing(input: &[u8], gas_limit: u64) -> EthPrecompileResult {
 
     let k = input_len / PAIRING_INPUT_LENGTH;
     let required_gas: u64 = PAIRING_MULTIPLIER_BASE * k as u64 + PAIRING_OFFSET_BASE;
-    if required_gas > gas_limit {
-        return Err(PrecompileHalt::OutOfGas);
-    }
+    gas.spend(required_gas)?;
 
     // Collect pairs of points for the pairing check
     let mut pairs: Vec<PairingPair> = Vec::with_capacity(k);
@@ -61,5 +59,5 @@ pub fn pairing(input: &[u8], gas_limit: u64) -> EthPrecompileResult {
     let result = crypto().bls12_381_pairing_check(&pairs)?;
     let result = if result { 1 } else { 0 };
 
-    Ok(EthPrecompileOutput::new(required_gas, B256::with_last_byte(result).into()))
+    Ok(EthPrecompileOutput::new(B256::with_last_byte(result).into()))
 }

@@ -1,7 +1,6 @@
+use crate::{Precompile, PrecompileSpecId};
 use alloc::borrow::Cow;
 use core::fmt;
-
-use crate::{Precompile, PrecompileSpecId};
 
 /// Precompile with address and function.
 /// Unique precompile identifier.

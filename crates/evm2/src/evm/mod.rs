@@ -6,7 +6,7 @@ use crate::{
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
     interpreter::{
-        Host, InstrStop, Interpreter, Message, MessageKind, MessageResult, SpecId, Word,
+        Gas, Host, InstrStop, Interpreter, Message, MessageKind, MessageResult, SpecId, Word,
     },
     registry::{HandlerResult, TxRegistry},
 };
@@ -100,8 +100,9 @@ impl<C: EvmConfig> Evm<C> {
     fn execute_precompile(
         &mut self,
         message: &Message,
+        gas: &mut Gas,
     ) -> Option<Result<PrecompileOutput, InstrStop>> {
-        self.precompiles.execute(message.code_address, &message.input, message.gas_limit)
+        self.precompiles.execute(message.code_address, &message.input, gas)
     }
 }
 
@@ -282,14 +283,12 @@ impl<C: EvmConfig<Host = Self>> Host for Evm<C> {
             };
         }
 
-        if let Some(result) = self.execute_precompile(&message) {
+        let mut gas = Gas::new(message.gas_limit);
+        if let Some(result) = self.execute_precompile(&message, &mut gas) {
             let (stop, gas_remaining, output) = match result {
-                Ok(output) if output.gas_used <= message.gas_limit => {
-                    (InstrStop::Return, message.gas_limit - output.gas_used, output.output)
-                }
-                Ok(_) => (InstrStop::PrecompileOOG, 0, Bytes::new()),
+                Ok(output) => (InstrStop::Return, gas.remaining(), output.output),
                 Err(stop) => {
-                    let gas_remaining = if stop.is_error() { 0 } else { message.gas_limit };
+                    let gas_remaining = if stop.is_error() { 0 } else { gas.remaining() };
                     (stop, gas_remaining, Bytes::new())
                 }
             };

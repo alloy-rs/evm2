@@ -1,13 +1,11 @@
 //! Precompile dispatch interface.
 
-use crate::interpreter::InstrStop;
+use crate::interpreter::{Gas, InstrStop};
 use alloy_primitives::{Address, Bytes};
 
 /// Result returned by a precompile.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PrecompileOutput {
-    /// Gas used by the precompile.
-    pub gas_used: u64,
     /// Returned bytes.
     pub output: Bytes,
 }
@@ -19,7 +17,7 @@ pub trait PrecompileProvider {
         &mut self,
         address: Address,
         input: &[u8],
-        gas_limit: u64,
+        gas: &mut Gas,
     ) -> Option<Result<PrecompileOutput, InstrStop>>;
 }
 
@@ -33,7 +31,7 @@ impl PrecompileProvider for NoPrecompiles {
         &mut self,
         _address: Address,
         _input: &[u8],
-        _gas_limit: u64,
+        _gas: &mut Gas,
     ) -> Option<Result<PrecompileOutput, InstrStop>> {
         None
     }

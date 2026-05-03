@@ -1,7 +1,7 @@
 //! BLS12-381 map fp to g1 precompile. More details in [`map_fp_to_g1`]
 use super::utils::{pad_g1_point, remove_fp_padding};
 use crate::{
-    EthPrecompileOutput, EthPrecompileResult, Precompile, PrecompileHalt, PrecompileId,
+    EthPrecompileOutput, EthPrecompileResult, Gas, Precompile, PrecompileHalt, PrecompileId,
     bls12_381_const::{MAP_FP_TO_G1_ADDRESS, MAP_FP_TO_G1_BASE_GAS_FEE, PADDED_FP_LENGTH},
     crypto, eth_precompile_fn,
 };
@@ -15,10 +15,8 @@ pub const PRECOMPILE: Precompile =
 /// Field-to-curve call expects 64 bytes as an input that is interpreted as an
 /// element of Fp. Output of this call is 128 bytes and is an encoded G1 point.
 /// See also: <https://eips.ethereum.org/EIPS/eip-2537#abi-for-mapping-fp-element-to-g1-point>
-pub fn map_fp_to_g1(input: &[u8], gas_limit: u64) -> EthPrecompileResult {
-    if MAP_FP_TO_G1_BASE_GAS_FEE > gas_limit {
-        return Err(PrecompileHalt::OutOfGas);
-    }
+pub fn map_fp_to_g1(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
+    gas.spend(MAP_FP_TO_G1_BASE_GAS_FEE)?;
 
     if input.len() != PADDED_FP_LENGTH {
         return Err(PrecompileHalt::Bls12381MapFpToG1InputLength);
@@ -31,7 +29,7 @@ pub fn map_fp_to_g1(input: &[u8], gas_limit: u64) -> EthPrecompileResult {
     // Pad the result for EVM compatibility
     let padded_result = pad_g1_point(&unpadded_result);
 
-    Ok(EthPrecompileOutput::new(MAP_FP_TO_G1_BASE_GAS_FEE, padded_result.into()))
+    Ok(EthPrecompileOutput::new(padded_result.into()))
 }
 
 #[cfg(test)]
@@ -44,7 +42,7 @@ mod test {
         let input = Bytes::from(hex!(
             "000000000000000000000000000000006900000000000000636f6e7472616374595a603f343061cd305a03f40239f5ffff31818185c136bc2595f2aa18e08f17"
         ));
-        let fail = map_fp_to_g1(&input, MAP_FP_TO_G1_BASE_GAS_FEE);
+        let fail = map_fp_to_g1(&input, &mut Gas::new(MAP_FP_TO_G1_BASE_GAS_FEE));
         assert_eq!(fail, Err(PrecompileHalt::NonCanonicalFp));
     }
 }

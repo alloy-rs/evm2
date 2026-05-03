@@ -1,7 +1,7 @@
 //! BLS12-381 G2 add precompile. More details in [`g2_add`]
 use super::utils::{pad_g2_point, remove_g2_padding};
 use crate::{
-    EthPrecompileOutput, EthPrecompileResult, Precompile, PrecompileHalt, PrecompileId,
+    EthPrecompileOutput, EthPrecompileResult, Gas, Precompile, PrecompileHalt, PrecompileId,
     bls12_381_const::{G2_ADD_ADDRESS, G2_ADD_BASE_GAS_FEE, G2_ADD_INPUT_LENGTH, PADDED_G2_LENGTH},
     crypto, eth_precompile_fn,
 };
@@ -18,10 +18,8 @@ pub const PRECOMPILE: Precompile =
 /// Output is an encoding of addition operation result - single G2 point (`256`
 /// bytes).
 /// See also <https://eips.ethereum.org/EIPS/eip-2537#abi-for-g2-addition>
-pub fn g2_add(input: &[u8], gas_limit: u64) -> EthPrecompileResult {
-    if G2_ADD_BASE_GAS_FEE > gas_limit {
-        return Err(PrecompileHalt::OutOfGas);
-    }
+pub fn g2_add(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
+    gas.spend(G2_ADD_BASE_GAS_FEE)?;
 
     if input.len() != G2_ADD_INPUT_LENGTH {
         return Err(PrecompileHalt::Bls12381G2AddInputLength);
@@ -39,5 +37,5 @@ pub fn g2_add(input: &[u8], gas_limit: u64) -> EthPrecompileResult {
     // Pad the result for EVM compatibility
     let padded_result = pad_g2_point(&unpadded_result);
 
-    Ok(EthPrecompileOutput::new(G2_ADD_BASE_GAS_FEE, padded_result.into()))
+    Ok(EthPrecompileOutput::new(padded_result.into()))
 }

@@ -80,8 +80,6 @@ pub fn crypto() -> &'static dyn Crypto {
 }
 
 /// A precompile operation result type for individual Ethereum precompile functions.
-///
-/// Returns either `Ok(EthPrecompileOutput)` or `Err(PrecompileHalt)`.
 pub type EthPrecompileResult = Result<EthPrecompileOutput, PrecompileHalt>;
 
 /// A precompile operation result type for the precompile provider.
@@ -91,21 +89,112 @@ pub type EthPrecompileResult = Result<EthPrecompileOutput, PrecompileHalt>;
 pub type PrecompileResult = Result<PrecompileOutput, PrecompileError>;
 
 /// Simple precompile execution output used by individual Ethereum precompile functions.
-///
-/// Contains only the gas used and output bytes. For the richer output type
-/// with state gas accounting and halt support, see [`PrecompileOutput`].
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct EthPrecompileOutput {
-    /// Gas used by the precompile.
-    pub gas_used: u64,
-    /// Output bytes
+    /// Output bytes.
     pub bytes: Bytes,
 }
 
 impl EthPrecompileOutput {
-    /// Returns new precompile output with the given gas used and output bytes.
-    pub const fn new(gas_used: u64, bytes: Bytes) -> Self {
-        Self { gas_used, bytes }
+    /// Returns new precompile output with the given output bytes.
+    pub const fn new(bytes: Bytes) -> Self {
+        Self { bytes }
+    }
+}
+
+/// Precompile gas accounting state.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct Gas {
+    remaining: u64,
+    limit: u64,
+    reservoir: u64,
+    state_gas_spent: u64,
+    refunded: i64,
+}
+
+impl Gas {
+    /// Creates gas with `limit` regular gas.
+    #[inline]
+    pub const fn new(limit: u64) -> Self {
+        Self::new_with_regular_gas_and_reservoir(limit, 0)
+    }
+
+    /// Creates gas with regular gas and a state gas reservoir.
+    #[inline]
+    pub const fn new_with_regular_gas_and_reservoir(limit: u64, reservoir: u64) -> Self {
+        Self { remaining: limit, limit, reservoir, state_gas_spent: 0, refunded: 0 }
+    }
+
+    /// Returns remaining regular gas.
+    #[inline]
+    pub const fn remaining(&self) -> u64 {
+        self.remaining
+    }
+
+    /// Returns the gas limit.
+    #[inline]
+    pub const fn limit(&self) -> u64 {
+        self.limit
+    }
+
+    /// Returns available state gas reservoir.
+    #[inline]
+    pub const fn reservoir(&self) -> u64 {
+        self.reservoir
+    }
+
+    /// Returns spent state gas.
+    #[inline]
+    pub const fn state_gas_spent(&self) -> u64 {
+        self.state_gas_spent
+    }
+
+    /// Returns gas refund.
+    #[inline]
+    pub const fn refunded(&self) -> i64 {
+        self.refunded
+    }
+
+    /// Returns spent regular gas.
+    #[inline]
+    pub const fn spent(&self) -> u64 {
+        self.limit.saturating_sub(self.remaining)
+    }
+
+    /// Spends regular gas.
+    #[inline]
+    pub const fn spend(&mut self, cost: u64) -> Result<(), PrecompileHalt> {
+        let remaining = self.remaining;
+        if remaining < cost {
+            self.remaining = 0;
+            Err(PrecompileHalt::OutOfGas)
+        } else {
+            self.remaining = remaining - cost;
+            Ok(())
+        }
+    }
+
+    /// Spends state gas.
+    #[inline]
+    pub fn spend_state(&mut self, cost: u64) -> Result<(), PrecompileHalt> {
+        if self.reservoir >= cost {
+            self.state_gas_spent = self.state_gas_spent.saturating_add(cost);
+            self.reservoir -= cost;
+            return Ok(());
+        }
+
+        let spill = cost - self.reservoir;
+
+        self.spend(spill)?;
+        self.state_gas_spent = self.state_gas_spent.saturating_add(cost);
+        self.reservoir = 0;
+        Ok(())
+    }
+
+    /// Adds gas refund.
+    #[inline]
+    pub const fn record_refund(&mut self, refund: i64) {
+        self.refunded += refund;
     }
 }
 
@@ -161,7 +250,7 @@ impl PrecompileStatus {
     }
 }
 
-/// Rich precompile execution output with gas accounting and status support.
+/// Rich precompile execution output with status support.
 ///
 /// This is the output type used at the precompile provider level. It can express
 /// successful execution, reverts, and halts (non-fatal errors like out-of-gas).
@@ -169,60 +258,32 @@ impl PrecompileStatus {
 pub struct PrecompileOutput {
     /// Status of the precompile execution.
     pub status: PrecompileStatus,
-    /// Regular gas used by the precompile.
-    pub gas_used: u64,
-    /// Gas refunded by the precompile.
-    pub gas_refunded: i64,
-    /// State gas used by the precompile.
-    pub state_gas_used: u64,
-    /// Reservoir gas for EIP-8037.
-    pub reservoir: u64,
     /// Output bytes.
     pub bytes: Bytes,
 }
 
 impl PrecompileOutput {
     /// Returns a new precompile output from an Ethereum precompile result.
-    pub fn from_eth_result(result: EthPrecompileResult, reservoir: u64) -> Self {
+    pub fn from_eth_result(result: EthPrecompileResult) -> Self {
         match result {
-            Ok(output) => Self::new(output.gas_used, output.bytes, reservoir),
-            Err(halt) => Self::halt(halt, reservoir),
+            Ok(output) => Self::new(output.bytes),
+            Err(halt) => Self::halt(halt),
         }
     }
+
     /// Returns a new successful precompile output.
-    pub const fn new(gas_used: u64, bytes: Bytes, reservoir: u64) -> Self {
-        Self {
-            status: PrecompileStatus::Success,
-            gas_used,
-            gas_refunded: 0,
-            state_gas_used: 0,
-            reservoir,
-            bytes,
-        }
+    pub const fn new(bytes: Bytes) -> Self {
+        Self { status: PrecompileStatus::Success, bytes }
     }
 
     /// Returns a new halted precompile output with the given halt reason.
-    pub const fn halt(reason: PrecompileHalt, reservoir: u64) -> Self {
-        Self {
-            status: PrecompileStatus::Halt(reason),
-            gas_used: 0,
-            gas_refunded: 0,
-            state_gas_used: 0,
-            reservoir,
-            bytes: Bytes::new(),
-        }
+    pub const fn halt(reason: PrecompileHalt) -> Self {
+        Self { status: PrecompileStatus::Halt(reason), bytes: Bytes::new() }
     }
 
     /// Returns a new reverted precompile output.
-    pub const fn revert(gas_used: u64, bytes: Bytes, reservoir: u64) -> Self {
-        Self {
-            status: PrecompileStatus::Revert,
-            gas_used,
-            gas_refunded: 0,
-            state_gas_used: 0,
-            reservoir,
-            bytes,
-        }
+    pub const fn revert(bytes: Bytes) -> Self {
+        Self { status: PrecompileStatus::Revert, bytes }
     }
 
     /// Returns `true` if the precompile execution was successful.
@@ -384,17 +445,17 @@ pub trait Crypto: Send + Sync + Debug {
     }
 }
 
-/// Eth precompile function type. Takes input and gas limit, returns an Eth precompile result.
+/// Eth precompile function type. Takes input and gas, returns an Eth precompile result.
 ///
 /// This is the function signature used by individual Ethereum precompile implementations.
 /// Use [`PrecompileFn`] for the higher-level type that returns [`PrecompileOutput`].
-pub type PrecompileEthFn = fn(&[u8], u64) -> EthPrecompileResult;
+pub type PrecompileEthFn = fn(&[u8], &mut Gas) -> EthPrecompileResult;
 
-/// Precompile function type. Takes input, gas limit and reservoir, returns a [`PrecompileResult`].
+/// Precompile function type. Takes input and gas, returns a [`PrecompileResult`].
 ///
 /// Returns `Ok(PrecompileOutput)` for successful execution or non-fatal halts,
 /// or `Err(PrecompileError)` for fatal/unrecoverable errors that should abort EVM execution.
-pub type PrecompileFn = fn(&[u8], u64, u64) -> PrecompileResult;
+pub type PrecompileFn = fn(&[u8], &mut Gas) -> PrecompileResult;
 
 /// Macro that generates a thin wrapper function converting a [`PrecompileEthFn`] into a
 /// [`PrecompileFn`].
@@ -405,15 +466,15 @@ pub type PrecompileFn = fn(&[u8], u64, u64) -> PrecompileResult;
 /// ```
 /// Expands to:
 /// ```ignore
-/// fn my_precompile(input: &[u8], gas_limit: u64, reservoir: u64) -> PrecompileOutput {
-///     call_eth_precompile(my_eth_fn, input, gas_limit, reservoir)
+/// fn my_precompile(input: &[u8], gas: &mut Gas) -> PrecompileOutput {
+///     call_eth_precompile(my_eth_fn, input, gas)
 /// }
 /// ```
 #[macro_export]
 macro_rules! eth_precompile_fn {
     ($name:ident, $eth_fn:expr) => {
-        fn $name(input: &[u8], gas_limit: u64, reservoir: u64) -> $crate::PrecompileResult {
-            Ok($crate::call_eth_precompile($eth_fn, input, gas_limit, reservoir))
+        fn $name(input: &[u8], gas: &mut $crate::Gas) -> $crate::PrecompileResult {
+            Ok($crate::call_eth_precompile($eth_fn, input, gas))
         }
     };
 }
@@ -422,20 +483,15 @@ macro_rules! eth_precompile_fn {
 ///
 /// Use this in wrapper functions to adapt an eth precompile to the [`PrecompileFn`] signature:
 /// ```ignore
-/// fn my_precompile(input: &[u8], gas_limit: u64, reservoir: u64) -> PrecompileOutput {
-///     call_eth_precompile(my_eth_fn, input, gas_limit, reservoir)
+/// fn my_precompile(input: &[u8], gas: &mut Gas) -> PrecompileOutput {
+///     call_eth_precompile(my_eth_fn, input, gas)
 /// }
 /// ```
 #[inline]
-pub fn call_eth_precompile(
-    f: PrecompileEthFn,
-    input: &[u8],
-    gas_limit: u64,
-    reservoir: u64,
-) -> PrecompileOutput {
-    match f(input, gas_limit) {
-        Ok(output) => PrecompileOutput::new(output.gas_used, output.bytes, reservoir),
-        Err(halt) => PrecompileOutput::halt(halt, reservoir),
+pub fn call_eth_precompile(f: PrecompileEthFn, input: &[u8], gas: &mut Gas) -> PrecompileOutput {
+    match f(input, gas) {
+        Ok(output) => PrecompileOutput::new(output.bytes),
+        Err(halt) => PrecompileOutput::halt(halt),
     }
 }
 

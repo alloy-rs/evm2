@@ -1,8 +1,8 @@
 //! KZG point evaluation precompile added in [`EIP-4844`](https://eips.ethereum.org/EIPS/eip-4844)
 //! For more details check [`run`] function.
 use crate::{
-    Address, EthPrecompileOutput, EthPrecompileResult, Precompile, PrecompileHalt, PrecompileId,
-    crypto, eth_precompile_fn,
+    Address, EthPrecompileOutput, EthPrecompileResult, Gas, Precompile, PrecompileHalt,
+    PrecompileId, crypto, eth_precompile_fn,
 };
 pub mod arkworks;
 
@@ -40,10 +40,8 @@ pub const RETURN_VALUE: &[u8; 64] = &hex!(
 /// | versioned_hash |  z  |  y  | commitment | proof |
 /// |     32         | 32  | 32  |     48     |   48  |
 /// with z and y being padded 32 byte big endian values
-pub fn run(input: &[u8], gas_limit: u64) -> EthPrecompileResult {
-    if gas_limit < GAS_COST {
-        return Err(PrecompileHalt::OutOfGas);
-    }
+pub fn run(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
+    gas.spend(GAS_COST)?;
 
     // Verify input length.
     if input.len() != 192 {
@@ -65,7 +63,7 @@ pub fn run(input: &[u8], gas_limit: u64) -> EthPrecompileResult {
     crypto().verify_kzg_proof(z, y, commitment, proof)?;
 
     // Return FIELD_ELEMENTS_PER_BLOB and BLS_MODULUS as padded 32 byte big endian values
-    Ok(EthPrecompileOutput::new(GAS_COST, RETURN_VALUE.into()))
+    Ok(EthPrecompileOutput::new(RETURN_VALUE.into()))
 }
 
 /// `VERSIONED_HASH_VERSION_KZG ++ sha256(commitment)[1..]`
@@ -121,9 +119,9 @@ mod tests {
         let expected_output = hex!(
             "000000000000000000000000000000000000000000000000000000000000100073eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001"
         );
-        let gas = 50000;
-        let output = run(&input, gas).unwrap();
-        assert_eq!(output.gas_used, gas);
+        let mut gas = Gas::new(50_000);
+        let output = run(&input, &mut gas).unwrap();
+        assert_eq!(gas.spent(), GAS_COST);
         assert_eq!(output.bytes[..], expected_output);
     }
 

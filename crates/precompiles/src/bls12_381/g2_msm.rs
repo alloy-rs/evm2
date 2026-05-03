@@ -1,7 +1,7 @@
 //! BLS12-381 G2 msm precompile. More details in [`g2_msm`]
 use super::utils::{pad_g2_point, remove_g2_padding};
 use crate::{
-    EthPrecompileOutput, EthPrecompileResult, Precompile, PrecompileHalt, PrecompileId,
+    EthPrecompileOutput, EthPrecompileResult, Gas, Precompile, PrecompileHalt, PrecompileId,
     bls12_381_const::{
         DISCOUNT_TABLE_G2_MSM, G2_MSM_ADDRESS, G2_MSM_BASE_GAS_FEE, G2_MSM_INPUT_LENGTH,
         PADDED_G2_LENGTH, SCALAR_LENGTH,
@@ -24,7 +24,7 @@ pub const PRECOMPILE: Precompile =
 /// Output is an encoding of multi-scalar-multiplication operation result - single G2
 /// point (`256` bytes).
 /// See also: <https://eips.ethereum.org/EIPS/eip-2537#abi-for-g2-multiexponentiation>
-pub fn g2_msm(input: &[u8], gas_limit: u64) -> EthPrecompileResult {
+pub fn g2_msm(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
     let input_len = input.len();
     if input_len == 0 || !input_len.is_multiple_of(G2_MSM_INPUT_LENGTH) {
         return Err(PrecompileHalt::Bls12381G2MsmInputLength);
@@ -32,9 +32,7 @@ pub fn g2_msm(input: &[u8], gas_limit: u64) -> EthPrecompileResult {
 
     let k = input_len / G2_MSM_INPUT_LENGTH;
     let required_gas = msm_required_gas(k, &DISCOUNT_TABLE_G2_MSM, G2_MSM_BASE_GAS_FEE);
-    if required_gas > gas_limit {
-        return Err(PrecompileHalt::OutOfGas);
-    }
+    gas.spend(required_gas)?;
 
     let mut valid_pairs_iter = (0..k).map(|i| {
         let start = i * G2_MSM_INPUT_LENGTH;
@@ -53,5 +51,5 @@ pub fn g2_msm(input: &[u8], gas_limit: u64) -> EthPrecompileResult {
     // Pad the result for EVM compatibility
     let padded_result = pad_g2_point(&unpadded_result);
 
-    Ok(EthPrecompileOutput::new(required_gas, padded_result.into()))
+    Ok(EthPrecompileOutput::new(padded_result.into()))
 }

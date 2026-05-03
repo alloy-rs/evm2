@@ -1,7 +1,7 @@
 //! BLS12-381 map fp2 to g2 precompile. More details in [`map_fp2_to_g2`]
 use super::utils::{pad_g2_point, remove_fp_padding};
 use crate::{
-    EthPrecompileOutput, EthPrecompileResult, Precompile, PrecompileHalt, PrecompileId,
+    EthPrecompileOutput, EthPrecompileResult, Gas, Precompile, PrecompileHalt, PrecompileId,
     bls12_381_const::{
         MAP_FP2_TO_G2_ADDRESS, MAP_FP2_TO_G2_BASE_GAS_FEE, PADDED_FP_LENGTH, PADDED_FP2_LENGTH,
     },
@@ -21,10 +21,8 @@ pub const PRECOMPILE: Precompile = Precompile::new(
 /// an element of Fp2. Output of this call is 256 bytes and is an encoded G2
 /// point.
 /// See also: <https://eips.ethereum.org/EIPS/eip-2537#abi-for-mapping-fp2-element-to-g2-point>
-pub fn map_fp2_to_g2(input: &[u8], gas_limit: u64) -> EthPrecompileResult {
-    if MAP_FP2_TO_G2_BASE_GAS_FEE > gas_limit {
-        return Err(PrecompileHalt::OutOfGas);
-    }
+pub fn map_fp2_to_g2(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
+    gas.spend(MAP_FP2_TO_G2_BASE_GAS_FEE)?;
 
     if input.len() != PADDED_FP2_LENGTH {
         return Err(PrecompileHalt::Bls12381MapFp2ToG2InputLength);
@@ -38,5 +36,5 @@ pub fn map_fp2_to_g2(input: &[u8], gas_limit: u64) -> EthPrecompileResult {
     // Pad the result for EVM compatibility
     let padded_result = pad_g2_point(&unpadded_result);
 
-    Ok(EthPrecompileOutput::new(MAP_FP2_TO_G2_BASE_GAS_FEE, padded_result.into()))
+    Ok(EthPrecompileOutput::new(padded_result.into()))
 }
