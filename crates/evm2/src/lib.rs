@@ -77,6 +77,11 @@ pub fn _get_asm() -> impl Sized {
         Default::default(),
         Default::default(),
     );
-    crate::interpreter::Interpreter::new(Default::default(), Default::default(), Default::default())
-        .run::<EvmVersion<()>>(&mut evm)
+    crate::interpreter::Interpreter::new(
+        Default::default(),
+        Default::default(),
+        Default::default(),
+        false,
+    )
+    .run::<EvmVersion<()>>(&mut evm)
 }
