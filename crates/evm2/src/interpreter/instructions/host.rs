@@ -42,9 +42,11 @@ pub(in crate::interpreter) fn sstore(cx: _) -> Result {
     if load.is_cold {
         cx.gas.spend(gas_params.get(GasId::ColdStorageCost))?;
     }
-    if old_value.is_zero() && !value.is_zero() {
+    if old_value == value {
+        // No-op stores only pay the load/static cost after Istanbul.
+    } else if old_value.is_zero() {
         cx.gas.spend(gas_params.get(GasId::SstoreSetWithoutLoadCost))?;
-    } else if !old_value.is_zero() && value.is_zero() {
+    } else if value.is_zero() {
         cx.gas.record_refund(gas_params.get(GasId::SstoreClearingSlotRefund) as i64);
         cx.gas.spend(gas_params.get(GasId::SstoreResetWithoutColdLoadCost))?;
     } else {
@@ -201,6 +203,18 @@ mod tests {
             .gas_limit(6000));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.gas_remaining(), 994);
+    }
+
+    #[test]
+    fn sstore_noop_uses_warm_load_gas() {
+        let mut host = TestHost::default();
+        let interpreter = run(RunConfig::new([op::PUSH1, 0, op::PUSH1, 0, op::SSTORE, op::STOP])
+            .host(&mut host)
+            .spec(SpecId::BERLIN)
+            .gas_limit(3000));
+
+        core::assert_matches!(interpreter.err, InstrStop::Stop);
+        assert_eq!(interpreter.gas_remaining(), 2894);
     }
 
     #[test]
