@@ -53,6 +53,9 @@ pub use evm::{
 
 mod once_lock;
 
+#[cfg(test)]
+mod tests;
+
 /// Exposes a small interpreter run for assembly inspection.
 #[unsafe(no_mangle)]
 #[doc(hidden)]

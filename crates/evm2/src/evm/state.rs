@@ -6,6 +6,8 @@ use alloy_primitives::{
     map::{self, HashMap},
 };
 
+pub use alloy_primitives::KECCAK256_EMPTY as KECCAK_EMPTY;
+
 /// Account information loaded from the backing database.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 #[non_exhaustive]
@@ -516,12 +518,6 @@ impl Database for CacheDB {
 
 /// A database implementation that stores initial state in memory.
 pub type InMemoryDB = CacheDB;
-
-/// Hash of the empty bytecode.
-pub const KECCAK_EMPTY: B256 = B256::new([
-    0xc5, 0xd2, 0x46, 0x01, 0x86, 0xf7, 0x23, 0x3c, 0x92, 0x7d, 0xb2, 0xdc, 0xc7, 0x03, 0xc0, 0xe5,
-    0x00, 0xb6, 0x53, 0xca, 0x82, 0x27, 0x3b, 0x7b, 0xfa, 0xd8, 0x04, 0x5d, 0x85, 0xa4, 0x70, 0x00,
-]);
 
 #[cfg(test)]
 mod tests {
