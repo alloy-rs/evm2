@@ -43,6 +43,7 @@ indicatif = "0.18"
 k256 = "0.13"
 once_cell = { version = "1.21", default-features = false }
 paste = "1.0"
+datatest-stable = "0.3"
 serde = { version = "1.0", default-features = false }
 serde_json = "1.0"
 thiserror = { version = "2.0", default-features = false }

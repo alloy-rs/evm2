@@ -24,6 +24,14 @@ serde_json = { workspace = true, features = ["preserve_order"] }
 thiserror.workspace = true
 walkdir.workspace = true
 
+[dev-dependencies]
+datatest-stable.workspace = true
+
 [[bin]]
 name = "evm2-statetest"
 path = "src/main.rs"
+
+[[test]]
+name = "statetest"
+path = "tests/statetest.rs"
+harness = false
