@@ -2,17 +2,16 @@ use crate::{
     error::{TestError, TestErrorKind},
     types::{AccountInfo, Env, Test, TestSuite, TestUnit, TransactionParts, TxPartIndices},
 };
-use alloy_primitives::{Address, B256, Bytes, U256};
+use alloy_consensus::{TxLegacy, transaction::Recovered};
+use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
 use evm2::{
-    Evm, EvmVersion,
+    Evm, EvmVersion, TxResult,
     bytecode::Bytecode,
     env::BlockEnv,
-    evm::{
-        AccountInfo as EvmAccountInfo, InMemoryDB, logs_hash,
-        transaction::{EvmError, ExecutionResult, Transaction},
-    },
+    ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
+    evm::{AccountInfo as EvmAccountInfo, InMemoryDB, logs_hash},
     interpreter::SpecId,
-    registry::TxRegistry,
+    registry::HandlerError,
 };
 use k256::ecdsa::SigningKey;
 use serde_json::json;
@@ -92,7 +91,7 @@ fn validate_result(
     name: &str,
     unit: &TestUnit,
     post: &Test,
-    result: Result<SpecOutcome, EvmError>,
+    result: Result<SpecOutcome, HandlerError>,
     spec: SpecId,
     config: ExecuteConfig,
 ) -> Result<(), TestError> {
@@ -198,16 +197,17 @@ fn execute_spec(
     spec: SpecId,
     block: BlockEnv,
     database: InMemoryDB,
-    tx: &Transaction,
-) -> Result<SpecOutcome, EvmError> {
+    tx: &RecoveredTxEnvelope,
+) -> Result<SpecOutcome, HandlerError> {
     macro_rules! run {
         ($spec:ident) => {{
-            let mut evm = Evm::<EvmVersion<(), { SpecId::$spec as u8 }>>::with_database(
+            let mut evm = Evm::<EvmVersion<RecoveredTxEnvelope, { SpecId::$spec as u8 }>>::new(
                 block,
-                TxRegistry::new(),
+                ethereum_tx_registry(),
                 database,
+                Default::default(),
             );
-            let result = evm.execute(tx)?;
+            let result = evm.transact(tx)?;
             Ok(spec_outcome(&evm, result))
         }};
     }
@@ -237,7 +237,7 @@ fn execute_spec(
     }
 }
 
-fn spec_outcome<C>(evm: &Evm<C>, result: ExecutionResult) -> SpecOutcome
+fn spec_outcome<C>(evm: &Evm<C>, result: TxResult) -> SpecOutcome
 where
     C: evm2::config::EvmConfig<Database = InMemoryDB>,
 {
@@ -285,7 +285,7 @@ fn build_tx(
     raw: &TransactionParts,
     indexes: &TxPartIndices,
     base_fee: U256,
-) -> Result<Transaction, TestErrorKind> {
+) -> Result<RecoveredTxEnvelope, TestErrorKind> {
     let caller = match raw.sender {
         Some(sender) => sender,
         None => recover_address(raw.secret_key.as_slice())
@@ -300,8 +300,19 @@ fn build_tx(
         .map_err(|_| TestErrorKind::Overflow("gasLimit"))?;
     let value = *raw.value.get(indexes.value).ok_or(TestErrorKind::BadIndex("value"))?;
     let nonce = raw.nonce.try_into().map_err(|_| TestErrorKind::Overflow("nonce"))?;
-    let gas_price = effective_gas_price(raw, base_fee)?;
-    Ok(Transaction { caller, to: raw.to, nonce, gas_limit, gas_price, value, data })
+    let gas_price = effective_gas_price(raw, base_fee)?
+        .try_into()
+        .map_err(|_| TestErrorKind::Overflow("gasPrice"))?;
+    let tx = TxLegacy {
+        chain_id: None,
+        nonce,
+        gas_price,
+        gas_limit,
+        to: TxKind::from(raw.to),
+        value,
+        input: data,
+    };
+    Ok(RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(tx, caller)))
 }
 
 fn effective_gas_price(raw: &TransactionParts, base_fee: U256) -> Result<U256, TestErrorKind> {

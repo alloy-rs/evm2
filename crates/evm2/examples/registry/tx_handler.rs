@@ -82,7 +82,7 @@ fn main() -> HandlerResult<()> {
     let transactions = sample_transactions();
 
     for tx in &transactions {
-        let receipt = registry.try_get_by_type(tx.ty())?.call(tx)?;
+        let receipt = registry.try_get_by_type(tx.ty())?.call(tx, &mut ())?;
         println!(
             "{:?}: success={}, cumulative_gas_used={}, logs={}",
             tx.tx_type(),

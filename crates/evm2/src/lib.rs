@@ -41,6 +41,8 @@ pub struct SelfDestructResult {
 }
 
 pub mod bytecode;
+/// Ethereum transaction types and handlers.
+pub mod ethereum;
 /// EVM host and transaction dispatcher.
 pub mod evm;
 pub mod interpreter;
@@ -60,7 +62,12 @@ mod tests;
 #[unsafe(no_mangle)]
 #[doc(hidden)]
 pub fn _get_asm() -> impl Sized {
-    let mut evm = Evm::<EvmVersion<()>>::new(Default::default(), Default::default());
+    let mut evm = Evm::<EvmVersion<()>>::new(
+        Default::default(),
+        Default::default(),
+        Default::default(),
+        Default::default(),
+    );
     crate::interpreter::Interpreter::new(Default::default(), Default::default(), Default::default())
         .run::<EvmVersion<()>>(&mut evm)
 }

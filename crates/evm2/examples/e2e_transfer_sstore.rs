@@ -1,13 +1,14 @@
 //! Runs a transaction that transfers value and writes storage.
 
-use alloy_primitives::{Address, Bytes, U256};
+use alloy_consensus::{TxLegacy, transaction::Recovered};
+use alloy_primitives::{Address, Bytes, TxKind, U256};
 use evm2::{
     Evm, EvmVersion,
     bytecode::Bytecode,
     env::BlockEnv,
-    evm::{AccountInfo, InMemoryDB, transaction::Transaction},
+    ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
+    evm::{AccountInfo, InMemoryDB},
     interpreter::{SpecId, op},
-    registry::TxRegistry,
 };
 
 fn main() {
@@ -29,26 +30,30 @@ fn main() {
         ]))),
     );
 
-    let mut evm = Evm::<EvmVersion<(), { SpecId::FRONTIER as u8 }>>::with_database(
+    let mut evm = Evm::<EvmVersion<RecoveredTxEnvelope, { SpecId::FRONTIER as u8 }>>::new(
         BlockEnv::default(),
-        TxRegistry::new(),
+        ethereum_tx_registry(),
         database,
+        Default::default(),
     );
-    let result = evm
-        .execute(&Transaction {
-            caller,
-            to: Some(contract),
+    let tx = RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(
+        TxLegacy {
             gas_limit: 100_000,
-            gas_price: U256::ONE,
+            gas_price: 1,
+            to: TxKind::Call(contract),
             value: U256::from(7),
-            ..Transaction::default()
-        })
-        .unwrap();
+            ..TxLegacy::default()
+        },
+        caller,
+    ));
+    let result = evm.transact(&tx).expect("sample legacy transaction should execute");
 
     println!(
         "status={} gas_used={} storage[1]={}",
-        result.is_success(),
+        result.status,
         result.gas_used,
-        evm.state().account_ref(contract).unwrap().storage[&U256::from(1)].current
+        evm.state().account_ref(contract).expect("sample contract account should exist").storage
+            [&U256::from(1)]
+            .current
     );
 }

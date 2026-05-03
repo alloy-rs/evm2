@@ -76,7 +76,7 @@ fn main() -> HandlerResult<()> {
 
     let tx = CustomEnvelope::Custom(CustomTx { gas_limit: 100_000, nonce: 7 });
 
-    let receipt = registry.try_get_by_type(tx.ty())?.call(&tx)?;
+    let receipt = registry.try_get_by_type(tx.ty())?.call(&tx, &mut ())?;
 
     println!(
         "custom tx type=0x{:02x}: success={}, cumulative_gas_used={}, logs={}",

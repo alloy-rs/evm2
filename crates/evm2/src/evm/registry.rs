@@ -3,9 +3,9 @@
 //! Handlers are written against concrete transaction types. The registry stores
 //! them behind an object-safe boundary and dispatches by transaction type byte.
 //!
-//! The registry is generic over the envelope type and the handler output, so it
-//! does not force a particular transaction or receipt representation onto the
-//! rest of the crate.
+//! The registry is generic over the envelope type, handler output, and mutable
+//! host type, so it does not force a particular transaction, receipt, or host
+//! representation onto the rest of the crate.
 //!
 //! # Example
 //!
@@ -46,20 +46,21 @@
 //! );
 //!
 //! let tx = Envelope::Transfer(TransferTx { amount: 7 });
-//! let receipt = registry.try_get_by_type(TRANSFER)?.call(&tx)?;
+//! let receipt = registry.try_get_by_type(TRANSFER)?.call(&tx, &mut ())?;
 //!
 //! assert_eq!(receipt, Receipt { gas_used: 21_007 });
 //! # Ok::<(), HandlerError>(())
 //! ```
 
-use alloc::boxed::Box;
+use alloc::{boxed::Box, rc::Rc};
+use alloy_primitives::{Address, U256};
 use core::{array, fmt, marker::PhantomData};
 use thiserror::Error;
 
 /// Convenience result type used by the registry and handlers.
 pub type HandlerResult<T> = core::result::Result<T, HandlerError>;
 
-/// Registry and handler errors.
+/// Registry, transaction validation, and transaction handler errors.
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
 pub enum HandlerError {
     /// No handler is registered for the transaction type byte.
@@ -71,55 +72,93 @@ pub enum HandlerError {
         /// Expected transaction type byte.
         expected: u8,
     },
+    /// Sender account does not have the expected nonce.
+    #[error("invalid nonce: expected {expected}, got {got}")]
+    InvalidNonce {
+        /// Expected nonce.
+        expected: u64,
+        /// Transaction nonce.
+        got: u64,
+    },
+    /// Transaction gas limit is lower than intrinsic gas.
+    #[error("intrinsic gas too low: required {required}, got {got}")]
+    IntrinsicGasTooLow {
+        /// Required intrinsic gas.
+        required: u64,
+        /// Transaction gas limit.
+        got: u64,
+    },
+    /// Sender cannot pay value plus maximum gas cost.
+    #[error("insufficient funds")]
+    InsufficientFunds,
+    /// Sender could not transfer transaction value to the target.
+    #[error("out of funds")]
+    OutOfFunds,
+    /// Signature recovery failed.
+    #[error("could not recover signer")]
+    SignerRecoveryFailed,
+    /// Fee cap is lower than the block base fee.
+    #[error("fee cap less than base fee: max_fee_per_gas {max_fee_per_gas}, base_fee {base_fee}")]
+    FeeCapLessThanBaseFee {
+        /// Maximum fee per gas.
+        max_fee_per_gas: U256,
+        /// Block base fee.
+        base_fee: U256,
+    },
+    /// Unsupported caller for this handler.
+    #[error("unsupported caller {0}")]
+    UnsupportedCaller(Address),
 }
 
 /// Request passed to a typed transaction handler.
-#[derive(Clone, Copy, Debug)]
+#[derive(Debug)]
 #[non_exhaustive]
-pub struct TxRequest<'a, Tx> {
+pub struct TxRequest<'a, Tx, Host = ()> {
     /// Concrete transaction extracted from the envelope.
     pub tx: &'a Tx,
+    /// Mutable host used by this handler.
+    pub host: &'a mut Host,
 }
 
 /// A typed transaction handler.
 ///
 /// `Tx` remains concrete. This is what gives handlers strong type guarantees
 /// even though the registry itself is type-erased.
-pub trait TxHandler<Tx, Output> {
+pub trait TxHandler<Tx, Output, Host = ()> {
     /// Executes the handler.
-    fn call(&self, req: TxRequest<'_, Tx>) -> HandlerResult<Output>;
+    fn call(&self, req: TxRequest<'_, Tx, Host>) -> HandlerResult<Output>;
 }
 
-impl<Tx, Output, F> TxHandler<Tx, Output> for F
+impl<Tx, Output, Host, F> TxHandler<Tx, Output, Host> for F
 where
-    F: for<'a> Fn(TxRequest<'a, Tx>) -> HandlerResult<Output>,
+    F: for<'a> Fn(TxRequest<'a, Tx, Host>) -> HandlerResult<Output>,
 {
-    fn call(&self, req: TxRequest<'_, Tx>) -> HandlerResult<Output> {
+    fn call(&self, req: TxRequest<'_, Tx, Host>) -> HandlerResult<Output> {
         self(req)
     }
 }
 
 /// An erased transaction handler returned by [`TxRegistry`].
-#[derive(Clone, Copy)]
-pub struct AnyTxHandler<'a, Env, Output> {
-    inner: &'a dyn ErasedTxHandler<Env, Output>,
+#[derive(Clone)]
+pub struct AnyTxHandler<Env, Output, Host = ()> {
+    inner: Rc<dyn ErasedTxHandler<Env, Output, Host>>,
 }
 
-impl<Env, Output> fmt::Debug for AnyTxHandler<'_, Env, Output> {
+impl<Env, Output, Host> fmt::Debug for AnyTxHandler<Env, Output, Host> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AnyTxHandler").finish_non_exhaustive()
     }
 }
 
-impl<Env, Output> AnyTxHandler<'_, Env, Output> {
-    /// Executes the erased handler against an envelope.
-    pub fn call(&self, env: &Env) -> HandlerResult<Output> {
-        self.inner.call(env)
+impl<Env, Output, Host> AnyTxHandler<Env, Output, Host> {
+    /// Executes the erased handler against an envelope and host.
+    pub fn call(&self, env: &Env, host: &mut Host) -> HandlerResult<Output> {
+        self.inner.call(env, host)
     }
 }
 
-trait ErasedTxHandler<Env, Output> {
-    fn call(&self, env: &Env) -> HandlerResult<Output>;
+trait ErasedTxHandler<Env, Output, Host> {
+    fn call(&self, env: &Env, host: &mut Host) -> HandlerResult<Output>;
 }
 
 struct HandlerAdapter<Tx, H, F> {
@@ -135,39 +174,39 @@ impl<Tx, H, F> HandlerAdapter<Tx, H, F> {
     }
 }
 
-impl<Env, Tx, Output, H, F> ErasedTxHandler<Env, Output> for HandlerAdapter<Tx, H, F>
+impl<Env, Tx, Output, Host, H, F> ErasedTxHandler<Env, Output, Host> for HandlerAdapter<Tx, H, F>
 where
-    H: TxHandler<Tx, Output>,
+    H: TxHandler<Tx, Output, Host>,
     F: for<'a> Fn(&'a Env) -> Option<&'a Tx>,
 {
-    fn call(&self, env: &Env) -> HandlerResult<Output> {
+    fn call(&self, env: &Env, host: &mut Host) -> HandlerResult<Output> {
         let tx = (self.extract)(env)
             .ok_or(HandlerError::WrongTransactionType { expected: self.type_id })?;
-        self.handler.call(TxRequest { tx })
+        self.handler.call(TxRequest { tx, host })
     }
 }
 
-type HandlerTable<Env, Output> = [Option<Box<dyn ErasedTxHandler<Env, Output>>>; 256];
+type HandlerTable<Env, Output, Host> = [Option<Rc<dyn ErasedTxHandler<Env, Output, Host>>>; 256];
 
 /// A type-erased transaction handler registry keyed by transaction type byte.
-pub struct TxRegistry<Env, Output = ()> {
-    handlers: Box<HandlerTable<Env, Output>>,
+pub struct TxRegistry<Env, Output = (), Host = ()> {
+    handlers: Box<HandlerTable<Env, Output, Host>>,
 }
 
-impl<Env, Output> fmt::Debug for TxRegistry<Env, Output> {
+impl<Env, Output, Host> fmt::Debug for TxRegistry<Env, Output, Host> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let len = self.handlers.iter().filter(|handler| handler.is_some()).count();
         f.debug_struct("TxRegistry").field("len", &len).finish_non_exhaustive()
     }
 }
 
-impl<Env, Output> Default for TxRegistry<Env, Output> {
+impl<Env, Output, Host> Default for TxRegistry<Env, Output, Host> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<Env, Output> TxRegistry<Env, Output> {
+impl<Env, Output, Host> TxRegistry<Env, Output, Host> {
     /// Creates an empty registry.
     pub fn new() -> Self {
         Self { handlers: Box::new(array::from_fn(|_| None)) }
@@ -176,15 +215,15 @@ impl<Env, Output> TxRegistry<Env, Output> {
     /// Registers a typed handler for a transaction type byte.
     ///
     /// `extract` projects `Tx` out of the envelope. The handler remains typed
-    /// as `TxHandler<Tx, Output>`; only this registry boundary is erased.
+    /// as `TxHandler<Tx, Output, Host>`; only this registry boundary is erased.
     pub fn register<Tx, H, F>(&mut self, type_id: u8, extract: F, handler: H) -> &mut Self
     where
         Tx: 'static,
-        H: TxHandler<Tx, Output> + 'static,
+        H: TxHandler<Tx, Output, Host> + 'static,
         F: for<'a> Fn(&'a Env) -> Option<&'a Tx> + 'static,
     {
         self.handlers[type_id as usize] =
-            Some(Box::new(HandlerAdapter::new(type_id, extract, handler)));
+            Some(Rc::new(HandlerAdapter::new(type_id, extract, handler)));
         self
     }
 
@@ -193,7 +232,7 @@ impl<Env, Output> TxRegistry<Env, Output> {
     pub fn with_handler<Tx, H, F>(mut self, type_id: u8, extract: F, handler: H) -> Self
     where
         Tx: 'static,
-        H: TxHandler<Tx, Output> + 'static,
+        H: TxHandler<Tx, Output, Host> + 'static,
         F: for<'a> Fn(&'a Env) -> Option<&'a Tx> + 'static,
     {
         self.register(type_id, extract, handler);
@@ -206,12 +245,14 @@ impl<Env, Output> TxRegistry<Env, Output> {
     }
 
     /// Returns the erased handler registered for `type_id`, if any.
-    pub fn get_by_type(&self, type_id: u8) -> Option<AnyTxHandler<'_, Env, Output>> {
-        self.handlers[type_id as usize].as_deref().map(|inner| AnyTxHandler { inner })
+    pub fn get_by_type(&self, type_id: u8) -> Option<AnyTxHandler<Env, Output, Host>> {
+        self.handlers[type_id as usize]
+            .as_ref()
+            .map(|inner| AnyTxHandler { inner: Rc::clone(inner) })
     }
 
     /// Returns the erased handler registered for `type_id`.
-    pub fn try_get_by_type(&self, type_id: u8) -> HandlerResult<AnyTxHandler<'_, Env, Output>> {
+    pub fn try_get_by_type(&self, type_id: u8) -> HandlerResult<AnyTxHandler<Env, Output, Host>> {
         self.get_by_type(type_id).ok_or(HandlerError::UnsupportedTransactionType(type_id))
     }
 }
@@ -276,7 +317,7 @@ mod tests {
         type_id: u8,
         env: &Envelope,
     ) -> HandlerResult<Receipt> {
-        registry.try_get_by_type(type_id)?.call(env)
+        registry.try_get_by_type(type_id)?.call(env, &mut ())
     }
 
     #[test]

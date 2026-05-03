@@ -2,7 +2,9 @@ use crate::{
     AccountLoad, EvmConfig, SelfDestructResult,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
-    interpreter::{Host, InstrStop, Interpreter, Message, MessageKind, SpecId, Stack, Word, op},
+    interpreter::{
+        Host, InstrStop, Interpreter, Message, MessageKind, MessageResult, SpecId, Stack, Word, op,
+    },
 };
 use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::{Address, B256, Bytes, Log};
@@ -33,7 +35,7 @@ pub(in crate::interpreter) struct TestHost {
     pub(super) storage: HashMap<(Address, Word), Word>,
     pub(super) transient_storage: HashMap<(Address, Word), Word>,
     pub(super) logs: Vec<Log>,
-    pub(super) execute_result: Result<Word, InstrStop>,
+    pub(super) execute_result: MessageResult,
     pub(super) selfdestruct_result: SelfDestructResult,
     pub(super) calls: Vec<Message>,
     pub(super) selfdestructs: Vec<(Address, Address, bool)>,
@@ -50,7 +52,7 @@ impl Default for TestHost {
             storage: HashMap::new(),
             transient_storage: HashMap::new(),
             logs: Vec::new(),
-            execute_result: Ok(Word::from(1)),
+            execute_result: MessageResult { stop: InstrStop::Return, ..MessageResult::default() },
             selfdestruct_result: SelfDestructResult::default(),
             calls: Vec::new(),
             selfdestructs: Vec::new(),
@@ -110,9 +112,9 @@ impl Host for TestHost {
         _tx_env: TxEnv,
         _bytecode: Bytecode,
         message: Message,
-    ) -> Result<Word, InstrStop> {
+    ) -> MessageResult {
         self.calls.push(message);
-        self.execute_result
+        self.execute_result.clone()
     }
 
     fn selfdestruct(
