@@ -1,6 +1,6 @@
 //! System opcode implementations.
 
-use super::utils::{address_to_word, as_usize, word_to_address};
+use super::utils::{as_usize, word_to_address};
 use crate::{
     EvmConfig,
     interpreter::{
@@ -76,7 +76,7 @@ fn load_acc_and_calc_gas<C: EvmConfig>(
 
     let additional_cold_cost = cx.gas_params.cold_account_additional_cost();
     let skip_cold_load = cx.gas.remaining() < additional_cold_cost;
-    let account = cx.state.host.load_account(address_to_word(to), true, skip_cold_load)?;
+    let account = cx.state.host.load_account(to, true, skip_cold_load)?;
 
     let mut cost = 0;
     if account.is_cold {
@@ -316,10 +316,12 @@ pub(in crate::interpreter) fn selfdestruct(cx: _, [target]: [Word]) -> Result {
 
 #[cfg(test)]
 mod tests {
-    use super::address_to_word;
     use crate::interpreter::{
         InstrStop, Message, MessageKind, SpecId, Word,
-        instructions::tests::{RunConfig, TestHost, push, run},
+        instructions::{
+            tests::{RunConfig, TestHost, push, run},
+            utils::address_to_word,
+        },
         op,
     };
     use alloy_primitives::Address;

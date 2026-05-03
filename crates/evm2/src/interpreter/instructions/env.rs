@@ -1,4 +1,4 @@
-use super::utils::{address_to_word, as_usize, as_usize_saturated, b256_to_word};
+use super::utils::{address_to_word, as_usize, as_usize_saturated, b256_to_word, word_to_address};
 use crate::{
     AccountLoad, EvmConfig,
     interpreter::{Host, InstrStop, Result, Word, memory::resize_memory, table::InstructionCx},
@@ -13,7 +13,7 @@ fn load_account<C: EvmConfig>(
 ) -> Result<AccountLoad> {
     let cold_load_gas = cx.gas_params.cold_account_additional_cost();
     let skip_cold_load = cx.gas.remaining() < cold_load_gas;
-    let account = cx.state.host.load_account(addr, load_code, skip_cold_load)?;
+    let account = cx.state.host.load_account(word_to_address(addr), load_code, skip_cold_load)?;
     if account.is_cold {
         cx.gas.spend(cold_load_gas)?;
     }
@@ -210,7 +210,7 @@ mod tests {
     fn balance_opcode() {
         assert_stack!(BALANCE(0xbeef), 0xbeef);
         assert_stack!(BALANCE(0), 0);
-        assert_stack!(BALANCE(neg(1)), neg(1));
+        assert_stack!(BALANCE(neg(1)), address_to_word(Address::from([0xff; 20])));
     }
 
     #[test]

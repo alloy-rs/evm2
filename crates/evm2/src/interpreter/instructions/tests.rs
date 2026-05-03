@@ -14,6 +14,7 @@ pub(in crate::interpreter) struct TestConfig<const SPEC: u8 = { SpecId::OSAKA as
 impl<const SPEC: u8> EvmConfig for TestConfig<SPEC> {
     type Tx = ();
     type Host = TestHost;
+    type Database = crate::evm::InMemoryDB;
 
     const SPEC_ID: SpecId = match SpecId::try_from_u8(SPEC) {
         Some(spec_id) => spec_id,
@@ -28,8 +29,8 @@ pub(in crate::interpreter) struct TestHost {
     pub(super) code: Bytes,
     pub(super) is_empty: bool,
     pub(super) is_cold: bool,
-    pub(super) storage: HashMap<Word, Word>,
-    pub(super) transient_storage: HashMap<Word, Word>,
+    pub(super) storage: HashMap<(Address, Word), Word>,
+    pub(super) transient_storage: HashMap<(Address, Word), Word>,
     pub(super) logs: Vec<Log>,
     pub(super) execute_result: Result<Word, InstrStop>,
     pub(super) selfdestruct_result: SelfDestructResult,
@@ -63,7 +64,7 @@ impl Host for TestHost {
 
     fn load_account(
         &mut self,
-        address: Word,
+        address: Address,
         load_code: bool,
         skip_cold_load: bool,
     ) -> Result<AccountLoad, InstrStop> {
@@ -71,7 +72,7 @@ impl Host for TestHost {
             return Err(InstrStop::OutOfGas);
         }
         Ok(AccountLoad {
-            balance: address,
+            balance: address.into_word().into(),
             code_hash: self.code_hash,
             code: if load_code { self.code.clone() } else { Bytes::new() },
             is_empty: self.is_empty,
@@ -83,20 +84,20 @@ impl Host for TestHost {
         Some(B256::with_last_byte(number as u8))
     }
 
-    fn sload(&mut self, index: Word) -> Word {
-        self.storage.get(&index).copied().unwrap_or_default()
+    fn sload(&mut self, address: Address, key: Word) -> Word {
+        self.storage.get(&(address, key)).copied().unwrap_or_default()
     }
 
-    fn sstore(&mut self, index: Word, value: Word) {
-        self.storage.insert(index, value);
+    fn sstore(&mut self, address: Address, key: Word, value: Word) {
+        self.storage.insert((address, key), value);
     }
 
-    fn tload(&mut self, index: Word) -> Word {
-        self.transient_storage.get(&index).copied().unwrap_or_default()
+    fn tload(&mut self, address: Address, key: Word) -> Word {
+        self.transient_storage.get(&(address, key)).copied().unwrap_or_default()
     }
 
-    fn tstore(&mut self, index: Word, value: Word) {
-        self.transient_storage.insert(index, value);
+    fn tstore(&mut self, address: Address, key: Word, value: Word) {
+        self.transient_storage.insert((address, key), value);
     }
 
     fn log(&mut self, log: Log) {
