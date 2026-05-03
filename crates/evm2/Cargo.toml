@@ -55,9 +55,15 @@ std = [
     "alloy-primitives/std",
     "alloy-rlp/std",
     "alloy-trie/std",
+    "once_cell/std",
     "serde?/std",
     "thiserror/std",
 ]
 
 nightly = []
-serde = ["dep:serde", "alloy-primitives/serde"]
+serde = [
+    "dep:serde",
+    "alloy-eips/serde",
+    "alloy-primitives/serde",
+    "alloy-trie/serde",
+]
