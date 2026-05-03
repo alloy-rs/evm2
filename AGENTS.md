@@ -1,7 +1,7 @@
 # Rust EVM
 
 This repo is a reimplementation of revm. When implementing EVM behavior, use
-`~/github/danipopes/revm` as the baseline reference and preserve revm semantics,
+`bluealloy/revm` as the baseline reference and preserve revm semantics,
 control flow, gas accounting, and host interaction shape as closely as possible unless
 explicitly told otherwise.
 
