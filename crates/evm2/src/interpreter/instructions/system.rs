@@ -164,12 +164,8 @@ fn call_inner<C: EvmConfig>(
     let bytecode = crate::bytecode::Bytecode::new_legacy(code);
     let result = cx.state.host.execute_message(cx.state.tx().clone(), bytecode, message);
     cx.gas.erase_cost(result.gas_remaining);
-    cx.state.memory().set_data(
-        return_memory_range.start,
-        0,
-        return_memory_range.len(),
-        &result.output,
-    );
+    let copy_len = min(return_memory_range.len(), result.output.len());
+    cx.state.memory().set(return_memory_range.start, &result.output[..copy_len]);
     cx.state.set_return_data(result.output);
     let success = if success(result.stop) { Word::from(1) } else { Word::ZERO };
     stack.push(success)

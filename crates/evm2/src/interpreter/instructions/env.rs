@@ -68,6 +68,7 @@ pub(in crate::interpreter) fn calldatacopy(
     [memory_offset, data_offset, len]: [Word],
 ) -> Result {
     let len = as_usize(len)?;
+    cx.gas.spend(cx.gas_params.copy_cost(len))?;
     if len == 0 {
         return Ok(());
     }
@@ -87,6 +88,7 @@ pub(in crate::interpreter) fn codesize(cx: _) -> out {
 #[instruction]
 pub(in crate::interpreter) fn codecopy(cx: _, [memory_offset, code_offset, len]: [Word]) -> Result {
     let len = as_usize(len)?;
+    cx.gas.spend(cx.gas_params.copy_cost(len))?;
     if len == 0 {
         return Ok(());
     }
