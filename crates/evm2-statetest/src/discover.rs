@@ -22,7 +22,7 @@ pub(crate) fn find_json_tests(paths: &[PathBuf]) -> Result<Vec<PathBuf>, TestErr
             }
         }
     }
-    files.sort();
+    files.sort_unstable();
     if files.is_empty() {
         return Err(TestError::path(PathBuf::new(), TestErrorKind::NoJsonFiles));
     }
