@@ -1,6 +1,5 @@
 use crate::{
     error::{TestError, TestErrorKind},
-    skip::skip_test,
     types::{AccountInfo, Env, Test, TestSuite, TestUnit, TransactionParts, TxPartIndices},
 };
 use alloy_primitives::{Address, B256, Bytes, U256};
@@ -10,86 +9,55 @@ use evm2::{
     env::BlockEnv,
     evm::{
         AccountInfo as EvmAccountInfo, InMemoryDB, logs_hash,
-        transaction::{Error as EvmError, ExecutionResult, Transaction},
+        transaction::{EvmError, ExecutionResult, Transaction},
     },
     interpreter::SpecId,
     registry::TxRegistry,
 };
 use k256::ecdsa::SigningKey;
 use serde_json::json;
-use std::{collections::BTreeMap, fs, path::Path, time::Instant};
+use std::{collections::BTreeMap, fs, path::Path};
 
 /// Per-spec execution outcome.
 #[derive(Clone, Debug)]
-pub struct SpecOutcome {
+pub(crate) struct SpecOutcome {
     /// Computed state root.
-    pub state_root: B256,
+    pub(crate) state_root: B256,
     /// Computed logs root.
-    pub logs_root: B256,
+    pub(crate) logs_root: B256,
     /// Transaction output.
-    pub output: Bytes,
+    pub(crate) output: Bytes,
     /// Gas used by the transaction.
-    pub gas_used: u64,
+    pub(crate) gas_used: u64,
     /// EVM result string.
-    pub evm_result: String,
+    pub(crate) evm_result: String,
 }
 
 /// Execution options for a single suite.
 #[derive(Clone, Copy, Debug, Default)]
-pub struct ExecuteConfig {
+pub(crate) struct ExecuteConfig {
     /// Whether to print revm-style JSON outcome records.
-    pub print_json_outcome: bool,
-}
-
-/// Executes a single state test JSON file.
-pub fn execute_file(path: &Path) -> Result<usize, TestError> {
-    execute_test_suite(path, ExecuteConfig::default()).map(|outcome| outcome.passed)
+    pub(crate) print_json_outcome: bool,
 }
 
 /// Executes a single state test JSON file using explicit execution options.
-pub fn execute_test_suite(
-    path: &Path,
-    config: ExecuteConfig,
-) -> Result<TestSuiteOutcome, TestError> {
-    if skip_test(path) {
-        return Ok(TestSuiteOutcome::default());
-    }
-    let start = Instant::now();
+pub(crate) fn execute_test_suite(path: &Path, config: ExecuteConfig) -> Result<(), TestError> {
     let input = fs::read_to_string(path).map_err(|err| TestError::unknown(path, err.into()))?;
-    let passed = execute_str_with_config(path, &input, config)?;
-    Ok(TestSuiteOutcome { passed, elapsed: start.elapsed() })
-}
-
-/// Executes a single state test JSON file from an already-loaded string.
-pub fn execute_str(path: &Path, input: &str) -> Result<usize, TestError> {
-    execute_str_with_config(path, input, ExecuteConfig::default())
+    execute_str_with_config(path, &input, config)
 }
 
 /// Executes a loaded state test JSON file using explicit execution options.
-pub fn execute_str_with_config(
+pub(crate) fn execute_str_with_config(
     path: &Path,
     input: &str,
     config: ExecuteConfig,
-) -> Result<usize, TestError> {
-    if skip_test(path) {
-        return Ok(0);
-    }
+) -> Result<(), TestError> {
     let suite: TestSuite =
         serde_json::from_str(input).map_err(|err| TestError::unknown(path, err.into()))?;
-    let mut passed = 0;
     for (name, unit) in suite.0 {
-        passed += execute_unit(path, &name, unit, config)?;
+        execute_unit(path, &name, unit, config)?;
     }
-    Ok(passed)
-}
-
-/// Outcome for a whole JSON suite file.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct TestSuiteOutcome {
-    /// Number of post cases that passed.
-    pub passed: usize,
-    /// CPU time spent executing the suite.
-    pub elapsed: std::time::Duration,
+    Ok(())
 }
 
 fn execute_unit(
@@ -97,8 +65,7 @@ fn execute_unit(
     name: &str,
     unit: TestUnit,
     config: ExecuteConfig,
-) -> Result<usize, TestError> {
-    let mut passed = 0;
+) -> Result<(), TestError> {
     let state = parse_state(&unit.pre).map_err(|err| TestError::case(path, name, err))?;
     let block = parse_block(&unit.env);
     for (spec_name, posts) in &unit.post {
@@ -109,17 +76,15 @@ fn execute_unit(
             let tx = match build_tx(&unit.transaction, &post.indexes, block.basefee) {
                 Ok(tx) => tx,
                 Err(_) if post.expect_exception.is_some() => {
-                    passed += 1;
                     continue;
                 }
                 Err(err) => return Err(TestError::case(path, name, err)),
             };
             let result = execute_spec(spec, block, state.clone(), &tx);
             validate_result(path, name, &unit, post, result, spec, config)?;
-            passed += 1;
         }
     }
-    Ok(passed)
+    Ok(())
 }
 
 fn validate_result(

@@ -2,7 +2,7 @@
 
 use crate::{
     evm::InMemoryDB,
-    interpreter::{GasParams, GasTable, Instruction, InstructionImplTable, SpecId},
+    interpreter::{GasParams, GasTable, InstructionImplTable, SpecId},
 };
 use core::marker::PhantomData;
 
@@ -26,20 +26,8 @@ pub trait EvmConfig: Sized + 'static {
     /// Dynamic gas parameter table.
     const GAS_PARAMS: GasParams = GasParams::new_spec(Self::SPEC_ID);
 
-    /// Returns the dynamic gas parameter table for this config.
-    #[inline]
-    fn gas_params() -> &'static GasParams {
-        GasParams::for_spec(Self::SPEC_ID)
-    }
-
     /// Instruction implementations.
     const INSTRUCTION_IMPLS: InstructionImplTable<Self> = InstructionImplTable::new();
-
-    /// Returns the instruction implementation for `opcode`.
-    #[inline]
-    fn instruction_impl(opcode: u8) -> &'static dyn Instruction<Self> {
-        Self::INSTRUCTION_IMPLS.get_or_default(opcode)
-    }
 }
 
 /// EVM configuration for a specification ID.
@@ -55,9 +43,4 @@ impl<Tx: 'static, const SPEC: u8> EvmConfig for EvmVersion<Tx, SPEC> {
         Some(spec_id) => spec_id,
         None => panic!("invalid EVM specification ID"),
     };
-
-    #[inline]
-    fn instruction_impl(opcode: u8) -> &'static dyn Instruction<Self> {
-        crate::interpreter::table::default_instruction_impl::<Self>(opcode)
-    }
 }

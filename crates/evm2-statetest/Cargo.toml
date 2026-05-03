@@ -1,6 +1,6 @@
 [package]
 name = "evm2-statetest"
-description = "Parallel Ethereum state test runner for evm2."
+description = "Ethereum state test nextest runner for evm2."
 readme = "README.md"
 
 version.workspace = true
@@ -18,7 +18,6 @@ workspace = true
 evm2 = { path = "../evm2", features = ["std", "serde"] }
 
 alloy-primitives = { workspace = true, features = ["std", "serde", "rlp"] }
-indicatif.workspace = true
 k256 = { workspace = true, features = ["ecdsa"] }
 libtest-mimic.workspace = true
 serde = { workspace = true, features = ["derive"] }

@@ -394,6 +394,48 @@ impl<D: Database> State<D> {
         self.get_or_insert(address).nonce = self.get_or_insert(address).nonce.saturating_add(1);
     }
 
+    /// Creates a contract account and transfers endowment from the caller.
+    #[inline]
+    pub fn create_account(
+        &mut self,
+        caller: Address,
+        address: Address,
+        value: Word,
+        spec: crate::interpreter::SpecId,
+    ) -> Result<(), crate::interpreter::InstrStop> {
+        let existed = self.account_info(address).is_some();
+        if let Some(info) = self.account_info(address)
+            && (info.nonce != 0 || info.code_hash != KECCAK_EMPTY)
+        {
+            return Err(crate::interpreter::InstrStop::CreateCollision);
+        }
+
+        self.journal.push(JournalEntry::Create { address, existed });
+        if !self.transfer(caller, address, value) {
+            return Err(crate::interpreter::InstrStop::OutOfFunds);
+        }
+
+        let account = self.get_or_insert(address);
+        account.nonce = u64::from(spec.enables(crate::interpreter::SpecId::SPURIOUS_DRAGON));
+        account.code_hash = KECCAK_EMPTY;
+        account.code = Bytecode::default();
+        account.storage.clear();
+        account.transient_storage.clear();
+        account.destructed = false;
+        account.just_created = true;
+        account.code_changed = true;
+        Ok(())
+    }
+
+    /// Sets account bytecode.
+    #[inline]
+    pub fn set_code(&mut self, address: Address, code: Bytecode) {
+        let account = self.get_or_insert(address);
+        account.code_hash = code.hash_slow();
+        account.code = code;
+        account.code_changed = true;
+    }
+
     /// Removes modified accounts that should be erased and are empty.
     #[inline]
     pub fn prune_empty_accounts(&mut self) {

@@ -116,6 +116,10 @@ pub(crate) type InstructionFn<C> = extern_table!(
     ) -> InstructionFnRet
 );
 
+/// Normal instruction dispatch table.
+#[cfg(not(feature = "nightly"))]
+pub(crate) type InstructionTable<C> = [InstructionFn<C>; 256];
+
 /// Tail instruction function pointer.
 #[cfg(feature = "nightly")]
 pub(crate) type TailInstructionFn<C> = extern_table!(
@@ -132,12 +136,14 @@ pub(crate) type TailInstructionFn<C> = extern_table!(
 #[cfg(feature = "nightly")]
 pub(crate) type TailInstructionTable<C> = [TailInstructionFn<C>; 256];
 
-#[cfg(feature = "nightly")]
 pub(crate) trait InstructionTables: EvmConfig {
+    #[cfg(not(feature = "nightly"))]
+    const INSTRUCTIONS: InstructionTable<Self> = make_normal_instruction_table::<Self>();
+
+    #[cfg(feature = "nightly")]
     const TAIL_INSTRUCTIONS: TailInstructionTable<Self> = make_tail_instruction_table::<Self>();
 }
 
-#[cfg(feature = "nightly")]
 impl<C: EvmConfig> InstructionTables for C {}
 
 /// Instruction execution context.
@@ -400,21 +406,6 @@ macro_rules! make_instruction_table_inner {
     };
 }
 
-macro_rules! match_instruction_impl {
-    ([$opcode:expr, $config:ty] $(($op:ident, $instr:path),)*) => {{
-        use crate::interpreter::instructions::*;
-
-        return match $opcode {
-            $(
-                op::$op if <$config as EvmConfig>::SPEC_ID.enables(opcode_min_spec(op::$op)) => {
-                    &$instr as &'static dyn Instruction<$config>
-                }
-            )*
-            _ => &unknown,
-        };
-    }};
-}
-
 const fn opcode_min_spec(opcode: u8) -> SpecId {
     match opcode {
         op::SHL | op::SHR | op::SAR | op::EXTCODEHASH => SpecId::CONSTANTINOPLE,
@@ -431,16 +422,6 @@ const fn opcode_min_spec(opcode: u8) -> SpecId {
     }
 }
 
-#[cfg(not(feature = "nightly"))]
-macro_rules! match_instruction {
-    ([$op:expr, $config:ty, $dispatch:ident, $instr_fn:ty] $($value:literal,)*) => {
-        match $op {
-            $($value => $dispatch::<$config, $value> as $instr_fn,)*
-        }
-    };
-}
-
-#[cfg(feature = "nightly")]
 macro_rules! assign_instruction_table_entries {
     ([$table:expr, $config:ty, $dispatch:ident, $instr_fn:ty] $($op:literal,)*) => {
         $(
@@ -488,19 +469,6 @@ macro_rules! for_each_opcode_value {
     };
 }
 
-/// Returns the normal instruction dispatcher for `opcode`.
-#[inline(always)]
-#[cfg(not(feature = "nightly"))]
-pub(crate) fn instruction<C: EvmConfig>(opcode: u8) -> InstructionFn<C> {
-    for_each_opcode_value!([opcode, C, dispatch, InstructionFn<C>] match_instruction)
-}
-
-/// Returns the default instruction implementation for `opcode`.
-#[inline(always)]
-pub(crate) fn default_instruction_impl<C: EvmConfig>(opcode: u8) -> &'static dyn Instruction<C> {
-    for_each_opcode!([opcode, C] match_instruction_impl);
-}
-
 impl<C: EvmConfig> InstructionImplTable<C> {
     /// Creates an instruction implementation table.
     pub const fn new() -> Self {
@@ -510,6 +478,15 @@ impl<C: EvmConfig> InstructionImplTable<C> {
         for_each_opcode!([table, C] make_instruction_table_inner);
         table
     }
+}
+
+/// Converts instruction implementations to a normal instruction dispatch table.
+#[inline]
+#[cfg(not(feature = "nightly"))]
+pub(crate) const fn make_normal_instruction_table<C: EvmConfig>() -> InstructionTable<C> {
+    let mut table = [dispatch::<C, 0> as InstructionFn<C>; 256];
+    for_each_opcode_value!([table, C, dispatch, InstructionFn<C>] assign_instruction_table_entries);
+    table
 }
 
 /// Converts instruction implementations to a tail-call instruction dispatch table.
@@ -529,7 +506,7 @@ extern_table! {
         gas: &mut Gas,
         state: &mut State<'_, C::Host>,
     ) -> InstructionFnRet {
-        let instr = C::instruction_impl(OP);
+        let instr = const { C::INSTRUCTION_IMPLS.get_or_default(OP) };
         let r;
         match pre_step::<C, OP>(gas) {
             Ok(()) => {
@@ -561,7 +538,7 @@ extern_table! {
             cold_path();
             tail_return!(tail_call_restore::<C>(pc, stack, gas, state, e));
         }
-        let instr = C::instruction_impl(OP);
+        let instr = const { C::INSTRUCTION_IMPLS.get_or_default(OP) };
         if let Err(e) = instr.execute(&mut pc, stack.as_mut(), gas, state) {
             cold_path();
             inc_pc::<OP>(&mut pc);

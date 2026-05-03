@@ -1,40 +1,44 @@
 use alloy_primitives::{B256, Bytes, U256};
-use evm2::evm::transaction::Error as EvmError;
+use evm2::evm::transaction::EvmError;
 use std::{io, path::PathBuf};
 use thiserror::Error;
 
 /// State test runner error.
 #[derive(Debug, Error)]
 #[error("Path: {path}\nName: {name}\nError: {kind}")]
-pub struct TestError {
+pub(crate) struct TestError {
     /// Test path.
-    pub path: String,
+    pub(crate) path: String,
     /// Test name.
-    pub name: String,
+    pub(crate) name: String,
     /// Error kind.
-    pub kind: TestErrorKind,
+    pub(crate) kind: TestErrorKind,
 }
 
 impl TestError {
     /// Creates an error for a path-level failure.
-    pub fn path(path: impl Into<PathBuf>, kind: TestErrorKind) -> Self {
+    pub(crate) fn path(path: impl Into<PathBuf>, kind: TestErrorKind) -> Self {
         Self { path: path.into().display().to_string(), name: "Path validation".to_string(), kind }
     }
 
     /// Creates an error for an unknown test name.
-    pub fn unknown(path: impl Into<PathBuf>, kind: TestErrorKind) -> Self {
+    pub(crate) fn unknown(path: impl Into<PathBuf>, kind: TestErrorKind) -> Self {
         Self { path: path.into().display().to_string(), name: "Unknown".to_string(), kind }
     }
 
     /// Creates an error for a named test case.
-    pub fn case(path: impl Into<PathBuf>, name: impl Into<String>, kind: TestErrorKind) -> Self {
+    pub(crate) fn case(
+        path: impl Into<PathBuf>,
+        name: impl Into<String>,
+        kind: TestErrorKind,
+    ) -> Self {
         Self { path: path.into().display().to_string(), name: name.into(), kind }
     }
 }
 
 /// Specific kind of error that occurred during test execution.
 #[derive(Debug, Error)]
-pub enum TestErrorKind {
+pub(crate) enum TestErrorKind {
     /// Invalid test path.
     #[error("path does not exist")]
     InvalidPath,
@@ -104,19 +108,4 @@ pub enum TestErrorKind {
     /// EVM execution failed.
     #[error(transparent)]
     Evm(#[from] EvmError),
-    /// Worker thread spawn failed.
-    #[error("failed to spawn worker: {0}")]
-    ThreadSpawn(io::Error),
-    /// Worker thread panicked.
-    #[error("thread panicked")]
-    Panic,
-    /// One or more files failed.
-    #[error("{0} test files failed")]
-    Failures(usize),
-    /// Tracing was requested but the local EVM does not expose tracing yet.
-    #[error("tracing is not implemented for evm2 statetests yet")]
-    TraceUnsupported,
 }
-
-/// Per-case state test error.
-pub type CaseError = TestErrorKind;

@@ -39,6 +39,8 @@ pub struct Message {
     /// Address whose code is being executed. This can differ from `destination` for `CALLCODE`
     /// and `DELEGATECALL`.
     pub code_address: Address,
+    /// CREATE2 salt. Ignored for other message kinds.
+    pub salt: U256,
 }
 
 impl Message {
@@ -64,6 +66,7 @@ impl Default for Message {
             input: Bytes::new(),
             value: U256::ZERO,
             code_address: Address::ZERO,
+            salt: U256::ZERO,
         }
     }
 }

@@ -9,9 +9,10 @@ use crate::{
 };
 use alloc::vec::Vec;
 use alloy_eips::eip2718::Typed2718;
-use alloy_primitives::{Address, B256, Bytes, Log, U256};
+use alloy_primitives::{Address, B256, Bytes, Log, U256, keccak256};
+use alloy_rlp::{Encodable, Header};
 use core::cmp::min;
-use transaction::{Error, ExecutionResult, Transaction, intrinsic_gas};
+use transaction::{EvmError, ExecutionResult, Transaction, intrinsic_gas};
 
 pub mod config;
 pub mod env;
@@ -93,27 +94,23 @@ impl<C: EvmConfig> Evm<C> {
     }
 
     /// Executes a transaction against the host state.
-    pub fn execute(&mut self, tx: &Transaction) -> Result<ExecutionResult, Error>
+    pub fn execute(&mut self, tx: &Transaction) -> Result<ExecutionResult, EvmError>
     where
         C: EvmConfig<Host = Self>,
     {
         let intrinsic = intrinsic_gas(C::SPEC_ID, tx);
         if tx.gas_limit < intrinsic {
-            return Err(Error::IntrinsicGasTooLow { required: intrinsic, got: tx.gas_limit });
-        }
-
-        if tx.to.is_none() {
-            return Err(Error::CreateUnsupported);
+            return Err(EvmError::IntrinsicGasTooLow { required: intrinsic, got: tx.gas_limit });
         }
 
         let max_gas_cost = U256::from(tx.gas_limit) * tx.gas_price;
         let max_upfront = max_gas_cost.saturating_add(tx.value);
         let sender_info = self.state.account_info(tx.caller).unwrap_or_default();
         if sender_info.nonce != tx.nonce {
-            return Err(Error::InvalidNonce { expected: sender_info.nonce, got: tx.nonce });
+            return Err(EvmError::InvalidNonce { expected: sender_info.nonce, got: tx.nonce });
         }
         if sender_info.balance < max_upfront {
-            return Err(Error::InsufficientFunds);
+            return Err(EvmError::InsufficientFunds);
         }
 
         self.state.add_balance(tx.caller, Word::ZERO.wrapping_sub(max_gas_cost));
@@ -121,34 +118,51 @@ impl<C: EvmConfig> Evm<C> {
         let execution_checkpoint = self.state.checkpoint();
         let log_checkpoint = self.logs.len();
 
-        let to = tx.to.expect("checked above");
         let stop;
         let mut output = Bytes::new();
         let mut gas_remaining = tx.gas_limit - intrinsic;
 
-        if self.state.transfer(tx.caller, to, tx.value) {
-            let code = self.state.get_code(to);
+        let tx_env = TxEnv { origin: tx.caller, gas_price: tx.gas_price, ..TxEnv::default() };
+        if let Some(to) = tx.to {
+            if self.state.transfer(tx.caller, to, tx.value) {
+                let code = self.state.get_code(to);
+                let message = Message {
+                    kind: MessageKind::Call,
+                    depth: 0,
+                    gas_limit: gas_remaining,
+                    destination: to,
+                    caller: tx.caller,
+                    input: tx.data.clone(),
+                    value: tx.value,
+                    code_address: to,
+                    salt: Word::ZERO,
+                };
+                let result = self.execute_frame(tx_env, code, message);
+                stop = result.stop;
+                output = result.output;
+                gas_remaining = result.gas_remaining;
+            } else {
+                stop = InstrStop::OutOfFunds;
+                gas_remaining = 0;
+            }
+        } else {
+            let created_address = create_address(tx.caller, tx.nonce);
             let message = Message {
-                kind: MessageKind::Call,
+                kind: MessageKind::Create,
                 depth: 0,
                 gas_limit: gas_remaining,
-                destination: to,
+                destination: created_address,
                 caller: tx.caller,
-                input: tx.data.clone(),
+                input: Bytes::new(),
                 value: tx.value,
-                code_address: to,
+                code_address: created_address,
+                salt: Word::ZERO,
             };
-            let result = self.execute_frame(
-                TxEnv { origin: tx.caller, gas_price: tx.gas_price, ..TxEnv::default() },
-                code,
-                message,
-            );
+            let result =
+                self.execute_create(tx_env, Bytecode::new_legacy(tx.data.clone()), message);
             stop = result.stop;
             output = result.output;
             gas_remaining = result.gas_remaining;
-        } else {
-            stop = InstrStop::OutOfFunds;
-            gas_remaining = 0;
         }
 
         if !stop.is_success() {
@@ -165,6 +179,79 @@ impl<C: EvmConfig> Evm<C> {
         self.state.prune_empty_accounts();
 
         Ok(ExecutionResult { stop, gas_used, output })
+    }
+
+    fn execute_create(&mut self, tx_env: TxEnv, bytecode: Bytecode, message: Message) -> FrameResult
+    where
+        C: EvmConfig<Host = Self>,
+    {
+        if message.depth >= Message::CALL_DEPTH_LIMIT {
+            return FrameResult {
+                stop: InstrStop::CallTooDeep,
+                gas_remaining: message.gas_limit,
+                output: Bytes::new(),
+            };
+        }
+
+        let caller_nonce = self.state.account_info(message.caller).map_or(0, |info| info.nonce);
+        let caller_balance =
+            self.state.account_info(message.caller).map_or(Word::ZERO, |info| info.balance);
+        if caller_balance < message.value {
+            return FrameResult {
+                stop: InstrStop::OutOfFunds,
+                gas_remaining: message.gas_limit,
+                output: Bytes::new(),
+            };
+        }
+
+        let address = match message.kind {
+            MessageKind::Create if message.depth == 0 => message.destination,
+            MessageKind::Create => create_address(message.caller, caller_nonce),
+            MessageKind::Create2 => {
+                create2_address(message.caller, message.salt, bytecode.original_byte_slice())
+            }
+            _ => unreachable!("invalid create message kind"),
+        };
+
+        if message.depth > 0 {
+            self.state.increment_nonce(message.caller);
+        }
+
+        let checkpoint = self.state.checkpoint();
+        let log_checkpoint = self.logs.len();
+        if let Err(stop) =
+            self.state.create_account(message.caller, address, message.value, C::SPEC_ID)
+        {
+            self.state.rollback(checkpoint);
+            self.logs.truncate(log_checkpoint);
+            return FrameResult { stop, gas_remaining: message.gas_limit, output: Bytes::new() };
+        }
+
+        let mut create_message = message;
+        create_message.destination = address;
+        create_message.code_address = address;
+        create_message.input = Bytes::new();
+        let mut interpreter = Interpreter::new(bytecode, tx_env, create_message);
+        let stop = interpreter.run::<C>(self);
+        let mut gas = interpreter.gas();
+        if stop.is_success() || stop.is_revert() {
+            gas.set_final_refund(C::SPEC_ID.enables(SpecId::LONDON));
+        }
+        let output = Bytes::copy_from_slice(interpreter.output());
+        let mut gas_remaining =
+            min(gas.remaining().saturating_add(gas.refunded() as u64), gas.limit());
+
+        if stop.is_success() {
+            self.state.set_code(address, Bytecode::new_legacy(output.clone()));
+        } else {
+            self.state.rollback(checkpoint);
+            self.logs.truncate(log_checkpoint);
+            if stop.is_error() {
+                gas_remaining = 0;
+            }
+        }
+
+        FrameResult { stop, gas_remaining, output }
     }
 
     fn execute_frame(&mut self, tx_env: TxEnv, bytecode: Bytecode, message: Message) -> FrameResult
@@ -297,9 +384,29 @@ impl<C: EvmConfig<Host = Self>> Host for Evm<C> {
         bytecode: Bytecode,
         message: Message,
     ) -> Result<Word, InstrStop> {
-        let result = self.execute_frame(tx_env, bytecode, message);
+        let is_create = matches!(message.kind, MessageKind::Create | MessageKind::Create2);
+        let address = if is_create {
+            match message.kind {
+                MessageKind::Create => {
+                    let nonce =
+                        self.state.account_info(message.caller).map_or(0, |info| info.nonce);
+                    create_address(message.caller, nonce)
+                }
+                MessageKind::Create2 => {
+                    create2_address(message.caller, message.salt, bytecode.original_byte_slice())
+                }
+                _ => unreachable!("checked above"),
+            }
+        } else {
+            Address::ZERO
+        };
+        let result = if is_create {
+            self.execute_create(tx_env, bytecode, message)
+        } else {
+            self.execute_frame(tx_env, bytecode, message)
+        };
         if result.stop.is_success() {
-            return Ok(Word::from(1));
+            return Ok(if is_create { Word::from_be_slice(address.as_slice()) } else { Word::ONE });
         }
         Err(result.stop)
     }
@@ -331,6 +438,23 @@ impl<C: EvmConfig<Host = Self>> Host for Evm<C> {
             previously_destroyed,
         })
     }
+}
+
+fn create_address(caller: Address, nonce: u64) -> Address {
+    let mut out = Vec::new();
+    Header { list: true, payload_length: caller.length() + nonce.length() }.encode(&mut out);
+    caller.encode(&mut out);
+    nonce.encode(&mut out);
+    Address::from_slice(&keccak256(out)[12..])
+}
+
+fn create2_address(caller: Address, salt: Word, initcode: &[u8]) -> Address {
+    let mut input = Vec::with_capacity(85);
+    input.push(0xff);
+    input.extend_from_slice(caller.as_slice());
+    input.extend_from_slice(&salt.to_be_bytes::<32>());
+    input.extend_from_slice(keccak256(initcode).as_slice());
+    Address::from_slice(&keccak256(input)[12..])
 }
 
 #[cfg(test)]
@@ -640,5 +764,47 @@ mod tests {
             Some(U256::ZERO)
         );
         assert_eq!(logs_hash(evm.logs()), logs_hash(&[]));
+    }
+
+    #[test]
+    fn execute_create_deploys_code() {
+        let caller = Address::from([0xaa; 20]);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(
+            caller,
+            AccountInfo { balance: U256::from(1_000_000), ..Default::default() },
+        );
+        let mut evm = Evm::<EvmVersion<(), { SpecId::CANCUN as u8 }>>::with_database(
+            BlockEnv::default(),
+            TxRegistry::new(),
+            database,
+        );
+        let initcode = Bytes::from_static(&[
+            op::PUSH1,
+            0x42,
+            op::PUSH0,
+            op::MSTORE8,
+            op::PUSH1,
+            0x01,
+            op::PUSH0,
+            op::RETURN,
+        ]);
+
+        let result = evm.execute(&Transaction {
+            caller,
+            to: None,
+            gas_limit: 100_000,
+            gas_price: U256::ONE,
+            data: initcode,
+            ..Transaction::default()
+        });
+
+        assert!(result.unwrap().is_success());
+        let caller_info = evm.state().account_info(caller).unwrap();
+        assert_eq!(caller_info.nonce, 1);
+        assert!(caller_info.balance < U256::from(1_000_000));
+        let created = create_address(caller, 0);
+        let code = evm.state.get_code(created);
+        assert_eq!(code.original_byte_slice(), &[0x42]);
     }
 }

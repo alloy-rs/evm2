@@ -231,12 +231,6 @@ impl GasParams {
         Self::new_spec_inner(spec)
     }
 
-    /// Returns the static gas parameter table for `spec`.
-    #[inline]
-    pub fn for_spec(spec: SpecId) -> &'static Self {
-        &GAS_PARAMS_BY_SPEC[spec as usize]
-    }
-
     #[inline]
     const fn new_spec_inner(spec: SpecId) -> Self {
         use GasId::*;
@@ -457,30 +451,6 @@ impl GasParams {
         self.get(GasId::ColdAccountAdditionalCost)
     }
 }
-
-static GAS_PARAMS_BY_SPEC: [GasParams; SpecId::NEXT as usize + 1] = [
-    GasParams::new_spec_inner(SpecId::FRONTIER),
-    GasParams::new_spec_inner(SpecId::FRONTIER_THAWING),
-    GasParams::new_spec_inner(SpecId::HOMESTEAD),
-    GasParams::new_spec_inner(SpecId::DAO_FORK),
-    GasParams::new_spec_inner(SpecId::TANGERINE),
-    GasParams::new_spec_inner(SpecId::SPURIOUS_DRAGON),
-    GasParams::new_spec_inner(SpecId::BYZANTIUM),
-    GasParams::new_spec_inner(SpecId::CONSTANTINOPLE),
-    GasParams::new_spec_inner(SpecId::PETERSBURG),
-    GasParams::new_spec_inner(SpecId::ISTANBUL),
-    GasParams::new_spec_inner(SpecId::MUIR_GLACIER),
-    GasParams::new_spec_inner(SpecId::BERLIN),
-    GasParams::new_spec_inner(SpecId::LONDON),
-    GasParams::new_spec_inner(SpecId::ARROW_GLACIER),
-    GasParams::new_spec_inner(SpecId::GRAY_GLACIER),
-    GasParams::new_spec_inner(SpecId::MERGE),
-    GasParams::new_spec_inner(SpecId::SHANGHAI),
-    GasParams::new_spec_inner(SpecId::CANCUN),
-    GasParams::new_spec_inner(SpecId::PRAGUE),
-    GasParams::new_spec_inner(SpecId::OSAKA),
-    GasParams::new_spec_inner(SpecId::AMSTERDAM),
-];
 
 #[cfg(test)]
 mod tests {

@@ -1,6 +1,7 @@
-#[cfg(feature = "nightly")]
-use super::table::InstructionTables;
-use super::{BytecodeRef, Gas, InstrStop, Memory, Message, Pc, Result, Stack, State, Word};
+use super::{
+    BytecodeRef, Gas, InstrStop, Memory, Message, Pc, Result, Stack, State, Word,
+    table::InstructionTables,
+};
 use crate::{EvmConfig, bytecode::Bytecode, env::TxEnv};
 use alloc::boxed::Box;
 use alloy_primitives::Bytes;
@@ -140,7 +141,7 @@ impl Interpreter {
         let bytecode = BytecodeRef::new(&self.bytecode);
         let pc = Pc::from_ptr(pc);
         let op = pc.op();
-        let instr = crate::interpreter::table::instruction::<C>(op);
+        let instr = const { &<C as InstructionTables>::INSTRUCTIONS }[op as usize];
         let (pc, stack_len) = instr(
             pc,
             Stack::new(&mut self.stack, stack_len),

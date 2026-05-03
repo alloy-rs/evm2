@@ -30,7 +30,8 @@ cargo nextest run -p evm2-statetest --test statetest -j28
 ```
 
 Each JSON file is listed as a separate nextest test. `-j` controls how many
-state test files nextest runs concurrently.
+state test files nextest runs concurrently. In CI we run a smoke test from this
+default layout without passing state-test environment variables.
 
 Run one subdirectory across all downloaded suites:
 
@@ -38,12 +39,11 @@ Run one subdirectory across all downloaded suites:
 SUBDIR=stRevertTest cargo nextest run -p evm2-statetest --test statetest -j28
 ```
 
-Run an explicit root:
+Run one explicit test file:
 
 ```sh
-EVM2_STATETEST_ROOT=test-fixtures/legacytests/Constantinople/GeneralStateTests \
-SUBDIR=stExample \
-cargo nextest run -p evm2-statetest --test statetest -j28
+cargo nextest run -p evm2-statetest --test statetest -j28 \
+  legacy_constantinople::stExample/add11.json
 ```
 
 List all discovered state test files:
@@ -51,3 +51,7 @@ List all discovered state test files:
 ```sh
 cargo nextest list -p evm2-statetest --test statetest
 ```
+
+For local experiments, `EVM2_STATETEST_ROOT`, `ETHEREUM_TESTS`, `ETHTESTS`,
+`EVM2_TEST_FIXTURES`, `REVMC_TEST_FIXTURES`, and `SUBDIR` are still supported as
+optional compatibility filters.

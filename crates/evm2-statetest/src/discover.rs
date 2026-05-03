@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
 /// Finds all JSON state test files under `paths`.
-pub fn find_json_tests(paths: &[PathBuf]) -> Result<Vec<PathBuf>, TestError> {
+pub(crate) fn find_json_tests(paths: &[PathBuf]) -> Result<Vec<PathBuf>, TestError> {
     let mut files = Vec::new();
     for path in paths {
         if path.is_file() {

@@ -44,7 +44,7 @@ impl ExecutionResult {
 
 /// EVM transaction validation or execution error.
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
-pub enum Error {
+pub enum EvmError {
     /// Sender account does not have the expected nonce.
     #[error("invalid nonce: expected {expected}, got {got}")]
     InvalidNonce {
@@ -64,9 +64,6 @@ pub enum Error {
     /// Sender cannot pay value plus maximum gas cost.
     #[error("insufficient funds")]
     InsufficientFunds,
-    /// Contract creation is not implemented yet.
-    #[error("contract creation is not implemented")]
-    CreateUnsupported,
 }
 
 /// Calculates intrinsic transaction gas.

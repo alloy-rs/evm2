@@ -167,6 +167,7 @@ fn call_inner<C: EvmConfig>(mut cx: InstructionCx<'_, '_, C>, args: CallArgs) ->
         input,
         value: call_value,
         code_address,
+        salt: Word::ZERO,
     };
     let bytecode = crate::bytecode::Bytecode::new_legacy(code);
     match cx.state.host.execute_message(cx.state.tx().clone(), bytecode, message) {
@@ -297,11 +298,13 @@ pub(in crate::interpreter) fn create<const IS_CREATE2: bool>(cx: _) -> Result {
         input: input.clone(),
         value,
         code_address: current.destination,
+        salt: salt.unwrap_or_default(),
     };
     let bytecode = crate::bytecode::Bytecode::new_legacy(input);
-    let result = cx.state.host.execute_message(cx.state.tx().clone(), bytecode, message)?;
-    let _ = salt;
-    stack.push(result)
+    match cx.state.host.execute_message(cx.state.tx().clone(), bytecode, message) {
+        Ok(address) => stack.push(address),
+        Err(_) => stack.push(Word::ZERO),
+    }
 }
 
 #[instruction]
