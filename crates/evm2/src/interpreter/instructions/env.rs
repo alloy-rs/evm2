@@ -21,32 +21,32 @@ fn load_account<H: Host + ?Sized>(
 }
 
 #[instruction]
-pub(in crate::interpreter) fn address(cx: _) -> out {
+pub(crate) fn address(cx: _) -> out {
     *out = address_to_word(cx.state.message().destination);
 }
 
 #[instruction]
-pub(in crate::interpreter) fn balance(cx: _, [addr]: [Word]) -> Result<out> {
+pub(crate) fn balance(cx: _, [addr]: [Word]) -> Result<out> {
     *out = load_account(&mut cx, addr, false)?.balance;
 }
 
 #[instruction]
-pub(in crate::interpreter) fn origin(cx: _) -> out {
+pub(crate) fn origin(cx: _) -> out {
     *out = address_to_word(cx.state.tx().origin);
 }
 
 #[instruction]
-pub(in crate::interpreter) fn caller(cx: _) -> out {
+pub(crate) fn caller(cx: _) -> out {
     *out = address_to_word(cx.state.message().caller);
 }
 
 #[instruction]
-pub(in crate::interpreter) fn callvalue(cx: _) -> out {
+pub(crate) fn callvalue(cx: _) -> out {
     *out = cx.state.message().value;
 }
 
 #[instruction]
-pub(in crate::interpreter) fn calldataload(cx: _, [offset]: [Word]) -> out {
+pub(crate) fn calldataload(cx: _, [offset]: [Word]) -> out {
     let offset = as_usize_saturated(offset);
     let input = cx.state.message().input.as_ref();
     let mut word = B256::ZERO;
@@ -58,15 +58,12 @@ pub(in crate::interpreter) fn calldataload(cx: _, [offset]: [Word]) -> out {
 }
 
 #[instruction]
-pub(in crate::interpreter) fn calldatasize(cx: _) -> out {
+pub(crate) fn calldatasize(cx: _) -> out {
     *out = Word::from(cx.state.message().input.len());
 }
 
 #[instruction]
-pub(in crate::interpreter) fn calldatacopy(
-    cx: _,
-    [memory_offset, data_offset, len]: [Word],
-) -> Result {
+pub(crate) fn calldatacopy(cx: _, [memory_offset, data_offset, len]: [Word]) -> Result {
     let len = as_usize(len)?;
     cx.gas.spend(cx.gas_params.copy_cost(len))?;
     if len == 0 {
@@ -81,12 +78,12 @@ pub(in crate::interpreter) fn calldatacopy(
 }
 
 #[instruction]
-pub(in crate::interpreter) fn codesize(cx: _) -> out {
+pub(crate) fn codesize(cx: _) -> out {
     *out = Word::from(cx.state.bytecode.len());
 }
 
 #[instruction]
-pub(in crate::interpreter) fn codecopy(cx: _, [memory_offset, code_offset, len]: [Word]) -> Result {
+pub(crate) fn codecopy(cx: _, [memory_offset, code_offset, len]: [Word]) -> Result {
     let len = as_usize(len)?;
     cx.gas.spend(cx.gas_params.copy_cost(len))?;
     if len == 0 {
@@ -101,26 +98,23 @@ pub(in crate::interpreter) fn codecopy(cx: _, [memory_offset, code_offset, len]:
 }
 
 #[instruction]
-pub(in crate::interpreter) fn gasprice(cx: _) -> out {
+pub(crate) fn gasprice(cx: _) -> out {
     *out = cx.state.tx().gas_price;
 }
 
 #[instruction]
-pub(in crate::interpreter) fn extcodesize(cx: _, [addr]: [Word]) -> Result<out> {
+pub(crate) fn extcodesize(cx: _, [addr]: [Word]) -> Result<out> {
     *out = Word::from(load_account(&mut cx, addr, true)?.code.len());
 }
 
 #[instruction]
-pub(in crate::interpreter) fn extcodehash(cx: _, [addr]: [Word]) -> Result<out> {
+pub(crate) fn extcodehash(cx: _, [addr]: [Word]) -> Result<out> {
     let account = load_account(&mut cx, addr, false)?;
     *out = if account.is_empty { Word::ZERO } else { b256_to_word(account.code_hash) };
 }
 
 #[instruction]
-pub(in crate::interpreter) fn extcodecopy(
-    cx: _,
-    [addr, memory_offset, code_offset, len]: [Word],
-) -> Result {
+pub(crate) fn extcodecopy(cx: _, [addr, memory_offset, code_offset, len]: [Word]) -> Result {
     let len = as_usize(len)?;
     cx.gas.spend(cx.gas_params.extcodecopy_cost(len))?;
 
@@ -137,15 +131,12 @@ pub(in crate::interpreter) fn extcodecopy(
 }
 
 #[instruction]
-pub(in crate::interpreter) fn returndatasize(cx: _) -> Result<out> {
+pub(crate) fn returndatasize(cx: _) -> Result<out> {
     *out = Word::from(cx.state.return_data().len());
 }
 
 #[instruction]
-pub(in crate::interpreter) fn returndatacopy(
-    cx: _,
-    [memory_offset, data_offset, len]: [Word],
-) -> Result {
+pub(crate) fn returndatacopy(cx: _, [memory_offset, data_offset, len]: [Word]) -> Result {
     let len = as_usize(len)?;
     let data_offset = as_usize_saturated(data_offset);
     if data_offset.saturating_add(len) > cx.state.return_data().len() {

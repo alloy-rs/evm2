@@ -68,7 +68,7 @@ impl<C: EvmConfig> Evm<C> {
 
     /// Returns the active hard fork specification.
     pub const fn spec_id(&self) -> SpecId {
-        C::VERSION.spec_id
+        C::VERSION.spec_id()
     }
 
     /// Returns the backing database.
@@ -141,7 +141,7 @@ impl<C: EvmConfig<Host = Self>> Host for Evm<C> {
         skip_cold_load: bool,
     ) -> Result<AccountLoad, InstrStop> {
         let is_cold =
-            C::VERSION.spec_id.enables(SpecId::BERLIN) && !self.state.is_account_warm(address);
+            C::VERSION.spec_id().enables(SpecId::BERLIN) && !self.state.is_account_warm(address);
         if skip_cold_load && is_cold {
             return Err(InstrStop::OutOfGas);
         }
@@ -166,7 +166,7 @@ impl<C: EvmConfig<Host = Self>> Host for Evm<C> {
 
     fn sload(&mut self, address: Address, key: Word) -> StorageLoad {
         let is_cold =
-            C::VERSION.spec_id.enables(SpecId::BERLIN) && self.state.warm_storage(address, key);
+            C::VERSION.spec_id().enables(SpecId::BERLIN) && self.state.warm_storage(address, key);
         StorageLoad { value: self.state.storage(address, key), is_cold }
     }
 
@@ -232,7 +232,7 @@ impl<C: EvmConfig<Host = Self>> Host for Evm<C> {
                 message.caller,
                 address,
                 message.value,
-                C::VERSION.spec_id,
+                C::VERSION.spec_id(),
             ) {
                 self.state.rollback(checkpoint);
                 self.logs.truncate(log_checkpoint);
@@ -251,7 +251,7 @@ impl<C: EvmConfig<Host = Self>> Host for Evm<C> {
             let stop = interpreter.run::<C>(self);
             let mut gas = interpreter.gas();
             if stop.is_success() || stop.is_revert() {
-                gas.set_final_refund(C::VERSION.spec_id.enables(SpecId::LONDON));
+                gas.set_final_refund(C::VERSION.spec_id().enables(SpecId::LONDON));
             }
             let output = Bytes::copy_from_slice(interpreter.output());
             let mut gas_remaining =
@@ -309,7 +309,7 @@ impl<C: EvmConfig<Host = Self>> Host for Evm<C> {
         let stop = interpreter.run::<C>(self);
         let mut gas = interpreter.gas();
         if stop.is_success() || stop.is_revert() {
-            gas.set_final_refund(C::VERSION.spec_id.enables(SpecId::LONDON));
+            gas.set_final_refund(C::VERSION.spec_id().enables(SpecId::LONDON));
         }
         let output = Bytes::copy_from_slice(interpreter.output());
         let mut gas_remaining =
@@ -334,7 +334,7 @@ impl<C: EvmConfig<Host = Self>> Host for Evm<C> {
     ) -> Result<SelfDestructResult, InstrStop> {
         // TODO: evmone applies full SELFDESTRUCT revision rules in state transition.
         let is_cold =
-            C::VERSION.spec_id.enables(SpecId::BERLIN) && !self.state.is_account_warm(target);
+            C::VERSION.spec_id().enables(SpecId::BERLIN) && !self.state.is_account_warm(target);
         if skip_cold_load && is_cold {
             return Err(InstrStop::OutOfGas);
         }

@@ -3,57 +3,57 @@ use crate::interpreter::Word;
 use evm2_macros::instruction;
 
 #[instruction]
-pub(in crate::interpreter) fn add([a, b]: [Word]) -> out {
+pub(crate) fn add([a, b]: [Word]) -> out {
     *out = a.wrapping_add(b);
 }
 
 #[instruction]
-pub(in crate::interpreter) fn mul([a, b]: [Word]) -> out {
+pub(crate) fn mul([a, b]: [Word]) -> out {
     *out = a.wrapping_mul(b);
 }
 
 #[instruction]
-pub(in crate::interpreter) fn sub([a, b]: [Word]) -> out {
+pub(crate) fn sub([a, b]: [Word]) -> out {
     *out = a.wrapping_sub(b);
 }
 
 #[instruction]
-pub(in crate::interpreter) fn div([a, b]: [Word]) -> out {
+pub(crate) fn div([a, b]: [Word]) -> out {
     *out = if b.is_zero() { Word::ZERO } else { a.wrapping_div(b) };
 }
 
 #[instruction]
-pub(in crate::interpreter) fn sdiv([a, b]: [Word]) -> out {
+pub(crate) fn sdiv([a, b]: [Word]) -> out {
     *out = i256_div(a, b);
 }
 
 #[instruction]
-pub(in crate::interpreter) fn rem([a, b]: [Word]) -> out {
+pub(crate) fn rem([a, b]: [Word]) -> out {
     *out = if b.is_zero() { Word::ZERO } else { a.wrapping_rem(b) };
 }
 
 #[instruction]
-pub(in crate::interpreter) fn smod([a, b]: [Word]) -> out {
+pub(crate) fn smod([a, b]: [Word]) -> out {
     *out = i256_mod(a, b);
 }
 
 #[instruction]
-pub(in crate::interpreter) fn addmod([a, b, n]: [Word]) -> out {
+pub(crate) fn addmod([a, b, n]: [Word]) -> out {
     *out = a.add_mod(b, n);
 }
 
 #[instruction]
-pub(in crate::interpreter) fn mulmod([a, b, n]: [Word]) -> out {
+pub(crate) fn mulmod([a, b, n]: [Word]) -> out {
     *out = a.mul_mod(b, n);
 }
 
 #[instruction]
-pub(in crate::interpreter) fn exp([a, b]: [Word]) -> out {
+pub(crate) fn exp([a, b]: [Word]) -> out {
     *out = a.wrapping_pow(b);
 }
 
 #[instruction]
-pub(in crate::interpreter) fn signextend([ext, value]: [Word]) -> out {
+pub(crate) fn signextend([ext, value]: [Word]) -> out {
     if ext < 31 {
         let bit_index = (8 * ext.as_limbs()[0] + 7) as usize;
         let mask = (Word::ONE << bit_index) - Word::ONE;

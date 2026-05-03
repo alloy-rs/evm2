@@ -2,12 +2,12 @@ use crate::interpreter::{InstrStop, Word};
 use evm2_macros::instruction;
 
 #[instruction]
-pub(in crate::interpreter) fn pop([_value]: [Word]) -> Result {
+pub(crate) fn pop([_value]: [Word]) -> Result {
     Ok(())
 }
 
 #[instruction(raw)]
-pub(in crate::interpreter) fn push<const N: usize>(cx: _) -> Result {
+pub(crate) fn push<const N: usize>(cx: _) -> Result {
     if N == 0 {
         return stack.push(Word::ZERO);
     }
@@ -16,31 +16,31 @@ pub(in crate::interpreter) fn push<const N: usize>(cx: _) -> Result {
 }
 
 #[instruction(raw)]
-pub(in crate::interpreter) fn dup<const N: usize>() -> Result {
+pub(crate) fn dup<const N: usize>() -> Result {
     stack.dup(N)
 }
 
 #[instruction(raw)]
-pub(in crate::interpreter) fn swap<const N: usize>() -> Result {
+pub(crate) fn swap<const N: usize>() -> Result {
     stack.swap(N)
 }
 
 #[instruction(raw)]
-pub(in crate::interpreter) fn dupn(cx: _) -> Result {
+pub(crate) fn dupn(cx: _) -> Result {
     let n = decode_single(unsafe { cx.pc.read_bytes_offset_unchecked(1, 1)[0] })
         .ok_or(InstrStop::InvalidImmediateEncoding)?;
     stack.dup(n)
 }
 
 #[instruction(raw)]
-pub(in crate::interpreter) fn swapn(cx: _) -> Result {
+pub(crate) fn swapn(cx: _) -> Result {
     let n = decode_single(unsafe { cx.pc.read_bytes_offset_unchecked(1, 1)[0] })
         .ok_or(InstrStop::InvalidImmediateEncoding)?;
     stack.exchange(0, n)
 }
 
 #[instruction(raw)]
-pub(in crate::interpreter) fn exchange(cx: _) -> Result {
+pub(crate) fn exchange(cx: _) -> Result {
     let (n, m) = decode_pair(unsafe { cx.pc.read_bytes_offset_unchecked(1, 1)[0] })
         .ok_or(InstrStop::InvalidImmediateEncoding)?;
     stack.exchange(n, m)

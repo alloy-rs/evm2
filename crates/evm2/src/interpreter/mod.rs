@@ -1,20 +1,20 @@
 //! EVM interpreter.
 
-mod gas;
+pub(crate) mod gas;
 pub use crate::version::{GasId, GasParamTable, GasParams, num_words};
 pub use gas::{Gas, GasTracker, MemoryGas};
 
 #[macro_use]
 mod utils;
 
-mod instructions;
+pub(crate) mod instructions;
 #[doc(hidden)]
 pub use crate::version::{GasTable, InstructionImplTable};
 #[doc(hidden)]
 pub use instructions::table::Instruction;
 pub(crate) use instructions::{table, unknown};
 
-mod opcode;
+pub(crate) mod opcode;
 pub use opcode::op;
 
 mod ctrl;

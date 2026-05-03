@@ -15,7 +15,7 @@ fn require_non_staticcall<H: Host + ?Sized>(cx: &InstructionCx<'_, '_, H>) -> Re
 }
 
 #[instruction]
-pub(in crate::interpreter) fn sload(cx: _, [key]: [Word]) -> Result<out> {
+pub(crate) fn sload(cx: _, [key]: [Word]) -> Result<out> {
     let load = cx.state.host.sload(cx.state.message().destination, key);
     if load.is_cold {
         cx.gas.spend(cx.gas_params.get(GasId::ColdStorageAdditionalCost))?;
@@ -24,7 +24,7 @@ pub(in crate::interpreter) fn sload(cx: _, [key]: [Word]) -> Result<out> {
 }
 
 #[instruction(raw)]
-pub(in crate::interpreter) fn sstore(cx: _) -> Result {
+pub(crate) fn sstore(cx: _) -> Result {
     require_non_staticcall(&cx)?;
     let [key, value] = stack.popn()?;
     let gas_params = cx.gas_params;
@@ -52,14 +52,14 @@ pub(in crate::interpreter) fn sstore(cx: _) -> Result {
 }
 
 #[instruction(raw)]
-pub(in crate::interpreter) fn tload(cx: _) -> Result {
+pub(crate) fn tload(cx: _) -> Result {
     let ([], key) = stack.popn_top()?;
     *key = cx.state.host.tload(cx.state.message().destination, *key);
     Ok(())
 }
 
 #[instruction(raw)]
-pub(in crate::interpreter) fn tstore(cx: _) -> Result {
+pub(crate) fn tstore(cx: _) -> Result {
     require_non_staticcall(&cx)?;
     let [key, value] = stack.popn()?;
     cx.state.host.tstore(cx.state.message().destination, key, value);
@@ -67,7 +67,7 @@ pub(in crate::interpreter) fn tstore(cx: _) -> Result {
 }
 
 #[instruction(raw)]
-pub(in crate::interpreter) fn log<const N: usize>(cx: _) -> Result {
+pub(crate) fn log<const N: usize>(cx: _) -> Result {
     log_common(cx, stack, N)
 }
 

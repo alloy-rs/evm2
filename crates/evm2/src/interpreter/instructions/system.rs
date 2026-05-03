@@ -169,27 +169,27 @@ fn call_inner<H: Host + ?Sized>(
 }
 
 #[instruction(raw)]
-pub(in crate::interpreter) fn call(cx: _) -> Result {
+pub(crate) fn call(cx: _) -> Result {
     call_inner(stack, cx, MessageKind::Call)
 }
 
 #[instruction(raw)]
-pub(in crate::interpreter) fn callcode(cx: _) -> Result {
+pub(crate) fn callcode(cx: _) -> Result {
     call_inner(stack, cx, MessageKind::CallCode)
 }
 
 #[instruction(raw)]
-pub(in crate::interpreter) fn delegatecall(cx: _) -> Result {
+pub(crate) fn delegatecall(cx: _) -> Result {
     call_inner(stack, cx, MessageKind::DelegateCall)
 }
 
 #[instruction(raw)]
-pub(in crate::interpreter) fn staticcall(cx: _) -> Result {
+pub(crate) fn staticcall(cx: _) -> Result {
     call_inner(stack, cx, MessageKind::StaticCall)
 }
 
 #[instruction(raw)]
-pub(in crate::interpreter) fn create<const IS_CREATE2: bool>(cx: _) -> Result {
+pub(crate) fn create<const IS_CREATE2: bool>(cx: _) -> Result {
     create_inner(stack, cx, IS_CREATE2)
 }
 
@@ -249,7 +249,7 @@ fn create_inner<H: Host + ?Sized>(
 }
 
 #[instruction]
-pub(in crate::interpreter) fn selfdestruct(cx: _, [target]: [Word]) -> Result {
+pub(crate) fn selfdestruct(cx: _, [target]: [Word]) -> Result {
     require_non_staticcall(&cx)?;
     let target = word_to_address(target);
     let cold_load_gas = cx.gas_params.selfdestruct_cold_cost();

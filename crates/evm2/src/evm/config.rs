@@ -26,6 +26,12 @@ pub trait EvmTypes: Sized + 'static {
 pub trait EvmConfig: EvmTypes {
     /// Active EVM version.
     const VERSION: &'static EvmVersion<Self>;
+
+    /// Active hard fork specification.
+    #[inline]
+    fn spec_id() -> SpecId {
+        Self::VERSION.spec_id()
+    }
 }
 
 /// EVM configuration for a specification ID.

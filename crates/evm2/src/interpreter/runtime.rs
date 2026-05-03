@@ -146,7 +146,7 @@ impl Interpreter {
             pc,
             Stack::new(&mut self.stack, stack_len),
             &mut self.gas,
-            &mut State { bytecode, host, spec: C::VERSION.spec_id, raw_interp: raw },
+            &mut State { bytecode, host, spec: C::VERSION.spec_id(), raw_interp: raw },
         );
         let flow = if pc.is_null() { Break(()) } else { Continue(()) };
         (pc, stack_len, flow)
@@ -164,7 +164,7 @@ impl Interpreter {
             pc,
             Stack::new(&mut self.stack, self.stack_len),
             &mut self.gas,
-            &mut State { bytecode, host, spec: C::VERSION.spec_id, raw_interp: raw },
+            &mut State { bytecode, host, spec: C::VERSION.spec_id(), raw_interp: raw },
             0,
         );
         self.result

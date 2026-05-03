@@ -1,37 +1,36 @@
 mod arithmetic;
-pub(super) use arithmetic::*;
+pub(crate) use arithmetic::*;
 
 mod bitwise;
-pub(super) use bitwise::*;
+pub(crate) use bitwise::*;
 
 mod block;
-pub(super) use block::*;
+pub(crate) use block::*;
 
 mod control;
-pub(crate) use control::unknown;
-pub(super) use control::*;
+pub(crate) use control::{unknown, *};
 
 mod crypto;
-pub(super) use crypto::*;
+pub(crate) use crypto::*;
 
 mod env;
-pub(super) use env::*;
+pub(crate) use env::*;
 
 mod host;
-pub(super) use host::*;
+pub(crate) use host::*;
 
 mod memory;
-pub(super) use memory::*;
+pub(crate) use memory::*;
 
 mod stack;
-pub(super) use stack::*;
+pub(crate) use stack::*;
 
 mod system;
-pub(super) use system::*;
+pub(crate) use system::*;
 
 mod i256;
 pub(crate) mod table;
 mod utils;
 
 #[cfg(test)]
-pub(in crate::interpreter) mod tests;
+pub(crate) mod tests;

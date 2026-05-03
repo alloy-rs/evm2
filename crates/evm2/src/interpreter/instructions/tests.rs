@@ -11,7 +11,7 @@ use alloy_primitives::{Address, B256, Bytes, Log};
 use std::collections::HashMap;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(in crate::interpreter) struct TestConfig<const SPEC: u8 = { SpecId::OSAKA as u8 }>;
+pub(crate) struct TestConfig<const SPEC: u8 = { SpecId::OSAKA as u8 }>;
 
 impl<const SPEC: u8> EvmTypes for TestConfig<SPEC> {
     type Tx = ();
@@ -29,7 +29,7 @@ impl<const SPEC: u8> EvmConfig for TestConfig<SPEC> {
 }
 
 #[derive(Debug)]
-pub(in crate::interpreter) struct TestHost {
+pub(crate) struct TestHost {
     pub(super) block: BlockEnv,
     pub(super) code_hash: B256,
     pub(super) code: Bytes,
@@ -347,7 +347,7 @@ macro_rules! assert_stack {
         );
     }};
 }
-pub(super) use assert_stack;
+pub(crate) use assert_stack;
 
 pub(super) fn push(code: &mut Vec<u8>, value: impl ToWord) {
     let value = value.to_word();
