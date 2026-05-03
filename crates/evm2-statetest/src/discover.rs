@@ -15,7 +15,7 @@ pub fn find_json_tests(paths: &[PathBuf]) -> Result<Vec<PathBuf>, TestError> {
         if !path.exists() {
             return Err(TestError::path(path, TestErrorKind::InvalidPath));
         }
-        for entry in WalkDir::new(path).follow_links(false) {
+        for entry in WalkDir::new(path).follow_links(true) {
             let entry = entry.map_err(|err| TestError::path(path, err.into()))?;
             if entry.file_type().is_file() && is_json_test(entry.path()) {
                 files.push(entry.path().to_path_buf());
