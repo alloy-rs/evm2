@@ -26,6 +26,7 @@ pub mod modexp;
 pub mod secp256k1;
 pub mod secp256r1;
 pub mod utilities;
+pub mod utils;
 
 extern crate self as primitives;
 
@@ -45,33 +46,18 @@ pub mod hardfork {
     pub use evm2::interpreter::SpecId;
 }
 
-pub use alloy_primitives::{
-    self, Address, B256, Bytes, U256, b256, hex, hex_literal, keccak256,
-    map::{AddressMap, AddressSet, HashMap},
-};
+pub use alloy_primitives::{self, Address, B256, Bytes, U256, b256, hex, hex_literal, keccak256};
 
 pub use std::sync::OnceLock;
 
-/// Optimize short address access.
-pub const SHORT_ADDRESS_CAP: usize = 300;
-
-/// Returns the short address from Address.
-#[inline]
-pub fn short_address(address: &Address) -> Option<usize> {
-    let (zeros, value) = address.split_at(18);
-    if zeros.iter().all(|b| *b == 0) {
-        let short_address = u16::from_be_bytes([value[0], value[1]]) as usize;
-        if short_address < SHORT_ADDRESS_CAP {
-            return Some(short_address);
-        }
-    }
-    None
-}
-
 pub use id::PrecompileId;
 pub use interface::*;
+#[allow(deprecated)]
+pub use utils::calc_linear_cost_u32;
+pub use utils::{calc_linear_cost, u64_to_address};
 
 use core::fmt::{self, Debug};
+use hardfork::SpecId;
 
 // silence arkworks lint as bn impl will be used as default if both are enabled.
 cfg_if::cfg_if! {
@@ -102,260 +88,6 @@ use aurora_engine_modexp as _;
 // silence p256 lint as aws-lc-rs will be used if both are enabled.
 #[cfg(feature = "p256-aws-lc-rs")]
 use p256 as _;
-
-use core::hash::Hash;
-use hardfork::SpecId;
-use std::boxed::Box;
-
-/// Calculate the linear cost of a precompile.
-#[inline]
-pub const fn calc_linear_cost(len: usize, base: u64, word: u64) -> u64 {
-    (len as u64).div_ceil(32) * word + base
-}
-
-/// Calculate the linear cost of a precompile.
-#[deprecated(note = "please use `calc_linear_cost` instead")]
-pub const fn calc_linear_cost_u32(len: usize, base: u64, word: u64) -> u64 {
-    calc_linear_cost(len, base, word)
-}
-
-/// Precompiles contain map of precompile addresses to functions and AddressSet of precompile
-/// addresses.
-#[derive(Clone, Debug)]
-pub struct Precompiles {
-    /// Precompiles
-    inner: AddressMap<Precompile>,
-    /// Addresses of precompiles.
-    addresses: AddressSet,
-    /// Optimized addresses filter.
-    optimized_access: Box<[Option<Precompile>; SHORT_ADDRESS_CAP]>,
-}
-
-impl Default for Precompiles {
-    fn default() -> Self {
-        Self {
-            inner: HashMap::default(),
-            addresses: AddressSet::default(),
-            optimized_access: Box::new([const { None }; SHORT_ADDRESS_CAP]),
-        }
-    }
-}
-
-impl Precompiles {
-    /// Returns the precompiles for the given spec.
-    pub fn new(spec: PrecompileSpecId) -> &'static Self {
-        static INSTANCES: [OnceLock<Precompiles>; PrecompileSpecId::NEXT as usize + 1] =
-            [const { OnceLock::new() }; PrecompileSpecId::NEXT as usize + 1];
-        INSTANCES[spec as usize].get_or_init(|| init_precompiles(spec))
-    }
-
-    /// Returns precompiles for Homestead spec.
-    pub fn homestead() -> &'static Self {
-        Self::new(PrecompileSpecId::HOMESTEAD)
-    }
-
-    /// Returns precompiles for Byzantium spec.
-    pub fn byzantium() -> &'static Self {
-        Self::new(PrecompileSpecId::BYZANTIUM)
-    }
-
-    /// Returns precompiles for Istanbul spec.
-    pub fn istanbul() -> &'static Self {
-        Self::new(PrecompileSpecId::ISTANBUL)
-    }
-
-    /// Returns precompiles for Berlin spec.
-    pub fn berlin() -> &'static Self {
-        Self::new(PrecompileSpecId::BERLIN)
-    }
-
-    /// Returns precompiles for Cancun spec.
-    ///
-    /// If the `c-kzg` feature is not enabled KZG Point Evaluation precompile will not be included,
-    /// effectively making this the same as Berlin.
-    pub fn cancun() -> &'static Self {
-        Self::new(PrecompileSpecId::CANCUN)
-    }
-
-    /// Returns precompiles for Prague spec.
-    pub fn prague() -> &'static Self {
-        Self::new(PrecompileSpecId::PRAGUE)
-    }
-
-    /// Returns precompiles for Osaka spec.
-    pub fn osaka() -> &'static Self {
-        Self::new(PrecompileSpecId::OSAKA)
-    }
-
-    /// Returns the precompiles for the latest spec.
-    pub fn latest() -> &'static Self {
-        Self::new(PrecompileSpecId::NEXT)
-    }
-
-    /// Returns inner HashMap of precompiles.
-    #[inline]
-    pub const fn inner(&self) -> &AddressMap<Precompile> {
-        &self.inner
-    }
-
-    /// Returns an iterator over the precompiles addresses.
-    #[inline]
-    pub fn addresses(&self) -> impl ExactSizeIterator<Item = &Address> {
-        self.inner.keys()
-    }
-
-    /// Consumes the type and returns all precompile addresses.
-    #[inline]
-    pub fn into_addresses(self) -> impl ExactSizeIterator<Item = Address> {
-        self.inner.into_keys()
-    }
-
-    /// Is the given address a precompile.
-    #[inline]
-    pub fn contains(&self, address: &Address) -> bool {
-        self.inner.contains_key(address)
-    }
-
-    /// Returns the precompile for the given address.
-    #[inline]
-    pub fn get(&self, address: &Address) -> Option<&Precompile> {
-        if let Some(short_address) = short_address(address) {
-            return self.optimized_access[short_address].as_ref();
-        }
-        self.inner.get(address)
-    }
-
-    /// Returns the precompile for the given address.
-    #[inline]
-    pub fn get_mut(&mut self, address: &Address) -> Option<&mut Precompile> {
-        self.inner.get_mut(address)
-    }
-
-    /// Is the precompiles list empty.
-    #[inline]
-    pub fn is_empty(&self) -> bool {
-        self.inner.is_empty()
-    }
-
-    /// Returns the number of precompiles.
-    #[inline]
-    pub fn len(&self) -> usize {
-        self.inner.len()
-    }
-
-    /// Returns the precompiles addresses as a set.
-    #[inline]
-    pub const fn addresses_set(&self) -> &AddressSet {
-        &self.addresses
-    }
-
-    /// Extends the precompiles with the given precompiles.
-    ///
-    /// Other precompiles with overwrite existing precompiles.
-    pub fn extend(&mut self, other: impl IntoIterator<Item = Precompile>) {
-        let iter = other.into_iter();
-        let (lower, _) = iter.size_hint();
-        self.addresses.reserve(lower);
-        self.inner.reserve(lower);
-        for item in iter {
-            let address = *item.address();
-            if let Some(short_idx) = short_address(&address) {
-                self.optimized_access[short_idx] = Some(item.clone());
-            }
-            self.addresses.insert(address);
-            self.inner.insert(address, item);
-        }
-    }
-
-    /// Returns complement of `other` in `self`.
-    ///
-    /// Two entries are considered equal if the precompile addresses are equal.
-    pub fn difference(&self, other: &Self) -> Self {
-        let Self { inner, .. } = self;
-
-        let inner = inner
-            .iter()
-            .filter(|(a, _)| !other.inner.contains_key(*a))
-            .map(|(a, p)| (*a, p.clone()))
-            .collect::<AddressMap<_>>();
-
-        let mut precompiles = Self::default();
-        precompiles.extend(inner.into_iter().map(|p| p.1));
-        precompiles
-    }
-
-    /// Returns intersection of `self` and `other`.
-    ///
-    /// Two entries are considered equal if the precompile addresses are equal.
-    pub fn intersection(&self, other: &Self) -> Self {
-        let Self { inner, .. } = self;
-
-        let inner = inner
-            .iter()
-            .filter(|(a, _)| other.inner.contains_key(*a))
-            .map(|(a, p)| (*a, p.clone()))
-            .collect::<AddressMap<_>>();
-
-        let mut precompiles = Self::default();
-        precompiles.extend(inner.into_iter().map(|p| p.1));
-        precompiles
-    }
-}
-
-fn init_precompiles(spec: PrecompileSpecId) -> Precompiles {
-    use PrecompileSpecId::*;
-
-    let mut precompiles = Precompiles::default();
-
-    // Homestead
-    precompiles.extend([secp256k1::ECRECOVER, hash::SHA256, hash::RIPEMD160, identity::FUN]);
-
-    if spec.is_enabled_in(BYZANTIUM) {
-        // EIP-196: Precompiled contracts for addition and scalar multiplication on the elliptic
-        // curve alt_bn128. EIP-197: Precompiled contracts for optimal ate pairing check on
-        // the elliptic curve alt_bn128. EIP-198: Big integer modular exponentiation.
-        precompiles.extend([
-            modexp::BYZANTIUM,
-            bn254::add::BYZANTIUM,
-            bn254::mul::BYZANTIUM,
-            bn254::pair::BYZANTIUM,
-        ]);
-    }
-
-    if spec.is_enabled_in(ISTANBUL) {
-        // EIP-152: Add BLAKE2 compression function `F` precompile.
-        // EIP-1108: Reduce alt_bn128 precompile gas costs.
-        precompiles.extend([
-            bn254::add::ISTANBUL,
-            bn254::mul::ISTANBUL,
-            bn254::pair::ISTANBUL,
-            blake2::FUN,
-        ]);
-    }
-
-    if spec.is_enabled_in(BERLIN) {
-        // EIP-2565: ModExp Gas Cost.
-        precompiles.extend([modexp::BERLIN]);
-    }
-
-    if spec.is_enabled_in(CANCUN) {
-        // EIP-4844: Shard Blob Transactions.
-        precompiles.extend([kzg_point_evaluation::POINT_EVALUATION]);
-    }
-
-    if spec.is_enabled_in(PRAGUE) {
-        // EIP-2537: Precompile for BLS12-381 curve operations.
-        precompiles.extend(bls12_381::precompiles());
-    }
-
-    if spec.is_enabled_in(OSAKA) {
-        // EIP-7823: Set upper bounds for MODEXP.
-        // EIP-7883: ModExp Gas Cost Increase.
-        precompiles.extend([modexp::OSAKA, secp256r1::P256VERIFY_OSAKA]);
-    }
-
-    precompiles
-}
 
 /// Precompile wrapper for simple eth function that provides complex interface on execution.
 #[derive(Clone)]
@@ -492,69 +224,5 @@ impl PrecompileSpecId {
             OSAKA | AMSTERDAM => Self::OSAKA,
             _ => Self::OSAKA,
         }
-    }
-}
-
-/// Const function for making an address by concatenating the bytes from two given numbers.
-///
-/// Note that 32 + 128 = 160 = 20 bytes (the length of an address).
-///
-/// This function is used as a convenience for specifying the addresses of the various precompiles.
-#[inline]
-pub const fn u64_to_address(x: u64) -> Address {
-    let x = x.to_be_bytes();
-    Address::new([
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7],
-    ])
-}
-
-#[cfg(test)]
-mod test {
-    use super::*;
-
-    fn temp_precompile(_input: &[u8], _gas_limit: u64, reservoir: u64) -> PrecompileResult {
-        Ok(PrecompileOutput::halt(PrecompileHalt::OutOfGas, reservoir))
-    }
-
-    #[test]
-    fn test_optimized_access() {
-        let mut precompiles = Precompiles::istanbul().clone();
-        assert!(precompiles.optimized_access[9].is_some());
-        assert!(precompiles.optimized_access[10].is_none());
-
-        precompiles.extend([Precompile::new(
-            PrecompileId::Custom("test".into()),
-            u64_to_address(100),
-            temp_precompile,
-        )]);
-        precompiles.extend([Precompile::new(
-            PrecompileId::Custom("test".into()),
-            u64_to_address(101),
-            temp_precompile,
-        )]);
-
-        let output =
-            precompiles.optimized_access[100].as_ref().unwrap().execute(&[], u64::MAX, 0).unwrap();
-        assert!(matches!(output.status, PrecompileStatus::Halt(PrecompileHalt::OutOfGas)));
-
-        let output = precompiles
-            .get(&Address::left_padding_from(&[101]))
-            .unwrap()
-            .execute(&[], u64::MAX, 0)
-            .unwrap();
-        assert!(matches!(output.status, PrecompileStatus::Halt(PrecompileHalt::OutOfGas)));
-    }
-
-    #[test]
-    fn test_difference_precompile_sets() {
-        let difference = Precompiles::istanbul().difference(Precompiles::berlin());
-        assert!(difference.is_empty());
-    }
-
-    #[test]
-    fn test_intersection_precompile_sets() {
-        let intersection = Precompiles::homestead().intersection(Precompiles::byzantium());
-
-        assert_eq!(intersection.len(), 4)
     }
 }

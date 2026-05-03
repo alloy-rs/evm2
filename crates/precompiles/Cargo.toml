@@ -122,9 +122,3 @@ gmp = ["dep:gmp-mpfr-sys"]
 
 # Use aws-lc-rs as a faster alternative to `p256` for secp256r1 signature verification.
 p256-aws-lc-rs = ["dep:aws-lc-rs"]
-
-[[bench]]
-name = "bench"
-path = "bench/main.rs"
-harness = false
-required-features = ["secp256k1"]
