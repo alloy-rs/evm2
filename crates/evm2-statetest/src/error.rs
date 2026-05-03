@@ -1,5 +1,5 @@
 use alloy_primitives::{B256, Bytes, U256};
-use evm2::evm::transaction::EvmError;
+use evm2::registry::HandlerError;
 use std::{io, path::PathBuf};
 use thiserror::Error;
 
@@ -107,5 +107,5 @@ pub(crate) enum TestErrorKind {
     BadIndex(&'static str),
     /// EVM execution failed.
     #[error(transparent)]
-    Evm(#[from] EvmError),
+    Evm(#[from] HandlerError),
 }

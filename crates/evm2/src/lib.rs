@@ -27,6 +27,15 @@ pub struct AccountLoad {
     pub is_cold: bool,
 }
 
+/// Loaded storage slot value.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct StorageLoad {
+    /// Storage slot value.
+    pub value: interpreter::Word,
+    /// Whether the storage slot access was cold.
+    pub is_cold: bool,
+}
+
 /// Result of a `SELFDESTRUCT` host operation.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct SelfDestructResult {
@@ -41,6 +50,8 @@ pub struct SelfDestructResult {
 }
 
 pub mod bytecode;
+/// Ethereum transaction types and handlers.
+pub mod ethereum;
 /// EVM host and transaction dispatcher.
 pub mod evm;
 pub mod interpreter;
@@ -60,7 +71,12 @@ mod tests;
 #[unsafe(no_mangle)]
 #[doc(hidden)]
 pub fn _get_asm() -> impl Sized {
-    let mut evm = Evm::<EvmVersion<()>>::new(Default::default(), Default::default());
+    let mut evm = Evm::<EvmVersion<()>>::new(
+        Default::default(),
+        Default::default(),
+        Default::default(),
+        Default::default(),
+    );
     crate::interpreter::Interpreter::new(Default::default(), Default::default(), Default::default())
         .run::<EvmVersion<()>>(&mut evm)
 }

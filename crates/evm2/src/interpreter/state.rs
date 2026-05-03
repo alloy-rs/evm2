@@ -1,6 +1,6 @@
 use super::{BytecodeRef, InstrStop, Interpreter, Memory, Message, SpecId, Word};
 use crate::{
-    AccountLoad, SelfDestructResult,
+    AccountLoad, SelfDestructResult, StorageLoad,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
 };
@@ -59,6 +59,12 @@ impl<H: Host + ?Sized> State<'_, H> {
         self.interp().return_data()
     }
 
+    /// Sets return data from the last call-like operation.
+    #[inline]
+    pub(crate) fn set_return_data(&mut self, return_data: Bytes) {
+        self.interp_mut().return_data = return_data;
+    }
+
     /// Sets the current frame output.
     #[inline]
     pub(crate) fn set_output(&mut self, output: *const [u8]) {
@@ -80,6 +86,27 @@ impl<H: Host + ?Sized> fmt::Debug for State<'_, H> {
     }
 }
 
+/// Result of executing a call/create message.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MessageResult {
+    /// Interpreter stop reason.
+    pub stop: InstrStop,
+    /// Gas left in the child frame after refunds.
+    pub gas_remaining: u64,
+    /// Return or revert output.
+    pub output: Bytes,
+    /// Created address for successful create messages.
+    pub created_address: Option<Address>,
+}
+
+impl MessageResult {
+    /// Returns whether the message committed state changes.
+    #[inline]
+    pub const fn is_success(&self) -> bool {
+        self.stop.is_success()
+    }
+}
+
 /// External host operations.
 pub trait Host {
     /// Returns the block environment.
@@ -97,7 +124,7 @@ pub trait Host {
     fn block_hash(&mut self, number: u64) -> Option<B256>;
 
     /// Loads a persistent storage slot.
-    fn sload(&mut self, address: Address, key: Word) -> Word;
+    fn sload(&mut self, address: Address, key: Word) -> StorageLoad;
 
     /// Stores a persistent storage slot.
     fn sstore(&mut self, address: Address, key: Word, value: Word);
@@ -117,7 +144,7 @@ pub trait Host {
         tx_env: TxEnv,
         bytecode: Bytecode,
         message: Message,
-    ) -> Result<Word, InstrStop>;
+    ) -> MessageResult;
 
     /// Registers the current contract for self-destruction.
     fn selfdestruct(

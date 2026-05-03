@@ -23,13 +23,18 @@ fn run_tx(evm: &mut TestEvm, destination: Address, code: impl Into<Vec<u8>>) {
         Bytecode::new_legacy(Bytes::from(code.into())),
         message,
     );
-    assert_eq!(result, Ok(Word::from(1)));
+    assert!(result.stop.is_success());
 }
 
 #[test]
 fn evm_executes_storage_transaction() {
     let contract = Address::from([0x11; 20]);
-    let mut evm = TestEvm::new(BlockEnv::default(), TxRegistry::new());
+    let mut evm = TestEvm::new(
+        BlockEnv::default(),
+        TxRegistry::new(),
+        InMemoryDB::default(),
+        Default::default(),
+    );
 
     run_tx(&mut evm, contract, [op::PUSH1, 0x2a, op::PUSH1, 0x01, op::SSTORE, op::STOP]);
 
@@ -45,7 +50,8 @@ fn evm_runs_transactions_against_initial_state() {
     let mut database = InMemoryDB::default();
     database.insert_account_info(contract, AccountInfo { nonce: 1, ..Default::default() });
     database.insert_account_storage(contract, Word::from(1), Word::from(40));
-    let mut evm = TestEvm::with_database(BlockEnv::default(), TxRegistry::new(), database);
+    let mut evm =
+        TestEvm::new(BlockEnv::default(), TxRegistry::new(), database, Default::default());
 
     run_tx(
         &mut evm,
@@ -73,7 +79,12 @@ fn evm_runs_transactions_against_initial_state() {
 #[test]
 fn evm_reports_invalid_transaction_execution() {
     let contract = Address::from([0x33; 20]);
-    let mut evm = TestEvm::new(BlockEnv::default(), TxRegistry::new());
+    let mut evm = TestEvm::new(
+        BlockEnv::default(),
+        TxRegistry::new(),
+        InMemoryDB::default(),
+        Default::default(),
+    );
     let message = Message {
         destination: contract,
         code_address: contract,
@@ -87,5 +98,5 @@ fn evm_reports_invalid_transaction_execution() {
         message,
     );
 
-    assert_eq!(result, Err(InstrStop::StackUnderflow));
+    assert_eq!(result.stop, InstrStop::StackUnderflow);
 }

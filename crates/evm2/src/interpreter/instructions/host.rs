@@ -18,8 +18,12 @@ fn require_non_staticcall<C: EvmConfig>(cx: &InstructionCx<'_, '_, C>) -> Result
 }
 
 #[instruction]
-pub(in crate::interpreter) fn sload(cx: _, [key]: [Word]) -> out {
-    *out = cx.state.host.sload(cx.state.message().destination, key);
+pub(in crate::interpreter) fn sload(cx: _, [key]: [Word]) -> Result<out> {
+    let load = cx.state.host.sload(cx.state.message().destination, key);
+    if load.is_cold {
+        cx.gas.spend(cx.gas_params.get(GasId::ColdStorageAdditionalCost))?;
+    }
+    *out = load.value;
 }
 
 #[instruction(raw)]
@@ -32,8 +36,12 @@ pub(in crate::interpreter) fn sstore(cx: _) -> Result {
     {
         return Err(InstrStop::ReentrancySentryOOG);
     }
-    let old_value = cx.state.host.sload(cx.state.message().destination, key);
+    let load = cx.state.host.sload(cx.state.message().destination, key);
+    let old_value = load.value;
     cx.gas.spend(gas_params.get(GasId::SstoreStatic))?;
+    if load.is_cold {
+        cx.gas.spend(gas_params.get(GasId::ColdStorageCost))?;
+    }
     if old_value.is_zero() && !value.is_zero() {
         cx.gas.spend(gas_params.get(GasId::SstoreSetWithoutLoadCost))?;
     } else if !old_value.is_zero() && value.is_zero() {

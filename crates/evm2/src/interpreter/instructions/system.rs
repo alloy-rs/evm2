@@ -126,7 +126,7 @@ fn call_inner<C: EvmConfig>(
     }
 
     let local_gas_limit = u64::try_from(local_gas_limit).unwrap_or(u64::MAX);
-    let (input_range, _return_memory_offset) = get_memory_input_and_out_ranges(
+    let (input_range, return_memory_range) = get_memory_input_and_out_ranges(
         &mut cx,
         input_offset,
         input_len,
@@ -162,12 +162,17 @@ fn call_inner<C: EvmConfig>(
         salt: B256::ZERO,
     };
     let bytecode = crate::bytecode::Bytecode::new_legacy(code);
-    let result = match cx.state.host.execute_message(cx.state.tx().clone(), bytecode, message) {
-        Ok(_) => Word::from(1),
-        Err(stop) if success(stop) => Word::from(1),
-        Err(_) => Word::ZERO,
-    };
-    stack.push(result)
+    let result = cx.state.host.execute_message(cx.state.tx().clone(), bytecode, message);
+    cx.gas.erase_cost(result.gas_remaining);
+    cx.state.memory().set_data(
+        return_memory_range.start,
+        0,
+        return_memory_range.len(),
+        &result.output,
+    );
+    cx.state.set_return_data(result.output);
+    let success = if success(result.stop) { Word::from(1) } else { Word::ZERO };
+    stack.push(success)
 }
 
 #[instruction(raw)]
@@ -239,10 +244,15 @@ fn create_inner<C: EvmConfig>(
         salt: salt.map(|salt| B256::from(salt.to_be_bytes())).unwrap_or_default(),
     };
     let bytecode = crate::bytecode::Bytecode::new_legacy(input);
-    match cx.state.host.execute_message(cx.state.tx().clone(), bytecode, message) {
-        Ok(address) => stack.push(address),
-        Err(_) => stack.push(Word::ZERO),
-    }
+    let result = cx.state.host.execute_message(cx.state.tx().clone(), bytecode, message);
+    cx.gas.erase_cost(result.gas_remaining);
+    cx.state.set_return_data(result.output);
+    let address = result
+        .created_address
+        .filter(|_| success(result.stop))
+        .map(|address| Word::from_be_slice(address.as_slice()))
+        .unwrap_or_default();
+    stack.push(address)
 }
 
 #[instruction]
@@ -267,7 +277,7 @@ pub(in crate::interpreter) fn selfdestruct(cx: _, [target]: [Word]) -> Result {
 #[cfg(test)]
 mod tests {
     use crate::interpreter::{
-        InstrStop, Message, MessageKind, SpecId, Word,
+        InstrStop, Message, MessageKind, MessageResult, SpecId, Word,
         instructions::{
             tests::{RunConfig, TestHost, push, run},
             utils::address_to_word,
@@ -444,8 +454,14 @@ mod tests {
     #[test]
     fn create_opcode() {
         let created = Address::from([0x77; 20]);
-        let mut host =
-            TestHost { execute_result: Ok(address_to_word(created)), ..Default::default() };
+        let mut host = TestHost {
+            execute_result: MessageResult {
+                stop: InstrStop::Return,
+                created_address: Some(created),
+                ..MessageResult::default()
+            },
+            ..Default::default()
+        };
         let mut code = Vec::new();
         push_all(&mut code, [Word::from(0), Word::from(0), Word::from(0)]);
         code.extend([op::CREATE, op::STOP]);
@@ -460,8 +476,14 @@ mod tests {
     #[test]
     fn create2_opcode() {
         let created = Address::from([0x88; 20]);
-        let mut host =
-            TestHost { execute_result: Ok(address_to_word(created)), ..Default::default() };
+        let mut host = TestHost {
+            execute_result: MessageResult {
+                stop: InstrStop::Return,
+                created_address: Some(created),
+                ..MessageResult::default()
+            },
+            ..Default::default()
+        };
         let mut code = Vec::new();
         push_all(&mut code, [Word::from(0), Word::from(0), Word::from(0), Word::from(0)]);
         code.extend([op::CREATE2, op::STOP]);

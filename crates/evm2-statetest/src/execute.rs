@@ -2,17 +2,20 @@ use crate::{
     error::{TestError, TestErrorKind},
     types::{AccountInfo, Env, Test, TestSuite, TestUnit, TransactionParts, TxPartIndices},
 };
-use alloy_primitives::{Address, B256, Bytes, U256};
+use alloy_consensus::{TxLegacy, transaction::Recovered};
+use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
+use alloy_trie::{
+    TrieAccount,
+    root::{state_root_unhashed, storage_root_unhashed},
+};
 use evm2::{
-    Evm, EvmVersion,
+    Evm, EvmVersion, TxResult,
     bytecode::Bytecode,
     env::BlockEnv,
-    evm::{
-        AccountInfo as EvmAccountInfo, InMemoryDB, logs_hash,
-        transaction::{EvmError, ExecutionResult, Transaction},
-    },
+    ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
+    evm::{AccountInfo as EvmAccountInfo, InMemoryDB, State, logs_hash},
     interpreter::SpecId,
-    registry::TxRegistry,
+    registry::HandlerError,
 };
 use k256::ecdsa::SigningKey;
 use serde_json::json;
@@ -92,7 +95,7 @@ fn validate_result(
     name: &str,
     unit: &TestUnit,
     post: &Test,
-    result: Result<SpecOutcome, EvmError>,
+    result: Result<SpecOutcome, HandlerError>,
     spec: SpecId,
     config: ExecuteConfig,
 ) -> Result<(), TestError> {
@@ -198,16 +201,17 @@ fn execute_spec(
     spec: SpecId,
     block: BlockEnv,
     database: InMemoryDB,
-    tx: &Transaction,
-) -> Result<SpecOutcome, EvmError> {
+    tx: &RecoveredTxEnvelope,
+) -> Result<SpecOutcome, HandlerError> {
     macro_rules! run {
         ($spec:ident) => {{
-            let mut evm = Evm::<EvmVersion<(), { SpecId::$spec as u8 }>>::with_database(
+            let mut evm = Evm::<EvmVersion<RecoveredTxEnvelope, { SpecId::$spec as u8 }>>::new(
                 block,
-                TxRegistry::new(),
+                ethereum_tx_registry(),
                 database,
+                Default::default(),
             );
-            let result = evm.execute(tx)?;
+            let result = evm.transact(tx)?;
             Ok(spec_outcome(&evm, result))
         }};
     }
@@ -237,17 +241,90 @@ fn execute_spec(
     }
 }
 
-fn spec_outcome<C>(evm: &Evm<C>, result: ExecutionResult) -> SpecOutcome
+fn spec_outcome<C>(evm: &Evm<C>, result: TxResult) -> SpecOutcome
 where
     C: evm2::config::EvmConfig<Database = InMemoryDB>,
 {
     SpecOutcome {
-        state_root: evm.state().state_root(),
+        state_root: state_root(evm.state(), C::SPEC_ID),
         logs_root: logs_hash(evm.logs()),
         output: result.output,
         gas_used: result.gas_used,
         evm_result: format!("{:?}", result.stop),
     }
+}
+
+fn state_root(state: &State<InMemoryDB>, spec: SpecId) -> B256 {
+    let mut addresses = Vec::from_iter(state.initial.accounts.keys().copied());
+    addresses.extend(state.modified.keys().copied());
+    addresses.sort_unstable();
+    addresses.dedup();
+
+    let accounts = addresses.into_iter().filter_map(|address| {
+        let info = state.account_info(address)?;
+        let storage = storage_for_root(state, address);
+        if !include_account_in_root(state, address, &info, &storage, spec) {
+            return None;
+        }
+
+        Some((
+            address,
+            TrieAccount {
+                nonce: info.nonce,
+                balance: info.balance,
+                storage_root: storage_root_unhashed(storage),
+                code_hash: info.code_hash,
+            },
+        ))
+    });
+
+    state_root_unhashed(accounts)
+}
+
+fn include_account_in_root(
+    state: &State<InMemoryDB>,
+    address: Address,
+    info: &EvmAccountInfo,
+    storage: &[(B256, U256)],
+    spec: SpecId,
+) -> bool {
+    if !spec.enables(SpecId::SPURIOUS_DRAGON) {
+        return state.initial.accounts.contains_key(&address)
+            || state.modified.contains_key(&address);
+    }
+
+    if !info.is_empty() || !storage.is_empty() {
+        return true;
+    }
+
+    // Approximate revm's `AccountState::None` case without tracking account state locally:
+    // untouched empty accounts that existed before execution remain in the state trie.
+    state.initial.accounts.contains_key(&address) && !state.modified.contains_key(&address)
+}
+
+fn storage_for_root(state: &State<InMemoryDB>, address: Address) -> Vec<(B256, U256)> {
+    let mut storage = Vec::new();
+    for ((storage_address, key), value) in &state.initial.storage {
+        if *storage_address == address && !value.is_zero() {
+            storage.push((B256::from(key.to_be_bytes()), *value));
+        }
+    }
+
+    if let Some(account) = state.modified.get(&address) {
+        for (key, value) in &account.storage {
+            let key = B256::from(key.to_be_bytes());
+            if let Some(existing) =
+                storage.iter_mut().find(|(existing_key, _)| *existing_key == key)
+            {
+                existing.1 = value.current;
+            } else if !value.current.is_zero() {
+                storage.push((key, value.current));
+            }
+        }
+    }
+
+    storage.retain(|(_, value)| !value.is_zero());
+    storage
 }
 
 fn parse_state(pre: &BTreeMap<Address, AccountInfo>) -> Result<InMemoryDB, TestErrorKind> {
@@ -285,7 +362,7 @@ fn build_tx(
     raw: &TransactionParts,
     indexes: &TxPartIndices,
     base_fee: U256,
-) -> Result<Transaction, TestErrorKind> {
+) -> Result<RecoveredTxEnvelope, TestErrorKind> {
     let caller = match raw.sender {
         Some(sender) => sender,
         None => recover_address(raw.secret_key.as_slice())
@@ -300,8 +377,19 @@ fn build_tx(
         .map_err(|_| TestErrorKind::Overflow("gasLimit"))?;
     let value = *raw.value.get(indexes.value).ok_or(TestErrorKind::BadIndex("value"))?;
     let nonce = raw.nonce.try_into().map_err(|_| TestErrorKind::Overflow("nonce"))?;
-    let gas_price = effective_gas_price(raw, base_fee)?;
-    Ok(Transaction { caller, to: raw.to, nonce, gas_limit, gas_price, value, data })
+    let gas_price = effective_gas_price(raw, base_fee)?
+        .try_into()
+        .map_err(|_| TestErrorKind::Overflow("gasPrice"))?;
+    let tx = TxLegacy {
+        chain_id: None,
+        nonce,
+        gas_price,
+        gas_limit,
+        to: TxKind::from(raw.to),
+        value,
+        input: data,
+    };
+    Ok(RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(tx, caller)))
 }
 
 fn effective_gas_price(raw: &TransactionParts, base_fee: U256) -> Result<U256, TestErrorKind> {

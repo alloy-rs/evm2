@@ -29,7 +29,7 @@ mod message;
 pub use message::{Message, MessageKind};
 
 mod state;
-pub use state::{Host, State};
+pub use state::{Host, MessageResult, State};
 
 mod runtime;
 pub use runtime::Interpreter;

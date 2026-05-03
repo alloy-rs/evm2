@@ -16,6 +16,7 @@ workspace = true
 [dependencies]
 evm2-macros.workspace = true
 
+alloy-consensus.workspace = true
 alloy-eips.workspace = true
 alloy-primitives.workspace = true
 alloy-rlp.workspace = true
@@ -30,7 +31,6 @@ paste.workspace = true
 serde = { workspace = true, features = ["derive", "alloc"], optional = true }
 
 [dev-dependencies]
-alloy-consensus = { workspace = true, features = ["std"] }
 serde_json = { workspace = true, features = ["std"] }
 
 [[example]]
@@ -51,6 +51,7 @@ doc-scrape-examples = true
 [features]
 default = ["std"]
 std = [
+    "alloy-consensus/std",
     "alloy-eips/std",
     "alloy-primitives/std",
     "alloy-rlp/std",
@@ -63,6 +64,7 @@ std = [
 nightly = []
 serde = [
     "dep:serde",
+    "alloy-consensus/serde",
     "alloy-eips/serde",
     "alloy-primitives/serde",
     "alloy-trie/serde",
