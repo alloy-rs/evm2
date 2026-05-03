@@ -242,7 +242,7 @@ fn spec_outcome<T: EvmTypes<Database = InMemoryDB>>(
 ) -> SpecOutcome {
     SpecOutcome {
         state_root: state_root(evm.state().initial(), &result.state_changes),
-        logs_root: logs_hash(evm.logs()),
+        logs_root: logs_hash(&result.state_changes.logs),
         output: result.output,
         gas_used: result.gas_used,
         evm_result: format!("{:?}", result.stop),

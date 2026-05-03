@@ -10,7 +10,6 @@ use crate::{
     registry::{HandlerResult, TxRegistry},
     version::GasId,
 };
-use alloc::vec::Vec;
 use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{Address, B256, Bytes, Log};
 use core::cmp::min;
@@ -39,7 +38,7 @@ pub struct TxResult {
     pub stop: InstrStop,
     /// Return or revert output.
     pub output: Bytes,
-    /// Database-visible state transition produced by this transaction.
+    /// State transition and logs produced by this transaction.
     pub state_changes: StateChanges,
 }
 
@@ -54,7 +53,6 @@ pub struct Evm<T: EvmTypes> {
     registry: TxRegistry<T::Tx, TxResult, Self>,
     pub(crate) state: State<T::Database>,
     precompiles: T::Precompiles,
-    pub(crate) logs: Vec<Log>,
 }
 
 impl<T: EvmTypes> Evm<T> {
@@ -88,15 +86,7 @@ impl<T: EvmTypes> Evm<T> {
         database: T::Database,
         precompiles: T::Precompiles,
     ) -> Self {
-        Self {
-            spec_id,
-            execution_config,
-            block,
-            registry,
-            state: State::new(database),
-            precompiles,
-            logs: Vec::new(),
-        }
+        Self { spec_id, execution_config, block, registry, state: State::new(database), precompiles }
     }
 
     #[inline]
@@ -124,9 +114,9 @@ impl<T: EvmTypes> Evm<T> {
         &self.state
     }
 
-    /// Returns emitted logs.
+    /// Returns logs emitted by the current in-flight transaction.
     pub fn logs(&self) -> &[Log] {
-        &self.logs
+        self.state.logs()
     }
 
     /// Returns the precompile provider.
@@ -244,7 +234,7 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
     }
 
     fn log(&mut self, log: Log) {
-        self.logs.push(log);
+        self.state.log(log);
     }
 
     fn execute_message(
@@ -289,12 +279,10 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
             }
 
             let checkpoint = self.state.checkpoint();
-            let log_checkpoint = self.logs.len();
             if let Err(stop) =
                 self.state.create_account(message.caller, address, message.value, self.spec_id())
             {
                 self.state.rollback(checkpoint);
-                self.logs.truncate(log_checkpoint);
                 return MessageResult {
                     stop,
                     gas_remaining: message.gas_limit,
@@ -335,7 +323,6 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
 
                 if let Some(stop) = stop {
                     self.state.rollback(checkpoint);
-                    self.logs.truncate(log_checkpoint);
                     gas_remaining = if stop.is_error() { 0 } else { gas.remaining() };
                     return MessageResult { stop, gas_remaining, output, created_address: None };
                 }
@@ -345,7 +332,6 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
                 self.state.set_code(address, Bytecode::new_legacy(output.clone()));
             } else {
                 self.state.rollback(checkpoint);
-                self.logs.truncate(log_checkpoint);
                 if stop.is_error() {
                     gas_remaining = 0;
                 }
@@ -360,7 +346,6 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
         }
 
         let checkpoint = self.state.checkpoint();
-        let log_checkpoint = self.logs.len();
         if matches!(message.kind, MessageKind::Call)
             && !self.state.transfer(message.caller, message.destination, message.value)
         {
@@ -384,7 +369,6 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
             };
             if !stop.is_success() {
                 self.state.rollback(checkpoint);
-                self.logs.truncate(log_checkpoint);
             }
             return MessageResult { stop, gas_remaining, output, created_address: None };
         }
@@ -401,7 +385,6 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
 
         if !stop.is_success() {
             self.state.rollback(checkpoint);
-            self.logs.truncate(log_checkpoint);
             if stop.is_error() {
                 gas_remaining = 0;
             }

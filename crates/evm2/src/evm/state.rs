@@ -3,7 +3,7 @@
 use crate::{bytecode::Bytecode, interpreter::Word};
 use alloc::{collections::BTreeMap, string::ToString, vec::Vec};
 use alloy_primitives::{
-    Address, B256, U256, keccak256,
+    Address, B256, Log, U256, keccak256,
     map::{self, HashMap, HashSet, hash_map},
 };
 
@@ -174,14 +174,14 @@ pub struct StorageOverlay {
     pub(crate) slots: HashMap<Word, StorageValue>,
 }
 
-/// Complete state transition produced by a transaction.
+/// Complete state transition and emitted logs produced by a transaction.
 ///
 /// `StateChanges` is the public write-set returned in [`crate::TxResult`]. It
 /// is intentionally explicit so embedding clients can update their own database
 /// and compute post-state roots without reimplementing EVM account-lifetime
-/// rules.
+/// rules. It also carries the logs emitted by the transaction.
 ///
-/// Consumers should apply changes in this order:
+/// Consumers should apply database changes in this order:
 ///
 /// 1. write bytecode from [`Self::code`] for every non-empty code hash they do not already have;
 /// 2. for each [`StorageChangeSet`] whose [`StorageChangeSet::wipe`] flag is true, delete all
@@ -201,13 +201,18 @@ pub struct StateChanges {
     pub storage: BTreeMap<Address, StorageChangeSet>,
     /// Newly created or modified bytecode keyed by code hash.
     pub code: BTreeMap<B256, Bytecode>,
+    /// Logs emitted by the transaction.
+    pub logs: Vec<Log>,
 }
 
 impl StateChanges {
-    /// Returns whether this transition contains no database-visible changes.
+    /// Returns whether this transition contains no changes or logs.
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.accounts.is_empty() && self.storage.is_empty() && self.code.is_empty()
+        self.accounts.is_empty()
+            && self.storage.is_empty()
+            && self.code.is_empty()
+            && self.logs.is_empty()
     }
 }
 
@@ -333,6 +338,11 @@ pub enum JournalEntry {
         /// Storage key.
         key: Word,
     },
+    /// Log was emitted.
+    Log {
+        /// Log index before emission.
+        index: usize,
+    },
 }
 
 /// Mutable EVM state with an overlay and reversible journal.
@@ -352,6 +362,8 @@ pub struct State<D> {
     pub storage: HashMap<Address, StorageOverlay>,
     /// Revert journal.
     pub journal: Vec<JournalEntry>,
+    /// Logs emitted by the current transaction.
+    pub logs: Vec<Log>,
     /// Accounts touched for transaction-finalization account-lifetime rules.
     ///
     /// This is separate from the account overlay and the EIP-2929 warm set. A
@@ -380,6 +392,7 @@ impl<D> State<D> {
             accounts: map::HashMap::default(),
             storage: map::HashMap::default(),
             journal: Vec::new(),
+            logs: Vec::new(),
             touched: map::HashSet::default(),
             selfdestructs: map::HashSet::default(),
             accessed_accounts: map::HashSet::default(),
@@ -404,6 +417,20 @@ impl<D> State<D> {
     #[inline]
     pub const fn initial_mut(&mut self) -> &mut D {
         &mut self.initial
+    }
+
+    /// Returns logs emitted by the current in-flight transaction.
+    #[inline]
+    pub fn logs(&self) -> &[Log] {
+        &self.logs
+    }
+
+    /// Records a transaction log and journals it for rollback.
+    #[inline]
+    pub fn log(&mut self, log: Log) {
+        let index = self.logs.len();
+        self.journal.push(JournalEntry::Log { index });
+        self.logs.push(log);
     }
 
     /// Returns the current account overlay if present and not deleted.
@@ -449,6 +476,7 @@ impl<D> State<D> {
         self.accessed_accounts.clear();
         self.accessed_storage.clear();
         self.transient_storage.clear();
+        self.logs.clear();
     }
 
     /// Clears all transaction-scoped warm accesses.
@@ -793,6 +821,9 @@ impl<D: Database> State<D> {
                 JournalEntry::StorageWarmed { address, key } => {
                     self.accessed_storage.remove(&(address, key));
                 }
+                JournalEntry::Log { index } => {
+                    self.logs.truncate(index);
+                }
             }
         }
     }
@@ -815,14 +846,14 @@ impl<D: Database> State<D> {
             && account.is_none_or(Account::is_empty)
     }
 
-    /// Builds the database-visible state transition for the current transaction.
+    /// Builds the state transition and emitted logs for the current transaction.
     ///
     /// This method is pure: it does not apply changes to the backing database and
     /// does not advance the overlay to the next transaction. Callers normally use
     /// the [`StateChanges`] attached to [`crate::TxResult`] instead of invoking
     /// this directly.
     pub fn build_state_changes(&self, spec: crate::SpecId) -> StateChanges {
-        let mut changes = StateChanges::default();
+        let mut changes = StateChanges { logs: self.logs.clone(), ..StateChanges::default() };
 
         for (&address, tracked) in &self.accounts {
             let deleted = self.account_deleted_by_rules(address, tracked.current.as_ref(), spec);
@@ -947,7 +978,7 @@ impl<D: Database> State<D> {
 }
 
 /// Returns the state-test logs hash.
-pub fn logs_hash(logs: &[alloy_primitives::Log]) -> B256 {
+pub fn logs_hash(logs: &[Log]) -> B256 {
     let mut out = Vec::with_capacity(alloy_rlp::list_length(logs));
     alloy_rlp::encode_list(logs, &mut out);
     keccak256(out)
@@ -1109,6 +1140,56 @@ mod tests {
         assert!(state.is_selfdestructed(address));
         state.rollback(checkpoint);
         assert!(!state.is_selfdestructed(address));
+    }
+
+    #[test]
+    fn log_rolls_back_to_checkpoint() {
+        use alloy_primitives::{Bytes, LogData};
+
+        let mut state = State::new(CacheDB::default());
+        let kept = Log {
+            address: Address::from([0x44; 20]),
+            data: LogData::new_unchecked(Vec::new(), Bytes::from_static(&[0x01])),
+        };
+        let reverted = Log {
+            address: Address::from([0x55; 20]),
+            data: LogData::new_unchecked(Vec::new(), Bytes::from_static(&[0x02])),
+        };
+
+        state.log(kept.clone());
+        let checkpoint = state.checkpoint();
+        state.log(reverted);
+
+        assert_eq!(
+            state.logs(),
+            &[
+                kept.clone(),
+                Log {
+                    address: Address::from([0x55; 20]),
+                    data: LogData::new_unchecked(Vec::new(), Bytes::from_static(&[0x02])),
+                }
+            ]
+        );
+        state.rollback(checkpoint);
+        assert_eq!(state.logs(), &[kept]);
+    }
+
+    #[test]
+    fn state_changes_include_logs_and_accept_clears_them() {
+        use alloy_primitives::{Bytes, LogData};
+
+        let mut state = State::new(CacheDB::default());
+        let log = Log {
+            address: Address::from([0x66; 20]),
+            data: LogData::new_unchecked(Vec::new(), Bytes::from_static(&[0x03])),
+        };
+
+        state.log(log.clone());
+        let changes = state.build_state_changes(crate::SpecId::SPURIOUS_DRAGON);
+        assert_eq!(changes.logs, [log]);
+
+        state.accept_transaction(crate::SpecId::SPURIOUS_DRAGON);
+        assert!(state.logs().is_empty());
     }
 
     #[test]

@@ -118,7 +118,6 @@ fn handle_legacy<T: EvmTypes<Host = Evm<T>>>(
     req.host.state.add_balance(caller, Word::ZERO.wrapping_sub(max_gas_cost));
     req.host.state.increment_nonce(caller);
     let execution_checkpoint = req.host.state.checkpoint();
-    let log_checkpoint = req.host.logs.len();
 
     let gas_limit = tx.gas_limit - intrinsic;
     let tx_env = TxEnv {
@@ -164,7 +163,6 @@ fn handle_legacy<T: EvmTypes<Host = Evm<T>>>(
     let mut result = req.host.execute_message(tx_env, bytecode, message, false);
     if !result.stop.is_success() {
         req.host.state.rollback(execution_checkpoint);
-        req.host.logs.truncate(log_checkpoint);
         if result.stop.is_error() {
             result.gas_remaining = 0;
         }
