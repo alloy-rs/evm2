@@ -2,7 +2,8 @@
 
 use crate::{
     evm::{InMemoryDB, precompile::PrecompileProvider},
-    interpreter::{GasParams, GasTable, InstructionImplTable, SpecId},
+    interpreter::SpecId,
+    version::EvmVersion,
 };
 use core::marker::PhantomData;
 
@@ -25,19 +26,6 @@ pub trait EvmTypes: Sized + 'static {
 pub trait EvmConfig: EvmTypes {
     /// Active EVM version.
     const VERSION: &'static EvmVersion<Self>;
-}
-
-/// EVM version data.
-#[derive(Debug)]
-pub struct EvmVersion<C: EvmConfig = BaseEvmTypes> {
-    /// Active hard fork specification.
-    pub spec_id: SpecId,
-    /// Static opcode gas table.
-    pub gas_table: GasTable,
-    /// Dynamic gas parameter table.
-    pub gas_params: GasParams,
-    /// Instruction implementations.
-    pub instruction_impls: InstructionImplTable<C>,
 }
 
 /// EVM configuration for a specification ID.

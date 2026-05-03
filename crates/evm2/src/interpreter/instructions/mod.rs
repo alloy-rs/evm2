@@ -8,6 +8,7 @@ mod block;
 pub(super) use block::*;
 
 mod control;
+pub(crate) use control::unknown;
 pub(super) use control::*;
 
 mod crypto;

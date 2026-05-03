@@ -5,7 +5,8 @@ use crate::interpreter::{InstrStop, Interpreter};
 use crate::{
     EvmConfig, EvmTypes, EvmVersion,
     interpreter::{
-        Gas, GasParams, Host, Pc, Result, SpecId, Stack, StackMut, State,
+        Gas, GasId, GasParams, GasTable, Host, InstructionImplTable, Pc, Result, SpecId, Stack,
+        StackMut, State,
         gas::{
             ACCESS_LIST_ADDRESS, ACCESS_LIST_STORAGE_KEY, BASE, BLOCKHASH, CALL_STIPEND, CALLVALUE,
             CODEDEPOSIT, COLD_ACCOUNT_ACCESS_COST_ADDITIONAL, COLD_SLOAD_COST, COPY, CREATE,
@@ -19,99 +20,7 @@ use crate::{
         opcode::{for_each_opcode, op},
     },
 };
-use core::{
-    hint::cold_path,
-    ops::{Index, IndexMut},
-};
-
-/// Opcode gas table.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct GasTable([u16; 256]);
-
-/// Instruction implementation table.
-#[derive(Clone, Copy)]
-pub struct InstructionImplTable<C: EvmConfig>([Option<&'static dyn Instruction<C>>; 256]);
-
-impl Index<usize> for GasTable {
-    type Output = u16;
-
-    #[inline]
-    fn index(&self, index: usize) -> &Self::Output {
-        &self.0[index]
-    }
-}
-
-impl IndexMut<usize> for GasTable {
-    #[inline]
-    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
-        &mut self.0[index]
-    }
-}
-
-impl<C: EvmConfig> core::fmt::Debug for InstructionImplTable<C> {
-    #[inline]
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("InstructionImplTable").finish_non_exhaustive()
-    }
-}
-
-impl<C: EvmConfig> Index<usize> for InstructionImplTable<C> {
-    type Output = Option<&'static dyn Instruction<C>>;
-
-    #[inline]
-    fn index(&self, index: usize) -> &Self::Output {
-        &self.0[index]
-    }
-}
-
-impl<C: EvmConfig> IndexMut<usize> for InstructionImplTable<C> {
-    #[inline]
-    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
-        &mut self.0[index]
-    }
-}
-
-impl<C: EvmConfig> Default for InstructionImplTable<C> {
-    #[inline]
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<C: EvmConfig> InstructionImplTable<C> {
-    /// Returns `true` if `opcode` has a set instruction implementation.
-    #[inline]
-    pub const fn contains(&self, opcode: u8) -> bool {
-        self.get(opcode).is_some()
-    }
-
-    /// Returns the instruction implementation for `opcode`.
-    #[inline]
-    pub const fn get(&self, opcode: u8) -> Option<&'static dyn Instruction<C>> {
-        self.0[opcode as usize]
-    }
-
-    /// Returns the instruction implementation for `opcode`, or unknown if it is not set.
-    #[inline]
-    pub const fn get_or_default(&self, opcode: u8) -> &'static dyn Instruction<C> {
-        match self.get(opcode) {
-            Some(instr) => instr,
-            None => &crate::interpreter::instructions::unknown,
-        }
-    }
-
-    /// Returns the mutable instruction implementation slot for `opcode`.
-    #[inline]
-    pub const fn get_mut(&mut self, opcode: u8) -> &mut Option<&'static dyn Instruction<C>> {
-        &mut self.0[opcode as usize]
-    }
-
-    /// Sets the instruction implementation for `opcode`.
-    #[inline]
-    pub const fn set(&mut self, opcode: u8, instr: Option<&'static dyn Instruction<C>>) {
-        self.0[opcode as usize] = instr;
-    }
-}
+use core::hint::cold_path;
 
 /// Normal instruction return value.
 #[cfg(not(feature = "nightly"))]
@@ -183,32 +92,6 @@ pub trait Instruction<C: EvmConfig = crate::BaseEvmTypes> {
     ) -> Result;
 }
 
-impl GasTable {
-    /// Creates a gas table for `spec`.
-    #[inline]
-    pub const fn new(spec: SpecId) -> Self {
-        EvmVersion::<crate::BaseEvmTypes>::new_base(spec).gas_table
-    }
-
-    /// Returns the gas cost for `opcode`.
-    #[inline]
-    pub const fn get(&self, opcode: u8) -> u16 {
-        self.0[opcode as usize]
-    }
-
-    /// Returns the mutable gas cost slot for `opcode`.
-    #[inline]
-    pub const fn get_mut(&mut self, opcode: u8) -> &mut u16 {
-        &mut self.0[opcode as usize]
-    }
-
-    /// Sets the gas cost for `opcode`.
-    #[inline]
-    pub const fn set(&mut self, opcode: u8, cost: u16) {
-        self.0[opcode as usize] = cost;
-    }
-}
-
 macro_rules! make_instruction_table_inner {
     ([$table:expr, $config:ty, $spec:expr] $(
         ($op:ident, $instr:path),
@@ -241,7 +124,8 @@ impl<C: EvmConfig> EvmVersion<C> {
     /// Creates the base EVM version for `spec`.
     #[inline]
     pub const fn new_base(spec: SpecId) -> Self {
-        use crate::interpreter::{GasId::*, instructions::*};
+        use crate::interpreter::instructions::*;
+        use GasId::*;
 
         let mut gas_table = GasTable([0; 256]);
         gas_table.set(op::STOP, ZERO as u16);
@@ -589,13 +473,6 @@ macro_rules! for_each_opcode_value {
             0xF8, 0xF9, 0xFA, 0xFB, 0xFC, 0xFD, 0xFE, 0xFF,
         }
     };
-}
-
-impl<C: EvmConfig> InstructionImplTable<C> {
-    /// Creates an instruction implementation table.
-    pub const fn new() -> Self {
-        Self([None; 256])
-    }
 }
 
 pub(crate) const fn make_instruction_table<C: EvmConfig>() -> InstructionTable<C> {

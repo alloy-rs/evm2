@@ -55,12 +55,14 @@ pub mod ethereum;
 /// EVM host and transaction dispatcher.
 pub mod evm;
 pub mod interpreter;
+pub mod version;
 
 pub use evm::{
     Evm, TxResult, config,
-    config::{BaseEvmTypes, EvmConfig, EvmTypes, EvmVersion},
+    config::{BaseEvmTypes, EvmConfig, EvmTypes},
     env, precompile, registry,
 };
+pub use version::EvmVersion;
 
 mod once_lock;
 

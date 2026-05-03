@@ -1,4 +1,4 @@
-use crate::interpreter::SpecId;
+use crate::{BaseEvmTypes, EvmVersion, interpreter::SpecId};
 use alloy_primitives::U256;
 use core::ops::{Index, IndexMut};
 use paste::paste;
@@ -227,7 +227,7 @@ impl GasParams {
     /// Creates gas parameters for `spec`.
     #[inline]
     pub const fn new_spec(spec: SpecId) -> Self {
-        crate::EvmVersion::<crate::BaseEvmTypes>::new_base(spec).gas_params
+        EvmVersion::<BaseEvmTypes>::new_base(spec).gas_params
     }
 
     /// Returns the raw gas parameter table.
