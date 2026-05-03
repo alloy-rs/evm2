@@ -1,6 +1,6 @@
 //! Command-line Ethereum state test runner for evm2.
 
-use evm2_statetest::{DEFAULT_STATE_TEST_ROOT, find_json_tests, run};
+use evm2_statetest::{find_json_tests, run, state_test_root_from_env};
 use std::{env, path::PathBuf, process, thread};
 
 fn main() {
@@ -57,7 +57,11 @@ impl Args {
                 }
                 "--keep-going" => keep_going = true,
                 "-h" | "--help" => {
-                    println!("usage: evm2-statetest [-j N] [--keep-going] <file-or-dir>...");
+                    println!(
+                        "usage: evm2-statetest [-j N] [--keep-going] <file-or-dir>...\n\
+                         \n\
+                         If no paths are provided, set EVM2_STATETEST_ROOT or ETHEREUM_TESTS."
+                    );
                     process::exit(0);
                 }
                 _ if arg.starts_with('-') => return Err(format!("unknown option: {arg}")),
@@ -65,7 +69,12 @@ impl Args {
             }
         }
         if paths.is_empty() {
-            paths.push(PathBuf::from(DEFAULT_STATE_TEST_ROOT));
+            let Some(path) = state_test_root_from_env() else {
+                return Err(
+                    "missing test path; pass <file-or-dir> or set EVM2_STATETEST_ROOT".to_string()
+                );
+            };
+            paths.push(path);
         }
         Ok(Self { paths, jobs: jobs.max(1), keep_going })
     }

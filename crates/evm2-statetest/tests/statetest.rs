@@ -1,22 +1,17 @@
 //! cargo-nextest state test harness.
 
-use evm2_statetest::{DEFAULT_STATE_TEST_ROOT, execute_str};
-use std::{
-    env,
-    path::{Path, PathBuf},
-};
+use evm2_statetest::{execute_str, state_test_root_from_env};
+use std::path::Path;
 
 fn root() -> String {
-    let mut root = env::var_os("EVM2_STATETEST_ROOT")
-        .or_else(|| env::var_os("ETHEREUM_TESTS"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_STATE_TEST_ROOT));
-    if let Some(subdir) = env::var_os("SUBDIR")
-        && !subdir.is_empty()
-    {
-        root.push(subdir);
-    }
-    root.display().to_string()
+    state_test_root_from_env()
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf())
+        .display()
+        .to_string()
+}
+
+fn pattern() -> &'static str {
+    if state_test_root_from_env().is_some() { r"^.*\.json$" } else { r"^$" }
 }
 
 fn statetest(path: &Path, contents: String) -> datatest_stable::Result<()> {
@@ -25,5 +20,5 @@ fn statetest(path: &Path, contents: String) -> datatest_stable::Result<()> {
 }
 
 datatest_stable::harness! {
-    { test = statetest, root = root(), pattern = r"^.*\.json$" },
+    { test = statetest, root = root(), pattern = pattern() },
 }
