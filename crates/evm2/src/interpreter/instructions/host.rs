@@ -31,7 +31,16 @@ pub(in crate::interpreter) fn sstore(cx: _) -> Result {
     {
         return Err(InstrStop::ReentrancySentryOOG);
     }
+    let old_value = cx.state.host.sload(cx.state.message().destination, key);
     cx.gas.spend(gas_params.get(GasId::SstoreStatic))?;
+    if old_value.is_zero() && !value.is_zero() {
+        cx.gas.spend(gas_params.get(GasId::SstoreSetWithoutLoadCost))?;
+    } else if !old_value.is_zero() && value.is_zero() {
+        cx.gas.record_refund(gas_params.get(GasId::SstoreClearingSlotRefund) as i64);
+        cx.gas.spend(gas_params.get(GasId::SstoreResetWithoutColdLoadCost))?;
+    } else {
+        cx.gas.spend(gas_params.get(GasId::SstoreResetWithoutColdLoadCost))?;
+    }
     cx.state.host.sstore(cx.state.message().destination, key, value);
     Ok(())
 }
@@ -115,7 +124,7 @@ mod tests {
         push(&mut code, 1);
         code.extend([op::SLOAD, op::STOP]);
 
-        let interpreter = run(RunConfig::new(code).host(&mut host));
+        let interpreter = run(RunConfig::new(code).host(&mut host).gas_limit(30_000));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::from(0xbeef)]);
         assert_eq!(host.storage.get(&(Address::ZERO, Word::from(1))), Some(&Word::from(0xbeef)));

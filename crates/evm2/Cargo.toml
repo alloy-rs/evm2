@@ -18,6 +18,8 @@ evm2-macros.workspace = true
 
 alloy-eips = { version = "2.0.4", default-features = false }
 alloy-primitives.workspace = true
+alloy-rlp.workspace = true
+alloy-trie = { workspace = true, features = ["ethereum"] }
 thiserror.workspace = true
 
 # no_std
@@ -39,6 +41,11 @@ doc-scrape-examples = true
 [[example]]
 name = "registry_custom_handler"
 path = "examples/registry/custom_handler.rs"
+doc-scrape-examples = true
+
+[[example]]
+name = "e2e_transfer_sstore"
+path = "examples/e2e_transfer_sstore.rs"
 doc-scrape-examples = true
 
 [features]

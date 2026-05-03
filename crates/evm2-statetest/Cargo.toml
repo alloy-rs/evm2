@@ -1,0 +1,29 @@
+[package]
+name = "evm2-statetest"
+description = "Parallel Ethereum state test runner for evm2."
+
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+evm2 = { path = "../evm2", features = ["std", "serde"] }
+
+alloy-primitives = { workspace = true, features = ["std", "serde", "rlp"] }
+indicatif.workspace = true
+k256 = { workspace = true, features = ["ecdsa"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, features = ["preserve_order"] }
+thiserror.workspace = true
+walkdir.workspace = true
+
+[[bin]]
+name = "evm2-statetest"
+path = "src/main.rs"
