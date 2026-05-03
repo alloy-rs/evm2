@@ -31,17 +31,10 @@ impl<C: EvmConfig> IndexMut<usize> for InstructionImplTable<C> {
     }
 }
 
-impl<C: EvmConfig> Default for InstructionImplTable<C> {
-    #[inline]
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl<C: EvmConfig> InstructionImplTable<C> {
-    /// Creates an instruction implementation table.
+    /// Creates an empty instruction implementation table.
     #[inline]
-    pub const fn new() -> Self {
+    pub(super) const fn empty() -> Self {
         Self([None; 256])
     }
 

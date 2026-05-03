@@ -1,4 +1,3 @@
-use crate::{BaseEvmTypes, EvmVersion, interpreter::SpecId};
 use alloy_primitives::U256;
 use core::ops::{Index, IndexMut};
 use paste::paste;
@@ -186,9 +185,6 @@ gas_ids! {
     TxEip7702PerAuthStateGas;
 }
 
-/// Gas parameter table.
-pub type GasParamTable = [u32; 256];
-
 /// Returns the number of EVM words needed for `len` bytes.
 #[inline]
 pub const fn num_words(len: usize) -> usize {
@@ -196,9 +192,9 @@ pub const fn num_words(len: usize) -> usize {
 }
 
 /// Dynamic gas parameter table.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct GasParams {
-    table: GasParamTable,
+    table: [u32; GasId::MAX as usize + 1],
 }
 
 impl Index<GasId> for GasParams {
@@ -220,20 +216,8 @@ impl IndexMut<GasId> for GasParams {
 impl GasParams {
     /// Creates gas parameters from a raw table.
     #[inline]
-    pub const fn new(table: GasParamTable) -> Self {
+    pub(super) const fn from_table(table: [u32; GasId::MAX as usize + 1]) -> Self {
         Self { table }
-    }
-
-    /// Creates gas parameters for `spec`.
-    #[inline]
-    pub const fn new_spec(spec: SpecId) -> Self {
-        EvmVersion::<BaseEvmTypes>::new_base(spec).gas_params
-    }
-
-    /// Returns the raw gas parameter table.
-    #[inline]
-    pub const fn table(&self) -> &GasParamTable {
-        &self.table
     }
 
     /// Returns the gas cost for `id`.
@@ -341,6 +325,11 @@ impl GasParams {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{BaseEvmTypes, EvmVersion, interpreter::SpecId};
+
+    fn gas_params(spec: SpecId) -> GasParams {
+        EvmVersion::<BaseEvmTypes>::new_base(spec).gas_params
+    }
 
     #[test]
     fn gas_id_roundtrips_names_and_values() {
@@ -356,7 +345,7 @@ mod tests {
 
     #[test]
     fn gas_params_match_frontier_defaults() {
-        let params = GasParams::new_spec(SpecId::FRONTIER);
+        let params = gas_params(SpecId::FRONTIER);
         assert_eq!(params.get(GasId::ExpByteGas), 10);
         assert_eq!(params.get(GasId::MemoryLinearCost), 3);
         assert_eq!(params.get(GasId::MemoryQuadraticReduction), 512);
@@ -367,40 +356,40 @@ mod tests {
 
     #[test]
     fn gas_params_apply_homestead_defaults() {
-        let params = GasParams::new_spec(SpecId::HOMESTEAD);
+        let params = gas_params(SpecId::HOMESTEAD);
         assert_eq!(params.get(GasId::TxCreateCost), 32000);
     }
 
     #[test]
     fn gas_params_apply_fork_defaults() {
-        let tangerine = GasParams::new_spec(SpecId::TANGERINE);
+        let tangerine = gas_params(SpecId::TANGERINE);
         assert_eq!(tangerine.get(GasId::NewAccountCostForSelfdestruct), 25000);
 
-        let spurious_dragon = GasParams::new_spec(SpecId::SPURIOUS_DRAGON);
+        let spurious_dragon = gas_params(SpecId::SPURIOUS_DRAGON);
         assert_eq!(spurious_dragon.get(GasId::ExpByteGas), 50);
 
-        let istanbul = GasParams::new_spec(SpecId::ISTANBUL);
+        let istanbul = gas_params(SpecId::ISTANBUL);
         assert_eq!(istanbul.get(GasId::SstoreStatic), 800);
         assert_eq!(istanbul.get(GasId::TxTokenNonZeroByteMultiplier), 4);
 
-        let berlin = GasParams::new_spec(SpecId::BERLIN);
+        let berlin = gas_params(SpecId::BERLIN);
         assert_eq!(berlin.get(GasId::SstoreStatic), 100);
         assert_eq!(berlin.get(GasId::ColdAccountAdditionalCost), 2500);
         assert_eq!(berlin.get(GasId::ColdStorageCost), 2100);
 
-        let london = GasParams::new_spec(SpecId::LONDON);
+        let london = gas_params(SpecId::LONDON);
         assert_eq!(london.get(GasId::SstoreClearingSlotRefund), 4800);
         assert_eq!(london.get(GasId::SelfdestructRefund), 0);
 
-        let shanghai = GasParams::new_spec(SpecId::SHANGHAI);
+        let shanghai = gas_params(SpecId::SHANGHAI);
         assert_eq!(shanghai.get(GasId::TxInitcodeCost), 2);
 
-        let prague = GasParams::new_spec(SpecId::PRAGUE);
+        let prague = gas_params(SpecId::PRAGUE);
         assert_eq!(prague.get(GasId::TxEip7702PerEmptyAccountCost), 25000);
         assert_eq!(prague.get(GasId::TxEip7702AuthRefund), 12500);
         assert_eq!(prague.get(GasId::TxFloorCostPerToken), 10);
 
-        let amsterdam = GasParams::new_spec(SpecId::AMSTERDAM);
+        let amsterdam = gas_params(SpecId::AMSTERDAM);
         assert_eq!(amsterdam.get(GasId::Create), 9000);
         assert_eq!(amsterdam.get(GasId::SstoreSetStateGas), 37568);
         assert_eq!(amsterdam.get(GasId::TxEip7702PerAuthStateGas), 158490);
@@ -408,7 +397,7 @@ mod tests {
 
     #[test]
     fn gas_params_override_values() {
-        let mut params = GasParams::new_spec(SpecId::default());
+        let mut params = gas_params(SpecId::default());
         params[GasId::MemoryLinearCost] = 7;
         params[GasId::MemoryQuadraticReduction] = 1024;
         assert_eq!(params[GasId::MemoryLinearCost], 7);
@@ -417,7 +406,7 @@ mod tests {
 
     #[test]
     fn gas_params_calculate_costs() {
-        let params = GasParams::new_spec(SpecId::FRONTIER);
+        let params = gas_params(SpecId::FRONTIER);
         assert_eq!(num_words(0), 0);
         assert_eq!(num_words(33), 2);
         assert_eq!(params.memory_cost(10), 30);

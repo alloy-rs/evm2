@@ -1,7 +1,7 @@
 //! EVM interpreter.
 
 pub(crate) mod gas;
-pub use crate::version::{GasId, GasParamTable, GasParams, num_words};
+pub use crate::version::{GasId, GasParams, num_words};
 pub use gas::{Gas, GasTracker, MemoryGas};
 
 #[macro_use]

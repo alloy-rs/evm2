@@ -286,7 +286,6 @@ mod tests {
         bytecode::Bytecode,
         env::TxEnv,
         interpreter::{Message, SpecId, Word, instructions::tests::TestHost, op},
-        version::GasTable,
     };
     use alloy_primitives::Bytes;
     use evm2_macros::instruction;
@@ -318,7 +317,7 @@ mod tests {
 
     #[test]
     fn default_gas_table_matches_revm_static_costs() {
-        let default_gas_table = GasTable::new(SpecId::FRONTIER);
+        let default_gas_table = EvmVersion::<CustomConfig>::new_base(SpecId::FRONTIER).gas_table;
         assert_eq!(default_gas_table[op::STOP as usize], 0);
         assert_eq!(default_gas_table[op::ADD as usize], 3);
         assert_eq!(default_gas_table[op::MUL as usize], 5);
@@ -331,16 +330,16 @@ mod tests {
 
     #[test]
     fn gas_table_applies_spec_static_costs() {
-        let tangerine = GasTable::new(SpecId::TANGERINE);
+        let tangerine = EvmVersion::<CustomConfig>::new_base(SpecId::TANGERINE).gas_table;
         assert_eq!(tangerine[op::SLOAD as usize], 200);
         assert_eq!(tangerine[op::BALANCE as usize], 400);
         assert_eq!(tangerine[op::SELFDESTRUCT as usize], 5000);
 
-        let istanbul = GasTable::new(SpecId::ISTANBUL);
+        let istanbul = EvmVersion::<CustomConfig>::new_base(SpecId::ISTANBUL).gas_table;
         assert_eq!(istanbul[op::SLOAD as usize], 800);
         assert_eq!(istanbul[op::EXTCODEHASH as usize], 700);
 
-        let berlin = GasTable::new(SpecId::BERLIN);
+        let berlin = EvmVersion::<CustomConfig>::new_base(SpecId::BERLIN).gas_table;
         assert_eq!(berlin[op::SLOAD as usize], 100);
         assert_eq!(berlin[op::BALANCE as usize], 100);
         assert_eq!(berlin[op::CALL as usize], 100);

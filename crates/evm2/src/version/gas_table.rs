@@ -1,9 +1,8 @@
-use crate::{BaseEvmTypes, EvmVersion, interpreter::SpecId};
 use core::ops::{Index, IndexMut};
 
 /// Opcode gas table.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct GasTable(pub(crate) [u16; 256]);
+pub struct GasTable([u16; 256]);
 
 impl Index<usize> for GasTable {
     type Output = u16;
@@ -22,10 +21,10 @@ impl IndexMut<usize> for GasTable {
 }
 
 impl GasTable {
-    /// Creates a gas table for `spec`.
+    /// Creates an empty gas table.
     #[inline]
-    pub const fn new(spec: SpecId) -> Self {
-        EvmVersion::<BaseEvmTypes>::new_base(spec).gas_table
+    pub(super) const fn empty() -> Self {
+        Self([0; 256])
     }
 
     /// Returns the gas cost for `opcode`.

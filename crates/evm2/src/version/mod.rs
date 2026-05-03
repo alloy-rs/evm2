@@ -1,7 +1,7 @@
 //! EVM version data.
 
 mod gas_params;
-pub use gas_params::{GasId, GasParamTable, GasParams, num_words};
+pub use gas_params::{GasId, GasParams, num_words};
 
 mod gas_table;
 pub use gas_table::GasTable;
@@ -75,9 +75,9 @@ impl<C: EvmConfig> EvmVersion<C> {
         use crate::interpreter::instructions::*;
         use GasId::*;
 
-        let mut gas_table = GasTable([0; 256]);
-        let mut gas_params = [0u32; 256];
-        let mut instruction_impls = InstructionImplTable::new();
+        let mut gas_table = GasTable::empty();
+        let mut gas_params = [0u32; GasId::MAX as usize + 1];
+        let mut instruction_impls = InstructionImplTable::empty();
 
         gas_table.set(op::STOP, ZERO as u16);
         gas_table.set(op::ADD, VERYLOW as u16);
@@ -343,7 +343,12 @@ impl<C: EvmConfig> EvmVersion<C> {
             for_each_opcode!([instruction_impls, C, SpecId::AMSTERDAM] make_instruction_table_inner);
         }
 
-        Self { spec_id: spec, gas_table, gas_params: GasParams::new(gas_params), instruction_impls }
+        Self {
+            spec_id: spec,
+            gas_table,
+            gas_params: GasParams::from_table(gas_params),
+            instruction_impls,
+        }
     }
 
     /// Returns the hard fork specification for this version.
