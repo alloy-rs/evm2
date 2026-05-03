@@ -24,26 +24,28 @@ hashbrown = ["revm-precompile/hashbrown"]
 asm-keccak = ["revm-precompile/asm-keccak"]
 asm-sha2 = ["revm-precompile/asm-sha2"]
 
-# Enables the c-kzg point evaluation precompile. Enabled by default as most stable/used implementation.
+# Enables the c-kzg point evaluation precompile. This is enabled by default
+# because it is the most stable and commonly used implementation.
 c-kzg = ["revm-precompile/c-kzg"]
 
-# Compile in portable mode, without ISA extensions.
-# Binary can be executed on all systems.
+# Compiles in portable mode without ISA extensions so the binary can run on all systems.
 portable = ["revm-precompile/portable"]
 
-# Use `secp256k1` as a faster alternative to `k256`.
-# The problem that `secp256k1` has is it fails to build for `wasm` target on Windows and Mac as it is c lib.
-# In Linux it passes. If you don't require to build wasm on win/mac, it is safe to use it and it is enabled by default.
+# Uses `secp256k1` as a faster alternative to `k256`.
+# The `secp256k1` crate fails to build for the `wasm` target on Windows and macOS
+# because it uses a C library. It passes on Linux. If you do not need to build
+# `wasm` on Windows or macOS, this feature is safe to use and is enabled by default.
 secp256k1 = ["revm-precompile/secp256k1"]
 
 # Enables the blst implementation of the BLS12-381 precompile.
 blst = ["revm-precompile/blst"]
 
-# Enables the substrate implementation of eip1962.
+# Enables the substrate implementation of EIP-1962.
 bn = ["revm-precompile/bn"]
 
-# Use GMP for accelerated modexp precompile. Dynamically links to libgmp at runtime.
+# Uses GMP for accelerated modexp precompile execution. This dynamically links
+# to libgmp at runtime.
 gmp = ["revm-precompile/gmp"]
 
-# Use aws-lc-rs as a faster alternative to `p256` for secp256r1 signature verification.
+# Uses aws-lc-rs as a faster alternative to `p256` for secp256r1 signature verification.
 p256-aws-lc-rs = ["revm-precompile/p256-aws-lc-rs"]
