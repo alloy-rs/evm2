@@ -1,0 +1,39 @@
+[package]
+name = "evm2-precompiles"
+description = "Ethereum precompiled contracts for evm2."
+
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+alloy-primitives = { workspace = true, features = ["map"] }
+bn = { workspace = true }
+k256 = { workspace = true, features = ["ecdsa"] }
+num = { workspace = true, features = ["alloc"] }
+ripemd.workspace = true
+secp256k1 = { workspace = true, features = ["alloc", "recovery"], optional = true }
+sha2.workspace = true
+sha3.workspace = true
+
+[dev-dependencies]
+hex.workspace = true
+
+[features]
+default = ["secp256k1"]
+std = [
+    "alloy-primitives/std",
+    "k256/std",
+    "ripemd/std",
+    "secp256k1?/std",
+    "sha2/std",
+    "sha3/std",
+]
+secp256k1 = ["dep:secp256k1"]

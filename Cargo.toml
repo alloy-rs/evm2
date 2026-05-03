@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/evm2", "crates/evm2-macros", "crates/evm2-statetest"]
+members = ["crates/evm2", "crates/evm2-macros", "crates/evm2-precompiles", "crates/evm2-statetest"]
 resolver = "3"
 
 [workspace.package]
@@ -34,6 +34,7 @@ all = "warn"
 
 [workspace.dependencies]
 evm2-macros = { path = "crates/evm2-macros" }
+evm2-precompiles = { path = "crates/evm2-precompiles", default-features = false }
 
 alloy-consensus = { version = "2.0.4", default-features = false }
 alloy-eips = { version = "2.0.4", default-features = false }
@@ -41,12 +42,19 @@ alloy-primitives = { version = "1.5.7", default-features = false }
 alloy-rlp = { version = "0.3", default-features = false }
 alloy-trie = { version = "0.9", default-features = false }
 
+bn = { package = "substrate-bn", version = "0.6", default-features = false }
+hex = "0.4"
 k256 = { version = "0.13", default-features = false }
 libtest-mimic = "0.8"
+num = { version = "0.4", default-features = false }
 once_cell = { version = "1.21", default-features = false }
 paste = "1.0"
 serde = { version = "1.0", default-features = false }
+ripemd = { version = "0.1", default-features = false }
+secp256k1 = { version = "0.27", default-features = false }
 serde_json = { version = "1.0", default-features = false }
+sha2 = { version = "0.10", default-features = false }
+sha3 = { version = "0.10", default-features = false }
 thiserror = { version = "2.0", default-features = false }
 walkdir = { version = "2.5", default-features = false }
 
