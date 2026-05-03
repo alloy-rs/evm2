@@ -4,11 +4,9 @@ use crate::{
     Evm, EvmConfig, TxResult,
     bytecode::Bytecode,
     env::TxEnv,
-    evm::precompile::PrecompileProvider,
     interpreter::{Host, Message, MessageKind, SpecId, Word},
     registry::{HandlerError, HandlerResult, TxRegistry, TxRequest},
 };
-use alloc::vec::Vec;
 use alloy_consensus::{TxEip1559, TxEip2930, TxEip7702, TxLegacy, transaction::Recovered};
 use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{B256, Bytes, TxKind, U256};
@@ -112,10 +110,6 @@ where
     }
 
     req.host.state.warm_account(caller);
-    let precompile_addresses = Vec::from(req.host.precompiles().warm_addresses());
-    for address in precompile_addresses {
-        req.host.state.warm_account(address);
-    }
     if C::SPEC_ID.enables(SpecId::SHANGHAI) {
         req.host.state.warm_account(req.host.block.beneficiary);
     }

@@ -198,6 +198,13 @@ impl<C: EvmConfig<Host = Self>> Host for Evm<C> {
             };
         }
 
+        if message.depth == 0 {
+            let precompile_addresses = Vec::from(self.precompiles.warm_addresses());
+            for address in precompile_addresses {
+                self.state.warm_account(address);
+            }
+        }
+
         let is_create = matches!(message.kind, MessageKind::Create | MessageKind::Create2);
         if is_create {
             let caller_nonce = self.state.account_info(message.caller).map_or(0, |info| info.nonce);
