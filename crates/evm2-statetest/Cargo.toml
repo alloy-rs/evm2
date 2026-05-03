@@ -20,6 +20,7 @@ evm2 = { path = "../evm2", features = ["std", "serde"] }
 alloy-primitives = { workspace = true, features = ["std", "serde", "rlp"] }
 indicatif.workspace = true
 k256 = { workspace = true, features = ["ecdsa"] }
+libtest-mimic.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["preserve_order"] }
 thiserror.workspace = true
@@ -28,3 +29,4 @@ walkdir.workspace = true
 [[test]]
 name = "statetest"
 path = "tests/statetest.rs"
+harness = false

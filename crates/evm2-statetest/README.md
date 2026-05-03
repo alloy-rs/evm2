@@ -26,16 +26,16 @@ already present.
 Run all discovered state tests with nextest:
 
 ```sh
-EVM2_STATETEST_JOBS=28 cargo nextest run -p evm2-statetest --test statetest -j28
+cargo nextest run -p evm2-statetest --test statetest -j28
 ```
 
-`EVM2_STATETEST_JOBS` controls file-level parallelism inside the single nextest
-test and defaults to at most 28 workers.
+Each JSON file is listed as a separate nextest test. `-j` controls how many
+state test files nextest runs concurrently.
 
 Run one subdirectory across all downloaded suites:
 
 ```sh
-SUBDIR=stRevertTest EVM2_STATETEST_JOBS=28 cargo nextest run -p evm2-statetest --test statetest -j28
+SUBDIR=stRevertTest cargo nextest run -p evm2-statetest --test statetest -j28
 ```
 
 Run an explicit root:
@@ -43,6 +43,11 @@ Run an explicit root:
 ```sh
 EVM2_STATETEST_ROOT=test-fixtures/legacytests/Constantinople/GeneralStateTests \
 SUBDIR=stExample \
-EVM2_STATETEST_JOBS=28 \
 cargo nextest run -p evm2-statetest --test statetest -j28
+```
+
+List all discovered state test files:
+
+```sh
+cargo nextest list -p evm2-statetest --test statetest
 ```

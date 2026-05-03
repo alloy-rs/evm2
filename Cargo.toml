@@ -41,6 +41,7 @@ alloy-trie = { version = "0.9", default-features = false }
 
 indicatif = "0.18"
 k256 = "0.13"
+libtest-mimic = "0.8"
 once_cell = { version = "1.21", default-features = false }
 paste = "1.0"
 serde = { version = "1.0", default-features = false }

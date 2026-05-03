@@ -129,7 +129,6 @@ jobs:
         run: |
           EVM2_STATETEST_ROOT=test-fixtures/legacytests/Constantinople/GeneralStateTests \
           SUBDIR=stExample \
-          EVM2_STATETEST_JOBS=28 \
           cargo nextest run -p evm2-statetest --test statetest -j28
 
   clippy:

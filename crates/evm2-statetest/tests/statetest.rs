@@ -1,58 +1,72 @@
-//! cargo-nextest state test entrypoint.
+//! cargo-nextest state test harness.
 
-use evm2_statetest::{RunConfig, find_json_tests, run_with_config, state_test_roots};
-use std::{env, path::PathBuf, thread};
+use evm2_statetest::{ExecuteConfig, execute_test_suite, find_json_tests, state_test_roots};
+use libtest_mimic::{Arguments, Failed, Trial};
+use std::{
+    env,
+    path::{Path, PathBuf},
+    process::ExitCode,
+};
 
-const DEFAULT_JOBS: usize = 28;
-const JOBS_ENV: &str = "EVM2_STATETEST_JOBS";
-const FAIL_FAST_ENV: &str = "EVM2_STATETEST_FAIL_FAST";
 const NEXTEST_ENV: &str = "NEXTEST";
-const NEXTEST_THREADS_ENV: &str = "NEXTEST_TEST_THREADS";
-const SINGLE_THREAD_ENV: &str = "SINGLE_THREAD";
 
-#[test]
-fn statetest() {
-    if env::var_os(NEXTEST_ENV).is_none() {
+fn main() -> ExitCode {
+    let args = Arguments::from_args();
+    if !args.list && env::var_os(NEXTEST_ENV).is_none() {
         eprintln!("Skipping state tests: run this target through cargo nextest.");
-        return;
+        return ExitCode::SUCCESS;
     }
 
-    let roots = state_test_roots();
-    if roots.is_empty() {
-        eprintln!(
-            "Skipping state tests: no fixtures found. Run ./scripts/setup-test-fixtures.sh or set EVM2_STATETEST_ROOT."
-        );
-        return;
-    }
+    let trials = collect_trials(&args).unwrap_or_else(|err| {
+        eprintln!("{err}");
+        Vec::new()
+    });
 
-    for root in &roots {
-        eprintln!("State tests: {} ({})", root.label, root.path.display());
-    }
-
-    let paths = roots.into_iter().map(|root| root.path).collect::<Vec<PathBuf>>();
-    let files = find_json_tests(&paths).unwrap();
-    run_with_config(
-        files,
-        RunConfig {
-            jobs: Some(jobs()),
-            single_thread: env::var_os(SINGLE_THREAD_ENV).is_some(),
-            keep_going: env::var_os(FAIL_FAST_ENV).is_none(),
-            ..RunConfig::default()
-        },
-    )
-    .unwrap();
+    libtest_mimic::run(&args, trials).exit_code()
 }
 
-fn jobs() -> usize {
-    env::var(JOBS_ENV)
-        .or_else(|_| env::var(NEXTEST_THREADS_ENV))
-        .ok()
-        .and_then(|jobs| jobs.parse().ok())
-        .unwrap_or_else(|| {
-            thread::available_parallelism()
-                .ok()
-                .map(|jobs| jobs.get())
-                .unwrap_or(1)
-                .min(DEFAULT_JOBS)
-        })
+fn collect_trials(args: &Arguments) -> Result<Vec<Trial>, String> {
+    let roots = state_test_roots();
+    if roots.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    if args.exact
+        && let Some(filter) = &args.filter
+    {
+        return Ok(exact_trial(&roots, filter).into_iter().collect());
+    }
+
+    let mut trials = Vec::new();
+    for root in roots {
+        let files =
+            find_json_tests(std::slice::from_ref(&root.path)).map_err(|err| err.to_string())?;
+        for path in files {
+            let name = test_name(root.name, &root.path, &path);
+            trials.push(Trial::test(name, move || run_file(path)));
+        }
+    }
+    Ok(trials)
+}
+
+fn exact_trial(roots: &[evm2_statetest::StateTestRoot], name: &str) -> Option<Trial> {
+    let (root_name, relative) = name.split_once("::")?;
+    let root = roots.iter().find(|root| root.name == root_name)?;
+    let path = root.path.join(relative);
+    path.is_file().then(|| Trial::test(name.to_string(), move || run_file(path)))
+}
+
+fn run_file(path: PathBuf) -> Result<(), Failed> {
+    execute_test_suite(&path, ExecuteConfig::default())
+        .map(|_| ())
+        .map_err(|err| err.to_string().into())
+}
+
+fn test_name(root_name: &str, root: &Path, path: &Path) -> String {
+    let relative = path.strip_prefix(root).unwrap_or(path);
+    format!("{root_name}::{}", path_name(relative))
+}
+
+fn path_name(path: &Path) -> String {
+    path.iter().map(|component| component.to_string_lossy()).collect::<Vec<_>>().join("/")
 }
