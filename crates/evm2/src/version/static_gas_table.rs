@@ -2,25 +2,25 @@ use core::ops::{Index, IndexMut};
 
 /// Opcode gas table.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct GasTable([u16; 256]);
+pub struct StaticGasTable([u16; 256]);
 
-impl Index<usize> for GasTable {
+impl Index<u8> for StaticGasTable {
     type Output = u16;
 
     #[inline]
-    fn index(&self, index: usize) -> &Self::Output {
-        &self.0[index]
+    fn index(&self, index: u8) -> &Self::Output {
+        &self.0[index as usize]
     }
 }
 
-impl IndexMut<usize> for GasTable {
+impl IndexMut<u8> for StaticGasTable {
     #[inline]
-    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
-        &mut self.0[index]
+    fn index_mut(&mut self, index: u8) -> &mut Self::Output {
+        &mut self.0[index as usize]
     }
 }
 
-impl GasTable {
+impl StaticGasTable {
     /// Creates an empty gas table.
     #[inline]
     pub(super) const fn empty() -> Self {

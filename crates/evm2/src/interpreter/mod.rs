@@ -9,7 +9,7 @@ mod utils;
 
 pub(crate) mod instructions;
 #[doc(hidden)]
-pub use crate::version::{GasTable, InstructionImplTable};
+pub use crate::version::{InstructionImplTable, StaticGasTable};
 #[doc(hidden)]
 pub use instructions::table::Instruction;
 pub(crate) use instructions::{table, unknown};

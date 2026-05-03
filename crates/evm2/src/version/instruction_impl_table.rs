@@ -15,19 +15,19 @@ impl<C: EvmConfig> core::fmt::Debug for InstructionImplTable<C> {
     }
 }
 
-impl<C: EvmConfig> Index<usize> for InstructionImplTable<C> {
+impl<C: EvmConfig> Index<u8> for InstructionImplTable<C> {
     type Output = Option<&'static dyn Instruction<C>>;
 
     #[inline]
-    fn index(&self, index: usize) -> &Self::Output {
-        &self.0[index]
+    fn index(&self, index: u8) -> &Self::Output {
+        &self.0[index as usize]
     }
 }
 
-impl<C: EvmConfig> IndexMut<usize> for InstructionImplTable<C> {
+impl<C: EvmConfig> IndexMut<u8> for InstructionImplTable<C> {
     #[inline]
-    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
-        &mut self.0[index]
+    fn index_mut(&mut self, index: u8) -> &mut Self::Output {
+        &mut self.0[index as usize]
     }
 }
 

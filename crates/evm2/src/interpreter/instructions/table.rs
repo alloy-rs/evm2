@@ -261,7 +261,7 @@ extern_table! {
 
 #[inline]
 const fn pre_step<C: EvmConfig>(gas: &mut Gas, op: u8) -> Result {
-    gas.spend(C::VERSION.gas_table.get(op) as _)
+    gas.spend(C::VERSION.static_gas_table.get(op) as _)
 }
 
 #[inline]
@@ -317,32 +317,33 @@ mod tests {
 
     #[test]
     fn default_gas_table_matches_revm_static_costs() {
-        let default_gas_table = EvmVersion::<CustomConfig>::new_base(SpecId::FRONTIER).gas_table;
-        assert_eq!(default_gas_table[op::STOP as usize], 0);
-        assert_eq!(default_gas_table[op::ADD as usize], 3);
-        assert_eq!(default_gas_table[op::MUL as usize], 5);
-        assert_eq!(default_gas_table[op::EXP as usize], 10);
-        assert_eq!(default_gas_table[op::BALANCE as usize], 20);
-        assert_eq!(default_gas_table[op::SLOAD as usize], 50);
-        assert_eq!(default_gas_table[op::CALL as usize], 40);
-        assert_eq!(default_gas_table[op::SELFDESTRUCT as usize], 0);
+        let default_gas_table =
+            EvmVersion::<CustomConfig>::new_base(SpecId::FRONTIER).static_gas_table;
+        assert_eq!(default_gas_table[op::STOP], 0);
+        assert_eq!(default_gas_table[op::ADD], 3);
+        assert_eq!(default_gas_table[op::MUL], 5);
+        assert_eq!(default_gas_table[op::EXP], 10);
+        assert_eq!(default_gas_table[op::BALANCE], 20);
+        assert_eq!(default_gas_table[op::SLOAD], 50);
+        assert_eq!(default_gas_table[op::CALL], 40);
+        assert_eq!(default_gas_table[op::SELFDESTRUCT], 0);
     }
 
     #[test]
     fn gas_table_applies_spec_static_costs() {
-        let tangerine = EvmVersion::<CustomConfig>::new_base(SpecId::TANGERINE).gas_table;
-        assert_eq!(tangerine[op::SLOAD as usize], 200);
-        assert_eq!(tangerine[op::BALANCE as usize], 400);
-        assert_eq!(tangerine[op::SELFDESTRUCT as usize], 5000);
+        let tangerine = EvmVersion::<CustomConfig>::new_base(SpecId::TANGERINE).static_gas_table;
+        assert_eq!(tangerine[op::SLOAD], 200);
+        assert_eq!(tangerine[op::BALANCE], 400);
+        assert_eq!(tangerine[op::SELFDESTRUCT], 5000);
 
-        let istanbul = EvmVersion::<CustomConfig>::new_base(SpecId::ISTANBUL).gas_table;
-        assert_eq!(istanbul[op::SLOAD as usize], 800);
-        assert_eq!(istanbul[op::EXTCODEHASH as usize], 700);
+        let istanbul = EvmVersion::<CustomConfig>::new_base(SpecId::ISTANBUL).static_gas_table;
+        assert_eq!(istanbul[op::SLOAD], 800);
+        assert_eq!(istanbul[op::EXTCODEHASH], 700);
 
-        let berlin = EvmVersion::<CustomConfig>::new_base(SpecId::BERLIN).gas_table;
-        assert_eq!(berlin[op::SLOAD as usize], 100);
-        assert_eq!(berlin[op::BALANCE as usize], 100);
-        assert_eq!(berlin[op::CALL as usize], 100);
+        let berlin = EvmVersion::<CustomConfig>::new_base(SpecId::BERLIN).static_gas_table;
+        assert_eq!(berlin[op::SLOAD], 100);
+        assert_eq!(berlin[op::BALANCE], 100);
+        assert_eq!(berlin[op::CALL], 100);
     }
 
     #[test]
