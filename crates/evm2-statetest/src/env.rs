@@ -63,7 +63,10 @@ pub(crate) fn explicit_state_test_root_from_env() -> Option<PathBuf> {
         .or_else(|| env::var_os(ETHTESTS_ENV))
         .map(PathBuf::from)
         .map(workspace_relative)
-        .map(apply_subdir)
+        .map(|mut x| {
+            apply_subdir(&mut x);
+            x
+        })
 }
 
 /// Returns the state-test roots to run by default.
@@ -110,13 +113,10 @@ pub(crate) fn default_state_test_roots() -> Vec<StateTestRoot> {
         });
     }
 
+    for root in &mut roots {
+        apply_subdir(&mut root.path);
+    }
     roots
-        .into_iter()
-        .map(|mut root| {
-            root.path = apply_subdir(root.path);
-            root
-        })
-        .collect()
 }
 
 fn general_state_tests_path(root: &Path) -> Option<PathBuf> {
@@ -131,13 +131,12 @@ fn general_state_tests_path(root: &Path) -> Option<PathBuf> {
     path.is_dir().then_some(path)
 }
 
-fn apply_subdir(mut root: PathBuf) -> PathBuf {
+fn apply_subdir(root: &mut PathBuf) {
     if let Some(subdir) = env::var_os(STATE_TEST_SUBDIR_ENV)
         && !subdir.is_empty()
     {
         root.push(subdir);
     }
-    root
 }
 
 fn workspace_relative(path: PathBuf) -> PathBuf {

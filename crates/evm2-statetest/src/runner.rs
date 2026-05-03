@@ -12,7 +12,8 @@ use std::{
 
 const NEXTEST_ENV: &str = "NEXTEST";
 
-pub(crate) fn run() -> ExitCode {
+/// Runs the cargo-nextest state test harness.
+pub fn run() -> ExitCode {
     let args = Arguments::from_args();
     if !args.list && env::var_os(NEXTEST_ENV).is_none() {
         eprintln!("Skipping state tests: run this target through cargo nextest.");
