@@ -141,20 +141,20 @@ impl<C: EvmConfig<Host = Self>> Host for Evm<C> {
         self.state.initial().get_block_hash(number)
     }
 
-    fn sload(&mut self, address: Address, index: Word) -> Word {
-        self.state.storage(address, index)
+    fn sload(&mut self, address: Address, key: Word) -> Word {
+        self.state.storage(address, key)
     }
 
-    fn sstore(&mut self, address: Address, index: Word, value: Word) {
-        self.state.set_storage(address, index, value);
+    fn sstore(&mut self, address: Address, key: Word, value: Word) {
+        self.state.set_storage(address, key, value);
     }
 
-    fn tload(&mut self, address: Address, index: Word) -> Word {
-        self.state.transient_storage(address, index)
+    fn tload(&mut self, address: Address, key: Word) -> Word {
+        self.state.transient_storage(address, key)
     }
 
-    fn tstore(&mut self, address: Address, index: Word, value: Word) {
-        self.state.set_transient_storage(address, index, value);
+    fn tstore(&mut self, address: Address, key: Word, value: Word) {
+        self.state.set_transient_storage(address, key, value);
     }
 
     fn log(&mut self, log: Log) {

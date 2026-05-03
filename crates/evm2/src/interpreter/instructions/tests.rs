@@ -84,20 +84,20 @@ impl Host for TestHost {
         Some(B256::with_last_byte(number as u8))
     }
 
-    fn sload(&mut self, address: Address, index: Word) -> Word {
-        self.storage.get(&(address, index)).copied().unwrap_or_default()
+    fn sload(&mut self, address: Address, key: Word) -> Word {
+        self.storage.get(&(address, key)).copied().unwrap_or_default()
     }
 
-    fn sstore(&mut self, address: Address, index: Word, value: Word) {
-        self.storage.insert((address, index), value);
+    fn sstore(&mut self, address: Address, key: Word, value: Word) {
+        self.storage.insert((address, key), value);
     }
 
-    fn tload(&mut self, address: Address, index: Word) -> Word {
-        self.transient_storage.get(&(address, index)).copied().unwrap_or_default()
+    fn tload(&mut self, address: Address, key: Word) -> Word {
+        self.transient_storage.get(&(address, key)).copied().unwrap_or_default()
     }
 
-    fn tstore(&mut self, address: Address, index: Word, value: Word) {
-        self.transient_storage.insert((address, index), value);
+    fn tstore(&mut self, address: Address, key: Word, value: Word) {
+        self.transient_storage.insert((address, key), value);
     }
 
     fn log(&mut self, log: Log) {

@@ -17,14 +17,14 @@ fn require_non_staticcall<C: EvmConfig>(cx: &InstructionCx<'_, '_, C>) -> Result
 }
 
 #[instruction]
-pub(in crate::interpreter) fn sload(cx: _, [index]: [Word]) -> out {
-    *out = cx.state.host.sload(cx.state.message().destination, index);
+pub(in crate::interpreter) fn sload(cx: _, [key]: [Word]) -> out {
+    *out = cx.state.host.sload(cx.state.message().destination, key);
 }
 
 #[instruction(raw)]
 pub(in crate::interpreter) fn sstore(cx: _) -> Result {
     require_non_staticcall(&cx)?;
-    let [index, value] = stack.popn()?;
+    let [key, value] = stack.popn()?;
     let gas_params = cx.gas_params;
     if cx.state.spec.enables(SpecId::ISTANBUL)
         && cx.gas.remaining() <= gas_params.get(GasId::CallStipend)
@@ -32,22 +32,22 @@ pub(in crate::interpreter) fn sstore(cx: _) -> Result {
         return Err(InstrStop::ReentrancySentryOOG);
     }
     cx.gas.spend(gas_params.get(GasId::SstoreStatic))?;
-    cx.state.host.sstore(cx.state.message().destination, index, value);
+    cx.state.host.sstore(cx.state.message().destination, key, value);
     Ok(())
 }
 
 #[instruction(raw)]
 pub(in crate::interpreter) fn tload(cx: _) -> Result {
-    let ([], index) = stack.popn_top()?;
-    *index = cx.state.host.tload(cx.state.message().destination, *index);
+    let ([], key) = stack.popn_top()?;
+    *key = cx.state.host.tload(cx.state.message().destination, *key);
     Ok(())
 }
 
 #[instruction(raw)]
 pub(in crate::interpreter) fn tstore(cx: _) -> Result {
     require_non_staticcall(&cx)?;
-    let [index, value] = stack.popn()?;
-    cx.state.host.tstore(cx.state.message().destination, index, value);
+    let [key, value] = stack.popn()?;
+    cx.state.host.tstore(cx.state.message().destination, key, value);
     Ok(())
 }
 
