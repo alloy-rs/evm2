@@ -11,10 +11,13 @@ fn root() -> String {
 }
 
 fn pattern() -> &'static str {
-    if state_test_root_from_env().is_some() { r"^.*\.json$" } else { r"^$" }
+    if state_test_root_from_env().is_some() { r"^.*\.json$" } else { r"^Cargo\.toml$" }
 }
 
 fn statetest(path: &Path, contents: String) -> datatest_stable::Result<()> {
+    if state_test_root_from_env().is_none() {
+        return Ok(());
+    }
     execute_str(path, &contents)?;
     Ok(())
 }
