@@ -5,7 +5,7 @@ use crate::{
     bls12_381_const::{
         MAP_FP2_TO_G2_ADDRESS, MAP_FP2_TO_G2_BASE_GAS_FEE, PADDED_FP_LENGTH, PADDED_FP2_LENGTH,
     },
-    crypto, eth_precompile_fn,
+    eth_precompile_fn,
 };
 
 eth_precompile_fn!(map_fp2_to_g2_precompile, map_fp2_to_g2);
@@ -31,7 +31,7 @@ pub fn map_fp2_to_g2(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
     let input_p0_x = remove_fp_padding(&input[..PADDED_FP_LENGTH])?;
     let input_p0_y = remove_fp_padding(&input[PADDED_FP_LENGTH..PADDED_FP2_LENGTH])?;
 
-    let unpadded_result = crypto().bls12_381_fp2_to_g2((*input_p0_x, *input_p0_y))?;
+    let unpadded_result = gas.crypto().bls12_381_fp2_to_g2((*input_p0_x, *input_p0_y))?;
 
     // Pad the result for EVM compatibility
     let padded_result = pad_g2_point(&unpadded_result);

@@ -55,6 +55,7 @@ pub mod ethereum;
 /// EVM host and transaction dispatcher.
 pub mod evm;
 pub mod interpreter;
+pub mod precompiles;
 
 pub use evm::{
     Evm, TxResult, config,

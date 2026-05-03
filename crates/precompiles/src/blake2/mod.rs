@@ -6,7 +6,7 @@
 
 use crate::{
     EthPrecompileOutput, EthPrecompileResult, Gas, Precompile, PrecompileHalt, PrecompileId,
-    crypto, eth_precompile_fn,
+    eth_precompile_fn,
 };
 
 #[cfg(all(
@@ -113,7 +113,7 @@ pub fn run(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
     let t_0 = u64::from_le_bytes(input[196..204].try_into().unwrap());
     let t_1 = u64::from_le_bytes(input[204..212].try_into().unwrap());
 
-    crypto().blake2_compress(rounds, &mut h, &m, &[t_0, t_1], f);
+    gas.crypto().blake2_compress(rounds, &mut h, &m, &[t_0, t_1], f);
 
     let mut out = [0u8; 64];
     for (i, h) in (0..64).step_by(8).zip(h.iter()) {

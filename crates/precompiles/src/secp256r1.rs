@@ -7,8 +7,8 @@
 //! P256 elliptic curve. The [`P256VERIFY`] const represents the implementation of this precompile,
 //! with the address that it is currently deployed at.
 use crate::{
-    EthPrecompileOutput, EthPrecompileResult, Gas, Precompile, PrecompileId, crypto,
-    eth_precompile_fn, u64_to_address,
+    EthPrecompileOutput, EthPrecompileResult, Gas, Precompile, PrecompileId, eth_precompile_fn,
+    u64_to_address,
 };
 use primitives::{B256, Bytes, alloy_primitives::B512};
 
@@ -71,13 +71,23 @@ pub fn p256_verify_osaka(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
 
 fn p256_verify_inner(input: &[u8], gas: &mut Gas, gas_cost: u64) -> EthPrecompileResult {
     gas.spend(gas_cost)?;
-    let result = if verify_impl(input) { B256::with_last_byte(1).into() } else { Bytes::new() };
+    let result = if verify_impl_with_crypto(input, gas.crypto()) {
+        B256::with_last_byte(1).into()
+    } else {
+        Bytes::new()
+    };
     Ok(EthPrecompileOutput::new(result))
 }
 
 /// Returns `Some(())` if the signature included in the input byte slice is
 /// valid, `None` otherwise.
 pub fn verify_impl(input: &[u8]) -> bool {
+    verify_impl_with_crypto(input, &crate::DefaultCrypto)
+}
+
+/// Returns `Some(())` if the signature included in the input byte slice is
+/// valid, `None` otherwise.
+pub fn verify_impl_with_crypto(input: &[u8], crypto: &dyn crate::Crypto) -> bool {
     if input.len() != 160 {
         return false;
     }
@@ -89,7 +99,7 @@ pub fn verify_impl(input: &[u8]) -> bool {
     // x, y: public key
     let pk = <&B512>::try_from(&input[96..160]).unwrap();
 
-    crypto().secp256r1_verify_signature(&msg.0, &sig.0, &pk.0)
+    crypto.secp256r1_verify_signature(&msg.0, &sig.0, &pk.0)
 }
 
 pub(crate) fn verify_signature(msg: &[u8; 32], sig: &[u8; 64], pk: &[u8; 64]) -> Option<()> {

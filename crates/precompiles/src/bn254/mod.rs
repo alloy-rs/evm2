@@ -1,7 +1,7 @@
 //! BN254 precompiles added in [`EIP-1962`](https://eips.ethereum.org/EIPS/eip-1962)
 use crate::{
     Address, EthPrecompileOutput, EthPrecompileResult, Gas, Precompile, PrecompileHalt,
-    PrecompileId, crypto, eth_precompile_fn,
+    PrecompileId, eth_precompile_fn,
     utils::{bool_to_bytes32, right_pad},
 };
 use alloc::vec::Vec;
@@ -154,7 +154,7 @@ pub fn run_add(input: &[u8], gas_cost: u64, gas: &mut Gas) -> EthPrecompileResul
 
     let p1_bytes = &input[..G1_LEN];
     let p2_bytes = &input[G1_LEN..];
-    let output = crypto().bn254_g1_add(p1_bytes, p2_bytes)?;
+    let output = gas.crypto().bn254_g1_add(p1_bytes, p2_bytes)?;
 
     Ok(EthPrecompileOutput::new(output.into()))
 }
@@ -167,7 +167,7 @@ pub fn run_mul(input: &[u8], gas_cost: u64, gas: &mut Gas) -> EthPrecompileResul
 
     let point_bytes = &input[..G1_LEN];
     let scalar_bytes = &input[G1_LEN..G1_LEN + SCALAR_LEN];
-    let output = crypto().bn254_g1_mul(point_bytes, scalar_bytes)?;
+    let output = gas.crypto().bn254_g1_mul(point_bytes, scalar_bytes)?;
 
     Ok(EthPrecompileOutput::new(output.into()))
 }
@@ -204,7 +204,7 @@ pub fn run_pair(
         points.push((encoded_g1_element, encoded_g2_element));
     }
 
-    let pairing_result = crypto().bn254_pairing_check(&points)?;
+    let pairing_result = gas.crypto().bn254_pairing_check(&points)?;
     Ok(EthPrecompileOutput::new(bool_to_bytes32(pairing_result)))
 }
 

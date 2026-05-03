@@ -7,7 +7,7 @@ use crate::{
         PADDED_G2_LENGTH, SCALAR_LENGTH,
     },
     bls12_381_utils::msm_required_gas,
-    crypto, eth_precompile_fn,
+    eth_precompile_fn,
 };
 
 eth_precompile_fn!(g2_msm_precompile, g2_msm);
@@ -46,7 +46,7 @@ pub fn g2_msm(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
         Ok(((*x_0, *x_1, *y_0, *y_1), scalar_array))
     });
 
-    let unpadded_result = crypto().bls12_381_g2_msm(&mut valid_pairs_iter)?;
+    let unpadded_result = gas.crypto().bls12_381_g2_msm(&mut valid_pairs_iter)?;
 
     // Pad the result for EVM compatibility
     let padded_result = pad_g2_point(&unpadded_result);

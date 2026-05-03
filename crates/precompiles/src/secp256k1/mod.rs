@@ -20,8 +20,8 @@ pub mod bitcoin_secp256k1;
 pub mod k256;
 
 use crate::{
-    EthPrecompileOutput, EthPrecompileResult, Gas, Precompile, PrecompileId, crypto,
-    eth_precompile_fn, utils::right_pad,
+    EthPrecompileOutput, EthPrecompileResult, Gas, Precompile, PrecompileId, eth_precompile_fn,
+    utils::right_pad,
 };
 use primitives::{B256, Bytes, alloy_primitives::B512};
 
@@ -49,7 +49,7 @@ pub fn ec_recover_run(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
     let recid = input[63] - 27;
     let sig = <&B512>::try_from(&input[64..128]).unwrap();
 
-    let res = crypto().secp256k1_ecrecover(&sig.0, recid, &msg.0).ok();
+    let res = gas.crypto().secp256k1_ecrecover(&sig.0, recid, &msg.0).ok();
     let out = res.map(|o| o.to_vec().into()).unwrap_or_default();
     Ok(EthPrecompileOutput::new(out))
 }

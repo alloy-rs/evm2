@@ -2,8 +2,7 @@
 //! More details in [`sha256_run`] and [`ripemd160_run`]
 use super::calc_linear_cost;
 use crate::{
-    EthPrecompileOutput, EthPrecompileResult, Gas, Precompile, PrecompileId, crypto,
-    eth_precompile_fn,
+    EthPrecompileOutput, EthPrecompileResult, Gas, Precompile, PrecompileId, eth_precompile_fn,
 };
 
 eth_precompile_fn!(sha256_precompile, sha256_run);
@@ -26,7 +25,7 @@ pub const RIPEMD160: Precompile =
 pub fn sha256_run(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
     let cost = calc_linear_cost(input.len(), 60, 12);
     gas.spend(cost)?;
-    let output = crypto().sha256(input);
+    let output = gas.crypto().sha256(input);
     Ok(EthPrecompileOutput::new(output.to_vec().into()))
 }
 
@@ -39,6 +38,6 @@ pub fn sha256_run(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
 pub fn ripemd160_run(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
     let gas_used = calc_linear_cost(input.len(), 600, 120);
     gas.spend(gas_used)?;
-    let output = crypto().ripemd160(input);
+    let output = gas.crypto().ripemd160(input);
     Ok(EthPrecompileOutput::new(output.to_vec().into()))
 }

@@ -1,8 +1,8 @@
 //! Interface for the precompiles. It contains the precompile result type,
 //! the precompile output type, and the precompile error type.
-use alloc::{borrow::Cow, boxed::Box, string::String, sync::Arc, vec::Vec};
+use alloc::{borrow::Cow, string::String, sync::Arc, vec::Vec};
 use core::fmt::{self, Debug};
-use primitives::{Bytes, OnceLock};
+use primitives::Bytes;
 
 use crate::bls12_381::{G1Point, G1PointScalar, G2Point, G2PointScalar};
 
@@ -66,19 +66,6 @@ impl From<&'static str> for AnyError {
     }
 }
 
-/// Global crypto provider instance
-static CRYPTO: OnceLock<Box<dyn Crypto>> = OnceLock::new();
-
-/// Install a custom crypto provider globally.
-pub fn install_crypto<C: Crypto + 'static>(crypto: C) -> bool {
-    CRYPTO.set(Box::new(crypto)).is_ok()
-}
-
-/// Get the installed crypto provider, or the default if none is installed.
-pub fn crypto() -> &'static dyn Crypto {
-    CRYPTO.get_or_init(|| Box::new(DefaultCrypto)).as_ref()
-}
-
 /// A precompile operation result type for individual Ethereum precompile functions.
 pub type EthPrecompileResult = Result<EthPrecompileOutput, PrecompileHalt>;
 
@@ -103,26 +90,63 @@ impl EthPrecompileOutput {
 }
 
 /// Precompile gas accounting state.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug)]
 pub struct Gas {
     remaining: u64,
     limit: u64,
     reservoir: u64,
     state_gas_spent: u64,
     refunded: i64,
+    crypto: &'static dyn Crypto,
+}
+
+impl PartialEq for Gas {
+    fn eq(&self, other: &Self) -> bool {
+        self.remaining == other.remaining
+            && self.limit == other.limit
+            && self.reservoir == other.reservoir
+            && self.state_gas_spent == other.state_gas_spent
+            && self.refunded == other.refunded
+            && core::ptr::addr_eq(self.crypto, other.crypto)
+    }
+}
+
+impl Eq for Gas {}
+
+impl core::hash::Hash for Gas {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        self.remaining.hash(state);
+        self.limit.hash(state);
+        self.reservoir.hash(state);
+        self.state_gas_spent.hash(state);
+        self.refunded.hash(state);
+        (self.crypto as *const dyn Crypto as *const ()).hash(state);
+    }
 }
 
 impl Gas {
     /// Creates gas with `limit` regular gas.
     #[inline]
-    pub const fn new(limit: u64) -> Self {
+    pub fn new(limit: u64) -> Self {
         Self::new_with_regular_gas_and_reservoir(limit, 0)
     }
 
     /// Creates gas with regular gas and a state gas reservoir.
     #[inline]
-    pub const fn new_with_regular_gas_and_reservoir(limit: u64, reservoir: u64) -> Self {
-        Self { remaining: limit, limit, reservoir, state_gas_spent: 0, refunded: 0 }
+    pub fn new_with_regular_gas_and_reservoir(limit: u64, reservoir: u64) -> Self {
+        Self::new_with_crypto(limit, reservoir, &DefaultCrypto)
+    }
+
+    /// Creates gas with regular gas, a state gas reservoir, and a crypto provider.
+    #[inline]
+    pub fn new_with_crypto(limit: u64, reservoir: u64, crypto: &'static dyn Crypto) -> Self {
+        Self { remaining: limit, limit, reservoir, state_gas_spent: 0, refunded: 0, crypto }
+    }
+
+    /// Returns the crypto provider.
+    #[inline]
+    pub const fn crypto(&self) -> &'static dyn Crypto {
+        self.crypto
     }
 
     /// Returns remaining regular gas.
@@ -195,6 +219,13 @@ impl Gas {
     #[inline]
     pub const fn record_refund(&mut self, refund: i64) {
         self.refunded += refund;
+    }
+}
+
+impl Default for Gas {
+    #[inline]
+    fn default() -> Self {
+        Self::new(0)
     }
 }
 

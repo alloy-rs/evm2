@@ -3,7 +3,7 @@ use super::utils::{pad_g1_point, remove_g1_padding};
 use crate::{
     EthPrecompileOutput, EthPrecompileResult, Gas, Precompile, PrecompileHalt, PrecompileId,
     bls12_381_const::{G1_ADD_ADDRESS, G1_ADD_BASE_GAS_FEE, G1_ADD_INPUT_LENGTH, PADDED_G1_LENGTH},
-    crypto, eth_precompile_fn,
+    eth_precompile_fn,
 };
 
 eth_precompile_fn!(g1_add_precompile, g1_add);
@@ -31,7 +31,7 @@ pub fn g1_add(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
     let a = (*a_x, *a_y);
     let b = (*b_x, *b_y);
 
-    let unpadded_result = crypto().bls12_381_g1_add(a, b)?;
+    let unpadded_result = gas.crypto().bls12_381_g1_add(a, b)?;
 
     // Pad the result for EVM compatibility
     let padded_result = pad_g1_point(&unpadded_result);

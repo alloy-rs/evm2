@@ -16,7 +16,6 @@ pub mod bls12_381_const;
 pub mod bls12_381_utils;
 pub mod bn254;
 pub mod hash;
-mod id;
 pub mod identity;
 pub mod interface;
 pub mod kzg_point_evaluation;
@@ -24,6 +23,8 @@ pub mod modexp;
 pub mod secp256k1;
 pub mod secp256r1;
 pub mod utils;
+
+mod id;
 
 extern crate self as primitives;
 
