@@ -892,11 +892,16 @@ impl<D: Database> State<D> {
         changes
     }
 
-    /// Advances the in-memory overlay to the next transaction boundary.
+    /// Marks the current transaction's overlay values as the new baseline.
     ///
-    /// This accepts the already-computed transition in the overlay only. It does
-    /// not write to or mutate the backing database.
-    pub fn accept_transaction(&mut self, spec: crate::SpecId) {
+    /// After [`Self::build_state_changes`] has emitted the transaction write-set,
+    /// the overlay must stop treating those writes as pending changes. This rolls
+    /// the current account and storage values forward into their `original` slots,
+    /// applies local deletion/wipe bookkeeping, and clears transaction-local journal,
+    /// touch, selfdestruct, and access-list state. It only advances the in-memory
+    /// overlay; callers are still responsible for applying the emitted write-set to
+    /// their backing database.
+    pub(super) fn accept_transaction(&mut self, spec: crate::SpecId) {
         let changes = self.build_state_changes(spec);
         for (&address, change) in &changes.accounts {
             self.ensure_account_overlay(address);
