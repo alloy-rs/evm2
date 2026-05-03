@@ -2,7 +2,8 @@ use super::utils::as_usize;
 use crate::{
     EvmConfig,
     interpreter::{
-        GasId, Host, InstrStop, Result, SpecId, Word, memory::resize_memory, table::InstructionCx,
+        GasId, Host, InstrStop, Result, SpecId, StackMut, Word, memory::resize_memory,
+        table::InstructionCx,
     },
 };
 use alloy_primitives::{B256, Bytes, Log, LogData};
@@ -62,10 +63,19 @@ pub(in crate::interpreter) fn tstore(cx: _) -> Result {
 
 #[instruction(raw)]
 pub(in crate::interpreter) fn log<const N: usize>(cx: _) -> Result {
+    log_common(cx, stack, N)
+}
+
+#[inline(never)]
+fn log_common<C: EvmConfig>(
+    cx: InstructionCx<'_, '_, C>,
+    mut stack: StackMut<'_>,
+    n: usize,
+) -> Result {
     require_non_staticcall(&cx)?;
     let [offset, len] = stack.popn()?;
     let len = as_usize(len)?;
-    cx.gas.spend(cx.gas_params.log_cost(N as u8, len))?;
+    cx.gas.spend(cx.gas_params.log_cost(n as u8, len))?;
 
     let data = if len == 0 {
         Bytes::new()
@@ -75,8 +85,7 @@ pub(in crate::interpreter) fn log<const N: usize>(cx: _) -> Result {
         Bytes::copy_from_slice(cx.state.memory().slice(offset, len))
     };
 
-    let topics =
-        stack.popn::<N>()?.into_iter().map(|topic| B256::from(topic.to_be_bytes::<32>())).collect();
+    let topics = stack.popn_dyn(n)?.map(|topic| B256::from(topic.to_be_bytes::<32>())).collect();
     cx.state.host.log(Log {
         address: cx.state.message().destination,
         data: LogData::new(topics, data).expect("LOG opcodes cannot emit more than 4 topics"),
