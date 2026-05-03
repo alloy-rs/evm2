@@ -3,12 +3,18 @@
 #[cfg(feature = "nightly")]
 use crate::interpreter::{InstrStop, Interpreter};
 use crate::{
-    EvmConfig,
+    EvmConfig, EvmTypes, EvmVersion,
     interpreter::{
         Gas, GasParams, Host, Pc, Result, SpecId, Stack, StackMut, State,
         gas::{
-            BASE, BLOCKHASH, EXP, HIGH, ISTANBUL_SLOAD_GAS, JUMPDEST, KECCAK256, LOG, LOW, MID,
-            VERYLOW, WARM_STORAGE_READ_COST, ZERO,
+            ACCESS_LIST_ADDRESS, ACCESS_LIST_STORAGE_KEY, BASE, BLOCKHASH, CALL_STIPEND, CALLVALUE,
+            CODEDEPOSIT, COLD_ACCOUNT_ACCESS_COST_ADDITIONAL, COLD_SLOAD_COST, COPY, CREATE,
+            EIP7702_PER_AUTH_BASE_COST, EIP7702_PER_EMPTY_ACCOUNT_COST, EXP, HIGH,
+            INITCODE_WORD_COST, ISTANBUL_SLOAD_GAS, JUMPDEST, KECCAK256, KECCAK256WORD, LOG,
+            LOGDATA, LOGTOPIC, LOW, MEMORY, MID, NEWACCOUNT, NON_ZERO_BYTE_MULTIPLIER,
+            NON_ZERO_BYTE_MULTIPLIER_ISTANBUL, REFUND_SSTORE_CLEARS, SELFDESTRUCT_REFUND,
+            SSTORE_RESET, SSTORE_SET, STANDARD_TOKEN_COST, TOTAL_COST_FLOOR_PER_TOKEN, VERYLOW,
+            WARM_SSTORE_RESET, WARM_STORAGE_READ_COST, ZERO,
         },
         opcode::{for_each_opcode, op},
     },
@@ -118,7 +124,7 @@ pub(crate) type InstructionFn<C> = extern_table!(
         pc: Pc,
         stack: Stack<'_>,
         gas: &mut Gas,
-        state: &mut State<'_, <C as EvmConfig>::Host>,
+        state: &mut State<'_, <C as EvmTypes>::Host>,
     ) -> InstructionFnRet
 );
 
@@ -138,7 +144,7 @@ pub(crate) type TailInstructionFn<C> = extern_table!(
         pc: Pc,
         stack: Stack<'_>,
         gas: &mut Gas,
-        state: &mut State<'_, <C as EvmConfig>::Host>,
+        state: &mut State<'_, <C as EvmTypes>::Host>,
         ret: u8,
     )
 );
@@ -166,7 +172,7 @@ pub(crate) struct InstructionCx<'a, 'state, H: Host + ?Sized> {
 }
 
 /// EVM instruction implementation.
-pub trait Instruction<C: EvmConfig = crate::EvmVersion<()>> {
+pub trait Instruction<C: EvmConfig = crate::BaseEvmConfig> {
     /// Executes this instruction.
     fn execute(
         &self,
@@ -181,204 +187,7 @@ impl GasTable {
     /// Creates a gas table for `spec`.
     #[inline]
     pub const fn new(spec: SpecId) -> Self {
-        let mut table = Self([0; 256]);
-
-        table.set(op::STOP, ZERO as u16);
-        table.set(op::ADD, VERYLOW as u16);
-        table.set(op::MUL, LOW as u16);
-        table.set(op::SUB, VERYLOW as u16);
-        table.set(op::DIV, 5);
-        table.set(op::SDIV, 5);
-        table.set(op::MOD, 5);
-        table.set(op::SMOD, 5);
-        table.set(op::ADDMOD, MID as u16);
-        table.set(op::MULMOD, 8);
-        table.set(op::EXP, EXP as u16);
-        table.set(op::SIGNEXTEND, 5);
-
-        table.set(op::LT, 3);
-        table.set(op::GT, 3);
-        table.set(op::SLT, 3);
-        table.set(op::SGT, 3);
-        table.set(op::EQ, 3);
-        table.set(op::ISZERO, 3);
-        table.set(op::AND, 3);
-        table.set(op::OR, 3);
-        table.set(op::XOR, 3);
-        table.set(op::NOT, 3);
-        table.set(op::BYTE, 3);
-        table.set(op::SHL, 3);
-        table.set(op::SHR, 3);
-        table.set(op::SAR, 3);
-        table.set(op::CLZ, 5);
-
-        table.set(op::KECCAK256, KECCAK256 as u16);
-
-        table.set(op::ADDRESS, BASE as u16);
-        table.set(op::BALANCE, 20);
-        table.set(op::ORIGIN, 2);
-        table.set(op::CALLER, 2);
-        table.set(op::CALLVALUE, 2);
-        table.set(op::CALLDATALOAD, 3);
-        table.set(op::CALLDATASIZE, 2);
-        table.set(op::CALLDATACOPY, 3);
-        table.set(op::CODESIZE, 2);
-        table.set(op::CODECOPY, 3);
-        table.set(op::GASPRICE, 2);
-        table.set(op::EXTCODESIZE, 20);
-        table.set(op::EXTCODECOPY, 20);
-        table.set(op::RETURNDATASIZE, 2);
-        table.set(op::RETURNDATACOPY, 3);
-        table.set(op::EXTCODEHASH, 400);
-        table.set(op::BLOCKHASH, BLOCKHASH as u16);
-        table.set(op::COINBASE, 2);
-        table.set(op::TIMESTAMP, 2);
-        table.set(op::NUMBER, 2);
-        table.set(op::DIFFICULTY, 2);
-        table.set(op::GASLIMIT, 2);
-        table.set(op::CHAINID, 2);
-        table.set(op::SELFBALANCE, 5);
-        table.set(op::BASEFEE, 2);
-        table.set(op::BLOBHASH, 3);
-        table.set(op::BLOBBASEFEE, 2);
-        table.set(op::SLOTNUM, 2);
-
-        table.set(op::POP, 2);
-        table.set(op::MLOAD, 3);
-        table.set(op::MSTORE, 3);
-        table.set(op::MSTORE8, 3);
-        table.set(op::SLOAD, 50);
-        table.set(op::SSTORE, 0);
-        table.set(op::JUMP, 8);
-        table.set(op::JUMPI, HIGH as u16);
-        table.set(op::PC, 2);
-        table.set(op::MSIZE, 2);
-        table.set(op::GAS, 2);
-        table.set(op::JUMPDEST, JUMPDEST as u16);
-        table.set(op::TLOAD, 100);
-        table.set(op::TSTORE, 100);
-        table.set(op::MCOPY, 3);
-
-        table.set(op::PUSH0, 2);
-        table.set(op::PUSH1, 3);
-        table.set(op::PUSH2, 3);
-        table.set(op::PUSH3, 3);
-        table.set(op::PUSH4, 3);
-        table.set(op::PUSH5, 3);
-        table.set(op::PUSH6, 3);
-        table.set(op::PUSH7, 3);
-        table.set(op::PUSH8, 3);
-        table.set(op::PUSH9, 3);
-        table.set(op::PUSH10, 3);
-        table.set(op::PUSH11, 3);
-        table.set(op::PUSH12, 3);
-        table.set(op::PUSH13, 3);
-        table.set(op::PUSH14, 3);
-        table.set(op::PUSH15, 3);
-        table.set(op::PUSH16, 3);
-        table.set(op::PUSH17, 3);
-        table.set(op::PUSH18, 3);
-        table.set(op::PUSH19, 3);
-        table.set(op::PUSH20, 3);
-        table.set(op::PUSH21, 3);
-        table.set(op::PUSH22, 3);
-        table.set(op::PUSH23, 3);
-        table.set(op::PUSH24, 3);
-        table.set(op::PUSH25, 3);
-        table.set(op::PUSH26, 3);
-        table.set(op::PUSH27, 3);
-        table.set(op::PUSH28, 3);
-        table.set(op::PUSH29, 3);
-        table.set(op::PUSH30, 3);
-        table.set(op::PUSH31, 3);
-        table.set(op::PUSH32, 3);
-
-        table.set(op::DUP1, 3);
-        table.set(op::DUP2, 3);
-        table.set(op::DUP3, 3);
-        table.set(op::DUP4, 3);
-        table.set(op::DUP5, 3);
-        table.set(op::DUP6, 3);
-        table.set(op::DUP7, 3);
-        table.set(op::DUP8, 3);
-        table.set(op::DUP9, 3);
-        table.set(op::DUP10, 3);
-        table.set(op::DUP11, 3);
-        table.set(op::DUP12, 3);
-        table.set(op::DUP13, 3);
-        table.set(op::DUP14, 3);
-        table.set(op::DUP15, 3);
-        table.set(op::DUP16, 3);
-
-        table.set(op::SWAP1, 3);
-        table.set(op::SWAP2, 3);
-        table.set(op::SWAP3, 3);
-        table.set(op::SWAP4, 3);
-        table.set(op::SWAP5, 3);
-        table.set(op::SWAP6, 3);
-        table.set(op::SWAP7, 3);
-        table.set(op::SWAP8, 3);
-        table.set(op::SWAP9, 3);
-        table.set(op::SWAP10, 3);
-        table.set(op::SWAP11, 3);
-        table.set(op::SWAP12, 3);
-        table.set(op::SWAP13, 3);
-        table.set(op::SWAP14, 3);
-        table.set(op::SWAP15, 3);
-        table.set(op::SWAP16, 3);
-
-        table.set(op::DUPN, 3);
-        table.set(op::SWAPN, 3);
-        table.set(op::EXCHANGE, 3);
-
-        table.set(op::LOG0, LOG as u16);
-        table.set(op::LOG1, LOG as u16);
-        table.set(op::LOG2, LOG as u16);
-        table.set(op::LOG3, LOG as u16);
-        table.set(op::LOG4, LOG as u16);
-
-        table.set(op::CREATE, 0);
-        table.set(op::CALL, 40);
-        table.set(op::CALLCODE, 40);
-        table.set(op::RETURN, 0);
-        table.set(op::DELEGATECALL, 40);
-        table.set(op::CREATE2, 0);
-        table.set(op::STATICCALL, 40);
-        table.set(op::REVERT, 0);
-        table.set(op::INVALID, 0);
-        table.set(op::SELFDESTRUCT, 0);
-
-        if spec.enables(SpecId::TANGERINE) {
-            table.set(op::SLOAD, 200);
-            table.set(op::BALANCE, 400);
-            table.set(op::EXTCODESIZE, 700);
-            table.set(op::EXTCODECOPY, 700);
-            table.set(op::CALL, 700);
-            table.set(op::CALLCODE, 700);
-            table.set(op::DELEGATECALL, 700);
-            table.set(op::STATICCALL, 700);
-            table.set(op::SELFDESTRUCT, 5000);
-        }
-
-        if spec.enables(SpecId::ISTANBUL) {
-            table.set(op::SLOAD, ISTANBUL_SLOAD_GAS as u16);
-            table.set(op::BALANCE, 700);
-            table.set(op::EXTCODEHASH, 700);
-        }
-
-        if spec.enables(SpecId::BERLIN) {
-            table.set(op::SLOAD, WARM_STORAGE_READ_COST as u16);
-            table.set(op::BALANCE, WARM_STORAGE_READ_COST as u16);
-            table.set(op::EXTCODESIZE, WARM_STORAGE_READ_COST as u16);
-            table.set(op::EXTCODEHASH, WARM_STORAGE_READ_COST as u16);
-            table.set(op::EXTCODECOPY, WARM_STORAGE_READ_COST as u16);
-            table.set(op::CALL, WARM_STORAGE_READ_COST as u16);
-            table.set(op::CALLCODE, WARM_STORAGE_READ_COST as u16);
-            table.set(op::DELEGATECALL, WARM_STORAGE_READ_COST as u16);
-            table.set(op::STATICCALL, WARM_STORAGE_READ_COST as u16);
-        }
-
-        table
+        EvmVersion::<crate::BaseEvmConfig>::new_base(spec).gas_table
     }
 
     /// Returns the gas cost for `opcode`.
@@ -401,11 +210,11 @@ impl GasTable {
 }
 
 macro_rules! make_instruction_table_inner {
-    ([$table:expr, $config:ty] $(
+    ([$table:expr, $config:ty, $spec:expr] $(
         ($op:ident, $instr:path),
     )*) => {
         $(
-            if <$config as EvmConfig>::SPEC_ID.enables(opcode_min_spec(op::$op)) {
+            if $spec.enables(opcode_min_spec(op::$op)) {
                 $table.set(op::$op, Some(&$instr as &'static dyn Instruction<$config>));
             }
         )*
@@ -425,6 +234,313 @@ const fn opcode_min_spec(opcode: u8) -> SpecId {
         op::DELEGATECALL => SpecId::HOMESTEAD,
         op::CREATE2 => SpecId::PETERSBURG,
         _ => SpecId::FRONTIER,
+    }
+}
+
+impl<C: EvmConfig> EvmVersion<C> {
+    /// Creates the base EVM version for `spec`.
+    #[inline]
+    pub const fn new_base(spec: SpecId) -> Self {
+        use crate::interpreter::{GasId::*, instructions::*};
+
+        let mut gas_table = GasTable([0; 256]);
+        gas_table.set(op::STOP, ZERO as u16);
+        gas_table.set(op::ADD, VERYLOW as u16);
+        gas_table.set(op::MUL, LOW as u16);
+        gas_table.set(op::SUB, VERYLOW as u16);
+        gas_table.set(op::DIV, 5);
+        gas_table.set(op::SDIV, 5);
+        gas_table.set(op::MOD, 5);
+        gas_table.set(op::SMOD, 5);
+        gas_table.set(op::ADDMOD, MID as u16);
+        gas_table.set(op::MULMOD, 8);
+        gas_table.set(op::EXP, EXP as u16);
+        gas_table.set(op::SIGNEXTEND, 5);
+
+        gas_table.set(op::LT, 3);
+        gas_table.set(op::GT, 3);
+        gas_table.set(op::SLT, 3);
+        gas_table.set(op::SGT, 3);
+        gas_table.set(op::EQ, 3);
+        gas_table.set(op::ISZERO, 3);
+        gas_table.set(op::AND, 3);
+        gas_table.set(op::OR, 3);
+        gas_table.set(op::XOR, 3);
+        gas_table.set(op::NOT, 3);
+        gas_table.set(op::BYTE, 3);
+        gas_table.set(op::SHL, 3);
+        gas_table.set(op::SHR, 3);
+        gas_table.set(op::SAR, 3);
+        gas_table.set(op::CLZ, 5);
+
+        gas_table.set(op::KECCAK256, KECCAK256 as u16);
+
+        gas_table.set(op::ADDRESS, BASE as u16);
+        gas_table.set(op::BALANCE, 20);
+        gas_table.set(op::ORIGIN, 2);
+        gas_table.set(op::CALLER, 2);
+        gas_table.set(op::CALLVALUE, 2);
+        gas_table.set(op::CALLDATALOAD, 3);
+        gas_table.set(op::CALLDATASIZE, 2);
+        gas_table.set(op::CALLDATACOPY, 3);
+        gas_table.set(op::CODESIZE, 2);
+        gas_table.set(op::CODECOPY, 3);
+        gas_table.set(op::GASPRICE, 2);
+        gas_table.set(op::EXTCODESIZE, 20);
+        gas_table.set(op::EXTCODECOPY, 20);
+        gas_table.set(op::RETURNDATASIZE, 2);
+        gas_table.set(op::RETURNDATACOPY, 3);
+        gas_table.set(op::EXTCODEHASH, 400);
+        gas_table.set(op::BLOCKHASH, BLOCKHASH as u16);
+        gas_table.set(op::COINBASE, 2);
+        gas_table.set(op::TIMESTAMP, 2);
+        gas_table.set(op::NUMBER, 2);
+        gas_table.set(op::DIFFICULTY, 2);
+        gas_table.set(op::GASLIMIT, 2);
+        gas_table.set(op::CHAINID, 2);
+        gas_table.set(op::SELFBALANCE, 5);
+        gas_table.set(op::BASEFEE, 2);
+        gas_table.set(op::BLOBHASH, 3);
+        gas_table.set(op::BLOBBASEFEE, 2);
+        gas_table.set(op::SLOTNUM, 2);
+
+        gas_table.set(op::POP, 2);
+        gas_table.set(op::MLOAD, 3);
+        gas_table.set(op::MSTORE, 3);
+        gas_table.set(op::MSTORE8, 3);
+        gas_table.set(op::SLOAD, 50);
+        gas_table.set(op::SSTORE, 0);
+        gas_table.set(op::JUMP, 8);
+        gas_table.set(op::JUMPI, HIGH as u16);
+        gas_table.set(op::PC, 2);
+        gas_table.set(op::MSIZE, 2);
+        gas_table.set(op::GAS, 2);
+        gas_table.set(op::JUMPDEST, JUMPDEST as u16);
+        gas_table.set(op::TLOAD, 100);
+        gas_table.set(op::TSTORE, 100);
+        gas_table.set(op::MCOPY, 3);
+
+        gas_table.set(op::PUSH0, 2);
+        gas_table.set(op::PUSH1, 3);
+        gas_table.set(op::PUSH2, 3);
+        gas_table.set(op::PUSH3, 3);
+        gas_table.set(op::PUSH4, 3);
+        gas_table.set(op::PUSH5, 3);
+        gas_table.set(op::PUSH6, 3);
+        gas_table.set(op::PUSH7, 3);
+        gas_table.set(op::PUSH8, 3);
+        gas_table.set(op::PUSH9, 3);
+        gas_table.set(op::PUSH10, 3);
+        gas_table.set(op::PUSH11, 3);
+        gas_table.set(op::PUSH12, 3);
+        gas_table.set(op::PUSH13, 3);
+        gas_table.set(op::PUSH14, 3);
+        gas_table.set(op::PUSH15, 3);
+        gas_table.set(op::PUSH16, 3);
+        gas_table.set(op::PUSH17, 3);
+        gas_table.set(op::PUSH18, 3);
+        gas_table.set(op::PUSH19, 3);
+        gas_table.set(op::PUSH20, 3);
+        gas_table.set(op::PUSH21, 3);
+        gas_table.set(op::PUSH22, 3);
+        gas_table.set(op::PUSH23, 3);
+        gas_table.set(op::PUSH24, 3);
+        gas_table.set(op::PUSH25, 3);
+        gas_table.set(op::PUSH26, 3);
+        gas_table.set(op::PUSH27, 3);
+        gas_table.set(op::PUSH28, 3);
+        gas_table.set(op::PUSH29, 3);
+        gas_table.set(op::PUSH30, 3);
+        gas_table.set(op::PUSH31, 3);
+        gas_table.set(op::PUSH32, 3);
+
+        gas_table.set(op::DUP1, 3);
+        gas_table.set(op::DUP2, 3);
+        gas_table.set(op::DUP3, 3);
+        gas_table.set(op::DUP4, 3);
+        gas_table.set(op::DUP5, 3);
+        gas_table.set(op::DUP6, 3);
+        gas_table.set(op::DUP7, 3);
+        gas_table.set(op::DUP8, 3);
+        gas_table.set(op::DUP9, 3);
+        gas_table.set(op::DUP10, 3);
+        gas_table.set(op::DUP11, 3);
+        gas_table.set(op::DUP12, 3);
+        gas_table.set(op::DUP13, 3);
+        gas_table.set(op::DUP14, 3);
+        gas_table.set(op::DUP15, 3);
+        gas_table.set(op::DUP16, 3);
+
+        gas_table.set(op::SWAP1, 3);
+        gas_table.set(op::SWAP2, 3);
+        gas_table.set(op::SWAP3, 3);
+        gas_table.set(op::SWAP4, 3);
+        gas_table.set(op::SWAP5, 3);
+        gas_table.set(op::SWAP6, 3);
+        gas_table.set(op::SWAP7, 3);
+        gas_table.set(op::SWAP8, 3);
+        gas_table.set(op::SWAP9, 3);
+        gas_table.set(op::SWAP10, 3);
+        gas_table.set(op::SWAP11, 3);
+        gas_table.set(op::SWAP12, 3);
+        gas_table.set(op::SWAP13, 3);
+        gas_table.set(op::SWAP14, 3);
+        gas_table.set(op::SWAP15, 3);
+        gas_table.set(op::SWAP16, 3);
+
+        gas_table.set(op::DUPN, 3);
+        gas_table.set(op::SWAPN, 3);
+        gas_table.set(op::EXCHANGE, 3);
+
+        gas_table.set(op::LOG0, LOG as u16);
+        gas_table.set(op::LOG1, LOG as u16);
+        gas_table.set(op::LOG2, LOG as u16);
+        gas_table.set(op::LOG3, LOG as u16);
+        gas_table.set(op::LOG4, LOG as u16);
+
+        gas_table.set(op::CREATE, 0);
+        gas_table.set(op::CALL, 40);
+        gas_table.set(op::CALLCODE, 40);
+        gas_table.set(op::RETURN, 0);
+        gas_table.set(op::DELEGATECALL, 40);
+        gas_table.set(op::CREATE2, 0);
+        gas_table.set(op::STATICCALL, 40);
+        gas_table.set(op::REVERT, 0);
+        gas_table.set(op::INVALID, 0);
+        gas_table.set(op::SELFDESTRUCT, 0);
+
+        let mut gas_params = [0u32; 256];
+        gas_params[ExpByteGas as usize] = 10;
+        gas_params[Logdata as usize] = LOGDATA;
+        gas_params[Logtopic as usize] = LOGTOPIC;
+        gas_params[CopyPerWord as usize] = COPY;
+        gas_params[ExtcodecopyPerWord as usize] = COPY;
+        gas_params[McopyPerWord as usize] = COPY;
+        gas_params[Keccak256PerWord as usize] = KECCAK256WORD;
+        gas_params[MemoryLinearCost as usize] = MEMORY;
+        gas_params[MemoryQuadraticReduction as usize] = 512;
+        gas_params[InitcodePerWord as usize] = INITCODE_WORD_COST;
+        gas_params[Create as usize] = CREATE;
+        gas_params[CallStipendReduction as usize] = 64;
+        gas_params[TransferValueCost as usize] = CALLVALUE;
+        gas_params[ColdAccountAdditionalCost as usize] = 0;
+        gas_params[NewAccountCost as usize] = NEWACCOUNT;
+        gas_params[WarmStorageReadCost as usize] = 0;
+        gas_params[SstoreStatic as usize] = SSTORE_RESET;
+        gas_params[SstoreSetWithoutLoadCost as usize] = SSTORE_SET - SSTORE_RESET;
+        gas_params[SstoreResetWithoutColdLoadCost as usize] = 0;
+        gas_params[SstoreSetRefund as usize] = SSTORE_SET - SSTORE_RESET;
+        gas_params[SstoreResetRefund as usize] = 0;
+        gas_params[SstoreClearingSlotRefund as usize] = REFUND_SSTORE_CLEARS;
+        gas_params[SelfdestructRefund as usize] = SELFDESTRUCT_REFUND;
+        gas_params[CallStipend as usize] = CALL_STIPEND;
+        gas_params[ColdStorageAdditionalCost as usize] = 0;
+        gas_params[ColdStorageCost as usize] = 0;
+        gas_params[NewAccountCostForSelfdestruct as usize] = 0;
+        gas_params[CodeDepositCost as usize] = CODEDEPOSIT;
+        gas_params[TxTokenNonZeroByteMultiplier as usize] = NON_ZERO_BYTE_MULTIPLIER;
+        gas_params[TxTokenCost as usize] = STANDARD_TOKEN_COST;
+        gas_params[TxBaseStipend as usize] = 21000;
+
+        if spec.enables(SpecId::HOMESTEAD) {
+            gas_params[TxCreateCost as usize] = CREATE;
+        }
+
+        if spec.enables(SpecId::TANGERINE) {
+            gas_table.set(op::SLOAD, 200);
+            gas_table.set(op::BALANCE, 400);
+            gas_table.set(op::EXTCODESIZE, 700);
+            gas_table.set(op::EXTCODECOPY, 700);
+            gas_table.set(op::CALL, 700);
+            gas_table.set(op::CALLCODE, 700);
+            gas_table.set(op::DELEGATECALL, 700);
+            gas_table.set(op::STATICCALL, 700);
+            gas_table.set(op::SELFDESTRUCT, 5000);
+            gas_params[NewAccountCostForSelfdestruct as usize] = NEWACCOUNT;
+        }
+
+        if spec.enables(SpecId::SPURIOUS_DRAGON) {
+            gas_params[ExpByteGas as usize] = 50;
+        }
+
+        if spec.enables(SpecId::ISTANBUL) {
+            gas_table.set(op::SLOAD, ISTANBUL_SLOAD_GAS as u16);
+            gas_table.set(op::BALANCE, 700);
+            gas_table.set(op::EXTCODEHASH, 700);
+            gas_params[SstoreStatic as usize] = ISTANBUL_SLOAD_GAS;
+            gas_params[SstoreSetWithoutLoadCost as usize] = SSTORE_SET - ISTANBUL_SLOAD_GAS;
+            gas_params[SstoreResetWithoutColdLoadCost as usize] = SSTORE_RESET - ISTANBUL_SLOAD_GAS;
+            gas_params[SstoreSetRefund as usize] = SSTORE_SET - ISTANBUL_SLOAD_GAS;
+            gas_params[SstoreResetRefund as usize] = SSTORE_RESET - ISTANBUL_SLOAD_GAS;
+            gas_params[TxTokenNonZeroByteMultiplier as usize] = NON_ZERO_BYTE_MULTIPLIER_ISTANBUL;
+        }
+
+        if spec.enables(SpecId::BERLIN) {
+            gas_table.set(op::SLOAD, WARM_STORAGE_READ_COST as u16);
+            gas_table.set(op::BALANCE, WARM_STORAGE_READ_COST as u16);
+            gas_table.set(op::EXTCODESIZE, WARM_STORAGE_READ_COST as u16);
+            gas_table.set(op::EXTCODEHASH, WARM_STORAGE_READ_COST as u16);
+            gas_table.set(op::EXTCODECOPY, WARM_STORAGE_READ_COST as u16);
+            gas_table.set(op::CALL, WARM_STORAGE_READ_COST as u16);
+            gas_table.set(op::CALLCODE, WARM_STORAGE_READ_COST as u16);
+            gas_table.set(op::DELEGATECALL, WARM_STORAGE_READ_COST as u16);
+            gas_table.set(op::STATICCALL, WARM_STORAGE_READ_COST as u16);
+            gas_params[SstoreStatic as usize] = WARM_STORAGE_READ_COST;
+            gas_params[ColdAccountAdditionalCost as usize] = COLD_ACCOUNT_ACCESS_COST_ADDITIONAL;
+            gas_params[ColdStorageAdditionalCost as usize] =
+                COLD_SLOAD_COST - WARM_STORAGE_READ_COST;
+            gas_params[ColdStorageCost as usize] = COLD_SLOAD_COST;
+            gas_params[WarmStorageReadCost as usize] = WARM_STORAGE_READ_COST;
+            gas_params[SstoreResetWithoutColdLoadCost as usize] =
+                WARM_SSTORE_RESET - WARM_STORAGE_READ_COST;
+            gas_params[SstoreSetWithoutLoadCost as usize] = SSTORE_SET - WARM_STORAGE_READ_COST;
+            gas_params[SstoreSetRefund as usize] = SSTORE_SET - WARM_STORAGE_READ_COST;
+            gas_params[SstoreResetRefund as usize] = WARM_SSTORE_RESET - WARM_STORAGE_READ_COST;
+            gas_params[TxAccessListAddressCost as usize] = ACCESS_LIST_ADDRESS;
+            gas_params[TxAccessListStorageKeyCost as usize] = ACCESS_LIST_STORAGE_KEY;
+        }
+
+        if spec.enables(SpecId::LONDON) {
+            gas_params[SstoreClearingSlotRefund as usize] =
+                WARM_SSTORE_RESET + ACCESS_LIST_STORAGE_KEY;
+            gas_params[SelfdestructRefund as usize] = 0;
+        }
+
+        if spec.enables(SpecId::SHANGHAI) {
+            gas_params[TxInitcodeCost as usize] = INITCODE_WORD_COST;
+        }
+
+        if spec.enables(SpecId::PRAGUE) {
+            gas_params[TxEip7702PerEmptyAccountCost as usize] = EIP7702_PER_EMPTY_ACCOUNT_COST;
+            gas_params[TxEip7702AuthRefund as usize] =
+                EIP7702_PER_EMPTY_ACCOUNT_COST - EIP7702_PER_AUTH_BASE_COST;
+            gas_params[TxFloorCostPerToken as usize] = TOTAL_COST_FLOOR_PER_TOKEN;
+            gas_params[TxFloorCostBaseGas as usize] = 21000;
+        }
+
+        if spec.enables(SpecId::AMSTERDAM) {
+            const CPSB: u32 = 1174;
+
+            gas_params[Create as usize] = 9000;
+            gas_params[TxCreateCost as usize] = 9000;
+            gas_params[CodeDepositCost as usize] = 0;
+            gas_params[NewAccountCost as usize] = 0;
+            gas_params[NewAccountCostForSelfdestruct as usize] = 0;
+            gas_params[SstoreSetWithoutLoadCost as usize] = 2800;
+            gas_params[SstoreSetStateGas as usize] = 32 * CPSB;
+            gas_params[NewAccountStateGas as usize] = 112 * CPSB;
+            gas_params[CodeDepositStateGas as usize] = CPSB;
+            gas_params[CreateStateGas as usize] = 112 * CPSB;
+            gas_params[SstoreSetRefund as usize] = 32 * CPSB + 2800;
+            gas_params[TxEip7702PerEmptyAccountCost as usize] = 7500 + (112 + 23) * CPSB;
+            gas_params[TxEip7702AuthRefund as usize] = 112 * CPSB;
+            gas_params[TxEip7702PerAuthStateGas as usize] = (112 + 23) * CPSB;
+        }
+
+        let mut instruction_impls = InstructionImplTable::new();
+        for_each_opcode!([instruction_impls, C, spec] make_instruction_table_inner);
+
+        Self { spec_id: spec, gas_table, gas_params: GasParams::new(gas_params), instruction_impls }
     }
 }
 
@@ -478,11 +594,7 @@ macro_rules! for_each_opcode_value {
 impl<C: EvmConfig> InstructionImplTable<C> {
     /// Creates an instruction implementation table.
     pub const fn new() -> Self {
-        use crate::interpreter::instructions::*;
-
-        let mut table = Self([None; 256]);
-        for_each_opcode!([table, C] make_instruction_table_inner);
-        table
+        Self([None; 256])
     }
 }
 
@@ -497,7 +609,7 @@ pub(crate) const fn make_instruction_table<C: EvmConfig>() -> InstructionTable<C
     let mut i = 0;
     let mut unknown_idx = 0;
     while i < 256 {
-        if !C::INSTRUCTION_IMPLS.contains(i as u8) {
+        if !C::VERSION.instruction_impls.contains(i as u8) {
             if unknown_idx == 0 {
                 unknown_idx = i;
             }
@@ -530,7 +642,7 @@ fn dispatch_mono<C: EvmConfig>(
     gas: &mut Gas,
     state: &mut State<'_, C::Host>,
 ) -> InstructionFnRet {
-    let instr = C::INSTRUCTION_IMPLS.get_or_default(op);
+    let instr = C::VERSION.instruction_impls.get_or_default(op);
     let r;
     match pre_step::<C>(gas, op) {
         Ok(()) => {
@@ -571,7 +683,7 @@ extern_table! {
         state: &mut State<'_, C::Host>,
         op: u8,
     ) {
-        let instr = C::INSTRUCTION_IMPLS.get_or_default(op);
+        let instr = C::VERSION.instruction_impls.get_or_default(op);
         if let Err(e) = pre_step::<C>(gas, op) {
             cold_path();
             tail_return!(tail_call_restore::<C>(pc, stack, gas, state, e as u8));
@@ -622,7 +734,7 @@ extern_table! {
 
 #[inline]
 const fn pre_step<C: EvmConfig>(gas: &mut Gas, op: u8) -> Result {
-    gas.spend(C::GAS_TABLE.get(op) as _)
+    gas.spend(C::VERSION.gas_table.get(op) as _)
 }
 
 #[inline]
@@ -642,9 +754,9 @@ const fn instruction_len(op: u8) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{GasTable, InstructionImplTable};
+    use super::GasTable;
     use crate::{
-        EvmConfig,
+        EvmConfig, EvmTypes, EvmVersion,
         bytecode::Bytecode,
         env::TxEnv,
         interpreter::{Message, SpecId, Word, instructions::tests::TestHost, op},
@@ -657,17 +769,18 @@ mod tests {
     #[derive(Debug)]
     struct CustomConfig;
 
-    impl EvmConfig for CustomConfig {
+    impl EvmTypes for CustomConfig {
         type Tx = ();
         type Host = TestHost;
         type Database = crate::evm::InMemoryDB;
         type Precompiles = crate::evm::precompile::NoPrecompiles;
+    }
 
-        const SPEC_ID: SpecId = SpecId::OSAKA;
-        const INSTRUCTION_IMPLS: &'static InstructionImplTable<Self> = &{
-            let mut table = InstructionImplTable::new();
-            table.set(CUSTOM_OPCODE, Some(&custom));
-            table
+    impl EvmConfig for CustomConfig {
+        const VERSION: &'static EvmVersion<Self> = &{
+            let mut version = EvmVersion::new_base(SpecId::OSAKA);
+            version.instruction_impls.set(CUSTOM_OPCODE, Some(&custom));
+            version
         };
     }
 

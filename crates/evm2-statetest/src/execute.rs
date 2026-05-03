@@ -9,7 +9,7 @@ use alloy_trie::{
     root::{state_root_unhashed, storage_root_unhashed},
 };
 use evm2::{
-    Evm, EvmVersion, TxResult,
+    BaseEvmConfig, Evm, TxResult,
     bytecode::Bytecode,
     env::BlockEnv,
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
@@ -205,7 +205,7 @@ fn execute_spec(
 ) -> Result<SpecOutcome, HandlerError> {
     macro_rules! run {
         ($spec:ident) => {{
-            let mut evm = Evm::<EvmVersion<RecoveredTxEnvelope, { SpecId::$spec as u8 }>>::new(
+            let mut evm = Evm::<BaseEvmConfig<{ SpecId::$spec as u8 }, RecoveredTxEnvelope>>::new(
                 block,
                 ethereum_tx_registry(),
                 database,
@@ -246,7 +246,7 @@ where
     C: evm2::config::EvmConfig<Database = InMemoryDB>,
 {
     SpecOutcome {
-        state_root: state_root(evm.state(), C::SPEC_ID),
+        state_root: state_root(evm.state(), C::VERSION.spec_id),
         logs_root: logs_hash(evm.logs()),
         output: result.output,
         gas_used: result.gas_used,

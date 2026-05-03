@@ -1,5 +1,5 @@
 use crate::{
-    AccountLoad, EvmConfig, SelfDestructResult, StorageLoad,
+    AccountLoad, EvmConfig, EvmTypes, EvmVersion, SelfDestructResult, StorageLoad,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
     interpreter::{
@@ -13,16 +13,19 @@ use std::collections::HashMap;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(in crate::interpreter) struct TestConfig<const SPEC: u8 = { SpecId::OSAKA as u8 }>;
 
-impl<const SPEC: u8> EvmConfig for TestConfig<SPEC> {
+impl<const SPEC: u8> EvmTypes for TestConfig<SPEC> {
     type Tx = ();
     type Host = TestHost;
     type Database = crate::evm::InMemoryDB;
     type Precompiles = crate::evm::precompile::NoPrecompiles;
+}
 
-    const SPEC_ID: SpecId = match SpecId::try_from_u8(SPEC) {
-        Some(spec_id) => spec_id,
-        None => panic!("invalid EVM specification ID"),
-    };
+impl<const SPEC: u8> EvmConfig for TestConfig<SPEC> {
+    const VERSION: &'static EvmVersion<Self> =
+        &EvmVersion::new_base(match SpecId::try_from_u8(SPEC) {
+            Some(spec_id) => spec_id,
+            None => panic!("invalid EVM specification ID"),
+        });
 }
 
 #[derive(Debug)]
