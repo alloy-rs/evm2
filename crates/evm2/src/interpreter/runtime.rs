@@ -78,6 +78,18 @@ impl Interpreter {
         self.output = output;
     }
 
+    /// Returns output produced by `RETURN` or `REVERT`.
+    #[inline]
+    pub const fn output(&self) -> &[u8] {
+        unsafe { &*self.output }
+    }
+
+    /// Returns the current gas state.
+    #[inline]
+    pub const fn gas(&self) -> Gas {
+        self.gas
+    }
+
     /// Runs the interpreter until it stops.
     pub fn run<C: EvmConfig>(&mut self, host: &mut C::Host) -> InstrStop {
         let _gas_start = self.gas.remaining();
@@ -86,12 +98,6 @@ impl Interpreter {
         let r = self.step_tail::<C>(host).unwrap_err();
         #[cfg(not(feature = "nightly"))]
         let r = self.run_table_loop::<C>(host);
-
-        #[cfg(feature = "std")]
-        {
-            eprintln!("execution stopped: {r:?}");
-            eprintln!("consumed gas: {}", _gas_start - self.gas.remaining())
-        }
 
         r
     }
@@ -153,13 +159,13 @@ impl Interpreter {
         let bytecode = BytecodeRef::new(&self.bytecode);
         let pc = Pc::from_ptr(self.pc);
         let op = pc.op();
-        let instr = <C as InstructionTables>::TAIL_INSTRUCTIONS[op as usize];
+        let instr = <C as InstructionTables>::INSTRUCTIONS[op as usize];
         instr(
             pc,
             Stack::new(&mut self.stack, self.stack_len),
             &mut self.gas,
             &mut State { bytecode, host, spec: C::SPEC_ID, raw_interp: raw },
-            InstrStop::Stop,
+            0,
         );
         self.result
     }

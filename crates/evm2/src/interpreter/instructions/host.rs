@@ -2,7 +2,8 @@ use super::utils::as_usize;
 use crate::{
     EvmConfig,
     interpreter::{
-        GasId, Host, InstrStop, Result, SpecId, Word, memory::resize_memory, table::InstructionCx,
+        GasId, Host, InstrStop, Result, SpecId, StackMut, Word, memory::resize_memory,
+        table::InstructionCx,
     },
 };
 use alloy_primitives::{B256, Bytes, Log, LogData};
@@ -31,7 +32,16 @@ pub(in crate::interpreter) fn sstore(cx: _) -> Result {
     {
         return Err(InstrStop::ReentrancySentryOOG);
     }
+    let old_value = cx.state.host.sload(cx.state.message().destination, key);
     cx.gas.spend(gas_params.get(GasId::SstoreStatic))?;
+    if old_value.is_zero() && !value.is_zero() {
+        cx.gas.spend(gas_params.get(GasId::SstoreSetWithoutLoadCost))?;
+    } else if !old_value.is_zero() && value.is_zero() {
+        cx.gas.record_refund(gas_params.get(GasId::SstoreClearingSlotRefund) as i64);
+        cx.gas.spend(gas_params.get(GasId::SstoreResetWithoutColdLoadCost))?;
+    } else {
+        cx.gas.spend(gas_params.get(GasId::SstoreResetWithoutColdLoadCost))?;
+    }
     cx.state.host.sstore(cx.state.message().destination, key, value);
     Ok(())
 }
@@ -53,10 +63,19 @@ pub(in crate::interpreter) fn tstore(cx: _) -> Result {
 
 #[instruction(raw)]
 pub(in crate::interpreter) fn log<const N: usize>(cx: _) -> Result {
+    log_common(cx, stack, N)
+}
+
+#[inline(never)]
+fn log_common<C: EvmConfig>(
+    cx: InstructionCx<'_, '_, C>,
+    mut stack: StackMut<'_>,
+    n: usize,
+) -> Result {
     require_non_staticcall(&cx)?;
     let [offset, len] = stack.popn()?;
     let len = as_usize(len)?;
-    cx.gas.spend(cx.gas_params.log_cost(N as u8, len))?;
+    cx.gas.spend(cx.gas_params.log_cost(n as u8, len))?;
 
     let data = if len == 0 {
         Bytes::new()
@@ -66,8 +85,7 @@ pub(in crate::interpreter) fn log<const N: usize>(cx: _) -> Result {
         Bytes::copy_from_slice(cx.state.memory().slice(offset, len))
     };
 
-    let topics =
-        stack.popn::<N>()?.into_iter().map(|topic| B256::from(topic.to_be_bytes::<32>())).collect();
+    let topics = stack.popn_dyn(n)?.map(|topic| B256::from(topic.to_be_bytes::<32>())).collect();
     cx.state.host.log(Log {
         address: cx.state.message().destination,
         data: LogData::new(topics, data).expect("LOG opcodes cannot emit more than 4 topics"),
@@ -115,7 +133,7 @@ mod tests {
         push(&mut code, 1);
         code.extend([op::SLOAD, op::STOP]);
 
-        let interpreter = run(RunConfig::new(code).host(&mut host));
+        let interpreter = run(RunConfig::new(code).host(&mut host).gas_limit(30_000));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::from(0xbeef)]);
         assert_eq!(host.storage.get(&(Address::ZERO, Word::from(1))), Some(&Word::from(0xbeef)));

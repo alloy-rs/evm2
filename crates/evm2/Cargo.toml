@@ -16,8 +16,10 @@ workspace = true
 [dependencies]
 evm2-macros.workspace = true
 
-alloy-eips = { version = "2.0.4", default-features = false }
+alloy-eips.workspace = true
 alloy-primitives.workspace = true
+alloy-rlp.workspace = true
+alloy-trie = { workspace = true, features = ["ethereum"] }
 thiserror.workspace = true
 
 # no_std
@@ -28,8 +30,8 @@ paste.workspace = true
 serde = { workspace = true, features = ["derive", "alloc"], optional = true }
 
 [dev-dependencies]
-alloy-consensus = "2.0.4"
-serde_json.workspace = true
+alloy-consensus = { workspace = true, features = ["std"] }
+serde_json = { workspace = true, features = ["std"] }
 
 [[example]]
 name = "registry_tx_handler"
@@ -41,9 +43,27 @@ name = "registry_custom_handler"
 path = "examples/registry/custom_handler.rs"
 doc-scrape-examples = true
 
+[[example]]
+name = "e2e_transfer_sstore"
+path = "examples/e2e_transfer_sstore.rs"
+doc-scrape-examples = true
+
 [features]
 default = ["std"]
-std = []
+std = [
+    "alloy-eips/std",
+    "alloy-primitives/std",
+    "alloy-rlp/std",
+    "alloy-trie/std",
+    "once_cell/std",
+    "serde?/std",
+    "thiserror/std",
+]
 
 nightly = []
-serde = ["dep:serde", "alloy-primitives/serde"]
+serde = [
+    "dep:serde",
+    "alloy-eips/serde",
+    "alloy-primitives/serde",
+    "alloy-trie/serde",
+]

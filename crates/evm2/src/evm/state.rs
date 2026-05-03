@@ -1,10 +1,12 @@
 //! Basic in-memory EVM host state.
 
 use crate::{bytecode::Bytecode, interpreter::Word};
+use alloc::{string::ToString, vec::Vec};
 use alloy_primitives::{
     Address, B256, U256, keccak256,
     map::{self, HashMap},
 };
+use alloy_trie::{HashBuilder, Nibbles, TrieAccount, root::storage_root_unhashed};
 
 pub use alloy_primitives::KECCAK256_EMPTY as KECCAK_EMPTY;
 
@@ -350,6 +352,98 @@ impl<D: Database> State<D> {
         self.get_storage_value(address, key).current = value;
     }
 
+    /// Adds a signed balance delta by wrapping two's-complement values.
+    #[inline]
+    pub fn add_balance(&mut self, address: Address, delta: Word) {
+        if delta.is_zero() {
+            self.get_or_insert(address).erase_if_empty = true;
+            return;
+        }
+        let previous = self.get_or_insert(address).balance;
+        self.journal.push(JournalEntry::BalanceChange { address, previous });
+        self.get_or_insert(address).balance = previous.wrapping_add(delta);
+    }
+
+    /// Transfers value between accounts.
+    #[inline]
+    pub fn transfer(&mut self, from: Address, to: Address, value: Word) -> bool {
+        if value.is_zero() || from == to {
+            self.get_or_insert(to).erase_if_empty = true;
+            return true;
+        }
+
+        let from_balance = self.account_info(from).map_or(Word::ZERO, |info| info.balance);
+        let Some(new_from_balance) = from_balance.checked_sub(value) else {
+            return false;
+        };
+
+        let from_previous = self.get_or_insert(from).balance;
+        self.journal.push(JournalEntry::BalanceChange { address: from, previous: from_previous });
+        self.get_or_insert(from).balance = new_from_balance;
+
+        let to_previous = self.get_or_insert(to).balance;
+        self.journal.push(JournalEntry::BalanceChange { address: to, previous: to_previous });
+        self.get_or_insert(to).balance = to_previous.saturating_add(value);
+        true
+    }
+
+    /// Increments account nonce.
+    #[inline]
+    pub fn increment_nonce(&mut self, address: Address) {
+        self.journal.push(JournalEntry::NonceBump { address });
+        self.get_or_insert(address).nonce = self.get_or_insert(address).nonce.saturating_add(1);
+    }
+
+    /// Creates a contract account and transfers endowment from the caller.
+    #[inline]
+    pub fn create_account(
+        &mut self,
+        caller: Address,
+        address: Address,
+        value: Word,
+        spec: crate::interpreter::SpecId,
+    ) -> Result<(), crate::interpreter::InstrStop> {
+        let existed = self.account_info(address).is_some();
+        if let Some(info) = self.account_info(address)
+            && (info.nonce != 0 || info.code_hash != KECCAK_EMPTY)
+        {
+            return Err(crate::interpreter::InstrStop::CreateCollision);
+        }
+
+        self.journal.push(JournalEntry::Create { address, existed });
+        if !self.transfer(caller, address, value) {
+            return Err(crate::interpreter::InstrStop::OutOfFunds);
+        }
+
+        let account = self.get_or_insert(address);
+        account.nonce = u64::from(spec.enables(crate::interpreter::SpecId::SPURIOUS_DRAGON));
+        account.code_hash = KECCAK_EMPTY;
+        account.code = Bytecode::default();
+        account.storage.clear();
+        account.transient_storage.clear();
+        account.destructed = false;
+        account.just_created = true;
+        account.code_changed = true;
+        Ok(())
+    }
+
+    /// Sets account bytecode.
+    #[inline]
+    pub fn set_code(&mut self, address: Address, code: Bytecode) {
+        let account = self.get_or_insert(address);
+        account.code_hash = code.hash_slow();
+        account.code = code;
+        account.code_changed = true;
+    }
+
+    /// Removes modified accounts that should be erased and are empty.
+    #[inline]
+    pub fn prune_empty_accounts(&mut self) {
+        self.modified.retain(|_, account| {
+            !(account.erase_if_empty && account.is_empty() && !account.has_initial_storage)
+        });
+    }
+
     /// Loads transient storage.
     #[inline]
     pub fn transient_storage(&mut self, address: Address, key: Word) -> Word {
@@ -407,6 +501,79 @@ impl<D: Database> State<D> {
             }
         }
     }
+}
+
+impl State<CacheDB> {
+    /// Calculates the Ethereum state trie root for the cached state.
+    pub fn state_root(&self) -> B256 {
+        let mut addresses = Vec::from_iter(self.initial.accounts.keys().copied());
+        addresses.extend(self.modified.keys().copied());
+        addresses.sort_unstable();
+        addresses.dedup();
+
+        let mut accounts = Vec::with_capacity(addresses.len());
+        for address in addresses {
+            let Some(info) = self.account_info(address) else {
+                continue;
+            };
+            if info.is_empty() && !info.has_storage {
+                continue;
+            }
+
+            let storage_root = storage_root_unhashed(self.storage_for_root(address));
+            accounts.push((
+                keccak256(address),
+                TrieAccount {
+                    nonce: info.nonce,
+                    balance: info.balance,
+                    storage_root,
+                    code_hash: info.code_hash,
+                },
+            ));
+        }
+        accounts.sort_unstable_by_key(|(key, _)| *key);
+
+        let mut builder = HashBuilder::default();
+        let mut account_rlp = Vec::new();
+        for (hashed_key, account) in accounts {
+            account_rlp.clear();
+            alloy_rlp::Encodable::encode(&account, &mut account_rlp);
+            builder.add_leaf(Nibbles::unpack(hashed_key), &account_rlp);
+        }
+        builder.root()
+    }
+
+    fn storage_for_root(&self, address: Address) -> Vec<(B256, Word)> {
+        let mut storage = Vec::new();
+        for ((storage_address, key), value) in &self.initial.storage {
+            if *storage_address == address && !value.is_zero() {
+                storage.push((B256::from(key.to_be_bytes()), *value));
+            }
+        }
+
+        if let Some(account) = self.modified.get(&address) {
+            for (key, value) in &account.storage {
+                let key = B256::from(key.to_be_bytes());
+                if let Some(existing) =
+                    storage.iter_mut().find(|(existing_key, _)| *existing_key == key)
+                {
+                    existing.1 = value.current;
+                } else if !value.current.is_zero() {
+                    storage.push((key, value.current));
+                }
+            }
+        }
+
+        storage.retain(|(_, value)| !value.is_zero());
+        storage
+    }
+}
+
+/// Returns the state-test logs hash.
+pub fn logs_hash(logs: &[alloy_primitives::Log]) -> B256 {
+    let mut out = Vec::with_capacity(alloy_rlp::list_length(logs));
+    alloy_rlp::encode_list(logs, &mut out);
+    keccak256(out)
 }
 
 /// A simple in-memory database view.

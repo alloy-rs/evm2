@@ -48,7 +48,7 @@ pub mod interpreter;
 pub use evm::{
     Evm, TxResult, config,
     config::{EvmConfig, EvmVersion},
-    env, registry,
+    env, precompile, registry,
 };
 
 mod once_lock;

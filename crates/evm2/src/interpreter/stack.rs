@@ -173,6 +173,16 @@ impl<'a> StackMut<'a> {
         Ok(unsafe { self.popn_unchecked() })
     }
 
+    /// Pops `n` words from the stack and returns an iterator over the popped words.
+    #[inline]
+    pub fn popn_dyn(&mut self, n: usize) -> Result<impl Iterator<Item = Word> + '_> {
+        if self.len() < n {
+            cold_path();
+            return Err(InstrStop::StackUnderflow);
+        }
+        Ok((0..n).map(move |_| unsafe { self.pop_unchecked() }))
+    }
+
     /// # Safety
     ///
     /// Caller must ensure the stack contains at least `N` initialized words.
@@ -390,6 +400,20 @@ mod tests {
 
         run_with_len(2, |stack| {
             core::assert_matches!(stack.popn_top::<2>(), Err(InstrStop::StackUnderflow));
+        });
+    }
+
+    #[test]
+    fn popn_dyn() {
+        run_with_len(4, |stack| {
+            let popped = stack.popn_dyn(3).unwrap().collect::<alloc::vec::Vec<_>>();
+            assert_eq!(popped, [Word::from(3), Word::from(2), Word::from(1)]);
+            assert_eq!(stack.as_slice(), [Word::from(0)]);
+        });
+
+        run_with_len(2, |stack| {
+            assert!(matches!(stack.popn_dyn(3), Err(InstrStop::StackUnderflow)));
+            assert_eq!(stack.as_slice(), [Word::from(0), Word::from(1)]);
         });
     }
 

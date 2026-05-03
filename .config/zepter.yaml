@@ -1,0 +1,29 @@
+version:
+  format: 1
+  binary: 1.5.1
+
+workflows:
+  check:
+    - [
+        "lint",
+        "propagate-feature",
+        "--features=std,serde",
+        "--left-side-feature-missing=ignore",
+        "--left-side-outside-workspace=ignore",
+        "--dep-kinds=normal:check,dev:ignore,build:check",
+        "--offline",
+        "--locked",
+        "--show-path",
+        "--quiet",
+      ]
+  default:
+    - [$check.0, "--fix"]
+
+help:
+  text: |
+    This repository uses Zepter to check Cargo feature propagation.
+
+    Install it with `cargo install zepter --locked`, then run `zepter` to fix
+    feature propagation issues or `zepter run check` to verify them.
+  links:
+    - "https://github.com/ggwpez/zepter"

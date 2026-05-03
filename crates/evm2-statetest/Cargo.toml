@@ -1,0 +1,31 @@
+[package]
+name = "evm2-statetest"
+description = "Ethereum state test nextest runner for evm2."
+readme = "README.md"
+
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+evm2 = { path = "../evm2", features = ["std", "serde"] }
+
+alloy-primitives = { workspace = true, features = ["std", "serde", "rlp"] }
+k256 = { workspace = true, features = ["ecdsa", "std"] }
+libtest-mimic.workspace = true
+serde = { workspace = true, features = ["derive", "std"] }
+serde_json = { workspace = true, features = ["preserve_order", "std"] }
+thiserror = { workspace = true, features = ["std"] }
+walkdir.workspace = true
+
+[[test]]
+name = "statetest"
+path = "tests/statetest.rs"
+harness = false

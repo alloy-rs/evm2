@@ -1,4 +1,4 @@
-use alloy_primitives::{Address, Bytes, U256};
+use alloy_primitives::{Address, B256, Bytes, U256};
 
 /// EVM message kind.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -39,6 +39,8 @@ pub struct Message {
     /// Address whose code is being executed. This can differ from `destination` for `CALLCODE`
     /// and `DELEGATECALL`.
     pub code_address: Address,
+    /// CREATE2 salt. Ignored for other message kinds.
+    pub salt: B256,
 }
 
 impl Message {
@@ -64,6 +66,7 @@ impl Default for Message {
             input: Bytes::new(),
             value: U256::ZERO,
             code_address: Address::ZERO,
+            salt: B256::ZERO,
         }
     }
 }

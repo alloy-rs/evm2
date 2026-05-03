@@ -1,7 +1,6 @@
 use alloc::{borrow::Cow, vec::Vec};
 use alloy_primitives::hex;
-use core::{cmp::Ordering, fmt, hash, marker::PhantomData};
-use std::hint::cold_path;
+use core::{cmp::Ordering, fmt, hash, hint::cold_path, marker::PhantomData};
 
 /// A table of valid `jump` destinations.
 ///

@@ -28,13 +28,13 @@ impl<T> Default for OnceLock<T> {
 impl<T> OnceLock<T> {
     /// Creates a new empty OnceLock.
     #[inline]
-    pub const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self { inner: OnceBox::new() }
     }
 
     /// Gets the contents of the OnceLock, initializing it if necessary.
     #[inline]
-    pub fn get_or_init<F>(&self, f: F) -> &T
+    pub(crate) fn get_or_init<F>(&self, f: F) -> &T
     where
         F: FnOnce() -> T,
     {
@@ -43,13 +43,13 @@ impl<T> OnceLock<T> {
 
     /// Gets the contents of the OnceLock, returning None if it is not initialized.
     #[inline]
-    pub fn get(&self) -> Option<&T> {
+    pub(crate) fn get(&self) -> Option<&T> {
         self.inner.get()
     }
 
     /// Sets the contents of the OnceLock.
     #[inline]
-    pub fn set(&self, value: T) -> Result<(), T> {
-        self.inner.set(Box::new(value)).map_err(|e| *e)
+    pub(crate) fn set(&self, value: T) -> Result<(), T> {
+        self.inner.set(Box::new(value)).map_err(|value| *value)
     }
 }

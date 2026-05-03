@@ -59,6 +59,22 @@ jobs:
       - name: doctest
         run: cargo test --workspace ${{ matrix.flags }} --doc
 
+  # statetest:
+  #   runs-on: ubuntu-latest
+  #   timeout-minutes: 30
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: dtolnay/rust-toolchain@stable
+  #     - uses: rui314/setup-mold@v1
+  #     - uses: Swatinem/rust-cache@v2
+  #       with:
+  #         cache-on-failure: true
+  #     - uses: taiki-e/install-action@nextest
+  #     - name: Download state test fixtures
+  #       run: ./scripts/setup-test-fixtures.sh
+  #     - name: Run state tests
+  #       run: cargo nextest run -p evm2-statetest --ignore-default-filter
+
   wasm:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -92,6 +108,20 @@ jobs:
           cache-on-failure: true
       - name: cargo hack
         run: cargo hack check --workspace --feature-powerset --skip nightly ${{ matrix.flags }}
+
+  feature-propagation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: rui314/setup-mold@v1
+      - uses: taiki-e/cache-cargo-install-action@v3
+        with:
+          tool: zepter
+      - name: Eagerly pull dependencies
+        run: cargo metadata --format-version=1 --locked > /dev/null
+      - run: zepter run check
 
   examples:
     runs-on: ubuntu-latest
@@ -158,8 +188,10 @@ jobs:
     if: always()
     needs:
       - test
+      # - statetest
       - wasm
       - feature-checks
+      - feature-propagation
       - examples
       - typos
       - clippy

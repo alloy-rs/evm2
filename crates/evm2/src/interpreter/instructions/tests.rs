@@ -15,6 +15,7 @@ impl<const SPEC: u8> EvmConfig for TestConfig<SPEC> {
     type Tx = ();
     type Host = TestHost;
     type Database = crate::evm::InMemoryDB;
+    type Precompiles = crate::evm::precompile::NoPrecompiles;
 
     const SPEC_ID: SpecId = match SpecId::try_from_u8(SPEC) {
         Some(spec_id) => spec_id,

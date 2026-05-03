@@ -114,20 +114,16 @@ pub trait Host {
     /// Executes a message inside this host.
     fn execute_message(
         &mut self,
-        _tx_env: TxEnv,
-        _bytecode: Bytecode,
-        _message: Message,
-    ) -> Result<Word, InstrStop> {
-        Err(InstrStop::FatalExternalError)
-    }
+        tx_env: TxEnv,
+        bytecode: Bytecode,
+        message: Message,
+    ) -> Result<Word, InstrStop>;
 
     /// Registers the current contract for self-destruction.
     fn selfdestruct(
         &mut self,
-        _contract: Address,
-        _target: Address,
-        _skip_cold_load: bool,
-    ) -> Result<SelfDestructResult, InstrStop> {
-        Err(InstrStop::FatalExternalError)
-    }
+        contract: Address,
+        target: Address,
+        skip_cold_load: bool,
+    ) -> Result<SelfDestructResult, InstrStop>;
 }
