@@ -340,6 +340,8 @@ impl<C: EvmConfig<Host = Self>> Host for Evm<C> {
         load_code: bool,
         _skip_cold_load: bool,
     ) -> Result<AccountLoad, InstrStop> {
+        // TODO: revm can return ColdLoadSkipped when `skip_cold_load` is true. This host does
+        // not track access lists yet, so every load is treated as warm.
         let info = self.state.account_info(address).unwrap_or_default();
         Ok(AccountLoad {
             balance: info.balance,
@@ -417,6 +419,7 @@ impl<C: EvmConfig<Host = Self>> Host for Evm<C> {
         target: Address,
         _skip_cold_load: bool,
     ) -> Result<SelfDestructResult, InstrStop> {
+        // TODO: evmone applies full SELFDESTRUCT revision rules in state transition.
         let target_exists = self.state.account_info(target).is_some_and(|info| !info.is_empty());
         let previously_destroyed =
             self.state.account_ref(contract).is_some_and(|account| account.destructed);
