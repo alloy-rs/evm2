@@ -1,4 +1,4 @@
-use alloy_primitives::{B256, Bytes};
+use alloy_primitives::{B256, Bytes, U256};
 use evm2::evm::transaction::Error as EvmError;
 use std::{io, path::PathBuf};
 use thiserror::Error;
@@ -69,6 +69,16 @@ pub enum TestErrorKind {
     /// Sender could not be recovered.
     #[error("unknown private key: {0:?}")]
     UnknownPrivateKey(B256),
+    /// Dynamic-fee transaction max fee is lower than the block base fee.
+    #[error(
+        "max fee per gas is lower than block base fee: max_fee_per_gas={max_fee_per_gas}, base_fee={base_fee}"
+    )]
+    FeeCapLessThanBaseFee {
+        /// Transaction fee cap.
+        max_fee_per_gas: U256,
+        /// Block base fee.
+        base_fee: U256,
+    },
     /// Unexpected exception status.
     #[error("unexpected exception: got {got_exception:?}, expected {expected_exception:?}")]
     UnexpectedException {

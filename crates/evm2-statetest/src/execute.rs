@@ -106,7 +106,7 @@ fn execute_unit(
             continue;
         };
         for post in posts {
-            let tx = match build_tx(&unit.transaction, &post.indexes) {
+            let tx = match build_tx(&unit.transaction, &post.indexes, block.basefee) {
                 Ok(tx) => tx,
                 Err(_) if post.expect_exception.is_some() => {
                     passed += 1;
@@ -316,7 +316,11 @@ fn parse_block(env: &Env) -> BlockEnv {
     }
 }
 
-fn build_tx(raw: &TransactionParts, indexes: &TxPartIndices) -> Result<Transaction, TestErrorKind> {
+fn build_tx(
+    raw: &TransactionParts,
+    indexes: &TxPartIndices,
+    base_fee: U256,
+) -> Result<Transaction, TestErrorKind> {
     let caller = match raw.sender {
         Some(sender) => sender,
         None => recover_address(raw.secret_key.as_slice())
@@ -331,19 +335,73 @@ fn build_tx(raw: &TransactionParts, indexes: &TxPartIndices) -> Result<Transacti
         .map_err(|_| TestErrorKind::Overflow("gasLimit"))?;
     let value = *raw.value.get(indexes.value).ok_or(TestErrorKind::BadIndex("value"))?;
     let nonce = raw.nonce.try_into().map_err(|_| TestErrorKind::Overflow("nonce"))?;
-    Ok(Transaction {
-        caller,
-        to: raw.to,
-        nonce,
-        gas_limit,
-        gas_price: raw.gas_price.or(raw.max_fee_per_gas).unwrap_or_default(),
-        value,
-        data,
-    })
+    let gas_price = effective_gas_price(raw, base_fee)?;
+    Ok(Transaction { caller, to: raw.to, nonce, gas_limit, gas_price, value, data })
+}
+
+fn effective_gas_price(raw: &TransactionParts, base_fee: U256) -> Result<U256, TestErrorKind> {
+    if let Some(gas_price) = raw.gas_price {
+        return Ok(gas_price);
+    }
+
+    let Some(max_fee_per_gas) = raw.max_fee_per_gas else {
+        return Ok(U256::ZERO);
+    };
+    if max_fee_per_gas < base_fee {
+        return Err(TestErrorKind::FeeCapLessThanBaseFee { max_fee_per_gas, base_fee });
+    }
+
+    let priority_fee = raw.max_priority_fee_per_gas.unwrap_or_default();
+    Ok(max_fee_per_gas.min(base_fee.saturating_add(priority_fee)))
 }
 
 fn recover_address(private_key: &[u8]) -> Option<Address> {
     let key = SigningKey::from_slice(private_key).ok()?;
     let public_key = key.verifying_key().to_encoded_point(false);
     Some(Address::from_raw_public_key(&public_key.as_bytes()[1..]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn effective_gas_price_uses_legacy_gas_price() {
+        let tx = TransactionParts {
+            gas_price: Some(U256::from(7)),
+            max_fee_per_gas: Some(U256::from(10)),
+            max_priority_fee_per_gas: Some(U256::from(2)),
+            ..TransactionParts::default()
+        };
+
+        assert_eq!(effective_gas_price(&tx, U256::from(100)).unwrap(), U256::from(7));
+    }
+
+    #[test]
+    fn effective_gas_price_caps_priority_fee() {
+        let tx = TransactionParts {
+            max_fee_per_gas: Some(U256::from(10)),
+            max_priority_fee_per_gas: Some(U256::from(3)),
+            ..TransactionParts::default()
+        };
+
+        assert_eq!(effective_gas_price(&tx, U256::from(8)).unwrap(), U256::from(10));
+    }
+
+    #[test]
+    fn effective_gas_price_rejects_fee_cap_below_base_fee() {
+        let tx = TransactionParts {
+            max_fee_per_gas: Some(U256::from(7)),
+            ..TransactionParts::default()
+        };
+
+        let err = effective_gas_price(&tx, U256::from(8)).unwrap_err();
+        assert!(matches!(
+            err,
+            TestErrorKind::FeeCapLessThanBaseFee {
+                max_fee_per_gas,
+                base_fee
+            } if max_fee_per_gas == U256::from(7) && base_fee == U256::from(8)
+        ));
+    }
 }

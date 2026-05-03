@@ -116,10 +116,10 @@ impl<C: EvmConfig> Evm<C> {
             return Err(Error::InsufficientFunds);
         }
 
-        let tx_checkpoint = self.state.checkpoint();
-        let log_checkpoint = self.logs.len();
         self.state.add_balance(tx.caller, Word::ZERO.wrapping_sub(max_gas_cost));
         self.state.increment_nonce(tx.caller);
+        let execution_checkpoint = self.state.checkpoint();
+        let log_checkpoint = self.logs.len();
 
         let to = tx.to.expect("checked above");
         let stop;
@@ -152,7 +152,7 @@ impl<C: EvmConfig> Evm<C> {
         }
 
         if !stop.is_success() {
-            self.state.rollback(tx_checkpoint);
+            self.state.rollback(execution_checkpoint);
             self.logs.truncate(log_checkpoint);
             if stop.is_error() {
                 gas_remaining = 0;
@@ -629,6 +629,10 @@ mod tests {
         });
 
         assert_eq!(result.unwrap().stop, InstrStop::Revert);
+        let caller_info = evm.state().account_info(caller).unwrap();
+        assert_eq!(caller_info.nonce, 1);
+        assert!(caller_info.balance < U256::from(1_000_000));
+        assert_eq!(evm.state().account_info(contract).unwrap().balance, U256::ZERO);
         assert_eq!(
             evm.state()
                 .account_ref(contract)
