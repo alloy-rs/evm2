@@ -415,7 +415,7 @@ macro_rules! make_instruction_table_inner {
 
 const fn opcode_min_spec(opcode: u8) -> SpecId {
     match opcode {
-        op::SHL | op::SHR | op::SAR | op::EXTCODEHASH => SpecId::CONSTANTINOPLE,
+        op::SHL | op::SHR | op::SAR | op::EXTCODEHASH => SpecId::PETERSBURG,
         op::RETURNDATASIZE | op::RETURNDATACOPY | op::STATICCALL | op::REVERT => SpecId::BYZANTIUM,
         op::CHAINID | op::SELFBALANCE => SpecId::ISTANBUL,
         op::BASEFEE => SpecId::LONDON,
