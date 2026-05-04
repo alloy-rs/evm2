@@ -52,6 +52,81 @@ cfg_if::cfg_if! {
 
 use arrayref as _;
 
+const HOMESTEAD_ADDRESSES: [Address; 4] =
+    [u64_to_address(1), u64_to_address(2), u64_to_address(3), u64_to_address(4)];
+const BYZANTIUM_ADDRESSES: [Address; 8] = [
+    u64_to_address(1),
+    u64_to_address(2),
+    u64_to_address(3),
+    u64_to_address(4),
+    u64_to_address(5),
+    u64_to_address(6),
+    u64_to_address(7),
+    u64_to_address(8),
+];
+const ISTANBUL_ADDRESSES: [Address; 9] = [
+    u64_to_address(1),
+    u64_to_address(2),
+    u64_to_address(3),
+    u64_to_address(4),
+    u64_to_address(5),
+    u64_to_address(6),
+    u64_to_address(7),
+    u64_to_address(8),
+    u64_to_address(9),
+];
+const CANCUN_ADDRESSES: [Address; 10] = [
+    u64_to_address(1),
+    u64_to_address(2),
+    u64_to_address(3),
+    u64_to_address(4),
+    u64_to_address(5),
+    u64_to_address(6),
+    u64_to_address(7),
+    u64_to_address(8),
+    u64_to_address(9),
+    u64_to_address(0x0a),
+];
+const PRAGUE_ADDRESSES: [Address; 17] = [
+    u64_to_address(1),
+    u64_to_address(2),
+    u64_to_address(3),
+    u64_to_address(4),
+    u64_to_address(5),
+    u64_to_address(6),
+    u64_to_address(7),
+    u64_to_address(8),
+    u64_to_address(9),
+    u64_to_address(0x0a),
+    u64_to_address(0x0b),
+    u64_to_address(0x0c),
+    u64_to_address(0x0d),
+    u64_to_address(0x0e),
+    u64_to_address(0x0f),
+    u64_to_address(0x10),
+    u64_to_address(0x11),
+];
+const OSAKA_ADDRESSES: [Address; 18] = [
+    u64_to_address(1),
+    u64_to_address(2),
+    u64_to_address(3),
+    u64_to_address(4),
+    u64_to_address(5),
+    u64_to_address(6),
+    u64_to_address(7),
+    u64_to_address(8),
+    u64_to_address(9),
+    u64_to_address(0x0a),
+    u64_to_address(0x0b),
+    u64_to_address(0x0c),
+    u64_to_address(0x0d),
+    u64_to_address(0x0e),
+    u64_to_address(0x0f),
+    u64_to_address(0x10),
+    u64_to_address(0x11),
+    u64_to_address(secp256r1::P256VERIFY_ADDRESS),
+];
+
 // silence arkworks-bls12-381 lint as blst will be used as default if both are enabled.
 cfg_if::cfg_if! {
     if #[cfg(feature = "blst")] {
@@ -101,6 +176,23 @@ impl<const SPEC: u8> Precompiles<SPEC> {
         Some(u64::from_be_bytes(bytes[12..].try_into().unwrap()))
     }
 
+    const fn addresses() -> &'static [Address] {
+        let spec = Self::SPEC_ID;
+        if spec.enables(SpecId::OSAKA) {
+            &OSAKA_ADDRESSES
+        } else if spec.enables(SpecId::PRAGUE) {
+            &PRAGUE_ADDRESSES
+        } else if spec.enables(SpecId::CANCUN) {
+            &CANCUN_ADDRESSES
+        } else if spec.enables(SpecId::ISTANBUL) {
+            &ISTANBUL_ADDRESSES
+        } else if spec.enables(SpecId::BYZANTIUM) {
+            &BYZANTIUM_ADDRESSES
+        } else {
+            &HOMESTEAD_ADDRESSES
+        }
+    }
+
     fn run(
         f: fn(&[u8], &mut Gas) -> EthPrecompileResult,
         input: &[u8],
@@ -119,6 +211,10 @@ impl<const SPEC: u8> Precompiles<SPEC> {
 }
 
 impl<const SPEC: u8> PrecompileProvider for Precompiles<SPEC> {
+    fn warm_addresses(&self) -> &'static [Address] {
+        Self::addresses()
+    }
+
     fn execute(
         &mut self,
         address: Address,
@@ -128,10 +224,10 @@ impl<const SPEC: u8> PrecompileProvider for Precompiles<SPEC> {
         let spec = Self::SPEC_ID;
         let address = Self::address_value(address)?;
         let f = match address {
-            1 if spec.enables(SpecId::HOMESTEAD) => secp256k1::run,
-            2 if spec.enables(SpecId::HOMESTEAD) => hash::run_sha256,
-            3 if spec.enables(SpecId::HOMESTEAD) => hash::run_ripemd160,
-            4 if spec.enables(SpecId::HOMESTEAD) => identity::run,
+            1 => secp256k1::run,
+            2 => hash::run_sha256,
+            3 => hash::run_ripemd160,
+            4 => identity::run,
             5 if spec.enables(SpecId::BYZANTIUM) && spec.enables(SpecId::OSAKA) => {
                 modexp::run_osaka
             }

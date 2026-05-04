@@ -12,6 +12,11 @@ pub struct PrecompileOutput {
 
 /// Precompile execution hook.
 pub trait PrecompileProvider {
+    /// Returns precompile addresses that should be warm at transaction start.
+    fn warm_addresses(&self) -> &'static [Address] {
+        &[]
+    }
+
     /// Executes the precompile at `address`, if one is registered.
     fn execute(
         &mut self,
@@ -26,6 +31,11 @@ pub trait PrecompileProvider {
 pub struct NoPrecompiles;
 
 impl PrecompileProvider for NoPrecompiles {
+    #[inline]
+    fn warm_addresses(&self) -> &'static [Address] {
+        &[]
+    }
+
     #[inline]
     fn execute(
         &mut self,

@@ -4,6 +4,7 @@ use crate::{
     Evm, EvmConfig, TxResult,
     bytecode::Bytecode,
     env::TxEnv,
+    evm::precompile::PrecompileProvider,
     interpreter::{Host, Message, MessageKind, SpecId, Word},
     registry::{HandlerError, HandlerResult, TxRegistry, TxRequest},
 };
@@ -115,6 +116,10 @@ where
     }
     if let TxKind::Call(to) = tx.to {
         req.host.state.warm_account(to);
+    }
+    let precompile_addresses = req.host.precompiles().warm_addresses();
+    for &address in precompile_addresses {
+        req.host.state.warm_account(address);
     }
 
     req.host.state.add_balance(caller, Word::ZERO.wrapping_sub(max_gas_cost));
