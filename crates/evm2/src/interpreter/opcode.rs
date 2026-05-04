@@ -1,6 +1,3 @@
-#[cfg(test)]
-use super::instructions::*;
-
 macro_rules! opcodes {
     ($d:tt $($val:literal => $name:ident => $instr:path;)*) => {
         /// Opcode byte constants.
@@ -10,13 +7,6 @@ macro_rules! opcodes {
                 pub const $name: u8 = $val;
             )*
         }
-
-        #[cfg(test)]
-        const _: () = {
-            $(
-                let _ = core::mem::size_of::<$instr>();
-            )*
-        };
     };
 }
 

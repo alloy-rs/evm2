@@ -55,7 +55,7 @@ impl<C: EvmConfig> InstructionImplTable<C> {
     pub const fn get_or_default(&self, opcode: u8) -> &'static dyn Instruction<C> {
         match self.get(opcode) {
             Some(instr) => instr,
-            None => &unknown,
+            None => &unknown::<C>::NEW,
         }
     }
 

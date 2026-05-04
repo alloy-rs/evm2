@@ -4,9 +4,9 @@ use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::{
-    AngleBracketedGenericArguments, FnArg, GenericArgument, Ident, ItemFn, LitStr, Pat, PatIdent,
-    PatSlice, PathArguments, ReturnType, Stmt, Token, Type, TypeInfer, TypePath, TypeSlice,
-    parse_macro_input, punctuated::Punctuated,
+    AngleBracketedGenericArguments, FnArg, GenericArgument, GenericParam, Ident, ItemFn, LitStr,
+    Pat, PatIdent, PatSlice, PathArguments, ReturnType, Stmt, Token, Type, TypeInfer, TypePath,
+    TypeSlice, parse_macro_input, punctuated::Punctuated,
 };
 
 /// Lowers instruction functions into the interpreter ABI.
@@ -27,12 +27,13 @@ fn expand_instruction(raw: bool, input: ItemFn) -> TokenStream2 {
     let generics = sig.generics;
     let struct_where_clause = generics.where_clause.clone();
     let impl_params = generics.params.clone();
-    let impl_generics = if impl_params.is_empty() {
+    let struct_generics = if impl_params.is_empty() {
         quote! { <C: evm2::EvmConfig> }
     } else {
         quote! { <C: evm2::EvmConfig, #impl_params> }
     };
-    let (_, type_generics, _) = generics.split_for_impl();
+    let type_params = generics.params.iter().map(generic_param_ident);
+    let type_generics = quote! { <C #(, #type_params)*> };
     let where_predicates =
         struct_where_clause.as_ref().map(|where_clause| &where_clause.predicates);
     let impl_where_clause = where_predicates.map(|predicates| quote! { where #predicates });
@@ -77,9 +78,17 @@ fn expand_instruction(raw: bool, input: ItemFn) -> TokenStream2 {
     quote! {
         #(#attrs)*
         #[allow(non_camel_case_types)]
-        #vis struct #ident #generics #struct_where_clause;
+        #vis struct #ident #struct_generics(
+            core::marker::PhantomData<fn() -> C>
+        ) #struct_where_clause;
 
-        impl #impl_generics evm2::interpreter::table::Instruction<C> for #ident #type_generics
+        impl #struct_generics #ident #type_generics
+        #impl_where_clause
+        {
+            pub const NEW: Self = Self(core::marker::PhantomData);
+        }
+
+        impl #struct_generics evm2::interpreter::table::Instruction<C> for #ident #type_generics
         #impl_where_clause
         {
             #[inline]
@@ -95,6 +104,23 @@ fn expand_instruction(raw: bool, input: ItemFn) -> TokenStream2 {
                 #stack_setup
                 #body
             }
+        }
+    }
+}
+
+fn generic_param_ident(param: &GenericParam) -> TokenStream2 {
+    match param {
+        GenericParam::Type(param) => {
+            let ident = &param.ident;
+            quote! { #ident }
+        }
+        GenericParam::Lifetime(param) => {
+            let lifetime = &param.lifetime;
+            quote! { #lifetime }
+        }
+        GenericParam::Const(param) => {
+            let ident = &param.ident;
+            quote! { #ident }
         }
     }
 }

@@ -305,7 +305,7 @@ mod tests {
     impl EvmConfig for CustomConfig {
         const VERSION: &'static EvmVersion<Self> = &{
             let mut version = EvmVersion::new_base(SpecId::OSAKA);
-            version.instruction_impls.set(CUSTOM_OPCODE, Some(&custom));
+            version.instruction_impls.set(CUSTOM_OPCODE, Some(&custom::<Self>::NEW));
             version
         };
     }

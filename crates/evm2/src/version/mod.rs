@@ -37,143 +37,143 @@ impl<C: EvmConfig> EvmVersion<C> {
         let mut gp = GasParams::empty();
         let mut i = InstructionImplTable::empty();
 
-        macro_rules! set_op {
+        macro_rules! new_op {
             ($name:ident, $cost:expr, $instr:path) => {
                 gt.set(op::$name, $cost as u16);
-                i.set(op::$name, Some(&$instr));
+                i.set(op::$name, Some(&<$instr>::NEW));
             };
         }
 
-        set_op!(STOP, ZERO, instr::stop);
-        set_op!(ADD, VERYLOW, instr::add);
-        set_op!(MUL, LOW, instr::mul);
-        set_op!(SUB, VERYLOW, instr::sub);
-        set_op!(DIV, LOW, instr::div);
-        set_op!(SDIV, LOW, instr::sdiv);
-        set_op!(MOD, LOW, instr::rem);
-        set_op!(SMOD, LOW, instr::smod);
-        set_op!(ADDMOD, MID, instr::addmod);
-        set_op!(MULMOD, MID, instr::mulmod);
-        set_op!(EXP, EXP, instr::exp);
-        set_op!(SIGNEXTEND, LOW, instr::signextend);
-        set_op!(LT, VERYLOW, instr::lt);
-        set_op!(GT, VERYLOW, instr::gt);
-        set_op!(SLT, VERYLOW, instr::slt);
-        set_op!(SGT, VERYLOW, instr::sgt);
-        set_op!(EQ, VERYLOW, instr::eq);
-        set_op!(ISZERO, VERYLOW, instr::iszero);
-        set_op!(AND, VERYLOW, instr::bitand);
-        set_op!(OR, VERYLOW, instr::bitor);
-        set_op!(XOR, VERYLOW, instr::bitxor);
-        set_op!(NOT, VERYLOW, instr::not);
-        set_op!(BYTE, VERYLOW, instr::byte);
-        set_op!(KECCAK256, KECCAK256, instr::keccak256);
-        set_op!(ADDRESS, BASE, instr::address);
-        set_op!(BALANCE, 20, instr::balance);
-        set_op!(ORIGIN, BASE, instr::origin);
-        set_op!(CALLER, BASE, instr::caller);
-        set_op!(CALLVALUE, BASE, instr::callvalue);
-        set_op!(CALLDATALOAD, VERYLOW, instr::calldataload);
-        set_op!(CALLDATASIZE, BASE, instr::calldatasize);
-        set_op!(CALLDATACOPY, VERYLOW, instr::calldatacopy);
-        set_op!(CODESIZE, BASE, instr::codesize);
-        set_op!(CODECOPY, VERYLOW, instr::codecopy);
-        set_op!(GASPRICE, BASE, instr::gasprice);
-        set_op!(EXTCODESIZE, 20, instr::extcodesize);
-        set_op!(EXTCODECOPY, 20, instr::extcodecopy);
-        set_op!(BLOCKHASH, BLOCKHASH, instr::blockhash);
-        set_op!(COINBASE, BASE, instr::coinbase);
-        set_op!(TIMESTAMP, BASE, instr::timestamp);
-        set_op!(NUMBER, BASE, instr::block_number);
-        set_op!(DIFFICULTY, BASE, instr::difficulty);
-        set_op!(GASLIMIT, BASE, instr::gaslimit);
-        set_op!(POP, BASE, instr::pop);
-        set_op!(MLOAD, VERYLOW, instr::mload);
-        set_op!(MSTORE, VERYLOW, instr::mstore);
-        set_op!(MSTORE8, VERYLOW, instr::mstore8);
-        set_op!(SLOAD, 50, instr::sload);
-        set_op!(SSTORE, ZERO, instr::sstore);
-        set_op!(JUMP, MID, instr::jump);
-        set_op!(JUMPI, HIGH, instr::jumpi);
-        set_op!(PC, BASE, instr::pc);
-        set_op!(MSIZE, BASE, instr::msize);
-        set_op!(GAS, BASE, instr::gas);
-        set_op!(JUMPDEST, JUMPDEST, instr::jumpdest);
-        set_op!(PUSH1, VERYLOW, instr::push::<1>);
-        set_op!(PUSH2, VERYLOW, instr::push::<2>);
-        set_op!(PUSH3, VERYLOW, instr::push::<3>);
-        set_op!(PUSH4, VERYLOW, instr::push::<4>);
-        set_op!(PUSH5, VERYLOW, instr::push::<5>);
-        set_op!(PUSH6, VERYLOW, instr::push::<6>);
-        set_op!(PUSH7, VERYLOW, instr::push::<7>);
-        set_op!(PUSH8, VERYLOW, instr::push::<8>);
-        set_op!(PUSH9, VERYLOW, instr::push::<9>);
-        set_op!(PUSH10, VERYLOW, instr::push::<10>);
-        set_op!(PUSH11, VERYLOW, instr::push::<11>);
-        set_op!(PUSH12, VERYLOW, instr::push::<12>);
-        set_op!(PUSH13, VERYLOW, instr::push::<13>);
-        set_op!(PUSH14, VERYLOW, instr::push::<14>);
-        set_op!(PUSH15, VERYLOW, instr::push::<15>);
-        set_op!(PUSH16, VERYLOW, instr::push::<16>);
-        set_op!(PUSH17, VERYLOW, instr::push::<17>);
-        set_op!(PUSH18, VERYLOW, instr::push::<18>);
-        set_op!(PUSH19, VERYLOW, instr::push::<19>);
-        set_op!(PUSH20, VERYLOW, instr::push::<20>);
-        set_op!(PUSH21, VERYLOW, instr::push::<21>);
-        set_op!(PUSH22, VERYLOW, instr::push::<22>);
-        set_op!(PUSH23, VERYLOW, instr::push::<23>);
-        set_op!(PUSH24, VERYLOW, instr::push::<24>);
-        set_op!(PUSH25, VERYLOW, instr::push::<25>);
-        set_op!(PUSH26, VERYLOW, instr::push::<26>);
-        set_op!(PUSH27, VERYLOW, instr::push::<27>);
-        set_op!(PUSH28, VERYLOW, instr::push::<28>);
-        set_op!(PUSH29, VERYLOW, instr::push::<29>);
-        set_op!(PUSH30, VERYLOW, instr::push::<30>);
-        set_op!(PUSH31, VERYLOW, instr::push::<31>);
-        set_op!(PUSH32, VERYLOW, instr::push::<32>);
-        set_op!(DUP1, VERYLOW, instr::dup::<1>);
-        set_op!(DUP2, VERYLOW, instr::dup::<2>);
-        set_op!(DUP3, VERYLOW, instr::dup::<3>);
-        set_op!(DUP4, VERYLOW, instr::dup::<4>);
-        set_op!(DUP5, VERYLOW, instr::dup::<5>);
-        set_op!(DUP6, VERYLOW, instr::dup::<6>);
-        set_op!(DUP7, VERYLOW, instr::dup::<7>);
-        set_op!(DUP8, VERYLOW, instr::dup::<8>);
-        set_op!(DUP9, VERYLOW, instr::dup::<9>);
-        set_op!(DUP10, VERYLOW, instr::dup::<10>);
-        set_op!(DUP11, VERYLOW, instr::dup::<11>);
-        set_op!(DUP12, VERYLOW, instr::dup::<12>);
-        set_op!(DUP13, VERYLOW, instr::dup::<13>);
-        set_op!(DUP14, VERYLOW, instr::dup::<14>);
-        set_op!(DUP15, VERYLOW, instr::dup::<15>);
-        set_op!(DUP16, VERYLOW, instr::dup::<16>);
-        set_op!(SWAP1, VERYLOW, instr::swap::<1>);
-        set_op!(SWAP2, VERYLOW, instr::swap::<2>);
-        set_op!(SWAP3, VERYLOW, instr::swap::<3>);
-        set_op!(SWAP4, VERYLOW, instr::swap::<4>);
-        set_op!(SWAP5, VERYLOW, instr::swap::<5>);
-        set_op!(SWAP6, VERYLOW, instr::swap::<6>);
-        set_op!(SWAP7, VERYLOW, instr::swap::<7>);
-        set_op!(SWAP8, VERYLOW, instr::swap::<8>);
-        set_op!(SWAP9, VERYLOW, instr::swap::<9>);
-        set_op!(SWAP10, VERYLOW, instr::swap::<10>);
-        set_op!(SWAP11, VERYLOW, instr::swap::<11>);
-        set_op!(SWAP12, VERYLOW, instr::swap::<12>);
-        set_op!(SWAP13, VERYLOW, instr::swap::<13>);
-        set_op!(SWAP14, VERYLOW, instr::swap::<14>);
-        set_op!(SWAP15, VERYLOW, instr::swap::<15>);
-        set_op!(SWAP16, VERYLOW, instr::swap::<16>);
-        set_op!(LOG0, LOG, instr::log::<0>);
-        set_op!(LOG1, LOG, instr::log::<1>);
-        set_op!(LOG2, LOG, instr::log::<2>);
-        set_op!(LOG3, LOG, instr::log::<3>);
-        set_op!(LOG4, LOG, instr::log::<4>);
-        set_op!(CREATE, ZERO, instr::create::<false>);
-        set_op!(CALL, 40, instr::call);
-        set_op!(CALLCODE, 40, instr::callcode);
-        set_op!(RETURN, ZERO, instr::r#return);
-        set_op!(INVALID, ZERO, instr::invalid);
-        set_op!(SELFDESTRUCT, ZERO, instr::selfdestruct);
+        new_op!(STOP, ZERO, instr::stop<C>);
+        new_op!(ADD, VERYLOW, instr::add<C>);
+        new_op!(MUL, LOW, instr::mul<C>);
+        new_op!(SUB, VERYLOW, instr::sub<C>);
+        new_op!(DIV, LOW, instr::div<C>);
+        new_op!(SDIV, LOW, instr::sdiv<C>);
+        new_op!(MOD, LOW, instr::rem<C>);
+        new_op!(SMOD, LOW, instr::smod<C>);
+        new_op!(ADDMOD, MID, instr::addmod<C>);
+        new_op!(MULMOD, MID, instr::mulmod<C>);
+        new_op!(EXP, EXP, instr::exp<C>);
+        new_op!(SIGNEXTEND, LOW, instr::signextend<C>);
+        new_op!(LT, VERYLOW, instr::lt<C>);
+        new_op!(GT, VERYLOW, instr::gt<C>);
+        new_op!(SLT, VERYLOW, instr::slt<C>);
+        new_op!(SGT, VERYLOW, instr::sgt<C>);
+        new_op!(EQ, VERYLOW, instr::eq<C>);
+        new_op!(ISZERO, VERYLOW, instr::iszero<C>);
+        new_op!(AND, VERYLOW, instr::bitand<C>);
+        new_op!(OR, VERYLOW, instr::bitor<C>);
+        new_op!(XOR, VERYLOW, instr::bitxor<C>);
+        new_op!(NOT, VERYLOW, instr::not<C>);
+        new_op!(BYTE, VERYLOW, instr::byte<C>);
+        new_op!(KECCAK256, KECCAK256, instr::keccak256<C>);
+        new_op!(ADDRESS, BASE, instr::address<C>);
+        new_op!(BALANCE, 20, instr::balance<C>);
+        new_op!(ORIGIN, BASE, instr::origin<C>);
+        new_op!(CALLER, BASE, instr::caller<C>);
+        new_op!(CALLVALUE, BASE, instr::callvalue<C>);
+        new_op!(CALLDATALOAD, VERYLOW, instr::calldataload<C>);
+        new_op!(CALLDATASIZE, BASE, instr::calldatasize<C>);
+        new_op!(CALLDATACOPY, VERYLOW, instr::calldatacopy<C>);
+        new_op!(CODESIZE, BASE, instr::codesize<C>);
+        new_op!(CODECOPY, VERYLOW, instr::codecopy<C>);
+        new_op!(GASPRICE, BASE, instr::gasprice<C>);
+        new_op!(EXTCODESIZE, 20, instr::extcodesize<C>);
+        new_op!(EXTCODECOPY, 20, instr::extcodecopy<C>);
+        new_op!(BLOCKHASH, BLOCKHASH, instr::blockhash<C>);
+        new_op!(COINBASE, BASE, instr::coinbase<C>);
+        new_op!(TIMESTAMP, BASE, instr::timestamp<C>);
+        new_op!(NUMBER, BASE, instr::block_number<C>);
+        new_op!(DIFFICULTY, BASE, instr::difficulty<C>);
+        new_op!(GASLIMIT, BASE, instr::gaslimit<C>);
+        new_op!(POP, BASE, instr::pop<C>);
+        new_op!(MLOAD, VERYLOW, instr::mload<C>);
+        new_op!(MSTORE, VERYLOW, instr::mstore<C>);
+        new_op!(MSTORE8, VERYLOW, instr::mstore8<C>);
+        new_op!(SLOAD, 50, instr::sload<C>);
+        new_op!(SSTORE, ZERO, instr::sstore<C>);
+        new_op!(JUMP, MID, instr::jump<C>);
+        new_op!(JUMPI, HIGH, instr::jumpi<C>);
+        new_op!(PC, BASE, instr::pc<C>);
+        new_op!(MSIZE, BASE, instr::msize<C>);
+        new_op!(GAS, BASE, instr::gas<C>);
+        new_op!(JUMPDEST, JUMPDEST, instr::jumpdest<C>);
+        new_op!(PUSH1, VERYLOW, instr::push<C, 1>);
+        new_op!(PUSH2, VERYLOW, instr::push<C, 2>);
+        new_op!(PUSH3, VERYLOW, instr::push<C, 3>);
+        new_op!(PUSH4, VERYLOW, instr::push<C, 4>);
+        new_op!(PUSH5, VERYLOW, instr::push<C, 5>);
+        new_op!(PUSH6, VERYLOW, instr::push<C, 6>);
+        new_op!(PUSH7, VERYLOW, instr::push<C, 7>);
+        new_op!(PUSH8, VERYLOW, instr::push<C, 8>);
+        new_op!(PUSH9, VERYLOW, instr::push<C, 9>);
+        new_op!(PUSH10, VERYLOW, instr::push<C, 10>);
+        new_op!(PUSH11, VERYLOW, instr::push<C, 11>);
+        new_op!(PUSH12, VERYLOW, instr::push<C, 12>);
+        new_op!(PUSH13, VERYLOW, instr::push<C, 13>);
+        new_op!(PUSH14, VERYLOW, instr::push<C, 14>);
+        new_op!(PUSH15, VERYLOW, instr::push<C, 15>);
+        new_op!(PUSH16, VERYLOW, instr::push<C, 16>);
+        new_op!(PUSH17, VERYLOW, instr::push<C, 17>);
+        new_op!(PUSH18, VERYLOW, instr::push<C, 18>);
+        new_op!(PUSH19, VERYLOW, instr::push<C, 19>);
+        new_op!(PUSH20, VERYLOW, instr::push<C, 20>);
+        new_op!(PUSH21, VERYLOW, instr::push<C, 21>);
+        new_op!(PUSH22, VERYLOW, instr::push<C, 22>);
+        new_op!(PUSH23, VERYLOW, instr::push<C, 23>);
+        new_op!(PUSH24, VERYLOW, instr::push<C, 24>);
+        new_op!(PUSH25, VERYLOW, instr::push<C, 25>);
+        new_op!(PUSH26, VERYLOW, instr::push<C, 26>);
+        new_op!(PUSH27, VERYLOW, instr::push<C, 27>);
+        new_op!(PUSH28, VERYLOW, instr::push<C, 28>);
+        new_op!(PUSH29, VERYLOW, instr::push<C, 29>);
+        new_op!(PUSH30, VERYLOW, instr::push<C, 30>);
+        new_op!(PUSH31, VERYLOW, instr::push<C, 31>);
+        new_op!(PUSH32, VERYLOW, instr::push<C, 32>);
+        new_op!(DUP1, VERYLOW, instr::dup<C, 1>);
+        new_op!(DUP2, VERYLOW, instr::dup<C, 2>);
+        new_op!(DUP3, VERYLOW, instr::dup<C, 3>);
+        new_op!(DUP4, VERYLOW, instr::dup<C, 4>);
+        new_op!(DUP5, VERYLOW, instr::dup<C, 5>);
+        new_op!(DUP6, VERYLOW, instr::dup<C, 6>);
+        new_op!(DUP7, VERYLOW, instr::dup<C, 7>);
+        new_op!(DUP8, VERYLOW, instr::dup<C, 8>);
+        new_op!(DUP9, VERYLOW, instr::dup<C, 9>);
+        new_op!(DUP10, VERYLOW, instr::dup<C, 10>);
+        new_op!(DUP11, VERYLOW, instr::dup<C, 11>);
+        new_op!(DUP12, VERYLOW, instr::dup<C, 12>);
+        new_op!(DUP13, VERYLOW, instr::dup<C, 13>);
+        new_op!(DUP14, VERYLOW, instr::dup<C, 14>);
+        new_op!(DUP15, VERYLOW, instr::dup<C, 15>);
+        new_op!(DUP16, VERYLOW, instr::dup<C, 16>);
+        new_op!(SWAP1, VERYLOW, instr::swap<C, 1>);
+        new_op!(SWAP2, VERYLOW, instr::swap<C, 2>);
+        new_op!(SWAP3, VERYLOW, instr::swap<C, 3>);
+        new_op!(SWAP4, VERYLOW, instr::swap<C, 4>);
+        new_op!(SWAP5, VERYLOW, instr::swap<C, 5>);
+        new_op!(SWAP6, VERYLOW, instr::swap<C, 6>);
+        new_op!(SWAP7, VERYLOW, instr::swap<C, 7>);
+        new_op!(SWAP8, VERYLOW, instr::swap<C, 8>);
+        new_op!(SWAP9, VERYLOW, instr::swap<C, 9>);
+        new_op!(SWAP10, VERYLOW, instr::swap<C, 10>);
+        new_op!(SWAP11, VERYLOW, instr::swap<C, 11>);
+        new_op!(SWAP12, VERYLOW, instr::swap<C, 12>);
+        new_op!(SWAP13, VERYLOW, instr::swap<C, 13>);
+        new_op!(SWAP14, VERYLOW, instr::swap<C, 14>);
+        new_op!(SWAP15, VERYLOW, instr::swap<C, 15>);
+        new_op!(SWAP16, VERYLOW, instr::swap<C, 16>);
+        new_op!(LOG0, LOG, instr::log<C, 0>);
+        new_op!(LOG1, LOG, instr::log<C, 1>);
+        new_op!(LOG2, LOG, instr::log<C, 2>);
+        new_op!(LOG3, LOG, instr::log<C, 3>);
+        new_op!(LOG4, LOG, instr::log<C, 4>);
+        new_op!(CREATE, ZERO, instr::create<C, false>);
+        new_op!(CALL, 40, instr::call<C>);
+        new_op!(CALLCODE, 40, instr::callcode<C>);
+        new_op!(RETURN, ZERO, instr::r#return<C>);
+        new_op!(INVALID, ZERO, instr::invalid<C>);
+        new_op!(SELFDESTRUCT, ZERO, instr::selfdestruct<C>);
 
         gp.set(ExpByteGas, 10);
         gp.set(Logdata, LOGDATA);
@@ -201,7 +201,7 @@ impl<C: EvmConfig> EvmVersion<C> {
         gp.set(TxBaseStipend, 21000);
 
         if spec_id.enables(SpecId::HOMESTEAD) {
-            set_op!(DELEGATECALL, 40, instr::delegatecall);
+            new_op!(DELEGATECALL, 40, instr::delegatecall<C>);
 
             gp.set(TxCreateCost, CREATE);
         }
@@ -223,26 +223,26 @@ impl<C: EvmConfig> EvmVersion<C> {
         }
 
         if spec_id.enables(SpecId::BYZANTIUM) {
-            set_op!(RETURNDATASIZE, BASE, instr::returndatasize);
-            set_op!(RETURNDATACOPY, VERYLOW, instr::returndatacopy);
-            set_op!(STATICCALL, 700, instr::staticcall);
-            set_op!(REVERT, ZERO, instr::revert);
+            new_op!(RETURNDATASIZE, BASE, instr::returndatasize<C>);
+            new_op!(RETURNDATACOPY, VERYLOW, instr::returndatacopy<C>);
+            new_op!(STATICCALL, 700, instr::staticcall<C>);
+            new_op!(REVERT, ZERO, instr::revert<C>);
         }
 
         if spec_id.enables(SpecId::CONSTANTINOPLE) {
-            set_op!(SHL, VERYLOW, instr::shl);
-            set_op!(SHR, VERYLOW, instr::shr);
-            set_op!(SAR, VERYLOW, instr::sar);
-            set_op!(EXTCODEHASH, 400, instr::extcodehash);
+            new_op!(SHL, VERYLOW, instr::shl<C>);
+            new_op!(SHR, VERYLOW, instr::shr<C>);
+            new_op!(SAR, VERYLOW, instr::sar<C>);
+            new_op!(EXTCODEHASH, 400, instr::extcodehash<C>);
         }
 
         if spec_id.enables(SpecId::PETERSBURG) {
-            set_op!(CREATE2, ZERO, instr::create::<true>);
+            new_op!(CREATE2, ZERO, instr::create<C, true>);
         }
 
         if spec_id.enables(SpecId::ISTANBUL) {
-            set_op!(CHAINID, BASE, instr::chainid);
-            set_op!(SELFBALANCE, LOW, instr::selfbalance);
+            new_op!(CHAINID, BASE, instr::chainid<C>);
+            new_op!(SELFBALANCE, LOW, instr::selfbalance<C>);
 
             gt.set(op::SLOAD, ISTANBUL_SLOAD_GAS as u16);
             gt.set(op::BALANCE, 700);
@@ -281,24 +281,24 @@ impl<C: EvmConfig> EvmVersion<C> {
         }
 
         if spec_id.enables(SpecId::LONDON) {
-            set_op!(BASEFEE, BASE, instr::basefee);
+            new_op!(BASEFEE, BASE, instr::basefee<C>);
 
             gp.set(SstoreClearingSlotRefund, WARM_SSTORE_RESET + ACCESS_LIST_STORAGE_KEY);
             gp.set(SelfdestructRefund, 0);
         }
 
         if spec_id.enables(SpecId::SHANGHAI) {
-            set_op!(PUSH0, BASE, instr::push::<0>);
+            new_op!(PUSH0, BASE, instr::push<C, 0>);
 
             gp.set(TxInitcodeCost, INITCODE_WORD_COST);
         }
 
         if spec_id.enables(SpecId::CANCUN) {
-            set_op!(BLOBHASH, VERYLOW, instr::blobhash);
-            set_op!(BLOBBASEFEE, BASE, instr::blobbasefee);
-            set_op!(TLOAD, WARM_STORAGE_READ_COST, instr::tload);
-            set_op!(TSTORE, WARM_STORAGE_READ_COST, instr::tstore);
-            set_op!(MCOPY, VERYLOW, instr::mcopy);
+            new_op!(BLOBHASH, VERYLOW, instr::blobhash<C>);
+            new_op!(BLOBBASEFEE, BASE, instr::blobbasefee<C>);
+            new_op!(TLOAD, WARM_STORAGE_READ_COST, instr::tload<C>);
+            new_op!(TSTORE, WARM_STORAGE_READ_COST, instr::tstore<C>);
+            new_op!(MCOPY, VERYLOW, instr::mcopy<C>);
         }
 
         if spec_id.enables(SpecId::PRAGUE) {
@@ -312,16 +312,16 @@ impl<C: EvmConfig> EvmVersion<C> {
         }
 
         if spec_id.enables(SpecId::OSAKA) {
-            set_op!(CLZ, LOW, instr::clz);
-            set_op!(DUPN, VERYLOW, instr::dupn);
-            set_op!(SWAPN, VERYLOW, instr::swapn);
-            set_op!(EXCHANGE, VERYLOW, instr::exchange);
+            new_op!(CLZ, LOW, instr::clz<C>);
+            new_op!(DUPN, VERYLOW, instr::dupn<C>);
+            new_op!(SWAPN, VERYLOW, instr::swapn<C>);
+            new_op!(EXCHANGE, VERYLOW, instr::exchange<C>);
         }
 
         if spec_id.enables(SpecId::AMSTERDAM) {
             const CPSB: u32 = 1174;
 
-            set_op!(SLOTNUM, BASE, instr::slotnum);
+            new_op!(SLOTNUM, BASE, instr::slotnum<C>);
 
             gp.set(Create, 9000);
             gp.set(TxCreateCost, 9000);
