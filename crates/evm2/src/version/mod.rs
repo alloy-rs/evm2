@@ -1,5 +1,10 @@
 //! EVM version data.
 
+use crate::{
+    EvmConfig,
+    interpreter::{SpecId, opcode::op},
+};
+
 mod gas_params;
 pub use gas_params::{GasId, GasParams, num_words};
 
@@ -8,24 +13,6 @@ pub use static_gas_table::StaticGasTable;
 
 mod instruction_impl_table;
 pub use instruction_impl_table::InstructionImplTable;
-
-use crate::{
-    EvmConfig,
-    interpreter::{
-        SpecId,
-        gas::{
-            ACCESS_LIST_ADDRESS, ACCESS_LIST_STORAGE_KEY, BASE, BLOCKHASH, CALL_STIPEND, CALLVALUE,
-            CODEDEPOSIT, COLD_ACCOUNT_ACCESS_COST_ADDITIONAL, COLD_SLOAD_COST, COPY, CREATE,
-            EIP7702_PER_AUTH_BASE_COST, EIP7702_PER_EMPTY_ACCOUNT_COST, EXP, HIGH,
-            INITCODE_WORD_COST, ISTANBUL_SLOAD_GAS, JUMPDEST, KECCAK256, KECCAK256WORD, LOG,
-            LOGDATA, LOGTOPIC, LOW, MEMORY, MID, NEWACCOUNT, NON_ZERO_BYTE_MULTIPLIER,
-            NON_ZERO_BYTE_MULTIPLIER_ISTANBUL, REFUND_SSTORE_CLEARS, SELFDESTRUCT_REFUND,
-            SSTORE_RESET, SSTORE_SET, STANDARD_TOKEN_COST, TOTAL_COST_FLOOR_PER_TOKEN, VERYLOW,
-            WARM_SSTORE_RESET, WARM_STORAGE_READ_COST, ZERO,
-        },
-        opcode::op,
-    },
-};
 
 /// EVM version data.
 #[derive(Debug)]
@@ -42,105 +29,151 @@ pub struct EvmVersion<C: EvmConfig = crate::BaseEvmTypes> {
 
 impl<C: EvmConfig> EvmVersion<C> {
     /// Creates the base EVM version for `spec`.
-    pub const fn new_base(spec: SpecId) -> Self {
-        use crate::interpreter::instructions as instr;
+    pub const fn new_base(spec_id: SpecId) -> Self {
+        use crate::interpreter::{gas::*, instructions as instr};
         use GasId::*;
 
         let mut gt = StaticGasTable::empty();
         let mut gp = GasParams::empty();
-        let mut instruction_impls = InstructionImplTable::empty();
+        let mut i = InstructionImplTable::empty();
 
-        gt.set(op::STOP, ZERO as u16);
-        gt.set(op::ADD, VERYLOW as u16);
-        gt.set(op::MUL, LOW as u16);
-        gt.set(op::SUB, VERYLOW as u16);
-        gt.set(op::DIV, LOW as u16);
-        gt.set(op::SDIV, LOW as u16);
-        gt.set(op::MOD, LOW as u16);
-        gt.set(op::SMOD, LOW as u16);
-        gt.set(op::ADDMOD, MID as u16);
-        gt.set(op::MULMOD, MID as u16);
-        gt.set(op::EXP, EXP as u16);
-        gt.set(op::SIGNEXTEND, LOW as u16);
-
-        gt.set(op::LT, VERYLOW as u16);
-        gt.set(op::GT, VERYLOW as u16);
-        gt.set(op::SLT, VERYLOW as u16);
-        gt.set(op::SGT, VERYLOW as u16);
-        gt.set(op::EQ, VERYLOW as u16);
-        gt.set(op::ISZERO, VERYLOW as u16);
-        gt.set(op::AND, VERYLOW as u16);
-        gt.set(op::OR, VERYLOW as u16);
-        gt.set(op::XOR, VERYLOW as u16);
-        gt.set(op::NOT, VERYLOW as u16);
-        gt.set(op::BYTE, VERYLOW as u16);
-
-        gt.set(op::KECCAK256, KECCAK256 as u16);
-
-        gt.set(op::ADDRESS, BASE as u16);
-        gt.set(op::BALANCE, 20);
-        gt.set(op::ORIGIN, BASE as u16);
-        gt.set(op::CALLER, BASE as u16);
-        gt.set(op::CALLVALUE, BASE as u16);
-        gt.set(op::CALLDATALOAD, VERYLOW as u16);
-        gt.set(op::CALLDATASIZE, BASE as u16);
-        gt.set(op::CALLDATACOPY, VERYLOW as u16);
-        gt.set(op::CODESIZE, BASE as u16);
-        gt.set(op::CODECOPY, VERYLOW as u16);
-        gt.set(op::GASPRICE, BASE as u16);
-        gt.set(op::EXTCODESIZE, 20);
-        gt.set(op::EXTCODECOPY, 20);
-
-        gt.set(op::BLOCKHASH, BLOCKHASH as u16);
-        gt.set(op::COINBASE, BASE as u16);
-        gt.set(op::TIMESTAMP, BASE as u16);
-        gt.set(op::NUMBER, BASE as u16);
-        gt.set(op::DIFFICULTY, BASE as u16);
-        gt.set(op::GASLIMIT, BASE as u16);
-
-        gt.set(op::POP, BASE as u16);
-        gt.set(op::MLOAD, VERYLOW as u16);
-        gt.set(op::MSTORE, VERYLOW as u16);
-        gt.set(op::MSTORE8, VERYLOW as u16);
-        gt.set(op::SLOAD, 50);
-        gt.set(op::SSTORE, ZERO as u16);
-        gt.set(op::JUMP, MID as u16);
-        gt.set(op::JUMPI, HIGH as u16);
-        gt.set(op::PC, BASE as u16);
-        gt.set(op::MSIZE, BASE as u16);
-        gt.set(op::GAS, BASE as u16);
-        gt.set(op::JUMPDEST, JUMPDEST as u16);
-
-        let mut opcode = op::PUSH1;
-        while opcode <= op::PUSH32 {
-            gt.set(opcode, VERYLOW as u16);
-            opcode += 1;
+        macro_rules! set_op {
+            ($name:ident, $cost:expr, $instr:path) => {
+                gt.set(op::$name, $cost as u16);
+                i.set(op::$name, Some(&$instr));
+            };
         }
 
-        opcode = op::DUP1;
-        while opcode <= op::DUP16 {
-            gt.set(opcode, VERYLOW as u16);
-            opcode += 1;
-        }
-
-        opcode = op::SWAP1;
-        while opcode <= op::SWAP16 {
-            gt.set(opcode, VERYLOW as u16);
-            opcode += 1;
-        }
-
-        gt.set(op::LOG0, LOG as u16);
-        gt.set(op::LOG1, LOG as u16);
-        gt.set(op::LOG2, LOG as u16);
-        gt.set(op::LOG3, LOG as u16);
-        gt.set(op::LOG4, LOG as u16);
-
-        gt.set(op::CREATE, ZERO as u16);
-        gt.set(op::CALL, 40);
-        gt.set(op::CALLCODE, 40);
-        gt.set(op::RETURN, ZERO as u16);
-        gt.set(op::INVALID, ZERO as u16);
-        gt.set(op::SELFDESTRUCT, ZERO as u16);
+        set_op!(STOP, ZERO, instr::stop);
+        set_op!(ADD, VERYLOW, instr::add);
+        set_op!(MUL, LOW, instr::mul);
+        set_op!(SUB, VERYLOW, instr::sub);
+        set_op!(DIV, LOW, instr::div);
+        set_op!(SDIV, LOW, instr::sdiv);
+        set_op!(MOD, LOW, instr::rem);
+        set_op!(SMOD, LOW, instr::smod);
+        set_op!(ADDMOD, MID, instr::addmod);
+        set_op!(MULMOD, MID, instr::mulmod);
+        set_op!(EXP, EXP, instr::exp);
+        set_op!(SIGNEXTEND, LOW, instr::signextend);
+        set_op!(LT, VERYLOW, instr::lt);
+        set_op!(GT, VERYLOW, instr::gt);
+        set_op!(SLT, VERYLOW, instr::slt);
+        set_op!(SGT, VERYLOW, instr::sgt);
+        set_op!(EQ, VERYLOW, instr::eq);
+        set_op!(ISZERO, VERYLOW, instr::iszero);
+        set_op!(AND, VERYLOW, instr::bitand);
+        set_op!(OR, VERYLOW, instr::bitor);
+        set_op!(XOR, VERYLOW, instr::bitxor);
+        set_op!(NOT, VERYLOW, instr::not);
+        set_op!(BYTE, VERYLOW, instr::byte);
+        set_op!(KECCAK256, KECCAK256, instr::keccak256);
+        set_op!(ADDRESS, BASE, instr::address);
+        set_op!(BALANCE, 20, instr::balance);
+        set_op!(ORIGIN, BASE, instr::origin);
+        set_op!(CALLER, BASE, instr::caller);
+        set_op!(CALLVALUE, BASE, instr::callvalue);
+        set_op!(CALLDATALOAD, VERYLOW, instr::calldataload);
+        set_op!(CALLDATASIZE, BASE, instr::calldatasize);
+        set_op!(CALLDATACOPY, VERYLOW, instr::calldatacopy);
+        set_op!(CODESIZE, BASE, instr::codesize);
+        set_op!(CODECOPY, VERYLOW, instr::codecopy);
+        set_op!(GASPRICE, BASE, instr::gasprice);
+        set_op!(EXTCODESIZE, 20, instr::extcodesize);
+        set_op!(EXTCODECOPY, 20, instr::extcodecopy);
+        set_op!(BLOCKHASH, BLOCKHASH, instr::blockhash);
+        set_op!(COINBASE, BASE, instr::coinbase);
+        set_op!(TIMESTAMP, BASE, instr::timestamp);
+        set_op!(NUMBER, BASE, instr::block_number);
+        set_op!(DIFFICULTY, BASE, instr::difficulty);
+        set_op!(GASLIMIT, BASE, instr::gaslimit);
+        set_op!(POP, BASE, instr::pop);
+        set_op!(MLOAD, VERYLOW, instr::mload);
+        set_op!(MSTORE, VERYLOW, instr::mstore);
+        set_op!(MSTORE8, VERYLOW, instr::mstore8);
+        set_op!(SLOAD, 50, instr::sload);
+        set_op!(SSTORE, ZERO, instr::sstore);
+        set_op!(JUMP, MID, instr::jump);
+        set_op!(JUMPI, HIGH, instr::jumpi);
+        set_op!(PC, BASE, instr::pc);
+        set_op!(MSIZE, BASE, instr::msize);
+        set_op!(GAS, BASE, instr::gas);
+        set_op!(JUMPDEST, JUMPDEST, instr::jumpdest);
+        set_op!(PUSH1, VERYLOW, instr::push::<1>);
+        set_op!(PUSH2, VERYLOW, instr::push::<2>);
+        set_op!(PUSH3, VERYLOW, instr::push::<3>);
+        set_op!(PUSH4, VERYLOW, instr::push::<4>);
+        set_op!(PUSH5, VERYLOW, instr::push::<5>);
+        set_op!(PUSH6, VERYLOW, instr::push::<6>);
+        set_op!(PUSH7, VERYLOW, instr::push::<7>);
+        set_op!(PUSH8, VERYLOW, instr::push::<8>);
+        set_op!(PUSH9, VERYLOW, instr::push::<9>);
+        set_op!(PUSH10, VERYLOW, instr::push::<10>);
+        set_op!(PUSH11, VERYLOW, instr::push::<11>);
+        set_op!(PUSH12, VERYLOW, instr::push::<12>);
+        set_op!(PUSH13, VERYLOW, instr::push::<13>);
+        set_op!(PUSH14, VERYLOW, instr::push::<14>);
+        set_op!(PUSH15, VERYLOW, instr::push::<15>);
+        set_op!(PUSH16, VERYLOW, instr::push::<16>);
+        set_op!(PUSH17, VERYLOW, instr::push::<17>);
+        set_op!(PUSH18, VERYLOW, instr::push::<18>);
+        set_op!(PUSH19, VERYLOW, instr::push::<19>);
+        set_op!(PUSH20, VERYLOW, instr::push::<20>);
+        set_op!(PUSH21, VERYLOW, instr::push::<21>);
+        set_op!(PUSH22, VERYLOW, instr::push::<22>);
+        set_op!(PUSH23, VERYLOW, instr::push::<23>);
+        set_op!(PUSH24, VERYLOW, instr::push::<24>);
+        set_op!(PUSH25, VERYLOW, instr::push::<25>);
+        set_op!(PUSH26, VERYLOW, instr::push::<26>);
+        set_op!(PUSH27, VERYLOW, instr::push::<27>);
+        set_op!(PUSH28, VERYLOW, instr::push::<28>);
+        set_op!(PUSH29, VERYLOW, instr::push::<29>);
+        set_op!(PUSH30, VERYLOW, instr::push::<30>);
+        set_op!(PUSH31, VERYLOW, instr::push::<31>);
+        set_op!(PUSH32, VERYLOW, instr::push::<32>);
+        set_op!(DUP1, VERYLOW, instr::dup::<1>);
+        set_op!(DUP2, VERYLOW, instr::dup::<2>);
+        set_op!(DUP3, VERYLOW, instr::dup::<3>);
+        set_op!(DUP4, VERYLOW, instr::dup::<4>);
+        set_op!(DUP5, VERYLOW, instr::dup::<5>);
+        set_op!(DUP6, VERYLOW, instr::dup::<6>);
+        set_op!(DUP7, VERYLOW, instr::dup::<7>);
+        set_op!(DUP8, VERYLOW, instr::dup::<8>);
+        set_op!(DUP9, VERYLOW, instr::dup::<9>);
+        set_op!(DUP10, VERYLOW, instr::dup::<10>);
+        set_op!(DUP11, VERYLOW, instr::dup::<11>);
+        set_op!(DUP12, VERYLOW, instr::dup::<12>);
+        set_op!(DUP13, VERYLOW, instr::dup::<13>);
+        set_op!(DUP14, VERYLOW, instr::dup::<14>);
+        set_op!(DUP15, VERYLOW, instr::dup::<15>);
+        set_op!(DUP16, VERYLOW, instr::dup::<16>);
+        set_op!(SWAP1, VERYLOW, instr::swap::<1>);
+        set_op!(SWAP2, VERYLOW, instr::swap::<2>);
+        set_op!(SWAP3, VERYLOW, instr::swap::<3>);
+        set_op!(SWAP4, VERYLOW, instr::swap::<4>);
+        set_op!(SWAP5, VERYLOW, instr::swap::<5>);
+        set_op!(SWAP6, VERYLOW, instr::swap::<6>);
+        set_op!(SWAP7, VERYLOW, instr::swap::<7>);
+        set_op!(SWAP8, VERYLOW, instr::swap::<8>);
+        set_op!(SWAP9, VERYLOW, instr::swap::<9>);
+        set_op!(SWAP10, VERYLOW, instr::swap::<10>);
+        set_op!(SWAP11, VERYLOW, instr::swap::<11>);
+        set_op!(SWAP12, VERYLOW, instr::swap::<12>);
+        set_op!(SWAP13, VERYLOW, instr::swap::<13>);
+        set_op!(SWAP14, VERYLOW, instr::swap::<14>);
+        set_op!(SWAP15, VERYLOW, instr::swap::<15>);
+        set_op!(SWAP16, VERYLOW, instr::swap::<16>);
+        set_op!(LOG0, LOG, instr::log::<0>);
+        set_op!(LOG1, LOG, instr::log::<1>);
+        set_op!(LOG2, LOG, instr::log::<2>);
+        set_op!(LOG3, LOG, instr::log::<3>);
+        set_op!(LOG4, LOG, instr::log::<4>);
+        set_op!(CREATE, ZERO, instr::create::<false>);
+        set_op!(CALL, 40, instr::call);
+        set_op!(CALLCODE, 40, instr::callcode);
+        set_op!(RETURN, ZERO, instr::r#return);
+        set_op!(INVALID, ZERO, instr::invalid);
+        set_op!(SELFDESTRUCT, ZERO, instr::selfdestruct);
 
         gp.set(ExpByteGas, 10);
         gp.set(Logdata, LOGDATA);
@@ -167,482 +200,13 @@ impl<C: EvmConfig> EvmVersion<C> {
         gp.set(TxTokenCost, STANDARD_TOKEN_COST);
         gp.set(TxBaseStipend, 21000);
 
-        instruction_impls
-            .set(op::STOP, Some(&instr::stop as &'static dyn crate::interpreter::Instruction<C>));
-        instruction_impls
-            .set(op::ADD, Some(&instr::add as &'static dyn crate::interpreter::Instruction<C>));
-        instruction_impls
-            .set(op::MUL, Some(&instr::mul as &'static dyn crate::interpreter::Instruction<C>));
-        instruction_impls
-            .set(op::SUB, Some(&instr::sub as &'static dyn crate::interpreter::Instruction<C>));
-        instruction_impls
-            .set(op::DIV, Some(&instr::div as &'static dyn crate::interpreter::Instruction<C>));
-        instruction_impls
-            .set(op::SDIV, Some(&instr::sdiv as &'static dyn crate::interpreter::Instruction<C>));
-        instruction_impls
-            .set(op::MOD, Some(&instr::rem as &'static dyn crate::interpreter::Instruction<C>));
-        instruction_impls
-            .set(op::SMOD, Some(&instr::smod as &'static dyn crate::interpreter::Instruction<C>));
-        instruction_impls.set(
-            op::ADDMOD,
-            Some(&instr::addmod as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::MULMOD,
-            Some(&instr::mulmod as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls
-            .set(op::EXP, Some(&instr::exp as &'static dyn crate::interpreter::Instruction<C>));
-        instruction_impls.set(
-            op::SIGNEXTEND,
-            Some(&instr::signextend as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls
-            .set(op::LT, Some(&instr::lt as &'static dyn crate::interpreter::Instruction<C>));
-        instruction_impls
-            .set(op::GT, Some(&instr::gt as &'static dyn crate::interpreter::Instruction<C>));
-        instruction_impls
-            .set(op::SLT, Some(&instr::slt as &'static dyn crate::interpreter::Instruction<C>));
-        instruction_impls
-            .set(op::SGT, Some(&instr::sgt as &'static dyn crate::interpreter::Instruction<C>));
-        instruction_impls
-            .set(op::EQ, Some(&instr::eq as &'static dyn crate::interpreter::Instruction<C>));
-        instruction_impls.set(
-            op::ISZERO,
-            Some(&instr::iszero as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls
-            .set(op::AND, Some(&instr::bitand as &'static dyn crate::interpreter::Instruction<C>));
-        instruction_impls
-            .set(op::OR, Some(&instr::bitor as &'static dyn crate::interpreter::Instruction<C>));
-        instruction_impls
-            .set(op::XOR, Some(&instr::bitxor as &'static dyn crate::interpreter::Instruction<C>));
-        instruction_impls
-            .set(op::NOT, Some(&instr::not as &'static dyn crate::interpreter::Instruction<C>));
-        instruction_impls
-            .set(op::BYTE, Some(&instr::byte as &'static dyn crate::interpreter::Instruction<C>));
-        instruction_impls.set(
-            op::KECCAK256,
-            Some(&instr::keccak256 as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::ADDRESS,
-            Some(&instr::address as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::BALANCE,
-            Some(&instr::balance as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::ORIGIN,
-            Some(&instr::origin as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::CALLER,
-            Some(&instr::caller as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::CALLVALUE,
-            Some(&instr::callvalue as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::CALLDATALOAD,
-            Some(&instr::calldataload as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::CALLDATASIZE,
-            Some(&instr::calldatasize as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::CALLDATACOPY,
-            Some(&instr::calldatacopy as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::CODESIZE,
-            Some(&instr::codesize as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::CODECOPY,
-            Some(&instr::codecopy as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::GASPRICE,
-            Some(&instr::gasprice as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::EXTCODESIZE,
-            Some(&instr::extcodesize as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::EXTCODECOPY,
-            Some(&instr::extcodecopy as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::BLOCKHASH,
-            Some(&instr::blockhash as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::COINBASE,
-            Some(&instr::coinbase as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::TIMESTAMP,
-            Some(&instr::timestamp as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::NUMBER,
-            Some(&instr::block_number as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::DIFFICULTY,
-            Some(&instr::difficulty as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::GASLIMIT,
-            Some(&instr::gaslimit as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls
-            .set(op::POP, Some(&instr::pop as &'static dyn crate::interpreter::Instruction<C>));
-        instruction_impls
-            .set(op::MLOAD, Some(&instr::mload as &'static dyn crate::interpreter::Instruction<C>));
-        instruction_impls.set(
-            op::MSTORE,
-            Some(&instr::mstore as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::MSTORE8,
-            Some(&instr::mstore8 as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls
-            .set(op::SLOAD, Some(&instr::sload as &'static dyn crate::interpreter::Instruction<C>));
-        instruction_impls.set(
-            op::SSTORE,
-            Some(&instr::sstore as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls
-            .set(op::JUMP, Some(&instr::jump as &'static dyn crate::interpreter::Instruction<C>));
-        instruction_impls
-            .set(op::JUMPI, Some(&instr::jumpi as &'static dyn crate::interpreter::Instruction<C>));
-        instruction_impls
-            .set(op::PC, Some(&instr::pc as &'static dyn crate::interpreter::Instruction<C>));
-        instruction_impls
-            .set(op::MSIZE, Some(&instr::msize as &'static dyn crate::interpreter::Instruction<C>));
-        instruction_impls
-            .set(op::GAS, Some(&instr::gas as &'static dyn crate::interpreter::Instruction<C>));
-        instruction_impls.set(
-            op::JUMPDEST,
-            Some(&instr::jumpdest as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::PUSH1,
-            Some(&instr::push::<1> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::PUSH2,
-            Some(&instr::push::<2> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::PUSH3,
-            Some(&instr::push::<3> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::PUSH4,
-            Some(&instr::push::<4> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::PUSH5,
-            Some(&instr::push::<5> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::PUSH6,
-            Some(&instr::push::<6> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::PUSH7,
-            Some(&instr::push::<7> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::PUSH8,
-            Some(&instr::push::<8> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::PUSH9,
-            Some(&instr::push::<9> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::PUSH10,
-            Some(&instr::push::<10> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::PUSH11,
-            Some(&instr::push::<11> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::PUSH12,
-            Some(&instr::push::<12> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::PUSH13,
-            Some(&instr::push::<13> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::PUSH14,
-            Some(&instr::push::<14> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::PUSH15,
-            Some(&instr::push::<15> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::PUSH16,
-            Some(&instr::push::<16> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::PUSH17,
-            Some(&instr::push::<17> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::PUSH18,
-            Some(&instr::push::<18> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::PUSH19,
-            Some(&instr::push::<19> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::PUSH20,
-            Some(&instr::push::<20> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::PUSH21,
-            Some(&instr::push::<21> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::PUSH22,
-            Some(&instr::push::<22> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::PUSH23,
-            Some(&instr::push::<23> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::PUSH24,
-            Some(&instr::push::<24> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::PUSH25,
-            Some(&instr::push::<25> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::PUSH26,
-            Some(&instr::push::<26> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::PUSH27,
-            Some(&instr::push::<27> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::PUSH28,
-            Some(&instr::push::<28> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::PUSH29,
-            Some(&instr::push::<29> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::PUSH30,
-            Some(&instr::push::<30> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::PUSH31,
-            Some(&instr::push::<31> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::PUSH32,
-            Some(&instr::push::<32> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::DUP1,
-            Some(&instr::dup::<1> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::DUP2,
-            Some(&instr::dup::<2> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::DUP3,
-            Some(&instr::dup::<3> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::DUP4,
-            Some(&instr::dup::<4> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::DUP5,
-            Some(&instr::dup::<5> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::DUP6,
-            Some(&instr::dup::<6> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::DUP7,
-            Some(&instr::dup::<7> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::DUP8,
-            Some(&instr::dup::<8> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::DUP9,
-            Some(&instr::dup::<9> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::DUP10,
-            Some(&instr::dup::<10> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::DUP11,
-            Some(&instr::dup::<11> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::DUP12,
-            Some(&instr::dup::<12> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::DUP13,
-            Some(&instr::dup::<13> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::DUP14,
-            Some(&instr::dup::<14> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::DUP15,
-            Some(&instr::dup::<15> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::DUP16,
-            Some(&instr::dup::<16> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::SWAP1,
-            Some(&instr::swap::<1> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::SWAP2,
-            Some(&instr::swap::<2> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::SWAP3,
-            Some(&instr::swap::<3> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::SWAP4,
-            Some(&instr::swap::<4> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::SWAP5,
-            Some(&instr::swap::<5> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::SWAP6,
-            Some(&instr::swap::<6> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::SWAP7,
-            Some(&instr::swap::<7> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::SWAP8,
-            Some(&instr::swap::<8> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::SWAP9,
-            Some(&instr::swap::<9> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::SWAP10,
-            Some(&instr::swap::<10> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::SWAP11,
-            Some(&instr::swap::<11> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::SWAP12,
-            Some(&instr::swap::<12> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::SWAP13,
-            Some(&instr::swap::<13> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::SWAP14,
-            Some(&instr::swap::<14> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::SWAP15,
-            Some(&instr::swap::<15> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::SWAP16,
-            Some(&instr::swap::<16> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::LOG0,
-            Some(&instr::log::<0> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::LOG1,
-            Some(&instr::log::<1> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::LOG2,
-            Some(&instr::log::<2> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::LOG3,
-            Some(&instr::log::<3> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::LOG4,
-            Some(&instr::log::<4> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::CREATE,
-            Some(&instr::create::<false> as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls
-            .set(op::CALL, Some(&instr::call as &'static dyn crate::interpreter::Instruction<C>));
-        instruction_impls.set(
-            op::CALLCODE,
-            Some(&instr::callcode as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::RETURN,
-            Some(&instr::r#return as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::INVALID,
-            Some(&instr::invalid as &'static dyn crate::interpreter::Instruction<C>),
-        );
-        instruction_impls.set(
-            op::SELFDESTRUCT,
-            Some(&instr::selfdestruct as &'static dyn crate::interpreter::Instruction<C>),
-        );
+        if spec_id.enables(SpecId::HOMESTEAD) {
+            set_op!(DELEGATECALL, 40, instr::delegatecall);
 
-        if spec.enables(SpecId::HOMESTEAD) {
-            gt.set(op::DELEGATECALL, 40);
             gp.set(TxCreateCost, CREATE);
-
-            instruction_impls.set(
-                op::DELEGATECALL,
-                Some(&instr::delegatecall as &'static dyn crate::interpreter::Instruction<C>),
-            );
         }
 
-        if spec.enables(SpecId::TANGERINE) {
+        if spec_id.enables(SpecId::TANGERINE) {
             gt.set(op::SLOAD, 200);
             gt.set(op::BALANCE, 400);
             gt.set(op::EXTCODESIZE, 700);
@@ -654,85 +218,45 @@ impl<C: EvmConfig> EvmVersion<C> {
             gp.set(NewAccountCostForSelfdestruct, NEWACCOUNT);
         }
 
-        if spec.enables(SpecId::SPURIOUS_DRAGON) {
+        if spec_id.enables(SpecId::SPURIOUS_DRAGON) {
             gp.set(ExpByteGas, 50);
         }
 
-        if spec.enables(SpecId::BYZANTIUM) {
-            gt.set(op::RETURNDATASIZE, BASE as u16);
-            gt.set(op::RETURNDATACOPY, VERYLOW as u16);
-            gt.set(op::STATICCALL, 700);
-            gt.set(op::REVERT, ZERO as u16);
-
-            instruction_impls.set(
-                op::RETURNDATASIZE,
-                Some(&instr::returndatasize as &'static dyn crate::interpreter::Instruction<C>),
-            );
-            instruction_impls.set(
-                op::RETURNDATACOPY,
-                Some(&instr::returndatacopy as &'static dyn crate::interpreter::Instruction<C>),
-            );
-            instruction_impls.set(
-                op::STATICCALL,
-                Some(&instr::staticcall as &'static dyn crate::interpreter::Instruction<C>),
-            );
-            instruction_impls.set(
-                op::REVERT,
-                Some(&instr::revert as &'static dyn crate::interpreter::Instruction<C>),
-            );
+        if spec_id.enables(SpecId::BYZANTIUM) {
+            set_op!(RETURNDATASIZE, BASE, instr::returndatasize);
+            set_op!(RETURNDATACOPY, VERYLOW, instr::returndatacopy);
+            set_op!(STATICCALL, 700, instr::staticcall);
+            set_op!(REVERT, ZERO, instr::revert);
         }
 
-        if spec.enables(SpecId::CONSTANTINOPLE) {
-            gt.set(op::SHL, VERYLOW as u16);
-            gt.set(op::SHR, VERYLOW as u16);
-            gt.set(op::SAR, VERYLOW as u16);
-            gt.set(op::EXTCODEHASH, 400);
-
-            instruction_impls
-                .set(op::SHL, Some(&instr::shl as &'static dyn crate::interpreter::Instruction<C>));
-            instruction_impls
-                .set(op::SHR, Some(&instr::shr as &'static dyn crate::interpreter::Instruction<C>));
-            instruction_impls
-                .set(op::SAR, Some(&instr::sar as &'static dyn crate::interpreter::Instruction<C>));
-            instruction_impls.set(
-                op::EXTCODEHASH,
-                Some(&instr::extcodehash as &'static dyn crate::interpreter::Instruction<C>),
-            );
+        if spec_id.enables(SpecId::CONSTANTINOPLE) {
+            set_op!(SHL, VERYLOW, instr::shl);
+            set_op!(SHR, VERYLOW, instr::shr);
+            set_op!(SAR, VERYLOW, instr::sar);
+            set_op!(EXTCODEHASH, 400, instr::extcodehash);
         }
 
-        if spec.enables(SpecId::PETERSBURG) {
-            gt.set(op::CREATE2, ZERO as u16);
-
-            instruction_impls.set(
-                op::CREATE2,
-                Some(&instr::create::<true> as &'static dyn crate::interpreter::Instruction<C>),
-            );
+        if spec_id.enables(SpecId::PETERSBURG) {
+            set_op!(CREATE2, ZERO, instr::create::<true>);
         }
 
-        if spec.enables(SpecId::ISTANBUL) {
-            gt.set(op::CHAINID, BASE as u16);
-            gt.set(op::SELFBALANCE, LOW as u16);
+        if spec_id.enables(SpecId::ISTANBUL) {
+            set_op!(CHAINID, BASE, instr::chainid);
+            set_op!(SELFBALANCE, LOW, instr::selfbalance);
+
             gt.set(op::SLOAD, ISTANBUL_SLOAD_GAS as u16);
             gt.set(op::BALANCE, 700);
             gt.set(op::EXTCODEHASH, 700);
+
             gp.set(SstoreStatic, ISTANBUL_SLOAD_GAS);
             gp.set(SstoreSetWithoutLoadCost, SSTORE_SET - ISTANBUL_SLOAD_GAS);
             gp.set(SstoreResetWithoutColdLoadCost, SSTORE_RESET - ISTANBUL_SLOAD_GAS);
             gp.set(SstoreSetRefund, SSTORE_SET - ISTANBUL_SLOAD_GAS);
             gp.set(SstoreResetRefund, SSTORE_RESET - ISTANBUL_SLOAD_GAS);
             gp.set(TxTokenNonZeroByteMultiplier, NON_ZERO_BYTE_MULTIPLIER_ISTANBUL);
-
-            instruction_impls.set(
-                op::CHAINID,
-                Some(&instr::chainid as &'static dyn crate::interpreter::Instruction<C>),
-            );
-            instruction_impls.set(
-                op::SELFBALANCE,
-                Some(&instr::selfbalance as &'static dyn crate::interpreter::Instruction<C>),
-            );
         }
 
-        if spec.enables(SpecId::BERLIN) {
+        if spec_id.enables(SpecId::BERLIN) {
             gt.set(op::SLOAD, WARM_STORAGE_READ_COST as u16);
             gt.set(op::BALANCE, WARM_STORAGE_READ_COST as u16);
             gt.set(op::EXTCODESIZE, WARM_STORAGE_READ_COST as u16);
@@ -742,6 +266,7 @@ impl<C: EvmConfig> EvmVersion<C> {
             gt.set(op::CALLCODE, WARM_STORAGE_READ_COST as u16);
             gt.set(op::DELEGATECALL, WARM_STORAGE_READ_COST as u16);
             gt.set(op::STATICCALL, WARM_STORAGE_READ_COST as u16);
+
             gp.set(SstoreStatic, WARM_STORAGE_READ_COST);
             gp.set(ColdAccountAdditionalCost, COLD_ACCOUNT_ACCESS_COST_ADDITIONAL);
             gp.set(ColdStorageAdditionalCost, COLD_SLOAD_COST - WARM_STORAGE_READ_COST);
@@ -755,57 +280,28 @@ impl<C: EvmConfig> EvmVersion<C> {
             gp.set(TxAccessListStorageKeyCost, ACCESS_LIST_STORAGE_KEY);
         }
 
-        if spec.enables(SpecId::LONDON) {
-            gt.set(op::BASEFEE, BASE as u16);
+        if spec_id.enables(SpecId::LONDON) {
+            set_op!(BASEFEE, BASE, instr::basefee);
+
             gp.set(SstoreClearingSlotRefund, WARM_SSTORE_RESET + ACCESS_LIST_STORAGE_KEY);
             gp.set(SelfdestructRefund, 0);
-
-            instruction_impls.set(
-                op::BASEFEE,
-                Some(&instr::basefee as &'static dyn crate::interpreter::Instruction<C>),
-            );
         }
 
-        if spec.enables(SpecId::SHANGHAI) {
-            gt.set(op::PUSH0, BASE as u16);
+        if spec_id.enables(SpecId::SHANGHAI) {
+            set_op!(PUSH0, BASE, instr::push::<0>);
+
             gp.set(TxInitcodeCost, INITCODE_WORD_COST);
-
-            instruction_impls.set(
-                op::PUSH0,
-                Some(&instr::push::<0> as &'static dyn crate::interpreter::Instruction<C>),
-            );
         }
 
-        if spec.enables(SpecId::CANCUN) {
-            gt.set(op::BLOBHASH, VERYLOW as u16);
-            gt.set(op::BLOBBASEFEE, BASE as u16);
-            gt.set(op::TLOAD, WARM_STORAGE_READ_COST as u16);
-            gt.set(op::TSTORE, WARM_STORAGE_READ_COST as u16);
-            gt.set(op::MCOPY, VERYLOW as u16);
-
-            instruction_impls.set(
-                op::BLOBHASH,
-                Some(&instr::blobhash as &'static dyn crate::interpreter::Instruction<C>),
-            );
-            instruction_impls.set(
-                op::BLOBBASEFEE,
-                Some(&instr::blobbasefee as &'static dyn crate::interpreter::Instruction<C>),
-            );
-            instruction_impls.set(
-                op::TLOAD,
-                Some(&instr::tload as &'static dyn crate::interpreter::Instruction<C>),
-            );
-            instruction_impls.set(
-                op::TSTORE,
-                Some(&instr::tstore as &'static dyn crate::interpreter::Instruction<C>),
-            );
-            instruction_impls.set(
-                op::MCOPY,
-                Some(&instr::mcopy as &'static dyn crate::interpreter::Instruction<C>),
-            );
+        if spec_id.enables(SpecId::CANCUN) {
+            set_op!(BLOBHASH, VERYLOW, instr::blobhash);
+            set_op!(BLOBBASEFEE, BASE, instr::blobbasefee);
+            set_op!(TLOAD, WARM_STORAGE_READ_COST, instr::tload);
+            set_op!(TSTORE, WARM_STORAGE_READ_COST, instr::tstore);
+            set_op!(MCOPY, VERYLOW, instr::mcopy);
         }
 
-        if spec.enables(SpecId::PRAGUE) {
+        if spec_id.enables(SpecId::PRAGUE) {
             gp.set(TxEip7702PerEmptyAccountCost, EIP7702_PER_EMPTY_ACCOUNT_COST);
             gp.set(
                 TxEip7702AuthRefund,
@@ -815,32 +311,18 @@ impl<C: EvmConfig> EvmVersion<C> {
             gp.set(TxFloorCostBaseGas, 21000);
         }
 
-        if spec.enables(SpecId::OSAKA) {
-            gt.set(op::CLZ, LOW as u16);
-            gt.set(op::DUPN, VERYLOW as u16);
-            gt.set(op::SWAPN, VERYLOW as u16);
-            gt.set(op::EXCHANGE, VERYLOW as u16);
-
-            instruction_impls
-                .set(op::CLZ, Some(&instr::clz as &'static dyn crate::interpreter::Instruction<C>));
-            instruction_impls.set(
-                op::DUPN,
-                Some(&instr::dupn as &'static dyn crate::interpreter::Instruction<C>),
-            );
-            instruction_impls.set(
-                op::SWAPN,
-                Some(&instr::swapn as &'static dyn crate::interpreter::Instruction<C>),
-            );
-            instruction_impls.set(
-                op::EXCHANGE,
-                Some(&instr::exchange as &'static dyn crate::interpreter::Instruction<C>),
-            );
+        if spec_id.enables(SpecId::OSAKA) {
+            set_op!(CLZ, LOW, instr::clz);
+            set_op!(DUPN, VERYLOW, instr::dupn);
+            set_op!(SWAPN, VERYLOW, instr::swapn);
+            set_op!(EXCHANGE, VERYLOW, instr::exchange);
         }
 
-        if spec.enables(SpecId::AMSTERDAM) {
+        if spec_id.enables(SpecId::AMSTERDAM) {
             const CPSB: u32 = 1174;
 
-            gt.set(op::SLOTNUM, BASE as u16);
+            set_op!(SLOTNUM, BASE, instr::slotnum);
+
             gp.set(Create, 9000);
             gp.set(TxCreateCost, 9000);
             gp.set(CodeDepositCost, 0);
@@ -855,14 +337,9 @@ impl<C: EvmConfig> EvmVersion<C> {
             gp.set(TxEip7702PerEmptyAccountCost, 7500 + (112 + 23) * CPSB);
             gp.set(TxEip7702AuthRefund, 112 * CPSB);
             gp.set(TxEip7702PerAuthStateGas, (112 + 23) * CPSB);
-
-            instruction_impls.set(
-                op::SLOTNUM,
-                Some(&instr::slotnum as &'static dyn crate::interpreter::Instruction<C>),
-            );
         }
 
-        Self { spec_id: spec, static_gas_table: gt, gas_params: gp, instruction_impls }
+        Self { spec_id, static_gas_table: gt, gas_params: gp, instruction_impls: i }
     }
 
     /// Returns the hard fork specification for this version.
