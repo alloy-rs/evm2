@@ -4,7 +4,6 @@ use alloc::sync::Arc;
 use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, keccak256};
 use analysis::analyze_legacy;
 use core::{cmp::Ordering, hash};
-use evm2_precompiles::OnceLock;
 use thiserror::Error;
 
 mod analysis;
@@ -14,6 +13,8 @@ mod jump_table;
 mod serde_impl;
 
 pub use jump_table::{JumpTable, JumpTableRef};
+
+use crate::precompiles::OnceLock;
 
 /// EIP-7702 version magic.
 pub const EIP7702_MAGIC: u16 = 0xEF01;
