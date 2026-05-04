@@ -1,6 +1,7 @@
 //! Precompile dispatch interface.
 
 use crate::interpreter::{Gas, InstrStop};
+use alloc::vec::Vec;
 use alloy_primitives::{Address, Bytes};
 
 /// Result returned by a precompile.
@@ -13,8 +14,8 @@ pub struct PrecompileOutput {
 /// Precompile execution hook.
 pub trait PrecompileProvider {
     /// Returns precompile addresses that should be warm at transaction start.
-    fn warm_addresses(&self) -> &'static [Address] {
-        &[]
+    fn warm_addresses(&self) -> Vec<Address> {
+        Vec::new()
     }
 
     /// Executes the precompile at `address`, if one is registered.
@@ -32,8 +33,8 @@ pub struct NoPrecompiles;
 
 impl PrecompileProvider for NoPrecompiles {
     #[inline]
-    fn warm_addresses(&self) -> &'static [Address] {
-        &[]
+    fn warm_addresses(&self) -> Vec<Address> {
+        Vec::new()
     }
 
     #[inline]

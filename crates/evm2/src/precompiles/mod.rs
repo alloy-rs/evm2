@@ -6,8 +6,11 @@ use crate::{
     interpreter::{Gas, InstrStop, SpecId},
     once_lock::OnceLock,
 };
-use alloc::boxed::Box;
-use alloy_primitives::Address;
+use alloc::{boxed::Box, vec::Vec};
+use alloy_primitives::{
+    Address,
+    map::{self, HashMap},
+};
 
 pub(crate) mod blake2;
 pub(crate) mod bls12_381;
@@ -52,81 +55,6 @@ cfg_if::cfg_if! {
 
 use arrayref as _;
 
-const HOMESTEAD_ADDRESSES: [Address; 4] =
-    [u64_to_address(1), u64_to_address(2), u64_to_address(3), u64_to_address(4)];
-const BYZANTIUM_ADDRESSES: [Address; 8] = [
-    u64_to_address(1),
-    u64_to_address(2),
-    u64_to_address(3),
-    u64_to_address(4),
-    u64_to_address(5),
-    u64_to_address(6),
-    u64_to_address(7),
-    u64_to_address(8),
-];
-const ISTANBUL_ADDRESSES: [Address; 9] = [
-    u64_to_address(1),
-    u64_to_address(2),
-    u64_to_address(3),
-    u64_to_address(4),
-    u64_to_address(5),
-    u64_to_address(6),
-    u64_to_address(7),
-    u64_to_address(8),
-    u64_to_address(9),
-];
-const CANCUN_ADDRESSES: [Address; 10] = [
-    u64_to_address(1),
-    u64_to_address(2),
-    u64_to_address(3),
-    u64_to_address(4),
-    u64_to_address(5),
-    u64_to_address(6),
-    u64_to_address(7),
-    u64_to_address(8),
-    u64_to_address(9),
-    u64_to_address(0x0a),
-];
-const PRAGUE_ADDRESSES: [Address; 17] = [
-    u64_to_address(1),
-    u64_to_address(2),
-    u64_to_address(3),
-    u64_to_address(4),
-    u64_to_address(5),
-    u64_to_address(6),
-    u64_to_address(7),
-    u64_to_address(8),
-    u64_to_address(9),
-    u64_to_address(0x0a),
-    u64_to_address(0x0b),
-    u64_to_address(0x0c),
-    u64_to_address(0x0d),
-    u64_to_address(0x0e),
-    u64_to_address(0x0f),
-    u64_to_address(0x10),
-    u64_to_address(0x11),
-];
-const OSAKA_ADDRESSES: [Address; 18] = [
-    u64_to_address(1),
-    u64_to_address(2),
-    u64_to_address(3),
-    u64_to_address(4),
-    u64_to_address(5),
-    u64_to_address(6),
-    u64_to_address(7),
-    u64_to_address(8),
-    u64_to_address(9),
-    u64_to_address(0x0a),
-    u64_to_address(0x0b),
-    u64_to_address(0x0c),
-    u64_to_address(0x0d),
-    u64_to_address(0x0e),
-    u64_to_address(0x0f),
-    u64_to_address(0x10),
-    u64_to_address(0x11),
-    u64_to_address(secp256r1::P256VERIFY_ADDRESS),
-];
-
 // silence arkworks-bls12-381 lint as blst will be used as default if both are enabled.
 cfg_if::cfg_if! {
     if #[cfg(feature = "blst")] {
@@ -158,6 +86,9 @@ pub fn crypto() -> &'static dyn Crypto {
     CRYPTO.get_or_init(|| Box::new(DefaultCrypto)).as_ref()
 }
 
+type PrecompileFn = fn(&[u8], &mut Gas) -> EthPrecompileResult;
+type PrecompileMap = HashMap<Address, PrecompileFn>;
+
 /// Ethereum precompile provider.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Precompiles<const SPEC: u8 = { SpecId::OSAKA as u8 }>;
@@ -168,28 +99,20 @@ impl<const SPEC: u8> Precompiles<SPEC> {
         None => panic!("invalid EVM specification ID"),
     };
 
-    fn address_value(address: Address) -> Option<u64> {
-        let bytes = address.as_slice();
-        if bytes[..12].iter().any(|&byte| byte != 0) {
-            return None;
-        }
-        Some(u64::from_be_bytes(bytes[12..].try_into().unwrap()))
-    }
-
-    const fn addresses() -> &'static [Address] {
+    fn map() -> &'static PrecompileMap {
         let spec = Self::SPEC_ID;
         if spec.enables(SpecId::OSAKA) {
-            &OSAKA_ADDRESSES
+            osaka()
         } else if spec.enables(SpecId::PRAGUE) {
-            &PRAGUE_ADDRESSES
+            prague()
         } else if spec.enables(SpecId::CANCUN) {
-            &CANCUN_ADDRESSES
+            cancun()
         } else if spec.enables(SpecId::ISTANBUL) {
-            &ISTANBUL_ADDRESSES
+            istanbul()
         } else if spec.enables(SpecId::BYZANTIUM) {
-            &BYZANTIUM_ADDRESSES
+            byzantium()
         } else {
-            &HOMESTEAD_ADDRESSES
+            homestead()
         }
     }
 
@@ -211,8 +134,8 @@ impl<const SPEC: u8> Precompiles<SPEC> {
 }
 
 impl<const SPEC: u8> PrecompileProvider for Precompiles<SPEC> {
-    fn warm_addresses(&self) -> &'static [Address] {
-        Self::addresses()
+    fn warm_addresses(&self) -> Vec<Address> {
+        Self::map().keys().copied().collect()
     }
 
     fn execute(
@@ -221,44 +144,90 @@ impl<const SPEC: u8> PrecompileProvider for Precompiles<SPEC> {
         input: &[u8],
         gas: &mut Gas,
     ) -> Option<Result<EvmPrecompileOutput, InstrStop>> {
-        let spec = Self::SPEC_ID;
-        let address = Self::address_value(address)?;
-        let f = match address {
-            1 => secp256k1::run,
-            2 => hash::run_sha256,
-            3 => hash::run_ripemd160,
-            4 => identity::run,
-            5 if spec.enables(SpecId::BYZANTIUM) && spec.enables(SpecId::OSAKA) => {
-                modexp::run_osaka
-            }
-            5 if spec.enables(SpecId::BYZANTIUM) && spec.enables(SpecId::BERLIN) => {
-                modexp::run_berlin
-            }
-            5 if spec.enables(SpecId::BYZANTIUM) => modexp::run_byzantium,
-            6 if spec.enables(SpecId::BYZANTIUM) && spec.enables(SpecId::ISTANBUL) => {
-                bn254::add::run_istanbul
-            }
-            6 if spec.enables(SpecId::BYZANTIUM) => bn254::add::run_byzantium,
-            7 if spec.enables(SpecId::BYZANTIUM) && spec.enables(SpecId::ISTANBUL) => {
-                bn254::mul::run_istanbul
-            }
-            7 if spec.enables(SpecId::BYZANTIUM) => bn254::mul::run_byzantium,
-            8 if spec.enables(SpecId::BYZANTIUM) && spec.enables(SpecId::ISTANBUL) => {
-                bn254::pair::run_istanbul
-            }
-            8 if spec.enables(SpecId::BYZANTIUM) => bn254::pair::run_byzantium,
-            9 if spec.enables(SpecId::ISTANBUL) => blake2::run,
-            0x0a if spec.enables(SpecId::CANCUN) => kzg_point_evaluation::run,
-            0x0b if spec.enables(SpecId::PRAGUE) => bls12_381::g1_add::run,
-            0x0c if spec.enables(SpecId::PRAGUE) => bls12_381::g1_msm::run,
-            0x0d if spec.enables(SpecId::PRAGUE) => bls12_381::g2_add::run,
-            0x0e if spec.enables(SpecId::PRAGUE) => bls12_381::g2_msm::run,
-            0x0f if spec.enables(SpecId::PRAGUE) => bls12_381::pairing::run,
-            0x10 if spec.enables(SpecId::PRAGUE) => bls12_381::map_fp_to_g1::run,
-            0x11 if spec.enables(SpecId::PRAGUE) => bls12_381::map_fp2_to_g2::run,
-            secp256r1::P256VERIFY_ADDRESS if spec.enables(SpecId::OSAKA) => secp256r1::run_osaka,
-            _ => return None,
-        };
+        let f = *Self::map().get(&address)?;
         Some(Self::run(f, input, gas))
     }
+}
+
+fn insert(precompiles: &mut PrecompileMap, address: u64, f: PrecompileFn) {
+    precompiles.insert(u64_to_address(address), f);
+}
+
+fn homestead() -> &'static PrecompileMap {
+    static INSTANCE: OnceLock<PrecompileMap> = OnceLock::new();
+    INSTANCE.get_or_init(|| {
+        let mut precompiles = map::HashMap::default();
+        insert(&mut precompiles, 1, secp256k1::run);
+        insert(&mut precompiles, 2, hash::run_sha256);
+        insert(&mut precompiles, 3, hash::run_ripemd160);
+        insert(&mut precompiles, 4, identity::run);
+        precompiles
+    })
+}
+
+fn byzantium() -> &'static PrecompileMap {
+    static INSTANCE: OnceLock<PrecompileMap> = OnceLock::new();
+    INSTANCE.get_or_init(|| {
+        let mut precompiles = homestead().clone();
+        insert(&mut precompiles, 5, modexp::run_byzantium);
+        insert(&mut precompiles, 6, bn254::add::run_byzantium);
+        insert(&mut precompiles, 7, bn254::mul::run_byzantium);
+        insert(&mut precompiles, 8, bn254::pair::run_byzantium);
+        precompiles
+    })
+}
+
+fn istanbul() -> &'static PrecompileMap {
+    static INSTANCE: OnceLock<PrecompileMap> = OnceLock::new();
+    INSTANCE.get_or_init(|| {
+        let mut precompiles = byzantium().clone();
+        insert(&mut precompiles, 6, bn254::add::run_istanbul);
+        insert(&mut precompiles, 7, bn254::mul::run_istanbul);
+        insert(&mut precompiles, 8, bn254::pair::run_istanbul);
+        insert(&mut precompiles, 9, blake2::run);
+        precompiles
+    })
+}
+
+fn berlin() -> &'static PrecompileMap {
+    static INSTANCE: OnceLock<PrecompileMap> = OnceLock::new();
+    INSTANCE.get_or_init(|| {
+        let mut precompiles = istanbul().clone();
+        insert(&mut precompiles, 5, modexp::run_berlin);
+        precompiles
+    })
+}
+
+fn cancun() -> &'static PrecompileMap {
+    static INSTANCE: OnceLock<PrecompileMap> = OnceLock::new();
+    INSTANCE.get_or_init(|| {
+        let mut precompiles = berlin().clone();
+        insert(&mut precompiles, 0x0a, kzg_point_evaluation::run);
+        precompiles
+    })
+}
+
+fn prague() -> &'static PrecompileMap {
+    static INSTANCE: OnceLock<PrecompileMap> = OnceLock::new();
+    INSTANCE.get_or_init(|| {
+        let mut precompiles = cancun().clone();
+        insert(&mut precompiles, 0x0b, bls12_381::g1_add::run);
+        insert(&mut precompiles, 0x0c, bls12_381::g1_msm::run);
+        insert(&mut precompiles, 0x0d, bls12_381::g2_add::run);
+        insert(&mut precompiles, 0x0e, bls12_381::g2_msm::run);
+        insert(&mut precompiles, 0x0f, bls12_381::pairing::run);
+        insert(&mut precompiles, 0x10, bls12_381::map_fp_to_g1::run);
+        insert(&mut precompiles, 0x11, bls12_381::map_fp2_to_g2::run);
+        precompiles
+    })
+}
+
+fn osaka() -> &'static PrecompileMap {
+    static INSTANCE: OnceLock<PrecompileMap> = OnceLock::new();
+    INSTANCE.get_or_init(|| {
+        let mut precompiles = prague().clone();
+        insert(&mut precompiles, 5, modexp::run_osaka);
+        insert(&mut precompiles, secp256r1::P256VERIFY_ADDRESS, secp256r1::run_osaka);
+        precompiles
+    })
 }

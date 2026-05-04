@@ -117,8 +117,7 @@ where
     if let TxKind::Call(to) = tx.to {
         req.host.state.warm_account(to);
     }
-    let precompile_addresses = req.host.precompiles().warm_addresses();
-    for &address in precompile_addresses {
+    for address in req.host.precompiles().warm_addresses() {
         req.host.state.warm_account(address);
     }
 
