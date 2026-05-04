@@ -1,5 +1,6 @@
 //! bitcoin_secp256k1 implementation of `ecrecover`. More about it in
 //! [`crate::precompiles::secp256k1`].
+
 use alloy_primitives::{B256, B512, keccak256};
 use secp256k1::{
     Message, SECP256K1,

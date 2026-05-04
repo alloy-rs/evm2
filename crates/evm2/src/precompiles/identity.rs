@@ -1,8 +1,9 @@
 //! Identity precompile returns
+
 use super::calc_linear_cost;
 use crate::{
     interpreter::Gas,
-    precompiles::{EthPrecompileOutput, EthPrecompileResult},
+    precompiles::{EthPrecompileResult, PrecompileOutput},
 };
 use alloy_primitives::Bytes;
 
@@ -19,5 +20,5 @@ pub(crate) const IDENTITY_PER_WORD: u64 = 3;
 pub(crate) fn run(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
     let gas_used = calc_linear_cost(input.len(), IDENTITY_BASE, IDENTITY_PER_WORD);
     gas.spend(gas_used)?;
-    Ok(EthPrecompileOutput::new(Bytes::copy_from_slice(input)))
+    Ok(PrecompileOutput::new(Bytes::copy_from_slice(input)))
 }

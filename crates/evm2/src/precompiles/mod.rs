@@ -1,5 +1,4 @@
 //! EVM precompiled contracts.
-#![allow(dead_code, unused_imports)]
 
 use crate::{
     evm::precompile::{PrecompileOutput as EvmPrecompileOutput, PrecompileProvider},
@@ -34,12 +33,13 @@ pub(crate) mod eip7823 {
 
 /// EIP-4844 constants.
 pub(crate) mod eip4844 {
+    #[allow(unused_imports)]
     pub(crate) use crate::precompiles::kzg_point_evaluation::VERSIONED_HASH_VERSION_KZG;
 }
 
 pub(crate) use interface::*;
 pub use interface::{Crypto, PrecompileHalt};
-#[allow(deprecated)]
+#[allow(deprecated, unused_imports)]
 pub(crate) use utils::calc_linear_cost_u32;
 pub(crate) use utils::{calc_linear_cost, u64_to_address};
 
@@ -108,14 +108,15 @@ impl<const SPEC: u8> Precompiles<SPEC> {
         input: &[u8],
         gas: &mut Gas,
     ) -> Result<EvmPrecompileOutput, InstrStop> {
-        let result = f(input, gas);
-        match result {
-            Ok(output) => Ok(EvmPrecompileOutput::new(output.bytes)),
-            Err(PrecompileHalt::OutOfGas) => {
+        let output = PrecompileOutput::from_eth_result(f(input, gas));
+        match output.status {
+            PrecompileStatus::Success => Ok(EvmPrecompileOutput::new(output.bytes)),
+            PrecompileStatus::Revert => Err(InstrStop::PrecompileError),
+            PrecompileStatus::Halt(PrecompileHalt::OutOfGas) => {
                 gas.spend_all();
                 Err(InstrStop::PrecompileOOG)
             }
-            Err(_) => Err(InstrStop::PrecompileError),
+            PrecompileStatus::Halt(_) => Err(InstrStop::PrecompileError),
         }
     }
 }

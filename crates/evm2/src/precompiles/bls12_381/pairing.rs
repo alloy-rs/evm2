@@ -1,4 +1,5 @@
 //! BLS12-381 pairing precompile. More details in [`run`]
+
 use super::{
     PairingPair,
     utils::{remove_g1_padding, remove_g2_padding},
@@ -6,7 +7,7 @@ use super::{
 use crate::{
     interpreter::Gas,
     precompiles::{
-        EthPrecompileOutput, EthPrecompileResult, PrecompileHalt,
+        EthPrecompileResult, PrecompileHalt, PrecompileOutput,
         bls12_381_const::{
             PADDED_G1_LENGTH, PADDED_G2_LENGTH, PAIRING_INPUT_LENGTH, PAIRING_MULTIPLIER_BASE,
             PAIRING_OFFSET_BASE,
@@ -55,5 +56,5 @@ pub(crate) fn run(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
     let result = crate::precompiles::crypto().bls12_381_pairing_check(&pairs)?;
     let result = if result { 1 } else { 0 };
 
-    Ok(EthPrecompileOutput::new(B256::with_last_byte(result).into()))
+    Ok(PrecompileOutput::new(B256::with_last_byte(result).into()))
 }

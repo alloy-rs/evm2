@@ -1,4 +1,5 @@
 //! BN128 precompile using Arkworks BLS12-381 implementation.
+
 use super::{FQ_LEN, FQ2_LEN, G1_LEN, SCALAR_LEN};
 use crate::precompiles::PrecompileHalt;
 use alloc::vec::Vec;

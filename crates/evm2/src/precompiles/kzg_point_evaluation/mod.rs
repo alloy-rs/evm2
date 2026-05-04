@@ -1,8 +1,9 @@
 //! KZG point evaluation precompile added in [`EIP-4844`](https://eips.ethereum.org/EIPS/eip-4844)
 //! For more details check [`run`] function.
+
 use crate::{
     interpreter::Gas,
-    precompiles::{EthPrecompileOutput, EthPrecompileResult, PrecompileHalt},
+    precompiles::{EthPrecompileResult, PrecompileHalt, PrecompileOutput},
 };
 pub(crate) mod arkworks;
 
@@ -55,11 +56,12 @@ pub(crate) fn run(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
     crate::precompiles::crypto().verify_kzg_proof(z, y, commitment, proof)?;
 
     // Return FIELD_ELEMENTS_PER_BLOB and BLS_MODULUS as padded 32 byte big endian values
-    Ok(EthPrecompileOutput::new(RETURN_VALUE.into()))
+    Ok(PrecompileOutput::new(RETURN_VALUE.into()))
 }
 
 /// `VERSIONED_HASH_VERSION_KZG ++ sha256(commitment)[1..]`
 #[inline]
+#[allow(dead_code)]
 pub(crate) fn kzg_to_versioned_hash(commitment: &[u8]) -> [u8; 32] {
     kzg_to_versioned_hash_with_crypto(&crate::precompiles::DefaultCrypto, commitment)
 }

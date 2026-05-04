@@ -1,4 +1,5 @@
 //! BLS12-381 utilities for padding and unpadding of input.
+
 use crate::precompiles::{
     PrecompileHalt,
     bls12_381_const::{

@@ -1,5 +1,7 @@
 //! Constants specifying the precompile addresses for each precompile in EIP-2537
 
+#![allow(dead_code)]
+
 use crate::precompiles::u64_to_address;
 use alloy_primitives::{Address, hex};
 

@@ -1,8 +1,9 @@
 //! BN254 precompiles added in [`EIP-1962`](https://eips.ethereum.org/EIPS/eip-1962)
+
 use crate::{
     interpreter::Gas,
     precompiles::{
-        EthPrecompileOutput, EthPrecompileResult, PrecompileHalt,
+        EthPrecompileResult, PrecompileHalt, PrecompileOutput,
         utils::{bool_to_bytes32, right_pad},
     },
 };
@@ -133,7 +134,7 @@ pub(crate) fn run_add(input: &[u8], gas_cost: u64, gas: &mut Gas) -> EthPrecompi
     let p2_bytes = &input[G1_LEN..];
     let output = crate::precompiles::crypto().bn254_g1_add(p1_bytes, p2_bytes)?;
 
-    Ok(EthPrecompileOutput::new(output.into()))
+    Ok(PrecompileOutput::new(output.into()))
 }
 
 /// Run the Bn254 mul precompile
@@ -146,7 +147,7 @@ pub(crate) fn run_mul(input: &[u8], gas_cost: u64, gas: &mut Gas) -> EthPrecompi
     let scalar_bytes = &input[G1_LEN..G1_LEN + SCALAR_LEN];
     let output = crate::precompiles::crypto().bn254_g1_mul(point_bytes, scalar_bytes)?;
 
-    Ok(EthPrecompileOutput::new(output.into()))
+    Ok(PrecompileOutput::new(output.into()))
 }
 
 /// Run the Bn254 pair precompile
@@ -182,7 +183,7 @@ pub(crate) fn run_pair(
     }
 
     let pairing_result = crate::precompiles::crypto().bn254_pairing_check(&points)?;
-    Ok(EthPrecompileOutput::new(bool_to_bytes32(pairing_result)))
+    Ok(PrecompileOutput::new(bool_to_bytes32(pairing_result)))
 }
 
 #[cfg(test)]

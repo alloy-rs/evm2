@@ -1,8 +1,9 @@
 //! BLS12-381 G1 msm precompile. More details in [`run`]
+
 use crate::{
     interpreter::Gas,
     precompiles::{
-        EthPrecompileOutput, EthPrecompileResult, PrecompileHalt,
+        EthPrecompileResult, PrecompileHalt, PrecompileOutput,
         bls12_381::{
             G1Point,
             utils::{pad_g1_point, remove_g1_padding},
@@ -51,7 +52,7 @@ pub(crate) fn run(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
     // Pad the result for EVM compatibility
     let padded_result = pad_g1_point(&unpadded_result);
 
-    Ok(EthPrecompileOutput::new(padded_result.into()))
+    Ok(PrecompileOutput::new(padded_result.into()))
 }
 
 #[cfg(test)]

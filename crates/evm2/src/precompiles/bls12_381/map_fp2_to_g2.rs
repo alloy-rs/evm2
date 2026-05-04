@@ -1,9 +1,10 @@
 //! BLS12-381 map fp2 to g2 precompile. More details in [`run`]
+
 use super::utils::{pad_g2_point, remove_fp_padding};
 use crate::{
     interpreter::Gas,
     precompiles::{
-        EthPrecompileOutput, EthPrecompileResult, PrecompileHalt,
+        EthPrecompileResult, PrecompileHalt, PrecompileOutput,
         bls12_381_const::{MAP_FP2_TO_G2_BASE_GAS_FEE, PADDED_FP_LENGTH, PADDED_FP2_LENGTH},
     },
 };
@@ -28,5 +29,5 @@ pub(crate) fn run(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
     // Pad the result for EVM compatibility
     let padded_result = pad_g2_point(&unpadded_result);
 
-    Ok(EthPrecompileOutput::new(padded_result.into()))
+    Ok(PrecompileOutput::new(padded_result.into()))
 }

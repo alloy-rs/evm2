@@ -50,6 +50,7 @@
 //!
 //! assert_eq!(receipt, Receipt { gas_used: 21_007 });
 //! # Ok::<(), HandlerError>(())
+
 //! ```
 
 use alloc::{boxed::Box, rc::Rc};

@@ -1,5 +1,8 @@
 //! Interface for the precompiles. It contains the precompile result type,
 //! the precompile output type, and the precompile error type.
+
+#![allow(dead_code)]
+
 use alloc::{borrow::Cow, string::String, sync::Arc, vec::Vec};
 use alloy_primitives::Bytes;
 use core::fmt::{self, Debug};
@@ -67,21 +70,7 @@ impl From<&'static str> for AnyError {
 }
 
 /// A precompile operation result type for individual Ethereum precompile functions.
-pub(crate) type EthPrecompileResult = Result<EthPrecompileOutput, PrecompileHalt>;
-
-/// Simple precompile execution output used by individual Ethereum precompile functions.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct EthPrecompileOutput {
-    /// Output bytes.
-    pub bytes: Bytes,
-}
-
-impl EthPrecompileOutput {
-    /// Returns new precompile output with the given output bytes.
-    pub(crate) const fn new(bytes: Bytes) -> Self {
-        Self { bytes }
-    }
-}
+pub(crate) type EthPrecompileResult = Result<PrecompileOutput, PrecompileHalt>;
 
 /// Status of a precompile execution.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -151,7 +140,7 @@ impl PrecompileOutput {
     /// Returns a new precompile output from an Ethereum precompile result.
     pub(crate) fn from_eth_result(result: EthPrecompileResult) -> Self {
         match result {
-            Ok(output) => Self::new(output.bytes),
+            Ok(output) => output,
             Err(halt) => Self::halt(halt),
         }
     }

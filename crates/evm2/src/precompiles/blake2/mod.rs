@@ -2,6 +2,7 @@
 //!
 //! The compression function is vendored from
 //! [`blake2b_simd`](https://github.com/oconnor663/blake2_simd) (MIT license),
+
 //! with modifications for EIP-152 variable round counts.
 
 #![cfg_attr(
@@ -11,7 +12,7 @@
 
 use crate::{
     interpreter::Gas,
-    precompiles::{EthPrecompileOutput, EthPrecompileResult, PrecompileHalt},
+    precompiles::{EthPrecompileResult, PrecompileHalt, PrecompileOutput},
 };
 
 #[cfg(all(
@@ -119,5 +120,5 @@ pub(crate) fn run(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
         out[i..i + 8].copy_from_slice(&h.to_le_bytes());
     }
 
-    Ok(EthPrecompileOutput::new(out.into()))
+    Ok(PrecompileOutput::new(out.into()))
 }

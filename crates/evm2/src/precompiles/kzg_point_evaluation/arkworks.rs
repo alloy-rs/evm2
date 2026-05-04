@@ -1,4 +1,7 @@
 //! KZG point evaluation precompile using Arkworks BLS12-381 implementation.
+
+#![allow(dead_code)]
+
 use crate::precompiles::{
     OnceLock, PrecompileHalt, bls12_381::arkworks::pairing_check,
     bls12_381_const::TRUSTED_SETUP_TAU_G2_BYTES,

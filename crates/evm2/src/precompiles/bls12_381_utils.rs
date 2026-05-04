@@ -1,4 +1,5 @@
 //! Utility functions for the BLS12-381 precompiles
+
 use crate::precompiles::bls12_381_const::MSM_MULTIPLIER;
 
 /// Implements the gas schedule for G1/G2 Multiscalar-multiplication assuming 30

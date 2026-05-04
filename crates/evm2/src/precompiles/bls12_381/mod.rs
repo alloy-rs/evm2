@@ -1,4 +1,5 @@
 //! BLS12-381 precompiles added in [`EIP-2537`](https://eips.ethereum.org/EIPS/eip-2537)
+
 //! For more details check modules for each precompile.
 
 #[cfg_attr(feature = "blst", expect(dead_code))]

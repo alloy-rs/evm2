@@ -15,13 +15,14 @@
 //!
 //! Output format:
 //! [32 bytes for recovered address]
+
 #[cfg(feature = "secp256k1")]
 pub(crate) mod bitcoin_secp256k1;
 pub(crate) mod k256;
 
 use crate::{
     interpreter::Gas,
-    precompiles::{EthPrecompileOutput, EthPrecompileResult, utils::right_pad},
+    precompiles::{EthPrecompileResult, PrecompileOutput, utils::right_pad},
 };
 use alloy_primitives::{B256, B512, Bytes};
 
@@ -36,7 +37,7 @@ pub(crate) fn run(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
 
     // `v` must be a 32-byte big-endian integer equal to 27 or 28.
     if !(input[32..63].iter().all(|&b| b == 0) && matches!(input[63], 27 | 28)) {
-        return Ok(EthPrecompileOutput::new(Bytes::new()));
+        return Ok(PrecompileOutput::new(Bytes::new()));
     }
 
     let msg = <&B256>::try_from(&input[0..32]).unwrap();
@@ -45,7 +46,7 @@ pub(crate) fn run(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
 
     let res = crate::precompiles::crypto().secp256k1_ecrecover(&sig.0, recid, &msg.0).ok();
     let out = res.map(|o| o.to_vec().into()).unwrap_or_default();
-    Ok(EthPrecompileOutput::new(out))
+    Ok(PrecompileOutput::new(out))
 }
 
 pub(crate) fn ecrecover_bytes(sig: &[u8; 64], recid: u8, msg: &[u8; 32]) -> Option<[u8; 32]> {

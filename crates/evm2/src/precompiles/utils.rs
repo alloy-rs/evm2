@@ -11,6 +11,7 @@ pub(crate) const fn calc_linear_cost(len: usize, base: u64, word: u64) -> u64 {
 
 /// Calculate the linear cost of a precompile.
 #[deprecated(note = "please use `calc_linear_cost` instead")]
+#[allow(dead_code)]
 pub(crate) const fn calc_linear_cost_u32(len: usize, base: u64, word: u64) -> u64 {
     calc_linear_cost(len, base, word)
 }
@@ -43,6 +44,7 @@ pub(crate) fn right_pad_with_offset<const LEN: usize>(
 ///
 /// Returns the first `len` bytes if it does not need padding.
 #[inline]
+#[allow(dead_code)]
 pub(crate) fn right_pad_with_offset_vec(data: &[u8], offset: usize, len: usize) -> Cow<'_, [u8]> {
     right_pad_vec(data.get(offset..).unwrap_or_default(), len)
 }
@@ -93,6 +95,7 @@ pub(crate) fn left_pad<const LEN: usize>(data: &[u8]) -> Cow<'_, [u8; LEN]> {
 ///
 /// Returns the first `len` bytes if it does not need padding.
 #[inline]
+#[allow(dead_code)]
 pub(crate) fn left_pad_vec(data: &[u8], len: usize) -> Cow<'_, [u8]> {
     if let Some(data) = data.get(..len) {
         Cow::Borrowed(data)

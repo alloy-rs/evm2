@@ -5,9 +5,10 @@
 //!
 //! The main purpose of this precompile is to verify ECDSA signatures that use the secp256r1, or
 //! P256 elliptic curve.
+
 use crate::{
     interpreter::Gas,
-    precompiles::{EthPrecompileOutput, EthPrecompileResult, u64_to_address},
+    precompiles::{EthPrecompileResult, PrecompileOutput},
 };
 use alloy_primitives::{B256, B512, Bytes};
 
@@ -15,6 +16,7 @@ use alloy_primitives::{B256, B512, Bytes};
 pub(crate) const P256VERIFY_ADDRESS: u64 = 256;
 
 /// Base gas fee for secp256r1 p256verify operation.
+#[allow(dead_code)]
 pub(crate) const P256VERIFY_BASE_GAS_FEE: u64 = 3450;
 
 /// Base gas fee for secp256r1 p256verify operation post Osaka.
@@ -29,6 +31,7 @@ pub(crate) const P256VERIFY_BASE_GAS_FEE_OSAKA: u64 = 6900;
 /// | signed message hash |  r  |  s  | public key x | public key y |
 /// | :-----------------: | :-: | :-: | :----------: | :----------: |
 /// |          32         | 32  | 32  |     32       |      32      |
+#[allow(dead_code)]
 pub(crate) fn run(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
     p256_verify_inner(input, gas, P256VERIFY_BASE_GAS_FEE)
 }
@@ -44,11 +47,12 @@ fn p256_verify_inner(input: &[u8], gas: &mut Gas, gas_cost: u64) -> EthPrecompil
     } else {
         Bytes::new()
     };
-    Ok(EthPrecompileOutput::new(result))
+    Ok(PrecompileOutput::new(result))
 }
 
 /// Returns `Some(())` if the signature included in the input byte slice is
 /// valid, `None` otherwise.
+#[allow(dead_code)]
 pub(crate) fn verify_impl(input: &[u8]) -> bool {
     verify_impl_with_crypto(input, &crate::precompiles::DefaultCrypto)
 }

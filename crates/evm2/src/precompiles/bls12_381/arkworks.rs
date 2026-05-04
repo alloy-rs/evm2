@@ -1,4 +1,5 @@
 //! BLS12-381 precompile using Arkworks BLS12-381 implementation.
+
 use super::{G1Point, G2Point, PairingPair};
 use crate::precompiles::{
     PrecompileHalt,

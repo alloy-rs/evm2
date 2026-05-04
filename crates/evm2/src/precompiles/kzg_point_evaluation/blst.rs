@@ -1,4 +1,7 @@
 //! KZG point evaluation precompile using BLST BLS12-381 implementation.
+
+#![allow(dead_code)]
+
 use crate::precompiles::{
     OnceLock, PrecompileHalt,
     bls12_381::blst::{

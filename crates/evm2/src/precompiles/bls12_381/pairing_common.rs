@@ -2,6 +2,7 @@
 //!
 //! This module intentionally holds only the byte-level validation/filtering logic that is
 //! identical across backends. Backend-specific parsing and pairing computation are injected
+
 //! as function parameters.
 
 use crate::precompiles::PrecompileHalt;

@@ -1,4 +1,7 @@
 //! k256 implementation of `ecrecover`. More about it in [`crate::precompiles::secp256k1`].
+
+#![allow(dead_code)]
+
 use alloy_primitives::{B256, B512, keccak256};
 use k256::ecdsa::{Error, RecoveryId, Signature, VerifyingKey};
 
