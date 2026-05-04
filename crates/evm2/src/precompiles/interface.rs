@@ -4,10 +4,12 @@
 #![allow(dead_code)]
 
 use alloc::{borrow::Cow, string::String, sync::Arc, vec::Vec};
-use alloy_primitives::Bytes;
 use core::fmt::{self, Debug};
 
-use crate::precompiles::bls12_381::{G1Point, G1PointScalar, G2Point, G2PointScalar};
+use crate::{
+    evm::precompile::PrecompileOutput,
+    precompiles::bls12_381::{G1Point, G1PointScalar, G2Point, G2PointScalar},
+};
 
 /// Type-erased error type.
 #[derive(Clone, Debug)]
@@ -71,122 +73,6 @@ impl From<&'static str> for AnyError {
 
 /// A precompile operation result type for individual Ethereum precompile functions.
 pub(crate) type EthPrecompileResult = Result<PrecompileOutput, PrecompileHalt>;
-
-/// Status of a precompile execution.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum PrecompileStatus {
-    /// Precompile executed successfully.
-    Success,
-    /// Precompile reverted (non-fatal, returns remaining gas).
-    Revert,
-    /// Precompile halted with a specific reason.
-    Halt(PrecompileHalt),
-}
-
-impl PrecompileStatus {
-    /// Returns `true` if the precompile execution was successful or reverted.
-    #[inline]
-    pub(crate) const fn is_success_or_revert(&self) -> bool {
-        matches!(self, Self::Success | Self::Revert)
-    }
-
-    /// Returns `true` if the precompile execution was reverted or halted.
-    #[inline]
-    pub(crate) const fn is_revert_or_halt(&self) -> bool {
-        matches!(self, Self::Revert | Self::Halt(_))
-    }
-
-    /// Returns the halt reason if the precompile halted, `None` otherwise.
-    #[inline]
-    pub(crate) const fn halt_reason(&self) -> Option<&PrecompileHalt> {
-        match &self {
-            Self::Halt(reason) => Some(reason),
-            _ => None,
-        }
-    }
-
-    /// Returns `true` if the precompile execution was successful.
-    #[inline]
-    pub(crate) const fn is_success(&self) -> bool {
-        matches!(self, Self::Success)
-    }
-
-    /// Returns `true` if the precompile reverted.
-    #[inline]
-    pub(crate) const fn is_revert(&self) -> bool {
-        matches!(self, Self::Revert)
-    }
-
-    /// Returns `true` if the precompile halted.
-    #[inline]
-    pub(crate) const fn is_halt(&self) -> bool {
-        matches!(self, Self::Halt(_))
-    }
-}
-
-/// Rich precompile execution output with status support.
-///
-/// This is the output type used at the precompile provider level. It can express
-/// successful execution, reverts, and halts (non-fatal errors like out-of-gas).
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct PrecompileOutput {
-    /// Status of the precompile execution.
-    pub status: PrecompileStatus,
-    /// Output bytes.
-    pub bytes: Bytes,
-}
-
-impl PrecompileOutput {
-    /// Returns a new precompile output from an Ethereum precompile result.
-    pub(crate) fn from_eth_result(result: EthPrecompileResult) -> Self {
-        match result {
-            Ok(output) => output,
-            Err(halt) => Self::halt(halt),
-        }
-    }
-
-    /// Returns a new successful precompile output.
-    pub(crate) const fn new(bytes: Bytes) -> Self {
-        Self { status: PrecompileStatus::Success, bytes }
-    }
-
-    /// Returns a new halted precompile output with the given halt reason.
-    pub(crate) const fn halt(reason: PrecompileHalt) -> Self {
-        Self { status: PrecompileStatus::Halt(reason), bytes: Bytes::new() }
-    }
-
-    /// Returns a new reverted precompile output.
-    pub(crate) const fn revert(bytes: Bytes) -> Self {
-        Self { status: PrecompileStatus::Revert, bytes }
-    }
-
-    /// Returns `true` if the precompile execution was successful.
-    pub(crate) const fn is_success(&self) -> bool {
-        matches!(self.status, PrecompileStatus::Success)
-    }
-
-    /// Returns `true` if the precompile execution was successful.
-    #[deprecated(note = "use `is_success` instead")]
-    pub(crate) const fn is_ok(&self) -> bool {
-        self.is_success()
-    }
-
-    /// Returns `true` if the precompile reverted.
-    pub(crate) const fn is_revert(&self) -> bool {
-        matches!(self.status, PrecompileStatus::Revert)
-    }
-
-    /// Returns `true` if the precompile halted.
-    pub(crate) const fn is_halt(&self) -> bool {
-        matches!(self.status, PrecompileStatus::Halt(_))
-    }
-
-    /// Returns the halt reason if the precompile halted, `None` otherwise.
-    #[inline]
-    pub(crate) const fn halt_reason(&self) -> Option<&PrecompileHalt> {
-        self.status.halt_reason()
-    }
-}
 
 /// Crypto operations trait for precompiles.
 pub trait Crypto: Send + Sync + Debug {
@@ -476,7 +362,7 @@ impl fmt::Display for PrecompileHalt {
 /// transaction. They propagate as `EVMError::Custom`.
 ///
 /// For non-fatal halt reasons (like out-of-gas or invalid input), see
-/// [`PrecompileHalt`] which is expressed through [`PrecompileStatus::Halt`].
+/// [`PrecompileHalt`] which is expressed through precompile output status.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum PrecompileError {
     /// Unrecoverable error that halts EVM execution.

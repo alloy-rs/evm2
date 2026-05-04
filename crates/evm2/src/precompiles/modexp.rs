@@ -485,7 +485,7 @@ mod tests {
             let res = run_byzantium(&input, &mut gas).unwrap();
             let expected = hex::decode(test.expected).unwrap();
             assert_eq!(gas.spent(), test_gas, "used gas not matching for test: {}", test.name);
-            assert_eq!(res.bytes, expected, "test:{}", test.name);
+            assert_eq!(res.bytes(), expected, "test:{}", test.name);
         }
     }
 
@@ -498,7 +498,7 @@ mod tests {
             let res = run_berlin(&input, &mut gas).unwrap();
             let expected = hex::decode(test.expected).unwrap();
             assert_eq!(gas.spent(), test_gas, "used gas not matching for test: {}", test.name);
-            assert_eq!(res.bytes, expected, "test:{}", test.name);
+            assert_eq!(res.bytes(), expected, "test:{}", test.name);
         }
     }
 
@@ -511,7 +511,7 @@ mod tests {
             let res = run_osaka(&input, &mut gas).unwrap();
             let expected = hex::decode(test.expected).unwrap();
             assert_eq!(gas.spent(), test_gas, "used gas not matching for test: {}", test.name);
-            assert_eq!(res.bytes, expected, "test:{}", test.name);
+            assert_eq!(res.bytes(), expected, "test:{}", test.name);
         }
     }
 
@@ -519,7 +519,7 @@ mod tests {
     fn test_berlin_modexp_empty_input() {
         let res = run_berlin(&Bytes::new(), &mut Gas::new(100_000)).unwrap();
         let expected: Vec<u8> = Vec::new();
-        assert_eq!(res.bytes, expected)
+        assert_eq!(res.bytes(), expected)
     }
 
     #[test]
@@ -602,7 +602,7 @@ mod tests {
         )
         .unwrap();
         let res = run_byzantium(&input, &mut Gas::new(100_000)).unwrap();
-        assert_eq!(res.bytes, vec![0x00], "0^5 mod 7 should be 0");
+        assert_eq!(res.bytes(), vec![0x00], "0^5 mod 7 should be 0");
 
         // Test case 2: Base equals modulus
         let input = hex::decode(
@@ -615,7 +615,7 @@ mod tests {
         )
         .unwrap();
         let res = run_byzantium(&input, &mut Gas::new(100_000)).unwrap();
-        assert_eq!(res.bytes, vec![0x00], "7^3 mod 7 should be 0");
+        assert_eq!(res.bytes(), vec![0x00], "7^3 mod 7 should be 0");
 
         // Test case 3: Exponent is zero (result should always be 1)
         let input = hex::decode(
@@ -627,7 +627,7 @@ mod tests {
         )
         .unwrap();
         let res = run_byzantium(&input, &mut Gas::new(100_000)).unwrap();
-        assert_eq!(res.bytes, vec![0x01], "5^0 mod 7 should be 1");
+        assert_eq!(res.bytes(), vec![0x01], "5^0 mod 7 should be 1");
 
         // Test case 4: Large base with small modulus
         // Actually, (2^256 - 1) mod 3 = 0, so 0^2 = 0
@@ -644,7 +644,7 @@ mod tests {
         // (2^256 - 1) = 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
         // This is divisible by 3, so (2^256 - 1) mod 3 = 0
         // Therefore 0^2 mod 3 = 0
-        assert_eq!(res.bytes, vec![0x00], "Large base mod 3 should reduce correctly");
+        assert_eq!(res.bytes(), vec![0x00], "Large base mod 3 should reduce correctly");
     }
 
     #[test]
@@ -673,7 +673,7 @@ mod tests {
         .unwrap();
         // For Byzantium, check that it computes correctly
         let res = run_byzantium(&input, &mut Gas::new(100_000)).unwrap();
-        assert_eq!(res.bytes, vec![0x00], "1^1 mod 1 = 0");
+        assert_eq!(res.bytes(), vec![0x00], "1^1 mod 1 = 0");
 
         // For Berlin, minimum gas is 200
         let mut gas = Gas::new(gas_limit);
@@ -694,8 +694,8 @@ mod tests {
         )
         .unwrap();
         let res = run_byzantium(&input, &mut Gas::new(100_000)).unwrap();
-        assert_eq!(res.bytes.len(), 32, "Result should be padded to modulus length");
-        assert_eq!(res.bytes[31], 8, "2^3 mod 257 = 8");
+        assert_eq!(res.bytes().len(), 32, "Result should be padded to modulus length");
+        assert_eq!(res.bytes()[31], 8, "2^3 mod 257 = 8");
     }
 
     #[test]
@@ -723,7 +723,7 @@ mod tests {
             berlin_gas_used < byzantium_gas_used,
             "Berlin gas {berlin_gas_used} should be less than Byzantium gas {byzantium_gas_used}"
         );
-        assert_eq!(byzantium_res.bytes, berlin_res.bytes, "Results should be identical");
+        assert_eq!(byzantium_res.bytes(), berlin_res.bytes(), "Results should be identical");
     }
 
     #[test]
@@ -774,7 +774,7 @@ mod tests {
 
         let res = run_byzantium(&input, &mut Gas::new(100_000)).unwrap();
         // Should pad with zeros and compute ff00^ff00 mod ff00
-        assert!(res.bytes.len() == 2, "Result should be 2 bytes");
+        assert!(res.bytes().len() == 2, "Result should be 2 bytes");
     }
 
     #[test]
@@ -791,9 +791,9 @@ mod tests {
         .unwrap();
 
         let res = run_byzantium(&input, &mut Gas::new(10_000_000)).unwrap();
-        assert_eq!(res.bytes.len(), 32, "Result should be 32 bytes");
+        assert_eq!(res.bytes().len(), 32, "Result should be 32 bytes");
         // (2^256 - 1)^1 mod (2^256 - 2) = 1
-        assert_eq!(res.bytes[31], 1, "Max value mod (max-1) should be 1");
+        assert_eq!(res.bytes()[31], 1, "Max value mod (max-1) should be 1");
     }
 
     #[test]
@@ -824,10 +824,15 @@ mod tests {
             let osaka_res = run_osaka(&input, &mut Gas::new(10_000_000)).unwrap();
 
             assert_eq!(
-                byzantium_res.bytes, berlin_res.bytes,
+                byzantium_res.bytes(),
+                berlin_res.bytes(),
                 "Byzantium and Berlin results should match"
             );
-            assert_eq!(berlin_res.bytes, osaka_res.bytes, "Berlin and Osaka results should match");
+            assert_eq!(
+                berlin_res.bytes(),
+                osaka_res.bytes(),
+                "Berlin and Osaka results should match"
+            );
         }
     }
 

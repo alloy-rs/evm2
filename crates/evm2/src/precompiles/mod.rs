@@ -1,7 +1,7 @@
 //! EVM precompiled contracts.
 
 use crate::{
-    evm::precompile::{PrecompileOutput as EvmPrecompileOutput, PrecompileProvider},
+    evm::precompile::{PrecompileProvider, PrecompileStatus},
     interpreter::{Gas, InstrStop, SpecId},
     once_lock::OnceLock,
 };
@@ -37,6 +37,7 @@ pub(crate) mod eip4844 {
     pub(crate) use crate::precompiles::kzg_point_evaluation::VERSIONED_HASH_VERSION_KZG;
 }
 
+pub(crate) use crate::evm::precompile::PrecompileOutput;
 pub(crate) use interface::*;
 pub use interface::{Crypto, PrecompileHalt};
 #[allow(deprecated, unused_imports)]
@@ -107,10 +108,17 @@ impl<const SPEC: u8> Precompiles<SPEC> {
         f: fn(&[u8], &mut Gas) -> EthPrecompileResult,
         input: &[u8],
         gas: &mut Gas,
-    ) -> Result<EvmPrecompileOutput, InstrStop> {
-        let output = PrecompileOutput::from_eth_result(f(input, gas));
-        match output.status {
-            PrecompileStatus::Success => Ok(EvmPrecompileOutput::new(output.bytes)),
+    ) -> Result<PrecompileOutput, InstrStop> {
+        let output = match f(input, gas) {
+            Ok(output) => output,
+            Err(PrecompileHalt::OutOfGas) => {
+                gas.spend_all();
+                return Err(InstrStop::PrecompileOOG);
+            }
+            Err(_) => return Err(InstrStop::PrecompileError),
+        };
+        match output.status() {
+            PrecompileStatus::Success => Ok(output),
             PrecompileStatus::Revert => Err(InstrStop::PrecompileError),
             PrecompileStatus::Halt(PrecompileHalt::OutOfGas) => {
                 gas.spend_all();
@@ -131,7 +139,7 @@ impl<const SPEC: u8> PrecompileProvider for Precompiles<SPEC> {
         address: Address,
         input: &[u8],
         gas: &mut Gas,
-    ) -> Option<Result<EvmPrecompileOutput, InstrStop>> {
+    ) -> Option<Result<PrecompileOutput, InstrStop>> {
         let f = *Self::map().get(&address)?;
         Some(Self::run(f, input, gas))
     }

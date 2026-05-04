@@ -126,7 +126,7 @@ mod tests {
         let mut gas = Gas::new(50_000);
         let output = run(&input, &mut gas).unwrap();
         assert_eq!(gas.spent(), GAS_COST);
-        assert_eq!(output.bytes[..], expected_output);
+        assert_eq!(output.bytes()[..], expected_output);
     }
 
     #[test]

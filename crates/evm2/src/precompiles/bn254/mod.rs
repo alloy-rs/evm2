@@ -218,7 +218,7 @@ mod tests {
         .unwrap();
 
         let outcome = run_add(&input, BYZANTIUM_ADD_GAS_COST, &mut Gas::new(500)).unwrap();
-        assert_eq!(outcome.bytes, expected);
+        assert_eq!(outcome.bytes(), expected);
 
         // Zero sum test
         let input = hex::decode(
@@ -237,7 +237,7 @@ mod tests {
         .unwrap();
 
         let outcome = run_add(&input, BYZANTIUM_ADD_GAS_COST, &mut Gas::new(500)).unwrap();
-        assert_eq!(outcome.bytes, expected);
+        assert_eq!(outcome.bytes(), expected);
 
         // Out of gas test
         let input = hex::decode(
@@ -263,7 +263,7 @@ mod tests {
         .unwrap();
 
         let outcome = run_add(&input, BYZANTIUM_ADD_GAS_COST, &mut Gas::new(500)).unwrap();
-        assert_eq!(outcome.bytes, expected);
+        assert_eq!(outcome.bytes(), expected);
 
         // Point not on curve fail
         let input = hex::decode(
@@ -299,7 +299,7 @@ mod tests {
         .unwrap();
 
         let outcome = run_mul(&input, BYZANTIUM_MUL_GAS_COST, &mut Gas::new(40_000)).unwrap();
-        assert_eq!(outcome.bytes, expected);
+        assert_eq!(outcome.bytes(), expected);
 
         // Out of gas test
         let input = hex::decode(
@@ -329,7 +329,7 @@ mod tests {
         .unwrap();
 
         let outcome = run_mul(&input, BYZANTIUM_MUL_GAS_COST, &mut Gas::new(40_000)).unwrap();
-        assert_eq!(outcome.bytes, expected);
+        assert_eq!(outcome.bytes(), expected);
 
         // No input test
         let input = [0u8; 0];
@@ -341,7 +341,7 @@ mod tests {
         .unwrap();
 
         let outcome = run_mul(&input, BYZANTIUM_MUL_GAS_COST, &mut Gas::new(40_000)).unwrap();
-        assert_eq!(outcome.bytes, expected);
+        assert_eq!(outcome.bytes(), expected);
 
         // Point not on curve fail
         let input = hex::decode(
@@ -384,7 +384,7 @@ mod tests {
         let outcome =
             run_pair(&input, BYZANTIUM_PAIR_PER_POINT, BYZANTIUM_PAIR_BASE, &mut Gas::new(260_000))
                 .unwrap();
-        assert_eq!(outcome.bytes, expected);
+        assert_eq!(outcome.bytes(), expected);
 
         // Out of gas test
         let input = hex::decode(
@@ -417,7 +417,7 @@ mod tests {
         let outcome =
             run_pair(&input, BYZANTIUM_PAIR_PER_POINT, BYZANTIUM_PAIR_BASE, &mut Gas::new(260_000))
                 .unwrap();
-        assert_eq!(outcome.bytes, expected);
+        assert_eq!(outcome.bytes(), expected);
 
         // Point not on curve fail
         let input = hex::decode(
@@ -471,7 +471,7 @@ mod tests {
         let outcome =
             run_pair(&input, BYZANTIUM_PAIR_PER_POINT, BYZANTIUM_PAIR_BASE, &mut Gas::new(260_000))
                 .unwrap();
-        assert_eq!(outcome.bytes, expected);
+        assert_eq!(outcome.bytes(), expected);
 
         // Test with G2 point at infinity - should also return true
         // Valid G1 point followed by G2 point at infinity (0,0,0,0)
@@ -489,6 +489,6 @@ mod tests {
         let outcome =
             run_pair(&input, BYZANTIUM_PAIR_PER_POINT, BYZANTIUM_PAIR_BASE, &mut Gas::new(260_000))
                 .unwrap();
-        assert_eq!(outcome.bytes, expected);
+        assert_eq!(outcome.bytes(), expected);
     }
 }

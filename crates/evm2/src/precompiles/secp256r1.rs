@@ -183,7 +183,7 @@ mod test {
         assert_eq!(gas.spent(), 3_450u64);
         let expected_result =
             if expect_success { B256::with_last_byte(1).into() } else { Bytes::new() };
-        assert_eq!(outcome.bytes, expected_result);
+        assert_eq!(outcome.bytes(), expected_result.as_ref());
     }
 
     #[rstest]
