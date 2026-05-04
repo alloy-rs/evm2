@@ -17,17 +17,6 @@ macro_rules! opcodes {
                 let _ = core::mem::size_of::<$instr>();
             )*
         };
-
-        /// Higher-order macro to iterate over all opcodes.
-        macro_rules! for_each_opcode {
-            ([$d ($d extra:tt)*] $d m:path) => {
-                $m!{[$d($d extra)*]
-                    $(
-                        ($name, $instr),
-                    )*
-                }
-            };
-        }
     };
 }
 
@@ -300,5 +289,3 @@ opcodes! {$
     0xFE => INVALID      => invalid;
     0xFF => SELFDESTRUCT => selfdestruct;
 }
-
-pub(crate) use for_each_opcode;
