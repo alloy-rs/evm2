@@ -1,5 +1,7 @@
 //! EVM version data.
 
+#![allow(unused_macros)]
+
 use crate::{
     BaseEvmConfig, EvmConfig, EvmTypes,
     interpreter::{SpecId, instructions as instr, opcode::op},
@@ -263,7 +265,6 @@ macro_rules! evm_versions {
                         const C: u8 = SpecId::$spec as u8;
                         let _ = C;
 
-                        #[allow(unused_macros)]
                         macro_rules! op {
                             ($name:ident, $cost:expr) => {
                                 v.static_gas_table.set(op::$name, $cost as u16);
@@ -272,7 +273,6 @@ macro_rules! evm_versions {
                                 v.static_gas_table.set(op::$name, $cost as u16);
                             };
                         }
-                        #[allow(unused_macros)]
                         macro_rules! static_gas {
                             ($name:ident, $cost:expr) => {
                                 op!($name, $cost);
@@ -281,7 +281,6 @@ macro_rules! evm_versions {
                                 op!($name, $cost, $instr);
                             };
                         }
-                        #[allow(unused_macros)]
                         macro_rules! gas {
                             ($id:ident, $value:expr) => {
                                 v.gas_params.set($id, $value);
@@ -310,7 +309,6 @@ macro_rules! evm_versions {
                         const C: u8 = SpecId::$spec as u8;
                         let _ = C;
 
-                        #[allow(unused_macros)]
                         macro_rules! op {
                             ($name:ident, $cost:expr) => {
                                 v.instruction_impls.set(
@@ -323,13 +321,12 @@ macro_rules! evm_versions {
                                     op::$name,
                                     Some(
                                         <$instr as instr::table::Instruction<T>>::execute::<
-                                            VersionConfig<C>,
+                                            BaseEvmConfig<C>,
                                         >,
                                     ),
                                 );
                             };
                         }
-                        #[allow(unused_macros)]
                         macro_rules! static_gas {
                             ($name:ident, $cost:expr) => {
                                 op!($name, $cost);
@@ -338,7 +335,6 @@ macro_rules! evm_versions {
                                 op!($name, $cost, $instr);
                             };
                         }
-                        #[allow(unused_macros)]
                         macro_rules! gas {
                             ($id:ident, $value:expr) => {
                                 let _ = $value;
