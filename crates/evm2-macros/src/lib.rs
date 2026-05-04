@@ -27,13 +27,14 @@ fn expand_instruction(raw: bool, input: ItemFn) -> TokenStream2 {
     let generics = sig.generics;
     let struct_where_clause = generics.where_clause.clone();
     let impl_params = generics.params.clone();
+    let evm_types = Ident::new("__Evm2T", ident.span());
     let struct_generics = if impl_params.is_empty() {
-        quote! { <C: evm2::EvmConfig> }
+        quote! { <#evm_types: evm2::EvmTypes> }
     } else {
-        quote! { <C: evm2::EvmConfig, #impl_params> }
+        quote! { <#evm_types: evm2::EvmTypes, #impl_params> }
     };
     let type_params = generics.params.iter().map(generic_param_ident);
-    let type_generics = quote! { <C #(, #type_params)*> };
+    let type_generics = quote! { <#evm_types #(, #type_params)*> };
     let where_predicates =
         struct_where_clause.as_ref().map(|where_clause| &where_clause.predicates);
     let impl_where_clause = where_predicates.map(|predicates| quote! { where #predicates });
@@ -67,7 +68,7 @@ fn expand_instruction(raw: bool, input: ItemFn) -> TokenStream2 {
     let cx_setup = has_cx.then(|| {
         let cx = cx_arg.unwrap_or_else(|| Ident::new("cx", ident.span()));
         quote! {
-            let mut #cx = evm2::interpreter::table::InstructionCx {
+            let mut #cx = evm2::interpreter::table::InstructionCx::<#evm_types> {
                 pc: __evm2_pc,
                 gas: __evm2_gas,
                 gas_params: &C::VERSION.gas_params,
@@ -79,25 +80,18 @@ fn expand_instruction(raw: bool, input: ItemFn) -> TokenStream2 {
         #(#attrs)*
         #[allow(non_camel_case_types)]
         #vis struct #ident #struct_generics(
-            core::marker::PhantomData<fn() -> C>
+            core::marker::PhantomData<fn() -> #evm_types>
         ) #struct_where_clause;
 
-        impl #struct_generics #ident #type_generics
-        #impl_where_clause
-        {
-            pub const NEW: Self = Self(core::marker::PhantomData);
-        }
-
-        impl #struct_generics evm2::interpreter::table::Instruction<C> for #ident #type_generics
+        impl #struct_generics evm2::interpreter::table::Instruction<#evm_types> for #ident #type_generics
         #impl_where_clause
         {
             #[inline]
-            fn execute(
-                &self,
+            fn execute<C: evm2::EvmConfig<Host = <#evm_types as evm2::EvmTypes>::Host>>(
                 __evm2_pc: &mut evm2::interpreter::Pc,
                 mut stack: evm2::interpreter::StackMut<'_>,
                 __evm2_gas: &mut evm2::interpreter::Gas,
-                __evm2_state: &mut evm2::interpreter::State<'_, <C as evm2::EvmTypes>::Host>,
+                __evm2_state: &mut evm2::interpreter::State<'_, <#evm_types as evm2::EvmTypes>::Host>,
             ) -> evm2::interpreter::Result {
                 evm2::asm_comment!(#asm_comment);
                 #cx_setup

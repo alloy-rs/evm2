@@ -1,16 +1,19 @@
 //! System opcode implementations.
 
 use super::utils::{as_usize, word_to_address};
-use crate::interpreter::{
-    GasId, Host, InstrStop, Message, MessageKind, Result, SpecId, StackMut, Word,
-    memory::resize_memory, table::InstructionCx,
+use crate::{
+    EvmTypes,
+    interpreter::{
+        GasId, Host, InstrStop, Message, MessageKind, Result, SpecId, StackMut, Word,
+        memory::resize_memory, table::InstructionCx,
+    },
 };
 use alloy_primitives::{Address, B256, Bytes};
 use core::{cmp::min, ops::Range};
 use evm2_macros::instruction;
 
 #[inline]
-fn require_non_staticcall<H: Host + ?Sized>(cx: &InstructionCx<'_, '_, H>) -> Result {
+fn require_non_staticcall<T: EvmTypes>(cx: &InstructionCx<'_, '_, T>) -> Result {
     if cx.state.message().is_static() {
         return Err(InstrStop::StateChangeDuringStaticCall);
     }
@@ -22,8 +25,8 @@ const fn success(stop: InstrStop) -> bool {
     matches!(stop, InstrStop::Stop | InstrStop::Return | InstrStop::SelfDestruct)
 }
 
-fn resize_memory_range<H: Host + ?Sized>(
-    cx: &mut InstructionCx<'_, '_, H>,
+fn resize_memory_range<T: EvmTypes>(
+    cx: &mut InstructionCx<'_, '_, T>,
     offset: Word,
     len: Word,
 ) -> Result<Range<usize>> {
@@ -38,8 +41,8 @@ fn resize_memory_range<H: Host + ?Sized>(
     Ok(offset..offset + len)
 }
 
-fn get_memory_input_and_out_ranges<H: Host + ?Sized>(
-    cx: &mut InstructionCx<'_, '_, H>,
+fn get_memory_input_and_out_ranges<T: EvmTypes>(
+    cx: &mut InstructionCx<'_, '_, T>,
     input_offset: Word,
     input_len: Word,
     return_offset: Word,
@@ -50,8 +53,8 @@ fn get_memory_input_and_out_ranges<H: Host + ?Sized>(
     Ok((input, output))
 }
 
-fn memory_range_bytes<H: Host + ?Sized>(
-    cx: &mut InstructionCx<'_, '_, H>,
+fn memory_range_bytes<T: EvmTypes>(
+    cx: &mut InstructionCx<'_, '_, T>,
     range: Range<usize>,
 ) -> Result<Bytes> {
     if range.is_empty() {
@@ -60,8 +63,8 @@ fn memory_range_bytes<H: Host + ?Sized>(
     Ok(Bytes::copy_from_slice(cx.state.memory().slice(range.start, range.len())))
 }
 
-fn load_acc_and_calc_gas<H: Host + ?Sized>(
-    cx: &mut InstructionCx<'_, '_, H>,
+fn load_acc_and_calc_gas<T: EvmTypes>(
+    cx: &mut InstructionCx<'_, '_, T>,
     to: Address,
     transfers_value: bool,
     create_empty_account: bool,
@@ -99,9 +102,9 @@ fn load_acc_and_calc_gas<H: Host + ?Sized>(
 }
 
 #[inline(always)]
-fn call_inner<H: Host + ?Sized>(
+fn call_inner<T: EvmTypes>(
     mut stack: StackMut<'_>,
-    mut cx: InstructionCx<'_, '_, H>,
+    mut cx: InstructionCx<'_, '_, T>,
     kind: MessageKind,
 ) -> Result {
     let has_value = match kind {
@@ -194,9 +197,9 @@ pub(crate) fn create<const IS_CREATE2: bool>(cx: _) -> Result {
 }
 
 #[inline]
-fn create_inner<H: Host + ?Sized>(
+fn create_inner<T: EvmTypes>(
     mut stack: StackMut<'_>,
-    mut cx: InstructionCx<'_, '_, H>,
+    mut cx: InstructionCx<'_, '_, T>,
     is_create2: bool,
 ) -> Result {
     require_non_staticcall(&cx)?;

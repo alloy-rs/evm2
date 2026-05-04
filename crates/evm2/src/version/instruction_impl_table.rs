@@ -1,22 +1,22 @@
 use crate::{
-    EvmConfig,
-    interpreter::{table::Instruction, unknown},
+    EvmTypes,
+    interpreter::table::{InstructionImplFn, unknown_instruction},
 };
 use core::ops::{Index, IndexMut};
 
 /// Instruction implementation table.
 #[derive(Clone, Copy)]
-pub struct InstructionImplTable<C: EvmConfig>([Option<&'static dyn Instruction<C>>; 256]);
+pub struct InstructionImplTable<T: EvmTypes>([Option<InstructionImplFn<T>>; 256]);
 
-impl<C: EvmConfig> core::fmt::Debug for InstructionImplTable<C> {
+impl<T: EvmTypes> core::fmt::Debug for InstructionImplTable<T> {
     #[inline]
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("InstructionImplTable").finish_non_exhaustive()
     }
 }
 
-impl<C: EvmConfig> Index<u8> for InstructionImplTable<C> {
-    type Output = Option<&'static dyn Instruction<C>>;
+impl<T: EvmTypes> Index<u8> for InstructionImplTable<T> {
+    type Output = Option<InstructionImplFn<T>>;
 
     #[inline]
     fn index(&self, index: u8) -> &Self::Output {
@@ -24,14 +24,14 @@ impl<C: EvmConfig> Index<u8> for InstructionImplTable<C> {
     }
 }
 
-impl<C: EvmConfig> IndexMut<u8> for InstructionImplTable<C> {
+impl<T: EvmTypes> IndexMut<u8> for InstructionImplTable<T> {
     #[inline]
     fn index_mut(&mut self, index: u8) -> &mut Self::Output {
         &mut self.0[index as usize]
     }
 }
 
-impl<C: EvmConfig> InstructionImplTable<C> {
+impl<T: EvmTypes> InstructionImplTable<T> {
     /// Creates an empty instruction implementation table.
     #[inline]
     pub(super) const fn empty() -> Self {
@@ -46,28 +46,28 @@ impl<C: EvmConfig> InstructionImplTable<C> {
 
     /// Returns the instruction implementation for `opcode`.
     #[inline]
-    pub const fn get(&self, opcode: u8) -> Option<&'static dyn Instruction<C>> {
+    pub const fn get(&self, opcode: u8) -> Option<InstructionImplFn<T>> {
         self.0[opcode as usize]
     }
 
     /// Returns the instruction implementation for `opcode`, or unknown if it is not set.
     #[inline]
-    pub const fn get_or_default(&self, opcode: u8) -> &'static dyn Instruction<C> {
+    pub const fn get_or_default(&self, opcode: u8) -> InstructionImplFn<T> {
         match self.get(opcode) {
             Some(instr) => instr,
-            None => &unknown::<C>::NEW,
+            None => unknown_instruction::<T>,
         }
     }
 
     /// Returns the mutable instruction implementation slot for `opcode`.
     #[inline]
-    pub const fn get_mut(&mut self, opcode: u8) -> &mut Option<&'static dyn Instruction<C>> {
+    pub const fn get_mut(&mut self, opcode: u8) -> &mut Option<InstructionImplFn<T>> {
         &mut self.0[opcode as usize]
     }
 
     /// Sets the instruction implementation for `opcode`.
     #[inline]
-    pub const fn set(&mut self, opcode: u8, instr: Option<&'static dyn Instruction<C>>) {
+    pub const fn set(&mut self, opcode: u8, instr: Option<InstructionImplFn<T>>) {
         self.0[opcode as usize] = instr;
     }
 }

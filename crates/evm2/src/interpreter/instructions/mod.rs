@@ -8,7 +8,7 @@ mod block;
 pub(crate) use block::*;
 
 mod control;
-pub(crate) use control::{unknown, *};
+pub(crate) use control::*;
 
 mod crypto;
 pub(crate) use crypto::*;

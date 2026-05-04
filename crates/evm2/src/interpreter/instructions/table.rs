@@ -1,10 +1,10 @@
 //! Instruction dispatch tables.
 
 #[cfg(feature = "nightly")]
-use crate::interpreter::{InstrStop, Interpreter};
+use crate::interpreter::Interpreter;
 use crate::{
     EvmConfig, EvmTypes,
-    interpreter::{Gas, GasParams, Host, Pc, Result, Stack, StackMut, State, op},
+    interpreter::{Gas, GasParams, InstrStop, Pc, Result, Stack, StackMut, State, op},
 };
 use core::hint::cold_path;
 
@@ -48,6 +48,14 @@ pub(crate) type TailInstructionFn<C> = extern_table!(
 #[cfg(feature = "nightly")]
 pub(crate) type TailInstructionTable<C> = [TailInstructionFn<C>; 256];
 
+/// Instruction implementation function.
+pub type InstructionImplFn<T> = fn(
+    pc: &mut Pc,
+    stack: StackMut<'_>,
+    gas: &mut Gas,
+    state: &mut State<'_, <T as EvmTypes>::Host>,
+) -> Result;
+
 pub(crate) trait InstructionTables: EvmConfig {
     const INSTRUCTIONS: &'static InstructionTable<Self> = &make_instruction_table::<Self>();
 }
@@ -55,7 +63,7 @@ pub(crate) trait InstructionTables: EvmConfig {
 impl<C: EvmConfig> InstructionTables for C {}
 
 /// Instruction execution context.
-pub(crate) struct InstructionCx<'a, 'state, H: Host + ?Sized> {
+pub(crate) struct InstructionCx<'a, 'state, T: EvmTypes> {
     /// Program counter state.
     pub pc: &'a mut Pc,
     /// Gas state.
@@ -63,19 +71,28 @@ pub(crate) struct InstructionCx<'a, 'state, H: Host + ?Sized> {
     /// Dynamic gas parameters for the active config.
     pub gas_params: &'a GasParams,
     /// Interpreter state.
-    pub state: &'a mut State<'state, H>,
+    pub state: &'a mut State<'state, T::Host>,
 }
 
 /// EVM instruction implementation.
-pub trait Instruction<C: EvmConfig = crate::BaseEvmTypes> {
+pub trait Instruction<T: EvmTypes = crate::BaseEvmTypes> {
     /// Executes this instruction.
-    fn execute(
-        &self,
+    fn execute<C: EvmConfig<Host = T::Host>>(
         pc: &mut Pc,
         stack: StackMut<'_>,
         gas: &mut Gas,
-        state: &mut State<'_, C::Host>,
+        state: &mut State<'_, T::Host>,
     ) -> Result;
+}
+
+#[cold]
+pub(crate) const fn unknown_instruction<T: EvmTypes>(
+    _pc: &mut Pc,
+    _stack: StackMut<'_>,
+    _gas: &mut Gas,
+    _state: &mut State<'_, T::Host>,
+) -> Result {
+    Err(InstrStop::OpcodeNotFound)
 }
 
 macro_rules! assign_instruction_table_entries {
@@ -173,7 +190,7 @@ fn dispatch_mono<C: EvmConfig>(
     let r;
     match pre_step::<C>(gas, op) {
         Ok(()) => {
-            r = instr.execute(&mut pc, stack.as_mut(), gas, state);
+            r = instr(&mut pc, stack.as_mut(), gas, state);
             inc_pc(&mut pc, op);
         }
         Err(e) => r = Err(e),
@@ -215,7 +232,7 @@ extern_table! {
             cold_path();
             tail_return!(tail_call_restore::<C>(pc, stack, gas, state, e as u8));
         }
-        if let Err(e) = instr.execute(&mut pc, stack.as_mut(), gas, state) {
+        if let Err(e) = instr(&mut pc, stack.as_mut(), gas, state) {
             cold_path();
             tail_return!(tail_call_restore::<C>(pc, stack, gas, state, e as u8));
         }
@@ -281,11 +298,13 @@ const fn instruction_len(op: u8) -> usize {
 
 #[cfg(test)]
 mod tests {
+    use super::Instruction;
     use crate::{
-        EvmConfig, EvmTypes, EvmVersion,
+        BaseEvmTypes, EvmConfig, EvmTypes, EvmVersion,
         bytecode::Bytecode,
         env::TxEnv,
         interpreter::{Message, SpecId, Word, instructions::tests::TestHost, op},
+        version::StaticGasTable,
     };
     use alloy_primitives::Bytes;
     use evm2_macros::instruction;
@@ -305,7 +324,9 @@ mod tests {
     impl EvmConfig for CustomConfig {
         const VERSION: &'static EvmVersion<Self> = &{
             let mut version = EvmVersion::new_base(SpecId::OSAKA);
-            version.instruction_impls.set(CUSTOM_OPCODE, Some(&custom::<Self>::NEW));
+            version
+                .instruction_impls
+                .set(CUSTOM_OPCODE, Some(<custom<Self> as Instruction<Self>>::execute::<Self>));
             version
         };
     }
@@ -315,10 +336,13 @@ mod tests {
         *out = Word::from(0xdead_u64);
     }
 
+    fn gas_params(spec: SpecId) -> StaticGasTable {
+        EvmVersion::<BaseEvmTypes>::new_base(spec).static_gas_table
+    }
+
     #[test]
     fn default_gas_table_matches_revm_static_costs() {
-        let default_gas_table =
-            EvmVersion::<CustomConfig>::new_base(SpecId::FRONTIER).static_gas_table;
+        let default_gas_table = gas_params(SpecId::FRONTIER);
         assert_eq!(default_gas_table[op::STOP], 0);
         assert_eq!(default_gas_table[op::ADD], 3);
         assert_eq!(default_gas_table[op::MUL], 5);
@@ -331,16 +355,16 @@ mod tests {
 
     #[test]
     fn gas_table_applies_spec_static_costs() {
-        let tangerine = EvmVersion::<CustomConfig>::new_base(SpecId::TANGERINE).static_gas_table;
+        let tangerine = gas_params(SpecId::TANGERINE);
         assert_eq!(tangerine[op::SLOAD], 200);
         assert_eq!(tangerine[op::BALANCE], 400);
         assert_eq!(tangerine[op::SELFDESTRUCT], 5000);
 
-        let istanbul = EvmVersion::<CustomConfig>::new_base(SpecId::ISTANBUL).static_gas_table;
+        let istanbul = gas_params(SpecId::ISTANBUL);
         assert_eq!(istanbul[op::SLOAD], 800);
         assert_eq!(istanbul[op::EXTCODEHASH], 700);
 
-        let berlin = EvmVersion::<CustomConfig>::new_base(SpecId::BERLIN).static_gas_table;
+        let berlin = gas_params(SpecId::BERLIN);
         assert_eq!(berlin[op::SLOAD], 100);
         assert_eq!(berlin[op::BALANCE], 100);
         assert_eq!(berlin[op::CALL], 100);

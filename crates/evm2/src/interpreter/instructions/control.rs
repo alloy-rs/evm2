@@ -1,6 +1,7 @@
 use super::utils::{as_usize, as_usize_saturated};
-use crate::interpreter::{
-    Host, InstrStop, Pc, Result, State, Word, memory::resize_memory, table::InstructionCx,
+use crate::{
+    EvmTypes,
+    interpreter::{InstrStop, Result, Word, memory::resize_memory, table::InstructionCx},
 };
 use core::hint::cold_path;
 use evm2_macros::instruction;
@@ -13,13 +14,13 @@ pub(crate) fn stop() -> Result {
 
 #[instruction]
 pub(crate) fn jump(cx: _, [target]: [Word]) -> Result {
-    jump_inner(target, cx.pc, cx.state)
+    jump_inner(target, &mut cx)
 }
 
 #[instruction]
 pub(crate) fn jumpi(cx: _, [target, cond]: [Word]) -> Result {
     if !cond.is_zero() {
-        jump_inner(target, cx.pc, cx.state)?;
+        jump_inner(target, &mut cx)?;
     } else {
         unsafe { cx.pc.advance_unchecked(1) };
     }
@@ -27,13 +28,13 @@ pub(crate) fn jumpi(cx: _, [target, cond]: [Word]) -> Result {
 }
 
 #[inline(always)]
-fn jump_inner<H: Host + ?Sized>(target: Word, pc_mut: &mut Pc, state: &State<'_, H>) -> Result {
+fn jump_inner<T: EvmTypes>(target: Word, cx: &mut InstructionCx<'_, '_, T>) -> Result {
     let target = as_usize_saturated(target);
-    if !state.bytecode.is_valid_jumpdest(target) {
+    if !cx.state.bytecode.is_valid_jumpdest(target) {
         cold_path();
         return Err(InstrStop::InvalidJump);
     }
-    unsafe { pc_mut.set_unchecked(state.bytecode, target) };
+    unsafe { cx.pc.set_unchecked(cx.state.bytecode, target) };
     Ok(())
 }
 
@@ -61,8 +62,8 @@ pub(crate) fn revert(cx: _, [offset, len]: [Word]) -> Result {
 }
 
 #[inline]
-fn return_inner<H: Host + ?Sized>(
-    cx: InstructionCx<'_, '_, H>,
+fn return_inner<T: EvmTypes>(
+    cx: InstructionCx<'_, '_, T>,
     offset: Word,
     len: Word,
     result: InstrStop,
