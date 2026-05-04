@@ -78,6 +78,7 @@ pub fn _get_asm() -> impl Sized {
         Default::default(),
         Default::default(),
         Default::default(),
+        Default::default(),
     );
     crate::interpreter::Interpreter::<BaseEvmTypes>::new(
         Default::default(),

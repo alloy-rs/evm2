@@ -54,22 +54,10 @@ pub struct Evm<T: EvmTypes> {
 }
 
 impl<T: EvmTypes> Evm<T> {
-    /// Creates an EVM for the default hard fork with the provided transaction registry,
-    /// database, and precompile provider.
-    #[inline]
-    pub fn new(
-        block: BlockEnv,
-        registry: TxRegistry<T::Tx, TxResult, Self>,
-        database: T::Database,
-        precompiles: T::Precompiles,
-    ) -> Self {
-        Self::new_with_spec(SpecId::OSAKA, block, registry, database, precompiles)
-    }
-
     /// Creates an EVM for `spec_id` with the provided transaction registry, database, and
     /// precompile provider.
     #[inline]
-    pub fn new_with_spec(
+    pub fn new(
         spec_id: SpecId,
         block: BlockEnv,
         registry: TxRegistry<T::Tx, TxResult, Self>,
@@ -565,6 +553,7 @@ mod tests {
         let registry =
             TxRegistry::new().with_handler(TEST_TX_TYPE, extract_test_tx, handle_test_tx);
         let mut evm = Evm::<TestEvmTypes<TestTx>>::new(
+            SpecId::OSAKA,
             BlockEnv::default(),
             registry,
             InMemoryDB::default(),
@@ -596,6 +585,7 @@ mod tests {
         let registry =
             TxRegistry::new().with_handler(TEST_TX_TYPE, extract_test_tx, handle_test_tx);
         let mut evm = Evm::<TestEvmTypes<TestTx>>::new(
+            SpecId::OSAKA,
             BlockEnv::default(),
             registry,
             InMemoryDB::default(),
@@ -613,6 +603,7 @@ mod tests {
     #[test]
     fn host_executes_message() {
         let mut evm = Evm::<TestEvmTypes>::new(
+            SpecId::OSAKA,
             BlockEnv::default(),
             TxRegistry::new(),
             InMemoryDB::default(),

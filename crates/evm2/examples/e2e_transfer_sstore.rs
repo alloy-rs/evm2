@@ -30,7 +30,7 @@ fn main() {
         ]))),
     );
 
-    let mut evm = Evm::<BaseEvmTypes<RecoveredTxEnvelope>>::new_with_spec(
+    let mut evm = Evm::<BaseEvmTypes<RecoveredTxEnvelope>>::new(
         SpecId::FRONTIER,
         BlockEnv::default(),
         ethereum_tx_registry(),

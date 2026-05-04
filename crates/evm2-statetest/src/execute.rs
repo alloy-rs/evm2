@@ -205,7 +205,7 @@ fn execute_spec(
 ) -> Result<SpecOutcome, HandlerError> {
     macro_rules! run {
         ($spec:ident) => {{
-            let mut evm = Evm::<BaseEvmTypes<RecoveredTxEnvelope>>::new_with_spec(
+            let mut evm = Evm::<BaseEvmTypes<RecoveredTxEnvelope>>::new(
                 SpecId::$spec,
                 block,
                 ethereum_tx_registry(),
