@@ -8,7 +8,27 @@ use alloy_primitives::{Address, Bytes};
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PrecompileOutput {
     /// Returned bytes.
-    pub output: Bytes,
+    bytes: Bytes,
+}
+
+impl PrecompileOutput {
+    /// Creates a new precompile output.
+    #[inline]
+    pub const fn new(bytes: Bytes) -> Self {
+        Self { bytes }
+    }
+
+    /// Returns the output bytes.
+    #[inline]
+    pub const fn bytes(&self) -> &Bytes {
+        &self.bytes
+    }
+
+    /// Consumes the output and returns its bytes.
+    #[inline]
+    pub fn into_bytes(self) -> Bytes {
+        self.bytes
+    }
 }
 
 /// Precompile execution hook.

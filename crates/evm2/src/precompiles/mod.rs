@@ -123,7 +123,7 @@ impl<const SPEC: u8> Precompiles<SPEC> {
     ) -> Result<EvmPrecompileOutput, InstrStop> {
         let result = f(input, gas);
         match result {
-            Ok(output) => Ok(EvmPrecompileOutput { output: output.bytes }),
+            Ok(output) => Ok(EvmPrecompileOutput::new(output.bytes)),
             Err(PrecompileHalt::OutOfGas) => {
                 gas.spend_all();
                 Err(InstrStop::PrecompileOOG)

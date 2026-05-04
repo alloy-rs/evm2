@@ -323,7 +323,7 @@ impl<C: EvmConfig<Host = Self>> Host for Evm<C> {
         let mut gas = Gas::new(message.gas_limit);
         if let Some(result) = self.execute_precompile(&message, &mut gas) {
             let (stop, gas_remaining, output) = match result {
-                Ok(output) => (InstrStop::Return, gas.remaining(), output.output),
+                Ok(output) => (InstrStop::Return, gas.remaining(), output.into_bytes()),
                 Err(stop) => {
                     let gas_remaining = if stop.is_error() { 0 } else { gas.remaining() };
                     (stop, gas_remaining, Bytes::new())
