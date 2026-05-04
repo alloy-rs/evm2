@@ -46,9 +46,7 @@ pub(crate) use utils::{calc_linear_cost, u64_to_address};
 
 use core::fmt::{self, Debug};
 
-pub(crate) use crate::OnceLock;
-
-use crate::interpreter::SpecId;
+use crate::{interpreter::SpecId, once_lock::OnceLock};
 
 // silence arkworks lint as bn impl will be used as default if both are enabled.
 cfg_if::cfg_if! {
