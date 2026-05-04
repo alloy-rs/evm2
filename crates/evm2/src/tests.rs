@@ -22,6 +22,7 @@ fn run_tx(evm: &mut TestEvm, destination: Address, code: impl Into<Vec<u8>>) {
         TxEnv::default(),
         Bytecode::new_legacy(Bytes::from(code.into())),
         message,
+        false,
     );
     assert!(result.stop.is_success());
 }
@@ -96,6 +97,7 @@ fn evm_reports_invalid_transaction_execution() {
         TxEnv::default(),
         Bytecode::new_legacy(Bytes::from_static(&[op::PUSH1, 0x01, op::SSTORE])),
         message,
+        false,
     );
 
     assert_eq!(result.stop, InstrStop::StackUnderflow);

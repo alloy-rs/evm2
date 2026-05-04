@@ -47,6 +47,12 @@ impl<T: EvmTypes> State<'_, T> {
         self.interp().message()
     }
 
+    /// Returns whether the active frame forbids state-changing operations.
+    #[inline]
+    pub(crate) fn is_static(&self) -> bool {
+        self.interp().is_static()
+    }
+
     /// Returns linear memory.
     #[inline]
     pub(crate) fn memory(&mut self) -> &mut Memory {
@@ -78,6 +84,7 @@ impl<T: EvmTypes> fmt::Debug for State<'_, T> {
             .field("bytecode", &self.bytecode)
             .field("tx", &self.tx())
             .field("message", &self.message())
+            .field("is_static", &self.is_static())
             .field("memory", &self.interp().memory)
             .field("return_data", &self.return_data())
             .field("spec", &self.spec)
@@ -147,6 +154,7 @@ pub trait Host {
         tx_env: TxEnv,
         bytecode: Bytecode,
         message: Message,
+        caller_is_static: bool,
     ) -> MessageResult;
 
     /// Registers the current contract for self-destruction.

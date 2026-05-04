@@ -635,14 +635,14 @@ evm_versions! {
 
     OSAKA {
         op!(CLZ, LOW);
-        op!(DUPN, VERYLOW);
-        op!(SWAPN, VERYLOW);
-        op!(EXCHANGE, VERYLOW);
     }
 
     AMSTERDAM {
         const CPSB: u32 = 1174;
 
+        op!(DUPN, VERYLOW);
+        op!(SWAPN, VERYLOW);
+        op!(EXCHANGE, VERYLOW);
         op!(SLOTNUM, BASE);
 
         gas!(Create, 9000);

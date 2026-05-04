@@ -33,6 +33,7 @@ pub(crate) struct TestHost {
     pub(super) execute_result: MessageResult,
     pub(super) selfdestruct_result: SelfDestructResult,
     pub(super) calls: Vec<Message>,
+    pub(super) call_static_flags: Vec<bool>,
     pub(super) selfdestructs: Vec<(Address, Address, bool)>,
 }
 
@@ -50,6 +51,7 @@ impl Default for TestHost {
             execute_result: MessageResult { stop: InstrStop::Return, ..MessageResult::default() },
             selfdestruct_result: SelfDestructResult::default(),
             calls: Vec::new(),
+            call_static_flags: Vec::new(),
             selfdestructs: Vec::new(),
         }
     }
@@ -114,7 +116,9 @@ impl Host for TestHost {
         _tx_env: TxEnv,
         _bytecode: Bytecode,
         message: Message,
+        caller_is_static: bool,
     ) -> MessageResult {
+        self.call_static_flags.push(caller_is_static || message.kind == MessageKind::StaticCall);
         self.calls.push(message);
         self.execute_result.clone()
     }
@@ -266,7 +270,7 @@ fn run_with_config<C: EvmConfig>(config: RunConfig<'_>) -> TestInterpreter {
     let RunConfig { code, host, spec_id: _, tx_env, mut message, gas_limit, return_data } = config;
     let bytecode = Bytecode::new_legacy(Bytes::from(code));
     message.gas_limit = gas_limit;
-    let mut inner = Interpreter::<TestTypes>::new(bytecode, tx_env, message);
+    let mut inner = Interpreter::<TestTypes>::new(bytecode, tx_env, message, false);
     inner.return_data = return_data;
     let mut default_host = TestHost::default();
     let host = host.unwrap_or(&mut default_host);

@@ -83,6 +83,7 @@ pub fn _get_asm() -> impl Sized {
         Default::default(),
         Default::default(),
         Default::default(),
+        false,
     )
     .run::<BaseEvmConfig>(&mut evm)
 }

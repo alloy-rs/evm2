@@ -33,6 +33,7 @@ pub(crate) fn msize(cx: _) -> out {
 #[instruction]
 pub(crate) fn mcopy(cx: _, [dst, src, len]: [Word]) -> Result {
     let len = as_usize(len)?;
+    cx.gas.spend(cx.gas_params.mcopy_cost(len))?;
     if len == 0 {
         return Ok(());
     }
@@ -46,7 +47,7 @@ pub(crate) fn mcopy(cx: _, [dst, src, len]: [Word]) -> Result {
 #[cfg(test)]
 mod tests {
     use crate::interpreter::{
-        InstrStop, Word,
+        InstrStop, SpecId, Word,
         instructions::tests::{RunConfig, push, run, run_stack},
         op,
     };
@@ -162,5 +163,21 @@ mod tests {
 
         let interpreter = run_stack([Word::MAX, Word::from(0), Word::from(1)], op::MCOPY);
         core::assert_matches!(interpreter.err, InstrStop::InvalidOperandOOG);
+    }
+
+    #[test]
+    fn mcopy_charges_dynamic_gas() {
+        let mut code = Vec::new();
+        push(&mut code, Word::ZERO);
+        push(&mut code, 0);
+        code.push(op::MSTORE);
+        push(&mut code, Word::from(32));
+        push(&mut code, 0);
+        push(&mut code, 0);
+        code.extend([op::MCOPY, op::STOP]);
+
+        let interpreter = run(RunConfig::new(code).spec(SpecId::CANCUN).gas_limit(26));
+
+        core::assert_matches!(interpreter.err, InstrStop::OutOfGas);
     }
 }
