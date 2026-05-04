@@ -23,9 +23,9 @@ alloy-rlp.workspace = true
 alloy-trie = { workspace = true, features = ["ethereum"] }
 thiserror.workspace = true
 cfg-if.workspace = true
-once_cell = { workspace = true, features = ["alloc"] }
 
 # no_std
+once_cell = { workspace = true, features = ["alloc"] }
 paste.workspace = true
 
 # "serde"
