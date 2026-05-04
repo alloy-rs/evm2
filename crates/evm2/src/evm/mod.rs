@@ -19,10 +19,12 @@ pub mod env;
 pub mod precompile;
 pub mod registry;
 
+mod db;
 mod state;
+pub use db::{CacheDB, Database, InMemoryDB};
 pub use state::{
-    Account, AccountChange, AccountInfo, CacheDB, Database, InMemoryDB, JournalEntry, KECCAK_EMPTY,
-    State, StateChanges, StorageChange, StorageChangeSet, StorageOverlay, Tracked, logs_hash,
+    Account, AccountInfo, JournalEntry, State, StateChanges, StorageChangeSet, StorageOverlay,
+    Tracked,
 };
 
 const MAX_CODE_SIZE: usize = 0x6000;
@@ -86,7 +88,14 @@ impl<T: EvmTypes> Evm<T> {
         database: T::Database,
         precompiles: T::Precompiles,
     ) -> Self {
-        Self { spec_id, execution_config, block, registry, state: State::new(database), precompiles }
+        Self {
+            spec_id,
+            execution_config,
+            block,
+            registry,
+            state: State::new(database),
+            precompiles,
+        }
     }
 
     #[inline]
@@ -149,15 +158,13 @@ impl<T: EvmTypes<Tx: Typed2718>> Evm<T> {
     /// Dispatches the transaction to the handler registered for its EIP-2718 type byte.
     pub fn transact(&mut self, tx: &T::Tx) -> HandlerResult<TxResult> {
         let handler = self.registry.try_get_by_type(tx.ty())?;
-        let spec_id = self.spec_id();
-        let result = handler.call(tx, self).map(|mut result| {
-            result.state_changes = self.state.build_state_changes(spec_id);
-            self.state.accept_transaction(spec_id);
-            result
-        });
-        if result.is_err() {
-            self.state.clear_transaction_state();
-        }
+        let mut result = handler.call(tx, self);
+        if let Ok(result) = &mut result {
+            self.state.finalize_transaction(self.spec_id());
+            result.state_changes = self.state.build_state_changes();
+            self.state.commit_transaction_overlay();
+        };
+        self.state.clear_transaction_state();
         result
     }
 
@@ -408,13 +415,17 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
         let target_exists = self.state.account_info(target).is_some_and(|info| !info.is_empty());
         let previously_destroyed = self.state.is_selfdestructed(contract);
         let balance = self.state.account_info(contract).map_or(Word::ZERO, |info| info.balance);
+        let should_destroy = !self.spec_id().enables(SpecId::CANCUN)
+            || self.state.is_created_in_transaction(contract);
 
-        if contract != target && !balance.is_zero() {
+        if contract != target {
             self.state.transfer(contract, target, balance);
-        } else if !balance.is_zero() {
+        } else if should_destroy && !balance.is_zero() {
             self.state.add_balance(contract, Word::ZERO.wrapping_sub(balance));
         }
-        self.state.mark_destructed(contract);
+        if should_destroy {
+            self.state.mark_destructed(contract);
+        }
 
         Ok(SelfDestructResult {
             had_value: !balance.is_zero(),
@@ -434,7 +445,7 @@ mod tests {
         interpreter::{MessageKind, op},
         registry::TxRequest,
     };
-    use alloy_primitives::{Address, B256, Bytes, Log, LogData, U256, keccak256};
+    use alloy_primitives::{Address, Bytes, U256};
 
     const TEST_TX_TYPE: u8 = 0x7f;
 
@@ -539,21 +550,6 @@ mod tests {
 
         let result = Host::execute_message(&mut evm, TxEnv::default(), bytecode, message, false);
         assert!(result.stop.is_success());
-    }
-
-    #[test]
-    fn logs_hash_matches_empty_logs() {
-        assert_eq!(logs_hash(&[]), keccak256([alloy_rlp::EMPTY_LIST_CODE]));
-    }
-
-    #[test]
-    fn logs_hash_hashes_logs() {
-        let log = Log {
-            address: Address::from([0x22; 20]),
-            data: LogData::new_unchecked(vec![B256::with_last_byte(1)], Bytes::from_static(&[2])),
-        };
-
-        assert_ne!(logs_hash(&[log]), B256::ZERO);
     }
 
     #[test]

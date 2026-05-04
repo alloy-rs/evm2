@@ -3,7 +3,7 @@ use crate::{
     types::{AccountInfo, Env, Test, TestSuite, TestUnit, TransactionParts, TxPartIndices},
 };
 use alloy_consensus::{TxLegacy, transaction::Recovered};
-use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
+use alloy_primitives::{Address, B256, Bytes, Log, TxKind, U256, keccak256};
 use alloy_trie::{
     TrieAccount,
     root::{state_root_unhashed, storage_root_unhashed},
@@ -13,7 +13,7 @@ use evm2::{
     bytecode::Bytecode,
     env::BlockEnv,
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
-    evm::{AccountInfo as EvmAccountInfo, InMemoryDB, StateChanges, logs_hash},
+    evm::{AccountInfo as EvmAccountInfo, InMemoryDB, StateChanges},
     registry::HandlerError,
 };
 use k256::ecdsa::SigningKey;
@@ -249,6 +249,12 @@ fn spec_outcome<T: EvmTypes<Database = InMemoryDB>>(
     }
 }
 
+fn logs_hash(logs: &[Log]) -> B256 {
+    let mut out = Vec::with_capacity(alloy_rlp::list_length(logs));
+    alloy_rlp::encode_list(logs, &mut out);
+    keccak256(out)
+}
+
 fn state_root(pre: &InMemoryDB, changes: &StateChanges) -> B256 {
     let post = apply_state_changes(pre, changes);
     let accounts = post.accounts.iter().map(|(&address, info)| {
@@ -397,6 +403,22 @@ fn recover_address(private_key: &[u8]) -> Option<Address> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy_primitives::LogData;
+
+    #[test]
+    fn logs_hash_matches_empty_logs() {
+        assert_eq!(logs_hash(&[]), keccak256([alloy_rlp::EMPTY_LIST_CODE]));
+    }
+
+    #[test]
+    fn logs_hash_hashes_logs() {
+        let log = Log {
+            address: Address::from([0x22; 20]),
+            data: LogData::new_unchecked(vec![B256::with_last_byte(1)], Bytes::from_static(&[2])),
+        };
+
+        assert_ne!(logs_hash(&[log]), B256::ZERO);
+    }
 
     #[test]
     fn effective_gas_price_uses_legacy_gas_price() {

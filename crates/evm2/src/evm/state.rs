@@ -1,22 +1,22 @@
 //! Basic in-memory EVM host state.
 
-use crate::{bytecode::Bytecode, interpreter::Word};
-use alloc::{collections::BTreeMap, string::ToString, vec::Vec};
+use super::db::Database;
+use crate::{KECCAK_EMPTY, bytecode::Bytecode, interpreter::Word};
+use alloc::{collections::BTreeMap, vec::Vec};
 use alloy_primitives::{
-    Address, B256, Log, U256, keccak256,
+    Address, B256, Log, U256,
     map::{self, HashMap, HashSet, hash_map},
 };
-
-pub use alloy_primitives::KECCAK256_EMPTY as KECCAK_EMPTY;
 
 /// A value tracked together with the value it had at the start of the current
 /// transaction.
 ///
-/// `Tracked` is used internally by [`State`] to keep an overlay over the
-/// backing database. `original` is the value at the current transaction
-/// boundary, while `current` is the value after all in-flight EVM mutations.
-/// When a transaction is accepted, `current` becomes the next transaction's
-/// `original` without writing anything to the backing database.
+/// `Tracked` is used by [`State`] to keep an overlay over the backing database
+/// and by [`StateChanges`] to describe account and storage transitions.
+/// `original` is the value at the current transaction boundary, while `current`
+/// is the value after all in-flight EVM mutations. When a transaction is
+/// accepted, `current` becomes the next transaction's `original` without writing
+/// anything to the backing database.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub struct Tracked<T> {
     /// Value at the start of the current transaction.
@@ -112,8 +112,6 @@ impl AccountInfo {
     }
 }
 
-type StorageValue = Tracked<Word>;
-
 /// Mutable account state cached by [`State`].
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 #[non_exhaustive]
@@ -171,7 +169,7 @@ pub struct StorageOverlay {
     /// before applying individual slot changes.
     pub wiped: bool,
     /// Loaded or changed storage slots.
-    pub(crate) slots: HashMap<Word, StorageValue>,
+    pub(crate) slots: HashMap<Word, Tracked<Word>>,
 }
 
 /// Complete state transition and emitted logs produced by a transaction.
@@ -186,8 +184,8 @@ pub struct StorageOverlay {
 /// 1. write bytecode from [`Self::code`] for every non-empty code hash they do not already have;
 /// 2. for each [`StorageChangeSet`] whose [`StorageChangeSet::wipe`] flag is true, delete all
 ///    storage for that account;
-/// 3. apply each storage slot change: a zero [`StorageChange::current`] means delete the slot,
-///    otherwise write the slot value;
+/// 3. apply each storage slot change: a zero [`Tracked::current`] means delete the slot, otherwise
+///    write the slot value;
 /// 4. apply account changes: `current = Some(..)` means upsert the account, `current = None` means
 ///    delete the account.
 ///
@@ -196,8 +194,17 @@ pub struct StorageOverlay {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct StateChanges {
     /// Account changes keyed by address.
-    pub accounts: BTreeMap<Address, AccountChange>,
+    ///
+    /// [`Tracked::original`] is the account at the beginning of the transaction.
+    /// [`Tracked::current`] is the account after transaction execution and EVM
+    /// account-lifetime rules have been evaluated. `current = None` is an explicit account
+    /// deletion.
+    pub accounts: BTreeMap<Address, Tracked<Option<AccountInfo>>>,
     /// Persistent storage changes keyed by account address.
+    ///
+    /// Each slot change's [`Tracked::original`] value is the slot value at the beginning of the
+    /// transaction, after any storage wipe/re-incarnation semantics that occurred before the slot
+    /// was loaded. `current = 0` means the consumer should delete the slot.
     pub storage: BTreeMap<Address, StorageChangeSet>,
     /// Newly created or modified bytecode keyed by code hash.
     pub code: BTreeMap<B256, Bytecode>,
@@ -216,19 +223,6 @@ impl StateChanges {
     }
 }
 
-/// Account transition for a single address.
-///
-/// `original` is the account at the beginning of the transaction. `current` is
-/// the account after transaction execution and EVM account-lifetime rules have
-/// been evaluated. `current = None` is an explicit account deletion.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AccountChange {
-    /// Account at the beginning of the transaction.
-    pub original: Option<AccountInfo>,
-    /// Account after the transaction, or `None` to delete it.
-    pub current: Option<AccountInfo>,
-}
-
 /// Storage transition for a single account.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct StorageChangeSet {
@@ -237,35 +231,7 @@ pub struct StorageChangeSet {
     /// re-incarnation semantics using an explicit storage wipe marker.
     pub wipe: bool,
     /// Changed storage slots keyed by slot.
-    pub slots: BTreeMap<Word, StorageChange>,
-}
-
-/// Storage transition for a single slot.
-///
-/// `original` is the slot value at the beginning of the transaction, after any
-/// storage wipe/re-incarnation semantics that occurred before the slot was
-/// loaded. `current = 0` means the consumer should delete the slot.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct StorageChange {
-    /// Slot value at the beginning of the transaction.
-    pub original: Word,
-    /// Slot value after the transaction. Zero means delete the slot.
-    pub current: Word,
-}
-
-/// Backing database view used to initialize mutable [`State`].
-pub trait Database {
-    /// Loads account information.
-    fn get_account(&self, address: Address) -> Option<AccountInfo>;
-
-    /// Loads account code.
-    fn get_account_code(&self, address: Address) -> Bytecode;
-
-    /// Loads a persistent storage slot.
-    fn get_storage(&self, address: Address, key: Word) -> Word;
-
-    /// Loads a historical block hash.
-    fn get_block_hash(&self, number: u64) -> Option<B256>;
+    pub slots: BTreeMap<Word, Tracked<Word>>,
 }
 
 /// Compact journal entry for reverting state changes.
@@ -478,13 +444,6 @@ impl<D> State<D> {
         self.transient_storage.clear();
         self.logs.clear();
     }
-
-    /// Clears all transaction-scoped warm accesses.
-    #[inline]
-    pub fn clear_accesses(&mut self) {
-        self.accessed_accounts.clear();
-        self.accessed_storage.clear();
-    }
 }
 
 impl<D: Database> State<D> {
@@ -581,7 +540,7 @@ impl<D: Database> State<D> {
         let initial = self.storage_initial(address, key);
         let storage = self.storage.entry(address).or_default();
         if let hash_map::Entry::Vacant(entry) = storage.slots.entry(key) {
-            entry.insert(StorageValue::new(initial));
+            entry.insert(Tracked::new(initial));
             if journal_insert {
                 self.journal.push(JournalEntry::StorageInserted { address, key });
             }
@@ -589,7 +548,7 @@ impl<D: Database> State<D> {
     }
 
     #[inline]
-    fn get_storage_value(&mut self, address: Address, key: Word) -> &mut StorageValue {
+    fn get_storage_value(&mut self, address: Address, key: Word) -> &mut Tracked<Word> {
         self.ensure_storage_slot(address, key, false);
         self.storage
             .get_mut(&address)
@@ -707,7 +666,6 @@ impl<D: Database> State<D> {
             code: Bytecode::default(),
             just_created: true,
             code_changed: true,
-            ..Account::default()
         });
         self.touch(address);
         Ok(())
@@ -756,6 +714,7 @@ impl<D: Database> State<D> {
     /// Marks an account as self-destructed in the current transaction.
     #[inline]
     pub fn mark_destructed(&mut self, address: Address) {
+        self.ensure_account_overlay(address);
         if self.selfdestructs.insert(address) {
             self.journal.push(JournalEntry::SelfDestruct { address });
         }
@@ -766,6 +725,15 @@ impl<D: Database> State<D> {
     #[inline]
     pub fn is_selfdestructed(&self, address: Address) -> bool {
         self.selfdestructs.contains(&address)
+    }
+
+    /// Returns whether an account was created in the current transaction.
+    #[inline]
+    pub(super) fn is_created_in_transaction(&self, address: Address) -> bool {
+        self.accounts
+            .get(&address)
+            .and_then(|tracked| tracked.current.as_ref())
+            .is_some_and(|account| account.just_created)
     }
 
     /// Reverts state changes after the checkpoint.
@@ -828,42 +796,90 @@ impl<D: Database> State<D> {
         }
     }
 
-    fn final_account_info(account: &Account, deleted: bool) -> Option<AccountInfo> {
-        if deleted { None } else { Some(account.info()) }
-    }
-
-    fn account_deleted_by_rules(
-        &self,
-        address: Address,
-        account: Option<&Account>,
-        spec: crate::SpecId,
-    ) -> bool {
-        if self.selfdestructs.contains(&address) {
-            return true;
-        }
-        spec.enables(crate::SpecId::SPURIOUS_DRAGON)
-            && self.touched.contains(&address)
-            && account.is_none_or(Account::is_empty)
-    }
-
-    /// Builds the state transition and emitted logs for the current transaction.
+    /// Returns whether an existing account is dead by the EIP-161 definition.
     ///
-    /// This method is pure: it does not apply changes to the backing database and
-    /// does not advance the overlay to the next transaction. Callers normally use
-    /// the [`StateChanges`] attached to [`crate::TxResult`] instead of invoking
-    /// this directly.
-    pub fn build_state_changes(&self, spec: crate::SpecId) -> StateChanges {
-        let mut changes = StateChanges { logs: self.logs.clone(), ..StateChanges::default() };
+    /// Accounts with zero nonce, zero balance, and empty code are dead. Starting
+    /// in Spurious Dragon, touched dead accounts that exist in the pre/final
+    /// overlay state are deleted during transaction finalization. Non-existent
+    /// touched accounts stay non-existent.
+    fn is_existing_dead(&self, address: Address) -> bool {
+        if let Some(account) = self.accounts.get(&address) {
+            return account.current.as_ref().is_some_and(Account::is_empty)
+                || (account.current.is_none() && account.original.is_some());
+        }
+        self.initial.get_account(address).is_some_and(|account| account.is_empty())
+    }
+
+    fn delete_account_for_finalization(&mut self, address: Address) {
+        self.accounts
+            .get_mut(&address)
+            .expect("finalized account is loaded into the overlay")
+            .current = None;
+        self.storage
+            .insert(address, StorageOverlay { wiped: true, slots: map::HashMap::default() });
+    }
+
+    fn materialize_empty_account_for_finalization(&mut self, address: Address) {
+        self.ensure_account_overlay(address);
+        if let Some(account) = self.accounts.get_mut(&address)
+            && account.original.is_none()
+            && account.current.is_none()
+        {
+            account.current = Some(Account {
+                code_hash: KECCAK_EMPTY,
+                code: Bytecode::default(),
+                ..Account::default()
+            });
+        }
+    }
+
+    /// Applies transaction-finalization account-lifetime rules to the overlay.
+    ///
+    /// This mutates the in-memory post-transaction state before it is serialized
+    /// by [`Self::build_state_changes`]. Runtime records
+    /// transaction substate such as touches and selfdestructs, while finalization
+    /// turns that substate into account deletions, storage wipes, or pre-EIP-161
+    /// empty-account materialization.
+    pub(super) fn finalize_transaction(&mut self, spec: crate::SpecId) {
+        let selfdestructs = core::mem::take(&mut self.selfdestructs);
+        for address in selfdestructs.iter().copied() {
+            self.delete_account_for_finalization(address);
+        }
+
+        let touched = core::mem::take(&mut self.touched);
+        if spec.enables(crate::SpecId::SPURIOUS_DRAGON) {
+            for address in touched {
+                // EIP-161 deletes touched dead accounts at transaction finalization.
+                if self.is_existing_dead(address) {
+                    self.ensure_account_overlay(address);
+                    self.delete_account_for_finalization(address);
+                }
+            }
+        } else {
+            for address in touched {
+                // Before EIP-161, touching a non-existent account materializes it as empty.
+                if !selfdestructs.contains(&address) && self.account_info(address).is_none() {
+                    self.materialize_empty_account_for_finalization(address);
+                }
+            }
+        }
+    }
+
+    /// Builds the state transition and takes emitted logs for the current transaction.
+    ///
+    /// This does not apply changes to the backing database, apply transaction-finalization rules,
+    /// or advance the overlay to the next transaction. It does move transaction-local logs into the
+    /// returned [`StateChanges`], since callers clear transaction-local state immediately after
+    /// accepting or discarding the transaction.
+    pub(crate) fn build_state_changes(&mut self) -> StateChanges {
+        let mut changes =
+            StateChanges { logs: core::mem::take(&mut self.logs), ..StateChanges::default() };
 
         for (&address, tracked) in &self.accounts {
-            let deleted = self.account_deleted_by_rules(address, tracked.current.as_ref(), spec);
             let original = tracked.original.as_ref().map(Account::info);
-            let current = tracked
-                .current
-                .as_ref()
-                .and_then(|account| Self::final_account_info(account, deleted));
+            let current = tracked.current.as_ref().map(Account::info);
             if original != current {
-                changes.accounts.insert(address, AccountChange { original, current });
+                changes.accounts.insert(address, Tracked { original, current });
             }
             if let Some(account) = tracked.current.as_ref()
                 && account.code_changed
@@ -875,62 +891,16 @@ impl<D: Database> State<D> {
             }
         }
 
-        for &address in &self.touched {
-            if self.accounts.contains_key(&address) {
-                continue;
-            }
-            let original = self.initial.get_account(address);
-            if spec.enables(crate::SpecId::SPURIOUS_DRAGON) {
-                if original.as_ref().is_some_and(AccountInfo::is_empty) {
-                    changes.accounts.insert(address, AccountChange { original, current: None });
-                }
-                continue;
-            }
-            if original.is_none() {
-                let empty = Account {
-                    code_hash: KECCAK_EMPTY,
-                    code: Bytecode::default(),
-                    ..Account::default()
-                };
-                changes
-                    .accounts
-                    .insert(address, AccountChange { original: None, current: Some(empty.info()) });
-            }
-        }
-
-        for &address in &self.selfdestructs {
-            let original = self
-                .accounts
-                .get(&address)
-                .and_then(|tracked| tracked.original.as_ref())
-                .map(Account::info)
-                .or_else(|| self.initial.get_account(address));
-            changes.accounts.entry(address).or_insert(AccountChange { original, current: None });
-        }
-
         for (&address, storage) in &self.storage {
-            let account_deleted =
-                changes.accounts.get(&address).is_some_and(|change| change.current.is_none());
-            let mut set =
-                StorageChangeSet { wipe: storage.wiped || account_deleted, slots: BTreeMap::new() };
-            if !account_deleted {
-                for (&key, slot) in &storage.slots {
-                    if slot.original != slot.current && (!set.wipe || !slot.current.is_zero()) {
-                        set.slots.insert(
-                            key,
-                            StorageChange { original: slot.original, current: slot.current },
-                        );
-                    }
+            let mut set = StorageChangeSet { wipe: storage.wiped, slots: BTreeMap::new() };
+            for (&key, slot) in &storage.slots {
+                if slot.original != slot.current && (!set.wipe || !slot.current.is_zero()) {
+                    set.slots
+                        .insert(key, Tracked { original: slot.original, current: slot.current });
                 }
             }
             if set.wipe || !set.slots.is_empty() {
                 changes.storage.insert(address, set);
-            }
-        }
-
-        for (&address, change) in &changes.accounts {
-            if change.current.is_none() {
-                changes.storage.entry(address).or_default().wipe = true;
             }
         }
 
@@ -939,164 +909,39 @@ impl<D: Database> State<D> {
 
     /// Marks the current transaction's overlay values as the new baseline.
     ///
-    /// After [`Self::build_state_changes`] has emitted the transaction write-set,
-    /// the overlay must stop treating those writes as pending changes. This rolls
-    /// the current account and storage values forward into their `original` slots,
-    /// applies local deletion/wipe bookkeeping, and clears transaction-local journal,
-    /// touch, selfdestruct, and access-list state. It only advances the in-memory
-    /// overlay; callers are still responsible for applying the emitted write-set to
-    /// their backing database.
-    pub(super) fn accept_transaction(&mut self, spec: crate::SpecId) {
-        let changes = self.build_state_changes(spec);
-        for (&address, change) in &changes.accounts {
-            self.ensure_account_overlay(address);
-            let current = change.current.clone().map(Account::from_info);
-            if let Some(account) = self.accounts.get_mut(&address) {
-                account.original = current.clone();
-                account.current = current;
+    /// After [`Self::finalize_transaction`] and [`Self::build_state_changes`] have
+    /// produced the transaction write-set, the overlay must stop treating those
+    /// writes as pending changes. This rolls the current account and storage
+    /// values forward into their `original` slots and applies local deletion/wipe
+    /// bookkeeping. It only advances the in-memory overlay; callers are still
+    /// responsible for applying the emitted write-set to their backing database
+    /// and clearing transaction-local state.
+    pub(super) fn commit_transaction_overlay(&mut self) {
+        for account in self.accounts.values_mut() {
+            if let Some(current) = &mut account.current {
+                current.just_created = false;
+                current.code_changed = false;
             }
+            account.original.clone_from(&account.current);
         }
-        for (&address, change) in &changes.storage {
-            if change.wipe {
-                self.storage.remove(&address);
+
+        self.storage.retain(|_, storage| {
+            if storage.wiped {
+                storage.slots.retain(|_, slot| !slot.current.is_zero());
             }
-            if !change.slots.is_empty() {
-                let storage = self.storage.entry(address).or_default();
-                for (&key, slot_change) in &change.slots {
-                    storage.slots.insert(key, StorageValue::new(slot_change.current));
-                }
-            }
-        }
-        for storage in self.storage.values_mut() {
             for slot in storage.slots.values_mut() {
                 slot.original = slot.current;
             }
             storage.wiped = false;
-        }
-        self.clear_transaction_state();
+            !storage.slots.is_empty()
+        });
     }
 }
-
-/// Returns the state-test logs hash.
-pub fn logs_hash(logs: &[Log]) -> B256 {
-    let mut out = Vec::with_capacity(alloy_rlp::list_length(logs));
-    alloy_rlp::encode_list(logs, &mut out);
-    keccak256(out)
-}
-
-/// A simple in-memory database view.
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[non_exhaustive]
-pub struct CacheDB {
-    /// Accounts keyed by address.
-    pub accounts: HashMap<Address, AccountInfo>,
-    /// Contracts keyed by code hash.
-    pub contracts: HashMap<B256, Bytecode>,
-    /// Persistent storage keyed by account and slot.
-    pub storage: HashMap<(Address, Word), Word>,
-    /// Cached block hashes keyed by block number.
-    pub block_hashes: HashMap<u64, B256>,
-}
-
-impl Default for CacheDB {
-    #[inline]
-    fn default() -> Self {
-        let mut contracts = map::HashMap::default();
-        contracts.insert(KECCAK_EMPTY, Bytecode::default());
-        contracts.insert(B256::ZERO, Bytecode::default());
-
-        Self {
-            accounts: map::HashMap::default(),
-            contracts,
-            storage: map::HashMap::default(),
-            block_hashes: map::HashMap::default(),
-        }
-    }
-}
-
-impl CacheDB {
-    /// Inserts account code into the contract cache.
-    #[inline]
-    pub fn insert_contract(&mut self, info: &mut AccountInfo) {
-        if let Some(code) = &info.code
-            && !code.is_empty()
-        {
-            if info.code_hash == KECCAK_EMPTY {
-                info.code_hash = code.hash_slow();
-            }
-            self.contracts.entry(info.code_hash).or_insert_with(|| code.clone());
-        }
-        if info.code_hash.is_zero() {
-            info.code_hash = KECCAK_EMPTY;
-        }
-    }
-
-    /// Inserts account info.
-    #[inline]
-    pub fn insert_account_info(&mut self, address: Address, mut info: AccountInfo) {
-        self.insert_contract(&mut info);
-        self.accounts.insert(address, info);
-    }
-
-    /// Returns account info if the account exists.
-    #[inline]
-    pub fn account_info(&self, address: Address) -> Option<&AccountInfo> {
-        self.accounts.get(&address)
-    }
-
-    /// Inserts persistent storage.
-    #[inline]
-    pub fn insert_account_storage(&mut self, address: Address, key: Word, value: Word) {
-        self.accounts.entry(address).or_default();
-        self.storage.insert((address, key), value);
-    }
-
-    /// Sets a historical block hash.
-    #[inline]
-    pub fn insert_block_hash(&mut self, number: u64, hash: B256) {
-        self.block_hashes.insert(number, hash);
-    }
-}
-
-impl Database for CacheDB {
-    #[inline]
-    fn get_account(&self, address: Address) -> Option<AccountInfo> {
-        self.accounts.get(&address).cloned()
-    }
-
-    #[inline]
-    fn get_account_code(&self, address: Address) -> Bytecode {
-        self.accounts
-            .get(&address)
-            .and_then(|info| info.code.clone())
-            .or_else(|| {
-                self.accounts
-                    .get(&address)
-                    .and_then(|info| self.contracts.get(&info.code_hash).cloned())
-            })
-            .unwrap_or_default()
-    }
-
-    #[inline]
-    fn get_storage(&self, address: Address, key: Word) -> Word {
-        self.storage.get(&(address, key)).copied().unwrap_or_default()
-    }
-
-    #[inline]
-    fn get_block_hash(&self, number: u64) -> Option<B256> {
-        self.block_hashes
-            .get(&number)
-            .copied()
-            .or_else(|| Some(keccak256(number.to_string().as_bytes())))
-    }
-}
-
-/// A database implementation that stores initial state in memory.
-pub type InMemoryDB = CacheDB;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::evm::CacheDB;
 
     #[test]
     fn storage_change_rolls_back_to_checkpoint() {
@@ -1175,7 +1020,7 @@ mod tests {
     }
 
     #[test]
-    fn state_changes_include_logs_and_accept_clears_them() {
+    fn state_changes_take_logs_from_transaction_state() {
         use alloy_primitives::{Bytes, LogData};
 
         let mut state = State::new(CacheDB::default());
@@ -1185,10 +1030,13 @@ mod tests {
         };
 
         state.log(log.clone());
-        let changes = state.build_state_changes(crate::SpecId::SPURIOUS_DRAGON);
-        assert_eq!(changes.logs, [log]);
+        state.finalize_transaction(crate::SpecId::SPURIOUS_DRAGON);
+        let changes = state.build_state_changes();
+        assert_eq!(changes.logs.as_slice(), core::slice::from_ref(&log));
+        assert!(state.logs().is_empty());
 
-        state.accept_transaction(crate::SpecId::SPURIOUS_DRAGON);
+        state.commit_transaction_overlay();
+        state.clear_transaction_state();
         assert!(state.logs().is_empty());
     }
 
@@ -1201,7 +1049,8 @@ mod tests {
         let mut state = State::new(database);
 
         state.touch(address);
-        let changes = state.build_state_changes(crate::SpecId::SPURIOUS_DRAGON);
+        state.finalize_transaction(crate::SpecId::SPURIOUS_DRAGON);
+        let changes = state.build_state_changes();
 
         let change = changes.accounts.get(&address).expect("touched empty account is deleted");
         assert_eq!(change.original, Some(empty));
@@ -1217,7 +1066,8 @@ mod tests {
         let mut state = State::new(database);
 
         state.touch(address);
-        let changes = state.build_state_changes(crate::SpecId::HOMESTEAD);
+        state.finalize_transaction(crate::SpecId::HOMESTEAD);
+        let changes = state.build_state_changes();
 
         assert!(!changes.accounts.contains_key(&address));
         assert!(!changes.storage.contains_key(&address));
@@ -1229,7 +1079,8 @@ mod tests {
         let mut state = State::new(CacheDB::default());
 
         state.touch(address);
-        let changes = state.build_state_changes(crate::SpecId::HOMESTEAD);
+        state.finalize_transaction(crate::SpecId::HOMESTEAD);
+        let changes = state.build_state_changes();
 
         let change =
             changes.accounts.get(&address).expect("pre-spurious empty touch creates account");
@@ -1244,7 +1095,8 @@ mod tests {
         let mut state = State::new(CacheDB::default());
 
         state.touch(address);
-        let changes = state.build_state_changes(crate::SpecId::SPURIOUS_DRAGON);
+        state.finalize_transaction(crate::SpecId::SPURIOUS_DRAGON);
+        let changes = state.build_state_changes();
 
         assert!(!changes.accounts.contains_key(&address));
         assert!(!changes.storage.contains_key(&address));
@@ -1259,7 +1111,8 @@ mod tests {
         let mut state = State::new(database);
 
         state.mark_destructed(address);
-        let changes = state.build_state_changes(crate::SpecId::SPURIOUS_DRAGON);
+        state.finalize_transaction(crate::SpecId::SPURIOUS_DRAGON);
+        let changes = state.build_state_changes();
 
         let change = changes.accounts.get(&address).expect("selfdestruct deletes account");
         assert!(change.original.is_some());

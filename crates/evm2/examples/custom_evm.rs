@@ -153,6 +153,7 @@ fn handle_custom_tx(
         gas_used: GAS_LIMIT - result.gas_remaining,
         stop: result.stop,
         output: result.output,
+        ..Default::default()
     })
 }
 
@@ -199,9 +200,7 @@ fn main() {
     assert!(result.status);
     assert_eq!(result.gas_used, expected_custom_gas);
     assert_eq!(
-        evm.state().account_ref(custom_target).expect("custom target should exist").storage
-            [&Word::from(1)]
-            .current,
+        result.state_changes.storage[&custom_target].slots[&Word::from(1)].current,
         Word::from(0xdead_u64),
     );
 
