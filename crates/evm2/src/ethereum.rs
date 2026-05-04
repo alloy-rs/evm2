@@ -87,13 +87,13 @@ where
     let caller = req.tx.signer();
     let tx = req.tx.inner();
     let gas_price = U256::from(tx.gas_price);
-    if C::VERSION.spec_id().enables(SpecId::LONDON) && gas_price < req.host.block.basefee {
+    if C::spec_id().enables(SpecId::LONDON) && gas_price < req.host.block.basefee {
         return Err(HandlerError::FeeCapLessThanBaseFee {
             max_fee_per_gas: gas_price,
             base_fee: req.host.block.basefee,
         });
     }
-    let intrinsic = legacy_intrinsic_gas(C::VERSION.spec_id(), tx);
+    let intrinsic = legacy_intrinsic_gas(C::spec_id(), tx);
     if tx.gas_limit < intrinsic {
         return Err(HandlerError::IntrinsicGasTooLow { required: intrinsic, got: tx.gas_limit });
     }
@@ -110,7 +110,7 @@ where
     }
 
     req.host.state.warm_account(caller);
-    if C::VERSION.spec_id().enables(SpecId::SHANGHAI) {
+    if C::spec_id().enables(SpecId::SHANGHAI) {
         req.host.state.warm_account(req.host.block.beneficiary);
     }
     if let TxKind::Call(to) = tx.to {
@@ -174,7 +174,7 @@ where
 
     let gas_used = tx.gas_limit - result.gas_remaining;
     req.host.state.add_balance(caller, U256::from(result.gas_remaining) * gas_price);
-    let beneficiary_gas_price = if C::VERSION.spec_id().enables(SpecId::LONDON) {
+    let beneficiary_gas_price = if C::spec_id().enables(SpecId::LONDON) {
         gas_price.saturating_sub(req.host.block.basefee)
     } else {
         gas_price
