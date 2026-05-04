@@ -273,14 +273,8 @@ macro_rules! evm_versions {
                                 v.static_gas_table.set(op::$name, $cost as u16);
                             };
                         }
-                        macro_rules! static_gas {
-                            ($name:ident, $cost:expr) => {
-                                op!($name, $cost);
-                            };
-                            ($name:ident, $cost:expr, $instr:path) => {
-                                op!($name, $cost, $instr);
-                            };
-                        }
+                        #[allow(unused_imports)]
+                        use op as static_gas;
                         macro_rules! gas {
                             ($id:ident, $value:expr) => {
                                 v.gas_params.set($id, $value);
@@ -327,14 +321,8 @@ macro_rules! evm_versions {
                                 );
                             };
                         }
-                        macro_rules! static_gas {
-                            ($name:ident, $cost:expr) => {
-                                op!($name, $cost);
-                            };
-                            ($name:ident, $cost:expr, $instr:path) => {
-                                op!($name, $cost, $instr);
-                            };
-                        }
+                        #[allow(unused_imports)]
+                        use op as static_gas;
                         macro_rules! gas {
                             ($id:ident, $value:expr) => {
                                 let _ = $value;
@@ -522,7 +510,7 @@ evm_versions! {
         static_gas!(BALANCE, 400);
         static_gas!(EXTCODESIZE, 700);
         static_gas!(EXTCODECOPY, 700);
-        op!(CREATE, ZERO);
+        static_gas!(CREATE, ZERO);
         static_gas!(CALL, 700);
         static_gas!(CALLCODE, 700);
         static_gas!(DELEGATECALL, 700);
@@ -531,7 +519,7 @@ evm_versions! {
 
     SPURIOUS_DRAGON {
         gas!(ExpByteGas, 50);
-        op!(EXP, EXP);
+        static_gas!(EXP, EXP);
     }
 
     BYZANTIUM {
@@ -566,7 +554,7 @@ evm_versions! {
         static_gas!(SLOAD, ISTANBUL_SLOAD_GAS);
         static_gas!(BALANCE, 700);
         static_gas!(EXTCODEHASH, 700);
-        op!(SSTORE, ZERO);
+        static_gas!(SSTORE, ZERO);
     }
 
     BERLIN {
@@ -587,12 +575,12 @@ evm_versions! {
         static_gas!(EXTCODESIZE, WARM_STORAGE_READ_COST);
         static_gas!(EXTCODEHASH, WARM_STORAGE_READ_COST);
         static_gas!(EXTCODECOPY, WARM_STORAGE_READ_COST);
-        op!(SSTORE, ZERO);
+        static_gas!(SSTORE, ZERO);
         static_gas!(CALL, WARM_STORAGE_READ_COST);
         static_gas!(CALLCODE, WARM_STORAGE_READ_COST);
         static_gas!(DELEGATECALL, WARM_STORAGE_READ_COST);
         static_gas!(STATICCALL, WARM_STORAGE_READ_COST);
-        op!(SELFDESTRUCT, 5000);
+        static_gas!(SELFDESTRUCT, 5000);
     }
 
     LONDON {
@@ -601,8 +589,8 @@ evm_versions! {
         gas!(SstoreClearingSlotRefund, WARM_SSTORE_RESET + ACCESS_LIST_STORAGE_KEY);
         gas!(SelfdestructRefund, 0);
 
-        op!(SSTORE, ZERO);
-        op!(SELFDESTRUCT, 5000);
+        static_gas!(SSTORE, ZERO);
+        static_gas!(SELFDESTRUCT, 5000);
     }
 
     SHANGHAI {
@@ -610,8 +598,8 @@ evm_versions! {
 
         gas!(TxInitcodeCost, INITCODE_WORD_COST);
 
-        op!(CREATE, ZERO);
-        op!(CREATE2, ZERO);
+        static_gas!(CREATE, ZERO);
+        static_gas!(CREATE2, ZERO);
     }
 
     CANCUN {
@@ -656,13 +644,13 @@ evm_versions! {
         gas!(TxEip7702AuthRefund, 112 * CPSB);
         gas!(TxEip7702PerAuthStateGas, (112 + 23) * CPSB);
 
-        op!(CREATE, ZERO);
-        op!(CREATE2, ZERO);
-        op!(SSTORE, ZERO);
-        op!(CALL, WARM_STORAGE_READ_COST);
-        op!(CALLCODE, WARM_STORAGE_READ_COST);
-        op!(DELEGATECALL, WARM_STORAGE_READ_COST);
-        op!(STATICCALL, WARM_STORAGE_READ_COST);
-        op!(SELFDESTRUCT, 5000);
+        static_gas!(CREATE, ZERO);
+        static_gas!(CREATE2, ZERO);
+        static_gas!(SSTORE, ZERO);
+        static_gas!(CALL, WARM_STORAGE_READ_COST);
+        static_gas!(CALLCODE, WARM_STORAGE_READ_COST);
+        static_gas!(DELEGATECALL, WARM_STORAGE_READ_COST);
+        static_gas!(STATICCALL, WARM_STORAGE_READ_COST);
+        static_gas!(SELFDESTRUCT, 5000);
     }
 }
