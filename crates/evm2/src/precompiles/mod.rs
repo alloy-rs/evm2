@@ -3,10 +3,6 @@
 
 use alloc::boxed::Box;
 
-#[cfg_attr(
-    all(any(target_arch = "x86", target_arch = "x86_64"), target_feature = "avx2"),
-    expect(unreachable_code)
-)]
 pub(crate) mod blake2;
 pub(crate) mod bls12_381;
 pub(crate) mod bls12_381_const;

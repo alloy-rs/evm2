@@ -4,6 +4,11 @@
 //! [`blake2b_simd`](https://github.com/oconnor663/blake2_simd) (MIT license),
 //! with modifications for EIP-152 variable round counts.
 
+#![cfg_attr(
+    all(any(target_arch = "x86", target_arch = "x86_64"), target_feature = "avx2"),
+    expect(unreachable_code)
+)]
+
 use crate::precompiles::{
     EthPrecompileOutput, EthPrecompileResult, Gas, Precompile, PrecompileHalt, PrecompileId,
     eth_precompile_fn,
