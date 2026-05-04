@@ -30,9 +30,7 @@ pub(crate) mod eip4844 {
     pub(crate) use crate::precompiles::kzg_point_evaluation::VERSIONED_HASH_VERSION_KZG;
 }
 
-pub(crate) use alloy_primitives::{
-    self, Address, B256, Bytes, U256, b256, hex, hex_literal, keccak256,
-};
+use alloy_primitives::Address;
 
 pub(crate) use id::PrecompileId;
 pub(crate) use interface::{eth_precompile_fn, *};

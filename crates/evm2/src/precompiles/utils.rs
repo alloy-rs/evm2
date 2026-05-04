@@ -1,8 +1,7 @@
 //! Utility functions that precompiles use for addresses, gas costs, padding, and conversions.
 
-use crate::precompiles::Address;
 use alloc::{borrow::Cow, vec};
-use alloy_primitives::{B256, Bytes, b256};
+use alloy_primitives::{Address, B256, Bytes, b256};
 
 /// Calculate the linear cost of a precompile.
 #[inline]
