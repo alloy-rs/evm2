@@ -14,7 +14,7 @@ mod serde_impl;
 
 pub use jump_table::{JumpTable, JumpTableRef};
 
-use crate::precompiles::OnceLock;
+use crate::OnceLock;
 
 /// EIP-7702 version magic.
 pub const EIP7702_MAGIC: u16 = 0xEF01;

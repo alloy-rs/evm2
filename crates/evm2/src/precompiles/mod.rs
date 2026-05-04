@@ -17,7 +17,6 @@ pub(crate) mod identity;
 pub(crate) mod interface;
 pub(crate) mod kzg_point_evaluation;
 pub(crate) mod modexp;
-mod once_lock;
 pub(crate) mod secp256k1;
 pub(crate) mod secp256r1;
 pub(crate) mod utils;
@@ -41,12 +40,13 @@ pub(crate) use alloy_primitives::{
 
 pub(crate) use id::PrecompileId;
 pub(crate) use interface::{eth_precompile_fn, *};
-pub(crate) use once_lock::OnceLock;
 #[allow(deprecated)]
 pub(crate) use utils::calc_linear_cost_u32;
 pub(crate) use utils::{calc_linear_cost, u64_to_address};
 
 use core::fmt::{self, Debug};
+
+pub(crate) use crate::OnceLock;
 
 use crate::interpreter::SpecId;
 

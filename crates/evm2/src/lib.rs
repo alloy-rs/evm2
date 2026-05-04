@@ -55,6 +55,7 @@ pub mod ethereum;
 /// EVM host and transaction dispatcher.
 pub mod evm;
 pub mod interpreter;
+mod once_lock;
 pub(crate) mod precompiles;
 
 pub use evm::{
@@ -62,6 +63,7 @@ pub use evm::{
     config::{EvmConfig, EvmVersion},
     env, precompile, registry,
 };
+pub(crate) use once_lock::OnceLock;
 
 #[cfg(test)]
 mod tests;
