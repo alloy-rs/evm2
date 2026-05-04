@@ -11,18 +11,17 @@ extern crate self as evm2;
 extern crate alloc;
 
 pub mod bytecode;
-/// Ethereum transaction types and handlers.
 pub mod ethereum;
-/// EVM host and transaction dispatcher.
-pub mod evm;
 pub mod interpreter;
-pub(crate) mod precompiles;
 
+pub mod evm;
 pub use evm::{
     Evm, TxResult, config,
     config::{EvmConfig, EvmVersion},
     env, precompile, registry,
 };
+
+pub(crate) mod precompiles;
 pub use precompiles::{Crypto, PrecompileHalt, Precompiles, crypto, install_crypto};
 
 mod once_lock;
