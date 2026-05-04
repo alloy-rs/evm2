@@ -33,6 +33,7 @@ pub(crate) mod eip4844 {
 use alloy_primitives::Address;
 
 pub(crate) use id::PrecompileId;
+pub use interface::{Crypto, PrecompileHalt};
 pub(crate) use interface::{eth_precompile_fn, *};
 #[allow(deprecated)]
 pub(crate) use utils::calc_linear_cost_u32;
@@ -76,12 +77,12 @@ use p256 as _;
 static CRYPTO: OnceLock<Box<dyn Crypto>> = OnceLock::new();
 
 /// Install a custom crypto provider globally.
-pub(crate) fn install_crypto<C: Crypto + 'static>(crypto: C) -> bool {
+pub fn install_crypto<C: Crypto + 'static>(crypto: C) -> bool {
     CRYPTO.set(Box::new(crypto)).is_ok()
 }
 
 /// Get the installed crypto provider, or the default if none is installed.
-pub(crate) fn crypto() -> &'static dyn Crypto {
+pub fn crypto() -> &'static dyn Crypto {
     CRYPTO.get_or_init(|| Box::new(DefaultCrypto)).as_ref()
 }
 

@@ -1,8 +1,8 @@
 use super::{BytecodeRef, InstrStop, Interpreter, Memory, Message, SpecId, Word};
 use crate::{
-    AccountLoad, SelfDestructResult, StorageLoad,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
+    evm::{AccountLoad, SelfDestructResult, StorageLoad},
 };
 use alloy_primitives::{Address, B256, Bytes, Log};
 use core::fmt;

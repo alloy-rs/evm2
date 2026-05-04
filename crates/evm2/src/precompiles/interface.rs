@@ -346,7 +346,7 @@ impl PrecompileOutput {
 }
 
 /// Crypto operations trait for precompiles.
-pub(crate) trait Crypto: Send + Sync + Debug {
+pub trait Crypto: Send + Sync + Debug {
     /// Compute SHA-256 hash
     #[inline]
     fn sha256(&self, input: &[u8]) -> [u8; 32] {
@@ -540,7 +540,7 @@ pub(crate) fn call_eth_precompile(
 /// the entire EVM transaction. They are expressed through [`PrecompileStatus::Halt`]
 /// at the provider level.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum PrecompileHalt {
+pub enum PrecompileHalt {
     /// out of gas is the main error. Others are here just for completeness
     OutOfGas,
     /// Blake2 errors

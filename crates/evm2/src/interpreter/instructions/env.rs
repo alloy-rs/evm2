@@ -1,6 +1,7 @@
 use super::utils::{address_to_word, as_usize, as_usize_saturated, b256_to_word, word_to_address};
 use crate::{
-    AccountLoad, EvmConfig,
+    EvmConfig,
+    evm::AccountLoad,
     interpreter::{Host, InstrStop, Result, Word, memory::resize_memory, table::InstructionCx},
 };
 use alloy_primitives::B256;

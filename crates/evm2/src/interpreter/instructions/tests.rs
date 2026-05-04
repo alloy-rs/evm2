@@ -1,7 +1,8 @@
 use crate::{
-    AccountLoad, EvmConfig, SelfDestructResult, StorageLoad,
+    EvmConfig,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
+    evm::{AccountLoad, SelfDestructResult, StorageLoad},
     interpreter::{
         Host, InstrStop, Interpreter, Message, MessageKind, MessageResult, SpecId, Stack, Word, op,
     },
