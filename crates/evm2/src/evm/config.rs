@@ -1,8 +1,8 @@
 //! EVM configuration.
 
 use crate::{
+    SpecId,
     evm::{InMemoryDB, precompile::PrecompileProvider},
-    interpreter::SpecId,
     version::Version,
 };
 use core::marker::PhantomData;

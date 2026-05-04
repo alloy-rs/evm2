@@ -2,12 +2,10 @@
 
 use self::precompile::{PrecompileOutput, PrecompileProvider};
 use crate::{
-    AccountLoad, BaseEvmConfig, EvmTypes, SelfDestructResult, StorageLoad, Version,
+    AccountLoad, EvmConfig, EvmTypes, SelfDestructResult, SpecId, StorageLoad, Version,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
-    interpreter::{
-        Host, InstrStop, Interpreter, Message, MessageKind, MessageResult, SpecId, Word,
-    },
+    interpreter::{Host, InstrStop, Interpreter, Message, MessageKind, MessageResult, Word},
     registry::{HandlerResult, TxRegistry},
 };
 use alloc::vec::Vec;
@@ -396,44 +394,23 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
 }
 
 fn run_interpreter_for_spec<T: EvmTypes>(spec_id: SpecId) -> RunInterpreterFn<T> {
-    macro_rules! run {
-        ($spec:ident) => {
-            run_interpreter::<T, { SpecId::$spec as u8 }>
-        };
-    }
-    match spec_id {
-        SpecId::FRONTIER => run!(FRONTIER),
-        SpecId::HOMESTEAD => run!(HOMESTEAD),
-        SpecId::TANGERINE => run!(TANGERINE),
-        SpecId::SPURIOUS_DRAGON => run!(SPURIOUS_DRAGON),
-        SpecId::BYZANTIUM => run!(BYZANTIUM),
-        SpecId::PETERSBURG => run!(PETERSBURG),
-        SpecId::ISTANBUL => run!(ISTANBUL),
-        SpecId::BERLIN => run!(BERLIN),
-        SpecId::LONDON => run!(LONDON),
-        SpecId::MERGE => run!(MERGE),
-        SpecId::SHANGHAI => run!(SHANGHAI),
-        SpecId::CANCUN => run!(CANCUN),
-        SpecId::PRAGUE => run!(PRAGUE),
-        SpecId::OSAKA => run!(OSAKA),
-        SpecId::AMSTERDAM => run!(AMSTERDAM),
-    }
+    crate::spec_to_generic!(spec_id, run_interpreter::<T, SPEC>)
 }
 
-fn run_interpreter<T: EvmTypes, const SPEC_ID: u8>(
+fn run_interpreter<T: EvmTypes, C: EvmConfig>(
     interpreter: &mut Interpreter<T>,
     host: &mut T::Host,
 ) -> InstrStop {
-    interpreter.run::<BaseEvmConfig<SPEC_ID>>(host)
+    interpreter.run::<C>(host)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{
-        BaseEvmTypes,
+        BaseEvmTypes, SpecId,
         bytecode::Bytecode,
-        interpreter::{MessageKind, SpecId, op},
+        interpreter::{MessageKind, op},
         registry::TxRequest,
     };
     use alloy_primitives::{Address, B256, Bytes, Log, LogData, U256, keccak256};

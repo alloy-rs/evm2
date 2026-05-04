@@ -158,9 +158,10 @@ pub(crate) fn returndatacopy(cx: _, [memory_offset, data_offset, len]: [Word]) -
 #[cfg(test)]
 mod tests {
     use crate::{
+        SpecId,
         env::TxEnv,
         interpreter::{
-            InstrStop, Message, SpecId, Word,
+            InstrStop, Message, Word,
             instructions::{
                 tests::{RunConfig, TestHost, assert_stack, push, run, run_stack},
                 utils::{address_to_word, b256_to_word},

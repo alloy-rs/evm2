@@ -1,9 +1,9 @@
 use crate::{
-    BaseEvmTypes, Evm,
+    BaseEvmTypes, Evm, SpecId,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
     evm::{AccountInfo, InMemoryDB},
-    interpreter::{Host, InstrStop, Message, SpecId, Word, op},
+    interpreter::{Host, InstrStop, Message, Word, op},
     registry::TxRegistry,
 };
 use alloy_primitives::{Address, Bytes};

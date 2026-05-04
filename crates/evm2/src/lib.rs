@@ -64,6 +64,9 @@ pub use evm::{
 };
 pub use version::{EvmVersion, Version};
 
+mod spec_id;
+pub use spec_id::SpecId;
+
 mod once_lock;
 
 #[cfg(test)]

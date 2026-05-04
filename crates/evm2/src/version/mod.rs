@@ -3,8 +3,8 @@
 #![allow(unused_macros)]
 
 use crate::{
-    BaseEvmConfig, EvmConfig, EvmTypes,
-    interpreter::{SpecId, instructions as instr, opcode::op},
+    BaseEvmConfig, EvmConfig, EvmTypes, SpecId,
+    interpreter::{instructions as instr, opcode::op},
 };
 
 macro_rules! op_instr {

@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use alloy_primitives::{Address, B256, Bytes, U256};
-use evm2::interpreter::SpecId;
+use evm2::SpecId;
 use serde::{Deserialize, Deserializer, de};
 use std::collections::BTreeMap;
 

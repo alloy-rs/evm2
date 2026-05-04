@@ -1,6 +1,6 @@
-use super::{BytecodeRef, InstrStop, Interpreter, Memory, Message, SpecId, Word};
+use super::{BytecodeRef, InstrStop, Interpreter, Memory, Message, Word};
 use crate::{
-    AccountLoad, EvmTypes, SelfDestructResult, StorageLoad,
+    AccountLoad, EvmTypes, SelfDestructResult, SpecId, StorageLoad,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
 };

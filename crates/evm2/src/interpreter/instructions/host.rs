@@ -1,9 +1,8 @@
 use super::utils::as_usize;
 use crate::{
-    EvmTypes,
+    EvmTypes, SpecId,
     interpreter::{
-        GasId, Host, InstrStop, Result, SpecId, StackMut, Word, memory::resize_memory,
-        table::InstructionCx,
+        GasId, Host, InstrStop, Result, StackMut, Word, memory::resize_memory, table::InstructionCx,
     },
 };
 use alloy_primitives::{B256, Bytes, Log, LogData};
@@ -105,10 +104,13 @@ fn log_common<T: EvmTypes>(
 
 #[cfg(test)]
 mod tests {
-    use crate::interpreter::{
-        InstrStop, Message, MessageKind, SpecId, Word,
-        instructions::tests::{RunConfig, TestHost, push, run},
-        op,
+    use crate::{
+        SpecId,
+        interpreter::{
+            InstrStop, Message, MessageKind, Word,
+            instructions::tests::{RunConfig, TestHost, push, run},
+            op,
+        },
     };
     use alloc::vec::Vec;
     use alloy_primitives::{Address, B256, Bytes};

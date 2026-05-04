@@ -283,8 +283,8 @@ const fn instruction_len(op: u8) -> usize {
 mod tests {
     use super::Instruction;
     use crate::{
-        EvmConfig, EvmTypes, EvmVersion, Version,
-        interpreter::{SpecId, Word, instructions::tests::TestHost, op},
+        EvmConfig, EvmTypes, EvmVersion, SpecId, Version,
+        interpreter::{Word, instructions::tests::TestHost, op},
         version::StaticGasTable,
     };
     use evm2_macros::instruction;

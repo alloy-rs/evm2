@@ -9,12 +9,11 @@ use alloy_trie::{
     root::{state_root_unhashed, storage_root_unhashed},
 };
 use evm2::{
-    BaseEvmTypes, Evm, EvmTypes, TxResult,
+    BaseEvmTypes, Evm, EvmTypes, SpecId, TxResult,
     bytecode::Bytecode,
     env::BlockEnv,
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
     evm::{AccountInfo as EvmAccountInfo, InMemoryDB, State, logs_hash},
-    interpreter::SpecId,
     registry::HandlerError,
 };
 use k256::ecdsa::SigningKey;

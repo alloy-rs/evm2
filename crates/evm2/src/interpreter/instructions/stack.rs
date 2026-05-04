@@ -62,10 +62,13 @@ const fn decode_pair(x: u8) -> Option<(usize, usize)> {
 
 #[cfg(test)]
 mod tests {
-    use crate::interpreter::{
-        InstrStop, SpecId, StackMut, Word,
-        instructions::tests::{RunConfig, push, run, run_stack},
-        op,
+    use crate::{
+        SpecId,
+        interpreter::{
+            InstrStop, StackMut, Word,
+            instructions::tests::{RunConfig, push, run, run_stack},
+            op,
+        },
     };
     use alloc::{vec, vec::Vec};
 

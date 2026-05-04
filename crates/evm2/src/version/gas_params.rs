@@ -333,7 +333,7 @@ impl GasParams {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Version, interpreter::SpecId};
+    use crate::{SpecId, Version};
 
     fn gas_params(spec: SpecId) -> &'static GasParams {
         &Version::base(spec).gas_params

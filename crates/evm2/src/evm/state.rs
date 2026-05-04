@@ -457,7 +457,7 @@ impl<D: Database> State<D> {
         caller: Address,
         address: Address,
         value: Word,
-        spec: crate::interpreter::SpecId,
+        spec: crate::SpecId,
     ) -> Result<(), crate::interpreter::InstrStop> {
         let existed = self.account_info(address).is_some();
         if let Some(info) = self.account_info(address)
@@ -472,7 +472,7 @@ impl<D: Database> State<D> {
         }
 
         let account = self.get_or_insert(address);
-        account.nonce = u64::from(spec.enables(crate::interpreter::SpecId::SPURIOUS_DRAGON));
+        account.nonce = u64::from(spec.enables(crate::SpecId::SPURIOUS_DRAGON));
         account.code_hash = KECCAK_EMPTY;
         account.code = Bytecode::default();
         account.storage.clear();

@@ -2,9 +2,9 @@
 
 use super::utils::{as_usize, word_to_address};
 use crate::{
-    EvmTypes,
+    EvmTypes, SpecId,
     interpreter::{
-        GasId, Host, InstrStop, Message, MessageKind, Result, SpecId, StackMut, Word,
+        GasId, Host, InstrStop, Message, MessageKind, Result, StackMut, Word,
         memory::resize_memory, table::InstructionCx,
     },
 };
@@ -281,13 +281,16 @@ pub(crate) fn selfdestruct(cx: _, [target]: [Word]) -> Result {
 
 #[cfg(test)]
 mod tests {
-    use crate::interpreter::{
-        InstrStop, Message, MessageKind, MessageResult, SpecId, Word,
-        instructions::{
-            tests::{RunConfig, TestHost, push, run},
-            utils::address_to_word,
+    use crate::{
+        SpecId,
+        interpreter::{
+            InstrStop, Message, MessageKind, MessageResult, Word,
+            instructions::{
+                tests::{RunConfig, TestHost, push, run},
+                utils::address_to_word,
+            },
+            op,
         },
-        op,
     };
     use alloy_primitives::{Address, Bytes};
 

@@ -66,10 +66,13 @@ pub(crate) fn signextend([ext, value]: [Word]) -> out {
 mod tests {
     use alloc::vec::Vec;
 
-    use crate::interpreter::{
-        InstrStop, SpecId, Word,
-        instructions::tests::{RunConfig, assert_stack, push, run},
-        op,
+    use crate::{
+        SpecId,
+        interpreter::{
+            InstrStop, Word,
+            instructions::tests::{RunConfig, assert_stack, push, run},
+            op,
+        },
     };
 
     fn neg(value: u64) -> Word {

@@ -1,9 +1,9 @@
 use crate::{
-    AccountLoad, BaseEvmConfig, EvmConfig, EvmTypes, SelfDestructResult, StorageLoad,
+    AccountLoad, EvmConfig, EvmTypes, SelfDestructResult, SpecId, StorageLoad,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
     interpreter::{
-        Host, InstrStop, Interpreter, Message, MessageKind, MessageResult, SpecId, Stack, Word, op,
+        Host, InstrStop, Interpreter, Message, MessageKind, MessageResult, Stack, Word, op,
     },
 };
 use alloc::{boxed::Box, vec::Vec};
@@ -229,35 +229,7 @@ impl Default for RunConfig<'_> {
 }
 
 pub(super) fn run(config: RunConfig<'_>) -> TestInterpreter {
-    macro_rules! run_with_spec {
-        ($config:expr, $spec:expr, $($spec_id:ident),* $(,)?) => {
-            match $spec {
-                $(
-                    SpecId::$spec_id => run_with_config::<BaseEvmConfig<{ SpecId::$spec_id as u8 }>>($config),
-                )*
-            }
-        };
-    }
-
-    run_with_spec!(
-        config,
-        config.spec_id,
-        FRONTIER,
-        HOMESTEAD,
-        TANGERINE,
-        SPURIOUS_DRAGON,
-        BYZANTIUM,
-        PETERSBURG,
-        ISTANBUL,
-        BERLIN,
-        LONDON,
-        MERGE,
-        SHANGHAI,
-        CANCUN,
-        PRAGUE,
-        OSAKA,
-        AMSTERDAM,
-    )
+    crate::spec_to_generic!(config.spec_id, run_with_config::<SPEC>(config))
 }
 
 fn run_with_config<C: EvmConfig>(config: RunConfig<'_>) -> TestInterpreter {

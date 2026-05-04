@@ -46,10 +46,13 @@ pub(crate) fn mcopy(cx: _, [dst, src, len]: [Word]) -> Result {
 
 #[cfg(test)]
 mod tests {
-    use crate::interpreter::{
-        InstrStop, SpecId, Word,
-        instructions::tests::{RunConfig, push, run, run_stack},
-        op,
+    use crate::{
+        SpecId,
+        interpreter::{
+            InstrStop, Word,
+            instructions::tests::{RunConfig, push, run, run_stack},
+            op,
+        },
     };
     use alloc::vec::Vec;
 

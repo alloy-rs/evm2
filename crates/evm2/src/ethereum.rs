@@ -1,10 +1,10 @@
 //! Ethereum transaction envelope and handlers.
 
 use crate::{
-    Evm, EvmTypes, TxResult,
+    Evm, EvmTypes, SpecId, TxResult,
     bytecode::Bytecode,
     env::TxEnv,
-    interpreter::{Host, Message, MessageKind, SpecId, Word},
+    interpreter::{Host, Message, MessageKind, Word},
     registry::{HandlerError, HandlerResult, TxRegistry, TxRequest},
 };
 use alloy_consensus::{TxEip1559, TxEip2930, TxEip7702, TxLegacy, transaction::Recovered};

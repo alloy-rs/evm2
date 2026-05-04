@@ -1,5 +1,8 @@
 use super::utils::{address_to_word, as_usize_saturated, b256_to_word};
-use crate::interpreter::{Host, InstrStop, SpecId, Word};
+use crate::{
+    SpecId,
+    interpreter::{Host, InstrStop, Word},
+};
 use evm2_macros::instruction;
 
 const BLOCK_HASH_HISTORY: u64 = 256;
@@ -86,9 +89,10 @@ pub(crate) fn slotnum(cx: _) -> Result<out> {
 #[cfg(test)]
 mod tests {
     use crate::{
+        SpecId,
         env::{BlockEnv, TxEnv},
         interpreter::{
-            InstrStop, SpecId, Word,
+            InstrStop, Word,
             instructions::{
                 tests::{RunConfig, TestHost, push, run},
                 utils::{address_to_word, b256_to_word},
