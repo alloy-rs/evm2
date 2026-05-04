@@ -124,8 +124,6 @@ pub struct Account {
     pub balance: Word,
     /// Account code hash.
     pub code_hash: B256,
-    /// EIP-1153 transient storage.
-    pub transient_storage: HashMap<Word, Word>,
     /// Cached account bytecode.
     pub code: Bytecode,
     /// Whether the account was created in the current transaction.
@@ -369,6 +367,8 @@ pub struct State<D> {
     pub accessed_accounts: HashSet<Address>,
     /// Transaction-scoped warm storage slot set.
     pub accessed_storage: HashSet<(Address, Word)>,
+    /// Transaction-scoped EIP-1153 transient storage keyed by account address and slot.
+    pub transient_storage: HashMap<(Address, Word), Word>,
 }
 
 impl<D> State<D> {
@@ -384,6 +384,7 @@ impl<D> State<D> {
             selfdestructs: map::HashSet::default(),
             accessed_accounts: map::HashSet::default(),
             accessed_storage: map::HashSet::default(),
+            transient_storage: map::HashMap::default(),
         }
     }
 
@@ -447,6 +448,7 @@ impl<D> State<D> {
         self.selfdestructs.clear();
         self.accessed_accounts.clear();
         self.accessed_storage.clear();
+        self.transient_storage.clear();
     }
 
     /// Clears all transaction-scoped warm accesses.
@@ -705,17 +707,22 @@ impl<D: Database> State<D> {
     /// Loads transient storage.
     #[inline]
     pub fn transient_storage(&mut self, address: Address, key: Word) -> Word {
-        self.account_ref(address)
-            .and_then(|account| account.transient_storage.get(&key).copied())
-            .unwrap_or_default()
+        self.transient_storage.get(&(address, key)).copied().unwrap_or_default()
     }
 
     /// Stores transient storage.
     #[inline]
     pub fn set_transient_storage(&mut self, address: Address, key: Word, value: Word) {
-        let previous = self.account_mut(address).transient_storage.get(&key).copied();
+        let previous = self.transient_storage.get(&(address, key)).copied();
+        if previous.unwrap_or_default() == value {
+            return;
+        }
         self.journal.push(JournalEntry::TransientStorageChange { address, key, previous });
-        self.account_mut(address).transient_storage.insert(key, value);
+        if value.is_zero() {
+            self.transient_storage.remove(&(address, key));
+        } else {
+            self.transient_storage.insert((address, key), value);
+        }
     }
 
     /// Marks an account as self-destructed in the current transaction.
@@ -772,17 +779,14 @@ impl<D: Database> State<D> {
                         self.storage.remove(&address);
                     }
                 },
-                JournalEntry::TransientStorageChange { address, key, previous } => {
-                    let storage = &mut self.account_mut(address).transient_storage;
-                    match previous {
-                        Some(previous) => {
-                            storage.insert(key, previous);
-                        }
-                        None => {
-                            storage.remove(&key);
-                        }
+                JournalEntry::TransientStorageChange { address, key, previous } => match previous {
+                    Some(previous) if !previous.is_zero() => {
+                        self.transient_storage.insert((address, key), previous);
                     }
-                }
+                    _ => {
+                        self.transient_storage.remove(&(address, key));
+                    }
+                },
                 JournalEntry::AccountWarmed { address } => {
                     self.accessed_accounts.remove(&address);
                 }
