@@ -63,7 +63,7 @@ const fn decode_pair(x: u8) -> Option<(usize, usize)> {
 #[cfg(test)]
 mod tests {
     use crate::interpreter::{
-        InstrStop, StackMut, Word,
+        InstrStop, SpecId, StackMut, Word,
         instructions::tests::{RunConfig, push, run, run_stack},
         op,
     };
@@ -92,13 +92,14 @@ mod tests {
         let interpreter = run(RunConfig::new([op::PUSH0, op::SWAP1]));
         core::assert_matches!(interpreter.err, InstrStop::StackUnderflow);
 
-        let interpreter = run(RunConfig::new([op::DUPN, 0x80]));
+        let interpreter = run(RunConfig::new([op::DUPN, 0x80]).spec(SpecId::AMSTERDAM));
         core::assert_matches!(interpreter.err, InstrStop::StackUnderflow);
 
-        let interpreter = run(RunConfig::new([op::PUSH0, op::SWAPN, 0x80]));
+        let interpreter = run(RunConfig::new([op::PUSH0, op::SWAPN, 0x80]).spec(SpecId::AMSTERDAM));
         core::assert_matches!(interpreter.err, InstrStop::StackUnderflow);
 
-        let interpreter = run(RunConfig::new([op::PUSH0, op::EXCHANGE, 0x8e]));
+        let interpreter =
+            run(RunConfig::new([op::PUSH0, op::EXCHANGE, 0x8e]).spec(SpecId::AMSTERDAM));
         core::assert_matches!(interpreter.err, InstrStop::StackUnderflow);
     }
 
@@ -290,7 +291,7 @@ mod tests {
         let mut code = vec![op::PUSH1, 0x01, op::PUSH1, 0x00];
         code.extend(core::iter::repeat_n(op::DUP1, 15));
         code.extend([op::DUPN, 0x80, op::STOP]);
-        let interpreter = run(RunConfig::new(code));
+        let interpreter = run(RunConfig::new(code).spec(SpecId::AMSTERDAM));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack().len(), 18);
         assert_eq!(interpreter.stack()[17], Word::from(1));
@@ -304,7 +305,7 @@ mod tests {
             push(&mut code, Word::from(value));
         }
         code.extend([op::DUPN, 0xff, op::STOP]);
-        let interpreter = run(RunConfig::new(code));
+        let interpreter = run(RunConfig::new(code).spec(SpecId::AMSTERDAM));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack().len(), 146);
         assert_eq!(interpreter.stack()[145], Word::from(1));
@@ -315,7 +316,7 @@ mod tests {
         let mut code = vec![op::PUSH1, 0x01, op::PUSH1, 0x00];
         code.extend(core::iter::repeat_n(op::DUP1, 15));
         code.extend([op::PUSH1, 0x02, op::SWAPN, 0x80, op::STOP]);
-        let interpreter = run(RunConfig::new(code));
+        let interpreter = run(RunConfig::new(code).spec(SpecId::AMSTERDAM));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack().len(), 18);
         assert_eq!(interpreter.stack()[17], Word::from(1));
@@ -329,7 +330,7 @@ mod tests {
             push(&mut code, Word::from(value));
         }
         code.extend([op::SWAPN, 0xff, op::STOP]);
-        let interpreter = run(RunConfig::new(code));
+        let interpreter = run(RunConfig::new(code).spec(SpecId::AMSTERDAM));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack()[0], Word::from(144));
         assert_eq!(interpreter.stack()[144], 0);
@@ -347,7 +348,8 @@ mod tests {
             op::EXCHANGE,
             0x8e,
             op::STOP,
-        ]));
+        ])
+        .spec(SpecId::AMSTERDAM));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::from(1), Word::from(0), Word::from(2)]);
 
@@ -356,10 +358,22 @@ mod tests {
             push(&mut code, Word::from(value));
         }
         code.extend([op::EXCHANGE, 0xff, op::STOP]);
-        let interpreter = run(RunConfig::new(code));
+        let interpreter = run(RunConfig::new(code).spec(SpecId::AMSTERDAM));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack()[0], Word::from(21));
         assert_eq!(interpreter.stack()[21], 0);
         assert_eq!(interpreter.stack()[22], Word::from(22));
+    }
+
+    #[test]
+    fn relative_stack_opcodes_are_not_enabled_before_amsterdam() {
+        let interpreter = run(RunConfig::new([op::DUPN, 0x80]).spec(SpecId::OSAKA));
+        core::assert_matches!(interpreter.err, InstrStop::OpcodeNotFound);
+
+        let interpreter = run(RunConfig::new([op::SWAPN, 0x80]).spec(SpecId::OSAKA));
+        core::assert_matches!(interpreter.err, InstrStop::OpcodeNotFound);
+
+        let interpreter = run(RunConfig::new([op::EXCHANGE, 0x8e]).spec(SpecId::OSAKA));
+        core::assert_matches!(interpreter.err, InstrStop::OpcodeNotFound);
     }
 }
