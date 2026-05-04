@@ -504,7 +504,7 @@ mod tests {
         let mut host = TestHost { code_hash: hash, ..TestHost::default() };
         let interpreter = run(RunConfig::new([op::PUSH1, 0xbe, op::EXTCODEHASH, op::STOP])
             .host(&mut host)
-            .spec(SpecId::CONSTANTINOPLE));
+            .spec(SpecId::PETERSBURG));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [b256_to_word(hash)]);
 

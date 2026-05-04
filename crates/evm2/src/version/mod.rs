@@ -229,20 +229,14 @@ impl<T: EvmTypes> EvmVersion<T> {
 
 static BASE_VERSIONS: [Version; SpecId::NEXT as usize + 1] = [
     Version::new_base_impl(SpecId::FRONTIER),
-    Version::new_base_impl(SpecId::FRONTIER_THAWING),
     Version::new_base_impl(SpecId::HOMESTEAD),
-    Version::new_base_impl(SpecId::DAO_FORK),
     Version::new_base_impl(SpecId::TANGERINE),
     Version::new_base_impl(SpecId::SPURIOUS_DRAGON),
     Version::new_base_impl(SpecId::BYZANTIUM),
-    Version::new_base_impl(SpecId::CONSTANTINOPLE),
     Version::new_base_impl(SpecId::PETERSBURG),
     Version::new_base_impl(SpecId::ISTANBUL),
-    Version::new_base_impl(SpecId::MUIR_GLACIER),
     Version::new_base_impl(SpecId::BERLIN),
     Version::new_base_impl(SpecId::LONDON),
-    Version::new_base_impl(SpecId::ARROW_GLACIER),
-    Version::new_base_impl(SpecId::GRAY_GLACIER),
     Version::new_base_impl(SpecId::MERGE),
     Version::new_base_impl(SpecId::SHANGHAI),
     Version::new_base_impl(SpecId::CANCUN),
@@ -529,14 +523,11 @@ evm_versions! {
         op!(REVERT, ZERO);
     }
 
-    CONSTANTINOPLE {
+    PETERSBURG {
         op!(SHL, VERYLOW);
         op!(SHR, VERYLOW);
         op!(SAR, VERYLOW);
         op!(EXTCODEHASH, 400);
-    }
-
-    PETERSBURG {
         op!(CREATE2, ZERO);
     }
 
