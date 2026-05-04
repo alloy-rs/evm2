@@ -1,12 +1,15 @@
 //! BLS12-381 G2 msm precompile. More details in [`run`]
 use super::utils::{pad_g2_point, remove_g2_padding};
-use crate::precompiles::{
-    EthPrecompileOutput, EthPrecompileResult, Gas, PrecompileHalt,
-    bls12_381_const::{
-        DISCOUNT_TABLE_G2_MSM, G2_MSM_BASE_GAS_FEE, G2_MSM_INPUT_LENGTH, PADDED_G2_LENGTH,
-        SCALAR_LENGTH,
+use crate::{
+    interpreter::Gas,
+    precompiles::{
+        EthPrecompileOutput, EthPrecompileResult, PrecompileHalt,
+        bls12_381_const::{
+            DISCOUNT_TABLE_G2_MSM, G2_MSM_BASE_GAS_FEE, G2_MSM_INPUT_LENGTH, PADDED_G2_LENGTH,
+            SCALAR_LENGTH,
+        },
+        bls12_381_utils::msm_required_gas,
     },
-    bls12_381_utils::msm_required_gas,
 };
 
 /// Implements EIP-2537 G2MSM precompile.
@@ -39,7 +42,7 @@ pub(crate) fn run(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
         Ok(((*x_0, *x_1, *y_0, *y_1), scalar_array))
     });
 
-    let unpadded_result = gas.crypto().bls12_381_g2_msm(&mut valid_pairs_iter)?;
+    let unpadded_result = crate::precompiles::crypto().bls12_381_g2_msm(&mut valid_pairs_iter)?;
 
     // Pad the result for EVM compatibility
     let padded_result = pad_g2_point(&unpadded_result);

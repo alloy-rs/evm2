@@ -1,8 +1,11 @@
 //! BLS12-381 G1 add precompile. More details in [`run`]
 use super::utils::{pad_g1_point, remove_g1_padding};
-use crate::precompiles::{
-    EthPrecompileOutput, EthPrecompileResult, Gas, PrecompileHalt,
-    bls12_381_const::{G1_ADD_BASE_GAS_FEE, G1_ADD_INPUT_LENGTH, PADDED_G1_LENGTH},
+use crate::{
+    interpreter::Gas,
+    precompiles::{
+        EthPrecompileOutput, EthPrecompileResult, PrecompileHalt,
+        bls12_381_const::{G1_ADD_BASE_GAS_FEE, G1_ADD_INPUT_LENGTH, PADDED_G1_LENGTH},
+    },
 };
 
 /// G1 addition call expects `256` bytes as an input that is interpreted as byte
@@ -24,7 +27,7 @@ pub(crate) fn run(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
     let a = (*a_x, *a_y);
     let b = (*b_x, *b_y);
 
-    let unpadded_result = gas.crypto().bls12_381_g1_add(a, b)?;
+    let unpadded_result = crate::precompiles::crypto().bls12_381_g1_add(a, b)?;
 
     // Pad the result for EVM compatibility
     let padded_result = pad_g1_point(&unpadded_result);

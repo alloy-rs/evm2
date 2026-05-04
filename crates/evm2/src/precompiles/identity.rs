@@ -1,6 +1,9 @@
 //! Identity precompile returns
 use super::calc_linear_cost;
-use crate::precompiles::{EthPrecompileOutput, EthPrecompileResult, Gas};
+use crate::{
+    interpreter::Gas,
+    precompiles::{EthPrecompileOutput, EthPrecompileResult},
+};
 use alloy_primitives::Bytes;
 
 /// The base cost of the operation

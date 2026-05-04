@@ -1,8 +1,11 @@
 //! Modexp precompile added in [`EIP-198`](https://eips.ethereum.org/EIPS/eip-198)
 //! and reprices in berlin hardfork with [`EIP-2565`](https://eips.ethereum.org/EIPS/eip-2565).
-use crate::precompiles::{
-    EthPrecompileOutput, EthPrecompileResult, Gas, PrecompileHalt, eip7823,
-    utils::{left_pad, left_pad_vec_be, right_pad_vec, right_pad_with_offset},
+use crate::{
+    interpreter::Gas,
+    precompiles::{
+        EthPrecompileOutput, EthPrecompileResult, PrecompileHalt, eip7823,
+        utils::{left_pad, left_pad_vec_be, right_pad_vec, right_pad_with_offset},
+    },
 };
 use alloc::vec::Vec;
 use alloy_primitives::{Bytes, U256};
@@ -215,7 +218,7 @@ where
     debug_assert_eq!(modulus.len(), mod_len);
 
     // Call the modexp.
-    let output = gas.crypto().modexp(base, exponent, modulus)?;
+    let output = crate::precompiles::crypto().modexp(base, exponent, modulus)?;
     // Ensure the output is exactly modulus length, as required by the spec.
     Ok(EthPrecompileOutput::new(left_pad_vec_be(&output, mod_len).into_owned().into()))
 }

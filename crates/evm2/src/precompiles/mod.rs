@@ -1,7 +1,13 @@
 //! EVM precompiled contracts.
 #![allow(dead_code, unused_imports)]
 
+use crate::{
+    evm::precompile::{PrecompileOutput as EvmPrecompileOutput, PrecompileProvider},
+    interpreter::{Gas, InstrStop, SpecId},
+    once_lock::OnceLock,
+};
 use alloc::boxed::Box;
+use alloy_primitives::Address;
 
 pub(crate) mod blake2;
 pub(crate) mod bls12_381;
@@ -28,23 +34,15 @@ pub(crate) mod eip4844 {
     pub(crate) use crate::precompiles::kzg_point_evaluation::VERSIONED_HASH_VERSION_KZG;
 }
 
-use alloy_primitives::Address;
-
 pub(crate) use interface::*;
 pub use interface::{Crypto, PrecompileHalt};
 #[allow(deprecated)]
 pub(crate) use utils::calc_linear_cost_u32;
 pub(crate) use utils::{calc_linear_cost, u64_to_address};
 
-use crate::{
-    evm::precompile::{PrecompileOutput as EvmPrecompileOutput, PrecompileProvider},
-    interpreter::{InstrStop, SpecId},
-    once_lock::OnceLock,
-};
-
 // silence arkworks lint as bn impl will be used as default if both are enabled.
 cfg_if::cfg_if! {
-    if #[cfg(feature = "bn")]{
+    if #[cfg(feature = "bn")] {
         use ark_bn254 as _;
         use ark_ff as _;
         use ark_ec as _;
@@ -56,7 +54,7 @@ use arrayref as _;
 
 // silence arkworks-bls12-381 lint as blst will be used as default if both are enabled.
 cfg_if::cfg_if! {
-    if #[cfg(feature = "blst")]{
+    if #[cfg(feature = "blst")] {
         use ark_bls12_381 as _;
         use ark_ff as _;
         use ark_ec as _;
@@ -106,14 +104,15 @@ impl<const SPEC: u8> Precompiles<SPEC> {
     fn run(
         f: fn(&[u8], &mut Gas) -> EthPrecompileResult,
         input: &[u8],
-        evm_gas: &mut crate::interpreter::Gas,
+        gas: &mut Gas,
     ) -> Result<EvmPrecompileOutput, InstrStop> {
-        let mut gas = Gas::from_evm_gas(evm_gas);
-        let result = f(input, &mut gas);
-        gas.apply_to_evm_gas(evm_gas);
+        let result = f(input, gas);
         match result {
             Ok(output) => Ok(EvmPrecompileOutput { output: output.bytes }),
-            Err(PrecompileHalt::OutOfGas) => Err(InstrStop::PrecompileOOG),
+            Err(PrecompileHalt::OutOfGas) => {
+                gas.spend_all();
+                Err(InstrStop::PrecompileOOG)
+            }
             Err(_) => Err(InstrStop::PrecompileError),
         }
     }
@@ -124,7 +123,7 @@ impl<const SPEC: u8> PrecompileProvider for Precompiles<SPEC> {
         &mut self,
         address: Address,
         input: &[u8],
-        gas: &mut crate::interpreter::Gas,
+        gas: &mut Gas,
     ) -> Option<Result<EvmPrecompileOutput, InstrStop>> {
         let spec = Self::SPEC_ID;
         let address = Self::address_value(address)?;

@@ -1,8 +1,11 @@
 //! BLS12-381 map fp to g1 precompile. More details in [`run`]
 use super::utils::{pad_g1_point, remove_fp_padding};
-use crate::precompiles::{
-    EthPrecompileOutput, EthPrecompileResult, Gas, PrecompileHalt,
-    bls12_381_const::{MAP_FP_TO_G1_BASE_GAS_FEE, PADDED_FP_LENGTH},
+use crate::{
+    interpreter::Gas,
+    precompiles::{
+        EthPrecompileOutput, EthPrecompileResult, PrecompileHalt,
+        bls12_381_const::{MAP_FP_TO_G1_BASE_GAS_FEE, PADDED_FP_LENGTH},
+    },
 };
 
 /// Field-to-curve call expects 64 bytes as an input that is interpreted as an
@@ -17,7 +20,7 @@ pub(crate) fn run(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
 
     let input_p0 = remove_fp_padding(input)?;
 
-    let unpadded_result = gas.crypto().bls12_381_fp_to_g1(input_p0)?;
+    let unpadded_result = crate::precompiles::crypto().bls12_381_fp_to_g1(input_p0)?;
 
     // Pad the result for EVM compatibility
     let padded_result = pad_g1_point(&unpadded_result);

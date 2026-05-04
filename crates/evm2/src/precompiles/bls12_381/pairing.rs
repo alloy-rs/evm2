@@ -3,11 +3,14 @@ use super::{
     PairingPair,
     utils::{remove_g1_padding, remove_g2_padding},
 };
-use crate::precompiles::{
-    EthPrecompileOutput, EthPrecompileResult, Gas, PrecompileHalt,
-    bls12_381_const::{
-        PADDED_G1_LENGTH, PADDED_G2_LENGTH, PAIRING_INPUT_LENGTH, PAIRING_MULTIPLIER_BASE,
-        PAIRING_OFFSET_BASE,
+use crate::{
+    interpreter::Gas,
+    precompiles::{
+        EthPrecompileOutput, EthPrecompileResult, PrecompileHalt,
+        bls12_381_const::{
+            PADDED_G1_LENGTH, PADDED_G2_LENGTH, PAIRING_INPUT_LENGTH, PAIRING_MULTIPLIER_BASE,
+            PAIRING_OFFSET_BASE,
+        },
     },
 };
 use alloc::vec::Vec;
@@ -49,7 +52,7 @@ pub(crate) fn run(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
         pairs.push(((*a_x, *a_y), (*b_x_0, *b_x_1, *b_y_0, *b_y_1)));
     }
 
-    let result = gas.crypto().bls12_381_pairing_check(&pairs)?;
+    let result = crate::precompiles::crypto().bls12_381_pairing_check(&pairs)?;
     let result = if result { 1 } else { 0 };
 
     Ok(EthPrecompileOutput::new(B256::with_last_byte(result).into()))

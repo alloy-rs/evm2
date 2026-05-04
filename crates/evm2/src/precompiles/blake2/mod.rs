@@ -9,7 +9,10 @@
     expect(unreachable_code)
 )]
 
-use crate::precompiles::{EthPrecompileOutput, EthPrecompileResult, Gas, PrecompileHalt};
+use crate::{
+    interpreter::Gas,
+    precompiles::{EthPrecompileOutput, EthPrecompileResult, PrecompileHalt},
+};
 
 #[cfg(all(
     any(target_arch = "x86", target_arch = "x86_64"),
@@ -109,7 +112,7 @@ pub(crate) fn run(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
     let t_0 = u64::from_le_bytes(input[196..204].try_into().unwrap());
     let t_1 = u64::from_le_bytes(input[204..212].try_into().unwrap());
 
-    gas.crypto().blake2_compress(rounds, &mut h, &m, &[t_0, t_1], f);
+    crate::precompiles::crypto().blake2_compress(rounds, &mut h, &m, &[t_0, t_1], f);
 
     let mut out = [0u8; 64];
     for (i, h) in (0..64).step_by(8).zip(h.iter()) {

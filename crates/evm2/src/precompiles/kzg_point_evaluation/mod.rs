@@ -1,6 +1,9 @@
 //! KZG point evaluation precompile added in [`EIP-4844`](https://eips.ethereum.org/EIPS/eip-4844)
 //! For more details check [`run`] function.
-use crate::precompiles::{EthPrecompileOutput, EthPrecompileResult, Gas, PrecompileHalt};
+use crate::{
+    interpreter::Gas,
+    precompiles::{EthPrecompileOutput, EthPrecompileResult, PrecompileHalt},
+};
 pub(crate) mod arkworks;
 
 #[cfg(feature = "blst")]
@@ -8,7 +11,7 @@ pub(crate) mod blst;
 
 use alloy_primitives::hex_literal::hex;
 
-/// Gas cost of the KZG point evaluation precompile.
+/// cost of the KZG point evaluation precompile.
 pub(crate) const GAS_COST: u64 = 50_000;
 
 /// Versioned hash version for KZG.
@@ -39,7 +42,8 @@ pub(crate) fn run(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
     // Verify commitment matches versioned_hash
     let versioned_hash = &input[..32];
     let commitment = &input[96..144];
-    if kzg_to_versioned_hash_with_crypto(gas.crypto(), commitment) != versioned_hash {
+    if kzg_to_versioned_hash_with_crypto(crate::precompiles::crypto(), commitment) != versioned_hash
+    {
         return Err(PrecompileHalt::BlobMismatchedVersion);
     }
 
@@ -48,7 +52,7 @@ pub(crate) fn run(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
     let z = input[32..64].try_into().unwrap();
     let y = input[64..96].try_into().unwrap();
     let proof = input[144..192].try_into().unwrap();
-    gas.crypto().verify_kzg_proof(z, y, commitment, proof)?;
+    crate::precompiles::crypto().verify_kzg_proof(z, y, commitment, proof)?;
 
     // Return FIELD_ELEMENTS_PER_BLOB and BLS_MODULUS as padded 32 byte big endian values
     Ok(EthPrecompileOutput::new(RETURN_VALUE.into()))

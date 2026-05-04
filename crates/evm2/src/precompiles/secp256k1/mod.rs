@@ -19,7 +19,10 @@
 pub(crate) mod bitcoin_secp256k1;
 pub(crate) mod k256;
 
-use crate::precompiles::{EthPrecompileOutput, EthPrecompileResult, Gas, utils::right_pad};
+use crate::{
+    interpreter::Gas,
+    precompiles::{EthPrecompileOutput, EthPrecompileResult, utils::right_pad},
+};
 use alloy_primitives::{B256, B512, Bytes};
 
 /// `ecrecover` precompile function. Read more about input and output format in [this module
@@ -40,7 +43,7 @@ pub(crate) fn run(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
     let recid = input[63] - 27;
     let sig = <&B512>::try_from(&input[64..128]).unwrap();
 
-    let res = gas.crypto().secp256k1_ecrecover(&sig.0, recid, &msg.0).ok();
+    let res = crate::precompiles::crypto().secp256k1_ecrecover(&sig.0, recid, &msg.0).ok();
     let out = res.map(|o| o.to_vec().into()).unwrap_or_default();
     Ok(EthPrecompileOutput::new(out))
 }

@@ -1,7 +1,10 @@
 //! Hash precompiles, it contains SHA-256 and RIPEMD-160 hash precompiles
 //! More details in [`run_sha256`] and [`run_ripemd160`]
 use super::calc_linear_cost;
-use crate::precompiles::{EthPrecompileOutput, EthPrecompileResult, Gas};
+use crate::{
+    interpreter::Gas,
+    precompiles::{EthPrecompileOutput, EthPrecompileResult},
+};
 
 /// Computes the SHA-256 hash of the input data
 ///
@@ -12,7 +15,7 @@ use crate::precompiles::{EthPrecompileOutput, EthPrecompileResult, Gas};
 pub(crate) fn run_sha256(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
     let cost = calc_linear_cost(input.len(), 60, 12);
     gas.spend(cost)?;
-    let output = gas.crypto().sha256(input);
+    let output = crate::precompiles::crypto().sha256(input);
     Ok(EthPrecompileOutput::new(output.to_vec().into()))
 }
 
@@ -25,6 +28,6 @@ pub(crate) fn run_sha256(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
 pub(crate) fn run_ripemd160(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
     let gas_used = calc_linear_cost(input.len(), 600, 120);
     gas.spend(gas_used)?;
-    let output = gas.crypto().ripemd160(input);
+    let output = crate::precompiles::crypto().ripemd160(input);
     Ok(EthPrecompileOutput::new(output.to_vec().into()))
 }

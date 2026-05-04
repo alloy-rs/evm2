@@ -5,7 +5,10 @@
 //!
 //! The main purpose of this precompile is to verify ECDSA signatures that use the secp256r1, or
 //! P256 elliptic curve.
-use crate::precompiles::{EthPrecompileOutput, EthPrecompileResult, Gas, u64_to_address};
+use crate::{
+    interpreter::Gas,
+    precompiles::{EthPrecompileOutput, EthPrecompileResult, u64_to_address},
+};
 use alloy_primitives::{B256, B512, Bytes};
 
 /// of secp256r1 precompile.
@@ -36,7 +39,7 @@ pub(crate) fn run_osaka(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
 
 fn p256_verify_inner(input: &[u8], gas: &mut Gas, gas_cost: u64) -> EthPrecompileResult {
     gas.spend(gas_cost)?;
-    let result = if verify_impl_with_crypto(input, gas.crypto()) {
+    let result = if verify_impl_with_crypto(input, crate::precompiles::crypto()) {
         B256::with_last_byte(1).into()
     } else {
         Bytes::new()
@@ -89,8 +92,7 @@ pub(crate) fn verify_signature(msg: &[u8; 32], sig: &[u8; 64], pk: &[u8; 64]) ->
         } else {
             use p256::{
                 ecdsa::{signature::hazmat::PrehashVerifier, Signature, VerifyingKey},
-                EncodedPoint,
-            };
+                EncodedPoint};
 
             // Can fail only if the input is not exact length.
             let signature = Signature::from_slice(sig).ok()?;

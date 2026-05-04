@@ -69,12 +69,6 @@ impl From<&'static str> for AnyError {
 /// A precompile operation result type for individual Ethereum precompile functions.
 pub(crate) type EthPrecompileResult = Result<EthPrecompileOutput, PrecompileHalt>;
 
-/// A precompile operation result type for the precompile provider.
-///
-/// Returns either `Ok(PrecompileOutput)` or `Err(PrecompileError)`.
-/// `PrecompileError` only represents fatal errors that abort EVM execution.
-pub(crate) type PrecompileResult = Result<PrecompileOutput, PrecompileError>;
-
 /// Simple precompile execution output used by individual Ethereum precompile functions.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct EthPrecompileOutput {
@@ -86,167 +80,6 @@ impl EthPrecompileOutput {
     /// Returns new precompile output with the given output bytes.
     pub(crate) const fn new(bytes: Bytes) -> Self {
         Self { bytes }
-    }
-}
-
-/// Precompile gas accounting state.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct Gas {
-    remaining: u64,
-    limit: u64,
-    reservoir: u64,
-    state_gas_spent: u64,
-    refunded: i64,
-    crypto: &'static dyn Crypto,
-}
-
-impl PartialEq for Gas {
-    fn eq(&self, other: &Self) -> bool {
-        self.remaining == other.remaining
-            && self.limit == other.limit
-            && self.reservoir == other.reservoir
-            && self.state_gas_spent == other.state_gas_spent
-            && self.refunded == other.refunded
-            && core::ptr::addr_eq(self.crypto, other.crypto)
-    }
-}
-
-impl Eq for Gas {}
-
-impl core::hash::Hash for Gas {
-    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
-        self.remaining.hash(state);
-        self.limit.hash(state);
-        self.reservoir.hash(state);
-        self.state_gas_spent.hash(state);
-        self.refunded.hash(state);
-        (self.crypto as *const dyn Crypto as *const ()).hash(state);
-    }
-}
-
-impl Gas {
-    /// Creates gas with `limit` regular gas.
-    #[inline]
-    pub(crate) fn new(limit: u64) -> Self {
-        Self::new_with_regular_gas_and_reservoir(limit, 0)
-    }
-
-    /// Creates gas with regular gas and a state gas reservoir.
-    #[inline]
-    pub(crate) fn new_with_regular_gas_and_reservoir(limit: u64, reservoir: u64) -> Self {
-        Self::new_with_crypto(limit, reservoir, &DefaultCrypto)
-    }
-
-    /// Creates gas with regular gas, a state gas reservoir, and a crypto provider.
-    #[inline]
-    pub(crate) fn new_with_crypto(limit: u64, reservoir: u64, crypto: &'static dyn Crypto) -> Self {
-        Self { remaining: limit, limit, reservoir, state_gas_spent: 0, refunded: 0, crypto }
-    }
-
-    #[inline]
-    pub(crate) fn from_evm_gas(gas: &crate::interpreter::Gas) -> Self {
-        Self {
-            remaining: gas.remaining(),
-            limit: gas.limit(),
-            reservoir: gas.reservoir(),
-            state_gas_spent: gas.state_gas_spent(),
-            refunded: gas.refunded(),
-            crypto: crate::precompiles::crypto(),
-        }
-    }
-
-    #[inline]
-    pub(crate) const fn apply_to_evm_gas(&self, gas: &mut crate::interpreter::Gas) {
-        gas.set_remaining(self.remaining);
-        gas.set_limit(self.limit);
-        gas.set_reservoir(self.reservoir);
-        gas.set_state_gas_spent(self.state_gas_spent);
-        gas.set_refunded(self.refunded);
-    }
-
-    /// Returns the crypto provider.
-    #[inline]
-    pub(crate) const fn crypto(&self) -> &'static dyn Crypto {
-        self.crypto
-    }
-
-    /// Returns remaining regular gas.
-    #[inline]
-    pub(crate) const fn remaining(&self) -> u64 {
-        self.remaining
-    }
-
-    /// Returns the gas limit.
-    #[inline]
-    pub(crate) const fn limit(&self) -> u64 {
-        self.limit
-    }
-
-    /// Returns available state gas reservoir.
-    #[inline]
-    pub(crate) const fn reservoir(&self) -> u64 {
-        self.reservoir
-    }
-
-    /// Returns spent state gas.
-    #[inline]
-    pub(crate) const fn state_gas_spent(&self) -> u64 {
-        self.state_gas_spent
-    }
-
-    /// Returns gas refund.
-    #[inline]
-    pub(crate) const fn refunded(&self) -> i64 {
-        self.refunded
-    }
-
-    /// Returns spent regular gas.
-    #[inline]
-    pub(crate) const fn spent(&self) -> u64 {
-        self.limit.saturating_sub(self.remaining)
-    }
-
-    /// Spends regular gas.
-    #[inline]
-    pub(crate) const fn spend(&mut self, cost: u64) -> Result<(), PrecompileHalt> {
-        let remaining = self.remaining;
-        if remaining < cost {
-            self.remaining = 0;
-            Err(PrecompileHalt::OutOfGas)
-        } else {
-            self.remaining = remaining - cost;
-            Ok(())
-        }
-    }
-
-    /// Spends state gas.
-    #[inline]
-    pub(crate) fn spend_state(&mut self, cost: u64) -> Result<(), PrecompileHalt> {
-        if self.reservoir >= cost {
-            self.state_gas_spent = self.state_gas_spent.saturating_add(cost);
-            self.reservoir -= cost;
-            return Ok(());
-        }
-
-        let spill = cost - self.reservoir;
-
-        self.spend(spill)?;
-        self.state_gas_spent = self.state_gas_spent.saturating_add(cost);
-        self.reservoir = 0;
-        Ok(())
-    }
-
-    /// Adds gas refund.
-    #[inline]
-    pub(crate) const fn record_refund(&mut self, refund: i64) {
-        self.refunded += refund;
-    }
-}
-
-impl Default for Gas {
-    #[inline]
-    fn default() -> Self {
-        Self::new(0)
     }
 }
 
@@ -592,6 +425,13 @@ impl PrecompileHalt {
     /// Returns `true` if the halt reason is out of gas.
     pub(crate) const fn is_oog(&self) -> bool {
         matches!(self, Self::OutOfGas)
+    }
+}
+
+impl From<crate::interpreter::InstrStop> for PrecompileHalt {
+    #[inline]
+    fn from(_: crate::interpreter::InstrStop) -> Self {
+        Self::OutOfGas
     }
 }
 

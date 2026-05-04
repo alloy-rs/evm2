@@ -1,15 +1,18 @@
 //! BLS12-381 G1 msm precompile. More details in [`run`]
-use crate::precompiles::{
-    EthPrecompileOutput, EthPrecompileResult, Gas, PrecompileHalt,
-    bls12_381::{
-        G1Point,
-        utils::{pad_g1_point, remove_g1_padding},
+use crate::{
+    interpreter::Gas,
+    precompiles::{
+        EthPrecompileOutput, EthPrecompileResult, PrecompileHalt,
+        bls12_381::{
+            G1Point,
+            utils::{pad_g1_point, remove_g1_padding},
+        },
+        bls12_381_const::{
+            DISCOUNT_TABLE_G1_MSM, G1_MSM_BASE_GAS_FEE, G1_MSM_INPUT_LENGTH, PADDED_G1_LENGTH,
+            SCALAR_LENGTH,
+        },
+        bls12_381_utils::msm_required_gas,
     },
-    bls12_381_const::{
-        DISCOUNT_TABLE_G1_MSM, G1_MSM_BASE_GAS_FEE, G1_MSM_INPUT_LENGTH, PADDED_G1_LENGTH,
-        SCALAR_LENGTH,
-    },
-    bls12_381_utils::msm_required_gas,
 };
 
 /// Implements EIP-2537 G1MSM precompile.
@@ -43,7 +46,7 @@ pub(crate) fn run(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
         Ok((point, scalar_array))
     });
 
-    let unpadded_result = gas.crypto().bls12_381_g1_msm(&mut valid_pairs_iter)?;
+    let unpadded_result = crate::precompiles::crypto().bls12_381_g1_msm(&mut valid_pairs_iter)?;
 
     // Pad the result for EVM compatibility
     let padded_result = pad_g1_point(&unpadded_result);
