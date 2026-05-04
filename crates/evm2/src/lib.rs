@@ -59,7 +59,7 @@ pub mod version;
 
 pub use evm::{
     Evm, TxResult, config,
-    config::{BaseEvmTypes, EvmConfig, EvmTypes},
+    config::{BaseEvmConfig, BaseEvmTypes, EvmConfig, EvmTypes},
     env, precompile, registry,
 };
 pub use version::{EvmVersion, Version};
@@ -79,6 +79,10 @@ pub fn _get_asm() -> impl Sized {
         Default::default(),
         Default::default(),
     );
-    crate::interpreter::Interpreter::new(Default::default(), Default::default(), Default::default())
-        .run::<BaseEvmTypes, BaseEvmTypes>(&mut evm)
+    crate::interpreter::Interpreter::<BaseEvmTypes>::new(
+        Default::default(),
+        Default::default(),
+        Default::default(),
+    )
+    .run::<BaseEvmConfig>(&mut evm)
 }

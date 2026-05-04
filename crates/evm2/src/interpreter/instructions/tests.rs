@@ -1,5 +1,5 @@
 use crate::{
-    AccountLoad, EvmConfig, EvmTypes, SelfDestructResult, StorageLoad, Version,
+    AccountLoad, BaseEvmConfig, EvmConfig, EvmTypes, SelfDestructResult, StorageLoad,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
     interpreter::{
@@ -11,20 +11,13 @@ use alloy_primitives::{Address, B256, Bytes, Log};
 use std::collections::HashMap;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct TestConfig<const SPEC: u8 = { SpecId::OSAKA as u8 }>;
+pub(crate) struct TestTypes;
 
-impl<const SPEC: u8> EvmTypes for TestConfig<SPEC> {
+impl EvmTypes for TestTypes {
     type Tx = ();
     type Host = TestHost;
     type Database = crate::evm::InMemoryDB;
     type Precompiles = crate::evm::precompile::NoPrecompiles;
-}
-
-impl<const SPEC: u8> EvmConfig for TestConfig<SPEC> {
-    const VERSION: &'static Version = &Version::new_base(match SpecId::try_from_u8(SPEC) {
-        Some(spec_id) => spec_id,
-        None => panic!("invalid EVM specification ID"),
-    });
 }
 
 #[derive(Debug)]
@@ -236,7 +229,7 @@ pub(super) fn run(config: RunConfig<'_>) -> TestInterpreter {
         ($config:expr, $spec:expr, $($spec_id:ident),* $(,)?) => {
             match $spec {
                 $(
-                    SpecId::$spec_id => run_with_config::<TestConfig<{ SpecId::$spec_id as u8 }>>($config),
+                    SpecId::$spec_id => run_with_config::<BaseEvmConfig<{ SpecId::$spec_id as u8 }>>($config),
                 )*
             }
         };
@@ -269,17 +262,15 @@ pub(super) fn run(config: RunConfig<'_>) -> TestInterpreter {
     )
 }
 
-fn run_with_config<C: EvmConfig + EvmTypes<Tx = (), Host = TestHost>>(
-    config: RunConfig<'_>,
-) -> TestInterpreter {
+fn run_with_config<C: EvmConfig>(config: RunConfig<'_>) -> TestInterpreter {
     let RunConfig { code, host, spec_id: _, tx_env, mut message, gas_limit, return_data } = config;
     let bytecode = Bytecode::new_legacy(Bytes::from(code));
     message.gas_limit = gas_limit;
-    let mut inner = Interpreter::new(bytecode, tx_env, message);
+    let mut inner = Interpreter::<TestTypes>::new(bytecode, tx_env, message);
     inner.return_data = return_data;
     let mut default_host = TestHost::default();
     let host = host.unwrap_or(&mut default_host);
-    let err = inner.run::<C, C>(host);
+    let err = inner.run::<C>(host);
     let stack_len = inner.stack_len();
     TestInterpreter {
         stack: inner.stack,

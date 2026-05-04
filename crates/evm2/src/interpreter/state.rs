@@ -1,6 +1,6 @@
 use super::{BytecodeRef, InstrStop, Interpreter, Memory, Message, SpecId, Word};
 use crate::{
-    AccountLoad, SelfDestructResult, StorageLoad,
+    AccountLoad, EvmTypes, SelfDestructResult, StorageLoad,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
 };
@@ -8,19 +8,19 @@ use alloy_primitives::{Address, B256, Bytes, Log};
 use core::fmt;
 
 /// Interpreter state passed to instructions.
-pub struct State<'a, H: Host + ?Sized> {
+pub struct State<'a, T: EvmTypes> {
     /// Active bytecode.
     pub bytecode: BytecodeRef<'a>,
     /// Host implementation.
-    pub host: &'a mut H,
+    pub host: &'a mut T::Host,
     /// Active spec identifier.
     pub spec: SpecId,
-    pub(crate) raw_interp: *mut Interpreter,
+    pub(crate) raw_interp: *mut Interpreter<T>,
 }
 
-impl<H: Host + ?Sized> State<'_, H> {
+impl<T: EvmTypes> State<'_, T> {
     #[inline]
-    fn interp(&self) -> &Interpreter {
+    fn interp(&self) -> &Interpreter<T> {
         // SAFETY: `raw_interp` is valid for the duration of instruction execution. Methods on
         // `State` must not borrow fields already passed separately to the instruction, such as
         // stack and gas.
@@ -28,7 +28,7 @@ impl<H: Host + ?Sized> State<'_, H> {
     }
 
     #[inline]
-    fn interp_mut(&mut self) -> &mut Interpreter {
+    fn interp_mut(&mut self) -> &mut Interpreter<T> {
         // SAFETY: `raw_interp` is valid for the duration of instruction execution. Methods on
         // `State` must not borrow fields already passed separately to the instruction, such as
         // stack and gas.
@@ -72,7 +72,7 @@ impl<H: Host + ?Sized> State<'_, H> {
     }
 }
 
-impl<H: Host + ?Sized> fmt::Debug for State<'_, H> {
+impl<T: EvmTypes> fmt::Debug for State<'_, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("State")
             .field("bytecode", &self.bytecode)

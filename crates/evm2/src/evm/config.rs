@@ -23,7 +23,7 @@ pub trait EvmTypes: Sized + 'static {
 }
 
 /// EVM configuration.
-pub trait EvmConfig: 'static {
+pub trait EvmConfig {
     /// Active EVM version.
     const VERSION: &'static Version;
 
@@ -34,19 +34,21 @@ pub trait EvmConfig: 'static {
     }
 }
 
-/// EVM configuration for a specification ID.
+/// Base EVM types.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct BaseEvmTypes<const SPEC_ID: u8 = { SpecId::OSAKA as u8 }, Tx = ()>(
-    PhantomData<fn() -> Tx>,
-);
+pub struct BaseEvmTypes<Tx = ()>(PhantomData<fn() -> Tx>);
 
-impl<Tx: 'static, const SPEC_ID: u8> EvmTypes for BaseEvmTypes<SPEC_ID, Tx> {
+impl<Tx: 'static> EvmTypes for BaseEvmTypes<Tx> {
     type Tx = Tx;
     type Host = crate::evm::Evm<Self>;
     type Database = InMemoryDB;
     type Precompiles = crate::evm::precompile::NoPrecompiles;
 }
 
-impl<Tx: 'static, const SPEC_ID: u8> EvmConfig for BaseEvmTypes<SPEC_ID, Tx> {
-    const VERSION: &'static Version = &Version::new_base(SpecId::try_from_u8(SPEC_ID).unwrap());
+/// Base EVM configuration for a specification ID.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct BaseEvmConfig<const SPEC_ID: u8 = { SpecId::DEFAULT as u8 }>;
+
+impl<const SPEC_ID: u8> EvmConfig for BaseEvmConfig<SPEC_ID> {
+    const VERSION: &'static Version = Version::base(SpecId::try_from_u8(SPEC_ID).unwrap());
 }

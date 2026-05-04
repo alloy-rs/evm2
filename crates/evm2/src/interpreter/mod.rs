@@ -112,6 +112,9 @@ pub enum SpecId {
 }
 
 impl SpecId {
+    /// Default specification ID.
+    pub const DEFAULT: Self = Self::OSAKA;
+
     /// Latest known specification ID.
     #[doc(alias = "MAX")]
     pub const NEXT: Self = Self::AMSTERDAM;
@@ -281,10 +284,16 @@ impl InstrStop {
 mod tests {
     use super::*;
     use crate::{
+        BaseEvmConfig,
         bytecode::Bytecode,
-        interpreter::instructions::tests::{TestConfig, TestHost},
+        interpreter::instructions::tests::{TestHost, TestTypes},
     };
     use alloy_primitives::{Bytes, U256};
+
+    #[test]
+    fn defaults() {
+        assert_eq!(SpecId::DEFAULT, SpecId::default());
+    }
 
     #[test]
     fn main_smoke() {
@@ -295,16 +304,16 @@ mod tests {
             op::ADD,
             op::STOP,
         ][..]);
-        type Config = TestConfig<{ SpecId::HOMESTEAD as u8 }>;
+        type Config = BaseEvmConfig<{ SpecId::HOMESTEAD as u8 }>;
 
         let bytecode = Bytecode::new_legacy(Bytes::copy_from_slice(bytecode));
-        let mut interpreter = Interpreter::new(
+        let mut interpreter = Interpreter::<TestTypes>::new(
             bytecode,
             crate::env::TxEnv::default(),
             Message { gas_limit: 10_000, ..Message::default() },
         );
         let mut host = TestHost::default();
-        interpreter.run::<Config, Config>(&mut host);
+        interpreter.run::<Config>(&mut host);
     }
 
     #[test]
@@ -313,15 +322,15 @@ mod tests {
 
         macro_rules! check {
             ($spec_id:ident) => {{
-                type Config = TestConfig<{ SpecId::$spec_id as u8 }>;
+                type Config = BaseEvmConfig<{ SpecId::$spec_id as u8 }>;
                 let bytecode = Bytecode::new_legacy(Bytes::from_static(BASIC));
-                let mut interpreter = Interpreter::new(
+                let mut interpreter = Interpreter::<TestTypes>::new(
                     bytecode,
                     crate::env::TxEnv::default(),
                     Message { gas_limit: 10_000, ..Message::default() },
                 );
                 let mut host = TestHost::default();
-                interpreter.run::<Config, Config>(&mut host);
+                interpreter.run::<Config>(&mut host);
                 assert!(interpreter.gas.remaining() > 0);
                 assert_eq!(interpreter.stack[0], U256::from(3));
             }};

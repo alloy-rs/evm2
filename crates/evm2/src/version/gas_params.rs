@@ -335,8 +335,8 @@ mod tests {
     use super::*;
     use crate::{Version, interpreter::SpecId};
 
-    fn gas_params(spec: SpecId) -> GasParams {
-        Version::new_base(spec).gas_params
+    fn gas_params(spec: SpecId) -> &'static GasParams {
+        &Version::base(spec).gas_params
     }
 
     #[test]
@@ -405,7 +405,7 @@ mod tests {
 
     #[test]
     fn gas_params_override_values() {
-        let mut params = gas_params(SpecId::default());
+        let mut params = *gas_params(SpecId::default());
         params[GasId::MemoryLinearCost] = 7;
         params[GasId::MemoryQuadraticReduction] = 1024;
         assert_eq!(params[GasId::MemoryLinearCost], 7);

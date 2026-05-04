@@ -1,7 +1,7 @@
 //! Ethereum transaction envelope and handlers.
 
 use crate::{
-    Evm, EvmConfig, EvmTypes, TxResult,
+    Evm, EvmTypes, TxResult,
     bytecode::Bytecode,
     env::TxEnv,
     interpreter::{Host, Message, MessageKind, SpecId, Word},
@@ -73,17 +73,14 @@ impl Typed2718 for RecoveredTxEnvelope {
 ///
 /// Currently only legacy transactions are registered. Future Ethereum typed
 /// transaction handlers should be added here.
-pub fn ethereum_tx_registry<T>() -> TxRegistry<RecoveredTxEnvelope, TxResult, Evm<T>>
-where
-    T: EvmConfig + EvmTypes<Host = Evm<T>>,
-{
+pub fn ethereum_tx_registry<T: EvmTypes<Host = Evm<T>>>()
+-> TxRegistry<RecoveredTxEnvelope, TxResult, Evm<T>> {
     TxRegistry::new().with_handler(0, RecoveredTxEnvelope::as_legacy, handle_legacy::<T>)
 }
 
-fn handle_legacy<T>(req: TxRequest<'_, Recovered<TxLegacy>, Evm<T>>) -> HandlerResult<TxResult>
-where
-    T: EvmConfig + EvmTypes<Host = Evm<T>>,
-{
+fn handle_legacy<T: EvmTypes<Host = Evm<T>>>(
+    req: TxRequest<'_, Recovered<TxLegacy>, Evm<T>>,
+) -> HandlerResult<TxResult> {
     let caller = req.tx.signer();
     let tx = req.tx.inner();
     let spec_id = req.host.spec_id();

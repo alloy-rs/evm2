@@ -1,7 +1,5 @@
 //! Instruction dispatch tables.
 
-#[cfg(feature = "nightly")]
-use crate::interpreter::Interpreter;
 use crate::{
     EvmConfig, EvmTypes,
     interpreter::{Gas, GasParams, InstrStop, Pc, Result, Stack, StackMut, State, op},
@@ -15,12 +13,7 @@ pub(crate) type InstructionFnRet = (*const u8, usize);
 /// Normal instruction function pointer.
 #[cfg(not(feature = "nightly"))]
 pub(crate) type InstructionFn<T> = extern_table!(
-    fn(
-        pc: Pc,
-        stack: Stack<'_>,
-        gas: &mut Gas,
-        state: &mut State<'_, <T as EvmTypes>::Host>,
-    ) -> InstructionFnRet
+    fn(pc: Pc, stack: Stack<'_>, gas: &mut Gas, state: &mut State<'_, T>) -> InstructionFnRet
 );
 
 /// Normal instruction dispatch table.
@@ -34,27 +27,16 @@ pub(crate) type InstructionTable<T> = TailInstructionTable<T>;
 
 /// Tail instruction function pointer.
 #[cfg(feature = "nightly")]
-pub(crate) type TailInstructionFn<T> = extern_table!(
-    fn(
-        pc: Pc,
-        stack: Stack<'_>,
-        gas: &mut Gas,
-        state: &mut State<'_, <T as EvmTypes>::Host>,
-        ret: u8,
-    )
-);
+pub(crate) type TailInstructionFn<T> =
+    extern_table!(fn(pc: Pc, stack: Stack<'_>, gas: &mut Gas, state: &mut State<'_, T>, ret: u8));
 
 /// Tail instruction dispatch table.
 #[cfg(feature = "nightly")]
 pub(crate) type TailInstructionTable<T> = [TailInstructionFn<T>; 256];
 
 /// Instruction implementation function.
-pub type InstructionImplFn<T> = fn(
-    pc: &mut Pc,
-    stack: StackMut<'_>,
-    gas: &mut Gas,
-    state: &mut State<'_, <T as EvmTypes>::Host>,
-) -> Result;
+pub type InstructionImplFn<T> =
+    fn(pc: &mut Pc, stack: StackMut<'_>, gas: &mut Gas, state: &mut State<'_, T>) -> Result;
 
 pub(crate) trait InstructionTables<C: EvmConfig>: EvmTypes {
     const VERSION: &'static crate::EvmVersion<Self> = &crate::EvmVersion::<Self>::new_base::<C>();
@@ -72,7 +54,7 @@ pub(crate) struct InstructionCx<'a, 'state, T: EvmTypes> {
     /// Dynamic gas parameters for the active config.
     pub gas_params: &'a GasParams,
     /// Interpreter state.
-    pub state: &'a mut State<'state, T::Host>,
+    pub state: &'a mut State<'state, T>,
 }
 
 /// EVM instruction implementation.
@@ -82,7 +64,7 @@ pub trait Instruction<T: EvmTypes = crate::BaseEvmTypes> {
         pc: &mut Pc,
         stack: StackMut<'_>,
         gas: &mut Gas,
-        state: &mut State<'_, T::Host>,
+        state: &mut State<'_, T>,
     ) -> Result;
 }
 
@@ -91,7 +73,7 @@ pub(crate) const fn unknown_instruction<T: EvmTypes>(
     _pc: &mut Pc,
     _stack: StackMut<'_>,
     _gas: &mut Gas,
-    _state: &mut State<'_, T::Host>,
+    _state: &mut State<'_, T>,
 ) -> Result {
     Err(InstrStop::OpcodeNotFound)
 }
@@ -172,7 +154,7 @@ extern_table! {
         pc: Pc,
         stack: Stack<'_>,
         gas: &mut Gas,
-        state: &mut State<'_, T::Host>,
+        state: &mut State<'_, T>,
     ) -> InstructionFnRet {
         dispatch_mono::<T, C>(OP, pc, stack, gas, state)
     }
@@ -185,7 +167,7 @@ fn dispatch_mono<T: EvmTypes, C: EvmConfig>(
     mut pc: Pc,
     mut stack: Stack<'_>,
     gas: &mut Gas,
-    state: &mut State<'_, T::Host>,
+    state: &mut State<'_, T>,
 ) -> InstructionFnRet {
     let instr = <T as InstructionTables<C>>::VERSION.instruction_impls.get_or_default(op);
     let r;
@@ -211,7 +193,7 @@ extern_table! {
         pc: Pc,
         stack: Stack<'_>,
         gas: &mut Gas,
-        state: &mut State<'_, T::Host>,
+        state: &mut State<'_, T>,
         _ret: u8,
     ) {
         tail_return!(tail_dispatch_mono::<T, C>(pc, stack, gas, state, OP));
@@ -225,7 +207,7 @@ extern_table! {
         mut pc: Pc,
         mut stack: Stack<'_>,
         gas: &mut Gas,
-        state: &mut State<'_, T::Host>,
+        state: &mut State<'_, T>,
         op: u8,
     ) {
         let instr = <T as InstructionTables<C>>::VERSION.instruction_impls.get_or_default(op);
@@ -249,7 +231,7 @@ extern_table! {
         pc: Pc,
         stack: Stack<'_>,
         gas: &mut Gas,
-        state: &mut State<'_, T::Host>,
+        state: &mut State<'_, T>,
         ret: u8,
     ) {
         let instr = <T as InstructionTables<C>>::INSTRUCTIONS[pc.op() as usize];
@@ -265,11 +247,11 @@ extern_table! {
         pc: Pc,
         stack: Stack<'_>,
         _gas: &mut Gas,
-        state: &mut State<'_, T::Host>,
+        state: &mut State<'_, T>,
         ret: u8,
     ) {
         // SAFETY: `raw_interp` is valid for the duration of execution.
-        let interp = unsafe { &mut *state.raw_interp.cast::<Interpreter>() };
+        let interp = unsafe { &mut *state.raw_interp };
         interp.pc = pc.as_ptr();
         interp.stack_len = stack.len;
         interp.result = Err(unsafe { core::mem::transmute::<u8, InstrStop>(ret) });
@@ -320,7 +302,7 @@ mod tests {
     }
 
     impl EvmConfig for CustomTypes {
-        const VERSION: &'static Version = &Version::new_base(SpecId::OSAKA);
+        const VERSION: &'static Version = Version::base(SpecId::DEFAULT);
     }
 
     #[instruction]
@@ -328,8 +310,8 @@ mod tests {
         *out = Word::from(0xdead_u64);
     }
 
-    fn gas_params(spec: SpecId) -> StaticGasTable {
-        Version::new_base(spec).static_gas_table
+    fn gas_params(spec: SpecId) -> &'static StaticGasTable {
+        &Version::base(spec).static_gas_table
     }
 
     #[test]

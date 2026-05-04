@@ -2,7 +2,7 @@
 
 use self::precompile::{PrecompileOutput, PrecompileProvider};
 use crate::{
-    AccountLoad, EvmConfig, EvmTypes, SelfDestructResult, StorageLoad, Version,
+    AccountLoad, BaseEvmConfig, EvmTypes, SelfDestructResult, StorageLoad, Version,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
     interpreter::{
@@ -39,10 +39,13 @@ pub struct TxResult {
     pub output: Bytes,
 }
 
+type RunInterpreterFn<T> = fn(&mut Interpreter<T>, &mut <T as EvmTypes>::Host) -> InstrStop;
+
 /// EVM host and transaction dispatcher.
 #[derive(Debug)]
 pub struct Evm<T: EvmTypes> {
     version: &'static Version,
+    run_interpreter: RunInterpreterFn<T>,
     pub(crate) block: BlockEnv,
     registry: TxRegistry<T::Tx, TxResult, Self>,
     pub(crate) state: State<T::Database>,
@@ -51,6 +54,31 @@ pub struct Evm<T: EvmTypes> {
 }
 
 impl<T: EvmTypes> Evm<T> {
+    /// Creates an EVM for the default hard fork with the provided transaction registry,
+    /// database, and precompile provider.
+    #[inline]
+    pub fn new(
+        block: BlockEnv,
+        registry: TxRegistry<T::Tx, TxResult, Self>,
+        database: T::Database,
+        precompiles: T::Precompiles,
+    ) -> Self {
+        Self::new_with_spec(SpecId::OSAKA, block, registry, database, precompiles)
+    }
+
+    /// Creates an EVM for `spec_id` with the provided transaction registry, database, and
+    /// precompile provider.
+    #[inline]
+    pub fn new_with_spec(
+        spec_id: SpecId,
+        block: BlockEnv,
+        registry: TxRegistry<T::Tx, TxResult, Self>,
+        database: T::Database,
+        precompiles: T::Precompiles,
+    ) -> Self {
+        Self::new_with_version(Version::base(spec_id), block, registry, database, precompiles)
+    }
+
     /// Creates an EVM with the provided transaction registry, database, and precompile provider.
     #[inline]
     pub fn new_with_version(
@@ -62,6 +90,7 @@ impl<T: EvmTypes> Evm<T> {
     ) -> Self {
         Self {
             version,
+            run_interpreter: run_interpreter_for_spec::<T>(version.spec_id()),
             block,
             registry,
             state: State::new(database),
@@ -119,20 +148,6 @@ impl<T: EvmTypes> Evm<T> {
     }
 }
 
-impl<T: EvmConfig + EvmTypes> Evm<T> {
-    /// Creates an EVM with the configured version and the provided transaction registry,
-    /// database, and precompile provider.
-    #[inline]
-    pub fn new(
-        block: BlockEnv,
-        registry: TxRegistry<T::Tx, TxResult, Self>,
-        database: T::Database,
-        precompiles: T::Precompiles,
-    ) -> Self {
-        Self::new_with_version(T::VERSION, block, registry, database, precompiles)
-    }
-}
-
 impl<T: EvmTypes<Tx: Typed2718>> Evm<T> {
     /// Dispatches the transaction to the handler registered for its EIP-2718 type byte.
     pub fn transact(&mut self, tx: &T::Tx) -> HandlerResult<TxResult> {
@@ -157,10 +172,7 @@ impl<T: EvmTypes<Tx: Typed2718>> Evm<T> {
     }
 }
 
-impl<T> Host for Evm<T>
-where
-    T: EvmConfig + EvmTypes<Host = Self>,
-{
+impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
     fn spec_id(&self) -> SpecId {
         self.spec_id()
     }
@@ -279,8 +291,8 @@ where
             create_message.destination = address;
             create_message.code_address = address;
             create_message.input = Bytes::new();
-            let mut interpreter = Interpreter::new(bytecode, tx_env, create_message);
-            let stop = interpreter.run::<T, T>(self);
+            let mut interpreter = Interpreter::<T>::new(bytecode, tx_env, create_message);
+            let stop = (self.run_interpreter)(&mut interpreter, self);
             let mut gas = interpreter.gas();
             if stop.is_success() || stop.is_revert() {
                 gas.set_final_refund(self.spec_id().enables(SpecId::LONDON));
@@ -337,8 +349,8 @@ where
             return MessageResult { stop, gas_remaining, output, created_address: None };
         }
 
-        let mut interpreter = Interpreter::new(bytecode, tx_env, message);
-        let stop = interpreter.run::<T, T>(self);
+        let mut interpreter = Interpreter::<T>::new(bytecode, tx_env, message);
+        let stop = (self.run_interpreter)(&mut interpreter, self);
         let mut gas = interpreter.gas();
         if stop.is_success() || stop.is_revert() {
             gas.set_final_refund(self.spec_id().enables(SpecId::LONDON));
@@ -393,6 +405,44 @@ where
     }
 }
 
+fn run_interpreter_for_spec<T: EvmTypes>(spec_id: SpecId) -> RunInterpreterFn<T> {
+    macro_rules! run {
+        ($spec:ident) => {
+            run_interpreter::<T, { SpecId::$spec as u8 }>
+        };
+    }
+    match spec_id {
+        SpecId::FRONTIER => run!(FRONTIER),
+        SpecId::FRONTIER_THAWING => run!(FRONTIER_THAWING),
+        SpecId::HOMESTEAD => run!(HOMESTEAD),
+        SpecId::DAO_FORK => run!(DAO_FORK),
+        SpecId::TANGERINE => run!(TANGERINE),
+        SpecId::SPURIOUS_DRAGON => run!(SPURIOUS_DRAGON),
+        SpecId::BYZANTIUM => run!(BYZANTIUM),
+        SpecId::CONSTANTINOPLE => run!(CONSTANTINOPLE),
+        SpecId::PETERSBURG => run!(PETERSBURG),
+        SpecId::ISTANBUL => run!(ISTANBUL),
+        SpecId::MUIR_GLACIER => run!(MUIR_GLACIER),
+        SpecId::BERLIN => run!(BERLIN),
+        SpecId::LONDON => run!(LONDON),
+        SpecId::ARROW_GLACIER => run!(ARROW_GLACIER),
+        SpecId::GRAY_GLACIER => run!(GRAY_GLACIER),
+        SpecId::MERGE => run!(MERGE),
+        SpecId::SHANGHAI => run!(SHANGHAI),
+        SpecId::CANCUN => run!(CANCUN),
+        SpecId::PRAGUE => run!(PRAGUE),
+        SpecId::OSAKA => run!(OSAKA),
+        SpecId::AMSTERDAM => run!(AMSTERDAM),
+    }
+}
+
+fn run_interpreter<T: EvmTypes, const SPEC_ID: u8>(
+    interpreter: &mut Interpreter<T>,
+    host: &mut T::Host,
+) -> InstrStop {
+    interpreter.run::<BaseEvmConfig<SPEC_ID>>(host)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -405,14 +455,14 @@ mod tests {
     use alloy_primitives::{Address, B256, Bytes, Log, LogData, U256, keccak256};
 
     const TEST_TX_TYPE: u8 = 0x7f;
-    const NO_CONFIG_VERSION: Version = Version::new_base(SpecId::OSAKA);
+    const NO_CONFIG_VERSION: &Version = Version::base(SpecId::OSAKA);
 
     #[derive(Debug)]
     struct TestTx {
         value: u64,
     }
 
-    type TestEvmConfig<Tx = ()> = BaseEvmTypes<{ SpecId::OSAKA as u8 }, Tx>;
+    type TestEvmTypes<Tx = ()> = BaseEvmTypes<Tx>;
 
     #[derive(Debug)]
     struct NoConfigTypes;
@@ -424,7 +474,7 @@ mod tests {
 
     impl Host for NoConfigHost {
         fn spec_id(&self) -> SpecId {
-            SpecId::OSAKA
+            SpecId::DEFAULT
         }
 
         fn block_env(&mut self) -> &BlockEnv {
@@ -501,7 +551,7 @@ mod tests {
     }
 
     fn handle_test_tx(
-        req: TxRequest<'_, TestTx, Evm<TestEvmConfig<TestTx>>>,
+        req: TxRequest<'_, TestTx, Evm<TestEvmTypes<TestTx>>>,
     ) -> HandlerResult<TxResult> {
         let _ = req.host.spec_id();
         Ok(TxResult { status: true, gas_used: req.tx.value + 1, ..TxResult::default() })
@@ -517,7 +567,7 @@ mod tests {
     fn dispatches_transaction_by_typed_2718_type() {
         let registry =
             TxRegistry::new().with_handler(TEST_TX_TYPE, extract_test_tx, handle_test_tx);
-        let mut evm = Evm::<TestEvmConfig<TestTx>>::new(
+        let mut evm = Evm::<TestEvmTypes<TestTx>>::new(
             BlockEnv::default(),
             registry,
             InMemoryDB::default(),
@@ -533,7 +583,7 @@ mod tests {
         let registry =
             TxRegistry::new().with_handler(TEST_TX_TYPE, extract_test_tx, handle_no_config_tx);
         let mut evm = Evm::<NoConfigTypes>::new_with_version(
-            &NO_CONFIG_VERSION,
+            NO_CONFIG_VERSION,
             BlockEnv::default(),
             registry,
             InMemoryDB::default(),
@@ -548,7 +598,7 @@ mod tests {
     fn dispatches_transaction_iter() {
         let registry =
             TxRegistry::new().with_handler(TEST_TX_TYPE, extract_test_tx, handle_test_tx);
-        let mut evm = Evm::<TestEvmConfig<TestTx>>::new(
+        let mut evm = Evm::<TestEvmTypes<TestTx>>::new(
             BlockEnv::default(),
             registry,
             InMemoryDB::default(),
@@ -565,7 +615,7 @@ mod tests {
 
     #[test]
     fn host_executes_message() {
-        let mut evm = Evm::<TestEvmConfig>::new(
+        let mut evm = Evm::<TestEvmTypes>::new(
             BlockEnv::default(),
             TxRegistry::new(),
             InMemoryDB::default(),

@@ -205,7 +205,8 @@ fn execute_spec(
 ) -> Result<SpecOutcome, HandlerError> {
     macro_rules! run {
         ($spec:ident) => {{
-            let mut evm = Evm::<BaseEvmTypes<{ SpecId::$spec as u8 }, RecoveredTxEnvelope>>::new(
+            let mut evm = Evm::<BaseEvmTypes<RecoveredTxEnvelope>>::new_with_spec(
+                SpecId::$spec,
                 block,
                 ethereum_tx_registry(),
                 database,
@@ -241,10 +242,11 @@ fn execute_spec(
     }
 }
 
-fn spec_outcome<C>(evm: &Evm<C>, result: TxResult, spec: SpecId) -> SpecOutcome
-where
-    C: EvmTypes<Database = InMemoryDB>,
-{
+fn spec_outcome<T: EvmTypes<Database = InMemoryDB>>(
+    evm: &Evm<T>,
+    result: TxResult,
+    spec: SpecId,
+) -> SpecOutcome {
     SpecOutcome {
         state_root: state_root(evm.state(), spec),
         logs_root: logs_hash(evm.logs()),

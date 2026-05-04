@@ -91,7 +91,7 @@ fn expand_instruction(raw: bool, input: ItemFn) -> TokenStream2 {
                 __evm2_pc: &mut evm2::interpreter::Pc,
                 mut stack: evm2::interpreter::StackMut<'_>,
                 __evm2_gas: &mut evm2::interpreter::Gas,
-                __evm2_state: &mut evm2::interpreter::State<'_, <#evm_types as evm2::EvmTypes>::Host>,
+                __evm2_state: &mut evm2::interpreter::State<'_, #evm_types>,
             ) -> evm2::interpreter::Result {
                 evm2::asm_comment!(#asm_comment);
                 #cx_setup
