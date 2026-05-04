@@ -9,10 +9,7 @@
     expect(unreachable_code)
 )]
 
-use crate::precompiles::{
-    EthPrecompileOutput, EthPrecompileResult, Gas, Precompile, PrecompileHalt, PrecompileId,
-    eth_precompile_fn,
-};
+use crate::precompiles::{EthPrecompileOutput, EthPrecompileResult, Gas, PrecompileHalt};
 
 #[cfg(all(
     any(target_arch = "x86", target_arch = "x86_64"),
@@ -74,15 +71,6 @@ pub(crate) fn compress(rounds: u32, h: &mut [Word; 8], m: &[Word; 16], t: &[Word
     }
     portable::compress(rounds, h, m, t, f);
 }
-
-eth_precompile_fn!(blake2_precompile, run);
-
-/// Blake2 precompile
-pub(crate) const FUN: Precompile = Precompile::new(
-    PrecompileId::Blake2F,
-    crate::precompiles::u64_to_address(9),
-    blake2_precompile,
-);
 
 /// reference: <https://eips.ethereum.org/EIPS/eip-152>
 /// input format:

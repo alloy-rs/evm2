@@ -23,7 +23,7 @@ pub use evm::{
     config::{EvmConfig, EvmVersion},
     env, precompile, registry,
 };
-pub use precompiles::{Crypto, PrecompileHalt, crypto, install_crypto};
+pub use precompiles::{Crypto, PrecompileHalt, Precompiles, crypto, install_crypto};
 
 mod once_lock;
 

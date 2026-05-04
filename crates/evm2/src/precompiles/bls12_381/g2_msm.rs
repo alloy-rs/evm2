@@ -1,20 +1,13 @@
-//! BLS12-381 G2 msm precompile. More details in [`g2_msm`]
+//! BLS12-381 G2 msm precompile. More details in [`run`]
 use super::utils::{pad_g2_point, remove_g2_padding};
 use crate::precompiles::{
-    EthPrecompileOutput, EthPrecompileResult, Gas, Precompile, PrecompileHalt, PrecompileId,
+    EthPrecompileOutput, EthPrecompileResult, Gas, PrecompileHalt,
     bls12_381_const::{
-        DISCOUNT_TABLE_G2_MSM, G2_MSM_ADDRESS, G2_MSM_BASE_GAS_FEE, G2_MSM_INPUT_LENGTH,
-        PADDED_G2_LENGTH, SCALAR_LENGTH,
+        DISCOUNT_TABLE_G2_MSM, G2_MSM_BASE_GAS_FEE, G2_MSM_INPUT_LENGTH, PADDED_G2_LENGTH,
+        SCALAR_LENGTH,
     },
     bls12_381_utils::msm_required_gas,
-    eth_precompile_fn,
 };
-
-eth_precompile_fn!(g2_msm_precompile, g2_msm);
-
-/// [EIP-2537](https://eips.ethereum.org/EIPS/eip-2537#specification) BLS12_G2MSM precompile.
-pub(crate) const PRECOMPILE: Precompile =
-    Precompile::new(PrecompileId::Bls12G2Msm, G2_MSM_ADDRESS, g2_msm_precompile);
 
 /// Implements EIP-2537 G2MSM precompile.
 /// G2 multi-scalar-multiplication call expects `288*k` bytes as an input that is interpreted
@@ -24,7 +17,7 @@ pub(crate) const PRECOMPILE: Precompile =
 /// Output is an encoding of multi-scalar-multiplication operation result - single G2
 /// point (`256` bytes).
 /// See also: <https://eips.ethereum.org/EIPS/eip-2537#abi-for-g2-multiexponentiation>
-pub(crate) fn g2_msm(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
+pub(crate) fn run(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
     let input_len = input.len();
     if input_len == 0 || !input_len.is_multiple_of(G2_MSM_INPUT_LENGTH) {
         return Err(PrecompileHalt::Bls12381G2MsmInputLength);

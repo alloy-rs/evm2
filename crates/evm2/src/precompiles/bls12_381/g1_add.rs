@@ -1,23 +1,16 @@
-//! BLS12-381 G1 add precompile. More details in [`g1_add`]
+//! BLS12-381 G1 add precompile. More details in [`run`]
 use super::utils::{pad_g1_point, remove_g1_padding};
 use crate::precompiles::{
-    EthPrecompileOutput, EthPrecompileResult, Gas, Precompile, PrecompileHalt, PrecompileId,
-    bls12_381_const::{G1_ADD_ADDRESS, G1_ADD_BASE_GAS_FEE, G1_ADD_INPUT_LENGTH, PADDED_G1_LENGTH},
-    eth_precompile_fn,
+    EthPrecompileOutput, EthPrecompileResult, Gas, PrecompileHalt,
+    bls12_381_const::{G1_ADD_BASE_GAS_FEE, G1_ADD_INPUT_LENGTH, PADDED_G1_LENGTH},
 };
-
-eth_precompile_fn!(g1_add_precompile, g1_add);
-
-/// [EIP-2537](https://eips.ethereum.org/EIPS/eip-2537#specification) BLS12_G1ADD precompile.
-pub(crate) const PRECOMPILE: Precompile =
-    Precompile::new(PrecompileId::Bls12G1Add, G1_ADD_ADDRESS, g1_add_precompile);
 
 /// G1 addition call expects `256` bytes as an input that is interpreted as byte
 /// concatenation of two G1 points (`128` bytes each).
 /// Output is an encoding of addition operation result - single G1 point (`128`
 /// bytes).
 /// See also: <https://eips.ethereum.org/EIPS/eip-2537#abi-for-g1-addition>
-pub(crate) fn g1_add(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
+pub(crate) fn run(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
     gas.spend(G1_ADD_BASE_GAS_FEE)?;
 
     if input.len() != G1_ADD_INPUT_LENGTH {

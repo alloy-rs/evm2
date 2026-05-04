@@ -143,6 +143,27 @@ impl Gas {
         Self { remaining: limit, limit, reservoir, state_gas_spent: 0, refunded: 0, crypto }
     }
 
+    #[inline]
+    pub(crate) fn from_evm_gas(gas: &crate::interpreter::Gas) -> Self {
+        Self {
+            remaining: gas.remaining(),
+            limit: gas.limit(),
+            reservoir: gas.reservoir(),
+            state_gas_spent: gas.state_gas_spent(),
+            refunded: gas.refunded(),
+            crypto: crate::precompiles::crypto(),
+        }
+    }
+
+    #[inline]
+    pub(crate) const fn apply_to_evm_gas(&self, gas: &mut crate::interpreter::Gas) {
+        gas.set_remaining(self.remaining);
+        gas.set_limit(self.limit);
+        gas.set_reservoir(self.reservoir);
+        gas.set_state_gas_spent(self.state_gas_spent);
+        gas.set_refunded(self.refunded);
+    }
+
     /// Returns the crypto provider.
     #[inline]
     pub(crate) const fn crypto(&self) -> &'static dyn Crypto {
@@ -476,69 +497,10 @@ pub trait Crypto: Send + Sync + Debug {
     }
 }
 
-/// Eth precompile function type. Takes input and gas, returns an Eth precompile result.
-///
-/// This is the function signature used by individual Ethereum precompile implementations.
-/// Use [`PrecompileFn`] for the higher-level type that returns [`PrecompileOutput`].
-pub(crate) type PrecompileEthFn = fn(&[u8], &mut Gas) -> EthPrecompileResult;
-
-/// Precompile function type. Takes input and gas, returns a [`PrecompileResult`].
-///
-/// Returns `Ok(PrecompileOutput)` for successful execution or non-fatal halts,
-/// or `Err(PrecompileError)` for fatal/unrecoverable errors that should abort EVM execution.
-pub(crate) type PrecompileFn = fn(&[u8], &mut Gas) -> PrecompileResult;
-
-/// Macro that generates a thin wrapper function converting a [`PrecompileEthFn`] into a
-/// [`PrecompileFn`].
-///
-/// Usage:
-/// ```ignore
-/// eth_precompile_fn!(my_precompile, my_eth_fn);
-/// ```
-/// Expands to:
-/// ```ignore
-/// fn my_precompile(input: &[u8], gas: &mut Gas) -> PrecompileOutput {
-///     call_eth_precompile(my_eth_fn, input, gas)
-/// }
-/// ```
-macro_rules! eth_precompile_fn {
-    ($name:ident, $eth_fn:expr) => {
-        fn $name(
-            input: &[u8],
-            gas: &mut crate::precompiles::Gas,
-        ) -> crate::precompiles::PrecompileResult {
-            Ok(crate::precompiles::call_eth_precompile($eth_fn, input, gas))
-        }
-    };
-}
-
-pub(crate) use eth_precompile_fn;
-
-/// Calls a [`PrecompileEthFn`] and wraps the result into a [`PrecompileOutput`].
-///
-/// Use this in wrapper functions to adapt an eth precompile to the [`PrecompileFn`] signature:
-/// ```ignore
-/// fn my_precompile(input: &[u8], gas: &mut Gas) -> PrecompileOutput {
-///     call_eth_precompile(my_eth_fn, input, gas)
-/// }
-/// ```
-#[inline]
-pub(crate) fn call_eth_precompile(
-    f: PrecompileEthFn,
-    input: &[u8],
-    gas: &mut Gas,
-) -> PrecompileOutput {
-    match f(input, gas) {
-        Ok(output) => PrecompileOutput::new(output.bytes),
-        Err(halt) => PrecompileOutput::halt(halt),
-    }
-}
-
 /// Non-fatal halt reasons for precompiles.
 ///
 /// These represent conditions that halt precompile execution but do not abort
-/// the entire EVM transaction. They are expressed through [`PrecompileStatus::Halt`]
-/// at the provider level.
+/// the entire EVM transaction.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum PrecompileHalt {
     /// out of gas is the main error. Others are here just for completeness

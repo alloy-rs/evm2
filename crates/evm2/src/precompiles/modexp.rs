@@ -1,32 +1,12 @@
 //! Modexp precompile added in [`EIP-198`](https://eips.ethereum.org/EIPS/eip-198)
 //! and reprices in berlin hardfork with [`EIP-2565`](https://eips.ethereum.org/EIPS/eip-2565).
 use crate::precompiles::{
-    EthPrecompileOutput, EthPrecompileResult, Gas, Precompile, PrecompileHalt, PrecompileId,
-    eip7823, eth_precompile_fn,
+    EthPrecompileOutput, EthPrecompileResult, Gas, PrecompileHalt, eip7823,
     utils::{left_pad, left_pad_vec_be, right_pad_vec, right_pad_with_offset},
 };
 use alloc::vec::Vec;
 use alloy_primitives::{Bytes, U256};
 use core::cmp::{max, min};
-
-eth_precompile_fn!(byzantium_precompile, byzantium_run);
-eth_precompile_fn!(berlin_precompile, berlin_run);
-eth_precompile_fn!(osaka_precompile, osaka_run);
-
-/// `modexp` precompile with BYZANTIUM gas rules.
-pub(crate) const BYZANTIUM: Precompile = Precompile::new(
-    PrecompileId::ModExp,
-    crate::precompiles::u64_to_address(5),
-    byzantium_precompile,
-);
-
-/// `modexp` precompile with BERLIN gas rules.
-pub(crate) const BERLIN: Precompile =
-    Precompile::new(PrecompileId::ModExp, crate::precompiles::u64_to_address(5), berlin_precompile);
-
-/// `modexp` precompile with OSAKA gas rules.
-pub(crate) const OSAKA: Precompile =
-    Precompile::new(PrecompileId::ModExp, crate::precompiles::u64_to_address(5), osaka_precompile);
 
 #[cfg(feature = "gmp")]
 /// GMP-based modular exponentiation implementation
@@ -131,19 +111,19 @@ pub(crate) fn modexp(base: &[u8], exponent: &[u8], modulus: &[u8]) -> Vec<u8> {
 
 /// See: <https://eips.ethereum.org/EIPS/eip-198>
 /// See: <https://etherscan.io/address/0000000000000000000000000000000000000005>
-pub(crate) fn byzantium_run(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
+pub(crate) fn run_byzantium(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
     run_inner::<_, false>(input, gas, 0, byzantium_gas_calc)
 }
 
 /// See: <https://eips.ethereum.org/EIPS/eip-2565>
 /// Gas cost of berlin is modified from byzantium.
-pub(crate) fn berlin_run(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
+pub(crate) fn run_berlin(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
     run_inner::<_, false>(input, gas, 200, berlin_gas_calc)
 }
 
 /// See: <https://eips.ethereum.org/EIPS/eip-7823>
 /// Gas cost of berlin is modified from byzantium.
-pub(crate) fn osaka_run(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
+pub(crate) fn run_osaka(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
     run_inner::<_, true>(input, gas, 500, osaka_gas_calc)
 }
 
@@ -341,7 +321,7 @@ mod tests {
             fffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2e\
             ffffffffffffffffffffffffffffffffffffffffff2f",
             expected: "162ead82cadefaeaf6e9283248fdf2f2845f6396f6f17c4d5a39f820b6f6b5f9",
-            name: "eth_tests_create2callPrecompiles_test0_berlin",
+            name: "eth_tests_create2calls_test0_berlin",
         },
         Test {
             input: "\
@@ -498,7 +478,7 @@ mod tests {
         for (test, &test_gas) in TESTS.iter().zip(BYZANTIUM_GAS.iter()) {
             let input = hex::decode(test.input).unwrap();
             let mut gas = Gas::new(gas_limit);
-            let res = byzantium_run(&input, &mut gas).unwrap();
+            let res = run_byzantium(&input, &mut gas).unwrap();
             let expected = hex::decode(test.expected).unwrap();
             assert_eq!(gas.spent(), test_gas, "used gas not matching for test: {}", test.name);
             assert_eq!(res.bytes, expected, "test:{}", test.name);
@@ -511,7 +491,7 @@ mod tests {
         for (test, &test_gas) in TESTS.iter().zip(BERLIN_GAS.iter()) {
             let input = hex::decode(test.input).unwrap();
             let mut gas = Gas::new(gas_limit);
-            let res = berlin_run(&input, &mut gas).unwrap();
+            let res = run_berlin(&input, &mut gas).unwrap();
             let expected = hex::decode(test.expected).unwrap();
             assert_eq!(gas.spent(), test_gas, "used gas not matching for test: {}", test.name);
             assert_eq!(res.bytes, expected, "test:{}", test.name);
@@ -524,7 +504,7 @@ mod tests {
         for (test, &test_gas) in TESTS.iter().zip(OSAKA_GAS.iter()) {
             let input = hex::decode(test.input).unwrap();
             let mut gas = Gas::new(gas_limit);
-            let res = osaka_run(&input, &mut gas).unwrap();
+            let res = run_osaka(&input, &mut gas).unwrap();
             let expected = hex::decode(test.expected).unwrap();
             assert_eq!(gas.spent(), test_gas, "used gas not matching for test: {}", test.name);
             assert_eq!(res.bytes, expected, "test:{}", test.name);
@@ -533,7 +513,7 @@ mod tests {
 
     #[test]
     fn test_berlin_modexp_empty_input() {
-        let res = berlin_run(&Bytes::new(), &mut Gas::new(100_000)).unwrap();
+        let res = run_berlin(&Bytes::new(), &mut Gas::new(100_000)).unwrap();
         let expected: Vec<u8> = Vec::new();
         assert_eq!(res.bytes, expected)
     }
@@ -598,7 +578,7 @@ mod tests {
         ];
         for test in test_inputs {
             let input = test.input();
-            let res = osaka_run(&input, &mut Gas::new(100_000_000)).err();
+            let res = run_osaka(&input, &mut Gas::new(100_000_000)).err();
             if res != test.expected {
                 panic!("test failed: {test:?} result: {res:?}");
             }
@@ -617,7 +597,7 @@ mod tests {
              07",
         )
         .unwrap();
-        let res = byzantium_run(&input, &mut Gas::new(100_000)).unwrap();
+        let res = run_byzantium(&input, &mut Gas::new(100_000)).unwrap();
         assert_eq!(res.bytes, vec![0x00], "0^5 mod 7 should be 0");
 
         // Test case 2: Base equals modulus
@@ -630,7 +610,7 @@ mod tests {
              07",
         )
         .unwrap();
-        let res = byzantium_run(&input, &mut Gas::new(100_000)).unwrap();
+        let res = run_byzantium(&input, &mut Gas::new(100_000)).unwrap();
         assert_eq!(res.bytes, vec![0x00], "7^3 mod 7 should be 0");
 
         // Test case 3: Exponent is zero (result should always be 1)
@@ -642,7 +622,7 @@ mod tests {
              07",
         )
         .unwrap();
-        let res = byzantium_run(&input, &mut Gas::new(100_000)).unwrap();
+        let res = run_byzantium(&input, &mut Gas::new(100_000)).unwrap();
         assert_eq!(res.bytes, vec![0x01], "5^0 mod 7 should be 1");
 
         // Test case 4: Large base with small modulus
@@ -656,7 +636,7 @@ mod tests {
              03",
         )
         .unwrap();
-        let res = byzantium_run(&input, &mut Gas::new(100_000)).unwrap();
+        let res = run_byzantium(&input, &mut Gas::new(100_000)).unwrap();
         // (2^256 - 1) = 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
         // This is divisible by 3, so (2^256 - 1) mod 3 = 0
         // Therefore 0^2 mod 3 = 0
@@ -669,12 +649,12 @@ mod tests {
         // Test minimum gas consumption with empty input
         // Byzantium has min_gas of 0 for empty input
         let mut gas = Gas::new(gas_limit);
-        byzantium_run(&[], &mut gas).unwrap();
+        run_byzantium(&[], &mut gas).unwrap();
         assert_eq!(gas.spent(), 0, "Empty input should use 0 gas for Byzantium");
 
         // Berlin has min_gas of 200
         let mut gas = Gas::new(gas_limit);
-        berlin_run(&[], &mut gas).unwrap();
+        run_berlin(&[], &mut gas).unwrap();
         assert_eq!(gas.spent(), 200, "Empty input should use minimum gas 200 for Berlin");
 
         // Test gas consumption with very small inputs
@@ -688,12 +668,12 @@ mod tests {
         )
         .unwrap();
         // For Byzantium, check that it computes correctly
-        let res = byzantium_run(&input, &mut Gas::new(100_000)).unwrap();
+        let res = run_byzantium(&input, &mut Gas::new(100_000)).unwrap();
         assert_eq!(res.bytes, vec![0x00], "1^1 mod 1 = 0");
 
         // For Berlin, minimum gas is 200
         let mut gas = Gas::new(gas_limit);
-        berlin_run(&input, &mut gas).unwrap();
+        run_berlin(&input, &mut gas).unwrap();
         assert_eq!(gas.spent(), 200, "Berlin should use minimum gas of 200");
     }
 
@@ -709,7 +689,7 @@ mod tests {
              0000000000000000000000000000000000000000000000000000000000000101",
         )
         .unwrap();
-        let res = byzantium_run(&input, &mut Gas::new(100_000)).unwrap();
+        let res = run_byzantium(&input, &mut Gas::new(100_000)).unwrap();
         assert_eq!(res.bytes.len(), 32, "Result should be padded to modulus length");
         assert_eq!(res.bytes[31], 8, "2^3 mod 257 = 8");
     }
@@ -729,9 +709,9 @@ mod tests {
 
         let gas_limit = 10_000_000u64;
         let mut byzantium_gas = Gas::new(gas_limit);
-        let byzantium_res = byzantium_run(&input, &mut byzantium_gas).unwrap();
+        let byzantium_res = run_byzantium(&input, &mut byzantium_gas).unwrap();
         let mut berlin_gas = Gas::new(gas_limit);
-        let berlin_res = berlin_run(&input, &mut berlin_gas).unwrap();
+        let berlin_res = run_berlin(&input, &mut berlin_gas).unwrap();
 
         let byzantium_gas_used = byzantium_gas.spent();
         let berlin_gas_used = berlin_gas.spent();
@@ -756,7 +736,7 @@ mod tests {
         .unwrap();
 
         // Should succeed with exactly 1024 bytes
-        let res = osaka_run(&input, &mut Gas::new(100_000_000));
+        let res = run_osaka(&input, &mut Gas::new(100_000_000));
         assert!(res.is_ok(), "1024-byte base should be allowed");
 
         // Test with 1025 bytes - should fail
@@ -770,7 +750,7 @@ mod tests {
         )
         .unwrap();
 
-        let res = osaka_run(&input_fail, &mut Gas::new(100_000_000));
+        let res = run_osaka(&input_fail, &mut Gas::new(100_000_000));
         assert!(
             matches!(res, Err(PrecompileHalt::ModexpEip7823LimitSize)),
             "1025-byte base should be rejected"
@@ -788,7 +768,7 @@ mod tests {
         )
         .unwrap();
 
-        let res = byzantium_run(&input, &mut Gas::new(100_000)).unwrap();
+        let res = run_byzantium(&input, &mut Gas::new(100_000)).unwrap();
         // Should pad with zeros and compute ff00^ff00 mod ff00
         assert!(res.bytes.len() == 2, "Result should be 2 bytes");
     }
@@ -806,7 +786,7 @@ mod tests {
         )
         .unwrap();
 
-        let res = byzantium_run(&input, &mut Gas::new(10_000_000)).unwrap();
+        let res = run_byzantium(&input, &mut Gas::new(10_000_000)).unwrap();
         assert_eq!(res.bytes.len(), 32, "Result should be 32 bytes");
         // (2^256 - 1)^1 mod (2^256 - 2) = 1
         assert_eq!(res.bytes[31], 1, "Max value mod (max-1) should be 1");
@@ -835,9 +815,9 @@ mod tests {
         for test_input in test_cases {
             let input = hex::decode(test_input).unwrap();
 
-            let byzantium_res = byzantium_run(&input, &mut Gas::new(10_000_000)).unwrap();
-            let berlin_res = berlin_run(&input, &mut Gas::new(10_000_000)).unwrap();
-            let osaka_res = osaka_run(&input, &mut Gas::new(10_000_000)).unwrap();
+            let byzantium_res = run_byzantium(&input, &mut Gas::new(10_000_000)).unwrap();
+            let berlin_res = run_berlin(&input, &mut Gas::new(10_000_000)).unwrap();
+            let osaka_res = run_osaka(&input, &mut Gas::new(10_000_000)).unwrap();
 
             assert_eq!(
                 byzantium_res.bytes, berlin_res.bytes,
@@ -858,7 +838,7 @@ mod tests {
         .unwrap();
 
         // Provide insufficient gas
-        let res = byzantium_run(&input, &mut Gas::new(1000));
+        let res = run_byzantium(&input, &mut Gas::new(1000));
         assert!(
             matches!(res, Err(PrecompileHalt::OutOfGas)),
             "Should return OutOfGas error with insufficient gas"

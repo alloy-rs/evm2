@@ -1,27 +1,15 @@
-//! BLS12-381 map fp2 to g2 precompile. More details in [`map_fp2_to_g2`]
+//! BLS12-381 map fp2 to g2 precompile. More details in [`run`]
 use super::utils::{pad_g2_point, remove_fp_padding};
 use crate::precompiles::{
-    EthPrecompileOutput, EthPrecompileResult, Gas, Precompile, PrecompileHalt, PrecompileId,
-    bls12_381_const::{
-        MAP_FP2_TO_G2_ADDRESS, MAP_FP2_TO_G2_BASE_GAS_FEE, PADDED_FP_LENGTH, PADDED_FP2_LENGTH,
-    },
-    eth_precompile_fn,
+    EthPrecompileOutput, EthPrecompileResult, Gas, PrecompileHalt,
+    bls12_381_const::{MAP_FP2_TO_G2_BASE_GAS_FEE, PADDED_FP_LENGTH, PADDED_FP2_LENGTH},
 };
-
-eth_precompile_fn!(map_fp2_to_g2_precompile, map_fp2_to_g2);
-
-/// [EIP-2537](https://eips.ethereum.org/EIPS/eip-2537#specification) BLS12_MAP_FP2_TO_G2 precompile.
-pub(crate) const PRECOMPILE: Precompile = Precompile::new(
-    PrecompileId::Bls12MapFp2ToGp2,
-    MAP_FP2_TO_G2_ADDRESS,
-    map_fp2_to_g2_precompile,
-);
 
 /// Field-to-curve call expects 128 bytes as an input that is interpreted as
 /// an element of Fp2. Output of this call is 256 bytes and is an encoded G2
 /// point.
 /// See also: <https://eips.ethereum.org/EIPS/eip-2537#abi-for-mapping-fp2-element-to-g2-point>
-pub(crate) fn map_fp2_to_g2(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
+pub(crate) fn run(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
     gas.spend(MAP_FP2_TO_G2_BASE_GAS_FEE)?;
 
     if input.len() != PADDED_FP2_LENGTH {

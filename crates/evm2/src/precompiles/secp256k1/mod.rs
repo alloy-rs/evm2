@@ -19,24 +19,12 @@
 pub(crate) mod bitcoin_secp256k1;
 pub(crate) mod k256;
 
-use crate::precompiles::{
-    EthPrecompileOutput, EthPrecompileResult, Gas, Precompile, PrecompileId, eth_precompile_fn,
-    utils::right_pad,
-};
+use crate::precompiles::{EthPrecompileOutput, EthPrecompileResult, Gas, utils::right_pad};
 use alloy_primitives::{B256, B512, Bytes};
-
-eth_precompile_fn!(ecrecover_precompile, ec_recover_run);
-
-/// `ecrecover` precompile, containing address and function to run.
-pub(crate) const ECRECOVER: Precompile = Precompile::new(
-    PrecompileId::EcRec,
-    crate::precompiles::u64_to_address(1),
-    ecrecover_precompile,
-);
 
 /// `ecrecover` precompile function. Read more about input and output format in [this module
 /// docs](self).
-pub(crate) fn ec_recover_run(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
+pub(crate) fn run(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
     const ECRECOVER_BASE: u64 = 3_000;
 
     gas.spend(ECRECOVER_BASE)?;

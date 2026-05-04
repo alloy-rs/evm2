@@ -1,7 +1,6 @@
 //! BN254 precompiles added in [`EIP-1962`](https://eips.ethereum.org/EIPS/eip-1962)
 use crate::precompiles::{
-    Address, EthPrecompileOutput, EthPrecompileResult, Gas, Precompile, PrecompileHalt,
-    PrecompileId, eth_precompile_fn,
+    EthPrecompileOutput, EthPrecompileResult, Gas, PrecompileHalt,
     utils::{bool_to_bytes32, right_pad},
 };
 use alloc::vec::Vec;
@@ -18,95 +17,68 @@ cfg_if::cfg_if! {
     }
 }
 
-/// Bn254 add precompile
 pub(crate) mod add {
     use super::*;
 
-    /// Bn254 add precompile address
-    pub(crate) const ADDRESS: Address = crate::precompiles::u64_to_address(6);
-
-    /// Bn254 add precompile with ISTANBUL gas rules
     pub(crate) const ISTANBUL_ADD_GAS_COST: u64 = 150;
-
-    /// Bn254 add precompile with ISTANBUL gas rules
-    pub(crate) const ISTANBUL: Precompile =
-        Precompile::new(PrecompileId::Bn254Add, ADDRESS, istanbul_add);
-
-    /// Bn254 add precompile with BYZANTIUM gas rules
     pub(crate) const BYZANTIUM_ADD_GAS_COST: u64 = 500;
 
-    /// Bn254 add precompile with BYZANTIUM gas rules
-    pub(crate) const BYZANTIUM: Precompile =
-        Precompile::new(PrecompileId::Bn254Add, ADDRESS, byzantium_add);
+    pub(crate) fn run_istanbul(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
+        run(input, ISTANBUL_ADD_GAS_COST, gas)
+    }
 
-    eth_precompile_fn!(istanbul_add, |i, g| run_add(i, ISTANBUL_ADD_GAS_COST, g));
-    eth_precompile_fn!(byzantium_add, |i, g| run_add(i, BYZANTIUM_ADD_GAS_COST, g));
+    pub(crate) fn run_byzantium(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
+        run(input, BYZANTIUM_ADD_GAS_COST, gas)
+    }
+
+    pub(crate) fn run(input: &[u8], gas_cost: u64, gas: &mut Gas) -> EthPrecompileResult {
+        super::run_add(input, gas_cost, gas)
+    }
 }
 
-/// Bn254 mul precompile
 pub(crate) mod mul {
     use super::*;
 
-    /// Bn254 mul precompile address
-    pub(crate) const ADDRESS: Address = crate::precompiles::u64_to_address(7);
-
-    /// Bn254 mul precompile with ISTANBUL gas rules
     pub(crate) const ISTANBUL_MUL_GAS_COST: u64 = 6_000;
-
-    /// Bn254 mul precompile with ISTANBUL gas rules
-    pub(crate) const ISTANBUL: Precompile =
-        Precompile::new(PrecompileId::Bn254Mul, ADDRESS, istanbul_mul);
-
-    /// Bn254 mul precompile with BYZANTIUM gas rules
     pub(crate) const BYZANTIUM_MUL_GAS_COST: u64 = 40_000;
 
-    /// Bn254 mul precompile with BYZANTIUM gas rules
-    pub(crate) const BYZANTIUM: Precompile =
-        Precompile::new(PrecompileId::Bn254Mul, ADDRESS, byzantium_mul);
+    pub(crate) fn run_istanbul(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
+        run(input, ISTANBUL_MUL_GAS_COST, gas)
+    }
 
-    eth_precompile_fn!(istanbul_mul, |i, g| run_mul(i, ISTANBUL_MUL_GAS_COST, g));
-    eth_precompile_fn!(byzantium_mul, |i, g| run_mul(i, BYZANTIUM_MUL_GAS_COST, g));
+    pub(crate) fn run_byzantium(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
+        run(input, BYZANTIUM_MUL_GAS_COST, gas)
+    }
+
+    pub(crate) fn run(input: &[u8], gas_cost: u64, gas: &mut Gas) -> EthPrecompileResult {
+        super::run_mul(input, gas_cost, gas)
+    }
 }
 
-/// Bn254 pair precompile
 pub(crate) mod pair {
     use super::*;
 
-    /// Bn254 pair precompile address
-    pub(crate) const ADDRESS: Address = crate::precompiles::u64_to_address(8);
-
-    /// Bn254 pair precompile with ISTANBUL gas rules
     pub(crate) const ISTANBUL_PAIR_PER_POINT: u64 = 34_000;
-
-    /// Bn254 pair precompile with ISTANBUL gas rules
     pub(crate) const ISTANBUL_PAIR_BASE: u64 = 45_000;
-
-    /// Bn254 pair precompile with ISTANBUL gas rules
-    pub(crate) const ISTANBUL: Precompile =
-        Precompile::new(PrecompileId::Bn254Pairing, ADDRESS, istanbul_pair);
-
-    /// Bn254 pair precompile with BYZANTIUM gas rules
     pub(crate) const BYZANTIUM_PAIR_PER_POINT: u64 = 80_000;
-
-    /// Bn254 pair precompile with BYZANTIUM gas rules
     pub(crate) const BYZANTIUM_PAIR_BASE: u64 = 100_000;
 
-    /// Bn254 pair precompile with BYZANTIUM gas rules
-    pub(crate) const BYZANTIUM: Precompile =
-        Precompile::new(PrecompileId::Bn254Pairing, ADDRESS, byzantium_pair);
+    pub(crate) fn run_istanbul(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
+        run(input, ISTANBUL_PAIR_PER_POINT, ISTANBUL_PAIR_BASE, gas)
+    }
 
-    eth_precompile_fn!(istanbul_pair, |i, g| run_pair(
-        i,
-        ISTANBUL_PAIR_PER_POINT,
-        ISTANBUL_PAIR_BASE,
-        g
-    ));
-    eth_precompile_fn!(byzantium_pair, |i, g| run_pair(
-        i,
-        BYZANTIUM_PAIR_PER_POINT,
-        BYZANTIUM_PAIR_BASE,
-        g
-    ));
+    pub(crate) fn run_byzantium(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
+        run(input, BYZANTIUM_PAIR_PER_POINT, BYZANTIUM_PAIR_BASE, gas)
+    }
+
+    pub(crate) fn run(
+        input: &[u8],
+        pair_per_point_cost: u64,
+        pair_base_cost: u64,
+        gas: &mut Gas,
+    ) -> EthPrecompileResult {
+        super::run_pair(input, pair_per_point_cost, pair_base_cost, gas)
+    }
 }
 
 /// FQ_LEN specifies the number of bytes needed to represent an
@@ -302,7 +274,7 @@ mod tests {
         let res = run_add(&input, BYZANTIUM_ADD_GAS_COST, &mut Gas::new(500));
         assert!(matches!(
             res,
-            Err(ref f) if *f == PrecompileHalt::Bn254AffineGFailedToCreate
+            Err(ref f) if *f ==PrecompileHalt::Bn254AffineGFailedToCreate
         ));
     }
 
@@ -379,7 +351,7 @@ mod tests {
         let res = run_mul(&input, BYZANTIUM_MUL_GAS_COST, &mut Gas::new(40_000));
         assert!(matches!(
             res,
-            Err(ref f) if *f == PrecompileHalt::Bn254AffineGFailedToCreate
+            Err(ref f) if *f ==PrecompileHalt::Bn254AffineGFailedToCreate
         ));
     }
 
@@ -459,7 +431,7 @@ mod tests {
             run_pair(&input, BYZANTIUM_PAIR_PER_POINT, BYZANTIUM_PAIR_BASE, &mut Gas::new(260_000));
         assert!(matches!(
             res,
-            Err(ref f) if *f == PrecompileHalt::Bn254AffineGFailedToCreate
+            Err(ref f) if *f ==PrecompileHalt::Bn254AffineGFailedToCreate
         ));
 
         // Invalid input length

@@ -17,8 +17,6 @@ pub(crate) mod secp256k1;
 pub(crate) mod secp256r1;
 pub(crate) mod utils;
 
-mod id;
-
 /// EIP-7823 constants.
 pub(crate) mod eip7823 {
     /// Each of the modexp length inputs must be less than or equal to 1024 bytes.
@@ -32,16 +30,17 @@ pub(crate) mod eip4844 {
 
 use alloy_primitives::Address;
 
-pub(crate) use id::PrecompileId;
+pub(crate) use interface::*;
 pub use interface::{Crypto, PrecompileHalt};
-pub(crate) use interface::{eth_precompile_fn, *};
 #[allow(deprecated)]
 pub(crate) use utils::calc_linear_cost_u32;
 pub(crate) use utils::{calc_linear_cost, u64_to_address};
 
-use core::fmt::{self, Debug};
-
-use crate::once_lock::OnceLock;
+use crate::{
+    evm::precompile::{PrecompileOutput as EvmPrecompileOutput, PrecompileProvider},
+    interpreter::{InstrStop, SpecId},
+    once_lock::OnceLock,
+};
 
 // silence arkworks lint as bn impl will be used as default if both are enabled.
 cfg_if::cfg_if! {
@@ -86,59 +85,85 @@ pub fn crypto() -> &'static dyn Crypto {
     CRYPTO.get_or_init(|| Box::new(DefaultCrypto)).as_ref()
 }
 
-/// Precompile wrapper for simple eth function that provides complex interface on execution.
-#[derive(Clone)]
-pub(crate) struct Precompile {
-    /// Unique identifier.
-    id: PrecompileId,
-    /// Precompile address.
-    address: Address,
-    /// Precompile function.
-    fn_: PrecompileFn,
-}
+/// Ethereum precompile provider.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct Precompiles<const SPEC: u8 = { SpecId::OSAKA as u8 }>;
 
-impl Debug for Precompile {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Precompile {{ id: {:?}, address: {:?} }}", self.id, self.address)
+impl<const SPEC: u8> Precompiles<SPEC> {
+    const SPEC_ID: SpecId = match SpecId::try_from_u8(SPEC) {
+        Some(spec_id) => spec_id,
+        None => panic!("invalid EVM specification ID"),
+    };
+
+    fn address_value(address: Address) -> Option<u64> {
+        let bytes = address.as_slice();
+        if bytes[..12].iter().any(|&byte| byte != 0) {
+            return None;
+        }
+        Some(u64::from_be_bytes(bytes[12..].try_into().unwrap()))
+    }
+
+    fn run(
+        f: fn(&[u8], &mut Gas) -> EthPrecompileResult,
+        input: &[u8],
+        evm_gas: &mut crate::interpreter::Gas,
+    ) -> Result<EvmPrecompileOutput, InstrStop> {
+        let mut gas = Gas::from_evm_gas(evm_gas);
+        let result = f(input, &mut gas);
+        gas.apply_to_evm_gas(evm_gas);
+        match result {
+            Ok(output) => Ok(EvmPrecompileOutput { output: output.bytes }),
+            Err(PrecompileHalt::OutOfGas) => Err(InstrStop::PrecompileOOG),
+            Err(_) => Err(InstrStop::PrecompileError),
+        }
     }
 }
 
-impl From<(PrecompileId, Address, PrecompileFn)> for Precompile {
-    fn from((id, address, fn_): (PrecompileId, Address, PrecompileFn)) -> Self {
-        Self { id, address, fn_ }
-    }
-}
-
-impl From<Precompile> for (PrecompileId, Address) {
-    fn from(value: Precompile) -> Self {
-        (value.id, value.address)
-    }
-}
-
-impl Precompile {
-    /// Create new precompile.
-    pub(crate) const fn new(id: PrecompileId, address: Address, fn_: PrecompileFn) -> Self {
-        Self { id, address, fn_ }
-    }
-
-    /// Returns reference to precompile identifier.
-    #[inline]
-    pub(crate) const fn id(&self) -> &PrecompileId {
-        &self.id
-    }
-
-    /// Returns reference to address.
-    #[inline]
-    pub(crate) const fn address(&self) -> &Address {
-        &self.address
-    }
-
-    /// Executes the precompile.
-    ///
-    /// Returns `Ok(PrecompileOutput)` on success or non-fatal halt,
-    /// or `Err(PrecompileError)` for fatal/unrecoverable errors.
-    #[inline]
-    pub(crate) fn execute(&self, input: &[u8], gas: &mut Gas) -> PrecompileResult {
-        (self.fn_)(input, gas)
+impl<const SPEC: u8> PrecompileProvider for Precompiles<SPEC> {
+    fn execute(
+        &mut self,
+        address: Address,
+        input: &[u8],
+        gas: &mut crate::interpreter::Gas,
+    ) -> Option<Result<EvmPrecompileOutput, InstrStop>> {
+        let spec = Self::SPEC_ID;
+        let address = Self::address_value(address)?;
+        let f = match address {
+            1 if spec.enables(SpecId::HOMESTEAD) => secp256k1::run,
+            2 if spec.enables(SpecId::HOMESTEAD) => hash::run_sha256,
+            3 if spec.enables(SpecId::HOMESTEAD) => hash::run_ripemd160,
+            4 if spec.enables(SpecId::HOMESTEAD) => identity::run,
+            5 if spec.enables(SpecId::BYZANTIUM) && spec.enables(SpecId::OSAKA) => {
+                modexp::run_osaka
+            }
+            5 if spec.enables(SpecId::BYZANTIUM) && spec.enables(SpecId::BERLIN) => {
+                modexp::run_berlin
+            }
+            5 if spec.enables(SpecId::BYZANTIUM) => modexp::run_byzantium,
+            6 if spec.enables(SpecId::BYZANTIUM) && spec.enables(SpecId::ISTANBUL) => {
+                bn254::add::run_istanbul
+            }
+            6 if spec.enables(SpecId::BYZANTIUM) => bn254::add::run_byzantium,
+            7 if spec.enables(SpecId::BYZANTIUM) && spec.enables(SpecId::ISTANBUL) => {
+                bn254::mul::run_istanbul
+            }
+            7 if spec.enables(SpecId::BYZANTIUM) => bn254::mul::run_byzantium,
+            8 if spec.enables(SpecId::BYZANTIUM) && spec.enables(SpecId::ISTANBUL) => {
+                bn254::pair::run_istanbul
+            }
+            8 if spec.enables(SpecId::BYZANTIUM) => bn254::pair::run_byzantium,
+            9 if spec.enables(SpecId::ISTANBUL) => blake2::run,
+            0x0a if spec.enables(SpecId::CANCUN) => kzg_point_evaluation::run,
+            0x0b if spec.enables(SpecId::PRAGUE) => bls12_381::g1_add::run,
+            0x0c if spec.enables(SpecId::PRAGUE) => bls12_381::g1_msm::run,
+            0x0d if spec.enables(SpecId::PRAGUE) => bls12_381::g2_add::run,
+            0x0e if spec.enables(SpecId::PRAGUE) => bls12_381::g2_msm::run,
+            0x0f if spec.enables(SpecId::PRAGUE) => bls12_381::pairing::run,
+            0x10 if spec.enables(SpecId::PRAGUE) => bls12_381::map_fp_to_g1::run,
+            0x11 if spec.enables(SpecId::PRAGUE) => bls12_381::map_fp2_to_g2::run,
+            secp256r1::P256VERIFY_ADDRESS if spec.enables(SpecId::OSAKA) => secp256r1::run_osaka,
+            _ => return None,
+        };
+        Some(Self::run(f, input, gas))
     }
 }

@@ -1,8 +1,6 @@
 //! BLS12-381 precompiles added in [`EIP-2537`](https://eips.ethereum.org/EIPS/eip-2537)
 //! For more details check modules for each precompile.
 
-use crate::precompiles::Precompile;
-
 #[cfg_attr(feature = "blst", expect(dead_code))]
 pub(crate) mod arkworks;
 
@@ -36,17 +34,3 @@ pub(crate) mod map_fp_to_g1;
 pub(crate) mod pairing;
 mod pairing_common;
 mod utils;
-
-/// Returns the BLS12-381 precompiles with their addresses.
-pub(crate) fn precompiles() -> impl Iterator<Item = Precompile> {
-    [
-        g1_add::PRECOMPILE,
-        g1_msm::PRECOMPILE,
-        g2_add::PRECOMPILE,
-        g2_msm::PRECOMPILE,
-        pairing::PRECOMPILE,
-        map_fp_to_g1::PRECOMPILE,
-        map_fp2_to_g2::PRECOMPILE,
-    ]
-    .into_iter()
-}

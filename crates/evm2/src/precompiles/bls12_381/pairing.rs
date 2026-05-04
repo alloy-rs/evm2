@@ -1,24 +1,17 @@
-//! BLS12-381 pairing precompile. More details in [`pairing`]
+//! BLS12-381 pairing precompile. More details in [`run`]
 use super::{
     PairingPair,
     utils::{remove_g1_padding, remove_g2_padding},
 };
 use crate::precompiles::{
-    EthPrecompileOutput, EthPrecompileResult, Gas, Precompile, PrecompileHalt, PrecompileId,
+    EthPrecompileOutput, EthPrecompileResult, Gas, PrecompileHalt,
     bls12_381_const::{
-        PADDED_G1_LENGTH, PADDED_G2_LENGTH, PAIRING_ADDRESS, PAIRING_INPUT_LENGTH,
-        PAIRING_MULTIPLIER_BASE, PAIRING_OFFSET_BASE,
+        PADDED_G1_LENGTH, PADDED_G2_LENGTH, PAIRING_INPUT_LENGTH, PAIRING_MULTIPLIER_BASE,
+        PAIRING_OFFSET_BASE,
     },
-    eth_precompile_fn,
 };
 use alloc::vec::Vec;
 use alloy_primitives::B256;
-
-eth_precompile_fn!(pairing_precompile, pairing);
-
-/// [EIP-2537](https://eips.ethereum.org/EIPS/eip-2537#specification) BLS12_PAIRING precompile.
-pub(crate) const PRECOMPILE: Precompile =
-    Precompile::new(PrecompileId::Bls12Pairing, PAIRING_ADDRESS, pairing_precompile);
 
 /// Pairing call expects 384*k (k being a positive integer) bytes as an inputs
 /// that is interpreted as byte concatenation of k slices. Each slice has the
@@ -32,7 +25,7 @@ pub(crate) const PRECOMPILE: Precompile =
 /// target field and 0x00 otherwise.
 ///
 /// See also: <https://eips.ethereum.org/EIPS/eip-2537#abi-for-pairing>
-pub(crate) fn pairing(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
+pub(crate) fn run(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
     let input_len = input.len();
     if input_len == 0 || !input_len.is_multiple_of(PAIRING_INPUT_LENGTH) {
         return Err(PrecompileHalt::Bls12381PairingInputLength);

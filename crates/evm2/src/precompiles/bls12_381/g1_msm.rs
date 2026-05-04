@@ -1,23 +1,16 @@
-//! BLS12-381 G1 msm precompile. More details in [`g1_msm`]
+//! BLS12-381 G1 msm precompile. More details in [`run`]
 use crate::precompiles::{
-    EthPrecompileOutput, EthPrecompileResult, Gas, Precompile, PrecompileHalt, PrecompileId,
+    EthPrecompileOutput, EthPrecompileResult, Gas, PrecompileHalt,
     bls12_381::{
         G1Point,
         utils::{pad_g1_point, remove_g1_padding},
     },
     bls12_381_const::{
-        DISCOUNT_TABLE_G1_MSM, G1_MSM_ADDRESS, G1_MSM_BASE_GAS_FEE, G1_MSM_INPUT_LENGTH,
-        PADDED_G1_LENGTH, SCALAR_LENGTH,
+        DISCOUNT_TABLE_G1_MSM, G1_MSM_BASE_GAS_FEE, G1_MSM_INPUT_LENGTH, PADDED_G1_LENGTH,
+        SCALAR_LENGTH,
     },
     bls12_381_utils::msm_required_gas,
-    eth_precompile_fn,
 };
-
-eth_precompile_fn!(g1_msm_precompile, g1_msm);
-
-/// [EIP-2537](https://eips.ethereum.org/EIPS/eip-2537#specification) BLS12_G1MSM precompile.
-pub(crate) const PRECOMPILE: Precompile =
-    Precompile::new(PrecompileId::Bls12G1Msm, G1_MSM_ADDRESS, g1_msm_precompile);
 
 /// Implements EIP-2537 G1MSM precompile.
 /// G1 multi-scalar-multiplication call expects `160*k` bytes as an input that is interpreted
@@ -27,7 +20,7 @@ pub(crate) const PRECOMPILE: Precompile =
 /// Output is an encoding of multi-scalar-multiplication operation result - single G1
 /// point (`128` bytes).
 /// See also: <https://eips.ethereum.org/EIPS/eip-2537#abi-for-g1-multiexponentiation>
-pub(crate) fn g1_msm(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
+pub(crate) fn run(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
     let input_len = input.len();
     if input_len == 0 || !input_len.is_multiple_of(G1_MSM_INPUT_LENGTH) {
         return Err(PrecompileHalt::Bls12381G1MsmInputLength);
@@ -68,7 +61,7 @@ mod test {
         let input = Bytes::from(hex!(
             "000000000000000000000000000000000a2833e497b38ee3ca5c62828bf4887a9f940c9e426c7890a759c20f248c23a7210d2432f4c98a514e524b5184a0ddac00000000000000000000000000000000150772d56bf9509469f9ebcd6e47570429fd31b0e262b66d512e245c38ec37255529f2271fd70066473e393a8bead0c30000000000000000000000000000000000000000000000000000000000000000"
         ));
-        let fail = g1_msm(&input, &mut Gas::new(G1_MSM_BASE_GAS_FEE));
+        let fail = run(&input, &mut Gas::new(G1_MSM_BASE_GAS_FEE));
         assert_eq!(fail, Err(PrecompileHalt::Bls12381G1NotOnCurve));
     }
 }

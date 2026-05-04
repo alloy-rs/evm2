@@ -41,7 +41,7 @@ impl<Tx: 'static, const SPEC: u8> EvmConfig for EvmVersion<Tx, SPEC> {
     type Tx = Tx;
     type Host = crate::evm::Evm<Self>;
     type Database = InMemoryDB;
-    type Precompiles = crate::evm::precompile::NoPrecompiles;
+    type Precompiles = crate::precompiles::Precompiles<SPEC>;
 
     const SPEC_ID: SpecId = match SpecId::try_from_u8(SPEC) {
         Some(spec_id) => spec_id,
