@@ -42,7 +42,7 @@ pub(crate) use utils::{calc_linear_cost, u64_to_address};
 
 use core::fmt::{self, Debug};
 
-use crate::{interpreter::SpecId, once_lock::OnceLock};
+use crate::once_lock::OnceLock;
 
 // silence arkworks lint as bn impl will be used as default if both are enabled.
 cfg_if::cfg_if! {
@@ -141,86 +141,5 @@ impl Precompile {
     #[inline]
     pub(crate) fn execute(&self, input: &[u8], gas: &mut Gas) -> PrecompileResult {
         (self.fn_)(input, gas)
-    }
-}
-
-/// Ethereum hardfork spec ids. Represents the specs where precompiles had a change.
-#[repr(u8)]
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Ord, PartialOrd)]
-#[allow(clippy::upper_case_acronyms)]
-pub(crate) enum PrecompileSpecId {
-    /// Frontier spec.
-    HOMESTEAD,
-    /// Byzantium spec introduced
-    /// * [EIP-198](https://eips.ethereum.org/EIPS/eip-198) a EIP-198: Big integer modular
-    ///   exponentiation (at 0x05 address).
-    /// * [EIP-196](https://eips.ethereum.org/EIPS/eip-196) a bn_add (at 0x06 address) and bn_mul
-    ///   (at 0x07 address) precompile
-    /// * [EIP-197](https://eips.ethereum.org/EIPS/eip-197) a bn_pair (at 0x08 address) precompile
-    BYZANTIUM,
-    /// Istanbul spec introduced
-    /// * [`EIP-152: Add BLAKE2 compression function`](https://eips.ethereum.org/EIPS/eip-152) `F`
-    ///   precompile (at 0x09 address).
-    /// * [`EIP-1108: Reduce alt_bn128 precompile gas costs`](https://eips.ethereum.org/EIPS/eip-1108).
-    ///   It reduced the gas cost of the bn_add, bn_mul, and bn_pair precompiles.
-    ISTANBUL,
-    /// Berlin spec made a change to:
-    /// * [`EIP-2565: ModExp Gas Cost`](https://eips.ethereum.org/EIPS/eip-2565). It changed the gas
-    ///   cost of the modexp precompile.
-    BERLIN,
-    /// Cancun spec added
-    /// * [`EIP-4844: Shard Blob Transactions`](https://eips.ethereum.org/EIPS/eip-4844). It added
-    ///   the KZG point evaluation precompile (at 0x0A address).
-    CANCUN,
-    /// Prague spec added bls precompiles [`EIP-2537: Precompile for BLS12-381 curve operations`](https://eips.ethereum.org/EIPS/eip-2537).
-    /// * `BLS12_G1ADD` at address 0x0b
-    /// * `BLS12_G1MSM` at address 0x0c
-    /// * `BLS12_G2ADD` at address 0x0d
-    /// * `BLS12_G2MSM` at address 0x0e
-    /// * `BLS12_PAIRING_CHECK` at address 0x0f
-    /// * `BLS12_MAP_FP_TO_G1` at address 0x10
-    /// * `BLS12_MAP_FP2_TO_G2` at address 0x11
-    PRAGUE,
-    /// Osaka spec added changes to modexp precompile:
-    /// * [`EIP-7823: Set upper bounds for MODEXP`](https://eips.ethereum.org/EIPS/eip-7823).
-    /// * [`EIP-7883: ModExp Gas Cost Increase`](https://eips.ethereum.org/EIPS/eip-7883)
-    OSAKA,
-}
-
-impl From<SpecId> for PrecompileSpecId {
-    fn from(spec_id: SpecId) -> Self {
-        Self::from_spec_id(spec_id)
-    }
-}
-
-impl PrecompileSpecId {
-    /// The latest known precompile spec. This may refer to a highly experimental hard fork
-    /// that is not yet finalized or deployed on any network.
-    ///
-    /// **Warning**: This value will change between minor versions as new hard forks are added.
-    /// Do not rely on it for stable behavior.
-    #[doc(alias = "MAX")]
-    pub(crate) const NEXT: Self = Self::OSAKA;
-
-    /// Returns `true` if the given specification ID is enabled in this spec.
-    #[inline]
-    pub(crate) const fn is_enabled_in(self, other: Self) -> bool {
-        self as u8 >= other as u8
-    }
-
-    /// Returns the appropriate precompile Spec for the primitive [SpecId].
-    pub(crate) const fn from_spec_id(spec_id: SpecId) -> Self {
-        use SpecId::*;
-        match spec_id {
-            FRONTIER | FRONTIER_THAWING | HOMESTEAD | DAO_FORK | TANGERINE | SPURIOUS_DRAGON => {
-                Self::HOMESTEAD
-            }
-            BYZANTIUM | CONSTANTINOPLE | PETERSBURG => Self::BYZANTIUM,
-            ISTANBUL | MUIR_GLACIER => Self::ISTANBUL,
-            BERLIN | LONDON | ARROW_GLACIER | GRAY_GLACIER | MERGE | SHANGHAI => Self::BERLIN,
-            CANCUN => Self::CANCUN,
-            PRAGUE => Self::PRAGUE,
-            OSAKA | AMSTERDAM => Self::OSAKA,
-        }
     }
 }

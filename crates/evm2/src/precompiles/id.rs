@@ -1,4 +1,4 @@
-use crate::precompiles::{Precompile, PrecompileSpecId};
+use crate::{interpreter::SpecId, precompiles::Precompile};
 use alloc::borrow::Cow;
 use core::fmt;
 
@@ -89,9 +89,7 @@ impl PrecompileId {
     ///
     /// For case where precompile was still not introduced in the spec,
     /// it will return [`Some`] with fork closest to activation.
-    pub(crate) fn precompile(&self, spec: PrecompileSpecId) -> Option<Precompile> {
-        use PrecompileSpecId::*;
-
+    pub(crate) fn precompile(&self, spec: SpecId) -> Option<Precompile> {
         let precompile = match self {
             Self::EcRec => crate::precompiles::secp256k1::ECRECOVER,
             Self::Sha256 => crate::precompiles::hash::SHA256,
@@ -99,9 +97,9 @@ impl PrecompileId {
             Self::Identity => crate::precompiles::identity::FUN,
             Self::ModExp => {
                 // ModExp changes gas calculation based on spec
-                if spec < BERLIN {
+                if spec < SpecId::BERLIN {
                     crate::precompiles::modexp::BYZANTIUM
-                } else if spec < OSAKA {
+                } else if spec < SpecId::OSAKA {
                     crate::precompiles::modexp::BERLIN
                 } else {
                     crate::precompiles::modexp::OSAKA
@@ -109,7 +107,7 @@ impl PrecompileId {
             }
             Self::Bn254Add => {
                 // BN254 add - gas cost changes in Istanbul
-                if spec < ISTANBUL {
+                if spec < SpecId::ISTANBUL {
                     crate::precompiles::bn254::add::BYZANTIUM
                 } else {
                     crate::precompiles::bn254::add::ISTANBUL
@@ -117,7 +115,7 @@ impl PrecompileId {
             }
             Self::Bn254Mul => {
                 // BN254 mul - gas cost changes in Istanbul
-                if spec < ISTANBUL {
+                if spec < SpecId::ISTANBUL {
                     crate::precompiles::bn254::mul::BYZANTIUM
                 } else {
                     crate::precompiles::bn254::mul::ISTANBUL
@@ -125,7 +123,7 @@ impl PrecompileId {
             }
             Self::Bn254Pairing => {
                 // BN254 pairing - gas cost changes in Istanbul
-                if spec < ISTANBUL {
+                if spec < SpecId::ISTANBUL {
                     crate::precompiles::bn254::pair::BYZANTIUM
                 } else {
                     crate::precompiles::bn254::pair::ISTANBUL
@@ -142,7 +140,7 @@ impl PrecompileId {
             Self::Bls12MapFp2ToGp2 => crate::precompiles::bls12_381::map_fp2_to_g2::PRECOMPILE,
             Self::P256Verify => {
                 // P256 verify - gas cost changes in Osaka
-                if spec < OSAKA {
+                if spec < SpecId::OSAKA {
                     crate::precompiles::secp256r1::P256VERIFY
                 } else {
                     crate::precompiles::secp256r1::P256VERIFY_OSAKA
