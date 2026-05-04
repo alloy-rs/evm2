@@ -77,6 +77,9 @@ impl SpecId {
     #[doc(alias = "MAX")]
     pub const NEXT: Self = Self::AMSTERDAM;
 
+    /// Number of SpecId variants.
+    pub const COUNT: usize = Self::NEXT as usize + 1;
+
     /// Returns the specification ID for a raw byte.
     #[inline]
     pub const fn try_from_u8(spec_id: u8) -> Option<Self> {

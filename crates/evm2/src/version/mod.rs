@@ -7,169 +7,6 @@ use crate::{
     interpreter::{instructions as instr, opcode::op},
 };
 
-macro_rules! op_instr {
-    ($ty:ident, $spec:ident, $name:ident) => {
-        <op_instr!(@path $ty, $name) as instr::table::Instruction<$ty>>::execute::<
-            BaseEvmConfig<$spec>,
-        >
-    };
-
-    (@path $ty:ident, STOP) => { instr::stop<$ty> };
-    (@path $ty:ident, ADD) => { instr::add<$ty> };
-    (@path $ty:ident, MUL) => { instr::mul<$ty> };
-    (@path $ty:ident, SUB) => { instr::sub<$ty> };
-    (@path $ty:ident, DIV) => { instr::div<$ty> };
-    (@path $ty:ident, SDIV) => { instr::sdiv<$ty> };
-    (@path $ty:ident, MOD) => { instr::rem<$ty> };
-    (@path $ty:ident, SMOD) => { instr::smod<$ty> };
-    (@path $ty:ident, ADDMOD) => { instr::addmod<$ty> };
-    (@path $ty:ident, MULMOD) => { instr::mulmod<$ty> };
-    (@path $ty:ident, EXP) => { instr::exp<$ty> };
-    (@path $ty:ident, SIGNEXTEND) => { instr::signextend<$ty> };
-    (@path $ty:ident, LT) => { instr::lt<$ty> };
-    (@path $ty:ident, GT) => { instr::gt<$ty> };
-    (@path $ty:ident, SLT) => { instr::slt<$ty> };
-    (@path $ty:ident, SGT) => { instr::sgt<$ty> };
-    (@path $ty:ident, EQ) => { instr::eq<$ty> };
-    (@path $ty:ident, ISZERO) => { instr::iszero<$ty> };
-    (@path $ty:ident, AND) => { instr::bitand<$ty> };
-    (@path $ty:ident, OR) => { instr::bitor<$ty> };
-    (@path $ty:ident, XOR) => { instr::bitxor<$ty> };
-    (@path $ty:ident, NOT) => { instr::not<$ty> };
-    (@path $ty:ident, BYTE) => { instr::byte<$ty> };
-    (@path $ty:ident, SHL) => { instr::shl<$ty> };
-    (@path $ty:ident, SHR) => { instr::shr<$ty> };
-    (@path $ty:ident, SAR) => { instr::sar<$ty> };
-    (@path $ty:ident, CLZ) => { instr::clz<$ty> };
-    (@path $ty:ident, KECCAK256) => { instr::keccak256<$ty> };
-    (@path $ty:ident, ADDRESS) => { instr::address<$ty> };
-    (@path $ty:ident, BALANCE) => { instr::balance<$ty> };
-    (@path $ty:ident, ORIGIN) => { instr::origin<$ty> };
-    (@path $ty:ident, CALLER) => { instr::caller<$ty> };
-    (@path $ty:ident, CALLVALUE) => { instr::callvalue<$ty> };
-    (@path $ty:ident, CALLDATALOAD) => { instr::calldataload<$ty> };
-    (@path $ty:ident, CALLDATASIZE) => { instr::calldatasize<$ty> };
-    (@path $ty:ident, CALLDATACOPY) => { instr::calldatacopy<$ty> };
-    (@path $ty:ident, CODESIZE) => { instr::codesize<$ty> };
-    (@path $ty:ident, CODECOPY) => { instr::codecopy<$ty> };
-    (@path $ty:ident, GASPRICE) => { instr::gasprice<$ty> };
-    (@path $ty:ident, EXTCODESIZE) => { instr::extcodesize<$ty> };
-    (@path $ty:ident, EXTCODECOPY) => { instr::extcodecopy<$ty> };
-    (@path $ty:ident, RETURNDATASIZE) => { instr::returndatasize<$ty> };
-    (@path $ty:ident, RETURNDATACOPY) => { instr::returndatacopy<$ty> };
-    (@path $ty:ident, EXTCODEHASH) => { instr::extcodehash<$ty> };
-    (@path $ty:ident, BLOCKHASH) => { instr::blockhash<$ty> };
-    (@path $ty:ident, COINBASE) => { instr::coinbase<$ty> };
-    (@path $ty:ident, TIMESTAMP) => { instr::timestamp<$ty> };
-    (@path $ty:ident, NUMBER) => { instr::block_number<$ty> };
-    (@path $ty:ident, DIFFICULTY) => { instr::difficulty<$ty> };
-    (@path $ty:ident, GASLIMIT) => { instr::gaslimit<$ty> };
-    (@path $ty:ident, CHAINID) => { instr::chainid<$ty> };
-    (@path $ty:ident, SELFBALANCE) => { instr::selfbalance<$ty> };
-    (@path $ty:ident, BASEFEE) => { instr::basefee<$ty> };
-    (@path $ty:ident, BLOBHASH) => { instr::blobhash<$ty> };
-    (@path $ty:ident, BLOBBASEFEE) => { instr::blobbasefee<$ty> };
-    (@path $ty:ident, SLOTNUM) => { instr::slotnum<$ty> };
-    (@path $ty:ident, POP) => { instr::pop<$ty> };
-    (@path $ty:ident, MLOAD) => { instr::mload<$ty> };
-    (@path $ty:ident, MSTORE) => { instr::mstore<$ty> };
-    (@path $ty:ident, MSTORE8) => { instr::mstore8<$ty> };
-    (@path $ty:ident, SLOAD) => { instr::sload<$ty> };
-    (@path $ty:ident, SSTORE) => { instr::sstore<$ty> };
-    (@path $ty:ident, JUMP) => { instr::jump<$ty> };
-    (@path $ty:ident, JUMPI) => { instr::jumpi<$ty> };
-    (@path $ty:ident, PC) => { instr::pc<$ty> };
-    (@path $ty:ident, MSIZE) => { instr::msize<$ty> };
-    (@path $ty:ident, GAS) => { instr::gas<$ty> };
-    (@path $ty:ident, JUMPDEST) => { instr::jumpdest<$ty> };
-    (@path $ty:ident, TLOAD) => { instr::tload<$ty> };
-    (@path $ty:ident, TSTORE) => { instr::tstore<$ty> };
-    (@path $ty:ident, MCOPY) => { instr::mcopy<$ty> };
-    (@path $ty:ident, PUSH0) => { instr::push<$ty, 0> };
-    (@path $ty:ident, PUSH1) => { instr::push<$ty, 1> };
-    (@path $ty:ident, PUSH2) => { instr::push<$ty, 2> };
-    (@path $ty:ident, PUSH3) => { instr::push<$ty, 3> };
-    (@path $ty:ident, PUSH4) => { instr::push<$ty, 4> };
-    (@path $ty:ident, PUSH5) => { instr::push<$ty, 5> };
-    (@path $ty:ident, PUSH6) => { instr::push<$ty, 6> };
-    (@path $ty:ident, PUSH7) => { instr::push<$ty, 7> };
-    (@path $ty:ident, PUSH8) => { instr::push<$ty, 8> };
-    (@path $ty:ident, PUSH9) => { instr::push<$ty, 9> };
-    (@path $ty:ident, PUSH10) => { instr::push<$ty, 10> };
-    (@path $ty:ident, PUSH11) => { instr::push<$ty, 11> };
-    (@path $ty:ident, PUSH12) => { instr::push<$ty, 12> };
-    (@path $ty:ident, PUSH13) => { instr::push<$ty, 13> };
-    (@path $ty:ident, PUSH14) => { instr::push<$ty, 14> };
-    (@path $ty:ident, PUSH15) => { instr::push<$ty, 15> };
-    (@path $ty:ident, PUSH16) => { instr::push<$ty, 16> };
-    (@path $ty:ident, PUSH17) => { instr::push<$ty, 17> };
-    (@path $ty:ident, PUSH18) => { instr::push<$ty, 18> };
-    (@path $ty:ident, PUSH19) => { instr::push<$ty, 19> };
-    (@path $ty:ident, PUSH20) => { instr::push<$ty, 20> };
-    (@path $ty:ident, PUSH21) => { instr::push<$ty, 21> };
-    (@path $ty:ident, PUSH22) => { instr::push<$ty, 22> };
-    (@path $ty:ident, PUSH23) => { instr::push<$ty, 23> };
-    (@path $ty:ident, PUSH24) => { instr::push<$ty, 24> };
-    (@path $ty:ident, PUSH25) => { instr::push<$ty, 25> };
-    (@path $ty:ident, PUSH26) => { instr::push<$ty, 26> };
-    (@path $ty:ident, PUSH27) => { instr::push<$ty, 27> };
-    (@path $ty:ident, PUSH28) => { instr::push<$ty, 28> };
-    (@path $ty:ident, PUSH29) => { instr::push<$ty, 29> };
-    (@path $ty:ident, PUSH30) => { instr::push<$ty, 30> };
-    (@path $ty:ident, PUSH31) => { instr::push<$ty, 31> };
-    (@path $ty:ident, PUSH32) => { instr::push<$ty, 32> };
-    (@path $ty:ident, DUP1) => { instr::dup<$ty, 1> };
-    (@path $ty:ident, DUP2) => { instr::dup<$ty, 2> };
-    (@path $ty:ident, DUP3) => { instr::dup<$ty, 3> };
-    (@path $ty:ident, DUP4) => { instr::dup<$ty, 4> };
-    (@path $ty:ident, DUP5) => { instr::dup<$ty, 5> };
-    (@path $ty:ident, DUP6) => { instr::dup<$ty, 6> };
-    (@path $ty:ident, DUP7) => { instr::dup<$ty, 7> };
-    (@path $ty:ident, DUP8) => { instr::dup<$ty, 8> };
-    (@path $ty:ident, DUP9) => { instr::dup<$ty, 9> };
-    (@path $ty:ident, DUP10) => { instr::dup<$ty, 10> };
-    (@path $ty:ident, DUP11) => { instr::dup<$ty, 11> };
-    (@path $ty:ident, DUP12) => { instr::dup<$ty, 12> };
-    (@path $ty:ident, DUP13) => { instr::dup<$ty, 13> };
-    (@path $ty:ident, DUP14) => { instr::dup<$ty, 14> };
-    (@path $ty:ident, DUP15) => { instr::dup<$ty, 15> };
-    (@path $ty:ident, DUP16) => { instr::dup<$ty, 16> };
-    (@path $ty:ident, SWAP1) => { instr::swap<$ty, 1> };
-    (@path $ty:ident, SWAP2) => { instr::swap<$ty, 2> };
-    (@path $ty:ident, SWAP3) => { instr::swap<$ty, 3> };
-    (@path $ty:ident, SWAP4) => { instr::swap<$ty, 4> };
-    (@path $ty:ident, SWAP5) => { instr::swap<$ty, 5> };
-    (@path $ty:ident, SWAP6) => { instr::swap<$ty, 6> };
-    (@path $ty:ident, SWAP7) => { instr::swap<$ty, 7> };
-    (@path $ty:ident, SWAP8) => { instr::swap<$ty, 8> };
-    (@path $ty:ident, SWAP9) => { instr::swap<$ty, 9> };
-    (@path $ty:ident, SWAP10) => { instr::swap<$ty, 10> };
-    (@path $ty:ident, SWAP11) => { instr::swap<$ty, 11> };
-    (@path $ty:ident, SWAP12) => { instr::swap<$ty, 12> };
-    (@path $ty:ident, SWAP13) => { instr::swap<$ty, 13> };
-    (@path $ty:ident, SWAP14) => { instr::swap<$ty, 14> };
-    (@path $ty:ident, SWAP15) => { instr::swap<$ty, 15> };
-    (@path $ty:ident, SWAP16) => { instr::swap<$ty, 16> };
-    (@path $ty:ident, LOG0) => { instr::log<$ty, 0> };
-    (@path $ty:ident, LOG1) => { instr::log<$ty, 1> };
-    (@path $ty:ident, LOG2) => { instr::log<$ty, 2> };
-    (@path $ty:ident, LOG3) => { instr::log<$ty, 3> };
-    (@path $ty:ident, LOG4) => { instr::log<$ty, 4> };
-    (@path $ty:ident, DUPN) => { instr::dupn<$ty> };
-    (@path $ty:ident, SWAPN) => { instr::swapn<$ty> };
-    (@path $ty:ident, EXCHANGE) => { instr::exchange<$ty> };
-    (@path $ty:ident, CREATE) => { instr::create<$ty, false> };
-    (@path $ty:ident, CALL) => { instr::call<$ty> };
-    (@path $ty:ident, CALLCODE) => { instr::callcode<$ty> };
-    (@path $ty:ident, RETURN) => { instr::r#return<$ty> };
-    (@path $ty:ident, DELEGATECALL) => { instr::delegatecall<$ty> };
-    (@path $ty:ident, CREATE2) => { instr::create<$ty, true> };
-    (@path $ty:ident, STATICCALL) => { instr::staticcall<$ty> };
-    (@path $ty:ident, REVERT) => { instr::revert<$ty> };
-    (@path $ty:ident, INVALID) => { instr::invalid<$ty> };
-    (@path $ty:ident, SELFDESTRUCT) => { instr::selfdestruct<$ty> };
-}
-
 mod gas_params;
 pub use gas_params::{GasId, GasParams, num_words};
 
@@ -192,7 +29,7 @@ pub struct Version {
 
 /// Type-specific EVM version data.
 #[derive(Debug)]
-pub struct EvmVersion<T: EvmTypes = crate::BaseEvmTypes> {
+pub struct EvmVersion<T: EvmTypes> {
     /// Active EVM version.
     pub version: &'static Version,
     /// Instruction implementations.
@@ -227,28 +64,20 @@ impl<T: EvmTypes> EvmVersion<T> {
     }
 }
 
-static BASE_VERSIONS: [Version; SpecId::NEXT as usize + 1] = [
-    Version::new_base_impl(SpecId::FRONTIER),
-    Version::new_base_impl(SpecId::HOMESTEAD),
-    Version::new_base_impl(SpecId::TANGERINE),
-    Version::new_base_impl(SpecId::SPURIOUS_DRAGON),
-    Version::new_base_impl(SpecId::BYZANTIUM),
-    Version::new_base_impl(SpecId::PETERSBURG),
-    Version::new_base_impl(SpecId::ISTANBUL),
-    Version::new_base_impl(SpecId::BERLIN),
-    Version::new_base_impl(SpecId::LONDON),
-    Version::new_base_impl(SpecId::MERGE),
-    Version::new_base_impl(SpecId::SHANGHAI),
-    Version::new_base_impl(SpecId::CANCUN),
-    Version::new_base_impl(SpecId::PRAGUE),
-    Version::new_base_impl(SpecId::OSAKA),
-    Version::new_base_impl(SpecId::AMSTERDAM),
-];
+static BASE_VERSIONS: [Version; SpecId::COUNT] = {
+    let mut versions = [const { Version::empty(SpecId::FRONTIER) }; SpecId::COUNT];
+    let mut i = 0;
+    while i < SpecId::COUNT {
+        versions[i] = Version::new_base(SpecId::try_from_u8(i as u8).unwrap());
+        i += 1;
+    }
+    versions
+};
 
 macro_rules! evm_versions {
     ($($spec:ident { $($tokens:tt)* })*) => {
         impl Version {
-            const fn new_base_impl(spec_id: SpecId) -> Self {
+            const fn new_base(spec_id: SpecId) -> Self {
                 use crate::interpreter::gas::*;
                 use GasId::*;
 
@@ -645,3 +474,167 @@ evm_versions! {
         static_gas!(SELFDESTRUCT, 5000);
     }
 }
+
+macro_rules! op_instr {
+    ($ty:ident, $spec:ident, $name:ident) => {
+        <op_instr!(@path $ty, $name) as instr::table::Instruction<$ty>>::execute::<
+            BaseEvmConfig<$spec>,
+        >
+    };
+
+    (@path $ty:ident, STOP) => { instr::stop<$ty> };
+    (@path $ty:ident, ADD) => { instr::add<$ty> };
+    (@path $ty:ident, MUL) => { instr::mul<$ty> };
+    (@path $ty:ident, SUB) => { instr::sub<$ty> };
+    (@path $ty:ident, DIV) => { instr::div<$ty> };
+    (@path $ty:ident, SDIV) => { instr::sdiv<$ty> };
+    (@path $ty:ident, MOD) => { instr::rem<$ty> };
+    (@path $ty:ident, SMOD) => { instr::smod<$ty> };
+    (@path $ty:ident, ADDMOD) => { instr::addmod<$ty> };
+    (@path $ty:ident, MULMOD) => { instr::mulmod<$ty> };
+    (@path $ty:ident, EXP) => { instr::exp<$ty> };
+    (@path $ty:ident, SIGNEXTEND) => { instr::signextend<$ty> };
+    (@path $ty:ident, LT) => { instr::lt<$ty> };
+    (@path $ty:ident, GT) => { instr::gt<$ty> };
+    (@path $ty:ident, SLT) => { instr::slt<$ty> };
+    (@path $ty:ident, SGT) => { instr::sgt<$ty> };
+    (@path $ty:ident, EQ) => { instr::eq<$ty> };
+    (@path $ty:ident, ISZERO) => { instr::iszero<$ty> };
+    (@path $ty:ident, AND) => { instr::bitand<$ty> };
+    (@path $ty:ident, OR) => { instr::bitor<$ty> };
+    (@path $ty:ident, XOR) => { instr::bitxor<$ty> };
+    (@path $ty:ident, NOT) => { instr::not<$ty> };
+    (@path $ty:ident, BYTE) => { instr::byte<$ty> };
+    (@path $ty:ident, SHL) => { instr::shl<$ty> };
+    (@path $ty:ident, SHR) => { instr::shr<$ty> };
+    (@path $ty:ident, SAR) => { instr::sar<$ty> };
+    (@path $ty:ident, CLZ) => { instr::clz<$ty> };
+    (@path $ty:ident, KECCAK256) => { instr::keccak256<$ty> };
+    (@path $ty:ident, ADDRESS) => { instr::address<$ty> };
+    (@path $ty:ident, BALANCE) => { instr::balance<$ty> };
+    (@path $ty:ident, ORIGIN) => { instr::origin<$ty> };
+    (@path $ty:ident, CALLER) => { instr::caller<$ty> };
+    (@path $ty:ident, CALLVALUE) => { instr::callvalue<$ty> };
+    (@path $ty:ident, CALLDATALOAD) => { instr::calldataload<$ty> };
+    (@path $ty:ident, CALLDATASIZE) => { instr::calldatasize<$ty> };
+    (@path $ty:ident, CALLDATACOPY) => { instr::calldatacopy<$ty> };
+    (@path $ty:ident, CODESIZE) => { instr::codesize<$ty> };
+    (@path $ty:ident, CODECOPY) => { instr::codecopy<$ty> };
+    (@path $ty:ident, GASPRICE) => { instr::gasprice<$ty> };
+    (@path $ty:ident, EXTCODESIZE) => { instr::extcodesize<$ty> };
+    (@path $ty:ident, EXTCODECOPY) => { instr::extcodecopy<$ty> };
+    (@path $ty:ident, RETURNDATASIZE) => { instr::returndatasize<$ty> };
+    (@path $ty:ident, RETURNDATACOPY) => { instr::returndatacopy<$ty> };
+    (@path $ty:ident, EXTCODEHASH) => { instr::extcodehash<$ty> };
+    (@path $ty:ident, BLOCKHASH) => { instr::blockhash<$ty> };
+    (@path $ty:ident, COINBASE) => { instr::coinbase<$ty> };
+    (@path $ty:ident, TIMESTAMP) => { instr::timestamp<$ty> };
+    (@path $ty:ident, NUMBER) => { instr::block_number<$ty> };
+    (@path $ty:ident, DIFFICULTY) => { instr::difficulty<$ty> };
+    (@path $ty:ident, GASLIMIT) => { instr::gaslimit<$ty> };
+    (@path $ty:ident, CHAINID) => { instr::chainid<$ty> };
+    (@path $ty:ident, SELFBALANCE) => { instr::selfbalance<$ty> };
+    (@path $ty:ident, BASEFEE) => { instr::basefee<$ty> };
+    (@path $ty:ident, BLOBHASH) => { instr::blobhash<$ty> };
+    (@path $ty:ident, BLOBBASEFEE) => { instr::blobbasefee<$ty> };
+    (@path $ty:ident, SLOTNUM) => { instr::slotnum<$ty> };
+    (@path $ty:ident, POP) => { instr::pop<$ty> };
+    (@path $ty:ident, MLOAD) => { instr::mload<$ty> };
+    (@path $ty:ident, MSTORE) => { instr::mstore<$ty> };
+    (@path $ty:ident, MSTORE8) => { instr::mstore8<$ty> };
+    (@path $ty:ident, SLOAD) => { instr::sload<$ty> };
+    (@path $ty:ident, SSTORE) => { instr::sstore<$ty> };
+    (@path $ty:ident, JUMP) => { instr::jump<$ty> };
+    (@path $ty:ident, JUMPI) => { instr::jumpi<$ty> };
+    (@path $ty:ident, PC) => { instr::pc<$ty> };
+    (@path $ty:ident, MSIZE) => { instr::msize<$ty> };
+    (@path $ty:ident, GAS) => { instr::gas<$ty> };
+    (@path $ty:ident, JUMPDEST) => { instr::jumpdest<$ty> };
+    (@path $ty:ident, TLOAD) => { instr::tload<$ty> };
+    (@path $ty:ident, TSTORE) => { instr::tstore<$ty> };
+    (@path $ty:ident, MCOPY) => { instr::mcopy<$ty> };
+    (@path $ty:ident, PUSH0) => { instr::push<$ty, 0> };
+    (@path $ty:ident, PUSH1) => { instr::push<$ty, 1> };
+    (@path $ty:ident, PUSH2) => { instr::push<$ty, 2> };
+    (@path $ty:ident, PUSH3) => { instr::push<$ty, 3> };
+    (@path $ty:ident, PUSH4) => { instr::push<$ty, 4> };
+    (@path $ty:ident, PUSH5) => { instr::push<$ty, 5> };
+    (@path $ty:ident, PUSH6) => { instr::push<$ty, 6> };
+    (@path $ty:ident, PUSH7) => { instr::push<$ty, 7> };
+    (@path $ty:ident, PUSH8) => { instr::push<$ty, 8> };
+    (@path $ty:ident, PUSH9) => { instr::push<$ty, 9> };
+    (@path $ty:ident, PUSH10) => { instr::push<$ty, 10> };
+    (@path $ty:ident, PUSH11) => { instr::push<$ty, 11> };
+    (@path $ty:ident, PUSH12) => { instr::push<$ty, 12> };
+    (@path $ty:ident, PUSH13) => { instr::push<$ty, 13> };
+    (@path $ty:ident, PUSH14) => { instr::push<$ty, 14> };
+    (@path $ty:ident, PUSH15) => { instr::push<$ty, 15> };
+    (@path $ty:ident, PUSH16) => { instr::push<$ty, 16> };
+    (@path $ty:ident, PUSH17) => { instr::push<$ty, 17> };
+    (@path $ty:ident, PUSH18) => { instr::push<$ty, 18> };
+    (@path $ty:ident, PUSH19) => { instr::push<$ty, 19> };
+    (@path $ty:ident, PUSH20) => { instr::push<$ty, 20> };
+    (@path $ty:ident, PUSH21) => { instr::push<$ty, 21> };
+    (@path $ty:ident, PUSH22) => { instr::push<$ty, 22> };
+    (@path $ty:ident, PUSH23) => { instr::push<$ty, 23> };
+    (@path $ty:ident, PUSH24) => { instr::push<$ty, 24> };
+    (@path $ty:ident, PUSH25) => { instr::push<$ty, 25> };
+    (@path $ty:ident, PUSH26) => { instr::push<$ty, 26> };
+    (@path $ty:ident, PUSH27) => { instr::push<$ty, 27> };
+    (@path $ty:ident, PUSH28) => { instr::push<$ty, 28> };
+    (@path $ty:ident, PUSH29) => { instr::push<$ty, 29> };
+    (@path $ty:ident, PUSH30) => { instr::push<$ty, 30> };
+    (@path $ty:ident, PUSH31) => { instr::push<$ty, 31> };
+    (@path $ty:ident, PUSH32) => { instr::push<$ty, 32> };
+    (@path $ty:ident, DUP1) => { instr::dup<$ty, 1> };
+    (@path $ty:ident, DUP2) => { instr::dup<$ty, 2> };
+    (@path $ty:ident, DUP3) => { instr::dup<$ty, 3> };
+    (@path $ty:ident, DUP4) => { instr::dup<$ty, 4> };
+    (@path $ty:ident, DUP5) => { instr::dup<$ty, 5> };
+    (@path $ty:ident, DUP6) => { instr::dup<$ty, 6> };
+    (@path $ty:ident, DUP7) => { instr::dup<$ty, 7> };
+    (@path $ty:ident, DUP8) => { instr::dup<$ty, 8> };
+    (@path $ty:ident, DUP9) => { instr::dup<$ty, 9> };
+    (@path $ty:ident, DUP10) => { instr::dup<$ty, 10> };
+    (@path $ty:ident, DUP11) => { instr::dup<$ty, 11> };
+    (@path $ty:ident, DUP12) => { instr::dup<$ty, 12> };
+    (@path $ty:ident, DUP13) => { instr::dup<$ty, 13> };
+    (@path $ty:ident, DUP14) => { instr::dup<$ty, 14> };
+    (@path $ty:ident, DUP15) => { instr::dup<$ty, 15> };
+    (@path $ty:ident, DUP16) => { instr::dup<$ty, 16> };
+    (@path $ty:ident, SWAP1) => { instr::swap<$ty, 1> };
+    (@path $ty:ident, SWAP2) => { instr::swap<$ty, 2> };
+    (@path $ty:ident, SWAP3) => { instr::swap<$ty, 3> };
+    (@path $ty:ident, SWAP4) => { instr::swap<$ty, 4> };
+    (@path $ty:ident, SWAP5) => { instr::swap<$ty, 5> };
+    (@path $ty:ident, SWAP6) => { instr::swap<$ty, 6> };
+    (@path $ty:ident, SWAP7) => { instr::swap<$ty, 7> };
+    (@path $ty:ident, SWAP8) => { instr::swap<$ty, 8> };
+    (@path $ty:ident, SWAP9) => { instr::swap<$ty, 9> };
+    (@path $ty:ident, SWAP10) => { instr::swap<$ty, 10> };
+    (@path $ty:ident, SWAP11) => { instr::swap<$ty, 11> };
+    (@path $ty:ident, SWAP12) => { instr::swap<$ty, 12> };
+    (@path $ty:ident, SWAP13) => { instr::swap<$ty, 13> };
+    (@path $ty:ident, SWAP14) => { instr::swap<$ty, 14> };
+    (@path $ty:ident, SWAP15) => { instr::swap<$ty, 15> };
+    (@path $ty:ident, SWAP16) => { instr::swap<$ty, 16> };
+    (@path $ty:ident, LOG0) => { instr::log<$ty, 0> };
+    (@path $ty:ident, LOG1) => { instr::log<$ty, 1> };
+    (@path $ty:ident, LOG2) => { instr::log<$ty, 2> };
+    (@path $ty:ident, LOG3) => { instr::log<$ty, 3> };
+    (@path $ty:ident, LOG4) => { instr::log<$ty, 4> };
+    (@path $ty:ident, DUPN) => { instr::dupn<$ty> };
+    (@path $ty:ident, SWAPN) => { instr::swapn<$ty> };
+    (@path $ty:ident, EXCHANGE) => { instr::exchange<$ty> };
+    (@path $ty:ident, CREATE) => { instr::create<$ty, false> };
+    (@path $ty:ident, CALL) => { instr::call<$ty> };
+    (@path $ty:ident, CALLCODE) => { instr::callcode<$ty> };
+    (@path $ty:ident, RETURN) => { instr::r#return<$ty> };
+    (@path $ty:ident, DELEGATECALL) => { instr::delegatecall<$ty> };
+    (@path $ty:ident, CREATE2) => { instr::create<$ty, true> };
+    (@path $ty:ident, STATICCALL) => { instr::staticcall<$ty> };
+    (@path $ty:ident, REVERT) => { instr::revert<$ty> };
+    (@path $ty:ident, INVALID) => { instr::invalid<$ty> };
+    (@path $ty:ident, SELFDESTRUCT) => { instr::selfdestruct<$ty> };
+}
+use op_instr;

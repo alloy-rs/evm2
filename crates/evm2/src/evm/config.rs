@@ -47,7 +47,7 @@ impl<Tx: 'static> EvmTypes for BaseEvmTypes<Tx> {
 
 /// Base EVM configuration for a specification ID.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct BaseEvmConfig<const SPEC_ID: u8 = { SpecId::DEFAULT as u8 }>;
+pub struct BaseEvmConfig<const SPEC_ID: u8>;
 
 impl<const SPEC_ID: u8> EvmConfig for BaseEvmConfig<SPEC_ID> {
     const VERSION: &'static Version = Version::base(SpecId::try_from_u8(SPEC_ID).unwrap());

@@ -89,5 +89,5 @@ pub fn _get_asm() -> impl Sized {
         Default::default(),
         false,
     )
-    .run::<BaseEvmConfig>(&mut evm)
+    .run::<BaseEvmConfig<{ SpecId::DEFAULT as u8 }>>(&mut evm)
 }
