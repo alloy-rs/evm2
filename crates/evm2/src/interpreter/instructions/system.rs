@@ -244,7 +244,11 @@ fn create_inner<C: EvmConfig>(
     let bytecode = crate::bytecode::Bytecode::new_legacy(input);
     let result = cx.state.host.execute_message(cx.state.tx().clone(), bytecode, message, false);
     cx.gas.erase_cost(result.gas_remaining);
-    cx.state.set_return_data(result.output);
+    if !result.stop.is_success() {
+        cx.state.set_return_data(result.output);
+    } else {
+        cx.state.set_return_data(Bytes::new());
+    }
     let address = result
         .created_address
         .filter(|_| success(result.stop))
@@ -282,7 +286,7 @@ mod tests {
         },
         op,
     };
-    use alloy_primitives::Address;
+    use alloy_primitives::{Address, Bytes};
 
     fn push_all<const N: usize>(code: &mut Vec<u8>, values: [Word; N]) {
         for value in values {
@@ -522,6 +526,46 @@ mod tests {
         assert_eq!(interpreter.stack(), [address_to_word(created)]);
         assert_eq!(host.calls.len(), 1);
         assert_eq!(host.calls[0].kind, MessageKind::Create);
+    }
+
+    #[test]
+    fn create_clears_return_data_on_success() {
+        let created = Address::from([0x77; 20]);
+        let mut host = TestHost {
+            execute_result: MessageResult {
+                stop: InstrStop::Return,
+                output: Bytes::from_static(&[0xaa, 0xbb, 0xcc]),
+                created_address: Some(created),
+                ..MessageResult::default()
+            },
+            ..Default::default()
+        };
+        let mut code = Vec::new();
+        push_all(&mut code, [Word::from(0), Word::from(0), Word::from(0)]);
+        code.extend([op::CREATE, op::RETURNDATASIZE, op::STOP]);
+
+        let interpreter = run(RunConfig::new(code).host(&mut host).gas_limit(50_000));
+        core::assert_matches!(interpreter.err, InstrStop::Stop);
+        assert_eq!(interpreter.stack(), [address_to_word(created), Word::ZERO]);
+    }
+
+    #[test]
+    fn create_sets_return_data_on_revert() {
+        let mut host = TestHost {
+            execute_result: MessageResult {
+                stop: InstrStop::Revert,
+                output: Bytes::from_static(&[0xaa, 0xbb]),
+                ..MessageResult::default()
+            },
+            ..Default::default()
+        };
+        let mut code = Vec::new();
+        push_all(&mut code, [Word::from(0), Word::from(0), Word::from(0)]);
+        code.extend([op::CREATE, op::RETURNDATASIZE, op::STOP]);
+
+        let interpreter = run(RunConfig::new(code).host(&mut host).gas_limit(50_000));
+        core::assert_matches!(interpreter.err, InstrStop::Stop);
+        assert_eq!(interpreter.stack(), [Word::ZERO, Word::from(2)]);
     }
 
     #[test]

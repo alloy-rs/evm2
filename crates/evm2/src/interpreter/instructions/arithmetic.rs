@@ -48,7 +48,8 @@ pub(in crate::interpreter) fn mulmod([a, b, n]: [Word]) -> out {
 }
 
 #[instruction]
-pub(in crate::interpreter) fn exp([a, b]: [Word]) -> out {
+pub(in crate::interpreter) fn exp(cx: _, [a, b]: [Word]) -> Result<out> {
+    cx.gas.spend(cx.gas_params.exp_cost(b))?;
     *out = a.wrapping_pow(b);
 }
 
@@ -63,7 +64,13 @@ pub(in crate::interpreter) fn signextend([ext, value]: [Word]) -> out {
 
 #[cfg(test)]
 mod tests {
-    use crate::interpreter::{Word, instructions::tests::assert_stack};
+    use alloc::vec::Vec;
+
+    use crate::interpreter::{
+        InstrStop, SpecId, Word,
+        instructions::tests::{RunConfig, assert_stack, push, run},
+        op,
+    };
 
     fn neg(value: u64) -> Word {
         Word::from(0).wrapping_sub(Word::from(value))
@@ -137,6 +144,18 @@ mod tests {
         assert_stack!(EXP(2, 10), 1024);
         assert_stack!(EXP(5, 0), 1);
         assert_stack!(EXP(0, 3), 0);
+    }
+
+    #[test]
+    fn exp_charges_dynamic_gas() {
+        let mut code = Vec::new();
+        push(&mut code, 0xff);
+        push(&mut code, 2);
+        code.extend([op::EXP, op::STOP]);
+
+        let interpreter = run(RunConfig::new(code).spec(SpecId::FRONTIER).gas_limit(25));
+
+        core::assert_matches!(interpreter.err, InstrStop::OutOfGas);
     }
 
     #[test]
