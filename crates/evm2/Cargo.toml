@@ -31,7 +31,14 @@ paste.workspace = true
 serde = { workspace = true, features = ["derive", "alloc"], optional = true }
 
 [dev-dependencies]
+alloy-primitives = { workspace = true, features = ["serde", "std"] }
+criterion = { package = "codspeed-criterion-compat", version = "4", default-features = false, features = ["cargo_bench_support"] }
+serde = { workspace = true, features = ["derive", "std"] }
 serde_json = { workspace = true, features = ["std"] }
+
+[[bench]]
+name = "evm"
+harness = false
 
 [[example]]
 name = "registry_tx_handler"
