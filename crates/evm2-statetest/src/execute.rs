@@ -9,7 +9,7 @@ use alloy_trie::{
     root::{state_root_unhashed, storage_root_unhashed},
 };
 use evm2::{
-    BaseEvmTypes, Evm, TxResult,
+    BaseEvmTypes, Evm, EvmTypes, TxResult,
     bytecode::Bytecode,
     env::BlockEnv,
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
@@ -212,7 +212,7 @@ fn execute_spec(
                 Default::default(),
             );
             let result = evm.transact(tx)?;
-            Ok(spec_outcome(&evm, result))
+            Ok(spec_outcome(&evm, result, spec))
         }};
     }
     match spec {
@@ -241,12 +241,12 @@ fn execute_spec(
     }
 }
 
-fn spec_outcome<C>(evm: &Evm<C>, result: TxResult) -> SpecOutcome
+fn spec_outcome<C>(evm: &Evm<C>, result: TxResult, spec: SpecId) -> SpecOutcome
 where
-    C: evm2::config::EvmConfig<Database = InMemoryDB>,
+    C: EvmTypes<Database = InMemoryDB>,
 {
     SpecOutcome {
-        state_root: state_root(evm.state(), C::VERSION.spec_id),
+        state_root: state_root(evm.state(), spec),
         logs_root: logs_hash(evm.logs()),
         output: result.output,
         gas_used: result.gas_used,

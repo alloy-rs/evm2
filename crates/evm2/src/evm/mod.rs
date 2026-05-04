@@ -2,7 +2,7 @@
 
 use self::precompile::{PrecompileOutput, PrecompileProvider};
 use crate::{
-    AccountLoad, EvmConfig, SelfDestructResult, StorageLoad,
+    AccountLoad, EvmConfig, EvmTypes, SelfDestructResult, StorageLoad, Version,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
     interpreter::{
@@ -41,43 +41,47 @@ pub struct TxResult {
 
 /// EVM host and transaction dispatcher.
 #[derive(Debug)]
-pub struct Evm<C: EvmConfig> {
+pub struct Evm<T: EvmTypes> {
+    version: &'static Version,
     pub(crate) block: BlockEnv,
-    registry: TxRegistry<C::Tx, TxResult, Self>,
-    pub(crate) state: State<C::Database>,
-    precompiles: C::Precompiles,
+    registry: TxRegistry<T::Tx, TxResult, Self>,
+    pub(crate) state: State<T::Database>,
+    precompiles: T::Precompiles,
     pub(crate) logs: Vec<Log>,
 }
 
-impl<C: EvmConfig> Evm<C> {
+impl<T: EvmTypes> Evm<T> {
     /// Creates an EVM with the provided transaction registry, database, and precompile provider.
     #[inline]
-    pub fn new(
+    pub fn new_with_version(
+        version: &'static Version,
         block: BlockEnv,
-        registry: TxRegistry<C::Tx, TxResult, Self>,
-        database: C::Database,
-        precompiles: C::Precompiles,
+        registry: TxRegistry<T::Tx, TxResult, Self>,
+        database: T::Database,
+        precompiles: T::Precompiles,
     ) -> Self {
-        Self { block, registry, state: State::new(database), precompiles, logs: Vec::new() }
+        Self {
+            version,
+            block,
+            registry,
+            state: State::new(database),
+            precompiles,
+            logs: Vec::new(),
+        }
     }
 
     /// Returns the transaction handler registry.
-    pub const fn registry(&self) -> &TxRegistry<C::Tx, TxResult, Self> {
+    pub const fn registry(&self) -> &TxRegistry<T::Tx, TxResult, Self> {
         &self.registry
     }
 
-    /// Returns the active hard fork specification.
-    pub fn spec_id(&self) -> SpecId {
-        C::spec_id()
-    }
-
     /// Returns the backing database.
-    pub const fn database(&self) -> &State<C::Database> {
+    pub const fn database(&self) -> &State<T::Database> {
         &self.state
     }
 
     /// Returns the mutable EVM state.
-    pub const fn state(&self) -> &State<C::Database> {
+    pub const fn state(&self) -> &State<T::Database> {
         &self.state
     }
 
@@ -87,13 +91,23 @@ impl<C: EvmConfig> Evm<C> {
     }
 
     /// Returns the precompile provider.
-    pub const fn precompiles(&self) -> &C::Precompiles {
+    pub const fn precompiles(&self) -> &T::Precompiles {
         &self.precompiles
     }
 
     /// Returns the precompile provider mutably.
-    pub const fn precompiles_mut(&mut self) -> &mut C::Precompiles {
+    pub const fn precompiles_mut(&mut self) -> &mut T::Precompiles {
         &mut self.precompiles
+    }
+
+    /// Returns the active EVM version.
+    pub const fn version(&self) -> &'static Version {
+        self.version
+    }
+
+    /// Returns the active hard fork specification.
+    pub const fn spec_id(&self) -> SpecId {
+        self.version.spec_id()
     }
 
     #[inline]
@@ -105,9 +119,23 @@ impl<C: EvmConfig> Evm<C> {
     }
 }
 
-impl<C: EvmConfig<Tx: Typed2718>> Evm<C> {
+impl<T: EvmConfig + EvmTypes> Evm<T> {
+    /// Creates an EVM with the configured version and the provided transaction registry,
+    /// database, and precompile provider.
+    #[inline]
+    pub fn new(
+        block: BlockEnv,
+        registry: TxRegistry<T::Tx, TxResult, Self>,
+        database: T::Database,
+        precompiles: T::Precompiles,
+    ) -> Self {
+        Self::new_with_version(T::VERSION, block, registry, database, precompiles)
+    }
+}
+
+impl<T: EvmTypes<Tx: Typed2718>> Evm<T> {
     /// Dispatches the transaction to the handler registered for its EIP-2718 type byte.
-    pub fn transact(&mut self, tx: &C::Tx) -> HandlerResult<TxResult> {
+    pub fn transact(&mut self, tx: &T::Tx) -> HandlerResult<TxResult> {
         let handler = self.registry.try_get_by_type(tx.ty())?;
         let result = handler.call(tx, self);
         self.state.clear_accesses();
@@ -120,16 +148,23 @@ impl<C: EvmConfig<Tx: Typed2718>> Evm<C> {
         txs: I,
     ) -> impl Iterator<Item = HandlerResult<TxResult>> + 'a
     where
-        I: IntoIterator<Item = &'a C::Tx>,
+        I: IntoIterator<Item = &'a T::Tx>,
         I::IntoIter: 'a,
-        C::Tx: 'a,
+        T::Tx: 'a,
         Self: 'a,
     {
         txs.into_iter().map(move |tx| self.transact(tx))
     }
 }
 
-impl<C: EvmConfig<Host = Self>> Host for Evm<C> {
+impl<T> Host for Evm<T>
+where
+    T: EvmConfig + EvmTypes<Host = Self>,
+{
+    fn spec_id(&self) -> SpecId {
+        self.spec_id()
+    }
+
     fn block_env(&mut self) -> &BlockEnv {
         &self.block
     }
@@ -140,7 +175,8 @@ impl<C: EvmConfig<Host = Self>> Host for Evm<C> {
         load_code: bool,
         skip_cold_load: bool,
     ) -> Result<AccountLoad, InstrStop> {
-        let is_cold = C::spec_id().enables(SpecId::BERLIN) && !self.state.is_account_warm(address);
+        let is_cold =
+            self.spec_id().enables(SpecId::BERLIN) && !self.state.is_account_warm(address);
         if skip_cold_load && is_cold {
             return Err(InstrStop::OutOfGas);
         }
@@ -164,7 +200,8 @@ impl<C: EvmConfig<Host = Self>> Host for Evm<C> {
     }
 
     fn sload(&mut self, address: Address, key: Word) -> StorageLoad {
-        let is_cold = C::spec_id().enables(SpecId::BERLIN) && self.state.warm_storage(address, key);
+        let is_cold =
+            self.spec_id().enables(SpecId::BERLIN) && self.state.warm_storage(address, key);
         StorageLoad { value: self.state.storage(address, key), is_cold }
     }
 
@@ -227,7 +264,7 @@ impl<C: EvmConfig<Host = Self>> Host for Evm<C> {
             let checkpoint = self.state.checkpoint();
             let log_checkpoint = self.logs.len();
             if let Err(stop) =
-                self.state.create_account(message.caller, address, message.value, C::spec_id())
+                self.state.create_account(message.caller, address, message.value, self.spec_id())
             {
                 self.state.rollback(checkpoint);
                 self.logs.truncate(log_checkpoint);
@@ -243,10 +280,10 @@ impl<C: EvmConfig<Host = Self>> Host for Evm<C> {
             create_message.code_address = address;
             create_message.input = Bytes::new();
             let mut interpreter = Interpreter::new(bytecode, tx_env, create_message);
-            let stop = interpreter.run::<C>(self);
+            let stop = interpreter.run::<T, T>(self);
             let mut gas = interpreter.gas();
             if stop.is_success() || stop.is_revert() {
-                gas.set_final_refund(C::spec_id().enables(SpecId::LONDON));
+                gas.set_final_refund(self.spec_id().enables(SpecId::LONDON));
             }
             let output = Bytes::copy_from_slice(interpreter.output());
             let mut gas_remaining =
@@ -301,10 +338,10 @@ impl<C: EvmConfig<Host = Self>> Host for Evm<C> {
         }
 
         let mut interpreter = Interpreter::new(bytecode, tx_env, message);
-        let stop = interpreter.run::<C>(self);
+        let stop = interpreter.run::<T, T>(self);
         let mut gas = interpreter.gas();
         if stop.is_success() || stop.is_revert() {
-            gas.set_final_refund(C::spec_id().enables(SpecId::LONDON));
+            gas.set_final_refund(self.spec_id().enables(SpecId::LONDON));
         }
         let output = Bytes::copy_from_slice(interpreter.output());
         let mut gas_remaining =
@@ -328,7 +365,7 @@ impl<C: EvmConfig<Host = Self>> Host for Evm<C> {
         skip_cold_load: bool,
     ) -> Result<SelfDestructResult, InstrStop> {
         // TODO: evmone applies full SELFDESTRUCT revision rules in state transition.
-        let is_cold = C::spec_id().enables(SpecId::BERLIN) && !self.state.is_account_warm(target);
+        let is_cold = self.spec_id().enables(SpecId::BERLIN) && !self.state.is_account_warm(target);
         if skip_cold_load && is_cold {
             return Err(InstrStop::OutOfGas);
         }
@@ -368,6 +405,7 @@ mod tests {
     use alloy_primitives::{Address, B256, Bytes, Log, LogData, U256, keccak256};
 
     const TEST_TX_TYPE: u8 = 0x7f;
+    const NO_CONFIG_VERSION: Version = Version::new_base(SpecId::OSAKA);
 
     #[derive(Debug)]
     struct TestTx {
@@ -375,6 +413,82 @@ mod tests {
     }
 
     type TestEvmConfig<Tx = ()> = BaseEvmTypes<{ SpecId::OSAKA as u8 }, Tx>;
+
+    #[derive(Debug)]
+    struct NoConfigTypes;
+
+    #[derive(Debug)]
+    struct NoConfigHost {
+        block: BlockEnv,
+    }
+
+    impl Host for NoConfigHost {
+        fn spec_id(&self) -> SpecId {
+            SpecId::OSAKA
+        }
+
+        fn block_env(&mut self) -> &BlockEnv {
+            &self.block
+        }
+
+        fn load_account(
+            &mut self,
+            _address: Address,
+            _load_code: bool,
+            _skip_cold_load: bool,
+        ) -> Result<AccountLoad, InstrStop> {
+            unreachable!("no-config transaction dispatch does not execute messages")
+        }
+
+        fn block_hash(&mut self, _number: u64) -> Option<B256> {
+            unreachable!("no-config transaction dispatch does not execute messages")
+        }
+
+        fn sload(&mut self, _address: Address, _key: Word) -> StorageLoad {
+            unreachable!("no-config transaction dispatch does not execute messages")
+        }
+
+        fn sstore(&mut self, _address: Address, _key: Word, _value: Word) {
+            unreachable!("no-config transaction dispatch does not execute messages")
+        }
+
+        fn tload(&mut self, _address: Address, _key: Word) -> Word {
+            unreachable!("no-config transaction dispatch does not execute messages")
+        }
+
+        fn tstore(&mut self, _address: Address, _key: Word, _value: Word) {
+            unreachable!("no-config transaction dispatch does not execute messages")
+        }
+
+        fn log(&mut self, _log: Log) {
+            unreachable!("no-config transaction dispatch does not execute messages")
+        }
+
+        fn execute_message(
+            &mut self,
+            _tx_env: TxEnv,
+            _bytecode: Bytecode,
+            _message: Message,
+        ) -> MessageResult {
+            unreachable!("no-config transaction dispatch does not execute messages")
+        }
+
+        fn selfdestruct(
+            &mut self,
+            _contract: Address,
+            _target: Address,
+            _skip_cold_load: bool,
+        ) -> Result<SelfDestructResult, InstrStop> {
+            unreachable!("no-config transaction dispatch does not execute messages")
+        }
+    }
+
+    impl EvmTypes for NoConfigTypes {
+        type Tx = TestTx;
+        type Host = NoConfigHost;
+        type Database = InMemoryDB;
+        type Precompiles = precompile::NoPrecompiles;
+    }
 
     impl Typed2718 for TestTx {
         fn ty(&self) -> u8 {
@@ -393,11 +507,33 @@ mod tests {
         Ok(TxResult { status: true, gas_used: req.tx.value + 1, ..TxResult::default() })
     }
 
+    fn handle_no_config_tx(
+        req: TxRequest<'_, TestTx, Evm<NoConfigTypes>>,
+    ) -> HandlerResult<TxResult> {
+        Ok(TxResult { status: true, gas_used: req.tx.value + 1, ..TxResult::default() })
+    }
+
     #[test]
     fn dispatches_transaction_by_typed_2718_type() {
         let registry =
             TxRegistry::new().with_handler(TEST_TX_TYPE, extract_test_tx, handle_test_tx);
         let mut evm = Evm::<TestEvmConfig<TestTx>>::new(
+            BlockEnv::default(),
+            registry,
+            InMemoryDB::default(),
+            Default::default(),
+        );
+        let tx = TestTx { value: 41 };
+
+        assert_eq!(evm.transact(&tx).map(|result| result.gas_used), Ok(42));
+    }
+
+    #[test]
+    fn dispatches_transaction_without_evm_config() {
+        let registry =
+            TxRegistry::new().with_handler(TEST_TX_TYPE, extract_test_tx, handle_no_config_tx);
+        let mut evm = Evm::<NoConfigTypes>::new_with_version(
+            &NO_CONFIG_VERSION,
             BlockEnv::default(),
             registry,
             InMemoryDB::default(),

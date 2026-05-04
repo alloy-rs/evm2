@@ -1,7 +1,7 @@
 //! Ethereum transaction envelope and handlers.
 
 use crate::{
-    Evm, EvmConfig, TxResult,
+    Evm, EvmConfig, EvmTypes, TxResult,
     bytecode::Bytecode,
     env::TxEnv,
     interpreter::{Host, Message, MessageKind, SpecId, Word},
@@ -73,27 +73,28 @@ impl Typed2718 for RecoveredTxEnvelope {
 ///
 /// Currently only legacy transactions are registered. Future Ethereum typed
 /// transaction handlers should be added here.
-pub fn ethereum_tx_registry<C>() -> TxRegistry<RecoveredTxEnvelope, TxResult, Evm<C>>
+pub fn ethereum_tx_registry<T>() -> TxRegistry<RecoveredTxEnvelope, TxResult, Evm<T>>
 where
-    C: EvmConfig<Host = Evm<C>>,
+    T: EvmConfig + EvmTypes<Host = Evm<T>>,
 {
-    TxRegistry::new().with_handler(0, RecoveredTxEnvelope::as_legacy, handle_legacy::<C>)
+    TxRegistry::new().with_handler(0, RecoveredTxEnvelope::as_legacy, handle_legacy::<T>)
 }
 
-fn handle_legacy<C>(req: TxRequest<'_, Recovered<TxLegacy>, Evm<C>>) -> HandlerResult<TxResult>
+fn handle_legacy<T>(req: TxRequest<'_, Recovered<TxLegacy>, Evm<T>>) -> HandlerResult<TxResult>
 where
-    C: EvmConfig<Host = Evm<C>>,
+    T: EvmConfig + EvmTypes<Host = Evm<T>>,
 {
     let caller = req.tx.signer();
     let tx = req.tx.inner();
+    let spec_id = req.host.spec_id();
     let gas_price = U256::from(tx.gas_price);
-    if C::spec_id().enables(SpecId::LONDON) && gas_price < req.host.block.basefee {
+    if spec_id.enables(SpecId::LONDON) && gas_price < req.host.block.basefee {
         return Err(HandlerError::FeeCapLessThanBaseFee {
             max_fee_per_gas: gas_price,
             base_fee: req.host.block.basefee,
         });
     }
-    let intrinsic = legacy_intrinsic_gas(C::spec_id(), tx);
+    let intrinsic = legacy_intrinsic_gas(spec_id, tx);
     if tx.gas_limit < intrinsic {
         return Err(HandlerError::IntrinsicGasTooLow { required: intrinsic, got: tx.gas_limit });
     }
@@ -110,7 +111,7 @@ where
     }
 
     req.host.state.warm_account(caller);
-    if C::spec_id().enables(SpecId::SHANGHAI) {
+    if spec_id.enables(SpecId::SHANGHAI) {
         req.host.state.warm_account(req.host.block.beneficiary);
     }
     if let TxKind::Call(to) = tx.to {
@@ -174,7 +175,7 @@ where
 
     let gas_used = tx.gas_limit - result.gas_remaining;
     req.host.state.add_balance(caller, U256::from(result.gas_remaining) * gas_price);
-    let beneficiary_gas_price = if C::spec_id().enables(SpecId::LONDON) {
+    let beneficiary_gas_price = if spec_id.enables(SpecId::LONDON) {
         gas_price.saturating_sub(req.host.block.basefee)
     } else {
         gas_price

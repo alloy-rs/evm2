@@ -304,7 +304,7 @@ mod tests {
             Message { gas_limit: 10_000, ..Message::default() },
         );
         let mut host = TestHost::default();
-        interpreter.run::<Config>(&mut host);
+        interpreter.run::<Config, Config>(&mut host);
     }
 
     #[test]
@@ -321,7 +321,7 @@ mod tests {
                     Message { gas_limit: 10_000, ..Message::default() },
                 );
                 let mut host = TestHost::default();
-                interpreter.run::<Config>(&mut host);
+                interpreter.run::<Config, Config>(&mut host);
                 assert!(interpreter.gas.remaining() > 0);
                 assert_eq!(interpreter.stack[0], U256::from(3));
             }};

@@ -109,6 +109,9 @@ impl MessageResult {
 
 /// External host operations.
 pub trait Host {
+    /// Returns the active hard fork specification.
+    fn spec_id(&self) -> SpecId;
+
     /// Returns the block environment.
     fn block_env(&mut self) -> &BlockEnv;
 

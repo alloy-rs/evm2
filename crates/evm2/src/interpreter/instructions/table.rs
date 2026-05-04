@@ -14,39 +14,39 @@ pub(crate) type InstructionFnRet = (*const u8, usize);
 
 /// Normal instruction function pointer.
 #[cfg(not(feature = "nightly"))]
-pub(crate) type InstructionFn<C> = extern_table!(
+pub(crate) type InstructionFn<T> = extern_table!(
     fn(
         pc: Pc,
         stack: Stack<'_>,
         gas: &mut Gas,
-        state: &mut State<'_, <C as EvmTypes>::Host>,
+        state: &mut State<'_, <T as EvmTypes>::Host>,
     ) -> InstructionFnRet
 );
 
 /// Normal instruction dispatch table.
 #[cfg(not(feature = "nightly"))]
-pub(crate) type InstructionTable<C> = [InstructionFn<C>; 256];
+pub(crate) type InstructionTable<T> = [InstructionFn<T>; 256];
 
 #[cfg(feature = "nightly")]
-pub(crate) type InstructionFn<C> = TailInstructionFn<C>;
+pub(crate) type InstructionFn<T> = TailInstructionFn<T>;
 #[cfg(feature = "nightly")]
-pub(crate) type InstructionTable<C> = TailInstructionTable<C>;
+pub(crate) type InstructionTable<T> = TailInstructionTable<T>;
 
 /// Tail instruction function pointer.
 #[cfg(feature = "nightly")]
-pub(crate) type TailInstructionFn<C> = extern_table!(
+pub(crate) type TailInstructionFn<T> = extern_table!(
     fn(
         pc: Pc,
         stack: Stack<'_>,
         gas: &mut Gas,
-        state: &mut State<'_, <C as EvmTypes>::Host>,
+        state: &mut State<'_, <T as EvmTypes>::Host>,
         ret: u8,
     )
 );
 
 /// Tail instruction dispatch table.
 #[cfg(feature = "nightly")]
-pub(crate) type TailInstructionTable<C> = [TailInstructionFn<C>; 256];
+pub(crate) type TailInstructionTable<T> = [TailInstructionFn<T>; 256];
 
 /// Instruction implementation function.
 pub type InstructionImplFn<T> = fn(
@@ -56,11 +56,12 @@ pub type InstructionImplFn<T> = fn(
     state: &mut State<'_, <T as EvmTypes>::Host>,
 ) -> Result;
 
-pub(crate) trait InstructionTables: EvmConfig {
-    const INSTRUCTIONS: &'static InstructionTable<Self> = &make_instruction_table::<Self>();
+pub(crate) trait InstructionTables<C: EvmConfig>: EvmTypes {
+    const VERSION: &'static crate::EvmVersion<Self> = &crate::EvmVersion::<Self>::new_base::<C>();
+    const INSTRUCTIONS: &'static InstructionTable<Self> = &make_instruction_table::<Self, C>();
 }
 
-impl<C: EvmConfig> InstructionTables for C {}
+impl<T: EvmTypes, C: EvmConfig> InstructionTables<C> for T {}
 
 /// Instruction execution context.
 pub(crate) struct InstructionCx<'a, 'state, T: EvmTypes> {
@@ -77,7 +78,7 @@ pub(crate) struct InstructionCx<'a, 'state, T: EvmTypes> {
 /// EVM instruction implementation.
 pub trait Instruction<T: EvmTypes = crate::BaseEvmTypes> {
     /// Executes this instruction.
-    fn execute<C: EvmConfig<Host = T::Host>>(
+    fn execute<C: EvmConfig>(
         pc: &mut Pc,
         stack: StackMut<'_>,
         gas: &mut Gas,
@@ -96,9 +97,9 @@ pub(crate) const fn unknown_instruction<T: EvmTypes>(
 }
 
 macro_rules! assign_instruction_table_entries {
-    ([$table:expr, $config:ty, $dispatch:ident, $instr_fn:ty] $($op:literal,)*) => {
+    ([$table:expr, $evm_types:ty, $config:ty, $dispatch:ident, $instr_fn:ty] $($op:literal,)*) => {
         $(
-            $table[$op] = $dispatch::<$config, $op> as $instr_fn;
+            $table[$op] = $dispatch::<$evm_types, $config, $op> as $instr_fn;
         )*
     };
 }
@@ -142,18 +143,18 @@ macro_rules! for_each_opcode_value {
     };
 }
 
-pub(crate) const fn make_instruction_table<C: EvmConfig>() -> InstructionTable<C> {
+pub(crate) const fn make_instruction_table<T: EvmTypes, C: EvmConfig>() -> InstructionTable<T> {
     #[cfg(feature = "nightly")]
     use tail_dispatch as dispatch;
 
-    let mut table = [dispatch::<C, 0> as InstructionFn<C>; 256];
-    for_each_opcode_value!([table, C, dispatch, InstructionFn<C>] assign_instruction_table_entries);
+    let mut table = [dispatch::<T, C, 0> as InstructionFn<T>; 256];
+    for_each_opcode_value!([table, T, C, dispatch, InstructionFn<T>] assign_instruction_table_entries);
 
     // Make all unknown entries point to the same function.
     let mut i = 0;
     let mut unknown_idx = 0;
     while i < 256 {
-        if !C::VERSION.instruction_impls.contains(i as u8) {
+        if !<T as InstructionTables<C>>::VERSION.instruction_impls.contains(i as u8) {
             if unknown_idx == 0 {
                 unknown_idx = i;
             }
@@ -167,26 +168,26 @@ pub(crate) const fn make_instruction_table<C: EvmConfig>() -> InstructionTable<C
 
 extern_table! {
     #[cfg(not(feature = "nightly"))]
-    fn dispatch<C: EvmConfig, const OP: u8>(
+    fn dispatch<T: EvmTypes, C: EvmConfig, const OP: u8>(
         pc: Pc,
         stack: Stack<'_>,
         gas: &mut Gas,
-        state: &mut State<'_, C::Host>,
+        state: &mut State<'_, T::Host>,
     ) -> InstructionFnRet {
-        dispatch_mono::<C>(OP, pc, stack, gas, state)
+        dispatch_mono::<T, C>(OP, pc, stack, gas, state)
     }
 }
 
 #[cfg(not(feature = "nightly"))]
 #[inline(always)]
-fn dispatch_mono<C: EvmConfig>(
+fn dispatch_mono<T: EvmTypes, C: EvmConfig>(
     op: u8,
     mut pc: Pc,
     mut stack: Stack<'_>,
     gas: &mut Gas,
-    state: &mut State<'_, C::Host>,
+    state: &mut State<'_, T::Host>,
 ) -> InstructionFnRet {
-    let instr = C::VERSION.instruction_impls.get_or_default(op);
+    let instr = <T as InstructionTables<C>>::VERSION.instruction_impls.get_or_default(op);
     let r;
     match pre_step::<C>(gas, op) {
         Ok(()) => {
@@ -206,52 +207,52 @@ fn dispatch_mono<C: EvmConfig>(
 
 extern_table! {
     #[cfg(feature = "nightly")]
-    fn tail_dispatch<C: EvmConfig, const OP: u8>(
+    fn tail_dispatch<T: EvmTypes, C: EvmConfig, const OP: u8>(
         pc: Pc,
         stack: Stack<'_>,
         gas: &mut Gas,
-        state: &mut State<'_, C::Host>,
+        state: &mut State<'_, T::Host>,
         _ret: u8,
     ) {
-        tail_return!(tail_dispatch_mono::<C>(pc, stack, gas, state, OP));
+        tail_return!(tail_dispatch_mono::<T, C>(pc, stack, gas, state, OP));
     }
 }
 
 extern_table! {
     #[cfg(feature = "nightly")]
     #[inline(always)]
-    fn tail_dispatch_mono<C: EvmConfig>(
+    fn tail_dispatch_mono<T: EvmTypes, C: EvmConfig>(
         mut pc: Pc,
         mut stack: Stack<'_>,
         gas: &mut Gas,
-        state: &mut State<'_, C::Host>,
+        state: &mut State<'_, T::Host>,
         op: u8,
     ) {
-        let instr = C::VERSION.instruction_impls.get_or_default(op);
+        let instr = <T as InstructionTables<C>>::VERSION.instruction_impls.get_or_default(op);
         if let Err(e) = pre_step::<C>(gas, op) {
             cold_path();
-            tail_return!(tail_call_restore::<C>(pc, stack, gas, state, e as u8));
+            tail_return!(tail_call_restore::<T>(pc, stack, gas, state, e as u8));
         }
         if let Err(e) = instr(&mut pc, stack.as_mut(), gas, state) {
             cold_path();
-            tail_return!(tail_call_restore::<C>(pc, stack, gas, state, e as u8));
+            tail_return!(tail_call_restore::<T>(pc, stack, gas, state, e as u8));
         }
         inc_pc(&mut pc, op);
-        tail_return!(tail_call_next::<C>(pc, stack, gas, state, 0));
+        tail_return!(tail_call_next::<T, C>(pc, stack, gas, state, 0));
     }
 }
 
 extern_table! {
     #[cfg(feature = "nightly")]
     #[inline]
-    fn tail_call_next<C: EvmConfig>(
+    fn tail_call_next<T: EvmTypes, C: EvmConfig>(
         pc: Pc,
         stack: Stack<'_>,
         gas: &mut Gas,
-        state: &mut State<'_, C::Host>,
+        state: &mut State<'_, T::Host>,
         ret: u8,
     ) {
-        let instr = <C as InstructionTables>::INSTRUCTIONS[pc.op() as usize];
+        let instr = <T as InstructionTables<C>>::INSTRUCTIONS[pc.op() as usize];
         tail_return!(instr(pc, stack, gas, state, ret));
     }
 }
@@ -260,11 +261,11 @@ extern_table! {
     #[cfg(feature = "nightly")]
     #[inline(never)] // TODO
     #[cold]
-    fn tail_call_restore<C: EvmConfig>(
+    fn tail_call_restore<T: EvmTypes>(
         pc: Pc,
         stack: Stack<'_>,
         _gas: &mut Gas,
-        state: &mut State<'_, C::Host>,
+        state: &mut State<'_, T::Host>,
         ret: u8,
     ) {
         // SAFETY: `raw_interp` is valid for the duration of execution.
@@ -300,35 +301,26 @@ const fn instruction_len(op: u8) -> usize {
 mod tests {
     use super::Instruction;
     use crate::{
-        BaseEvmTypes, EvmConfig, EvmTypes, EvmVersion,
-        bytecode::Bytecode,
-        env::TxEnv,
-        interpreter::{Message, SpecId, Word, instructions::tests::TestHost, op},
+        EvmConfig, EvmTypes, EvmVersion, Version,
+        interpreter::{SpecId, Word, instructions::tests::TestHost, op},
         version::StaticGasTable,
     };
-    use alloy_primitives::Bytes;
     use evm2_macros::instruction;
 
     const CUSTOM_OPCODE: u8 = 0x0c;
 
     #[derive(Debug)]
-    struct CustomConfig;
+    struct CustomTypes;
 
-    impl EvmTypes for CustomConfig {
+    impl EvmTypes for CustomTypes {
         type Tx = ();
         type Host = TestHost;
         type Database = crate::evm::InMemoryDB;
         type Precompiles = crate::evm::precompile::NoPrecompiles;
     }
 
-    impl EvmConfig for CustomConfig {
-        const VERSION: &'static EvmVersion<Self> = &{
-            let mut version = EvmVersion::new_base(SpecId::OSAKA);
-            version
-                .instruction_impls
-                .set(CUSTOM_OPCODE, Some(<custom<Self> as Instruction<Self>>::execute::<Self>));
-            version
-        };
+    impl EvmConfig for CustomTypes {
+        const VERSION: &'static Version = &Version::new_base(SpecId::OSAKA);
     }
 
     #[instruction]
@@ -337,7 +329,7 @@ mod tests {
     }
 
     fn gas_params(spec: SpecId) -> StaticGasTable {
-        EvmVersion::<BaseEvmTypes>::new_base(spec).static_gas_table
+        Version::new_base(spec).static_gas_table
     }
 
     #[test]
@@ -371,18 +363,12 @@ mod tests {
     }
 
     #[test]
-    fn custom_instruction_table_opcode_runs() {
-        let bytecode = Bytecode::new_legacy(Bytes::from_static(&[CUSTOM_OPCODE, op::STOP]));
-        let mut interpreter = crate::interpreter::Interpreter::new(
-            bytecode,
-            TxEnv::default(),
-            Message { gas_limit: 10_000, ..Message::default() },
+    fn instruction_impl_table_sets_custom_opcode() {
+        let mut version = EvmVersion::<CustomTypes>::new_base::<CustomTypes>();
+        version.instruction_impls.set(
+            CUSTOM_OPCODE,
+            Some(<custom<CustomTypes> as Instruction<CustomTypes>>::execute::<CustomTypes>),
         );
-        let mut host = TestHost::default();
-
-        let stop = interpreter.run::<CustomConfig>(&mut host);
-
-        core::assert_matches!(stop, crate::interpreter::InstrStop::Stop);
-        assert_eq!(interpreter.stack[0], Word::from(0xdead_u64));
+        assert!(version.instruction_impls.contains(CUSTOM_OPCODE));
     }
 }

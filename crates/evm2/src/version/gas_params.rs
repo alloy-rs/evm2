@@ -333,10 +333,10 @@ impl GasParams {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{BaseEvmTypes, EvmVersion, interpreter::SpecId};
+    use crate::{Version, interpreter::SpecId};
 
     fn gas_params(spec: SpecId) -> GasParams {
-        EvmVersion::<BaseEvmTypes>::new_base(spec).gas_params
+        Version::new_base(spec).gas_params
     }
 
     #[test]

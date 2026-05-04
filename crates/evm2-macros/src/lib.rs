@@ -87,7 +87,7 @@ fn expand_instruction(raw: bool, input: ItemFn) -> TokenStream2 {
         #impl_where_clause
         {
             #[inline]
-            fn execute<C: evm2::EvmConfig<Host = <#evm_types as evm2::EvmTypes>::Host>>(
+            fn execute<C: evm2::EvmConfig>(
                 __evm2_pc: &mut evm2::interpreter::Pc,
                 mut stack: evm2::interpreter::StackMut<'_>,
                 __evm2_gas: &mut evm2::interpreter::Gas,

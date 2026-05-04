@@ -1,5 +1,5 @@
 use crate::{
-    AccountLoad, EvmConfig, EvmTypes, EvmVersion, SelfDestructResult, StorageLoad,
+    AccountLoad, EvmConfig, EvmTypes, SelfDestructResult, StorageLoad, Version,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
     interpreter::{
@@ -21,11 +21,10 @@ impl<const SPEC: u8> EvmTypes for TestConfig<SPEC> {
 }
 
 impl<const SPEC: u8> EvmConfig for TestConfig<SPEC> {
-    const VERSION: &'static EvmVersion<Self> =
-        &EvmVersion::new_base(match SpecId::try_from_u8(SPEC) {
-            Some(spec_id) => spec_id,
-            None => panic!("invalid EVM specification ID"),
-        });
+    const VERSION: &'static Version = &Version::new_base(match SpecId::try_from_u8(SPEC) {
+        Some(spec_id) => spec_id,
+        None => panic!("invalid EVM specification ID"),
+    });
 }
 
 #[derive(Debug)]
@@ -64,6 +63,10 @@ impl Default for TestHost {
 }
 
 impl Host for TestHost {
+    fn spec_id(&self) -> SpecId {
+        SpecId::OSAKA
+    }
+
     fn block_env(&mut self) -> &BlockEnv {
         &self.block
     }
@@ -266,7 +269,7 @@ pub(super) fn run(config: RunConfig<'_>) -> TestInterpreter {
     )
 }
 
-fn run_with_config<C: EvmConfig<Tx = (), Host = TestHost>>(
+fn run_with_config<C: EvmConfig + EvmTypes<Tx = (), Host = TestHost>>(
     config: RunConfig<'_>,
 ) -> TestInterpreter {
     let RunConfig { code, host, spec_id: _, tx_env, mut message, gas_limit, return_data } = config;
@@ -276,7 +279,7 @@ fn run_with_config<C: EvmConfig<Tx = (), Host = TestHost>>(
     inner.return_data = return_data;
     let mut default_host = TestHost::default();
     let host = host.unwrap_or(&mut default_host);
-    let err = inner.run::<C>(host);
+    let err = inner.run::<C, C>(host);
     let stack_len = inner.stack_len();
     TestInterpreter {
         stack: inner.stack,

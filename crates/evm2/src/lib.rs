@@ -62,7 +62,7 @@ pub use evm::{
     config::{BaseEvmTypes, EvmConfig, EvmTypes},
     env, precompile, registry,
 };
-pub use version::EvmVersion;
+pub use version::{EvmVersion, Version};
 
 mod once_lock;
 
@@ -80,5 +80,5 @@ pub fn _get_asm() -> impl Sized {
         Default::default(),
     );
     crate::interpreter::Interpreter::new(Default::default(), Default::default(), Default::default())
-        .run::<BaseEvmTypes>(&mut evm)
+        .run::<BaseEvmTypes, BaseEvmTypes>(&mut evm)
 }

@@ -2,7 +2,7 @@ use super::{
     BytecodeRef, Gas, InstrStop, Memory, Message, Pc, Result, Stack, State, Word,
     table::InstructionTables,
 };
-use crate::{EvmConfig, bytecode::Bytecode, env::TxEnv};
+use crate::{EvmConfig, EvmTypes, bytecode::Bytecode, env::TxEnv};
 use alloc::boxed::Box;
 use alloy_primitives::Bytes;
 #[cfg(not(feature = "nightly"))]
@@ -91,23 +91,23 @@ impl Interpreter {
     }
 
     /// Runs the interpreter until it stops.
-    pub fn run<C: EvmConfig>(&mut self, host: &mut C::Host) -> InstrStop {
+    pub fn run<T: EvmTypes, C: EvmConfig>(&mut self, host: &mut T::Host) -> InstrStop {
         let _gas_start = self.gas.remaining();
 
         #[cfg(feature = "nightly")]
-        let r = self.step_tail::<C>(host).unwrap_err();
+        let r = self.step_tail::<T, C>(host);
         #[cfg(not(feature = "nightly"))]
-        let r = self.run_table_loop::<C>(host);
+        let r = self.run_table_loop::<T, C>(host);
 
         r
     }
 
     #[cfg(not(feature = "nightly"))]
-    fn run_table_loop<C: EvmConfig>(&mut self, host: &mut C::Host) -> InstrStop {
+    fn run_table_loop<T: EvmTypes, C: EvmConfig>(&mut self, host: &mut T::Host) -> InstrStop {
         let mut pc = self.pc;
         let mut stack_len = self.stack_len;
         loop {
-            let (next_pc, next_stack_len, flow) = self.raw_step::<C>(host, pc, stack_len);
+            let (next_pc, next_stack_len, flow) = self.raw_step::<T, C>(host, pc, stack_len);
             pc = next_pc;
             stack_len = next_stack_len;
             if flow.is_break() {
@@ -122,8 +122,8 @@ impl Interpreter {
     /// Executes one instruction.
     #[inline(always)]
     #[cfg(not(feature = "nightly"))]
-    pub fn step<C: EvmConfig>(&mut self, host: &mut C::Host) -> ControlFlow<(), ()> {
-        let (pc, stack_len, flow) = self.raw_step::<C>(host, self.pc, self.stack_len);
+    pub fn step<T: EvmTypes, C: EvmConfig>(&mut self, host: &mut T::Host) -> ControlFlow<(), ()> {
+        let (pc, stack_len, flow) = self.raw_step::<T, C>(host, self.pc, self.stack_len);
         self.pc = pc;
         self.stack_len = stack_len;
         flow
@@ -131,9 +131,9 @@ impl Interpreter {
 
     #[inline(always)]
     #[cfg(not(feature = "nightly"))]
-    fn raw_step<C: EvmConfig>(
+    fn raw_step<T: EvmTypes, C: EvmConfig>(
         &mut self,
-        host: &mut C::Host,
+        host: &mut T::Host,
         pc: *const u8,
         stack_len: usize,
     ) -> (*const u8, usize, ControlFlow<(), ()>) {
@@ -141,7 +141,7 @@ impl Interpreter {
         let bytecode = BytecodeRef::new(&self.bytecode);
         let pc = Pc::from_ptr(pc);
         let op = pc.op();
-        let instr = <C as InstructionTables>::INSTRUCTIONS[op as usize];
+        let instr = <T as InstructionTables<C>>::INSTRUCTIONS[op as usize];
         let (pc, stack_len) = instr(
             pc,
             Stack::new(&mut self.stack, stack_len),
@@ -154,12 +154,12 @@ impl Interpreter {
 
     #[inline(always)]
     #[cfg(feature = "nightly")]
-    fn step_tail<C: EvmConfig>(&mut self, host: &mut C::Host) -> Result {
+    fn step_tail<T: EvmTypes, C: EvmConfig>(&mut self, host: &mut T::Host) -> InstrStop {
         let raw = self as *mut Self;
         let bytecode = BytecodeRef::new(&self.bytecode);
         let pc = Pc::from_ptr(self.pc);
         let op = pc.op();
-        let instr = <C as InstructionTables>::INSTRUCTIONS[op as usize];
+        let instr = <T as InstructionTables<C>>::INSTRUCTIONS[op as usize];
         instr(
             pc,
             Stack::new(&mut self.stack, self.stack_len),
@@ -167,6 +167,6 @@ impl Interpreter {
             &mut State { bytecode, host, spec: C::spec_id(), raw_interp: raw },
             0,
         );
-        self.result
+        self.result.unwrap_err()
     }
 }

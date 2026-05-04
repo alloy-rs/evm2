@@ -3,7 +3,7 @@
 use crate::{
     evm::{InMemoryDB, precompile::PrecompileProvider},
     interpreter::SpecId,
-    version::EvmVersion,
+    version::Version,
 };
 use core::marker::PhantomData;
 
@@ -23,9 +23,9 @@ pub trait EvmTypes: Sized + 'static {
 }
 
 /// EVM configuration.
-pub trait EvmConfig: EvmTypes {
+pub trait EvmConfig: 'static {
     /// Active EVM version.
-    const VERSION: &'static EvmVersion<Self>;
+    const VERSION: &'static Version;
 
     /// Active hard fork specification.
     #[inline]
@@ -48,9 +48,5 @@ impl<Tx: 'static, const SPEC_ID: u8> EvmTypes for BaseEvmTypes<SPEC_ID, Tx> {
 }
 
 impl<Tx: 'static, const SPEC_ID: u8> EvmConfig for BaseEvmTypes<SPEC_ID, Tx> {
-    const VERSION: &'static EvmVersion<Self> =
-        &EvmVersion::new_base(match SpecId::try_from_u8(SPEC_ID) {
-            Some(spec_id) => spec_id,
-            None => panic!("invalid EVM specification ID"),
-        });
+    const VERSION: &'static Version = &Version::new_base(SpecId::try_from_u8(SPEC_ID).unwrap());
 }
