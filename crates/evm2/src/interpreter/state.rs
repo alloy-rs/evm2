@@ -16,7 +16,7 @@ pub struct State<'a, T: EvmTypes> {
     pub host: &'a mut T::Host,
     /// Active spec identifier.
     pub spec: SpecId,
-    /// Active EVM version data.
+    /// Active runtime version data.
     pub version: Version,
     pub(crate) raw_interp: *mut Interpreter<T>,
 }
@@ -129,7 +129,7 @@ impl MessageResult {
 
 /// External host operations.
 pub trait Host {
-    /// Returns the active hard fork specification.
+    /// Returns the active base specification ID.
     fn spec_id(&self) -> SpecId;
 
     /// Returns the block environment.

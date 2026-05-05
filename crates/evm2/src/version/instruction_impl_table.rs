@@ -1,6 +1,6 @@
 use crate::{
     EvmTypes,
-    interpreter::table::{InstructionImplFn, unknown_instruction},
+    interpreter::{InstructionImplFn, instructions::table::unknown_instruction},
 };
 use core::ops::{Index, IndexMut};
 

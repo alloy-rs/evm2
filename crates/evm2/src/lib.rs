@@ -60,12 +60,12 @@ pub mod version;
 pub use evm::{
     Evm, TxResult, config,
     config::{
-        BaseEvmConfig, BaseEvmConfigFactory, BaseEvmTypes, EvmConfig, EvmConfigFactory,
-        EvmRuntimeConfig, EvmTypes, base_evm_runtime_config,
+        BaseEvmConfig, BaseEvmConfigSelector, BaseEvmTypes, EvmConfig, EvmConfigSelector, EvmTypes,
+        ExecutionConfig, base_execution_config,
     },
     env, precompile, registry,
 };
-pub use version::{EvmVersion, Version};
+pub use version::{Version, VersionTables};
 
 mod spec_id;
 pub use spec_id::SpecId;

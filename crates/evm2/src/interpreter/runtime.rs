@@ -1,7 +1,7 @@
 use super::{
     BytecodeRef, Gas, InstrStop, Memory, Message, MessageKind, Pc, Result, Stack, State, Word,
 };
-use crate::{EvmConfig, EvmRuntimeConfig, EvmTypes, bytecode::Bytecode, env::TxEnv};
+use crate::{EvmConfig, EvmTypes, ExecutionConfig, bytecode::Bytecode, env::TxEnv};
 use alloc::boxed::Box;
 use alloy_primitives::Bytes;
 use core::marker::PhantomData;
@@ -108,27 +108,27 @@ impl<T: EvmTypes> Interpreter<T> {
     /// Runs the interpreter until it stops, using `C` as the EVM configuration.
     #[inline]
     pub fn run<C: EvmConfig<T>>(&mut self, host: &mut T::Host) -> InstrStop {
-        self.run_with(EvmRuntimeConfig::new::<C>(), host)
+        self.run_with(ExecutionConfig::new::<C>(), host)
     }
 
     /// Runs the interpreter until it stops.
-    pub fn run_with(&mut self, runtime: EvmRuntimeConfig<T>, host: &mut T::Host) -> InstrStop {
+    pub fn run_with(&mut self, config: ExecutionConfig<T>, host: &mut T::Host) -> InstrStop {
         let _gas_start = self.gas.remaining();
 
         #[cfg(feature = "nightly")]
-        let r = self.step_tail(runtime, host);
+        let r = self.step_tail(config, host);
         #[cfg(not(feature = "nightly"))]
-        let r = self.run_table_loop(runtime, host);
+        let r = self.run_table_loop(config, host);
 
         r
     }
 
     #[cfg(not(feature = "nightly"))]
-    fn run_table_loop(&mut self, runtime: EvmRuntimeConfig<T>, host: &mut T::Host) -> InstrStop {
+    fn run_table_loop(&mut self, config: ExecutionConfig<T>, host: &mut T::Host) -> InstrStop {
         let mut pc = self.pc;
         let mut stack_len = self.stack_len;
         loop {
-            let (next_pc, next_stack_len, flow) = self.raw_step(runtime, host, pc, stack_len);
+            let (next_pc, next_stack_len, flow) = self.raw_step(config, host, pc, stack_len);
             pc = next_pc;
             stack_len = next_stack_len;
             if flow.is_break() {
@@ -143,12 +143,8 @@ impl<T: EvmTypes> Interpreter<T> {
     /// Executes one instruction.
     #[inline(always)]
     #[cfg(not(feature = "nightly"))]
-    pub fn step(
-        &mut self,
-        runtime: EvmRuntimeConfig<T>,
-        host: &mut T::Host,
-    ) -> ControlFlow<(), ()> {
-        let (pc, stack_len, flow) = self.raw_step(runtime, host, self.pc, self.stack_len);
+    pub fn step(&mut self, config: ExecutionConfig<T>, host: &mut T::Host) -> ControlFlow<(), ()> {
+        let (pc, stack_len, flow) = self.raw_step(config, host, self.pc, self.stack_len);
         self.pc = pc;
         self.stack_len = stack_len;
         flow
@@ -158,7 +154,7 @@ impl<T: EvmTypes> Interpreter<T> {
     #[cfg(not(feature = "nightly"))]
     fn raw_step(
         &mut self,
-        runtime: EvmRuntimeConfig<T>,
+        config: ExecutionConfig<T>,
         host: &mut T::Host,
         pc: *const u8,
         stack_len: usize,
@@ -167,7 +163,7 @@ impl<T: EvmTypes> Interpreter<T> {
         let bytecode = BytecodeRef::new(&self.bytecode);
         let pc = Pc::from_ptr(pc);
         let op = pc.op();
-        let instr = runtime.instructions[op as usize];
+        let instr = config.instructions[op as usize];
         let (pc, stack_len) = instr(
             pc,
             Stack::new(&mut self.stack, stack_len),
@@ -175,8 +171,8 @@ impl<T: EvmTypes> Interpreter<T> {
             &mut State {
                 bytecode,
                 host,
-                spec: runtime.version.spec_id(),
-                version: runtime.version,
+                spec: config.version.spec_id(),
+                version: config.version,
                 raw_interp: raw,
             },
         );
@@ -186,12 +182,12 @@ impl<T: EvmTypes> Interpreter<T> {
 
     #[inline(always)]
     #[cfg(feature = "nightly")]
-    fn step_tail(&mut self, runtime: EvmRuntimeConfig<T>, host: &mut T::Host) -> InstrStop {
+    fn step_tail(&mut self, config: ExecutionConfig<T>, host: &mut T::Host) -> InstrStop {
         let raw = self as *mut Self;
         let bytecode = BytecodeRef::new(&self.bytecode);
         let pc = Pc::from_ptr(self.pc);
         let op = pc.op();
-        let instr = runtime.instructions[op as usize];
+        let instr = config.instructions[op as usize];
         instr(
             pc,
             Stack::new(&mut self.stack, self.stack_len),
@@ -199,8 +195,8 @@ impl<T: EvmTypes> Interpreter<T> {
             &mut State {
                 bytecode,
                 host,
-                spec: runtime.version.spec_id(),
-                version: runtime.version,
+                spec: config.version.spec_id(),
+                version: config.version,
                 raw_interp: raw,
             },
             0,

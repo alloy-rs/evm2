@@ -1,18 +1,21 @@
 //! EVM configuration.
 
 use crate::{
-    EvmVersion, SpecId,
+    SpecId, VersionTables,
     evm::{InMemoryDB, precompile::PrecompileProvider},
-    interpreter::table::{InstructionTable, InstructionTables},
+    interpreter::instructions::table::{InstructionTable, InstructionTables},
     spec_to_generic,
     version::Version,
 };
 use core::marker::PhantomData;
 
-/// EVM type configuration.
+/// Runtime EVM type family.
+///
+/// Defines the concrete host, database, transaction, precompile, spec-id, and config selector
+/// types used by an EVM instance. This is runtime wiring, not version behavior.
 pub trait EvmTypes: Sized + 'static {
-    /// Configuration factory used by this EVM.
-    type ConfigFactory: EvmConfigFactory<Self>;
+    /// Configuration selector used by this EVM.
+    type ConfigSelector: EvmConfigSelector<Self>;
 
     /// Runtime specification ID accepted by this EVM.
     type SpecId: Copy + Into<SpecId>;
@@ -30,50 +33,58 @@ pub trait EvmTypes: Sized + 'static {
     type Precompiles: PrecompileProvider;
 }
 
-/// EVM compile-time configuration.
+/// Compile-time EVM version configuration.
+///
+/// Names a concrete version for monomorphized code. It exposes the runtime `Version` data and the
+/// type-specific `VersionTables` needed to build dispatch tables.
 pub trait EvmConfig<T: EvmTypes> {
     /// Active EVM version.
     const VERSION: Version;
 
-    /// Active type-specific EVM version.
-    const EVM_VERSION: &'static EvmVersion<T>;
+    /// Active type-specific version tables.
+    const VERSION_TABLES: &'static VersionTables<T>;
 
-    /// Active hard fork specification.
+    /// Active base specification ID.
     #[inline]
     fn spec_id() -> SpecId {
         Self::VERSION.spec_id()
     }
 }
 
-/// Factory for selecting an EVM configuration (compile-time or runtime) from a runtime
-/// specification ID.
-pub trait EvmConfigFactory<T: EvmTypes>: Sized {
+/// Runtime EVM config selector.
+///
+/// Maps a runtime spec-id value accepted by `EvmTypes` to the `ExecutionConfig` that the EVM and
+/// interpreter use. Custom selectors can map external IDs onto base or custom configs.
+pub trait EvmConfigSelector<T: EvmTypes>: Sized {
     /// Concrete EVM configuration for a base specification ID.
     type Config<const SPEC_ID: u8>: EvmConfig<T>;
 
-    /// Returns the EVM runtime config for `spec_id`.
-    fn evm_runtime_config(spec_id: T::SpecId) -> EvmRuntimeConfig<T>;
+    /// Returns the selected execution config for `spec_id`.
+    fn execution_config(spec_id: T::SpecId) -> ExecutionConfig<T>;
 }
 
-/// Runtime config selected for EVM execution.
+/// Selected execution configuration.
+///
+/// Bundles the active runtime `Version` with the finalized instruction dispatch table selected for
+/// an EVM instance. This is the data passed to the interpreter when it runs.
 #[derive(derive_more::Debug)]
-pub struct EvmRuntimeConfig<T: EvmTypes> {
+pub struct ExecutionConfig<T: EvmTypes> {
     pub(crate) version: Version,
     #[debug(skip)]
     pub(crate) instructions: &'static InstructionTable<T>,
 }
 
-impl<T: EvmTypes> Clone for EvmRuntimeConfig<T> {
+impl<T: EvmTypes> Clone for ExecutionConfig<T> {
     #[inline]
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<T: EvmTypes> Copy for EvmRuntimeConfig<T> {}
+impl<T: EvmTypes> Copy for ExecutionConfig<T> {}
 
-impl<T: EvmTypes> EvmRuntimeConfig<T> {
-    /// Creates EVM runtime config for `C`.
+impl<T: EvmTypes> ExecutionConfig<T> {
+    /// Creates an execution config for `C`.
     #[inline]
     pub const fn new<C: EvmConfig<T>>() -> Self {
         Self { version: C::VERSION, instructions: <T as InstructionTables<C>>::INSTRUCTIONS }
@@ -91,7 +102,7 @@ impl<T: EvmTypes> EvmRuntimeConfig<T> {
 pub struct BaseEvmTypes<Tx = ()>(PhantomData<fn() -> Tx>);
 
 impl<Tx: 'static> EvmTypes for BaseEvmTypes<Tx> {
-    type ConfigFactory = BaseEvmConfigFactory;
+    type ConfigSelector = BaseEvmConfigSelector;
     type SpecId = SpecId;
     type Tx = Tx;
     type Host = crate::evm::Evm<Self>;
@@ -105,26 +116,26 @@ pub struct BaseEvmConfig<const SPEC_ID: u8>(());
 
 impl<T: EvmTypes, const SPEC_ID: u8> EvmConfig<T> for BaseEvmConfig<SPEC_ID> {
     const VERSION: Version = Version::base(SpecId::try_from_u8(SPEC_ID).unwrap());
-    const EVM_VERSION: &'static EvmVersion<T> = &EvmVersion::<T>::new_base::<Self>();
+    const VERSION_TABLES: &'static VersionTables<T> = &VersionTables::<T>::new_base::<Self>();
 }
 
-/// Base EVM configuration factory.
+/// Base EVM config selector.
 #[allow(missing_copy_implementations, missing_debug_implementations)]
-pub struct BaseEvmConfigFactory(());
+pub struct BaseEvmConfigSelector(());
 
-impl<T: EvmTypes<SpecId = SpecId>> EvmConfigFactory<T> for BaseEvmConfigFactory {
+impl<T: EvmTypes<SpecId = SpecId>> EvmConfigSelector<T> for BaseEvmConfigSelector {
     type Config<const SPEC_ID: u8> = BaseEvmConfig<SPEC_ID>;
 
-    fn evm_runtime_config(spec_id: T::SpecId) -> EvmRuntimeConfig<T> {
-        base_evm_runtime_config::<T, Self>(spec_id)
+    fn execution_config(spec_id: T::SpecId) -> ExecutionConfig<T> {
+        base_execution_config::<T, Self>(spec_id)
     }
 }
 
-/// Returns EVM runtime config for a base EVM specification.
-pub const fn base_evm_runtime_config<T, F>(spec_id: SpecId) -> EvmRuntimeConfig<T>
+/// Returns the execution config for a base EVM specification.
+pub const fn base_execution_config<T, F>(spec_id: SpecId) -> ExecutionConfig<T>
 where
     T: EvmTypes,
-    F: EvmConfigFactory<T>,
+    F: EvmConfigSelector<T>,
 {
-    spec_to_generic!(spec_id, |SPEC_ID| EvmRuntimeConfig::<T>::new::<F::Config<SPEC_ID>>())
+    spec_to_generic!(spec_id, |SPEC_ID| ExecutionConfig::<T>::new::<F::Config<SPEC_ID>>())
 }

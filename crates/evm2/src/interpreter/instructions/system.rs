@@ -4,8 +4,8 @@ use super::utils::{as_usize, word_to_address};
 use crate::{
     EvmTypes, SpecId,
     interpreter::{
-        GasId, Host, InstrStop, Message, MessageKind, Result, StackMut, Word,
-        memory::resize_memory, table::InstructionCx,
+        GasId, Host, InstrStop, InstructionCx, Message, MessageKind, Result, StackMut, Word,
+        memory::resize_memory,
     },
 };
 use alloy_primitives::{Address, B256, Bytes};

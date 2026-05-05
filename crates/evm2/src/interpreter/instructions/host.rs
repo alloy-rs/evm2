@@ -2,7 +2,7 @@ use super::utils::as_usize;
 use crate::{
     EvmTypes, SpecId,
     interpreter::{
-        GasId, Host, InstrStop, Result, StackMut, Word, memory::resize_memory, table::InstructionCx,
+        GasId, Host, InstrStop, InstructionCx, Result, StackMut, Word, memory::resize_memory,
     },
 };
 use alloy_primitives::{B256, Bytes, Log, LogData};

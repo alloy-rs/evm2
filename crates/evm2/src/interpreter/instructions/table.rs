@@ -53,13 +53,20 @@ where
 }
 
 /// Instruction execution context.
-pub(crate) struct InstructionCx<'a, 'state, T: EvmTypes> {
+pub struct InstructionCx<'a, 'state, T: EvmTypes> {
     /// Program counter state.
     pub pc: &'a mut Pc,
     /// Gas state.
     pub gas: &'a mut Gas,
     /// Interpreter state.
     pub state: &'a mut State<'state, T>,
+}
+
+impl<T: EvmTypes> core::fmt::Debug for InstructionCx<'_, '_, T> {
+    #[inline]
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("InstructionCx").finish_non_exhaustive()
+    }
 }
 
 /// EVM instruction implementation.
@@ -141,7 +148,7 @@ where
     let mut i = 0;
     let mut unknown_idx = None;
     while i < 256 {
-        if !C::EVM_VERSION.instruction_impls.contains(i as u8) {
+        if !C::VERSION_TABLES.instruction_impls.contains(i as u8) {
             if unknown_idx.is_none() {
                 unknown_idx = Some(i);
             }
@@ -174,7 +181,7 @@ fn dispatch_mono<T: EvmTypes, C: EvmConfig<T>>(
     gas: &mut Gas,
     state: &mut State<'_, T>,
 ) -> InstructionFnRet {
-    let instr = C::EVM_VERSION.instruction_impls.get_or_default(op);
+    let instr = C::VERSION_TABLES.instruction_impls.get_or_default(op);
     let r;
     match pre_step::<T, C>(gas, op) {
         Ok(()) => {
@@ -215,7 +222,7 @@ extern_table! {
         state: &mut State<'_, T>,
         op: u8,
     ) {
-        let instr = C::EVM_VERSION.instruction_impls.get_or_default(op);
+        let instr = C::VERSION_TABLES.instruction_impls.get_or_default(op);
         if let Err(e) = pre_step::<T, C>(gas, op) {
             cold_path();
             tail_return!(tail_call_restore::<T>(pc, stack, gas, state, e as u8));
@@ -266,7 +273,7 @@ extern_table! {
 
 #[inline]
 const fn pre_step<T: EvmTypes, C: EvmConfig<T>>(gas: &mut Gas, op: u8) -> Result {
-    gas.spend(C::EVM_VERSION.static_gas_table.get(op) as _)
+    gas.spend(C::VERSION_TABLES.static_gas_table.get(op) as _)
 }
 
 #[inline]
@@ -292,7 +299,7 @@ mod tests {
 
     fn static_gas_table(spec: SpecId) -> StaticGasTable {
         crate::spec_to_generic!(spec, |SPEC_ID| {
-            <BaseEvmConfig<SPEC_ID> as EvmConfig<BaseEvmTypes>>::EVM_VERSION.static_gas_table
+            <BaseEvmConfig<SPEC_ID> as EvmConfig<BaseEvmTypes>>::VERSION_TABLES.static_gas_table
         })
     }
 

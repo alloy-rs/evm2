@@ -1,5 +1,5 @@
 use crate::{
-    AccountLoad, BaseEvmConfig, EvmConfig, EvmRuntimeConfig, EvmTypes, SelfDestructResult, SpecId,
+    AccountLoad, BaseEvmConfig, EvmConfig, EvmTypes, ExecutionConfig, SelfDestructResult, SpecId,
     StorageLoad,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
@@ -15,7 +15,7 @@ use std::collections::HashMap;
 pub(crate) struct TestTypes;
 
 impl EvmTypes for TestTypes {
-    type ConfigFactory = crate::BaseEvmConfigFactory;
+    type ConfigSelector = crate::BaseEvmConfigSelector;
     type SpecId = crate::SpecId;
     type Tx = ();
     type Host = TestHost;
@@ -245,7 +245,7 @@ fn run_with_config<C: EvmConfig<TestTypes>>(config: RunConfig<'_>) -> TestInterp
     inner.return_data = return_data;
     let mut default_host = TestHost::default();
     let host = host.unwrap_or(&mut default_host);
-    let err = inner.run_with(EvmRuntimeConfig::new::<C>(), host);
+    let err = inner.run_with(ExecutionConfig::new::<C>(), host);
     let stack_len = inner.stack_len();
     TestInterpreter {
         stack: inner.stack,

@@ -2,7 +2,7 @@
 
 use self::precompile::{PrecompileOutput, PrecompileProvider};
 use crate::{
-    AccountLoad, EvmConfigFactory, EvmRuntimeConfig, EvmTypes, SelfDestructResult, SpecId,
+    AccountLoad, EvmConfigSelector, EvmTypes, ExecutionConfig, SelfDestructResult, SpecId,
     StorageLoad,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
@@ -44,7 +44,7 @@ pub struct Evm<T: EvmTypes> {
     #[debug(skip)]
     spec_id: T::SpecId,
     #[debug(skip)]
-    evm_runtime_config: EvmRuntimeConfig<T>,
+    execution_config: ExecutionConfig<T>,
     pub(crate) block: BlockEnv,
     registry: TxRegistry<T::Tx, TxResult, Self>,
     pub(crate) state: State<T::Database>,
@@ -63,8 +63,8 @@ impl<T: EvmTypes> Evm<T> {
         database: T::Database,
         precompiles: T::Precompiles,
     ) -> Self {
-        Self::new_with_evm_runtime_config(
-            <T::ConfigFactory as EvmConfigFactory<T>>::evm_runtime_config(spec_id),
+        Self::new_with_execution_config(
+            <T::ConfigSelector as EvmConfigSelector<T>>::execution_config(spec_id),
             spec_id,
             block,
             registry,
@@ -75,8 +75,8 @@ impl<T: EvmTypes> Evm<T> {
 
     /// Creates an EVM with the provided transaction registry, database, and precompile provider.
     #[inline]
-    pub fn new_with_evm_runtime_config(
-        evm_runtime_config: EvmRuntimeConfig<T>,
+    pub fn new_with_execution_config(
+        execution_config: ExecutionConfig<T>,
         spec_id: T::SpecId,
         block: BlockEnv,
         registry: TxRegistry<T::Tx, TxResult, Self>,
@@ -85,7 +85,7 @@ impl<T: EvmTypes> Evm<T> {
     ) -> Self {
         Self {
             spec_id,
-            evm_runtime_config,
+            execution_config,
             block,
             registry,
             state: State::new(database),
@@ -136,15 +136,15 @@ impl<T: EvmTypes> Evm<T> {
 
     /// Returns the active EVM version.
     pub const fn version(&self) -> &crate::Version {
-        self.evm_runtime_config.version()
+        self.execution_config.version()
     }
 
-    /// Returns the active hard fork specification.
+    /// Returns the active base specification ID.
     pub const fn spec_id(&self) -> SpecId {
         self.version().spec_id()
     }
 
-    /// Returns the factory-specific runtime specification ID.
+    /// Returns the selector-specific runtime specification ID.
     pub const fn config_spec_id(&self) -> T::SpecId {
         self.spec_id
     }
@@ -296,8 +296,8 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
             create_message.input = Bytes::new();
             let mut interpreter =
                 Interpreter::<T>::new(bytecode, tx_env, create_message, caller_is_static);
-            let evm_runtime_config = self.evm_runtime_config;
-            let stop = interpreter.run_with(evm_runtime_config, self);
+            let execution_config = self.execution_config;
+            let stop = interpreter.run_with(execution_config, self);
             let mut gas = interpreter.gas();
             if stop.is_success() || stop.is_revert() {
                 gas.set_final_refund(self.spec_id().enables(SpecId::LONDON));
@@ -355,8 +355,8 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
         }
 
         let mut interpreter = Interpreter::<T>::new(bytecode, tx_env, message, caller_is_static);
-        let evm_runtime_config = self.evm_runtime_config;
-        let stop = interpreter.run_with(evm_runtime_config, self);
+        let execution_config = self.execution_config;
+        let stop = interpreter.run_with(execution_config, self);
         let mut gas = interpreter.gas();
         if stop.is_success() || stop.is_revert() {
             gas.set_final_refund(self.spec_id().enables(SpecId::LONDON));
@@ -423,8 +423,8 @@ mod tests {
     use alloy_primitives::{Address, B256, Bytes, Log, LogData, U256, keccak256};
 
     const TEST_TX_TYPE: u8 = 0x7f;
-    const NO_CONFIG_RUNTIME: EvmRuntimeConfig<NoConfigTypes> =
-        EvmRuntimeConfig::new::<BaseEvmConfig<{ SpecId::OSAKA as u8 }>>();
+    const NO_CONFIG_EXECUTION: ExecutionConfig<NoConfigTypes> =
+        ExecutionConfig::new::<BaseEvmConfig<{ SpecId::OSAKA as u8 }>>();
 
     #[derive(Debug)]
     struct TestTx {
@@ -504,7 +504,7 @@ mod tests {
     }
 
     impl EvmTypes for NoConfigTypes {
-        type ConfigFactory = crate::BaseEvmConfigFactory;
+        type ConfigSelector = crate::BaseEvmConfigSelector;
         type SpecId = SpecId;
         type Tx = TestTx;
         type Host = NoConfigHost;
@@ -555,8 +555,8 @@ mod tests {
     fn dispatches_transaction_without_evm_config() {
         let registry =
             TxRegistry::new().with_handler(TEST_TX_TYPE, extract_test_tx, handle_no_config_tx);
-        let mut evm = Evm::<NoConfigTypes>::new_with_evm_runtime_config(
-            NO_CONFIG_RUNTIME,
+        let mut evm = Evm::<NoConfigTypes>::new_with_execution_config(
+            NO_CONFIG_EXECUTION,
             SpecId::OSAKA,
             BlockEnv::default(),
             registry,

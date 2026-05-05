@@ -29,7 +29,7 @@ mod system;
 pub(crate) use system::*;
 
 mod i256;
-pub mod table;
+pub(crate) mod table;
 mod utils;
 
 #[cfg(test)]

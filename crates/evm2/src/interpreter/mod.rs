@@ -8,12 +8,7 @@ pub use gas::{Gas, GasTracker, MemoryGas};
 mod utils;
 
 pub(crate) mod instructions;
-#[doc(hidden)]
-pub use crate::version::{InstructionImplTable, StaticGasTable};
-#[doc(hidden)]
-pub use instructions::table;
-#[doc(hidden)]
-pub use instructions::table::{Instruction, InstructionImplFn};
+pub use instructions::table::{Instruction, InstructionCx, InstructionImplFn};
 
 pub(crate) mod opcode;
 pub use opcode::op;
@@ -36,7 +31,7 @@ pub use state::{Host, MessageResult, State};
 mod runtime;
 pub use runtime::Interpreter;
 
-#[doc(hidden)]
+/// Interpreter result type.
 pub type Result<T = (), E = InstrStop> = core::result::Result<T, E>;
 
 /// Result of executing an EVM instruction.
@@ -164,7 +159,7 @@ impl InstrStop {
 mod tests {
     use super::*;
     use crate::{
-        BaseEvmConfig, EvmRuntimeConfig, SpecId,
+        BaseEvmConfig, ExecutionConfig, SpecId,
         bytecode::Bytecode,
         interpreter::instructions::tests::{TestHost, TestTypes},
     };
@@ -194,7 +189,7 @@ mod tests {
             false,
         );
         let mut host = TestHost::default();
-        interpreter.run_with(EvmRuntimeConfig::new::<Config>(), &mut host);
+        interpreter.run_with(ExecutionConfig::new::<Config>(), &mut host);
     }
 
     #[test]
@@ -212,7 +207,7 @@ mod tests {
                     false,
                 );
                 let mut host = TestHost::default();
-                interpreter.run_with(EvmRuntimeConfig::new::<Config>(), &mut host);
+                interpreter.run_with(ExecutionConfig::new::<Config>(), &mut host);
                 assert!(interpreter.gas.remaining() > 0);
                 assert_eq!(interpreter.stack[0], U256::from(3));
             }};

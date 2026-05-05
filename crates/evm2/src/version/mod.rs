@@ -1,4 +1,4 @@
-//! EVM version data.
+//! EVM version definitions.
 
 #![allow(unused_macros)]
 
@@ -16,18 +16,24 @@ pub use static_gas_table::StaticGasTable;
 mod instruction_impl_table;
 pub use instruction_impl_table::InstructionImplTable;
 
-/// EVM version data.
+/// Runtime version data.
+///
+/// Holds the active base `SpecId` and dynamic gas parameter table. This is copied into execution
+/// state so instructions can read version-dependent runtime parameters without monomorphization.
 #[derive(Clone, Copy, Debug)]
 pub struct Version {
-    /// Active hard fork specification.
+    /// Active base specification ID.
     pub spec_id: SpecId,
     /// Dynamic gas parameter table.
     pub gas_params: &'static GasParams,
 }
 
-/// Type-specific EVM version data.
+/// Type-specific version tables.
+///
+/// Stores the static gas table and instruction implementations for a concrete `EvmTypes` family.
+/// These tables are compile-time inputs used to build the final interpreter dispatch table.
 #[derive(Debug)]
-pub struct EvmVersion<T: EvmTypes> {
+pub struct VersionTables<T: EvmTypes> {
     /// Active EVM version.
     pub version: Version,
     /// Static opcode gas table.
@@ -43,21 +49,21 @@ impl Version {
         Self::new_base(spec_id)
     }
 
-    /// Creates an empty EVM version for `spec`.
+    /// Creates the base EVM version for `spec`.
     #[inline]
     const fn new_base(spec_id: SpecId) -> Self {
         Self { spec_id, gas_params: &BASE_GAS_PARAMS[spec_id as usize] }
     }
 
-    /// Returns the hard fork specification for this version.
+    /// Returns the base specification ID for this version.
     #[inline]
     pub const fn spec_id(&self) -> SpecId {
         self.spec_id
     }
 }
 
-impl<T: EvmTypes> EvmVersion<T> {
-    /// Creates an empty type-specific EVM version.
+impl<T: EvmTypes> VersionTables<T> {
+    /// Creates empty type-specific version tables.
     #[inline]
     const fn empty(version: Version) -> Self {
         Self {
@@ -111,8 +117,8 @@ macro_rules! evm_versions {
             gp
         }
 
-        impl<T: EvmTypes> EvmVersion<T> {
-            /// Creates the type-specific EVM version for `Cfg`.
+        impl<T: EvmTypes> VersionTables<T> {
+            /// Creates the type-specific version tables for `Cfg`.
             pub const fn new_base<Cfg: EvmConfig<T>>() -> Self {
                 use crate::interpreter::gas::*;
 

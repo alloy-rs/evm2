@@ -1,7 +1,7 @@
 use super::utils::{as_usize, as_usize_saturated};
 use crate::{
     EvmTypes,
-    interpreter::{InstrStop, Result, Word, memory::resize_memory, table::InstructionCx},
+    interpreter::{InstrStop, InstructionCx, Result, Word, memory::resize_memory},
 };
 use core::hint::cold_path;
 use evm2_macros::instruction;
