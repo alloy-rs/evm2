@@ -75,10 +75,17 @@ p256 = { workspace = true, features = ["ecdsa"] }
 aws-lc-rs = { workspace = true, optional = true }
 
 [dev-dependencies]
+alloy-primitives = { workspace = true, features = ["serde", "std"] }
+criterion = { package = "codspeed-criterion-compat", version = "4", default-features = false, features = ["cargo_bench_support"] }
+serde = { workspace = true, features = ["derive", "std"] }
 serde_json = { workspace = true, features = ["std"] }
 rand = { workspace = true, features = ["std"] }
 ark-std = { workspace = true }
 rstest.workspace = true
+
+[[bench]]
+name = "evm"
+harness = false
 
 [[example]]
 name = "registry_tx_handler"
@@ -101,7 +108,16 @@ path = "examples/custom_evm.rs"
 doc-scrape-examples = true
 
 [features]
-default = ["std", "secp256k1", "blst", "c-kzg", "portable"]
+default = [
+    "std",
+    "secp256k1",
+    "blst",
+    "c-kzg",
+    "portable",
+    # TODO: probably shouldn't enable these library-wide.
+    "asm-keccak",
+    "map-foldhash",
+]
 std = [
     "alloy-consensus/std",
     "alloy-eips/std",
@@ -125,7 +141,6 @@ std = [
     "p256/std",
 ]
 
-nightly = []
 serde = [
     "dep:serde",
     "alloy-consensus/serde",
@@ -133,8 +148,18 @@ serde = [
     "alloy-primitives/serde",
     "alloy-trie/serde",
 ]
-hashbrown = ["alloy-primitives/map-hashbrown"]
+arbitrary = [
+    "alloy-consensus/arbitrary",
+    "alloy-eips/arbitrary",
+    "alloy-primitives/arbitrary",
+    "alloy-trie/arbitrary",
+]
+
+map-hashbrown = ["alloy-primitives/map-hashbrown"]
+map-foldhash = ["alloy-primitives/map-foldhash"]
 asm-keccak = ["alloy-primitives/asm-keccak"]
+sha3-keccak = ["alloy-primitives/sha3-keccak"]
+
 asm-sha2 = ["sha2/asm"]
 secp256k1 = ["dep:secp256k1"]
 gmp = ["dep:gmp-mpfr-sys"]
@@ -143,3 +168,5 @@ c-kzg = ["dep:c-kzg"]
 blst = ["dep:blst"]
 portable = ["c-kzg?/portable", "blst?/portable"]
 p256-aws-lc-rs = ["dep:aws-lc-rs"]
+
+nightly = []
