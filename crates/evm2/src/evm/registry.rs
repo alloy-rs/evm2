@@ -130,6 +130,12 @@ pub enum HandlerError {
     /// EIP-2930 transaction is not enabled in the active specification.
     #[error("EIP-2930 transaction not supported")]
     Eip2930NotSupported,
+    /// EIP-1559 transaction is not enabled in the active specification.
+    #[error("EIP-1559 transaction not supported")]
+    Eip1559NotSupported,
+    /// Priority fee is greater than max fee.
+    #[error("priority fee greater than max fee")]
+    PriorityFeeGreaterThanMaxFee,
     /// Unsupported caller for this handler.
     #[error("unsupported caller {0}")]
     UnsupportedCaller(Address),

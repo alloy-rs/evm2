@@ -1,5 +1,6 @@
 //! Ethereum transaction envelope and handlers.
 
+mod eip1559;
 mod eip2930;
 mod legacy;
 
@@ -82,6 +83,7 @@ pub fn ethereum_tx_registry<T: EvmTypes<Host = Evm<T>>>()
     TxRegistry::new()
         .with_handler(0, RecoveredTxEnvelope::as_legacy, legacy::handle::<T>)
         .with_handler(1, RecoveredTxEnvelope::as_eip2930, eip2930::handle::<T>)
+        .with_handler(2, RecoveredTxEnvelope::as_eip1559, eip1559::handle::<T>)
 }
 
 pub(super) fn validate_gas_price(
@@ -96,6 +98,24 @@ pub(super) fn validate_gas_price(
         });
     }
     Ok(())
+}
+
+pub(super) fn validate_priority_fee(
+    max_fee_per_gas: U256,
+    max_priority_fee_per_gas: U256,
+) -> HandlerResult<()> {
+    if max_priority_fee_per_gas > max_fee_per_gas {
+        return Err(HandlerError::PriorityFeeGreaterThanMaxFee);
+    }
+    Ok(())
+}
+
+pub(super) fn effective_gas_price(
+    max_fee_per_gas: U256,
+    max_priority_fee_per_gas: U256,
+    basefee: U256,
+) -> U256 {
+    max_fee_per_gas.min(basefee.saturating_add(max_priority_fee_per_gas))
 }
 
 pub(super) fn validate_block_gas_limit(
