@@ -1,7 +1,7 @@
-use super::utils::{as_usize, as_usize_saturated};
 use crate::{
     EvmTypes,
     interpreter::{InstrStop, InstructionCx, Result, Word, memory::resize_memory},
+    utils::{word_to_usize, word_to_usize_saturated},
 };
 use core::hint::cold_path;
 use evm2_macros::instruction;
@@ -28,7 +28,7 @@ pub(crate) fn jumpi(cx: _, [target, cond]: [Word]) -> Result {
 
 #[inline(always)]
 fn jump_inner<T: EvmTypes>(target: Word, cx: &mut InstructionCx<'_, '_, T>) -> Result {
-    let target = as_usize_saturated(target);
+    let target = word_to_usize_saturated(target);
     if !cx.state.bytecode.is_valid_jumpdest(target) {
         cold_path();
         return Err(InstrStop::InvalidJump);
@@ -67,9 +67,9 @@ fn return_inner<T: EvmTypes>(
     len: Word,
     result: InstrStop,
 ) -> Result {
-    let len = as_usize(len)?;
+    let len = word_to_usize(len)?;
     let offset = if len != 0 {
-        let offset = as_usize(offset)?;
+        let offset = word_to_usize(offset)?;
         resize_memory(cx.gas, cx.state.memory(), offset, len)?;
         offset
     } else {

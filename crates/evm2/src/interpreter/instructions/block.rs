@@ -1,7 +1,7 @@
-use super::utils::{address_to_word, as_usize_saturated, b256_to_word};
 use crate::{
     SpecId,
     interpreter::{Host, InstrStop, Word},
+    utils::{address_to_word, b256_to_word, word_to_usize_saturated},
 };
 use evm2_macros::instruction;
 
@@ -72,7 +72,7 @@ pub(crate) fn basefee(cx: _) -> Result<out> {
 
 #[instruction]
 pub(crate) fn blobhash(cx: _, [index]: [Word]) -> Result<out> {
-    let index = as_usize_saturated(index);
+    let index = word_to_usize_saturated(index);
     *out = cx.state.tx().blob_hashes.get(index).copied().unwrap_or_default();
 }
 
@@ -93,12 +93,10 @@ mod tests {
         env::{BlockEnv, TxEnv},
         interpreter::{
             InstrStop, Word,
-            instructions::{
-                tests::{RunConfig, TestHost, push, run},
-                utils::{address_to_word, b256_to_word},
-            },
+            instructions::tests::{RunConfig, TestHost, push, run},
             op,
         },
+        utils::{address_to_word, b256_to_word},
     };
     use alloc::vec::Vec;
     use alloy_primitives::{Address, B256};

@@ -1,9 +1,8 @@
-use super::utils::as_usize;
 use crate::{
     EvmTypes, SpecId,
-    interpreter::{
-        GasId, Host, InstrStop, InstructionCx, Result, StackMut, Word, memory::resize_memory,
-    },
+    interpreter::{Host, InstrStop, InstructionCx, Result, StackMut, Word, memory::resize_memory},
+    utils::word_to_usize,
+    version::GasId,
 };
 use alloy_primitives::{B256, Bytes, Log, LogData};
 use evm2_macros::instruction;
@@ -80,13 +79,13 @@ fn log_common<T: EvmTypes>(
 ) -> Result {
     require_non_staticcall(&cx)?;
     let [offset, len] = stack.popn()?;
-    let len = as_usize(len)?;
+    let len = word_to_usize(len)?;
     cx.gas.spend(cx.state.gas_params().log_cost(n as u8, len))?;
 
     let data = if len == 0 {
         Bytes::new()
     } else {
-        let offset = as_usize(offset)?;
+        let offset = word_to_usize(offset)?;
         resize_memory(cx.gas, cx.state.memory(), offset, len)?;
         Bytes::copy_from_slice(cx.state.memory().slice(offset, len))
     };

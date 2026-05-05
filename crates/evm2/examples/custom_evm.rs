@@ -11,8 +11,9 @@ use evm2::{
     bytecode::Bytecode,
     env::BlockEnv,
     evm::{InMemoryDB, precompile::NoPrecompiles},
-    interpreter::{GasId, GasParams, Host, InstrStop, Instruction, Message, Word, op},
+    interpreter::{Host, InstrStop, Instruction, Message, Word, op},
     registry::{HandlerResult, TxRegistry, TxRequest},
+    version::{GasId, GasParams},
 };
 use evm2_macros::instruction;
 

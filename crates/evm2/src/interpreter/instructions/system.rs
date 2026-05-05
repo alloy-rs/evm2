@@ -1,12 +1,13 @@
 //! System opcode implementations.
 
-use super::utils::{as_usize, word_to_address};
 use crate::{
     EvmTypes, SpecId,
     interpreter::{
-        GasId, Host, InstrStop, InstructionCx, Message, MessageKind, Result, StackMut, Word,
+        Host, InstrStop, InstructionCx, Message, MessageKind, Result, StackMut, Word,
         memory::resize_memory,
     },
+    utils::{word_to_address, word_to_usize},
+    version::GasId,
 };
 use alloy_primitives::{Address, B256, Bytes};
 use core::{cmp::min, ops::Range};
@@ -30,9 +31,9 @@ fn resize_memory_range<T: EvmTypes>(
     offset: Word,
     len: Word,
 ) -> Result<Range<usize>> {
-    let len = as_usize(len)?;
+    let len = word_to_usize(len)?;
     let offset = if len != 0 {
-        let offset = as_usize(offset)?;
+        let offset = word_to_usize(offset)?;
         resize_memory(cx.gas, cx.state.memory(), offset, len)?;
         offset
     } else {
@@ -213,7 +214,7 @@ fn create_inner<T: EvmTypes>(
         return Ok(());
     }
 
-    let len = as_usize(len)?;
+    let len = word_to_usize(len)?;
     if cx.state.spec.enables(SpecId::SHANGHAI) {
         cx.gas.spend(cx.state.gas_params().initcode_cost(len))?;
     }
@@ -285,12 +286,10 @@ mod tests {
         SpecId,
         interpreter::{
             InstrStop, Message, MessageKind, MessageResult, Word,
-            instructions::{
-                tests::{RunConfig, TestHost, push, run},
-                utils::address_to_word,
-            },
+            instructions::tests::{RunConfig, TestHost, push, run},
             op,
         },
+        utils::address_to_word,
     };
     use alloy_primitives::{Address, Bytes};
 

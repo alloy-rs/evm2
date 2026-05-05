@@ -1,5 +1,5 @@
-use super::{i256::i256_cmp, utils::as_usize_saturated};
-use crate::interpreter::Word;
+use super::i256::i256_cmp;
+use crate::{interpreter::Word, utils::word_to_usize_saturated};
 use core::cmp::Ordering;
 use evm2_macros::instruction;
 
@@ -55,25 +55,25 @@ pub(crate) fn not([value]: [Word]) -> out {
 
 #[instruction]
 pub(crate) fn byte([index, value]: [Word]) -> out {
-    let index = as_usize_saturated(index);
+    let index = word_to_usize_saturated(index);
     *out = if index < 32 { Word::from(value.byte(31 - index)) } else { Word::ZERO };
 }
 
 #[instruction]
 pub(crate) fn shl([shift, value]: [Word]) -> out {
-    let shift = as_usize_saturated(shift);
+    let shift = word_to_usize_saturated(shift);
     *out = if shift < 256 { value << shift } else { Word::ZERO };
 }
 
 #[instruction]
 pub(crate) fn shr([shift, value]: [Word]) -> out {
-    let shift = as_usize_saturated(shift);
+    let shift = word_to_usize_saturated(shift);
     *out = if shift < 256 { value >> shift } else { Word::ZERO };
 }
 
 #[instruction]
 pub(crate) fn sar([shift, value]: [Word]) -> out {
-    let shift = as_usize_saturated(shift);
+    let shift = word_to_usize_saturated(shift);
     *out = if shift < 256 {
         value.arithmetic_shr(shift)
     } else if value.bit(255) {

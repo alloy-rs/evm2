@@ -8,7 +8,7 @@ use crate::{
 };
 
 mod gas_params;
-pub use gas_params::{GasId, GasParams, num_words};
+pub use gas_params::{GasId, GasParams};
 
 mod static_gas_table;
 pub use static_gas_table::StaticGasTable;
@@ -142,12 +142,7 @@ macro_rules! evm_versions {
                             };
                         }
                         #[allow(unused_imports)]
-                        use op as static_gas;
-                        macro_rules! gas {
-                            ($id:ident, $value:expr) => {
-                                const _: u32 = $value;
-                            };
-                        }
+                        use {op as static_gas, noop as gas};
 
                         $($tokens)*
                     }
@@ -320,6 +315,7 @@ evm_versions! {
 
     HOMESTEAD {
         op!(DELEGATECALL, 40);
+
         gas!(TxCreateCost, CREATE);
     }
 
@@ -339,6 +335,7 @@ evm_versions! {
 
     SPURIOUS_DRAGON {
         gas!(ExpByte, 50);
+
         static_gas!(EXP, EXP);
     }
 
@@ -410,6 +407,8 @@ evm_versions! {
         static_gas!(SELFDESTRUCT, 5000);
     }
 
+    MERGE {}
+
     SHANGHAI {
         op!(PUSH0, BASE);
 
@@ -439,6 +438,7 @@ evm_versions! {
     }
 
     AMSTERDAM {
+        #[allow(dead_code)]
         const CPSB: u32 = 1174;
 
         op!(DUPN, VERYLOW);

@@ -1,7 +1,6 @@
 //! EVM interpreter.
 
 pub(crate) mod gas;
-pub use crate::version::{GasId, GasParams, num_words};
 pub use gas::{Gas, GasTracker, MemoryGas};
 
 #[macro_use]
@@ -31,7 +30,7 @@ pub use state::{Host, MessageResult, State};
 mod runtime;
 pub use runtime::Interpreter;
 
-/// Interpreter result type.
+/// Instruction result type.
 pub type Result<T = (), E = InstrStop> = core::result::Result<T, E>;
 
 /// Result of executing an EVM instruction.
@@ -152,68 +151,5 @@ impl InstrStop {
     #[inline]
     pub const fn is_error(self) -> bool {
         !self.is_ok_or_revert() && !matches!(self, Self::Suspend)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{
-        BaseEvmConfig, ExecutionConfig, SpecId,
-        bytecode::Bytecode,
-        interpreter::instructions::tests::{TestHost, TestTypes},
-    };
-    use alloy_primitives::{Bytes, U256};
-
-    #[test]
-    fn defaults() {
-        assert_eq!(SpecId::DEFAULT, SpecId::default());
-    }
-
-    #[test]
-    fn main_smoke() {
-        #[rustfmt::skip]
-        let bytecode = core::hint::black_box(&[
-            op::PUSH1, 0x01,
-            op::PUSH1, 0x02,
-            op::ADD,
-            op::STOP,
-        ][..]);
-        type Config = BaseEvmConfig<{ SpecId::HOMESTEAD as u8 }>;
-
-        let bytecode = Bytecode::new_legacy(Bytes::copy_from_slice(bytecode));
-        let mut interpreter = Interpreter::<TestTypes>::new(
-            bytecode,
-            crate::env::TxEnv::default(),
-            Message { gas_limit: 10_000, ..Message::default() },
-            false,
-        );
-        let mut host = TestHost::default();
-        interpreter.run_with(ExecutionConfig::for_config::<Config>(), &mut host);
-    }
-
-    #[test]
-    fn basic() {
-        const BASIC: &[u8] = &[op::PUSH1, 0x01, op::PUSH1, 0x02, op::ADD, op::STOP];
-
-        macro_rules! check {
-            ($spec_id:ident) => {{
-                type Config = BaseEvmConfig<{ SpecId::$spec_id as u8 }>;
-                let bytecode = Bytecode::new_legacy(Bytes::from_static(BASIC));
-                let mut interpreter = Interpreter::<TestTypes>::new(
-                    bytecode,
-                    crate::env::TxEnv::default(),
-                    Message { gas_limit: 10_000, ..Message::default() },
-                    false,
-                );
-                let mut host = TestHost::default();
-                interpreter.run_with(ExecutionConfig::for_config::<Config>(), &mut host);
-                assert!(interpreter.gas.remaining() > 0);
-                assert_eq!(interpreter.stack[0], U256::from(3));
-            }};
-        }
-
-        check!(FRONTIER);
-        check!(HOMESTEAD);
     }
 }

@@ -296,8 +296,7 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
             create_message.input = Bytes::new();
             let mut interpreter =
                 Interpreter::<T>::new(bytecode, tx_env, create_message, caller_is_static);
-            let execution_config = self.execution_config;
-            let stop = interpreter.run_with(execution_config, self);
+            let stop = interpreter.run_with(self.execution_config, self);
             let mut gas = interpreter.gas();
             if stop.is_success() || stop.is_revert() {
                 gas.set_final_refund(self.spec_id().enables(SpecId::LONDON));
@@ -355,8 +354,7 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
         }
 
         let mut interpreter = Interpreter::<T>::new(bytecode, tx_env, message, caller_is_static);
-        let execution_config = self.execution_config;
-        let stop = interpreter.run_with(execution_config, self);
+        let stop = interpreter.run_with(self.execution_config, self);
         let mut gas = interpreter.gas();
         if stop.is_success() || stop.is_revert() {
             gas.set_final_refund(self.spec_id().enables(SpecId::LONDON));

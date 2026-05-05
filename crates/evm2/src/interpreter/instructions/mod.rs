@@ -30,7 +30,6 @@ pub(crate) use system::*;
 
 mod i256;
 pub(crate) mod table;
-mod utils;
 
 #[cfg(test)]
 pub(crate) mod tests;

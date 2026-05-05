@@ -182,3 +182,13 @@ macro_rules! spec_to_generic {
         }
     }};
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn defaults() {
+        assert_eq!(SpecId::DEFAULT, SpecId::default());
+    }
+}

@@ -1,3 +1,4 @@
+use crate::utils::num_words;
 use alloy_primitives::U256;
 use core::ops::{Index, IndexMut};
 
@@ -178,12 +179,6 @@ gas_ids! {
     Custom6;
     /// Reserved custom gas parameter slot 7.
     Custom7;
-}
-
-/// Returns the number of EVM words needed for `len` bytes.
-#[inline]
-pub const fn num_words(len: usize) -> usize {
-    len.div_ceil(32)
 }
 
 /// Dynamic gas parameter table.
