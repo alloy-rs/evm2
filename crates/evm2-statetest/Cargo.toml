@@ -20,6 +20,7 @@ evm2 = { path = "../evm2", features = ["std", "serde"] }
 alloy-consensus = { workspace = true, features = ["std"] }
 alloy-primitives = { workspace = true, features = ["std", "serde", "rlp"] }
 alloy-rlp = { workspace = true, features = ["std"] }
+alloy-rpc-types-eth = { workspace = true, features = ["std"] }
 alloy-trie = { workspace = true, features = ["ethereum"] }
 k256 = { workspace = true, features = ["ecdsa", "std"] }
 libtest-mimic.workspace = true
