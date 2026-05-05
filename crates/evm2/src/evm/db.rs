@@ -1,9 +1,9 @@
 //! In-memory database helpers for the EVM state overlay.
 
 use super::state::AccountInfo;
-use crate::{KECCAK_EMPTY, bytecode::Bytecode, interpreter::Word};
+use crate::{bytecode::Bytecode, interpreter::Word};
 use alloc::string::ToString;
-use alloy_primitives::{Address, B256, keccak256, map};
+use alloy_primitives::{Address, B256, KECCAK256_EMPTY, keccak256, map};
 
 /// Backing database view used to initialize mutable [`super::State`].
 pub trait Database {
@@ -38,7 +38,7 @@ impl Default for CacheDB {
     #[inline]
     fn default() -> Self {
         let mut contracts = map::HashMap::default();
-        contracts.insert(KECCAK_EMPTY, Bytecode::default());
+        contracts.insert(KECCAK256_EMPTY, Bytecode::default());
         contracts.insert(B256::ZERO, Bytecode::default());
 
         Self {
@@ -57,13 +57,13 @@ impl CacheDB {
         if let Some(code) = &info.code
             && !code.is_empty()
         {
-            if info.code_hash == KECCAK_EMPTY {
+            if info.code_hash == KECCAK256_EMPTY {
                 info.code_hash = code.hash_slow();
             }
             self.contracts.entry(info.code_hash).or_insert_with(|| code.clone());
         }
         if info.code_hash.is_zero() {
-            info.code_hash = KECCAK_EMPTY;
+            info.code_hash = KECCAK256_EMPTY;
         }
     }
 

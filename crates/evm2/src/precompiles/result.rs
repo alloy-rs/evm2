@@ -187,7 +187,7 @@ pub enum PrecompileHalt {
 impl From<crate::interpreter::InstrStop> for PrecompileError {
     #[inline]
     fn from(x: crate::interpreter::InstrStop) -> Self {
-        debug_assert!(x.is_error());
+        debug_assert!(x.is_halt());
         Self::Halt(PrecompileHalt::OutOfGas)
     }
 }

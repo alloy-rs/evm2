@@ -1,10 +1,10 @@
 //! Basic in-memory EVM host state.
 
 use super::db::Database;
-use crate::{KECCAK_EMPTY, bytecode::Bytecode, interpreter::Word};
+use crate::{bytecode::Bytecode, interpreter::Word};
 use alloc::{collections::BTreeMap, vec::Vec};
 use alloy_primitives::{
-    Address, B256, Log, U256,
+    Address, B256, KECCAK256_EMPTY, Log, U256,
     map::{self, HashMap, HashSet, hash_map},
 };
 
@@ -65,7 +65,7 @@ impl Default for AccountInfo {
         Self {
             balance: U256::ZERO,
             nonce: 0,
-            code_hash: KECCAK_EMPTY,
+            code_hash: KECCAK256_EMPTY,
             code: Some(Bytecode::default()),
         }
     }
@@ -108,7 +108,7 @@ impl AccountInfo {
     /// Returns whether this account is empty by the Spurious Dragon definition.
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.balance.is_zero() && self.nonce == 0 && self.code_hash == KECCAK_EMPTY
+        self.balance.is_zero() && self.nonce == 0 && self.code_hash == KECCAK256_EMPTY
     }
 }
 
@@ -157,7 +157,7 @@ impl Account {
     /// Returns whether this account is empty.
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.nonce == 0 && self.balance.is_zero() && self.code_hash == KECCAK_EMPTY
+        self.nonce == 0 && self.balance.is_zero() && self.code_hash == KECCAK256_EMPTY
     }
 }
 
@@ -472,7 +472,7 @@ impl<D: Database> State<D> {
             self.journal.push(JournalEntry::AccountChange { address, previous: None });
             self.accounts.get_mut(&address).expect("account overlay exists").current =
                 Some(Account {
-                    code_hash: KECCAK_EMPTY,
+                    code_hash: KECCAK256_EMPTY,
                     code: Bytecode::default(),
                     ..Account::default()
                 });
@@ -517,7 +517,7 @@ impl<D: Database> State<D> {
         let Some(account) = self.find(address) else {
             return Bytecode::default();
         };
-        if account.code_hash == KECCAK_EMPTY {
+        if account.code_hash == KECCAK256_EMPTY {
             return Bytecode::default();
         }
         if !account.code.is_empty() {
@@ -647,7 +647,7 @@ impl<D: Database> State<D> {
         spec: crate::SpecId,
     ) -> Result<(), crate::interpreter::InstrStop> {
         if let Some(info) = self.account_info(address)
-            && (info.nonce != 0 || info.code_hash != KECCAK_EMPTY)
+            && (info.nonce != 0 || info.code_hash != KECCAK256_EMPTY)
         {
             return Err(crate::interpreter::InstrStop::CreateCollision);
         }
@@ -662,7 +662,7 @@ impl<D: Database> State<D> {
         self.accounts.get_mut(&address).expect("account overlay exists").current = Some(Account {
             nonce: u64::from(spec.enables(crate::SpecId::SPURIOUS_DRAGON)),
             balance,
-            code_hash: KECCAK_EMPTY,
+            code_hash: KECCAK256_EMPTY,
             code: Bytecode::default(),
             just_created: true,
             code_changed: true,
@@ -826,7 +826,7 @@ impl<D: Database> State<D> {
             && account.current.is_none()
         {
             account.current = Some(Account {
-                code_hash: KECCAK_EMPTY,
+                code_hash: KECCAK256_EMPTY,
                 code: Bytecode::default(),
                 ..Account::default()
             });
@@ -885,7 +885,7 @@ impl<D: Database> State<D> {
                 && account.code_changed
                 && !account.code.is_empty()
                 && !account.code_hash.is_zero()
-                && account.code_hash != KECCAK_EMPTY
+                && account.code_hash != KECCAK256_EMPTY
             {
                 changes.code.insert(account.code_hash, account.code.clone());
             }
