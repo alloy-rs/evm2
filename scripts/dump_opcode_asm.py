@@ -8,6 +8,7 @@
 Examples:
     ./scripts/dump_opcode_asm.py
     ./scripts/dump_opcode_asm.py ADD PUSH1 SSTORE -o tmp/mydump
+    ./scripts/dump_opcode_asm.py --features evm2/nightly ADD
 """
 
 import argparse
@@ -76,6 +77,11 @@ def parse_args() -> argparse.Namespace:
         "--keep-everything",
         action="store_true",
         help="Keep the full cargo asm --everything dumps in the output directory.",
+    )
+    parser.add_argument(
+        "--all-monomorphizations",
+        action="store_true",
+        help="Dump every matching dispatch monomorphization instead of only the first.",
     )
     return parser.parse_args()
 
@@ -205,12 +211,16 @@ def dump_output(
     mnemonic: str,
     opcode: int,
     output: str,
+    all_monomorphizations: bool,
 ) -> Path:
     blocks = blocks_by_opcode.get(opcode, [])
     if not blocks:
         raise RuntimeError(
             f"could not find cargo asm --{output} output for {mnemonic} ({opcode:#04x})"
         )
+    if not all_monomorphizations and len(blocks) > 1:
+        log(f"{mnemonic} has {len(blocks)} {output} monomorphization(s); writing the first")
+        blocks = blocks[:1]
 
     suffix = "ll" if output == "llvm" else "s"
     path = out / f"{mnemonic}.{suffix}"
@@ -247,7 +257,14 @@ def main() -> int:
         for output in ("asm", "llvm")
     ]
     for mnemonic, opcode, output in tasks:
-        path = dump_output(out, dumps[output], mnemonic, opcode, output)
+        path = dump_output(
+            out,
+            dumps[output],
+            mnemonic,
+            opcode,
+            output,
+            args.all_monomorphizations,
+        )
         log(f"wrote {path.relative_to(ROOT)}")
     print(f"wrote {len(tasks)} file(s) to {out.relative_to(ROOT)}")
 
