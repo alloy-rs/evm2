@@ -91,15 +91,14 @@ macro_rules! evm_versions {
         const fn base_version_tables<T: EvmTypes, Cfg: EvmConfig<T>>() -> VersionTables<T> {
             use crate::interpreter::gas::*;
 
-            let version = Cfg::VERSION;
-            let spec_id = version.spec_id();
-            let mut v = VersionTables::empty(version);
+            let spec_id = Cfg::VERSION.spec_id();
+            let mut v = VersionTables::empty();
 
             macro_rules! op {
                 ($name:ident, $cost:expr) => {
-                    v.set_instruction_with_dynamic_gas(
+                    v.set_instruction(
                         op::$name,
-                        Some(op_instr!(T, $name)),
+                        op_instr!(T, $name),
                         op_dynamic_gas!(T, $name),
                     );
                     v.set_static_gas(op::$name, $cost as u16);

@@ -81,6 +81,7 @@ const fn custom_version_tables<const BASE_SPEC_ID: u8>() -> VersionTables<Custom
         CUSTOM_OPCODE,
         CUSTOM_OPCODE_GAS,
         <custom<CustomTypes> as Instruction<CustomTypes>>::execute,
+        true,
     );
     version
 }

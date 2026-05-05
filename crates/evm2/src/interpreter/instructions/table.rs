@@ -129,9 +129,8 @@ macro_rules! assign_instruction_table_entries {
 macro_rules! assign_instruction_table_entries {
     ([$table:expr, $evm_types:ty, $config:ty, $dispatch:ident, $instr_fn:ty] $($op:literal,)*) => {
         $(
-            $table[$op] = if <$config as EvmConfig<$evm_types>>::VERSION_TABLES
-                .instruction_dynamic_gas_or_unknown($op)
-            {
+            let instruction = <$config as EvmConfig<$evm_types>>::VERSION_TABLES.instruction($op);
+            $table[$op] = if instruction.dynamic_gas {
                 $dispatch::<$evm_types, $config, $op, true> as $instr_fn
             } else {
                 $dispatch::<$evm_types, $config, $op, false> as $instr_fn
@@ -190,7 +189,7 @@ where
     #[cfg(not(feature = "nightly"))]
     let mut table = [dispatch::<T, C, 0> as InstructionFn<T>; 256];
     #[cfg(feature = "nightly")]
-    let mut table = [if C::VERSION_TABLES.instruction_dynamic_gas_or_unknown(0) {
+    let mut table = [if C::VERSION_TABLES.instruction(0).dynamic_gas {
         dispatch::<T, C, 0, true> as InstructionFn<T>
     } else {
         dispatch::<T, C, 0, false> as InstructionFn<T>
@@ -201,7 +200,7 @@ where
     let mut i = 0;
     let mut unknown_idx = None;
     while i < 256 {
-        if !C::VERSION_TABLES.contains_instruction(i as u8) {
+        if C::VERSION_TABLES.instruction(i as u8).is_unknown {
             if unknown_idx.is_none() {
                 unknown_idx = Some(i);
             }
@@ -234,7 +233,7 @@ fn dispatch_mono<T: EvmTypes, C: EvmConfig<T>>(
     gas: &mut Gas,
     state: &mut State<'_, T>,
 ) -> InstructionFnRet {
-    let instr = C::VERSION_TABLES.instruction_or_unknown(op);
+    let instr = C::VERSION_TABLES.instruction(op).instr;
     let r;
     match pre_step::<T, C>(gas, op) {
         Ok(()) => {
@@ -284,7 +283,7 @@ extern_table! {
         state: &mut State<'_, T>,
         op: u8,
     ) {
-        let instr = C::VERSION_TABLES.instruction_or_unknown(op);
+        let instr = C::VERSION_TABLES.instruction(op).instr;
         if let Err(e) = pre_step::<T, C>(&mut remaining_gas, op) {
             cold_path();
             tail_return!(tail_call_restore::<T>(
