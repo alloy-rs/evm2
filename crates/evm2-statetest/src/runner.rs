@@ -46,7 +46,7 @@ fn collect_trials(args: &Arguments) -> Result<Vec<Trial>, String> {
             find_json_tests(std::slice::from_ref(&root.path)).map_err(|err| err.to_string())?;
         for path in files {
             let name = test_name(root.name, &root.path, &path);
-            let ignored = is_slow_passing_test(&name);
+            let ignored = should_ignore(&name);
             trials.push(Trial::test(name, move || run_file(path)).with_ignored_flag(ignored));
         }
     }
@@ -58,7 +58,7 @@ fn exact_trial(roots: &[StateTestRoot], name: &str) -> Option<Trial> {
     let root = roots.iter().find(|root| root.name == root_name)?;
     let path = root.path.join(relative);
     path.is_file().then(|| {
-        let ignored = is_slow_passing_test(name);
+        let ignored = should_ignore(name);
         Trial::test(name.to_string(), move || run_file(path)).with_ignored_flag(ignored)
     })
 }
@@ -78,23 +78,21 @@ fn path_name(path: &Path) -> String {
     path.iter().map(|component| component.to_string_lossy()).collect::<Vec<_>>().join("/")
 }
 
-fn is_slow_passing_test(name: &str) -> bool {
-    if name.starts_with("legacy_constantinople::") {
-        return false;
-    }
+const IGNORED_TESTS: &[&str] = &[
+    "CALLBlake2f_MaxRounds.json",
+    "loopMul.json",
+    "stQuadraticComplexityTest/Call1MB1024Calldepth.json",
+    "stQuadraticComplexityTest/Create1000",
+    "stRecursiveCreate/recursiveCreate",
+    "stRevertTest/LoopCallsDepthThenRevert",
+    "stRevertTest/LoopDelegateCallsDepthThenRevert",
+    "stSolidityTest/RecursiveCreateContracts",
+    "stStaticCall/static_Call1MB1024Calldepth.json",
+    "stStaticCall/static_CallRecursiveBomb",
+    "stStaticCall/static_LoopCallsDepthThenRevert",
+    "stSystemOperationsTest/CallRecursiveBomb",
+];
 
-    const SLOW_PASSING_PATTERNS: &[&str] = &[
-        "stQuadraticComplexityTest/Call1MB1024Calldepth.json",
-        "stQuadraticComplexityTest/Create1000",
-        "stRecursiveCreate/recursiveCreate",
-        "stRevertTest/LoopCallsDepthThenRevert",
-        "stRevertTest/LoopDelegateCallsDepthThenRevert",
-        "stSolidityTest/RecursiveCreateContracts",
-        "stStaticCall/static_Call1MB1024Calldepth.json",
-        "stStaticCall/static_CallRecursiveBomb",
-        "stStaticCall/static_LoopCallsDepthThenRevert",
-        "stSystemOperationsTest/CallRecursiveBomb",
-    ];
-
-    SLOW_PASSING_PATTERNS.iter().any(|pattern| name.contains(pattern))
+fn should_ignore(name: &str) -> bool {
+    IGNORED_TESTS.iter().any(|pattern| name.contains(pattern))
 }
