@@ -1,9 +1,9 @@
 //! In-memory cache database.
 
 use super::{Database, EmptyDB};
-use crate::{KECCAK_EMPTY, bytecode::Bytecode, evm::state::AccountInfo, interpreter::Word};
+use crate::{bytecode::Bytecode, evm::state::AccountInfo, interpreter::Word};
 use alloy_primitives::{
-    Address, B256,
+    Address, B256, KECCAK256_EMPTY,
     map::{AddressMap, B256Map, HashMap, U256Map, hash_map::Entry},
 };
 
@@ -31,7 +31,7 @@ impl Default for Cache {
     #[inline]
     fn default() -> Self {
         let mut contracts = B256Map::default();
-        contracts.insert(KECCAK_EMPTY, Bytecode::default());
+        contracts.insert(KECCAK256_EMPTY, Bytecode::default());
         contracts.insert(B256::ZERO, Bytecode::default());
         Self {
             accounts: AddressMap::default(),
@@ -77,13 +77,13 @@ impl<ExtDB> CacheDB<ExtDB> {
         if let Some(code) = &info.code
             && !code.is_empty()
         {
-            if info.code_hash == KECCAK_EMPTY {
+            if info.code_hash == KECCAK256_EMPTY {
                 info.code_hash = code.hash_slow();
             }
             contracts.entry(info.code_hash).or_insert_with(|| code.clone());
         }
         if info.code_hash.is_zero() {
-            info.code_hash = KECCAK_EMPTY;
+            info.code_hash = KECCAK256_EMPTY;
         }
     }
 

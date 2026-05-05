@@ -1,8 +1,9 @@
 use super::{BytecodeRef, InstrStop, Interpreter, Memory, Message, Word};
 use crate::{
-    AccountLoad, EvmTypes, SelfDestructResult, SpecId, StorageLoad, Version,
+    EvmTypes, SpecId, Version,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
+    evm::{AccountLoad, SelfDestructResult, StorageLoad},
     version::GasParams,
 };
 use alloy_primitives::{Address, B256, Bytes, Log};

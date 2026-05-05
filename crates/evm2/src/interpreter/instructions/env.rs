@@ -1,5 +1,6 @@
 use crate::{
-    AccountLoad, EvmTypes,
+    EvmTypes,
+    evm::AccountLoad,
     interpreter::{Host, InstrStop, InstructionCx, Result, Word, memory::resize_memory},
     utils::{
         address_to_word, b256_to_word, word_to_address, word_to_usize, word_to_usize_saturated,

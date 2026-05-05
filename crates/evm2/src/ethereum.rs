@@ -4,6 +4,7 @@ use crate::{
     Evm, EvmTypes, SpecId, TxResult,
     bytecode::Bytecode,
     env::TxEnv,
+    evm::precompile::PrecompileProvider,
     interpreter::{Host, Message, MessageKind, Word},
     registry::{HandlerError, HandlerResult, TxRegistry, TxRequest},
 };
@@ -113,6 +114,9 @@ fn handle_legacy<T: EvmTypes<Host = Evm<T>>>(
     }
     if let TxKind::Call(to) = tx.to {
         let _ = req.host.state.warm_account(to);
+    }
+    for address in req.host.precompiles().warm_addresses() {
+        let _ = req.host.state.warm_account(address);
     }
 
     req.host.state.add_balance(caller, Word::ZERO.wrapping_sub(max_gas_cost));

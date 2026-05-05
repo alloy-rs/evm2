@@ -2,13 +2,13 @@
 
 use super::db::Database;
 use crate::{
-    KECCAK_EMPTY, SpecId,
+    SpecId,
     bytecode::Bytecode,
     interpreter::{InstrStop, Word},
 };
 use alloc::{collections::BTreeMap, vec::Vec};
 use alloy_primitives::{
-    Address, B256, Log, U256,
+    Address, B256, KECCAK256_EMPTY, Log, U256,
     map::{AddressMap, AddressSet, HashMap, HashSet, U256Map, hash_map},
 };
 
@@ -69,7 +69,7 @@ impl Default for AccountInfo {
         Self {
             balance: U256::ZERO,
             nonce: 0,
-            code_hash: KECCAK_EMPTY,
+            code_hash: KECCAK256_EMPTY,
             code: Some(Bytecode::default()),
         }
     }
@@ -112,7 +112,7 @@ impl AccountInfo {
     /// Returns whether this account is empty by the Spurious Dragon definition.
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.balance.is_zero() && self.nonce == 0 && self.code_hash == KECCAK_EMPTY
+        self.balance.is_zero() && self.nonce == 0 && self.code_hash == KECCAK256_EMPTY
     }
 }
 
@@ -161,7 +161,7 @@ impl Account {
     /// Returns whether this account is empty.
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.nonce == 0 && self.balance.is_zero() && self.code_hash == KECCAK_EMPTY
+        self.nonce == 0 && self.balance.is_zero() && self.code_hash == KECCAK256_EMPTY
     }
 }
 
@@ -495,7 +495,7 @@ impl<D: Database> State<D> {
             self.journal.push(JournalEntry::AccountChange { address, previous: None });
         }
         tracked.current.get_or_insert_with(|| Account {
-            code_hash: KECCAK_EMPTY,
+            code_hash: KECCAK256_EMPTY,
             code: Bytecode::default(),
             ..Account::default()
         })
@@ -512,7 +512,7 @@ impl<D: Database> State<D> {
         let previous = tracked.current.clone();
         self.journal.push(JournalEntry::AccountChange { address, previous });
         tracked.current.get_or_insert_with(|| Account {
-            code_hash: KECCAK_EMPTY,
+            code_hash: KECCAK256_EMPTY,
             code: Bytecode::default(),
             ..Account::default()
         })
@@ -548,7 +548,7 @@ impl<D: Database> State<D> {
         let Some(account) = self.find(address) else {
             return Bytecode::default();
         };
-        if account.code_hash == KECCAK_EMPTY {
+        if account.code_hash == KECCAK256_EMPTY {
             return Bytecode::default();
         }
         if !account.code.is_empty() {
@@ -672,7 +672,7 @@ impl<D: Database> State<D> {
         spec: SpecId,
     ) -> Result<(), InstrStop> {
         if let Some(info) = self.account_info(address)
-            && (info.nonce != 0 || info.code_hash != KECCAK_EMPTY)
+            && (info.nonce != 0 || info.code_hash != KECCAK256_EMPTY)
         {
             return Err(InstrStop::CreateCollision);
         }
@@ -687,7 +687,7 @@ impl<D: Database> State<D> {
         *account = Account {
             nonce: u64::from(spec.enables(SpecId::SPURIOUS_DRAGON)),
             balance,
-            code_hash: KECCAK_EMPTY,
+            code_hash: KECCAK256_EMPTY,
             code: Bytecode::default(),
             just_created: true,
             code_changed: true,
@@ -882,7 +882,7 @@ impl<D: Database> State<D> {
         );
         if account.original.is_none() {
             account.current.get_or_insert_with(|| Account {
-                code_hash: KECCAK_EMPTY,
+                code_hash: KECCAK256_EMPTY,
                 code: Bytecode::default(),
                 ..Account::default()
             });
@@ -941,7 +941,7 @@ impl<D: Database> State<D> {
                 if account.code_changed
                     && !account.code.is_empty()
                     && !code_hash.is_zero()
-                    && code_hash != KECCAK_EMPTY
+                    && code_hash != KECCAK256_EMPTY
                 {
                     changes.code.insert(code_hash, account.code.clone());
                 }
