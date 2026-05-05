@@ -124,7 +124,7 @@ impl<Tx: 'static> EvmTypes for BaseEvmTypes<Tx> {
     type Tx = Tx;
     type Host = crate::evm::Evm<Self>;
     type Database = InMemoryDB;
-    type Precompiles = crate::precompiles::BasePrecompiles;
+    type Precompiles = crate::precompiles::Precompiles;
 }
 
 /// Base EVM configuration for an inherited base specification ID.

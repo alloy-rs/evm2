@@ -69,13 +69,13 @@ use aurora_engine_modexp as _;
 #[cfg(feature = "p256-aws-lc-rs")]
 use p256 as _;
 
-/// Base Ethereum precompile provider.
+/// Default precompile provider.
 #[derive(Clone, Debug)]
-pub struct BasePrecompiles {
+pub struct Precompiles {
     map: Cow<'static, PrecompileMap>,
 }
 
-impl BasePrecompiles {
+impl Precompiles {
     /// Creates a precompile provider from a static precompile map.
     #[inline]
     pub const fn new(map: Cow<'static, PrecompileMap>) -> Self {
@@ -95,7 +95,7 @@ impl BasePrecompiles {
     }
 }
 
-impl PrecompileProvider for BasePrecompiles {
+impl PrecompileProvider for Precompiles {
     #[inline]
     fn warm_addresses(&self) -> Vec<Address> {
         self.map.as_ref().addresses().collect()

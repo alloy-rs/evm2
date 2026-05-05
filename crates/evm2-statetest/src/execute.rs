@@ -9,7 +9,7 @@ use alloy_trie::{
     root::{state_root_unhashed, storage_root_unhashed},
 };
 use evm2::{
-    BaseEvmTypes, BasePrecompiles, Evm, EvmTypes, SpecId, TxResult,
+    BaseEvmTypes, Evm, EvmTypes, Precompiles, SpecId, TxResult,
     bytecode::Bytecode,
     env::BlockEnv,
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
@@ -210,7 +210,7 @@ fn execute_spec(
                 block,
                 ethereum_tx_registry(),
                 database,
-                BasePrecompiles::base(spec),
+                Precompiles::base(spec),
             );
             let result = evm.transact(tx)?;
             Ok(spec_outcome(&evm, result, spec))

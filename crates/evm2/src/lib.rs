@@ -68,7 +68,7 @@ pub use evm::{
 
 pub mod precompiles;
 pub use precompiles::{
-    BasePrecompiles, Crypto, PrecompileError, PrecompileHalt, crypto, install_crypto,
+    Crypto, PrecompileError, PrecompileHalt, Precompiles, crypto, install_crypto,
 };
 
 pub mod version;
