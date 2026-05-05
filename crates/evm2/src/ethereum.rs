@@ -1,12 +1,14 @@
 //! Ethereum transaction envelope and handlers.
 
 use crate::{
-    Evm, EvmTypes, SpecId, TxResult,
+    Evm, EvmTypes, SpecId, TxResult, Version,
     bytecode::Bytecode,
     env::TxEnv,
     evm::precompile::PrecompileProvider,
     interpreter::{Host, Message, MessageKind, Word},
     registry::{HandlerError, HandlerResult, TxRegistry, TxRequest},
+    utils::num_words,
+    version::GasId,
 };
 use alloy_consensus::{TxEip1559, TxEip2930, TxEip7702, TxLegacy, transaction::Recovered};
 use alloy_eips::eip2718::Typed2718;
@@ -92,7 +94,7 @@ fn handle_legacy<T: EvmTypes<Host = Evm<T>>>(
             base_fee: req.host.block.basefee,
         });
     }
-    let intrinsic = legacy_intrinsic_gas(spec_id, tx);
+    let intrinsic = legacy_intrinsic_gas(req.host.version(), tx);
     if tx.gas_limit < intrinsic {
         return Err(HandlerError::IntrinsicGasTooLow { required: intrinsic, got: tx.gas_limit });
     }
@@ -193,7 +195,8 @@ fn handle_legacy<T: EvmTypes<Host = Evm<T>>>(
 }
 
 /// Calculates intrinsic legacy transaction gas.
-pub fn legacy_intrinsic_gas(spec: SpecId, tx: &TxLegacy) -> u64 {
+pub fn legacy_intrinsic_gas(version: &Version, tx: &TxLegacy) -> u64 {
+    let spec = version.spec_id();
     let non_zero_multiplier = if spec.enables(SpecId::ISTANBUL) { 16 } else { 68 };
     let mut gas = 21_000;
     for byte in &tx.input {
@@ -202,5 +205,41 @@ pub fn legacy_intrinsic_gas(spec: SpecId, tx: &TxLegacy) -> u64 {
     if tx.to.is_create() && spec.enables(SpecId::HOMESTEAD) {
         gas += 32_000;
     }
+    if tx.to.is_create() && spec.enables(SpecId::SHANGHAI) {
+        gas += u64::from(version.gas_params().get(GasId::TxInitcodeCost))
+            * num_words(tx.input.len()) as u64;
+    }
     gas
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::vec;
+
+    fn legacy_tx(to: TxKind, input: Bytes) -> TxLegacy {
+        TxLegacy {
+            chain_id: None,
+            nonce: 0,
+            gas_price: 0,
+            gas_limit: 0,
+            to,
+            value: U256::ZERO,
+            input,
+        }
+    }
+
+    #[test]
+    fn legacy_intrinsic_gas_charges_shanghai_create_initcode_words() {
+        let tx = legacy_tx(TxKind::Create, Bytes::from(vec![1; 74]));
+
+        assert_eq!(
+            legacy_intrinsic_gas(&Version::base(SpecId::LONDON), &tx),
+            21_000 + 32_000 + 74 * 16
+        );
+        assert_eq!(
+            legacy_intrinsic_gas(&Version::base(SpecId::SHANGHAI), &tx),
+            21_000 + 32_000 + 74 * 16 + 3 * 2
+        );
+    }
 }
