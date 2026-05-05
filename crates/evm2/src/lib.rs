@@ -12,6 +12,8 @@ extern crate alloc;
 
 use alloy_primitives::{B256, Bytes};
 
+pub use alloy_primitives::KECCAK256_EMPTY as KECCAK_EMPTY;
+
 /// Loaded account information.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct AccountLoad {

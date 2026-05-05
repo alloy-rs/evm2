@@ -1,15 +1,51 @@
 //! Basic in-memory EVM host state.
 
-use crate::{bytecode::Bytecode, interpreter::Word};
-use alloc::{string::ToString, vec::Vec};
+use super::db::Database;
+use crate::{KECCAK_EMPTY, bytecode::Bytecode, interpreter::Word};
+use alloc::{collections::BTreeMap, vec::Vec};
 use alloy_primitives::{
-    Address, B256, U256, keccak256,
-    map::{self, HashMap, HashSet},
+    Address, B256, Log, U256,
+    map::{self, HashMap, HashSet, hash_map},
 };
 
-pub use alloy_primitives::KECCAK256_EMPTY as KECCAK_EMPTY;
+/// A value tracked together with the value it had at the start of the current
+/// transaction.
+///
+/// `Tracked` is used by [`State`] to keep an overlay over the backing database
+/// and by [`StateChanges`] to describe account and storage transitions.
+/// `original` is the value at the current transaction boundary, while `current`
+/// is the value after all in-flight EVM mutations. When a transaction is
+/// accepted, `current` becomes the next transaction's `original` without writing
+/// anything to the backing database.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub struct Tracked<T> {
+    /// Value at the start of the current transaction.
+    pub original: T,
+    /// Current overlay value.
+    pub current: T,
+}
 
-/// Account information loaded from the backing database.
+impl<T> Tracked<T> {
+    /// Creates a tracked value whose original and current values are equal.
+    #[inline]
+    pub fn new(value: T) -> Self
+    where
+        T: Clone,
+    {
+        Self { original: value.clone(), current: value }
+    }
+}
+
+impl<T: PartialEq> Tracked<T> {
+    /// Returns whether the current value differs from the original value.
+    #[inline]
+    pub fn is_changed(&self) -> bool {
+        self.original != self.current
+    }
+}
+
+/// Account information loaded from the backing database or emitted in a state
+/// transition.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 #[non_exhaustive]
 pub struct AccountInfo {
@@ -21,8 +57,6 @@ pub struct AccountInfo {
     pub code_hash: B256,
     /// Bytecode associated with this account.
     pub code: Option<Bytecode>,
-    /// Whether the account has initial persistent storage.
-    pub has_storage: bool,
 }
 
 impl Default for AccountInfo {
@@ -33,7 +67,6 @@ impl Default for AccountInfo {
             nonce: 0,
             code_hash: KECCAK_EMPTY,
             code: Some(Bytecode::default()),
-            has_storage: false,
         }
     }
 }
@@ -42,7 +75,7 @@ impl AccountInfo {
     /// Creates a new [`AccountInfo`] with the given fields.
     #[inline]
     pub const fn new(balance: Word, nonce: u64, code_hash: B256, code: Bytecode) -> Self {
-        Self { balance, nonce, code_hash, code: Some(code), has_storage: false }
+        Self { balance, nonce, code_hash, code: Some(code) }
     }
 
     /// Creates a new [`AccountInfo`] with the given code.
@@ -79,30 +112,6 @@ impl AccountInfo {
     }
 }
 
-/// Persistent storage value cached by [`State`].
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
-#[non_exhaustive]
-pub struct StorageValue {
-    /// Current value.
-    pub current: Word,
-    /// Original value loaded from the backing database.
-    pub original: Word,
-}
-
-impl StorageValue {
-    /// Creates a new unchanged storage value.
-    #[inline]
-    pub const fn new(value: Word) -> Self {
-        Self { current: value, original: value }
-    }
-
-    /// Returns whether the value changed from its original value.
-    #[inline]
-    pub fn is_changed(&self) -> bool {
-        self.current != self.original
-    }
-}
-
 /// Mutable account state cached by [`State`].
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 #[non_exhaustive]
@@ -113,18 +122,8 @@ pub struct Account {
     pub balance: Word,
     /// Account code hash.
     pub code_hash: B256,
-    /// Whether the account has initial persistent storage.
-    pub has_initial_storage: bool,
-    /// Cached and modified persistent storage entries.
-    pub storage: HashMap<Word, StorageValue>,
-    /// EIP-1153 transient storage.
-    pub transient_storage: HashMap<Word, Word>,
     /// Cached account bytecode.
     pub code: Bytecode,
-    /// Whether the account has been self-destructed.
-    pub destructed: bool,
-    /// Whether the account should be deleted if empty.
-    pub erase_if_empty: bool,
     /// Whether the account was created in the current transaction.
     pub just_created: bool,
     /// Whether the account code has been modified.
@@ -139,7 +138,6 @@ impl Account {
             nonce: info.nonce,
             balance: info.balance,
             code_hash: info.code_hash,
-            has_initial_storage: info.has_storage,
             code: info.code.unwrap_or_default(),
             ..Self::default()
         }
@@ -153,8 +151,6 @@ impl Account {
             nonce: self.nonce,
             code_hash: self.code_hash,
             code: Some(self.code.clone()),
-            has_storage: self.has_initial_storage
-                || self.storage.values().any(StorageValue::is_changed),
         }
     }
 
@@ -165,34 +161,102 @@ impl Account {
     }
 }
 
-/// Backing database view used to initialize mutable [`State`].
-pub trait Database {
-    /// Loads account information.
-    fn get_account(&self, address: Address) -> Option<AccountInfo>;
+/// Persistent storage overlay for one account.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[non_exhaustive]
+pub struct StorageOverlay {
+    /// Whether consumers must delete all pre-existing storage for the account
+    /// before applying individual slot changes.
+    pub wiped: bool,
+    /// Loaded or changed storage slots.
+    pub(crate) slots: HashMap<Word, Tracked<Word>>,
+}
 
-    /// Loads account code.
-    fn get_account_code(&self, address: Address) -> Bytecode;
+/// Complete state transition and emitted logs produced by a transaction.
+///
+/// `StateChanges` is the public write-set returned in [`crate::TxResult`]. It
+/// is intentionally explicit so embedding clients can update their own database
+/// and compute post-state roots without reimplementing EVM account-lifetime
+/// rules. It also carries the logs emitted by the transaction.
+///
+/// Consumers should apply database changes in this order:
+///
+/// 1. write bytecode from [`Self::code`] for every non-empty code hash they do not already have;
+/// 2. for each [`StorageChangeSet`] whose [`StorageChangeSet::wipe`] flag is true, delete all
+///    storage for that account;
+/// 3. apply each storage slot change: a zero [`Tracked::current`] means delete the slot, otherwise
+///    write the slot value;
+/// 4. apply account changes: `current = Some(..)` means upsert the account, `current = None` means
+///    delete the account.
+///
+/// `evm2` does not write to the backing database. These changes describe what
+/// happened; applying them is the responsibility of the caller.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct StateChanges {
+    /// Account changes keyed by address.
+    ///
+    /// [`Tracked::original`] is the account at the beginning of the transaction.
+    /// [`Tracked::current`] is the account after transaction execution and EVM
+    /// account-lifetime rules have been evaluated. `current = None` is an explicit account
+    /// deletion.
+    pub accounts: BTreeMap<Address, Tracked<Option<AccountInfo>>>,
+    /// Persistent storage changes keyed by account address.
+    ///
+    /// Each slot change's [`Tracked::original`] value is the slot value at the beginning of the
+    /// transaction, after any storage wipe/re-incarnation semantics that occurred before the slot
+    /// was loaded. `current = 0` means the consumer should delete the slot.
+    pub storage: BTreeMap<Address, StorageChangeSet>,
+    /// Newly created or modified bytecode keyed by code hash.
+    pub code: BTreeMap<B256, Bytecode>,
+    /// Logs emitted by the transaction.
+    pub logs: Vec<Log>,
+}
 
-    /// Loads a persistent storage slot.
-    fn get_storage(&self, address: Address, key: Word) -> Word;
+impl StateChanges {
+    /// Returns whether this transition contains no changes or logs.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.accounts.is_empty()
+            && self.storage.is_empty()
+            && self.code.is_empty()
+            && self.logs.is_empty()
+    }
+}
 
-    /// Loads a historical block hash.
-    fn get_block_hash(&self, number: u64) -> Option<B256>;
+/// Storage transition for a single account.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct StorageChangeSet {
+    /// If true, delete all pre-existing storage for this account before applying
+    /// [`Self::slots`]. This is used for selfdestruct and contract
+    /// re-incarnation semantics using an explicit storage wipe marker.
+    pub wipe: bool,
+    /// Changed storage slots keyed by slot.
+    pub slots: BTreeMap<Word, Tracked<Word>>,
 }
 
 /// Compact journal entry for reverting state changes.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum JournalEntry {
-    /// Account balance changed.
-    BalanceChange {
+    /// Account current value changed.
+    AccountChange {
         /// Account address.
         address: Address,
-        /// Previous balance.
-        previous: Word,
+        /// Previous current account value.
+        previous: Option<Account>,
+    },
+    /// Account overlay entry was inserted.
+    AccountInserted {
+        /// Account address.
+        address: Address,
     },
     /// Account was touched.
-    Touched {
+    Touch {
+        /// Account address.
+        address: Address,
+    },
+    /// Account was self-destructed.
+    SelfDestruct {
         /// Account address.
         address: Address,
     },
@@ -202,8 +266,22 @@ pub enum JournalEntry {
         address: Address,
         /// Storage key.
         key: Word,
-        /// Previous storage value.
+        /// Previous current storage value.
         previous: Word,
+    },
+    /// Persistent storage slot overlay was inserted.
+    StorageInserted {
+        /// Account address.
+        address: Address,
+        /// Storage key.
+        key: Word,
+    },
+    /// Account storage wipe flag changed.
+    StorageWipe {
+        /// Account address.
+        address: Address,
+        /// Previous storage overlay.
+        previous: Option<StorageOverlay>,
     },
     /// Transient storage changed.
     TransientStorageChange {
@@ -212,12 +290,7 @@ pub enum JournalEntry {
         /// Storage key.
         key: Word,
         /// Previous transient storage value.
-        previous: Word,
-    },
-    /// Account nonce was incremented.
-    NonceBump {
-        /// Account address.
-        address: Address,
+        previous: Option<Word>,
     },
     /// Account was warmed by EIP-2929 access tracking.
     AccountWarmed {
@@ -231,34 +304,49 @@ pub enum JournalEntry {
         /// Storage key.
         key: Word,
     },
-    /// Account was created.
-    Create {
-        /// Account address.
-        address: Address,
-        /// Whether the account existed before creation.
-        existed: bool,
-    },
-    /// Account was self-destructed.
-    Destruct {
-        /// Account address.
-        address: Address,
+    /// Log was emitted.
+    Log {
+        /// Log index before emission.
+        index: usize,
     },
 }
 
-/// Mutable EVM state with evmone-style journaling.
+/// Mutable EVM state with an overlay and reversible journal.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub struct State<D> {
     /// Read-only initial database.
     pub initial: D,
-    /// Accounts loaded from the initial database and potentially modified.
-    pub modified: HashMap<Address, Account>,
+    /// Account data overlay keyed by address.
+    ///
+    /// Entries are created when account state is loaded or mutated. The tracked
+    /// `original`/`current` pair is used to execute against the in-memory overlay
+    /// and later derive account-level [`StateChanges`]. Presence here does not by
+    /// itself mean the account was touched or warmed.
+    pub accounts: HashMap<Address, Tracked<Option<Account>>>,
+    /// Persistent storage overlay keyed by account address.
+    pub storage: HashMap<Address, StorageOverlay>,
     /// Revert journal.
     pub journal: Vec<JournalEntry>,
-    /// Transaction-scoped warm account set.
+    /// Logs emitted by the current transaction.
+    pub logs: Vec<Log>,
+    /// Accounts touched for transaction-finalization account-lifetime rules.
+    ///
+    /// This is separate from the account overlay and the EIP-2929 warm set. A
+    /// touched account may have no field changes, but can still matter for empty
+    /// account deletion/materialization rules across forks.
+    pub touched: HashSet<Address>,
+    /// Accounts self-destructed in the current transaction.
+    pub selfdestructs: HashSet<Address>,
+    /// Transaction-scoped warm account set for EIP-2929 gas accounting.
+    ///
+    /// This tracks whether account access is warm or cold. It does not imply the
+    /// account was touched, changed, or should be emitted in [`StateChanges`].
     pub accessed_accounts: HashSet<Address>,
     /// Transaction-scoped warm storage slot set.
     pub accessed_storage: HashSet<(Address, Word)>,
+    /// Transaction-scoped EIP-1153 transient storage keyed by account address and slot.
+    pub transient_storage: HashMap<(Address, Word), Word>,
 }
 
 impl<D> State<D> {
@@ -267,10 +355,15 @@ impl<D> State<D> {
     pub fn new(initial: D) -> Self {
         Self {
             initial,
-            modified: map::HashMap::default(),
+            accounts: map::HashMap::default(),
+            storage: map::HashMap::default(),
             journal: Vec::new(),
+            logs: Vec::new(),
+            touched: map::HashSet::default(),
+            selfdestructs: map::HashSet::default(),
             accessed_accounts: map::HashSet::default(),
             accessed_storage: map::HashSet::default(),
+            transient_storage: map::HashMap::default(),
         }
     }
 
@@ -292,10 +385,24 @@ impl<D> State<D> {
         &mut self.initial
     }
 
-    /// Returns the modified account if present.
+    /// Returns logs emitted by the current in-flight transaction.
+    #[inline]
+    pub fn logs(&self) -> &[Log] {
+        &self.logs
+    }
+
+    /// Records a transaction log and journals it for rollback.
+    #[inline]
+    pub fn log(&mut self, log: Log) {
+        let index = self.logs.len();
+        self.journal.push(JournalEntry::Log { index });
+        self.logs.push(log);
+    }
+
+    /// Returns the current account overlay if present and not deleted.
     #[inline]
     pub fn account_ref(&self, address: Address) -> Option<&Account> {
-        self.modified.get(&address)
+        self.accounts.get(&address).and_then(|account| account.current.as_ref())
     }
 
     /// Returns whether an account is warm in the current transaction.
@@ -326,47 +433,82 @@ impl<D> State<D> {
         }
     }
 
-    /// Clears all transaction-scoped warm accesses.
+    /// Clears transaction-scoped substate.
     #[inline]
-    pub fn clear_accesses(&mut self) {
+    pub fn clear_transaction_state(&mut self) {
+        self.journal.clear();
+        self.touched.clear();
+        self.selfdestructs.clear();
         self.accessed_accounts.clear();
         self.accessed_storage.clear();
+        self.transient_storage.clear();
+        self.logs.clear();
     }
 }
 
 impl<D: Database> State<D> {
+    fn load_account(&mut self, address: Address) -> Option<&Tracked<Option<Account>>> {
+        if !self.accounts.contains_key(&address)
+            && let Some(info) = self.initial.get_account(address)
+        {
+            let account = Account::from_info(info);
+            self.accounts.insert(address, Tracked::new(Some(account)));
+        }
+        self.accounts.get(&address)
+    }
+
+    fn ensure_account_overlay(&mut self, address: Address) {
+        if !self.accounts.contains_key(&address) {
+            let original = self.initial.get_account(address).map(Account::from_info);
+            self.accounts
+                .insert(address, Tracked { original: original.clone(), current: original });
+            self.journal.push(JournalEntry::AccountInserted { address });
+        }
+    }
+
+    fn account_mut(&mut self, address: Address) -> &mut Account {
+        self.ensure_account_overlay(address);
+        if self.accounts[&address].current.is_none() {
+            self.journal.push(JournalEntry::AccountChange { address, previous: None });
+            self.accounts.get_mut(&address).expect("account overlay exists").current =
+                Some(Account {
+                    code_hash: KECCAK_EMPTY,
+                    code: Bytecode::default(),
+                    ..Account::default()
+                });
+        }
+        self.accounts
+            .get_mut(&address)
+            .and_then(|account| account.current.as_mut())
+            .expect("current account exists")
+    }
+
+    fn journal_account_change(&mut self, address: Address) {
+        self.ensure_account_overlay(address);
+        let previous = self.accounts[&address].current.clone();
+        self.journal.push(JournalEntry::AccountChange { address, previous });
+    }
+
     /// Returns account info.
     #[inline]
     pub fn account_info(&self, address: Address) -> Option<AccountInfo> {
-        self.modified.get(&address).map(Account::info).or_else(|| self.initial.get_account(address))
+        if let Some(account) = self.accounts.get(&address) {
+            return account.current.as_ref().map(Account::info);
+        }
+        self.initial.get_account(address)
     }
 
     /// Returns an account if it exists.
     #[inline]
     pub fn find(&mut self, address: Address) -> Option<&Account> {
-        if !self.modified.contains_key(&address)
-            && let Some(info) = self.initial.get_account(address)
-        {
-            self.modified.insert(address, Account::from_info(info));
-        }
-        self.modified.get(&address)
+        self.load_account(address);
+        self.account_ref(address)
     }
 
     /// Gets an existing account or inserts a new empty account.
     #[inline]
     pub fn get_or_insert(&mut self, address: Address) -> &mut Account {
-        if !self.modified.contains_key(&address) {
-            let account =
-                self.initial.get_account(address).map(Account::from_info).unwrap_or_else(|| {
-                    Account {
-                        code_hash: KECCAK_EMPTY,
-                        code: Bytecode::default(),
-                        ..Account::default()
-                    }
-                });
-            self.modified.insert(address, account);
-        }
-        self.modified.get_mut(&address).expect("account was just inserted")
+        self.account_mut(address)
     }
 
     /// Gets account code.
@@ -384,47 +526,89 @@ impl<D: Database> State<D> {
         self.initial.get_account_code(address)
     }
 
-    /// Gets a persistent storage value.
-    #[inline]
-    pub fn get_storage_value(&mut self, address: Address, key: Word) -> &mut StorageValue {
-        if !self.get_or_insert(address).storage.contains_key(&key) {
-            let initial = self.initial.get_storage(address, key);
-            self.get_or_insert(address).storage.insert(key, StorageValue::new(initial));
+    fn storage_initial(&self, address: Address, key: Word) -> Word {
+        if self.storage.get(&address).is_some_and(|storage| storage.wiped)
+            || self.accounts.get(&address).is_some_and(|account| account.original.is_none())
+        {
+            Word::ZERO
+        } else {
+            self.initial.get_storage(address, key)
         }
-        self.get_or_insert(address).storage.get_mut(&key).expect("storage was just inserted")
+    }
+
+    fn ensure_storage_slot(&mut self, address: Address, key: Word, journal_insert: bool) {
+        let initial = self.storage_initial(address, key);
+        let storage = self.storage.entry(address).or_default();
+        if let hash_map::Entry::Vacant(entry) = storage.slots.entry(key) {
+            entry.insert(Tracked::new(initial));
+            if journal_insert {
+                self.journal.push(JournalEntry::StorageInserted { address, key });
+            }
+        }
+    }
+
+    #[inline]
+    fn get_storage_value(&mut self, address: Address, key: Word) -> &mut Tracked<Word> {
+        self.ensure_storage_slot(address, key, false);
+        self.storage
+            .get_mut(&address)
+            .and_then(|storage| storage.slots.get_mut(&key))
+            .expect("storage slot was just inserted")
     }
 
     /// Loads persistent storage.
     #[inline]
     pub fn storage(&mut self, address: Address, key: Word) -> Word {
+        if self.account_info(address).is_none() {
+            return Word::ZERO;
+        }
         self.get_storage_value(address, key).current
     }
 
     /// Stores persistent storage.
     #[inline]
     pub fn set_storage(&mut self, address: Address, key: Word, value: Word) {
-        let previous = self.get_storage_value(address, key).current;
+        self.account_mut(address);
+        let inserted =
+            !self.storage.get(&address).is_some_and(|storage| storage.slots.contains_key(&key));
+        self.ensure_storage_slot(address, key, inserted);
+        let previous = self.storage[&address].slots[&key].current;
         self.journal.push(JournalEntry::StorageChange { address, key, previous });
-        self.get_storage_value(address, key).current = value;
+        self.storage
+            .get_mut(&address)
+            .expect("storage overlay exists")
+            .slots
+            .get_mut(&key)
+            .expect("storage slot exists")
+            .current = value;
+    }
+
+    /// Marks an account as touched by the current transaction.
+    #[inline]
+    pub fn touch(&mut self, address: Address) {
+        if self.touched.insert(address) {
+            self.journal.push(JournalEntry::Touch { address });
+        }
     }
 
     /// Adds a signed balance delta by wrapping two's-complement values.
     #[inline]
     pub fn add_balance(&mut self, address: Address, delta: Word) {
         if delta.is_zero() {
-            self.get_or_insert(address).erase_if_empty = true;
+            self.touch(address);
             return;
         }
-        let previous = self.get_or_insert(address).balance;
-        self.journal.push(JournalEntry::BalanceChange { address, previous });
-        self.get_or_insert(address).balance = previous.wrapping_add(delta);
+        self.journal_account_change(address);
+        let account = self.account_mut(address);
+        account.balance = account.balance.wrapping_add(delta);
+        self.touch(address);
     }
 
     /// Transfers value between accounts.
     #[inline]
     pub fn transfer(&mut self, from: Address, to: Address, value: Word) -> bool {
         if value.is_zero() || from == to {
-            self.get_or_insert(to).erase_if_empty = true;
+            self.touch(to);
             return true;
         }
 
@@ -433,21 +617,24 @@ impl<D: Database> State<D> {
             return false;
         };
 
-        let from_previous = self.get_or_insert(from).balance;
-        self.journal.push(JournalEntry::BalanceChange { address: from, previous: from_previous });
-        self.get_or_insert(from).balance = new_from_balance;
+        self.journal_account_change(from);
+        self.account_mut(from).balance = new_from_balance;
+        self.touch(from);
 
-        let to_previous = self.get_or_insert(to).balance;
-        self.journal.push(JournalEntry::BalanceChange { address: to, previous: to_previous });
-        self.get_or_insert(to).balance = to_previous.saturating_add(value);
+        self.journal_account_change(to);
+        let to_balance = self.account_mut(to).balance;
+        self.account_mut(to).balance = to_balance.saturating_add(value);
+        self.touch(to);
         true
     }
 
     /// Increments account nonce.
     #[inline]
     pub fn increment_nonce(&mut self, address: Address) {
-        self.journal.push(JournalEntry::NonceBump { address });
-        self.get_or_insert(address).nonce = self.get_or_insert(address).nonce.saturating_add(1);
+        self.journal_account_change(address);
+        let account = self.account_mut(address);
+        account.nonce = account.nonce.saturating_add(1);
+        self.touch(address);
     }
 
     /// Creates a contract account and transfers endowment from the caller.
@@ -459,66 +646,94 @@ impl<D: Database> State<D> {
         value: Word,
         spec: crate::SpecId,
     ) -> Result<(), crate::interpreter::InstrStop> {
-        let existed = self.account_info(address).is_some();
         if let Some(info) = self.account_info(address)
             && (info.nonce != 0 || info.code_hash != KECCAK_EMPTY)
         {
             return Err(crate::interpreter::InstrStop::CreateCollision);
         }
 
-        self.journal.push(JournalEntry::Create { address, existed });
         if !self.transfer(caller, address, value) {
             return Err(crate::interpreter::InstrStop::OutOfFunds);
         }
 
-        let account = self.get_or_insert(address);
-        account.nonce = u64::from(spec.enables(crate::SpecId::SPURIOUS_DRAGON));
-        account.code_hash = KECCAK_EMPTY;
-        account.code = Bytecode::default();
-        account.storage.clear();
-        account.transient_storage.clear();
-        account.destructed = false;
-        account.just_created = true;
-        account.code_changed = true;
+        let balance = self.account_mut(address).balance;
+        self.wipe_storage(address);
+        self.journal_account_change(address);
+        self.accounts.get_mut(&address).expect("account overlay exists").current = Some(Account {
+            nonce: u64::from(spec.enables(crate::SpecId::SPURIOUS_DRAGON)),
+            balance,
+            code_hash: KECCAK_EMPTY,
+            code: Bytecode::default(),
+            just_created: true,
+            code_changed: true,
+        });
+        self.touch(address);
         Ok(())
     }
 
     /// Sets account bytecode.
     #[inline]
     pub fn set_code(&mut self, address: Address, code: Bytecode) {
-        let account = self.get_or_insert(address);
+        self.journal_account_change(address);
+        let account = self.account_mut(address);
         account.code_hash = code.hash_slow();
         account.code = code;
         account.code_changed = true;
     }
 
-    /// Removes modified accounts that should be erased and are empty.
+    /// Marks all prior persistent storage for `address` as deleted.
     #[inline]
-    pub fn prune_empty_accounts(&mut self) {
-        self.modified.retain(|_, account| {
-            !(account.erase_if_empty && account.is_empty() && !account.has_initial_storage)
-        });
+    pub fn wipe_storage(&mut self, address: Address) {
+        let previous = self.storage.get(&address).cloned();
+        self.journal.push(JournalEntry::StorageWipe { address, previous });
+        self.storage
+            .insert(address, StorageOverlay { wiped: true, slots: map::HashMap::default() });
     }
 
     /// Loads transient storage.
     #[inline]
     pub fn transient_storage(&mut self, address: Address, key: Word) -> Word {
-        self.get_or_insert(address).transient_storage.get(&key).copied().unwrap_or_default()
+        self.transient_storage.get(&(address, key)).copied().unwrap_or_default()
     }
 
     /// Stores transient storage.
     #[inline]
     pub fn set_transient_storage(&mut self, address: Address, key: Word, value: Word) {
-        let previous = self.transient_storage(address, key);
+        let previous = self.transient_storage.get(&(address, key)).copied();
+        if previous.unwrap_or_default() == value {
+            return;
+        }
         self.journal.push(JournalEntry::TransientStorageChange { address, key, previous });
-        self.get_or_insert(address).transient_storage.insert(key, value);
+        if value.is_zero() {
+            self.transient_storage.remove(&(address, key));
+        } else {
+            self.transient_storage.insert((address, key), value);
+        }
     }
 
-    /// Marks an account as self-destructed.
+    /// Marks an account as self-destructed in the current transaction.
     #[inline]
     pub fn mark_destructed(&mut self, address: Address) {
-        self.journal.push(JournalEntry::Destruct { address });
-        self.get_or_insert(address).destructed = true;
+        self.ensure_account_overlay(address);
+        if self.selfdestructs.insert(address) {
+            self.journal.push(JournalEntry::SelfDestruct { address });
+        }
+        self.touch(address);
+    }
+
+    /// Returns whether an account has been marked self-destructed in the current transaction.
+    #[inline]
+    pub fn is_selfdestructed(&self, address: Address) -> bool {
+        self.selfdestructs.contains(&address)
+    }
+
+    /// Returns whether an account was created in the current transaction.
+    #[inline]
+    pub(super) fn is_created_in_transaction(&self, address: Address) -> bool {
+        self.accounts
+            .get(&address)
+            .and_then(|tracked| tracked.current.as_ref())
+            .is_some_and(|account| account.just_created)
     }
 
     /// Reverts state changes after the checkpoint.
@@ -526,170 +741,213 @@ impl<D: Database> State<D> {
     pub fn rollback(&mut self, checkpoint: usize) {
         while self.journal.len() != checkpoint {
             match self.journal.pop().expect("journal length checked above") {
-                JournalEntry::BalanceChange { address, previous } => {
-                    self.get_or_insert(address).balance = previous;
+                JournalEntry::AccountChange { address, previous } => {
+                    if let Some(account) = self.accounts.get_mut(&address) {
+                        account.current = previous;
+                    }
                 }
-                JournalEntry::Touched { address } => {
-                    self.get_or_insert(address).erase_if_empty = false;
+                JournalEntry::AccountInserted { address } => {
+                    self.accounts.remove(&address);
+                }
+                JournalEntry::Touch { address } => {
+                    self.touched.remove(&address);
+                }
+                JournalEntry::SelfDestruct { address } => {
+                    self.selfdestructs.remove(&address);
                 }
                 JournalEntry::StorageChange { address, key, previous } => {
-                    self.get_storage_value(address, key).current = previous;
+                    if let Some(storage) = self.storage.get_mut(&address)
+                        && let Some(slot) = storage.slots.get_mut(&key)
+                    {
+                        slot.current = previous;
+                    }
                 }
-                JournalEntry::TransientStorageChange { address, key, previous } => {
-                    self.get_or_insert(address).transient_storage.insert(key, previous);
+                JournalEntry::StorageInserted { address, key } => {
+                    if let Some(storage) = self.storage.get_mut(&address) {
+                        storage.slots.remove(&key);
+                    }
                 }
-                JournalEntry::NonceBump { address } => {
-                    self.get_or_insert(address).nonce -= 1;
-                }
+                JournalEntry::StorageWipe { address, previous } => match previous {
+                    Some(storage) => {
+                        self.storage.insert(address, storage);
+                    }
+                    None => {
+                        self.storage.remove(&address);
+                    }
+                },
+                JournalEntry::TransientStorageChange { address, key, previous } => match previous {
+                    Some(previous) if !previous.is_zero() => {
+                        self.transient_storage.insert((address, key), previous);
+                    }
+                    _ => {
+                        self.transient_storage.remove(&(address, key));
+                    }
+                },
                 JournalEntry::AccountWarmed { address } => {
                     self.accessed_accounts.remove(&address);
                 }
                 JournalEntry::StorageWarmed { address, key } => {
                     self.accessed_storage.remove(&(address, key));
                 }
-                JournalEntry::Create { address, existed } => {
-                    if existed {
-                        let account = self.get_or_insert(address);
-                        account.nonce = 0;
-                        account.code_hash = KECCAK_EMPTY;
-                        account.code = Bytecode::default();
-                    } else {
-                        self.modified.remove(&address);
-                    }
-                }
-                JournalEntry::Destruct { address } => {
-                    self.get_or_insert(address).destructed = false;
+                JournalEntry::Log { index } => {
+                    self.logs.truncate(index);
                 }
             }
         }
     }
-}
 
-/// Returns the state-test logs hash.
-pub fn logs_hash(logs: &[alloy_primitives::Log]) -> B256 {
-    let mut out = Vec::with_capacity(alloy_rlp::list_length(logs));
-    alloy_rlp::encode_list(logs, &mut out);
-    keccak256(out)
-}
-
-/// A simple in-memory database view.
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[non_exhaustive]
-pub struct CacheDB {
-    /// Accounts keyed by address.
-    pub accounts: HashMap<Address, AccountInfo>,
-    /// Contracts keyed by code hash.
-    pub contracts: HashMap<B256, Bytecode>,
-    /// Persistent storage keyed by account and slot.
-    pub storage: HashMap<(Address, Word), Word>,
-    /// Cached block hashes keyed by block number.
-    pub block_hashes: HashMap<u64, B256>,
-}
-
-impl Default for CacheDB {
-    #[inline]
-    fn default() -> Self {
-        let mut contracts = map::HashMap::default();
-        contracts.insert(KECCAK_EMPTY, Bytecode::default());
-        contracts.insert(B256::ZERO, Bytecode::default());
-
-        Self {
-            accounts: map::HashMap::default(),
-            contracts,
-            storage: map::HashMap::default(),
-            block_hashes: map::HashMap::default(),
+    /// Returns whether an existing account is dead by the EIP-161 definition.
+    ///
+    /// Accounts with zero nonce, zero balance, and empty code are dead. Starting
+    /// in Spurious Dragon, touched dead accounts that exist in the pre/final
+    /// overlay state are deleted during transaction finalization. Non-existent
+    /// touched accounts stay non-existent.
+    fn is_existing_dead(&self, address: Address) -> bool {
+        if let Some(account) = self.accounts.get(&address) {
+            return account.current.as_ref().is_some_and(Account::is_empty)
+                || (account.current.is_none() && account.original.is_some());
         }
-    }
-}
-
-impl CacheDB {
-    /// Inserts account code into the contract cache.
-    #[inline]
-    pub fn insert_contract(&mut self, info: &mut AccountInfo) {
-        if let Some(code) = &info.code
-            && !code.is_empty()
-        {
-            if info.code_hash == KECCAK_EMPTY {
-                info.code_hash = code.hash_slow();
-            }
-            self.contracts.entry(info.code_hash).or_insert_with(|| code.clone());
-        }
-        if info.code_hash.is_zero() {
-            info.code_hash = KECCAK_EMPTY;
-        }
+        self.initial.get_account(address).is_some_and(|account| account.is_empty())
     }
 
-    /// Inserts account info.
-    #[inline]
-    pub fn insert_account_info(&mut self, address: Address, mut info: AccountInfo) {
-        self.insert_contract(&mut info);
-        self.accounts.insert(address, info);
-    }
-
-    /// Returns account info if the account exists.
-    #[inline]
-    pub fn account_info(&self, address: Address) -> Option<&AccountInfo> {
-        self.accounts.get(&address)
-    }
-
-    /// Inserts persistent storage.
-    #[inline]
-    pub fn insert_account_storage(&mut self, address: Address, key: Word, value: Word) {
-        self.accounts.entry(address).or_default().has_storage = true;
-        self.storage.insert((address, key), value);
-    }
-
-    /// Sets a historical block hash.
-    #[inline]
-    pub fn insert_block_hash(&mut self, number: u64, hash: B256) {
-        self.block_hashes.insert(number, hash);
-    }
-}
-
-impl Database for CacheDB {
-    #[inline]
-    fn get_account(&self, address: Address) -> Option<AccountInfo> {
-        self.accounts.get(&address).cloned()
-    }
-
-    #[inline]
-    fn get_account_code(&self, address: Address) -> Bytecode {
+    fn delete_account_for_finalization(&mut self, address: Address) {
         self.accounts
-            .get(&address)
-            .and_then(|info| info.code.clone())
-            .or_else(|| {
-                self.accounts
-                    .get(&address)
-                    .and_then(|info| self.contracts.get(&info.code_hash).cloned())
-            })
-            .unwrap_or_default()
+            .get_mut(&address)
+            .expect("finalized account is loaded into the overlay")
+            .current = None;
+        self.storage
+            .insert(address, StorageOverlay { wiped: true, slots: map::HashMap::default() });
     }
 
-    #[inline]
-    fn get_storage(&self, address: Address, key: Word) -> Word {
-        self.storage.get(&(address, key)).copied().unwrap_or_default()
+    fn materialize_empty_account_for_finalization(&mut self, address: Address) {
+        self.ensure_account_overlay(address);
+        if let Some(account) = self.accounts.get_mut(&address)
+            && account.original.is_none()
+            && account.current.is_none()
+        {
+            account.current = Some(Account {
+                code_hash: KECCAK_EMPTY,
+                code: Bytecode::default(),
+                ..Account::default()
+            });
+        }
     }
 
-    #[inline]
-    fn get_block_hash(&self, number: u64) -> Option<B256> {
-        self.block_hashes
-            .get(&number)
-            .copied()
-            .or_else(|| Some(keccak256(number.to_string().as_bytes())))
+    /// Applies transaction-finalization account-lifetime rules to the overlay.
+    ///
+    /// This mutates the in-memory post-transaction state before it is serialized
+    /// by [`Self::build_state_changes`]. Runtime records
+    /// transaction substate such as touches and selfdestructs, while finalization
+    /// turns that substate into account deletions, storage wipes, or pre-EIP-161
+    /// empty-account materialization.
+    pub(super) fn finalize_transaction(&mut self, spec: crate::SpecId) {
+        let selfdestructs = core::mem::take(&mut self.selfdestructs);
+        for address in selfdestructs.iter().copied() {
+            self.delete_account_for_finalization(address);
+        }
+
+        let touched = core::mem::take(&mut self.touched);
+        if spec.enables(crate::SpecId::SPURIOUS_DRAGON) {
+            for address in touched {
+                // EIP-161 deletes touched dead accounts at transaction finalization.
+                if self.is_existing_dead(address) {
+                    self.ensure_account_overlay(address);
+                    self.delete_account_for_finalization(address);
+                }
+            }
+        } else {
+            for address in touched {
+                // Before EIP-161, touching a non-existent account materializes it as empty.
+                if !selfdestructs.contains(&address) && self.account_info(address).is_none() {
+                    self.materialize_empty_account_for_finalization(address);
+                }
+            }
+        }
+    }
+
+    /// Builds the state transition and takes emitted logs for the current transaction.
+    ///
+    /// This does not apply changes to the backing database, apply transaction-finalization rules,
+    /// or advance the overlay to the next transaction. It does move transaction-local logs into the
+    /// returned [`StateChanges`], since callers clear transaction-local state immediately after
+    /// accepting or discarding the transaction.
+    pub(crate) fn build_state_changes(&mut self) -> StateChanges {
+        let mut changes =
+            StateChanges { logs: core::mem::take(&mut self.logs), ..StateChanges::default() };
+
+        for (&address, tracked) in &self.accounts {
+            let original = tracked.original.as_ref().map(Account::info);
+            let current = tracked.current.as_ref().map(Account::info);
+            if original != current {
+                changes.accounts.insert(address, Tracked { original, current });
+            }
+            if let Some(account) = tracked.current.as_ref()
+                && account.code_changed
+                && !account.code.is_empty()
+                && !account.code_hash.is_zero()
+                && account.code_hash != KECCAK_EMPTY
+            {
+                changes.code.insert(account.code_hash, account.code.clone());
+            }
+        }
+
+        for (&address, storage) in &self.storage {
+            let mut set = StorageChangeSet { wipe: storage.wiped, slots: BTreeMap::new() };
+            for (&key, slot) in &storage.slots {
+                if slot.original != slot.current && (!set.wipe || !slot.current.is_zero()) {
+                    set.slots
+                        .insert(key, Tracked { original: slot.original, current: slot.current });
+                }
+            }
+            if set.wipe || !set.slots.is_empty() {
+                changes.storage.insert(address, set);
+            }
+        }
+
+        changes
+    }
+
+    /// Marks the current transaction's overlay values as the new baseline.
+    ///
+    /// After [`Self::finalize_transaction`] and [`Self::build_state_changes`] have
+    /// produced the transaction write-set, the overlay must stop treating those
+    /// writes as pending changes. This rolls the current account and storage
+    /// values forward into their `original` slots and applies local deletion/wipe
+    /// bookkeeping. It only advances the in-memory overlay; callers are still
+    /// responsible for applying the emitted write-set to their backing database
+    /// and clearing transaction-local state.
+    pub(super) fn commit_transaction_overlay(&mut self) {
+        for account in self.accounts.values_mut() {
+            if let Some(current) = &mut account.current {
+                current.just_created = false;
+                current.code_changed = false;
+            }
+            account.original.clone_from(&account.current);
+        }
+
+        self.storage.retain(|_, storage| {
+            if storage.wiped {
+                storage.slots.retain(|_, slot| !slot.current.is_zero());
+            }
+            for slot in storage.slots.values_mut() {
+                slot.original = slot.current;
+            }
+            storage.wiped = false;
+            !storage.slots.is_empty()
+        });
     }
 }
-
-/// A database implementation that stores initial state in memory.
-pub type InMemoryDB = CacheDB;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::evm::CacheDB;
 
     #[test]
     fn storage_change_rolls_back_to_checkpoint() {
         let address = Address::from([0x11; 20]);
         let mut database = CacheDB::default();
+        database.insert_account_info(address, AccountInfo::default());
         database.insert_account_storage(address, Word::from(1), Word::from(10));
         let mut state = State::new(database);
 
@@ -724,8 +982,141 @@ mod tests {
         let checkpoint = state.checkpoint();
         state.mark_destructed(address);
 
-        assert!(state.account_ref(address).unwrap().destructed);
+        assert!(state.is_selfdestructed(address));
         state.rollback(checkpoint);
-        assert!(!state.account_ref(address).unwrap().destructed);
+        assert!(!state.is_selfdestructed(address));
+    }
+
+    #[test]
+    fn log_rolls_back_to_checkpoint() {
+        use alloy_primitives::{Bytes, LogData};
+
+        let mut state = State::new(CacheDB::default());
+        let kept = Log {
+            address: Address::from([0x44; 20]),
+            data: LogData::new_unchecked(Vec::new(), Bytes::from_static(&[0x01])),
+        };
+        let reverted = Log {
+            address: Address::from([0x55; 20]),
+            data: LogData::new_unchecked(Vec::new(), Bytes::from_static(&[0x02])),
+        };
+
+        state.log(kept.clone());
+        let checkpoint = state.checkpoint();
+        state.log(reverted);
+
+        assert_eq!(
+            state.logs(),
+            &[
+                kept.clone(),
+                Log {
+                    address: Address::from([0x55; 20]),
+                    data: LogData::new_unchecked(Vec::new(), Bytes::from_static(&[0x02])),
+                }
+            ]
+        );
+        state.rollback(checkpoint);
+        assert_eq!(state.logs(), &[kept]);
+    }
+
+    #[test]
+    fn state_changes_take_logs_from_transaction_state() {
+        use alloy_primitives::{Bytes, LogData};
+
+        let mut state = State::new(CacheDB::default());
+        let log = Log {
+            address: Address::from([0x66; 20]),
+            data: LogData::new_unchecked(Vec::new(), Bytes::from_static(&[0x03])),
+        };
+
+        state.log(log.clone());
+        state.finalize_transaction(crate::SpecId::SPURIOUS_DRAGON);
+        let changes = state.build_state_changes();
+        assert_eq!(changes.logs.as_slice(), core::slice::from_ref(&log));
+        assert!(state.logs().is_empty());
+
+        state.commit_transaction_overlay();
+        state.clear_transaction_state();
+        assert!(state.logs().is_empty());
+    }
+
+    #[test]
+    fn spurious_dragon_deletes_touched_empty_existing_account() {
+        let address = Address::from([0x44; 20]);
+        let empty = AccountInfo::default();
+        let mut database = CacheDB::default();
+        database.insert_account_info(address, empty.clone());
+        let mut state = State::new(database);
+
+        state.touch(address);
+        state.finalize_transaction(crate::SpecId::SPURIOUS_DRAGON);
+        let changes = state.build_state_changes();
+
+        let change = changes.accounts.get(&address).expect("touched empty account is deleted");
+        assert_eq!(change.original, Some(empty));
+        assert_eq!(change.current, None);
+        assert!(changes.storage.get(&address).is_some_and(|storage| storage.wipe));
+    }
+
+    #[test]
+    fn homestead_preserves_touched_empty_existing_account() {
+        let address = Address::from([0x45; 20]);
+        let mut database = CacheDB::default();
+        database.insert_account_info(address, AccountInfo::default());
+        let mut state = State::new(database);
+
+        state.touch(address);
+        state.finalize_transaction(crate::SpecId::HOMESTEAD);
+        let changes = state.build_state_changes();
+
+        assert!(!changes.accounts.contains_key(&address));
+        assert!(!changes.storage.contains_key(&address));
+    }
+
+    #[test]
+    fn homestead_materializes_touched_empty_new_account() {
+        let address = Address::from([0x46; 20]);
+        let mut state = State::new(CacheDB::default());
+
+        state.touch(address);
+        state.finalize_transaction(crate::SpecId::HOMESTEAD);
+        let changes = state.build_state_changes();
+
+        let change =
+            changes.accounts.get(&address).expect("pre-spurious empty touch creates account");
+        assert_eq!(change.original, None);
+        let current = change.current.as_ref().expect("created empty account");
+        assert!(current.is_empty());
+    }
+
+    #[test]
+    fn spurious_dragon_ignores_touched_empty_new_account() {
+        let address = Address::from([0x47; 20]);
+        let mut state = State::new(CacheDB::default());
+
+        state.touch(address);
+        state.finalize_transaction(crate::SpecId::SPURIOUS_DRAGON);
+        let changes = state.build_state_changes();
+
+        assert!(!changes.accounts.contains_key(&address));
+        assert!(!changes.storage.contains_key(&address));
+    }
+
+    #[test]
+    fn selfdestruct_deletes_account_and_wipes_storage() {
+        let address = Address::from([0x48; 20]);
+        let mut database = CacheDB::default();
+        database.insert_account_info(address, AccountInfo::default().with_balance(Word::from(1)));
+        database.insert_account_storage(address, Word::from(1), Word::from(2));
+        let mut state = State::new(database);
+
+        state.mark_destructed(address);
+        state.finalize_transaction(crate::SpecId::SPURIOUS_DRAGON);
+        let changes = state.build_state_changes();
+
+        let change = changes.accounts.get(&address).expect("selfdestruct deletes account");
+        assert!(change.original.is_some());
+        assert_eq!(change.current, None);
+        assert!(changes.storage.get(&address).is_some_and(|storage| storage.wipe));
     }
 }
