@@ -9,7 +9,7 @@ use crate::{
     registry::{HandlerResult, TxRegistry},
     version::GasId,
 };
-use alloc::vec::Vec;
+use alloc::{boxed::Box, vec::Vec};
 use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{Address, B256, Bytes, Log};
 
@@ -150,7 +150,8 @@ pub struct Evm<T: EvmTypes> {
     pub(crate) state: State<T::Database>,
     precompiles: T::Precompiles,
     #[debug(skip)]
-    interpreters: Vec<Interpreter<T>>,
+    #[expect(clippy::vec_box, reason = "pooled active interpreters must stay at stable addresses")]
+    interpreter_pool: Vec<Box<Interpreter<T>>>,
 }
 
 impl<T: EvmTypes> Evm<T> {
@@ -184,8 +185,6 @@ impl<T: EvmTypes> Evm<T> {
         database: T::Database,
         precompiles: T::Precompiles,
     ) -> Self {
-        let mut interpreters = Vec::with_capacity(Message::CALL_DEPTH_LIMIT as usize + 1);
-        interpreters.resize_with(Message::CALL_DEPTH_LIMIT as usize + 1, Interpreter::default);
         Self {
             spec_id,
             execution_config,
@@ -193,7 +192,7 @@ impl<T: EvmTypes> Evm<T> {
             registry,
             state: State::new(database),
             precompiles,
-            interpreters,
+            interpreter_pool: Vec::new(),
         }
     }
 
@@ -485,18 +484,19 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         gas: &mut Gas,
         output: &mut Bytes,
     ) {
-        let depth = usize::from(message.depth);
-        debug_assert!(depth <= Message::CALL_DEPTH_LIMIT as usize);
-        let interpreter = &mut self.interpreters[depth] as *mut Interpreter<T>;
+        let mut interpreter =
+            self.interpreter_pool.pop().unwrap_or_else(|| Box::new(Interpreter::default()));
+        let raw_interpreter = interpreter.as_mut() as *mut Interpreter<T>;
 
-        // SAFETY: The interpreter vector is preallocated to the full call-depth limit, so recursive
-        // execution cannot reallocate it. Each active EVM frame uses its own depth index.
+        // SAFETY: The active interpreter is owned by this stack frame until it is returned to the
+        // pool after execution. Recursive calls may mutate the pool, but they cannot move this box.
         unsafe {
-            (*interpreter).init(bytecode, tx_env, message, caller_is_static);
-            *stop = (*interpreter).run_with(self.execution_config, self);
-            *gas = (*interpreter).gas();
-            *output = Bytes::copy_from_slice((*interpreter).output());
+            (*raw_interpreter).init(bytecode, tx_env, message, caller_is_static);
+            *stop = (*raw_interpreter).run_with(self.execution_config, self);
+            *gas = (*raw_interpreter).gas();
+            *output = Bytes::copy_from_slice((*raw_interpreter).output());
         }
+        self.interpreter_pool.push(interpreter);
     }
 }
 
