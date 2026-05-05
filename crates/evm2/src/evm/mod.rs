@@ -11,7 +11,6 @@ use crate::{
 };
 use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{Address, B256, Bytes, Log};
-use core::cmp::min;
 
 pub mod config;
 pub mod env;
@@ -44,13 +43,70 @@ pub struct AccountLoad {
     pub is_cold: bool,
 }
 
-/// Loaded storage slot value.
+/// Result of an `SLOAD` host operation.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub struct StorageLoad {
+pub struct SLoad {
     /// Storage slot value.
     pub value: Word,
     /// Whether the storage slot access was cold.
     pub is_cold: bool,
+}
+
+/// Result of an `SSTORE` host operation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct SStore {
+    /// Storage value at the start of the transaction.
+    pub original_value: Word,
+    /// Storage value immediately before this `SSTORE`.
+    pub present_value: Word,
+    /// Storage value written by this `SSTORE`.
+    pub new_value: Word,
+    /// Whether the storage slot access was cold.
+    pub is_cold: bool,
+}
+
+impl SStore {
+    /// Returns whether this `SSTORE` leaves the slot unchanged (`new == present`).
+    #[inline]
+    #[must_use]
+    pub fn is_noop(&self) -> bool {
+        self.new_value == self.present_value
+    }
+
+    /// Returns whether the slot is clean (`original == present`).
+    #[inline]
+    #[must_use]
+    pub fn is_clean(&self) -> bool {
+        self.original_value == self.present_value
+    }
+
+    /// Returns whether this `SSTORE` restores the slot to its original value (`new == original`).
+    #[inline]
+    #[must_use]
+    pub fn resets_original(&self) -> bool {
+        self.original_value == self.new_value
+    }
+
+    /// Returns whether the original value is zero.
+    #[inline]
+    #[must_use]
+    pub fn original_is_zero(&self) -> bool {
+        self.original_value.is_zero()
+    }
+
+    /// Returns whether the present value is zero.
+    #[inline]
+    #[must_use]
+    pub fn present_is_zero(&self) -> bool {
+        self.present_value.is_zero()
+    }
+
+    /// Returns whether the new value is zero.
+    #[inline]
+    #[must_use]
+    pub fn new_is_zero(&self) -> bool {
+        self.new_value.is_zero()
+    }
 }
 
 /// Result of a `SELFDESTRUCT` host operation.
@@ -260,14 +316,41 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
         self.state.initial_mut().get_block_hash(number)
     }
 
-    fn sload(&mut self, address: Address, key: Word) -> StorageLoad {
+    fn sload(
+        &mut self,
+        address: Address,
+        key: Word,
+        skip_cold_load: bool,
+    ) -> Result<SLoad, InstrStop> {
         let is_cold =
-            self.spec_id().enables(SpecId::BERLIN) && self.state.warm_storage(address, key);
-        StorageLoad { value: self.state.storage(address, key), is_cold }
+            self.spec_id().enables(SpecId::BERLIN) && !self.state.is_storage_warm(address, key);
+        if skip_cold_load && is_cold {
+            return Err(InstrStop::OutOfGas);
+        }
+        if is_cold {
+            let _ = self.state.warm_storage(address, key);
+        }
+        Ok(SLoad { value: self.state.storage(address, key), is_cold })
     }
 
-    fn sstore(&mut self, address: Address, key: Word, value: Word) {
-        self.state.set_storage(address, key, value);
+    fn sstore(
+        &mut self,
+        address: Address,
+        key: Word,
+        value: Word,
+        skip_cold_load: bool,
+    ) -> Result<SStore, InstrStop> {
+        let is_cold =
+            self.spec_id().enables(SpecId::BERLIN) && !self.state.is_storage_warm(address, key);
+        if skip_cold_load && is_cold {
+            return Err(InstrStop::OutOfGas);
+        }
+        if is_cold {
+            let _ = self.state.warm_storage(address, key);
+        }
+        let mut result = self.state.set_storage(address, key, value);
+        result.is_cold = is_cold;
+        Ok(result)
     }
 
     fn tload(&mut self, address: Address, key: Word) -> Word {
@@ -343,12 +426,9 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
                 Interpreter::<T>::new(bytecode, tx_env, create_message, caller_is_static);
             let stop = interpreter.run_with(self.execution_config, self);
             let mut gas = interpreter.gas();
-            if stop.is_success() || stop.is_revert() {
-                gas.set_final_refund(self.spec_id().enables(SpecId::LONDON));
-            }
             let output = Bytes::copy_from_slice(interpreter.output());
-            let mut gas_remaining =
-                min(gas.remaining().saturating_add(gas.refunded() as u64), gas.limit());
+            let mut gas_remaining = gas.remaining();
+            let mut gas_refunded = if stop.is_success() { gas.refunded() } else { 0 };
 
             if stop.is_success() {
                 let stop = if self.spec_id().enables(SpecId::SPURIOUS_DRAGON)
@@ -369,11 +449,17 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
                 if let Some(stop) = stop {
                     self.state.rollback(checkpoint);
                     gas_remaining = if stop.is_halt() { 0 } else { gas.remaining() };
-                    return MessageResult { stop, gas_remaining, output, created_address: None };
+                    return MessageResult {
+                        stop,
+                        gas_remaining,
+                        gas_refunded: 0,
+                        output,
+                        created_address: None,
+                    };
                 }
 
-                gas_remaining =
-                    min(gas.remaining().saturating_add(gas.refunded() as u64), gas.limit());
+                gas_remaining = gas.remaining();
+                gas_refunded = gas.refunded();
                 self.state.set_code(address, Bytecode::new_legacy(output.clone()));
             } else {
                 self.state.rollback(checkpoint);
@@ -385,6 +471,7 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
             return MessageResult {
                 stop,
                 gas_remaining,
+                gas_refunded: if stop.is_success() { gas_refunded } else { 0 },
                 output,
                 created_address: stop.is_success().then_some(address),
             };
@@ -420,18 +507,20 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
             if !stop.is_success() {
                 self.state.rollback(checkpoint);
             }
-            return MessageResult { stop, gas_remaining, output, created_address: None };
+            return MessageResult {
+                stop,
+                gas_remaining,
+                gas_refunded: 0,
+                output,
+                created_address: None,
+            };
         }
 
         let mut interpreter = Interpreter::<T>::new(bytecode, tx_env, message, caller_is_static);
         let stop = interpreter.run_with(self.execution_config, self);
-        let mut gas = interpreter.gas();
-        if stop.is_success() || stop.is_revert() {
-            gas.set_final_refund(self.spec_id().enables(SpecId::LONDON));
-        }
+        let gas = interpreter.gas();
         let output = Bytes::copy_from_slice(interpreter.output());
-        let mut gas_remaining =
-            min(gas.remaining().saturating_add(gas.refunded() as u64), gas.limit());
+        let mut gas_remaining = gas.remaining();
 
         if !stop.is_success() {
             self.state.rollback(checkpoint);
@@ -440,7 +529,13 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
             }
         }
 
-        MessageResult { stop, gas_remaining, output, created_address: None }
+        MessageResult {
+            stop,
+            gas_remaining,
+            gas_refunded: if stop.is_success() { gas.refunded() } else { 0 },
+            output,
+            created_address: None,
+        }
     }
 
     fn selfdestruct(

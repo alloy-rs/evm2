@@ -1,6 +1,6 @@
 //! Basic in-memory EVM host state.
 
-use super::db::Database;
+use super::{SStore, db::Database};
 use crate::{
     SpecId,
     bytecode::Bytecode,
@@ -435,6 +435,13 @@ impl<D> State<D> {
         }
     }
 
+    /// Returns whether a storage slot is warm in the current transaction.
+    #[inline]
+    #[must_use]
+    pub fn is_storage_warm(&self, address: Address, key: Word) -> bool {
+        self.accessed_storage.contains(&(address, key))
+    }
+
     /// Marks a storage slot as warm and returns whether it was cold before this access.
     #[inline]
     #[must_use]
@@ -604,17 +611,30 @@ impl<D: Database> State<D> {
         self.storage_slot_mut(address, key, false).current
     }
 
-    /// Stores persistent storage.
+    /// Stores persistent storage and returns values needed for `SSTORE` gas metering.
+    ///
+    /// This is a raw state mutation helper, not the full EVM `SSTORE` host operation. It does
+    /// not perform static-call checks, gas/stipend checks, EIP-2929 cold-access handling, refund
+    /// accounting, or Amsterdam state-gas charging. Instruction implementations should call the
+    /// host `sstore` operation instead, and only use this lower-level helper when those concerns
+    /// are handled elsewhere.
     #[inline]
-    pub fn set_storage(&mut self, address: Address, key: Word, value: Word) {
+    pub fn set_storage(&mut self, address: Address, key: Word, value: Word) -> SStore {
         let _ = self.account_mut(address);
-        let previous = {
-            let slot = self.storage_slot_mut(address, key, true);
+        self.touch(address);
+        let slot = self.storage_slot_mut(address, key, true);
+        let result = SStore {
+            original_value: slot.original,
+            present_value: slot.current,
+            new_value: value,
+            is_cold: false,
+        };
+        if slot.current != value {
             let previous = slot.current;
             slot.current = value;
-            previous
-        };
-        self.journal.push(JournalEntry::StorageChange { address, key, previous });
+            self.journal.push(JournalEntry::StorageChange { address, key, previous });
+        }
+        result
     }
 
     /// Marks an account as touched by the current transaction.
