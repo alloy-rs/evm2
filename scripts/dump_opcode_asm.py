@@ -110,7 +110,7 @@ def select_opcodes(
 
 
 def cargo_asm_everything(package: str, features: list[str], output: str) -> str:
-    cmd = ["cargo", "asm", "-q", "-s", "-p", package]
+    cmd = ["cargo", "asm", "-q", "-s", "--simplify", "-p", package]
     for feature in features:
         cmd.extend(("-F", feature))
     cmd.extend(("--lib", f"--{output}", "--everything"))
@@ -147,6 +147,14 @@ def dispatch_opcode(text: str) -> int | None:
     return int(match.group(1))
 
 
+def is_asm_symbol_label(line: str) -> bool:
+    return (
+        line.endswith(":\n")
+        and not line.startswith(("\t", " ", ".", "#"))
+        and len(line) > 2
+    )
+
+
 def extract_asm_functions(text: str) -> dict[int, list[str]]:
     lines = text.splitlines(keepends=True)
     blocks: dict[int, list[str]] = {}
@@ -162,6 +170,16 @@ def extract_asm_functions(text: str) -> dict[int, list[str]]:
             block = lines[start:i]
             if any(line.startswith(".type\t") for line in block):
                 blocks.setdefault(opcode, []).append(clean_asm_block(block).rstrip() + "\n")
+            continue
+
+        opcode = dispatch_opcode(line) if is_asm_symbol_label(line) else None
+        if opcode is not None:
+            start = i
+            i += 1
+            while i < len(lines) and not is_asm_symbol_label(lines[i]):
+                i += 1
+            block = lines[start:i]
+            blocks.setdefault(opcode, []).append(clean_asm_block(block).rstrip() + "\n")
             continue
         i += 1
     return blocks
