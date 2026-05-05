@@ -294,7 +294,13 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     ) -> MessageResult {
         let address = match self.create_address(&bytecode, message) {
             Ok(address) => address,
-            Err(result) => return result,
+            Err(stop) => {
+                return MessageResult {
+                    stop,
+                    gas_remaining: message.gas_limit,
+                    ..MessageResult::default()
+                };
+            }
         };
 
         self.state.warm_account(address);
@@ -387,7 +393,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         &mut self,
         bytecode: &Bytecode,
         message: &Message,
-    ) -> core::result::Result<Address, MessageResult> {
+    ) -> Result<Address, InstrStop> {
         let mut info_slot = None;
         if message.value > 0
             && info_slot
@@ -395,11 +401,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
                 .as_ref()
                 .is_none_or(|info| info.balance < message.value)
         {
-            return Err(MessageResult {
-                stop: InstrStop::OutOfFunds,
-                gas_remaining: message.gas_limit,
-                ..MessageResult::default()
-            });
+            return Err(InstrStop::OutOfFunds);
         }
 
         Ok(match message.kind {

@@ -689,7 +689,7 @@ impl<D: Database> State<D> {
     }
 
     /// Creates a contract account and transfers endowment from the caller.
-    #[inline]
+    #[inline(never)]
     pub fn create_account(
         &mut self,
         caller: Address,
@@ -810,7 +810,7 @@ impl<D: Database> State<D> {
     }
 
     /// Reverts state changes after the checkpoint.
-    #[inline]
+    #[inline(never)]
     pub fn rollback(&mut self, checkpoint: usize) {
         assert!(checkpoint <= self.journal.len(), "checkpoint is past journal length");
         while self.journal.len() != checkpoint {

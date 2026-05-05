@@ -151,7 +151,7 @@ impl Bytecode {
     }
 
     /// Creates a new legacy [`Bytecode`] by analyzing raw bytes.
-    #[inline]
+    #[inline(never)]
     pub fn new_legacy(raw: Bytes) -> Self {
         if raw.is_empty() {
             return Self::new();
