@@ -2,12 +2,10 @@
 
 use self::precompile::{PrecompileOutput, PrecompileProvider};
 use crate::{
-    EvmConfig,
+    EvmConfigSelector, EvmTypes, ExecutionConfig, SpecId,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
-    interpreter::{
-        Gas, Host, InstrStop, Interpreter, Message, MessageKind, MessageResult, SpecId, Word,
-    },
+    interpreter::{Gas, Host, InstrStop, Interpreter, Message, MessageKind, MessageResult, Word},
     registry::{HandlerResult, TxRegistry},
 };
 use alloc::vec::Vec;
@@ -77,60 +75,59 @@ pub struct TxResult {
 }
 
 /// EVM host and transaction dispatcher.
-#[derive(Debug)]
-pub struct Evm<C: EvmConfig> {
+#[derive(derive_more::Debug)]
+pub struct Evm<T: EvmTypes> {
+    #[debug(skip)]
+    spec_id: T::SpecId,
+    #[debug(skip)]
+    execution_config: ExecutionConfig<T>,
     pub(crate) block: BlockEnv,
-    registry: TxRegistry<C::Tx, TxResult, Self>,
-    pub(crate) state: State<C::Database>,
-    precompiles: C::Precompiles,
+    registry: TxRegistry<T::Tx, TxResult, Self>,
+    pub(crate) state: State<T::Database>,
+    precompiles: T::Precompiles,
     pub(crate) logs: Vec<Log>,
 }
 
-impl<C: EvmConfig> Evm<C> {
-    /// Creates an EVM with the provided transaction registry, database, and precompile provider.
+impl<T: EvmTypes> Evm<T> {
+    /// Creates an EVM for `spec_id` with the provided transaction registry, database, and
+    /// precompile provider.
     #[inline]
     pub fn new(
+        spec_id: T::SpecId,
         block: BlockEnv,
-        registry: TxRegistry<C::Tx, TxResult, Self>,
-        database: C::Database,
-        precompiles: C::Precompiles,
+        registry: TxRegistry<T::Tx, TxResult, Self>,
+        database: T::Database,
+        precompiles: T::Precompiles,
     ) -> Self {
-        Self { block, registry, state: State::new(database), precompiles, logs: Vec::new() }
+        Self::new_with_execution_config(
+            <T::ConfigSelector as EvmConfigSelector<T>>::execution_config(spec_id),
+            spec_id,
+            block,
+            registry,
+            database,
+            precompiles,
+        )
     }
 
-    /// Returns the transaction handler registry.
-    pub const fn registry(&self) -> &TxRegistry<C::Tx, TxResult, Self> {
-        &self.registry
-    }
-
-    /// Returns the active hard fork specification.
-    pub const fn spec_id(&self) -> SpecId {
-        C::SPEC_ID
-    }
-
-    /// Returns the backing database.
-    pub const fn database(&self) -> &State<C::Database> {
-        &self.state
-    }
-
-    /// Returns the mutable EVM state.
-    pub const fn state(&self) -> &State<C::Database> {
-        &self.state
-    }
-
-    /// Returns emitted logs.
-    pub fn logs(&self) -> &[Log] {
-        &self.logs
-    }
-
-    /// Returns the precompile provider.
-    pub const fn precompiles(&self) -> &C::Precompiles {
-        &self.precompiles
-    }
-
-    /// Returns the precompile provider mutably.
-    pub const fn precompiles_mut(&mut self) -> &mut C::Precompiles {
-        &mut self.precompiles
+    /// Creates an EVM with the provided transaction registry, database, and precompile provider.
+    #[inline]
+    pub fn new_with_execution_config(
+        execution_config: ExecutionConfig<T>,
+        spec_id: T::SpecId,
+        block: BlockEnv,
+        registry: TxRegistry<T::Tx, TxResult, Self>,
+        database: T::Database,
+        precompiles: T::Precompiles,
+    ) -> Self {
+        Self {
+            spec_id,
+            execution_config,
+            block,
+            registry,
+            state: State::new(database),
+            precompiles,
+            logs: Vec::new(),
+        }
     }
 
     #[inline]
@@ -143,9 +140,56 @@ impl<C: EvmConfig> Evm<C> {
     }
 }
 
-impl<C: EvmConfig<Tx: Typed2718>> Evm<C> {
+impl<T: EvmTypes> Evm<T> {
+    /// Returns the transaction handler registry.
+    pub const fn registry(&self) -> &TxRegistry<T::Tx, TxResult, Self> {
+        &self.registry
+    }
+
+    /// Returns the backing database.
+    pub const fn database(&self) -> &State<T::Database> {
+        &self.state
+    }
+
+    /// Returns the mutable EVM state.
+    pub const fn state(&self) -> &State<T::Database> {
+        &self.state
+    }
+
+    /// Returns emitted logs.
+    pub fn logs(&self) -> &[Log] {
+        &self.logs
+    }
+
+    /// Returns the precompile provider.
+    pub const fn precompiles(&self) -> &T::Precompiles {
+        &self.precompiles
+    }
+
+    /// Returns the precompile provider mutably.
+    pub const fn precompiles_mut(&mut self) -> &mut T::Precompiles {
+        &mut self.precompiles
+    }
+
+    /// Returns the active EVM version.
+    pub const fn version(&self) -> &crate::Version {
+        self.execution_config.version()
+    }
+
+    /// Returns the active base specification ID.
+    pub const fn spec_id(&self) -> SpecId {
+        self.version().spec_id()
+    }
+
+    /// Returns the selector-specific runtime specification ID.
+    pub const fn config_spec_id(&self) -> T::SpecId {
+        self.spec_id
+    }
+}
+
+impl<T: EvmTypes<Tx: Typed2718>> Evm<T> {
     /// Dispatches the transaction to the handler registered for its EIP-2718 type byte.
-    pub fn transact(&mut self, tx: &C::Tx) -> HandlerResult<TxResult> {
+    pub fn transact(&mut self, tx: &T::Tx) -> HandlerResult<TxResult> {
         let handler = self.registry.try_get_by_type(tx.ty())?;
         let result = handler.call(tx, self);
         self.state.clear_accesses();
@@ -158,16 +202,20 @@ impl<C: EvmConfig<Tx: Typed2718>> Evm<C> {
         txs: I,
     ) -> impl Iterator<Item = HandlerResult<TxResult>> + 'a
     where
-        I: IntoIterator<Item = &'a C::Tx>,
+        I: IntoIterator<Item = &'a T::Tx>,
         I::IntoIter: 'a,
-        C::Tx: 'a,
+        T::Tx: 'a,
         Self: 'a,
     {
         txs.into_iter().map(move |tx| self.transact(tx))
     }
 }
 
-impl<C: EvmConfig<Host = Self>> Host for Evm<C> {
+impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
+    fn spec_id(&self) -> SpecId {
+        self.spec_id()
+    }
+
     fn block_env(&mut self) -> &BlockEnv {
         &self.block
     }
@@ -178,7 +226,8 @@ impl<C: EvmConfig<Host = Self>> Host for Evm<C> {
         load_code: bool,
         skip_cold_load: bool,
     ) -> Result<AccountLoad, InstrStop> {
-        let is_cold = C::SPEC_ID.enables(SpecId::BERLIN) && !self.state.is_account_warm(address);
+        let is_cold =
+            self.spec_id().enables(SpecId::BERLIN) && !self.state.is_account_warm(address);
         if skip_cold_load && is_cold {
             return Err(InstrStop::OutOfGas);
         }
@@ -202,7 +251,8 @@ impl<C: EvmConfig<Host = Self>> Host for Evm<C> {
     }
 
     fn sload(&mut self, address: Address, key: Word) -> StorageLoad {
-        let is_cold = C::SPEC_ID.enables(SpecId::BERLIN) && self.state.warm_storage(address, key);
+        let is_cold =
+            self.spec_id().enables(SpecId::BERLIN) && self.state.warm_storage(address, key);
         StorageLoad { value: self.state.storage(address, key), is_cold }
     }
 
@@ -227,6 +277,7 @@ impl<C: EvmConfig<Host = Self>> Host for Evm<C> {
         tx_env: TxEnv,
         bytecode: Bytecode,
         message: Message,
+        caller_is_static: bool,
     ) -> MessageResult {
         if message.depth >= Message::CALL_DEPTH_LIMIT {
             return MessageResult {
@@ -265,7 +316,7 @@ impl<C: EvmConfig<Host = Self>> Host for Evm<C> {
             let checkpoint = self.state.checkpoint();
             let log_checkpoint = self.logs.len();
             if let Err(stop) =
-                self.state.create_account(message.caller, address, message.value, C::SPEC_ID)
+                self.state.create_account(message.caller, address, message.value, self.spec_id())
             {
                 self.state.rollback(checkpoint);
                 self.logs.truncate(log_checkpoint);
@@ -280,11 +331,12 @@ impl<C: EvmConfig<Host = Self>> Host for Evm<C> {
             create_message.destination = address;
             create_message.code_address = address;
             create_message.input = Bytes::new();
-            let mut interpreter = Interpreter::new(bytecode, tx_env, create_message);
-            let stop = interpreter.run::<C>(self);
+            let mut interpreter =
+                Interpreter::<T>::new(bytecode, tx_env, create_message, caller_is_static);
+            let stop = interpreter.run_with(self.execution_config, self);
             let mut gas = interpreter.gas();
             if stop.is_success() || stop.is_revert() {
-                gas.set_final_refund(C::SPEC_ID.enables(SpecId::LONDON));
+                gas.set_final_refund(self.spec_id().enables(SpecId::LONDON));
             }
             let output = Bytes::copy_from_slice(interpreter.output());
             let mut gas_remaining =
@@ -336,11 +388,11 @@ impl<C: EvmConfig<Host = Self>> Host for Evm<C> {
             return MessageResult { stop, gas_remaining, output, created_address: None };
         }
 
-        let mut interpreter = Interpreter::new(bytecode, tx_env, message);
-        let stop = interpreter.run::<C>(self);
+        let mut interpreter = Interpreter::<T>::new(bytecode, tx_env, message, caller_is_static);
+        let stop = interpreter.run_with(self.execution_config, self);
         let mut gas = interpreter.gas();
         if stop.is_success() || stop.is_revert() {
-            gas.set_final_refund(C::SPEC_ID.enables(SpecId::LONDON));
+            gas.set_final_refund(self.spec_id().enables(SpecId::LONDON));
         }
         let output = Bytes::copy_from_slice(interpreter.output());
         let mut gas_remaining =
@@ -364,7 +416,7 @@ impl<C: EvmConfig<Host = Self>> Host for Evm<C> {
         skip_cold_load: bool,
     ) -> Result<SelfDestructResult, InstrStop> {
         // TODO: evmone applies full SELFDESTRUCT revision rules in state transition.
-        let is_cold = C::SPEC_ID.enables(SpecId::BERLIN) && !self.state.is_account_warm(target);
+        let is_cold = self.spec_id().enables(SpecId::BERLIN) && !self.state.is_account_warm(target);
         if skip_cold_load && is_cold {
             return Err(InstrStop::OutOfGas);
         }
@@ -396,7 +448,7 @@ impl<C: EvmConfig<Host = Self>> Host for Evm<C> {
 mod tests {
     use super::*;
     use crate::{
-        EvmVersion,
+        BaseEvmConfig, BaseEvmTypes, SpecId,
         bytecode::Bytecode,
         interpreter::{MessageKind, op},
         registry::TxRequest,
@@ -410,6 +462,11 @@ mod tests {
         value: u64,
     }
 
+    type TestEvmTypes<Tx = ()> = BaseEvmTypes<Tx>;
+
+    const NO_CONFIG_EXECUTION: ExecutionConfig<TestEvmTypes<TestTx>> =
+        ExecutionConfig::for_config::<BaseEvmConfig<{ SpecId::OSAKA as u8 }>>();
+
     impl Typed2718 for TestTx {
         fn ty(&self) -> u8 {
             TEST_TX_TYPE
@@ -421,7 +478,7 @@ mod tests {
     }
 
     fn handle_test_tx(
-        req: TxRequest<'_, TestTx, Evm<EvmVersion<TestTx>>>,
+        req: TxRequest<'_, TestTx, Evm<TestEvmTypes<TestTx>>>,
     ) -> HandlerResult<TxResult> {
         let _ = req.host.spec_id();
         Ok(TxResult { status: true, gas_used: req.tx.value + 1, ..TxResult::default() })
@@ -431,7 +488,25 @@ mod tests {
     fn dispatches_transaction_by_typed_2718_type() {
         let registry =
             TxRegistry::new().with_handler(TEST_TX_TYPE, extract_test_tx, handle_test_tx);
-        let mut evm = Evm::<EvmVersion<TestTx>>::new(
+        let mut evm = Evm::<TestEvmTypes<TestTx>>::new(
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            registry,
+            InMemoryDB::default(),
+            Default::default(),
+        );
+        let tx = TestTx { value: 41 };
+
+        assert_eq!(evm.transact(&tx).map(|result| result.gas_used), Ok(42));
+    }
+
+    #[test]
+    fn dispatches_transaction_without_evm_config() {
+        let registry =
+            TxRegistry::new().with_handler(TEST_TX_TYPE, extract_test_tx, handle_test_tx);
+        let mut evm = Evm::<TestEvmTypes<TestTx>>::new_with_execution_config(
+            NO_CONFIG_EXECUTION,
+            SpecId::OSAKA,
             BlockEnv::default(),
             registry,
             InMemoryDB::default(),
@@ -446,7 +521,8 @@ mod tests {
     fn dispatches_transaction_iter() {
         let registry =
             TxRegistry::new().with_handler(TEST_TX_TYPE, extract_test_tx, handle_test_tx);
-        let mut evm = Evm::<EvmVersion<TestTx>>::new(
+        let mut evm = Evm::<TestEvmTypes<TestTx>>::new(
+            SpecId::OSAKA,
             BlockEnv::default(),
             registry,
             InMemoryDB::default(),
@@ -463,7 +539,8 @@ mod tests {
 
     #[test]
     fn host_executes_message() {
-        let mut evm = Evm::<EvmVersion<()>>::new(
+        let mut evm = Evm::<TestEvmTypes>::new(
+            SpecId::OSAKA,
             BlockEnv::default(),
             TxRegistry::new(),
             InMemoryDB::default(),
@@ -479,7 +556,7 @@ mod tests {
             ..Message::default()
         };
 
-        let result = Host::execute_message(&mut evm, TxEnv::default(), bytecode, message);
+        let result = Host::execute_message(&mut evm, TxEnv::default(), bytecode, message, false);
         assert!(result.stop.is_success());
     }
 

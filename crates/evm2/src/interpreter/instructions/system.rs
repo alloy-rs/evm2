@@ -1,20 +1,21 @@
 //! System opcode implementations.
 
-use super::utils::{as_usize, word_to_address};
 use crate::{
-    EvmConfig,
+    EvmTypes, SpecId,
     interpreter::{
-        GasId, Host, InstrStop, Message, MessageKind, Result, SpecId, StackMut, Word,
-        memory::resize_memory, table::InstructionCx,
+        Host, InstrStop, InstructionCx, Message, MessageKind, Result, StackMut, Word,
+        memory::resize_memory,
     },
+    utils::{word_to_address, word_to_usize},
+    version::GasId,
 };
 use alloy_primitives::{Address, B256, Bytes};
 use core::{cmp::min, ops::Range};
 use evm2_macros::instruction;
 
 #[inline]
-fn require_non_staticcall<C: EvmConfig>(cx: &InstructionCx<'_, '_, C>) -> Result {
-    if cx.state.message().is_static() {
+fn require_non_staticcall<T: EvmTypes>(cx: &InstructionCx<'_, '_, T>) -> Result {
+    if cx.state.is_static() {
         return Err(InstrStop::StateChangeDuringStaticCall);
     }
     Ok(())
@@ -25,14 +26,14 @@ const fn success(stop: InstrStop) -> bool {
     matches!(stop, InstrStop::Stop | InstrStop::Return | InstrStop::SelfDestruct)
 }
 
-fn resize_memory_range<C: EvmConfig>(
-    cx: &mut InstructionCx<'_, '_, C>,
+fn resize_memory_range<T: EvmTypes>(
+    cx: &mut InstructionCx<'_, '_, T>,
     offset: Word,
     len: Word,
 ) -> Result<Range<usize>> {
-    let len = as_usize(len)?;
+    let len = word_to_usize(len)?;
     let offset = if len != 0 {
-        let offset = as_usize(offset)?;
+        let offset = word_to_usize(offset)?;
         resize_memory(cx.gas, cx.state.memory(), offset, len)?;
         offset
     } else {
@@ -41,8 +42,8 @@ fn resize_memory_range<C: EvmConfig>(
     Ok(offset..offset + len)
 }
 
-fn get_memory_input_and_out_ranges<C: EvmConfig>(
-    cx: &mut InstructionCx<'_, '_, C>,
+fn get_memory_input_and_out_ranges<T: EvmTypes>(
+    cx: &mut InstructionCx<'_, '_, T>,
     input_offset: Word,
     input_len: Word,
     return_offset: Word,
@@ -53,8 +54,8 @@ fn get_memory_input_and_out_ranges<C: EvmConfig>(
     Ok((input, output))
 }
 
-fn memory_range_bytes<C: EvmConfig>(
-    cx: &mut InstructionCx<'_, '_, C>,
+fn memory_range_bytes<T: EvmTypes>(
+    cx: &mut InstructionCx<'_, '_, T>,
     range: Range<usize>,
 ) -> Result<Bytes> {
     if range.is_empty() {
@@ -63,18 +64,18 @@ fn memory_range_bytes<C: EvmConfig>(
     Ok(Bytes::copy_from_slice(cx.state.memory().slice(range.start, range.len())))
 }
 
-fn load_acc_and_calc_gas<C: EvmConfig>(
-    cx: &mut InstructionCx<'_, '_, C>,
+fn load_acc_and_calc_gas<T: EvmTypes>(
+    cx: &mut InstructionCx<'_, '_, T>,
     to: Address,
     transfers_value: bool,
     create_empty_account: bool,
     stack_gas_limit: u64,
 ) -> Result<(u64, Bytes)> {
     if transfers_value {
-        cx.gas.spend(cx.gas_params.get(GasId::TransferValueCost))?;
+        cx.gas.spend(cx.state.gas_params().get(GasId::TransferValueCost).into())?;
     }
 
-    let additional_cold_cost = cx.gas_params.cold_account_additional_cost();
+    let additional_cold_cost = cx.state.gas_params().cold_account_additional_cost();
     let skip_cold_load = cx.gas.remaining() < additional_cold_cost;
     let account = cx.state.host.load_account(to, true, skip_cold_load)?;
 
@@ -83,28 +84,28 @@ fn load_acc_and_calc_gas<C: EvmConfig>(
         cost += additional_cold_cost;
     }
     if create_empty_account && transfers_value && account.is_empty {
-        cost += cx.gas_params.get(GasId::NewAccountCost);
+        cost += u64::from(cx.state.gas_params().get(GasId::NewAccountCost));
     }
     cx.gas.spend(cost)?;
 
     let mut gas_limit = if cx.state.spec.enables(SpecId::TANGERINE) {
-        min(cx.gas_params.call_stipend_reduction(cx.gas.remaining()), stack_gas_limit)
+        min(cx.state.gas_params().call_stipend_reduction(cx.gas.remaining()), stack_gas_limit)
     } else {
         stack_gas_limit
     };
     cx.gas.spend(gas_limit)?;
 
     if transfers_value {
-        gas_limit = gas_limit.saturating_add(cx.gas_params.get(GasId::CallStipend));
+        gas_limit = gas_limit.saturating_add(cx.state.gas_params().get(GasId::CallStipend).into());
     }
 
     Ok((gas_limit, account.code))
 }
 
 #[inline(always)]
-fn call_inner<C: EvmConfig>(
+fn call_inner<T: EvmTypes>(
     mut stack: StackMut<'_>,
-    mut cx: InstructionCx<'_, '_, C>,
+    mut cx: InstructionCx<'_, '_, T>,
     kind: MessageKind,
 ) -> Result {
     let has_value = match kind {
@@ -117,7 +118,7 @@ fn call_inner<C: EvmConfig>(
     let [input_offset, input_len, return_offset, return_len] = stack.popn::<4>()?;
     let to = word_to_address(to);
     let has_transfer = !value.is_zero();
-    if cx.state.message().is_static() && has_transfer {
+    if cx.state.is_static() && kind == MessageKind::Call && has_transfer {
         return Err(InstrStop::CallNotAllowedInsideStatic);
     }
     if cx.state.message().depth.saturating_add(1) >= Message::CALL_DEPTH_LIMIT {
@@ -161,8 +162,10 @@ fn call_inner<C: EvmConfig>(
         code_address,
         salt: B256::ZERO,
     };
+    let caller_is_static = cx.state.is_static();
     let bytecode = crate::bytecode::Bytecode::new_legacy(code);
-    let result = cx.state.host.execute_message(cx.state.tx().clone(), bytecode, message);
+    let result =
+        cx.state.host.execute_message(cx.state.tx().clone(), bytecode, message, caller_is_static);
     cx.gas.erase_cost(result.gas_remaining);
     let copy_len = min(return_memory_range.len(), result.output.len());
     cx.state.memory().set(return_memory_range.start, &result.output[..copy_len]);
@@ -171,35 +174,35 @@ fn call_inner<C: EvmConfig>(
     stack.push(success)
 }
 
-#[instruction(raw)]
-pub(in crate::interpreter) fn call(cx: _) -> Result {
+#[instruction(no_stack_preamble)]
+pub(crate) fn call(cx: _) -> Result {
     call_inner(stack, cx, MessageKind::Call)
 }
 
-#[instruction(raw)]
-pub(in crate::interpreter) fn callcode(cx: _) -> Result {
+#[instruction(no_stack_preamble)]
+pub(crate) fn callcode(cx: _) -> Result {
     call_inner(stack, cx, MessageKind::CallCode)
 }
 
-#[instruction(raw)]
-pub(in crate::interpreter) fn delegatecall(cx: _) -> Result {
+#[instruction(no_stack_preamble)]
+pub(crate) fn delegatecall(cx: _) -> Result {
     call_inner(stack, cx, MessageKind::DelegateCall)
 }
 
-#[instruction(raw)]
-pub(in crate::interpreter) fn staticcall(cx: _) -> Result {
+#[instruction(no_stack_preamble)]
+pub(crate) fn staticcall(cx: _) -> Result {
     call_inner(stack, cx, MessageKind::StaticCall)
 }
 
-#[instruction(raw)]
-pub(in crate::interpreter) fn create<const IS_CREATE2: bool>(cx: _) -> Result {
+#[instruction(no_stack_preamble)]
+pub(crate) fn create<const IS_CREATE2: bool>(cx: _) -> Result {
     create_inner(stack, cx, IS_CREATE2)
 }
 
 #[inline]
-fn create_inner<C: EvmConfig>(
+fn create_inner<T: EvmTypes>(
     mut stack: StackMut<'_>,
-    mut cx: InstructionCx<'_, '_, C>,
+    mut cx: InstructionCx<'_, '_, T>,
     is_create2: bool,
 ) -> Result {
     require_non_staticcall(&cx)?;
@@ -211,17 +214,20 @@ fn create_inner<C: EvmConfig>(
         return Ok(());
     }
 
-    let len = as_usize(len)?;
+    let len = word_to_usize(len)?;
     if cx.state.spec.enables(SpecId::SHANGHAI) {
-        cx.gas.spend(cx.gas_params.initcode_cost(len))?;
+        cx.gas.spend(cx.state.gas_params().initcode_cost(len))?;
     }
     let code_range = resize_memory_range(&mut cx, offset, Word::from(len))?;
     let input = memory_range_bytes(&mut cx, code_range)?;
-    let create_cost =
-        if is_create2 { cx.gas_params.create2_cost(len) } else { cx.gas_params.get(GasId::Create) };
+    let create_cost = if is_create2 {
+        cx.state.gas_params().create2_cost(len)
+    } else {
+        cx.state.gas_params().get(GasId::Create).into()
+    };
     cx.gas.spend(create_cost)?;
     let gas_limit = if cx.state.spec.enables(SpecId::TANGERINE) {
-        cx.gas_params.call_stipend_reduction(cx.gas.remaining())
+        cx.state.gas_params().call_stipend_reduction(cx.gas.remaining())
     } else {
         cx.gas.remaining()
     };
@@ -240,9 +246,13 @@ fn create_inner<C: EvmConfig>(
         salt: salt.map(|salt| B256::from(salt.to_be_bytes())).unwrap_or_default(),
     };
     let bytecode = crate::bytecode::Bytecode::new_legacy(input);
-    let result = cx.state.host.execute_message(cx.state.tx().clone(), bytecode, message);
+    let result = cx.state.host.execute_message(cx.state.tx().clone(), bytecode, message, false);
     cx.gas.erase_cost(result.gas_remaining);
-    cx.state.set_return_data(result.output);
+    if !result.stop.is_success() {
+        cx.state.set_return_data(result.output);
+    } else {
+        cx.state.set_return_data(Bytes::new());
+    }
     let address = result
         .created_address
         .filter(|_| success(result.stop))
@@ -252,10 +262,10 @@ fn create_inner<C: EvmConfig>(
 }
 
 #[instruction]
-pub(in crate::interpreter) fn selfdestruct(cx: _, [target]: [Word]) -> Result {
+pub(crate) fn selfdestruct(cx: _, [target]: [Word]) -> Result {
     require_non_staticcall(&cx)?;
     let target = word_to_address(target);
-    let cold_load_gas = cx.gas_params.selfdestruct_cold_cost();
+    let cold_load_gas = cx.state.gas_params().selfdestruct_cold_cost();
     let skip_cold_load = cx.gas.remaining() < cold_load_gas;
     let res = cx.state.host.selfdestruct(cx.state.message().destination, target, skip_cold_load)?;
     let should_charge_topup = if cx.state.spec.enables(SpecId::SPURIOUS_DRAGON) {
@@ -263,24 +273,25 @@ pub(in crate::interpreter) fn selfdestruct(cx: _, [target]: [Word]) -> Result {
     } else {
         !res.target_exists
     };
-    cx.gas.spend(cx.gas_params.selfdestruct_cost(should_charge_topup, res.is_cold))?;
+    cx.gas.spend(cx.state.gas_params().selfdestruct_cost(should_charge_topup, res.is_cold))?;
     if !res.previously_destroyed {
-        cx.gas.record_refund(cx.gas_params.get(GasId::SelfdestructRefund) as i64);
+        cx.gas.record_refund(cx.state.gas_params().get(GasId::SelfdestructRefund) as i64);
     }
     Err(InstrStop::SelfDestruct)
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::interpreter::{
-        InstrStop, Message, MessageKind, MessageResult, SpecId, Word,
-        instructions::{
-            tests::{RunConfig, TestHost, push, run},
-            utils::address_to_word,
+    use crate::{
+        SpecId,
+        interpreter::{
+            InstrStop, Message, MessageKind, MessageResult, Word,
+            instructions::tests::{RunConfig, TestHost, push, run},
+            op,
         },
-        op,
+        utils::address_to_word,
     };
-    use alloy_primitives::Address;
+    use alloy_primitives::{Address, Bytes};
 
     fn push_all<const N: usize>(code: &mut Vec<u8>, values: [Word; N]) {
         for value in values {
@@ -319,6 +330,59 @@ mod tests {
         assert_eq!(host.calls[0].kind, MessageKind::Call);
         assert_eq!(host.calls[0].destination, target);
         assert_eq!(host.calls[0].caller, caller);
+    }
+
+    #[test]
+    fn call_propagates_static_flag() {
+        let target = Address::from([0x22; 20]);
+        let mut host = TestHost::default();
+        let mut code = Vec::new();
+        push_all(
+            &mut code,
+            [
+                Word::from(0),
+                Word::from(0),
+                Word::from(0),
+                Word::from(0),
+                Word::ZERO,
+                address_to_word(target),
+                Word::from(1000),
+            ],
+        );
+        code.extend([op::CALL, op::STOP]);
+
+        let interpreter = run(RunConfig::new(code).host(&mut host).staticcall());
+        core::assert_matches!(interpreter.err, InstrStop::Stop);
+        assert_eq!(host.calls.len(), 1);
+        assert_eq!(host.calls[0].kind, MessageKind::Call);
+        assert!(host.call_static_flags[0]);
+    }
+
+    #[test]
+    fn callcode_propagates_static_flag_and_allows_apparent_value() {
+        let code_address = Address::from([0x33; 20]);
+        let mut host = TestHost::default();
+        let mut code = Vec::new();
+        push_all(
+            &mut code,
+            [
+                Word::from(0),
+                Word::from(0),
+                Word::from(0),
+                Word::from(0),
+                Word::from(7),
+                address_to_word(code_address),
+                Word::from(1000),
+            ],
+        );
+        code.extend([op::CALLCODE, op::STOP]);
+
+        let interpreter = run(RunConfig::new(code).host(&mut host).staticcall().gas_limit(20_000));
+        core::assert_matches!(interpreter.err, InstrStop::Stop);
+        assert_eq!(host.calls.len(), 1);
+        assert_eq!(host.calls[0].kind, MessageKind::CallCode);
+        assert_eq!(host.calls[0].value, Word::from(7));
+        assert!(host.call_static_flags[0]);
     }
 
     #[test]
@@ -426,7 +490,7 @@ mod tests {
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::from(1)]);
         assert_eq!(host.calls[0].kind, MessageKind::StaticCall);
-        assert!(host.calls[0].is_static());
+        assert!(host.call_static_flags[0]);
 
         let interpreter = run(RunConfig::new([
             op::PUSH1,
@@ -467,6 +531,46 @@ mod tests {
         assert_eq!(interpreter.stack(), [address_to_word(created)]);
         assert_eq!(host.calls.len(), 1);
         assert_eq!(host.calls[0].kind, MessageKind::Create);
+    }
+
+    #[test]
+    fn create_clears_return_data_on_success() {
+        let created = Address::from([0x77; 20]);
+        let mut host = TestHost {
+            execute_result: MessageResult {
+                stop: InstrStop::Return,
+                output: Bytes::from_static(&[0xaa, 0xbb, 0xcc]),
+                created_address: Some(created),
+                ..MessageResult::default()
+            },
+            ..Default::default()
+        };
+        let mut code = Vec::new();
+        push_all(&mut code, [Word::from(0), Word::from(0), Word::from(0)]);
+        code.extend([op::CREATE, op::RETURNDATASIZE, op::STOP]);
+
+        let interpreter = run(RunConfig::new(code).host(&mut host).gas_limit(50_000));
+        core::assert_matches!(interpreter.err, InstrStop::Stop);
+        assert_eq!(interpreter.stack(), [address_to_word(created), Word::ZERO]);
+    }
+
+    #[test]
+    fn create_sets_return_data_on_revert() {
+        let mut host = TestHost {
+            execute_result: MessageResult {
+                stop: InstrStop::Revert,
+                output: Bytes::from_static(&[0xaa, 0xbb]),
+                ..MessageResult::default()
+            },
+            ..Default::default()
+        };
+        let mut code = Vec::new();
+        push_all(&mut code, [Word::from(0), Word::from(0), Word::from(0)]);
+        code.extend([op::CREATE, op::RETURNDATASIZE, op::STOP]);
+
+        let interpreter = run(RunConfig::new(code).host(&mut host).gas_limit(50_000));
+        core::assert_matches!(interpreter.err, InstrStop::Stop);
+        assert_eq!(interpreter.stack(), [Word::ZERO, Word::from(2)]);
     }
 
     #[test]

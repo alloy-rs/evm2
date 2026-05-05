@@ -1,6 +1,3 @@
-#[cfg(test)]
-use super::instructions::*;
-
 macro_rules! opcodes {
     ($d:tt $($val:literal => $name:ident => $instr:path;)*) => {
         /// Opcode byte constants.
@@ -9,24 +6,6 @@ macro_rules! opcodes {
                 #[doc = concat!("Opcode byte for `", stringify!($name), "`.")]
                 pub const $name: u8 = $val;
             )*
-        }
-
-        #[cfg(test)]
-        const _: () = {
-            $(
-                let _ = core::mem::size_of::<$instr>();
-            )*
-        };
-
-        /// Higher-order macro to iterate over all opcodes.
-        macro_rules! for_each_opcode {
-            ([$d ($d extra:tt)*] $d m:path) => {
-                $m!{[$d($d extra)*]
-                    $(
-                        ($name, $instr),
-                    )*
-                }
-            };
         }
     };
 }
@@ -300,5 +279,3 @@ opcodes! {$
     0xFE => INVALID      => invalid;
     0xFF => SELFDESTRUCT => selfdestruct;
 }
-
-pub(crate) use for_each_opcode;

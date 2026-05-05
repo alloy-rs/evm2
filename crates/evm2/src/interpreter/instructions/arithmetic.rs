@@ -3,57 +3,58 @@ use crate::interpreter::Word;
 use evm2_macros::instruction;
 
 #[instruction]
-pub(in crate::interpreter) fn add([a, b]: [Word]) -> out {
+pub(crate) fn add([a, b]: [Word]) -> out {
     *out = a.wrapping_add(b);
 }
 
 #[instruction]
-pub(in crate::interpreter) fn mul([a, b]: [Word]) -> out {
+pub(crate) fn mul([a, b]: [Word]) -> out {
     *out = a.wrapping_mul(b);
 }
 
 #[instruction]
-pub(in crate::interpreter) fn sub([a, b]: [Word]) -> out {
+pub(crate) fn sub([a, b]: [Word]) -> out {
     *out = a.wrapping_sub(b);
 }
 
 #[instruction]
-pub(in crate::interpreter) fn div([a, b]: [Word]) -> out {
+pub(crate) fn div([a, b]: [Word]) -> out {
     *out = if b.is_zero() { Word::ZERO } else { a.wrapping_div(b) };
 }
 
 #[instruction]
-pub(in crate::interpreter) fn sdiv([a, b]: [Word]) -> out {
+pub(crate) fn sdiv([a, b]: [Word]) -> out {
     *out = i256_div(a, b);
 }
 
 #[instruction]
-pub(in crate::interpreter) fn rem([a, b]: [Word]) -> out {
+pub(crate) fn rem([a, b]: [Word]) -> out {
     *out = if b.is_zero() { Word::ZERO } else { a.wrapping_rem(b) };
 }
 
 #[instruction]
-pub(in crate::interpreter) fn smod([a, b]: [Word]) -> out {
+pub(crate) fn smod([a, b]: [Word]) -> out {
     *out = i256_mod(a, b);
 }
 
 #[instruction]
-pub(in crate::interpreter) fn addmod([a, b, n]: [Word]) -> out {
+pub(crate) fn addmod([a, b, n]: [Word]) -> out {
     *out = a.add_mod(b, n);
 }
 
 #[instruction]
-pub(in crate::interpreter) fn mulmod([a, b, n]: [Word]) -> out {
+pub(crate) fn mulmod([a, b, n]: [Word]) -> out {
     *out = a.mul_mod(b, n);
 }
 
 #[instruction]
-pub(in crate::interpreter) fn exp([a, b]: [Word]) -> out {
+pub(crate) fn exp(cx: _, [a, b]: [Word]) -> Result<out> {
+    cx.gas.spend(cx.state.gas_params().exp_cost(b))?;
     *out = a.wrapping_pow(b);
 }
 
 #[instruction]
-pub(in crate::interpreter) fn signextend([ext, value]: [Word]) -> out {
+pub(crate) fn signextend([ext, value]: [Word]) -> out {
     if ext < 31 {
         let bit_index = (8 * ext.as_limbs()[0] + 7) as usize;
         let mask = (Word::ONE << bit_index) - Word::ONE;
@@ -63,7 +64,16 @@ pub(in crate::interpreter) fn signextend([ext, value]: [Word]) -> out {
 
 #[cfg(test)]
 mod tests {
-    use crate::interpreter::{Word, instructions::tests::assert_stack};
+    use alloc::vec::Vec;
+
+    use crate::{
+        SpecId,
+        interpreter::{
+            InstrStop, Word,
+            instructions::tests::{RunConfig, assert_stack, push, run},
+            op,
+        },
+    };
 
     fn neg(value: u64) -> Word {
         Word::from(0).wrapping_sub(Word::from(value))
@@ -137,6 +147,32 @@ mod tests {
         assert_stack!(EXP(2, 10), 1024);
         assert_stack!(EXP(5, 0), 1);
         assert_stack!(EXP(0, 3), 0);
+    }
+
+    #[test]
+    fn exp_charges_dynamic_gas() {
+        let mut code = Vec::new();
+        push(&mut code, 0xff);
+        push(&mut code, 2);
+        code.extend([op::EXP, op::STOP]);
+
+        let interpreter = run(RunConfig::new(code).spec(SpecId::FRONTIER).gas_limit(25));
+
+        core::assert_matches!(interpreter.err, InstrStop::OutOfGas);
+    }
+
+    #[test]
+    fn exp_dynamic_gas_uses_active_spec() {
+        let mut code = Vec::new();
+        push(&mut code, 0xff);
+        push(&mut code, 2);
+        code.extend([op::EXP, op::STOP]);
+
+        let frontier = run(RunConfig::new(code.clone()).spec(SpecId::FRONTIER).gas_limit(65));
+        let spurious_dragon = run(RunConfig::new(code).spec(SpecId::SPURIOUS_DRAGON).gas_limit(65));
+
+        assert_eq!(frontier.err, InstrStop::Stop);
+        core::assert_matches!(spurious_dragon.err, InstrStop::OutOfGas);
     }
 
     #[test]

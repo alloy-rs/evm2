@@ -13,32 +13,28 @@ extern crate alloc;
 pub mod bytecode;
 pub mod ethereum;
 pub mod interpreter;
+pub mod utils;
+pub mod version;
 
 pub mod evm;
 pub use evm::{
     Evm, TxResult, config,
-    config::{EvmConfig, EvmVersion},
+    config::{
+        BaseEvmConfig, BaseEvmConfigSelector, BaseEvmTypes, EvmConfig, EvmConfigSelector, EvmTypes,
+        ExecutionConfig,
+    },
     env, precompile, registry,
 };
 
 pub(crate) mod precompiles;
 pub use precompiles::{Crypto, PrecompileHalt, Precompiles, crypto, install_crypto};
 
+pub use version::{Version, VersionTables};
+
+mod spec_id;
+pub use spec_id::SpecId;
+
 mod once_lock;
 
 #[cfg(test)]
 mod tests;
-
-/// Exposes a small interpreter run for assembly inspection.
-#[unsafe(no_mangle)]
-#[doc(hidden)]
-pub fn _get_asm() -> impl Sized {
-    let mut evm = Evm::<EvmVersion<()>>::new(
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-    );
-    crate::interpreter::Interpreter::new(Default::default(), Default::default(), Default::default())
-        .run::<EvmVersion<()>>(&mut evm)
-}

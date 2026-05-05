@@ -1,8 +1,9 @@
 //! EVM precompiled contracts.
 
 use crate::{
+    SpecId,
     evm::precompile::{PrecompileProvider, PrecompileStatus},
-    interpreter::{Gas, InstrStop, SpecId},
+    interpreter::{Gas, InstrStop},
     once_lock::OnceLock,
 };
 use alloc::{boxed::Box, vec::Vec};

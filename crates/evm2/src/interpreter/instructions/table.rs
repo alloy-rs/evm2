@@ -1,111 +1,10 @@
 //! Instruction dispatch tables.
 
-#[cfg(feature = "nightly")]
-use crate::interpreter::{InstrStop, Interpreter};
 use crate::{
-    EvmConfig,
-    interpreter::{
-        Gas, GasParams, Pc, Result, SpecId, Stack, StackMut, State,
-        gas::{
-            BASE, BLOCKHASH, EXP, HIGH, ISTANBUL_SLOAD_GAS, JUMPDEST, KECCAK256, LOG, LOW, MID,
-            VERYLOW, WARM_STORAGE_READ_COST, ZERO,
-        },
-        opcode::{for_each_opcode, op},
-    },
+    EvmConfig, EvmTypes,
+    interpreter::{Gas, InstrStop, Pc, Result, Stack, StackMut, State, op},
 };
-use core::{
-    hint::cold_path,
-    ops::{Index, IndexMut},
-};
-
-/// Opcode gas table.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct GasTable([u16; 256]);
-
-/// Instruction implementation table.
-#[derive(Clone, Copy)]
-pub struct InstructionImplTable<C: EvmConfig>([Option<&'static dyn Instruction<C>>; 256]);
-
-impl Index<usize> for GasTable {
-    type Output = u16;
-
-    #[inline]
-    fn index(&self, index: usize) -> &Self::Output {
-        &self.0[index]
-    }
-}
-
-impl IndexMut<usize> for GasTable {
-    #[inline]
-    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
-        &mut self.0[index]
-    }
-}
-
-impl<C: EvmConfig> core::fmt::Debug for InstructionImplTable<C> {
-    #[inline]
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("InstructionImplTable").finish_non_exhaustive()
-    }
-}
-
-impl<C: EvmConfig> Index<usize> for InstructionImplTable<C> {
-    type Output = Option<&'static dyn Instruction<C>>;
-
-    #[inline]
-    fn index(&self, index: usize) -> &Self::Output {
-        &self.0[index]
-    }
-}
-
-impl<C: EvmConfig> IndexMut<usize> for InstructionImplTable<C> {
-    #[inline]
-    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
-        &mut self.0[index]
-    }
-}
-
-impl<C: EvmConfig> Default for InstructionImplTable<C> {
-    #[inline]
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<C: EvmConfig> InstructionImplTable<C> {
-    /// Returns `true` if `opcode` has a set instruction implementation.
-    #[inline]
-    pub const fn contains(&self, opcode: u8) -> bool {
-        self.get(opcode).is_some()
-    }
-
-    /// Returns the instruction implementation for `opcode`.
-    #[inline]
-    pub const fn get(&self, opcode: u8) -> Option<&'static dyn Instruction<C>> {
-        self.0[opcode as usize]
-    }
-
-    /// Returns the instruction implementation for `opcode`, or unknown if it is not set.
-    #[inline]
-    pub const fn get_or_default(&self, opcode: u8) -> &'static dyn Instruction<C> {
-        match self.get(opcode) {
-            Some(instr) => instr,
-            None => &crate::interpreter::instructions::unknown,
-        }
-    }
-
-    /// Returns the mutable instruction implementation slot for `opcode`.
-    #[inline]
-    pub const fn get_mut(&mut self, opcode: u8) -> &mut Option<&'static dyn Instruction<C>> {
-        &mut self.0[opcode as usize]
-    }
-
-    /// Sets the instruction implementation for `opcode`.
-    #[inline]
-    pub const fn set(&mut self, opcode: u8, instr: Option<&'static dyn Instruction<C>>) {
-        self.0[opcode as usize] = instr;
-    }
-}
+use core::hint::cold_path;
 
 /// Normal instruction return value.
 #[cfg(not(feature = "nightly"))]
@@ -113,326 +12,84 @@ pub(crate) type InstructionFnRet = (*const u8, usize);
 
 /// Normal instruction function pointer.
 #[cfg(not(feature = "nightly"))]
-pub(crate) type InstructionFn<C> = extern_table!(
-    fn(
-        pc: Pc,
-        stack: Stack<'_>,
-        gas: &mut Gas,
-        state: &mut State<'_, <C as EvmConfig>::Host>,
-    ) -> InstructionFnRet
+pub(crate) type InstructionFn<T> = extern_table!(
+    fn(pc: Pc, stack: Stack<'_>, gas: &mut Gas, state: &mut State<'_, T>) -> InstructionFnRet
 );
 
 /// Normal instruction dispatch table.
 #[cfg(not(feature = "nightly"))]
-pub(crate) type InstructionTable<C> = [InstructionFn<C>; 256];
+pub(crate) type InstructionTable<T> = [InstructionFn<T>; 256];
 
 #[cfg(feature = "nightly")]
-pub(crate) type InstructionFn<C> = TailInstructionFn<C>;
+pub(crate) type InstructionFn<T> = TailInstructionFn<T>;
 #[cfg(feature = "nightly")]
-pub(crate) type InstructionTable<C> = TailInstructionTable<C>;
+pub(crate) type InstructionTable<T> = TailInstructionTable<T>;
 
 /// Tail instruction function pointer.
 #[cfg(feature = "nightly")]
-pub(crate) type TailInstructionFn<C> = extern_table!(
-    fn(
-        pc: Pc,
-        stack: Stack<'_>,
-        gas: &mut Gas,
-        state: &mut State<'_, <C as EvmConfig>::Host>,
-        ret: u8,
-    )
-);
+pub(crate) type TailInstructionFn<T> =
+    extern_table!(fn(pc: Pc, stack: Stack<'_>, gas: &mut Gas, state: &mut State<'_, T>, ret: u8));
 
 /// Tail instruction dispatch table.
 #[cfg(feature = "nightly")]
-pub(crate) type TailInstructionTable<C> = [TailInstructionFn<C>; 256];
+pub(crate) type TailInstructionTable<T> = [TailInstructionFn<T>; 256];
 
-pub(crate) trait InstructionTables: EvmConfig {
-    const INSTRUCTIONS: &'static InstructionTable<Self> = &make_instruction_table::<Self>();
+/// Function signature of an `#[instruction]`.
+pub type InstructionImplFn<T> =
+    fn(pc: &mut Pc, stack: StackMut<'_>, gas: &mut Gas, state: &mut State<'_, T>) -> Result;
+
+pub(crate) trait InstructionTables<C>: EvmTypes
+where
+    C: EvmConfig<Self>,
+{
+    const INSTRUCTIONS: &'static InstructionTable<Self> = &make_instruction_table::<Self, C>();
 }
 
-impl<C: EvmConfig> InstructionTables for C {}
+impl<T, C> InstructionTables<C> for T
+where
+    T: EvmTypes,
+    C: EvmConfig<T>,
+{
+}
 
 /// Instruction execution context.
-#[derive(Debug)]
-pub(crate) struct InstructionCx<'a, 'state, C: EvmConfig> {
+pub struct InstructionCx<'a, 'state, T: EvmTypes> {
     /// Program counter state.
     pub pc: &'a mut Pc,
     /// Gas state.
     pub gas: &'a mut Gas,
-    /// Dynamic gas parameters for the active config.
-    pub gas_params: &'a GasParams,
     /// Interpreter state.
-    pub state: &'a mut State<'state, C::Host>,
+    pub state: &'a mut State<'state, T>,
+}
+
+impl<T: EvmTypes> core::fmt::Debug for InstructionCx<'_, '_, T> {
+    #[inline]
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("InstructionCx").finish_non_exhaustive()
+    }
 }
 
 /// EVM instruction implementation.
-pub trait Instruction<C: EvmConfig = crate::EvmVersion<()>> {
+pub trait Instruction<T: EvmTypes = crate::BaseEvmTypes> {
     /// Executes this instruction.
-    fn execute(
-        &self,
-        pc: &mut Pc,
-        stack: StackMut<'_>,
-        gas: &mut Gas,
-        state: &mut State<'_, C::Host>,
-    ) -> Result;
+    fn execute(pc: &mut Pc, stack: StackMut<'_>, gas: &mut Gas, state: &mut State<'_, T>)
+    -> Result;
 }
 
-impl GasTable {
-    /// Creates a gas table for `spec`.
-    #[inline]
-    pub const fn new(spec: SpecId) -> Self {
-        let mut table = Self([0; 256]);
-
-        table.set(op::STOP, ZERO as u16);
-        table.set(op::ADD, VERYLOW as u16);
-        table.set(op::MUL, LOW as u16);
-        table.set(op::SUB, VERYLOW as u16);
-        table.set(op::DIV, 5);
-        table.set(op::SDIV, 5);
-        table.set(op::MOD, 5);
-        table.set(op::SMOD, 5);
-        table.set(op::ADDMOD, MID as u16);
-        table.set(op::MULMOD, 8);
-        table.set(op::EXP, EXP as u16);
-        table.set(op::SIGNEXTEND, 5);
-
-        table.set(op::LT, 3);
-        table.set(op::GT, 3);
-        table.set(op::SLT, 3);
-        table.set(op::SGT, 3);
-        table.set(op::EQ, 3);
-        table.set(op::ISZERO, 3);
-        table.set(op::AND, 3);
-        table.set(op::OR, 3);
-        table.set(op::XOR, 3);
-        table.set(op::NOT, 3);
-        table.set(op::BYTE, 3);
-        table.set(op::SHL, 3);
-        table.set(op::SHR, 3);
-        table.set(op::SAR, 3);
-        table.set(op::CLZ, 5);
-
-        table.set(op::KECCAK256, KECCAK256 as u16);
-
-        table.set(op::ADDRESS, BASE as u16);
-        table.set(op::BALANCE, 20);
-        table.set(op::ORIGIN, 2);
-        table.set(op::CALLER, 2);
-        table.set(op::CALLVALUE, 2);
-        table.set(op::CALLDATALOAD, 3);
-        table.set(op::CALLDATASIZE, 2);
-        table.set(op::CALLDATACOPY, 3);
-        table.set(op::CODESIZE, 2);
-        table.set(op::CODECOPY, 3);
-        table.set(op::GASPRICE, 2);
-        table.set(op::EXTCODESIZE, 20);
-        table.set(op::EXTCODECOPY, 20);
-        table.set(op::RETURNDATASIZE, 2);
-        table.set(op::RETURNDATACOPY, 3);
-        table.set(op::EXTCODEHASH, 400);
-        table.set(op::BLOCKHASH, BLOCKHASH as u16);
-        table.set(op::COINBASE, 2);
-        table.set(op::TIMESTAMP, 2);
-        table.set(op::NUMBER, 2);
-        table.set(op::DIFFICULTY, 2);
-        table.set(op::GASLIMIT, 2);
-        table.set(op::CHAINID, 2);
-        table.set(op::SELFBALANCE, 5);
-        table.set(op::BASEFEE, 2);
-        table.set(op::BLOBHASH, 3);
-        table.set(op::BLOBBASEFEE, 2);
-        table.set(op::SLOTNUM, 2);
-
-        table.set(op::POP, 2);
-        table.set(op::MLOAD, 3);
-        table.set(op::MSTORE, 3);
-        table.set(op::MSTORE8, 3);
-        table.set(op::SLOAD, 50);
-        table.set(op::SSTORE, 0);
-        table.set(op::JUMP, 8);
-        table.set(op::JUMPI, HIGH as u16);
-        table.set(op::PC, 2);
-        table.set(op::MSIZE, 2);
-        table.set(op::GAS, 2);
-        table.set(op::JUMPDEST, JUMPDEST as u16);
-        table.set(op::TLOAD, 100);
-        table.set(op::TSTORE, 100);
-        table.set(op::MCOPY, 3);
-
-        table.set(op::PUSH0, 2);
-        table.set(op::PUSH1, 3);
-        table.set(op::PUSH2, 3);
-        table.set(op::PUSH3, 3);
-        table.set(op::PUSH4, 3);
-        table.set(op::PUSH5, 3);
-        table.set(op::PUSH6, 3);
-        table.set(op::PUSH7, 3);
-        table.set(op::PUSH8, 3);
-        table.set(op::PUSH9, 3);
-        table.set(op::PUSH10, 3);
-        table.set(op::PUSH11, 3);
-        table.set(op::PUSH12, 3);
-        table.set(op::PUSH13, 3);
-        table.set(op::PUSH14, 3);
-        table.set(op::PUSH15, 3);
-        table.set(op::PUSH16, 3);
-        table.set(op::PUSH17, 3);
-        table.set(op::PUSH18, 3);
-        table.set(op::PUSH19, 3);
-        table.set(op::PUSH20, 3);
-        table.set(op::PUSH21, 3);
-        table.set(op::PUSH22, 3);
-        table.set(op::PUSH23, 3);
-        table.set(op::PUSH24, 3);
-        table.set(op::PUSH25, 3);
-        table.set(op::PUSH26, 3);
-        table.set(op::PUSH27, 3);
-        table.set(op::PUSH28, 3);
-        table.set(op::PUSH29, 3);
-        table.set(op::PUSH30, 3);
-        table.set(op::PUSH31, 3);
-        table.set(op::PUSH32, 3);
-
-        table.set(op::DUP1, 3);
-        table.set(op::DUP2, 3);
-        table.set(op::DUP3, 3);
-        table.set(op::DUP4, 3);
-        table.set(op::DUP5, 3);
-        table.set(op::DUP6, 3);
-        table.set(op::DUP7, 3);
-        table.set(op::DUP8, 3);
-        table.set(op::DUP9, 3);
-        table.set(op::DUP10, 3);
-        table.set(op::DUP11, 3);
-        table.set(op::DUP12, 3);
-        table.set(op::DUP13, 3);
-        table.set(op::DUP14, 3);
-        table.set(op::DUP15, 3);
-        table.set(op::DUP16, 3);
-
-        table.set(op::SWAP1, 3);
-        table.set(op::SWAP2, 3);
-        table.set(op::SWAP3, 3);
-        table.set(op::SWAP4, 3);
-        table.set(op::SWAP5, 3);
-        table.set(op::SWAP6, 3);
-        table.set(op::SWAP7, 3);
-        table.set(op::SWAP8, 3);
-        table.set(op::SWAP9, 3);
-        table.set(op::SWAP10, 3);
-        table.set(op::SWAP11, 3);
-        table.set(op::SWAP12, 3);
-        table.set(op::SWAP13, 3);
-        table.set(op::SWAP14, 3);
-        table.set(op::SWAP15, 3);
-        table.set(op::SWAP16, 3);
-
-        table.set(op::DUPN, 3);
-        table.set(op::SWAPN, 3);
-        table.set(op::EXCHANGE, 3);
-
-        table.set(op::LOG0, LOG as u16);
-        table.set(op::LOG1, LOG as u16);
-        table.set(op::LOG2, LOG as u16);
-        table.set(op::LOG3, LOG as u16);
-        table.set(op::LOG4, LOG as u16);
-
-        table.set(op::CREATE, 0);
-        table.set(op::CALL, 40);
-        table.set(op::CALLCODE, 40);
-        table.set(op::RETURN, 0);
-        table.set(op::DELEGATECALL, 40);
-        table.set(op::CREATE2, 0);
-        table.set(op::STATICCALL, 40);
-        table.set(op::REVERT, 0);
-        table.set(op::INVALID, 0);
-        table.set(op::SELFDESTRUCT, 0);
-
-        if spec.enables(SpecId::TANGERINE) {
-            table.set(op::SLOAD, 200);
-            table.set(op::BALANCE, 400);
-            table.set(op::EXTCODESIZE, 700);
-            table.set(op::EXTCODECOPY, 700);
-            table.set(op::CALL, 700);
-            table.set(op::CALLCODE, 700);
-            table.set(op::DELEGATECALL, 700);
-            table.set(op::STATICCALL, 700);
-            table.set(op::SELFDESTRUCT, 5000);
-        }
-
-        if spec.enables(SpecId::ISTANBUL) {
-            table.set(op::SLOAD, ISTANBUL_SLOAD_GAS as u16);
-            table.set(op::BALANCE, 700);
-            table.set(op::EXTCODEHASH, 700);
-        }
-
-        if spec.enables(SpecId::BERLIN) {
-            table.set(op::SLOAD, WARM_STORAGE_READ_COST as u16);
-            table.set(op::BALANCE, WARM_STORAGE_READ_COST as u16);
-            table.set(op::EXTCODESIZE, WARM_STORAGE_READ_COST as u16);
-            table.set(op::EXTCODEHASH, WARM_STORAGE_READ_COST as u16);
-            table.set(op::EXTCODECOPY, WARM_STORAGE_READ_COST as u16);
-            table.set(op::CALL, WARM_STORAGE_READ_COST as u16);
-            table.set(op::CALLCODE, WARM_STORAGE_READ_COST as u16);
-            table.set(op::DELEGATECALL, WARM_STORAGE_READ_COST as u16);
-            table.set(op::STATICCALL, WARM_STORAGE_READ_COST as u16);
-        }
-
-        table
-    }
-
-    /// Returns the gas cost for `opcode`.
-    #[inline]
-    pub const fn get(&self, opcode: u8) -> u16 {
-        self.0[opcode as usize]
-    }
-
-    /// Returns the mutable gas cost slot for `opcode`.
-    #[inline]
-    pub const fn get_mut(&mut self, opcode: u8) -> &mut u16 {
-        &mut self.0[opcode as usize]
-    }
-
-    /// Sets the gas cost for `opcode`.
-    #[inline]
-    pub const fn set(&mut self, opcode: u8, cost: u16) {
-        self.0[opcode as usize] = cost;
-    }
-}
-
-macro_rules! make_instruction_table_inner {
-    ([$table:expr, $config:ty] $(
-        ($op:ident, $instr:path),
-    )*) => {
-        $(
-            if <$config as EvmConfig>::SPEC_ID.enables(opcode_min_spec(op::$op)) {
-                $table.set(op::$op, Some(&$instr as &'static dyn Instruction<$config>));
-            }
-        )*
-    };
-}
-
-const fn opcode_min_spec(opcode: u8) -> SpecId {
-    match opcode {
-        op::SHL | op::SHR | op::SAR | op::EXTCODEHASH => SpecId::CONSTANTINOPLE,
-        op::RETURNDATASIZE | op::RETURNDATACOPY | op::STATICCALL | op::REVERT => SpecId::BYZANTIUM,
-        op::CHAINID | op::SELFBALANCE => SpecId::ISTANBUL,
-        op::BASEFEE => SpecId::LONDON,
-        op::PUSH0 => SpecId::SHANGHAI,
-        op::BLOBHASH | op::BLOBBASEFEE | op::TLOAD | op::TSTORE | op::MCOPY => SpecId::CANCUN,
-        op::CLZ | op::DUPN | op::SWAPN | op::EXCHANGE => SpecId::OSAKA,
-        op::SLOTNUM => SpecId::AMSTERDAM,
-        op::DELEGATECALL => SpecId::HOMESTEAD,
-        op::CREATE2 => SpecId::PETERSBURG,
-        _ => SpecId::FRONTIER,
-    }
+#[cold]
+pub(crate) const fn unknown_instruction<T: EvmTypes>(
+    _pc: &mut Pc,
+    _stack: StackMut<'_>,
+    _gas: &mut Gas,
+    _state: &mut State<'_, T>,
+) -> Result {
+    Err(InstrStop::OpcodeNotFound)
 }
 
 macro_rules! assign_instruction_table_entries {
-    ([$table:expr, $config:ty, $dispatch:ident, $instr_fn:ty] $($op:literal,)*) => {
+    ([$table:expr, $evm_types:ty, $config:ty, $dispatch:ident, $instr_fn:ty] $($op:literal,)*) => {
         $(
-            $table[$op] = $dispatch::<$config, $op> as $instr_fn;
+            $table[$op] = $dispatch::<$evm_types, $config, $op> as $instr_fn;
         )*
     };
 }
@@ -476,33 +133,26 @@ macro_rules! for_each_opcode_value {
     };
 }
 
-impl<C: EvmConfig> InstructionImplTable<C> {
-    /// Creates an instruction implementation table.
-    pub const fn new() -> Self {
-        use crate::interpreter::instructions::*;
-
-        let mut table = Self([None; 256]);
-        for_each_opcode!([table, C] make_instruction_table_inner);
-        table
-    }
-}
-
-pub(crate) const fn make_instruction_table<C: EvmConfig>() -> InstructionTable<C> {
+pub(crate) const fn make_instruction_table<T, C>() -> InstructionTable<T>
+where
+    T: EvmTypes,
+    C: EvmConfig<T>,
+{
     #[cfg(feature = "nightly")]
     use tail_dispatch as dispatch;
 
-    let mut table = [dispatch::<C, 0> as InstructionFn<C>; 256];
-    for_each_opcode_value!([table, C, dispatch, InstructionFn<C>] assign_instruction_table_entries);
+    let mut table = [dispatch::<T, C, 0> as InstructionFn<T>; 256];
+    for_each_opcode_value!([table, T, C, dispatch, InstructionFn<T>] assign_instruction_table_entries);
 
-    // Make all unknown entries point to the same function.
+    // Make all unknown entries point to the same dispatch function.
     let mut i = 0;
-    let mut unknown_idx = 0;
+    let mut unknown_idx = None;
     while i < 256 {
-        if !C::INSTRUCTION_IMPLS.contains(i as u8) {
-            if unknown_idx == 0 {
-                unknown_idx = i;
+        if !C::VERSION_TABLES.contains_instruction(i as u8) {
+            if unknown_idx.is_none() {
+                unknown_idx = Some(i);
             }
-            table[i] = table[unknown_idx];
+            table[i] = table[unknown_idx.unwrap()];
         }
         i += 1;
     }
@@ -512,30 +162,30 @@ pub(crate) const fn make_instruction_table<C: EvmConfig>() -> InstructionTable<C
 
 extern_table! {
     #[cfg(not(feature = "nightly"))]
-    fn dispatch<C: EvmConfig, const OP: u8>(
+    fn dispatch<T: EvmTypes, C: EvmConfig<T>, const OP: u8>(
         pc: Pc,
         stack: Stack<'_>,
         gas: &mut Gas,
-        state: &mut State<'_, C::Host>,
+        state: &mut State<'_, T>,
     ) -> InstructionFnRet {
-        dispatch_mono::<C>(OP, pc, stack, gas, state)
+        dispatch_mono::<T, C>(OP, pc, stack, gas, state)
     }
 }
 
 #[cfg(not(feature = "nightly"))]
 #[inline(always)]
-fn dispatch_mono<C: EvmConfig>(
+fn dispatch_mono<T: EvmTypes, C: EvmConfig<T>>(
     op: u8,
     mut pc: Pc,
     mut stack: Stack<'_>,
     gas: &mut Gas,
-    state: &mut State<'_, C::Host>,
+    state: &mut State<'_, T>,
 ) -> InstructionFnRet {
-    let instr = C::INSTRUCTION_IMPLS.get_or_default(op);
+    let instr = C::VERSION_TABLES.instruction_or_unknown(op);
     let r;
-    match pre_step::<C>(gas, op) {
+    match pre_step::<T, C>(gas, op) {
         Ok(()) => {
-            r = instr.execute(&mut pc, stack.as_mut(), gas, state);
+            r = instr(&mut pc, stack.as_mut(), gas, state);
             inc_pc(&mut pc, op);
         }
         Err(e) => r = Err(e),
@@ -551,52 +201,52 @@ fn dispatch_mono<C: EvmConfig>(
 
 extern_table! {
     #[cfg(feature = "nightly")]
-    fn tail_dispatch<C: EvmConfig, const OP: u8>(
+    fn tail_dispatch<T: EvmTypes, C: EvmConfig<T>, const OP: u8>(
         pc: Pc,
         stack: Stack<'_>,
         gas: &mut Gas,
-        state: &mut State<'_, C::Host>,
+        state: &mut State<'_, T>,
         _ret: u8,
     ) {
-        tail_return!(tail_dispatch_mono::<C>(pc, stack, gas, state, OP));
+        tail_return!(tail_dispatch_mono::<T, C>(pc, stack, gas, state, OP));
     }
 }
 
 extern_table! {
     #[cfg(feature = "nightly")]
     #[inline(always)]
-    fn tail_dispatch_mono<C: EvmConfig>(
+    fn tail_dispatch_mono<T: EvmTypes, C: EvmConfig<T>>(
         mut pc: Pc,
         mut stack: Stack<'_>,
         gas: &mut Gas,
-        state: &mut State<'_, C::Host>,
+        state: &mut State<'_, T>,
         op: u8,
     ) {
-        let instr = C::INSTRUCTION_IMPLS.get_or_default(op);
-        if let Err(e) = pre_step::<C>(gas, op) {
+        let instr = C::VERSION_TABLES.instruction_or_unknown(op);
+        if let Err(e) = pre_step::<T, C>(gas, op) {
             cold_path();
-            tail_return!(tail_call_restore::<C>(pc, stack, gas, state, e as u8));
+            tail_return!(tail_call_restore::<T>(pc, stack, gas, state, e as u8));
         }
-        if let Err(e) = instr.execute(&mut pc, stack.as_mut(), gas, state) {
+        if let Err(e) = instr(&mut pc, stack.as_mut(), gas, state) {
             cold_path();
-            tail_return!(tail_call_restore::<C>(pc, stack, gas, state, e as u8));
+            tail_return!(tail_call_restore::<T>(pc, stack, gas, state, e as u8));
         }
         inc_pc(&mut pc, op);
-        tail_return!(tail_call_next::<C>(pc, stack, gas, state, 0));
+        tail_return!(tail_call_next::<T, C>(pc, stack, gas, state, 0));
     }
 }
 
 extern_table! {
     #[cfg(feature = "nightly")]
     #[inline]
-    fn tail_call_next<C: EvmConfig>(
+    fn tail_call_next<T: EvmTypes, C: EvmConfig<T>>(
         pc: Pc,
         stack: Stack<'_>,
         gas: &mut Gas,
-        state: &mut State<'_, C::Host>,
+        state: &mut State<'_, T>,
         ret: u8,
     ) {
-        let instr = <C as InstructionTables>::INSTRUCTIONS[pc.op() as usize];
+        let instr = <T as InstructionTables<C>>::INSTRUCTIONS[pc.op() as usize];
         tail_return!(instr(pc, stack, gas, state, ret));
     }
 }
@@ -605,15 +255,15 @@ extern_table! {
     #[cfg(feature = "nightly")]
     #[inline(never)] // TODO
     #[cold]
-    fn tail_call_restore<C: EvmConfig>(
+    fn tail_call_restore<T: EvmTypes>(
         pc: Pc,
         stack: Stack<'_>,
         _gas: &mut Gas,
-        state: &mut State<'_, C::Host>,
+        state: &mut State<'_, T>,
         ret: u8,
     ) {
         // SAFETY: `raw_interp` is valid for the duration of execution.
-        let interp = unsafe { &mut *state.raw_interp.cast::<Interpreter>() };
+        let interp = unsafe { &mut *state.raw_interp };
         interp.pc = pc.as_ptr();
         interp.stack_len = stack.len;
         interp.result = Err(unsafe { core::mem::transmute::<u8, InstrStop>(ret) });
@@ -622,8 +272,8 @@ extern_table! {
 }
 
 #[inline]
-const fn pre_step<C: EvmConfig>(gas: &mut Gas, op: u8) -> Result {
-    gas.spend(C::GAS_TABLE.get(op) as _)
+const fn pre_step<T: EvmTypes, C: EvmConfig<T>>(gas: &mut Gas, op: u8) -> Result {
+    gas.spend(C::VERSION_TABLES.static_gas(op) as _)
 }
 
 #[inline]
@@ -643,83 +293,41 @@ const fn instruction_len(op: u8) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{GasTable, InstructionImplTable};
-    use crate::{
-        EvmConfig,
-        bytecode::Bytecode,
-        env::TxEnv,
-        interpreter::{Message, SpecId, Word, instructions::tests::TestHost, op},
-    };
-    use alloy_primitives::Bytes;
-    use evm2_macros::instruction;
+    use crate::{BaseEvmConfig, BaseEvmTypes, EvmConfig, SpecId, VersionTables, interpreter::op};
 
-    const CUSTOM_OPCODE: u8 = 0x0c;
-
-    #[derive(Debug)]
-    struct CustomConfig;
-
-    impl EvmConfig for CustomConfig {
-        type Tx = ();
-        type Host = TestHost;
-        type Database = crate::evm::InMemoryDB;
-        type Precompiles = crate::evm::precompile::NoPrecompiles;
-
-        const SPEC_ID: SpecId = SpecId::OSAKA;
-        const INSTRUCTION_IMPLS: &'static InstructionImplTable<Self> = &{
-            let mut table = InstructionImplTable::new();
-            table.set(CUSTOM_OPCODE, Some(&custom));
-            table
-        };
-    }
-
-    #[instruction]
-    fn custom() -> out {
-        *out = Word::from(0xdead_u64);
+    fn version_tables(spec: SpecId) -> &'static VersionTables<BaseEvmTypes> {
+        crate::spec_to_generic!(spec, |BASE_SPEC_ID| {
+            <BaseEvmConfig<BASE_SPEC_ID> as EvmConfig<BaseEvmTypes>>::VERSION_TABLES
+        })
     }
 
     #[test]
     fn default_gas_table_matches_revm_static_costs() {
-        let default_gas_table = GasTable::new(SpecId::FRONTIER);
-        assert_eq!(default_gas_table[op::STOP as usize], 0);
-        assert_eq!(default_gas_table[op::ADD as usize], 3);
-        assert_eq!(default_gas_table[op::MUL as usize], 5);
-        assert_eq!(default_gas_table[op::EXP as usize], 10);
-        assert_eq!(default_gas_table[op::BALANCE as usize], 20);
-        assert_eq!(default_gas_table[op::SLOAD as usize], 50);
-        assert_eq!(default_gas_table[op::CALL as usize], 40);
-        assert_eq!(default_gas_table[op::SELFDESTRUCT as usize], 0);
+        let default_gas_table = version_tables(SpecId::FRONTIER);
+        assert_eq!(default_gas_table.static_gas(op::STOP), 0);
+        assert_eq!(default_gas_table.static_gas(op::ADD), 3);
+        assert_eq!(default_gas_table.static_gas(op::MUL), 5);
+        assert_eq!(default_gas_table.static_gas(op::EXP), 10);
+        assert_eq!(default_gas_table.static_gas(op::BALANCE), 20);
+        assert_eq!(default_gas_table.static_gas(op::SLOAD), 50);
+        assert_eq!(default_gas_table.static_gas(op::CALL), 40);
+        assert_eq!(default_gas_table.static_gas(op::SELFDESTRUCT), 0);
     }
 
     #[test]
     fn gas_table_applies_spec_static_costs() {
-        let tangerine = GasTable::new(SpecId::TANGERINE);
-        assert_eq!(tangerine[op::SLOAD as usize], 200);
-        assert_eq!(tangerine[op::BALANCE as usize], 400);
-        assert_eq!(tangerine[op::SELFDESTRUCT as usize], 5000);
+        let tangerine = version_tables(SpecId::TANGERINE);
+        assert_eq!(tangerine.static_gas(op::SLOAD), 200);
+        assert_eq!(tangerine.static_gas(op::BALANCE), 400);
+        assert_eq!(tangerine.static_gas(op::SELFDESTRUCT), 5000);
 
-        let istanbul = GasTable::new(SpecId::ISTANBUL);
-        assert_eq!(istanbul[op::SLOAD as usize], 800);
-        assert_eq!(istanbul[op::EXTCODEHASH as usize], 700);
+        let istanbul = version_tables(SpecId::ISTANBUL);
+        assert_eq!(istanbul.static_gas(op::SLOAD), 800);
+        assert_eq!(istanbul.static_gas(op::EXTCODEHASH), 700);
 
-        let berlin = GasTable::new(SpecId::BERLIN);
-        assert_eq!(berlin[op::SLOAD as usize], 100);
-        assert_eq!(berlin[op::BALANCE as usize], 100);
-        assert_eq!(berlin[op::CALL as usize], 100);
-    }
-
-    #[test]
-    fn custom_instruction_table_opcode_runs() {
-        let bytecode = Bytecode::new_legacy(Bytes::from_static(&[CUSTOM_OPCODE, op::STOP]));
-        let mut interpreter = crate::interpreter::Interpreter::new(
-            bytecode,
-            TxEnv::default(),
-            Message { gas_limit: 10_000, ..Message::default() },
-        );
-        let mut host = TestHost::default();
-
-        let stop = interpreter.run::<CustomConfig>(&mut host);
-
-        core::assert_matches!(stop, crate::interpreter::InstrStop::Stop);
-        assert_eq!(interpreter.stack[0], Word::from(0xdead_u64));
+        let berlin = version_tables(SpecId::BERLIN);
+        assert_eq!(berlin.static_gas(op::SLOAD), 100);
+        assert_eq!(berlin.static_gas(op::BALANCE), 100);
+        assert_eq!(berlin.static_gas(op::CALL), 100);
     }
 }

@@ -1,54 +1,56 @@
-use super::utils::as_usize;
-use crate::interpreter::{Word, memory::resize_memory};
+use crate::{
+    interpreter::{Word, memory::resize_memory},
+    utils::word_to_usize,
+};
 use evm2_macros::instruction;
 
 #[instruction]
-pub(in crate::interpreter) fn mload(cx: _, [offset]: [Word]) -> Result<out> {
-    let offset = as_usize(offset)?;
+pub(crate) fn mload(cx: _, [offset]: [Word]) -> Result<out> {
+    let offset = word_to_usize(offset)?;
     resize_memory(cx.gas, cx.state.memory(), offset, 32)?;
     *out = cx.state.memory().get_word(offset);
 }
 
 #[instruction]
-pub(in crate::interpreter) fn mstore(cx: _, [offset, value]: [Word]) -> Result {
-    let offset = as_usize(offset)?;
+pub(crate) fn mstore(cx: _, [offset, value]: [Word]) -> Result {
+    let offset = word_to_usize(offset)?;
     resize_memory(cx.gas, cx.state.memory(), offset, 32)?;
     cx.state.memory().set(offset, &value.to_be_bytes::<32>());
-    Ok(())
 }
 
 #[instruction]
-pub(in crate::interpreter) fn mstore8(cx: _, [offset, value]: [Word]) -> Result {
-    let offset = as_usize(offset)?;
+pub(crate) fn mstore8(cx: _, [offset, value]: [Word]) -> Result {
+    let offset = word_to_usize(offset)?;
     resize_memory(cx.gas, cx.state.memory(), offset, 1)?;
     cx.state.memory().set(offset, &[value.byte(0)]);
-    Ok(())
 }
 
 #[instruction]
-pub(in crate::interpreter) fn msize(cx: _) -> out {
+pub(crate) fn msize(cx: _) -> out {
     *out = Word::from(cx.state.memory().len());
 }
 
 #[instruction]
-pub(in crate::interpreter) fn mcopy(cx: _, [dst, src, len]: [Word]) -> Result {
-    let len = as_usize(len)?;
-    if len == 0 {
-        return Ok(());
-    }
-    let dst = as_usize(dst)?;
-    let src = as_usize(src)?;
-    resize_memory(cx.gas, cx.state.memory(), dst.max(src), len)?;
-    cx.state.memory().copy(dst, src, len);
-    Ok(())
+pub(crate) fn mcopy(cx: _, [dst, src, len]: [Word]) -> Result {
+    let len = word_to_usize(len)?;
+    cx.gas.spend(cx.state.gas_params().mcopy_cost(len))?;
+    if len != 0 {
+        let dst = word_to_usize(dst)?;
+        let src = word_to_usize(src)?;
+        resize_memory(cx.gas, cx.state.memory(), dst.max(src), len)?;
+        cx.state.memory().copy(dst, src, len);
+    };
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::interpreter::{
-        InstrStop, Word,
-        instructions::tests::{RunConfig, push, run, run_stack},
-        op,
+    use crate::{
+        SpecId,
+        interpreter::{
+            InstrStop, Word,
+            instructions::tests::{RunConfig, push, run, run_stack},
+            op,
+        },
     };
     use alloc::vec::Vec;
 
@@ -162,5 +164,21 @@ mod tests {
 
         let interpreter = run_stack([Word::MAX, Word::from(0), Word::from(1)], op::MCOPY);
         core::assert_matches!(interpreter.err, InstrStop::InvalidOperandOOG);
+    }
+
+    #[test]
+    fn mcopy_charges_dynamic_gas() {
+        let mut code = Vec::new();
+        push(&mut code, Word::ZERO);
+        push(&mut code, 0);
+        code.push(op::MSTORE);
+        push(&mut code, Word::from(32));
+        push(&mut code, 0);
+        push(&mut code, 0);
+        code.extend([op::MCOPY, op::STOP]);
+
+        let interpreter = run(RunConfig::new(code).spec(SpecId::CANCUN).gas_limit(26));
+
+        core::assert_matches!(interpreter.err, InstrStop::OutOfGas);
     }
 }

@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run
 # /// script
 # requires-python = ">=3.13"
-# dependencies = ["tqdm>=4.67.3"]
+# dependencies = []
 # ///
 """Dump cargo-asm output for EVM opcode dispatch functions.
 
@@ -11,20 +11,18 @@ Examples:
 """
 
 import argparse
-import os
 import re
 import subprocess
 import sys
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from tqdm import tqdm
 from utils import cargo_env, repo_root
-
 
 ROOT = Path(repo_root())
 OPCODE_RS = ROOT / "crates" / "evm2" / "src" / "interpreter" / "opcode.rs"
 DEFAULT_OUT = ROOT / "tmp" / "dump"
+DISPATCH_SYMBOL = "evm2::interpreter::instructions::table::dispatch::<"
+DISPATCH_OPCODE = re.compile(r",\s*(\d+)>")
 
 
 def parse_opcodes() -> dict[str, int]:
@@ -56,8 +54,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--package",
-        default="evm2",
-        help="Cargo package passed to cargo asm. Defaults to evm2.",
+        default="evm2-statetest",
+        help="Cargo package passed to cargo asm. Defaults to evm2-statetest.",
     )
     parser.add_argument(
         "-F",
@@ -67,11 +65,9 @@ def parse_args() -> argparse.Namespace:
         help="Cargo feature(s) passed through to cargo asm. Can be repeated.",
     )
     parser.add_argument(
-        "-j",
-        "--jobs",
-        type=int,
-        default=os.cpu_count(),
-        help="Number of cargo asm jobs to run in parallel. Defaults to CPU count.",
+        "--keep-everything",
+        action="store_true",
+        help="Keep the full cargo asm --everything dumps in the output directory.",
     )
     return parser.parse_args()
 
@@ -99,12 +95,11 @@ def select_opcodes(
     return selected
 
 
-def cargo_asm(package: str, features: list[str], opcode: int, output: str) -> str:
-    symbol = f", {opcode}>"
+def cargo_asm_everything(package: str, features: list[str], output: str) -> str:
     cmd = ["cargo", "asm", "-q", "-s", "-p", package]
     for feature in features:
         cmd.extend(("-F", feature))
-    cmd.extend(("--lib", f"--{output}", symbol))
+    cmd.extend(("--lib", f"--{output}", "--everything"))
     proc = subprocess.run(
         cmd,
         cwd=ROOT,
@@ -116,7 +111,7 @@ def cargo_asm(package: str, features: list[str], opcode: int, output: str) -> st
     )
     if proc.returncode != 0:
         raise RuntimeError(
-            f"cargo asm --{output} failed for opcode {opcode:#04x}\n"
+            f"cargo asm --{output} --everything failed\n"
             f"command: {' '.join(cmd)}\n"
             f"stdout:\n{proc.stdout}\n"
             f"stderr:\n{proc.stderr}"
@@ -124,18 +119,89 @@ def cargo_asm(package: str, features: list[str], opcode: int, output: str) -> st
     return proc.stdout
 
 
+def dispatch_opcode(text: str) -> int | None:
+    if DISPATCH_SYMBOL not in text:
+        return None
+    match = DISPATCH_OPCODE.search(text)
+    if match is None:
+        return None
+    return int(match.group(1))
+
+
+def extract_asm_functions(text: str) -> dict[int, list[str]]:
+    lines = text.splitlines(keepends=True)
+    blocks: dict[int, list[str]] = {}
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        opcode = dispatch_opcode(line) if line.startswith(".section ") else None
+        if opcode is not None:
+            start = i
+            i += 1
+            while i < len(lines) and not lines[i].startswith(".section "):
+                i += 1
+            block = lines[start:i]
+            if any(line.startswith(".type\t") for line in block):
+                blocks.setdefault(opcode, []).append(clean_asm_block(block).rstrip() + "\n")
+            continue
+        i += 1
+    return blocks
+
+
+def clean_asm_block(lines: list[str]) -> str:
+    return "".join(line for line in lines if not re.match(r"\.Ltmp\d+:\n?$", line))
+
+
+def extract_llvm_functions(text: str) -> dict[int, list[str]]:
+    lines = text.splitlines(keepends=True)
+    blocks: dict[int, list[str]] = {}
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        opcode = dispatch_opcode(line) if line.startswith("; ") else None
+        if opcode is not None:
+            start = i
+            i += 1
+            while i < len(lines) and not lines[i].startswith("define "):
+                i += 1
+            if i == len(lines):
+                break
+            i += 1
+            while i < len(lines):
+                if lines[i].startswith("}"):
+                    i += 1
+                    break
+                i += 1
+            blocks.setdefault(opcode, []).append("".join(lines[start:i]).rstrip() + "\n")
+            continue
+        i += 1
+    return blocks
+
+
+def extract_functions(text: str, output: str) -> dict[int, list[str]]:
+    if output == "asm":
+        return extract_asm_functions(text)
+    if output == "llvm":
+        return extract_llvm_functions(text)
+    raise ValueError(f"unsupported cargo asm output: {output}")
+
+
 def dump_output(
     out: Path,
-    package: str,
-    features: list[str],
+    blocks_by_opcode: dict[int, list[str]],
     mnemonic: str,
     opcode: int,
     output: str,
 ) -> Path:
-    text = cargo_asm(package, features, opcode, output)
+    blocks = blocks_by_opcode.get(opcode, [])
+    if not blocks:
+        raise RuntimeError(
+            f"could not find cargo asm --{output} output for {mnemonic} ({opcode:#04x})"
+        )
+
     suffix = "ll" if output == "llvm" else "s"
     path = out / f"{mnemonic}.{suffix}"
-    path.write_text(text)
+    path.write_text("\n\n".join(blocks))
     return path
 
 
@@ -146,36 +212,21 @@ def main() -> int:
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=True)
 
+    dumps: dict[str, dict[int, list[str]]] = {}
+    for output in ("asm", "llvm"):
+        text = cargo_asm_everything(args.package, args.features, output)
+        if args.keep_everything:
+            suffix = "ll" if output == "llvm" else "s"
+            (out / f"everything.{suffix}").write_text(text)
+        dumps[output] = extract_functions(text, output)
+
     tasks = [
         (mnemonic, opcode, output)
         for mnemonic, opcode in selected
         for output in ("asm", "llvm")
     ]
-    workers = max(1, args.jobs)
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = {
-            executor.submit(
-                dump_output,
-                out,
-                args.package,
-                args.features,
-                mnemonic,
-                opcode,
-                output,
-            ): (mnemonic, output)
-            for mnemonic, opcode, output in tasks
-        }
-        progress = tqdm(
-            as_completed(futures),
-            total=len(futures),
-            unit="file",
-            dynamic_ncols=True,
-        )
-        for future in progress:
-            mnemonic, output = futures[future]
-            progress.set_description(f"{mnemonic}.{output}")
-            future.result()
-
+    for mnemonic, opcode, output in tasks:
+        dump_output(out, dumps[output], mnemonic, opcode, output)
     print(f"wrote {len(tasks)} file(s) to {out.relative_to(ROOT)}")
 
     return 0

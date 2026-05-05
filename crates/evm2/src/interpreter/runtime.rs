@@ -1,10 +1,10 @@
 use super::{
-    BytecodeRef, Gas, InstrStop, Memory, Message, Pc, Result, Stack, State, Word,
-    table::InstructionTables,
+    BytecodeRef, Gas, InstrStop, Memory, Message, MessageKind, Pc, Result, Stack, State, Word,
 };
-use crate::{EvmConfig, bytecode::Bytecode, env::TxEnv};
+use crate::{EvmConfig, EvmTypes, ExecutionConfig, bytecode::Bytecode, env::TxEnv};
 use alloc::boxed::Box;
 use alloy_primitives::Bytes;
+use core::marker::PhantomData;
 #[cfg(not(feature = "nightly"))]
 use core::{
     hint::cold_path,
@@ -13,7 +13,7 @@ use core::{
 
 /// EVM interpreter.
 #[derive(Debug)]
-pub struct Interpreter {
+pub struct Interpreter<T: EvmTypes> {
     bytecode: Bytecode,
     pub(crate) pc: *const u8,
     pub(crate) stack: Box<[Word; Stack::CAPACITY]>,
@@ -24,14 +24,22 @@ pub struct Interpreter {
     pub(crate) output: *const [u8],
     tx_env: TxEnv,
     pub(crate) message: Message,
+    pub(crate) is_static: bool,
     pub(crate) return_data: Bytes,
+    _marker: PhantomData<fn() -> T>,
 }
 
-impl Interpreter {
+impl<T: EvmTypes> Interpreter<T> {
     /// Creates an interpreter from analyzed bytecode, a transaction-global environment, and a
     /// frame-local message.
-    pub fn new(bytecode: Bytecode, tx_env: TxEnv, message: Message) -> Self {
+    pub fn new(
+        bytecode: Bytecode,
+        tx_env: TxEnv,
+        message: Message,
+        caller_is_static: bool,
+    ) -> Self {
         let gas_limit = message.gas_limit;
+        let is_static = caller_is_static || matches!(message.kind, MessageKind::StaticCall);
         Self {
             pc: bytecode.original_byte_slice().as_ptr(),
             bytecode,
@@ -44,7 +52,9 @@ impl Interpreter {
             output: &[],
             tx_env,
             message,
+            is_static,
             return_data: Bytes::new(),
+            _marker: PhantomData,
         }
     }
 
@@ -61,6 +71,11 @@ impl Interpreter {
     #[inline]
     pub(crate) const fn message(&self) -> &Message {
         &self.message
+    }
+
+    #[inline]
+    pub(crate) const fn is_static(&self) -> bool {
+        self.is_static
     }
 
     #[inline]
@@ -90,24 +105,30 @@ impl Interpreter {
         self.gas
     }
 
+    /// Runs the interpreter until it stops, using `C` as the EVM configuration.
+    #[inline]
+    pub fn run<C: EvmConfig<T>>(&mut self, host: &mut T::Host) -> InstrStop {
+        self.run_with(ExecutionConfig::for_config::<C>(), host)
+    }
+
     /// Runs the interpreter until it stops.
-    pub fn run<C: EvmConfig>(&mut self, host: &mut C::Host) -> InstrStop {
+    pub fn run_with(&mut self, config: ExecutionConfig<T>, host: &mut T::Host) -> InstrStop {
         let _gas_start = self.gas.remaining();
 
         #[cfg(feature = "nightly")]
-        let r = self.step_tail::<C>(host).unwrap_err();
+        let r = self.step_tail(config, host);
         #[cfg(not(feature = "nightly"))]
-        let r = self.run_table_loop::<C>(host);
+        let r = self.run_table_loop(config, host);
 
         r
     }
 
     #[cfg(not(feature = "nightly"))]
-    fn run_table_loop<C: EvmConfig>(&mut self, host: &mut C::Host) -> InstrStop {
+    fn run_table_loop(&mut self, config: ExecutionConfig<T>, host: &mut T::Host) -> InstrStop {
         let mut pc = self.pc;
         let mut stack_len = self.stack_len;
         loop {
-            let (next_pc, next_stack_len, flow) = self.raw_step::<C>(host, pc, stack_len);
+            let (next_pc, next_stack_len, flow) = self.raw_step(config, host, pc, stack_len);
             pc = next_pc;
             stack_len = next_stack_len;
             if flow.is_break() {
@@ -122,8 +143,8 @@ impl Interpreter {
     /// Executes one instruction.
     #[inline(always)]
     #[cfg(not(feature = "nightly"))]
-    pub fn step<C: EvmConfig>(&mut self, host: &mut C::Host) -> ControlFlow<(), ()> {
-        let (pc, stack_len, flow) = self.raw_step::<C>(host, self.pc, self.stack_len);
+    pub fn step(&mut self, config: ExecutionConfig<T>, host: &mut T::Host) -> ControlFlow<(), ()> {
+        let (pc, stack_len, flow) = self.raw_step(config, host, self.pc, self.stack_len);
         self.pc = pc;
         self.stack_len = stack_len;
         flow
@@ -131,9 +152,10 @@ impl Interpreter {
 
     #[inline(always)]
     #[cfg(not(feature = "nightly"))]
-    fn raw_step<C: EvmConfig>(
+    fn raw_step(
         &mut self,
-        host: &mut C::Host,
+        config: ExecutionConfig<T>,
+        host: &mut T::Host,
         pc: *const u8,
         stack_len: usize,
     ) -> (*const u8, usize, ControlFlow<(), ()>) {
@@ -141,12 +163,18 @@ impl Interpreter {
         let bytecode = BytecodeRef::new(&self.bytecode);
         let pc = Pc::from_ptr(pc);
         let op = pc.op();
-        let instr = <C as InstructionTables>::INSTRUCTIONS[op as usize];
+        let instr = config.instructions[op as usize];
         let (pc, stack_len) = instr(
             pc,
             Stack::new(&mut self.stack, stack_len),
             &mut self.gas,
-            &mut State { bytecode, host, spec: C::SPEC_ID, raw_interp: raw },
+            &mut State {
+                bytecode,
+                host,
+                spec: config.version.spec_id(),
+                version: config.version,
+                raw_interp: raw,
+            },
         );
         let flow = if pc.is_null() { Break(()) } else { Continue(()) };
         (pc, stack_len, flow)
@@ -154,19 +182,25 @@ impl Interpreter {
 
     #[inline(always)]
     #[cfg(feature = "nightly")]
-    fn step_tail<C: EvmConfig>(&mut self, host: &mut C::Host) -> Result {
+    fn step_tail(&mut self, config: ExecutionConfig<T>, host: &mut T::Host) -> InstrStop {
         let raw = self as *mut Self;
         let bytecode = BytecodeRef::new(&self.bytecode);
         let pc = Pc::from_ptr(self.pc);
         let op = pc.op();
-        let instr = <C as InstructionTables>::INSTRUCTIONS[op as usize];
+        let instr = config.instructions[op as usize];
         instr(
             pc,
             Stack::new(&mut self.stack, self.stack_len),
             &mut self.gas,
-            &mut State { bytecode, host, spec: C::SPEC_ID, raw_interp: raw },
+            &mut State {
+                bytecode,
+                host,
+                spec: config.version.spec_id(),
+                version: config.version,
+                raw_interp: raw,
+            },
             0,
         );
-        self.result
+        self.result.unwrap_err()
     }
 }
