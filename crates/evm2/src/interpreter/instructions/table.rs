@@ -298,8 +298,9 @@ mod tests {
     };
 
     fn static_gas_table(spec: SpecId) -> StaticGasTable {
-        crate::spec_to_generic!(spec, |SPEC_ID| {
-            <BaseEvmConfig<SPEC_ID> as EvmConfig<BaseEvmTypes>>::VERSION_TABLES.static_gas_table
+        crate::spec_to_generic!(spec, |BASE_SPEC_ID| {
+            <BaseEvmConfig<BASE_SPEC_ID> as EvmConfig<BaseEvmTypes>>::VERSION_TABLES
+                .static_gas_table
         })
     }
 

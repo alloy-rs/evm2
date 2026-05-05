@@ -43,15 +43,9 @@ pub struct VersionTables<T: EvmTypes> {
 }
 
 impl Version {
-    /// Returns the base EVM version for `spec`.
+    /// Returns the base EVM version for `spec_id`.
     #[inline]
     pub const fn base(spec_id: SpecId) -> Self {
-        Self::new_base(spec_id)
-    }
-
-    /// Creates the base EVM version for `spec`.
-    #[inline]
-    const fn new_base(spec_id: SpecId) -> Self {
         Self { spec_id, gas_params: &BASE_GAS_PARAMS[spec_id as usize] }
     }
 
@@ -78,7 +72,7 @@ static BASE_GAS_PARAMS: [GasParams; SpecId::COUNT] = {
     let mut params = [const { GasParams::empty() }; SpecId::COUNT];
     let mut i = 0;
     while i < SpecId::COUNT {
-        params[i] = new_base_gas_params(SpecId::try_from_u8(i as u8).unwrap());
+        params[i] = base_gas_params(SpecId::try_from_u8(i as u8).unwrap());
         i += 1;
     }
     params
@@ -91,7 +85,7 @@ macro_rules! noop {
 macro_rules! evm_versions {
     ($($spec:ident { $($tokens:tt)* })*) => {
         /// Creates the base dynamic gas parameters for `spec_id`.
-        const fn new_base_gas_params(spec_id: SpecId) -> GasParams {
+        const fn base_gas_params(spec_id: SpecId) -> GasParams {
             use crate::interpreter::gas::*;
             use GasId::*;
 
@@ -118,8 +112,8 @@ macro_rules! evm_versions {
         }
 
         impl<T: EvmTypes> VersionTables<T> {
-            /// Creates the type-specific version tables for `Cfg`.
-            pub const fn new_base<Cfg: EvmConfig<T>>() -> Self {
+            /// Creates the type-specific base version tables for `Cfg`.
+            pub const fn base<Cfg: EvmConfig<T>>() -> Self {
                 use crate::interpreter::gas::*;
 
                 let version = Cfg::VERSION;

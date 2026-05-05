@@ -61,7 +61,7 @@ pub use evm::{
     Evm, TxResult, config,
     config::{
         BaseEvmConfig, BaseEvmConfigSelector, BaseEvmTypes, EvmConfig, EvmConfigSelector, EvmTypes,
-        ExecutionConfig, base_execution_config,
+        ExecutionConfig,
     },
     env, precompile, registry,
 };

@@ -424,7 +424,7 @@ mod tests {
 
     const TEST_TX_TYPE: u8 = 0x7f;
     const NO_CONFIG_EXECUTION: ExecutionConfig<NoConfigTypes> =
-        ExecutionConfig::new::<BaseEvmConfig<{ SpecId::OSAKA as u8 }>>();
+        ExecutionConfig::for_config::<BaseEvmConfig<{ SpecId::OSAKA as u8 }>>();
 
     #[derive(Debug)]
     struct TestTx {

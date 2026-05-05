@@ -1,10 +1,13 @@
 //! Defines a custom EVM config selector.
+//!
+//! The runtime `CustomSpecId` distinguishes base Osaka from custom Osaka, while the const generic
+//! `BASE_SPEC_ID` always names the inherited base `SpecId`.
 
 use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{Address, Bytes};
 use evm2::{
     BaseEvmConfig, Evm, EvmConfig, EvmConfigSelector, EvmTypes, ExecutionConfig, SpecId, Version,
-    VersionTables, base_execution_config,
+    VersionTables,
     bytecode::Bytecode,
     env::BlockEnv,
     evm::{InMemoryDB, precompile::NoPrecompiles},
@@ -44,19 +47,20 @@ impl EvmTypes for CustomTypes {
     type Precompiles = NoPrecompiles;
 }
 
-const fn custom_version<const SPEC_ID: u8>() -> Version {
-    Version::base(SpecId::try_from_u8(SPEC_ID).unwrap())
+struct CustomConfig<const BASE_SPEC_ID: u8>(());
+
+impl<const BASE_SPEC_ID: u8> EvmConfig<CustomTypes> for CustomConfig<BASE_SPEC_ID> {
+    const VERSION: Version = custom_version::<BASE_SPEC_ID>();
+    const VERSION_TABLES: &'static VersionTables<CustomTypes> =
+        &custom_version_tables::<BASE_SPEC_ID>();
 }
 
-struct CustomConfig<const SPEC_ID: u8>(());
-
-impl<const SPEC_ID: u8> EvmConfig<CustomTypes> for CustomConfig<SPEC_ID> {
-    const VERSION: Version = custom_version::<SPEC_ID>();
-    const VERSION_TABLES: &'static VersionTables<CustomTypes> = &custom_version_tables::<SPEC_ID>();
+const fn custom_version<const BASE_SPEC_ID: u8>() -> Version {
+    Version::base(SpecId::try_from_u8(BASE_SPEC_ID).unwrap())
 }
 
-const fn custom_version_tables<const SPEC_ID: u8>() -> VersionTables<CustomTypes> {
-    let mut version = VersionTables::<CustomTypes>::new_base::<CustomConfig<SPEC_ID>>();
+const fn custom_version_tables<const BASE_SPEC_ID: u8>() -> VersionTables<CustomTypes> {
+    let mut version = VersionTables::<CustomTypes>::base::<CustomConfig<BASE_SPEC_ID>>();
     version.static_gas_table.set(CUSTOM_OPCODE, CUSTOM_OPCODE_GAS);
     version
         .instruction_impls
@@ -67,14 +71,17 @@ const fn custom_version_tables<const SPEC_ID: u8>() -> VersionTables<CustomTypes
 struct CustomConfigSelector(());
 
 impl EvmConfigSelector<CustomTypes> for CustomConfigSelector {
-    type Config<const SPEC_ID: u8> = CustomConfig<SPEC_ID>;
+    type Config<const BASE_SPEC_ID: u8> = CustomConfig<BASE_SPEC_ID>;
 
     fn execution_config(spec_id: CustomSpecId) -> ExecutionConfig<CustomTypes> {
         match spec_id {
             CustomSpecId::MainnetOsaka => {
-                ExecutionConfig::new::<BaseEvmConfig<{ SpecId::OSAKA as u8 }>>()
+                ExecutionConfig::for_config::<BaseEvmConfig<{ SpecId::OSAKA as u8 }>>()
             }
-            CustomSpecId::CustomOsaka => base_execution_config::<CustomTypes, Self>(spec_id.into()),
+            CustomSpecId::CustomOsaka => {
+                let base_spec_id = spec_id.into();
+                ExecutionConfig::for_base_spec::<Self>(base_spec_id)
+            }
         }
     }
 }

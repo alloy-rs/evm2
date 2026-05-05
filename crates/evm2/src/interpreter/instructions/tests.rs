@@ -232,9 +232,9 @@ impl Default for RunConfig<'_> {
 }
 
 pub(super) fn run(config: RunConfig<'_>) -> TestInterpreter {
-    crate::spec_to_generic!(config.spec_id, |SPEC_ID| run_with_config::<BaseEvmConfig<SPEC_ID>>(
-        config
-    ))
+    crate::spec_to_generic!(config.spec_id, |BASE_SPEC_ID| {
+        run_with_config::<BaseEvmConfig<BASE_SPEC_ID>>(config)
+    })
 }
 
 fn run_with_config<C: EvmConfig<TestTypes>>(config: RunConfig<'_>) -> TestInterpreter {
@@ -245,7 +245,7 @@ fn run_with_config<C: EvmConfig<TestTypes>>(config: RunConfig<'_>) -> TestInterp
     inner.return_data = return_data;
     let mut default_host = TestHost::default();
     let host = host.unwrap_or(&mut default_host);
-    let err = inner.run_with(ExecutionConfig::new::<C>(), host);
+    let err = inner.run_with(ExecutionConfig::for_config::<C>(), host);
     let stack_len = inner.stack_len();
     TestInterpreter {
         stack: inner.stack,

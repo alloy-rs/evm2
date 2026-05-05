@@ -108,7 +108,7 @@ impl<T: EvmTypes> Interpreter<T> {
     /// Runs the interpreter until it stops, using `C` as the EVM configuration.
     #[inline]
     pub fn run<C: EvmConfig<T>>(&mut self, host: &mut T::Host) -> InstrStop {
-        self.run_with(ExecutionConfig::new::<C>(), host)
+        self.run_with(ExecutionConfig::for_config::<C>(), host)
     }
 
     /// Runs the interpreter until it stops.

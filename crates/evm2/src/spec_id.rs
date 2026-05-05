@@ -123,7 +123,7 @@ impl TryFrom<u8> for SpecId {
     }
 }
 
-/// Maps a runtime specification ID to a compile-time constant.
+/// Maps a base specification ID to its compile-time `u8` discriminant.
 #[macro_export]
 macro_rules! spec_to_generic {
     (@spec $spec_id:ident, |$spec_const:ident| $e:expr) => {{

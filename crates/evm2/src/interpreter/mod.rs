@@ -189,7 +189,7 @@ mod tests {
             false,
         );
         let mut host = TestHost::default();
-        interpreter.run_with(ExecutionConfig::new::<Config>(), &mut host);
+        interpreter.run_with(ExecutionConfig::for_config::<Config>(), &mut host);
     }
 
     #[test]
@@ -207,7 +207,7 @@ mod tests {
                     false,
                 );
                 let mut host = TestHost::default();
-                interpreter.run_with(ExecutionConfig::new::<Config>(), &mut host);
+                interpreter.run_with(ExecutionConfig::for_config::<Config>(), &mut host);
                 assert!(interpreter.gas.remaining() > 0);
                 assert_eq!(interpreter.stack[0], U256::from(3));
             }};
