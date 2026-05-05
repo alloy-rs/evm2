@@ -1,10 +1,11 @@
 //! Ethereum transaction envelope and handlers.
 
 use crate::{
-    Evm, EvmConfig, TxResult,
+    Evm, EvmTypes, SpecId, TxResult,
     bytecode::Bytecode,
     env::TxEnv,
-    interpreter::{Host, Message, MessageKind, SpecId, Word},
+    evm::precompile::PrecompileProvider,
+    interpreter::{Host, Message, MessageKind, Word},
     registry::{HandlerError, HandlerResult, TxRegistry, TxRequest},
 };
 use alloy_consensus::{TxEip1559, TxEip2930, TxEip7702, TxLegacy, transaction::Recovered};
@@ -73,27 +74,25 @@ impl Typed2718 for RecoveredTxEnvelope {
 ///
 /// Currently only legacy transactions are registered. Future Ethereum typed
 /// transaction handlers should be added here.
-pub fn ethereum_tx_registry<C>() -> TxRegistry<RecoveredTxEnvelope, TxResult, Evm<C>>
-where
-    C: EvmConfig<Host = Evm<C>>,
-{
-    TxRegistry::new().with_handler(0, RecoveredTxEnvelope::as_legacy, handle_legacy::<C>)
+pub fn ethereum_tx_registry<T: EvmTypes<Host = Evm<T>>>()
+-> TxRegistry<RecoveredTxEnvelope, TxResult, Evm<T>> {
+    TxRegistry::new().with_handler(0, RecoveredTxEnvelope::as_legacy, handle_legacy::<T>)
 }
 
-fn handle_legacy<C>(req: TxRequest<'_, Recovered<TxLegacy>, Evm<C>>) -> HandlerResult<TxResult>
-where
-    C: EvmConfig<Host = Evm<C>>,
-{
+fn handle_legacy<T: EvmTypes<Host = Evm<T>>>(
+    req: TxRequest<'_, Recovered<TxLegacy>, Evm<T>>,
+) -> HandlerResult<TxResult> {
     let caller = req.tx.signer();
     let tx = req.tx.inner();
+    let spec_id = req.host.spec_id();
     let gas_price = U256::from(tx.gas_price);
-    if C::SPEC_ID.enables(SpecId::LONDON) && gas_price < req.host.block.basefee {
+    if spec_id.enables(SpecId::LONDON) && gas_price < req.host.block.basefee {
         return Err(HandlerError::FeeCapLessThanBaseFee {
             max_fee_per_gas: gas_price,
             base_fee: req.host.block.basefee,
         });
     }
-    let intrinsic = legacy_intrinsic_gas(C::SPEC_ID, tx);
+    let intrinsic = legacy_intrinsic_gas(spec_id, tx);
     if tx.gas_limit < intrinsic {
         return Err(HandlerError::IntrinsicGasTooLow { required: intrinsic, got: tx.gas_limit });
     }
@@ -110,17 +109,19 @@ where
     }
 
     req.host.state.warm_account(caller);
-    if C::SPEC_ID.enables(SpecId::SHANGHAI) {
+    if spec_id.enables(SpecId::SHANGHAI) {
         req.host.state.warm_account(req.host.block.beneficiary);
     }
     if let TxKind::Call(to) = tx.to {
         req.host.state.warm_account(to);
     }
+    for address in req.host.precompiles().warm_addresses() {
+        req.host.state.warm_account(address);
+    }
 
     req.host.state.add_balance(caller, Word::ZERO.wrapping_sub(max_gas_cost));
     req.host.state.increment_nonce(caller);
     let execution_checkpoint = req.host.state.checkpoint();
-    let log_checkpoint = req.host.logs.len();
 
     let gas_limit = tx.gas_limit - intrinsic;
     let tx_env = TxEnv {
@@ -166,15 +167,14 @@ where
     let mut result = req.host.execute_message(tx_env, bytecode, message, false);
     if !result.stop.is_success() {
         req.host.state.rollback(execution_checkpoint);
-        req.host.logs.truncate(log_checkpoint);
-        if result.stop.is_error() {
+        if result.stop.is_halt() {
             result.gas_remaining = 0;
         }
     }
 
     let gas_used = tx.gas_limit - result.gas_remaining;
     req.host.state.add_balance(caller, U256::from(result.gas_remaining) * gas_price);
-    let beneficiary_gas_price = if C::SPEC_ID.enables(SpecId::LONDON) {
+    let beneficiary_gas_price = if spec_id.enables(SpecId::LONDON) {
         gas_price.saturating_sub(req.host.block.basefee)
     } else {
         gas_price
@@ -182,13 +182,12 @@ where
     req.host
         .state
         .add_balance(req.host.block.beneficiary, U256::from(gas_used) * beneficiary_gas_price);
-    req.host.state.prune_empty_accounts();
-
     Ok(TxResult {
         status: result.stop.is_success(),
         gas_used,
         stop: result.stop,
         output: result.output,
+        ..TxResult::default()
     })
 }
 

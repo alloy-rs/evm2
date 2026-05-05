@@ -1,17 +1,20 @@
-use super::utils::{address_to_word, as_usize, as_usize_saturated, b256_to_word, word_to_address};
 use crate::{
-    AccountLoad, EvmConfig,
-    interpreter::{Host, InstrStop, Result, Word, memory::resize_memory, table::InstructionCx},
+    EvmTypes,
+    evm::AccountLoad,
+    interpreter::{Host, InstrStop, InstructionCx, Result, Word, memory::resize_memory},
+    utils::{
+        address_to_word, b256_to_word, word_to_address, word_to_usize, word_to_usize_saturated,
+    },
 };
 use alloy_primitives::B256;
 use evm2_macros::instruction;
 
-fn load_account<C: EvmConfig>(
-    cx: &mut InstructionCx<'_, '_, C>,
+fn load_account<T: EvmTypes>(
+    cx: &mut InstructionCx<'_, '_, T>,
     addr: Word,
     load_code: bool,
 ) -> Result<AccountLoad> {
-    let cold_load_gas = cx.gas_params.cold_account_additional_cost();
+    let cold_load_gas = cx.state.gas_params().cold_account_additional_cost();
     let skip_cold_load = cx.gas.remaining() < cold_load_gas;
     let account = cx.state.host.load_account(word_to_address(addr), load_code, skip_cold_load)?;
     if account.is_cold {
@@ -21,33 +24,33 @@ fn load_account<C: EvmConfig>(
 }
 
 #[instruction]
-pub(in crate::interpreter) fn address(cx: _) -> out {
+pub(crate) fn address(cx: _) -> out {
     *out = address_to_word(cx.state.message().destination);
 }
 
 #[instruction]
-pub(in crate::interpreter) fn balance(cx: _, [addr]: [Word]) -> Result<out> {
+pub(crate) fn balance(cx: _, [addr]: [Word]) -> Result<out> {
     *out = load_account(&mut cx, addr, false)?.balance;
 }
 
 #[instruction]
-pub(in crate::interpreter) fn origin(cx: _) -> out {
+pub(crate) fn origin(cx: _) -> out {
     *out = address_to_word(cx.state.tx().origin);
 }
 
 #[instruction]
-pub(in crate::interpreter) fn caller(cx: _) -> out {
+pub(crate) fn caller(cx: _) -> out {
     *out = address_to_word(cx.state.message().caller);
 }
 
 #[instruction]
-pub(in crate::interpreter) fn callvalue(cx: _) -> out {
+pub(crate) fn callvalue(cx: _) -> out {
     *out = cx.state.message().value;
 }
 
 #[instruction]
-pub(in crate::interpreter) fn calldataload(cx: _, [offset]: [Word]) -> out {
-    let offset = as_usize_saturated(offset);
+pub(crate) fn calldataload(cx: _, [offset]: [Word]) -> out {
+    let offset = word_to_usize_saturated(offset);
     let input = cx.state.message().input.as_ref();
     let mut word = B256::ZERO;
     if offset < input.len() {
@@ -58,124 +61,106 @@ pub(in crate::interpreter) fn calldataload(cx: _, [offset]: [Word]) -> out {
 }
 
 #[instruction]
-pub(in crate::interpreter) fn calldatasize(cx: _) -> out {
+pub(crate) fn calldatasize(cx: _) -> out {
     *out = Word::from(cx.state.message().input.len());
 }
 
 #[instruction]
-pub(in crate::interpreter) fn calldatacopy(
-    cx: _,
-    [memory_offset, data_offset, len]: [Word],
-) -> Result {
-    let len = as_usize(len)?;
-    cx.gas.spend(cx.gas_params.copy_cost(len))?;
-    if len == 0 {
-        return Ok(());
-    }
-    let memory_offset = as_usize(memory_offset)?;
-    let data_offset = as_usize_saturated(data_offset);
-    resize_memory(cx.gas, cx.state.memory(), memory_offset, len)?;
-    let input = cx.state.message().input.clone();
-    cx.state.memory().set_data(memory_offset, data_offset, len, &input);
-    Ok(())
+pub(crate) fn calldatacopy(cx: _, [memory_offset, data_offset, len]: [Word]) -> Result {
+    let len = word_to_usize(len)?;
+    cx.gas.spend(cx.state.gas_params().copy_cost(len))?;
+    if len != 0 {
+        let memory_offset = word_to_usize(memory_offset)?;
+        let data_offset = word_to_usize_saturated(data_offset);
+        resize_memory(cx.gas, cx.state.memory(), memory_offset, len)?;
+        let input = cx.state.message().input.clone();
+        cx.state.memory().set_data(memory_offset, data_offset, len, &input);
+    };
 }
 
 #[instruction]
-pub(in crate::interpreter) fn codesize(cx: _) -> out {
+pub(crate) fn codesize(cx: _) -> out {
     *out = Word::from(cx.state.bytecode.len());
 }
 
 #[instruction]
-pub(in crate::interpreter) fn codecopy(cx: _, [memory_offset, code_offset, len]: [Word]) -> Result {
-    let len = as_usize(len)?;
-    cx.gas.spend(cx.gas_params.copy_cost(len))?;
-    if len == 0 {
-        return Ok(());
-    }
-    let memory_offset = as_usize(memory_offset)?;
-    let code_offset = as_usize_saturated(code_offset);
-    resize_memory(cx.gas, cx.state.memory(), memory_offset, len)?;
-    let code = cx.state.bytecode.as_slice();
-    cx.state.memory().set_data(memory_offset, code_offset, len, code);
-    Ok(())
+pub(crate) fn codecopy(cx: _, [memory_offset, code_offset, len]: [Word]) -> Result {
+    let len = word_to_usize(len)?;
+    cx.gas.spend(cx.state.gas_params().copy_cost(len))?;
+    if len != 0 {
+        let memory_offset = word_to_usize(memory_offset)?;
+        let code_offset = word_to_usize_saturated(code_offset);
+        resize_memory(cx.gas, cx.state.memory(), memory_offset, len)?;
+        let code = cx.state.bytecode.as_slice();
+        cx.state.memory().set_data(memory_offset, code_offset, len, code);
+    };
 }
 
 #[instruction]
-pub(in crate::interpreter) fn gasprice(cx: _) -> out {
+pub(crate) fn gasprice(cx: _) -> out {
     *out = cx.state.tx().gas_price;
 }
 
 #[instruction]
-pub(in crate::interpreter) fn extcodesize(cx: _, [addr]: [Word]) -> Result<out> {
+pub(crate) fn extcodesize(cx: _, [addr]: [Word]) -> Result<out> {
     *out = Word::from(load_account(&mut cx, addr, true)?.code.len());
 }
 
 #[instruction]
-pub(in crate::interpreter) fn extcodehash(cx: _, [addr]: [Word]) -> Result<out> {
+pub(crate) fn extcodehash(cx: _, [addr]: [Word]) -> Result<out> {
     let account = load_account(&mut cx, addr, false)?;
     *out = if account.is_empty { Word::ZERO } else { b256_to_word(account.code_hash) };
 }
 
 #[instruction]
-pub(in crate::interpreter) fn extcodecopy(
-    cx: _,
-    [addr, memory_offset, code_offset, len]: [Word],
-) -> Result {
-    let len = as_usize(len)?;
-    cx.gas.spend(cx.gas_params.extcodecopy_cost(len))?;
+pub(crate) fn extcodecopy(cx: _, [addr, memory_offset, code_offset, len]: [Word]) -> Result {
+    let len = word_to_usize(len)?;
+    cx.gas.spend(cx.state.gas_params().extcodecopy_cost(len))?;
 
     let mut memory_offset_usize = 0;
     if len != 0 {
-        memory_offset_usize = as_usize(memory_offset)?;
+        memory_offset_usize = word_to_usize(memory_offset)?;
         resize_memory(cx.gas, cx.state.memory(), memory_offset_usize, len)?;
     }
 
     let code = load_account(&mut cx, addr, true)?.code;
-    let code_offset = as_usize_saturated(code_offset).min(code.len());
+    let code_offset = word_to_usize_saturated(code_offset).min(code.len());
     cx.state.memory().set_data(memory_offset_usize, code_offset, len, &code);
-    Ok(())
 }
 
 #[instruction]
-pub(in crate::interpreter) fn returndatasize(cx: _) -> Result<out> {
+pub(crate) fn returndatasize(cx: _) -> Result<out> {
     *out = Word::from(cx.state.return_data().len());
 }
 
 #[instruction]
-pub(in crate::interpreter) fn returndatacopy(
-    cx: _,
-    [memory_offset, data_offset, len]: [Word],
-) -> Result {
-    let len = as_usize(len)?;
-    let data_offset = as_usize_saturated(data_offset);
+pub(crate) fn returndatacopy(cx: _, [memory_offset, data_offset, len]: [Word]) -> Result {
+    let len = word_to_usize(len)?;
+    let data_offset = word_to_usize_saturated(data_offset);
     if data_offset.saturating_add(len) > cx.state.return_data().len() {
         return Err(InstrStop::OutOfOffset);
     }
 
-    cx.gas.spend(cx.gas_params.copy_cost(len))?;
-    if len == 0 {
-        return Ok(());
-    }
-
-    let memory_offset = as_usize(memory_offset)?;
-    resize_memory(cx.gas, cx.state.memory(), memory_offset, len)?;
-    let return_data = cx.state.return_data().clone();
-    cx.state.memory().set_data(memory_offset, data_offset, len, &return_data);
-    Ok(())
+    cx.gas.spend(cx.state.gas_params().copy_cost(len))?;
+    if len != 0 {
+        let memory_offset = word_to_usize(memory_offset)?;
+        resize_memory(cx.gas, cx.state.memory(), memory_offset, len)?;
+        let return_data = cx.state.return_data().clone();
+        cx.state.memory().set_data(memory_offset, data_offset, len, &return_data);
+    };
 }
 
 #[cfg(test)]
 mod tests {
     use crate::{
+        SpecId,
         env::TxEnv,
         interpreter::{
-            InstrStop, Message, SpecId, Word,
-            instructions::{
-                tests::{RunConfig, TestHost, assert_stack, push, run, run_stack},
-                utils::{address_to_word, b256_to_word},
-            },
+            InstrStop, Message, Word,
+            instructions::tests::{RunConfig, TestHost, assert_stack, push, run, run_stack},
             op,
         },
+        utils::{address_to_word, b256_to_word},
     };
     use alloc::vec::Vec;
     use alloy_primitives::{Address, B256, Bytes};
@@ -513,7 +498,7 @@ mod tests {
         let mut host = TestHost { code_hash: hash, ..TestHost::default() };
         let interpreter = run(RunConfig::new([op::PUSH1, 0xbe, op::EXTCODEHASH, op::STOP])
             .host(&mut host)
-            .spec(SpecId::CONSTANTINOPLE));
+            .spec(SpecId::PETERSBURG));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [b256_to_word(hash)]);
 

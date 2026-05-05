@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use alloy_primitives::{Address, B256, Bytes, U256};
-use evm2::interpreter::SpecId;
+use evm2::SpecId;
 use serde::{Deserialize, Deserializer, de};
 use std::collections::BTreeMap;
 
@@ -222,9 +222,10 @@ impl SpecName {
             }
             Self::EIP158 => Some(SpecId::SPURIOUS_DRAGON),
             Self::EIP158ToByzantiumAt5 | Self::Byzantium => Some(SpecId::BYZANTIUM),
-            Self::ByzantiumToConstantinopleFixAt5 | Self::ConstantinopleFix => {
-                Some(SpecId::PETERSBURG)
-            }
+            Self::ByzantiumToConstantinopleAt5
+            | Self::ByzantiumToConstantinopleFixAt5
+            | Self::Constantinople
+            | Self::ConstantinopleFix => Some(SpecId::PETERSBURG),
             Self::Istanbul => Some(SpecId::ISTANBUL),
             Self::Berlin => Some(SpecId::BERLIN),
             Self::BerlinToLondonAt5 | Self::London => Some(SpecId::LONDON),
@@ -234,7 +235,7 @@ impl SpecName {
             Self::Prague => Some(SpecId::PRAGUE),
             Self::Osaka => Some(SpecId::OSAKA),
             Self::Amsterdam => Some(SpecId::AMSTERDAM),
-            Self::ByzantiumToConstantinopleAt5 | Self::Constantinople | Self::Unknown => None,
+            Self::Unknown => None,
         }
     }
 }

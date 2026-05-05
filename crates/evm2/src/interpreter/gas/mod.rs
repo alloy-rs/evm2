@@ -3,50 +3,47 @@
 use super::{InstrStop, Result};
 use core::hint::cold_path;
 
-mod params;
-pub use params::{GasId, GasParamTable, GasParams, num_words};
-
-pub(super) const ZERO: u32 = 0;
-pub(super) const BASE: u32 = 2;
-pub(super) const VERYLOW: u32 = 3;
-pub(super) const LOW: u32 = 5;
-pub(super) const MID: u32 = 8;
-pub(super) const HIGH: u32 = 10;
-pub(super) const JUMPDEST: u32 = 1;
-pub(super) const EXP: u32 = 10;
-pub(super) const MEMORY: u32 = 3;
-pub(super) const LOG: u32 = 375;
-pub(super) const LOGDATA: u32 = 8;
-pub(super) const LOGTOPIC: u32 = 375;
-pub(super) const KECCAK256: u32 = 30;
-pub(super) const KECCAK256WORD: u32 = 6;
-pub(super) const COPY: u32 = 3;
-pub(super) const BLOCKHASH: u32 = 20;
-pub(super) const CREATE: u32 = 32000;
-pub(super) const CALLVALUE: u32 = 9000;
-pub(super) const NEWACCOUNT: u32 = 25000;
-pub(super) const SELFDESTRUCT_REFUND: u32 = 24000;
-pub(super) const CODEDEPOSIT: u32 = 200;
-pub(super) const SSTORE_SET: u32 = 20000;
-pub(super) const SSTORE_RESET: u32 = 5000;
-pub(super) const REFUND_SSTORE_CLEARS: u32 = 15000;
-pub(super) const STANDARD_TOKEN_COST: u32 = 4;
-pub(super) const NON_ZERO_BYTE_MULTIPLIER: u32 = 17;
-pub(super) const NON_ZERO_BYTE_MULTIPLIER_ISTANBUL: u32 = 4;
-pub(super) const TOTAL_COST_FLOOR_PER_TOKEN: u32 = 10;
-pub(super) const INITCODE_WORD_COST: u32 = 2;
-pub(super) const CALL_STIPEND: u32 = 2300;
-pub(super) const ISTANBUL_SLOAD_GAS: u32 = 800;
-pub(super) const ACCESS_LIST_ADDRESS: u32 = 2400;
-pub(super) const ACCESS_LIST_STORAGE_KEY: u32 = 1900;
-pub(super) const COLD_SLOAD_COST: u32 = 2100;
-pub(super) const COLD_ACCOUNT_ACCESS_COST: u32 = 2600;
-pub(super) const COLD_ACCOUNT_ACCESS_COST_ADDITIONAL: u32 =
+pub(crate) const ZERO: u32 = 0;
+pub(crate) const BASE: u32 = 2;
+pub(crate) const VERYLOW: u32 = 3;
+pub(crate) const LOW: u32 = 5;
+pub(crate) const MID: u32 = 8;
+pub(crate) const HIGH: u32 = 10;
+pub(crate) const JUMPDEST: u32 = 1;
+pub(crate) const EXP: u32 = 10;
+pub(crate) const MEMORY: u32 = 3;
+pub(crate) const LOG: u32 = 375;
+pub(crate) const LOGDATA: u32 = 8;
+pub(crate) const LOGTOPIC: u32 = 375;
+pub(crate) const KECCAK256: u32 = 30;
+pub(crate) const KECCAK256WORD: u32 = 6;
+pub(crate) const COPY: u32 = 3;
+pub(crate) const BLOCKHASH: u32 = 20;
+pub(crate) const CREATE: u32 = 32000;
+pub(crate) const CALLVALUE: u32 = 9000;
+pub(crate) const NEWACCOUNT: u32 = 25000;
+pub(crate) const SELFDESTRUCT_REFUND: u32 = 24000;
+pub(crate) const CODEDEPOSIT: u32 = 200;
+pub(crate) const SSTORE_SET: u32 = 20000;
+pub(crate) const SSTORE_RESET: u32 = 5000;
+pub(crate) const REFUND_SSTORE_CLEARS: u32 = 15000;
+pub(crate) const STANDARD_TOKEN_COST: u32 = 4;
+pub(crate) const NON_ZERO_BYTE_MULTIPLIER: u32 = 17;
+pub(crate) const NON_ZERO_BYTE_MULTIPLIER_ISTANBUL: u32 = 4;
+pub(crate) const TOTAL_COST_FLOOR_PER_TOKEN: u32 = 10;
+pub(crate) const INITCODE_WORD_COST: u32 = 2;
+pub(crate) const CALL_STIPEND: u32 = 2300;
+pub(crate) const ISTANBUL_SLOAD_GAS: u32 = 800;
+pub(crate) const ACCESS_LIST_ADDRESS: u32 = 2400;
+pub(crate) const ACCESS_LIST_STORAGE_KEY: u32 = 1900;
+pub(crate) const COLD_SLOAD_COST: u32 = 2100;
+pub(crate) const COLD_ACCOUNT_ACCESS_COST: u32 = 2600;
+pub(crate) const COLD_ACCOUNT_ACCESS_COST_ADDITIONAL: u32 =
     COLD_ACCOUNT_ACCESS_COST - WARM_STORAGE_READ_COST;
-pub(super) const WARM_STORAGE_READ_COST: u32 = 100;
-pub(super) const WARM_SSTORE_RESET: u32 = SSTORE_RESET - COLD_SLOAD_COST;
-pub(super) const EIP7702_PER_AUTH_BASE_COST: u32 = 12500;
-pub(super) const EIP7702_PER_EMPTY_ACCOUNT_COST: u32 = 25000;
+pub(crate) const WARM_STORAGE_READ_COST: u32 = 100;
+pub(crate) const WARM_SSTORE_RESET: u32 = SSTORE_RESET - COLD_SLOAD_COST;
+pub(crate) const EIP7702_PER_AUTH_BASE_COST: u32 = 12500;
+pub(crate) const EIP7702_PER_EMPTY_ACCOUNT_COST: u32 = 25000;
 
 /// Tracks regular, state, and refunded gas.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -386,18 +383,6 @@ impl Gas {
     pub fn set_final_refund(&mut self, is_london: bool) {
         self.tracker.set_final_refund(is_london);
     }
-}
-
-/// Memory expansion result.
-#[derive(Clone, Copy, Debug)]
-#[non_exhaustive]
-pub enum MemoryExtensionResult {
-    /// Memory was extended.
-    Extended,
-    /// Memory size did not change.
-    Same,
-    /// Memory expansion ran out of gas.
-    OutOfGas,
 }
 
 /// Memory gas accounting state.

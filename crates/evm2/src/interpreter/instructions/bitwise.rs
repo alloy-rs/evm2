@@ -1,79 +1,79 @@
-use super::{i256::i256_cmp, utils::as_usize_saturated};
-use crate::interpreter::Word;
+use super::i256::i256_cmp;
+use crate::{interpreter::Word, utils::word_to_usize_saturated};
 use core::cmp::Ordering;
 use evm2_macros::instruction;
 
 #[instruction]
-pub(in crate::interpreter) fn lt([a, b]: [Word]) -> out {
+pub(crate) fn lt([a, b]: [Word]) -> out {
     *out = Word::from(a < b);
 }
 
 #[instruction]
-pub(in crate::interpreter) fn gt([a, b]: [Word]) -> out {
+pub(crate) fn gt([a, b]: [Word]) -> out {
     *out = Word::from(a > b);
 }
 
 #[instruction]
-pub(in crate::interpreter) fn slt([a, b]: [Word]) -> out {
+pub(crate) fn slt([a, b]: [Word]) -> out {
     *out = Word::from(i256_cmp(&a, &b) == Ordering::Less);
 }
 
 #[instruction]
-pub(in crate::interpreter) fn sgt([a, b]: [Word]) -> out {
+pub(crate) fn sgt([a, b]: [Word]) -> out {
     *out = Word::from(i256_cmp(&a, &b) == Ordering::Greater);
 }
 
 #[instruction]
-pub(in crate::interpreter) fn eq([a, b]: [Word]) -> out {
+pub(crate) fn eq([a, b]: [Word]) -> out {
     *out = Word::from(a == b);
 }
 
 #[instruction]
-pub(in crate::interpreter) fn iszero([value]: [Word]) -> out {
+pub(crate) fn iszero([value]: [Word]) -> out {
     *out = Word::from(value.is_zero());
 }
 
 #[instruction]
-pub(in crate::interpreter) fn bitand([a, b]: [Word]) -> out {
+pub(crate) fn bitand([a, b]: [Word]) -> out {
     *out = a & b;
 }
 
 #[instruction]
-pub(in crate::interpreter) fn bitor([a, b]: [Word]) -> out {
+pub(crate) fn bitor([a, b]: [Word]) -> out {
     *out = a | b;
 }
 
 #[instruction]
-pub(in crate::interpreter) fn bitxor([a, b]: [Word]) -> out {
+pub(crate) fn bitxor([a, b]: [Word]) -> out {
     *out = a ^ b;
 }
 
 #[instruction]
-pub(in crate::interpreter) fn not([value]: [Word]) -> out {
+pub(crate) fn not([value]: [Word]) -> out {
     *out = !value;
 }
 
 #[instruction]
-pub(in crate::interpreter) fn byte([index, value]: [Word]) -> out {
-    let index = as_usize_saturated(index);
+pub(crate) fn byte([index, value]: [Word]) -> out {
+    let index = word_to_usize_saturated(index);
     *out = if index < 32 { Word::from(value.byte(31 - index)) } else { Word::ZERO };
 }
 
 #[instruction]
-pub(in crate::interpreter) fn shl([shift, value]: [Word]) -> out {
-    let shift = as_usize_saturated(shift);
+pub(crate) fn shl([shift, value]: [Word]) -> out {
+    let shift = word_to_usize_saturated(shift);
     *out = if shift < 256 { value << shift } else { Word::ZERO };
 }
 
 #[instruction]
-pub(in crate::interpreter) fn shr([shift, value]: [Word]) -> out {
-    let shift = as_usize_saturated(shift);
+pub(crate) fn shr([shift, value]: [Word]) -> out {
+    let shift = word_to_usize_saturated(shift);
     *out = if shift < 256 { value >> shift } else { Word::ZERO };
 }
 
 #[instruction]
-pub(in crate::interpreter) fn sar([shift, value]: [Word]) -> out {
-    let shift = as_usize_saturated(shift);
+pub(crate) fn sar([shift, value]: [Word]) -> out {
+    let shift = word_to_usize_saturated(shift);
     *out = if shift < 256 {
         value.arithmetic_shr(shift)
     } else if value.bit(255) {
@@ -84,7 +84,7 @@ pub(in crate::interpreter) fn sar([shift, value]: [Word]) -> out {
 }
 
 #[instruction]
-pub(in crate::interpreter) fn clz([value]: [Word]) -> out {
+pub(crate) fn clz([value]: [Word]) -> out {
     *out = Word::from(value.leading_zeros());
 }
 

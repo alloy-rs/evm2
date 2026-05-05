@@ -1,26 +1,30 @@
-use super::{BytecodeRef, InstrStop, Interpreter, Memory, Message, SpecId, Word};
+use super::{BytecodeRef, InstrStop, Interpreter, Memory, Message, Word};
 use crate::{
-    AccountLoad, SelfDestructResult, StorageLoad,
+    EvmTypes, SpecId, Version,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
+    evm::{AccountLoad, SelfDestructResult, StorageLoad},
+    version::GasParams,
 };
 use alloy_primitives::{Address, B256, Bytes, Log};
 use core::fmt;
 
 /// Interpreter state passed to instructions.
-pub struct State<'a, H: Host + ?Sized> {
+pub struct State<'a, T: EvmTypes> {
     /// Active bytecode.
     pub bytecode: BytecodeRef<'a>,
     /// Host implementation.
-    pub host: &'a mut H,
+    pub host: &'a mut T::Host,
     /// Active spec identifier.
     pub spec: SpecId,
-    pub(crate) raw_interp: *mut Interpreter,
+    /// Active runtime version data.
+    pub version: Version,
+    pub(crate) raw_interp: *mut Interpreter<T>,
 }
 
-impl<H: Host + ?Sized> State<'_, H> {
+impl<T: EvmTypes> State<'_, T> {
     #[inline]
-    fn interp(&self) -> &Interpreter {
+    fn interp(&self) -> &Interpreter<T> {
         // SAFETY: `raw_interp` is valid for the duration of instruction execution. Methods on
         // `State` must not borrow fields already passed separately to the instruction, such as
         // stack and gas.
@@ -28,7 +32,7 @@ impl<H: Host + ?Sized> State<'_, H> {
     }
 
     #[inline]
-    fn interp_mut(&mut self) -> &mut Interpreter {
+    fn interp_mut(&mut self) -> &mut Interpreter<T> {
         // SAFETY: `raw_interp` is valid for the duration of instruction execution. Methods on
         // `State` must not borrow fields already passed separately to the instruction, such as
         // stack and gas.
@@ -51,6 +55,15 @@ impl<H: Host + ?Sized> State<'_, H> {
     #[inline]
     pub(crate) fn is_static(&self) -> bool {
         self.interp().is_static()
+    }
+
+    /// Returns the active dynamic gas parameters.
+    #[inline]
+    pub const fn gas_params(&self) -> &'static GasParams {
+        // Gas params are data on the active version so changes automatically affect every
+        // instruction that reads them. Tracking instruction dependencies on version tables is not
+        // sustainable for custom forks.
+        self.version.gas_params()
     }
 
     /// Returns linear memory.
@@ -78,7 +91,7 @@ impl<H: Host + ?Sized> State<'_, H> {
     }
 }
 
-impl<H: Host + ?Sized> fmt::Debug for State<'_, H> {
+impl<T: EvmTypes> fmt::Debug for State<'_, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("State")
             .field("bytecode", &self.bytecode)
@@ -88,6 +101,7 @@ impl<H: Host + ?Sized> fmt::Debug for State<'_, H> {
             .field("memory", &self.interp().memory)
             .field("return_data", &self.return_data())
             .field("spec", &self.spec)
+            .field("version", &self.version)
             .field("raw_interp", &self.raw_interp)
             .finish_non_exhaustive()
     }
@@ -116,6 +130,9 @@ impl MessageResult {
 
 /// External host operations.
 pub trait Host {
+    /// Returns the active base specification ID.
+    fn spec_id(&self) -> SpecId;
+
     /// Returns the block environment.
     fn block_env(&mut self) -> &BlockEnv;
 

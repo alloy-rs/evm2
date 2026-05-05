@@ -2,12 +2,10 @@ use crate::interpreter::{InstrStop, Word};
 use evm2_macros::instruction;
 
 #[instruction]
-pub(in crate::interpreter) fn pop([_value]: [Word]) -> Result {
-    Ok(())
-}
+pub(crate) fn pop([_value]: [Word]) -> Result {}
 
-#[instruction(raw)]
-pub(in crate::interpreter) fn push<const N: usize>(cx: _) -> Result {
+#[instruction(no_stack_preamble)]
+pub(crate) fn push<const N: usize>(cx: _) -> Result {
     if N == 0 {
         return stack.push(Word::ZERO);
     }
@@ -15,32 +13,32 @@ pub(in crate::interpreter) fn push<const N: usize>(cx: _) -> Result {
     stack.push_slice(slice)
 }
 
-#[instruction(raw)]
-pub(in crate::interpreter) fn dup<const N: usize>() -> Result {
+#[instruction(no_stack_preamble)]
+pub(crate) fn dup<const N: usize>() -> Result {
     stack.dup(N)
 }
 
-#[instruction(raw)]
-pub(in crate::interpreter) fn swap<const N: usize>() -> Result {
+#[instruction(no_stack_preamble)]
+pub(crate) fn swap<const N: usize>() -> Result {
     stack.swap(N)
 }
 
-#[instruction(raw)]
-pub(in crate::interpreter) fn dupn(cx: _) -> Result {
+#[instruction(no_stack_preamble)]
+pub(crate) fn dupn(cx: _) -> Result {
     let n = decode_single(unsafe { cx.pc.read_bytes_offset_unchecked(1, 1)[0] })
         .ok_or(InstrStop::InvalidImmediateEncoding)?;
     stack.dup(n)
 }
 
-#[instruction(raw)]
-pub(in crate::interpreter) fn swapn(cx: _) -> Result {
+#[instruction(no_stack_preamble)]
+pub(crate) fn swapn(cx: _) -> Result {
     let n = decode_single(unsafe { cx.pc.read_bytes_offset_unchecked(1, 1)[0] })
         .ok_or(InstrStop::InvalidImmediateEncoding)?;
     stack.exchange(0, n)
 }
 
-#[instruction(raw)]
-pub(in crate::interpreter) fn exchange(cx: _) -> Result {
+#[instruction(no_stack_preamble)]
+pub(crate) fn exchange(cx: _) -> Result {
     let (n, m) = decode_pair(unsafe { cx.pc.read_bytes_offset_unchecked(1, 1)[0] })
         .ok_or(InstrStop::InvalidImmediateEncoding)?;
     stack.exchange(n, m)
@@ -62,10 +60,13 @@ const fn decode_pair(x: u8) -> Option<(usize, usize)> {
 
 #[cfg(test)]
 mod tests {
-    use crate::interpreter::{
-        InstrStop, SpecId, StackMut, Word,
-        instructions::tests::{RunConfig, push, run, run_stack},
-        op,
+    use crate::{
+        SpecId,
+        interpreter::{
+            InstrStop, StackMut, Word,
+            instructions::tests::{RunConfig, push, run, run_stack},
+            op,
+        },
     };
     use alloc::{vec, vec::Vec};
 

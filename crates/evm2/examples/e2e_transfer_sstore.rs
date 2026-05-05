@@ -3,12 +3,12 @@
 use alloy_consensus::{TxLegacy, transaction::Recovered};
 use alloy_primitives::{Address, Bytes, TxKind, U256};
 use evm2::{
-    Evm, EvmVersion,
+    BaseEvmTypes, Evm, Precompiles, SpecId,
     bytecode::Bytecode,
     env::BlockEnv,
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
     evm::{AccountInfo, InMemoryDB},
-    interpreter::{SpecId, op},
+    interpreter::op,
 };
 
 fn main() {
@@ -30,11 +30,12 @@ fn main() {
         ]))),
     );
 
-    let mut evm = Evm::<EvmVersion<RecoveredTxEnvelope, { SpecId::FRONTIER as u8 }>>::new(
+    let mut evm = Evm::<BaseEvmTypes<RecoveredTxEnvelope>>::new(
+        SpecId::FRONTIER,
         BlockEnv::default(),
         ethereum_tx_registry(),
         database,
-        Default::default(),
+        Precompiles::base(SpecId::FRONTIER),
     );
     let tx = RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(
         TxLegacy {
@@ -52,8 +53,6 @@ fn main() {
         "status={} gas_used={} storage[1]={}",
         result.status,
         result.gas_used,
-        evm.state().account_ref(contract).expect("sample contract account should exist").storage
-            [&U256::from(1)]
-            .current
+        result.state_changes.storage[&contract].slots[&U256::from(1)].current
     );
 }
