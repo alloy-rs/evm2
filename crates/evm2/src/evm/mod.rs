@@ -8,6 +8,7 @@ use crate::{
     env::{BlockEnv, TxEnv},
     interpreter::{Host, InstrStop, Interpreter, Message, MessageKind, MessageResult, Word},
     registry::{HandlerResult, TxRegistry},
+    version::GasId,
 };
 use alloc::vec::Vec;
 use alloy_eips::eip2718::Typed2718;
@@ -24,6 +25,8 @@ pub use state::{
     Account, AccountInfo, CacheDB, Database, InMemoryDB, JournalEntry, KECCAK_EMPTY, State,
     StorageValue, logs_hash,
 };
+
+const MAX_CODE_SIZE: usize = 0x6000;
 
 /// Result of executing a transaction.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -306,6 +309,30 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
                 min(gas.remaining().saturating_add(gas.refunded() as u64), gas.limit());
 
             if stop.is_success() {
+                let stop = if self.spec_id().enables(SpecId::SPURIOUS_DRAGON)
+                    && output.len() > MAX_CODE_SIZE
+                {
+                    Some(InstrStop::CreateContractSizeLimit)
+                } else if self.spec_id().enables(SpecId::LONDON)
+                    && output.first().is_some_and(|byte| *byte == 0xef)
+                {
+                    Some(InstrStop::CreateContractStartingWithEF)
+                } else {
+                    let code_deposit_gas = output.len().saturating_mul(
+                        self.version().gas_params().get(GasId::CodeDepositCost) as usize,
+                    );
+                    gas.spend(u64::try_from(code_deposit_gas).unwrap_or(u64::MAX)).err()
+                };
+
+                if let Some(stop) = stop {
+                    self.state.rollback(checkpoint);
+                    self.logs.truncate(log_checkpoint);
+                    gas_remaining = if stop.is_error() { 0 } else { gas.remaining() };
+                    return MessageResult { stop, gas_remaining, output, created_address: None };
+                }
+
+                gas_remaining =
+                    min(gas.remaining().saturating_add(gas.refunded() as u64), gas.limit());
                 self.state.set_code(address, Bytecode::new_legacy(output.clone()));
             } else {
                 self.state.rollback(checkpoint);
