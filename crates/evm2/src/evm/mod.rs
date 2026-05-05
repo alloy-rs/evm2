@@ -331,18 +331,11 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         create_message.destination = address;
         create_message.code_address = address;
         create_message.input = Bytes::new();
-        let mut stop = InstrStop::Stop;
-        let mut gas = Gas::new(0);
-        let mut output = Bytes::new();
-        self.run_interpreter(
-            bytecode,
-            tx_env,
-            &create_message,
-            caller_is_static,
-            &mut stop,
-            &mut gas,
-            &mut output,
-        );
+        let (stop, mut gas, output) = {
+            let (stop, interpreter) =
+                self.run_interpreter(bytecode, tx_env, &create_message, caller_is_static);
+            (stop, interpreter.gas(), Bytes::copy_from_slice(interpreter.output()))
+        };
         let mut gas_remaining = gas.remaining();
         let mut gas_refunded = if stop.is_success() { gas.refunded() } else { 0 };
 
@@ -440,18 +433,11 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             };
         }
 
-        let mut stop = InstrStop::Stop;
-        let mut child_gas = Gas::new(0);
-        let mut output = Bytes::new();
-        self.run_interpreter(
-            bytecode,
-            tx_env,
-            message,
-            caller_is_static,
-            &mut stop,
-            &mut child_gas,
-            &mut output,
-        );
+        let (stop, child_gas, output) = {
+            let (stop, interpreter) =
+                self.run_interpreter(bytecode, tx_env, message, caller_is_static);
+            (stop, interpreter.gas(), Bytes::copy_from_slice(interpreter.output()))
+        };
         let mut gas_remaining = child_gas.remaining();
 
         if !stop.is_success() {
@@ -470,33 +456,21 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         }
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "keeps recursive frame outputs out of an aggregate stack slot"
-    )]
     fn run_interpreter(
         &mut self,
         bytecode: Bytecode,
         tx_env: &TxEnv,
         message: &Message,
         caller_is_static: bool,
-        stop: &mut InstrStop,
-        gas: &mut Gas,
-        output: &mut Bytes,
-    ) {
-        let mut interpreter =
-            self.interpreter_pool.pop().unwrap_or_else(|| Box::new(Interpreter::default()));
-        let raw_interpreter = interpreter.as_mut() as *mut Interpreter<T>;
-
+    ) -> (InstrStop, &mut Interpreter<T>) {
+        let mut interpreter = self.interpreter_pool.pop().unwrap_or_default();
         // SAFETY: The active interpreter is owned by this stack frame until it is returned to the
         // pool after execution. Recursive calls may mutate the pool, but they cannot move this box.
-        unsafe {
-            (*raw_interpreter).init(bytecode, tx_env, message, caller_is_static);
-            *stop = (*raw_interpreter).run_with(self.execution_config, self);
-            *gas = (*raw_interpreter).gas();
-            *output = Bytes::copy_from_slice((*raw_interpreter).output());
-        }
-        self.interpreter_pool.push(interpreter);
+        let interpreter_ref = unsafe { &mut *(&mut *interpreter as *mut Interpreter<T>) };
+        interpreter_ref.init(bytecode, tx_env, message, caller_is_static);
+        let stop = interpreter_ref.run_with(self.execution_config, self);
+        let interpreter = self.interpreter_pool.push_mut(interpreter);
+        (stop, interpreter)
     }
 }
 
