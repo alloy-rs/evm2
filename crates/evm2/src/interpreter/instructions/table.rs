@@ -81,6 +81,7 @@ where
 }
 
 /// Instruction execution context.
+#[doc(hidden)]
 pub struct InstructionCx<'a, 'state, T: EvmTypes> {
     /// Program counter state.
     pub pc: &'a mut Pc,
@@ -89,6 +90,7 @@ pub struct InstructionCx<'a, 'state, T: EvmTypes> {
 }
 
 /// Instruction execution context with mutable gas state.
+#[doc(hidden)]
 pub struct GasInstructionCx<'a, 'state, T: EvmTypes> {
     /// Program counter state.
     pub pc: &'a mut Pc,
