@@ -417,15 +417,21 @@ impl<D> State<D> {
         self.accessed_accounts.contains(&address)
     }
 
-    /// Marks an account as warm and returns whether it was cold before this access.
+    /// Marks an account as warm.
     #[inline]
-    #[must_use]
-    pub fn warm_account(&mut self, address: Address) -> bool {
+    pub fn warm_account(&mut self, address: Address) {
         if self.accessed_accounts.insert(address) {
             self.journal.push(JournalEntry::AccountWarmed { address });
-            true
-        } else {
-            false
+        }
+    }
+
+    /// Marks accounts as warm.
+    #[inline]
+    pub fn warm_accounts(&mut self, addresses: impl IntoIterator<Item = Address>) {
+        let addresses = addresses.into_iter();
+        self.accessed_accounts.reserve(addresses.size_hint().0);
+        for address in addresses {
+            self.warm_account(address);
         }
     }
 

@@ -108,16 +108,14 @@ fn handle_legacy<T: EvmTypes<Host = Evm<T>>>(
         return Err(HandlerError::InsufficientFunds);
     }
 
-    let _ = req.host.state.warm_account(caller);
+    req.host.state.warm_account(caller);
     if spec_id.enables(SpecId::SHANGHAI) {
-        let _ = req.host.state.warm_account(req.host.block.beneficiary);
+        req.host.state.warm_account(req.host.block.beneficiary);
     }
     if let TxKind::Call(to) = tx.to {
-        let _ = req.host.state.warm_account(to);
+        req.host.state.warm_account(to);
     }
-    for address in req.host.precompiles().warm_addresses() {
-        let _ = req.host.state.warm_account(address);
-    }
+    req.host.state.warm_accounts(req.host.precompiles().warm_addresses());
 
     req.host.state.add_balance(caller, Word::ZERO.wrapping_sub(max_gas_cost));
     req.host.state.increment_nonce(caller);

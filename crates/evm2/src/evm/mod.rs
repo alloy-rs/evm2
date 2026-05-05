@@ -241,7 +241,7 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
         if skip_cold_load && is_cold {
             return Err(InstrStop::OutOfGas);
         }
-        let _ = self.state.warm_account(address);
+        self.state.warm_account(address);
         let info = self.state.account_info(address).unwrap_or_default();
         Ok(AccountLoad {
             balance: info.balance,
@@ -317,7 +317,7 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
                 _ => unreachable!("invalid create message kind"),
             };
 
-            let _ = self.state.warm_account(address);
+            self.state.warm_account(address);
 
             if message.depth > 0 {
                 self.state.increment_nonce(message.caller);
@@ -454,7 +454,7 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
         if skip_cold_load && is_cold {
             return Err(InstrStop::OutOfGas);
         }
-        let _ = self.state.warm_account(target);
+        self.state.warm_account(target);
         let target_exists = self.state.account_info(target).is_some_and(|info| !info.is_empty());
         let previously_destroyed = self.state.is_selfdestructed(contract);
         let balance = self.state.account_info(contract).map_or(Word::ZERO, |info| info.balance);
