@@ -47,7 +47,7 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     };
     let (bytecode, message) =
         initial_message(req.host, caller, tx.nonce, tx.to, &tx.input, tx.value, gas_limit);
-    let mut result = req.host.execute_message(tx_env, bytecode, message, false);
+    let mut result = req.host.execute_message(&tx_env, bytecode, &message, false);
     rollback_failed_execution(req.host, execution_checkpoint, &mut result);
 
     Ok(settle_gas(req.host, spec_id, caller, gas_price, tx.gas_limit, result))

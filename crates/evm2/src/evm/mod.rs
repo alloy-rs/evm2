@@ -5,7 +5,10 @@ use crate::{
     EvmConfigSelector, EvmTypes, ExecutionConfig, PrecompileError, PrecompileHalt, SpecId,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
-    interpreter::{Gas, Host, InstrStop, Interpreter, Message, MessageKind, MessageResult, Word},
+    interpreter::{
+        Gas, Host, InstrStop, Interpreter, InterpreterPool, Message, MessageKind, MessageResult,
+        Word,
+    },
     registry::{HandlerResult, TxRegistry},
     version::GasId,
 };
@@ -148,6 +151,8 @@ pub struct Evm<T: EvmTypes> {
     registry: TxRegistry<T::Tx, TxResult, Self>,
     pub(crate) state: State<T::Database>,
     precompiles: T::Precompiles,
+    #[debug(skip)]
+    interpreter_pool: InterpreterPool<T>,
 }
 
 impl<T: EvmTypes> Evm<T> {
@@ -188,6 +193,7 @@ impl<T: EvmTypes> Evm<T> {
             registry,
             state: State::new(database),
             precompiles,
+            interpreter_pool: InterpreterPool::new(),
         }
     }
 
@@ -274,6 +280,224 @@ impl<T: EvmTypes<Tx: Typed2718>> Evm<T> {
         Self: 'a,
     {
         txs.into_iter().map(move |tx| self.transact(tx))
+    }
+}
+
+impl<T: EvmTypes<Host = Self>> Evm<T> {
+    #[inline(never)]
+    fn execute_create_message(
+        &mut self,
+        tx_env: &TxEnv,
+        bytecode: Bytecode,
+        message: &Message,
+        caller_is_static: bool,
+    ) -> MessageResult {
+        if let Err(stop) = self.check_create_funds(message) {
+            return MessageResult {
+                stop,
+                gas_remaining: message.gas_limit,
+                ..MessageResult::default()
+            };
+        }
+
+        let address = self.create_address(&bytecode, message);
+
+        self.state.warm_account(address);
+
+        if message.depth > 0 {
+            self.state.increment_nonce(message.caller);
+        }
+
+        let checkpoint = self.state.checkpoint();
+        if let Err(stop) =
+            self.state.create_account(message.caller, address, message.value, self.spec_id())
+        {
+            self.state.rollback(checkpoint);
+            return MessageResult {
+                stop,
+                gas_remaining: message.gas_limit,
+                ..MessageResult::default()
+            };
+        }
+
+        let create_message = Message {
+            destination: address,
+            code_address: address,
+            input: Bytes::new(),
+
+            kind: message.kind,
+            depth: message.depth,
+            gas_limit: message.gas_limit,
+            caller: message.caller,
+            value: message.value,
+            salt: message.salt,
+        };
+        let (stop, mut gas, output) = {
+            let (stop, interpreter) =
+                self.run_interpreter(bytecode, tx_env, &create_message, caller_is_static);
+            (stop, interpreter.gas(), Bytes::copy_from_slice(interpreter.output()))
+        };
+        let mut gas_remaining = gas.remaining();
+        let mut gas_refunded = if stop.is_success() { gas.refunded() } else { 0 };
+
+        if stop.is_success() {
+            let stop = if self.spec_id().enables(SpecId::SPURIOUS_DRAGON)
+                && output.len() > MAX_CODE_SIZE
+            {
+                Some(InstrStop::CreateContractSizeLimit)
+            } else if self.spec_id().enables(SpecId::LONDON)
+                && output.first().is_some_and(|byte| *byte == 0xef)
+            {
+                Some(InstrStop::CreateContractStartingWithEF)
+            } else {
+                let code_deposit_gas = output.len().saturating_mul(
+                    self.version().gas_params().get(GasId::CodeDepositCost) as usize,
+                );
+                gas.spend(u64::try_from(code_deposit_gas).unwrap_or(u64::MAX)).err()
+            };
+
+            if let Some(stop) = stop {
+                self.state.rollback(checkpoint);
+                gas_remaining = if stop.is_halt() { 0 } else { gas.remaining() };
+                return MessageResult {
+                    stop,
+                    gas_remaining,
+                    gas_refunded: 0,
+                    output,
+                    created_address: None,
+                };
+            }
+
+            gas_remaining = gas.remaining();
+            gas_refunded = gas.refunded();
+            self.state.set_code(address, Bytecode::new_legacy(output.clone()));
+        } else {
+            self.state.rollback(checkpoint);
+            if stop.is_halt() {
+                gas_remaining = 0;
+            }
+        }
+
+        MessageResult {
+            stop,
+            gas_remaining,
+            gas_refunded: if stop.is_success() { gas_refunded } else { 0 },
+            output,
+            created_address: stop.is_success().then_some(address),
+        }
+    }
+
+    #[inline(never)]
+    fn check_create_funds(&mut self, message: &Message) -> Result<(), InstrStop> {
+        if message.value > 0
+            && self
+                .state
+                .account_info(message.caller)
+                .is_none_or(|info| info.balance < message.value)
+        {
+            return Err(InstrStop::OutOfFunds);
+        }
+        Ok(())
+    }
+
+    #[inline(never)]
+    fn create_address(&mut self, bytecode: &Bytecode, message: &Message) -> Address {
+        match message.kind {
+            MessageKind::Create if message.depth == 0 => message.destination,
+            MessageKind::Create => message
+                .caller
+                .create(self.state.account_info(message.caller).map_or(0, |info| info.nonce)),
+            MessageKind::Create2 => message.caller.create2(message.salt, bytecode.hash_slow()),
+            _ => unreachable!("invalid create message kind"),
+        }
+    }
+
+    #[inline(never)]
+    fn execute_call_message(
+        &mut self,
+        tx_env: &TxEnv,
+        bytecode: Bytecode,
+        message: &Message,
+        caller_is_static: bool,
+    ) -> MessageResult {
+        let checkpoint = self.state.checkpoint();
+        if matches!(message.kind, MessageKind::Call)
+            && !self.state.transfer(message.caller, message.destination, message.value)
+        {
+            return MessageResult {
+                stop: InstrStop::OutOfFunds,
+                gas_remaining: message.gas_limit,
+                ..MessageResult::default()
+            };
+        }
+
+        let mut gas = Gas::new(message.gas_limit);
+        if let Some(result) = self.execute_precompile(message, &mut gas) {
+            let (stop, gas_remaining, output) = match result {
+                Ok(output) => (InstrStop::Return, gas.remaining(), output.into_bytes()),
+                Err(PrecompileError::Revert(output)) => {
+                    (InstrStop::Revert, gas.remaining(), output)
+                }
+                Err(PrecompileError::Halt(PrecompileHalt::OutOfGas)) => {
+                    (InstrStop::PrecompileOOG, 0, Bytes::new())
+                }
+                Err(PrecompileError::Halt(_) | PrecompileError::Fatal(_)) => {
+                    let stop = InstrStop::PrecompileError;
+                    let gas_remaining = if stop.is_halt() { 0 } else { gas.remaining() };
+                    (stop, gas_remaining, Bytes::new())
+                }
+            };
+            if !stop.is_success() {
+                self.state.rollback(checkpoint);
+            }
+            return MessageResult {
+                stop,
+                gas_remaining,
+                gas_refunded: 0,
+                output,
+                created_address: None,
+            };
+        }
+
+        let (stop, child_gas, output) = {
+            let (stop, interpreter) =
+                self.run_interpreter(bytecode, tx_env, message, caller_is_static);
+            (stop, interpreter.gas(), Bytes::copy_from_slice(interpreter.output()))
+        };
+        let mut gas_remaining = child_gas.remaining();
+
+        if !stop.is_success() {
+            self.state.rollback(checkpoint);
+            if stop.is_halt() {
+                gas_remaining = 0;
+            }
+        }
+
+        MessageResult {
+            stop,
+            gas_remaining,
+            gas_refunded: if stop.is_success() { child_gas.refunded() } else { 0 },
+            output,
+            created_address: None,
+        }
+    }
+
+    #[inline(never)]
+    fn run_interpreter<'frame>(
+        &mut self,
+        bytecode: Bytecode,
+        tx_env: &'frame TxEnv,
+        message: &'frame Message,
+        caller_is_static: bool,
+    ) -> (InstrStop, &mut Interpreter<'frame, T>) {
+        let mut interpreter = self.interpreter_pool.pop();
+        // SAFETY: The active interpreter is owned by this stack frame until it is returned to the
+        // pool after execution. Recursive calls may mutate the pool, but they cannot move this box.
+        let interpreter_ref = unsafe { &mut *(&mut *interpreter as *mut Interpreter<'frame, T>) };
+        interpreter_ref.init(bytecode, tx_env, message, caller_is_static);
+        let stop = interpreter_ref.run_with(self.execution_config, self);
+        let interpreter = self.interpreter_pool.push(interpreter);
+        (stop, interpreter)
     }
 }
 
@@ -367,9 +591,9 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
 
     fn execute_message(
         &mut self,
-        tx_env: TxEnv,
+        tx_env: &TxEnv,
         bytecode: Bytecode,
-        message: Message,
+        message: &Message,
         caller_is_static: bool,
     ) -> MessageResult {
         if message.depth > Message::CALL_DEPTH_LIMIT {
@@ -380,161 +604,16 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
             };
         }
 
-        let is_create = matches!(message.kind, MessageKind::Create | MessageKind::Create2);
-        if is_create {
-            let caller_nonce = self.state.account_info(message.caller).map_or(0, |info| info.nonce);
-            let caller_balance =
-                self.state.account_info(message.caller).map_or(Word::ZERO, |info| info.balance);
-            if caller_balance < message.value {
-                return MessageResult {
-                    stop: InstrStop::OutOfFunds,
-                    gas_remaining: message.gas_limit,
-                    ..MessageResult::default()
-                };
+        match message.kind {
+            MessageKind::Create | MessageKind::Create2 => {
+                self.execute_create_message(tx_env, bytecode, message, caller_is_static)
             }
-
-            let address = match message.kind {
-                MessageKind::Create if message.depth == 0 => message.destination,
-                MessageKind::Create => message.caller.create(caller_nonce),
-                MessageKind::Create2 => message.caller.create2(message.salt, bytecode.hash_slow()),
-                _ => unreachable!("invalid create message kind"),
-            };
-
-            self.state.warm_account(address);
-
-            if message.depth > 0 {
-                self.state.increment_nonce(message.caller);
+            MessageKind::Call
+            | MessageKind::CallCode
+            | MessageKind::DelegateCall
+            | MessageKind::StaticCall => {
+                self.execute_call_message(tx_env, bytecode, message, caller_is_static)
             }
-
-            let checkpoint = self.state.checkpoint();
-            if let Err(stop) =
-                self.state.create_account(message.caller, address, message.value, self.spec_id())
-            {
-                self.state.rollback(checkpoint);
-                return MessageResult {
-                    stop,
-                    gas_remaining: message.gas_limit,
-                    ..MessageResult::default()
-                };
-            }
-
-            let mut create_message = message;
-            create_message.destination = address;
-            create_message.code_address = address;
-            create_message.input = Bytes::new();
-            let mut interpreter =
-                Interpreter::<T>::new(bytecode, tx_env, create_message, caller_is_static);
-            let stop = interpreter.run_with(self.execution_config, self);
-            let mut gas = interpreter.gas();
-            let output = Bytes::copy_from_slice(interpreter.output());
-            let mut gas_remaining = gas.remaining();
-            let mut gas_refunded = if stop.is_success() { gas.refunded() } else { 0 };
-
-            if stop.is_success() {
-                let stop = if self.spec_id().enables(SpecId::SPURIOUS_DRAGON)
-                    && output.len() > MAX_CODE_SIZE
-                {
-                    Some(InstrStop::CreateContractSizeLimit)
-                } else if self.spec_id().enables(SpecId::LONDON)
-                    && output.first().is_some_and(|byte| *byte == 0xef)
-                {
-                    Some(InstrStop::CreateContractStartingWithEF)
-                } else {
-                    let code_deposit_gas = output.len().saturating_mul(
-                        self.version().gas_params().get(GasId::CodeDepositCost) as usize,
-                    );
-                    gas.spend(u64::try_from(code_deposit_gas).unwrap_or(u64::MAX)).err()
-                };
-
-                if let Some(stop) = stop {
-                    self.state.rollback(checkpoint);
-                    gas_remaining = if stop.is_halt() { 0 } else { gas.remaining() };
-                    return MessageResult {
-                        stop,
-                        gas_remaining,
-                        gas_refunded: 0,
-                        output,
-                        created_address: None,
-                    };
-                }
-
-                gas_remaining = gas.remaining();
-                gas_refunded = gas.refunded();
-                self.state.set_code(address, Bytecode::new_legacy(output.clone()));
-            } else {
-                self.state.rollback(checkpoint);
-                if stop.is_halt() {
-                    gas_remaining = 0;
-                }
-            }
-
-            return MessageResult {
-                stop,
-                gas_remaining,
-                gas_refunded: if stop.is_success() { gas_refunded } else { 0 },
-                output,
-                created_address: stop.is_success().then_some(address),
-            };
-        }
-
-        let checkpoint = self.state.checkpoint();
-        if matches!(message.kind, MessageKind::Call)
-            && !self.state.transfer(message.caller, message.destination, message.value)
-        {
-            return MessageResult {
-                stop: InstrStop::OutOfFunds,
-                gas_remaining: message.gas_limit,
-                ..MessageResult::default()
-            };
-        }
-
-        let mut gas = Gas::new(message.gas_limit);
-        if let Some(result) = self.execute_precompile(&message, &mut gas) {
-            let (stop, gas_remaining, output) = match result {
-                Ok(output) => (InstrStop::Return, gas.remaining(), output.into_bytes()),
-                Err(PrecompileError::Revert(output)) => {
-                    (InstrStop::Revert, gas.remaining(), output)
-                }
-                Err(PrecompileError::Halt(PrecompileHalt::OutOfGas)) => {
-                    (InstrStop::PrecompileOOG, 0, Bytes::new())
-                }
-                Err(PrecompileError::Halt(_) | PrecompileError::Fatal(_)) => {
-                    let stop = InstrStop::PrecompileError;
-                    let gas_remaining = if stop.is_halt() { 0 } else { gas.remaining() };
-                    (stop, gas_remaining, Bytes::new())
-                }
-            };
-            if !stop.is_success() {
-                self.state.rollback(checkpoint);
-            }
-            return MessageResult {
-                stop,
-                gas_remaining,
-                gas_refunded: 0,
-                output,
-                created_address: None,
-            };
-        }
-
-        let mut interpreter = Interpreter::<T>::new(bytecode, tx_env, message, caller_is_static);
-        let stop = interpreter.run_with(self.execution_config, self);
-        let gas = interpreter.gas();
-        let output = Bytes::copy_from_slice(interpreter.output());
-        let mut gas_remaining = gas.remaining();
-
-        if !stop.is_success() {
-            self.state.rollback(checkpoint);
-            if stop.is_halt() {
-                gas_remaining = 0;
-            }
-        }
-
-        MessageResult {
-            stop,
-            gas_remaining,
-            gas_refunded: if stop.is_success() { gas.refunded() } else { 0 },
-            output,
-            created_address: None,
         }
     }
 
@@ -693,7 +772,7 @@ mod tests {
             ..Message::default()
         };
 
-        let result = Host::execute_message(&mut evm, TxEnv::default(), bytecode, message, false);
+        let result = Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &message, false);
         assert!(result.stop.is_success());
     }
 
@@ -714,7 +793,7 @@ mod tests {
             ..Message::default()
         };
 
-        let result = Host::execute_message(&mut evm, TxEnv::default(), bytecode, message, false);
+        let result = Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &message, false);
         assert!(result.stop.is_success());
     }
 
@@ -735,7 +814,7 @@ mod tests {
             ..Message::default()
         };
 
-        let result = Host::execute_message(&mut evm, TxEnv::default(), bytecode, message, false);
+        let result = Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &message, false);
         assert_eq!(result.stop, InstrStop::CallTooDeep);
         assert_eq!(result.gas_remaining, 50_000);
     }
