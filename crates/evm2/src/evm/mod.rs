@@ -2,11 +2,10 @@
 
 use self::precompile::{PrecompileOutput, PrecompileProvider};
 use crate::{
-    AccountLoad, EvmConfigSelector, EvmTypes, ExecutionConfig, SelfDestructResult, SpecId,
-    StorageLoad,
+    EvmConfigSelector, EvmTypes, ExecutionConfig, PrecompileError, PrecompileHalt, SpecId,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
-    interpreter::{Host, InstrStop, Interpreter, Message, MessageKind, MessageResult, Word},
+    interpreter::{Gas, Host, InstrStop, Interpreter, Message, MessageKind, MessageResult, Word},
     registry::{HandlerResult, TxRegistry},
     version::GasId,
 };
@@ -20,14 +19,52 @@ pub mod precompile;
 pub mod registry;
 
 mod db;
-mod state;
 pub use db::{CacheDB, Database, InMemoryDB};
+
+mod state;
 pub use state::{
     Account, AccountInfo, JournalEntry, State, StateChanges, StorageChangeSet, StorageOverlay,
     Tracked,
 };
 
 const MAX_CODE_SIZE: usize = 0x6000;
+
+/// Loaded account information.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct AccountLoad {
+    /// Account balance.
+    pub balance: Word,
+    /// Account code hash.
+    pub code_hash: B256,
+    /// Account code bytes.
+    pub code: Bytes,
+    /// Whether the account is empty.
+    pub is_empty: bool,
+    /// Whether the account access was cold.
+    pub is_cold: bool,
+}
+
+/// Loaded storage slot value.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct StorageLoad {
+    /// Storage slot value.
+    pub value: Word,
+    /// Whether the storage slot access was cold.
+    pub is_cold: bool,
+}
+
+/// Result of a `SELFDESTRUCT` host operation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct SelfDestructResult {
+    /// Whether the destroyed account had non-zero value.
+    pub had_value: bool,
+    /// Whether the beneficiary account already exists.
+    pub target_exists: bool,
+    /// Whether the beneficiary access was cold.
+    pub is_cold: bool,
+    /// Whether this account was already destroyed in this transaction.
+    pub previously_destroyed: bool,
+}
 
 /// Result of executing a transaction.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -102,8 +139,9 @@ impl<T: EvmTypes> Evm<T> {
     fn execute_precompile(
         &mut self,
         message: &Message,
-    ) -> Option<Result<PrecompileOutput, InstrStop>> {
-        self.precompiles.execute(message.code_address, &message.input, message.gas_limit)
+        gas: &mut Gas,
+    ) -> Option<Result<PrecompileOutput, PrecompileError>> {
+        self.precompiles.execute(message.code_address, &message.input, gas)
     }
 }
 
@@ -363,14 +401,19 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
             };
         }
 
-        if let Some(result) = self.execute_precompile(&message) {
+        let mut gas = Gas::new(message.gas_limit);
+        if let Some(result) = self.execute_precompile(&message, &mut gas) {
             let (stop, gas_remaining, output) = match result {
-                Ok(output) if output.gas_used <= message.gas_limit => {
-                    (InstrStop::Return, message.gas_limit - output.gas_used, output.output)
+                Ok(output) => (InstrStop::Return, gas.remaining(), output.into_bytes()),
+                Err(PrecompileError::Revert(output)) => {
+                    (InstrStop::Revert, gas.remaining(), output)
                 }
-                Ok(_) => (InstrStop::PrecompileOOG, 0, Bytes::new()),
-                Err(stop) => {
-                    let gas_remaining = if stop.is_halt() { 0 } else { message.gas_limit };
+                Err(PrecompileError::Halt(PrecompileHalt::OutOfGas)) => {
+                    (InstrStop::PrecompileOOG, 0, Bytes::new())
+                }
+                Err(PrecompileError::Halt(_) | PrecompileError::Fatal(_)) => {
+                    let stop = InstrStop::PrecompileError;
+                    let gas_remaining = if stop.is_halt() { 0 } else { gas.remaining() };
                     (stop, gas_remaining, Bytes::new())
                 }
             };
@@ -440,7 +483,7 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
 mod tests {
     use super::*;
     use crate::{
-        BaseEvmConfig, BaseEvmTypes, SpecId,
+        BaseEvmConfig, BaseEvmTypes, Precompiles, SpecId,
         bytecode::Bytecode,
         interpreter::{MessageKind, op},
         registry::TxRequest,
@@ -485,7 +528,7 @@ mod tests {
             BlockEnv::default(),
             registry,
             InMemoryDB::default(),
-            Default::default(),
+            Precompiles::base(SpecId::OSAKA),
         );
         let tx = TestTx { value: 41 };
 
@@ -502,7 +545,7 @@ mod tests {
             BlockEnv::default(),
             registry,
             InMemoryDB::default(),
-            Default::default(),
+            Precompiles::base(SpecId::OSAKA),
         );
         let tx = TestTx { value: 41 };
 
@@ -518,7 +561,7 @@ mod tests {
             BlockEnv::default(),
             registry,
             InMemoryDB::default(),
-            Default::default(),
+            Precompiles::base(SpecId::OSAKA),
         );
         let txs = [TestTx { value: 1 }, TestTx { value: 2 }];
         let gas_used = evm
@@ -536,7 +579,7 @@ mod tests {
             BlockEnv::default(),
             TxRegistry::new(),
             InMemoryDB::default(),
-            Default::default(),
+            Precompiles::base(SpecId::OSAKA),
         );
         let contract = Address::from([0x11; 20]);
         let bytecode = Bytecode::new_legacy(Bytes::from_static(&[op::ADDRESS, op::STOP]));

@@ -23,6 +23,7 @@ alloy-rlp.workspace = true
 alloy-trie = { workspace = true, features = ["ethereum"] }
 derive_more.workspace = true
 thiserror.workspace = true
+cfg-if.workspace = true
 
 # no_std
 once_cell = { workspace = true, features = ["alloc"] }
@@ -31,8 +32,53 @@ paste.workspace = true
 # "serde"
 serde = { workspace = true, features = ["derive", "alloc"], optional = true }
 
+# ecrecover
+k256 = { workspace = true, features = ["ecdsa"] }
+secp256k1 = { workspace = true, features = [
+    "alloc",
+    "recovery",
+    "rand",
+    "global-context",
+], optional = true }
+
+# sha256
+sha2.workspace = true
+
+# ripemd160
+ripemd.workspace = true
+
+# modexp
+aurora-engine-modexp.workspace = true
+gmp-mpfr-sys = { workspace = true, default-features = false, optional = true }
+
+# bn254
+bn = { workspace = true, optional = true }
+ark-bn254 = { workspace = true, features = ["curve"] }
+ark-ec = { workspace = true }
+ark-ff = { workspace = true, features = ["asm"] }
+ark-serialize = { workspace = true }
+
+# blake2f
+arrayref = "0.3.6"
+
+# kzg point evaluation
+c-kzg = { workspace = true, optional = true, features = [
+    "ethereum_kzg_settings",
+] }
+
+# bls12-381
+blst = { workspace = true, optional = true }
+ark-bls12-381 = { workspace = true, features = ["curve"] }
+
+# p256verify
+p256 = { workspace = true, features = ["ecdsa"] }
+aws-lc-rs = { workspace = true, optional = true }
+
 [dev-dependencies]
 serde_json = { workspace = true, features = ["std"] }
+rand = { workspace = true, features = ["std"] }
+ark-std = { workspace = true }
+rstest.workspace = true
 
 [[example]]
 name = "registry_tx_handler"
@@ -55,16 +101,28 @@ path = "examples/custom_evm.rs"
 doc-scrape-examples = true
 
 [features]
-default = ["std"]
+default = ["std", "secp256k1", "blst", "c-kzg", "portable"]
 std = [
     "alloy-consensus/std",
     "alloy-eips/std",
     "alloy-primitives/std",
     "alloy-rlp/std",
     "alloy-trie/std",
-    "once_cell/std",
     "serde?/std",
     "thiserror/std",
+    "k256/std",
+    "secp256k1?/std",
+    "sha2/std",
+    "ripemd/std",
+    "aurora-engine-modexp/std",
+    "ark-bn254/std",
+    "ark-ec/std",
+    "ark-ff/std",
+    "ark-serialize/std",
+    "c-kzg?/std",
+    "ark-bls12-381/std",
+    "ark-std/std",
+    "p256/std",
 ]
 
 nightly = []
@@ -75,3 +133,13 @@ serde = [
     "alloy-primitives/serde",
     "alloy-trie/serde",
 ]
+hashbrown = ["alloy-primitives/map-hashbrown"]
+asm-keccak = ["alloy-primitives/asm-keccak"]
+asm-sha2 = ["sha2/asm"]
+secp256k1 = ["dep:secp256k1"]
+gmp = ["dep:gmp-mpfr-sys"]
+bn = ["dep:bn"]
+c-kzg = ["dep:c-kzg"]
+blst = ["dep:blst"]
+portable = ["c-kzg?/portable", "blst?/portable"]
+p256-aws-lc-rs = ["dep:aws-lc-rs"]

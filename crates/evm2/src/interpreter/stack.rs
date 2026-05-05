@@ -412,7 +412,7 @@ mod tests {
         });
 
         run_with_len(2, |stack| {
-            assert!(matches!(stack.popn_dyn(3), Err(InstrStop::StackUnderflow)));
+            core::assert_matches!(stack.popn_dyn(3).map(|_| ()), Err(InstrStop::StackUnderflow));
             assert_eq!(stack.as_slice(), [Word::from(0), Word::from(1)]);
         });
     }

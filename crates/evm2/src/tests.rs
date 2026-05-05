@@ -1,5 +1,5 @@
 use crate::{
-    BaseEvmTypes, Evm, SpecId,
+    BaseEvmTypes, Evm, Precompiles, SpecId,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
     evm::{AccountInfo, InMemoryDB},
@@ -35,7 +35,7 @@ fn evm_executes_storage_transaction() {
         BlockEnv::default(),
         TxRegistry::new(),
         InMemoryDB::default(),
-        Default::default(),
+        Precompiles::base(SpecId::OSAKA),
     );
 
     run_tx(&mut evm, contract, [op::PUSH1, 0x2a, op::PUSH1, 0x01, op::SSTORE, op::STOP]);
@@ -54,7 +54,7 @@ fn evm_runs_transactions_against_initial_state() {
         BlockEnv::default(),
         TxRegistry::new(),
         database,
-        Default::default(),
+        Precompiles::base(SpecId::OSAKA),
     );
 
     run_tx(
@@ -88,7 +88,7 @@ fn evm_reports_invalid_transaction_execution() {
         BlockEnv::default(),
         TxRegistry::new(),
         InMemoryDB::default(),
-        Default::default(),
+        Precompiles::base(SpecId::OSAKA),
     );
     let message = Message {
         destination: contract,
