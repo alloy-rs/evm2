@@ -691,6 +691,49 @@ mod tests {
     }
 
     #[test]
+    fn host_allows_message_at_call_depth_limit() {
+        let mut evm = Evm::<TestEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        let bytecode = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
+        let message = Message {
+            kind: MessageKind::Call,
+            depth: Message::CALL_DEPTH_LIMIT,
+            gas_limit: 50_000,
+            ..Message::default()
+        };
+
+        let result = Host::execute_message(&mut evm, TxEnv::default(), bytecode, message, false);
+        assert!(result.stop.is_success());
+    }
+
+    #[test]
+    fn host_rejects_message_past_call_depth_limit() {
+        let mut evm = Evm::<TestEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        let bytecode = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
+        let message = Message {
+            kind: MessageKind::Call,
+            depth: Message::CALL_DEPTH_LIMIT + 1,
+            gas_limit: 50_000,
+            ..Message::default()
+        };
+
+        let result = Host::execute_message(&mut evm, TxEnv::default(), bytecode, message, false);
+        assert_eq!(result.stop, InstrStop::CallTooDeep);
+        assert_eq!(result.gas_remaining, 50_000);
+    }
+
+    #[test]
     fn account_info_with_code_sets_hash() {
         let code = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
         let info = AccountInfo::default().with_code(code.clone());
