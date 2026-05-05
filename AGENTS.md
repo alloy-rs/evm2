@@ -5,6 +5,10 @@ This repo is a reimplementation of revm. When implementing EVM behavior, use
 control flow, gas accounting, and host interaction shape as closely as possible unless
 explicitly told otherwise.
 
+This is a work-in-progress repo with no public API stability guarantees. Do not add
+backwards-compatibility aliases, deprecated wrappers, compatibility shims, or similar
+transitional API layers unless explicitly requested.
+
 ## Commands
 
 ```bash
