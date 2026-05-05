@@ -19,8 +19,9 @@ pub mod precompile;
 pub mod registry;
 
 mod db;
-mod state;
 pub use db::{CacheDB, Database, InMemoryDB};
+
+mod state;
 pub use state::{
     Account, AccountInfo, JournalEntry, State, StateChanges, StorageChangeSet, StorageOverlay,
     Tracked,
