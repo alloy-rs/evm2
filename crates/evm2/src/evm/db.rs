@@ -8,10 +8,6 @@ use alloy_primitives::{Address, B256, keccak256};
 mod cache;
 pub use cache::{Cache, CacheDB, InMemoryDB};
 
-/// Empty backing database.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct EmptyDB(());
-
 /// Backing database view used to initialize mutable [`super::State`].
 pub trait Database {
     /// Loads account information.
@@ -26,6 +22,10 @@ pub trait Database {
     /// Loads a historical block hash.
     fn get_block_hash(&mut self, number: Word) -> Option<B256>;
 }
+
+/// Empty backing database.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EmptyDB(());
 
 impl Database for EmptyDB {
     #[inline]
