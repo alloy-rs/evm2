@@ -9,12 +9,11 @@ use alloy_trie::{
     root::{state_root_unhashed, storage_root_unhashed},
 };
 use evm2::{
-    Evm, EvmVersion, TxResult,
+    BaseEvmTypes, Evm, EvmTypes, SpecId, TxResult,
     bytecode::Bytecode,
     env::BlockEnv,
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
     evm::{AccountInfo as EvmAccountInfo, InMemoryDB, State, logs_hash},
-    interpreter::SpecId,
     registry::HandlerError,
 };
 use k256::ecdsa::SigningKey;
@@ -205,14 +204,15 @@ fn execute_spec(
 ) -> Result<SpecOutcome, HandlerError> {
     macro_rules! run {
         ($spec:ident) => {{
-            let mut evm = Evm::<EvmVersion<RecoveredTxEnvelope, { SpecId::$spec as u8 }>>::new(
+            let mut evm = Evm::<BaseEvmTypes<RecoveredTxEnvelope>>::new(
+                SpecId::$spec,
                 block,
                 ethereum_tx_registry(),
                 database,
                 Default::default(),
             );
             let result = evm.transact(tx)?;
-            Ok(spec_outcome(&evm, result))
+            Ok(spec_outcome(&evm, result, spec))
         }};
     }
     match spec {
@@ -235,12 +235,13 @@ fn execute_spec(
     }
 }
 
-fn spec_outcome<C>(evm: &Evm<C>, result: TxResult) -> SpecOutcome
-where
-    C: evm2::config::EvmConfig<Database = InMemoryDB>,
-{
+fn spec_outcome<T: EvmTypes<Database = InMemoryDB>>(
+    evm: &Evm<T>,
+    result: TxResult,
+    spec: SpecId,
+) -> SpecOutcome {
     SpecOutcome {
-        state_root: state_root(evm.state(), C::SPEC_ID),
+        state_root: state_root(evm.state(), spec),
         logs_root: logs_hash(evm.logs()),
         output: result.output,
         gas_used: result.gas_used,

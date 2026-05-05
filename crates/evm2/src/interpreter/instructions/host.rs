@@ -1,16 +1,14 @@
-use super::utils::as_usize;
 use crate::{
-    EvmConfig,
-    interpreter::{
-        GasId, Host, InstrStop, Result, SpecId, StackMut, Word, memory::resize_memory,
-        table::InstructionCx,
-    },
+    EvmTypes, SpecId,
+    interpreter::{Host, InstrStop, InstructionCx, Result, StackMut, Word, memory::resize_memory},
+    utils::word_to_usize,
+    version::GasId,
 };
 use alloy_primitives::{B256, Bytes, Log, LogData};
 use evm2_macros::instruction;
 
 #[inline]
-fn require_non_staticcall<C: EvmConfig>(cx: &InstructionCx<'_, '_, C>) -> Result {
+fn require_non_staticcall<T: EvmTypes>(cx: &InstructionCx<'_, '_, T>) -> Result {
     if cx.state.is_static() {
         return Err(InstrStop::StateChangeDuringStaticCall);
     }
@@ -18,79 +16,76 @@ fn require_non_staticcall<C: EvmConfig>(cx: &InstructionCx<'_, '_, C>) -> Result
 }
 
 #[instruction]
-pub(in crate::interpreter) fn sload(cx: _, [key]: [Word]) -> Result<out> {
+pub(crate) fn sload(cx: _, [key]: [Word]) -> Result<out> {
     let load = cx.state.host.sload(cx.state.message().destination, key);
     if load.is_cold {
-        cx.gas.spend(cx.gas_params.get(GasId::ColdStorageAdditionalCost))?;
+        cx.gas.spend(cx.state.gas_params().get(GasId::ColdStorageAdditionalCost).into())?;
     }
     *out = load.value;
 }
 
-#[instruction(raw)]
-pub(in crate::interpreter) fn sstore(cx: _) -> Result {
+#[instruction(no_stack_preamble)]
+pub(crate) fn sstore(cx: _) -> Result {
     require_non_staticcall(&cx)?;
     let [key, value] = stack.popn()?;
-    let gas_params = cx.gas_params;
+    let gas_params = cx.state.gas_params();
     if cx.state.spec.enables(SpecId::ISTANBUL)
-        && cx.gas.remaining() <= gas_params.get(GasId::CallStipend)
+        && cx.gas.remaining() <= gas_params.get(GasId::CallStipend).into()
     {
         return Err(InstrStop::ReentrancySentryOOG);
     }
     let load = cx.state.host.sload(cx.state.message().destination, key);
     let old_value = load.value;
-    cx.gas.spend(gas_params.get(GasId::SstoreStatic))?;
+    cx.gas.spend(gas_params.get(GasId::SstoreStatic).into())?;
     if load.is_cold {
-        cx.gas.spend(gas_params.get(GasId::ColdStorageCost))?;
+        cx.gas.spend(gas_params.get(GasId::ColdStorageCost).into())?;
     }
     if old_value == value {
         // No-op stores only pay the load/static cost after Istanbul.
     } else if old_value.is_zero() {
-        cx.gas.spend(gas_params.get(GasId::SstoreSetWithoutLoadCost))?;
+        cx.gas.spend(gas_params.get(GasId::SstoreSetWithoutLoadCost).into())?;
     } else if value.is_zero() {
         cx.gas.record_refund(gas_params.get(GasId::SstoreClearingSlotRefund) as i64);
-        cx.gas.spend(gas_params.get(GasId::SstoreResetWithoutColdLoadCost))?;
+        cx.gas.spend(gas_params.get(GasId::SstoreResetWithoutColdLoadCost).into())?;
     } else {
-        cx.gas.spend(gas_params.get(GasId::SstoreResetWithoutColdLoadCost))?;
+        cx.gas.spend(gas_params.get(GasId::SstoreResetWithoutColdLoadCost).into())?;
     }
     cx.state.host.sstore(cx.state.message().destination, key, value);
-    Ok(())
 }
 
-#[instruction(raw)]
-pub(in crate::interpreter) fn tload(cx: _) -> Result {
+#[instruction(no_stack_preamble)]
+pub(crate) fn tload(cx: _) -> Result {
     let ([], key) = stack.popn_top()?;
     *key = cx.state.host.tload(cx.state.message().destination, *key);
-    Ok(())
 }
 
-#[instruction(raw)]
-pub(in crate::interpreter) fn tstore(cx: _) -> Result {
+#[instruction(no_stack_preamble)]
+pub(crate) fn tstore(cx: _) -> Result {
     require_non_staticcall(&cx)?;
     let [key, value] = stack.popn()?;
     cx.state.host.tstore(cx.state.message().destination, key, value);
-    Ok(())
 }
 
-#[instruction(raw)]
-pub(in crate::interpreter) fn log<const N: usize>(cx: _) -> Result {
+#[instruction(no_stack_preamble)]
+pub(crate) fn log<const N: usize>(cx: _) -> Result {
     log_common(cx, stack, N)
 }
 
 #[inline(never)]
-fn log_common<C: EvmConfig>(
-    cx: InstructionCx<'_, '_, C>,
+fn log_common<T: EvmTypes>(
+    cx: InstructionCx<'_, '_, T>,
     mut stack: StackMut<'_>,
     n: usize,
 ) -> Result {
     require_non_staticcall(&cx)?;
     let [offset, len] = stack.popn()?;
-    let len = as_usize(len)?;
-    cx.gas.spend(cx.gas_params.log_cost(n as u8, len))?;
+    let len = word_to_usize(len)?;
+    cx.gas.spend(cx.state.gas_params().log_cost(n as u8, len))?;
 
     let data = if len == 0 {
         Bytes::new()
     } else {
-        let offset = as_usize(offset)?;
+        let offset = word_to_usize(offset)?;
         resize_memory(cx.gas, cx.state.memory(), offset, len)?;
         Bytes::copy_from_slice(cx.state.memory().slice(offset, len))
     };
@@ -105,10 +100,13 @@ fn log_common<C: EvmConfig>(
 
 #[cfg(test)]
 mod tests {
-    use crate::interpreter::{
-        InstrStop, Message, MessageKind, SpecId, Word,
-        instructions::tests::{RunConfig, TestHost, push, run},
-        op,
+    use crate::{
+        SpecId,
+        interpreter::{
+            InstrStop, Message, MessageKind, Word,
+            instructions::tests::{RunConfig, TestHost, push, run},
+            op,
+        },
     };
     use alloc::vec::Vec;
     use alloy_primitives::{Address, B256, Bytes};

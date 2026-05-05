@@ -1,9 +1,9 @@
 use crate::{
-    AccountLoad, EvmConfig, SelfDestructResult, StorageLoad,
+    AccountLoad, BaseEvmConfig, EvmConfig, EvmTypes, SelfDestructResult, SpecId, StorageLoad,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
     interpreter::{
-        Host, InstrStop, Interpreter, Message, MessageKind, MessageResult, SpecId, Stack, Word, op,
+        Host, InstrStop, Interpreter, Message, MessageKind, MessageResult, Stack, Word, op,
     },
 };
 use alloc::{boxed::Box, vec::Vec};
@@ -11,22 +11,19 @@ use alloy_primitives::{Address, B256, Bytes, Log};
 use std::collections::HashMap;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(in crate::interpreter) struct TestConfig<const SPEC: u8 = { SpecId::OSAKA as u8 }>;
+pub(crate) struct TestTypes;
 
-impl<const SPEC: u8> EvmConfig for TestConfig<SPEC> {
+impl EvmTypes for TestTypes {
+    type ConfigSelector = crate::BaseEvmConfigSelector;
+    type SpecId = crate::SpecId;
     type Tx = ();
     type Host = TestHost;
     type Database = crate::evm::InMemoryDB;
     type Precompiles = crate::evm::precompile::NoPrecompiles;
-
-    const SPEC_ID: SpecId = match SpecId::try_from_u8(SPEC) {
-        Some(spec_id) => spec_id,
-        None => panic!("invalid EVM specification ID"),
-    };
 }
 
 #[derive(Debug)]
-pub(in crate::interpreter) struct TestHost {
+pub(crate) struct TestHost {
     pub(super) block: BlockEnv,
     pub(super) code_hash: B256,
     pub(super) code: Bytes,
@@ -63,6 +60,10 @@ impl Default for TestHost {
 }
 
 impl Host for TestHost {
+    fn spec_id(&self) -> SpecId {
+        SpecId::OSAKA
+    }
+
     fn block_env(&mut self) -> &BlockEnv {
         &self.block
     }
@@ -230,44 +231,16 @@ impl Default for RunConfig<'_> {
 }
 
 pub(super) fn run(config: RunConfig<'_>) -> TestInterpreter {
-    macro_rules! run_with_spec {
-        ($config:expr, $spec:expr, $($spec_id:ident),* $(,)?) => {
-            match $spec {
-                $(
-                    SpecId::$spec_id => run_with_config::<TestConfig<{ SpecId::$spec_id as u8 }>>($config),
-                )*
-            }
-        };
-    }
-
-    run_with_spec!(
-        config,
-        config.spec_id,
-        FRONTIER,
-        HOMESTEAD,
-        TANGERINE,
-        SPURIOUS_DRAGON,
-        BYZANTIUM,
-        PETERSBURG,
-        ISTANBUL,
-        BERLIN,
-        LONDON,
-        MERGE,
-        SHANGHAI,
-        CANCUN,
-        PRAGUE,
-        OSAKA,
-        AMSTERDAM,
-    )
+    crate::spec_to_generic!(config.spec_id, |BASE_SPEC_ID| {
+        run_with_config::<BaseEvmConfig<BASE_SPEC_ID>>(config)
+    })
 }
 
-fn run_with_config<C: EvmConfig<Tx = (), Host = TestHost>>(
-    config: RunConfig<'_>,
-) -> TestInterpreter {
+fn run_with_config<C: EvmConfig<TestTypes>>(config: RunConfig<'_>) -> TestInterpreter {
     let RunConfig { code, host, spec_id: _, tx_env, mut message, gas_limit, return_data } = config;
     let bytecode = Bytecode::new_legacy(Bytes::from(code));
     message.gas_limit = gas_limit;
-    let mut inner = Interpreter::new(bytecode, tx_env, message, false);
+    let mut inner = Interpreter::<TestTypes>::new(bytecode, tx_env, message, false);
     inner.return_data = return_data;
     let mut default_host = TestHost::default();
     let host = host.unwrap_or(&mut default_host);
@@ -342,7 +315,7 @@ macro_rules! assert_stack {
         );
     }};
 }
-pub(super) use assert_stack;
+pub(crate) use assert_stack;
 
 pub(super) fn push(code: &mut Vec<u8>, value: impl ToWord) {
     let value = value.to_word();

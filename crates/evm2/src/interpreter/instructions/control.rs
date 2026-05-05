@@ -1,75 +1,75 @@
-use super::utils::{as_usize, as_usize_saturated};
-use crate::interpreter::{
-    Host, InstrStop, Pc, Result, State, Word, memory::resize_memory, table::InstructionCx,
+use crate::{
+    EvmTypes,
+    interpreter::{InstrStop, InstructionCx, Result, Word, memory::resize_memory},
+    utils::{word_to_usize, word_to_usize_saturated},
 };
 use core::hint::cold_path;
 use evm2_macros::instruction;
 
 #[instruction]
-pub(in crate::interpreter) fn stop() -> Result {
+pub(crate) fn stop() -> Result {
     cold_path();
     Err(InstrStop::Stop)
 }
 
 #[instruction]
-pub(in crate::interpreter) fn jump(cx: _, [target]: [Word]) -> Result {
-    jump_inner(target, cx.pc, cx.state)
+pub(crate) fn jump(cx: _, [target]: [Word]) -> Result {
+    jump_inner(target, &mut cx)
 }
 
 #[instruction]
-pub(in crate::interpreter) fn jumpi(cx: _, [target, cond]: [Word]) -> Result {
+pub(crate) fn jumpi(cx: _, [target, cond]: [Word]) -> Result {
     if !cond.is_zero() {
-        jump_inner(target, cx.pc, cx.state)?;
+        jump_inner(target, &mut cx)?;
     } else {
         unsafe { cx.pc.advance_unchecked(1) };
-    }
-    Ok(())
+    };
 }
 
 #[inline(always)]
-fn jump_inner<H: Host + ?Sized>(target: Word, pc_mut: &mut Pc, state: &State<'_, H>) -> Result {
-    let target = as_usize_saturated(target);
-    if !state.bytecode.is_valid_jumpdest(target) {
+fn jump_inner<T: EvmTypes>(target: Word, cx: &mut InstructionCx<'_, '_, T>) -> Result {
+    let target = word_to_usize_saturated(target);
+    if !cx.state.bytecode.is_valid_jumpdest(target) {
         cold_path();
         return Err(InstrStop::InvalidJump);
     }
-    unsafe { pc_mut.set_unchecked(state.bytecode, target) };
+    unsafe { cx.pc.set_unchecked(cx.state.bytecode, target) };
     Ok(())
 }
 
 #[instruction]
-pub(in crate::interpreter) fn pc(cx: _) -> out {
+pub(crate) fn pc(cx: _) -> out {
     *out = Word::from(cx.state.bytecode.pc_offset(*cx.pc));
 }
 
 #[instruction]
-pub(in crate::interpreter) fn gas(cx: _) -> out {
+pub(crate) fn gas(cx: _) -> out {
     *out = Word::from(cx.gas.remaining());
 }
 
 #[instruction]
-pub(in crate::interpreter) fn jumpdest() {}
+pub(crate) fn jumpdest() {}
 
 #[instruction]
-pub(in crate::interpreter) fn r#return(cx: _, [offset, len]: [Word]) -> Result {
+pub(crate) fn r#return(cx: _, [offset, len]: [Word]) -> Result {
     return_inner(cx, offset, len, InstrStop::Return)
 }
 
 #[instruction]
-pub(in crate::interpreter) fn revert(cx: _, [offset, len]: [Word]) -> Result {
+pub(crate) fn revert(cx: _, [offset, len]: [Word]) -> Result {
     return_inner(cx, offset, len, InstrStop::Revert)
 }
 
 #[inline]
-fn return_inner<C: crate::EvmConfig>(
-    cx: InstructionCx<'_, '_, C>,
+fn return_inner<T: EvmTypes>(
+    cx: InstructionCx<'_, '_, T>,
     offset: Word,
     len: Word,
     result: InstrStop,
 ) -> Result {
-    let len = as_usize(len)?;
+    let len = word_to_usize(len)?;
     let offset = if len != 0 {
-        let offset = as_usize(offset)?;
+        let offset = word_to_usize(offset)?;
         resize_memory(cx.gas, cx.state.memory(), offset, len)?;
         offset
     } else {
@@ -81,13 +81,13 @@ fn return_inner<C: crate::EvmConfig>(
 }
 
 #[instruction]
-pub(in crate::interpreter) fn invalid() -> Result {
+pub(crate) fn invalid() -> Result {
     cold_path();
     Err(InstrStop::InvalidFEOpcode)
 }
 
 #[instruction]
-pub(in crate::interpreter) fn unknown() -> Result {
+pub(crate) fn unknown() -> Result {
     cold_path();
     Err(InstrStop::OpcodeNotFound)
 }

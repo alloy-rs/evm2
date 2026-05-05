@@ -4,21 +4,94 @@ use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::{
-    AngleBracketedGenericArguments, FnArg, GenericArgument, Ident, ItemFn, LitStr, Pat, PatIdent,
-    PatSlice, PathArguments, ReturnType, Stmt, Token, Type, TypeInfer, TypePath, TypeSlice,
-    parse_macro_input, punctuated::Punctuated,
+    AngleBracketedGenericArguments, FnArg, GenericArgument, GenericParam, Ident, ItemFn, LitStr,
+    Pat, PatIdent, PatSlice, PathArguments, ReturnType, Stmt, Token, Type, TypeInfer, TypePath,
+    TypeSlice, parse_macro_input, punctuated::Punctuated,
 };
 
-/// Lowers instruction functions into the interpreter ABI.
+/// Generates an `Instruction` impl for an instruction function definition.
+///
+/// ## Parameters
+///
+/// - `cx: _`: Optional instruction context. It exposes `pc`, `gas`, and `state`, which are needed
+///   for immediates, memory, host access, dynamic gas, active version data, and message or
+///   transaction state.
+/// - `[a, b]: [Word]`: Automatic stack inputs. The macro checks stack bounds, pops one word per
+///   binding, and creates local `Word` values with those names.
+/// - `-> out`: Automatic stack output. The output name is a mutable `Word` slot. Multiple outputs
+///   can be written as `-> Result<out1, out2>` for fallible instructions.
+/// - `-> Result`: Fallible instruction with no automatic outputs. The body must evaluate to
+///   `evm2::interpreter::Result`, so `?` can be used to return an `InstrStop`.
+/// - `-> Result<out>`: Fallible instruction with automatic outputs. The body gets mutable output
+///   slots and may use `?`; no explicit final `Ok(())` is needed.
+///
+/// ## Attributes
+///
+/// - `#[instruction(no_stack_preamble)]`: Disables automatic stack input and output handling. The
+///   body receives a `stack` local and is responsible for all stack reads, writes, and bounds
+///   checks.
+///
+/// ## Examples
+///
+/// ### Full Signature
+///
+/// ```ignore
+/// use evm2::interpreter::{Result, Word};
+/// use evm2_macros::instruction;
+///
+/// #[instruction]
+/// fn opcode_name(cx: _, [a, b, c]: [Word]) -> Result<out> {
+///     cx.gas.spend(3)?;
+///     *out = a.wrapping_add(b).wrapping_add(c);
+/// }
+/// ```
+///
+/// ### Stack only
+///
+/// Stack-only instructions can omit `cx: _` and `Result`:
+///
+/// ```ignore
+/// use evm2::interpreter::Word;
+/// use evm2_macros::instruction;
+///
+/// #[instruction]
+/// fn add([a, b]: [Word]) -> out {
+///     *out = a.wrapping_add(b);
+/// }
+/// ```
+///
+/// ### No stack preamble
+///
+/// ```ignore
+/// use evm2::interpreter::{Result, Word};
+/// use evm2_macros::instruction;
+///
+/// #[instruction(no_stack_preamble)]
+/// fn no_stack_preamble_opcode(cx: _) -> Result {
+///     cx.gas.spend(2)?;
+///     stack.push(Word::ZERO)
+/// }
+/// ```
 #[proc_macro_attribute]
 pub fn instruction(attr: TokenStream, item: TokenStream) -> TokenStream {
     let args = parse_macro_input!(attr with Punctuated::<Ident, Token![,]>::parse_terminated);
-    let raw = args.iter().any(|arg| arg == "raw");
+    let no_stack_preamble = match args.len() {
+        0 => false,
+        1 if args[0] == "no_stack_preamble" => true,
+        _ => {
+            return syn::Error::new_spanned(
+                args,
+                "expected `#[instruction]` or `#[instruction(no_stack_preamble)]`",
+            )
+            .to_compile_error()
+            .into();
+        }
+    };
     let input = parse_macro_input!(item as ItemFn);
-    expand_instruction(raw, input).into()
+    expand_instruction(no_stack_preamble, input).into()
 }
 
-fn expand_instruction(raw: bool, input: ItemFn) -> TokenStream2 {
+fn expand_instruction(no_stack_preamble: bool, input: ItemFn) -> TokenStream2 {
     let attrs = input.attrs;
     let vis = input.vis;
     let sig = input.sig;
@@ -27,12 +100,14 @@ fn expand_instruction(raw: bool, input: ItemFn) -> TokenStream2 {
     let generics = sig.generics;
     let struct_where_clause = generics.where_clause.clone();
     let impl_params = generics.params.clone();
-    let impl_generics = if impl_params.is_empty() {
-        quote! { <C: evm2::EvmConfig> }
+    let evm_types = Ident::new("__Evm2T", ident.span());
+    let struct_generics = if impl_params.is_empty() {
+        quote! { <#evm_types: evm2::EvmTypes> }
     } else {
-        quote! { <C: evm2::EvmConfig, #impl_params> }
+        quote! { <#evm_types: evm2::EvmTypes, #impl_params> }
     };
-    let (_, type_generics, _) = generics.split_for_impl();
+    let type_params = generics.params.iter().map(generic_param_ident);
+    let type_generics = quote! { <#evm_types #(, #type_params)*> };
     let where_predicates =
         struct_where_clause.as_ref().map(|where_clause| &where_clause.predicates);
     let impl_where_clause = where_predicates.map(|predicates| quote! { where #predicates });
@@ -57,44 +132,64 @@ fn expand_instruction(raw: bool, input: ItemFn) -> TokenStream2 {
                 Some(ident)
             }));
         } else {
-            let Pat::Ident(PatIdent { ident, .. }) = *arg.pat else { continue };
-            inputs.push(ident);
+            return syn::Error::new_spanned(
+                arg,
+                "unsupported #[instruction] argument; use `cx: _` for context or `[a, b]: [Word]` for stack inputs",
+            )
+            .to_compile_error();
         }
     }
 
-    let stack_setup = (!raw).then(|| stack_setup(&inputs, &outputs));
+    let stack_setup = (!no_stack_preamble).then(|| stack_setup(&inputs, &outputs));
     let cx_setup = has_cx.then(|| {
         let cx = cx_arg.unwrap_or_else(|| Ident::new("cx", ident.span()));
         quote! {
-            let mut #cx: evm2::interpreter::table::InstructionCx<'_, '_, C> = evm2::interpreter::table::InstructionCx {
-                pc: __evm2_pc,
-                gas: __evm2_gas,
-                gas_params: C::GAS_PARAMS,
-                state: __evm2_state,
-            };
+            let mut #cx = evm2::interpreter::InstructionCx::<#evm_types> {
+            pc: __evm2_pc,
+            gas: __evm2_gas,
+            state: __evm2_state,
+        };
         }
     });
     quote! {
         #(#attrs)*
         #[allow(non_camel_case_types)]
-        #vis struct #ident #generics #struct_where_clause;
+        #vis struct #ident #struct_generics(
+            core::marker::PhantomData<fn() -> #evm_types>
+        ) #struct_where_clause;
 
-        impl #impl_generics evm2::interpreter::table::Instruction<C> for #ident #type_generics
+        impl #struct_generics evm2::interpreter::Instruction<#evm_types> for #ident #type_generics
         #impl_where_clause
         {
             #[inline]
             fn execute(
-                &self,
                 __evm2_pc: &mut evm2::interpreter::Pc,
                 mut stack: evm2::interpreter::StackMut<'_>,
                 __evm2_gas: &mut evm2::interpreter::Gas,
-                __evm2_state: &mut evm2::interpreter::State<'_, <C as evm2::EvmConfig>::Host>,
+                __evm2_state: &mut evm2::interpreter::State<'_, #evm_types>,
             ) -> evm2::interpreter::Result {
                 evm2::asm_comment!(#asm_comment);
                 #cx_setup
                 #stack_setup
                 #body
             }
+        }
+    }
+}
+
+fn generic_param_ident(param: &GenericParam) -> TokenStream2 {
+    match param {
+        GenericParam::Type(param) => {
+            let ident = &param.ident;
+            quote! { #ident }
+        }
+        GenericParam::Lifetime(param) => {
+            let lifetime = &param.lifetime;
+            quote! { #lifetime }
+        }
+        GenericParam::Const(param) => {
+            let ident = &param.ident;
+            quote! { #ident }
         }
     }
 }

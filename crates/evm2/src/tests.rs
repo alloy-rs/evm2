@@ -1,5 +1,5 @@
 use crate::{
-    Evm, EvmVersion,
+    BaseEvmTypes, Evm, SpecId,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
     evm::{AccountInfo, InMemoryDB},
@@ -8,7 +8,7 @@ use crate::{
 };
 use alloy_primitives::{Address, Bytes};
 
-type TestEvm = Evm<EvmVersion<()>>;
+type TestEvm = Evm<BaseEvmTypes>;
 
 fn run_tx(evm: &mut TestEvm, destination: Address, code: impl Into<Vec<u8>>) {
     let message = Message {
@@ -31,6 +31,7 @@ fn run_tx(evm: &mut TestEvm, destination: Address, code: impl Into<Vec<u8>>) {
 fn evm_executes_storage_transaction() {
     let contract = Address::from([0x11; 20]);
     let mut evm = TestEvm::new(
+        SpecId::OSAKA,
         BlockEnv::default(),
         TxRegistry::new(),
         InMemoryDB::default(),
@@ -51,8 +52,13 @@ fn evm_runs_transactions_against_initial_state() {
     let mut database = InMemoryDB::default();
     database.insert_account_info(contract, AccountInfo { nonce: 1, ..Default::default() });
     database.insert_account_storage(contract, Word::from(1), Word::from(40));
-    let mut evm =
-        TestEvm::new(BlockEnv::default(), TxRegistry::new(), database, Default::default());
+    let mut evm = TestEvm::new(
+        SpecId::OSAKA,
+        BlockEnv::default(),
+        TxRegistry::new(),
+        database,
+        Default::default(),
+    );
 
     run_tx(
         &mut evm,
@@ -81,6 +87,7 @@ fn evm_runs_transactions_against_initial_state() {
 fn evm_reports_invalid_transaction_execution() {
     let contract = Address::from([0x33; 20]);
     let mut evm = TestEvm::new(
+        SpecId::OSAKA,
         BlockEnv::default(),
         TxRegistry::new(),
         InMemoryDB::default(),

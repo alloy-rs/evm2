@@ -1,4 +1,5 @@
 use super::{Gas, InstrStop, Result, Word};
+use crate::utils::num_words;
 use alloc::vec::Vec;
 use core::{cmp::min, fmt, hint::cold_path, ops::Range};
 
@@ -175,11 +176,6 @@ unsafe fn set_data(dst: &mut [u8], src: &[u8], dst_offset: usize, src_offset: us
     let data = unsafe { src.get_unchecked(src_offset..src_end) };
     unsafe { dst.get_unchecked_mut(dst_offset..dst_offset + src_len).copy_from_slice(data) };
     unsafe { dst.get_unchecked_mut(dst_offset + src_len..dst_offset + len).fill(0) };
-}
-
-#[inline]
-pub(super) const fn num_words(len: usize) -> usize {
-    len.div_ceil(32)
 }
 
 #[inline]

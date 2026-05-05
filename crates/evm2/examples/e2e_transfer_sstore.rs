@@ -3,12 +3,12 @@
 use alloy_consensus::{TxLegacy, transaction::Recovered};
 use alloy_primitives::{Address, Bytes, TxKind, U256};
 use evm2::{
-    Evm, EvmVersion,
+    BaseEvmTypes, Evm, SpecId,
     bytecode::Bytecode,
     env::BlockEnv,
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
     evm::{AccountInfo, InMemoryDB},
-    interpreter::{SpecId, op},
+    interpreter::op,
 };
 
 fn main() {
@@ -30,7 +30,8 @@ fn main() {
         ]))),
     );
 
-    let mut evm = Evm::<EvmVersion<RecoveredTxEnvelope, { SpecId::FRONTIER as u8 }>>::new(
+    let mut evm = Evm::<BaseEvmTypes<RecoveredTxEnvelope>>::new(
+        SpecId::FRONTIER,
         BlockEnv::default(),
         ethereum_tx_registry(),
         database,
