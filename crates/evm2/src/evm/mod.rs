@@ -292,10 +292,13 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         message: &Message,
         caller_is_static: bool,
     ) -> MessageResult {
-        let caller_nonce = self.state.account_info(message.caller).map_or(0, |info| info.nonce);
-        let caller_balance =
-            self.state.account_info(message.caller).map_or(Word::ZERO, |info| info.balance);
-        if caller_balance < message.value {
+        let mut info_slot = None;
+        if message.value > 0
+            && info_slot
+                .get_or_insert_with(|| self.state.account_info(message.caller))
+                .as_ref()
+                .is_none_or(|info| info.balance < message.value)
+        {
             return MessageResult {
                 stop: InstrStop::OutOfFunds,
                 gas_remaining: message.gas_limit,
@@ -305,7 +308,12 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
 
         let address = match message.kind {
             MessageKind::Create if message.depth == 0 => message.destination,
-            MessageKind::Create => message.caller.create(caller_nonce),
+            MessageKind::Create => message.caller.create(
+                info_slot
+                    .get_or_insert_with(|| self.state.account_info(message.caller))
+                    .as_ref()
+                    .map_or(0, |info| info.nonce),
+            ),
             MessageKind::Create2 => message.caller.create2(message.salt, bytecode.hash_slow()),
             _ => unreachable!("invalid create message kind"),
         };
