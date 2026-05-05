@@ -77,12 +77,13 @@ impl JumpTable {
 
     #[inline]
     pub(crate) fn set(&mut self, pc: usize) {
-        if pc >= self.bit_len {
-            cold_path();
-            return;
-        }
+        debug_assert!(pc < self.bit_len, "jump table bit index exceeds bit length");
         let (byte, bit) = (pc / 8, pc % 8);
-        self.table.to_mut()[byte] |= 1 << bit;
+        // SAFETY: callers only set PCs inside the bytecode length, and debug
+        // builds assert the bit length above.
+        unsafe {
+            *self.table.to_mut().get_unchecked_mut(byte) |= 1 << bit;
+        }
     }
 
     /// Constructs a jump map from raw bytes and length.
