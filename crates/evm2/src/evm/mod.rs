@@ -292,6 +292,14 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         message: &Message,
         caller_is_static: bool,
     ) -> MessageResult {
+        if let Err(stop) = self.check_create_funds(message) {
+            return MessageResult {
+                stop,
+                gas_remaining: message.gas_limit,
+                ..MessageResult::default()
+            };
+        }
+
         let address = self.create_address(&bytecode, message);
 
         self.state.warm_account(address);
@@ -377,6 +385,19 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             output,
             created_address: stop.is_success().then_some(address),
         }
+    }
+
+    #[inline(never)]
+    fn check_create_funds(&mut self, message: &Message) -> Result<(), InstrStop> {
+        if message.value > 0
+            && self
+                .state
+                .account_info(message.caller)
+                .is_none_or(|info| info.balance < message.value)
+        {
+            return Err(InstrStop::OutOfFunds);
+        }
+        Ok(())
     }
 
     #[inline(never)]
