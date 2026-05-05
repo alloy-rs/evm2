@@ -14,6 +14,7 @@ import argparse
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from utils import cargo_env, repo_root
@@ -21,8 +22,15 @@ from utils import cargo_env, repo_root
 ROOT = Path(repo_root())
 OPCODE_RS = ROOT / "crates" / "evm2" / "src" / "interpreter" / "opcode.rs"
 DEFAULT_OUT = ROOT / "tmp" / "dump"
-DISPATCH_SYMBOL = "evm2::interpreter::instructions::table::dispatch::<"
+DISPATCH_SYMBOLS = (
+    "evm2::interpreter::instructions::table::dispatch::<",
+    "evm2::interpreter::instructions::table::tail_dispatch::<",
+)
 DISPATCH_OPCODE = re.compile(r",\s*(\d+)>")
+
+
+def log(message: str) -> None:
+    print(f"[dump_opcode_asm] {message}", file=sys.stderr, flush=True)
 
 
 def parse_opcodes() -> dict[str, int]:
@@ -100,6 +108,8 @@ def cargo_asm_everything(package: str, features: list[str], output: str) -> str:
     for feature in features:
         cmd.extend(("-F", feature))
     cmd.extend(("--lib", f"--{output}", "--everything"))
+    log(f"running {' '.join(cmd)}")
+    started = time.perf_counter()
     proc = subprocess.run(
         cmd,
         cwd=ROOT,
@@ -109,18 +119,21 @@ def cargo_asm_everything(package: str, features: list[str], output: str) -> str:
         env=cargo_env(),
         check=False,
     )
+    elapsed = time.perf_counter() - started
     if proc.returncode != 0:
+        log(f"failed after {elapsed:.1f}s: cargo asm --{output} --everything")
         raise RuntimeError(
             f"cargo asm --{output} --everything failed\n"
             f"command: {' '.join(cmd)}\n"
             f"stdout:\n{proc.stdout}\n"
             f"stderr:\n{proc.stderr}"
         )
+    log(f"finished cargo asm --{output} --everything in {elapsed:.1f}s")
     return proc.stdout
 
 
 def dispatch_opcode(text: str) -> int | None:
-    if DISPATCH_SYMBOL not in text:
+    if not any(symbol in text for symbol in DISPATCH_SYMBOLS):
         return None
     match = DISPATCH_OPCODE.search(text)
     if match is None:
@@ -211,14 +224,22 @@ def main() -> int:
     selected = select_opcodes(opcodes, args.mnemonics)
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=True)
+    feature_msg = f" with features {', '.join(args.features)}" if args.features else ""
+    log(
+        f"dumping {len(selected)} opcode(s) from package {args.package}{feature_msg} "
+        f"to {out.relative_to(ROOT)}"
+    )
 
     dumps: dict[str, dict[int, list[str]]] = {}
     for output in ("asm", "llvm"):
         text = cargo_asm_everything(args.package, args.features, output)
         if args.keep_everything:
             suffix = "ll" if output == "llvm" else "s"
+            log(f"writing full cargo asm --{output} dump")
             (out / f"everything.{suffix}").write_text(text)
         dumps[output] = extract_functions(text, output)
+        block_count = sum(len(blocks) for blocks in dumps[output].values())
+        log(f"extracted {block_count} dispatch block(s) from --{output} output")
 
     tasks = [
         (mnemonic, opcode, output)
@@ -226,7 +247,8 @@ def main() -> int:
         for output in ("asm", "llvm")
     ]
     for mnemonic, opcode, output in tasks:
-        dump_output(out, dumps[output], mnemonic, opcode, output)
+        path = dump_output(out, dumps[output], mnemonic, opcode, output)
+        log(f"wrote {path.relative_to(ROOT)}")
     print(f"wrote {len(tasks)} file(s) to {out.relative_to(ROOT)}")
 
     return 0
