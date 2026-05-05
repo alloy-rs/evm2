@@ -2,7 +2,7 @@ use crate::{
     BaseEvmConfig, EvmConfig, EvmTypes, SpecId,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
-    evm::{AccountLoad, SelfDestructResult, StorageLoad},
+    evm::{AccountLoad, SLoad, SStore, SelfDestructResult},
     interpreter::{
         Gas, Host, InstrStop, Interpreter, Memory, Message, MessageKind, MessageResult, Stack,
         Word, op,
@@ -31,6 +31,7 @@ pub(crate) struct TestHost {
     pub(super) is_empty: bool,
     pub(super) is_cold: bool,
     pub(super) storage: HashMap<(Address, Word), Word>,
+    pub(super) original_storage: HashMap<(Address, Word), Word>,
     pub(super) transient_storage: HashMap<(Address, Word), Word>,
     pub(super) logs: Vec<Log>,
     pub(super) execute_result: MessageResult,
@@ -49,6 +50,7 @@ impl Default for TestHost {
             is_empty: false,
             is_cold: false,
             storage: HashMap::default(),
+            original_storage: HashMap::default(),
             transient_storage: HashMap::default(),
             logs: Vec::new(),
             execute_result: MessageResult { stop: InstrStop::Return, ..MessageResult::default() },
@@ -91,15 +93,40 @@ impl Host for TestHost {
         Some(B256::with_last_byte(number.wrapping_to::<u8>()))
     }
 
-    fn sload(&mut self, address: Address, key: Word) -> StorageLoad {
-        StorageLoad {
+    fn sload(
+        &mut self,
+        address: Address,
+        key: Word,
+        skip_cold_load: bool,
+    ) -> Result<SLoad, InstrStop> {
+        if skip_cold_load && self.is_cold {
+            return Err(InstrStop::OutOfGas);
+        }
+        Ok(SLoad {
             value: self.storage.get(&(address, key)).copied().unwrap_or_default(),
             is_cold: self.is_cold,
-        }
+        })
     }
 
-    fn sstore(&mut self, address: Address, key: Word, value: Word) {
-        self.storage.insert((address, key), value);
+    fn sstore(
+        &mut self,
+        address: Address,
+        key: Word,
+        value: Word,
+        skip_cold_load: bool,
+    ) -> Result<SStore, InstrStop> {
+        if skip_cold_load && self.is_cold {
+            return Err(InstrStop::OutOfGas);
+        }
+        let storage_key = (address, key);
+        let present_value = self.storage.get(&storage_key).copied().unwrap_or_default();
+        let original_value = *self.original_storage.entry(storage_key).or_insert(present_value);
+        if value.is_zero() {
+            self.storage.remove(&storage_key);
+        } else {
+            self.storage.insert(storage_key, value);
+        }
+        Ok(SStore { original_value, present_value, new_value: value, is_cold: self.is_cold })
     }
 
     fn tload(&mut self, address: Address, key: Word) -> Word {
@@ -157,6 +184,14 @@ impl TestInterpreter {
 
     pub(super) fn gas_remaining(&self) -> u64 {
         self.gas.remaining()
+    }
+
+    pub(super) fn gas_refunded(&self) -> i64 {
+        self.gas.refunded()
+    }
+
+    pub(super) fn state_gas_spent(&self) -> u64 {
+        self.gas.state_gas_spent()
     }
 
     pub(super) fn output(&self) -> &[u8] {
@@ -257,7 +292,7 @@ fn run_with_config<C: EvmConfig<TestTypes>>(config: RunConfig<'_>) -> TestInterp
     }
 }
 
-pub(super) trait ToWord {
+pub(crate) trait ToWord {
     fn to_word(self) -> Word;
 }
 
@@ -318,7 +353,7 @@ macro_rules! assert_stack {
 }
 pub(crate) use assert_stack;
 
-pub(super) fn push(code: &mut Vec<u8>, value: impl ToWord) {
+pub(crate) fn push(code: &mut Vec<u8>, value: impl ToWord) {
     let value = value.to_word();
     if value.is_zero() {
         code.extend([op::PUSH1, 0]);

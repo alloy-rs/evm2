@@ -166,7 +166,8 @@ fn call_inner<T: EvmTypes>(
     let bytecode = crate::bytecode::Bytecode::new_legacy(code);
     let result =
         cx.state.host.execute_message(cx.state.tx().clone(), bytecode, message, caller_is_static);
-    cx.gas.erase_cost(result.gas_remaining);
+    cx.gas.erase_cost(result.gas_returned_to_parent());
+    cx.gas.record_refund(result.refund_propagated_to_parent());
     let copy_len = min(return_memory_range.len(), result.output.len());
     cx.state.memory().set(return_memory_range.start, &result.output[..copy_len]);
     cx.state.set_return_data(result.output);
@@ -247,7 +248,8 @@ fn create_inner<T: EvmTypes>(
     };
     let bytecode = crate::bytecode::Bytecode::new_legacy(input);
     let result = cx.state.host.execute_message(cx.state.tx().clone(), bytecode, message, false);
-    cx.gas.erase_cost(result.gas_remaining);
+    cx.gas.erase_cost(result.gas_returned_to_parent());
+    cx.gas.record_refund(result.refund_propagated_to_parent());
     if !result.stop.is_success() {
         cx.state.set_return_data(result.output);
     } else {

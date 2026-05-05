@@ -170,8 +170,11 @@ fn handle_legacy<T: EvmTypes<Host = Evm<T>>>(
         }
     }
 
-    let gas_used = tx.gas_limit - result.gas_remaining;
-    req.host.state.add_balance(caller, U256::from(result.gas_remaining) * gas_price);
+    let gas_remaining =
+        result.gas_remaining_after_final_refund(tx.gas_limit, spec_id.enables(SpecId::LONDON));
+    let gas_used =
+        result.gas_used_after_final_refund(tx.gas_limit, spec_id.enables(SpecId::LONDON));
+    req.host.state.add_balance(caller, U256::from(gas_remaining) * gas_price);
     let beneficiary_gas_price = if spec_id.enables(SpecId::LONDON) {
         gas_price.saturating_sub(req.host.block.basefee)
     } else {
