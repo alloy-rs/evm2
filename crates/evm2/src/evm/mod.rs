@@ -372,7 +372,7 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
         message: Message,
         caller_is_static: bool,
     ) -> MessageResult {
-        if message.depth >= Message::CALL_DEPTH_LIMIT {
+        if message.depth > Message::CALL_DEPTH_LIMIT {
             return MessageResult {
                 stop: InstrStop::CallTooDeep,
                 gas_remaining: message.gas_limit,
