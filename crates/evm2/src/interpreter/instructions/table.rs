@@ -1,7 +1,7 @@
 //! Instruction dispatch tables.
 
 use crate::{
-    EvmConfig, EvmConfigFactory, EvmTypes,
+    EvmConfig, EvmTypes,
     interpreter::{Gas, GasParams, InstrStop, Pc, Result, Stack, StackMut, State, op},
 };
 use core::hint::cold_path;
@@ -38,11 +38,19 @@ pub(crate) type TailInstructionTable<T> = [TailInstructionFn<T>; 256];
 pub type InstructionImplFn<T> =
     fn(pc: &mut Pc, stack: StackMut<'_>, gas: &mut Gas, state: &mut State<'_, T>) -> Result;
 
-pub(crate) trait InstructionTables<C: EvmConfig>: EvmTypes {
+pub(crate) trait InstructionTables<C>: EvmTypes
+where
+    C: EvmConfig<Self>,
+{
     const INSTRUCTIONS: &'static InstructionTable<Self> = &make_instruction_table::<Self, C>();
 }
 
-impl<T: EvmTypes, C: EvmConfig> InstructionTables<C> for T {}
+impl<T, C> InstructionTables<C> for T
+where
+    T: EvmTypes,
+    C: EvmConfig<T>,
+{
+}
 
 /// Instruction execution context.
 pub(crate) struct InstructionCx<'a, 'state, T: EvmTypes> {
@@ -59,7 +67,7 @@ pub(crate) struct InstructionCx<'a, 'state, T: EvmTypes> {
 /// EVM instruction implementation.
 pub trait Instruction<T: EvmTypes = crate::BaseEvmTypes> {
     /// Executes this instruction.
-    fn execute<C: EvmConfig>(
+    fn execute<C: EvmConfig<T>>(
         pc: &mut Pc,
         stack: StackMut<'_>,
         gas: &mut Gas,
@@ -124,7 +132,11 @@ macro_rules! for_each_opcode_value {
     };
 }
 
-pub(crate) const fn make_instruction_table<T: EvmTypes, C: EvmConfig>() -> InstructionTable<T> {
+pub(crate) const fn make_instruction_table<T, C>() -> InstructionTable<T>
+where
+    T: EvmTypes,
+    C: EvmConfig<T>,
+{
     #[cfg(feature = "nightly")]
     use tail_dispatch as dispatch;
 
@@ -135,10 +147,7 @@ pub(crate) const fn make_instruction_table<T: EvmTypes, C: EvmConfig>() -> Instr
     let mut i = 0;
     let mut unknown_idx = 0;
     while i < 256 {
-        if !<T::ConfigFactory as EvmConfigFactory<T>>::evm_version::<C>()
-            .instruction_impls
-            .contains(i as u8)
-        {
+        if !C::EVM_VERSION.instruction_impls.contains(i as u8) {
             if unknown_idx == 0 {
                 unknown_idx = i;
             }
@@ -152,7 +161,7 @@ pub(crate) const fn make_instruction_table<T: EvmTypes, C: EvmConfig>() -> Instr
 
 extern_table! {
     #[cfg(not(feature = "nightly"))]
-    fn dispatch<T: EvmTypes, C: EvmConfig, const OP: u8>(
+    fn dispatch<T: EvmTypes, C: EvmConfig<T>, const OP: u8>(
         pc: Pc,
         stack: Stack<'_>,
         gas: &mut Gas,
@@ -164,18 +173,16 @@ extern_table! {
 
 #[cfg(not(feature = "nightly"))]
 #[inline(always)]
-fn dispatch_mono<T: EvmTypes, C: EvmConfig>(
+fn dispatch_mono<T: EvmTypes, C: EvmConfig<T>>(
     op: u8,
     mut pc: Pc,
     mut stack: Stack<'_>,
     gas: &mut Gas,
     state: &mut State<'_, T>,
 ) -> InstructionFnRet {
-    let instr = <T::ConfigFactory as EvmConfigFactory<T>>::evm_version::<C>()
-        .instruction_impls
-        .get_or_default(op);
+    let instr = C::EVM_VERSION.instruction_impls.get_or_default(op);
     let r;
-    match pre_step::<C>(gas, op) {
+    match pre_step::<T, C>(gas, op) {
         Ok(()) => {
             r = instr(&mut pc, stack.as_mut(), gas, state);
             inc_pc(&mut pc, op);
@@ -193,7 +200,7 @@ fn dispatch_mono<T: EvmTypes, C: EvmConfig>(
 
 extern_table! {
     #[cfg(feature = "nightly")]
-    fn tail_dispatch<T: EvmTypes, C: EvmConfig, const OP: u8>(
+    fn tail_dispatch<T: EvmTypes, C: EvmConfig<T>, const OP: u8>(
         pc: Pc,
         stack: Stack<'_>,
         gas: &mut Gas,
@@ -207,17 +214,15 @@ extern_table! {
 extern_table! {
     #[cfg(feature = "nightly")]
     #[inline(always)]
-    fn tail_dispatch_mono<T: EvmTypes, C: EvmConfig>(
+    fn tail_dispatch_mono<T: EvmTypes, C: EvmConfig<T>>(
         mut pc: Pc,
         mut stack: Stack<'_>,
         gas: &mut Gas,
         state: &mut State<'_, T>,
         op: u8,
     ) {
-        let instr = <T::ConfigFactory as EvmConfigFactory<T>>::evm_version::<C>()
-            .instruction_impls
-            .get_or_default(op);
-        if let Err(e) = pre_step::<C>(gas, op) {
+        let instr = C::EVM_VERSION.instruction_impls.get_or_default(op);
+        if let Err(e) = pre_step::<T, C>(gas, op) {
             cold_path();
             tail_return!(tail_call_restore::<T>(pc, stack, gas, state, e as u8));
         }
@@ -233,7 +238,7 @@ extern_table! {
 extern_table! {
     #[cfg(feature = "nightly")]
     #[inline]
-    fn tail_call_next<T: EvmTypes, C: EvmConfig>(
+    fn tail_call_next<T: EvmTypes, C: EvmConfig<T>>(
         pc: Pc,
         stack: Stack<'_>,
         gas: &mut Gas,
@@ -266,7 +271,7 @@ extern_table! {
 }
 
 #[inline]
-const fn pre_step<C: EvmConfig>(gas: &mut Gas, op: u8) -> Result {
+const fn pre_step<T: EvmTypes, C: EvmConfig<T>>(gas: &mut Gas, op: u8) -> Result {
     gas.spend(C::VERSION.static_gas_table.get(op) as _)
 }
 

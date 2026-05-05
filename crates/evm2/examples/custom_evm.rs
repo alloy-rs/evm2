@@ -43,33 +43,29 @@ impl EvmTypes for CustomTypes {
     type Precompiles = NoPrecompiles;
 }
 
-static CUSTOM_VERSION: Version = {
-    let mut version = Version::new_base(SpecId::OSAKA);
+const fn custom_version<const SPEC_ID: u8>() -> Version {
+    let mut version = Version::new_base(SpecId::try_from_u8(SPEC_ID).unwrap());
     version.static_gas_table.set(CUSTOM_OPCODE, CUSTOM_OPCODE_GAS);
     version
-};
+}
 
 struct CustomConfig<const SPEC_ID: u8>(());
 
-impl<const SPEC_ID: u8> EvmConfig for CustomConfig<SPEC_ID> {
-    const VERSION: &'static Version = &CUSTOM_VERSION;
+impl<const SPEC_ID: u8> EvmConfig<CustomTypes> for CustomConfig<SPEC_ID> {
+    const VERSION: &'static Version = &custom_version::<SPEC_ID>();
+    const EVM_VERSION: &'static EvmVersion<CustomTypes> = &custom_evm_version::<SPEC_ID>();
+}
+
+const fn custom_evm_version<const SPEC_ID: u8>() -> EvmVersion<CustomTypes> {
+    let mut version = EvmVersion::<CustomTypes>::new_base::<CustomConfig<SPEC_ID>>();
+    version.instruction_impls.set(
+        CUSTOM_OPCODE,
+        Some(<custom<CustomTypes> as Instruction<CustomTypes>>::execute::<CustomConfig<SPEC_ID>>),
+    );
+    version
 }
 
 struct CustomConfigFactory(());
-
-static CUSTOM_EVM_VERSION: EvmVersion<CustomTypes> = {
-    let mut version =
-        EvmVersion::<CustomTypes>::new_base::<CustomConfig<{ SpecId::OSAKA as u8 }>>();
-    version.instruction_impls.set(
-        CUSTOM_OPCODE,
-        Some(
-            <custom<CustomTypes> as Instruction<CustomTypes>>::execute::<
-                CustomConfig<{ SpecId::OSAKA as u8 }>,
-            >,
-        ),
-    );
-    version
-};
 
 impl EvmConfigFactory<CustomTypes> for CustomConfigFactory {
     type Config<const SPEC_ID: u8> = CustomConfig<SPEC_ID>;
@@ -84,15 +80,9 @@ impl EvmConfigFactory<CustomTypes> for CustomConfigFactory {
     fn version(spec_id: CustomSpecId) -> &'static Version {
         match spec_id {
             CustomSpecId::MainnetOsaka => Version::base(spec_id.into()),
-            CustomSpecId::CustomOsaka => &CUSTOM_VERSION,
-        }
-    }
-
-    fn evm_version<Cfg: EvmConfig>() -> &'static EvmVersion<CustomTypes> {
-        if core::ptr::addr_eq(Cfg::VERSION, &CUSTOM_VERSION) {
-            &CUSTOM_EVM_VERSION
-        } else {
-            const { &EvmVersion::<CustomTypes>::new_base::<Cfg>() }
+            CustomSpecId::CustomOsaka => {
+                <CustomConfig<{ SpecId::OSAKA as u8 }> as EvmConfig<CustomTypes>>::VERSION
+            }
         }
     }
 }

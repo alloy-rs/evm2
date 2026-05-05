@@ -107,7 +107,7 @@ impl<T: EvmTypes> Interpreter<T> {
     }
 
     /// Runs the interpreter until it stops.
-    pub fn run<C: EvmConfig>(&mut self, host: &mut T::Host) -> InstrStop {
+    pub fn run<C: EvmConfig<T>>(&mut self, host: &mut T::Host) -> InstrStop {
         let _gas_start = self.gas.remaining();
 
         #[cfg(feature = "nightly")]
@@ -119,7 +119,7 @@ impl<T: EvmTypes> Interpreter<T> {
     }
 
     #[cfg(not(feature = "nightly"))]
-    fn run_table_loop<C: EvmConfig>(&mut self, host: &mut T::Host) -> InstrStop {
+    fn run_table_loop<C: EvmConfig<T>>(&mut self, host: &mut T::Host) -> InstrStop {
         let mut pc = self.pc;
         let mut stack_len = self.stack_len;
         loop {
@@ -138,7 +138,7 @@ impl<T: EvmTypes> Interpreter<T> {
     /// Executes one instruction.
     #[inline(always)]
     #[cfg(not(feature = "nightly"))]
-    pub fn step<C: EvmConfig>(&mut self, host: &mut T::Host) -> ControlFlow<(), ()> {
+    pub fn step<C: EvmConfig<T>>(&mut self, host: &mut T::Host) -> ControlFlow<(), ()> {
         let (pc, stack_len, flow) = self.raw_step::<C>(host, self.pc, self.stack_len);
         self.pc = pc;
         self.stack_len = stack_len;
@@ -147,7 +147,7 @@ impl<T: EvmTypes> Interpreter<T> {
 
     #[inline(always)]
     #[cfg(not(feature = "nightly"))]
-    fn raw_step<C: EvmConfig>(
+    fn raw_step<C: EvmConfig<T>>(
         &mut self,
         host: &mut T::Host,
         pc: *const u8,
@@ -170,7 +170,7 @@ impl<T: EvmTypes> Interpreter<T> {
 
     #[inline(always)]
     #[cfg(feature = "nightly")]
-    fn step_tail<C: EvmConfig>(&mut self, host: &mut T::Host) -> InstrStop {
+    fn step_tail<C: EvmConfig<T>>(&mut self, host: &mut T::Host) -> InstrStop {
         let raw = self as *mut Self;
         let bytecode = BytecodeRef::new(&self.bytecode);
         let pc = Pc::from_ptr(self.pc);

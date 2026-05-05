@@ -115,7 +115,7 @@ macro_rules! evm_versions {
 
         impl<T: EvmTypes> EvmVersion<T> {
             /// Creates the type-specific EVM version for `Cfg`.
-            pub const fn new_base<Cfg: EvmConfig>() -> Self {
+            pub const fn new_base<Cfg: EvmConfig<T>>() -> Self {
                 use crate::interpreter::gas::*;
 
                 let version = Cfg::VERSION;

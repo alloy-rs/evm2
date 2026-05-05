@@ -31,9 +31,12 @@ pub trait EvmTypes: Sized + 'static {
 }
 
 /// EVM runtime configuration.
-pub trait EvmConfig {
+pub trait EvmConfig<T: EvmTypes> {
     /// Active EVM version.
     const VERSION: &'static Version;
+
+    /// Active type-specific EVM version.
+    const EVM_VERSION: &'static EvmVersion<T>;
 
     /// Active hard fork specification.
     #[inline]
@@ -45,7 +48,7 @@ pub trait EvmConfig {
 /// Factory for selecting an EVM configuration from a runtime specification ID.
 pub trait EvmConfigFactory<T: EvmTypes>: Sized {
     /// Concrete EVM configuration for a base specification ID.
-    type Config<const SPEC_ID: u8>: EvmConfig;
+    type Config<const SPEC_ID: u8>: EvmConfig<T>;
 
     /// Returns the active EVM version for `spec_id`.
     #[inline]
@@ -55,12 +58,6 @@ pub trait EvmConfigFactory<T: EvmTypes>: Sized {
 
     /// Returns the interpreter runner for `spec_id`.
     fn run_interpreter(spec_id: T::SpecId) -> crate::evm::RunInterpreterFn<T>;
-
-    /// Returns the type-specific EVM version for `Cfg`.
-    #[inline]
-    fn evm_version<Cfg: EvmConfig>() -> &'static EvmVersion<T> {
-        const { &EvmVersion::<T>::new_base::<Cfg>() }
-    }
 }
 
 /// Base EVM types.
@@ -80,8 +77,9 @@ impl<Tx: 'static> EvmTypes for BaseEvmTypes<Tx> {
 #[allow(missing_copy_implementations, missing_debug_implementations)]
 pub struct BaseEvmConfig<const SPEC_ID: u8>(());
 
-impl<const SPEC_ID: u8> EvmConfig for BaseEvmConfig<SPEC_ID> {
+impl<T: EvmTypes, const SPEC_ID: u8> EvmConfig<T> for BaseEvmConfig<SPEC_ID> {
     const VERSION: &'static Version = Version::base(SpecId::try_from_u8(SPEC_ID).unwrap());
+    const EVM_VERSION: &'static EvmVersion<T> = &EvmVersion::<T>::new_base::<Self>();
 }
 
 /// Base EVM configuration factory.
@@ -105,7 +103,7 @@ where
     spec_to_generic!(spec_id, |SPEC_ID| run_interpreter::<T, F::Config<SPEC_ID>>)
 }
 
-fn run_interpreter<T: EvmTypes, C: EvmConfig>(
+fn run_interpreter<T: EvmTypes, C: EvmConfig<T>>(
     interpreter: &mut Interpreter<T>,
     host: &mut T::Host,
 ) -> InstrStop {
