@@ -5,11 +5,13 @@ use crate::{
     EvmConfigSelector, EvmTypes, ExecutionConfig, PrecompileError, PrecompileHalt, SpecId,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
-    interpreter::{Gas, Host, InstrStop, Interpreter, Message, MessageKind, MessageResult, Word},
+    interpreter::{
+        Gas, Host, InstrStop, Interpreter, InterpreterPool, Message, MessageKind, MessageResult,
+        Word,
+    },
     registry::{HandlerResult, TxRegistry},
     version::GasId,
 };
-use alloc::{boxed::Box, vec::Vec};
 use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{Address, B256, Bytes, Log};
 
@@ -150,8 +152,7 @@ pub struct Evm<T: EvmTypes> {
     pub(crate) state: State<T::Database>,
     precompiles: T::Precompiles,
     #[debug(skip)]
-    #[expect(clippy::vec_box, reason = "pooled active interpreters must stay at stable addresses")]
-    interpreter_pool: Vec<Box<Interpreter<T>>>,
+    interpreter_pool: InterpreterPool<T>,
 }
 
 impl<T: EvmTypes> Evm<T> {
@@ -192,7 +193,7 @@ impl<T: EvmTypes> Evm<T> {
             registry,
             state: State::new(database),
             precompiles,
-            interpreter_pool: Vec::new(),
+            interpreter_pool: InterpreterPool::new(),
         }
     }
 
@@ -456,20 +457,20 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         }
     }
 
-    fn run_interpreter(
+    fn run_interpreter<'frame>(
         &mut self,
         bytecode: Bytecode,
-        tx_env: &TxEnv,
-        message: &Message,
+        tx_env: &'frame TxEnv,
+        message: &'frame Message,
         caller_is_static: bool,
-    ) -> (InstrStop, &mut Interpreter<T>) {
-        let mut interpreter = self.interpreter_pool.pop().unwrap_or_default();
+    ) -> (InstrStop, &mut Interpreter<'frame, T>) {
+        let mut interpreter = self.interpreter_pool.pop();
         // SAFETY: The active interpreter is owned by this stack frame until it is returned to the
         // pool after execution. Recursive calls may mutate the pool, but they cannot move this box.
-        let interpreter_ref = unsafe { &mut *(&mut *interpreter as *mut Interpreter<T>) };
+        let interpreter_ref = unsafe { &mut *(&mut *interpreter as *mut Interpreter<'frame, T>) };
         interpreter_ref.init(bytecode, tx_env, message, caller_is_static);
         let stop = interpreter_ref.run_with(self.execution_config, self);
-        let interpreter = self.interpreter_pool.push_mut(interpreter);
+        let interpreter = self.interpreter_pool.push(interpreter);
         (stop, interpreter)
     }
 }

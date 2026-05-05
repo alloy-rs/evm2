@@ -2,7 +2,7 @@ use super::{
     BytecodeRef, Gas, InstrStop, Memory, Message, MessageKind, Pc, Result, Stack, State, Word,
 };
 use crate::{EvmConfig, EvmTypes, ExecutionConfig, bytecode::Bytecode, env::TxEnv};
-use alloc::boxed::Box;
+use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::Bytes;
 use core::marker::PhantomData;
 #[cfg(not(feature = "nightly"))]
@@ -13,7 +13,7 @@ use core::{
 
 /// EVM interpreter.
 #[derive(Debug)]
-pub struct Interpreter<T: EvmTypes> {
+pub struct Interpreter<'frame, T: EvmTypes> {
     bytecode: Bytecode,
     pub(crate) pc: *const u8,
     pub(crate) stack: Box<[Word; Stack::CAPACITY]>,
@@ -22,20 +22,42 @@ pub struct Interpreter<T: EvmTypes> {
     pub(crate) memory: Memory,
     pub(crate) result: Result,
     pub(crate) output: *const [u8],
-    tx_env: *const TxEnv,
-    pub(crate) message: *const Message,
+    tx_env: Option<&'frame TxEnv>,
+    pub(crate) message: Option<&'frame Message>,
     pub(crate) is_static: bool,
     pub(crate) return_data: Bytes,
     _marker: PhantomData<fn() -> T>,
 }
 
-impl<T: EvmTypes> Interpreter<T> {
+impl<T: EvmTypes> Default for Interpreter<'_, T> {
+    fn default() -> Self {
+        let bytecode = Bytecode::new();
+        Self {
+            pc: bytecode.original_byte_slice().as_ptr(),
+            bytecode,
+            // SAFETY: `Word` is valid at any bitpattern. It's not read before init anyway.
+            stack: unsafe { Box::new_uninit().assume_init() },
+            stack_len: 0,
+            gas: Gas::new(0),
+            memory: Memory::new(),
+            result: Ok(()),
+            output: &[],
+            tx_env: None,
+            message: None,
+            is_static: false,
+            return_data: Bytes::new(),
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
     /// Creates an interpreter from analyzed bytecode, a transaction-global environment, and a
     /// frame-local message.
     pub fn new(
         bytecode: Bytecode,
-        tx_env: &TxEnv,
-        message: &Message,
+        tx_env: &'frame TxEnv,
+        message: &'frame Message,
         caller_is_static: bool,
     ) -> Self {
         let mut interpreter = Self::default();
@@ -47,8 +69,8 @@ impl<T: EvmTypes> Interpreter<T> {
     pub(crate) fn init(
         &mut self,
         bytecode: Bytecode,
-        tx_env: &TxEnv,
-        message: &Message,
+        tx_env: &'frame TxEnv,
+        message: &'frame Message,
         caller_is_static: bool,
     ) {
         let gas_limit = message.gas_limit;
@@ -60,10 +82,15 @@ impl<T: EvmTypes> Interpreter<T> {
         self.memory.clear();
         self.result = Ok(());
         self.output = &[];
-        self.tx_env = tx_env;
-        self.message = message;
+        self.tx_env = Some(tx_env);
+        self.message = Some(message);
         self.is_static = is_static;
-        self.return_data = Bytes::new();
+        self.return_data.clear();
+    }
+
+    pub(crate) const fn clear_frame_refs(&mut self) {
+        self.tx_env = None;
+        self.message = None;
     }
 
     #[cfg(test)]
@@ -72,15 +99,13 @@ impl<T: EvmTypes> Interpreter<T> {
     }
 
     #[inline]
-    pub(crate) fn tx_env(&self) -> &TxEnv {
-        debug_assert!(!self.tx_env.is_null());
-        unsafe { &*self.tx_env }
+    pub(crate) const fn tx_env(&self) -> &TxEnv {
+        self.tx_env.expect("interpreter tx env is initialized")
     }
 
     #[inline]
-    pub(crate) fn message(&self) -> &Message {
-        debug_assert!(!self.message.is_null());
-        unsafe { &*self.message }
+    pub(crate) const fn message(&self) -> &Message {
+        self.message.expect("interpreter message is initialized")
     }
 
     #[inline]
@@ -169,7 +194,8 @@ impl<T: EvmTypes> Interpreter<T> {
         pc: *const u8,
         stack_len: usize,
     ) -> (*const u8, usize, ControlFlow<(), ()>) {
-        let raw = self as *mut Self;
+        #[expect(clippy::unnecessary_cast, reason = "cast erases the active interpreter lifetime")]
+        let raw = self as *mut Self as *mut Interpreter<'_, T>;
         let bytecode = BytecodeRef::new(&self.bytecode);
         let pc = Pc::from_ptr(pc);
         let op = pc.op();
@@ -193,7 +219,8 @@ impl<T: EvmTypes> Interpreter<T> {
     #[inline(always)]
     #[cfg(feature = "nightly")]
     fn step_tail(&mut self, config: ExecutionConfig<T>, host: &mut T::Host) -> InstrStop {
-        let raw = self as *mut Self;
+        #[expect(clippy::unnecessary_cast, reason = "cast erases the active interpreter lifetime")]
+        let raw = self as *mut Self as *mut Interpreter<'_, T>;
         let bytecode = BytecodeRef::new(&self.bytecode);
         let pc = Pc::from_ptr(self.pc);
         let op = pc.op();
@@ -215,24 +242,45 @@ impl<T: EvmTypes> Interpreter<T> {
     }
 }
 
-impl<T: EvmTypes> Default for Interpreter<T> {
-    fn default() -> Self {
-        let bytecode = Bytecode::new();
-        Self {
-            pc: bytecode.original_byte_slice().as_ptr(),
-            bytecode,
-            // SAFETY: `Word` is valid at any bitpattern. It's not read before init anyway.
-            stack: unsafe { Box::new_uninit().assume_init() },
-            stack_len: 0,
-            gas: Gas::new(0),
-            memory: Memory::new(),
-            result: Ok(()),
-            output: &[],
-            tx_env: core::ptr::null(),
-            message: core::ptr::null(),
-            is_static: false,
-            return_data: Bytes::new(),
-            _marker: PhantomData,
+#[derive(Debug, Default)]
+#[expect(clippy::vec_box, reason = "pooled active interpreters must stay at stable addresses")]
+pub(crate) struct InterpreterPool<T: EvmTypes> {
+    frames: Vec<Box<Interpreter<'static, T>>>,
+}
+
+impl<T: EvmTypes> InterpreterPool<T> {
+    pub(crate) const fn new() -> Self {
+        Self { frames: Vec::new() }
+    }
+
+    pub(crate) fn pop<'frame>(&mut self) -> Box<Interpreter<'frame, T>> {
+        let frame = self.frames.pop().unwrap_or_default();
+        // SAFETY: Frames stored in the pool have their frame-local references cleared before they
+        // are erased to `'static`. Rebinding the lifetime is only used to initialize the next
+        // frame.
+        unsafe {
+            core::mem::transmute::<Box<Interpreter<'static, T>>, Box<Interpreter<'frame, T>>>(frame)
+        }
+    }
+
+    pub(crate) fn push<'pool, 'frame>(
+        &'pool mut self,
+        mut frame: Box<Interpreter<'frame, T>>,
+    ) -> &'pool mut Interpreter<'frame, T> {
+        frame.clear_frame_refs();
+        // SAFETY: `clear_frame_refs` removes every reference carrying `'frame`, so the boxed
+        // interpreter can be stored in the pool with the erased `'static` lifetime.
+        let frame = unsafe {
+            core::mem::transmute::<Box<Interpreter<'frame, T>>, Box<Interpreter<'static, T>>>(frame)
+        };
+        let frame = self.frames.push_mut(frame);
+        // SAFETY: The returned borrow is tied to `&mut self`; the erased frame references are
+        // empty.
+        unsafe {
+            core::mem::transmute::<
+                &'pool mut Interpreter<'static, T>,
+                &'pool mut Interpreter<'frame, T>,
+            >(frame)
         }
     }
 }

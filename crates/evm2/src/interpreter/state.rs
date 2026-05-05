@@ -19,12 +19,12 @@ pub struct State<'a, T: EvmTypes> {
     pub spec: SpecId,
     /// Active runtime version data.
     pub version: Version,
-    pub(crate) raw_interp: *mut Interpreter<T>,
+    pub(crate) raw_interp: *mut Interpreter<'a, T>,
 }
 
-impl<T: EvmTypes> State<'_, T> {
+impl<'a, T: EvmTypes> State<'a, T> {
     #[inline]
-    fn interp(&self) -> &Interpreter<T> {
+    const fn interp(&self) -> &Interpreter<'a, T> {
         // SAFETY: `raw_interp` is valid for the duration of instruction execution. Methods on
         // `State` must not borrow fields already passed separately to the instruction, such as
         // stack and gas.
@@ -32,7 +32,7 @@ impl<T: EvmTypes> State<'_, T> {
     }
 
     #[inline]
-    fn interp_mut(&mut self) -> &mut Interpreter<T> {
+    fn interp_mut(&mut self) -> &mut Interpreter<'a, T> {
         // SAFETY: `raw_interp` is valid for the duration of instruction execution. Methods on
         // `State` must not borrow fields already passed separately to the instruction, such as
         // stack and gas.
@@ -41,19 +41,19 @@ impl<T: EvmTypes> State<'_, T> {
 
     /// Returns the cached transaction-global environment.
     #[inline]
-    pub(crate) fn tx(&self) -> &TxEnv {
+    pub(crate) const fn tx(&self) -> &TxEnv {
         self.interp().tx_env()
     }
 
     /// Returns the active frame-local call/create message.
     #[inline]
-    pub(crate) fn message(&self) -> &Message {
+    pub(crate) const fn message(&self) -> &Message {
         self.interp().message()
     }
 
     /// Returns whether the active frame forbids state-changing operations.
     #[inline]
-    pub(crate) fn is_static(&self) -> bool {
+    pub(crate) const fn is_static(&self) -> bool {
         self.interp().is_static()
     }
 
@@ -74,7 +74,7 @@ impl<T: EvmTypes> State<'_, T> {
 
     /// Returns return data from the last call-like operation.
     #[inline]
-    pub(crate) fn return_data(&self) -> &Bytes {
+    pub(crate) const fn return_data(&self) -> &Bytes {
         self.interp().return_data()
     }
 
