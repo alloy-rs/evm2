@@ -42,25 +42,7 @@ pub(crate) type TailInstructionFn<T> = extern_table!(
 
 /// Tail instruction dispatch table.
 #[cfg(feature = "nightly")]
-pub(crate) type TailInstructionTable<T> = [TailInstruction<T>; 256];
-
-/// Tail instruction dispatch table entry.
-#[cfg(feature = "nightly")]
-pub(crate) struct TailInstruction<T: EvmTypes> {
-    pub(crate) instr: TailInstructionFn<T>,
-    pub(crate) dynamic_gas: bool,
-}
-
-#[cfg(feature = "nightly")]
-impl<T: EvmTypes> Clone for TailInstruction<T> {
-    #[inline]
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-
-#[cfg(feature = "nightly")]
-impl<T: EvmTypes> Copy for TailInstruction<T> {}
+pub(crate) type TailInstructionTable<T> = [TailInstructionFn<T>; 256];
 
 /// Function signature of an `#[instruction]`.
 pub type InstructionImplFn<T> =
@@ -147,16 +129,12 @@ macro_rules! assign_instruction_table_entries {
 macro_rules! assign_instruction_table_entries {
     ([$table:expr, $evm_types:ty, $config:ty, $dispatch:ident, $instr_fn:ty] $($op:literal,)*) => {
         $(
-            $table[$op] = TailInstruction {
-                instr: if <$config as EvmConfig<$evm_types>>::VERSION_TABLES
-                    .instruction_dynamic_gas_or_unknown($op)
-                {
-                    $dispatch::<$evm_types, $config, $op, true> as $instr_fn
-                } else {
-                    $dispatch::<$evm_types, $config, $op, false> as $instr_fn
-                },
-                dynamic_gas: <$config as EvmConfig<$evm_types>>::VERSION_TABLES
-                    .instruction_dynamic_gas_or_unknown($op),
+            $table[$op] = if <$config as EvmConfig<$evm_types>>::VERSION_TABLES
+                .instruction_dynamic_gas_or_unknown($op)
+            {
+                $dispatch::<$evm_types, $config, $op, true> as $instr_fn
+            } else {
+                $dispatch::<$evm_types, $config, $op, false> as $instr_fn
             };
         )*
     };
@@ -212,13 +190,10 @@ where
     #[cfg(not(feature = "nightly"))]
     let mut table = [dispatch::<T, C, 0> as InstructionFn<T>; 256];
     #[cfg(feature = "nightly")]
-    let mut table = [TailInstruction {
-        instr: if C::VERSION_TABLES.instruction_dynamic_gas_or_unknown(0) {
-            dispatch::<T, C, 0, true> as InstructionFn<T>
-        } else {
-            dispatch::<T, C, 0, false> as InstructionFn<T>
-        },
-        dynamic_gas: C::VERSION_TABLES.instruction_dynamic_gas_or_unknown(0),
+    let mut table = [if C::VERSION_TABLES.instruction_dynamic_gas_or_unknown(0) {
+        dispatch::<T, C, 0, true> as InstructionFn<T>
+    } else {
+        dispatch::<T, C, 0, false> as InstructionFn<T>
     }; 256];
     for_each_opcode_value!([table, T, C, dispatch, InstructionFn<T>] assign_instruction_table_entries);
 
@@ -358,7 +333,7 @@ extern_table! {
         ret: u8,
     ) {
         let instr = <T as InstructionTables<C>>::INSTRUCTIONS[pc.op() as usize];
-        tail_return!((instr.instr)(pc, stack, remaining_gas, gas, state, ret));
+        tail_return!(instr(pc, stack, remaining_gas, gas, state, ret));
     }
 }
 
