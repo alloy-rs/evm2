@@ -421,8 +421,6 @@ mod tests {
     use alloy_primitives::{Address, B256, Bytes, Log, LogData, U256, keccak256};
 
     const TEST_TX_TYPE: u8 = 0x7f;
-    const NO_CONFIG_EXECUTION: ExecutionConfig<NoConfigTypes> =
-        ExecutionConfig::for_config::<BaseEvmConfig<{ SpecId::OSAKA as u8 }>>();
 
     #[derive(Debug)]
     struct TestTx {
@@ -431,84 +429,8 @@ mod tests {
 
     type TestEvmTypes<Tx = ()> = BaseEvmTypes<Tx>;
 
-    #[derive(Debug)]
-    struct NoConfigTypes;
-
-    #[derive(Debug)]
-    struct NoConfigHost {
-        block: BlockEnv,
-    }
-
-    impl Host for NoConfigHost {
-        fn spec_id(&self) -> SpecId {
-            SpecId::DEFAULT
-        }
-
-        fn block_env(&mut self) -> &BlockEnv {
-            &self.block
-        }
-
-        fn load_account(
-            &mut self,
-            _address: Address,
-            _load_code: bool,
-            _skip_cold_load: bool,
-        ) -> Result<AccountLoad, InstrStop> {
-            unreachable!("no-config transaction dispatch does not execute messages")
-        }
-
-        fn block_hash(&mut self, _number: u64) -> Option<B256> {
-            unreachable!("no-config transaction dispatch does not execute messages")
-        }
-
-        fn sload(&mut self, _address: Address, _key: Word) -> StorageLoad {
-            unreachable!("no-config transaction dispatch does not execute messages")
-        }
-
-        fn sstore(&mut self, _address: Address, _key: Word, _value: Word) {
-            unreachable!("no-config transaction dispatch does not execute messages")
-        }
-
-        fn tload(&mut self, _address: Address, _key: Word) -> Word {
-            unreachable!("no-config transaction dispatch does not execute messages")
-        }
-
-        fn tstore(&mut self, _address: Address, _key: Word, _value: Word) {
-            unreachable!("no-config transaction dispatch does not execute messages")
-        }
-
-        fn log(&mut self, _log: Log) {
-            unreachable!("no-config transaction dispatch does not execute messages")
-        }
-
-        fn execute_message(
-            &mut self,
-            _tx_env: TxEnv,
-            _bytecode: Bytecode,
-            _message: Message,
-            _caller_is_static: bool,
-        ) -> MessageResult {
-            unreachable!("no-config transaction dispatch does not execute messages")
-        }
-
-        fn selfdestruct(
-            &mut self,
-            _contract: Address,
-            _target: Address,
-            _skip_cold_load: bool,
-        ) -> Result<SelfDestructResult, InstrStop> {
-            unreachable!("no-config transaction dispatch does not execute messages")
-        }
-    }
-
-    impl EvmTypes for NoConfigTypes {
-        type ConfigSelector = crate::BaseEvmConfigSelector;
-        type SpecId = SpecId;
-        type Tx = TestTx;
-        type Host = NoConfigHost;
-        type Database = InMemoryDB;
-        type Precompiles = precompile::NoPrecompiles;
-    }
+    const NO_CONFIG_EXECUTION: ExecutionConfig<TestEvmTypes<TestTx>> =
+        ExecutionConfig::for_config::<BaseEvmConfig<{ SpecId::OSAKA as u8 }>>();
 
     impl Typed2718 for TestTx {
         fn ty(&self) -> u8 {
@@ -524,12 +446,6 @@ mod tests {
         req: TxRequest<'_, TestTx, Evm<TestEvmTypes<TestTx>>>,
     ) -> HandlerResult<TxResult> {
         let _ = req.host.spec_id();
-        Ok(TxResult { status: true, gas_used: req.tx.value + 1, ..TxResult::default() })
-    }
-
-    fn handle_no_config_tx(
-        req: TxRequest<'_, TestTx, Evm<NoConfigTypes>>,
-    ) -> HandlerResult<TxResult> {
         Ok(TxResult { status: true, gas_used: req.tx.value + 1, ..TxResult::default() })
     }
 
@@ -552,8 +468,8 @@ mod tests {
     #[test]
     fn dispatches_transaction_without_evm_config() {
         let registry =
-            TxRegistry::new().with_handler(TEST_TX_TYPE, extract_test_tx, handle_no_config_tx);
-        let mut evm = Evm::<NoConfigTypes>::new_with_execution_config(
+            TxRegistry::new().with_handler(TEST_TX_TYPE, extract_test_tx, handle_test_tx);
+        let mut evm = Evm::<TestEvmTypes<TestTx>>::new_with_execution_config(
             NO_CONFIG_EXECUTION,
             SpecId::OSAKA,
             BlockEnv::default(),

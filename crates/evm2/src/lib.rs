@@ -75,23 +75,3 @@ mod once_lock;
 
 #[cfg(test)]
 mod tests;
-
-/// Exposes a small interpreter run for assembly inspection.
-#[unsafe(no_mangle)]
-#[doc(hidden)]
-pub fn _get_asm() -> impl Sized {
-    let mut evm = Evm::<BaseEvmTypes>::new(
-        SpecId::DEFAULT,
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-    );
-    crate::interpreter::Interpreter::<BaseEvmTypes>::new(
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        false,
-    )
-    .run::<BaseEvmConfig<{ SpecId::DEFAULT as u8 }>>(&mut evm)
-}
