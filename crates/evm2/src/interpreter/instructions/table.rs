@@ -145,13 +145,13 @@ where
 
     // Make all unknown entries point to the same function.
     let mut i = 0;
-    let mut unknown_idx = 0;
+    let mut unknown_idx = None;
     while i < 256 {
         if !C::EVM_VERSION.instruction_impls.contains(i as u8) {
-            if unknown_idx == 0 {
-                unknown_idx = i;
+            if unknown_idx.is_none() {
+                unknown_idx = Some(i);
             }
-            table[i] = table[unknown_idx];
+            table[i] = table[unknown_idx.unwrap()];
         }
         i += 1;
     }
