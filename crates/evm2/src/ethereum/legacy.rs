@@ -9,7 +9,9 @@ use crate::{
     version::GasId,
 };
 use alloy_consensus::{TxLegacy, transaction::Recovered};
-use alloy_primitives::{B256, Bytes, TxKind, U256};
+use alloy_primitives::{B256, Bytes, KECCAK256_EMPTY, TxKind, U256};
+
+const MAX_INITCODE_SIZE: usize = 2 * 0x6000;
 
 pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     req: TxRequest<'_, Recovered<TxLegacy>, Evm<T>>,
@@ -24,12 +26,34 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
             base_fee: req.host.block.basefee,
         });
     }
+    if U256::from(tx.gas_limit) > req.host.block.gas_limit {
+        return Err(HandlerError::GasLimitMoreThanBlock {
+            gas_limit: tx.gas_limit,
+            block_gas_limit: req.host.block.gas_limit,
+        });
+    }
+    if spec_id.enables(SpecId::SHANGHAI) && tx.to.is_create() && tx.input.len() > MAX_INITCODE_SIZE
+    {
+        return Err(HandlerError::CreateInitCodeSizeLimit {
+            limit: MAX_INITCODE_SIZE,
+            got: tx.input.len(),
+        });
+    }
+    if tx.nonce == u64::MAX {
+        return Err(HandlerError::NonceOverflow);
+    }
     let intrinsic = legacy_intrinsic_gas(req.host.version(), tx);
     if tx.gas_limit < intrinsic {
         return Err(HandlerError::IntrinsicGasTooLow { required: intrinsic, got: tx.gas_limit });
     }
 
     let sender_info = req.host.state.account_info(caller).unwrap_or_default();
+    if sender_info.code_hash != KECCAK256_EMPTY {
+        let code = req.host.state.get_code(caller);
+        if !code.is_empty() && !code.is_eip7702() {
+            return Err(HandlerError::RejectCallerWithCode);
+        }
+    }
     if sender_info.nonce != tx.nonce {
         return Err(HandlerError::InvalidNonce { expected: sender_info.nonce, got: tx.nonce });
     }
