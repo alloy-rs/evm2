@@ -22,7 +22,8 @@ pub(crate) mod k256;
 
 use crate::{
     interpreter::Gas,
-    precompiles::{EthPrecompileResult, PrecompileOutput, utils::right_pad},
+    precompiles::{EthPrecompileResult, PrecompileOutput},
+    utils::right_pad,
 };
 use alloy_primitives::{B256, B512, Bytes};
 

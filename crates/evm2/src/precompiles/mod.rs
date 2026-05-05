@@ -24,7 +24,6 @@ pub(crate) mod kzg_point_evaluation;
 pub(crate) mod modexp;
 pub(crate) mod secp256k1;
 pub(crate) mod secp256r1;
-pub(crate) mod utils;
 
 /// EIP-7823 constants.
 pub(crate) mod eip7823 {
@@ -32,18 +31,12 @@ pub(crate) mod eip7823 {
     pub(crate) const INPUT_SIZE_LIMIT: usize = 1024;
 }
 
-/// EIP-4844 constants.
-pub(crate) mod eip4844 {
-    #[allow(unused_imports)]
-    pub(crate) use crate::precompiles::kzg_point_evaluation::VERSIONED_HASH_VERSION_KZG;
-}
-
-pub(crate) use crate::evm::precompile::PrecompileOutput;
+pub(crate) use crate::{
+    evm::precompile::PrecompileOutput,
+    utils::{calc_linear_cost, u64_to_address},
+};
 pub(crate) use interface::*;
 pub use interface::{Crypto, PrecompileHalt};
-#[allow(deprecated, unused_imports)]
-pub(crate) use utils::calc_linear_cost_u32;
-pub(crate) use utils::{calc_linear_cost, u64_to_address};
 
 // silence arkworks lint as bn impl will be used as default if both are enabled.
 cfg_if::cfg_if! {

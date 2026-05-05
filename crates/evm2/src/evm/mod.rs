@@ -18,6 +18,12 @@ pub mod env;
 pub mod precompile;
 pub mod registry;
 
+mod state;
+pub use state::{
+    Account, AccountInfo, CacheDB, Database, InMemoryDB, JournalEntry, KECCAK_EMPTY, State,
+    StorageValue, logs_hash,
+};
+
 /// Loaded account information.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct AccountLoad {
@@ -54,12 +60,6 @@ pub struct SelfDestructResult {
     /// Whether this account was already destroyed in this transaction.
     pub previously_destroyed: bool,
 }
-
-mod state;
-pub use state::{
-    Account, AccountInfo, CacheDB, Database, InMemoryDB, JournalEntry, KECCAK_EMPTY, State,
-    StorageValue, logs_hash,
-};
 
 /// Result of executing a transaction.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

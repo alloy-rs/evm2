@@ -14,7 +14,6 @@ pub mod bytecode;
 pub mod ethereum;
 pub mod interpreter;
 pub mod utils;
-pub mod version;
 
 pub mod evm;
 pub use evm::{
@@ -29,6 +28,7 @@ pub use evm::{
 pub(crate) mod precompiles;
 pub use precompiles::{Crypto, PrecompileHalt, Precompiles, crypto, install_crypto};
 
+pub mod version;
 pub use version::{Version, VersionTables};
 
 mod spec_id;

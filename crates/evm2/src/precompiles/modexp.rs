@@ -3,10 +3,8 @@
 
 use crate::{
     interpreter::Gas,
-    precompiles::{
-        EthPrecompileResult, PrecompileHalt, PrecompileOutput, eip7823,
-        utils::{left_pad, left_pad_vec_be, right_pad_vec, right_pad_with_offset},
-    },
+    precompiles::{EthPrecompileResult, PrecompileHalt, PrecompileOutput, eip7823},
+    utils::{left_pad, left_pad_vec_be, right_pad_vec, right_pad_with_offset},
 };
 use alloc::vec::Vec;
 use alloy_primitives::{Bytes, U256};

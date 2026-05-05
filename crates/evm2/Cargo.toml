@@ -76,11 +76,9 @@ aws-lc-rs = { workspace = true, optional = true }
 
 [dev-dependencies]
 serde_json = { workspace = true, features = ["std"] }
-criterion.workspace = true
 rand = { workspace = true, features = ["std"] }
 ark-std = { workspace = true }
 rstest.workspace = true
-p256 = { workspace = true, features = ["ecdsa"] }
 
 [[example]]
 name = "registry_tx_handler"

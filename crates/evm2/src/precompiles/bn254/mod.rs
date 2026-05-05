@@ -2,10 +2,8 @@
 
 use crate::{
     interpreter::Gas,
-    precompiles::{
-        EthPrecompileResult, PrecompileHalt, PrecompileOutput,
-        utils::{bool_to_bytes32, right_pad},
-    },
+    precompiles::{EthPrecompileResult, PrecompileHalt, PrecompileOutput},
+    utils::{bool_to_bytes32, right_pad},
 };
 use alloc::vec::Vec;
 
