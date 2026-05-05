@@ -127,6 +127,9 @@ pub enum HandlerError {
         /// Block base fee.
         base_fee: U256,
     },
+    /// EIP-2930 transaction is not enabled in the active specification.
+    #[error("EIP-2930 transaction not supported")]
+    Eip2930NotSupported,
     /// Unsupported caller for this handler.
     #[error("unsupported caller {0}")]
     UnsupportedCaller(Address),
