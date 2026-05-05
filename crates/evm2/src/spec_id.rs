@@ -177,6 +177,8 @@ macro_rules! spec_to_generic {
             $crate::SpecId::AMSTERDAM => {
                 $crate::spec_to_generic!(@spec AMSTERDAM, |$spec_const| $e)
             }
+            #[allow(unreachable_patterns)]
+            _ => unreachable!(),
         }
     }};
 }
