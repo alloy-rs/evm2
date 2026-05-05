@@ -213,6 +213,7 @@ fn create_inner<T: EvmTypes>(
 
     let [value, offset, len] = stack.popn::<3>()?;
     let salt = if is_create2 { Some(stack.pop()?) } else { None };
+
     let len = word_to_usize(len)?;
     if cx.state.spec.enables(SpecId::SHANGHAI) {
         cx.gas.spend(cx.state.gas_params().initcode_cost(len))?;
