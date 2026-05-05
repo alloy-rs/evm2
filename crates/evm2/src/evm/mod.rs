@@ -328,10 +328,18 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             };
         }
 
-        let mut create_message = message.clone();
-        create_message.destination = address;
-        create_message.code_address = address;
-        create_message.input = Bytes::new();
+        let create_message = Message {
+            destination: address,
+            code_address: address,
+            input: Bytes::new(),
+
+            kind: message.kind,
+            depth: message.depth,
+            gas_limit: message.gas_limit,
+            caller: message.caller,
+            value: message.value,
+            salt: message.salt,
+        };
         let (stop, mut gas, output) = {
             let (stop, interpreter) =
                 self.run_interpreter(bytecode, tx_env, &create_message, caller_is_static);
@@ -457,6 +465,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         }
     }
 
+    #[inline(never)]
     fn run_interpreter<'frame>(
         &mut self,
         bytecode: Bytecode,
