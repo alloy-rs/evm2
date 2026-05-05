@@ -1,7 +1,5 @@
 //! EVM version definitions.
 
-#![allow(unused_macros)]
-
 use crate::{
     EvmConfig, EvmTypes, SpecId,
     interpreter::{instructions as instr, opcode::op},
@@ -91,19 +89,15 @@ macro_rules! evm_versions {
 
             let mut gp = GasParams::empty();
 
+            use {noop as op, noop as static_gas};
+            macro_rules! gas {
+                ($id:ident, $value:expr) => {
+                    gp.set($id, $value);
+                };
+            }
+
             $(
                 if spec_id.enables(SpecId::$spec) {
-                    #[allow(dead_code)]
-                    const C: u8 = SpecId::$spec as u8;
-
-                    #[allow(unused_imports)]
-                    use {noop as op, noop as static_gas};
-                    macro_rules! gas {
-                        ($id:ident, $value:expr) => {
-                            gp.set($id, $value);
-                        };
-                    }
-
                     $($tokens)*
                 }
             )*
@@ -120,30 +114,24 @@ macro_rules! evm_versions {
                 let spec_id = version.spec_id;
                 let mut v = Self::empty(version);
 
+                macro_rules! op {
+                    ($name:ident, $cost:expr) => {
+                        v.static_gas_table.set(op::$name, $cost as u16);
+                        v.instruction_impls.set(
+                            op::$name,
+                            Some(op_instr!(T, $name)),
+                        );
+                    };
+                }
+                macro_rules! static_gas {
+                    ($name:ident, $cost:expr) => {
+                        v.static_gas_table.set(op::$name, $cost as u16);
+                    };
+                }
+                use noop as gas;
+
                 $(
                     if spec_id.enables(SpecId::$spec) {
-                        #[allow(dead_code)]
-                        const C: u8 = SpecId::$spec as u8;
-
-                        macro_rules! op {
-                            ($name:ident, $cost:expr) => {
-                                v.static_gas_table.set(op::$name, $cost as u16);
-                                v.instruction_impls.set(
-                                    op::$name,
-                                    Some(op_instr!(T, $name)),
-                                );
-                            };
-                            ($name:ident, $cost:expr, $instr:path) => {
-                                v.static_gas_table.set(op::$name, $cost as u16);
-                                v.instruction_impls.set(
-                                    op::$name,
-                                    Some(<$instr as instr::table::Instruction<T>>::execute),
-                                );
-                            };
-                        }
-                        #[allow(unused_imports)]
-                        use {op as static_gas, noop as gas};
-
                         $($tokens)*
                     }
                 )*
