@@ -10,11 +10,9 @@ const BLOCK_HASH_HISTORY: u64 = 256;
 #[instruction]
 pub(crate) fn blockhash(cx: _, [number]: [Word]) -> Result<out> {
     *out = if let Some(diff) = cx.state.host.block_env().number.checked_sub(number) {
-        let diff = u64::try_from(diff).unwrap_or(u64::MAX);
         if diff == 0 || diff > BLOCK_HASH_HISTORY {
             Word::ZERO
         } else {
-            let number = u64::try_from(number).unwrap_or(u64::MAX);
             cx.state
                 .host
                 .block_hash(number)
@@ -92,7 +90,7 @@ mod tests {
         SpecId,
         env::{BlockEnv, TxEnv},
         interpreter::{
-            InstrStop, Word,
+            InstrStop, Message, Word,
             instructions::tests::{RunConfig, TestHost, push, run},
             op,
         },
@@ -194,11 +192,7 @@ mod tests {
     fn selfbalance_opcode() {
         let address = Address::from([0x66; 20]);
         let mut host = TestHost::default();
-        let message = crate::interpreter::Message {
-            destination: address,
-            gas_limit: 10_000,
-            ..Default::default()
-        };
+        let message = Message { destination: address, gas_limit: 10_000, ..Default::default() };
         let interpreter =
             run(RunConfig::new([op::SELFBALANCE, op::STOP]).host(&mut host).message(message));
         core::assert_matches!(interpreter.err, InstrStop::Stop);

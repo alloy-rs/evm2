@@ -1,6 +1,6 @@
 //! EVM bytecode.
 
-use crate::once_lock::OnceLock;
+use crate::{interpreter::op, once_lock::OnceLock};
 use alloc::sync::Arc;
 use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, keccak256};
 use analysis::analyze_legacy;
@@ -138,7 +138,7 @@ impl Bytecode {
         DEFAULT.get_or_init(|| {
             Self(Arc::new(BytecodeInner {
                 kind: BytecodeKind::Legacy,
-                bytecode: Bytes::from_static(&[crate::interpreter::op::STOP]),
+                bytecode: Bytes::from_static(&[op::STOP]),
                 original_len: 0,
                 jump_table: JumpTable::default(),
                 hash: {
@@ -305,9 +305,6 @@ impl Bytecode {
     /// Calculates or returns cached hash of the bytecode.
     #[inline]
     pub fn hash_slow(&self) -> B256 {
-        if let Some(hash) = self.0.hash.get() {
-            return *hash;
-        }
         *self.0.hash.get_or_init(|| keccak256(self.original_byte_slice()))
     }
 

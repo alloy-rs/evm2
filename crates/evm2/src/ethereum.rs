@@ -115,9 +115,7 @@ fn handle_legacy<T: EvmTypes<Host = Evm<T>>>(
     if let TxKind::Call(to) = tx.to {
         req.host.state.warm_account(to);
     }
-    for address in req.host.precompiles().warm_addresses() {
-        req.host.state.warm_account(address);
-    }
+    req.host.state.warm_accounts(req.host.precompiles().warm_addresses());
 
     req.host.state.add_balance(caller, Word::ZERO.wrapping_sub(max_gas_cost));
     req.host.state.increment_nonce(caller);

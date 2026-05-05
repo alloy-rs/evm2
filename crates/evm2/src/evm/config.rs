@@ -3,7 +3,10 @@
 use crate::{
     SpecId, VersionTables,
     evm::{InMemoryDB, precompile::PrecompileProvider},
-    interpreter::instructions::table::{InstructionTable, InstructionTables},
+    interpreter::{
+        Host,
+        instructions::table::{InstructionTable, InstructionTables},
+    },
     spec_to_generic,
     version::Version,
 };
@@ -26,7 +29,7 @@ pub trait EvmTypes: Sized + 'static {
     type Tx;
 
     /// Host type used by this EVM.
-    type Host: crate::interpreter::Host + ?Sized;
+    type Host: Host + ?Sized;
 
     /// Database type used by this EVM.
     type Database: crate::evm::Database;

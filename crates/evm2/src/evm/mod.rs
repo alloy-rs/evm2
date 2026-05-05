@@ -19,7 +19,7 @@ pub mod precompile;
 pub mod registry;
 
 mod db;
-pub use db::{CacheDB, Database, InMemoryDB};
+pub use db::{Cache, CacheDB, Database, EmptyDB, InMemoryDB};
 
 mod state;
 pub use state::{
@@ -256,8 +256,8 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
         })
     }
 
-    fn block_hash(&mut self, number: u64) -> Option<B256> {
-        self.state.initial().get_block_hash(number)
+    fn block_hash(&mut self, number: Word) -> Option<B256> {
+        self.state.initial_mut().get_block_hash(number)
     }
 
     fn sload(&mut self, address: Address, key: Word) -> StorageLoad {
@@ -462,7 +462,7 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
             || self.state.is_created_in_transaction(contract);
 
         if contract != target {
-            self.state.transfer(contract, target, balance);
+            let _ = self.state.transfer(contract, target, balance);
         } else if should_destroy && !balance.is_zero() {
             self.state.add_balance(contract, Word::ZERO.wrapping_sub(balance));
         }
