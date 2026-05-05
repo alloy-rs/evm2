@@ -88,7 +88,9 @@ fn load_acc_and_calc_gas<T: EvmTypes>(
     if account.is_cold {
         cost += additional_cold_cost;
     }
-    if create_empty_account && transfers_value && account.is_empty {
+    let creates_empty_account = create_empty_account
+        && (!cx.state.spec.enables(SpecId::SPURIOUS_DRAGON) || transfers_value);
+    if creates_empty_account && account.is_empty {
         cost += u64::from(cx.state.gas_params().get(GasId::NewAccountCost));
     }
     cx.gas.spend(cost)?;
@@ -391,6 +393,69 @@ mod tests {
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::ZERO]);
         assert_eq!(interpreter.gas_remaining(), 15_679);
+        assert!(host.calls.is_empty());
+    }
+
+    #[test]
+    fn call_with_value_too_deep_credits_stipend() {
+        let mut host = TestHost::default();
+        let code = [
+            op::PUSH1,
+            0xff,
+            op::PUSH1,
+            0,
+            op::PUSH1,
+            0xff,
+            op::PUSH1,
+            0,
+            op::PUSH1,
+            1,
+            op::PUSH1,
+            0xaa,
+            op::PUSH2,
+            0x80,
+            0,
+            op::CALL,
+            op::POP,
+        ];
+
+        let interpreter = run(RunConfig::new(code)
+            .host(&mut host)
+            .spec(SpecId::TANGERINE)
+            .message(Message { depth: Message::CALL_DEPTH_LIMIT, ..Default::default() })
+            .gas_limit(50_000));
+        core::assert_matches!(interpreter.err, InstrStop::Stop);
+        assert_eq!(interpreter.gas_remaining(), 42_553);
+        assert!(host.calls.is_empty());
+    }
+
+    #[test]
+    fn call_too_deep_charges_pre_spurious_empty_account() {
+        let target = Address::from([0x22; 20]);
+        let mut host = TestHost { is_empty: true, ..Default::default() };
+        let mut code = Vec::new();
+        push_all(
+            &mut code,
+            [
+                Word::ZERO,
+                Word::ZERO,
+                Word::ZERO,
+                Word::ZERO,
+                Word::ZERO,
+                address_to_word(target),
+                Word::ZERO,
+            ],
+        );
+        code.extend([op::CALL, op::STOP]);
+
+        let interpreter = run(RunConfig::new(code)
+            .host(&mut host)
+            .spec(SpecId::TANGERINE)
+            .message(Message { depth: Message::CALL_DEPTH_LIMIT, ..Default::default() })
+            .gas_limit(50_000));
+        core::assert_matches!(interpreter.err, InstrStop::Stop);
+        assert_eq!(interpreter.stack(), [Word::ZERO]);
+        assert_eq!(interpreter.gas_remaining(), 24_279);
         assert!(host.calls.is_empty());
     }
 
