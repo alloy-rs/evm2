@@ -7,8 +7,8 @@ use crate::{
     env::{BlockEnv, TxEnv},
     interpreter::{Gas, Host, InstrStop, Interpreter, Message, MessageKind, MessageResult, Word},
     registry::{HandlerResult, TxRegistry},
+    version::GasId,
 };
-use alloc::vec::Vec;
 use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{Address, B256, Bytes, Log};
 use core::cmp::min;
@@ -18,10 +18,12 @@ pub mod env;
 pub mod precompile;
 pub mod registry;
 
+mod db;
 mod state;
+pub use db::{CacheDB, Database, InMemoryDB};
 pub use state::{
-    Account, AccountInfo, CacheDB, Database, InMemoryDB, JournalEntry, KECCAK_EMPTY, State,
-    StorageValue, logs_hash,
+    Account, AccountInfo, JournalEntry, State, StateChanges, StorageChangeSet, StorageOverlay,
+    Tracked,
 };
 
 /// Loaded account information.
@@ -61,6 +63,8 @@ pub struct SelfDestructResult {
     pub previously_destroyed: bool,
 }
 
+const MAX_CODE_SIZE: usize = 0x6000;
+
 /// Result of executing a transaction.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TxResult {
@@ -72,6 +76,8 @@ pub struct TxResult {
     pub stop: InstrStop,
     /// Return or revert output.
     pub output: Bytes,
+    /// State transition and logs produced by this transaction.
+    pub state_changes: StateChanges,
 }
 
 /// EVM host and transaction dispatcher.
@@ -85,7 +91,6 @@ pub struct Evm<T: EvmTypes> {
     registry: TxRegistry<T::Tx, TxResult, Self>,
     pub(crate) state: State<T::Database>,
     precompiles: T::Precompiles,
-    pub(crate) logs: Vec<Log>,
 }
 
 impl<T: EvmTypes> Evm<T> {
@@ -126,7 +131,6 @@ impl<T: EvmTypes> Evm<T> {
             registry,
             state: State::new(database),
             precompiles,
-            logs: Vec::new(),
         }
     }
 
@@ -156,9 +160,9 @@ impl<T: EvmTypes> Evm<T> {
         &self.state
     }
 
-    /// Returns emitted logs.
+    /// Returns logs emitted by the current in-flight transaction.
     pub fn logs(&self) -> &[Log] {
-        &self.logs
+        self.state.logs()
     }
 
     /// Returns the precompile provider.
@@ -191,8 +195,13 @@ impl<T: EvmTypes<Tx: Typed2718>> Evm<T> {
     /// Dispatches the transaction to the handler registered for its EIP-2718 type byte.
     pub fn transact(&mut self, tx: &T::Tx) -> HandlerResult<TxResult> {
         let handler = self.registry.try_get_by_type(tx.ty())?;
-        let result = handler.call(tx, self);
-        self.state.clear_accesses();
+        let mut result = handler.call(tx, self);
+        if let Ok(result) = &mut result {
+            self.state.finalize_transaction(self.spec_id());
+            result.state_changes = self.state.build_state_changes();
+            self.state.commit_transaction_overlay();
+        };
+        self.state.clear_transaction_state();
         result
     }
 
@@ -269,7 +278,7 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
     }
 
     fn log(&mut self, log: Log) {
-        self.logs.push(log);
+        self.state.log(log);
     }
 
     fn execute_message(
@@ -314,12 +323,10 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
             }
 
             let checkpoint = self.state.checkpoint();
-            let log_checkpoint = self.logs.len();
             if let Err(stop) =
                 self.state.create_account(message.caller, address, message.value, self.spec_id())
             {
                 self.state.rollback(checkpoint);
-                self.logs.truncate(log_checkpoint);
                 return MessageResult {
                     stop,
                     gas_remaining: message.gas_limit,
@@ -343,10 +350,32 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
                 min(gas.remaining().saturating_add(gas.refunded() as u64), gas.limit());
 
             if stop.is_success() {
+                let stop = if self.spec_id().enables(SpecId::SPURIOUS_DRAGON)
+                    && output.len() > MAX_CODE_SIZE
+                {
+                    Some(InstrStop::CreateContractSizeLimit)
+                } else if self.spec_id().enables(SpecId::LONDON)
+                    && output.first().is_some_and(|byte| *byte == 0xef)
+                {
+                    Some(InstrStop::CreateContractStartingWithEF)
+                } else {
+                    let code_deposit_gas = output.len().saturating_mul(
+                        self.version().gas_params().get(GasId::CodeDepositCost) as usize,
+                    );
+                    gas.spend(u64::try_from(code_deposit_gas).unwrap_or(u64::MAX)).err()
+                };
+
+                if let Some(stop) = stop {
+                    self.state.rollback(checkpoint);
+                    gas_remaining = if stop.is_error() { 0 } else { gas.remaining() };
+                    return MessageResult { stop, gas_remaining, output, created_address: None };
+                }
+
+                gas_remaining =
+                    min(gas.remaining().saturating_add(gas.refunded() as u64), gas.limit());
                 self.state.set_code(address, Bytecode::new_legacy(output.clone()));
             } else {
                 self.state.rollback(checkpoint);
-                self.logs.truncate(log_checkpoint);
                 if stop.is_error() {
                     gas_remaining = 0;
                 }
@@ -361,7 +390,6 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
         }
 
         let checkpoint = self.state.checkpoint();
-        let log_checkpoint = self.logs.len();
         if matches!(message.kind, MessageKind::Call)
             && !self.state.transfer(message.caller, message.destination, message.value)
         {
@@ -390,7 +418,6 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
             };
             if !stop.is_success() {
                 self.state.rollback(checkpoint);
-                self.logs.truncate(log_checkpoint);
             }
             return MessageResult { stop, gas_remaining, output, created_address: None };
         }
@@ -407,7 +434,6 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
 
         if !stop.is_success() {
             self.state.rollback(checkpoint);
-            self.logs.truncate(log_checkpoint);
             if stop.is_error() {
                 gas_remaining = 0;
             }
@@ -429,18 +455,19 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
         }
         self.state.warm_account(target);
         let target_exists = self.state.account_info(target).is_some_and(|info| !info.is_empty());
-        let previously_destroyed =
-            self.state.account_ref(contract).is_some_and(|account| account.destructed);
+        let previously_destroyed = self.state.is_selfdestructed(contract);
         let balance = self.state.account_info(contract).map_or(Word::ZERO, |info| info.balance);
+        let should_destroy = !self.spec_id().enables(SpecId::CANCUN)
+            || self.state.is_created_in_transaction(contract);
 
-        if contract != target && !balance.is_zero() {
+        if contract != target {
             self.state.transfer(contract, target, balance);
+        } else if should_destroy && !balance.is_zero() {
+            self.state.add_balance(contract, Word::ZERO.wrapping_sub(balance));
         }
-
-        let previous = self.state.get_or_insert(contract).balance;
-        self.state.journal.push(JournalEntry::BalanceChange { address: contract, previous });
-        self.state.get_or_insert(contract).balance = Word::ZERO;
-        self.state.mark_destructed(contract);
+        if should_destroy {
+            self.state.mark_destructed(contract);
+        }
 
         Ok(SelfDestructResult {
             had_value: !balance.is_zero(),
@@ -460,7 +487,7 @@ mod tests {
         interpreter::{MessageKind, op},
         registry::TxRequest,
     };
-    use alloy_primitives::{Address, B256, Bytes, Log, LogData, U256, keccak256};
+    use alloy_primitives::{Address, Bytes, U256};
 
     const TEST_TX_TYPE: u8 = 0x7f;
 
@@ -565,21 +592,6 @@ mod tests {
 
         let result = Host::execute_message(&mut evm, TxEnv::default(), bytecode, message, false);
         assert!(result.stop.is_success());
-    }
-
-    #[test]
-    fn logs_hash_matches_empty_logs() {
-        assert_eq!(logs_hash(&[]), keccak256([alloy_rlp::EMPTY_LIST_CODE]));
-    }
-
-    #[test]
-    fn logs_hash_hashes_logs() {
-        let log = Log {
-            address: Address::from([0x22; 20]),
-            data: LogData::new_unchecked(vec![B256::with_last_byte(1)], Bytes::from_static(&[2])),
-        };
-
-        assert_ne!(logs_hash(&[log]), B256::ZERO);
     }
 
     #[test]

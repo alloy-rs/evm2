@@ -3,7 +3,7 @@ use crate::{
     types::{AccountInfo, Env, Test, TestSuite, TestUnit, TransactionParts, TxPartIndices},
 };
 use alloy_consensus::{TxLegacy, transaction::Recovered};
-use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
+use alloy_primitives::{Address, B256, Bytes, Log, TxKind, U256, keccak256};
 use alloy_trie::{
     TrieAccount,
     root::{state_root_unhashed, storage_root_unhashed},
@@ -13,7 +13,7 @@ use evm2::{
     bytecode::Bytecode,
     env::BlockEnv,
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
-    evm::{AccountInfo as EvmAccountInfo, InMemoryDB, State, logs_hash},
+    evm::{AccountInfo as EvmAccountInfo, InMemoryDB, StateChanges},
     registry::HandlerError,
 };
 use k256::ecdsa::SigningKey;
@@ -239,31 +239,28 @@ fn execute_spec(
 fn spec_outcome<T: EvmTypes<Database = InMemoryDB>>(
     evm: &Evm<T>,
     result: TxResult,
-    spec: SpecId,
+    _spec: SpecId,
 ) -> SpecOutcome {
     SpecOutcome {
-        state_root: state_root(evm.state(), spec),
-        logs_root: logs_hash(evm.logs()),
+        state_root: state_root(evm.state().initial(), &result.state_changes),
+        logs_root: logs_hash(&result.state_changes.logs),
         output: result.output,
         gas_used: result.gas_used,
         evm_result: format!("{:?}", result.stop),
     }
 }
 
-fn state_root(state: &State<InMemoryDB>, spec: SpecId) -> B256 {
-    let mut addresses = Vec::from_iter(state.initial.accounts.keys().copied());
-    addresses.extend(state.modified.keys().copied());
-    addresses.sort_unstable();
-    addresses.dedup();
+fn logs_hash(logs: &[Log]) -> B256 {
+    let mut out = Vec::with_capacity(alloy_rlp::list_length(logs));
+    alloy_rlp::encode_list(logs, &mut out);
+    keccak256(out)
+}
 
-    let accounts = addresses.into_iter().filter_map(|address| {
-        let info = state.account_info(address)?;
-        let storage = storage_for_root(state, address);
-        if !include_account_in_root(state, address, &info, &storage, spec) {
-            return None;
-        }
-
-        Some((
+fn state_root(pre: &InMemoryDB, changes: &StateChanges) -> B256 {
+    let post = apply_state_changes(pre, changes);
+    let accounts = post.accounts.iter().map(|(&address, info)| {
+        let storage = storage_for_root(&post, address);
+        (
             address,
             TrieAccount {
                 nonce: info.nonce,
@@ -271,56 +268,50 @@ fn state_root(state: &State<InMemoryDB>, spec: SpecId) -> B256 {
                 storage_root: storage_root_unhashed(storage),
                 code_hash: info.code_hash,
             },
-        ))
+        )
     });
 
     state_root_unhashed(accounts)
 }
 
-fn include_account_in_root(
-    state: &State<InMemoryDB>,
-    address: Address,
-    info: &EvmAccountInfo,
-    storage: &[(B256, U256)],
-    spec: SpecId,
-) -> bool {
-    if !spec.enables(SpecId::SPURIOUS_DRAGON) {
-        return state.initial.accounts.contains_key(&address)
-            || state.modified.contains_key(&address);
+fn apply_state_changes(pre: &InMemoryDB, changes: &StateChanges) -> InMemoryDB {
+    let mut post = pre.clone();
+    for (&code_hash, code) in &changes.code {
+        post.contracts.insert(code_hash, code.clone());
     }
-
-    if !info.is_empty() || !storage.is_empty() {
-        return true;
-    }
-
-    // Approximate revm's `AccountState::None` case without tracking account state locally:
-    // untouched empty accounts that existed before execution remain in the state trie.
-    state.initial.accounts.contains_key(&address) && !state.modified.contains_key(&address)
-}
-
-fn storage_for_root(state: &State<InMemoryDB>, address: Address) -> Vec<(B256, U256)> {
-    let mut storage = Vec::new();
-    for ((storage_address, key), value) in &state.initial.storage {
-        if *storage_address == address && !value.is_zero() {
-            storage.push((B256::from(key.to_be_bytes()), *value));
+    for (&address, storage) in &changes.storage {
+        if storage.wipe {
+            post.storage.retain(|(storage_address, _), _| *storage_address != address);
         }
-    }
-
-    if let Some(account) = state.modified.get(&address) {
-        for (key, value) in &account.storage {
-            let key = B256::from(key.to_be_bytes());
-            if let Some(existing) =
-                storage.iter_mut().find(|(existing_key, _)| *existing_key == key)
-            {
-                existing.1 = value.current;
-            } else if !value.current.is_zero() {
-                storage.push((key, value.current));
+        for (&key, change) in &storage.slots {
+            if change.current.is_zero() {
+                post.storage.remove(&(address, key));
+            } else {
+                post.storage.insert((address, key), change.current);
             }
         }
     }
+    for (&address, change) in &changes.accounts {
+        match &change.current {
+            Some(info) => post.insert_account_info(address, info.clone()),
+            None => {
+                post.accounts.remove(&address);
+                post.storage.retain(|(storage_address, _), _| *storage_address != address);
+            }
+        }
+    }
+    post
+}
 
-    storage.retain(|(_, value)| !value.is_zero());
-    storage
+fn storage_for_root(state: &InMemoryDB, address: Address) -> Vec<(B256, U256)> {
+    state
+        .storage
+        .iter()
+        .filter_map(|(&(storage_address, key), &value)| {
+            (storage_address == address && !value.is_zero())
+                .then_some((B256::from(key.to_be_bytes()), value))
+        })
+        .collect()
 }
 
 fn parse_state(pre: &BTreeMap<Address, AccountInfo>) -> Result<InMemoryDB, TestErrorKind> {
@@ -413,6 +404,22 @@ fn recover_address(private_key: &[u8]) -> Option<Address> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy_primitives::LogData;
+
+    #[test]
+    fn logs_hash_matches_empty_logs() {
+        assert_eq!(logs_hash(&[]), keccak256([alloy_rlp::EMPTY_LIST_CODE]));
+    }
+
+    #[test]
+    fn logs_hash_hashes_logs() {
+        let log = Log {
+            address: Address::from([0x22; 20]),
+            data: LogData::new_unchecked(vec![B256::with_last_byte(1)], Bytes::from_static(&[2])),
+        };
+
+        assert_ne!(logs_hash(&[log]), B256::ZERO);
+    }
 
     #[test]
     fn effective_gas_price_uses_legacy_gas_price() {
