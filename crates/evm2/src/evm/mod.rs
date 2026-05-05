@@ -292,30 +292,9 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         message: &Message,
         caller_is_static: bool,
     ) -> MessageResult {
-        let mut info_slot = None;
-        if message.value > 0
-            && info_slot
-                .get_or_insert_with(|| self.state.account_info(message.caller))
-                .as_ref()
-                .is_none_or(|info| info.balance < message.value)
-        {
-            return MessageResult {
-                stop: InstrStop::OutOfFunds,
-                gas_remaining: message.gas_limit,
-                ..MessageResult::default()
-            };
-        }
-
-        let address = match message.kind {
-            MessageKind::Create if message.depth == 0 => message.destination,
-            MessageKind::Create => message.caller.create(
-                info_slot
-                    .get_or_insert_with(|| self.state.account_info(message.caller))
-                    .as_ref()
-                    .map_or(0, |info| info.nonce),
-            ),
-            MessageKind::Create2 => message.caller.create2(message.salt, bytecode.hash_slow()),
-            _ => unreachable!("invalid create message kind"),
+        let address = match self.create_address(&bytecode, message) {
+            Ok(address) => address,
+            Err(result) => return result,
         };
 
         self.state.warm_account(address);
@@ -401,6 +380,39 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             output,
             created_address: stop.is_success().then_some(address),
         }
+    }
+
+    #[inline(never)]
+    fn create_address(
+        &mut self,
+        bytecode: &Bytecode,
+        message: &Message,
+    ) -> core::result::Result<Address, MessageResult> {
+        let mut info_slot = None;
+        if message.value > 0
+            && info_slot
+                .get_or_insert_with(|| self.state.account_info(message.caller))
+                .as_ref()
+                .is_none_or(|info| info.balance < message.value)
+        {
+            return Err(MessageResult {
+                stop: InstrStop::OutOfFunds,
+                gas_remaining: message.gas_limit,
+                ..MessageResult::default()
+            });
+        }
+
+        Ok(match message.kind {
+            MessageKind::Create if message.depth == 0 => message.destination,
+            MessageKind::Create => message.caller.create(
+                info_slot
+                    .get_or_insert_with(|| self.state.account_info(message.caller))
+                    .as_ref()
+                    .map_or(0, |info| info.nonce),
+            ),
+            MessageKind::Create2 => message.caller.create2(message.salt, bytecode.hash_slow()),
+            _ => unreachable!("invalid create message kind"),
+        })
     }
 
     #[inline(never)]
