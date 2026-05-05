@@ -45,8 +45,6 @@ pub enum InstrStop {
     Return,
     /// Self-destruct the current contract.
     SelfDestruct,
-    /// Temporarily suspended, for CALL/CREATE.
-    Suspend,
 
     // Revert Codes
     /// Revert the transaction.
@@ -62,7 +60,7 @@ pub enum InstrStop {
     /// `ExtDelegateCall` calling a non EOF contract.
     InvalidExtDelegateCallTarget,
 
-    // Error Codes
+    // Halt Codes
     /// Out of gas error.
     OutOfGas = 0x20,
     /// Out of gas error encountered during memory expansion.
@@ -135,21 +133,9 @@ impl InstrStop {
         )
     }
 
-    /// Returns whether execution reverted without an exceptional halt.
+    /// Returns whether execution halted exceptionally.
     #[inline]
-    pub const fn is_reverted(self) -> bool {
-        self.is_revert()
-    }
-
-    /// Returns whether execution completed successfully or reverted.
-    #[inline]
-    pub const fn is_ok_or_revert(self) -> bool {
-        self.is_success() || self.is_revert()
-    }
-
-    /// Returns whether execution halted with an exceptional error.
-    #[inline]
-    pub const fn is_error(self) -> bool {
-        !self.is_ok_or_revert() && !matches!(self, Self::Suspend)
+    pub const fn is_halt(self) -> bool {
+        !self.is_success() && !self.is_revert()
     }
 }

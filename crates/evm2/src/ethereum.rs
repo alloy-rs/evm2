@@ -167,7 +167,7 @@ fn handle_legacy<T: EvmTypes<Host = Evm<T>>>(
     let mut result = req.host.execute_message(tx_env, bytecode, message, false);
     if !result.stop.is_success() {
         req.host.state.rollback(execution_checkpoint);
-        if result.stop.is_error() {
+        if result.stop.is_halt() {
             result.gas_remaining = 0;
         }
     }

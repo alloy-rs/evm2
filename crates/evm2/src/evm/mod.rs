@@ -368,7 +368,7 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
 
                 if let Some(stop) = stop {
                     self.state.rollback(checkpoint);
-                    gas_remaining = if stop.is_error() { 0 } else { gas.remaining() };
+                    gas_remaining = if stop.is_halt() { 0 } else { gas.remaining() };
                     return MessageResult { stop, gas_remaining, output, created_address: None };
                 }
 
@@ -377,7 +377,7 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
                 self.state.set_code(address, Bytecode::new_legacy(output.clone()));
             } else {
                 self.state.rollback(checkpoint);
-                if stop.is_error() {
+                if stop.is_halt() {
                     gas_remaining = 0;
                 }
             }
@@ -413,7 +413,7 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
                 }
                 Err(PrecompileError::Halt(_) | PrecompileError::Fatal(_)) => {
                     let stop = InstrStop::PrecompileError;
-                    let gas_remaining = if stop.is_error() { 0 } else { gas.remaining() };
+                    let gas_remaining = if stop.is_halt() { 0 } else { gas.remaining() };
                     (stop, gas_remaining, Bytes::new())
                 }
             };
@@ -435,7 +435,7 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
 
         if !stop.is_success() {
             self.state.rollback(checkpoint);
-            if stop.is_error() {
+            if stop.is_halt() {
                 gas_remaining = 0;
             }
         }
