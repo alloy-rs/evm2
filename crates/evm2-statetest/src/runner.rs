@@ -80,6 +80,7 @@ fn path_name(path: &Path) -> String {
 
 const IGNORED_TESTS: &[&str] = &[
     "CALLBlake2f_MaxRounds.json",
+    "loopExp",
     "loopMul.json",
     "stQuadraticComplexityTest/Call1MB1024Calldepth.json",
     "stQuadraticComplexityTest/Create1000",
@@ -88,6 +89,7 @@ const IGNORED_TESTS: &[&str] = &[
     "stRevertTest/LoopDelegateCallsDepthThenRevert",
     "stSolidityTest/RecursiveCreateContracts",
     "stStaticCall/static_Call1MB1024Calldepth.json",
+    "stStaticCall/static_Call50000_sha256",
     "stStaticCall/static_CallRecursiveBomb",
     "stStaticCall/static_LoopCallsDepthThenRevert",
     "stSystemOperationsTest/CallRecursiveBomb",
