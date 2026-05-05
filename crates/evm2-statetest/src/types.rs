@@ -224,7 +224,6 @@ impl SpecName {
             Self::EIP158ToByzantiumAt5 | Self::Byzantium => Some(SpecId::BYZANTIUM),
             Self::ByzantiumToConstantinopleAt5
             | Self::ByzantiumToConstantinopleFixAt5
-            | Self::Constantinople
             | Self::ConstantinopleFix => Some(SpecId::PETERSBURG),
             Self::Istanbul => Some(SpecId::ISTANBUL),
             Self::Berlin => Some(SpecId::BERLIN),
@@ -235,7 +234,8 @@ impl SpecName {
             Self::Prague => Some(SpecId::PRAGUE),
             Self::Osaka => Some(SpecId::OSAKA),
             Self::Amsterdam => Some(SpecId::AMSTERDAM),
-            Self::Unknown => None,
+            // Skip Constantinople due to the pre-Petersburg reentrancy bug.
+            Self::Constantinople | Self::Unknown => None,
         }
     }
 }
