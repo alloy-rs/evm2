@@ -30,7 +30,7 @@ use syn::{
 /// - `#[instruction(no_stack_preamble)]`: Disables automatic stack input and output handling. The
 ///   body receives a `stack` local and is responsible for all stack reads, writes, and bounds
 ///   checks.
-/// - `#[instruction(needs_gas)]`: Exposes `cx.gas` and marks the instruction as needing access to
+/// - `#[instruction(dynamic_gas)]`: Exposes `cx.gas` and marks the instruction as needing access to
 ///   mutable gas state.
 ///
 /// ## Examples
@@ -78,12 +78,12 @@ use syn::{
 pub fn instruction(attr: TokenStream, item: TokenStream) -> TokenStream {
     let args = parse_macro_input!(attr with Punctuated::<Ident, Token![,]>::parse_terminated);
     let mut no_stack_preamble = false;
-    let mut needs_gas = false;
+    let mut dynamic_gas = false;
     for arg in args {
         if arg == "no_stack_preamble" {
             no_stack_preamble = true;
-        } else if arg == "needs_gas" {
-            needs_gas = true;
+        } else if arg == "dynamic_gas" {
+            dynamic_gas = true;
         } else {
             return syn::Error::new_spanned(arg, "unsupported #[instruction] argument")
                 .to_compile_error()
@@ -91,10 +91,10 @@ pub fn instruction(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     }
     let input = parse_macro_input!(item as ItemFn);
-    expand_instruction(no_stack_preamble, needs_gas, input).into()
+    expand_instruction(no_stack_preamble, dynamic_gas, input).into()
 }
 
-fn expand_instruction(no_stack_preamble: bool, needs_gas: bool, input: ItemFn) -> TokenStream2 {
+fn expand_instruction(no_stack_preamble: bool, dynamic_gas: bool, input: ItemFn) -> TokenStream2 {
     let attrs = input.attrs;
     let vis = input.vis;
     let sig = input.sig;
@@ -146,12 +146,12 @@ fn expand_instruction(no_stack_preamble: bool, needs_gas: bool, input: ItemFn) -
     let stack_setup = (!no_stack_preamble).then(|| stack_setup(&inputs, &outputs));
     let cx_setup = has_cx.then(|| {
         let cx = cx_arg.unwrap_or_else(|| Ident::new("cx", ident.span()));
-        let cx_ty = if needs_gas {
+        let cx_ty = if dynamic_gas {
             quote! { evm2::interpreter::GasInstructionCx }
         } else {
             quote! { evm2::interpreter::InstructionCx }
         };
-        let gas_field = needs_gas.then(|| quote! { gas: __evm2_gas, });
+        let gas_field = dynamic_gas.then(|| quote! { gas: __evm2_gas, });
         quote! {
             let mut #cx = #cx_ty::<#evm_types> {
             pc: __evm2_pc,
@@ -170,7 +170,7 @@ fn expand_instruction(no_stack_preamble: bool, needs_gas: bool, input: ItemFn) -
         impl #struct_generics evm2::interpreter::Instruction<#evm_types> for #ident #type_generics
         #impl_where_clause
         {
-            const NEEDS_GAS: bool = #needs_gas;
+            const DYNAMIC_GAS: bool = #dynamic_gas;
 
             #[inline]
             fn execute(

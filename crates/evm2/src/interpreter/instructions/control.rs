@@ -44,7 +44,7 @@ pub(crate) fn pc(cx: _) -> out {
     *out = Word::from(cx.state.bytecode.pc_offset(*cx.pc));
 }
 
-#[instruction(needs_gas)]
+#[instruction(dynamic_gas)]
 pub(crate) fn gas(cx: _) -> out {
     *out = Word::from(cx.gas.remaining());
 }
@@ -52,12 +52,12 @@ pub(crate) fn gas(cx: _) -> out {
 #[instruction]
 pub(crate) fn jumpdest() {}
 
-#[instruction(needs_gas)]
+#[instruction(dynamic_gas)]
 pub(crate) fn r#return(cx: _, [offset, len]: [Word]) -> Result {
     return_inner(cx, offset, len, InstrStop::Return)
 }
 
-#[instruction(needs_gas)]
+#[instruction(dynamic_gas)]
 pub(crate) fn revert(cx: _, [offset, len]: [Word]) -> Result {
     return_inner(cx, offset, len, InstrStop::Revert)
 }

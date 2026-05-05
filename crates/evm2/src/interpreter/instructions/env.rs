@@ -28,7 +28,7 @@ pub(crate) fn address(cx: _) -> out {
     *out = address_to_word(cx.state.message().destination);
 }
 
-#[instruction(needs_gas)]
+#[instruction(dynamic_gas)]
 pub(crate) fn balance(cx: _, [addr]: [Word]) -> Result<out> {
     *out = load_account(&mut cx, addr, false)?.balance;
 }
@@ -65,7 +65,7 @@ pub(crate) fn calldatasize(cx: _) -> out {
     *out = Word::from(cx.state.message().input.len());
 }
 
-#[instruction(needs_gas)]
+#[instruction(dynamic_gas)]
 pub(crate) fn calldatacopy(cx: _, [memory_offset, data_offset, len]: [Word]) -> Result {
     let len = word_to_usize(len)?;
     cx.gas.spend(cx.state.gas_params().copy_cost(len))?;
@@ -83,7 +83,7 @@ pub(crate) fn codesize(cx: _) -> out {
     *out = Word::from(cx.state.bytecode.len());
 }
 
-#[instruction(needs_gas)]
+#[instruction(dynamic_gas)]
 pub(crate) fn codecopy(cx: _, [memory_offset, code_offset, len]: [Word]) -> Result {
     let len = word_to_usize(len)?;
     cx.gas.spend(cx.state.gas_params().copy_cost(len))?;
@@ -101,18 +101,18 @@ pub(crate) fn gasprice(cx: _) -> out {
     *out = cx.state.tx().gas_price;
 }
 
-#[instruction(needs_gas)]
+#[instruction(dynamic_gas)]
 pub(crate) fn extcodesize(cx: _, [addr]: [Word]) -> Result<out> {
     *out = Word::from(load_account(&mut cx, addr, true)?.code.len());
 }
 
-#[instruction(needs_gas)]
+#[instruction(dynamic_gas)]
 pub(crate) fn extcodehash(cx: _, [addr]: [Word]) -> Result<out> {
     let account = load_account(&mut cx, addr, false)?;
     *out = if account.is_empty { Word::ZERO } else { b256_to_word(account.code_hash) };
 }
 
-#[instruction(needs_gas)]
+#[instruction(dynamic_gas)]
 pub(crate) fn extcodecopy(cx: _, [addr, memory_offset, code_offset, len]: [Word]) -> Result {
     let len = word_to_usize(len)?;
     cx.gas.spend(cx.state.gas_params().extcodecopy_cost(len))?;
@@ -133,7 +133,7 @@ pub(crate) fn returndatasize(cx: _) -> Result<out> {
     *out = Word::from(cx.state.return_data().len());
 }
 
-#[instruction(needs_gas)]
+#[instruction(dynamic_gas)]
 pub(crate) fn returndatacopy(cx: _, [memory_offset, data_offset, len]: [Word]) -> Result {
     let len = word_to_usize(len)?;
     let data_offset = word_to_usize_saturated(data_offset);

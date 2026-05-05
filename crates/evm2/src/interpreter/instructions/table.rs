@@ -48,7 +48,7 @@ pub(crate) type TailInstructionTable<T> = [TailInstruction<T>; 256];
 #[cfg(feature = "nightly")]
 pub(crate) struct TailInstruction<T: EvmTypes> {
     pub(crate) instr: TailInstructionFn<T>,
-    pub(crate) needs_gas: bool,
+    pub(crate) dynamic_gas: bool,
 }
 
 #[cfg(feature = "nightly")]
@@ -115,7 +115,7 @@ impl<T: EvmTypes> core::fmt::Debug for GasInstructionCx<'_, '_, T> {
 /// EVM instruction implementation.
 pub trait Instruction<T: EvmTypes = crate::BaseEvmTypes> {
     /// Whether this instruction needs mutable gas state.
-    const NEEDS_GAS: bool = true;
+    const DYNAMIC_GAS: bool = true;
 
     /// Executes this instruction.
     fn execute(pc: &mut Pc, stack: StackMut<'_>, gas: &mut Gas, state: &mut State<'_, T>)
@@ -147,14 +147,14 @@ macro_rules! assign_instruction_table_entries {
         $(
             $table[$op] = TailInstruction {
                 instr: if <$config as EvmConfig<$evm_types>>::VERSION_TABLES
-                    .instruction_needs_gas_or_unknown($op)
+                    .instruction_dynamic_gas_or_unknown($op)
                 {
                     $dispatch::<$evm_types, $config, $op, true> as $instr_fn
                 } else {
                     $dispatch::<$evm_types, $config, $op, false> as $instr_fn
                 },
-                needs_gas: <$config as EvmConfig<$evm_types>>::VERSION_TABLES
-                    .instruction_needs_gas_or_unknown($op),
+                dynamic_gas: <$config as EvmConfig<$evm_types>>::VERSION_TABLES
+                    .instruction_dynamic_gas_or_unknown($op),
             };
         )*
     };
@@ -211,12 +211,12 @@ where
     let mut table = [dispatch::<T, C, 0> as InstructionFn<T>; 256];
     #[cfg(feature = "nightly")]
     let mut table = [TailInstruction {
-        instr: if C::VERSION_TABLES.instruction_needs_gas_or_unknown(0) {
+        instr: if C::VERSION_TABLES.instruction_dynamic_gas_or_unknown(0) {
             dispatch::<T, C, 0, true> as InstructionFn<T>
         } else {
             dispatch::<T, C, 0, false> as InstructionFn<T>
         },
-        needs_gas: C::VERSION_TABLES.instruction_needs_gas_or_unknown(0),
+        dynamic_gas: C::VERSION_TABLES.instruction_dynamic_gas_or_unknown(0),
     }; 256];
     for_each_opcode_value!([table, T, C, dispatch, InstructionFn<T>] assign_instruction_table_entries);
 
@@ -277,7 +277,7 @@ fn dispatch_mono<T: EvmTypes, C: EvmConfig<T>>(
 
 extern_table! {
     #[cfg(feature = "nightly")]
-    fn tail_dispatch<T: EvmTypes, C: EvmConfig<T>, const OP: u8, const NEEDS_GAS: bool>(
+    fn tail_dispatch<T: EvmTypes, C: EvmConfig<T>, const OP: u8, const DYNAMIC_GAS: bool>(
         pc: Pc,
         stack: Stack<'_>,
         remaining_gas: RemainingGas,
@@ -285,7 +285,7 @@ extern_table! {
         state: &mut State<'_, T>,
         _ret: u8,
     ) {
-        tail_return!(tail_dispatch_mono::<T, C, NEEDS_GAS>(
+        tail_return!(tail_dispatch_mono::<T, C, DYNAMIC_GAS>(
             pc,
             stack,
             remaining_gas,
@@ -299,7 +299,7 @@ extern_table! {
 extern_table! {
     #[cfg(feature = "nightly")]
     #[inline(always)]
-    fn tail_dispatch_mono<T: EvmTypes, C: EvmConfig<T>, const NEEDS_GAS: bool>(
+    fn tail_dispatch_mono<T: EvmTypes, C: EvmConfig<T>, const DYNAMIC_GAS: bool>(
         mut pc: Pc,
         mut stack: Stack<'_>,
         mut remaining_gas: RemainingGas,
@@ -319,12 +319,12 @@ extern_table! {
                 e as u8,
             ));
         }
-        if NEEDS_GAS {
+        if DYNAMIC_GAS {
             gas.set_remaining(remaining_gas.get());
         }
         if let Err(e) = instr(&mut pc, stack.as_mut(), gas, state) {
             cold_path();
-            if NEEDS_GAS {
+            if DYNAMIC_GAS {
                 remaining_gas.set(gas.remaining());
             }
             tail_return!(tail_call_restore::<T>(
@@ -337,7 +337,7 @@ extern_table! {
             ));
         }
         inc_pc(&mut pc, op);
-        if NEEDS_GAS {
+        if DYNAMIC_GAS {
             remaining_gas.set(gas.remaining());
         }
         tail_return!(tail_call_next::<T, C>(pc, stack, remaining_gas, gas, state, 0));

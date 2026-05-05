@@ -17,7 +17,7 @@ fn require_non_staticcall<T: EvmTypes>(state: &State<'_, T>) -> Result {
     Ok(())
 }
 
-#[instruction(needs_gas)]
+#[instruction(dynamic_gas)]
 pub(crate) fn sload(cx: _, [key]: [Word]) -> Result<out> {
     let load = cx.state.host.sload(cx.state.message().destination, key);
     if load.is_cold {
@@ -26,7 +26,7 @@ pub(crate) fn sload(cx: _, [key]: [Word]) -> Result<out> {
     *out = load.value;
 }
 
-#[instruction(no_stack_preamble, needs_gas)]
+#[instruction(no_stack_preamble, dynamic_gas)]
 pub(crate) fn sstore(cx: _) -> Result {
     require_non_staticcall(cx.state)?;
     let [key, value] = stack.popn()?;
@@ -68,7 +68,7 @@ pub(crate) fn tstore(cx: _) -> Result {
     cx.state.host.tstore(cx.state.message().destination, key, value);
 }
 
-#[instruction(no_stack_preamble, needs_gas)]
+#[instruction(no_stack_preamble, dynamic_gas)]
 pub(crate) fn log<const N: usize>(cx: _) -> Result {
     log_common(cx, stack, N)
 }

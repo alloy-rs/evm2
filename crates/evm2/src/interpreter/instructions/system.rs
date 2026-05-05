@@ -174,27 +174,27 @@ fn call_inner<T: EvmTypes>(
     stack.push(success)
 }
 
-#[instruction(no_stack_preamble, needs_gas)]
+#[instruction(no_stack_preamble, dynamic_gas)]
 pub(crate) fn call(cx: _) -> Result {
     call_inner(stack, cx, MessageKind::Call)
 }
 
-#[instruction(no_stack_preamble, needs_gas)]
+#[instruction(no_stack_preamble, dynamic_gas)]
 pub(crate) fn callcode(cx: _) -> Result {
     call_inner(stack, cx, MessageKind::CallCode)
 }
 
-#[instruction(no_stack_preamble, needs_gas)]
+#[instruction(no_stack_preamble, dynamic_gas)]
 pub(crate) fn delegatecall(cx: _) -> Result {
     call_inner(stack, cx, MessageKind::DelegateCall)
 }
 
-#[instruction(no_stack_preamble, needs_gas)]
+#[instruction(no_stack_preamble, dynamic_gas)]
 pub(crate) fn staticcall(cx: _) -> Result {
     call_inner(stack, cx, MessageKind::StaticCall)
 }
 
-#[instruction(no_stack_preamble, needs_gas)]
+#[instruction(no_stack_preamble, dynamic_gas)]
 pub(crate) fn create<const IS_CREATE2: bool>(cx: _) -> Result {
     create_inner(stack, cx, IS_CREATE2)
 }
@@ -261,7 +261,7 @@ fn create_inner<T: EvmTypes>(
     stack.push(address)
 }
 
-#[instruction(needs_gas)]
+#[instruction(dynamic_gas)]
 pub(crate) fn selfdestruct(cx: _, [target]: [Word]) -> Result {
     require_non_staticcall(cx.state)?;
     let target = word_to_address(target);

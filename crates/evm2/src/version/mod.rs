@@ -97,10 +97,10 @@ macro_rules! evm_versions {
 
             macro_rules! op {
                 ($name:ident, $cost:expr) => {
-                    v.set_instruction_with_needs_gas(
+                    v.set_instruction_with_dynamic_gas(
                         op::$name,
                         Some(op_instr!(T, $name)),
-                        op_needs_gas!(T, $name),
+                        op_dynamic_gas!(T, $name),
                     );
                     v.set_static_gas(op::$name, $cost as u16);
                 };
@@ -603,9 +603,9 @@ macro_rules! op_instr {
 }
 use op_instr;
 
-macro_rules! op_needs_gas {
+macro_rules! op_dynamic_gas {
     ($ty:ident, $name:ident) => {
-        <op_instr!(@path $ty, $name) as instr::table::Instruction<$ty>>::NEEDS_GAS
+        <op_instr!(@path $ty, $name) as instr::table::Instruction<$ty>>::DYNAMIC_GAS
     };
 }
-use op_needs_gas;
+use op_dynamic_gas;

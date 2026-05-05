@@ -47,7 +47,7 @@ pub(crate) fn mulmod([a, b, n]: [Word]) -> out {
     *out = a.mul_mod(b, n);
 }
 
-#[instruction(needs_gas)]
+#[instruction(dynamic_gas)]
 pub(crate) fn exp(cx: _, [a, b]: [Word]) -> Result<out> {
     cx.gas.spend(cx.state.gas_params().exp_cost(b))?;
     *out = a.wrapping_pow(b);

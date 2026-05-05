@@ -190,7 +190,7 @@ impl<T: EvmTypes> Interpreter<T> {
         let pc = Pc::from_ptr(self.pc);
         let op = pc.op();
         let instr = config.instructions[op as usize];
-        let _needs_gas = instr.needs_gas;
+        let _dynamic_gas = instr.dynamic_gas;
         let remaining_gas = RemainingGas::new(self.gas.remaining());
         (instr.instr)(
             pc,

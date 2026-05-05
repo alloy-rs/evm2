@@ -77,45 +77,45 @@ impl<T: EvmTypes> VersionTables<T> {
 
     /// Returns whether the instruction implementation for `opcode` needs mutable gas state.
     #[inline]
-    pub const fn instruction_needs_gas_or_unknown(&self, opcode: u8) -> bool {
-        self.instruction_impls.needs_gas_or_default(opcode)
+    pub const fn instruction_dynamic_gas_or_unknown(&self, opcode: u8) -> bool {
+        self.instruction_impls.dynamic_gas_or_default(opcode)
     }
 
     /// Sets the instruction implementation for `opcode`.
     #[inline]
     pub const fn set_instruction(&mut self, opcode: u8, instr: Option<InstructionImplFn<T>>) {
-        self.set_instruction_with_needs_gas(opcode, instr, true);
+        self.set_instruction_with_dynamic_gas(opcode, instr, true);
     }
 
-    /// Sets the instruction implementation and gas-state requirement for `opcode`.
+    /// Sets the instruction implementation and dynamic-gas requirement for `opcode`.
     #[inline]
-    pub const fn set_instruction_with_needs_gas(
+    pub const fn set_instruction_with_dynamic_gas(
         &mut self,
         opcode: u8,
         instr: Option<InstructionImplFn<T>>,
-        needs_gas: bool,
+        dynamic_gas: bool,
     ) {
-        self.instruction_impls.set(opcode, instr, needs_gas);
+        self.instruction_impls.set(opcode, instr, dynamic_gas);
     }
 
     /// Sets the static gas cost and instruction implementation for `opcode`.
     #[inline]
     pub const fn set_opcode(&mut self, opcode: u8, gas: u16, instr: InstructionImplFn<T>) {
-        self.set_opcode_with_needs_gas(opcode, gas, instr, true);
+        self.set_opcode_with_dynamic_gas(opcode, gas, instr, true);
     }
 
-    /// Sets the static gas cost, instruction implementation, and gas-state requirement for
+    /// Sets the static gas cost, instruction implementation, and dynamic-gas requirement for
     /// `opcode`.
     #[inline]
-    pub const fn set_opcode_with_needs_gas(
+    pub const fn set_opcode_with_dynamic_gas(
         &mut self,
         opcode: u8,
         gas: u16,
         instr: InstructionImplFn<T>,
-        needs_gas: bool,
+        dynamic_gas: bool,
     ) {
         self.set_static_gas(opcode, gas);
-        self.set_instruction_with_needs_gas(opcode, Some(instr), needs_gas);
+        self.set_instruction_with_dynamic_gas(opcode, Some(instr), dynamic_gas);
     }
 }
 
@@ -146,14 +146,14 @@ impl StaticGasTable {
 
 struct InstructionImplTable<T: EvmTypes> {
     instrs: [Option<InstructionImplFn<T>>; 256],
-    needs_gas: [bool; 256],
+    dynamic_gas: [bool; 256],
 }
 
 impl<T: EvmTypes> InstructionImplTable<T> {
     /// Creates an empty instruction implementation table.
     #[inline]
     const fn empty() -> Self {
-        Self { instrs: [None; 256], needs_gas: [false; 256] }
+        Self { instrs: [None; 256], dynamic_gas: [false; 256] }
     }
 
     /// Returns `true` if `opcode` has a set instruction implementation.
@@ -179,14 +179,14 @@ impl<T: EvmTypes> InstructionImplTable<T> {
 
     /// Returns whether the instruction implementation for `opcode` needs mutable gas state.
     #[inline]
-    const fn needs_gas_or_default(&self, opcode: u8) -> bool {
-        if self.contains(opcode) { self.needs_gas[opcode as usize] } else { true }
+    const fn dynamic_gas_or_default(&self, opcode: u8) -> bool {
+        if self.contains(opcode) { self.dynamic_gas[opcode as usize] } else { true }
     }
 
     /// Sets the instruction implementation for `opcode`.
     #[inline]
-    const fn set(&mut self, opcode: u8, instr: Option<InstructionImplFn<T>>, needs_gas: bool) {
+    const fn set(&mut self, opcode: u8, instr: Option<InstructionImplFn<T>>, dynamic_gas: bool) {
         self.instrs[opcode as usize] = instr;
-        self.needs_gas[opcode as usize] = needs_gas;
+        self.dynamic_gas[opcode as usize] = dynamic_gas;
     }
 }
