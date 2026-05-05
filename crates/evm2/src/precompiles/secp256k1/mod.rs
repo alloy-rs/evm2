@@ -29,7 +29,7 @@ use alloy_primitives::{B256, B512, Bytes};
 
 /// `ecrecover` precompile function. Read more about input and output format in [this module
 /// docs](self).
-pub(crate) fn run(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
+pub fn run(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
     const ECRECOVER_BASE: u64 = 3_000;
 
     gas.spend(ECRECOVER_BASE)?;

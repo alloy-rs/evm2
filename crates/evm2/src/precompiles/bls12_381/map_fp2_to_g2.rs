@@ -13,7 +13,7 @@ use crate::{
 /// an element of Fp2. Output of this call is 256 bytes and is an encoded G2
 /// point.
 /// See also: <https://eips.ethereum.org/EIPS/eip-2537#abi-for-mapping-fp2-element-to-g2-point>
-pub(crate) fn run(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
+pub fn run(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
     gas.spend(MAP_FP2_TO_G2_BASE_GAS_FEE)?;
 
     if input.len() != PADDED_FP2_LENGTH {

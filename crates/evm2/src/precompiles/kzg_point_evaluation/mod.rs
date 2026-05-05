@@ -32,7 +32,7 @@ pub(crate) const RETURN_VALUE: &[u8; 64] = &hex!(
 /// | versioned_hash |  z  |  y  | commitment | proof |
 /// |     32         | 32  | 32  |     48     |   48  |
 /// with z and y being padded 32 byte big endian values
-pub(crate) fn run(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
+pub fn run(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
     gas.spend(GAS_COST)?;
 
     // Verify input length.

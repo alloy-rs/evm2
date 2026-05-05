@@ -19,17 +19,20 @@ cfg_if::cfg_if! {
     }
 }
 
-pub(crate) mod add {
+/// BN254 point addition precompile entrypoints.
+pub mod add {
     use super::*;
 
     pub(crate) const ISTANBUL_ADD_GAS_COST: u64 = 150;
     pub(crate) const BYZANTIUM_ADD_GAS_COST: u64 = 500;
 
-    pub(crate) fn run_istanbul(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
+    /// Runs the Istanbul BN254 point addition precompile.
+    pub fn run_istanbul(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
         run(input, ISTANBUL_ADD_GAS_COST, gas)
     }
 
-    pub(crate) fn run_byzantium(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
+    /// Runs the Byzantium BN254 point addition precompile.
+    pub fn run_byzantium(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
         run(input, BYZANTIUM_ADD_GAS_COST, gas)
     }
 
@@ -38,17 +41,20 @@ pub(crate) mod add {
     }
 }
 
-pub(crate) mod mul {
+/// BN254 scalar multiplication precompile entrypoints.
+pub mod mul {
     use super::*;
 
     pub(crate) const ISTANBUL_MUL_GAS_COST: u64 = 6_000;
     pub(crate) const BYZANTIUM_MUL_GAS_COST: u64 = 40_000;
 
-    pub(crate) fn run_istanbul(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
+    /// Runs the Istanbul BN254 scalar multiplication precompile.
+    pub fn run_istanbul(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
         run(input, ISTANBUL_MUL_GAS_COST, gas)
     }
 
-    pub(crate) fn run_byzantium(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
+    /// Runs the Byzantium BN254 scalar multiplication precompile.
+    pub fn run_byzantium(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
         run(input, BYZANTIUM_MUL_GAS_COST, gas)
     }
 
@@ -57,7 +63,8 @@ pub(crate) mod mul {
     }
 }
 
-pub(crate) mod pair {
+/// BN254 pairing precompile entrypoints.
+pub mod pair {
     use super::*;
 
     pub(crate) const ISTANBUL_PAIR_PER_POINT: u64 = 34_000;
@@ -65,11 +72,13 @@ pub(crate) mod pair {
     pub(crate) const BYZANTIUM_PAIR_PER_POINT: u64 = 80_000;
     pub(crate) const BYZANTIUM_PAIR_BASE: u64 = 100_000;
 
-    pub(crate) fn run_istanbul(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
+    /// Runs the Istanbul BN254 pairing precompile.
+    pub fn run_istanbul(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
         run(input, ISTANBUL_PAIR_PER_POINT, ISTANBUL_PAIR_BASE, gas)
     }
 
-    pub(crate) fn run_byzantium(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
+    /// Runs the Byzantium BN254 pairing precompile.
+    pub fn run_byzantium(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
         run(input, BYZANTIUM_PAIR_PER_POINT, BYZANTIUM_PAIR_BASE, gas)
     }
 
@@ -123,7 +132,7 @@ pub(crate) const MUL_INPUT_LEN: usize = G1_LEN + SCALAR_LEN;
 pub(crate) const PAIR_ELEMENT_LEN: usize = G1_LEN + G2_LEN;
 
 /// Run the Bn254 add precompile
-pub(crate) fn run_add(input: &[u8], gas_cost: u64, gas: &mut Gas) -> EthPrecompileResult {
+pub fn run_add(input: &[u8], gas_cost: u64, gas: &mut Gas) -> EthPrecompileResult {
     gas.spend(gas_cost)?;
 
     let input = right_pad::<ADD_INPUT_LEN>(input);
@@ -136,7 +145,7 @@ pub(crate) fn run_add(input: &[u8], gas_cost: u64, gas: &mut Gas) -> EthPrecompi
 }
 
 /// Run the Bn254 mul precompile
-pub(crate) fn run_mul(input: &[u8], gas_cost: u64, gas: &mut Gas) -> EthPrecompileResult {
+pub fn run_mul(input: &[u8], gas_cost: u64, gas: &mut Gas) -> EthPrecompileResult {
     gas.spend(gas_cost)?;
 
     let input = right_pad::<MUL_INPUT_LEN>(input);
@@ -149,7 +158,7 @@ pub(crate) fn run_mul(input: &[u8], gas_cost: u64, gas: &mut Gas) -> EthPrecompi
 }
 
 /// Run the Bn254 pair precompile
-pub(crate) fn run_pair(
+pub fn run_pair(
     input: &[u8],
     pair_per_point_cost: u64,
     pair_base_cost: u64,

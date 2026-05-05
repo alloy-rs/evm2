@@ -29,11 +29,12 @@ pub(crate) const P256VERIFY_BASE_GAS_FEE_OSAKA: u64 = 6900;
 /// | :-----------------: | :-: | :-: | :----------: | :----------: |
 /// |          32         | 32  | 32  |     32       |      32      |
 #[allow(dead_code)]
-pub(crate) fn run(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
+pub fn run(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
     p256_verify_inner(input, gas, P256VERIFY_BASE_GAS_FEE)
 }
 
-pub(crate) fn run_osaka(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
+/// Runs the secp256r1 precompile with the Osaka gas cost.
+pub fn run_osaka(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
     p256_verify_inner(input, gas, P256VERIFY_BASE_GAS_FEE_OSAKA)
 }
 

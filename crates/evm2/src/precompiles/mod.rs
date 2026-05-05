@@ -12,18 +12,18 @@ use alloy_primitives::{
     map::{self, HashMap},
 };
 
-pub(crate) mod blake2;
-pub(crate) mod bls12_381;
-pub(crate) mod bls12_381_const;
-pub(crate) mod bls12_381_utils;
-pub(crate) mod bn254;
-pub(crate) mod hash;
-pub(crate) mod identity;
-pub(crate) mod interface;
-pub(crate) mod kzg_point_evaluation;
-pub(crate) mod modexp;
-pub(crate) mod secp256k1;
-pub(crate) mod secp256r1;
+pub mod blake2;
+pub mod bls12_381;
+pub mod bls12_381_const;
+pub mod bls12_381_utils;
+pub mod bn254;
+pub mod hash;
+pub mod identity;
+pub mod interface;
+pub mod kzg_point_evaluation;
+pub mod modexp;
+pub mod secp256k1;
+pub mod secp256r1;
 
 /// EIP-7823 constants.
 pub(crate) mod eip7823 {

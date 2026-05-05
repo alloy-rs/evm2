@@ -21,7 +21,7 @@ use crate::{
 /// Output is an encoding of multi-scalar-multiplication operation result - single G2
 /// point (`256` bytes).
 /// See also: <https://eips.ethereum.org/EIPS/eip-2537#abi-for-g2-multiexponentiation>
-pub(crate) fn run(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
+pub fn run(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
     let input_len = input.len();
     if input_len == 0 || !input_len.is_multiple_of(G2_MSM_INPUT_LENGTH) {
         return Err(PrecompileHalt::Bls12381G2MsmInputLength);

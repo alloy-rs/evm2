@@ -17,7 +17,7 @@ pub(crate) const IDENTITY_PER_WORD: u64 = 3;
 /// See: <https://ethereum.github.io/yellowpaper/paper.pdf>
 ///
 /// See: <https://etherscan.io/address/0000000000000000000000000000000000000004>
-pub(crate) fn run(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
+pub fn run(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
     let gas_used = calc_linear_cost(input.len(), IDENTITY_BASE, IDENTITY_PER_WORD);
     gas.spend(gas_used)?;
     Ok(PrecompileOutput::new(Bytes::copy_from_slice(input)))

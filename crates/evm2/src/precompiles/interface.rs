@@ -73,7 +73,7 @@ impl From<&'static str> for AnyError {
 }
 
 /// A precompile operation result type for individual Ethereum precompile functions.
-pub(crate) type EthPrecompileResult = Result<PrecompileOutput, PrecompileHalt>;
+pub type EthPrecompileResult = Result<PrecompileOutput, PrecompileHalt>;
 
 /// Crypto operations trait for precompiles.
 pub trait Crypto: Send + Sync + Debug {

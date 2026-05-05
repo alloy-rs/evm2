@@ -113,19 +113,19 @@ pub(crate) fn modexp(base: &[u8], exponent: &[u8], modulus: &[u8]) -> Vec<u8> {
 
 /// See: <https://eips.ethereum.org/EIPS/eip-198>
 /// See: <https://etherscan.io/address/0000000000000000000000000000000000000005>
-pub(crate) fn run_byzantium(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
+pub fn run_byzantium(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
     run_inner(input, gas, 0, false, byzantium_gas_calc)
 }
 
 /// See: <https://eips.ethereum.org/EIPS/eip-2565>
 /// Gas cost of berlin is modified from byzantium.
-pub(crate) fn run_berlin(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
+pub fn run_berlin(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
     run_inner(input, gas, 200, false, berlin_gas_calc)
 }
 
 /// See: <https://eips.ethereum.org/EIPS/eip-7823>
 /// Gas cost of berlin is modified from byzantium.
-pub(crate) fn run_osaka(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
+pub fn run_osaka(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
     run_inner(input, gas, 500, true, osaka_gas_calc)
 }
 
@@ -146,7 +146,7 @@ pub(crate) fn calculate_iteration_count(exp_length: u64, exp_highp: &U256, multi
 }
 
 /// Run the modexp precompile.
-pub(crate) fn run_inner(
+pub fn run_inner(
     input: &[u8],
     gas: &mut Gas,
     min_gas: u64,

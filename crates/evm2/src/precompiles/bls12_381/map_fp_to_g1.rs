@@ -12,7 +12,7 @@ use crate::{
 /// Field-to-curve call expects 64 bytes as an input that is interpreted as an
 /// element of Fp. Output of this call is 128 bytes and is an encoded G1 point.
 /// See also: <https://eips.ethereum.org/EIPS/eip-2537#abi-for-mapping-fp-element-to-g1-point>
-pub(crate) fn run(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
+pub fn run(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
     gas.spend(MAP_FP_TO_G1_BASE_GAS_FEE)?;
 
     if input.len() != PADDED_FP_LENGTH {

@@ -14,7 +14,7 @@ use crate::{
 /// Output is an encoding of addition operation result - single G1 point (`128`
 /// bytes).
 /// See also: <https://eips.ethereum.org/EIPS/eip-2537#abi-for-g1-addition>
-pub(crate) fn run(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
+pub fn run(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
     gas.spend(G1_ADD_BASE_GAS_FEE)?;
 
     if input.len() != G1_ADD_INPUT_LENGTH {

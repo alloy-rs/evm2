@@ -25,7 +25,7 @@ pub use evm::{
     env, precompile, registry,
 };
 
-pub(crate) mod precompiles;
+pub mod precompiles;
 pub use precompiles::{BasePrecompiles, Crypto, PrecompileHalt, crypto, install_crypto};
 
 pub mod version;
