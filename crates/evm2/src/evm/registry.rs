@@ -91,6 +91,28 @@ pub enum HandlerError {
     /// Sender cannot pay value plus maximum gas cost.
     #[error("insufficient funds")]
     InsufficientFunds,
+    /// Sender account has deployed code.
+    #[error("caller has code")]
+    RejectCallerWithCode,
+    /// Transaction nonce cannot be incremented.
+    #[error("nonce overflow in transaction")]
+    NonceOverflow,
+    /// Transaction gas limit exceeds the block gas limit.
+    #[error("transaction gas limit {gas_limit} exceeds block gas limit {block_gas_limit}")]
+    GasLimitMoreThanBlock {
+        /// Transaction gas limit.
+        gas_limit: u64,
+        /// Block gas limit.
+        block_gas_limit: U256,
+    },
+    /// Create transaction initcode exceeds the active size limit.
+    #[error("create initcode size limit exceeded: limit {limit}, got {got}")]
+    CreateInitCodeSizeLimit {
+        /// Maximum initcode size.
+        limit: usize,
+        /// Transaction initcode size.
+        got: usize,
+    },
     /// Sender could not transfer transaction value to the target.
     #[error("out of funds")]
     OutOfFunds,
