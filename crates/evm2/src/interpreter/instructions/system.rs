@@ -128,6 +128,7 @@ fn call_inner<T: EvmTypes>(
     if cx.state.is_static() && kind == MessageKind::Call && has_transfer {
         return Err(InstrStop::CallNotAllowedInsideStatic);
     }
+
     let local_gas_limit = u64::try_from(local_gas_limit).unwrap_or(u64::MAX);
     let (input_range, return_memory_range) = get_memory_input_and_out_ranges(
         &mut cx,
