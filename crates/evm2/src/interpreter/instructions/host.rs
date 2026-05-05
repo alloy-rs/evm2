@@ -25,7 +25,7 @@ pub(crate) fn sload(cx: _, [key]: [Word]) -> Result<out> {
     *out = load.value;
 }
 
-#[instruction(raw)]
+#[instruction(no_stack_preamble)]
 pub(crate) fn sstore(cx: _) -> Result {
     require_non_staticcall(&cx)?;
     let [key, value] = stack.popn()?;
@@ -52,25 +52,22 @@ pub(crate) fn sstore(cx: _) -> Result {
         cx.gas.spend(gas_params.get(GasId::SstoreResetWithoutColdLoadCost).into())?;
     }
     cx.state.host.sstore(cx.state.message().destination, key, value);
-    Ok(())
 }
 
-#[instruction(raw)]
+#[instruction(no_stack_preamble)]
 pub(crate) fn tload(cx: _) -> Result {
     let ([], key) = stack.popn_top()?;
     *key = cx.state.host.tload(cx.state.message().destination, *key);
-    Ok(())
 }
 
-#[instruction(raw)]
+#[instruction(no_stack_preamble)]
 pub(crate) fn tstore(cx: _) -> Result {
     require_non_staticcall(&cx)?;
     let [key, value] = stack.popn()?;
     cx.state.host.tstore(cx.state.message().destination, key, value);
-    Ok(())
 }
 
-#[instruction(raw)]
+#[instruction(no_stack_preamble)]
 pub(crate) fn log<const N: usize>(cx: _) -> Result {
     log_common(cx, stack, N)
 }

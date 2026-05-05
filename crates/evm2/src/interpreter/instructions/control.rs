@@ -23,8 +23,7 @@ pub(crate) fn jumpi(cx: _, [target, cond]: [Word]) -> Result {
         jump_inner(target, &mut cx)?;
     } else {
         unsafe { cx.pc.advance_unchecked(1) };
-    }
-    Ok(())
+    };
 }
 
 #[inline(always)]

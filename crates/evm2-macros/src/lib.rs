@@ -9,16 +9,89 @@ use syn::{
     TypeSlice, parse_macro_input, punctuated::Punctuated,
 };
 
-/// Lowers instruction functions into the interpreter ABI.
+/// Generates an `Instruction` impl for an instruction function definition.
+///
+/// ## Parameters
+///
+/// - `cx: _`: Optional instruction context. It exposes `pc`, `gas`, and `state`, which are needed
+///   for immediates, memory, host access, dynamic gas, active version data, and message or
+///   transaction state.
+/// - `[a, b]: [Word]`: Automatic stack inputs. The macro checks stack bounds, pops one word per
+///   binding, and creates local `Word` values with those names.
+/// - `-> out`: Automatic stack output. The output name is a mutable `Word` slot. Multiple outputs
+///   can be written as `-> Result<out1, out2>` for fallible instructions.
+/// - `-> Result`: Fallible instruction with no automatic outputs. The body must evaluate to
+///   `evm2::interpreter::Result`, so `?` can be used to return an `InstrStop`.
+/// - `-> Result<out>`: Fallible instruction with automatic outputs. The body gets mutable output
+///   slots and may use `?`; no explicit final `Ok(())` is needed.
+///
+/// ## Attributes
+///
+/// - `#[instruction(no_stack_preamble)]`: Disables automatic stack input and output handling. The
+///   body receives a `stack` local and is responsible for all stack reads, writes, and bounds
+///   checks.
+///
+/// ## Examples
+///
+/// ### Full Signature
+///
+/// ```ignore
+/// use evm2::interpreter::{Result, Word};
+/// use evm2_macros::instruction;
+///
+/// #[instruction]
+/// fn opcode_name(cx: _, [a, b, c]: [Word]) -> Result<out> {
+///     cx.gas.spend(3)?;
+///     *out = a.wrapping_add(b).wrapping_add(c);
+/// }
+/// ```
+///
+/// ### Stack only
+///
+/// Stack-only instructions can omit `cx: _` and `Result`:
+///
+/// ```ignore
+/// use evm2::interpreter::Word;
+/// use evm2_macros::instruction;
+///
+/// #[instruction]
+/// fn add([a, b]: [Word]) -> out {
+///     *out = a.wrapping_add(b);
+/// }
+/// ```
+///
+/// ### No stack preamble
+///
+/// ```ignore
+/// use evm2::interpreter::{Result, Word};
+/// use evm2_macros::instruction;
+///
+/// #[instruction(no_stack_preamble)]
+/// fn no_stack_preamble_opcode(cx: _) -> Result {
+///     cx.gas.spend(2)?;
+///     stack.push(Word::ZERO)
+/// }
+/// ```
 #[proc_macro_attribute]
 pub fn instruction(attr: TokenStream, item: TokenStream) -> TokenStream {
     let args = parse_macro_input!(attr with Punctuated::<Ident, Token![,]>::parse_terminated);
-    let raw = args.iter().any(|arg| arg == "raw");
+    let no_stack_preamble = match args.len() {
+        0 => false,
+        1 if args[0] == "no_stack_preamble" => true,
+        _ => {
+            return syn::Error::new_spanned(
+                args,
+                "expected `#[instruction]` or `#[instruction(no_stack_preamble)]`",
+            )
+            .to_compile_error()
+            .into();
+        }
+    };
     let input = parse_macro_input!(item as ItemFn);
-    expand_instruction(raw, input).into()
+    expand_instruction(no_stack_preamble, input).into()
 }
 
-fn expand_instruction(raw: bool, input: ItemFn) -> TokenStream2 {
+fn expand_instruction(no_stack_preamble: bool, input: ItemFn) -> TokenStream2 {
     let attrs = input.attrs;
     let vis = input.vis;
     let sig = input.sig;
@@ -59,12 +132,15 @@ fn expand_instruction(raw: bool, input: ItemFn) -> TokenStream2 {
                 Some(ident)
             }));
         } else {
-            let Pat::Ident(PatIdent { ident, .. }) = *arg.pat else { continue };
-            inputs.push(ident);
+            return syn::Error::new_spanned(
+                arg,
+                "unsupported #[instruction] argument; use `cx: _` for context or `[a, b]: [Word]` for stack inputs",
+            )
+            .to_compile_error();
         }
     }
 
-    let stack_setup = (!raw).then(|| stack_setup(&inputs, &outputs));
+    let stack_setup = (!no_stack_preamble).then(|| stack_setup(&inputs, &outputs));
     let cx_setup = has_cx.then(|| {
         let cx = cx_arg.unwrap_or_else(|| Ident::new("cx", ident.span()));
         quote! {

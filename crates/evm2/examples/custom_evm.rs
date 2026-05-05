@@ -15,6 +15,7 @@ use evm2_macros::instruction;
 
 const CUSTOM_OPCODE: u8 = 0x0c;
 const CUSTOM_OPCODE_GAS: u16 = 7;
+const CUSTOM_OPCODE_DYNAMIC_GAS: u64 = 3;
 const CUSTOM_TX_TYPE: u8 = 0x7f;
 
 #[derive(Clone, Copy, Debug)]
@@ -79,7 +80,8 @@ impl EvmConfigSelector<CustomTypes> for CustomConfigSelector {
 }
 
 #[instruction]
-fn custom() -> out {
+fn custom(cx: _) -> Result<out> {
+    cx.gas.spend(CUSTOM_OPCODE_DYNAMIC_GAS)?;
     *out = Word::from(0xdead_u64);
 }
 
@@ -134,6 +136,11 @@ fn main() {
     let custom_target = Address::from([0xcc; 20]);
     let code = Bytes::from_static(&[CUSTOM_OPCODE, op::PUSH1, 0x01, op::SSTORE, op::STOP]);
     let tx = CustomTx { target: custom_target, code };
+    let expected_custom_gas = u64::from(CUSTOM_OPCODE_GAS)
+        + CUSTOM_OPCODE_DYNAMIC_GAS
+        + 3 // PUSH1
+        + 2100 // Cold SSTORE load.
+        + 20_000; // SSTORE zero to non-zero.
 
     let mut evm = Evm::<CustomTypes>::new(
         CustomSpecId::CustomOsaka,
@@ -152,6 +159,7 @@ fn main() {
     let result = evm.transact(&tx).expect("custom transaction should execute");
     assert_eq!(result.stop, InstrStop::Stop);
     assert!(result.status);
+    assert_eq!(result.gas_used, expected_custom_gas);
     assert_eq!(
         evm.state().account_ref(custom_target).expect("custom target should exist").storage
             [&Word::from(1)]

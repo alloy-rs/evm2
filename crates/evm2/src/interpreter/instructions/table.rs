@@ -34,7 +34,7 @@ pub(crate) type TailInstructionFn<T> =
 #[cfg(feature = "nightly")]
 pub(crate) type TailInstructionTable<T> = [TailInstructionFn<T>; 256];
 
-/// Instruction implementation function.
+/// Function signature of an `#[instruction]`.
 pub type InstructionImplFn<T> =
     fn(pc: &mut Pc, stack: StackMut<'_>, gas: &mut Gas, state: &mut State<'_, T>) -> Result;
 

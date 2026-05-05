@@ -4,7 +4,7 @@ use crate::{
 };
 use core::ops::{Index, IndexMut};
 
-/// Instruction implementation table.
+/// `#[instruction]` table.
 #[derive(Clone, Copy)]
 pub struct InstructionImplTable<T: EvmTypes>([Option<InstructionImplFn<T>>; 256]);
 

@@ -2,11 +2,9 @@ use crate::interpreter::{InstrStop, Word};
 use evm2_macros::instruction;
 
 #[instruction]
-pub(crate) fn pop([_value]: [Word]) -> Result {
-    Ok(())
-}
+pub(crate) fn pop([_value]: [Word]) -> Result {}
 
-#[instruction(raw)]
+#[instruction(no_stack_preamble)]
 pub(crate) fn push<const N: usize>(cx: _) -> Result {
     if N == 0 {
         return stack.push(Word::ZERO);
@@ -15,31 +13,31 @@ pub(crate) fn push<const N: usize>(cx: _) -> Result {
     stack.push_slice(slice)
 }
 
-#[instruction(raw)]
+#[instruction(no_stack_preamble)]
 pub(crate) fn dup<const N: usize>() -> Result {
     stack.dup(N)
 }
 
-#[instruction(raw)]
+#[instruction(no_stack_preamble)]
 pub(crate) fn swap<const N: usize>() -> Result {
     stack.swap(N)
 }
 
-#[instruction(raw)]
+#[instruction(no_stack_preamble)]
 pub(crate) fn dupn(cx: _) -> Result {
     let n = decode_single(unsafe { cx.pc.read_bytes_offset_unchecked(1, 1)[0] })
         .ok_or(InstrStop::InvalidImmediateEncoding)?;
     stack.dup(n)
 }
 
-#[instruction(raw)]
+#[instruction(no_stack_preamble)]
 pub(crate) fn swapn(cx: _) -> Result {
     let n = decode_single(unsafe { cx.pc.read_bytes_offset_unchecked(1, 1)[0] })
         .ok_or(InstrStop::InvalidImmediateEncoding)?;
     stack.exchange(0, n)
 }
 
-#[instruction(raw)]
+#[instruction(no_stack_preamble)]
 pub(crate) fn exchange(cx: _) -> Result {
     let (n, m) = decode_pair(unsafe { cx.pc.read_bytes_offset_unchecked(1, 1)[0] })
         .ok_or(InstrStop::InvalidImmediateEncoding)?;

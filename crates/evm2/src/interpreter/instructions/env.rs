@@ -66,15 +66,13 @@ pub(crate) fn calldatasize(cx: _) -> out {
 pub(crate) fn calldatacopy(cx: _, [memory_offset, data_offset, len]: [Word]) -> Result {
     let len = as_usize(len)?;
     cx.gas.spend(cx.state.gas_params().copy_cost(len))?;
-    if len == 0 {
-        return Ok(());
-    }
-    let memory_offset = as_usize(memory_offset)?;
-    let data_offset = as_usize_saturated(data_offset);
-    resize_memory(cx.gas, cx.state.memory(), memory_offset, len)?;
-    let input = cx.state.message().input.clone();
-    cx.state.memory().set_data(memory_offset, data_offset, len, &input);
-    Ok(())
+    if len != 0 {
+        let memory_offset = as_usize(memory_offset)?;
+        let data_offset = as_usize_saturated(data_offset);
+        resize_memory(cx.gas, cx.state.memory(), memory_offset, len)?;
+        let input = cx.state.message().input.clone();
+        cx.state.memory().set_data(memory_offset, data_offset, len, &input);
+    };
 }
 
 #[instruction]
@@ -86,15 +84,13 @@ pub(crate) fn codesize(cx: _) -> out {
 pub(crate) fn codecopy(cx: _, [memory_offset, code_offset, len]: [Word]) -> Result {
     let len = as_usize(len)?;
     cx.gas.spend(cx.state.gas_params().copy_cost(len))?;
-    if len == 0 {
-        return Ok(());
-    }
-    let memory_offset = as_usize(memory_offset)?;
-    let code_offset = as_usize_saturated(code_offset);
-    resize_memory(cx.gas, cx.state.memory(), memory_offset, len)?;
-    let code = cx.state.bytecode.as_slice();
-    cx.state.memory().set_data(memory_offset, code_offset, len, code);
-    Ok(())
+    if len != 0 {
+        let memory_offset = as_usize(memory_offset)?;
+        let code_offset = as_usize_saturated(code_offset);
+        resize_memory(cx.gas, cx.state.memory(), memory_offset, len)?;
+        let code = cx.state.bytecode.as_slice();
+        cx.state.memory().set_data(memory_offset, code_offset, len, code);
+    };
 }
 
 #[instruction]
@@ -127,7 +123,6 @@ pub(crate) fn extcodecopy(cx: _, [addr, memory_offset, code_offset, len]: [Word]
     let code = load_account(&mut cx, addr, true)?.code;
     let code_offset = as_usize_saturated(code_offset).min(code.len());
     cx.state.memory().set_data(memory_offset_usize, code_offset, len, &code);
-    Ok(())
 }
 
 #[instruction]
@@ -144,15 +139,12 @@ pub(crate) fn returndatacopy(cx: _, [memory_offset, data_offset, len]: [Word]) -
     }
 
     cx.gas.spend(cx.state.gas_params().copy_cost(len))?;
-    if len == 0 {
-        return Ok(());
-    }
-
-    let memory_offset = as_usize(memory_offset)?;
-    resize_memory(cx.gas, cx.state.memory(), memory_offset, len)?;
-    let return_data = cx.state.return_data().clone();
-    cx.state.memory().set_data(memory_offset, data_offset, len, &return_data);
-    Ok(())
+    if len != 0 {
+        let memory_offset = as_usize(memory_offset)?;
+        resize_memory(cx.gas, cx.state.memory(), memory_offset, len)?;
+        let return_data = cx.state.return_data().clone();
+        cx.state.memory().set_data(memory_offset, data_offset, len, &return_data);
+    };
 }
 
 #[cfg(test)]

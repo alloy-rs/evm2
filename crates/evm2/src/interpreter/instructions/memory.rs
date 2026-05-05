@@ -14,7 +14,6 @@ pub(crate) fn mstore(cx: _, [offset, value]: [Word]) -> Result {
     let offset = as_usize(offset)?;
     resize_memory(cx.gas, cx.state.memory(), offset, 32)?;
     cx.state.memory().set(offset, &value.to_be_bytes::<32>());
-    Ok(())
 }
 
 #[instruction]
@@ -22,7 +21,6 @@ pub(crate) fn mstore8(cx: _, [offset, value]: [Word]) -> Result {
     let offset = as_usize(offset)?;
     resize_memory(cx.gas, cx.state.memory(), offset, 1)?;
     cx.state.memory().set(offset, &[value.byte(0)]);
-    Ok(())
 }
 
 #[instruction]
@@ -34,14 +32,12 @@ pub(crate) fn msize(cx: _) -> out {
 pub(crate) fn mcopy(cx: _, [dst, src, len]: [Word]) -> Result {
     let len = as_usize(len)?;
     cx.gas.spend(cx.state.gas_params().mcopy_cost(len))?;
-    if len == 0 {
-        return Ok(());
-    }
-    let dst = as_usize(dst)?;
-    let src = as_usize(src)?;
-    resize_memory(cx.gas, cx.state.memory(), dst.max(src), len)?;
-    cx.state.memory().copy(dst, src, len);
-    Ok(())
+    if len != 0 {
+        let dst = as_usize(dst)?;
+        let src = as_usize(src)?;
+        resize_memory(cx.gas, cx.state.memory(), dst.max(src), len)?;
+        cx.state.memory().copy(dst, src, len);
+    };
 }
 
 #[cfg(test)]

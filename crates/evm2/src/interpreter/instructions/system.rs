@@ -173,27 +173,27 @@ fn call_inner<T: EvmTypes>(
     stack.push(success)
 }
 
-#[instruction(raw)]
+#[instruction(no_stack_preamble)]
 pub(crate) fn call(cx: _) -> Result {
     call_inner(stack, cx, MessageKind::Call)
 }
 
-#[instruction(raw)]
+#[instruction(no_stack_preamble)]
 pub(crate) fn callcode(cx: _) -> Result {
     call_inner(stack, cx, MessageKind::CallCode)
 }
 
-#[instruction(raw)]
+#[instruction(no_stack_preamble)]
 pub(crate) fn delegatecall(cx: _) -> Result {
     call_inner(stack, cx, MessageKind::DelegateCall)
 }
 
-#[instruction(raw)]
+#[instruction(no_stack_preamble)]
 pub(crate) fn staticcall(cx: _) -> Result {
     call_inner(stack, cx, MessageKind::StaticCall)
 }
 
-#[instruction(raw)]
+#[instruction(no_stack_preamble)]
 pub(crate) fn create<const IS_CREATE2: bool>(cx: _) -> Result {
     create_inner(stack, cx, IS_CREATE2)
 }
