@@ -77,8 +77,12 @@ impl JumpTable {
 
     #[inline]
     pub(crate) fn set(&mut self, pc: usize) {
-        debug_assert!(pc < self.bit_len);
-        self.table.to_mut()[pc >> 3] |= 1 << (pc & 7);
+        if pc >= self.bit_len {
+            cold_path();
+            return;
+        }
+        let (byte, bit) = (pc / 8, pc % 8);
+        self.table.to_mut()[byte] |= 1 << bit;
     }
 
     /// Constructs a jump map from raw bytes and length.

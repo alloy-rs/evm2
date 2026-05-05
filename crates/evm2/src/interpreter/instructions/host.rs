@@ -293,11 +293,7 @@ mod tests {
     fn log0_opcode() {
         let mut host = TestHost::default();
         let address = Address::from([0x11; 20]);
-        let message = crate::interpreter::Message {
-            destination: address,
-            gas_limit: 10_000,
-            ..Default::default()
-        };
+        let message = Message { destination: address, gas_limit: 10_000, ..Default::default() };
         let interpreter = run(RunConfig::new(log_code(30, 2, [])).host(&mut host).message(message));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert!(interpreter.stack().is_empty());

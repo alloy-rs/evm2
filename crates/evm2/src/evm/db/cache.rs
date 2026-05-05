@@ -1,0 +1,239 @@
+//! In-memory cache database.
+
+use super::{Database, EmptyDB};
+use crate::{bytecode::Bytecode, evm::state::AccountInfo, interpreter::Word};
+use alloy_primitives::{
+    Address, B256, KECCAK256_EMPTY,
+    map::{AddressMap, B256Map, HashMap, U256Map, hash_map::Entry},
+};
+
+/// A database implementation that stores initial state in memory.
+pub type InMemoryDB = CacheDB<EmptyDB>;
+
+/// Cache used by [`CacheDB`].
+///
+/// Accounts and code are stored separately: accounts carry the code hash, and
+/// bytecode is keyed by that hash in [`Self::contracts`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Cache {
+    /// Accounts keyed by address.
+    pub accounts: AddressMap<AccountInfo>,
+    /// Contracts keyed by code hash.
+    pub contracts: B256Map<Bytecode>,
+    /// Persistent storage keyed by account and slot.
+    pub storage: HashMap<(Address, Word), Word>,
+    /// Cached block hashes keyed by block number.
+    pub block_hashes: U256Map<B256>,
+}
+
+impl Default for Cache {
+    #[inline]
+    fn default() -> Self {
+        let mut contracts = B256Map::default();
+        contracts.insert(KECCAK256_EMPTY, Bytecode::default());
+        contracts.insert(B256::ZERO, Bytecode::default());
+        Self {
+            accounts: AddressMap::default(),
+            contracts,
+            storage: HashMap::default(),
+            block_hashes: U256Map::default(),
+        }
+    }
+}
+
+/// A cache database over another backing database.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct CacheDB<ExtDB = EmptyDB> {
+    /// The cache that stores all local state.
+    pub cache: Cache,
+    /// Wrapped backing database.
+    pub db: ExtDB,
+}
+
+impl Default for CacheDB<EmptyDB> {
+    #[inline]
+    fn default() -> Self {
+        Self::new(EmptyDB::default())
+    }
+}
+
+impl<ExtDB> CacheDB<ExtDB> {
+    /// Creates a new cache over a backing database.
+    #[inline]
+    pub fn new(db: ExtDB) -> Self {
+        Self { cache: Cache::default(), db }
+    }
+
+    /// Inserts account code into the contract cache.
+    #[inline]
+    pub fn insert_contract(&mut self, info: &mut AccountInfo) {
+        Self::insert_contract_inner(&mut self.cache.contracts, info);
+    }
+
+    #[inline]
+    fn insert_contract_inner(contracts: &mut B256Map<Bytecode>, info: &mut AccountInfo) {
+        if let Some(code) = &info.code
+            && !code.is_empty()
+        {
+            if info.code_hash == KECCAK256_EMPTY {
+                info.code_hash = code.hash_slow();
+            }
+            contracts.entry(info.code_hash).or_insert_with(|| code.clone());
+        }
+        if info.code_hash.is_zero() {
+            info.code_hash = KECCAK256_EMPTY;
+        }
+    }
+
+    /// Inserts account info.
+    #[inline]
+    pub fn insert_account_info(&mut self, address: Address, mut info: AccountInfo) {
+        self.insert_contract(&mut info);
+        info.code = None;
+        self.cache.accounts.insert(address, info);
+    }
+
+    /// Returns cached account info if the account exists in the cache.
+    #[inline]
+    pub fn account_info(&self, address: Address) -> Option<&AccountInfo> {
+        self.cache.accounts.get(&address)
+    }
+
+    /// Inserts persistent storage.
+    #[inline]
+    pub fn insert_account_storage(&mut self, address: Address, key: Word, value: Word) {
+        self.cache.accounts.entry(address).or_default();
+        self.cache.storage.insert((address, key), value);
+    }
+
+    /// Sets a historical block hash.
+    #[inline]
+    pub fn insert_block_hash(&mut self, number: Word, hash: B256) {
+        self.cache.block_hashes.insert(number, hash);
+    }
+}
+
+impl<ExtDB: Database> Database for CacheDB<ExtDB> {
+    #[inline]
+    fn get_account(&mut self, address: Address) -> Option<AccountInfo> {
+        let Cache { accounts, contracts, .. } = &mut self.cache;
+        match accounts.entry(address) {
+            Entry::Occupied(entry) => Some(entry.get().clone()),
+            Entry::Vacant(entry) => {
+                let mut info = self.db.get_account(address)?;
+                Self::insert_contract_inner(contracts, &mut info);
+                info.code = None;
+                Some(entry.insert(info).clone())
+            }
+        }
+    }
+
+    #[inline]
+    fn get_account_code(&mut self, address: Address) -> Bytecode {
+        let code_hash = self.get_account(address).map(|info| info.code_hash);
+        if let Some(code_hash) = code_hash
+            && let Some(code) = self.cache.contracts.get(&code_hash)
+        {
+            return code.clone();
+        }
+
+        let code = self.db.get_account_code(address);
+        if !code.is_empty() {
+            let code_hash = code_hash.unwrap_or_else(|| code.hash_slow());
+            self.cache.contracts.entry(code_hash).or_insert_with(|| code.clone());
+        }
+        code
+    }
+
+    #[inline]
+    fn get_storage(&mut self, address: Address, key: Word) -> Word {
+        match self.cache.storage.entry((address, key)) {
+            Entry::Occupied(entry) => *entry.get(),
+            Entry::Vacant(entry) => {
+                let value = self.db.get_storage(address, key);
+                *entry.insert(value)
+            }
+        }
+    }
+
+    #[inline]
+    fn get_block_hash(&mut self, number: Word) -> Option<B256> {
+        match self.cache.block_hashes.entry(number) {
+            Entry::Occupied(entry) => Some(*entry.get()),
+            Entry::Vacant(entry) => {
+                let hash = self.db.get_block_hash(number)?;
+                Some(*entry.insert(hash))
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::interpreter::op;
+    use alloy_primitives::Bytes;
+
+    #[derive(Debug, Default)]
+    struct CountingDB {
+        account: Option<AccountInfo>,
+        storage: Word,
+        block_hash: Option<B256>,
+        account_loads: usize,
+        code_loads: usize,
+        storage_loads: usize,
+        block_hash_loads: usize,
+    }
+
+    impl Database for CountingDB {
+        fn get_account(&mut self, _address: Address) -> Option<AccountInfo> {
+            self.account_loads += 1;
+            self.account.clone()
+        }
+
+        fn get_account_code(&mut self, _address: Address) -> Bytecode {
+            self.code_loads += 1;
+            self.account.as_ref().and_then(|info| info.code.clone()).unwrap_or_default()
+        }
+
+        fn get_storage(&mut self, _address: Address, _key: Word) -> Word {
+            self.storage_loads += 1;
+            self.storage
+        }
+
+        fn get_block_hash(&mut self, _number: Word) -> Option<B256> {
+            self.block_hash_loads += 1;
+            self.block_hash
+        }
+    }
+
+    #[test]
+    fn cache_db_caches_wrapped_db_reads() {
+        let address = Address::with_last_byte(1);
+        let key = Word::from(2);
+        let code = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
+        let block_hash = B256::with_last_byte(3);
+        let db = CountingDB {
+            account: Some(AccountInfo::default().with_code(code.clone())),
+            storage: Word::from(4),
+            block_hash: Some(block_hash),
+            ..CountingDB::default()
+        };
+        let mut cache = CacheDB::new(db);
+
+        assert_eq!(cache.get_account_code(address), code);
+        assert_eq!(cache.get_account_code(address), code);
+        assert_eq!(cache.db.account_loads, 1);
+        assert_eq!(cache.db.code_loads, 0);
+
+        assert_eq!(cache.get_storage(address, key), Word::from(4));
+        assert_eq!(cache.get_storage(address, key), Word::from(4));
+        assert_eq!(cache.db.storage_loads, 1);
+
+        assert_eq!(cache.get_block_hash(Word::from(5)), Some(block_hash));
+        assert_eq!(cache.get_block_hash(Word::from(5)), Some(block_hash));
+        assert_eq!(cache.db.block_hash_loads, 1);
+    }
+}

@@ -52,9 +52,9 @@
 //! # Ok::<(), HandlerError>(())
 //! ```
 
-use alloc::{boxed::Box, rc::Rc};
-use alloy_primitives::{Address, U256};
-use core::{array, fmt, marker::PhantomData};
+use alloc::rc::Rc;
+use alloy_primitives::{Address, U256, map::HashMap};
+use core::{fmt, marker::PhantomData};
 use thiserror::Error;
 
 /// Convenience result type used by the registry and handlers.
@@ -186,17 +186,14 @@ where
     }
 }
 
-type HandlerTable<Env, Output, Host> = [Option<Rc<dyn ErasedTxHandler<Env, Output, Host>>>; 256];
-
 /// A type-erased transaction handler registry keyed by transaction type byte.
 pub struct TxRegistry<Env, Output = (), Host = ()> {
-    handlers: Box<HandlerTable<Env, Output, Host>>,
+    handlers: HashMap<u8, Rc<dyn ErasedTxHandler<Env, Output, Host>>>,
 }
 
 impl<Env, Output, Host> fmt::Debug for TxRegistry<Env, Output, Host> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let len = self.handlers.iter().filter(|handler| handler.is_some()).count();
-        f.debug_struct("TxRegistry").field("len", &len).finish_non_exhaustive()
+        f.debug_struct("TxRegistry").field("len", &self.handlers.len()).finish_non_exhaustive()
     }
 }
 
@@ -209,7 +206,7 @@ impl<Env, Output, Host> Default for TxRegistry<Env, Output, Host> {
 impl<Env, Output, Host> TxRegistry<Env, Output, Host> {
     /// Creates an empty registry.
     pub fn new() -> Self {
-        Self { handlers: Box::new(array::from_fn(|_| None)) }
+        Self { handlers: HashMap::default() }
     }
 
     /// Registers a typed handler for a transaction type byte.
@@ -222,8 +219,7 @@ impl<Env, Output, Host> TxRegistry<Env, Output, Host> {
         H: TxHandler<Tx, Output, Host> + 'static,
         F: for<'a> Fn(&'a Env) -> Option<&'a Tx> + 'static,
     {
-        self.handlers[type_id as usize] =
-            Some(Rc::new(HandlerAdapter::new(type_id, extract, handler)));
+        self.handlers.insert(type_id, Rc::new(HandlerAdapter::new(type_id, extract, handler)));
         self
     }
 
@@ -241,14 +237,12 @@ impl<Env, Output, Host> TxRegistry<Env, Output, Host> {
 
     /// Returns true if a handler is registered for `type_id`.
     pub fn contains(&self, type_id: u8) -> bool {
-        self.handlers[type_id as usize].is_some()
+        self.handlers.contains_key(&type_id)
     }
 
     /// Returns the erased handler registered for `type_id`, if any.
     pub fn get_by_type(&self, type_id: u8) -> Option<AnyTxHandler<Env, Output, Host>> {
-        self.handlers[type_id as usize]
-            .as_ref()
-            .map(|inner| AnyTxHandler { inner: Rc::clone(inner) })
+        self.handlers.get(&type_id).map(|inner| AnyTxHandler { inner: Rc::clone(inner) })
     }
 
     /// Returns the erased handler registered for `type_id`.
