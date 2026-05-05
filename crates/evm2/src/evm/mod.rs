@@ -27,6 +27,8 @@ pub use state::{
     Tracked,
 };
 
+const MAX_CODE_SIZE: usize = 0x6000;
+
 /// Loaded account information.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct AccountLoad {
@@ -63,8 +65,6 @@ pub struct SelfDestructResult {
     /// Whether this account was already destroyed in this transaction.
     pub previously_destroyed: bool,
 }
-
-const MAX_CODE_SIZE: usize = 0x6000;
 
 /// Result of executing a transaction.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
