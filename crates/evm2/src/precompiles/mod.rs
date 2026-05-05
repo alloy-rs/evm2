@@ -6,11 +6,8 @@ use crate::{
     interpreter::{Gas, InstrStop},
     once_lock::OnceLock,
 };
-use alloc::{boxed::Box, vec::Vec};
-use alloy_primitives::{
-    Address,
-    map::{self, HashMap},
-};
+use alloc::{borrow::Cow, boxed::Box, vec::Vec};
+use alloy_primitives::Address;
 
 pub mod blake2;
 pub mod bls12_381;
@@ -19,11 +16,16 @@ pub mod bls12_381_utils;
 pub mod bn254;
 pub mod hash;
 pub mod identity;
-pub mod interface;
 pub mod kzg_point_evaluation;
 pub mod modexp;
 pub mod secp256k1;
 pub mod secp256r1;
+
+mod id;
+pub use id::PrecompileId;
+
+mod table;
+pub use table::*;
 
 /// EIP-7823 constants.
 pub(crate) mod eip7823 {
@@ -31,12 +33,11 @@ pub(crate) mod eip7823 {
     pub(crate) const INPUT_SIZE_LIMIT: usize = 1024;
 }
 
-pub(crate) use crate::{
-    evm::precompile::PrecompileOutput,
-    utils::{calc_linear_cost, u64_to_address},
-};
+pub mod interface;
 pub(crate) use interface::*;
-pub use interface::{Crypto, PrecompileHalt};
+pub use interface::{Crypto, EthPrecompileResult, PrecompileHalt};
+
+pub(crate) use crate::evm::precompile::PrecompileOutput;
 
 // silence arkworks lint as bn impl will be used as default if both are enabled.
 cfg_if::cfg_if! {
@@ -81,20 +82,29 @@ pub fn crypto() -> &'static dyn Crypto {
     CRYPTO.get_or_init(|| Box::new(DefaultCrypto)).as_ref()
 }
 
-type PrecompileFn = fn(&[u8], &mut Gas) -> EthPrecompileResult;
-type PrecompileMap = HashMap<Address, PrecompileFn>;
-
 /// Base Ethereum precompile provider.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct BasePrecompiles {
-    map: &'static PrecompileMap,
+    map: Cow<'static, PrecompileMap>,
 }
 
 impl BasePrecompiles {
+    /// Creates a precompile provider from a static precompile map.
+    #[inline]
+    pub const fn new(map: Cow<'static, PrecompileMap>) -> Self {
+        Self { map }
+    }
+
     /// Creates a precompile provider for a base EVM specification.
     #[inline]
     pub fn base(spec_id: SpecId) -> Self {
-        Self { map: for_spec(spec_id) }
+        Self::new(Cow::Borrowed(for_spec(spec_id)))
+    }
+
+    /// Creates a precompile map from precompile descriptors.
+    #[inline]
+    pub fn map(precompiles: impl IntoIterator<Item = Precompile>) -> PrecompileMap {
+        PrecompileMap::from_precompiles(precompiles)
     }
 
     fn run(
@@ -125,7 +135,7 @@ impl BasePrecompiles {
 impl PrecompileProvider for BasePrecompiles {
     #[inline]
     fn warm_addresses(&self) -> Vec<Address> {
-        self.map.keys().copied().collect()
+        self.map.as_ref().addresses().collect()
     }
 
     #[inline]
@@ -135,13 +145,9 @@ impl PrecompileProvider for BasePrecompiles {
         input: &[u8],
         gas: &mut Gas,
     ) -> Option<Result<PrecompileOutput, InstrStop>> {
-        let f = *self.map.get(&address)?;
-        Some(Self::run(f, input, gas))
+        let precompile = self.map.as_ref().get_data(&address)?;
+        Some(Self::run(precompile.run(), input, gas))
     }
-}
-
-fn insert(precompiles: &mut PrecompileMap, address: u64, f: PrecompileFn) {
-    precompiles.insert(u64_to_address(address), f);
 }
 
 fn for_spec(spec: SpecId) -> &'static PrecompileMap {
@@ -157,51 +163,55 @@ fn for_spec(spec: SpecId) -> &'static PrecompileMap {
         SpecId::OSAKA | SpecId::AMSTERDAM => 6,
     };
     CACHE[index].get_or_init(|| {
-        let mut precompiles = map::HashMap::default();
+        let mut precompiles = PrecompileMap::new();
 
         {
-            insert(&mut precompiles, 0x01, secp256k1::run);
-            insert(&mut precompiles, 0x02, hash::run_sha256);
-            insert(&mut precompiles, 0x03, hash::run_ripemd160);
-            insert(&mut precompiles, 0x04, identity::run);
+            precompiles.extend([SECP256K1_ECRECOVER, SHA256, RIPEMD160, IDENTITY]);
         }
 
         if spec.enables(SpecId::BYZANTIUM) {
-            insert(&mut precompiles, 0x05, modexp::run_byzantium);
-            insert(&mut precompiles, 0x06, bn254::add::run_byzantium);
-            insert(&mut precompiles, 0x07, bn254::mul::run_byzantium);
-            insert(&mut precompiles, 0x08, bn254::pair::run_byzantium);
+            precompiles.extend([
+                MODEXP_BYZANTIUM,
+                BN254_ADD_BYZANTIUM,
+                BN254_MUL_BYZANTIUM,
+                BN254_PAIR_BYZANTIUM,
+            ]);
         }
 
         if spec.enables(SpecId::ISTANBUL) {
-            insert(&mut precompiles, 0x06, bn254::add::run_istanbul);
-            insert(&mut precompiles, 0x07, bn254::mul::run_istanbul);
-            insert(&mut precompiles, 0x08, bn254::pair::run_istanbul);
-            insert(&mut precompiles, 0x09, blake2::run);
+            precompiles.extend([
+                BN254_ADD_ISTANBUL,
+                BN254_MUL_ISTANBUL,
+                BN254_PAIR_ISTANBUL,
+                BLAKE2F,
+            ]);
         }
 
         if spec.enables(SpecId::BERLIN) {
-            insert(&mut precompiles, 0x05, modexp::run_berlin);
+            precompiles.extend([MODEXP_BERLIN]);
         }
 
         if spec.enables(SpecId::CANCUN) {
-            insert(&mut precompiles, 0x0a, kzg_point_evaluation::run);
+            precompiles.extend([KZG_POINT_EVALUATION]);
         }
 
         if spec.enables(SpecId::PRAGUE) {
-            insert(&mut precompiles, 0x0b, bls12_381::g1_add::run);
-            insert(&mut precompiles, 0x0c, bls12_381::g1_msm::run);
-            insert(&mut precompiles, 0x0d, bls12_381::g2_add::run);
-            insert(&mut precompiles, 0x0e, bls12_381::g2_msm::run);
-            insert(&mut precompiles, 0x0f, bls12_381::pairing::run);
-            insert(&mut precompiles, 0x10, bls12_381::map_fp_to_g1::run);
-            insert(&mut precompiles, 0x11, bls12_381::map_fp2_to_g2::run);
+            precompiles.extend([
+                BLS12_381_G1_ADD,
+                BLS12_381_G1_MSM,
+                BLS12_381_G2_ADD,
+                BLS12_381_G2_MSM,
+                BLS12_381_PAIRING,
+                BLS12_381_MAP_FP_TO_G1,
+                BLS12_381_MAP_FP2_TO_G2,
+            ]);
         }
 
         if spec.enables(SpecId::OSAKA) {
-            insert(&mut precompiles, 0x05, modexp::run_osaka);
-            insert(&mut precompiles, 0x100, secp256r1::run_osaka);
+            precompiles.extend([MODEXP_OSAKA, SECP256R1_VERIFY]);
         }
+
+        precompiles.shrink_to_fit();
 
         precompiles
     })
