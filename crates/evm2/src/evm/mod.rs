@@ -2,7 +2,7 @@
 
 use self::precompile::{PrecompileOutput, PrecompileProvider};
 use crate::{
-    EvmConfigSelector, EvmTypes, ExecutionConfig, SpecId,
+    EvmConfigSelector, EvmTypes, ExecutionConfig, PrecompileError, PrecompileHalt, SpecId,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
     interpreter::{Gas, Host, InstrStop, Interpreter, Message, MessageKind, MessageResult, Word},
@@ -135,7 +135,7 @@ impl<T: EvmTypes> Evm<T> {
         &mut self,
         message: &Message,
         gas: &mut Gas,
-    ) -> Option<Result<PrecompileOutput, InstrStop>> {
+    ) -> Option<Result<PrecompileOutput, PrecompileError>> {
         self.precompiles.execute(message.code_address, &message.input, gas)
     }
 }
@@ -376,7 +376,14 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
         if let Some(result) = self.execute_precompile(&message, &mut gas) {
             let (stop, gas_remaining, output) = match result {
                 Ok(output) => (InstrStop::Return, gas.remaining(), output.into_bytes()),
-                Err(stop) => {
+                Err(PrecompileError::Revert(output)) => {
+                    (InstrStop::Revert, gas.remaining(), output)
+                }
+                Err(PrecompileError::Halt(PrecompileHalt::OutOfGas)) => {
+                    (InstrStop::PrecompileOOG, 0, Bytes::new())
+                }
+                Err(PrecompileError::Halt(_) | PrecompileError::Fatal(_)) => {
+                    let stop = InstrStop::PrecompileError;
                     let gas_remaining = if stop.is_error() { 0 } else { gas.remaining() };
                     (stop, gas_remaining, Bytes::new())
                 }

@@ -12,7 +12,7 @@
 
 use crate::{
     interpreter::Gas,
-    precompiles::{EthPrecompileResult, PrecompileHalt, PrecompileOutput},
+    precompiles::{PrecompileHalt, PrecompileOutput, PrecompileResult},
 };
 
 #[cfg(all(
@@ -80,9 +80,9 @@ pub(crate) fn compress(rounds: u32, h: &mut [Word; 8], m: &[Word; 16], t: &[Word
 /// input format:
 /// [4 bytes for rounds][64 bytes for h][128 bytes for m][8 bytes for t_0][8 bytes for t_1][1 byte
 /// for f]
-pub fn run(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
+pub fn run(input: &[u8], gas: &mut Gas) -> PrecompileResult {
     if input.len() != INPUT_LENGTH {
-        return Err(PrecompileHalt::Blake2WrongLength);
+        return Err(PrecompileHalt::Blake2WrongLength.into());
     }
 
     // Parse number of rounds (4 bytes)
@@ -94,7 +94,7 @@ pub fn run(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
     let f = match input[212] {
         0 => false,
         1 => true,
-        _ => return Err(PrecompileHalt::Blake2WrongFinalIndicatorFlag),
+        _ => return Err(PrecompileHalt::Blake2WrongFinalIndicatorFlag.into()),
     };
 
     // Parse state vector h (8 × u64)

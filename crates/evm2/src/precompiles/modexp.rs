@@ -3,7 +3,7 @@
 
 use crate::{
     interpreter::Gas,
-    precompiles::{EthPrecompileResult, PrecompileHalt, PrecompileOutput, eip7823},
+    precompiles::{PrecompileHalt, PrecompileOutput, PrecompileResult, eip7823},
     utils::{left_pad, left_pad_vec_be, right_pad_vec, right_pad_with_offset},
 };
 use alloc::vec::Vec;
@@ -113,19 +113,19 @@ pub(crate) fn modexp(base: &[u8], exponent: &[u8], modulus: &[u8]) -> Vec<u8> {
 
 /// See: <https://eips.ethereum.org/EIPS/eip-198>
 /// See: <https://etherscan.io/address/0000000000000000000000000000000000000005>
-pub fn run_byzantium(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
+pub fn run_byzantium(input: &[u8], gas: &mut Gas) -> PrecompileResult {
     run_inner(input, gas, 0, false, byzantium_gas_calc)
 }
 
 /// See: <https://eips.ethereum.org/EIPS/eip-2565>
 /// Gas cost of berlin is modified from byzantium.
-pub fn run_berlin(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
+pub fn run_berlin(input: &[u8], gas: &mut Gas) -> PrecompileResult {
     run_inner(input, gas, 200, false, berlin_gas_calc)
 }
 
 /// See: <https://eips.ethereum.org/EIPS/eip-7823>
 /// Gas cost of berlin is modified from byzantium.
-pub fn run_osaka(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
+pub fn run_osaka(input: &[u8], gas: &mut Gas) -> PrecompileResult {
     run_inner(input, gas, 500, true, osaka_gas_calc)
 }
 
@@ -152,7 +152,7 @@ pub fn run_inner(
     min_gas: u64,
     osaka: bool,
     calc_gas: fn(u64, u64, u64, &U256) -> u64,
-) -> EthPrecompileResult {
+) -> PrecompileResult {
     gas.spend(min_gas)?;
 
     // The format of input is:
@@ -178,7 +178,7 @@ pub fn run_inner(
             || mod_len > eip7823::INPUT_SIZE_LIMIT
             || exp_len > eip7823::INPUT_SIZE_LIMIT)
     {
-        return Err(PrecompileHalt::ModexpEip7823LimitSize);
+        return Err(PrecompileHalt::ModexpEip7823LimitSize.into());
     }
 
     // Used to extract ADJUSTED_EXPONENT_LENGTH.
@@ -320,6 +320,7 @@ fn osaka_multiplication_complexity(max_len: u64) -> U256 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::precompiles::PrecompileError;
     use alloc::vec::Vec;
     use alloy_primitives::hex;
 
@@ -556,7 +557,7 @@ mod tests {
             base_len: U256,
             exp_len: U256,
             mod_len: U256,
-            expected: Option<PrecompileHalt>,
+            expected: Option<PrecompileError>,
         }
 
         impl TestInput {
@@ -574,31 +575,31 @@ mod tests {
                 base_len: U256::from(1025),
                 exp_len: U256::from(1024),
                 mod_len: U256::from(1024),
-                expected: Some(PrecompileHalt::ModexpEip7823LimitSize),
+                expected: Some(PrecompileError::Halt(PrecompileHalt::ModexpEip7823LimitSize)),
             },
             TestInput {
                 base_len: U256::from(1024),
                 exp_len: U256::from(1025),
                 mod_len: U256::from(1024),
-                expected: Some(PrecompileHalt::ModexpEip7823LimitSize),
+                expected: Some(PrecompileError::Halt(PrecompileHalt::ModexpEip7823LimitSize)),
             },
             TestInput {
                 base_len: U256::from(1024),
                 exp_len: U256::from(1024),
                 mod_len: U256::from(1025),
-                expected: Some(PrecompileHalt::ModexpEip7823LimitSize),
+                expected: Some(PrecompileError::Halt(PrecompileHalt::ModexpEip7823LimitSize)),
             },
             TestInput {
                 base_len: U256::from(0),
                 exp_len: U256::from(0),
                 mod_len: U256::from(1025),
-                expected: Some(PrecompileHalt::ModexpEip7823LimitSize),
+                expected: Some(PrecompileError::Halt(PrecompileHalt::ModexpEip7823LimitSize)),
             },
             TestInput {
                 base_len: U256::from(1024),
                 exp_len: U256::from(1024),
                 mod_len: U256::from(1024),
-                expected: Some(PrecompileHalt::OutOfGas),
+                expected: Some(PrecompileError::Halt(PrecompileHalt::OutOfGas)),
             },
             TestInput {
                 base_len: U256::from(0),
@@ -783,7 +784,7 @@ mod tests {
 
         let res = run_osaka(&input_fail, &mut Gas::new(100_000_000));
         assert!(
-            matches!(res, Err(PrecompileHalt::ModexpEip7823LimitSize)),
+            matches!(res, Err(PrecompileError::Halt(PrecompileHalt::ModexpEip7823LimitSize))),
             "1025-byte base should be rejected"
         );
     }
@@ -876,7 +877,7 @@ mod tests {
         // Provide insufficient gas
         let res = run_byzantium(&input, &mut Gas::new(1000));
         assert!(
-            matches!(res, Err(PrecompileHalt::OutOfGas)),
+            matches!(res, Err(PrecompileError::Halt(PrecompileHalt::OutOfGas))),
             "Should return OutOfGas error with insufficient gas"
         );
     }

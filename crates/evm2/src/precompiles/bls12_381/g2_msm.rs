@@ -4,7 +4,7 @@ use super::utils::{pad_g2_point, remove_g2_padding};
 use crate::{
     interpreter::Gas,
     precompiles::{
-        EthPrecompileResult, PrecompileHalt, PrecompileOutput,
+        PrecompileHalt, PrecompileOutput, PrecompileResult,
         bls12_381_const::{
             DISCOUNT_TABLE_G2_MSM, G2_MSM_BASE_GAS_FEE, G2_MSM_INPUT_LENGTH, PADDED_G2_LENGTH,
             SCALAR_LENGTH,
@@ -21,10 +21,10 @@ use crate::{
 /// Output is an encoding of multi-scalar-multiplication operation result - single G2
 /// point (`256` bytes).
 /// See also: <https://eips.ethereum.org/EIPS/eip-2537#abi-for-g2-multiexponentiation>
-pub fn run(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
+pub fn run(input: &[u8], gas: &mut Gas) -> PrecompileResult {
     let input_len = input.len();
     if input_len == 0 || !input_len.is_multiple_of(G2_MSM_INPUT_LENGTH) {
-        return Err(PrecompileHalt::Bls12381G2MsmInputLength);
+        return Err(PrecompileHalt::Bls12381G2MsmInputLength.into());
     }
 
     let k = input_len / G2_MSM_INPUT_LENGTH;

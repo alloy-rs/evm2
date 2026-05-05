@@ -8,7 +8,7 @@
 
 use crate::{
     interpreter::Gas,
-    precompiles::{EthPrecompileResult, PrecompileOutput},
+    precompiles::{PrecompileOutput, PrecompileResult},
 };
 use alloy_primitives::{B256, B512, Bytes};
 
@@ -29,16 +29,16 @@ pub(crate) const P256VERIFY_BASE_GAS_FEE_OSAKA: u64 = 6900;
 /// | :-----------------: | :-: | :-: | :----------: | :----------: |
 /// |          32         | 32  | 32  |     32       |      32      |
 #[allow(dead_code)]
-pub fn run(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
+pub fn run(input: &[u8], gas: &mut Gas) -> PrecompileResult {
     p256_verify_inner(input, gas, P256VERIFY_BASE_GAS_FEE)
 }
 
 /// Runs the secp256r1 precompile with the Osaka gas cost.
-pub fn run_osaka(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
+pub fn run_osaka(input: &[u8], gas: &mut Gas) -> PrecompileResult {
     p256_verify_inner(input, gas, P256VERIFY_BASE_GAS_FEE_OSAKA)
 }
 
-fn p256_verify_inner(input: &[u8], gas: &mut Gas, gas_cost: u64) -> EthPrecompileResult {
+fn p256_verify_inner(input: &[u8], gas: &mut Gas, gas_cost: u64) -> PrecompileResult {
     gas.spend(gas_cost)?;
     let result = if verify_impl_with_crypto(input, crate::precompiles::crypto()) {
         B256::with_last_byte(1).into()
@@ -52,7 +52,7 @@ fn p256_verify_inner(input: &[u8], gas: &mut Gas, gas_cost: u64) -> EthPrecompil
 /// valid, `None` otherwise.
 #[allow(dead_code)]
 pub(crate) fn verify_impl(input: &[u8]) -> bool {
-    verify_impl_with_crypto(input, &crate::precompiles::DefaultCrypto)
+    verify_impl_with_crypto(input, &crate::precompiles::DefaultCrypto::new())
 }
 
 /// Returns `Some(())` if the signature included in the input byte slice is
@@ -190,7 +190,7 @@ mod test {
         let result = run(&input, &mut Gas::new(2_500));
 
         assert!(result.is_err());
-        assert_eq!(result.err(), Some(PrecompileHalt::OutOfGas));
+        assert_eq!(result.err().and_then(|e| e.as_halt().cloned()), Some(PrecompileHalt::OutOfGas));
     }
 
     #[rstest]

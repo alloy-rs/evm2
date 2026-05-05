@@ -2,7 +2,7 @@
 
 use crate::{
     interpreter::Gas,
-    precompiles::{EthPrecompileResult, PrecompileHalt, PrecompileOutput},
+    precompiles::{PrecompileHalt, PrecompileOutput, PrecompileResult},
     utils::{bool_to_bytes32, right_pad},
 };
 use alloc::vec::Vec;
@@ -27,16 +27,16 @@ pub mod add {
     pub(crate) const BYZANTIUM_ADD_GAS_COST: u64 = 500;
 
     /// Runs the Istanbul BN254 point addition precompile.
-    pub fn run_istanbul(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
+    pub fn run_istanbul(input: &[u8], gas: &mut Gas) -> PrecompileResult {
         run(input, ISTANBUL_ADD_GAS_COST, gas)
     }
 
     /// Runs the Byzantium BN254 point addition precompile.
-    pub fn run_byzantium(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
+    pub fn run_byzantium(input: &[u8], gas: &mut Gas) -> PrecompileResult {
         run(input, BYZANTIUM_ADD_GAS_COST, gas)
     }
 
-    pub(crate) fn run(input: &[u8], gas_cost: u64, gas: &mut Gas) -> EthPrecompileResult {
+    pub(crate) fn run(input: &[u8], gas_cost: u64, gas: &mut Gas) -> PrecompileResult {
         super::run_add(input, gas_cost, gas)
     }
 }
@@ -49,16 +49,16 @@ pub mod mul {
     pub(crate) const BYZANTIUM_MUL_GAS_COST: u64 = 40_000;
 
     /// Runs the Istanbul BN254 scalar multiplication precompile.
-    pub fn run_istanbul(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
+    pub fn run_istanbul(input: &[u8], gas: &mut Gas) -> PrecompileResult {
         run(input, ISTANBUL_MUL_GAS_COST, gas)
     }
 
     /// Runs the Byzantium BN254 scalar multiplication precompile.
-    pub fn run_byzantium(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
+    pub fn run_byzantium(input: &[u8], gas: &mut Gas) -> PrecompileResult {
         run(input, BYZANTIUM_MUL_GAS_COST, gas)
     }
 
-    pub(crate) fn run(input: &[u8], gas_cost: u64, gas: &mut Gas) -> EthPrecompileResult {
+    pub(crate) fn run(input: &[u8], gas_cost: u64, gas: &mut Gas) -> PrecompileResult {
         super::run_mul(input, gas_cost, gas)
     }
 }
@@ -73,12 +73,12 @@ pub mod pair {
     pub(crate) const BYZANTIUM_PAIR_BASE: u64 = 100_000;
 
     /// Runs the Istanbul BN254 pairing precompile.
-    pub fn run_istanbul(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
+    pub fn run_istanbul(input: &[u8], gas: &mut Gas) -> PrecompileResult {
         run(input, ISTANBUL_PAIR_PER_POINT, ISTANBUL_PAIR_BASE, gas)
     }
 
     /// Runs the Byzantium BN254 pairing precompile.
-    pub fn run_byzantium(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
+    pub fn run_byzantium(input: &[u8], gas: &mut Gas) -> PrecompileResult {
         run(input, BYZANTIUM_PAIR_PER_POINT, BYZANTIUM_PAIR_BASE, gas)
     }
 
@@ -87,7 +87,7 @@ pub mod pair {
         pair_per_point_cost: u64,
         pair_base_cost: u64,
         gas: &mut Gas,
-    ) -> EthPrecompileResult {
+    ) -> PrecompileResult {
         super::run_pair(input, pair_per_point_cost, pair_base_cost, gas)
     }
 }
@@ -132,7 +132,7 @@ pub(crate) const MUL_INPUT_LEN: usize = G1_LEN + SCALAR_LEN;
 pub(crate) const PAIR_ELEMENT_LEN: usize = G1_LEN + G2_LEN;
 
 /// Run the Bn254 add precompile
-pub fn run_add(input: &[u8], gas_cost: u64, gas: &mut Gas) -> EthPrecompileResult {
+pub fn run_add(input: &[u8], gas_cost: u64, gas: &mut Gas) -> PrecompileResult {
     gas.spend(gas_cost)?;
 
     let input = right_pad::<ADD_INPUT_LEN>(input);
@@ -145,7 +145,7 @@ pub fn run_add(input: &[u8], gas_cost: u64, gas: &mut Gas) -> EthPrecompileResul
 }
 
 /// Run the Bn254 mul precompile
-pub fn run_mul(input: &[u8], gas_cost: u64, gas: &mut Gas) -> EthPrecompileResult {
+pub fn run_mul(input: &[u8], gas_cost: u64, gas: &mut Gas) -> PrecompileResult {
     gas.spend(gas_cost)?;
 
     let input = right_pad::<MUL_INPUT_LEN>(input);
@@ -163,12 +163,12 @@ pub fn run_pair(
     pair_per_point_cost: u64,
     pair_base_cost: u64,
     gas: &mut Gas,
-) -> EthPrecompileResult {
+) -> PrecompileResult {
     let gas_used = (input.len() / PAIR_ELEMENT_LEN) as u64 * pair_per_point_cost + pair_base_cost;
     gas.spend(gas_used)?;
 
     if !input.len().is_multiple_of(PAIR_ELEMENT_LEN) {
-        return Err(PrecompileHalt::Bn254PairLength);
+        return Err(PrecompileHalt::Bn254PairLength.into());
     }
 
     let elements = input.len() / PAIR_ELEMENT_LEN;
@@ -196,7 +196,7 @@ pub fn run_pair(
 #[cfg(test)]
 mod tests {
     use crate::precompiles::{
-        PrecompileHalt,
+        PrecompileError, PrecompileHalt,
         bn254::{
             add::BYZANTIUM_ADD_GAS_COST,
             mul::BYZANTIUM_MUL_GAS_COST,
@@ -258,7 +258,7 @@ mod tests {
 
         let res = run_add(&input, BYZANTIUM_ADD_GAS_COST, &mut Gas::new(499));
 
-        assert!(matches!(res, Err(PrecompileHalt::OutOfGas)));
+        core::assert_matches!(res, Err(PrecompileError::Halt(PrecompileHalt::OutOfGas)));
 
         // No input test
         let input = [0u8; 0];
@@ -283,10 +283,10 @@ mod tests {
         .unwrap();
 
         let res = run_add(&input, BYZANTIUM_ADD_GAS_COST, &mut Gas::new(500));
-        assert!(matches!(
+        core::assert_matches!(
             res,
-            Err(ref f) if *f ==PrecompileHalt::Bn254AffineGFailedToCreate
-        ));
+            Err(ref f) if *f == PrecompileError::Halt(PrecompileHalt::Bn254AffineGFailedToCreate)
+        );
     }
 
     #[test]
@@ -318,7 +318,7 @@ mod tests {
         .unwrap();
 
         let res = run_mul(&input, BYZANTIUM_MUL_GAS_COST, &mut Gas::new(39_999));
-        assert!(matches!(res, Err(PrecompileHalt::OutOfGas)));
+        core::assert_matches!(res, Err(PrecompileError::Halt(PrecompileHalt::OutOfGas)));
 
         // Zero multiplication test
         let input = hex::decode(
@@ -360,10 +360,10 @@ mod tests {
         .unwrap();
 
         let res = run_mul(&input, BYZANTIUM_MUL_GAS_COST, &mut Gas::new(40_000));
-        assert!(matches!(
+        core::assert_matches!(
             res,
-            Err(ref f) if *f ==PrecompileHalt::Bn254AffineGFailedToCreate
-        ));
+            Err(ref f) if *f == PrecompileError::Halt(PrecompileHalt::Bn254AffineGFailedToCreate)
+        );
     }
 
     #[test]
@@ -413,7 +413,7 @@ mod tests {
 
         let res =
             run_pair(&input, BYZANTIUM_PAIR_PER_POINT, BYZANTIUM_PAIR_BASE, &mut Gas::new(259_999));
-        assert!(matches!(res, Err(PrecompileHalt::OutOfGas)));
+        core::assert_matches!(res, Err(PrecompileError::Halt(PrecompileHalt::OutOfGas)));
 
         // No input test
         let input = [0u8; 0];
@@ -440,10 +440,10 @@ mod tests {
 
         let res =
             run_pair(&input, BYZANTIUM_PAIR_PER_POINT, BYZANTIUM_PAIR_BASE, &mut Gas::new(260_000));
-        assert!(matches!(
+        core::assert_matches!(
             res,
-            Err(ref f) if *f ==PrecompileHalt::Bn254AffineGFailedToCreate
-        ));
+            Err(ref f) if *f == PrecompileError::Halt(PrecompileHalt::Bn254AffineGFailedToCreate)
+        );
 
         // Invalid input length
         let input = hex::decode(
@@ -457,7 +457,7 @@ mod tests {
 
         let res =
             run_pair(&input, BYZANTIUM_PAIR_PER_POINT, BYZANTIUM_PAIR_BASE, &mut Gas::new(260_000));
-        assert!(matches!(res, Err(PrecompileHalt::Bn254PairLength)));
+        core::assert_matches!(res, Err(PrecompileError::Halt(PrecompileHalt::Bn254PairLength)));
 
         // Test with point at infinity - should return true (identity element)
         // G1 point at infinity (0,0) followed by a valid G2 point

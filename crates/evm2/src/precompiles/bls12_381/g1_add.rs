@@ -4,7 +4,7 @@ use super::utils::{pad_g1_point, remove_g1_padding};
 use crate::{
     interpreter::Gas,
     precompiles::{
-        EthPrecompileResult, PrecompileHalt, PrecompileOutput,
+        PrecompileHalt, PrecompileOutput, PrecompileResult,
         bls12_381_const::{G1_ADD_BASE_GAS_FEE, G1_ADD_INPUT_LENGTH, PADDED_G1_LENGTH},
     },
 };
@@ -14,11 +14,11 @@ use crate::{
 /// Output is an encoding of addition operation result - single G1 point (`128`
 /// bytes).
 /// See also: <https://eips.ethereum.org/EIPS/eip-2537#abi-for-g1-addition>
-pub fn run(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
+pub fn run(input: &[u8], gas: &mut Gas) -> PrecompileResult {
     gas.spend(G1_ADD_BASE_GAS_FEE)?;
 
     if input.len() != G1_ADD_INPUT_LENGTH {
-        return Err(PrecompileHalt::Bls12381G1AddInputLength);
+        return Err(PrecompileHalt::Bls12381G1AddInputLength.into());
     }
 
     // Extract coordinates from padded input

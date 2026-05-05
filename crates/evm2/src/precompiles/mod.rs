@@ -1,12 +1,7 @@
 //! EVM precompiled contracts.
 
-use crate::{
-    SpecId,
-    evm::precompile::{PrecompileProvider, PrecompileStatus},
-    interpreter::{Gas, InstrStop},
-    once_lock::OnceLock,
-};
-use alloc::{borrow::Cow, boxed::Box, vec::Vec};
+use crate::{SpecId, evm::precompile::PrecompileProvider, interpreter::Gas, once_lock::OnceLock};
+use alloc::{borrow::Cow, vec::Vec};
 use alloy_primitives::Address;
 
 pub mod blake2;
@@ -14,6 +9,9 @@ pub mod bls12_381;
 pub mod bls12_381_const;
 pub mod bls12_381_utils;
 pub mod bn254;
+mod crypto;
+pub use crypto::{Crypto, DefaultCrypto, crypto, install_crypto};
+
 pub mod hash;
 pub mod identity;
 pub mod kzg_point_evaluation;
@@ -33,11 +31,13 @@ pub(crate) mod eip7823 {
     pub(crate) const INPUT_SIZE_LIMIT: usize = 1024;
 }
 
-pub mod interface;
-pub(crate) use interface::*;
-pub use interface::{Crypto, EthPrecompileResult, PrecompileHalt};
+mod result;
+pub use result::{AnyError, PrecompileError, PrecompileHalt, PrecompileResult};
 
-pub(crate) use crate::evm::precompile::PrecompileOutput;
+pub(crate) use crate::{
+    evm::precompile::PrecompileOutput,
+    utils::{calc_linear_cost, u64_to_address},
+};
 
 // silence arkworks lint as bn impl will be used as default if both are enabled.
 cfg_if::cfg_if! {
@@ -69,19 +69,6 @@ use aurora_engine_modexp as _;
 #[cfg(feature = "p256-aws-lc-rs")]
 use p256 as _;
 
-/// Global crypto provider instance.
-static CRYPTO: OnceLock<Box<dyn Crypto>> = OnceLock::new();
-
-/// Install a custom crypto provider globally.
-pub fn install_crypto<C: Crypto + 'static>(crypto: C) -> bool {
-    CRYPTO.set(Box::new(crypto)).is_ok()
-}
-
-/// Get the installed crypto provider, or the default if none is installed.
-pub fn crypto() -> &'static dyn Crypto {
-    CRYPTO.get_or_init(|| Box::new(DefaultCrypto)).as_ref()
-}
-
 /// Base Ethereum precompile provider.
 #[derive(Clone, Debug)]
 pub struct BasePrecompiles {
@@ -98,37 +85,13 @@ impl BasePrecompiles {
     /// Creates a precompile provider for a base EVM specification.
     #[inline]
     pub fn base(spec_id: SpecId) -> Self {
-        Self::new(Cow::Borrowed(for_spec(spec_id)))
+        Self::new(Cow::Borrowed(base_precompiles(spec_id)))
     }
 
     /// Creates a precompile map from precompile descriptors.
     #[inline]
     pub fn map(precompiles: impl IntoIterator<Item = Precompile>) -> PrecompileMap {
         PrecompileMap::from_precompiles(precompiles)
-    }
-
-    fn run(
-        f: fn(&[u8], &mut Gas) -> EthPrecompileResult,
-        input: &[u8],
-        gas: &mut Gas,
-    ) -> Result<PrecompileOutput, InstrStop> {
-        let output = match f(input, gas) {
-            Ok(output) => output,
-            Err(PrecompileHalt::OutOfGas) => {
-                gas.spend_all();
-                return Err(InstrStop::PrecompileOOG);
-            }
-            Err(_) => return Err(InstrStop::PrecompileError),
-        };
-        match output.status() {
-            PrecompileStatus::Success => Ok(output),
-            PrecompileStatus::Revert => Err(InstrStop::PrecompileError),
-            PrecompileStatus::Halt(PrecompileHalt::OutOfGas) => {
-                gas.spend_all();
-                Err(InstrStop::PrecompileOOG)
-            }
-            PrecompileStatus::Halt(_) => Err(InstrStop::PrecompileError),
-        }
     }
 }
 
@@ -144,13 +107,13 @@ impl PrecompileProvider for BasePrecompiles {
         address: Address,
         input: &[u8],
         gas: &mut Gas,
-    ) -> Option<Result<PrecompileOutput, InstrStop>> {
+    ) -> Option<PrecompileResult> {
         let precompile = self.map.as_ref().get_data(&address)?;
-        Some(Self::run(precompile.run(), input, gas))
+        Some(precompile.run()(input, gas))
     }
 }
 
-fn for_spec(spec: SpecId) -> &'static PrecompileMap {
+fn base_precompiles(spec: SpecId) -> &'static PrecompileMap {
     static CACHE: [OnceLock<PrecompileMap>; 7] = [const { OnceLock::new() }; 7];
 
     let index = match spec {

@@ -4,7 +4,7 @@ use super::utils::{pad_g1_point, remove_fp_padding};
 use crate::{
     interpreter::Gas,
     precompiles::{
-        EthPrecompileResult, PrecompileHalt, PrecompileOutput,
+        PrecompileHalt, PrecompileOutput, PrecompileResult,
         bls12_381_const::{MAP_FP_TO_G1_BASE_GAS_FEE, PADDED_FP_LENGTH},
     },
 };
@@ -12,11 +12,11 @@ use crate::{
 /// Field-to-curve call expects 64 bytes as an input that is interpreted as an
 /// element of Fp. Output of this call is 128 bytes and is an encoded G1 point.
 /// See also: <https://eips.ethereum.org/EIPS/eip-2537#abi-for-mapping-fp-element-to-g1-point>
-pub fn run(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
+pub fn run(input: &[u8], gas: &mut Gas) -> PrecompileResult {
     gas.spend(MAP_FP_TO_G1_BASE_GAS_FEE)?;
 
     if input.len() != PADDED_FP_LENGTH {
-        return Err(PrecompileHalt::Bls12381MapFpToG1InputLength);
+        return Err(PrecompileHalt::Bls12381MapFpToG1InputLength.into());
     }
 
     let input_p0 = remove_fp_padding(input)?;
@@ -40,6 +40,9 @@ mod test {
             "000000000000000000000000000000006900000000000000636f6e7472616374595a603f343061cd305a03f40239f5ffff31818185c136bc2595f2aa18e08f17"
         ));
         let fail = run(&input, &mut Gas::new(MAP_FP_TO_G1_BASE_GAS_FEE));
-        assert_eq!(fail, Err(PrecompileHalt::NonCanonicalFp));
+        assert_eq!(
+            fail.err().and_then(|e| e.as_halt().cloned()),
+            Some(PrecompileHalt::NonCanonicalFp)
+        );
     }
 }

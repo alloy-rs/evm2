@@ -3,7 +3,7 @@
 
 use crate::{
     interpreter::Gas,
-    precompiles::{EthPrecompileResult, PrecompileHalt, PrecompileOutput},
+    precompiles::{PrecompileHalt, PrecompileOutput, PrecompileResult},
 };
 pub(crate) mod arkworks;
 
@@ -32,12 +32,12 @@ pub(crate) const RETURN_VALUE: &[u8; 64] = &hex!(
 /// | versioned_hash |  z  |  y  | commitment | proof |
 /// |     32         | 32  | 32  |     48     |   48  |
 /// with z and y being padded 32 byte big endian values
-pub fn run(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
+pub fn run(input: &[u8], gas: &mut Gas) -> PrecompileResult {
     gas.spend(GAS_COST)?;
 
     // Verify input length.
     if input.len() != 192 {
-        return Err(PrecompileHalt::BlobInvalidInputLength);
+        return Err(PrecompileHalt::BlobInvalidInputLength.into());
     }
 
     // Verify commitment matches versioned_hash
@@ -45,7 +45,7 @@ pub fn run(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
     let commitment = &input[96..144];
     if kzg_to_versioned_hash_with_crypto(crate::precompiles::crypto(), commitment) != versioned_hash
     {
-        return Err(PrecompileHalt::BlobMismatchedVersion);
+        return Err(PrecompileHalt::BlobMismatchedVersion.into());
     }
 
     // Verify KZG proof with z and y in big endian format
@@ -63,7 +63,7 @@ pub fn run(input: &[u8], gas: &mut Gas) -> EthPrecompileResult {
 #[inline]
 #[allow(dead_code)]
 pub(crate) fn kzg_to_versioned_hash(commitment: &[u8]) -> [u8; 32] {
-    kzg_to_versioned_hash_with_crypto(&crate::precompiles::DefaultCrypto, commitment)
+    kzg_to_versioned_hash_with_crypto(&crate::precompiles::DefaultCrypto::new(), commitment)
 }
 
 /// `VERSIONED_HASH_VERSION_KZG ++ sha256(commitment)[1..]`
@@ -110,9 +110,11 @@ mod tests {
         // Test data from: https://github.com/ethereum/c-kzg-4844/blob/main/tests/verify_kzg_proof/kzg-mainnet/verify_kzg_proof_case_correct_proof_4_4/data.yaml
 
         let commitment = hex!("8f59a8d2a1a625a17f3fea0fe5eb8c896db3764f3185481bc22f91b4aaffcca25f26936857bc3a7c2539ea8ec3a952b7").to_vec();
-        let mut versioned_hash =
-            crate::precompiles::Crypto::sha256(&crate::precompiles::DefaultCrypto, &commitment)
-                .to_vec();
+        let mut versioned_hash = crate::precompiles::Crypto::sha256(
+            &crate::precompiles::DefaultCrypto::new(),
+            &commitment,
+        )
+        .to_vec();
         versioned_hash[0] = VERSIONED_HASH_VERSION_KZG;
         let z = hex!("73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000000").to_vec();
         let y = hex!("1522a4a7f34e1ea350ae07c29c96c7e79655aa926122e95fe69fcbd932ca49e9").to_vec();
