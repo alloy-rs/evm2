@@ -142,10 +142,11 @@ fn handle_custom_tx(
         code_address: req.tx.target,
         ..Message::default()
     };
+    let tx_env = Default::default();
     let result = req.host.execute_message(
-        Default::default(),
+        &tx_env,
         Bytecode::new_legacy(req.tx.code.clone()),
-        message,
+        &message,
         false,
     );
     Ok(evm2::TxResult {

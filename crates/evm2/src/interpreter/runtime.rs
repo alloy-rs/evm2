@@ -22,8 +22,8 @@ pub struct Interpreter<T: EvmTypes> {
     pub(crate) memory: Memory,
     pub(crate) result: Result,
     pub(crate) output: *const [u8],
-    tx_env: TxEnv,
-    pub(crate) message: Message,
+    tx_env: *const TxEnv,
+    pub(crate) message: *const Message,
     pub(crate) is_static: bool,
     pub(crate) return_data: Bytes,
     _marker: PhantomData<fn() -> T>,
@@ -34,28 +34,36 @@ impl<T: EvmTypes> Interpreter<T> {
     /// frame-local message.
     pub fn new(
         bytecode: Bytecode,
-        tx_env: TxEnv,
-        message: Message,
+        tx_env: &TxEnv,
+        message: &Message,
         caller_is_static: bool,
     ) -> Self {
+        let mut interpreter = Self::default();
+        interpreter.init(bytecode, tx_env, message, caller_is_static);
+        interpreter
+    }
+
+    /// Initializes this interpreter for a new frame, retaining reusable allocations.
+    pub(crate) fn init(
+        &mut self,
+        bytecode: Bytecode,
+        tx_env: &TxEnv,
+        message: &Message,
+        caller_is_static: bool,
+    ) {
         let gas_limit = message.gas_limit;
         let is_static = caller_is_static || matches!(message.kind, MessageKind::StaticCall);
-        Self {
-            pc: bytecode.original_byte_slice().as_ptr(),
-            bytecode,
-            // SAFETY: `Word` is valid at any bitpattern. It's not read before init anyway.
-            stack: unsafe { Box::new_uninit().assume_init() },
-            stack_len: 0,
-            gas: Gas::new(gas_limit),
-            memory: Memory::new(),
-            result: Ok(()),
-            output: &[],
-            tx_env,
-            message,
-            is_static,
-            return_data: Bytes::new(),
-            _marker: PhantomData,
-        }
+        self.pc = bytecode.original_byte_slice().as_ptr();
+        self.bytecode = bytecode;
+        self.stack_len = 0;
+        self.gas = Gas::new(gas_limit);
+        self.memory.clear();
+        self.result = Ok(());
+        self.output = &[];
+        self.tx_env = tx_env;
+        self.message = message;
+        self.is_static = is_static;
+        self.return_data = Bytes::new();
     }
 
     #[cfg(test)]
@@ -64,13 +72,15 @@ impl<T: EvmTypes> Interpreter<T> {
     }
 
     #[inline]
-    pub(crate) const fn tx_env(&self) -> &TxEnv {
-        &self.tx_env
+    pub(crate) fn tx_env(&self) -> &TxEnv {
+        debug_assert!(!self.tx_env.is_null());
+        unsafe { &*self.tx_env }
     }
 
     #[inline]
-    pub(crate) const fn message(&self) -> &Message {
-        &self.message
+    pub(crate) fn message(&self) -> &Message {
+        debug_assert!(!self.message.is_null());
+        unsafe { &*self.message }
     }
 
     #[inline]
@@ -141,7 +151,7 @@ impl<T: EvmTypes> Interpreter<T> {
     }
 
     /// Executes one instruction.
-    #[inline(always)]
+    #[inline]
     #[cfg(not(feature = "nightly"))]
     pub fn step(&mut self, config: ExecutionConfig<T>, host: &mut T::Host) -> ControlFlow<(), ()> {
         let (pc, stack_len, flow) = self.raw_step(config, host, self.pc, self.stack_len);
@@ -150,7 +160,7 @@ impl<T: EvmTypes> Interpreter<T> {
         flow
     }
 
-    #[inline(always)]
+    #[inline(never)]
     #[cfg(not(feature = "nightly"))]
     fn raw_step(
         &mut self,
@@ -202,5 +212,27 @@ impl<T: EvmTypes> Interpreter<T> {
             0,
         );
         self.result.unwrap_err()
+    }
+}
+
+impl<T: EvmTypes> Default for Interpreter<T> {
+    fn default() -> Self {
+        let bytecode = Bytecode::new();
+        Self {
+            pc: bytecode.original_byte_slice().as_ptr(),
+            bytecode,
+            // SAFETY: `Word` is valid at any bitpattern. It's not read before init anyway.
+            stack: unsafe { Box::new_uninit().assume_init() },
+            stack_len: 0,
+            gas: Gas::new(0),
+            memory: Memory::new(),
+            result: Ok(()),
+            output: &[],
+            tx_env: core::ptr::null(),
+            message: core::ptr::null(),
+            is_static: false,
+            return_data: Bytes::new(),
+            _marker: PhantomData,
+        }
     }
 }

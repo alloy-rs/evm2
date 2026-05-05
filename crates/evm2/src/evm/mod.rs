@@ -9,6 +9,7 @@ use crate::{
     registry::{HandlerResult, TxRegistry},
     version::GasId,
 };
+use alloc::vec::Vec;
 use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{Address, B256, Bytes, Log};
 
@@ -148,6 +149,8 @@ pub struct Evm<T: EvmTypes> {
     registry: TxRegistry<T::Tx, TxResult, Self>,
     pub(crate) state: State<T::Database>,
     precompiles: T::Precompiles,
+    #[debug(skip)]
+    interpreters: Vec<Interpreter<T>>,
 }
 
 impl<T: EvmTypes> Evm<T> {
@@ -181,6 +184,8 @@ impl<T: EvmTypes> Evm<T> {
         database: T::Database,
         precompiles: T::Precompiles,
     ) -> Self {
+        let mut interpreters = Vec::with_capacity(Message::CALL_DEPTH_LIMIT as usize + 1);
+        interpreters.resize_with(Message::CALL_DEPTH_LIMIT as usize + 1, Interpreter::default);
         Self {
             spec_id,
             execution_config,
@@ -188,6 +193,7 @@ impl<T: EvmTypes> Evm<T> {
             registry,
             state: State::new(database),
             precompiles,
+            interpreters,
         }
     }
 
@@ -274,6 +280,223 @@ impl<T: EvmTypes<Tx: Typed2718>> Evm<T> {
         Self: 'a,
     {
         txs.into_iter().map(move |tx| self.transact(tx))
+    }
+}
+
+impl<T: EvmTypes<Host = Self>> Evm<T> {
+    #[inline(never)]
+    fn execute_create_message(
+        &mut self,
+        tx_env: &TxEnv,
+        bytecode: Bytecode,
+        message: &Message,
+        caller_is_static: bool,
+    ) -> MessageResult {
+        let caller_nonce = self.state.account_info(message.caller).map_or(0, |info| info.nonce);
+        let caller_balance =
+            self.state.account_info(message.caller).map_or(Word::ZERO, |info| info.balance);
+        if caller_balance < message.value {
+            return MessageResult {
+                stop: InstrStop::OutOfFunds,
+                gas_remaining: message.gas_limit,
+                ..MessageResult::default()
+            };
+        }
+
+        let address = match message.kind {
+            MessageKind::Create if message.depth == 0 => message.destination,
+            MessageKind::Create => message.caller.create(caller_nonce),
+            MessageKind::Create2 => message.caller.create2(message.salt, bytecode.hash_slow()),
+            _ => unreachable!("invalid create message kind"),
+        };
+
+        self.state.warm_account(address);
+
+        if message.depth > 0 {
+            self.state.increment_nonce(message.caller);
+        }
+
+        let checkpoint = self.state.checkpoint();
+        if let Err(stop) =
+            self.state.create_account(message.caller, address, message.value, self.spec_id())
+        {
+            self.state.rollback(checkpoint);
+            return MessageResult {
+                stop,
+                gas_remaining: message.gas_limit,
+                ..MessageResult::default()
+            };
+        }
+
+        let mut create_message = message.clone();
+        create_message.destination = address;
+        create_message.code_address = address;
+        create_message.input = Bytes::new();
+        let mut stop = InstrStop::Stop;
+        let mut gas = Gas::new(0);
+        let mut output = Bytes::new();
+        self.run_interpreter(
+            bytecode,
+            tx_env,
+            &create_message,
+            caller_is_static,
+            &mut stop,
+            &mut gas,
+            &mut output,
+        );
+        let mut gas_remaining = gas.remaining();
+        let mut gas_refunded = if stop.is_success() { gas.refunded() } else { 0 };
+
+        if stop.is_success() {
+            let stop = if self.spec_id().enables(SpecId::SPURIOUS_DRAGON)
+                && output.len() > MAX_CODE_SIZE
+            {
+                Some(InstrStop::CreateContractSizeLimit)
+            } else if self.spec_id().enables(SpecId::LONDON)
+                && output.first().is_some_and(|byte| *byte == 0xef)
+            {
+                Some(InstrStop::CreateContractStartingWithEF)
+            } else {
+                let code_deposit_gas = output.len().saturating_mul(
+                    self.version().gas_params().get(GasId::CodeDepositCost) as usize,
+                );
+                gas.spend(u64::try_from(code_deposit_gas).unwrap_or(u64::MAX)).err()
+            };
+
+            if let Some(stop) = stop {
+                self.state.rollback(checkpoint);
+                gas_remaining = if stop.is_halt() { 0 } else { gas.remaining() };
+                return MessageResult {
+                    stop,
+                    gas_remaining,
+                    gas_refunded: 0,
+                    output,
+                    created_address: None,
+                };
+            }
+
+            gas_remaining = gas.remaining();
+            gas_refunded = gas.refunded();
+            self.state.set_code(address, Bytecode::new_legacy(output.clone()));
+        } else {
+            self.state.rollback(checkpoint);
+            if stop.is_halt() {
+                gas_remaining = 0;
+            }
+        }
+
+        MessageResult {
+            stop,
+            gas_remaining,
+            gas_refunded: if stop.is_success() { gas_refunded } else { 0 },
+            output,
+            created_address: stop.is_success().then_some(address),
+        }
+    }
+
+    #[inline(never)]
+    fn execute_call_message(
+        &mut self,
+        tx_env: &TxEnv,
+        bytecode: Bytecode,
+        message: &Message,
+        caller_is_static: bool,
+    ) -> MessageResult {
+        let checkpoint = self.state.checkpoint();
+        if matches!(message.kind, MessageKind::Call)
+            && !self.state.transfer(message.caller, message.destination, message.value)
+        {
+            return MessageResult {
+                stop: InstrStop::OutOfFunds,
+                gas_remaining: message.gas_limit,
+                ..MessageResult::default()
+            };
+        }
+
+        let mut gas = Gas::new(message.gas_limit);
+        if let Some(result) = self.execute_precompile(message, &mut gas) {
+            let (stop, gas_remaining, output) = match result {
+                Ok(output) => (InstrStop::Return, gas.remaining(), output.into_bytes()),
+                Err(PrecompileError::Revert(output)) => {
+                    (InstrStop::Revert, gas.remaining(), output)
+                }
+                Err(PrecompileError::Halt(PrecompileHalt::OutOfGas)) => {
+                    (InstrStop::PrecompileOOG, 0, Bytes::new())
+                }
+                Err(PrecompileError::Halt(_) | PrecompileError::Fatal(_)) => {
+                    let stop = InstrStop::PrecompileError;
+                    let gas_remaining = if stop.is_halt() { 0 } else { gas.remaining() };
+                    (stop, gas_remaining, Bytes::new())
+                }
+            };
+            if !stop.is_success() {
+                self.state.rollback(checkpoint);
+            }
+            return MessageResult {
+                stop,
+                gas_remaining,
+                gas_refunded: 0,
+                output,
+                created_address: None,
+            };
+        }
+
+        let mut stop = InstrStop::Stop;
+        let mut child_gas = Gas::new(0);
+        let mut output = Bytes::new();
+        self.run_interpreter(
+            bytecode,
+            tx_env,
+            message,
+            caller_is_static,
+            &mut stop,
+            &mut child_gas,
+            &mut output,
+        );
+        let mut gas_remaining = child_gas.remaining();
+
+        if !stop.is_success() {
+            self.state.rollback(checkpoint);
+            if stop.is_halt() {
+                gas_remaining = 0;
+            }
+        }
+
+        MessageResult {
+            stop,
+            gas_remaining,
+            gas_refunded: if stop.is_success() { child_gas.refunded() } else { 0 },
+            output,
+            created_address: None,
+        }
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "keeps recursive frame outputs out of an aggregate stack slot"
+    )]
+    fn run_interpreter(
+        &mut self,
+        bytecode: Bytecode,
+        tx_env: &TxEnv,
+        message: &Message,
+        caller_is_static: bool,
+        stop: &mut InstrStop,
+        gas: &mut Gas,
+        output: &mut Bytes,
+    ) {
+        let depth = usize::from(message.depth);
+        debug_assert!(depth <= Message::CALL_DEPTH_LIMIT as usize);
+        let interpreter = &mut self.interpreters[depth] as *mut Interpreter<T>;
+
+        // SAFETY: The interpreter vector is preallocated to the full call-depth limit, so recursive
+        // execution cannot reallocate it. Each active EVM frame uses its own depth index.
+        unsafe {
+            (*interpreter).init(bytecode, tx_env, message, caller_is_static);
+            *stop = (*interpreter).run_with(self.execution_config, self);
+            *gas = (*interpreter).gas();
+            *output = Bytes::copy_from_slice((*interpreter).output());
+        }
     }
 }
 
@@ -367,11 +590,14 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
 
     fn execute_message(
         &mut self,
-        tx_env: TxEnv,
+        tx_env: &TxEnv,
         bytecode: Bytecode,
-        message: Message,
+        message: &Message,
         caller_is_static: bool,
     ) -> MessageResult {
+        if message.depth.is_multiple_of(100) {
+            eprintln!("depth {}", message.depth);
+        }
         if message.depth > Message::CALL_DEPTH_LIMIT {
             return MessageResult {
                 stop: InstrStop::CallTooDeep,
@@ -380,161 +606,16 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
             };
         }
 
-        let is_create = matches!(message.kind, MessageKind::Create | MessageKind::Create2);
-        if is_create {
-            let caller_nonce = self.state.account_info(message.caller).map_or(0, |info| info.nonce);
-            let caller_balance =
-                self.state.account_info(message.caller).map_or(Word::ZERO, |info| info.balance);
-            if caller_balance < message.value {
-                return MessageResult {
-                    stop: InstrStop::OutOfFunds,
-                    gas_remaining: message.gas_limit,
-                    ..MessageResult::default()
-                };
+        match message.kind {
+            MessageKind::Create | MessageKind::Create2 => {
+                self.execute_create_message(tx_env, bytecode, message, caller_is_static)
             }
-
-            let address = match message.kind {
-                MessageKind::Create if message.depth == 0 => message.destination,
-                MessageKind::Create => message.caller.create(caller_nonce),
-                MessageKind::Create2 => message.caller.create2(message.salt, bytecode.hash_slow()),
-                _ => unreachable!("invalid create message kind"),
-            };
-
-            self.state.warm_account(address);
-
-            if message.depth > 0 {
-                self.state.increment_nonce(message.caller);
+            MessageKind::Call
+            | MessageKind::CallCode
+            | MessageKind::DelegateCall
+            | MessageKind::StaticCall => {
+                self.execute_call_message(tx_env, bytecode, message, caller_is_static)
             }
-
-            let checkpoint = self.state.checkpoint();
-            if let Err(stop) =
-                self.state.create_account(message.caller, address, message.value, self.spec_id())
-            {
-                self.state.rollback(checkpoint);
-                return MessageResult {
-                    stop,
-                    gas_remaining: message.gas_limit,
-                    ..MessageResult::default()
-                };
-            }
-
-            let mut create_message = message;
-            create_message.destination = address;
-            create_message.code_address = address;
-            create_message.input = Bytes::new();
-            let mut interpreter =
-                Interpreter::<T>::new(bytecode, tx_env, create_message, caller_is_static);
-            let stop = interpreter.run_with(self.execution_config, self);
-            let mut gas = interpreter.gas();
-            let output = Bytes::copy_from_slice(interpreter.output());
-            let mut gas_remaining = gas.remaining();
-            let mut gas_refunded = if stop.is_success() { gas.refunded() } else { 0 };
-
-            if stop.is_success() {
-                let stop = if self.spec_id().enables(SpecId::SPURIOUS_DRAGON)
-                    && output.len() > MAX_CODE_SIZE
-                {
-                    Some(InstrStop::CreateContractSizeLimit)
-                } else if self.spec_id().enables(SpecId::LONDON)
-                    && output.first().is_some_and(|byte| *byte == 0xef)
-                {
-                    Some(InstrStop::CreateContractStartingWithEF)
-                } else {
-                    let code_deposit_gas = output.len().saturating_mul(
-                        self.version().gas_params().get(GasId::CodeDepositCost) as usize,
-                    );
-                    gas.spend(u64::try_from(code_deposit_gas).unwrap_or(u64::MAX)).err()
-                };
-
-                if let Some(stop) = stop {
-                    self.state.rollback(checkpoint);
-                    gas_remaining = if stop.is_halt() { 0 } else { gas.remaining() };
-                    return MessageResult {
-                        stop,
-                        gas_remaining,
-                        gas_refunded: 0,
-                        output,
-                        created_address: None,
-                    };
-                }
-
-                gas_remaining = gas.remaining();
-                gas_refunded = gas.refunded();
-                self.state.set_code(address, Bytecode::new_legacy(output.clone()));
-            } else {
-                self.state.rollback(checkpoint);
-                if stop.is_halt() {
-                    gas_remaining = 0;
-                }
-            }
-
-            return MessageResult {
-                stop,
-                gas_remaining,
-                gas_refunded: if stop.is_success() { gas_refunded } else { 0 },
-                output,
-                created_address: stop.is_success().then_some(address),
-            };
-        }
-
-        let checkpoint = self.state.checkpoint();
-        if matches!(message.kind, MessageKind::Call)
-            && !self.state.transfer(message.caller, message.destination, message.value)
-        {
-            return MessageResult {
-                stop: InstrStop::OutOfFunds,
-                gas_remaining: message.gas_limit,
-                ..MessageResult::default()
-            };
-        }
-
-        let mut gas = Gas::new(message.gas_limit);
-        if let Some(result) = self.execute_precompile(&message, &mut gas) {
-            let (stop, gas_remaining, output) = match result {
-                Ok(output) => (InstrStop::Return, gas.remaining(), output.into_bytes()),
-                Err(PrecompileError::Revert(output)) => {
-                    (InstrStop::Revert, gas.remaining(), output)
-                }
-                Err(PrecompileError::Halt(PrecompileHalt::OutOfGas)) => {
-                    (InstrStop::PrecompileOOG, 0, Bytes::new())
-                }
-                Err(PrecompileError::Halt(_) | PrecompileError::Fatal(_)) => {
-                    let stop = InstrStop::PrecompileError;
-                    let gas_remaining = if stop.is_halt() { 0 } else { gas.remaining() };
-                    (stop, gas_remaining, Bytes::new())
-                }
-            };
-            if !stop.is_success() {
-                self.state.rollback(checkpoint);
-            }
-            return MessageResult {
-                stop,
-                gas_remaining,
-                gas_refunded: 0,
-                output,
-                created_address: None,
-            };
-        }
-
-        let mut interpreter = Interpreter::<T>::new(bytecode, tx_env, message, caller_is_static);
-        let stop = interpreter.run_with(self.execution_config, self);
-        let gas = interpreter.gas();
-        let output = Bytes::copy_from_slice(interpreter.output());
-        let mut gas_remaining = gas.remaining();
-
-        if !stop.is_success() {
-            self.state.rollback(checkpoint);
-            if stop.is_halt() {
-                gas_remaining = 0;
-            }
-        }
-
-        MessageResult {
-            stop,
-            gas_remaining,
-            gas_refunded: if stop.is_success() { gas.refunded() } else { 0 },
-            output,
-            created_address: None,
         }
     }
 
@@ -686,7 +767,7 @@ mod tests {
             ..Message::default()
         };
 
-        let result = Host::execute_message(&mut evm, TxEnv::default(), bytecode, message, false);
+        let result = Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &message, false);
         assert!(result.stop.is_success());
     }
 
@@ -707,7 +788,7 @@ mod tests {
             ..Message::default()
         };
 
-        let result = Host::execute_message(&mut evm, TxEnv::default(), bytecode, message, false);
+        let result = Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &message, false);
         assert!(result.stop.is_success());
     }
 
@@ -728,7 +809,7 @@ mod tests {
             ..Message::default()
         };
 
-        let result = Host::execute_message(&mut evm, TxEnv::default(), bytecode, message, false);
+        let result = Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &message, false);
         assert_eq!(result.stop, InstrStop::CallTooDeep);
         assert_eq!(result.gas_remaining, 50_000);
     }

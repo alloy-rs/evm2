@@ -235,9 +235,9 @@ pub trait Host {
     /// Executes a message inside this host.
     fn execute_message(
         &mut self,
-        tx_env: TxEnv,
+        tx_env: &TxEnv,
         bytecode: Bytecode,
-        message: Message,
+        message: &Message,
         caller_is_static: bool,
     ) -> MessageResult;
 

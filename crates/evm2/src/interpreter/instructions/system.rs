@@ -109,7 +109,7 @@ fn load_acc_and_calc_gas<T: EvmTypes>(
     Ok((gas_limit, account.code))
 }
 
-#[inline(always)]
+#[inline(never)]
 fn call_inner<T: EvmTypes>(
     mut stack: StackMut<'_>,
     mut cx: InstructionCx<'_, '_, T>,
@@ -167,10 +167,13 @@ fn call_inner<T: EvmTypes>(
     };
     let caller_is_static = cx.state.is_static();
     let bytecode = crate::bytecode::Bytecode::new_legacy(code);
+    let tx_env = cx.state.tx() as *const _;
     let result = if message.depth > Message::CALL_DEPTH_LIMIT {
         call_too_deep_result(message.gas_limit)
     } else {
-        cx.state.host.execute_message(cx.state.tx().clone(), bytecode, message, caller_is_static)
+        // SAFETY: `tx_env` points into the active interpreter frame and remains valid for the
+        // duration of this instruction.
+        cx.state.host.execute_message(unsafe { &*tx_env }, bytecode, &message, caller_is_static)
     };
     cx.gas.erase_cost(result.gas_returned_to_parent());
     cx.gas.record_refund(result.refund_propagated_to_parent());
@@ -206,7 +209,7 @@ pub(crate) fn create<const IS_CREATE2: bool>(cx: _) -> Result {
     create_inner(stack, cx, IS_CREATE2)
 }
 
-#[inline]
+#[inline(never)]
 fn create_inner<T: EvmTypes>(
     mut stack: StackMut<'_>,
     mut cx: InstructionCx<'_, '_, T>,
@@ -249,10 +252,13 @@ fn create_inner<T: EvmTypes>(
         salt: salt.map(|salt| B256::from(salt.to_be_bytes())).unwrap_or_default(),
     };
     let bytecode = crate::bytecode::Bytecode::new_legacy(input);
+    let tx_env = cx.state.tx() as *const _;
     let result = if message.depth > Message::CALL_DEPTH_LIMIT {
         call_too_deep_result(message.gas_limit)
     } else {
-        cx.state.host.execute_message(cx.state.tx().clone(), bytecode, message, false)
+        // SAFETY: `tx_env` points into the active interpreter frame and remains valid for the
+        // duration of this instruction.
+        cx.state.host.execute_message(unsafe { &*tx_env }, bytecode, &message, false)
     };
     cx.gas.erase_cost(result.gas_returned_to_parent());
     cx.gas.record_refund(result.refund_propagated_to_parent());

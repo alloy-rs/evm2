@@ -143,13 +143,13 @@ impl Host for TestHost {
 
     fn execute_message(
         &mut self,
-        _tx_env: TxEnv,
+        _tx_env: &TxEnv,
         _bytecode: Bytecode,
-        message: Message,
+        message: &Message,
         caller_is_static: bool,
     ) -> MessageResult {
         self.call_static_flags.push(caller_is_static || message.kind == MessageKind::StaticCall);
-        self.calls.push(message);
+        self.calls.push(message.clone());
         self.execute_result.clone()
     }
 
@@ -276,7 +276,7 @@ fn run_with_config<C: EvmConfig<TestTypes>>(config: RunConfig<'_>) -> TestInterp
     let RunConfig { code, host, spec_id: _, tx_env, mut message, gas_limit, return_data } = config;
     let bytecode = Bytecode::new_legacy(Bytes::from(code));
     message.gas_limit = gas_limit;
-    let mut inner = Interpreter::<TestTypes>::new(bytecode, tx_env, message, false);
+    let mut inner = Interpreter::<TestTypes>::new(bytecode, &tx_env, &message, false);
     inner.return_data = return_data;
     let mut default_host = TestHost::default();
     let host = host.unwrap_or(&mut default_host);

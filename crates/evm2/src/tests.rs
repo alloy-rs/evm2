@@ -20,9 +20,9 @@ fn run_tx(evm: &mut TestEvm, destination: Address, code: impl Into<Vec<u8>>) {
     };
     let result = Host::execute_message(
         evm,
-        TxEnv::default(),
+        &TxEnv::default(),
         Bytecode::new_legacy(Bytes::from(code.into())),
-        message,
+        &message,
         false,
     );
     assert!(result.stop.is_success());
@@ -128,9 +128,9 @@ fn evm_propagates_child_sstore_negative_refund() {
     };
     let result = Host::execute_message(
         &mut evm,
-        TxEnv::default(),
+        &TxEnv::default(),
         Bytecode::new_legacy(Bytes::from(parent_code)),
-        message,
+        &message,
         false,
     );
 
@@ -156,9 +156,9 @@ fn evm_reports_invalid_transaction_execution() {
     };
     let result = Host::execute_message(
         &mut evm,
-        TxEnv::default(),
+        &TxEnv::default(),
         Bytecode::new_legacy(Bytes::from_static(&[op::PUSH1, 0x01, op::SSTORE])),
-        message,
+        &message,
         false,
     );
 
