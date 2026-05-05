@@ -3,12 +3,12 @@ use crate::{
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
     interpreter::{
-        Host, InstrStop, Interpreter, Message, MessageKind, MessageResult, Stack, Word, op,
+        Gas, Host, InstrStop, Interpreter, Memory, Message, MessageKind, MessageResult, Stack,
+        Word, op,
     },
 };
 use alloc::{boxed::Box, vec::Vec};
-use alloy_primitives::{Address, B256, Bytes, Log};
-use std::collections::HashMap;
+use alloy_primitives::{Address, B256, Bytes, Log, map::HashMap};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct TestTypes;
@@ -47,8 +47,8 @@ impl Default for TestHost {
             code: Bytes::new(),
             is_empty: false,
             is_cold: false,
-            storage: HashMap::new(),
-            transient_storage: HashMap::new(),
+            storage: HashMap::default(),
+            transient_storage: HashMap::default(),
             logs: Vec::new(),
             execute_result: MessageResult { stop: InstrStop::Return, ..MessageResult::default() },
             selfdestruct_result: SelfDestructResult::default(),
@@ -86,8 +86,8 @@ impl Host for TestHost {
         })
     }
 
-    fn block_hash(&mut self, number: u64) -> Option<B256> {
-        Some(B256::with_last_byte(number as u8))
+    fn block_hash(&mut self, number: Word) -> Option<B256> {
+        Some(B256::with_last_byte(number.wrapping_to::<u8>()))
     }
 
     fn sload(&mut self, address: Address, key: Word) -> StorageLoad {
@@ -139,8 +139,8 @@ impl Host for TestHost {
 pub(super) struct TestInterpreter {
     pub(super) stack: Box<[Word; Stack::CAPACITY]>,
     pub(super) stack_len: usize,
-    pub(super) gas: crate::interpreter::Gas,
-    pub(super) memory: crate::interpreter::Memory,
+    pub(super) gas: Gas,
+    pub(super) memory: Memory,
     pub(super) output: *const [u8],
     pub(super) err: InstrStop,
 }

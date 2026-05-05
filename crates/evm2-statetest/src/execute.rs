@@ -257,7 +257,7 @@ fn logs_hash(logs: &[Log]) -> B256 {
 
 fn state_root(pre: &InMemoryDB, changes: &StateChanges) -> B256 {
     let post = apply_state_changes(pre, changes);
-    let accounts = post.accounts.iter().map(|(&address, info)| {
+    let accounts = post.cache.accounts.iter().map(|(&address, info)| {
         let storage = storage_for_root(&post, address);
         (
             address,
@@ -276,17 +276,17 @@ fn state_root(pre: &InMemoryDB, changes: &StateChanges) -> B256 {
 fn apply_state_changes(pre: &InMemoryDB, changes: &StateChanges) -> InMemoryDB {
     let mut post = pre.clone();
     for (&code_hash, code) in &changes.code {
-        post.contracts.insert(code_hash, code.clone());
+        post.cache.contracts.insert(code_hash, code.clone());
     }
     for (&address, storage) in &changes.storage {
         if storage.wipe {
-            post.storage.retain(|(storage_address, _), _| *storage_address != address);
+            post.cache.storage.retain(|(storage_address, _), _| *storage_address != address);
         }
         for (&key, change) in &storage.slots {
             if change.current.is_zero() {
-                post.storage.remove(&(address, key));
+                post.cache.storage.remove(&(address, key));
             } else {
-                post.storage.insert((address, key), change.current);
+                post.cache.storage.insert((address, key), change.current);
             }
         }
     }
@@ -294,8 +294,8 @@ fn apply_state_changes(pre: &InMemoryDB, changes: &StateChanges) -> InMemoryDB {
         match &change.current {
             Some(info) => post.insert_account_info(address, info.clone()),
             None => {
-                post.accounts.remove(&address);
-                post.storage.retain(|(storage_address, _), _| *storage_address != address);
+                post.cache.accounts.remove(&address);
+                post.cache.storage.retain(|(storage_address, _), _| *storage_address != address);
             }
         }
     }
@@ -304,6 +304,7 @@ fn apply_state_changes(pre: &InMemoryDB, changes: &StateChanges) -> InMemoryDB {
 
 fn storage_for_root(state: &InMemoryDB, address: Address) -> Vec<(B256, U256)> {
     state
+        .cache
         .storage
         .iter()
         .filter_map(|(&(storage_address, key), &value)| {

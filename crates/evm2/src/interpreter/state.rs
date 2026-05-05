@@ -144,7 +144,7 @@ pub trait Host {
     ) -> Result<AccountLoad, InstrStop>;
 
     /// Returns a historical block hash.
-    fn block_hash(&mut self, number: u64) -> Option<B256>;
+    fn block_hash(&mut self, number: Word) -> Option<B256>;
 
     /// Loads a persistent storage slot.
     fn sload(&mut self, address: Address, key: Word) -> StorageLoad;

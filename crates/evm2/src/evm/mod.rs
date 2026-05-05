@@ -21,7 +21,7 @@ pub mod registry;
 
 mod db;
 mod state;
-pub use db::{CacheDB, Database, InMemoryDB};
+pub use db::{Cache, CacheDB, Database, EmptyDB, InMemoryDB};
 pub use state::{
     Account, AccountInfo, JournalEntry, State, StateChanges, StorageChangeSet, StorageOverlay,
     Tracked,
@@ -203,7 +203,7 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
         if skip_cold_load && is_cold {
             return Err(InstrStop::OutOfGas);
         }
-        self.state.warm_account(address);
+        let _ = self.state.warm_account(address);
         let info = self.state.account_info(address).unwrap_or_default();
         Ok(AccountLoad {
             balance: info.balance,
@@ -218,7 +218,7 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
         })
     }
 
-    fn block_hash(&mut self, number: u64) -> Option<B256> {
+    fn block_hash(&mut self, number: Word) -> Option<B256> {
         self.state.initial().get_block_hash(number)
     }
 
@@ -279,7 +279,7 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
                 _ => unreachable!("invalid create message kind"),
             };
 
-            self.state.warm_account(address);
+            let _ = self.state.warm_account(address);
 
             if message.depth > 0 {
                 self.state.increment_nonce(message.caller);
@@ -411,7 +411,7 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
         if skip_cold_load && is_cold {
             return Err(InstrStop::OutOfGas);
         }
-        self.state.warm_account(target);
+        let _ = self.state.warm_account(target);
         let target_exists = self.state.account_info(target).is_some_and(|info| !info.is_empty());
         let previously_destroyed = self.state.is_selfdestructed(contract);
         let balance = self.state.account_info(contract).map_or(Word::ZERO, |info| info.balance);
@@ -419,7 +419,7 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
             || self.state.is_created_in_transaction(contract);
 
         if contract != target {
-            self.state.transfer(contract, target, balance);
+            let _ = self.state.transfer(contract, target, balance);
         } else if should_destroy && !balance.is_zero() {
             self.state.add_balance(contract, Word::ZERO.wrapping_sub(balance));
         }
