@@ -448,7 +448,7 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
 mod tests {
     use super::*;
     use crate::{
-        BaseEvmConfig, BaseEvmTypes, SpecId,
+        BaseEvmConfig, BaseEvmTypes, BasePrecompiles, SpecId,
         bytecode::Bytecode,
         interpreter::{MessageKind, op},
         registry::TxRequest,
@@ -493,7 +493,7 @@ mod tests {
             BlockEnv::default(),
             registry,
             InMemoryDB::default(),
-            Default::default(),
+            BasePrecompiles::base(SpecId::OSAKA),
         );
         let tx = TestTx { value: 41 };
 
@@ -510,7 +510,7 @@ mod tests {
             BlockEnv::default(),
             registry,
             InMemoryDB::default(),
-            Default::default(),
+            BasePrecompiles::base(SpecId::OSAKA),
         );
         let tx = TestTx { value: 41 };
 
@@ -526,7 +526,7 @@ mod tests {
             BlockEnv::default(),
             registry,
             InMemoryDB::default(),
-            Default::default(),
+            BasePrecompiles::base(SpecId::OSAKA),
         );
         let txs = [TestTx { value: 1 }, TestTx { value: 2 }];
         let gas_used = evm
@@ -544,7 +544,7 @@ mod tests {
             BlockEnv::default(),
             TxRegistry::new(),
             InMemoryDB::default(),
-            Default::default(),
+            BasePrecompiles::base(SpecId::OSAKA),
         );
         let contract = Address::from([0x11; 20]);
         let bytecode = Bytecode::new_legacy(Bytes::from_static(&[op::ADDRESS, op::STOP]));

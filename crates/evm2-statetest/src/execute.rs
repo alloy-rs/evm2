@@ -9,7 +9,7 @@ use alloy_trie::{
     root::{state_root_unhashed, storage_root_unhashed},
 };
 use evm2::{
-    BaseEvmTypes, Evm, EvmTypes, SpecId, TxResult,
+    BaseEvmTypes, BasePrecompiles, Evm, EvmTypes, SpecId, TxResult,
     bytecode::Bytecode,
     env::BlockEnv,
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
@@ -204,12 +204,13 @@ fn execute_spec(
 ) -> Result<SpecOutcome, HandlerError> {
     macro_rules! run {
         ($spec:ident) => {{
+            let spec = SpecId::$spec;
             let mut evm = Evm::<BaseEvmTypes<RecoveredTxEnvelope>>::new(
-                SpecId::$spec,
+                spec,
                 block,
                 ethereum_tx_registry(),
                 database,
-                Default::default(),
+                BasePrecompiles::base(spec),
             );
             let result = evm.transact(tx)?;
             Ok(spec_outcome(&evm, result, spec))

@@ -3,7 +3,7 @@
 use alloy_consensus::{TxLegacy, transaction::Recovered};
 use alloy_primitives::{Address, Bytes, TxKind, U256};
 use evm2::{
-    BaseEvmTypes, Evm, SpecId,
+    BaseEvmTypes, BasePrecompiles, Evm, SpecId,
     bytecode::Bytecode,
     env::BlockEnv,
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
@@ -35,7 +35,7 @@ fn main() {
         BlockEnv::default(),
         ethereum_tx_registry(),
         database,
-        Default::default(),
+        BasePrecompiles::base(SpecId::FRONTIER),
     );
     let tx = RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(
         TxLegacy {

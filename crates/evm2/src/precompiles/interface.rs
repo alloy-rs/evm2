@@ -10,6 +10,7 @@ use crate::{
     evm::precompile::PrecompileOutput,
     precompiles::bls12_381::{G1Point, G1PointScalar, G2Point, G2PointScalar},
 };
+use thiserror::Error;
 
 /// Type-erased error type.
 #[derive(Clone, Debug)]
@@ -209,80 +210,116 @@ pub trait Crypto: Send + Sync + Debug {
 ///
 /// These represent conditions that halt precompile execution but do not abort
 /// the entire EVM transaction.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, Error, PartialEq, Eq, Hash)]
 pub enum PrecompileHalt {
     /// out of gas is the main error. Others are here just for completeness
+    #[error("out of gas")]
     OutOfGas,
     /// Blake2 errors
+    #[error("wrong input length for blake2")]
     Blake2WrongLength,
     /// Blake2 wrong final indicator flag
+    #[error("wrong final indicator flag for blake2")]
     Blake2WrongFinalIndicatorFlag,
     /// Modexp errors
+    #[error("modexp exp overflow")]
     ModexpExpOverflow,
     /// Modexp base overflow
+    #[error("modexp base overflow")]
     ModexpBaseOverflow,
     /// Modexp mod overflow
+    #[error("modexp mod overflow")]
     ModexpModOverflow,
     /// Modexp limit all input sizes.
+    #[error("Modexp limit all input sizes.")]
     ModexpEip7823LimitSize,
     /// Bn254 errors
+    #[error("field point not a member of bn254 curve")]
     Bn254FieldPointNotAMember,
     /// Bn254 affine g failed to create
+    #[error("failed to create affine g point for bn254 curve")]
     Bn254AffineGFailedToCreate,
     /// Bn254 pair length
+    #[error("bn254 invalid pair length")]
     Bn254PairLength,
     // Blob errors
     /// The input length is not exactly 192 bytes
+    #[error("invalid blob input length")]
     BlobInvalidInputLength,
     /// The commitment does not match the versioned hash
+    #[error("mismatched blob version")]
     BlobMismatchedVersion,
     /// The proof verification failed
+    #[error("verifying blob kzg proof failed")]
     BlobVerifyKzgProofFailed,
     /// Non-canonical field element
+    #[error("non-canonical field element")]
     NonCanonicalFp,
     /// BLS12-381 G1 point not on curve
+    #[error("bls12-381 g1 point not on curve")]
     Bls12381G1NotOnCurve,
     /// BLS12-381 G1 point not in correct subgroup
+    #[error("bls12-381 g1 point not in correct subgroup")]
     Bls12381G1NotInSubgroup,
     /// BLS12-381 G2 point not on curve
+    #[error("bls12-381 g2 point not on curve")]
     Bls12381G2NotOnCurve,
     /// BLS12-381 G2 point not in correct subgroup
+    #[error("bls12-381 g2 point not in correct subgroup")]
     Bls12381G2NotInSubgroup,
     /// BLS12-381 scalar input length error
+    #[error("bls12-381 scalar input length error")]
     Bls12381ScalarInputLength,
     /// BLS12-381 G1 add input length error
+    #[error("bls12-381 g1 add input length error")]
     Bls12381G1AddInputLength,
     /// BLS12-381 G1 msm input length error
+    #[error("bls12-381 g1 msm input length error")]
     Bls12381G1MsmInputLength,
     /// BLS12-381 G2 add input length error
+    #[error("bls12-381 g2 add input length error")]
     Bls12381G2AddInputLength,
     /// BLS12-381 G2 msm input length error
+    #[error("bls12-381 g2 msm input length error")]
     Bls12381G2MsmInputLength,
     /// BLS12-381 pairing input length error
+    #[error("bls12-381 pairing input length error")]
     Bls12381PairingInputLength,
     /// BLS12-381 map fp to g1 input length error
+    #[error("bls12-381 map fp to g1 input length error")]
     Bls12381MapFpToG1InputLength,
     /// BLS12-381 map fp2 to g2 input length error
+    #[error("bls12-381 map fp2 to g2 input length error")]
     Bls12381MapFp2ToG2InputLength,
     /// BLS12-381 padding error
+    #[error("bls12-381 fp 64 top bytes of input are not zero")]
     Bls12381FpPaddingInvalid,
     /// BLS12-381 fp padding length error
+    #[error("bls12-381 fp padding length error")]
     Bls12381FpPaddingLength,
     /// BLS12-381 g1 padding length error
+    #[error("bls12-381 g1 padding length error")]
     Bls12381G1PaddingLength,
     /// BLS12-381 g2 padding length error
+    #[error("bls12-381 g2 padding length error")]
     Bls12381G2PaddingLength,
     /// KZG invalid G1 point
+    #[error("kzg invalid g1 point")]
     KzgInvalidG1Point,
     /// KZG G1 point not on curve
+    #[error("kzg g1 point not on curve")]
     KzgG1PointNotOnCurve,
     /// KZG G1 point not in correct subgroup
+    #[error("kzg g1 point not in correct subgroup")]
     KzgG1PointNotInSubgroup,
     /// KZG input length error
+    #[error("kzg invalid input length")]
     KzgInvalidInputLength,
     /// secp256k1 ecrecover failed
+    #[error("secp256k1 signature recovery failed")]
     Secp256k1RecoverFailed,
     /// Catch-all variant for precompile halt reasons without a dedicated variant.
+    #[error("{0}")]
     Other(Cow<'static, str>),
 }
 
@@ -307,52 +344,6 @@ impl From<crate::interpreter::InstrStop> for PrecompileHalt {
     #[inline]
     fn from(_: crate::interpreter::InstrStop) -> Self {
         Self::OutOfGas
-    }
-}
-
-impl core::error::Error for PrecompileHalt {}
-
-impl fmt::Display for PrecompileHalt {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let s = match self {
-            Self::OutOfGas => "out of gas",
-            Self::Blake2WrongLength => "wrong input length for blake2",
-            Self::Blake2WrongFinalIndicatorFlag => "wrong final indicator flag for blake2",
-            Self::ModexpExpOverflow => "modexp exp overflow",
-            Self::ModexpBaseOverflow => "modexp base overflow",
-            Self::ModexpModOverflow => "modexp mod overflow",
-            Self::ModexpEip7823LimitSize => "Modexp limit all input sizes.",
-            Self::Bn254FieldPointNotAMember => "field point not a member of bn254 curve",
-            Self::Bn254AffineGFailedToCreate => "failed to create affine g point for bn254 curve",
-            Self::Bn254PairLength => "bn254 invalid pair length",
-            Self::BlobInvalidInputLength => "invalid blob input length",
-            Self::BlobMismatchedVersion => "mismatched blob version",
-            Self::BlobVerifyKzgProofFailed => "verifying blob kzg proof failed",
-            Self::NonCanonicalFp => "non-canonical field element",
-            Self::Bls12381G1NotOnCurve => "bls12-381 g1 point not on curve",
-            Self::Bls12381G1NotInSubgroup => "bls12-381 g1 point not in correct subgroup",
-            Self::Bls12381G2NotOnCurve => "bls12-381 g2 point not on curve",
-            Self::Bls12381G2NotInSubgroup => "bls12-381 g2 point not in correct subgroup",
-            Self::Bls12381ScalarInputLength => "bls12-381 scalar input length error",
-            Self::Bls12381G1AddInputLength => "bls12-381 g1 add input length error",
-            Self::Bls12381G1MsmInputLength => "bls12-381 g1 msm input length error",
-            Self::Bls12381G2AddInputLength => "bls12-381 g2 add input length error",
-            Self::Bls12381G2MsmInputLength => "bls12-381 g2 msm input length error",
-            Self::Bls12381PairingInputLength => "bls12-381 pairing input length error",
-            Self::Bls12381MapFpToG1InputLength => "bls12-381 map fp to g1 input length error",
-            Self::Bls12381MapFp2ToG2InputLength => "bls12-381 map fp2 to g2 input length error",
-            Self::Bls12381FpPaddingInvalid => "bls12-381 fp 64 top bytes of input are not zero",
-            Self::Bls12381FpPaddingLength => "bls12-381 fp padding length error",
-            Self::Bls12381G1PaddingLength => "bls12-381 g1 padding length error",
-            Self::Bls12381G2PaddingLength => "bls12-381 g2 padding length error",
-            Self::KzgInvalidG1Point => "kzg invalid g1 point",
-            Self::KzgG1PointNotOnCurve => "kzg g1 point not on curve",
-            Self::KzgG1PointNotInSubgroup => "kzg g1 point not in correct subgroup",
-            Self::KzgInvalidInputLength => "kzg invalid input length",
-            Self::Secp256k1RecoverFailed => "secp256k1 signature recovery failed",
-            Self::Other(s) => s,
-        };
-        f.write_str(s)
     }
 }
 

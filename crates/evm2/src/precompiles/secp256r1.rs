@@ -12,9 +12,6 @@ use crate::{
 };
 use alloy_primitives::{B256, B512, Bytes};
 
-/// of secp256r1 precompile.
-pub(crate) const P256VERIFY_ADDRESS: u64 = 256;
-
 /// Base gas fee for secp256r1 p256verify operation.
 #[allow(dead_code)]
 pub(crate) const P256VERIFY_BASE_GAS_FEE: u64 = 3450;

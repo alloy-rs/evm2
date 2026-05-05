@@ -84,18 +84,17 @@ pub fn crypto() -> &'static dyn Crypto {
 type PrecompileFn = fn(&[u8], &mut Gas) -> EthPrecompileResult;
 type PrecompileMap = HashMap<Address, PrecompileFn>;
 
-/// Ethereum precompile provider.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub struct Precompiles<const SPEC: u8 = { SpecId::OSAKA as u8 }>;
+/// Base Ethereum precompile provider.
+#[derive(Clone, Copy, Debug)]
+pub struct BasePrecompiles {
+    map: &'static PrecompileMap,
+}
 
-impl<const SPEC: u8> Precompiles<SPEC> {
-    const SPEC_ID: SpecId = match SpecId::try_from_u8(SPEC) {
-        Some(spec_id) => spec_id,
-        None => panic!("invalid EVM specification ID"),
-    };
-
-    fn map() -> &'static PrecompileMap {
-        for_spec(Self::SPEC_ID)
+impl BasePrecompiles {
+    /// Creates a precompile provider for a base EVM specification.
+    #[inline]
+    pub fn base(spec_id: SpecId) -> Self {
+        Self { map: for_spec(spec_id) }
     }
 
     fn run(
@@ -123,18 +122,20 @@ impl<const SPEC: u8> Precompiles<SPEC> {
     }
 }
 
-impl<const SPEC: u8> PrecompileProvider for Precompiles<SPEC> {
+impl PrecompileProvider for BasePrecompiles {
+    #[inline]
     fn warm_addresses(&self) -> Vec<Address> {
-        Self::map().keys().copied().collect()
+        self.map.keys().copied().collect()
     }
 
+    #[inline]
     fn execute(
         &mut self,
         address: Address,
         input: &[u8],
         gas: &mut Gas,
     ) -> Option<Result<PrecompileOutput, InstrStop>> {
-        let f = *Self::map().get(&address)?;
+        let f = *self.map.get(&address)?;
         Some(Self::run(f, input, gas))
     }
 }
@@ -144,54 +145,43 @@ fn insert(precompiles: &mut PrecompileMap, address: u64, f: PrecompileFn) {
 }
 
 fn for_spec(spec: SpecId) -> &'static PrecompileMap {
-    static HOMESTEAD: OnceLock<PrecompileMap> = OnceLock::new();
-    static BYZANTIUM: OnceLock<PrecompileMap> = OnceLock::new();
-    static ISTANBUL: OnceLock<PrecompileMap> = OnceLock::new();
-    static BERLIN: OnceLock<PrecompileMap> = OnceLock::new();
-    static CANCUN: OnceLock<PrecompileMap> = OnceLock::new();
-    static PRAGUE: OnceLock<PrecompileMap> = OnceLock::new();
-    static OSAKA: OnceLock<PrecompileMap> = OnceLock::new();
+    static CACHE: [OnceLock<PrecompileMap>; 7] = [const { OnceLock::new() }; 7];
 
-    let lock = if spec.enables(SpecId::OSAKA) {
-        &OSAKA
-    } else if spec.enables(SpecId::PRAGUE) {
-        &PRAGUE
-    } else if spec.enables(SpecId::CANCUN) {
-        &CANCUN
-    } else if spec.enables(SpecId::BERLIN) {
-        &BERLIN
-    } else if spec.enables(SpecId::ISTANBUL) {
-        &ISTANBUL
-    } else if spec.enables(SpecId::BYZANTIUM) {
-        &BYZANTIUM
-    } else {
-        &HOMESTEAD
+    let index = match spec {
+        SpecId::FRONTIER | SpecId::HOMESTEAD | SpecId::TANGERINE | SpecId::SPURIOUS_DRAGON => 0,
+        SpecId::BYZANTIUM | SpecId::PETERSBURG => 1,
+        SpecId::ISTANBUL => 2,
+        SpecId::BERLIN | SpecId::LONDON | SpecId::MERGE | SpecId::SHANGHAI => 3,
+        SpecId::CANCUN => 4,
+        SpecId::PRAGUE => 5,
+        SpecId::OSAKA | SpecId::AMSTERDAM => 6,
     };
-
-    lock.get_or_init(|| {
+    CACHE[index].get_or_init(|| {
         let mut precompiles = map::HashMap::default();
 
-        insert(&mut precompiles, 1, secp256k1::run);
-        insert(&mut precompiles, 2, hash::run_sha256);
-        insert(&mut precompiles, 3, hash::run_ripemd160);
-        insert(&mut precompiles, 4, identity::run);
+        {
+            insert(&mut precompiles, 0x01, secp256k1::run);
+            insert(&mut precompiles, 0x02, hash::run_sha256);
+            insert(&mut precompiles, 0x03, hash::run_ripemd160);
+            insert(&mut precompiles, 0x04, identity::run);
+        }
 
         if spec.enables(SpecId::BYZANTIUM) {
-            insert(&mut precompiles, 5, modexp::run_byzantium);
-            insert(&mut precompiles, 6, bn254::add::run_byzantium);
-            insert(&mut precompiles, 7, bn254::mul::run_byzantium);
-            insert(&mut precompiles, 8, bn254::pair::run_byzantium);
+            insert(&mut precompiles, 0x05, modexp::run_byzantium);
+            insert(&mut precompiles, 0x06, bn254::add::run_byzantium);
+            insert(&mut precompiles, 0x07, bn254::mul::run_byzantium);
+            insert(&mut precompiles, 0x08, bn254::pair::run_byzantium);
         }
 
         if spec.enables(SpecId::ISTANBUL) {
-            insert(&mut precompiles, 6, bn254::add::run_istanbul);
-            insert(&mut precompiles, 7, bn254::mul::run_istanbul);
-            insert(&mut precompiles, 8, bn254::pair::run_istanbul);
-            insert(&mut precompiles, 9, blake2::run);
+            insert(&mut precompiles, 0x06, bn254::add::run_istanbul);
+            insert(&mut precompiles, 0x07, bn254::mul::run_istanbul);
+            insert(&mut precompiles, 0x08, bn254::pair::run_istanbul);
+            insert(&mut precompiles, 0x09, blake2::run);
         }
 
         if spec.enables(SpecId::BERLIN) {
-            insert(&mut precompiles, 5, modexp::run_berlin);
+            insert(&mut precompiles, 0x05, modexp::run_berlin);
         }
 
         if spec.enables(SpecId::CANCUN) {
@@ -209,8 +199,8 @@ fn for_spec(spec: SpecId) -> &'static PrecompileMap {
         }
 
         if spec.enables(SpecId::OSAKA) {
-            insert(&mut precompiles, 5, modexp::run_osaka);
-            insert(&mut precompiles, secp256r1::P256VERIFY_ADDRESS, secp256r1::run_osaka);
+            insert(&mut precompiles, 0x05, modexp::run_osaka);
+            insert(&mut precompiles, 0xff, secp256r1::run_osaka);
         }
 
         precompiles

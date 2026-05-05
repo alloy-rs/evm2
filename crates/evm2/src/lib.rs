@@ -26,7 +26,7 @@ pub use evm::{
 };
 
 pub(crate) mod precompiles;
-pub use precompiles::{Crypto, PrecompileHalt, Precompiles, crypto, install_crypto};
+pub use precompiles::{BasePrecompiles, Crypto, PrecompileHalt, crypto, install_crypto};
 
 pub mod version;
 pub use version::{Version, VersionTables};
