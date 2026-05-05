@@ -7,7 +7,7 @@ pub use gas::{Gas, GasTracker, MemoryGas};
 mod utils;
 
 pub(crate) mod instructions;
-pub use instructions::table::{Instruction, InstructionCx, InstructionImplFn};
+pub use instructions::table::{GasInstructionCx, Instruction, InstructionCx, InstructionImplFn};
 
 pub(crate) mod opcode;
 pub use opcode::op;

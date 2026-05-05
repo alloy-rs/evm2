@@ -42,7 +42,25 @@ pub(crate) type TailInstructionFn<T> = extern_table!(
 
 /// Tail instruction dispatch table.
 #[cfg(feature = "nightly")]
-pub(crate) type TailInstructionTable<T> = [TailInstructionFn<T>; 256];
+pub(crate) type TailInstructionTable<T> = [TailInstruction<T>; 256];
+
+/// Tail instruction dispatch table entry.
+#[cfg(feature = "nightly")]
+pub(crate) struct TailInstruction<T: EvmTypes> {
+    pub(crate) instr: TailInstructionFn<T>,
+    pub(crate) needs_gas: bool,
+}
+
+#[cfg(feature = "nightly")]
+impl<T: EvmTypes> Clone for TailInstruction<T> {
+    #[inline]
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+#[cfg(feature = "nightly")]
+impl<T: EvmTypes> Copy for TailInstruction<T> {}
 
 /// Function signature of an `#[instruction]`.
 pub type InstructionImplFn<T> =
@@ -66,6 +84,14 @@ where
 pub struct InstructionCx<'a, 'state, T: EvmTypes> {
     /// Program counter state.
     pub pc: &'a mut Pc,
+    /// Interpreter state.
+    pub state: &'a mut State<'state, T>,
+}
+
+/// Instruction execution context with mutable gas state.
+pub struct GasInstructionCx<'a, 'state, T: EvmTypes> {
+    /// Program counter state.
+    pub pc: &'a mut Pc,
     /// Gas state.
     pub gas: &'a mut Gas,
     /// Interpreter state.
@@ -79,8 +105,18 @@ impl<T: EvmTypes> core::fmt::Debug for InstructionCx<'_, '_, T> {
     }
 }
 
+impl<T: EvmTypes> core::fmt::Debug for GasInstructionCx<'_, '_, T> {
+    #[inline]
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("GasInstructionCx").finish_non_exhaustive()
+    }
+}
+
 /// EVM instruction implementation.
 pub trait Instruction<T: EvmTypes = crate::BaseEvmTypes> {
+    /// Whether this instruction needs mutable gas state.
+    const NEEDS_GAS: bool = true;
+
     /// Executes this instruction.
     fn execute(pc: &mut Pc, stack: StackMut<'_>, gas: &mut Gas, state: &mut State<'_, T>)
     -> Result;
@@ -96,10 +132,30 @@ pub(crate) const fn unknown_instruction<T: EvmTypes>(
     Err(InstrStop::OpcodeNotFound)
 }
 
+#[cfg(not(feature = "nightly"))]
 macro_rules! assign_instruction_table_entries {
     ([$table:expr, $evm_types:ty, $config:ty, $dispatch:ident, $instr_fn:ty] $($op:literal,)*) => {
         $(
             $table[$op] = $dispatch::<$evm_types, $config, $op> as $instr_fn;
+        )*
+    };
+}
+
+#[cfg(feature = "nightly")]
+macro_rules! assign_instruction_table_entries {
+    ([$table:expr, $evm_types:ty, $config:ty, $dispatch:ident, $instr_fn:ty] $($op:literal,)*) => {
+        $(
+            $table[$op] = TailInstruction {
+                instr: if <$config as EvmConfig<$evm_types>>::VERSION_TABLES
+                    .instruction_needs_gas_or_unknown($op)
+                {
+                    $dispatch::<$evm_types, $config, $op, true> as $instr_fn
+                } else {
+                    $dispatch::<$evm_types, $config, $op, false> as $instr_fn
+                },
+                needs_gas: <$config as EvmConfig<$evm_types>>::VERSION_TABLES
+                    .instruction_needs_gas_or_unknown($op),
+            };
         )*
     };
 }
@@ -151,7 +207,17 @@ where
     #[cfg(feature = "nightly")]
     use tail_dispatch as dispatch;
 
+    #[cfg(not(feature = "nightly"))]
     let mut table = [dispatch::<T, C, 0> as InstructionFn<T>; 256];
+    #[cfg(feature = "nightly")]
+    let mut table = [TailInstruction {
+        instr: if C::VERSION_TABLES.instruction_needs_gas_or_unknown(0) {
+            dispatch::<T, C, 0, true> as InstructionFn<T>
+        } else {
+            dispatch::<T, C, 0, false> as InstructionFn<T>
+        },
+        needs_gas: C::VERSION_TABLES.instruction_needs_gas_or_unknown(0),
+    }; 256];
     for_each_opcode_value!([table, T, C, dispatch, InstructionFn<T>] assign_instruction_table_entries);
 
     // Make all unknown entries point to the same dispatch function.
@@ -211,7 +277,7 @@ fn dispatch_mono<T: EvmTypes, C: EvmConfig<T>>(
 
 extern_table! {
     #[cfg(feature = "nightly")]
-    fn tail_dispatch<T: EvmTypes, C: EvmConfig<T>, const OP: u8>(
+    fn tail_dispatch<T: EvmTypes, C: EvmConfig<T>, const OP: u8, const NEEDS_GAS: bool>(
         pc: Pc,
         stack: Stack<'_>,
         remaining_gas: RemainingGas,
@@ -219,14 +285,21 @@ extern_table! {
         state: &mut State<'_, T>,
         _ret: u8,
     ) {
-        tail_return!(tail_dispatch_mono::<T, C>(pc, stack, remaining_gas, gas, state, OP));
+        tail_return!(tail_dispatch_mono::<T, C, NEEDS_GAS>(
+            pc,
+            stack,
+            remaining_gas,
+            gas,
+            state,
+            OP,
+        ));
     }
 }
 
 extern_table! {
     #[cfg(feature = "nightly")]
     #[inline(always)]
-    fn tail_dispatch_mono<T: EvmTypes, C: EvmConfig<T>>(
+    fn tail_dispatch_mono<T: EvmTypes, C: EvmConfig<T>, const NEEDS_GAS: bool>(
         mut pc: Pc,
         mut stack: Stack<'_>,
         mut remaining_gas: RemainingGas,
@@ -237,16 +310,36 @@ extern_table! {
         let instr = C::VERSION_TABLES.instruction_or_unknown(op);
         if let Err(e) = pre_step::<T, C>(&mut remaining_gas, op) {
             cold_path();
-            tail_return!(tail_call_restore::<T>(pc, stack, remaining_gas, gas, state, e as u8));
+            tail_return!(tail_call_restore::<T>(
+                pc,
+                stack,
+                remaining_gas,
+                gas,
+                state,
+                e as u8,
+            ));
         }
-        gas.set_remaining(remaining_gas.get());
+        if NEEDS_GAS {
+            gas.set_remaining(remaining_gas.get());
+        }
         if let Err(e) = instr(&mut pc, stack.as_mut(), gas, state) {
             cold_path();
-            remaining_gas.set(gas.remaining());
-            tail_return!(tail_call_restore::<T>(pc, stack, remaining_gas, gas, state, e as u8));
+            if NEEDS_GAS {
+                remaining_gas.set(gas.remaining());
+            }
+            tail_return!(tail_call_restore::<T>(
+                pc,
+                stack,
+                remaining_gas,
+                gas,
+                state,
+                e as u8,
+            ));
         }
-        remaining_gas.set(gas.remaining());
         inc_pc(&mut pc, op);
+        if NEEDS_GAS {
+            remaining_gas.set(gas.remaining());
+        }
         tail_return!(tail_call_next::<T, C>(pc, stack, remaining_gas, gas, state, 0));
     }
 }
@@ -263,7 +356,7 @@ extern_table! {
         ret: u8,
     ) {
         let instr = <T as InstructionTables<C>>::INSTRUCTIONS[pc.op() as usize];
-        tail_return!(instr(pc, stack, remaining_gas, gas, state, ret));
+        tail_return!((instr.instr)(pc, stack, remaining_gas, gas, state, ret));
     }
 }
 

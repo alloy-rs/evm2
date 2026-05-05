@@ -107,7 +107,7 @@ impl EvmConfigSelector<CustomTypes> for CustomConfigSelector {
 
 // Custom instruction
 
-#[instruction]
+#[instruction(needs_gas)]
 fn custom(cx: _) -> Result<out> {
     cx.gas.spend(cx.state.gas_params().get(CUSTOM_OPCODE_DYNAMIC_GAS_ID).into())?;
     *out = Word::from(0xdead_u64);

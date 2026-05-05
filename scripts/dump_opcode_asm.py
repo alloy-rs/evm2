@@ -27,7 +27,7 @@ DISPATCH_SYMBOLS = (
     "evm2::interpreter::instructions::table::dispatch::<",
     "evm2::interpreter::instructions::table::tail_dispatch::<",
 )
-DISPATCH_OPCODE = re.compile(r",\s*(\d+)>")
+DISPATCH_OPCODE = re.compile(r",\s*(\d+)(?:,\s*(?:true|false))?>")
 
 
 def log(message: str) -> None:

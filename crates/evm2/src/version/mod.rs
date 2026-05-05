@@ -97,9 +97,10 @@ macro_rules! evm_versions {
 
             macro_rules! op {
                 ($name:ident, $cost:expr) => {
-                    v.set_instruction(
+                    v.set_instruction_with_needs_gas(
                         op::$name,
                         Some(op_instr!(T, $name)),
+                        op_needs_gas!(T, $name),
                     );
                     v.set_static_gas(op::$name, $cost as u16);
                 };
@@ -601,3 +602,10 @@ macro_rules! op_instr {
     (@path $ty:ident, SELFDESTRUCT) => { instr::selfdestruct<$ty> };
 }
 use op_instr;
+
+macro_rules! op_needs_gas {
+    ($ty:ident, $name:ident) => {
+        <op_instr!(@path $ty, $name) as instr::table::Instruction<$ty>>::NEEDS_GAS
+    };
+}
+use op_needs_gas;

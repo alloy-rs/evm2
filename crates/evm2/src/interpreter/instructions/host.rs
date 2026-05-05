@@ -1,6 +1,8 @@
 use crate::{
     EvmTypes, SpecId,
-    interpreter::{Host, InstrStop, InstructionCx, Result, StackMut, Word, memory::resize_memory},
+    interpreter::{
+        GasInstructionCx, Host, InstrStop, Result, StackMut, State, Word, memory::resize_memory,
+    },
     utils::word_to_usize,
     version::GasId,
 };
@@ -8,14 +10,14 @@ use alloy_primitives::{B256, Bytes, Log, LogData};
 use evm2_macros::instruction;
 
 #[inline]
-fn require_non_staticcall<T: EvmTypes>(cx: &InstructionCx<'_, '_, T>) -> Result {
-    if cx.state.is_static() {
+fn require_non_staticcall<T: EvmTypes>(state: &State<'_, T>) -> Result {
+    if state.is_static() {
         return Err(InstrStop::StateChangeDuringStaticCall);
     }
     Ok(())
 }
 
-#[instruction]
+#[instruction(needs_gas)]
 pub(crate) fn sload(cx: _, [key]: [Word]) -> Result<out> {
     let load = cx.state.host.sload(cx.state.message().destination, key);
     if load.is_cold {
@@ -24,9 +26,9 @@ pub(crate) fn sload(cx: _, [key]: [Word]) -> Result<out> {
     *out = load.value;
 }
 
-#[instruction(no_stack_preamble)]
+#[instruction(no_stack_preamble, needs_gas)]
 pub(crate) fn sstore(cx: _) -> Result {
-    require_non_staticcall(&cx)?;
+    require_non_staticcall(cx.state)?;
     let [key, value] = stack.popn()?;
     let gas_params = cx.state.gas_params();
     if cx.state.spec.enables(SpecId::ISTANBUL)
@@ -61,23 +63,23 @@ pub(crate) fn tload(cx: _) -> Result {
 
 #[instruction(no_stack_preamble)]
 pub(crate) fn tstore(cx: _) -> Result {
-    require_non_staticcall(&cx)?;
+    require_non_staticcall(cx.state)?;
     let [key, value] = stack.popn()?;
     cx.state.host.tstore(cx.state.message().destination, key, value);
 }
 
-#[instruction(no_stack_preamble)]
+#[instruction(no_stack_preamble, needs_gas)]
 pub(crate) fn log<const N: usize>(cx: _) -> Result {
     log_common(cx, stack, N)
 }
 
 #[inline(never)]
 fn log_common<T: EvmTypes>(
-    cx: InstructionCx<'_, '_, T>,
+    cx: GasInstructionCx<'_, '_, T>,
     mut stack: StackMut<'_>,
     n: usize,
 ) -> Result {
-    require_non_staticcall(&cx)?;
+    require_non_staticcall(cx.state)?;
     let [offset, len] = stack.popn()?;
     let len = word_to_usize(len)?;
     cx.gas.spend(cx.state.gas_params().log_cost(n as u8, len))?;
