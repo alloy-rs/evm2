@@ -59,7 +59,10 @@ pub mod version;
 
 pub use evm::{
     Evm, TxResult, config,
-    config::{BaseEvmConfig, BaseEvmTypes, EvmConfig, EvmTypes},
+    config::{
+        BaseEvmConfig, BaseEvmConfigFactory, BaseEvmTypes, EvmConfig, EvmConfigFactory, EvmTypes,
+        base_run_interpreter,
+    },
     env, precompile, registry,
 };
 pub use version::{EvmVersion, Version};
@@ -77,7 +80,7 @@ mod tests;
 #[doc(hidden)]
 pub fn _get_asm() -> impl Sized {
     let mut evm = Evm::<BaseEvmTypes>::new(
-        Default::default(),
+        SpecId::DEFAULT,
         Default::default(),
         Default::default(),
         Default::default(),

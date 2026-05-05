@@ -120,61 +120,59 @@ impl TryFrom<u8> for SpecId {
     }
 }
 
-/// Maps a runtime specification ID to a compile-time EVM config named `SPEC`.
+/// Maps a runtime specification ID to a compile-time constant.
 #[macro_export]
 macro_rules! spec_to_generic {
-    (@spec $spec_id:ident, $e:expr) => {{
-        const SPEC_ID: u8 = $crate::SpecId::$spec_id as u8;
-        #[allow(clippy::upper_case_acronyms)]
-        type SPEC = $crate::BaseEvmConfig<SPEC_ID>;
+    (@spec $spec_id:ident, |$spec_const:ident| $e:expr) => {{
+        const $spec_const: u8 = $crate::SpecId::$spec_id as u8;
         $e
     }};
-    ($spec_id:expr, $e:expr) => {{
+    ($spec_id:expr, |$spec_const:ident| $e:expr) => {{
         match $spec_id {
             $crate::SpecId::FRONTIER => {
-                $crate::spec_to_generic!(@spec FRONTIER, $e)
+                $crate::spec_to_generic!(@spec FRONTIER, |$spec_const| $e)
             }
             $crate::SpecId::HOMESTEAD => {
-                $crate::spec_to_generic!(@spec HOMESTEAD, $e)
+                $crate::spec_to_generic!(@spec HOMESTEAD, |$spec_const| $e)
             }
             $crate::SpecId::TANGERINE => {
-                $crate::spec_to_generic!(@spec TANGERINE, $e)
+                $crate::spec_to_generic!(@spec TANGERINE, |$spec_const| $e)
             }
             $crate::SpecId::SPURIOUS_DRAGON => {
-                $crate::spec_to_generic!(@spec SPURIOUS_DRAGON, $e)
+                $crate::spec_to_generic!(@spec SPURIOUS_DRAGON, |$spec_const| $e)
             }
             $crate::SpecId::BYZANTIUM => {
-                $crate::spec_to_generic!(@spec BYZANTIUM, $e)
+                $crate::spec_to_generic!(@spec BYZANTIUM, |$spec_const| $e)
             }
             $crate::SpecId::PETERSBURG => {
-                $crate::spec_to_generic!(@spec PETERSBURG, $e)
+                $crate::spec_to_generic!(@spec PETERSBURG, |$spec_const| $e)
             }
             $crate::SpecId::ISTANBUL => {
-                $crate::spec_to_generic!(@spec ISTANBUL, $e)
+                $crate::spec_to_generic!(@spec ISTANBUL, |$spec_const| $e)
             }
             $crate::SpecId::BERLIN => {
-                $crate::spec_to_generic!(@spec BERLIN, $e)
+                $crate::spec_to_generic!(@spec BERLIN, |$spec_const| $e)
             }
             $crate::SpecId::LONDON => {
-                $crate::spec_to_generic!(@spec LONDON, $e)
+                $crate::spec_to_generic!(@spec LONDON, |$spec_const| $e)
             }
             $crate::SpecId::MERGE => {
-                $crate::spec_to_generic!(@spec MERGE, $e)
+                $crate::spec_to_generic!(@spec MERGE, |$spec_const| $e)
             }
             $crate::SpecId::SHANGHAI => {
-                $crate::spec_to_generic!(@spec SHANGHAI, $e)
+                $crate::spec_to_generic!(@spec SHANGHAI, |$spec_const| $e)
             }
             $crate::SpecId::CANCUN => {
-                $crate::spec_to_generic!(@spec CANCUN, $e)
+                $crate::spec_to_generic!(@spec CANCUN, |$spec_const| $e)
             }
             $crate::SpecId::PRAGUE => {
-                $crate::spec_to_generic!(@spec PRAGUE, $e)
+                $crate::spec_to_generic!(@spec PRAGUE, |$spec_const| $e)
             }
             $crate::SpecId::OSAKA => {
-                $crate::spec_to_generic!(@spec OSAKA, $e)
+                $crate::spec_to_generic!(@spec OSAKA, |$spec_const| $e)
             }
             $crate::SpecId::AMSTERDAM => {
-                $crate::spec_to_generic!(@spec AMSTERDAM, $e)
+                $crate::spec_to_generic!(@spec AMSTERDAM, |$spec_const| $e)
             }
         }
     }};

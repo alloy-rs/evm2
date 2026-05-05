@@ -77,7 +77,8 @@ static BASE_VERSIONS: [Version; SpecId::COUNT] = {
 macro_rules! evm_versions {
     ($($spec:ident { $($tokens:tt)* })*) => {
         impl Version {
-            const fn new_base(spec_id: SpecId) -> Self {
+            /// Creates the base EVM version for `spec_id`.
+            pub const fn new_base(spec_id: SpecId) -> Self {
                 use crate::interpreter::gas::*;
                 use GasId::*;
 

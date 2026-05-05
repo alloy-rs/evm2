@@ -1,5 +1,5 @@
 use crate::{
-    AccountLoad, EvmConfig, EvmTypes, SelfDestructResult, SpecId, StorageLoad,
+    AccountLoad, BaseEvmConfig, EvmConfig, EvmTypes, SelfDestructResult, SpecId, StorageLoad,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
     interpreter::{
@@ -14,6 +14,8 @@ use std::collections::HashMap;
 pub(crate) struct TestTypes;
 
 impl EvmTypes for TestTypes {
+    type ConfigFactory = crate::BaseEvmConfigFactory;
+    type SpecId = crate::SpecId;
     type Tx = ();
     type Host = TestHost;
     type Database = crate::evm::InMemoryDB;
@@ -229,7 +231,9 @@ impl Default for RunConfig<'_> {
 }
 
 pub(super) fn run(config: RunConfig<'_>) -> TestInterpreter {
-    crate::spec_to_generic!(config.spec_id, run_with_config::<SPEC>(config))
+    crate::spec_to_generic!(config.spec_id, |SPEC_ID| run_with_config::<BaseEvmConfig<SPEC_ID>>(
+        config
+    ))
 }
 
 fn run_with_config<C: EvmConfig>(config: RunConfig<'_>) -> TestInterpreter {

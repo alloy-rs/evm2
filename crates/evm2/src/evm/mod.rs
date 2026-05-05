@@ -2,7 +2,7 @@
 
 use self::precompile::{PrecompileOutput, PrecompileProvider};
 use crate::{
-    AccountLoad, EvmConfig, EvmTypes, SelfDestructResult, SpecId, StorageLoad, Version,
+    AccountLoad, EvmConfigFactory, EvmTypes, SelfDestructResult, SpecId, StorageLoad, Version,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
     interpreter::{Host, InstrStop, Interpreter, Message, MessageKind, MessageResult, Word},
@@ -37,12 +37,16 @@ pub struct TxResult {
     pub output: Bytes,
 }
 
-type RunInterpreterFn<T> = fn(&mut Interpreter<T>, &mut <T as EvmTypes>::Host) -> InstrStop;
+/// Interpreter runner selected for a concrete EVM configuration.
+pub type RunInterpreterFn<T> = fn(&mut Interpreter<T>, &mut <T as EvmTypes>::Host) -> InstrStop;
 
 /// EVM host and transaction dispatcher.
-#[derive(Debug)]
+#[derive(derive_more::Debug)]
 pub struct Evm<T: EvmTypes> {
+    #[debug(skip)]
+    spec_id: T::SpecId,
     version: &'static Version,
+    #[debug(skip)]
     run_interpreter: RunInterpreterFn<T>,
     pub(crate) block: BlockEnv,
     registry: TxRegistry<T::Tx, TxResult, Self>,
@@ -56,27 +60,36 @@ impl<T: EvmTypes> Evm<T> {
     /// precompile provider.
     #[inline]
     pub fn new(
-        spec_id: SpecId,
+        spec_id: T::SpecId,
         block: BlockEnv,
         registry: TxRegistry<T::Tx, TxResult, Self>,
         database: T::Database,
         precompiles: T::Precompiles,
     ) -> Self {
-        Self::new_with_version(Version::base(spec_id), block, registry, database, precompiles)
+        Self::new_with_version(
+            <T::ConfigFactory as EvmConfigFactory<T>>::version(spec_id),
+            spec_id,
+            block,
+            registry,
+            database,
+            precompiles,
+        )
     }
 
     /// Creates an EVM with the provided transaction registry, database, and precompile provider.
     #[inline]
     pub fn new_with_version(
         version: &'static Version,
+        spec_id: T::SpecId,
         block: BlockEnv,
         registry: TxRegistry<T::Tx, TxResult, Self>,
         database: T::Database,
         precompiles: T::Precompiles,
     ) -> Self {
         Self {
+            spec_id,
             version,
-            run_interpreter: run_interpreter_for_spec::<T>(version.spec_id()),
+            run_interpreter: <T::ConfigFactory as EvmConfigFactory<T>>::run_interpreter(spec_id),
             block,
             registry,
             state: State::new(database),
@@ -85,6 +98,16 @@ impl<T: EvmTypes> Evm<T> {
         }
     }
 
+    #[inline]
+    fn execute_precompile(
+        &mut self,
+        message: &Message,
+    ) -> Option<Result<PrecompileOutput, InstrStop>> {
+        self.precompiles.execute(message.code_address, &message.input, message.gas_limit)
+    }
+}
+
+impl<T: EvmTypes> Evm<T> {
     /// Returns the transaction handler registry.
     pub const fn registry(&self) -> &TxRegistry<T::Tx, TxResult, Self> {
         &self.registry
@@ -125,12 +148,9 @@ impl<T: EvmTypes> Evm<T> {
         self.version.spec_id()
     }
 
-    #[inline]
-    fn execute_precompile(
-        &mut self,
-        message: &Message,
-    ) -> Option<Result<PrecompileOutput, InstrStop>> {
-        self.precompiles.execute(message.code_address, &message.input, message.gas_limit)
+    /// Returns the factory-specific runtime specification ID.
+    pub const fn config_spec_id(&self) -> T::SpecId {
+        self.spec_id
     }
 }
 
@@ -393,17 +413,6 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
     }
 }
 
-fn run_interpreter_for_spec<T: EvmTypes>(spec_id: SpecId) -> RunInterpreterFn<T> {
-    crate::spec_to_generic!(spec_id, run_interpreter::<T, SPEC>)
-}
-
-fn run_interpreter<T: EvmTypes, C: EvmConfig>(
-    interpreter: &mut Interpreter<T>,
-    host: &mut T::Host,
-) -> InstrStop {
-    interpreter.run::<C>(host)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -496,6 +505,8 @@ mod tests {
     }
 
     impl EvmTypes for NoConfigTypes {
+        type ConfigFactory = crate::BaseEvmConfigFactory;
+        type SpecId = SpecId;
         type Tx = TestTx;
         type Host = NoConfigHost;
         type Database = InMemoryDB;
@@ -547,6 +558,7 @@ mod tests {
             TxRegistry::new().with_handler(TEST_TX_TYPE, extract_test_tx, handle_no_config_tx);
         let mut evm = Evm::<NoConfigTypes>::new_with_version(
             NO_CONFIG_VERSION,
+            SpecId::OSAKA,
             BlockEnv::default(),
             registry,
             InMemoryDB::default(),

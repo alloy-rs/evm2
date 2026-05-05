@@ -10,7 +10,8 @@ mod utils;
 pub(crate) mod instructions;
 #[doc(hidden)]
 pub use crate::version::{InstructionImplTable, StaticGasTable};
-pub(crate) use instructions::table;
+#[doc(hidden)]
+pub use instructions::table;
 #[doc(hidden)]
 pub use instructions::table::{Instruction, InstructionImplFn};
 
@@ -35,7 +36,8 @@ pub use state::{Host, MessageResult, State};
 mod runtime;
 pub use runtime::Interpreter;
 
-pub(crate) type Result<T = (), E = InstrStop> = core::result::Result<T, E>;
+#[doc(hidden)]
+pub type Result<T = (), E = InstrStop> = core::result::Result<T, E>;
 
 /// Result of executing an EVM instruction.
 #[repr(u8)]

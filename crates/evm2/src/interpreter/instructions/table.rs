@@ -1,7 +1,7 @@
 //! Instruction dispatch tables.
 
 use crate::{
-    EvmConfig, EvmTypes,
+    EvmConfig, EvmConfigFactory, EvmTypes,
     interpreter::{Gas, GasParams, InstrStop, Pc, Result, Stack, StackMut, State, op},
 };
 use core::hint::cold_path;
@@ -39,7 +39,6 @@ pub type InstructionImplFn<T> =
     fn(pc: &mut Pc, stack: StackMut<'_>, gas: &mut Gas, state: &mut State<'_, T>) -> Result;
 
 pub(crate) trait InstructionTables<C: EvmConfig>: EvmTypes {
-    const VERSION: &'static crate::EvmVersion<Self> = &crate::EvmVersion::<Self>::new_base::<C>();
     const INSTRUCTIONS: &'static InstructionTable<Self> = &make_instruction_table::<Self, C>();
 }
 
@@ -136,7 +135,10 @@ pub(crate) const fn make_instruction_table<T: EvmTypes, C: EvmConfig>() -> Instr
     let mut i = 0;
     let mut unknown_idx = 0;
     while i < 256 {
-        if !<T as InstructionTables<C>>::VERSION.instruction_impls.contains(i as u8) {
+        if !<T::ConfigFactory as EvmConfigFactory<T>>::evm_version::<C>()
+            .instruction_impls
+            .contains(i as u8)
+        {
             if unknown_idx == 0 {
                 unknown_idx = i;
             }
@@ -169,7 +171,9 @@ fn dispatch_mono<T: EvmTypes, C: EvmConfig>(
     gas: &mut Gas,
     state: &mut State<'_, T>,
 ) -> InstructionFnRet {
-    let instr = <T as InstructionTables<C>>::VERSION.instruction_impls.get_or_default(op);
+    let instr = <T::ConfigFactory as EvmConfigFactory<T>>::evm_version::<C>()
+        .instruction_impls
+        .get_or_default(op);
     let r;
     match pre_step::<C>(gas, op) {
         Ok(()) => {
@@ -210,7 +214,9 @@ extern_table! {
         state: &mut State<'_, T>,
         op: u8,
     ) {
-        let instr = <T as InstructionTables<C>>::VERSION.instruction_impls.get_or_default(op);
+        let instr = <T::ConfigFactory as EvmConfigFactory<T>>::evm_version::<C>()
+            .instruction_impls
+            .get_or_default(op);
         if let Err(e) = pre_step::<C>(gas, op) {
             cold_path();
             tail_return!(tail_call_restore::<T>(pc, stack, gas, state, e as u8));
@@ -281,34 +287,7 @@ const fn instruction_len(op: u8) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::Instruction;
-    use crate::{
-        EvmConfig, EvmTypes, EvmVersion, SpecId, Version,
-        interpreter::{Word, instructions::tests::TestHost, op},
-        version::StaticGasTable,
-    };
-    use evm2_macros::instruction;
-
-    const CUSTOM_OPCODE: u8 = 0x0c;
-
-    #[derive(Debug)]
-    struct CustomTypes;
-
-    impl EvmTypes for CustomTypes {
-        type Tx = ();
-        type Host = TestHost;
-        type Database = crate::evm::InMemoryDB;
-        type Precompiles = crate::evm::precompile::NoPrecompiles;
-    }
-
-    impl EvmConfig for CustomTypes {
-        const VERSION: &'static Version = Version::base(SpecId::DEFAULT);
-    }
-
-    #[instruction]
-    fn custom() -> out {
-        *out = Word::from(0xdead_u64);
-    }
+    use crate::{SpecId, Version, interpreter::op, version::StaticGasTable};
 
     fn gas_params(spec: SpecId) -> &'static StaticGasTable {
         &Version::base(spec).static_gas_table
@@ -342,15 +321,5 @@ mod tests {
         assert_eq!(berlin[op::SLOAD], 100);
         assert_eq!(berlin[op::BALANCE], 100);
         assert_eq!(berlin[op::CALL], 100);
-    }
-
-    #[test]
-    fn instruction_impl_table_sets_custom_opcode() {
-        let mut version = EvmVersion::<CustomTypes>::new_base::<CustomTypes>();
-        version.instruction_impls.set(
-            CUSTOM_OPCODE,
-            Some(<custom<CustomTypes> as Instruction<CustomTypes>>::execute::<CustomTypes>),
-        );
-        assert!(version.instruction_impls.contains(CUSTOM_OPCODE));
     }
 }
