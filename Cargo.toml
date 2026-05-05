@@ -83,4 +83,8 @@ opt-level = 3
 [profile.release]
 opt-level = 3
 panic = "abort"
-# lto = "thin"
+
+[profile.bench]
+inherits = "release"
+lto = "thin"
+codegen-units = 1
