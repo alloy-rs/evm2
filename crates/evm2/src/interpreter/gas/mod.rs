@@ -209,32 +209,34 @@ impl GasTracker {
 }
 
 /// Remaining regular gas threaded through tail calls.
+#[cfg(feature = "nightly")]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[repr(transparent)]
-pub struct RemainingGas(u64);
+pub(crate) struct RemainingGas(u64);
 
+#[cfg(feature = "nightly")]
 impl RemainingGas {
     /// Creates a remaining gas counter.
     #[inline]
-    pub const fn new(remaining: u64) -> Self {
+    pub(crate) const fn new(remaining: u64) -> Self {
         Self(remaining)
     }
 
     /// Returns remaining regular gas.
     #[inline]
-    pub const fn get(self) -> u64 {
+    pub(crate) const fn get(self) -> u64 {
         self.0
     }
 
     /// Sets remaining regular gas.
     #[inline]
-    pub const fn set(&mut self, remaining: u64) {
+    pub(crate) const fn set(&mut self, remaining: u64) {
         self.0 = remaining;
     }
 
     /// Spends regular gas.
     #[inline(always)]
-    pub const fn spend(&mut self, cost: u64) -> Result {
+    pub(crate) const fn spend(&mut self, cost: u64) -> Result {
         let remaining = self.0;
         self.0 = remaining.wrapping_sub(cost);
         if remaining < cost {
@@ -243,12 +245,6 @@ impl RemainingGas {
         } else {
             Ok(())
         }
-    }
-
-    /// Returns gas to the remaining counter.
-    #[inline]
-    pub const fn erase_cost(&mut self, returned: u64) {
-        self.0 += returned;
     }
 }
 

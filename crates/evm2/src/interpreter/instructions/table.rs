@@ -1,7 +1,7 @@
 //! Instruction dispatch tables.
 
 #[cfg(feature = "nightly")]
-use crate::interpreter::RemainingGas;
+use crate::interpreter::gas::RemainingGas;
 use crate::{
     EvmConfig, EvmTypes,
     interpreter::{Gas, InstrStop, Pc, Result, Stack, StackMut, State, op},

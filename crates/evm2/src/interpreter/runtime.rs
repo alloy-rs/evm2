@@ -1,5 +1,5 @@
 #[cfg(feature = "nightly")]
-use super::RemainingGas;
+use super::gas::RemainingGas;
 use super::{
     BytecodeRef, Gas, InstrStop, Memory, Message, MessageKind, Pc, Result, Stack, State, Word,
 };
