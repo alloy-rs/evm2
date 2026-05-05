@@ -58,7 +58,7 @@ impl<T: EvmTypes> State<'_, T> {
 
     /// Returns the active dynamic gas parameters.
     #[inline]
-    pub(crate) const fn gas_params(&self) -> &'static GasParams {
+    pub const fn gas_params(&self) -> &'static GasParams {
         // Gas params are data on the active version so changes automatically affect every
         // instruction that reads them. Tracking instruction dependencies on version tables is not
         // sustainable for custom forks.

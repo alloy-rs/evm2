@@ -292,7 +292,7 @@ evm_versions! {
         op!(INVALID, ZERO);
         op!(SELFDESTRUCT, ZERO);
 
-        gas!(ExpByteGas, 10);
+        gas!(ExpByte, 10);
         gas!(Logdata, LOGDATA);
         gas!(Logtopic, LOGTOPIC);
         gas!(CopyPerWord, COPY);
@@ -338,7 +338,7 @@ evm_versions! {
     }
 
     SPURIOUS_DRAGON {
-        gas!(ExpByteGas, 50);
+        gas!(ExpByte, 50);
         static_gas!(EXP, EXP);
     }
 
@@ -431,7 +431,7 @@ evm_versions! {
         gas!(TxEip7702PerEmptyAccountCost, EIP7702_PER_EMPTY_ACCOUNT_COST);
         gas!(TxEip7702AuthRefund, EIP7702_PER_EMPTY_ACCOUNT_COST - EIP7702_PER_AUTH_BASE_COST);
         gas!(TxFloorCostPerToken, TOTAL_COST_FLOOR_PER_TOKEN);
-        gas!(TxFloorCostBaseGas, 21000);
+        gas!(TxFloorCostBase, 21000);
     }
 
     OSAKA {
@@ -452,14 +452,14 @@ evm_versions! {
         gas!(NewAccountCost, 0);
         gas!(NewAccountCostForSelfdestruct, 0);
         gas!(SstoreSetWithoutLoadCost, 2800);
-        gas!(SstoreSetStateGas, 32 * CPSB);
-        gas!(NewAccountStateGas, 112 * CPSB);
-        gas!(CodeDepositStateGas, CPSB);
-        gas!(CreateStateGas, 112 * CPSB);
+        gas!(SstoreSetState, 32 * CPSB);
+        gas!(NewAccountState, 112 * CPSB);
+        gas!(CodeDepositState, CPSB);
+        gas!(CreateState, 112 * CPSB);
         gas!(SstoreSetRefund, 32 * CPSB + 2800);
         gas!(TxEip7702PerEmptyAccountCost, 7500 + (112 + 23) * CPSB);
         gas!(TxEip7702AuthRefund, 112 * CPSB);
-        gas!(TxEip7702PerAuthStateGas, (112 + 23) * CPSB);
+        gas!(TxEip7702PerAuthState, (112 + 23) * CPSB);
 
         static_gas!(CREATE, ZERO);
         static_gas!(CREATE2, ZERO);

@@ -1,6 +1,5 @@
 use alloy_primitives::U256;
 use core::ops::{Index, IndexMut};
-use paste::paste;
 
 macro_rules! gas_ids {
     ($($tokens:tt)*) => {
@@ -22,73 +21,50 @@ macro_rules! gas_ids_impl {
         [#[$first_doc:meta] $first_variant:ident; $(#[$doc:meta] $variant:ident;)*]
         #[$last_doc:meta] $last_variant:ident;
     ) => {
-        paste! {
-            /// Gas parameter identifier.
-            #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-            #[non_exhaustive]
-            #[repr(u8)]
-            pub enum GasId {
-                #[$first_doc]
-                $first_variant = 0,
-                $(
-                    #[$doc]
-                    $variant,
-                )*
-                #[$last_doc]
-                $last_variant,
+        /// Gas parameter identifier.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+        #[non_exhaustive]
+        #[repr(u8)]
+        pub enum GasId {
+            #[$first_doc]
+            $first_variant = 0,
+            $(
+                #[$doc]
+                $variant,
+            )*
+            #[$last_doc]
+            $last_variant,
+        }
+
+        impl GasId {
+            /// Smallest gas parameter identifier.
+            pub const MIN: Self = Self::$first_variant;
+
+            /// Largest gas parameter identifier.
+            pub const MAX: Self = Self::$last_variant;
+
+            /// Number of gas parameter identifiers.
+            pub const COUNT: usize = Self::MAX as usize + 1;
+
+            /// Returns the gas parameter for a raw identifier.
+            #[inline]
+            pub const fn from_usize(value: usize) -> Option<Self> {
+                if value <= (Self::MAX as usize) {
+                    // SAFETY: `GasId` is `repr(u8)`, starts at 0, and every variant up to
+                    // `MAX` is assigned contiguously by the enum declaration.
+                    return Some(unsafe { core::mem::transmute::<u8, Self>(value as u8) });
+                }
+                None
             }
 
-            impl GasId {
-                /// Smallest gas parameter identifier.
-                pub const MIN: Self = Self::$first_variant;
+            // TODO: Do we even need string names for gas IDs?
+            // pub fn from_name(name: &str) -> Option<Self> { ... }
+            // pub const fn name(self) -> &'static str { ... }
 
-                /// Largest gas parameter identifier.
-                pub const MAX: Self = Self::$last_variant;
-
-                /// Number of gas parameter identifiers.
-                pub const COUNT: usize = Self::MAX as usize + 1;
-
-                /// Returns the gas parameter for a raw identifier.
-                #[inline]
-                pub const fn from_usize(value: usize) -> Option<Self> {
-                    if value <= (Self::MAX as usize) {
-                        // SAFETY: `GasId` is `repr(u8)`, starts at 0, and every variant up to
-                        // `MAX` is assigned contiguously by the enum declaration.
-                        return Some(unsafe { core::mem::transmute::<u8, Self>(value as u8) });
-                    }
-                    None
-                }
-
-                /// Returns the gas parameter for a revm gas parameter name.
-                #[inline]
-                pub fn from_name(name: &str) -> Option<Self> {
-                    match name {
-                        stringify!([<$first_variant:snake>]) => Some(Self::$first_variant),
-                        $(
-                            stringify!([<$variant:snake>]) => Some(Self::$variant),
-                        )*
-                        stringify!([<$last_variant:snake>]) => Some(Self::$last_variant),
-                        _ => None,
-                    }
-                }
-
-                /// Returns the gas parameter identifier as a table index.
-                #[inline]
-                pub const fn as_usize(self) -> usize {
-                    self as usize
-                }
-
-                /// Returns the revm gas parameter name.
-                #[inline]
-                pub const fn name(self) -> &'static str {
-                    match self {
-                        Self::$first_variant => stringify!([<$first_variant:snake>]),
-                        $(
-                            Self::$variant => stringify!([<$variant:snake>]),
-                        )*
-                        Self::$last_variant => stringify!([<$last_variant:snake>]),
-                    }
-                }
+            /// Returns the gas parameter identifier as a table index.
+            #[inline]
+            pub const fn as_usize(self) -> usize {
+                self as usize
             }
         }
     };
@@ -96,7 +72,7 @@ macro_rules! gas_ids_impl {
 
 gas_ids! {
     /// Gas charged per non-zero byte in `EXP` exponent.
-    ExpByteGas;
+    ExpByte;
     /// Gas charged per copied word in `EXTCODECOPY`.
     ExtcodecopyPerWord;
     /// Gas charged per copied word.
@@ -156,7 +132,7 @@ gas_ids! {
     /// Transaction floor cost per token.
     TxFloorCostPerToken;
     /// Transaction floor base gas.
-    TxFloorCostBaseGas;
+    TxFloorCostBase;
     /// Transaction access-list address cost.
     TxAccessListAddressCost;
     /// Transaction access-list storage-key cost.
@@ -174,15 +150,34 @@ gas_ids! {
     /// EIP-7702 transaction authorization refund.
     TxEip7702AuthRefund;
     /// `SSTORE` set state gas.
-    SstoreSetStateGas;
+    SstoreSetState;
     /// New account state gas.
-    NewAccountStateGas;
+    NewAccountState;
     /// Code deposit state gas.
-    CodeDepositStateGas;
+    CodeDepositState;
     /// `CREATE` state gas.
-    CreateStateGas;
+    CreateState;
     /// EIP-7702 transaction state gas per authorization.
-    TxEip7702PerAuthStateGas;
+    TxEip7702PerAuthState;
+
+    // Reserved custom gas parameter slots.
+
+    /// Reserved custom gas parameter slot 0.
+    Custom0;
+    /// Reserved custom gas parameter slot 1.
+    Custom1;
+    /// Reserved custom gas parameter slot 2.
+    Custom2;
+    /// Reserved custom gas parameter slot 3.
+    Custom3;
+    /// Reserved custom gas parameter slot 4.
+    Custom4;
+    /// Reserved custom gas parameter slot 5.
+    Custom5;
+    /// Reserved custom gas parameter slot 6.
+    Custom6;
+    /// Reserved custom gas parameter slot 7.
+    Custom7;
 }
 
 /// Returns the number of EVM words needed for `len` bytes.
@@ -254,7 +249,7 @@ impl GasParams {
         if power.const_is_zero() {
             return 0;
         }
-        (self.get(GasId::ExpByteGas) as u64).saturating_mul(power.bit_len().div_ceil(8) as u64)
+        (self.get(GasId::ExpByte) as u64).saturating_mul(power.bit_len().div_ceil(8) as u64)
     }
 
     /// Calculates copy gas for `len` bytes.
@@ -346,20 +341,17 @@ mod tests {
     }
 
     #[test]
-    fn gas_id_roundtrips_names_and_values() {
-        assert_eq!(GasId::from_usize(0), Some(GasId::ExpByteGas));
-        assert_eq!(GasId::ExpByteGas.as_usize(), 0);
-        assert_eq!(GasId::ExpByteGas.name(), "exp_byte_gas");
-        assert_eq!(GasId::from_name("exp_byte_gas"), Some(GasId::ExpByteGas));
-        assert_eq!(GasId::from_usize(GasId::MAX as usize), Some(GasId::TxEip7702PerAuthStateGas));
+    fn gas_id_roundtrips_values() {
+        assert_eq!(GasId::from_usize(0), Some(GasId::ExpByte));
+        assert_eq!(GasId::ExpByte.as_usize(), 0);
+        assert_eq!(GasId::from_usize(GasId::MAX as usize), Some(GasId::Custom7));
         assert_eq!(GasId::from_usize(GasId::COUNT), None);
-        assert_eq!(GasId::from_name("missing"), None);
     }
 
     #[test]
     fn gas_params_match_frontier_defaults() {
         let params = gas_params(SpecId::FRONTIER);
-        assert_eq!(params.get(GasId::ExpByteGas), 10);
+        assert_eq!(params.get(GasId::ExpByte), 10);
         assert_eq!(params.get(GasId::MemoryLinearCost), 3);
         assert_eq!(params.get(GasId::MemoryQuadraticReduction), 512);
         assert_eq!(params.get(GasId::SstoreStatic), 5000);
@@ -379,7 +371,7 @@ mod tests {
         assert_eq!(tangerine.get(GasId::NewAccountCostForSelfdestruct), 25000);
 
         let spurious_dragon = gas_params(SpecId::SPURIOUS_DRAGON);
-        assert_eq!(spurious_dragon.get(GasId::ExpByteGas), 50);
+        assert_eq!(spurious_dragon.get(GasId::ExpByte), 50);
 
         let istanbul = gas_params(SpecId::ISTANBUL);
         assert_eq!(istanbul.get(GasId::SstoreStatic), 800);
@@ -404,8 +396,8 @@ mod tests {
 
         let amsterdam = gas_params(SpecId::AMSTERDAM);
         assert_eq!(amsterdam.get(GasId::Create), 9000);
-        assert_eq!(amsterdam.get(GasId::SstoreSetStateGas), 37568);
-        assert_eq!(amsterdam.get(GasId::TxEip7702PerAuthStateGas), 158490);
+        assert_eq!(amsterdam.get(GasId::SstoreSetState), 37568);
+        assert_eq!(amsterdam.get(GasId::TxEip7702PerAuthState), 158490);
     }
 
     #[test]

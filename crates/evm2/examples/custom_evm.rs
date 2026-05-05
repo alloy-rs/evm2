@@ -11,15 +11,18 @@ use evm2::{
     bytecode::Bytecode,
     env::BlockEnv,
     evm::{InMemoryDB, precompile::NoPrecompiles},
-    interpreter::{Host, InstrStop, Instruction, Message, Word, op},
+    interpreter::{GasId, GasParams, Host, InstrStop, Instruction, Message, Word, op},
     registry::{HandlerResult, TxRegistry, TxRequest},
 };
 use evm2_macros::instruction;
 
 const CUSTOM_OPCODE: u8 = 0x0c;
 const CUSTOM_OPCODE_GAS: u16 = 7;
-const CUSTOM_OPCODE_DYNAMIC_GAS: u64 = 3;
+const CUSTOM_OPCODE_DYNAMIC_GAS_ID: GasId = GasId::Custom0;
+const CUSTOM_OPCODE_DYNAMIC_GAS: u32 = 3;
 const CUSTOM_TX_TYPE: u8 = 0x7f;
+
+// Runtime spec IDs
 
 #[derive(Clone, Copy, Debug)]
 enum CustomSpecId {
@@ -35,6 +38,8 @@ impl From<CustomSpecId> for SpecId {
     }
 }
 
+// EVM type family
+
 #[derive(Debug)]
 struct CustomTypes;
 
@@ -47,16 +52,28 @@ impl EvmTypes for CustomTypes {
     type Precompiles = NoPrecompiles;
 }
 
+// Version config
+
 struct CustomConfig<const BASE_SPEC_ID: u8>(());
 
+impl<const BASE_SPEC_ID: u8> CustomConfig<BASE_SPEC_ID> {
+    const GAS_PARAMS: GasParams = custom_gas_params::<BASE_SPEC_ID>();
+}
+
 impl<const BASE_SPEC_ID: u8> EvmConfig<CustomTypes> for CustomConfig<BASE_SPEC_ID> {
-    const VERSION: Version = custom_version::<BASE_SPEC_ID>();
+    const VERSION: Version = Version {
+        spec_id: SpecId::try_from_u8(BASE_SPEC_ID).unwrap(),
+        gas_params: &Self::GAS_PARAMS,
+    };
     const VERSION_TABLES: &'static VersionTables<CustomTypes> =
         &custom_version_tables::<BASE_SPEC_ID>();
 }
 
-const fn custom_version<const BASE_SPEC_ID: u8>() -> Version {
-    Version::base(SpecId::try_from_u8(BASE_SPEC_ID).unwrap())
+const fn custom_gas_params<const BASE_SPEC_ID: u8>() -> GasParams {
+    let base_spec_id = SpecId::try_from_u8(BASE_SPEC_ID).unwrap();
+    let mut gp = *Version::base(base_spec_id).gas_params;
+    gp.set(CUSTOM_OPCODE_DYNAMIC_GAS_ID, CUSTOM_OPCODE_DYNAMIC_GAS);
+    gp
 }
 
 const fn custom_version_tables<const BASE_SPEC_ID: u8>() -> VersionTables<CustomTypes> {
@@ -67,6 +84,8 @@ const fn custom_version_tables<const BASE_SPEC_ID: u8>() -> VersionTables<Custom
         .set(CUSTOM_OPCODE, Some(<custom<CustomTypes> as Instruction<CustomTypes>>::execute));
     version
 }
+
+// Config selector
 
 struct CustomConfigSelector(());
 
@@ -86,11 +105,15 @@ impl EvmConfigSelector<CustomTypes> for CustomConfigSelector {
     }
 }
 
+// Custom instruction
+
 #[instruction]
 fn custom(cx: _) -> Result<out> {
-    cx.gas.spend(CUSTOM_OPCODE_DYNAMIC_GAS)?;
+    cx.gas.spend(cx.state.gas_params().get(CUSTOM_OPCODE_DYNAMIC_GAS_ID).into())?;
     *out = Word::from(0xdead_u64);
 }
+
+// Custom transaction
 
 #[derive(Debug)]
 struct CustomTx {
@@ -137,6 +160,8 @@ fn custom_registry() -> TxRegistry<CustomTx, evm2::TxResult, Evm<CustomTypes>> {
     TxRegistry::new().with_handler(CUSTOM_TX_TYPE, as_custom_tx, handle_custom_tx)
 }
 
+// End-to-end check
+
 fn main() {
     assert_eq!(SpecId::from(CustomSpecId::MainnetOsaka), SpecId::OSAKA);
 
@@ -144,7 +169,7 @@ fn main() {
     let code = Bytes::from_static(&[CUSTOM_OPCODE, op::PUSH1, 0x01, op::SSTORE, op::STOP]);
     let tx = CustomTx { target: custom_target, code };
     let expected_custom_gas = u64::from(CUSTOM_OPCODE_GAS)
-        + CUSTOM_OPCODE_DYNAMIC_GAS
+        + u64::from(CUSTOM_OPCODE_DYNAMIC_GAS)
         + 3 // PUSH1
         + 2100 // Cold SSTORE load.
         + 20_000; // SSTORE zero to non-zero.
@@ -161,6 +186,12 @@ fn main() {
         <CustomConfig<{ SpecId::OSAKA as u8 }> as EvmConfig<CustomTypes>>::VERSION_TABLES
             .static_gas_table[CUSTOM_OPCODE],
         CUSTOM_OPCODE_GAS,
+    );
+    assert_eq!(
+        <CustomConfig<{ SpecId::OSAKA as u8 }> as EvmConfig<CustomTypes>>::VERSION
+            .gas_params
+            .get(CUSTOM_OPCODE_DYNAMIC_GAS_ID),
+        CUSTOM_OPCODE_DYNAMIC_GAS,
     );
 
     let result = evm.transact(&tx).expect("custom transaction should execute");
