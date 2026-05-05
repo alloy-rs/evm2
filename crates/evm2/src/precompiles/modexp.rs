@@ -10,8 +10,8 @@ use alloc::vec::Vec;
 use alloy_primitives::{Bytes, U256};
 use core::cmp::{max, min};
 
-#[cfg(feature = "gmp")]
 /// GMP-based modular exponentiation implementation
+#[cfg(feature = "gmp")]
 pub(crate) fn modexp(base: &[u8], exponent: &[u8], modulus: &[u8]) -> Vec<u8> {
     use core::{ffi::c_void, mem::MaybeUninit};
     use gmp_mpfr_sys::gmp;

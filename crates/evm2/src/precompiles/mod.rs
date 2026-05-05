@@ -200,7 +200,7 @@ fn for_spec(spec: SpecId) -> &'static PrecompileMap {
 
         if spec.enables(SpecId::OSAKA) {
             insert(&mut precompiles, 0x05, modexp::run_osaka);
-            insert(&mut precompiles, 0xff, secp256r1::run_osaka);
+            insert(&mut precompiles, 0x100, secp256r1::run_osaka);
         }
 
         precompiles
