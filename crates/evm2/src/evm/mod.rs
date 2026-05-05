@@ -219,7 +219,7 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
     }
 
     fn block_hash(&mut self, number: Word) -> Option<B256> {
-        self.state.initial().get_block_hash(number)
+        self.state.initial_mut().get_block_hash(number)
     }
 
     fn sload(&mut self, address: Address, key: Word) -> StorageLoad {

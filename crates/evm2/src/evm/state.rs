@@ -468,7 +468,7 @@ impl<D: Database> State<D> {
 
     #[must_use]
     fn ensure_account_overlay<'a>(
-        initial: &D,
+        initial: &mut D,
         accounts: &'a mut AddressMap<Tracked<Option<Account>>>,
         journal: &mut Vec<JournalEntry>,
         address: Address,
@@ -486,7 +486,7 @@ impl<D: Database> State<D> {
     #[must_use]
     fn account_mut(&mut self, address: Address) -> &mut Account {
         let tracked = Self::ensure_account_overlay(
-            &self.initial,
+            &mut self.initial,
             &mut self.accounts,
             &mut self.journal,
             address,
@@ -504,7 +504,7 @@ impl<D: Database> State<D> {
     #[must_use]
     fn journal_account_change(&mut self, address: Address) -> &mut Account {
         let tracked = Self::ensure_account_overlay(
-            &self.initial,
+            &mut self.initial,
             &mut self.accounts,
             &mut self.journal,
             address,
@@ -521,7 +521,7 @@ impl<D: Database> State<D> {
     /// Returns account info.
     #[inline]
     #[must_use]
-    pub fn account_info(&self, address: Address) -> Option<AccountInfo> {
+    pub fn account_info(&mut self, address: Address) -> Option<AccountInfo> {
         if let Some(account) = self.accounts.get(&address) {
             return account.current.as_ref().map(Account::info);
         }
@@ -558,7 +558,7 @@ impl<D: Database> State<D> {
     }
 
     #[must_use]
-    fn storage_initial(&self, address: Address, key: Word) -> Word {
+    fn storage_initial(&mut self, address: Address, key: Word) -> Word {
         if self.storage.get(&address).is_some_and(|storage| storage.wiped)
             || self.accounts.get(&address).is_some_and(|account| account.original.is_none())
         {
@@ -758,7 +758,7 @@ impl<D: Database> State<D> {
     #[inline]
     pub fn mark_destructed(&mut self, address: Address) {
         let _ = Self::ensure_account_overlay(
-            &self.initial,
+            &mut self.initial,
             &mut self.accounts,
             &mut self.journal,
             address,
@@ -854,7 +854,7 @@ impl<D: Database> State<D> {
     /// overlay state are deleted during transaction finalization. Non-existent
     /// touched accounts stay non-existent.
     #[must_use]
-    fn is_existing_dead(&self, address: Address) -> bool {
+    fn is_existing_dead(&mut self, address: Address) -> bool {
         if let Some(account) = self.accounts.get(&address) {
             return account.current.as_ref().is_some_and(Account::is_empty)
                 || (account.current.is_none() && account.original.is_some());
@@ -864,7 +864,7 @@ impl<D: Database> State<D> {
 
     fn delete_account_for_finalization(&mut self, address: Address) {
         let account = Self::ensure_account_overlay(
-            &self.initial,
+            &mut self.initial,
             &mut self.accounts,
             &mut self.journal,
             address,
@@ -875,7 +875,7 @@ impl<D: Database> State<D> {
 
     fn materialize_empty_account_for_finalization(&mut self, address: Address) {
         let account = Self::ensure_account_overlay(
-            &self.initial,
+            &mut self.initial,
             &mut self.accounts,
             &mut self.journal,
             address,

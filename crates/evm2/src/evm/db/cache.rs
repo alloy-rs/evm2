@@ -4,7 +4,7 @@ use super::{Database, EmptyDB};
 use crate::{KECCAK_EMPTY, bytecode::Bytecode, evm::state::AccountInfo, interpreter::Word};
 use alloy_primitives::{
     Address, B256,
-    map::{AddressMap, B256Map, HashMap, U256Map},
+    map::{AddressMap, B256Map, HashMap, U256Map, hash_map::Entry},
 };
 
 /// A database implementation that stores initial state in memory.
@@ -68,27 +68,30 @@ impl<ExtDB> CacheDB<ExtDB> {
 
     /// Inserts account code into the contract cache.
     #[inline]
-    pub fn insert_contract(&mut self, info: &AccountInfo) {
+    pub fn insert_contract(&mut self, info: &mut AccountInfo) {
+        Self::insert_contract_inner(&mut self.cache.contracts, info);
+    }
+
+    #[inline]
+    fn insert_contract_inner(contracts: &mut B256Map<Bytecode>, info: &mut AccountInfo) {
         if let Some(code) = &info.code
             && !code.is_empty()
         {
-            self.cache.contracts.entry(info.code_hash).or_insert_with(|| code.clone());
+            if info.code_hash == KECCAK_EMPTY {
+                info.code_hash = code.hash_slow();
+            }
+            contracts.entry(info.code_hash).or_insert_with(|| code.clone());
+        }
+        if info.code_hash.is_zero() {
+            info.code_hash = KECCAK_EMPTY;
         }
     }
 
     /// Inserts account info.
     #[inline]
     pub fn insert_account_info(&mut self, address: Address, mut info: AccountInfo) {
-        if let Some(code) = &info.code
-            && !code.is_empty()
-            && info.code_hash == KECCAK_EMPTY
-        {
-            info.code_hash = code.hash_slow();
-        }
-        if info.code_hash.is_zero() {
-            info.code_hash = KECCAK_EMPTY;
-        }
-        self.insert_contract(&info);
+        self.insert_contract(&mut info);
+        info.code = None;
         self.cache.accounts.insert(address, info);
     }
 
@@ -114,36 +117,123 @@ impl<ExtDB> CacheDB<ExtDB> {
 
 impl<ExtDB: Database> Database for CacheDB<ExtDB> {
     #[inline]
-    fn get_account(&self, address: Address) -> Option<AccountInfo> {
-        self.cache.accounts.get(&address).cloned().or_else(|| self.db.get_account(address))
+    fn get_account(&mut self, address: Address) -> Option<AccountInfo> {
+        let Cache { accounts, contracts, .. } = &mut self.cache;
+        match accounts.entry(address) {
+            Entry::Occupied(entry) => Some(entry.get().clone()),
+            Entry::Vacant(entry) => {
+                let mut info = self.db.get_account(address)?;
+                Self::insert_contract_inner(contracts, &mut info);
+                info.code = None;
+                Some(entry.insert(info).clone())
+            }
+        }
     }
 
     #[inline]
-    fn get_account_code(&self, address: Address) -> Bytecode {
-        self.cache
-            .accounts
-            .get(&address)
-            .and_then(|info| info.code.clone())
-            .or_else(|| {
-                self.cache
-                    .accounts
-                    .get(&address)
-                    .and_then(|info| self.cache.contracts.get(&info.code_hash).cloned())
-            })
-            .unwrap_or_else(|| self.db.get_account_code(address))
+    fn get_account_code(&mut self, address: Address) -> Bytecode {
+        let code_hash = self.get_account(address).map(|info| info.code_hash);
+        if let Some(code_hash) = code_hash
+            && let Some(code) = self.cache.contracts.get(&code_hash)
+        {
+            return code.clone();
+        }
+
+        let code = self.db.get_account_code(address);
+        if !code.is_empty() {
+            let code_hash = code_hash.unwrap_or_else(|| code.hash_slow());
+            self.cache.contracts.entry(code_hash).or_insert_with(|| code.clone());
+        }
+        code
     }
 
     #[inline]
-    fn get_storage(&self, address: Address, key: Word) -> Word {
-        self.cache
-            .storage
-            .get(&(address, key))
-            .copied()
-            .unwrap_or_else(|| self.db.get_storage(address, key))
+    fn get_storage(&mut self, address: Address, key: Word) -> Word {
+        match self.cache.storage.entry((address, key)) {
+            Entry::Occupied(entry) => *entry.get(),
+            Entry::Vacant(entry) => {
+                let value = self.db.get_storage(address, key);
+                *entry.insert(value)
+            }
+        }
     }
 
     #[inline]
-    fn get_block_hash(&self, number: Word) -> Option<B256> {
-        self.cache.block_hashes.get(&number).copied().or_else(|| self.db.get_block_hash(number))
+    fn get_block_hash(&mut self, number: Word) -> Option<B256> {
+        match self.cache.block_hashes.entry(number) {
+            Entry::Occupied(entry) => Some(*entry.get()),
+            Entry::Vacant(entry) => {
+                let hash = self.db.get_block_hash(number)?;
+                Some(*entry.insert(hash))
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::interpreter::op;
+    use alloy_primitives::Bytes;
+
+    #[derive(Debug, Default)]
+    struct CountingDB {
+        account: Option<AccountInfo>,
+        storage: Word,
+        block_hash: Option<B256>,
+        account_loads: usize,
+        code_loads: usize,
+        storage_loads: usize,
+        block_hash_loads: usize,
+    }
+
+    impl Database for CountingDB {
+        fn get_account(&mut self, _address: Address) -> Option<AccountInfo> {
+            self.account_loads += 1;
+            self.account.clone()
+        }
+
+        fn get_account_code(&mut self, _address: Address) -> Bytecode {
+            self.code_loads += 1;
+            self.account.as_ref().and_then(|info| info.code.clone()).unwrap_or_default()
+        }
+
+        fn get_storage(&mut self, _address: Address, _key: Word) -> Word {
+            self.storage_loads += 1;
+            self.storage
+        }
+
+        fn get_block_hash(&mut self, _number: Word) -> Option<B256> {
+            self.block_hash_loads += 1;
+            self.block_hash
+        }
+    }
+
+    #[test]
+    fn cache_db_caches_wrapped_db_reads() {
+        let address = Address::with_last_byte(1);
+        let key = Word::from(2);
+        let code = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
+        let block_hash = B256::with_last_byte(3);
+        let db = CountingDB {
+            account: Some(AccountInfo::default().with_code(code.clone())),
+            storage: Word::from(4),
+            block_hash: Some(block_hash),
+            ..CountingDB::default()
+        };
+        let mut cache = CacheDB::new(db);
+
+        assert_eq!(cache.get_account_code(address), code);
+        assert_eq!(cache.get_account_code(address), code);
+        assert_eq!(cache.db.account_loads, 1);
+        assert_eq!(cache.db.code_loads, 0);
+
+        assert_eq!(cache.get_storage(address, key), Word::from(4));
+        assert_eq!(cache.get_storage(address, key), Word::from(4));
+        assert_eq!(cache.db.storage_loads, 1);
+
+        assert_eq!(cache.get_block_hash(Word::from(5)), Some(block_hash));
+        assert_eq!(cache.get_block_hash(Word::from(5)), Some(block_hash));
+        assert_eq!(cache.db.block_hash_loads, 1);
     }
 }

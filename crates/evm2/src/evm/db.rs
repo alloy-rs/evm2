@@ -15,36 +15,36 @@ pub struct EmptyDB(());
 /// Backing database view used to initialize mutable [`super::State`].
 pub trait Database {
     /// Loads account information.
-    fn get_account(&self, address: Address) -> Option<AccountInfo>;
+    fn get_account(&mut self, address: Address) -> Option<AccountInfo>;
 
     /// Loads account code.
-    fn get_account_code(&self, address: Address) -> Bytecode;
+    fn get_account_code(&mut self, address: Address) -> Bytecode;
 
     /// Loads a persistent storage slot.
-    fn get_storage(&self, address: Address, key: Word) -> Word;
+    fn get_storage(&mut self, address: Address, key: Word) -> Word;
 
     /// Loads a historical block hash.
-    fn get_block_hash(&self, number: Word) -> Option<B256>;
+    fn get_block_hash(&mut self, number: Word) -> Option<B256>;
 }
 
 impl Database for EmptyDB {
     #[inline]
-    fn get_account(&self, _address: Address) -> Option<AccountInfo> {
+    fn get_account(&mut self, _address: Address) -> Option<AccountInfo> {
         None
     }
 
     #[inline]
-    fn get_account_code(&self, _address: Address) -> Bytecode {
+    fn get_account_code(&mut self, _address: Address) -> Bytecode {
         Bytecode::default()
     }
 
     #[inline]
-    fn get_storage(&self, _address: Address, _key: Word) -> Word {
+    fn get_storage(&mut self, _address: Address, _key: Word) -> Word {
         Word::ZERO
     }
 
     #[inline]
-    fn get_block_hash(&self, number: Word) -> Option<B256> {
+    fn get_block_hash(&mut self, number: Word) -> Option<B256> {
         Some(keccak256(number.to_string().as_bytes()))
     }
 }
