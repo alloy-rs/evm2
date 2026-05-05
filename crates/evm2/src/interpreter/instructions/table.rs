@@ -189,11 +189,7 @@ where
     #[cfg(not(feature = "nightly"))]
     let mut table = [dispatch::<T, C, 0> as InstructionFn<T>; 256];
     #[cfg(feature = "nightly")]
-    let mut table = [if C::VERSION_TABLES.instruction(0).dynamic_gas {
-        dispatch::<T, C, 0, true> as InstructionFn<T>
-    } else {
-        dispatch::<T, C, 0, false> as InstructionFn<T>
-    }; 256];
+    let mut table = [dispatch::<T, C, 0, true> as InstructionFn<T>; 256];
     for_each_opcode_value!([table, T, C, dispatch, InstructionFn<T>] assign_instruction_table_entries);
 
     // Make all unknown entries point to the same dispatch function.
@@ -298,11 +294,12 @@ extern_table! {
         if DYNAMIC_GAS {
             gas.set_remaining(remaining_gas.get());
         }
-        if let Err(e) = instr(&mut pc, stack.as_mut(), gas, state) {
+        let r = instr(&mut pc, stack.as_mut(), gas, state);
+        if DYNAMIC_GAS {
+            remaining_gas.set(gas.remaining());
+        }
+        if let Err(e) = r {
             cold_path();
-            if DYNAMIC_GAS {
-                remaining_gas.set(gas.remaining());
-            }
             tail_return!(tail_call_restore::<T>(
                 pc,
                 stack,
@@ -313,9 +310,6 @@ extern_table! {
             ));
         }
         inc_pc(&mut pc, op);
-        if DYNAMIC_GAS {
-            remaining_gas.set(gas.remaining());
-        }
         tail_return!(tail_call_next::<T, C>(pc, stack, remaining_gas, gas, state, 0));
     }
 }
