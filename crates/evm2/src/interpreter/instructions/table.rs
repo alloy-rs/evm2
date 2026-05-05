@@ -2,7 +2,7 @@
 
 use crate::{
     EvmConfig, EvmTypes,
-    interpreter::{Gas, InstrStop, Pc, Result, Stack, StackMut, State, op},
+    interpreter::{Gas, GasCx, InstrStop, Pc, RemainingGas, Result, Stack, StackMut, State, op},
 };
 use core::hint::cold_path;
 
@@ -27,16 +27,29 @@ pub(crate) type InstructionTable<T> = TailInstructionTable<T>;
 
 /// Tail instruction function pointer.
 #[cfg(feature = "nightly")]
-pub(crate) type TailInstructionFn<T> =
-    extern_table!(fn(pc: Pc, stack: Stack<'_>, gas: &mut Gas, state: &mut State<'_, T>, ret: u8));
+pub(crate) type TailInstructionFn<T> = extern_table!(
+    fn(
+        pc: Pc,
+        stack: Stack<'_>,
+        remaining_gas: RemainingGas,
+        gas: &mut Gas,
+        state: &mut State<'_, T>,
+        ret: u8,
+    )
+);
 
 /// Tail instruction dispatch table.
 #[cfg(feature = "nightly")]
 pub(crate) type TailInstructionTable<T> = [TailInstructionFn<T>; 256];
 
 /// Function signature of an `#[instruction]`.
-pub type InstructionImplFn<T> =
-    fn(pc: &mut Pc, stack: StackMut<'_>, gas: &mut Gas, state: &mut State<'_, T>) -> Result;
+pub type InstructionImplFn<T> = fn(
+    pc: &mut Pc,
+    stack: StackMut<'_>,
+    remaining_gas: &mut RemainingGas,
+    gas: &mut Gas,
+    state: &mut State<'_, T>,
+) -> Result;
 
 pub(crate) trait InstructionTables<C>: EvmTypes
 where
@@ -57,7 +70,7 @@ pub struct InstructionCx<'a, 'state, T: EvmTypes> {
     /// Program counter state.
     pub pc: &'a mut Pc,
     /// Gas state.
-    pub gas: &'a mut Gas,
+    pub gas: &'a mut GasCx<'a>,
     /// Interpreter state.
     pub state: &'a mut State<'state, T>,
 }
@@ -72,14 +85,20 @@ impl<T: EvmTypes> core::fmt::Debug for InstructionCx<'_, '_, T> {
 /// EVM instruction implementation.
 pub trait Instruction<T: EvmTypes = crate::BaseEvmTypes> {
     /// Executes this instruction.
-    fn execute(pc: &mut Pc, stack: StackMut<'_>, gas: &mut Gas, state: &mut State<'_, T>)
-    -> Result;
+    fn execute(
+        pc: &mut Pc,
+        stack: StackMut<'_>,
+        remaining_gas: &mut RemainingGas,
+        gas: &mut Gas,
+        state: &mut State<'_, T>,
+    ) -> Result;
 }
 
 #[cold]
 pub(crate) const fn unknown_instruction<T: EvmTypes>(
     _pc: &mut Pc,
     _stack: StackMut<'_>,
+    _remaining_gas: &mut RemainingGas,
     _gas: &mut Gas,
     _state: &mut State<'_, T>,
 ) -> Result {
@@ -182,14 +201,16 @@ fn dispatch_mono<T: EvmTypes, C: EvmConfig<T>>(
     state: &mut State<'_, T>,
 ) -> InstructionFnRet {
     let instr = C::VERSION_TABLES.instruction_or_unknown(op);
+    let mut remaining_gas = RemainingGas::new(gas.remaining());
     let r;
-    match pre_step::<T, C>(gas, op) {
+    match pre_step::<T, C>(&mut remaining_gas, op) {
         Ok(()) => {
-            r = instr(&mut pc, stack.as_mut(), gas, state);
+            r = instr(&mut pc, stack.as_mut(), &mut remaining_gas, gas, state);
             inc_pc(&mut pc, op);
         }
         Err(e) => r = Err(e),
     }
+    gas.set_remaining(remaining_gas.get());
     if r.is_err() {
         cold_path();
         // SAFETY: `raw_interp` is valid for the duration of execution.
@@ -204,11 +225,12 @@ extern_table! {
     fn tail_dispatch<T: EvmTypes, C: EvmConfig<T>, const OP: u8>(
         pc: Pc,
         stack: Stack<'_>,
+        remaining_gas: RemainingGas,
         gas: &mut Gas,
         state: &mut State<'_, T>,
         _ret: u8,
     ) {
-        tail_return!(tail_dispatch_mono::<T, C>(pc, stack, gas, state, OP));
+        tail_return!(tail_dispatch_mono::<T, C>(pc, stack, remaining_gas, gas, state, OP));
     }
 }
 
@@ -218,21 +240,22 @@ extern_table! {
     fn tail_dispatch_mono<T: EvmTypes, C: EvmConfig<T>>(
         mut pc: Pc,
         mut stack: Stack<'_>,
+        mut remaining_gas: RemainingGas,
         gas: &mut Gas,
         state: &mut State<'_, T>,
         op: u8,
     ) {
         let instr = C::VERSION_TABLES.instruction_or_unknown(op);
-        if let Err(e) = pre_step::<T, C>(gas, op) {
+        if let Err(e) = pre_step::<T, C>(&mut remaining_gas, op) {
             cold_path();
-            tail_return!(tail_call_restore::<T>(pc, stack, gas, state, e as u8));
+            tail_return!(tail_call_restore::<T>(pc, stack, remaining_gas, gas, state, e as u8));
         }
-        if let Err(e) = instr(&mut pc, stack.as_mut(), gas, state) {
+        if let Err(e) = instr(&mut pc, stack.as_mut(), &mut remaining_gas, gas, state) {
             cold_path();
-            tail_return!(tail_call_restore::<T>(pc, stack, gas, state, e as u8));
+            tail_return!(tail_call_restore::<T>(pc, stack, remaining_gas, gas, state, e as u8));
         }
         inc_pc(&mut pc, op);
-        tail_return!(tail_call_next::<T, C>(pc, stack, gas, state, 0));
+        tail_return!(tail_call_next::<T, C>(pc, stack, remaining_gas, gas, state, 0));
     }
 }
 
@@ -242,12 +265,13 @@ extern_table! {
     fn tail_call_next<T: EvmTypes, C: EvmConfig<T>>(
         pc: Pc,
         stack: Stack<'_>,
+        remaining_gas: RemainingGas,
         gas: &mut Gas,
         state: &mut State<'_, T>,
         ret: u8,
     ) {
         let instr = <T as InstructionTables<C>>::INSTRUCTIONS[pc.op() as usize];
-        tail_return!(instr(pc, stack, gas, state, ret));
+        tail_return!(instr(pc, stack, remaining_gas, gas, state, ret));
     }
 }
 
@@ -258,10 +282,12 @@ extern_table! {
     fn tail_call_restore<T: EvmTypes>(
         pc: Pc,
         stack: Stack<'_>,
-        _gas: &mut Gas,
+        remaining_gas: RemainingGas,
+        gas: &mut Gas,
         state: &mut State<'_, T>,
         ret: u8,
     ) {
+        gas.set_remaining(remaining_gas.get());
         // SAFETY: `raw_interp` is valid for the duration of execution.
         let interp = unsafe { &mut *state.raw_interp };
         interp.pc = pc.as_ptr();
@@ -272,8 +298,11 @@ extern_table! {
 }
 
 #[inline]
-const fn pre_step<T: EvmTypes, C: EvmConfig<T>>(gas: &mut Gas, op: u8) -> Result {
-    gas.spend(C::VERSION_TABLES.static_gas(op) as _)
+const fn pre_step<T: EvmTypes, C: EvmConfig<T>>(
+    remaining_gas: &mut RemainingGas,
+    op: u8,
+) -> Result {
+    remaining_gas.spend(C::VERSION_TABLES.static_gas(op) as _)
 }
 
 #[inline]

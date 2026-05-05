@@ -208,6 +208,50 @@ impl GasTracker {
     }
 }
 
+/// Remaining regular gas threaded through tail calls.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[repr(transparent)]
+pub struct RemainingGas(u64);
+
+impl RemainingGas {
+    /// Creates a remaining gas counter.
+    #[inline]
+    pub const fn new(remaining: u64) -> Self {
+        Self(remaining)
+    }
+
+    /// Returns remaining regular gas.
+    #[inline]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+
+    /// Sets remaining regular gas.
+    #[inline]
+    pub const fn set(&mut self, remaining: u64) {
+        self.0 = remaining;
+    }
+
+    /// Spends regular gas.
+    #[inline(always)]
+    pub const fn spend(&mut self, cost: u64) -> Result {
+        let remaining = self.0;
+        self.0 = remaining.wrapping_sub(cost);
+        if remaining < cost {
+            cold_path();
+            Err(InstrStop::OutOfGas)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Returns gas to the remaining counter.
+    #[inline]
+    pub const fn erase_cost(&mut self, returned: u64) {
+        self.0 += returned;
+    }
+}
+
 /// Interpreter gas state.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[repr(C)] // Puts `tracker`, and so `.remaining`, first.
@@ -382,6 +426,119 @@ impl Gas {
     #[inline]
     pub fn set_final_refund(&mut self, is_london: bool) {
         self.tracker.set_final_refund(is_london);
+    }
+}
+
+/// Gas operations used by instruction implementations.
+pub(crate) trait GasOps {
+    /// Returns memory gas state.
+    fn memory(&self) -> &MemoryGas;
+
+    /// Returns mutable memory gas state.
+    fn memory_mut(&mut self) -> &mut MemoryGas;
+
+    /// Spends regular gas or returns out of gas.
+    fn spend(&mut self, amount: u64) -> Result;
+}
+
+impl GasOps for Gas {
+    #[inline]
+    fn memory(&self) -> &MemoryGas {
+        self.memory()
+    }
+
+    #[inline]
+    fn memory_mut(&mut self) -> &mut MemoryGas {
+        self.memory_mut()
+    }
+
+    #[inline(always)]
+    fn spend(&mut self, amount: u64) -> Result {
+        self.spend(amount)
+    }
+}
+
+/// Instruction gas view.
+#[derive(Debug)]
+pub struct GasCx<'a> {
+    remaining: &'a mut RemainingGas,
+    gas: &'a mut Gas,
+}
+
+impl<'a> GasCx<'a> {
+    /// Creates an instruction gas view.
+    #[inline]
+    pub const fn new(remaining: &'a mut RemainingGas, gas: &'a mut Gas) -> Self {
+        Self { remaining, gas }
+    }
+
+    /// Returns memory gas state.
+    #[inline]
+    pub const fn memory(&self) -> &MemoryGas {
+        self.gas.memory()
+    }
+
+    /// Returns mutable memory gas state.
+    #[inline]
+    pub const fn memory_mut(&mut self) -> &mut MemoryGas {
+        self.gas.memory_mut()
+    }
+
+    /// Returns remaining regular gas.
+    #[inline]
+    pub const fn remaining(&self) -> u64 {
+        self.remaining.get()
+    }
+
+    /// Spends regular gas or returns out of gas.
+    #[inline(always)]
+    pub const fn spend(&mut self, amount: u64) -> Result {
+        self.remaining.spend(amount)
+    }
+
+    /// Spends state gas.
+    #[inline]
+    pub fn spend_state(&mut self, cost: u64) -> Result {
+        if self.gas.reservoir() >= cost {
+            self.gas.set_state_gas_spent(self.gas.state_gas_spent().saturating_add(cost));
+            self.gas.set_reservoir(self.gas.reservoir() - cost);
+            return Ok(());
+        }
+
+        let spill = cost - self.gas.reservoir();
+        self.spend(spill)?;
+        self.gas.set_state_gas_spent(self.gas.state_gas_spent().saturating_add(cost));
+        self.gas.set_reservoir(0);
+        Ok(())
+    }
+
+    /// Adds gas refund.
+    #[inline]
+    pub const fn record_refund(&mut self, refund: i64) {
+        self.gas.record_refund(refund);
+    }
+
+    /// Returns gas to the remaining counter.
+    #[inline]
+    pub const fn erase_cost(&mut self, returned: u64) {
+        self.remaining.erase_cost(returned);
+    }
+}
+
+impl GasOps for GasCx<'_> {
+    #[inline]
+    fn memory(&self) -> &MemoryGas {
+        self.memory()
+    }
+
+    #[inline]
+    fn memory_mut(&mut self) -> &mut MemoryGas {
+        self.memory_mut()
+    }
+
+    #[inline(always)]
+    fn spend(&mut self, amount: u64) -> Result {
+        self.spend(amount)
     }
 }
 

@@ -1,3 +1,5 @@
+#[cfg(feature = "nightly")]
+use super::RemainingGas;
 use super::{
     BytecodeRef, Gas, InstrStop, Memory, Message, MessageKind, Pc, Result, Stack, State, Word,
 };
@@ -188,9 +190,11 @@ impl<T: EvmTypes> Interpreter<T> {
         let pc = Pc::from_ptr(self.pc);
         let op = pc.op();
         let instr = config.instructions[op as usize];
+        let remaining_gas = RemainingGas::new(self.gas.remaining());
         instr(
             pc,
             Stack::new(&mut self.stack, self.stack_len),
+            remaining_gas,
             &mut self.gas,
             &mut State {
                 bytecode,
