@@ -144,15 +144,11 @@ fn expand_instruction(no_stack_preamble: bool, input: ItemFn) -> TokenStream2 {
     let cx_setup = has_cx.then(|| {
         let cx = cx_arg.unwrap_or_else(|| Ident::new("cx", ident.span()));
         quote! {
-            let mut __evm2_gas_cx = evm2::interpreter::GasCx::new(
-                __evm2_remaining_gas,
-                __evm2_gas,
-            );
             let mut #cx = evm2::interpreter::InstructionCx::<#evm_types> {
-                pc: __evm2_pc,
-                gas: &mut __evm2_gas_cx,
-                state: __evm2_state,
-            };
+            pc: __evm2_pc,
+            gas: __evm2_gas,
+            state: __evm2_state,
+        };
         }
     });
     quote! {
@@ -169,7 +165,6 @@ fn expand_instruction(no_stack_preamble: bool, input: ItemFn) -> TokenStream2 {
             fn execute(
                 __evm2_pc: &mut evm2::interpreter::Pc,
                 mut stack: evm2::interpreter::StackMut<'_>,
-                __evm2_remaining_gas: &mut evm2::interpreter::RemainingGas,
                 __evm2_gas: &mut evm2::interpreter::Gas,
                 __evm2_state: &mut evm2::interpreter::State<'_, #evm_types>,
             ) -> evm2::interpreter::Result {

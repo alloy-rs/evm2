@@ -1,8 +1,10 @@
 //! Instruction dispatch tables.
 
+#[cfg(feature = "nightly")]
+use crate::interpreter::RemainingGas;
 use crate::{
     EvmConfig, EvmTypes,
-    interpreter::{Gas, GasCx, InstrStop, Pc, RemainingGas, Result, Stack, StackMut, State, op},
+    interpreter::{Gas, InstrStop, Pc, Result, Stack, StackMut, State, op},
 };
 use core::hint::cold_path;
 
@@ -43,13 +45,8 @@ pub(crate) type TailInstructionFn<T> = extern_table!(
 pub(crate) type TailInstructionTable<T> = [TailInstructionFn<T>; 256];
 
 /// Function signature of an `#[instruction]`.
-pub type InstructionImplFn<T> = fn(
-    pc: &mut Pc,
-    stack: StackMut<'_>,
-    remaining_gas: &mut RemainingGas,
-    gas: &mut Gas,
-    state: &mut State<'_, T>,
-) -> Result;
+pub type InstructionImplFn<T> =
+    fn(pc: &mut Pc, stack: StackMut<'_>, gas: &mut Gas, state: &mut State<'_, T>) -> Result;
 
 pub(crate) trait InstructionTables<C>: EvmTypes
 where
@@ -70,7 +67,7 @@ pub struct InstructionCx<'a, 'state, T: EvmTypes> {
     /// Program counter state.
     pub pc: &'a mut Pc,
     /// Gas state.
-    pub gas: &'a mut GasCx<'a>,
+    pub gas: &'a mut Gas,
     /// Interpreter state.
     pub state: &'a mut State<'state, T>,
 }
@@ -85,20 +82,14 @@ impl<T: EvmTypes> core::fmt::Debug for InstructionCx<'_, '_, T> {
 /// EVM instruction implementation.
 pub trait Instruction<T: EvmTypes = crate::BaseEvmTypes> {
     /// Executes this instruction.
-    fn execute(
-        pc: &mut Pc,
-        stack: StackMut<'_>,
-        remaining_gas: &mut RemainingGas,
-        gas: &mut Gas,
-        state: &mut State<'_, T>,
-    ) -> Result;
+    fn execute(pc: &mut Pc, stack: StackMut<'_>, gas: &mut Gas, state: &mut State<'_, T>)
+    -> Result;
 }
 
 #[cold]
 pub(crate) const fn unknown_instruction<T: EvmTypes>(
     _pc: &mut Pc,
     _stack: StackMut<'_>,
-    _remaining_gas: &mut RemainingGas,
     _gas: &mut Gas,
     _state: &mut State<'_, T>,
 ) -> Result {
@@ -201,16 +192,14 @@ fn dispatch_mono<T: EvmTypes, C: EvmConfig<T>>(
     state: &mut State<'_, T>,
 ) -> InstructionFnRet {
     let instr = C::VERSION_TABLES.instruction_or_unknown(op);
-    let mut remaining_gas = RemainingGas::new(gas.remaining());
     let r;
-    match pre_step::<T, C>(&mut remaining_gas, op) {
+    match pre_step::<T, C>(gas, op) {
         Ok(()) => {
-            r = instr(&mut pc, stack.as_mut(), &mut remaining_gas, gas, state);
+            r = instr(&mut pc, stack.as_mut(), gas, state);
             inc_pc(&mut pc, op);
         }
         Err(e) => r = Err(e),
     }
-    gas.set_remaining(remaining_gas.get());
     if r.is_err() {
         cold_path();
         // SAFETY: `raw_interp` is valid for the duration of execution.
@@ -250,10 +239,13 @@ extern_table! {
             cold_path();
             tail_return!(tail_call_restore::<T>(pc, stack, remaining_gas, gas, state, e as u8));
         }
-        if let Err(e) = instr(&mut pc, stack.as_mut(), &mut remaining_gas, gas, state) {
+        gas.set_remaining(remaining_gas.get());
+        if let Err(e) = instr(&mut pc, stack.as_mut(), gas, state) {
             cold_path();
+            remaining_gas.set(gas.remaining());
             tail_return!(tail_call_restore::<T>(pc, stack, remaining_gas, gas, state, e as u8));
         }
+        remaining_gas.set(gas.remaining());
         inc_pc(&mut pc, op);
         tail_return!(tail_call_next::<T, C>(pc, stack, remaining_gas, gas, state, 0));
     }
@@ -298,6 +290,13 @@ extern_table! {
 }
 
 #[inline]
+#[cfg(not(feature = "nightly"))]
+const fn pre_step<T: EvmTypes, C: EvmConfig<T>>(gas: &mut Gas, op: u8) -> Result {
+    gas.spend(C::VERSION_TABLES.static_gas(op) as _)
+}
+
+#[inline]
+#[cfg(feature = "nightly")]
 const fn pre_step<T: EvmTypes, C: EvmConfig<T>>(
     remaining_gas: &mut RemainingGas,
     op: u8,

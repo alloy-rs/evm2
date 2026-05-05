@@ -1,4 +1,4 @@
-use super::{InstrStop, Result, Word, gas::GasOps};
+use super::{Gas, InstrStop, Result, Word};
 use crate::utils::num_words;
 use alloc::vec::Vec;
 use core::{cmp::min, fmt, hint::cold_path, ops::Range};
@@ -186,7 +186,7 @@ pub(super) const fn memory_cost(len: usize) -> u64 {
 
 #[inline]
 pub(super) fn resize_memory(
-    gas: &mut impl GasOps,
+    gas: &mut Gas,
     memory: &mut Memory,
     offset: usize,
     len: usize,
@@ -201,7 +201,7 @@ pub(super) fn resize_memory(
 
 #[cold]
 #[inline(never)]
-fn resize_memory_cold(gas: &mut impl GasOps, memory: &mut Memory, new_num_words: usize) -> Result {
+fn resize_memory_cold(gas: &mut Gas, memory: &mut Memory, new_num_words: usize) -> Result {
     let Some(new_size) = new_num_words.checked_mul(32) else {
         cold_path();
         return Err(InstrStop::MemoryOOG);
@@ -223,7 +223,6 @@ fn resize_memory_cold(gas: &mut impl GasOps, memory: &mut Memory, new_num_words:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::interpreter::Gas;
 
     #[test]
     fn test_num_words() {
