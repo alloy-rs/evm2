@@ -91,6 +91,28 @@ pub enum HandlerError {
     /// Sender cannot pay value plus maximum gas cost.
     #[error("insufficient funds")]
     InsufficientFunds,
+    /// Sender account has deployed code.
+    #[error("caller has code")]
+    RejectCallerWithCode,
+    /// Transaction nonce cannot be incremented.
+    #[error("nonce overflow in transaction")]
+    NonceOverflow,
+    /// Transaction gas limit exceeds the block gas limit.
+    #[error("transaction gas limit {gas_limit} exceeds block gas limit {block_gas_limit}")]
+    GasLimitMoreThanBlock {
+        /// Transaction gas limit.
+        gas_limit: u64,
+        /// Block gas limit.
+        block_gas_limit: U256,
+    },
+    /// Create transaction initcode exceeds the active size limit.
+    #[error("create initcode size limit exceeded: limit {limit}, got {got}")]
+    CreateInitCodeSizeLimit {
+        /// Maximum initcode size.
+        limit: usize,
+        /// Transaction initcode size.
+        got: usize,
+    },
     /// Sender could not transfer transaction value to the target.
     #[error("out of funds")]
     OutOfFunds,
@@ -105,6 +127,15 @@ pub enum HandlerError {
         /// Block base fee.
         base_fee: U256,
     },
+    /// EIP-2930 transaction is not enabled in the active specification.
+    #[error("EIP-2930 transaction not supported")]
+    Eip2930NotSupported,
+    /// EIP-1559 transaction is not enabled in the active specification.
+    #[error("EIP-1559 transaction not supported")]
+    Eip1559NotSupported,
+    /// Priority fee is greater than max fee.
+    #[error("priority fee greater than max fee")]
+    PriorityFeeGreaterThanMaxFee,
     /// Unsupported caller for this handler.
     #[error("unsupported caller {0}")]
     UnsupportedCaller(Address),

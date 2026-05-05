@@ -637,7 +637,14 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
             return Err(InstrStop::OutOfGas);
         }
         self.state.warm_account(target);
-        let target_exists = self.state.account_info(target).is_some_and(|info| !info.is_empty());
+        // EIP-161 changes account emptiness semantics: before Spurious Dragon, an empty
+        // account that exists in state is still an existing `SELFDESTRUCT` beneficiary and
+        // must not be charged EIP-150's new-account topup.
+        let target_exists = if self.spec_id().enables(SpecId::SPURIOUS_DRAGON) {
+            self.state.account_info(target).is_some_and(|info| !info.is_empty())
+        } else {
+            self.state.account_info(target).is_some()
+        };
         let previously_destroyed = self.state.is_selfdestructed(contract);
         let balance = self.state.account_info(contract).map_or(Word::ZERO, |info| info.balance);
         let should_destroy = !self.spec_id().enables(SpecId::CANCUN)
