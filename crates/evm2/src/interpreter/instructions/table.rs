@@ -143,7 +143,7 @@ where
     let mut table = [dispatch::<T, C, 0> as InstructionFn<T>; 256];
     for_each_opcode_value!([table, T, C, dispatch, InstructionFn<T>] assign_instruction_table_entries);
 
-    // Make all unknown entries point to the same function.
+    // Make all unknown entries point to the same dispatch function.
     let mut i = 0;
     let mut unknown_idx = None;
     while i < 256 {
