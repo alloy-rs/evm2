@@ -70,6 +70,9 @@ pub enum SpecId {
 }
 
 impl SpecId {
+    /// Smallest specification ID.
+    pub const MIN: Self = Self::FRONTIER;
+
     /// Default specification ID.
     pub const DEFAULT: Self = Self::OSAKA;
 
@@ -78,7 +81,7 @@ impl SpecId {
     pub const NEXT: Self = Self::AMSTERDAM;
 
     /// Number of SpecId variants.
-    pub const COUNT: usize = Self::NEXT as usize + 1;
+    pub const COUNT: usize = Self::NEXT as usize - Self::MIN as usize + 1;
 
     /// Returns the specification ID for a raw byte.
     #[inline]

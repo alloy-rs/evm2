@@ -3,13 +3,13 @@
 use crate::{
     EvmVersion, SpecId,
     evm::{InMemoryDB, precompile::PrecompileProvider},
-    interpreter::{InstrStop, Interpreter},
+    interpreter::table::{InstructionTable, InstructionTables},
     spec_to_generic,
     version::Version,
 };
 use core::marker::PhantomData;
 
-/// EVM compile-time type configuration.
+/// EVM type configuration.
 pub trait EvmTypes: Sized + 'static {
     /// Configuration factory used by this EVM.
     type ConfigFactory: EvmConfigFactory<Self>;
@@ -30,10 +30,10 @@ pub trait EvmTypes: Sized + 'static {
     type Precompiles: PrecompileProvider;
 }
 
-/// EVM runtime configuration.
+/// EVM compile-time configuration.
 pub trait EvmConfig<T: EvmTypes> {
     /// Active EVM version.
-    const VERSION: &'static Version;
+    const VERSION: Version;
 
     /// Active type-specific EVM version.
     const EVM_VERSION: &'static EvmVersion<T>;
@@ -45,19 +45,45 @@ pub trait EvmConfig<T: EvmTypes> {
     }
 }
 
-/// Factory for selecting an EVM configuration from a runtime specification ID.
+/// Factory for selecting an EVM configuration (compile-time or runtime) from a runtime
+/// specification ID.
 pub trait EvmConfigFactory<T: EvmTypes>: Sized {
     /// Concrete EVM configuration for a base specification ID.
     type Config<const SPEC_ID: u8>: EvmConfig<T>;
 
-    /// Returns the active EVM version for `spec_id`.
+    /// Returns the EVM runtime config for `spec_id`.
+    fn evm_runtime_config(spec_id: T::SpecId) -> EvmRuntimeConfig<T>;
+}
+
+/// Runtime config selected for EVM execution.
+#[derive(derive_more::Debug)]
+pub struct EvmRuntimeConfig<T: EvmTypes> {
+    pub(crate) version: Version,
+    #[debug(skip)]
+    pub(crate) instructions: &'static InstructionTable<T>,
+}
+
+impl<T: EvmTypes> Clone for EvmRuntimeConfig<T> {
     #[inline]
-    fn version(spec_id: T::SpecId) -> &'static Version {
-        Version::base(spec_id.into())
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T: EvmTypes> Copy for EvmRuntimeConfig<T> {}
+
+impl<T: EvmTypes> EvmRuntimeConfig<T> {
+    /// Creates EVM runtime config for `C`.
+    #[inline]
+    pub const fn new<C: EvmConfig<T>>() -> Self {
+        Self { version: C::VERSION, instructions: <T as InstructionTables<C>>::INSTRUCTIONS }
     }
 
-    /// Returns the interpreter runner for `spec_id`.
-    fn run_interpreter(spec_id: T::SpecId) -> crate::evm::RunInterpreterFn<T>;
+    /// Returns the active EVM version.
+    #[inline]
+    pub const fn version(&self) -> &Version {
+        &self.version
+    }
 }
 
 /// Base EVM types.
@@ -78,7 +104,7 @@ impl<Tx: 'static> EvmTypes for BaseEvmTypes<Tx> {
 pub struct BaseEvmConfig<const SPEC_ID: u8>(());
 
 impl<T: EvmTypes, const SPEC_ID: u8> EvmConfig<T> for BaseEvmConfig<SPEC_ID> {
-    const VERSION: &'static Version = Version::base(SpecId::try_from_u8(SPEC_ID).unwrap());
+    const VERSION: Version = Version::base(SpecId::try_from_u8(SPEC_ID).unwrap());
     const EVM_VERSION: &'static EvmVersion<T> = &EvmVersion::<T>::new_base::<Self>();
 }
 
@@ -89,23 +115,16 @@ pub struct BaseEvmConfigFactory(());
 impl<T: EvmTypes<SpecId = SpecId>> EvmConfigFactory<T> for BaseEvmConfigFactory {
     type Config<const SPEC_ID: u8> = BaseEvmConfig<SPEC_ID>;
 
-    fn run_interpreter(spec_id: T::SpecId) -> crate::evm::RunInterpreterFn<T> {
-        base_run_interpreter::<T, Self>(spec_id)
+    fn evm_runtime_config(spec_id: T::SpecId) -> EvmRuntimeConfig<T> {
+        base_evm_runtime_config::<T, Self>(spec_id)
     }
 }
 
-/// Returns the interpreter runner for a base EVM specification.
-pub fn base_run_interpreter<T, F>(spec_id: SpecId) -> crate::evm::RunInterpreterFn<T>
+/// Returns EVM runtime config for a base EVM specification.
+pub const fn base_evm_runtime_config<T, F>(spec_id: SpecId) -> EvmRuntimeConfig<T>
 where
     T: EvmTypes,
     F: EvmConfigFactory<T>,
 {
-    spec_to_generic!(spec_id, |SPEC_ID| run_interpreter::<T, F::Config<SPEC_ID>>)
-}
-
-fn run_interpreter<T: EvmTypes, C: EvmConfig<T>>(
-    interpreter: &mut Interpreter<T>,
-    host: &mut T::Host,
-) -> InstrStop {
-    interpreter.run::<C>(host)
+    spec_to_generic!(spec_id, |SPEC_ID| EvmRuntimeConfig::<T>::new::<F::Config<SPEC_ID>>())
 }

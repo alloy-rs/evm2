@@ -49,7 +49,7 @@ pub(crate) fn mulmod([a, b, n]: [Word]) -> out {
 
 #[instruction]
 pub(crate) fn exp(cx: _, [a, b]: [Word]) -> Result<out> {
-    cx.gas.spend(cx.gas_params.exp_cost(b))?;
+    cx.gas.spend(cx.state.gas_params().exp_cost(b))?;
     *out = a.wrapping_pow(b);
 }
 
@@ -159,6 +159,20 @@ mod tests {
         let interpreter = run(RunConfig::new(code).spec(SpecId::FRONTIER).gas_limit(25));
 
         core::assert_matches!(interpreter.err, InstrStop::OutOfGas);
+    }
+
+    #[test]
+    fn exp_dynamic_gas_uses_active_spec() {
+        let mut code = Vec::new();
+        push(&mut code, 0xff);
+        push(&mut code, 2);
+        code.extend([op::EXP, op::STOP]);
+
+        let frontier = run(RunConfig::new(code.clone()).spec(SpecId::FRONTIER).gas_limit(65));
+        let spurious_dragon = run(RunConfig::new(code).spec(SpecId::SPURIOUS_DRAGON).gas_limit(65));
+
+        assert_eq!(frontier.err, InstrStop::Stop);
+        core::assert_matches!(spurious_dragon.err, InstrStop::OutOfGas);
     }
 
     #[test]

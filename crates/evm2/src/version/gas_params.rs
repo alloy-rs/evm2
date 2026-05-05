@@ -29,7 +29,7 @@ macro_rules! gas_ids_impl {
             #[repr(u8)]
             pub enum GasId {
                 #[$first_doc]
-                $first_variant = 1,
+                $first_variant = 0,
                 $(
                     #[$doc]
                     $variant,
@@ -39,14 +39,20 @@ macro_rules! gas_ids_impl {
             }
 
             impl GasId {
+                /// Smallest gas parameter identifier.
+                pub const MIN: Self = Self::$first_variant;
+
                 /// Largest gas parameter identifier.
                 pub const MAX: Self = Self::$last_variant;
+
+                /// Number of gas parameter identifiers.
+                pub const COUNT: usize = Self::MAX as usize + 1;
 
                 /// Returns the gas parameter for a raw identifier.
                 #[inline]
                 pub const fn from_usize(value: usize) -> Option<Self> {
-                    if value >= 1 && value <= (Self::MAX as usize) {
-                        // SAFETY: `GasId` is `repr(u8)`, starts at 1, and every variant up to
+                    if value <= (Self::MAX as usize) {
+                        // SAFETY: `GasId` is `repr(u8)`, starts at 0, and every variant up to
                         // `MAX` is assigned contiguously by the enum declaration.
                         return Some(unsafe { core::mem::transmute::<u8, Self>(value as u8) });
                     }
@@ -188,7 +194,7 @@ pub const fn num_words(len: usize) -> usize {
 /// Dynamic gas parameter table.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct GasParams {
-    table: [u32; GasId::MAX as usize + 1],
+    table: [u32; GasId::COUNT],
     _align: [usize; 0],
 }
 
@@ -212,7 +218,7 @@ impl GasParams {
     /// Creates empty gas parameters.
     #[inline]
     pub(super) const fn empty() -> Self {
-        Self { table: [0; GasId::MAX as usize + 1], _align: [] }
+        Self { table: [0; GasId::COUNT], _align: [] }
     }
 
     /// Returns the gas cost for `id`.
@@ -336,18 +342,17 @@ mod tests {
     use crate::{SpecId, Version};
 
     fn gas_params(spec: SpecId) -> &'static GasParams {
-        &Version::base(spec).gas_params
+        Version::base(spec).gas_params
     }
 
     #[test]
     fn gas_id_roundtrips_names_and_values() {
-        assert_eq!(GasId::from_usize(1), Some(GasId::ExpByteGas));
-        assert_eq!(GasId::ExpByteGas.as_usize(), 1);
+        assert_eq!(GasId::from_usize(0), Some(GasId::ExpByteGas));
+        assert_eq!(GasId::ExpByteGas.as_usize(), 0);
         assert_eq!(GasId::ExpByteGas.name(), "exp_byte_gas");
         assert_eq!(GasId::from_name("exp_byte_gas"), Some(GasId::ExpByteGas));
         assert_eq!(GasId::from_usize(GasId::MAX as usize), Some(GasId::TxEip7702PerAuthStateGas));
-        assert_eq!(GasId::from_usize(GasId::MAX as usize + 1), None);
-        assert_eq!(GasId::from_usize(0), None);
+        assert_eq!(GasId::from_usize(GasId::COUNT), None);
         assert_eq!(GasId::from_name("missing"), None);
     }
 

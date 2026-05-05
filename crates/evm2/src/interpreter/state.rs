@@ -1,8 +1,9 @@
 use super::{BytecodeRef, InstrStop, Interpreter, Memory, Message, Word};
 use crate::{
-    AccountLoad, EvmTypes, SelfDestructResult, SpecId, StorageLoad,
+    AccountLoad, EvmTypes, SelfDestructResult, SpecId, StorageLoad, Version,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
+    version::GasParams,
 };
 use alloy_primitives::{Address, B256, Bytes, Log};
 use core::fmt;
@@ -15,6 +16,8 @@ pub struct State<'a, T: EvmTypes> {
     pub host: &'a mut T::Host,
     /// Active spec identifier.
     pub spec: SpecId,
+    /// Active EVM version data.
+    pub version: Version,
     pub(crate) raw_interp: *mut Interpreter<T>,
 }
 
@@ -53,6 +56,15 @@ impl<T: EvmTypes> State<'_, T> {
         self.interp().is_static()
     }
 
+    /// Returns the active dynamic gas parameters.
+    #[inline]
+    pub(crate) const fn gas_params(&self) -> &'static GasParams {
+        // Gas params are data on the active version so changes automatically affect every
+        // instruction that reads them. Tracking instruction dependencies on version tables is not
+        // sustainable for custom forks.
+        self.version.gas_params
+    }
+
     /// Returns linear memory.
     #[inline]
     pub(crate) fn memory(&mut self) -> &mut Memory {
@@ -88,6 +100,7 @@ impl<T: EvmTypes> fmt::Debug for State<'_, T> {
             .field("memory", &self.interp().memory)
             .field("return_data", &self.return_data())
             .field("spec", &self.spec)
+            .field("version", &self.version)
             .field("raw_interp", &self.raw_interp)
             .finish_non_exhaustive()
     }

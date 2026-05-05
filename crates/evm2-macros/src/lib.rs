@@ -71,7 +71,6 @@ fn expand_instruction(raw: bool, input: ItemFn) -> TokenStream2 {
             let mut #cx = evm2::interpreter::table::InstructionCx::<#evm_types> {
                 pc: __evm2_pc,
                 gas: __evm2_gas,
-                gas_params: &C::VERSION.gas_params,
                 state: __evm2_state,
             };
         }
@@ -87,7 +86,7 @@ fn expand_instruction(raw: bool, input: ItemFn) -> TokenStream2 {
         #impl_where_clause
         {
             #[inline]
-            fn execute<C: evm2::EvmConfig<#evm_types>>(
+            fn execute(
                 __evm2_pc: &mut evm2::interpreter::Pc,
                 mut stack: evm2::interpreter::StackMut<'_>,
                 __evm2_gas: &mut evm2::interpreter::Gas,

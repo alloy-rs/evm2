@@ -164,7 +164,7 @@ impl InstrStop {
 mod tests {
     use super::*;
     use crate::{
-        BaseEvmConfig, SpecId,
+        BaseEvmConfig, EvmRuntimeConfig, SpecId,
         bytecode::Bytecode,
         interpreter::instructions::tests::{TestHost, TestTypes},
     };
@@ -194,7 +194,7 @@ mod tests {
             false,
         );
         let mut host = TestHost::default();
-        interpreter.run::<Config>(&mut host);
+        interpreter.run_with(EvmRuntimeConfig::new::<Config>(), &mut host);
     }
 
     #[test]
@@ -212,7 +212,7 @@ mod tests {
                     false,
                 );
                 let mut host = TestHost::default();
-                interpreter.run::<Config>(&mut host);
+                interpreter.run_with(EvmRuntimeConfig::new::<Config>(), &mut host);
                 assert!(interpreter.gas.remaining() > 0);
                 assert_eq!(interpreter.stack[0], U256::from(3));
             }};

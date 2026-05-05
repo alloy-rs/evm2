@@ -60,8 +60,8 @@ pub mod version;
 pub use evm::{
     Evm, TxResult, config,
     config::{
-        BaseEvmConfig, BaseEvmConfigFactory, BaseEvmTypes, EvmConfig, EvmConfigFactory, EvmTypes,
-        base_run_interpreter,
+        BaseEvmConfig, BaseEvmConfigFactory, BaseEvmTypes, EvmConfig, EvmConfigFactory,
+        EvmRuntimeConfig, EvmTypes, base_evm_runtime_config,
     },
     env, precompile, registry,
 };

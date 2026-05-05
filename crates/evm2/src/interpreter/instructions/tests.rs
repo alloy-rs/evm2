@@ -1,5 +1,6 @@
 use crate::{
-    AccountLoad, BaseEvmConfig, EvmConfig, EvmTypes, SelfDestructResult, SpecId, StorageLoad,
+    AccountLoad, BaseEvmConfig, EvmConfig, EvmRuntimeConfig, EvmTypes, SelfDestructResult, SpecId,
+    StorageLoad,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
     interpreter::{
@@ -244,7 +245,7 @@ fn run_with_config<C: EvmConfig<TestTypes>>(config: RunConfig<'_>) -> TestInterp
     inner.return_data = return_data;
     let mut default_host = TestHost::default();
     let host = host.unwrap_or(&mut default_host);
-    let err = inner.run::<C>(host);
+    let err = inner.run_with(EvmRuntimeConfig::new::<C>(), host);
     let stack_len = inner.stack_len();
     TestInterpreter {
         stack: inner.stack,

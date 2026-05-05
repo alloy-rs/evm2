@@ -3,11 +3,11 @@
 use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{Address, Bytes};
 use evm2::{
-    BaseEvmConfig, Evm, EvmConfig, EvmConfigFactory, EvmTypes, EvmVersion, SpecId, Version,
-    base_run_interpreter,
+    BaseEvmConfig, Evm, EvmConfig, EvmConfigFactory, EvmRuntimeConfig, EvmTypes, EvmVersion,
+    SpecId, Version, base_evm_runtime_config,
     bytecode::Bytecode,
     env::BlockEnv,
-    evm::{InMemoryDB, RunInterpreterFn, precompile::NoPrecompiles},
+    evm::{InMemoryDB, precompile::NoPrecompiles},
     interpreter::{Host, InstrStop, Instruction, Message, Word, op},
     registry::{HandlerResult, TxRegistry, TxRequest},
 };
@@ -44,24 +44,22 @@ impl EvmTypes for CustomTypes {
 }
 
 const fn custom_version<const SPEC_ID: u8>() -> Version {
-    let mut version = Version::new_base(SpecId::try_from_u8(SPEC_ID).unwrap());
-    version.static_gas_table.set(CUSTOM_OPCODE, CUSTOM_OPCODE_GAS);
-    version
+    Version::base(SpecId::try_from_u8(SPEC_ID).unwrap())
 }
 
 struct CustomConfig<const SPEC_ID: u8>(());
 
 impl<const SPEC_ID: u8> EvmConfig<CustomTypes> for CustomConfig<SPEC_ID> {
-    const VERSION: &'static Version = &custom_version::<SPEC_ID>();
+    const VERSION: Version = custom_version::<SPEC_ID>();
     const EVM_VERSION: &'static EvmVersion<CustomTypes> = &custom_evm_version::<SPEC_ID>();
 }
 
 const fn custom_evm_version<const SPEC_ID: u8>() -> EvmVersion<CustomTypes> {
     let mut version = EvmVersion::<CustomTypes>::new_base::<CustomConfig<SPEC_ID>>();
-    version.instruction_impls.set(
-        CUSTOM_OPCODE,
-        Some(<custom<CustomTypes> as Instruction<CustomTypes>>::execute::<CustomConfig<SPEC_ID>>),
-    );
+    version.static_gas_table.set(CUSTOM_OPCODE, CUSTOM_OPCODE_GAS);
+    version
+        .instruction_impls
+        .set(CUSTOM_OPCODE, Some(<custom<CustomTypes> as Instruction<CustomTypes>>::execute));
     version
 }
 
@@ -70,28 +68,16 @@ struct CustomConfigFactory(());
 impl EvmConfigFactory<CustomTypes> for CustomConfigFactory {
     type Config<const SPEC_ID: u8> = CustomConfig<SPEC_ID>;
 
-    fn run_interpreter(spec_id: CustomSpecId) -> RunInterpreterFn<CustomTypes> {
+    fn evm_runtime_config(spec_id: CustomSpecId) -> EvmRuntimeConfig<CustomTypes> {
         match spec_id {
-            CustomSpecId::MainnetOsaka => run_base_osaka,
-            CustomSpecId::CustomOsaka => base_run_interpreter::<CustomTypes, Self>(spec_id.into()),
-        }
-    }
-
-    fn version(spec_id: CustomSpecId) -> &'static Version {
-        match spec_id {
-            CustomSpecId::MainnetOsaka => Version::base(spec_id.into()),
+            CustomSpecId::MainnetOsaka => {
+                EvmRuntimeConfig::new::<BaseEvmConfig<{ SpecId::OSAKA as u8 }>>()
+            }
             CustomSpecId::CustomOsaka => {
-                <CustomConfig<{ SpecId::OSAKA as u8 }> as EvmConfig<CustomTypes>>::VERSION
+                base_evm_runtime_config::<CustomTypes, Self>(spec_id.into())
             }
         }
     }
-}
-
-fn run_base_osaka(
-    interpreter: &mut evm2::interpreter::Interpreter<CustomTypes>,
-    host: &mut Evm<CustomTypes>,
-) -> InstrStop {
-    interpreter.run::<BaseEvmConfig<{ SpecId::OSAKA as u8 }>>(host)
 }
 
 #[instruction]
@@ -159,7 +145,11 @@ fn main() {
         NoPrecompiles,
     );
     assert_eq!(evm.spec_id(), SpecId::OSAKA);
-    assert_eq!(evm.version().static_gas_table[CUSTOM_OPCODE], CUSTOM_OPCODE_GAS);
+    assert_eq!(
+        <CustomConfig<{ SpecId::OSAKA as u8 }> as EvmConfig<CustomTypes>>::EVM_VERSION
+            .static_gas_table[CUSTOM_OPCODE],
+        CUSTOM_OPCODE_GAS,
+    );
 
     let result = evm.transact(&tx).expect("custom transaction should execute");
     assert_eq!(result.stop, InstrStop::Stop);

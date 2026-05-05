@@ -20,7 +20,7 @@ fn require_non_staticcall<T: EvmTypes>(cx: &InstructionCx<'_, '_, T>) -> Result 
 pub(crate) fn sload(cx: _, [key]: [Word]) -> Result<out> {
     let load = cx.state.host.sload(cx.state.message().destination, key);
     if load.is_cold {
-        cx.gas.spend(cx.gas_params.get(GasId::ColdStorageAdditionalCost).into())?;
+        cx.gas.spend(cx.state.gas_params().get(GasId::ColdStorageAdditionalCost).into())?;
     }
     *out = load.value;
 }
@@ -29,7 +29,7 @@ pub(crate) fn sload(cx: _, [key]: [Word]) -> Result<out> {
 pub(crate) fn sstore(cx: _) -> Result {
     require_non_staticcall(&cx)?;
     let [key, value] = stack.popn()?;
-    let gas_params = cx.gas_params;
+    let gas_params = cx.state.gas_params();
     if cx.state.spec.enables(SpecId::ISTANBUL)
         && cx.gas.remaining() <= gas_params.get(GasId::CallStipend).into()
     {
@@ -84,7 +84,7 @@ fn log_common<T: EvmTypes>(
     require_non_staticcall(&cx)?;
     let [offset, len] = stack.popn()?;
     let len = as_usize(len)?;
-    cx.gas.spend(cx.gas_params.log_cost(n as u8, len))?;
+    cx.gas.spend(cx.state.gas_params().log_cost(n as u8, len))?;
 
     let data = if len == 0 {
         Bytes::new()

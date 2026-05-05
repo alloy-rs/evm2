@@ -2,7 +2,7 @@
 
 use crate::{
     EvmConfig, EvmTypes,
-    interpreter::{Gas, GasParams, InstrStop, Pc, Result, Stack, StackMut, State, op},
+    interpreter::{Gas, InstrStop, Pc, Result, Stack, StackMut, State, op},
 };
 use core::hint::cold_path;
 
@@ -58,8 +58,6 @@ pub(crate) struct InstructionCx<'a, 'state, T: EvmTypes> {
     pub pc: &'a mut Pc,
     /// Gas state.
     pub gas: &'a mut Gas,
-    /// Dynamic gas parameters for the active config.
-    pub gas_params: &'a GasParams,
     /// Interpreter state.
     pub state: &'a mut State<'state, T>,
 }
@@ -67,12 +65,8 @@ pub(crate) struct InstructionCx<'a, 'state, T: EvmTypes> {
 /// EVM instruction implementation.
 pub trait Instruction<T: EvmTypes = crate::BaseEvmTypes> {
     /// Executes this instruction.
-    fn execute<C: EvmConfig<T>>(
-        pc: &mut Pc,
-        stack: StackMut<'_>,
-        gas: &mut Gas,
-        state: &mut State<'_, T>,
-    ) -> Result;
+    fn execute(pc: &mut Pc, stack: StackMut<'_>, gas: &mut Gas, state: &mut State<'_, T>)
+    -> Result;
 }
 
 #[cold]
@@ -272,7 +266,7 @@ extern_table! {
 
 #[inline]
 const fn pre_step<T: EvmTypes, C: EvmConfig<T>>(gas: &mut Gas, op: u8) -> Result {
-    gas.spend(C::VERSION.static_gas_table.get(op) as _)
+    gas.spend(C::EVM_VERSION.static_gas_table.get(op) as _)
 }
 
 #[inline]
@@ -292,15 +286,19 @@ const fn instruction_len(op: u8) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use crate::{SpecId, Version, interpreter::op, version::StaticGasTable};
+    use crate::{
+        BaseEvmConfig, BaseEvmTypes, EvmConfig, SpecId, interpreter::op, version::StaticGasTable,
+    };
 
-    fn gas_params(spec: SpecId) -> &'static StaticGasTable {
-        &Version::base(spec).static_gas_table
+    fn static_gas_table(spec: SpecId) -> StaticGasTable {
+        crate::spec_to_generic!(spec, |SPEC_ID| {
+            <BaseEvmConfig<SPEC_ID> as EvmConfig<BaseEvmTypes>>::EVM_VERSION.static_gas_table
+        })
     }
 
     #[test]
     fn default_gas_table_matches_revm_static_costs() {
-        let default_gas_table = gas_params(SpecId::FRONTIER);
+        let default_gas_table = static_gas_table(SpecId::FRONTIER);
         assert_eq!(default_gas_table[op::STOP], 0);
         assert_eq!(default_gas_table[op::ADD], 3);
         assert_eq!(default_gas_table[op::MUL], 5);
@@ -313,16 +311,16 @@ mod tests {
 
     #[test]
     fn gas_table_applies_spec_static_costs() {
-        let tangerine = gas_params(SpecId::TANGERINE);
+        let tangerine = static_gas_table(SpecId::TANGERINE);
         assert_eq!(tangerine[op::SLOAD], 200);
         assert_eq!(tangerine[op::BALANCE], 400);
         assert_eq!(tangerine[op::SELFDESTRUCT], 5000);
 
-        let istanbul = gas_params(SpecId::ISTANBUL);
+        let istanbul = static_gas_table(SpecId::ISTANBUL);
         assert_eq!(istanbul[op::SLOAD], 800);
         assert_eq!(istanbul[op::EXTCODEHASH], 700);
 
-        let berlin = gas_params(SpecId::BERLIN);
+        let berlin = static_gas_table(SpecId::BERLIN);
         assert_eq!(berlin[op::SLOAD], 100);
         assert_eq!(berlin[op::BALANCE], 100);
         assert_eq!(berlin[op::CALL], 100);

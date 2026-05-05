@@ -11,7 +11,7 @@ fn load_account<T: EvmTypes>(
     addr: Word,
     load_code: bool,
 ) -> Result<AccountLoad> {
-    let cold_load_gas = cx.gas_params.cold_account_additional_cost();
+    let cold_load_gas = cx.state.gas_params().cold_account_additional_cost();
     let skip_cold_load = cx.gas.remaining() < cold_load_gas;
     let account = cx.state.host.load_account(word_to_address(addr), load_code, skip_cold_load)?;
     if account.is_cold {
@@ -65,7 +65,7 @@ pub(crate) fn calldatasize(cx: _) -> out {
 #[instruction]
 pub(crate) fn calldatacopy(cx: _, [memory_offset, data_offset, len]: [Word]) -> Result {
     let len = as_usize(len)?;
-    cx.gas.spend(cx.gas_params.copy_cost(len))?;
+    cx.gas.spend(cx.state.gas_params().copy_cost(len))?;
     if len == 0 {
         return Ok(());
     }
@@ -85,7 +85,7 @@ pub(crate) fn codesize(cx: _) -> out {
 #[instruction]
 pub(crate) fn codecopy(cx: _, [memory_offset, code_offset, len]: [Word]) -> Result {
     let len = as_usize(len)?;
-    cx.gas.spend(cx.gas_params.copy_cost(len))?;
+    cx.gas.spend(cx.state.gas_params().copy_cost(len))?;
     if len == 0 {
         return Ok(());
     }
@@ -116,7 +116,7 @@ pub(crate) fn extcodehash(cx: _, [addr]: [Word]) -> Result<out> {
 #[instruction]
 pub(crate) fn extcodecopy(cx: _, [addr, memory_offset, code_offset, len]: [Word]) -> Result {
     let len = as_usize(len)?;
-    cx.gas.spend(cx.gas_params.extcodecopy_cost(len))?;
+    cx.gas.spend(cx.state.gas_params().extcodecopy_cost(len))?;
 
     let mut memory_offset_usize = 0;
     if len != 0 {
@@ -143,7 +143,7 @@ pub(crate) fn returndatacopy(cx: _, [memory_offset, data_offset, len]: [Word]) -
         return Err(InstrStop::OutOfOffset);
     }
 
-    cx.gas.spend(cx.gas_params.copy_cost(len))?;
+    cx.gas.spend(cx.state.gas_params().copy_cost(len))?;
     if len == 0 {
         return Ok(());
     }

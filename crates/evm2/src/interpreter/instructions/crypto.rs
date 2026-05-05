@@ -6,7 +6,7 @@ use evm2_macros::instruction;
 #[instruction]
 pub(crate) fn keccak256(cx: _, [offset, len]: [Word]) -> Result<out> {
     let len = as_usize(len)?;
-    cx.gas.spend(cx.gas_params.keccak256_word_cost(len))?;
+    cx.gas.spend(cx.state.gas_params().keccak256_word_cost(len))?;
     let hash = if len == 0 {
         keccak256_hash([])
     } else {

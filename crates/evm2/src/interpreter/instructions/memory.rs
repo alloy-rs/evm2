@@ -33,7 +33,7 @@ pub(crate) fn msize(cx: _) -> out {
 #[instruction]
 pub(crate) fn mcopy(cx: _, [dst, src, len]: [Word]) -> Result {
     let len = as_usize(len)?;
-    cx.gas.spend(cx.gas_params.mcopy_cost(len))?;
+    cx.gas.spend(cx.state.gas_params().mcopy_cost(len))?;
     if len == 0 {
         return Ok(());
     }
