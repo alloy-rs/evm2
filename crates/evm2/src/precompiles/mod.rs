@@ -171,7 +171,7 @@ fn base_precompiles(spec: SpecId) -> &'static PrecompileMap {
         }
 
         if spec.enables(SpecId::OSAKA) {
-            precompiles.extend([MODEXP_OSAKA, SECP256R1_VERIFY]);
+            precompiles.extend([MODEXP_OSAKA, P256VERIFY_OSAKA]);
         }
 
         precompiles.shrink_to_fit();

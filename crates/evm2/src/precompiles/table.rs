@@ -4,7 +4,6 @@ use crate::{
         PrecompileId, PrecompileResult, blake2, bls12_381, bn254, hash, identity,
         kzg_point_evaluation, modexp, secp256k1, secp256r1,
     },
-    utils::u64_to_address,
 };
 use alloy_primitives::{Address, map::HashMap};
 
@@ -23,8 +22,8 @@ pub struct Precompile {
 impl Precompile {
     /// Creates a precompile descriptor.
     #[inline]
-    pub const fn new(address: u64, id: PrecompileId, f: PrecompileFn) -> Self {
-        Self { address: u64_to_address(address), data: PrecompileData::new(id, f) }
+    pub const fn new(address: Address, id: PrecompileId, f: PrecompileFn) -> Self {
+        Self { address, data: PrecompileData::new(id, f) }
     }
 
     /// Returns the precompile address.
@@ -175,6 +174,12 @@ impl PrecompileMap {
 /// Defines precompile constants.
 #[macro_export]
 macro_rules! define_precompiles {
+    (@address $address:literal) => {
+        $crate::precompiles::u64_to_address($address)
+    };
+    (@address $address:expr) => {
+        $address
+    };
     ($(
         $(#[$attr:meta])*
         $vis:vis const $name:ident = ($address:expr, $id:expr) => $f:path;
@@ -182,7 +187,7 @@ macro_rules! define_precompiles {
         $(
             $(#[$attr])*
             $vis const $name: $crate::precompiles::Precompile =
-                $crate::precompiles::Precompile::new($address, $id, $f);
+                $crate::precompiles::Precompile::new($crate::define_precompiles!(@address $address), $id, $f);
         )*
     };
 }
@@ -235,5 +240,7 @@ define_precompiles! {
     /// BLS12-381 map FP2 to G2 precompile.
     pub const BLS12_381_MAP_FP2_TO_G2 = (0x11, PrecompileId::Bls12MapFp2ToGp2) => bls12_381::map_fp2_to_g2::run;
     /// secp256r1 signature verification precompile.
-    pub const SECP256R1_VERIFY = (0x100, PrecompileId::P256Verify) => secp256r1::run_osaka;
+    pub const P256VERIFY = (0x100, PrecompileId::P256Verify) => secp256r1::run;
+    /// secp256r1 signature verification precompile with Osaka gas rules.
+    pub const P256VERIFY_OSAKA = (0x100, PrecompileId::P256Verify) => secp256r1::run_osaka;
 }
