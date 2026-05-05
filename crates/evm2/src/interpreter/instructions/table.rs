@@ -148,7 +148,7 @@ where
     let mut i = 0;
     let mut unknown_idx = None;
     while i < 256 {
-        if !C::VERSION_TABLES.instruction_impls.contains(i as u8) {
+        if !C::VERSION_TABLES.contains_instruction(i as u8) {
             if unknown_idx.is_none() {
                 unknown_idx = Some(i);
             }
@@ -181,7 +181,7 @@ fn dispatch_mono<T: EvmTypes, C: EvmConfig<T>>(
     gas: &mut Gas,
     state: &mut State<'_, T>,
 ) -> InstructionFnRet {
-    let instr = C::VERSION_TABLES.instruction_impls.get_or_default(op);
+    let instr = C::VERSION_TABLES.instruction_or_unknown(op);
     let r;
     match pre_step::<T, C>(gas, op) {
         Ok(()) => {
@@ -222,7 +222,7 @@ extern_table! {
         state: &mut State<'_, T>,
         op: u8,
     ) {
-        let instr = C::VERSION_TABLES.instruction_impls.get_or_default(op);
+        let instr = C::VERSION_TABLES.instruction_or_unknown(op);
         if let Err(e) = pre_step::<T, C>(gas, op) {
             cold_path();
             tail_return!(tail_call_restore::<T>(pc, stack, gas, state, e as u8));
@@ -273,7 +273,7 @@ extern_table! {
 
 #[inline]
 const fn pre_step<T: EvmTypes, C: EvmConfig<T>>(gas: &mut Gas, op: u8) -> Result {
-    gas.spend(C::VERSION_TABLES.static_gas_table.get(op) as _)
+    gas.spend(C::VERSION_TABLES.static_gas(op) as _)
 }
 
 #[inline]
@@ -293,44 +293,41 @@ const fn instruction_len(op: u8) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        BaseEvmConfig, BaseEvmTypes, EvmConfig, SpecId, interpreter::op, version::StaticGasTable,
-    };
+    use crate::{BaseEvmConfig, BaseEvmTypes, EvmConfig, SpecId, VersionTables, interpreter::op};
 
-    fn static_gas_table(spec: SpecId) -> StaticGasTable {
+    fn version_tables(spec: SpecId) -> &'static VersionTables<BaseEvmTypes> {
         crate::spec_to_generic!(spec, |BASE_SPEC_ID| {
             <BaseEvmConfig<BASE_SPEC_ID> as EvmConfig<BaseEvmTypes>>::VERSION_TABLES
-                .static_gas_table
         })
     }
 
     #[test]
     fn default_gas_table_matches_revm_static_costs() {
-        let default_gas_table = static_gas_table(SpecId::FRONTIER);
-        assert_eq!(default_gas_table[op::STOP], 0);
-        assert_eq!(default_gas_table[op::ADD], 3);
-        assert_eq!(default_gas_table[op::MUL], 5);
-        assert_eq!(default_gas_table[op::EXP], 10);
-        assert_eq!(default_gas_table[op::BALANCE], 20);
-        assert_eq!(default_gas_table[op::SLOAD], 50);
-        assert_eq!(default_gas_table[op::CALL], 40);
-        assert_eq!(default_gas_table[op::SELFDESTRUCT], 0);
+        let default_gas_table = version_tables(SpecId::FRONTIER);
+        assert_eq!(default_gas_table.static_gas(op::STOP), 0);
+        assert_eq!(default_gas_table.static_gas(op::ADD), 3);
+        assert_eq!(default_gas_table.static_gas(op::MUL), 5);
+        assert_eq!(default_gas_table.static_gas(op::EXP), 10);
+        assert_eq!(default_gas_table.static_gas(op::BALANCE), 20);
+        assert_eq!(default_gas_table.static_gas(op::SLOAD), 50);
+        assert_eq!(default_gas_table.static_gas(op::CALL), 40);
+        assert_eq!(default_gas_table.static_gas(op::SELFDESTRUCT), 0);
     }
 
     #[test]
     fn gas_table_applies_spec_static_costs() {
-        let tangerine = static_gas_table(SpecId::TANGERINE);
-        assert_eq!(tangerine[op::SLOAD], 200);
-        assert_eq!(tangerine[op::BALANCE], 400);
-        assert_eq!(tangerine[op::SELFDESTRUCT], 5000);
+        let tangerine = version_tables(SpecId::TANGERINE);
+        assert_eq!(tangerine.static_gas(op::SLOAD), 200);
+        assert_eq!(tangerine.static_gas(op::BALANCE), 400);
+        assert_eq!(tangerine.static_gas(op::SELFDESTRUCT), 5000);
 
-        let istanbul = static_gas_table(SpecId::ISTANBUL);
-        assert_eq!(istanbul[op::SLOAD], 800);
-        assert_eq!(istanbul[op::EXTCODEHASH], 700);
+        let istanbul = version_tables(SpecId::ISTANBUL);
+        assert_eq!(istanbul.static_gas(op::SLOAD), 800);
+        assert_eq!(istanbul.static_gas(op::EXTCODEHASH), 700);
 
-        let berlin = static_gas_table(SpecId::BERLIN);
-        assert_eq!(berlin[op::SLOAD], 100);
-        assert_eq!(berlin[op::BALANCE], 100);
-        assert_eq!(berlin[op::CALL], 100);
+        let berlin = version_tables(SpecId::BERLIN);
+        assert_eq!(berlin.static_gas(op::SLOAD), 100);
+        assert_eq!(berlin.static_gas(op::BALANCE), 100);
+        assert_eq!(berlin.static_gas(op::CALL), 100);
     }
 }

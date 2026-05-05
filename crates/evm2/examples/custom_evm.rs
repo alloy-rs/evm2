@@ -62,27 +62,26 @@ impl<const BASE_SPEC_ID: u8> CustomConfig<BASE_SPEC_ID> {
 }
 
 impl<const BASE_SPEC_ID: u8> EvmConfig<CustomTypes> for CustomConfig<BASE_SPEC_ID> {
-    const VERSION: Version = Version {
-        spec_id: SpecId::try_from_u8(BASE_SPEC_ID).unwrap(),
-        gas_params: &Self::GAS_PARAMS,
-    };
+    const VERSION: Version =
+        Version::new(SpecId::try_from_u8(BASE_SPEC_ID).unwrap(), &Self::GAS_PARAMS);
     const VERSION_TABLES: &'static VersionTables<CustomTypes> =
         &custom_version_tables::<BASE_SPEC_ID>();
 }
 
 const fn custom_gas_params<const BASE_SPEC_ID: u8>() -> GasParams {
     let base_spec_id = SpecId::try_from_u8(BASE_SPEC_ID).unwrap();
-    let mut gp = *Version::base(base_spec_id).gas_params;
+    let mut gp = *Version::base(base_spec_id).gas_params();
     gp.set(CUSTOM_OPCODE_DYNAMIC_GAS_ID, CUSTOM_OPCODE_DYNAMIC_GAS);
     gp
 }
 
 const fn custom_version_tables<const BASE_SPEC_ID: u8>() -> VersionTables<CustomTypes> {
     let mut version = VersionTables::<CustomTypes>::base::<CustomConfig<BASE_SPEC_ID>>();
-    version.static_gas_table.set(CUSTOM_OPCODE, CUSTOM_OPCODE_GAS);
-    version
-        .instruction_impls
-        .set(CUSTOM_OPCODE, Some(<custom<CustomTypes> as Instruction<CustomTypes>>::execute));
+    version.set_opcode(
+        CUSTOM_OPCODE,
+        CUSTOM_OPCODE_GAS,
+        <custom<CustomTypes> as Instruction<CustomTypes>>::execute,
+    );
     version
 }
 
@@ -185,12 +184,12 @@ fn main() {
     assert_eq!(evm.spec_id(), SpecId::OSAKA);
     assert_eq!(
         <CustomConfig<{ SpecId::OSAKA as u8 }> as EvmConfig<CustomTypes>>::VERSION_TABLES
-            .static_gas_table[CUSTOM_OPCODE],
+            .static_gas(CUSTOM_OPCODE),
         CUSTOM_OPCODE_GAS,
     );
     assert_eq!(
         <CustomConfig<{ SpecId::OSAKA as u8 }> as EvmConfig<CustomTypes>>::VERSION
-            .gas_params
+            .gas_params()
             .get(CUSTOM_OPCODE_DYNAMIC_GAS_ID),
         CUSTOM_OPCODE_DYNAMIC_GAS,
     );

@@ -8,11 +8,8 @@ use crate::{
 mod gas_params;
 pub use gas_params::{GasId, GasParams};
 
-mod static_gas_table;
-pub use static_gas_table::StaticGasTable;
-
-mod instruction_impl_table;
-pub use instruction_impl_table::InstructionImplTable;
+mod tables;
+pub use tables::VersionTables;
 
 /// Runtime version data.
 ///
@@ -21,30 +18,22 @@ pub use instruction_impl_table::InstructionImplTable;
 #[derive(Clone, Copy, Debug)]
 pub struct Version {
     /// Active base specification ID.
-    pub spec_id: SpecId,
+    spec_id: SpecId,
     /// Dynamic gas parameter table.
-    pub gas_params: &'static GasParams,
-}
-
-/// Type-specific version tables.
-///
-/// Stores the static gas table and instruction implementations for a concrete `EvmTypes` family.
-/// These tables are compile-time inputs used to build the final interpreter dispatch table.
-#[derive(Debug)]
-pub struct VersionTables<T: EvmTypes> {
-    /// Active EVM version.
-    pub version: Version,
-    /// Static opcode gas table.
-    pub static_gas_table: StaticGasTable,
-    /// Instruction implementations.
-    pub instruction_impls: InstructionImplTable<T>,
+    gas_params: &'static GasParams,
 }
 
 impl Version {
+    /// Creates an EVM version from a base spec ID and gas parameter table.
+    #[inline]
+    pub const fn new(spec_id: SpecId, gas_params: &'static GasParams) -> Self {
+        Self { spec_id, gas_params }
+    }
+
     /// Returns the base EVM version for `spec_id`.
     #[inline]
     pub const fn base(spec_id: SpecId) -> Self {
-        Self { spec_id, gas_params: &BASE_GAS_PARAMS[spec_id as usize] }
+        Self::new(spec_id, &BASE_GAS_PARAMS[spec_id as usize])
     }
 
     /// Returns the base specification ID for this version.
@@ -52,17 +41,11 @@ impl Version {
     pub const fn spec_id(&self) -> SpecId {
         self.spec_id
     }
-}
 
-impl<T: EvmTypes> VersionTables<T> {
-    /// Creates empty type-specific version tables.
+    /// Returns the dynamic gas parameter table for this version.
     #[inline]
-    const fn empty(version: Version) -> Self {
-        Self {
-            version,
-            static_gas_table: StaticGasTable::empty(),
-            instruction_impls: InstructionImplTable::empty(),
-        }
+    pub const fn gas_params(&self) -> &'static GasParams {
+        self.gas_params
     }
 }
 
@@ -105,39 +88,36 @@ macro_rules! evm_versions {
             gp
         }
 
-        impl<T: EvmTypes> VersionTables<T> {
-            /// Creates the type-specific base version tables for `Cfg`.
-            pub const fn base<Cfg: EvmConfig<T>>() -> Self {
-                use crate::interpreter::gas::*;
+        const fn base_version_tables<T: EvmTypes, Cfg: EvmConfig<T>>() -> VersionTables<T> {
+            use crate::interpreter::gas::*;
 
-                let version = Cfg::VERSION;
-                let spec_id = version.spec_id;
-                let mut v = Self::empty(version);
+            let version = Cfg::VERSION;
+            let spec_id = version.spec_id();
+            let mut v = VersionTables::empty(version);
 
-                macro_rules! op {
-                    ($name:ident, $cost:expr) => {
-                        v.static_gas_table.set(op::$name, $cost as u16);
-                        v.instruction_impls.set(
-                            op::$name,
-                            Some(op_instr!(T, $name)),
-                        );
-                    };
-                }
-                macro_rules! static_gas {
-                    ($name:ident, $cost:expr) => {
-                        v.static_gas_table.set(op::$name, $cost as u16);
-                    };
-                }
-                use noop as gas;
-
-                $(
-                    if spec_id.enables(SpecId::$spec) {
-                        $($tokens)*
-                    }
-                )*
-
-                v
+            macro_rules! op {
+                ($name:ident, $cost:expr) => {
+                    v.set_instruction(
+                        op::$name,
+                        Some(op_instr!(T, $name)),
+                    );
+                    v.set_static_gas(op::$name, $cost as u16);
+                };
             }
+            macro_rules! static_gas {
+                ($name:ident, $cost:expr) => {
+                    v.set_static_gas(op::$name, $cost as u16);
+                };
+            }
+            use noop as gas;
+
+            $(
+                if spec_id.enables(SpecId::$spec) {
+                    $($tokens)*
+                }
+            )*
+
+            v
         }
     };
 }
