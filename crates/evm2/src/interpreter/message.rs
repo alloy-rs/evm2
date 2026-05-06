@@ -43,11 +43,6 @@ pub struct Message {
     pub salt: B256,
 }
 
-impl Message {
-    /// EVM call depth limit.
-    pub const CALL_DEPTH_LIMIT: u16 = 1024;
-}
-
 impl Default for Message {
     #[inline]
     fn default() -> Self {

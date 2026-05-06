@@ -1,21 +1,20 @@
 use super::{InstrStop, Result};
+use crate::constants::STACK_LIMIT;
 use alloy_primitives::U256;
 use core::{fmt, hint::cold_path};
 
 /// EVM stack word.
 pub type Word = U256;
 
-const STACK_CAPACITY: usize = 1024;
-
 /// Mutable EVM operand stack.
 pub struct Stack<'a> {
-    pub(crate) stack: &'a mut [Word; STACK_CAPACITY],
+    pub(crate) stack: &'a mut [Word; STACK_LIMIT],
     pub(crate) len: usize,
 }
 
 /// Borrowed mutable EVM operand stack.
 pub struct StackMut<'a> {
-    pub(crate) stack: &'a mut [Word; STACK_CAPACITY],
+    pub(crate) stack: &'a mut [Word; STACK_LIMIT],
     pub(crate) len: &'a mut usize,
 }
 
@@ -32,7 +31,7 @@ impl fmt::Debug for StackMut<'_> {
 }
 
 impl<'a> Stack<'a> {
-    pub(crate) const CAPACITY: usize = STACK_CAPACITY;
+    pub(crate) const CAPACITY: usize = STACK_LIMIT;
 
     #[inline]
     pub(crate) const fn new(stack: &'a mut [Word; Stack::CAPACITY], len: usize) -> Self {
@@ -69,7 +68,7 @@ impl<'a> Stack<'a> {
 }
 
 impl<'a> StackMut<'a> {
-    pub(crate) const CAPACITY: usize = STACK_CAPACITY;
+    pub(crate) const CAPACITY: usize = STACK_LIMIT;
 
     #[inline]
     #[cfg(test)]
