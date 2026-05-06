@@ -434,8 +434,11 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         caller_is_static: bool,
     ) -> MessageResult {
         let checkpoint = self.state.checkpoint();
-        if matches!(message.kind, MessageKind::Call | MessageKind::CallCode)
-            && !self.state.transfer(message.caller, message.destination, message.value)
+        // EIP-161 state clearing depends on zero-value direct call targets being touched.
+        if matches!(
+            message.kind,
+            MessageKind::Call | MessageKind::CallCode | MessageKind::StaticCall
+        ) && !self.state.transfer(message.caller, message.destination, message.value)
         {
             return MessageResult {
                 stop: InstrStop::OutOfFunds,
@@ -790,6 +793,83 @@ mod tests {
 
         let result = Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &message, false);
         assert!(result.stop.is_success());
+    }
+
+    #[test]
+    fn staticcall_touches_empty_existing_destination() {
+        let target = Address::from([0x11; 20]);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(target, AccountInfo::default());
+        database.insert_account_storage(target, Word::ZERO, Word::from(1));
+        let mut evm = Evm::<TestEvmTypes>::new(
+            SpecId::SPURIOUS_DRAGON,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            database,
+            Precompiles::base(SpecId::SPURIOUS_DRAGON),
+        );
+        let message = Message {
+            kind: MessageKind::StaticCall,
+            destination: target,
+            code_address: target,
+            gas_limit: 50_000,
+            ..Message::default()
+        };
+
+        let result = Host::execute_message(
+            &mut evm,
+            &TxEnv::default(),
+            Bytecode::default(),
+            &message,
+            false,
+        );
+        assert!(result.stop.is_success());
+
+        evm.state.finalize_transaction(SpecId::SPURIOUS_DRAGON);
+        let changes = evm.state.build_state_changes();
+        let account = changes.accounts.get(&target).expect("empty destination should be deleted");
+        assert!(account.original.is_some());
+        assert_eq!(account.current, None);
+        assert!(changes.storage.get(&target).is_some_and(|storage| storage.wipe));
+    }
+
+    #[test]
+    fn delegatecall_does_not_touch_empty_code_address() {
+        let destination = Address::from([0x11; 20]);
+        let code_address = Address::from([0x22; 20]);
+        let mut database = InMemoryDB::default();
+        database
+            .insert_account_info(destination, AccountInfo::default().with_balance(Word::from(1)));
+        database.insert_account_info(code_address, AccountInfo::default());
+        database.insert_account_storage(code_address, Word::ZERO, Word::from(1));
+        let mut evm = Evm::<TestEvmTypes>::new(
+            SpecId::SPURIOUS_DRAGON,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            database,
+            Precompiles::base(SpecId::SPURIOUS_DRAGON),
+        );
+        let message = Message {
+            kind: MessageKind::DelegateCall,
+            destination,
+            code_address,
+            gas_limit: 50_000,
+            ..Message::default()
+        };
+
+        let result = Host::execute_message(
+            &mut evm,
+            &TxEnv::default(),
+            Bytecode::default(),
+            &message,
+            false,
+        );
+        assert!(result.stop.is_success());
+
+        evm.state.finalize_transaction(SpecId::SPURIOUS_DRAGON);
+        let changes = evm.state.build_state_changes();
+        assert!(!changes.accounts.contains_key(&code_address));
+        assert!(!changes.storage.contains_key(&code_address));
     }
 
     #[test]
