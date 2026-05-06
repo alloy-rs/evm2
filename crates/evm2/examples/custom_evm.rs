@@ -3,6 +3,8 @@
 //! The runtime `CustomSpecId` distinguishes base Osaka from custom Osaka, while the const generic
 //! `BASE_SPEC_ID` always names the inherited base `SpecId`.
 
+#![allow(clippy::missing_const_for_fn)]
+
 use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{Address, Bytes};
 use evm2::{
@@ -31,17 +33,11 @@ enum CustomSpecId {
     CustomOsaka,
 }
 
-impl CustomSpecId {
-    const fn base_spec_id(self) -> SpecId {
-        match self {
-            Self::MainnetOsaka | Self::CustomOsaka => SpecId::OSAKA,
-        }
-    }
-}
-
 impl From<CustomSpecId> for SpecId {
     fn from(spec_id: CustomSpecId) -> Self {
-        spec_id.base_spec_id()
+        match spec_id {
+            CustomSpecId::MainnetOsaka | CustomSpecId::CustomOsaka => Self::OSAKA,
+        }
     }
 }
 
@@ -167,12 +163,12 @@ struct Args {
 }
 
 impl Args {
-    const fn parse() -> Self {
+    fn parse() -> Self {
         Self { spec_id: CustomSpecId::CustomOsaka, memory_limit: Some(1 << 20) }
     }
 
-    const fn version(&self) -> Version {
-        let mut version = custom_version(self.spec_id.base_spec_id());
+    fn version(&self) -> Version {
+        let mut version = custom_version(self.spec_id.into());
         if let Some(memory_limit) = self.memory_limit {
             version.memory_limit = memory_limit;
         }
