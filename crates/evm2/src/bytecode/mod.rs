@@ -1,6 +1,10 @@
 //! EVM bytecode.
 
-use crate::{interpreter::op, once_lock::OnceLock};
+use crate::{
+    constants::{EIP7702_BYTECODE_LEN, EIP7702_MAGIC_BYTES, EIP7702_VERSION},
+    interpreter::op,
+    once_lock::OnceLock,
+};
 use alloc::sync::Arc;
 use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, keccak256};
 use analysis::analyze_legacy;
@@ -14,20 +18,6 @@ mod jump_table;
 mod serde_impl;
 
 pub use jump_table::{JumpTable, JumpTableRef};
-
-/// EIP-7702 version magic.
-pub const EIP7702_MAGIC: u16 = 0xEF01;
-
-/// EIP-7702 version magic bytes.
-pub const EIP7702_MAGIC_BYTES: &[u8] = &EIP7702_MAGIC.to_be_bytes();
-
-/// EIP-7702 version.
-pub const EIP7702_VERSION: u8 = 0;
-
-/// EIP-7702 bytecode length.
-///
-/// 2 (magic) + 1 (version) + 20 (address) = 23 bytes.
-pub const EIP7702_BYTECODE_LEN: usize = 23;
 
 /// EIP-7702 decode errors.
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq, PartialOrd, Ord, Hash)]

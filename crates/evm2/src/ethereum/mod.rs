@@ -23,8 +23,6 @@ use alloy_consensus::{
 use alloy_eips::{eip2718::Typed2718, eip2930::AccessList};
 use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, TxKind, U256};
 
-const EIP7825_TX_GAS_LIMIT_CAP: u64 = 16_777_216;
-
 /// Ethereum transaction envelope containing recovered transactions.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RecoveredTxEnvelope {
@@ -151,33 +149,33 @@ pub(super) fn validate_block_gas_limit(
 }
 
 pub(super) const fn validate_tx_gas_limit_cap(
-    spec_id: SpecId,
+    version: &Version,
     tx_gas_limit: u64,
 ) -> HandlerResult<()> {
     // EIP-7825 caps each transaction gas limit to 2^24 in Osaka. Amsterdam/EIP-8037
     // replaces this with a regular-gas cap while allowing extra transaction gas to serve as
     // the state-gas reservoir.
-    if matches!(spec_id, SpecId::OSAKA) && tx_gas_limit > EIP7825_TX_GAS_LIMIT_CAP {
+    if matches!(version.spec_id(), SpecId::OSAKA) && tx_gas_limit > version.max_tx_gas_limit() {
         return Err(HandlerError::TxGasLimitGreaterThanCap {
             gas_limit: tx_gas_limit,
-            cap: EIP7825_TX_GAS_LIMIT_CAP,
+            cap: version.max_tx_gas_limit(),
         });
     }
     Ok(())
 }
 
 pub(super) const fn validate_regular_gas_limit_cap(
-    spec_id: SpecId,
+    version: &Version,
     tx_gas_limit: u64,
     intrinsic: u64,
     floor_gas: u64,
 ) -> HandlerResult<()> {
-    if spec_id.enables(SpecId::AMSTERDAM) && tx_gas_limit > EIP7825_TX_GAS_LIMIT_CAP {
+    if version.spec_id().enables(SpecId::AMSTERDAM) && tx_gas_limit > version.max_tx_gas_limit() {
         let required_regular_gas = if intrinsic > floor_gas { intrinsic } else { floor_gas };
-        if required_regular_gas > EIP7825_TX_GAS_LIMIT_CAP {
+        if required_regular_gas > version.max_tx_gas_limit() {
             return Err(HandlerError::TxGasLimitGreaterThanCap {
                 gas_limit: required_regular_gas,
-                cap: EIP7825_TX_GAS_LIMIT_CAP,
+                cap: version.max_tx_gas_limit(),
             });
         }
     }
@@ -573,32 +571,34 @@ mod tests {
 
     #[test]
     fn amsterdam_allows_total_gas_above_osaka_cap_when_regular_gas_fits() {
-        let tx_gas_limit = EIP7825_TX_GAS_LIMIT_CAP + 1;
+        let osaka = Version::base(SpecId::OSAKA);
+        let amsterdam = Version::base(SpecId::AMSTERDAM);
+        let tx_gas_limit = osaka.max_tx_gas_limit() + 1;
         let intrinsic = 21_000;
         let floor_gas = 21_000;
 
         assert_eq!(
-            validate_tx_gas_limit_cap(SpecId::OSAKA, tx_gas_limit),
+            validate_tx_gas_limit_cap(&osaka, tx_gas_limit),
             Err(HandlerError::TxGasLimitGreaterThanCap {
                 gas_limit: tx_gas_limit,
-                cap: EIP7825_TX_GAS_LIMIT_CAP
+                cap: osaka.max_tx_gas_limit()
             })
         );
-        assert_eq!(validate_tx_gas_limit_cap(SpecId::AMSTERDAM, tx_gas_limit), Ok(()));
+        assert_eq!(validate_tx_gas_limit_cap(&amsterdam, tx_gas_limit), Ok(()));
         assert_eq!(
-            validate_regular_gas_limit_cap(SpecId::AMSTERDAM, tx_gas_limit, intrinsic, floor_gas),
+            validate_regular_gas_limit_cap(&amsterdam, tx_gas_limit, intrinsic, floor_gas),
             Ok(())
         );
         assert_eq!(
             validate_regular_gas_limit_cap(
-                SpecId::AMSTERDAM,
+                &amsterdam,
                 tx_gas_limit,
-                EIP7825_TX_GAS_LIMIT_CAP + 1,
+                amsterdam.max_tx_gas_limit() + 1,
                 floor_gas,
             ),
             Err(HandlerError::TxGasLimitGreaterThanCap {
-                gas_limit: EIP7825_TX_GAS_LIMIT_CAP + 1,
-                cap: EIP7825_TX_GAS_LIMIT_CAP
+                gas_limit: amsterdam.max_tx_gas_limit() + 1,
+                cap: amsterdam.max_tx_gas_limit()
             })
         );
     }

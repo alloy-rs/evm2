@@ -4,6 +4,7 @@ use crate::{
     EvmConfig, EvmTypes, SpecId,
     interpreter::{instructions as instr, opcode::op},
 };
+use alloy_eips::eip7825::MAX_TX_GAS_LIMIT_OSAKA;
 
 mod gas_params;
 pub use gas_params::{GasId, GasParams};
@@ -21,19 +22,25 @@ pub struct Version {
     spec_id: SpecId,
     /// Dynamic gas parameter table.
     gas_params: &'static GasParams,
+    /// Maximum transaction gas limit.
+    max_tx_gas_limit: u64,
 }
 
 impl Version {
-    /// Creates an EVM version from a base spec ID and gas parameter table.
+    /// Creates an EVM version from a base spec ID, gas parameter table, and transaction gas limit.
     #[inline]
-    pub const fn new(spec_id: SpecId, gas_params: &'static GasParams) -> Self {
-        Self { spec_id, gas_params }
+    pub const fn new(
+        spec_id: SpecId,
+        gas_params: &'static GasParams,
+        max_tx_gas_limit: u64,
+    ) -> Self {
+        Self { spec_id, gas_params, max_tx_gas_limit }
     }
 
     /// Returns the base EVM version for `spec_id`.
     #[inline]
     pub const fn base(spec_id: SpecId) -> Self {
-        Self::new(spec_id, &BASE_GAS_PARAMS[spec_id as usize])
+        Self::new(spec_id, &BASE_GAS_PARAMS[spec_id as usize], base_max_tx_gas_limit(spec_id))
     }
 
     /// Returns the base specification ID for this version.
@@ -47,6 +54,16 @@ impl Version {
     pub const fn gas_params(&self) -> &'static GasParams {
         self.gas_params
     }
+
+    /// Returns the maximum transaction gas limit for this version.
+    #[inline]
+    pub const fn max_tx_gas_limit(&self) -> u64 {
+        self.max_tx_gas_limit
+    }
+}
+
+const fn base_max_tx_gas_limit(spec_id: SpecId) -> u64 {
+    if spec_id.enables(SpecId::OSAKA) { MAX_TX_GAS_LIMIT_OSAKA } else { u64::MAX }
 }
 
 static BASE_GAS_PARAMS: [GasParams; SpecId::COUNT] = {

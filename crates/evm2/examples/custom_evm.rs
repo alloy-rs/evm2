@@ -62,8 +62,11 @@ impl<const BASE_SPEC_ID: u8> CustomConfig<BASE_SPEC_ID> {
 }
 
 impl<const BASE_SPEC_ID: u8> EvmConfig<CustomTypes> for CustomConfig<BASE_SPEC_ID> {
-    const VERSION: Version =
-        Version::new(SpecId::try_from_u8(BASE_SPEC_ID).unwrap(), &Self::GAS_PARAMS);
+    const VERSION: Version = Version::new(
+        SpecId::try_from_u8(BASE_SPEC_ID).unwrap(),
+        &Self::GAS_PARAMS,
+        Version::base(SpecId::try_from_u8(BASE_SPEC_ID).unwrap()).max_tx_gas_limit(),
+    );
     const VERSION_TABLES: &'static VersionTables<CustomTypes> =
         &custom_version_tables::<BASE_SPEC_ID>();
 }

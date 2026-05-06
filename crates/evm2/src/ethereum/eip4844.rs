@@ -38,7 +38,7 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     validate_gas_price(spec_id, gas_price, req.host.block.basefee)?;
     validate_blob_fee(max_fee_per_blob_gas, req.host.block.blob_basefee)?;
     validate_blobs(&tx.blob_versioned_hashes, max_blobs_per_tx(spec_id))?;
-    validate_tx_gas_limit_cap(spec_id, tx.gas_limit)?;
+    validate_tx_gas_limit_cap(req.host.version(), tx.gas_limit)?;
     validate_block_gas_limit(tx.gas_limit, req.host.block.gas_limit)?;
     validate_create_initcode(spec_id, tx.to.into(), &tx.input)?;
     validate_nonce_not_overflow(tx.nonce)?;
@@ -53,7 +53,7 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     validate_intrinsic_gas(tx.gas_limit, intrinsic)?;
     let floor_gas = floor_gas(req.host.version(), &tx.input);
     validate_floor_gas(tx.gas_limit, floor_gas)?;
-    validate_regular_gas_limit_cap(spec_id, tx.gas_limit, intrinsic, floor_gas)?;
+    validate_regular_gas_limit_cap(req.host.version(), tx.gas_limit, intrinsic, floor_gas)?;
 
     let blob_gas_cost = U256::from(DATA_GAS_PER_BLOB) * U256::from(tx.blob_versioned_hashes.len());
     let max_blob_gas_cost = blob_gas_cost * max_fee_per_blob_gas;
