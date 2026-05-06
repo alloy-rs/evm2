@@ -26,7 +26,7 @@ pub trait Crypto: Send + Sync + Debug {
         hasher.update(input);
 
         let mut output = [0u8; 32];
-        hasher.finalize_into((&mut output[12..]).into());
+        output[12..].copy_from_slice(&hasher.finalize());
         output
     }
 
