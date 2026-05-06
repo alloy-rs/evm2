@@ -325,37 +325,37 @@ pub enum JournalEntry {
 #[non_exhaustive]
 pub struct State<D> {
     /// Read-only initial database.
-    pub initial: D,
+    initial: D,
     /// Account data overlay keyed by address.
     ///
     /// Entries are created when account state is loaded or mutated. The tracked
     /// `original`/`current` pair is used to execute against the in-memory overlay
     /// and later derive account-level [`StateChanges`]. Presence here does not by
     /// itself mean the account was touched or warmed.
-    pub accounts: AddressMap<Tracked<Option<Account>>>,
+    accounts: AddressMap<Tracked<Option<Account>>>,
     /// Persistent storage overlay keyed by account address.
-    pub storage: AddressMap<StorageOverlay>,
+    storage: AddressMap<StorageOverlay>,
     /// Revert journal.
-    pub journal: Vec<JournalEntry>,
+    journal: Vec<JournalEntry>,
     /// Logs emitted by the current transaction.
-    pub logs: Vec<Log>,
+    logs: Vec<Log>,
     /// Accounts touched for transaction-finalization account-lifetime rules.
     ///
     /// This is separate from the account overlay and the EIP-2929 warm set. A
     /// touched account may have no field changes, but can still matter for empty
     /// account deletion/materialization rules across forks.
-    pub touched: AddressSet,
+    touched: AddressSet,
     /// Accounts self-destructed in the current transaction.
-    pub selfdestructs: AddressSet,
+    selfdestructs: AddressSet,
     /// Transaction-scoped warm account set for EIP-2929 gas accounting.
     ///
     /// This tracks whether account access is warm or cold. It does not imply the
     /// account was touched, changed, or should be emitted in [`StateChanges`].
-    pub accessed_accounts: AddressSet,
+    accessed_accounts: AddressSet,
     /// Transaction-scoped warm storage slot set.
-    pub accessed_storage: HashSet<(Address, Word)>,
+    accessed_storage: HashSet<(Address, Word)>,
     /// Transaction-scoped EIP-1153 transient storage keyed by account address and slot.
-    pub transient_storage: HashMap<(Address, Word), Word>,
+    transient_storage: HashMap<(Address, Word), Word>,
 }
 
 impl<D> State<D> {
@@ -406,7 +406,20 @@ impl<D> State<D> {
         self.logs.push(log);
     }
 
+    /// Returns a loaded persistent storage overlay slot, if present.
+    ///
+    /// This is a non-mutating overlay lookup. It does not load the account or slot from the
+    /// backing database; use [`Self::storage`] when database-backed loading is desired.
+    #[inline]
+    pub fn storage_ref(&self, address: Address, key: Word) -> Option<&Tracked<Word>> {
+        self.storage.get(&address)?.slots.get(&key)
+    }
+
     /// Returns the current account overlay if present and not deleted.
+    ///
+    /// This is a non-mutating overlay lookup. It does not load the account from the backing
+    /// database; use [`Self::account_info`] or [`Self::find`] when database-backed loading is
+    /// desired.
     #[inline]
     #[must_use]
     pub fn account_ref(&self, address: Address) -> Option<&Account> {
