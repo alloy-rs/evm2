@@ -12,12 +12,11 @@ transitional API layers unless explicitly requested.
 ## Commands
 
 ```bash
-cargo cl                                                      # lint
-cargo fmt --all                                               # format
-cargo docs                                                    # check docs
+cargo cl # lint
+cargo fmt --all # format
+cargo docs # check docs
 
-cargo nextest run --workspace                                 # test all
-cargo nextest run --workspace "test_name"                     # test single
-cargo nextest run --workspace "statetest"                     # test statetests
-SUBDIR=stRevertTest cargo nextest run --workspace "statetest" # test single statetest
+cargo nextest run # test (default filter)
+cargo nextest run -E "not (test(glob*)) | package(/regex.*/)" # further filter tests
+cargo nextest run --ignore-default-filters # include statetests
 ```
