@@ -4,8 +4,8 @@ use crate::{
     EvmTypes, SpecId,
     constants::{CALL_DEPTH_LIMIT, MAX_INITCODE_SIZE},
     interpreter::{
-        GasInstructionCx, Host, InstrStop, Message, MessageKind, MessageResult, Result, StackMut, State,
-        Word, memory::resize_memory,
+        GasInstructionCx, Host, InstrStop, Message, MessageKind, MessageResult, Result, StackMut,
+        State, Word, memory::resize_memory,
     },
     utils::{word_to_address, word_to_usize},
     version::GasId,
