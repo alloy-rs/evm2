@@ -89,9 +89,10 @@ fn load_acc_and_calc_gas<T: EvmTypes>(
     if account.is_cold {
         cost += additional_cold_cost;
     }
-    let creates_empty_account = create_empty_account
-        && (!cx.state.spec.enables(SpecId::SPURIOUS_DRAGON) || transfers_value);
-    if creates_empty_account && account.is_empty {
+    let is_spurious_dragon = cx.state.spec.enables(SpecId::SPURIOUS_DRAGON);
+    let creates_empty_account = create_empty_account && (!is_spurious_dragon || transfers_value);
+    let target_is_empty = if is_spurious_dragon { account.is_empty } else { !account.exists };
+    if creates_empty_account && target_is_empty {
         cost += u64::from(cx.state.gas_params().get(GasId::NewAccountCost));
     }
     cx.gas.spend(cost)?;
@@ -444,7 +445,7 @@ mod tests {
     #[test]
     fn call_too_deep_charges_pre_spurious_empty_account() {
         let target = Address::from([0x22; 20]);
-        let mut host = TestHost { is_empty: true, ..Default::default() };
+        let mut host = TestHost { exists: false, is_empty: true, ..Default::default() };
         let mut code = Vec::new();
         push_all(
             &mut code,
