@@ -420,7 +420,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         caller_is_static: bool,
     ) -> MessageResult {
         let checkpoint = self.state.checkpoint();
-        if matches!(message.kind, MessageKind::Call)
+        if matches!(message.kind, MessageKind::Call | MessageKind::CallCode)
             && !self.state.transfer(message.caller, message.destination, message.value)
         {
             return MessageResult {
