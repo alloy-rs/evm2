@@ -97,7 +97,7 @@ fn load_acc_and_calc_gas<T: EvmTypes>(
     transfers_value: bool,
     create_empty_account: bool,
     stack_gas_limit: u64,
-) -> Result<(u64, Bytes)> {
+) -> Result<(u64, Bytes, Address, bool)> {
     if transfers_value {
         cx.gas.spend(cx.state.gas_params().get(GasId::TransferValueCost).into())?;
     }
@@ -112,6 +112,7 @@ fn load_acc_and_calc_gas<T: EvmTypes>(
         cost += additional_cold_cost;
     }
     let mut code = account.code;
+    let mut code_address = to;
     if cx.state.spec.enables(SpecId::PRAGUE)
         && let Some(delegated_address) = eip7702_address(&code)
     {
@@ -126,6 +127,7 @@ fn load_acc_and_calc_gas<T: EvmTypes>(
             cost += additional_cold_cost;
         }
         code = delegated_account.code;
+        code_address = delegated_address;
     }
     if create_empty_account
         && should_charge_new_account_gas(
@@ -149,7 +151,8 @@ fn load_acc_and_calc_gas<T: EvmTypes>(
         gas_limit = gas_limit.saturating_add(cx.state.gas_params().get(GasId::CallStipend).into());
     }
 
-    Ok((gas_limit, code))
+    let disable_precompiles = code_address != to;
+    Ok((gas_limit, code, code_address, disable_precompiles))
 }
 
 #[inline(never)]
@@ -180,7 +183,7 @@ fn call_inner<T: EvmTypes>(
         return_offset,
         return_len,
     )?;
-    let (gas_limit, code) = load_acc_and_calc_gas(
+    let (gas_limit, code, resolved_code_address, disable_precompiles) = load_acc_and_calc_gas(
         &mut cx,
         to,
         has_transfer,
@@ -191,10 +194,14 @@ fn call_inner<T: EvmTypes>(
 
     let current = cx.state.message();
     let (destination, caller, call_value, code_address) = match kind {
-        MessageKind::Call => (to, current.destination, value, to),
-        MessageKind::CallCode => (current.destination, current.destination, value, to),
-        MessageKind::DelegateCall => (current.destination, current.caller, current.value, to),
-        MessageKind::StaticCall => (to, current.destination, Word::ZERO, to),
+        MessageKind::Call => (to, current.destination, value, resolved_code_address),
+        MessageKind::CallCode => {
+            (current.destination, current.destination, value, resolved_code_address)
+        }
+        MessageKind::DelegateCall => {
+            (current.destination, current.caller, current.value, resolved_code_address)
+        }
+        MessageKind::StaticCall => (to, current.destination, Word::ZERO, resolved_code_address),
         _ => unreachable!("invalid call message kind"),
     };
     let message = Message {
@@ -206,6 +213,7 @@ fn call_inner<T: EvmTypes>(
         input,
         value: call_value,
         code_address,
+        disable_precompiles,
         salt: B256::ZERO,
     };
     let caller_is_static = cx.state.is_static();
@@ -295,6 +303,7 @@ fn create_inner<T: EvmTypes>(
         input: input.clone(),
         value,
         code_address: current.destination,
+        disable_precompiles: false,
         salt: salt.map(|salt| B256::from(salt.to_be_bytes())).unwrap_or_default(),
     };
     let bytecode = crate::bytecode::Bytecode::new_legacy(input);

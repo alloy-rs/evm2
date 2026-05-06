@@ -154,12 +154,32 @@ pub(super) const fn validate_tx_gas_limit_cap(
     spec_id: SpecId,
     tx_gas_limit: u64,
 ) -> HandlerResult<()> {
-    // EIP-7825 caps each transaction gas limit to 2^24 starting in Osaka.
-    if spec_id.enables(SpecId::OSAKA) && tx_gas_limit > EIP7825_TX_GAS_LIMIT_CAP {
+    // EIP-7825 caps each transaction gas limit to 2^24 in Osaka. Amsterdam/EIP-8037
+    // replaces this with a regular-gas cap while allowing extra transaction gas to serve as
+    // the state-gas reservoir.
+    if matches!(spec_id, SpecId::OSAKA) && tx_gas_limit > EIP7825_TX_GAS_LIMIT_CAP {
         return Err(HandlerError::TxGasLimitGreaterThanCap {
             gas_limit: tx_gas_limit,
             cap: EIP7825_TX_GAS_LIMIT_CAP,
         });
+    }
+    Ok(())
+}
+
+pub(super) const fn validate_regular_gas_limit_cap(
+    spec_id: SpecId,
+    tx_gas_limit: u64,
+    intrinsic: u64,
+    floor_gas: u64,
+) -> HandlerResult<()> {
+    if spec_id.enables(SpecId::AMSTERDAM) && tx_gas_limit > EIP7825_TX_GAS_LIMIT_CAP {
+        let required_regular_gas = if intrinsic > floor_gas { intrinsic } else { floor_gas };
+        if required_regular_gas > EIP7825_TX_GAS_LIMIT_CAP {
+            return Err(HandlerError::TxGasLimitGreaterThanCap {
+                gas_limit: required_regular_gas,
+                cap: EIP7825_TX_GAS_LIMIT_CAP,
+            });
+        }
     }
     Ok(())
 }
@@ -268,7 +288,7 @@ pub(super) fn initial_message<T: EvmTypes<Host = Evm<T>>>(
 ) -> (Bytecode, Message) {
     match to {
         TxKind::Call(to) => {
-            let code = initial_call_code(host, to);
+            let initial_code = initial_call_code(host, to);
             let message = Message {
                 kind: MessageKind::Call,
                 depth: 0,
@@ -277,10 +297,11 @@ pub(super) fn initial_message<T: EvmTypes<Host = Evm<T>>>(
                 caller,
                 input: input.clone(),
                 value,
-                code_address: to,
+                code_address: initial_code.code_address,
+                disable_precompiles: initial_code.disable_precompiles,
                 salt: B256::ZERO,
             };
-            (code, message)
+            (initial_code.code, message)
         }
         TxKind::Create => {
             let address = caller.create(nonce);
@@ -293,6 +314,7 @@ pub(super) fn initial_message<T: EvmTypes<Host = Evm<T>>>(
                 input: Bytes::new(),
                 value,
                 code_address: address,
+                disable_precompiles: false,
                 salt: B256::ZERO,
             };
             (Bytecode::new_legacy(input.clone()), message)
@@ -300,15 +322,28 @@ pub(super) fn initial_message<T: EvmTypes<Host = Evm<T>>>(
     }
 }
 
-fn initial_call_code<T: EvmTypes<Host = Evm<T>>>(host: &mut Evm<T>, to: Address) -> Bytecode {
+struct InitialCallCode {
+    code: Bytecode,
+    code_address: Address,
+    disable_precompiles: bool,
+}
+
+fn initial_call_code<T: EvmTypes<Host = Evm<T>>>(
+    host: &mut Evm<T>,
+    to: Address,
+) -> InitialCallCode {
     let code = host.state.get_code(to);
     if host.spec_id().enables(SpecId::PRAGUE)
         && let Some(delegated_address) = code.eip7702_address()
     {
         host.state.warm_account(delegated_address);
-        return host.state.get_code(delegated_address);
+        return InitialCallCode {
+            code: host.state.get_code(delegated_address),
+            code_address: delegated_address,
+            disable_precompiles: true,
+        };
     }
-    code
+    InitialCallCode { code, code_address: to, disable_precompiles: false }
 }
 
 pub(super) fn rollback_failed_execution<T: EvmTypes<Host = Evm<T>>>(
@@ -416,6 +451,13 @@ pub(super) fn intrinsic_gas(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        BaseEvmTypes, Precompiles,
+        env::{BlockEnv, TxEnv},
+        evm::InMemoryDB,
+        interpreter::{Host, InstrStop, op},
+        registry::TxRegistry,
+    };
     use alloc::vec;
 
     #[test]
@@ -478,5 +520,86 @@ mod tests {
         };
 
         assert_eq!(final_tx_gas(&result, 100_000, true, 60_000), (30_000, 70_000));
+    }
+
+    #[test]
+    fn initial_delegated_call_uses_delegated_code_address() {
+        let caller = Address::with_last_byte(0xaa);
+        let target = Address::with_last_byte(0x02);
+        let delegated = Address::with_last_byte(0x33);
+        let delegated_code = Bytecode::new_legacy(Bytes::from_static(&[
+            op::PUSH1,
+            0x2a,
+            op::PUSH0,
+            op::MSTORE,
+            op::PUSH1,
+            0x20,
+            op::PUSH0,
+            op::RETURN,
+        ]));
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(
+            target,
+            AccountInfo::default().with_code(Bytecode::new_eip7702(delegated)),
+        );
+        database.insert_account_info(delegated, AccountInfo::default().with_code(delegated_code));
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::PRAGUE,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            database,
+            Precompiles::base(SpecId::PRAGUE),
+        );
+
+        let (bytecode, message) = initial_message(
+            &mut evm,
+            caller,
+            0,
+            TxKind::Call(target),
+            &Bytes::new(),
+            U256::ZERO,
+            100_000,
+        );
+        assert_eq!(message.destination, target);
+        assert_eq!(message.code_address, delegated);
+        assert!(message.disable_precompiles);
+
+        let result = Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &message, false);
+
+        assert_eq!(result.stop, InstrStop::Return);
+        assert_eq!(result.output.len(), 32);
+        assert_eq!(result.output[31], 0x2a);
+    }
+
+    #[test]
+    fn amsterdam_allows_total_gas_above_osaka_cap_when_regular_gas_fits() {
+        let tx_gas_limit = EIP7825_TX_GAS_LIMIT_CAP + 1;
+        let intrinsic = 21_000;
+        let floor_gas = 21_000;
+
+        assert_eq!(
+            validate_tx_gas_limit_cap(SpecId::OSAKA, tx_gas_limit),
+            Err(HandlerError::TxGasLimitGreaterThanCap {
+                gas_limit: tx_gas_limit,
+                cap: EIP7825_TX_GAS_LIMIT_CAP
+            })
+        );
+        assert_eq!(validate_tx_gas_limit_cap(SpecId::AMSTERDAM, tx_gas_limit), Ok(()));
+        assert_eq!(
+            validate_regular_gas_limit_cap(SpecId::AMSTERDAM, tx_gas_limit, intrinsic, floor_gas),
+            Ok(())
+        );
+        assert_eq!(
+            validate_regular_gas_limit_cap(
+                SpecId::AMSTERDAM,
+                tx_gas_limit,
+                EIP7825_TX_GAS_LIMIT_CAP + 1,
+                floor_gas,
+            ),
+            Err(HandlerError::TxGasLimitGreaterThanCap {
+                gas_limit: EIP7825_TX_GAS_LIMIT_CAP + 1,
+                cap: EIP7825_TX_GAS_LIMIT_CAP
+            })
+        );
     }
 }

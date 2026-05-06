@@ -36,9 +36,12 @@ pub struct Message {
     pub input: Bytes,
     /// Value transferred with the message.
     pub value: U256,
-    /// Address whose code is being executed. This can differ from `destination` for `CALLCODE`
-    /// and `DELEGATECALL`.
+    /// Address whose code is being executed. This can differ from `destination` for `CALLCODE`,
+    /// `DELEGATECALL`, and EIP-7702 delegated-code execution.
     pub code_address: Address,
+    /// Whether native precompile dispatch is disabled for this frame because its bytecode was
+    /// loaded through an EIP-7702 delegation designation.
+    pub disable_precompiles: bool,
     /// CREATE2 salt. Ignored for other message kinds.
     pub salt: B256,
 }
@@ -55,6 +58,7 @@ impl Default for Message {
             input: Bytes::new(),
             value: U256::ZERO,
             code_address: Address::ZERO,
+            disable_precompiles: false,
             salt: B256::ZERO,
         }
     }

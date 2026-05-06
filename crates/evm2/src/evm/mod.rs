@@ -204,6 +204,9 @@ impl<T: EvmTypes> Evm<T> {
         message: &Message,
         gas: &mut Gas,
     ) -> Option<Result<PrecompileOutput, PrecompileError>> {
+        if message.disable_precompiles {
+            return None;
+        }
         self.precompiles.execute(message.code_address, &message.input, gas)
     }
 }
@@ -337,6 +340,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         let create_message = Message {
             destination: address,
             code_address: address,
+            disable_precompiles: false,
             input: Bytes::new(),
 
             kind: message.kind,

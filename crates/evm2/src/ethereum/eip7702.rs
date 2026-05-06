@@ -2,8 +2,8 @@ use super::{
     access_list_counts, charge_upfront, effective_gas_price, floor_gas, initial_message,
     intrinsic_gas, rollback_failed_execution, settle_gas, validate_block_gas_limit,
     validate_create_initcode, validate_floor_gas, validate_gas_price, validate_intrinsic_gas,
-    validate_nonce_not_overflow, validate_priority_fee, validate_sender, validate_tx_gas_limit_cap,
-    warm_access_list, warm_base_accounts,
+    validate_nonce_not_overflow, validate_priority_fee, validate_regular_gas_limit_cap,
+    validate_sender, validate_tx_gas_limit_cap, warm_access_list, warm_base_accounts,
 };
 use crate::{
     Evm, EvmTypes, SpecId, TxResult,
@@ -52,6 +52,7 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     validate_intrinsic_gas(tx.gas_limit, intrinsic)?;
     let floor_gas = floor_gas(req.host.version(), &tx.input);
     validate_floor_gas(tx.gas_limit, floor_gas)?;
+    validate_regular_gas_limit_cap(spec_id, tx.gas_limit, intrinsic, floor_gas)?;
 
     let max_gas_cost = U256::from(tx.gas_limit) * max_fee_per_gas;
     validate_sender(req.host, caller, tx.nonce, max_gas_cost.saturating_add(tx.value))?;
