@@ -91,6 +91,8 @@ fn load_acc_and_calc_gas<T: EvmTypes>(
     }
     let is_spurious_dragon = cx.state.spec.enables(SpecId::SPURIOUS_DRAGON);
     let creates_empty_account = create_empty_account && (!is_spurious_dragon || transfers_value);
+    // EIP-161 changed CALL new-account gas from non-existing accounts to value transfers into
+    // empty accounts.
     let target_is_empty = if is_spurious_dragon { account.is_empty } else { !account.exists };
     if creates_empty_account && target_is_empty {
         cost += u64::from(cx.state.gas_params().get(GasId::NewAccountCost));
