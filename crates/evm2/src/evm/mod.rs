@@ -299,6 +299,18 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             };
         }
 
+        if message.depth > 0 {
+            // EIP-2681 caps account nonces at u64::MAX; CREATE/CREATE2 return zero
+            // instead of wrapping or saturating the creator nonce.
+            if self.state.account_info(message.caller).is_some_and(|info| info.nonce == u64::MAX) {
+                return MessageResult {
+                    stop: InstrStop::Return,
+                    gas_remaining: message.gas_limit,
+                    ..MessageResult::default()
+                };
+            }
+        }
+
         let address = self.create_address(&bytecode, message);
 
         self.state.warm_account(address);
