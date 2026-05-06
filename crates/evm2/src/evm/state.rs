@@ -818,7 +818,7 @@ impl<D: Database> State<D> {
 
     /// Reverts state changes after the checkpoint.
     #[inline(never)]
-    pub fn rollback(&mut self, checkpoint: usize) {
+    pub fn rollback(&mut self, checkpoint: usize, spec: SpecId) {
         assert!(checkpoint <= self.journal.len(), "checkpoint is past journal length");
         while self.journal.len() != checkpoint {
             let Some(entry) = self.journal.pop() else {
@@ -834,6 +834,12 @@ impl<D: Database> State<D> {
                     self.accounts.remove(&address);
                 }
                 JournalEntry::Touch { address } => {
+                    // EIP-161 preserves the historical Yellow Paper K.1 precompile-3 touch.
+                    if spec.enables(SpecId::SPURIOUS_DRAGON)
+                        && address == Address::with_last_byte(3)
+                    {
+                        continue;
+                    }
                     self.touched.remove(&address);
                 }
                 JournalEntry::SelfDestruct { address } => {
@@ -1046,7 +1052,7 @@ mod tests {
         state.set_storage(address, Word::from(1), Word::from(30));
 
         assert_eq!(state.storage(address, Word::from(1)), Word::from(30));
-        state.rollback(checkpoint);
+        state.rollback(checkpoint, SpecId::FRONTIER);
         assert_eq!(state.storage(address, Word::from(1)), Word::from(10));
     }
 
@@ -1060,7 +1066,7 @@ mod tests {
         state.set_transient_storage(address, Word::from(1), Word::from(20));
 
         assert_eq!(state.transient_storage(address, Word::from(1)), Word::from(20));
-        state.rollback(checkpoint);
+        state.rollback(checkpoint, SpecId::FRONTIER);
         assert_eq!(state.transient_storage(address, Word::from(1)), Word::from(10));
     }
 
@@ -1073,7 +1079,7 @@ mod tests {
         state.mark_destructed(address);
 
         assert!(state.is_selfdestructed(address));
-        state.rollback(checkpoint);
+        state.rollback(checkpoint, SpecId::FRONTIER);
         assert!(!state.is_selfdestructed(address));
     }
 
@@ -1105,8 +1111,26 @@ mod tests {
                 }
             ]
         );
-        state.rollback(checkpoint);
+        state.rollback(checkpoint, SpecId::FRONTIER);
         assert_eq!(state.logs(), &[kept]);
+    }
+
+    #[test]
+    fn spurious_dragon_rollback_preserves_precompile3_touch() {
+        let precompile3 = Address::with_last_byte(3);
+        let other = Address::with_last_byte(4);
+        let mut database = CacheDB::default();
+        database.insert_account_info(precompile3, AccountInfo::default());
+        database.insert_account_info(other, AccountInfo::default());
+        let mut state = State::new(database);
+
+        let checkpoint = state.checkpoint();
+        state.touch(precompile3);
+        state.touch(other);
+
+        state.rollback(checkpoint, SpecId::SPURIOUS_DRAGON);
+        assert!(state.touched.contains(&precompile3));
+        assert!(!state.touched.contains(&other));
     }
 
     #[test]

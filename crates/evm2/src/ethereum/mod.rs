@@ -304,7 +304,7 @@ pub(super) fn rollback_failed_execution<T: EvmTypes<Host = Evm<T>>>(
     result: &mut MessageResult,
 ) {
     if !result.stop.is_success() {
-        host.state.rollback(checkpoint);
+        host.state.rollback(checkpoint, host.spec_id());
         if result.stop.is_halt() {
             result.gas_remaining = 0;
         }
