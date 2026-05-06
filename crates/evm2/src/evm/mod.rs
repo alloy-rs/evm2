@@ -118,8 +118,8 @@ impl SStore {
 pub struct SelfDestructResult {
     /// Whether the destroyed account had non-zero value.
     pub had_value: bool,
-    /// Whether the beneficiary account already exists.
-    pub target_exists: bool,
+    /// Whether the beneficiary is empty/non-existent for new-account gas checks.
+    pub target_is_empty: bool,
     /// Whether the beneficiary access was cold.
     pub is_cold: bool,
     /// Whether this account was already destroyed in this transaction.
@@ -567,12 +567,8 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
         })
     }
 
-    fn account_exists(&mut self, address: Address) -> bool {
-        let Some(info) = self.state.account_info(address) else {
-            return !self.spec_id().enables(SpecId::SPURIOUS_DRAGON)
-                && self.state.touched.contains(&address);
-        };
-        !self.spec_id().enables(SpecId::SPURIOUS_DRAGON) || !info.is_empty()
+    fn target_is_empty_for_new_account_gas(&mut self, address: Address, spec: SpecId) -> bool {
+        self.state.target_is_empty_for_new_account_gas(address, spec)
     }
 
     fn block_hash(&mut self, number: Word) -> Option<B256> {
@@ -668,14 +664,8 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
             return Err(InstrStop::OutOfGas);
         }
         self.state.warm_account(target);
-        // EIP-161 changes account emptiness semantics: before Spurious Dragon, an empty
-        // account that exists in state is still an existing `SELFDESTRUCT` beneficiary and
-        // must not be charged EIP-150's new-account topup.
-        let target_exists = if self.spec_id().enables(SpecId::SPURIOUS_DRAGON) {
-            self.state.account_info(target).is_some_and(|info| !info.is_empty())
-        } else {
-            self.state.account_info(target).is_some()
-        };
+        let target_is_empty_for_new_account_gas =
+            self.state.target_is_empty_for_new_account_gas(target, self.spec_id());
         let previously_destroyed = self.state.is_selfdestructed(contract);
         let balance = self.state.account_info(contract).map_or(Word::ZERO, |info| info.balance);
         let should_destroy = !self.spec_id().enables(SpecId::CANCUN)
@@ -692,7 +682,7 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
 
         Ok(SelfDestructResult {
             had_value: !balance.is_zero(),
-            target_exists,
+            target_is_empty: target_is_empty_for_new_account_gas,
             is_cold,
             previously_destroyed,
         })

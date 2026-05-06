@@ -94,8 +94,12 @@ impl Host for TestHost {
         })
     }
 
-    fn account_exists(&mut self, _address: Address) -> bool {
-        self.exists || self.is_touched
+    fn target_is_empty_for_new_account_gas(&mut self, _address: Address, spec: SpecId) -> bool {
+        if spec.enables(SpecId::SPURIOUS_DRAGON) {
+            self.is_empty
+        } else {
+            !self.exists && !self.is_touched
+        }
     }
 
     fn block_hash(&mut self, number: Word) -> Option<B256> {

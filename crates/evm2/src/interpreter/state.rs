@@ -203,8 +203,8 @@ pub trait Host {
         skip_cold_load: bool,
     ) -> Result<AccountLoad, InstrStop>;
 
-    /// Returns whether an account exists for CALL new-account gas checks.
-    fn account_exists(&mut self, address: Address) -> bool;
+    /// Returns whether an account is empty/non-existent for new-account gas checks.
+    fn target_is_empty_for_new_account_gas(&mut self, address: Address, spec: SpecId) -> bool;
 
     /// Returns a historical block hash.
     fn block_hash(&mut self, number: Word) -> Option<B256>;

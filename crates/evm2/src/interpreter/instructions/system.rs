@@ -28,6 +28,16 @@ const fn success(stop: InstrStop) -> bool {
 }
 
 #[inline]
+const fn should_charge_new_account_gas(
+    spec: SpecId,
+    transfers_value: bool,
+    target_is_empty_for_new_account_gas: bool,
+) -> bool {
+    target_is_empty_for_new_account_gas
+        && (!spec.enables(SpecId::SPURIOUS_DRAGON) || transfers_value)
+}
+
+#[inline]
 fn call_too_deep_result(gas_limit: u64) -> MessageResult {
     MessageResult { stop: InstrStop::CallTooDeep, gas_remaining: gas_limit, ..Default::default() }
 }
@@ -89,16 +99,13 @@ fn load_acc_and_calc_gas<T: EvmTypes>(
     if account.is_cold {
         cost += additional_cold_cost;
     }
-    let is_spurious_dragon = cx.state.spec.enables(SpecId::SPURIOUS_DRAGON);
-    let creates_empty_account = create_empty_account && (!is_spurious_dragon || transfers_value);
-    // EIP-150 charges CALL new-account gas only when the target does not exist.
-    // EIP-161 changes this to empty accounts only when value is transferred.
-    let target_is_empty = if is_spurious_dragon {
-        account.is_empty
-    } else {
-        !account.exists && !cx.state.host.account_exists(to)
-    };
-    if creates_empty_account && target_is_empty {
+    if create_empty_account
+        && should_charge_new_account_gas(
+            cx.state.spec,
+            transfers_value,
+            cx.state.host.target_is_empty_for_new_account_gas(to, cx.state.spec),
+        )
+    {
         cost += u64::from(cx.state.gas_params().get(GasId::NewAccountCost));
     }
     cx.gas.spend(cost)?;
@@ -294,11 +301,8 @@ pub(crate) fn selfdestruct(cx: _, [target]: [Word]) -> Result {
     let cold_load_gas = cx.state.gas_params().selfdestruct_cold_cost();
     let skip_cold_load = cx.gas.remaining() < cold_load_gas;
     let res = cx.state.host.selfdestruct(cx.state.message().destination, target, skip_cold_load)?;
-    let should_charge_topup = if cx.state.spec.enables(SpecId::SPURIOUS_DRAGON) {
-        res.had_value && !res.target_exists
-    } else {
-        !res.target_exists
-    };
+    let should_charge_topup =
+        should_charge_new_account_gas(cx.state.spec, res.had_value, res.target_is_empty);
     cx.gas.spend(cx.state.gas_params().selfdestruct_cost(should_charge_topup, res.is_cold))?;
     if !res.previously_destroyed {
         cx.gas.record_refund(cx.state.gas_params().get(GasId::SelfdestructRefund) as i64);
