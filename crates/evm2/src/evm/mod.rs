@@ -346,7 +346,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             value: message.value,
             salt: message.salt,
         };
-        let (stop, mut gas, output) = {
+        let (stop, mut gas, mut output) = {
             let (stop, interpreter) =
                 self.run_interpreter(bytecode, tx_env, &create_message, caller_is_static);
             (stop, interpreter.gas(), Bytes::copy_from_slice(interpreter.output()))
@@ -367,7 +367,17 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
                 let code_deposit_gas = output.len().saturating_mul(
                     self.version().gas_params().get(GasId::CodeDepositCost) as usize,
                 );
-                gas.spend(u64::try_from(code_deposit_gas).unwrap_or(u64::MAX)).err()
+                let code_deposit_gas = u64::try_from(code_deposit_gas).unwrap_or(u64::MAX);
+                if gas.remaining() >= code_deposit_gas {
+                    gas.spend(code_deposit_gas).err()
+                } else if self.spec_id().enables(SpecId::HOMESTEAD) {
+                    // EIP-2 makes code-deposit OOG fail contract creation; Frontier instead
+                    // creates the account with empty code.
+                    Some(InstrStop::OutOfGas)
+                } else {
+                    output = Bytes::new();
+                    None
+                }
             };
 
             if let Some(stop) = stop {
@@ -690,7 +700,7 @@ mod tests {
         interpreter::{MessageKind, op},
         registry::TxRequest,
     };
-    use alloy_primitives::{Address, Bytes, U256};
+    use alloy_primitives::{Address, Bytes, KECCAK256_EMPTY, U256};
 
     const TEST_TX_TYPE: u8 = 0x7f;
 
@@ -795,6 +805,70 @@ mod tests {
 
         let result = Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &message, false);
         assert!(result.stop.is_success());
+    }
+
+    #[test]
+    fn frontier_code_deposit_oog_creates_empty_contract() {
+        let caller = Address::from([0x11; 20]);
+        let created = Address::from([0x22; 20]);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(caller, AccountInfo::default().with_balance(Word::from(1)));
+        let mut evm = Evm::<TestEvmTypes>::new(
+            SpecId::FRONTIER,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            database,
+            Precompiles::base(SpecId::FRONTIER),
+        );
+        let message = Message {
+            kind: MessageKind::Create,
+            destination: created,
+            caller,
+            gas_limit: 50,
+            ..Message::default()
+        };
+        let code =
+            Bytecode::new_legacy(Bytes::from_static(&[op::PUSH1, 1, op::PUSH1, 0, op::RETURN]));
+
+        let result = Host::execute_message(&mut evm, &TxEnv::default(), code, &message, false);
+        assert!(result.stop.is_success());
+
+        evm.state.finalize_transaction(SpecId::FRONTIER);
+        let changes = evm.state.build_state_changes();
+        let account =
+            changes.accounts.get(&created).and_then(|change| change.current.as_ref()).unwrap();
+        assert_eq!(account.code_hash, KECCAK256_EMPTY);
+    }
+
+    #[test]
+    fn homestead_code_deposit_oog_fails_create() {
+        let caller = Address::from([0x11; 20]);
+        let created = Address::from([0x22; 20]);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(caller, AccountInfo::default().with_balance(Word::from(1)));
+        let mut evm = Evm::<TestEvmTypes>::new(
+            SpecId::HOMESTEAD,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            database,
+            Precompiles::base(SpecId::HOMESTEAD),
+        );
+        let message = Message {
+            kind: MessageKind::Create,
+            destination: created,
+            caller,
+            gas_limit: 50,
+            ..Message::default()
+        };
+        let code =
+            Bytecode::new_legacy(Bytes::from_static(&[op::PUSH1, 1, op::PUSH1, 0, op::RETURN]));
+
+        let result = Host::execute_message(&mut evm, &TxEnv::default(), code, &message, false);
+        assert_eq!(result.stop, InstrStop::OutOfGas);
+
+        evm.state.finalize_transaction(SpecId::HOMESTEAD);
+        let changes = evm.state.build_state_changes();
+        assert!(!changes.accounts.contains_key(&created));
     }
 
     #[test]
