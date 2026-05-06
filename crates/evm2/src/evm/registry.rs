@@ -105,6 +105,14 @@ pub enum HandlerError {
         /// Block gas limit.
         block_gas_limit: U256,
     },
+    /// Transaction gas limit exceeds the active per-transaction gas cap.
+    #[error("transaction gas limit {gas_limit} exceeds cap {cap}")]
+    TxGasLimitGreaterThanCap {
+        /// Transaction gas limit.
+        gas_limit: u64,
+        /// Active transaction gas limit cap.
+        cap: u64,
+    },
     /// Create transaction initcode exceeds the active size limit.
     #[error("create initcode size limit exceeded: limit {limit}, got {got}")]
     CreateInitCodeSizeLimit {
