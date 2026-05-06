@@ -91,9 +91,10 @@ fn load_acc_and_calc_gas<T: EvmTypes>(
     }
     let is_spurious_dragon = cx.state.spec.enables(SpecId::SPURIOUS_DRAGON);
     let creates_empty_account = create_empty_account && (!is_spurious_dragon || transfers_value);
-    // EIP-161 changed CALL new-account gas from non-existing accounts to value transfers into
-    // empty accounts.
-    let target_is_empty = if is_spurious_dragon { account.is_empty } else { !account.exists };
+    // EIP-150 charges CALL new-account gas for untouched non-existing accounts.
+    // EIP-161 changed the check to empty accounts only when value is transferred.
+    let target_is_empty =
+        if is_spurious_dragon { account.is_empty } else { !account.exists && !account.is_touched };
     if creates_empty_account && target_is_empty {
         cost += u64::from(cx.state.gas_params().get(GasId::NewAccountCost));
     }
@@ -471,6 +472,37 @@ mod tests {
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::ZERO]);
         assert_eq!(interpreter.gas_remaining(), 24_279);
+        assert!(host.calls.is_empty());
+    }
+
+    #[test]
+    fn call_too_deep_skips_pre_spurious_touched_empty_account_cost() {
+        let target = Address::from([0x22; 20]);
+        let mut host =
+            TestHost { exists: false, is_empty: true, is_touched: true, ..Default::default() };
+        let mut code = Vec::new();
+        push_all(
+            &mut code,
+            [
+                Word::ZERO,
+                Word::ZERO,
+                Word::ZERO,
+                Word::ZERO,
+                Word::ZERO,
+                address_to_word(target),
+                Word::ZERO,
+            ],
+        );
+        code.extend([op::CALL, op::STOP]);
+
+        let interpreter = run(RunConfig::new(code)
+            .host(&mut host)
+            .spec(SpecId::TANGERINE)
+            .message(Message { depth: CALL_DEPTH_LIMIT, ..Default::default() })
+            .gas_limit(50_000));
+        core::assert_matches!(interpreter.err, InstrStop::Stop);
+        assert_eq!(interpreter.stack(), [Word::ZERO]);
+        assert_eq!(interpreter.gas_remaining(), 49_279);
         assert!(host.calls.is_empty());
     }
 
