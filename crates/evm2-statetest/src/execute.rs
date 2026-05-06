@@ -414,7 +414,7 @@ fn build_tx(
         .map(TryInto::try_into)
         .transpose()
         .map_err(|_| TestErrorKind::Overflow("maxFeePerBlobGas"))?;
-    request.access_list = access_list(raw)?;
+    request.access_list = access_list(raw, indexes.data)?;
     if !raw.blob_versioned_hashes.is_empty() {
         request.blob_versioned_hashes = Some(raw.blob_versioned_hashes.clone());
     }
@@ -424,11 +424,14 @@ fn build_tx(
     recovered_envelope(tx, caller)
 }
 
-fn access_list(raw: &TransactionParts) -> Result<Option<RpcAccessList>, TestErrorKind> {
+fn access_list(
+    raw: &TransactionParts,
+    access_list_index: usize,
+) -> Result<Option<RpcAccessList>, TestErrorKind> {
     if matches!(raw.tx_type, Some(0)) {
         return Ok(None);
     }
-    let Some(access_list) = raw.access_lists.first().cloned().flatten() else {
+    let Some(access_list) = raw.access_lists.get(access_list_index).cloned().flatten() else {
         return Ok(matches!(raw.tx_type, Some(1)).then(RpcAccessList::default));
     };
     Ok(Some(RpcAccessList(
@@ -539,5 +542,39 @@ mod tests {
         };
         assert_eq!(tx.signer(), caller);
         assert_eq!(tx.inner().access_list[0].address, access_address);
+    }
+
+    #[test]
+    fn build_tx_uses_indexed_access_list() {
+        let caller = Address::from([0x11; 20]);
+        let first_address = Address::from([0x33; 20]);
+        let second_address = Address::from([0x44; 20]);
+        let raw = TransactionParts {
+            tx_type: Some(1),
+            data: vec![Bytes::new(), Bytes::from_static(&[0xaa])],
+            gas_limit: vec![U256::from(25_300)],
+            gas_price: Some(U256::from(7)),
+            sender: Some(caller),
+            to: Some(Address::from([0x22; 20])),
+            value: vec![U256::ZERO],
+            access_lists: vec![
+                Some(vec![crate::types::AccessListItem {
+                    address: first_address,
+                    storage_keys: vec![B256::with_last_byte(1)],
+                }]),
+                Some(vec![crate::types::AccessListItem {
+                    address: second_address,
+                    storage_keys: vec![B256::with_last_byte(2)],
+                }]),
+            ],
+            ..TransactionParts::default()
+        };
+
+        let tx = build_tx(&raw, &TxPartIndices { data: 1, gas: 0, value: 0 }, None).unwrap();
+
+        let RecoveredTxEnvelope::Eip2930(tx) = tx else {
+            panic!("expected EIP-2930 transaction");
+        };
+        assert_eq!(tx.inner().access_list[0].address, second_address);
     }
 }
