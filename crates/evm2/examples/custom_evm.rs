@@ -57,12 +57,8 @@ impl EvmTypes for CustomTypes {
 
 struct CustomConfig<const BASE_SPEC_ID: u8>(());
 
-impl<const BASE_SPEC_ID: u8> CustomConfig<BASE_SPEC_ID> {
-    const VERSION_VALUE: Version = custom_version::<BASE_SPEC_ID>();
-}
-
 impl<const BASE_SPEC_ID: u8> EvmConfig<CustomTypes> for CustomConfig<BASE_SPEC_ID> {
-    const VERSION: &'static Version = &Self::VERSION_VALUE;
+    const VERSION: &'static Version = &custom_version::<BASE_SPEC_ID>();
     const VERSION_TABLES: &'static VersionTables<CustomTypes> =
         &custom_version_tables::<BASE_SPEC_ID>();
 }
