@@ -35,12 +35,6 @@ impl Memory {
         Self { data: Vec::with_capacity(capacity), memory_limit: u64::MAX }
     }
 
-    /// Creates memory with a byte limit.
-    #[inline]
-    pub fn new_with_memory_limit(memory_limit: u64) -> Self {
-        Self { memory_limit, ..Self::new() }
-    }
-
     /// Sets the memory byte limit.
     #[inline]
     pub const fn set_memory_limit(&mut self, limit: u64) {
@@ -268,7 +262,8 @@ mod tests {
     #[test]
     fn resize_memory_respects_memory_limit() {
         let mut gas = Gas::new(100_000);
-        let mut memory = Memory::new_with_memory_limit(64);
+        let mut memory = Memory::new();
+        memory.set_memory_limit(64);
 
         resize_memory(&mut gas, &mut memory, 0, 32).unwrap();
         assert_eq!(memory.len(), 32);

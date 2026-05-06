@@ -45,10 +45,10 @@ pub(crate) fn mcopy(cx: _, [dst, src, len]: [Word]) -> Result {
 #[cfg(test)]
 mod tests {
     use crate::{
-        SpecId,
+        EvmConfig, SpecId, Version, VersionTables,
         interpreter::{
             InstrStop, Word,
-            instructions::tests::{RunConfig, push, run, run_stack},
+            instructions::tests::{RunConfig, TestTypes, push, run, run_stack, run_with_config},
             op,
         },
     };
@@ -91,6 +91,32 @@ mod tests {
 
         let interpreter = run_stack([Word::MAX, Word::from(0)], op::MSTORE);
         core::assert_matches!(interpreter.err, InstrStop::InvalidOperandOOG);
+    }
+
+    #[test]
+    fn mstore_respects_version_memory_limit() {
+        struct Config;
+
+        impl EvmConfig<TestTypes> for Config {
+            const VERSION: &'static Version = &{
+                let mut version = *Version::base(SpecId::OSAKA);
+                version.memory_limit = 64;
+                version
+            };
+            const VERSION_TABLES: &'static VersionTables<TestTypes> =
+                &VersionTables::<TestTypes>::base::<Self>();
+        }
+
+        let mut code = Vec::new();
+        push(&mut code, Word::ZERO);
+        push(&mut code, Word::from(64));
+        code.push(op::MSTORE);
+        code.push(op::STOP);
+
+        let interpreter = run_with_config::<Config>(RunConfig::new(code));
+
+        core::assert_matches!(interpreter.err, InstrStop::MemoryLimitOOG);
+        assert_eq!(interpreter.memory.len(), 0);
     }
 
     #[test]
