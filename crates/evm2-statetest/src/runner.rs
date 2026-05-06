@@ -80,6 +80,19 @@ fn path_name(path: &Path) -> String {
 
 const IGNORED_TESTS: &[&str] = &[
     "CALLBlake2f_MaxRounds.json",
+    // EIP-7610 fixtures with storage checks for newly created accounts are also
+    // skipped by revm's state test runner.
+    "eip7610_create_collision",
+    "InitCollision.json",
+    "InitCollisionParis.json",
+    "RevertInCreateInInit.json",
+    "RevertInCreateInInit_Paris.json",
+    "RevertInCreateInInitCreate2.json",
+    "RevertInCreateInInitCreate2Paris.json",
+    "create2collisionStorage.json",
+    "create2collisionStorageParis.json",
+    "dynamicAccountOverwriteEmpty.json",
+    "dynamicAccountOverwriteEmpty_Paris.json",
     "loopExp",
     "loopMul.json",
     "stQuadraticComplexityTest/Call1MB1024Calldepth.json",
