@@ -141,6 +141,12 @@ pub enum HandlerError {
     /// EIP-1559 transaction is not enabled in the active specification.
     #[error("EIP-1559 transaction not supported")]
     Eip1559NotSupported,
+    /// EIP-7702 transaction is not enabled in the active specification.
+    #[error("EIP-7702 transaction not supported")]
+    Eip7702NotSupported,
+    /// EIP-7702 authorization list is empty.
+    #[error("EIP-7702 authorization list is empty")]
+    EmptyAuthorizationList,
     /// EIP-4844 transaction is not enabled in the active specification.
     #[error("EIP-4844 transaction not supported")]
     Eip4844NotSupported,

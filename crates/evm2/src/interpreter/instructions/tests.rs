@@ -30,8 +30,8 @@ pub(crate) struct TestHost {
     pub(super) code: Bytes,
     pub(super) exists: bool,
     pub(super) is_empty: bool,
-    pub(super) is_touched: bool,
     pub(super) is_cold: bool,
+    pub(super) is_touched: bool,
     pub(super) storage: HashMap<(Address, Word), Word>,
     pub(super) original_storage: HashMap<(Address, Word), Word>,
     pub(super) transient_storage: HashMap<(Address, Word), Word>,
@@ -51,8 +51,8 @@ impl Default for TestHost {
             code: Bytes::new(),
             exists: true,
             is_empty: false,
-            is_touched: false,
             is_cold: false,
+            is_touched: false,
             storage: HashMap::default(),
             original_storage: HashMap::default(),
             transient_storage: HashMap::default(),
@@ -96,10 +96,9 @@ impl Host for TestHost {
 
     fn target_is_empty_for_new_account_gas(&mut self, _address: Address, spec: SpecId) -> bool {
         if spec.enables(SpecId::SPURIOUS_DRAGON) {
-            self.is_empty
-        } else {
-            !self.exists && !self.is_touched
+            return !self.exists || self.is_empty;
         }
+        !self.exists && !self.is_touched
     }
 
     fn block_hash(&mut self, number: Word) -> Option<B256> {

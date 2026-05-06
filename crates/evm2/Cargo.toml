@@ -17,7 +17,7 @@ workspace = true
 evm2-macros.workspace = true
 
 alloy-consensus.workspace = true
-alloy-eips.workspace = true
+alloy-eips = { workspace = true, features = ["k256"] }
 alloy-primitives.workspace = true
 alloy-rlp.workspace = true
 alloy-trie = { workspace = true, features = ["ethereum"] }
