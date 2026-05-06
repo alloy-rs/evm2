@@ -80,7 +80,7 @@ fn path_name(path: &Path) -> String {
 
 #[rustfmt::skip]
 const IGNORED_TESTS: &[&str] = &[
-    // Slow fixtures.
+    // Skip slow fixtures and create-collision fixtures that need storage-aware collision handling.
     "CALLBlake2f_MaxRounds.json",
     "loopExp",
     "loopMul.json",
@@ -96,26 +96,15 @@ const IGNORED_TESTS: &[&str] = &[
     "stStaticCall/static_LoopCallsDepthThenRevert",
     "stSystemOperationsTest/CallRecursiveBomb",
 
-    // EIP-7610 create-collision fixtures require storage-aware collision handling.
     "eip7610_create_collision",
-
-    // Init collision fixtures require treating pre-existing storage as a collision.
     "InitCollision.json",
     "InitCollisionParis.json",
-
-    // Revert-in-create fixtures require preserving storage-only collision state.
     "RevertInCreateInInit.json",
     "RevertInCreateInInit_Paris.json",
-
-    // CREATE2 revert-in-create fixtures require storage-aware collision handling.
     "RevertInCreateInInitCreate2.json",
     "RevertInCreateInInitCreate2Paris.json",
-
-    // CREATE2 storage collision fixtures require storage-aware collision handling.
     "create2collisionStorage.json",
     "create2collisionStorageParis.json",
-
-    // Dynamic overwrite fixtures require storage-aware empty-account handling.
     "dynamicAccountOverwriteEmpty.json",
     "dynamicAccountOverwriteEmpty_Paris.json",
 ];
