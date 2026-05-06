@@ -9,6 +9,9 @@ use alloy_eips::eip7825::MAX_TX_GAS_LIMIT_OSAKA;
 mod gas_params;
 pub use gas_params::{GasId, GasParams};
 
+mod features;
+pub use features::EvmFeatures;
+
 mod tables;
 pub use tables::VersionTables;
 
@@ -26,6 +29,8 @@ pub struct Version {
     // instruction that reads them. Tracking instruction dependencies on version tables is not
     // sustainable for custom forks.
     pub gas_params: GasParams,
+    /// EVM feature set.
+    pub features: EvmFeatures,
     /// Transaction gas limit cap.
     pub tx_gas_limit_cap: u64,
     /// Hard memory limit in bytes.
@@ -57,6 +62,7 @@ static BASE_VERSIONS: [Version; SpecId::COUNT] = {
         Version {
             spec_id: SpecId::FRONTIER,
             gas_params: GasParams::empty(),
+            features: EvmFeatures::EMPTY,
             tx_gas_limit_cap: u64::MAX,
             memory_limit: DEFAULT_MEMORY_LIMIT,
         }
@@ -67,6 +73,7 @@ static BASE_VERSIONS: [Version; SpecId::COUNT] = {
         versions[i] = Version {
             spec_id,
             gas_params: base_gas_params(spec_id),
+            features: base_features(spec_id),
             tx_gas_limit_cap: base_tx_gas_limit_cap(spec_id),
             memory_limit: DEFAULT_MEMORY_LIMIT,
         };
@@ -74,6 +81,24 @@ static BASE_VERSIONS: [Version; SpecId::COUNT] = {
     }
     versions
 };
+
+const fn base_features(spec_id: SpecId) -> EvmFeatures {
+    let mut features = EvmFeatures::EMPTY;
+    features.insert(EvmFeatures::TX_CHAIN_ID_CHECK);
+    features.insert(EvmFeatures::NONCE_CHECK);
+    features.insert(EvmFeatures::BALANCE_CHECK);
+    features.insert(EvmFeatures::BLOCK_GAS_LIMIT_CHECK);
+    features.insert(EvmFeatures::EIP3541);
+    features.insert(EvmFeatures::EIP3607);
+    features.insert(EvmFeatures::EIP7623);
+    features.insert(EvmFeatures::BASE_FEE_CHECK);
+    features.insert(EvmFeatures::PRIORITY_FEE_CHECK);
+    features.insert(EvmFeatures::FEE_CHARGE);
+    features.insert(EvmFeatures::EIP7708);
+    features.insert(EvmFeatures::EIP7708_DELAYED_BURN);
+    features.set(EvmFeatures::EIP8037, spec_id.enables(SpecId::AMSTERDAM));
+    features
+}
 
 macro_rules! apply_base_gas_params {
     ($gp:ident, ops: [$($tokens:tt)*]) => {};
@@ -140,6 +165,35 @@ macro_rules! evm_versions {
             v
         }
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn base_versions_set_revm_cfg_env_defaults() {
+        let osaka = Version::base(SpecId::OSAKA);
+        assert!(osaka.features.contains(EvmFeatures::TX_CHAIN_ID_CHECK));
+        assert!(osaka.features.contains(EvmFeatures::NONCE_CHECK));
+        assert!(osaka.features.contains(EvmFeatures::BALANCE_CHECK));
+        assert!(osaka.features.contains(EvmFeatures::BLOCK_GAS_LIMIT_CHECK));
+        assert!(osaka.features.contains(EvmFeatures::EIP3541));
+        assert!(osaka.features.contains(EvmFeatures::EIP3607));
+        assert!(osaka.features.contains(EvmFeatures::EIP7623));
+        assert!(osaka.features.contains(EvmFeatures::BASE_FEE_CHECK));
+        assert!(osaka.features.contains(EvmFeatures::PRIORITY_FEE_CHECK));
+        assert!(osaka.features.contains(EvmFeatures::FEE_CHARGE));
+        assert!(osaka.features.contains(EvmFeatures::EIP7708));
+        assert!(osaka.features.contains(EvmFeatures::EIP7708_DELAYED_BURN));
+        assert!(!osaka.features.contains(EvmFeatures::EIP8037));
+
+        let amsterdam = Version::base(SpecId::AMSTERDAM);
+        assert!(amsterdam.features.contains(EvmFeatures::TX_CHAIN_ID_CHECK));
+        assert!(amsterdam.features.contains(EvmFeatures::EIP8037));
+        assert!(amsterdam.features.contains(EvmFeatures::EIP7708));
+        assert!(amsterdam.features.contains(EvmFeatures::EIP7708_DELAYED_BURN));
+    }
 }
 
 const AMSTERDAM_CPSB: u32 = 1174;
