@@ -89,6 +89,7 @@ impl Host for TestHost {
             exists: self.exists,
             is_empty: self.is_empty,
             is_cold: self.is_cold,
+            delegated_code_extra_gas: 0,
         })
     }
 

@@ -3,6 +3,7 @@ use crate::{
     types::{AccountInfo, Env, Test, TestSuite, TestUnit, TransactionParts, TxPartIndices},
 };
 use alloy_consensus::{TypedTransaction, transaction::Recovered};
+use alloy_eips::eip7702::SignedAuthorization;
 use alloy_primitives::{Address, B256, Bytes, Log, TxKind, U256, keccak256};
 use alloy_rpc_types_eth::{
     AccessList as RpcAccessList, AccessListItem as RpcAccessListItem, TransactionInput,
@@ -415,6 +416,7 @@ fn build_tx(
         .transpose()
         .map_err(|_| TestErrorKind::Overflow("maxFeePerBlobGas"))?;
     request.access_list = access_list(raw, indexes.data)?;
+    request.authorization_list = authorization_list(raw)?;
     if !raw.blob_versioned_hashes.is_empty() {
         request.blob_versioned_hashes = Some(raw.blob_versioned_hashes.clone());
     }
@@ -422,6 +424,19 @@ fn build_tx(
     let tx =
         request.build_consensus_tx().map_err(|err| TestErrorKind::BuildTransaction(err.error))?;
     recovered_envelope(tx, caller)
+}
+
+fn authorization_list(
+    raw: &TransactionParts,
+) -> Result<Option<Vec<SignedAuthorization>>, TestErrorKind> {
+    let Some(authorizations) = &raw.authorization_list else {
+        return Ok(None);
+    };
+    let authorizations = authorizations
+        .iter()
+        .map(|authorization| serde_json::from_value(authorization.value.clone()))
+        .collect::<Result<_, _>>()?;
+    Ok(Some(authorizations))
 }
 
 fn access_list(
