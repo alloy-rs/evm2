@@ -11,7 +11,7 @@ extern crate self as evm2;
 extern crate alloc;
 
 pub mod bytecode;
-pub mod constants;
+pub(crate) mod constants;
 pub mod ethereum;
 pub mod interpreter;
 pub mod utils;

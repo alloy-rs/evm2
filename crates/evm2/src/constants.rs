@@ -20,12 +20,12 @@ pub(crate) const STACK_LIMIT: usize = 1024;
 pub(crate) const BLOCK_HASH_HISTORY: u64 = 256;
 
 /// EIP-7702 version magic.
-pub const EIP7702_MAGIC: u16 = 0xEF01;
+pub(crate) const EIP7702_MAGIC: u16 = 0xEF01;
 /// EIP-7702 version magic bytes.
-pub const EIP7702_MAGIC_BYTES: &[u8] = &EIP7702_MAGIC.to_be_bytes();
+pub(crate) const EIP7702_MAGIC_BYTES: &[u8] = &EIP7702_MAGIC.to_be_bytes();
 /// EIP-7702 version.
-pub const EIP7702_VERSION: u8 = 0;
+pub(crate) const EIP7702_VERSION: u8 = 0;
 /// EIP-7702 bytecode length.
 ///
 /// 2 (magic) + 1 (version) + 20 (address) = 23 bytes.
-pub const EIP7702_BYTECODE_LEN: usize = 23;
+pub(crate) const EIP7702_BYTECODE_LEN: usize = 23;
