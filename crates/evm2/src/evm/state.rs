@@ -238,10 +238,10 @@ pub struct StorageChangeSet {
     pub slots: BTreeMap<Word, Tracked<Word>>,
 }
 
-/// Checkpoint for reverting state changes.
+/// State checkpoint for reverting state changes.
 #[allow(missing_copy_implementations)]
 #[derive(Debug, Eq, PartialEq)]
-pub struct Checkpoint {
+pub struct StateCheckpoint {
     /// Revert journal length at the checkpoint.
     journal_len: usize,
     /// Emitted log count at the checkpoint.
@@ -378,8 +378,8 @@ impl<D> State<D> {
 
     /// Returns a checkpoint for later rollback.
     #[inline]
-    pub const fn checkpoint(&self) -> Checkpoint {
-        Checkpoint { journal_len: self.journal.len(), logs_len: self.logs.len() }
+    pub const fn checkpoint(&self) -> StateCheckpoint {
+        StateCheckpoint { journal_len: self.journal.len(), logs_len: self.logs.len() }
     }
 
     /// Returns the initial database.
@@ -835,7 +835,7 @@ impl<D: Database> State<D> {
 
     /// Reverts state changes after the checkpoint.
     #[inline(never)]
-    pub fn rollback(&mut self, checkpoint: Checkpoint, spec: SpecId) {
+    pub fn rollback(&mut self, checkpoint: StateCheckpoint, spec: SpecId) {
         assert!(checkpoint.journal_len <= self.journal.len(), "checkpoint is past journal length");
         assert!(checkpoint.logs_len <= self.logs.len(), "checkpoint is past logs length");
         self.logs.truncate(checkpoint.logs_len);

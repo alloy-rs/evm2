@@ -26,7 +26,7 @@ pub use db::{Cache, CacheDB, Database, EmptyDB, InMemoryDB};
 
 mod state;
 pub use state::{
-    Account, AccountInfo, Checkpoint, JournalEntry, State, StateChanges, StorageChangeSet,
+    Account, AccountInfo, JournalEntry, State, StateChanges, StateCheckpoint, StorageChangeSet,
     StorageOverlay, Tracked,
 };
 
