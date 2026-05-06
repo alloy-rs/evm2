@@ -4,17 +4,6 @@
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct EvmFeatures(u64);
 
-macro_rules! evm_features {
-    ($($(#[$attr:meta])* $name:ident = $bit:literal,)*) => {
-        impl EvmFeatures {
-            $(
-                $(#[$attr])*
-                pub const $name: Self = Self::from_bit($bit);
-            )*
-        }
-    };
-}
-
 impl EvmFeatures {
     /// Empty feature bitmap.
     pub const EMPTY: Self = Self(0);
@@ -117,59 +106,73 @@ impl core::ops::Not for EvmFeatures {
     }
 }
 
+macro_rules! evm_features {
+    (@impl $bit:expr;) => {};
+    (@impl $bit:expr; $(#[$attr:meta])* $name:ident, $($rest:tt)*) => {
+        impl EvmFeatures {
+            $(#[$attr])*
+            pub const $name: Self = Self::from_bit($bit);
+        }
+        evm_features!(@impl $bit + 1; $($rest)*);
+    };
+    ($($tokens:tt)*) => {
+        evm_features!(@impl 0; $($tokens)*);
+    };
+}
+
 evm_features! {
     /// Checks transaction chain IDs.
     ///
     /// Default: on
-    TX_CHAIN_ID_CHECK = 0,
+    TX_CHAIN_ID_CHECK,
     /// Checks transaction nonces against account nonces.
     ///
     /// Default: on
-    NONCE_CHECK = 1,
+    NONCE_CHECK,
     /// Checks that senders can pay transaction costs.
     ///
     /// Default: on
-    BALANCE_CHECK = 2,
+    BALANCE_CHECK,
     /// Checks that transaction gas limits do not exceed the block gas limit.
     ///
     /// Default: on
-    BLOCK_GAS_LIMIT_CHECK = 3,
+    BLOCK_GAS_LIMIT_CHECK,
     /// Applies EIP-3541 contract code prefix rejection.
     ///
-    /// Default: on
-    EIP3541 = 4,
+    /// Default: on since London
+    EIP3541,
     /// Applies EIP-3607 sender code rejection.
     ///
     /// Default: on
-    EIP3607 = 5,
+    EIP3607,
     /// Applies EIP-7623 calldata cost floor.
     ///
-    /// Default: on
-    EIP7623 = 6,
+    /// Default: on since Prague
+    EIP7623,
     /// Checks EIP-1559 transaction fee caps against the block base fee.
     ///
-    /// Default: on
-    BASE_FEE_CHECK = 7,
+    /// Default: on since London
+    BASE_FEE_CHECK,
     /// Checks EIP-1559 max priority fee against max fee.
     ///
     /// Default: on
-    PRIORITY_FEE_CHECK = 8,
+    PRIORITY_FEE_CHECK,
     /// Charges transaction fees.
     ///
     /// Default: on
-    FEE_CHARGE = 9,
+    FEE_CHARGE,
     /// Applies EIP-8037 state creation gas accounting.
     ///
-    /// Default: on if amsterdam
-    EIP8037 = 10,
+    /// Default: on since Amsterdam
+    EIP8037,
     /// Applies EIP-7708 ETH transfer logs.
     ///
-    /// Default: on
-    EIP7708 = 11,
+    /// Default: on since Amsterdam
+    EIP7708,
     /// Applies delayed burn logging for EIP-7708 selfdestructs.
     ///
-    /// Default: on
-    EIP7708_DELAYED_BURN = 12,
+    /// Default: on since Amsterdam
+    EIP7708_DELAYED_BURN,
 }
 
 #[cfg(test)]

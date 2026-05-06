@@ -82,25 +82,8 @@ static BASE_VERSIONS: [Version; SpecId::COUNT] = {
     versions
 };
 
-const fn base_features(spec_id: SpecId) -> EvmFeatures {
-    let mut features = EvmFeatures::EMPTY;
-    features.insert(EvmFeatures::TX_CHAIN_ID_CHECK);
-    features.insert(EvmFeatures::NONCE_CHECK);
-    features.insert(EvmFeatures::BALANCE_CHECK);
-    features.insert(EvmFeatures::BLOCK_GAS_LIMIT_CHECK);
-    features.insert(EvmFeatures::EIP3541);
-    features.insert(EvmFeatures::EIP3607);
-    features.insert(EvmFeatures::EIP7623);
-    features.insert(EvmFeatures::BASE_FEE_CHECK);
-    features.insert(EvmFeatures::PRIORITY_FEE_CHECK);
-    features.insert(EvmFeatures::FEE_CHARGE);
-    features.insert(EvmFeatures::EIP7708);
-    features.insert(EvmFeatures::EIP7708_DELAYED_BURN);
-    features.set(EvmFeatures::EIP8037, spec_id.enables(SpecId::AMSTERDAM));
-    features
-}
-
 macro_rules! apply_base_gas_params {
+    ($gp:ident, features: [$($tokens:tt)*]) => {};
     ($gp:ident, ops: [$($tokens:tt)*]) => {};
     ($gp:ident, static_gas: [$($tokens:tt)*]) => {};
     ($gp:ident, dynamic_gas: [$($id:ident: $value:expr,)*]) => {
@@ -110,7 +93,19 @@ macro_rules! apply_base_gas_params {
     };
 }
 
+macro_rules! apply_base_features {
+    ($features:ident, features: [$($feature:ident,)*]) => {
+        $(
+            $features.insert(EvmFeatures::$feature);
+        )*
+    };
+    ($features:ident, ops: [$($tokens:tt)*]) => {};
+    ($features:ident, static_gas: [$($tokens:tt)*]) => {};
+    ($features:ident, dynamic_gas: [$($tokens:tt)*]) => {};
+}
+
 macro_rules! apply_version_tables {
+    ($v:ident, $ty:ident, features: [$($tokens:tt)*]) => {};
     ($v:ident, $ty:ident, ops: [$($name:ident: $cost:expr,)*]) => {
         $(
             $v.set_instruction(
@@ -130,6 +125,21 @@ macro_rules! apply_version_tables {
 
 macro_rules! evm_versions {
     ($($spec:ident { $($section:ident: [$($tokens:tt)*],)* })*) => {
+        /// Creates the base feature set for `spec_id`.
+        const fn base_features(spec_id: SpecId) -> EvmFeatures {
+            let mut features = EvmFeatures::EMPTY;
+
+            $(
+                if spec_id.enables(SpecId::$spec) {
+                    $(
+                        apply_base_features!(features, $section: [$($tokens)*]);
+                    )*
+                }
+            )*
+
+            features
+        }
+
         /// Creates the base dynamic gas parameters for `spec_id`.
         const fn base_gas_params(spec_id: SpecId) -> GasParams {
             use crate::interpreter::gas::*;
@@ -184,8 +194,8 @@ mod tests {
         assert!(osaka.features.contains(EvmFeatures::BASE_FEE_CHECK));
         assert!(osaka.features.contains(EvmFeatures::PRIORITY_FEE_CHECK));
         assert!(osaka.features.contains(EvmFeatures::FEE_CHARGE));
-        assert!(osaka.features.contains(EvmFeatures::EIP7708));
-        assert!(osaka.features.contains(EvmFeatures::EIP7708_DELAYED_BURN));
+        assert!(!osaka.features.contains(EvmFeatures::EIP7708));
+        assert!(!osaka.features.contains(EvmFeatures::EIP7708_DELAYED_BURN));
         assert!(!osaka.features.contains(EvmFeatures::EIP8037));
 
         let amsterdam = Version::base(SpecId::AMSTERDAM);
@@ -200,6 +210,15 @@ const AMSTERDAM_CPSB: u32 = 1174;
 
 evm_versions! {
     FRONTIER {
+        features: [
+            TX_CHAIN_ID_CHECK,
+            NONCE_CHECK,
+            BALANCE_CHECK,
+            BLOCK_GAS_LIMIT_CHECK,
+            EIP3607,
+            PRIORITY_FEE_CHECK,
+            FEE_CHARGE,
+        ],
         ops: [
             STOP: ZERO,
             ADD: VERYLOW,
@@ -465,6 +484,10 @@ evm_versions! {
     }
 
     LONDON {
+        features: [
+            EIP3541,
+            BASE_FEE_CHECK,
+        ],
         ops: [
             BASEFEE: BASE,
         ],
@@ -504,6 +527,9 @@ evm_versions! {
     }
 
     PRAGUE {
+        features: [
+            EIP7623,
+        ],
         dynamic_gas: [
             TxEip7702PerEmptyAccountCost: EIP7702_PER_EMPTY_ACCOUNT_COST,
             TxEip7702AuthRefund: EIP7702_PER_EMPTY_ACCOUNT_COST - EIP7702_PER_AUTH_BASE_COST,
@@ -519,6 +545,11 @@ evm_versions! {
     }
 
     AMSTERDAM {
+        features: [
+            EIP8037,
+            EIP7708,
+            EIP7708_DELAYED_BURN,
+        ],
         ops: [
             DUPN: VERYLOW,
             SWAPN: VERYLOW,

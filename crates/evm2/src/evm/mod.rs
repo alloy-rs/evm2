@@ -364,7 +364,6 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             {
                 Some(InstrStop::CreateContractSizeLimit)
             } else if self.version().features.contains(EvmFeatures::EIP3541)
-                && self.spec_id().enables(SpecId::LONDON)
                 && output.first().is_some_and(|byte| *byte == 0xef)
             {
                 Some(InstrStop::CreateContractStartingWithEF)

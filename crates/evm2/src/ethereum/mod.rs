@@ -108,10 +108,7 @@ pub(super) fn validate_gas_price(
     gas_price: U256,
     basefee: U256,
 ) -> HandlerResult<()> {
-    if version.features.contains(EvmFeatures::BASE_FEE_CHECK)
-        && version.spec_id.enables(SpecId::LONDON)
-        && gas_price < basefee
-    {
+    if version.features.contains(EvmFeatures::BASE_FEE_CHECK) && gas_price < basefee {
         return Err(HandlerError::FeeCapLessThanBaseFee {
             max_fee_per_gas: gas_price,
             base_fee: basefee,
