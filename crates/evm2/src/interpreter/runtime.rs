@@ -186,7 +186,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         flow
     }
 
-    #[inline(never)]
+    #[inline(always)]
     #[cfg(not(feature = "nightly"))]
     fn raw_step(
         &mut self,
