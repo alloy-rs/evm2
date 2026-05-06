@@ -141,6 +141,33 @@ pub enum HandlerError {
     /// EIP-1559 transaction is not enabled in the active specification.
     #[error("EIP-1559 transaction not supported")]
     Eip1559NotSupported,
+    /// EIP-4844 transaction is not enabled in the active specification.
+    #[error("EIP-4844 transaction not supported")]
+    Eip4844NotSupported,
+    /// EIP-4844 blob fee cap is lower than the block blob base fee.
+    #[error(
+        "blob fee cap less than blob base fee: max_fee_per_blob_gas {max_fee_per_blob_gas}, blob_base_fee {blob_base_fee}"
+    )]
+    BlobFeeCapLessThanBlobBaseFee {
+        /// Maximum fee per blob gas.
+        max_fee_per_blob_gas: U256,
+        /// Block blob base fee.
+        blob_base_fee: U256,
+    },
+    /// EIP-4844 blob transaction contains no blob hashes.
+    #[error("empty blobs")]
+    EmptyBlobs,
+    /// EIP-4844 blob transaction contains too many blob hashes.
+    #[error("too many blobs: have {have}, max {max}")]
+    TooManyBlobs {
+        /// Blob count in the transaction.
+        have: usize,
+        /// Maximum allowed blob count.
+        max: usize,
+    },
+    /// EIP-4844 blob transaction contains an unsupported versioned hash.
+    #[error("blob version not supported")]
+    BlobVersionNotSupported,
     /// Priority fee is greater than max fee.
     #[error("priority fee greater than max fee")]
     PriorityFeeGreaterThanMaxFee,

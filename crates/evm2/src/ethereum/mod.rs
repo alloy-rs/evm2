@@ -2,6 +2,7 @@
 
 mod eip1559;
 mod eip2930;
+mod eip4844;
 mod legacy;
 
 use crate::{
@@ -14,7 +15,10 @@ use crate::{
     utils::num_words,
     version::GasId,
 };
-use alloy_consensus::{TxEip1559, TxEip2930, TxEip7702, TxLegacy, transaction::Recovered};
+use alloy_consensus::{
+    TxEip1559, TxEip2930, TxEip7702, TxLegacy,
+    transaction::{Recovered, TxEip4844Variant},
+};
 use alloy_eips::{eip2718::Typed2718, eip2930::AccessList};
 use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, TxKind, U256};
 
@@ -29,6 +33,8 @@ pub enum RecoveredTxEnvelope {
     Eip2930(Recovered<TxEip2930>),
     /// EIP-1559 dynamic-fee transaction.
     Eip1559(Recovered<TxEip1559>),
+    /// EIP-4844 blob transaction.
+    Eip4844(Recovered<TxEip4844Variant>),
     /// EIP-7702 set-code transaction.
     Eip7702(Recovered<TxEip7702>),
 }
@@ -38,7 +44,7 @@ impl RecoveredTxEnvelope {
     pub const fn as_legacy(&self) -> Option<&Recovered<TxLegacy>> {
         match self {
             Self::Legacy(tx) => Some(tx),
-            Self::Eip2930(_) | Self::Eip1559(_) | Self::Eip7702(_) => None,
+            Self::Eip2930(_) | Self::Eip1559(_) | Self::Eip4844(_) | Self::Eip7702(_) => None,
         }
     }
 
@@ -46,7 +52,7 @@ impl RecoveredTxEnvelope {
     pub const fn as_eip2930(&self) -> Option<&Recovered<TxEip2930>> {
         match self {
             Self::Eip2930(tx) => Some(tx),
-            Self::Legacy(_) | Self::Eip1559(_) | Self::Eip7702(_) => None,
+            Self::Legacy(_) | Self::Eip1559(_) | Self::Eip4844(_) | Self::Eip7702(_) => None,
         }
     }
 
@@ -54,7 +60,15 @@ impl RecoveredTxEnvelope {
     pub const fn as_eip1559(&self) -> Option<&Recovered<TxEip1559>> {
         match self {
             Self::Eip1559(tx) => Some(tx),
-            Self::Legacy(_) | Self::Eip2930(_) | Self::Eip7702(_) => None,
+            Self::Legacy(_) | Self::Eip2930(_) | Self::Eip4844(_) | Self::Eip7702(_) => None,
+        }
+    }
+
+    /// Returns the contained EIP-4844 transaction, if this is EIP-4844.
+    pub const fn as_eip4844(&self) -> Option<&Recovered<TxEip4844Variant>> {
+        match self {
+            Self::Eip4844(tx) => Some(tx),
+            Self::Legacy(_) | Self::Eip2930(_) | Self::Eip1559(_) | Self::Eip7702(_) => None,
         }
     }
 
@@ -62,7 +76,7 @@ impl RecoveredTxEnvelope {
     pub const fn as_eip7702(&self) -> Option<&Recovered<TxEip7702>> {
         match self {
             Self::Eip7702(tx) => Some(tx),
-            Self::Legacy(_) | Self::Eip2930(_) | Self::Eip1559(_) => None,
+            Self::Legacy(_) | Self::Eip2930(_) | Self::Eip1559(_) | Self::Eip4844(_) => None,
         }
     }
 }
@@ -73,6 +87,7 @@ impl Typed2718 for RecoveredTxEnvelope {
             Self::Legacy(tx) => tx.ty(),
             Self::Eip2930(tx) => tx.ty(),
             Self::Eip1559(tx) => tx.ty(),
+            Self::Eip4844(tx) => tx.ty(),
             Self::Eip7702(tx) => tx.ty(),
         }
     }
@@ -85,6 +100,7 @@ pub fn ethereum_tx_registry<T: EvmTypes<Host = Evm<T>>>()
         .with_handler(0, RecoveredTxEnvelope::as_legacy, legacy::handle::<T>)
         .with_handler(1, RecoveredTxEnvelope::as_eip2930, eip2930::handle::<T>)
         .with_handler(2, RecoveredTxEnvelope::as_eip1559, eip1559::handle::<T>)
+        .with_handler(3, RecoveredTxEnvelope::as_eip4844, eip4844::handle::<T>)
 }
 
 pub(super) fn validate_gas_price(
