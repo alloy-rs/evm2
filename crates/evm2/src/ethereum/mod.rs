@@ -7,6 +7,7 @@ mod legacy;
 use crate::{
     Evm, EvmTypes, SpecId, TxResult, Version,
     bytecode::Bytecode,
+    constants::MAX_INITCODE_SIZE,
     evm::{AccountInfo, precompile::PrecompileProvider},
     interpreter::{Message, MessageKind, MessageResult, Word},
     registry::{HandlerError, HandlerResult, TxRegistry},
@@ -16,8 +17,6 @@ use crate::{
 use alloy_consensus::{TxEip1559, TxEip2930, TxEip7702, TxLegacy, transaction::Recovered};
 use alloy_eips::{eip2718::Typed2718, eip2930::AccessList};
 use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, TxKind, U256};
-
-const MAX_INITCODE_SIZE: usize = 2 * 0x6000;
 
 /// Ethereum transaction envelope containing recovered transactions.
 #[derive(Clone, Debug, PartialEq, Eq)]

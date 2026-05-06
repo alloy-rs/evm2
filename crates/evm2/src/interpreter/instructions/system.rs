@@ -2,6 +2,7 @@
 
 use crate::{
     EvmTypes, SpecId,
+    constants::{CALL_DEPTH_LIMIT, MAX_INITCODE_SIZE},
     interpreter::{
         Host, InstrStop, InstructionCx, Message, MessageKind, MessageResult, Result, StackMut,
         Word, memory::resize_memory,
@@ -168,7 +169,7 @@ fn call_inner<T: EvmTypes>(
     let caller_is_static = cx.state.is_static();
     let bytecode = crate::bytecode::Bytecode::new_legacy(code);
     let tx_env = cx.state.tx() as *const _;
-    let result = if message.depth > Message::CALL_DEPTH_LIMIT {
+    let result = if message.depth > CALL_DEPTH_LIMIT {
         call_too_deep_result(message.gas_limit)
     } else {
         // SAFETY: `tx_env` points into the active interpreter frame and remains valid for the
@@ -222,6 +223,9 @@ fn create_inner<T: EvmTypes>(
 
     let len = word_to_usize(len)?;
     if cx.state.spec.enables(SpecId::SHANGHAI) {
+        if len > MAX_INITCODE_SIZE {
+            return Err(InstrStop::CreateInitCodeSizeLimit);
+        }
         cx.gas.spend(cx.state.gas_params().initcode_cost(len))?;
     }
     let code_range = resize_memory_range(&mut cx, offset, Word::from(len))?;
@@ -253,7 +257,7 @@ fn create_inner<T: EvmTypes>(
     };
     let bytecode = crate::bytecode::Bytecode::new_legacy(input);
     let tx_env = cx.state.tx() as *const _;
-    let result = if message.depth > Message::CALL_DEPTH_LIMIT {
+    let result = if message.depth > CALL_DEPTH_LIMIT {
         call_too_deep_result(message.gas_limit)
     } else {
         // SAFETY: `tx_env` points into the active interpreter frame and remains valid for the
@@ -299,6 +303,7 @@ pub(crate) fn selfdestruct(cx: _, [target]: [Word]) -> Result {
 mod tests {
     use crate::{
         SpecId,
+        constants::{CALL_DEPTH_LIMIT, MAX_INITCODE_SIZE},
         interpreter::{
             InstrStop, Message, MessageKind, MessageResult, Word,
             instructions::tests::{RunConfig, TestHost, push, run},
@@ -395,7 +400,7 @@ mod tests {
         let interpreter = run(RunConfig::new(code)
             .host(&mut host)
             .spec(SpecId::BERLIN)
-            .message(Message { depth: Message::CALL_DEPTH_LIMIT, ..Default::default() })
+            .message(Message { depth: CALL_DEPTH_LIMIT, ..Default::default() })
             .gas_limit(50_000));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::ZERO]);
@@ -429,7 +434,7 @@ mod tests {
         let interpreter = run(RunConfig::new(code)
             .host(&mut host)
             .spec(SpecId::TANGERINE)
-            .message(Message { depth: Message::CALL_DEPTH_LIMIT, ..Default::default() })
+            .message(Message { depth: CALL_DEPTH_LIMIT, ..Default::default() })
             .gas_limit(50_000));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.gas_remaining(), 42_553);
@@ -458,7 +463,7 @@ mod tests {
         let interpreter = run(RunConfig::new(code)
             .host(&mut host)
             .spec(SpecId::TANGERINE)
-            .message(Message { depth: Message::CALL_DEPTH_LIMIT, ..Default::default() })
+            .message(Message { depth: CALL_DEPTH_LIMIT, ..Default::default() })
             .gas_limit(50_000));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::ZERO]);
@@ -691,11 +696,24 @@ mod tests {
         let interpreter = run(RunConfig::new(code)
             .host(&mut host)
             .spec(SpecId::BERLIN)
-            .message(Message { depth: Message::CALL_DEPTH_LIMIT, ..Default::default() })
+            .message(Message { depth: CALL_DEPTH_LIMIT, ..Default::default() })
             .gas_limit(50_000));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::ZERO]);
         assert_eq!(interpreter.gas_remaining(), 17_991);
+        assert!(host.calls.is_empty());
+    }
+
+    #[test]
+    fn create_initcode_size_limit_halts_after_shanghai() {
+        let mut host = TestHost::default();
+        let mut code = Vec::new();
+        push_all(&mut code, [Word::from(MAX_INITCODE_SIZE + 1), Word::ZERO, Word::ZERO]);
+        code.extend([op::CREATE, op::STOP]);
+
+        let interpreter =
+            run(RunConfig::new(code).host(&mut host).spec(SpecId::SHANGHAI).gas_limit(50_000));
+        core::assert_matches!(interpreter.err, InstrStop::CreateInitCodeSizeLimit);
         assert!(host.calls.is_empty());
     }
 

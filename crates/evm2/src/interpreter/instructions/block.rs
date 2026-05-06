@@ -1,11 +1,10 @@
 use crate::{
     SpecId,
+    constants::BLOCK_HASH_HISTORY,
     interpreter::{Host, InstrStop, Word},
     utils::{address_to_word, b256_to_word, word_to_usize_saturated},
 };
 use evm2_macros::instruction;
-
-const BLOCK_HASH_HISTORY: u64 = 256;
 
 #[instruction]
 pub(crate) fn blockhash(cx: _, [number]: [Word]) -> Result<out> {
