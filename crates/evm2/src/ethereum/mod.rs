@@ -10,7 +10,7 @@ use crate::{
     Evm, EvmTypes, SpecId, TxResult, Version,
     bytecode::Bytecode,
     constants::MAX_INITCODE_SIZE,
-    evm::{AccountInfo, precompile::PrecompileProvider},
+    evm::{AccountInfo, Checkpoint, precompile::PrecompileProvider},
     interpreter::{Message, MessageKind, MessageResult, Word},
     registry::{HandlerError, HandlerResult, TxRegistry},
     utils::num_words,
@@ -348,7 +348,7 @@ fn initial_call_code<T: EvmTypes<Host = Evm<T>>>(
 
 pub(super) fn rollback_failed_execution<T: EvmTypes<Host = Evm<T>>>(
     host: &mut Evm<T>,
-    checkpoint: usize,
+    checkpoint: Checkpoint,
     result: &mut MessageResult,
 ) {
     if !result.stop.is_success() {
