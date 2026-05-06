@@ -10,7 +10,7 @@ use alloy_primitives::{B256, Bytes, Log, LogData};
 use evm2_macros::instruction;
 
 #[inline]
-fn require_non_staticcall<T: EvmTypes>(state: &State<'_, T>) -> Result {
+const fn require_non_staticcall<T: EvmTypes>(state: &State<'_, T>) -> Result {
     if state.is_static() {
         return Err(InstrStop::StateChangeDuringStaticCall);
     }
@@ -19,9 +19,15 @@ fn require_non_staticcall<T: EvmTypes>(state: &State<'_, T>) -> Result {
 
 #[instruction(dynamic_gas)]
 pub(crate) fn sload(cx: _, [key]: [Word]) -> Result<out> {
-    let load = cx.state.host.sload(cx.state.message().destination, key);
+    // EIP-2929: SLOAD pays the warm read cost as static opcode gas, then only
+    // charges the additional cold cost when the slot was not already warm. Avoid
+    // touching the host/database if the frame cannot afford that cold surcharge.
+    let additional_cold_cost = cx.state.gas_params().get(GasId::ColdStorageAdditionalCost).into();
+    let skip_cold_load =
+        cx.state.spec.enables(SpecId::BERLIN) && cx.gas.remaining() < additional_cold_cost;
+    let load = cx.state.host.sload(cx.state.message().destination, key, skip_cold_load)?;
     if load.is_cold {
-        cx.gas.spend(cx.state.gas_params().get(GasId::ColdStorageAdditionalCost).into())?;
+        cx.gas.spend(additional_cold_cost)?;
     }
     *out = load.value;
 }
@@ -31,28 +37,43 @@ pub(crate) fn sstore(cx: _) -> Result {
     require_non_staticcall(cx.state)?;
     let [key, value] = stack.popn()?;
     let gas_params = cx.state.gas_params();
-    if cx.state.spec.enables(SpecId::ISTANBUL)
-        && cx.gas.remaining() <= gas_params.get(GasId::CallStipend).into()
-    {
+    let is_istanbul = cx.state.spec.enables(SpecId::ISTANBUL);
+
+    // EIP-2200: SSTORE may not execute with only the value-transfer stipend left. This
+    // check happens before any gas is charged or host storage is touched.
+    if is_istanbul && cx.gas.remaining() <= gas_params.get(GasId::CallStipend).into() {
         return Err(InstrStop::ReentrancySentryOOG);
     }
-    let load = cx.state.host.sload(cx.state.message().destination, key);
-    let old_value = load.value;
+
+    // Frontier through Petersburg charge a fixed SSTORE_RESET static cost. Istanbul
+    // (EIP-2200) turns this into the SLOAD-equivalent cost, and Berlin (EIP-2929)
+    // makes that the warm storage read cost.
     cx.gas.spend(gas_params.get(GasId::SstoreStatic).into())?;
-    if load.is_cold {
-        cx.gas.spend(gas_params.get(GasId::ColdStorageCost).into())?;
+
+    // EIP-2929: avoid performing a cold storage load if the frame cannot afford the
+    // additional cold-load charge. The host performs the write and returns
+    // original/present/new values for net metering.
+    let skip_cold_load = cx.state.spec.enables(SpecId::BERLIN)
+        && cx.gas.remaining() < gas_params.get(GasId::ColdStorageAdditionalCost).into();
+    let state_load =
+        cx.state.host.sstore(cx.state.message().destination, key, value, skip_cold_load)?;
+
+    // EIP-2200 net gas metering depends on original, present, and new slot values:
+    // clean slots pay set/reset costs, dirty slots generally only pay the load cost,
+    // and reset-to-original transitions are handled through refunds.
+    cx.gas.spend(gas_params.sstore_dynamic_gas(is_istanbul, &state_load))?;
+
+    // EIP-8037 / Amsterdam: creating a new storage slot (original == present == 0,
+    // new != 0) also consumes state gas from the reservoir before spilling into
+    // regular gas.
+    if cx.state.spec.enables(SpecId::AMSTERDAM) {
+        cx.gas.spend_state(gas_params.sstore_state_gas(&state_load))?;
     }
-    if old_value == value {
-        // No-op stores only pay the load/static cost after Istanbul.
-    } else if old_value.is_zero() {
-        cx.gas.spend(gas_params.get(GasId::SstoreSetWithoutLoadCost).into())?;
-    } else if value.is_zero() {
-        cx.gas.record_refund(gas_params.get(GasId::SstoreClearingSlotRefund) as i64);
-        cx.gas.spend(gas_params.get(GasId::SstoreResetWithoutColdLoadCost).into())?;
-    } else {
-        cx.gas.spend(gas_params.get(GasId::SstoreResetWithoutColdLoadCost).into())?;
-    }
-    cx.state.host.sstore(cx.state.message().destination, key, value);
+
+    // EIP-2200 and EIP-3529 refund rules, including negative refund adjustments for
+    // dirty nonzero slots and London's reduced clearing-slot refund via gas params.
+    cx.gas.record_refund(gas_params.sstore_refund(is_istanbul, &state_load));
+    Ok(())
 }
 
 #[instruction(no_stack_preamble)]
@@ -215,6 +236,58 @@ mod tests {
 
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.gas_remaining(), 2894);
+    }
+
+    #[test]
+    fn sstore_dirty_slot_write_only_pays_load_cost() {
+        let mut host = TestHost::default();
+        let mut code = Vec::new();
+        push(&mut code, 1);
+        push(&mut code, 0);
+        code.push(op::SSTORE);
+        push(&mut code, 2);
+        push(&mut code, 0);
+        code.extend([op::SSTORE, op::STOP]);
+
+        let interpreter =
+            run(RunConfig::new(code).host(&mut host).spec(SpecId::BERLIN).gas_limit(50_000));
+
+        core::assert_matches!(interpreter.err, InstrStop::Stop);
+        assert_eq!(interpreter.gas_remaining(), 29_888);
+        assert_eq!(interpreter.gas_refunded(), 0);
+    }
+
+    #[test]
+    fn sstore_reset_to_original_records_refund() {
+        let mut host = TestHost::default();
+        host.storage.insert((Address::ZERO, Word::from(0)), Word::from(5));
+        let mut code = Vec::new();
+        push(&mut code, 7);
+        push(&mut code, 0);
+        code.push(op::SSTORE);
+        push(&mut code, 5);
+        push(&mut code, 0);
+        code.extend([op::SSTORE, op::STOP]);
+
+        let interpreter =
+            run(RunConfig::new(code).host(&mut host).spec(SpecId::BERLIN).gas_limit(50_000));
+
+        core::assert_matches!(interpreter.err, InstrStop::Stop);
+        assert_eq!(interpreter.gas_remaining(), 46_988);
+        assert_eq!(interpreter.gas_refunded(), 2_800);
+    }
+
+    #[test]
+    fn sstore_amsterdam_new_slot_charges_state_gas() {
+        let mut host = TestHost::default();
+        let interpreter = run(RunConfig::new([op::PUSH1, 1, op::PUSH1, 0, op::SSTORE, op::STOP])
+            .host(&mut host)
+            .spec(SpecId::AMSTERDAM)
+            .gas_limit(100_000));
+
+        core::assert_matches!(interpreter.err, InstrStop::Stop);
+        assert_eq!(interpreter.gas_remaining(), 59_526);
+        assert_eq!(interpreter.state_gas_spent(), 37_568);
     }
 
     #[test]

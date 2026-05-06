@@ -1,4 +1,4 @@
-use crate::utils::num_words;
+use crate::{evm::SStore, utils::num_words};
 use alloy_primitives::U256;
 use core::ops::{Index, IndexMut};
 
@@ -297,6 +297,80 @@ impl GasParams {
     #[inline]
     pub const fn call_stipend_reduction(&self, gas_limit: u64) -> u64 {
         gas_limit - gas_limit / self.get(GasId::CallStipendReduction) as u64
+    }
+
+    /// Calculates dynamic `SSTORE` gas.
+    #[inline]
+    pub fn sstore_dynamic_gas(&self, is_istanbul: bool, vals: &SStore) -> u64 {
+        if !is_istanbul {
+            if vals.present_is_zero() && !vals.new_is_zero() {
+                return self.get(GasId::SstoreSetWithoutLoadCost) as u64;
+            }
+            return self.get(GasId::SstoreResetWithoutColdLoadCost) as u64;
+        }
+
+        let mut gas = 0;
+        if vals.is_cold {
+            gas += self.get(GasId::ColdStorageCost) as u64;
+        }
+
+        if !vals.is_noop() && vals.is_clean() {
+            gas += if vals.original_is_zero() {
+                self.get(GasId::SstoreSetWithoutLoadCost) as u64
+            } else {
+                self.get(GasId::SstoreResetWithoutColdLoadCost) as u64
+            };
+        }
+        gas
+    }
+
+    /// Calculates `SSTORE` refund.
+    #[inline]
+    pub fn sstore_refund(&self, is_istanbul: bool, vals: &SStore) -> i64 {
+        let clearing_slot_refund = self.get(GasId::SstoreClearingSlotRefund) as i64;
+
+        if !is_istanbul {
+            if !vals.present_is_zero() && vals.new_is_zero() {
+                return clearing_slot_refund;
+            }
+            return 0;
+        }
+
+        if vals.is_noop() {
+            return 0;
+        }
+
+        if vals.is_clean() && vals.new_is_zero() {
+            return clearing_slot_refund;
+        }
+
+        let mut refund = 0;
+        if !vals.original_is_zero() {
+            if vals.present_is_zero() {
+                refund -= clearing_slot_refund;
+            } else if vals.new_is_zero() {
+                refund += clearing_slot_refund;
+            }
+        }
+
+        if vals.resets_original() {
+            if vals.original_is_zero() {
+                refund += self.get(GasId::SstoreSetRefund) as i64;
+            } else {
+                refund += self.get(GasId::SstoreResetRefund) as i64;
+            }
+        }
+        refund
+    }
+
+    /// Calculates `SSTORE` state gas for new slot creation.
+    #[inline]
+    pub fn sstore_state_gas(&self, vals: &SStore) -> u64 {
+        if !vals.is_noop() && vals.is_clean() && vals.original_is_zero() {
+            self.get(GasId::SstoreSetState) as u64
+        } else {
+            0
+        }
     }
 
     /// Returns `SELFDESTRUCT` cold account cost.

@@ -2,9 +2,10 @@
 
 use crate::{
     EvmTypes, SpecId,
+    constants::{CALL_DEPTH_LIMIT, MAX_INITCODE_SIZE},
     interpreter::{
-        GasInstructionCx, Host, InstrStop, Message, MessageKind, Result, StackMut, State, Word,
-        memory::resize_memory,
+        GasInstructionCx, Host, InstrStop, Message, MessageKind, MessageResult, Result, StackMut, State,
+        Word, memory::resize_memory,
     },
     utils::{word_to_address, word_to_usize},
     version::GasId,
@@ -14,7 +15,7 @@ use core::{cmp::min, ops::Range};
 use evm2_macros::instruction;
 
 #[inline]
-fn require_non_staticcall<T: EvmTypes>(state: &State<'_, T>) -> Result {
+const fn require_non_staticcall<T: EvmTypes>(state: &State<'_, T>) -> Result {
     if state.is_static() {
         return Err(InstrStop::StateChangeDuringStaticCall);
     }
@@ -24,6 +25,11 @@ fn require_non_staticcall<T: EvmTypes>(state: &State<'_, T>) -> Result {
 #[inline]
 const fn success(stop: InstrStop) -> bool {
     matches!(stop, InstrStop::Stop | InstrStop::Return | InstrStop::SelfDestruct)
+}
+
+#[inline]
+fn call_too_deep_result(gas_limit: u64) -> MessageResult {
+    MessageResult { stop: InstrStop::CallTooDeep, gas_remaining: gas_limit, ..Default::default() }
 }
 
 fn resize_memory_range<T: EvmTypes>(
@@ -83,7 +89,10 @@ fn load_acc_and_calc_gas<T: EvmTypes>(
     if account.is_cold {
         cost += additional_cold_cost;
     }
-    if create_empty_account && transfers_value && account.is_empty {
+    let is_spurious_dragon = cx.state.spec.enables(SpecId::SPURIOUS_DRAGON);
+    let creates_empty_account = create_empty_account && (!is_spurious_dragon || transfers_value);
+    let target_is_empty = if is_spurious_dragon { account.is_empty } else { !account.exists };
+    if creates_empty_account && target_is_empty {
         cost += u64::from(cx.state.gas_params().get(GasId::NewAccountCost));
     }
     cx.gas.spend(cost)?;
@@ -102,7 +111,7 @@ fn load_acc_and_calc_gas<T: EvmTypes>(
     Ok((gas_limit, account.code))
 }
 
-#[inline(always)]
+#[inline(never)]
 fn call_inner<T: EvmTypes>(
     mut stack: StackMut<'_>,
     mut cx: GasInstructionCx<'_, '_, T>,
@@ -120,10 +129,6 @@ fn call_inner<T: EvmTypes>(
     let has_transfer = !value.is_zero();
     if cx.state.is_static() && kind == MessageKind::Call && has_transfer {
         return Err(InstrStop::CallNotAllowedInsideStatic);
-    }
-    if cx.state.message().depth.saturating_add(1) >= Message::CALL_DEPTH_LIMIT {
-        stack.push(Word::ZERO)?;
-        return Ok(());
     }
 
     let local_gas_limit = u64::try_from(local_gas_limit).unwrap_or(u64::MAX);
@@ -164,9 +169,16 @@ fn call_inner<T: EvmTypes>(
     };
     let caller_is_static = cx.state.is_static();
     let bytecode = crate::bytecode::Bytecode::new_legacy(code);
-    let result =
-        cx.state.host.execute_message(cx.state.tx().clone(), bytecode, message, caller_is_static);
-    cx.gas.erase_cost(result.gas_remaining);
+    let tx_env = cx.state.tx() as *const _;
+    let result = if message.depth > CALL_DEPTH_LIMIT {
+        call_too_deep_result(message.gas_limit)
+    } else {
+        // SAFETY: `tx_env` points into the active interpreter frame and remains valid for the
+        // duration of this instruction.
+        cx.state.host.execute_message(unsafe { &*tx_env }, bytecode, &message, caller_is_static)
+    };
+    cx.gas.erase_cost(result.gas_returned_to_parent());
+    cx.gas.record_refund(result.refund_propagated_to_parent());
     let copy_len = min(return_memory_range.len(), result.output.len());
     cx.state.memory().set(return_memory_range.start, &result.output[..copy_len]);
     cx.state.set_return_data(result.output);
@@ -199,7 +211,7 @@ pub(crate) fn create<const IS_CREATE2: bool>(cx: _) -> Result {
     create_inner(stack, cx, IS_CREATE2)
 }
 
-#[inline]
+#[inline(never)]
 fn create_inner<T: EvmTypes>(
     mut stack: StackMut<'_>,
     mut cx: GasInstructionCx<'_, '_, T>,
@@ -209,13 +221,12 @@ fn create_inner<T: EvmTypes>(
 
     let [value, offset, len] = stack.popn::<3>()?;
     let salt = if is_create2 { Some(stack.pop()?) } else { None };
-    if cx.state.message().depth.saturating_add(1) >= Message::CALL_DEPTH_LIMIT {
-        stack.push(Word::ZERO)?;
-        return Ok(());
-    }
 
     let len = word_to_usize(len)?;
     if cx.state.spec.enables(SpecId::SHANGHAI) {
+        if len > MAX_INITCODE_SIZE {
+            return Err(InstrStop::CreateInitCodeSizeLimit);
+        }
         cx.gas.spend(cx.state.gas_params().initcode_cost(len))?;
     }
     let code_range = resize_memory_range(&mut cx, offset, Word::from(len))?;
@@ -246,9 +257,18 @@ fn create_inner<T: EvmTypes>(
         salt: salt.map(|salt| B256::from(salt.to_be_bytes())).unwrap_or_default(),
     };
     let bytecode = crate::bytecode::Bytecode::new_legacy(input);
-    let result = cx.state.host.execute_message(cx.state.tx().clone(), bytecode, message, false);
-    cx.gas.erase_cost(result.gas_remaining);
-    if !result.stop.is_success() {
+    let tx_env = cx.state.tx() as *const _;
+    let result = if message.depth > CALL_DEPTH_LIMIT {
+        call_too_deep_result(message.gas_limit)
+    } else {
+        // SAFETY: `tx_env` points into the active interpreter frame and remains valid for the
+        // duration of this instruction.
+        cx.state.host.execute_message(unsafe { &*tx_env }, bytecode, &message, false)
+    };
+    cx.gas.erase_cost(result.gas_returned_to_parent());
+    cx.gas.record_refund(result.refund_propagated_to_parent());
+    // EIP-211 exposes CREATE failure data only for REVERT; other failures clear returndata.
+    if result.stop == InstrStop::Revert {
         cx.state.set_return_data(result.output);
     } else {
         cx.state.set_return_data(Bytes::new());
@@ -284,6 +304,7 @@ pub(crate) fn selfdestruct(cx: _, [target]: [Word]) -> Result {
 mod tests {
     use crate::{
         SpecId,
+        constants::{CALL_DEPTH_LIMIT, MAX_INITCODE_SIZE},
         interpreter::{
             InstrStop, Message, MessageKind, MessageResult, Word,
             instructions::tests::{RunConfig, TestHost, push, run},
@@ -356,6 +377,99 @@ mod tests {
         assert_eq!(host.calls.len(), 1);
         assert_eq!(host.calls[0].kind, MessageKind::Call);
         assert!(host.call_static_flags[0]);
+    }
+
+    #[test]
+    fn call_too_deep_charges_dynamic_gas() {
+        let target = Address::from([0x22; 20]);
+        let mut host = TestHost { is_cold: true, is_empty: true, ..Default::default() };
+        let mut code = Vec::new();
+        push_all(
+            &mut code,
+            [
+                Word::ZERO,
+                Word::ZERO,
+                Word::ZERO,
+                Word::ZERO,
+                Word::from(1),
+                address_to_word(target),
+                Word::from(1000),
+            ],
+        );
+        code.extend([op::CALL, op::STOP]);
+
+        let interpreter = run(RunConfig::new(code)
+            .host(&mut host)
+            .spec(SpecId::BERLIN)
+            .message(Message { depth: CALL_DEPTH_LIMIT, ..Default::default() })
+            .gas_limit(50_000));
+        core::assert_matches!(interpreter.err, InstrStop::Stop);
+        assert_eq!(interpreter.stack(), [Word::ZERO]);
+        assert_eq!(interpreter.gas_remaining(), 15_679);
+        assert!(host.calls.is_empty());
+    }
+
+    #[test]
+    fn call_with_value_too_deep_credits_stipend() {
+        let mut host = TestHost::default();
+        let code = [
+            op::PUSH1,
+            0xff,
+            op::PUSH1,
+            0,
+            op::PUSH1,
+            0xff,
+            op::PUSH1,
+            0,
+            op::PUSH1,
+            1,
+            op::PUSH1,
+            0xaa,
+            op::PUSH2,
+            0x80,
+            0,
+            op::CALL,
+            op::POP,
+        ];
+
+        let interpreter = run(RunConfig::new(code)
+            .host(&mut host)
+            .spec(SpecId::TANGERINE)
+            .message(Message { depth: CALL_DEPTH_LIMIT, ..Default::default() })
+            .gas_limit(50_000));
+        core::assert_matches!(interpreter.err, InstrStop::Stop);
+        assert_eq!(interpreter.gas_remaining(), 42_553);
+        assert!(host.calls.is_empty());
+    }
+
+    #[test]
+    fn call_too_deep_charges_pre_spurious_empty_account() {
+        let target = Address::from([0x22; 20]);
+        let mut host = TestHost { exists: false, is_empty: true, ..Default::default() };
+        let mut code = Vec::new();
+        push_all(
+            &mut code,
+            [
+                Word::ZERO,
+                Word::ZERO,
+                Word::ZERO,
+                Word::ZERO,
+                Word::ZERO,
+                address_to_word(target),
+                Word::ZERO,
+            ],
+        );
+        code.extend([op::CALL, op::STOP]);
+
+        let interpreter = run(RunConfig::new(code)
+            .host(&mut host)
+            .spec(SpecId::TANGERINE)
+            .message(Message { depth: CALL_DEPTH_LIMIT, ..Default::default() })
+            .gas_limit(50_000));
+        core::assert_matches!(interpreter.err, InstrStop::Stop);
+        assert_eq!(interpreter.stack(), [Word::ZERO]);
+        assert_eq!(interpreter.gas_remaining(), 24_279);
+        assert!(host.calls.is_empty());
     }
 
     #[test]
@@ -571,6 +685,37 @@ mod tests {
         let interpreter = run(RunConfig::new(code).host(&mut host).gas_limit(50_000));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::ZERO, Word::from(2)]);
+    }
+
+    #[test]
+    fn create_too_deep_charges_create_gas() {
+        let mut host = TestHost::default();
+        let mut code = Vec::new();
+        push_all(&mut code, [Word::ZERO, Word::ZERO, Word::ZERO]);
+        code.extend([op::CREATE, op::STOP]);
+
+        let interpreter = run(RunConfig::new(code)
+            .host(&mut host)
+            .spec(SpecId::BERLIN)
+            .message(Message { depth: CALL_DEPTH_LIMIT, ..Default::default() })
+            .gas_limit(50_000));
+        core::assert_matches!(interpreter.err, InstrStop::Stop);
+        assert_eq!(interpreter.stack(), [Word::ZERO]);
+        assert_eq!(interpreter.gas_remaining(), 17_991);
+        assert!(host.calls.is_empty());
+    }
+
+    #[test]
+    fn create_initcode_size_limit_halts_after_shanghai() {
+        let mut host = TestHost::default();
+        let mut code = Vec::new();
+        push_all(&mut code, [Word::from(MAX_INITCODE_SIZE + 1), Word::ZERO, Word::ZERO]);
+        code.extend([op::CREATE, op::STOP]);
+
+        let interpreter =
+            run(RunConfig::new(code).host(&mut host).spec(SpecId::SHANGHAI).gas_limit(50_000));
+        core::assert_matches!(interpreter.err, InstrStop::CreateInitCodeSizeLimit);
+        assert!(host.calls.is_empty());
     }
 
     #[test]

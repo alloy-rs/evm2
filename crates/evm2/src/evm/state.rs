@@ -1,6 +1,6 @@
 //! Basic in-memory EVM host state.
 
-use super::db::Database;
+use super::{SStore, db::Database};
 use crate::{
     SpecId,
     bytecode::Bytecode,
@@ -435,6 +435,13 @@ impl<D> State<D> {
         }
     }
 
+    /// Returns whether a storage slot is warm in the current transaction.
+    #[inline]
+    #[must_use]
+    pub fn is_storage_warm(&self, address: Address, key: Word) -> bool {
+        self.accessed_storage.contains(&(address, key))
+    }
+
     /// Marks a storage slot as warm and returns whether it was cold before this access.
     #[inline]
     #[must_use]
@@ -604,17 +611,30 @@ impl<D: Database> State<D> {
         self.storage_slot_mut(address, key, false).current
     }
 
-    /// Stores persistent storage.
+    /// Stores persistent storage and returns values needed for `SSTORE` gas metering.
+    ///
+    /// This is a raw state mutation helper, not the full EVM `SSTORE` host operation. It does
+    /// not perform static-call checks, gas/stipend checks, EIP-2929 cold-access handling, refund
+    /// accounting, or Amsterdam state-gas charging. Instruction implementations should call the
+    /// host `sstore` operation instead, and only use this lower-level helper when those concerns
+    /// are handled elsewhere.
     #[inline]
-    pub fn set_storage(&mut self, address: Address, key: Word, value: Word) {
+    pub fn set_storage(&mut self, address: Address, key: Word, value: Word) -> SStore {
         let _ = self.account_mut(address);
-        let previous = {
-            let slot = self.storage_slot_mut(address, key, true);
+        self.touch(address);
+        let slot = self.storage_slot_mut(address, key, true);
+        let result = SStore {
+            original_value: slot.original,
+            present_value: slot.current,
+            new_value: value,
+            is_cold: false,
+        };
+        if slot.current != value {
             let previous = slot.current;
             slot.current = value;
-            previous
-        };
-        self.journal.push(JournalEntry::StorageChange { address, key, previous });
+            self.journal.push(JournalEntry::StorageChange { address, key, previous });
+        }
+        result
     }
 
     /// Marks an account as touched by the current transaction.
@@ -669,7 +689,7 @@ impl<D: Database> State<D> {
     }
 
     /// Creates a contract account and transfers endowment from the caller.
-    #[inline]
+    #[inline(never)]
     pub fn create_account(
         &mut self,
         caller: Address,
@@ -790,8 +810,8 @@ impl<D: Database> State<D> {
     }
 
     /// Reverts state changes after the checkpoint.
-    #[inline]
-    pub fn rollback(&mut self, checkpoint: usize) {
+    #[inline(never)]
+    pub fn rollback(&mut self, checkpoint: usize, spec: SpecId) {
         assert!(checkpoint <= self.journal.len(), "checkpoint is past journal length");
         while self.journal.len() != checkpoint {
             let Some(entry) = self.journal.pop() else {
@@ -807,6 +827,12 @@ impl<D: Database> State<D> {
                     self.accounts.remove(&address);
                 }
                 JournalEntry::Touch { address } => {
+                    // EIP-161 preserves the historical Yellow Paper K.1 precompile-3 touch.
+                    if spec.enables(SpecId::SPURIOUS_DRAGON)
+                        && address == Address::with_last_byte(3)
+                    {
+                        continue;
+                    }
                     self.touched.remove(&address);
                 }
                 JournalEntry::SelfDestruct { address } => {
@@ -1019,7 +1045,7 @@ mod tests {
         state.set_storage(address, Word::from(1), Word::from(30));
 
         assert_eq!(state.storage(address, Word::from(1)), Word::from(30));
-        state.rollback(checkpoint);
+        state.rollback(checkpoint, SpecId::FRONTIER);
         assert_eq!(state.storage(address, Word::from(1)), Word::from(10));
     }
 
@@ -1033,7 +1059,7 @@ mod tests {
         state.set_transient_storage(address, Word::from(1), Word::from(20));
 
         assert_eq!(state.transient_storage(address, Word::from(1)), Word::from(20));
-        state.rollback(checkpoint);
+        state.rollback(checkpoint, SpecId::FRONTIER);
         assert_eq!(state.transient_storage(address, Word::from(1)), Word::from(10));
     }
 
@@ -1046,7 +1072,7 @@ mod tests {
         state.mark_destructed(address);
 
         assert!(state.is_selfdestructed(address));
-        state.rollback(checkpoint);
+        state.rollback(checkpoint, SpecId::FRONTIER);
         assert!(!state.is_selfdestructed(address));
     }
 
@@ -1078,8 +1104,26 @@ mod tests {
                 }
             ]
         );
-        state.rollback(checkpoint);
+        state.rollback(checkpoint, SpecId::FRONTIER);
         assert_eq!(state.logs(), &[kept]);
+    }
+
+    #[test]
+    fn spurious_dragon_rollback_preserves_precompile3_touch() {
+        let precompile3 = Address::with_last_byte(3);
+        let other = Address::with_last_byte(4);
+        let mut database = CacheDB::default();
+        database.insert_account_info(precompile3, AccountInfo::default());
+        database.insert_account_info(other, AccountInfo::default());
+        let mut state = State::new(database);
+
+        let checkpoint = state.checkpoint();
+        state.touch(precompile3);
+        state.touch(other);
+
+        state.rollback(checkpoint, SpecId::SPURIOUS_DRAGON);
+        assert!(state.touched.contains(&precompile3));
+        assert!(!state.touched.contains(&other));
     }
 
     #[test]

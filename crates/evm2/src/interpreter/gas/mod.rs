@@ -198,14 +198,6 @@ impl GasTracker {
     pub const fn spend_all(&mut self) {
         self.remaining = 0;
     }
-
-    /// Applies the final refund cap.
-    #[inline]
-    pub fn set_final_refund(&mut self, is_london: bool) {
-        let max_refund_quotient = if is_london { 5 } else { 2 };
-        let gas_used = self.spent().saturating_sub(self.reservoir);
-        self.refunded = (self.refunded as u64).min(gas_used / max_refund_quotient) as i64;
-    }
 }
 
 /// Remaining regular gas threaded through tail calls.
@@ -416,12 +408,6 @@ impl Gas {
     #[inline]
     pub const fn spend_all(&mut self) {
         self.tracker.spend_all();
-    }
-
-    /// Applies the final refund cap.
-    #[inline]
-    pub fn set_final_refund(&mut self, is_london: bool) {
-        self.tracker.set_final_refund(is_london);
     }
 }
 

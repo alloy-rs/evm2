@@ -2,8 +2,12 @@ use crate::{
     error::{TestError, TestErrorKind},
     types::{AccountInfo, Env, Test, TestSuite, TestUnit, TransactionParts, TxPartIndices},
 };
-use alloy_consensus::{TxLegacy, transaction::Recovered};
+use alloy_consensus::{TypedTransaction, transaction::Recovered};
 use alloy_primitives::{Address, B256, Bytes, Log, TxKind, U256, keccak256};
+use alloy_rpc_types_eth::{
+    AccessList as RpcAccessList, AccessListItem as RpcAccessListItem, TransactionInput,
+    TransactionRequest,
+};
 use alloy_trie::{
     TrieAccount,
     root::{state_root_unhashed, storage_root_unhashed},
@@ -75,7 +79,7 @@ fn execute_unit(
             continue;
         };
         for post in posts {
-            let tx = match build_tx(&unit.transaction, &post.indexes, block.basefee) {
+            let tx = match build_tx(&unit.transaction, &post.indexes, unit.env.current_chain_id) {
                 Ok(tx) => tx,
                 Err(_) if post.expect_exception.is_some() => {
                     continue;
@@ -349,7 +353,7 @@ fn parse_block(env: &Env) -> BlockEnv {
 fn build_tx(
     raw: &TransactionParts,
     indexes: &TxPartIndices,
-    base_fee: U256,
+    chain_id: Option<U256>,
 ) -> Result<RecoveredTxEnvelope, TestErrorKind> {
     let caller = match raw.sender {
         Some(sender) => sender,
@@ -365,35 +369,103 @@ fn build_tx(
         .map_err(|_| TestErrorKind::Overflow("gasLimit"))?;
     let value = *raw.value.get(indexes.value).ok_or(TestErrorKind::BadIndex("value"))?;
     let nonce = raw.nonce.try_into().map_err(|_| TestErrorKind::Overflow("nonce"))?;
-    let gas_price = effective_gas_price(raw, base_fee)?
-        .try_into()
-        .map_err(|_| TestErrorKind::Overflow("gasPrice"))?;
-    let tx = TxLegacy {
-        chain_id: None,
-        nonce,
-        gas_price,
-        gas_limit,
-        to: TxKind::from(raw.to),
-        value,
-        input: data,
-    };
-    Ok(RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(tx, caller)))
+
+    let mut request = TransactionRequest::default()
+        .from(caller)
+        .gas_limit(gas_limit)
+        .nonce(nonce)
+        .value(value)
+        .input(TransactionInput::from(data));
+    request.to = Some(TxKind::from(raw.to));
+    request.transaction_type = raw.tx_type;
+    request.chain_id = chain_id
+        .map(TryInto::try_into)
+        .transpose()
+        .map_err(|_| TestErrorKind::Overflow("chainId"))?;
+    if !matches!(raw.tx_type, Some(2..=4)) {
+        request.gas_price = raw
+            .gas_price
+            .map(TryInto::try_into)
+            .transpose()
+            .map_err(|_| TestErrorKind::Overflow("gasPrice"))?;
+        if request.gas_price.is_none()
+            && (matches!(raw.tx_type, Some(0 | 1))
+                || (raw.max_fee_per_gas.is_none() && raw.max_priority_fee_per_gas.is_none()))
+        {
+            request.gas_price = Some(0);
+        }
+    }
+    request.max_fee_per_gas = raw
+        .max_fee_per_gas
+        .map(TryInto::try_into)
+        .transpose()
+        .map_err(|_| TestErrorKind::Overflow("maxFeePerGas"))?;
+    request.max_priority_fee_per_gas =
+        if raw.max_fee_per_gas.is_some() && raw.max_priority_fee_per_gas.is_none() {
+            Some(0)
+        } else {
+            raw.max_priority_fee_per_gas
+                .map(TryInto::try_into)
+                .transpose()
+                .map_err(|_| TestErrorKind::Overflow("maxPriorityFeePerGas"))?
+        };
+    request.max_fee_per_blob_gas = raw
+        .max_fee_per_blob_gas
+        .map(TryInto::try_into)
+        .transpose()
+        .map_err(|_| TestErrorKind::Overflow("maxFeePerBlobGas"))?;
+    request.access_list = access_list(raw, indexes.data)?;
+    if !raw.blob_versioned_hashes.is_empty() {
+        request.blob_versioned_hashes = Some(raw.blob_versioned_hashes.clone());
+    }
+
+    let tx =
+        request.build_consensus_tx().map_err(|err| TestErrorKind::BuildTransaction(err.error))?;
+    recovered_envelope(tx, caller)
 }
 
-fn effective_gas_price(raw: &TransactionParts, base_fee: U256) -> Result<U256, TestErrorKind> {
-    if let Some(gas_price) = raw.gas_price {
-        return Ok(gas_price);
+fn access_list(
+    raw: &TransactionParts,
+    access_list_index: usize,
+) -> Result<Option<RpcAccessList>, TestErrorKind> {
+    if matches!(raw.tx_type, Some(0)) {
+        return Ok(None);
     }
-
-    let Some(max_fee_per_gas) = raw.max_fee_per_gas else {
-        return Ok(U256::ZERO);
+    let Some(access_list) = raw.access_lists.get(access_list_index).cloned().flatten() else {
+        return Ok(matches!(raw.tx_type, Some(1)).then(RpcAccessList::default));
     };
-    if max_fee_per_gas < base_fee {
-        return Err(TestErrorKind::FeeCapLessThanBaseFee { max_fee_per_gas, base_fee });
-    }
+    Ok(Some(RpcAccessList(
+        access_list
+            .into_iter()
+            .map(|item| RpcAccessListItem {
+                address: item.address,
+                storage_keys: item.storage_keys,
+            })
+            .collect(),
+    )))
+}
 
-    let priority_fee = raw.max_priority_fee_per_gas.unwrap_or_default();
-    Ok(max_fee_per_gas.min(base_fee.saturating_add(priority_fee)))
+fn recovered_envelope(
+    tx: TypedTransaction,
+    caller: Address,
+) -> Result<RecoveredTxEnvelope, TestErrorKind> {
+    match tx {
+        TypedTransaction::Legacy(tx) => {
+            Ok(RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(tx, caller)))
+        }
+        TypedTransaction::Eip2930(tx) => {
+            Ok(RecoveredTxEnvelope::Eip2930(Recovered::new_unchecked(tx, caller)))
+        }
+        TypedTransaction::Eip1559(tx) => {
+            Ok(RecoveredTxEnvelope::Eip1559(Recovered::new_unchecked(tx, caller)))
+        }
+        TypedTransaction::Eip7702(tx) => {
+            Ok(RecoveredTxEnvelope::Eip7702(Recovered::new_unchecked(tx, caller)))
+        }
+        TypedTransaction::Eip4844(_) => Err(TestErrorKind::BuildTransaction(
+            "EIP-4844 transactions are not supported".to_string(),
+        )),
+    }
 }
 
 fn recover_address(private_key: &[u8]) -> Option<Address> {
@@ -423,42 +495,86 @@ mod tests {
     }
 
     #[test]
-    fn effective_gas_price_uses_legacy_gas_price() {
-        let tx = TransactionParts {
+    fn build_tx_builds_legacy_transaction() {
+        let caller = Address::from([0x11; 20]);
+        let raw = TransactionParts {
+            data: vec![Bytes::from_static(&[0xaa])],
+            gas_limit: vec![U256::from(21_000)],
             gas_price: Some(U256::from(7)),
-            max_fee_per_gas: Some(U256::from(10)),
-            max_priority_fee_per_gas: Some(U256::from(2)),
+            sender: Some(caller),
+            to: Some(Address::from([0x22; 20])),
+            value: vec![U256::from(3)],
             ..TransactionParts::default()
         };
 
-        assert_eq!(effective_gas_price(&tx, U256::from(100)).unwrap(), U256::from(7));
+        let tx = build_tx(&raw, &TxPartIndices { data: 0, gas: 0, value: 0 }, None).unwrap();
+
+        let RecoveredTxEnvelope::Legacy(tx) = tx else {
+            panic!("expected legacy transaction");
+        };
+        assert_eq!(tx.signer(), caller);
+        assert_eq!(tx.inner().gas_price, 7);
     }
 
     #[test]
-    fn effective_gas_price_caps_priority_fee() {
-        let tx = TransactionParts {
-            max_fee_per_gas: Some(U256::from(10)),
-            max_priority_fee_per_gas: Some(U256::from(3)),
+    fn build_tx_builds_eip2930_transaction() {
+        let caller = Address::from([0x11; 20]);
+        let access_address = Address::from([0x33; 20]);
+        let raw = TransactionParts {
+            tx_type: Some(1),
+            data: vec![Bytes::new()],
+            gas_limit: vec![U256::from(25_300)],
+            gas_price: Some(U256::from(7)),
+            sender: Some(caller),
+            to: Some(Address::from([0x22; 20])),
+            value: vec![U256::ZERO],
+            access_lists: vec![Some(vec![crate::types::AccessListItem {
+                address: access_address,
+                storage_keys: vec![B256::with_last_byte(1)],
+            }])],
             ..TransactionParts::default()
         };
 
-        assert_eq!(effective_gas_price(&tx, U256::from(8)).unwrap(), U256::from(10));
+        let tx = build_tx(&raw, &TxPartIndices { data: 0, gas: 0, value: 0 }, None).unwrap();
+
+        let RecoveredTxEnvelope::Eip2930(tx) = tx else {
+            panic!("expected EIP-2930 transaction");
+        };
+        assert_eq!(tx.signer(), caller);
+        assert_eq!(tx.inner().access_list[0].address, access_address);
     }
 
     #[test]
-    fn effective_gas_price_rejects_fee_cap_below_base_fee() {
-        let tx = TransactionParts {
-            max_fee_per_gas: Some(U256::from(7)),
+    fn build_tx_uses_indexed_access_list() {
+        let caller = Address::from([0x11; 20]);
+        let first_address = Address::from([0x33; 20]);
+        let second_address = Address::from([0x44; 20]);
+        let raw = TransactionParts {
+            tx_type: Some(1),
+            data: vec![Bytes::new(), Bytes::from_static(&[0xaa])],
+            gas_limit: vec![U256::from(25_300)],
+            gas_price: Some(U256::from(7)),
+            sender: Some(caller),
+            to: Some(Address::from([0x22; 20])),
+            value: vec![U256::ZERO],
+            access_lists: vec![
+                Some(vec![crate::types::AccessListItem {
+                    address: first_address,
+                    storage_keys: vec![B256::with_last_byte(1)],
+                }]),
+                Some(vec![crate::types::AccessListItem {
+                    address: second_address,
+                    storage_keys: vec![B256::with_last_byte(2)],
+                }]),
+            ],
             ..TransactionParts::default()
         };
 
-        let err = effective_gas_price(&tx, U256::from(8)).unwrap_err();
-        assert!(matches!(
-            err,
-            TestErrorKind::FeeCapLessThanBaseFee {
-                max_fee_per_gas,
-                base_fee
-            } if max_fee_per_gas == U256::from(7) && base_fee == U256::from(8)
-        ));
+        let tx = build_tx(&raw, &TxPartIndices { data: 1, gas: 0, value: 0 }, None).unwrap();
+
+        let RecoveredTxEnvelope::Eip2930(tx) = tx else {
+            panic!("expected EIP-2930 transaction");
+        };
+        assert_eq!(tx.inner().access_list[0].address, second_address);
     }
 }

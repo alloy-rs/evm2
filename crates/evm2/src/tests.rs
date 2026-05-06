@@ -3,9 +3,10 @@ use crate::{
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
     evm::{AccountInfo, InMemoryDB},
-    interpreter::{Host, InstrStop, Message, Word, op},
+    interpreter::{Host, InstrStop, Message, Word, instructions::tests::push, op},
     registry::TxRegistry,
 };
+use alloc::vec::Vec;
 use alloy_primitives::{Address, Bytes};
 
 type TestEvm = Evm<BaseEvmTypes>;
@@ -19,9 +20,9 @@ fn run_tx(evm: &mut TestEvm, destination: Address, code: impl Into<Vec<u8>>) {
     };
     let result = Host::execute_message(
         evm,
-        TxEnv::default(),
+        &TxEnv::default(),
         Bytecode::new_legacy(Bytes::from(code.into())),
-        message,
+        &message,
         false,
     );
     assert!(result.stop.is_success());
@@ -81,6 +82,63 @@ fn evm_runs_transactions_against_initial_state() {
 }
 
 #[test]
+fn evm_propagates_child_sstore_negative_refund() {
+    let contract = Address::with_last_byte(0x44);
+    let mut child_code = Vec::new();
+    push(&mut child_code, 7);
+    push(&mut child_code, 0);
+    child_code.extend([op::SSTORE, op::STOP]);
+
+    let mut database = InMemoryDB::default();
+    database.insert_account_info(
+        contract,
+        AccountInfo {
+            nonce: 1,
+            code: Some(Bytecode::new_legacy(Bytes::from(child_code))),
+            ..Default::default()
+        },
+    );
+    database.insert_account_storage(contract, Word::from(0), Word::from(5));
+    let mut evm = TestEvm::new(
+        SpecId::LONDON,
+        BlockEnv::default(),
+        TxRegistry::new(),
+        database,
+        Precompiles::base(SpecId::LONDON),
+    );
+
+    let mut parent_code = Vec::new();
+    push(&mut parent_code, 0);
+    push(&mut parent_code, 0);
+    parent_code.push(op::SSTORE);
+    push(&mut parent_code, 0); // return length
+    push(&mut parent_code, 0); // return offset
+    push(&mut parent_code, 0); // input length
+    push(&mut parent_code, 0); // input offset
+    push(&mut parent_code, 0); // value
+    push(&mut parent_code, 0x44); // callee
+    push(&mut parent_code, 50_000); // gas
+    parent_code.extend([op::CALL, op::STOP]);
+
+    let message = Message {
+        destination: contract,
+        code_address: contract,
+        gas_limit: 100_000,
+        ..Default::default()
+    };
+    let result = Host::execute_message(
+        &mut evm,
+        &TxEnv::default(),
+        Bytecode::new_legacy(Bytes::from(parent_code)),
+        &message,
+        false,
+    );
+
+    assert!(result.stop.is_success());
+    assert_eq!(result.gas_refunded, 0);
+}
+
+#[test]
 fn evm_reports_invalid_transaction_execution() {
     let contract = Address::from([0x33; 20]);
     let mut evm = TestEvm::new(
@@ -98,9 +156,9 @@ fn evm_reports_invalid_transaction_execution() {
     };
     let result = Host::execute_message(
         &mut evm,
-        TxEnv::default(),
+        &TxEnv::default(),
         Bytecode::new_legacy(Bytes::from_static(&[op::PUSH1, 0x01, op::SSTORE])),
-        message,
+        &message,
         false,
     );
 

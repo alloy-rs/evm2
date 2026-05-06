@@ -144,9 +144,9 @@ fn handle_custom_tx(
         ..Message::default()
     };
     let result = req.host.execute_message(
-        Default::default(),
+        &Default::default(),
         Bytecode::new_legacy(req.tx.code.clone()),
-        message,
+        &message,
         false,
     );
     Ok(evm2::TxResult {

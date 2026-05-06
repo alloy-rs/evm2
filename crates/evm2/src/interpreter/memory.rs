@@ -59,6 +59,12 @@ impl Memory {
         self.data.is_empty()
     }
 
+    /// Clears memory while retaining the allocation.
+    #[inline]
+    pub fn clear(&mut self) {
+        self.data.clear();
+    }
+
     #[inline]
     fn resize_to(&mut self, new_size: usize) {
         self.data.resize(new_size, 0);

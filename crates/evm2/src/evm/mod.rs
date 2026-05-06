@@ -4,14 +4,17 @@ use self::precompile::{PrecompileOutput, PrecompileProvider};
 use crate::{
     EvmConfigSelector, EvmTypes, ExecutionConfig, PrecompileError, PrecompileHalt, SpecId,
     bytecode::Bytecode,
+    constants::{CALL_DEPTH_LIMIT, MAX_CODE_SIZE},
     env::{BlockEnv, TxEnv},
-    interpreter::{Gas, Host, InstrStop, Interpreter, Message, MessageKind, MessageResult, Word},
+    interpreter::{
+        Gas, Host, InstrStop, Interpreter, InterpreterPool, Message, MessageKind, MessageResult,
+        Word,
+    },
     registry::{HandlerResult, TxRegistry},
     version::GasId,
 };
 use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{Address, B256, Bytes, Log};
-use core::cmp::min;
 
 pub mod config;
 pub mod env;
@@ -27,8 +30,6 @@ pub use state::{
     Tracked,
 };
 
-const MAX_CODE_SIZE: usize = 0x6000;
-
 /// Loaded account information.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct AccountLoad {
@@ -38,19 +39,78 @@ pub struct AccountLoad {
     pub code_hash: B256,
     /// Account code bytes.
     pub code: Bytes,
+    /// Whether the account exists in state.
+    pub exists: bool,
     /// Whether the account is empty.
     pub is_empty: bool,
     /// Whether the account access was cold.
     pub is_cold: bool,
 }
 
-/// Loaded storage slot value.
+/// Result of an `SLOAD` host operation.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub struct StorageLoad {
+pub struct SLoad {
     /// Storage slot value.
     pub value: Word,
     /// Whether the storage slot access was cold.
     pub is_cold: bool,
+}
+
+/// Result of an `SSTORE` host operation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct SStore {
+    /// Storage value at the start of the transaction.
+    pub original_value: Word,
+    /// Storage value immediately before this `SSTORE`.
+    pub present_value: Word,
+    /// Storage value written by this `SSTORE`.
+    pub new_value: Word,
+    /// Whether the storage slot access was cold.
+    pub is_cold: bool,
+}
+
+impl SStore {
+    /// Returns whether this `SSTORE` leaves the slot unchanged (`new == present`).
+    #[inline]
+    #[must_use]
+    pub fn is_noop(&self) -> bool {
+        self.new_value == self.present_value
+    }
+
+    /// Returns whether the slot is clean (`original == present`).
+    #[inline]
+    #[must_use]
+    pub fn is_clean(&self) -> bool {
+        self.original_value == self.present_value
+    }
+
+    /// Returns whether this `SSTORE` restores the slot to its original value (`new == original`).
+    #[inline]
+    #[must_use]
+    pub fn resets_original(&self) -> bool {
+        self.original_value == self.new_value
+    }
+
+    /// Returns whether the original value is zero.
+    #[inline]
+    #[must_use]
+    pub fn original_is_zero(&self) -> bool {
+        self.original_value.is_zero()
+    }
+
+    /// Returns whether the present value is zero.
+    #[inline]
+    #[must_use]
+    pub fn present_is_zero(&self) -> bool {
+        self.present_value.is_zero()
+    }
+
+    /// Returns whether the new value is zero.
+    #[inline]
+    #[must_use]
+    pub fn new_is_zero(&self) -> bool {
+        self.new_value.is_zero()
+    }
 }
 
 /// Result of a `SELFDESTRUCT` host operation.
@@ -92,6 +152,8 @@ pub struct Evm<T: EvmTypes> {
     registry: TxRegistry<T::Tx, TxResult, Self>,
     pub(crate) state: State<T::Database>,
     precompiles: T::Precompiles,
+    #[debug(skip)]
+    interpreter_pool: InterpreterPool<T>,
 }
 
 impl<T: EvmTypes> Evm<T> {
@@ -132,6 +194,7 @@ impl<T: EvmTypes> Evm<T> {
             registry,
             state: State::new(database),
             precompiles,
+            interpreter_pool: InterpreterPool::new(),
         }
     }
 
@@ -221,6 +284,225 @@ impl<T: EvmTypes<Tx: Typed2718>> Evm<T> {
     }
 }
 
+impl<T: EvmTypes<Host = Self>> Evm<T> {
+    #[inline(never)]
+    fn execute_create_message(
+        &mut self,
+        tx_env: &TxEnv,
+        bytecode: Bytecode,
+        message: &Message,
+        caller_is_static: bool,
+    ) -> MessageResult {
+        if let Err(stop) = self.check_create_funds(message) {
+            return MessageResult {
+                stop,
+                gas_remaining: message.gas_limit,
+                ..MessageResult::default()
+            };
+        }
+
+        let address = self.create_address(&bytecode, message);
+
+        self.state.warm_account(address);
+
+        if message.depth > 0 {
+            self.state.increment_nonce(message.caller);
+        }
+
+        let checkpoint = self.state.checkpoint();
+        if let Err(stop) =
+            self.state.create_account(message.caller, address, message.value, self.spec_id())
+        {
+            self.state.rollback(checkpoint, self.spec_id());
+            return MessageResult {
+                stop,
+                gas_remaining: message.gas_limit,
+                ..MessageResult::default()
+            };
+        }
+
+        let create_message = Message {
+            destination: address,
+            code_address: address,
+            input: Bytes::new(),
+
+            kind: message.kind,
+            depth: message.depth,
+            gas_limit: message.gas_limit,
+            caller: message.caller,
+            value: message.value,
+            salt: message.salt,
+        };
+        let (stop, mut gas, output) = {
+            let (stop, interpreter) =
+                self.run_interpreter(bytecode, tx_env, &create_message, caller_is_static);
+            (stop, interpreter.gas(), Bytes::copy_from_slice(interpreter.output()))
+        };
+        let mut gas_remaining = gas.remaining();
+        let mut gas_refunded = if stop.is_success() { gas.refunded() } else { 0 };
+
+        if stop.is_success() {
+            let stop = if self.spec_id().enables(SpecId::SPURIOUS_DRAGON)
+                && output.len() > MAX_CODE_SIZE
+            {
+                Some(InstrStop::CreateContractSizeLimit)
+            } else if self.spec_id().enables(SpecId::LONDON)
+                && output.first().is_some_and(|byte| *byte == 0xef)
+            {
+                Some(InstrStop::CreateContractStartingWithEF)
+            } else {
+                let code_deposit_gas = output.len().saturating_mul(
+                    self.version().gas_params().get(GasId::CodeDepositCost) as usize,
+                );
+                gas.spend(u64::try_from(code_deposit_gas).unwrap_or(u64::MAX)).err()
+            };
+
+            if let Some(stop) = stop {
+                self.state.rollback(checkpoint, self.spec_id());
+                gas_remaining = if stop.is_halt() { 0 } else { gas.remaining() };
+                return MessageResult {
+                    stop,
+                    gas_remaining,
+                    gas_refunded: 0,
+                    output,
+                    created_address: None,
+                };
+            }
+
+            gas_remaining = gas.remaining();
+            gas_refunded = gas.refunded();
+            self.state.set_code(address, Bytecode::new_legacy(output.clone()));
+        } else {
+            self.state.rollback(checkpoint, self.spec_id());
+            if stop.is_halt() {
+                gas_remaining = 0;
+            }
+        }
+
+        MessageResult {
+            stop,
+            gas_remaining,
+            gas_refunded: if stop.is_success() { gas_refunded } else { 0 },
+            output,
+            created_address: stop.is_success().then_some(address),
+        }
+    }
+
+    #[inline(never)]
+    fn check_create_funds(&mut self, message: &Message) -> Result<(), InstrStop> {
+        if message.value > 0
+            && self
+                .state
+                .account_info(message.caller)
+                .is_none_or(|info| info.balance < message.value)
+        {
+            return Err(InstrStop::OutOfFunds);
+        }
+        Ok(())
+    }
+
+    #[inline(never)]
+    fn create_address(&mut self, bytecode: &Bytecode, message: &Message) -> Address {
+        match message.kind {
+            MessageKind::Create if message.depth == 0 => message.destination,
+            MessageKind::Create => message
+                .caller
+                .create(self.state.account_info(message.caller).map_or(0, |info| info.nonce)),
+            MessageKind::Create2 => message.caller.create2(message.salt, bytecode.hash_slow()),
+            _ => unreachable!("invalid create message kind"),
+        }
+    }
+
+    #[inline(never)]
+    fn execute_call_message(
+        &mut self,
+        tx_env: &TxEnv,
+        bytecode: Bytecode,
+        message: &Message,
+        caller_is_static: bool,
+    ) -> MessageResult {
+        let checkpoint = self.state.checkpoint();
+        // EIP-161 state clearing depends on zero-value direct call targets being touched.
+        if matches!(message.kind, MessageKind::Call | MessageKind::StaticCall)
+            && !self.state.transfer(message.caller, message.destination, message.value)
+        {
+            return MessageResult {
+                stop: InstrStop::OutOfFunds,
+                gas_remaining: message.gas_limit,
+                ..MessageResult::default()
+            };
+        }
+
+        let mut gas = Gas::new(message.gas_limit);
+        if let Some(result) = self.execute_precompile(message, &mut gas) {
+            let (stop, gas_remaining, output) = match result {
+                Ok(output) => (InstrStop::Return, gas.remaining(), output.into_bytes()),
+                Err(PrecompileError::Revert(output)) => {
+                    (InstrStop::Revert, gas.remaining(), output)
+                }
+                Err(PrecompileError::Halt(PrecompileHalt::OutOfGas)) => {
+                    (InstrStop::PrecompileOOG, 0, Bytes::new())
+                }
+                Err(PrecompileError::Halt(_) | PrecompileError::Fatal(_)) => {
+                    let stop = InstrStop::PrecompileError;
+                    let gas_remaining = if stop.is_halt() { 0 } else { gas.remaining() };
+                    (stop, gas_remaining, Bytes::new())
+                }
+            };
+            if !stop.is_success() {
+                self.state.rollback(checkpoint, self.spec_id());
+            }
+            return MessageResult {
+                stop,
+                gas_remaining,
+                gas_refunded: 0,
+                output,
+                created_address: None,
+            };
+        }
+
+        let (stop, child_gas, output) = {
+            let (stop, interpreter) =
+                self.run_interpreter(bytecode, tx_env, message, caller_is_static);
+            (stop, interpreter.gas(), Bytes::copy_from_slice(interpreter.output()))
+        };
+        let mut gas_remaining = child_gas.remaining();
+
+        if !stop.is_success() {
+            self.state.rollback(checkpoint, self.spec_id());
+            if stop.is_halt() {
+                gas_remaining = 0;
+            }
+        }
+
+        MessageResult {
+            stop,
+            gas_remaining,
+            gas_refunded: if stop.is_success() { child_gas.refunded() } else { 0 },
+            output,
+            created_address: None,
+        }
+    }
+
+    #[inline(never)]
+    fn run_interpreter<'frame>(
+        &mut self,
+        bytecode: Bytecode,
+        tx_env: &'frame TxEnv,
+        message: &'frame Message,
+        caller_is_static: bool,
+    ) -> (InstrStop, &mut Interpreter<'frame, T>) {
+        let mut interpreter = self.interpreter_pool.pop();
+        // SAFETY: The active interpreter is owned by this stack frame until it is returned to the
+        // pool after execution. Recursive calls may mutate the pool, but they cannot move this box.
+        let interpreter_ref = unsafe { &mut *(&mut *interpreter as *mut Interpreter<'frame, T>) };
+        interpreter_ref.init(bytecode, tx_env, message, caller_is_static);
+        let stop = interpreter_ref.run_with(self.execution_config, self);
+        let interpreter = self.interpreter_pool.push(interpreter);
+        (stop, interpreter)
+    }
+}
+
 impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
     fn spec_id(&self) -> SpecId {
         self.spec_id()
@@ -242,15 +524,18 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
             return Err(InstrStop::OutOfGas);
         }
         self.state.warm_account(address);
-        let info = self.state.account_info(address).unwrap_or_default();
+        let info = self.state.account_info(address);
+        let exists = info.is_some();
+        let info = info.unwrap_or_default();
         Ok(AccountLoad {
             balance: info.balance,
-            code_hash: if info.is_empty() { B256::ZERO } else { info.code_hash },
+            code_hash: if exists { info.code_hash } else { B256::ZERO },
             code: if load_code {
                 self.state.get_code(address).original_bytes()
             } else {
                 Bytes::new()
             },
+            exists,
             is_empty: info.is_empty(),
             is_cold,
         })
@@ -260,14 +545,41 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
         self.state.initial_mut().get_block_hash(number)
     }
 
-    fn sload(&mut self, address: Address, key: Word) -> StorageLoad {
+    fn sload(
+        &mut self,
+        address: Address,
+        key: Word,
+        skip_cold_load: bool,
+    ) -> Result<SLoad, InstrStop> {
         let is_cold =
-            self.spec_id().enables(SpecId::BERLIN) && self.state.warm_storage(address, key);
-        StorageLoad { value: self.state.storage(address, key), is_cold }
+            self.spec_id().enables(SpecId::BERLIN) && !self.state.is_storage_warm(address, key);
+        if skip_cold_load && is_cold {
+            return Err(InstrStop::OutOfGas);
+        }
+        if is_cold {
+            let _ = self.state.warm_storage(address, key);
+        }
+        Ok(SLoad { value: self.state.storage(address, key), is_cold })
     }
 
-    fn sstore(&mut self, address: Address, key: Word, value: Word) {
-        self.state.set_storage(address, key, value);
+    fn sstore(
+        &mut self,
+        address: Address,
+        key: Word,
+        value: Word,
+        skip_cold_load: bool,
+    ) -> Result<SStore, InstrStop> {
+        let is_cold =
+            self.spec_id().enables(SpecId::BERLIN) && !self.state.is_storage_warm(address, key);
+        if skip_cold_load && is_cold {
+            return Err(InstrStop::OutOfGas);
+        }
+        if is_cold {
+            let _ = self.state.warm_storage(address, key);
+        }
+        let mut result = self.state.set_storage(address, key, value);
+        result.is_cold = is_cold;
+        Ok(result)
     }
 
     fn tload(&mut self, address: Address, key: Word) -> Word {
@@ -284,12 +596,12 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
 
     fn execute_message(
         &mut self,
-        tx_env: TxEnv,
+        tx_env: &TxEnv,
         bytecode: Bytecode,
-        message: Message,
+        message: &Message,
         caller_is_static: bool,
     ) -> MessageResult {
-        if message.depth >= Message::CALL_DEPTH_LIMIT {
+        if message.depth > CALL_DEPTH_LIMIT {
             return MessageResult {
                 stop: InstrStop::CallTooDeep,
                 gas_remaining: message.gas_limit,
@@ -297,150 +609,17 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
             };
         }
 
-        let is_create = matches!(message.kind, MessageKind::Create | MessageKind::Create2);
-        if is_create {
-            let caller_nonce = self.state.account_info(message.caller).map_or(0, |info| info.nonce);
-            let caller_balance =
-                self.state.account_info(message.caller).map_or(Word::ZERO, |info| info.balance);
-            if caller_balance < message.value {
-                return MessageResult {
-                    stop: InstrStop::OutOfFunds,
-                    gas_remaining: message.gas_limit,
-                    ..MessageResult::default()
-                };
+        match message.kind {
+            MessageKind::Create | MessageKind::Create2 => {
+                self.execute_create_message(tx_env, bytecode, message, caller_is_static)
             }
-
-            let address = match message.kind {
-                MessageKind::Create if message.depth == 0 => message.destination,
-                MessageKind::Create => message.caller.create(caller_nonce),
-                MessageKind::Create2 => message.caller.create2(message.salt, bytecode.hash_slow()),
-                _ => unreachable!("invalid create message kind"),
-            };
-
-            self.state.warm_account(address);
-
-            if message.depth > 0 {
-                self.state.increment_nonce(message.caller);
-            }
-
-            let checkpoint = self.state.checkpoint();
-            if let Err(stop) =
-                self.state.create_account(message.caller, address, message.value, self.spec_id())
-            {
-                self.state.rollback(checkpoint);
-                return MessageResult {
-                    stop,
-                    gas_remaining: message.gas_limit,
-                    ..MessageResult::default()
-                };
-            }
-
-            let mut create_message = message;
-            create_message.destination = address;
-            create_message.code_address = address;
-            create_message.input = Bytes::new();
-            let mut interpreter =
-                Interpreter::<T>::new(bytecode, tx_env, create_message, caller_is_static);
-            let stop = interpreter.run_with(self.execution_config, self);
-            let mut gas = interpreter.gas();
-            if stop.is_success() || stop.is_revert() {
-                gas.set_final_refund(self.spec_id().enables(SpecId::LONDON));
-            }
-            let output = Bytes::copy_from_slice(interpreter.output());
-            let mut gas_remaining =
-                min(gas.remaining().saturating_add(gas.refunded() as u64), gas.limit());
-
-            if stop.is_success() {
-                let stop = if self.spec_id().enables(SpecId::SPURIOUS_DRAGON)
-                    && output.len() > MAX_CODE_SIZE
-                {
-                    Some(InstrStop::CreateContractSizeLimit)
-                } else if self.spec_id().enables(SpecId::LONDON)
-                    && output.first().is_some_and(|byte| *byte == 0xef)
-                {
-                    Some(InstrStop::CreateContractStartingWithEF)
-                } else {
-                    let code_deposit_gas = output.len().saturating_mul(
-                        self.version().gas_params().get(GasId::CodeDepositCost) as usize,
-                    );
-                    gas.spend(u64::try_from(code_deposit_gas).unwrap_or(u64::MAX)).err()
-                };
-
-                if let Some(stop) = stop {
-                    self.state.rollback(checkpoint);
-                    gas_remaining = if stop.is_halt() { 0 } else { gas.remaining() };
-                    return MessageResult { stop, gas_remaining, output, created_address: None };
-                }
-
-                gas_remaining =
-                    min(gas.remaining().saturating_add(gas.refunded() as u64), gas.limit());
-                self.state.set_code(address, Bytecode::new_legacy(output.clone()));
-            } else {
-                self.state.rollback(checkpoint);
-                if stop.is_halt() {
-                    gas_remaining = 0;
-                }
-            }
-
-            return MessageResult {
-                stop,
-                gas_remaining,
-                output,
-                created_address: stop.is_success().then_some(address),
-            };
-        }
-
-        let checkpoint = self.state.checkpoint();
-        if matches!(message.kind, MessageKind::Call)
-            && !self.state.transfer(message.caller, message.destination, message.value)
-        {
-            return MessageResult {
-                stop: InstrStop::OutOfFunds,
-                gas_remaining: message.gas_limit,
-                ..MessageResult::default()
-            };
-        }
-
-        let mut gas = Gas::new(message.gas_limit);
-        if let Some(result) = self.execute_precompile(&message, &mut gas) {
-            let (stop, gas_remaining, output) = match result {
-                Ok(output) => (InstrStop::Return, gas.remaining(), output.into_bytes()),
-                Err(PrecompileError::Revert(output)) => {
-                    (InstrStop::Revert, gas.remaining(), output)
-                }
-                Err(PrecompileError::Halt(PrecompileHalt::OutOfGas)) => {
-                    (InstrStop::PrecompileOOG, 0, Bytes::new())
-                }
-                Err(PrecompileError::Halt(_) | PrecompileError::Fatal(_)) => {
-                    let stop = InstrStop::PrecompileError;
-                    let gas_remaining = if stop.is_halt() { 0 } else { gas.remaining() };
-                    (stop, gas_remaining, Bytes::new())
-                }
-            };
-            if !stop.is_success() {
-                self.state.rollback(checkpoint);
-            }
-            return MessageResult { stop, gas_remaining, output, created_address: None };
-        }
-
-        let mut interpreter = Interpreter::<T>::new(bytecode, tx_env, message, caller_is_static);
-        let stop = interpreter.run_with(self.execution_config, self);
-        let mut gas = interpreter.gas();
-        if stop.is_success() || stop.is_revert() {
-            gas.set_final_refund(self.spec_id().enables(SpecId::LONDON));
-        }
-        let output = Bytes::copy_from_slice(interpreter.output());
-        let mut gas_remaining =
-            min(gas.remaining().saturating_add(gas.refunded() as u64), gas.limit());
-
-        if !stop.is_success() {
-            self.state.rollback(checkpoint);
-            if stop.is_halt() {
-                gas_remaining = 0;
+            MessageKind::Call
+            | MessageKind::CallCode
+            | MessageKind::DelegateCall
+            | MessageKind::StaticCall => {
+                self.execute_call_message(tx_env, bytecode, message, caller_is_static)
             }
         }
-
-        MessageResult { stop, gas_remaining, output, created_address: None }
     }
 
     fn selfdestruct(
@@ -455,7 +634,14 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
             return Err(InstrStop::OutOfGas);
         }
         self.state.warm_account(target);
-        let target_exists = self.state.account_info(target).is_some_and(|info| !info.is_empty());
+        // EIP-161 changes account emptiness semantics: before Spurious Dragon, an empty
+        // account that exists in state is still an existing `SELFDESTRUCT` beneficiary and
+        // must not be charged EIP-150's new-account topup.
+        let target_exists = if self.spec_id().enables(SpecId::SPURIOUS_DRAGON) {
+            self.state.account_info(target).is_some_and(|info| !info.is_empty())
+        } else {
+            self.state.account_info(target).is_some()
+        };
         let previously_destroyed = self.state.is_selfdestructed(contract);
         let balance = self.state.account_info(contract).map_or(Word::ZERO, |info| info.balance);
         let should_destroy = !self.spec_id().enables(SpecId::CANCUN)
@@ -591,8 +777,128 @@ mod tests {
             ..Message::default()
         };
 
-        let result = Host::execute_message(&mut evm, TxEnv::default(), bytecode, message, false);
+        let result = Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &message, false);
         assert!(result.stop.is_success());
+    }
+
+    #[test]
+    fn staticcall_touches_empty_existing_destination() {
+        let target = Address::from([0x11; 20]);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(target, AccountInfo::default());
+        database.insert_account_storage(target, Word::ZERO, Word::from(1));
+        let mut evm = Evm::<TestEvmTypes>::new(
+            SpecId::SPURIOUS_DRAGON,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            database,
+            Precompiles::base(SpecId::SPURIOUS_DRAGON),
+        );
+        let message = Message {
+            kind: MessageKind::StaticCall,
+            destination: target,
+            code_address: target,
+            gas_limit: 50_000,
+            ..Message::default()
+        };
+
+        let result = Host::execute_message(
+            &mut evm,
+            &TxEnv::default(),
+            Bytecode::default(),
+            &message,
+            false,
+        );
+        assert!(result.stop.is_success());
+
+        evm.state.finalize_transaction(SpecId::SPURIOUS_DRAGON);
+        let changes = evm.state.build_state_changes();
+        let account = changes.accounts.get(&target).expect("empty destination should be deleted");
+        assert!(account.original.is_some());
+        assert_eq!(account.current, None);
+        assert!(changes.storage.get(&target).is_some_and(|storage| storage.wipe));
+    }
+
+    #[test]
+    fn delegatecall_does_not_touch_empty_code_address() {
+        let destination = Address::from([0x11; 20]);
+        let code_address = Address::from([0x22; 20]);
+        let mut database = InMemoryDB::default();
+        database
+            .insert_account_info(destination, AccountInfo::default().with_balance(Word::from(1)));
+        database.insert_account_info(code_address, AccountInfo::default());
+        database.insert_account_storage(code_address, Word::ZERO, Word::from(1));
+        let mut evm = Evm::<TestEvmTypes>::new(
+            SpecId::SPURIOUS_DRAGON,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            database,
+            Precompiles::base(SpecId::SPURIOUS_DRAGON),
+        );
+        let message = Message {
+            kind: MessageKind::DelegateCall,
+            destination,
+            code_address,
+            gas_limit: 50_000,
+            ..Message::default()
+        };
+
+        let result = Host::execute_message(
+            &mut evm,
+            &TxEnv::default(),
+            Bytecode::default(),
+            &message,
+            false,
+        );
+        assert!(result.stop.is_success());
+
+        evm.state.finalize_transaction(SpecId::SPURIOUS_DRAGON);
+        let changes = evm.state.build_state_changes();
+        assert!(!changes.accounts.contains_key(&code_address));
+        assert!(!changes.storage.contains_key(&code_address));
+    }
+
+    #[test]
+    fn host_allows_message_at_call_depth_limit() {
+        let mut evm = Evm::<TestEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        let bytecode = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
+        let message = Message {
+            kind: MessageKind::Call,
+            depth: CALL_DEPTH_LIMIT,
+            gas_limit: 50_000,
+            ..Message::default()
+        };
+
+        let result = Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &message, false);
+        assert!(result.stop.is_success());
+    }
+
+    #[test]
+    fn host_rejects_message_past_call_depth_limit() {
+        let mut evm = Evm::<TestEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        let bytecode = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
+        let message = Message {
+            kind: MessageKind::Call,
+            depth: CALL_DEPTH_LIMIT + 1,
+            gas_limit: 50_000,
+            ..Message::default()
+        };
+
+        let result = Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &message, false);
+        assert_eq!(result.stop, InstrStop::CallTooDeep);
+        assert_eq!(result.gas_remaining, 50_000);
     }
 
     #[test]
