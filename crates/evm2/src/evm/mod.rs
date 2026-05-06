@@ -243,13 +243,13 @@ impl<T: EvmTypes> Evm<T> {
     }
 
     /// Returns the active EVM version.
-    pub const fn version(&self) -> &crate::Version {
+    pub const fn version(&self) -> &'static crate::Version {
         self.execution_config.version()
     }
 
     /// Returns the active base specification ID.
     pub const fn spec_id(&self) -> SpecId {
-        self.version().spec_id()
+        self.version().spec_id
     }
 
     /// Returns the selector-specific runtime specification ID.
@@ -368,9 +368,9 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             {
                 Some(InstrStop::CreateContractStartingWithEF)
             } else {
-                let code_deposit_gas = output.len().saturating_mul(
-                    self.version().gas_params().get(GasId::CodeDepositCost) as usize,
-                );
+                let code_deposit_gas = output
+                    .len()
+                    .saturating_mul(self.version().gas_params.get(GasId::CodeDepositCost) as usize);
                 let code_deposit_gas = u64::try_from(code_deposit_gas).unwrap_or(u64::MAX);
                 if gas.remaining() >= code_deposit_gas {
                     gas.spend(code_deposit_gas).err()

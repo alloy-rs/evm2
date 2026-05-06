@@ -4,6 +4,7 @@ use crate::{
     EvmConfig, EvmTypes, SpecId,
     interpreter::{instructions as instr, opcode::op},
 };
+use alloy_eips::eip7825::MAX_TX_GAS_LIMIT_OSAKA;
 
 mod gas_params;
 pub use gas_params::{GasId, GasParams};
@@ -13,50 +14,50 @@ pub use tables::VersionTables;
 
 /// Runtime version data.
 ///
-/// Holds the active base `SpecId` and dynamic gas parameter table. This is copied into execution
-/// state so instructions can read version-dependent runtime parameters without monomorphization.
+/// Holds the active base `SpecId` and dynamic gas parameter table so instructions can read
+/// version-dependent runtime parameters without monomorphization.
 #[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
 pub struct Version {
     /// Active base specification ID.
-    spec_id: SpecId,
+    pub spec_id: SpecId,
     /// Dynamic gas parameter table.
-    gas_params: &'static GasParams,
+    pub gas_params: GasParams,
+    /// Transaction gas limit cap.
+    pub tx_gas_limit_cap: u64,
 }
 
 impl Version {
-    /// Creates an EVM version from a base spec ID and gas parameter table.
-    #[inline]
-    pub const fn new(spec_id: SpecId, gas_params: &'static GasParams) -> Self {
-        Self { spec_id, gas_params }
-    }
-
     /// Returns the base EVM version for `spec_id`.
     #[inline]
-    pub const fn base(spec_id: SpecId) -> Self {
-        Self::new(spec_id, &BASE_GAS_PARAMS[spec_id as usize])
-    }
-
-    /// Returns the base specification ID for this version.
-    #[inline]
-    pub const fn spec_id(&self) -> SpecId {
-        self.spec_id
-    }
-
-    /// Returns the dynamic gas parameter table for this version.
-    #[inline]
-    pub const fn gas_params(&self) -> &'static GasParams {
-        self.gas_params
+    pub const fn base(spec_id: SpecId) -> &'static Self {
+        &BASE_VERSIONS[spec_id as usize]
     }
 }
 
-static BASE_GAS_PARAMS: [GasParams; SpecId::COUNT] = {
-    let mut params = [const { GasParams::empty() }; SpecId::COUNT];
+const fn base_tx_gas_limit_cap(spec_id: SpecId) -> u64 {
+    if spec_id.enables(SpecId::OSAKA) { MAX_TX_GAS_LIMIT_OSAKA } else { u64::MAX }
+}
+
+static BASE_VERSIONS: [Version; SpecId::COUNT] = {
+    let mut versions = [const {
+        Version {
+            spec_id: SpecId::FRONTIER,
+            gas_params: GasParams::empty(),
+            tx_gas_limit_cap: u64::MAX,
+        }
+    }; SpecId::COUNT];
     let mut i = 0;
     while i < SpecId::COUNT {
-        params[i] = base_gas_params(SpecId::try_from_u8(i as u8).unwrap());
+        let spec_id = SpecId::try_from_u8(i as u8).unwrap();
+        versions[i] = Version {
+            spec_id,
+            gas_params: base_gas_params(spec_id),
+            tx_gas_limit_cap: base_tx_gas_limit_cap(spec_id),
+        };
         i += 1;
     }
-    params
+    versions
 };
 
 macro_rules! noop {
@@ -92,7 +93,7 @@ macro_rules! evm_versions {
             use crate::interpreter::gas::*;
 
             let version = Cfg::VERSION;
-            let spec_id = version.spec_id();
+            let spec_id = version.spec_id;
             let mut v = VersionTables::empty(version);
 
             macro_rules! op {

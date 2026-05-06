@@ -27,7 +27,7 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     let gas_price = U256::from(tx.gas_price);
 
     validate_gas_price(spec_id, gas_price, req.host.block.basefee)?;
-    validate_tx_gas_limit_cap(spec_id, tx.gas_limit)?;
+    validate_tx_gas_limit_cap(req.host.version(), tx.gas_limit)?;
     validate_block_gas_limit(tx.gas_limit, req.host.block.gas_limit)?;
     validate_create_initcode(spec_id, tx.to, &tx.input)?;
     validate_nonce_not_overflow(tx.nonce)?;
@@ -42,7 +42,7 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     validate_intrinsic_gas(tx.gas_limit, intrinsic)?;
     let floor_gas = floor_gas(req.host.version(), &tx.input);
     validate_floor_gas(tx.gas_limit, floor_gas)?;
-    validate_regular_gas_limit_cap(spec_id, tx.gas_limit, intrinsic, floor_gas)?;
+    validate_regular_gas_limit_cap(req.host.version(), tx.gas_limit, intrinsic, floor_gas)?;
 
     let max_gas_cost = U256::from(tx.gas_limit) * gas_price;
     validate_sender(req.host, caller, tx.nonce, max_gas_cost.saturating_add(tx.value))?;

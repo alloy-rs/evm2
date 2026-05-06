@@ -23,8 +23,6 @@ use alloy_consensus::{
 use alloy_eips::{eip2718::Typed2718, eip2930::AccessList};
 use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, TxKind, U256};
 
-const EIP7825_TX_GAS_LIMIT_CAP: u64 = 16_777_216;
-
 /// Ethereum transaction envelope containing recovered transactions.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RecoveredTxEnvelope {
@@ -151,33 +149,32 @@ pub(super) fn validate_block_gas_limit(
 }
 
 pub(super) const fn validate_tx_gas_limit_cap(
-    spec_id: SpecId,
+    version: &'static Version,
     tx_gas_limit: u64,
 ) -> HandlerResult<()> {
     // EIP-7825 caps each transaction gas limit to 2^24 in Osaka. Amsterdam/EIP-8037
     // replaces this with a regular-gas cap while allowing extra transaction gas to serve as
     // the state-gas reservoir.
-    if matches!(spec_id, SpecId::OSAKA) && tx_gas_limit > EIP7825_TX_GAS_LIMIT_CAP {
-        return Err(HandlerError::TxGasLimitGreaterThanCap {
-            gas_limit: tx_gas_limit,
-            cap: EIP7825_TX_GAS_LIMIT_CAP,
-        });
+    let cap = version.tx_gas_limit_cap;
+    if matches!(version.spec_id, SpecId::OSAKA) && tx_gas_limit > cap {
+        return Err(HandlerError::TxGasLimitGreaterThanCap { gas_limit: tx_gas_limit, cap });
     }
     Ok(())
 }
 
 pub(super) const fn validate_regular_gas_limit_cap(
-    spec_id: SpecId,
+    version: &'static Version,
     tx_gas_limit: u64,
     intrinsic: u64,
     floor_gas: u64,
 ) -> HandlerResult<()> {
-    if spec_id.enables(SpecId::AMSTERDAM) && tx_gas_limit > EIP7825_TX_GAS_LIMIT_CAP {
+    let cap = version.tx_gas_limit_cap;
+    if version.spec_id.enables(SpecId::AMSTERDAM) && tx_gas_limit > cap {
         let required_regular_gas = if intrinsic > floor_gas { intrinsic } else { floor_gas };
-        if required_regular_gas > EIP7825_TX_GAS_LIMIT_CAP {
+        if required_regular_gas > cap {
             return Err(HandlerError::TxGasLimitGreaterThanCap {
                 gas_limit: required_regular_gas,
-                cap: EIP7825_TX_GAS_LIMIT_CAP,
+                cap,
             });
         }
     }
@@ -406,8 +403,8 @@ pub(super) fn access_list_counts(access_list: &AccessList) -> (u64, u64) {
 }
 
 /// Calculates transaction calldata floor gas.
-pub(super) fn floor_gas(version: &Version, input: &Bytes) -> u64 {
-    let params = version.gas_params();
+pub(super) fn floor_gas(version: &'static Version, input: &Bytes) -> u64 {
+    let params = &version.gas_params;
     let floor_cost_per_token = u64::from(params.get(GasId::TxFloorCostPerToken));
     if floor_cost_per_token == 0 {
         return 0;
@@ -424,14 +421,14 @@ pub(super) fn floor_gas(version: &Version, input: &Bytes) -> u64 {
 
 /// Calculates intrinsic transaction gas.
 pub(super) fn intrinsic_gas(
-    version: &Version,
+    version: &'static Version,
     to: TxKind,
     input: &Bytes,
     access_list_accounts: u64,
     access_list_storage_keys: u64,
 ) -> u64 {
-    let spec = version.spec_id();
-    let params = version.gas_params();
+    let spec = version.spec_id;
+    let params = &version.gas_params;
     let non_zero_multiplier = if spec.enables(SpecId::ISTANBUL) { 16 } else { 68 };
     let mut gas = 21_000;
     for byte in input {
@@ -465,11 +462,11 @@ mod tests {
         let input = Bytes::from(vec![1; 74]);
 
         assert_eq!(
-            intrinsic_gas(&Version::base(SpecId::LONDON), TxKind::Create, &input, 0, 0),
+            intrinsic_gas(Version::base(SpecId::LONDON), TxKind::Create, &input, 0, 0),
             21_000 + 32_000 + 74 * 16
         );
         assert_eq!(
-            intrinsic_gas(&Version::base(SpecId::SHANGHAI), TxKind::Create, &input, 0, 0),
+            intrinsic_gas(Version::base(SpecId::SHANGHAI), TxKind::Create, &input, 0, 0),
             21_000 + 32_000 + 74 * 16 + 3 * 2
         );
     }
@@ -479,13 +476,7 @@ mod tests {
         let input = Bytes::new();
 
         assert_eq!(
-            intrinsic_gas(
-                &Version::base(SpecId::BERLIN),
-                TxKind::Call(Address::ZERO),
-                &input,
-                2,
-                3
-            ),
+            intrinsic_gas(Version::base(SpecId::BERLIN), TxKind::Call(Address::ZERO), &input, 2, 3),
             21_000 + 2 * 2400 + 3 * 1900
         );
     }
@@ -494,8 +485,8 @@ mod tests {
     fn floor_gas_charges_prague_calldata_tokens() {
         let input = Bytes::from_static(&[0, 1, 2]);
 
-        assert_eq!(floor_gas(&Version::base(SpecId::SHANGHAI), &input), 0);
-        assert_eq!(floor_gas(&Version::base(SpecId::PRAGUE), &input), 21_000 + 9 * 10);
+        assert_eq!(floor_gas(Version::base(SpecId::SHANGHAI), &input), 0);
+        assert_eq!(floor_gas(Version::base(SpecId::PRAGUE), &input), 21_000 + 9 * 10);
     }
 
     #[test]
@@ -573,32 +564,34 @@ mod tests {
 
     #[test]
     fn amsterdam_allows_total_gas_above_osaka_cap_when_regular_gas_fits() {
-        let tx_gas_limit = EIP7825_TX_GAS_LIMIT_CAP + 1;
+        let osaka = Version::base(SpecId::OSAKA);
+        let amsterdam = Version::base(SpecId::AMSTERDAM);
+        let tx_gas_limit = osaka.tx_gas_limit_cap + 1;
         let intrinsic = 21_000;
         let floor_gas = 21_000;
 
         assert_eq!(
-            validate_tx_gas_limit_cap(SpecId::OSAKA, tx_gas_limit),
+            validate_tx_gas_limit_cap(osaka, tx_gas_limit),
             Err(HandlerError::TxGasLimitGreaterThanCap {
                 gas_limit: tx_gas_limit,
-                cap: EIP7825_TX_GAS_LIMIT_CAP
+                cap: osaka.tx_gas_limit_cap
             })
         );
-        assert_eq!(validate_tx_gas_limit_cap(SpecId::AMSTERDAM, tx_gas_limit), Ok(()));
+        assert_eq!(validate_tx_gas_limit_cap(amsterdam, tx_gas_limit), Ok(()));
         assert_eq!(
-            validate_regular_gas_limit_cap(SpecId::AMSTERDAM, tx_gas_limit, intrinsic, floor_gas),
+            validate_regular_gas_limit_cap(amsterdam, tx_gas_limit, intrinsic, floor_gas),
             Ok(())
         );
         assert_eq!(
             validate_regular_gas_limit_cap(
-                SpecId::AMSTERDAM,
+                amsterdam,
                 tx_gas_limit,
-                EIP7825_TX_GAS_LIMIT_CAP + 1,
+                amsterdam.tx_gas_limit_cap + 1,
                 floor_gas,
             ),
             Err(HandlerError::TxGasLimitGreaterThanCap {
-                gas_limit: EIP7825_TX_GAS_LIMIT_CAP + 1,
-                cap: EIP7825_TX_GAS_LIMIT_CAP
+                gas_limit: amsterdam.tx_gas_limit_cap + 1,
+                cap: amsterdam.tx_gas_limit_cap
             })
         );
     }

@@ -37,7 +37,7 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
 
     validate_priority_fee(max_fee_per_gas, max_priority_fee_per_gas)?;
     validate_gas_price(spec_id, gas_price, req.host.block.basefee)?;
-    validate_tx_gas_limit_cap(spec_id, tx.gas_limit)?;
+    validate_tx_gas_limit_cap(req.host.version(), tx.gas_limit)?;
     validate_block_gas_limit(tx.gas_limit, req.host.block.gas_limit)?;
     validate_create_initcode(spec_id, tx.to.into(), &tx.input)?;
     validate_nonce_not_overflow(tx.nonce)?;
@@ -52,7 +52,7 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     validate_intrinsic_gas(tx.gas_limit, intrinsic)?;
     let floor_gas = floor_gas(req.host.version(), &tx.input);
     validate_floor_gas(tx.gas_limit, floor_gas)?;
-    validate_regular_gas_limit_cap(spec_id, tx.gas_limit, intrinsic, floor_gas)?;
+    validate_regular_gas_limit_cap(req.host.version(), tx.gas_limit, intrinsic, floor_gas)?;
 
     let max_gas_cost = U256::from(tx.gas_limit) * max_fee_per_gas;
     validate_sender(req.host, caller, tx.nonce, max_gas_cost.saturating_add(tx.value))?;
@@ -83,7 +83,7 @@ fn eip7702_authorization_gas<T: EvmTypes<Host = Evm<T>>>(
     host: &Evm<T>,
     authorizations: usize,
 ) -> u64 {
-    let per_auth = u64::from(host.version().gas_params().get(GasId::TxEip7702PerEmptyAccountCost));
+    let per_auth = u64::from(host.version().gas_params.get(GasId::TxEip7702PerEmptyAccountCost));
     u64::try_from(authorizations).unwrap_or(u64::MAX).saturating_mul(per_auth)
 }
 
@@ -123,7 +123,7 @@ fn apply_auth_list<T: EvmTypes<Host = Evm<T>>>(
         set_delegation(host, authority, *authorization.address());
     }
 
-    let refund_per_auth = u64::from(host.version().gas_params().get(GasId::TxEip7702AuthRefund));
+    let refund_per_auth = u64::from(host.version().gas_params.get(GasId::TxEip7702AuthRefund));
     refunded_accounts.saturating_mul(refund_per_auth)
 }
 

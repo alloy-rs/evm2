@@ -406,7 +406,7 @@ mod tests {
     use crate::{SpecId, Version};
 
     fn gas_params(spec: SpecId) -> &'static GasParams {
-        Version::base(spec).gas_params()
+        &Version::base(spec).gas_params
     }
 
     #[test]

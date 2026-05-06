@@ -1,4 +1,4 @@
-//! EVM protocol limits.
+//! EVM constants.
 
 /// Maximum deployed contract bytecode size.
 ///
@@ -18,3 +18,14 @@ pub(crate) const STACK_LIMIT: usize = 1024;
 
 /// Number of recent block hashes available to the `BLOCKHASH` opcode.
 pub(crate) const BLOCK_HASH_HISTORY: u64 = 256;
+
+/// EIP-7702 version magic.
+pub(crate) const EIP7702_MAGIC: u16 = 0xEF01;
+/// EIP-7702 version magic bytes.
+pub(crate) const EIP7702_MAGIC_BYTES: &[u8] = &EIP7702_MAGIC.to_be_bytes();
+/// EIP-7702 version.
+pub(crate) const EIP7702_VERSION: u8 = 0;
+/// EIP-7702 bytecode length.
+///
+/// 2 (magic) + 1 (version) + 20 (address) = 23 bytes.
+pub(crate) const EIP7702_BYTECODE_LEN: usize = 23;

@@ -44,7 +44,7 @@ pub trait EvmTypes: Sized + 'static {
 /// type-specific `VersionTables` needed to build dispatch tables.
 pub trait EvmConfig<T: EvmTypes> {
     /// Active EVM version.
-    const VERSION: Version;
+    const VERSION: &'static Version;
 
     /// Active type-specific version tables.
     const VERSION_TABLES: &'static VersionTables<T>;
@@ -52,7 +52,7 @@ pub trait EvmConfig<T: EvmTypes> {
     /// Active base specification ID.
     #[inline]
     fn spec_id() -> SpecId {
-        Self::VERSION.spec_id()
+        Self::VERSION.spec_id
     }
 }
 
@@ -78,7 +78,7 @@ pub trait EvmConfigSelector<T: EvmTypes>: Sized {
 /// an EVM instance. This is the data passed to the interpreter when it runs.
 #[derive(derive_more::Debug)]
 pub struct ExecutionConfig<T: EvmTypes> {
-    pub(crate) version: Version,
+    pub(crate) version: &'static Version,
     #[debug(skip)]
     pub(crate) instructions: &'static InstructionTable<T>,
 }
@@ -112,8 +112,8 @@ impl<T: EvmTypes> ExecutionConfig<T> {
 
     /// Returns the active EVM version.
     #[inline]
-    pub const fn version(&self) -> &Version {
-        &self.version
+    pub const fn version(&self) -> &'static Version {
+        self.version
     }
 }
 
@@ -137,7 +137,7 @@ impl<Tx: 'static> EvmTypes for BaseEvmTypes<Tx> {
 pub struct BaseEvmConfig<const BASE_SPEC_ID: u8>(());
 
 impl<T: EvmTypes, const BASE_SPEC_ID: u8> EvmConfig<T> for BaseEvmConfig<BASE_SPEC_ID> {
-    const VERSION: Version = Version::base(SpecId::try_from_u8(BASE_SPEC_ID).unwrap());
+    const VERSION: &'static Version = Version::base(SpecId::try_from_u8(BASE_SPEC_ID).unwrap());
     const VERSION_TABLES: &'static VersionTables<T> = &VersionTables::<T>::base::<Self>();
 }
 

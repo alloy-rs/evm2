@@ -2,8 +2,10 @@
 
 use crate::{
     EvmTypes, SpecId,
-    bytecode::{EIP7702_BYTECODE_LEN, EIP7702_MAGIC_BYTES, EIP7702_VERSION},
-    constants::{CALL_DEPTH_LIMIT, MAX_INITCODE_SIZE},
+    constants::{
+        CALL_DEPTH_LIMIT, EIP7702_BYTECODE_LEN, EIP7702_MAGIC_BYTES, EIP7702_VERSION,
+        MAX_INITCODE_SIZE,
+    },
     interpreter::{
         Host, InstrStop, InstructionCx, Message, MessageKind, MessageResult, Result, StackMut,
         Word, memory::resize_memory,
