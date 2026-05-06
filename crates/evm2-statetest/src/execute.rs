@@ -3,6 +3,7 @@ use crate::{
     types::{AccountInfo, Env, Test, TestSuite, TestUnit, TransactionParts, TxPartIndices},
 };
 use alloy_consensus::{TypedTransaction, transaction::Recovered};
+use alloy_eips::{eip4844, eip7691};
 use alloy_primitives::{Address, B256, Bytes, Log, TxKind, U256, keccak256};
 use alloy_rpc_types_eth::{
     AccessList as RpcAccessList, AccessListItem as RpcAccessListItem, TransactionInput,
@@ -73,11 +74,11 @@ fn execute_unit(
     config: ExecuteConfig,
 ) -> Result<(), TestError> {
     let state = parse_state(&unit.pre).map_err(|err| TestError::case(path, name, err))?;
-    let block = parse_block(&unit.env);
     for (spec_name, posts) in &unit.post {
         let Some(spec) = spec_name.to_spec_id() else {
             continue;
         };
+        let block = parse_block(&unit.env, spec);
         for post in posts {
             let tx = match build_tx(&unit.transaction, &post.indexes, unit.env.current_chain_id) {
                 Ok(tx) => tx,
@@ -334,7 +335,7 @@ fn parse_state(pre: &BTreeMap<Address, AccountInfo>) -> Result<InMemoryDB, TestE
     Ok(database)
 }
 
-fn parse_block(env: &Env) -> BlockEnv {
+fn parse_block(env: &Env, spec: SpecId) -> BlockEnv {
     BlockEnv {
         number: env.current_number,
         beneficiary: env.current_coinbase,
@@ -345,8 +346,25 @@ fn parse_block(env: &Env) -> BlockEnv {
         prevrandao: env
             .current_random
             .map_or(U256::ZERO, |random| U256::from_be_slice(random.as_slice())),
+        blob_basefee: env
+            .current_excess_blob_gas
+            .map_or(U256::ONE, |excess| U256::from(blob_basefee(excess, spec))),
         slot_num: env.slot_number.unwrap_or_default(),
-        ..BlockEnv::default()
+    }
+}
+
+fn blob_basefee(excess_blob_gas: U256, spec: SpecId) -> u128 {
+    let excess_blob_gas = excess_blob_gas.saturating_to::<u64>();
+    // EIP-4844 defines blob base fee with fake exponential; EIP-7691 changes the
+    // update fraction from Prague.
+    if spec.enables(SpecId::PRAGUE) {
+        eip7691::calc_blob_gasprice(excess_blob_gas)
+    } else {
+        eip4844::fake_exponential(
+            eip4844::BLOB_TX_MIN_BLOB_GASPRICE,
+            excess_blob_gas as u128,
+            eip4844::BLOB_GASPRICE_UPDATE_FRACTION,
+        )
     }
 }
 
@@ -415,7 +433,10 @@ fn build_tx(
         .transpose()
         .map_err(|_| TestErrorKind::Overflow("maxFeePerBlobGas"))?;
     request.access_list = access_list(raw, indexes.data)?;
-    if !raw.blob_versioned_hashes.is_empty() {
+    if raw.max_fee_per_blob_gas.is_some()
+        || matches!(raw.tx_type, Some(3))
+        || !raw.blob_versioned_hashes.is_empty()
+    {
         request.blob_versioned_hashes = Some(raw.blob_versioned_hashes.clone());
     }
 
@@ -459,12 +480,12 @@ fn recovered_envelope(
         TypedTransaction::Eip1559(tx) => {
             Ok(RecoveredTxEnvelope::Eip1559(Recovered::new_unchecked(tx, caller)))
         }
+        TypedTransaction::Eip4844(tx) => {
+            Ok(RecoveredTxEnvelope::Eip4844(Recovered::new_unchecked(tx, caller)))
+        }
         TypedTransaction::Eip7702(tx) => {
             Ok(RecoveredTxEnvelope::Eip7702(Recovered::new_unchecked(tx, caller)))
         }
-        TypedTransaction::Eip4844(_) => Err(TestErrorKind::BuildTransaction(
-            "EIP-4844 transactions are not supported".to_string(),
-        )),
     }
 }
 
