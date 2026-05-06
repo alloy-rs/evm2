@@ -45,14 +45,17 @@ pub(crate) fn mcopy(cx: _, [dst, src, len]: [Word]) -> Result {
 #[cfg(test)]
 mod tests {
     use crate::{
-        EvmConfig, SpecId, Version, VersionTables,
+        ExecutionConfig, SpecId, Version,
+        bytecode::Bytecode,
+        env::TxEnv,
         interpreter::{
-            InstrStop, Word,
-            instructions::tests::{RunConfig, TestTypes, push, run, run_stack, run_with_config},
+            InstrStop, Interpreter, Message, Word,
+            instructions::tests::{RunConfig, TestHost, TestTypes, push, run, run_stack},
             op,
         },
     };
     use alloc::vec::Vec;
+    use alloy_primitives::Bytes;
 
     #[test]
     fn mload_opcode() {
@@ -95,27 +98,23 @@ mod tests {
 
     #[test]
     fn mstore_respects_version_memory_limit() {
-        struct Config;
-
-        impl EvmConfig<TestTypes> for Config {
-            const VERSION: &'static Version = &{
-                let mut version = *Version::base(SpecId::OSAKA);
-                version.memory_limit = 64;
-                version
-            };
-            const VERSION_TABLES: &'static VersionTables<TestTypes> =
-                &VersionTables::<TestTypes>::base::<Self>();
-        }
-
+        let mut version = Version::new(SpecId::OSAKA);
+        version.memory_limit = 64;
+        let config = ExecutionConfig::<TestTypes>::for_spec_and_version(SpecId::OSAKA, version);
         let mut code = Vec::new();
         push(&mut code, Word::ZERO);
         push(&mut code, Word::from(64));
         code.push(op::MSTORE);
         code.push(op::STOP);
 
-        let interpreter = run_with_config::<Config>(RunConfig::new(code));
+        let tx_env = TxEnv::default();
+        let message = Message { gas_limit: 10_000, ..Message::default() };
+        let bytecode = Bytecode::new_legacy(Bytes::from(code));
+        let mut interpreter = Interpreter::<TestTypes>::new(bytecode, &tx_env, &message, false);
+        let mut host = TestHost::default();
+        let err = interpreter.run_with(&config, &mut host);
 
-        core::assert_matches!(interpreter.err, InstrStop::MemoryLimitOOG);
+        core::assert_matches!(err, InstrStop::MemoryLimitOOG);
         assert_eq!(interpreter.memory.len(), 0);
     }
 

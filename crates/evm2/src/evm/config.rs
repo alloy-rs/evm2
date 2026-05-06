@@ -38,22 +38,15 @@ pub trait EvmTypes: Sized + 'static {
     type Precompiles: PrecompileProvider;
 }
 
-/// Compile-time EVM version configuration.
+/// Compile-time EVM table configuration.
 ///
-/// Names a concrete version for monomorphized code. It exposes the runtime `Version` data and the
-/// type-specific `VersionTables` needed to build dispatch tables.
+/// Names the inherited base spec and type-specific `VersionTables` needed to build dispatch tables.
 pub trait EvmConfig<T: EvmTypes> {
-    /// Active EVM version.
-    const VERSION: &'static Version;
+    /// Inherited base specification ID.
+    const BASE_SPEC_ID: SpecId;
 
     /// Active type-specific version tables.
     const VERSION_TABLES: &'static VersionTables<T>;
-
-    /// Active base specification ID.
-    #[inline]
-    fn spec_id() -> SpecId {
-        Self::VERSION.spec_id
-    }
 }
 
 /// Runtime EVM config selector.
@@ -78,7 +71,7 @@ pub trait EvmConfigSelector<T: EvmTypes>: Sized {
 /// an EVM instance. This is the data passed to the interpreter when it runs.
 #[derive(derive_more::Debug)]
 pub struct ExecutionConfig<T: EvmTypes> {
-    pub(crate) version: &'static Version,
+    pub(crate) version: Version,
     #[debug(skip)]
     pub(crate) instructions: &'static InstructionTable<T>,
 }
@@ -96,7 +89,10 @@ impl<T: EvmTypes> ExecutionConfig<T> {
     /// Creates an execution config for a concrete compile-time config.
     #[inline]
     pub const fn for_config<C: EvmConfig<T>>() -> Self {
-        Self { version: C::VERSION, instructions: <T as InstructionTables<C>>::INSTRUCTIONS }
+        Self {
+            version: Version::new(C::BASE_SPEC_ID),
+            instructions: <T as InstructionTables<C>>::INSTRUCTIONS,
+        }
     }
 
     /// Creates an execution config for a base `SpecId` through selector `F`.
@@ -110,10 +106,26 @@ impl<T: EvmTypes> ExecutionConfig<T> {
         })
     }
 
+    /// Creates an execution config for `spec_id` with dynamic runtime version data.
+    #[inline]
+    pub fn for_spec_and_version(spec_id: T::SpecId, version: Version) -> Self {
+        let config = <T::ConfigSelector as EvmConfigSelector<T>>::execution_config(spec_id);
+        assert_eq!(spec_id.into(), version.spec_id, "execution config version spec mismatch");
+        config.with_version(version)
+    }
+
+    /// Replaces the runtime version data while keeping the same dispatch table.
+    #[inline]
+    pub fn with_version(mut self, version: Version) -> Self {
+        assert_eq!(self.version.spec_id, version.spec_id, "execution config version spec mismatch");
+        self.version = version;
+        self
+    }
+
     /// Returns the active EVM version.
     #[inline]
-    pub const fn version(&self) -> &'static Version {
-        self.version
+    pub const fn version(&self) -> &Version {
+        &self.version
     }
 }
 
@@ -137,7 +149,7 @@ impl<Tx: 'static> EvmTypes for BaseEvmTypes<Tx> {
 pub struct BaseEvmConfig<const BASE_SPEC_ID: u8>(());
 
 impl<T: EvmTypes, const BASE_SPEC_ID: u8> EvmConfig<T> for BaseEvmConfig<BASE_SPEC_ID> {
-    const VERSION: &'static Version = Version::base(SpecId::try_from_u8(BASE_SPEC_ID).unwrap());
+    const BASE_SPEC_ID: SpecId = SpecId::try_from_u8(BASE_SPEC_ID).unwrap();
     const VERSION_TABLES: &'static VersionTables<T> = &VersionTables::<T>::base::<Self>();
 }
 

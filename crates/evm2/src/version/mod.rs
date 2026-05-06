@@ -22,6 +22,9 @@ pub struct Version {
     /// Active base specification ID.
     pub spec_id: SpecId,
     /// Dynamic gas parameter table.
+    // Gas params are data on the active version so changes automatically affect every
+    // instruction that reads them. Tracking instruction dependencies on version tables is not
+    // sustainable for custom forks.
     pub gas_params: GasParams,
     /// Transaction gas limit cap.
     pub tx_gas_limit_cap: u64,
@@ -30,6 +33,12 @@ pub struct Version {
 }
 
 impl Version {
+    /// Creates the base EVM version for `spec_id`.
+    #[inline]
+    pub const fn new(spec_id: SpecId) -> Self {
+        *Self::base(spec_id)
+    }
+
     /// Returns the base EVM version for `spec_id`.
     #[inline]
     pub const fn base(spec_id: SpecId) -> &'static Self {
@@ -117,9 +126,8 @@ macro_rules! evm_versions {
         const fn base_version_tables<T: EvmTypes, Cfg: EvmConfig<T>>() -> VersionTables<T> {
             use crate::interpreter::gas::*;
 
-            let version = Cfg::VERSION;
-            let spec_id = version.spec_id;
-            let mut v = VersionTables::empty(version);
+            let spec_id = Cfg::BASE_SPEC_ID;
+            let mut v = VersionTables::empty();
 
             $(
                 if spec_id.enables(SpecId::$spec) {

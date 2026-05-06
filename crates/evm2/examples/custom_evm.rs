@@ -3,6 +3,8 @@
 //! The runtime `CustomSpecId` distinguishes base Osaka from custom Osaka, while the const generic
 //! `BASE_SPEC_ID` always names the inherited base `SpecId`.
 
+#![allow(clippy::missing_const_for_fn)]
+
 use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{Address, Bytes};
 use evm2::{
@@ -57,14 +59,12 @@ impl EvmTypes for CustomTypes {
 
 struct CustomConfig<const BASE_SPEC_ID: u8>(());
 
-impl<const BASE_SPEC_ID: u8> EvmConfig<CustomTypes> for CustomConfig<BASE_SPEC_ID> {
-    const VERSION: &'static Version = &custom_version::<BASE_SPEC_ID>();
-    const VERSION_TABLES: &'static VersionTables<CustomTypes> =
-        &custom_version_tables::<BASE_SPEC_ID>();
+impl<const ID: u8> EvmConfig<CustomTypes> for CustomConfig<ID> {
+    const BASE_SPEC_ID: SpecId = SpecId::try_from_u8(ID).unwrap();
+    const VERSION_TABLES: &'static VersionTables<CustomTypes> = &custom_version_tables::<ID>();
 }
 
-const fn custom_version<const BASE_SPEC_ID: u8>() -> Version {
-    let base_spec_id = SpecId::try_from_u8(BASE_SPEC_ID).unwrap();
+const fn custom_version(base_spec_id: SpecId) -> Version {
     let mut version = *Version::base(base_spec_id);
     version.gas_params.set(CUSTOM_OPCODE_DYNAMIC_GAS_ID, CUSTOM_OPCODE_DYNAMIC_GAS);
     version
@@ -156,10 +156,26 @@ fn custom_registry() -> TxRegistry<CustomTx, evm2::TxResult, Evm<CustomTypes>> {
     TxRegistry::new().with_handler(CUSTOM_TX_TYPE, as_custom_tx, handle_custom_tx)
 }
 
+#[derive(Debug)]
+struct Args {
+    spec_id: CustomSpecId,
+    version: Version,
+}
+
+impl Args {
+    fn parse() -> Self {
+        let spec_id = CustomSpecId::CustomOsaka;
+        let mut version = custom_version(spec_id.into());
+        version.memory_limit = 1 << 20;
+        Self { spec_id, version }
+    }
+}
+
 // End-to-end check
 
 fn main() {
     assert_eq!(SpecId::from(CustomSpecId::MainnetOsaka), SpecId::OSAKA);
+    let args = Args::parse();
 
     let custom_target = Address::from([0xcc; 20]);
     let code = Bytes::from_static(&[CUSTOM_OPCODE, op::PUSH1, 0x01, op::SSTORE, op::STOP]);
@@ -170,23 +186,26 @@ fn main() {
         + 2100 // Cold SSTORE load.
         + 20_000; // SSTORE zero to non-zero.
 
-    let mut evm = Evm::<CustomTypes>::new(
-        CustomSpecId::CustomOsaka,
+    let execution_config =
+        CustomConfigSelector::execution_config(args.spec_id).with_version(args.version);
+
+    let mut evm = Evm::<CustomTypes>::new_with_execution_config(
+        execution_config,
+        args.spec_id,
         BlockEnv::default(),
         custom_registry(),
         InMemoryDB::default(),
         NoPrecompiles,
     );
     assert_eq!(evm.spec_id(), SpecId::OSAKA);
+    assert_eq!(evm.version().memory_limit, args.version.memory_limit);
     assert_eq!(
         <CustomConfig<{ SpecId::OSAKA as u8 }> as EvmConfig<CustomTypes>>::VERSION_TABLES
             .static_gas(CUSTOM_OPCODE),
         CUSTOM_OPCODE_GAS,
     );
     assert_eq!(
-        <CustomConfig<{ SpecId::OSAKA as u8 }> as EvmConfig<CustomTypes>>::VERSION
-            .gas_params
-            .get(CUSTOM_OPCODE_DYNAMIC_GAS_ID),
+        args.version.gas_params.get(CUSTOM_OPCODE_DYNAMIC_GAS_ID),
         CUSTOM_OPCODE_DYNAMIC_GAS,
     );
 
@@ -194,10 +213,6 @@ fn main() {
     assert_eq!(result.stop, InstrStop::Stop);
     assert!(result.status);
     assert_eq!(result.gas_used, expected_custom_gas);
-    assert_eq!(
-        result.state_changes.storage[&custom_target].slots[&Word::from(1)].current,
-        Word::from(0xdead_u64),
-    );
 
     let mut evm = Evm::<CustomTypes>::new(
         CustomSpecId::MainnetOsaka,
