@@ -17,7 +17,7 @@ pub struct State<'a, T: EvmTypes> {
     pub host: &'a mut T::Host,
     /// Active spec identifier.
     pub spec: SpecId,
-    pub(crate) tmp: u8,
+    pub(crate) tmp: InstrStop,
     /// Active runtime version data.
     pub version: &'a Version,
     pub(crate) raw_interp: *mut Interpreter<'a, T>,
