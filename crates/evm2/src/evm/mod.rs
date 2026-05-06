@@ -308,6 +308,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         if message.depth > 0 {
             // EIP-2681 caps account nonces at u64::MAX; CREATE/CREATE2 return zero
             // instead of wrapping or saturating the creator nonce.
+            // TODO: Fold this into nonce bumping so account info is not loaded repeatedly.
             if self.state.account_info(message.caller).is_some_and(|info| info.nonce == u64::MAX) {
                 return MessageResult {
                     stop: InstrStop::Return,
@@ -316,7 +317,6 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
                 };
             }
         }
-
         let address = self.create_address(&bytecode, message);
 
         self.state.warm_account(address);
@@ -449,6 +449,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     ) -> MessageResult {
         let checkpoint = self.state.checkpoint();
         // EIP-161 state clearing depends on zero-value direct call targets being touched.
+        // CALLCODE also needs the value-transfer balance check.
         if matches!(
             message.kind,
             MessageKind::Call | MessageKind::CallCode | MessageKind::StaticCall
@@ -844,6 +845,70 @@ mod tests {
 
         let result = Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &message, false);
         assert!(result.stop.is_success());
+    }
+
+    #[test]
+    fn frontier_code_deposit_oog_creates_empty_contract() {
+        let caller = Address::from([0x11; 20]);
+        let created = Address::from([0x22; 20]);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(caller, AccountInfo::default().with_balance(Word::from(1)));
+        let mut evm = Evm::<TestEvmTypes>::new(
+            SpecId::FRONTIER,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            database,
+            Precompiles::base(SpecId::FRONTIER),
+        );
+        let message = Message {
+            kind: MessageKind::Create,
+            destination: created,
+            caller,
+            gas_limit: 50,
+            ..Message::default()
+        };
+        let code =
+            Bytecode::new_legacy(Bytes::from_static(&[op::PUSH1, 1, op::PUSH1, 0, op::RETURN]));
+
+        let result = Host::execute_message(&mut evm, &TxEnv::default(), code, &message, false);
+        assert!(result.stop.is_success());
+
+        evm.state.finalize_transaction(SpecId::FRONTIER);
+        let changes = evm.state.build_state_changes();
+        let account =
+            changes.accounts.get(&created).and_then(|change| change.current.as_ref()).unwrap();
+        assert_eq!(account.code_hash, KECCAK256_EMPTY);
+    }
+
+    #[test]
+    fn homestead_code_deposit_oog_fails_create() {
+        let caller = Address::from([0x11; 20]);
+        let created = Address::from([0x22; 20]);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(caller, AccountInfo::default().with_balance(Word::from(1)));
+        let mut evm = Evm::<TestEvmTypes>::new(
+            SpecId::HOMESTEAD,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            database,
+            Precompiles::base(SpecId::HOMESTEAD),
+        );
+        let message = Message {
+            kind: MessageKind::Create,
+            destination: created,
+            caller,
+            gas_limit: 50,
+            ..Message::default()
+        };
+        let code =
+            Bytecode::new_legacy(Bytes::from_static(&[op::PUSH1, 1, op::PUSH1, 0, op::RETURN]));
+
+        let result = Host::execute_message(&mut evm, &TxEnv::default(), code, &message, false);
+        assert_eq!(result.stop, InstrStop::OutOfGas);
+
+        evm.state.finalize_transaction(SpecId::HOMESTEAD);
+        let changes = evm.state.build_state_changes();
+        assert!(!changes.accounts.contains_key(&created));
     }
 
     #[test]
