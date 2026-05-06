@@ -25,6 +25,8 @@ pub struct Version {
     pub gas_params: GasParams,
     /// Transaction gas limit cap.
     pub tx_gas_limit_cap: u64,
+    /// Hard memory limit in bytes.
+    pub memory_limit: u64,
 }
 
 impl Version {
@@ -39,12 +41,15 @@ const fn base_tx_gas_limit_cap(spec_id: SpecId) -> u64 {
     if spec_id.enables(SpecId::OSAKA) { MAX_TX_GAS_LIMIT_OSAKA } else { u64::MAX }
 }
 
+const DEFAULT_MEMORY_LIMIT: u64 = (1 << 32) - 1;
+
 static BASE_VERSIONS: [Version; SpecId::COUNT] = {
     let mut versions = [const {
         Version {
             spec_id: SpecId::FRONTIER,
             gas_params: GasParams::empty(),
             tx_gas_limit_cap: u64::MAX,
+            memory_limit: DEFAULT_MEMORY_LIMIT,
         }
     }; SpecId::COUNT];
     let mut i = 0;
@@ -54,6 +59,7 @@ static BASE_VERSIONS: [Version; SpecId::COUNT] = {
             spec_id,
             gas_params: base_gas_params(spec_id),
             tx_gas_limit_cap: base_tx_gas_limit_cap(spec_id),
+            memory_limit: DEFAULT_MEMORY_LIMIT,
         };
         i += 1;
     }
