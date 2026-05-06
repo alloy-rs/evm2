@@ -10,7 +10,7 @@ use crate::{
     Evm, EvmTypes, SpecId, TxResult, Version,
     bytecode::Bytecode,
     constants::MAX_INITCODE_SIZE,
-    evm::{AccountInfo, precompile::PrecompileProvider},
+    evm::{AccountInfo, StateCheckpoint, precompile::PrecompileProvider},
     interpreter::{Message, MessageKind, MessageResult, Word},
     registry::{HandlerError, HandlerResult, TxRegistry},
     utils::num_words,
@@ -149,7 +149,7 @@ pub(super) fn validate_block_gas_limit(
 }
 
 pub(super) const fn validate_tx_gas_limit_cap(
-    version: &'static Version,
+    version: &Version,
     tx_gas_limit: u64,
 ) -> HandlerResult<()> {
     // EIP-7825 caps each transaction gas limit to 2^24 in Osaka. Amsterdam/EIP-8037
@@ -163,7 +163,7 @@ pub(super) const fn validate_tx_gas_limit_cap(
 }
 
 pub(super) const fn validate_regular_gas_limit_cap(
-    version: &'static Version,
+    version: &Version,
     tx_gas_limit: u64,
     intrinsic: u64,
     floor_gas: u64,
@@ -244,14 +244,14 @@ pub(super) fn warm_base_accounts<T: EvmTypes<Host = Evm<T>>>(
     caller: Address,
     to: TxKind,
 ) {
-    host.state.warm_account(caller);
+    host.state.warm_account_non_revertible(caller);
     if spec_id.enables(SpecId::SHANGHAI) {
-        host.state.warm_account(host.block.beneficiary);
+        host.state.warm_account_non_revertible(host.block.beneficiary);
     }
     if let TxKind::Call(to) = to {
-        host.state.warm_account(to);
+        host.state.warm_account_non_revertible(to);
     }
-    host.state.warm_accounts(host.precompiles().warm_addresses());
+    host.state.warm_accounts_non_revertible(host.precompiles().warm_addresses());
 }
 
 pub(super) fn warm_access_list<T: EvmTypes<Host = Evm<T>>>(
@@ -259,9 +259,10 @@ pub(super) fn warm_access_list<T: EvmTypes<Host = Evm<T>>>(
     access_list: &AccessList,
 ) {
     for item in access_list.iter() {
-        host.state.warm_account(item.address);
+        host.state.warm_account_non_revertible(item.address);
         for key in &item.storage_keys {
-            let _ = host.state.warm_storage(item.address, U256::from_be_bytes(key.0));
+            let _ =
+                host.state.warm_storage_non_revertible(item.address, U256::from_be_bytes(key.0));
         }
     }
 }
@@ -345,7 +346,7 @@ fn initial_call_code<T: EvmTypes<Host = Evm<T>>>(
 
 pub(super) fn rollback_failed_execution<T: EvmTypes<Host = Evm<T>>>(
     host: &mut Evm<T>,
-    checkpoint: usize,
+    checkpoint: StateCheckpoint,
     result: &mut MessageResult,
 ) {
     if !result.stop.is_success() {
@@ -403,7 +404,7 @@ pub(super) fn access_list_counts(access_list: &AccessList) -> (u64, u64) {
 }
 
 /// Calculates transaction calldata floor gas.
-pub(super) fn floor_gas(version: &'static Version, input: &Bytes) -> u64 {
+pub(super) fn floor_gas(version: &Version, input: &Bytes) -> u64 {
     let params = &version.gas_params;
     let floor_cost_per_token = u64::from(params.get(GasId::TxFloorCostPerToken));
     if floor_cost_per_token == 0 {
@@ -421,7 +422,7 @@ pub(super) fn floor_gas(version: &'static Version, input: &Bytes) -> u64 {
 
 /// Calculates intrinsic transaction gas.
 pub(super) fn intrinsic_gas(
-    version: &'static Version,
+    version: &Version,
     to: TxKind,
     input: &Bytes,
     access_list_accounts: u64,

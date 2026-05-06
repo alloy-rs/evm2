@@ -238,6 +238,16 @@ pub struct StorageChangeSet {
     pub slots: BTreeMap<Word, Tracked<Word>>,
 }
 
+/// State checkpoint for reverting state changes.
+#[allow(missing_copy_implementations)]
+#[derive(Debug, Eq, PartialEq)]
+pub struct StateCheckpoint {
+    /// Revert journal length at the checkpoint.
+    journal_len: usize,
+    /// Emitted log count at the checkpoint.
+    logs_len: usize,
+}
+
 /// Compact journal entry for reverting state changes.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
@@ -308,11 +318,6 @@ pub enum JournalEntry {
         /// Storage key.
         key: Word,
     },
-    /// Log was emitted.
-    Log {
-        /// Log index before emission.
-        index: usize,
-    },
 }
 
 /// Mutable EVM state with an overlay and reversible journal.
@@ -320,37 +325,37 @@ pub enum JournalEntry {
 #[non_exhaustive]
 pub struct State<D> {
     /// Read-only initial database.
-    pub initial: D,
+    initial: D,
     /// Account data overlay keyed by address.
     ///
     /// Entries are created when account state is loaded or mutated. The tracked
     /// `original`/`current` pair is used to execute against the in-memory overlay
     /// and later derive account-level [`StateChanges`]. Presence here does not by
     /// itself mean the account was touched or warmed.
-    pub accounts: AddressMap<Tracked<Option<Account>>>,
+    accounts: AddressMap<Tracked<Option<Account>>>,
     /// Persistent storage overlay keyed by account address.
-    pub storage: AddressMap<StorageOverlay>,
+    storage: AddressMap<StorageOverlay>,
     /// Revert journal.
-    pub journal: Vec<JournalEntry>,
+    journal: Vec<JournalEntry>,
     /// Logs emitted by the current transaction.
-    pub logs: Vec<Log>,
+    logs: Vec<Log>,
     /// Accounts touched for transaction-finalization account-lifetime rules.
     ///
     /// This is separate from the account overlay and the EIP-2929 warm set. A
     /// touched account may have no field changes, but can still matter for empty
     /// account deletion/materialization rules across forks.
-    pub touched: AddressSet,
+    touched: AddressSet,
     /// Accounts self-destructed in the current transaction.
-    pub selfdestructs: AddressSet,
+    selfdestructs: AddressSet,
     /// Transaction-scoped warm account set for EIP-2929 gas accounting.
     ///
     /// This tracks whether account access is warm or cold. It does not imply the
     /// account was touched, changed, or should be emitted in [`StateChanges`].
-    pub accessed_accounts: AddressSet,
+    accessed_accounts: AddressSet,
     /// Transaction-scoped warm storage slot set.
-    pub accessed_storage: HashSet<(Address, Word)>,
+    accessed_storage: HashSet<(Address, Word)>,
     /// Transaction-scoped EIP-1153 transient storage keyed by account address and slot.
-    pub transient_storage: HashMap<(Address, Word), Word>,
+    transient_storage: HashMap<(Address, Word), Word>,
 }
 
 impl<D> State<D> {
@@ -373,8 +378,8 @@ impl<D> State<D> {
 
     /// Returns a checkpoint for later rollback.
     #[inline]
-    pub const fn checkpoint(&self) -> usize {
-        self.journal.len()
+    pub const fn checkpoint(&self) -> StateCheckpoint {
+        StateCheckpoint { journal_len: self.journal.len(), logs_len: self.logs.len() }
     }
 
     /// Returns the initial database.
@@ -395,15 +400,26 @@ impl<D> State<D> {
         &self.logs
     }
 
-    /// Records a transaction log and journals it for rollback.
+    /// Records a transaction log.
     #[inline]
     pub fn log(&mut self, log: Log) {
-        let index = self.logs.len();
-        self.journal.push(JournalEntry::Log { index });
         self.logs.push(log);
     }
 
+    /// Returns a loaded persistent storage overlay slot, if present.
+    ///
+    /// This is a non-mutating overlay lookup. It does not load the account or slot from the
+    /// backing database; use [`Self::storage`] when database-backed loading is desired.
+    #[inline]
+    pub fn storage_ref(&self, address: Address, key: Word) -> Option<&Tracked<Word>> {
+        self.storage.get(&address)?.slots.get(&key)
+    }
+
     /// Returns the current account overlay if present and not deleted.
+    ///
+    /// This is a non-mutating overlay lookup. It does not load the account from the backing
+    /// database; use [`Self::account_info`] or [`Self::find`] when database-backed loading is
+    /// desired.
     #[inline]
     #[must_use]
     pub fn account_ref(&self, address: Address) -> Option<&Account> {
@@ -417,7 +433,11 @@ impl<D> State<D> {
         self.accessed_accounts.contains(&address)
     }
 
-    /// Marks an account as warm.
+    /// Marks an account as warm in a revertible execution context.
+    ///
+    /// If this call newly warms the account, the warm-set change is journaled and will be undone
+    /// by [`Self::rollback`]. Use this for warmth introduced while executing EVM code or any other
+    /// scope whose effects may be reverted to a checkpoint.
     #[inline]
     pub fn warm_account(&mut self, address: Address) {
         if self.accessed_accounts.insert(address) {
@@ -425,13 +445,44 @@ impl<D> State<D> {
         }
     }
 
-    /// Marks accounts as warm.
+    /// Marks an account as warm outside all revertible execution contexts.
+    ///
+    /// This intentionally does **not** journal the warm-set change. It must only be used for
+    /// transaction-initial warmth that is established before any checkpoint that might be rolled
+    /// back, such as base transaction warm addresses, precompiles, access-list entries, or other
+    /// pre-execution transaction setup. Warmth added by this method survives [`Self::rollback`] and
+    /// is cleared only by [`Self::clear_transaction_state`].
+    ///
+    /// Do not call this from EVM execution, nested calls, precompile execution, or any other
+    /// revertible scope. Use [`Self::warm_account`] there so failed frames correctly restore the
+    /// EIP-2929 access set.
+    #[inline]
+    pub fn warm_account_non_revertible(&mut self, address: Address) {
+        self.accessed_accounts.insert(address);
+    }
+
+    /// Marks accounts as warm in a revertible execution context.
+    ///
+    /// See [`Self::warm_account`] for rollback semantics.
     #[inline]
     pub fn warm_accounts(&mut self, addresses: impl IntoIterator<Item = Address>) {
         let addresses = addresses.into_iter();
         self.accessed_accounts.reserve(addresses.size_hint().0);
         for address in addresses {
             self.warm_account(address);
+        }
+    }
+
+    /// Marks accounts as warm outside all revertible execution contexts.
+    ///
+    /// See [`Self::warm_account_non_revertible`] for the required usage restrictions. In
+    /// particular, these warm-set changes are not journaled and are not undone by rollback.
+    #[inline]
+    pub fn warm_accounts_non_revertible(&mut self, addresses: impl IntoIterator<Item = Address>) {
+        let addresses = addresses.into_iter();
+        self.accessed_accounts.reserve(addresses.size_hint().0);
+        for address in addresses {
+            self.warm_account_non_revertible(address);
         }
     }
 
@@ -442,7 +493,12 @@ impl<D> State<D> {
         self.accessed_storage.contains(&(address, key))
     }
 
-    /// Marks a storage slot as warm and returns whether it was cold before this access.
+    /// Marks a storage slot as warm in a revertible execution context.
+    ///
+    /// Returns whether the slot was cold before this access. If this call newly warms the slot, the
+    /// warm-set change is journaled and will be undone by [`Self::rollback`]. Use this for warmth
+    /// introduced while executing EVM code or any other scope whose effects may be reverted to a
+    /// checkpoint.
     #[inline]
     #[must_use]
     pub fn warm_storage(&mut self, address: Address, key: Word) -> bool {
@@ -452,6 +508,23 @@ impl<D> State<D> {
         } else {
             false
         }
+    }
+
+    /// Marks a storage slot as warm outside all revertible execution contexts.
+    ///
+    /// Returns whether the slot was cold before this access. This intentionally does **not**
+    /// journal the warm-set change. It must only be used for transaction-initial warmth that is
+    /// established before any checkpoint that might be rolled back, such as access-list storage
+    /// slots. Warmth added by this method survives [`Self::rollback`] and is cleared only by
+    /// [`Self::clear_transaction_state`].
+    ///
+    /// Do not call this from EVM execution, nested calls, precompile execution, or any other
+    /// revertible scope. Use [`Self::warm_storage`] there so failed frames correctly restore the
+    /// EIP-2929 access set.
+    #[inline]
+    #[must_use]
+    pub fn warm_storage_non_revertible(&mut self, address: Address, key: Word) -> bool {
+        self.accessed_storage.insert((address, key))
     }
 
     /// Clears transaction-scoped substate.
@@ -832,9 +905,11 @@ impl<D: Database> State<D> {
 
     /// Reverts state changes after the checkpoint.
     #[inline(never)]
-    pub fn rollback(&mut self, checkpoint: usize, spec: SpecId) {
-        assert!(checkpoint <= self.journal.len(), "checkpoint is past journal length");
-        while self.journal.len() != checkpoint {
+    pub fn rollback(&mut self, checkpoint: StateCheckpoint, spec: SpecId) {
+        assert!(checkpoint.journal_len <= self.journal.len(), "checkpoint is past journal length");
+        assert!(checkpoint.logs_len <= self.logs.len(), "checkpoint is past logs length");
+        self.logs.truncate(checkpoint.logs_len);
+        while self.journal.len() != checkpoint.journal_len {
             let Some(entry) = self.journal.pop() else {
                 unreachable!("checkpoint is checked above")
             };
@@ -892,9 +967,6 @@ impl<D: Database> State<D> {
                 }
                 JournalEntry::StorageWarmed { address, key } => {
                     self.accessed_storage.remove(&(address, key));
-                }
-                JournalEntry::Log { index } => {
-                    self.logs.truncate(index);
                 }
             }
         }
@@ -1145,6 +1217,31 @@ mod tests {
         state.rollback(checkpoint, SpecId::SPURIOUS_DRAGON);
         assert!(state.touched.contains(&precompile3));
         assert!(!state.touched.contains(&other));
+    }
+
+    #[test]
+    fn non_revertible_warmth_is_not_journaled_or_rolled_back() {
+        let base_account = Address::with_last_byte(0x10);
+        let frame_account = Address::with_last_byte(0x11);
+        let base_storage = Address::with_last_byte(0x12);
+        let frame_storage = Address::with_last_byte(0x13);
+        let key = Word::from(1);
+        let mut state = State::new(CacheDB::default());
+
+        state.warm_account_non_revertible(base_account);
+        assert!(state.warm_storage_non_revertible(base_storage, key));
+        assert!(state.journal.is_empty());
+
+        let checkpoint = state.checkpoint();
+        state.warm_account(frame_account);
+        assert!(state.warm_storage(frame_storage, key));
+        assert_eq!(state.journal.len(), 2);
+
+        state.rollback(checkpoint, SpecId::FRONTIER);
+        assert!(state.is_account_warm(base_account));
+        assert!(state.is_storage_warm(base_storage, key));
+        assert!(!state.is_account_warm(frame_account));
+        assert!(!state.is_storage_warm(frame_storage, key));
     }
 
     #[test]

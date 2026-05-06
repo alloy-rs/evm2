@@ -105,7 +105,7 @@ fn apply_auth_list<T: EvmTypes<Host = Evm<T>>>(
         let Ok(authority) = authorization.recover_authority() else {
             continue;
         };
-        host.state.warm_account(authority);
+        host.state.warm_account_non_revertible(authority);
         let authority_info = host.state.account_info(authority);
         let existed = authority_info.is_some();
         let authority_info = authority_info.unwrap_or_default();

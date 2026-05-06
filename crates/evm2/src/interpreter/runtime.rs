@@ -145,12 +145,12 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
     /// Runs the interpreter until it stops, using `C` as the EVM configuration.
     #[inline]
     pub fn run<C: EvmConfig<T>>(&mut self, host: &mut T::Host) -> InstrStop {
-        self.run_with(ExecutionConfig::for_config::<C>(), host)
+        self.run_with(&ExecutionConfig::for_config::<C>(), host)
     }
 
     /// Runs the interpreter until it stops.
-    pub fn run_with(&mut self, config: ExecutionConfig<T>, host: &mut T::Host) -> InstrStop {
-        let _gas_start = self.gas.remaining();
+    pub fn run_with(&mut self, config: &ExecutionConfig<T>, host: &mut T::Host) -> InstrStop {
+        self.memory.set_memory_limit(config.version.memory_limit);
 
         #[cfg(feature = "nightly")]
         let r = self.step_tail(config, host);
@@ -161,7 +161,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
     }
 
     #[cfg(not(feature = "nightly"))]
-    fn run_table_loop(&mut self, config: ExecutionConfig<T>, host: &mut T::Host) -> InstrStop {
+    fn run_table_loop(&mut self, config: &ExecutionConfig<T>, host: &mut T::Host) -> InstrStop {
         let mut pc = self.pc;
         let mut stack_len = self.stack_len;
         loop {
@@ -180,18 +180,18 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
     /// Executes one instruction.
     #[inline]
     #[cfg(not(feature = "nightly"))]
-    pub fn step(&mut self, config: ExecutionConfig<T>, host: &mut T::Host) -> ControlFlow<(), ()> {
+    pub fn step(&mut self, config: &ExecutionConfig<T>, host: &mut T::Host) -> ControlFlow<(), ()> {
         let (pc, stack_len, flow) = self.raw_step(config, host, self.pc, self.stack_len);
         self.pc = pc;
         self.stack_len = stack_len;
         flow
     }
 
-    #[inline(never)]
+    #[inline(always)]
     #[cfg(not(feature = "nightly"))]
     fn raw_step(
         &mut self,
-        config: ExecutionConfig<T>,
+        config: &ExecutionConfig<T>,
         host: &mut T::Host,
         pc: *const u8,
         stack_len: usize,
@@ -210,7 +210,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
                 host,
                 spec: config.version.spec_id,
                 tmp: 0,
-                version: config.version,
+                version: &config.version,
                 raw_interp: raw,
             },
         );
@@ -220,7 +220,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
 
     #[inline(always)]
     #[cfg(feature = "nightly")]
-    fn step_tail(&mut self, config: ExecutionConfig<T>, host: &mut T::Host) -> InstrStop {
+    fn step_tail(&mut self, config: &ExecutionConfig<T>, host: &mut T::Host) -> InstrStop {
         #[expect(clippy::unnecessary_cast, reason = "cast erases the active interpreter lifetime")]
         let raw = self as *mut Self as *mut Interpreter<'_, T>;
         let bytecode = BytecodeRef::new(&self.bytecode);
@@ -237,7 +237,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
                 host,
                 spec: config.version.spec_id,
                 tmp: 0,
-                version: config.version,
+                version: &config.version,
                 raw_interp: raw,
             },
         );

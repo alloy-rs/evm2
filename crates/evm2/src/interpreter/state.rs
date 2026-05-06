@@ -19,7 +19,7 @@ pub struct State<'a, T: EvmTypes> {
     pub spec: SpecId,
     pub(crate) tmp: u8,
     /// Active runtime version data.
-    pub version: &'static Version,
+    pub version: &'a Version,
     pub(crate) raw_interp: *mut Interpreter<'a, T>,
 }
 
@@ -68,10 +68,7 @@ impl<'a, T: EvmTypes> State<'a, T> {
 
     /// Returns the active dynamic gas parameters.
     #[inline]
-    pub const fn gas_params(&self) -> &'static GasParams {
-        // Gas params are data on the active version so changes automatically affect every
-        // instruction that reads them. Tracking instruction dependencies on version tables is not
-        // sustainable for custom forks.
+    pub const fn gas_params(&self) -> &'a GasParams {
         &self.version.gas_params
     }
 
