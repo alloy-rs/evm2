@@ -2,8 +2,8 @@ use super::{
     access_list_counts, charge_upfront, effective_gas_price, floor_gas, initial_message,
     intrinsic_gas, rollback_failed_execution, settle_gas, validate_block_gas_limit,
     validate_create_initcode, validate_floor_gas, validate_gas_price, validate_intrinsic_gas,
-    validate_nonce_not_overflow, validate_priority_fee, validate_sender, warm_access_list,
-    warm_base_accounts,
+    validate_nonce_not_overflow, validate_priority_fee, validate_sender, validate_tx_gas_limit_cap,
+    warm_access_list, warm_base_accounts,
 };
 use crate::{
     Evm, EvmTypes, SpecId, TxResult,
@@ -38,6 +38,7 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     validate_gas_price(spec_id, gas_price, req.host.block.basefee)?;
     validate_blob_fee(max_fee_per_blob_gas, req.host.block.blob_basefee)?;
     validate_blobs(&tx.blob_versioned_hashes, max_blobs_per_tx(spec_id))?;
+    validate_tx_gas_limit_cap(spec_id, tx.gas_limit)?;
     validate_block_gas_limit(tx.gas_limit, req.host.block.gas_limit)?;
     validate_create_initcode(spec_id, tx.to.into(), &tx.input)?;
     validate_nonce_not_overflow(tx.nonce)?;
@@ -50,7 +51,8 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
         access_list_storage_keys,
     );
     validate_intrinsic_gas(tx.gas_limit, intrinsic)?;
-    validate_floor_gas(tx.gas_limit, floor_gas(req.host.version(), &tx.input))?;
+    let floor_gas = floor_gas(req.host.version(), &tx.input);
+    validate_floor_gas(tx.gas_limit, floor_gas)?;
 
     let blob_gas_cost = U256::from(DATA_GAS_PER_BLOB) * U256::from(tx.blob_versioned_hashes.len());
     let max_blob_gas_cost = blob_gas_cost * max_fee_per_blob_gas;
@@ -83,7 +85,7 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     let mut result = req.host.execute_message(&tx_env, bytecode, &message, false);
     rollback_failed_execution(req.host, execution_checkpoint, &mut result);
 
-    Ok(settle_gas(req.host, spec_id, caller, gas_price, tx.gas_limit, result))
+    Ok(settle_gas(req.host, spec_id, caller, gas_price, tx.gas_limit, floor_gas, result))
 }
 
 fn validate_blob_fee(max_fee_per_blob_gas: U256, blob_basefee: U256) -> HandlerResult<()> {
