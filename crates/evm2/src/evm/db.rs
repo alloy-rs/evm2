@@ -19,6 +19,11 @@ pub trait Database {
     /// Loads a persistent storage slot.
     fn get_storage(&mut self, address: Address, key: Word) -> Word;
 
+    /// Returns whether an account has any non-zero persistent storage.
+    fn has_storage(&mut self, _address: Address) -> bool {
+        false
+    }
+
     /// Loads a historical block hash.
     fn get_block_hash(&mut self, number: Word) -> Option<B256>;
 }
@@ -41,6 +46,11 @@ impl Database for EmptyDB {
     #[inline]
     fn get_storage(&mut self, _address: Address, _key: Word) -> Word {
         Word::ZERO
+    }
+
+    #[inline]
+    fn has_storage(&mut self, _address: Address) -> bool {
+        false
     }
 
     #[inline]

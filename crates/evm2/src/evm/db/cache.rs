@@ -159,6 +159,15 @@ impl<ExtDB: Database> Database for CacheDB<ExtDB> {
     }
 
     #[inline]
+    fn has_storage(&mut self, address: Address) -> bool {
+        self.cache
+            .storage
+            .iter()
+            .any(|(&(account, _), value)| account == address && !value.is_zero())
+            || self.db.has_storage(address)
+    }
+
+    #[inline]
     fn get_block_hash(&mut self, number: Word) -> Option<B256> {
         match self.cache.block_hashes.entry(number) {
             Entry::Occupied(entry) => Some(*entry.get()),
@@ -201,6 +210,10 @@ mod tests {
         fn get_storage(&mut self, _address: Address, _key: Word) -> Word {
             self.storage_loads += 1;
             self.storage
+        }
+
+        fn has_storage(&mut self, _address: Address) -> bool {
+            !self.storage.is_zero()
         }
 
         fn get_block_hash(&mut self, _number: Word) -> Option<B256> {

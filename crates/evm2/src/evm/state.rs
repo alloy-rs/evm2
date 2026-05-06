@@ -535,6 +535,10 @@ impl<D: Database> State<D> {
     #[inline]
     #[must_use]
     pub fn account_info(&mut self, address: Address) -> Option<AccountInfo> {
+        self.load_account(address)?.current.as_ref().map(Account::info)
+    }
+
+    fn create_collision_account_info(&mut self, address: Address) -> Option<AccountInfo> {
         if let Some(account) = self.accounts.get(&address) {
             return account.current.as_ref().map(Account::info);
         }
@@ -579,6 +583,21 @@ impl<D: Database> State<D> {
         } else {
             self.initial.get_storage(address, key)
         }
+    }
+
+    fn has_create_collision_storage(&mut self, address: Address) -> bool {
+        if let Some(storage) = self.storage.get(&address) {
+            if storage.slots.values().any(|slot| !slot.current.is_zero()) {
+                return true;
+            }
+            if storage.wiped {
+                return false;
+            }
+        }
+        if self.accounts.get(&address).is_some_and(|account| account.original.is_none()) {
+            return false;
+        }
+        self.initial.has_storage(address)
     }
 
     #[must_use]
@@ -704,9 +723,13 @@ impl<D: Database> State<D> {
         value: Word,
         spec: SpecId,
     ) -> Result<(), InstrStop> {
-        if let Some(info) = self.account_info(address)
+        if let Some(info) = self.create_collision_account_info(address)
             && (info.nonce != 0 || info.code_hash != KECCAK256_EMPTY)
         {
+            return Err(InstrStop::CreateCollision);
+        }
+        // EIP-7610 extends create collision checks to storage-only accounts.
+        if self.has_create_collision_storage(address) {
             return Err(InstrStop::CreateCollision);
         }
 
@@ -1163,6 +1186,38 @@ mod tests {
 
         assert!(!state.transfer(address, address, Word::from(4)));
         assert!(state.transfer(address, address, Word::from(3)));
+    }
+
+    #[test]
+    fn create_collides_with_storage_only_account() {
+        let caller = Address::from([0x11; 20]);
+        let created = Address::from([0x22; 20]);
+        let mut database = CacheDB::default();
+        database.insert_account_info(caller, AccountInfo::default().with_balance(Word::from(1)));
+        database.insert_account_storage(created, Word::ZERO, Word::from(1));
+        let mut state = State::new(database);
+
+        assert_eq!(
+            state.create_account(caller, created, Word::ZERO, SpecId::SPURIOUS_DRAGON),
+            Err(InstrStop::CreateCollision)
+        );
+        assert_eq!(state.storage(created, Word::ZERO), Word::from(1));
+    }
+
+    #[test]
+    fn create_after_prior_account_load_collides_with_storage() {
+        let caller = Address::from([0x33; 20]);
+        let created = Address::from([0x44; 20]);
+        let mut database = CacheDB::default();
+        database.insert_account_info(caller, AccountInfo::default().with_balance(Word::from(1)));
+        database.insert_account_storage(created, Word::ZERO, Word::from(1));
+        let mut state = State::new(database);
+
+        assert!(state.find(created).is_some());
+        assert_eq!(
+            state.create_account(caller, created, Word::ZERO, SpecId::SPURIOUS_DRAGON),
+            Err(InstrStop::CreateCollision)
+        );
     }
 
     #[test]
