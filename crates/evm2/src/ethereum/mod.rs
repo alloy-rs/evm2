@@ -149,7 +149,7 @@ pub(super) fn validate_block_gas_limit(
 }
 
 pub(super) const fn validate_tx_gas_limit_cap(
-    version: &'static Version,
+    version: &Version,
     tx_gas_limit: u64,
 ) -> HandlerResult<()> {
     // EIP-7825 caps each transaction gas limit to 2^24 in Osaka. Amsterdam/EIP-8037
@@ -163,7 +163,7 @@ pub(super) const fn validate_tx_gas_limit_cap(
 }
 
 pub(super) const fn validate_regular_gas_limit_cap(
-    version: &'static Version,
+    version: &Version,
     tx_gas_limit: u64,
     intrinsic: u64,
     floor_gas: u64,
@@ -404,7 +404,7 @@ pub(super) fn access_list_counts(access_list: &AccessList) -> (u64, u64) {
 }
 
 /// Calculates transaction calldata floor gas.
-pub(super) fn floor_gas(version: &'static Version, input: &Bytes) -> u64 {
+pub(super) fn floor_gas(version: &Version, input: &Bytes) -> u64 {
     let params = &version.gas_params;
     let floor_cost_per_token = u64::from(params.get(GasId::TxFloorCostPerToken));
     if floor_cost_per_token == 0 {
@@ -422,7 +422,7 @@ pub(super) fn floor_gas(version: &'static Version, input: &Bytes) -> u64 {
 
 /// Calculates intrinsic transaction gas.
 pub(super) fn intrinsic_gas(
-    version: &'static Version,
+    version: &Version,
     to: TxKind,
     input: &Bytes,
     access_list_accounts: u64,

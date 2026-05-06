@@ -243,7 +243,7 @@ impl<T: EvmTypes> Evm<T> {
     }
 
     /// Returns the active EVM version.
-    pub const fn version(&self) -> &'static crate::Version {
+    pub const fn version(&self) -> &crate::Version {
         self.execution_config.version()
     }
 
@@ -527,7 +527,8 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         // pool after execution. Recursive calls may mutate the pool, but they cannot move this box.
         let interpreter_ref = unsafe { &mut *(&mut *interpreter as *mut Interpreter<'frame, T>) };
         interpreter_ref.init(bytecode, tx_env, message, caller_is_static);
-        let stop = interpreter_ref.run_with(self.execution_config, self);
+        let execution_config = self.execution_config;
+        let stop = interpreter_ref.run_with(&execution_config, self);
         let interpreter = self.interpreter_pool.push(interpreter);
         (stop, interpreter)
     }
@@ -733,6 +734,16 @@ mod tests {
         Ok(TxResult { status: true, gas_used: req.tx.value + 1, ..TxResult::default() })
     }
 
+    fn handle_test_tx_version(
+        req: TxRequest<'_, TestTx, Evm<TestEvmTypes<TestTx>>>,
+    ) -> HandlerResult<TxResult> {
+        Ok(TxResult {
+            status: true,
+            gas_used: req.host.version().tx_gas_limit_cap,
+            ..TxResult::default()
+        })
+    }
+
     #[test]
     fn dispatches_transaction_by_typed_2718_type() {
         let registry =
@@ -762,6 +773,25 @@ mod tests {
             Precompiles::base(SpecId::OSAKA),
         );
         let tx = TestTx { value: 41 };
+
+        assert_eq!(evm.transact(&tx).map(|result| result.gas_used), Ok(42));
+    }
+
+    #[test]
+    fn dispatches_transaction_with_dynamic_version() {
+        let registry =
+            TxRegistry::new().with_handler(TEST_TX_TYPE, extract_test_tx, handle_test_tx_version);
+        let mut version = crate::Version::new(SpecId::OSAKA);
+        version.tx_gas_limit_cap = 42;
+        let mut evm = Evm::<TestEvmTypes<TestTx>>::new_with_execution_config(
+            ExecutionConfig::for_spec_and_version(SpecId::OSAKA, version),
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            registry,
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        let tx = TestTx { value: 0 };
 
         assert_eq!(evm.transact(&tx).map(|result| result.gas_used), Ok(42));
     }

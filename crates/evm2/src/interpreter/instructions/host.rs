@@ -34,27 +34,27 @@ pub(crate) fn sload(cx: _, [key]: [Word]) -> Result<out> {
 pub(crate) fn sstore(cx: _) -> Result {
     require_non_staticcall(&cx)?;
     let [key, value] = stack.popn()?;
-    let gas_params = cx.state.gas_params();
     let is_istanbul = cx.state.spec.enables(SpecId::ISTANBUL);
 
     // EIP-2200: SSTORE may not execute with only the value-transfer stipend left. This
     // check happens before any gas is charged or host storage is touched.
-    if is_istanbul && cx.gas.remaining() <= gas_params.get(GasId::CallStipend).into() {
+    if is_istanbul && cx.gas.remaining() <= cx.state.gas_params().get(GasId::CallStipend).into() {
         return Err(InstrStop::ReentrancySentryOOG);
     }
 
     // Frontier through Petersburg charge a fixed SSTORE_RESET static cost. Istanbul
     // (EIP-2200) turns this into the SLOAD-equivalent cost, and Berlin (EIP-2929)
     // makes that the warm storage read cost.
-    cx.gas.spend(gas_params.get(GasId::SstoreStatic).into())?;
+    cx.gas.spend(cx.state.gas_params().get(GasId::SstoreStatic).into())?;
 
     // EIP-2929: avoid performing a cold storage load if the frame cannot afford the
     // additional cold-load charge. The host performs the write and returns
     // original/present/new values for net metering.
     let skip_cold_load = cx.state.spec.enables(SpecId::BERLIN)
-        && cx.gas.remaining() < gas_params.get(GasId::ColdStorageAdditionalCost).into();
+        && cx.gas.remaining() < cx.state.gas_params().get(GasId::ColdStorageAdditionalCost).into();
     let state_load =
         cx.state.host.sstore(cx.state.message().destination, key, value, skip_cold_load)?;
+    let gas_params = cx.state.gas_params();
 
     // EIP-2200 net gas metering depends on original, present, and new slot values:
     // clean slots pay set/reset costs, dirty slots generally only pay the load cost,

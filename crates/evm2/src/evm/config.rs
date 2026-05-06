@@ -78,7 +78,7 @@ pub trait EvmConfigSelector<T: EvmTypes>: Sized {
 /// an EVM instance. This is the data passed to the interpreter when it runs.
 #[derive(derive_more::Debug)]
 pub struct ExecutionConfig<T: EvmTypes> {
-    pub(crate) version: &'static Version,
+    pub(crate) version: Version,
     #[debug(skip)]
     pub(crate) instructions: &'static InstructionTable<T>,
 }
@@ -96,7 +96,7 @@ impl<T: EvmTypes> ExecutionConfig<T> {
     /// Creates an execution config for a concrete compile-time config.
     #[inline]
     pub const fn for_config<C: EvmConfig<T>>() -> Self {
-        Self { version: C::VERSION, instructions: <T as InstructionTables<C>>::INSTRUCTIONS }
+        Self { version: *C::VERSION, instructions: <T as InstructionTables<C>>::INSTRUCTIONS }
     }
 
     /// Creates an execution config for a base `SpecId` through selector `F`.
@@ -110,10 +110,26 @@ impl<T: EvmTypes> ExecutionConfig<T> {
         })
     }
 
+    /// Creates an execution config for `spec_id` with dynamic runtime version data.
+    #[inline]
+    pub fn for_spec_and_version(spec_id: T::SpecId, version: Version) -> Self {
+        let config = <T::ConfigSelector as EvmConfigSelector<T>>::execution_config(spec_id);
+        assert_eq!(spec_id.into(), version.spec_id, "execution config version spec mismatch");
+        config.with_version(version)
+    }
+
+    /// Replaces the runtime version data while keeping the same dispatch table.
+    #[inline]
+    pub fn with_version(mut self, version: Version) -> Self {
+        assert_eq!(self.version.spec_id, version.spec_id, "execution config version spec mismatch");
+        self.version = version;
+        self
+    }
+
     /// Returns the active EVM version.
     #[inline]
-    pub const fn version(&self) -> &'static Version {
-        self.version
+    pub const fn version(&self) -> &Version {
+        &self.version
     }
 }
 

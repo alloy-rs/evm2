@@ -30,6 +30,12 @@ pub struct Version {
 }
 
 impl Version {
+    /// Creates the base EVM version for `spec_id`.
+    #[inline]
+    pub const fn new(spec_id: SpecId) -> Self {
+        *Self::base(spec_id)
+    }
+
     /// Returns the base EVM version for `spec_id`.
     #[inline]
     pub const fn base(spec_id: SpecId) -> &'static Self {
@@ -117,9 +123,8 @@ macro_rules! evm_versions {
         const fn base_version_tables<T: EvmTypes, Cfg: EvmConfig<T>>() -> VersionTables<T> {
             use crate::interpreter::gas::*;
 
-            let version = Cfg::VERSION;
-            let spec_id = version.spec_id;
-            let mut v = VersionTables::empty(version);
+            let spec_id = Cfg::VERSION.spec_id;
+            let mut v = VersionTables::empty();
 
             $(
                 if spec_id.enables(SpecId::$spec) {
