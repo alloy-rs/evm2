@@ -17,13 +17,14 @@ pub use tables::VersionTables;
 /// Holds the active base `SpecId` and dynamic gas parameter table so instructions can read
 /// version-dependent runtime parameters without monomorphization.
 #[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
 pub struct Version {
     /// Active base specification ID.
-    spec_id: SpecId,
+    pub spec_id: SpecId,
     /// Dynamic gas parameter table.
-    gas_params: GasParams,
+    pub gas_params: GasParams,
     /// Transaction gas limit cap.
-    tx_gas_limit_cap: u64,
+    pub tx_gas_limit_cap: u64,
 }
 
 impl Version {
