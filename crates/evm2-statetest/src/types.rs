@@ -102,6 +102,7 @@ pub(crate) struct TransactionParts {
     #[serde(default, deserialize_with = "deserialize_maybe_empty")]
     pub(crate) to: Option<Address>,
     /// Value variants.
+    #[serde(deserialize_with = "deserialize_u256_vec_allow_bigint")]
     pub(crate) value: Vec<U256>,
     /// EIP-1559 max fee.
     pub(crate) max_fee_per_gas: Option<U256>,
@@ -297,5 +298,44 @@ where
         serde_json::Value::String(string) if string.is_empty() || string == "0x" => Ok(None),
         serde_json::Value::String(string) => string.parse().map(Some).map_err(de::Error::custom),
         _ => Err(de::Error::custom("invalid transaction to field")),
+    }
+}
+
+fn deserialize_u256_vec_allow_bigint<'de, D>(deserializer: D) -> Result<Vec<U256>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let values = Vec::<serde_json::Value>::deserialize(deserializer)?;
+    values
+        .into_iter()
+        .map(|value| match &value {
+            // retesteth uses 0x:bigint markers for intentionally invalid values.
+            // evmone maps them to uint256::MAX so the invalid-transaction path can run.
+            serde_json::Value::String(string) if string.starts_with("0x:bigint ") => Ok(U256::MAX),
+            _ => serde_json::from_value(value).map_err(de::Error::custom),
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transaction_value_allows_bigint_marker() {
+        let input = r#"{
+            "data": ["0x"],
+            "gasLimit": ["0x5208"],
+            "gasPrice": "0x64",
+            "nonce": "0x00",
+            "to": "0xd0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0",
+            "value": [
+                "0x:bigint 0x10000000000000000000000000000000000000000000000000000000000000001"
+            ]
+        }"#;
+
+        let tx: TransactionParts = serde_json::from_str(input).unwrap();
+
+        assert_eq!(tx.value, vec![U256::MAX]);
     }
 }
