@@ -126,7 +126,7 @@ macro_rules! evm_versions {
         const fn base_version_tables<T: EvmTypes, Cfg: EvmConfig<T>>() -> VersionTables<T> {
             use crate::interpreter::gas::*;
 
-            let spec_id = Cfg::VERSION.spec_id;
+            let spec_id = Cfg::BASE_SPEC_ID;
             let mut v = VersionTables::empty();
 
             $(

@@ -38,21 +38,20 @@ pub trait EvmTypes: Sized + 'static {
     type Precompiles: PrecompileProvider;
 }
 
-/// Compile-time EVM version configuration.
+/// Compile-time EVM table configuration.
 ///
-/// Names a concrete version for monomorphized code. It exposes the runtime `Version` data and the
-/// type-specific `VersionTables` needed to build dispatch tables.
+/// Names the inherited base spec and type-specific `VersionTables` needed to build dispatch tables.
 pub trait EvmConfig<T: EvmTypes> {
-    /// Active EVM version.
-    const VERSION: &'static Version;
+    /// Inherited base specification ID.
+    const BASE_SPEC_ID: SpecId;
 
     /// Active type-specific version tables.
     const VERSION_TABLES: &'static VersionTables<T>;
 
-    /// Active base specification ID.
+    /// Creates the runtime version data for this config.
     #[inline]
-    fn spec_id() -> SpecId {
-        Self::VERSION.spec_id
+    fn version() -> Version {
+        Version::new(Self::BASE_SPEC_ID)
     }
 }
 
@@ -95,8 +94,8 @@ impl<T: EvmTypes> Copy for ExecutionConfig<T> {}
 impl<T: EvmTypes> ExecutionConfig<T> {
     /// Creates an execution config for a concrete compile-time config.
     #[inline]
-    pub const fn for_config<C: EvmConfig<T>>() -> Self {
-        Self { version: *C::VERSION, instructions: <T as InstructionTables<C>>::INSTRUCTIONS }
+    pub fn for_config<C: EvmConfig<T>>() -> Self {
+        Self { version: C::version(), instructions: <T as InstructionTables<C>>::INSTRUCTIONS }
     }
 
     /// Creates an execution config for a base `SpecId` through selector `F`.
@@ -104,7 +103,7 @@ impl<T: EvmTypes> ExecutionConfig<T> {
     /// The selector provides the concrete `Config<BASE_SPEC_ID>` used for the inherited base
     /// version.
     #[inline]
-    pub const fn for_base_spec<F: EvmConfigSelector<T>>(base_spec_id: SpecId) -> Self {
+    pub fn for_base_spec<F: EvmConfigSelector<T>>(base_spec_id: SpecId) -> Self {
         spec_to_generic!(base_spec_id, |BASE_SPEC_ID| {
             Self::for_config::<F::Config<BASE_SPEC_ID>>()
         })
@@ -153,7 +152,7 @@ impl<Tx: 'static> EvmTypes for BaseEvmTypes<Tx> {
 pub struct BaseEvmConfig<const BASE_SPEC_ID: u8>(());
 
 impl<T: EvmTypes, const BASE_SPEC_ID: u8> EvmConfig<T> for BaseEvmConfig<BASE_SPEC_ID> {
-    const VERSION: &'static Version = Version::base(SpecId::try_from_u8(BASE_SPEC_ID).unwrap());
+    const BASE_SPEC_ID: SpecId = SpecId::try_from_u8(BASE_SPEC_ID).unwrap();
     const VERSION_TABLES: &'static VersionTables<T> = &VersionTables::<T>::base::<Self>();
 }
 

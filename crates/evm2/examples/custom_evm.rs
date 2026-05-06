@@ -57,10 +57,13 @@ impl EvmTypes for CustomTypes {
 
 struct CustomConfig<const BASE_SPEC_ID: u8>(());
 
-impl<const BASE_SPEC_ID: u8> EvmConfig<CustomTypes> for CustomConfig<BASE_SPEC_ID> {
-    const VERSION: &'static Version = &custom_version::<BASE_SPEC_ID>();
-    const VERSION_TABLES: &'static VersionTables<CustomTypes> =
-        &custom_version_tables::<BASE_SPEC_ID>();
+impl<const ID: u8> EvmConfig<CustomTypes> for CustomConfig<ID> {
+    const BASE_SPEC_ID: SpecId = SpecId::try_from_u8(ID).unwrap();
+    const VERSION_TABLES: &'static VersionTables<CustomTypes> = &custom_version_tables::<ID>();
+
+    fn version() -> Version {
+        custom_version::<ID>()
+    }
 }
 
 const fn custom_version<const BASE_SPEC_ID: u8>() -> Version {
@@ -184,7 +187,7 @@ fn main() {
         CUSTOM_OPCODE_GAS,
     );
     assert_eq!(
-        <CustomConfig<{ SpecId::OSAKA as u8 }> as EvmConfig<CustomTypes>>::VERSION
+        <CustomConfig<{ SpecId::OSAKA as u8 }> as EvmConfig<CustomTypes>>::version()
             .gas_params
             .get(CUSTOM_OPCODE_DYNAMIC_GAS_ID),
         CUSTOM_OPCODE_DYNAMIC_GAS,

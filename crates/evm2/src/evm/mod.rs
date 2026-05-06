@@ -714,9 +714,6 @@ mod tests {
 
     type TestEvmTypes<Tx = ()> = BaseEvmTypes<Tx>;
 
-    const NO_CONFIG_EXECUTION: ExecutionConfig<TestEvmTypes<TestTx>> =
-        ExecutionConfig::for_config::<BaseEvmConfig<{ SpecId::OSAKA as u8 }>>();
-
     impl Typed2718 for TestTx {
         fn ty(&self) -> u8 {
             TEST_TX_TYPE
@@ -765,7 +762,7 @@ mod tests {
         let registry =
             TxRegistry::new().with_handler(TEST_TX_TYPE, extract_test_tx, handle_test_tx);
         let mut evm = Evm::<TestEvmTypes<TestTx>>::new_with_execution_config(
-            NO_CONFIG_EXECUTION,
+            ExecutionConfig::for_config::<BaseEvmConfig<{ SpecId::OSAKA as u8 }>>(),
             SpecId::OSAKA,
             BlockEnv::default(),
             registry,
