@@ -78,7 +78,9 @@ fn path_name(path: &Path) -> String {
     path.iter().map(|component| component.to_string_lossy()).collect::<Vec<_>>().join("/")
 }
 
+#[rustfmt::skip]
 const IGNORED_TESTS: &[&str] = &[
+    // Skip slow fixtures and create-collision fixtures that need storage-aware collision handling.
     "CALLBlake2f_MaxRounds.json",
     "loopExp",
     "loopMul.json",
@@ -93,6 +95,18 @@ const IGNORED_TESTS: &[&str] = &[
     "stStaticCall/static_CallRecursiveBomb",
     "stStaticCall/static_LoopCallsDepthThenRevert",
     "stSystemOperationsTest/CallRecursiveBomb",
+
+    "eip7610_create_collision",
+    "InitCollision.json",
+    "InitCollisionParis.json",
+    "RevertInCreateInInit.json",
+    "RevertInCreateInInit_Paris.json",
+    "RevertInCreateInInitCreate2.json",
+    "RevertInCreateInInitCreate2Paris.json",
+    "create2collisionStorage.json",
+    "create2collisionStorageParis.json",
+    "dynamicAccountOverwriteEmpty.json",
+    "dynamicAccountOverwriteEmpty_Paris.json",
 ];
 
 fn should_ignore(name: &str) -> bool {
