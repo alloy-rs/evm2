@@ -30,6 +30,7 @@ pub(crate) struct TestHost {
     pub(super) code: Bytes,
     pub(super) exists: bool,
     pub(super) is_empty: bool,
+    pub(super) is_touched: bool,
     pub(super) is_cold: bool,
     pub(super) storage: HashMap<(Address, Word), Word>,
     pub(super) original_storage: HashMap<(Address, Word), Word>,
@@ -50,6 +51,7 @@ impl Default for TestHost {
             code: Bytes::new(),
             exists: true,
             is_empty: false,
+            is_touched: false,
             is_cold: false,
             storage: HashMap::default(),
             original_storage: HashMap::default(),
@@ -88,6 +90,7 @@ impl Host for TestHost {
             code: if load_code { self.code.clone() } else { Bytes::new() },
             exists: self.exists,
             is_empty: self.is_empty,
+            is_touched: self.is_touched,
             is_cold: self.is_cold,
         })
     }

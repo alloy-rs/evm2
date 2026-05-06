@@ -43,6 +43,8 @@ pub struct AccountLoad {
     pub exists: bool,
     /// Whether the account is empty.
     pub is_empty: bool,
+    /// Whether the account was already touched in this transaction.
+    pub is_touched: bool,
     /// Whether the account access was cold.
     pub is_cold: bool,
 }
@@ -563,6 +565,7 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
             },
             exists,
             is_empty: info.is_empty(),
+            is_touched: self.state.touched.contains(&address),
             is_cold,
         })
     }
