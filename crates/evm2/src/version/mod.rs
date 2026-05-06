@@ -22,6 +22,9 @@ pub struct Version {
     /// Active base specification ID.
     pub spec_id: SpecId,
     /// Dynamic gas parameter table.
+    // Gas params are data on the active version so changes automatically affect every
+    // instruction that reads them. Tracking instruction dependencies on version tables is not
+    // sustainable for custom forks.
     pub gas_params: GasParams,
     /// Transaction gas limit cap.
     pub tx_gas_limit_cap: u64,

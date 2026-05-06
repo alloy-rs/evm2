@@ -148,7 +148,6 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
 
     /// Runs the interpreter until it stops.
     pub fn run_with(&mut self, config: &ExecutionConfig<T>, host: &mut T::Host) -> InstrStop {
-        let _gas_start = self.gas.remaining();
         self.memory.set_memory_limit(config.version.memory_limit);
 
         #[cfg(feature = "nightly")]
