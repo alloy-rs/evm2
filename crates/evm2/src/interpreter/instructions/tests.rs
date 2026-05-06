@@ -92,6 +92,7 @@ impl Host for TestHost {
             is_empty: self.is_empty,
             is_touched: self.is_touched,
             is_cold: self.is_cold,
+            delegated_code_extra_gas: 0,
         })
     }
 

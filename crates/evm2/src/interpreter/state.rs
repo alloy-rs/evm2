@@ -203,6 +203,15 @@ pub trait Host {
         skip_cold_load: bool,
     ) -> Result<AccountLoad, InstrStop>;
 
+    /// Loads account information with EIP-7702 delegation resolved for execution.
+    fn load_account_delegated(
+        &mut self,
+        address: Address,
+        skip_cold_load: bool,
+    ) -> Result<AccountLoad, InstrStop> {
+        self.load_account(address, true, skip_cold_load)
+    }
+
     /// Returns a historical block hash.
     fn block_hash(&mut self, number: Word) -> Option<B256>;
 

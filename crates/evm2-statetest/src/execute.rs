@@ -3,7 +3,7 @@ use crate::{
     types::{AccountInfo, Env, Test, TestSuite, TestUnit, TransactionParts, TxPartIndices},
 };
 use alloy_consensus::{TypedTransaction, transaction::Recovered};
-use alloy_eips::{eip4844, eip7691};
+use alloy_eips::{eip4844, eip7691, eip7702::SignedAuthorization};
 use alloy_primitives::{Address, B256, Bytes, Log, TxKind, U256, keccak256};
 use alloy_rpc_types_eth::{
     AccessList as RpcAccessList, AccessListItem as RpcAccessListItem, TransactionInput,
@@ -323,8 +323,9 @@ fn storage_for_root(state: &InMemoryDB, address: Address) -> Vec<(B256, U256)> {
 fn parse_state(pre: &BTreeMap<Address, AccountInfo>) -> Result<InMemoryDB, TestErrorKind> {
     let mut database = InMemoryDB::default();
     for (address, account) in pre {
-        let mut info =
-            EvmAccountInfo::default().with_code(Bytecode::new_legacy(account.code.clone()));
+        let code = Bytecode::new_raw_checked(account.code.clone())
+            .unwrap_or_else(|_| Bytecode::new_legacy(account.code.clone()));
+        let mut info = EvmAccountInfo::default().with_code(code);
         info.nonce = account.nonce;
         info.balance = account.balance;
         database.insert_account_info(*address, info);
@@ -433,6 +434,7 @@ fn build_tx(
         .transpose()
         .map_err(|_| TestErrorKind::Overflow("maxFeePerBlobGas"))?;
     request.access_list = access_list(raw, indexes.data)?;
+    request.authorization_list = authorization_list(raw)?;
     if raw.max_fee_per_blob_gas.is_some()
         || matches!(raw.tx_type, Some(3))
         || !raw.blob_versioned_hashes.is_empty()
@@ -443,6 +445,19 @@ fn build_tx(
     let tx =
         request.build_consensus_tx().map_err(|err| TestErrorKind::BuildTransaction(err.error))?;
     recovered_envelope(tx, caller)
+}
+
+fn authorization_list(
+    raw: &TransactionParts,
+) -> Result<Option<Vec<SignedAuthorization>>, TestErrorKind> {
+    let Some(authorizations) = &raw.authorization_list else {
+        return Ok(None);
+    };
+    let authorizations = authorizations
+        .iter()
+        .map(|authorization| serde_json::from_value(authorization.value.clone()))
+        .collect::<Result<_, _>>()?;
+    Ok(Some(authorizations))
 }
 
 fn access_list(
@@ -597,5 +612,41 @@ mod tests {
             panic!("expected EIP-2930 transaction");
         };
         assert_eq!(tx.inner().access_list[0].address, second_address);
+    }
+
+    #[test]
+    fn build_tx_builds_eip7702_transaction() {
+        let caller = Address::from([0x11; 20]);
+        let delegated_address = Address::from([0x33; 20]);
+        let raw = TransactionParts {
+            tx_type: Some(4),
+            data: vec![Bytes::new()],
+            gas_limit: vec![U256::from(46_000)],
+            sender: Some(caller),
+            to: Some(Address::from([0x22; 20])),
+            value: vec![U256::ZERO],
+            max_fee_per_gas: Some(U256::from(7)),
+            max_priority_fee_per_gas: Some(U256::from(1)),
+            authorization_list: Some(vec![crate::types::TestAuthorization {
+                value: json!({
+                    "chainId": "0x1",
+                    "address": delegated_address,
+                    "nonce": "0x0",
+                    "yParity": "0x0",
+                    "r": "0x1",
+                    "s": "0x1",
+                }),
+            }]),
+            ..TransactionParts::default()
+        };
+
+        let tx =
+            build_tx(&raw, &TxPartIndices { data: 0, gas: 0, value: 0 }, Some(U256::ONE)).unwrap();
+
+        let RecoveredTxEnvelope::Eip7702(tx) = tx else {
+            panic!("expected EIP-7702 transaction");
+        };
+        assert_eq!(tx.signer(), caller);
+        assert_eq!(tx.inner().authorization_list[0].address(), &delegated_address);
     }
 }

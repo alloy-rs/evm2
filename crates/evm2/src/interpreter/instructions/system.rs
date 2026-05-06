@@ -83,12 +83,13 @@ fn load_acc_and_calc_gas<T: EvmTypes>(
 
     let additional_cold_cost = cx.state.gas_params().cold_account_additional_cost();
     let skip_cold_load = cx.gas.remaining() < additional_cold_cost;
-    let account = cx.state.host.load_account(to, true, skip_cold_load)?;
+    let account = cx.state.host.load_account_delegated(to, skip_cold_load)?;
 
     let mut cost = 0;
     if account.is_cold {
         cost += additional_cold_cost;
     }
+    cost += account.delegated_code_extra_gas;
     let is_spurious_dragon = cx.state.spec.enables(SpecId::SPURIOUS_DRAGON);
     let creates_empty_account = create_empty_account && (!is_spurious_dragon || transfers_value);
     // EIP-150 charges CALL new-account gas for untouched non-existing accounts.

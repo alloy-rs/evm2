@@ -3,6 +3,7 @@
 mod eip1559;
 mod eip2930;
 mod eip4844;
+mod eip7702;
 mod legacy;
 
 use crate::{
@@ -101,6 +102,7 @@ pub fn ethereum_tx_registry<T: EvmTypes<Host = Evm<T>>>()
         .with_handler(1, RecoveredTxEnvelope::as_eip2930, eip2930::handle::<T>)
         .with_handler(2, RecoveredTxEnvelope::as_eip1559, eip1559::handle::<T>)
         .with_handler(3, RecoveredTxEnvelope::as_eip4844, eip4844::handle::<T>)
+        .with_handler(4, RecoveredTxEnvelope::as_eip7702, eip7702::handle::<T>)
 }
 
 pub(super) fn validate_gas_price(
@@ -266,7 +268,7 @@ pub(super) fn initial_message<T: EvmTypes<Host = Evm<T>>>(
 ) -> (Bytecode, Message) {
     match to {
         TxKind::Call(to) => {
-            let code = host.state.get_code(to);
+            let code = initial_call_code(host, to);
             let message = Message {
                 kind: MessageKind::Call,
                 depth: 0,
@@ -298,6 +300,19 @@ pub(super) fn initial_message<T: EvmTypes<Host = Evm<T>>>(
     }
 }
 
+fn initial_call_code<T: EvmTypes<Host = Evm<T>>>(host: &mut Evm<T>, to: Address) -> Bytecode {
+    let code = host.state.get_code(to);
+    if !host.spec_id().enables(SpecId::PRAGUE) {
+        return code;
+    }
+
+    let Some(delegated_address) = code.eip7702_address() else {
+        return code;
+    };
+    host.state.warm_account(delegated_address);
+    host.state.get_code(delegated_address)
+}
+
 pub(super) fn rollback_failed_execution<T: EvmTypes<Host = Evm<T>>>(
     host: &mut Evm<T>,
     checkpoint: usize,
@@ -320,13 +335,39 @@ pub(super) fn settle_gas<T: EvmTypes<Host = Evm<T>>>(
     floor_gas: u64,
     result: MessageResult,
 ) -> TxResult {
-    let (gas_remaining, gas_used) =
-        final_tx_gas(&result, tx_gas_limit, spec_id.enables(SpecId::LONDON), floor_gas);
-    host.state.add_balance(caller, U256::from(gas_remaining) * gas_price);
-    let beneficiary_gas_price = if spec_id.enables(SpecId::LONDON) {
-        gas_price.saturating_sub(host.block.basefee)
+    settle_gas_with_extra_refund(
+        host,
+        GasSettlement { spec_id, caller, gas_price, tx_gas_limit, floor_gas, extra_refund: 0 },
+        result,
+    )
+}
+
+pub(super) struct GasSettlement {
+    pub(super) spec_id: SpecId,
+    pub(super) caller: Address,
+    pub(super) gas_price: U256,
+    pub(super) tx_gas_limit: u64,
+    pub(super) floor_gas: u64,
+    pub(super) extra_refund: u64,
+}
+
+pub(super) fn settle_gas_with_extra_refund<T: EvmTypes<Host = Evm<T>>>(
+    host: &mut Evm<T>,
+    settlement: GasSettlement,
+    result: MessageResult,
+) -> TxResult {
+    let (gas_remaining, gas_used) = final_tx_gas(
+        &result,
+        settlement.tx_gas_limit,
+        settlement.spec_id.enables(SpecId::LONDON),
+        settlement.floor_gas,
+        settlement.extra_refund,
+    );
+    host.state.add_balance(settlement.caller, U256::from(gas_remaining) * settlement.gas_price);
+    let beneficiary_gas_price = if settlement.spec_id.enables(SpecId::LONDON) {
+        settlement.gas_price.saturating_sub(host.block.basefee)
     } else {
-        gas_price
+        settlement.gas_price
     };
     host.state.add_balance(host.block.beneficiary, U256::from(gas_used) * beneficiary_gas_price);
     TxResult {
@@ -343,14 +384,49 @@ const fn final_tx_gas(
     tx_gas_limit: u64,
     is_london: bool,
     floor_gas: u64,
+    extra_refund: u64,
 ) -> (u64, u64) {
-    let gas_remaining = result.gas_remaining_after_final_refund(tx_gas_limit, is_london);
-    let gas_used = result.gas_used_after_final_refund(tx_gas_limit, is_london);
+    let gas_remaining =
+        gas_remaining_after_final_refund(result, tx_gas_limit, is_london, extra_refund);
+    let gas_used = tx_gas_limit.saturating_sub(gas_remaining);
     // EIP-7623 charges at least the calldata floor after applying refunds.
     if gas_used < floor_gas {
         return (tx_gas_limit.saturating_sub(floor_gas), floor_gas);
     }
     (gas_remaining, gas_used)
+}
+
+const fn gas_remaining_after_final_refund(
+    result: &MessageResult,
+    tx_gas_limit: u64,
+    is_london: bool,
+    extra_refund: u64,
+) -> u64 {
+    let refunded = final_refund(result, tx_gas_limit, is_london, extra_refund);
+    let remaining = result.gas_remaining.saturating_add(refunded);
+    if remaining < tx_gas_limit { remaining } else { tx_gas_limit }
+}
+
+const fn final_refund(
+    result: &MessageResult,
+    tx_gas_limit: u64,
+    is_london: bool,
+    extra_refund: u64,
+) -> u64 {
+    let execution_refund = if result.stop.is_success() && result.gas_refunded > 0 {
+        result.gas_refunded as u64
+    } else {
+        0
+    };
+    let refund = execution_refund.saturating_add(extra_refund);
+    if refund == 0 {
+        return 0;
+    }
+
+    let max_refund_quotient = if is_london { 5 } else { 2 };
+    let spent = tx_gas_limit.saturating_sub(result.gas_remaining);
+    let cap = spent / max_refund_quotient;
+    if refund < cap { refund } else { cap }
 }
 
 pub(super) fn access_list_counts(access_list: &AccessList) -> (u64, u64) {
@@ -452,7 +528,7 @@ mod tests {
             ..MessageResult::default()
         };
 
-        assert_eq!(final_tx_gas(&result, 100_000, true, 60_000), (40_000, 60_000));
+        assert_eq!(final_tx_gas(&result, 100_000, true, 60_000, 0), (40_000, 60_000));
     }
 
     #[test]
@@ -464,6 +540,6 @@ mod tests {
             ..MessageResult::default()
         };
 
-        assert_eq!(final_tx_gas(&result, 100_000, true, 60_000), (30_000, 70_000));
+        assert_eq!(final_tx_gas(&result, 100_000, true, 60_000, 0), (30_000, 70_000));
     }
 }

@@ -47,6 +47,8 @@ pub struct AccountLoad {
     pub is_touched: bool,
     /// Whether the account access was cold.
     pub is_cold: bool,
+    /// Extra gas charged when EIP-7702 delegated code was loaded for execution.
+    pub delegated_code_extra_gas: u64,
 }
 
 /// Result of an `SLOAD` host operation.
@@ -529,6 +531,55 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     }
 }
 
+impl<T: EvmTypes<Host = Self>> Evm<T> {
+    fn load_account_inner(
+        &mut self,
+        address: Address,
+        load_code: bool,
+        skip_cold_load: bool,
+        resolve_delegation: bool,
+    ) -> Result<AccountLoad, InstrStop> {
+        let is_cold =
+            self.spec_id().enables(SpecId::BERLIN) && !self.state.is_account_warm(address);
+        if skip_cold_load && is_cold {
+            return Err(InstrStop::OutOfGas);
+        }
+        self.state.warm_account(address);
+        let info = self.state.account_info(address);
+        let exists = info.is_some();
+        let info = info.unwrap_or_default();
+        let code = load_code.then(|| self.state.get_code(address));
+        let mut load = AccountLoad {
+            balance: info.balance,
+            code_hash: if exists { info.code_hash } else { B256::ZERO },
+            code: code.as_ref().map_or_else(Bytes::new, Bytecode::original_bytes),
+            exists,
+            is_empty: info.is_empty(),
+            is_touched: self.state.touched.contains(&address),
+            is_cold,
+            delegated_code_extra_gas: 0,
+        };
+
+        if resolve_delegation
+            && self.spec_id().enables(SpecId::PRAGUE)
+            && let Some(delegated_address) = code.and_then(|code| code.eip7702_address())
+        {
+            load.delegated_code_extra_gas +=
+                u64::from(self.version().gas_params().get(GasId::WarmStorageReadCost));
+            let delegate_is_cold = self.spec_id().enables(SpecId::BERLIN)
+                && !self.state.is_account_warm(delegated_address);
+            self.state.warm_account(delegated_address);
+            if delegate_is_cold {
+                load.delegated_code_extra_gas +=
+                    self.version().gas_params().cold_account_additional_cost();
+            }
+            load.code = self.state.get_code(delegated_address).original_bytes();
+        }
+
+        Ok(load)
+    }
+}
+
 impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
     fn spec_id(&self) -> SpecId {
         self.spec_id()
@@ -544,28 +595,15 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
         load_code: bool,
         skip_cold_load: bool,
     ) -> Result<AccountLoad, InstrStop> {
-        let is_cold =
-            self.spec_id().enables(SpecId::BERLIN) && !self.state.is_account_warm(address);
-        if skip_cold_load && is_cold {
-            return Err(InstrStop::OutOfGas);
-        }
-        self.state.warm_account(address);
-        let info = self.state.account_info(address);
-        let exists = info.is_some();
-        let info = info.unwrap_or_default();
-        Ok(AccountLoad {
-            balance: info.balance,
-            code_hash: if exists { info.code_hash } else { B256::ZERO },
-            code: if load_code {
-                self.state.get_code(address).original_bytes()
-            } else {
-                Bytes::new()
-            },
-            exists,
-            is_empty: info.is_empty(),
-            is_touched: self.state.touched.contains(&address),
-            is_cold,
-        })
+        self.load_account_inner(address, load_code, skip_cold_load, false)
+    }
+
+    fn load_account_delegated(
+        &mut self,
+        address: Address,
+        skip_cold_load: bool,
+    ) -> Result<AccountLoad, InstrStop> {
+        self.load_account_inner(address, true, skip_cold_load, true)
     }
 
     fn block_hash(&mut self, number: Word) -> Option<B256> {
