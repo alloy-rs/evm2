@@ -19,10 +19,12 @@ pub use features::EvmFeatures;
 mod tables;
 pub use tables::VersionTables;
 
-/// Runtime version data.
+/// Runtime configuration data.
 ///
-/// Holds the active base `SpecId` and dynamic gas parameter table so instructions can read
-/// version-dependent runtime parameters without monomorphization.
+/// The name is a bit misleading: this is a catch-all runtime configuration object. It stores fork
+/// configuration such as the active base `SpecId` and EVM features, and also stores regular runtime
+/// configuration values such as chain ID, memory limits, code size limits, gas caps, and gas
+/// parameters.
 #[derive(Clone, Copy, Debug)]
 #[non_exhaustive]
 pub struct Version {
