@@ -78,26 +78,8 @@ fn path_name(path: &Path) -> String {
     path.iter().map(|component| component.to_string_lossy()).collect::<Vec<_>>().join("/")
 }
 
-const IGNORED_TESTS: &[&str] = &[
+const SLOW_TESTS: &[&str] = &[
     "CALLBlake2f_MaxRounds.json",
-    // Match revm's revme statetest skip list for EIP-7610 storage-collision
-    // fixtures. These are valid tests; revm skips them because its create
-    // collision check is not storage-aware yet. evmone handles this by treating
-    // accounts with initial storage as create collisions.
-    //
-    // Revm path skip: paris/eip7610_create_collision.
-    "eip7610_create_collision",
-    // Revm file skips.
-    "InitCollision.json",
-    "InitCollisionParis.json",
-    "RevertInCreateInInit.json",
-    "RevertInCreateInInit_Paris.json",
-    "RevertInCreateInInitCreate2.json",
-    "RevertInCreateInInitCreate2Paris.json",
-    "create2collisionStorage.json",
-    "create2collisionStorageParis.json",
-    "dynamicAccountOverwriteEmpty.json",
-    "dynamicAccountOverwriteEmpty_Paris.json",
     "loopExp",
     "loopMul.json",
     "stQuadraticComplexityTest/Call1MB1024Calldepth.json",
@@ -113,6 +95,39 @@ const IGNORED_TESTS: &[&str] = &[
     "stSystemOperationsTest/CallRecursiveBomb",
 ];
 
+// EIP-7610 create-collision fixtures require storage-aware collision handling.
+const EIP7610_CREATE_COLLISION_TESTS: &[&str] = &["eip7610_create_collision"];
+
+// Init collision fixtures require treating pre-existing storage as a collision.
+const INIT_COLLISION_TESTS: &[&str] = &["InitCollision.json", "InitCollisionParis.json"];
+
+// Revert-in-create fixtures require preserving storage-only collision state.
+const REVERT_IN_CREATE_TESTS: &[&str] =
+    &["RevertInCreateInInit.json", "RevertInCreateInInit_Paris.json"];
+
+// CREATE2 revert-in-create fixtures require storage-aware collision handling.
+const REVERT_IN_CREATE2_TESTS: &[&str] =
+    &["RevertInCreateInInitCreate2.json", "RevertInCreateInInitCreate2Paris.json"];
+
+// CREATE2 storage collision fixtures require storage-aware collision handling.
+const CREATE2_STORAGE_COLLISION_TESTS: &[&str] =
+    &["create2collisionStorage.json", "create2collisionStorageParis.json"];
+
+// Dynamic overwrite fixtures require storage-aware empty-account handling.
+const DYNAMIC_OVERWRITE_TESTS: &[&str] =
+    &["dynamicAccountOverwriteEmpty.json", "dynamicAccountOverwriteEmpty_Paris.json"];
+
 fn should_ignore(name: &str) -> bool {
-    IGNORED_TESTS.iter().any(|pattern| name.contains(pattern))
+    [
+        SLOW_TESTS,
+        EIP7610_CREATE_COLLISION_TESTS,
+        INIT_COLLISION_TESTS,
+        REVERT_IN_CREATE_TESTS,
+        REVERT_IN_CREATE2_TESTS,
+        CREATE2_STORAGE_COLLISION_TESTS,
+        DYNAMIC_OVERWRITE_TESTS,
+    ]
+    .into_iter()
+    .flatten()
+    .any(|pattern| name.contains(pattern))
 }
