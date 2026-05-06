@@ -1,6 +1,7 @@
 use alloy_consensus::{TxLegacy, transaction::Recovered};
 use alloy_primitives::{Address, Bytes, TxKind, U256};
 use evm2::{
+    SpecId, Version,
     bytecode::Bytecode,
     env::BlockEnv,
     ethereum::RecoveredTxEnvelope,
@@ -88,8 +89,8 @@ impl Case {
         db
     }
 
-    pub(crate) fn tx(&self) -> RecoveredTxEnvelope {
-        self.transaction.first().expect("fixture must contain a transaction").envelope()
+    pub(crate) fn tx(&self, spec: SpecId) -> RecoveredTxEnvelope {
+        self.transaction.first().expect("fixture must contain a transaction").envelope(spec)
     }
 }
 
@@ -150,12 +151,14 @@ struct Transaction {
 }
 
 impl Transaction {
-    fn envelope(&self) -> RecoveredTxEnvelope {
+    fn envelope(&self, spec: SpecId) -> RecoveredTxEnvelope {
+        let version = Version::base(spec);
+        let gas_limit = u64_value(self.gas_limit).min(version.tx_gas_limit_cap);
         let tx = TxLegacy {
             chain_id: None,
             nonce: u64_value(self.nonce),
             gas_price: u128_value(self.gas_price.unwrap_or_default()),
-            gas_limit: u64_value(self.gas_limit),
+            gas_limit,
             to: self.to.map_or(TxKind::Create, TxKind::Call),
             value: self.value.unwrap_or_default(),
             input: self.data.clone(),

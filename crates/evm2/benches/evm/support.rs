@@ -27,7 +27,7 @@ impl PreparedBench {
             spec: bench.spec,
             block: case.block(),
             db: case.state(),
-            tx: case.tx(),
+            tx: case.tx(bench.spec),
         }
     }
 
