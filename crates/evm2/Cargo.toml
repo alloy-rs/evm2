@@ -17,7 +17,7 @@ workspace = true
 evm2-macros.workspace = true
 
 alloy-consensus.workspace = true
-alloy-eips.workspace = true
+alloy-eips = { workspace = true, features = ["k256"] }
 alloy-primitives.workspace = true
 alloy-rlp.workspace = true
 alloy-trie = { workspace = true, features = ["ethereum"] }
@@ -128,8 +128,6 @@ std = [
     "thiserror/std",
     "k256/std",
     "secp256k1?/std",
-    "sha2/std",
-    "ripemd/std",
     "aurora-engine-modexp/std",
     "ark-bn254/std",
     "ark-ec/std",
@@ -160,7 +158,6 @@ map-foldhash = ["alloy-primitives/map-foldhash"]
 asm-keccak = ["alloy-primitives/asm-keccak"]
 sha3-keccak = ["alloy-primitives/sha3-keccak"]
 
-asm-sha2 = ["sha2/asm"]
 secp256k1 = ["dep:secp256k1"]
 gmp = ["dep:gmp-mpfr-sys"]
 bn = ["dep:bn"]

@@ -541,6 +541,20 @@ impl<D: Database> State<D> {
         self.initial.get_account(address)
     }
 
+    /// Returns whether an account is empty/non-existent for EIP-150 new-account gas checks.
+    #[inline]
+    #[must_use]
+    pub(super) fn target_is_empty_for_new_account_gas(
+        &mut self,
+        address: Address,
+        spec: SpecId,
+    ) -> bool {
+        if spec.enables(SpecId::SPURIOUS_DRAGON) {
+            return self.account_info(address).is_none_or(|info| info.is_empty());
+        }
+        self.account_info(address).is_none() && !self.touched.contains(&address)
+    }
+
     /// Returns an account if it exists.
     #[inline]
     #[must_use]

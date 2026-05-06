@@ -105,6 +105,14 @@ pub enum HandlerError {
         /// Block gas limit.
         block_gas_limit: U256,
     },
+    /// Transaction gas limit exceeds the active per-transaction gas cap.
+    #[error("transaction gas limit {gas_limit} exceeds cap {cap}")]
+    TxGasLimitGreaterThanCap {
+        /// Transaction gas limit.
+        gas_limit: u64,
+        /// Active transaction gas limit cap.
+        cap: u64,
+    },
     /// Create transaction initcode exceeds the active size limit.
     #[error("create initcode size limit exceeded: limit {limit}, got {got}")]
     CreateInitCodeSizeLimit {
@@ -133,6 +141,39 @@ pub enum HandlerError {
     /// EIP-1559 transaction is not enabled in the active specification.
     #[error("EIP-1559 transaction not supported")]
     Eip1559NotSupported,
+    /// EIP-7702 transaction is not enabled in the active specification.
+    #[error("EIP-7702 transaction not supported")]
+    Eip7702NotSupported,
+    /// EIP-7702 authorization list is empty.
+    #[error("EIP-7702 authorization list is empty")]
+    EmptyAuthorizationList,
+    /// EIP-4844 transaction is not enabled in the active specification.
+    #[error("EIP-4844 transaction not supported")]
+    Eip4844NotSupported,
+    /// EIP-4844 blob fee cap is lower than the block blob base fee.
+    #[error(
+        "blob fee cap less than blob base fee: max_fee_per_blob_gas {max_fee_per_blob_gas}, blob_base_fee {blob_base_fee}"
+    )]
+    BlobFeeCapLessThanBlobBaseFee {
+        /// Maximum fee per blob gas.
+        max_fee_per_blob_gas: U256,
+        /// Block blob base fee.
+        blob_base_fee: U256,
+    },
+    /// EIP-4844 blob transaction contains no blob hashes.
+    #[error("empty blobs")]
+    EmptyBlobs,
+    /// EIP-4844 blob transaction contains too many blob hashes.
+    #[error("too many blobs: have {have}, max {max}")]
+    TooManyBlobs {
+        /// Blob count in the transaction.
+        have: usize,
+        /// Maximum allowed blob count.
+        max: usize,
+    },
+    /// EIP-4844 blob transaction contains an unsupported versioned hash.
+    #[error("blob version not supported")]
+    BlobVersionNotSupported,
     /// Priority fee is greater than max fee.
     #[error("priority fee greater than max fee")]
     PriorityFeeGreaterThanMaxFee,

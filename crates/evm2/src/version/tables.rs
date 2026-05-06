@@ -1,5 +1,5 @@
 use crate::{
-    EvmConfig, EvmTypes,
+    EvmConfig, EvmTypes, Version,
     interpreter::{InstructionImplFn, instructions::table::unknown_instruction},
 };
 use core::fmt;
@@ -9,6 +9,8 @@ use core::fmt;
 /// Stores the static gas table and instruction implementations for a concrete `EvmTypes` family.
 /// These tables are compile-time inputs used to build the final interpreter dispatch table.
 pub struct VersionTables<T: EvmTypes> {
+    /// Active EVM version.
+    version: &'static Version,
     /// Static opcode gas table.
     static_gas_table: StaticGasTable,
     /// Instruction implementations.
@@ -35,11 +37,18 @@ impl<T: EvmTypes> VersionTables<T> {
 
     /// Creates empty type-specific version tables.
     #[inline]
-    pub(super) const fn empty() -> Self {
+    pub(super) const fn empty(version: &'static Version) -> Self {
         Self {
+            version,
             static_gas_table: StaticGasTable::empty(),
             instruction_impls: InstructionImplTable::empty(),
         }
+    }
+
+    /// Returns the active EVM version.
+    #[inline]
+    pub const fn version(&self) -> &'static Version {
+        self.version
     }
 
     /// Returns the static gas cost for `opcode`.

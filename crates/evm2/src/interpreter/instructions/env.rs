@@ -109,7 +109,7 @@ pub(crate) fn extcodesize(cx: _, [addr]: [Word]) -> Result<out> {
 #[instruction(dynamic_gas)]
 pub(crate) fn extcodehash(cx: _, [addr]: [Word]) -> Result<out> {
     let account = load_account(&mut cx, addr, false)?;
-    *out = if account.exists { b256_to_word(account.code_hash) } else { Word::ZERO };
+    *out = if account.is_empty { Word::ZERO } else { b256_to_word(account.code_hash) };
 }
 
 #[instruction(dynamic_gas)]

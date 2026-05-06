@@ -18,7 +18,7 @@ pub struct State<'a, T: EvmTypes> {
     /// Active spec identifier.
     pub spec: SpecId,
     /// Active runtime version data.
-    pub version: Version,
+    pub version: &'static Version,
     pub(crate) raw_interp: *mut Interpreter<'a, T>,
 }
 
@@ -63,7 +63,7 @@ impl<'a, T: EvmTypes> State<'a, T> {
         // Gas params are data on the active version so changes automatically affect every
         // instruction that reads them. Tracking instruction dependencies on version tables is not
         // sustainable for custom forks.
-        self.version.gas_params()
+        &self.version.gas_params
     }
 
     /// Returns linear memory.
@@ -159,10 +159,10 @@ impl MessageResult {
         if self.stop.is_success() { self.gas_refunded } else { 0 }
     }
 
-    /// Calculates the final refund amount for a top-level successful transaction.
+    /// Calculates the final refund amount for a top-level transaction.
     #[inline]
     pub const fn final_refund(&self, gas_limit: u64, is_london: bool) -> u64 {
-        if !self.stop.is_success() || self.gas_refunded <= 0 {
+        if self.gas_refunded <= 0 {
             return 0;
         }
         let max_refund_quotient = if is_london { 5 } else { 2 };
@@ -202,6 +202,9 @@ pub trait Host {
         load_code: bool,
         skip_cold_load: bool,
     ) -> Result<AccountLoad, InstrStop>;
+
+    /// Returns whether an account is empty/non-existent for new-account gas checks.
+    fn target_is_empty_for_new_account_gas(&mut self, address: Address, spec: SpecId) -> bool;
 
     /// Returns a historical block hash.
     fn block_hash(&mut self, number: Word) -> Option<B256>;

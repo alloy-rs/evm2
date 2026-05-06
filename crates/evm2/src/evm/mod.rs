@@ -118,8 +118,8 @@ impl SStore {
 pub struct SelfDestructResult {
     /// Whether the destroyed account had non-zero value.
     pub had_value: bool,
-    /// Whether the beneficiary account already exists.
-    pub target_exists: bool,
+    /// Whether the beneficiary is empty/non-existent for new-account gas checks.
+    pub target_is_empty: bool,
     /// Whether the beneficiary access was cold.
     pub is_cold: bool,
     /// Whether this account was already destroyed in this transaction.
@@ -204,6 +204,9 @@ impl<T: EvmTypes> Evm<T> {
         message: &Message,
         gas: &mut Gas,
     ) -> Option<Result<PrecompileOutput, PrecompileError>> {
+        if message.disable_precompiles {
+            return None;
+        }
         self.precompiles.execute(message.code_address, &message.input, gas)
     }
 }
@@ -240,13 +243,13 @@ impl<T: EvmTypes> Evm<T> {
     }
 
     /// Returns the active EVM version.
-    pub const fn version(&self) -> &crate::Version {
+    pub const fn version(&self) -> &'static crate::Version {
         self.execution_config.version()
     }
 
     /// Returns the active base specification ID.
     pub const fn spec_id(&self) -> SpecId {
-        self.version().spec_id()
+        self.version().spec_id
     }
 
     /// Returns the selector-specific runtime specification ID.
@@ -337,6 +340,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         let create_message = Message {
             destination: address,
             code_address: address,
+            disable_precompiles: false,
             input: Bytes::new(),
 
             kind: message.kind,
@@ -364,9 +368,9 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             {
                 Some(InstrStop::CreateContractStartingWithEF)
             } else {
-                let code_deposit_gas = output.len().saturating_mul(
-                    self.version().gas_params().get(GasId::CodeDepositCost) as usize,
-                );
+                let code_deposit_gas = output
+                    .len()
+                    .saturating_mul(self.version().gas_params.get(GasId::CodeDepositCost) as usize);
                 let code_deposit_gas = u64::try_from(code_deposit_gas).unwrap_or(u64::MAX);
                 if gas.remaining() >= code_deposit_gas {
                     gas.spend(code_deposit_gas).err()
@@ -567,6 +571,10 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
         })
     }
 
+    fn target_is_empty_for_new_account_gas(&mut self, address: Address, spec: SpecId) -> bool {
+        self.state.target_is_empty_for_new_account_gas(address, spec)
+    }
+
     fn block_hash(&mut self, number: Word) -> Option<B256> {
         self.state.initial_mut().get_block_hash(number)
     }
@@ -660,14 +668,8 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
             return Err(InstrStop::OutOfGas);
         }
         self.state.warm_account(target);
-        // EIP-161 changes account emptiness semantics: before Spurious Dragon, an empty
-        // account that exists in state is still an existing `SELFDESTRUCT` beneficiary and
-        // must not be charged EIP-150's new-account topup.
-        let target_exists = if self.spec_id().enables(SpecId::SPURIOUS_DRAGON) {
-            self.state.account_info(target).is_some_and(|info| !info.is_empty())
-        } else {
-            self.state.account_info(target).is_some()
-        };
+        let target_is_empty_for_new_account_gas =
+            self.state.target_is_empty_for_new_account_gas(target, self.spec_id());
         let previously_destroyed = self.state.is_selfdestructed(contract);
         let balance = self.state.account_info(contract).map_or(Word::ZERO, |info| info.balance);
         let should_destroy = !self.spec_id().enables(SpecId::CANCUN)
@@ -684,7 +686,7 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
 
         Ok(SelfDestructResult {
             had_value: !balance.is_zero(),
-            target_exists,
+            target_is_empty: target_is_empty_for_new_account_gas,
             is_cold,
             previously_destroyed,
         })

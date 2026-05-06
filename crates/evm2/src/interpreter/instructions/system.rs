@@ -2,7 +2,10 @@
 
 use crate::{
     EvmTypes, SpecId,
-    constants::{CALL_DEPTH_LIMIT, MAX_INITCODE_SIZE},
+    constants::{
+        CALL_DEPTH_LIMIT, EIP7702_BYTECODE_LEN, EIP7702_MAGIC_BYTES, EIP7702_VERSION,
+        MAX_INITCODE_SIZE,
+    },
     interpreter::{
         GasInstructionCx, Host, InstrStop, Message, MessageKind, MessageResult, Result, StackMut,
         State, Word, memory::resize_memory,
@@ -25,6 +28,16 @@ const fn require_non_staticcall<T: EvmTypes>(state: &State<'_, T>) -> Result {
 #[inline]
 const fn success(stop: InstrStop) -> bool {
     matches!(stop, InstrStop::Stop | InstrStop::Return | InstrStop::SelfDestruct)
+}
+
+#[inline]
+const fn should_charge_new_account_gas(
+    spec: SpecId,
+    transfers_value: bool,
+    target_is_empty_for_new_account_gas: bool,
+) -> bool {
+    target_is_empty_for_new_account_gas
+        && (!spec.enables(SpecId::SPURIOUS_DRAGON) || transfers_value)
 }
 
 #[inline]
@@ -70,29 +83,61 @@ fn memory_range_bytes<T: EvmTypes>(
     Ok(Bytes::copy_from_slice(cx.state.memory().slice(range.start, range.len())))
 }
 
+fn eip7702_address(code: &Bytes) -> Option<Address> {
+    if code.len() == EIP7702_BYTECODE_LEN
+        && code.starts_with(EIP7702_MAGIC_BYTES)
+        && code[2] == EIP7702_VERSION
+    {
+        return Some(Address::from_slice(&code[3..]));
+    }
+    None
+}
+
 fn load_acc_and_calc_gas<T: EvmTypes>(
     cx: &mut GasInstructionCx<'_, '_, T>,
     to: Address,
     transfers_value: bool,
     create_empty_account: bool,
     stack_gas_limit: u64,
-) -> Result<(u64, Bytes)> {
+) -> Result<(u64, Bytes, Address, bool)> {
     if transfers_value {
         cx.gas.spend(cx.state.gas_params().get(GasId::TransferValueCost).into())?;
     }
 
     let additional_cold_cost = cx.state.gas_params().cold_account_additional_cost();
-    let skip_cold_load = cx.gas.remaining() < additional_cold_cost;
+    let remaining_gas = cx.gas.remaining();
+    let skip_cold_load = remaining_gas < additional_cold_cost;
     let account = cx.state.host.load_account(to, true, skip_cold_load)?;
 
     let mut cost = 0;
     if account.is_cold {
         cost += additional_cold_cost;
     }
-    let is_spurious_dragon = cx.state.spec.enables(SpecId::SPURIOUS_DRAGON);
-    let creates_empty_account = create_empty_account && (!is_spurious_dragon || transfers_value);
-    let target_is_empty = if is_spurious_dragon { account.is_empty } else { !account.exists };
-    if creates_empty_account && target_is_empty {
+    let mut code = account.code;
+    let mut code_address = to;
+    if cx.state.spec.enables(SpecId::PRAGUE)
+        && let Some(delegated_address) = eip7702_address(&code)
+    {
+        cost += u64::from(cx.state.gas_params().get(GasId::WarmStorageReadCost));
+        if cost > remaining_gas {
+            return Err(InstrStop::OutOfGas);
+        }
+        let skip_cold_load = remaining_gas < cost.saturating_add(additional_cold_cost);
+        let delegated_account =
+            cx.state.host.load_account(delegated_address, true, skip_cold_load)?;
+        if delegated_account.is_cold {
+            cost += additional_cold_cost;
+        }
+        code = delegated_account.code;
+        code_address = delegated_address;
+    }
+    if create_empty_account
+        && should_charge_new_account_gas(
+            cx.state.spec,
+            transfers_value,
+            cx.state.host.target_is_empty_for_new_account_gas(to, cx.state.spec),
+        )
+    {
         cost += u64::from(cx.state.gas_params().get(GasId::NewAccountCost));
     }
     cx.gas.spend(cost)?;
@@ -108,7 +153,8 @@ fn load_acc_and_calc_gas<T: EvmTypes>(
         gas_limit = gas_limit.saturating_add(cx.state.gas_params().get(GasId::CallStipend).into());
     }
 
-    Ok((gas_limit, account.code))
+    let disable_precompiles = code_address != to;
+    Ok((gas_limit, code, code_address, disable_precompiles))
 }
 
 #[inline(never)]
@@ -139,7 +185,7 @@ fn call_inner<T: EvmTypes>(
         return_offset,
         return_len,
     )?;
-    let (gas_limit, code) = load_acc_and_calc_gas(
+    let (gas_limit, code, resolved_code_address, disable_precompiles) = load_acc_and_calc_gas(
         &mut cx,
         to,
         has_transfer,
@@ -150,10 +196,14 @@ fn call_inner<T: EvmTypes>(
 
     let current = cx.state.message();
     let (destination, caller, call_value, code_address) = match kind {
-        MessageKind::Call => (to, current.destination, value, to),
-        MessageKind::CallCode => (current.destination, current.destination, value, to),
-        MessageKind::DelegateCall => (current.destination, current.caller, current.value, to),
-        MessageKind::StaticCall => (to, current.destination, Word::ZERO, to),
+        MessageKind::Call => (to, current.destination, value, resolved_code_address),
+        MessageKind::CallCode => {
+            (current.destination, current.destination, value, resolved_code_address)
+        }
+        MessageKind::DelegateCall => {
+            (current.destination, current.caller, current.value, resolved_code_address)
+        }
+        MessageKind::StaticCall => (to, current.destination, Word::ZERO, resolved_code_address),
         _ => unreachable!("invalid call message kind"),
     };
     let message = Message {
@@ -165,6 +215,7 @@ fn call_inner<T: EvmTypes>(
         input,
         value: call_value,
         code_address,
+        disable_precompiles,
         salt: B256::ZERO,
     };
     let caller_is_static = cx.state.is_static();
@@ -254,6 +305,7 @@ fn create_inner<T: EvmTypes>(
         input: input.clone(),
         value,
         code_address: current.destination,
+        disable_precompiles: false,
         salt: salt.map(|salt| B256::from(salt.to_be_bytes())).unwrap_or_default(),
     };
     let bytecode = crate::bytecode::Bytecode::new_legacy(input);
@@ -288,11 +340,8 @@ pub(crate) fn selfdestruct(cx: _, [target]: [Word]) -> Result {
     let cold_load_gas = cx.state.gas_params().selfdestruct_cold_cost();
     let skip_cold_load = cx.gas.remaining() < cold_load_gas;
     let res = cx.state.host.selfdestruct(cx.state.message().destination, target, skip_cold_load)?;
-    let should_charge_topup = if cx.state.spec.enables(SpecId::SPURIOUS_DRAGON) {
-        res.had_value && !res.target_exists
-    } else {
-        !res.target_exists
-    };
+    let should_charge_topup =
+        should_charge_new_account_gas(cx.state.spec, res.had_value, res.target_is_empty);
     cx.gas.spend(cx.state.gas_params().selfdestruct_cost(should_charge_topup, res.is_cold))?;
     if !res.previously_destroyed {
         cx.gas.record_refund(cx.state.gas_params().get(GasId::SelfdestructRefund) as i64);
@@ -469,6 +518,37 @@ mod tests {
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::ZERO]);
         assert_eq!(interpreter.gas_remaining(), 24_279);
+        assert!(host.calls.is_empty());
+    }
+
+    #[test]
+    fn call_too_deep_skips_pre_spurious_touched_empty_account_cost() {
+        let target = Address::from([0x22; 20]);
+        let mut host =
+            TestHost { exists: false, is_empty: true, is_touched: true, ..Default::default() };
+        let mut code = Vec::new();
+        push_all(
+            &mut code,
+            [
+                Word::ZERO,
+                Word::ZERO,
+                Word::ZERO,
+                Word::ZERO,
+                Word::ZERO,
+                address_to_word(target),
+                Word::ZERO,
+            ],
+        );
+        code.extend([op::CALL, op::STOP]);
+
+        let interpreter = run(RunConfig::new(code)
+            .host(&mut host)
+            .spec(SpecId::TANGERINE)
+            .message(Message { depth: CALL_DEPTH_LIMIT, ..Default::default() })
+            .gas_limit(50_000));
+        core::assert_matches!(interpreter.err, InstrStop::Stop);
+        assert_eq!(interpreter.stack(), [Word::ZERO]);
+        assert_eq!(interpreter.gas_remaining(), 49_279);
         assert!(host.calls.is_empty());
     }
 

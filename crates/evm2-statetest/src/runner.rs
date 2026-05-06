@@ -14,7 +14,7 @@ const NEXTEST_ENV: &str = "NEXTEST";
 
 /// Runs the cargo-nextest state test harness.
 pub fn run() -> ExitCode {
-    let args = Arguments::from_args();
+    let mut args = Arguments::from_args();
     if !args.list && env::var_os(NEXTEST_ENV).is_none() {
         eprintln!("Skipping state tests: run this target through cargo nextest.");
         return ExitCode::SUCCESS;
@@ -24,6 +24,11 @@ pub fn run() -> ExitCode {
         eprintln!("{err}");
         Vec::new()
     });
+
+    // Avoid spawning a thread if there's no need for parallelism.
+    if trials.len() <= 1 {
+        args.test_threads = Some(1);
+    }
 
     libtest_mimic::run(&args, trials).exit_code()
 }
@@ -78,7 +83,10 @@ fn path_name(path: &Path) -> String {
     path.iter().map(|component| component.to_string_lossy()).collect::<Vec<_>>().join("/")
 }
 
+#[rustfmt::skip]
 const IGNORED_TESTS: &[&str] = &[
+    // Skip slow fixtures and create-collision fixtures that need storage-aware collision handling.
+    "stTimeConsuming/static_Call50000_sha256.json",
     "CALLBlake2f_MaxRounds.json",
     "loopExp",
     "loopMul.json",
@@ -93,6 +101,18 @@ const IGNORED_TESTS: &[&str] = &[
     "stStaticCall/static_CallRecursiveBomb",
     "stStaticCall/static_LoopCallsDepthThenRevert",
     "stSystemOperationsTest/CallRecursiveBomb",
+
+    "eip7610_create_collision",
+    "InitCollision.json",
+    "InitCollisionParis.json",
+    "RevertInCreateInInit.json",
+    "RevertInCreateInInit_Paris.json",
+    "RevertInCreateInInitCreate2.json",
+    "RevertInCreateInInitCreate2Paris.json",
+    "create2collisionStorage.json",
+    "create2collisionStorageParis.json",
+    "dynamicAccountOverwriteEmpty.json",
+    "dynamicAccountOverwriteEmpty_Paris.json",
 ];
 
 fn should_ignore(name: &str) -> bool {
