@@ -238,6 +238,16 @@ pub struct StorageChangeSet {
     pub slots: BTreeMap<Word, Tracked<Word>>,
 }
 
+/// State checkpoint for reverting state changes.
+#[allow(missing_copy_implementations)]
+#[derive(Debug, Eq, PartialEq)]
+pub struct StateCheckpoint {
+    /// Revert journal length at the checkpoint.
+    journal_len: usize,
+    /// Emitted log count at the checkpoint.
+    logs_len: usize,
+}
+
 /// Compact journal entry for reverting state changes.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
@@ -308,11 +318,6 @@ pub enum JournalEntry {
         /// Storage key.
         key: Word,
     },
-    /// Log was emitted.
-    Log {
-        /// Log index before emission.
-        index: usize,
-    },
 }
 
 /// Mutable EVM state with an overlay and reversible journal.
@@ -373,8 +378,8 @@ impl<D> State<D> {
 
     /// Returns a checkpoint for later rollback.
     #[inline]
-    pub const fn checkpoint(&self) -> usize {
-        self.journal.len()
+    pub const fn checkpoint(&self) -> StateCheckpoint {
+        StateCheckpoint { journal_len: self.journal.len(), logs_len: self.logs.len() }
     }
 
     /// Returns the initial database.
@@ -395,11 +400,9 @@ impl<D> State<D> {
         &self.logs
     }
 
-    /// Records a transaction log and journals it for rollback.
+    /// Records a transaction log.
     #[inline]
     pub fn log(&mut self, log: Log) {
-        let index = self.logs.len();
-        self.journal.push(JournalEntry::Log { index });
         self.logs.push(log);
     }
 
@@ -832,9 +835,11 @@ impl<D: Database> State<D> {
 
     /// Reverts state changes after the checkpoint.
     #[inline(never)]
-    pub fn rollback(&mut self, checkpoint: usize, spec: SpecId) {
-        assert!(checkpoint <= self.journal.len(), "checkpoint is past journal length");
-        while self.journal.len() != checkpoint {
+    pub fn rollback(&mut self, checkpoint: StateCheckpoint, spec: SpecId) {
+        assert!(checkpoint.journal_len <= self.journal.len(), "checkpoint is past journal length");
+        assert!(checkpoint.logs_len <= self.logs.len(), "checkpoint is past logs length");
+        self.logs.truncate(checkpoint.logs_len);
+        while self.journal.len() != checkpoint.journal_len {
             let Some(entry) = self.journal.pop() else {
                 unreachable!("checkpoint is checked above")
             };
@@ -892,9 +897,6 @@ impl<D: Database> State<D> {
                 }
                 JournalEntry::StorageWarmed { address, key } => {
                     self.accessed_storage.remove(&(address, key));
-                }
-                JournalEntry::Log { index } => {
-                    self.logs.truncate(index);
                 }
             }
         }
