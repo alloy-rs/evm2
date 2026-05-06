@@ -39,6 +39,8 @@ pub struct AccountLoad {
     pub code_hash: B256,
     /// Account code bytes.
     pub code: Bytes,
+    /// Whether the account exists in state.
+    pub exists: bool,
     /// Whether the account is empty.
     pub is_empty: bool,
     /// Whether the account access was cold.
@@ -522,15 +524,18 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
             return Err(InstrStop::OutOfGas);
         }
         self.state.warm_account(address);
-        let info = self.state.account_info(address).unwrap_or_default();
+        let info = self.state.account_info(address);
+        let exists = info.is_some();
+        let info = info.unwrap_or_default();
         Ok(AccountLoad {
             balance: info.balance,
-            code_hash: if info.is_empty() { B256::ZERO } else { info.code_hash },
+            code_hash: if exists { info.code_hash } else { B256::ZERO },
             code: if load_code {
                 self.state.get_code(address).original_bytes()
             } else {
                 Bytes::new()
             },
+            exists,
             is_empty: info.is_empty(),
             is_cold,
         })
