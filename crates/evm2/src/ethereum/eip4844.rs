@@ -34,12 +34,12 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
         effective_gas_price(max_fee_per_gas, max_priority_fee_per_gas, req.host.block.basefee);
     let max_fee_per_blob_gas = U256::from(tx.max_fee_per_blob_gas);
 
-    validate_priority_fee(max_fee_per_gas, max_priority_fee_per_gas)?;
-    validate_gas_price(spec_id, gas_price, req.host.block.basefee)?;
+    validate_priority_fee(req.host.version(), max_fee_per_gas, max_priority_fee_per_gas)?;
+    validate_gas_price(req.host.version(), gas_price, req.host.block.basefee)?;
     validate_blob_fee(max_fee_per_blob_gas, req.host.block.blob_basefee)?;
     validate_blobs(&tx.blob_versioned_hashes, max_blobs_per_tx(spec_id))?;
     validate_tx_gas_limit_cap(req.host.version(), tx.gas_limit)?;
-    validate_block_gas_limit(tx.gas_limit, req.host.block.gas_limit)?;
+    validate_block_gas_limit(req.host.version(), tx.gas_limit, req.host.block.gas_limit)?;
     validate_create_initcode(spec_id, tx.to.into(), &tx.input)?;
     validate_nonce_not_overflow(tx.nonce)?;
     let (access_list_accounts, access_list_storage_keys) = access_list_counts(&tx.access_list);

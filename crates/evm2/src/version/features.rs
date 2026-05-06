@@ -120,55 +120,55 @@ impl core::ops::Not for EvmFeatures {
 evm_features! {
     /// Checks transaction chain IDs.
     ///
-    /// Default: on.
+    /// Default: on
     TX_CHAIN_ID_CHECK = 0,
     /// Checks transaction nonces against account nonces.
     ///
-    /// Default: on.
+    /// Default: on
     NONCE_CHECK = 1,
     /// Checks that senders can pay transaction costs.
     ///
-    /// Default: on.
+    /// Default: on
     BALANCE_CHECK = 2,
     /// Checks that transaction gas limits do not exceed the block gas limit.
     ///
-    /// Default: on.
+    /// Default: on
     BLOCK_GAS_LIMIT_CHECK = 3,
     /// Applies EIP-3541 contract code prefix rejection.
     ///
-    /// Default: on.
+    /// Default: on
     EIP3541 = 4,
     /// Applies EIP-3607 sender code rejection.
     ///
-    /// Default: on.
+    /// Default: on
     EIP3607 = 5,
     /// Applies EIP-7623 calldata cost floor.
     ///
-    /// Default: on.
+    /// Default: on
     EIP7623 = 6,
     /// Checks EIP-1559 transaction fee caps against the block base fee.
     ///
-    /// Default: on.
+    /// Default: on
     BASE_FEE_CHECK = 7,
     /// Checks EIP-1559 max priority fee against max fee.
     ///
-    /// Default: on.
+    /// Default: on
     PRIORITY_FEE_CHECK = 8,
     /// Charges transaction fees.
     ///
-    /// Default: on.
+    /// Default: on
     FEE_CHARGE = 9,
     /// Applies EIP-8037 state creation gas accounting.
     ///
-    /// Default: on if Amsterdam.
+    /// Default: on if amsterdam
     EIP8037 = 10,
     /// Applies EIP-7708 ETH transfer logs.
     ///
-    /// Default: on.
+    /// Default: on
     EIP7708 = 11,
     /// Applies delayed burn logging for EIP-7708 selfdestructs.
     ///
-    /// Default: on.
+    /// Default: on
     EIP7708_DELAYED_BURN = 12,
 }
 

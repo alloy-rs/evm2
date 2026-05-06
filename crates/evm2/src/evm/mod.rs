@@ -11,7 +11,7 @@ use crate::{
         Word,
     },
     registry::{HandlerResult, TxRegistry},
-    version::GasId,
+    version::{EvmFeatures, GasId},
 };
 use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{Address, B256, Bytes, Log};
@@ -363,7 +363,8 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
                 && output.len() > MAX_CODE_SIZE
             {
                 Some(InstrStop::CreateContractSizeLimit)
-            } else if self.spec_id().enables(SpecId::LONDON)
+            } else if self.version().features.contains(EvmFeatures::EIP3541)
+                && self.spec_id().enables(SpecId::LONDON)
                 && output.first().is_some_and(|byte| *byte == 0xef)
             {
                 Some(InstrStop::CreateContractStartingWithEF)

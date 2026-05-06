@@ -21,9 +21,9 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     let spec_id = req.host.spec_id();
     let gas_price = U256::from(tx.gas_price);
 
-    validate_gas_price(spec_id, gas_price, req.host.block.basefee)?;
+    validate_gas_price(req.host.version(), gas_price, req.host.block.basefee)?;
     validate_tx_gas_limit_cap(req.host.version(), tx.gas_limit)?;
-    validate_block_gas_limit(tx.gas_limit, req.host.block.gas_limit)?;
+    validate_block_gas_limit(req.host.version(), tx.gas_limit, req.host.block.gas_limit)?;
     validate_create_initcode(spec_id, tx.to, &tx.input)?;
     validate_nonce_not_overflow(tx.nonce)?;
     let intrinsic = intrinsic_gas(req.host.version(), tx.to, &tx.input, 0, 0);
