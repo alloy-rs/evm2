@@ -90,9 +90,12 @@ impl Host for TestHost {
             code: if load_code { self.code.clone() } else { Bytes::new() },
             exists: self.exists,
             is_empty: self.is_empty,
-            is_touched: self.is_touched,
             is_cold: self.is_cold,
         })
+    }
+
+    fn account_exists(&mut self, _address: Address) -> bool {
+        self.exists || self.is_touched
     }
 
     fn block_hash(&mut self, number: Word) -> Option<B256> {

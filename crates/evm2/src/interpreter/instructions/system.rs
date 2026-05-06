@@ -91,10 +91,13 @@ fn load_acc_and_calc_gas<T: EvmTypes>(
     }
     let is_spurious_dragon = cx.state.spec.enables(SpecId::SPURIOUS_DRAGON);
     let creates_empty_account = create_empty_account && (!is_spurious_dragon || transfers_value);
-    // EIP-150 charges CALL new-account gas for untouched non-existing accounts.
-    // EIP-161 changed the check to empty accounts only when value is transferred.
-    let target_is_empty =
-        if is_spurious_dragon { account.is_empty } else { !account.exists && !account.is_touched };
+    // EIP-150 charges CALL new-account gas only when the target does not exist.
+    // EIP-161 changes this to empty accounts only when value is transferred.
+    let target_is_empty = if is_spurious_dragon {
+        account.is_empty
+    } else {
+        !account.exists && !cx.state.host.account_exists(to)
+    };
     if creates_empty_account && target_is_empty {
         cost += u64::from(cx.state.gas_params().get(GasId::NewAccountCost));
     }

@@ -43,8 +43,6 @@ pub struct AccountLoad {
     pub exists: bool,
     /// Whether the account is empty.
     pub is_empty: bool,
-    /// Whether the account was already touched in this transaction.
-    pub is_touched: bool,
     /// Whether the account access was cold.
     pub is_cold: bool,
 }
@@ -565,9 +563,16 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
             },
             exists,
             is_empty: info.is_empty(),
-            is_touched: self.state.touched.contains(&address),
             is_cold,
         })
+    }
+
+    fn account_exists(&mut self, address: Address) -> bool {
+        let Some(info) = self.state.account_info(address) else {
+            return !self.spec_id().enables(SpecId::SPURIOUS_DRAGON)
+                && self.state.touched.contains(&address);
+        };
+        !self.spec_id().enables(SpecId::SPURIOUS_DRAGON) || !info.is_empty()
     }
 
     fn block_hash(&mut self, number: Word) -> Option<B256> {
