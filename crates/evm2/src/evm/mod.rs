@@ -279,6 +279,8 @@ impl<T: EvmTypes<Tx: Typed2718>> Evm<T> {
         let handler = self.registry.try_get_by_type(tx.ty())?;
         let mut result = handler.call(tx, self);
         if let Ok(result) = &mut result {
+            let version = *self.version();
+            self.state.eip7708_emit_delayed_burn_logs(&version);
             self.state.finalize_transaction(self.spec_id());
             result.state_changes = self.state.build_state_changes();
             self.state.commit_transaction_overlay();
@@ -351,6 +353,8 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
                 ..MessageResult::default()
             };
         }
+        let version = *self.version();
+        self.state.eip7708_transfer_log(&version, message.caller, address, message.value);
 
         let create_message = Message {
             destination: address,
@@ -477,6 +481,13 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
                 ..MessageResult::default()
             };
         }
+        let version = *self.version();
+        self.state.eip7708_transfer_log(
+            &version,
+            message.caller,
+            message.destination,
+            message.value,
+        );
 
         let mut gas = Gas::new(message.gas_limit);
         if let Some(result) = self.execute_precompile(message, &mut gas) {
@@ -693,8 +704,12 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
 
         if contract != target {
             let _ = self.state.transfer(contract, target, balance);
+            let version = *self.version();
+            self.state.eip7708_transfer_log(&version, contract, target, balance);
         } else if should_destroy && !balance.is_zero() {
             self.state.add_balance(contract, Word::ZERO.wrapping_sub(balance));
+            let version = *self.version();
+            self.state.eip7708_burn_log(&version, contract, balance);
         }
         if should_destroy {
             self.state.mark_destructed(contract);
@@ -715,10 +730,11 @@ mod tests {
     use crate::{
         BaseEvmConfig, BaseEvmTypes, Precompiles, SpecId,
         bytecode::Bytecode,
+        constants::{BURN_LOG_TOPIC, ETH_TRANSFER_LOG_ADDRESS, ETH_TRANSFER_LOG_TOPIC},
         interpreter::{MessageKind, op},
         registry::TxRequest,
     };
-    use alloy_primitives::{Address, Bytes, KECCAK256_EMPTY, U256};
+    use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, U256};
 
     const TEST_TX_TYPE: u8 = 0x7f;
 
@@ -1059,5 +1075,135 @@ mod tests {
             state.account_info(to).expect("recipient account should exist").balance,
             U256::from(7)
         );
+    }
+
+    #[test]
+    fn eip7708_call_value_emits_transfer_log() {
+        let caller = Address::from([0x01; 20]);
+        let target = Address::from([0x02; 20]);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(caller, AccountInfo::default().with_balance(Word::from(10)));
+        let mut evm = Evm::<TestEvmTypes>::new(
+            SpecId::AMSTERDAM,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            database,
+            Precompiles::base(SpecId::AMSTERDAM),
+        );
+        let message = Message {
+            kind: MessageKind::Call,
+            caller,
+            destination: target,
+            code_address: target,
+            value: Word::from(7),
+            gas_limit: 50_000,
+            ..Message::default()
+        };
+
+        let result = Host::execute_message(
+            &mut evm,
+            &TxEnv::default(),
+            Bytecode::new_legacy(Bytes::from_static(&[op::STOP])),
+            &message,
+            false,
+        );
+
+        assert!(result.stop.is_success());
+        let log = evm.state.logs().first().expect("transfer log");
+        assert_eq!(log.address, ETH_TRANSFER_LOG_ADDRESS);
+        assert_eq!(
+            log.topics(),
+            &[
+                ETH_TRANSFER_LOG_TOPIC,
+                B256::left_padding_from(caller.as_slice()),
+                B256::left_padding_from(target.as_slice()),
+            ]
+        );
+        assert_eq!(log.data.data, Bytes::copy_from_slice(&Word::from(7).to_be_bytes::<32>()));
+    }
+
+    #[test]
+    fn eip7708_selfdestruct_emits_transfer_log() {
+        let contract = Address::from([0x03; 20]);
+        let target = Address::from([0x04; 20]);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(contract, AccountInfo::default().with_balance(Word::from(9)));
+        let mut evm = Evm::<TestEvmTypes>::new(
+            SpecId::AMSTERDAM,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            database,
+            Precompiles::base(SpecId::AMSTERDAM),
+        );
+
+        let result = Host::selfdestruct(&mut evm, contract, target, false).expect("selfdestruct");
+
+        assert!(result.had_value);
+        let log = evm.state.logs().first().expect("transfer log");
+        assert_eq!(log.address, ETH_TRANSFER_LOG_ADDRESS);
+        assert_eq!(
+            log.topics(),
+            &[
+                ETH_TRANSFER_LOG_TOPIC,
+                B256::left_padding_from(contract.as_slice()),
+                B256::left_padding_from(target.as_slice()),
+            ]
+        );
+        assert_eq!(log.data.data, Bytes::copy_from_slice(&Word::from(9).to_be_bytes::<32>()));
+    }
+
+    #[test]
+    fn eip7708_selfdestruct_to_self_emits_burn_log() {
+        let caller = Address::from([0xaa; 20]);
+        let contract = Address::from([0x05; 20]);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(caller, AccountInfo::default().with_balance(Word::from(11)));
+        let mut evm = Evm::<TestEvmTypes>::new(
+            SpecId::AMSTERDAM,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            database,
+            Precompiles::base(SpecId::AMSTERDAM),
+        );
+        evm.state
+            .create_account(caller, contract, Word::from(11), SpecId::AMSTERDAM)
+            .expect("created account");
+
+        let result = Host::selfdestruct(&mut evm, contract, contract, false).expect("selfdestruct");
+
+        assert!(result.had_value);
+        let log = evm.state.logs().first().expect("burn log");
+        assert_eq!(log.address, ETH_TRANSFER_LOG_ADDRESS);
+        assert_eq!(log.topics(), &[BURN_LOG_TOPIC, B256::left_padding_from(contract.as_slice())]);
+        assert_eq!(log.data.data, Bytes::copy_from_slice(&Word::from(11).to_be_bytes::<32>()));
+    }
+
+    #[test]
+    fn eip7708_delayed_burn_logs_remaining_selfdestruct_balance() {
+        let caller = Address::from([0xaa; 20]);
+        let contract = Address::from([0x06; 20]);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(caller, AccountInfo::default().with_balance(Word::from(1)));
+        let mut evm = Evm::<TestEvmTypes>::new(
+            SpecId::AMSTERDAM,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            database,
+            Precompiles::base(SpecId::AMSTERDAM),
+        );
+        evm.state
+            .create_account(caller, contract, Word::from(1), SpecId::AMSTERDAM)
+            .expect("created account");
+
+        Host::selfdestruct(&mut evm, contract, Address::from([0x07; 20]), false)
+            .expect("selfdestruct");
+        evm.state.add_balance(contract, Word::from(13));
+        let version = *evm.version();
+        evm.state.eip7708_emit_delayed_burn_logs(&version);
+
+        let log = evm.state.logs().last().expect("delayed burn log");
+        assert_eq!(log.address, ETH_TRANSFER_LOG_ADDRESS);
+        assert_eq!(log.topics(), &[BURN_LOG_TOPIC, B256::left_padding_from(contract.as_slice())]);
+        assert_eq!(log.data.data, Bytes::copy_from_slice(&Word::from(13).to_be_bytes::<32>()));
     }
 }

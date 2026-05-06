@@ -2,13 +2,14 @@
 
 use super::{SStore, db::Database};
 use crate::{
-    SpecId,
+    EvmFeatures, SpecId, Version,
     bytecode::Bytecode,
+    constants::{BURN_LOG_TOPIC, ETH_TRANSFER_LOG_ADDRESS, ETH_TRANSFER_LOG_TOPIC},
     interpreter::{InstrStop, Word},
 };
 use alloc::{collections::BTreeMap, vec::Vec};
 use alloy_primitives::{
-    Address, B256, KECCAK256_EMPTY, Log, U256,
+    Address, B256, Bytes, KECCAK256_EMPTY, Log, LogData, U256,
     map::{AddressMap, AddressSet, HashMap, HashSet, U256Map, hash_map},
 };
 
@@ -404,6 +405,68 @@ impl<D> State<D> {
     #[inline]
     pub fn log(&mut self, log: Log) {
         self.logs.push(log);
+    }
+
+    /// Records an EIP-7708 ETH transfer log if the feature is active.
+    #[inline]
+    pub fn eip7708_transfer_log(
+        &mut self,
+        version: &Version,
+        from: Address,
+        to: Address,
+        value: Word,
+    ) {
+        if !version.feature(EvmFeatures::EIP7708) || from == to || value.is_zero() {
+            return;
+        }
+        let topics = vec![
+            ETH_TRANSFER_LOG_TOPIC,
+            B256::left_padding_from(from.as_slice()),
+            B256::left_padding_from(to.as_slice()),
+        ];
+        let data = Bytes::copy_from_slice(&value.to_be_bytes::<32>());
+        self.log(Log {
+            address: ETH_TRANSFER_LOG_ADDRESS,
+            data: LogData::new(topics, data).expect("3 topics is valid"),
+        });
+    }
+
+    /// Records an EIP-7708 burn log if the feature is active.
+    #[inline]
+    pub fn eip7708_burn_log(&mut self, version: &Version, address: Address, value: Word) {
+        if !version.feature(EvmFeatures::EIP7708) || value.is_zero() {
+            return;
+        }
+        let topics = vec![BURN_LOG_TOPIC, B256::left_padding_from(address.as_slice())];
+        let data = Bytes::copy_from_slice(&value.to_be_bytes::<32>());
+        self.log(Log {
+            address: ETH_TRANSFER_LOG_ADDRESS,
+            data: LogData::new(topics, data).expect("2 topics is valid"),
+        });
+    }
+
+    /// Emits delayed EIP-7708 burn logs for self-destructed accounts that still have balance.
+    #[inline]
+    pub fn eip7708_emit_delayed_burn_logs(&mut self, version: &Version) {
+        if !version.feature(EvmFeatures::EIP7708)
+            || !version.feature(EvmFeatures::EIP7708_DELAYED_BURN)
+        {
+            return;
+        }
+
+        let mut accounts = self
+            .selfdestructs
+            .iter()
+            .copied()
+            .filter_map(|address| {
+                let balance = self.account_ref(address)?.balance;
+                (!balance.is_zero()).then_some((address, balance))
+            })
+            .collect::<Vec<_>>();
+        accounts.sort_by_key(|(address, _)| *address);
+        for (address, balance) in accounts {
+            self.eip7708_burn_log(version, address, balance);
+        }
     }
 
     /// Returns a loaded persistent storage overlay slot, if present.

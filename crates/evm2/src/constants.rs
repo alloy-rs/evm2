@@ -1,5 +1,7 @@
 //! EVM constants.
 
+use alloy_primitives::{Address, B256, address, b256};
+
 /// Maximum deployed contract bytecode size.
 ///
 /// EIP-170 - Contract code size limit.
@@ -41,3 +43,15 @@ pub(crate) const EIP7702_VERSION: u8 = 0;
 ///
 /// 2 (magic) + 1 (version) + 20 (address) = 23 bytes.
 pub(crate) const EIP7702_BYTECODE_LEN: usize = 23;
+
+/// System address used as the log emitter for EIP-7708 ETH transfer events.
+pub(crate) const ETH_TRANSFER_LOG_ADDRESS: Address =
+    address!("0xfffffffffffffffffffffffffffffffffffffffe");
+
+/// EIP-7708 transfer event topic.
+pub(crate) const ETH_TRANSFER_LOG_TOPIC: B256 =
+    b256!("0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef");
+
+/// EIP-7708 burn event topic.
+pub(crate) const BURN_LOG_TOPIC: B256 =
+    b256!("0xcc16f5dbb4873280815c1ee09dbd06736cffcc184412cf7a71a0fdb75d397ca5");
