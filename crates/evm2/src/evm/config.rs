@@ -47,12 +47,6 @@ pub trait EvmConfig<T: EvmTypes> {
 
     /// Active type-specific version tables.
     const VERSION_TABLES: &'static VersionTables<T>;
-
-    /// Creates the runtime version data for this config.
-    #[inline]
-    fn version() -> Version {
-        Version::new(Self::BASE_SPEC_ID)
-    }
 }
 
 /// Runtime EVM config selector.
@@ -94,8 +88,11 @@ impl<T: EvmTypes> Copy for ExecutionConfig<T> {}
 impl<T: EvmTypes> ExecutionConfig<T> {
     /// Creates an execution config for a concrete compile-time config.
     #[inline]
-    pub fn for_config<C: EvmConfig<T>>() -> Self {
-        Self { version: C::version(), instructions: <T as InstructionTables<C>>::INSTRUCTIONS }
+    pub const fn for_config<C: EvmConfig<T>>() -> Self {
+        Self {
+            version: Version::new(C::BASE_SPEC_ID),
+            instructions: <T as InstructionTables<C>>::INSTRUCTIONS,
+        }
     }
 
     /// Creates an execution config for a base `SpecId` through selector `F`.
@@ -103,7 +100,7 @@ impl<T: EvmTypes> ExecutionConfig<T> {
     /// The selector provides the concrete `Config<BASE_SPEC_ID>` used for the inherited base
     /// version.
     #[inline]
-    pub fn for_base_spec<F: EvmConfigSelector<T>>(base_spec_id: SpecId) -> Self {
+    pub const fn for_base_spec<F: EvmConfigSelector<T>>(base_spec_id: SpecId) -> Self {
         spec_to_generic!(base_spec_id, |BASE_SPEC_ID| {
             Self::for_config::<F::Config<BASE_SPEC_ID>>()
         })

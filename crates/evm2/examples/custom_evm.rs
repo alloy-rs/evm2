@@ -31,11 +31,17 @@ enum CustomSpecId {
     CustomOsaka,
 }
 
+impl CustomSpecId {
+    const fn base_spec_id(self) -> SpecId {
+        match self {
+            Self::MainnetOsaka | Self::CustomOsaka => SpecId::OSAKA,
+        }
+    }
+}
+
 impl From<CustomSpecId> for SpecId {
     fn from(spec_id: CustomSpecId) -> Self {
-        match spec_id {
-            CustomSpecId::MainnetOsaka | CustomSpecId::CustomOsaka => Self::OSAKA,
-        }
+        spec_id.base_spec_id()
     }
 }
 
@@ -60,10 +66,6 @@ struct CustomConfig<const BASE_SPEC_ID: u8>(());
 impl<const ID: u8> EvmConfig<CustomTypes> for CustomConfig<ID> {
     const BASE_SPEC_ID: SpecId = SpecId::try_from_u8(ID).unwrap();
     const VERSION_TABLES: &'static VersionTables<CustomTypes> = &custom_version_tables::<ID>();
-
-    fn version() -> Version {
-        custom_version(Self::BASE_SPEC_ID)
-    }
 }
 
 const fn custom_version(base_spec_id: SpecId) -> Version {
@@ -168,6 +170,14 @@ impl Args {
     const fn parse() -> Self {
         Self { spec_id: CustomSpecId::CustomOsaka, memory_limit: Some(1 << 20) }
     }
+
+    const fn version(&self) -> Version {
+        let mut version = custom_version(self.spec_id.base_spec_id());
+        if let Some(memory_limit) = self.memory_limit {
+            version.memory_limit = memory_limit;
+        }
+        version
+    }
 }
 
 // End-to-end check
@@ -185,12 +195,8 @@ fn main() {
         + 2100 // Cold SSTORE load.
         + 20_000; // SSTORE zero to non-zero.
 
-    let mut execution_config = CustomConfigSelector::execution_config(args.spec_id);
-    if let Some(memory_limit) = args.memory_limit {
-        let mut version = *execution_config.version();
-        version.memory_limit = memory_limit;
-        execution_config = execution_config.with_version(version);
-    }
+    let execution_config =
+        CustomConfigSelector::execution_config(args.spec_id).with_version(args.version());
 
     let mut evm = Evm::<CustomTypes>::new_with_execution_config(
         execution_config,
@@ -210,9 +216,7 @@ fn main() {
         CUSTOM_OPCODE_GAS,
     );
     assert_eq!(
-        <CustomConfig<{ SpecId::OSAKA as u8 }> as EvmConfig<CustomTypes>>::version()
-            .gas_params
-            .get(CUSTOM_OPCODE_DYNAMIC_GAS_ID),
+        args.version().gas_params.get(CUSTOM_OPCODE_DYNAMIC_GAS_ID),
         CUSTOM_OPCODE_DYNAMIC_GAS,
     );
 
