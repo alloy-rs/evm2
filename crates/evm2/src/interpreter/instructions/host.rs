@@ -1,5 +1,5 @@
 use crate::{
-    EvmTypes, SpecId,
+    EvmFeatures, EvmTypes, SpecId,
     interpreter::{Host, InstrStop, InstructionCx, Result, StackMut, Word, memory::resize_memory},
     utils::word_to_usize,
     version::GasId,
@@ -64,7 +64,7 @@ pub(crate) fn sstore(cx: _) -> Result {
     // EIP-8037 / Amsterdam: creating a new storage slot (original == present == 0,
     // new != 0) also consumes state gas from the reservoir before spilling into
     // regular gas.
-    if cx.state.spec.enables(SpecId::AMSTERDAM) {
+    if cx.state.version.feature(EvmFeatures::EIP8037) {
         cx.gas.spend_state(gas_params.sstore_state_gas(&state_load))?;
     }
 

@@ -2,20 +2,29 @@
 
 use crate::{
     EvmConfig, EvmTypes, SpecId,
+    constants::{
+        BLOB_BASE_FEE_UPDATE_FRACTION_CANCUN, BLOB_BASE_FEE_UPDATE_FRACTION_PRAGUE, MAX_CODE_SIZE,
+        MAX_CODE_SIZE_AMSTERDAM, MAX_INITCODE_SIZE, MAX_INITCODE_SIZE_AMSTERDAM,
+    },
     interpreter::{instructions as instr, opcode::op},
 };
-use alloy_eips::eip7825::MAX_TX_GAS_LIMIT_OSAKA;
+use alloy_eips::{eip4844::MAX_BLOBS_PER_BLOCK_DENCUN, eip7825::MAX_TX_GAS_LIMIT_OSAKA};
 
 mod gas_params;
 pub use gas_params::{GasId, GasParams};
 
+mod features;
+pub use features::EvmFeatures;
+
 mod tables;
 pub use tables::VersionTables;
 
-/// Runtime version data.
+/// Runtime configuration data.
 ///
-/// Holds the active base `SpecId` and dynamic gas parameter table so instructions can read
-/// version-dependent runtime parameters without monomorphization.
+/// The name is a bit misleading: this is a catch-all runtime configuration object. It stores fork
+/// configuration such as the active base `SpecId` and EVM features, and also stores regular runtime
+/// configuration values such as chain ID, memory limits, code size limits, gas caps, and gas
+/// parameters.
 #[derive(Clone, Copy, Debug)]
 #[non_exhaustive]
 pub struct Version {
@@ -26,10 +35,22 @@ pub struct Version {
     // instruction that reads them. Tracking instruction dependencies on version tables is not
     // sustainable for custom forks.
     pub gas_params: GasParams,
+    /// EVM feature set.
+    pub features: EvmFeatures,
+    /// Chain ID returned by the `CHAINID` opcode and used for transaction chain ID validation.
+    pub chain_id: u64,
     /// Transaction gas limit cap.
     pub tx_gas_limit_cap: u64,
     /// Hard memory limit in bytes.
     pub memory_limit: u64,
+    /// Maximum deployed contract bytecode size.
+    pub max_code_size: usize,
+    /// Maximum contract creation initcode size.
+    pub max_initcode_size: usize,
+    /// Maximum blobs allowed in a single blob transaction.
+    pub max_blobs_per_tx: usize,
+    /// Blob base fee update fraction.
+    pub blob_base_fee_update_fraction: u64,
 }
 
 impl Version {
@@ -44,21 +65,60 @@ impl Version {
     pub const fn base(spec_id: SpecId) -> &'static Self {
         &BASE_VERSIONS[spec_id as usize]
     }
+
+    /// Returns `true` if the active feature set contains `feature`.
+    #[inline]
+    pub const fn feature(&self, feature: EvmFeatures) -> bool {
+        self.features.contains(feature)
+    }
 }
 
 const fn base_tx_gas_limit_cap(spec_id: SpecId) -> u64 {
     if spec_id.enables(SpecId::OSAKA) { MAX_TX_GAS_LIMIT_OSAKA } else { u64::MAX }
 }
 
+const fn base_max_code_size(spec_id: SpecId) -> usize {
+    if spec_id.enables(SpecId::AMSTERDAM) { MAX_CODE_SIZE_AMSTERDAM } else { MAX_CODE_SIZE }
+}
+
+const fn base_max_initcode_size(spec_id: SpecId) -> usize {
+    if spec_id.enables(SpecId::AMSTERDAM) { MAX_INITCODE_SIZE_AMSTERDAM } else { MAX_INITCODE_SIZE }
+}
+
+const fn base_max_blobs_per_tx(spec_id: SpecId) -> usize {
+    // EIP-7594 Osaka tests keep the per-transaction blob cap at the Cancun cap, while
+    // Prague allows nine blobs per transaction.
+    if spec_id.enables(SpecId::PRAGUE) && !spec_id.enables(SpecId::OSAKA) {
+        9
+    } else {
+        MAX_BLOBS_PER_BLOCK_DENCUN
+    }
+}
+
+const fn base_blob_base_fee_update_fraction(spec_id: SpecId) -> u64 {
+    if spec_id.enables(SpecId::PRAGUE) {
+        BLOB_BASE_FEE_UPDATE_FRACTION_PRAGUE
+    } else {
+        BLOB_BASE_FEE_UPDATE_FRACTION_CANCUN
+    }
+}
+
 const DEFAULT_MEMORY_LIMIT: u64 = (1 << 32) - 1;
+const DEFAULT_CHAIN_ID: u64 = 1;
 
 static BASE_VERSIONS: [Version; SpecId::COUNT] = {
     let mut versions = [const {
         Version {
             spec_id: SpecId::FRONTIER,
             gas_params: GasParams::empty(),
+            features: EvmFeatures::empty(),
+            chain_id: DEFAULT_CHAIN_ID,
             tx_gas_limit_cap: u64::MAX,
             memory_limit: DEFAULT_MEMORY_LIMIT,
+            max_code_size: MAX_CODE_SIZE,
+            max_initcode_size: MAX_INITCODE_SIZE,
+            max_blobs_per_tx: MAX_BLOBS_PER_BLOCK_DENCUN,
+            blob_base_fee_update_fraction: BLOB_BASE_FEE_UPDATE_FRACTION_CANCUN,
         }
     }; SpecId::COUNT];
     let mut i = 0;
@@ -67,8 +127,14 @@ static BASE_VERSIONS: [Version; SpecId::COUNT] = {
         versions[i] = Version {
             spec_id,
             gas_params: base_gas_params(spec_id),
+            features: base_features(spec_id),
+            chain_id: DEFAULT_CHAIN_ID,
             tx_gas_limit_cap: base_tx_gas_limit_cap(spec_id),
             memory_limit: DEFAULT_MEMORY_LIMIT,
+            max_code_size: base_max_code_size(spec_id),
+            max_initcode_size: base_max_initcode_size(spec_id),
+            max_blobs_per_tx: base_max_blobs_per_tx(spec_id),
+            blob_base_fee_update_fraction: base_blob_base_fee_update_fraction(spec_id),
         };
         i += 1;
     }
@@ -76,6 +142,7 @@ static BASE_VERSIONS: [Version; SpecId::COUNT] = {
 };
 
 macro_rules! apply_base_gas_params {
+    ($gp:ident, features: [$($tokens:tt)*]) => {};
     ($gp:ident, ops: [$($tokens:tt)*]) => {};
     ($gp:ident, static_gas: [$($tokens:tt)*]) => {};
     ($gp:ident, dynamic_gas: [$($id:ident: $value:expr,)*]) => {
@@ -85,7 +152,19 @@ macro_rules! apply_base_gas_params {
     };
 }
 
+macro_rules! apply_base_features {
+    ($features:ident, features: [$($feature:ident,)*]) => {
+        $(
+            $features.insert(EvmFeatures::$feature);
+        )*
+    };
+    ($features:ident, ops: [$($tokens:tt)*]) => {};
+    ($features:ident, static_gas: [$($tokens:tt)*]) => {};
+    ($features:ident, dynamic_gas: [$($tokens:tt)*]) => {};
+}
+
 macro_rules! apply_version_tables {
+    ($v:ident, $ty:ident, features: [$($tokens:tt)*]) => {};
     ($v:ident, $ty:ident, ops: [$($name:ident: $cost:expr,)*]) => {
         $(
             $v.set_instruction(
@@ -105,6 +184,21 @@ macro_rules! apply_version_tables {
 
 macro_rules! evm_versions {
     ($($spec:ident { $($section:ident: [$($tokens:tt)*],)* })*) => {
+        /// Creates the base feature set for `spec_id`.
+        const fn base_features(spec_id: SpecId) -> EvmFeatures {
+            let mut features = EvmFeatures::empty();
+
+            $(
+                if spec_id.enables(SpecId::$spec) {
+                    $(
+                        apply_base_features!(features, $section: [$($tokens)*]);
+                    )*
+                }
+            )*
+
+            features
+        }
+
         /// Creates the base dynamic gas parameters for `spec_id`.
         const fn base_gas_params(spec_id: SpecId) -> GasParams {
             use crate::interpreter::gas::*;
@@ -142,10 +236,70 @@ macro_rules! evm_versions {
     };
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn base_versions_set_revm_cfg_env_defaults() {
+        let osaka = Version::base(SpecId::OSAKA);
+        assert!(osaka.feature(EvmFeatures::TX_CHAIN_ID_CHECK));
+        assert!(osaka.feature(EvmFeatures::NONCE_CHECK));
+        assert!(osaka.feature(EvmFeatures::BALANCE_CHECK));
+        assert!(osaka.feature(EvmFeatures::BLOCK_GAS_LIMIT_CHECK));
+        assert!(osaka.feature(EvmFeatures::EIP3541));
+        assert!(osaka.feature(EvmFeatures::EIP3607));
+        assert!(osaka.feature(EvmFeatures::EIP7623));
+        assert!(osaka.feature(EvmFeatures::BASE_FEE_CHECK));
+        assert!(osaka.feature(EvmFeatures::PRIORITY_FEE_CHECK));
+        assert!(osaka.feature(EvmFeatures::FEE_CHARGE));
+        assert!(!osaka.feature(EvmFeatures::EIP7708));
+        assert!(!osaka.feature(EvmFeatures::EIP7708_DELAYED_BURN));
+        assert!(!osaka.feature(EvmFeatures::EIP8037));
+        assert_eq!(osaka.chain_id, DEFAULT_CHAIN_ID);
+        assert_eq!(osaka.tx_gas_limit_cap, MAX_TX_GAS_LIMIT_OSAKA);
+        assert_eq!(osaka.memory_limit, DEFAULT_MEMORY_LIMIT);
+        assert_eq!(osaka.max_code_size, MAX_CODE_SIZE);
+        assert_eq!(osaka.max_initcode_size, MAX_INITCODE_SIZE);
+        assert_eq!(osaka.max_blobs_per_tx, MAX_BLOBS_PER_BLOCK_DENCUN);
+        assert_eq!(osaka.blob_base_fee_update_fraction, BLOB_BASE_FEE_UPDATE_FRACTION_PRAGUE);
+
+        let amsterdam = Version::base(SpecId::AMSTERDAM);
+        assert!(amsterdam.feature(EvmFeatures::TX_CHAIN_ID_CHECK));
+        assert!(amsterdam.feature(EvmFeatures::EIP8037));
+        assert!(amsterdam.feature(EvmFeatures::EIP7708));
+        assert!(amsterdam.feature(EvmFeatures::EIP7708_DELAYED_BURN));
+        assert_eq!(amsterdam.chain_id, DEFAULT_CHAIN_ID);
+        assert_eq!(amsterdam.tx_gas_limit_cap, MAX_TX_GAS_LIMIT_OSAKA);
+        assert_eq!(amsterdam.memory_limit, DEFAULT_MEMORY_LIMIT);
+        assert_eq!(amsterdam.max_code_size, MAX_CODE_SIZE_AMSTERDAM);
+        assert_eq!(amsterdam.max_initcode_size, MAX_INITCODE_SIZE_AMSTERDAM);
+        assert_eq!(amsterdam.max_blobs_per_tx, MAX_BLOBS_PER_BLOCK_DENCUN);
+        assert_eq!(amsterdam.blob_base_fee_update_fraction, BLOB_BASE_FEE_UPDATE_FRACTION_PRAGUE);
+
+        let cancun = Version::base(SpecId::CANCUN);
+        assert_eq!(cancun.max_blobs_per_tx, MAX_BLOBS_PER_BLOCK_DENCUN);
+        assert_eq!(cancun.blob_base_fee_update_fraction, BLOB_BASE_FEE_UPDATE_FRACTION_CANCUN);
+
+        let prague = Version::base(SpecId::PRAGUE);
+        assert_eq!(prague.max_blobs_per_tx, 9);
+        assert_eq!(prague.blob_base_fee_update_fraction, BLOB_BASE_FEE_UPDATE_FRACTION_PRAGUE);
+    }
+}
+
 const AMSTERDAM_CPSB: u32 = 1174;
 
 evm_versions! {
     FRONTIER {
+        features: [
+            TX_CHAIN_ID_CHECK,
+            NONCE_CHECK,
+            BALANCE_CHECK,
+            BLOCK_GAS_LIMIT_CHECK,
+            EIP3607,
+            PRIORITY_FEE_CHECK,
+            FEE_CHARGE,
+        ],
         ops: [
             STOP: ZERO,
             ADD: VERYLOW,
@@ -411,6 +565,10 @@ evm_versions! {
     }
 
     LONDON {
+        features: [
+            EIP3541,
+            BASE_FEE_CHECK,
+        ],
         ops: [
             BASEFEE: BASE,
         ],
@@ -450,6 +608,9 @@ evm_versions! {
     }
 
     PRAGUE {
+        features: [
+            EIP7623,
+        ],
         dynamic_gas: [
             TxEip7702PerEmptyAccountCost: EIP7702_PER_EMPTY_ACCOUNT_COST,
             TxEip7702AuthRefund: EIP7702_PER_EMPTY_ACCOUNT_COST - EIP7702_PER_AUTH_BASE_COST,
@@ -465,6 +626,11 @@ evm_versions! {
     }
 
     AMSTERDAM {
+        features: [
+            EIP8037,
+            EIP7708,
+            EIP7708_DELAYED_BURN,
+        ],
         ops: [
             DUPN: VERYLOW,
             SWAPN: VERYLOW,

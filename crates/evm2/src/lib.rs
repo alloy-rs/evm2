@@ -32,7 +32,7 @@ pub use precompiles::{
 };
 
 pub mod version;
-pub use version::{Version, VersionTables};
+pub use version::{EvmFeatures, Version, VersionTables};
 
 mod spec_id;
 pub use spec_id::SpecId;
