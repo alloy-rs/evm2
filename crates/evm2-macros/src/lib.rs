@@ -151,7 +151,7 @@ fn expand_instruction(no_stack_preamble: bool, dynamic_gas: bool, input: ItemFn)
         } else {
             quote! { evm2::interpreter::InstructionCx }
         };
-        let gas_field = dynamic_gas.then(|| quote! { gas: __evm2_gas, });
+        let gas_field = dynamic_gas.then(|| quote! { gas: __evm2_state.gas(), });
         quote! {
             let mut #cx = #cx_ty::<#evm_types> {
             pc: __evm2_pc,
@@ -176,7 +176,6 @@ fn expand_instruction(no_stack_preamble: bool, dynamic_gas: bool, input: ItemFn)
             fn execute(
                 __evm2_pc: &mut evm2::interpreter::Pc,
                 mut stack: evm2::interpreter::StackMut<'_>,
-                __evm2_gas: &mut evm2::interpreter::Gas,
                 __evm2_state: &mut evm2::interpreter::State<'_, #evm_types>,
             ) -> evm2::interpreter::Result {
                 evm2::asm_comment!(#asm_comment);

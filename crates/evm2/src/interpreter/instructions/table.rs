@@ -14,9 +14,8 @@ pub(crate) type InstructionFnRet = (*const u8, usize);
 
 /// Normal instruction function pointer.
 #[cfg(not(feature = "nightly"))]
-pub(crate) type InstructionFn<T> = extern_table!(
-    fn(pc: Pc, stack: Stack<'_>, gas: &mut Gas, state: &mut State<'_, T>) -> InstructionFnRet
-);
+pub(crate) type InstructionFn<T> =
+    extern_table!(fn(pc: Pc, stack: Stack<'_>, state: &mut State<'_, T>) -> InstructionFnRet);
 
 /// Normal instruction dispatch table.
 #[cfg(not(feature = "nightly"))]
@@ -30,14 +29,7 @@ pub(crate) type InstructionTable<T> = TailInstructionTable<T>;
 /// Tail instruction function pointer.
 #[cfg(feature = "nightly")]
 pub(crate) type TailInstructionFn<T> = extern_table!(
-    fn(
-        pc: Pc,
-        stack: Stack<'_>,
-        remaining_gas: RemainingGas,
-        gas: &mut Gas,
-        state: &mut State<'_, T>,
-        ret: u8,
-    )
+    fn(pc: Pc, stack: Stack<'_>, remaining_gas: RemainingGas, state: &mut State<'_, T>)
 );
 
 /// Tail instruction dispatch table.
@@ -46,7 +38,7 @@ pub(crate) type TailInstructionTable<T> = [TailInstructionFn<T>; 256];
 
 /// Function signature of an `#[instruction]`.
 pub type InstructionImplFn<T> =
-    fn(pc: &mut Pc, stack: StackMut<'_>, gas: &mut Gas, state: &mut State<'_, T>) -> Result;
+    fn(pc: &mut Pc, stack: StackMut<'_>, state: &mut State<'_, T>) -> Result;
 
 pub(crate) trait InstructionTables<C>: EvmTypes
 where
@@ -102,15 +94,13 @@ pub trait Instruction<T: EvmTypes = crate::BaseEvmTypes> {
     const DYNAMIC_GAS: bool = true;
 
     /// Executes this instruction.
-    fn execute(pc: &mut Pc, stack: StackMut<'_>, gas: &mut Gas, state: &mut State<'_, T>)
-    -> Result;
+    fn execute(pc: &mut Pc, stack: StackMut<'_>, state: &mut State<'_, T>) -> Result;
 }
 
 #[cold]
 pub(crate) const fn unknown_instruction<T: EvmTypes>(
     _pc: &mut Pc,
     _stack: StackMut<'_>,
-    _gas: &mut Gas,
     _state: &mut State<'_, T>,
 ) -> Result {
     Err(InstrStop::OpcodeNotFound)
@@ -213,10 +203,9 @@ extern_table! {
     fn dispatch<T: EvmTypes, C: EvmConfig<T>, const OP: u8>(
         pc: Pc,
         stack: Stack<'_>,
-        gas: &mut Gas,
         state: &mut State<'_, T>,
     ) -> InstructionFnRet {
-        dispatch_mono::<T, C>(OP, pc, stack, gas, state)
+        dispatch_mono::<T, C>(OP, pc, stack, state)
     }
 }
 
@@ -226,14 +215,13 @@ fn dispatch_mono<T: EvmTypes, C: EvmConfig<T>>(
     op: u8,
     mut pc: Pc,
     mut stack: Stack<'_>,
-    gas: &mut Gas,
     state: &mut State<'_, T>,
 ) -> InstructionFnRet {
     let instr = C::VERSION_TABLES.instruction(op).instr;
     let r;
-    match pre_step::<T, C>(gas, op) {
+    match pre_step::<T, C>(state.gas(), op) {
         Ok(()) => {
-            r = instr(&mut pc, stack.as_mut(), gas, state);
+            r = instr(&mut pc, stack.as_mut(), state);
             inc_pc(&mut pc, op);
         }
         Err(e) => r = Err(e),
@@ -253,18 +241,10 @@ extern_table! {
         pc: Pc,
         stack: Stack<'_>,
         remaining_gas: RemainingGas,
-        gas: &mut Gas,
         state: &mut State<'_, T>,
-        _ret: u8,
     ) {
-        tail_return!(tail_dispatch_mono::<T, C, DYNAMIC_GAS>(
-            pc,
-            stack,
-            remaining_gas,
-            gas,
-            state,
-            OP,
-        ));
+        assume!(pc.op() == OP);
+        tail_return!(tail_dispatch_mono::<T, C, DYNAMIC_GAS>(pc, stack, remaining_gas, state));
     }
 }
 
@@ -275,42 +255,29 @@ extern_table! {
         mut pc: Pc,
         mut stack: Stack<'_>,
         mut remaining_gas: RemainingGas,
-        gas: &mut Gas,
         state: &mut State<'_, T>,
-        op: u8,
     ) {
+        let op = pc.op();
         let instr = C::VERSION_TABLES.instruction(op).instr;
         if let Err(e) = pre_step::<T, C>(&mut remaining_gas, op) {
             cold_path();
-            tail_return!(tail_call_restore::<T>(
-                pc,
-                stack,
-                remaining_gas,
-                gas,
-                state,
-                e as u8,
-            ));
+            state.tmp = e as u8;
+            tail_return!(tail_call_restore::<T>(pc, stack, remaining_gas, state));
         }
         if DYNAMIC_GAS {
-            gas.set_remaining(remaining_gas.get());
+            state.gas().set_remaining(remaining_gas.get());
         }
-        let r = instr(&mut pc, stack.as_mut(), gas, state);
+        let r = instr(&mut pc, stack.as_mut(), state);
         if DYNAMIC_GAS {
-            remaining_gas.set(gas.remaining());
+            remaining_gas.set(state.gas().remaining());
         }
         if let Err(e) = r {
             cold_path();
-            tail_return!(tail_call_restore::<T>(
-                pc,
-                stack,
-                remaining_gas,
-                gas,
-                state,
-                e as u8,
-            ));
+            state.tmp = e as u8;
+            tail_return!(tail_call_restore::<T>(pc, stack, remaining_gas, state));
         }
         inc_pc(&mut pc, op);
-        tail_return!(tail_call_next::<T, C>(pc, stack, remaining_gas, gas, state, 0));
+        tail_return!(tail_call_next::<T, C>(pc, stack, remaining_gas, state));
     }
 }
 
@@ -321,12 +288,10 @@ extern_table! {
         pc: Pc,
         stack: Stack<'_>,
         remaining_gas: RemainingGas,
-        gas: &mut Gas,
         state: &mut State<'_, T>,
-        ret: u8,
     ) {
         let instr = <T as InstructionTables<C>>::INSTRUCTIONS[pc.op() as usize];
-        tail_return!(instr(pc, stack, remaining_gas, gas, state, ret));
+        tail_return!(instr(pc, stack, remaining_gas, state));
     }
 }
 
@@ -338,16 +303,14 @@ extern_table! {
         pc: Pc,
         stack: Stack<'_>,
         remaining_gas: RemainingGas,
-        gas: &mut Gas,
         state: &mut State<'_, T>,
-        ret: u8,
     ) {
-        gas.set_remaining(remaining_gas.get());
+        state.gas().set_remaining(remaining_gas.get());
         // SAFETY: `raw_interp` is valid for the duration of execution.
         let interp = unsafe { &mut *state.raw_interp };
         interp.pc = pc.as_ptr();
         interp.stack_len = stack.len;
-        interp.result = Err(unsafe { core::mem::transmute::<u8, InstrStop>(ret) });
+        interp.result = Err(unsafe { core::mem::transmute::<u8, InstrStop>(state.tmp) });
         // Exits by returning normally.
     }
 }

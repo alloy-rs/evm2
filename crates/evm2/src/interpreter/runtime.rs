@@ -205,11 +205,11 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         let (pc, stack_len) = instr(
             pc,
             Stack::new(&mut self.stack, stack_len),
-            &mut self.gas,
             &mut State {
                 bytecode,
                 host,
                 spec: config.version.spec_id,
+                tmp: 0,
                 version: config.version,
                 raw_interp: raw,
             },
@@ -232,15 +232,14 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
             pc,
             Stack::new(&mut self.stack, self.stack_len),
             remaining_gas,
-            &mut self.gas,
             &mut State {
                 bytecode,
                 host,
                 spec: config.version.spec_id,
+                tmp: 0,
                 version: config.version,
                 raw_interp: raw,
             },
-            0,
         );
         self.result.unwrap_err()
     }

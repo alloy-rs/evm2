@@ -30,6 +30,13 @@ DISPATCH_SYMBOLS = (
 DISPATCH_OPCODE = re.compile(r",\s*(\d+)(?:,\s*(?:true|false))?>")
 
 
+def display_path(path: Path) -> str:
+    try:
+        return str(path.relative_to(ROOT))
+    except ValueError:
+        return str(path)
+
+
 def log(message: str) -> None:
     print(f"[dump_opcode_asm] {message}", file=sys.stderr, flush=True)
 
@@ -250,12 +257,12 @@ def main() -> int:
     args = parse_args()
     opcodes = parse_opcodes()
     selected = select_opcodes(opcodes, args.mnemonics)
-    out = args.output.resolve()
+    out = args.output if args.output.is_absolute() else ROOT / args.output
     out.mkdir(parents=True, exist_ok=True)
     feature_msg = f" with features {', '.join(args.features)}" if args.features else ""
     log(
         f"dumping {len(selected)} opcode(s) from package {args.package}{feature_msg} "
-        f"to {out.relative_to(ROOT)}"
+        f"to {display_path(out)}"
     )
 
     dumps: dict[str, dict[int, list[str]]] = {}
@@ -283,8 +290,8 @@ def main() -> int:
             output,
             args.all_monomorphizations,
         )
-        log(f"wrote {path.relative_to(ROOT)}")
-    print(f"wrote {len(tasks)} file(s) to {out.relative_to(ROOT)}")
+        log(f"wrote {display_path(path)}")
+    print(f"wrote {len(tasks)} file(s) to {display_path(out)}")
 
     return 0
 
