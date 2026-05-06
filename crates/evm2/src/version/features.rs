@@ -8,20 +8,8 @@ impl EvmFeatures {
     /// Empty feature bitmap.
     pub const EMPTY: Self = Self(0);
 
-    /// Creates a feature bitmap from raw bits.
-    #[inline]
-    pub const fn from_bits(bits: u64) -> Self {
-        Self(bits)
-    }
-
     const fn from_bit(bit: u32) -> Self {
         Self(1 << bit)
-    }
-
-    /// Returns the raw feature bits.
-    #[inline]
-    pub const fn bits(self) -> u64 {
-        self.0
     }
 
     /// Returns `true` if no feature bits are set.
@@ -189,9 +177,6 @@ mod tests {
         assert!(!features.contains(EvmFeatures::NONCE_CHECK));
 
         features.set(EvmFeatures::BASE_FEE_CHECK, true);
-        assert_eq!(
-            EvmFeatures::from_bits(features.bits()),
-            EvmFeatures::TX_CHAIN_ID_CHECK | EvmFeatures::BASE_FEE_CHECK
-        );
+        assert_eq!(features, EvmFeatures::TX_CHAIN_ID_CHECK | EvmFeatures::BASE_FEE_CHECK);
     }
 }
