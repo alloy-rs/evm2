@@ -80,9 +80,14 @@ fn path_name(path: &Path) -> String {
 
 const IGNORED_TESTS: &[&str] = &[
     "CALLBlake2f_MaxRounds.json",
-    // EIP-7610 fixtures with storage checks for newly created accounts are also
-    // skipped by revm's state test runner.
+    // Match revm's revme statetest skip list for EIP-7610 storage-collision
+    // fixtures. These are valid tests; revm skips them because its create
+    // collision check is not storage-aware yet. evmone handles this by treating
+    // accounts with initial storage as create collisions.
+    //
+    // Revm path skip: paris/eip7610_create_collision.
     "eip7610_create_collision",
+    // Revm file skips.
     "InitCollision.json",
     "InitCollisionParis.json",
     "RevertInCreateInInit.json",
