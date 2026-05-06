@@ -661,12 +661,19 @@ impl<D: Database> State<D> {
     #[inline]
     #[must_use]
     pub fn transfer(&mut self, from: Address, to: Address, value: Word) -> bool {
-        if value.is_zero() || from == to {
+        if value.is_zero() {
             self.touch(to);
             return true;
         }
 
         let from_balance = self.account_info(from).map_or(Word::ZERO, |info| info.balance);
+        if from == to {
+            if from_balance < value {
+                return false;
+            }
+            self.touch(to);
+            return true;
+        }
         let Some(new_from_balance) = from_balance.checked_sub(value) else {
             return false;
         };
@@ -1145,6 +1152,17 @@ mod tests {
         state.commit_transaction_overlay();
         state.clear_transaction_state();
         assert!(state.logs().is_empty());
+    }
+
+    #[test]
+    fn transfer_to_self_requires_balance() {
+        let address = Address::from([0x77; 20]);
+        let mut database = CacheDB::default();
+        database.insert_account_info(address, AccountInfo::default().with_balance(Word::from(3)));
+        let mut state = State::new(database);
+
+        assert!(!state.transfer(address, address, Word::from(4)));
+        assert!(state.transfer(address, address, Word::from(3)));
     }
 
     #[test]

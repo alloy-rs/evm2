@@ -436,8 +436,11 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     ) -> MessageResult {
         let checkpoint = self.state.checkpoint();
         // EIP-161 state clearing depends on zero-value direct call targets being touched.
-        if matches!(message.kind, MessageKind::Call | MessageKind::StaticCall)
-            && !self.state.transfer(message.caller, message.destination, message.value)
+        // CALLCODE also needs the value-transfer balance check.
+        if matches!(
+            message.kind,
+            MessageKind::Call | MessageKind::CallCode | MessageKind::StaticCall
+        ) && !self.state.transfer(message.caller, message.destination, message.value)
         {
             return MessageResult {
                 stop: InstrStop::OutOfFunds,
