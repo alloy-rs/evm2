@@ -13,11 +13,14 @@ use evm2::{
     evm::{InMemoryDB, precompile::NoPrecompiles},
     interpreter::{Host, InstrStop, Instruction, Message, Word, op},
     registry::{HandlerResult, TxRegistry, TxRequest},
+    version::GasId,
 };
 use evm2_macros::instruction;
 
 const CUSTOM_OPCODE: u8 = 0x0c;
 const CUSTOM_OPCODE_GAS: u16 = 7;
+const CUSTOM_OPCODE_DYNAMIC_GAS_ID: GasId = GasId::Custom0;
+const CUSTOM_OPCODE_DYNAMIC_GAS: u32 = 3;
 const CUSTOM_TX_TYPE: u8 = 0x7f;
 
 // Runtime spec IDs
@@ -54,10 +57,21 @@ impl EvmTypes for CustomTypes {
 
 struct CustomConfig<const BASE_SPEC_ID: u8>(());
 
+impl<const BASE_SPEC_ID: u8> CustomConfig<BASE_SPEC_ID> {
+    const VERSION_VALUE: Version = custom_version::<BASE_SPEC_ID>();
+}
+
 impl<const BASE_SPEC_ID: u8> EvmConfig<CustomTypes> for CustomConfig<BASE_SPEC_ID> {
-    const VERSION: &'static Version = Version::base(SpecId::try_from_u8(BASE_SPEC_ID).unwrap());
+    const VERSION: &'static Version = &Self::VERSION_VALUE;
     const VERSION_TABLES: &'static VersionTables<CustomTypes> =
         &custom_version_tables::<BASE_SPEC_ID>();
+}
+
+const fn custom_version<const BASE_SPEC_ID: u8>() -> Version {
+    let base_spec_id = SpecId::try_from_u8(BASE_SPEC_ID).unwrap();
+    let mut version = *Version::base(base_spec_id);
+    version.gas_params.set(CUSTOM_OPCODE_DYNAMIC_GAS_ID, CUSTOM_OPCODE_DYNAMIC_GAS);
+    version
 }
 
 const fn custom_version_tables<const BASE_SPEC_ID: u8>() -> VersionTables<CustomTypes> {
@@ -94,6 +108,7 @@ impl EvmConfigSelector<CustomTypes> for CustomConfigSelector {
 
 #[instruction]
 fn custom(cx: _) -> Result<out> {
+    cx.gas.spend(cx.state.gas_params().get(CUSTOM_OPCODE_DYNAMIC_GAS_ID).into())?;
     *out = Word::from(0xdead_u64);
 }
 
@@ -154,6 +169,7 @@ fn main() {
     let code = Bytes::from_static(&[CUSTOM_OPCODE, op::PUSH1, 0x01, op::SSTORE, op::STOP]);
     let tx = CustomTx { target: custom_target, code };
     let expected_custom_gas = u64::from(CUSTOM_OPCODE_GAS)
+        + u64::from(CUSTOM_OPCODE_DYNAMIC_GAS)
         + 3 // PUSH1
         + 2100 // Cold SSTORE load.
         + 20_000; // SSTORE zero to non-zero.
@@ -171,6 +187,13 @@ fn main() {
             .static_gas(CUSTOM_OPCODE),
         CUSTOM_OPCODE_GAS,
     );
+    assert_eq!(
+        <CustomConfig<{ SpecId::OSAKA as u8 }> as EvmConfig<CustomTypes>>::VERSION
+            .gas_params
+            .get(CUSTOM_OPCODE_DYNAMIC_GAS_ID),
+        CUSTOM_OPCODE_DYNAMIC_GAS,
+    );
+
     let result = evm.transact(&tx).expect("custom transaction should execute");
     assert_eq!(result.stop, InstrStop::Stop);
     assert!(result.status);
