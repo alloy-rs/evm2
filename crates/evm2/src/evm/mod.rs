@@ -302,6 +302,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         if message.depth > 0 {
             // EIP-2681 caps account nonces at u64::MAX; CREATE/CREATE2 return zero
             // instead of wrapping or saturating the creator nonce.
+            // TODO: Fold this into nonce bumping so account info is not loaded repeatedly.
             if self.state.account_info(message.caller).is_some_and(|info| info.nonce == u64::MAX) {
                 return MessageResult {
                     stop: InstrStop::Return,
