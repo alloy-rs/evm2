@@ -22,6 +22,8 @@ use alloy_consensus::{
 use alloy_eips::{eip2718::Typed2718, eip2930::AccessList};
 use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, TxKind, U256};
 
+const EIP7825_TX_GAS_LIMIT_CAP: u64 = 16_777_216;
+
 /// Ethereum transaction envelope containing recovered transactions.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RecoveredTxEnvelope {
@@ -141,6 +143,20 @@ pub(super) fn validate_block_gas_limit(
         return Err(HandlerError::GasLimitMoreThanBlock {
             gas_limit: tx_gas_limit,
             block_gas_limit,
+        });
+    }
+    Ok(())
+}
+
+pub(super) const fn validate_tx_gas_limit_cap(
+    spec_id: SpecId,
+    tx_gas_limit: u64,
+) -> HandlerResult<()> {
+    // EIP-7825 caps each transaction gas limit to 2^24 starting in Osaka.
+    if spec_id.enables(SpecId::OSAKA) && tx_gas_limit > EIP7825_TX_GAS_LIMIT_CAP {
+        return Err(HandlerError::TxGasLimitGreaterThanCap {
+            gas_limit: tx_gas_limit,
+            cap: EIP7825_TX_GAS_LIMIT_CAP,
         });
     }
     Ok(())
@@ -301,12 +317,11 @@ pub(super) fn settle_gas<T: EvmTypes<Host = Evm<T>>>(
     caller: Address,
     gas_price: U256,
     tx_gas_limit: u64,
+    floor_gas: u64,
     result: MessageResult,
 ) -> TxResult {
-    let gas_remaining =
-        result.gas_remaining_after_final_refund(tx_gas_limit, spec_id.enables(SpecId::LONDON));
-    let gas_used =
-        result.gas_used_after_final_refund(tx_gas_limit, spec_id.enables(SpecId::LONDON));
+    let (gas_remaining, gas_used) =
+        final_tx_gas(&result, tx_gas_limit, spec_id.enables(SpecId::LONDON), floor_gas);
     host.state.add_balance(caller, U256::from(gas_remaining) * gas_price);
     let beneficiary_gas_price = if spec_id.enables(SpecId::LONDON) {
         gas_price.saturating_sub(host.block.basefee)
@@ -321,6 +336,21 @@ pub(super) fn settle_gas<T: EvmTypes<Host = Evm<T>>>(
         output: result.output,
         ..TxResult::default()
     }
+}
+
+const fn final_tx_gas(
+    result: &MessageResult,
+    tx_gas_limit: u64,
+    is_london: bool,
+    floor_gas: u64,
+) -> (u64, u64) {
+    let gas_remaining = result.gas_remaining_after_final_refund(tx_gas_limit, is_london);
+    let gas_used = result.gas_used_after_final_refund(tx_gas_limit, is_london);
+    // EIP-7623 charges at least the calldata floor after applying refunds.
+    if gas_used < floor_gas {
+        return (tx_gas_limit.saturating_sub(floor_gas), floor_gas);
+    }
+    (gas_remaining, gas_used)
 }
 
 pub(super) fn access_list_counts(access_list: &AccessList) -> (u64, u64) {
@@ -411,5 +441,29 @@ mod tests {
 
         assert_eq!(floor_gas(&Version::base(SpecId::SHANGHAI), &input), 0);
         assert_eq!(floor_gas(&Version::base(SpecId::PRAGUE), &input), 21_000 + 9 * 10);
+    }
+
+    #[test]
+    fn final_tx_gas_charges_calldata_floor_after_refund() {
+        let result = MessageResult {
+            stop: crate::interpreter::InstrStop::Return,
+            gas_remaining: 50_000,
+            gas_refunded: 10_000,
+            ..MessageResult::default()
+        };
+
+        assert_eq!(final_tx_gas(&result, 100_000, true, 60_000), (40_000, 60_000));
+    }
+
+    #[test]
+    fn final_tx_gas_preserves_higher_actual_usage() {
+        let result = MessageResult {
+            stop: crate::interpreter::InstrStop::Return,
+            gas_remaining: 30_000,
+            gas_refunded: 0,
+            ..MessageResult::default()
+        };
+
+        assert_eq!(final_tx_gas(&result, 100_000, true, 60_000), (30_000, 70_000));
     }
 }
