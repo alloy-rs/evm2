@@ -22,25 +22,25 @@ pub struct Version {
     spec_id: SpecId,
     /// Dynamic gas parameter table.
     gas_params: &'static GasParams,
-    /// Maximum transaction gas limit.
-    max_tx_gas_limit: u64,
+    /// Transaction gas limit cap.
+    tx_gas_limit_cap: u64,
 }
 
 impl Version {
-    /// Creates an EVM version from a base spec ID, gas parameter table, and transaction gas limit.
+    /// Creates an EVM version from a base spec ID, gas parameter table, and transaction gas cap.
     #[inline]
     pub const fn new(
         spec_id: SpecId,
         gas_params: &'static GasParams,
-        max_tx_gas_limit: u64,
+        tx_gas_limit_cap: u64,
     ) -> Self {
-        Self { spec_id, gas_params, max_tx_gas_limit }
+        Self { spec_id, gas_params, tx_gas_limit_cap }
     }
 
     /// Returns the base EVM version for `spec_id`.
     #[inline]
     pub const fn base(spec_id: SpecId) -> Self {
-        Self::new(spec_id, &BASE_GAS_PARAMS[spec_id as usize], base_max_tx_gas_limit(spec_id))
+        Self::new(spec_id, &BASE_GAS_PARAMS[spec_id as usize], base_tx_gas_limit_cap(spec_id))
     }
 
     /// Returns the base specification ID for this version.
@@ -55,14 +55,14 @@ impl Version {
         self.gas_params
     }
 
-    /// Returns the maximum transaction gas limit for this version.
+    /// Returns the transaction gas limit cap for this version.
     #[inline]
-    pub const fn max_tx_gas_limit(&self) -> u64 {
-        self.max_tx_gas_limit
+    pub const fn tx_gas_limit_cap(&self) -> u64 {
+        self.tx_gas_limit_cap
     }
 }
 
-const fn base_max_tx_gas_limit(spec_id: SpecId) -> u64 {
+const fn base_tx_gas_limit_cap(spec_id: SpecId) -> u64 {
     if spec_id.enables(SpecId::OSAKA) { MAX_TX_GAS_LIMIT_OSAKA } else { u64::MAX }
 }
 
