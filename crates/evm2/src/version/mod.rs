@@ -62,7 +62,7 @@ static BASE_VERSIONS: [Version; SpecId::COUNT] = {
         Version {
             spec_id: SpecId::FRONTIER,
             gas_params: GasParams::empty(),
-            features: EvmFeatures::EMPTY,
+            features: EvmFeatures::empty(),
             tx_gas_limit_cap: u64::MAX,
             memory_limit: DEFAULT_MEMORY_LIMIT,
         }
@@ -127,7 +127,7 @@ macro_rules! evm_versions {
     ($($spec:ident { $($section:ident: [$($tokens:tt)*],)* })*) => {
         /// Creates the base feature set for `spec_id`.
         const fn base_features(spec_id: SpecId) -> EvmFeatures {
-            let mut features = EvmFeatures::EMPTY;
+            let mut features = EvmFeatures::empty();
 
             $(
                 if spec_id.enables(SpecId::$spec) {

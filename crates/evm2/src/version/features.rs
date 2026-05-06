@@ -5,8 +5,11 @@
 pub struct EvmFeatures(u64);
 
 impl EvmFeatures {
-    /// Empty feature bitmap.
-    pub const EMPTY: Self = Self(0);
+    /// Creates an empty feature bitmap.
+    #[inline]
+    pub const fn empty() -> Self {
+        Self(0)
+    }
 
     const fn from_bit(bit: u32) -> Self {
         Self(1 << bit)
