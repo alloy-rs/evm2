@@ -159,10 +159,10 @@ impl MessageResult {
         if self.stop.is_success() { self.gas_refunded } else { 0 }
     }
 
-    /// Calculates the final refund amount for a top-level successful transaction.
+    /// Calculates the final refund amount for a top-level transaction.
     #[inline]
     pub const fn final_refund(&self, gas_limit: u64, is_london: bool) -> u64 {
-        if !self.stop.is_success() || self.gas_refunded <= 0 {
+        if self.gas_refunded <= 0 {
             return 0;
         }
         let max_refund_quotient = if is_london { 5 } else { 2 };

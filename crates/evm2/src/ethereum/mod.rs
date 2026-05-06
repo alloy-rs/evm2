@@ -3,6 +3,7 @@
 mod eip1559;
 mod eip2930;
 mod eip4844;
+mod eip7702;
 mod legacy;
 
 use crate::{
@@ -101,6 +102,7 @@ pub fn ethereum_tx_registry<T: EvmTypes<Host = Evm<T>>>()
         .with_handler(1, RecoveredTxEnvelope::as_eip2930, eip2930::handle::<T>)
         .with_handler(2, RecoveredTxEnvelope::as_eip1559, eip1559::handle::<T>)
         .with_handler(3, RecoveredTxEnvelope::as_eip4844, eip4844::handle::<T>)
+        .with_handler(4, RecoveredTxEnvelope::as_eip7702, eip7702::handle::<T>)
 }
 
 pub(super) fn validate_gas_price(
@@ -266,7 +268,7 @@ pub(super) fn initial_message<T: EvmTypes<Host = Evm<T>>>(
 ) -> (Bytecode, Message) {
     match to {
         TxKind::Call(to) => {
-            let code = host.state.get_code(to);
+            let code = initial_call_code(host, to);
             let message = Message {
                 kind: MessageKind::Call,
                 depth: 0,
@@ -296,6 +298,17 @@ pub(super) fn initial_message<T: EvmTypes<Host = Evm<T>>>(
             (Bytecode::new_legacy(input.clone()), message)
         }
     }
+}
+
+fn initial_call_code<T: EvmTypes<Host = Evm<T>>>(host: &mut Evm<T>, to: Address) -> Bytecode {
+    let code = host.state.get_code(to);
+    if host.spec_id().enables(SpecId::PRAGUE)
+        && let Some(delegated_address) = code.eip7702_address()
+    {
+        host.state.warm_account(delegated_address);
+        return host.state.get_code(delegated_address);
+    }
+    code
 }
 
 pub(super) fn rollback_failed_execution<T: EvmTypes<Host = Evm<T>>>(
