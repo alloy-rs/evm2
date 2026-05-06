@@ -213,46 +213,61 @@ impl<T: EvmTypes> Evm<T> {
 
 impl<T: EvmTypes> Evm<T> {
     /// Returns the transaction handler registry.
+    #[inline]
     pub const fn registry(&self) -> &TxRegistry<T::Tx, TxResult, Self> {
         &self.registry
     }
 
     /// Returns the backing database.
+    #[inline]
     pub const fn database(&self) -> &State<T::Database> {
         &self.state
     }
 
     /// Returns the mutable EVM state.
+    #[inline]
     pub const fn state(&self) -> &State<T::Database> {
         &self.state
     }
 
     /// Returns logs emitted by the current in-flight transaction.
+    #[inline]
     pub fn logs(&self) -> &[Log] {
         self.state.logs()
     }
 
     /// Returns the precompile provider.
+    #[inline]
     pub const fn precompiles(&self) -> &T::Precompiles {
         &self.precompiles
     }
 
     /// Returns the precompile provider mutably.
+    #[inline]
     pub const fn precompiles_mut(&mut self) -> &mut T::Precompiles {
         &mut self.precompiles
     }
 
     /// Returns the active EVM version.
+    #[inline]
     pub const fn version(&self) -> &crate::Version {
         self.execution_config.version()
     }
 
+    /// Returns `true` if the active EVM feature set contains `feature`.
+    #[inline]
+    pub const fn feature(&self, feature: EvmFeatures) -> bool {
+        self.version().feature(feature)
+    }
+
     /// Returns the active base specification ID.
+    #[inline]
     pub const fn spec_id(&self) -> SpecId {
         self.version().spec_id
     }
 
     /// Returns the selector-specific runtime specification ID.
+    #[inline]
     pub const fn config_spec_id(&self) -> T::SpecId {
         self.spec_id
     }
@@ -363,7 +378,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
                 && output.len() > MAX_CODE_SIZE
             {
                 Some(InstrStop::CreateContractSizeLimit)
-            } else if self.version().features.contains(EvmFeatures::EIP3541)
+            } else if self.feature(EvmFeatures::EIP3541)
                 && output.first().is_some_and(|byte| *byte == 0xef)
             {
                 Some(InstrStop::CreateContractStartingWithEF)

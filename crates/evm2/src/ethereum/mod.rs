@@ -108,7 +108,7 @@ pub(super) fn validate_gas_price(
     gas_price: U256,
     basefee: U256,
 ) -> HandlerResult<()> {
-    if version.features.contains(EvmFeatures::BASE_FEE_CHECK) && gas_price < basefee {
+    if version.feature(EvmFeatures::BASE_FEE_CHECK) && gas_price < basefee {
         return Err(HandlerError::FeeCapLessThanBaseFee {
             max_fee_per_gas: gas_price,
             base_fee: basefee,
@@ -122,7 +122,7 @@ pub(super) fn validate_priority_fee(
     max_fee_per_gas: U256,
     max_priority_fee_per_gas: U256,
 ) -> HandlerResult<()> {
-    if version.features.contains(EvmFeatures::PRIORITY_FEE_CHECK)
+    if version.feature(EvmFeatures::PRIORITY_FEE_CHECK)
         && max_priority_fee_per_gas > max_fee_per_gas
     {
         return Err(HandlerError::PriorityFeeGreaterThanMaxFee);
@@ -143,7 +143,7 @@ pub(super) fn validate_block_gas_limit(
     tx_gas_limit: u64,
     block_gas_limit: U256,
 ) -> HandlerResult<()> {
-    if version.features.contains(EvmFeatures::BLOCK_GAS_LIMIT_CHECK)
+    if version.feature(EvmFeatures::BLOCK_GAS_LIMIT_CHECK)
         && U256::from(tx_gas_limit) > block_gas_limit
     {
         return Err(HandlerError::GasLimitMoreThanBlock {
@@ -162,7 +162,7 @@ pub(super) const fn validate_tx_gas_limit_cap(
     // replaces this with a regular-gas cap while allowing extra transaction gas to serve as
     // the state-gas reservoir.
     let cap = version.tx_gas_limit_cap;
-    if !version.features.contains(EvmFeatures::EIP8037) && tx_gas_limit > cap {
+    if !version.feature(EvmFeatures::EIP8037) && tx_gas_limit > cap {
         return Err(HandlerError::TxGasLimitGreaterThanCap { gas_limit: tx_gas_limit, cap });
     }
     Ok(())
@@ -175,7 +175,7 @@ pub(super) const fn validate_regular_gas_limit_cap(
     floor_gas: u64,
 ) -> HandlerResult<()> {
     let cap = version.tx_gas_limit_cap;
-    if version.features.contains(EvmFeatures::EIP8037) && tx_gas_limit > cap {
+    if version.feature(EvmFeatures::EIP8037) && tx_gas_limit > cap {
         let required_regular_gas = if intrinsic > floor_gas { intrinsic } else { floor_gas };
         if required_regular_gas > cap {
             return Err(HandlerError::TxGasLimitGreaterThanCap {
@@ -229,20 +229,19 @@ pub(super) fn validate_sender<T: EvmTypes<Host = Evm<T>>>(
     max_upfront: U256,
 ) -> HandlerResult<AccountInfo> {
     let sender_info = host.state.account_info(caller).unwrap_or_default();
-    let features = host.version().features;
-    if features.contains(EvmFeatures::EIP3607) && sender_info.code_hash != KECCAK256_EMPTY {
+    if host.feature(EvmFeatures::EIP3607) && sender_info.code_hash != KECCAK256_EMPTY {
         let code = host.state.get_code(caller);
         if !code.is_empty() && !code.is_eip7702() {
             return Err(HandlerError::RejectCallerWithCode);
         }
     }
-    if features.contains(EvmFeatures::NONCE_CHECK) && sender_info.nonce != nonce {
+    if host.feature(EvmFeatures::NONCE_CHECK) && sender_info.nonce != nonce {
         return Err(HandlerError::InvalidNonce { expected: sender_info.nonce, got: nonce });
     }
-    if features.contains(EvmFeatures::BALANCE_CHECK) && sender_info.balance < max_upfront {
+    if host.feature(EvmFeatures::BALANCE_CHECK) && sender_info.balance < max_upfront {
         return Err(HandlerError::InsufficientFunds);
     }
-    if !features.contains(EvmFeatures::BALANCE_CHECK) && sender_info.balance < max_upfront {
+    if !host.feature(EvmFeatures::BALANCE_CHECK) && sender_info.balance < max_upfront {
         host.state.add_balance(caller, max_upfront - sender_info.balance);
     }
     Ok(sender_info)
@@ -282,7 +281,7 @@ pub(super) fn charge_upfront<T: EvmTypes<Host = Evm<T>>>(
     caller: Address,
     max_gas_cost: U256,
 ) {
-    if !host.version().features.contains(EvmFeatures::FEE_CHARGE) {
+    if !host.feature(EvmFeatures::FEE_CHARGE) {
         return;
     }
     host.state.add_balance(caller, Word::ZERO.wrapping_sub(max_gas_cost));
@@ -381,7 +380,7 @@ pub(super) fn settle_gas<T: EvmTypes<Host = Evm<T>>>(
 ) -> TxResult {
     let (gas_remaining, gas_used) =
         final_tx_gas(&result, tx_gas_limit, spec_id.enables(SpecId::LONDON), floor_gas);
-    if host.version().features.contains(EvmFeatures::FEE_CHARGE) {
+    if host.feature(EvmFeatures::FEE_CHARGE) {
         host.state.add_balance(caller, U256::from(gas_remaining) * gas_price);
         let beneficiary_gas_price = if spec_id.enables(SpecId::LONDON) {
             gas_price.saturating_sub(host.block.basefee)
@@ -421,7 +420,7 @@ pub(super) fn access_list_counts(access_list: &AccessList) -> (u64, u64) {
 
 /// Calculates transaction calldata floor gas.
 pub(super) fn floor_gas(version: &Version, input: &Bytes) -> u64 {
-    if !version.features.contains(EvmFeatures::EIP7623) {
+    if !version.feature(EvmFeatures::EIP7623) {
         return 0;
     }
     let params = &version.gas_params;

@@ -49,6 +49,12 @@ impl Version {
     pub const fn base(spec_id: SpecId) -> &'static Self {
         &BASE_VERSIONS[spec_id as usize]
     }
+
+    /// Returns `true` if the active feature set contains `feature`.
+    #[inline]
+    pub const fn feature(&self, feature: EvmFeatures) -> bool {
+        self.features.contains(feature)
+    }
 }
 
 const fn base_tx_gas_limit_cap(spec_id: SpecId) -> u64 {
@@ -184,25 +190,25 @@ mod tests {
     #[test]
     fn base_versions_set_revm_cfg_env_defaults() {
         let osaka = Version::base(SpecId::OSAKA);
-        assert!(osaka.features.contains(EvmFeatures::TX_CHAIN_ID_CHECK));
-        assert!(osaka.features.contains(EvmFeatures::NONCE_CHECK));
-        assert!(osaka.features.contains(EvmFeatures::BALANCE_CHECK));
-        assert!(osaka.features.contains(EvmFeatures::BLOCK_GAS_LIMIT_CHECK));
-        assert!(osaka.features.contains(EvmFeatures::EIP3541));
-        assert!(osaka.features.contains(EvmFeatures::EIP3607));
-        assert!(osaka.features.contains(EvmFeatures::EIP7623));
-        assert!(osaka.features.contains(EvmFeatures::BASE_FEE_CHECK));
-        assert!(osaka.features.contains(EvmFeatures::PRIORITY_FEE_CHECK));
-        assert!(osaka.features.contains(EvmFeatures::FEE_CHARGE));
-        assert!(!osaka.features.contains(EvmFeatures::EIP7708));
-        assert!(!osaka.features.contains(EvmFeatures::EIP7708_DELAYED_BURN));
-        assert!(!osaka.features.contains(EvmFeatures::EIP8037));
+        assert!(osaka.feature(EvmFeatures::TX_CHAIN_ID_CHECK));
+        assert!(osaka.feature(EvmFeatures::NONCE_CHECK));
+        assert!(osaka.feature(EvmFeatures::BALANCE_CHECK));
+        assert!(osaka.feature(EvmFeatures::BLOCK_GAS_LIMIT_CHECK));
+        assert!(osaka.feature(EvmFeatures::EIP3541));
+        assert!(osaka.feature(EvmFeatures::EIP3607));
+        assert!(osaka.feature(EvmFeatures::EIP7623));
+        assert!(osaka.feature(EvmFeatures::BASE_FEE_CHECK));
+        assert!(osaka.feature(EvmFeatures::PRIORITY_FEE_CHECK));
+        assert!(osaka.feature(EvmFeatures::FEE_CHARGE));
+        assert!(!osaka.feature(EvmFeatures::EIP7708));
+        assert!(!osaka.feature(EvmFeatures::EIP7708_DELAYED_BURN));
+        assert!(!osaka.feature(EvmFeatures::EIP8037));
 
         let amsterdam = Version::base(SpecId::AMSTERDAM);
-        assert!(amsterdam.features.contains(EvmFeatures::TX_CHAIN_ID_CHECK));
-        assert!(amsterdam.features.contains(EvmFeatures::EIP8037));
-        assert!(amsterdam.features.contains(EvmFeatures::EIP7708));
-        assert!(amsterdam.features.contains(EvmFeatures::EIP7708_DELAYED_BURN));
+        assert!(amsterdam.feature(EvmFeatures::TX_CHAIN_ID_CHECK));
+        assert!(amsterdam.feature(EvmFeatures::EIP8037));
+        assert!(amsterdam.feature(EvmFeatures::EIP7708));
+        assert!(amsterdam.feature(EvmFeatures::EIP7708_DELAYED_BURN));
     }
 }
 
