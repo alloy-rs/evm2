@@ -2,9 +2,13 @@
 
 use crate::{
     EvmConfig, EvmTypes, SpecId,
+    constants::{
+        BLOB_BASE_FEE_UPDATE_FRACTION_CANCUN, BLOB_BASE_FEE_UPDATE_FRACTION_PRAGUE, MAX_CODE_SIZE,
+        MAX_CODE_SIZE_AMSTERDAM, MAX_INITCODE_SIZE, MAX_INITCODE_SIZE_AMSTERDAM,
+    },
     interpreter::{instructions as instr, opcode::op},
 };
-use alloy_eips::eip7825::MAX_TX_GAS_LIMIT_OSAKA;
+use alloy_eips::{eip4844::MAX_BLOBS_PER_BLOCK_DENCUN, eip7825::MAX_TX_GAS_LIMIT_OSAKA};
 
 mod gas_params;
 pub use gas_params::{GasId, GasParams};
@@ -31,10 +35,20 @@ pub struct Version {
     pub gas_params: GasParams,
     /// EVM feature set.
     pub features: EvmFeatures,
+    /// Chain ID returned by the `CHAINID` opcode and used for transaction chain ID validation.
+    pub chain_id: u64,
     /// Transaction gas limit cap.
     pub tx_gas_limit_cap: u64,
     /// Hard memory limit in bytes.
     pub memory_limit: u64,
+    /// Maximum deployed contract bytecode size.
+    pub max_code_size: usize,
+    /// Maximum contract creation initcode size.
+    pub max_initcode_size: usize,
+    /// Maximum blobs allowed in a single blob transaction.
+    pub max_blobs_per_tx: usize,
+    /// Blob base fee update fraction.
+    pub blob_base_fee_update_fraction: u64,
 }
 
 impl Version {
@@ -61,7 +75,34 @@ const fn base_tx_gas_limit_cap(spec_id: SpecId) -> u64 {
     if spec_id.enables(SpecId::OSAKA) { MAX_TX_GAS_LIMIT_OSAKA } else { u64::MAX }
 }
 
+const fn base_max_code_size(spec_id: SpecId) -> usize {
+    if spec_id.enables(SpecId::AMSTERDAM) { MAX_CODE_SIZE_AMSTERDAM } else { MAX_CODE_SIZE }
+}
+
+const fn base_max_initcode_size(spec_id: SpecId) -> usize {
+    if spec_id.enables(SpecId::AMSTERDAM) { MAX_INITCODE_SIZE_AMSTERDAM } else { MAX_INITCODE_SIZE }
+}
+
+const fn base_max_blobs_per_tx(spec_id: SpecId) -> usize {
+    // EIP-7594 Osaka tests keep the per-transaction blob cap at the Cancun cap, while
+    // Prague allows nine blobs per transaction.
+    if spec_id.enables(SpecId::PRAGUE) && !spec_id.enables(SpecId::OSAKA) {
+        9
+    } else {
+        MAX_BLOBS_PER_BLOCK_DENCUN
+    }
+}
+
+const fn base_blob_base_fee_update_fraction(spec_id: SpecId) -> u64 {
+    if spec_id.enables(SpecId::PRAGUE) {
+        BLOB_BASE_FEE_UPDATE_FRACTION_PRAGUE
+    } else {
+        BLOB_BASE_FEE_UPDATE_FRACTION_CANCUN
+    }
+}
+
 const DEFAULT_MEMORY_LIMIT: u64 = (1 << 32) - 1;
+const DEFAULT_CHAIN_ID: u64 = 1;
 
 static BASE_VERSIONS: [Version; SpecId::COUNT] = {
     let mut versions = [const {
@@ -69,8 +110,13 @@ static BASE_VERSIONS: [Version; SpecId::COUNT] = {
             spec_id: SpecId::FRONTIER,
             gas_params: GasParams::empty(),
             features: EvmFeatures::empty(),
+            chain_id: DEFAULT_CHAIN_ID,
             tx_gas_limit_cap: u64::MAX,
             memory_limit: DEFAULT_MEMORY_LIMIT,
+            max_code_size: MAX_CODE_SIZE,
+            max_initcode_size: MAX_INITCODE_SIZE,
+            max_blobs_per_tx: MAX_BLOBS_PER_BLOCK_DENCUN,
+            blob_base_fee_update_fraction: BLOB_BASE_FEE_UPDATE_FRACTION_CANCUN,
         }
     }; SpecId::COUNT];
     let mut i = 0;
@@ -80,8 +126,13 @@ static BASE_VERSIONS: [Version; SpecId::COUNT] = {
             spec_id,
             gas_params: base_gas_params(spec_id),
             features: base_features(spec_id),
+            chain_id: DEFAULT_CHAIN_ID,
             tx_gas_limit_cap: base_tx_gas_limit_cap(spec_id),
             memory_limit: DEFAULT_MEMORY_LIMIT,
+            max_code_size: base_max_code_size(spec_id),
+            max_initcode_size: base_max_initcode_size(spec_id),
+            max_blobs_per_tx: base_max_blobs_per_tx(spec_id),
+            blob_base_fee_update_fraction: base_blob_base_fee_update_fraction(spec_id),
         };
         i += 1;
     }
@@ -203,12 +254,34 @@ mod tests {
         assert!(!osaka.feature(EvmFeatures::EIP7708));
         assert!(!osaka.feature(EvmFeatures::EIP7708_DELAYED_BURN));
         assert!(!osaka.feature(EvmFeatures::EIP8037));
+        assert_eq!(osaka.chain_id, DEFAULT_CHAIN_ID);
+        assert_eq!(osaka.tx_gas_limit_cap, MAX_TX_GAS_LIMIT_OSAKA);
+        assert_eq!(osaka.memory_limit, DEFAULT_MEMORY_LIMIT);
+        assert_eq!(osaka.max_code_size, MAX_CODE_SIZE);
+        assert_eq!(osaka.max_initcode_size, MAX_INITCODE_SIZE);
+        assert_eq!(osaka.max_blobs_per_tx, MAX_BLOBS_PER_BLOCK_DENCUN);
+        assert_eq!(osaka.blob_base_fee_update_fraction, BLOB_BASE_FEE_UPDATE_FRACTION_PRAGUE);
 
         let amsterdam = Version::base(SpecId::AMSTERDAM);
         assert!(amsterdam.feature(EvmFeatures::TX_CHAIN_ID_CHECK));
         assert!(amsterdam.feature(EvmFeatures::EIP8037));
         assert!(amsterdam.feature(EvmFeatures::EIP7708));
         assert!(amsterdam.feature(EvmFeatures::EIP7708_DELAYED_BURN));
+        assert_eq!(amsterdam.chain_id, DEFAULT_CHAIN_ID);
+        assert_eq!(amsterdam.tx_gas_limit_cap, MAX_TX_GAS_LIMIT_OSAKA);
+        assert_eq!(amsterdam.memory_limit, DEFAULT_MEMORY_LIMIT);
+        assert_eq!(amsterdam.max_code_size, MAX_CODE_SIZE_AMSTERDAM);
+        assert_eq!(amsterdam.max_initcode_size, MAX_INITCODE_SIZE_AMSTERDAM);
+        assert_eq!(amsterdam.max_blobs_per_tx, MAX_BLOBS_PER_BLOCK_DENCUN);
+        assert_eq!(amsterdam.blob_base_fee_update_fraction, BLOB_BASE_FEE_UPDATE_FRACTION_PRAGUE);
+
+        let cancun = Version::base(SpecId::CANCUN);
+        assert_eq!(cancun.max_blobs_per_tx, MAX_BLOBS_PER_BLOCK_DENCUN);
+        assert_eq!(cancun.blob_base_fee_update_fraction, BLOB_BASE_FEE_UPDATE_FRACTION_CANCUN);
+
+        let prague = Version::base(SpecId::PRAGUE);
+        assert_eq!(prague.max_blobs_per_tx, 9);
+        assert_eq!(prague.blob_base_fee_update_fraction, BLOB_BASE_FEE_UPDATE_FRACTION_PRAGUE);
     }
 }
 

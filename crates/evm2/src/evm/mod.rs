@@ -4,7 +4,7 @@ use self::precompile::{PrecompileOutput, PrecompileProvider};
 use crate::{
     EvmConfigSelector, EvmTypes, ExecutionConfig, PrecompileError, PrecompileHalt, SpecId,
     bytecode::Bytecode,
-    constants::{CALL_DEPTH_LIMIT, MAX_CODE_SIZE},
+    constants::CALL_DEPTH_LIMIT,
     env::{BlockEnv, TxEnv},
     interpreter::{
         Gas, Host, InstrStop, Interpreter, InterpreterPool, Message, MessageKind, MessageResult,
@@ -375,7 +375,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
 
         if stop.is_success() {
             let stop = if self.spec_id().enables(SpecId::SPURIOUS_DRAGON)
-                && output.len() > MAX_CODE_SIZE
+                && output.len() > self.version().max_code_size
             {
                 Some(InstrStop::CreateContractSizeLimit)
             } else if self.feature(EvmFeatures::EIP3541)

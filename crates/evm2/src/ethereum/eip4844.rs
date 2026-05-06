@@ -1,9 +1,10 @@
 use super::{
     access_list_counts, charge_upfront, effective_gas_price, floor_gas, initial_message,
     intrinsic_gas, rollback_failed_execution, settle_gas, validate_block_gas_limit,
-    validate_create_initcode, validate_floor_gas, validate_gas_price, validate_intrinsic_gas,
-    validate_nonce_not_overflow, validate_priority_fee, validate_regular_gas_limit_cap,
-    validate_sender, validate_tx_gas_limit_cap, warm_access_list, warm_base_accounts,
+    validate_chain_id, validate_create_initcode, validate_floor_gas, validate_gas_price,
+    validate_intrinsic_gas, validate_nonce_not_overflow, validate_priority_fee,
+    validate_regular_gas_limit_cap, validate_sender, validate_tx_gas_limit_cap, warm_access_list,
+    warm_base_accounts,
 };
 use crate::{
     Evm, EvmTypes, SpecId, TxResult,
@@ -13,9 +14,7 @@ use crate::{
     utils::b256_to_word,
 };
 use alloy_consensus::transaction::{Recovered, TxEip4844Variant};
-use alloy_eips::eip4844::{
-    DATA_GAS_PER_BLOB, MAX_BLOBS_PER_BLOCK_DENCUN, VERSIONED_HASH_VERSION_KZG,
-};
+use alloy_eips::eip4844::{DATA_GAS_PER_BLOB, VERSIONED_HASH_VERSION_KZG};
 use alloy_primitives::U256;
 
 pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
@@ -36,11 +35,12 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
 
     validate_priority_fee(req.host.version(), max_fee_per_gas, max_priority_fee_per_gas)?;
     validate_gas_price(req.host.version(), gas_price, req.host.block.basefee)?;
+    validate_chain_id(req.host.version(), Some(tx.chain_id), false)?;
     validate_blob_fee(max_fee_per_blob_gas, req.host.block.blob_basefee)?;
-    validate_blobs(&tx.blob_versioned_hashes, max_blobs_per_tx(spec_id))?;
+    validate_blobs(&tx.blob_versioned_hashes, req.host.version().max_blobs_per_tx)?;
     validate_tx_gas_limit_cap(req.host.version(), tx.gas_limit)?;
     validate_block_gas_limit(req.host.version(), tx.gas_limit, req.host.block.gas_limit)?;
-    validate_create_initcode(spec_id, tx.to.into(), &tx.input)?;
+    validate_create_initcode(req.host.version(), tx.to.into(), &tx.input)?;
     validate_nonce_not_overflow(tx.nonce)?;
     let (access_list_accounts, access_list_storage_keys) = access_list_counts(&tx.access_list);
     let intrinsic = intrinsic_gas(
@@ -78,7 +78,7 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     let tx_env = TxEnv {
         origin: caller,
         gas_price,
-        chain_id: U256::from(tx.chain_id),
+        chain_id: U256::from(req.host.version().chain_id),
         blob_hashes: tx.blob_versioned_hashes.iter().copied().map(b256_to_word).collect(),
     };
     let (bytecode, message) =
@@ -110,14 +110,4 @@ fn validate_blobs(blobs: &[alloy_primitives::B256], max_blobs: usize) -> Handler
         return Err(HandlerError::BlobVersionNotSupported);
     }
     Ok(())
-}
-
-const fn max_blobs_per_tx(spec_id: SpecId) -> usize {
-    // EIP-7594 Osaka tests keep the per-transaction blob cap at the Cancun cap, while
-    // Prague allows nine blobs per transaction.
-    if spec_id.enables(SpecId::PRAGUE) && !spec_id.enables(SpecId::OSAKA) {
-        9
-    } else {
-        MAX_BLOBS_PER_BLOCK_DENCUN
-    }
 }

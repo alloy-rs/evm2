@@ -80,6 +80,17 @@ pub enum HandlerError {
         /// Transaction nonce.
         got: u64,
     },
+    /// Transaction chain ID does not match the active chain.
+    #[error("invalid chain id: expected {expected}, got {got}")]
+    InvalidChainId {
+        /// Active chain ID.
+        expected: u64,
+        /// Transaction chain ID.
+        got: u64,
+    },
+    /// Transaction chain ID is required.
+    #[error("missing chain id")]
+    MissingChainId,
     /// Transaction gas limit is lower than intrinsic gas.
     #[error("intrinsic gas too low: required {required}, got {got}")]
     IntrinsicGasTooLow {

@@ -9,7 +9,6 @@ mod legacy;
 use crate::{
     Evm, EvmFeatures, EvmTypes, SpecId, TxResult, Version,
     bytecode::Bytecode,
-    constants::MAX_INITCODE_SIZE,
     evm::{AccountInfo, StateCheckpoint, precompile::PrecompileProvider},
     interpreter::{Message, MessageKind, MessageResult, Word},
     registry::{HandlerError, HandlerResult, TxRegistry},
@@ -187,14 +186,34 @@ pub(super) const fn validate_regular_gas_limit_cap(
     Ok(())
 }
 
+pub(super) const fn validate_chain_id(
+    version: &Version,
+    chain_id: Option<u64>,
+    allow_missing: bool,
+) -> HandlerResult<()> {
+    if !version.feature(EvmFeatures::TX_CHAIN_ID_CHECK) {
+        return Ok(());
+    }
+    let Some(chain_id) = chain_id else {
+        return if allow_missing { Ok(()) } else { Err(HandlerError::MissingChainId) };
+    };
+    if chain_id != version.chain_id {
+        return Err(HandlerError::InvalidChainId { expected: version.chain_id, got: chain_id });
+    }
+    Ok(())
+}
+
 pub(super) fn validate_create_initcode(
-    spec_id: SpecId,
+    version: &Version,
     to: TxKind,
     input: &Bytes,
 ) -> HandlerResult<()> {
-    if spec_id.enables(SpecId::SHANGHAI) && to.is_create() && input.len() > MAX_INITCODE_SIZE {
+    if version.spec_id.enables(SpecId::SHANGHAI)
+        && to.is_create()
+        && input.len() > version.max_initcode_size
+    {
         return Err(HandlerError::CreateInitCodeSizeLimit {
-            limit: MAX_INITCODE_SIZE,
+            limit: version.max_initcode_size,
             got: input.len(),
         });
     }
@@ -538,6 +557,18 @@ mod tests {
         );
         prague.features.remove(EvmFeatures::BLOCK_GAS_LIMIT_CHECK);
         assert_eq!(validate_block_gas_limit(&prague, 2, U256::ONE), Ok(()));
+
+        let mut version = Version::new(SpecId::OSAKA);
+        version.chain_id = 10;
+        assert_eq!(validate_chain_id(&version, Some(10), false), Ok(()));
+        assert_eq!(
+            validate_chain_id(&version, Some(1), false),
+            Err(HandlerError::InvalidChainId { expected: 10, got: 1 })
+        );
+        assert_eq!(validate_chain_id(&version, None, false), Err(HandlerError::MissingChainId));
+        assert_eq!(validate_chain_id(&version, None, true), Ok(()));
+        version.features.remove(EvmFeatures::TX_CHAIN_ID_CHECK);
+        assert_eq!(validate_chain_id(&version, Some(1), false), Ok(()));
     }
 
     #[test]
