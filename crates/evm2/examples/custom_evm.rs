@@ -159,20 +159,15 @@ fn custom_registry() -> TxRegistry<CustomTx, evm2::TxResult, Evm<CustomTypes>> {
 #[derive(Debug)]
 struct Args {
     spec_id: CustomSpecId,
-    memory_limit: Option<u64>,
+    version: Version,
 }
 
 impl Args {
     fn parse() -> Self {
-        Self { spec_id: CustomSpecId::CustomOsaka, memory_limit: Some(1 << 20) }
-    }
-
-    fn version(&self) -> Version {
-        let mut version = custom_version(self.spec_id.into());
-        if let Some(memory_limit) = self.memory_limit {
-            version.memory_limit = memory_limit;
-        }
-        version
+        let spec_id = CustomSpecId::CustomOsaka;
+        let mut version = custom_version(spec_id.into());
+        version.memory_limit = 1 << 20;
+        Self { spec_id, version }
     }
 }
 
@@ -192,7 +187,7 @@ fn main() {
         + 20_000; // SSTORE zero to non-zero.
 
     let execution_config =
-        CustomConfigSelector::execution_config(args.spec_id).with_version(args.version());
+        CustomConfigSelector::execution_config(args.spec_id).with_version(args.version);
 
     let mut evm = Evm::<CustomTypes>::new_with_execution_config(
         execution_config,
@@ -203,16 +198,14 @@ fn main() {
         NoPrecompiles,
     );
     assert_eq!(evm.spec_id(), SpecId::OSAKA);
-    if let Some(memory_limit) = args.memory_limit {
-        assert_eq!(evm.version().memory_limit, memory_limit);
-    }
+    assert_eq!(evm.version().memory_limit, args.version.memory_limit);
     assert_eq!(
         <CustomConfig<{ SpecId::OSAKA as u8 }> as EvmConfig<CustomTypes>>::VERSION_TABLES
             .static_gas(CUSTOM_OPCODE),
         CUSTOM_OPCODE_GAS,
     );
     assert_eq!(
-        args.version().gas_params.get(CUSTOM_OPCODE_DYNAMIC_GAS_ID),
+        args.version.gas_params.get(CUSTOM_OPCODE_DYNAMIC_GAS_ID),
         CUSTOM_OPCODE_DYNAMIC_GAS,
     );
 
