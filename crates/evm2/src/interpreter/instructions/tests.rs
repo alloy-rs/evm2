@@ -28,6 +28,7 @@ pub(crate) struct TestHost {
     pub(super) block: BlockEnv,
     pub(super) code_hash: B256,
     pub(super) code: Bytes,
+    pub(super) exists: bool,
     pub(super) is_empty: bool,
     pub(super) is_cold: bool,
     pub(super) storage: HashMap<(Address, Word), Word>,
@@ -47,6 +48,7 @@ impl Default for TestHost {
             block: BlockEnv::default(),
             code_hash: B256::ZERO,
             code: Bytes::new(),
+            exists: true,
             is_empty: false,
             is_cold: false,
             storage: HashMap::default(),
@@ -84,6 +86,7 @@ impl Host for TestHost {
             balance: address.into_word().into(),
             code_hash: self.code_hash,
             code: if load_code { self.code.clone() } else { Bytes::new() },
+            exists: self.exists,
             is_empty: self.is_empty,
             is_cold: self.is_cold,
         })

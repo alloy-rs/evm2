@@ -39,6 +39,8 @@ pub struct AccountLoad {
     pub code_hash: B256,
     /// Account code bytes.
     pub code: Bytes,
+    /// Whether the account exists in state.
+    pub exists: bool,
     /// Whether the account is empty.
     pub is_empty: bool,
     /// Whether the account access was cold.
@@ -311,7 +313,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         if let Err(stop) =
             self.state.create_account(message.caller, address, message.value, self.spec_id())
         {
-            self.state.rollback(checkpoint);
+            self.state.rollback(checkpoint, self.spec_id());
             return MessageResult {
                 stop,
                 gas_remaining: message.gas_limit,
@@ -356,7 +358,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             };
 
             if let Some(stop) = stop {
-                self.state.rollback(checkpoint);
+                self.state.rollback(checkpoint, self.spec_id());
                 gas_remaining = if stop.is_halt() { 0 } else { gas.remaining() };
                 return MessageResult {
                     stop,
@@ -371,7 +373,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             gas_refunded = gas.refunded();
             self.state.set_code(address, Bytecode::new_legacy(output.clone()));
         } else {
-            self.state.rollback(checkpoint);
+            self.state.rollback(checkpoint, self.spec_id());
             if stop.is_halt() {
                 gas_remaining = 0;
             }
@@ -420,7 +422,8 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         caller_is_static: bool,
     ) -> MessageResult {
         let checkpoint = self.state.checkpoint();
-        if matches!(message.kind, MessageKind::Call)
+        // EIP-161 state clearing depends on zero-value direct call targets being touched.
+        if matches!(message.kind, MessageKind::Call | MessageKind::StaticCall)
             && !self.state.transfer(message.caller, message.destination, message.value)
         {
             return MessageResult {
@@ -447,7 +450,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
                 }
             };
             if !stop.is_success() {
-                self.state.rollback(checkpoint);
+                self.state.rollback(checkpoint, self.spec_id());
             }
             return MessageResult {
                 stop,
@@ -466,7 +469,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         let mut gas_remaining = child_gas.remaining();
 
         if !stop.is_success() {
-            self.state.rollback(checkpoint);
+            self.state.rollback(checkpoint, self.spec_id());
             if stop.is_halt() {
                 gas_remaining = 0;
             }
@@ -521,15 +524,18 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
             return Err(InstrStop::OutOfGas);
         }
         self.state.warm_account(address);
-        let info = self.state.account_info(address).unwrap_or_default();
+        let info = self.state.account_info(address);
+        let exists = info.is_some();
+        let info = info.unwrap_or_default();
         Ok(AccountLoad {
             balance: info.balance,
-            code_hash: if info.is_empty() { B256::ZERO } else { info.code_hash },
+            code_hash: if exists { info.code_hash } else { B256::ZERO },
             code: if load_code {
                 self.state.get_code(address).original_bytes()
             } else {
                 Bytes::new()
             },
+            exists,
             is_empty: info.is_empty(),
             is_cold,
         })
@@ -773,6 +779,83 @@ mod tests {
 
         let result = Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &message, false);
         assert!(result.stop.is_success());
+    }
+
+    #[test]
+    fn staticcall_touches_empty_existing_destination() {
+        let target = Address::from([0x11; 20]);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(target, AccountInfo::default());
+        database.insert_account_storage(target, Word::ZERO, Word::from(1));
+        let mut evm = Evm::<TestEvmTypes>::new(
+            SpecId::SPURIOUS_DRAGON,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            database,
+            Precompiles::base(SpecId::SPURIOUS_DRAGON),
+        );
+        let message = Message {
+            kind: MessageKind::StaticCall,
+            destination: target,
+            code_address: target,
+            gas_limit: 50_000,
+            ..Message::default()
+        };
+
+        let result = Host::execute_message(
+            &mut evm,
+            &TxEnv::default(),
+            Bytecode::default(),
+            &message,
+            false,
+        );
+        assert!(result.stop.is_success());
+
+        evm.state.finalize_transaction(SpecId::SPURIOUS_DRAGON);
+        let changes = evm.state.build_state_changes();
+        let account = changes.accounts.get(&target).expect("empty destination should be deleted");
+        assert!(account.original.is_some());
+        assert_eq!(account.current, None);
+        assert!(changes.storage.get(&target).is_some_and(|storage| storage.wipe));
+    }
+
+    #[test]
+    fn delegatecall_does_not_touch_empty_code_address() {
+        let destination = Address::from([0x11; 20]);
+        let code_address = Address::from([0x22; 20]);
+        let mut database = InMemoryDB::default();
+        database
+            .insert_account_info(destination, AccountInfo::default().with_balance(Word::from(1)));
+        database.insert_account_info(code_address, AccountInfo::default());
+        database.insert_account_storage(code_address, Word::ZERO, Word::from(1));
+        let mut evm = Evm::<TestEvmTypes>::new(
+            SpecId::SPURIOUS_DRAGON,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            database,
+            Precompiles::base(SpecId::SPURIOUS_DRAGON),
+        );
+        let message = Message {
+            kind: MessageKind::DelegateCall,
+            destination,
+            code_address,
+            gas_limit: 50_000,
+            ..Message::default()
+        };
+
+        let result = Host::execute_message(
+            &mut evm,
+            &TxEnv::default(),
+            Bytecode::default(),
+            &message,
+            false,
+        );
+        assert!(result.stop.is_success());
+
+        evm.state.finalize_transaction(SpecId::SPURIOUS_DRAGON);
+        let changes = evm.state.build_state_changes();
+        assert!(!changes.accounts.contains_key(&code_address));
+        assert!(!changes.storage.contains_key(&code_address));
     }
 
     #[test]
