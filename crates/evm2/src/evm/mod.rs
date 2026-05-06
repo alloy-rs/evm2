@@ -243,7 +243,7 @@ impl<T: EvmTypes> Evm<T> {
     }
 
     /// Returns the active EVM version.
-    pub const fn version(&self) -> &crate::Version {
+    pub const fn version(&self) -> &'static crate::Version {
         self.execution_config.version()
     }
 

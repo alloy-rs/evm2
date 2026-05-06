@@ -18,7 +18,7 @@ pub struct State<'a, T: EvmTypes> {
     /// Active spec identifier.
     pub spec: SpecId,
     /// Active runtime version data.
-    pub version: Version,
+    pub version: &'static Version,
     pub(crate) raw_interp: *mut Interpreter<'a, T>,
 }
 

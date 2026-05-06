@@ -10,7 +10,7 @@ use core::fmt;
 /// These tables are compile-time inputs used to build the final interpreter dispatch table.
 pub struct VersionTables<T: EvmTypes> {
     /// Active EVM version.
-    version: Version,
+    version: &'static Version,
     /// Static opcode gas table.
     static_gas_table: StaticGasTable,
     /// Instruction implementations.
@@ -31,7 +31,7 @@ impl<T: EvmTypes> VersionTables<T> {
 
     /// Creates empty type-specific version tables.
     #[inline]
-    pub(super) const fn empty(version: Version) -> Self {
+    pub(super) const fn empty(version: &'static Version) -> Self {
         Self {
             version,
             static_gas_table: StaticGasTable::empty(),
@@ -41,8 +41,8 @@ impl<T: EvmTypes> VersionTables<T> {
 
     /// Returns the active EVM version.
     #[inline]
-    pub const fn version(&self) -> &Version {
-        &self.version
+    pub const fn version(&self) -> &'static Version {
+        self.version
     }
 
     /// Returns the static gas cost for `opcode`.

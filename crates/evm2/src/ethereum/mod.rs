@@ -149,7 +149,7 @@ pub(super) fn validate_block_gas_limit(
 }
 
 pub(super) const fn validate_tx_gas_limit_cap(
-    version: &Version,
+    version: &'static Version,
     tx_gas_limit: u64,
 ) -> HandlerResult<()> {
     // EIP-7825 caps each transaction gas limit to 2^24 in Osaka. Amsterdam/EIP-8037
@@ -163,7 +163,7 @@ pub(super) const fn validate_tx_gas_limit_cap(
 }
 
 pub(super) const fn validate_regular_gas_limit_cap(
-    version: &Version,
+    version: &'static Version,
     tx_gas_limit: u64,
     intrinsic: u64,
     floor_gas: u64,
@@ -403,7 +403,7 @@ pub(super) fn access_list_counts(access_list: &AccessList) -> (u64, u64) {
 }
 
 /// Calculates transaction calldata floor gas.
-pub(super) fn floor_gas(version: &Version, input: &Bytes) -> u64 {
+pub(super) fn floor_gas(version: &'static Version, input: &Bytes) -> u64 {
     let params = version.gas_params();
     let floor_cost_per_token = u64::from(params.get(GasId::TxFloorCostPerToken));
     if floor_cost_per_token == 0 {
@@ -421,7 +421,7 @@ pub(super) fn floor_gas(version: &Version, input: &Bytes) -> u64 {
 
 /// Calculates intrinsic transaction gas.
 pub(super) fn intrinsic_gas(
-    version: &Version,
+    version: &'static Version,
     to: TxKind,
     input: &Bytes,
     access_list_accounts: u64,
@@ -462,11 +462,11 @@ mod tests {
         let input = Bytes::from(vec![1; 74]);
 
         assert_eq!(
-            intrinsic_gas(&Version::base(SpecId::LONDON), TxKind::Create, &input, 0, 0),
+            intrinsic_gas(Version::base(SpecId::LONDON), TxKind::Create, &input, 0, 0),
             21_000 + 32_000 + 74 * 16
         );
         assert_eq!(
-            intrinsic_gas(&Version::base(SpecId::SHANGHAI), TxKind::Create, &input, 0, 0),
+            intrinsic_gas(Version::base(SpecId::SHANGHAI), TxKind::Create, &input, 0, 0),
             21_000 + 32_000 + 74 * 16 + 3 * 2
         );
     }
@@ -476,13 +476,7 @@ mod tests {
         let input = Bytes::new();
 
         assert_eq!(
-            intrinsic_gas(
-                &Version::base(SpecId::BERLIN),
-                TxKind::Call(Address::ZERO),
-                &input,
-                2,
-                3
-            ),
+            intrinsic_gas(Version::base(SpecId::BERLIN), TxKind::Call(Address::ZERO), &input, 2, 3),
             21_000 + 2 * 2400 + 3 * 1900
         );
     }
@@ -491,8 +485,8 @@ mod tests {
     fn floor_gas_charges_prague_calldata_tokens() {
         let input = Bytes::from_static(&[0, 1, 2]);
 
-        assert_eq!(floor_gas(&Version::base(SpecId::SHANGHAI), &input), 0);
-        assert_eq!(floor_gas(&Version::base(SpecId::PRAGUE), &input), 21_000 + 9 * 10);
+        assert_eq!(floor_gas(Version::base(SpecId::SHANGHAI), &input), 0);
+        assert_eq!(floor_gas(Version::base(SpecId::PRAGUE), &input), 21_000 + 9 * 10);
     }
 
     #[test]
@@ -577,20 +571,20 @@ mod tests {
         let floor_gas = 21_000;
 
         assert_eq!(
-            validate_tx_gas_limit_cap(&osaka, tx_gas_limit),
+            validate_tx_gas_limit_cap(osaka, tx_gas_limit),
             Err(HandlerError::TxGasLimitGreaterThanCap {
                 gas_limit: tx_gas_limit,
                 cap: osaka.tx_gas_limit_cap()
             })
         );
-        assert_eq!(validate_tx_gas_limit_cap(&amsterdam, tx_gas_limit), Ok(()));
+        assert_eq!(validate_tx_gas_limit_cap(amsterdam, tx_gas_limit), Ok(()));
         assert_eq!(
-            validate_regular_gas_limit_cap(&amsterdam, tx_gas_limit, intrinsic, floor_gas),
+            validate_regular_gas_limit_cap(amsterdam, tx_gas_limit, intrinsic, floor_gas),
             Ok(())
         );
         assert_eq!(
             validate_regular_gas_limit_cap(
-                &amsterdam,
+                amsterdam,
                 tx_gas_limit,
                 amsterdam.tx_gas_limit_cap() + 1,
                 floor_gas,
