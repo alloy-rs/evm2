@@ -417,7 +417,11 @@ impl<D> State<D> {
         self.accessed_accounts.contains(&address)
     }
 
-    /// Marks an account as warm.
+    /// Marks an account as warm in a revertible execution context.
+    ///
+    /// If this call newly warms the account, the warm-set change is journaled and will be undone
+    /// by [`Self::rollback`]. Use this for warmth introduced while executing EVM code or any other
+    /// scope whose effects may be reverted to a checkpoint.
     #[inline]
     pub fn warm_account(&mut self, address: Address) {
         if self.accessed_accounts.insert(address) {
@@ -425,13 +429,44 @@ impl<D> State<D> {
         }
     }
 
-    /// Marks accounts as warm.
+    /// Marks an account as warm outside all revertible execution contexts.
+    ///
+    /// This intentionally does **not** journal the warm-set change. It must only be used for
+    /// transaction-initial warmth that is established before any checkpoint that might be rolled
+    /// back, such as base transaction warm addresses, precompiles, access-list entries, or other
+    /// pre-execution transaction setup. Warmth added by this method survives [`Self::rollback`] and
+    /// is cleared only by [`Self::clear_transaction_state`].
+    ///
+    /// Do not call this from EVM execution, nested calls, precompile execution, or any other
+    /// revertible scope. Use [`Self::warm_account`] there so failed frames correctly restore the
+    /// EIP-2929 access set.
+    #[inline]
+    pub fn warm_account_non_revertible(&mut self, address: Address) {
+        self.accessed_accounts.insert(address);
+    }
+
+    /// Marks accounts as warm in a revertible execution context.
+    ///
+    /// See [`Self::warm_account`] for rollback semantics.
     #[inline]
     pub fn warm_accounts(&mut self, addresses: impl IntoIterator<Item = Address>) {
         let addresses = addresses.into_iter();
         self.accessed_accounts.reserve(addresses.size_hint().0);
         for address in addresses {
             self.warm_account(address);
+        }
+    }
+
+    /// Marks accounts as warm outside all revertible execution contexts.
+    ///
+    /// See [`Self::warm_account_non_revertible`] for the required usage restrictions. In
+    /// particular, these warm-set changes are not journaled and are not undone by rollback.
+    #[inline]
+    pub fn warm_accounts_non_revertible(&mut self, addresses: impl IntoIterator<Item = Address>) {
+        let addresses = addresses.into_iter();
+        self.accessed_accounts.reserve(addresses.size_hint().0);
+        for address in addresses {
+            self.warm_account_non_revertible(address);
         }
     }
 
@@ -442,7 +477,12 @@ impl<D> State<D> {
         self.accessed_storage.contains(&(address, key))
     }
 
-    /// Marks a storage slot as warm and returns whether it was cold before this access.
+    /// Marks a storage slot as warm in a revertible execution context.
+    ///
+    /// Returns whether the slot was cold before this access. If this call newly warms the slot, the
+    /// warm-set change is journaled and will be undone by [`Self::rollback`]. Use this for warmth
+    /// introduced while executing EVM code or any other scope whose effects may be reverted to a
+    /// checkpoint.
     #[inline]
     #[must_use]
     pub fn warm_storage(&mut self, address: Address, key: Word) -> bool {
@@ -452,6 +492,23 @@ impl<D> State<D> {
         } else {
             false
         }
+    }
+
+    /// Marks a storage slot as warm outside all revertible execution contexts.
+    ///
+    /// Returns whether the slot was cold before this access. This intentionally does **not**
+    /// journal the warm-set change. It must only be used for transaction-initial warmth that is
+    /// established before any checkpoint that might be rolled back, such as access-list storage
+    /// slots. Warmth added by this method survives [`Self::rollback`] and is cleared only by
+    /// [`Self::clear_transaction_state`].
+    ///
+    /// Do not call this from EVM execution, nested calls, precompile execution, or any other
+    /// revertible scope. Use [`Self::warm_storage`] there so failed frames correctly restore the
+    /// EIP-2929 access set.
+    #[inline]
+    #[must_use]
+    pub fn warm_storage_non_revertible(&mut self, address: Address, key: Word) -> bool {
+        self.accessed_storage.insert((address, key))
     }
 
     /// Clears transaction-scoped substate.
@@ -1145,6 +1202,31 @@ mod tests {
         state.rollback(checkpoint, SpecId::SPURIOUS_DRAGON);
         assert!(state.touched.contains(&precompile3));
         assert!(!state.touched.contains(&other));
+    }
+
+    #[test]
+    fn non_revertible_warmth_is_not_journaled_or_rolled_back() {
+        let base_account = Address::with_last_byte(0x10);
+        let frame_account = Address::with_last_byte(0x11);
+        let base_storage = Address::with_last_byte(0x12);
+        let frame_storage = Address::with_last_byte(0x13);
+        let key = Word::from(1);
+        let mut state = State::new(CacheDB::default());
+
+        state.warm_account_non_revertible(base_account);
+        assert!(state.warm_storage_non_revertible(base_storage, key));
+        assert!(state.journal.is_empty());
+
+        let checkpoint = state.checkpoint();
+        state.warm_account(frame_account);
+        assert!(state.warm_storage(frame_storage, key));
+        assert_eq!(state.journal.len(), 2);
+
+        state.rollback(checkpoint, SpecId::FRONTIER);
+        assert!(state.is_account_warm(base_account));
+        assert!(state.is_storage_warm(base_storage, key));
+        assert!(!state.is_account_warm(frame_account));
+        assert!(!state.is_storage_warm(frame_storage, key));
     }
 
     #[test]
