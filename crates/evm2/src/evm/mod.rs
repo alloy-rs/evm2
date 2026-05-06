@@ -329,7 +329,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         if let Err(stop) =
             self.state.create_account(message.caller, address, message.value, self.spec_id())
         {
-            self.state.rollback_with_spec(checkpoint, self.spec_id());
+            self.state.rollback(checkpoint, self.spec_id());
             return MessageResult {
                 stop,
                 gas_remaining: message.gas_limit,
@@ -384,7 +384,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             };
 
             if let Some(stop) = stop {
-                self.state.rollback_with_spec(checkpoint, self.spec_id());
+                self.state.rollback(checkpoint, self.spec_id());
                 gas_remaining = if stop.is_halt() { 0 } else { gas.remaining() };
                 return MessageResult {
                     stop,
@@ -399,7 +399,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             gas_refunded = gas.refunded();
             self.state.set_code(address, Bytecode::new_legacy(output.clone()));
         } else {
-            self.state.rollback_with_spec(checkpoint, self.spec_id());
+            self.state.rollback(checkpoint, self.spec_id());
             if stop.is_halt() {
                 gas_remaining = 0;
             }
@@ -478,7 +478,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
                 }
             };
             if !stop.is_success() {
-                self.state.rollback_with_spec(checkpoint, self.spec_id());
+                self.state.rollback(checkpoint, self.spec_id());
             }
             return MessageResult {
                 stop,
@@ -497,7 +497,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         let mut gas_remaining = child_gas.remaining();
 
         if !stop.is_success() {
-            self.state.rollback_with_spec(checkpoint, self.spec_id());
+            self.state.rollback(checkpoint, self.spec_id());
             if stop.is_halt() {
                 gas_remaining = 0;
             }

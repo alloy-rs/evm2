@@ -309,6 +309,8 @@ where
     values
         .into_iter()
         .map(|value| match &value {
+            // retesteth uses 0x:bigint markers for intentionally invalid values.
+            // evmone maps them to uint256::MAX so the invalid-transaction path can run.
             serde_json::Value::String(string) if string.starts_with("0x:bigint ") => Ok(U256::MAX),
             _ => serde_json::from_value(value).map_err(de::Error::custom),
         })

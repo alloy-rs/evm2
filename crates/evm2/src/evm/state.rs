@@ -818,17 +818,7 @@ impl<D: Database> State<D> {
 
     /// Reverts state changes after the checkpoint.
     #[inline(never)]
-    pub fn rollback(&mut self, checkpoint: usize) {
-        self.rollback_inner(checkpoint, false);
-    }
-
-    /// Reverts state changes after the checkpoint with fork-specific rollback exceptions.
-    #[inline(never)]
-    pub fn rollback_with_spec(&mut self, checkpoint: usize, spec: SpecId) {
-        self.rollback_inner(checkpoint, spec.enables(SpecId::SPURIOUS_DRAGON));
-    }
-
-    fn rollback_inner(&mut self, checkpoint: usize, preserve_precompile3_touch: bool) {
+    pub fn rollback(&mut self, checkpoint: usize, spec: SpecId) {
         assert!(checkpoint <= self.journal.len(), "checkpoint is past journal length");
         while self.journal.len() != checkpoint {
             let Some(entry) = self.journal.pop() else {
@@ -845,7 +835,9 @@ impl<D: Database> State<D> {
                 }
                 JournalEntry::Touch { address } => {
                     // EIP-161 preserves the historical Yellow Paper K.1 precompile-3 touch.
-                    if preserve_precompile3_touch && address == Address::with_last_byte(3) {
+                    if spec.enables(SpecId::SPURIOUS_DRAGON)
+                        && address == Address::with_last_byte(3)
+                    {
                         continue;
                     }
                     self.touched.remove(&address);
@@ -1060,7 +1052,7 @@ mod tests {
         state.set_storage(address, Word::from(1), Word::from(30));
 
         assert_eq!(state.storage(address, Word::from(1)), Word::from(30));
-        state.rollback(checkpoint);
+        state.rollback(checkpoint, SpecId::FRONTIER);
         assert_eq!(state.storage(address, Word::from(1)), Word::from(10));
     }
 
@@ -1074,7 +1066,7 @@ mod tests {
         state.set_transient_storage(address, Word::from(1), Word::from(20));
 
         assert_eq!(state.transient_storage(address, Word::from(1)), Word::from(20));
-        state.rollback(checkpoint);
+        state.rollback(checkpoint, SpecId::FRONTIER);
         assert_eq!(state.transient_storage(address, Word::from(1)), Word::from(10));
     }
 
@@ -1087,7 +1079,7 @@ mod tests {
         state.mark_destructed(address);
 
         assert!(state.is_selfdestructed(address));
-        state.rollback(checkpoint);
+        state.rollback(checkpoint, SpecId::FRONTIER);
         assert!(!state.is_selfdestructed(address));
     }
 
@@ -1119,7 +1111,7 @@ mod tests {
                 }
             ]
         );
-        state.rollback(checkpoint);
+        state.rollback(checkpoint, SpecId::FRONTIER);
         assert_eq!(state.logs(), &[kept]);
     }
 
@@ -1136,7 +1128,7 @@ mod tests {
         state.touch(precompile3);
         state.touch(other);
 
-        state.rollback_with_spec(checkpoint, crate::SpecId::SPURIOUS_DRAGON);
+        state.rollback(checkpoint, SpecId::SPURIOUS_DRAGON);
         assert!(state.touched.contains(&precompile3));
         assert!(!state.touched.contains(&other));
     }
