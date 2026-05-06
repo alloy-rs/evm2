@@ -60,12 +60,36 @@ static BASE_VERSIONS: [Version; SpecId::COUNT] = {
     versions
 };
 
-macro_rules! noop {
-    ($($t:tt)*) => {};
+macro_rules! apply_base_gas_params {
+    ($gp:ident, ops: [$($tokens:tt)*]) => {};
+    ($gp:ident, static_gas: [$($tokens:tt)*]) => {};
+    ($gp:ident, dynamic_gas: [$($id:ident: $value:expr,)*]) => {
+        $(
+            $gp.set($id, $value);
+        )*
+    };
+}
+
+macro_rules! apply_version_tables {
+    ($v:ident, $ty:ident, ops: [$($name:ident: $cost:expr,)*]) => {
+        $(
+            $v.set_instruction(
+                op::$name,
+                Some(op_instr!($ty, $name)),
+            );
+            $v.set_static_gas(op::$name, $cost as u16);
+        )*
+    };
+    ($v:ident, $ty:ident, static_gas: [$($name:ident: $cost:expr,)*]) => {
+        $(
+            $v.set_static_gas(op::$name, $cost as u16);
+        )*
+    };
+    ($v:ident, $ty:ident, dynamic_gas: [$($tokens:tt)*]) => {};
 }
 
 macro_rules! evm_versions {
-    ($($spec:ident { $($tokens:tt)* })*) => {
+    ($($spec:ident { $($section:ident: [$($tokens:tt)*],)* })*) => {
         /// Creates the base dynamic gas parameters for `spec_id`.
         const fn base_gas_params(spec_id: SpecId) -> GasParams {
             use crate::interpreter::gas::*;
@@ -73,16 +97,11 @@ macro_rules! evm_versions {
 
             let mut gp = GasParams::empty();
 
-            use {noop as op, noop as static_gas};
-            macro_rules! gas {
-                ($id:ident, $value:expr) => {
-                    gp.set($id, $value);
-                };
-            }
-
             $(
                 if spec_id.enables(SpecId::$spec) {
-                    $($tokens)*
+                    $(
+                        apply_base_gas_params!(gp, $section: [$($tokens)*]);
+                    )*
                 }
             )*
 
@@ -96,25 +115,11 @@ macro_rules! evm_versions {
             let spec_id = version.spec_id;
             let mut v = VersionTables::empty(version);
 
-            macro_rules! op {
-                ($name:ident, $cost:expr) => {
-                    v.set_instruction(
-                        op::$name,
-                        Some(op_instr!(T, $name)),
-                    );
-                    v.set_static_gas(op::$name, $cost as u16);
-                };
-            }
-            macro_rules! static_gas {
-                ($name:ident, $cost:expr) => {
-                    v.set_static_gas(op::$name, $cost as u16);
-                };
-            }
-            use noop as gas;
-
             $(
                 if spec_id.enables(SpecId::$spec) {
-                    $($tokens)*
+                    $(
+                        apply_version_tables!(v, T, $section: [$($tokens)*]);
+                    )*
                 }
             )*
 
@@ -123,322 +128,363 @@ macro_rules! evm_versions {
     };
 }
 
+const AMSTERDAM_CPSB: u32 = 1174;
+
 evm_versions! {
     FRONTIER {
-        op!(STOP, ZERO);
-        op!(ADD, VERYLOW);
-        op!(MUL, LOW);
-        op!(SUB, VERYLOW);
-        op!(DIV, LOW);
-        op!(SDIV, LOW);
-        op!(MOD, LOW);
-        op!(SMOD, LOW);
-        op!(ADDMOD, MID);
-        op!(MULMOD, MID);
-        op!(EXP, EXP);
-        op!(SIGNEXTEND, LOW);
-        op!(LT, VERYLOW);
-        op!(GT, VERYLOW);
-        op!(SLT, VERYLOW);
-        op!(SGT, VERYLOW);
-        op!(EQ, VERYLOW);
-        op!(ISZERO, VERYLOW);
-        op!(AND, VERYLOW);
-        op!(OR, VERYLOW);
-        op!(XOR, VERYLOW);
-        op!(NOT, VERYLOW);
-        op!(BYTE, VERYLOW);
-        op!(KECCAK256, KECCAK256);
-        op!(ADDRESS, BASE);
-        op!(BALANCE, 20);
-        op!(ORIGIN, BASE);
-        op!(CALLER, BASE);
-        op!(CALLVALUE, BASE);
-        op!(CALLDATALOAD, VERYLOW);
-        op!(CALLDATASIZE, BASE);
-        op!(CALLDATACOPY, VERYLOW);
-        op!(CODESIZE, BASE);
-        op!(CODECOPY, VERYLOW);
-        op!(GASPRICE, BASE);
-        op!(EXTCODESIZE, 20);
-        op!(EXTCODECOPY, 20);
-        op!(BLOCKHASH, BLOCKHASH);
-        op!(COINBASE, BASE);
-        op!(TIMESTAMP, BASE);
-        op!(NUMBER, BASE);
-        op!(DIFFICULTY, BASE);
-        op!(GASLIMIT, BASE);
-        op!(POP, BASE);
-        op!(MLOAD, VERYLOW);
-        op!(MSTORE, VERYLOW);
-        op!(MSTORE8, VERYLOW);
-        op!(SLOAD, 50);
-        op!(SSTORE, ZERO);
-        op!(JUMP, MID);
-        op!(JUMPI, HIGH);
-        op!(PC, BASE);
-        op!(MSIZE, BASE);
-        op!(GAS, BASE);
-        op!(JUMPDEST, JUMPDEST);
-        op!(PUSH1, VERYLOW);
-        op!(PUSH2, VERYLOW);
-        op!(PUSH3, VERYLOW);
-        op!(PUSH4, VERYLOW);
-        op!(PUSH5, VERYLOW);
-        op!(PUSH6, VERYLOW);
-        op!(PUSH7, VERYLOW);
-        op!(PUSH8, VERYLOW);
-        op!(PUSH9, VERYLOW);
-        op!(PUSH10, VERYLOW);
-        op!(PUSH11, VERYLOW);
-        op!(PUSH12, VERYLOW);
-        op!(PUSH13, VERYLOW);
-        op!(PUSH14, VERYLOW);
-        op!(PUSH15, VERYLOW);
-        op!(PUSH16, VERYLOW);
-        op!(PUSH17, VERYLOW);
-        op!(PUSH18, VERYLOW);
-        op!(PUSH19, VERYLOW);
-        op!(PUSH20, VERYLOW);
-        op!(PUSH21, VERYLOW);
-        op!(PUSH22, VERYLOW);
-        op!(PUSH23, VERYLOW);
-        op!(PUSH24, VERYLOW);
-        op!(PUSH25, VERYLOW);
-        op!(PUSH26, VERYLOW);
-        op!(PUSH27, VERYLOW);
-        op!(PUSH28, VERYLOW);
-        op!(PUSH29, VERYLOW);
-        op!(PUSH30, VERYLOW);
-        op!(PUSH31, VERYLOW);
-        op!(PUSH32, VERYLOW);
-        op!(DUP1, VERYLOW);
-        op!(DUP2, VERYLOW);
-        op!(DUP3, VERYLOW);
-        op!(DUP4, VERYLOW);
-        op!(DUP5, VERYLOW);
-        op!(DUP6, VERYLOW);
-        op!(DUP7, VERYLOW);
-        op!(DUP8, VERYLOW);
-        op!(DUP9, VERYLOW);
-        op!(DUP10, VERYLOW);
-        op!(DUP11, VERYLOW);
-        op!(DUP12, VERYLOW);
-        op!(DUP13, VERYLOW);
-        op!(DUP14, VERYLOW);
-        op!(DUP15, VERYLOW);
-        op!(DUP16, VERYLOW);
-        op!(SWAP1, VERYLOW);
-        op!(SWAP2, VERYLOW);
-        op!(SWAP3, VERYLOW);
-        op!(SWAP4, VERYLOW);
-        op!(SWAP5, VERYLOW);
-        op!(SWAP6, VERYLOW);
-        op!(SWAP7, VERYLOW);
-        op!(SWAP8, VERYLOW);
-        op!(SWAP9, VERYLOW);
-        op!(SWAP10, VERYLOW);
-        op!(SWAP11, VERYLOW);
-        op!(SWAP12, VERYLOW);
-        op!(SWAP13, VERYLOW);
-        op!(SWAP14, VERYLOW);
-        op!(SWAP15, VERYLOW);
-        op!(SWAP16, VERYLOW);
-        op!(LOG0, LOG);
-        op!(LOG1, LOG);
-        op!(LOG2, LOG);
-        op!(LOG3, LOG);
-        op!(LOG4, LOG);
-        op!(CREATE, ZERO);
-        op!(CALL, 40);
-        op!(CALLCODE, 40);
-        op!(RETURN, ZERO);
-        op!(INVALID, ZERO);
-        op!(SELFDESTRUCT, ZERO);
-
-        gas!(ExpByte, 10);
-        gas!(Logdata, LOGDATA);
-        gas!(Logtopic, LOGTOPIC);
-        gas!(CopyPerWord, COPY);
-        gas!(ExtcodecopyPerWord, COPY);
-        gas!(McopyPerWord, COPY);
-        gas!(Keccak256PerWord, KECCAK256WORD);
-        gas!(MemoryLinearCost, MEMORY);
-        gas!(MemoryQuadraticReduction, 512);
-        gas!(InitcodePerWord, INITCODE_WORD_COST);
-        gas!(Create, CREATE);
-        gas!(CallStipendReduction, 64);
-        gas!(TransferValueCost, CALLVALUE);
-        gas!(NewAccountCost, NEWACCOUNT);
-        gas!(SstoreStatic, SSTORE_RESET);
-        gas!(SstoreSetWithoutLoadCost, SSTORE_SET - SSTORE_RESET);
-        gas!(SstoreSetRefund, SSTORE_SET - SSTORE_RESET);
-        gas!(SstoreClearingSlotRefund, REFUND_SSTORE_CLEARS);
-        gas!(SelfdestructRefund, SELFDESTRUCT_REFUND);
-        gas!(CallStipend, CALL_STIPEND);
-        gas!(CodeDepositCost, CODEDEPOSIT);
-        gas!(TxTokenNonZeroByteMultiplier, NON_ZERO_BYTE_MULTIPLIER);
-        gas!(TxTokenCost, STANDARD_TOKEN_COST);
-        gas!(TxBaseStipend, 21000);
+        ops: [
+            STOP: ZERO,
+            ADD: VERYLOW,
+            MUL: LOW,
+            SUB: VERYLOW,
+            DIV: LOW,
+            SDIV: LOW,
+            MOD: LOW,
+            SMOD: LOW,
+            ADDMOD: MID,
+            MULMOD: MID,
+            EXP: EXP,
+            SIGNEXTEND: LOW,
+            LT: VERYLOW,
+            GT: VERYLOW,
+            SLT: VERYLOW,
+            SGT: VERYLOW,
+            EQ: VERYLOW,
+            ISZERO: VERYLOW,
+            AND: VERYLOW,
+            OR: VERYLOW,
+            XOR: VERYLOW,
+            NOT: VERYLOW,
+            BYTE: VERYLOW,
+            KECCAK256: KECCAK256,
+            ADDRESS: BASE,
+            BALANCE: 20,
+            ORIGIN: BASE,
+            CALLER: BASE,
+            CALLVALUE: BASE,
+            CALLDATALOAD: VERYLOW,
+            CALLDATASIZE: BASE,
+            CALLDATACOPY: VERYLOW,
+            CODESIZE: BASE,
+            CODECOPY: VERYLOW,
+            GASPRICE: BASE,
+            EXTCODESIZE: 20,
+            EXTCODECOPY: 20,
+            BLOCKHASH: BLOCKHASH,
+            COINBASE: BASE,
+            TIMESTAMP: BASE,
+            NUMBER: BASE,
+            DIFFICULTY: BASE,
+            GASLIMIT: BASE,
+            POP: BASE,
+            MLOAD: VERYLOW,
+            MSTORE: VERYLOW,
+            MSTORE8: VERYLOW,
+            SLOAD: 50,
+            SSTORE: ZERO,
+            JUMP: MID,
+            JUMPI: HIGH,
+            PC: BASE,
+            MSIZE: BASE,
+            GAS: BASE,
+            JUMPDEST: JUMPDEST,
+            PUSH1: VERYLOW,
+            PUSH2: VERYLOW,
+            PUSH3: VERYLOW,
+            PUSH4: VERYLOW,
+            PUSH5: VERYLOW,
+            PUSH6: VERYLOW,
+            PUSH7: VERYLOW,
+            PUSH8: VERYLOW,
+            PUSH9: VERYLOW,
+            PUSH10: VERYLOW,
+            PUSH11: VERYLOW,
+            PUSH12: VERYLOW,
+            PUSH13: VERYLOW,
+            PUSH14: VERYLOW,
+            PUSH15: VERYLOW,
+            PUSH16: VERYLOW,
+            PUSH17: VERYLOW,
+            PUSH18: VERYLOW,
+            PUSH19: VERYLOW,
+            PUSH20: VERYLOW,
+            PUSH21: VERYLOW,
+            PUSH22: VERYLOW,
+            PUSH23: VERYLOW,
+            PUSH24: VERYLOW,
+            PUSH25: VERYLOW,
+            PUSH26: VERYLOW,
+            PUSH27: VERYLOW,
+            PUSH28: VERYLOW,
+            PUSH29: VERYLOW,
+            PUSH30: VERYLOW,
+            PUSH31: VERYLOW,
+            PUSH32: VERYLOW,
+            DUP1: VERYLOW,
+            DUP2: VERYLOW,
+            DUP3: VERYLOW,
+            DUP4: VERYLOW,
+            DUP5: VERYLOW,
+            DUP6: VERYLOW,
+            DUP7: VERYLOW,
+            DUP8: VERYLOW,
+            DUP9: VERYLOW,
+            DUP10: VERYLOW,
+            DUP11: VERYLOW,
+            DUP12: VERYLOW,
+            DUP13: VERYLOW,
+            DUP14: VERYLOW,
+            DUP15: VERYLOW,
+            DUP16: VERYLOW,
+            SWAP1: VERYLOW,
+            SWAP2: VERYLOW,
+            SWAP3: VERYLOW,
+            SWAP4: VERYLOW,
+            SWAP5: VERYLOW,
+            SWAP6: VERYLOW,
+            SWAP7: VERYLOW,
+            SWAP8: VERYLOW,
+            SWAP9: VERYLOW,
+            SWAP10: VERYLOW,
+            SWAP11: VERYLOW,
+            SWAP12: VERYLOW,
+            SWAP13: VERYLOW,
+            SWAP14: VERYLOW,
+            SWAP15: VERYLOW,
+            SWAP16: VERYLOW,
+            LOG0: LOG,
+            LOG1: LOG,
+            LOG2: LOG,
+            LOG3: LOG,
+            LOG4: LOG,
+            CREATE: ZERO,
+            CALL: 40,
+            CALLCODE: 40,
+            RETURN: ZERO,
+            INVALID: ZERO,
+            SELFDESTRUCT: ZERO,
+        ],
+        dynamic_gas: [
+            ExpByte: 10,
+            Logdata: LOGDATA,
+            Logtopic: LOGTOPIC,
+            CopyPerWord: COPY,
+            ExtcodecopyPerWord: COPY,
+            McopyPerWord: COPY,
+            Keccak256PerWord: KECCAK256WORD,
+            MemoryLinearCost: MEMORY,
+            MemoryQuadraticReduction: 512,
+            InitcodePerWord: INITCODE_WORD_COST,
+            Create: CREATE,
+            CallStipendReduction: 64,
+            TransferValueCost: CALLVALUE,
+            NewAccountCost: NEWACCOUNT,
+            SstoreStatic: SSTORE_RESET,
+            SstoreSetWithoutLoadCost: SSTORE_SET - SSTORE_RESET,
+            SstoreSetRefund: SSTORE_SET - SSTORE_RESET,
+            SstoreClearingSlotRefund: REFUND_SSTORE_CLEARS,
+            SelfdestructRefund: SELFDESTRUCT_REFUND,
+            CallStipend: CALL_STIPEND,
+            CodeDepositCost: CODEDEPOSIT,
+            TxTokenNonZeroByteMultiplier: NON_ZERO_BYTE_MULTIPLIER,
+            TxTokenCost: STANDARD_TOKEN_COST,
+            TxBaseStipend: 21000,
+        ],
     }
 
     HOMESTEAD {
-        op!(DELEGATECALL, 40);
-
-        gas!(TxCreateCost, CREATE);
+        ops: [
+            DELEGATECALL: 40,
+        ],
+        dynamic_gas: [
+            TxCreateCost: CREATE,
+        ],
     }
 
     TANGERINE {
-        gas!(NewAccountCostForSelfdestruct, NEWACCOUNT);
-
-        static_gas!(SLOAD, 200);
-        static_gas!(BALANCE, 400);
-        static_gas!(EXTCODESIZE, 700);
-        static_gas!(EXTCODECOPY, 700);
-        static_gas!(CREATE, ZERO);
-        static_gas!(CALL, 700);
-        static_gas!(CALLCODE, 700);
-        static_gas!(DELEGATECALL, 700);
-        static_gas!(SELFDESTRUCT, 5000);
+        static_gas: [
+            SLOAD: 200,
+            BALANCE: 400,
+            EXTCODESIZE: 700,
+            EXTCODECOPY: 700,
+            CREATE: ZERO,
+            CALL: 700,
+            CALLCODE: 700,
+            DELEGATECALL: 700,
+            SELFDESTRUCT: 5000,
+        ],
+        dynamic_gas: [
+            NewAccountCostForSelfdestruct: NEWACCOUNT,
+        ],
     }
 
     SPURIOUS_DRAGON {
-        gas!(ExpByte, 50);
-
-        static_gas!(EXP, EXP);
+        static_gas: [
+            EXP: EXP,
+        ],
+        dynamic_gas: [
+            ExpByte: 50,
+        ],
     }
 
     BYZANTIUM {
-        op!(RETURNDATASIZE, BASE);
-        op!(RETURNDATACOPY, VERYLOW);
-        op!(STATICCALL, 700);
-        op!(REVERT, ZERO);
+        ops: [
+            RETURNDATASIZE: BASE,
+            RETURNDATACOPY: VERYLOW,
+            STATICCALL: 700,
+            REVERT: ZERO,
+        ],
     }
 
     PETERSBURG {
-        op!(SHL, VERYLOW);
-        op!(SHR, VERYLOW);
-        op!(SAR, VERYLOW);
-        op!(EXTCODEHASH, 400);
-        op!(CREATE2, ZERO);
+        ops: [
+            SHL: VERYLOW,
+            SHR: VERYLOW,
+            SAR: VERYLOW,
+            EXTCODEHASH: 400,
+            CREATE2: ZERO,
+        ],
     }
 
     ISTANBUL {
-        op!(CHAINID, BASE);
-        op!(SELFBALANCE, LOW);
-
-        gas!(SstoreStatic, ISTANBUL_SLOAD_GAS);
-        gas!(SstoreSetWithoutLoadCost, SSTORE_SET - ISTANBUL_SLOAD_GAS);
-        gas!(SstoreResetWithoutColdLoadCost, SSTORE_RESET - ISTANBUL_SLOAD_GAS);
-        gas!(SstoreSetRefund, SSTORE_SET - ISTANBUL_SLOAD_GAS);
-        gas!(SstoreResetRefund, SSTORE_RESET - ISTANBUL_SLOAD_GAS);
-        gas!(TxTokenNonZeroByteMultiplier, NON_ZERO_BYTE_MULTIPLIER_ISTANBUL);
-
-        static_gas!(SLOAD, ISTANBUL_SLOAD_GAS);
-        static_gas!(BALANCE, 700);
-        static_gas!(EXTCODEHASH, 700);
-        static_gas!(SSTORE, ZERO);
+        ops: [
+            CHAINID: BASE,
+            SELFBALANCE: LOW,
+        ],
+        static_gas: [
+            SLOAD: ISTANBUL_SLOAD_GAS,
+            BALANCE: 700,
+            EXTCODEHASH: 700,
+            SSTORE: ZERO,
+        ],
+        dynamic_gas: [
+            SstoreStatic: ISTANBUL_SLOAD_GAS,
+            SstoreSetWithoutLoadCost: SSTORE_SET - ISTANBUL_SLOAD_GAS,
+            SstoreResetWithoutColdLoadCost: SSTORE_RESET - ISTANBUL_SLOAD_GAS,
+            SstoreSetRefund: SSTORE_SET - ISTANBUL_SLOAD_GAS,
+            SstoreResetRefund: SSTORE_RESET - ISTANBUL_SLOAD_GAS,
+            TxTokenNonZeroByteMultiplier: NON_ZERO_BYTE_MULTIPLIER_ISTANBUL,
+        ],
     }
 
     BERLIN {
-        gas!(SstoreStatic, WARM_STORAGE_READ_COST);
-        gas!(ColdAccountAdditionalCost, COLD_ACCOUNT_ACCESS_COST_ADDITIONAL);
-        gas!(ColdStorageAdditionalCost, COLD_SLOAD_COST - WARM_STORAGE_READ_COST);
-        gas!(ColdStorageCost, COLD_SLOAD_COST);
-        gas!(WarmStorageReadCost, WARM_STORAGE_READ_COST);
-        gas!(SstoreResetWithoutColdLoadCost, WARM_SSTORE_RESET - WARM_STORAGE_READ_COST);
-        gas!(SstoreSetWithoutLoadCost, SSTORE_SET - WARM_STORAGE_READ_COST);
-        gas!(SstoreSetRefund, SSTORE_SET - WARM_STORAGE_READ_COST);
-        gas!(SstoreResetRefund, WARM_SSTORE_RESET - WARM_STORAGE_READ_COST);
-        gas!(TxAccessListAddressCost, ACCESS_LIST_ADDRESS);
-        gas!(TxAccessListStorageKeyCost, ACCESS_LIST_STORAGE_KEY);
-
-        static_gas!(SLOAD, WARM_STORAGE_READ_COST);
-        static_gas!(BALANCE, WARM_STORAGE_READ_COST);
-        static_gas!(EXTCODESIZE, WARM_STORAGE_READ_COST);
-        static_gas!(EXTCODEHASH, WARM_STORAGE_READ_COST);
-        static_gas!(EXTCODECOPY, WARM_STORAGE_READ_COST);
-        static_gas!(SSTORE, ZERO);
-        static_gas!(CALL, WARM_STORAGE_READ_COST);
-        static_gas!(CALLCODE, WARM_STORAGE_READ_COST);
-        static_gas!(DELEGATECALL, WARM_STORAGE_READ_COST);
-        static_gas!(STATICCALL, WARM_STORAGE_READ_COST);
-        static_gas!(SELFDESTRUCT, 5000);
+        static_gas: [
+            SLOAD: WARM_STORAGE_READ_COST,
+            BALANCE: WARM_STORAGE_READ_COST,
+            EXTCODESIZE: WARM_STORAGE_READ_COST,
+            EXTCODEHASH: WARM_STORAGE_READ_COST,
+            EXTCODECOPY: WARM_STORAGE_READ_COST,
+            SSTORE: ZERO,
+            CALL: WARM_STORAGE_READ_COST,
+            CALLCODE: WARM_STORAGE_READ_COST,
+            DELEGATECALL: WARM_STORAGE_READ_COST,
+            STATICCALL: WARM_STORAGE_READ_COST,
+            SELFDESTRUCT: 5000,
+        ],
+        dynamic_gas: [
+            SstoreStatic: WARM_STORAGE_READ_COST,
+            ColdAccountAdditionalCost: COLD_ACCOUNT_ACCESS_COST_ADDITIONAL,
+            ColdStorageAdditionalCost: COLD_SLOAD_COST - WARM_STORAGE_READ_COST,
+            ColdStorageCost: COLD_SLOAD_COST,
+            WarmStorageReadCost: WARM_STORAGE_READ_COST,
+            SstoreResetWithoutColdLoadCost: WARM_SSTORE_RESET - WARM_STORAGE_READ_COST,
+            SstoreSetWithoutLoadCost: SSTORE_SET - WARM_STORAGE_READ_COST,
+            SstoreSetRefund: SSTORE_SET - WARM_STORAGE_READ_COST,
+            SstoreResetRefund: WARM_SSTORE_RESET - WARM_STORAGE_READ_COST,
+            TxAccessListAddressCost: ACCESS_LIST_ADDRESS,
+            TxAccessListStorageKeyCost: ACCESS_LIST_STORAGE_KEY,
+        ],
     }
 
     LONDON {
-        op!(BASEFEE, BASE);
-
-        gas!(SstoreClearingSlotRefund, WARM_SSTORE_RESET + ACCESS_LIST_STORAGE_KEY);
-        gas!(SelfdestructRefund, 0);
-
-        static_gas!(SSTORE, ZERO);
-        static_gas!(SELFDESTRUCT, 5000);
+        ops: [
+            BASEFEE: BASE,
+        ],
+        static_gas: [
+            SSTORE: ZERO,
+            SELFDESTRUCT: 5000,
+        ],
+        dynamic_gas: [
+            SstoreClearingSlotRefund: WARM_SSTORE_RESET + ACCESS_LIST_STORAGE_KEY,
+            SelfdestructRefund: 0,
+        ],
     }
 
     MERGE {}
 
     SHANGHAI {
-        op!(PUSH0, BASE);
-
-        gas!(TxInitcodeCost, INITCODE_WORD_COST);
-
-        static_gas!(CREATE, ZERO);
-        static_gas!(CREATE2, ZERO);
+        ops: [
+            PUSH0: BASE,
+        ],
+        static_gas: [
+            CREATE: ZERO,
+            CREATE2: ZERO,
+        ],
+        dynamic_gas: [
+            TxInitcodeCost: INITCODE_WORD_COST,
+        ],
     }
 
     CANCUN {
-        op!(BLOBHASH, VERYLOW);
-        op!(BLOBBASEFEE, BASE);
-        op!(TLOAD, WARM_STORAGE_READ_COST);
-        op!(TSTORE, WARM_STORAGE_READ_COST);
-        op!(MCOPY, VERYLOW);
+        ops: [
+            BLOBHASH: VERYLOW,
+            BLOBBASEFEE: BASE,
+            TLOAD: WARM_STORAGE_READ_COST,
+            TSTORE: WARM_STORAGE_READ_COST,
+            MCOPY: VERYLOW,
+        ],
     }
 
     PRAGUE {
-        gas!(TxEip7702PerEmptyAccountCost, EIP7702_PER_EMPTY_ACCOUNT_COST);
-        gas!(TxEip7702AuthRefund, EIP7702_PER_EMPTY_ACCOUNT_COST - EIP7702_PER_AUTH_BASE_COST);
-        gas!(TxFloorCostPerToken, TOTAL_COST_FLOOR_PER_TOKEN);
-        gas!(TxFloorCostBase, 21000);
+        dynamic_gas: [
+            TxEip7702PerEmptyAccountCost: EIP7702_PER_EMPTY_ACCOUNT_COST,
+            TxEip7702AuthRefund: EIP7702_PER_EMPTY_ACCOUNT_COST - EIP7702_PER_AUTH_BASE_COST,
+            TxFloorCostPerToken: TOTAL_COST_FLOOR_PER_TOKEN,
+            TxFloorCostBase: 21000,
+        ],
     }
 
     OSAKA {
-        op!(CLZ, LOW);
+        ops: [
+            CLZ: LOW,
+        ],
     }
 
     AMSTERDAM {
-        #[allow(dead_code)]
-        const CPSB: u32 = 1174;
-
-        op!(DUPN, VERYLOW);
-        op!(SWAPN, VERYLOW);
-        op!(EXCHANGE, VERYLOW);
-        op!(SLOTNUM, BASE);
-
-        gas!(Create, 9000);
-        gas!(TxCreateCost, 9000);
-        gas!(CodeDepositCost, 0);
-        gas!(NewAccountCost, 0);
-        gas!(NewAccountCostForSelfdestruct, 0);
-        gas!(SstoreSetWithoutLoadCost, 2800);
-        gas!(SstoreSetState, 32 * CPSB);
-        gas!(NewAccountState, 112 * CPSB);
-        gas!(CodeDepositState, CPSB);
-        gas!(CreateState, 112 * CPSB);
-        gas!(SstoreSetRefund, 32 * CPSB + 2800);
-        gas!(TxEip7702PerEmptyAccountCost, 7500 + (112 + 23) * CPSB);
-        gas!(TxEip7702AuthRefund, 112 * CPSB);
-        gas!(TxEip7702PerAuthState, (112 + 23) * CPSB);
-
-        static_gas!(CREATE, ZERO);
-        static_gas!(CREATE2, ZERO);
-        static_gas!(SSTORE, ZERO);
-        static_gas!(CALL, WARM_STORAGE_READ_COST);
-        static_gas!(CALLCODE, WARM_STORAGE_READ_COST);
-        static_gas!(DELEGATECALL, WARM_STORAGE_READ_COST);
-        static_gas!(STATICCALL, WARM_STORAGE_READ_COST);
-        static_gas!(SELFDESTRUCT, 5000);
+        ops: [
+            DUPN: VERYLOW,
+            SWAPN: VERYLOW,
+            EXCHANGE: VERYLOW,
+            SLOTNUM: BASE,
+        ],
+        static_gas: [
+            CREATE: ZERO,
+            CREATE2: ZERO,
+            SSTORE: ZERO,
+            CALL: WARM_STORAGE_READ_COST,
+            CALLCODE: WARM_STORAGE_READ_COST,
+            DELEGATECALL: WARM_STORAGE_READ_COST,
+            STATICCALL: WARM_STORAGE_READ_COST,
+            SELFDESTRUCT: 5000,
+        ],
+        dynamic_gas: [
+            Create: 9000,
+            TxCreateCost: 9000,
+            CodeDepositCost: 0,
+            NewAccountCost: 0,
+            NewAccountCostForSelfdestruct: 0,
+            SstoreSetWithoutLoadCost: 2800,
+            SstoreSetState: 32 * AMSTERDAM_CPSB,
+            NewAccountState: 112 * AMSTERDAM_CPSB,
+            CodeDepositState: AMSTERDAM_CPSB,
+            CreateState: 112 * AMSTERDAM_CPSB,
+            SstoreSetRefund: 32 * AMSTERDAM_CPSB + 2800,
+            TxEip7702PerEmptyAccountCost: 7500 + (112 + 23) * AMSTERDAM_CPSB,
+            TxEip7702AuthRefund: 112 * AMSTERDAM_CPSB,
+            TxEip7702PerAuthState: (112 + 23) * AMSTERDAM_CPSB,
+        ],
     }
+
 }
 
 macro_rules! op_instr {
