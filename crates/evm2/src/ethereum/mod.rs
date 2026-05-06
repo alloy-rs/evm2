@@ -244,14 +244,14 @@ pub(super) fn warm_base_accounts<T: EvmTypes<Host = Evm<T>>>(
     caller: Address,
     to: TxKind,
 ) {
-    host.state.warm_account(caller);
+    host.state.warm_account_non_revertible(caller);
     if spec_id.enables(SpecId::SHANGHAI) {
-        host.state.warm_account(host.block.beneficiary);
+        host.state.warm_account_non_revertible(host.block.beneficiary);
     }
     if let TxKind::Call(to) = to {
-        host.state.warm_account(to);
+        host.state.warm_account_non_revertible(to);
     }
-    host.state.warm_accounts(host.precompiles().warm_addresses());
+    host.state.warm_accounts_non_revertible(host.precompiles().warm_addresses());
 }
 
 pub(super) fn warm_access_list<T: EvmTypes<Host = Evm<T>>>(
@@ -259,9 +259,10 @@ pub(super) fn warm_access_list<T: EvmTypes<Host = Evm<T>>>(
     access_list: &AccessList,
 ) {
     for item in access_list.iter() {
-        host.state.warm_account(item.address);
+        host.state.warm_account_non_revertible(item.address);
         for key in &item.storage_keys {
-            let _ = host.state.warm_storage(item.address, U256::from_be_bytes(key.0));
+            let _ =
+                host.state.warm_storage_non_revertible(item.address, U256::from_be_bytes(key.0));
         }
     }
 }
