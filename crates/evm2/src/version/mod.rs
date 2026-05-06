@@ -33,24 +33,6 @@ impl Version {
     pub const fn base(spec_id: SpecId) -> &'static Self {
         &BASE_VERSIONS[spec_id as usize]
     }
-
-    /// Returns the base specification ID for this version.
-    #[inline]
-    pub const fn spec_id(&self) -> SpecId {
-        self.spec_id
-    }
-
-    /// Returns the dynamic gas parameter table for this version.
-    #[inline]
-    pub const fn gas_params(&'static self) -> &'static GasParams {
-        &self.gas_params
-    }
-
-    /// Returns the transaction gas limit cap for this version.
-    #[inline]
-    pub const fn tx_gas_limit_cap(&self) -> u64 {
-        self.tx_gas_limit_cap
-    }
 }
 
 const fn base_tx_gas_limit_cap(spec_id: SpecId) -> u64 {
@@ -111,7 +93,7 @@ macro_rules! evm_versions {
             use crate::interpreter::gas::*;
 
             let version = Cfg::VERSION;
-            let spec_id = version.spec_id();
+            let spec_id = version.spec_id;
             let mut v = VersionTables::empty(version);
 
             macro_rules! op {

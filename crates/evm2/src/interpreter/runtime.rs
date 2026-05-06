@@ -207,7 +207,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
             &mut State {
                 bytecode,
                 host,
-                spec: config.version.spec_id(),
+                spec: config.version.spec_id,
                 version: config.version,
                 raw_interp: raw,
             },
@@ -232,7 +232,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
             &mut State {
                 bytecode,
                 host,
-                spec: config.version.spec_id(),
+                spec: config.version.spec_id,
                 version: config.version,
                 raw_interp: raw,
             },

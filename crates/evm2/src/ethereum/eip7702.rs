@@ -83,7 +83,7 @@ fn eip7702_authorization_gas<T: EvmTypes<Host = Evm<T>>>(
     host: &Evm<T>,
     authorizations: usize,
 ) -> u64 {
-    let per_auth = u64::from(host.version().gas_params().get(GasId::TxEip7702PerEmptyAccountCost));
+    let per_auth = u64::from(host.version().gas_params.get(GasId::TxEip7702PerEmptyAccountCost));
     u64::try_from(authorizations).unwrap_or(u64::MAX).saturating_mul(per_auth)
 }
 
@@ -123,7 +123,7 @@ fn apply_auth_list<T: EvmTypes<Host = Evm<T>>>(
         set_delegation(host, authority, *authorization.address());
     }
 
-    let refund_per_auth = u64::from(host.version().gas_params().get(GasId::TxEip7702AuthRefund));
+    let refund_per_auth = u64::from(host.version().gas_params.get(GasId::TxEip7702AuthRefund));
     refunded_accounts.saturating_mul(refund_per_auth)
 }
 

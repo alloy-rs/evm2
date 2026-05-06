@@ -52,7 +52,7 @@ pub trait EvmConfig<T: EvmTypes> {
     /// Active base specification ID.
     #[inline]
     fn spec_id() -> SpecId {
-        Self::VERSION.spec_id()
+        Self::VERSION.spec_id
     }
 }
 

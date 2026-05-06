@@ -63,7 +63,7 @@ impl<'a, T: EvmTypes> State<'a, T> {
         // Gas params are data on the active version so changes automatically affect every
         // instruction that reads them. Tracking instruction dependencies on version tables is not
         // sustainable for custom forks.
-        self.version.gas_params()
+        &self.version.gas_params
     }
 
     /// Returns linear memory.
