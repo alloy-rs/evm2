@@ -464,7 +464,6 @@ pub(super) fn intrinsic_gas(
     access_list_accounts: u64,
     access_list_storage_keys: u64,
 ) -> u64 {
-    let spec = version.spec_id;
     let params = &version.gas_params;
     let non_zero_multiplier = if version.feature(EvmFeatures::EIP2028) { 16 } else { 68 };
     let mut gas = 21_000;
