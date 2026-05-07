@@ -28,9 +28,7 @@ use std::{
     unreachable_pub,
     clippy::use_self
 )]
-pub mod ffi {
-    include!(concat!(env!("OUT_DIR"), "/evmc.rs"));
-}
+pub mod ffi;
 
 use ffi::*;
 
@@ -337,7 +335,7 @@ unsafe extern "C" fn destroy(vm: *mut evmc_vm) {
 }
 
 const unsafe extern "C" fn get_capabilities(_vm: *mut evmc_vm) -> evmc_capabilities_flagset {
-    EVMC_CAPABILITY_EVM1.0 as evmc_capabilities_flagset
+    EVMC_CAPABILITY_EVM1 as evmc_capabilities_flagset
 }
 
 unsafe extern "C" fn execute(
@@ -394,7 +392,7 @@ fn message_from_evmc(msg: &evmc_message) -> Message {
             EVMC_CALLCODE => MessageKind::CallCode,
             EVMC_CREATE => MessageKind::Create,
             EVMC_CREATE2 => MessageKind::Create2,
-            _ if msg.flags & EVMC_STATIC.0 != 0 => MessageKind::StaticCall,
+            _ if msg.flags & EVMC_STATIC != 0 => MessageKind::StaticCall,
             _ => MessageKind::Call,
         },
         depth: msg.depth.try_into().unwrap_or_default(),
@@ -413,9 +411,9 @@ fn message_from_evmc(msg: &evmc_message) -> Message {
 
 fn message_to_evmc(message: &Message, code: &[u8], caller_is_static: bool) -> evmc_message {
     let mut flags = u32::from(caller_is_static || matches!(message.kind, MessageKind::StaticCall))
-        * EVMC_STATIC.0;
+        * EVMC_STATIC;
     if message.destination != message.code_address {
-        flags |= EVMC_DELEGATED.0;
+        flags |= EVMC_DELEGATED;
     }
 
     evmc_message {

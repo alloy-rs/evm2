@@ -1,14 +1,12 @@
 //! Generates Rust bindings for the vendored EVMC header.
 
-use std::{env, path::PathBuf};
-
 fn main() {
     let bindings = bindgen::Builder::default()
         .header("include/evmc/evmc.h")
         .allowlist_function("evmc_.*")
         .allowlist_type("evmc_.*")
         .allowlist_var("EVMC_.*")
-        .newtype_global_enum("evmc_.*")
+        .default_enum_style(bindgen::EnumVariation::Consts)
         .prepend_enum_name(false)
         .generate_comments(false)
         .layout_tests(false)
@@ -17,6 +15,5 @@ fn main() {
         .generate()
         .expect("failed to generate EVMC bindings");
 
-    let out_path = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR is set"));
-    bindings.write_to_file(out_path.join("evmc.rs")).expect("failed to write EVMC bindings");
+    bindings.write_to_file("src/ffi.rs").expect("failed to write EVMC bindings");
 }
