@@ -208,7 +208,7 @@ pub(super) fn validate_create_initcode(
     to: TxKind,
     input: &Bytes,
 ) -> HandlerResult<()> {
-    if version.spec_id.enables(SpecId::SHANGHAI)
+    if version.feature(EvmFeatures::EIP3860)
         && to.is_create()
         && input.len() > version.max_initcode_size
     {
@@ -476,7 +476,7 @@ pub(super) fn intrinsic_gas(
     if to.is_create() && version.feature(EvmFeatures::EIP2) {
         gas += 32_000;
     }
-    if to.is_create() && spec.enables(SpecId::SHANGHAI) {
+    if to.is_create() && version.feature(EvmFeatures::EIP3860) {
         gas += u64::from(params.get(GasId::TxInitcodeCost)) * num_words(input.len()) as u64;
     }
     gas

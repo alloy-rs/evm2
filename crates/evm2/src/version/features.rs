@@ -140,6 +140,10 @@ evm_features! {
     ///
     /// Default: on since Shanghai
     EIP3651,
+    /// Applies EIP-3860 initcode size limits and word gas.
+    ///
+    /// Default: on since Shanghai
+    EIP3860,
     /// Applies EIP-3541 contract code prefix rejection.
     ///
     /// Default: on since London
