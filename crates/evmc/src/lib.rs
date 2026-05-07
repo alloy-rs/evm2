@@ -271,12 +271,18 @@ impl EvmcHost {
     }
 
     fn access_account(&mut self, address: &evmc_address) -> evmc_access_status {
+        if !self.spec_id.enables(SpecId::BERLIN) {
+            return EVMC_ACCESS_WARM;
+        }
         self.host().access_account.map_or(EVMC_ACCESS_WARM, |access_account| unsafe {
             access_account(self.context, address)
         })
     }
 
     fn access_storage(&mut self, address: &evmc_address, key: &evmc_bytes32) -> evmc_access_status {
+        if !self.spec_id.enables(SpecId::BERLIN) {
+            return EVMC_ACCESS_WARM;
+        }
         self.host().access_storage.map_or(EVMC_ACCESS_WARM, |access_storage| unsafe {
             access_storage(self.context, address, key)
         })
@@ -409,6 +415,12 @@ fn message_from_evmc(msg: &evmc_message) -> Message {
 }
 
 fn message_to_evmc(message: &Message, code: &[u8], caller_is_static: bool) -> evmc_message {
+    let mut flags = u32::from(caller_is_static || matches!(message.kind, MessageKind::StaticCall))
+        * EVMC_STATIC as u32;
+    if message.destination != message.code_address {
+        flags |= EVMC_DELEGATED as u32;
+    }
+
     evmc_message {
         kind: match message.kind {
             MessageKind::DelegateCall => EVMC_DELEGATECALL,
@@ -418,9 +430,7 @@ fn message_to_evmc(message: &Message, code: &[u8], caller_is_static: bool) -> ev
             MessageKind::Call | MessageKind::StaticCall => EVMC_CALL,
             _ => EVMC_CALL,
         },
-        flags: (u32::from(caller_is_static || matches!(message.kind, MessageKind::StaticCall))
-            * EVMC_STATIC as u32)
-            | (u32::from(message.disable_precompiles) * EVMC_DELEGATED as u32),
+        flags,
         depth: message.depth.into(),
         gas: i64::try_from(message.gas_limit).unwrap_or(i64::MAX),
         recipient: address_to_evmc(message.destination),
