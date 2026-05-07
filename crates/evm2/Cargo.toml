@@ -88,23 +88,8 @@ name = "evm"
 harness = false
 
 [[example]]
-name = "registry_tx_handler"
-path = "examples/registry/tx_handler.rs"
-doc-scrape-examples = true
-
-[[example]]
-name = "registry_custom_handler"
-path = "examples/registry/custom_handler.rs"
-doc-scrape-examples = true
-
-[[example]]
-name = "e2e_transfer_sstore"
-path = "examples/e2e_transfer_sstore.rs"
-doc-scrape-examples = true
-
-[[example]]
 name = "custom_evm"
-path = "examples/custom_evm.rs"
+path = "examples/custom_evm/main.rs"
 doc-scrape-examples = true
 
 [features]

@@ -1,5 +1,7 @@
 //! Instruction dispatch tables.
 
+#[cfg(not(feature = "nightly"))]
+use crate::interpreter::gas::Gas;
 #[cfg(feature = "nightly")]
 use crate::interpreter::gas::RemainingGas;
 use crate::{
