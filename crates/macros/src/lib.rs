@@ -160,20 +160,24 @@ fn expand_instruction(instruction_attrs: InstructionAttrs, input: ItemFn) -> Tok
         (!instruction_attrs.no_stack_preamble).then(|| stack_setup(&inputs, &outputs));
     let cx_setup = has_cx.then(|| {
         let cx = cx_arg.unwrap_or_else(|| Ident::new("cx", ident.span()));
-        let cx_ty = if instruction_attrs.dynamic_gas {
-            quote! { evm2::interpreter::private::GasInstructionCx }
+        if instruction_attrs.dynamic_gas {
+            quote! {
+                let (__evm2_gas, __evm2_state) = unsafe {
+                    evm2::interpreter::private::split_gas_state(__evm2_state)
+                };
+                let mut #cx = evm2::interpreter::private::GasInstructionCx::<#evm_types> {
+                    pc: __evm2_pc,
+                    gas: __evm2_gas,
+                    state: __evm2_state,
+                };
+            }
         } else {
-            quote! { evm2::interpreter::private::InstructionCx }
-        };
-        let gas_field = instruction_attrs
-            .dynamic_gas
-            .then(|| quote! { gas: evm2::interpreter::private::gas(__evm2_state), });
-        quote! {
-            let mut #cx = #cx_ty::<#evm_types> {
-            pc: __evm2_pc,
-            #gas_field
-            state: __evm2_state,
-        };
+            quote! {
+                let mut #cx = evm2::interpreter::private::InstructionCx::<#evm_types> {
+                    pc: __evm2_pc,
+                    state: __evm2_state,
+                };
+            }
         }
     });
     let dynamic_gas = instruction_attrs.dynamic_gas;

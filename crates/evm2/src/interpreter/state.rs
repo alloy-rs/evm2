@@ -15,11 +15,12 @@ pub struct State<'a, T: EvmTypes> {
     pub bytecode: BytecodeRef<'a>,
     /// Host implementation.
     pub host: &'a mut T::Host,
+    /// Active runtime version data.
+    pub version: &'a Version,
     /// Active spec identifier.
     pub spec: SpecId,
     pub(crate) result: Result,
-    /// Active runtime version data.
-    pub version: &'a Version,
+    pub(crate) gas: Gas,
     pub(crate) raw_interp: *mut Interpreter<'a, T>,
 }
 
@@ -28,7 +29,7 @@ impl<'a, T: EvmTypes> State<'a, T> {
     const fn interp(&self) -> &Interpreter<'a, T> {
         // SAFETY: `raw_interp` is valid for the duration of instruction execution. Methods on
         // `State` must not borrow fields already passed separately to the instruction, such as
-        // stack and gas.
+        // stack.
         unsafe { &*self.raw_interp }
     }
 
@@ -36,15 +37,14 @@ impl<'a, T: EvmTypes> State<'a, T> {
     fn interp_mut(&mut self) -> &mut Interpreter<'a, T> {
         // SAFETY: `raw_interp` is valid for the duration of instruction execution. Methods on
         // `State` must not borrow fields already passed separately to the instruction, such as
-        // stack and gas.
+        // stack.
         unsafe { &mut *self.raw_interp }
     }
 
     /// Returns interpreter gas.
     #[inline]
-    pub(crate) fn gas(&mut self) -> &'a mut Gas {
-        // SAFETY: `raw_interp` is valid for the duration of instruction execution.
-        unsafe { &mut (*self.raw_interp).gas }
+    pub(crate) const fn gas(&mut self) -> &mut Gas {
+        &mut self.gas
     }
 
     /// Returns the cached transaction-global environment.
@@ -106,6 +106,7 @@ impl<T: EvmTypes> fmt::Debug for State<'_, T> {
             .field("memory", &self.interp().memory)
             .field("return_data", &self.return_data())
             .field("spec", &self.spec)
+            .field("gas", &self.gas)
             .field("result", &self.result)
             .field("version", &self.version)
             .field("raw_interp", &self.raw_interp)

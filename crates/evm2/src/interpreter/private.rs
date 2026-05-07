@@ -55,7 +55,16 @@ pub fn instr_stack_setup(
     stack.instr_stack_setup(input, output)
 }
 
+/// Splits a mutable instruction state into separate gas and state references.
+///
+/// # Safety
+///
+/// The returned `gas` reference must not be accessed through the returned `state` reference while
+/// both references are live.
 #[inline]
-pub fn gas<'a, T: EvmTypes>(state: &mut State<'a, T>) -> &'a mut Gas {
-    state.gas()
+pub unsafe fn split_gas_state<'a, 'state, T: EvmTypes>(
+    state: *mut State<'state, T>,
+) -> (&'a mut Gas, &'a mut State<'state, T>) {
+    // SAFETY: The caller must ensure the returned `gas` reference is not used through `state`.
+    unsafe { (&mut (*state).gas, &mut *state) }
 }

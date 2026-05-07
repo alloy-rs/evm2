@@ -40,6 +40,12 @@ impl<'a> Stack<'a> {
     }
 
     #[inline]
+    #[cfg(not(feature = "nightly"))]
+    pub(crate) const fn reborrow(&mut self) -> Stack<'_> {
+        Stack { stack: self.stack, len: self.len }
+    }
+
+    #[inline]
     pub(crate) const fn as_mut(&mut self) -> StackMut<'_> {
         StackMut { stack: self.stack, len: &mut self.len }
     }
