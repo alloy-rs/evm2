@@ -985,32 +985,48 @@ impl<D: Database> State<D> {
     /// overlay state are deleted during transaction finalization. Non-existent
     /// touched accounts stay non-existent.
     #[must_use]
-    fn is_existing_dead(&mut self, address: Address) -> bool {
-        if let Some(account) = self.accounts.get(&address) {
+    fn is_existing_dead(
+        initial: &mut D,
+        accounts: &AddressMap<Tracked<Option<Account>>>,
+        address: Address,
+    ) -> bool {
+        if let Some(account) = accounts.get(&address) {
             return account.current.as_ref().is_some_and(Account::is_empty)
                 || (account.current.is_none() && account.original.is_some());
         }
-        self.initial.get_account(address).is_some_and(|account| account.is_empty())
+        initial.get_account(address).is_some_and(|account| account.is_empty())
     }
 
-    fn delete_account_for_finalization(&mut self, address: Address) {
-        let account = Self::ensure_account_overlay(
-            &mut self.initial,
-            &mut self.accounts,
-            &mut self.journal,
-            address,
-        );
+    fn account_exists(
+        initial: &mut D,
+        accounts: &AddressMap<Tracked<Option<Account>>>,
+        address: Address,
+    ) -> bool {
+        if let Some(account) = accounts.get(&address) {
+            return account.current.is_some();
+        }
+        initial.get_account(address).is_some()
+    }
+
+    fn delete_account_for_finalization(
+        initial: &mut D,
+        accounts: &mut AddressMap<Tracked<Option<Account>>>,
+        journal: &mut Vec<JournalEntry>,
+        storage: &mut AddressMap<StorageOverlay>,
+        address: Address,
+    ) {
+        let account = Self::ensure_account_overlay(initial, accounts, journal, address);
         account.current = None;
-        self.storage.insert(address, StorageOverlay { wiped: true, slots: U256Map::default() });
+        storage.insert(address, StorageOverlay { wiped: true, slots: U256Map::default() });
     }
 
-    fn materialize_empty_account_for_finalization(&mut self, address: Address) {
-        let account = Self::ensure_account_overlay(
-            &mut self.initial,
-            &mut self.accounts,
-            &mut self.journal,
-            address,
-        );
+    fn materialize_empty_account_for_finalization(
+        initial: &mut D,
+        accounts: &mut AddressMap<Tracked<Option<Account>>>,
+        journal: &mut Vec<JournalEntry>,
+        address: Address,
+    ) {
+        let account = Self::ensure_account_overlay(initial, accounts, journal, address);
         if account.original.is_none() {
             account.current.get_or_insert_with(|| Account {
                 code_hash: KECCAK256_EMPTY,
@@ -1028,27 +1044,47 @@ impl<D: Database> State<D> {
     /// turns that substate into account deletions, storage wipes, or pre-EIP-161
     /// empty-account materialization.
     pub(super) fn finalize_transaction(&mut self, spec: SpecId) {
-        let selfdestructs = core::mem::take(&mut self.selfdestructs);
-        for address in selfdestructs.iter().copied() {
-            self.delete_account_for_finalization(address);
+        for &address in &self.selfdestructs {
+            Self::delete_account_for_finalization(
+                &mut self.initial,
+                &mut self.accounts,
+                &mut self.journal,
+                &mut self.storage,
+                address,
+            );
         }
 
-        let touched = core::mem::take(&mut self.touched);
         if spec.enables(SpecId::SPURIOUS_DRAGON) {
-            for address in touched {
+            for &address in &self.touched {
                 // EIP-161 deletes touched dead accounts at transaction finalization.
-                if self.is_existing_dead(address) {
-                    self.delete_account_for_finalization(address);
+                if Self::is_existing_dead(&mut self.initial, &self.accounts, address) {
+                    Self::delete_account_for_finalization(
+                        &mut self.initial,
+                        &mut self.accounts,
+                        &mut self.journal,
+                        &mut self.storage,
+                        address,
+                    );
                 }
             }
         } else {
-            for address in touched {
+            for &address in &self.touched {
                 // Before EIP-161, touching a non-existent account materializes it as empty.
-                if !selfdestructs.contains(&address) && self.account_info(address).is_none() {
-                    self.materialize_empty_account_for_finalization(address);
+                if !self.selfdestructs.contains(&address)
+                    && !Self::account_exists(&mut self.initial, &self.accounts, address)
+                {
+                    Self::materialize_empty_account_for_finalization(
+                        &mut self.initial,
+                        &mut self.accounts,
+                        &mut self.journal,
+                        address,
+                    );
                 }
             }
         }
+
+        self.selfdestructs.clear();
+        self.touched.clear();
     }
 
     /// Builds the state transition and takes emitted logs for the current transaction.
@@ -1342,6 +1378,26 @@ mod tests {
 
         assert!(!changes.accounts.contains_key(&address));
         assert!(!changes.storage.contains_key(&address));
+    }
+
+    #[test]
+    fn finalization_preserves_transaction_set_capacity() {
+        let mut state = State::new(CacheDB::default());
+
+        for i in 0..32 {
+            state.touch(Address::from([i; 20]));
+            state.mark_destructed(Address::from([i + 32; 20]));
+        }
+
+        let touched_capacity = state.touched.capacity();
+        let selfdestructs_capacity = state.selfdestructs.capacity();
+
+        state.finalize_transaction(crate::SpecId::SPURIOUS_DRAGON);
+
+        assert!(state.touched.is_empty());
+        assert!(state.selfdestructs.is_empty());
+        assert_eq!(state.touched.capacity(), touched_capacity);
+        assert_eq!(state.selfdestructs.capacity(), selfdestructs_capacity);
     }
 
     #[test]
