@@ -20,6 +20,11 @@ pub mod config;
 pub mod env;
 pub mod precompile;
 pub mod registry;
+mod system;
+pub use system::{
+    BEACON_ROOTS_ADDRESS, CONSOLIDATION_REQUEST_ADDRESS, HISTORY_STORAGE_ADDRESS, SYSTEM_ADDRESS,
+    SYSTEM_CALL_GAS_LIMIT, WITHDRAWAL_REQUEST_ADDRESS,
+};
 
 mod db;
 pub use db::{Cache, CacheDB, Database, EmptyDB, InMemoryDB};
@@ -826,6 +831,76 @@ mod tests {
             .collect::<HandlerResult<Vec<_>>>();
 
         assert_eq!(gas_used, Ok(vec![2, 3]));
+    }
+
+    #[test]
+    fn system_call_uses_system_sender_without_fee_accounting() {
+        let contract = Address::from([0x42; 20]);
+        let beneficiary = Address::from([0x99; 20]);
+        let code = Bytecode::new_legacy(Bytes::from_static(&[
+            op::CALLER,
+            op::PUSH1,
+            0,
+            op::SSTORE,
+            op::ORIGIN,
+            op::PUSH1,
+            1,
+            op::SSTORE,
+            op::STOP,
+        ]));
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(contract, AccountInfo::default().with_code(code));
+        let block = BlockEnv { beneficiary, basefee: U256::from(7), ..BlockEnv::default() };
+        let mut evm = Evm::<TestEvmTypes>::new(
+            SpecId::OSAKA,
+            block,
+            TxRegistry::new(),
+            database,
+            Precompiles::base(SpecId::OSAKA),
+        );
+
+        let result = evm.system_call(contract, Bytes::new());
+
+        assert!(result.status);
+        assert!(result.gas_used < SYSTEM_CALL_GAS_LIMIT);
+        assert!(!result.state_changes.accounts.contains_key(&SYSTEM_ADDRESS));
+        assert!(!result.state_changes.accounts.contains_key(&beneficiary));
+        let storage = result.state_changes.storage.get(&contract).expect("storage changed");
+        let system_address = U256::from_be_slice(SYSTEM_ADDRESS.as_slice());
+        assert_eq!(storage.slots.get(&U256::ZERO).map(|slot| slot.current), Some(system_address));
+        assert_eq!(storage.slots.get(&U256::ONE).map(|slot| slot.current), Some(system_address));
+    }
+
+    #[test]
+    fn system_call_reverts_state_changes() {
+        let contract = Address::from([0x42; 20]);
+        let code = Bytecode::new_legacy(Bytes::from_static(&[
+            op::PUSH1,
+            1,
+            op::PUSH1,
+            0,
+            op::SSTORE,
+            op::PUSH1,
+            0,
+            op::PUSH1,
+            0,
+            op::REVERT,
+        ]));
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(contract, AccountInfo::default().with_code(code));
+        let mut evm = Evm::<TestEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            database,
+            Precompiles::base(SpecId::OSAKA),
+        );
+
+        let result = evm.system_call(contract, Bytes::new());
+
+        assert!(!result.status);
+        assert_eq!(result.stop, InstrStop::Revert);
+        assert!(result.state_changes.is_empty());
     }
 
     #[test]
