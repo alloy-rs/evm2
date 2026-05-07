@@ -157,7 +157,7 @@ def dispatch_opcode(text: str) -> int | None:
 def is_asm_symbol_label(line: str) -> bool:
     return (
         line.endswith(":\n")
-        and not line.startswith(("\t", " ", ".", "#"))
+        and not line.startswith(("\t", " ", ".", "#", "L"))
         and len(line) > 2
     )
 
