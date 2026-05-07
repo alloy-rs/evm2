@@ -139,35 +139,6 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         (self.stack, self.stack_len, self.gas, self.memory, self.output)
     }
 
-    #[inline]
-    pub(crate) const fn tx_env(&self) -> &TxEnv {
-        self.tx_env.expect("interpreter tx env is initialized")
-    }
-
-    /// Returns the active runtime version data.
-    #[inline]
-    pub(crate) const fn version(&self) -> &Version {
-        // SAFETY: `version` is initialized at the beginning of `run_with` and points into the
-        // `ExecutionConfig` borrowed by the current run.
-        unsafe { &*self.version }
-    }
-
-    #[inline]
-    pub(crate) const fn message(&self) -> &Message {
-        self.message.expect("interpreter message is initialized")
-    }
-
-    #[inline]
-    pub(crate) const fn is_static(&self) -> bool {
-        self.is_static
-    }
-
-    /// Returns the active dynamic gas parameters.
-    #[inline]
-    pub const fn gas_params(&self) -> &GasParams {
-        &self.version().gas_params
-    }
-
     /// Returns output produced by `RETURN` or `REVERT`.
     #[inline]
     pub const fn output(&self) -> &[u8] {
@@ -294,7 +265,7 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
     /// Returns the cached transaction-global environment.
     #[inline]
     pub const fn tx(&self) -> &TxEnv {
-        self.0.tx_env()
+        self.0.tx_env.expect("interpreter tx env is initialized")
     }
 
     /// Returns the active bytecode.
@@ -323,13 +294,13 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
     /// Returns the active frame-local call/create message.
     #[inline]
     pub const fn message(&self) -> &Message {
-        self.0.message()
+        self.0.message.expect("interpreter message is initialized")
     }
 
     /// Returns whether the active frame forbids state-changing operations.
     #[inline]
     pub const fn is_static(&self) -> bool {
-        self.0.is_static()
+        self.0.is_static
     }
 
     /// Returns the active spec identifier.
