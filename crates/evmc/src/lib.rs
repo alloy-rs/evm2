@@ -39,6 +39,20 @@ const VERSION: &CStr =
         Err(_) => panic!("package version is a valid C string"),
     };
 
+#[unsafe(no_mangle)]
+pub extern "C" fn evmc_create_evm2() -> *mut evmc_vm {
+    let vm = Box::new(evmc_vm {
+        abi_version: EVMC_ABI_VERSION.try_into().expect("EVMC ABI version fits in c_int"),
+        name: NAME.as_ptr(),
+        version: VERSION.as_ptr(),
+        destroy: Some(destroy),
+        execute: Some(execute),
+        get_capabilities: Some(get_capabilities),
+        set_option: None,
+    });
+    Box::into_raw(vm)
+}
+
 #[derive(Clone, Copy)]
 struct EvmcTypes;
 
@@ -311,20 +325,6 @@ impl EvmcHost {
         code.truncate(copied);
         code.into()
     }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn evmc_create_evm2() -> *mut evmc_vm {
-    let vm = Box::new(evmc_vm {
-        abi_version: EVMC_ABI_VERSION.try_into().expect("EVMC ABI version fits in c_int"),
-        name: NAME.as_ptr(),
-        version: VERSION.as_ptr(),
-        destroy: Some(destroy),
-        execute: Some(execute),
-        get_capabilities: Some(get_capabilities),
-        set_option: None,
-    });
-    Box::into_raw(vm)
 }
 
 unsafe extern "C" fn destroy(vm: *mut evmc_vm) {
