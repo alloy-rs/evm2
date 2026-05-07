@@ -169,7 +169,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         let raw = self as *mut Self as *mut Interpreter<'_, T>;
         let mut pc = Pc::from_ptr(self.pc);
         let mut stack_len = self.stack_len;
-        let stack = &mut self.stack;
+        let stack = &mut *self.stack;
         let bytecode = BytecodeRef::new(&self.bytecode);
         let mut state = State {
             bytecode,
@@ -206,6 +206,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         let pc = Pc::from_ptr(self.pc);
         let op = pc.op();
         let instr = config.instructions[op as usize];
+        let stack = &mut *self.stack;
         let remaining_gas = RemainingGas::new(self.gas.remaining());
         let mut state = State {
             bytecode,
@@ -216,7 +217,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
             version: &config.version,
             raw_interp: raw,
         };
-        instr(pc, Stack::new(&mut self.stack, self.stack_len), remaining_gas, &mut state);
+        instr(pc, Stack::new(&mut *stack, self.stack_len), remaining_gas, &mut state);
         self.result.unwrap_err()
     }
 }
