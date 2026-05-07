@@ -128,6 +128,10 @@ evm_features! {
     ///
     /// Default: on
     BLOCK_GAS_LIMIT_CHECK,
+    /// Applies EIP-2 create transaction intrinsic gas.
+    ///
+    /// Default: on since Homestead
+    EIP2,
     /// Applies EIP-3541 contract code prefix rejection.
     ///
     /// Default: on since London

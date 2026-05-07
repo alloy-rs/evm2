@@ -474,7 +474,7 @@ pub(super) fn intrinsic_gas(
     }
     gas += access_list_accounts * u64::from(params.get(GasId::TxAccessListAddressCost));
     gas += access_list_storage_keys * u64::from(params.get(GasId::TxAccessListStorageKeyCost));
-    if to.is_create() && spec.enables(SpecId::HOMESTEAD) {
+    if to.is_create() && version.feature(EvmFeatures::EIP2) {
         gas += 32_000;
     }
     if to.is_create() && spec.enables(SpecId::SHANGHAI) {
