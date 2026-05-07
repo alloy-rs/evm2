@@ -1,4 +1,3 @@
-pub use super::runtime::split_gas_state;
 use super::{Gas, InterpreterState, Pc, Result, StackMut, Word};
 use crate::EvmTypes;
 
@@ -54,4 +53,18 @@ pub fn instr_stack_setup(
     output: usize,
 ) -> Result<*mut Word> {
     stack.instr_stack_setup(input, output)
+}
+
+/// Splits a mutable instruction state into separate gas and state references.
+///
+/// # Safety
+///
+/// The returned `gas` reference must not be accessed through the returned `state` reference while
+/// both references are live.
+#[inline]
+pub unsafe fn split_gas_state<'a, 'state, T: EvmTypes>(
+    state: *mut InterpreterState<'state, T>,
+) -> (&'a mut Gas, &'a mut InterpreterState<'state, T>) {
+    // SAFETY: The caller must ensure the returned `gas` reference is not used through `state`.
+    unsafe { (&mut *InterpreterState::gas_from_state_ptr(state), &mut *state) }
 }

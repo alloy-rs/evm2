@@ -14,21 +14,23 @@ use core::{fmt, marker::PhantomData, ptr::NonNull};
 /// EVM interpreter.
 pub struct Interpreter<'frame, T: EvmTypes> {
     bytecode: Bytecode,
-    pub(crate) pc: *const u8,
-    pub(crate) stack: Box<[Word; Stack::CAPACITY]>,
-    pub(crate) stack_len: usize,
-    pub(crate) gas: Gas,
-    pub(crate) memory: Memory,
-    pub(crate) result: Result,
-    pub(crate) output: *const [u8],
+
+    stack: Box<[Word; Stack::CAPACITY]>,
+
+    pc: *const u8,
+    stack_len: usize,
+    gas: Gas,
+    memory: Memory,
+    result: Result,
+    output: *const [u8],
     tx_env: Option<&'frame TxEnv>,
-    pub(crate) message: Option<&'frame Message>,
-    pub(crate) is_static: bool,
-    pub(crate) return_data: Bytes,
-    pub(crate) host: Option<NonNull<T::Host>>,
-    pub(crate) version: *const Version,
-    /// Active spec identifier.
-    pub spec: SpecId,
+    message: Option<&'frame Message>,
+    is_static: bool,
+    return_data: Bytes,
+    host: Option<NonNull<T::Host>>,
+    version: *const Version,
+    spec: SpecId,
+
     _marker: PhantomData<fn() -> T>,
 }
 
@@ -121,8 +123,20 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
     }
 
     #[cfg(test)]
-    pub(crate) const fn stack_len(&self) -> usize {
-        self.stack_len
+    pub(crate) const fn memory_len(&self) -> usize {
+        self.memory.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_return_data(&mut self, return_data: Bytes) {
+        self.return_data = return_data;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn into_parts(
+        self,
+    ) -> (Box<[Word; Stack::CAPACITY]>, usize, Gas, Memory, *const [u8]) {
+        (self.stack, self.stack_len, self.gas, self.memory, self.output)
     }
 
     #[inline]
@@ -170,6 +184,24 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
     #[inline]
     pub const fn gas_mut(&mut self) -> &mut Gas {
         &mut self.gas
+    }
+
+    #[inline]
+    pub(crate) const fn set_result(&mut self, result: Result) {
+        self.result = result;
+    }
+
+    #[inline]
+    #[cfg(feature = "nightly")]
+    pub(crate) const fn result(&self) -> Result {
+        self.result
+    }
+
+    #[inline]
+    #[cfg(feature = "nightly")]
+    pub(crate) const fn set_pc_stack_len(&mut self, pc: *const u8, stack_len: usize) {
+        self.pc = pc;
+        self.stack_len = stack_len;
     }
 
     /// Runs the interpreter until it stops, using `C` as the EVM configuration.
@@ -253,21 +285,27 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
         unsafe { core::mem::transmute::<&mut Interpreter<'frame, T>, &mut Self>(interpreter) }
     }
 
+    #[inline]
+    pub(in crate::interpreter) const unsafe fn gas_from_state_ptr(state: *mut Self) -> *mut Gas {
+        // SAFETY: The caller upholds that `state` points to a valid interpreter state.
+        unsafe { &raw mut (*state).0.gas }
+    }
+
     /// Returns the cached transaction-global environment.
     #[inline]
-    pub(crate) const fn tx(&self) -> &TxEnv {
+    pub const fn tx(&self) -> &TxEnv {
         self.0.tx_env()
     }
 
     /// Returns the active bytecode.
     #[inline]
-    pub(crate) fn bytecode(&self) -> BytecodeRef<'_> {
+    pub fn bytecode(&self) -> BytecodeRef<'_> {
         BytecodeRef::new(&self.0.bytecode)
     }
 
     /// Returns the host implementation.
     #[inline]
-    pub(crate) const fn host(&mut self) -> &mut T::Host {
+    pub const fn host(&mut self) -> &mut T::Host {
         // SAFETY: `host` is initialized at the beginning of `run_with` and cleared before the
         // method returns. Instruction execution is synchronous, so the pointer cannot outlive the
         // `run_with` host borrow.
@@ -276,7 +314,7 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
 
     /// Returns the active runtime version data.
     #[inline]
-    pub(crate) const fn version(&self) -> &Version {
+    pub const fn version(&self) -> &Version {
         // SAFETY: `version` is initialized at the beginning of `run_with` and points into the
         // `ExecutionConfig` borrowed by the current run.
         unsafe { &*self.0.version }
@@ -284,19 +322,19 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
 
     /// Returns the active frame-local call/create message.
     #[inline]
-    pub(crate) const fn message(&self) -> &Message {
+    pub const fn message(&self) -> &Message {
         self.0.message()
     }
 
     /// Returns whether the active frame forbids state-changing operations.
     #[inline]
-    pub(crate) const fn is_static(&self) -> bool {
+    pub const fn is_static(&self) -> bool {
         self.0.is_static()
     }
 
     /// Returns the active spec identifier.
     #[inline]
-    pub(crate) const fn spec(&self) -> SpecId {
+    pub const fn spec(&self) -> SpecId {
         self.0.spec
     }
 
@@ -308,41 +346,27 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
 
     /// Returns linear memory.
     #[inline]
-    pub(crate) const fn memory(&mut self) -> &mut Memory {
+    pub const fn memory(&mut self) -> &mut Memory {
         &mut self.0.memory
     }
 
     /// Returns return data from the last call-like operation.
     #[inline]
-    pub(crate) const fn return_data(&self) -> &Bytes {
+    pub const fn return_data(&self) -> &Bytes {
         &self.0.return_data
     }
 
     /// Sets return data from the last call-like operation.
     #[inline]
-    pub(crate) fn set_return_data(&mut self, return_data: Bytes) {
+    pub fn set_return_data(&mut self, return_data: Bytes) {
         self.0.return_data = return_data;
     }
 
     /// Sets the current frame output.
     #[inline]
-    pub(crate) const fn set_output(&mut self, output: *const [u8]) {
+    pub const fn set_output(&mut self, output: *const [u8]) {
         self.0.output = output;
     }
-}
-
-/// Splits mutable instruction state into separate gas and state references.
-///
-/// # Safety
-///
-/// The returned `gas` reference must not be accessed through the returned `state` reference while
-/// both references are live.
-#[inline]
-pub unsafe fn split_gas_state<'a, 'state, T: EvmTypes>(
-    state: *mut InterpreterState<'state, T>,
-) -> (&'a mut Gas, &'a mut InterpreterState<'state, T>) {
-    // SAFETY: The caller must ensure the returned `gas` reference is not used through `state`.
-    unsafe { (&mut (*state).0.gas, &mut *state) }
 }
 
 #[derive(Default)]

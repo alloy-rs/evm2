@@ -115,7 +115,7 @@ mod tests {
         let err = interpreter.run_with(&config, &mut host);
 
         core::assert_matches!(err, InstrStop::MemoryLimitOOG);
-        assert_eq!(interpreter.memory.len(), 0);
+        assert_eq!(interpreter.memory_len(), 0);
     }
 
     #[test]

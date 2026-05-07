@@ -191,7 +191,7 @@ fn dispatch_mono<T: EvmTypes, C: EvmConfig<T>>(
     }
     if r.is_err() {
         cold_path();
-        state.result = r;
+        state.set_result(r);
         return (core::ptr::null(), stack.len);
     }
     (pc.as_ptr(), stack.len)
@@ -220,7 +220,7 @@ extern_table! {
         state: &mut Interpreter<'_, T>,
     ) {
         assume!(C::VERSION_TABLES.is_unknown_opcode(pc.op()));
-        state.result = Err(InstrStop::OpcodeNotFound);
+        state.set_result(Err(InstrStop::OpcodeNotFound));
         tail_return!(tail_call_restore::<T>(pc, stack, remaining_gas, state));
     }
 }
@@ -238,7 +238,7 @@ extern_table! {
         let instr = C::VERSION_TABLES.instruction(op).instr;
         if let Err(e) = pre_step::<T, C>(&mut remaining_gas, op) {
             cold_path();
-            state.result = Err(e);
+            state.set_result(Err(e));
             tail_return!(tail_call_restore::<T>(pc, stack, remaining_gas, state));
         }
         if DYNAMIC_GAS {
@@ -250,7 +250,7 @@ extern_table! {
         }
         if let Err(e) = r {
             cold_path();
-            state.result = Err(e);
+            state.set_result(Err(e));
             tail_return!(tail_call_restore::<T>(pc, stack, remaining_gas, state));
         }
         inc_pc(&mut pc, op);
@@ -283,9 +283,8 @@ extern_table! {
         state: &mut Interpreter<'_, T>,
     ) {
         state.gas_mut().set_remaining(remaining_gas.get());
-        state.pc = pc.as_ptr();
-        state.stack_len = stack.len;
-        debug_assert!(state.result.is_err());
+        state.set_pc_stack_len(pc.as_ptr(), stack.len);
+        debug_assert!(state.result().is_err());
         // Exits by returning normally.
     }
 }

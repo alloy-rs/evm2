@@ -292,20 +292,13 @@ fn run_with_config<C: EvmConfig<TestTypes>>(config: RunConfig<'_>) -> TestInterp
     let bytecode = Bytecode::new_legacy(Bytes::from(code));
     message.gas_limit = gas_limit;
     let mut inner = Interpreter::<TestTypes>::new(bytecode, &tx_env, &message, false);
-    inner.return_data = return_data;
+    inner.set_return_data(return_data);
     let mut default_host = TestHost::default();
     let host = host.unwrap_or(&mut default_host);
     host.spec_id = spec_id;
     let err = inner.run::<C>(host);
-    let stack_len = inner.stack_len();
-    TestInterpreter {
-        stack: inner.stack,
-        stack_len,
-        gas: inner.gas,
-        memory: inner.memory,
-        output: inner.output,
-        err,
-    }
+    let (stack, stack_len, gas, memory, output) = inner.into_parts();
+    TestInterpreter { stack, stack_len, gas, memory, output, err }
 }
 
 pub(crate) trait ToWord {
