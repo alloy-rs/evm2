@@ -9,7 +9,7 @@ use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::Bytes;
 #[cfg(not(feature = "nightly"))]
 use core::hint::cold_path;
-use core::{fmt, marker::PhantomData, ptr::NonNull};
+use core::{fmt, marker::PhantomData};
 
 /// EVM interpreter.
 pub struct Interpreter<'frame, T: EvmTypes> {
@@ -27,7 +27,7 @@ pub struct Interpreter<'frame, T: EvmTypes> {
     message: Option<&'frame Message>,
     is_static: bool,
     return_data: Bytes,
-    host: Option<NonNull<T::Host>>,
+    host: *mut T::Host,
     version: *const Version,
     spec: SpecId,
 
@@ -51,7 +51,7 @@ impl<T: EvmTypes> Default for Interpreter<'_, T> {
             message: None,
             is_static: false,
             return_data: Bytes::new(),
-            host: None,
+            host: core::ptr::null_mut(),
             version: core::ptr::null(),
             spec: SpecId::DEFAULT,
             _marker: PhantomData,
@@ -73,7 +73,7 @@ impl<T: EvmTypes> fmt::Debug for Interpreter<'_, T> {
             .field("message", &self.message)
             .field("is_static", &self.is_static)
             .field("return_data", &self.return_data)
-            .field("host", &self.host.map(|host| host.as_ptr()))
+            .field("host", &self.host)
             .field("version", &self.version)
             .field("spec", &self.spec)
             .finish_non_exhaustive()
@@ -166,7 +166,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
     /// Runs the interpreter until it stops.
     pub fn run_with(&mut self, config: &ExecutionConfig<T>, host: &mut T::Host) -> InstrStop {
         self.memory.set_memory_limit(config.version.memory_limit);
-        self.host = Some(NonNull::from(&mut *host));
+        self.host = host;
         self.version = &config.version;
         self.spec = config.version.spec_id;
 
@@ -175,7 +175,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         #[cfg(not(feature = "nightly"))]
         let r = self.run_table_loop(config);
 
-        self.host = None;
+        self.host = core::ptr::null_mut();
         self.version = core::ptr::null();
         r
     }
@@ -287,7 +287,8 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
         // SAFETY: `host` is initialized at the beginning of `run_with` and cleared before the
         // method returns. Instruction execution is synchronous, so the pointer cannot outlive the
         // `run_with` host borrow.
-        unsafe { self.0.host.expect("interpreter host is initialized").as_mut() }
+        assert!(!self.0.host.is_null(), "interpreter host is initialized");
+        unsafe { &mut *self.0.host }
     }
 
     /// Returns the active runtime version data.
@@ -348,6 +349,7 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
 }
 
 #[derive(Default)]
+#[expect(clippy::vec_box, reason = "pooled active interpreters must stay at stable addresses")]
 pub(crate) struct InterpreterPool<T: EvmTypes> {
     frames: Vec<Box<Interpreter<'static, T>>>,
 }
