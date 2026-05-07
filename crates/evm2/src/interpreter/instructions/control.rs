@@ -33,17 +33,17 @@ pub(crate) fn jumpi(cx: _, [target, cond]: [Word]) -> Result {
 #[inline(always)]
 fn jump_inner<T: EvmTypes>(target: Word, cx: &mut InstructionCx<'_, '_, T>) -> Result {
     let target = word_to_usize_saturated(target);
-    if !cx.state.bytecode.is_valid_jumpdest(target) {
+    if !cx.state.bytecode().is_valid_jumpdest(target) {
         cold_path();
         return Err(InstrStop::InvalidJump);
     }
-    unsafe { cx.pc.set_unchecked(cx.state.bytecode, target) };
+    unsafe { cx.pc.set_unchecked(cx.state.bytecode(), target) };
     Ok(())
 }
 
 #[instruction]
 pub(crate) fn pc(cx: _) -> out {
-    *out = Word::from(cx.state.bytecode.pc_offset(*cx.pc));
+    *out = Word::from(cx.state.bytecode().pc_offset(*cx.pc));
 }
 
 #[instruction(dynamic_gas)]

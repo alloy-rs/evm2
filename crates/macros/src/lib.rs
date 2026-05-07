@@ -197,7 +197,7 @@ fn expand_instruction(instruction_attrs: InstructionAttrs, input: ItemFn) -> Tok
             fn execute(
                 __evm2_pc: &mut evm2::interpreter::Pc,
                 mut stack: evm2::interpreter::StackMut<'_>,
-                __evm2_state: &mut evm2::interpreter::State<'_, #evm_types>,
+                __evm2_state: &mut evm2::interpreter::Interpreter<'_, #evm_types>,
             ) -> evm2::interpreter::Result {
                 evm2::asm_comment!(#asm_comment);
                 #cx_setup

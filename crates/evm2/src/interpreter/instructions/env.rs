@@ -18,7 +18,7 @@ fn load_account<T: EvmTypes>(
 ) -> Result<AccountLoad> {
     let cold_load_gas = cx.state.gas_params().cold_account_additional_cost();
     let skip_cold_load = cx.gas.remaining() < cold_load_gas;
-    let account = cx.state.host.load_account(word_to_address(addr), load_code, skip_cold_load)?;
+    let account = cx.state.host().load_account(word_to_address(addr), load_code, skip_cold_load)?;
     if account.is_cold {
         cx.gas.spend(cold_load_gas)?;
     }
@@ -82,7 +82,7 @@ pub(crate) fn calldatacopy(cx: _, [memory_offset, data_offset, len]: [Word]) -> 
 
 #[instruction]
 pub(crate) fn codesize(cx: _) -> out {
-    *out = Word::from(cx.state.bytecode.len());
+    *out = Word::from(cx.state.bytecode().len());
 }
 
 #[instruction(dynamic_gas)]
@@ -93,8 +93,9 @@ pub(crate) fn codecopy(cx: _, [memory_offset, code_offset, len]: [Word]) -> Resu
         let memory_offset = word_to_usize(memory_offset)?;
         let code_offset = word_to_usize_saturated(code_offset);
         resize_memory(cx.gas, cx.state.memory(), memory_offset, len)?;
-        let code = cx.state.bytecode.as_slice();
-        cx.state.memory().set_data(memory_offset, code_offset, len, code);
+        let code = cx.state.bytecode().as_slice() as *const [u8];
+        // SAFETY: The interpreter owns bytecode for the duration of this instruction.
+        cx.state.memory().set_data(memory_offset, code_offset, len, unsafe { &*code });
     };
 }
 

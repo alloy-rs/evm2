@@ -1,17 +1,17 @@
 #[cfg(feature = "nightly")]
 use super::gas::RemainingGas;
-use super::{
-    BytecodeRef, Gas, InstrStop, Memory, Message, MessageKind, Pc, Result, Stack, State, Word,
+use super::{BytecodeRef, Gas, InstrStop, Memory, Message, MessageKind, Pc, Result, Stack, Word};
+use crate::{
+    EvmConfig, EvmTypes, ExecutionConfig, SpecId, Version, bytecode::Bytecode, env::TxEnv,
+    version::GasParams,
 };
-use crate::{EvmConfig, EvmTypes, ExecutionConfig, bytecode::Bytecode, env::TxEnv};
 use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::Bytes;
 #[cfg(not(feature = "nightly"))]
 use core::hint::cold_path;
-use core::marker::PhantomData;
+use core::{fmt, marker::PhantomData, ptr::NonNull};
 
 /// EVM interpreter.
-#[derive(Debug)]
 pub struct Interpreter<'frame, T: EvmTypes> {
     bytecode: Bytecode,
     pub(crate) pc: *const u8,
@@ -25,6 +25,10 @@ pub struct Interpreter<'frame, T: EvmTypes> {
     pub(crate) message: Option<&'frame Message>,
     pub(crate) is_static: bool,
     pub(crate) return_data: Bytes,
+    pub(crate) host: Option<NonNull<T::Host>>,
+    pub(crate) version: *const Version,
+    /// Active spec identifier.
+    pub spec: SpecId,
     _marker: PhantomData<fn() -> T>,
 }
 
@@ -45,8 +49,32 @@ impl<T: EvmTypes> Default for Interpreter<'_, T> {
             message: None,
             is_static: false,
             return_data: Bytes::new(),
+            host: None,
+            version: core::ptr::null(),
+            spec: SpecId::DEFAULT,
             _marker: PhantomData,
         }
+    }
+}
+
+impl<T: EvmTypes> fmt::Debug for Interpreter<'_, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Interpreter")
+            .field("bytecode", &self.bytecode)
+            .field("pc", &self.pc)
+            .field("stack_len", &self.stack_len)
+            .field("gas", &self.gas)
+            .field("memory", &self.memory)
+            .field("result", &self.result)
+            .field("output", &self.output)
+            .field("tx_env", &self.tx_env)
+            .field("message", &self.message)
+            .field("is_static", &self.is_static)
+            .field("return_data", &self.return_data)
+            .field("host", &self.host.map(|host| host.as_ptr()))
+            .field("version", &self.version)
+            .field("spec", &self.spec)
+            .finish_non_exhaustive()
     }
 }
 
@@ -102,6 +130,35 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         self.tx_env.expect("interpreter tx env is initialized")
     }
 
+    /// Returns the cached transaction-global environment.
+    #[inline]
+    pub(crate) const fn tx(&self) -> &TxEnv {
+        self.tx_env()
+    }
+
+    /// Returns the active bytecode.
+    #[inline]
+    pub(crate) fn bytecode(&self) -> BytecodeRef<'_> {
+        BytecodeRef::new(&self.bytecode)
+    }
+
+    /// Returns the host implementation.
+    #[inline]
+    pub(crate) const fn host(&mut self) -> &mut T::Host {
+        // SAFETY: `host` is initialized at the beginning of `run_with` and cleared before the
+        // method returns. Instruction execution is synchronous, so the pointer cannot outlive the
+        // `run_with` host borrow.
+        unsafe { self.host.expect("interpreter host is initialized").as_mut() }
+    }
+
+    /// Returns the active runtime version data.
+    #[inline]
+    pub(crate) const fn version(&self) -> &Version {
+        // SAFETY: `version` is initialized at the beginning of `run_with` and points into the
+        // `ExecutionConfig` borrowed by the current run.
+        unsafe { &*self.version }
+    }
+
     #[inline]
     pub(crate) const fn message(&self) -> &Message {
         self.message.expect("interpreter message is initialized")
@@ -112,6 +169,12 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         self.is_static
     }
 
+    /// Returns the active dynamic gas parameters.
+    #[inline]
+    pub const fn gas_params(&self) -> &GasParams {
+        &self.version().gas_params
+    }
+
     #[inline]
     pub(crate) const fn memory(&mut self) -> &mut Memory {
         &mut self.memory
@@ -120,6 +183,12 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
     #[inline]
     pub(crate) const fn return_data(&self) -> &Bytes {
         &self.return_data
+    }
+
+    /// Sets return data from the last call-like operation.
+    #[inline]
+    pub(crate) fn set_return_data(&mut self, return_data: Bytes) {
+        self.return_data = return_data;
     }
 
     #[inline]
@@ -154,42 +223,38 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
     /// Runs the interpreter until it stops.
     pub fn run_with(&mut self, config: &ExecutionConfig<T>, host: &mut T::Host) -> InstrStop {
         self.memory.set_memory_limit(config.version.memory_limit);
+        self.host = Some(NonNull::from(&mut *host));
+        self.version = &config.version;
+        self.spec = config.version.spec_id;
 
         #[cfg(feature = "nightly")]
-        let r = self.step_tail(config, host);
+        let r = self.step_tail(config);
         #[cfg(not(feature = "nightly"))]
-        let r = self.run_table_loop(config, host);
+        let r = self.run_table_loop(config);
 
+        self.host = None;
+        self.version = core::ptr::null();
         r
     }
 
     #[cfg(not(feature = "nightly"))]
-    fn run_table_loop(&mut self, config: &ExecutionConfig<T>, host: &mut T::Host) -> InstrStop {
+    fn run_table_loop(&mut self, config: &ExecutionConfig<T>) -> InstrStop {
         #[expect(clippy::unnecessary_cast, reason = "cast erases the active interpreter lifetime")]
         let raw = self as *mut Self as *mut Interpreter<'_, T>;
         let mut pc = Pc::new(self.pc);
         let mut stack = Stack::new(&mut self.stack, self.stack_len);
-        let bytecode = BytecodeRef::new(&self.bytecode);
-        let mut state = State {
-            bytecode,
-            host,
-            spec: config.version.spec_id,
-            gas: self.gas,
-            result: Ok(()),
-            version: &config.version,
-            raw_interp: raw,
-        };
         loop {
             let op = pc.op();
             let instr = config.instructions[op as usize];
-            let (next_pc, next_stack_len) = instr(pc, stack.reborrow(), &mut state);
+            // SAFETY: Instruction methods must not access the stack through `Interpreter` while
+            // the separate stack view is live.
+            let (next_pc, next_stack_len) = instr(pc, stack.reborrow(), unsafe { &mut *raw });
             pc = Pc::new(next_pc);
             stack.len = next_stack_len;
             if next_pc.is_null() {
                 cold_path();
                 self.pc = next_pc;
                 self.stack_len = stack.len;
-                self.gas = state.gas;
                 return self.result.unwrap_err();
             }
         }
@@ -197,31 +262,22 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
 
     #[inline(always)]
     #[cfg(feature = "nightly")]
-    fn step_tail(&mut self, config: &ExecutionConfig<T>, host: &mut T::Host) -> InstrStop {
+    fn step_tail(&mut self, config: &ExecutionConfig<T>) -> InstrStop {
         #[expect(clippy::unnecessary_cast, reason = "cast erases the active interpreter lifetime")]
         let raw = self as *mut Self as *mut Interpreter<'_, T>;
-        let bytecode = BytecodeRef::new(&self.bytecode);
         let pc = Pc::new(self.pc);
         let op = pc.op();
         let instr = config.instructions[op as usize];
         let stack = Stack::new(&mut self.stack, self.stack_len);
         let remaining_gas = RemainingGas::new(self.gas.remaining());
-        let mut state = State {
-            bytecode,
-            host,
-            spec: config.version.spec_id,
-            gas: self.gas,
-            result: Ok(()),
-            version: &config.version,
-            raw_interp: raw,
-        };
-        instr(pc, stack, remaining_gas, &mut state);
+        // SAFETY: Instruction methods must not access the stack through `Interpreter` while the
+        // separate stack view is live.
+        instr(pc, stack, remaining_gas, unsafe { &mut *raw });
         self.result.unwrap_err()
     }
 }
 
-#[derive(Debug, Default)]
-#[expect(clippy::vec_box, reason = "pooled active interpreters must stay at stable addresses")]
+#[derive(Default)]
 pub(crate) struct InterpreterPool<T: EvmTypes> {
     frames: Vec<Box<Interpreter<'static, T>>>,
 }

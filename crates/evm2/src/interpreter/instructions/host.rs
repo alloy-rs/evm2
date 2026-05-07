@@ -1,7 +1,7 @@
 use crate::{
     EvmFeatures, EvmTypes, SpecId,
     interpreter::{
-        Host, InstrStop, Result, StackMut, State, Word, memory::resize_memory,
+        Host, InstrStop, Interpreter, Result, StackMut, Word, memory::resize_memory,
         private::GasInstructionCx,
     },
     utils::word_to_usize,
@@ -11,7 +11,7 @@ use alloy_primitives::{B256, Bytes, Log, LogData};
 use evm2_macros::instruction;
 
 #[inline]
-const fn require_non_staticcall<T: EvmTypes>(state: &State<'_, T>) -> Result {
+const fn require_non_staticcall<T: EvmTypes>(state: &Interpreter<'_, T>) -> Result {
     if state.is_static() {
         return Err(InstrStop::StateChangeDuringStaticCall);
     }
@@ -26,7 +26,8 @@ pub(crate) fn sload(cx: _, [key]: [Word]) -> Result<out> {
     let additional_cold_cost = cx.state.gas_params().get(GasId::ColdStorageAdditionalCost).into();
     let skip_cold_load =
         cx.state.spec.enables(SpecId::BERLIN) && cx.gas.remaining() < additional_cold_cost;
-    let load = cx.state.host.sload(cx.state.message().destination, key, skip_cold_load)?;
+    let destination = cx.state.message().destination;
+    let load = cx.state.host().sload(destination, key, skip_cold_load)?;
     if load.is_cold {
         cx.gas.spend(additional_cold_cost)?;
     }
@@ -37,57 +38,58 @@ pub(crate) fn sload(cx: _, [key]: [Word]) -> Result<out> {
 pub(crate) fn sstore(cx: _) -> Result {
     require_non_staticcall(cx.state)?;
     let [key, value] = stack.popn()?;
-    let gas_params = cx.state.gas_params();
     let is_istanbul = cx.state.spec.enables(SpecId::ISTANBUL);
 
     // EIP-2200: SSTORE may not execute with only the value-transfer stipend left. This
     // check happens before any gas is charged or host storage is touched.
-    if is_istanbul && cx.gas.remaining() <= gas_params.get(GasId::CallStipend).into() {
+    if is_istanbul && cx.gas.remaining() <= cx.state.gas_params().get(GasId::CallStipend).into() {
         return Err(InstrStop::ReentrancySentryOOG);
     }
 
     // Frontier through Petersburg charge a fixed SSTORE_RESET static cost. Istanbul
     // (EIP-2200) turns this into the SLOAD-equivalent cost, and Berlin (EIP-2929)
     // makes that the warm storage read cost.
-    cx.gas.spend(gas_params.get(GasId::SstoreStatic).into())?;
+    cx.gas.spend(cx.state.gas_params().get(GasId::SstoreStatic).into())?;
 
     // EIP-2929: avoid performing a cold storage load if the frame cannot afford the
     // additional cold-load charge. The host performs the write and returns
     // original/present/new values for net metering.
     let skip_cold_load = cx.state.spec.enables(SpecId::BERLIN)
-        && cx.gas.remaining() < gas_params.get(GasId::ColdStorageAdditionalCost).into();
-    let state_load =
-        cx.state.host.sstore(cx.state.message().destination, key, value, skip_cold_load)?;
+        && cx.gas.remaining() < cx.state.gas_params().get(GasId::ColdStorageAdditionalCost).into();
+    let destination = cx.state.message().destination;
+    let state_load = cx.state.host().sstore(destination, key, value, skip_cold_load)?;
 
     // EIP-2200 net gas metering depends on original, present, and new slot values:
     // clean slots pay set/reset costs, dirty slots generally only pay the load cost,
     // and reset-to-original transitions are handled through refunds.
-    cx.gas.spend(gas_params.sstore_dynamic_gas(is_istanbul, &state_load))?;
+    cx.gas.spend(cx.state.gas_params().sstore_dynamic_gas(is_istanbul, &state_load))?;
 
     // EIP-8037 / Amsterdam: creating a new storage slot (original == present == 0,
     // new != 0) also consumes state gas from the reservoir before spilling into
     // regular gas.
-    if cx.state.version.feature(EvmFeatures::EIP8037) {
-        cx.gas.spend_state(gas_params.sstore_state_gas(&state_load))?;
+    if cx.state.version().feature(EvmFeatures::EIP8037) {
+        cx.gas.spend_state(cx.state.gas_params().sstore_state_gas(&state_load))?;
     }
 
     // EIP-2200 and EIP-3529 refund rules, including negative refund adjustments for
     // dirty nonzero slots and London's reduced clearing-slot refund via gas params.
-    cx.gas.record_refund(gas_params.sstore_refund(is_istanbul, &state_load));
+    cx.gas.record_refund(cx.state.gas_params().sstore_refund(is_istanbul, &state_load));
     Ok(())
 }
 
 #[instruction(no_stack_preamble)]
 pub(crate) fn tload(cx: _) -> Result {
     let ([], key) = stack.popn_top()?;
-    *key = cx.state.host.tload(cx.state.message().destination, *key);
+    let destination = cx.state.message().destination;
+    *key = cx.state.host().tload(destination, *key);
 }
 
 #[instruction(no_stack_preamble)]
 pub(crate) fn tstore(cx: _) -> Result {
     require_non_staticcall(cx.state)?;
     let [key, value] = stack.popn()?;
-    cx.state.host.tstore(cx.state.message().destination, key, value);
+    let destination = cx.state.message().destination;
+    cx.state.host().tstore(destination, key, value);
 }
 
 #[instruction(no_stack_preamble, dynamic_gas)]
@@ -115,8 +117,9 @@ fn log_common<T: EvmTypes>(
     };
 
     let topics = stack.popn_dyn(n)?.map(|topic| B256::from(topic.to_be_bytes::<32>())).collect();
-    cx.state.host.log(Log {
-        address: cx.state.message().destination,
+    let destination = cx.state.message().destination;
+    cx.state.host().log(Log {
+        address: destination,
         data: LogData::new(topics, data).expect("LOG opcodes cannot emit more than 4 topics"),
     });
     Ok(())

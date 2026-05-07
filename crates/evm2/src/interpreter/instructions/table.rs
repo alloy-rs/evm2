@@ -6,7 +6,7 @@ use crate::interpreter::gas::Gas;
 use crate::interpreter::gas::RemainingGas;
 use crate::{
     EvmConfig, EvmTypes,
-    interpreter::{InstrStop, Pc, Result, Stack, StackMut, State, op},
+    interpreter::{InstrStop, Interpreter, Pc, Result, Stack, StackMut, op},
 };
 use core::hint::cold_path;
 
@@ -17,7 +17,7 @@ pub(crate) type InstructionFnRet = (*const u8, usize);
 /// Normal instruction function pointer.
 #[cfg(not(feature = "nightly"))]
 pub(crate) type InstructionFn<T> =
-    extern_table!(fn(pc: Pc, stack: Stack<'_>, state: &mut State<'_, T>) -> InstructionFnRet);
+    extern_table!(fn(pc: Pc, stack: Stack<'_>, state: &mut Interpreter<'_, T>) -> InstructionFnRet);
 
 #[cfg(feature = "nightly")]
 pub(crate) type InstructionFn<T> = TailInstructionFn<T>;
@@ -31,7 +31,7 @@ pub(crate) type InstructionTable<T> = TailInstructionTable<T>;
 /// Tail instruction function pointer.
 #[cfg(feature = "nightly")]
 pub(crate) type TailInstructionFn<T> = extern_table!(
-    fn(pc: Pc, stack: Stack<'_>, remaining_gas: RemainingGas, state: &mut State<'_, T>)
+    fn(pc: Pc, stack: Stack<'_>, remaining_gas: RemainingGas, state: &mut Interpreter<'_, T>)
 );
 
 /// Tail instruction dispatch table.
@@ -56,7 +56,7 @@ where
 pub(crate) const fn unknown_instruction<T: EvmTypes>(
     _pc: &mut Pc,
     _stack: StackMut<'_>,
-    _state: &mut State<'_, T>,
+    _state: &mut Interpreter<'_, T>,
 ) -> Result {
     Err(InstrStop::OpcodeNotFound)
 }
@@ -166,7 +166,7 @@ extern_table! {
     fn dispatch<T: EvmTypes, C: EvmConfig<T>, const OP: u8>(
         pc: Pc,
         stack: Stack<'_>,
-        state: &mut State<'_, T>,
+        state: &mut Interpreter<'_, T>,
     ) -> InstructionFnRet {
         dispatch_mono::<T, C>(OP, pc, stack, state)
     }
@@ -178,11 +178,11 @@ fn dispatch_mono<T: EvmTypes, C: EvmConfig<T>>(
     op: u8,
     mut pc: Pc,
     mut stack: Stack<'_>,
-    state: &mut State<'_, T>,
+    state: &mut Interpreter<'_, T>,
 ) -> InstructionFnRet {
     let instr = C::VERSION_TABLES.instruction(op).instr;
     let r;
-    match pre_step::<T, C>(state.gas(), op) {
+    match pre_step::<T, C>(state.gas_mut(), op) {
         Ok(()) => {
             r = instr(&mut pc, stack.as_mut(), state);
             inc_pc(&mut pc, op);
@@ -191,8 +191,7 @@ fn dispatch_mono<T: EvmTypes, C: EvmConfig<T>>(
     }
     if r.is_err() {
         cold_path();
-        // SAFETY: `raw_interp` is valid for the duration of execution.
-        unsafe { (*state.raw_interp).result = r };
+        state.result = r;
         return (core::ptr::null(), stack.len);
     }
     (pc.as_ptr(), stack.len)
@@ -204,7 +203,7 @@ extern_table! {
         pc: Pc,
         stack: Stack<'_>,
         remaining_gas: RemainingGas,
-        state: &mut State<'_, T>,
+        state: &mut Interpreter<'_, T>,
     ) {
         assume!(pc.op() == OP);
         tail_return!(tail_dispatch_mono::<T, C, DYNAMIC_GAS>(pc, stack, remaining_gas, state));
@@ -218,7 +217,7 @@ extern_table! {
         pc: Pc,
         stack: Stack<'_>,
         remaining_gas: RemainingGas,
-        state: &mut State<'_, T>,
+        state: &mut Interpreter<'_, T>,
     ) {
         assume!(C::VERSION_TABLES.is_unknown_opcode(pc.op()));
         state.result = Err(InstrStop::OpcodeNotFound);
@@ -233,7 +232,7 @@ extern_table! {
         mut pc: Pc,
         mut stack: Stack<'_>,
         mut remaining_gas: RemainingGas,
-        state: &mut State<'_, T>,
+        state: &mut Interpreter<'_, T>,
     ) {
         let op = pc.op();
         let instr = C::VERSION_TABLES.instruction(op).instr;
@@ -243,11 +242,11 @@ extern_table! {
             tail_return!(tail_call_restore::<T>(pc, stack, remaining_gas, state));
         }
         if DYNAMIC_GAS {
-            state.gas().set_remaining(remaining_gas.get());
+            state.gas_mut().set_remaining(remaining_gas.get());
         }
         let r = instr(&mut pc, stack.as_mut(), state);
         if DYNAMIC_GAS {
-            remaining_gas.set(state.gas().remaining());
+            remaining_gas.set(state.gas_mut().remaining());
         }
         if let Err(e) = r {
             cold_path();
@@ -266,7 +265,7 @@ extern_table! {
         pc: Pc,
         stack: Stack<'_>,
         remaining_gas: RemainingGas,
-        state: &mut State<'_, T>,
+        state: &mut Interpreter<'_, T>,
     ) {
         let instr = <T as InstructionTables<C>>::INSTRUCTIONS[pc.op() as usize];
         tail_return!(instr(pc, stack, remaining_gas, state));
@@ -281,16 +280,12 @@ extern_table! {
         pc: Pc,
         stack: Stack<'_>,
         remaining_gas: RemainingGas,
-        state: &mut State<'_, T>,
+        state: &mut Interpreter<'_, T>,
     ) {
-        state.gas().set_remaining(remaining_gas.get());
-        // SAFETY: `raw_interp` is valid for the duration of execution.
-        let interp = unsafe { &mut *state.raw_interp };
-        interp.gas = state.gas;
-        interp.pc = pc.as_ptr();
-        interp.stack_len = stack.len;
+        state.gas_mut().set_remaining(remaining_gas.get());
+        state.pc = pc.as_ptr();
+        state.stack_len = stack.len;
         debug_assert!(state.result.is_err());
-        interp.result = state.result;
         // Exits by returning normally.
     }
 }

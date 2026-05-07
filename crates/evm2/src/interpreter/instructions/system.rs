@@ -4,7 +4,7 @@ use crate::{
     EvmTypes, SpecId,
     constants::{CALL_DEPTH_LIMIT, EIP7702_BYTECODE_LEN, EIP7702_MAGIC_BYTES, EIP7702_VERSION},
     interpreter::{
-        Host, InstrStop, Message, MessageKind, MessageResult, Result, StackMut, State, Word,
+        Host, InstrStop, Interpreter, Message, MessageKind, MessageResult, Result, StackMut, Word,
         memory::resize_memory, private::GasInstructionCx,
     },
     utils::{word_to_address, word_to_usize},
@@ -15,7 +15,7 @@ use core::{cmp::min, ops::Range};
 use evm2_macros::instruction;
 
 #[inline]
-const fn require_non_staticcall<T: EvmTypes>(state: &State<'_, T>) -> Result {
+const fn require_non_staticcall<T: EvmTypes>(state: &Interpreter<'_, T>) -> Result {
     if state.is_static() {
         return Err(InstrStop::StateChangeDuringStaticCall);
     }
@@ -104,7 +104,7 @@ fn load_acc_and_calc_gas<T: EvmTypes>(
     let additional_cold_cost = cx.state.gas_params().cold_account_additional_cost();
     let remaining_gas = cx.gas.remaining();
     let skip_cold_load = remaining_gas < additional_cold_cost;
-    let account = cx.state.host.load_account(to, true, skip_cold_load)?;
+    let account = cx.state.host().load_account(to, true, skip_cold_load)?;
 
     let mut cost = 0;
     if account.is_cold {
@@ -121,18 +121,19 @@ fn load_acc_and_calc_gas<T: EvmTypes>(
         }
         let skip_cold_load = remaining_gas < cost.saturating_add(additional_cold_cost);
         let delegated_account =
-            cx.state.host.load_account(delegated_address, true, skip_cold_load)?;
+            cx.state.host().load_account(delegated_address, true, skip_cold_load)?;
         if delegated_account.is_cold {
             cost += additional_cold_cost;
         }
         code = delegated_account.code;
         code_address = delegated_address;
     }
+    let spec = cx.state.spec;
     if create_empty_account
         && should_charge_new_account_gas(
-            cx.state.spec,
+            spec,
             transfers_value,
-            cx.state.host.target_is_empty_for_new_account_gas(to, cx.state.spec),
+            cx.state.host().target_is_empty_for_new_account_gas(to, spec),
         )
     {
         cost += u64::from(cx.state.gas_params().get(GasId::NewAccountCost));
@@ -223,7 +224,7 @@ fn call_inner<T: EvmTypes>(
     } else {
         // SAFETY: `tx_env` points into the active interpreter frame and remains valid for the
         // duration of this instruction.
-        cx.state.host.execute_message(unsafe { &*tx_env }, bytecode, &message, caller_is_static)
+        cx.state.host().execute_message(unsafe { &*tx_env }, bytecode, &message, caller_is_static)
     };
     cx.gas.erase_cost(result.gas_returned_to_parent());
     cx.gas.record_refund(result.refund_propagated_to_parent());
@@ -272,7 +273,7 @@ fn create_inner<T: EvmTypes>(
 
     let len = word_to_usize(len)?;
     if cx.state.spec.enables(SpecId::SHANGHAI) {
-        if len > cx.state.version.max_initcode_size {
+        if len > cx.state.version().max_initcode_size {
             return Err(InstrStop::CreateInitCodeSizeLimit);
         }
         cx.gas.spend(cx.state.gas_params().initcode_cost(len))?;
@@ -312,7 +313,7 @@ fn create_inner<T: EvmTypes>(
     } else {
         // SAFETY: `tx_env` points into the active interpreter frame and remains valid for the
         // duration of this instruction.
-        cx.state.host.execute_message(unsafe { &*tx_env }, bytecode, &message, false)
+        cx.state.host().execute_message(unsafe { &*tx_env }, bytecode, &message, false)
     };
     cx.gas.erase_cost(result.gas_returned_to_parent());
     cx.gas.record_refund(result.refund_propagated_to_parent());
@@ -336,7 +337,8 @@ pub(crate) fn selfdestruct(cx: _, [target]: [Word]) -> Result {
     let target = word_to_address(target);
     let cold_load_gas = cx.state.gas_params().selfdestruct_cold_cost();
     let skip_cold_load = cx.gas.remaining() < cold_load_gas;
-    let res = cx.state.host.selfdestruct(cx.state.message().destination, target, skip_cold_load)?;
+    let destination = cx.state.message().destination;
+    let res = cx.state.host().selfdestruct(destination, target, skip_cold_load)?;
     let should_charge_topup =
         should_charge_new_account_gas(cx.state.spec, res.had_value, res.target_is_empty);
     cx.gas.spend(cx.state.gas_params().selfdestruct_cost(should_charge_topup, res.is_cold))?;

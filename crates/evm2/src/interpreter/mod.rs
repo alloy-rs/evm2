@@ -26,8 +26,8 @@ pub use memory::Memory;
 mod message;
 pub use message::{Message, MessageKind};
 
-mod state;
-pub use state::{Host, MessageResult, State};
+mod host;
+pub use host::{Host, MessageResult};
 
 mod runtime;
 pub use runtime::Interpreter;
