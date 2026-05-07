@@ -208,18 +208,17 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         let pc = Pc::from_ptr(pc);
         let op = pc.op();
         let instr = config.instructions[op as usize];
-        let (pc, stack_len) = instr(
-            pc,
-            Stack::new(&mut self.stack, stack_len),
-            &mut State {
-                bytecode,
-                host,
-                spec: config.version.spec_id,
-                result: Ok(()),
-                version: &config.version,
-                raw_interp: raw,
-            },
-        );
+        let mut state = State {
+            bytecode,
+            host,
+            spec: config.version.spec_id,
+            gas: self.gas,
+            result: Ok(()),
+            version: &config.version,
+            raw_interp: raw,
+        };
+        let (pc, stack_len) = instr(pc, Stack::new(&mut self.stack, stack_len), &mut state);
+        self.gas = state.gas;
         let flow = if pc.is_null() { Break(()) } else { Continue(()) };
         (pc, stack_len, flow)
     }
@@ -234,19 +233,16 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         let op = pc.op();
         let instr = config.instructions[op as usize];
         let remaining_gas = RemainingGas::new(self.gas.remaining());
-        instr(
-            pc,
-            Stack::new(&mut self.stack, self.stack_len),
-            remaining_gas,
-            &mut State {
-                bytecode,
-                host,
-                spec: config.version.spec_id,
-                result: Ok(()),
-                version: &config.version,
-                raw_interp: raw,
-            },
-        );
+        let mut state = State {
+            bytecode,
+            host,
+            spec: config.version.spec_id,
+            gas: self.gas,
+            result: Ok(()),
+            version: &config.version,
+            raw_interp: raw,
+        };
+        instr(pc, Stack::new(&mut self.stack, self.stack_len), remaining_gas, &mut state);
         self.result.unwrap_err()
     }
 }

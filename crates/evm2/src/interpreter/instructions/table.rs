@@ -263,6 +263,7 @@ extern_table! {
         state.gas().set_remaining(remaining_gas.get());
         // SAFETY: `raw_interp` is valid for the duration of execution.
         let interp = unsafe { &mut *state.raw_interp };
+        interp.gas = state.gas;
         interp.pc = pc.as_ptr();
         interp.stack_len = stack.len;
         debug_assert!(state.result.is_err());
