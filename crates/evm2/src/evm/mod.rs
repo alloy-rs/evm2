@@ -229,6 +229,12 @@ impl<T: EvmTypes> Evm<T> {
         self.state.initial()
     }
 
+    /// Returns the backing database mutably.
+    #[inline]
+    pub const fn database_mut(&mut self) -> &mut T::Database {
+        self.state.initial_mut()
+    }
+
     /// Returns the mutable EVM state.
     #[inline]
     pub const fn state(&self) -> &State<T::Database> {
