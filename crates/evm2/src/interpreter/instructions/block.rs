@@ -40,7 +40,7 @@ pub(crate) fn block_number(cx: _) -> out {
 
 #[instruction]
 pub(crate) fn difficulty(cx: _) -> out {
-    *out = if cx.state.spec.enables(SpecId::MERGE) {
+    *out = if cx.state.spec().enables(SpecId::MERGE) {
         cx.state.host().block_env().prevrandao
     } else {
         cx.state.host().block_env().difficulty

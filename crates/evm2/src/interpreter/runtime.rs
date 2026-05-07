@@ -130,27 +130,6 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         self.tx_env.expect("interpreter tx env is initialized")
     }
 
-    /// Returns the cached transaction-global environment.
-    #[inline]
-    pub(crate) const fn tx(&self) -> &TxEnv {
-        self.tx_env()
-    }
-
-    /// Returns the active bytecode.
-    #[inline]
-    pub(crate) fn bytecode(&self) -> BytecodeRef<'_> {
-        BytecodeRef::new(&self.bytecode)
-    }
-
-    /// Returns the host implementation.
-    #[inline]
-    pub(crate) const fn host(&mut self) -> &mut T::Host {
-        // SAFETY: `host` is initialized at the beginning of `run_with` and cleared before the
-        // method returns. Instruction execution is synchronous, so the pointer cannot outlive the
-        // `run_with` host borrow.
-        unsafe { self.host.expect("interpreter host is initialized").as_mut() }
-    }
-
     /// Returns the active runtime version data.
     #[inline]
     pub(crate) const fn version(&self) -> &Version {
@@ -173,27 +152,6 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
     #[inline]
     pub const fn gas_params(&self) -> &GasParams {
         &self.version().gas_params
-    }
-
-    #[inline]
-    pub(crate) const fn memory(&mut self) -> &mut Memory {
-        &mut self.memory
-    }
-
-    #[inline]
-    pub(crate) const fn return_data(&self) -> &Bytes {
-        &self.return_data
-    }
-
-    /// Sets return data from the last call-like operation.
-    #[inline]
-    pub(crate) fn set_return_data(&mut self, return_data: Bytes) {
-        self.return_data = return_data;
-    }
-
-    #[inline]
-    pub(crate) const fn set_output(&mut self, output: *const [u8]) {
-        self.output = output;
     }
 
     /// Returns output produced by `RETURN` or `REVERT`.
@@ -275,6 +233,116 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         instr(pc, stack, remaining_gas, unsafe { &mut *raw });
         self.result.unwrap_err()
     }
+}
+
+/// Interpreter state exposed to instruction implementations.
+#[repr(transparent)]
+pub struct InterpreterState<'frame, T: EvmTypes>(Interpreter<'frame, T>);
+
+impl<T: EvmTypes> fmt::Debug for InterpreterState<'_, T> {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
+    #[inline]
+    pub(crate) const fn wrap_mut<'a>(interpreter: &'a mut Interpreter<'frame, T>) -> &'a mut Self {
+        // SAFETY: `InterpreterState` is a transparent wrapper over `Interpreter`.
+        unsafe { core::mem::transmute::<&mut Interpreter<'frame, T>, &mut Self>(interpreter) }
+    }
+
+    /// Returns the cached transaction-global environment.
+    #[inline]
+    pub(crate) const fn tx(&self) -> &TxEnv {
+        self.0.tx_env()
+    }
+
+    /// Returns the active bytecode.
+    #[inline]
+    pub(crate) fn bytecode(&self) -> BytecodeRef<'_> {
+        BytecodeRef::new(&self.0.bytecode)
+    }
+
+    /// Returns the host implementation.
+    #[inline]
+    pub(crate) const fn host(&mut self) -> &mut T::Host {
+        // SAFETY: `host` is initialized at the beginning of `run_with` and cleared before the
+        // method returns. Instruction execution is synchronous, so the pointer cannot outlive the
+        // `run_with` host borrow.
+        unsafe { self.0.host.expect("interpreter host is initialized").as_mut() }
+    }
+
+    /// Returns the active runtime version data.
+    #[inline]
+    pub(crate) const fn version(&self) -> &Version {
+        // SAFETY: `version` is initialized at the beginning of `run_with` and points into the
+        // `ExecutionConfig` borrowed by the current run.
+        unsafe { &*self.0.version }
+    }
+
+    /// Returns the active frame-local call/create message.
+    #[inline]
+    pub(crate) const fn message(&self) -> &Message {
+        self.0.message()
+    }
+
+    /// Returns whether the active frame forbids state-changing operations.
+    #[inline]
+    pub(crate) const fn is_static(&self) -> bool {
+        self.0.is_static()
+    }
+
+    /// Returns the active spec identifier.
+    #[inline]
+    pub(crate) const fn spec(&self) -> SpecId {
+        self.0.spec
+    }
+
+    /// Returns the active dynamic gas parameters.
+    #[inline]
+    pub const fn gas_params(&self) -> &GasParams {
+        &self.version().gas_params
+    }
+
+    /// Returns linear memory.
+    #[inline]
+    pub(crate) const fn memory(&mut self) -> &mut Memory {
+        &mut self.0.memory
+    }
+
+    /// Returns return data from the last call-like operation.
+    #[inline]
+    pub(crate) const fn return_data(&self) -> &Bytes {
+        &self.0.return_data
+    }
+
+    /// Sets return data from the last call-like operation.
+    #[inline]
+    pub(crate) fn set_return_data(&mut self, return_data: Bytes) {
+        self.0.return_data = return_data;
+    }
+
+    /// Sets the current frame output.
+    #[inline]
+    pub(crate) const fn set_output(&mut self, output: *const [u8]) {
+        self.0.output = output;
+    }
+}
+
+/// Splits mutable instruction state into separate gas and state references.
+///
+/// # Safety
+///
+/// The returned `gas` reference must not be accessed through the returned `state` reference while
+/// both references are live.
+#[inline]
+pub unsafe fn split_gas_state<'a, 'state, T: EvmTypes>(
+    state: *mut InterpreterState<'state, T>,
+) -> (&'a mut Gas, &'a mut InterpreterState<'state, T>) {
+    // SAFETY: The caller must ensure the returned `gas` reference is not used through `state`.
+    unsafe { (&mut (*state).0.gas, &mut *state) }
 }
 
 #[derive(Default)]

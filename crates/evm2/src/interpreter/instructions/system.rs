@@ -4,8 +4,8 @@ use crate::{
     EvmTypes, SpecId,
     constants::{CALL_DEPTH_LIMIT, EIP7702_BYTECODE_LEN, EIP7702_MAGIC_BYTES, EIP7702_VERSION},
     interpreter::{
-        Host, InstrStop, Interpreter, Message, MessageKind, MessageResult, Result, StackMut, Word,
-        memory::resize_memory, private::GasInstructionCx,
+        Host, InstrStop, InterpreterState, Message, MessageKind, MessageResult, Result, StackMut,
+        Word, memory::resize_memory, private::GasInstructionCx,
     },
     utils::{word_to_address, word_to_usize},
     version::GasId,
@@ -15,7 +15,7 @@ use core::{cmp::min, ops::Range};
 use evm2_macros::instruction;
 
 #[inline]
-const fn require_non_staticcall<T: EvmTypes>(state: &Interpreter<'_, T>) -> Result {
+const fn require_non_staticcall<T: EvmTypes>(state: &InterpreterState<'_, T>) -> Result {
     if state.is_static() {
         return Err(InstrStop::StateChangeDuringStaticCall);
     }
@@ -112,7 +112,7 @@ fn load_acc_and_calc_gas<T: EvmTypes>(
     }
     let mut code = account.code;
     let mut code_address = to;
-    if cx.state.spec.enables(SpecId::PRAGUE)
+    if cx.state.spec().enables(SpecId::PRAGUE)
         && let Some(delegated_address) = eip7702_address(&code)
     {
         cost += u64::from(cx.state.gas_params().get(GasId::WarmStorageReadCost));
@@ -128,7 +128,7 @@ fn load_acc_and_calc_gas<T: EvmTypes>(
         code = delegated_account.code;
         code_address = delegated_address;
     }
-    let spec = cx.state.spec;
+    let spec = cx.state.spec();
     if create_empty_account
         && should_charge_new_account_gas(
             spec,
@@ -140,7 +140,7 @@ fn load_acc_and_calc_gas<T: EvmTypes>(
     }
     cx.gas.spend(cost)?;
 
-    let mut gas_limit = if cx.state.spec.enables(SpecId::TANGERINE) {
+    let mut gas_limit = if cx.state.spec().enables(SpecId::TANGERINE) {
         min(cx.state.gas_params().call_stipend_reduction(cx.gas.remaining()), stack_gas_limit)
     } else {
         stack_gas_limit
@@ -272,7 +272,7 @@ fn create_inner<T: EvmTypes>(
     let salt = if is_create2 { Some(stack.pop()?) } else { None };
 
     let len = word_to_usize(len)?;
-    if cx.state.spec.enables(SpecId::SHANGHAI) {
+    if cx.state.spec().enables(SpecId::SHANGHAI) {
         if len > cx.state.version().max_initcode_size {
             return Err(InstrStop::CreateInitCodeSizeLimit);
         }
@@ -286,7 +286,7 @@ fn create_inner<T: EvmTypes>(
         cx.state.gas_params().get(GasId::Create).into()
     };
     cx.gas.spend(create_cost)?;
-    let gas_limit = if cx.state.spec.enables(SpecId::TANGERINE) {
+    let gas_limit = if cx.state.spec().enables(SpecId::TANGERINE) {
         cx.state.gas_params().call_stipend_reduction(cx.gas.remaining())
     } else {
         cx.gas.remaining()
@@ -340,7 +340,7 @@ pub(crate) fn selfdestruct(cx: _, [target]: [Word]) -> Result {
     let destination = cx.state.message().destination;
     let res = cx.state.host().selfdestruct(destination, target, skip_cold_load)?;
     let should_charge_topup =
-        should_charge_new_account_gas(cx.state.spec, res.had_value, res.target_is_empty);
+        should_charge_new_account_gas(cx.state.spec(), res.had_value, res.target_is_empty);
     cx.gas.spend(cx.state.gas_params().selfdestruct_cost(should_charge_topup, res.is_cold))?;
     if !res.previously_destroyed {
         cx.gas.record_refund(cx.state.gas_params().get(GasId::SelfdestructRefund) as i64);

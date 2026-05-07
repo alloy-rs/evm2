@@ -6,7 +6,7 @@ use crate::interpreter::gas::Gas;
 use crate::interpreter::gas::RemainingGas;
 use crate::{
     EvmConfig, EvmTypes,
-    interpreter::{InstrStop, Interpreter, Pc, Result, Stack, StackMut, op},
+    interpreter::{InstrStop, Interpreter, InterpreterState, Pc, Result, Stack, StackMut, op},
 };
 use core::hint::cold_path;
 
@@ -56,7 +56,7 @@ where
 pub(crate) const fn unknown_instruction<T: EvmTypes>(
     _pc: &mut Pc,
     _stack: StackMut<'_>,
-    _state: &mut Interpreter<'_, T>,
+    _state: &mut InterpreterState<'_, T>,
 ) -> Result {
     Err(InstrStop::OpcodeNotFound)
 }
@@ -184,7 +184,7 @@ fn dispatch_mono<T: EvmTypes, C: EvmConfig<T>>(
     let r;
     match pre_step::<T, C>(state.gas_mut(), op) {
         Ok(()) => {
-            r = instr(&mut pc, stack.as_mut(), state);
+            r = instr(&mut pc, stack.as_mut(), InterpreterState::wrap_mut(state));
             inc_pc(&mut pc, op);
         }
         Err(e) => r = Err(e),
@@ -244,7 +244,7 @@ extern_table! {
         if DYNAMIC_GAS {
             state.gas_mut().set_remaining(remaining_gas.get());
         }
-        let r = instr(&mut pc, stack.as_mut(), state);
+        let r = instr(&mut pc, stack.as_mut(), InterpreterState::wrap_mut(state));
         if DYNAMIC_GAS {
             remaining_gas.set(state.gas_mut().remaining());
         }
