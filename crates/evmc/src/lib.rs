@@ -516,16 +516,7 @@ fn result_to_message(result: evmc_result) -> MessageResult {
 
 fn result_with_output(status_code: evmc_status_code, output: &[u8]) -> evmc_result {
     if output.is_empty() {
-        return evmc_result {
-            status_code,
-            gas_left: 0,
-            gas_refund: 0,
-            output_data: ptr::null(),
-            output_size: 0,
-            release: None,
-            create_address: zero_address(),
-            padding: [0; 4],
-        };
+        return evmc_result { status_code, ..evmc_result_zero() };
     }
 
     let output = output.to_vec().into_boxed_slice();
@@ -534,19 +525,20 @@ fn result_with_output(status_code: evmc_status_code, output: &[u8]) -> evmc_resu
     Box::leak(output);
     evmc_result {
         status_code,
-        gas_left: 0,
-        gas_refund: 0,
         output_data,
         output_size,
         release: Some(release_result),
-        create_address: zero_address(),
-        padding: [0; 4],
+        ..evmc_result_zero()
     }
 }
 
-fn failure_result(status_code: evmc_status_code) -> evmc_result {
+const fn failure_result(status_code: evmc_status_code) -> evmc_result {
+    evmc_result { status_code, ..evmc_result_zero() }
+}
+
+const fn evmc_result_zero() -> evmc_result {
     evmc_result {
-        status_code,
+        status_code: 0,
         gas_left: 0,
         gas_refund: 0,
         output_data: ptr::null(),
@@ -645,8 +637,8 @@ fn storage_status_to_sstore(status: evmc_storage_status, is_cold: bool) -> SStor
     SStore { original_value, present_value, new_value, is_cold }
 }
 
-fn address_from_evmc(address: evmc_address) -> Address {
-    Address::from(address.bytes)
+const fn address_from_evmc(address: evmc_address) -> Address {
+    Address::new(address.bytes)
 }
 
 const fn address_to_evmc(address: Address) -> evmc_address {
