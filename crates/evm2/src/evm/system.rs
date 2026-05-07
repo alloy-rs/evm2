@@ -1,4 +1,10 @@
 //! System transaction execution.
+//!
+//! System calls execute bytecode already present at the target system contract address. The EVM
+//! does not install or inject protocol system contract bytecode; callers that use these hooks are
+//! responsible for making the target account and code available in the backing database or overlay
+//! before calling [`Evm::system_call`]. Calling an address without code succeeds as an empty call
+//! and produces no state changes.
 
 use super::{Evm, TxResult};
 use crate::{EvmTypes, env::TxEnv, ethereum::initial_message, interpreter::Host};
@@ -37,6 +43,9 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     /// System calls bypass normal transaction validation, nonce updates, fee charging, gas refunds,
     /// and beneficiary rewards. They execute a top-level `CALL` with zero value and
     /// [`SYSTEM_CALL_GAS_LIMIT`] gas, then finalize and return the produced state changes.
+    ///
+    /// The target system contract bytecode must already be present in state. This method does not
+    /// deploy protocol system contracts or synthesize their bytecode.
     pub fn system_call_with_caller(
         &mut self,
         caller: Address,
