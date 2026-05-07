@@ -132,6 +132,10 @@ evm_features! {
     ///
     /// Default: on since Homestead
     EIP2,
+    /// Applies EIP-2028 transaction calldata repricing.
+    ///
+    /// Default: on since Istanbul
+    EIP2028,
     /// Applies EIP-3541 contract code prefix rejection.
     ///
     /// Default: on since London
