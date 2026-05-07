@@ -27,3 +27,6 @@ _regenerate = ["dep:bindgen"]
 
 [build-dependencies]
 bindgen = { version = "0.72", optional = true }
+
+[dev-dependencies]
+libloading = "0.8"
