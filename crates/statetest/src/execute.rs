@@ -212,7 +212,7 @@ fn execute_spec(
     macro_rules! run {
         ($spec:ident) => {{
             let spec = SpecId::$spec;
-            let mut evm = Evm::<BaseEvmTypes<RecoveredTxEnvelope>>::new(
+            let mut evm = Evm::<BaseEvmTypes>::new(
                 spec,
                 block,
                 ethereum_tx_registry(spec),
