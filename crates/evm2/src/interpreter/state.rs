@@ -1,4 +1,4 @@
-use super::{BytecodeRef, Gas, InstrStop, Interpreter, Memory, Message, Word};
+use super::{BytecodeRef, Gas, InstrStop, Interpreter, Memory, Message, Result, Word};
 use crate::{
     EvmTypes, SpecId, Version,
     bytecode::Bytecode,
@@ -17,7 +17,7 @@ pub struct State<'a, T: EvmTypes> {
     pub host: &'a mut T::Host,
     /// Active spec identifier.
     pub spec: SpecId,
-    pub(crate) tmp: InstrStop,
+    pub(crate) result: Result,
     /// Active runtime version data.
     pub version: &'a Version,
     pub(crate) raw_interp: *mut Interpreter<'a, T>,
@@ -108,7 +108,7 @@ impl<T: EvmTypes> fmt::Debug for State<'_, T> {
             .field("memory", &self.interp().memory)
             .field("return_data", &self.return_data())
             .field("spec", &self.spec)
-            .field("tmp", &self.tmp)
+            .field("result", &self.result)
             .field("version", &self.version)
             .field("raw_interp", &self.raw_interp)
             .finish_non_exhaustive()

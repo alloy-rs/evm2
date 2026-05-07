@@ -261,7 +261,7 @@ extern_table! {
         let instr = C::VERSION_TABLES.instruction(op).instr;
         if let Err(e) = pre_step::<T, C>(&mut remaining_gas, op) {
             cold_path();
-            state.tmp = e;
+            state.result = Err(e);
             tail_return!(tail_call_restore::<T>(pc, stack, remaining_gas, state));
         }
         if DYNAMIC_GAS {
@@ -273,7 +273,7 @@ extern_table! {
         }
         if let Err(e) = r {
             cold_path();
-            state.tmp = e;
+            state.result = Err(e);
             tail_return!(tail_call_restore::<T>(pc, stack, remaining_gas, state));
         }
         inc_pc(&mut pc, op);
@@ -310,7 +310,8 @@ extern_table! {
         let interp = unsafe { &mut *state.raw_interp };
         interp.pc = pc.as_ptr();
         interp.stack_len = stack.len;
-        interp.result = Err(state.tmp);
+        debug_assert!(state.result.is_err());
+        interp.result = state.result;
         // Exits by returning normally.
     }
 }
