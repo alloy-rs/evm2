@@ -131,6 +131,7 @@ mod tests {
             instructions::tests::{RunConfig, TestHost, push, run},
             op,
         },
+        storage_key::StorageKey,
     };
     use alloc::vec::Vec;
     use alloy_primitives::{Address, B256, Bytes};
@@ -138,7 +139,7 @@ mod tests {
     #[test]
     fn sload_opcode() {
         let mut host = TestHost::default();
-        host.storage.insert((Address::ZERO, Word::from(1)), Word::from(0xbeef));
+        host.storage.insert(StorageKey::new(Address::ZERO, Word::from(1)), Word::from(0xbeef));
 
         let mut code = Vec::new();
         push(&mut code, 1);
@@ -168,7 +169,10 @@ mod tests {
         let interpreter = run(RunConfig::new(code).host(&mut host).gas_limit(30_000));
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::from(0xbeef)]);
-        assert_eq!(host.storage.get(&(Address::ZERO, Word::from(1))), Some(&Word::from(0xbeef)));
+        assert_eq!(
+            host.storage.get(&StorageKey::new(Address::ZERO, Word::from(1))),
+            Some(&Word::from(0xbeef))
+        );
     }
 
     #[test]
@@ -182,7 +186,7 @@ mod tests {
         let interpreter = run(RunConfig::new(code).host(&mut host).staticcall());
         core::assert_matches!(interpreter.err, InstrStop::StateChangeDuringStaticCall);
         assert_eq!(interpreter.stack(), [Word::from(0xbeef), Word::from(1)]);
-        assert_eq!(host.storage.get(&(Address::ZERO, Word::from(1))), None);
+        assert_eq!(host.storage.get(&StorageKey::new(Address::ZERO, Word::from(1))), None);
     }
 
     #[test]
@@ -199,7 +203,7 @@ mod tests {
 
         core::assert_matches!(interpreter.err, InstrStop::StateChangeDuringStaticCall);
         assert_eq!(interpreter.stack(), [Word::from(0xbeef), Word::from(1)]);
-        assert_eq!(host.storage.get(&(Address::ZERO, Word::from(1))), None);
+        assert_eq!(host.storage.get(&StorageKey::new(Address::ZERO, Word::from(1))), None);
     }
 
     #[test]
@@ -213,7 +217,7 @@ mod tests {
         let interpreter =
             run(RunConfig::new(code).host(&mut host).spec(SpecId::ISTANBUL).gas_limit(2306));
         core::assert_matches!(interpreter.err, InstrStop::ReentrancySentryOOG);
-        assert_eq!(host.storage.get(&(Address::ZERO, Word::from(1))), None);
+        assert_eq!(host.storage.get(&StorageKey::new(Address::ZERO, Word::from(1))), None);
     }
 
     #[test]
@@ -261,7 +265,7 @@ mod tests {
     #[test]
     fn sstore_reset_to_original_records_refund() {
         let mut host = TestHost::default();
-        host.storage.insert((Address::ZERO, Word::from(0)), Word::from(5));
+        host.storage.insert(StorageKey::new(Address::ZERO, Word::from(0)), Word::from(5));
         let mut code = Vec::new();
         push(&mut code, 7);
         push(&mut code, 0);
@@ -294,7 +298,8 @@ mod tests {
     #[test]
     fn tload_opcode() {
         let mut host = TestHost::default();
-        host.transient_storage.insert((Address::ZERO, Word::from(1)), Word::from(0xcafe));
+        host.transient_storage
+            .insert(StorageKey::new(Address::ZERO, Word::from(1)), Word::from(0xcafe));
 
         let mut code = Vec::new();
         push(&mut code, 1);
@@ -324,7 +329,7 @@ mod tests {
         core::assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::from(0xcafe)]);
         assert_eq!(
-            host.transient_storage.get(&(Address::ZERO, Word::from(1))),
+            host.transient_storage.get(&StorageKey::new(Address::ZERO, Word::from(1))),
             Some(&Word::from(0xcafe))
         );
 
@@ -347,7 +352,10 @@ mod tests {
             run(RunConfig::new(code).host(&mut host).spec(SpecId::CANCUN).staticcall());
         core::assert_matches!(interpreter.err, InstrStop::StateChangeDuringStaticCall);
         assert_eq!(interpreter.stack(), [Word::from(0xcafe), Word::from(1)]);
-        assert_eq!(host.transient_storage.get(&(Address::ZERO, Word::from(1))), None);
+        assert_eq!(
+            host.transient_storage.get(&StorageKey::new(Address::ZERO, Word::from(1))),
+            None
+        );
     }
 
     fn log_code<const N: usize>(offset: usize, len: usize, topics: [Word; N]) -> Vec<u8> {

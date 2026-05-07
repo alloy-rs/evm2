@@ -15,7 +15,7 @@ use alloy_trie::{
 };
 use evm2::{
     BEACON_ROOTS_ADDRESS, BaseEvmTypes, Evm, EvmTypes, HISTORY_STORAGE_ADDRESS, Precompiles,
-    SpecId, TxResult,
+    SpecId, StorageKey, TxResult,
     bytecode::Bytecode,
     env::BlockEnv,
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
@@ -350,13 +350,13 @@ fn apply_state_changes(pre: &InMemoryDB, changes: &StateChanges) -> InMemoryDB {
     }
     for (&address, storage) in &changes.storage {
         if storage.wipe {
-            post.cache.storage.retain(|(storage_address, _), _| *storage_address != address);
+            post.cache.storage.retain(|key, _| key.address() != address);
         }
         for (&key, change) in &storage.slots {
             if change.current.is_zero() {
-                post.cache.storage.remove(&(address, key));
+                post.cache.storage.remove(&StorageKey::new(address, key));
             } else {
-                post.cache.storage.insert((address, key), change.current);
+                post.cache.storage.insert(StorageKey::new(address, key), change.current);
             }
         }
     }
@@ -365,7 +365,7 @@ fn apply_state_changes(pre: &InMemoryDB, changes: &StateChanges) -> InMemoryDB {
             Some(info) => post.insert_account_info(address, info.clone()),
             None => {
                 post.cache.accounts.remove(&address);
-                post.cache.storage.retain(|(storage_address, _), _| *storage_address != address);
+                post.cache.storage.retain(|key, _| key.address() != address);
             }
         }
     }
@@ -377,9 +377,8 @@ fn storage_for_root(state: &InMemoryDB, address: Address) -> Vec<(B256, U256)> {
         .cache
         .storage
         .iter()
-        .filter_map(|(&(storage_address, key), &value)| {
-            (storage_address == address && !value.is_zero())
-                .then_some((B256::from(key.to_be_bytes()), value))
+        .filter_map(|(&key, &value)| {
+            (key.address() == address && !value.is_zero()).then_some((B256::from(key.key()), value))
         })
         .collect()
 }
