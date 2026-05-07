@@ -872,6 +872,49 @@ mod tests {
     }
 
     #[test]
+    fn system_call_starts_with_warm_system_contract() {
+        let contract = Address::from([0x42; 20]);
+        let code =
+            Bytecode::new_legacy(Bytes::from_static(&[op::ADDRESS, op::EXTCODESIZE, op::STOP]));
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(contract, AccountInfo::default().with_code(code));
+        let mut evm = Evm::<TestEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            database,
+            Precompiles::base(SpecId::OSAKA),
+        );
+
+        let result = evm.system_call(contract, Bytes::new());
+
+        assert!(result.status);
+        assert!(
+            result.gas_used < 1_000,
+            "system contract should be warm before execution, got {} gas used",
+            result.gas_used
+        );
+    }
+
+    #[test]
+    fn system_call_to_missing_code_is_noop() {
+        let contract = Address::from([0x42; 20]);
+        let mut evm = Evm::<TestEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+
+        let result = evm.system_call(contract, Bytes::new());
+
+        assert!(result.status);
+        assert_eq!(result.gas_used, 0);
+        assert!(result.state_changes.is_empty());
+    }
+
+    #[test]
     fn system_call_reverts_state_changes() {
         let contract = Address::from([0x42; 20]);
         let code = Bytecode::new_legacy(Bytes::from_static(&[

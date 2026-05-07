@@ -279,24 +279,36 @@ fn pre_block_system_calls<T: EvmTypes<Database = InMemoryDB, Host = Evm<T>>>(
         && let Some(previous_hash) = env.previous_hash
         && system_contract_has_code(database, HISTORY_STORAGE_ADDRESS)
     {
-        changes.push(
-            evm.system_call(
-                HISTORY_STORAGE_ADDRESS,
-                Bytes::copy_from_slice(previous_hash.as_slice()),
-            )
-            .state_changes,
+        push_system_call_changes(
+            evm,
+            &mut changes,
+            HISTORY_STORAGE_ADDRESS,
+            Bytes::copy_from_slice(previous_hash.as_slice()),
         );
     }
     if spec.enables(SpecId::CANCUN)
         && let Some(beacon_root) = env.current_beacon_root
         && system_contract_has_code(database, BEACON_ROOTS_ADDRESS)
     {
-        changes.push(
-            evm.system_call(BEACON_ROOTS_ADDRESS, Bytes::copy_from_slice(beacon_root.as_slice()))
-                .state_changes,
+        push_system_call_changes(
+            evm,
+            &mut changes,
+            BEACON_ROOTS_ADDRESS,
+            Bytes::copy_from_slice(beacon_root.as_slice()),
         );
     }
     changes
+}
+
+fn push_system_call_changes<T: EvmTypes<Database = InMemoryDB, Host = Evm<T>>>(
+    evm: &mut Evm<T>,
+    changes: &mut Vec<StateChanges>,
+    address: Address,
+    data: Bytes,
+) {
+    let result = evm.system_call(address, data);
+    assert!(result.status, "pre-block system call failed: {address}");
+    changes.push(result.state_changes);
 }
 
 fn system_contract_has_code(database: &InMemoryDB, address: Address) -> bool {

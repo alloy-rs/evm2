@@ -43,6 +43,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         system_contract_address: Address,
         data: Bytes,
     ) -> TxResult {
+        self.state.warm_account_non_revertible(system_contract_address);
         let tx_env = TxEnv {
             origin: caller,
             gas_price: U256::ZERO,
@@ -59,7 +60,13 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             SYSTEM_CALL_GAS_LIMIT,
         );
         let result = Host::execute_message(self, &tx_env, bytecode, &message, false);
-        let gas_used = SYSTEM_CALL_GAS_LIMIT.saturating_sub(result.gas_remaining);
+        let gas_spent = SYSTEM_CALL_GAS_LIMIT.saturating_sub(result.gas_remaining);
+        let gas_refunded = if result.stop.is_success() && result.gas_refunded > 0 {
+            result.gas_refunded as u64
+        } else {
+            0
+        };
+        let gas_used = gas_spent.saturating_sub(gas_refunded);
         let mut result = TxResult {
             status: result.stop.is_success(),
             gas_used,
