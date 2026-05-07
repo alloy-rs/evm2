@@ -183,8 +183,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         loop {
             let op = pc.op();
             let instr = config.instructions[op as usize];
-            let (next_pc, next_stack_len) =
-                instr(pc, Stack::new(&mut *stack, stack_len), &mut state);
+            let (next_pc, next_stack_len) = instr(pc, Stack::new(stack, stack_len), &mut state);
             pc = Pc::new(next_pc);
             stack_len = next_stack_len;
             if next_pc.is_null() {
