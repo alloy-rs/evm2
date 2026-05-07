@@ -5,9 +5,10 @@ use crate::{
     interpreter::{Interpreter, Message, MessageResult},
 };
 use alloy_primitives::{Address, Log, U256};
+use core::any::Any;
 
 /// EVM execution inspector.
-pub trait Inspector<T: EvmTypes> {
+pub trait Inspector<T: EvmTypes>: Any {
     /// Called after a frame interpreter has been initialized.
     #[inline]
     fn initialize_interp(&mut self, interp: &mut Interpreter<'_, T>) {

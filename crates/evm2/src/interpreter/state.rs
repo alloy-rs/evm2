@@ -97,12 +97,6 @@ impl<'a, T: EvmTypes> State<'a, T> {
     }
 
     #[inline]
-    #[cfg_attr(not(feature = "nightly"), allow(dead_code))]
-    pub(crate) const fn has_inspector(&self) -> bool {
-        self.inspector.is_some()
-    }
-
-    #[inline]
     pub(crate) fn inspect_step(&mut self, pc: Pc, stack_len: usize) {
         let Some(mut inspector) = self.inspector else {
             return;

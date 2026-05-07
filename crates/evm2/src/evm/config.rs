@@ -74,6 +74,8 @@ pub struct ExecutionConfig<T: EvmTypes> {
     pub(crate) version: Version,
     #[debug(skip)]
     pub(crate) instructions: &'static InstructionTable<T>,
+    #[debug(skip)]
+    pub(crate) inspect_instructions: &'static InstructionTable<T>,
 }
 
 impl<T: EvmTypes> Clone for ExecutionConfig<T> {
@@ -92,6 +94,7 @@ impl<T: EvmTypes> ExecutionConfig<T> {
         Self {
             version: Version::new(C::BASE_SPEC_ID),
             instructions: <T as InstructionTables<C>>::INSTRUCTIONS,
+            inspect_instructions: <T as InstructionTables<C>>::INSPECT_INSTRUCTIONS,
         }
     }
 

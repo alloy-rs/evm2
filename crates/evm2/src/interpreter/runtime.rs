@@ -2,6 +2,7 @@
 use super::gas::RemainingGas;
 use super::{
     BytecodeRef, Gas, InstrStop, Memory, Message, MessageKind, Pc, Result, Stack, State, Word,
+    instructions::table::InstructionTable,
 };
 use crate::{
     EvmConfig, EvmTypes, ExecutionConfig, bytecode::Bytecode, env::TxEnv, evm::inspector::Inspector,
@@ -193,11 +194,13 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         inspector: Option<NonNull<dyn Inspector<T>>>,
     ) -> InstrStop {
         self.memory.set_memory_limit(config.version.memory_limit);
+        let instructions =
+            if inspector.is_some() { config.inspect_instructions } else { config.instructions };
 
         #[cfg(feature = "nightly")]
-        let r = self.step_tail(config, host, inspector);
+        let r = self.step_tail(config, instructions, host, inspector);
         #[cfg(not(feature = "nightly"))]
-        let r = self.run_table_loop(config, host, inspector);
+        let r = self.run_table_loop(config, instructions, host, inspector);
 
         r
     }
@@ -206,6 +209,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
     fn run_table_loop(
         &mut self,
         config: &ExecutionConfig<T>,
+        instructions: &'static InstructionTable<T>,
         host: &mut T::Host,
         inspector: Option<NonNull<dyn Inspector<T>>>,
     ) -> InstrStop {
@@ -213,7 +217,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         let mut stack_len = self.stack_len;
         loop {
             let (next_pc, next_stack_len, flow) =
-                self.raw_step(config, host, inspector, pc, stack_len);
+                self.raw_step(config, instructions, host, inspector, pc, stack_len);
             pc = next_pc;
             stack_len = next_stack_len;
             if flow.is_break() {
@@ -229,7 +233,8 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
     #[inline]
     #[cfg(not(feature = "nightly"))]
     pub fn step(&mut self, config: &ExecutionConfig<T>, host: &mut T::Host) -> ControlFlow<(), ()> {
-        let (pc, stack_len, flow) = self.raw_step(config, host, None, self.pc, self.stack_len);
+        let (pc, stack_len, flow) =
+            self.raw_step(config, config.instructions, host, None, self.pc, self.stack_len);
         self.pc = pc;
         self.stack_len = stack_len;
         flow
@@ -240,6 +245,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
     fn raw_step(
         &mut self,
         config: &ExecutionConfig<T>,
+        instructions: &'static InstructionTable<T>,
         host: &mut T::Host,
         inspector: Option<NonNull<dyn Inspector<T>>>,
         pc: *const u8,
@@ -250,7 +256,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         let bytecode = BytecodeRef::new(&self.bytecode);
         let pc = Pc::from_ptr(pc);
         let op = pc.op();
-        let instr = config.instructions[op as usize];
+        let instr = instructions[op as usize];
         let (pc, stack_len) = instr(
             pc,
             Stack::new(&mut self.stack, stack_len),
@@ -273,6 +279,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
     fn step_tail(
         &mut self,
         config: &ExecutionConfig<T>,
+        instructions: &'static InstructionTable<T>,
         host: &mut T::Host,
         inspector: Option<NonNull<dyn Inspector<T>>>,
     ) -> InstrStop {
@@ -281,7 +288,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         let bytecode = BytecodeRef::new(&self.bytecode);
         let pc = Pc::from_ptr(self.pc);
         let op = pc.op();
-        let instr = config.instructions[op as usize];
+        let instr = instructions[op as usize];
         let remaining_gas = RemainingGas::new(self.gas.remaining());
         instr(
             pc,

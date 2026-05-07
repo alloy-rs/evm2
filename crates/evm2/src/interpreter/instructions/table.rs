@@ -43,6 +43,8 @@ where
     C: EvmConfig<Self>,
 {
     const INSTRUCTIONS: &'static InstructionTable<Self> = &make_instruction_table::<Self, C>();
+    const INSPECT_INSTRUCTIONS: &'static InstructionTable<Self> =
+        &make_inspect_instruction_table::<Self, C>();
 }
 
 impl<T, C> InstructionTables<C> for T
@@ -153,6 +155,38 @@ where
     table
 }
 
+pub(crate) const fn make_inspect_instruction_table<T, C>() -> InstructionTable<T>
+where
+    T: EvmTypes,
+    C: EvmConfig<T>,
+{
+    #[cfg(not(feature = "nightly"))]
+    use inspect_dispatch as dispatch;
+    #[cfg(feature = "nightly")]
+    use tail_inspect_dispatch as dispatch;
+
+    #[cfg(not(feature = "nightly"))]
+    let mut table = [dispatch::<T, C, 0> as InstructionFn<T>; 256];
+    #[cfg(feature = "nightly")]
+    let mut table = [dispatch::<T, C, 0, true> as InstructionFn<T>; 256];
+    for_each_opcode_value!([table, T, C, dispatch, InstructionFn<T>] assign_instruction_table_entries);
+
+    // Make all unknown entries point to the same dispatch function.
+    let mut i = 0;
+    let mut unknown_idx = None;
+    while i < 256 {
+        if C::VERSION_TABLES.instruction(i as u8).is_unknown {
+            if unknown_idx.is_none() {
+                unknown_idx = Some(i);
+            }
+            table[i] = table[unknown_idx.unwrap()];
+        }
+        i += 1;
+    }
+
+    table
+}
+
 extern_table! {
     #[cfg(not(feature = "nightly"))]
     fn dispatch<T: EvmTypes, C: EvmConfig<T>, const OP: u8>(
@@ -167,6 +201,43 @@ extern_table! {
 #[cfg(not(feature = "nightly"))]
 #[inline(always)]
 fn dispatch_mono<T: EvmTypes, C: EvmConfig<T>>(
+    op: u8,
+    mut pc: Pc,
+    mut stack: Stack<'_>,
+    state: &mut State<'_, T>,
+) -> InstructionFnRet {
+    let instr = C::VERSION_TABLES.instruction(op).instr;
+    let r;
+    match pre_step::<T, C>(state.gas(), op) {
+        Ok(()) => {
+            r = instr(&mut pc, stack.as_mut(), state);
+            inc_pc(&mut pc, op);
+        }
+        Err(e) => r = Err(e),
+    }
+    if r.is_err() {
+        cold_path();
+        // SAFETY: `raw_interp` is valid for the duration of execution.
+        unsafe { (*state.raw_interp).result = r };
+        return (core::ptr::null(), stack.len);
+    }
+    (pc.as_ptr(), stack.len)
+}
+
+extern_table! {
+    #[cfg(not(feature = "nightly"))]
+    fn inspect_dispatch<T: EvmTypes, C: EvmConfig<T>, const OP: u8>(
+        pc: Pc,
+        stack: Stack<'_>,
+        state: &mut State<'_, T>,
+    ) -> InstructionFnRet {
+        inspect_dispatch_mono::<T, C>(OP, pc, stack, state)
+    }
+}
+
+#[cfg(not(feature = "nightly"))]
+#[inline(always)]
+fn inspect_dispatch_mono<T: EvmTypes, C: EvmConfig<T>>(
     op: u8,
     mut pc: Pc,
     mut stack: Stack<'_>,
@@ -218,10 +289,59 @@ extern_table! {
     ) {
         let op = pc.op();
         let instr = C::VERSION_TABLES.instruction(op).instr;
-        if state.has_inspector() {
-            state.gas().set_remaining(remaining_gas.get());
-            state.inspect_step(pc, stack.len);
+        if let Err(e) = pre_step::<T, C>(&mut remaining_gas, op) {
+            cold_path();
+            state.result = Err(e);
+            tail_return!(tail_call_restore::<T>(pc, stack, remaining_gas, state));
         }
+        if DYNAMIC_GAS {
+            state.gas().set_remaining(remaining_gas.get());
+        }
+        let r = instr(&mut pc, stack.as_mut(), state);
+        if DYNAMIC_GAS {
+            remaining_gas.set(state.gas().remaining());
+        }
+        if let Err(e) = r {
+            cold_path();
+            state.result = Err(e);
+            tail_return!(tail_call_restore::<T>(pc, stack, remaining_gas, state));
+        }
+        inc_pc(&mut pc, op);
+        tail_return!(tail_call_next::<T, C>(pc, stack, remaining_gas, state));
+    }
+}
+
+extern_table! {
+    #[cfg(feature = "nightly")]
+    fn tail_inspect_dispatch<T: EvmTypes, C: EvmConfig<T>, const OP: u8, const DYNAMIC_GAS: bool>(
+        pc: Pc,
+        stack: Stack<'_>,
+        remaining_gas: RemainingGas,
+        state: &mut State<'_, T>,
+    ) {
+        assume!(pc.op() == OP);
+        tail_return!(tail_inspect_dispatch_mono::<T, C, DYNAMIC_GAS>(
+            pc,
+            stack,
+            remaining_gas,
+            state
+        ));
+    }
+}
+
+extern_table! {
+    #[cfg(feature = "nightly")]
+    #[inline(always)]
+    fn tail_inspect_dispatch_mono<T: EvmTypes, C: EvmConfig<T>, const DYNAMIC_GAS: bool>(
+        mut pc: Pc,
+        mut stack: Stack<'_>,
+        mut remaining_gas: RemainingGas,
+        state: &mut State<'_, T>,
+    ) {
+        let op = pc.op();
+        let instr = C::VERSION_TABLES.instruction(op).instr;
+        state.gas().set_remaining(remaining_gas.get());
+        state.inspect_step(pc, stack.len);
         if let Err(e) = pre_step::<T, C>(&mut remaining_gas, op) {
             cold_path();
             state.gas().set_remaining(remaining_gas.get());
@@ -229,28 +349,22 @@ extern_table! {
             state.inspect_step_end(pc, stack.len);
             tail_return!(tail_call_restore::<T>(pc, stack, remaining_gas, state));
         }
-        if DYNAMIC_GAS || state.has_inspector() {
-            state.gas().set_remaining(remaining_gas.get());
-        }
+        state.gas().set_remaining(remaining_gas.get());
         let r = instr(&mut pc, stack.as_mut(), state);
-        if DYNAMIC_GAS || state.has_inspector() {
+        if DYNAMIC_GAS {
             remaining_gas.set(state.gas().remaining());
         }
         if let Err(e) = r {
             cold_path();
             state.result = Err(e);
-            if state.has_inspector() {
-                state.gas().set_remaining(remaining_gas.get());
-                state.inspect_step_end(pc, stack.len);
-            }
+            state.gas().set_remaining(remaining_gas.get());
+            state.inspect_step_end(pc, stack.len);
             tail_return!(tail_call_restore::<T>(pc, stack, remaining_gas, state));
         }
         inc_pc(&mut pc, op);
-        if state.has_inspector() {
-            state.gas().set_remaining(remaining_gas.get());
-            state.inspect_step_end(pc, stack.len);
-        }
-        tail_return!(tail_call_next::<T, C>(pc, stack, remaining_gas, state));
+        state.gas().set_remaining(remaining_gas.get());
+        state.inspect_step_end(pc, stack.len);
+        tail_return!(tail_inspect_call_next::<T, C>(pc, stack, remaining_gas, state));
     }
 }
 
@@ -264,6 +378,20 @@ extern_table! {
         state: &mut State<'_, T>,
     ) {
         let instr = <T as InstructionTables<C>>::INSTRUCTIONS[pc.op() as usize];
+        tail_return!(instr(pc, stack, remaining_gas, state));
+    }
+}
+
+extern_table! {
+    #[cfg(feature = "nightly")]
+    #[inline]
+    fn tail_inspect_call_next<T: EvmTypes, C: EvmConfig<T>>(
+        pc: Pc,
+        stack: Stack<'_>,
+        remaining_gas: RemainingGas,
+        state: &mut State<'_, T>,
+    ) {
+        let instr = <T as InstructionTables<C>>::INSPECT_INSTRUCTIONS[pc.op() as usize];
         tail_return!(instr(pc, stack, remaining_gas, state));
     }
 }
