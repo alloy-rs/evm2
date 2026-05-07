@@ -132,15 +132,10 @@ impl<ExtDB: Database> Database for CacheDB<ExtDB> {
 
     #[inline]
     fn get_code_by_hash(&mut self, code_hash: B256) -> Bytecode {
-        if let Some(code) = self.cache.contracts.get(&code_hash) {
-            return code.clone();
+        match self.cache.contracts.entry(code_hash) {
+            Entry::Occupied(entry) => entry.get().clone(),
+            Entry::Vacant(entry) => entry.insert(self.db.get_code_by_hash(code_hash)).clone(),
         }
-
-        let code = self.db.get_code_by_hash(code_hash);
-        if !code.is_empty() {
-            self.cache.contracts.entry(code_hash).or_insert_with(|| code.clone());
-        }
-        code
     }
 
     #[inline]
