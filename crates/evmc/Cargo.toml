@@ -9,7 +9,7 @@ authors.workspace = true
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true
-exclude = ["build.rs"]
+exclude = ["regenerate-bindings.rs"]
 
 [lib]
 crate-type = ["cdylib", "rlib"]
@@ -21,12 +21,6 @@ workspace = true
 evm2.workspace = true
 
 alloy-primitives.workspace = true
-
-[features]
-_regenerate = ["dep:bindgen"]
-
-[build-dependencies]
-bindgen = { version = "0.72", optional = true }
 
 [dev-dependencies]
 libloading = "0.8"

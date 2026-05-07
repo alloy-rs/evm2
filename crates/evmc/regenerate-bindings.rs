@@ -1,15 +1,11 @@
+#!/usr/bin/env cargo-script
+//! ```cargo
+//! [dependencies]
+//! bindgen = "0.72"
+//! ```
 //! Generates Rust bindings for the vendored EVMC header.
 
 fn main() {
-    println!("cargo:rerun-if-changed=include/evmc/evmc.h");
-    println!("cargo:rerun-if-changed=build.rs");
-
-    #[cfg(feature = "_regenerate")]
-    regenerate();
-}
-
-#[cfg(feature = "_regenerate")]
-fn regenerate() {
     let bindings = bindgen::Builder::default()
         .header("include/evmc/evmc.h")
         .allowlist_function("evmc_.*")
