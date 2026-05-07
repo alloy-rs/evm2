@@ -1,9 +1,12 @@
 use crate::interpreter::Word;
 use alloy_primitives::{
-    Address, B256,
+    Address, B256, FixedBytes,
     map::{FbBuildHasher, HashMap, HashSet},
 };
-use core::hash::{Hash, Hasher};
+use core::{
+    hash::{Hash, Hasher},
+    mem,
+};
 
 /// Hash map keyed by storage account and slot.
 pub type StorageKeyMap<V> = HashMap<StorageKey, V, FbBuildHasher<52>>;
@@ -12,11 +15,14 @@ pub type StorageKeyMap<V> = HashMap<StorageKey, V, FbBuildHasher<52>>;
 pub type StorageKeySet = HashSet<StorageKey, FbBuildHasher<52>>;
 
 /// Storage key for account-address and storage-slot pairs.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq)]
+#[repr(C)]
 pub struct StorageKey {
     address: Address,
     key: B256,
 }
+
+const _: () = assert!(mem::size_of::<StorageKey>() == mem::size_of::<FixedBytes<52>>());
 
 impl StorageKey {
     /// Creates a storage key from an account address and slot.
@@ -36,14 +42,26 @@ impl StorageKey {
     pub const fn key(self) -> Word {
         Word::from_be_bytes(self.key.0)
     }
+
+    #[inline]
+    const fn as_fixed_bytes(&self) -> &FixedBytes<52> {
+        // SAFETY: `StorageKey` is `repr(C)` and contains exactly an `Address` followed by a `B256`;
+        // both are transparent fixed-byte wrappers, and the size assertion above guarantees 52
+        // bytes.
+        unsafe { &*(core::ptr::from_ref(self).cast::<FixedBytes<52>>()) }
+    }
+}
+
+impl PartialEq for StorageKey {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.as_fixed_bytes() == other.as_fixed_bytes()
+    }
 }
 
 impl Hash for StorageKey {
     #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
-        let mut bytes = [0; 52];
-        bytes[..20].copy_from_slice(self.address.as_slice());
-        bytes[20..].copy_from_slice(self.key.as_slice());
-        state.write(&bytes);
+        state.write(self.as_fixed_bytes().as_slice());
     }
 }
