@@ -1,13 +1,13 @@
-use super::{BytecodeRef, Gas, InstrStop, Interpreter, Memory, Message, Result, Word};
+use super::{BytecodeRef, Gas, InstrStop, Interpreter, Memory, Message, Pc, Result, Word};
 use crate::{
     EvmTypes, SpecId, Version,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
-    evm::{AccountLoad, SLoad, SStore, SelfDestructResult},
+    evm::{AccountLoad, SLoad, SStore, SelfDestructResult, inspector::Inspector},
     version::GasParams,
 };
 use alloy_primitives::{Address, B256, Bytes, Log};
-use core::fmt;
+use core::{fmt, ptr::NonNull};
 
 /// Interpreter state passed to instructions.
 pub struct State<'a, T: EvmTypes> {
@@ -21,6 +21,7 @@ pub struct State<'a, T: EvmTypes> {
     /// Active runtime version data.
     pub version: &'a Version,
     pub(crate) raw_interp: *mut Interpreter<'a, T>,
+    pub(crate) inspector: Option<NonNull<dyn Inspector<T>>>,
 }
 
 impl<'a, T: EvmTypes> State<'a, T> {
@@ -93,6 +94,78 @@ impl<'a, T: EvmTypes> State<'a, T> {
     #[inline]
     pub(crate) fn set_output(&mut self, output: *const [u8]) {
         self.interp_mut().set_output(output);
+    }
+
+    #[inline]
+    #[cfg_attr(not(feature = "nightly"), allow(dead_code))]
+    pub(crate) const fn has_inspector(&self) -> bool {
+        self.inspector.is_some()
+    }
+
+    #[inline]
+    pub(crate) fn inspect_step(&mut self, pc: Pc, stack_len: usize) {
+        let Some(mut inspector) = self.inspector else {
+            return;
+        };
+        // SAFETY: `raw_interp` is valid for the duration of instruction execution, and the
+        // inspector pointer is created from the active EVM before entering the interpreter.
+        unsafe {
+            let interp = &mut *self.raw_interp;
+            interp.pc = pc.as_ptr();
+            interp.stack_len = stack_len;
+            inspector.as_mut().step(interp);
+        }
+    }
+
+    #[inline]
+    pub(crate) fn inspect_step_end(&mut self, pc: Pc, stack_len: usize) {
+        let Some(mut inspector) = self.inspector else {
+            return;
+        };
+        // SAFETY: `raw_interp` is valid for the duration of instruction execution, and the
+        // inspector pointer is created from the active EVM before entering the interpreter.
+        unsafe {
+            let interp = &mut *self.raw_interp;
+            interp.pc = pc.as_ptr();
+            interp.stack_len = stack_len;
+            inspector.as_mut().step_end(interp);
+        }
+    }
+
+    #[inline]
+    pub(crate) fn inspect_call(&mut self, message: &mut Message) -> Option<MessageResult> {
+        let mut inspector = self.inspector?;
+        // SAFETY: The inspector pointer is created from the active EVM before entering the
+        // interpreter.
+        unsafe { inspector.as_mut().call(message) }
+    }
+
+    #[inline]
+    pub(crate) fn inspect_call_end(&mut self, message: &Message, result: &mut MessageResult) {
+        let Some(mut inspector) = self.inspector else {
+            return;
+        };
+        // SAFETY: The inspector pointer is created from the active EVM before entering the
+        // interpreter.
+        unsafe { inspector.as_mut().call_end(message, result) };
+    }
+
+    #[inline]
+    pub(crate) fn inspect_create(&mut self, message: &mut Message) -> Option<MessageResult> {
+        let mut inspector = self.inspector?;
+        // SAFETY: The inspector pointer is created from the active EVM before entering the
+        // interpreter.
+        unsafe { inspector.as_mut().create(message) }
+    }
+
+    #[inline]
+    pub(crate) fn inspect_create_end(&mut self, message: &Message, result: &mut MessageResult) {
+        let Some(mut inspector) = self.inspector else {
+            return;
+        };
+        // SAFETY: The inspector pointer is created from the active EVM before entering the
+        // interpreter.
+        unsafe { inspector.as_mut().create_end(message, result) };
     }
 }
 

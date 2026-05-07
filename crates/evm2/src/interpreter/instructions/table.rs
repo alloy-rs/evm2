@@ -173,18 +173,22 @@ fn dispatch_mono<T: EvmTypes, C: EvmConfig<T>>(
     state: &mut State<'_, T>,
 ) -> InstructionFnRet {
     let instr = C::VERSION_TABLES.instruction(op).instr;
+    state.inspect_step(pc, stack.len);
     let r;
     match pre_step::<T, C>(state.gas(), op) {
         Ok(()) => {
             r = instr(&mut pc, stack.as_mut(), state);
-            inc_pc(&mut pc, op);
+            if r.is_ok() {
+                inc_pc(&mut pc, op);
+            }
         }
         Err(e) => r = Err(e),
     }
+    // SAFETY: `raw_interp` is valid for the duration of execution.
+    unsafe { (*state.raw_interp).result = r };
+    state.inspect_step_end(pc, stack.len);
     if r.is_err() {
         cold_path();
-        // SAFETY: `raw_interp` is valid for the duration of execution.
-        unsafe { (*state.raw_interp).result = r };
         return (core::ptr::null(), stack.len);
     }
     (pc.as_ptr(), stack.len)
@@ -214,24 +218,38 @@ extern_table! {
     ) {
         let op = pc.op();
         let instr = C::VERSION_TABLES.instruction(op).instr;
+        if state.has_inspector() {
+            state.gas().set_remaining(remaining_gas.get());
+            state.inspect_step(pc, stack.len);
+        }
         if let Err(e) = pre_step::<T, C>(&mut remaining_gas, op) {
             cold_path();
+            state.gas().set_remaining(remaining_gas.get());
             state.result = Err(e);
+            state.inspect_step_end(pc, stack.len);
             tail_return!(tail_call_restore::<T>(pc, stack, remaining_gas, state));
         }
-        if DYNAMIC_GAS {
+        if DYNAMIC_GAS || state.has_inspector() {
             state.gas().set_remaining(remaining_gas.get());
         }
         let r = instr(&mut pc, stack.as_mut(), state);
-        if DYNAMIC_GAS {
+        if DYNAMIC_GAS || state.has_inspector() {
             remaining_gas.set(state.gas().remaining());
         }
         if let Err(e) = r {
             cold_path();
             state.result = Err(e);
+            if state.has_inspector() {
+                state.gas().set_remaining(remaining_gas.get());
+                state.inspect_step_end(pc, stack.len);
+            }
             tail_return!(tail_call_restore::<T>(pc, stack, remaining_gas, state));
         }
         inc_pc(&mut pc, op);
+        if state.has_inspector() {
+            state.gas().set_remaining(remaining_gas.get());
+            state.inspect_step_end(pc, stack.len);
+        }
         tail_return!(tail_call_next::<T, C>(pc, stack, remaining_gas, state));
     }
 }

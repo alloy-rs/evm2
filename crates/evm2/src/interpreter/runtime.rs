@@ -3,15 +3,17 @@ use super::gas::RemainingGas;
 use super::{
     BytecodeRef, Gas, InstrStop, Memory, Message, MessageKind, Pc, Result, Stack, State, Word,
 };
-use crate::{EvmConfig, EvmTypes, ExecutionConfig, bytecode::Bytecode, env::TxEnv};
+use crate::{
+    EvmConfig, EvmTypes, ExecutionConfig, bytecode::Bytecode, env::TxEnv, evm::inspector::Inspector,
+};
 use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::Bytes;
-use core::marker::PhantomData;
 #[cfg(not(feature = "nightly"))]
 use core::{
     hint::cold_path,
     ops::ControlFlow::{self, Break, Continue},
 };
+use core::{marker::PhantomData, ptr::NonNull};
 
 /// EVM interpreter.
 #[derive(Debug)]
@@ -136,6 +138,30 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         unsafe { &*self.output }
     }
 
+    /// Returns the current bytecode-relative program counter.
+    #[inline]
+    pub fn pc(&self) -> usize {
+        unsafe { self.pc.offset_from(self.bytecode.original_byte_slice().as_ptr()) as usize }
+    }
+
+    /// Returns the current opcode.
+    #[inline]
+    pub const fn opcode(&self) -> u8 {
+        unsafe { *self.pc }
+    }
+
+    /// Returns the current operand stack.
+    #[inline]
+    pub fn stack(&self) -> &[Word] {
+        unsafe { core::slice::from_raw_parts(self.stack.as_ptr(), self.stack_len) }
+    }
+
+    /// Returns the current linear memory.
+    #[inline]
+    pub const fn memory_ref(&self) -> &Memory {
+        &self.memory
+    }
+
     /// Returns the current gas state.
     #[inline]
     pub const fn gas(&self) -> Gas {
@@ -156,22 +182,38 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
 
     /// Runs the interpreter until it stops.
     pub fn run_with(&mut self, config: &ExecutionConfig<T>, host: &mut T::Host) -> InstrStop {
+        self.run_with_inspector(config, host, None)
+    }
+
+    /// Runs the interpreter until it stops with an execution inspector.
+    pub(crate) fn run_with_inspector(
+        &mut self,
+        config: &ExecutionConfig<T>,
+        host: &mut T::Host,
+        inspector: Option<NonNull<dyn Inspector<T>>>,
+    ) -> InstrStop {
         self.memory.set_memory_limit(config.version.memory_limit);
 
         #[cfg(feature = "nightly")]
-        let r = self.step_tail(config, host);
+        let r = self.step_tail(config, host, inspector);
         #[cfg(not(feature = "nightly"))]
-        let r = self.run_table_loop(config, host);
+        let r = self.run_table_loop(config, host, inspector);
 
         r
     }
 
     #[cfg(not(feature = "nightly"))]
-    fn run_table_loop(&mut self, config: &ExecutionConfig<T>, host: &mut T::Host) -> InstrStop {
+    fn run_table_loop(
+        &mut self,
+        config: &ExecutionConfig<T>,
+        host: &mut T::Host,
+        inspector: Option<NonNull<dyn Inspector<T>>>,
+    ) -> InstrStop {
         let mut pc = self.pc;
         let mut stack_len = self.stack_len;
         loop {
-            let (next_pc, next_stack_len, flow) = self.raw_step(config, host, pc, stack_len);
+            let (next_pc, next_stack_len, flow) =
+                self.raw_step(config, host, inspector, pc, stack_len);
             pc = next_pc;
             stack_len = next_stack_len;
             if flow.is_break() {
@@ -187,7 +229,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
     #[inline]
     #[cfg(not(feature = "nightly"))]
     pub fn step(&mut self, config: &ExecutionConfig<T>, host: &mut T::Host) -> ControlFlow<(), ()> {
-        let (pc, stack_len, flow) = self.raw_step(config, host, self.pc, self.stack_len);
+        let (pc, stack_len, flow) = self.raw_step(config, host, None, self.pc, self.stack_len);
         self.pc = pc;
         self.stack_len = stack_len;
         flow
@@ -199,6 +241,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         &mut self,
         config: &ExecutionConfig<T>,
         host: &mut T::Host,
+        inspector: Option<NonNull<dyn Inspector<T>>>,
         pc: *const u8,
         stack_len: usize,
     ) -> (*const u8, usize, ControlFlow<(), ()>) {
@@ -218,6 +261,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
                 result: Ok(()),
                 version: &config.version,
                 raw_interp: raw,
+                inspector,
             },
         );
         let flow = if pc.is_null() { Break(()) } else { Continue(()) };
@@ -226,7 +270,12 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
 
     #[inline(always)]
     #[cfg(feature = "nightly")]
-    fn step_tail(&mut self, config: &ExecutionConfig<T>, host: &mut T::Host) -> InstrStop {
+    fn step_tail(
+        &mut self,
+        config: &ExecutionConfig<T>,
+        host: &mut T::Host,
+        inspector: Option<NonNull<dyn Inspector<T>>>,
+    ) -> InstrStop {
         #[expect(clippy::unnecessary_cast, reason = "cast erases the active interpreter lifetime")]
         let raw = self as *mut Self as *mut Interpreter<'_, T>;
         let bytecode = BytecodeRef::new(&self.bytecode);
@@ -245,6 +294,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
                 result: Ok(()),
                 version: &config.version,
                 raw_interp: raw,
+                inspector,
             },
         );
         self.result.unwrap_err()

@@ -19,6 +19,14 @@ pub enum MessageKind {
     StaticCall,
 }
 
+impl MessageKind {
+    /// Returns `true` if the message is CREATE or CREATE2.
+    #[inline]
+    pub const fn is_create(&self) -> bool {
+        matches!(self, Self::Create | Self::Create2)
+    }
+}
+
 /// Frame-local EVM call/create message executed by the interpreter.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Message {

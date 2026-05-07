@@ -23,7 +23,7 @@ pub use evm::{
         BaseEvmConfig, BaseEvmConfigSelector, BaseEvmTypes, EvmConfig, EvmConfigSelector, EvmTypes,
         ExecutionConfig,
     },
-    env, precompile, registry,
+    env, inspector, precompile, registry,
 };
 
 pub mod precompiles;

@@ -203,7 +203,7 @@ fn call_inner<T: EvmTypes>(
         MessageKind::StaticCall => (to, current.destination, Word::ZERO, resolved_code_address),
         _ => unreachable!("invalid call message kind"),
     };
-    let message = Message {
+    let mut message = Message {
         kind,
         depth: current.depth.saturating_add(1),
         gas_limit,
@@ -219,7 +219,12 @@ fn call_inner<T: EvmTypes>(
     let bytecode = crate::bytecode::Bytecode::new_legacy(code);
     let tx_env = cx.state.tx() as *const _;
     let result = if message.depth > CALL_DEPTH_LIMIT {
-        call_too_deep_result(message.gas_limit)
+        let mut result = cx
+            .state
+            .inspect_call(&mut message)
+            .unwrap_or_else(|| call_too_deep_result(message.gas_limit));
+        cx.state.inspect_call_end(&message, &mut result);
+        result
     } else {
         // SAFETY: `tx_env` points into the active interpreter frame and remains valid for the
         // duration of this instruction.
@@ -293,7 +298,7 @@ fn create_inner<T: EvmTypes>(
     cx.gas.spend(gas_limit)?;
 
     let current = cx.state.message();
-    let message = Message {
+    let mut message = Message {
         kind: if is_create2 { MessageKind::Create2 } else { MessageKind::Create },
         depth: current.depth.saturating_add(1),
         gas_limit,
@@ -308,7 +313,12 @@ fn create_inner<T: EvmTypes>(
     let bytecode = crate::bytecode::Bytecode::new_legacy(input);
     let tx_env = cx.state.tx() as *const _;
     let result = if message.depth > CALL_DEPTH_LIMIT {
-        call_too_deep_result(message.gas_limit)
+        let mut result = cx
+            .state
+            .inspect_create(&mut message)
+            .unwrap_or_else(|| call_too_deep_result(message.gas_limit));
+        cx.state.inspect_create_end(&message, &mut result);
+        result
     } else {
         // SAFETY: `tx_env` points into the active interpreter frame and remains valid for the
         // duration of this instruction.

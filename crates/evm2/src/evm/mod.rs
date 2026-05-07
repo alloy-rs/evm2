@@ -1,6 +1,9 @@
 //! EVM execution host.
 
-use self::precompile::{PrecompileOutput, PrecompileProvider};
+use self::{
+    inspector::Inspector,
+    precompile::{PrecompileOutput, PrecompileProvider},
+};
 use crate::{
     EvmConfigSelector, EvmTypes, ExecutionConfig, PrecompileError, PrecompileHalt, SpecId,
     bytecode::Bytecode,
@@ -13,11 +16,14 @@ use crate::{
     registry::{HandlerResult, TxRegistry},
     version::{EvmFeatures, GasId},
 };
+use alloc::{borrow::Cow, boxed::Box};
 use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{Address, B256, Bytes, Log};
+use core::ptr::NonNull;
 
 pub mod config;
 pub mod env;
+pub mod inspector;
 pub mod precompile;
 pub mod registry;
 
@@ -154,6 +160,8 @@ pub struct Evm<T: EvmTypes> {
     precompiles: T::Precompiles,
     #[debug(skip)]
     interpreter_pool: InterpreterPool<T>,
+    #[debug(skip)]
+    inspector: Option<Box<dyn Inspector<T>>>,
 }
 
 impl<T: EvmTypes> Evm<T> {
@@ -195,6 +203,7 @@ impl<T: EvmTypes> Evm<T> {
             state: State::new(database),
             precompiles,
             interpreter_pool: InterpreterPool::new(),
+            inspector: None,
         }
     }
 
@@ -246,6 +255,36 @@ impl<T: EvmTypes> Evm<T> {
     #[inline]
     pub const fn precompiles_mut(&mut self) -> &mut T::Precompiles {
         &mut self.precompiles
+    }
+
+    /// Returns the active execution inspector.
+    #[inline]
+    pub fn inspector(&self) -> Option<&dyn Inspector<T>> {
+        self.inspector.as_deref()
+    }
+
+    /// Returns the active execution inspector mutably.
+    #[inline]
+    pub fn inspector_mut(&mut self) -> Option<&mut dyn Inspector<T>> {
+        self.inspector.as_mut().map(|inspector| inspector.as_mut() as &mut dyn Inspector<T>)
+    }
+
+    /// Sets the active execution inspector.
+    #[inline]
+    pub fn set_inspector<I: Inspector<T> + 'static>(&mut self, inspector: I) {
+        self.inspector = Some(Box::new(inspector));
+    }
+
+    /// Sets the active boxed execution inspector.
+    #[inline]
+    pub fn set_boxed_inspector(&mut self, inspector: Box<dyn Inspector<T>>) {
+        self.inspector = Some(inspector);
+    }
+
+    /// Removes the active execution inspector.
+    #[inline]
+    pub fn clear_inspector(&mut self) -> Option<Box<dyn Inspector<T>>> {
+        self.inspector.take()
     }
 
     /// Returns the active EVM version.
@@ -542,10 +581,107 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         // pool after execution. Recursive calls may mutate the pool, but they cannot move this box.
         let interpreter_ref = unsafe { &mut *(&mut *interpreter as *mut Interpreter<'frame, T>) };
         interpreter_ref.init(bytecode, tx_env, message, caller_is_static);
+        self.inspect_initialize_interp(interpreter_ref);
         let execution_config = self.execution_config;
-        let stop = interpreter_ref.run_with(&execution_config, self);
+        let inspector = self.inspector.as_deref_mut().map(NonNull::from);
+        let stop = interpreter_ref.run_with_inspector(&execution_config, self, inspector);
         let interpreter = self.interpreter_pool.push(interpreter);
         (stop, interpreter)
+    }
+
+    fn inspect_initialize_interp(&mut self, interp: &mut Interpreter<'_, T>) {
+        if let Some(inspector) = &mut self.inspector {
+            inspector.initialize_interp(interp);
+        }
+    }
+
+    fn inspect_log(&mut self, log: &Log) {
+        if let Some(inspector) = &mut self.inspector {
+            inspector.log(log);
+        }
+    }
+
+    fn inspect_call(&mut self, message: &mut Message) -> Option<MessageResult> {
+        self.inspector.as_deref_mut().and_then(|inspector| inspector.call(message))
+    }
+
+    fn inspect_call_end(&mut self, message: &Message, result: &mut MessageResult) {
+        if let Some(inspector) = &mut self.inspector {
+            inspector.call_end(message, result);
+        }
+    }
+
+    fn inspect_create(&mut self, message: &mut Message) -> Option<MessageResult> {
+        self.inspector.as_deref_mut().and_then(|inspector| inspector.create(message))
+    }
+
+    fn inspect_create_end(&mut self, message: &Message, result: &mut MessageResult) {
+        if let Some(inspector) = &mut self.inspector {
+            inspector.create_end(message, result);
+        }
+    }
+
+    fn has_inspector(&self) -> bool {
+        self.inspector.is_some()
+    }
+
+    fn inspect_message_start(&mut self, message: &mut Cow<'_, Message>) -> Option<MessageResult> {
+        if message.kind.is_create() {
+            self.inspect_create(message.to_mut())
+        } else {
+            self.inspect_call(message.to_mut())
+        }
+    }
+
+    #[inline(never)]
+    fn inspect_execute_message(
+        &mut self,
+        tx_env: &TxEnv,
+        bytecode: Bytecode,
+        message: &Message,
+        caller_is_static: bool,
+    ) -> MessageResult {
+        let mut message = Cow::Borrowed(message);
+        let inspected_result = self.inspect_message_start(&mut message);
+
+        let mut result = if let Some(result) = inspected_result {
+            result
+        } else if message.depth > CALL_DEPTH_LIMIT {
+            MessageResult {
+                stop: InstrStop::CallTooDeep,
+                gas_remaining: message.gas_limit,
+                ..MessageResult::default()
+            }
+        } else {
+            match message.kind {
+                MessageKind::Create | MessageKind::Create2 => self.execute_create_message(
+                    tx_env,
+                    bytecode,
+                    message.as_ref(),
+                    caller_is_static,
+                ),
+                MessageKind::Call
+                | MessageKind::CallCode
+                | MessageKind::DelegateCall
+                | MessageKind::StaticCall => {
+                    self.execute_call_message(tx_env, bytecode, message.as_ref(), caller_is_static)
+                }
+            }
+        };
+
+        if message.kind.is_create() {
+            self.inspect_create_end(message.as_ref(), &mut result);
+        } else {
+            self.inspect_call_end(message.as_ref(), &mut result);
+        }
+
+        result
+    }
+
+    fn inspect_selfdestruct(&mut self, contract: Address, target: Address, value: Word) {
+        if let Some(inspector) = &mut self.inspector {
+            inspector.selfdestruct(contract, target, value);
+        }
     }
 }
 
@@ -641,6 +777,7 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
     }
 
     fn log(&mut self, log: Log) {
+        self.inspect_log(&log);
         self.state.log(log);
     }
 
@@ -651,6 +788,10 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
         message: &Message,
         caller_is_static: bool,
     ) -> MessageResult {
+        if self.has_inspector() {
+            return self.inspect_execute_message(tx_env, bytecode, message, caller_is_static);
+        }
+
         if message.depth > CALL_DEPTH_LIMIT {
             return MessageResult {
                 stop: InstrStop::CallTooDeep,
@@ -699,6 +840,7 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
         if should_destroy {
             self.state.mark_destructed(contract);
         }
+        self.inspect_selfdestruct(contract, target, balance);
 
         Ok(SelfDestructResult {
             had_value: !balance.is_zero(),
@@ -718,7 +860,9 @@ mod tests {
         interpreter::{MessageKind, op},
         registry::TxRequest,
     };
+    use alloc::rc::Rc;
     use alloy_primitives::{Address, Bytes, KECCAK256_EMPTY, U256};
+    use core::cell::RefCell;
 
     const TEST_TX_TYPE: u8 = 0x7f;
 
@@ -849,6 +993,91 @@ mod tests {
 
         let result = Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &message, false);
         assert!(result.stop.is_success());
+    }
+
+    #[derive(Clone, Debug, Default, PartialEq, Eq)]
+    struct InspectorCounts {
+        initialize_interp: usize,
+        step: usize,
+        step_end: usize,
+        log: usize,
+        call: usize,
+        call_end: usize,
+    }
+
+    #[derive(Clone, Debug)]
+    struct CountInspector(Rc<RefCell<InspectorCounts>>);
+
+    impl inspector::Inspector<TestEvmTypes> for CountInspector {
+        fn initialize_interp(&mut self, _interp: &mut Interpreter<'_, TestEvmTypes>) {
+            self.0.borrow_mut().initialize_interp += 1;
+        }
+
+        fn step(&mut self, _interp: &mut Interpreter<'_, TestEvmTypes>) {
+            self.0.borrow_mut().step += 1;
+        }
+
+        fn step_end(&mut self, _interp: &mut Interpreter<'_, TestEvmTypes>) {
+            self.0.borrow_mut().step_end += 1;
+        }
+
+        fn log(&mut self, _log: &Log) {
+            self.0.borrow_mut().log += 1;
+        }
+
+        fn call(&mut self, _message: &mut Message) -> Option<MessageResult> {
+            self.0.borrow_mut().call += 1;
+            None
+        }
+
+        fn call_end(&mut self, _message: &Message, _result: &mut MessageResult) {
+            self.0.borrow_mut().call_end += 1;
+        }
+    }
+
+    #[test]
+    fn inspector_observes_call_frame_steps_and_logs() {
+        let mut evm = Evm::<TestEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        let counts = Rc::new(RefCell::new(InspectorCounts::default()));
+        evm.set_inspector(CountInspector(Rc::clone(&counts)));
+
+        let contract = Address::from([0x11; 20]);
+        let bytecode = Bytecode::new_legacy(Bytes::from_static(&[
+            op::PUSH1,
+            0,
+            op::PUSH1,
+            0,
+            op::LOG0,
+            op::STOP,
+        ]));
+        let message = Message {
+            kind: MessageKind::Call,
+            destination: contract,
+            code_address: contract,
+            gas_limit: 50_000,
+            ..Message::default()
+        };
+
+        let result = Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &message, false);
+
+        assert!(result.stop.is_success());
+        assert_eq!(
+            *counts.borrow(),
+            InspectorCounts {
+                initialize_interp: 1,
+                step: 4,
+                step_end: 4,
+                log: 1,
+                call: 1,
+                call_end: 1,
+            }
+        );
     }
 
     #[test]
