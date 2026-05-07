@@ -161,11 +161,13 @@ fn expand_instruction(instruction_attrs: InstructionAttrs, input: ItemFn) -> Tok
     let cx_setup = has_cx.then(|| {
         let cx = cx_arg.unwrap_or_else(|| Ident::new("cx", ident.span()));
         let cx_ty = if instruction_attrs.dynamic_gas {
-            quote! { evm2::interpreter::GasInstructionCx }
+            quote! { evm2::interpreter::private::GasInstructionCx }
         } else {
-            quote! { evm2::interpreter::InstructionCx }
+            quote! { evm2::interpreter::private::InstructionCx }
         };
-        let gas_field = instruction_attrs.dynamic_gas.then(|| quote! { gas: __evm2_state.gas(), });
+        let gas_field = instruction_attrs
+            .dynamic_gas
+            .then(|| quote! { gas: evm2::interpreter::private::gas(__evm2_state), });
         quote! {
             let mut #cx = #cx_ty::<#evm_types> {
             pc: __evm2_pc,
@@ -296,7 +298,11 @@ fn stack_setup(inputs: &[Ident], outputs: &[Ident]) -> TokenStream2 {
     });
 
     quote! {
-        let ptr = stack.instr_stack_setup(#input_count, #output_count)?;
+        let ptr = evm2::interpreter::private::instr_stack_setup(
+            &mut stack,
+            #input_count,
+            #output_count,
+        )?;
         #input_setup
         #output_setup
     }

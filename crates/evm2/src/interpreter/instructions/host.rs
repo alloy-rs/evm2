@@ -1,7 +1,8 @@
 use crate::{
     EvmFeatures, EvmTypes, SpecId,
     interpreter::{
-        GasInstructionCx, Host, InstrStop, Result, StackMut, State, Word, memory::resize_memory,
+        Host, InstrStop, Result, StackMut, State, Word, memory::resize_memory,
+        private::GasInstructionCx,
     },
     utils::word_to_usize,
     version::GasId,

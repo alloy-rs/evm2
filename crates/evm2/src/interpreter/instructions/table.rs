@@ -4,7 +4,7 @@
 use crate::interpreter::gas::RemainingGas;
 use crate::{
     EvmConfig, EvmTypes,
-    interpreter::{Gas, InstrStop, Pc, Result, Stack, StackMut, State, op},
+    interpreter::{InstrStop, Pc, Result, Stack, StackMut, State, op},
 };
 use core::hint::cold_path;
 
@@ -52,40 +52,6 @@ where
     T: EvmTypes,
     C: EvmConfig<T>,
 {
-}
-
-/// Instruction execution context.
-#[doc(hidden)] // For macro only. Not public API.
-pub struct InstructionCx<'a, 'state, T: EvmTypes> {
-    /// Program counter state.
-    pub pc: &'a mut Pc,
-    /// Interpreter state.
-    pub state: &'a mut State<'state, T>,
-}
-
-/// Instruction execution context with mutable gas state.
-#[doc(hidden)] // For macro only. Not public API.
-pub struct GasInstructionCx<'a, 'state, T: EvmTypes> {
-    /// Program counter state.
-    pub pc: &'a mut Pc,
-    /// Gas state.
-    pub gas: &'a mut Gas,
-    /// Interpreter state.
-    pub state: &'a mut State<'state, T>,
-}
-
-impl<T: EvmTypes> core::fmt::Debug for InstructionCx<'_, '_, T> {
-    #[inline]
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("InstructionCx").finish_non_exhaustive()
-    }
-}
-
-impl<T: EvmTypes> core::fmt::Debug for GasInstructionCx<'_, '_, T> {
-    #[inline]
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("GasInstructionCx").finish_non_exhaustive()
-    }
 }
 
 /// EVM instruction implementation.

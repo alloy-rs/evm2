@@ -1,7 +1,9 @@
 use crate::{
     EvmTypes,
     interpreter::{
-        GasInstructionCx, InstrStop, InstructionCx, Result, Word, memory::resize_memory,
+        InstrStop, Result, Word,
+        memory::resize_memory,
+        private::{GasInstructionCx, InstructionCx},
     },
     utils::{word_to_usize, word_to_usize_saturated},
 };

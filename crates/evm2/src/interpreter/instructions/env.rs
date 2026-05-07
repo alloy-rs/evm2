@@ -1,7 +1,9 @@
 use crate::{
     EvmTypes,
     evm::AccountLoad,
-    interpreter::{GasInstructionCx, Host, InstrStop, Result, Word, memory::resize_memory},
+    interpreter::{
+        Host, InstrStop, Result, Word, memory::resize_memory, private::GasInstructionCx,
+    },
     utils::{
         address_to_word, b256_to_word, word_to_address, word_to_usize, word_to_usize_saturated,
     },
