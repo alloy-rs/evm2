@@ -397,7 +397,7 @@ pub(super) fn settle_gas<T: EvmTypes<Host = Evm<T>>>(
     result: MessageResult,
 ) -> TxResult {
     let (gas_remaining, gas_used) =
-        final_tx_gas(&result, tx_gas_limit, spec_id.enables(SpecId::LONDON), floor_gas);
+        final_tx_gas(&result, tx_gas_limit, host.feature(EvmFeatures::EIP3529), floor_gas);
     if host.feature(EvmFeatures::FEE_CHARGE) {
         host.state.add_balance(caller, U256::from(gas_remaining) * gas_price);
         let beneficiary_gas_price = if spec_id.enables(SpecId::LONDON) {
@@ -420,11 +420,11 @@ pub(super) fn settle_gas<T: EvmTypes<Host = Evm<T>>>(
 const fn final_tx_gas(
     result: &MessageResult,
     tx_gas_limit: u64,
-    is_london: bool,
+    is_eip3529: bool,
     floor_gas: u64,
 ) -> (u64, u64) {
-    let gas_remaining = result.gas_remaining_after_final_refund(tx_gas_limit, is_london);
-    let gas_used = result.gas_used_after_final_refund(tx_gas_limit, is_london);
+    let gas_remaining = result.gas_remaining_after_final_refund(tx_gas_limit, is_eip3529);
+    let gas_used = result.gas_used_after_final_refund(tx_gas_limit, is_eip3529);
     // EIP-7623 charges at least the calldata floor after applying refunds.
     if gas_used < floor_gas {
         return (tx_gas_limit.saturating_sub(floor_gas), floor_gas);

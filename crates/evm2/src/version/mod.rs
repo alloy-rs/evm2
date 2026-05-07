@@ -245,6 +245,7 @@ mod tests {
         assert!(osaka.feature(EvmFeatures::BLOCK_GAS_LIMIT_CHECK));
         assert!(osaka.feature(EvmFeatures::EIP2));
         assert!(osaka.feature(EvmFeatures::EIP2028));
+        assert!(osaka.feature(EvmFeatures::EIP3529));
         assert!(osaka.feature(EvmFeatures::EIP3651));
         assert!(osaka.feature(EvmFeatures::EIP3860));
         assert!(osaka.feature(EvmFeatures::EIP3541));
@@ -572,6 +573,7 @@ evm_versions! {
 
     LONDON {
         features: [
+            EIP3529,
             EIP3541,
             BASE_FEE_CHECK,
         ],

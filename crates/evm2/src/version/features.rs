@@ -136,6 +136,10 @@ evm_features! {
     ///
     /// Default: on since Istanbul
     EIP2028,
+    /// Applies EIP-3529 refund reductions.
+    ///
+    /// Default: on since London
+    EIP3529,
     /// Applies EIP-3651 warm coinbase at transaction start.
     ///
     /// Default: on since Shanghai
