@@ -1,5 +1,5 @@
 use alloy_consensus::{TxLegacy, transaction::Recovered};
-use alloy_primitives::{Address, Bytes, TxKind, U256};
+use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
 use evm2::{
     SpecId, Version,
     bytecode::Bytecode,
@@ -7,7 +7,8 @@ use evm2::{
     ethereum::RecoveredTxEnvelope,
     evm::{AccountInfo, InMemoryDB},
 };
-use serde::{Deserialize, Deserializer, de};
+use serde::{Deserialize, Deserializer, Serialize, de};
+use serde_json::json;
 use std::{
     collections::{BTreeMap, HashMap},
     fs,
@@ -92,6 +93,72 @@ impl Case {
     pub(crate) fn tx(&self, spec: SpecId) -> RecoveredTxEnvelope {
         self.transaction.first().expect("fixture must contain a transaction").envelope(spec)
     }
+
+    pub(crate) fn revm_case(&self, name: &str, spec: SpecId) -> revm_fixture::Case {
+        let transaction = self.transaction.first().expect("fixture must contain a transaction");
+        let gas_limit = transaction.capped_gas_limit(spec);
+        let value = transaction.value.unwrap_or_default();
+        let current_random = self.env.current_random.map(b256_from_u256);
+        let fixture = json!({
+            name: {
+                "env": {
+                    "currentChainID": null,
+                    "currentCoinbase": self.env.current_coinbase,
+                    "currentDifficulty": self.env.current_difficulty,
+                    "currentGasLimit": self.env.current_gas_limit,
+                    "currentNumber": self.env.current_number,
+                    "currentTimestamp": self.env.current_timestamp,
+                    "currentBaseFee": self.env.current_base_fee,
+                    "previousHash": null,
+                    "currentRandom": current_random,
+                    "currentBeaconRoot": null,
+                    "currentWithdrawalsRoot": null,
+                    "currentExcessBlobGas": null,
+                    "slotNumber": self.env.slot_number,
+                },
+                "pre": self.pre,
+                "post": {
+                    revm_spec_name(spec): [{
+                        "expectException": null,
+                        "indexes": {
+                            "data": 0,
+                            "gas": 0,
+                            "value": 0,
+                        },
+                        "hash": B256::ZERO,
+                        "logs": B256::ZERO,
+                    }],
+                },
+                "transaction": {
+                    "data": [transaction.data.clone()],
+                    "gasLimit": [U256::from(gas_limit)],
+                    "gasPrice": transaction.gas_price,
+                    "nonce": transaction.nonce,
+                    "secretKey": B256::ZERO,
+                    "sender": transaction.sender,
+                    "to": transaction.to,
+                    "value": [value],
+                },
+            },
+        });
+        let mut suite: ::revm::statetest_types::TestSuite = serde_json::from_value(fixture)
+            .expect("converted fixture must parse as revm statetest");
+        let mut unit = suite.0.remove(name).expect("converted suite must contain benchmark case");
+        let test = unit
+            .post
+            .values_mut()
+            .next()
+            .and_then(|tests| tests.pop())
+            .expect("converted suite must contain a post test");
+        revm_fixture::Case { unit, test }
+    }
+}
+
+pub(crate) mod revm_fixture {
+    pub(crate) struct Case {
+        pub(crate) unit: ::revm::statetest_types::TestUnit,
+        pub(crate) test: ::revm::statetest_types::Test,
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -127,7 +194,7 @@ impl Env {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct Account {
     balance: U256,
     code: Bytes,
@@ -152,8 +219,7 @@ struct Transaction {
 
 impl Transaction {
     fn envelope(&self, spec: SpecId) -> RecoveredTxEnvelope {
-        let version = Version::base(spec);
-        let gas_limit = u64_value(self.gas_limit).min(version.tx_gas_limit_cap);
+        let gas_limit = self.capped_gas_limit(spec);
         let tx = TxLegacy {
             chain_id: None,
             nonce: u64_value(self.nonce),
@@ -164,6 +230,36 @@ impl Transaction {
             input: self.data.clone(),
         };
         RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(tx, self.sender))
+    }
+
+    fn capped_gas_limit(&self, spec: SpecId) -> u64 {
+        let version = Version::base(spec);
+        u64_value(self.gas_limit).min(version.tx_gas_limit_cap)
+    }
+}
+
+fn b256_from_u256(value: U256) -> B256 {
+    B256::from(value.to_be_bytes())
+}
+
+fn revm_spec_name(spec: SpecId) -> &'static str {
+    match spec {
+        SpecId::FRONTIER => "Frontier",
+        SpecId::HOMESTEAD => "Homestead",
+        SpecId::TANGERINE => "EIP150",
+        SpecId::SPURIOUS_DRAGON => "EIP158",
+        SpecId::BYZANTIUM => "Byzantium",
+        SpecId::PETERSBURG => "ConstantinopleFix",
+        SpecId::ISTANBUL => "Istanbul",
+        SpecId::BERLIN => "Berlin",
+        SpecId::LONDON => "London",
+        SpecId::MERGE => "Merge",
+        SpecId::SHANGHAI => "Shanghai",
+        SpecId::CANCUN => "Cancun",
+        SpecId::PRAGUE => "Prague",
+        SpecId::OSAKA => "Osaka",
+        SpecId::AMSTERDAM => "Amsterdam",
+        _ => panic!("unsupported benchmark spec: {spec:?}"),
     }
 }
 

@@ -2,6 +2,8 @@
 
 #[cfg(not(feature = "nightly"))]
 use crate::interpreter::gas::Gas;
+#[cfg(not(feature = "nightly"))]
+use crate::interpreter::Gas;
 #[cfg(feature = "nightly")]
 use crate::interpreter::gas::RemainingGas;
 use crate::{
@@ -19,12 +21,12 @@ pub(crate) type InstructionFnRet = (*const u8, usize);
 pub(crate) type InstructionFn<T> =
     extern_table!(fn(pc: Pc, stack: Stack<'_>, state: &mut State<'_, T>) -> InstructionFnRet);
 
+#[cfg(feature = "nightly")]
+pub(crate) type InstructionFn<T> = TailInstructionFn<T>;
+
 /// Normal instruction dispatch table.
 #[cfg(not(feature = "nightly"))]
 pub(crate) type InstructionTable<T> = [InstructionFn<T>; 256];
-
-#[cfg(feature = "nightly")]
-pub(crate) type InstructionFn<T> = TailInstructionFn<T>;
 #[cfg(feature = "nightly")]
 pub(crate) type InstructionTable<T> = TailInstructionTable<T>;
 
