@@ -103,7 +103,6 @@ impl Host for EvmcHost {
     fn target_is_empty_for_new_account_gas(&mut self, address: Address, _spec: SpecId) -> bool {
         let evmc_address = address_to_evmc(address);
         !self.account_exists(&evmc_address)
-            || (self.balance(&evmc_address).is_zero() && self.code_size(&evmc_address) == 0)
     }
 
     fn block_hash(&mut self, number: Word) -> Option<B256> {
@@ -223,17 +222,19 @@ impl Host for EvmcHost {
         if skip_cold_load && is_cold {
             return Err(InstrStop::OutOfGas);
         }
-        let Some(selfdestruct) = self.host().selfdestruct else {
-            return Ok(SelfDestructResult { is_cold, ..SelfDestructResult::default() });
-        };
+        let target_is_empty = !self.account_exists(&target);
         let contract = address_to_evmc(contract);
+        let had_value = !self.balance(&contract).is_zero();
+        let Some(selfdestruct) = self.host().selfdestruct else {
+            return Ok(SelfDestructResult {
+                had_value,
+                target_is_empty,
+                is_cold,
+                ..SelfDestructResult::default()
+            });
+        };
         let previously_destroyed = !unsafe { selfdestruct(self.context, &contract, &target) };
-        Ok(SelfDestructResult {
-            is_cold,
-            target_is_empty: false,
-            previously_destroyed,
-            had_value: false,
-        })
+        Ok(SelfDestructResult { had_value, target_is_empty, is_cold, previously_destroyed })
     }
 }
 
@@ -666,7 +667,7 @@ const fn zero_tx_context() -> evmc_tx_context {
 }
 
 fn signed_to_u256(value: i64) -> U256 {
-    u64::try_from(value).map_or(U256::ZERO, U256::from)
+    U256::from(value as u64)
 }
 
 fn evmc_blob_hashes(tx_context: &evmc_tx_context) -> &[evmc_bytes32] {
