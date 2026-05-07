@@ -6,7 +6,7 @@ use crate::interpreter::gas::Gas;
 use crate::interpreter::gas::RemainingGas;
 use crate::{
     EvmConfig, EvmTypes,
-    interpreter::{InstrStop, Interpreter, InterpreterState, Pc, Result, Stack, StackMut, op},
+    interpreter::{InstrStop, InterpreterState, Pc, Result, Stack, StackMut, op},
 };
 use core::hint::cold_path;
 
@@ -16,8 +16,9 @@ pub(crate) type InstructionFnRet = (*const u8, usize);
 
 /// Normal instruction function pointer.
 #[cfg(not(feature = "nightly"))]
-pub(crate) type InstructionFn<T> =
-    extern_table!(fn(pc: Pc, stack: Stack<'_>, state: &mut Interpreter<'_, T>) -> InstructionFnRet);
+pub(crate) type InstructionFn<T> = extern_table!(
+    fn(pc: Pc, stack: Stack<'_>, state: &mut InterpreterState<'_, T>) -> InstructionFnRet
+);
 
 #[cfg(feature = "nightly")]
 pub(crate) type InstructionFn<T> = TailInstructionFn<T>;
@@ -31,7 +32,7 @@ pub(crate) type InstructionTable<T> = TailInstructionTable<T>;
 /// Tail instruction function pointer.
 #[cfg(feature = "nightly")]
 pub(crate) type TailInstructionFn<T> = extern_table!(
-    fn(pc: Pc, stack: Stack<'_>, remaining_gas: RemainingGas, state: &mut Interpreter<'_, T>)
+    fn(pc: Pc, stack: Stack<'_>, remaining_gas: RemainingGas, state: &mut InterpreterState<'_, T>)
 );
 
 /// Tail instruction dispatch table.
@@ -166,7 +167,7 @@ extern_table! {
     fn dispatch<T: EvmTypes, C: EvmConfig<T>, const OP: u8>(
         pc: Pc,
         stack: Stack<'_>,
-        state: &mut Interpreter<'_, T>,
+        state: &mut InterpreterState<'_, T>,
     ) -> InstructionFnRet {
         dispatch_mono::<T, C>(OP, pc, stack, state)
     }
@@ -178,13 +179,13 @@ fn dispatch_mono<T: EvmTypes, C: EvmConfig<T>>(
     op: u8,
     mut pc: Pc,
     mut stack: Stack<'_>,
-    state: &mut Interpreter<'_, T>,
+    state: &mut InterpreterState<'_, T>,
 ) -> InstructionFnRet {
     let instr = C::VERSION_TABLES.instruction(op).instr;
     let r;
     match pre_step::<T, C>(state.gas_mut(), op) {
         Ok(()) => {
-            r = instr(&mut pc, stack.as_mut(), InterpreterState::wrap_mut(state));
+            r = instr(&mut pc, stack.as_mut(), state);
             inc_pc(&mut pc, op);
         }
         Err(e) => r = Err(e),
@@ -203,7 +204,7 @@ extern_table! {
         pc: Pc,
         stack: Stack<'_>,
         remaining_gas: RemainingGas,
-        state: &mut Interpreter<'_, T>,
+        state: &mut InterpreterState<'_, T>,
     ) {
         assume!(pc.op() == OP);
         tail_return!(tail_dispatch_mono::<T, C, DYNAMIC_GAS>(pc, stack, remaining_gas, state));
@@ -217,7 +218,7 @@ extern_table! {
         pc: Pc,
         stack: Stack<'_>,
         remaining_gas: RemainingGas,
-        state: &mut Interpreter<'_, T>,
+        state: &mut InterpreterState<'_, T>,
     ) {
         assume!(C::VERSION_TABLES.is_unknown_opcode(pc.op()));
         state.set_result(Err(InstrStop::OpcodeNotFound));
@@ -232,7 +233,7 @@ extern_table! {
         mut pc: Pc,
         mut stack: Stack<'_>,
         mut remaining_gas: RemainingGas,
-        state: &mut Interpreter<'_, T>,
+        state: &mut InterpreterState<'_, T>,
     ) {
         let op = pc.op();
         let instr = C::VERSION_TABLES.instruction(op).instr;
@@ -244,7 +245,7 @@ extern_table! {
         if DYNAMIC_GAS {
             state.gas_mut().set_remaining(remaining_gas.get());
         }
-        let r = instr(&mut pc, stack.as_mut(), InterpreterState::wrap_mut(state));
+        let r = instr(&mut pc, stack.as_mut(), state);
         if DYNAMIC_GAS {
             remaining_gas.set(state.gas_mut().remaining());
         }
@@ -265,7 +266,7 @@ extern_table! {
         pc: Pc,
         stack: Stack<'_>,
         remaining_gas: RemainingGas,
-        state: &mut Interpreter<'_, T>,
+        state: &mut InterpreterState<'_, T>,
     ) {
         let instr = <T as InstructionTables<C>>::INSTRUCTIONS[pc.op() as usize];
         tail_return!(instr(pc, stack, remaining_gas, state));
@@ -280,7 +281,7 @@ extern_table! {
         pc: Pc,
         stack: Stack<'_>,
         remaining_gas: RemainingGas,
-        state: &mut Interpreter<'_, T>,
+        state: &mut InterpreterState<'_, T>,
     ) {
         state.gas_mut().set_remaining(remaining_gas.get());
         state.set_pc_stack_len(pc.as_ptr(), stack.len);

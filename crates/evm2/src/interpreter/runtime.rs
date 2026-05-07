@@ -157,24 +157,6 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         &mut self.gas
     }
 
-    #[inline]
-    pub(crate) const fn set_result(&mut self, result: Result) {
-        self.result = result;
-    }
-
-    #[inline]
-    #[cfg(feature = "nightly")]
-    pub(crate) const fn result(&self) -> Result {
-        self.result
-    }
-
-    #[inline]
-    #[cfg(feature = "nightly")]
-    pub(crate) const fn set_pc_stack_len(&mut self, pc: *const u8, stack_len: usize) {
-        self.pc = pc;
-        self.stack_len = stack_len;
-    }
-
     /// Runs the interpreter until it stops, using `C` as the EVM configuration.
     #[inline]
     pub fn run<C: EvmConfig<T>>(&mut self, host: &mut T::Host) -> InstrStop {
@@ -202,14 +184,15 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
     fn run_table_loop(&mut self, config: &ExecutionConfig<T>) -> InstrStop {
         #[expect(clippy::unnecessary_cast, reason = "cast erases the active interpreter lifetime")]
         let raw = self as *mut Self as *mut Interpreter<'_, T>;
+        // SAFETY: Instruction methods must not access the stack through `InterpreterState` while
+        // the separate stack view is live.
+        let state = InterpreterState::wrap_mut(unsafe { &mut *raw });
         let mut pc = Pc::new(self.pc);
         let mut stack = Stack::new(&mut self.stack, self.stack_len);
         loop {
             let op = pc.op();
             let instr = config.instructions[op as usize];
-            // SAFETY: Instruction methods must not access the stack through `Interpreter` while
-            // the separate stack view is live.
-            let (next_pc, next_stack_len) = instr(pc, stack.reborrow(), unsafe { &mut *raw });
+            let (next_pc, next_stack_len) = instr(pc, stack.reborrow(), state);
             pc = Pc::new(next_pc);
             stack.len = next_stack_len;
             if next_pc.is_null() {
@@ -226,14 +209,15 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
     fn step_tail(&mut self, config: &ExecutionConfig<T>) -> InstrStop {
         #[expect(clippy::unnecessary_cast, reason = "cast erases the active interpreter lifetime")]
         let raw = self as *mut Self as *mut Interpreter<'_, T>;
+        // SAFETY: Instruction methods must not access the stack through `InterpreterState` while
+        // the separate stack view is live.
+        let state = InterpreterState::wrap_mut(unsafe { &mut *raw });
         let pc = Pc::new(self.pc);
         let op = pc.op();
         let instr = config.instructions[op as usize];
         let stack = Stack::new(&mut self.stack, self.stack_len);
         let remaining_gas = RemainingGas::new(self.gas.remaining());
-        // SAFETY: Instruction methods must not access the stack through `Interpreter` while the
-        // separate stack view is live.
-        instr(pc, stack, remaining_gas, unsafe { &mut *raw });
+        instr(pc, stack, remaining_gas, state);
         self.result.unwrap_err()
     }
 }
@@ -260,6 +244,29 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
     pub(in crate::interpreter) const unsafe fn gas_from_state_ptr(state: *mut Self) -> *mut Gas {
         // SAFETY: The caller upholds that `state` points to a valid interpreter state.
         unsafe { &raw mut (*state).0.gas }
+    }
+
+    #[inline]
+    pub(crate) const fn gas_mut(&mut self) -> &mut Gas {
+        &mut self.0.gas
+    }
+
+    #[inline]
+    pub(crate) const fn set_result(&mut self, result: Result) {
+        self.0.result = result;
+    }
+
+    #[inline]
+    #[cfg(feature = "nightly")]
+    pub(crate) const fn result(&self) -> Result {
+        self.0.result
+    }
+
+    #[inline]
+    #[cfg(feature = "nightly")]
+    pub(crate) const fn set_pc_stack_len(&mut self, pc: *const u8, stack_len: usize) {
+        self.0.pc = pc;
+        self.0.stack_len = stack_len;
     }
 
     /// Returns the cached transaction-global environment.
