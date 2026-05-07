@@ -30,7 +30,6 @@ mod db;
 pub use db::{Cache, CacheDB, Database, EmptyDB, InMemoryDB};
 
 mod state;
-pub use crate::storage_key::{StorageKey, StorageKeyMap, StorageKeySet};
 pub use state::{
     Account, AccountInfo, JournalEntry, State, StateChanges, StateCheckpoint, StorageChangeSet,
     StorageOverlay, Tracked,

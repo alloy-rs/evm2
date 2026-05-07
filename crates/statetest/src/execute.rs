@@ -15,11 +15,11 @@ use alloy_trie::{
 };
 use evm2::{
     BEACON_ROOTS_ADDRESS, BaseEvmTypes, Evm, EvmTypes, HISTORY_STORAGE_ADDRESS, Precompiles,
-    SpecId, TxResult,
+    SpecId, StorageKey, TxResult,
     bytecode::Bytecode,
     env::BlockEnv,
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
-    evm::{AccountInfo as EvmAccountInfo, InMemoryDB, StateChanges, StorageKey},
+    evm::{AccountInfo as EvmAccountInfo, InMemoryDB, StateChanges},
     registry::HandlerError,
 };
 use k256::ecdsa::SigningKey;
