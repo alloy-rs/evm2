@@ -2,6 +2,7 @@
 
 use crate::{
     SpecId, VersionTables,
+    ethereum::RecoveredTxEnvelope,
     evm::{InMemoryDB, precompile::PrecompileProvider},
     interpreter::{
         Host,
@@ -10,7 +11,6 @@ use crate::{
     spec_to_generic,
     version::Version,
 };
-use core::marker::PhantomData;
 
 /// Runtime EVM type family.
 ///
@@ -131,12 +131,12 @@ impl<T: EvmTypes> ExecutionConfig<T> {
 
 /// Base EVM types.
 #[allow(missing_copy_implementations, missing_debug_implementations)]
-pub struct BaseEvmTypes<Tx = ()>(PhantomData<fn() -> Tx>);
+pub struct BaseEvmTypes(());
 
-impl<Tx: 'static> EvmTypes for BaseEvmTypes<Tx> {
+impl EvmTypes for BaseEvmTypes {
     type ConfigSelector = BaseEvmConfigSelector;
     type SpecId = SpecId;
-    type Tx = Tx;
+    type Tx = RecoveredTxEnvelope;
     type Host = crate::evm::Evm<Self>;
     type Database = InMemoryDB;
     type Precompiles = crate::precompiles::Precompiles;

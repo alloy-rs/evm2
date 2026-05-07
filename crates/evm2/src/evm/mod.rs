@@ -727,12 +727,13 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
 mod tests {
     use super::*;
     use crate::{
-        BaseEvmConfig, BaseEvmTypes, Precompiles, SpecId,
+        BaseEvmConfig, Precompiles, SpecId,
         bytecode::Bytecode,
         interpreter::{MessageKind, op},
         registry::TxRequest,
     };
     use alloy_primitives::{Address, Bytes, KECCAK256_EMPTY, U256};
+    use core::marker::PhantomData;
 
     const TEST_TX_TYPE: u8 = 0x7f;
 
@@ -741,7 +742,16 @@ mod tests {
         value: u64,
     }
 
-    type TestEvmTypes<Tx = ()> = BaseEvmTypes<Tx>;
+    struct TestEvmTypes<Tx = ()>(PhantomData<fn() -> Tx>);
+
+    impl<Tx: 'static> EvmTypes for TestEvmTypes<Tx> {
+        type ConfigSelector = crate::BaseEvmConfigSelector;
+        type SpecId = SpecId;
+        type Tx = Tx;
+        type Host = Evm<Self>;
+        type Database = InMemoryDB;
+        type Precompiles = Precompiles;
+    }
 
     impl Typed2718 for TestTx {
         fn ty(&self) -> u8 {

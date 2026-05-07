@@ -7,7 +7,7 @@ use evm2::{
     evm::InMemoryDB,
 };
 
-type BenchEvm = Evm<BaseEvmTypes<RecoveredTxEnvelope>>;
+type BenchEvm = Evm<BaseEvmTypes>;
 
 #[derive(Clone, Debug)]
 pub(crate) struct PreparedBench {
