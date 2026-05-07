@@ -22,7 +22,6 @@ pub(crate) struct InstructionInfo<T: EvmTypes> {
     pub(crate) instr: InstructionImplFn<T>,
     #[allow(dead_code)]
     pub(crate) dynamic_gas: bool,
-    pub(crate) is_unknown: bool,
 }
 
 impl<T: EvmTypes> fmt::Debug for VersionTables<T> {
@@ -62,6 +61,12 @@ impl<T: EvmTypes> VersionTables<T> {
     #[inline]
     pub(crate) const fn instruction(&self, opcode: u8) -> InstructionInfo<T> {
         self.instruction_impls.get(opcode)
+    }
+
+    /// Returns whether `opcode` has no instruction implementation in this version.
+    #[inline]
+    pub(crate) const fn is_unknown_opcode(&self, opcode: u8) -> bool {
+        self.instruction_impls.is_unknown(opcode)
     }
 
     /// Sets the static gas cost and instruction for `opcode`.
@@ -116,17 +121,17 @@ impl<T: EvmTypes> InstructionImplTable<T> {
     #[inline]
     const fn get(&self, opcode: u8) -> InstructionInfo<T> {
         match self.instrs[opcode as usize] {
-            Some(instr) => InstructionInfo {
-                instr,
-                dynamic_gas: self.dynamic_gas[opcode as usize],
-                is_unknown: false,
-            },
-            None => InstructionInfo {
-                instr: unknown_instruction::<T>,
-                dynamic_gas: true,
-                is_unknown: true,
-            },
+            Some(instr) => {
+                InstructionInfo { instr, dynamic_gas: self.dynamic_gas[opcode as usize] }
+            }
+            None => InstructionInfo { instr: unknown_instruction::<T>, dynamic_gas: true },
         }
+    }
+
+    /// Returns whether `opcode` has no instruction implementation.
+    #[inline]
+    const fn is_unknown(&self, opcode: u8) -> bool {
+        self.instrs[opcode as usize].is_none()
     }
 
     /// Sets the instruction implementation for `opcode`.

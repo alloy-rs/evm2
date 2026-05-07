@@ -139,13 +139,21 @@ where
 
     // Make all unknown entries point to the same dispatch function.
     let mut i = 0;
+    #[cfg(not(feature = "nightly"))]
     let mut unknown_idx = None;
     while i < 256 {
-        if C::VERSION_TABLES.instruction(i as u8).is_unknown {
-            if unknown_idx.is_none() {
-                unknown_idx = Some(i);
+        if C::VERSION_TABLES.is_unknown_opcode(i as u8) {
+            #[cfg(not(feature = "nightly"))]
+            {
+                if unknown_idx.is_none() {
+                    unknown_idx = Some(i);
+                }
+                table[i] = table[unknown_idx.unwrap()];
             }
-            table[i] = table[unknown_idx.unwrap()];
+            #[cfg(feature = "nightly")]
+            {
+                table[i] = tail_unknown_dispatch::<T, C> as InstructionFn<T>;
+            }
         }
         i += 1;
     }
@@ -200,6 +208,21 @@ extern_table! {
     ) {
         assume!(pc.op() == OP);
         tail_return!(tail_dispatch_mono::<T, C, DYNAMIC_GAS>(pc, stack, remaining_gas, state));
+    }
+}
+
+extern_table! {
+    #[cfg(feature = "nightly")]
+    #[cold]
+    fn tail_unknown_dispatch<T: EvmTypes, C: EvmConfig<T>>(
+        pc: Pc,
+        stack: Stack<'_>,
+        remaining_gas: RemainingGas,
+        state: &mut State<'_, T>,
+    ) {
+        assume!(C::VERSION_TABLES.is_unknown_opcode(pc.op()));
+        state.result = Err(InstrStop::OpcodeNotFound);
+        tail_return!(tail_call_restore::<T>(pc, stack, remaining_gas, state));
     }
 }
 
