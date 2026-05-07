@@ -15,12 +15,12 @@ pub struct State<'a, T: EvmTypes> {
     pub bytecode: BytecodeRef<'a>,
     /// Host implementation.
     pub host: &'a mut T::Host,
-    /// Active spec identifier.
-    pub spec: SpecId,
-    pub(crate) gas: Gas,
-    pub(crate) result: Result,
     /// Active runtime version data.
     pub version: &'a Version,
+    /// Active spec identifier.
+    pub spec: SpecId,
+    pub(crate) result: Result,
+    pub(crate) gas: Gas,
     pub(crate) raw_interp: *mut Interpreter<'a, T>,
 }
 
