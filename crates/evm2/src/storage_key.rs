@@ -5,28 +5,35 @@ use alloy_primitives::{
 };
 use core::hash::{Hash, Hasher};
 
-pub(crate) type StorageKeyMap<V> = HashMap<StorageKey, V, FbBuildHasher<52>>;
-pub(crate) type StorageKeySet = HashSet<StorageKey, FbBuildHasher<52>>;
+/// Hash map keyed by storage account and slot.
+pub type StorageKeyMap<V> = HashMap<StorageKey, V, FbBuildHasher<52>>;
 
+/// Hash set keyed by storage account and slot.
+pub type StorageKeySet = HashSet<StorageKey, FbBuildHasher<52>>;
+
+/// Storage key for account-address and storage-slot pairs.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct StorageKey {
+pub struct StorageKey {
     address: Address,
     key: B256,
 }
 
 impl StorageKey {
+    /// Creates a storage key from an account address and slot.
     #[inline]
-    pub(crate) fn new(address: Address, key: Word) -> Self {
+    pub fn new(address: Address, key: Word) -> Self {
         Self { address, key: B256::from(key) }
     }
 
+    /// Returns the account address.
     #[inline]
-    pub(crate) const fn address(self) -> Address {
+    pub const fn address(self) -> Address {
         self.address
     }
 
+    /// Returns the storage slot.
     #[inline]
-    pub(crate) const fn key(self) -> Word {
+    pub const fn key(self) -> Word {
         Word::from_be_bytes(self.key.0)
     }
 }

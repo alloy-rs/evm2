@@ -27,7 +27,7 @@ pub struct Cache {
     /// Contracts keyed by code hash.
     pub contracts: B256Map<Bytecode>,
     /// Persistent storage keyed by account and slot.
-    pub(crate) storage: StorageKeyMap<Word>,
+    pub storage: StorageKeyMap<Word>,
     /// Cached block hashes keyed by block number.
     pub block_hashes: U256Map<B256>,
 }
@@ -44,34 +44,6 @@ impl Default for Cache {
             storage: StorageKeyMap::default(),
             block_hashes: U256Map::default(),
         }
-    }
-}
-
-impl Cache {
-    /// Inserts persistent storage.
-    #[inline]
-    pub fn insert_storage(&mut self, address: Address, key: Word, value: Word) {
-        self.storage.insert(StorageKey::new(address, key), value);
-    }
-
-    /// Removes persistent storage.
-    #[inline]
-    pub fn remove_storage(&mut self, address: Address, key: Word) -> Option<Word> {
-        self.storage.remove(&StorageKey::new(address, key))
-    }
-
-    /// Removes all persistent storage for an account.
-    #[inline]
-    pub fn clear_storage(&mut self, address: Address) {
-        self.storage.retain(|key, _| key.address() != address);
-    }
-
-    /// Returns persistent storage entries for an account.
-    #[inline]
-    pub fn account_storage(&self, address: Address) -> impl Iterator<Item = (Word, Word)> + '_ {
-        self.storage.iter().filter_map(move |(&key, &value)| {
-            (key.address() == address).then_some((key.key(), value))
-        })
     }
 }
 
@@ -138,7 +110,7 @@ impl<ExtDB> CacheDB<ExtDB> {
     #[inline]
     pub fn insert_account_storage(&mut self, address: Address, key: Word, value: Word) {
         self.cache.accounts.entry(address).or_default();
-        self.cache.insert_storage(address, key, value);
+        self.cache.storage.insert(StorageKey::new(address, key), value);
     }
 
     /// Sets a historical block hash.

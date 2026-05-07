@@ -19,7 +19,7 @@ use evm2::{
     bytecode::Bytecode,
     env::BlockEnv,
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
-    evm::{AccountInfo as EvmAccountInfo, InMemoryDB, StateChanges},
+    evm::{AccountInfo as EvmAccountInfo, InMemoryDB, StateChanges, StorageKey},
     registry::HandlerError,
 };
 use k256::ecdsa::SigningKey;
@@ -350,13 +350,13 @@ fn apply_state_changes(pre: &InMemoryDB, changes: &StateChanges) -> InMemoryDB {
     }
     for (&address, storage) in &changes.storage {
         if storage.wipe {
-            post.cache.clear_storage(address);
+            post.cache.storage.retain(|key, _| key.address() != address);
         }
         for (&key, change) in &storage.slots {
             if change.current.is_zero() {
-                post.cache.remove_storage(address, key);
+                post.cache.storage.remove(&StorageKey::new(address, key));
             } else {
-                post.cache.insert_storage(address, key, change.current);
+                post.cache.storage.insert(StorageKey::new(address, key), change.current);
             }
         }
     }
@@ -365,7 +365,7 @@ fn apply_state_changes(pre: &InMemoryDB, changes: &StateChanges) -> InMemoryDB {
             Some(info) => post.insert_account_info(address, info.clone()),
             None => {
                 post.cache.accounts.remove(&address);
-                post.cache.clear_storage(address);
+                post.cache.storage.retain(|key, _| key.address() != address);
             }
         }
     }
@@ -375,8 +375,11 @@ fn apply_state_changes(pre: &InMemoryDB, changes: &StateChanges) -> InMemoryDB {
 fn storage_for_root(state: &InMemoryDB, address: Address) -> Vec<(B256, U256)> {
     state
         .cache
-        .account_storage(address)
-        .filter_map(|(key, value)| (!value.is_zero()).then_some((B256::from(key), value)))
+        .storage
+        .iter()
+        .filter_map(|(&key, &value)| {
+            (key.address() == address && !value.is_zero()).then_some((B256::from(key.key()), value))
+        })
         .collect()
 }
 
