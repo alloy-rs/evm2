@@ -3,18 +3,22 @@ use criterion::{BatchSize, BenchmarkGroup, black_box, measurement::WallTime};
 use evm2::SpecId;
 use revm::{
     ExecuteEvm, MainBuilder, MainContext,
-    context::{CfgEnv, Context, TxEnv},
-    database::{EmptyDB, InMemoryDB},
+    context::{BlockEnv, CfgEnv, Context, TxEnv},
+    database::{CacheDB, EmptyDB, InMemoryDB},
     primitives::hardfork::SpecId as RevmSpecId,
     statetest_types::TestUnit,
 };
+use std::sync::Arc;
 
-type BenchEvm = revm::MainnetEvm<revm::handler::MainnetContext<InMemoryDB>>;
+type BenchDB = CacheDB<Arc<InMemoryDB>>;
+type BenchEvm = revm::MainnetEvm<revm::handler::MainnetContext<BenchDB>>;
 
+#[derive(Clone)]
 pub(crate) struct PreparedBench {
     name: &'static str,
-    spec: RevmSpecId,
-    unit: TestUnit,
+    cfg: CfgEnv,
+    block: BlockEnv,
+    db: Arc<InMemoryDB>,
     tx: TxEnv,
 }
 
@@ -24,7 +28,9 @@ impl PreparedBench {
         let case = suite.case(bench.name).revm_case(bench.name, bench.spec);
         let tx =
             case.test.tx_env(&case.unit).expect("converted revm benchmark transaction must build");
-        Self { name: bench.name, spec: revm_spec_id(bench.spec), unit: case.unit, tx }
+        let (cfg, block) = envs(&case.unit, revm_spec_id(bench.spec));
+        let db = Arc::new(database(&case.unit));
+        Self { name: bench.name, cfg, block, db, tx }
     }
 
     pub(crate) fn sanity_check(&self) {
@@ -56,7 +62,14 @@ struct Runner {
 
 impl Runner {
     fn new(prepared: &PreparedBench) -> Self {
-        Self { evm: new_evm(prepared), tx: prepared.tx.clone() }
+        Self {
+            evm: new_evm(
+                prepared.cfg.clone(),
+                prepared.block.clone(),
+                CacheDB::new(Arc::clone(&prepared.db)),
+            ),
+            tx: prepared.tx.clone(),
+        }
     }
 
     fn run(
@@ -69,7 +82,7 @@ impl Runner {
             revm::state::EvmState,
         >,
         revm::context_interface::result::EVMError<
-            <InMemoryDB as revm::Database>::Error,
+            <BenchDB as revm::Database>::Error,
             revm::context_interface::result::InvalidTransaction,
         >,
     > {
@@ -77,18 +90,17 @@ impl Runner {
     }
 }
 
-fn new_evm(prepared: &PreparedBench) -> BenchEvm {
+fn envs(unit: &TestUnit, spec: RevmSpecId) -> (CfgEnv, BlockEnv) {
     let mut cfg = CfgEnv::new();
-    cfg.set_spec_and_mainnet_gas_params(prepared.spec);
+    cfg.set_spec_and_mainnet_gas_params(spec);
     cfg = cfg.disable_tx_chain_id_check();
-    cfg.chain_id =
-        prepared.unit.env.current_chain_id.map(|chain_id| chain_id.to()).unwrap_or_default();
-    let block = prepared.unit.block_env(&mut cfg);
-    Context::mainnet()
-        .with_cfg(cfg)
-        .with_block(block)
-        .with_db(database(&prepared.unit))
-        .build_mainnet()
+    cfg.chain_id = unit.env.current_chain_id.map(|chain_id| chain_id.to()).unwrap_or_default();
+    let block = unit.block_env(&mut cfg);
+    (cfg, block)
+}
+
+fn new_evm(cfg: CfgEnv, block: BlockEnv, db: BenchDB) -> BenchEvm {
+    Context::mainnet().with_cfg(cfg).with_block(block).with_db(db).build_mainnet()
 }
 
 fn database(unit: &TestUnit) -> InMemoryDB {
