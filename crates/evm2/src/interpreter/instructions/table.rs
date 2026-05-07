@@ -37,7 +37,7 @@ pub(crate) type TailInstructionFn<T> = extern_table!(
 pub(crate) type TailInstructionTable<T> = [TailInstructionFn<T>; 256];
 
 /// Function signature of an `#[instruction]`.
-pub type InstructionImplFn<T> =
+pub(crate) type InstructionImplFn<T> =
     fn(pc: &mut Pc, stack: StackMut<'_>, state: &mut State<'_, T>) -> Result;
 
 pub(crate) trait InstructionTables<C>: EvmTypes

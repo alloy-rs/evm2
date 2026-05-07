@@ -1,6 +1,9 @@
 use crate::{
     EvmConfig, EvmTypes,
-    interpreter::{Instruction, InstructionImplFn, instructions::table::unknown_instruction},
+    interpreter::{
+        Instruction,
+        instructions::table::{InstructionImplFn, unknown_instruction},
+    },
 };
 use core::fmt;
 

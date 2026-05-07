@@ -7,9 +7,9 @@ pub use gas::{Gas, GasTracker, MemoryGas};
 mod utils;
 
 pub(crate) mod instructions;
+pub use instructions::table::Instruction;
 #[doc(hidden)] // For macro only. Not public API.
 pub use instructions::table::{GasInstructionCx, InstructionCx};
-pub use instructions::table::{Instruction, InstructionImplFn};
 
 pub(crate) mod opcode;
 pub use opcode::op;
