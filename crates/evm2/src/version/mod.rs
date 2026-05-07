@@ -245,8 +245,9 @@ mod tests {
         assert!(osaka.feature(EvmFeatures::BLOCK_GAS_LIMIT_CHECK));
         assert!(osaka.feature(EvmFeatures::EIP2));
         assert!(osaka.feature(EvmFeatures::EIP2028));
-        assert!(osaka.feature(EvmFeatures::EIP3541));
         assert!(osaka.feature(EvmFeatures::EIP3651));
+        assert!(osaka.feature(EvmFeatures::EIP3860));
+        assert!(osaka.feature(EvmFeatures::EIP3541));
         assert!(osaka.feature(EvmFeatures::EIP3607));
         assert!(osaka.feature(EvmFeatures::EIP7623));
         assert!(osaka.feature(EvmFeatures::BASE_FEE_CHECK));
@@ -592,6 +593,7 @@ evm_versions! {
     SHANGHAI {
         features: [
             EIP3651,
+            EIP3860,
         ],
         ops: [
             PUSH0: BASE,
