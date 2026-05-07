@@ -578,12 +578,15 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
         load_code: bool,
         skip_cold_load: bool,
     ) -> Result<AccountLoad, InstrStop> {
-        let is_cold =
-            self.spec_id().enables(SpecId::BERLIN) && !self.state.is_account_warm(address);
+        let is_cold = if self.spec_id().enables(SpecId::BERLIN) {
+            self.state.warm_account(address)
+        } else {
+            self.state.warm_account(address);
+            false
+        };
         if skip_cold_load && is_cold {
             return Err(InstrStop::OutOfGas);
         }
-        self.state.warm_account(address);
         let info = self.state.account_info(address);
         let exists = info.is_some();
         let info = info.unwrap_or_default();
@@ -616,12 +619,9 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
         skip_cold_load: bool,
     ) -> Result<SLoad, InstrStop> {
         let is_cold =
-            self.spec_id().enables(SpecId::BERLIN) && !self.state.is_storage_warm(address, key);
+            self.spec_id().enables(SpecId::BERLIN) && self.state.warm_storage(address, key);
         if skip_cold_load && is_cold {
             return Err(InstrStop::OutOfGas);
-        }
-        if is_cold {
-            let _ = self.state.warm_storage(address, key);
         }
         Ok(SLoad { value: self.state.storage(address, key), is_cold })
     }
@@ -634,12 +634,9 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
         skip_cold_load: bool,
     ) -> Result<SStore, InstrStop> {
         let is_cold =
-            self.spec_id().enables(SpecId::BERLIN) && !self.state.is_storage_warm(address, key);
+            self.spec_id().enables(SpecId::BERLIN) && self.state.warm_storage(address, key);
         if skip_cold_load && is_cold {
             return Err(InstrStop::OutOfGas);
-        }
-        if is_cold {
-            let _ = self.state.warm_storage(address, key);
         }
         let mut result = self.state.set_storage(address, key, value);
         result.is_cold = is_cold;
@@ -693,11 +690,15 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
         skip_cold_load: bool,
     ) -> Result<SelfDestructResult, InstrStop> {
         // TODO: evmone applies full SELFDESTRUCT revision rules in state transition.
-        let is_cold = self.spec_id().enables(SpecId::BERLIN) && !self.state.is_account_warm(target);
+        let is_cold = if self.spec_id().enables(SpecId::BERLIN) {
+            self.state.warm_account(target)
+        } else {
+            self.state.warm_account(target);
+            false
+        };
         if skip_cold_load && is_cold {
             return Err(InstrStop::OutOfGas);
         }
-        self.state.warm_account(target);
         let target_is_empty_for_new_account_gas =
             self.state.target_is_empty_for_new_account_gas(target, self.spec_id());
         let previously_destroyed = self.state.is_selfdestructed(contract);
@@ -873,6 +874,33 @@ mod tests {
 
         let result = Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &message, false);
         assert!(result.stop.is_success());
+    }
+
+    #[test]
+    fn cold_storage_oog_rolls_back_warmth() {
+        let mut evm = Evm::<TestEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        let contract = Address::from([0x11; 20]);
+        let key = Word::ZERO;
+        let bytecode =
+            Bytecode::new_legacy(Bytes::from_static(&[op::PUSH1, 0, op::SLOAD, op::STOP]));
+        let message = Message {
+            kind: MessageKind::Call,
+            destination: contract,
+            code_address: contract,
+            gas_limit: 500,
+            ..Message::default()
+        };
+
+        let result = Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &message, false);
+
+        assert_eq!(result.stop, InstrStop::OutOfGas);
+        assert!(!evm.state.is_storage_warm(contract, key));
     }
 
     #[test]

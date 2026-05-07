@@ -437,13 +437,17 @@ impl<D> State<D> {
 
     /// Marks an account as warm in a revertible execution context.
     ///
-    /// If this call newly warms the account, the warm-set change is journaled and will be undone
-    /// by [`Self::rollback`]. Use this for warmth introduced while executing EVM code or any other
-    /// scope whose effects may be reverted to a checkpoint.
+    /// Returns whether the account was cold before this access. If this call newly warms the
+    /// account, the warm-set change is journaled and will be undone by [`Self::rollback`]. Use this
+    /// for warmth introduced while executing EVM code or any other scope whose effects may be
+    /// reverted to a checkpoint.
     #[inline]
-    pub fn warm_account(&mut self, address: Address) {
+    pub fn warm_account(&mut self, address: Address) -> bool {
         if self.accessed_accounts.insert(address) {
             self.journal.push(JournalEntry::AccountWarmed { address });
+            true
+        } else {
+            false
         }
     }
 
@@ -1275,7 +1279,7 @@ mod tests {
         assert!(state.journal.is_empty());
 
         let checkpoint = state.checkpoint();
-        state.warm_account(frame_account);
+        assert!(state.warm_account(frame_account));
         assert!(state.warm_storage(frame_storage, key));
         assert_eq!(state.journal.len(), 2);
 
