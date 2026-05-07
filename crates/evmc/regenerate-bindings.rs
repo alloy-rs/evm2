@@ -1,9 +1,11 @@
-#!/usr/bin/env cargo-script
-//! ```cargo
-//! [dependencies]
-//! bindgen = "0.72"
-//! ```
-//! Generates Rust bindings for the vendored EVMC header.
+#!/usr/bin/env -S cargo -Zscript
+---
+[package]
+edition = "2024"
+
+[dependencies]
+bindgen = "0.72"
+---
 
 fn main() {
     let bindings = bindgen::Builder::default()
@@ -16,7 +18,6 @@ fn main() {
         .generate_comments(false)
         .layout_tests(false)
         .merge_extern_blocks(true)
-        .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
         .generate()
         .expect("failed to generate EVMC bindings");
 
