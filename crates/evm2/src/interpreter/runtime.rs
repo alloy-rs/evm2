@@ -6,12 +6,9 @@ use super::{
 use crate::{EvmConfig, EvmTypes, ExecutionConfig, bytecode::Bytecode, env::TxEnv};
 use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::Bytes;
-use core::marker::PhantomData;
 #[cfg(not(feature = "nightly"))]
-use core::{
-    hint::cold_path,
-    ops::ControlFlow::{self, Break, Continue},
-};
+use core::hint::cold_path;
+use core::marker::PhantomData;
 
 /// EVM interpreter.
 #[derive(Debug)]
@@ -198,46 +195,6 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
                 return self.result.unwrap_err();
             }
         }
-    }
-
-    /// Executes one instruction.
-    #[inline]
-    #[cfg(not(feature = "nightly"))]
-    pub fn step(&mut self, config: &ExecutionConfig<T>, host: &mut T::Host) -> ControlFlow<(), ()> {
-        let (pc, stack_len, flow) = self.raw_step(config, host, self.pc, self.stack_len);
-        self.pc = pc;
-        self.stack_len = stack_len;
-        flow
-    }
-
-    #[inline(always)]
-    #[cfg(not(feature = "nightly"))]
-    fn raw_step(
-        &mut self,
-        config: &ExecutionConfig<T>,
-        host: &mut T::Host,
-        pc: *const u8,
-        stack_len: usize,
-    ) -> (*const u8, usize, ControlFlow<(), ()>) {
-        #[expect(clippy::unnecessary_cast, reason = "cast erases the active interpreter lifetime")]
-        let raw = self as *mut Self as *mut Interpreter<'_, T>;
-        let bytecode = BytecodeRef::new(&self.bytecode);
-        let pc = Pc::from_ptr(pc);
-        let op = pc.op();
-        let instr = config.instructions[op as usize];
-        let mut state = State {
-            bytecode,
-            host,
-            spec: config.version.spec_id,
-            gas: self.gas,
-            result: Ok(()),
-            version: &config.version,
-            raw_interp: raw,
-        };
-        let (pc, stack_len) = instr(pc, Stack::new(&mut self.stack, stack_len), &mut state);
-        self.gas = state.gas;
-        let flow = if pc.is_null() { Break(()) } else { Continue(()) };
-        (pc, stack_len, flow)
     }
 
     #[inline(always)]
