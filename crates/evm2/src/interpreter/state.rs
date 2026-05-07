@@ -41,7 +41,8 @@ impl<'a, T: EvmTypes> State<'a, T> {
     }
 
     /// Returns interpreter gas.
-    #[doc(hidden)]
+    /// For `#[instruction]` macro only, please do not use manually.
+    #[doc(hidden)] // For macro only. Not public API.
     #[inline]
     pub fn gas(&mut self) -> &'a mut Gas {
         // SAFETY: `raw_interp` is valid for the duration of instruction execution.

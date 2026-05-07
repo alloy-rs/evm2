@@ -55,7 +55,7 @@ where
 }
 
 /// Instruction execution context.
-#[doc(hidden)]
+#[doc(hidden)] // For macro only. Not public API.
 pub struct InstructionCx<'a, 'state, T: EvmTypes> {
     /// Program counter state.
     pub pc: &'a mut Pc,
@@ -64,7 +64,7 @@ pub struct InstructionCx<'a, 'state, T: EvmTypes> {
 }
 
 /// Instruction execution context with mutable gas state.
-#[doc(hidden)]
+#[doc(hidden)] // For macro only. Not public API.
 pub struct GasInstructionCx<'a, 'state, T: EvmTypes> {
     /// Program counter state.
     pub pc: &'a mut Pc,

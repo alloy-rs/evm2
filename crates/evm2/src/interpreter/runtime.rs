@@ -142,6 +142,12 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         self.gas
     }
 
+    /// Returns a reference to the current gas state.
+    #[inline]
+    pub const fn gas_mut(&mut self) -> &mut Gas {
+        &mut self.gas
+    }
+
     /// Runs the interpreter until it stops, using `C` as the EVM configuration.
     #[inline]
     pub fn run<C: EvmConfig<T>>(&mut self, host: &mut T::Host) -> InstrStop {
