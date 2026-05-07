@@ -158,7 +158,7 @@ mod tests {
 
         let interpreter = run(RunConfig::new(code).spec(SpecId::FRONTIER).gas_limit(25));
 
-        core::assert_matches!(interpreter.err, InstrStop::OutOfGas);
+        assert!(matches!(interpreter.err, InstrStop::OutOfGas));
     }
 
     #[test]
@@ -172,7 +172,7 @@ mod tests {
         let spurious_dragon = run(RunConfig::new(code).spec(SpecId::SPURIOUS_DRAGON).gas_limit(65));
 
         assert_eq!(frontier.err, InstrStop::Stop);
-        core::assert_matches!(spurious_dragon.err, InstrStop::OutOfGas);
+        assert!(matches!(spurious_dragon.err, InstrStop::OutOfGas));
     }
 
     #[test]

@@ -352,7 +352,7 @@ pub(super) fn assert_stack_words(inputs: &[Word], opcode: u8, expected: &[Word])
     }
     code.extend([opcode, op::STOP]);
     let interpreter = run(RunConfig::new(code));
-    core::assert_matches!(interpreter.err, InstrStop::Stop);
+    assert!(matches!(interpreter.err, InstrStop::Stop));
     assert_eq!(interpreter.stack(), expected);
 }
 

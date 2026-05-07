@@ -121,7 +121,7 @@ impl<'a> StackMut<'a> {
     #[inline(always)]
     fn check_bounds_(len: usize, input: usize, output: usize) -> Result {
         debug_assert!(len <= Self::CAPACITY);
-        core::debug_assert_matches!(output, 0 | 1);
+        debug_assert!(matches!(output, 0 | 1));
         if len < input {
             cold_path();
             return Err(InstrStop::StackUnderflow);
@@ -360,19 +360,19 @@ mod tests {
         run_with_len(0, |stack| {
             assert!(stack.check_bounds(0, 0).is_ok());
             assert!(stack.check_bounds(0, 1).is_ok());
-            core::assert_matches!(stack.check_bounds(1, 0), Err(InstrStop::StackUnderflow));
-            core::assert_matches!(stack.check_bounds(1, 1), Err(InstrStop::StackUnderflow));
+            assert!(matches!(stack.check_bounds(1, 0), Err(InstrStop::StackUnderflow)));
+            assert!(matches!(stack.check_bounds(1, 1), Err(InstrStop::StackUnderflow)));
         });
 
         run_with_len(1, |stack| {
             assert!(stack.check_bounds(1, 0).is_ok());
             assert!(stack.check_bounds(1, 1).is_ok());
-            core::assert_matches!(stack.check_bounds(2, 0), Err(InstrStop::StackUnderflow));
+            assert!(matches!(stack.check_bounds(2, 0), Err(InstrStop::StackUnderflow)));
         });
 
         run_with_len(StackMut::CAPACITY, |stack| {
             assert!(stack.check_bounds(1, 1).is_ok());
-            core::assert_matches!(stack.check_bounds(0, 1), Err(InstrStop::StackOverflow));
+            assert!(matches!(stack.check_bounds(0, 1), Err(InstrStop::StackOverflow)));
         });
     }
 
@@ -384,11 +384,11 @@ mod tests {
             assert_eq!(stack.as_slice(), [Word::from(1), Word::from(2)]);
             assert_eq!(stack.pop().unwrap(), Word::from(2));
             assert_eq!(stack.popn::<1>().unwrap(), [Word::from(1)]);
-            core::assert_matches!(stack.pop(), Err(InstrStop::StackUnderflow));
+            assert!(matches!(stack.pop(), Err(InstrStop::StackUnderflow)));
         });
 
         run_with_len(StackMut::CAPACITY, |stack| {
-            core::assert_matches!(stack.push(Word::ZERO), Err(InstrStop::StackOverflow));
+            assert!(matches!(stack.push(Word::ZERO), Err(InstrStop::StackOverflow)));
         });
     }
 
@@ -403,7 +403,7 @@ mod tests {
         });
 
         run_with_len(2, |stack| {
-            core::assert_matches!(stack.popn_top::<2>(), Err(InstrStop::StackUnderflow));
+            assert!(matches!(stack.popn_top::<2>(), Err(InstrStop::StackUnderflow)));
         });
     }
 
@@ -416,7 +416,7 @@ mod tests {
         });
 
         run_with_len(2, |stack| {
-            core::assert_matches!(stack.popn_dyn(3).map(|_| ()), Err(InstrStop::StackUnderflow));
+            assert!(matches!(stack.popn_dyn(3).map(|_| ()), Err(InstrStop::StackUnderflow)));
             assert_eq!(stack.as_slice(), [Word::from(0), Word::from(1)]);
         });
     }
@@ -444,13 +444,13 @@ mod tests {
         });
 
         run_with_len(1, |stack| {
-            core::assert_matches!(stack.dup(2), Err(InstrStop::StackUnderflow));
-            core::assert_matches!(stack.swap(1), Err(InstrStop::StackUnderflow));
-            core::assert_matches!(stack.exchange(0, 1), Err(InstrStop::StackUnderflow));
+            assert!(matches!(stack.dup(2), Err(InstrStop::StackUnderflow)));
+            assert!(matches!(stack.swap(1), Err(InstrStop::StackUnderflow)));
+            assert!(matches!(stack.exchange(0, 1), Err(InstrStop::StackUnderflow)));
         });
 
         run_with_len(StackMut::CAPACITY, |stack| {
-            core::assert_matches!(stack.dup(1), Err(InstrStop::StackOverflow));
+            assert!(matches!(stack.dup(1), Err(InstrStop::StackOverflow)));
         });
     }
 
@@ -497,7 +497,7 @@ mod tests {
         });
 
         run_with_len(StackMut::CAPACITY, |stack| {
-            core::assert_matches!(stack.push_slice(&[42]), Err(InstrStop::StackOverflow));
+            assert!(matches!(stack.push_slice(&[42]), Err(InstrStop::StackOverflow)));
         });
     }
 }
