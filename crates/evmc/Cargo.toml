@@ -22,5 +22,8 @@ evm2.workspace = true
 
 alloy-primitives.workspace = true
 
+[features]
+_regenerate = ["dep:bindgen"]
+
 [build-dependencies]
-bindgen = "0.72"
+bindgen = { version = "0.72", optional = true }
