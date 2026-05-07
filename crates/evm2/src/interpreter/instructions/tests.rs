@@ -25,6 +25,7 @@ impl EvmTypes for TestTypes {
 
 #[derive(Debug)]
 pub(crate) struct TestHost {
+    pub(super) spec_id: SpecId,
     pub(super) block: BlockEnv,
     pub(super) code_hash: B256,
     pub(super) code: Bytes,
@@ -46,6 +47,7 @@ pub(crate) struct TestHost {
 impl Default for TestHost {
     fn default() -> Self {
         Self {
+            spec_id: SpecId::OSAKA,
             block: BlockEnv::default(),
             code_hash: B256::ZERO,
             code: Bytes::new(),
@@ -68,7 +70,7 @@ impl Default for TestHost {
 
 impl Host for TestHost {
     fn spec_id(&self) -> SpecId {
-        SpecId::OSAKA
+        self.spec_id
     }
 
     fn block_env(&mut self) -> &BlockEnv {
@@ -285,13 +287,14 @@ pub(super) fn run(config: RunConfig<'_>) -> TestInterpreter {
 }
 
 fn run_with_config<C: EvmConfig<TestTypes>>(config: RunConfig<'_>) -> TestInterpreter {
-    let RunConfig { code, host, spec_id: _, tx_env, mut message, gas_limit, return_data } = config;
+    let RunConfig { code, host, spec_id, tx_env, mut message, gas_limit, return_data } = config;
     let bytecode = Bytecode::new_legacy(Bytes::from(code));
     message.gas_limit = gas_limit;
     let mut inner = Interpreter::<TestTypes>::new(bytecode, &tx_env, &message, false);
     inner.return_data = return_data;
     let mut default_host = TestHost::default();
     let host = host.unwrap_or(&mut default_host);
+    host.spec_id = spec_id;
     let err = inner.run::<C>(host);
     let stack_len = inner.stack_len();
     TestInterpreter {

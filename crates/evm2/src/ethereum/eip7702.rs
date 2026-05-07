@@ -1,9 +1,10 @@
 use super::{
     access_list_counts, charge_upfront, effective_gas_price, floor_gas, initial_message,
     intrinsic_gas, rollback_failed_execution, settle_gas, validate_block_gas_limit,
-    validate_create_initcode, validate_floor_gas, validate_gas_price, validate_intrinsic_gas,
-    validate_nonce_not_overflow, validate_priority_fee, validate_regular_gas_limit_cap,
-    validate_sender, validate_tx_gas_limit_cap, warm_access_list, warm_base_accounts,
+    validate_chain_id, validate_create_initcode, validate_floor_gas, validate_gas_price,
+    validate_intrinsic_gas, validate_nonce_not_overflow, validate_priority_fee,
+    validate_regular_gas_limit_cap, validate_sender, validate_tx_gas_limit_cap, warm_access_list,
+    warm_base_accounts,
 };
 use crate::{
     Evm, EvmTypes, SpecId, TxResult,
@@ -35,11 +36,12 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     let gas_price =
         effective_gas_price(max_fee_per_gas, max_priority_fee_per_gas, req.host.block.basefee);
 
-    validate_priority_fee(max_fee_per_gas, max_priority_fee_per_gas)?;
-    validate_gas_price(spec_id, gas_price, req.host.block.basefee)?;
+    validate_priority_fee(req.host.version(), max_fee_per_gas, max_priority_fee_per_gas)?;
+    validate_gas_price(req.host.version(), gas_price, req.host.block.basefee)?;
+    validate_chain_id(req.host.version(), Some(tx.chain_id), false)?;
     validate_tx_gas_limit_cap(req.host.version(), tx.gas_limit)?;
-    validate_block_gas_limit(tx.gas_limit, req.host.block.gas_limit)?;
-    validate_create_initcode(spec_id, tx.to.into(), &tx.input)?;
+    validate_block_gas_limit(req.host.version(), tx.gas_limit, req.host.block.gas_limit)?;
+    validate_create_initcode(req.host.version(), tx.to.into(), &tx.input)?;
     validate_nonce_not_overflow(tx.nonce)?;
     let (access_list_accounts, access_list_storage_keys) = access_list_counts(&tx.access_list);
     let intrinsic = intrinsic_gas(
@@ -63,12 +65,17 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     let effective_gas_cost = U256::from(tx.gas_limit) * gas_price;
     charge_upfront(req.host, caller, effective_gas_cost);
     req.host.state.increment_nonce(caller);
-    let eip7702_refund = apply_auth_list(req.host, tx.chain_id, &tx.authorization_list);
+    let chain_id = req.host.version().chain_id;
+    let eip7702_refund = apply_auth_list(req.host, chain_id, &tx.authorization_list);
     let execution_checkpoint = req.host.state.checkpoint();
 
     let gas_limit = tx.gas_limit - intrinsic;
-    let tx_env =
-        TxEnv { origin: caller, gas_price, chain_id: U256::from(tx.chain_id), ..TxEnv::default() };
+    let tx_env = TxEnv {
+        origin: caller,
+        gas_price,
+        chain_id: U256::from(req.host.version().chain_id),
+        ..TxEnv::default()
+    };
     let (bytecode, message) =
         initial_message(req.host, caller, tx.nonce, tx.to.into(), &tx.input, tx.value, gas_limit);
     let mut result = req.host.execute_message(&tx_env, bytecode, &message, false);

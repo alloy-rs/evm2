@@ -2,10 +2,7 @@
 
 use crate::{
     EvmTypes, SpecId,
-    constants::{
-        CALL_DEPTH_LIMIT, EIP7702_BYTECODE_LEN, EIP7702_MAGIC_BYTES, EIP7702_VERSION,
-        MAX_INITCODE_SIZE,
-    },
+    constants::{CALL_DEPTH_LIMIT, EIP7702_BYTECODE_LEN, EIP7702_MAGIC_BYTES, EIP7702_VERSION},
     interpreter::{
         GasInstructionCx, Host, InstrStop, Message, MessageKind, MessageResult, Result, StackMut,
         State, Word, memory::resize_memory,
@@ -275,7 +272,7 @@ fn create_inner<T: EvmTypes>(
 
     let len = word_to_usize(len)?;
     if cx.state.spec.enables(SpecId::SHANGHAI) {
-        if len > MAX_INITCODE_SIZE {
+        if len > cx.state.version.max_initcode_size {
             return Err(InstrStop::CreateInitCodeSizeLimit);
         }
         cx.gas.spend(cx.state.gas_params().initcode_cost(len))?;

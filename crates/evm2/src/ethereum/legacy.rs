@@ -1,7 +1,7 @@
 use super::{
     charge_upfront, floor_gas, initial_message, intrinsic_gas, rollback_failed_execution,
-    settle_gas, validate_block_gas_limit, validate_create_initcode, validate_floor_gas,
-    validate_gas_price, validate_intrinsic_gas, validate_nonce_not_overflow,
+    settle_gas, validate_block_gas_limit, validate_chain_id, validate_create_initcode,
+    validate_floor_gas, validate_gas_price, validate_intrinsic_gas, validate_nonce_not_overflow,
     validate_regular_gas_limit_cap, validate_sender, validate_tx_gas_limit_cap, warm_base_accounts,
 };
 use crate::{
@@ -21,10 +21,11 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     let spec_id = req.host.spec_id();
     let gas_price = U256::from(tx.gas_price);
 
-    validate_gas_price(spec_id, gas_price, req.host.block.basefee)?;
+    validate_gas_price(req.host.version(), gas_price, req.host.block.basefee)?;
+    validate_chain_id(req.host.version(), tx.chain_id, true)?;
     validate_tx_gas_limit_cap(req.host.version(), tx.gas_limit)?;
-    validate_block_gas_limit(tx.gas_limit, req.host.block.gas_limit)?;
-    validate_create_initcode(spec_id, tx.to, &tx.input)?;
+    validate_block_gas_limit(req.host.version(), tx.gas_limit, req.host.block.gas_limit)?;
+    validate_create_initcode(req.host.version(), tx.to, &tx.input)?;
     validate_nonce_not_overflow(tx.nonce)?;
     let intrinsic = intrinsic_gas(req.host.version(), tx.to, &tx.input, 0, 0);
     validate_intrinsic_gas(tx.gas_limit, intrinsic)?;
@@ -45,7 +46,7 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     let tx_env = TxEnv {
         origin: caller,
         gas_price,
-        chain_id: tx.chain_id.map(U256::from).unwrap_or(U256::ONE),
+        chain_id: U256::from(req.host.version().chain_id),
         ..TxEnv::default()
     };
     let (bytecode, message) =

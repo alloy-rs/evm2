@@ -7,9 +7,8 @@ mod eip7702;
 mod legacy;
 
 use crate::{
-    Evm, EvmTypes, SpecId, TxResult, Version,
+    Evm, EvmFeatures, EvmTypes, SpecId, TxResult, Version,
     bytecode::Bytecode,
-    constants::MAX_INITCODE_SIZE,
     evm::{AccountInfo, StateCheckpoint, precompile::PrecompileProvider},
     interpreter::{Message, MessageKind, MessageResult, Word},
     registry::{HandlerError, HandlerResult, TxRegistry},
@@ -104,11 +103,11 @@ pub fn ethereum_tx_registry<T: EvmTypes<Host = Evm<T>>>()
 }
 
 pub(super) fn validate_gas_price(
-    spec_id: SpecId,
+    version: &Version,
     gas_price: U256,
     basefee: U256,
 ) -> HandlerResult<()> {
-    if spec_id.enables(SpecId::LONDON) && gas_price < basefee {
+    if version.feature(EvmFeatures::BASE_FEE_CHECK) && gas_price < basefee {
         return Err(HandlerError::FeeCapLessThanBaseFee {
             max_fee_per_gas: gas_price,
             base_fee: basefee,
@@ -118,10 +117,13 @@ pub(super) fn validate_gas_price(
 }
 
 pub(super) fn validate_priority_fee(
+    version: &Version,
     max_fee_per_gas: U256,
     max_priority_fee_per_gas: U256,
 ) -> HandlerResult<()> {
-    if max_priority_fee_per_gas > max_fee_per_gas {
+    if version.feature(EvmFeatures::PRIORITY_FEE_CHECK)
+        && max_priority_fee_per_gas > max_fee_per_gas
+    {
         return Err(HandlerError::PriorityFeeGreaterThanMaxFee);
     }
     Ok(())
@@ -136,10 +138,13 @@ pub(super) fn effective_gas_price(
 }
 
 pub(super) fn validate_block_gas_limit(
+    version: &Version,
     tx_gas_limit: u64,
     block_gas_limit: U256,
 ) -> HandlerResult<()> {
-    if U256::from(tx_gas_limit) > block_gas_limit {
+    if version.feature(EvmFeatures::BLOCK_GAS_LIMIT_CHECK)
+        && U256::from(tx_gas_limit) > block_gas_limit
+    {
         return Err(HandlerError::GasLimitMoreThanBlock {
             gas_limit: tx_gas_limit,
             block_gas_limit,
@@ -156,7 +161,7 @@ pub(super) const fn validate_tx_gas_limit_cap(
     // replaces this with a regular-gas cap while allowing extra transaction gas to serve as
     // the state-gas reservoir.
     let cap = version.tx_gas_limit_cap;
-    if matches!(version.spec_id, SpecId::OSAKA) && tx_gas_limit > cap {
+    if !version.feature(EvmFeatures::EIP8037) && tx_gas_limit > cap {
         return Err(HandlerError::TxGasLimitGreaterThanCap { gas_limit: tx_gas_limit, cap });
     }
     Ok(())
@@ -169,7 +174,7 @@ pub(super) const fn validate_regular_gas_limit_cap(
     floor_gas: u64,
 ) -> HandlerResult<()> {
     let cap = version.tx_gas_limit_cap;
-    if version.spec_id.enables(SpecId::AMSTERDAM) && tx_gas_limit > cap {
+    if version.feature(EvmFeatures::EIP8037) && tx_gas_limit > cap {
         let required_regular_gas = if intrinsic > floor_gas { intrinsic } else { floor_gas };
         if required_regular_gas > cap {
             return Err(HandlerError::TxGasLimitGreaterThanCap {
@@ -181,14 +186,34 @@ pub(super) const fn validate_regular_gas_limit_cap(
     Ok(())
 }
 
+pub(super) const fn validate_chain_id(
+    version: &Version,
+    chain_id: Option<u64>,
+    allow_missing: bool,
+) -> HandlerResult<()> {
+    if !version.feature(EvmFeatures::TX_CHAIN_ID_CHECK) {
+        return Ok(());
+    }
+    let Some(chain_id) = chain_id else {
+        return if allow_missing { Ok(()) } else { Err(HandlerError::MissingChainId) };
+    };
+    if chain_id != version.chain_id {
+        return Err(HandlerError::InvalidChainId { expected: version.chain_id, got: chain_id });
+    }
+    Ok(())
+}
+
 pub(super) fn validate_create_initcode(
-    spec_id: SpecId,
+    version: &Version,
     to: TxKind,
     input: &Bytes,
 ) -> HandlerResult<()> {
-    if spec_id.enables(SpecId::SHANGHAI) && to.is_create() && input.len() > MAX_INITCODE_SIZE {
+    if version.spec_id.enables(SpecId::SHANGHAI)
+        && to.is_create()
+        && input.len() > version.max_initcode_size
+    {
         return Err(HandlerError::CreateInitCodeSizeLimit {
-            limit: MAX_INITCODE_SIZE,
+            limit: version.max_initcode_size,
             got: input.len(),
         });
     }
@@ -223,17 +248,20 @@ pub(super) fn validate_sender<T: EvmTypes<Host = Evm<T>>>(
     max_upfront: U256,
 ) -> HandlerResult<AccountInfo> {
     let sender_info = host.state.account_info(caller).unwrap_or_default();
-    if sender_info.code_hash != KECCAK256_EMPTY {
+    if host.feature(EvmFeatures::EIP3607) && sender_info.code_hash != KECCAK256_EMPTY {
         let code = host.state.get_code(caller);
         if !code.is_empty() && !code.is_eip7702() {
             return Err(HandlerError::RejectCallerWithCode);
         }
     }
-    if sender_info.nonce != nonce {
+    if host.feature(EvmFeatures::NONCE_CHECK) && sender_info.nonce != nonce {
         return Err(HandlerError::InvalidNonce { expected: sender_info.nonce, got: nonce });
     }
-    if sender_info.balance < max_upfront {
+    if host.feature(EvmFeatures::BALANCE_CHECK) && sender_info.balance < max_upfront {
         return Err(HandlerError::InsufficientFunds);
+    }
+    if !host.feature(EvmFeatures::BALANCE_CHECK) && sender_info.balance < max_upfront {
+        host.state.add_balance(caller, max_upfront - sender_info.balance);
     }
     Ok(sender_info)
 }
@@ -272,6 +300,9 @@ pub(super) fn charge_upfront<T: EvmTypes<Host = Evm<T>>>(
     caller: Address,
     max_gas_cost: U256,
 ) {
+    if !host.feature(EvmFeatures::FEE_CHARGE) {
+        return;
+    }
     host.state.add_balance(caller, Word::ZERO.wrapping_sub(max_gas_cost));
 }
 
@@ -368,13 +399,16 @@ pub(super) fn settle_gas<T: EvmTypes<Host = Evm<T>>>(
 ) -> TxResult {
     let (gas_remaining, gas_used) =
         final_tx_gas(&result, tx_gas_limit, spec_id.enables(SpecId::LONDON), floor_gas);
-    host.state.add_balance(caller, U256::from(gas_remaining) * gas_price);
-    let beneficiary_gas_price = if spec_id.enables(SpecId::LONDON) {
-        gas_price.saturating_sub(host.block.basefee)
-    } else {
-        gas_price
-    };
-    host.state.add_balance(host.block.beneficiary, U256::from(gas_used) * beneficiary_gas_price);
+    if host.feature(EvmFeatures::FEE_CHARGE) {
+        host.state.add_balance(caller, U256::from(gas_remaining) * gas_price);
+        let beneficiary_gas_price = if spec_id.enables(SpecId::LONDON) {
+            gas_price.saturating_sub(host.block.basefee)
+        } else {
+            gas_price
+        };
+        host.state
+            .add_balance(host.block.beneficiary, U256::from(gas_used) * beneficiary_gas_price);
+    }
     TxResult {
         status: result.stop.is_success(),
         gas_used,
@@ -405,6 +439,9 @@ pub(super) fn access_list_counts(access_list: &AccessList) -> (u64, u64) {
 
 /// Calculates transaction calldata floor gas.
 pub(super) fn floor_gas(version: &Version, input: &Bytes) -> u64 {
+    if !version.feature(EvmFeatures::EIP7623) {
+        return 0;
+    }
     let params = &version.gas_params;
     let floor_cost_per_token = u64::from(params.get(GasId::TxFloorCostPerToken));
     if floor_cost_per_token == 0 {
@@ -450,7 +487,7 @@ pub(super) fn intrinsic_gas(
 mod tests {
     use super::*;
     use crate::{
-        BaseEvmTypes, Precompiles,
+        BaseEvmTypes, ExecutionConfig, Precompiles,
         env::{BlockEnv, TxEnv},
         evm::InMemoryDB,
         interpreter::{Host, InstrStop, op},
@@ -485,9 +522,81 @@ mod tests {
     #[test]
     fn floor_gas_charges_prague_calldata_tokens() {
         let input = Bytes::from_static(&[0, 1, 2]);
+        let mut prague_without_eip7623 = Version::new(SpecId::PRAGUE);
+        prague_without_eip7623.features.remove(EvmFeatures::EIP7623);
 
         assert_eq!(floor_gas(Version::base(SpecId::SHANGHAI), &input), 0);
         assert_eq!(floor_gas(Version::base(SpecId::PRAGUE), &input), 21_000 + 9 * 10);
+        assert_eq!(floor_gas(&prague_without_eip7623, &input), 0);
+    }
+
+    #[test]
+    fn features_gate_transaction_validation() {
+        let mut london = Version::new(SpecId::LONDON);
+        assert_eq!(
+            validate_gas_price(&london, U256::ZERO, U256::ONE),
+            Err(HandlerError::FeeCapLessThanBaseFee {
+                max_fee_per_gas: U256::ZERO,
+                base_fee: U256::ONE,
+            })
+        );
+        london.features.remove(EvmFeatures::BASE_FEE_CHECK);
+        assert_eq!(validate_gas_price(&london, U256::ZERO, U256::ONE), Ok(()));
+
+        let mut prague = Version::new(SpecId::PRAGUE);
+        assert_eq!(
+            validate_priority_fee(&prague, U256::ONE, U256::from(2)),
+            Err(HandlerError::PriorityFeeGreaterThanMaxFee)
+        );
+        prague.features.remove(EvmFeatures::PRIORITY_FEE_CHECK);
+        assert_eq!(validate_priority_fee(&prague, U256::ONE, U256::from(2)), Ok(()));
+
+        assert_eq!(
+            validate_block_gas_limit(&prague, 2, U256::ONE),
+            Err(HandlerError::GasLimitMoreThanBlock { gas_limit: 2, block_gas_limit: U256::ONE })
+        );
+        prague.features.remove(EvmFeatures::BLOCK_GAS_LIMIT_CHECK);
+        assert_eq!(validate_block_gas_limit(&prague, 2, U256::ONE), Ok(()));
+
+        let mut version = Version::new(SpecId::OSAKA);
+        version.chain_id = 10;
+        assert_eq!(validate_chain_id(&version, Some(10), false), Ok(()));
+        assert_eq!(
+            validate_chain_id(&version, Some(1), false),
+            Err(HandlerError::InvalidChainId { expected: 10, got: 1 })
+        );
+        assert_eq!(validate_chain_id(&version, None, false), Err(HandlerError::MissingChainId));
+        assert_eq!(validate_chain_id(&version, None, true), Ok(()));
+        version.features.remove(EvmFeatures::TX_CHAIN_ID_CHECK);
+        assert_eq!(validate_chain_id(&version, Some(1), false), Ok(()));
+    }
+
+    #[test]
+    fn features_gate_sender_validation() {
+        let caller = Address::with_last_byte(0xaa);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(
+            caller,
+            AccountInfo::default()
+                .with_nonce(7)
+                .with_code(Bytecode::new_legacy(Bytes::from_static(&[op::STOP]))),
+        );
+
+        let mut version = Version::new(SpecId::OSAKA);
+        version.features.remove(EvmFeatures::EIP3607);
+        version.features.remove(EvmFeatures::NONCE_CHECK);
+        version.features.remove(EvmFeatures::BALANCE_CHECK);
+        let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
+            ExecutionConfig::for_spec_and_version(SpecId::OSAKA, version),
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            database,
+            Precompiles::base(SpecId::OSAKA),
+        );
+
+        assert!(validate_sender(&mut evm, caller, 0, U256::from(100)).is_ok());
+        assert_eq!(evm.state.account_info(caller).unwrap().balance, U256::from(100));
     }
 
     #[test]
@@ -593,6 +702,16 @@ mod tests {
             Err(HandlerError::TxGasLimitGreaterThanCap {
                 gas_limit: amsterdam.tx_gas_limit_cap + 1,
                 cap: amsterdam.tx_gas_limit_cap
+            })
+        );
+
+        let mut amsterdam_without_eip8037 = Version::new(SpecId::AMSTERDAM);
+        amsterdam_without_eip8037.features.remove(EvmFeatures::EIP8037);
+        assert_eq!(
+            validate_tx_gas_limit_cap(&amsterdam_without_eip8037, tx_gas_limit),
+            Err(HandlerError::TxGasLimitGreaterThanCap {
+                gas_limit: tx_gas_limit,
+                cap: amsterdam_without_eip8037.tx_gas_limit_cap,
             })
         );
     }
