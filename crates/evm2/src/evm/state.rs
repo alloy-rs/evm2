@@ -645,16 +645,20 @@ impl<D: Database> State<D> {
     #[inline]
     #[must_use]
     pub fn get_code(&mut self, address: Address) -> Bytecode {
-        let Some(account) = self.find(address) else {
+        let Some((code_hash, code)) = self.find(address).map(|account| {
+            let code_hash = account.code_hash;
+            let code = account.code.clone();
+            (code_hash, code)
+        }) else {
             return Bytecode::default();
         };
-        if account.code_hash == KECCAK256_EMPTY {
+        if code_hash == KECCAK256_EMPTY {
             return Bytecode::default();
         }
-        if !account.code.is_empty() {
-            return account.code.clone();
+        if !code.is_empty() {
+            return code;
         }
-        self.initial.get_account_code(address)
+        self.initial.get_code_by_hash(code_hash)
     }
 
     #[must_use]
