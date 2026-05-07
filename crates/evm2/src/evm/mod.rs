@@ -20,6 +20,11 @@ pub mod config;
 pub mod env;
 pub mod precompile;
 pub mod registry;
+mod system;
+pub use system::{
+    BEACON_ROOTS_ADDRESS, CONSOLIDATION_REQUEST_ADDRESS, HISTORY_STORAGE_ADDRESS, SYSTEM_ADDRESS,
+    SYSTEM_CALL_GAS_LIMIT, WITHDRAWAL_REQUEST_ADDRESS,
+};
 
 mod db;
 pub use db::{Cache, CacheDB, Database, EmptyDB, InMemoryDB};

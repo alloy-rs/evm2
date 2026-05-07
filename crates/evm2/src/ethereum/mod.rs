@@ -306,7 +306,7 @@ pub(super) fn charge_upfront<T: EvmTypes<Host = Evm<T>>>(
     host.state.add_balance(caller, Word::ZERO.wrapping_sub(max_gas_cost));
 }
 
-pub(super) fn initial_message<T: EvmTypes<Host = Evm<T>>>(
+pub(crate) fn initial_message<T: EvmTypes<Host = Evm<T>>>(
     host: &mut Evm<T>,
     caller: Address,
     nonce: u64,
