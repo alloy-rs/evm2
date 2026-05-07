@@ -39,6 +39,8 @@ mod spec_id;
 pub use spec_id::SpecId;
 
 mod once_lock;
+mod storage_key;
+pub use storage_key::{StorageKey, StorageKeyMap, StorageKeySet};
 
 #[cfg(test)]
 mod tests;
