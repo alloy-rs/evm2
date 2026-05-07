@@ -143,7 +143,8 @@ impl Account {
             balance: info.balance,
             code_hash: info.code_hash,
             code: info.code.unwrap_or_default(),
-            ..Self::default()
+            just_created: false,
+            code_changed: false,
         }
     }
 
