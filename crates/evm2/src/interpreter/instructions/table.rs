@@ -2,8 +2,6 @@
 
 #[cfg(not(feature = "nightly"))]
 use crate::interpreter::gas::Gas;
-#[cfg(not(feature = "nightly"))]
-use crate::interpreter::Gas;
 #[cfg(feature = "nightly")]
 use crate::interpreter::gas::RemainingGas;
 use crate::{
