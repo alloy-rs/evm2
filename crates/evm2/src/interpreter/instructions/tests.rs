@@ -9,8 +9,9 @@ use crate::{
     },
     storage_key::{StorageKey, StorageKeyMap},
 };
-use alloc::{boxed::Box, vec::Vec};
+use alloc::vec::Vec;
 use alloy_primitives::{Address, B256, Bytes, Log};
+use core::mem::MaybeUninit;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct TestTypes;
@@ -180,7 +181,7 @@ impl Host for TestHost {
 }
 
 pub(super) struct TestInterpreter {
-    pub(super) stack: Box<[Word; Stack::CAPACITY]>,
+    pub(super) stack: [MaybeUninit<Word>; Stack::CAPACITY],
     pub(super) stack_len: usize,
     pub(super) gas: Gas,
     pub(super) memory: Memory,
@@ -190,7 +191,7 @@ pub(super) struct TestInterpreter {
 
 impl TestInterpreter {
     pub(super) fn stack(&self) -> &[Word] {
-        unsafe { core::slice::from_raw_parts(self.stack.as_ptr(), self.stack_len) }
+        unsafe { core::slice::from_raw_parts(self.stack.as_ptr().cast(), self.stack_len) }
     }
 
     pub(super) fn memory(&mut self, offset: usize, len: usize) -> &[u8] {

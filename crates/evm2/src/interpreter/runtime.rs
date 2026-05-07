@@ -9,29 +9,31 @@ use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::Bytes;
 #[cfg(not(feature = "nightly"))]
 use core::hint::cold_path;
-use core::{fmt, marker::PhantomData};
+use core::{fmt, marker::PhantomData, mem::MaybeUninit};
 
 /// EVM interpreter.
+#[repr(C)]
 pub struct Interpreter<'frame, T: EvmTypes> {
     bytecode: Bytecode,
-
-    stack: Box<[Word; Stack::CAPACITY]>,
+    memory: Memory,
+    return_data: Bytes,
 
     pc: *const u8,
-    stack_len: usize,
-    gas: Gas,
-    memory: Memory,
-    result: Result,
     output: *const [u8],
     tx_env: Option<&'frame TxEnv>,
     message: Option<&'frame Message>,
-    is_static: bool,
-    return_data: Bytes,
     host: *mut T::Host,
     version: *const Version,
+    stack_len: usize,
+
+    gas: Gas,
+    result: Result,
     spec: SpecId,
+    is_static: bool,
 
     _marker: PhantomData<fn() -> T>,
+
+    stack: [MaybeUninit<Word>; Stack::CAPACITY],
 }
 
 impl<T: EvmTypes> Default for Interpreter<'_, T> {
@@ -40,8 +42,6 @@ impl<T: EvmTypes> Default for Interpreter<'_, T> {
         Self {
             pc: bytecode.original_byte_slice().as_ptr(),
             bytecode,
-            // SAFETY: `Word` is valid at any bitpattern. It's not read before init anyway.
-            stack: unsafe { Box::new_uninit().assume_init() },
             stack_len: 0,
             gas: Gas::new(0),
             memory: Memory::new(),
@@ -55,6 +55,7 @@ impl<T: EvmTypes> Default for Interpreter<'_, T> {
             version: core::ptr::null(),
             spec: SpecId::DEFAULT,
             _marker: PhantomData,
+            stack: [const { MaybeUninit::uninit() }; Stack::CAPACITY],
         }
     }
 }
@@ -135,7 +136,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
     #[cfg(test)]
     pub(crate) fn into_parts(
         self,
-    ) -> (Box<[Word; Stack::CAPACITY]>, usize, Gas, Memory, *const [u8]) {
+    ) -> ([MaybeUninit<Word>; Stack::CAPACITY], usize, Gas, Memory, *const [u8]) {
         (self.stack, self.stack_len, self.gas, self.memory, self.output)
     }
 
@@ -188,7 +189,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         // the separate stack view is live.
         let state = InterpreterState::wrap_mut(unsafe { &mut *raw });
         let mut pc = Pc::new(self.pc);
-        let mut stack = Stack::new(&mut self.stack, self.stack_len);
+        let mut stack = Stack::new(self.stack.as_mut_ptr().cast(), self.stack_len);
         loop {
             let op = pc.op();
             let instr = config.instructions[op as usize];
@@ -215,7 +216,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         let pc = Pc::new(self.pc);
         let op = pc.op();
         let instr = config.instructions[op as usize];
-        let stack = Stack::new(&mut self.stack, self.stack_len);
+        let stack = Stack::new(self.stack.as_mut_ptr().cast(), self.stack_len);
         let remaining_gas = RemainingGas::new(self.gas.remaining());
         instr(pc, stack, remaining_gas, state);
         self.result.unwrap_err()
@@ -349,7 +350,6 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
 }
 
 #[derive(Default)]
-#[expect(clippy::vec_box, reason = "pooled active interpreters must stay at stable addresses")]
 pub(crate) struct InterpreterPool<T: EvmTypes> {
     frames: Vec<Box<Interpreter<'static, T>>>,
 }
