@@ -7,9 +7,10 @@ use crate::{
         Gas, Host, InstrStop, Interpreter, Memory, Message, MessageKind, MessageResult, Stack,
         Word, op,
     },
+    storage_key::{StorageKey, StorageKeyMap},
 };
 use alloc::{boxed::Box, vec::Vec};
-use alloy_primitives::{Address, B256, Bytes, Log, map::HashMap};
+use alloy_primitives::{Address, B256, Bytes, Log};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct TestTypes;
@@ -33,9 +34,9 @@ pub(crate) struct TestHost {
     pub(super) is_empty: bool,
     pub(super) is_cold: bool,
     pub(super) is_touched: bool,
-    pub(super) storage: HashMap<(Address, Word), Word>,
-    pub(super) original_storage: HashMap<(Address, Word), Word>,
-    pub(super) transient_storage: HashMap<(Address, Word), Word>,
+    pub(super) storage: StorageKeyMap<Word>,
+    pub(super) original_storage: StorageKeyMap<Word>,
+    pub(super) transient_storage: StorageKeyMap<Word>,
     pub(super) logs: Vec<Log>,
     pub(super) execute_result: MessageResult,
     pub(super) selfdestruct_result: SelfDestructResult,
@@ -55,9 +56,9 @@ impl Default for TestHost {
             is_empty: false,
             is_cold: false,
             is_touched: false,
-            storage: HashMap::default(),
-            original_storage: HashMap::default(),
-            transient_storage: HashMap::default(),
+            storage: StorageKeyMap::default(),
+            original_storage: StorageKeyMap::default(),
+            transient_storage: StorageKeyMap::default(),
             logs: Vec::new(),
             execute_result: MessageResult { stop: InstrStop::Return, ..MessageResult::default() },
             selfdestruct_result: SelfDestructResult::default(),
@@ -117,7 +118,7 @@ impl Host for TestHost {
             return Err(InstrStop::OutOfGas);
         }
         Ok(SLoad {
-            value: self.storage.get(&(address, key)).copied().unwrap_or_default(),
+            value: self.storage.get(&StorageKey::new(address, key)).copied().unwrap_or_default(),
             is_cold: self.is_cold,
         })
     }
@@ -132,7 +133,7 @@ impl Host for TestHost {
         if skip_cold_load && self.is_cold {
             return Err(InstrStop::OutOfGas);
         }
-        let storage_key = (address, key);
+        let storage_key = StorageKey::new(address, key);
         let present_value = self.storage.get(&storage_key).copied().unwrap_or_default();
         let original_value = *self.original_storage.entry(storage_key).or_insert(present_value);
         if value.is_zero() {
@@ -144,11 +145,11 @@ impl Host for TestHost {
     }
 
     fn tload(&mut self, address: Address, key: Word) -> Word {
-        self.transient_storage.get(&(address, key)).copied().unwrap_or_default()
+        self.transient_storage.get(&StorageKey::new(address, key)).copied().unwrap_or_default()
     }
 
     fn tstore(&mut self, address: Address, key: Word, value: Word) {
-        self.transient_storage.insert((address, key), value);
+        self.transient_storage.insert(StorageKey::new(address, key), value);
     }
 
     fn log(&mut self, log: Log) {

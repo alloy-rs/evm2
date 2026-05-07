@@ -5,11 +5,12 @@ use crate::{
     SpecId,
     bytecode::Bytecode,
     interpreter::{InstrStop, Word},
+    storage_key::{StorageKey, StorageKeyMap, StorageKeySet},
 };
 use alloc::{collections::BTreeMap, vec::Vec};
 use alloy_primitives::{
     Address, B256, KECCAK256_EMPTY, Log, U256,
-    map::{AddressMap, AddressSet, HashMap, HashSet, U256Map, hash_map},
+    map::{AddressMap, AddressSet, U256Map, hash_map},
 };
 
 /// A value tracked together with the value it had at the start of the current
@@ -354,9 +355,9 @@ pub struct State<D> {
     /// account was touched, changed, or should be emitted in [`StateChanges`].
     accessed_accounts: AddressSet,
     /// Transaction-scoped warm storage slot set.
-    accessed_storage: HashSet<(Address, Word)>,
+    accessed_storage: StorageKeySet,
     /// Transaction-scoped EIP-1153 transient storage keyed by account address and slot.
-    transient_storage: HashMap<(Address, Word), Word>,
+    transient_storage: StorageKeyMap<Word>,
 }
 
 impl<D> State<D> {
@@ -372,8 +373,8 @@ impl<D> State<D> {
             touched: AddressSet::default(),
             selfdestructs: AddressSet::default(),
             accessed_accounts: AddressSet::default(),
-            accessed_storage: HashSet::default(),
-            transient_storage: HashMap::default(),
+            accessed_storage: StorageKeySet::default(),
+            transient_storage: StorageKeyMap::default(),
         }
     }
 
@@ -491,7 +492,7 @@ impl<D> State<D> {
     #[inline]
     #[must_use]
     pub fn is_storage_warm(&self, address: Address, key: Word) -> bool {
-        self.accessed_storage.contains(&(address, key))
+        self.accessed_storage.contains(&StorageKey::new(address, key))
     }
 
     /// Marks a storage slot as warm in a revertible execution context.
@@ -503,7 +504,7 @@ impl<D> State<D> {
     #[inline]
     #[must_use]
     pub fn warm_storage(&mut self, address: Address, key: Word) -> bool {
-        if self.accessed_storage.insert((address, key)) {
+        if self.accessed_storage.insert(StorageKey::new(address, key)) {
             self.journal.push(JournalEntry::StorageWarmed { address, key });
             true
         } else {
@@ -525,7 +526,7 @@ impl<D> State<D> {
     #[inline]
     #[must_use]
     pub fn warm_storage_non_revertible(&mut self, address: Address, key: Word) -> bool {
-        self.accessed_storage.insert((address, key))
+        self.accessed_storage.insert(StorageKey::new(address, key))
     }
 
     /// Clears transaction-scoped substate.
@@ -842,13 +843,13 @@ impl<D: Database> State<D> {
     #[inline]
     #[must_use]
     pub fn transient_storage(&mut self, address: Address, key: Word) -> Word {
-        self.transient_storage.get(&(address, key)).copied().unwrap_or_default()
+        self.transient_storage.get(&StorageKey::new(address, key)).copied().unwrap_or_default()
     }
 
     /// Stores transient storage.
     #[inline]
     pub fn set_transient_storage(&mut self, address: Address, key: Word, value: Word) {
-        match self.transient_storage.entry((address, key)) {
+        match self.transient_storage.entry(StorageKey::new(address, key)) {
             hash_map::Entry::Occupied(mut entry) => {
                 let previous = *entry.get();
                 if previous == value {
@@ -961,17 +962,17 @@ impl<D: Database> State<D> {
                 },
                 JournalEntry::TransientStorageChange { address, key, previous } => match previous {
                     Some(previous) if !previous.is_zero() => {
-                        self.transient_storage.insert((address, key), previous);
+                        self.transient_storage.insert(StorageKey::new(address, key), previous);
                     }
                     _ => {
-                        self.transient_storage.remove(&(address, key));
+                        self.transient_storage.remove(&StorageKey::new(address, key));
                     }
                 },
                 JournalEntry::AccountWarmed { address } => {
                     self.accessed_accounts.remove(&address);
                 }
                 JournalEntry::StorageWarmed { address, key } => {
-                    self.accessed_storage.remove(&(address, key));
+                    self.accessed_storage.remove(&StorageKey::new(address, key));
                 }
             }
         }
