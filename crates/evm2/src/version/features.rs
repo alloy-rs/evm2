@@ -136,6 +136,10 @@ evm_features! {
     ///
     /// Default: on since Istanbul
     EIP2028,
+    /// Applies EIP-3651 warm coinbase at transaction start.
+    ///
+    /// Default: on since Shanghai
+    EIP3651,
     /// Applies EIP-3541 contract code prefix rejection.
     ///
     /// Default: on since London

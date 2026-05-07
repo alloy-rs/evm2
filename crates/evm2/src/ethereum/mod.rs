@@ -268,12 +268,11 @@ pub(super) fn validate_sender<T: EvmTypes<Host = Evm<T>>>(
 
 pub(super) fn warm_base_accounts<T: EvmTypes<Host = Evm<T>>>(
     host: &mut Evm<T>,
-    spec_id: SpecId,
     caller: Address,
     to: TxKind,
 ) {
     host.state.warm_account_non_revertible(caller);
-    if spec_id.enables(SpecId::SHANGHAI) {
+    if host.feature(EvmFeatures::EIP3651) {
         host.state.warm_account_non_revertible(host.block.beneficiary);
     }
     if let TxKind::Call(to) = to {

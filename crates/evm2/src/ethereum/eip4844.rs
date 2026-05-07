@@ -65,7 +65,7 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
         max_gas_cost.saturating_add(max_blob_gas_cost).saturating_add(tx.value),
     )?;
 
-    warm_base_accounts(req.host, spec_id, caller, tx.to.into());
+    warm_base_accounts(req.host, caller, tx.to.into());
     warm_access_list(req.host, &tx.access_list);
 
     let effective_gas_cost = U256::from(tx.gas_limit) * gas_price;
