@@ -131,17 +131,13 @@ impl<ExtDB: Database> Database for CacheDB<ExtDB> {
     }
 
     #[inline]
-    fn get_account_code(&mut self, address: Address) -> Bytecode {
-        let code_hash = self.get_account(address).map(|info| info.code_hash);
-        if let Some(code_hash) = code_hash
-            && let Some(code) = self.cache.contracts.get(&code_hash)
-        {
+    fn get_code_by_hash(&mut self, code_hash: B256) -> Bytecode {
+        if let Some(code) = self.cache.contracts.get(&code_hash) {
             return code.clone();
         }
 
-        let code = self.db.get_account_code(address);
+        let code = self.db.get_code_by_hash(code_hash);
         if !code.is_empty() {
-            let code_hash = code_hash.unwrap_or_else(|| code.hash_slow());
             self.cache.contracts.entry(code_hash).or_insert_with(|| code.clone());
         }
         code
@@ -193,9 +189,13 @@ mod tests {
             self.account.clone()
         }
 
-        fn get_account_code(&mut self, _address: Address) -> Bytecode {
+        fn get_code_by_hash(&mut self, code_hash: B256) -> Bytecode {
             self.code_loads += 1;
-            self.account.as_ref().and_then(|info| info.code.clone()).unwrap_or_default()
+            self.account
+                .as_ref()
+                .filter(|info| info.code_hash == code_hash)
+                .and_then(|info| info.code.clone())
+                .unwrap_or_default()
         }
 
         fn get_storage(&mut self, _address: Address, _key: Word) -> Word {
@@ -223,8 +223,10 @@ mod tests {
         };
         let mut cache = CacheDB::new(db);
 
-        assert_eq!(cache.get_account_code(address), code);
-        assert_eq!(cache.get_account_code(address), code);
+        let code_hash = code.hash_slow();
+        assert_eq!(cache.get_account(address).map(|info| info.code_hash), Some(code_hash));
+        assert_eq!(cache.get_code_by_hash(code_hash), code);
+        assert_eq!(cache.get_code_by_hash(code_hash), code);
         assert_eq!(cache.db.account_loads, 1);
         assert_eq!(cache.db.code_loads, 0);
 
