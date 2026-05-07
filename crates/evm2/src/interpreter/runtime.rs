@@ -167,7 +167,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
     fn run_table_loop(&mut self, config: &ExecutionConfig<T>, host: &mut T::Host) -> InstrStop {
         #[expect(clippy::unnecessary_cast, reason = "cast erases the active interpreter lifetime")]
         let raw = self as *mut Self as *mut Interpreter<'_, T>;
-        let mut pc = Pc::from_ptr(self.pc);
+        let mut pc = Pc::new(self.pc);
         let mut stack_len = self.stack_len;
         let stack = &mut *self.stack;
         let bytecode = BytecodeRef::new(&self.bytecode);
@@ -185,7 +185,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
             let instr = config.instructions[op as usize];
             let (next_pc, next_stack_len) =
                 instr(pc, Stack::new(&mut *stack, stack_len), &mut state);
-            pc = Pc::from_ptr(next_pc);
+            pc = Pc::new(next_pc);
             stack_len = next_stack_len;
             if next_pc.is_null() {
                 cold_path();
@@ -203,7 +203,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         #[expect(clippy::unnecessary_cast, reason = "cast erases the active interpreter lifetime")]
         let raw = self as *mut Self as *mut Interpreter<'_, T>;
         let bytecode = BytecodeRef::new(&self.bytecode);
-        let pc = Pc::from_ptr(self.pc);
+        let pc = Pc::new(self.pc);
         let op = pc.op();
         let instr = config.instructions[op as usize];
         let stack = &mut *self.stack;

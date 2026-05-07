@@ -61,15 +61,8 @@ impl<'a> BytecodeRef<'a> {
 }
 
 impl Pc {
-    /// Creates a program counter from a byte offset.
-    #[allow(dead_code)]
-    pub(crate) const fn new(bytecode: BytecodeRef<'_>, pc: usize) -> Self {
-        let base = bytecode.bytecode.as_ptr();
-        Self { pc: unsafe { base.add(pc) } }
-    }
-
     /// Creates a program counter from a byte pointer.
-    pub(crate) const fn from_ptr(pc: *const u8) -> Self {
+    pub(crate) const fn new(pc: *const u8) -> Self {
         Self { pc }
     }
 
