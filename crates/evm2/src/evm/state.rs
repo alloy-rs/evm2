@@ -668,30 +668,27 @@ impl<D: Database> State<D> {
     }
 
     #[must_use]
-    fn storage_initial(&mut self, address: Address, key: Word) -> Word {
-        if self.storage.get(&address).is_some_and(|storage| storage.wiped)
-            || self.accounts.get(&address).is_some_and(|account| account.original.is_none())
-        {
-            Word::ZERO
-        } else {
-            self.initial.get_storage(address, key)
-        }
-    }
-
-    #[must_use]
     fn storage_slot_mut(
         &mut self,
         address: Address,
         key: Word,
         journal_insert: bool,
     ) -> &mut Tracked<Word> {
-        let initial = self.storage_initial(address, key);
-        let storage = self.storage.entry(address).or_default();
+        let Self { initial, accounts, storage, journal, .. } = self;
+        let account_created =
+            accounts.get(&address).is_some_and(|account| account.original.is_none());
+        let storage = storage.entry(address).or_default();
+        let storage_wiped = storage.wiped;
         match storage.slots.entry(key) {
             hash_map::Entry::Occupied(entry) => entry.into_mut(),
             hash_map::Entry::Vacant(entry) => {
+                let initial = if storage_wiped || account_created {
+                    Word::ZERO
+                } else {
+                    initial.get_storage(address, key)
+                };
                 if journal_insert {
-                    self.journal.push(JournalEntry::StorageInserted { address, key });
+                    journal.push(JournalEntry::StorageInserted { address, key });
                 }
                 entry.insert(Tracked::new(initial))
             }
