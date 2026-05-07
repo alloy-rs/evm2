@@ -1,6 +1,6 @@
 use crate::{
     EvmConfig, EvmTypes,
-    interpreter::{InstructionImplFn, instructions::table::unknown_instruction},
+    interpreter::{Instruction, InstructionImplFn, instructions::table::unknown_instruction},
 };
 use core::fmt;
 
@@ -60,29 +60,14 @@ impl<T: EvmTypes> VersionTables<T> {
         self.instruction_impls.get(opcode)
     }
 
-    /// Sets the instruction implementation and dynamic-gas requirement for `opcode`.
+    /// Sets the static gas cost and instruction for `opcode`.
     #[inline]
-    pub const fn set_instruction(
-        &mut self,
-        opcode: u8,
-        instr: InstructionImplFn<T>,
-        dynamic_gas: bool,
-    ) {
-        self.instruction_impls.set(opcode, instr, dynamic_gas);
-    }
-
-    /// Sets the static gas cost, instruction implementation, and dynamic-gas requirement for
-    /// `opcode`.
-    #[inline]
-    pub const fn set_opcode(
-        &mut self,
-        opcode: u8,
-        gas: u16,
-        instr: InstructionImplFn<T>,
-        dynamic_gas: bool,
-    ) {
+    pub const fn set_instruction<I>(&mut self, opcode: u8, gas: u16)
+    where
+        I: Instruction<T>,
+    {
         self.set_static_gas(opcode, gas);
-        self.set_instruction(opcode, instr, dynamic_gas);
+        self.instruction_impls.set(opcode, I::execute, I::DYNAMIC_GAS);
     }
 }
 

@@ -77,25 +77,38 @@ use syn::{
 #[proc_macro_attribute]
 pub fn instruction(attr: TokenStream, item: TokenStream) -> TokenStream {
     let args = parse_macro_input!(attr with Punctuated::<Ident, Token![,]>::parse_terminated);
-    let mut no_stack_preamble = false;
-    let mut dynamic_gas = false;
-    for arg in args {
-        if arg == "no_stack_preamble" {
-            no_stack_preamble = true;
-        } else if arg == "dynamic_gas" {
-            dynamic_gas = true;
-        } else {
-            return syn::Error::new_spanned(arg, "unsupported #[instruction] argument")
-                .to_compile_error()
-                .into();
-        }
-    }
+    let attrs = match InstructionAttrs::parse(args) {
+        Ok(attrs) => attrs,
+        Err(err) => return err.to_compile_error().into(),
+    };
     let input = parse_macro_input!(item as ItemFn);
-    expand_instruction(no_stack_preamble, dynamic_gas, input).into()
+    expand_instruction(attrs, input).into()
 }
 
-fn expand_instruction(no_stack_preamble: bool, dynamic_gas: bool, input: ItemFn) -> TokenStream2 {
-    let attrs = input.attrs;
+#[derive(Clone, Copy, Debug, Default)]
+struct InstructionAttrs {
+    no_stack_preamble: bool,
+    dynamic_gas: bool,
+}
+
+impl InstructionAttrs {
+    fn parse(args: Punctuated<Ident, Token![,]>) -> syn::Result<Self> {
+        let mut attrs = Self::default();
+        for arg in args {
+            if arg == "no_stack_preamble" {
+                attrs.no_stack_preamble = true;
+            } else if arg == "dynamic_gas" {
+                attrs.dynamic_gas = true;
+            } else {
+                return Err(syn::Error::new_spanned(arg, "unsupported #[instruction] argument"));
+            }
+        }
+        Ok(attrs)
+    }
+}
+
+fn expand_instruction(instruction_attrs: InstructionAttrs, input: ItemFn) -> TokenStream2 {
+    let fn_attrs = input.attrs;
     let vis = input.vis;
     let sig = input.sig;
     let ident = sig.ident;
@@ -143,15 +156,16 @@ fn expand_instruction(no_stack_preamble: bool, dynamic_gas: bool, input: ItemFn)
         }
     }
 
-    let stack_setup = (!no_stack_preamble).then(|| stack_setup(&inputs, &outputs));
+    let stack_setup =
+        (!instruction_attrs.no_stack_preamble).then(|| stack_setup(&inputs, &outputs));
     let cx_setup = has_cx.then(|| {
         let cx = cx_arg.unwrap_or_else(|| Ident::new("cx", ident.span()));
-        let cx_ty = if dynamic_gas {
+        let cx_ty = if instruction_attrs.dynamic_gas {
             quote! { evm2::interpreter::GasInstructionCx }
         } else {
             quote! { evm2::interpreter::InstructionCx }
         };
-        let gas_field = dynamic_gas.then(|| quote! { gas: __evm2_state.gas(), });
+        let gas_field = instruction_attrs.dynamic_gas.then(|| quote! { gas: __evm2_state.gas(), });
         quote! {
             let mut #cx = #cx_ty::<#evm_types> {
             pc: __evm2_pc,
@@ -160,8 +174,9 @@ fn expand_instruction(no_stack_preamble: bool, dynamic_gas: bool, input: ItemFn)
         };
         }
     });
+    let dynamic_gas = instruction_attrs.dynamic_gas;
     quote! {
-        #(#attrs)*
+        #(#fn_attrs)*
         #[allow(non_camel_case_types)]
         #vis struct #ident #struct_generics(
             core::marker::PhantomData<fn() -> #evm_types>
