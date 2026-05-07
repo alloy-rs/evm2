@@ -4,8 +4,8 @@ use crate::{
     EvmTypes, SpecId,
     constants::{CALL_DEPTH_LIMIT, EIP7702_BYTECODE_LEN, EIP7702_MAGIC_BYTES, EIP7702_VERSION},
     interpreter::{
-        Host, InstrStop, InstructionCx, Message, MessageKind, MessageResult, Result, StackMut,
-        Word, memory::resize_memory,
+        Host, InstrStop, Message, MessageKind, MessageResult, Result, StackMut, State, Word,
+        memory::resize_memory, private::GasInstructionCx,
     },
     utils::{word_to_address, word_to_usize},
     version::GasId,
@@ -15,8 +15,8 @@ use core::{cmp::min, ops::Range};
 use evm2_macros::instruction;
 
 #[inline]
-const fn require_non_staticcall<T: EvmTypes>(cx: &InstructionCx<'_, '_, T>) -> Result {
-    if cx.state.is_static() {
+const fn require_non_staticcall<T: EvmTypes>(state: &State<'_, T>) -> Result {
+    if state.is_static() {
         return Err(InstrStop::StateChangeDuringStaticCall);
     }
     Ok(())
@@ -43,7 +43,7 @@ fn call_too_deep_result(gas_limit: u64) -> MessageResult {
 }
 
 fn resize_memory_range<T: EvmTypes>(
-    cx: &mut InstructionCx<'_, '_, T>,
+    cx: &mut GasInstructionCx<'_, '_, T>,
     offset: Word,
     len: Word,
 ) -> Result<Range<usize>> {
@@ -59,7 +59,7 @@ fn resize_memory_range<T: EvmTypes>(
 }
 
 fn get_memory_input_and_out_ranges<T: EvmTypes>(
-    cx: &mut InstructionCx<'_, '_, T>,
+    cx: &mut GasInstructionCx<'_, '_, T>,
     input_offset: Word,
     input_len: Word,
     return_offset: Word,
@@ -71,7 +71,7 @@ fn get_memory_input_and_out_ranges<T: EvmTypes>(
 }
 
 fn memory_range_bytes<T: EvmTypes>(
-    cx: &mut InstructionCx<'_, '_, T>,
+    cx: &mut GasInstructionCx<'_, '_, T>,
     range: Range<usize>,
 ) -> Result<Bytes> {
     if range.is_empty() {
@@ -91,7 +91,7 @@ fn eip7702_address(code: &Bytes) -> Option<Address> {
 }
 
 fn load_acc_and_calc_gas<T: EvmTypes>(
-    cx: &mut InstructionCx<'_, '_, T>,
+    cx: &mut GasInstructionCx<'_, '_, T>,
     to: Address,
     transfers_value: bool,
     create_empty_account: bool,
@@ -157,7 +157,7 @@ fn load_acc_and_calc_gas<T: EvmTypes>(
 #[inline(never)]
 fn call_inner<T: EvmTypes>(
     mut stack: StackMut<'_>,
-    mut cx: InstructionCx<'_, '_, T>,
+    mut cx: GasInstructionCx<'_, '_, T>,
     kind: MessageKind,
 ) -> Result {
     let has_value = match kind {
@@ -234,27 +234,27 @@ fn call_inner<T: EvmTypes>(
     stack.push(success)
 }
 
-#[instruction(no_stack_preamble)]
+#[instruction(no_stack_preamble, dynamic_gas)]
 pub(crate) fn call(cx: _) -> Result {
     call_inner(stack, cx, MessageKind::Call)
 }
 
-#[instruction(no_stack_preamble)]
+#[instruction(no_stack_preamble, dynamic_gas)]
 pub(crate) fn callcode(cx: _) -> Result {
     call_inner(stack, cx, MessageKind::CallCode)
 }
 
-#[instruction(no_stack_preamble)]
+#[instruction(no_stack_preamble, dynamic_gas)]
 pub(crate) fn delegatecall(cx: _) -> Result {
     call_inner(stack, cx, MessageKind::DelegateCall)
 }
 
-#[instruction(no_stack_preamble)]
+#[instruction(no_stack_preamble, dynamic_gas)]
 pub(crate) fn staticcall(cx: _) -> Result {
     call_inner(stack, cx, MessageKind::StaticCall)
 }
 
-#[instruction(no_stack_preamble)]
+#[instruction(no_stack_preamble, dynamic_gas)]
 pub(crate) fn create<const IS_CREATE2: bool>(cx: _) -> Result {
     create_inner(stack, cx, IS_CREATE2)
 }
@@ -262,10 +262,10 @@ pub(crate) fn create<const IS_CREATE2: bool>(cx: _) -> Result {
 #[inline(never)]
 fn create_inner<T: EvmTypes>(
     mut stack: StackMut<'_>,
-    mut cx: InstructionCx<'_, '_, T>,
+    mut cx: GasInstructionCx<'_, '_, T>,
     is_create2: bool,
 ) -> Result {
-    require_non_staticcall(&cx)?;
+    require_non_staticcall(cx.state)?;
 
     let [value, offset, len] = stack.popn::<3>()?;
     let salt = if is_create2 { Some(stack.pop()?) } else { None };
@@ -330,9 +330,9 @@ fn create_inner<T: EvmTypes>(
     stack.push(address)
 }
 
-#[instruction]
+#[instruction(dynamic_gas)]
 pub(crate) fn selfdestruct(cx: _, [target]: [Word]) -> Result {
-    require_non_staticcall(&cx)?;
+    require_non_staticcall(cx.state)?;
     let target = word_to_address(target);
     let cold_load_gas = cx.state.gas_params().selfdestruct_cold_cost();
     let skip_cold_load = cx.gas.remaining() < cold_load_gas;

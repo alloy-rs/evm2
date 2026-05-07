@@ -1,3 +1,5 @@
+#[cfg(feature = "nightly")]
+use super::gas::RemainingGas;
 use super::{
     BytecodeRef, Gas, InstrStop, Memory, Message, MessageKind, Pc, Result, Stack, State, Word,
 };
@@ -140,6 +142,12 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         self.gas
     }
 
+    /// Returns a reference to the current gas state.
+    #[inline]
+    pub const fn gas_mut(&mut self) -> &mut Gas {
+        &mut self.gas
+    }
+
     /// Runs the interpreter until it stops, using `C` as the EVM configuration.
     #[inline]
     pub fn run<C: EvmConfig<T>>(&mut self, host: &mut T::Host) -> InstrStop {
@@ -203,11 +211,11 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         let (pc, stack_len) = instr(
             pc,
             Stack::new(&mut self.stack, stack_len),
-            &mut self.gas,
             &mut State {
                 bytecode,
                 host,
                 spec: config.version.spec_id,
+                result: Ok(()),
                 version: &config.version,
                 raw_interp: raw,
             },
@@ -225,18 +233,19 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         let pc = Pc::from_ptr(self.pc);
         let op = pc.op();
         let instr = config.instructions[op as usize];
+        let remaining_gas = RemainingGas::new(self.gas.remaining());
         instr(
             pc,
             Stack::new(&mut self.stack, self.stack_len),
-            &mut self.gas,
+            remaining_gas,
             &mut State {
                 bytecode,
                 host,
                 spec: config.version.spec_id,
+                result: Ok(()),
                 version: &config.version,
                 raw_interp: raw,
             },
-            0,
         );
         self.result.unwrap_err()
     }

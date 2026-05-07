@@ -13,7 +13,7 @@ use evm2::{
     bytecode::Bytecode,
     env::BlockEnv,
     evm::{InMemoryDB, precompile::NoPrecompiles},
-    interpreter::{Host, InstrStop, Instruction, Message, Word, op},
+    interpreter::{Host, InstrStop, Message, Word, op},
     registry::{HandlerResult, TxRegistry, TxRequest},
     version::GasId,
 };
@@ -72,11 +72,7 @@ const fn custom_version(base_spec_id: SpecId) -> Version {
 
 const fn custom_version_tables<const BASE_SPEC_ID: u8>() -> VersionTables<CustomTypes> {
     let mut version = VersionTables::<CustomTypes>::base::<CustomConfig<BASE_SPEC_ID>>();
-    version.set_opcode(
-        CUSTOM_OPCODE,
-        CUSTOM_OPCODE_GAS,
-        <custom<CustomTypes> as Instruction<CustomTypes>>::execute,
-    );
+    version.set_instruction::<custom<CustomTypes>>(CUSTOM_OPCODE, CUSTOM_OPCODE_GAS);
     version
 }
 
@@ -102,7 +98,7 @@ impl EvmConfigSelector<CustomTypes> for CustomConfigSelector {
 
 // Custom instruction
 
-#[instruction]
+#[instruction(dynamic_gas)]
 fn custom(cx: _) -> Result<out> {
     cx.gas.spend(cx.state.gas_params().get(CUSTOM_OPCODE_DYNAMIC_GAS_ID).into())?;
     *out = Word::from(0xdead_u64);

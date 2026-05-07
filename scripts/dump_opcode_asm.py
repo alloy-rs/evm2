@@ -8,12 +8,14 @@
 Examples:
     ./scripts/dump_opcode_asm.py
     ./scripts/dump_opcode_asm.py ADD PUSH1 SSTORE -o tmp/mydump
+    ./scripts/dump_opcode_asm.py --features evm2/nightly ADD
 """
 
 import argparse
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from utils import cargo_env, repo_root
@@ -21,8 +23,22 @@ from utils import cargo_env, repo_root
 ROOT = Path(repo_root())
 OPCODE_RS = ROOT / "crates" / "evm2" / "src" / "interpreter" / "opcode.rs"
 DEFAULT_OUT = ROOT / "tmp" / "dump"
-DISPATCH_SYMBOL = "evm2::interpreter::instructions::table::dispatch::<"
-DISPATCH_OPCODE = re.compile(r",\s*(\d+)>")
+DISPATCH_SYMBOLS = (
+    "evm2::interpreter::instructions::table::dispatch::<",
+    "evm2::interpreter::instructions::table::tail_dispatch::<",
+)
+DISPATCH_OPCODE = re.compile(r",\s*(\d+)(?:,\s*(?:true|false))?>")
+
+
+def display_path(path: Path) -> str:
+    try:
+        return str(path.relative_to(ROOT))
+    except ValueError:
+        return str(path)
+
+
+def log(message: str) -> None:
+    print(f"[dump_opcode_asm] {message}", file=sys.stderr, flush=True)
 
 
 def parse_opcodes() -> dict[str, int]:
@@ -69,6 +85,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Keep the full cargo asm --everything dumps in the output directory.",
     )
+    parser.add_argument(
+        "--all-monomorphizations",
+        action="store_true",
+        help="Dump every matching dispatch monomorphization instead of only the first.",
+    )
     return parser.parse_args()
 
 
@@ -96,10 +117,12 @@ def select_opcodes(
 
 
 def cargo_asm_everything(package: str, features: list[str], output: str) -> str:
-    cmd = ["cargo", "asm", "-q", "-s", "-p", package]
+    cmd = ["cargo", "asm", "-q", "-s", "--simplify", "-p", package]
     for feature in features:
         cmd.extend(("-F", feature))
     cmd.extend(("--lib", f"--{output}", "--everything"))
+    log(f"running {' '.join(cmd)}")
+    started = time.perf_counter()
     proc = subprocess.run(
         cmd,
         cwd=ROOT,
@@ -109,23 +132,34 @@ def cargo_asm_everything(package: str, features: list[str], output: str) -> str:
         env=cargo_env(),
         check=False,
     )
+    elapsed = time.perf_counter() - started
     if proc.returncode != 0:
+        log(f"failed after {elapsed:.1f}s: cargo asm --{output} --everything")
         raise RuntimeError(
             f"cargo asm --{output} --everything failed\n"
             f"command: {' '.join(cmd)}\n"
             f"stdout:\n{proc.stdout}\n"
             f"stderr:\n{proc.stderr}"
         )
+    log(f"finished cargo asm --{output} --everything in {elapsed:.1f}s")
     return proc.stdout
 
 
 def dispatch_opcode(text: str) -> int | None:
-    if DISPATCH_SYMBOL not in text:
+    if not any(symbol in text for symbol in DISPATCH_SYMBOLS):
         return None
     match = DISPATCH_OPCODE.search(text)
     if match is None:
         return None
     return int(match.group(1))
+
+
+def is_asm_symbol_label(line: str) -> bool:
+    return (
+        line.endswith(":\n")
+        and not line.startswith(("\t", " ", ".", "#"))
+        and len(line) > 2
+    )
 
 
 def extract_asm_functions(text: str) -> dict[int, list[str]]:
@@ -143,6 +177,16 @@ def extract_asm_functions(text: str) -> dict[int, list[str]]:
             block = lines[start:i]
             if any(line.startswith(".type\t") for line in block):
                 blocks.setdefault(opcode, []).append(clean_asm_block(block).rstrip() + "\n")
+            continue
+
+        opcode = dispatch_opcode(line) if is_asm_symbol_label(line) else None
+        if opcode is not None:
+            start = i
+            i += 1
+            while i < len(lines) and not is_asm_symbol_label(lines[i]):
+                i += 1
+            block = lines[start:i]
+            blocks.setdefault(opcode, []).append(clean_asm_block(block).rstrip() + "\n")
             continue
         i += 1
     return blocks
@@ -192,12 +236,16 @@ def dump_output(
     mnemonic: str,
     opcode: int,
     output: str,
+    all_monomorphizations: bool,
 ) -> Path:
     blocks = blocks_by_opcode.get(opcode, [])
     if not blocks:
         raise RuntimeError(
             f"could not find cargo asm --{output} output for {mnemonic} ({opcode:#04x})"
         )
+    if not all_monomorphizations and len(blocks) > 1:
+        log(f"{mnemonic} has {len(blocks)} {output} monomorphization(s); writing the first")
+        blocks = blocks[:1]
 
     suffix = "ll" if output == "llvm" else "s"
     path = out / f"{mnemonic}.{suffix}"
@@ -209,16 +257,24 @@ def main() -> int:
     args = parse_args()
     opcodes = parse_opcodes()
     selected = select_opcodes(opcodes, args.mnemonics)
-    out = args.output.resolve()
+    out = args.output if args.output.is_absolute() else ROOT / args.output
     out.mkdir(parents=True, exist_ok=True)
+    feature_msg = f" with features {', '.join(args.features)}" if args.features else ""
+    log(
+        f"dumping {len(selected)} opcode(s) from package {args.package}{feature_msg} "
+        f"to {display_path(out)}"
+    )
 
     dumps: dict[str, dict[int, list[str]]] = {}
     for output in ("asm", "llvm"):
         text = cargo_asm_everything(args.package, args.features, output)
         if args.keep_everything:
             suffix = "ll" if output == "llvm" else "s"
+            log(f"writing full cargo asm --{output} dump")
             (out / f"everything.{suffix}").write_text(text)
         dumps[output] = extract_functions(text, output)
+        block_count = sum(len(blocks) for blocks in dumps[output].values())
+        log(f"extracted {block_count} dispatch block(s) from --{output} output")
 
     tasks = [
         (mnemonic, opcode, output)
@@ -226,8 +282,16 @@ def main() -> int:
         for output in ("asm", "llvm")
     ]
     for mnemonic, opcode, output in tasks:
-        dump_output(out, dumps[output], mnemonic, opcode, output)
-    print(f"wrote {len(tasks)} file(s) to {out.relative_to(ROOT)}")
+        path = dump_output(
+            out,
+            dumps[output],
+            mnemonic,
+            opcode,
+            output,
+            args.all_monomorphizations,
+        )
+        log(f"wrote {display_path(path)}")
+    print(f"wrote {len(tasks)} file(s) to {display_path(out)}")
 
     return 0
 

@@ -1,4 +1,4 @@
-use super::{BytecodeRef, InstrStop, Interpreter, Memory, Message, Word};
+use super::{BytecodeRef, Gas, InstrStop, Interpreter, Memory, Message, Result, Word};
 use crate::{
     EvmTypes, SpecId, Version,
     bytecode::Bytecode,
@@ -17,6 +17,7 @@ pub struct State<'a, T: EvmTypes> {
     pub host: &'a mut T::Host,
     /// Active spec identifier.
     pub spec: SpecId,
+    pub(crate) result: Result,
     /// Active runtime version data.
     pub version: &'a Version,
     pub(crate) raw_interp: *mut Interpreter<'a, T>,
@@ -37,6 +38,13 @@ impl<'a, T: EvmTypes> State<'a, T> {
         // `State` must not borrow fields already passed separately to the instruction, such as
         // stack and gas.
         unsafe { &mut *self.raw_interp }
+    }
+
+    /// Returns interpreter gas.
+    #[inline]
+    pub(crate) fn gas(&mut self) -> &'a mut Gas {
+        // SAFETY: `raw_interp` is valid for the duration of instruction execution.
+        unsafe { &mut (*self.raw_interp).gas }
     }
 
     /// Returns the cached transaction-global environment.
@@ -98,6 +106,7 @@ impl<T: EvmTypes> fmt::Debug for State<'_, T> {
             .field("memory", &self.interp().memory)
             .field("return_data", &self.return_data())
             .field("spec", &self.spec)
+            .field("result", &self.result)
             .field("version", &self.version)
             .field("raw_interp", &self.raw_interp)
             .finish_non_exhaustive()

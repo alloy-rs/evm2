@@ -200,6 +200,46 @@ impl GasTracker {
     }
 }
 
+/// Remaining regular gas threaded through tail calls.
+#[cfg(feature = "nightly")]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[repr(transparent)]
+pub(crate) struct RemainingGas(u64);
+
+#[cfg(feature = "nightly")]
+impl RemainingGas {
+    /// Creates a remaining gas counter.
+    #[inline]
+    pub(crate) const fn new(remaining: u64) -> Self {
+        Self(remaining)
+    }
+
+    /// Returns remaining regular gas.
+    #[inline]
+    pub(crate) const fn get(self) -> u64 {
+        self.0
+    }
+
+    /// Sets remaining regular gas.
+    #[inline]
+    pub(crate) const fn set(&mut self, remaining: u64) {
+        self.0 = remaining;
+    }
+
+    /// Spends regular gas.
+    #[inline(always)]
+    pub(crate) const fn spend(&mut self, cost: u64) -> Result {
+        let remaining = self.0;
+        self.0 = remaining.wrapping_sub(cost);
+        if remaining < cost {
+            cold_path();
+            Err(InstrStop::OutOfGas)
+        } else {
+            Ok(())
+        }
+    }
+}
+
 /// Interpreter gas state.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[repr(C)] // Puts `tracker`, and so `.remaining`, first.

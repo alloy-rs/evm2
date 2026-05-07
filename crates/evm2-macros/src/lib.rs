@@ -30,6 +30,8 @@ use syn::{
 /// - `#[instruction(no_stack_preamble)]`: Disables automatic stack input and output handling. The
 ///   body receives a `stack` local and is responsible for all stack reads, writes, and bounds
 ///   checks.
+/// - `#[instruction(dynamic_gas)]`: Exposes `cx.gas` and marks the instruction as needing access to
+///   mutable gas state.
 ///
 /// ## Examples
 ///
@@ -75,24 +77,38 @@ use syn::{
 #[proc_macro_attribute]
 pub fn instruction(attr: TokenStream, item: TokenStream) -> TokenStream {
     let args = parse_macro_input!(attr with Punctuated::<Ident, Token![,]>::parse_terminated);
-    let no_stack_preamble = match args.len() {
-        0 => false,
-        1 if args[0] == "no_stack_preamble" => true,
-        _ => {
-            return syn::Error::new_spanned(
-                args,
-                "expected `#[instruction]` or `#[instruction(no_stack_preamble)]`",
-            )
-            .to_compile_error()
-            .into();
-        }
+    let attrs = match InstructionAttrs::parse(args) {
+        Ok(attrs) => attrs,
+        Err(err) => return err.to_compile_error().into(),
     };
     let input = parse_macro_input!(item as ItemFn);
-    expand_instruction(no_stack_preamble, input).into()
+    expand_instruction(attrs, input).into()
 }
 
-fn expand_instruction(no_stack_preamble: bool, input: ItemFn) -> TokenStream2 {
-    let attrs = input.attrs;
+#[derive(Clone, Copy, Debug, Default)]
+struct InstructionAttrs {
+    no_stack_preamble: bool,
+    dynamic_gas: bool,
+}
+
+impl InstructionAttrs {
+    fn parse(args: Punctuated<Ident, Token![,]>) -> syn::Result<Self> {
+        let mut attrs = Self::default();
+        for arg in args {
+            if arg == "no_stack_preamble" {
+                attrs.no_stack_preamble = true;
+            } else if arg == "dynamic_gas" {
+                attrs.dynamic_gas = true;
+            } else {
+                return Err(syn::Error::new_spanned(arg, "unsupported #[instruction] argument"));
+            }
+        }
+        Ok(attrs)
+    }
+}
+
+fn expand_instruction(instruction_attrs: InstructionAttrs, input: ItemFn) -> TokenStream2 {
+    let fn_attrs = input.attrs;
     let vis = input.vis;
     let sig = input.sig;
     let ident = sig.ident;
@@ -140,32 +156,43 @@ fn expand_instruction(no_stack_preamble: bool, input: ItemFn) -> TokenStream2 {
         }
     }
 
-    let stack_setup = (!no_stack_preamble).then(|| stack_setup(&inputs, &outputs));
+    let stack_setup =
+        (!instruction_attrs.no_stack_preamble).then(|| stack_setup(&inputs, &outputs));
     let cx_setup = has_cx.then(|| {
         let cx = cx_arg.unwrap_or_else(|| Ident::new("cx", ident.span()));
+        let cx_ty = if instruction_attrs.dynamic_gas {
+            quote! { evm2::interpreter::private::GasInstructionCx }
+        } else {
+            quote! { evm2::interpreter::private::InstructionCx }
+        };
+        let gas_field = instruction_attrs
+            .dynamic_gas
+            .then(|| quote! { gas: evm2::interpreter::private::gas(__evm2_state), });
         quote! {
-            let mut #cx = evm2::interpreter::InstructionCx::<#evm_types> {
+            let mut #cx = #cx_ty::<#evm_types> {
             pc: __evm2_pc,
-            gas: __evm2_gas,
+            #gas_field
             state: __evm2_state,
         };
         }
     });
+    let dynamic_gas = instruction_attrs.dynamic_gas;
     quote! {
-        #(#attrs)*
+        #(#fn_attrs)*
         #[allow(non_camel_case_types)]
         #vis struct #ident #struct_generics(
             core::marker::PhantomData<fn() -> #evm_types>
         ) #struct_where_clause;
 
-        impl #struct_generics evm2::interpreter::Instruction<#evm_types> for #ident #type_generics
+        impl #struct_generics evm2::interpreter::private::Instruction<#evm_types> for #ident #type_generics
         #impl_where_clause
         {
+            const DYNAMIC_GAS: bool = #dynamic_gas;
+
             #[inline]
             fn execute(
                 __evm2_pc: &mut evm2::interpreter::Pc,
                 mut stack: evm2::interpreter::StackMut<'_>,
-                __evm2_gas: &mut evm2::interpreter::Gas,
                 __evm2_state: &mut evm2::interpreter::State<'_, #evm_types>,
             ) -> evm2::interpreter::Result {
                 evm2::asm_comment!(#asm_comment);
@@ -271,7 +298,11 @@ fn stack_setup(inputs: &[Ident], outputs: &[Ident]) -> TokenStream2 {
     });
 
     quote! {
-        let ptr = stack.instr_stack_setup(#input_count, #output_count)?;
+        let ptr = evm2::interpreter::private::instr_stack_setup(
+            &mut stack,
+            #input_count,
+            #output_count,
+        )?;
         #input_setup
         #output_setup
     }

@@ -1,6 +1,9 @@
 use crate::{
     EvmConfig, EvmTypes,
-    interpreter::{InstructionImplFn, instructions::table::unknown_instruction},
+    interpreter::{
+        instructions::table::unknown_instruction,
+        private::{Instruction, InstructionImplFn},
+    },
 };
 use core::fmt;
 
@@ -13,6 +16,12 @@ pub struct VersionTables<T: EvmTypes> {
     static_gas_table: StaticGasTable,
     /// Instruction implementations.
     instruction_impls: InstructionImplTable<T>,
+}
+
+pub(crate) struct InstructionInfo<T: EvmTypes> {
+    pub(crate) instr: InstructionImplFn<T>,
+    pub(crate) dynamic_gas: bool,
+    pub(crate) is_unknown: bool,
 }
 
 impl<T: EvmTypes> fmt::Debug for VersionTables<T> {
@@ -48,35 +57,20 @@ impl<T: EvmTypes> VersionTables<T> {
         self.static_gas_table.set(opcode, cost);
     }
 
-    /// Returns `true` if `opcode` has a set instruction implementation.
+    /// Returns instruction metadata for `opcode`.
     #[inline]
-    pub const fn contains_instruction(&self, opcode: u8) -> bool {
-        self.instruction_impls.contains(opcode)
-    }
-
-    /// Returns the instruction implementation for `opcode`.
-    #[inline]
-    pub const fn instruction(&self, opcode: u8) -> Option<InstructionImplFn<T>> {
+    pub(crate) const fn instruction(&self, opcode: u8) -> InstructionInfo<T> {
         self.instruction_impls.get(opcode)
     }
 
-    /// Returns the instruction implementation for `opcode`, or unknown if it is not set.
+    /// Sets the static gas cost and instruction for `opcode`.
+    ///
+    /// An `I: Instruction` is implemented using the [`#[instruction]`](evm2_macros::instruction)
+    /// proc macro.
     #[inline]
-    pub const fn instruction_or_unknown(&self, opcode: u8) -> InstructionImplFn<T> {
-        self.instruction_impls.get_or_default(opcode)
-    }
-
-    /// Sets the instruction implementation for `opcode`.
-    #[inline]
-    pub const fn set_instruction(&mut self, opcode: u8, instr: Option<InstructionImplFn<T>>) {
-        self.instruction_impls.set(opcode, instr);
-    }
-
-    /// Sets the static gas cost and instruction implementation for `opcode`.
-    #[inline]
-    pub const fn set_opcode(&mut self, opcode: u8, gas: u16, instr: InstructionImplFn<T>) {
+    pub const fn set_instruction<I: Instruction<T>>(&mut self, opcode: u8, gas: u16) {
         self.set_static_gas(opcode, gas);
-        self.set_instruction(opcode, Some(instr));
+        self.instruction_impls.set(opcode, I::execute, I::DYNAMIC_GAS);
     }
 }
 
@@ -105,39 +99,39 @@ impl StaticGasTable {
     }
 }
 
-struct InstructionImplTable<T: EvmTypes>([Option<InstructionImplFn<T>>; 256]);
+struct InstructionImplTable<T: EvmTypes> {
+    instrs: [Option<InstructionImplFn<T>>; 256],
+    dynamic_gas: [bool; 256],
+}
 
 impl<T: EvmTypes> InstructionImplTable<T> {
     /// Creates an empty instruction implementation table.
     #[inline]
     const fn empty() -> Self {
-        Self([None; 256])
-    }
-
-    /// Returns `true` if `opcode` has a set instruction implementation.
-    #[inline]
-    const fn contains(&self, opcode: u8) -> bool {
-        self.get(opcode).is_some()
+        Self { instrs: [None; 256], dynamic_gas: [false; 256] }
     }
 
     /// Returns the instruction implementation for `opcode`.
     #[inline]
-    const fn get(&self, opcode: u8) -> Option<InstructionImplFn<T>> {
-        self.0[opcode as usize]
-    }
-
-    /// Returns the instruction implementation for `opcode`, or unknown if it is not set.
-    #[inline]
-    const fn get_or_default(&self, opcode: u8) -> InstructionImplFn<T> {
-        match self.get(opcode) {
-            Some(instr) => instr,
-            None => unknown_instruction::<T>,
+    const fn get(&self, opcode: u8) -> InstructionInfo<T> {
+        match self.instrs[opcode as usize] {
+            Some(instr) => InstructionInfo {
+                instr,
+                dynamic_gas: self.dynamic_gas[opcode as usize],
+                is_unknown: false,
+            },
+            None => InstructionInfo {
+                instr: unknown_instruction::<T>,
+                dynamic_gas: true,
+                is_unknown: true,
+            },
         }
     }
 
     /// Sets the instruction implementation for `opcode`.
     #[inline]
-    const fn set(&mut self, opcode: u8, instr: Option<InstructionImplFn<T>>) {
-        self.0[opcode as usize] = instr;
+    const fn set(&mut self, opcode: u8, instr: InstructionImplFn<T>, dynamic_gas: bool) {
+        self.instrs[opcode as usize] = Some(instr);
+        self.dynamic_gas[opcode as usize] = dynamic_gas;
     }
 }

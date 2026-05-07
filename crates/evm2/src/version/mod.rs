@@ -167,11 +167,7 @@ macro_rules! apply_version_tables {
     ($v:ident, $ty:ident, features: [$($tokens:tt)*]) => {};
     ($v:ident, $ty:ident, ops: [$($name:ident: $cost:expr,)*]) => {
         $(
-            $v.set_instruction(
-                op::$name,
-                Some(op_instr!($ty, $name)),
-            );
-            $v.set_static_gas(op::$name, $cost as u16);
+            $v.set_instruction::<op_instr!($ty, $name)>(op::$name, $cost as u16);
         )*
     };
     ($v:ident, $ty:ident, static_gas: [$($name:ident: $cost:expr,)*]) => {
@@ -669,7 +665,7 @@ evm_versions! {
 
 macro_rules! op_instr {
     ($ty:ident, $name:ident) => {
-        <op_instr!(@path $ty, $name) as instr::table::Instruction<$ty>>::execute
+        op_instr!(@path $ty, $name)
     };
 
     (@path $ty:ident, STOP) => { instr::stop<$ty> };

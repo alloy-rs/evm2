@@ -1,6 +1,9 @@
 use crate::{
     EvmFeatures, EvmTypes, SpecId,
-    interpreter::{Host, InstrStop, InstructionCx, Result, StackMut, Word, memory::resize_memory},
+    interpreter::{
+        Host, InstrStop, Result, StackMut, State, Word, memory::resize_memory,
+        private::GasInstructionCx,
+    },
     utils::word_to_usize,
     version::GasId,
 };
@@ -8,14 +11,14 @@ use alloy_primitives::{B256, Bytes, Log, LogData};
 use evm2_macros::instruction;
 
 #[inline]
-const fn require_non_staticcall<T: EvmTypes>(cx: &InstructionCx<'_, '_, T>) -> Result {
-    if cx.state.is_static() {
+const fn require_non_staticcall<T: EvmTypes>(state: &State<'_, T>) -> Result {
+    if state.is_static() {
         return Err(InstrStop::StateChangeDuringStaticCall);
     }
     Ok(())
 }
 
-#[instruction]
+#[instruction(dynamic_gas)]
 pub(crate) fn sload(cx: _, [key]: [Word]) -> Result<out> {
     // EIP-2929: SLOAD pays the warm read cost as static opcode gas, then only
     // charges the additional cold cost when the slot was not already warm. Avoid
@@ -30,9 +33,9 @@ pub(crate) fn sload(cx: _, [key]: [Word]) -> Result<out> {
     *out = load.value;
 }
 
-#[instruction(no_stack_preamble)]
+#[instruction(no_stack_preamble, dynamic_gas)]
 pub(crate) fn sstore(cx: _) -> Result {
-    require_non_staticcall(&cx)?;
+    require_non_staticcall(cx.state)?;
     let [key, value] = stack.popn()?;
     let gas_params = cx.state.gas_params();
     let is_istanbul = cx.state.spec.enables(SpecId::ISTANBUL);
@@ -82,23 +85,23 @@ pub(crate) fn tload(cx: _) -> Result {
 
 #[instruction(no_stack_preamble)]
 pub(crate) fn tstore(cx: _) -> Result {
-    require_non_staticcall(&cx)?;
+    require_non_staticcall(cx.state)?;
     let [key, value] = stack.popn()?;
     cx.state.host.tstore(cx.state.message().destination, key, value);
 }
 
-#[instruction(no_stack_preamble)]
+#[instruction(no_stack_preamble, dynamic_gas)]
 pub(crate) fn log<const N: usize>(cx: _) -> Result {
     log_common(cx, stack, N)
 }
 
 #[inline(never)]
 fn log_common<T: EvmTypes>(
-    cx: InstructionCx<'_, '_, T>,
+    cx: GasInstructionCx<'_, '_, T>,
     mut stack: StackMut<'_>,
     n: usize,
 ) -> Result {
-    require_non_staticcall(&cx)?;
+    require_non_staticcall(cx.state)?;
     let [offset, len] = stack.popn()?;
     let len = word_to_usize(len)?;
     cx.gas.spend(cx.state.gas_params().log_cost(n as u8, len))?;

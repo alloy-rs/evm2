@@ -1,6 +1,10 @@
 use crate::{
     EvmTypes,
-    interpreter::{InstrStop, InstructionCx, Result, Word, memory::resize_memory},
+    interpreter::{
+        InstrStop, Result, Word,
+        memory::resize_memory,
+        private::{GasInstructionCx, InstructionCx},
+    },
     utils::{word_to_usize, word_to_usize_saturated},
 };
 use core::hint::cold_path;
@@ -42,7 +46,7 @@ pub(crate) fn pc(cx: _) -> out {
     *out = Word::from(cx.state.bytecode.pc_offset(*cx.pc));
 }
 
-#[instruction]
+#[instruction(dynamic_gas)]
 pub(crate) fn gas(cx: _) -> out {
     *out = Word::from(cx.gas.remaining());
 }
@@ -50,19 +54,19 @@ pub(crate) fn gas(cx: _) -> out {
 #[instruction]
 pub(crate) fn jumpdest() {}
 
-#[instruction]
+#[instruction(dynamic_gas)]
 pub(crate) fn r#return(cx: _, [offset, len]: [Word]) -> Result {
     return_inner(cx, offset, len, InstrStop::Return)
 }
 
-#[instruction]
+#[instruction(dynamic_gas)]
 pub(crate) fn revert(cx: _, [offset, len]: [Word]) -> Result {
     return_inner(cx, offset, len, InstrStop::Revert)
 }
 
 #[inline]
 fn return_inner<T: EvmTypes>(
-    cx: InstructionCx<'_, '_, T>,
+    cx: GasInstructionCx<'_, '_, T>,
     offset: Word,
     len: Word,
     result: InstrStop,

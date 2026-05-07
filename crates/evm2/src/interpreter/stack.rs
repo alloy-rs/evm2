@@ -129,8 +129,7 @@ impl<'a> StackMut<'a> {
 
     /// Checks that an instruction can consume `input` words and produce `output` words.
     #[inline(always)]
-    #[doc(hidden)] // For macro only.
-    pub fn instr_stack_setup(&mut self, input: usize, output: usize) -> Result<*mut Word> {
+    pub(crate) fn instr_stack_setup(&mut self, input: usize, output: usize) -> Result<*mut Word> {
         let len = self.len();
         // SAFETY: Assumes that the stack is never used after execution fails.
         *self.len = len.wrapping_sub(input).wrapping_add(output);
