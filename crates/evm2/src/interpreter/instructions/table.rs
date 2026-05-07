@@ -1,8 +1,8 @@
 //! Instruction dispatch tables.
 
-#[cfg(not(feature = "nightly"))]
+#[cfg(not(feature = "tco"))]
 use crate::interpreter::gas::Gas;
-#[cfg(feature = "nightly")]
+#[cfg(feature = "tco")]
 use crate::interpreter::gas::RemainingGas;
 use crate::{
     EvmConfig, EvmTypes,
@@ -11,31 +11,31 @@ use crate::{
 use core::hint::cold_path;
 
 /// Normal instruction return value.
-#[cfg(not(feature = "nightly"))]
+#[cfg(not(feature = "tco"))]
 pub(crate) type InstructionFnRet = (*const u8, usize);
 
 /// Normal instruction function pointer.
-#[cfg(not(feature = "nightly"))]
+#[cfg(not(feature = "tco"))]
 pub(crate) type InstructionFn<T> =
     extern_table!(fn(pc: Pc, stack: Stack<'_>, state: &mut State<'_, T>) -> InstructionFnRet);
 
-#[cfg(feature = "nightly")]
+#[cfg(feature = "tco")]
 pub(crate) type InstructionFn<T> = TailInstructionFn<T>;
 
 /// Normal instruction dispatch table.
-#[cfg(not(feature = "nightly"))]
+#[cfg(not(feature = "tco"))]
 pub(crate) type InstructionTable<T> = [InstructionFn<T>; 256];
-#[cfg(feature = "nightly")]
+#[cfg(feature = "tco")]
 pub(crate) type InstructionTable<T> = TailInstructionTable<T>;
 
 /// Tail instruction function pointer.
-#[cfg(feature = "nightly")]
+#[cfg(feature = "tco")]
 pub(crate) type TailInstructionFn<T> = extern_table!(
     fn(pc: Pc, stack: Stack<'_>, remaining_gas: RemainingGas, state: &mut State<'_, T>)
 );
 
 /// Tail instruction dispatch table.
-#[cfg(feature = "nightly")]
+#[cfg(feature = "tco")]
 pub(crate) type TailInstructionTable<T> = [TailInstructionFn<T>; 256];
 
 pub(crate) trait InstructionTables<C>: EvmTypes
@@ -61,7 +61,7 @@ pub(crate) const fn unknown_instruction<T: EvmTypes>(
     Err(InstrStop::OpcodeNotFound)
 }
 
-#[cfg(not(feature = "nightly"))]
+#[cfg(not(feature = "tco"))]
 macro_rules! assign_instruction_table_entries {
     ([$table:expr, $evm_types:ty, $config:ty, $dispatch:ident, $instr_fn:ty] $($op:literal,)*) => {
         $(
@@ -70,7 +70,7 @@ macro_rules! assign_instruction_table_entries {
     };
 }
 
-#[cfg(feature = "nightly")]
+#[cfg(feature = "tco")]
 macro_rules! assign_instruction_table_entries {
     ([$table:expr, $evm_types:ty, $config:ty, $dispatch:ident, $instr_fn:ty] $($op:literal,)*) => {
         $(
@@ -128,29 +128,29 @@ where
     T: EvmTypes,
     C: EvmConfig<T>,
 {
-    #[cfg(feature = "nightly")]
+    #[cfg(feature = "tco")]
     use tail_dispatch as dispatch;
 
-    #[cfg(not(feature = "nightly"))]
+    #[cfg(not(feature = "tco"))]
     let mut table = [dispatch::<T, C, 0> as InstructionFn<T>; 256];
-    #[cfg(feature = "nightly")]
+    #[cfg(feature = "tco")]
     let mut table = [dispatch::<T, C, 0, true> as InstructionFn<T>; 256];
     for_each_opcode_value!([table, T, C, dispatch, InstructionFn<T>] assign_instruction_table_entries);
 
     // Make all unknown entries point to the same dispatch function.
     let mut i = 0;
-    #[cfg(not(feature = "nightly"))]
+    #[cfg(not(feature = "tco"))]
     let mut unknown_idx = None;
     while i < 256 {
         if C::VERSION_TABLES.is_unknown_opcode(i as u8) {
-            #[cfg(not(feature = "nightly"))]
+            #[cfg(not(feature = "tco"))]
             {
                 if unknown_idx.is_none() {
                     unknown_idx = Some(i);
                 }
                 table[i] = table[unknown_idx.unwrap()];
             }
-            #[cfg(feature = "nightly")]
+            #[cfg(feature = "tco")]
             {
                 table[i] = tail_unknown_dispatch::<T, C> as InstructionFn<T>;
             }
@@ -162,7 +162,7 @@ where
 }
 
 extern_table! {
-    #[cfg(not(feature = "nightly"))]
+    #[cfg(not(feature = "tco"))]
     fn dispatch<T: EvmTypes, C: EvmConfig<T>, const OP: u8>(
         pc: Pc,
         stack: Stack<'_>,
@@ -172,7 +172,7 @@ extern_table! {
     }
 }
 
-#[cfg(not(feature = "nightly"))]
+#[cfg(not(feature = "tco"))]
 #[inline(always)]
 fn dispatch_mono<T: EvmTypes, C: EvmConfig<T>>(
     op: u8,
@@ -199,7 +199,7 @@ fn dispatch_mono<T: EvmTypes, C: EvmConfig<T>>(
 }
 
 extern_table! {
-    #[cfg(feature = "nightly")]
+    #[cfg(feature = "tco")]
     fn tail_dispatch<T: EvmTypes, C: EvmConfig<T>, const OP: u8, const DYNAMIC_GAS: bool>(
         pc: Pc,
         stack: Stack<'_>,
@@ -212,7 +212,7 @@ extern_table! {
 }
 
 extern_table! {
-    #[cfg(feature = "nightly")]
+    #[cfg(feature = "tco")]
     #[cold]
     fn tail_unknown_dispatch<T: EvmTypes, C: EvmConfig<T>>(
         pc: Pc,
@@ -227,7 +227,7 @@ extern_table! {
 }
 
 extern_table! {
-    #[cfg(feature = "nightly")]
+    #[cfg(feature = "tco")]
     #[inline(always)]
     fn tail_dispatch_mono<T: EvmTypes, C: EvmConfig<T>, const DYNAMIC_GAS: bool>(
         mut pc: Pc,
@@ -260,7 +260,7 @@ extern_table! {
 }
 
 extern_table! {
-    #[cfg(feature = "nightly")]
+    #[cfg(feature = "tco")]
     #[inline]
     fn tail_call_next<T: EvmTypes, C: EvmConfig<T>>(
         pc: Pc,
@@ -274,7 +274,7 @@ extern_table! {
 }
 
 extern_table! {
-    #[cfg(feature = "nightly")]
+    #[cfg(feature = "tco")]
     #[inline(never)] // TODO
     #[cold]
     fn tail_call_restore<T: EvmTypes>(
@@ -296,13 +296,13 @@ extern_table! {
 }
 
 #[inline]
-#[cfg(not(feature = "nightly"))]
+#[cfg(not(feature = "tco"))]
 const fn pre_step<T: EvmTypes, C: EvmConfig<T>>(gas: &mut Gas, op: u8) -> Result {
     gas.spend(C::VERSION_TABLES.static_gas(op) as _)
 }
 
 #[inline]
-#[cfg(feature = "nightly")]
+#[cfg(feature = "tco")]
 const fn pre_step<T: EvmTypes, C: EvmConfig<T>>(
     remaining_gas: &mut RemainingGas,
     op: u8,

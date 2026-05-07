@@ -1,4 +1,4 @@
-#[cfg(feature = "nightly")]
+#[cfg(feature = "tco")]
 use super::gas::RemainingGas;
 use super::{
     BytecodeRef, Gas, InstrStop, Memory, Message, MessageKind, Pc, Result, Stack, State, Word,
@@ -6,7 +6,7 @@ use super::{
 use crate::{EvmConfig, EvmTypes, ExecutionConfig, bytecode::Bytecode, env::TxEnv};
 use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::Bytes;
-#[cfg(not(feature = "nightly"))]
+#[cfg(not(feature = "tco"))]
 use core::hint::cold_path;
 use core::marker::PhantomData;
 
@@ -155,15 +155,15 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
     pub fn run_with(&mut self, config: &ExecutionConfig<T>, host: &mut T::Host) -> InstrStop {
         self.memory.set_memory_limit(config.version.memory_limit);
 
-        #[cfg(feature = "nightly")]
+        #[cfg(feature = "tco")]
         let r = self.step_tail(config, host);
-        #[cfg(not(feature = "nightly"))]
+        #[cfg(not(feature = "tco"))]
         let r = self.run_table_loop(config, host);
 
         r
     }
 
-    #[cfg(not(feature = "nightly"))]
+    #[cfg(not(feature = "tco"))]
     fn run_table_loop(&mut self, config: &ExecutionConfig<T>, host: &mut T::Host) -> InstrStop {
         #[expect(clippy::unnecessary_cast, reason = "cast erases the active interpreter lifetime")]
         let raw = self as *mut Self as *mut Interpreter<'_, T>;
@@ -196,7 +196,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
     }
 
     #[inline(always)]
-    #[cfg(feature = "nightly")]
+    #[cfg(feature = "tco")]
     fn step_tail(&mut self, config: &ExecutionConfig<T>, host: &mut T::Host) -> InstrStop {
         #[expect(clippy::unnecessary_cast, reason = "cast erases the active interpreter lifetime")]
         let raw = self as *mut Self as *mut Interpreter<'_, T>;
