@@ -1,6 +1,19 @@
 use super::{Gas, Pc, Result, StackMut, State, Word};
 use crate::EvmTypes;
 
+/// Function signature of an `#[instruction]`.
+pub(crate) type InstructionImplFn<T> =
+    fn(pc: &mut Pc, stack: StackMut<'_>, state: &mut State<'_, T>) -> Result;
+
+/// EVM instruction implementation.
+pub trait Instruction<T: EvmTypes = crate::BaseEvmTypes> {
+    /// Whether this instruction needs mutable gas state.
+    const DYNAMIC_GAS: bool = true;
+
+    /// Executes this instruction.
+    fn execute(pc: &mut Pc, stack: StackMut<'_>, state: &mut State<'_, T>) -> Result;
+}
+
 /// Instruction execution context.
 pub struct InstructionCx<'a, 'state, T: EvmTypes> {
     /// Program counter state.

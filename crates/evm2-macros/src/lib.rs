@@ -184,7 +184,7 @@ fn expand_instruction(instruction_attrs: InstructionAttrs, input: ItemFn) -> Tok
             core::marker::PhantomData<fn() -> #evm_types>
         ) #struct_where_clause;
 
-        impl #struct_generics evm2::interpreter::Instruction<#evm_types> for #ident #type_generics
+        impl #struct_generics evm2::interpreter::private::Instruction<#evm_types> for #ident #type_generics
         #impl_where_clause
         {
             const DYNAMIC_GAS: bool = #dynamic_gas;

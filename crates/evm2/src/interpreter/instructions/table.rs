@@ -36,10 +36,6 @@ pub(crate) type TailInstructionFn<T> = extern_table!(
 #[cfg(feature = "nightly")]
 pub(crate) type TailInstructionTable<T> = [TailInstructionFn<T>; 256];
 
-/// Function signature of an `#[instruction]`.
-pub(crate) type InstructionImplFn<T> =
-    fn(pc: &mut Pc, stack: StackMut<'_>, state: &mut State<'_, T>) -> Result;
-
 pub(crate) trait InstructionTables<C>: EvmTypes
 where
     C: EvmConfig<Self>,
@@ -52,15 +48,6 @@ where
     T: EvmTypes,
     C: EvmConfig<T>,
 {
-}
-
-/// EVM instruction implementation.
-pub trait Instruction<T: EvmTypes = crate::BaseEvmTypes> {
-    /// Whether this instruction needs mutable gas state.
-    const DYNAMIC_GAS: bool = true;
-
-    /// Executes this instruction.
-    fn execute(pc: &mut Pc, stack: StackMut<'_>, state: &mut State<'_, T>) -> Result;
 }
 
 #[cold]

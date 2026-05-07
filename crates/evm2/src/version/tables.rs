@@ -1,8 +1,8 @@
 use crate::{
     EvmConfig, EvmTypes,
     interpreter::{
-        Instruction,
-        instructions::table::{InstructionImplFn, unknown_instruction},
+        instructions::table::unknown_instruction,
+        private::{Instruction, InstructionImplFn},
     },
 };
 use core::fmt;
@@ -64,11 +64,11 @@ impl<T: EvmTypes> VersionTables<T> {
     }
 
     /// Sets the static gas cost and instruction for `opcode`.
+    ///
+    /// An `I: Instruction` is implemented using the [`#[instruction]`](evm2_macros::instruction)
+    /// proc macro.
     #[inline]
-    pub const fn set_instruction<I>(&mut self, opcode: u8, gas: u16)
-    where
-        I: Instruction<T>,
-    {
+    pub const fn set_instruction<I: Instruction<T>>(&mut self, opcode: u8, gas: u16) {
         self.set_static_gas(opcode, gas);
         self.instruction_impls.set(opcode, I::execute, I::DYNAMIC_GAS);
     }
