@@ -168,8 +168,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         #[expect(clippy::unnecessary_cast, reason = "cast erases the active interpreter lifetime")]
         let raw = self as *mut Self as *mut Interpreter<'_, T>;
         let mut pc = Pc::new(self.pc);
-        let mut stack_len = self.stack_len;
-        let stack = &mut *self.stack;
+        let mut stack = Stack::new(&mut self.stack, self.stack_len);
         let bytecode = BytecodeRef::new(&self.bytecode);
         let mut state = State {
             bytecode,
@@ -183,13 +182,13 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         loop {
             let op = pc.op();
             let instr = config.instructions[op as usize];
-            let (next_pc, next_stack_len) = instr(pc, Stack::new(stack, stack_len), &mut state);
+            let (next_pc, next_stack_len) = instr(pc, stack.reborrow(), &mut state);
             pc = Pc::new(next_pc);
-            stack_len = next_stack_len;
+            stack.len = next_stack_len;
             if next_pc.is_null() {
                 cold_path();
                 self.pc = next_pc;
-                self.stack_len = stack_len;
+                self.stack_len = stack.len;
                 self.gas = state.gas;
                 return self.result.unwrap_err();
             }
@@ -205,7 +204,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         let pc = Pc::new(self.pc);
         let op = pc.op();
         let instr = config.instructions[op as usize];
-        let stack = &mut *self.stack;
+        let stack = Stack::new(&mut self.stack, self.stack_len);
         let remaining_gas = RemainingGas::new(self.gas.remaining());
         let mut state = State {
             bytecode,
@@ -216,7 +215,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
             version: &config.version,
             raw_interp: raw,
         };
-        instr(pc, Stack::new(&mut *stack, self.stack_len), remaining_gas, &mut state);
+        instr(pc, stack, remaining_gas, &mut state);
         self.result.unwrap_err()
     }
 }
