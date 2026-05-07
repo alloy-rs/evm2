@@ -6,6 +6,8 @@ use criterion::{Criterion, criterion_group, criterion_main};
 mod cases;
 #[path = "evm/fixture.rs"]
 mod fixture;
+#[path = "evm/revm.rs"]
+mod revm;
 #[path = "evm/support.rs"]
 mod support;
 
@@ -14,6 +16,10 @@ fn evm(c: &mut Criterion) {
     let suites = fixture::Suites::load(cases::all().iter().map(|bench| bench.fixture_path));
     for bench in cases::all() {
         let prepared = support::PreparedBench::load(bench, &suites);
+        prepared.sanity_check();
+        prepared.bench(&mut group);
+
+        let prepared = revm::PreparedBench::load(bench, &suites);
         prepared.sanity_check();
         prepared.bench(&mut group);
     }
