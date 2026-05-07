@@ -38,7 +38,11 @@ use ffi::{
 };
 
 const NAME: &CStr = c"evm2";
-const VERSION: &CStr = c"0.1.0";
+const VERSION: &CStr =
+    match CStr::from_bytes_with_nul(concat!(env!("CARGO_PKG_VERSION"), "\0").as_bytes()) {
+        Ok(version) => version,
+        Err(_) => panic!("package version is a valid C string"),
+    };
 
 #[derive(Clone, Copy)]
 struct EvmcTypes;
