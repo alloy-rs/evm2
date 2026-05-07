@@ -84,7 +84,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         self.tx_env = Some(tx_env);
         self.message = Some(message);
         self.is_static = is_static;
-        self.return_data.clear();
+        self.return_data = Bytes::new();
     }
 
     pub(crate) const fn clear_frame_refs(&mut self) {

@@ -553,8 +553,11 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         // pool after execution. Recursive calls may mutate the pool, but they cannot move this box.
         let interpreter_ref = unsafe { &mut *(&mut *interpreter as *mut Interpreter<'frame, T>) };
         interpreter_ref.init(bytecode, tx_env, message, caller_is_static);
-        let execution_config = self.execution_config;
-        let stop = interpreter_ref.run_with(&execution_config, self);
+        // SAFETY: `execution_config` points to a private field that host execution does not
+        // replace or mutate, so the pointee remains valid here.
+        #[expect(clippy::deref_addrof, reason = "raw borrow avoids copying the config")]
+        let execution_config = unsafe { &*(&raw const self.execution_config) };
+        let stop = interpreter_ref.run_with(execution_config, self);
         let interpreter = self.interpreter_pool.push(interpreter);
         (stop, interpreter)
     }
