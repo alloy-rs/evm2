@@ -91,15 +91,27 @@ impl Typed2718 for RecoveredTxEnvelope {
     }
 }
 
-/// Returns the Ethereum transaction registry.
-pub fn ethereum_tx_registry<T: EvmTypes<Host = Evm<T>>>()
--> TxRegistry<RecoveredTxEnvelope, TxResult, Evm<T>> {
-    TxRegistry::new()
-        .with_handler(0, RecoveredTxEnvelope::as_legacy, legacy::handle::<T>)
-        .with_handler(1, RecoveredTxEnvelope::as_eip2930, eip2930::handle::<T>)
-        .with_handler(2, RecoveredTxEnvelope::as_eip1559, eip1559::handle::<T>)
-        .with_handler(3, RecoveredTxEnvelope::as_eip4844, eip4844::handle::<T>)
-        .with_handler(4, RecoveredTxEnvelope::as_eip7702, eip7702::handle::<T>)
+/// Returns the Ethereum transaction registry for `spec_id`.
+pub fn ethereum_tx_registry<T: EvmTypes<Host = Evm<T>>>(
+    spec_id: SpecId,
+) -> TxRegistry<RecoveredTxEnvelope, TxResult, Evm<T>> {
+    let mut registry =
+        TxRegistry::new().with_handler(0, RecoveredTxEnvelope::as_legacy, legacy::handle::<T>);
+
+    if spec_id.enables(SpecId::BERLIN) {
+        registry.register(1, RecoveredTxEnvelope::as_eip2930, eip2930::handle::<T>);
+    }
+    if spec_id.enables(SpecId::LONDON) {
+        registry.register(2, RecoveredTxEnvelope::as_eip1559, eip1559::handle::<T>);
+    }
+    if spec_id.enables(SpecId::CANCUN) {
+        registry.register(3, RecoveredTxEnvelope::as_eip4844, eip4844::handle::<T>);
+    }
+    if spec_id.enables(SpecId::PRAGUE) {
+        registry.register(4, RecoveredTxEnvelope::as_eip7702, eip7702::handle::<T>);
+    }
+
+    registry
 }
 
 pub(super) fn validate_gas_price(
@@ -464,7 +476,6 @@ pub(super) fn intrinsic_gas(
     access_list_accounts: u64,
     access_list_storage_keys: u64,
 ) -> u64 {
-    let spec = version.spec_id;
     let params = &version.gas_params;
     let non_zero_multiplier = if version.feature(EvmFeatures::EIP2028) { 16 } else { 68 };
     let mut gas = 21_000;

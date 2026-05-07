@@ -215,7 +215,7 @@ fn execute_spec(
             let mut evm = Evm::<BaseEvmTypes<RecoveredTxEnvelope>>::new(
                 spec,
                 block,
-                ethereum_tx_registry(),
+                ethereum_tx_registry(spec),
                 database.clone(),
                 Precompiles::base(spec),
             );
