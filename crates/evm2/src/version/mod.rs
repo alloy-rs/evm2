@@ -244,6 +244,7 @@ mod tests {
         assert!(osaka.feature(EvmFeatures::BALANCE_CHECK));
         assert!(osaka.feature(EvmFeatures::BLOCK_GAS_LIMIT_CHECK));
         assert!(osaka.feature(EvmFeatures::EIP2));
+        assert!(osaka.feature(EvmFeatures::EIP2028));
         assert!(osaka.feature(EvmFeatures::EIP3541));
         assert!(osaka.feature(EvmFeatures::EIP3607));
         assert!(osaka.feature(EvmFeatures::EIP7623));
@@ -515,6 +516,9 @@ evm_versions! {
     }
 
     ISTANBUL {
+        features: [
+            EIP2028,
+        ],
         ops: [
             CHAINID: BASE,
             SELFBALANCE: LOW,

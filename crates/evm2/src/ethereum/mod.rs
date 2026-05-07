@@ -467,7 +467,7 @@ pub(super) fn intrinsic_gas(
 ) -> u64 {
     let spec = version.spec_id;
     let params = &version.gas_params;
-    let non_zero_multiplier = if spec.enables(SpecId::ISTANBUL) { 16 } else { 68 };
+    let non_zero_multiplier = if version.feature(EvmFeatures::EIP2028) { 16 } else { 68 };
     let mut gas = 21_000;
     for byte in input {
         gas += if *byte == 0 { 4 } else { non_zero_multiplier };
