@@ -1,0 +1,25 @@
+[package]
+name = "evm2-evmc"
+description = "EVMC C API adapter for evm2."
+
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[lints]
+workspace = true
+
+[dependencies]
+evm2.workspace = true
+
+alloy-primitives.workspace = true
+
+[build-dependencies]
+bindgen = "0.72"

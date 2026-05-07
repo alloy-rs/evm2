@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/evm2", "crates/macros", "crates/statetest"]
+members = ["crates/evm2", "crates/evmc", "crates/macros", "crates/statetest"]
 resolver = "3"
 
 [workspace.package]

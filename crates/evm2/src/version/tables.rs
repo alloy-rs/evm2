@@ -20,6 +20,7 @@ pub struct VersionTables<T: EvmTypes> {
 
 pub(crate) struct InstructionInfo<T: EvmTypes> {
     pub(crate) instr: InstructionImplFn<T>,
+    #[cfg_attr(not(feature = "nightly"), allow(dead_code))]
     pub(crate) dynamic_gas: bool,
     pub(crate) is_unknown: bool,
 }
