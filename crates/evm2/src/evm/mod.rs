@@ -225,8 +225,14 @@ impl<T: EvmTypes> Evm<T> {
 
     /// Returns the backing database.
     #[inline]
-    pub const fn database(&self) -> &State<T::Database> {
-        &self.state
+    pub const fn database(&self) -> &T::Database {
+        self.state.initial()
+    }
+
+    /// Returns the backing database mutably.
+    #[inline]
+    pub const fn database_mut(&mut self) -> &mut T::Database {
+        self.state.initial_mut()
     }
 
     /// Returns the mutable EVM state.
