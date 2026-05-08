@@ -151,3 +151,5 @@ c-kzg = ["dep:c-kzg"]
 blst = ["dep:blst"]
 portable = ["c-kzg?/portable", "blst?/portable"]
 p256-aws-lc-rs = ["dep:aws-lc-rs"]
+
+nightly = []

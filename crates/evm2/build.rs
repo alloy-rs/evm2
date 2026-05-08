@@ -9,18 +9,21 @@ use std::{
 };
 
 fn main() {
-    println!("cargo:rustc-check-cfg=cfg(evm2_tco)");
+    println!("cargo:rustc-check-cfg=cfg(tco)");
     println!("cargo:rerun-if-env-changed=RUSTC");
     println!("cargo:rerun-if-env-changed=TARGET");
 
+    let nightly_requested = env::var_os("CARGO_FEATURE_NIGHTLY").is_some();
     let is_nightly = rustc_is_nightly();
 
-    if !is_nightly {
+    if !(is_nightly || nightly_requested) {
         return;
     }
 
     if probe_tco_support() {
-        println!("cargo:rustc-cfg=evm2_tco");
+        println!("cargo:rustc-cfg=tco");
+    } else if nightly_requested {
+        panic!("requested nightly backend is not supported by this rustc/target");
     }
 }
 
@@ -37,8 +40,8 @@ fn rustc_is_nightly() -> bool {
 fn probe_tco_support() -> bool {
     let Some(target) = env::var_os("TARGET") else { return false };
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR is set by Cargo"));
-    let source = out_dir.join("evm2_tco_probe.rs");
-    let metadata = out_dir.join("evm2_tco_probe.rmeta");
+    let source = out_dir.join("tco_probe.rs");
+    let metadata = out_dir.join("tco_probe.rmeta");
 
     if fs::write(&source, TCO_PROBE).is_err() {
         return false;
@@ -46,7 +49,7 @@ fn probe_tco_support() -> bool {
 
     let output = Command::new(rustc())
         .arg("--crate-name")
-        .arg("evm2_tco_probe")
+        .arg("tco_probe")
         .arg("--crate-type")
         .arg("lib")
         .arg("--edition")

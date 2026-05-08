@@ -8,6 +8,7 @@
 Examples:
     ./scripts/dump_opcode_asm.py
     ./scripts/dump_opcode_asm.py ADD PUSH1 SSTORE -o tmp/mydump
+    ./scripts/dump_opcode_asm.py --features evm2/nightly ADD
 """
 
 import argparse
