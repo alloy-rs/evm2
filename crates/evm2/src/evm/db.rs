@@ -77,13 +77,6 @@ impl Database for Box<dyn Database> {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct EmptyDB(());
 
-impl From<EmptyDB> for Box<dyn Database> {
-    #[inline]
-    fn from(value: EmptyDB) -> Self {
-        Box::new(value)
-    }
-}
-
 impl Database for EmptyDB {
     #[inline]
     fn get_account(&mut self, _address: Address) -> Option<AccountInfo> {

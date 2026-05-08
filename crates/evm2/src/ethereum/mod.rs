@@ -601,8 +601,8 @@ mod tests {
             SpecId::OSAKA,
             BlockEnv::default(),
             TxRegistry::new(),
-            database,
-            Precompiles::base(SpecId::OSAKA),
+            Box::new(database),
+            Box::new(Precompiles::base(SpecId::OSAKA)),
         );
 
         assert!(validate_sender(&mut evm, caller, 0, U256::from(100)).is_ok());
@@ -658,8 +658,8 @@ mod tests {
             SpecId::PRAGUE,
             BlockEnv::default(),
             TxRegistry::new(),
-            database,
-            Precompiles::base(SpecId::PRAGUE),
+            Box::new(database),
+            Box::new(Precompiles::base(SpecId::PRAGUE)),
         );
 
         let (bytecode, message) = initial_message(

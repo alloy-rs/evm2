@@ -7,7 +7,6 @@ use crate::{
     interpreter::Word,
     storage_key::{StorageKey, StorageKeyMap},
 };
-use alloc::boxed::Box;
 use alloy_primitives::{
     Address, B256, KECCAK256_EMPTY,
     map::{AddressMap, B256Map, U256Map, hash_map::Entry},
@@ -118,13 +117,6 @@ impl<ExtDB> CacheDB<ExtDB> {
     #[inline]
     pub fn insert_block_hash(&mut self, number: Word, hash: B256) {
         self.cache.block_hashes.insert(number, hash);
-    }
-}
-
-impl<ExtDB: Database> From<CacheDB<ExtDB>> for Box<dyn Database> {
-    #[inline]
-    fn from(value: CacheDB<ExtDB>) -> Self {
-        Box::new(value)
     }
 }
 

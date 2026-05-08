@@ -149,65 +149,72 @@ pub struct TxResult {
 
 macro_rules! evm_dyn_provider_methods {
     (database) => {
-        /// Returns the backing database.
-        #[inline]
-        pub fn database(&self) -> &dyn Database {
-            self.state.initial().as_ref()
-        }
+        paste::paste! {
+            /// Returns this provider.
+            #[inline]
+            pub fn database(&self) -> &dyn Database {
+                self.state.initial().as_ref()
+            }
 
-        /// Returns the backing database mutably.
-        #[inline]
-        pub fn database_mut(&mut self) -> &mut dyn Database {
-            self.state.initial_mut().as_mut()
-        }
+            /// Returns this provider mutably.
+            #[inline]
+            pub fn [<database _mut>](&mut self) -> &mut dyn Database {
+                self.state.initial_mut().as_mut()
+            }
 
-        /// Replaces the backing database.
-        #[inline]
-        pub fn set_database(&mut self, database: impl Into<Box<dyn Database>>) {
-            *self.state.initial_mut() = database.into();
-        }
+            /// Replaces this provider.
+            #[inline]
+            pub fn [<set_ database>](&mut self, database: impl Into<Box<dyn Database>>) {
+                *self.state.initial_mut() = database.into();
+            }
 
-        /// Returns the backing database as `D` if it has that concrete type.
-        #[inline]
-        pub fn database_as<D: Database>(&self) -> Option<&D> {
-            self.database().downcast_ref()
-        }
+            /// Returns this provider as `P` if it has that concrete type.
+            #[inline]
+            pub fn [<database _as>]<P: Database>(&self) -> Option<&P> {
+                self.database().downcast_ref()
+            }
 
-        /// Returns the backing database mutably as `D` if it has that concrete type.
-        #[inline]
-        pub fn database_as_mut<D: Database>(&mut self) -> Option<&mut D> {
-            self.database_mut().downcast_mut()
+            /// Returns this provider mutably as `P` if it has that concrete type.
+            #[inline]
+            pub fn [<database _as_mut>]<P: Database>(&mut self) -> Option<&mut P> {
+                self.[<database _mut>]().downcast_mut()
+            }
         }
     };
     (precompiles) => {
-        /// Returns the precompile provider.
-        #[inline]
-        pub fn precompiles(&self) -> &dyn PrecompileProvider {
-            self.precompiles.as_ref()
-        }
+        paste::paste! {
+            /// Returns this provider.
+            #[inline]
+            pub fn precompiles(&self) -> &dyn PrecompileProvider {
+                self.precompiles.as_ref()
+            }
 
-        /// Returns the precompile provider mutably.
-        #[inline]
-        pub fn precompiles_mut(&mut self) -> &mut dyn PrecompileProvider {
-            self.precompiles.as_mut()
-        }
+            /// Returns this provider mutably.
+            #[inline]
+            pub fn [<precompiles _mut>](&mut self) -> &mut dyn PrecompileProvider {
+                self.precompiles.as_mut()
+            }
 
-        /// Replaces the precompile provider.
-        #[inline]
-        pub fn set_precompiles(&mut self, precompiles: impl Into<Box<dyn PrecompileProvider>>) {
-            self.precompiles = precompiles.into();
-        }
+            /// Replaces this provider.
+            #[inline]
+            pub fn [<set_ precompiles>](
+                &mut self,
+                precompiles: impl Into<Box<dyn PrecompileProvider>>,
+            ) {
+                self.precompiles = precompiles.into();
+            }
 
-        /// Returns the precompile provider as `P` if it has that concrete type.
-        #[inline]
-        pub fn precompiles_as<P: PrecompileProvider>(&self) -> Option<&P> {
-            self.precompiles().downcast_ref()
-        }
+            /// Returns this provider as `P` if it has that concrete type.
+            #[inline]
+            pub fn [<precompiles _as>]<P: PrecompileProvider>(&self) -> Option<&P> {
+                self.precompiles().downcast_ref()
+            }
 
-        /// Returns the precompile provider mutably as `P` if it has that concrete type.
-        #[inline]
-        pub fn precompiles_as_mut<P: PrecompileProvider>(&mut self) -> Option<&mut P> {
-            self.precompiles_mut().downcast_mut()
+            /// Returns this provider mutably as `P` if it has that concrete type.
+            #[inline]
+            pub fn [<precompiles _as_mut>]<P: PrecompileProvider>(&mut self) -> Option<&mut P> {
+                self.[<precompiles _mut>]().downcast_mut()
+            }
         }
     };
 }
@@ -834,8 +841,8 @@ mod tests {
             SpecId::OSAKA,
             BlockEnv::default(),
             registry,
-            InMemoryDB::default(),
-            Precompiles::base(SpecId::OSAKA),
+            Box::new(InMemoryDB::default()),
+            Box::new(Precompiles::base(SpecId::OSAKA)),
         );
         let tx = TestTx { value: 41 };
 
@@ -851,8 +858,8 @@ mod tests {
             SpecId::OSAKA,
             BlockEnv::default(),
             registry,
-            InMemoryDB::default(),
-            Precompiles::base(SpecId::OSAKA),
+            Box::new(InMemoryDB::default()),
+            Box::new(Precompiles::base(SpecId::OSAKA)),
         );
         let tx = TestTx { value: 41 };
 
@@ -870,8 +877,8 @@ mod tests {
             SpecId::OSAKA,
             BlockEnv::default(),
             registry,
-            InMemoryDB::default(),
-            Precompiles::base(SpecId::OSAKA),
+            Box::new(InMemoryDB::default()),
+            Box::new(Precompiles::base(SpecId::OSAKA)),
         );
         let tx = TestTx { value: 0 };
 
@@ -886,8 +893,8 @@ mod tests {
             SpecId::OSAKA,
             BlockEnv::default(),
             registry,
-            InMemoryDB::default(),
-            Precompiles::base(SpecId::OSAKA),
+            Box::new(InMemoryDB::default()),
+            Box::new(Precompiles::base(SpecId::OSAKA)),
         );
         let txs = [TestTx { value: 1 }, TestTx { value: 2 }];
         let gas_used = evm
@@ -904,8 +911,8 @@ mod tests {
             SpecId::OSAKA,
             BlockEnv::default(),
             TxRegistry::new(),
-            InMemoryDB::default(),
-            Precompiles::base(SpecId::OSAKA),
+            Box::new(InMemoryDB::default()),
+            Box::new(Precompiles::base(SpecId::OSAKA)),
         );
         let contract = Address::from([0x11; 20]);
         let bytecode = Bytecode::new_legacy(Bytes::from_static(&[op::ADDRESS, op::STOP]));
@@ -927,8 +934,8 @@ mod tests {
             SpecId::OSAKA,
             BlockEnv::default(),
             TxRegistry::new(),
-            InMemoryDB::default(),
-            Precompiles::base(SpecId::OSAKA),
+            Box::new(InMemoryDB::default()),
+            Box::new(Precompiles::base(SpecId::OSAKA)),
         );
         let contract = Address::from([0x11; 20]);
         let key = Word::ZERO;
@@ -958,8 +965,8 @@ mod tests {
             SpecId::FRONTIER,
             BlockEnv::default(),
             TxRegistry::new(),
-            database,
-            Precompiles::base(SpecId::FRONTIER),
+            Box::new(database),
+            Box::new(Precompiles::base(SpecId::FRONTIER)),
         );
         let message = Message {
             kind: MessageKind::Create,
@@ -991,8 +998,8 @@ mod tests {
             SpecId::HOMESTEAD,
             BlockEnv::default(),
             TxRegistry::new(),
-            database,
-            Precompiles::base(SpecId::HOMESTEAD),
+            Box::new(database),
+            Box::new(Precompiles::base(SpecId::HOMESTEAD)),
         );
         let message = Message {
             kind: MessageKind::Create,
@@ -1022,8 +1029,8 @@ mod tests {
             SpecId::SPURIOUS_DRAGON,
             BlockEnv::default(),
             TxRegistry::new(),
-            database,
-            Precompiles::base(SpecId::SPURIOUS_DRAGON),
+            Box::new(database),
+            Box::new(Precompiles::base(SpecId::SPURIOUS_DRAGON)),
         );
         let message = Message {
             kind: MessageKind::StaticCall,
@@ -1063,8 +1070,8 @@ mod tests {
             SpecId::SPURIOUS_DRAGON,
             BlockEnv::default(),
             TxRegistry::new(),
-            database,
-            Precompiles::base(SpecId::SPURIOUS_DRAGON),
+            Box::new(database),
+            Box::new(Precompiles::base(SpecId::SPURIOUS_DRAGON)),
         );
         let message = Message {
             kind: MessageKind::DelegateCall,
@@ -1095,8 +1102,8 @@ mod tests {
             SpecId::OSAKA,
             BlockEnv::default(),
             TxRegistry::new(),
-            InMemoryDB::default(),
-            Precompiles::base(SpecId::OSAKA),
+            Box::new(InMemoryDB::default()),
+            Box::new(Precompiles::base(SpecId::OSAKA)),
         );
         let bytecode = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
         let message = Message {
@@ -1116,8 +1123,8 @@ mod tests {
             SpecId::OSAKA,
             BlockEnv::default(),
             TxRegistry::new(),
-            InMemoryDB::default(),
-            Precompiles::base(SpecId::OSAKA),
+            Box::new(InMemoryDB::default()),
+            Box::new(Precompiles::base(SpecId::OSAKA)),
         );
         let bytecode = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
         let message = Message {

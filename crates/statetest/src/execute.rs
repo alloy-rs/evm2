@@ -216,8 +216,8 @@ fn execute_spec(
                 spec,
                 block,
                 ethereum_tx_registry(spec),
-                database.clone(),
-                Precompiles::base(spec),
+                Box::new(database.clone()),
+                Box::new(Precompiles::base(spec)),
             );
             let system_changes = pre_block_system_calls(&mut evm, spec, env, &database);
             let result = evm.transact(tx)?;

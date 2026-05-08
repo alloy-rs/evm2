@@ -1,7 +1,7 @@
 //! EVM precompiled contracts.
 
 use crate::{SpecId, evm::precompile::PrecompileProvider, interpreter::Gas, once_lock::OnceLock};
-use alloc::{borrow::Cow, boxed::Box, vec::Vec};
+use alloc::{borrow::Cow, vec::Vec};
 use alloy_primitives::Address;
 
 pub mod blake2;
@@ -92,13 +92,6 @@ impl Precompiles {
     #[inline]
     pub fn map(precompiles: impl IntoIterator<Item = Precompile>) -> PrecompileMap {
         PrecompileMap::from_precompiles(precompiles)
-    }
-}
-
-impl From<Precompiles> for Box<dyn PrecompileProvider> {
-    #[inline]
-    fn from(value: Precompiles) -> Self {
-        Box::new(value)
     }
 }
 

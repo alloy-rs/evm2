@@ -36,8 +36,8 @@ fn main() -> evm2::registry::HandlerResult<()> {
         CustomSpecId::CustomOsaka,
         BlockEnv::default(),
         custom_registry(),
-        InMemoryDB::default(),
-        NoPrecompiles,
+        Box::new(InMemoryDB::default()),
+        Box::new(NoPrecompiles),
     );
     assert_eq!(evm.spec_id(), SpecId::OSAKA);
     assert_eq!(evm.version().memory_limit, version.memory_limit);
@@ -63,8 +63,8 @@ fn main() -> evm2::registry::HandlerResult<()> {
         CustomSpecId::MainnetOsaka,
         BlockEnv::default(),
         custom_registry(),
-        InMemoryDB::default(),
-        NoPrecompiles,
+        Box::new(InMemoryDB::default()),
+        Box::new(NoPrecompiles),
     );
     let mainnet_result = mainnet_evm.transact(&execute_code_tx)?;
     assert_eq!(mainnet_result.stop, InstrStop::OpcodeNotFound);

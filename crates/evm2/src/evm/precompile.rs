@@ -96,13 +96,6 @@ impl PrecompileProvider for Box<dyn PrecompileProvider> {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct NoPrecompiles;
 
-impl From<NoPrecompiles> for Box<dyn PrecompileProvider> {
-    #[inline]
-    fn from(value: NoPrecompiles) -> Self {
-        Box::new(value)
-    }
-}
-
 impl PrecompileProvider for NoPrecompiles {
     #[inline]
     fn warm_addresses(&self) -> Vec<Address> {
