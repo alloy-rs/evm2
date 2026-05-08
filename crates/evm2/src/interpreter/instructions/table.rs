@@ -4,6 +4,7 @@ use crate::{
     EvmConfig, EvmTypes,
     interpreter::{InstrStop, InterpreterState, Pc, Result, StackMut, op},
 };
+
 #[cold]
 pub(crate) const fn unknown_instruction<T: EvmTypes>(
     _pc: &mut Pc,

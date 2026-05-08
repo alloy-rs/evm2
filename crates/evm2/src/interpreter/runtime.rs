@@ -27,7 +27,6 @@ pub struct Interpreter<'frame, T: EvmTypes> {
     message: Option<&'frame Message>,
     host: Option<NonNull<T::Host>>,
     inspector: Option<NonNull<dyn Inspector<T>>>,
-    typed_inspector: Option<NonNull<()>>,
     version: *const Version,
     stack_len: usize,
     #[debug(skip)]
@@ -59,7 +58,6 @@ impl<T: EvmTypes> Default for Interpreter<'_, T> {
             return_data: Bytes::new(),
             host: None,
             inspector: None,
-            typed_inspector: None,
             version: core::ptr::null(),
             spec: SpecId::DEFAULT,
             // SAFETY: `MaybeUninit<Word>` does not need initialization.
@@ -182,12 +180,9 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         I: Inspector<T>,
     {
         let config = ExecutionConfig::for_config::<C>();
-        self.run_with_typed_inspector(
-            &config,
-            host,
-            inspector,
-            <T as super::instructions::table::TypedInspectInstrTables<C, I>>::INSPECT_INSTRUCTIONS,
-        )
+        let instructions =
+            <T as super::instructions::table::TypedInspectInstrTables<C, I>>::INSPECT_INSTRUCTIONS;
+        self.run_inner(&config, host, Some(NonNull::from(inspector)), instructions)
     }
 
     /// Runs the interpreter until it stops.
@@ -204,23 +199,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
     ) -> InstrStop {
         let instructions =
             if inspector.is_some() { config.inspect_instructions } else { config.instructions };
-        self.run_inner(config, host, inspector, None, instructions)
-    }
-
-    fn run_with_typed_inspector<I: Inspector<T>>(
-        &mut self,
-        config: &ExecutionConfig<T>,
-        host: &mut T::Host,
-        inspector: &mut I,
-        instructions: &'static super::instructions::table::InstrTable<T>,
-    ) -> InstrStop {
-        self.run_inner(
-            config,
-            host,
-            Some(NonNull::from(&mut *inspector)),
-            Some(NonNull::from(inspector).cast()),
-            instructions,
-        )
+        self.run_inner(config, host, inspector, instructions)
     }
 
     fn run_inner(
@@ -228,13 +207,12 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         config: &ExecutionConfig<T>,
         host: &mut T::Host,
         inspector: Option<NonNull<dyn Inspector<T>>>,
-        typed_inspector: Option<NonNull<()>>,
         instructions: &'static super::instructions::table::InstrTable<T>,
     ) -> InstrStop {
         self.memory.set_memory_limit(config.version.memory_limit);
-        self.host = Some(NonNull::from(&mut *host));
+
+        self.host = Some(NonNull::from(host));
         self.inspector = inspector;
-        self.typed_inspector = typed_inspector;
         self.version = &config.version;
         self.spec = config.version.spec_id;
 
@@ -245,8 +223,8 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
 
         self.host = None;
         self.inspector = None;
-        self.typed_inspector = None;
         self.version = core::ptr::null();
+
         r
     }
 
@@ -428,44 +406,36 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
 
     #[inline]
     pub(crate) fn inspect_step(&mut self, pc: Pc, stack_len: usize) {
-        let Some(mut inspector) = self.0.inspector else {
-            return;
-        };
         self.0.pc = pc.as_ptr();
         self.0.stack_len = stack_len;
-        unsafe { inspector.as_mut().step(&mut self.0) };
+        unsafe { self.0.inspector.unwrap_unchecked().as_mut().step(&mut self.0) };
     }
 
     #[inline]
     pub(crate) fn inspect_step_as<I: Inspector<T>>(&mut self, pc: Pc, stack_len: usize) {
-        let Some(inspector) = self.0.typed_inspector else {
-            self.inspect_step(pc, stack_len);
-            return;
-        };
         self.0.pc = pc.as_ptr();
         self.0.stack_len = stack_len;
-        unsafe { inspector.cast::<I>().as_mut().step(&mut self.0) };
+        unsafe {
+            let inspector = self.0.inspector.unwrap_unchecked().as_ptr() as *mut I;
+            (*inspector).step(&mut self.0);
+        };
     }
 
     #[inline]
     pub(crate) fn inspect_step_end(&mut self, pc: Pc, stack_len: usize) {
-        let Some(mut inspector) = self.0.inspector else {
-            return;
-        };
         self.0.pc = pc.as_ptr();
         self.0.stack_len = stack_len;
-        unsafe { inspector.as_mut().step_end(&mut self.0) };
+        unsafe { self.0.inspector.unwrap_unchecked().as_mut().step_end(&mut self.0) };
     }
 
     #[inline]
     pub(crate) fn inspect_step_end_as<I: Inspector<T>>(&mut self, pc: Pc, stack_len: usize) {
-        let Some(inspector) = self.0.typed_inspector else {
-            self.inspect_step_end(pc, stack_len);
-            return;
-        };
         self.0.pc = pc.as_ptr();
         self.0.stack_len = stack_len;
-        unsafe { inspector.cast::<I>().as_mut().step_end(&mut self.0) };
+        unsafe {
+            let inspector = self.0.inspector.unwrap_unchecked().as_ptr() as *mut I;
+            (*inspector).step_end(&mut self.0);
+        };
     }
 
     #[inline]
