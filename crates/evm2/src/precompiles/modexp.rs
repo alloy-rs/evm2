@@ -6,6 +6,8 @@ use crate::{
     precompiles::{PrecompileHalt, PrecompileOutput, PrecompileResult, eip7823},
     utils::{left_pad, left_pad_vec_be, right_pad_vec, right_pad_with_offset},
 };
+#[cfg(feature = "gmp")]
+use alloc::vec;
 use alloc::vec::Vec;
 use alloy_primitives::{Bytes, U256};
 use core::cmp::{max, min};

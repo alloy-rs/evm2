@@ -54,7 +54,7 @@ macro_rules! for_each_opcode_value {
 }
 
 cfg_if::cfg_if! {
-    if #[cfg(feature = "tco")] {
+    if #[cfg(tco)] {
         mod tco;
         use tco as imp;
     } else {
