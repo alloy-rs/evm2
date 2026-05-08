@@ -85,6 +85,21 @@ where
 {
 }
 
+#[inline]
+pub(super) const fn inc_pc(pc: &mut Pc, op: u8) {
+    unsafe { pc.advance_unchecked(instruction_len(op)) };
+}
+
+#[inline(always)]
+pub(super) const fn instruction_len(op: u8) -> usize {
+    match op {
+        op::JUMP | op::JUMPI => 0, // Set inside.
+        op::PUSH1..=op::PUSH32 => (op - op::PUSH1 + 2) as usize,
+        op::DUPN | op::SWAPN | op::EXCHANGE => 2,
+        _ => 1,
+    }
+}
+
 pub(super) trait InspectMode<T: EvmTypes> {
     const INSPECT: bool;
 
@@ -118,21 +133,6 @@ impl<T: EvmTypes> InspectMode<T> for DynInspector {
     #[inline(always)]
     fn step_end(state: &mut InterpreterState<'_, T>, pc: Pc, stack_len: usize) {
         state.inspect_step_end(pc, stack_len);
-    }
-}
-
-#[inline]
-pub(super) const fn inc_pc(pc: &mut Pc, op: u8) {
-    unsafe { pc.advance_unchecked(instruction_len(op)) };
-}
-
-#[inline(always)]
-pub(super) const fn instruction_len(op: u8) -> usize {
-    match op {
-        op::JUMP | op::JUMPI => 0, // Set inside.
-        op::PUSH1..=op::PUSH32 => (op - op::PUSH1 + 2) as usize,
-        op::DUPN | op::SWAPN | op::EXCHANGE => 2,
-        _ => 1,
     }
 }
 
