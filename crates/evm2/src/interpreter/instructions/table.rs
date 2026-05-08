@@ -275,7 +275,7 @@ extern_table! {
 
 extern_table! {
     #[cfg(feature = "tco")]
-    #[inline(never)]
+    #[inline(never)] // TODO
     #[cold]
     fn tail_call_restore<T: EvmTypes>(
         pc: Pc,
