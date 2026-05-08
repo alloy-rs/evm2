@@ -25,6 +25,7 @@ fn load_account<T: EvmTypes>(
     Ok(account)
 }
 
+#[inline]
 fn copy_memory_resize<T: EvmTypes>(
     cx: &mut GasInstructionCx<'_, '_, T>,
     memory_offset: Word,
@@ -38,6 +39,7 @@ fn copy_memory_resize<T: EvmTypes>(
     Ok(Some(memory_offset))
 }
 
+#[inline]
 fn copy_cost_and_memory_resize<T: EvmTypes>(
     cx: &mut GasInstructionCx<'_, '_, T>,
     memory_offset: Word,
@@ -47,6 +49,7 @@ fn copy_cost_and_memory_resize<T: EvmTypes>(
     copy_memory_resize(cx, memory_offset, len)
 }
 
+#[inline]
 fn set_copy_data<T: EvmTypes>(
     cx: &mut GasInstructionCx<'_, '_, T>,
     memory_offset: usize,
@@ -57,6 +60,7 @@ fn set_copy_data<T: EvmTypes>(
     cx.state.memory().set_data(memory_offset, word_to_usize_saturated(data_offset), len, data);
 }
 
+#[inline]
 fn copy_data<T: EvmTypes>(
     cx: &mut GasInstructionCx<'_, '_, T>,
     memory_offset: Word,
