@@ -85,7 +85,7 @@ where
 {
 }
 
-#[inline]
+#[inline(always)]
 pub(super) const fn inc_pc(pc: &mut Pc, op: u8) {
     unsafe { pc.advance_unchecked(instruction_len(op)) };
 }

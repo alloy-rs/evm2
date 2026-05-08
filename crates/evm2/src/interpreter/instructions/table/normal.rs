@@ -63,6 +63,7 @@ extern_table! {
     }
 }
 
+#[cold] // Not cold, but avoids MIR inlining.
 #[inline(always)]
 fn dispatch_mono<T: EvmTypes, C: EvmConfig<T>, M: InspectMode<T>>(
     mut pc: Pc,
@@ -98,7 +99,7 @@ fn dispatch_mono<T: EvmTypes, C: EvmConfig<T>, M: InspectMode<T>>(
     (pc.as_ptr(), stack.len)
 }
 
-#[inline]
+#[inline(always)]
 const fn pre_step<T: EvmTypes, C: EvmConfig<T>>(gas: &mut Gas, op: u8) -> Result {
     gas.spend(C::VERSION_TABLES.static_gas(op) as _)
 }

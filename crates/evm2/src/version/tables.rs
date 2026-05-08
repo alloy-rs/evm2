@@ -46,25 +46,25 @@ impl<T: EvmTypes> VersionTables<T> {
     }
 
     /// Returns the static gas cost for `opcode`.
-    #[inline]
+    #[inline(always)]
     pub const fn static_gas(&self, opcode: u8) -> u16 {
         self.static_gas_table.get(opcode)
     }
 
     /// Sets the static gas cost for `opcode`.
-    #[inline]
+    #[inline(always)]
     pub const fn set_static_gas(&mut self, opcode: u8, cost: u16) {
         self.static_gas_table.set(opcode, cost);
     }
 
     /// Returns instruction metadata for `opcode`.
-    #[inline]
+    #[inline(always)]
     pub(crate) const fn instruction(&self, opcode: u8) -> InstructionInfo<T> {
         self.instruction_impls.get(opcode)
     }
 
     /// Returns whether `opcode` has no instruction implementation in this version.
-    #[inline]
+    #[inline(always)]
     pub(crate) const fn is_unknown_opcode(&self, opcode: u8) -> bool {
         self.instruction_impls.is_unknown(opcode)
     }
@@ -73,7 +73,7 @@ impl<T: EvmTypes> VersionTables<T> {
     ///
     /// An `I: Instruction` is implemented using the [`#[instruction]`](evm2_macros::instruction)
     /// proc macro.
-    #[inline]
+    #[inline(always)]
     pub const fn set_instruction<I: Instruction<T>>(&mut self, opcode: u8, gas: u16) {
         self.set_static_gas(opcode, gas);
         self.instruction_impls.set(opcode, I::execute, I::DYNAMIC_GAS);
@@ -93,13 +93,13 @@ impl StaticGasTable {
     }
 
     /// Returns the gas cost for `opcode`.
-    #[inline]
+    #[inline(always)]
     const fn get(&self, opcode: u8) -> u16 {
         self.table[opcode as usize]
     }
 
     /// Sets the gas cost for `opcode`.
-    #[inline]
+    #[inline(always)]
     const fn set(&mut self, opcode: u8, cost: u16) {
         self.table[opcode as usize] = cost;
     }
@@ -118,7 +118,7 @@ impl<T: EvmTypes> InstructionImplTable<T> {
     }
 
     /// Returns the instruction implementation for `opcode`.
-    #[inline]
+    #[inline(always)]
     const fn get(&self, opcode: u8) -> InstructionInfo<T> {
         match self.instrs[opcode as usize] {
             Some(instr) => {
@@ -129,13 +129,13 @@ impl<T: EvmTypes> InstructionImplTable<T> {
     }
 
     /// Returns whether `opcode` has no instruction implementation.
-    #[inline]
+    #[inline(always)]
     const fn is_unknown(&self, opcode: u8) -> bool {
         self.instrs[opcode as usize].is_none()
     }
 
     /// Sets the instruction implementation for `opcode`.
-    #[inline]
+    #[inline(always)]
     const fn set(&mut self, opcode: u8, instr: InstructionImplFn<T>, dynamic_gas: bool) {
         self.instrs[opcode as usize] = Some(instr);
         self.dynamic_gas[opcode as usize] = dynamic_gas;

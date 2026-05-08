@@ -304,7 +304,7 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
         &mut self.0.gas
     }
 
-    #[inline]
+    #[inline(always)]
     pub(crate) const fn set_result(&mut self, result: Result) {
         self.0.result = result;
     }

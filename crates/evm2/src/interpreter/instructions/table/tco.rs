@@ -141,7 +141,7 @@ extern_table! {
     }
 }
 
-#[inline]
+#[inline(always)]
 const fn pre_step<T: EvmTypes, C: EvmConfig<T>>(
     remaining_gas: &mut RemainingGas,
     op: u8,
