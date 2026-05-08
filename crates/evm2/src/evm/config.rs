@@ -29,7 +29,7 @@ pub trait EvmTypes: Sized + 'static {
     type Tx;
 
     /// Host type used by this EVM.
-    type Host: Host;
+    type Host: Host + ?Sized;
 
     /// Database type used by this EVM.
     type Database: crate::evm::Database;

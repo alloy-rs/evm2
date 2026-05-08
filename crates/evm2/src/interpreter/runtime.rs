@@ -9,9 +9,10 @@ use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::Bytes;
 #[cfg(not(feature = "tco"))]
 use core::hint::cold_path;
-use core::{fmt, marker::PhantomData, mem::MaybeUninit};
+use core::{fmt, marker::PhantomData, mem::MaybeUninit, ptr::NonNull};
 
 /// EVM interpreter.
+#[derive(derive_more::Debug)]
 #[repr(C)]
 pub struct Interpreter<'frame, T: EvmTypes> {
     bytecode: Bytecode,
@@ -22,7 +23,7 @@ pub struct Interpreter<'frame, T: EvmTypes> {
     output: *const [u8],
     tx_env: Option<&'frame TxEnv>,
     message: Option<&'frame Message>,
-    host: *mut T::Host,
+    host: Option<NonNull<T::Host>>,
     version: *const Version,
     stack_len: usize,
 
@@ -31,9 +32,11 @@ pub struct Interpreter<'frame, T: EvmTypes> {
     spec: SpecId,
     is_static: bool,
 
-    _marker: PhantomData<fn() -> T>,
-
+    #[debug(skip)]
     stack: [MaybeUninit<Word>; Stack::CAPACITY],
+
+    #[debug(skip)]
+    _marker: PhantomData<fn() -> T>,
 }
 
 impl<T: EvmTypes> Default for Interpreter<'_, T> {
@@ -51,33 +54,12 @@ impl<T: EvmTypes> Default for Interpreter<'_, T> {
             message: None,
             is_static: false,
             return_data: Bytes::new(),
-            host: core::ptr::null_mut(),
+            host: None,
             version: core::ptr::null(),
             spec: SpecId::DEFAULT,
-            _marker: PhantomData,
             stack: [const { MaybeUninit::uninit() }; Stack::CAPACITY],
+            _marker: PhantomData,
         }
-    }
-}
-
-impl<T: EvmTypes> fmt::Debug for Interpreter<'_, T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Interpreter")
-            .field("bytecode", &self.bytecode)
-            .field("pc", &self.pc)
-            .field("stack_len", &self.stack_len)
-            .field("gas", &self.gas)
-            .field("memory", &self.memory)
-            .field("result", &self.result)
-            .field("output", &self.output)
-            .field("tx_env", &self.tx_env)
-            .field("message", &self.message)
-            .field("is_static", &self.is_static)
-            .field("return_data", &self.return_data)
-            .field("host", &self.host)
-            .field("version", &self.version)
-            .field("spec", &self.spec)
-            .finish_non_exhaustive()
     }
 }
 
@@ -167,7 +149,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
     /// Runs the interpreter until it stops.
     pub fn run_with(&mut self, config: &ExecutionConfig<T>, host: &mut T::Host) -> InstrStop {
         self.memory.set_memory_limit(config.version.memory_limit);
-        self.host = host;
+        self.host = Some(NonNull::from(&mut *host));
         self.version = &config.version;
         self.spec = config.version.spec_id;
 
@@ -176,7 +158,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         #[cfg(not(feature = "tco"))]
         let r = self.run_table_loop(config);
 
-        self.host = core::ptr::null_mut();
+        self.host = None;
         self.version = core::ptr::null();
         r
     }
@@ -288,8 +270,7 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
         // SAFETY: `host` is initialized at the beginning of `run_with` and cleared before the
         // method returns. Instruction execution is synchronous, so the pointer cannot outlive the
         // `run_with` host borrow.
-        assert!(!self.0.host.is_null(), "interpreter host is initialized");
-        unsafe { &mut *self.0.host }
+        unsafe { self.0.host.expect("interpreter host is initialized").as_mut() }
     }
 
     /// Returns the active runtime version data.
