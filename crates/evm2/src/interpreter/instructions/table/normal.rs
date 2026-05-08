@@ -5,15 +5,14 @@ use crate::{
 use core::hint::cold_path;
 
 /// Normal instruction return value.
-pub(crate) type InstructionFnRet = (*const u8, usize);
+pub(crate) type InstrFnRet = (*const u8, usize);
 
 /// Normal instruction function pointer.
-pub(super) type RawInstructionFn<T> = extern_table!(
-    fn(pc: Pc, stack: Stack<'_>, state: &mut InterpreterState<'_, T>) -> InstructionFnRet
-);
+pub(super) type RawInstrFn<T> =
+    extern_table!(fn(pc: Pc, stack: Stack<'_>, state: &mut InterpreterState<'_, T>) -> InstrFnRet);
 
 /// Normal instruction dispatch table.
-pub(super) type RawInstructionTable<T> = [RawInstructionFn<T>; 256];
+pub(super) type RawInstrTable<T> = [RawInstrFn<T>; 256];
 
 macro_rules! assign_instruction_table_entries {
     ([$table:expr, $evm_types:ty, $config:ty, $dispatch:ident, $instr_fn:ty] $($op:literal,)*) => {
@@ -23,13 +22,13 @@ macro_rules! assign_instruction_table_entries {
     };
 }
 
-pub(crate) const fn make_instruction_table<T, C>() -> RawInstructionTable<T>
+pub(crate) const fn make_instruction_table<T, C>() -> RawInstrTable<T>
 where
     T: EvmTypes,
     C: EvmConfig<T>,
 {
-    let mut table = [dispatch::<T, C, 0> as super::InstructionFn<T>; 256];
-    for_each_opcode_value!([table, T, C, dispatch, super::InstructionFn<T>] assign_instruction_table_entries);
+    let mut table = [dispatch::<T, C, 0> as super::InstrFn<T>; 256];
+    for_each_opcode_value!([table, T, C, dispatch, super::InstrFn<T>] assign_instruction_table_entries);
 
     // Make all unknown entries point to the same dispatch function.
     let mut i = 0;
@@ -52,7 +51,7 @@ extern_table! {
         pc: Pc,
         stack: Stack<'_>,
         state: &mut InterpreterState<'_, T>,
-    ) -> InstructionFnRet {
+    ) -> InstrFnRet {
         dispatch_mono::<T, C>(OP, pc, stack, state)
     }
 }
@@ -63,7 +62,7 @@ fn dispatch_mono<T: EvmTypes, C: EvmConfig<T>>(
     mut pc: Pc,
     mut stack: Stack<'_>,
     state: &mut InterpreterState<'_, T>,
-) -> InstructionFnRet {
+) -> InstrFnRet {
     let instr = C::VERSION_TABLES.instruction(op).instr;
     let r;
     match pre_step::<T, C>(state.gas_mut(), op) {

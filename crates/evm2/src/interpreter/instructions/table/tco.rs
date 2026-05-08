@@ -5,16 +5,16 @@ use crate::{
 use core::hint::cold_path;
 
 /// Tail instruction function pointer.
-type TailInstructionFn<T> = extern_table!(
+type TailInstrFn<T> = extern_table!(
     fn(pc: Pc, stack: Stack<'_>, remaining_gas: RemainingGas, state: &mut InterpreterState<'_, T>)
 );
 
 /// Tail instruction dispatch table.
-type TailInstructionTable<T> = [TailInstructionFn<T>; 256];
+type TailInstrTable<T> = [TailInstrFn<T>; 256];
 
-pub(super) type RawInstructionFn<T> = TailInstructionFn<T>;
+pub(super) type RawInstrFn<T> = TailInstrFn<T>;
 
-pub(super) type RawInstructionTable<T> = TailInstructionTable<T>;
+pub(super) type RawInstrTable<T> = TailInstrTable<T>;
 
 macro_rules! assign_instruction_table_entries {
     ([$table:expr, $evm_types:ty, $config:ty, $dispatch:ident, $instr_fn:ty] $($op:literal,)*) => {
@@ -29,21 +29,21 @@ macro_rules! assign_instruction_table_entries {
     };
 }
 
-pub(crate) const fn make_instruction_table<T, C>() -> RawInstructionTable<T>
+pub(crate) const fn make_instruction_table<T, C>() -> RawInstrTable<T>
 where
     T: EvmTypes,
     C: EvmConfig<T>,
 {
     use tail_dispatch as dispatch;
 
-    let mut table = [dispatch::<T, C, 0, true> as super::InstructionFn<T>; 256];
-    for_each_opcode_value!([table, T, C, dispatch, super::InstructionFn<T>] assign_instruction_table_entries);
+    let mut table = [dispatch::<T, C, 0, true> as super::InstrFn<T>; 256];
+    for_each_opcode_value!([table, T, C, dispatch, super::InstrFn<T>] assign_instruction_table_entries);
 
     // Make all unknown entries point to the same dispatch function.
     let mut i = 0;
     while i < 256 {
         if C::VERSION_TABLES.is_unknown_opcode(i as u8) {
-            table[i] = tail_unknown_dispatch::<T, C> as super::InstructionFn<T>;
+            table[i] = tail_unknown_dispatch::<T, C> as super::InstrFn<T>;
         }
         i += 1;
     }
@@ -117,7 +117,7 @@ extern_table! {
         remaining_gas: RemainingGas,
         state: &mut InterpreterState<'_, T>,
     ) {
-        let instr = <T as super::InstructionTables<C>>::INSTRUCTIONS[pc.op() as usize];
+        let instr = <T as super::InstrTables<C>>::INSTRUCTIONS[pc.op() as usize];
         tail_return!(instr(pc, stack, remaining_gas, state));
     }
 }

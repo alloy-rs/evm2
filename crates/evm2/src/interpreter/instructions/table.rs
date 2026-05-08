@@ -55,30 +55,30 @@ macro_rules! for_each_opcode_value {
 
 cfg_if::cfg_if! {
     if #[cfg(feature = "tco")] {
-        #[path = "table/tco.rs"]
-        mod imp;
+        mod tco;
+        use tco as imp;
     } else {
-        #[path = "table/normal.rs"]
-        mod imp;
+        mod normal;
+        use normal as imp;
     }
 }
 
-/// Normal instruction function pointer.
-pub(crate) type InstructionFn<T> = imp::RawInstructionFn<T>;
+/// Instruction function pointer.
+pub(crate) type InstrFn<T> = imp::RawInstrFn<T>;
 
-/// Normal instruction dispatch table.
-pub(crate) type InstructionTable<T> = imp::RawInstructionTable<T>;
+/// Instruction dispatch table.
+pub(crate) type InstrTable<T> = imp::RawInstrTable<T>;
 
 pub(crate) use imp::make_instruction_table;
 
-pub(crate) trait InstructionTables<C>: EvmTypes
+pub(crate) trait InstrTables<C>: EvmTypes
 where
     C: EvmConfig<Self>,
 {
-    const INSTRUCTIONS: &'static InstructionTable<Self> = &make_instruction_table::<Self, C>();
+    const INSTRUCTIONS: &'static InstrTable<Self> = &make_instruction_table::<Self, C>();
 }
 
-impl<T, C> InstructionTables<C> for T
+impl<T, C> InstrTables<C> for T
 where
     T: EvmTypes,
     C: EvmConfig<T>,
