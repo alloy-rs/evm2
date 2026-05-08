@@ -221,10 +221,6 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         #[cfg(not(tco))]
         let r = self.run_table_loop(instructions);
 
-        self.host = None;
-        self.inspector = None;
-        self.version = core::ptr::null();
-
         r
     }
 
