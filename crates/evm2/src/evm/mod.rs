@@ -345,7 +345,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
 
         let address = self.create_address(&bytecode, message);
 
-        self.state.warm_account(address);
+        let _ = self.state.warm_account(address);
 
         if message.depth > 0 {
             self.state.increment_nonce(message.caller);
@@ -581,7 +581,7 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
         let is_cold = if self.spec_id().enables(SpecId::BERLIN) {
             self.state.warm_account(address)
         } else {
-            self.state.warm_account(address);
+            let _ = self.state.warm_account(address);
             false
         };
         if skip_cold_load && is_cold {
@@ -693,7 +693,7 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
         let is_cold = if self.spec_id().enables(SpecId::BERLIN) {
             self.state.warm_account(target)
         } else {
-            self.state.warm_account(target);
+            let _ = self.state.warm_account(target);
             false
         };
         if skip_cold_load && is_cold {

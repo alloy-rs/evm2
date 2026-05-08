@@ -442,6 +442,7 @@ impl<D> State<D> {
     /// for warmth introduced while executing EVM code or any other scope whose effects may be
     /// reverted to a checkpoint.
     #[inline]
+    #[must_use]
     pub fn warm_account(&mut self, address: Address) -> bool {
         if self.accessed_accounts.insert(address) {
             self.journal.push(JournalEntry::AccountWarmed { address });
@@ -475,7 +476,7 @@ impl<D> State<D> {
         let addresses = addresses.into_iter();
         self.accessed_accounts.reserve(addresses.size_hint().0);
         for address in addresses {
-            self.warm_account(address);
+            let _ = self.warm_account(address);
         }
     }
 
