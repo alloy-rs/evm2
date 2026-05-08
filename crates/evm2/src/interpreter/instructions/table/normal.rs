@@ -95,8 +95,7 @@ fn dispatch_mono<T: EvmTypes, C: EvmConfig<T>, const DYNAMIC_GAS: bool>(
     if r.is_err() {
         cold_path();
         state.set_result(r);
-        let stack_len = if stack.len <= STACK_LIMIT { stack.len } else { 0 };
-        return (PackedPcStackLen::pack(core::ptr::null(), stack_len), remaining_gas);
+        return (PackedPcStackLen::pack(core::ptr::null(), stack.len), remaining_gas);
     }
     (PackedPcStackLen::pack(pc.as_ptr(), stack.len), remaining_gas)
 }
@@ -123,7 +122,6 @@ pub(crate) struct PackedPcStackLen(usize);
 impl PackedPcStackLen {
     #[inline(always)]
     pub(crate) fn pack(pc: *const u8, stack_len: usize) -> Self {
-        debug_assert!(stack_len <= STACK_LIMIT);
         Self((stack_len << PC_BITS) | (pc as usize & PC_MASK))
     }
 
