@@ -1,8 +1,9 @@
 use crate::{
     EvmConfig, EvmTypes,
+    evm::inspector::Inspector,
     interpreter::{InstrStop, InterpreterState, Pc, Result, Stack, gas::RemainingGas},
 };
-use core::hint::cold_path;
+use core::{hint::cold_path, marker::PhantomData};
 
 /// Tail instruction function pointer.
 type TailInstrFn<T> = extern_table!(
@@ -17,13 +18,13 @@ pub(super) type RawInstrFn<T> = TailInstrFn<T>;
 pub(super) type RawInstrTable<T> = TailInstrTable<T>;
 
 macro_rules! assign_instruction_table_entries {
-    ([$table:expr, $evm_types:ty, $config:ty, $dispatch:ident, $instr_fn:ty] $($op:literal,)*) => {
+    ([$table:expr, $evm_types:ty, $config:ty, $mode:ty, $inspect:literal, $dispatch:ident, $instr_fn:ty] $($op:literal,)*) => {
         $(
             let instruction = <$config as EvmConfig<$evm_types>>::VERSION_TABLES.instruction($op);
             $table[$op] = if instruction.dynamic_gas {
-                $dispatch::<$evm_types, $config, $op, true> as $instr_fn
+                $dispatch::<$evm_types, $config, $mode, $op, true, $inspect> as $instr_fn
             } else {
-                $dispatch::<$evm_types, $config, $op, false> as $instr_fn
+                $dispatch::<$evm_types, $config, $mode, $op, false, $inspect> as $instr_fn
             };
         )*
     };
@@ -34,10 +35,8 @@ where
     T: EvmTypes,
     C: EvmConfig<T>,
 {
-    use tail_dispatch as dispatch;
-
-    let mut table = [dispatch::<T, C, 0, true> as super::InstrFn<T>; 256];
-    for_each_opcode_value!([table, T, C, dispatch, super::InstrFn<T>] assign_instruction_table_entries);
+    let mut table = [tail_dispatch::<T, C, NoInspector, 0, true, false> as super::InstrFn<T>; 256];
+    for_each_opcode_value!([table, T, C, NoInspector, false, tail_dispatch, super::InstrFn<T>] assign_instruction_table_entries);
 
     // Make all unknown entries point to the same dispatch function.
     let mut i = 0;
@@ -56,23 +55,46 @@ where
     T: EvmTypes,
     C: EvmConfig<T>,
 {
-    use tail_inspect_dispatch as dispatch;
+    let mut table = [tail_dispatch::<T, C, DynInspector, 0, true, true> as super::InstrFn<T>; 256];
+    for_each_opcode_value!([table, T, C, DynInspector, true, tail_dispatch, super::InstrFn<T>] assign_instruction_table_entries);
 
-    let mut table = [dispatch::<T, C, 0, true> as super::InstrFn<T>; 256];
-    for_each_opcode_value!([table, T, C, dispatch, super::InstrFn<T>] assign_instruction_table_entries);
+    table
+}
+
+pub(crate) const fn make_typed_inspect_instruction_table<T, C, I>() -> RawInstrTable<T>
+where
+    T: EvmTypes,
+    C: EvmConfig<T>,
+    I: Inspector<T>,
+{
+    let mut table =
+        [tail_dispatch::<T, C, TypedInspector<I>, 0, true, true> as super::InstrFn<T>; 256];
+    for_each_opcode_value!([table, T, C, TypedInspector<I>, true, tail_dispatch, super::InstrFn<T>] assign_instruction_table_entries);
 
     table
 }
 
 extern_table! {
-    fn tail_dispatch<T: EvmTypes, C: EvmConfig<T>, const OP: u8, const DYNAMIC_GAS: bool>(
+    fn tail_dispatch<
+        T: EvmTypes,
+        C: EvmConfig<T>,
+        M: InspectMode<T>,
+        const OP: u8,
+        const DYNAMIC_GAS: bool,
+        const INSPECT: bool,
+    >(
         pc: Pc,
         stack: Stack<'_>,
         remaining_gas: RemainingGas,
         state: &mut InterpreterState<'_, T>,
     ) {
         assume!(pc.op() == OP);
-        tail_return!(tail_dispatch_mono::<T, C, DYNAMIC_GAS>(pc, stack, remaining_gas, state));
+        tail_return!(tail_dispatch_mono::<T, C, M, DYNAMIC_GAS, INSPECT>(
+            pc,
+            stack,
+            remaining_gas,
+            state
+        ));
     }
 }
 
@@ -92,7 +114,13 @@ extern_table! {
 
 extern_table! {
     #[inline(always)]
-    fn tail_dispatch_mono<T: EvmTypes, C: EvmConfig<T>, const DYNAMIC_GAS: bool>(
+    fn tail_dispatch_mono<
+        T: EvmTypes,
+        C: EvmConfig<T>,
+        M: InspectMode<T>,
+        const DYNAMIC_GAS: bool,
+        const INSPECT: bool,
+    >(
         mut pc: Pc,
         mut stack: Stack<'_>,
         mut remaining_gas: RemainingGas,
@@ -100,9 +128,15 @@ extern_table! {
     ) {
         let op = pc.op();
         let instr = C::VERSION_TABLES.instruction(op).instr;
+        if INSPECT {
+            M::step(state, pc, stack.len);
+        }
         if let Err(e) = pre_step::<T, C>(&mut remaining_gas, op) {
             cold_path();
             state.set_result(Err(e));
+            if INSPECT {
+                M::step_end(state, pc, stack.len);
+            }
             tail_return!(tail_call_restore::<T>(pc, stack, remaining_gas, state));
         }
         if DYNAMIC_GAS {
@@ -115,89 +149,82 @@ extern_table! {
         if let Err(e) = r {
             cold_path();
             state.set_result(Err(e));
+            if INSPECT {
+                M::step_end(state, pc, stack.len);
+            }
             tail_return!(tail_call_restore::<T>(pc, stack, remaining_gas, state));
         }
         super::inc_pc(&mut pc, op);
-        tail_return!(tail_call_next::<T, C>(pc, stack, remaining_gas, state));
+        if INSPECT {
+            M::step_end(state, pc, stack.len);
+        }
+        let instr = M::next::<C>(pc.op());
+        tail_return!(instr(pc, stack, remaining_gas, state));
     }
 }
 
-extern_table! {
-    fn tail_inspect_dispatch<T: EvmTypes, C: EvmConfig<T>, const OP: u8, const DYNAMIC_GAS: bool>(
-        pc: Pc,
-        stack: Stack<'_>,
-        remaining_gas: RemainingGas,
-        state: &mut InterpreterState<'_, T>,
-    ) {
-        assume!(pc.op() == OP);
-        tail_return!(tail_inspect_dispatch_mono::<T, C, DYNAMIC_GAS>(
-            pc,
-            stack,
-            remaining_gas,
-            state
-        ));
-    }
+trait InspectMode<T: EvmTypes> {
+    fn step(state: &mut InterpreterState<'_, T>, pc: Pc, stack_len: usize);
+
+    fn step_end(state: &mut InterpreterState<'_, T>, pc: Pc, stack_len: usize);
+
+    fn next<C: EvmConfig<T>>(op: u8) -> TailInstrFn<T>;
 }
 
-extern_table! {
+struct NoInspector;
+
+impl<T: EvmTypes> InspectMode<T> for NoInspector {
     #[inline(always)]
-    fn tail_inspect_dispatch_mono<T: EvmTypes, C: EvmConfig<T>, const DYNAMIC_GAS: bool>(
-        mut pc: Pc,
-        mut stack: Stack<'_>,
-        mut remaining_gas: RemainingGas,
-        state: &mut InterpreterState<'_, T>,
-    ) {
-        let op = pc.op();
-        let instr = C::VERSION_TABLES.instruction(op).instr;
-        state.inspect_step(pc, stack.len);
-        if let Err(e) = pre_step::<T, C>(&mut remaining_gas, op) {
-            cold_path();
-            state.set_result(Err(e));
-            state.inspect_step_end(pc, stack.len);
-            tail_return!(tail_call_restore::<T>(pc, stack, remaining_gas, state));
-        }
-        if DYNAMIC_GAS {
-            state.gas_mut().set_remaining(remaining_gas.get());
-        }
-        let r = instr(&mut pc, stack.as_mut(), state);
-        if DYNAMIC_GAS {
-            remaining_gas.set(state.gas_mut().remaining());
-        }
-        if let Err(e) = r {
-            cold_path();
-            state.set_result(Err(e));
-            state.inspect_step_end(pc, stack.len);
-            tail_return!(tail_call_restore::<T>(pc, stack, remaining_gas, state));
-        }
-        super::inc_pc(&mut pc, op);
-        state.inspect_step_end(pc, stack.len);
-        tail_return!(tail_inspect_call_next::<T, C>(pc, stack, remaining_gas, state));
+    fn step(_state: &mut InterpreterState<'_, T>, _pc: Pc, _stack_len: usize) {}
+
+    #[inline(always)]
+    fn step_end(_state: &mut InterpreterState<'_, T>, _pc: Pc, _stack_len: usize) {}
+
+    #[inline(always)]
+    fn next<C: EvmConfig<T>>(op: u8) -> TailInstrFn<T> {
+        <T as super::InstrTables<C>>::INSTRUCTIONS[op as usize]
     }
 }
 
-extern_table! {
-    #[inline]
-    fn tail_call_next<T: EvmTypes, C: EvmConfig<T>>(
-        pc: Pc,
-        stack: Stack<'_>,
-        remaining_gas: RemainingGas,
-        state: &mut InterpreterState<'_, T>,
-    ) {
-        let instr = <T as super::InstrTables<C>>::INSTRUCTIONS[pc.op() as usize];
-        tail_return!(instr(pc, stack, remaining_gas, state));
+struct DynInspector;
+
+impl<T: EvmTypes> InspectMode<T> for DynInspector {
+    #[inline(always)]
+    fn step(state: &mut InterpreterState<'_, T>, pc: Pc, stack_len: usize) {
+        state.inspect_step(pc, stack_len);
+    }
+
+    #[inline(always)]
+    fn step_end(state: &mut InterpreterState<'_, T>, pc: Pc, stack_len: usize) {
+        state.inspect_step_end(pc, stack_len);
+    }
+
+    #[inline(always)]
+    fn next<C: EvmConfig<T>>(op: u8) -> TailInstrFn<T> {
+        <T as super::InstrTables<C>>::INSPECT_INSTRUCTIONS[op as usize]
     }
 }
 
-extern_table! {
-    #[inline]
-    fn tail_inspect_call_next<T: EvmTypes, C: EvmConfig<T>>(
-        pc: Pc,
-        stack: Stack<'_>,
-        remaining_gas: RemainingGas,
-        state: &mut InterpreterState<'_, T>,
-    ) {
-        let instr = <T as super::InstrTables<C>>::INSPECT_INSTRUCTIONS[pc.op() as usize];
-        tail_return!(instr(pc, stack, remaining_gas, state));
+struct TypedInspector<I>(PhantomData<fn() -> I>);
+
+impl<T, I> InspectMode<T> for TypedInspector<I>
+where
+    T: EvmTypes,
+    I: Inspector<T>,
+{
+    #[inline(always)]
+    fn step(state: &mut InterpreterState<'_, T>, pc: Pc, stack_len: usize) {
+        state.inspect_step_as::<I>(pc, stack_len);
+    }
+
+    #[inline(always)]
+    fn step_end(state: &mut InterpreterState<'_, T>, pc: Pc, stack_len: usize) {
+        state.inspect_step_end_as::<I>(pc, stack_len);
+    }
+
+    #[inline(always)]
+    fn next<C: EvmConfig<T>>(op: u8) -> TailInstrFn<T> {
+        <T as super::TypedInspectInstrTables<C, I>>::INSPECT_INSTRUCTIONS[op as usize]
     }
 }
 

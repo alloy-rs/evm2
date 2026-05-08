@@ -68,7 +68,9 @@ pub(crate) type InstrFn<T> = imp::RawInstrFn<T>;
 /// Instruction dispatch table.
 pub(crate) type InstrTable<T> = imp::RawInstrTable<T>;
 
-pub(crate) use imp::{make_inspect_instruction_table, make_instruction_table};
+pub(crate) use imp::{
+    make_inspect_instruction_table, make_instruction_table, make_typed_inspect_instruction_table,
+};
 
 pub(crate) trait InstrTables<C>: EvmTypes
 where
@@ -83,6 +85,23 @@ impl<T, C> InstrTables<C> for T
 where
     T: EvmTypes,
     C: EvmConfig<T>,
+{
+}
+
+pub(crate) trait TypedInspectInstrTables<C, I>: EvmTypes
+where
+    C: EvmConfig<Self>,
+    I: crate::evm::inspector::Inspector<Self>,
+{
+    const INSPECT_INSTRUCTIONS: &'static InstrTable<Self> =
+        &make_typed_inspect_instruction_table::<Self, C, I>();
+}
+
+impl<T, C, I> TypedInspectInstrTables<C, I> for T
+where
+    T: EvmTypes,
+    C: EvmConfig<T>,
+    I: crate::evm::inspector::Inspector<T>,
 {
 }
 

@@ -598,7 +598,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         let execution_config = unsafe { &*(&raw const self.execution_config) };
         self.inspect_initialize_interp(interpreter_ref);
         let inspector = self.inspector.as_deref_mut().map(NonNull::from);
-        let stop = interpreter_ref.run_with_inspector(execution_config, self, inspector);
+        let stop = interpreter_ref.run_with_dyn_inspector(execution_config, self, inspector);
         let interpreter = self.interpreter_pool.push(interpreter);
         (stop, interpreter)
     }

@@ -2,7 +2,7 @@ use crate::{
     BaseEvmConfig, EvmConfig, EvmTypes, SpecId,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
-    evm::{AccountLoad, SLoad, SStore, SelfDestructResult},
+    evm::{AccountLoad, SLoad, SStore, SelfDestructResult, inspector::Inspector},
     interpreter::{
         Gas, Host, InstrStop, Interpreter, Memory, Message, MessageKind, MessageResult,
         StackBacking, Word, op,
@@ -336,6 +336,39 @@ pub(super) fn run_stack<T: ToWord, const N: usize>(inputs: [T; N], opcode: u8) -
     }
     code.extend([opcode, op::STOP]);
     run(RunConfig::new(code))
+}
+
+#[test]
+fn typed_inspector_run_steps() {
+    #[derive(Default)]
+    struct StepInspector {
+        steps: usize,
+        step_ends: usize,
+    }
+
+    impl Inspector<TestTypes> for StepInspector {
+        fn step(&mut self, _interp: &mut Interpreter<'_, TestTypes>) {
+            self.steps += 1;
+        }
+
+        fn step_end(&mut self, _interp: &mut Interpreter<'_, TestTypes>) {
+            self.step_ends += 1;
+        }
+    }
+
+    let tx_env = TxEnv::default();
+    let message = Message::default();
+    let bytecode = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
+    let mut inner = Interpreter::<TestTypes>::new(bytecode, &tx_env, &message, false);
+    let mut host = TestHost::default();
+    let mut inspector = StepInspector::default();
+
+    let stop = inner
+        .run_with_inspector::<BaseEvmConfig<{ SpecId::OSAKA as u8 }>, _>(&mut host, &mut inspector);
+
+    assert_eq!(stop, InstrStop::Stop);
+    assert_eq!(inspector.steps, 1);
+    assert_eq!(inspector.step_ends, 1);
 }
 
 pub(super) fn assert_stack_words(inputs: &[Word], opcode: u8, expected: &[Word]) {
