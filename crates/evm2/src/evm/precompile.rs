@@ -1,8 +1,9 @@
 //! Precompile dispatch interface.
 
 use crate::{PrecompileError, interpreter::Gas};
-use alloc::vec::Vec;
+use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::{Address, Bytes};
+use core::any::Any;
 
 /// Result returned by a precompile.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
@@ -32,7 +33,13 @@ impl PrecompileOutput {
 }
 
 /// Precompile execution hook.
-pub trait PrecompileProvider {
+pub trait PrecompileProvider: Any {
+    /// Returns this provider as [`Any`].
+    fn as_any(&self) -> &dyn Any;
+
+    /// Returns this provider as mutable [`Any`].
+    fn as_any_mut(&mut self) -> &mut dyn Any;
+
     /// Returns precompile addresses that should be warm at transaction start.
     fn warm_addresses(&self) -> Vec<Address> {
         Vec::new()
@@ -47,11 +54,68 @@ pub trait PrecompileProvider {
     ) -> Option<Result<PrecompileOutput, PrecompileError>>;
 }
 
+impl dyn PrecompileProvider {
+    /// Returns `true` if the boxed precompile provider has type `T`.
+    #[inline]
+    pub fn is<T: PrecompileProvider>(&self) -> bool {
+        self.as_any().is::<T>()
+    }
+
+    /// Returns the concrete precompile provider if it has type `T`.
+    #[inline]
+    pub fn downcast_ref<T: PrecompileProvider>(&self) -> Option<&T> {
+        self.as_any().downcast_ref()
+    }
+
+    /// Returns the concrete precompile provider mutably if it has type `T`.
+    #[inline]
+    pub fn downcast_mut<T: PrecompileProvider>(&mut self) -> Option<&mut T> {
+        self.as_any_mut().downcast_mut()
+    }
+}
+
+impl PrecompileProvider for Box<dyn PrecompileProvider> {
+    #[inline]
+    fn as_any(&self) -> &dyn Any {
+        self.as_ref().as_any()
+    }
+
+    #[inline]
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self.as_mut().as_any_mut()
+    }
+
+    #[inline]
+    fn warm_addresses(&self) -> Vec<Address> {
+        self.as_ref().warm_addresses()
+    }
+
+    #[inline]
+    fn execute(
+        &mut self,
+        address: Address,
+        input: &[u8],
+        gas: &mut Gas,
+    ) -> Option<Result<PrecompileOutput, PrecompileError>> {
+        self.as_mut().execute(address, input, gas)
+    }
+}
+
 /// Empty precompile provider.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct NoPrecompiles;
 
 impl PrecompileProvider for NoPrecompiles {
+    #[inline]
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    #[inline]
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+
     #[inline]
     fn warm_addresses(&self) -> Vec<Address> {
         Vec::new()

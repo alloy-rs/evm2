@@ -235,6 +235,20 @@ impl<T: EvmTypes> Evm<T> {
         self.state.initial_mut()
     }
 
+    /// Returns the backing database as `D` if it has that concrete type.
+    #[inline]
+    pub fn database_as<D: Database>(&self) -> Option<&D> {
+        let database: &dyn Database = self.database();
+        database.downcast_ref()
+    }
+
+    /// Returns the backing database mutably as `D` if it has that concrete type.
+    #[inline]
+    pub fn database_as_mut<D: Database>(&mut self) -> Option<&mut D> {
+        let database: &mut dyn Database = self.database_mut();
+        database.downcast_mut()
+    }
+
     /// Returns the mutable EVM state.
     #[inline]
     pub const fn state(&self) -> &State<T::Database> {
@@ -257,6 +271,20 @@ impl<T: EvmTypes> Evm<T> {
     #[inline]
     pub const fn precompiles_mut(&mut self) -> &mut T::Precompiles {
         &mut self.precompiles
+    }
+
+    /// Returns the precompile provider as `P` if it has that concrete type.
+    #[inline]
+    pub fn precompiles_as<P: PrecompileProvider>(&self) -> Option<&P> {
+        let precompiles: &dyn PrecompileProvider = self.precompiles();
+        precompiles.downcast_ref()
+    }
+
+    /// Returns the precompile provider mutably as `P` if it has that concrete type.
+    #[inline]
+    pub fn precompiles_as_mut<P: PrecompileProvider>(&mut self) -> Option<&mut P> {
+        let precompiles: &mut dyn PrecompileProvider = self.precompiles_mut();
+        precompiles.downcast_mut()
     }
 
     /// Returns the active EVM version.

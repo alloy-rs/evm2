@@ -11,6 +11,7 @@ use alloy_primitives::{
     Address, B256, KECCAK256_EMPTY,
     map::{AddressMap, B256Map, U256Map, hash_map::Entry},
 };
+use core::any::Any;
 
 /// A database implementation that stores initial state in memory.
 pub type InMemoryDB = CacheDB<EmptyDB>;
@@ -122,6 +123,16 @@ impl<ExtDB> CacheDB<ExtDB> {
 
 impl<ExtDB: Database> Database for CacheDB<ExtDB> {
     #[inline]
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    #[inline]
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+
+    #[inline]
     fn get_account(&mut self, address: Address) -> Option<AccountInfo> {
         let Cache { accounts, contracts, .. } = &mut self.cache;
         match accounts.entry(address) {
@@ -184,6 +195,14 @@ mod tests {
     }
 
     impl Database for CountingDB {
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+
+        fn as_any_mut(&mut self) -> &mut dyn Any {
+            self
+        }
+
         fn get_account(&mut self, _address: Address) -> Option<AccountInfo> {
             self.account_loads += 1;
             self.account.clone()

@@ -3,7 +3,7 @@
 use crate::{
     SpecId, VersionTables,
     ethereum::RecoveredTxEnvelope,
-    evm::{InMemoryDB, precompile::PrecompileProvider},
+    evm::{Database, precompile::PrecompileProvider},
     interpreter::{
         Host,
         instructions::table::{InstrTable, InstrTables},
@@ -138,8 +138,8 @@ impl EvmTypes for BaseEvmTypes {
     type SpecId = SpecId;
     type Tx = RecoveredTxEnvelope;
     type Host = crate::evm::Evm<Self>;
-    type Database = InMemoryDB;
-    type Precompiles = crate::precompiles::Precompiles;
+    type Database = alloc::boxed::Box<dyn Database>;
+    type Precompiles = alloc::boxed::Box<dyn PrecompileProvider>;
 }
 
 /// Base EVM configuration for an inherited base specification ID.

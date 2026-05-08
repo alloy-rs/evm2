@@ -72,5 +72,11 @@ impl Runner {
 }
 
 fn new_evm(spec: SpecId, block: BlockEnv, db: InMemoryDB) -> BenchEvm {
-    Evm::new(spec, block, ethereum_tx_registry(spec), db, Precompiles::base(spec))
+    Evm::new(
+        spec,
+        block,
+        ethereum_tx_registry(spec),
+        Box::new(db),
+        Box::new(Precompiles::base(spec)),
+    )
 }

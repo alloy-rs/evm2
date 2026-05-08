@@ -3,6 +3,7 @@
 use crate::{SpecId, evm::precompile::PrecompileProvider, interpreter::Gas, once_lock::OnceLock};
 use alloc::{borrow::Cow, vec::Vec};
 use alloy_primitives::Address;
+use core::any::Any;
 
 pub mod blake2;
 pub mod bls12_381;
@@ -96,6 +97,16 @@ impl Precompiles {
 }
 
 impl PrecompileProvider for Precompiles {
+    #[inline]
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    #[inline]
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+
     #[inline]
     fn warm_addresses(&self) -> Vec<Address> {
         self.map.as_ref().addresses().collect()

@@ -216,12 +216,12 @@ fn execute_spec(
                 spec,
                 block,
                 ethereum_tx_registry(spec),
-                database.clone(),
-                Precompiles::base(spec),
+                Box::new(database.clone()),
+                Box::new(Precompiles::base(spec)),
             );
             let system_changes = pre_block_system_calls(&mut evm, spec, env, &database);
             let result = evm.transact(tx)?;
-            Ok(spec_outcome(&evm, result, &system_changes))
+            Ok(spec_outcome(&database, result, &system_changes))
         }};
     }
     match spec {
@@ -244,12 +244,12 @@ fn execute_spec(
     }
 }
 
-fn spec_outcome<T: EvmTypes<Database = InMemoryDB>>(
-    evm: &Evm<T>,
+fn spec_outcome(
+    database: &InMemoryDB,
     result: TxResult,
     system_changes: &[StateChanges],
 ) -> SpecOutcome {
-    let mut post = evm.state().initial().clone();
+    let mut post = database.clone();
     for changes in system_changes {
         post = apply_state_changes(&post, changes);
     }
@@ -264,7 +264,7 @@ fn spec_outcome<T: EvmTypes<Database = InMemoryDB>>(
     }
 }
 
-fn pre_block_system_calls<T: EvmTypes<Database = InMemoryDB, Host = Evm<T>>>(
+fn pre_block_system_calls<T: EvmTypes<Host = Evm<T>>>(
     evm: &mut Evm<T>,
     spec: SpecId,
     env: &Env,
@@ -300,7 +300,7 @@ fn pre_block_system_calls<T: EvmTypes<Database = InMemoryDB, Host = Evm<T>>>(
     changes
 }
 
-fn push_system_call_changes<T: EvmTypes<Database = InMemoryDB, Host = Evm<T>>>(
+fn push_system_call_changes<T: EvmTypes<Host = Evm<T>>>(
     evm: &mut Evm<T>,
     changes: &mut Vec<StateChanges>,
     address: Address,
