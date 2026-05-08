@@ -4,12 +4,6 @@ use crate::{
 };
 use core::hint::cold_path;
 
-/// Normal instruction function pointer.
-pub(crate) type InstructionFn<T> = TailInstructionFn<T>;
-
-/// Normal instruction dispatch table.
-pub(crate) type InstructionTable<T> = TailInstructionTable<T>;
-
 /// Tail instruction function pointer.
 pub(crate) type TailInstructionFn<T> = extern_table!(
     fn(pc: Pc, stack: Stack<'_>, remaining_gas: RemainingGas, state: &mut InterpreterState<'_, T>)
@@ -31,21 +25,21 @@ macro_rules! assign_instruction_table_entries {
     };
 }
 
-pub(crate) const fn make_instruction_table<T, C>() -> InstructionTable<T>
+pub(crate) const fn make_instruction_table<T, C>() -> TailInstructionTable<T>
 where
     T: EvmTypes,
     C: EvmConfig<T>,
 {
     use tail_dispatch as dispatch;
 
-    let mut table = [dispatch::<T, C, 0, true> as InstructionFn<T>; 256];
-    for_each_opcode_value!([table, T, C, dispatch, InstructionFn<T>] assign_instruction_table_entries);
+    let mut table = [dispatch::<T, C, 0, true> as super::InstructionFn<T>; 256];
+    for_each_opcode_value!([table, T, C, dispatch, super::InstructionFn<T>] assign_instruction_table_entries);
 
     // Make all unknown entries point to the same dispatch function.
     let mut i = 0;
     while i < 256 {
         if C::VERSION_TABLES.is_unknown_opcode(i as u8) {
-            table[i] = tail_unknown_dispatch::<T, C> as InstructionFn<T>;
+            table[i] = tail_unknown_dispatch::<T, C> as super::InstructionFn<T>;
         }
         i += 1;
     }

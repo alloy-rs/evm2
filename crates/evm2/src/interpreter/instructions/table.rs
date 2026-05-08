@@ -56,12 +56,22 @@ macro_rules! for_each_opcode_value {
 cfg_if::cfg_if! {
     if #[cfg(feature = "tco")] {
         mod tco;
-        pub(crate) use tco::*;
+        pub(crate) use tco::{TailInstructionFn, TailInstructionTable, make_instruction_table};
     } else {
         mod normal;
-        pub(crate) use normal::*;
+        pub(crate) use normal::{
+            NormalInstructionFn as TailInstructionFn,
+            NormalInstructionTable as TailInstructionTable,
+            make_instruction_table,
+        };
     }
 }
+
+/// Normal instruction function pointer.
+pub(crate) type InstructionFn<T> = TailInstructionFn<T>;
+
+/// Normal instruction dispatch table.
+pub(crate) type InstructionTable<T> = TailInstructionTable<T>;
 
 pub(crate) trait InstructionTables<C>: EvmTypes
 where
