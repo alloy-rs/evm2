@@ -35,12 +35,16 @@ fn evm_executes_storage_transaction() {
         SpecId::OSAKA,
         BlockEnv::default(),
         TxRegistry::new(),
-        Box::new(InMemoryDB::default()),
-        Box::new(Precompiles::base(SpecId::OSAKA)),
+        InMemoryDB::default(),
+        Precompiles::base(SpecId::OSAKA),
     );
 
     assert!(evm.database_as::<InMemoryDB>().is_some());
+    assert!(evm.database_as_mut::<InMemoryDB>().is_some());
     assert!(evm.precompiles_as::<Precompiles>().is_some());
+    assert!(evm.precompiles_as_mut::<Precompiles>().is_some());
+    evm.set_database(InMemoryDB::default());
+    evm.set_precompiles(Precompiles::base(SpecId::OSAKA));
 
     run_tx(&mut evm, contract, [op::PUSH1, 0x2a, op::PUSH1, 0x01, op::SSTORE, op::STOP]);
 
@@ -60,8 +64,8 @@ fn evm_runs_transactions_against_initial_state() {
         SpecId::OSAKA,
         BlockEnv::default(),
         TxRegistry::new(),
-        Box::new(database),
-        Box::new(Precompiles::base(SpecId::OSAKA)),
+        database,
+        Precompiles::base(SpecId::OSAKA),
     );
 
     run_tx(
@@ -115,8 +119,8 @@ fn evm_propagates_child_sstore_negative_refund() {
         SpecId::LONDON,
         BlockEnv::default(),
         TxRegistry::new(),
-        Box::new(database),
-        Box::new(Precompiles::base(SpecId::LONDON)),
+        database,
+        Precompiles::base(SpecId::LONDON),
     );
 
     let mut parent_code = Vec::new();
@@ -157,8 +161,8 @@ fn evm_reports_invalid_transaction_execution() {
         SpecId::OSAKA,
         BlockEnv::default(),
         TxRegistry::new(),
-        Box::new(InMemoryDB::default()),
-        Box::new(Precompiles::base(SpecId::OSAKA)),
+        InMemoryDB::default(),
+        Precompiles::base(SpecId::OSAKA),
     );
     let message = Message {
         destination: contract,

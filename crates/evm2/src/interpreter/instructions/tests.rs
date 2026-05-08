@@ -20,8 +20,6 @@ impl EvmTypes for TestTypes {
     type SpecId = crate::SpecId;
     type Tx = ();
     type Host = TestHost;
-    type Database = crate::evm::InMemoryDB;
-    type Precompiles = crate::evm::precompile::NoPrecompiles;
 }
 
 #[derive(Debug)]

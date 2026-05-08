@@ -34,12 +34,6 @@ impl PrecompileOutput {
 
 /// Precompile execution hook.
 pub trait PrecompileProvider: Any {
-    /// Returns this provider as [`Any`].
-    fn as_any(&self) -> &dyn Any;
-
-    /// Returns this provider as mutable [`Any`].
-    fn as_any_mut(&mut self) -> &mut dyn Any;
-
     /// Returns precompile addresses that should be warm at transaction start.
     fn warm_addresses(&self) -> Vec<Address> {
         Vec::new()
@@ -55,36 +49,33 @@ pub trait PrecompileProvider: Any {
 }
 
 impl dyn PrecompileProvider {
-    /// Returns `true` if the boxed precompile provider has type `T`.
+    /// Returns `true` if the precompile provider has type `T`.
     #[inline]
     pub fn is<T: PrecompileProvider>(&self) -> bool {
-        self.as_any().is::<T>()
+        (self as &dyn Any).is::<T>()
     }
 
     /// Returns the concrete precompile provider if it has type `T`.
     #[inline]
     pub fn downcast_ref<T: PrecompileProvider>(&self) -> Option<&T> {
-        self.as_any().downcast_ref()
+        (self as &dyn Any).downcast_ref()
     }
 
     /// Returns the concrete precompile provider mutably if it has type `T`.
     #[inline]
     pub fn downcast_mut<T: PrecompileProvider>(&mut self) -> Option<&mut T> {
-        self.as_any_mut().downcast_mut()
+        (self as &mut dyn Any).downcast_mut()
+    }
+}
+
+impl<T: PrecompileProvider> From<Box<T>> for Box<dyn PrecompileProvider> {
+    #[inline]
+    fn from(value: Box<T>) -> Self {
+        value
     }
 }
 
 impl PrecompileProvider for Box<dyn PrecompileProvider> {
-    #[inline]
-    fn as_any(&self) -> &dyn Any {
-        self.as_ref().as_any()
-    }
-
-    #[inline]
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self.as_mut().as_any_mut()
-    }
-
     #[inline]
     fn warm_addresses(&self) -> Vec<Address> {
         self.as_ref().warm_addresses()
@@ -105,17 +96,14 @@ impl PrecompileProvider for Box<dyn PrecompileProvider> {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct NoPrecompiles;
 
+impl From<NoPrecompiles> for Box<dyn PrecompileProvider> {
+    #[inline]
+    fn from(value: NoPrecompiles) -> Self {
+        Box::new(value)
+    }
+}
+
 impl PrecompileProvider for NoPrecompiles {
-    #[inline]
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    #[inline]
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self
-    }
-
     #[inline]
     fn warm_addresses(&self) -> Vec<Address> {
         Vec::new()

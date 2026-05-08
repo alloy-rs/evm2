@@ -13,6 +13,7 @@ use crate::{
     registry::{HandlerResult, TxRegistry},
     version::{EvmFeatures, GasId},
 };
+use alloc::boxed::Box;
 use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{Address, B256, Bytes, Log};
 
@@ -146,6 +147,71 @@ pub struct TxResult {
     pub state_changes: StateChanges,
 }
 
+macro_rules! evm_dyn_provider_methods {
+    (database) => {
+        /// Returns the backing database.
+        #[inline]
+        pub fn database(&self) -> &dyn Database {
+            self.state.initial().as_ref()
+        }
+
+        /// Returns the backing database mutably.
+        #[inline]
+        pub fn database_mut(&mut self) -> &mut dyn Database {
+            self.state.initial_mut().as_mut()
+        }
+
+        /// Replaces the backing database.
+        #[inline]
+        pub fn set_database(&mut self, database: impl Into<Box<dyn Database>>) {
+            *self.state.initial_mut() = database.into();
+        }
+
+        /// Returns the backing database as `D` if it has that concrete type.
+        #[inline]
+        pub fn database_as<D: Database>(&self) -> Option<&D> {
+            self.database().downcast_ref()
+        }
+
+        /// Returns the backing database mutably as `D` if it has that concrete type.
+        #[inline]
+        pub fn database_as_mut<D: Database>(&mut self) -> Option<&mut D> {
+            self.database_mut().downcast_mut()
+        }
+    };
+    (precompiles) => {
+        /// Returns the precompile provider.
+        #[inline]
+        pub fn precompiles(&self) -> &dyn PrecompileProvider {
+            self.precompiles.as_ref()
+        }
+
+        /// Returns the precompile provider mutably.
+        #[inline]
+        pub fn precompiles_mut(&mut self) -> &mut dyn PrecompileProvider {
+            self.precompiles.as_mut()
+        }
+
+        /// Replaces the precompile provider.
+        #[inline]
+        pub fn set_precompiles(&mut self, precompiles: impl Into<Box<dyn PrecompileProvider>>) {
+            self.precompiles = precompiles.into();
+        }
+
+        /// Returns the precompile provider as `P` if it has that concrete type.
+        #[inline]
+        pub fn precompiles_as<P: PrecompileProvider>(&self) -> Option<&P> {
+            self.precompiles().downcast_ref()
+        }
+
+        /// Returns the precompile provider mutably as `P` if it has that concrete type.
+        #[inline]
+        pub fn precompiles_as_mut<P: PrecompileProvider>(&mut self) -> Option<&mut P> {
+            self.precompiles_mut().downcast_mut()
+        }
+    };
+}
+
 /// EVM host and transaction dispatcher.
 #[derive(derive_more::Debug)]
 pub struct Evm<T: EvmTypes> {
@@ -155,8 +221,10 @@ pub struct Evm<T: EvmTypes> {
     execution_config: ExecutionConfig<T>,
     pub(crate) block: BlockEnv,
     registry: TxRegistry<T::Tx, TxResult, Self>,
-    pub(crate) state: State<T::Database>,
-    precompiles: T::Precompiles,
+    #[debug(skip)]
+    pub(crate) state: State<Box<dyn Database>>,
+    #[debug(skip)]
+    precompiles: Box<dyn PrecompileProvider>,
     #[debug(skip)]
     interpreter_pool: InterpreterPool<T>,
 }
@@ -169,8 +237,8 @@ impl<T: EvmTypes> Evm<T> {
         spec_id: T::SpecId,
         block: BlockEnv,
         registry: TxRegistry<T::Tx, TxResult, Self>,
-        database: T::Database,
-        precompiles: T::Precompiles,
+        database: impl Into<Box<dyn Database>>,
+        precompiles: impl Into<Box<dyn PrecompileProvider>>,
     ) -> Self {
         Self::new_with_execution_config(
             <T::ConfigSelector as EvmConfigSelector<T>>::execution_config(spec_id),
@@ -189,16 +257,16 @@ impl<T: EvmTypes> Evm<T> {
         spec_id: T::SpecId,
         block: BlockEnv,
         registry: TxRegistry<T::Tx, TxResult, Self>,
-        database: T::Database,
-        precompiles: T::Precompiles,
+        database: impl Into<Box<dyn Database>>,
+        precompiles: impl Into<Box<dyn PrecompileProvider>>,
     ) -> Self {
         Self {
             spec_id,
             execution_config,
             block,
             registry,
-            state: State::new(database),
-            precompiles,
+            state: State::new(database.into()),
+            precompiles: precompiles.into(),
             interpreter_pool: InterpreterPool::new(),
         }
     }
@@ -223,35 +291,11 @@ impl<T: EvmTypes> Evm<T> {
         &self.registry
     }
 
-    /// Returns the backing database.
-    #[inline]
-    pub const fn database(&self) -> &T::Database {
-        self.state.initial()
-    }
-
-    /// Returns the backing database mutably.
-    #[inline]
-    pub const fn database_mut(&mut self) -> &mut T::Database {
-        self.state.initial_mut()
-    }
-
-    /// Returns the backing database as `D` if it has that concrete type.
-    #[inline]
-    pub fn database_as<D: Database>(&self) -> Option<&D> {
-        let database: &dyn Database = self.database();
-        database.downcast_ref()
-    }
-
-    /// Returns the backing database mutably as `D` if it has that concrete type.
-    #[inline]
-    pub fn database_as_mut<D: Database>(&mut self) -> Option<&mut D> {
-        let database: &mut dyn Database = self.database_mut();
-        database.downcast_mut()
-    }
+    evm_dyn_provider_methods!(database);
 
     /// Returns the mutable EVM state.
     #[inline]
-    pub const fn state(&self) -> &State<T::Database> {
+    pub const fn state(&self) -> &State<Box<dyn Database>> {
         &self.state
     }
 
@@ -261,31 +305,7 @@ impl<T: EvmTypes> Evm<T> {
         self.state.logs()
     }
 
-    /// Returns the precompile provider.
-    #[inline]
-    pub const fn precompiles(&self) -> &T::Precompiles {
-        &self.precompiles
-    }
-
-    /// Returns the precompile provider mutably.
-    #[inline]
-    pub const fn precompiles_mut(&mut self) -> &mut T::Precompiles {
-        &mut self.precompiles
-    }
-
-    /// Returns the precompile provider as `P` if it has that concrete type.
-    #[inline]
-    pub fn precompiles_as<P: PrecompileProvider>(&self) -> Option<&P> {
-        let precompiles: &dyn PrecompileProvider = self.precompiles();
-        precompiles.downcast_ref()
-    }
-
-    /// Returns the precompile provider mutably as `P` if it has that concrete type.
-    #[inline]
-    pub fn precompiles_as_mut<P: PrecompileProvider>(&mut self) -> Option<&mut P> {
-        let precompiles: &mut dyn PrecompileProvider = self.precompiles_mut();
-        precompiles.downcast_mut()
-    }
+    evm_dyn_provider_methods!(precompiles);
 
     /// Returns the active EVM version.
     #[inline]
@@ -777,8 +797,6 @@ mod tests {
         type SpecId = SpecId;
         type Tx = Tx;
         type Host = Evm<Self>;
-        type Database = InMemoryDB;
-        type Precompiles = Precompiles;
     }
 
     impl Typed2718 for TestTx {

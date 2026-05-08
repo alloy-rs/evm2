@@ -2,7 +2,7 @@
 
 use super::state::AccountInfo;
 use crate::{bytecode::Bytecode, interpreter::Word};
-use alloc::string::ToString;
+use alloc::{boxed::Box, string::ToString};
 use alloy_primitives::{Address, B256, keccak256};
 use core::any::Any;
 
@@ -11,12 +11,6 @@ pub use cache::{Cache, CacheDB, InMemoryDB};
 
 /// Backing database view used to initialize mutable [`super::State`].
 pub trait Database: Any {
-    /// Returns this database as [`Any`].
-    fn as_any(&self) -> &dyn Any;
-
-    /// Returns this database as mutable [`Any`].
-    fn as_any_mut(&mut self) -> &mut dyn Any;
-
     /// Loads account information.
     fn get_account(&mut self, address: Address) -> Option<AccountInfo>;
 
@@ -31,36 +25,33 @@ pub trait Database: Any {
 }
 
 impl dyn Database {
-    /// Returns `true` if the boxed database has type `T`.
+    /// Returns `true` if the database has type `T`.
     #[inline]
     pub fn is<T: Database>(&self) -> bool {
-        self.as_any().is::<T>()
+        (self as &dyn Any).is::<T>()
     }
 
     /// Returns the concrete database if it has type `T`.
     #[inline]
     pub fn downcast_ref<T: Database>(&self) -> Option<&T> {
-        self.as_any().downcast_ref()
+        (self as &dyn Any).downcast_ref()
     }
 
     /// Returns the concrete database mutably if it has type `T`.
     #[inline]
     pub fn downcast_mut<T: Database>(&mut self) -> Option<&mut T> {
-        self.as_any_mut().downcast_mut()
+        (self as &mut dyn Any).downcast_mut()
     }
 }
 
-impl Database for alloc::boxed::Box<dyn Database> {
+impl<T: Database> From<Box<T>> for Box<dyn Database> {
     #[inline]
-    fn as_any(&self) -> &dyn Any {
-        self.as_ref().as_any()
+    fn from(value: Box<T>) -> Self {
+        value
     }
+}
 
-    #[inline]
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self.as_mut().as_any_mut()
-    }
-
+impl Database for Box<dyn Database> {
     #[inline]
     fn get_account(&mut self, address: Address) -> Option<AccountInfo> {
         self.as_mut().get_account(address)
@@ -86,17 +77,14 @@ impl Database for alloc::boxed::Box<dyn Database> {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct EmptyDB(());
 
+impl From<EmptyDB> for Box<dyn Database> {
+    #[inline]
+    fn from(value: EmptyDB) -> Self {
+        Box::new(value)
+    }
+}
+
 impl Database for EmptyDB {
-    #[inline]
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    #[inline]
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self
-    }
-
     #[inline]
     fn get_account(&mut self, _address: Address) -> Option<AccountInfo> {
         None

@@ -3,7 +3,6 @@
 use crate::{
     SpecId, VersionTables,
     ethereum::RecoveredTxEnvelope,
-    evm::{Database, precompile::PrecompileProvider},
     interpreter::{
         Host,
         instructions::table::{InstrTable, InstrTables},
@@ -14,8 +13,8 @@ use crate::{
 
 /// Runtime EVM type family.
 ///
-/// Defines the concrete host, database, transaction, precompile, runtime spec-id, and config
-/// selector types used by an EVM instance. This is runtime wiring, not version behavior.
+/// Defines the concrete host, transaction, runtime spec-id, and config selector types used by an
+/// EVM instance. This is runtime wiring, not version behavior.
 pub trait EvmTypes: Sized + 'static {
     /// Configuration selector used by this EVM.
     type ConfigSelector: EvmConfigSelector<Self>;
@@ -30,12 +29,6 @@ pub trait EvmTypes: Sized + 'static {
 
     /// Host type used by this EVM.
     type Host: Host + ?Sized;
-
-    /// Database type used by this EVM.
-    type Database: crate::evm::Database;
-
-    /// Precompile provider used by this EVM.
-    type Precompiles: PrecompileProvider;
 }
 
 /// Compile-time EVM table configuration.
@@ -138,8 +131,6 @@ impl EvmTypes for BaseEvmTypes {
     type SpecId = SpecId;
     type Tx = RecoveredTxEnvelope;
     type Host = crate::evm::Evm<Self>;
-    type Database = alloc::boxed::Box<dyn Database>;
-    type Precompiles = alloc::boxed::Box<dyn PrecompileProvider>;
 }
 
 /// Base EVM configuration for an inherited base specification ID.

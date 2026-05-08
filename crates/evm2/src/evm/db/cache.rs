@@ -7,11 +7,11 @@ use crate::{
     interpreter::Word,
     storage_key::{StorageKey, StorageKeyMap},
 };
+use alloc::boxed::Box;
 use alloy_primitives::{
     Address, B256, KECCAK256_EMPTY,
     map::{AddressMap, B256Map, U256Map, hash_map::Entry},
 };
-use core::any::Any;
 
 /// A database implementation that stores initial state in memory.
 pub type InMemoryDB = CacheDB<EmptyDB>;
@@ -121,17 +121,14 @@ impl<ExtDB> CacheDB<ExtDB> {
     }
 }
 
+impl<ExtDB: Database> From<CacheDB<ExtDB>> for Box<dyn Database> {
+    #[inline]
+    fn from(value: CacheDB<ExtDB>) -> Self {
+        Box::new(value)
+    }
+}
+
 impl<ExtDB: Database> Database for CacheDB<ExtDB> {
-    #[inline]
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    #[inline]
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self
-    }
-
     #[inline]
     fn get_account(&mut self, address: Address) -> Option<AccountInfo> {
         let Cache { accounts, contracts, .. } = &mut self.cache;
@@ -195,14 +192,6 @@ mod tests {
     }
 
     impl Database for CountingDB {
-        fn as_any(&self) -> &dyn Any {
-            self
-        }
-
-        fn as_any_mut(&mut self) -> &mut dyn Any {
-            self
-        }
-
         fn get_account(&mut self, _address: Address) -> Option<AccountInfo> {
             self.account_loads += 1;
             self.account.clone()

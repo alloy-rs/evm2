@@ -128,8 +128,8 @@ mod tests {
             SpecId::OSAKA,
             block,
             TxRegistry::new(),
-            Box::new(database),
-            Box::new(Precompiles::base(SpecId::OSAKA)),
+            database,
+            Precompiles::base(SpecId::OSAKA),
         );
 
         let result = evm.system_call(contract, Bytes::new());
@@ -155,8 +155,8 @@ mod tests {
             SpecId::OSAKA,
             BlockEnv::default(),
             TxRegistry::new(),
-            Box::new(database),
-            Box::new(Precompiles::base(SpecId::OSAKA)),
+            database,
+            Precompiles::base(SpecId::OSAKA),
         );
 
         let result = evm.system_call(contract, Bytes::new());
@@ -176,8 +176,8 @@ mod tests {
             SpecId::OSAKA,
             BlockEnv::default(),
             TxRegistry::new(),
-            Box::new(InMemoryDB::default()),
-            Box::new(Precompiles::base(SpecId::OSAKA)),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
         );
 
         let result = evm.system_call(contract, Bytes::new());
@@ -208,8 +208,8 @@ mod tests {
             SpecId::OSAKA,
             BlockEnv::default(),
             TxRegistry::new(),
-            Box::new(database),
-            Box::new(Precompiles::base(SpecId::OSAKA)),
+            database,
+            Precompiles::base(SpecId::OSAKA),
         );
 
         let result = evm.system_call(contract, Bytes::new());
