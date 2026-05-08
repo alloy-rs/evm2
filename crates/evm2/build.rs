@@ -4,6 +4,7 @@ use std::{env, ffi::OsString, process::Command};
 
 fn main() {
     println!("cargo:rustc-check-cfg=cfg(tco)");
+    println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-env-changed=RUSTC");
     println!("cargo:rerun-if-env-changed=TARGET");
 
