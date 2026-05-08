@@ -209,27 +209,6 @@ fn execute_spec(
     tx: &RecoveredTxEnvelope,
     env: &Env,
 ) -> Result<SpecOutcome, HandlerError> {
-    if !matches!(
-        spec,
-        SpecId::FRONTIER
-            | SpecId::HOMESTEAD
-            | SpecId::TANGERINE
-            | SpecId::SPURIOUS_DRAGON
-            | SpecId::BYZANTIUM
-            | SpecId::PETERSBURG
-            | SpecId::ISTANBUL
-            | SpecId::BERLIN
-            | SpecId::LONDON
-            | SpecId::MERGE
-            | SpecId::SHANGHAI
-            | SpecId::CANCUN
-            | SpecId::PRAGUE
-            | SpecId::OSAKA
-            | SpecId::AMSTERDAM
-    ) {
-        unreachable!("unknown statetest spec: {spec:?}");
-    }
-
     let mut evm = Evm::<BaseEvmTypes>::new(
         spec,
         block,
@@ -239,15 +218,15 @@ fn execute_spec(
     );
     let system_changes = pre_block_system_calls(&mut evm, spec, env, &database);
     let result = evm.transact(tx)?;
-    Ok(spec_outcome(&database, result, &system_changes))
+    Ok(spec_outcome(database, result, &system_changes))
 }
 
 fn spec_outcome(
-    database: &InMemoryDB,
+    database: InMemoryDB,
     result: TxResult,
     system_changes: &[StateChanges],
 ) -> SpecOutcome {
-    let mut post = database.clone();
+    let mut post = database;
     for changes in system_changes {
         post = apply_state_changes(&post, changes);
     }
