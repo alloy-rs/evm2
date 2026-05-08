@@ -147,75 +147,6 @@ pub struct TxResult {
     pub state_changes: StateChanges,
 }
 
-macro_rules! evm_dyn_provider_methods {
-    (database) => {
-        paste::paste! {
-            /// Returns this provider.
-            #[inline]
-            pub fn database(&self) -> &dyn Database {
-                self.state.initial().as_ref()
-            }
-
-            /// Returns this provider mutably.
-            #[inline]
-            pub fn [<database _mut>](&mut self) -> &mut dyn Database {
-                self.state.initial_mut().as_mut()
-            }
-
-            /// Replaces this provider.
-            #[inline]
-            pub fn [<set_ database>](&mut self, database: impl Database) {
-                *self.state.initial_mut() = Box::new(database);
-            }
-
-            /// Returns this provider as `P` if it has that concrete type.
-            #[inline]
-            pub fn [<database _as>]<P: Database>(&self) -> Option<&P> {
-                (self.database() as &dyn core::any::Any).downcast_ref()
-            }
-
-            /// Returns this provider mutably as `P` if it has that concrete type.
-            #[inline]
-            pub fn [<database _as_mut>]<P: Database>(&mut self) -> Option<&mut P> {
-                (self.[<database _mut>]() as &mut dyn core::any::Any).downcast_mut()
-            }
-        }
-    };
-    (precompiles) => {
-        paste::paste! {
-            /// Returns this provider.
-            #[inline]
-            pub fn precompiles(&self) -> &dyn PrecompileProvider {
-                self.precompiles.as_ref()
-            }
-
-            /// Returns this provider mutably.
-            #[inline]
-            pub fn [<precompiles _mut>](&mut self) -> &mut dyn PrecompileProvider {
-                self.precompiles.as_mut()
-            }
-
-            /// Replaces this provider.
-            #[inline]
-            pub fn [<set_ precompiles>](&mut self, precompiles: impl PrecompileProvider) {
-                self.precompiles = Box::new(precompiles);
-            }
-
-            /// Returns this provider as `P` if it has that concrete type.
-            #[inline]
-            pub fn [<precompiles _as>]<P: PrecompileProvider>(&self) -> Option<&P> {
-                (self.precompiles() as &dyn core::any::Any).downcast_ref()
-            }
-
-            /// Returns this provider mutably as `P` if it has that concrete type.
-            #[inline]
-            pub fn [<precompiles _as_mut>]<P: PrecompileProvider>(&mut self) -> Option<&mut P> {
-                (self.[<precompiles _mut>]() as &mut dyn core::any::Any).downcast_mut()
-            }
-        }
-    };
-}
-
 /// EVM host and transaction dispatcher.
 #[derive(derive_more::Debug)]
 pub struct Evm<T: EvmTypes> {
@@ -314,7 +245,35 @@ impl<T: EvmTypes> Evm<T> {
         &self.registry
     }
 
-    evm_dyn_provider_methods!(database);
+    /// Returns the backing database.
+    #[inline]
+    pub fn database(&self) -> &dyn Database {
+        self.state.initial().as_ref()
+    }
+
+    /// Returns the backing database mutably.
+    #[inline]
+    pub fn database_mut(&mut self) -> &mut dyn Database {
+        self.state.initial_mut().as_mut()
+    }
+
+    /// Replaces the backing database.
+    #[inline]
+    pub fn set_database(&mut self, database: impl Database) {
+        *self.state.initial_mut() = Box::new(database);
+    }
+
+    /// Returns the backing database as `D` if it has that concrete type.
+    #[inline]
+    pub fn database_as<D: Database>(&self) -> Option<&D> {
+        (self.database() as &dyn core::any::Any).downcast_ref()
+    }
+
+    /// Returns the backing database mutably as `D` if it has that concrete type.
+    #[inline]
+    pub fn database_as_mut<D: Database>(&mut self) -> Option<&mut D> {
+        (self.database_mut() as &mut dyn core::any::Any).downcast_mut()
+    }
 
     /// Returns the mutable EVM state.
     #[inline]
@@ -328,7 +287,35 @@ impl<T: EvmTypes> Evm<T> {
         self.state.logs()
     }
 
-    evm_dyn_provider_methods!(precompiles);
+    /// Returns the precompile provider.
+    #[inline]
+    pub fn precompiles(&self) -> &dyn PrecompileProvider {
+        self.precompiles.as_ref()
+    }
+
+    /// Returns the precompile provider mutably.
+    #[inline]
+    pub fn precompiles_mut(&mut self) -> &mut dyn PrecompileProvider {
+        self.precompiles.as_mut()
+    }
+
+    /// Replaces the precompile provider.
+    #[inline]
+    pub fn set_precompiles(&mut self, precompiles: impl PrecompileProvider) {
+        self.precompiles = Box::new(precompiles);
+    }
+
+    /// Returns the precompile provider as `P` if it has that concrete type.
+    #[inline]
+    pub fn precompiles_as<P: PrecompileProvider>(&self) -> Option<&P> {
+        (self.precompiles() as &dyn core::any::Any).downcast_ref()
+    }
+
+    /// Returns the precompile provider mutably as `P` if it has that concrete type.
+    #[inline]
+    pub fn precompiles_as_mut<P: PrecompileProvider>(&mut self) -> Option<&mut P> {
+        (self.precompiles_mut() as &mut dyn core::any::Any).downcast_mut()
+    }
 
     /// Returns the active EVM version.
     #[inline]
