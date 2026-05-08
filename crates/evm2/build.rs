@@ -13,18 +13,14 @@ fn main() {
     println!("cargo:rerun-if-env-changed=RUSTC");
     println!("cargo:rerun-if-env-changed=TARGET");
 
-    let tco_requested = env::var_os("CARGO_FEATURE_TCO").is_some();
-    let nightly_requested = env::var_os("CARGO_FEATURE_NIGHTLY").is_some();
     let is_nightly = rustc_is_nightly();
 
-    if !(is_nightly || tco_requested || nightly_requested) {
+    if !is_nightly {
         return;
     }
 
     if probe_tco_support() {
         println!("cargo:rustc-cfg=evm2_tco");
-    } else if tco_requested || nightly_requested {
-        panic!("requested tco backend is not supported by this rustc/target");
     }
 }
 
