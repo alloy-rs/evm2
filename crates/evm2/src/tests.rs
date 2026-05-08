@@ -39,6 +39,13 @@ fn evm_executes_storage_transaction() {
         Precompiles::base(SpecId::OSAKA),
     );
 
+    assert!(evm.database_as::<InMemoryDB>().is_some());
+    assert!(evm.database_as_mut::<InMemoryDB>().is_some());
+    assert!(evm.precompiles_as::<Precompiles>().is_some());
+    assert!(evm.precompiles_as_mut::<Precompiles>().is_some());
+    evm.set_database(InMemoryDB::default());
+    evm.set_precompiles(Precompiles::base(SpecId::OSAKA));
+
     run_tx(&mut evm, contract, [op::PUSH1, 0x2a, op::PUSH1, 0x01, op::SSTORE, op::STOP]);
 
     assert_eq!(

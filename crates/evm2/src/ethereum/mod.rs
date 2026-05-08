@@ -9,7 +9,7 @@ mod legacy;
 use crate::{
     Evm, EvmFeatures, EvmTypes, SpecId, TxResult, Version,
     bytecode::Bytecode,
-    evm::{AccountInfo, StateCheckpoint, precompile::PrecompileProvider},
+    evm::{AccountInfo, StateCheckpoint},
     interpreter::{Message, MessageKind, MessageResult, Word},
     registry::{HandlerError, HandlerResult, TxRegistry},
     utils::num_words,

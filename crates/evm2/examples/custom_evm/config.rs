@@ -4,7 +4,6 @@ use crate::opcode;
 use evm2::{
     BaseEvmConfig, Evm, EvmConfig, EvmConfigSelector, EvmTypes, ExecutionConfig, SpecId, Version,
     VersionTables,
-    evm::{InMemoryDB, precompile::NoPrecompiles},
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -29,8 +28,6 @@ impl EvmTypes for CustomTypes {
     type SpecId = CustomSpecId;
     type Tx = crate::tx::CustomEnvelope;
     type Host = Evm<Self>;
-    type Database = InMemoryDB;
-    type Precompiles = NoPrecompiles;
 }
 
 // Const-generic configs are still keyed by the inherited base spec.
