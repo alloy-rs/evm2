@@ -4,8 +4,8 @@ use crate::{
     env::{BlockEnv, TxEnv},
     evm::{AccountLoad, SLoad, SStore, SelfDestructResult},
     interpreter::{
-        Gas, Host, InstrStop, Interpreter, Memory, Message, MessageKind, MessageResult, Stack,
-        Word, op,
+        Gas, Host, InstrStop, Interpreter, Memory, Message, MessageKind, MessageResult,
+        StackBacking, Word, op,
     },
     storage_key::{StorageKey, StorageKeyMap},
 };
@@ -180,7 +180,7 @@ impl Host for TestHost {
 }
 
 pub(super) struct TestInterpreter {
-    pub(super) stack: Box<[Word; Stack::CAPACITY]>,
+    pub(super) stack: Box<StackBacking>,
     pub(super) stack_len: usize,
     pub(super) gas: Gas,
     pub(super) memory: Memory,
@@ -190,7 +190,7 @@ pub(super) struct TestInterpreter {
 
 impl TestInterpreter {
     pub(super) fn stack(&self) -> &[Word] {
-        &self.stack[..self.stack_len]
+        unsafe { core::slice::from_raw_parts(self.stack.as_ptr().cast(), self.stack_len) }
     }
 
     pub(super) fn memory(&mut self, offset: usize, len: usize) -> &[u8] {

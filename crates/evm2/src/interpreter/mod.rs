@@ -18,6 +18,7 @@ mod ctrl;
 pub use ctrl::{BytecodeRef, Pc};
 
 mod stack;
+pub(crate) use stack::StackBacking;
 pub use stack::{Stack, StackMut, Word};
 
 mod memory;

@@ -77,11 +77,10 @@ pub(crate) fn sstore(cx: _) -> Result {
     Ok(())
 }
 
-#[instruction(no_stack_preamble)]
-pub(crate) fn tload(cx: _) -> Result {
-    let ([], key) = stack.popn_top()?;
+#[instruction]
+pub(crate) fn tload(cx: _, [key]: [Word]) -> out {
     let destination = cx.state.message().destination;
-    *key = cx.state.host().tload(destination, *key);
+    *out = cx.state.host().tload(destination, key);
 }
 
 #[instruction(no_stack_preamble)]
@@ -120,7 +119,8 @@ fn log_common<T: EvmTypes>(
     let destination = cx.state.message().destination;
     cx.state.host().log(Log {
         address: destination,
-        data: LogData::new(topics, data).expect("LOG opcodes cannot emit more than 4 topics"),
+        // SAFETY: `log` is only dispatched for LOG0 through LOG4.
+        data: unsafe { LogData::new(topics, data).unwrap_unchecked() },
     });
     Ok(())
 }
