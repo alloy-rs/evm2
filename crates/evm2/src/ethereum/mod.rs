@@ -376,7 +376,7 @@ fn initial_call_code<T: EvmTypes<Host = Evm<T>>>(
     if host.spec_id().enables(SpecId::PRAGUE)
         && let Some(delegated_address) = code.eip7702_address()
     {
-        host.state.warm_account(delegated_address);
+        let _ = host.state.warm_account(delegated_address);
         return InitialCallCode {
             code: host.state.get_code(delegated_address),
             code_address: delegated_address,

@@ -437,13 +437,18 @@ impl<D> State<D> {
 
     /// Marks an account as warm in a revertible execution context.
     ///
-    /// If this call newly warms the account, the warm-set change is journaled and will be undone
-    /// by [`Self::rollback`]. Use this for warmth introduced while executing EVM code or any other
-    /// scope whose effects may be reverted to a checkpoint.
+    /// Returns whether the account was cold before this access. If this call newly warms the
+    /// account, the warm-set change is journaled and will be undone by [`Self::rollback`]. Use this
+    /// for warmth introduced while executing EVM code or any other scope whose effects may be
+    /// reverted to a checkpoint.
     #[inline]
-    pub fn warm_account(&mut self, address: Address) {
+    #[must_use]
+    pub fn warm_account(&mut self, address: Address) -> bool {
         if self.accessed_accounts.insert(address) {
             self.journal.push(JournalEntry::AccountWarmed { address });
+            true
+        } else {
+            false
         }
     }
 
@@ -471,7 +476,7 @@ impl<D> State<D> {
         let addresses = addresses.into_iter();
         self.accessed_accounts.reserve(addresses.size_hint().0);
         for address in addresses {
-            self.warm_account(address);
+            let _ = self.warm_account(address);
         }
     }
 
@@ -664,30 +669,27 @@ impl<D: Database> State<D> {
     }
 
     #[must_use]
-    fn storage_initial(&mut self, address: Address, key: Word) -> Word {
-        if self.storage.get(&address).is_some_and(|storage| storage.wiped)
-            || self.accounts.get(&address).is_some_and(|account| account.original.is_none())
-        {
-            Word::ZERO
-        } else {
-            self.initial.get_storage(address, key)
-        }
-    }
-
-    #[must_use]
     fn storage_slot_mut(
         &mut self,
         address: Address,
         key: Word,
         journal_insert: bool,
     ) -> &mut Tracked<Word> {
-        let initial = self.storage_initial(address, key);
-        let storage = self.storage.entry(address).or_default();
+        let Self { initial, accounts, storage, journal, .. } = self;
+        let account_created =
+            accounts.get(&address).is_some_and(|account| account.original.is_none());
+        let storage = storage.entry(address).or_default();
+        let storage_wiped = storage.wiped;
         match storage.slots.entry(key) {
             hash_map::Entry::Occupied(entry) => entry.into_mut(),
             hash_map::Entry::Vacant(entry) => {
+                let initial = if storage_wiped || account_created {
+                    Word::ZERO
+                } else {
+                    initial.get_storage(address, key)
+                };
                 if journal_insert {
-                    self.journal.push(JournalEntry::StorageInserted { address, key });
+                    journal.push(JournalEntry::StorageInserted { address, key });
                 }
                 entry.insert(Tracked::new(initial))
             }
@@ -1275,7 +1277,7 @@ mod tests {
         assert!(state.journal.is_empty());
 
         let checkpoint = state.checkpoint();
-        state.warm_account(frame_account);
+        assert!(state.warm_account(frame_account));
         assert!(state.warm_storage(frame_storage, key));
         assert_eq!(state.journal.len(), 2);
 
