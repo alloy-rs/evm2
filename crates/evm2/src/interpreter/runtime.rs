@@ -1,6 +1,8 @@
 #[cfg(feature = "tco")]
 use super::gas::RemainingGas;
-use super::{BytecodeRef, Gas, InstrStop, Memory, Message, MessageKind, Pc, Result, Stack, Word};
+use super::{
+    BytecodeRef, Gas, InstrStop, Memory, Message, MessageKind, Pc, Result, Stack, StackBacking,
+};
 use crate::{
     EvmConfig, EvmTypes, ExecutionConfig, SpecId, Version, bytecode::Bytecode, env::TxEnv,
     version::GasParams,
@@ -26,7 +28,7 @@ pub struct Interpreter<'frame, T: EvmTypes> {
     version: *const Version,
     stack_len: usize,
     #[debug(skip)]
-    stack: Box<[Word; Stack::CAPACITY]>,
+    stack: Box<StackBacking>,
 
     gas: Gas,
     result: Result,
@@ -55,7 +57,7 @@ impl<T: EvmTypes> Default for Interpreter<'_, T> {
             host: None,
             version: core::ptr::null(),
             spec: SpecId::DEFAULT,
-            // SAFETY: `Word` is valid at any bitpattern. It's not read before init anyway.
+            // SAFETY: `MaybeUninit<Word>` does not need initialization.
             stack: unsafe { Box::new_uninit().assume_init() },
             _marker: PhantomData,
         }
@@ -115,9 +117,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
     }
 
     #[cfg(test)]
-    pub(crate) fn into_parts(
-        self,
-    ) -> (Box<[Word; Stack::CAPACITY]>, usize, Gas, Memory, *const [u8]) {
+    pub(crate) fn into_parts(self) -> (Box<StackBacking>, usize, Gas, Memory, *const [u8]) {
         (self.stack, self.stack_len, self.gas, self.memory, self.output)
     }
 
@@ -170,7 +170,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         // the separate stack view is live.
         let state = InterpreterState::wrap_mut(unsafe { &mut *raw });
         let mut pc = Pc::new(self.pc);
-        let mut stack = Stack::new(self.stack.as_mut_ptr(), self.stack_len);
+        let mut stack = Stack::new(&mut self.stack, self.stack_len);
         loop {
             let op = pc.op();
             let instr = config.instructions[op as usize];
@@ -197,7 +197,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         let pc = Pc::new(self.pc);
         let op = pc.op();
         let instr = config.instructions[op as usize];
-        let stack = Stack::new(self.stack.as_mut_ptr(), self.stack_len);
+        let stack = Stack::new(&mut self.stack, self.stack_len);
         let remaining_gas = RemainingGas::new(self.gas.remaining());
         instr(pc, stack, remaining_gas, state);
         self.result.unwrap_err()
@@ -254,7 +254,9 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
     /// Returns the cached transaction-global environment.
     #[inline]
     pub const fn tx(&self) -> &TxEnv {
-        self.0.tx_env.expect("interpreter tx env is initialized")
+        // SAFETY: `tx_env` is initialized at the beginning of `run_with` and remains set for
+        // instruction execution.
+        unsafe { self.0.tx_env.unwrap_unchecked() }
     }
 
     /// Returns the active bytecode.
@@ -269,7 +271,7 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
         // SAFETY: `host` is initialized at the beginning of `run_with` and cleared before the
         // method returns. Instruction execution is synchronous, so the pointer cannot outlive the
         // `run_with` host borrow.
-        unsafe { self.0.host.expect("interpreter host is initialized").as_mut() }
+        unsafe { self.0.host.unwrap_unchecked().as_mut() }
     }
 
     /// Returns the active runtime version data.
@@ -283,7 +285,9 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
     /// Returns the active frame-local call/create message.
     #[inline]
     pub const fn message(&self) -> &Message {
-        self.0.message.expect("interpreter message is initialized")
+        // SAFETY: `message` is initialized at the beginning of `run_with` and remains set for
+        // instruction execution.
+        unsafe { self.0.message.unwrap_unchecked() }
     }
 
     /// Returns whether the active frame forbids state-changing operations.
