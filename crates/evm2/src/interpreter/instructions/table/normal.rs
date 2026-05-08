@@ -122,7 +122,7 @@ pub(crate) struct PackedPcStackLen(usize);
 impl PackedPcStackLen {
     #[inline(always)]
     pub(crate) fn pack(pc: *const u8, stack_len: usize) -> Self {
-        Self((stack_len << PC_BITS) | (pc as usize & PC_MASK))
+        Self((stack_len << PC_BITS) | pc as usize)
     }
 
     #[inline(always)]
