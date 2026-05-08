@@ -8,12 +8,12 @@ use evm2_macros::instruction;
 
 #[instruction]
 pub(crate) fn blockhash(cx: _, [number]: [Word]) -> Result<out> {
-    *out = if let Some(diff) = cx.state.host.block_env().number.checked_sub(number) {
+    *out = if let Some(diff) = cx.state.host().block_env().number.checked_sub(number) {
         if diff == 0 || diff > BLOCK_HASH_HISTORY {
             Word::ZERO
         } else {
             cx.state
-                .host
+                .host()
                 .block_hash(number)
                 .map(b256_to_word)
                 .ok_or(InstrStop::FatalExternalError)?
@@ -25,31 +25,31 @@ pub(crate) fn blockhash(cx: _, [number]: [Word]) -> Result<out> {
 
 #[instruction]
 pub(crate) fn coinbase(cx: _) -> out {
-    *out = address_to_word(cx.state.host.block_env().beneficiary);
+    *out = address_to_word(cx.state.host().block_env().beneficiary);
 }
 
 #[instruction]
 pub(crate) fn timestamp(cx: _) -> out {
-    *out = cx.state.host.block_env().timestamp;
+    *out = cx.state.host().block_env().timestamp;
 }
 
 #[instruction]
 pub(crate) fn block_number(cx: _) -> out {
-    *out = cx.state.host.block_env().number;
+    *out = cx.state.host().block_env().number;
 }
 
 #[instruction]
 pub(crate) fn difficulty(cx: _) -> out {
-    *out = if cx.state.spec.enables(SpecId::MERGE) {
-        cx.state.host.block_env().prevrandao
+    *out = if cx.state.spec().enables(SpecId::MERGE) {
+        cx.state.host().block_env().prevrandao
     } else {
-        cx.state.host.block_env().difficulty
+        cx.state.host().block_env().difficulty
     };
 }
 
 #[instruction]
 pub(crate) fn gaslimit(cx: _) -> out {
-    *out = cx.state.host.block_env().gas_limit;
+    *out = cx.state.host().block_env().gas_limit;
 }
 
 #[instruction]
@@ -59,12 +59,13 @@ pub(crate) fn chainid(cx: _) -> Result<out> {
 
 #[instruction]
 pub(crate) fn selfbalance(cx: _) -> Result<out> {
-    *out = cx.state.host.load_account(cx.state.message().destination, false, false)?.balance;
+    let destination = cx.state.message().destination;
+    *out = cx.state.host().load_account(destination, false, false)?.balance;
 }
 
 #[instruction]
 pub(crate) fn basefee(cx: _) -> Result<out> {
-    *out = cx.state.host.block_env().basefee;
+    *out = cx.state.host().block_env().basefee;
 }
 
 #[instruction]
@@ -75,12 +76,12 @@ pub(crate) fn blobhash(cx: _, [index]: [Word]) -> Result<out> {
 
 #[instruction]
 pub(crate) fn blobbasefee(cx: _) -> Result<out> {
-    *out = cx.state.host.block_env().blob_basefee;
+    *out = cx.state.host().block_env().blob_basefee;
 }
 
 #[instruction]
 pub(crate) fn slotnum(cx: _) -> Result<out> {
-    *out = cx.state.host.block_env().slot_num;
+    *out = cx.state.host().block_env().slot_num;
 }
 
 #[cfg(test)]

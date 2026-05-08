@@ -1,9 +1,9 @@
-use super::{Gas, Pc, Result, StackMut, State, Word};
+use super::{Gas, InterpreterState, Pc, Result, StackMut, Word};
 use crate::EvmTypes;
 
 /// Function signature of an `#[instruction]`.
 pub(crate) type InstructionImplFn<T> =
-    fn(pc: &mut Pc, stack: StackMut<'_>, state: &mut State<'_, T>) -> Result;
+    fn(pc: &mut Pc, stack: StackMut<'_>, state: &mut InterpreterState<'_, T>) -> Result;
 
 /// EVM instruction implementation.
 pub trait Instruction<T: EvmTypes = crate::BaseEvmTypes> {
@@ -11,7 +11,7 @@ pub trait Instruction<T: EvmTypes = crate::BaseEvmTypes> {
     const DYNAMIC_GAS: bool = true;
 
     /// Executes this instruction.
-    fn execute(pc: &mut Pc, stack: StackMut<'_>, state: &mut State<'_, T>) -> Result;
+    fn execute(pc: &mut Pc, stack: StackMut<'_>, state: &mut InterpreterState<'_, T>) -> Result;
 }
 
 /// Instruction execution context.
@@ -19,7 +19,7 @@ pub struct InstructionCx<'a, 'state, T: EvmTypes> {
     /// Program counter state.
     pub pc: &'a mut Pc,
     /// Interpreter state.
-    pub state: &'a mut State<'state, T>,
+    pub state: &'a mut InterpreterState<'state, T>,
 }
 
 /// Instruction execution context with mutable gas state.
@@ -29,7 +29,7 @@ pub struct GasInstructionCx<'a, 'state, T: EvmTypes> {
     /// Gas state.
     pub gas: &'a mut Gas,
     /// Interpreter state.
-    pub state: &'a mut State<'state, T>,
+    pub state: &'a mut InterpreterState<'state, T>,
 }
 
 impl<T: EvmTypes> core::fmt::Debug for InstructionCx<'_, '_, T> {
@@ -63,8 +63,8 @@ pub fn instr_stack_setup(
 /// both references are live.
 #[inline]
 pub unsafe fn split_gas_state<'a, 'state, T: EvmTypes>(
-    state: *mut State<'state, T>,
-) -> (&'a mut Gas, &'a mut State<'state, T>) {
+    state: *mut InterpreterState<'state, T>,
+) -> (&'a mut Gas, &'a mut InterpreterState<'state, T>) {
     // SAFETY: The caller must ensure the returned `gas` reference is not used through `state`.
-    unsafe { (&mut (*state).gas, &mut *state) }
+    unsafe { (&mut *InterpreterState::gas_from_state_ptr(state), &mut *state) }
 }

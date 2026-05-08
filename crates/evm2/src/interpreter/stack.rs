@@ -1,21 +1,23 @@
 use super::{InstrStop, Result};
 use crate::constants::STACK_LIMIT;
 use alloy_primitives::U256;
-use core::{fmt, hint::cold_path};
+use core::{fmt, hint::cold_path, marker::PhantomData};
 
 /// EVM stack word.
 pub type Word = U256;
 
 /// Mutable EVM operand stack.
 pub struct Stack<'a> {
-    pub(crate) stack: &'a mut [Word; STACK_LIMIT],
+    pub(crate) stack: *mut Word,
     pub(crate) len: usize,
+    _marker: PhantomData<&'a mut Word>,
 }
 
 /// Borrowed mutable EVM operand stack.
 pub struct StackMut<'a> {
-    pub(crate) stack: &'a mut [Word; STACK_LIMIT],
+    pub(crate) stack: *mut Word,
     pub(crate) len: &'a mut usize,
+    _marker: PhantomData<&'a mut Word>,
 }
 
 impl fmt::Debug for Stack<'_> {
@@ -34,20 +36,20 @@ impl<'a> Stack<'a> {
     pub(crate) const CAPACITY: usize = STACK_LIMIT;
 
     #[inline]
-    pub(crate) const fn new(stack: &'a mut [Word; Stack::CAPACITY], len: usize) -> Self {
+    pub(crate) const fn new(stack: *mut Word, len: usize) -> Self {
         debug_assert!(len <= Self::CAPACITY);
-        Self { stack, len }
+        Self { stack, len, _marker: PhantomData }
     }
 
     #[inline]
     #[cfg(not(feature = "tco"))]
     pub(crate) const fn reborrow(&mut self) -> Stack<'_> {
-        Stack { stack: self.stack, len: self.len }
+        Stack { stack: self.stack, len: self.len, _marker: PhantomData }
     }
 
     #[inline]
     pub(crate) const fn as_mut(&mut self) -> StackMut<'_> {
-        StackMut { stack: self.stack, len: &mut self.len }
+        StackMut { stack: self.stack, len: &mut self.len, _marker: PhantomData }
     }
 
     /// Returns the stack length.
@@ -69,7 +71,7 @@ impl<'a> Stack<'a> {
     /// Returns the stack contents as a slice.
     #[inline]
     pub const fn as_slice(&self) -> &[Word] {
-        unsafe { core::slice::from_raw_parts(self.stack.as_ptr(), self.len()) }
+        unsafe { core::slice::from_raw_parts(self.stack, self.len()) }
     }
 }
 
@@ -78,9 +80,9 @@ impl<'a> StackMut<'a> {
 
     #[inline]
     #[cfg(test)]
-    pub(crate) const fn new(stack: &'a mut [Word; StackMut::CAPACITY], len: &'a mut usize) -> Self {
+    pub(crate) const fn new(stack: *mut Word, len: &'a mut usize) -> Self {
         debug_assert!(*len <= Self::CAPACITY);
-        Self { stack, len }
+        Self { stack, len, _marker: PhantomData }
     }
 
     /// Returns the stack length.
@@ -102,13 +104,13 @@ impl<'a> StackMut<'a> {
     /// Returns the stack contents as a slice.
     #[inline]
     pub const fn as_slice(&self) -> &[Word] {
-        unsafe { core::slice::from_raw_parts(self.stack.as_ptr(), self.len()) }
+        unsafe { core::slice::from_raw_parts(self.stack, self.len()) }
     }
 
     /// Returns the stack contents as a slice.
     #[inline]
     pub const fn as_slice_mut(&mut self) -> &mut [Word] {
-        unsafe { core::slice::from_raw_parts_mut(self.stack.as_mut_ptr(), self.len()) }
+        unsafe { core::slice::from_raw_parts_mut(self.stack, self.len()) }
     }
 
     /// Checks that an instruction can consume `input` words and produce `output` words.
@@ -141,7 +143,7 @@ impl<'a> StackMut<'a> {
         *self.len = len.wrapping_sub(input).wrapping_add(output);
         Self::check_bounds_(len, input, output)?;
         debug_assert!(*self.len <= Self::CAPACITY);
-        Ok(unsafe { self.stack.as_mut_ptr().add(len).sub(input) })
+        Ok(unsafe { self.stack.add(len).sub(input) })
     }
 
     /// Pushes a word onto the stack.
@@ -153,7 +155,7 @@ impl<'a> StackMut<'a> {
             return Err(InstrStop::StackOverflow);
         }
         unsafe {
-            let end = self.stack.as_mut_ptr().add(len);
+            let end = self.stack.add(len);
             *end = value;
             *self.len = len + 1;
             debug_assert!(*self.len <= Self::CAPACITY);
@@ -215,7 +217,7 @@ impl<'a> StackMut<'a> {
     pub unsafe fn top_unchecked(&mut self) -> &mut Word {
         let len = self.len();
         debug_assert!(len > 0);
-        unsafe { self.stack.get_unchecked_mut(len - 1) }
+        unsafe { &mut *self.stack.add(len - 1) }
     }
 
     /// # Safety
@@ -225,7 +227,7 @@ impl<'a> StackMut<'a> {
     pub unsafe fn pop_unchecked(&mut self) -> Word {
         debug_assert!(!self.is_empty());
         *self.len -= 1;
-        unsafe { *self.stack.get_unchecked(self.len()) }
+        unsafe { *self.stack.add(self.len()) }
     }
 
     /// Duplicates the `n`th stack word from the top.
@@ -242,7 +244,7 @@ impl<'a> StackMut<'a> {
             });
         }
         unsafe {
-            let ptr = self.stack.as_mut_ptr().add(len);
+            let ptr = self.stack.add(len);
             *ptr = *ptr.sub(n);
             *self.len = len + 1;
             debug_assert!(*self.len <= Self::CAPACITY);
@@ -266,7 +268,7 @@ impl<'a> StackMut<'a> {
             return Err(InstrStop::StackUnderflow);
         }
         unsafe {
-            let top = self.stack.as_mut_ptr().add(len - 1);
+            let top = self.stack.add(len - 1);
             core::ptr::swap_nonoverlapping(top.sub(n), top.sub(m), 1);
         }
         Ok(())
@@ -289,7 +291,7 @@ impl<'a> StackMut<'a> {
         }
 
         unsafe {
-            let dst = self.stack.as_mut_ptr().add(len).cast::<u64>();
+            let dst = self.stack.add(len).cast::<u64>();
             *self.len = new_len;
             debug_assert!(*self.len <= Self::CAPACITY);
 
@@ -341,7 +343,7 @@ mod tests {
     fn run(f: impl FnOnce(&mut StackMut<'_>)) {
         let mut backing = [Word::MAX; StackMut::CAPACITY];
         let mut len = 0;
-        let mut stack = StackMut::new(&mut backing, &mut len);
+        let mut stack = StackMut::new(backing.as_mut_ptr(), &mut len);
         f(&mut stack);
     }
 
@@ -351,7 +353,7 @@ mod tests {
             *word = Word::from(i);
         }
         let mut len = len;
-        let mut stack = StackMut::new(&mut backing, &mut len);
+        let mut stack = StackMut::new(backing.as_mut_ptr(), &mut len);
         f(&mut stack);
     }
 
