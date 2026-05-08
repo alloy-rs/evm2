@@ -1,3 +1,4 @@
+use super::InspectMode;
 use crate::{
     EvmConfig, EvmTypes,
     interpreter::{InterpreterState, Pc, Result, Stack, gas::Gas},
@@ -22,38 +23,16 @@ macro_rules! assign_instruction_table_entries {
     };
 }
 
-pub(crate) const fn make_instruction_table<T, C>() -> RawInstrTable<T>
+pub(crate) const fn make_table<T, C, M>() -> RawInstrTable<T>
 where
     T: EvmTypes,
     C: EvmConfig<T>,
+    M: InspectMode<T>,
 {
-    let mut table = [dispatch::<T, C, NoInspector, 0> as super::InstrFn<T>; 256];
-    for_each_opcode_value!([table, T, C, NoInspector, dispatch, super::InstrFn<T>] assign_instruction_table_entries);
+    let mut table = [dispatch::<T, C, M, 0> as super::InstrFn<T>; 256];
+    for_each_opcode_value!([table, T, C, M, dispatch, super::InstrFn<T>] assign_instruction_table_entries);
 
     // Make all unknown entries point to the same dispatch function.
-    let mut i = 0;
-    let mut unknown_idx = None;
-    while i < 256 {
-        if C::VERSION_TABLES.is_unknown_opcode(i as u8) {
-            if unknown_idx.is_none() {
-                unknown_idx = Some(i);
-            }
-            table[i] = table[unknown_idx.unwrap()];
-        }
-        i += 1;
-    }
-
-    table
-}
-
-pub(crate) const fn make_inspect_instruction_table<T, C>() -> RawInstrTable<T>
-where
-    T: EvmTypes,
-    C: EvmConfig<T>,
-{
-    let mut table = [dispatch::<T, C, DynInspector, 0> as super::InstrFn<T>; 256];
-    for_each_opcode_value!([table, T, C, DynInspector, dispatch, super::InstrFn<T>] assign_instruction_table_entries);
-
     let mut i = 0;
     let mut unknown_idx = None;
     while i < 256 {
@@ -80,16 +59,16 @@ extern_table! {
         stack: Stack<'_>,
         state: &mut InterpreterState<'_, T>,
     ) -> InstrFnRet {
-        dispatch_mono::<T, C, M>(OP, pc, stack, state)
+        dispatch_mono::<T, C, M>(pc, stack, state, OP)
     }
 }
 
 #[inline(always)]
 fn dispatch_mono<T: EvmTypes, C: EvmConfig<T>, M: InspectMode<T>>(
-    op: u8,
     mut pc: Pc,
     mut stack: Stack<'_>,
     state: &mut InterpreterState<'_, T>,
+    op: u8,
 ) -> InstrFnRet {
     let instr = C::VERSION_TABLES.instruction(op).instr;
     if M::INSPECT {
@@ -117,42 +96,6 @@ fn dispatch_mono<T: EvmTypes, C: EvmConfig<T>, M: InspectMode<T>>(
         return (core::ptr::null(), stack.len);
     }
     (pc.as_ptr(), stack.len)
-}
-
-trait InspectMode<T: EvmTypes> {
-    const INSPECT: bool;
-
-    fn step(state: &mut InterpreterState<'_, T>, pc: Pc, stack_len: usize);
-
-    fn step_end(state: &mut InterpreterState<'_, T>, pc: Pc, stack_len: usize);
-}
-
-struct NoInspector;
-
-impl<T: EvmTypes> InspectMode<T> for NoInspector {
-    const INSPECT: bool = false;
-
-    #[inline(always)]
-    fn step(_state: &mut InterpreterState<'_, T>, _pc: Pc, _stack_len: usize) {}
-
-    #[inline(always)]
-    fn step_end(_state: &mut InterpreterState<'_, T>, _pc: Pc, _stack_len: usize) {}
-}
-
-struct DynInspector;
-
-impl<T: EvmTypes> InspectMode<T> for DynInspector {
-    const INSPECT: bool = true;
-
-    #[inline(always)]
-    fn step(state: &mut InterpreterState<'_, T>, pc: Pc, stack_len: usize) {
-        state.inspect_step(pc, stack_len);
-    }
-
-    #[inline(always)]
-    fn step_end(state: &mut InterpreterState<'_, T>, pc: Pc, stack_len: usize) {
-        state.inspect_step_end(pc, stack_len);
-    }
 }
 
 #[inline]

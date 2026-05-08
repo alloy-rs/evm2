@@ -69,15 +69,13 @@ pub(crate) type InstrFn<T> = imp::RawInstrFn<T>;
 /// Instruction dispatch table.
 pub(crate) type InstrTable<T> = imp::RawInstrTable<T>;
 
-pub(crate) use imp::{make_inspect_instruction_table, make_instruction_table};
-
 pub(crate) trait InstrTables<C>: EvmTypes
 where
     C: EvmConfig<Self>,
 {
-    const INSTRUCTIONS: &'static InstrTable<Self> = &make_instruction_table::<Self, C>();
+    const INSTRUCTIONS: &'static InstrTable<Self> = &imp::make_table::<Self, C, NoInspector>();
     const INSPECT_INSTRUCTIONS: &'static InstrTable<Self> =
-        &make_inspect_instruction_table::<Self, C>();
+        &imp::make_table::<Self, C, DynInspector>();
 }
 
 impl<T, C> InstrTables<C> for T
@@ -85,6 +83,42 @@ where
     T: EvmTypes,
     C: EvmConfig<T>,
 {
+}
+
+pub(super) trait InspectMode<T: EvmTypes> {
+    const INSPECT: bool;
+
+    fn step(state: &mut InterpreterState<'_, T>, pc: Pc, stack_len: usize);
+
+    fn step_end(state: &mut InterpreterState<'_, T>, pc: Pc, stack_len: usize);
+}
+
+pub(super) struct NoInspector;
+
+impl<T: EvmTypes> InspectMode<T> for NoInspector {
+    const INSPECT: bool = false;
+
+    #[inline(always)]
+    fn step(_state: &mut InterpreterState<'_, T>, _pc: Pc, _stack_len: usize) {}
+
+    #[inline(always)]
+    fn step_end(_state: &mut InterpreterState<'_, T>, _pc: Pc, _stack_len: usize) {}
+}
+
+pub(super) struct DynInspector;
+
+impl<T: EvmTypes> InspectMode<T> for DynInspector {
+    const INSPECT: bool = true;
+
+    #[inline(always)]
+    fn step(state: &mut InterpreterState<'_, T>, pc: Pc, stack_len: usize) {
+        state.inspect_step(pc, stack_len);
+    }
+
+    #[inline(always)]
+    fn step_end(state: &mut InterpreterState<'_, T>, pc: Pc, stack_len: usize) {
+        state.inspect_step_end(pc, stack_len);
+    }
 }
 
 #[inline]

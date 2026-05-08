@@ -1,5 +1,9 @@
 #![doc = include_str!("../README.md")]
-#![cfg_attr(tco, feature(explicit_tail_calls, rust_preserve_none_cc), allow(incomplete_features))]
+#![cfg_attr(
+    tco,
+    feature(explicit_tail_calls, optimize_attribute, rust_preserve_none_cc),
+    allow(incomplete_features)
+)]
 #![cfg_attr(not(feature = "std"), no_std)]
 
 extern crate self as evm2;
