@@ -157,7 +157,7 @@ pub struct Evm<T: EvmTypes> {
     pub(crate) block: BlockEnv,
     registry: TxRegistry<T::Tx, TxResult, Self>,
     #[debug(skip)]
-    pub(crate) state: State<Box<dyn Database>>,
+    pub(crate) state: State,
     #[debug(skip)]
     precompiles: Box<dyn PrecompileProvider>,
     #[debug(skip)]
@@ -219,7 +219,7 @@ impl<T: EvmTypes> Evm<T> {
             execution_config,
             block,
             registry,
-            state: State::new(database),
+            state: State::new_mono(database),
             precompiles,
             interpreter_pool: InterpreterPool::new(),
         }
@@ -248,19 +248,19 @@ impl<T: EvmTypes> Evm<T> {
     /// Returns the backing database.
     #[inline]
     pub fn database(&self) -> &dyn Database {
-        self.state.initial().as_ref()
+        self.state.initial()
     }
 
     /// Returns the backing database mutably.
     #[inline]
     pub fn database_mut(&mut self) -> &mut dyn Database {
-        self.state.initial_mut().as_mut()
+        self.state.initial_mut()
     }
 
     /// Replaces the backing database.
     #[inline]
     pub fn set_database(&mut self, database: impl Database) {
-        *self.state.initial_mut() = Box::new(database);
+        self.state.set_initial(database);
     }
 
     /// Returns the backing database as `D` if it has that concrete type.
@@ -277,7 +277,7 @@ impl<T: EvmTypes> Evm<T> {
 
     /// Returns the mutable EVM state.
     #[inline]
-    pub const fn state(&self) -> &State<Box<dyn Database>> {
+    pub const fn state(&self) -> &State {
         &self.state
     }
 
