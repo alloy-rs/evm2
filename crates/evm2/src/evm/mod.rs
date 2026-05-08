@@ -689,7 +689,6 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
         target: Address,
         skip_cold_load: bool,
     ) -> Result<SelfDestructResult, InstrStop> {
-        // TODO: evmone applies full SELFDESTRUCT revision rules in state transition.
         let is_cold = if self.spec_id().enables(SpecId::BERLIN) {
             self.state.warm_account(target)
         } else {

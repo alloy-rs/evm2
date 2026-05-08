@@ -58,10 +58,6 @@ macro_rules! gas_ids_impl {
                 None
             }
 
-            // TODO: Do we even need string names for gas IDs?
-            // pub fn from_name(name: &str) -> Option<Self> { ... }
-            // pub const fn name(self) -> &'static str { ... }
-
             /// Returns the gas parameter identifier as a table index.
             #[inline]
             pub const fn as_usize(self) -> usize {
