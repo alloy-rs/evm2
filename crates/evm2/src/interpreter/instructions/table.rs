@@ -70,8 +70,6 @@ pub(crate) type InstrFn<T> = imp::RawInstrFn<T>;
 pub(crate) type InstrTable<T> = imp::RawInstrTable<T>;
 
 pub(crate) use imp::make_instruction_table;
-#[cfg(not(tco))]
-pub(crate) use imp::unpack_pc_stack_len;
 
 pub(crate) trait InstrTables<C>: EvmTypes
 where

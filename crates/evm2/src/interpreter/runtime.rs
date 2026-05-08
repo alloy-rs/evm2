@@ -175,7 +175,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
             let op = pc.op();
             let instr = config.instructions[op as usize];
             let (packed, next_remaining_gas) = instr(pc, stack.reborrow(), remaining_gas, state);
-            let (next_pc, next_stack_len) = super::instructions::table::unpack_pc_stack_len(packed);
+            let (next_pc, next_stack_len) = packed.unpack();
             pc = Pc::new(next_pc);
             stack.len = next_stack_len;
             remaining_gas = next_remaining_gas;

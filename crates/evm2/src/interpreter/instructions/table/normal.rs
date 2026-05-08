@@ -6,7 +6,7 @@ use crate::{
 use core::hint::cold_path;
 
 /// Normal instruction return value.
-pub(crate) type InstrFnRet = (usize, RemainingGas);
+pub(crate) type InstrFnRet = (PackedPcStackLen, RemainingGas);
 
 /// Normal instruction function pointer.
 pub(super) type RawInstrFn<T> = extern_table!(
@@ -96,9 +96,9 @@ fn dispatch_mono<T: EvmTypes, C: EvmConfig<T>, const DYNAMIC_GAS: bool>(
         cold_path();
         state.set_result(r);
         let stack_len = if stack.len <= STACK_LIMIT { stack.len } else { 0 };
-        return (pack_pc_stack_len(core::ptr::null(), stack_len), remaining_gas);
+        return (PackedPcStackLen::pack(core::ptr::null(), stack_len), remaining_gas);
     }
-    (pack_pc_stack_len(pc.as_ptr(), stack.len), remaining_gas)
+    (PackedPcStackLen::pack(pc.as_ptr(), stack.len), remaining_gas)
 }
 
 #[inline]
@@ -115,13 +115,20 @@ const PC_MASK: usize = usize::MAX >> STACK_LEN_BITS;
 
 const _: () = assert!(STACK_LIMIT <= (1 << STACK_LEN_BITS));
 
-#[inline(always)]
-pub(crate) fn pack_pc_stack_len(pc: *const u8, stack_len: usize) -> usize {
-    debug_assert!(stack_len <= STACK_LIMIT);
-    (stack_len << PC_BITS) | (pc as usize & PC_MASK)
-}
+/// Packed normal dispatch pc and stack length.
+#[derive(Clone, Copy)]
+#[repr(transparent)]
+pub(crate) struct PackedPcStackLen(usize);
 
-#[inline(always)]
-pub(crate) const fn unpack_pc_stack_len(packed: usize) -> (*const u8, usize) {
-    ((packed & PC_MASK) as *const u8, packed >> PC_BITS)
+impl PackedPcStackLen {
+    #[inline(always)]
+    pub(crate) fn pack(pc: *const u8, stack_len: usize) -> Self {
+        debug_assert!(stack_len <= STACK_LIMIT);
+        Self((stack_len << PC_BITS) | (pc as usize & PC_MASK))
+    }
+
+    #[inline(always)]
+    pub(crate) const fn unpack(self) -> (*const u8, usize) {
+        ((self.0 & PC_MASK) as *const u8, self.0 >> PC_BITS)
+    }
 }
