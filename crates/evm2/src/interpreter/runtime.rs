@@ -172,7 +172,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         self.run_with(&ExecutionConfig::for_config::<C>(), host)
     }
 
-    /// Runs the interpreter until it stops with a monomorphized execution inspector.
+    /// Runs the interpreter until it stops with an execution inspector.
     #[inline]
     pub fn run_with_inspector<C, I>(&mut self, host: &mut T::Host, inspector: &mut I) -> InstrStop
     where
@@ -180,9 +180,12 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         I: Inspector<T>,
     {
         let config = ExecutionConfig::for_config::<C>();
-        let instructions =
-            <T as super::instructions::table::TypedInspectInstrTables<C, I>>::INSPECT_INSTRUCTIONS;
-        self.run_inner(&config, host, Some(NonNull::from(inspector)), instructions)
+        self.run_inner(
+            &config,
+            host,
+            Some(NonNull::from(inspector) as NonNull<dyn Inspector<T>>),
+            config.inspect_instructions,
+        )
     }
 
     /// Runs the interpreter until it stops.
@@ -408,30 +411,10 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
     }
 
     #[inline]
-    pub(crate) fn inspect_step_as<I: Inspector<T>>(&mut self, pc: Pc, stack_len: usize) {
-        self.0.pc = pc.as_ptr();
-        self.0.stack_len = stack_len;
-        unsafe {
-            let inspector = self.0.inspector.unwrap_unchecked().as_ptr() as *mut I;
-            (*inspector).step(&mut self.0);
-        };
-    }
-
-    #[inline]
     pub(crate) fn inspect_step_end(&mut self, pc: Pc, stack_len: usize) {
         self.0.pc = pc.as_ptr();
         self.0.stack_len = stack_len;
         unsafe { self.0.inspector.unwrap_unchecked().as_mut().step_end(&mut self.0) };
-    }
-
-    #[inline]
-    pub(crate) fn inspect_step_end_as<I: Inspector<T>>(&mut self, pc: Pc, stack_len: usize) {
-        self.0.pc = pc.as_ptr();
-        self.0.stack_len = stack_len;
-        unsafe {
-            let inspector = self.0.inspector.unwrap_unchecked().as_ptr() as *mut I;
-            (*inspector).step_end(&mut self.0);
-        };
     }
 
     #[inline]

@@ -1,9 +1,8 @@
 use crate::{
     EvmConfig, EvmTypes,
-    evm::inspector::Inspector,
     interpreter::{InstrStop, InterpreterState, Pc, Result, Stack, gas::RemainingGas},
 };
-use core::{hint::cold_path, marker::PhantomData};
+use core::hint::cold_path;
 
 /// Tail instruction function pointer.
 type TailInstrFn<T> = extern_table!(
@@ -57,18 +56,6 @@ where
 {
     let mut table = [tail_dispatch::<T, C, DynInspector, 0, true> as super::InstrFn<T>; 256];
     for_each_opcode_value!([table, T, C, DynInspector, tail_dispatch, super::InstrFn<T>] assign_instruction_table_entries);
-
-    table
-}
-
-pub(crate) const fn make_typed_inspect_instruction_table<T, C, I>() -> RawInstrTable<T>
-where
-    T: EvmTypes,
-    C: EvmConfig<T>,
-    I: Inspector<T>,
-{
-    let mut table = [tail_dispatch::<T, C, TypedInspector<I>, 0, true> as super::InstrFn<T>; 256];
-    for_each_opcode_value!([table, T, C, TypedInspector<I>, tail_dispatch, super::InstrFn<T>] assign_instruction_table_entries);
 
     table
 }
@@ -205,31 +192,6 @@ impl<T: EvmTypes> InspectMode<T> for DynInspector {
     #[inline(always)]
     fn next<C: EvmConfig<T>>(op: u8) -> TailInstrFn<T> {
         <T as super::InstrTables<C>>::INSPECT_INSTRUCTIONS[op as usize]
-    }
-}
-
-struct TypedInspector<I>(PhantomData<fn() -> I>);
-
-impl<T, I> InspectMode<T> for TypedInspector<I>
-where
-    T: EvmTypes,
-    I: Inspector<T>,
-{
-    const INSPECT: bool = true;
-
-    #[inline(always)]
-    fn step(state: &mut InterpreterState<'_, T>, pc: Pc, stack_len: usize) {
-        state.inspect_step_as::<I>(pc, stack_len);
-    }
-
-    #[inline(always)]
-    fn step_end(state: &mut InterpreterState<'_, T>, pc: Pc, stack_len: usize) {
-        state.inspect_step_end_as::<I>(pc, stack_len);
-    }
-
-    #[inline(always)]
-    fn next<C: EvmConfig<T>>(op: u8) -> TailInstrFn<T> {
-        <T as super::TypedInspectInstrTables<C, I>>::INSPECT_INSTRUCTIONS[op as usize]
     }
 }
 
