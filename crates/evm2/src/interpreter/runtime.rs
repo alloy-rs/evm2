@@ -1,7 +1,6 @@
-#[cfg(tco)]
-use super::gas::RemainingGas;
 use super::{
     BytecodeRef, Gas, InstrStop, Memory, Message, MessageKind, Pc, Result, Stack, StackBacking,
+    gas::RemainingGas,
 };
 use crate::{
     EvmConfig, EvmTypes, ExecutionConfig, SpecId, Version, bytecode::Bytecode, env::TxEnv,
@@ -171,16 +170,20 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         let state = InterpreterState::wrap_mut(unsafe { &mut *raw });
         let mut pc = Pc::new(self.pc);
         let mut stack = Stack::new(&mut self.stack, self.stack_len);
+        let mut remaining_gas = RemainingGas::new(self.gas.remaining());
         loop {
             let op = pc.op();
             let instr = config.instructions[op as usize];
-            let (next_pc, next_stack_len) = instr(pc, stack.reborrow(), state);
+            let (packed, next_remaining_gas) = instr(pc, stack.reborrow(), remaining_gas, state);
+            let (next_pc, next_stack_len) = super::instructions::table::unpack_pc_stack_len(packed);
             pc = Pc::new(next_pc);
             stack.len = next_stack_len;
+            remaining_gas = next_remaining_gas;
             if next_pc.is_null() {
                 cold_path();
                 self.pc = next_pc;
                 self.stack_len = stack.len;
+                self.gas.set_remaining(remaining_gas.get());
                 return self.result.unwrap_err();
             }
         }
