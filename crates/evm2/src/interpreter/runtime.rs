@@ -9,11 +9,10 @@ use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::Bytes;
 #[cfg(not(feature = "tco"))]
 use core::hint::cold_path;
-use core::{fmt, marker::PhantomData, mem::MaybeUninit, ptr::NonNull};
+use core::{fmt, marker::PhantomData, ptr::NonNull};
 
 /// EVM interpreter.
 #[derive(derive_more::Debug)]
-#[repr(C)]
 pub struct Interpreter<'frame, T: EvmTypes> {
     bytecode: Bytecode,
     memory: Memory,
@@ -26,14 +25,13 @@ pub struct Interpreter<'frame, T: EvmTypes> {
     host: Option<NonNull<T::Host>>,
     version: *const Version,
     stack_len: usize,
+    #[debug(skip)]
+    stack: Box<[Word; Stack::CAPACITY]>,
 
     gas: Gas,
     result: Result,
     spec: SpecId,
     is_static: bool,
-
-    #[debug(skip)]
-    stack: [MaybeUninit<Word>; Stack::CAPACITY],
 
     #[debug(skip)]
     _marker: PhantomData<fn() -> T>,
@@ -57,7 +55,8 @@ impl<T: EvmTypes> Default for Interpreter<'_, T> {
             host: None,
             version: core::ptr::null(),
             spec: SpecId::DEFAULT,
-            stack: [const { MaybeUninit::uninit() }; Stack::CAPACITY],
+            // SAFETY: `Word` is valid at any bitpattern. It's not read before init anyway.
+            stack: unsafe { Box::new_uninit().assume_init() },
             _marker: PhantomData,
         }
     }
@@ -118,7 +117,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
     #[cfg(test)]
     pub(crate) fn into_parts(
         self,
-    ) -> ([MaybeUninit<Word>; Stack::CAPACITY], usize, Gas, Memory, *const [u8]) {
+    ) -> (Box<[Word; Stack::CAPACITY]>, usize, Gas, Memory, *const [u8]) {
         (self.stack, self.stack_len, self.gas, self.memory, self.output)
     }
 
@@ -171,7 +170,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         // the separate stack view is live.
         let state = InterpreterState::wrap_mut(unsafe { &mut *raw });
         let mut pc = Pc::new(self.pc);
-        let mut stack = Stack::new(self.stack.as_mut_ptr().cast(), self.stack_len);
+        let mut stack = Stack::new(self.stack.as_mut_ptr(), self.stack_len);
         loop {
             let op = pc.op();
             let instr = config.instructions[op as usize];
@@ -198,7 +197,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         let pc = Pc::new(self.pc);
         let op = pc.op();
         let instr = config.instructions[op as usize];
-        let stack = Stack::new(self.stack.as_mut_ptr().cast(), self.stack_len);
+        let stack = Stack::new(self.stack.as_mut_ptr(), self.stack_len);
         let remaining_gas = RemainingGas::new(self.gas.remaining());
         instr(pc, stack, remaining_gas, state);
         self.result.unwrap_err()
