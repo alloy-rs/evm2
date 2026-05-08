@@ -40,7 +40,7 @@ mod tests {
         code.push(op::KECCAK256);
         code.push(op::STOP);
         let interpreter = run(RunConfig::new(code));
-        core::assert_matches!(interpreter.err, InstrStop::Stop);
+        assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.stack(), [b256_to_word(keccak256([]))]);
 
         let mut code = Vec::new();
@@ -52,14 +52,14 @@ mod tests {
         code.push(op::KECCAK256);
         code.push(op::STOP);
         let interpreter = run(RunConfig::new(code));
-        core::assert_matches!(interpreter.err, InstrStop::Stop);
+        assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.stack(), [b256_to_word(keccak256([0x80]))]);
 
         let interpreter = run_stack([Word::MAX, Word::from(0)], op::KECCAK256);
-        core::assert_matches!(interpreter.err, InstrStop::Stop);
+        assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.stack(), [b256_to_word(keccak256([]))]);
 
         let interpreter = run_stack([Word::MAX, Word::from(1)], op::KECCAK256);
-        core::assert_matches!(interpreter.err, InstrStop::InvalidOperandOOG);
+        assert!(matches!(interpreter.err, InstrStop::InvalidOperandOOG));
     }
 }

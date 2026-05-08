@@ -1,4 +1,4 @@
-#[cfg(feature = "nightly")]
+#[cfg(feature = "tco")]
 use super::gas::RemainingGas;
 use super::{BytecodeRef, Gas, InstrStop, Memory, Message, MessageKind, Pc, Result, Stack, Word};
 use crate::{
@@ -7,7 +7,7 @@ use crate::{
 };
 use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::Bytes;
-#[cfg(not(feature = "nightly"))]
+#[cfg(not(feature = "tco"))]
 use core::hint::cold_path;
 use core::{fmt, marker::PhantomData, mem::MaybeUninit};
 
@@ -171,9 +171,9 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         self.version = &config.version;
         self.spec = config.version.spec_id;
 
-        #[cfg(feature = "nightly")]
+        #[cfg(feature = "tco")]
         let r = self.step_tail(config);
-        #[cfg(not(feature = "nightly"))]
+        #[cfg(not(feature = "tco"))]
         let r = self.run_table_loop(config);
 
         self.host = core::ptr::null_mut();
@@ -181,7 +181,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         r
     }
 
-    #[cfg(not(feature = "nightly"))]
+    #[cfg(not(feature = "tco"))]
     fn run_table_loop(&mut self, config: &ExecutionConfig<T>) -> InstrStop {
         #[expect(clippy::unnecessary_cast, reason = "cast erases the active interpreter lifetime")]
         let raw = self as *mut Self as *mut Interpreter<'_, T>;
@@ -206,7 +206,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
     }
 
     #[inline(always)]
-    #[cfg(feature = "nightly")]
+    #[cfg(feature = "tco")]
     fn step_tail(&mut self, config: &ExecutionConfig<T>) -> InstrStop {
         #[expect(clippy::unnecessary_cast, reason = "cast erases the active interpreter lifetime")]
         let raw = self as *mut Self as *mut Interpreter<'_, T>;

@@ -1,6 +1,6 @@
 #![doc = include_str!("../README.md")]
 #![cfg_attr(
-    feature = "nightly",
+    feature = "tco",
     feature(explicit_tail_calls, rust_preserve_none_cc),
     allow(incomplete_features)
 )]

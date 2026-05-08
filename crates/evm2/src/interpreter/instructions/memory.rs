@@ -69,12 +69,12 @@ mod tests {
         code.push(op::STOP);
 
         let mut interpreter = run(RunConfig::new(code));
-        core::assert_matches!(interpreter.err, InstrStop::Stop);
+        assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.stack(), [value]);
         assert_eq!(interpreter.memory(30, 2), [0xfe, 0xed]);
 
         let interpreter = run_stack([Word::MAX], op::MLOAD);
-        core::assert_matches!(interpreter.err, InstrStop::InvalidOperandOOG);
+        assert!(matches!(interpreter.err, InstrStop::InvalidOperandOOG));
     }
 
     #[test]
@@ -88,12 +88,12 @@ mod tests {
         code.push(op::STOP);
 
         let mut interpreter = run(RunConfig::new(code));
-        core::assert_matches!(interpreter.err, InstrStop::Stop);
+        assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.stack(), [Word::from(64)]);
         assert_eq!(interpreter.memory(38, 2), [0xfe, 0xed]);
 
         let interpreter = run_stack([Word::MAX, Word::from(0)], op::MSTORE);
-        core::assert_matches!(interpreter.err, InstrStop::InvalidOperandOOG);
+        assert!(matches!(interpreter.err, InstrStop::InvalidOperandOOG));
     }
 
     #[test]
@@ -114,7 +114,7 @@ mod tests {
         let mut host = TestHost::default();
         let err = interpreter.run_with(&config, &mut host);
 
-        core::assert_matches!(err, InstrStop::MemoryLimitOOG);
+        assert!(matches!(err, InstrStop::MemoryLimitOOG));
         assert_eq!(interpreter.memory_len(), 0);
     }
 
@@ -129,18 +129,18 @@ mod tests {
         code.push(op::STOP);
 
         let mut interpreter = run(RunConfig::new(code));
-        core::assert_matches!(interpreter.err, InstrStop::Stop);
+        assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.memory(4, 1), [0xab]);
         assert_eq!(interpreter.stack()[0] >> 248, Word::from(0xab));
 
         let interpreter = run_stack([Word::MAX, Word::from(0)], op::MSTORE8);
-        core::assert_matches!(interpreter.err, InstrStop::InvalidOperandOOG);
+        assert!(matches!(interpreter.err, InstrStop::InvalidOperandOOG));
     }
 
     #[test]
     fn msize_opcode() {
         let interpreter = run(RunConfig::new([op::MSIZE, op::STOP]));
-        core::assert_matches!(interpreter.err, InstrStop::Stop);
+        assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.stack(), [0]);
 
         let mut code = Vec::new();
@@ -150,7 +150,7 @@ mod tests {
         code.push(op::MSIZE);
         code.push(op::STOP);
         let interpreter = run(RunConfig::new(code));
-        core::assert_matches!(interpreter.err, InstrStop::Stop);
+        assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.stack(), [Word::from(96)]);
     }
 
@@ -170,7 +170,7 @@ mod tests {
         code.push(op::STOP);
 
         let interpreter = run(RunConfig::new(code));
-        core::assert_matches!(interpreter.err, InstrStop::Stop);
+        assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.stack(), [value]);
 
         let mut code = Vec::new();
@@ -181,14 +181,14 @@ mod tests {
         code.push(op::MSIZE);
         code.push(op::STOP);
         let interpreter = run(RunConfig::new(code));
-        core::assert_matches!(interpreter.err, InstrStop::Stop);
+        assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.stack(), [0]);
 
         let interpreter = run_stack([Word::MAX, Word::MAX, Word::from(0)], op::MCOPY);
-        core::assert_matches!(interpreter.err, InstrStop::Stop);
+        assert!(matches!(interpreter.err, InstrStop::Stop));
 
         let interpreter = run_stack([Word::MAX, Word::from(0), Word::from(1)], op::MCOPY);
-        core::assert_matches!(interpreter.err, InstrStop::InvalidOperandOOG);
+        assert!(matches!(interpreter.err, InstrStop::InvalidOperandOOG));
     }
 
     #[test]
@@ -204,6 +204,6 @@ mod tests {
 
         let interpreter = run(RunConfig::new(code).spec(SpecId::CANCUN).gas_limit(26));
 
-        core::assert_matches!(interpreter.err, InstrStop::OutOfGas);
+        assert!(matches!(interpreter.err, InstrStop::OutOfGas));
     }
 }
