@@ -1,7 +1,7 @@
 //! Precompile dispatch interface.
 
 use crate::{PrecompileError, interpreter::Gas};
-use alloc::vec::Vec;
+use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::{Address, Bytes};
 use core::any::Any;
 
@@ -46,6 +46,23 @@ pub trait PrecompileProvider: Any {
         input: &[u8],
         gas: &mut Gas,
     ) -> Option<Result<PrecompileOutput, PrecompileError>>;
+}
+
+impl PrecompileProvider for Box<dyn PrecompileProvider> {
+    #[inline]
+    fn warm_addresses(&self) -> Vec<Address> {
+        self.as_ref().warm_addresses()
+    }
+
+    #[inline]
+    fn execute(
+        &mut self,
+        address: Address,
+        input: &[u8],
+        gas: &mut Gas,
+    ) -> Option<Result<PrecompileOutput, PrecompileError>> {
+        self.as_mut().execute(address, input, gas)
+    }
 }
 
 /// Empty precompile provider.
