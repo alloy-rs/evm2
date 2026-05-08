@@ -7,7 +7,7 @@ use crate::{
     interpreter::{InstrStop, Word},
     storage_key::{StorageKey, StorageKeyMap, StorageKeySet},
 };
-use alloc::{collections::BTreeMap, vec::Vec};
+use alloc::{boxed::Box, collections::BTreeMap, vec::Vec};
 use alloy_primitives::{
     Address, B256, KECCAK256_EMPTY, Log, U256,
     map::{AddressMap, AddressSet, U256Map, hash_map},
@@ -323,11 +323,12 @@ pub enum JournalEntry {
 }
 
 /// Mutable EVM state with an overlay and reversible journal.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(derive_more::Debug)]
 #[non_exhaustive]
-pub struct State<D> {
+pub struct State {
     /// Read-only initial database.
-    initial: D,
+    #[debug(skip)]
+    initial: Box<dyn Database>,
     /// Account data overlay keyed by address.
     ///
     /// Entries are created when account state is loaded or mutated. The tracked
@@ -360,10 +361,15 @@ pub struct State<D> {
     transient_storage: StorageKeyMap<Word>,
 }
 
-impl<D> State<D> {
+impl State {
     /// Creates a new state over an initial database.
     #[inline]
-    pub fn new(initial: D) -> Self {
+    pub fn new(initial: impl Database) -> Self {
+        Self::new_mono(Box::new(initial))
+    }
+
+    #[inline]
+    pub(crate) fn new_mono(initial: Box<dyn Database>) -> Self {
         Self {
             initial,
             accounts: AddressMap::default(),
@@ -386,14 +392,20 @@ impl<D> State<D> {
 
     /// Returns the initial database.
     #[inline]
-    pub const fn initial(&self) -> &D {
-        &self.initial
+    pub fn initial(&self) -> &dyn Database {
+        self.initial.as_ref()
     }
 
     /// Returns the initial database mutably.
     #[inline]
-    pub const fn initial_mut(&mut self) -> &mut D {
-        &mut self.initial
+    pub fn initial_mut(&mut self) -> &mut dyn Database {
+        self.initial.as_mut()
+    }
+
+    /// Replaces the initial database.
+    #[inline]
+    pub fn set_initial(&mut self, initial: impl Database) {
+        self.initial = Box::new(initial);
     }
 
     /// Returns logs emitted by the current in-flight transaction.
@@ -545,9 +557,7 @@ impl<D> State<D> {
         self.transient_storage.clear();
         self.logs.clear();
     }
-}
 
-impl<D: Database> State<D> {
     #[must_use]
     fn load_account(&mut self, address: Address) -> Option<&mut Tracked<Option<Account>>> {
         match self.accounts.entry(address) {
@@ -561,7 +571,7 @@ impl<D: Database> State<D> {
 
     #[must_use]
     fn ensure_account_overlay<'a>(
-        initial: &mut D,
+        initial: &mut dyn Database,
         accounts: &'a mut AddressMap<Tracked<Option<Account>>>,
         journal: &mut Vec<JournalEntry>,
         address: Address,
@@ -988,7 +998,7 @@ impl<D: Database> State<D> {
     /// touched accounts stay non-existent.
     #[must_use]
     fn is_existing_dead(
-        initial: &mut D,
+        initial: &mut dyn Database,
         accounts: &AddressMap<Tracked<Option<Account>>>,
         address: Address,
     ) -> bool {
@@ -1000,7 +1010,7 @@ impl<D: Database> State<D> {
     }
 
     fn account_exists(
-        initial: &mut D,
+        initial: &mut dyn Database,
         accounts: &AddressMap<Tracked<Option<Account>>>,
         address: Address,
     ) -> bool {
@@ -1011,7 +1021,7 @@ impl<D: Database> State<D> {
     }
 
     fn delete_account_for_finalization(
-        initial: &mut D,
+        initial: &mut dyn Database,
         accounts: &mut AddressMap<Tracked<Option<Account>>>,
         journal: &mut Vec<JournalEntry>,
         storage: &mut AddressMap<StorageOverlay>,
@@ -1023,7 +1033,7 @@ impl<D: Database> State<D> {
     }
 
     fn materialize_empty_account_for_finalization(
-        initial: &mut D,
+        initial: &mut dyn Database,
         accounts: &mut AddressMap<Tracked<Option<Account>>>,
         journal: &mut Vec<JournalEntry>,
         address: Address,
