@@ -164,8 +164,8 @@ macro_rules! evm_dyn_provider_methods {
 
             /// Replaces this provider.
             #[inline]
-            pub fn [<set_ database>](&mut self, database: impl Into<Box<dyn Database>>) {
-                *self.state.initial_mut() = database.into();
+            pub fn [<set_ database>](&mut self, database: impl Database) {
+                *self.state.initial_mut() = Box::new(database);
             }
 
             /// Returns this provider as `P` if it has that concrete type.
@@ -197,11 +197,8 @@ macro_rules! evm_dyn_provider_methods {
 
             /// Replaces this provider.
             #[inline]
-            pub fn [<set_ precompiles>](
-                &mut self,
-                precompiles: impl Into<Box<dyn PrecompileProvider>>,
-            ) {
-                self.precompiles = precompiles.into();
+            pub fn [<set_ precompiles>](&mut self, precompiles: impl PrecompileProvider) {
+                self.precompiles = Box::new(precompiles);
             }
 
             /// Returns this provider as `P` if it has that concrete type.
@@ -244,8 +241,8 @@ impl<T: EvmTypes> Evm<T> {
         spec_id: T::SpecId,
         block: BlockEnv,
         registry: TxRegistry<T::Tx, TxResult, Self>,
-        database: impl Into<Box<dyn Database>>,
-        precompiles: impl Into<Box<dyn PrecompileProvider>>,
+        database: impl Database,
+        precompiles: impl PrecompileProvider,
     ) -> Self {
         Self::new_with_execution_config(
             <T::ConfigSelector as EvmConfigSelector<T>>::execution_config(spec_id),
@@ -264,16 +261,35 @@ impl<T: EvmTypes> Evm<T> {
         spec_id: T::SpecId,
         block: BlockEnv,
         registry: TxRegistry<T::Tx, TxResult, Self>,
-        database: impl Into<Box<dyn Database>>,
-        precompiles: impl Into<Box<dyn PrecompileProvider>>,
+        database: impl Database,
+        precompiles: impl PrecompileProvider,
+    ) -> Self {
+        Self::new_mono(
+            execution_config,
+            spec_id,
+            block,
+            registry,
+            Box::new(database),
+            Box::new(precompiles),
+        )
+    }
+
+    #[inline]
+    fn new_mono(
+        execution_config: ExecutionConfig<T>,
+        spec_id: T::SpecId,
+        block: BlockEnv,
+        registry: TxRegistry<T::Tx, TxResult, Self>,
+        database: Box<dyn Database>,
+        precompiles: Box<dyn PrecompileProvider>,
     ) -> Self {
         Self {
             spec_id,
             execution_config,
             block,
             registry,
-            state: State::new(database.into()),
-            precompiles: precompiles.into(),
+            state: State::new(database),
+            precompiles,
             interpreter_pool: InterpreterPool::new(),
         }
     }
@@ -841,8 +857,8 @@ mod tests {
             SpecId::OSAKA,
             BlockEnv::default(),
             registry,
-            Box::new(InMemoryDB::default()),
-            Box::new(Precompiles::base(SpecId::OSAKA)),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
         );
         let tx = TestTx { value: 41 };
 
@@ -858,8 +874,8 @@ mod tests {
             SpecId::OSAKA,
             BlockEnv::default(),
             registry,
-            Box::new(InMemoryDB::default()),
-            Box::new(Precompiles::base(SpecId::OSAKA)),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
         );
         let tx = TestTx { value: 41 };
 
@@ -877,8 +893,8 @@ mod tests {
             SpecId::OSAKA,
             BlockEnv::default(),
             registry,
-            Box::new(InMemoryDB::default()),
-            Box::new(Precompiles::base(SpecId::OSAKA)),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
         );
         let tx = TestTx { value: 0 };
 
@@ -893,8 +909,8 @@ mod tests {
             SpecId::OSAKA,
             BlockEnv::default(),
             registry,
-            Box::new(InMemoryDB::default()),
-            Box::new(Precompiles::base(SpecId::OSAKA)),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
         );
         let txs = [TestTx { value: 1 }, TestTx { value: 2 }];
         let gas_used = evm
@@ -911,8 +927,8 @@ mod tests {
             SpecId::OSAKA,
             BlockEnv::default(),
             TxRegistry::new(),
-            Box::new(InMemoryDB::default()),
-            Box::new(Precompiles::base(SpecId::OSAKA)),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
         );
         let contract = Address::from([0x11; 20]);
         let bytecode = Bytecode::new_legacy(Bytes::from_static(&[op::ADDRESS, op::STOP]));
@@ -934,8 +950,8 @@ mod tests {
             SpecId::OSAKA,
             BlockEnv::default(),
             TxRegistry::new(),
-            Box::new(InMemoryDB::default()),
-            Box::new(Precompiles::base(SpecId::OSAKA)),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
         );
         let contract = Address::from([0x11; 20]);
         let key = Word::ZERO;
@@ -965,8 +981,8 @@ mod tests {
             SpecId::FRONTIER,
             BlockEnv::default(),
             TxRegistry::new(),
-            Box::new(database),
-            Box::new(Precompiles::base(SpecId::FRONTIER)),
+            database,
+            Precompiles::base(SpecId::FRONTIER),
         );
         let message = Message {
             kind: MessageKind::Create,
@@ -998,8 +1014,8 @@ mod tests {
             SpecId::HOMESTEAD,
             BlockEnv::default(),
             TxRegistry::new(),
-            Box::new(database),
-            Box::new(Precompiles::base(SpecId::HOMESTEAD)),
+            database,
+            Precompiles::base(SpecId::HOMESTEAD),
         );
         let message = Message {
             kind: MessageKind::Create,
@@ -1029,8 +1045,8 @@ mod tests {
             SpecId::SPURIOUS_DRAGON,
             BlockEnv::default(),
             TxRegistry::new(),
-            Box::new(database),
-            Box::new(Precompiles::base(SpecId::SPURIOUS_DRAGON)),
+            database,
+            Precompiles::base(SpecId::SPURIOUS_DRAGON),
         );
         let message = Message {
             kind: MessageKind::StaticCall,
@@ -1070,8 +1086,8 @@ mod tests {
             SpecId::SPURIOUS_DRAGON,
             BlockEnv::default(),
             TxRegistry::new(),
-            Box::new(database),
-            Box::new(Precompiles::base(SpecId::SPURIOUS_DRAGON)),
+            database,
+            Precompiles::base(SpecId::SPURIOUS_DRAGON),
         );
         let message = Message {
             kind: MessageKind::DelegateCall,
@@ -1102,8 +1118,8 @@ mod tests {
             SpecId::OSAKA,
             BlockEnv::default(),
             TxRegistry::new(),
-            Box::new(InMemoryDB::default()),
-            Box::new(Precompiles::base(SpecId::OSAKA)),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
         );
         let bytecode = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
         let message = Message {
@@ -1123,8 +1139,8 @@ mod tests {
             SpecId::OSAKA,
             BlockEnv::default(),
             TxRegistry::new(),
-            Box::new(InMemoryDB::default()),
-            Box::new(Precompiles::base(SpecId::OSAKA)),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
         );
         let bytecode = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
         let message = Message {

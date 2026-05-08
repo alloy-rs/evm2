@@ -24,13 +24,6 @@ pub trait Database: Any {
     fn get_block_hash(&mut self, number: Word) -> Option<B256>;
 }
 
-impl<T: Database> From<Box<T>> for Box<dyn Database> {
-    #[inline]
-    fn from(value: Box<T>) -> Self {
-        value
-    }
-}
-
 impl Database for Box<dyn Database> {
     #[inline]
     fn get_account(&mut self, address: Address) -> Option<AccountInfo> {

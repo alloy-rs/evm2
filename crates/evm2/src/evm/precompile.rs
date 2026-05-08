@@ -48,13 +48,6 @@ pub trait PrecompileProvider: Any {
     ) -> Option<Result<PrecompileOutput, PrecompileError>>;
 }
 
-impl<T: PrecompileProvider> From<Box<T>> for Box<dyn PrecompileProvider> {
-    #[inline]
-    fn from(value: Box<T>) -> Self {
-        value
-    }
-}
-
 impl PrecompileProvider for Box<dyn PrecompileProvider> {
     #[inline]
     fn warm_addresses(&self) -> Vec<Address> {
