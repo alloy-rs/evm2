@@ -5,12 +5,16 @@ use crate::{
 use core::hint::cold_path;
 
 /// Tail instruction function pointer.
-pub(crate) type TailInstructionFn<T> = extern_table!(
+type TailInstructionFn<T> = extern_table!(
     fn(pc: Pc, stack: Stack<'_>, remaining_gas: RemainingGas, state: &mut InterpreterState<'_, T>)
 );
 
 /// Tail instruction dispatch table.
-pub(crate) type TailInstructionTable<T> = [TailInstructionFn<T>; 256];
+type TailInstructionTable<T> = [TailInstructionFn<T>; 256];
+
+pub(super) type RawInstructionFn<T> = TailInstructionFn<T>;
+
+pub(super) type RawInstructionTable<T> = TailInstructionTable<T>;
 
 macro_rules! assign_instruction_table_entries {
     ([$table:expr, $evm_types:ty, $config:ty, $dispatch:ident, $instr_fn:ty] $($op:literal,)*) => {
@@ -25,7 +29,7 @@ macro_rules! assign_instruction_table_entries {
     };
 }
 
-pub(crate) const fn make_instruction_table<T, C>() -> TailInstructionTable<T>
+pub(crate) const fn make_instruction_table<T, C>() -> RawInstructionTable<T>
 where
     T: EvmTypes,
     C: EvmConfig<T>,

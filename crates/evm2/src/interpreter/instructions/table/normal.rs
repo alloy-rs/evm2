@@ -8,12 +8,12 @@ use core::hint::cold_path;
 pub(crate) type InstructionFnRet = (*const u8, usize);
 
 /// Normal instruction function pointer.
-pub(crate) type NormalInstructionFn<T> = extern_table!(
+pub(super) type RawInstructionFn<T> = extern_table!(
     fn(pc: Pc, stack: Stack<'_>, state: &mut InterpreterState<'_, T>) -> InstructionFnRet
 );
 
 /// Normal instruction dispatch table.
-pub(crate) type NormalInstructionTable<T> = [NormalInstructionFn<T>; 256];
+pub(super) type RawInstructionTable<T> = [RawInstructionFn<T>; 256];
 
 macro_rules! assign_instruction_table_entries {
     ([$table:expr, $evm_types:ty, $config:ty, $dispatch:ident, $instr_fn:ty] $($op:literal,)*) => {
@@ -23,7 +23,7 @@ macro_rules! assign_instruction_table_entries {
     };
 }
 
-pub(crate) const fn make_instruction_table<T, C>() -> NormalInstructionTable<T>
+pub(crate) const fn make_instruction_table<T, C>() -> RawInstructionTable<T>
 where
     T: EvmTypes,
     C: EvmConfig<T>,
