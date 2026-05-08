@@ -24,8 +24,8 @@ ROOT = Path(repo_root())
 OPCODE_RS = ROOT / "crates" / "evm2" / "src" / "interpreter" / "opcode.rs"
 DEFAULT_OUT = ROOT / "tmp" / "dump"
 DISPATCH_SYMBOLS = (
-    "evm2::interpreter::instructions::table::dispatch::<",
-    "evm2::interpreter::instructions::table::tail_dispatch::<",
+    "evm2::interpreter::instructions::table::normal::dispatch::<",
+    "evm2::interpreter::instructions::table::tco::tail_dispatch::<",
 )
 DISPATCH_OPCODE = re.compile(r",\s*(\d+)(?:,\s*(?:true|false))?>")
 
@@ -176,7 +176,9 @@ def extract_asm_functions(text: str) -> dict[int, list[str]]:
                 i += 1
             block = lines[start:i]
             if any(line.startswith(".type\t") for line in block):
-                blocks.setdefault(opcode, []).append(clean_asm_block(block).rstrip() + "\n")
+                blocks.setdefault(opcode, []).append(
+                    clean_asm_block(block).rstrip() + "\n"
+                )
             continue
 
         opcode = dispatch_opcode(line) if is_asm_symbol_label(line) else None
@@ -216,7 +218,9 @@ def extract_llvm_functions(text: str) -> dict[int, list[str]]:
                     i += 1
                     break
                 i += 1
-            blocks.setdefault(opcode, []).append("".join(lines[start:i]).rstrip() + "\n")
+            blocks.setdefault(opcode, []).append(
+                "".join(lines[start:i]).rstrip() + "\n"
+            )
             continue
         i += 1
     return blocks
@@ -244,7 +248,9 @@ def dump_output(
             f"could not find cargo asm --{output} output for {mnemonic} ({opcode:#04x})"
         )
     if not all_monomorphizations and len(blocks) > 1:
-        log(f"{mnemonic} has {len(blocks)} {output} monomorphization(s); writing the first")
+        log(
+            f"{mnemonic} has {len(blocks)} {output} monomorphization(s); writing the first"
+        )
         blocks = blocks[:1]
 
     suffix = "ll" if output == "llvm" else "s"

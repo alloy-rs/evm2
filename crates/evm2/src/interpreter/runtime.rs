@@ -1,4 +1,4 @@
-#[cfg(feature = "tco")]
+#[cfg(tco)]
 use super::gas::RemainingGas;
 use super::{
     BytecodeRef, Gas, InstrStop, Memory, Message, MessageKind, MessageResult, Pc, Result, Stack,
@@ -10,7 +10,7 @@ use crate::{
 };
 use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::Bytes;
-#[cfg(not(feature = "tco"))]
+#[cfg(not(tco))]
 use core::hint::cold_path;
 use core::{fmt, marker::PhantomData, ptr::NonNull};
 
@@ -238,9 +238,9 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         self.version = &config.version;
         self.spec = config.version.spec_id;
 
-        #[cfg(feature = "tco")]
+        #[cfg(tco)]
         let r = self.step_tail(instructions);
-        #[cfg(not(feature = "tco"))]
+        #[cfg(not(tco))]
         let r = self.run_table_loop(instructions);
 
         self.host = None;
@@ -250,7 +250,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         r
     }
 
-    #[cfg(not(feature = "tco"))]
+    #[cfg(not(tco))]
     fn run_table_loop(
         &mut self,
         instructions: &'static super::instructions::table::InstrTable<T>,
@@ -278,7 +278,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
     }
 
     #[inline(always)]
-    #[cfg(feature = "tco")]
+    #[cfg(tco)]
     fn step_tail(
         &mut self,
         instructions: &'static super::instructions::table::InstrTable<T>,
@@ -333,13 +333,13 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
     }
 
     #[inline]
-    #[cfg(feature = "nightly")]
+    #[cfg(tco)]
     pub(crate) const fn result(&self) -> Result {
         self.0.result
     }
 
     #[inline]
-    #[cfg(feature = "nightly")]
+    #[cfg(tco)]
     pub(crate) const fn set_pc_stack_len(&mut self, pc: *const u8, stack_len: usize) {
         self.0.pc = pc;
         self.0.stack_len = stack_len;
