@@ -266,13 +266,13 @@ impl<T: EvmTypes> Evm<T> {
     /// Returns the backing database as `D` if it has that concrete type.
     #[inline]
     pub fn database_as<D: Database>(&self) -> Option<&D> {
-        (self.database() as &dyn core::any::Any).downcast_ref()
+        <dyn core::any::Any>::downcast_ref(self.database())
     }
 
     /// Returns the backing database mutably as `D` if it has that concrete type.
     #[inline]
     pub fn database_as_mut<D: Database>(&mut self) -> Option<&mut D> {
-        (self.database_mut() as &mut dyn core::any::Any).downcast_mut()
+        <dyn core::any::Any>::downcast_mut(self.database_mut())
     }
 
     /// Returns the mutable EVM state.
@@ -308,13 +308,13 @@ impl<T: EvmTypes> Evm<T> {
     /// Returns the precompile provider as `P` if it has that concrete type.
     #[inline]
     pub fn precompiles_as<P: PrecompileProvider>(&self) -> Option<&P> {
-        (self.precompiles() as &dyn core::any::Any).downcast_ref()
+        <dyn core::any::Any>::downcast_ref(self.precompiles())
     }
 
     /// Returns the precompile provider mutably as `P` if it has that concrete type.
     #[inline]
     pub fn precompiles_as_mut<P: PrecompileProvider>(&mut self) -> Option<&mut P> {
-        (self.precompiles_mut() as &mut dyn core::any::Any).downcast_mut()
+        <dyn core::any::Any>::downcast_mut(self.precompiles_mut())
     }
 
     /// Returns the active EVM version.
