@@ -8,8 +8,13 @@ fn main() {
     println!("cargo:rerun-if-env-changed=RUSTC");
     println!("cargo:rerun-if-env-changed=TARGET");
 
+    let no_tco_requested = env::var_os("CARGO_FEATURE_NO_TCO").is_some();
     let nightly_requested = env::var_os("CARGO_FEATURE_NIGHTLY").is_some();
     let is_nightly = rustc_is_nightly();
+
+    if no_tco_requested {
+        return;
+    }
 
     if is_nightly {
         println!("cargo:rustc-cfg=tco");

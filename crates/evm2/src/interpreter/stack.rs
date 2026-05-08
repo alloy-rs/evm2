@@ -43,7 +43,7 @@ impl<'a> Stack<'a> {
 
     #[inline]
     #[cfg(not(tco))]
-    pub(crate) fn reborrow(&mut self) -> Stack<'_> {
+    pub(crate) const fn reborrow(&mut self) -> Stack<'_> {
         Stack { stack: self.stack, len: self.len }
     }
 
