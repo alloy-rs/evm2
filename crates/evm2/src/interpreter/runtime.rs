@@ -206,7 +206,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
     #[cfg(not(feature = "tco"))]
     fn run_table_loop(
         &mut self,
-        instructions: &'static super::instructions::table::InstructionTable<T>,
+        instructions: &'static super::instructions::table::InstrTable<T>,
     ) -> InstrStop {
         #[expect(clippy::unnecessary_cast, reason = "cast erases the active interpreter lifetime")]
         let raw = self as *mut Self as *mut Interpreter<'_, T>;
@@ -234,7 +234,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
     #[cfg(feature = "tco")]
     fn step_tail(
         &mut self,
-        instructions: &'static super::instructions::table::InstructionTable<T>,
+        instructions: &'static super::instructions::table::InstrTable<T>,
     ) -> InstrStop {
         #[expect(clippy::unnecessary_cast, reason = "cast erases the active interpreter lifetime")]
         let raw = self as *mut Self as *mut Interpreter<'_, T>;

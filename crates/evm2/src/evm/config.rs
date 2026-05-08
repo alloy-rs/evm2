@@ -6,7 +6,7 @@ use crate::{
     evm::{InMemoryDB, precompile::PrecompileProvider},
     interpreter::{
         Host,
-        instructions::table::{InstructionTable, InstructionTables},
+        instructions::table::{InstrTable, InstrTables},
     },
     spec_to_generic,
     version::Version,
@@ -73,9 +73,9 @@ pub trait EvmConfigSelector<T: EvmTypes>: Sized {
 pub struct ExecutionConfig<T: EvmTypes> {
     pub(crate) version: Version,
     #[debug(skip)]
-    pub(crate) instructions: &'static InstructionTable<T>,
+    pub(crate) instructions: &'static InstrTable<T>,
     #[debug(skip)]
-    pub(crate) inspect_instructions: &'static InstructionTable<T>,
+    pub(crate) inspect_instructions: &'static InstrTable<T>,
 }
 
 impl<T: EvmTypes> Clone for ExecutionConfig<T> {
@@ -93,8 +93,8 @@ impl<T: EvmTypes> ExecutionConfig<T> {
     pub const fn for_config<C: EvmConfig<T>>() -> Self {
         Self {
             version: Version::new(C::BASE_SPEC_ID),
-            instructions: <T as InstructionTables<C>>::INSTRUCTIONS,
-            inspect_instructions: <T as InstructionTables<C>>::INSPECT_INSTRUCTIONS,
+            instructions: <T as InstrTables<C>>::INSTRUCTIONS,
+            inspect_instructions: <T as InstrTables<C>>::INSPECT_INSTRUCTIONS,
         }
     }
 
