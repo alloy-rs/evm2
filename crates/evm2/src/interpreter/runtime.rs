@@ -185,6 +185,24 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         self.run_inner(&config, host, Some(NonNull::from(inspector)), instructions)
     }
 
+    /// Runs the interpreter until it stops with a monomorphized execution inspector.
+    #[inline]
+    pub(crate) fn run_with_typed_inspector<C, I>(
+        &mut self,
+        config: &ExecutionConfig<T>,
+        host: &mut T::Host,
+        inspector: &mut I,
+    ) -> InstrStop
+    where
+        C: EvmConfig<T>,
+        I: Inspector<T>,
+    {
+        assert_eq!(config.version.spec_id, C::BASE_SPEC_ID);
+        let instructions =
+            <T as super::instructions::table::TypedInspectInstrTables<C, I>>::INSPECT_INSTRUCTIONS;
+        self.run_inner(config, host, Some(NonNull::from(inspector)), instructions)
+    }
+
     /// Runs the interpreter until it stops.
     pub fn run_with(&mut self, config: &ExecutionConfig<T>, host: &mut T::Host) -> InstrStop {
         self.run_with_dyn_inspector(config, host, None)

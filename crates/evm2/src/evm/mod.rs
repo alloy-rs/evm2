@@ -5,7 +5,8 @@ use self::{
     precompile::{PrecompileOutput, PrecompileProvider},
 };
 use crate::{
-    EvmConfigSelector, EvmTypes, ExecutionConfig, PrecompileError, PrecompileHalt, SpecId,
+    EvmConfig, EvmConfigSelector, EvmTypes, ExecutionConfig, PrecompileError, PrecompileHalt,
+    SpecId,
     bytecode::Bytecode,
     constants::CALL_DEPTH_LIMIT,
     env::{BlockEnv, TxEnv},
@@ -40,6 +41,41 @@ pub use state::{
     Account, AccountInfo, JournalEntry, State, StateChanges, StateCheckpoint, StorageChangeSet,
     StorageOverlay, Tracked,
 };
+
+type RunInspectorFn<T> = for<'frame> unsafe fn(
+    &mut Evm<T>,
+    &mut Interpreter<'frame, T>,
+    &ExecutionConfig<T>,
+    NonNull<dyn Inspector<T>>,
+) -> InstrStop;
+
+struct ActiveInspector<T: EvmTypes> {
+    ptr: NonNull<dyn Inspector<T>>,
+    run: RunInspectorFn<T>,
+}
+
+impl<T: EvmTypes> Clone for ActiveInspector<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T: EvmTypes> Copy for ActiveInspector<T> {}
+
+unsafe fn run_with_active_inspector<T, C, I>(
+    evm: &mut Evm<T>,
+    interpreter: &mut Interpreter<'_, T>,
+    config: &ExecutionConfig<T>,
+    inspector: NonNull<dyn Inspector<T>>,
+) -> InstrStop
+where
+    T: EvmTypes<Host = Evm<T>>,
+    C: EvmConfig<T>,
+    I: Inspector<T>,
+{
+    let inspector = unsafe { &mut *(inspector.as_ptr() as *mut I) };
+    interpreter.run_with_typed_inspector::<C, I>(config, evm, inspector)
+}
 
 /// Loaded account information.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
@@ -167,6 +203,8 @@ pub struct Evm<T: EvmTypes> {
     interpreter_pool: InterpreterPool<T>,
     #[debug(skip)]
     inspector: Option<Box<dyn Inspector<T>>>,
+    #[debug(skip)]
+    active_inspector: Option<ActiveInspector<T>>,
 }
 
 impl<T: EvmTypes> Evm<T> {
@@ -209,6 +247,7 @@ impl<T: EvmTypes> Evm<T> {
             precompiles,
             interpreter_pool: InterpreterPool::new(),
             inspector: None,
+            active_inspector: None,
         }
     }
 
@@ -334,6 +373,27 @@ impl<T: EvmTypes<Tx: Typed2718>> Evm<T> {
             self.state.commit_transaction_overlay();
         };
         self.state.clear_transaction_state();
+        result
+    }
+
+    /// Dispatches a transaction with a monomorphized execution inspector.
+    pub fn transact_with_inspector<C, I>(
+        &mut self,
+        tx: &T::Tx,
+        inspector: &mut I,
+    ) -> HandlerResult<TxResult>
+    where
+        T: EvmTypes<Host = Self>,
+        C: EvmConfig<T>,
+        I: Inspector<T>,
+    {
+        assert_eq!(self.execution_config.version.spec_id, C::BASE_SPEC_ID);
+        let previous = self.active_inspector.replace(ActiveInspector {
+            ptr: NonNull::from(&mut *inspector),
+            run: run_with_active_inspector::<T, C, I>,
+        });
+        let result = self.transact(tx);
+        self.active_inspector = previous;
         result
     }
 
@@ -597,46 +657,57 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         #[expect(clippy::deref_addrof, reason = "raw borrow avoids copying the config")]
         let execution_config = unsafe { &*(&raw const self.execution_config) };
         self.inspect_initialize_interp(interpreter_ref);
-        let inspector = self.inspector.as_deref_mut().map(NonNull::from);
-        let stop = interpreter_ref.run_with_dyn_inspector(execution_config, self, inspector);
+        let stop = if let Some(active) = self.active_inspector {
+            unsafe { (active.run)(self, interpreter_ref, execution_config, active.ptr) }
+        } else {
+            let inspector = self.inspector.as_deref_mut().map(NonNull::from);
+            interpreter_ref.run_with_dyn_inspector(execution_config, self, inspector)
+        };
         let interpreter = self.interpreter_pool.push(interpreter);
         (stop, interpreter)
     }
 
+    fn active_inspector_mut(&mut self) -> Option<&mut dyn Inspector<T>> {
+        if let Some(mut active) = self.active_inspector {
+            return Some(unsafe { active.ptr.as_mut() });
+        }
+        self.inspector.as_deref_mut()
+    }
+
     fn inspect_initialize_interp(&mut self, interp: &mut Interpreter<'_, T>) {
-        if let Some(inspector) = &mut self.inspector {
+        if let Some(inspector) = self.active_inspector_mut() {
             inspector.initialize_interp(interp);
         }
     }
 
     fn inspect_log(&mut self, log: &Log) {
-        if let Some(inspector) = &mut self.inspector {
+        if let Some(inspector) = self.active_inspector_mut() {
             inspector.log(log);
         }
     }
 
     fn inspect_call(&mut self, message: &mut Message) -> Option<MessageResult> {
-        self.inspector.as_deref_mut().and_then(|inspector| inspector.call(message))
+        self.active_inspector_mut().and_then(|inspector| inspector.call(message))
     }
 
     fn inspect_call_end(&mut self, message: &Message, result: &mut MessageResult) {
-        if let Some(inspector) = &mut self.inspector {
+        if let Some(inspector) = self.active_inspector_mut() {
             inspector.call_end(message, result);
         }
     }
 
     fn inspect_create(&mut self, message: &mut Message) -> Option<MessageResult> {
-        self.inspector.as_deref_mut().and_then(|inspector| inspector.create(message))
+        self.active_inspector_mut().and_then(|inspector| inspector.create(message))
     }
 
     fn inspect_create_end(&mut self, message: &Message, result: &mut MessageResult) {
-        if let Some(inspector) = &mut self.inspector {
+        if let Some(inspector) = self.active_inspector_mut() {
             inspector.create_end(message, result);
         }
     }
 
     fn has_inspector(&self) -> bool {
-        self.inspector.is_some()
+        self.active_inspector.is_some() || self.inspector.is_some()
     }
 
     fn inspect_message_start(&mut self, message: &mut Cow<'_, Message>) -> Option<MessageResult> {
@@ -693,7 +764,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     }
 
     fn inspect_selfdestruct(&mut self, contract: Address, target: Address, value: Word) {
-        if let Some(inspector) = &mut self.inspector {
+        if let Some(inspector) = self.active_inspector_mut() {
             inspector.selfdestruct(contract, target, value);
         }
     }
