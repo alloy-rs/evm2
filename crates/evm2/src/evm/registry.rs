@@ -146,21 +146,9 @@ pub enum HandlerError {
         /// Block base fee.
         base_fee: U256,
     },
-    /// EIP-2930 transaction is not enabled in the active specification.
-    #[error("EIP-2930 transaction not supported")]
-    Eip2930NotSupported,
-    /// EIP-1559 transaction is not enabled in the active specification.
-    #[error("EIP-1559 transaction not supported")]
-    Eip1559NotSupported,
-    /// EIP-7702 transaction is not enabled in the active specification.
-    #[error("EIP-7702 transaction not supported")]
-    Eip7702NotSupported,
     /// EIP-7702 authorization list is empty.
     #[error("EIP-7702 authorization list is empty")]
     EmptyAuthorizationList,
-    /// EIP-4844 transaction is not enabled in the active specification.
-    #[error("EIP-4844 transaction not supported")]
-    Eip4844NotSupported,
     /// EIP-4844 blob fee cap is lower than the block blob base fee.
     #[error(
         "blob fee cap less than blob base fee: max_fee_per_blob_gas {max_fee_per_blob_gas}, blob_base_fee {blob_base_fee}"

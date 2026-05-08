@@ -1,36 +1,43 @@
-#[cfg(feature = "nightly")]
+#[cfg(feature = "tco")]
 use super::gas::RemainingGas;
 use super::{
-    BytecodeRef, Gas, InstrStop, Memory, Message, MessageKind, Pc, Result, Stack, State, Word,
-    instructions::table::InstructionTable,
+    BytecodeRef, Gas, InstrStop, Memory, Message, MessageKind, MessageResult, Pc, Result, Stack,
+    StackBacking, Word,
 };
 use crate::{
-    EvmConfig, EvmTypes, ExecutionConfig, bytecode::Bytecode, env::TxEnv, evm::inspector::Inspector,
+    EvmConfig, EvmTypes, ExecutionConfig, SpecId, Version, bytecode::Bytecode, env::TxEnv,
+    evm::inspector::Inspector, version::GasParams,
 };
 use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::Bytes;
-#[cfg(not(feature = "nightly"))]
-use core::{
-    hint::cold_path,
-    ops::ControlFlow::{self, Break, Continue},
-};
-use core::{marker::PhantomData, ptr::NonNull};
+#[cfg(not(feature = "tco"))]
+use core::hint::cold_path;
+use core::{fmt, marker::PhantomData, ptr::NonNull};
 
 /// EVM interpreter.
-#[derive(Debug)]
+#[derive(derive_more::Debug)]
 pub struct Interpreter<'frame, T: EvmTypes> {
     bytecode: Bytecode,
-    pub(crate) pc: *const u8,
-    pub(crate) stack: Box<[Word; Stack::CAPACITY]>,
-    pub(crate) stack_len: usize,
-    pub(crate) gas: Gas,
-    pub(crate) memory: Memory,
-    pub(crate) result: Result,
-    pub(crate) output: *const [u8],
+    memory: Memory,
+    return_data: Bytes,
+
+    pc: *const u8,
+    output: *const [u8],
     tx_env: Option<&'frame TxEnv>,
-    pub(crate) message: Option<&'frame Message>,
-    pub(crate) is_static: bool,
-    pub(crate) return_data: Bytes,
+    message: Option<&'frame Message>,
+    host: Option<NonNull<T::Host>>,
+    inspector: Option<NonNull<dyn Inspector<T>>>,
+    version: *const Version,
+    stack_len: usize,
+    #[debug(skip)]
+    stack: Box<StackBacking>,
+
+    gas: Gas,
+    result: Result,
+    spec: SpecId,
+    is_static: bool,
+
+    #[debug(skip)]
     _marker: PhantomData<fn() -> T>,
 }
 
@@ -40,8 +47,6 @@ impl<T: EvmTypes> Default for Interpreter<'_, T> {
         Self {
             pc: bytecode.original_byte_slice().as_ptr(),
             bytecode,
-            // SAFETY: `Word` is valid at any bitpattern. It's not read before init anyway.
-            stack: unsafe { Box::new_uninit().assume_init() },
             stack_len: 0,
             gas: Gas::new(0),
             memory: Memory::new(),
@@ -51,6 +56,12 @@ impl<T: EvmTypes> Default for Interpreter<'_, T> {
             message: None,
             is_static: false,
             return_data: Bytes::new(),
+            host: None,
+            inspector: None,
+            version: core::ptr::null(),
+            spec: SpecId::DEFAULT,
+            // SAFETY: `MaybeUninit<Word>` does not need initialization.
+            stack: unsafe { Box::new_uninit().assume_init() },
             _marker: PhantomData,
         }
     }
@@ -90,7 +101,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         self.tx_env = Some(tx_env);
         self.message = Some(message);
         self.is_static = is_static;
-        self.return_data.clear();
+        self.return_data = Bytes::new();
     }
 
     pub(crate) const fn clear_frame_refs(&mut self) {
@@ -99,38 +110,18 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
     }
 
     #[cfg(test)]
-    pub(crate) const fn stack_len(&self) -> usize {
-        self.stack_len
+    pub(crate) const fn memory_len(&self) -> usize {
+        self.memory.len()
     }
 
-    #[inline]
-    pub(crate) const fn tx_env(&self) -> &TxEnv {
-        self.tx_env.expect("interpreter tx env is initialized")
+    #[cfg(test)]
+    pub(crate) fn set_return_data(&mut self, return_data: Bytes) {
+        self.return_data = return_data;
     }
 
-    #[inline]
-    pub(crate) const fn message(&self) -> &Message {
-        self.message.expect("interpreter message is initialized")
-    }
-
-    #[inline]
-    pub(crate) const fn is_static(&self) -> bool {
-        self.is_static
-    }
-
-    #[inline]
-    pub(crate) const fn memory(&mut self) -> &mut Memory {
-        &mut self.memory
-    }
-
-    #[inline]
-    pub(crate) const fn return_data(&self) -> &Bytes {
-        &self.return_data
-    }
-
-    #[inline]
-    pub(crate) const fn set_output(&mut self, output: *const [u8]) {
-        self.output = output;
+    #[cfg(test)]
+    pub(crate) fn into_parts(self) -> (Box<StackBacking>, usize, Gas, Memory, *const [u8]) {
+        (self.stack, self.stack_len, self.gas, self.memory, self.output)
     }
 
     /// Returns output produced by `RETURN` or `REVERT`.
@@ -154,7 +145,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
     /// Returns the current operand stack.
     #[inline]
     pub fn stack(&self) -> &[Word] {
-        unsafe { core::slice::from_raw_parts(self.stack.as_ptr(), self.stack_len) }
+        unsafe { core::slice::from_raw_parts(self.stack.as_ptr().cast(), self.stack_len) }
     }
 
     /// Returns the current linear memory.
@@ -194,122 +185,250 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         inspector: Option<NonNull<dyn Inspector<T>>>,
     ) -> InstrStop {
         self.memory.set_memory_limit(config.version.memory_limit);
+        self.host = Some(NonNull::from(&mut *host));
+        self.inspector = inspector;
+        self.version = &config.version;
+        self.spec = config.version.spec_id;
         let instructions =
             if inspector.is_some() { config.inspect_instructions } else { config.instructions };
 
-        #[cfg(feature = "nightly")]
-        let r = self.step_tail(config, instructions, host, inspector);
-        #[cfg(not(feature = "nightly"))]
-        let r = self.run_table_loop(config, instructions, host, inspector);
+        #[cfg(feature = "tco")]
+        let r = self.step_tail(instructions);
+        #[cfg(not(feature = "tco"))]
+        let r = self.run_table_loop(instructions);
 
+        self.host = None;
+        self.inspector = None;
+        self.version = core::ptr::null();
         r
     }
 
-    #[cfg(not(feature = "nightly"))]
+    #[cfg(not(feature = "tco"))]
     fn run_table_loop(
         &mut self,
-        config: &ExecutionConfig<T>,
-        instructions: &'static InstructionTable<T>,
-        host: &mut T::Host,
-        inspector: Option<NonNull<dyn Inspector<T>>>,
+        instructions: &'static super::instructions::table::InstructionTable<T>,
     ) -> InstrStop {
-        let mut pc = self.pc;
-        let mut stack_len = self.stack_len;
+        #[expect(clippy::unnecessary_cast, reason = "cast erases the active interpreter lifetime")]
+        let raw = self as *mut Self as *mut Interpreter<'_, T>;
+        // SAFETY: Instruction methods must not access the stack through `InterpreterState` while
+        // the separate stack view is live.
+        let state = InterpreterState::wrap_mut(unsafe { &mut *raw });
+        let mut pc = Pc::new(self.pc);
+        let mut stack = Stack::new(&mut self.stack, self.stack_len);
         loop {
-            let (next_pc, next_stack_len, flow) =
-                self.raw_step(config, instructions, host, inspector, pc, stack_len);
-            pc = next_pc;
-            stack_len = next_stack_len;
-            if flow.is_break() {
+            let op = pc.op();
+            let instr = instructions[op as usize];
+            let (next_pc, next_stack_len) = instr(pc, stack.reborrow(), state);
+            pc = Pc::new(next_pc);
+            stack.len = next_stack_len;
+            if next_pc.is_null() {
                 cold_path();
-                self.pc = pc;
-                self.stack_len = stack_len;
+                self.pc = next_pc;
+                self.stack_len = stack.len;
                 return self.result.unwrap_err();
             }
         }
     }
 
-    /// Executes one instruction.
-    #[inline]
-    #[cfg(not(feature = "nightly"))]
-    pub fn step(&mut self, config: &ExecutionConfig<T>, host: &mut T::Host) -> ControlFlow<(), ()> {
-        let (pc, stack_len, flow) =
-            self.raw_step(config, config.instructions, host, None, self.pc, self.stack_len);
-        self.pc = pc;
-        self.stack_len = stack_len;
-        flow
-    }
-
     #[inline(always)]
-    #[cfg(not(feature = "nightly"))]
-    fn raw_step(
-        &mut self,
-        config: &ExecutionConfig<T>,
-        instructions: &'static InstructionTable<T>,
-        host: &mut T::Host,
-        inspector: Option<NonNull<dyn Inspector<T>>>,
-        pc: *const u8,
-        stack_len: usize,
-    ) -> (*const u8, usize, ControlFlow<(), ()>) {
-        #[expect(clippy::unnecessary_cast, reason = "cast erases the active interpreter lifetime")]
-        let raw = self as *mut Self as *mut Interpreter<'_, T>;
-        let bytecode = BytecodeRef::new(&self.bytecode);
-        let pc = Pc::from_ptr(pc);
-        let op = pc.op();
-        let instr = instructions[op as usize];
-        let (pc, stack_len) = instr(
-            pc,
-            Stack::new(&mut self.stack, stack_len),
-            &mut State {
-                bytecode,
-                host,
-                spec: config.version.spec_id,
-                result: Ok(()),
-                version: &config.version,
-                raw_interp: raw,
-                inspector,
-            },
-        );
-        let flow = if pc.is_null() { Break(()) } else { Continue(()) };
-        (pc, stack_len, flow)
-    }
-
-    #[inline(always)]
-    #[cfg(feature = "nightly")]
+    #[cfg(feature = "tco")]
     fn step_tail(
         &mut self,
-        config: &ExecutionConfig<T>,
-        instructions: &'static InstructionTable<T>,
-        host: &mut T::Host,
-        inspector: Option<NonNull<dyn Inspector<T>>>,
+        instructions: &'static super::instructions::table::InstructionTable<T>,
     ) -> InstrStop {
         #[expect(clippy::unnecessary_cast, reason = "cast erases the active interpreter lifetime")]
         let raw = self as *mut Self as *mut Interpreter<'_, T>;
-        let bytecode = BytecodeRef::new(&self.bytecode);
-        let pc = Pc::from_ptr(self.pc);
+        // SAFETY: Instruction methods must not access the stack through `InterpreterState` while
+        // the separate stack view is live.
+        let state = InterpreterState::wrap_mut(unsafe { &mut *raw });
+        let pc = Pc::new(self.pc);
         let op = pc.op();
         let instr = instructions[op as usize];
+        let stack = Stack::new(&mut self.stack, self.stack_len);
         let remaining_gas = RemainingGas::new(self.gas.remaining());
-        instr(
-            pc,
-            Stack::new(&mut self.stack, self.stack_len),
-            remaining_gas,
-            &mut State {
-                bytecode,
-                host,
-                spec: config.version.spec_id,
-                result: Ok(()),
-                version: &config.version,
-                raw_interp: raw,
-                inspector,
-            },
-        );
+        instr(pc, stack, remaining_gas, state);
         self.result.unwrap_err()
     }
 }
 
-#[derive(Debug, Default)]
-#[expect(clippy::vec_box, reason = "pooled active interpreters must stay at stable addresses")]
+/// Interpreter state exposed to instruction implementations.
+#[repr(transparent)]
+pub struct InterpreterState<'frame, T: EvmTypes>(Interpreter<'frame, T>);
+
+impl<T: EvmTypes> fmt::Debug for InterpreterState<'_, T> {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
+    #[inline]
+    pub(crate) const fn wrap_mut<'a>(interpreter: &'a mut Interpreter<'frame, T>) -> &'a mut Self {
+        // SAFETY: `InterpreterState` is a transparent wrapper over `Interpreter`.
+        unsafe { core::mem::transmute::<&mut Interpreter<'frame, T>, &mut Self>(interpreter) }
+    }
+
+    #[inline]
+    pub(in crate::interpreter) const unsafe fn gas_from_state_ptr(state: *mut Self) -> *mut Gas {
+        // SAFETY: The caller upholds that `state` points to a valid interpreter state.
+        unsafe { &raw mut (*state).0.gas }
+    }
+
+    #[inline]
+    pub(crate) const fn gas_mut(&mut self) -> &mut Gas {
+        &mut self.0.gas
+    }
+
+    #[inline]
+    pub(crate) const fn set_result(&mut self, result: Result) {
+        self.0.result = result;
+    }
+
+    #[inline]
+    #[cfg(feature = "nightly")]
+    pub(crate) const fn result(&self) -> Result {
+        self.0.result
+    }
+
+    #[inline]
+    #[cfg(feature = "nightly")]
+    pub(crate) const fn set_pc_stack_len(&mut self, pc: *const u8, stack_len: usize) {
+        self.0.pc = pc;
+        self.0.stack_len = stack_len;
+    }
+
+    /// Returns the cached transaction-global environment.
+    #[inline]
+    pub const fn tx(&self) -> &TxEnv {
+        // SAFETY: `tx_env` is initialized at the beginning of `run_with` and remains set for
+        // instruction execution.
+        unsafe { self.0.tx_env.unwrap_unchecked() }
+    }
+
+    /// Returns the active bytecode.
+    #[inline]
+    pub fn bytecode(&self) -> BytecodeRef<'_> {
+        BytecodeRef::new(&self.0.bytecode)
+    }
+
+    /// Returns the host implementation.
+    #[inline]
+    pub const fn host(&mut self) -> &mut T::Host {
+        // SAFETY: `host` is initialized at the beginning of `run_with` and cleared before the
+        // method returns. Instruction execution is synchronous, so the pointer cannot outlive the
+        // `run_with` host borrow.
+        unsafe { self.0.host.unwrap_unchecked().as_mut() }
+    }
+
+    /// Returns the active runtime version data.
+    #[inline]
+    pub const fn version(&self) -> &Version {
+        // SAFETY: `version` is initialized at the beginning of `run_with` and points into the
+        // `ExecutionConfig` borrowed by the current run.
+        unsafe { &*self.0.version }
+    }
+
+    /// Returns the active frame-local call/create message.
+    #[inline]
+    pub const fn message(&self) -> &Message {
+        // SAFETY: `message` is initialized at the beginning of `run_with` and remains set for
+        // instruction execution.
+        unsafe { self.0.message.unwrap_unchecked() }
+    }
+
+    /// Returns whether the active frame forbids state-changing operations.
+    #[inline]
+    pub const fn is_static(&self) -> bool {
+        self.0.is_static
+    }
+
+    /// Returns the active spec identifier.
+    #[inline]
+    pub const fn spec(&self) -> SpecId {
+        self.0.spec
+    }
+
+    /// Returns the active dynamic gas parameters.
+    #[inline]
+    pub const fn gas_params(&self) -> &GasParams {
+        &self.version().gas_params
+    }
+
+    /// Returns linear memory.
+    #[inline]
+    pub const fn memory(&mut self) -> &mut Memory {
+        &mut self.0.memory
+    }
+
+    /// Returns return data from the last call-like operation.
+    #[inline]
+    pub const fn return_data(&self) -> &Bytes {
+        &self.0.return_data
+    }
+
+    /// Sets return data from the last call-like operation.
+    #[inline]
+    pub fn set_return_data(&mut self, return_data: Bytes) {
+        self.0.return_data = return_data;
+    }
+
+    /// Sets the current frame output.
+    #[inline]
+    pub const fn set_output(&mut self, output: *const [u8]) {
+        self.0.output = output;
+    }
+
+    #[inline]
+    pub(crate) fn inspect_step(&mut self, pc: Pc, stack_len: usize) {
+        let Some(mut inspector) = self.0.inspector else {
+            return;
+        };
+        self.0.pc = pc.as_ptr();
+        self.0.stack_len = stack_len;
+        unsafe { inspector.as_mut().step(&mut self.0) };
+    }
+
+    #[inline]
+    pub(crate) fn inspect_step_end(&mut self, pc: Pc, stack_len: usize) {
+        let Some(mut inspector) = self.0.inspector else {
+            return;
+        };
+        self.0.pc = pc.as_ptr();
+        self.0.stack_len = stack_len;
+        unsafe { inspector.as_mut().step_end(&mut self.0) };
+    }
+
+    #[inline]
+    pub(crate) fn inspect_call(&mut self, message: &mut Message) -> Option<MessageResult> {
+        let mut inspector = self.0.inspector?;
+        unsafe { inspector.as_mut().call(message) }
+    }
+
+    #[inline]
+    pub(crate) fn inspect_call_end(&mut self, message: &Message, result: &mut MessageResult) {
+        let Some(mut inspector) = self.0.inspector else {
+            return;
+        };
+        unsafe { inspector.as_mut().call_end(message, result) };
+    }
+
+    #[inline]
+    pub(crate) fn inspect_create(&mut self, message: &mut Message) -> Option<MessageResult> {
+        let mut inspector = self.0.inspector?;
+        unsafe { inspector.as_mut().create(message) }
+    }
+
+    #[inline]
+    pub(crate) fn inspect_create_end(&mut self, message: &Message, result: &mut MessageResult) {
+        let Some(mut inspector) = self.0.inspector else {
+            return;
+        };
+        unsafe { inspector.as_mut().create_end(message, result) };
+    }
+}
+
+#[derive(Default)]
 pub(crate) struct InterpreterPool<T: EvmTypes> {
     frames: Vec<Box<Interpreter<'static, T>>>,
 }

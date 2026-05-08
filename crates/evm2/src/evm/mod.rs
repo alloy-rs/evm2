@@ -26,6 +26,11 @@ pub mod env;
 pub mod inspector;
 pub mod precompile;
 pub mod registry;
+mod system;
+pub use system::{
+    BEACON_ROOTS_ADDRESS, CONSOLIDATION_REQUEST_ADDRESS, HISTORY_STORAGE_ADDRESS, SYSTEM_ADDRESS,
+    SYSTEM_CALL_GAS_LIMIT, WITHDRAWAL_REQUEST_ADDRESS,
+};
 
 mod db;
 pub use db::{Cache, CacheDB, Database, EmptyDB, InMemoryDB};
@@ -229,8 +234,14 @@ impl<T: EvmTypes> Evm<T> {
 
     /// Returns the backing database.
     #[inline]
-    pub const fn database(&self) -> &State<T::Database> {
-        &self.state
+    pub const fn database(&self) -> &T::Database {
+        self.state.initial()
+    }
+
+    /// Returns the backing database mutably.
+    #[inline]
+    pub const fn database_mut(&mut self) -> &mut T::Database {
+        self.state.initial_mut()
     }
 
     /// Returns the mutable EVM state.
@@ -373,7 +384,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
 
         let address = self.create_address(&bytecode, message);
 
-        self.state.warm_account(address);
+        let _ = self.state.warm_account(address);
 
         if message.depth > 0 {
             self.state.increment_nonce(message.caller);
@@ -581,10 +592,13 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         // pool after execution. Recursive calls may mutate the pool, but they cannot move this box.
         let interpreter_ref = unsafe { &mut *(&mut *interpreter as *mut Interpreter<'frame, T>) };
         interpreter_ref.init(bytecode, tx_env, message, caller_is_static);
+        // SAFETY: `execution_config` points to a private field that host execution does not
+        // replace or mutate, so the pointee remains valid here.
+        #[expect(clippy::deref_addrof, reason = "raw borrow avoids copying the config")]
+        let execution_config = unsafe { &*(&raw const self.execution_config) };
         self.inspect_initialize_interp(interpreter_ref);
-        let execution_config = self.execution_config;
         let inspector = self.inspector.as_deref_mut().map(NonNull::from);
-        let stop = interpreter_ref.run_with_inspector(&execution_config, self, inspector);
+        let stop = interpreter_ref.run_with_inspector(execution_config, self, inspector);
         let interpreter = self.interpreter_pool.push(interpreter);
         (stop, interpreter)
     }
@@ -700,12 +714,15 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
         load_code: bool,
         skip_cold_load: bool,
     ) -> Result<AccountLoad, InstrStop> {
-        let is_cold =
-            self.spec_id().enables(SpecId::BERLIN) && !self.state.is_account_warm(address);
+        let is_cold = if self.spec_id().enables(SpecId::BERLIN) {
+            self.state.warm_account(address)
+        } else {
+            let _ = self.state.warm_account(address);
+            false
+        };
         if skip_cold_load && is_cold {
             return Err(InstrStop::OutOfGas);
         }
-        self.state.warm_account(address);
         let info = self.state.account_info(address);
         let exists = info.is_some();
         let info = info.unwrap_or_default();
@@ -738,12 +755,9 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
         skip_cold_load: bool,
     ) -> Result<SLoad, InstrStop> {
         let is_cold =
-            self.spec_id().enables(SpecId::BERLIN) && !self.state.is_storage_warm(address, key);
+            self.spec_id().enables(SpecId::BERLIN) && self.state.warm_storage(address, key);
         if skip_cold_load && is_cold {
             return Err(InstrStop::OutOfGas);
-        }
-        if is_cold {
-            let _ = self.state.warm_storage(address, key);
         }
         Ok(SLoad { value: self.state.storage(address, key), is_cold })
     }
@@ -756,12 +770,9 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
         skip_cold_load: bool,
     ) -> Result<SStore, InstrStop> {
         let is_cold =
-            self.spec_id().enables(SpecId::BERLIN) && !self.state.is_storage_warm(address, key);
+            self.spec_id().enables(SpecId::BERLIN) && self.state.warm_storage(address, key);
         if skip_cold_load && is_cold {
             return Err(InstrStop::OutOfGas);
-        }
-        if is_cold {
-            let _ = self.state.warm_storage(address, key);
         }
         let mut result = self.state.set_storage(address, key, value);
         result.is_cold = is_cold;
@@ -819,12 +830,15 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
         target: Address,
         skip_cold_load: bool,
     ) -> Result<SelfDestructResult, InstrStop> {
-        // TODO: evmone applies full SELFDESTRUCT revision rules in state transition.
-        let is_cold = self.spec_id().enables(SpecId::BERLIN) && !self.state.is_account_warm(target);
+        let is_cold = if self.spec_id().enables(SpecId::BERLIN) {
+            self.state.warm_account(target)
+        } else {
+            let _ = self.state.warm_account(target);
+            false
+        };
         if skip_cold_load && is_cold {
             return Err(InstrStop::OutOfGas);
         }
-        self.state.warm_account(target);
         let target_is_empty_for_new_account_gas =
             self.state.target_is_empty_for_new_account_gas(target, self.spec_id());
         let previously_destroyed = self.state.is_selfdestructed(contract);
@@ -855,14 +869,13 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
 mod tests {
     use super::*;
     use crate::{
-        BaseEvmConfig, BaseEvmTypes, Precompiles, SpecId,
+        BaseEvmConfig, Precompiles, SpecId,
         bytecode::Bytecode,
         interpreter::{MessageKind, op},
         registry::TxRequest,
     };
-    use alloc::rc::Rc;
     use alloy_primitives::{Address, Bytes, KECCAK256_EMPTY, U256};
-    use core::cell::RefCell;
+    use core::marker::PhantomData;
 
     const TEST_TX_TYPE: u8 = 0x7f;
 
@@ -871,7 +884,16 @@ mod tests {
         value: u64,
     }
 
-    type TestEvmTypes<Tx = ()> = BaseEvmTypes<Tx>;
+    struct TestEvmTypes<Tx = ()>(PhantomData<fn() -> Tx>);
+
+    impl<Tx: 'static> EvmTypes for TestEvmTypes<Tx> {
+        type ConfigSelector = crate::BaseEvmConfigSelector;
+        type SpecId = SpecId;
+        type Tx = Tx;
+        type Host = Evm<Self>;
+        type Database = InMemoryDB;
+        type Precompiles = Precompiles;
+    }
 
     impl Typed2718 for TestTx {
         fn ty(&self) -> u8 {
@@ -995,48 +1017,8 @@ mod tests {
         assert!(result.stop.is_success());
     }
 
-    #[derive(Clone, Debug, Default, PartialEq, Eq)]
-    struct InspectorCounts {
-        initialize_interp: usize,
-        step: usize,
-        step_end: usize,
-        log: usize,
-        call: usize,
-        call_end: usize,
-    }
-
-    #[derive(Clone, Debug)]
-    struct CountInspector(Rc<RefCell<InspectorCounts>>);
-
-    impl inspector::Inspector<TestEvmTypes> for CountInspector {
-        fn initialize_interp(&mut self, _interp: &mut Interpreter<'_, TestEvmTypes>) {
-            self.0.borrow_mut().initialize_interp += 1;
-        }
-
-        fn step(&mut self, _interp: &mut Interpreter<'_, TestEvmTypes>) {
-            self.0.borrow_mut().step += 1;
-        }
-
-        fn step_end(&mut self, _interp: &mut Interpreter<'_, TestEvmTypes>) {
-            self.0.borrow_mut().step_end += 1;
-        }
-
-        fn log(&mut self, _log: &Log) {
-            self.0.borrow_mut().log += 1;
-        }
-
-        fn call(&mut self, _message: &mut Message) -> Option<MessageResult> {
-            self.0.borrow_mut().call += 1;
-            None
-        }
-
-        fn call_end(&mut self, _message: &Message, _result: &mut MessageResult) {
-            self.0.borrow_mut().call_end += 1;
-        }
-    }
-
     #[test]
-    fn inspector_observes_call_frame_steps_and_logs() {
+    fn cold_storage_oog_rolls_back_warmth() {
         let mut evm = Evm::<TestEvmTypes>::new(
             SpecId::OSAKA,
             BlockEnv::default(),
@@ -1044,40 +1026,22 @@ mod tests {
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
         );
-        let counts = Rc::new(RefCell::new(InspectorCounts::default()));
-        evm.set_inspector(CountInspector(Rc::clone(&counts)));
-
         let contract = Address::from([0x11; 20]);
-        let bytecode = Bytecode::new_legacy(Bytes::from_static(&[
-            op::PUSH1,
-            0,
-            op::PUSH1,
-            0,
-            op::LOG0,
-            op::STOP,
-        ]));
+        let key = Word::ZERO;
+        let bytecode =
+            Bytecode::new_legacy(Bytes::from_static(&[op::PUSH1, 0, op::SLOAD, op::STOP]));
         let message = Message {
             kind: MessageKind::Call,
             destination: contract,
             code_address: contract,
-            gas_limit: 50_000,
+            gas_limit: 500,
             ..Message::default()
         };
 
         let result = Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &message, false);
 
-        assert!(result.stop.is_success());
-        assert_eq!(
-            *counts.borrow(),
-            InspectorCounts {
-                initialize_interp: 1,
-                step: 4,
-                step_end: 4,
-                log: 1,
-                call: 1,
-                call_end: 1,
-            }
-        );
+        assert_eq!(result.stop, InstrStop::OutOfGas);
+        assert!(!evm.state.is_storage_warm(contract, key));
     }
 
     #[test]

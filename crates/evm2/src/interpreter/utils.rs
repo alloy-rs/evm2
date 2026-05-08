@@ -43,7 +43,7 @@ macro_rules! asm_comment {
     };
 }
 
-#[cfg(feature = "nightly")]
+#[cfg(feature = "tco")]
 #[collapse_debuginfo(yes)]
 macro_rules! tail_return {
     ($e:expr) => {
@@ -51,7 +51,7 @@ macro_rules! tail_return {
     };
 }
 
-#[cfg(feature = "nightly")]
+#[cfg(feature = "tco")]
 #[collapse_debuginfo(yes)]
 macro_rules! extern_table {
     ($(#[$attr:meta])* fn $($f:tt)*) => {
@@ -62,7 +62,7 @@ macro_rules! extern_table {
     };
 }
 
-#[cfg(not(feature = "nightly"))]
+#[cfg(not(feature = "tco"))]
 #[collapse_debuginfo(yes)]
 macro_rules! extern_table {
     ($(#[$attr:meta])* fn $($f:tt)*) => {

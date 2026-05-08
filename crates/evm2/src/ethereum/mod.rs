@@ -91,15 +91,27 @@ impl Typed2718 for RecoveredTxEnvelope {
     }
 }
 
-/// Returns the Ethereum transaction registry.
-pub fn ethereum_tx_registry<T: EvmTypes<Host = Evm<T>>>()
--> TxRegistry<RecoveredTxEnvelope, TxResult, Evm<T>> {
-    TxRegistry::new()
-        .with_handler(0, RecoveredTxEnvelope::as_legacy, legacy::handle::<T>)
-        .with_handler(1, RecoveredTxEnvelope::as_eip2930, eip2930::handle::<T>)
-        .with_handler(2, RecoveredTxEnvelope::as_eip1559, eip1559::handle::<T>)
-        .with_handler(3, RecoveredTxEnvelope::as_eip4844, eip4844::handle::<T>)
-        .with_handler(4, RecoveredTxEnvelope::as_eip7702, eip7702::handle::<T>)
+/// Returns the Ethereum transaction registry for `spec_id`.
+pub fn ethereum_tx_registry<T: EvmTypes<Host = Evm<T>>>(
+    spec_id: SpecId,
+) -> TxRegistry<RecoveredTxEnvelope, TxResult, Evm<T>> {
+    let mut registry =
+        TxRegistry::new().with_handler(0, RecoveredTxEnvelope::as_legacy, legacy::handle::<T>);
+
+    if spec_id.enables(SpecId::BERLIN) {
+        registry.register(1, RecoveredTxEnvelope::as_eip2930, eip2930::handle::<T>);
+    }
+    if spec_id.enables(SpecId::LONDON) {
+        registry.register(2, RecoveredTxEnvelope::as_eip1559, eip1559::handle::<T>);
+    }
+    if spec_id.enables(SpecId::CANCUN) {
+        registry.register(3, RecoveredTxEnvelope::as_eip4844, eip4844::handle::<T>);
+    }
+    if spec_id.enables(SpecId::PRAGUE) {
+        registry.register(4, RecoveredTxEnvelope::as_eip7702, eip7702::handle::<T>);
+    }
+
+    registry
 }
 
 pub(super) fn validate_gas_price(
@@ -208,7 +220,7 @@ pub(super) fn validate_create_initcode(
     to: TxKind,
     input: &Bytes,
 ) -> HandlerResult<()> {
-    if version.spec_id.enables(SpecId::SHANGHAI)
+    if version.feature(EvmFeatures::EIP3860)
         && to.is_create()
         && input.len() > version.max_initcode_size
     {
@@ -268,12 +280,11 @@ pub(super) fn validate_sender<T: EvmTypes<Host = Evm<T>>>(
 
 pub(super) fn warm_base_accounts<T: EvmTypes<Host = Evm<T>>>(
     host: &mut Evm<T>,
-    spec_id: SpecId,
     caller: Address,
     to: TxKind,
 ) {
     host.state.warm_account_non_revertible(caller);
-    if spec_id.enables(SpecId::SHANGHAI) {
+    if host.feature(EvmFeatures::EIP3651) {
         host.state.warm_account_non_revertible(host.block.beneficiary);
     }
     if let TxKind::Call(to) = to {
@@ -306,7 +317,7 @@ pub(super) fn charge_upfront<T: EvmTypes<Host = Evm<T>>>(
     host.state.add_balance(caller, Word::ZERO.wrapping_sub(max_gas_cost));
 }
 
-pub(super) fn initial_message<T: EvmTypes<Host = Evm<T>>>(
+pub(crate) fn initial_message<T: EvmTypes<Host = Evm<T>>>(
     host: &mut Evm<T>,
     caller: Address,
     nonce: u64,
@@ -365,7 +376,7 @@ fn initial_call_code<T: EvmTypes<Host = Evm<T>>>(
     if host.spec_id().enables(SpecId::PRAGUE)
         && let Some(delegated_address) = code.eip7702_address()
     {
-        host.state.warm_account(delegated_address);
+        let _ = host.state.warm_account(delegated_address);
         return InitialCallCode {
             code: host.state.get_code(delegated_address),
             code_address: delegated_address,
@@ -398,7 +409,7 @@ pub(super) fn settle_gas<T: EvmTypes<Host = Evm<T>>>(
     result: MessageResult,
 ) -> TxResult {
     let (gas_remaining, gas_used) =
-        final_tx_gas(&result, tx_gas_limit, spec_id.enables(SpecId::LONDON), floor_gas);
+        final_tx_gas(&result, tx_gas_limit, host.feature(EvmFeatures::EIP3529), floor_gas);
     if host.feature(EvmFeatures::FEE_CHARGE) {
         host.state.add_balance(caller, U256::from(gas_remaining) * gas_price);
         let beneficiary_gas_price = if spec_id.enables(SpecId::LONDON) {
@@ -421,11 +432,11 @@ pub(super) fn settle_gas<T: EvmTypes<Host = Evm<T>>>(
 const fn final_tx_gas(
     result: &MessageResult,
     tx_gas_limit: u64,
-    is_london: bool,
+    is_eip3529: bool,
     floor_gas: u64,
 ) -> (u64, u64) {
-    let gas_remaining = result.gas_remaining_after_final_refund(tx_gas_limit, is_london);
-    let gas_used = result.gas_used_after_final_refund(tx_gas_limit, is_london);
+    let gas_remaining = result.gas_remaining_after_final_refund(tx_gas_limit, is_eip3529);
+    let gas_used = result.gas_used_after_final_refund(tx_gas_limit, is_eip3529);
     // EIP-7623 charges at least the calldata floor after applying refunds.
     if gas_used < floor_gas {
         return (tx_gas_limit.saturating_sub(floor_gas), floor_gas);
@@ -465,19 +476,18 @@ pub(super) fn intrinsic_gas(
     access_list_accounts: u64,
     access_list_storage_keys: u64,
 ) -> u64 {
-    let spec = version.spec_id;
     let params = &version.gas_params;
-    let non_zero_multiplier = if spec.enables(SpecId::ISTANBUL) { 16 } else { 68 };
+    let non_zero_multiplier = if version.feature(EvmFeatures::EIP2028) { 16 } else { 68 };
     let mut gas = 21_000;
     for byte in input {
         gas += if *byte == 0 { 4 } else { non_zero_multiplier };
     }
     gas += access_list_accounts * u64::from(params.get(GasId::TxAccessListAddressCost));
     gas += access_list_storage_keys * u64::from(params.get(GasId::TxAccessListStorageKeyCost));
-    if to.is_create() && spec.enables(SpecId::HOMESTEAD) {
+    if to.is_create() && version.feature(EvmFeatures::EIP2) {
         gas += 32_000;
     }
-    if to.is_create() && spec.enables(SpecId::SHANGHAI) {
+    if to.is_create() && version.feature(EvmFeatures::EIP3860) {
         gas += u64::from(params.get(GasId::TxInitcodeCost)) * num_words(input.len()) as u64;
     }
     gas

@@ -14,7 +14,8 @@ use alloy_trie::{
     root::{state_root_unhashed, storage_root_unhashed},
 };
 use evm2::{
-    BaseEvmTypes, Evm, EvmTypes, Precompiles, SpecId, TxResult,
+    BEACON_ROOTS_ADDRESS, BaseEvmTypes, Evm, EvmTypes, HISTORY_STORAGE_ADDRESS, Precompiles,
+    SpecId, StorageKey, TxResult,
     bytecode::Bytecode,
     env::BlockEnv,
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
@@ -87,7 +88,7 @@ fn execute_unit(
                 }
                 Err(err) => return Err(TestError::case(path, name, err)),
             };
-            let result = execute_spec(spec, block, state.clone(), &tx);
+            let result = execute_spec(spec, block, state.clone(), &tx, &unit.env);
             validate_result(path, name, &unit, post, result, spec, config)?;
         }
     }
@@ -206,19 +207,21 @@ fn execute_spec(
     block: BlockEnv,
     database: InMemoryDB,
     tx: &RecoveredTxEnvelope,
+    env: &Env,
 ) -> Result<SpecOutcome, HandlerError> {
     macro_rules! run {
         ($spec:ident) => {{
             let spec = SpecId::$spec;
-            let mut evm = Evm::<BaseEvmTypes<RecoveredTxEnvelope>>::new(
+            let mut evm = Evm::<BaseEvmTypes>::new(
                 spec,
                 block,
-                ethereum_tx_registry(),
-                database,
+                ethereum_tx_registry(spec),
+                database.clone(),
                 Precompiles::base(spec),
             );
+            let system_changes = pre_block_system_calls(&mut evm, spec, env, &database);
             let result = evm.transact(tx)?;
-            Ok(spec_outcome(&evm, result, spec))
+            Ok(spec_outcome(&evm, result, &system_changes))
         }};
     }
     match spec {
@@ -244,15 +247,77 @@ fn execute_spec(
 fn spec_outcome<T: EvmTypes<Database = InMemoryDB>>(
     evm: &Evm<T>,
     result: TxResult,
-    _spec: SpecId,
+    system_changes: &[StateChanges],
 ) -> SpecOutcome {
+    let mut post = evm.state().initial().clone();
+    for changes in system_changes {
+        post = apply_state_changes(&post, changes);
+    }
+    post = apply_state_changes(&post, &result.state_changes);
+
     SpecOutcome {
-        state_root: state_root(evm.state().initial(), &result.state_changes),
+        state_root: state_root_from_database(&post),
         logs_root: logs_hash(&result.state_changes.logs),
         output: result.output,
         gas_used: result.gas_used,
         evm_result: format!("{:?}", result.stop),
     }
+}
+
+fn pre_block_system_calls<T: EvmTypes<Database = InMemoryDB, Host = Evm<T>>>(
+    evm: &mut Evm<T>,
+    spec: SpecId,
+    env: &Env,
+    database: &InMemoryDB,
+) -> Vec<StateChanges> {
+    if env.current_number.is_zero() {
+        return Vec::new();
+    }
+
+    let mut changes = Vec::new();
+    if spec.enables(SpecId::PRAGUE)
+        && let Some(previous_hash) = env.previous_hash
+        && system_contract_has_code(database, HISTORY_STORAGE_ADDRESS)
+    {
+        push_system_call_changes(
+            evm,
+            &mut changes,
+            HISTORY_STORAGE_ADDRESS,
+            Bytes::copy_from_slice(previous_hash.as_slice()),
+        );
+    }
+    if spec.enables(SpecId::CANCUN)
+        && let Some(beacon_root) = env.current_beacon_root
+        && system_contract_has_code(database, BEACON_ROOTS_ADDRESS)
+    {
+        push_system_call_changes(
+            evm,
+            &mut changes,
+            BEACON_ROOTS_ADDRESS,
+            Bytes::copy_from_slice(beacon_root.as_slice()),
+        );
+    }
+    changes
+}
+
+fn push_system_call_changes<T: EvmTypes<Database = InMemoryDB, Host = Evm<T>>>(
+    evm: &mut Evm<T>,
+    changes: &mut Vec<StateChanges>,
+    address: Address,
+    data: Bytes,
+) {
+    let result = evm.system_call(address, data);
+    assert!(result.status, "pre-block system call failed: {address}");
+    changes.push(result.state_changes);
+}
+
+fn system_contract_has_code(database: &InMemoryDB, address: Address) -> bool {
+    database
+        .cache
+        .accounts
+        .get(&address)
+        .and_then(|info| database.cache.contracts.get(&info.code_hash))
+        .is_some_and(|code| !code.is_empty())
 }
 
 fn logs_hash(logs: &[Log]) -> B256 {
@@ -261,10 +326,9 @@ fn logs_hash(logs: &[Log]) -> B256 {
     keccak256(out)
 }
 
-fn state_root(pre: &InMemoryDB, changes: &StateChanges) -> B256 {
-    let post = apply_state_changes(pre, changes);
-    let accounts = post.cache.accounts.iter().map(|(&address, info)| {
-        let storage = storage_for_root(&post, address);
+fn state_root_from_database(state: &InMemoryDB) -> B256 {
+    let accounts = state.cache.accounts.iter().map(|(&address, info)| {
+        let storage = storage_for_root(state, address);
         (
             address,
             TrieAccount {
@@ -286,13 +350,13 @@ fn apply_state_changes(pre: &InMemoryDB, changes: &StateChanges) -> InMemoryDB {
     }
     for (&address, storage) in &changes.storage {
         if storage.wipe {
-            post.cache.storage.retain(|(storage_address, _), _| *storage_address != address);
+            post.cache.storage.retain(|key, _| key.address() != address);
         }
         for (&key, change) in &storage.slots {
             if change.current.is_zero() {
-                post.cache.storage.remove(&(address, key));
+                post.cache.storage.remove(&StorageKey::new(address, key));
             } else {
-                post.cache.storage.insert((address, key), change.current);
+                post.cache.storage.insert(StorageKey::new(address, key), change.current);
             }
         }
     }
@@ -301,7 +365,7 @@ fn apply_state_changes(pre: &InMemoryDB, changes: &StateChanges) -> InMemoryDB {
             Some(info) => post.insert_account_info(address, info.clone()),
             None => {
                 post.cache.accounts.remove(&address);
-                post.cache.storage.retain(|(storage_address, _), _| *storage_address != address);
+                post.cache.storage.retain(|key, _| key.address() != address);
             }
         }
     }
@@ -313,9 +377,8 @@ fn storage_for_root(state: &InMemoryDB, address: Address) -> Vec<(B256, U256)> {
         .cache
         .storage
         .iter()
-        .filter_map(|(&(storage_address, key), &value)| {
-            (storage_address == address && !value.is_zero())
-                .then_some((B256::from(key.to_be_bytes()), value))
+        .filter_map(|(&key, &value)| {
+            (key.address() == address && !value.is_zero()).then_some((B256::from(key.key()), value))
         })
         .collect()
 }

@@ -4,8 +4,8 @@ use crate::{
     EvmTypes, SpecId,
     constants::{CALL_DEPTH_LIMIT, EIP7702_BYTECODE_LEN, EIP7702_MAGIC_BYTES, EIP7702_VERSION},
     interpreter::{
-        Host, InstrStop, Message, MessageKind, MessageResult, Result, StackMut, State, Word,
-        memory::resize_memory, private::GasInstructionCx,
+        Host, InstrStop, InterpreterState, Message, MessageKind, MessageResult, Result, StackMut,
+        Word, memory::resize_memory, private::GasInstructionCx,
     },
     utils::{word_to_address, word_to_usize},
     version::GasId,
@@ -15,7 +15,7 @@ use core::{cmp::min, ops::Range};
 use evm2_macros::instruction;
 
 #[inline]
-const fn require_non_staticcall<T: EvmTypes>(state: &State<'_, T>) -> Result {
+const fn require_non_staticcall<T: EvmTypes>(state: &InterpreterState<'_, T>) -> Result {
     if state.is_static() {
         return Err(InstrStop::StateChangeDuringStaticCall);
     }
@@ -104,7 +104,7 @@ fn load_acc_and_calc_gas<T: EvmTypes>(
     let additional_cold_cost = cx.state.gas_params().cold_account_additional_cost();
     let remaining_gas = cx.gas.remaining();
     let skip_cold_load = remaining_gas < additional_cold_cost;
-    let account = cx.state.host.load_account(to, true, skip_cold_load)?;
+    let account = cx.state.host().load_account(to, true, skip_cold_load)?;
 
     let mut cost = 0;
     if account.is_cold {
@@ -112,7 +112,7 @@ fn load_acc_and_calc_gas<T: EvmTypes>(
     }
     let mut code = account.code;
     let mut code_address = to;
-    if cx.state.spec.enables(SpecId::PRAGUE)
+    if cx.state.spec().enables(SpecId::PRAGUE)
         && let Some(delegated_address) = eip7702_address(&code)
     {
         cost += u64::from(cx.state.gas_params().get(GasId::WarmStorageReadCost));
@@ -121,25 +121,26 @@ fn load_acc_and_calc_gas<T: EvmTypes>(
         }
         let skip_cold_load = remaining_gas < cost.saturating_add(additional_cold_cost);
         let delegated_account =
-            cx.state.host.load_account(delegated_address, true, skip_cold_load)?;
+            cx.state.host().load_account(delegated_address, true, skip_cold_load)?;
         if delegated_account.is_cold {
             cost += additional_cold_cost;
         }
         code = delegated_account.code;
         code_address = delegated_address;
     }
+    let spec = cx.state.spec();
     if create_empty_account
         && should_charge_new_account_gas(
-            cx.state.spec,
+            spec,
             transfers_value,
-            cx.state.host.target_is_empty_for_new_account_gas(to, cx.state.spec),
+            cx.state.host().target_is_empty_for_new_account_gas(to, spec),
         )
     {
         cost += u64::from(cx.state.gas_params().get(GasId::NewAccountCost));
     }
     cx.gas.spend(cost)?;
 
-    let mut gas_limit = if cx.state.spec.enables(SpecId::TANGERINE) {
+    let mut gas_limit = if cx.state.spec().enables(SpecId::TANGERINE) {
         min(cx.state.gas_params().call_stipend_reduction(cx.gas.remaining()), stack_gas_limit)
     } else {
         stack_gas_limit
@@ -228,7 +229,7 @@ fn call_inner<T: EvmTypes>(
     } else {
         // SAFETY: `tx_env` points into the active interpreter frame and remains valid for the
         // duration of this instruction.
-        cx.state.host.execute_message(unsafe { &*tx_env }, bytecode, &message, caller_is_static)
+        cx.state.host().execute_message(unsafe { &*tx_env }, bytecode, &message, caller_is_static)
     };
     cx.gas.erase_cost(result.gas_returned_to_parent());
     cx.gas.record_refund(result.refund_propagated_to_parent());
@@ -276,8 +277,8 @@ fn create_inner<T: EvmTypes>(
     let salt = if is_create2 { Some(stack.pop()?) } else { None };
 
     let len = word_to_usize(len)?;
-    if cx.state.spec.enables(SpecId::SHANGHAI) {
-        if len > cx.state.version.max_initcode_size {
+    if cx.state.spec().enables(SpecId::SHANGHAI) {
+        if len > cx.state.version().max_initcode_size {
             return Err(InstrStop::CreateInitCodeSizeLimit);
         }
         cx.gas.spend(cx.state.gas_params().initcode_cost(len))?;
@@ -290,7 +291,7 @@ fn create_inner<T: EvmTypes>(
         cx.state.gas_params().get(GasId::Create).into()
     };
     cx.gas.spend(create_cost)?;
-    let gas_limit = if cx.state.spec.enables(SpecId::TANGERINE) {
+    let gas_limit = if cx.state.spec().enables(SpecId::TANGERINE) {
         cx.state.gas_params().call_stipend_reduction(cx.gas.remaining())
     } else {
         cx.gas.remaining()
@@ -322,7 +323,7 @@ fn create_inner<T: EvmTypes>(
     } else {
         // SAFETY: `tx_env` points into the active interpreter frame and remains valid for the
         // duration of this instruction.
-        cx.state.host.execute_message(unsafe { &*tx_env }, bytecode, &message, false)
+        cx.state.host().execute_message(unsafe { &*tx_env }, bytecode, &message, false)
     };
     cx.gas.erase_cost(result.gas_returned_to_parent());
     cx.gas.record_refund(result.refund_propagated_to_parent());
@@ -346,9 +347,10 @@ pub(crate) fn selfdestruct(cx: _, [target]: [Word]) -> Result {
     let target = word_to_address(target);
     let cold_load_gas = cx.state.gas_params().selfdestruct_cold_cost();
     let skip_cold_load = cx.gas.remaining() < cold_load_gas;
-    let res = cx.state.host.selfdestruct(cx.state.message().destination, target, skip_cold_load)?;
+    let destination = cx.state.message().destination;
+    let res = cx.state.host().selfdestruct(destination, target, skip_cold_load)?;
     let should_charge_topup =
-        should_charge_new_account_gas(cx.state.spec, res.had_value, res.target_is_empty);
+        should_charge_new_account_gas(cx.state.spec(), res.had_value, res.target_is_empty);
     cx.gas.spend(cx.state.gas_params().selfdestruct_cost(should_charge_topup, res.is_cold))?;
     if !res.previously_destroyed {
         cx.gas.record_refund(cx.state.gas_params().get(GasId::SelfdestructRefund) as i64);
@@ -401,7 +403,7 @@ mod tests {
             gas_limit: 10_000,
             ..Default::default()
         }));
-        core::assert_matches!(interpreter.err, InstrStop::Stop);
+        assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.stack(), [Word::from(1)]);
         assert_eq!(host.calls.len(), 1);
         assert_eq!(host.calls[0].kind, MessageKind::Call);
@@ -429,7 +431,7 @@ mod tests {
         code.extend([op::CALL, op::STOP]);
 
         let interpreter = run(RunConfig::new(code).host(&mut host).staticcall());
-        core::assert_matches!(interpreter.err, InstrStop::Stop);
+        assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(host.calls.len(), 1);
         assert_eq!(host.calls[0].kind, MessageKind::Call);
         assert!(host.call_static_flags[0]);
@@ -459,7 +461,7 @@ mod tests {
             .spec(SpecId::BERLIN)
             .message(Message { depth: CALL_DEPTH_LIMIT, ..Default::default() })
             .gas_limit(50_000));
-        core::assert_matches!(interpreter.err, InstrStop::Stop);
+        assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.stack(), [Word::ZERO]);
         assert_eq!(interpreter.gas_remaining(), 15_679);
         assert!(host.calls.is_empty());
@@ -493,7 +495,7 @@ mod tests {
             .spec(SpecId::TANGERINE)
             .message(Message { depth: CALL_DEPTH_LIMIT, ..Default::default() })
             .gas_limit(50_000));
-        core::assert_matches!(interpreter.err, InstrStop::Stop);
+        assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.gas_remaining(), 42_553);
         assert!(host.calls.is_empty());
     }
@@ -522,7 +524,7 @@ mod tests {
             .spec(SpecId::TANGERINE)
             .message(Message { depth: CALL_DEPTH_LIMIT, ..Default::default() })
             .gas_limit(50_000));
-        core::assert_matches!(interpreter.err, InstrStop::Stop);
+        assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.stack(), [Word::ZERO]);
         assert_eq!(interpreter.gas_remaining(), 24_279);
         assert!(host.calls.is_empty());
@@ -553,7 +555,7 @@ mod tests {
             .spec(SpecId::TANGERINE)
             .message(Message { depth: CALL_DEPTH_LIMIT, ..Default::default() })
             .gas_limit(50_000));
-        core::assert_matches!(interpreter.err, InstrStop::Stop);
+        assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.stack(), [Word::ZERO]);
         assert_eq!(interpreter.gas_remaining(), 49_279);
         assert!(host.calls.is_empty());
@@ -579,7 +581,7 @@ mod tests {
         code.extend([op::CALLCODE, op::STOP]);
 
         let interpreter = run(RunConfig::new(code).host(&mut host).staticcall().gas_limit(20_000));
-        core::assert_matches!(interpreter.err, InstrStop::Stop);
+        assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(host.calls.len(), 1);
         assert_eq!(host.calls[0].kind, MessageKind::CallCode);
         assert_eq!(host.calls[0].value, Word::from(7));
@@ -610,7 +612,7 @@ mod tests {
             .host(&mut host)
             .message(Message { destination, ..Default::default() })
             .gas_limit(20_000));
-        core::assert_matches!(interpreter.err, InstrStop::Stop);
+        assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.stack(), [Word::from(1)]);
         assert_eq!(host.calls[0].kind, MessageKind::CallCode);
         assert_eq!(host.calls[0].destination, destination);
@@ -643,7 +645,7 @@ mod tests {
             gas_limit: 10_000,
             ..Default::default()
         }));
-        core::assert_matches!(interpreter.err, InstrStop::Stop);
+        assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.stack(), [Word::from(1)]);
         assert_eq!(host.calls[0].kind, MessageKind::DelegateCall);
         assert_eq!(host.calls[0].caller, caller);
@@ -666,7 +668,7 @@ mod tests {
             op::DELEGATECALL,
         ])
         .spec(SpecId::FRONTIER));
-        core::assert_matches!(interpreter.err, InstrStop::OpcodeNotFound);
+        assert!(matches!(interpreter.err, InstrStop::OpcodeNotFound));
     }
 
     #[test]
@@ -688,7 +690,7 @@ mod tests {
         code.extend([op::STATICCALL, op::STOP]);
 
         let interpreter = run(RunConfig::new(code).host(&mut host));
-        core::assert_matches!(interpreter.err, InstrStop::Stop);
+        assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.stack(), [Word::from(1)]);
         assert_eq!(host.calls[0].kind, MessageKind::StaticCall);
         assert!(host.call_static_flags[0]);
@@ -709,7 +711,7 @@ mod tests {
             op::STATICCALL,
         ])
         .spec(SpecId::HOMESTEAD));
-        core::assert_matches!(interpreter.err, InstrStop::OpcodeNotFound);
+        assert!(matches!(interpreter.err, InstrStop::OpcodeNotFound));
     }
 
     #[test]
@@ -728,7 +730,7 @@ mod tests {
         code.extend([op::CREATE, op::STOP]);
 
         let interpreter = run(RunConfig::new(code).host(&mut host).gas_limit(50_000));
-        core::assert_matches!(interpreter.err, InstrStop::Stop);
+        assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.stack(), [address_to_word(created)]);
         assert_eq!(host.calls.len(), 1);
         assert_eq!(host.calls[0].kind, MessageKind::Create);
@@ -751,7 +753,7 @@ mod tests {
         code.extend([op::CREATE, op::RETURNDATASIZE, op::STOP]);
 
         let interpreter = run(RunConfig::new(code).host(&mut host).gas_limit(50_000));
-        core::assert_matches!(interpreter.err, InstrStop::Stop);
+        assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.stack(), [address_to_word(created), Word::ZERO]);
     }
 
@@ -770,7 +772,7 @@ mod tests {
         code.extend([op::CREATE, op::RETURNDATASIZE, op::STOP]);
 
         let interpreter = run(RunConfig::new(code).host(&mut host).gas_limit(50_000));
-        core::assert_matches!(interpreter.err, InstrStop::Stop);
+        assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.stack(), [Word::ZERO, Word::from(2)]);
     }
 
@@ -786,7 +788,7 @@ mod tests {
             .spec(SpecId::BERLIN)
             .message(Message { depth: CALL_DEPTH_LIMIT, ..Default::default() })
             .gas_limit(50_000));
-        core::assert_matches!(interpreter.err, InstrStop::Stop);
+        assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.stack(), [Word::ZERO]);
         assert_eq!(interpreter.gas_remaining(), 17_991);
         assert!(host.calls.is_empty());
@@ -801,7 +803,7 @@ mod tests {
 
         let interpreter =
             run(RunConfig::new(code).host(&mut host).spec(SpecId::SHANGHAI).gas_limit(50_000));
-        core::assert_matches!(interpreter.err, InstrStop::CreateInitCodeSizeLimit);
+        assert!(matches!(interpreter.err, InstrStop::CreateInitCodeSizeLimit));
         assert!(host.calls.is_empty());
     }
 
@@ -821,7 +823,7 @@ mod tests {
         code.extend([op::CREATE2, op::STOP]);
 
         let interpreter = run(RunConfig::new(code).host(&mut host).gas_limit(50_000));
-        core::assert_matches!(interpreter.err, InstrStop::Stop);
+        assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.stack(), [address_to_word(created)]);
         assert_eq!(host.calls[0].kind, MessageKind::Create2);
 
@@ -837,7 +839,7 @@ mod tests {
             op::CREATE2,
         ])
         .spec(SpecId::BYZANTIUM));
-        core::assert_matches!(interpreter.err, InstrStop::OpcodeNotFound);
+        assert!(matches!(interpreter.err, InstrStop::OpcodeNotFound));
     }
 
     #[test]
@@ -854,7 +856,7 @@ mod tests {
             gas_limit: 10_000,
             ..Default::default()
         }));
-        core::assert_matches!(interpreter.err, InstrStop::SelfDestruct);
+        assert!(matches!(interpreter.err, InstrStop::SelfDestruct));
         assert_eq!(host.selfdestructs, [(contract, target, false)]);
     }
 }

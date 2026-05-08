@@ -6,10 +6,10 @@ use super::{
     validate_tx_gas_limit_cap, warm_access_list, warm_base_accounts,
 };
 use crate::{
-    Evm, EvmTypes, SpecId, TxResult,
+    Evm, EvmTypes, TxResult,
     env::TxEnv,
     interpreter::Host,
-    registry::{HandlerError, HandlerResult, TxRequest},
+    registry::{HandlerResult, TxRequest},
 };
 use alloy_consensus::{TxEip2930, transaction::Recovered};
 use alloy_primitives::U256;
@@ -18,10 +18,6 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     req: TxRequest<'_, Recovered<TxEip2930>, Evm<T>>,
 ) -> HandlerResult<TxResult> {
     let spec_id = req.host.spec_id();
-    if !spec_id.enables(SpecId::BERLIN) {
-        return Err(HandlerError::Eip2930NotSupported);
-    }
-
     let caller = req.tx.signer();
     let tx = req.tx.inner();
     let gas_price = U256::from(tx.gas_price);
@@ -48,7 +44,7 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     let max_gas_cost = U256::from(tx.gas_limit) * gas_price;
     validate_sender(req.host, caller, tx.nonce, max_gas_cost.saturating_add(tx.value))?;
 
-    warm_base_accounts(req.host, spec_id, caller, tx.to);
+    warm_base_accounts(req.host, caller, tx.to);
     warm_access_list(req.host, &tx.access_list);
 
     charge_upfront(req.host, caller, max_gas_cost);

@@ -243,6 +243,11 @@ mod tests {
         assert!(osaka.feature(EvmFeatures::NONCE_CHECK));
         assert!(osaka.feature(EvmFeatures::BALANCE_CHECK));
         assert!(osaka.feature(EvmFeatures::BLOCK_GAS_LIMIT_CHECK));
+        assert!(osaka.feature(EvmFeatures::EIP2));
+        assert!(osaka.feature(EvmFeatures::EIP2028));
+        assert!(osaka.feature(EvmFeatures::EIP3529));
+        assert!(osaka.feature(EvmFeatures::EIP3651));
+        assert!(osaka.feature(EvmFeatures::EIP3860));
         assert!(osaka.feature(EvmFeatures::EIP3541));
         assert!(osaka.feature(EvmFeatures::EIP3607));
         assert!(osaka.feature(EvmFeatures::EIP7623));
@@ -457,6 +462,9 @@ evm_versions! {
     }
 
     HOMESTEAD {
+        features: [
+            EIP2,
+        ],
         ops: [
             DELEGATECALL: 40,
         ],
@@ -511,6 +519,9 @@ evm_versions! {
     }
 
     ISTANBUL {
+        features: [
+            EIP2028,
+        ],
         ops: [
             CHAINID: BASE,
             SELFBALANCE: LOW,
@@ -562,6 +573,7 @@ evm_versions! {
 
     LONDON {
         features: [
+            EIP3529,
             EIP3541,
             BASE_FEE_CHECK,
         ],
@@ -581,6 +593,10 @@ evm_versions! {
     MERGE {}
 
     SHANGHAI {
+        features: [
+            EIP3651,
+            EIP3860,
+        ],
         ops: [
             PUSH0: BASE,
         ],

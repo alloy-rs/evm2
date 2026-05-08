@@ -258,7 +258,7 @@ mod tests {
 
         let res = run_add(&input, BYZANTIUM_ADD_GAS_COST, &mut Gas::new(499));
 
-        core::assert_matches!(res, Err(PrecompileError::Halt(PrecompileHalt::OutOfGas)));
+        assert!(matches!(res, Err(PrecompileError::Halt(PrecompileHalt::OutOfGas))));
 
         // No input test
         let input = [0u8; 0];
@@ -283,9 +283,8 @@ mod tests {
         .unwrap();
 
         let res = run_add(&input, BYZANTIUM_ADD_GAS_COST, &mut Gas::new(500));
-        core::assert_matches!(
-            res,
-            Err(ref f) if *f == PrecompileError::Halt(PrecompileHalt::Bn254AffineGFailedToCreate)
+        assert!(
+            matches!(res, Err(ref f) if *f == PrecompileError::Halt(PrecompileHalt::Bn254AffineGFailedToCreate))
         );
     }
 
@@ -318,7 +317,7 @@ mod tests {
         .unwrap();
 
         let res = run_mul(&input, BYZANTIUM_MUL_GAS_COST, &mut Gas::new(39_999));
-        core::assert_matches!(res, Err(PrecompileError::Halt(PrecompileHalt::OutOfGas)));
+        assert!(matches!(res, Err(PrecompileError::Halt(PrecompileHalt::OutOfGas))));
 
         // Zero multiplication test
         let input = hex::decode(
@@ -360,9 +359,8 @@ mod tests {
         .unwrap();
 
         let res = run_mul(&input, BYZANTIUM_MUL_GAS_COST, &mut Gas::new(40_000));
-        core::assert_matches!(
-            res,
-            Err(ref f) if *f == PrecompileError::Halt(PrecompileHalt::Bn254AffineGFailedToCreate)
+        assert!(
+            matches!(res, Err(ref f) if *f == PrecompileError::Halt(PrecompileHalt::Bn254AffineGFailedToCreate))
         );
     }
 
@@ -413,7 +411,7 @@ mod tests {
 
         let res =
             run_pair(&input, BYZANTIUM_PAIR_PER_POINT, BYZANTIUM_PAIR_BASE, &mut Gas::new(259_999));
-        core::assert_matches!(res, Err(PrecompileError::Halt(PrecompileHalt::OutOfGas)));
+        assert!(matches!(res, Err(PrecompileError::Halt(PrecompileHalt::OutOfGas))));
 
         // No input test
         let input = [0u8; 0];
@@ -440,9 +438,8 @@ mod tests {
 
         let res =
             run_pair(&input, BYZANTIUM_PAIR_PER_POINT, BYZANTIUM_PAIR_BASE, &mut Gas::new(260_000));
-        core::assert_matches!(
-            res,
-            Err(ref f) if *f == PrecompileError::Halt(PrecompileHalt::Bn254AffineGFailedToCreate)
+        assert!(
+            matches!(res, Err(ref f) if *f == PrecompileError::Halt(PrecompileHalt::Bn254AffineGFailedToCreate))
         );
 
         // Invalid input length
@@ -457,7 +454,7 @@ mod tests {
 
         let res =
             run_pair(&input, BYZANTIUM_PAIR_PER_POINT, BYZANTIUM_PAIR_BASE, &mut Gas::new(260_000));
-        core::assert_matches!(res, Err(PrecompileError::Halt(PrecompileHalt::Bn254PairLength)));
+        assert!(matches!(res, Err(PrecompileError::Halt(PrecompileHalt::Bn254PairLength))));
 
         // Test with point at infinity - should return true (identity element)
         // G1 point at infinity (0,0) followed by a valid G2 point

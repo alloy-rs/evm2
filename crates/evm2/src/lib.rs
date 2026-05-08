@@ -1,6 +1,6 @@
 #![doc = include_str!("../README.md")]
 #![cfg_attr(
-    feature = "nightly",
+    feature = "tco",
     feature(explicit_tail_calls, rust_preserve_none_cc),
     allow(incomplete_features)
 )]
@@ -18,7 +18,8 @@ pub mod utils;
 
 pub mod evm;
 pub use evm::{
-    Evm, TxResult, config,
+    BEACON_ROOTS_ADDRESS, CONSOLIDATION_REQUEST_ADDRESS, Evm, HISTORY_STORAGE_ADDRESS,
+    SYSTEM_ADDRESS, SYSTEM_CALL_GAS_LIMIT, TxResult, WITHDRAWAL_REQUEST_ADDRESS, config,
     config::{
         BaseEvmConfig, BaseEvmConfigSelector, BaseEvmTypes, EvmConfig, EvmConfigSelector, EvmTypes,
         ExecutionConfig,
@@ -38,6 +39,8 @@ mod spec_id;
 pub use spec_id::SpecId;
 
 mod once_lock;
+mod storage_key;
+pub use storage_key::{StorageKey, StorageKeyMap, StorageKeySet};
 
 #[cfg(test)]
 mod tests;

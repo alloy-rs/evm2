@@ -1,20 +1,22 @@
 use super::{InstrStop, Result};
 use crate::constants::STACK_LIMIT;
 use alloy_primitives::U256;
-use core::{fmt, hint::cold_path};
+use core::{fmt, hint::cold_path, mem::MaybeUninit};
 
 /// EVM stack word.
 pub type Word = U256;
 
+pub(crate) type StackBacking = [MaybeUninit<Word>; STACK_LIMIT];
+
 /// Mutable EVM operand stack.
 pub struct Stack<'a> {
-    pub(crate) stack: &'a mut [Word; STACK_LIMIT],
+    pub(crate) stack: &'a mut StackBacking,
     pub(crate) len: usize,
 }
 
 /// Borrowed mutable EVM operand stack.
 pub struct StackMut<'a> {
-    pub(crate) stack: &'a mut [Word; STACK_LIMIT],
+    pub(crate) stack: &'a mut StackBacking,
     pub(crate) len: &'a mut usize,
 }
 
@@ -34,14 +36,25 @@ impl<'a> Stack<'a> {
     pub(crate) const CAPACITY: usize = STACK_LIMIT;
 
     #[inline]
-    pub(crate) const fn new(stack: &'a mut [Word; Stack::CAPACITY], len: usize) -> Self {
+    pub(crate) const fn new(stack: &'a mut StackBacking, len: usize) -> Self {
         debug_assert!(len <= Self::CAPACITY);
         Self { stack, len }
     }
 
     #[inline]
+    #[cfg(not(feature = "tco"))]
+    pub(crate) fn reborrow(&mut self) -> Stack<'_> {
+        Stack { stack: self.stack, len: self.len }
+    }
+
+    #[inline]
     pub(crate) const fn as_mut(&mut self) -> StackMut<'_> {
         StackMut { stack: self.stack, len: &mut self.len }
+    }
+
+    #[inline]
+    const fn as_word_ptr(&self) -> *const Word {
+        self.stack.as_ptr().cast()
     }
 
     /// Returns the stack length.
@@ -63,7 +76,7 @@ impl<'a> Stack<'a> {
     /// Returns the stack contents as a slice.
     #[inline]
     pub const fn as_slice(&self) -> &[Word] {
-        unsafe { core::slice::from_raw_parts(self.stack.as_ptr(), self.len()) }
+        unsafe { core::slice::from_raw_parts(self.as_word_ptr(), self.len()) }
     }
 }
 
@@ -72,9 +85,19 @@ impl<'a> StackMut<'a> {
 
     #[inline]
     #[cfg(test)]
-    pub(crate) const fn new(stack: &'a mut [Word; StackMut::CAPACITY], len: &'a mut usize) -> Self {
+    pub(crate) const fn new(stack: &'a mut StackBacking, len: &'a mut usize) -> Self {
         debug_assert!(*len <= Self::CAPACITY);
         Self { stack, len }
+    }
+
+    #[inline]
+    const fn as_word_ptr(&self) -> *const Word {
+        self.stack.as_ptr().cast()
+    }
+
+    #[inline]
+    const fn as_word_mut_ptr(&mut self) -> *mut Word {
+        self.stack.as_mut_ptr().cast()
     }
 
     /// Returns the stack length.
@@ -96,13 +119,13 @@ impl<'a> StackMut<'a> {
     /// Returns the stack contents as a slice.
     #[inline]
     pub const fn as_slice(&self) -> &[Word] {
-        unsafe { core::slice::from_raw_parts(self.stack.as_ptr(), self.len()) }
+        unsafe { core::slice::from_raw_parts(self.as_word_ptr(), self.len()) }
     }
 
     /// Returns the stack contents as a slice.
     #[inline]
     pub const fn as_slice_mut(&mut self) -> &mut [Word] {
-        unsafe { core::slice::from_raw_parts_mut(self.stack.as_mut_ptr(), self.len()) }
+        unsafe { core::slice::from_raw_parts_mut(self.as_word_mut_ptr(), self.len()) }
     }
 
     /// Checks that an instruction can consume `input` words and produce `output` words.
@@ -115,7 +138,7 @@ impl<'a> StackMut<'a> {
     #[inline(always)]
     fn check_bounds_(len: usize, input: usize, output: usize) -> Result {
         debug_assert!(len <= Self::CAPACITY);
-        core::debug_assert_matches!(output, 0 | 1);
+        debug_assert!(matches!(output, 0 | 1));
         if len < input {
             cold_path();
             return Err(InstrStop::StackUnderflow);
@@ -135,7 +158,7 @@ impl<'a> StackMut<'a> {
         *self.len = len.wrapping_sub(input).wrapping_add(output);
         Self::check_bounds_(len, input, output)?;
         debug_assert!(*self.len <= Self::CAPACITY);
-        Ok(unsafe { self.stack.as_mut_ptr().add(len).sub(input) })
+        Ok(unsafe { self.as_word_mut_ptr().add(len).sub(input) })
     }
 
     /// Pushes a word onto the stack.
@@ -147,7 +170,7 @@ impl<'a> StackMut<'a> {
             return Err(InstrStop::StackOverflow);
         }
         unsafe {
-            let end = self.stack.as_mut_ptr().add(len);
+            let end = self.as_word_mut_ptr().add(len);
             *end = value;
             *self.len = len + 1;
             debug_assert!(*self.len <= Self::CAPACITY);
@@ -209,7 +232,7 @@ impl<'a> StackMut<'a> {
     pub unsafe fn top_unchecked(&mut self) -> &mut Word {
         let len = self.len();
         debug_assert!(len > 0);
-        unsafe { self.stack.get_unchecked_mut(len - 1) }
+        unsafe { &mut *self.as_word_mut_ptr().add(len - 1) }
     }
 
     /// # Safety
@@ -219,7 +242,7 @@ impl<'a> StackMut<'a> {
     pub unsafe fn pop_unchecked(&mut self) -> Word {
         debug_assert!(!self.is_empty());
         *self.len -= 1;
-        unsafe { *self.stack.get_unchecked(self.len()) }
+        unsafe { *self.as_word_ptr().add(self.len()) }
     }
 
     /// Duplicates the `n`th stack word from the top.
@@ -236,7 +259,7 @@ impl<'a> StackMut<'a> {
             });
         }
         unsafe {
-            let ptr = self.stack.as_mut_ptr().add(len);
+            let ptr = self.as_word_mut_ptr().add(len);
             *ptr = *ptr.sub(n);
             *self.len = len + 1;
             debug_assert!(*self.len <= Self::CAPACITY);
@@ -260,7 +283,7 @@ impl<'a> StackMut<'a> {
             return Err(InstrStop::StackUnderflow);
         }
         unsafe {
-            let top = self.stack.as_mut_ptr().add(len - 1);
+            let top = self.as_word_mut_ptr().add(len - 1);
             core::ptr::swap_nonoverlapping(top.sub(n), top.sub(m), 1);
         }
         Ok(())
@@ -283,7 +306,7 @@ impl<'a> StackMut<'a> {
         }
 
         unsafe {
-            let dst = self.stack.as_mut_ptr().add(len).cast::<u64>();
+            let dst = self.as_word_mut_ptr().add(len).cast::<u64>();
             *self.len = new_len;
             debug_assert!(*self.len <= Self::CAPACITY);
 
@@ -333,16 +356,16 @@ mod tests {
     use super::*;
 
     fn run(f: impl FnOnce(&mut StackMut<'_>)) {
-        let mut backing = [Word::MAX; StackMut::CAPACITY];
+        let mut backing = [MaybeUninit::new(Word::MAX); StackMut::CAPACITY];
         let mut len = 0;
         let mut stack = StackMut::new(&mut backing, &mut len);
         f(&mut stack);
     }
 
     fn run_with_len(len: usize, f: impl FnOnce(&mut StackMut<'_>)) {
-        let mut backing = [Word::MAX; StackMut::CAPACITY];
+        let mut backing = [MaybeUninit::new(Word::MAX); StackMut::CAPACITY];
         for (i, word) in backing.iter_mut().take(len).enumerate() {
-            *word = Word::from(i);
+            word.write(Word::from(i));
         }
         let mut len = len;
         let mut stack = StackMut::new(&mut backing, &mut len);
@@ -354,19 +377,19 @@ mod tests {
         run_with_len(0, |stack| {
             assert!(stack.check_bounds(0, 0).is_ok());
             assert!(stack.check_bounds(0, 1).is_ok());
-            core::assert_matches!(stack.check_bounds(1, 0), Err(InstrStop::StackUnderflow));
-            core::assert_matches!(stack.check_bounds(1, 1), Err(InstrStop::StackUnderflow));
+            assert!(matches!(stack.check_bounds(1, 0), Err(InstrStop::StackUnderflow)));
+            assert!(matches!(stack.check_bounds(1, 1), Err(InstrStop::StackUnderflow)));
         });
 
         run_with_len(1, |stack| {
             assert!(stack.check_bounds(1, 0).is_ok());
             assert!(stack.check_bounds(1, 1).is_ok());
-            core::assert_matches!(stack.check_bounds(2, 0), Err(InstrStop::StackUnderflow));
+            assert!(matches!(stack.check_bounds(2, 0), Err(InstrStop::StackUnderflow)));
         });
 
         run_with_len(StackMut::CAPACITY, |stack| {
             assert!(stack.check_bounds(1, 1).is_ok());
-            core::assert_matches!(stack.check_bounds(0, 1), Err(InstrStop::StackOverflow));
+            assert!(matches!(stack.check_bounds(0, 1), Err(InstrStop::StackOverflow)));
         });
     }
 
@@ -378,11 +401,11 @@ mod tests {
             assert_eq!(stack.as_slice(), [Word::from(1), Word::from(2)]);
             assert_eq!(stack.pop().unwrap(), Word::from(2));
             assert_eq!(stack.popn::<1>().unwrap(), [Word::from(1)]);
-            core::assert_matches!(stack.pop(), Err(InstrStop::StackUnderflow));
+            assert!(matches!(stack.pop(), Err(InstrStop::StackUnderflow)));
         });
 
         run_with_len(StackMut::CAPACITY, |stack| {
-            core::assert_matches!(stack.push(Word::ZERO), Err(InstrStop::StackOverflow));
+            assert!(matches!(stack.push(Word::ZERO), Err(InstrStop::StackOverflow)));
         });
     }
 
@@ -397,7 +420,7 @@ mod tests {
         });
 
         run_with_len(2, |stack| {
-            core::assert_matches!(stack.popn_top::<2>(), Err(InstrStop::StackUnderflow));
+            assert!(matches!(stack.popn_top::<2>(), Err(InstrStop::StackUnderflow)));
         });
     }
 
@@ -410,7 +433,7 @@ mod tests {
         });
 
         run_with_len(2, |stack| {
-            core::assert_matches!(stack.popn_dyn(3).map(|_| ()), Err(InstrStop::StackUnderflow));
+            assert!(matches!(stack.popn_dyn(3).map(|_| ()), Err(InstrStop::StackUnderflow)));
             assert_eq!(stack.as_slice(), [Word::from(0), Word::from(1)]);
         });
     }
@@ -438,13 +461,13 @@ mod tests {
         });
 
         run_with_len(1, |stack| {
-            core::assert_matches!(stack.dup(2), Err(InstrStop::StackUnderflow));
-            core::assert_matches!(stack.swap(1), Err(InstrStop::StackUnderflow));
-            core::assert_matches!(stack.exchange(0, 1), Err(InstrStop::StackUnderflow));
+            assert!(matches!(stack.dup(2), Err(InstrStop::StackUnderflow)));
+            assert!(matches!(stack.swap(1), Err(InstrStop::StackUnderflow)));
+            assert!(matches!(stack.exchange(0, 1), Err(InstrStop::StackUnderflow)));
         });
 
         run_with_len(StackMut::CAPACITY, |stack| {
-            core::assert_matches!(stack.dup(1), Err(InstrStop::StackOverflow));
+            assert!(matches!(stack.dup(1), Err(InstrStop::StackOverflow)));
         });
     }
 
@@ -491,7 +514,7 @@ mod tests {
         });
 
         run_with_len(StackMut::CAPACITY, |stack| {
-            core::assert_matches!(stack.push_slice(&[42]), Err(InstrStop::StackOverflow));
+            assert!(matches!(stack.push_slice(&[42]), Err(InstrStop::StackOverflow)));
         });
     }
 }

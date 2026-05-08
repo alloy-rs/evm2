@@ -128,6 +128,26 @@ evm_features! {
     ///
     /// Default: on
     BLOCK_GAS_LIMIT_CHECK,
+    /// Applies EIP-2 create transaction intrinsic gas.
+    ///
+    /// Default: on since Homestead
+    EIP2,
+    /// Applies EIP-2028 transaction calldata repricing.
+    ///
+    /// Default: on since Istanbul
+    EIP2028,
+    /// Applies EIP-3529 refund reductions.
+    ///
+    /// Default: on since London
+    EIP3529,
+    /// Applies EIP-3651 warm coinbase at transaction start.
+    ///
+    /// Default: on since Shanghai
+    EIP3651,
+    /// Applies EIP-3860 initcode size limits and word gas.
+    ///
+    /// Default: on since Shanghai
+    EIP3860,
     /// Applies EIP-3541 contract code prefix rejection.
     ///
     /// Default: on since London

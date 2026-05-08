@@ -5,11 +5,12 @@ use crate::{
     SpecId,
     bytecode::Bytecode,
     interpreter::{InstrStop, Word},
+    storage_key::{StorageKey, StorageKeyMap, StorageKeySet},
 };
 use alloc::{collections::BTreeMap, vec::Vec};
 use alloy_primitives::{
     Address, B256, KECCAK256_EMPTY, Log, U256,
-    map::{AddressMap, AddressSet, HashMap, HashSet, U256Map, hash_map},
+    map::{AddressMap, AddressSet, U256Map, hash_map},
 };
 
 /// A value tracked together with the value it had at the start of the current
@@ -143,7 +144,8 @@ impl Account {
             balance: info.balance,
             code_hash: info.code_hash,
             code: info.code.unwrap_or_default(),
-            ..Self::default()
+            just_created: false,
+            code_changed: false,
         }
     }
 
@@ -353,9 +355,9 @@ pub struct State<D> {
     /// account was touched, changed, or should be emitted in [`StateChanges`].
     accessed_accounts: AddressSet,
     /// Transaction-scoped warm storage slot set.
-    accessed_storage: HashSet<(Address, Word)>,
+    accessed_storage: StorageKeySet,
     /// Transaction-scoped EIP-1153 transient storage keyed by account address and slot.
-    transient_storage: HashMap<(Address, Word), Word>,
+    transient_storage: StorageKeyMap<Word>,
 }
 
 impl<D> State<D> {
@@ -371,8 +373,8 @@ impl<D> State<D> {
             touched: AddressSet::default(),
             selfdestructs: AddressSet::default(),
             accessed_accounts: AddressSet::default(),
-            accessed_storage: HashSet::default(),
-            transient_storage: HashMap::default(),
+            accessed_storage: StorageKeySet::default(),
+            transient_storage: StorageKeyMap::default(),
         }
     }
 
@@ -435,13 +437,18 @@ impl<D> State<D> {
 
     /// Marks an account as warm in a revertible execution context.
     ///
-    /// If this call newly warms the account, the warm-set change is journaled and will be undone
-    /// by [`Self::rollback`]. Use this for warmth introduced while executing EVM code or any other
-    /// scope whose effects may be reverted to a checkpoint.
+    /// Returns whether the account was cold before this access. If this call newly warms the
+    /// account, the warm-set change is journaled and will be undone by [`Self::rollback`]. Use this
+    /// for warmth introduced while executing EVM code or any other scope whose effects may be
+    /// reverted to a checkpoint.
     #[inline]
-    pub fn warm_account(&mut self, address: Address) {
+    #[must_use]
+    pub fn warm_account(&mut self, address: Address) -> bool {
         if self.accessed_accounts.insert(address) {
             self.journal.push(JournalEntry::AccountWarmed { address });
+            true
+        } else {
+            false
         }
     }
 
@@ -469,7 +476,7 @@ impl<D> State<D> {
         let addresses = addresses.into_iter();
         self.accessed_accounts.reserve(addresses.size_hint().0);
         for address in addresses {
-            self.warm_account(address);
+            let _ = self.warm_account(address);
         }
     }
 
@@ -490,7 +497,7 @@ impl<D> State<D> {
     #[inline]
     #[must_use]
     pub fn is_storage_warm(&self, address: Address, key: Word) -> bool {
-        self.accessed_storage.contains(&(address, key))
+        self.accessed_storage.contains(&StorageKey::new(address, key))
     }
 
     /// Marks a storage slot as warm in a revertible execution context.
@@ -502,7 +509,7 @@ impl<D> State<D> {
     #[inline]
     #[must_use]
     pub fn warm_storage(&mut self, address: Address, key: Word) -> bool {
-        if self.accessed_storage.insert((address, key)) {
+        if self.accessed_storage.insert(StorageKey::new(address, key)) {
             self.journal.push(JournalEntry::StorageWarmed { address, key });
             true
         } else {
@@ -524,7 +531,7 @@ impl<D> State<D> {
     #[inline]
     #[must_use]
     pub fn warm_storage_non_revertible(&mut self, address: Address, key: Word) -> bool {
-        self.accessed_storage.insert((address, key))
+        self.accessed_storage.insert(StorageKey::new(address, key))
     }
 
     /// Clears transaction-scoped substate.
@@ -645,27 +652,20 @@ impl<D: Database> State<D> {
     #[inline]
     #[must_use]
     pub fn get_code(&mut self, address: Address) -> Bytecode {
-        let Some(account) = self.find(address) else {
+        let Some((code_hash, code)) = self.find(address).map(|account| {
+            let code_hash = account.code_hash;
+            let code = account.code.clone();
+            (code_hash, code)
+        }) else {
             return Bytecode::default();
         };
-        if account.code_hash == KECCAK256_EMPTY {
+        if code_hash == KECCAK256_EMPTY {
             return Bytecode::default();
         }
-        if !account.code.is_empty() {
-            return account.code.clone();
+        if !code.is_empty() {
+            return code;
         }
-        self.initial.get_account_code(address)
-    }
-
-    #[must_use]
-    fn storage_initial(&mut self, address: Address, key: Word) -> Word {
-        if self.storage.get(&address).is_some_and(|storage| storage.wiped)
-            || self.accounts.get(&address).is_some_and(|account| account.original.is_none())
-        {
-            Word::ZERO
-        } else {
-            self.initial.get_storage(address, key)
-        }
+        self.initial.get_code_by_hash(code_hash)
     }
 
     #[must_use]
@@ -675,13 +675,21 @@ impl<D: Database> State<D> {
         key: Word,
         journal_insert: bool,
     ) -> &mut Tracked<Word> {
-        let initial = self.storage_initial(address, key);
-        let storage = self.storage.entry(address).or_default();
+        let Self { initial, accounts, storage, journal, .. } = self;
+        let account_created =
+            accounts.get(&address).is_some_and(|account| account.original.is_none());
+        let storage = storage.entry(address).or_default();
+        let storage_wiped = storage.wiped;
         match storage.slots.entry(key) {
             hash_map::Entry::Occupied(entry) => entry.into_mut(),
             hash_map::Entry::Vacant(entry) => {
+                let initial = if storage_wiped || account_created {
+                    Word::ZERO
+                } else {
+                    initial.get_storage(address, key)
+                };
                 if journal_insert {
-                    self.journal.push(JournalEntry::StorageInserted { address, key });
+                    journal.push(JournalEntry::StorageInserted { address, key });
                 }
                 entry.insert(Tracked::new(initial))
             }
@@ -837,13 +845,13 @@ impl<D: Database> State<D> {
     #[inline]
     #[must_use]
     pub fn transient_storage(&mut self, address: Address, key: Word) -> Word {
-        self.transient_storage.get(&(address, key)).copied().unwrap_or_default()
+        self.transient_storage.get(&StorageKey::new(address, key)).copied().unwrap_or_default()
     }
 
     /// Stores transient storage.
     #[inline]
     pub fn set_transient_storage(&mut self, address: Address, key: Word, value: Word) {
-        match self.transient_storage.entry((address, key)) {
+        match self.transient_storage.entry(StorageKey::new(address, key)) {
             hash_map::Entry::Occupied(mut entry) => {
                 let previous = *entry.get();
                 if previous == value {
@@ -956,17 +964,17 @@ impl<D: Database> State<D> {
                 },
                 JournalEntry::TransientStorageChange { address, key, previous } => match previous {
                     Some(previous) if !previous.is_zero() => {
-                        self.transient_storage.insert((address, key), previous);
+                        self.transient_storage.insert(StorageKey::new(address, key), previous);
                     }
                     _ => {
-                        self.transient_storage.remove(&(address, key));
+                        self.transient_storage.remove(&StorageKey::new(address, key));
                     }
                 },
                 JournalEntry::AccountWarmed { address } => {
                     self.accessed_accounts.remove(&address);
                 }
                 JournalEntry::StorageWarmed { address, key } => {
-                    self.accessed_storage.remove(&(address, key));
+                    self.accessed_storage.remove(&StorageKey::new(address, key));
                 }
             }
         }
@@ -979,32 +987,48 @@ impl<D: Database> State<D> {
     /// overlay state are deleted during transaction finalization. Non-existent
     /// touched accounts stay non-existent.
     #[must_use]
-    fn is_existing_dead(&mut self, address: Address) -> bool {
-        if let Some(account) = self.accounts.get(&address) {
+    fn is_existing_dead(
+        initial: &mut D,
+        accounts: &AddressMap<Tracked<Option<Account>>>,
+        address: Address,
+    ) -> bool {
+        if let Some(account) = accounts.get(&address) {
             return account.current.as_ref().is_some_and(Account::is_empty)
                 || (account.current.is_none() && account.original.is_some());
         }
-        self.initial.get_account(address).is_some_and(|account| account.is_empty())
+        initial.get_account(address).is_some_and(|account| account.is_empty())
     }
 
-    fn delete_account_for_finalization(&mut self, address: Address) {
-        let account = Self::ensure_account_overlay(
-            &mut self.initial,
-            &mut self.accounts,
-            &mut self.journal,
-            address,
-        );
+    fn account_exists(
+        initial: &mut D,
+        accounts: &AddressMap<Tracked<Option<Account>>>,
+        address: Address,
+    ) -> bool {
+        if let Some(account) = accounts.get(&address) {
+            return account.current.is_some();
+        }
+        initial.get_account(address).is_some()
+    }
+
+    fn delete_account_for_finalization(
+        initial: &mut D,
+        accounts: &mut AddressMap<Tracked<Option<Account>>>,
+        journal: &mut Vec<JournalEntry>,
+        storage: &mut AddressMap<StorageOverlay>,
+        address: Address,
+    ) {
+        let account = Self::ensure_account_overlay(initial, accounts, journal, address);
         account.current = None;
-        self.storage.insert(address, StorageOverlay { wiped: true, slots: U256Map::default() });
+        storage.insert(address, StorageOverlay { wiped: true, slots: U256Map::default() });
     }
 
-    fn materialize_empty_account_for_finalization(&mut self, address: Address) {
-        let account = Self::ensure_account_overlay(
-            &mut self.initial,
-            &mut self.accounts,
-            &mut self.journal,
-            address,
-        );
+    fn materialize_empty_account_for_finalization(
+        initial: &mut D,
+        accounts: &mut AddressMap<Tracked<Option<Account>>>,
+        journal: &mut Vec<JournalEntry>,
+        address: Address,
+    ) {
+        let account = Self::ensure_account_overlay(initial, accounts, journal, address);
         if account.original.is_none() {
             account.current.get_or_insert_with(|| Account {
                 code_hash: KECCAK256_EMPTY,
@@ -1022,27 +1046,47 @@ impl<D: Database> State<D> {
     /// turns that substate into account deletions, storage wipes, or pre-EIP-161
     /// empty-account materialization.
     pub(super) fn finalize_transaction(&mut self, spec: SpecId) {
-        let selfdestructs = core::mem::take(&mut self.selfdestructs);
-        for address in selfdestructs.iter().copied() {
-            self.delete_account_for_finalization(address);
+        for &address in &self.selfdestructs {
+            Self::delete_account_for_finalization(
+                &mut self.initial,
+                &mut self.accounts,
+                &mut self.journal,
+                &mut self.storage,
+                address,
+            );
         }
 
-        let touched = core::mem::take(&mut self.touched);
         if spec.enables(SpecId::SPURIOUS_DRAGON) {
-            for address in touched {
+            for &address in &self.touched {
                 // EIP-161 deletes touched dead accounts at transaction finalization.
-                if self.is_existing_dead(address) {
-                    self.delete_account_for_finalization(address);
+                if Self::is_existing_dead(&mut self.initial, &self.accounts, address) {
+                    Self::delete_account_for_finalization(
+                        &mut self.initial,
+                        &mut self.accounts,
+                        &mut self.journal,
+                        &mut self.storage,
+                        address,
+                    );
                 }
             }
         } else {
-            for address in touched {
+            for &address in &self.touched {
                 // Before EIP-161, touching a non-existent account materializes it as empty.
-                if !selfdestructs.contains(&address) && self.account_info(address).is_none() {
-                    self.materialize_empty_account_for_finalization(address);
+                if !self.selfdestructs.contains(&address)
+                    && !Self::account_exists(&mut self.initial, &self.accounts, address)
+                {
+                    Self::materialize_empty_account_for_finalization(
+                        &mut self.initial,
+                        &mut self.accounts,
+                        &mut self.journal,
+                        address,
+                    );
                 }
             }
         }
+
+        self.selfdestructs.clear();
+        self.touched.clear();
     }
 
     /// Builds the state transition and takes emitted logs for the current transaction.
@@ -1233,7 +1277,7 @@ mod tests {
         assert!(state.journal.is_empty());
 
         let checkpoint = state.checkpoint();
-        state.warm_account(frame_account);
+        assert!(state.warm_account(frame_account));
         assert!(state.warm_storage(frame_storage, key));
         assert_eq!(state.journal.len(), 2);
 
@@ -1336,6 +1380,26 @@ mod tests {
 
         assert!(!changes.accounts.contains_key(&address));
         assert!(!changes.storage.contains_key(&address));
+    }
+
+    #[test]
+    fn finalization_preserves_transaction_set_capacity() {
+        let mut state = State::new(CacheDB::default());
+
+        for i in 0..32 {
+            state.touch(Address::from([i; 20]));
+            state.mark_destructed(Address::from([i + 32; 20]));
+        }
+
+        let touched_capacity = state.touched.capacity();
+        let selfdestructs_capacity = state.selfdestructs.capacity();
+
+        state.finalize_transaction(crate::SpecId::SPURIOUS_DRAGON);
+
+        assert!(state.touched.is_empty());
+        assert!(state.selfdestructs.is_empty());
+        assert_eq!(state.touched.capacity(), touched_capacity);
+        assert_eq!(state.selfdestructs.capacity(), selfdestructs_capacity);
     }
 
     #[test]

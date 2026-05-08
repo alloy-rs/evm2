@@ -7,7 +7,7 @@ use evm2::{
     evm::InMemoryDB,
 };
 
-type BenchEvm = Evm<BaseEvmTypes<RecoveredTxEnvelope>>;
+type BenchEvm = Evm<BaseEvmTypes>;
 
 #[derive(Clone, Debug)]
 pub(crate) struct PreparedBench {
@@ -72,5 +72,5 @@ impl Runner {
 }
 
 fn new_evm(spec: SpecId, block: BlockEnv, db: InMemoryDB) -> BenchEvm {
-    Evm::new(spec, block, ethereum_tx_registry(), db, Precompiles::base(spec))
+    Evm::new(spec, block, ethereum_tx_registry(spec), db, Precompiles::base(spec))
 }

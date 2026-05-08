@@ -1,10 +1,15 @@
 //! In-memory cache database.
 
 use super::{Database, EmptyDB};
-use crate::{bytecode::Bytecode, evm::state::AccountInfo, interpreter::Word};
+use crate::{
+    bytecode::Bytecode,
+    evm::state::AccountInfo,
+    interpreter::Word,
+    storage_key::{StorageKey, StorageKeyMap},
+};
 use alloy_primitives::{
     Address, B256, KECCAK256_EMPTY,
-    map::{AddressMap, B256Map, HashMap, U256Map, hash_map::Entry},
+    map::{AddressMap, B256Map, U256Map, hash_map::Entry},
 };
 
 /// A database implementation that stores initial state in memory.
@@ -22,7 +27,7 @@ pub struct Cache {
     /// Contracts keyed by code hash.
     pub contracts: B256Map<Bytecode>,
     /// Persistent storage keyed by account and slot.
-    pub storage: HashMap<(Address, Word), Word>,
+    pub storage: StorageKeyMap<Word>,
     /// Cached block hashes keyed by block number.
     pub block_hashes: U256Map<B256>,
 }
@@ -36,7 +41,7 @@ impl Default for Cache {
         Self {
             accounts: AddressMap::default(),
             contracts,
-            storage: HashMap::default(),
+            storage: StorageKeyMap::default(),
             block_hashes: U256Map::default(),
         }
     }
@@ -105,7 +110,7 @@ impl<ExtDB> CacheDB<ExtDB> {
     #[inline]
     pub fn insert_account_storage(&mut self, address: Address, key: Word, value: Word) {
         self.cache.accounts.entry(address).or_default();
-        self.cache.storage.insert((address, key), value);
+        self.cache.storage.insert(StorageKey::new(address, key), value);
     }
 
     /// Sets a historical block hash.
@@ -131,25 +136,16 @@ impl<ExtDB: Database> Database for CacheDB<ExtDB> {
     }
 
     #[inline]
-    fn get_account_code(&mut self, address: Address) -> Bytecode {
-        let code_hash = self.get_account(address).map(|info| info.code_hash);
-        if let Some(code_hash) = code_hash
-            && let Some(code) = self.cache.contracts.get(&code_hash)
-        {
-            return code.clone();
+    fn get_code_by_hash(&mut self, code_hash: B256) -> Bytecode {
+        match self.cache.contracts.entry(code_hash) {
+            Entry::Occupied(entry) => entry.get().clone(),
+            Entry::Vacant(entry) => entry.insert(self.db.get_code_by_hash(code_hash)).clone(),
         }
-
-        let code = self.db.get_account_code(address);
-        if !code.is_empty() {
-            let code_hash = code_hash.unwrap_or_else(|| code.hash_slow());
-            self.cache.contracts.entry(code_hash).or_insert_with(|| code.clone());
-        }
-        code
     }
 
     #[inline]
     fn get_storage(&mut self, address: Address, key: Word) -> Word {
-        match self.cache.storage.entry((address, key)) {
+        match self.cache.storage.entry(StorageKey::new(address, key)) {
             Entry::Occupied(entry) => *entry.get(),
             Entry::Vacant(entry) => {
                 let value = self.db.get_storage(address, key);
@@ -193,9 +189,13 @@ mod tests {
             self.account.clone()
         }
 
-        fn get_account_code(&mut self, _address: Address) -> Bytecode {
+        fn get_code_by_hash(&mut self, code_hash: B256) -> Bytecode {
             self.code_loads += 1;
-            self.account.as_ref().and_then(|info| info.code.clone()).unwrap_or_default()
+            self.account
+                .as_ref()
+                .filter(|info| info.code_hash == code_hash)
+                .and_then(|info| info.code.clone())
+                .unwrap_or_default()
         }
 
         fn get_storage(&mut self, _address: Address, _key: Word) -> Word {
@@ -223,8 +223,10 @@ mod tests {
         };
         let mut cache = CacheDB::new(db);
 
-        assert_eq!(cache.get_account_code(address), code);
-        assert_eq!(cache.get_account_code(address), code);
+        let code_hash = code.hash_slow();
+        assert_eq!(cache.get_account(address).map(|info| info.code_hash), Some(code_hash));
+        assert_eq!(cache.get_code_by_hash(code_hash), code);
+        assert_eq!(cache.get_code_by_hash(code_hash), code);
         assert_eq!(cache.db.account_loads, 1);
         assert_eq!(cache.db.code_loads, 0);
 

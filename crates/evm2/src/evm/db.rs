@@ -13,8 +13,8 @@ pub trait Database {
     /// Loads account information.
     fn get_account(&mut self, address: Address) -> Option<AccountInfo>;
 
-    /// Loads account code.
-    fn get_account_code(&mut self, address: Address) -> Bytecode;
+    /// Loads bytecode by code hash.
+    fn get_code_by_hash(&mut self, code_hash: B256) -> Bytecode;
 
     /// Loads a persistent storage slot.
     fn get_storage(&mut self, address: Address, key: Word) -> Word;
@@ -34,7 +34,7 @@ impl Database for EmptyDB {
     }
 
     #[inline]
-    fn get_account_code(&mut self, _address: Address) -> Bytecode {
+    fn get_code_by_hash(&mut self, _code_hash: B256) -> Bytecode {
         Bytecode::default()
     }
 
