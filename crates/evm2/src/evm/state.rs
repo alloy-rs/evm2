@@ -557,6 +557,7 @@ impl State {
         self.transient_storage.clear();
         self.logs.clear();
     }
+
     #[must_use]
     fn load_account(&mut self, address: Address) -> Option<&mut Tracked<Option<Account>>> {
         match self.accounts.entry(address) {

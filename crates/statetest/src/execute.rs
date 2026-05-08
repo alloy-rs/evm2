@@ -209,39 +209,37 @@ fn execute_spec(
     tx: &RecoveredTxEnvelope,
     env: &Env,
 ) -> Result<SpecOutcome, HandlerError> {
-    macro_rules! run {
-        ($spec:ident) => {{
-            let spec = SpecId::$spec;
-            let mut evm = Evm::<BaseEvmTypes>::new(
-                spec,
-                block,
-                ethereum_tx_registry(spec),
-                database.clone(),
-                Precompiles::base(spec),
-            );
-            let system_changes = pre_block_system_calls(&mut evm, spec, env, &database);
-            let result = evm.transact(tx)?;
-            Ok(spec_outcome(&database, result, &system_changes))
-        }};
+    if !matches!(
+        spec,
+        SpecId::FRONTIER
+            | SpecId::HOMESTEAD
+            | SpecId::TANGERINE
+            | SpecId::SPURIOUS_DRAGON
+            | SpecId::BYZANTIUM
+            | SpecId::PETERSBURG
+            | SpecId::ISTANBUL
+            | SpecId::BERLIN
+            | SpecId::LONDON
+            | SpecId::MERGE
+            | SpecId::SHANGHAI
+            | SpecId::CANCUN
+            | SpecId::PRAGUE
+            | SpecId::OSAKA
+            | SpecId::AMSTERDAM
+    ) {
+        unreachable!("unknown statetest spec: {spec:?}");
     }
-    match spec {
-        SpecId::FRONTIER => run!(FRONTIER),
-        SpecId::HOMESTEAD => run!(HOMESTEAD),
-        SpecId::TANGERINE => run!(TANGERINE),
-        SpecId::SPURIOUS_DRAGON => run!(SPURIOUS_DRAGON),
-        SpecId::BYZANTIUM => run!(BYZANTIUM),
-        SpecId::PETERSBURG => run!(PETERSBURG),
-        SpecId::ISTANBUL => run!(ISTANBUL),
-        SpecId::BERLIN => run!(BERLIN),
-        SpecId::LONDON => run!(LONDON),
-        SpecId::MERGE => run!(MERGE),
-        SpecId::SHANGHAI => run!(SHANGHAI),
-        SpecId::CANCUN => run!(CANCUN),
-        SpecId::PRAGUE => run!(PRAGUE),
-        SpecId::OSAKA => run!(OSAKA),
-        SpecId::AMSTERDAM => run!(AMSTERDAM),
-        _ => unreachable!("unknown statetest spec: {spec:?}"),
-    }
+
+    let mut evm = Evm::<BaseEvmTypes>::new(
+        spec,
+        block,
+        ethereum_tx_registry(spec),
+        database.clone(),
+        Precompiles::base(spec),
+    );
+    let system_changes = pre_block_system_calls(&mut evm, spec, env, &database);
+    let result = evm.transact(tx)?;
+    Ok(spec_outcome(&database, result, &system_changes))
 }
 
 fn spec_outcome(
