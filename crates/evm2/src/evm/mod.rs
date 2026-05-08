@@ -171,13 +171,13 @@ macro_rules! evm_dyn_provider_methods {
             /// Returns this provider as `P` if it has that concrete type.
             #[inline]
             pub fn [<database _as>]<P: Database>(&self) -> Option<&P> {
-                self.database().downcast_ref()
+                (self.database() as &dyn core::any::Any).downcast_ref()
             }
 
             /// Returns this provider mutably as `P` if it has that concrete type.
             #[inline]
             pub fn [<database _as_mut>]<P: Database>(&mut self) -> Option<&mut P> {
-                self.[<database _mut>]().downcast_mut()
+                (self.[<database _mut>]() as &mut dyn core::any::Any).downcast_mut()
             }
         }
     };
@@ -207,13 +207,13 @@ macro_rules! evm_dyn_provider_methods {
             /// Returns this provider as `P` if it has that concrete type.
             #[inline]
             pub fn [<precompiles _as>]<P: PrecompileProvider>(&self) -> Option<&P> {
-                self.precompiles().downcast_ref()
+                (self.precompiles() as &dyn core::any::Any).downcast_ref()
             }
 
             /// Returns this provider mutably as `P` if it has that concrete type.
             #[inline]
             pub fn [<precompiles _as_mut>]<P: PrecompileProvider>(&mut self) -> Option<&mut P> {
-                self.[<precompiles _mut>]().downcast_mut()
+                (self.[<precompiles _mut>]() as &mut dyn core::any::Any).downcast_mut()
             }
         }
     };

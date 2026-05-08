@@ -24,26 +24,6 @@ pub trait Database: Any {
     fn get_block_hash(&mut self, number: Word) -> Option<B256>;
 }
 
-impl dyn Database {
-    /// Returns `true` if the database has type `T`.
-    #[inline]
-    pub fn is<T: Database>(&self) -> bool {
-        (self as &dyn Any).is::<T>()
-    }
-
-    /// Returns the concrete database if it has type `T`.
-    #[inline]
-    pub fn downcast_ref<T: Database>(&self) -> Option<&T> {
-        (self as &dyn Any).downcast_ref()
-    }
-
-    /// Returns the concrete database mutably if it has type `T`.
-    #[inline]
-    pub fn downcast_mut<T: Database>(&mut self) -> Option<&mut T> {
-        (self as &mut dyn Any).downcast_mut()
-    }
-}
-
 impl<T: Database> From<Box<T>> for Box<dyn Database> {
     #[inline]
     fn from(value: Box<T>) -> Self {

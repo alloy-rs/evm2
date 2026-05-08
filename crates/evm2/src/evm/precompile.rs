@@ -48,26 +48,6 @@ pub trait PrecompileProvider: Any {
     ) -> Option<Result<PrecompileOutput, PrecompileError>>;
 }
 
-impl dyn PrecompileProvider {
-    /// Returns `true` if the precompile provider has type `T`.
-    #[inline]
-    pub fn is<T: PrecompileProvider>(&self) -> bool {
-        (self as &dyn Any).is::<T>()
-    }
-
-    /// Returns the concrete precompile provider if it has type `T`.
-    #[inline]
-    pub fn downcast_ref<T: PrecompileProvider>(&self) -> Option<&T> {
-        (self as &dyn Any).downcast_ref()
-    }
-
-    /// Returns the concrete precompile provider mutably if it has type `T`.
-    #[inline]
-    pub fn downcast_mut<T: PrecompileProvider>(&mut self) -> Option<&mut T> {
-        (self as &mut dyn Any).downcast_mut()
-    }
-}
-
 impl<T: PrecompileProvider> From<Box<T>> for Box<dyn PrecompileProvider> {
     #[inline]
     fn from(value: Box<T>) -> Self {
