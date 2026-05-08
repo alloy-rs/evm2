@@ -1,4 +1,4 @@
-#[cfg(feature = "tco")]
+#[cfg(evm2_tco)]
 use super::gas::RemainingGas;
 use super::{
     BytecodeRef, Gas, InstrStop, Memory, Message, MessageKind, Pc, Result, Stack, StackBacking,
@@ -9,7 +9,7 @@ use crate::{
 };
 use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::Bytes;
-#[cfg(not(feature = "tco"))]
+#[cfg(not(evm2_tco))]
 use core::hint::cold_path;
 use core::{fmt, marker::PhantomData, ptr::NonNull};
 
@@ -152,9 +152,9 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         self.version = &config.version;
         self.spec = config.version.spec_id;
 
-        #[cfg(feature = "tco")]
+        #[cfg(evm2_tco)]
         let r = self.step_tail(config);
-        #[cfg(not(feature = "tco"))]
+        #[cfg(not(evm2_tco))]
         let r = self.run_table_loop(config);
 
         self.host = None;
@@ -162,7 +162,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         r
     }
 
-    #[cfg(not(feature = "tco"))]
+    #[cfg(not(evm2_tco))]
     fn run_table_loop(&mut self, config: &ExecutionConfig<T>) -> InstrStop {
         #[expect(clippy::unnecessary_cast, reason = "cast erases the active interpreter lifetime")]
         let raw = self as *mut Self as *mut Interpreter<'_, T>;
@@ -187,7 +187,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
     }
 
     #[inline(always)]
-    #[cfg(feature = "tco")]
+    #[cfg(evm2_tco)]
     fn step_tail(&mut self, config: &ExecutionConfig<T>) -> InstrStop {
         #[expect(clippy::unnecessary_cast, reason = "cast erases the active interpreter lifetime")]
         let raw = self as *mut Self as *mut Interpreter<'_, T>;
@@ -239,13 +239,13 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
     }
 
     #[inline]
-    #[cfg(feature = "nightly")]
+    #[cfg(evm2_tco)]
     pub(crate) const fn result(&self) -> Result {
         self.0.result
     }
 
     #[inline]
-    #[cfg(feature = "nightly")]
+    #[cfg(evm2_tco)]
     pub(crate) const fn set_pc_stack_len(&mut self, pc: *const u8, stack_len: usize) {
         self.0.pc = pc;
         self.0.stack_len = stack_len;

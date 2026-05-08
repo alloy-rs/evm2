@@ -201,12 +201,12 @@ impl GasTracker {
 }
 
 /// Remaining regular gas threaded through tail calls.
-#[cfg(feature = "tco")]
+#[cfg(evm2_tco)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[repr(transparent)]
 pub(crate) struct RemainingGas(u64);
 
-#[cfg(feature = "tco")]
+#[cfg(evm2_tco)]
 impl RemainingGas {
     /// Creates a remaining gas counter.
     #[inline]

@@ -42,7 +42,7 @@ impl<'a> Stack<'a> {
     }
 
     #[inline]
-    #[cfg(not(feature = "tco"))]
+    #[cfg(not(evm2_tco))]
     pub(crate) fn reborrow(&mut self) -> Stack<'_> {
         Stack { stack: self.stack, len: self.len }
     }
