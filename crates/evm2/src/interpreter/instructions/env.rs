@@ -47,6 +47,29 @@ fn copy_cost_and_memory_resize<T: EvmTypes>(
     copy_memory_resize(cx, memory_offset, len)
 }
 
+fn set_copy_data<T: EvmTypes>(
+    cx: &mut GasInstructionCx<'_, '_, T>,
+    memory_offset: usize,
+    data_offset: Word,
+    len: usize,
+    data: &[u8],
+) {
+    cx.state.memory().set_data(memory_offset, word_to_usize_saturated(data_offset), len, data);
+}
+
+fn copy_data<T: EvmTypes>(
+    cx: &mut GasInstructionCx<'_, '_, T>,
+    memory_offset: Word,
+    data_offset: Word,
+    len: usize,
+    data: &[u8],
+) -> Result {
+    if let Some(memory_offset) = copy_cost_and_memory_resize(cx, memory_offset, len)? {
+        set_copy_data(cx, memory_offset, data_offset, len, data);
+    }
+    Ok(())
+}
+
 #[instruction]
 pub(crate) fn address(cx: _) -> out {
     *out = address_to_word(cx.state.message().destination);
@@ -92,11 +115,8 @@ pub(crate) fn calldatasize(cx: _) -> out {
 #[instruction(dynamic_gas)]
 pub(crate) fn calldatacopy(cx: _, [memory_offset, data_offset, len]: [Word]) -> Result {
     let len = word_to_usize(len)?;
-    if let Some(memory_offset) = copy_cost_and_memory_resize(&mut cx, memory_offset, len)? {
-        let data_offset = word_to_usize_saturated(data_offset);
-        let input = cx.state.message().input.clone();
-        cx.state.memory().set_data(memory_offset, data_offset, len, &input);
-    };
+    let input = cx.state.message().input.clone();
+    copy_data(&mut cx, memory_offset, data_offset, len, &input)
 }
 
 #[instruction]
@@ -107,12 +127,9 @@ pub(crate) fn codesize(cx: _) -> out {
 #[instruction(dynamic_gas)]
 pub(crate) fn codecopy(cx: _, [memory_offset, code_offset, len]: [Word]) -> Result {
     let len = word_to_usize(len)?;
-    if let Some(memory_offset) = copy_cost_and_memory_resize(&mut cx, memory_offset, len)? {
-        let code_offset = word_to_usize_saturated(code_offset);
-        let code = cx.state.bytecode().as_slice() as *const [u8];
-        // SAFETY: The interpreter owns bytecode for the duration of this instruction.
-        cx.state.memory().set_data(memory_offset, code_offset, len, unsafe { &*code });
-    };
+    let code = cx.state.bytecode().as_slice() as *const [u8];
+    // SAFETY: The interpreter owns bytecode for the duration of this instruction.
+    copy_data(&mut cx, memory_offset, code_offset, len, unsafe { &*code })
 }
 
 #[instruction]
@@ -138,8 +155,7 @@ pub(crate) fn extcodecopy(cx: _, [addr, memory_offset, code_offset, len]: [Word]
     let memory_offset = copy_memory_resize(&mut cx, memory_offset, len)?.unwrap_or(0);
 
     let code = load_account(&mut cx, addr, true)?.code;
-    let code_offset = word_to_usize_saturated(code_offset).min(code.len());
-    cx.state.memory().set_data(memory_offset, code_offset, len, &code);
+    set_copy_data(&mut cx, memory_offset, code_offset, len, &code);
 }
 
 #[instruction]
@@ -155,10 +171,8 @@ pub(crate) fn returndatacopy(cx: _, [memory_offset, data_offset, len]: [Word]) -
         return Err(InstrStop::OutOfOffset);
     }
 
-    if let Some(memory_offset) = copy_cost_and_memory_resize(&mut cx, memory_offset, len)? {
-        let return_data = cx.state.return_data().clone();
-        cx.state.memory().set_data(memory_offset, data_offset, len, &return_data);
-    };
+    let return_data = cx.state.return_data().clone();
+    copy_data(&mut cx, memory_offset, Word::from(data_offset), len, &return_data)
 }
 
 #[cfg(test)]
