@@ -191,7 +191,7 @@ mod tests {
         },
         utils::{address_to_word, b256_to_word},
     };
-    use alloc::vec::Vec;
+    use alloc::{vec, vec::Vec};
     use alloy_primitives::{Address, B256, Bytes};
 
     fn neg(value: u64) -> Word {

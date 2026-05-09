@@ -7,6 +7,7 @@
 #   ├── main/
 #   │   ├── stable/state_tests/...
 #   │   └── develop/state_tests/...
+#   ├── devnet/state_tests/...
 #   └── legacytests/
 #       ├── Cancun/GeneralStateTests/...
 #       └── Constantinople/GeneralStateTests/...
@@ -14,8 +15,9 @@
 set -euo pipefail
 
 MAIN_VERSION="${MAIN_VERSION:-v5.3.0}"
+LEGACY_VERSION="${LEGACY_VERSION:-v17.2}"
 BASE_URL="https://github.com/ethereum/execution-spec-tests/releases/download"
-LEGACY_REPO_URL="https://github.com/ethereum/legacytests.git"
+LEGACY_URL="https://github.com/ethereum/tests/archive/refs/tags/$LEGACY_VERSION.tar.gz"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -23,15 +25,16 @@ FIXTURES_DIR="${EVM2_TEST_FIXTURES:-$REPO_ROOT/test-fixtures}"
 
 MAIN_STABLE_DIR="$FIXTURES_DIR/main/stable"
 MAIN_DEVELOP_DIR="$FIXTURES_DIR/main/develop"
+DEVNET_DIR="$FIXTURES_DIR/devnet"
 LEGACY_DIR="$FIXTURES_DIR/legacytests"
 
 if [[ -n "${EVM2_STATETEST_STABLE:-}" && "${EVM2_STATETEST_STABLE:-}" != "0" ]]; then
     MAIN_DIR="$MAIN_STABLE_DIR"
-    MAIN_TAR="fixtures_stable.tar.gz"
+    MAIN_TAR="${MAIN_TAR:-fixtures_stable.tar.gz}"
     MAIN_LABEL="main stable"
 else
     MAIN_DIR="$MAIN_DEVELOP_DIR"
-    MAIN_TAR="fixtures_develop.tar.gz"
+    MAIN_TAR="${MAIN_TAR:-fixtures_develop.tar.gz}"
     MAIN_LABEL="main develop"
 fi
 
@@ -51,6 +54,14 @@ retry() {
     done
 }
 
+curl_tar() {
+    local url="$1"
+    local dest="$2"
+
+    curl -fL --progress-bar "$url" |
+        tar xzf - --strip-components=1 -C "$dest"
+}
+
 download_and_extract() {
     local dest="$1"
     local tar_file="$2"
@@ -63,15 +74,10 @@ download_and_extract() {
     fi
 
     local url="$BASE_URL/$version/$tar_file"
-    local archive="$FIXTURES_DIR/$tar_file"
 
-    echo "  Downloading: $url"
+    echo "  Downloading and extracting: $url"
     mkdir -p "$dest" "$FIXTURES_DIR"
-    retry curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors "$url" -o "$archive"
-
-    echo "  Extracting $label fixtures"
-    tar xzf "$archive" --strip-components=1 -C "$dest"
-    rm -f "$archive"
+    retry curl_tar "$url" "$dest"
 }
 
 legacy_tests_exist() {
@@ -79,25 +85,42 @@ legacy_tests_exist() {
         -d "$LEGACY_DIR/Constantinople/GeneralStateTests" ]]
 }
 
-clone_legacy_tests() {
+download_legacy_tests() {
     if legacy_tests_exist; then
         echo "  Already exists: $LEGACY_DIR"
     elif [[ -e "$LEGACY_DIR" ]]; then
         echo "  Exists but does not contain the expected legacy state tests: $LEGACY_DIR" >&2
         return 1
     else
-        retry git clone --depth 1 "$LEGACY_REPO_URL" "$LEGACY_DIR"
+        echo "  Downloading and extracting: $LEGACY_URL"
+        mkdir -p "$LEGACY_DIR" "$FIXTURES_DIR"
+        retry curl_tar "$LEGACY_URL" "$LEGACY_DIR"
     fi
 }
 
 echo "=== Fetching state test fixtures ==="
-download_and_extract "$MAIN_DIR" "$MAIN_TAR" "$MAIN_LABEL" "$MAIN_VERSION" &
-main_pid=$!
-clone_legacy_tests &
-legacy_pid=$!
+if [[ -z "${EVM2_STATETEST_DEVNET_ONLY:-}" || "${EVM2_STATETEST_DEVNET_ONLY:-}" == "0" ]]; then
+    download_and_extract "$MAIN_DIR" "$MAIN_TAR" "$MAIN_LABEL" "$MAIN_VERSION" &
+    main_pid=$!
+    download_legacy_tests &
+    legacy_pid=$!
+else
+    main_pid=
+    legacy_pid=
+fi
+if [[ -n "${DEVNET_VERSION:-}" || -n "${DEVNET_TAR:-}" ]]; then
+    if [[ -z "${DEVNET_VERSION:-}" || -z "${DEVNET_TAR:-}" ]]; then
+        echo "  DEVNET_VERSION and DEVNET_TAR must be set together." >&2
+        exit 1
+    fi
+    download_and_extract "$DEVNET_DIR" "$DEVNET_TAR" "devnet" "$DEVNET_VERSION" &
+    devnet_pid=$!
+else
+    devnet_pid=
+fi
 
 status=0
-for pid in "$main_pid" "$legacy_pid"; do
+for pid in ${main_pid:+"$main_pid"} ${legacy_pid:+"$legacy_pid"} ${devnet_pid:+"$devnet_pid"}; do
     if ! wait "$pid"; then
         status=1
     fi
@@ -111,6 +134,7 @@ echo "Fixture directories:"
 for dir in \
     "$MAIN_STABLE_DIR/state_tests" \
     "$MAIN_DEVELOP_DIR/state_tests" \
+    "$DEVNET_DIR/state_tests" \
     "$LEGACY_DIR/Cancun/GeneralStateTests" \
     "$LEGACY_DIR/Constantinople/GeneralStateTests"
 do

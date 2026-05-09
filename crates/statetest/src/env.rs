@@ -93,6 +93,11 @@ pub(crate) fn default_state_test_roots() -> Vec<StateTestRoot> {
     let mut roots = vec![
         StateTestRoot { name: "eest", label: "execution-spec-tests", path: eest_path },
         StateTestRoot {
+            name: "devnet",
+            label: "execution-spec-tests devnet",
+            path: fixtures.join("devnet/state_tests"),
+        },
+        StateTestRoot {
             name: "legacy_cancun",
             label: "legacy Cancun",
             path: fixtures.join("legacytests/Cancun/GeneralStateTests"),

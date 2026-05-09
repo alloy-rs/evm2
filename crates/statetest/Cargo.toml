@@ -15,7 +15,7 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
-evm2 = { path = "../evm2", features = ["std", "serde"] }
+evm2 = { workspace = true, features = ["std"] }
 
 alloy-consensus = { workspace = true, features = ["std"] }
 alloy-eips = { workspace = true, features = ["std"] }

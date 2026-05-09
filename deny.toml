@@ -1,0 +1,42 @@
+[advisories]
+version = 2
+yanked = "warn"
+ignore = [
+    "RUSTSEC-2024-0436", # paste - no longer maintained
+]
+
+[bans]
+multiple-versions = "allow"
+wildcards = "deny"
+highlight = "all"
+
+[licenses]
+confidence-threshold = 0.9
+# copyleft = "deny"
+
+allow = [
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+    "CC0-1.0",
+    "LGPL-3.0-or-later",
+]
+
+exceptions = []
+
+[[licenses.clarify]]
+name = "ring"
+expression = "LicenseRef-ring"
+license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
+
+[sources]
+unknown-registry = "deny"
+# We can't release with git dependencies anyway, and using them for temporary patches is fine.
+unknown-git = "allow"

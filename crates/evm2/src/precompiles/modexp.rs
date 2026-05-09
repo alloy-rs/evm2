@@ -323,7 +323,7 @@ fn osaka_multiplication_complexity(max_len: u64) -> U256 {
 mod tests {
     use super::*;
     use crate::precompiles::PrecompileError;
-    use alloc::vec::Vec;
+    use alloc::{vec, vec::Vec};
     use alloy_primitives::hex;
 
     struct Test {
