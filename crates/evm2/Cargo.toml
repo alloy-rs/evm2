@@ -133,7 +133,6 @@ serde = [
     "alloy-eips/serde",
     "alloy-primitives/serde",
     "alloy-trie/serde",
-    "ark-serialize/serde",
     "k256/serde",
     "p256/serde",
     "blst?/serde",
