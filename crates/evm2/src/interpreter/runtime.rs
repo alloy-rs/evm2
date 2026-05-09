@@ -6,7 +6,8 @@ use super::{
 };
 use crate::{
     EvmTypes, ExecutionConfig, SpecId, Version, bytecode::Bytecode, env::TxEnv,
-    evm::inspector::Inspector, interpreter::instructions::table::InstrTable, version::GasParams,
+    evm::inspector::Inspector, interpreter::instructions::table::InstrTable, trustme,
+    version::GasParams,
 };
 use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::{Address, Bytes, Log};
@@ -214,7 +215,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
     fn run_table_loop(&mut self, instructions: &InstrTable<T>) -> InstrStop {
         // SAFETY: Only the active interpreter lifetime is erased; this stays as a raw pointer so
         // the dispatch loop does not create an extra `&mut` alias for `self`.
-        let raw = unsafe { crate::trustme::decouple_lt_mut_ptr(self as *mut Self) };
+        let raw = unsafe { trustme::decouple_lt_mut_ptr(self as *mut Self) };
         // SAFETY: Instruction methods must not access the stack through `InterpreterState` while
         // the separate stack view is live.
         let state = InterpreterState::wrap_mut(unsafe { &mut *raw });
@@ -240,7 +241,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
     fn step_tail(&mut self, instructions: &InstrTable<T>) -> InstrStop {
         // SAFETY: Only the active interpreter lifetime is erased; this stays as a raw pointer so
         // the dispatch step does not create an extra `&mut` alias for `self`.
-        let raw = unsafe { crate::trustme::decouple_lt_mut_ptr(self as *mut Self) };
+        let raw = unsafe { trustme::decouple_lt_mut_ptr(self as *mut Self) };
         // SAFETY: Instruction methods must not access the stack through `InterpreterState` while
         // the separate stack view is live.
         let state = InterpreterState::wrap_mut(unsafe { &mut *raw });
@@ -457,7 +458,7 @@ impl<T: EvmTypes> InterpreterPool<T> {
         // SAFETY: Frames stored in the pool have their frame-local references cleared before they
         // are erased to `'static`. Rebinding the lifetime is only used to initialize the next
         // frame.
-        unsafe { crate::trustme::decouple_lt_box(frame) }
+        unsafe { trustme::decouple_lt_box(frame) }
     }
 
     pub(crate) fn push<'pool, 'frame>(
@@ -467,10 +468,10 @@ impl<T: EvmTypes> InterpreterPool<T> {
         frame.clear_frame_refs();
         // SAFETY: `clear_frame_refs` removes every reference carrying `'frame`, so the boxed
         // interpreter can be stored in the pool with the erased `'static` lifetime.
-        let frame = unsafe { crate::trustme::decouple_lt_box(frame) };
+        let frame = unsafe { trustme::decouple_lt_box(frame) };
         let frame = self.frames.push_mut(frame);
         // SAFETY: The returned borrow is tied to `&mut self`; the erased frame references are
         // empty.
-        unsafe { crate::trustme::decouple_interpreter_lt_mut(frame) }
+        unsafe { trustme::decouple_interpreter_lt_mut(frame) }
     }
 }

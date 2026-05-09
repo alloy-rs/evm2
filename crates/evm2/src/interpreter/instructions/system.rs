@@ -7,6 +7,7 @@ use crate::{
         Host, InstrStop, InterpreterState, Message, MessageKind, MessageResult, Result, StackMut,
         Word, memory::resize_memory, private::GasInstructionCx,
     },
+    trustme,
     utils::{word_to_address, word_to_usize},
     version::GasId,
 };
@@ -223,7 +224,7 @@ fn call_inner<T: EvmTypes>(
         call_too_deep_result(message.gas_limit)
     } else {
         let bytecode = crate::bytecode::Bytecode::new_legacy(code);
-        let tx_env = unsafe { crate::trustme::decouple_lt(cx.state.tx()) };
+        let tx_env = unsafe { trustme::decouple_lt(cx.state.tx()) };
         cx.state.host().execute_message(tx_env, bytecode, &message, caller_is_static)
     };
     cx.state.inspect_call_end(&message, &mut result);
@@ -313,7 +314,7 @@ fn create_inner<T: EvmTypes>(
         call_too_deep_result(message.gas_limit)
     } else {
         let bytecode = crate::bytecode::Bytecode::new_legacy(input);
-        let tx_env = unsafe { crate::trustme::decouple_lt(cx.state.tx()) };
+        let tx_env = unsafe { trustme::decouple_lt(cx.state.tx()) };
         cx.state.host().execute_message(tx_env, bytecode, &message, false)
     };
     cx.state.inspect_create_end(&message, &mut result);

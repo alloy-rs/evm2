@@ -13,6 +13,7 @@ use crate::{
         Word,
     },
     registry::{HandlerResult, TxRegistry},
+    trustme,
     version::{EvmFeatures, GasId},
 };
 use alloc::boxed::Box;
@@ -654,12 +655,12 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         interpreter_ref.init(bytecode, tx_env, message, caller_is_static);
         // SAFETY: `execution_config` points to a private field that host execution does not
         // replace or mutate, so the pointee remains valid here.
-        let execution_config = unsafe { crate::trustme::decouple_lt(&self.execution_config) };
+        let execution_config = unsafe { trustme::decouple_lt(&self.execution_config) };
         self.inspect_initialize_interp(interpreter_ref);
         let inspector = self.inspector.as_deref_mut().map(|inspector| {
             // SAFETY: The inspector is stored in `self` and remains alive for the duration of the
             // interpreter run.
-            unsafe { crate::trustme::decouple_lt_mut(inspector) }
+            unsafe { trustme::decouple_lt_mut(inspector) }
         });
         let stop = if let Some(inspector) = inspector {
             interpreter_ref.run_inspect(execution_config, self, inspector)
