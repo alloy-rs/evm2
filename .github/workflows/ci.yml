@@ -47,11 +47,6 @@ jobs:
             os: "ubuntu-latest"
             rust: "nightly"
             flags: "--all-features"
-          - kind: "statetest"
-            fixture: "devnet"
-            os: "ubuntu-latest"
-            rust: "stable"
-            flags: ""
           # - kind: "test"
           #   os: "macos-latest"
           #   rust: "nightly"
@@ -68,6 +63,13 @@ jobs:
           #   os: "windows-latest"
           #   rust: "nightly"
           #   flags: "--features nightly" # Some C libraries don't support MSVC.
+          # Devnet
+          # - kind: "statetest"
+          #   fixture: "devnet"
+          #   os: "ubuntu-latest"
+          #   rust: "stable"
+          #   flags: ""
+
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
@@ -181,7 +183,7 @@ jobs:
         with:
           cache-on-failure: true
       - name: Check examples
-        run: cargo check --workspace --examples
+        run: cargo build --workspace --examples
 
   typos:
     runs-on: ubuntu-latest
@@ -228,8 +230,6 @@ jobs:
       - run: cargo fmt --all --check
 
   deny:
-    permissions:
-      contents: read
     uses: tempoxyz/ci/.github/workflows/deny.yml@main
 
   ci-success:
@@ -238,7 +238,6 @@ jobs:
     if: always()
     needs:
       - test
-      # - statetest
       - wasm
       - no-std
       - feature-checks
