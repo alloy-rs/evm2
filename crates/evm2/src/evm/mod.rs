@@ -19,7 +19,6 @@ use crate::{
 use alloc::{borrow::Cow, boxed::Box};
 use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{Address, B256, Bytes, Log};
-use core::ptr::NonNull;
 
 pub mod config;
 pub mod env;
@@ -651,11 +650,18 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         interpreter_ref.init(bytecode, tx_env, message, caller_is_static);
         // SAFETY: `execution_config` points to a private field that host execution does not
         // replace or mutate, so the pointee remains valid here.
-        #[expect(clippy::deref_addrof, reason = "raw borrow avoids copying the config")]
-        let execution_config = unsafe { &*(&raw const self.execution_config) };
+        let execution_config = unsafe { crate::trustme::decouple_lt(&self.execution_config) };
         self.inspect_initialize_interp(interpreter_ref);
-        let inspector = self.inspector.as_deref_mut().map(NonNull::from);
-        let stop = interpreter_ref.run_with_dyn_inspector(execution_config, self, inspector);
+        let inspector = self.inspector.as_deref_mut().map(|inspector| {
+            // SAFETY: The inspector is stored in `self` and remains alive for the duration of the
+            // interpreter run.
+            unsafe { crate::trustme::decouple_lt_mut(inspector) }
+        });
+        let stop = if let Some(inspector) = inspector {
+            interpreter_ref.run_with_dyn_inspector(execution_config, self, inspector)
+        } else {
+            interpreter_ref.run_with(execution_config, self)
+        };
         let interpreter = self.interpreter_pool.push(interpreter);
         (stop, interpreter)
     }

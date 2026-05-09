@@ -44,7 +44,6 @@ where
 }
 
 extern_table! {
-    #[optimize(none)]
     fn tail_dispatch<
         T: EvmTypes,
         C: EvmConfig<T>,

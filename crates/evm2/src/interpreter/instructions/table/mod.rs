@@ -91,7 +91,7 @@ pub(super) const fn inc_pc(pc: &mut Pc, op: u8) {
 }
 
 #[inline(always)]
-pub(super) const fn instruction_len(op: u8) -> usize {
+const fn instruction_len(op: u8) -> usize {
     match op {
         op::JUMP | op::JUMPI => 0, // Set inside.
         op::PUSH1..=op::PUSH32 => (op - op::PUSH1 + 2) as usize,
