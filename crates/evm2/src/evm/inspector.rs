@@ -264,6 +264,7 @@ mod tests {
         step_ends: usize,
         logs: Vec<Log>,
         calls: usize,
+        creates: usize,
     }
 
     struct SharedE2eInspector(Rc<RefCell<E2eState>>);
@@ -287,6 +288,11 @@ mod tests {
 
         fn call(&mut self, _message: &mut Message) -> Option<MessageResult> {
             self.0.borrow_mut().calls += 1;
+            None
+        }
+
+        fn create(&mut self, _message: &mut Message) -> Option<MessageResult> {
+            self.0.borrow_mut().creates += 1;
             None
         }
     }
@@ -507,6 +513,30 @@ mod tests {
     }
 
     #[test]
+    fn create_inspector_override_wins_at_max_depth() {
+        let created = Address::from([0x77; 20]);
+        let mut host = TestHost::default();
+        let mut inspector =
+            OverrideCreateInspector { created, create_depth: None, create_end_stop: None };
+        let mut code = create_code();
+        code.extend([op::CREATE, op::STOP]);
+
+        let (stop, stack) = run_with_inspector(
+            code,
+            &mut host,
+            &Message { depth: CALL_DEPTH_LIMIT, ..Default::default() },
+            50_000,
+            &mut inspector,
+        );
+
+        assert!(matches!(stop, InstrStop::Stop));
+        assert_eq!(stack, [address_to_word(created)]);
+        assert_eq!(inspector.create_depth, Some(CALL_DEPTH_LIMIT + 1));
+        assert_eq!(inspector.create_end_stop, Some(InstrStop::Return));
+        assert!(host.calls.is_empty());
+    }
+
+    #[test]
     fn create_end_can_mutate_result_before_opcode_observes_it() {
         let created = Address::from([0x88; 20]);
         let mut host = TestHost::default();
@@ -541,6 +571,19 @@ mod tests {
         assert_eq!(inspector.logs.len(), 1);
         assert_eq!(inspector.logs[0].address, contract);
         assert_eq!(host.logs, inspector.logs);
+    }
+
+    #[test]
+    fn log_opcode_oog_is_not_inspected_or_emitted_to_host() {
+        let mut host = TestHost::default();
+        let mut inspector = LogInspector::default();
+        let code = Vec::from([op::PUSH1, 0, op::PUSH1, 0, op::LOG0, op::STOP]);
+
+        let (stop, _) = run_with_inspector(code, &mut host, &Message::default(), 6, &mut inspector);
+
+        assert_eq!(stop, InstrStop::OutOfGas);
+        assert!(inspector.logs.is_empty());
+        assert!(host.logs.is_empty());
     }
 
     #[test]
@@ -587,6 +630,28 @@ mod tests {
     }
 
     #[test]
+    fn selfdestruct_host_error_is_not_inspected() {
+        let target = Address::from([0x99; 20]);
+        let mut host = TestHost::default();
+        host.selfdestruct_error = Some(InstrStop::FatalExternalError);
+        let mut inspector = MessageInspector::default();
+        let mut code = Vec::new();
+        push(&mut code, address_to_word(target));
+        code.push(op::SELFDESTRUCT);
+
+        let (stop, _) = run_with_inspector(
+            code,
+            &mut host,
+            &Message { gas_limit: 10_000, ..Default::default() },
+            10_000,
+            &mut inspector,
+        );
+
+        assert_eq!(stop, InstrStop::FatalExternalError);
+        assert_eq!(inspector.selfdestruct, None);
+    }
+
+    #[test]
     fn evm_transaction_inspects_interpreter_steps_and_logs() {
         let caller = Address::from([0xaa; 20]);
         let contract = Address::from([0xbb; 20]);
@@ -628,5 +693,44 @@ mod tests {
         assert_eq!(state.logs.len(), 1);
         assert_eq!(state.logs[0].address, contract);
         assert_eq!(state.calls, 0);
+        assert_eq!(state.creates, 0);
+    }
+
+    #[test]
+    fn evm_create_transaction_initializes_interpreter_without_create_hook() {
+        let caller = Address::from([0xaa; 20]);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(
+            caller,
+            AccountInfo::default().with_balance(U256::from(1_000_000_000_u64)),
+        );
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            ethereum_tx_registry(SpecId::OSAKA),
+            database,
+            Precompiles::base(SpecId::OSAKA),
+        );
+        let state = Rc::new(RefCell::new(E2eState::default()));
+        evm.set_inspector(SharedE2eInspector(Rc::clone(&state)));
+        let tx = RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(
+            TxLegacy {
+                to: TxKind::Create,
+                input: Bytes::from_static(&[op::STOP]),
+                gas_limit: 100_000,
+                ..Default::default()
+            },
+            caller,
+        ));
+
+        let result = evm.transact(&tx).unwrap();
+        let state = state.borrow();
+
+        assert!(result.status);
+        assert_eq!(state.initialized, 1);
+        assert_eq!(state.steps, 1);
+        assert_eq!(state.step_ends, 1);
+        assert_eq!(state.calls, 0);
+        assert_eq!(state.creates, 0);
     }
 }

@@ -38,6 +38,7 @@ pub(crate) struct TestHost {
     pub(crate) logs: Vec<Log>,
     pub(super) execute_result: MessageResult,
     pub(crate) selfdestruct_result: SelfDestructResult,
+    pub(crate) selfdestruct_error: Option<InstrStop>,
     pub(crate) calls: Vec<Message>,
     pub(super) call_static_flags: Vec<bool>,
     pub(super) selfdestructs: Vec<(Address, Address, bool)>,
@@ -60,6 +61,7 @@ impl Default for TestHost {
             logs: Vec::new(),
             execute_result: MessageResult { stop: InstrStop::Return, ..MessageResult::default() },
             selfdestruct_result: SelfDestructResult::default(),
+            selfdestruct_error: None,
             calls: Vec::new(),
             call_static_flags: Vec::new(),
             selfdestructs: Vec::new(),
@@ -172,6 +174,9 @@ impl Host for TestHost {
         target: Address,
         skip_cold_load: bool,
     ) -> Result<SelfDestructResult, InstrStop> {
+        if let Some(err) = self.selfdestruct_error {
+            return Err(err);
+        }
         self.selfdestructs.push((contract, target, skip_cold_load));
         Ok(self.selfdestruct_result)
     }
