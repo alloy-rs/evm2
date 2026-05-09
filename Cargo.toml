@@ -91,7 +91,7 @@ lto = "thin"
 codegen-units = 1
 
 [patch.crates-io]
-# Temporary fork with unrolling removed to avoid excessive generated code size.
+# https://github.com/arkworks-rs/algebra/issues/1104
 ark-ec = { git = "https://github.com/DaniPopes/algebra", branch = "remove-unrolls" }
 ark-bls12-381 = { git = "https://github.com/DaniPopes/algebra", branch = "remove-unrolls" }
 ark-bn254 = { git = "https://github.com/DaniPopes/algebra", branch = "remove-unrolls" }

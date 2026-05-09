@@ -133,11 +133,12 @@ serde = [
     "alloy-eips/serde",
     "alloy-primitives/serde",
     "alloy-trie/serde",
+    "ark-serialize/serde",
     "k256/serde",
     "p256/serde",
     "blst?/serde",
     "c-kzg?/serde",
-    "secp256k1?/serde"
+    "secp256k1?/serde",
 ]
 arbitrary = [
     "alloy-consensus/arbitrary",
