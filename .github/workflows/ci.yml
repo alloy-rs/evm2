@@ -81,6 +81,8 @@ jobs:
         with:
           cache-on-failure: true
       - uses: taiki-e/install-action@nextest
+      - uses: astral-sh/setup-uv@v7
+        if: ${{ matrix.kind == 'statetest' }}
       - name: Download state test fixtures
         if: ${{ matrix.kind == 'statetest' }}
         shell: bash
