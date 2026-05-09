@@ -196,6 +196,7 @@ impl<'a> JumpTableRef<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::format;
 
     #[test]
     #[should_panic(expected = "slice bit length is less than bit_len")]

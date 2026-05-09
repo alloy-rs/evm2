@@ -840,6 +840,7 @@ mod tests {
         interpreter::{MessageKind, op},
         registry::TxRequest,
     };
+    use alloc::{vec, vec::Vec};
     use alloy_consensus::{TxLegacy, transaction::Recovered};
     use alloy_primitives::{Address, Bytes, KECCAK256_EMPTY, U256};
 

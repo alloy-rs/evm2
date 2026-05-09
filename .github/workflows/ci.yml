@@ -14,28 +14,29 @@ concurrency:
 
 jobs:
   test:
-    name: test ${{ matrix.os }} ${{ matrix.rust }} ${{ matrix.flags }}
+    name: ${{ matrix.kind }} +${{ matrix.rust }} ${{ matrix.os }} ${{ matrix.flags }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
+        kind: ["test", "statetest"]
         os: [
           "ubuntu-latest",
           # "macos-latest",
           # "windows-latest",
         ]
         rust: [
-            "stable",
-            "nightly",
-            "1.95", # MSRV
-          ]
+          "stable",
+          "nightly",
+          # "1.95", # MSRV
+        ]
         flags: [
-            # No features
-            "--no-default-features",
-            # Default features
-            "",
-          ]
+          # No features
+          "--no-default-features",
+          # Default features
+          "",
+        ]
         include:
           # All features
           - os: "ubuntu-latest"
@@ -46,9 +47,9 @@ jobs:
           #   flags: "--all-features"
           # - os: "windows-latest"
           #   rust: "nightly"
-          #   flags: "--features nightly"
+          #   flags: "--features nightly" # Some C libraries don't support MSVC.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.rust }}
@@ -58,32 +59,26 @@ jobs:
         with:
           cache-on-failure: true
       - uses: taiki-e/install-action@nextest
-      - name: test
-        run: cargo nextest run --workspace ${{ matrix.flags }}
+      - name: Download state test fixtures
+        if: ${{ matrix.kind == 'statetest' }}
+        run: ./scripts/setup-test-fixtures.sh
+      - name: ${{ matrix.kind }}
+        shell: bash
+        run: |
+            extra_flags=()
+            if [[ "${{ matrix.kind }}" == "statetest" ]]; then
+              extra_flags+=(-p evm2-statetest --ignore-default-filter)
+            fi
+            cargo nextest run --workspace --no-fail-fast ${{ matrix.flags }} "${extra_flags[@]}"
       - name: doctest
+        if: ${{ matrix.kind == 'test' }}
         run: cargo test --workspace ${{ matrix.flags }} --doc
-
-  # statetest:
-  #   runs-on: ubuntu-latest
-  #   timeout-minutes: 30
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - uses: dtolnay/rust-toolchain@stable
-  #     - uses: rui314/setup-mold@v1
-  #     - uses: Swatinem/rust-cache@v2
-  #       with:
-  #         cache-on-failure: true
-  #     - uses: taiki-e/install-action@nextest
-  #     - name: Download state test fixtures
-  #       run: ./scripts/setup-test-fixtures.sh
-  #     - name: Run state tests
-  #       run: cargo nextest run -p evm2-statetest --ignore-default-filter
 
   wasm:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
@@ -103,7 +98,7 @@ jobs:
       matrix:
         flags: ["", "--all-targets"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: rui314/setup-mold@v1
       - uses: taiki-e/install-action@cargo-hack
@@ -117,7 +112,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: rui314/setup-mold@v1
       - uses: taiki-e/cache-cargo-install-action@v3
@@ -131,7 +126,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -150,7 +145,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: clippy
@@ -164,7 +159,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@nightly
       - uses: rui314/setup-mold@v1
       - uses: Swatinem/rust-cache@v2
@@ -177,7 +172,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: rustfmt

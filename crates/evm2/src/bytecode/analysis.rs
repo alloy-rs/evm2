@@ -69,6 +69,7 @@ const fn is_dupn_swapn_exchange(opcode: u8) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec;
 
     #[test]
     fn test_bytecode_ends_with_stop_no_padding_needed() {

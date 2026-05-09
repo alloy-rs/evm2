@@ -364,6 +364,7 @@ mod tests {
         },
         utils::address_to_word,
     };
+    use alloc::vec::Vec;
     use alloy_primitives::{Address, Bytes};
 
     fn push_all<const N: usize>(code: &mut Vec<u8>, values: [Word; N]) {
