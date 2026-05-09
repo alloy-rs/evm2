@@ -271,14 +271,21 @@ async def download_all(fixtures: list[Fixture], progress: Progress) -> None:
 def task_status(task, label_width: int) -> str:
     completed = human_bytes(task.completed)
     if task.total is None:
-        return f"{task.description:<{label_width}} {completed:>10}"
+        status = "done" if task.finished else ""
+        return f"{task.description:<{label_width}} {completed:>10} {status:>6}"
 
     percent = 0 if task.total == 0 else task.completed / task.total * 100
     remaining = task.time_remaining
-    eta = f", eta {format_duration(remaining)}" if remaining is not None else ""
+    if task.finished:
+        suffix = "done"
+    elif remaining is not None:
+        suffix = f"eta {format_duration(remaining)}"
+    else:
+        suffix = ""
     return (
         f"{task.description:<{label_width}} "
-        f"{completed:>10}/{human_bytes(task.total):<10} ({percent:>3.0f}%{eta})"
+        f"{completed:>10}/{human_bytes(task.total):<10} "
+        f"({percent:>3.0f}%, {suffix:>8})"
     )
 
 
@@ -301,7 +308,7 @@ async def report_progress(progress: Progress) -> None:
     try:
         while True:
             await asyncio.sleep(5)
-            tasks = [task for task in progress.tasks if not task.finished]
+            tasks = list(progress.tasks)
             if tasks:
                 label_width = max(len(task.description) for task in progress.tasks)
                 console.print(
