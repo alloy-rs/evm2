@@ -458,7 +458,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
                 let code_deposit_gas = u64::try_from(code_deposit_gas).unwrap_or(u64::MAX);
                 if gas.remaining() >= code_deposit_gas {
                     gas.spend(code_deposit_gas).err()
-                } else if self.spec_id().enables(SpecId::HOMESTEAD) {
+                } else if self.feature(EvmFeatures::EIP2) {
                     // EIP-2 makes code-deposit OOG fail contract creation; Frontier instead
                     // creates the account with empty code.
                     Some(InstrStop::OutOfGas)

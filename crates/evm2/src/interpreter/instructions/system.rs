@@ -1,7 +1,7 @@
 //! System opcode implementations.
 
 use crate::{
-    EvmTypes, SpecId,
+    EvmFeatures, EvmTypes, SpecId,
     constants::{CALL_DEPTH_LIMIT, EIP7702_BYTECODE_LEN, EIP7702_MAGIC_BYTES, EIP7702_VERSION},
     interpreter::{
         Host, InstrStop, InterpreterState, Message, MessageKind, MessageResult, Result, StackMut,
@@ -272,7 +272,7 @@ fn create_inner<T: EvmTypes>(
     let salt = if is_create2 { Some(stack.pop()?) } else { None };
 
     let len = word_to_usize(len)?;
-    if cx.state.spec().enables(SpecId::SHANGHAI) {
+    if cx.state.version().feature(EvmFeatures::EIP3860) {
         if len > cx.state.version().max_initcode_size {
             return Err(InstrStop::CreateInitCodeSizeLimit);
         }

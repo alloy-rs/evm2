@@ -401,7 +401,6 @@ pub(super) fn rollback_failed_execution<T: EvmTypes<Host = Evm<T>>>(
 
 pub(super) fn settle_gas<T: EvmTypes<Host = Evm<T>>>(
     host: &mut Evm<T>,
-    spec_id: SpecId,
     caller: Address,
     gas_price: U256,
     tx_gas_limit: u64,
@@ -412,7 +411,7 @@ pub(super) fn settle_gas<T: EvmTypes<Host = Evm<T>>>(
         final_tx_gas(&result, tx_gas_limit, host.feature(EvmFeatures::EIP3529), floor_gas);
     if host.feature(EvmFeatures::FEE_CHARGE) {
         host.state.add_balance(caller, U256::from(gas_remaining) * gas_price);
-        let beneficiary_gas_price = if spec_id.enables(SpecId::LONDON) {
+        let beneficiary_gas_price = if host.feature(EvmFeatures::BASE_FEE_CHECK) {
             gas_price.saturating_sub(host.block.basefee)
         } else {
             gas_price
