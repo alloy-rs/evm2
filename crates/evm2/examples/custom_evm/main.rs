@@ -2,10 +2,6 @@
 
 #![allow(missing_docs, clippy::missing_const_for_fn)]
 
-pub mod config;
-pub mod opcode;
-pub mod tx;
-
 use crate::config::CustomConfigSelector;
 use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{Address, Bytes};
@@ -21,14 +17,18 @@ use evm2::{
 use std::{cell::RefCell, rc::Rc};
 use tx::{CustomEnvelope, ExecuteCodeTx, custom_registry};
 
+pub mod config;
+pub mod opcode;
+pub mod tx;
+
 fn main() -> HandlerResult<()> {
-    custom_opcode_showcase()?;
-    mainnet_fallback_showcase()?;
-    inspector_showcase()?;
+    custom_opcode()?;
+    mainnet_fallback()?;
+    inspector()?;
     Ok(())
 }
 
-fn custom_opcode_showcase() -> HandlerResult<()> {
+fn custom_opcode() -> HandlerResult<()> {
     let mut evm = custom_evm();
     let tx = custom_opcode_tx(Bytes::from_static(&[
         opcode::CUSTOM_OPCODE,
@@ -59,7 +59,7 @@ fn custom_opcode_showcase() -> HandlerResult<()> {
     Ok(())
 }
 
-fn mainnet_fallback_showcase() -> HandlerResult<()> {
+fn mainnet_fallback() -> HandlerResult<()> {
     let mut evm = mainnet_evm();
     let tx = custom_opcode_tx(Bytes::from_static(&[opcode::CUSTOM_OPCODE, op::STOP]));
 
@@ -75,7 +75,7 @@ fn mainnet_fallback_showcase() -> HandlerResult<()> {
     Ok(())
 }
 
-fn inspector_showcase() -> HandlerResult<()> {
+fn inspector() -> HandlerResult<()> {
     let mut evm = custom_evm();
     let inspector_state = Rc::new(RefCell::new(InspectorState::default()));
     evm.set_inspector(ExampleInspector(Rc::clone(&inspector_state)));
