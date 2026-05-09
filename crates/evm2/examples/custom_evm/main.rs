@@ -2,26 +2,27 @@
 
 #![allow(clippy::missing_const_for_fn)]
 
-mod config;
-mod opcode;
-mod tx;
-
+use crate::config::CustomConfigSelector;
 use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{Address, Bytes};
 use config::{CustomSpecId, CustomTypes, custom_version};
 use evm2::{
-    Evm, ExecutionConfig, SpecId, Version,
+    Evm, EvmConfigSelector, SpecId, Version,
     env::BlockEnv,
     evm::{InMemoryDB, precompile::NoPrecompiles},
     interpreter::{InstrStop, op},
 };
 use tx::{CustomEnvelope, ExecuteCodeTx, custom_registry};
 
+mod config;
+mod opcode;
+mod tx;
+
 fn main() -> evm2::registry::HandlerResult<()> {
     let version = configured_custom_version();
     // Start from Osaka rules, then swap in the custom version tables and gas params.
     let execution_config =
-        ExecutionConfig::<CustomTypes>::for_spec_and_version(CustomSpecId::CustomOsaka, version);
+        CustomConfigSelector::execution_config(CustomSpecId::CustomOsaka).with_version(version);
 
     let custom_target = Address::from([0xcc; 20]);
     // This bytecode only succeeds when the custom opcode has been installed.

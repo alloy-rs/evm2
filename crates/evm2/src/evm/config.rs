@@ -53,12 +53,19 @@ pub trait EvmConfigSelector<T: EvmTypes>: Sized {
     /// runtime ID type.
     type Config<const BASE_SPEC_ID: u8>: EvmConfig<T>;
 
-    /// Ordered version tables for this selector's base-spec config family.
-    const VERSION_TABLES: &'static [&'static VersionTables<T>; SpecId::COUNT] =
-        &selector_version_tables::<T, Self>();
-
     /// Returns the selected execution config for `spec_id`.
     fn execution_config(spec_id: T::SpecId) -> ExecutionConfig<T>;
+}
+
+pub(crate) struct SelectorVersionTables<T, F>(core::marker::PhantomData<fn() -> (T, F)>);
+
+impl<T, F> SelectorVersionTables<T, F>
+where
+    T: EvmTypes,
+    F: EvmConfigSelector<T>,
+{
+    pub(crate) const VERSION_TABLES: &'static [&'static VersionTables<T>; SpecId::COUNT] =
+        &selector_version_tables::<T, F>();
 }
 
 const fn selector_version_tables<T, F>() -> [&'static VersionTables<T>; SpecId::COUNT]

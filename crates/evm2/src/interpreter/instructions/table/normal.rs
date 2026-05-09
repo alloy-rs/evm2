@@ -1,6 +1,7 @@
 use super::InspectMode;
 use crate::{
     EvmConfig, EvmConfigSelector, EvmTypes, SpecId, VersionTables,
+    evm::config::SelectorVersionTables,
     interpreter::{InterpreterState, Pc, Result, Stack, gas::Gas},
 };
 use core::hint::cold_path;
@@ -73,7 +74,9 @@ where
             let $name = make_table::<T, F::Config<{ SpecId::$spec as u8 }>, M>(
                 make_tables!(@previous_table [$($previous_table)*]),
                 match previous {
-                    Some(previous) => Some(F::VERSION_TABLES[previous as usize]),
+                    Some(previous) => {
+                        Some(SelectorVersionTables::<T, F>::VERSION_TABLES[previous as usize])
+                    }
                     None => None,
                 },
             );
