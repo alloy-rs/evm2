@@ -274,7 +274,7 @@ fn create_inner<T: EvmTypes>(
     let salt = if is_create2 { Some(stack.pop()?) } else { None };
 
     let len = word_to_usize(len)?;
-    if cx.state.version().feature(EvmFeatures::EIP3860) {
+    if cx.state.feature(EvmFeatures::EIP3860) {
         if len > cx.state.version().max_initcode_size {
             return Err(InstrStop::CreateInitCodeSizeLimit);
         }

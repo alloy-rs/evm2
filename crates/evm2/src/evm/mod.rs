@@ -160,6 +160,7 @@ pub struct Evm<T: EvmTypes> {
     spec_id: T::SpecId,
     #[debug(skip)]
     execution_config: ExecutionConfig<T>,
+    features: EvmFeatures,
     pub(crate) block: BlockEnv,
     registry: TxRegistry<T::Tx, TxResult, Self>,
     #[debug(skip)]
@@ -229,6 +230,7 @@ impl<T: EvmTypes> Evm<T> {
         );
         Self {
             spec_id,
+            features: execution_config.version().features,
             execution_config,
             block,
             registry,
@@ -370,7 +372,7 @@ impl<T: EvmTypes> Evm<T> {
     /// Returns `true` if the active EVM feature set contains `feature`.
     #[inline]
     pub const fn feature(&self, feature: EvmFeatures) -> bool {
-        self.version().feature(feature)
+        self.features.contains(feature)
     }
 
     /// Returns the active base specification ID.

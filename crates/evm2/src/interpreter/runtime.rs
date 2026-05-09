@@ -5,9 +5,13 @@ use super::{
     StackBacking, Word,
 };
 use crate::{
-    EvmTypes, ExecutionConfig, SpecId, Version, bytecode::Bytecode, env::TxEnv,
-    evm::inspector::Inspector, interpreter::instructions::table::InstrTable, trustme,
-    version::GasParams,
+    EvmTypes, ExecutionConfig, SpecId, Version,
+    bytecode::Bytecode,
+    env::TxEnv,
+    evm::inspector::Inspector,
+    interpreter::instructions::table::InstrTable,
+    trustme,
+    version::{EvmFeatures, GasParams},
 };
 use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::{Address, Bytes, Log};
@@ -36,6 +40,7 @@ pub struct Interpreter<'frame, T: EvmTypes> {
     gas: Gas,
     result: Result,
     spec: SpecId,
+    features: EvmFeatures,
     is_static: bool,
 
     #[debug(skip)]
@@ -61,6 +66,7 @@ impl<T: EvmTypes> Default for Interpreter<'_, T> {
             inspector: None,
             version: core::ptr::null(),
             spec: SpecId::DEFAULT,
+            features: EvmFeatures::empty(),
             // SAFETY: `MaybeUninit<Word>` does not need initialization.
             stack: unsafe { Box::new_uninit().assume_init() },
             _marker: PhantomData,
@@ -202,6 +208,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         self.inspector = inspector;
         self.version = version;
         self.spec = version.spec_id;
+        self.features = version.features;
 
         #[cfg(tco)]
         let r = self.step_tail(instructions);
@@ -351,6 +358,12 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
     #[inline]
     pub const fn spec(&self) -> SpecId {
         self.0.spec
+    }
+
+    /// Returns `true` if the active feature set contains `feature`.
+    #[inline]
+    pub const fn feature(&self, feature: EvmFeatures) -> bool {
+        self.0.features.contains(feature)
     }
 
     /// Returns the active dynamic gas parameters.
