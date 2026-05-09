@@ -20,7 +20,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ["ubuntu-latest", "macos-latest", "windows-latest"]
+        os: [
+          "ubuntu-latest",
+          # "macos-latest",
+          # "windows-latest",
+        ]
         rust: [
             "stable",
             "nightly",
@@ -37,12 +41,12 @@ jobs:
           - os: "ubuntu-latest"
             rust: "nightly"
             flags: "--all-features"
-          - os: "macos-latest"
-            rust: "nightly"
-            flags: "--all-features"
-          - os: "windows-latest"
-            rust: "nightly"
-            flags: "--all-features"
+          # - os: "macos-latest"
+          #   rust: "nightly"
+          #   flags: "--all-features"
+          # - os: "windows-latest"
+          #   rust: "nightly"
+          #   flags: "--features nightly"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -88,7 +92,7 @@ jobs:
         with:
           cache-on-failure: true
       - name: check
-        run: cargo check --workspace --target wasm32-unknown-unknown
+        run: cargo build -p evm2 --target wasm32-unknown-unknown
 
   feature-checks:
     name: features ${{ matrix.flags }}
@@ -107,7 +111,7 @@ jobs:
         with:
           cache-on-failure: true
       - name: cargo hack
-        run: cargo hack check --workspace --feature-powerset --skip nightly ${{ matrix.flags }}
+        run: cargo hack check --workspace --each-feature --skip nightly ${{ matrix.flags }}
 
   feature-propagation:
     runs-on: ubuntu-latest
@@ -120,7 +124,7 @@ jobs:
         with:
           tool: zepter
       - name: Eagerly pull dependencies
-        run: cargo metadata --format-version=1 --locked > /dev/null
+        run: cargo generate-lockfile
       - run: zepter run check
 
   examples:

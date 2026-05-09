@@ -110,19 +110,21 @@ std = [
     "alloy-primitives/std",
     "alloy-rlp/std",
     "alloy-trie/std",
-    "serde?/std",
-    "thiserror/std",
-    "k256/std",
-    "secp256k1?/std",
-    "aurora-engine-modexp/std",
+    "ark-bls12-381/std",
     "ark-bn254/std",
     "ark-ec/std",
     "ark-ff/std",
     "ark-serialize/std",
-    "c-kzg?/std",
-    "ark-bls12-381/std",
     "ark-std/std",
+    "aurora-engine-modexp/std",
+    "derive_more/std",
+    "k256/std",
+    "once_cell/std",
     "p256/std",
+    "thiserror/std",
+    "c-kzg?/std",
+    "secp256k1?/std",
+    "serde?/std",
 ]
 
 serde = [
@@ -131,6 +133,12 @@ serde = [
     "alloy-eips/serde",
     "alloy-primitives/serde",
     "alloy-trie/serde",
+    "ark-serialize/serde",
+    "k256/serde",
+    "p256/serde",
+    "blst?/serde",
+    "c-kzg?/serde",
+    "secp256k1?/serde"
 ]
 arbitrary = [
     "alloy-consensus/arbitrary",

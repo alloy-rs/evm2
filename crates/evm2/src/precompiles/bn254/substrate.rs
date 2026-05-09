@@ -120,9 +120,9 @@ pub(super) fn encode_g1_point(point: G1) -> [u8; G1_LEN] {
 /// Panics if the input is not at least 128 bytes long.
 #[inline]
 pub(super) fn read_g2_point(input: &[u8]) -> Result<G2, PrecompileHalt> {
-    let ba = read_fq2(&input[0..FQ2_LEN])?;
-    let bb = read_fq2(&input[FQ2_LEN..2 * FQ2_LEN])?;
-    new_g2_point(ba, bb)
+    let x = read_fq2(&input[0..FQ2_LEN])?;
+    let y = read_fq2(&input[FQ2_LEN..2 * FQ2_LEN])?;
+    new_g2_point(x, y)
 }
 
 /// Reads a scalar from the input slice
