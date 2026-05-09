@@ -104,6 +104,25 @@ jobs:
       - name: check
         run: cargo build -p evm2 --target wasm32-unknown-unknown --no-default-features
 
+  no-std:
+    name: no_std ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ["riscv32imac-unknown-none-elf", "riscv64imac-unknown-none-elf"]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: check
+        run: cargo build -p evm2 --target ${{ matrix.target }} --no-default-features
+
   feature-checks:
     name: features ${{ matrix.flags }}
     runs-on: ubuntu-latest
@@ -206,6 +225,7 @@ jobs:
       - test
       # - statetest
       - wasm
+      - no-std
       - feature-checks
       - feature-propagation
       - examples
