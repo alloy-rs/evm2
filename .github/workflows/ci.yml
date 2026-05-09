@@ -37,6 +37,7 @@ jobs:
           # Default features
           "",
         ]
+        fixture: [""]
         include:
           # All features
           - kind: "test"
@@ -81,6 +82,8 @@ jobs:
         with:
           cache-on-failure: true
       - uses: taiki-e/install-action@nextest
+      - uses: astral-sh/setup-uv@v7
+        if: ${{ matrix.kind == 'statetest' }}
       - name: Download state test fixtures
         if: ${{ matrix.kind == 'statetest' }}
         shell: bash
@@ -90,7 +93,7 @@ jobs:
               export DEVNET_TAR="fixtures_snobal-devnet-6.tar.gz"
               export EVM2_STATETEST_DEVNET_ONLY=1
             fi
-            ./scripts/setup-test-fixtures.sh
+            ./scripts/setup_test_fixtures.py
       - name: ${{ matrix.kind }}
         shell: bash
         run: |

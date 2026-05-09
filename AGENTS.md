@@ -23,7 +23,7 @@ cargo nextest run --ignore-default-filter # include statetests
 
 ## State Tests
 
-`./scripts/setup-test-fixtures.sh` downloads fixtures into `test-fixtures/`.
+`./scripts/setup_test_fixtures.py` downloads fixtures into `test-fixtures/`.
 By default it downloads EEST develop (or stable with `EVM2_STATETEST_STABLE=1`)
 and legacy Cancun/Constantinople. Devnet fixtures are opt-in with
 `DEVNET_VERSION` and `DEVNET_TAR`; add `EVM2_STATETEST_DEVNET_ONLY=1` to skip

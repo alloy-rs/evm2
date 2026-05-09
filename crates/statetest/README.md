@@ -17,7 +17,7 @@ test-fixtures/
 Populate it with:
 
 ```sh
-./scripts/setup-test-fixtures.sh
+./scripts/setup_test_fixtures.py
 ```
 
 The script downloads into `test-fixtures` and exits early for suites that are
