@@ -1,5 +1,5 @@
 use crate::{
-    BaseEvmConfig, EvmConfig, EvmTypes, SpecId,
+    BaseEvmConfigSelector, EvmTypes, ExecutionConfig, SpecId,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
     evm::{AccountLoad, SLoad, SStore, SelfDestructResult, inspector::Inspector},
@@ -280,12 +280,6 @@ impl Default for RunConfig<'_> {
 }
 
 pub(super) fn run(config: RunConfig<'_>) -> TestInterpreter {
-    crate::spec_to_generic!(config.spec_id, |BASE_SPEC_ID| {
-        run_with_config::<BaseEvmConfig<BASE_SPEC_ID>>(config)
-    })
-}
-
-fn run_with_config<C: EvmConfig<TestTypes>>(config: RunConfig<'_>) -> TestInterpreter {
     let RunConfig { code, host, spec_id, tx_env, mut message, gas_limit, return_data } = config;
     let bytecode = Bytecode::new_legacy(Bytes::from(code));
     message.gas_limit = gas_limit;
@@ -294,7 +288,8 @@ fn run_with_config<C: EvmConfig<TestTypes>>(config: RunConfig<'_>) -> TestInterp
     let mut default_host = TestHost::default();
     let host = host.unwrap_or(&mut default_host);
     host.spec_id = spec_id;
-    let err = inner.run::<C>(host);
+    let config = ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(spec_id);
+    let err = inner.run_with(&config, host);
     let (stack, stack_len, gas, memory, output) = inner.into_parts();
     TestInterpreter { stack, stack_len, gas, memory, output, err }
 }
@@ -361,8 +356,8 @@ fn typed_inspector_run_steps() {
     let mut host = TestHost::default();
     let mut inspector = StepInspector::default();
 
-    let stop = inner
-        .run_with_inspector::<BaseEvmConfig<{ SpecId::OSAKA as u8 }>, _>(&mut host, &mut inspector);
+    let config = ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(SpecId::OSAKA);
+    let stop = inner.run_with_dyn_inspector(&config, &mut host, &mut inspector);
 
     assert_eq!(stop, InstrStop::Stop);
     assert_eq!(inspector.steps, 1);

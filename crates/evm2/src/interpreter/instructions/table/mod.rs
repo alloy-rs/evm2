@@ -1,7 +1,7 @@
 //! Instruction dispatch tables.
 
 use crate::{
-    EvmConfig, EvmTypes,
+    EvmConfigSelector, EvmTypes, InstrTables, VersionTables,
     interpreter::{InstrStop, InterpreterState, Pc, Result, StackMut, op},
 };
 
@@ -69,20 +69,30 @@ pub(crate) type InstrFn<T> = imp::RawInstrFn<T>;
 /// Instruction dispatch table.
 pub(crate) type InstrTable<T> = imp::RawInstrTable<T>;
 
-pub(crate) trait InstrTables<C>: EvmTypes
-where
-    C: EvmConfig<Self>,
-{
-    const INSTRUCTIONS: &'static InstrTable<Self> = &imp::make_table::<Self, C, NoInspector>();
-    const INSPECT_INSTRUCTIONS: &'static InstrTable<Self> =
-        &imp::make_table::<Self, C, DynInspector>();
-}
-
-impl<T, C> InstrTables<C> for T
+#[allow(private_interfaces)]
+impl<T, F> InstrTables<F> for T
 where
     T: EvmTypes,
-    C: EvmConfig<T>,
+    F: EvmConfigSelector<T>,
 {
+    const INSTRUCTIONS: &'static [InstrTable<Self>; crate::SpecId::COUNT] =
+        &imp::make_selector_tables::<Self, F, NoInspector>();
+    const INSPECT_INSTRUCTIONS: &'static [InstrTable<Self>; crate::SpecId::COUNT] =
+        &imp::make_selector_tables::<Self, F, DynInspector>();
+}
+
+pub(super) const fn instruction_changed<T: EvmTypes>(
+    version_tables: &VersionTables<T>,
+    previous_version_tables: Option<&VersionTables<T>>,
+    op: u8,
+) -> bool {
+    let Some(previous_version_tables) = previous_version_tables else {
+        return true;
+    };
+    let instruction = version_tables.instruction(op);
+    let previous_instruction = previous_version_tables.instruction(op);
+    version_tables.static_gas_revision(op) != previous_version_tables.static_gas_revision(op)
+        || instruction.revision != previous_instruction.revision
 }
 
 #[inline(always)]
@@ -100,7 +110,7 @@ const fn instruction_len(op: u8) -> usize {
     }
 }
 
-pub(super) trait InspectMode<T: EvmTypes> {
+pub(crate) trait InspectMode<T: EvmTypes> {
     const INSPECT: bool;
 
     fn step(state: &mut InterpreterState<'_, T>, pc: Pc, stack_len: usize);
@@ -108,7 +118,7 @@ pub(super) trait InspectMode<T: EvmTypes> {
     fn step_end(state: &mut InterpreterState<'_, T>, pc: Pc, stack_len: usize);
 }
 
-pub(super) struct NoInspector;
+pub(crate) struct NoInspector;
 
 impl<T: EvmTypes> InspectMode<T> for NoInspector {
     const INSPECT: bool = false;
@@ -120,7 +130,7 @@ impl<T: EvmTypes> InspectMode<T> for NoInspector {
     fn step_end(_state: &mut InterpreterState<'_, T>, _pc: Pc, _stack_len: usize) {}
 }
 
-pub(super) struct DynInspector;
+pub(crate) struct DynInspector;
 
 impl<T: EvmTypes> InspectMode<T> for DynInspector {
     const INSPECT: bool = true;

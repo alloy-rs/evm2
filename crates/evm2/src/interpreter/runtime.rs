@@ -5,12 +5,8 @@ use super::{
     StackBacking, Word,
 };
 use crate::{
-    EvmConfig, EvmTypes, ExecutionConfig, SpecId, Version,
-    bytecode::Bytecode,
-    env::TxEnv,
-    evm::inspector::Inspector,
-    interpreter::instructions::table::{InstrTable, InstrTables},
-    version::GasParams,
+    EvmTypes, ExecutionConfig, SpecId, Version, bytecode::Bytecode, env::TxEnv,
+    evm::inspector::Inspector, interpreter::instructions::table::InstrTable, version::GasParams,
 };
 use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::Bytes;
@@ -170,33 +166,10 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         &mut self.gas
     }
 
-    /// Runs the interpreter until it stops, using `C` as the EVM configuration.
-    #[inline]
-    pub fn run<C: EvmConfig<T>>(&mut self, host: &mut T::Host) -> InstrStop {
-        let version = Version::new(C::BASE_SPEC_ID);
-        self.run_inner(&version, host, None, <T as InstrTables<C>>::INSTRUCTIONS)
-    }
-
     /// Runs the interpreter until it stops.
     #[inline]
     pub fn run_with(&mut self, config: &ExecutionConfig<T>, host: &mut T::Host) -> InstrStop {
         self.run_inner(config.version(), host, None, config.instructions)
-    }
-
-    /// Runs the interpreter until it stops with an execution inspector.
-    #[inline]
-    pub fn run_with_inspector<C, I>(&mut self, host: &mut T::Host, inspector: &mut I) -> InstrStop
-    where
-        C: EvmConfig<T>,
-        I: Inspector<T>,
-    {
-        let version = Version::new(C::BASE_SPEC_ID);
-        self.run_inner(
-            &version,
-            host,
-            Some(NonNull::from(inspector) as NonNull<dyn Inspector<T>>),
-            <T as InstrTables<C>>::INSPECT_INSTRUCTIONS,
-        )
     }
 
     /// Runs the interpreter until it stops with an execution inspector.
@@ -276,7 +249,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         let instr = instructions[op as usize];
         let stack = Stack::new(&mut self.stack, self.stack_len);
         let remaining_gas = RemainingGas::new(self.gas.remaining());
-        instr(pc, stack, remaining_gas, state);
+        instr(pc, stack, remaining_gas, state, (instructions as *const InstrTable<T>).cast());
         self.result.unwrap_err()
     }
 }

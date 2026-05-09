@@ -932,7 +932,7 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
 mod tests {
     use super::*;
     use crate::{
-        BaseEvmConfig, BaseEvmTypes, Precompiles, SpecId,
+        BaseEvmConfigSelector, BaseEvmTypes, Precompiles, SpecId,
         bytecode::Bytecode,
         ethereum::RecoveredTxEnvelope,
         interpreter::{MessageKind, op},
@@ -994,7 +994,7 @@ mod tests {
             handle_test_tx,
         );
         let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
-            ExecutionConfig::for_config::<BaseEvmConfig<{ SpecId::OSAKA as u8 }>>(),
+            ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(SpecId::OSAKA),
             SpecId::OSAKA,
             BlockEnv::default(),
             registry,

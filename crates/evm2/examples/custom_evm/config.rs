@@ -2,11 +2,11 @@
 
 use crate::opcode;
 use evm2::{
-    BaseEvmConfig, Evm, EvmConfig, EvmConfigSelector, EvmTypes, ExecutionConfig, SpecId, Version,
-    VersionTables,
+    BaseEvmConfigSelector, Evm, EvmConfig, EvmConfigSelector, EvmTypes, ExecutionConfig, SpecId,
+    Version, VersionTables,
 };
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CustomSpecId {
     MainnetOsaka,
     CustomOsaka,
@@ -60,9 +60,9 @@ impl EvmConfigSelector<CustomTypes> for CustomConfigSelector {
 
     fn execution_config(spec_id: CustomSpecId) -> ExecutionConfig<CustomTypes> {
         match spec_id {
-            // Use unmodified revm-compatible Osaka tables.
+            // Use unmodified Osaka tables.
             CustomSpecId::MainnetOsaka => {
-                ExecutionConfig::for_config::<BaseEvmConfig<{ SpecId::OSAKA as u8 }>>()
+                ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(SpecId::OSAKA)
             }
             // Use the same base spec, with the custom tables from `CustomConfig`.
             CustomSpecId::CustomOsaka => {

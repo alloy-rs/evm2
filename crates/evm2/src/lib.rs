@@ -18,7 +18,7 @@ pub use evm::{
     SYSTEM_ADDRESS, SYSTEM_CALL_GAS_LIMIT, TxResult, WITHDRAWAL_REQUEST_ADDRESS, config,
     config::{
         BaseEvmConfig, BaseEvmConfigSelector, BaseEvmTypes, EvmConfig, EvmConfigSelector, EvmTypes,
-        ExecutionConfig,
+        ExecutionConfig, InstrTables,
     },
     env, inspector, precompile, registry,
 };

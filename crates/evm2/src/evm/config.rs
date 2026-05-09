@@ -3,11 +3,7 @@
 use crate::{
     SpecId, VersionTables,
     ethereum::RecoveredTxEnvelope,
-    interpreter::{
-        Host,
-        instructions::table::{InstrTable, InstrTables},
-    },
-    spec_to_generic,
+    interpreter::{Host, instructions::table::InstrTable},
     version::Version,
 };
 
@@ -54,8 +50,41 @@ pub trait EvmConfigSelector<T: EvmTypes>: Sized {
     /// runtime ID type.
     type Config<const BASE_SPEC_ID: u8>: EvmConfig<T>;
 
+    /// Ordered version tables for this selector's base-spec config family.
+    const VERSION_TABLES: &'static [&'static VersionTables<T>; SpecId::COUNT] =
+        &selector_version_tables::<T, Self>();
+
     /// Returns the selected execution config for `spec_id`.
     fn execution_config(spec_id: T::SpecId) -> ExecutionConfig<T>;
+}
+
+#[doc(hidden)]
+#[allow(private_interfaces)]
+pub trait InstrTables<F>: EvmTypes
+where
+    F: EvmConfigSelector<Self>,
+{
+    const INSTRUCTIONS: &'static [InstrTable<Self>; SpecId::COUNT];
+    const INSPECT_INSTRUCTIONS: &'static [InstrTable<Self>; SpecId::COUNT];
+}
+
+const fn selector_version_tables<T, F>() -> [&'static VersionTables<T>; SpecId::COUNT]
+where
+    T: EvmTypes,
+    F: EvmConfigSelector<T>,
+{
+    macro_rules! version_tables {
+        ([$evm_types:ty, $selector:ty] $($spec:ident $name:ident,)*) => {
+            [
+                $(
+                    <<$selector as EvmConfigSelector<$evm_types>>::Config<{ SpecId::$spec as u8 }>
+                        as EvmConfig<$evm_types>>::VERSION_TABLES,
+                )*
+            ]
+        };
+    }
+
+    crate::for_each_spec!([T, F] version_tables)
 }
 
 /// Selected execution configuration.
@@ -81,25 +110,23 @@ impl<T: EvmTypes> Clone for ExecutionConfig<T> {
 impl<T: EvmTypes> Copy for ExecutionConfig<T> {}
 
 impl<T: EvmTypes> ExecutionConfig<T> {
-    /// Creates an execution config for a concrete compile-time config.
-    #[inline]
-    pub const fn for_config<C: EvmConfig<T>>() -> Self {
-        Self {
-            version: Version::new(C::BASE_SPEC_ID),
-            instructions: <T as InstrTables<C>>::INSTRUCTIONS,
-            inspect_instructions: <T as InstrTables<C>>::INSPECT_INSTRUCTIONS,
-        }
-    }
-
     /// Creates an execution config for a base `SpecId` through selector `F`.
     ///
     /// The selector provides the concrete `Config<BASE_SPEC_ID>` used for the inherited base
     /// version.
     #[inline]
-    pub const fn for_base_spec<F: EvmConfigSelector<T>>(base_spec_id: SpecId) -> Self {
-        spec_to_generic!(base_spec_id, |BASE_SPEC_ID| {
-            Self::for_config::<F::Config<BASE_SPEC_ID>>()
-        })
+    pub const fn for_base_spec<F: EvmConfigSelector<T>>(base_spec_id: SpecId) -> Self
+    where
+        T: InstrTables<F>,
+    {
+        let i = base_spec_id as usize;
+        let instructions = <T as InstrTables<F>>::INSTRUCTIONS;
+        let inspect_instructions = <T as InstrTables<F>>::INSPECT_INSTRUCTIONS;
+        Self {
+            version: Version::new(base_spec_id),
+            instructions: &instructions[i],
+            inspect_instructions: &inspect_instructions[i],
+        }
     }
 
     /// Creates an execution config for `spec_id` with dynamic runtime version data.
@@ -143,7 +170,7 @@ impl EvmTypes for BaseEvmTypes {
 pub struct BaseEvmConfig<const BASE_SPEC_ID: u8>(());
 
 impl<T: EvmTypes, const BASE_SPEC_ID: u8> EvmConfig<T> for BaseEvmConfig<BASE_SPEC_ID> {
-    const BASE_SPEC_ID: SpecId = SpecId::try_from_u8(BASE_SPEC_ID).unwrap();
+    const BASE_SPEC_ID: SpecId = SpecId::try_from_u8(BASE_SPEC_ID).expect("invalid spec id");
     const VERSION_TABLES: &'static VersionTables<T> = &VersionTables::<T>::base::<Self>();
 }
 
@@ -151,10 +178,10 @@ impl<T: EvmTypes, const BASE_SPEC_ID: u8> EvmConfig<T> for BaseEvmConfig<BASE_SP
 #[allow(missing_copy_implementations, missing_debug_implementations)]
 pub struct BaseEvmConfigSelector(());
 
-impl<T: EvmTypes<SpecId = SpecId>> EvmConfigSelector<T> for BaseEvmConfigSelector {
+impl<T: EvmTypes> EvmConfigSelector<T> for BaseEvmConfigSelector {
     type Config<const BASE_SPEC_ID: u8> = BaseEvmConfig<BASE_SPEC_ID>;
 
     fn execution_config(spec_id: T::SpecId) -> ExecutionConfig<T> {
-        ExecutionConfig::for_base_spec::<Self>(spec_id)
+        ExecutionConfig::for_base_spec::<Self>(spec_id.into())
     }
 }

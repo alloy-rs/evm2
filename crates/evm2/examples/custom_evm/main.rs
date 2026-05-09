@@ -8,9 +8,9 @@ mod tx;
 
 use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{Address, Bytes};
-use config::{CustomConfig, CustomConfigSelector, CustomSpecId, CustomTypes, custom_version};
+use config::{CustomSpecId, CustomTypes, custom_version};
 use evm2::{
-    Evm, EvmConfig, EvmConfigSelector, SpecId, Version,
+    Evm, ExecutionConfig, SpecId, Version,
     env::BlockEnv,
     evm::{InMemoryDB, precompile::NoPrecompiles},
     interpreter::{InstrStop, op},
@@ -21,7 +21,7 @@ fn main() -> evm2::registry::HandlerResult<()> {
     let version = configured_custom_version();
     // Start from Osaka rules, then swap in the custom version tables and gas params.
     let execution_config =
-        CustomConfigSelector::execution_config(CustomSpecId::CustomOsaka).with_version(version);
+        ExecutionConfig::<CustomTypes>::for_spec_and_version(CustomSpecId::CustomOsaka, version);
 
     let custom_target = Address::from([0xcc; 20]);
     // This bytecode only succeeds when the custom opcode has been installed.
@@ -38,13 +38,6 @@ fn main() -> evm2::registry::HandlerResult<()> {
         custom_registry(),
         InMemoryDB::default(),
         NoPrecompiles,
-    );
-    assert_eq!(evm.spec_id(), SpecId::OSAKA);
-    assert_eq!(evm.version().memory_limit, version.memory_limit);
-    assert_eq!(
-        <CustomConfig<{ SpecId::OSAKA as u8 }> as EvmConfig<CustomTypes>>::VERSION_TABLES
-            .static_gas(opcode::CUSTOM_OPCODE),
-        opcode::CUSTOM_OPCODE_GAS,
     );
 
     let execute_result = evm.transact(&execute_code_tx)?;
@@ -66,6 +59,7 @@ fn main() -> evm2::registry::HandlerResult<()> {
         InMemoryDB::default(),
         NoPrecompiles,
     );
+    assert_eq!(mainnet_evm.config_spec_id(), CustomSpecId::MainnetOsaka);
     let mainnet_result = mainnet_evm.transact(&execute_code_tx)?;
     assert_eq!(mainnet_result.stop, InstrStop::OpcodeNotFound);
     assert!(!mainnet_result.status);

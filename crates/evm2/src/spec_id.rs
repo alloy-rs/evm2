@@ -93,6 +93,18 @@ impl SpecId {
         None
     }
 
+    /// Returns the previous specification ID.
+    #[inline]
+    pub const fn prev(self) -> Option<Self> {
+        Self::try_from_u8((self as u8).wrapping_sub(1))
+    }
+
+    /// Returns the next specification ID.
+    #[inline]
+    pub const fn next(self) -> Option<Self> {
+        Self::try_from_u8((self as u8).wrapping_add(1))
+    }
+
     /// Returns `true` if this specification enables `other`.
     #[inline]
     pub const fn enables(self, other: Self) -> bool {
@@ -124,63 +136,53 @@ impl TryFrom<u8> for SpecId {
 }
 
 /// Maps a base specification ID to its compile-time `u8` discriminant.
+///
+/// Syntax: `spec_to_generic!(spec_id_value, |SPEC_ID| do_something::<SPEC_ID>())`
 #[macro_export]
 macro_rules! spec_to_generic {
     (@spec $spec_id:ident, |$spec_const:ident| $e:expr) => {{
         const $spec_const: u8 = $crate::SpecId::$spec_id as u8;
         $e
     }};
-    ($spec_id:expr, |$spec_const:ident| $e:expr) => {{
+    ([@match $spec_id:expr, $spec_const:ident, $e:expr] $($spec:ident $name:ident,)*) => {{
         match $spec_id {
-            $crate::SpecId::FRONTIER => {
-                $crate::spec_to_generic!(@spec FRONTIER, |$spec_const| $e)
-            }
-            $crate::SpecId::HOMESTEAD => {
-                $crate::spec_to_generic!(@spec HOMESTEAD, |$spec_const| $e)
-            }
-            $crate::SpecId::TANGERINE => {
-                $crate::spec_to_generic!(@spec TANGERINE, |$spec_const| $e)
-            }
-            $crate::SpecId::SPURIOUS_DRAGON => {
-                $crate::spec_to_generic!(@spec SPURIOUS_DRAGON, |$spec_const| $e)
-            }
-            $crate::SpecId::BYZANTIUM => {
-                $crate::spec_to_generic!(@spec BYZANTIUM, |$spec_const| $e)
-            }
-            $crate::SpecId::PETERSBURG => {
-                $crate::spec_to_generic!(@spec PETERSBURG, |$spec_const| $e)
-            }
-            $crate::SpecId::ISTANBUL => {
-                $crate::spec_to_generic!(@spec ISTANBUL, |$spec_const| $e)
-            }
-            $crate::SpecId::BERLIN => {
-                $crate::spec_to_generic!(@spec BERLIN, |$spec_const| $e)
-            }
-            $crate::SpecId::LONDON => {
-                $crate::spec_to_generic!(@spec LONDON, |$spec_const| $e)
-            }
-            $crate::SpecId::MERGE => {
-                $crate::spec_to_generic!(@spec MERGE, |$spec_const| $e)
-            }
-            $crate::SpecId::SHANGHAI => {
-                $crate::spec_to_generic!(@spec SHANGHAI, |$spec_const| $e)
-            }
-            $crate::SpecId::CANCUN => {
-                $crate::spec_to_generic!(@spec CANCUN, |$spec_const| $e)
-            }
-            $crate::SpecId::PRAGUE => {
-                $crate::spec_to_generic!(@spec PRAGUE, |$spec_const| $e)
-            }
-            $crate::SpecId::OSAKA => {
-                $crate::spec_to_generic!(@spec OSAKA, |$spec_const| $e)
-            }
-            $crate::SpecId::AMSTERDAM => {
-                $crate::spec_to_generic!(@spec AMSTERDAM, |$spec_const| $e)
-            }
+            $(
+                $crate::SpecId::$spec => {
+                    $crate::spec_to_generic!(@spec $spec, |$spec_const| $e)
+                }
+            )*
             #[allow(unreachable_patterns)]
             _ => unreachable!(),
         }
     }};
+    ($spec_id:expr, |$spec_const:ident| $e:expr) => {{
+        $crate::for_each_spec!([@match $spec_id, $spec_const, $e] $crate::spec_to_generic)
+    }};
+}
+
+/// Calls a macro with all specification IDs in activation order.
+#[macro_export]
+macro_rules! for_each_spec {
+    ([$($extra:tt)*] $($m:tt)+) => {
+        $($m)+! {
+            [$($extra)*]
+            FRONTIER frontier,
+            HOMESTEAD homestead,
+            TANGERINE tangerine,
+            SPURIOUS_DRAGON spurious_dragon,
+            BYZANTIUM byzantium,
+            PETERSBURG petersburg,
+            ISTANBUL istanbul,
+            BERLIN berlin,
+            LONDON london,
+            MERGE merge,
+            SHANGHAI shanghai,
+            CANCUN cancun,
+            PRAGUE prague,
+            OSAKA osaka,
+            AMSTERDAM amsterdam,
+        }
+    };
 }
 
 #[cfg(test)]
