@@ -37,11 +37,11 @@ macro_rules! assign_instruction_table_entry {
         let changed = super::instruction_changed($vt, $previous_vt, $op);
         if changed {
             $table[$op] = if $vt.is_unknown_opcode($op) {
-                $($dispatch)* 0xFE, false> as $instr_fn
+                $($dispatch)* 0xFE, false, true> as $instr_fn
             } else if $vt.instruction($op).dynamic_gas {
-                $($dispatch)* $op, true> as $instr_fn
+                $($dispatch)* $op, true, false> as $instr_fn
             } else {
-                $($dispatch)* $op, false> as $instr_fn
+                $($dispatch)* $op, false, false> as $instr_fn
             };
         }
     }};
@@ -58,7 +58,7 @@ where
 {
     let mut table = match previous {
         Some(previous) => *previous,
-        None => [tail_dispatch::<T, C, M, 0xFE, false> as super::InstrFn<T>; 256],
+        None => [tail_dispatch::<T, C, M, 0xFE, false, true> as super::InstrFn<T>; 256],
     };
     let vt = C::VERSION_TABLES;
     for_each_opcode_value!([table, vt, previous_version_tables, super::InstrFn<T>, [tail_dispatch::<T, C, M,]] assign_instruction_table_entries);
@@ -111,6 +111,35 @@ extern_table! {
         M: InspectMode<T>,
         const OP: u8,
         const DYNAMIC_GAS: bool,
+        const UNKNOWN: bool,
+    >(
+        pc: Pc,
+        stack: Stack<'_>,
+        remaining_gas: RemainingGas,
+        state: &mut InterpreterState<'_, T>,
+        instructions: *const (),
+    ) {
+        if !UNKNOWN {
+            unsafe { core::hint::assert_unchecked(pc.op() == OP) };
+        }
+        tail_return!(tail_dispatch_mono::<T, C, M, DYNAMIC_GAS, UNKNOWN>(
+            pc,
+            stack,
+            remaining_gas,
+            state,
+            instructions
+        ));
+    }
+}
+
+extern_table! {
+    #[inline(always)]
+    fn tail_dispatch_mono<
+        T: EvmTypes,
+        C: EvmConfig<T>,
+        M: InspectMode<T>,
+        const DYNAMIC_GAS: bool,
+        const UNKNOWN: bool,
     >(
         mut pc: Pc,
         mut stack: Stack<'_>,
@@ -118,8 +147,12 @@ extern_table! {
         state: &mut InterpreterState<'_, T>,
         instructions: *const (),
     ) {
-        let op = OP;
-        let instr = C::VERSION_TABLES.instruction(OP).instr;
+        let (op, instr) = if UNKNOWN {
+            (0xFE, super::unknown_instruction as crate::interpreter::private::InstructionImplFn<T>)
+        } else {
+            let op = pc.op();
+            (op, C::VERSION_TABLES.instruction(op).instr)
+        };
         if M::INSPECT {
             M::step(state, pc, stack.len);
         }
