@@ -1,17 +1,24 @@
 use super::InspectMode;
 use crate::{
     EvmConfig, EvmConfigSelector, EvmTypes, SpecId, VersionTables,
+    constants::STACK_LIMIT,
     evm::config::SelectorVersionTables,
-    interpreter::{InterpreterState, Pc, Result, Stack, gas::Gas},
+    interpreter::{InterpreterState, Pc, Result, Stack, gas::RemainingGas},
 };
 use core::hint::cold_path;
 
 /// Normal instruction return value.
-pub(crate) type InstrFnRet = (*const u8, usize);
+pub(crate) type InstrFnRet = (PackedPcStackLen, RemainingGas);
 
 /// Normal instruction function pointer.
-pub(super) type RawInstrFn<T> =
-    extern_table!(fn(pc: Pc, stack: Stack<'_>, state: &mut InterpreterState<'_, T>) -> InstrFnRet);
+pub(super) type RawInstrFn<T> = extern_table!(
+    fn(
+        pc: Pc,
+        stack: Stack<'_>,
+        remaining_gas: RemainingGas,
+        state: &mut InterpreterState<'_, T>,
+    ) -> InstrFnRet
+);
 
 /// Normal instruction dispatch table.
 pub(super) type RawInstrTable<T> = [RawInstrFn<T>; 256];
@@ -20,7 +27,12 @@ macro_rules! assign_instruction_table_entries {
     ([$table:expr, $evm_types:ty, $config:ty, $mode:ty, $vt:ident, $previous_vt:ident, $dispatch:ident, $instr_fn:ty] $($op:literal,)*) => {
         $(
             if super::instruction_changed($vt, $previous_vt, $op) {
-                $table[$op] = $dispatch::<$evm_types, $config, $mode, $op> as $instr_fn;
+                let instruction = <$config as EvmConfig<$evm_types>>::VERSION_TABLES.instruction($op);
+                $table[$op] = if instruction.dynamic_gas {
+                    $dispatch::<$evm_types, $config, $mode, $op, true> as $instr_fn
+                } else {
+                    $dispatch::<$evm_types, $config, $mode, $op, false> as $instr_fn
+                };
             }
         )*
     };
@@ -37,7 +49,7 @@ where
 {
     let mut table = match previous {
         Some(previous) => *previous,
-        None => [dispatch::<T, C, M, 0> as super::InstrFn<T>; 256],
+        None => [dispatch::<T, C, M, 0, true> as super::InstrFn<T>; 256],
     };
     let vt = C::VERSION_TABLES;
     for_each_opcode_value!([table, T, C, M, vt, previous_version_tables, dispatch, super::InstrFn<T>] assign_instruction_table_entries);
@@ -103,20 +115,23 @@ extern_table! {
         C: EvmConfig<T>,
         M: InspectMode<T>,
         const OP: u8,
+        const DYNAMIC_GAS: bool,
     >(
         pc: Pc,
         stack: Stack<'_>,
+        remaining_gas: RemainingGas,
         state: &mut InterpreterState<'_, T>,
     ) -> InstrFnRet {
-        dispatch_mono::<T, C, M>(pc, stack, state, OP)
+        dispatch_mono::<T, C, M, DYNAMIC_GAS>(pc, stack, remaining_gas, state, OP)
     }
 }
 
 #[cold] // Not cold, but avoids MIR inlining.
 #[inline(always)]
-fn dispatch_mono<T: EvmTypes, C: EvmConfig<T>, M: InspectMode<T>>(
+fn dispatch_mono<T: EvmTypes, C: EvmConfig<T>, M: InspectMode<T>, const DYNAMIC_GAS: bool>(
     mut pc: Pc,
     mut stack: Stack<'_>,
+    mut remaining_gas: RemainingGas,
     state: &mut InterpreterState<'_, T>,
     op: u8,
 ) -> InstrFnRet {
@@ -125,14 +140,25 @@ fn dispatch_mono<T: EvmTypes, C: EvmConfig<T>, M: InspectMode<T>>(
         M::step(state, pc, stack.len);
     }
     let r;
-    match pre_step::<T, C>(state.gas_mut(), op) {
+    match pre_step::<T, C>(&mut remaining_gas, op) {
         Ok(()) => {
+            if M::INSPECT || DYNAMIC_GAS {
+                state.gas_mut().set_remaining(remaining_gas.get());
+            }
             r = instr(&mut pc, stack.as_mut(), state);
+            if DYNAMIC_GAS {
+                remaining_gas.set(state.gas_mut().remaining());
+            }
             if !M::INSPECT || r.is_ok() {
                 super::inc_pc(&mut pc, op);
             }
         }
-        Err(e) => r = Err(e),
+        Err(e) => {
+            if M::INSPECT {
+                state.gas_mut().set_remaining(remaining_gas.get());
+            }
+            r = Err(e);
+        }
     }
     if M::INSPECT {
         state.set_result(r);
@@ -143,12 +169,40 @@ fn dispatch_mono<T: EvmTypes, C: EvmConfig<T>, M: InspectMode<T>>(
         if !M::INSPECT {
             state.set_result(r);
         }
-        return (core::ptr::null(), stack.len);
+        let stack_len = if stack.len <= STACK_LIMIT { stack.len } else { 0 };
+        return (PackedPcStackLen::pack(core::ptr::null(), stack_len), remaining_gas);
     }
-    (pc.as_ptr(), stack.len)
+    (PackedPcStackLen::pack(pc.as_ptr(), stack.len), remaining_gas)
 }
 
-#[inline(always)]
-const fn pre_step<T: EvmTypes, C: EvmConfig<T>>(gas: &mut Gas, op: u8) -> Result {
-    gas.spend(C::VERSION_TABLES.static_gas(op) as _)
+#[inline]
+const fn pre_step<T: EvmTypes, C: EvmConfig<T>>(
+    remaining_gas: &mut RemainingGas,
+    op: u8,
+) -> Result {
+    remaining_gas.spend(C::VERSION_TABLES.static_gas(op) as _)
+}
+
+const STACK_LEN_BITS: u32 = 11;
+const PC_BITS: u32 = usize::BITS - STACK_LEN_BITS;
+const PC_MASK: usize = usize::MAX >> STACK_LEN_BITS;
+
+const _: () = assert!(STACK_LIMIT <= (1 << STACK_LEN_BITS));
+
+/// Packed normal dispatch pc and stack length.
+#[derive(Clone, Copy)]
+#[repr(transparent)]
+pub(crate) struct PackedPcStackLen(usize);
+
+impl PackedPcStackLen {
+    #[inline(always)]
+    pub(crate) fn pack(pc: *const u8, stack_len: usize) -> Self {
+        debug_assert!(stack_len <= STACK_LIMIT);
+        Self((stack_len << PC_BITS) | pc as usize)
+    }
+
+    #[inline(always)]
+    pub(crate) const fn unpack(self) -> (*const u8, usize) {
+        ((self.0 & PC_MASK) as *const u8, self.0 >> PC_BITS)
+    }
 }
