@@ -56,12 +56,12 @@ thiserror = { version = "2.0", default-features = false }
 walkdir = { version = "2.5", default-features = false }
 
 # Precompiles
-ark-bls12-381 = { version = "0.6", default-features = false }
-ark-bn254 = { version = "0.6", default-features = false }
-ark-ec = { version = "0.6", default-features = false }
-ark-ff = { version = "0.6", default-features = false }
-ark-serialize = { version = "0.6", default-features = false }
-ark-std = { version = "0.6", default-features = false }
+ark-bls12-381 = { version = "0.5.0", default-features = false }
+ark-bn254 = { version = "0.5.0", default-features = false }
+ark-ec = { version = "0.5.0", default-features = false }
+ark-ff = { version = "0.5.0", default-features = false }
+ark-serialize = { version = "0.5.0", default-features = false }
+ark-std = { version = "0.5.0", default-features = false }
 aurora-engine-modexp = { version = "1.2", default-features = false }
 aws-lc-rs = { version = "1.16.2", default-features = false, features = ["aws-lc-sys"] }
 blst = "0.3.15"
@@ -89,3 +89,15 @@ panic = "abort"
 inherits = "release"
 lto = "thin"
 codegen-units = 1
+
+[patch.crates-io]
+# https://github.com/arkworks-rs/algebra/issues/1104
+ark-ec = { git = "https://github.com/DaniPopes/algebra", branch = "remove-unrolls" }
+ark-bls12-381 = { git = "https://github.com/DaniPopes/algebra", branch = "remove-unrolls" }
+ark-bn254 = { git = "https://github.com/DaniPopes/algebra", branch = "remove-unrolls" }
+ark-ff = { git = "https://github.com/DaniPopes/algebra", branch = "remove-unrolls" }
+ark-ff-asm = { git = "https://github.com/DaniPopes/algebra", branch = "remove-unrolls" }
+ark-ff-macros = { git = "https://github.com/DaniPopes/algebra", branch = "remove-unrolls" }
+ark-poly = { git = "https://github.com/DaniPopes/algebra", branch = "remove-unrolls" }
+ark-serialize = { git = "https://github.com/DaniPopes/algebra", branch = "remove-unrolls" }
+ark-serialize-derive = { git = "https://github.com/DaniPopes/algebra", branch = "remove-unrolls" }
