@@ -90,7 +90,7 @@ jobs:
               export DEVNET_TAR="fixtures_snobal-devnet-6.tar.gz"
               export EVM2_STATETEST_DEVNET_ONLY=1
             fi
-            ./scripts/setup-test-fixtures.sh
+            ./scripts/setup_test_fixtures.py
       - name: ${{ matrix.kind }}
         shell: bash
         run: |
