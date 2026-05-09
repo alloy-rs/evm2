@@ -18,5 +18,5 @@ cargo docs # check docs
 
 cargo nextest run # test (default filter)
 cargo nextest run -E "not (test(glob*)) | package(/regex.*/)" # further filter tests
-cargo nextest run --ignore-default-filters # include statetests
+cargo nextest run --ignore-default-filter # include statetests
 ```

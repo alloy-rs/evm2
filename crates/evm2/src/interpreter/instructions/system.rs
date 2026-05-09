@@ -7,6 +7,7 @@ use crate::{
         Host, InstrStop, InterpreterState, Message, MessageKind, MessageResult, Result, StackMut,
         Word, memory::resize_memory, private::GasInstructionCx,
     },
+    trustme,
     utils::{word_to_address, word_to_usize},
     version::GasId,
 };
@@ -204,7 +205,7 @@ fn call_inner<T: EvmTypes>(
         MessageKind::StaticCall => (to, current.destination, Word::ZERO, resolved_code_address),
         _ => unreachable!("invalid call message kind"),
     };
-    let message = Message {
+    let mut message = Message {
         kind,
         depth: current.depth.saturating_add(1),
         gas_limit,
@@ -217,15 +218,16 @@ fn call_inner<T: EvmTypes>(
         salt: B256::ZERO,
     };
     let caller_is_static = cx.state.is_static();
-    let bytecode = crate::bytecode::Bytecode::new_legacy(code);
-    let tx_env = cx.state.tx() as *const _;
-    let result = if message.depth > CALL_DEPTH_LIMIT {
+    let mut result = if let Some(result) = cx.state.inspect_call(&mut message) {
+        result
+    } else if message.depth > CALL_DEPTH_LIMIT {
         call_too_deep_result(message.gas_limit)
     } else {
-        // SAFETY: `tx_env` points into the active interpreter frame and remains valid for the
-        // duration of this instruction.
-        cx.state.host().execute_message(unsafe { &*tx_env }, bytecode, &message, caller_is_static)
+        let bytecode = crate::bytecode::Bytecode::new_legacy(code);
+        let tx_env = unsafe { trustme::decouple_lt(cx.state.tx()) };
+        cx.state.host().execute_message(tx_env, bytecode, &message, caller_is_static)
     };
+    cx.state.inspect_call_end(&message, &mut result);
     cx.gas.erase_cost(result.gas_returned_to_parent());
     cx.gas.record_refund(result.refund_propagated_to_parent());
     let copy_len = min(return_memory_range.len(), result.output.len());
@@ -294,7 +296,7 @@ fn create_inner<T: EvmTypes>(
     cx.gas.spend(gas_limit)?;
 
     let current = cx.state.message();
-    let message = Message {
+    let mut message = Message {
         kind: if is_create2 { MessageKind::Create2 } else { MessageKind::Create },
         depth: current.depth.saturating_add(1),
         gas_limit,
@@ -306,15 +308,16 @@ fn create_inner<T: EvmTypes>(
         disable_precompiles: false,
         salt: salt.map(|salt| B256::from(salt.to_be_bytes())).unwrap_or_default(),
     };
-    let bytecode = crate::bytecode::Bytecode::new_legacy(input);
-    let tx_env = cx.state.tx() as *const _;
-    let result = if message.depth > CALL_DEPTH_LIMIT {
+    let mut result = if let Some(result) = cx.state.inspect_create(&mut message) {
+        result
+    } else if message.depth > CALL_DEPTH_LIMIT {
         call_too_deep_result(message.gas_limit)
     } else {
-        // SAFETY: `tx_env` points into the active interpreter frame and remains valid for the
-        // duration of this instruction.
-        cx.state.host().execute_message(unsafe { &*tx_env }, bytecode, &message, false)
+        let bytecode = crate::bytecode::Bytecode::new_legacy(input);
+        let tx_env = unsafe { trustme::decouple_lt(cx.state.tx()) };
+        cx.state.host().execute_message(tx_env, bytecode, &message, false)
     };
+    cx.state.inspect_create_end(&message, &mut result);
     cx.gas.erase_cost(result.gas_returned_to_parent());
     cx.gas.record_refund(result.refund_propagated_to_parent());
     // EIP-211 exposes CREATE failure data only for REVERT; other failures clear returndata.
@@ -339,6 +342,7 @@ pub(crate) fn selfdestruct(cx: _, [target]: [Word]) -> Result {
     let skip_cold_load = cx.gas.remaining() < cold_load_gas;
     let destination = cx.state.message().destination;
     let res = cx.state.host().selfdestruct(destination, target, skip_cold_load)?;
+    cx.state.inspect_selfdestruct(destination, target, res.value);
     let should_charge_topup =
         should_charge_new_account_gas(cx.state.spec(), res.had_value, res.target_is_empty);
     cx.gas.spend(cx.state.gas_params().selfdestruct_cost(should_charge_topup, res.is_cold))?;

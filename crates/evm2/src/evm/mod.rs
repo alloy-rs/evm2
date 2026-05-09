@@ -1,16 +1,19 @@
 //! EVM execution host.
 
-use self::precompile::{PrecompileOutput, PrecompileProvider};
+use self::{
+    inspector::Inspector,
+    precompile::{PrecompileOutput, PrecompileProvider},
+};
 use crate::{
     EvmConfigSelector, EvmTypes, ExecutionConfig, PrecompileError, PrecompileHalt, SpecId,
     bytecode::Bytecode,
-    constants::CALL_DEPTH_LIMIT,
     env::{BlockEnv, TxEnv},
     interpreter::{
         Gas, Host, InstrStop, Interpreter, InterpreterPool, Message, MessageKind, MessageResult,
         Word,
     },
     registry::{HandlerResult, TxRegistry},
+    trustme,
     version::{EvmFeatures, GasId},
 };
 use alloc::boxed::Box;
@@ -19,6 +22,7 @@ use alloy_primitives::{Address, B256, Bytes, Log};
 
 pub mod config;
 pub mod env;
+pub mod inspector;
 pub mod precompile;
 pub mod registry;
 mod system;
@@ -124,6 +128,8 @@ impl SStore {
 pub struct SelfDestructResult {
     /// Whether the destroyed account had non-zero value.
     pub had_value: bool,
+    /// Balance transferred or cleared by the destruction.
+    pub value: Word,
     /// Whether the beneficiary is empty/non-existent for new-account gas checks.
     pub target_is_empty: bool,
     /// Whether the beneficiary access was cold.
@@ -162,6 +168,8 @@ pub struct Evm<T: EvmTypes> {
     precompiles: Box<dyn PrecompileProvider>,
     #[debug(skip)]
     interpreter_pool: InterpreterPool<T>,
+    #[debug(skip)]
+    inspector: Option<Box<dyn Inspector<T>>>,
 }
 
 impl<T: EvmTypes> Evm<T> {
@@ -214,6 +222,11 @@ impl<T: EvmTypes> Evm<T> {
         database: Box<dyn Database>,
         precompiles: Box<dyn PrecompileProvider>,
     ) -> Self {
+        assert_eq!(
+            spec_id.into(),
+            execution_config.version().spec_id,
+            "execution config version spec mismatch"
+        );
         Self {
             spec_id,
             execution_config,
@@ -222,6 +235,7 @@ impl<T: EvmTypes> Evm<T> {
             state: State::new_mono(database),
             precompiles,
             interpreter_pool: InterpreterPool::new(),
+            inspector: None,
         }
     }
 
@@ -315,6 +329,36 @@ impl<T: EvmTypes> Evm<T> {
     #[inline]
     pub fn precompiles_as_mut<P: PrecompileProvider>(&mut self) -> Option<&mut P> {
         <dyn core::any::Any>::downcast_mut(self.precompiles_mut())
+    }
+
+    /// Returns the active execution inspector.
+    #[inline]
+    pub fn inspector(&self) -> Option<&dyn Inspector<T>> {
+        self.inspector.as_deref()
+    }
+
+    /// Returns the active execution inspector mutably.
+    #[inline]
+    pub fn inspector_mut(&mut self) -> Option<&mut dyn Inspector<T>> {
+        self.inspector.as_mut().map(|inspector| inspector.as_mut() as &mut dyn Inspector<T>)
+    }
+
+    /// Sets the active execution inspector.
+    #[inline]
+    pub fn set_inspector<I: Inspector<T> + 'static>(&mut self, inspector: I) {
+        self.inspector = Some(Box::new(inspector));
+    }
+
+    /// Sets the active boxed execution inspector.
+    #[inline]
+    pub fn set_boxed_inspector(&mut self, inspector: Box<dyn Inspector<T>>) {
+        self.inspector = Some(inspector);
+    }
+
+    /// Removes the active execution inspector.
+    #[inline]
+    pub fn clear_inspector(&mut self) -> Option<Box<dyn Inspector<T>>> {
+        self.inspector.take()
     }
 
     /// Returns the active EVM version.
@@ -607,17 +651,30 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         caller_is_static: bool,
     ) -> (InstrStop, &mut Interpreter<'frame, T>) {
         let mut interpreter = self.interpreter_pool.pop();
-        // SAFETY: The active interpreter is owned by this stack frame until it is returned to the
-        // pool after execution. Recursive calls may mutate the pool, but they cannot move this box.
-        let interpreter_ref = unsafe { &mut *(&mut *interpreter as *mut Interpreter<'frame, T>) };
+        let interpreter_ref = interpreter.as_mut();
         interpreter_ref.init(bytecode, tx_env, message, caller_is_static);
         // SAFETY: `execution_config` points to a private field that host execution does not
         // replace or mutate, so the pointee remains valid here.
-        #[expect(clippy::deref_addrof, reason = "raw borrow avoids copying the config")]
-        let execution_config = unsafe { &*(&raw const self.execution_config) };
-        let stop = interpreter_ref.run_with(execution_config, self);
+        let execution_config = unsafe { trustme::decouple_lt(&self.execution_config) };
+        self.inspect_initialize_interp(interpreter_ref);
+        let inspector = self.inspector.as_deref_mut().map(|inspector| {
+            // SAFETY: The inspector is stored in `self` and remains alive for the duration of the
+            // interpreter run.
+            unsafe { trustme::decouple_lt_mut(inspector) }
+        });
+        let stop = if let Some(inspector) = inspector {
+            interpreter_ref.run_inspect(execution_config, self, inspector)
+        } else {
+            interpreter_ref.run(execution_config, self)
+        };
         let interpreter = self.interpreter_pool.push(interpreter);
         (stop, interpreter)
+    }
+
+    fn inspect_initialize_interp(&mut self, interp: &mut Interpreter<'_, T>) {
+        if let Some(inspector) = &mut self.inspector {
+            inspector.initialize_interp(interp);
+        }
     }
 }
 
@@ -720,14 +777,6 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
         message: &Message,
         caller_is_static: bool,
     ) -> MessageResult {
-        if message.depth > CALL_DEPTH_LIMIT {
-            return MessageResult {
-                stop: InstrStop::CallTooDeep,
-                gas_remaining: message.gas_limit,
-                ..MessageResult::default()
-            };
-        }
-
         match message.kind {
             MessageKind::Create | MessageKind::Create2 => {
                 self.execute_create_message(tx_env, bytecode, message, caller_is_static)
@@ -771,9 +820,9 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
         if should_destroy {
             self.state.mark_destructed(contract);
         }
-
         Ok(SelfDestructResult {
             had_value: !balance.is_zero(),
+            value: balance,
             target_is_empty: target_is_empty_for_new_account_gas,
             is_cold,
             previously_destroyed,
@@ -785,49 +834,33 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
 mod tests {
     use super::*;
     use crate::{
-        BaseEvmConfig, Precompiles, SpecId,
+        BaseEvmConfigSelector, BaseEvmTypes, Precompiles, SpecId,
         bytecode::Bytecode,
+        ethereum::RecoveredTxEnvelope,
         interpreter::{MessageKind, op},
         registry::TxRequest,
     };
+    use alloy_consensus::{TxLegacy, transaction::Recovered};
     use alloy_primitives::{Address, Bytes, KECCAK256_EMPTY, U256};
-    use core::marker::PhantomData;
 
-    const TEST_TX_TYPE: u8 = 0x7f;
+    const TEST_TX_TYPE: u8 = 0x00;
 
-    #[derive(Debug)]
-    struct TestTx {
-        value: u64,
-    }
-
-    struct TestEvmTypes<Tx = ()>(PhantomData<fn() -> Tx>);
-
-    impl<Tx: 'static> EvmTypes for TestEvmTypes<Tx> {
-        type ConfigSelector = crate::BaseEvmConfigSelector;
-        type SpecId = SpecId;
-        type Tx = Tx;
-        type Host = Evm<Self>;
-    }
-
-    impl Typed2718 for TestTx {
-        fn ty(&self) -> u8 {
-            TEST_TX_TYPE
-        }
-    }
-
-    fn extract_test_tx(tx: &TestTx) -> Option<&TestTx> {
-        Some(tx)
+    fn test_tx(value: u64) -> RecoveredTxEnvelope {
+        RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(
+            TxLegacy { nonce: value, ..TxLegacy::default() },
+            Address::ZERO,
+        ))
     }
 
     fn handle_test_tx(
-        req: TxRequest<'_, TestTx, Evm<TestEvmTypes<TestTx>>>,
+        req: TxRequest<'_, Recovered<TxLegacy>, Evm<BaseEvmTypes>>,
     ) -> HandlerResult<TxResult> {
         let _ = req.host.spec_id();
-        Ok(TxResult { status: true, gas_used: req.tx.value + 1, ..TxResult::default() })
+        Ok(TxResult { status: true, gas_used: req.tx.nonce + 1, ..TxResult::default() })
     }
 
     fn handle_test_tx_version(
-        req: TxRequest<'_, TestTx, Evm<TestEvmTypes<TestTx>>>,
+        req: TxRequest<'_, Recovered<TxLegacy>, Evm<BaseEvmTypes>>,
     ) -> HandlerResult<TxResult> {
         Ok(TxResult {
             status: true,
@@ -838,44 +871,53 @@ mod tests {
 
     #[test]
     fn dispatches_transaction_by_typed_2718_type() {
-        let registry =
-            TxRegistry::new().with_handler(TEST_TX_TYPE, extract_test_tx, handle_test_tx);
-        let mut evm = Evm::<TestEvmTypes<TestTx>>::new(
+        let registry = TxRegistry::new().with_handler(
+            TEST_TX_TYPE,
+            RecoveredTxEnvelope::as_legacy,
+            handle_test_tx,
+        );
+        let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
             BlockEnv::default(),
             registry,
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
         );
-        let tx = TestTx { value: 41 };
+        let tx = test_tx(41);
 
         assert_eq!(evm.transact(&tx).map(|result| result.gas_used), Ok(42));
     }
 
     #[test]
     fn dispatches_transaction_without_evm_config() {
-        let registry =
-            TxRegistry::new().with_handler(TEST_TX_TYPE, extract_test_tx, handle_test_tx);
-        let mut evm = Evm::<TestEvmTypes<TestTx>>::new_with_execution_config(
-            ExecutionConfig::for_config::<BaseEvmConfig<{ SpecId::OSAKA as u8 }>>(),
+        let registry = TxRegistry::new().with_handler(
+            TEST_TX_TYPE,
+            RecoveredTxEnvelope::as_legacy,
+            handle_test_tx,
+        );
+        let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
+            ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(SpecId::OSAKA),
             SpecId::OSAKA,
             BlockEnv::default(),
             registry,
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
         );
-        let tx = TestTx { value: 41 };
+        let tx = test_tx(41);
 
         assert_eq!(evm.transact(&tx).map(|result| result.gas_used), Ok(42));
     }
 
     #[test]
     fn dispatches_transaction_with_dynamic_version() {
-        let registry =
-            TxRegistry::new().with_handler(TEST_TX_TYPE, extract_test_tx, handle_test_tx_version);
+        let registry = TxRegistry::new().with_handler(
+            TEST_TX_TYPE,
+            RecoveredTxEnvelope::as_legacy,
+            handle_test_tx_version,
+        );
         let mut version = crate::Version::new(SpecId::OSAKA);
         version.tx_gas_limit_cap = 42;
-        let mut evm = Evm::<TestEvmTypes<TestTx>>::new_with_execution_config(
+        let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
             ExecutionConfig::for_spec_and_version(SpecId::OSAKA, version),
             SpecId::OSAKA,
             BlockEnv::default(),
@@ -883,23 +925,26 @@ mod tests {
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
         );
-        let tx = TestTx { value: 0 };
+        let tx = test_tx(0);
 
         assert_eq!(evm.transact(&tx).map(|result| result.gas_used), Ok(42));
     }
 
     #[test]
     fn dispatches_transaction_iter() {
-        let registry =
-            TxRegistry::new().with_handler(TEST_TX_TYPE, extract_test_tx, handle_test_tx);
-        let mut evm = Evm::<TestEvmTypes<TestTx>>::new(
+        let registry = TxRegistry::new().with_handler(
+            TEST_TX_TYPE,
+            RecoveredTxEnvelope::as_legacy,
+            handle_test_tx,
+        );
+        let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
             BlockEnv::default(),
             registry,
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
         );
-        let txs = [TestTx { value: 1 }, TestTx { value: 2 }];
+        let txs = [test_tx(1), test_tx(2)];
         let gas_used = evm
             .transact_iter(&txs)
             .map(|result| result.map(|result| result.gas_used))
@@ -910,7 +955,7 @@ mod tests {
 
     #[test]
     fn host_executes_message() {
-        let mut evm = Evm::<TestEvmTypes>::new(
+        let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
             BlockEnv::default(),
             TxRegistry::new(),
@@ -933,7 +978,7 @@ mod tests {
 
     #[test]
     fn cold_storage_oog_rolls_back_warmth() {
-        let mut evm = Evm::<TestEvmTypes>::new(
+        let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
             BlockEnv::default(),
             TxRegistry::new(),
@@ -964,7 +1009,7 @@ mod tests {
         let created = Address::from([0x22; 20]);
         let mut database = InMemoryDB::default();
         database.insert_account_info(caller, AccountInfo::default().with_balance(Word::from(1)));
-        let mut evm = Evm::<TestEvmTypes>::new(
+        let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::FRONTIER,
             BlockEnv::default(),
             TxRegistry::new(),
@@ -997,7 +1042,7 @@ mod tests {
         let created = Address::from([0x22; 20]);
         let mut database = InMemoryDB::default();
         database.insert_account_info(caller, AccountInfo::default().with_balance(Word::from(1)));
-        let mut evm = Evm::<TestEvmTypes>::new(
+        let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::HOMESTEAD,
             BlockEnv::default(),
             TxRegistry::new(),
@@ -1028,7 +1073,7 @@ mod tests {
         let mut database = InMemoryDB::default();
         database.insert_account_info(target, AccountInfo::default());
         database.insert_account_storage(target, Word::ZERO, Word::from(1));
-        let mut evm = Evm::<TestEvmTypes>::new(
+        let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::SPURIOUS_DRAGON,
             BlockEnv::default(),
             TxRegistry::new(),
@@ -1069,7 +1114,7 @@ mod tests {
             .insert_account_info(destination, AccountInfo::default().with_balance(Word::from(1)));
         database.insert_account_info(code_address, AccountInfo::default());
         database.insert_account_storage(code_address, Word::ZERO, Word::from(1));
-        let mut evm = Evm::<TestEvmTypes>::new(
+        let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::SPURIOUS_DRAGON,
             BlockEnv::default(),
             TxRegistry::new(),
@@ -1097,49 +1142,6 @@ mod tests {
         let changes = evm.state.build_state_changes();
         assert!(!changes.accounts.contains_key(&code_address));
         assert!(!changes.storage.contains_key(&code_address));
-    }
-
-    #[test]
-    fn host_allows_message_at_call_depth_limit() {
-        let mut evm = Evm::<TestEvmTypes>::new(
-            SpecId::OSAKA,
-            BlockEnv::default(),
-            TxRegistry::new(),
-            InMemoryDB::default(),
-            Precompiles::base(SpecId::OSAKA),
-        );
-        let bytecode = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
-        let message = Message {
-            kind: MessageKind::Call,
-            depth: CALL_DEPTH_LIMIT,
-            gas_limit: 50_000,
-            ..Message::default()
-        };
-
-        let result = Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &message, false);
-        assert!(result.stop.is_success());
-    }
-
-    #[test]
-    fn host_rejects_message_past_call_depth_limit() {
-        let mut evm = Evm::<TestEvmTypes>::new(
-            SpecId::OSAKA,
-            BlockEnv::default(),
-            TxRegistry::new(),
-            InMemoryDB::default(),
-            Precompiles::base(SpecId::OSAKA),
-        );
-        let bytecode = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
-        let message = Message {
-            kind: MessageKind::Call,
-            depth: CALL_DEPTH_LIMIT + 1,
-            gas_limit: 50_000,
-            ..Message::default()
-        };
-
-        let result = Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &message, false);
-        assert_eq!(result.stop, InstrStop::CallTooDeep);
-        assert_eq!(result.gas_remaining, 50_000);
     }
 
     #[test]

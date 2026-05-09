@@ -117,11 +117,13 @@ fn log_common<T: EvmTypes>(
 
     let topics = stack.popn_dyn(n)?.map(|topic| B256::from(topic.to_be_bytes::<32>())).collect();
     let destination = cx.state.message().destination;
-    cx.state.host().log(Log {
+    let emitted_log = Log {
         address: destination,
         // SAFETY: `log` is only dispatched for LOG0 through LOG4.
         data: unsafe { LogData::new(topics, data).unwrap_unchecked() },
-    });
+    };
+    cx.state.inspect_log(&emitted_log);
+    cx.state.host().log(emitted_log);
     Ok(())
 }
 

@@ -62,18 +62,19 @@ impl<'a> BytecodeRef<'a> {
 
 impl Pc {
     /// Creates a program counter from a byte pointer.
+    #[inline(always)]
     pub(crate) const fn new(pc: *const u8) -> Self {
         Self { pc }
     }
 
     /// Returns the opcode at the current program counter.
-    #[inline]
+    #[inline(always)]
     pub const fn op(&self) -> u8 {
         unsafe { *self.pc }
     }
 
     /// Returns the current program counter pointer.
-    #[inline]
+    #[inline(always)]
     pub const fn as_ptr(&self) -> *const u8 {
         self.pc
     }
@@ -82,7 +83,7 @@ impl Pc {
     ///
     /// Caller must ensure advancing by `n` keeps `pc` within valid bytecode bounds for
     /// subsequent reads.
-    #[inline]
+    #[inline(always)]
     pub const unsafe fn advance_unchecked(&mut self, n: usize) {
         self.pc = unsafe { self.pc.add(n) };
     }
@@ -90,7 +91,7 @@ impl Pc {
     /// # Safety
     ///
     /// Caller must ensure `pc` is a valid offset for the current bytecode.
-    #[inline]
+    #[inline(always)]
     pub const unsafe fn set_unchecked(&mut self, bytecode: BytecodeRef<'_>, pc: usize) {
         self.pc = unsafe { bytecode.as_slice().as_ptr().add(pc) };
     }
@@ -98,7 +99,7 @@ impl Pc {
     /// # Safety
     ///
     /// Caller must ensure the requested range is in bounds of the bytecode allocation.
-    #[inline]
+    #[inline(always)]
     pub const unsafe fn read_bytes_unchecked(&self, n: usize) -> &[u8] {
         unsafe { core::slice::from_raw_parts(self.pc, n) }
     }
@@ -106,7 +107,7 @@ impl Pc {
     /// # Safety
     ///
     /// Caller must ensure the requested range is in bounds of the bytecode allocation.
-    #[inline]
+    #[inline(always)]
     pub const unsafe fn read_bytes_offset_unchecked(&self, offset: usize, n: usize) -> &[u8] {
         unsafe { core::slice::from_raw_parts(self.pc.add(offset), n) }
     }

@@ -1,12 +1,20 @@
+use super::InspectMode;
 use crate::{
-    EvmConfig, EvmTypes,
-    interpreter::{InstrStop, InterpreterState, Pc, Result, Stack, gas::RemainingGas},
+    EvmConfig, EvmConfigSelector, EvmTypes, SpecId, VersionTables,
+    evm::config::SelectorVersionTables,
+    interpreter::{InterpreterState, Pc, Result, Stack, gas::RemainingGas},
 };
 use core::hint::cold_path;
 
 /// Tail instruction function pointer.
 type TailInstrFn<T> = extern_table!(
-    fn(pc: Pc, stack: Stack<'_>, remaining_gas: RemainingGas, state: &mut InterpreterState<'_, T>)
+    fn(
+        pc: Pc,
+        stack: Stack<'_>,
+        remaining_gas: RemainingGas,
+        state: &mut InterpreterState<'_, T>,
+        instructions: *const (),
+    )
 );
 
 /// Tail instruction dispatch table.
@@ -17,80 +25,144 @@ pub(super) type RawInstrFn<T> = TailInstrFn<T>;
 pub(super) type RawInstrTable<T> = TailInstrTable<T>;
 
 macro_rules! assign_instruction_table_entries {
-    ([$table:expr, $evm_types:ty, $config:ty, $dispatch:ident, $instr_fn:ty] $($op:literal,)*) => {
+    ([$table:expr, $vt:ident, $previous_vt:ident, $instr_fn:ty, $dispatch:tt] $($op:literal,)*) => {
         $(
-            let instruction = <$config as EvmConfig<$evm_types>>::VERSION_TABLES.instruction($op);
-            $table[$op] = if instruction.dynamic_gas {
-                $dispatch::<$evm_types, $config, $op, true> as $instr_fn
-            } else {
-                $dispatch::<$evm_types, $config, $op, false> as $instr_fn
-            };
+            assign_instruction_table_entry!([$table, $vt, $previous_vt, $instr_fn, $dispatch] $op);
         )*
     };
 }
 
-pub(crate) const fn make_instruction_table<T, C>() -> RawInstrTable<T>
+macro_rules! assign_instruction_table_entry {
+    ([$table:expr, $vt:ident, $previous_vt:ident, $instr_fn:ty, [$($dispatch:tt)*]] $op:literal) => {{
+        let changed = super::instruction_changed($vt, $previous_vt, $op);
+        if changed {
+            $table[$op] = if $vt.is_unknown_opcode($op) {
+                $($dispatch)* 0xFE, false, true> as $instr_fn
+            } else if $vt.instruction($op).dynamic_gas {
+                $($dispatch)* $op, true, false> as $instr_fn
+            } else {
+                $($dispatch)* $op, false, false> as $instr_fn
+            };
+        }
+    }};
+}
+
+pub(crate) const fn make_table<T, C, M>(
+    previous: Option<&RawInstrTable<T>>,
+    previous_version_tables: Option<&VersionTables<T>>,
+) -> RawInstrTable<T>
 where
     T: EvmTypes,
     C: EvmConfig<T>,
+    M: InspectMode<T>,
 {
-    use tail_dispatch as dispatch;
-
-    let mut table = [dispatch::<T, C, 0, true> as super::InstrFn<T>; 256];
-    for_each_opcode_value!([table, T, C, dispatch, super::InstrFn<T>] assign_instruction_table_entries);
-
-    // Make all unknown entries point to the same dispatch function.
-    let mut i = 0;
-    while i < 256 {
-        if C::VERSION_TABLES.is_unknown_opcode(i as u8) {
-            table[i] = tail_unknown_dispatch::<T, C> as super::InstrFn<T>;
-        }
-        i += 1;
-    }
-
+    let mut table = match previous {
+        Some(previous) => *previous,
+        None => [tail_dispatch::<T, C, M, 0xFE, false, true> as super::InstrFn<T>; 256],
+    };
+    let vt = C::VERSION_TABLES;
+    for_each_opcode_value!([table, vt, previous_version_tables, super::InstrFn<T>, [tail_dispatch::<T, C, M,]] assign_instruction_table_entries);
     table
 }
 
-extern_table! {
-    fn tail_dispatch<T: EvmTypes, C: EvmConfig<T>, const OP: u8, const DYNAMIC_GAS: bool>(
-        pc: Pc,
-        stack: Stack<'_>,
-        remaining_gas: RemainingGas,
-        state: &mut InterpreterState<'_, T>,
-    ) {
-        assume!(pc.op() == OP);
-        tail_return!(tail_dispatch_mono::<T, C, DYNAMIC_GAS>(pc, stack, remaining_gas, state));
+pub(crate) const fn make_selector_tables<T, F, M, const CUSTOM_SPEC_ID: u8>()
+-> [RawInstrTable<T>; SpecId::COUNT]
+where
+    T: EvmTypes,
+    F: EvmConfigSelector<T>,
+    M: InspectMode<T>,
+{
+    macro_rules! make_tables {
+        ([$($extra:tt)*] $($spec:ident $name:ident,)*) => {{
+            make_tables!(@build [] [none]; $($spec $name,)*)
+        }};
+        (@build [$($tables:ident,)*] [$($previous_table:tt)*]; $spec:ident $name:ident, $($rest:ident $rest_name:ident,)*) => {{
+            let spec = SpecId::$spec;
+            let previous = spec.prev();
+            let $name = make_table::<T, F::Config<{ SpecId::$spec as u8 }, CUSTOM_SPEC_ID>, M>(
+                make_tables!(@previous_table [$($previous_table)*]),
+                match previous {
+                    Some(previous) => {
+                        Some(SelectorVersionTables::<T, F, CUSTOM_SPEC_ID>::VERSION_TABLES[previous as usize])
+                    }
+                    None => None,
+                },
+            );
+            make_tables!(@build [$($tables,)* $name,] [some $name]; $($rest $rest_name,)*)
+        }};
+        (@build [$($tables:ident,)*] [$($previous_table:tt)*];) => {
+            [$($tables,)*]
+        };
+        (@previous_table [none]) => {
+            None
+        };
+        (@previous_table [some $previous_table:ident]) => {
+            Some(&$previous_table)
+        };
     }
+
+    crate::for_each_spec!([] make_tables)
 }
 
 extern_table! {
-    #[cold]
-    fn tail_unknown_dispatch<T: EvmTypes, C: EvmConfig<T>>(
+    fn tail_dispatch<
+        T: EvmTypes,
+        C: EvmConfig<T>,
+        M: InspectMode<T>,
+        const OP: u8,
+        const DYNAMIC_GAS: bool,
+        const UNKNOWN: bool,
+    >(
         pc: Pc,
         stack: Stack<'_>,
         remaining_gas: RemainingGas,
         state: &mut InterpreterState<'_, T>,
+        instructions: *const (),
     ) {
-        assume!(C::VERSION_TABLES.is_unknown_opcode(pc.op()));
-        state.set_result(Err(InstrStop::OpcodeNotFound));
-        tail_return!(tail_call_restore::<T>(pc, stack, remaining_gas, state));
+        if !UNKNOWN {
+            unsafe { core::hint::assert_unchecked(pc.op() == OP) };
+        }
+        tail_return!(tail_dispatch_mono::<T, C, M, DYNAMIC_GAS, UNKNOWN>(
+            pc,
+            stack,
+            remaining_gas,
+            state,
+            instructions
+        ));
     }
 }
 
 extern_table! {
     #[inline(always)]
-    fn tail_dispatch_mono<T: EvmTypes, C: EvmConfig<T>, const DYNAMIC_GAS: bool>(
+    fn tail_dispatch_mono<
+        T: EvmTypes,
+        C: EvmConfig<T>,
+        M: InspectMode<T>,
+        const DYNAMIC_GAS: bool,
+        const UNKNOWN: bool,
+    >(
         mut pc: Pc,
         mut stack: Stack<'_>,
         mut remaining_gas: RemainingGas,
         state: &mut InterpreterState<'_, T>,
+        instructions: *const (),
     ) {
-        let op = pc.op();
-        let instr = C::VERSION_TABLES.instruction(op).instr;
+        let (op, instr) = if UNKNOWN {
+            (0xFE, super::unknown_instruction as crate::interpreter::private::InstructionImplFn<T>)
+        } else {
+            let op = pc.op();
+            (op, C::VERSION_TABLES.instruction(op).instr)
+        };
+        if M::INSPECT {
+            M::step(state, pc, stack.len);
+        }
         if let Err(e) = pre_step::<T, C>(&mut remaining_gas, op) {
             cold_path();
             state.set_result(Err(e));
-            tail_return!(tail_call_restore::<T>(pc, stack, remaining_gas, state));
+            if M::INSPECT {
+                M::step_end(state, pc, stack.len);
+            }
+            tail_return!(tail_call_restore::<T>(pc, stack, remaining_gas, state, instructions));
         }
         if DYNAMIC_GAS {
             state.gas_mut().set_remaining(remaining_gas.get());
@@ -102,23 +174,18 @@ extern_table! {
         if let Err(e) = r {
             cold_path();
             state.set_result(Err(e));
-            tail_return!(tail_call_restore::<T>(pc, stack, remaining_gas, state));
+            if M::INSPECT {
+                M::step_end(state, pc, stack.len);
+            }
+            tail_return!(tail_call_restore::<T>(pc, stack, remaining_gas, state, instructions));
         }
         super::inc_pc(&mut pc, op);
-        tail_return!(tail_call_next::<T, C>(pc, stack, remaining_gas, state));
-    }
-}
-
-extern_table! {
-    #[inline]
-    fn tail_call_next<T: EvmTypes, C: EvmConfig<T>>(
-        pc: Pc,
-        stack: Stack<'_>,
-        remaining_gas: RemainingGas,
-        state: &mut InterpreterState<'_, T>,
-    ) {
-        let instr = <T as super::InstrTables<C>>::INSTRUCTIONS[pc.op() as usize];
-        tail_return!(instr(pc, stack, remaining_gas, state));
+        if M::INSPECT {
+            M::step_end(state, pc, stack.len);
+        }
+        let instructions = instructions.cast::<TailInstrTable<T>>();
+        let instr = unsafe { (*instructions)[pc.op() as usize] };
+        tail_return!(instr(pc, stack, remaining_gas, state, instructions.cast()));
     }
 }
 
@@ -130,6 +197,7 @@ extern_table! {
         stack: Stack<'_>,
         remaining_gas: RemainingGas,
         state: &mut InterpreterState<'_, T>,
+        _instructions: *const (),
     ) {
         state.gas_mut().set_remaining(remaining_gas.get());
         state.set_pc_stack_len(pc.as_ptr(), stack.len);
@@ -138,7 +206,7 @@ extern_table! {
     }
 }
 
-#[inline]
+#[inline(always)]
 const fn pre_step<T: EvmTypes, C: EvmConfig<T>>(
     remaining_gas: &mut RemainingGas,
     op: u8,

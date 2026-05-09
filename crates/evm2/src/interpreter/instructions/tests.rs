@@ -1,5 +1,5 @@
 use crate::{
-    BaseEvmConfig, EvmConfig, EvmTypes, SpecId,
+    BaseEvmConfigSelector, EvmTypes, ExecutionConfig, SpecId,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
     evm::{AccountLoad, SLoad, SStore, SelfDestructResult},
@@ -35,10 +35,11 @@ pub(crate) struct TestHost {
     pub(super) storage: StorageKeyMap<Word>,
     pub(super) original_storage: StorageKeyMap<Word>,
     pub(super) transient_storage: StorageKeyMap<Word>,
-    pub(super) logs: Vec<Log>,
+    pub(crate) logs: Vec<Log>,
     pub(super) execute_result: MessageResult,
-    pub(super) selfdestruct_result: SelfDestructResult,
-    pub(super) calls: Vec<Message>,
+    pub(crate) selfdestruct_result: SelfDestructResult,
+    pub(crate) selfdestruct_error: Option<InstrStop>,
+    pub(crate) calls: Vec<Message>,
     pub(super) call_static_flags: Vec<bool>,
     pub(super) selfdestructs: Vec<(Address, Address, bool)>,
 }
@@ -60,6 +61,7 @@ impl Default for TestHost {
             logs: Vec::new(),
             execute_result: MessageResult { stop: InstrStop::Return, ..MessageResult::default() },
             selfdestruct_result: SelfDestructResult::default(),
+            selfdestruct_error: None,
             calls: Vec::new(),
             call_static_flags: Vec::new(),
             selfdestructs: Vec::new(),
@@ -172,6 +174,9 @@ impl Host for TestHost {
         target: Address,
         skip_cold_load: bool,
     ) -> Result<SelfDestructResult, InstrStop> {
+        if let Some(err) = self.selfdestruct_error {
+            return Err(err);
+        }
         self.selfdestructs.push((contract, target, skip_cold_load));
         Ok(self.selfdestruct_result)
     }
@@ -280,12 +285,6 @@ impl Default for RunConfig<'_> {
 }
 
 pub(super) fn run(config: RunConfig<'_>) -> TestInterpreter {
-    crate::spec_to_generic!(config.spec_id, |BASE_SPEC_ID| {
-        run_with_config::<BaseEvmConfig<BASE_SPEC_ID>>(config)
-    })
-}
-
-fn run_with_config<C: EvmConfig<TestTypes>>(config: RunConfig<'_>) -> TestInterpreter {
     let RunConfig { code, host, spec_id, tx_env, mut message, gas_limit, return_data } = config;
     let bytecode = Bytecode::new_legacy(Bytes::from(code));
     message.gas_limit = gas_limit;
@@ -294,7 +293,8 @@ fn run_with_config<C: EvmConfig<TestTypes>>(config: RunConfig<'_>) -> TestInterp
     let mut default_host = TestHost::default();
     let host = host.unwrap_or(&mut default_host);
     host.spec_id = spec_id;
-    let err = inner.run::<C>(host);
+    let config = ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(spec_id);
+    let err = inner.run(&config, host);
     let (stack, stack_len, gas, memory, output) = inner.into_parts();
     TestInterpreter { stack, stack_len, gas, memory, output, err }
 }

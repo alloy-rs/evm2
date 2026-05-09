@@ -10,10 +10,10 @@ use evm2::{
     registry::{HandlerResult, TxRegistry, TxRequest},
 };
 
-const EXECUTE_CODE_TX_TYPE: u8 = 0x7f;
+pub const EXECUTE_CODE_TX_TYPE: u8 = 0x7f;
 
 #[derive(Debug)]
-pub(crate) enum CustomEnvelope {
+pub enum CustomEnvelope {
     ExecuteCode(ExecuteCodeTx),
 }
 
@@ -26,7 +26,7 @@ impl Typed2718 for CustomEnvelope {
 }
 
 impl CustomEnvelope {
-    const fn as_execute_code(&self) -> Option<&ExecuteCodeTx> {
+    pub const fn as_execute_code(&self) -> Option<&ExecuteCodeTx> {
         match self {
             Self::ExecuteCode(tx) => Some(tx),
         }
@@ -34,19 +34,19 @@ impl CustomEnvelope {
 }
 
 #[derive(Debug)]
-pub(crate) struct ExecuteCodeTx {
-    pub(crate) target: Address,
-    pub(crate) code: Bytes,
-    pub(crate) gas_limit: u64,
+pub struct ExecuteCodeTx {
+    pub target: Address,
+    pub code: Bytes,
+    pub gas_limit: u64,
 }
 
 impl ExecuteCodeTx {
-    const fn ty(&self) -> u8 {
+    pub const fn ty(&self) -> u8 {
         EXECUTE_CODE_TX_TYPE
     }
 }
 
-fn execute_code(
+pub fn execute_code(
     req: TxRequest<'_, ExecuteCodeTx, Evm<CustomTypes>>,
 ) -> HandlerResult<evm2::TxResult> {
     // The transaction handler owns policy; the interpreter still executes a normal message.
@@ -71,7 +71,7 @@ fn execute_code(
     })
 }
 
-pub(crate) fn custom_registry() -> TxRegistry<CustomEnvelope, evm2::TxResult, Evm<CustomTypes>> {
+pub fn custom_registry() -> TxRegistry<CustomEnvelope, evm2::TxResult, Evm<CustomTypes>> {
     // The EIP-2718 type byte selects the typed extractor and handler.
     TxRegistry::new().with_handler(
         EXECUTE_CODE_TX_TYPE,

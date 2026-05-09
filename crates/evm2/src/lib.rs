@@ -20,13 +20,15 @@ pub use evm::{
         BaseEvmConfig, BaseEvmConfigSelector, BaseEvmTypes, EvmConfig, EvmConfigSelector, EvmTypes,
         ExecutionConfig,
     },
-    env, precompile, registry,
+    env, inspector, precompile, registry,
 };
 
 pub mod precompiles;
 pub use precompiles::{
     Crypto, PrecompileError, PrecompileHalt, Precompiles, crypto, install_crypto,
 };
+
+pub(crate) mod trustme;
 
 pub mod version;
 pub use version::{EvmFeatures, Version, VersionTables};

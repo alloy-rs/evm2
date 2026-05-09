@@ -1,14 +1,16 @@
 #[cfg(tco)]
 use super::gas::RemainingGas;
 use super::{
-    BytecodeRef, Gas, InstrStop, Memory, Message, MessageKind, Pc, Result, Stack, StackBacking,
+    BytecodeRef, Gas, InstrStop, Memory, Message, MessageKind, MessageResult, Pc, Result, Stack,
+    StackBacking, Word,
 };
 use crate::{
-    EvmConfig, EvmTypes, ExecutionConfig, SpecId, Version, bytecode::Bytecode, env::TxEnv,
+    EvmTypes, ExecutionConfig, SpecId, Version, bytecode::Bytecode, env::TxEnv,
+    evm::inspector::Inspector, interpreter::instructions::table::InstrTable, trustme,
     version::GasParams,
 };
 use alloc::{boxed::Box, vec::Vec};
-use alloy_primitives::Bytes;
+use alloy_primitives::{Address, Bytes, Log};
 #[cfg(not(tco))]
 use core::hint::cold_path;
 use core::{fmt, marker::PhantomData, ptr::NonNull};
@@ -25,6 +27,7 @@ pub struct Interpreter<'frame, T: EvmTypes> {
     tx_env: Option<&'frame TxEnv>,
     message: Option<&'frame Message>,
     host: Option<NonNull<T::Host>>,
+    inspector: Option<NonNull<dyn Inspector<T>>>,
     version: *const Version,
     stack_len: usize,
     #[debug(skip)]
@@ -55,6 +58,7 @@ impl<T: EvmTypes> Default for Interpreter<'_, T> {
             is_static: false,
             return_data: Bytes::new(),
             host: None,
+            inspector: None,
             version: core::ptr::null(),
             spec: SpecId::DEFAULT,
             // SAFETY: `MaybeUninit<Word>` does not need initialization.
@@ -127,6 +131,30 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         unsafe { &*self.output }
     }
 
+    /// Returns the current bytecode-relative program counter.
+    #[inline]
+    pub fn pc(&self) -> usize {
+        unsafe { self.pc.offset_from(self.bytecode.original_byte_slice().as_ptr()) as usize }
+    }
+
+    /// Returns the current opcode.
+    #[inline]
+    pub const fn opcode(&self) -> u8 {
+        unsafe { *self.pc }
+    }
+
+    /// Returns the current operand stack.
+    #[inline]
+    pub fn stack(&self) -> &[Word] {
+        unsafe { core::slice::from_raw_parts(self.stack.as_ptr().cast(), self.stack_len) }
+    }
+
+    /// Returns the current linear memory.
+    #[inline]
+    pub const fn memory_ref(&self) -> &Memory {
+        &self.memory
+    }
+
     /// Returns the current gas state.
     #[inline]
     pub const fn gas(&self) -> Gas {
@@ -139,33 +167,55 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         &mut self.gas
     }
 
-    /// Runs the interpreter until it stops, using `C` as the EVM configuration.
+    /// Runs the interpreter until it stops.
     #[inline]
-    pub fn run<C: EvmConfig<T>>(&mut self, host: &mut T::Host) -> InstrStop {
-        self.run_with(&ExecutionConfig::for_config::<C>(), host)
+    pub fn run(&mut self, config: &ExecutionConfig<T>, host: &mut T::Host) -> InstrStop {
+        self.run_inner(config.version(), host, None, config.instructions)
     }
 
-    /// Runs the interpreter until it stops.
-    pub fn run_with(&mut self, config: &ExecutionConfig<T>, host: &mut T::Host) -> InstrStop {
-        self.memory.set_memory_limit(config.version.memory_limit);
-        self.host = Some(NonNull::from(&mut *host));
-        self.version = &config.version;
-        self.spec = config.version.spec_id;
+    /// Runs the interpreter until it stops with an execution inspector.
+    #[inline]
+    pub fn run_inspect(
+        &mut self,
+        config: &ExecutionConfig<T>,
+        host: &mut T::Host,
+        inspector: &mut dyn Inspector<T>,
+    ) -> InstrStop {
+        self.run_inner(
+            config.version(),
+            host,
+            Some(NonNull::from(inspector)),
+            config.inspect_instructions,
+        )
+    }
+
+    fn run_inner(
+        &mut self,
+        version: &Version,
+        host: &mut T::Host,
+        inspector: Option<NonNull<dyn Inspector<T>>>,
+        instructions: &InstrTable<T>,
+    ) -> InstrStop {
+        self.memory.set_memory_limit(version.memory_limit);
+
+        self.host = Some(NonNull::from(host));
+        self.inspector = inspector;
+        self.version = version;
+        self.spec = version.spec_id;
 
         #[cfg(tco)]
-        let r = self.step_tail(config);
+        let r = self.step_tail(instructions);
         #[cfg(not(tco))]
-        let r = self.run_table_loop(config);
+        let r = self.run_table_loop(instructions);
 
-        self.host = None;
-        self.version = core::ptr::null();
         r
     }
 
     #[cfg(not(tco))]
-    fn run_table_loop(&mut self, config: &ExecutionConfig<T>) -> InstrStop {
-        #[expect(clippy::unnecessary_cast, reason = "cast erases the active interpreter lifetime")]
-        let raw = self as *mut Self as *mut Interpreter<'_, T>;
+    fn run_table_loop(&mut self, instructions: &InstrTable<T>) -> InstrStop {
+        // SAFETY: Only the active interpreter lifetime is erased; this stays as a raw pointer so
+        // the dispatch loop does not create an extra `&mut` alias for `self`.
+        let raw = unsafe { trustme::decouple_lt_mut_ptr(self as *mut Self) };
         // SAFETY: Instruction methods must not access the stack through `InterpreterState` while
         // the separate stack view is live.
         let state = InterpreterState::wrap_mut(unsafe { &mut *raw });
@@ -173,7 +223,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         let mut stack = Stack::new(&mut self.stack, self.stack_len);
         loop {
             let op = pc.op();
-            let instr = config.instructions[op as usize];
+            let instr = instructions[op as usize];
             let (next_pc, next_stack_len) = instr(pc, stack.reborrow(), state);
             pc = Pc::new(next_pc);
             stack.len = next_stack_len;
@@ -188,18 +238,19 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
 
     #[inline(always)]
     #[cfg(tco)]
-    fn step_tail(&mut self, config: &ExecutionConfig<T>) -> InstrStop {
-        #[expect(clippy::unnecessary_cast, reason = "cast erases the active interpreter lifetime")]
-        let raw = self as *mut Self as *mut Interpreter<'_, T>;
+    fn step_tail(&mut self, instructions: &InstrTable<T>) -> InstrStop {
+        // SAFETY: Only the active interpreter lifetime is erased; this stays as a raw pointer so
+        // the dispatch step does not create an extra `&mut` alias for `self`.
+        let raw = unsafe { trustme::decouple_lt_mut_ptr(self as *mut Self) };
         // SAFETY: Instruction methods must not access the stack through `InterpreterState` while
         // the separate stack view is live.
         let state = InterpreterState::wrap_mut(unsafe { &mut *raw });
         let pc = Pc::new(self.pc);
         let op = pc.op();
-        let instr = config.instructions[op as usize];
+        let instr = instructions[op as usize];
         let stack = Stack::new(&mut self.stack, self.stack_len);
         let remaining_gas = RemainingGas::new(self.gas.remaining());
-        instr(pc, stack, remaining_gas, state);
+        instr(pc, stack, remaining_gas, state, (instructions as *const InstrTable<T>).cast());
         self.result.unwrap_err()
     }
 }
@@ -233,7 +284,7 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
         &mut self.0.gas
     }
 
-    #[inline]
+    #[inline(always)]
     pub(crate) const fn set_result(&mut self, result: Result) {
         self.0.result = result;
     }
@@ -254,7 +305,7 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
     /// Returns the cached transaction-global environment.
     #[inline]
     pub const fn tx(&self) -> &TxEnv {
-        // SAFETY: `tx_env` is initialized at the beginning of `run_with` and remains set for
+        // SAFETY: `tx_env` is initialized at the beginning of `run` and remains set for
         // instruction execution.
         unsafe { self.0.tx_env.unwrap_unchecked() }
     }
@@ -268,24 +319,24 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
     /// Returns the host implementation.
     #[inline]
     pub const fn host(&mut self) -> &mut T::Host {
-        // SAFETY: `host` is initialized at the beginning of `run_with` and cleared before the
+        // SAFETY: `host` is initialized at the beginning of `run` and cleared before the
         // method returns. Instruction execution is synchronous, so the pointer cannot outlive the
-        // `run_with` host borrow.
+        // `run` host borrow.
         unsafe { self.0.host.unwrap_unchecked().as_mut() }
     }
 
     /// Returns the active runtime version data.
     #[inline]
     pub const fn version(&self) -> &Version {
-        // SAFETY: `version` is initialized at the beginning of `run_with` and points into the
-        // `ExecutionConfig` borrowed by the current run.
+        // SAFETY: `version` is initialized at the beginning of `run` and points into the
+        // `Version` borrowed by the current run.
         unsafe { &*self.0.version }
     }
 
     /// Returns the active frame-local call/create message.
     #[inline]
     pub const fn message(&self) -> &Message {
-        // SAFETY: `message` is initialized at the beginning of `run_with` and remains set for
+        // SAFETY: `message` is initialized at the beginning of `run` and remains set for
         // instruction execution.
         unsafe { self.0.message.unwrap_unchecked() }
     }
@@ -331,6 +382,65 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
     pub const fn set_output(&mut self, output: *const [u8]) {
         self.0.output = output;
     }
+
+    #[inline]
+    fn inspector(&mut self) -> Option<&mut dyn Inspector<T>> {
+        self.0.inspector.map(|mut x| unsafe { x.as_mut() })
+    }
+
+    #[inline]
+    pub(crate) fn inspect_step(&mut self, pc: Pc, stack_len: usize) {
+        self.0.pc = pc.as_ptr();
+        self.0.stack_len = stack_len;
+        let mut inspector = unsafe { self.0.inspector.unwrap_unchecked() };
+        unsafe { inspector.as_mut() }.step(&mut self.0);
+    }
+
+    #[inline]
+    pub(crate) fn inspect_step_end(&mut self, pc: Pc, stack_len: usize) {
+        self.0.pc = pc.as_ptr();
+        self.0.stack_len = stack_len;
+        let mut inspector = unsafe { self.0.inspector.unwrap_unchecked() };
+        unsafe { inspector.as_mut() }.step_end(&mut self.0);
+    }
+
+    #[inline]
+    pub(crate) fn inspect_call(&mut self, message: &mut Message) -> Option<MessageResult> {
+        self.inspector().and_then(|inspector| inspector.call(message))
+    }
+
+    #[inline]
+    pub(crate) fn inspect_call_end(&mut self, message: &Message, result: &mut MessageResult) {
+        if let Some(inspector) = self.inspector() {
+            inspector.call_end(message, result);
+        }
+    }
+
+    #[inline]
+    pub(crate) fn inspect_create(&mut self, message: &mut Message) -> Option<MessageResult> {
+        self.inspector().and_then(|inspector| inspector.create(message))
+    }
+
+    #[inline]
+    pub(crate) fn inspect_create_end(&mut self, message: &Message, result: &mut MessageResult) {
+        if let Some(inspector) = self.inspector() {
+            inspector.create_end(message, result);
+        }
+    }
+
+    #[inline]
+    pub(crate) fn inspect_log(&mut self, log: &Log) {
+        if let Some(inspector) = self.inspector() {
+            inspector.log(log);
+        }
+    }
+
+    #[inline]
+    pub(crate) fn inspect_selfdestruct(&mut self, contract: Address, target: Address, value: Word) {
+        if let Some(inspector) = self.inspector() {
+            inspector.selfdestruct(contract, target, value);
+        }
+    }
 }
 
 #[derive(Default)]
@@ -348,9 +458,7 @@ impl<T: EvmTypes> InterpreterPool<T> {
         // SAFETY: Frames stored in the pool have their frame-local references cleared before they
         // are erased to `'static`. Rebinding the lifetime is only used to initialize the next
         // frame.
-        unsafe {
-            core::mem::transmute::<Box<Interpreter<'static, T>>, Box<Interpreter<'frame, T>>>(frame)
-        }
+        unsafe { trustme::decouple_lt_box(frame) }
     }
 
     pub(crate) fn push<'pool, 'frame>(
@@ -360,17 +468,10 @@ impl<T: EvmTypes> InterpreterPool<T> {
         frame.clear_frame_refs();
         // SAFETY: `clear_frame_refs` removes every reference carrying `'frame`, so the boxed
         // interpreter can be stored in the pool with the erased `'static` lifetime.
-        let frame = unsafe {
-            core::mem::transmute::<Box<Interpreter<'frame, T>>, Box<Interpreter<'static, T>>>(frame)
-        };
+        let frame = unsafe { trustme::decouple_lt_box(frame) };
         let frame = self.frames.push_mut(frame);
         // SAFETY: The returned borrow is tied to `&mut self`; the erased frame references are
         // empty.
-        unsafe {
-            core::mem::transmute::<
-                &'pool mut Interpreter<'static, T>,
-                &'pool mut Interpreter<'frame, T>,
-            >(frame)
-        }
+        unsafe { trustme::decouple_interpreter_lt_mut(frame) }
     }
 }

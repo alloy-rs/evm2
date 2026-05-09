@@ -1,7 +1,8 @@
 //! Instruction dispatch tables.
 
 use crate::{
-    EvmConfig, EvmTypes,
+    BaseEvmConfigSelector, EvmConfig, EvmConfigSelector, EvmTypes, VersionTables,
+    evm::config::SelectorVersionTables,
     interpreter::{InstrStop, InterpreterState, Pc, Result, StackMut, op},
 };
 
@@ -69,34 +70,110 @@ pub(crate) type InstrFn<T> = imp::RawInstrFn<T>;
 /// Instruction dispatch table.
 pub(crate) type InstrTable<T> = imp::RawInstrTable<T>;
 
-pub(crate) use imp::make_instruction_table;
+pub(crate) struct ConfigInstrTables<T, C>(core::marker::PhantomData<fn() -> (T, C)>);
 
-pub(crate) trait InstrTables<C>: EvmTypes
-where
-    C: EvmConfig<Self>,
-{
-    const INSTRUCTIONS: &'static InstrTable<Self> = &make_instruction_table::<Self, C>();
-}
-
-impl<T, C> InstrTables<C> for T
+impl<T, C> ConfigInstrTables<T, C>
 where
     T: EvmTypes,
     C: EvmConfig<T>,
 {
+    pub(crate) const INSTRUCTIONS: &'static InstrTable<T> = &imp::make_table::<T, C, NoInspector>(
+        Some(
+            &SelectorInstrTables::<T, BaseEvmConfigSelector, { u8::MAX }>::INSTRUCTIONS
+                [C::BASE_SPEC_ID as usize],
+        ),
+        Some(
+            SelectorVersionTables::<T, BaseEvmConfigSelector, { u8::MAX }>::VERSION_TABLES
+                [C::BASE_SPEC_ID as usize],
+        ),
+    );
+    pub(crate) const INSPECT_INSTRUCTIONS: &'static InstrTable<T> =
+        &imp::make_table::<T, C, DynInspector>(
+            Some(
+                &SelectorInstrTables::<T, BaseEvmConfigSelector, { u8::MAX }>::INSPECT_INSTRUCTIONS
+                    [C::BASE_SPEC_ID as usize],
+            ),
+            Some(
+                SelectorVersionTables::<T, BaseEvmConfigSelector, { u8::MAX }>::VERSION_TABLES
+                    [C::BASE_SPEC_ID as usize],
+            ),
+        );
 }
 
-#[inline]
+pub(crate) struct SelectorInstrTables<T, F, const CUSTOM_SPEC_ID: u8>(
+    core::marker::PhantomData<fn() -> (T, F)>,
+);
+
+impl<T, F, const CUSTOM_SPEC_ID: u8> SelectorInstrTables<T, F, CUSTOM_SPEC_ID>
+where
+    T: EvmTypes,
+    F: EvmConfigSelector<T>,
+{
+    pub(crate) const INSTRUCTIONS: &'static [InstrTable<T>; crate::SpecId::COUNT] =
+        &imp::make_selector_tables::<T, F, NoInspector, CUSTOM_SPEC_ID>();
+    pub(crate) const INSPECT_INSTRUCTIONS: &'static [InstrTable<T>; crate::SpecId::COUNT] =
+        &imp::make_selector_tables::<T, F, DynInspector, CUSTOM_SPEC_ID>();
+}
+
+pub(super) const fn instruction_changed<T: EvmTypes>(
+    version_tables: &VersionTables<T>,
+    previous_version_tables: Option<&VersionTables<T>>,
+    op: u8,
+) -> bool {
+    let Some(previous_version_tables) = previous_version_tables else {
+        return true;
+    };
+    version_tables.revision(op) != previous_version_tables.revision(op)
+}
+
+#[inline(always)]
 pub(super) const fn inc_pc(pc: &mut Pc, op: u8) {
     unsafe { pc.advance_unchecked(instruction_len(op)) };
 }
 
 #[inline(always)]
-pub(super) const fn instruction_len(op: u8) -> usize {
+const fn instruction_len(op: u8) -> usize {
     match op {
         op::JUMP | op::JUMPI => 0, // Set inside.
         op::PUSH1..=op::PUSH32 => (op - op::PUSH1 + 2) as usize,
         op::DUPN | op::SWAPN | op::EXCHANGE => 2,
         _ => 1,
+    }
+}
+
+pub(crate) trait InspectMode<T: EvmTypes> {
+    const INSPECT: bool;
+
+    fn step(state: &mut InterpreterState<'_, T>, pc: Pc, stack_len: usize);
+
+    fn step_end(state: &mut InterpreterState<'_, T>, pc: Pc, stack_len: usize);
+}
+
+pub(crate) struct NoInspector;
+
+impl<T: EvmTypes> InspectMode<T> for NoInspector {
+    const INSPECT: bool = false;
+
+    #[inline(always)]
+    fn step(_state: &mut InterpreterState<'_, T>, _pc: Pc, _stack_len: usize) {}
+
+    #[inline(always)]
+    fn step_end(_state: &mut InterpreterState<'_, T>, _pc: Pc, _stack_len: usize) {}
+}
+
+pub(crate) struct DynInspector;
+
+impl<T: EvmTypes> InspectMode<T> for DynInspector {
+    const INSPECT: bool = true;
+
+    #[inline(always)]
+    fn step(state: &mut InterpreterState<'_, T>, pc: Pc, stack_len: usize) {
+        state.inspect_step(pc, stack_len);
+    }
+
+    #[inline(always)]
+    fn step_end(state: &mut InterpreterState<'_, T>, pc: Pc, stack_len: usize) {
+        state.inspect_step_end(pc, stack_len);
     }
 }
 

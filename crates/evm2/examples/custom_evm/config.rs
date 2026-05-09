@@ -6,10 +6,39 @@ use evm2::{
     VersionTables,
 };
 
-#[derive(Clone, Copy, Debug)]
-pub(crate) enum CustomSpecId {
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CustomSpecId {
     MainnetOsaka,
     CustomOsaka,
+}
+
+impl CustomSpecId {
+    pub const MIN: Self = Self::MainnetOsaka;
+    pub const NEXT: Self = Self::CustomOsaka;
+    pub const COUNT: usize = Self::NEXT as usize - Self::MIN as usize + 1;
+
+    pub const fn as_u8(self) -> u8 {
+        self as u8
+    }
+
+    pub const fn try_from_u8(spec_id: u8) -> Option<Self> {
+        if spec_id <= Self::NEXT as u8 {
+            // SAFETY: `spec_id` is within the valid variant range.
+            return Some(unsafe { core::mem::transmute::<u8, Self>(spec_id) });
+        }
+        None
+    }
+
+    pub const fn enables(self, other: Self) -> bool {
+        self as u8 >= other as u8
+    }
+}
+
+impl From<CustomSpecId> for u8 {
+    fn from(spec_id: CustomSpecId) -> Self {
+        spec_id as Self
+    }
 }
 
 impl From<CustomSpecId> for SpecId {
@@ -20,8 +49,8 @@ impl From<CustomSpecId> for SpecId {
     }
 }
 
-#[derive(Debug)]
-pub(crate) struct CustomTypes;
+#[derive(Clone, Copy, Debug)]
+pub struct CustomTypes;
 
 impl EvmTypes for CustomTypes {
     type ConfigSelector = CustomConfigSelector;
@@ -30,45 +59,54 @@ impl EvmTypes for CustomTypes {
     type Host = Evm<Self>;
 }
 
-// Const-generic configs are still keyed by the inherited base spec.
-pub(crate) struct CustomConfig<const BASE_SPEC_ID: u8>(());
+#[derive(Clone, Copy, Debug)]
+pub struct CustomConfig<const BASE_SPEC_ID: u8, const CUSTOM_SPEC_ID: u8>(());
 
-impl<const ID: u8> EvmConfig<CustomTypes> for CustomConfig<ID> {
-    const BASE_SPEC_ID: SpecId = SpecId::try_from_u8(ID).unwrap();
-    const VERSION_TABLES: &'static VersionTables<CustomTypes> = &custom_version_tables::<ID>();
+impl<const BASE_SPEC_ID: u8, const CUSTOM_SPEC_ID: u8> EvmConfig<CustomTypes>
+    for CustomConfig<BASE_SPEC_ID, CUSTOM_SPEC_ID>
+{
+    const BASE_SPEC_ID: SpecId = SpecId::try_from_u8(BASE_SPEC_ID).unwrap();
+    const VERSION_TABLES: &'static VersionTables<CustomTypes> =
+        &custom_version_tables::<BASE_SPEC_ID, CUSTOM_SPEC_ID>();
 }
 
-pub(crate) const fn custom_version(base_spec_id: SpecId) -> Version {
+pub const fn custom_version(base_spec_id: SpecId) -> Version {
     let mut version = *Version::base(base_spec_id);
     opcode::install_gas_params(&mut version.gas_params);
     version
 }
 
-const fn custom_version_tables<const BASE_SPEC_ID: u8>() -> VersionTables<CustomTypes> {
-    let mut version = VersionTables::<CustomTypes>::base::<CustomConfig<BASE_SPEC_ID>>();
-    version.set_instruction::<opcode::custom<CustomTypes>>(
-        opcode::CUSTOM_OPCODE,
-        opcode::CUSTOM_OPCODE_GAS,
-    );
+pub const fn custom_version_tables<const BASE_SPEC_ID: u8, const CUSTOM_SPEC_ID: u8>()
+-> VersionTables<CustomTypes> {
+    let mut version =
+        VersionTables::<CustomTypes>::base::<CustomConfig<BASE_SPEC_ID, CUSTOM_SPEC_ID>>();
+    let custom_spec_id = CustomSpecId::try_from_u8(CUSTOM_SPEC_ID).expect("invalid custom spec id");
+    if custom_spec_id.enables(CustomSpecId::CustomOsaka) {
+        version.set_instruction::<opcode::custom<CustomTypes>>(
+            opcode::CUSTOM_OPCODE,
+            opcode::CUSTOM_OPCODE_GAS,
+        );
+    }
     version
 }
 
-pub(crate) struct CustomConfigSelector(());
+#[derive(Clone, Copy, Debug)]
+pub struct CustomConfigSelector(());
 
 impl EvmConfigSelector<CustomTypes> for CustomConfigSelector {
-    type Config<const BASE_SPEC_ID: u8> = CustomConfig<BASE_SPEC_ID>;
+    type Config<const BASE_SPEC_ID: u8, const CUSTOM_SPEC_ID: u8> =
+        CustomConfig<BASE_SPEC_ID, CUSTOM_SPEC_ID>;
 
     fn execution_config(spec_id: CustomSpecId) -> ExecutionConfig<CustomTypes> {
         match spec_id {
-            // Use unmodified revm-compatible Osaka tables.
+            // Use unmodified Osaka tables.
             CustomSpecId::MainnetOsaka => {
                 ExecutionConfig::for_config::<BaseEvmConfig<{ SpecId::OSAKA as u8 }>>()
             }
-            // Use the same base spec, with the custom tables from `CustomConfig`.
-            CustomSpecId::CustomOsaka => {
-                let base_spec_id = spec_id.into();
-                ExecutionConfig::for_base_spec::<Self>(base_spec_id)
-            }
+            // Use the same base spec, with one concrete custom table.
+            CustomSpecId::CustomOsaka => ExecutionConfig::for_config::<
+                CustomConfig<{ SpecId::OSAKA as u8 }, { CustomSpecId::CustomOsaka.as_u8() }>,
+            >(),
         }
     }
 }

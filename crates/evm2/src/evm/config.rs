@@ -5,16 +5,16 @@ use crate::{
     ethereum::RecoveredTxEnvelope,
     interpreter::{
         Host,
-        instructions::table::{InstrTable, InstrTables},
+        instructions::table::{ConfigInstrTables, InstrTable, SelectorInstrTables},
     },
-    spec_to_generic,
     version::Version,
 };
 
 /// Runtime EVM type family.
 ///
 /// Defines the concrete host, transaction, runtime spec-id, and config selector types used by an
-/// EVM instance. This is runtime wiring, not version behavior.
+/// EVM instance. The runtime spec-id can be a custom type, but each value must map to the base
+/// `SpecId` whose rules it inherits.
 pub trait EvmTypes: Sized + 'static {
     /// Configuration selector used by this EVM.
     type ConfigSelector: EvmConfigSelector<Self>;
@@ -33,7 +33,8 @@ pub trait EvmTypes: Sized + 'static {
 
 /// Compile-time EVM table configuration.
 ///
-/// Names the inherited base spec and type-specific `VersionTables` needed to build dispatch tables.
+/// Names the inherited base `SpecId` and the type-specific `VersionTables` needed to build a
+/// dispatch table. Custom configs are modeled as overlays on a base spec, not as new base specs.
 pub trait EvmConfig<T: EvmTypes> {
     /// Inherited base specification ID.
     const BASE_SPEC_ID: SpecId;
@@ -46,16 +47,52 @@ pub trait EvmConfig<T: EvmTypes> {
 ///
 /// Maps a runtime spec-id value accepted by `EvmTypes` to the `ExecutionConfig` that the EVM and
 /// interpreter use. Custom selectors can choose different configs for runtime IDs that share the
-/// same inherited base `SpecId`.
+/// same inherited base `SpecId`, while base selectors use `u8::MAX` as the custom-spec sentinel.
 pub trait EvmConfigSelector<T: EvmTypes>: Sized {
-    /// Concrete EVM configuration for a base specification ID.
+    /// Concrete EVM configuration for a base specification ID and custom specification ID.
     ///
     /// `BASE_SPEC_ID` is always a `crate::SpecId` discriminant, even when `T::SpecId` is a custom
-    /// runtime ID type.
-    type Config<const BASE_SPEC_ID: u8>: EvmConfig<T>;
+    /// runtime ID type. `CUSTOM_SPEC_ID` is a selector-specific `u8` discriminant; `u8::MAX`
+    /// represents the base table inherited from `BASE_SPEC_ID`.
+    type Config<const BASE_SPEC_ID: u8, const CUSTOM_SPEC_ID: u8>: EvmConfig<T>;
 
     /// Returns the selected execution config for `spec_id`.
     fn execution_config(spec_id: T::SpecId) -> ExecutionConfig<T>;
+}
+
+pub(crate) struct SelectorVersionTables<T, F, const CUSTOM_SPEC_ID: u8>(
+    core::marker::PhantomData<fn() -> (T, F)>,
+);
+
+impl<T, F, const CUSTOM_SPEC_ID: u8> SelectorVersionTables<T, F, CUSTOM_SPEC_ID>
+where
+    T: EvmTypes,
+    F: EvmConfigSelector<T>,
+{
+    pub(crate) const VERSION_TABLES: &'static [&'static VersionTables<T>; SpecId::COUNT] =
+        &selector_version_tables::<T, F, CUSTOM_SPEC_ID>();
+}
+
+const fn selector_version_tables<T, F, const CUSTOM_SPEC_ID: u8>()
+-> [&'static VersionTables<T>; SpecId::COUNT]
+where
+    T: EvmTypes,
+    F: EvmConfigSelector<T>,
+{
+    macro_rules! version_tables {
+        ([$evm_types:ty, $selector:ty] $($spec:ident $name:ident,)*) => {
+            [
+                $(
+                    <<$selector as EvmConfigSelector<$evm_types>>::Config<
+                        { SpecId::$spec as u8 },
+                        CUSTOM_SPEC_ID,
+                    > as EvmConfig<$evm_types>>::VERSION_TABLES,
+                )*
+            ]
+        };
+    }
+
+    crate::for_each_spec!([T, F] version_tables)
 }
 
 /// Selected execution configuration.
@@ -67,6 +104,8 @@ pub struct ExecutionConfig<T: EvmTypes> {
     pub(crate) version: Version,
     #[debug(skip)]
     pub(crate) instructions: &'static InstrTable<T>,
+    #[debug(skip)]
+    pub(crate) inspect_instructions: &'static InstrTable<T>,
 }
 
 impl<T: EvmTypes> Clone for ExecutionConfig<T> {
@@ -79,24 +118,38 @@ impl<T: EvmTypes> Clone for ExecutionConfig<T> {
 impl<T: EvmTypes> Copy for ExecutionConfig<T> {}
 
 impl<T: EvmTypes> ExecutionConfig<T> {
-    /// Creates an execution config for a concrete compile-time config.
+    /// Creates an execution config for a base `SpecId` through selector `F`.
+    ///
+    /// This uses the selector's base inherited tables by passing `u8::MAX` as the custom-spec
+    /// sentinel.
     #[inline]
-    pub const fn for_config<C: EvmConfig<T>>() -> Self {
+    pub(crate) const fn for_base_spec<F: EvmConfigSelector<T>>(base_spec_id: SpecId) -> Self {
+        Self::for_custom_spec::<F, { u8::MAX }>(base_spec_id)
+    }
+
+    /// Creates an execution config for selector custom spec `CUSTOM_SPEC_ID` and base `SpecId`.
+    #[inline]
+    pub(crate) const fn for_custom_spec<F: EvmConfigSelector<T>, const CUSTOM_SPEC_ID: u8>(
+        base_spec_id: SpecId,
+    ) -> Self {
+        let i = base_spec_id as usize;
         Self {
-            version: Version::new(C::BASE_SPEC_ID),
-            instructions: <T as InstrTables<C>>::INSTRUCTIONS,
+            version: Version::new(base_spec_id),
+            instructions: &SelectorInstrTables::<T, F, CUSTOM_SPEC_ID>::INSTRUCTIONS[i],
+            inspect_instructions:
+                &SelectorInstrTables::<T, F, CUSTOM_SPEC_ID>::INSPECT_INSTRUCTIONS[i],
         }
     }
 
-    /// Creates an execution config for a base `SpecId` through selector `F`.
-    ///
-    /// The selector provides the concrete `Config<BASE_SPEC_ID>` used for the inherited base
-    /// version.
+    /// Creates an execution config for concrete EVM configuration `C`.
     #[inline]
-    pub const fn for_base_spec<F: EvmConfigSelector<T>>(base_spec_id: SpecId) -> Self {
-        spec_to_generic!(base_spec_id, |BASE_SPEC_ID| {
-            Self::for_config::<F::Config<BASE_SPEC_ID>>()
-        })
+    pub const fn for_config<C: EvmConfig<T>>() -> Self {
+        let base_spec_id = C::BASE_SPEC_ID;
+        Self {
+            version: Version::new(base_spec_id),
+            instructions: ConfigInstrTables::<T, C>::INSTRUCTIONS,
+            inspect_instructions: ConfigInstrTables::<T, C>::INSPECT_INSTRUCTIONS,
+        }
     }
 
     /// Creates an execution config for `spec_id` with dynamic runtime version data.
@@ -140,7 +193,7 @@ impl EvmTypes for BaseEvmTypes {
 pub struct BaseEvmConfig<const BASE_SPEC_ID: u8>(());
 
 impl<T: EvmTypes, const BASE_SPEC_ID: u8> EvmConfig<T> for BaseEvmConfig<BASE_SPEC_ID> {
-    const BASE_SPEC_ID: SpecId = SpecId::try_from_u8(BASE_SPEC_ID).unwrap();
+    const BASE_SPEC_ID: SpecId = SpecId::try_from_u8(BASE_SPEC_ID).expect("invalid spec id");
     const VERSION_TABLES: &'static VersionTables<T> = &VersionTables::<T>::base::<Self>();
 }
 
@@ -148,10 +201,10 @@ impl<T: EvmTypes, const BASE_SPEC_ID: u8> EvmConfig<T> for BaseEvmConfig<BASE_SP
 #[allow(missing_copy_implementations, missing_debug_implementations)]
 pub struct BaseEvmConfigSelector(());
 
-impl<T: EvmTypes<SpecId = SpecId>> EvmConfigSelector<T> for BaseEvmConfigSelector {
-    type Config<const BASE_SPEC_ID: u8> = BaseEvmConfig<BASE_SPEC_ID>;
+impl<T: EvmTypes> EvmConfigSelector<T> for BaseEvmConfigSelector {
+    type Config<const BASE_SPEC_ID: u8, const CUSTOM_SPEC_ID: u8> = BaseEvmConfig<BASE_SPEC_ID>;
 
     fn execution_config(spec_id: T::SpecId) -> ExecutionConfig<T> {
-        ExecutionConfig::for_base_spec::<Self>(spec_id)
+        ExecutionConfig::for_base_spec::<Self>(spec_id.into())
     }
 }

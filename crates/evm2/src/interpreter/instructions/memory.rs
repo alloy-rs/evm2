@@ -112,7 +112,7 @@ mod tests {
         let bytecode = Bytecode::new_legacy(Bytes::from(code));
         let mut interpreter = Interpreter::<TestTypes>::new(bytecode, &tx_env, &message, false);
         let mut host = TestHost::default();
-        let err = interpreter.run_with(&config, &mut host);
+        let err = interpreter.run(&config, &mut host);
 
         assert!(matches!(err, InstrStop::MemoryLimitOOG));
         assert_eq!(interpreter.memory_len(), 0);
