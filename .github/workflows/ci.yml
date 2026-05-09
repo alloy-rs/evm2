@@ -48,7 +48,7 @@ jobs:
             rust: "nightly"
             flags: "--all-features"
           - kind: "statetest"
-            fixture: "devnet"
+            fixture: "statetest devnet"
             os: "ubuntu-latest"
             rust: "stable"
             flags: ""
@@ -80,7 +80,7 @@ jobs:
           cache-on-failure: true
       - uses: taiki-e/install-action@nextest
       - name: Download state test fixtures
-        if: ${{ matrix.kind == 'statetest' }}
+        if: ${{ matrix.kind != 'test' }}
         shell: bash
         run: |
             if [[ "${{ matrix.fixture }}" == "devnet" ]]; then
@@ -93,7 +93,7 @@ jobs:
         shell: bash
         run: |
             extra_flags=()
-            if [[ "${{ matrix.kind }}" == "statetest" ]]; then
+            if [[ "${{ matrix.kind }}" != "test" ]]; then
               extra_flags+=(-p evm2-statetest --ignore-default-filter)
             fi
             if [[ "${{ matrix.fixture }}" == "devnet" ]]; then
