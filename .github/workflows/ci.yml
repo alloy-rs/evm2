@@ -39,13 +39,28 @@ jobs:
         ]
         include:
           # All features
-          - os: "ubuntu-latest"
+          - kind: "test"
+            os: "ubuntu-latest"
             rust: "nightly"
             flags: "--all-features"
-          # - os: "macos-latest"
+          - kind: "statetest"
+            os: "ubuntu-latest"
+            rust: "nightly"
+            flags: "--all-features"
+          # - kind: "test"
+          #   os: "macos-latest"
           #   rust: "nightly"
           #   flags: "--all-features"
-          # - os: "windows-latest"
+          # - kind: "statetest"
+          #   os: "macos-latest"
+          #   rust: "nightly"
+          #   flags: "--all-features"
+          # - kind: "test"
+          #   os: "windows-latest"
+          #   rust: "nightly"
+          #   flags: "--features nightly" # Some C libraries don't support MSVC.
+          # - kind: "statetest"
+          #   os: "windows-latest"
           #   rust: "nightly"
           #   flags: "--features nightly" # Some C libraries don't support MSVC.
     steps:
@@ -87,7 +102,7 @@ jobs:
         with:
           cache-on-failure: true
       - name: check
-        run: cargo build -p evm2 --target wasm32-unknown-unknown
+        run: cargo build -p evm2 --target wasm32-unknown-unknown --no-default-features
 
   feature-checks:
     name: features ${{ matrix.flags }}
@@ -179,6 +194,8 @@ jobs:
       - run: cargo fmt --all --check
 
   deny:
+    permissions:
+      contents: read
     uses: tempoxyz/ci/.github/workflows/deny.yml@main
 
   ci-success:
