@@ -9,7 +9,7 @@ use crate::{
     evm::inspector::Inspector, interpreter::instructions::table::InstrTable, version::GasParams,
 };
 use alloc::{boxed::Box, vec::Vec};
-use alloy_primitives::Bytes;
+use alloy_primitives::{Address, Bytes, Log};
 #[cfg(not(tco))]
 use core::hint::cold_path;
 use core::{fmt, marker::PhantomData, ptr::NonNull};
@@ -168,13 +168,13 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
 
     /// Runs the interpreter until it stops.
     #[inline]
-    pub fn run_with(&mut self, config: &ExecutionConfig<T>, host: &mut T::Host) -> InstrStop {
+    pub fn run(&mut self, config: &ExecutionConfig<T>, host: &mut T::Host) -> InstrStop {
         self.run_inner(config.version(), host, None, config.instructions)
     }
 
     /// Runs the interpreter until it stops with an execution inspector.
     #[inline]
-    pub fn run_with_dyn_inspector(
+    pub fn run_inspect(
         &mut self,
         config: &ExecutionConfig<T>,
         host: &mut T::Host,
@@ -304,7 +304,7 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
     /// Returns the cached transaction-global environment.
     #[inline]
     pub const fn tx(&self) -> &TxEnv {
-        // SAFETY: `tx_env` is initialized at the beginning of `run_with` and remains set for
+        // SAFETY: `tx_env` is initialized at the beginning of `run` and remains set for
         // instruction execution.
         unsafe { self.0.tx_env.unwrap_unchecked() }
     }
@@ -318,16 +318,16 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
     /// Returns the host implementation.
     #[inline]
     pub const fn host(&mut self) -> &mut T::Host {
-        // SAFETY: `host` is initialized at the beginning of `run_with` and cleared before the
+        // SAFETY: `host` is initialized at the beginning of `run` and cleared before the
         // method returns. Instruction execution is synchronous, so the pointer cannot outlive the
-        // `run_with` host borrow.
+        // `run` host borrow.
         unsafe { self.0.host.unwrap_unchecked().as_mut() }
     }
 
     /// Returns the active runtime version data.
     #[inline]
     pub const fn version(&self) -> &Version {
-        // SAFETY: `version` is initialized at the beginning of `run_with` and points into the
+        // SAFETY: `version` is initialized at the beginning of `run` and points into the
         // `Version` borrowed by the current run.
         unsafe { &*self.0.version }
     }
@@ -335,7 +335,7 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
     /// Returns the active frame-local call/create message.
     #[inline]
     pub const fn message(&self) -> &Message {
-        // SAFETY: `message` is initialized at the beginning of `run_with` and remains set for
+        // SAFETY: `message` is initialized at the beginning of `run` and remains set for
         // instruction execution.
         unsafe { self.0.message.unwrap_unchecked() }
     }
@@ -383,45 +383,62 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
     }
 
     #[inline]
+    fn inspector(&mut self) -> Option<&mut dyn Inspector<T>> {
+        self.0.inspector.map(|mut x| unsafe { x.as_mut() })
+    }
+
+    #[inline]
     pub(crate) fn inspect_step(&mut self, pc: Pc, stack_len: usize) {
         self.0.pc = pc.as_ptr();
         self.0.stack_len = stack_len;
-        unsafe { self.0.inspector.unwrap_unchecked().as_mut().step(&mut self.0) };
+        let mut inspector = unsafe { self.0.inspector.unwrap_unchecked() };
+        unsafe { inspector.as_mut() }.step(&mut self.0);
     }
 
     #[inline]
     pub(crate) fn inspect_step_end(&mut self, pc: Pc, stack_len: usize) {
         self.0.pc = pc.as_ptr();
         self.0.stack_len = stack_len;
-        unsafe { self.0.inspector.unwrap_unchecked().as_mut().step_end(&mut self.0) };
+        let mut inspector = unsafe { self.0.inspector.unwrap_unchecked() };
+        unsafe { inspector.as_mut() }.step_end(&mut self.0);
     }
 
     #[inline]
     pub(crate) fn inspect_call(&mut self, message: &mut Message) -> Option<MessageResult> {
-        let mut inspector = self.0.inspector?;
-        unsafe { inspector.as_mut().call(message) }
+        self.inspector().and_then(|inspector| inspector.call(message))
     }
 
     #[inline]
     pub(crate) fn inspect_call_end(&mut self, message: &Message, result: &mut MessageResult) {
-        let Some(mut inspector) = self.0.inspector else {
-            return;
-        };
-        unsafe { inspector.as_mut().call_end(message, result) };
+        if let Some(inspector) = self.inspector() {
+            inspector.call_end(message, result);
+        }
     }
 
     #[inline]
     pub(crate) fn inspect_create(&mut self, message: &mut Message) -> Option<MessageResult> {
-        let mut inspector = self.0.inspector?;
-        unsafe { inspector.as_mut().create(message) }
+        self.inspector().and_then(|inspector| inspector.create(message))
     }
 
     #[inline]
     pub(crate) fn inspect_create_end(&mut self, message: &Message, result: &mut MessageResult) {
-        let Some(mut inspector) = self.0.inspector else {
-            return;
-        };
-        unsafe { inspector.as_mut().create_end(message, result) };
+        if let Some(inspector) = self.inspector() {
+            inspector.create_end(message, result);
+        }
+    }
+
+    #[inline]
+    pub(crate) fn inspect_log(&mut self, log: &Log) {
+        if let Some(inspector) = self.inspector() {
+            inspector.log(log);
+        }
+    }
+
+    #[inline]
+    pub(crate) fn inspect_selfdestruct(&mut self, contract: Address, target: Address, value: Word) {
+        if let Some(inspector) = self.inspector() {
+            inspector.selfdestruct(contract, target, value);
+        }
     }
 }
 

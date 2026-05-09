@@ -326,7 +326,7 @@ pub(crate) fn initial_message<T: EvmTypes<Host = Evm<T>>>(
     value: U256,
     gas_limit: u64,
 ) -> (Bytecode, Message) {
-    match to {
+    let (bytecode, message) = match to {
         TxKind::Call(to) => {
             let initial_code = initial_call_code(host, to);
             let message = Message {
@@ -359,7 +359,9 @@ pub(crate) fn initial_message<T: EvmTypes<Host = Evm<T>>>(
             };
             (Bytecode::new_legacy(input.clone()), message)
         }
-    }
+    };
+    debug_assert_eq!(message.depth, 0);
+    (bytecode, message)
 }
 
 struct InitialCallCode {

@@ -19,14 +19,6 @@ pub mod opcode;
 pub mod tx;
 
 fn main() -> evm2::registry::HandlerResult<()> {
-    assert_eq!(CustomSpecId::COUNT, 2);
-    assert_eq!(CustomSpecId::MIN, CustomSpecId::MainnetOsaka);
-    assert_eq!(CustomSpecId::NEXT, CustomSpecId::CustomOsaka);
-    assert_eq!(
-        CustomSpecId::try_from_u8(CustomSpecId::CustomOsaka.as_u8()),
-        Some(CustomSpecId::CustomOsaka),
-    );
-
     let version = configured_custom_version();
     // Start from Osaka rules, then swap in the custom version tables and gas params.
     let execution_config =

@@ -217,20 +217,16 @@ fn call_inner<T: EvmTypes>(
         salt: B256::ZERO,
     };
     let caller_is_static = cx.state.is_static();
-    let bytecode = crate::bytecode::Bytecode::new_legacy(code);
-    let tx_env = cx.state.tx() as *const _;
-    let result = if message.depth > CALL_DEPTH_LIMIT {
-        let mut result = cx
-            .state
-            .inspect_call(&mut message)
-            .unwrap_or_else(|| call_too_deep_result(message.gas_limit));
-        cx.state.inspect_call_end(&message, &mut result);
+    let mut result = if let Some(result) = cx.state.inspect_call(&mut message) {
         result
+    } else if message.depth > CALL_DEPTH_LIMIT {
+        call_too_deep_result(message.gas_limit)
     } else {
-        // SAFETY: `tx_env` points into the active interpreter frame and remains valid for the
-        // duration of this instruction.
-        cx.state.host().execute_message(unsafe { &*tx_env }, bytecode, &message, caller_is_static)
+        let bytecode = crate::bytecode::Bytecode::new_legacy(code);
+        let tx_env = unsafe { crate::trustme::decouple_lt(cx.state.tx()) };
+        cx.state.host().execute_message(tx_env, bytecode, &message, caller_is_static)
     };
+    cx.state.inspect_call_end(&message, &mut result);
     cx.gas.erase_cost(result.gas_returned_to_parent());
     cx.gas.record_refund(result.refund_propagated_to_parent());
     let copy_len = min(return_memory_range.len(), result.output.len());
@@ -311,20 +307,16 @@ fn create_inner<T: EvmTypes>(
         disable_precompiles: false,
         salt: salt.map(|salt| B256::from(salt.to_be_bytes())).unwrap_or_default(),
     };
-    let bytecode = crate::bytecode::Bytecode::new_legacy(input);
-    let tx_env = cx.state.tx() as *const _;
-    let result = if message.depth > CALL_DEPTH_LIMIT {
-        let mut result = cx
-            .state
-            .inspect_create(&mut message)
-            .unwrap_or_else(|| call_too_deep_result(message.gas_limit));
-        cx.state.inspect_create_end(&message, &mut result);
+    let mut result = if let Some(result) = cx.state.inspect_create(&mut message) {
         result
+    } else if message.depth > CALL_DEPTH_LIMIT {
+        call_too_deep_result(message.gas_limit)
     } else {
-        // SAFETY: `tx_env` points into the active interpreter frame and remains valid for the
-        // duration of this instruction.
-        cx.state.host().execute_message(unsafe { &*tx_env }, bytecode, &message, false)
+        let bytecode = crate::bytecode::Bytecode::new_legacy(input);
+        let tx_env = unsafe { crate::trustme::decouple_lt(cx.state.tx()) };
+        cx.state.host().execute_message(tx_env, bytecode, &message, false)
     };
+    cx.state.inspect_create_end(&message, &mut result);
     cx.gas.erase_cost(result.gas_returned_to_parent());
     cx.gas.record_refund(result.refund_propagated_to_parent());
     // EIP-211 exposes CREATE failure data only for REVERT; other failures clear returndata.
@@ -349,6 +341,7 @@ pub(crate) fn selfdestruct(cx: _, [target]: [Word]) -> Result {
     let skip_cold_load = cx.gas.remaining() < cold_load_gas;
     let destination = cx.state.message().destination;
     let res = cx.state.host().selfdestruct(destination, target, skip_cold_load)?;
+    cx.state.inspect_selfdestruct(destination, target, res.value);
     let should_charge_topup =
         should_charge_new_account_gas(cx.state.spec(), res.had_value, res.target_is_empty);
     cx.gas.spend(cx.state.gas_params().selfdestruct_cost(should_charge_topup, res.is_cold))?;
@@ -361,11 +354,13 @@ pub(crate) fn selfdestruct(cx: _, [target]: [Word]) -> Result {
 #[cfg(test)]
 mod tests {
     use crate::{
-        SpecId,
+        BaseEvmConfigSelector, ExecutionConfig, SpecId,
+        bytecode::Bytecode,
         constants::{CALL_DEPTH_LIMIT, MAX_INITCODE_SIZE},
+        evm::inspector::Inspector,
         interpreter::{
-            InstrStop, Message, MessageKind, MessageResult, Word,
-            instructions::tests::{RunConfig, TestHost, push, run},
+            InstrStop, Interpreter, Message, MessageKind, MessageResult, Word,
+            instructions::tests::{RunConfig, TestHost, TestTypes, push, run},
             op,
         },
         utils::address_to_word,
@@ -376,6 +371,57 @@ mod tests {
         for value in values {
             push(code, value);
         }
+    }
+
+    #[derive(Default)]
+    struct MessageInspector {
+        call_depth: Option<u16>,
+        call_end_stop: Option<InstrStop>,
+        create_depth: Option<u16>,
+        create_end_stop: Option<InstrStop>,
+        selfdestruct: Option<(Address, Address, Word)>,
+    }
+
+    impl Inspector<TestTypes> for MessageInspector {
+        fn call(&mut self, message: &mut Message) -> Option<MessageResult> {
+            self.call_depth = Some(message.depth);
+            None
+        }
+
+        fn call_end(&mut self, _message: &Message, result: &mut MessageResult) {
+            self.call_end_stop = Some(result.stop);
+        }
+
+        fn create(&mut self, message: &mut Message) -> Option<MessageResult> {
+            self.create_depth = Some(message.depth);
+            None
+        }
+
+        fn create_end(&mut self, _message: &Message, result: &mut MessageResult) {
+            self.create_end_stop = Some(result.stop);
+        }
+
+        fn selfdestruct(&mut self, contract: Address, target: Address, value: Word) {
+            self.selfdestruct = Some((contract, target, value));
+        }
+    }
+
+    fn run_with_message_inspector(
+        code: Vec<u8>,
+        host: &mut TestHost,
+        message: &Message,
+        gas_limit: u64,
+        inspector: &mut MessageInspector,
+    ) -> (InstrStop, Vec<Word>) {
+        let tx_env = crate::env::TxEnv::default();
+        let bytecode = Bytecode::new_legacy(Bytes::from(code));
+        let mut message = message.clone();
+        message.gas_limit = gas_limit;
+        let mut inner = Interpreter::<TestTypes>::new(bytecode, &tx_env, &message, false);
+        let config = ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(SpecId::OSAKA);
+        let stop = inner.run_inspect(&config, host, inspector);
+        let stack = inner.stack().to_vec();
+        (stop, stack)
     }
 
     #[test]
@@ -464,6 +510,41 @@ mod tests {
         assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.stack(), [Word::ZERO]);
         assert_eq!(interpreter.gas_remaining(), 15_679);
+        assert!(host.calls.is_empty());
+    }
+
+    #[test]
+    fn call_too_deep_is_inspected_without_host_call() {
+        let target = Address::from([0x22; 20]);
+        let mut host = TestHost::default();
+        let mut inspector = MessageInspector::default();
+        let mut code = Vec::new();
+        push_all(
+            &mut code,
+            [
+                Word::ZERO,
+                Word::ZERO,
+                Word::ZERO,
+                Word::ZERO,
+                Word::ZERO,
+                address_to_word(target),
+                Word::from(1000),
+            ],
+        );
+        code.extend([op::CALL, op::STOP]);
+
+        let (stop, stack) = run_with_message_inspector(
+            code,
+            &mut host,
+            &Message { depth: CALL_DEPTH_LIMIT, ..Default::default() },
+            50_000,
+            &mut inspector,
+        );
+
+        assert!(matches!(stop, InstrStop::Stop));
+        assert_eq!(stack, [Word::ZERO]);
+        assert_eq!(inspector.call_depth, Some(CALL_DEPTH_LIMIT + 1));
+        assert_eq!(inspector.call_end_stop, Some(InstrStop::CallTooDeep));
         assert!(host.calls.is_empty());
     }
 
@@ -795,6 +876,29 @@ mod tests {
     }
 
     #[test]
+    fn create_too_deep_is_inspected_without_host_call() {
+        let mut host = TestHost::default();
+        let mut inspector = MessageInspector::default();
+        let mut code = Vec::new();
+        push_all(&mut code, [Word::ZERO, Word::ZERO, Word::ZERO]);
+        code.extend([op::CREATE, op::STOP]);
+
+        let (stop, stack) = run_with_message_inspector(
+            code,
+            &mut host,
+            &Message { depth: CALL_DEPTH_LIMIT, ..Default::default() },
+            50_000,
+            &mut inspector,
+        );
+
+        assert!(matches!(stop, InstrStop::Stop));
+        assert_eq!(stack, [Word::ZERO]);
+        assert_eq!(inspector.create_depth, Some(CALL_DEPTH_LIMIT + 1));
+        assert_eq!(inspector.create_end_stop, Some(InstrStop::CallTooDeep));
+        assert!(host.calls.is_empty());
+    }
+
+    #[test]
     fn create_initcode_size_limit_halts_after_shanghai() {
         let mut host = TestHost::default();
         let mut code = Vec::new();
@@ -858,5 +962,35 @@ mod tests {
         }));
         assert!(matches!(interpreter.err, InstrStop::SelfDestruct));
         assert_eq!(host.selfdestructs, [(contract, target, false)]);
+    }
+
+    #[test]
+    fn selfdestruct_is_inspected_from_opcode() {
+        let contract = Address::from([0x11; 20]);
+        let target = Address::from([0x99; 20]);
+        let value = Word::from(0xbeef);
+        let mut host = TestHost {
+            selfdestruct_result: crate::evm::SelfDestructResult {
+                had_value: true,
+                value,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut inspector = MessageInspector::default();
+        let mut code = Vec::new();
+        push(&mut code, address_to_word(target));
+        code.push(op::SELFDESTRUCT);
+
+        let (stop, _) = run_with_message_inspector(
+            code,
+            &mut host,
+            &Message { destination: contract, gas_limit: 10_000, ..Default::default() },
+            10_000,
+            &mut inspector,
+        );
+
+        assert!(matches!(stop, InstrStop::SelfDestruct));
+        assert_eq!(inspector.selfdestruct, Some((contract, target, value)));
     }
 }

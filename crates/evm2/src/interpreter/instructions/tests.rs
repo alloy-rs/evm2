@@ -289,7 +289,7 @@ pub(super) fn run(config: RunConfig<'_>) -> TestInterpreter {
     let host = host.unwrap_or(&mut default_host);
     host.spec_id = spec_id;
     let config = ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(spec_id);
-    let err = inner.run_with(&config, host);
+    let err = inner.run(&config, host);
     let (stack, stack_len, gas, memory, output) = inner.into_parts();
     TestInterpreter { stack, stack_len, gas, memory, output, err }
 }
@@ -357,7 +357,7 @@ fn typed_inspector_run_steps() {
     let mut inspector = StepInspector::default();
 
     let config = ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(SpecId::OSAKA);
-    let stop = inner.run_with_dyn_inspector(&config, &mut host, &mut inspector);
+    let stop = inner.run_inspect(&config, &mut host, &mut inspector);
 
     assert_eq!(stop, InstrStop::Stop);
     assert_eq!(inspector.steps, 1);

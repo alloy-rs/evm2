@@ -7,7 +7,6 @@ use self::{
 use crate::{
     EvmConfigSelector, EvmTypes, ExecutionConfig, PrecompileError, PrecompileHalt, SpecId,
     bytecode::Bytecode,
-    constants::CALL_DEPTH_LIMIT,
     env::{BlockEnv, TxEnv},
     interpreter::{
         Gas, Host, InstrStop, Interpreter, InterpreterPool, Message, MessageKind, MessageResult,
@@ -16,7 +15,7 @@ use crate::{
     registry::{HandlerResult, TxRegistry},
     version::{EvmFeatures, GasId},
 };
-use alloc::{borrow::Cow, boxed::Box};
+use alloc::boxed::Box;
 use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{Address, B256, Bytes, Log};
 
@@ -128,6 +127,8 @@ impl SStore {
 pub struct SelfDestructResult {
     /// Whether the destroyed account had non-zero value.
     pub had_value: bool,
+    /// Balance transferred or cleared by the destruction.
+    pub value: Word,
     /// Whether the beneficiary is empty/non-existent for new-account gas checks.
     pub target_is_empty: bool,
     /// Whether the beneficiary access was cold.
@@ -649,9 +650,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         caller_is_static: bool,
     ) -> (InstrStop, &mut Interpreter<'frame, T>) {
         let mut interpreter = self.interpreter_pool.pop();
-        // SAFETY: The active interpreter is owned by this stack frame until it is returned to the
-        // pool after execution. Recursive calls may mutate the pool, but they cannot move this box.
-        let interpreter_ref = unsafe { &mut *(&mut *interpreter as *mut Interpreter<'frame, T>) };
+        let interpreter_ref = interpreter.as_mut();
         interpreter_ref.init(bytecode, tx_env, message, caller_is_static);
         // SAFETY: `execution_config` points to a private field that host execution does not
         // replace or mutate, so the pointee remains valid here.
@@ -663,9 +662,9 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             unsafe { crate::trustme::decouple_lt_mut(inspector) }
         });
         let stop = if let Some(inspector) = inspector {
-            interpreter_ref.run_with_dyn_inspector(execution_config, self, inspector)
+            interpreter_ref.run_inspect(execution_config, self, inspector)
         } else {
-            interpreter_ref.run_with(execution_config, self)
+            interpreter_ref.run(execution_config, self)
         };
         let interpreter = self.interpreter_pool.push(interpreter);
         (stop, interpreter)
@@ -674,95 +673,6 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     fn inspect_initialize_interp(&mut self, interp: &mut Interpreter<'_, T>) {
         if let Some(inspector) = &mut self.inspector {
             inspector.initialize_interp(interp);
-        }
-    }
-
-    fn inspect_log(&mut self, log: &Log) {
-        if let Some(inspector) = &mut self.inspector {
-            inspector.log(log);
-        }
-    }
-
-    fn inspect_call(&mut self, message: &mut Message) -> Option<MessageResult> {
-        self.inspector.as_deref_mut().and_then(|inspector| inspector.call(message))
-    }
-
-    fn inspect_call_end(&mut self, message: &Message, result: &mut MessageResult) {
-        if let Some(inspector) = &mut self.inspector {
-            inspector.call_end(message, result);
-        }
-    }
-
-    fn inspect_create(&mut self, message: &mut Message) -> Option<MessageResult> {
-        self.inspector.as_deref_mut().and_then(|inspector| inspector.create(message))
-    }
-
-    fn inspect_create_end(&mut self, message: &Message, result: &mut MessageResult) {
-        if let Some(inspector) = &mut self.inspector {
-            inspector.create_end(message, result);
-        }
-    }
-
-    fn has_inspector(&self) -> bool {
-        self.inspector.is_some()
-    }
-
-    fn inspect_message_start(&mut self, message: &mut Cow<'_, Message>) -> Option<MessageResult> {
-        if message.kind.is_create() {
-            self.inspect_create(message.to_mut())
-        } else {
-            self.inspect_call(message.to_mut())
-        }
-    }
-
-    #[inline(never)]
-    fn inspect_execute_message(
-        &mut self,
-        tx_env: &TxEnv,
-        bytecode: Bytecode,
-        message: &Message,
-        caller_is_static: bool,
-    ) -> MessageResult {
-        let mut message = Cow::Borrowed(message);
-        let inspected_result = self.inspect_message_start(&mut message);
-
-        let mut result = if let Some(result) = inspected_result {
-            result
-        } else if message.depth > CALL_DEPTH_LIMIT {
-            MessageResult {
-                stop: InstrStop::CallTooDeep,
-                gas_remaining: message.gas_limit,
-                ..MessageResult::default()
-            }
-        } else {
-            match message.kind {
-                MessageKind::Create | MessageKind::Create2 => self.execute_create_message(
-                    tx_env,
-                    bytecode,
-                    message.as_ref(),
-                    caller_is_static,
-                ),
-                MessageKind::Call
-                | MessageKind::CallCode
-                | MessageKind::DelegateCall
-                | MessageKind::StaticCall => {
-                    self.execute_call_message(tx_env, bytecode, message.as_ref(), caller_is_static)
-                }
-            }
-        };
-
-        if message.kind.is_create() {
-            self.inspect_create_end(message.as_ref(), &mut result);
-        } else {
-            self.inspect_call_end(message.as_ref(), &mut result);
-        }
-
-        result
-    }
-
-    fn inspect_selfdestruct(&mut self, contract: Address, target: Address, value: Word) {
-        if let Some(inspector) = &mut self.inspector {
-            inspector.selfdestruct(contract, target, value);
         }
     }
 }
@@ -856,7 +766,6 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
     }
 
     fn log(&mut self, log: Log) {
-        self.inspect_log(&log);
         self.state.log(log);
     }
 
@@ -867,18 +776,6 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
         message: &Message,
         caller_is_static: bool,
     ) -> MessageResult {
-        if self.has_inspector() {
-            return self.inspect_execute_message(tx_env, bytecode, message, caller_is_static);
-        }
-
-        if message.depth > CALL_DEPTH_LIMIT {
-            return MessageResult {
-                stop: InstrStop::CallTooDeep,
-                gas_remaining: message.gas_limit,
-                ..MessageResult::default()
-            };
-        }
-
         match message.kind {
             MessageKind::Create | MessageKind::Create2 => {
                 self.execute_create_message(tx_env, bytecode, message, caller_is_static)
@@ -922,10 +819,9 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
         if should_destroy {
             self.state.mark_destructed(contract);
         }
-        self.inspect_selfdestruct(contract, target, balance);
-
         Ok(SelfDestructResult {
             had_value: !balance.is_zero(),
+            value: balance,
             target_is_empty: target_is_empty_for_new_account_gas,
             is_cold,
             previously_destroyed,
@@ -1245,49 +1141,6 @@ mod tests {
         let changes = evm.state.build_state_changes();
         assert!(!changes.accounts.contains_key(&code_address));
         assert!(!changes.storage.contains_key(&code_address));
-    }
-
-    #[test]
-    fn host_allows_message_at_call_depth_limit() {
-        let mut evm = Evm::<BaseEvmTypes>::new(
-            SpecId::OSAKA,
-            BlockEnv::default(),
-            TxRegistry::new(),
-            InMemoryDB::default(),
-            Precompiles::base(SpecId::OSAKA),
-        );
-        let bytecode = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
-        let message = Message {
-            kind: MessageKind::Call,
-            depth: CALL_DEPTH_LIMIT,
-            gas_limit: 50_000,
-            ..Message::default()
-        };
-
-        let result = Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &message, false);
-        assert!(result.stop.is_success());
-    }
-
-    #[test]
-    fn host_rejects_message_past_call_depth_limit() {
-        let mut evm = Evm::<BaseEvmTypes>::new(
-            SpecId::OSAKA,
-            BlockEnv::default(),
-            TxRegistry::new(),
-            InMemoryDB::default(),
-            Precompiles::base(SpecId::OSAKA),
-        );
-        let bytecode = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
-        let message = Message {
-            kind: MessageKind::Call,
-            depth: CALL_DEPTH_LIMIT + 1,
-            gas_limit: 50_000,
-            ..Message::default()
-        };
-
-        let result = Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &message, false);
-        assert_eq!(result.stop, InstrStop::CallTooDeep);
-        assert_eq!(result.gas_remaining, 50_000);
     }
 
     #[test]
