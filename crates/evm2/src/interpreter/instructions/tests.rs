@@ -35,7 +35,7 @@ pub(crate) struct TestHost {
     pub(super) storage: StorageKeyMap<Word>,
     pub(super) original_storage: StorageKeyMap<Word>,
     pub(super) transient_storage: StorageKeyMap<Word>,
-    pub(super) logs: Vec<Log>,
+    pub(crate) logs: Vec<Log>,
     pub(super) execute_result: MessageResult,
     pub(crate) selfdestruct_result: SelfDestructResult,
     pub(crate) calls: Vec<Message>,
