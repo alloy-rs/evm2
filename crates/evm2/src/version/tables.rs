@@ -16,13 +16,14 @@ pub struct VersionTables<T: EvmTypes> {
     static_gas_table: StaticGasTable,
     /// Instruction implementations.
     instruction_impls: InstructionImplTable<T>,
+    /// Per-opcode revision for dispatch-table rebuild decisions.
+    revisions: [u8; 256],
 }
 
 pub(crate) struct InstructionInfo<T: EvmTypes> {
     pub(crate) instr: InstructionImplFn<T>,
     #[allow(dead_code)]
     pub(crate) dynamic_gas: bool,
-    pub(crate) revision: u16,
 }
 
 impl<T: EvmTypes> fmt::Debug for VersionTables<T> {
@@ -43,6 +44,7 @@ impl<T: EvmTypes> VersionTables<T> {
         Self {
             static_gas_table: StaticGasTable::empty(),
             instruction_impls: InstructionImplTable::empty(),
+            revisions: [0; 256],
         }
     }
 
@@ -52,16 +54,18 @@ impl<T: EvmTypes> VersionTables<T> {
         self.static_gas_table.get(opcode)
     }
 
-    /// Returns the static gas revision for `opcode`.
+    /// Returns the dispatch-table revision for `opcode`.
     #[inline(always)]
-    pub(crate) const fn static_gas_revision(&self, opcode: u8) -> u16 {
-        self.static_gas_table.revision(opcode)
+    pub(crate) const fn revision(&self, opcode: u8) -> u8 {
+        self.revisions[opcode as usize]
     }
 
     /// Sets the static gas cost for `opcode`.
     #[inline(always)]
     pub const fn set_static_gas(&mut self, opcode: u8, cost: u16) {
-        self.static_gas_table.set(opcode, cost);
+        if self.static_gas_table.set(opcode, cost) {
+            self.bump_revision(opcode);
+        }
     }
 
     /// Returns instruction metadata for `opcode`.
@@ -83,13 +87,19 @@ impl<T: EvmTypes> VersionTables<T> {
     #[inline(always)]
     pub const fn set_instruction<I: Instruction<T>>(&mut self, opcode: u8, gas: u16) {
         self.set_static_gas(opcode, gas);
-        self.instruction_impls.set(opcode, I::execute, I::DYNAMIC_GAS);
+        if self.instruction_impls.set(opcode, I::execute, I::DYNAMIC_GAS) {
+            self.bump_revision(opcode);
+        }
+    }
+
+    #[inline(always)]
+    const fn bump_revision(&mut self, opcode: u8) {
+        self.revisions[opcode as usize] += 1;
     }
 }
 
 struct StaticGasTable {
     table: [u16; 256],
-    revisions: [u16; 256],
     _align: [usize; 0],
 }
 
@@ -97,7 +107,7 @@ impl StaticGasTable {
     /// Creates an empty gas table.
     #[inline]
     const fn empty() -> Self {
-        Self { table: [0; 256], revisions: [0; 256], _align: [] }
+        Self { table: [0; 256], _align: [] }
     }
 
     /// Returns the gas cost for `opcode`.
@@ -106,50 +116,38 @@ impl StaticGasTable {
         self.table[opcode as usize]
     }
 
-    /// Returns the revision for `opcode`.
-    #[inline(always)]
-    const fn revision(&self, opcode: u8) -> u16 {
-        self.revisions[opcode as usize]
-    }
-
     /// Sets the gas cost for `opcode`.
     #[inline(always)]
-    const fn set(&mut self, opcode: u8, cost: u16) {
+    const fn set(&mut self, opcode: u8, cost: u16) -> bool {
         let index = opcode as usize;
         if self.table[index] != cost {
             self.table[index] = cost;
-            self.revisions[index] += 1;
+            return true;
         }
+        false
     }
 }
 
 struct InstructionImplTable<T: EvmTypes> {
     instrs: [Option<InstructionImplFn<T>>; 256],
     dynamic_gas: [bool; 256],
-    revisions: [u16; 256],
 }
 
 impl<T: EvmTypes> InstructionImplTable<T> {
     /// Creates an empty instruction implementation table.
     #[inline]
     const fn empty() -> Self {
-        Self { instrs: [None; 256], dynamic_gas: [false; 256], revisions: [0; 256] }
+        Self { instrs: [None; 256], dynamic_gas: [false; 256] }
     }
 
     /// Returns the instruction implementation for `opcode`.
     #[inline(always)]
     const fn get(&self, opcode: u8) -> InstructionInfo<T> {
         match self.instrs[opcode as usize] {
-            Some(instr) => InstructionInfo {
-                instr,
-                dynamic_gas: self.dynamic_gas[opcode as usize],
-                revision: self.revisions[opcode as usize],
-            },
-            None => InstructionInfo {
-                instr: unknown_instruction::<T>,
-                dynamic_gas: true,
-                revision: self.revisions[opcode as usize],
-            },
+            Some(instr) => {
+                InstructionInfo { instr, dynamic_gas: self.dynamic_gas[opcode as usize] }
+            }
+            None => InstructionInfo { instr: unknown_instruction::<T>, dynamic_gas: true },
         }
     }
 
@@ -161,10 +159,10 @@ impl<T: EvmTypes> InstructionImplTable<T> {
 
     /// Sets the instruction implementation for `opcode`.
     #[inline(always)]
-    const fn set(&mut self, opcode: u8, instr: InstructionImplFn<T>, dynamic_gas: bool) {
+    const fn set(&mut self, opcode: u8, instr: InstructionImplFn<T>, dynamic_gas: bool) -> bool {
         let index = opcode as usize;
         self.instrs[index] = Some(instr);
         self.dynamic_gas[index] = dynamic_gas;
-        self.revisions[index] += 1;
+        true
     }
 }

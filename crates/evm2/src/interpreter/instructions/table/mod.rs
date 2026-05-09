@@ -89,10 +89,7 @@ pub(super) const fn instruction_changed<T: EvmTypes>(
     let Some(previous_version_tables) = previous_version_tables else {
         return true;
     };
-    let instruction = version_tables.instruction(op);
-    let previous_instruction = previous_version_tables.instruction(op);
-    version_tables.static_gas_revision(op) != previous_version_tables.static_gas_revision(op)
-        || instruction.revision != previous_instruction.revision
+    version_tables.revision(op) != previous_version_tables.revision(op)
 }
 
 #[inline(always)]
