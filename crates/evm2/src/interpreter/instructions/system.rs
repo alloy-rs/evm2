@@ -355,13 +355,11 @@ pub(crate) fn selfdestruct(cx: _, [target]: [Word]) -> Result {
 #[cfg(test)]
 mod tests {
     use crate::{
-        BaseEvmConfigSelector, ExecutionConfig, SpecId,
-        bytecode::Bytecode,
+        SpecId,
         constants::{CALL_DEPTH_LIMIT, MAX_INITCODE_SIZE},
-        evm::inspector::Inspector,
         interpreter::{
-            InstrStop, Interpreter, Message, MessageKind, MessageResult, Word,
-            instructions::tests::{RunConfig, TestHost, TestTypes, push, run},
+            InstrStop, Message, MessageKind, MessageResult, Word,
+            instructions::tests::{RunConfig, TestHost, push, run},
             op,
         },
         utils::address_to_word,
@@ -372,57 +370,6 @@ mod tests {
         for value in values {
             push(code, value);
         }
-    }
-
-    #[derive(Default)]
-    struct MessageInspector {
-        call_depth: Option<u16>,
-        call_end_stop: Option<InstrStop>,
-        create_depth: Option<u16>,
-        create_end_stop: Option<InstrStop>,
-        selfdestruct: Option<(Address, Address, Word)>,
-    }
-
-    impl Inspector<TestTypes> for MessageInspector {
-        fn call(&mut self, message: &mut Message) -> Option<MessageResult> {
-            self.call_depth = Some(message.depth);
-            None
-        }
-
-        fn call_end(&mut self, _message: &Message, result: &mut MessageResult) {
-            self.call_end_stop = Some(result.stop);
-        }
-
-        fn create(&mut self, message: &mut Message) -> Option<MessageResult> {
-            self.create_depth = Some(message.depth);
-            None
-        }
-
-        fn create_end(&mut self, _message: &Message, result: &mut MessageResult) {
-            self.create_end_stop = Some(result.stop);
-        }
-
-        fn selfdestruct(&mut self, contract: Address, target: Address, value: Word) {
-            self.selfdestruct = Some((contract, target, value));
-        }
-    }
-
-    fn run_with_message_inspector(
-        code: Vec<u8>,
-        host: &mut TestHost,
-        message: &Message,
-        gas_limit: u64,
-        inspector: &mut MessageInspector,
-    ) -> (InstrStop, Vec<Word>) {
-        let tx_env = crate::env::TxEnv::default();
-        let bytecode = Bytecode::new_legacy(Bytes::from(code));
-        let mut message = message.clone();
-        message.gas_limit = gas_limit;
-        let mut inner = Interpreter::<TestTypes>::new(bytecode, &tx_env, &message, false);
-        let config = ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(SpecId::OSAKA);
-        let stop = inner.run_inspect(&config, host, inspector);
-        let stack = inner.stack().to_vec();
-        (stop, stack)
     }
 
     #[test]
@@ -511,41 +458,6 @@ mod tests {
         assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.stack(), [Word::ZERO]);
         assert_eq!(interpreter.gas_remaining(), 15_679);
-        assert!(host.calls.is_empty());
-    }
-
-    #[test]
-    fn call_too_deep_is_inspected_without_host_call() {
-        let target = Address::from([0x22; 20]);
-        let mut host = TestHost::default();
-        let mut inspector = MessageInspector::default();
-        let mut code = Vec::new();
-        push_all(
-            &mut code,
-            [
-                Word::ZERO,
-                Word::ZERO,
-                Word::ZERO,
-                Word::ZERO,
-                Word::ZERO,
-                address_to_word(target),
-                Word::from(1000),
-            ],
-        );
-        code.extend([op::CALL, op::STOP]);
-
-        let (stop, stack) = run_with_message_inspector(
-            code,
-            &mut host,
-            &Message { depth: CALL_DEPTH_LIMIT, ..Default::default() },
-            50_000,
-            &mut inspector,
-        );
-
-        assert!(matches!(stop, InstrStop::Stop));
-        assert_eq!(stack, [Word::ZERO]);
-        assert_eq!(inspector.call_depth, Some(CALL_DEPTH_LIMIT + 1));
-        assert_eq!(inspector.call_end_stop, Some(InstrStop::CallTooDeep));
         assert!(host.calls.is_empty());
     }
 
@@ -877,29 +789,6 @@ mod tests {
     }
 
     #[test]
-    fn create_too_deep_is_inspected_without_host_call() {
-        let mut host = TestHost::default();
-        let mut inspector = MessageInspector::default();
-        let mut code = Vec::new();
-        push_all(&mut code, [Word::ZERO, Word::ZERO, Word::ZERO]);
-        code.extend([op::CREATE, op::STOP]);
-
-        let (stop, stack) = run_with_message_inspector(
-            code,
-            &mut host,
-            &Message { depth: CALL_DEPTH_LIMIT, ..Default::default() },
-            50_000,
-            &mut inspector,
-        );
-
-        assert!(matches!(stop, InstrStop::Stop));
-        assert_eq!(stack, [Word::ZERO]);
-        assert_eq!(inspector.create_depth, Some(CALL_DEPTH_LIMIT + 1));
-        assert_eq!(inspector.create_end_stop, Some(InstrStop::CallTooDeep));
-        assert!(host.calls.is_empty());
-    }
-
-    #[test]
     fn create_initcode_size_limit_halts_after_shanghai() {
         let mut host = TestHost::default();
         let mut code = Vec::new();
@@ -963,35 +852,5 @@ mod tests {
         }));
         assert!(matches!(interpreter.err, InstrStop::SelfDestruct));
         assert_eq!(host.selfdestructs, [(contract, target, false)]);
-    }
-
-    #[test]
-    fn selfdestruct_is_inspected_from_opcode() {
-        let contract = Address::from([0x11; 20]);
-        let target = Address::from([0x99; 20]);
-        let value = Word::from(0xbeef);
-        let mut host = TestHost {
-            selfdestruct_result: crate::evm::SelfDestructResult {
-                had_value: true,
-                value,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let mut inspector = MessageInspector::default();
-        let mut code = Vec::new();
-        push(&mut code, address_to_word(target));
-        code.push(op::SELFDESTRUCT);
-
-        let (stop, _) = run_with_message_inspector(
-            code,
-            &mut host,
-            &Message { destination: contract, gas_limit: 10_000, ..Default::default() },
-            10_000,
-            &mut inspector,
-        );
-
-        assert!(matches!(stop, InstrStop::SelfDestruct));
-        assert_eq!(inspector.selfdestruct, Some((contract, target, value)));
     }
 }

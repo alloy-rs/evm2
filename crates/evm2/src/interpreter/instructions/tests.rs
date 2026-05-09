@@ -2,7 +2,7 @@ use crate::{
     BaseEvmConfigSelector, EvmTypes, ExecutionConfig, SpecId,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
-    evm::{AccountLoad, SLoad, SStore, SelfDestructResult, inspector::Inspector},
+    evm::{AccountLoad, SLoad, SStore, SelfDestructResult},
     interpreter::{
         Gas, Host, InstrStop, Interpreter, Memory, Message, MessageKind, MessageResult,
         StackBacking, Word, op,
@@ -37,8 +37,8 @@ pub(crate) struct TestHost {
     pub(super) transient_storage: StorageKeyMap<Word>,
     pub(super) logs: Vec<Log>,
     pub(super) execute_result: MessageResult,
-    pub(super) selfdestruct_result: SelfDestructResult,
-    pub(super) calls: Vec<Message>,
+    pub(crate) selfdestruct_result: SelfDestructResult,
+    pub(crate) calls: Vec<Message>,
     pub(super) call_static_flags: Vec<bool>,
     pub(super) selfdestructs: Vec<(Address, Address, bool)>,
 }
@@ -329,39 +329,6 @@ pub(super) fn run_stack<T: ToWord, const N: usize>(inputs: [T; N], opcode: u8) -
     }
     code.extend([opcode, op::STOP]);
     run(RunConfig::new(code))
-}
-
-#[test]
-fn typed_inspector_run_steps() {
-    #[derive(Default)]
-    struct StepInspector {
-        steps: usize,
-        step_ends: usize,
-    }
-
-    impl Inspector<TestTypes> for StepInspector {
-        fn step(&mut self, _interp: &mut Interpreter<'_, TestTypes>) {
-            self.steps += 1;
-        }
-
-        fn step_end(&mut self, _interp: &mut Interpreter<'_, TestTypes>) {
-            self.step_ends += 1;
-        }
-    }
-
-    let tx_env = TxEnv::default();
-    let message = Message::default();
-    let bytecode = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
-    let mut inner = Interpreter::<TestTypes>::new(bytecode, &tx_env, &message, false);
-    let mut host = TestHost::default();
-    let mut inspector = StepInspector::default();
-
-    let config = ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(SpecId::OSAKA);
-    let stop = inner.run_inspect(&config, &mut host, &mut inspector);
-
-    assert_eq!(stop, InstrStop::Stop);
-    assert_eq!(inspector.steps, 1);
-    assert_eq!(inspector.step_ends, 1);
 }
 
 pub(super) fn assert_stack_words(inputs: &[Word], opcode: u8, expected: &[Word]) {
