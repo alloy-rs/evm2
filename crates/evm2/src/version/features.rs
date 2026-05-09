@@ -128,43 +128,43 @@ evm_features! {
     ///
     /// Default: on
     BLOCK_GAS_LIMIT_CHECK,
-    /// Applies EIP-2 create transaction intrinsic gas.
+    /// Applies [EIP-2](https://eips.ethereum.org/EIPS/eip-2) create transaction intrinsic gas.
     ///
     /// Default: on since Homestead
     EIP2,
-    /// Applies EIP-2028 transaction calldata repricing.
+    /// Applies [EIP-2028](https://eips.ethereum.org/EIPS/eip-2028) transaction calldata repricing.
     ///
     /// Default: on since Istanbul
     EIP2028,
-    /// Applies EIP-3529 refund reductions.
+    /// Applies [EIP-3529](https://eips.ethereum.org/EIPS/eip-3529) refund reductions.
     ///
     /// Default: on since London
     EIP3529,
-    /// Applies EIP-3651 warm coinbase at transaction start.
+    /// Applies [EIP-3651](https://eips.ethereum.org/EIPS/eip-3651) warm coinbase at transaction start.
     ///
     /// Default: on since Shanghai
     EIP3651,
-    /// Applies EIP-3860 initcode size limits and word gas.
+    /// Applies [EIP-3860](https://eips.ethereum.org/EIPS/eip-3860) initcode size limits and word gas.
     ///
     /// Default: on since Shanghai
     EIP3860,
-    /// Applies EIP-3541 contract code prefix rejection.
+    /// Applies [EIP-3541](https://eips.ethereum.org/EIPS/eip-3541) contract code prefix rejection.
     ///
     /// Default: on since London
     EIP3541,
-    /// Applies EIP-3607 sender code rejection.
+    /// Applies [EIP-3607](https://eips.ethereum.org/EIPS/eip-3607) sender code rejection.
     ///
     /// Default: on
     EIP3607,
-    /// Applies EIP-7623 calldata cost floor.
+    /// Applies [EIP-7623](https://eips.ethereum.org/EIPS/eip-7623) calldata cost floor.
     ///
     /// Default: on since Prague
     EIP7623,
-    /// Checks EIP-1559 transaction fee caps against the block base fee.
+    /// Checks [EIP-1559](https://eips.ethereum.org/EIPS/eip-1559) transaction fee caps against the block base fee.
     ///
     /// Default: on since London
     BASE_FEE_CHECK,
-    /// Checks EIP-1559 max priority fee against max fee.
+    /// Checks [EIP-1559](https://eips.ethereum.org/EIPS/eip-1559) max priority fee against max fee.
     ///
     /// Default: on
     PRIORITY_FEE_CHECK,
@@ -172,15 +172,15 @@ evm_features! {
     ///
     /// Default: on
     FEE_CHARGE,
-    /// Applies EIP-8037 state creation gas accounting.
+    /// Applies [EIP-8037](https://eips.ethereum.org/EIPS/eip-8037) state creation gas accounting.
     ///
     /// Default: on since Amsterdam
     EIP8037,
-    /// Applies EIP-7708 ETH transfer logs.
+    /// Applies [EIP-7708](https://eips.ethereum.org/EIPS/eip-7708) ETH transfer logs.
     ///
     /// Default: on since Amsterdam
     EIP7708,
-    /// Applies delayed burn logging for EIP-7708 selfdestructs.
+    /// Applies delayed burn logging for [EIP-7708](https://eips.ethereum.org/EIPS/eip-7708) selfdestructs.
     ///
     /// Default: on since Amsterdam
     EIP7708_DELAYED_BURN,
