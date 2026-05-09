@@ -47,6 +47,11 @@ jobs:
             os: "ubuntu-latest"
             rust: "nightly"
             flags: "--all-features"
+          - kind: "statetest"
+            fixture: "devnet"
+            os: "ubuntu-latest"
+            rust: "stable"
+            flags: ""
           # - kind: "test"
           #   os: "macos-latest"
           #   rust: "nightly"
@@ -76,13 +81,23 @@ jobs:
       - uses: taiki-e/install-action@nextest
       - name: Download state test fixtures
         if: ${{ matrix.kind == 'statetest' }}
-        run: ./scripts/setup-test-fixtures.sh
+        shell: bash
+        run: |
+            if [[ "${{ matrix.fixture }}" == "devnet" ]]; then
+              export DEVNET_VERSION="snobal-devnet-6%40v1.1.0"
+              export DEVNET_TAR="fixtures_snobal-devnet-6.tar.gz"
+              export EVM2_STATETEST_DEVNET_ONLY=1
+            fi
+            ./scripts/setup-test-fixtures.sh
       - name: ${{ matrix.kind }}
         shell: bash
         run: |
             extra_flags=()
             if [[ "${{ matrix.kind }}" == "statetest" ]]; then
               extra_flags+=(-p evm2-statetest --ignore-default-filter)
+            fi
+            if [[ "${{ matrix.fixture }}" == "devnet" ]]; then
+              export EVM2_STATETEST_ROOT="test-fixtures/devnet/state_tests"
             fi
             cargo nextest run --workspace --no-fail-fast ${{ matrix.flags }} "${extra_flags[@]}"
       - name: doctest

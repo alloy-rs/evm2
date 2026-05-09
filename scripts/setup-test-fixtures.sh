@@ -7,6 +7,7 @@
 #   ├── main/
 #   │   ├── stable/state_tests/...
 #   │   └── develop/state_tests/...
+#   ├── devnet/state_tests/...
 #   └── legacytests/
 #       ├── Cancun/GeneralStateTests/...
 #       └── Constantinople/GeneralStateTests/...
@@ -24,15 +25,16 @@ FIXTURES_DIR="${EVM2_TEST_FIXTURES:-$REPO_ROOT/test-fixtures}"
 
 MAIN_STABLE_DIR="$FIXTURES_DIR/main/stable"
 MAIN_DEVELOP_DIR="$FIXTURES_DIR/main/develop"
+DEVNET_DIR="$FIXTURES_DIR/devnet"
 LEGACY_DIR="$FIXTURES_DIR/legacytests"
 
 if [[ -n "${EVM2_STATETEST_STABLE:-}" && "${EVM2_STATETEST_STABLE:-}" != "0" ]]; then
     MAIN_DIR="$MAIN_STABLE_DIR"
-    MAIN_TAR="fixtures_stable.tar.gz"
+    MAIN_TAR="${MAIN_TAR:-fixtures_stable.tar.gz}"
     MAIN_LABEL="main stable"
 else
     MAIN_DIR="$MAIN_DEVELOP_DIR"
-    MAIN_TAR="fixtures_develop.tar.gz"
+    MAIN_TAR="${MAIN_TAR:-fixtures_develop.tar.gz}"
     MAIN_LABEL="main develop"
 fi
 
@@ -97,13 +99,28 @@ download_legacy_tests() {
 }
 
 echo "=== Fetching state test fixtures ==="
-download_and_extract "$MAIN_DIR" "$MAIN_TAR" "$MAIN_LABEL" "$MAIN_VERSION" &
-main_pid=$!
-download_legacy_tests &
-legacy_pid=$!
+if [[ -z "${EVM2_STATETEST_DEVNET_ONLY:-}" || "${EVM2_STATETEST_DEVNET_ONLY:-}" == "0" ]]; then
+    download_and_extract "$MAIN_DIR" "$MAIN_TAR" "$MAIN_LABEL" "$MAIN_VERSION" &
+    main_pid=$!
+    download_legacy_tests &
+    legacy_pid=$!
+else
+    main_pid=
+    legacy_pid=
+fi
+if [[ -n "${DEVNET_VERSION:-}" || -n "${DEVNET_TAR:-}" ]]; then
+    if [[ -z "${DEVNET_VERSION:-}" || -z "${DEVNET_TAR:-}" ]]; then
+        echo "  DEVNET_VERSION and DEVNET_TAR must be set together." >&2
+        exit 1
+    fi
+    download_and_extract "$DEVNET_DIR" "$DEVNET_TAR" "devnet" "$DEVNET_VERSION" &
+    devnet_pid=$!
+else
+    devnet_pid=
+fi
 
 status=0
-for pid in "$main_pid" "$legacy_pid"; do
+for pid in ${main_pid:+"$main_pid"} ${legacy_pid:+"$legacy_pid"} ${devnet_pid:+"$devnet_pid"}; do
     if ! wait "$pid"; then
         status=1
     fi
@@ -117,6 +134,7 @@ echo "Fixture directories:"
 for dir in \
     "$MAIN_STABLE_DIR/state_tests" \
     "$MAIN_DEVELOP_DIR/state_tests" \
+    "$DEVNET_DIR/state_tests" \
     "$LEGACY_DIR/Cancun/GeneralStateTests" \
     "$LEGACY_DIR/Constantinople/GeneralStateTests"
 do
