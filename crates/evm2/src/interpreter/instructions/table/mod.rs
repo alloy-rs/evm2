@@ -1,7 +1,7 @@
 //! Instruction dispatch tables.
 
 use crate::{
-    EvmConfigSelector, EvmTypes, InstrTables, VersionTables,
+    EvmConfigSelector, EvmTypes, VersionTables,
     interpreter::{InstrStop, InterpreterState, Pc, Result, StackMut, op},
 };
 
@@ -69,16 +69,17 @@ pub(crate) type InstrFn<T> = imp::RawInstrFn<T>;
 /// Instruction dispatch table.
 pub(crate) type InstrTable<T> = imp::RawInstrTable<T>;
 
-#[allow(private_interfaces)]
-impl<T, F> InstrTables<F> for T
+pub(crate) struct InstrTables<T, F>(core::marker::PhantomData<fn() -> (T, F)>);
+
+impl<T, F> InstrTables<T, F>
 where
     T: EvmTypes,
     F: EvmConfigSelector<T>,
 {
-    const INSTRUCTIONS: &'static [InstrTable<Self>; crate::SpecId::COUNT] =
-        &imp::make_selector_tables::<Self, F, NoInspector>();
-    const INSPECT_INSTRUCTIONS: &'static [InstrTable<Self>; crate::SpecId::COUNT] =
-        &imp::make_selector_tables::<Self, F, DynInspector>();
+    pub(crate) const INSTRUCTIONS: &'static [InstrTable<T>; crate::SpecId::COUNT] =
+        &imp::make_selector_tables::<T, F, NoInspector>();
+    pub(crate) const INSPECT_INSTRUCTIONS: &'static [InstrTable<T>; crate::SpecId::COUNT] =
+        &imp::make_selector_tables::<T, F, DynInspector>();
 }
 
 pub(super) const fn instruction_changed<T: EvmTypes>(

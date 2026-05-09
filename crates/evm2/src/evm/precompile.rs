@@ -66,8 +66,9 @@ impl PrecompileProvider for Box<dyn PrecompileProvider> {
 }
 
 /// Empty precompile provider.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub struct NoPrecompiles;
+#[allow(missing_debug_implementations, missing_copy_implementations)]
+#[derive(Default)]
+pub struct NoPrecompiles(());
 
 impl PrecompileProvider for NoPrecompiles {
     #[inline]

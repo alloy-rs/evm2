@@ -3,7 +3,10 @@
 use crate::{
     SpecId, VersionTables,
     ethereum::RecoveredTxEnvelope,
-    interpreter::{Host, instructions::table::InstrTable},
+    interpreter::{
+        Host,
+        instructions::table::{InstrTable, InstrTables},
+    },
     version::Version,
 };
 
@@ -58,16 +61,6 @@ pub trait EvmConfigSelector<T: EvmTypes>: Sized {
     fn execution_config(spec_id: T::SpecId) -> ExecutionConfig<T>;
 }
 
-#[doc(hidden)]
-#[allow(private_interfaces)]
-pub trait InstrTables<F>: EvmTypes
-where
-    F: EvmConfigSelector<Self>,
-{
-    const INSTRUCTIONS: &'static [InstrTable<Self>; SpecId::COUNT];
-    const INSPECT_INSTRUCTIONS: &'static [InstrTable<Self>; SpecId::COUNT];
-}
-
 const fn selector_version_tables<T, F>() -> [&'static VersionTables<T>; SpecId::COUNT]
 where
     T: EvmTypes,
@@ -115,17 +108,12 @@ impl<T: EvmTypes> ExecutionConfig<T> {
     /// The selector provides the concrete `Config<BASE_SPEC_ID>` used for the inherited base
     /// version.
     #[inline]
-    pub const fn for_base_spec<F: EvmConfigSelector<T>>(base_spec_id: SpecId) -> Self
-    where
-        T: InstrTables<F>,
-    {
+    pub const fn for_base_spec<F: EvmConfigSelector<T>>(base_spec_id: SpecId) -> Self {
         let i = base_spec_id as usize;
-        let instructions = <T as InstrTables<F>>::INSTRUCTIONS;
-        let inspect_instructions = <T as InstrTables<F>>::INSPECT_INSTRUCTIONS;
         Self {
             version: Version::new(base_spec_id),
-            instructions: &instructions[i],
-            inspect_instructions: &inspect_instructions[i],
+            instructions: &InstrTables::<T, F>::INSTRUCTIONS[i],
+            inspect_instructions: &InstrTables::<T, F>::INSPECT_INSTRUCTIONS[i],
         }
     }
 

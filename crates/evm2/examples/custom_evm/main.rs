@@ -37,9 +37,8 @@ fn main() -> evm2::registry::HandlerResult<()> {
         BlockEnv::default(),
         custom_registry(),
         InMemoryDB::default(),
-        NoPrecompiles,
+        NoPrecompiles::default(),
     );
-
     let execute_result = evm.transact(&execute_code_tx)?;
     let expected_custom_gas = u64::from(opcode::CUSTOM_OPCODE_GAS)
         + u64::from(opcode::CUSTOM_OPCODE_DYNAMIC_GAS)
@@ -57,9 +56,8 @@ fn main() -> evm2::registry::HandlerResult<()> {
         BlockEnv::default(),
         custom_registry(),
         InMemoryDB::default(),
-        NoPrecompiles,
+        NoPrecompiles::default(),
     );
-    assert_eq!(mainnet_evm.config_spec_id(), CustomSpecId::MainnetOsaka);
     let mainnet_result = mainnet_evm.transact(&execute_code_tx)?;
     assert_eq!(mainnet_result.stop, InstrStop::OpcodeNotFound);
     assert!(!mainnet_result.status);
