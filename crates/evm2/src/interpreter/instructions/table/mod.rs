@@ -1,7 +1,8 @@
 //! Instruction dispatch tables.
 
 use crate::{
-    EvmConfigSelector, EvmTypes, VersionTables,
+    BaseEvmConfigSelector, EvmConfig, EvmConfigSelector, EvmTypes, VersionTables,
+    evm::config::SelectorVersionTables,
     interpreter::{InstrStop, InterpreterState, Pc, Result, StackMut, op},
 };
 
@@ -69,17 +70,49 @@ pub(crate) type InstrFn<T> = imp::RawInstrFn<T>;
 /// Instruction dispatch table.
 pub(crate) type InstrTable<T> = imp::RawInstrTable<T>;
 
-pub(crate) struct InstrTables<T, F>(core::marker::PhantomData<fn() -> (T, F)>);
+pub(crate) struct ConfigInstrTables<T, C>(core::marker::PhantomData<fn() -> (T, C)>);
 
-impl<T, F> InstrTables<T, F>
+impl<T, C> ConfigInstrTables<T, C>
+where
+    T: EvmTypes,
+    C: EvmConfig<T>,
+{
+    pub(crate) const INSTRUCTIONS: &'static InstrTable<T> = &imp::make_table::<T, C, NoInspector>(
+        Some(
+            &SelectorInstrTables::<T, BaseEvmConfigSelector, { u8::MAX }>::INSTRUCTIONS
+                [C::BASE_SPEC_ID as usize],
+        ),
+        Some(
+            SelectorVersionTables::<T, BaseEvmConfigSelector, { u8::MAX }>::VERSION_TABLES
+                [C::BASE_SPEC_ID as usize],
+        ),
+    );
+    pub(crate) const INSPECT_INSTRUCTIONS: &'static InstrTable<T> =
+        &imp::make_table::<T, C, DynInspector>(
+            Some(
+                &SelectorInstrTables::<T, BaseEvmConfigSelector, { u8::MAX }>::INSPECT_INSTRUCTIONS
+                    [C::BASE_SPEC_ID as usize],
+            ),
+            Some(
+                SelectorVersionTables::<T, BaseEvmConfigSelector, { u8::MAX }>::VERSION_TABLES
+                    [C::BASE_SPEC_ID as usize],
+            ),
+        );
+}
+
+pub(crate) struct SelectorInstrTables<T, F, const CUSTOM_SPEC_ID: u8>(
+    core::marker::PhantomData<fn() -> (T, F)>,
+);
+
+impl<T, F, const CUSTOM_SPEC_ID: u8> SelectorInstrTables<T, F, CUSTOM_SPEC_ID>
 where
     T: EvmTypes,
     F: EvmConfigSelector<T>,
 {
     pub(crate) const INSTRUCTIONS: &'static [InstrTable<T>; crate::SpecId::COUNT] =
-        &imp::make_selector_tables::<T, F, NoInspector>();
+        &imp::make_selector_tables::<T, F, NoInspector, CUSTOM_SPEC_ID>();
     pub(crate) const INSPECT_INSTRUCTIONS: &'static [InstrTable<T>; crate::SpecId::COUNT] =
-        &imp::make_selector_tables::<T, F, DynInspector>();
+        &imp::make_selector_tables::<T, F, DynInspector, CUSTOM_SPEC_ID>();
 }
 
 pub(super) const fn instruction_changed<T: EvmTypes>(

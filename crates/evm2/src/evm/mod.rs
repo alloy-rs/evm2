@@ -220,6 +220,11 @@ impl<T: EvmTypes> Evm<T> {
         database: Box<dyn Database>,
         precompiles: Box<dyn PrecompileProvider>,
     ) -> Self {
+        assert_eq!(
+            spec_id.into(),
+            execution_config.version().spec_id,
+            "execution config version spec mismatch"
+        );
         Self {
             spec_id,
             execution_config,

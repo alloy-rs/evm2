@@ -65,7 +65,8 @@ where
     table
 }
 
-pub(crate) const fn make_selector_tables<T, F, M>() -> [RawInstrTable<T>; SpecId::COUNT]
+pub(crate) const fn make_selector_tables<T, F, M, const CUSTOM_SPEC_ID: u8>()
+-> [RawInstrTable<T>; SpecId::COUNT]
 where
     T: EvmTypes,
     F: EvmConfigSelector<T>,
@@ -78,11 +79,11 @@ where
         (@build [$($tables:ident,)*] [$($previous_table:tt)*]; $spec:ident $name:ident, $($rest:ident $rest_name:ident,)*) => {{
             let spec = SpecId::$spec;
             let previous = spec.prev();
-            let $name = make_table::<T, F::Config<{ SpecId::$spec as u8 }>, M>(
+            let $name = make_table::<T, F::Config<{ SpecId::$spec as u8 }, CUSTOM_SPEC_ID>, M>(
                 make_tables!(@previous_table [$($previous_table)*]),
                 match previous {
                     Some(previous) => {
-                        Some(SelectorVersionTables::<T, F>::VERSION_TABLES[previous as usize])
+                        Some(SelectorVersionTables::<T, F, CUSTOM_SPEC_ID>::VERSION_TABLES[previous as usize])
                     }
                     None => None,
                 },

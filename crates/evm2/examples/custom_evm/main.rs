@@ -1,6 +1,6 @@
 //! A custom EVM integration with a custom spec, opcode, transaction envelope, and registry.
 
-#![allow(clippy::missing_const_for_fn)]
+#![allow(missing_docs, clippy::missing_const_for_fn)]
 
 use crate::config::CustomConfigSelector;
 use alloy_eips::eip2718::Typed2718;
@@ -14,11 +14,19 @@ use evm2::{
 };
 use tx::{CustomEnvelope, ExecuteCodeTx, custom_registry};
 
-mod config;
-mod opcode;
-mod tx;
+pub mod config;
+pub mod opcode;
+pub mod tx;
 
 fn main() -> evm2::registry::HandlerResult<()> {
+    assert_eq!(CustomSpecId::COUNT, 2);
+    assert_eq!(CustomSpecId::MIN, CustomSpecId::MainnetOsaka);
+    assert_eq!(CustomSpecId::NEXT, CustomSpecId::CustomOsaka);
+    assert_eq!(
+        CustomSpecId::try_from_u8(CustomSpecId::CustomOsaka.as_u8()),
+        Some(CustomSpecId::CustomOsaka),
+    );
+
     let version = configured_custom_version();
     // Start from Osaka rules, then swap in the custom version tables and gas params.
     let execution_config =
@@ -74,7 +82,7 @@ fn main() -> evm2::registry::HandlerResult<()> {
     Ok(())
 }
 
-fn configured_custom_version() -> Version {
+pub fn configured_custom_version() -> Version {
     let mut version = custom_version(SpecId::OSAKA);
     version.memory_limit = 1 << 20;
     version
