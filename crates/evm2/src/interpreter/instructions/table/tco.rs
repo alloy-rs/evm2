@@ -113,34 +113,6 @@ extern_table! {
         const DYNAMIC_GAS: bool,
         const UNKNOWN: bool,
     >(
-        pc: Pc,
-        stack: Stack<'_>,
-        remaining_gas: RemainingGas,
-        state: &mut InterpreterState<'_, T>,
-        instructions: *const (),
-    ) {
-        if !UNKNOWN {
-            unsafe { core::hint::assert_unchecked(pc.op() == OP) };
-        }
-        tail_return!(tail_dispatch_mono::<T, C, M, DYNAMIC_GAS, UNKNOWN>(
-            pc,
-            stack,
-            remaining_gas,
-            state,
-            instructions
-        ));
-    }
-}
-
-extern_table! {
-    #[inline(always)]
-    fn tail_dispatch_mono<
-        T: EvmTypes,
-        C: EvmConfig<T>,
-        M: InspectMode<T>,
-        const DYNAMIC_GAS: bool,
-        const UNKNOWN: bool,
-    >(
         mut pc: Pc,
         mut stack: Stack<'_>,
         mut remaining_gas: RemainingGas,
@@ -150,8 +122,7 @@ extern_table! {
         let (op, instr) = if UNKNOWN {
             (0xFE, super::unknown_instruction as crate::interpreter::private::InstructionImplFn<T>)
         } else {
-            let op = pc.op();
-            (op, C::VERSION_TABLES.instruction(op).instr)
+            (OP, C::VERSION_TABLES.instruction(OP).instr)
         };
         if M::INSPECT {
             M::step(state, pc, stack.len);
