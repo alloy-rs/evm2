@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   test:
-    name: ${{ matrix.kind }} +${{ matrix.rust }} ${{ matrix.os }} ${{ matrix.flags }}
+    name: ${{ matrix.kind }}${{ matrix.fixture && format(' {0}', matrix.fixture) || '' }} +${{ matrix.rust }} ${{ matrix.os }} ${{ matrix.flags }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
