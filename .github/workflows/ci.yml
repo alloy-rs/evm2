@@ -37,6 +37,7 @@ jobs:
           # Default features
           "",
         ]
+        fixture: [""]
         include:
           # All features
           - kind: "test"
