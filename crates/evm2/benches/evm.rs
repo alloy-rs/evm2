@@ -1,4 +1,4 @@
-#![allow(missing_docs)]
+#![allow(missing_docs, clippy::missing_const_for_fn)]
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use std::time::Duration;
@@ -31,11 +31,11 @@ fn evm(c: &mut Criterion) {
     }
 }
 
-const fn sample_size(name: &str) -> usize {
-    match name.as_bytes() {
-        b"onchain_lm_v2" => 10,
-        b"snailtracer" | b"burntpix" => 20,
-        b"erc20_transfer" | b"hash_10k" => 30,
+fn sample_size(name: &str) -> usize {
+    match name {
+        "onchain_lm_v2" => 10,
+        "snailtracer" | "burntpix" => 20,
+        "erc20_transfer" | "hash_10k" => 30,
         _ => 100,
     }
 }
