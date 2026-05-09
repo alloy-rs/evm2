@@ -89,3 +89,15 @@ panic = "abort"
 inherits = "release"
 lto = "thin"
 codegen-units = 1
+
+[patch.crates-io]
+# Temporary fork with unrolling removed to avoid excessive generated code size.
+ark-ec = { git = "https://github.com/DaniPopes/algebra", branch = "remove-unrolls" }
+ark-bls12-381 = { git = "https://github.com/DaniPopes/algebra", branch = "remove-unrolls" }
+ark-bn254 = { git = "https://github.com/DaniPopes/algebra", branch = "remove-unrolls" }
+ark-ff = { git = "https://github.com/DaniPopes/algebra", branch = "remove-unrolls" }
+ark-ff-asm = { git = "https://github.com/DaniPopes/algebra", branch = "remove-unrolls" }
+ark-ff-macros = { git = "https://github.com/DaniPopes/algebra", branch = "remove-unrolls" }
+ark-poly = { git = "https://github.com/DaniPopes/algebra", branch = "remove-unrolls" }
+ark-serialize = { git = "https://github.com/DaniPopes/algebra", branch = "remove-unrolls" }
+ark-serialize-derive = { git = "https://github.com/DaniPopes/algebra", branch = "remove-unrolls" }
