@@ -17,7 +17,6 @@ use alloy_primitives::U256;
 pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     req: TxRequest<'_, Recovered<TxEip2930>, Evm<T>>,
 ) -> HandlerResult<TxResult> {
-    let spec_id = req.host.spec_id();
     let caller = req.tx.signer();
     let tx = req.tx.inner();
     let gas_price = U256::from(tx.gas_price);
@@ -63,5 +62,5 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     let mut result = req.host.execute_message(&tx_env, bytecode, &message, false);
     rollback_failed_execution(req.host, execution_checkpoint, &mut result);
 
-    Ok(settle_gas(req.host, spec_id, caller, gas_price, tx.gas_limit, floor_gas, result))
+    Ok(settle_gas(req.host, caller, gas_price, tx.gas_limit, floor_gas, result))
 }

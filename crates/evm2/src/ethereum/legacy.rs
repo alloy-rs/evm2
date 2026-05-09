@@ -18,7 +18,6 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
 ) -> HandlerResult<TxResult> {
     let caller = req.tx.signer();
     let tx = req.tx.inner();
-    let spec_id = req.host.spec_id();
     let gas_price = U256::from(tx.gas_price);
 
     validate_gas_price(req.host.version(), gas_price, req.host.block.basefee)?;
@@ -54,5 +53,5 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     let mut result = req.host.execute_message(&tx_env, bytecode, &message, false);
     rollback_failed_execution(req.host, execution_checkpoint, &mut result);
 
-    Ok(settle_gas(req.host, spec_id, caller, gas_price, tx.gas_limit, floor_gas, result))
+    Ok(settle_gas(req.host, caller, gas_price, tx.gas_limit, floor_gas, result))
 }

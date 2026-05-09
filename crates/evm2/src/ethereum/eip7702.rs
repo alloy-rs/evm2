@@ -21,7 +21,6 @@ use alloy_primitives::{Address, U256};
 pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     req: TxRequest<'_, Recovered<TxEip7702>, Evm<T>>,
 ) -> HandlerResult<TxResult> {
-    let spec_id = req.host.spec_id();
     let caller = req.tx.signer();
     let tx = req.tx.inner();
     if tx.authorization_list.is_empty() {
@@ -79,7 +78,7 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     result.gas_refunded =
         result.gas_refunded.saturating_add(i64::try_from(eip7702_refund).unwrap_or(i64::MAX));
 
-    Ok(settle_gas(req.host, spec_id, caller, gas_price, tx.gas_limit, floor_gas, result))
+    Ok(settle_gas(req.host, caller, gas_price, tx.gas_limit, floor_gas, result))
 }
 
 fn eip7702_authorization_gas<T: EvmTypes<Host = Evm<T>>>(
