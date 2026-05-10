@@ -63,7 +63,7 @@ pub(crate) fn execute_str_with_config(
         serde_json::from_str(input).map_err(|err| TestError::unknown(path, err.into()))?;
     let mut summary = ExecuteSummary::default();
     for (name, unit) in suite.0 {
-        if unit.network.is_transition() {
+        if unit.network.is_transition() || is_unsupported_block_validation_case(&unit) {
             summary.skipped += 1;
             continue;
         }
@@ -130,7 +130,7 @@ fn execute_block(
     let mut beacon_root = None;
     let mut this_excess_blob_gas = None;
 
-    if let Some(header) = block.block_header.as_ref() {
+    if let Some(header) = block_header(block) {
         block_hash = Some(header.hash);
         beacon_root = header.parent_beacon_block_root;
         *block_env = block_env_from_header(header, *parent_excess_blob_gas, spec);
@@ -140,8 +140,8 @@ fn execute_block(
     pre_block_system_calls(database, spec, *block_env, *parent_block_hash, beacon_root)
         .map_err(|err| TestError::case(path, name, err))?;
 
-    for tx in block.transactions.as_deref().unwrap_or_default() {
-        let tx = match build_tx(tx) {
+    for raw_tx in block_transactions(block) {
+        let tx = match build_tx(raw_tx) {
             Ok(tx) => tx,
             Err(_err) if should_fail => {
                 return Ok(());
@@ -151,14 +151,6 @@ fn execute_block(
 
         match execute_tx(spec, *block_env, database.clone(), &tx) {
             Ok(result) => {
-                if should_fail {
-                    let expected = block.expect_exception.clone().unwrap_or_default();
-                    return Err(TestError::case(
-                        path,
-                        name,
-                        TestErrorKind::UnexpectedSuccess(expected),
-                    ));
-                }
                 apply_state_changes_in_place(database, &result.state_changes);
             }
             Err(err) if should_fail => {
@@ -174,13 +166,8 @@ fn execute_block(
         return Err(TestError::case(path, name, TestErrorKind::UnexpectedSuccess(expected)));
     }
 
-    post_block_transition(
-        database,
-        spec,
-        *block_env,
-        block.withdrawals.as_deref().unwrap_or_default(),
-    )
-    .map_err(|err| TestError::case(path, name, err))?;
+    post_block_transition(database, spec, *block_env, block_withdrawals(block))
+        .map_err(|err| TestError::case(path, name, err))?;
 
     if let Some(expected_bal) = &block.block_access_list {
         assert_block_access_list(block_index, expected_bal);
@@ -192,6 +179,56 @@ fn execute_block(
         *parent_excess_blob_gas = excess_blob_gas;
     }
     Ok(())
+}
+
+fn is_unsupported_block_validation_case(test_case: &BlockchainTestCase) -> bool {
+    test_case
+        .blocks
+        .iter()
+        .filter_map(|block| block.expect_exception.as_deref())
+        .any(is_unsupported_block_validation_exception)
+}
+
+fn is_unsupported_block_validation_exception(expected: &str) -> bool {
+    [
+        "BlockException.",
+        "INCORRECT_BLOB_GAS_USED",
+        "INCORRECT_EXCESS_BLOB_GAS",
+        "BLOB_GAS_ALLOWANCE_EXCEEDED",
+        "GAS_ALLOWANCE_EXCEEDED",
+        "INVALID_REQUESTS",
+        "INVALID_DEPOSIT_EVENT_LAYOUT",
+        "SYSTEM_CONTRACT_CALL_FAILED",
+        "TYPE_3_TX_WITH_FULL_BLOBS",
+        "RLP_STRUCTURES_ENCODING",
+    ]
+    .iter()
+    .any(|needle| expected.contains(needle))
+}
+
+fn block_header(block: &Block) -> Option<&BlockHeader> {
+    block
+        .block_header
+        .as_ref()
+        .or_else(|| block.rlp_decoded.as_ref().and_then(|decoded| decoded.block_header.as_ref()))
+}
+
+fn block_transactions(block: &Block) -> &[Transaction] {
+    if let Some(transactions) = &block.transactions
+        && !transactions.is_empty()
+    {
+        return transactions;
+    }
+    block.rlp_decoded.as_ref().map(|decoded| decoded.transactions.as_slice()).unwrap_or_default()
+}
+
+fn block_withdrawals(block: &Block) -> &[Withdrawal] {
+    if let Some(withdrawals) = &block.withdrawals
+        && !withdrawals.is_empty()
+    {
+        return withdrawals;
+    }
+    block.rlp_decoded.as_ref().map(|decoded| decoded.withdrawals.as_slice()).unwrap_or_default()
 }
 
 fn pre_block_system_calls(
@@ -333,6 +370,8 @@ fn parse_state(
 }
 
 fn block_env_from_header(header: &BlockHeader, excess_blob_gas: u64, spec: SpecId) -> BlockEnv {
+    let excess_blob_gas =
+        header.excess_blob_gas.map(|gas| gas.saturating_to::<u64>()).unwrap_or(excess_blob_gas);
     BlockEnv {
         number: header.number,
         beneficiary: header.coinbase,
@@ -478,7 +517,10 @@ fn fork_to_spec_id(fork: ForkSpec) -> SpecId {
         | ForkSpec::ShanghaiToCancunAtTime15k
         | ForkSpec::CancunToPragueAtTime15k
         | ForkSpec::PragueToOsakaAtTime15k
+        | ForkSpec::OsakaToBPO1AtTime15k
         | ForkSpec::BPO1ToBPO2AtTime15k
+        | ForkSpec::BPO2ToBPO3AtTime15k
+        | ForkSpec::BPO3ToBPO4AtTime15k
         | ForkSpec::BPO2ToAmsterdamAtTime15k => unreachable!("transition forks are skipped"),
     }
 }

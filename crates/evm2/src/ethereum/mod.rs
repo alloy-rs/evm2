@@ -505,6 +505,8 @@ mod tests {
         registry::TxRegistry,
     };
     use alloc::vec;
+    use alloy_consensus::{TxEip2930, transaction::Recovered};
+    use alloy_eips::eip2930::AccessList;
 
     #[test]
     fn intrinsic_gas_charges_shanghai_create_initcode_words() {
@@ -527,6 +529,41 @@ mod tests {
         assert_eq!(
             intrinsic_gas(Version::base(SpecId::BERLIN), TxKind::Call(Address::ZERO), &input, 2, 3),
             21_000 + 2 * 2400 + 3 * 1900
+        );
+    }
+
+    #[test]
+    fn eip2930_rejects_gas_below_intrinsic() {
+        let caller = Address::with_last_byte(0xaa);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(
+            caller,
+            AccountInfo::default().with_balance(U256::from(1_000_000_000u64)),
+        );
+        let tx = RecoveredTxEnvelope::Eip2930(Recovered::new_unchecked(
+            TxEip2930 {
+                chain_id: 1,
+                nonce: 0,
+                gas_price: 1,
+                gas_limit: 20_999,
+                to: TxKind::Call(Address::with_last_byte(0xbb)),
+                value: U256::ZERO,
+                input: Bytes::new(),
+                access_list: AccessList::default(),
+            },
+            caller,
+        ));
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::BERLIN,
+            BlockEnv::default(),
+            ethereum_tx_registry(SpecId::BERLIN),
+            database,
+            Precompiles::base(SpecId::BERLIN),
+        );
+
+        assert_eq!(
+            evm.transact(&tx),
+            Err(HandlerError::IntrinsicGasTooLow { required: 21_000, got: 20_999 })
         );
     }
 

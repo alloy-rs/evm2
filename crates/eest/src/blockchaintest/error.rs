@@ -56,7 +56,7 @@ pub(crate) enum TestErrorKind {
     #[error("unexpected execution failure: {0}")]
     UnexpectedFailure(String),
     /// EVM execution unexpectedly succeeded.
-    #[error("expected exception, but execution succeeded: {0}")]
+    #[error("execution succeeded, but expected exception: {0}")]
     UnexpectedSuccess(String),
     /// A system call failed.
     #[error("system call failed: {0}")]
