@@ -97,6 +97,10 @@ pub(crate) struct BlockHeader {
 pub(crate) struct Block {
     /// Block header.
     pub(crate) block_header: Option<BlockHeader>,
+    /// Decoded block payload used by blockchain fixtures that primarily carry block RLP.
+    #[serde(rename = "rlp_decoded")]
+    #[serde(default)]
+    pub(crate) rlp_decoded: Option<DecodedBlock>,
     /// RLP-encoded block data.
     #[serde(default)]
     pub(crate) rlp: Bytes,
@@ -110,6 +114,23 @@ pub(crate) struct Block {
     pub(crate) withdrawals: Option<Vec<Withdrawal>>,
     /// Block access list.
     pub(crate) block_access_list: Option<BlockAccessList>,
+}
+
+/// Decoded contents of an RLP-backed block fixture.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DecodedBlock {
+    /// Block header.
+    pub(crate) block_header: Option<BlockHeader>,
+    /// Transactions in the block.
+    #[serde(default)]
+    pub(crate) transactions: Vec<Transaction>,
+    /// Uncle/ommer headers.
+    #[serde(default)]
+    pub(crate) uncle_headers: Vec<BlockHeader>,
+    /// Withdrawals in the block.
+    #[serde(default)]
+    pub(crate) withdrawals: Vec<Withdrawal>,
 }
 
 /// Transaction structure.
@@ -258,8 +279,14 @@ pub(crate) enum ForkSpec {
     PragueToOsakaAtTime15k,
     /// Osaka.
     Osaka,
+    /// Osaka to BPO1 transition.
+    OsakaToBPO1AtTime15k,
     /// BPO1 to BPO2 transition.
     BPO1ToBPO2AtTime15k,
+    /// BPO2 to BPO3 transition.
+    BPO2ToBPO3AtTime15k,
+    /// BPO3 to BPO4 transition.
+    BPO3ToBPO4AtTime15k,
     /// BPO2 to Amsterdam transition.
     BPO2ToAmsterdamAtTime15k,
     /// Amsterdam.
@@ -282,7 +309,10 @@ impl ForkSpec {
                 | Self::ShanghaiToCancunAtTime15k
                 | Self::CancunToPragueAtTime15k
                 | Self::PragueToOsakaAtTime15k
+                | Self::OsakaToBPO1AtTime15k
                 | Self::BPO1ToBPO2AtTime15k
+                | Self::BPO2ToBPO3AtTime15k
+                | Self::BPO3ToBPO4AtTime15k
                 | Self::BPO2ToAmsterdamAtTime15k
         )
     }
