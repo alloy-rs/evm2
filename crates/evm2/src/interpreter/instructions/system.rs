@@ -47,34 +47,6 @@ fn call_too_deep_result(gas_limit: u64) -> MessageResult {
     }
 }
 
-#[inline]
-const fn take_child_state_gas<T: EvmTypes>(cx: &mut GasInstructionCx<'_, '_, T>) -> u64 {
-    if !cx.state.feature(EvmFeatures::EIP8037) {
-        return 0;
-    }
-    let state_gas = cx.gas.reservoir();
-    cx.gas.set_reservoir(0);
-    state_gas
-}
-
-#[inline]
-const fn apply_child_state_gas<T: EvmTypes>(
-    cx: &mut GasInstructionCx<'_, '_, T>,
-    result: &MessageResult,
-) {
-    if !cx.state.feature(EvmFeatures::EIP8037) {
-        return;
-    }
-    if success(result.stop) {
-        cx.gas.set_reservoir(result.gas.reservoir());
-        cx.gas.set_state_gas_spent(
-            cx.gas.state_gas_spent().saturating_add(result.gas.state_gas_spent()),
-        );
-    } else {
-        cx.gas.set_reservoir(result.gas.reservoir().saturating_add(result.gas.state_gas_spent()));
-    }
-}
-
 fn resize_memory_range<T: EvmTypes>(
     cx: &mut GasInstructionCx<'_, '_, T>,
     offset: Word,
@@ -169,11 +141,7 @@ fn load_acc_and_calc_gas<T: EvmTypes>(
             cx.state.host().target_is_empty_for_new_account_gas(to, spec),
         )
     {
-        if cx.state.feature(EvmFeatures::EIP8037) {
-            cx.gas.spend_state(u64::from(cx.state.gas_params().get(GasId::NewAccountState)))?;
-        } else {
-            cost += u64::from(cx.state.gas_params().get(GasId::NewAccountCost));
-        }
+        cost += u64::from(cx.state.gas_params().get(GasId::NewAccountCost));
     }
     cx.gas.spend(cost)?;
 
@@ -245,7 +213,6 @@ fn call_inner<T: EvmTypes>(
         kind,
         depth: current.depth.saturating_add(1),
         gas_limit,
-        state_gas_limit: 0,
         destination,
         caller,
         input,
@@ -254,10 +221,6 @@ fn call_inner<T: EvmTypes>(
         disable_precompiles,
         salt: B256::ZERO,
     };
-    let child_state_gas_taken = message.depth <= CALL_DEPTH_LIMIT;
-    if child_state_gas_taken {
-        message.state_gas_limit = take_child_state_gas(&mut cx);
-    }
     let caller_is_static = cx.state.is_static();
     let mut result = if let Some(result) = cx.state.inspect_call(&mut message) {
         result
@@ -269,9 +232,6 @@ fn call_inner<T: EvmTypes>(
         cx.state.host().execute_message(tx_env, bytecode, &message, caller_is_static)
     };
     cx.state.inspect_call_end(&message, &mut result);
-    if child_state_gas_taken {
-        apply_child_state_gas(&mut cx, &result);
-    }
     cx.gas.erase_cost(result.gas_returned_to_parent());
     cx.gas.record_refund(result.refund_propagated_to_parent());
     let copy_len = min(return_memory_range.len(), result.output.len());
@@ -332,9 +292,6 @@ fn create_inner<T: EvmTypes>(
         cx.state.gas_params().get(GasId::Create).into()
     };
     cx.gas.spend(create_cost)?;
-    if cx.state.feature(EvmFeatures::EIP8037) {
-        cx.gas.spend_state(u64::from(cx.state.gas_params().get(GasId::CreateState)))?;
-    }
     let gas_limit = if cx.state.spec().enables(SpecId::TANGERINE) {
         cx.state.gas_params().call_stipend_reduction(cx.gas.remaining())
     } else {
@@ -347,7 +304,6 @@ fn create_inner<T: EvmTypes>(
         kind: if is_create2 { MessageKind::Create2 } else { MessageKind::Create },
         depth: current.depth.saturating_add(1),
         gas_limit,
-        state_gas_limit: 0,
         destination: current.destination,
         caller: current.destination,
         input: input.clone(),
@@ -356,10 +312,6 @@ fn create_inner<T: EvmTypes>(
         disable_precompiles: false,
         salt: salt.map(|salt| B256::from(salt.to_be_bytes())).unwrap_or_default(),
     };
-    let child_state_gas_taken = message.depth <= CALL_DEPTH_LIMIT;
-    if child_state_gas_taken {
-        message.state_gas_limit = take_child_state_gas(&mut cx);
-    }
     let mut result = if let Some(result) = cx.state.inspect_create(&mut message) {
         result
     } else if message.depth > CALL_DEPTH_LIMIT {
@@ -370,9 +322,6 @@ fn create_inner<T: EvmTypes>(
         cx.state.host().execute_message(tx_env, bytecode, &message, false)
     };
     cx.state.inspect_create_end(&message, &mut result);
-    if child_state_gas_taken {
-        apply_child_state_gas(&mut cx, &result);
-    }
     cx.gas.erase_cost(result.gas_returned_to_parent());
     cx.gas.record_refund(result.refund_propagated_to_parent());
     // EIP-211 exposes CREATE failure data only for REVERT; other failures clear returndata.
@@ -400,12 +349,7 @@ pub(crate) fn selfdestruct(cx: _, [target]: [Word]) -> Result {
     cx.state.inspect_selfdestruct(destination, target, res.value);
     let should_charge_topup =
         should_charge_new_account_gas(cx.state.spec(), res.had_value, res.target_is_empty);
-    if should_charge_topup && cx.state.feature(EvmFeatures::EIP8037) {
-        cx.gas.spend_state(u64::from(cx.state.gas_params().get(GasId::NewAccountState)))?;
-        cx.gas.spend(cx.state.gas_params().selfdestruct_cost(false, res.is_cold))?;
-    } else {
-        cx.gas.spend(cx.state.gas_params().selfdestruct_cost(should_charge_topup, res.is_cold))?;
-    }
+    cx.gas.spend(cx.state.gas_params().selfdestruct_cost(should_charge_topup, res.is_cold))?;
     if !res.previously_destroyed {
         cx.gas.record_refund(cx.state.gas_params().get(GasId::SelfdestructRefund) as i64);
     }

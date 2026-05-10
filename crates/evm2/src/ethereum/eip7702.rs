@@ -1,8 +1,8 @@
 use super::{
-    access_list_counts, charge_upfront, effective_gas_price, execution_gas_limits, floor_gas,
-    initial_message, intrinsic_gas, intrinsic_state_gas, rollback_failed_execution, settle_gas,
-    validate_block_gas_limit, validate_chain_id, validate_create_initcode, validate_floor_gas,
-    validate_gas_price, validate_intrinsic_gas, validate_nonce_not_overflow, validate_priority_fee,
+    access_list_counts, charge_upfront, effective_gas_price, floor_gas, initial_message,
+    intrinsic_gas, rollback_failed_execution, settle_gas, validate_block_gas_limit,
+    validate_chain_id, validate_create_initcode, validate_floor_gas, validate_gas_price,
+    validate_intrinsic_gas, validate_nonce_not_overflow, validate_priority_fee,
     validate_regular_gas_limit_cap, validate_sender, validate_tx_gas_limit_cap, warm_access_list,
     warm_base_accounts,
 };
@@ -46,9 +46,7 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
         access_list_accounts,
         access_list_storage_keys,
     ) + eip7702_authorization_gas(req.host, tx.authorization_list.len());
-    let intrinsic_state =
-        intrinsic_state_gas(req.host.version(), tx.to.into(), tx.authorization_list.len());
-    validate_intrinsic_gas(tx.gas_limit, intrinsic.saturating_add(intrinsic_state))?;
+    validate_intrinsic_gas(tx.gas_limit, intrinsic)?;
     let floor_gas =
         floor_gas(req.host.version(), &tx.input, access_list_accounts, access_list_storage_keys);
     validate_floor_gas(tx.gas_limit, floor_gas)?;
@@ -67,15 +65,7 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     let eip7702_refund = apply_auth_list(req.host, chain_id, &tx.authorization_list);
     let execution_checkpoint = req.host.state.checkpoint();
 
-    let state_gas_refund =
-        if req.host.feature(crate::EvmFeatures::EIP8037) { eip7702_refund } else { 0 };
-    let gas = execution_gas_limits(
-        req.host.version(),
-        tx.gas_limit,
-        intrinsic,
-        intrinsic_state,
-        state_gas_refund,
-    );
+    let gas_limit = tx.gas_limit - intrinsic;
     let tx_env = TxEnv {
         origin: caller,
         gas_price,
@@ -83,14 +73,12 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
         ..TxEnv::default()
     };
     let (bytecode, message) =
-        initial_message(req.host, caller, tx.nonce, tx.to.into(), &tx.input, tx.value, gas);
+        initial_message(req.host, caller, tx.nonce, tx.to.into(), &tx.input, tx.value, gas_limit);
     let mut result = req.host.execute_message(&tx_env, bytecode, &message, false);
     rollback_failed_execution(req.host, execution_checkpoint, &mut result);
-    if !req.host.feature(crate::EvmFeatures::EIP8037) {
-        result.gas.set_refunded(
-            result.gas.refunded().saturating_add(i64::try_from(eip7702_refund).unwrap_or(i64::MAX)),
-        );
-    }
+    result.gas.set_refunded(
+        result.gas.refunded().saturating_add(i64::try_from(eip7702_refund).unwrap_or(i64::MAX)),
+    );
 
     Ok(settle_gas(req.host, caller, gas_price, tx.gas_limit, floor_gas, result))
 }

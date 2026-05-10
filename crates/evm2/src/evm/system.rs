@@ -7,12 +7,7 @@
 //! and produces no state changes.
 
 use super::{Evm, TxResult};
-use crate::{
-    EvmTypes,
-    env::TxEnv,
-    ethereum::{ExecutionGas, initial_message},
-    interpreter::Host,
-};
+use crate::{EvmTypes, env::TxEnv, ethereum::initial_message, interpreter::Host};
 use alloc::vec::Vec;
 use alloy_primitives::{Address, Bytes, TxKind, U256, address};
 
@@ -71,7 +66,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             TxKind::Call(system_contract_address),
             &data,
             U256::ZERO,
-            ExecutionGas { regular: SYSTEM_CALL_GAS_LIMIT, state: 0 },
+            SYSTEM_CALL_GAS_LIMIT,
         );
         let result = Host::execute_message(self, &tx_env, bytecode, &message, false);
         let gas_spent = SYSTEM_CALL_GAS_LIMIT.saturating_sub(result.gas.remaining());

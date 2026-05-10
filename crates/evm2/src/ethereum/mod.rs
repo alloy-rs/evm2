@@ -324,7 +324,7 @@ pub(crate) fn initial_message<T: EvmTypes<Host = Evm<T>>>(
     to: TxKind,
     input: &Bytes,
     value: U256,
-    gas: ExecutionGas,
+    gas_limit: u64,
 ) -> (Bytecode, Message) {
     let r = match to {
         TxKind::Call(to) => {
@@ -332,8 +332,7 @@ pub(crate) fn initial_message<T: EvmTypes<Host = Evm<T>>>(
             let message = Message {
                 kind: MessageKind::Call,
                 depth: 0,
-                gas_limit: gas.regular,
-                state_gas_limit: gas.state,
+                gas_limit,
                 destination: to,
                 caller,
                 input: input.clone(),
@@ -349,8 +348,7 @@ pub(crate) fn initial_message<T: EvmTypes<Host = Evm<T>>>(
             let message = Message {
                 kind: MessageKind::Create,
                 depth: 0,
-                gas_limit: gas.regular,
-                state_gas_limit: gas.state,
+                gas_limit,
                 destination: address,
                 caller,
                 input: Bytes::new(),
@@ -397,12 +395,6 @@ pub(super) fn rollback_failed_execution<T: EvmTypes<Host = Evm<T>>>(
 ) {
     if !result.stop.is_success() {
         host.state.rollback(checkpoint, host.spec_id());
-        if host.feature(EvmFeatures::EIP8037) {
-            result
-                .gas
-                .set_reservoir(result.gas.reservoir().saturating_add(result.gas.state_gas_spent()));
-            result.gas.set_state_gas_spent(0);
-        }
         if result.stop.is_halt() {
             result.gas.set_remaining(0);
         }
@@ -417,11 +409,8 @@ pub(super) fn settle_gas<T: EvmTypes<Host = Evm<T>>>(
     floor_gas: u64,
     result: MessageResult,
 ) -> TxResult {
-    let (gas_remaining, gas_used) = if host.feature(EvmFeatures::EIP8037) {
-        final_tx_gas_eip8037(&result, tx_gas_limit, floor_gas)
-    } else {
-        final_tx_gas(&result, tx_gas_limit, host.feature(EvmFeatures::EIP3529), floor_gas)
-    };
+    let (gas_remaining, gas_used) =
+        final_tx_gas(&result, tx_gas_limit, host.feature(EvmFeatures::EIP3529), floor_gas);
     if host.feature(EvmFeatures::FEE_CHARGE) {
         host.state.add_balance(caller, U256::from(gas_remaining) * gas_price);
         let beneficiary_gas_price = if host.feature(EvmFeatures::BASE_FEE_CHECK) {
@@ -439,19 +428,6 @@ pub(super) fn settle_gas<T: EvmTypes<Host = Evm<T>>>(
         output: result.output,
         ..TxResult::default()
     }
-}
-
-fn final_tx_gas_eip8037(result: &MessageResult, tx_gas_limit: u64, floor_gas: u64) -> (u64, u64) {
-    let total_consumed =
-        tx_gas_limit.saturating_sub(result.gas.remaining()).saturating_sub(result.gas.reservoir());
-    let refund = if result.gas.refunded() <= 0 {
-        0
-    } else {
-        core::cmp::min(result.gas.refunded() as u64, total_consumed / 5)
-    };
-    let sender_gas = total_consumed.saturating_sub(refund);
-    let gas_used = if sender_gas < floor_gas { floor_gas } else { sender_gas };
-    (tx_gas_limit.saturating_sub(gas_used), gas_used)
 }
 
 const fn final_tx_gas(
@@ -473,8 +449,8 @@ pub(super) fn access_list_counts(access_list: &AccessList) -> (u64, u64) {
     (access_list.len() as u64, access_list.storage_keys_count() as u64)
 }
 
-const ACCESS_LIST_ADDRESS_FLOOR_TOKENS: u64 = 20;
-const ACCESS_LIST_STORAGE_KEY_FLOOR_TOKENS: u64 = 32;
+const ACCESS_LIST_ADDRESS_FLOOR_TOKENS: u64 = 80;
+const ACCESS_LIST_STORAGE_KEY_FLOOR_TOKENS: u64 = 128;
 
 const fn access_list_floor_tokens(
     version: &Version,
@@ -539,51 +515,6 @@ pub(super) fn intrinsic_gas(
         gas += u64::from(params.get(GasId::TxInitcodeCost)) * num_words(input.len()) as u64;
     }
     gas
-}
-
-pub(super) fn intrinsic_state_gas(
-    version: &Version,
-    to: TxKind,
-    authorization_list_len: usize,
-) -> u64 {
-    if !version.feature(EvmFeatures::EIP8037) {
-        return 0;
-    }
-    let mut gas = 0u64;
-    if to.is_create() && version.feature(EvmFeatures::EIP2) {
-        gas += u64::from(version.gas_params.get(GasId::CreateState));
-    }
-    gas.saturating_add(
-        u64::try_from(authorization_list_len)
-            .unwrap_or(u64::MAX)
-            .saturating_mul(u64::from(version.gas_params.get(GasId::TxEip7702PerAuthState))),
-    )
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(super) struct ExecutionGas {
-    pub(super) regular: u64,
-    pub(super) state: u64,
-}
-
-pub(super) const fn execution_gas_limits(
-    version: &Version,
-    tx_gas_limit: u64,
-    intrinsic_regular_gas: u64,
-    intrinsic_state_gas: u64,
-    state_gas_refund: u64,
-) -> ExecutionGas {
-    let execution_gas_limit =
-        tx_gas_limit.saturating_sub(intrinsic_regular_gas).saturating_sub(intrinsic_state_gas);
-    if !version.feature(EvmFeatures::EIP8037) {
-        return ExecutionGas { regular: execution_gas_limit, state: 0 };
-    }
-    let regular_cap = version.tx_gas_limit_cap.saturating_sub(intrinsic_regular_gas);
-    let regular_gas_limit =
-        if execution_gas_limit < regular_cap { execution_gas_limit } else { regular_cap };
-    let state_gas_limit =
-        execution_gas_limit.saturating_sub(regular_gas_limit).saturating_add(state_gas_refund);
-    ExecutionGas { regular: regular_gas_limit, state: state_gas_limit }
 }
 
 #[cfg(test)]
@@ -786,23 +717,6 @@ mod tests {
     }
 
     #[test]
-    fn amsterdam_calldata_floor_charges_per_byte() {
-        let amsterdam = Version::base(SpecId::AMSTERDAM);
-        let input = Bytes::from(vec![0; 100]);
-
-        assert_eq!(floor_gas(amsterdam, &input, 0, 0), 27_400);
-    }
-
-    #[test]
-    fn amsterdam_access_list_bytes_count_toward_intrinsic_and_floor() {
-        let amsterdam = Version::base(SpecId::AMSTERDAM);
-        let input = Bytes::from(vec![0; 100]);
-
-        assert_eq!(floor_gas(amsterdam, &input, 1, 0), 28_680);
-        assert_eq!(intrinsic_gas(amsterdam, TxKind::Call(Address::ZERO), &input, 1, 0), 25_080);
-    }
-
-    #[test]
     fn initial_delegated_call_uses_delegated_code_address() {
         let caller = Address::with_last_byte(0xaa);
         let target = Address::with_last_byte(0x02);
@@ -838,7 +752,7 @@ mod tests {
             TxKind::Call(target),
             &Bytes::new(),
             U256::ZERO,
-            ExecutionGas { regular: 100_000, state: 0 },
+            100_000,
         );
         assert_eq!(message.destination, target);
         assert_eq!(message.code_address, delegated);

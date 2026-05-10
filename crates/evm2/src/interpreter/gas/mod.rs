@@ -31,6 +31,7 @@ pub(crate) const STANDARD_TOKEN_COST: u32 = 4;
 pub(crate) const NON_ZERO_BYTE_MULTIPLIER: u32 = 17;
 pub(crate) const NON_ZERO_BYTE_MULTIPLIER_ISTANBUL: u32 = 4;
 pub(crate) const TOTAL_COST_FLOOR_PER_TOKEN: u32 = 10;
+pub(crate) const TOTAL_COST_FLOOR_PER_TOKEN_AMSTERDAM: u32 = 16;
 pub(crate) const INITCODE_WORD_COST: u32 = 2;
 pub(crate) const CALL_STIPEND: u32 = 2300;
 pub(crate) const ISTANBUL_SLOAD_GAS: u32 = 800;
