@@ -1,7 +1,7 @@
 use crate::{
     env::state_test_roots,
     execute::{ExecuteConfig, execute_test_suite},
-    harness::{descend_all, run_json_harness},
+    harness::{TestSuite, descend_all, run_json_harness},
 };
 use libtest_mimic::Failed;
 use std::{path::PathBuf, process::ExitCode};
@@ -9,6 +9,16 @@ use std::{path::PathBuf, process::ExitCode};
 /// Runs the cargo-nextest state test harness.
 pub fn run() -> ExitCode {
     run_json_harness("state", state_test_roots(), descend_all, should_ignore, run_file)
+}
+
+pub(crate) fn suite() -> TestSuite {
+    TestSuite {
+        name: "state",
+        roots: state_test_roots(),
+        should_descend: descend_all,
+        should_ignore,
+        run_file,
+    }
 }
 
 fn run_file(path: PathBuf) -> Result<(), Failed> {

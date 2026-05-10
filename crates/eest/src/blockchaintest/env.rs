@@ -29,7 +29,11 @@ pub(crate) fn explicit_blockchain_test_root_from_env() -> Option<PathBuf> {
 /// Returns the blockchain-test roots to run by default.
 pub(crate) fn blockchain_test_roots() -> Vec<BlockchainTestRoot> {
     if let Some(path) = explicit_blockchain_test_root_from_env() {
-        return vec![BlockchainTestRoot { name: "custom", label: "custom blockchain tests", path }];
+        return vec![BlockchainTestRoot {
+            name: "blockchain_tests::custom",
+            label: "custom blockchain tests",
+            path,
+        }];
     }
 
     default_blockchain_test_roots().into_iter().filter(|root| root.path.is_dir()).collect()
@@ -45,9 +49,13 @@ pub(crate) fn default_blockchain_test_roots() -> Vec<BlockchainTestRoot> {
     };
 
     let mut roots = vec![
-        BlockchainTestRoot { name: "eest", label: "execution-spec-tests", path: main_path },
         BlockchainTestRoot {
-            name: "devnet",
+            name: "blockchain_tests",
+            label: "execution-spec-tests",
+            path: main_path,
+        },
+        BlockchainTestRoot {
+            name: "blockchain_tests::devnet",
             label: "execution-spec-tests devnet",
             path: fixtures.join("devnet/blockchain_tests"),
         },

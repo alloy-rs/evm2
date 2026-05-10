@@ -22,12 +22,20 @@ Populate it with:
 ./scripts/setup_test_fixtures.py
 ```
 
+Run all discovered EEST fixtures with the single `eest` test binary:
+
+```sh
+cargo nextest run -p evm2-eest --test eest --ignore-default-filter
+```
+
+Discovered tests are named under `statetests`, `blockchain_tests`, and `legacy`.
+
 ## State tests
 
 Run all discovered state tests with nextest:
 
 ```sh
-cargo nextest run -p evm2-eest --test statetest --ignore-default-filter -j28
+cargo nextest run -p evm2-eest --test eest --ignore-default-filter statetests
 ```
 
 By default, this runs `main/develop/state_tests` plus the legacy Cancun and
@@ -42,7 +50,7 @@ of develop.
 Run all discovered blockchain tests with nextest:
 
 ```sh
-cargo nextest run -p evm2-eest --test blockchaintest --ignore-default-filter -j28
+cargo nextest run -p evm2-eest --test eest --ignore-default-filter blockchain_tests
 ```
 
 By default, this runs `main/develop/blockchain_tests` and
@@ -58,28 +66,35 @@ instead of develop for main blockchain fixtures.
 The default nextest profile excludes this crate from workspace runs. Pass
 `--ignore-default-filter` when running EEST tests explicitly.
 
+Filter by top-level suite name:
+
+```sh
+cargo nextest run -p evm2-eest --test eest --ignore-default-filter statetests
+cargo nextest run -p evm2-eest --test eest --ignore-default-filter blockchain_tests
+cargo nextest run -p evm2-eest --test eest --ignore-default-filter legacy
+```
+
 Run one subdirectory across all downloaded suites:
 
 ```sh
-SUBDIR=stRevertTest cargo nextest run -p evm2-eest --test statetest --ignore-default-filter -j28
-SUBDIR=berlin cargo nextest run -p evm2-eest --test blockchaintest --ignore-default-filter -j28
+SUBDIR=stRevertTest cargo nextest run -p evm2-eest --test eest --ignore-default-filter statetests
+SUBDIR=berlin cargo nextest run -p evm2-eest --test eest --ignore-default-filter blockchain_tests
 ```
 
 Run one explicit test file:
 
 ```sh
-cargo nextest run -p evm2-eest --test statetest -j28 \
-  --ignore-default-filter legacy_constantinople::stExample/add11.json
+cargo nextest run -p evm2-eest --test eest \
+  --ignore-default-filter legacy::constantinople::stExample/add11.json
 
-cargo nextest run -p evm2-eest --test blockchaintest -j28 \
-  --ignore-default-filter eest::berlin/eip2929_gas_cost_increases/test_call_insufficient_balance.json
+cargo nextest run -p evm2-eest --test eest \
+  --ignore-default-filter blockchain_tests::berlin/eip2929_gas_cost_increases/test_call_insufficient_balance.json
 ```
 
 List all discovered tests:
 
 ```sh
-cargo nextest list -p evm2-eest --test statetest --ignore-default-filter
-cargo nextest list -p evm2-eest --test blockchaintest --ignore-default-filter
+cargo nextest list -p evm2-eest --test eest --ignore-default-filter
 ```
 
 For local experiments, `EVM2_STATETEST_ROOT`, `EVM2_BLOCKCHAINTEST_ROOT`,

@@ -32,11 +32,6 @@ thiserror = { workspace = true, features = ["std"] }
 walkdir.workspace = true
 
 [[test]]
-name = "statetest"
-path = "tests/statetest.rs"
-harness = false
-
-[[test]]
-name = "blockchaintest"
-path = "tests/blockchaintest.rs"
+name = "eest"
+path = "tests/eest.rs"
 harness = false

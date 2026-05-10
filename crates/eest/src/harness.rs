@@ -19,6 +19,20 @@ pub(crate) struct TestRoot {
     pub(crate) path: PathBuf,
 }
 
+/// A JSON fixture test suite.
+pub(crate) struct TestSuite {
+    /// Human readable suite name.
+    pub(crate) name: &'static str,
+    /// Fixture roots included in this suite.
+    pub(crate) roots: Vec<TestRoot>,
+    /// Directory descent filter.
+    pub(crate) should_descend: fn(&Path) -> bool,
+    /// Test ignore filter.
+    pub(crate) should_ignore: fn(&str) -> bool,
+    /// Test file runner.
+    pub(crate) run_file: fn(PathBuf) -> Result<(), Failed>,
+}
+
 /// Runs a cargo-nextest JSON fixture harness.
 pub(crate) fn run_json_harness(
     suite_name: &'static str,
@@ -27,17 +41,28 @@ pub(crate) fn run_json_harness(
     should_ignore: fn(&str) -> bool,
     run_file: fn(PathBuf) -> Result<(), Failed>,
 ) -> ExitCode {
+    run_json_harnesses(vec![TestSuite {
+        name: suite_name,
+        roots,
+        should_descend,
+        should_ignore,
+        run_file,
+    }])
+}
+
+/// Runs cargo-nextest JSON fixture harnesses in one test binary.
+pub(crate) fn run_json_harnesses(suites: Vec<TestSuite>) -> ExitCode {
     let mut args = Arguments::from_args();
     if !args.list && env::var_os(NEXTEST_ENV).is_none() {
-        eprintln!("Skipping {suite_name} tests: run this target through cargo nextest.");
+        let suite_names = suites.iter().map(|suite| suite.name).collect::<Vec<_>>().join(", ");
+        eprintln!("Skipping {suite_names} tests: run this target through cargo nextest.");
         return ExitCode::SUCCESS;
     }
 
-    let trials = collect_trials(&args, &roots, should_descend, should_ignore, run_file)
-        .unwrap_or_else(|err| {
-            eprintln!("{err}");
-            Vec::new()
-        });
+    let trials = collect_trials(&args, &suites).unwrap_or_else(|err| {
+        eprintln!("{err}");
+        Vec::new()
+    });
 
     if trials.len() <= 1 {
         args.test_threads = Some(1);
@@ -46,46 +71,47 @@ pub(crate) fn run_json_harness(
     libtest_mimic::run(&args, trials).exit_code()
 }
 
-fn collect_trials(
-    args: &Arguments,
-    roots: &[TestRoot],
-    should_descend: fn(&Path) -> bool,
-    should_ignore: fn(&str) -> bool,
-    run_file: fn(PathBuf) -> Result<(), Failed>,
-) -> Result<Vec<Trial>, String> {
-    if roots.is_empty() {
+fn collect_trials(args: &Arguments, suites: &[TestSuite]) -> Result<Vec<Trial>, String> {
+    if suites.iter().all(|suite| suite.roots.is_empty()) {
         return Ok(Vec::new());
     }
 
     if args.exact
         && let Some(filter) = &args.filter
     {
-        return Ok(exact_trial(roots, filter, should_ignore, run_file).into_iter().collect());
+        return Ok(exact_trial(suites, filter).into_iter().collect());
     }
 
     let mut trials = Vec::new();
-    for root in roots {
-        let files = find_json_tests(std::slice::from_ref(&root.path), should_descend)?;
-        for path in files {
-            let name = test_name(root.name, &root.path, &path);
-            let ignored = should_ignore(&name);
-            trials.push(Trial::test(name, move || run_file(path)).with_ignored_flag(ignored));
+    for suite in suites {
+        for root in &suite.roots {
+            let files = find_json_tests(std::slice::from_ref(&root.path), suite.should_descend)?;
+            for path in files {
+                let name = test_name(root.name, &root.path, &path);
+                let ignored = (suite.should_ignore)(&name);
+                let run_file = suite.run_file;
+                trials.push(Trial::test(name, move || run_file(path)).with_ignored_flag(ignored));
+            }
         }
     }
     Ok(trials)
 }
 
-fn exact_trial(
-    roots: &[TestRoot],
-    name: &str,
-    should_ignore: fn(&str) -> bool,
-    run_file: fn(PathBuf) -> Result<(), Failed>,
-) -> Option<Trial> {
-    let (root_name, relative) = name.split_once("::")?;
-    let root = roots.iter().find(|root| root.name == root_name)?;
+fn exact_trial(suites: &[TestSuite], name: &str) -> Option<Trial> {
+    let (suite, root, relative) = suites
+        .iter()
+        .flat_map(|suite| suite.roots.iter().map(move |root| (suite, root)))
+        .filter_map(|(suite, root)| {
+            name.strip_prefix(root.name).map(|relative| (suite, root, relative))
+        })
+        .filter_map(|(suite, root, relative)| {
+            relative.strip_prefix("::").map(|relative| (suite, root, relative))
+        })
+        .max_by_key(|(_, root, _)| root.name.len())?;
     let path = root.path.join(relative);
     path.is_file().then(|| {
-        let ignored = should_ignore(name);
+        let ignored = (suite.should_ignore)(name);
+        let run_file = suite.run_file;
         Trial::test(name.to_string(), move || run_file(path)).with_ignored_flag(ignored)
     })
 }

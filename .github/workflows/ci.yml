@@ -20,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        kind: ["test", "statetest"]
+        kind: ["test", "eest"]
         os: [
           "ubuntu-latest",
           # "macos-latest",
@@ -44,7 +44,7 @@ jobs:
             os: "ubuntu-latest"
             rust: "nightly"
             flags: "--all-features"
-          - kind: "statetest"
+          - kind: "eest"
             os: "ubuntu-latest"
             rust: "nightly"
             flags: "--all-features"
@@ -52,7 +52,7 @@ jobs:
           #   os: "macos-latest"
           #   rust: "nightly"
           #   flags: "--all-features"
-          # - kind: "statetest"
+          # - kind: "eest"
           #   os: "macos-latest"
           #   rust: "nightly"
           #   flags: "--all-features"
@@ -60,12 +60,12 @@ jobs:
           #   os: "windows-latest"
           #   rust: "nightly"
           #   flags: "--features nightly" # Some C libraries don't support MSVC.
-          # - kind: "statetest"
+          # - kind: "eest"
           #   os: "windows-latest"
           #   rust: "nightly"
           #   flags: "--features nightly" # Some C libraries don't support MSVC.
           # Devnet
-          # - kind: "statetest"
+          # - kind: "eest"
           #   fixture: "devnet"
           #   os: "ubuntu-latest"
           #   rust: "stable"
@@ -83,9 +83,9 @@ jobs:
           cache-on-failure: true
       - uses: taiki-e/install-action@nextest
       - uses: astral-sh/setup-uv@v7
-        if: ${{ matrix.kind == 'statetest' }}
-      - name: Download state test fixtures
-        if: ${{ matrix.kind == 'statetest' }}
+        if: ${{ matrix.kind == 'eest' }}
+      - name: Download EEST fixtures
+        if: ${{ matrix.kind == 'eest' }}
         shell: bash
         run: |
             if [[ "${{ matrix.fixture }}" == "devnet" ]]; then
@@ -98,40 +98,17 @@ jobs:
         shell: bash
         run: |
             extra_flags=()
-            if [[ "${{ matrix.kind }}" == "statetest" ]]; then
-              extra_flags+=(-p evm2-eest --test statetest --ignore-default-filter)
+            if [[ "${{ matrix.kind }}" == "eest" ]]; then
+              extra_flags+=(-p evm2-eest --ignore-default-filter)
             fi
             if [[ "${{ matrix.fixture }}" == "devnet" ]]; then
               export EVM2_STATETEST_ROOT="test-fixtures/devnet/state_tests"
+              export EVM2_BLOCKCHAINTEST_ROOT="test-fixtures/devnet/blockchain_tests"
             fi
             cargo nextest run --workspace --no-fail-fast ${{ matrix.flags }} "${extra_flags[@]}"
       - name: doctest
         if: ${{ matrix.kind == 'test' }}
         run: cargo test --workspace ${{ matrix.flags }} --doc
-
-
-  blockchaintest:
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: rui314/setup-mold@v1
-      - uses: Swatinem/rust-cache@v2
-        with:
-          cache-on-failure: true
-      - uses: taiki-e/install-action@nextest
-      - uses: astral-sh/setup-uv@v7
-      - name: Download blockchain test fixtures
-        shell: bash
-        run: |
-            export DEVNET_VERSION="bal@v5.4.0"
-            export DEVNET_TAR="fixtures_bal.tar.gz"
-            ./scripts/setup_test_fixtures.py
-      # BAL assertions intentionally contain todo!() until evm2 can build BALs.
-      # Listing validates fixture discovery without running into the BAL assertion placeholder.
-      - name: List blockchain tests
-        run: cargo nextest list -p evm2-eest --test blockchaintest --ignore-default-filter
 
   wasm:
     runs-on: ubuntu-latest
@@ -265,7 +242,6 @@ jobs:
     if: always()
     needs:
       - test
-      - blockchaintest
       - wasm
       - no-std
       - feature-checks

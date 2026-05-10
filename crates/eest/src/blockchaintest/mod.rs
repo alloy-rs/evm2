@@ -7,3 +7,4 @@ mod runner;
 mod types;
 
 pub use runner::run;
+pub(crate) use runner::suite;
