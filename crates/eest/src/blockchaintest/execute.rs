@@ -63,7 +63,7 @@ pub(crate) fn execute_str_with_config(
         serde_json::from_str(input).map_err(|err| TestError::unknown(path, err.into()))?;
     let mut summary = ExecuteSummary::default();
     for (name, unit) in suite.0 {
-        if unit.network.is_transition() || is_unsupported_block_validation_case(&unit) {
+        if unit.network.is_transition() {
             summary.skipped += 1;
             continue;
         }
@@ -179,28 +179,6 @@ fn execute_block(
         *parent_excess_blob_gas = excess_blob_gas;
     }
     Ok(())
-}
-
-fn is_unsupported_block_validation_case(test_case: &BlockchainTestCase) -> bool {
-    test_case
-        .blocks
-        .iter()
-        .filter_map(|block| block.expect_exception.as_deref())
-        .any(is_unsupported_block_validation_exception)
-}
-
-fn is_unsupported_block_validation_exception(expected: &str) -> bool {
-    [
-        "BlockException.",
-        "INCORRECT_BLOB_GAS_USED",
-        "INCORRECT_EXCESS_BLOB_GAS",
-        "BLOB_GAS_ALLOWANCE_EXCEEDED",
-        "GAS_ALLOWANCE_EXCEEDED",
-        "TYPE_3_TX_WITH_FULL_BLOBS",
-        "RLP_STRUCTURES_ENCODING",
-    ]
-    .iter()
-    .any(|needle| expected.contains(needle))
 }
 
 fn block_header(block: &Block) -> Option<&BlockHeader> {
