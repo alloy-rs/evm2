@@ -1,6 +1,6 @@
 //! In-memory cache database.
 
-use super::{Database, DatabaseCommit, EmptyDB};
+use super::{Database, DatabaseCommit, DbErrorCode, DbResult, EmptyDB};
 use crate::{
     bytecode::Bytecode,
     evm::state::{AccountInfo, StateChanges},
@@ -151,47 +151,56 @@ impl<ExtDB> DatabaseCommit for CacheDB<ExtDB> {
 
 impl<ExtDB: Database> Database for CacheDB<ExtDB> {
     #[inline]
-    fn get_account(&mut self, address: Address) -> Option<AccountInfo> {
+    fn get_account(&mut self, address: Address) -> DbResult<Option<AccountInfo>> {
         let Cache { accounts, contracts, .. } = &mut self.cache;
         match accounts.entry(address) {
-            Entry::Occupied(entry) => Some(entry.get().clone()),
+            Entry::Occupied(entry) => Ok(Some(entry.get().clone())),
             Entry::Vacant(entry) => {
-                let mut info = self.db.get_account(address)?;
+                let Some(mut info) = self.db.get_account(address)? else {
+                    return Ok(None);
+                };
                 Self::insert_contract_inner(contracts, &mut info);
                 info.code = None;
-                Some(entry.insert(info).clone())
+                Ok(Some(entry.insert(info).clone()))
             }
         }
     }
 
     #[inline]
-    fn get_code_by_hash(&mut self, code_hash: B256) -> Bytecode {
+    fn get_code_by_hash(&mut self, code_hash: B256) -> DbResult<Bytecode> {
         match self.cache.contracts.entry(code_hash) {
-            Entry::Occupied(entry) => entry.get().clone(),
-            Entry::Vacant(entry) => entry.insert(self.db.get_code_by_hash(code_hash)).clone(),
+            Entry::Occupied(entry) => Ok(entry.get().clone()),
+            Entry::Vacant(entry) => Ok(entry.insert(self.db.get_code_by_hash(code_hash)?).clone()),
         }
     }
 
     #[inline]
-    fn get_storage(&mut self, address: Address, key: Word) -> Word {
+    fn get_storage(&mut self, address: Address, key: Word) -> DbResult<Word> {
         match self.cache.storage.entry(StorageKey::new(address, key)) {
-            Entry::Occupied(entry) => *entry.get(),
+            Entry::Occupied(entry) => Ok(*entry.get()),
             Entry::Vacant(entry) => {
-                let value = self.db.get_storage(address, key);
-                *entry.insert(value)
+                let value = self.db.get_storage(address, key)?;
+                Ok(*entry.insert(value))
             }
         }
     }
 
     #[inline]
-    fn get_block_hash(&mut self, number: Word) -> Option<B256> {
+    fn get_block_hash(&mut self, number: Word) -> DbResult<Option<B256>> {
         match self.cache.block_hashes.entry(number) {
-            Entry::Occupied(entry) => Some(*entry.get()),
+            Entry::Occupied(entry) => Ok(Some(*entry.get())),
             Entry::Vacant(entry) => {
-                let hash = self.db.get_block_hash(number)?;
-                Some(*entry.insert(hash))
+                let Some(hash) = self.db.get_block_hash(number)? else {
+                    return Ok(None);
+                };
+                Ok(Some(*entry.insert(hash)))
             }
         }
+    }
+
+    #[inline]
+    fn error(&mut self, code: DbErrorCode) -> alloc::boxed::Box<dyn core::error::Error> {
+        self.db.error(code)
     }
 }
 
@@ -213,28 +222,29 @@ mod tests {
     }
 
     impl Database for CountingDB {
-        fn get_account(&mut self, _address: Address) -> Option<AccountInfo> {
+        fn get_account(&mut self, _address: Address) -> DbResult<Option<AccountInfo>> {
             self.account_loads += 1;
-            self.account.clone()
+            Ok(self.account.clone())
         }
 
-        fn get_code_by_hash(&mut self, code_hash: B256) -> Bytecode {
+        fn get_code_by_hash(&mut self, code_hash: B256) -> DbResult<Bytecode> {
             self.code_loads += 1;
-            self.account
+            Ok(self
+                .account
                 .as_ref()
                 .filter(|info| info.code_hash == code_hash)
                 .and_then(|info| info.code.clone())
-                .unwrap_or_default()
+                .unwrap_or_default())
         }
 
-        fn get_storage(&mut self, _address: Address, _key: Word) -> Word {
+        fn get_storage(&mut self, _address: Address, _key: Word) -> DbResult<Word> {
             self.storage_loads += 1;
-            self.storage
+            Ok(self.storage)
         }
 
-        fn get_block_hash(&mut self, _number: Word) -> Option<B256> {
+        fn get_block_hash(&mut self, _number: Word) -> DbResult<Option<B256>> {
             self.block_hash_loads += 1;
-            self.block_hash
+            Ok(self.block_hash)
         }
     }
 
@@ -253,18 +263,18 @@ mod tests {
         let mut cache = CacheDB::new(db);
 
         let code_hash = code.hash_slow();
-        assert_eq!(cache.get_account(address).map(|info| info.code_hash), Some(code_hash));
-        assert_eq!(cache.get_code_by_hash(code_hash), code);
-        assert_eq!(cache.get_code_by_hash(code_hash), code);
+        assert_eq!(cache.get_account(address).unwrap().map(|info| info.code_hash), Some(code_hash));
+        assert_eq!(cache.get_code_by_hash(code_hash).unwrap(), code);
+        assert_eq!(cache.get_code_by_hash(code_hash).unwrap(), code);
         assert_eq!(cache.db.account_loads, 1);
         assert_eq!(cache.db.code_loads, 0);
 
-        assert_eq!(cache.get_storage(address, key), Word::from(4));
-        assert_eq!(cache.get_storage(address, key), Word::from(4));
+        assert_eq!(cache.get_storage(address, key).unwrap(), Word::from(4));
+        assert_eq!(cache.get_storage(address, key).unwrap(), Word::from(4));
         assert_eq!(cache.db.storage_loads, 1);
 
-        assert_eq!(cache.get_block_hash(Word::from(5)), Some(block_hash));
-        assert_eq!(cache.get_block_hash(Word::from(5)), Some(block_hash));
+        assert_eq!(cache.get_block_hash(Word::from(5)).unwrap(), Some(block_hash));
+        assert_eq!(cache.get_block_hash(Word::from(5)).unwrap(), Some(block_hash));
         assert_eq!(cache.db.block_hash_loads, 1);
     }
 }
