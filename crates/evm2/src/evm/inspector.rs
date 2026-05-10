@@ -74,7 +74,8 @@ pub trait Inspector<T: EvmTypes>: Any {
 mod tests {
     use super::Inspector;
     use crate::{
-        BaseEvmConfigSelector, BaseEvmTypes, Evm, ExecutionConfig, Precompiles, SpecId,
+        BaseEvmConfigSelector, BaseEvmTypes, Evm, ExecutionConfig, Precompiles, SYSTEM_ADDRESS,
+        SpecId,
         bytecode::Bytecode,
         constants::CALL_DEPTH_LIMIT,
         env::{BlockEnv, TxEnv},
@@ -694,6 +695,43 @@ mod tests {
         assert_eq!(state.logs[0].address, contract);
         assert_eq!(state.calls, 0);
         assert_eq!(state.creates, 0);
+    }
+
+    #[test]
+    fn evm_transaction_inspects_eip7708_transfer_log() {
+        let caller = Address::from([0xaa; 20]);
+        let target = Address::from([0xbb; 20]);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(
+            caller,
+            AccountInfo::default().with_balance(U256::from(1_000_000_000_u64)),
+        );
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::AMSTERDAM,
+            BlockEnv::default(),
+            ethereum_tx_registry(SpecId::AMSTERDAM),
+            database,
+            Precompiles::base(SpecId::AMSTERDAM),
+        );
+        let state = Rc::new(RefCell::new(E2eState::default()));
+        evm.set_inspector(SharedE2eInspector(Rc::clone(&state)));
+        let tx = RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(
+            TxLegacy {
+                to: TxKind::Call(target),
+                value: U256::from(7),
+                gas_limit: 100_000,
+                ..Default::default()
+            },
+            caller,
+        ));
+
+        let result = evm.transact(&tx).unwrap();
+        let state = state.borrow();
+
+        assert!(result.status);
+        assert_eq!(result.state_changes.logs.len(), 1);
+        assert_eq!(state.logs, result.state_changes.logs);
+        assert_eq!(state.logs[0].address, SYSTEM_ADDRESS);
     }
 
     #[test]

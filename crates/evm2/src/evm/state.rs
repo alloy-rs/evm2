@@ -1,17 +1,23 @@
 //! Basic in-memory EVM host state.
 
-use super::{SStore, db::Database};
+use super::{SStore, SYSTEM_ADDRESS, db::Database, inspector::Inspector};
 use crate::{
-    SpecId,
+    EvmFeatures, EvmTypes, SpecId, Version,
     bytecode::Bytecode,
     interpreter::{InstrStop, Word},
     storage_key::{StorageKey, StorageKeyMap, StorageKeySet},
 };
-use alloc::{boxed::Box, collections::BTreeMap, vec::Vec};
+use alloc::{boxed::Box, collections::BTreeMap, vec, vec::Vec};
 use alloy_primitives::{
-    Address, B256, KECCAK256_EMPTY, Log, U256,
+    Address, B256, Bytes, KECCAK256_EMPTY, Log, LogData, U256, b256,
     map::{AddressMap, AddressSet, U256Map, hash_map},
 };
+use core::{mem, ptr::NonNull};
+
+const EIP7708_TRANSFER_TOPIC: B256 =
+    b256!("ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef");
+const EIP7708_BURN_TOPIC: B256 =
+    b256!("cc16f5dbb4873280815c1ee09dbd06736cffcc184412cf7a71a0fdb75d397ca5");
 
 /// A value tracked together with the value it had at the start of the current
 /// transaction.
@@ -325,7 +331,7 @@ pub enum JournalEntry {
 /// Mutable EVM state with an overlay and reversible journal.
 #[derive(derive_more::Debug)]
 #[non_exhaustive]
-pub struct State {
+pub struct State<T: EvmTypes = crate::BaseEvmTypes> {
     /// Read-only initial database.
     #[debug(skip)]
     initial: Box<dyn Database>,
@@ -359,6 +365,9 @@ pub struct State {
     accessed_storage: StorageKeySet,
     /// Transaction-scoped EIP-1153 transient storage keyed by account address and slot.
     transient_storage: StorageKeyMap<Word>,
+    /// Active execution inspector for state-emitted logs.
+    #[debug(skip)]
+    inspector: Option<NonNull<dyn Inspector<T>>>,
 }
 
 impl State {
@@ -367,7 +376,9 @@ impl State {
     pub fn new(initial: impl Database) -> Self {
         Self::new_mono(Box::new(initial))
     }
+}
 
+impl<T: EvmTypes> State<T> {
     #[inline]
     pub(crate) fn new_mono(initial: Box<dyn Database>) -> Self {
         Self {
@@ -381,7 +392,13 @@ impl State {
             accessed_accounts: AddressSet::default(),
             accessed_storage: StorageKeySet::default(),
             transient_storage: StorageKeyMap::default(),
+            inspector: None,
         }
+    }
+
+    #[inline]
+    pub(super) const fn set_inspector(&mut self, inspector: Option<NonNull<dyn Inspector<T>>>) {
+        self.inspector = inspector;
     }
 
     /// Returns a checkpoint for later rollback.
@@ -418,6 +435,58 @@ impl State {
     #[inline]
     pub fn log(&mut self, log: Log) {
         self.logs.push(log);
+    }
+
+    #[inline]
+    fn inspect_log(&mut self, log: &Log) {
+        if let Some(mut inspector) = self.inspector {
+            unsafe { inspector.as_mut() }.log(log);
+        }
+    }
+
+    #[inline]
+    pub(super) fn emit_log(&mut self, log: Log) {
+        self.inspect_log(&log);
+        self.log(log);
+    }
+
+    /// Builds an EIP-7708 ETH transfer log for non-zero cross-account value.
+    pub(super) fn eip7708_transfer_log(
+        &self,
+        from: Address,
+        to: Address,
+        value: Word,
+    ) -> Option<Log> {
+        if value.is_zero() || from == to {
+            return None;
+        }
+        let topics = vec![
+            EIP7708_TRANSFER_TOPIC,
+            B256::left_padding_from(from.as_slice()),
+            B256::left_padding_from(to.as_slice()),
+        ];
+        Some(Log {
+            address: SYSTEM_ADDRESS,
+            data: LogData::new_unchecked(
+                topics,
+                Bytes::copy_from_slice(&value.to_be_bytes::<32>()),
+            ),
+        })
+    }
+
+    /// Builds an EIP-7708 ETH burn log if the burned value is non-zero.
+    pub(super) fn eip7708_burn_log(&self, address: Address, value: Word) -> Option<Log> {
+        if value.is_zero() {
+            return None;
+        }
+        let topics = vec![EIP7708_BURN_TOPIC, B256::left_padding_from(address.as_slice())];
+        Some(Log {
+            address: SYSTEM_ADDRESS,
+            data: LogData::new_unchecked(
+                topics,
+                Bytes::copy_from_slice(&value.to_be_bytes::<32>()),
+            ),
+        })
     }
 
     /// Returns a loaded persistent storage overlay slot, if present.
@@ -763,9 +832,25 @@ impl State {
     }
 
     /// Transfers value between accounts.
-    #[inline]
     #[must_use]
     pub fn transfer(&mut self, from: Address, to: Address, value: Word) -> bool {
+        self.transfer_inner(from, to, value, false)
+    }
+
+    /// Transfers value between accounts and emits an EIP-7708 log for non-zero cross-account value.
+    #[must_use]
+    pub fn transfer_with_eip7708_log(&mut self, from: Address, to: Address, value: Word) -> bool {
+        self.transfer_inner(from, to, value, true)
+    }
+
+    #[must_use]
+    pub(crate) fn transfer_inner(
+        &mut self,
+        from: Address,
+        to: Address,
+        value: Word,
+        log_eip7708: bool,
+    ) -> bool {
         if value.is_zero() {
             self.touch(to);
             return true;
@@ -789,6 +874,9 @@ impl State {
         let account = self.journal_account_change(to);
         account.balance = account.balance.saturating_add(value);
         self.touch(to);
+        if log_eip7708 && let Some(log) = self.eip7708_transfer_log(from, to, value) {
+            self.emit_log(log);
+        }
         true
     }
 
@@ -807,7 +895,7 @@ impl State {
         caller: Address,
         address: Address,
         value: Word,
-        spec: SpecId,
+        version: &Version,
     ) -> Result<(), InstrStop> {
         if let Some(info) = self.account_info(address)
             && (info.nonce != 0 || info.code_hash != KECCAK256_EMPTY)
@@ -815,7 +903,7 @@ impl State {
             return Err(InstrStop::CreateCollision);
         }
 
-        if !self.transfer(caller, address, value) {
+        if !self.transfer_inner(caller, address, value, version.feature(EvmFeatures::EIP7708)) {
             return Err(InstrStop::OutOfFunds);
         }
 
@@ -823,7 +911,7 @@ impl State {
         self.wipe_storage(address);
         let account = self.journal_account_change(address);
         *account = Account {
-            nonce: u64::from(spec.enables(SpecId::SPURIOUS_DRAGON)),
+            nonce: u64::from(version.spec_id.enables(SpecId::SPURIOUS_DRAGON)),
             balance,
             code_hash: KECCAK256_EMPTY,
             code: Bytecode::default(),
@@ -997,48 +1085,39 @@ impl State {
     /// overlay state are deleted during transaction finalization. Non-existent
     /// touched accounts stay non-existent.
     #[must_use]
-    fn is_existing_dead(
-        initial: &mut dyn Database,
-        accounts: &AddressMap<Tracked<Option<Account>>>,
-        address: Address,
-    ) -> bool {
-        if let Some(account) = accounts.get(&address) {
+    fn is_existing_dead(&mut self, address: Address) -> bool {
+        if let Some(account) = self.accounts.get(&address) {
             return account.current.as_ref().is_some_and(Account::is_empty)
                 || (account.current.is_none() && account.original.is_some());
         }
-        initial.get_account(address).is_some_and(|account| account.is_empty())
+        self.initial.get_account(address).is_some_and(|account| account.is_empty())
     }
 
-    fn account_exists(
-        initial: &mut dyn Database,
-        accounts: &AddressMap<Tracked<Option<Account>>>,
-        address: Address,
-    ) -> bool {
-        if let Some(account) = accounts.get(&address) {
+    fn account_exists(&mut self, address: Address) -> bool {
+        if let Some(account) = self.accounts.get(&address) {
             return account.current.is_some();
         }
-        initial.get_account(address).is_some()
+        self.initial.get_account(address).is_some()
     }
 
-    fn delete_account_for_finalization(
-        initial: &mut dyn Database,
-        accounts: &mut AddressMap<Tracked<Option<Account>>>,
-        journal: &mut Vec<JournalEntry>,
-        storage: &mut AddressMap<StorageOverlay>,
-        address: Address,
-    ) {
-        let account = Self::ensure_account_overlay(initial, accounts, journal, address);
+    fn delete_account_for_finalization(&mut self, address: Address) {
+        let account = Self::ensure_account_overlay(
+            &mut self.initial,
+            &mut self.accounts,
+            &mut self.journal,
+            address,
+        );
         account.current = None;
-        storage.insert(address, StorageOverlay { wiped: true, slots: U256Map::default() });
+        self.storage.insert(address, StorageOverlay { wiped: true, slots: U256Map::default() });
     }
 
-    fn materialize_empty_account_for_finalization(
-        initial: &mut dyn Database,
-        accounts: &mut AddressMap<Tracked<Option<Account>>>,
-        journal: &mut Vec<JournalEntry>,
-        address: Address,
-    ) {
-        let account = Self::ensure_account_overlay(initial, accounts, journal, address);
+    fn materialize_empty_account_for_finalization(&mut self, address: Address) {
+        let account = Self::ensure_account_overlay(
+            &mut self.initial,
+            &mut self.accounts,
+            &mut self.journal,
+            address,
+        );
         if account.original.is_none() {
             account.current.get_or_insert_with(|| Account {
                 code_hash: KECCAK256_EMPTY,
@@ -1048,6 +1127,11 @@ impl State {
         }
     }
 
+    #[cfg(test)]
+    pub(super) fn finalize_transaction_(&mut self, version: &Version) {
+        self.finalize_transaction(version);
+    }
+
     /// Applies transaction-finalization account-lifetime rules to the overlay.
     ///
     /// This mutates the in-memory post-transaction state before it is serialized
@@ -1055,47 +1139,58 @@ impl State {
     /// transaction substate such as touches and selfdestructs, while finalization
     /// turns that substate into account deletions, storage wipes, or pre-EIP-161
     /// empty-account materialization.
-    pub(super) fn finalize_transaction(&mut self, spec: SpecId) {
-        for &address in &self.selfdestructs {
-            Self::delete_account_for_finalization(
-                &mut self.initial,
-                &mut self.accounts,
-                &mut self.journal,
-                &mut self.storage,
-                address,
-            );
+    pub(super) fn finalize_transaction(&mut self, version: &Version) {
+        let selfdestructs = mem::take(&mut self.selfdestructs);
+        let touched = mem::take(&mut self.touched);
+
+        let spec = version.spec_id;
+        let delayed_burn_logs =
+            version.feature(EvmFeatures::EIP7708 | EvmFeatures::EIP7708_DELAYED_BURN);
+        if delayed_burn_logs {
+            let mut burned = Vec::new();
+            for &address in &selfdestructs {
+                if let Some(balance) = self
+                    .accounts
+                    .get(&address)
+                    .and_then(|account| account.current.as_ref())
+                    .map(|account| account.balance)
+                    && !balance.is_zero()
+                {
+                    burned.push((address, balance));
+                }
+            }
+            burned.sort_by_key(|(address, _)| *address);
+            for (address, balance) in burned {
+                if let Some(log) = self.eip7708_burn_log(address, balance) {
+                    self.emit_log(log);
+                }
+            }
+        }
+
+        for &address in &selfdestructs {
+            self.delete_account_for_finalization(address);
         }
 
         if spec.enables(SpecId::SPURIOUS_DRAGON) {
-            for &address in &self.touched {
+            for &address in &touched {
                 // EIP-161 deletes touched dead accounts at transaction finalization.
-                if Self::is_existing_dead(&mut self.initial, &self.accounts, address) {
-                    Self::delete_account_for_finalization(
-                        &mut self.initial,
-                        &mut self.accounts,
-                        &mut self.journal,
-                        &mut self.storage,
-                        address,
-                    );
+                if self.is_existing_dead(address) {
+                    self.delete_account_for_finalization(address);
                 }
             }
         } else {
-            for &address in &self.touched {
+            for &address in &touched {
                 // Before EIP-161, touching a non-existent account materializes it as empty.
-                if !self.selfdestructs.contains(&address)
-                    && !Self::account_exists(&mut self.initial, &self.accounts, address)
-                {
-                    Self::materialize_empty_account_for_finalization(
-                        &mut self.initial,
-                        &mut self.accounts,
-                        &mut self.journal,
-                        address,
-                    );
+                if !selfdestructs.contains(&address) && !self.account_exists(address) {
+                    self.materialize_empty_account_for_finalization(address);
                 }
             }
         }
 
+        self.selfdestructs = selfdestructs;
         self.selfdestructs.clear();
+
+        self.touched = touched;
         self.touched.clear();
     }
 
@@ -1309,7 +1404,7 @@ mod tests {
         };
 
         state.log(log.clone());
-        state.finalize_transaction(crate::SpecId::SPURIOUS_DRAGON);
+        state.finalize_transaction_(Version::base(crate::SpecId::SPURIOUS_DRAGON));
         let changes = state.build_state_changes();
         assert_eq!(changes.logs.as_slice(), core::slice::from_ref(&log));
         assert!(state.logs().is_empty());
@@ -1339,7 +1434,7 @@ mod tests {
         let mut state = State::new(database);
 
         state.touch(address);
-        state.finalize_transaction(crate::SpecId::SPURIOUS_DRAGON);
+        state.finalize_transaction_(Version::base(crate::SpecId::SPURIOUS_DRAGON));
         let changes = state.build_state_changes();
 
         let change = changes.accounts.get(&address).expect("touched empty account is deleted");
@@ -1356,7 +1451,7 @@ mod tests {
         let mut state = State::new(database);
 
         state.touch(address);
-        state.finalize_transaction(crate::SpecId::HOMESTEAD);
+        state.finalize_transaction_(Version::base(crate::SpecId::HOMESTEAD));
         let changes = state.build_state_changes();
 
         assert!(!changes.accounts.contains_key(&address));
@@ -1369,7 +1464,7 @@ mod tests {
         let mut state = State::new(CacheDB::default());
 
         state.touch(address);
-        state.finalize_transaction(crate::SpecId::HOMESTEAD);
+        state.finalize_transaction_(Version::base(crate::SpecId::HOMESTEAD));
         let changes = state.build_state_changes();
 
         let change =
@@ -1385,7 +1480,7 @@ mod tests {
         let mut state = State::new(CacheDB::default());
 
         state.touch(address);
-        state.finalize_transaction(crate::SpecId::SPURIOUS_DRAGON);
+        state.finalize_transaction_(Version::base(crate::SpecId::SPURIOUS_DRAGON));
         let changes = state.build_state_changes();
 
         assert!(!changes.accounts.contains_key(&address));
@@ -1393,7 +1488,7 @@ mod tests {
     }
 
     #[test]
-    fn finalization_preserves_transaction_set_capacity() {
+    fn finalization_preserves_touched_set_capacity() {
         let mut state = State::new(CacheDB::default());
 
         for i in 0..32 {
@@ -1404,7 +1499,7 @@ mod tests {
         let touched_capacity = state.touched.capacity();
         let selfdestructs_capacity = state.selfdestructs.capacity();
 
-        state.finalize_transaction(crate::SpecId::SPURIOUS_DRAGON);
+        state.finalize_transaction_(Version::base(crate::SpecId::SPURIOUS_DRAGON));
 
         assert!(state.touched.is_empty());
         assert!(state.selfdestructs.is_empty());
@@ -1421,12 +1516,67 @@ mod tests {
         let mut state = State::new(database);
 
         state.mark_destructed(address);
-        state.finalize_transaction(crate::SpecId::SPURIOUS_DRAGON);
+        state.finalize_transaction_(Version::base(crate::SpecId::SPURIOUS_DRAGON));
         let changes = state.build_state_changes();
 
         let change = changes.accounts.get(&address).expect("selfdestruct deletes account");
         assert!(change.original.is_some());
         assert_eq!(change.current, None);
         assert!(changes.storage.get(&address).is_some_and(|storage| storage.wipe));
+    }
+
+    #[test]
+    fn eip7708_transfer_log_matches_event_shape() {
+        let from = Address::from([0x01; 20]);
+        let to = Address::from([0x02; 20]);
+        let mut state = State::new(CacheDB::default());
+        state.add_balance(from, Word::from(10));
+
+        assert!(state.transfer_with_eip7708_log(from, to, Word::from(7)));
+
+        let log = state.logs().first().expect("transfer log");
+        assert_eq!(log.address, SYSTEM_ADDRESS);
+        assert_eq!(
+            log.topics(),
+            &[
+                EIP7708_TRANSFER_TOPIC,
+                B256::left_padding_from(from.as_slice()),
+                B256::left_padding_from(to.as_slice()),
+            ]
+        );
+        assert_eq!(log.data.data, Bytes::copy_from_slice(&Word::from(7).to_be_bytes::<32>()));
+    }
+
+    #[test]
+    fn eip7708_delayed_burn_logs_selfdestructs_sorted() {
+        let high = Address::from([0x22; 20]);
+        let low = Address::from([0x11; 20]);
+        let mut database = CacheDB::default();
+        database.insert_account_info(high, AccountInfo::default().with_balance(Word::from(2)));
+        database.insert_account_info(low, AccountInfo::default().with_balance(Word::from(1)));
+        let mut state = State::new(database);
+
+        state.mark_destructed(high);
+        state.mark_destructed(low);
+        state.finalize_transaction_(Version::base(SpecId::AMSTERDAM));
+
+        let changes = state.build_state_changes();
+        assert_eq!(changes.logs.len(), 2);
+        assert_eq!(
+            changes.logs[0].topics(),
+            &[EIP7708_BURN_TOPIC, B256::left_padding_from(low.as_slice())]
+        );
+        assert_eq!(
+            changes.logs[0].data.data,
+            Bytes::copy_from_slice(&Word::from(1).to_be_bytes::<32>())
+        );
+        assert_eq!(
+            changes.logs[1].topics(),
+            &[EIP7708_BURN_TOPIC, B256::left_padding_from(high.as_slice())]
+        );
+        assert_eq!(
+            changes.logs[1].data.data,
+            Bytes::copy_from_slice(&Word::from(2).to_be_bytes::<32>())
+        );
     }
 }

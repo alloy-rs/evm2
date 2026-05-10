@@ -19,6 +19,7 @@ use crate::{
 use alloc::boxed::Box;
 use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{Address, B256, Bytes, Log};
+use core::ptr::NonNull;
 
 pub mod config;
 pub mod env;
@@ -164,7 +165,7 @@ pub struct Evm<T: EvmTypes> {
     pub(crate) block: BlockEnv,
     registry: TxRegistry<T::Tx, TxResult, Self>,
     #[debug(skip)]
-    pub(crate) state: State,
+    pub(crate) state: State<T>,
     #[debug(skip)]
     precompiles: Box<dyn PrecompileProvider>,
     #[debug(skip)]
@@ -293,7 +294,7 @@ impl<T: EvmTypes> Evm<T> {
 
     /// Returns the mutable EVM state.
     #[inline]
-    pub const fn state(&self) -> &State {
+    pub const fn state(&self) -> &State<T> {
         &self.state
     }
 
@@ -345,21 +346,30 @@ impl<T: EvmTypes> Evm<T> {
         self.inspector.as_mut().map(|inspector| inspector.as_mut() as &mut dyn Inspector<T>)
     }
 
+    #[inline]
+    fn sync_state_inspector(&mut self) {
+        let inspector = self.inspector.as_deref_mut().map(NonNull::from);
+        self.state.set_inspector(inspector);
+    }
+
     /// Sets the active execution inspector.
     #[inline]
     pub fn set_inspector<I: Inspector<T> + 'static>(&mut self, inspector: I) {
         self.inspector = Some(Box::new(inspector));
+        self.sync_state_inspector();
     }
 
     /// Sets the active boxed execution inspector.
     #[inline]
     pub fn set_boxed_inspector(&mut self, inspector: Box<dyn Inspector<T>>) {
         self.inspector = Some(inspector);
+        self.sync_state_inspector();
     }
 
     /// Removes the active execution inspector.
     #[inline]
     pub fn clear_inspector(&mut self) -> Option<Box<dyn Inspector<T>>> {
+        self.state.set_inspector(None);
         self.inspector.take()
     }
 
@@ -394,7 +404,7 @@ impl<T: EvmTypes<Tx: Typed2718>> Evm<T> {
         let handler = self.registry.try_get_by_type(tx.ty())?;
         let mut result = handler.call(tx, self);
         if let Ok(result) = &mut result {
-            self.state.finalize_transaction(self.spec_id());
+            self.state.finalize_transaction(self.execution_config.version());
             result.state_changes = self.state.build_state_changes();
             self.state.commit_transaction_overlay();
         };
@@ -456,8 +466,9 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         }
 
         let checkpoint = self.state.checkpoint();
+        let version = self.execution_config.version();
         if let Err(stop) =
-            self.state.create_account(message.caller, address, message.value, self.spec_id())
+            self.state.create_account(message.caller, address, message.value, version)
         {
             self.state.rollback(checkpoint, self.spec_id());
             return Err(stop);
@@ -579,11 +590,19 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         let checkpoint = self.state.checkpoint();
         // EIP-161 state clearing depends on zero-value direct call targets being touched.
         // CALLCODE also needs the value-transfer balance check.
-        if matches!(
+        let transfers_balance = matches!(
             message.kind,
             MessageKind::Call | MessageKind::CallCode | MessageKind::StaticCall
-        ) && !self.state.transfer(message.caller, message.destination, message.value)
-        {
+        );
+        let eip7708 = self.feature(EvmFeatures::EIP7708);
+        let transfer_succeeded = !transfers_balance
+            || self.state.transfer_inner(
+                message.caller,
+                message.destination,
+                message.value,
+                eip7708,
+            );
+        if transfers_balance && !transfer_succeeded {
             return Err(InstrStop::OutOfFunds);
         }
 
@@ -819,8 +838,17 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
             || self.state.is_created_in_transaction(contract);
 
         if contract != target {
-            let _ = self.state.transfer(contract, target, balance);
+            if self.feature(EvmFeatures::EIP7708) {
+                let _ = self.state.transfer_with_eip7708_log(contract, target, balance);
+            } else {
+                let _ = self.state.transfer(contract, target, balance);
+            }
         } else if should_destroy && !balance.is_zero() {
+            if self.feature(EvmFeatures::EIP7708)
+                && let Some(log) = self.state.eip7708_burn_log(contract, balance)
+            {
+                self.state.emit_log(log);
+            }
             self.state.add_balance(contract, Word::ZERO.wrapping_sub(balance));
         }
         if should_destroy {
@@ -840,7 +868,7 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
 mod tests {
     use super::*;
     use crate::{
-        BaseEvmConfigSelector, BaseEvmTypes, Precompiles, SpecId,
+        BaseEvmConfigSelector, BaseEvmTypes, Precompiles, SpecId, Version,
         bytecode::Bytecode,
         ethereum::RecoveredTxEnvelope,
         interpreter::{MessageKind, op},
@@ -1036,7 +1064,7 @@ mod tests {
         let result = Host::execute_message(&mut evm, &TxEnv::default(), code, &message, false);
         assert!(result.stop.is_success());
 
-        evm.state.finalize_transaction(SpecId::FRONTIER);
+        evm.state.finalize_transaction_(Version::base(SpecId::FRONTIER));
         let changes = evm.state.build_state_changes();
         let account =
             changes.accounts.get(&created).and_then(|change| change.current.as_ref()).unwrap();
@@ -1069,7 +1097,7 @@ mod tests {
         let result = Host::execute_message(&mut evm, &TxEnv::default(), code, &message, false);
         assert_eq!(result.stop, InstrStop::OutOfGas);
 
-        evm.state.finalize_transaction(SpecId::HOMESTEAD);
+        evm.state.finalize_transaction_(Version::base(SpecId::HOMESTEAD));
         let changes = evm.state.build_state_changes();
         assert!(!changes.accounts.contains_key(&created));
     }
@@ -1104,7 +1132,7 @@ mod tests {
         );
         assert!(result.stop.is_success());
 
-        evm.state.finalize_transaction(SpecId::SPURIOUS_DRAGON);
+        evm.state.finalize_transaction_(Version::base(SpecId::SPURIOUS_DRAGON));
         let changes = evm.state.build_state_changes();
         let account = changes.accounts.get(&target).expect("empty destination should be deleted");
         assert!(account.original.is_some());
@@ -1145,7 +1173,7 @@ mod tests {
         );
         assert!(result.stop.is_success());
 
-        evm.state.finalize_transaction(SpecId::SPURIOUS_DRAGON);
+        evm.state.finalize_transaction_(Version::base(SpecId::SPURIOUS_DRAGON));
         let changes = evm.state.build_state_changes();
         assert!(!changes.accounts.contains_key(&code_address));
         assert!(!changes.storage.contains_key(&code_address));
@@ -1175,5 +1203,43 @@ mod tests {
             state.account_info(to).expect("recipient account should exist").balance,
             U256::from(7)
         );
+    }
+
+    #[test]
+    fn amsterdam_call_value_emits_eip7708_log() {
+        let caller = Address::from([0x01; 20]);
+        let target = Address::from([0x02; 20]);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(caller, AccountInfo::default().with_balance(U256::from(10)));
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::AMSTERDAM,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            database,
+            Precompiles::base(SpecId::AMSTERDAM),
+        );
+        let message = Message {
+            kind: MessageKind::Call,
+            destination: target,
+            caller,
+            value: U256::from(7),
+            gas_limit: 50_000,
+            ..Message::default()
+        };
+
+        let result = Host::execute_message(
+            &mut evm,
+            &TxEnv::default(),
+            Bytecode::default(),
+            &message,
+            false,
+        );
+        assert!(result.stop.is_success());
+
+        let version = *evm.version();
+        evm.state.finalize_transaction_(&version);
+        let changes = evm.state.build_state_changes();
+        assert_eq!(changes.logs.len(), 1);
+        assert_eq!(changes.logs[0].address, SYSTEM_ADDRESS);
     }
 }

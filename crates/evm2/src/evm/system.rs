@@ -84,7 +84,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             ..TxResult::default()
         };
 
-        self.state.finalize_transaction(self.spec_id());
+        self.state.finalize_transaction(self.execution_config.version());
         result.state_changes = self.state.build_state_changes();
         self.state.commit_transaction_overlay();
         self.state.clear_transaction_state();
