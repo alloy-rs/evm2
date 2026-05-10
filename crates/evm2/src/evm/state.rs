@@ -1150,7 +1150,7 @@ impl State {
     /// writes as pending changes. This rolls the current account and storage
     /// values forward into their `original` slots and applies local deletion/wipe
     /// bookkeeping. It only advances the in-memory overlay; callers are still
-    /// responsible for applying the emitted write-set to their backing database
+    /// responsible for committing the emitted write-set to their backing database
     /// and clearing transaction-local state.
     pub(super) fn commit_transaction_overlay(&mut self) {
         for account in self.accounts.values_mut() {
