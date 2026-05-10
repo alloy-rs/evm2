@@ -2,7 +2,7 @@ use super::{
     env::blockchain_test_roots,
     execute::{ExecuteConfig, execute_test_suite},
 };
-use crate::harness::{TestSuite, ignore_none, run_json_harness};
+use crate::harness::{TestSuite, run_json_harness};
 use libtest_mimic::Failed;
 use std::{
     path::{Path, PathBuf},
@@ -11,7 +11,7 @@ use std::{
 
 /// Runs the cargo-nextest blockchain test harness.
 pub fn run() -> ExitCode {
-    run_json_harness("blockchain", blockchain_test_roots(), should_descend, ignore_none, run_file)
+    run_json_harness("blockchain", blockchain_test_roots(), should_descend, should_ignore, run_file)
 }
 
 pub(crate) fn suite() -> TestSuite {
@@ -19,7 +19,7 @@ pub(crate) fn suite() -> TestSuite {
         name: "blockchain",
         roots: blockchain_test_roots(),
         should_descend,
-        should_ignore: ignore_none,
+        should_ignore,
         run_file,
     }
 }
@@ -39,3 +39,15 @@ fn should_descend(path: &Path) -> bool {
         "blockchain_tests_engine" | "blockchain_tests_engine_x" | "blockchain_tests_sync"
     )
 }
+
+fn should_ignore(name: &str) -> bool {
+    IGNORED_TESTS.iter().any(|ignored| name.contains(ignored))
+}
+
+#[rustfmt::skip]
+const IGNORED_TESTS: &[&str] = &[
+    "prague/eip6110_deposits",
+    "prague/eip7002_el_triggerable_withdrawals",
+    "prague/eip7251_consolidations",
+    "prague/eip7685_general_purpose_el_requests",
+];

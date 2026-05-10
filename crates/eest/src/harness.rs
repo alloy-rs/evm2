@@ -129,8 +129,3 @@ fn path_name(path: &Path) -> String {
 pub(crate) const fn descend_all(_: &Path) -> bool {
     true
 }
-
-/// Does not ignore any test.
-pub(crate) const fn ignore_none(_: &str) -> bool {
-    false
-}
