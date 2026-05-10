@@ -175,7 +175,7 @@ fn dispatch_mono<T: EvmTypes, C: EvmConfig<T>, M: InspectMode<T>, const DYNAMIC_
     (PackedPcStackLen::pack(pc.as_ptr(), stack.len), remaining_gas)
 }
 
-#[inline]
+#[inline(always)]
 const fn pre_step<T: EvmTypes, C: EvmConfig<T>>(
     remaining_gas: &mut RemainingGas,
     op: u8,
