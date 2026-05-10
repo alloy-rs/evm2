@@ -198,7 +198,6 @@ fn is_unsupported_block_validation_exception(expected: &str) -> bool {
         "GAS_ALLOWANCE_EXCEEDED",
         "INVALID_REQUESTS",
         "INVALID_DEPOSIT_EVENT_LAYOUT",
-        "SYSTEM_CONTRACT_CALL_FAILED",
         "TYPE_3_TX_WITH_FULL_BLOBS",
         "RLP_STRUCTURES_ENCODING",
     ]
