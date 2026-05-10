@@ -1,3 +1,4 @@
+use crate::tx::TxBuildError;
 use alloy_primitives::{B256, Bytes};
 use evm2::registry::HandlerError;
 use std::{io, path::PathBuf};
@@ -16,11 +17,6 @@ pub(crate) struct TestError {
 }
 
 impl TestError {
-    /// Creates an error for a path-level failure.
-    pub(crate) fn path(path: impl Into<PathBuf>, kind: TestErrorKind) -> Self {
-        Self { path: path.into().display().to_string(), name: "Path validation".to_string(), kind }
-    }
-
     /// Creates an error for an unknown test name.
     pub(crate) fn unknown(path: impl Into<PathBuf>, kind: TestErrorKind) -> Self {
         Self { path: path.into().display().to_string(), name: "Unknown".to_string(), kind }
@@ -39,15 +35,6 @@ impl TestError {
 /// Specific kind of error that occurred during test execution.
 #[derive(Debug, Error)]
 pub(crate) enum TestErrorKind {
-    /// Invalid test path.
-    #[error("path does not exist")]
-    InvalidPath,
-    /// No JSON tests were found.
-    #[error("no JSON test files found in path")]
-    NoJsonFiles,
-    /// Directory traversal failed.
-    #[error("walk error: {0}")]
-    Walk(#[from] walkdir::Error),
     /// File read failed.
     #[error("read error: {0}")]
     Read(#[from] io::Error),
@@ -101,4 +88,14 @@ pub(crate) enum TestErrorKind {
     /// EVM execution failed.
     #[error(transparent)]
     Evm(#[from] HandlerError),
+}
+
+impl From<TxBuildError> for TestErrorKind {
+    fn from(error: TxBuildError) -> Self {
+        match error {
+            TxBuildError::Overflow(name) => Self::Overflow(name),
+            TxBuildError::BuildTransaction(error) => Self::BuildTransaction(error),
+            TxBuildError::SerdeDeserialize(error) => Self::SerdeDeserialize(error),
+        }
+    }
 }

@@ -3,5 +3,5 @@
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
-    evm2_statetest::run()
+    evm2_eest::run_statetests()
 }

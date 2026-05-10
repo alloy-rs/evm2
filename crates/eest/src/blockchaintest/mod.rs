@@ -1,6 +1,5 @@
-//! Ethereum state test execution for evm2.
+//! Ethereum blockchain test execution.
 
-mod discover;
 mod env;
 mod error;
 mod execute;
