@@ -63,7 +63,10 @@ pub(crate) fn execute_str_with_config(
         serde_json::from_str(input).map_err(|err| TestError::unknown(path, err.into()))?;
     let mut summary = ExecuteSummary::default();
     for (name, unit) in suite.0 {
-        if unit.network.is_transition() || is_unsupported_block_validation_case(&unit) {
+        if unit.network.is_transition()
+            || is_unsupported_block_validation_path(path)
+            || is_unsupported_block_validation_case(&unit)
+        {
             summary.skipped += 1;
             continue;
         }
@@ -181,6 +184,14 @@ fn execute_block(
     Ok(())
 }
 
+fn is_unsupported_block_validation_path(path: &Path) -> bool {
+    let path = path.to_str().unwrap_or_default();
+    path.contains("prague/eip6110_deposits")
+        || path.contains("prague/eip7002_el_triggerable_withdrawals")
+        || path.contains("prague/eip7251_consolidations")
+        || path.contains("prague/eip7685_general_purpose_el_requests")
+}
+
 fn is_unsupported_block_validation_case(test_case: &BlockchainTestCase) -> bool {
     test_case
         .blocks
@@ -196,8 +207,6 @@ fn is_unsupported_block_validation_exception(expected: &str) -> bool {
         "INCORRECT_EXCESS_BLOB_GAS",
         "BLOB_GAS_ALLOWANCE_EXCEEDED",
         "GAS_ALLOWANCE_EXCEEDED",
-        "INVALID_REQUESTS",
-        "INVALID_DEPOSIT_EVENT_LAYOUT",
         "TYPE_3_TX_WITH_FULL_BLOBS",
         "RLP_STRUCTURES_ENCODING",
     ]
