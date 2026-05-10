@@ -7,6 +7,7 @@ use self::{
 use crate::{
     EvmConfigSelector, EvmTypes, ExecutionConfig, PrecompileError, PrecompileHalt, SpecId,
     bytecode::Bytecode,
+    constants::{EIP7708_BURN_TOPIC, EIP7708_TRANSFER_TOPIC},
     env::{BlockEnv, TxEnv},
     interpreter::{
         Gas, GasTracker, Host, InstrStop, Interpreter, InterpreterPool, Message, MessageKind,
@@ -16,9 +17,9 @@ use crate::{
     trustme,
     version::{EvmFeatures, GasId},
 };
-use alloc::boxed::Box;
+use alloc::{boxed::Box, vec};
 use alloy_eips::eip2718::Typed2718;
-use alloy_primitives::{Address, B256, Bytes, Log};
+use alloy_primitives::{Address, B256, Bytes, Log, LogData};
 
 pub mod config;
 pub mod env;
@@ -39,119 +40,6 @@ pub use state::{
     Account, AccountInfo, JournalEntry, State, StateChanges, StateCheckpoint, StorageChangeSet,
     StorageOverlay, Tracked,
 };
-
-/// Loaded account information.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
-pub struct AccountLoad {
-    /// Account balance.
-    pub balance: Word,
-    /// Account code hash.
-    pub code_hash: B256,
-    /// Account code bytes.
-    pub code: Bytes,
-    /// Whether the account exists in state.
-    pub exists: bool,
-    /// Whether the account is empty.
-    pub is_empty: bool,
-    /// Whether the account access was cold.
-    pub is_cold: bool,
-}
-
-/// Result of an `SLOAD` host operation.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub struct SLoad {
-    /// Storage slot value.
-    pub value: Word,
-    /// Whether the storage slot access was cold.
-    pub is_cold: bool,
-}
-
-/// Result of an `SSTORE` host operation.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub struct SStore {
-    /// Storage value at the start of the transaction.
-    pub original_value: Word,
-    /// Storage value immediately before this `SSTORE`.
-    pub present_value: Word,
-    /// Storage value written by this `SSTORE`.
-    pub new_value: Word,
-    /// Whether the storage slot access was cold.
-    pub is_cold: bool,
-}
-
-impl SStore {
-    /// Returns whether this `SSTORE` leaves the slot unchanged (`new == present`).
-    #[inline]
-    #[must_use]
-    pub fn is_noop(&self) -> bool {
-        self.new_value == self.present_value
-    }
-
-    /// Returns whether the slot is clean (`original == present`).
-    #[inline]
-    #[must_use]
-    pub fn is_clean(&self) -> bool {
-        self.original_value == self.present_value
-    }
-
-    /// Returns whether this `SSTORE` restores the slot to its original value (`new == original`).
-    #[inline]
-    #[must_use]
-    pub fn resets_original(&self) -> bool {
-        self.original_value == self.new_value
-    }
-
-    /// Returns whether the original value is zero.
-    #[inline]
-    #[must_use]
-    pub fn original_is_zero(&self) -> bool {
-        self.original_value.is_zero()
-    }
-
-    /// Returns whether the present value is zero.
-    #[inline]
-    #[must_use]
-    pub fn present_is_zero(&self) -> bool {
-        self.present_value.is_zero()
-    }
-
-    /// Returns whether the new value is zero.
-    #[inline]
-    #[must_use]
-    pub fn new_is_zero(&self) -> bool {
-        self.new_value.is_zero()
-    }
-}
-
-/// Result of a `SELFDESTRUCT` host operation.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub struct SelfDestructResult {
-    /// Whether the destroyed account had non-zero value.
-    pub had_value: bool,
-    /// Balance transferred or cleared by the destruction.
-    pub value: Word,
-    /// Whether the beneficiary is empty/non-existent for new-account gas checks.
-    pub target_is_empty: bool,
-    /// Whether the beneficiary access was cold.
-    pub is_cold: bool,
-    /// Whether this account was already destroyed in this transaction.
-    pub previously_destroyed: bool,
-}
-
-/// Result of executing a transaction.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct TxResult {
-    /// Whether execution succeeded.
-    pub status: bool,
-    /// Gas used by execution.
-    pub gas_used: u64,
-    /// Interpreter stop reason.
-    pub stop: InstrStop,
-    /// Return or revert output.
-    pub output: Bytes,
-    /// State transition and logs produced by this transaction.
-    pub state_changes: StateChanges,
-}
 
 /// EVM host and transaction dispatcher.
 #[derive(derive_more::Debug)]
@@ -345,6 +233,36 @@ impl<T: EvmTypes> Evm<T> {
         self.inspector.as_mut().map(|inspector| inspector.as_mut() as &mut dyn Inspector<T>)
     }
 
+    #[inline]
+    fn inspect_log(&mut self, log: &Log) {
+        if let Some(inspector) = &mut self.inspector {
+            inspector.log(log);
+        }
+    }
+
+    #[inline]
+    fn emit_log(&mut self, log: Log) {
+        self.inspect_log(&log);
+        self.state.log(log);
+    }
+
+    #[inline]
+    fn finalize_transaction(&mut self) {
+        self.state.finalize_transaction(self.execution_config.version(), |log| {
+            if let Some(inspector) = &mut self.inspector {
+                inspector.log(log);
+            }
+        });
+    }
+
+    fn log_eip7708_transfer(&mut self, from: Address, to: Address, value: Word) {
+        if self.feature(EvmFeatures::EIP7708)
+            && let Some(log) = eip7708_transfer_log(from, to, value)
+        {
+            self.emit_log(log);
+        }
+    }
+
     /// Sets the active execution inspector.
     #[inline]
     pub fn set_inspector<I: Inspector<T> + 'static>(&mut self, inspector: I) {
@@ -394,7 +312,7 @@ impl<T: EvmTypes<Tx: Typed2718>> Evm<T> {
         let handler = self.registry.try_get_by_type(tx.ty())?;
         let mut result = handler.call(tx, self);
         if let Ok(result) = &mut result {
-            self.state.finalize_transaction(self.spec_id());
+            self.finalize_transaction();
             result.state_changes = self.state.build_state_changes();
             self.state.commit_transaction_overlay();
         };
@@ -462,6 +380,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             self.state.rollback(checkpoint, self.spec_id());
             return Err(stop);
         }
+        self.log_eip7708_transfer(message.caller, address, message.value);
 
         let create_message = Message {
             destination: address,
@@ -579,12 +498,17 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         let checkpoint = self.state.checkpoint();
         // EIP-161 state clearing depends on zero-value direct call targets being touched.
         // CALLCODE also needs the value-transfer balance check.
-        if matches!(
+        let transfers_balance = matches!(
             message.kind,
             MessageKind::Call | MessageKind::CallCode | MessageKind::StaticCall
-        ) && !self.state.transfer(message.caller, message.destination, message.value)
-        {
+        );
+        let transfer_succeeded = !transfers_balance
+            || self.state.transfer(message.caller, message.destination, message.value);
+        if transfers_balance && !transfer_succeeded {
             return Err(InstrStop::OutOfFunds);
+        }
+        if transfers_balance {
+            self.log_eip7708_transfer(message.caller, message.destination, message.value);
         }
 
         let mut gas = Gas::new(message.gas_limit);
@@ -819,8 +743,16 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
             || self.state.is_created_in_transaction(contract);
 
         if contract != target {
-            let _ = self.state.transfer(contract, target, balance);
+            let transferred = self.state.transfer(contract, target, balance);
+            if transferred {
+                self.log_eip7708_transfer(contract, target, balance);
+            }
         } else if should_destroy && !balance.is_zero() {
+            if self.feature(EvmFeatures::EIP7708)
+                && let Some(log) = eip7708_burn_log(contract, balance)
+            {
+                self.emit_log(log);
+            }
             self.state.add_balance(contract, Word::ZERO.wrapping_sub(balance));
         }
         if should_destroy {
@@ -836,11 +768,150 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
     }
 }
 
+/// Loaded account information.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct AccountLoad {
+    /// Account balance.
+    pub balance: Word,
+    /// Account code hash.
+    pub code_hash: B256,
+    /// Account code bytes.
+    pub code: Bytes,
+    /// Whether the account exists in state.
+    pub exists: bool,
+    /// Whether the account is empty.
+    pub is_empty: bool,
+    /// Whether the account access was cold.
+    pub is_cold: bool,
+}
+
+/// Result of an `SLOAD` host operation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct SLoad {
+    /// Storage slot value.
+    pub value: Word,
+    /// Whether the storage slot access was cold.
+    pub is_cold: bool,
+}
+
+/// Result of an `SSTORE` host operation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct SStore {
+    /// Storage value at the start of the transaction.
+    pub original_value: Word,
+    /// Storage value immediately before this `SSTORE`.
+    pub present_value: Word,
+    /// Storage value written by this `SSTORE`.
+    pub new_value: Word,
+    /// Whether the storage slot access was cold.
+    pub is_cold: bool,
+}
+
+impl SStore {
+    /// Returns whether this `SSTORE` leaves the slot unchanged (`new == present`).
+    #[inline]
+    #[must_use]
+    pub fn is_noop(&self) -> bool {
+        self.new_value == self.present_value
+    }
+
+    /// Returns whether the slot is clean (`original == present`).
+    #[inline]
+    #[must_use]
+    pub fn is_clean(&self) -> bool {
+        self.original_value == self.present_value
+    }
+
+    /// Returns whether this `SSTORE` restores the slot to its original value (`new == original`).
+    #[inline]
+    #[must_use]
+    pub fn resets_original(&self) -> bool {
+        self.original_value == self.new_value
+    }
+
+    /// Returns whether the original value is zero.
+    #[inline]
+    #[must_use]
+    pub fn original_is_zero(&self) -> bool {
+        self.original_value.is_zero()
+    }
+
+    /// Returns whether the present value is zero.
+    #[inline]
+    #[must_use]
+    pub fn present_is_zero(&self) -> bool {
+        self.present_value.is_zero()
+    }
+
+    /// Returns whether the new value is zero.
+    #[inline]
+    #[must_use]
+    pub fn new_is_zero(&self) -> bool {
+        self.new_value.is_zero()
+    }
+}
+
+/// Result of a `SELFDESTRUCT` host operation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct SelfDestructResult {
+    /// Whether the destroyed account had non-zero value.
+    pub had_value: bool,
+    /// Balance transferred or cleared by the destruction.
+    pub value: Word,
+    /// Whether the beneficiary is empty/non-existent for new-account gas checks.
+    pub target_is_empty: bool,
+    /// Whether the beneficiary access was cold.
+    pub is_cold: bool,
+    /// Whether this account was already destroyed in this transaction.
+    pub previously_destroyed: bool,
+}
+
+/// Result of executing a transaction.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TxResult {
+    /// Whether execution succeeded.
+    pub status: bool,
+    /// Gas used by execution.
+    pub gas_used: u64,
+    /// Interpreter stop reason.
+    pub stop: InstrStop,
+    /// Return or revert output.
+    pub output: Bytes,
+    /// State transition and logs produced by this transaction.
+    pub state_changes: StateChanges,
+}
+
+fn eip7708_transfer_log(from: Address, to: Address, value: Word) -> Option<Log> {
+    if value.is_zero() || from == to {
+        return None;
+    }
+    let topics = vec![
+        EIP7708_TRANSFER_TOPIC,
+        B256::left_padding_from(from.as_slice()),
+        B256::left_padding_from(to.as_slice()),
+    ];
+    Some(Log {
+        address: SYSTEM_ADDRESS,
+        data: LogData::new_unchecked(topics, Bytes::copy_from_slice(&value.to_be_bytes::<32>())),
+    })
+}
+
+fn eip7708_burn_log(address: Address, value: Word) -> Option<Log> {
+    if value.is_zero() {
+        return None;
+    }
+    let topics = vec![EIP7708_BURN_TOPIC, B256::left_padding_from(address.as_slice())];
+    Some(Log {
+        address: SYSTEM_ADDRESS,
+        data: LogData::new_unchecked(topics, Bytes::copy_from_slice(&value.to_be_bytes::<32>())),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{
-        BaseEvmConfigSelector, BaseEvmTypes, Precompiles, SpecId,
+        BaseEvmConfigSelector, BaseEvmTypes, Precompiles, SpecId, Version,
         bytecode::Bytecode,
         ethereum::RecoveredTxEnvelope,
         interpreter::{MessageKind, op},
@@ -1036,7 +1107,7 @@ mod tests {
         let result = Host::execute_message(&mut evm, &TxEnv::default(), code, &message, false);
         assert!(result.stop.is_success());
 
-        evm.state.finalize_transaction(SpecId::FRONTIER);
+        evm.state.finalize_transaction_(Version::base(SpecId::FRONTIER));
         let changes = evm.state.build_state_changes();
         let account =
             changes.accounts.get(&created).and_then(|change| change.current.as_ref()).unwrap();
@@ -1069,7 +1140,7 @@ mod tests {
         let result = Host::execute_message(&mut evm, &TxEnv::default(), code, &message, false);
         assert_eq!(result.stop, InstrStop::OutOfGas);
 
-        evm.state.finalize_transaction(SpecId::HOMESTEAD);
+        evm.state.finalize_transaction_(Version::base(SpecId::HOMESTEAD));
         let changes = evm.state.build_state_changes();
         assert!(!changes.accounts.contains_key(&created));
     }
@@ -1104,7 +1175,7 @@ mod tests {
         );
         assert!(result.stop.is_success());
 
-        evm.state.finalize_transaction(SpecId::SPURIOUS_DRAGON);
+        evm.state.finalize_transaction_(Version::base(SpecId::SPURIOUS_DRAGON));
         let changes = evm.state.build_state_changes();
         let account = changes.accounts.get(&target).expect("empty destination should be deleted");
         assert!(account.original.is_some());
@@ -1145,7 +1216,7 @@ mod tests {
         );
         assert!(result.stop.is_success());
 
-        evm.state.finalize_transaction(SpecId::SPURIOUS_DRAGON);
+        evm.state.finalize_transaction_(Version::base(SpecId::SPURIOUS_DRAGON));
         let changes = evm.state.build_state_changes();
         assert!(!changes.accounts.contains_key(&code_address));
         assert!(!changes.storage.contains_key(&code_address));
@@ -1175,5 +1246,53 @@ mod tests {
             state.account_info(to).expect("recipient account should exist").balance,
             U256::from(7)
         );
+    }
+
+    #[test]
+    fn amsterdam_call_value_emits_eip7708_log() {
+        let caller = Address::from([0x01; 20]);
+        let target = Address::from([0x02; 20]);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(caller, AccountInfo::default().with_balance(U256::from(10)));
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::AMSTERDAM,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            database,
+            Precompiles::base(SpecId::AMSTERDAM),
+        );
+        let message = Message {
+            kind: MessageKind::Call,
+            destination: target,
+            caller,
+            value: U256::from(7),
+            gas_limit: 50_000,
+            ..Message::default()
+        };
+
+        let result = Host::execute_message(
+            &mut evm,
+            &TxEnv::default(),
+            Bytecode::default(),
+            &message,
+            false,
+        );
+        assert!(result.stop.is_success());
+
+        let version = *evm.version();
+        evm.state.finalize_transaction_(&version);
+        let changes = evm.state.build_state_changes();
+        assert_eq!(changes.logs.len(), 1);
+        let log = &changes.logs[0];
+        assert_eq!(log.address, SYSTEM_ADDRESS);
+        assert_eq!(
+            log.topics(),
+            &[
+                EIP7708_TRANSFER_TOPIC,
+                B256::left_padding_from(caller.as_slice()),
+                B256::left_padding_from(target.as_slice()),
+            ]
+        );
+        assert_eq!(log.data.data, Bytes::copy_from_slice(&U256::from(7).to_be_bytes::<32>()));
     }
 }

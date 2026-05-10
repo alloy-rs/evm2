@@ -1,8 +1,8 @@
 //! Basic in-memory EVM host state.
 
-use super::{SStore, db::Database};
+use super::{SStore, db::Database, eip7708_burn_log};
 use crate::{
-    SpecId,
+    EvmFeatures, SpecId, Version,
     bytecode::Bytecode,
     interpreter::{InstrStop, Word},
     storage_key::{StorageKey, StorageKeyMap, StorageKeySet},
@@ -12,6 +12,7 @@ use alloy_primitives::{
     Address, B256, KECCAK256_EMPTY, Log, U256,
     map::{AddressMap, AddressSet, U256Map, hash_map},
 };
+use core::mem;
 
 /// A value tracked together with the value it had at the start of the current
 /// transaction.
@@ -763,7 +764,6 @@ impl State {
     }
 
     /// Transfers value between accounts.
-    #[inline]
     #[must_use]
     pub fn transfer(&mut self, from: Address, to: Address, value: Word) -> bool {
         if value.is_zero() {
@@ -997,48 +997,39 @@ impl State {
     /// overlay state are deleted during transaction finalization. Non-existent
     /// touched accounts stay non-existent.
     #[must_use]
-    fn is_existing_dead(
-        initial: &mut dyn Database,
-        accounts: &AddressMap<Tracked<Option<Account>>>,
-        address: Address,
-    ) -> bool {
-        if let Some(account) = accounts.get(&address) {
+    fn is_existing_dead(&mut self, address: Address) -> bool {
+        if let Some(account) = self.accounts.get(&address) {
             return account.current.as_ref().is_some_and(Account::is_empty)
                 || (account.current.is_none() && account.original.is_some());
         }
-        initial.get_account(address).is_some_and(|account| account.is_empty())
+        self.initial.get_account(address).is_some_and(|account| account.is_empty())
     }
 
-    fn account_exists(
-        initial: &mut dyn Database,
-        accounts: &AddressMap<Tracked<Option<Account>>>,
-        address: Address,
-    ) -> bool {
-        if let Some(account) = accounts.get(&address) {
+    fn account_exists(&mut self, address: Address) -> bool {
+        if let Some(account) = self.accounts.get(&address) {
             return account.current.is_some();
         }
-        initial.get_account(address).is_some()
+        self.initial.get_account(address).is_some()
     }
 
-    fn delete_account_for_finalization(
-        initial: &mut dyn Database,
-        accounts: &mut AddressMap<Tracked<Option<Account>>>,
-        journal: &mut Vec<JournalEntry>,
-        storage: &mut AddressMap<StorageOverlay>,
-        address: Address,
-    ) {
-        let account = Self::ensure_account_overlay(initial, accounts, journal, address);
+    fn delete_account_for_finalization(&mut self, address: Address) {
+        let account = Self::ensure_account_overlay(
+            &mut self.initial,
+            &mut self.accounts,
+            &mut self.journal,
+            address,
+        );
         account.current = None;
-        storage.insert(address, StorageOverlay { wiped: true, slots: U256Map::default() });
+        self.storage.insert(address, StorageOverlay { wiped: true, slots: U256Map::default() });
     }
 
-    fn materialize_empty_account_for_finalization(
-        initial: &mut dyn Database,
-        accounts: &mut AddressMap<Tracked<Option<Account>>>,
-        journal: &mut Vec<JournalEntry>,
-        address: Address,
-    ) {
-        let account = Self::ensure_account_overlay(initial, accounts, journal, address);
+    fn materialize_empty_account_for_finalization(&mut self, address: Address) {
+        let account = Self::ensure_account_overlay(
+            &mut self.initial,
+            &mut self.accounts,
+            &mut self.journal,
+            address,
+        );
         if account.original.is_none() {
             account.current.get_or_insert_with(|| Account {
                 code_hash: KECCAK256_EMPTY,
@@ -1048,6 +1039,11 @@ impl State {
         }
     }
 
+    #[cfg(test)]
+    pub(super) fn finalize_transaction_(&mut self, version: &Version) {
+        self.finalize_transaction(version, |_| {});
+    }
+
     /// Applies transaction-finalization account-lifetime rules to the overlay.
     ///
     /// This mutates the in-memory post-transaction state before it is serialized
@@ -1055,47 +1051,66 @@ impl State {
     /// transaction substate such as touches and selfdestructs, while finalization
     /// turns that substate into account deletions, storage wipes, or pre-EIP-161
     /// empty-account materialization.
-    pub(super) fn finalize_transaction(&mut self, spec: SpecId) {
-        for &address in &self.selfdestructs {
-            Self::delete_account_for_finalization(
-                &mut self.initial,
-                &mut self.accounts,
-                &mut self.journal,
-                &mut self.storage,
-                address,
-            );
+    ///
+    /// The callback lets the EVM inspect logs synthesized during finalization without storing
+    /// inspector state in [`State`].
+    pub(super) fn finalize_transaction(
+        &mut self,
+        version: &Version,
+        mut inspect_log: impl FnMut(&Log),
+    ) {
+        let selfdestructs = mem::take(&mut self.selfdestructs);
+        let touched = mem::take(&mut self.touched);
+
+        let spec = version.spec_id;
+        let delayed_burn_logs =
+            version.feature(EvmFeatures::EIP7708 | EvmFeatures::EIP7708_DELAYED_BURN);
+        if delayed_burn_logs {
+            let mut burned = Vec::new();
+            for &address in &selfdestructs {
+                if let Some(balance) = self
+                    .accounts
+                    .get(&address)
+                    .and_then(|account| account.current.as_ref())
+                    .map(|account| account.balance)
+                    && !balance.is_zero()
+                {
+                    burned.push((address, balance));
+                }
+            }
+            burned.sort_by_key(|(address, _)| *address);
+            for (address, balance) in burned {
+                if let Some(log) = eip7708_burn_log(address, balance) {
+                    inspect_log(&log);
+                    self.log(log);
+                }
+            }
+        }
+
+        for &address in &selfdestructs {
+            self.delete_account_for_finalization(address);
         }
 
         if spec.enables(SpecId::SPURIOUS_DRAGON) {
-            for &address in &self.touched {
+            for &address in &touched {
                 // EIP-161 deletes touched dead accounts at transaction finalization.
-                if Self::is_existing_dead(&mut self.initial, &self.accounts, address) {
-                    Self::delete_account_for_finalization(
-                        &mut self.initial,
-                        &mut self.accounts,
-                        &mut self.journal,
-                        &mut self.storage,
-                        address,
-                    );
+                if self.is_existing_dead(address) {
+                    self.delete_account_for_finalization(address);
                 }
             }
         } else {
-            for &address in &self.touched {
+            for &address in &touched {
                 // Before EIP-161, touching a non-existent account materializes it as empty.
-                if !self.selfdestructs.contains(&address)
-                    && !Self::account_exists(&mut self.initial, &self.accounts, address)
-                {
-                    Self::materialize_empty_account_for_finalization(
-                        &mut self.initial,
-                        &mut self.accounts,
-                        &mut self.journal,
-                        address,
-                    );
+                if !selfdestructs.contains(&address) && !self.account_exists(address) {
+                    self.materialize_empty_account_for_finalization(address);
                 }
             }
         }
 
+        self.selfdestructs = selfdestructs;
         self.selfdestructs.clear();
+
+        self.touched = touched;
         self.touched.clear();
     }
 
@@ -1177,7 +1192,8 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::evm::CacheDB;
+    use crate::{constants::EIP7708_BURN_TOPIC, evm::CacheDB};
+    use alloy_primitives::Bytes;
 
     #[test]
     fn storage_change_rolls_back_to_checkpoint() {
@@ -1309,7 +1325,7 @@ mod tests {
         };
 
         state.log(log.clone());
-        state.finalize_transaction(crate::SpecId::SPURIOUS_DRAGON);
+        state.finalize_transaction_(Version::base(crate::SpecId::SPURIOUS_DRAGON));
         let changes = state.build_state_changes();
         assert_eq!(changes.logs.as_slice(), core::slice::from_ref(&log));
         assert!(state.logs().is_empty());
@@ -1339,7 +1355,7 @@ mod tests {
         let mut state = State::new(database);
 
         state.touch(address);
-        state.finalize_transaction(crate::SpecId::SPURIOUS_DRAGON);
+        state.finalize_transaction_(Version::base(crate::SpecId::SPURIOUS_DRAGON));
         let changes = state.build_state_changes();
 
         let change = changes.accounts.get(&address).expect("touched empty account is deleted");
@@ -1356,7 +1372,7 @@ mod tests {
         let mut state = State::new(database);
 
         state.touch(address);
-        state.finalize_transaction(crate::SpecId::HOMESTEAD);
+        state.finalize_transaction_(Version::base(crate::SpecId::HOMESTEAD));
         let changes = state.build_state_changes();
 
         assert!(!changes.accounts.contains_key(&address));
@@ -1369,7 +1385,7 @@ mod tests {
         let mut state = State::new(CacheDB::default());
 
         state.touch(address);
-        state.finalize_transaction(crate::SpecId::HOMESTEAD);
+        state.finalize_transaction_(Version::base(crate::SpecId::HOMESTEAD));
         let changes = state.build_state_changes();
 
         let change =
@@ -1385,7 +1401,7 @@ mod tests {
         let mut state = State::new(CacheDB::default());
 
         state.touch(address);
-        state.finalize_transaction(crate::SpecId::SPURIOUS_DRAGON);
+        state.finalize_transaction_(Version::base(crate::SpecId::SPURIOUS_DRAGON));
         let changes = state.build_state_changes();
 
         assert!(!changes.accounts.contains_key(&address));
@@ -1393,7 +1409,7 @@ mod tests {
     }
 
     #[test]
-    fn finalization_preserves_transaction_set_capacity() {
+    fn finalization_preserves_touched_set_capacity() {
         let mut state = State::new(CacheDB::default());
 
         for i in 0..32 {
@@ -1404,7 +1420,7 @@ mod tests {
         let touched_capacity = state.touched.capacity();
         let selfdestructs_capacity = state.selfdestructs.capacity();
 
-        state.finalize_transaction(crate::SpecId::SPURIOUS_DRAGON);
+        state.finalize_transaction_(Version::base(crate::SpecId::SPURIOUS_DRAGON));
 
         assert!(state.touched.is_empty());
         assert!(state.selfdestructs.is_empty());
@@ -1421,12 +1437,49 @@ mod tests {
         let mut state = State::new(database);
 
         state.mark_destructed(address);
-        state.finalize_transaction(crate::SpecId::SPURIOUS_DRAGON);
+        state.finalize_transaction_(Version::base(crate::SpecId::SPURIOUS_DRAGON));
         let changes = state.build_state_changes();
 
         let change = changes.accounts.get(&address).expect("selfdestruct deletes account");
         assert!(change.original.is_some());
         assert_eq!(change.current, None);
         assert!(changes.storage.get(&address).is_some_and(|storage| storage.wipe));
+    }
+
+    #[test]
+    fn eip7708_delayed_burn_logs_selfdestructs_sorted() {
+        let high = Address::from([0x22; 20]);
+        let low = Address::from([0x11; 20]);
+        let mut database = CacheDB::default();
+        database.insert_account_info(high, AccountInfo::default().with_balance(Word::from(2)));
+        database.insert_account_info(low, AccountInfo::default().with_balance(Word::from(1)));
+        let mut state = State::new(database);
+
+        state.mark_destructed(high);
+        state.mark_destructed(low);
+        let mut inspected = Vec::new();
+        state.finalize_transaction(Version::base(SpecId::AMSTERDAM), |log| {
+            inspected.push(log.clone())
+        });
+
+        let changes = state.build_state_changes();
+        assert_eq!(inspected, changes.logs);
+        assert_eq!(changes.logs.len(), 2);
+        assert_eq!(
+            changes.logs[0].topics(),
+            &[EIP7708_BURN_TOPIC, B256::left_padding_from(low.as_slice())]
+        );
+        assert_eq!(
+            changes.logs[0].data.data,
+            Bytes::copy_from_slice(&Word::from(1).to_be_bytes::<32>())
+        );
+        assert_eq!(
+            changes.logs[1].topics(),
+            &[EIP7708_BURN_TOPIC, B256::left_padding_from(high.as_slice())]
+        );
+        assert_eq!(
+            changes.logs[1].data.data,
+            Bytes::copy_from_slice(&Word::from(2).to_be_bytes::<32>())
+        );
     }
 }
