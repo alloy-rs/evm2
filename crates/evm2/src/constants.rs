@@ -11,10 +11,10 @@ pub(crate) const MAX_CODE_SIZE: usize = 0x6000;
 pub(crate) const MAX_INITCODE_SIZE: usize = 2 * MAX_CODE_SIZE;
 
 /// Maximum deployed contract bytecode size since Amsterdam.
-pub(crate) const MAX_CODE_SIZE_AMSTERDAM: usize = 0xC000;
+pub(crate) const MAX_CODE_SIZE_AMSTERDAM: usize = 0x8000;
 
 /// Maximum contract creation initcode size since Amsterdam.
-pub(crate) const MAX_INITCODE_SIZE_AMSTERDAM: usize = 0x12000;
+pub(crate) const MAX_INITCODE_SIZE_AMSTERDAM: usize = 2 * MAX_CODE_SIZE_AMSTERDAM;
 
 /// Cancun blob base fee update fraction.
 pub(crate) const BLOB_BASE_FEE_UPDATE_FRACTION_CANCUN: u64 = 3_338_477;
