@@ -509,7 +509,7 @@ pub(super) fn intrinsic_gas(
     gas += access_list_floor_tokens(version, access_list_accounts, access_list_storage_keys)
         * u64::from(params.get(GasId::TxFloorCostPerToken));
     if to.is_create() && version.feature(EvmFeatures::EIP2) {
-        gas += 32_000;
+        gas += u64::from(params.get(GasId::TxCreateCost));
     }
     if to.is_create() && version.feature(EvmFeatures::EIP3860) {
         gas += u64::from(params.get(GasId::TxInitcodeCost)) * num_words(input.len()) as u64;
