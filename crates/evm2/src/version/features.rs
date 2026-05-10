@@ -172,6 +172,10 @@ evm_features! {
     ///
     /// Default: on
     FEE_CHARGE,
+    /// Applies [EIP-7981](https://eips.ethereum.org/EIPS/eip-7981) access-list data gas costs.
+    ///
+    /// Default: on since Amsterdam
+    EIP7981,
     /// Applies [EIP-8037](https://eips.ethereum.org/EIPS/eip-8037) state creation gas accounting.
     ///
     /// Default: on since Amsterdam
