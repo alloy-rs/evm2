@@ -85,6 +85,19 @@ const IGNORED_TESTS: &[&str] = &[
     "osaka/eip7594_peerdas/max_blob_per_tx/invalid_max_blobs_per_tx.json",
     "osaka/eip7594_peerdas/max_blob_per_tx/max_blobs_per_tx_fork_transition.json",
 
+    // Create-collision fixtures need storage-aware collision handling.
+    "eip7610_create_collision",
+    "InitCollision.json",
+    "InitCollisionParis.json",
+    "RevertInCreateInInit.json",
+    "RevertInCreateInInit_Paris.json",
+    "RevertInCreateInInitCreate2.json",
+    "RevertInCreateInInitCreate2Paris.json",
+    "create2collisionStorage.json",
+    "create2collisionStorageParis.json",
+    "dynamicAccountOverwriteEmpty.json",
+    "dynamicAccountOverwriteEmpty_Paris.json",
+
     // The harness does not track cumulative block gas allowance or validate Osaka block RLP size limits.
     "osaka/eip7825_transaction_gas_limit_cap/test_tx_gas_larger_than_block_gas_limit.json",
     "osaka/eip7934_block_rlp_limit/test_block_at_rlp_size_limit_boundary.json",
