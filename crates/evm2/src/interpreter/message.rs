@@ -36,6 +36,8 @@ pub struct Message {
     pub depth: u16,
     /// Gas available to this message.
     pub gas_limit: u64,
+    /// State gas reservoir available to this message.
+    pub state_gas_limit: u64,
     /// Account whose context is being executed.
     pub destination: Address,
     /// Immediate caller.
@@ -61,6 +63,7 @@ impl Default for Message {
             kind: MessageKind::Call,
             depth: 0,
             gas_limit: 0,
+            state_gas_limit: 0,
             destination: Address::ZERO,
             caller: Address::ZERO,
             input: Bytes::new(),

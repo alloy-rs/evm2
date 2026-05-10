@@ -101,7 +101,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         self.pc = bytecode.original_byte_slice().as_ptr();
         self.bytecode = bytecode;
         self.stack_len = 0;
-        self.gas = Gas::new(gas_limit);
+        self.gas = Gas::new_with_regular_gas_and_reservoir(gas_limit, message.state_gas_limit);
         self.memory.clear();
         self.result = Ok(());
         self.output = &[];

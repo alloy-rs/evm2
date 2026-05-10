@@ -14,6 +14,7 @@ use crate::{
     },
     registry::{HandlerResult, TxRegistry},
     trustme,
+    utils::num_words,
     version::{EvmFeatures, GasId},
 };
 use alloc::boxed::Box;
@@ -437,7 +438,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         caller_is_static: bool,
     ) -> MessageResult {
         self.execute_create_message_inner(tx_env, bytecode, message, caller_is_static)
-            .unwrap_or_else(|stop| Self::error_message_result(stop, message.gas_limit))
+            .unwrap_or_else(|stop| Self::error_message_result(stop, message))
     }
 
     fn execute_create_message_inner(
@@ -483,6 +484,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             kind: message.kind,
             depth: message.depth,
             gas_limit: message.gas_limit,
+            state_gas_limit: message.state_gas_limit,
             caller: message.caller,
             value: message.value,
             salt: message.salt,
@@ -544,8 +546,18 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             .len()
             .saturating_mul(self.version().gas_params.get(GasId::CodeDepositCost) as usize);
         let code_deposit_gas = u64::try_from(code_deposit_gas).unwrap_or(u64::MAX);
+        if self.feature(EvmFeatures::EIP8037) {
+            let regular_gas =
+                u64::try_from(num_words(output.len())).unwrap_or(u64::MAX).saturating_mul(6);
+            gas.spend(regular_gas)?;
+            let state_gas = u64::try_from(output.len())
+                .unwrap_or(u64::MAX)
+                .saturating_mul(u64::from(self.version().gas_params.get(GasId::CodeDepositState)));
+            return gas.spend_state(state_gas);
+        }
         if gas.remaining() >= code_deposit_gas {
-            return gas.spend(code_deposit_gas);
+            gas.spend(code_deposit_gas)?;
+            return Ok(());
         }
         if self.feature(EvmFeatures::EIP2) {
             // EIP-2 makes code-deposit OOG fail contract creation; Frontier instead creates the
@@ -577,7 +589,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         caller_is_static: bool,
     ) -> MessageResult {
         self.execute_call_message_inner(tx_env, bytecode, message, caller_is_static)
-            .unwrap_or_else(|stop| Self::error_message_result(stop, message.gas_limit))
+            .unwrap_or_else(|stop| Self::error_message_result(stop, message))
     }
 
     fn execute_call_message_inner(
@@ -606,7 +618,8 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             return Err(InstrStop::OutOfFunds);
         }
 
-        let mut gas = Gas::new(message.gas_limit);
+        let mut gas =
+            Gas::new_with_regular_gas_and_reservoir(message.gas_limit, message.state_gas_limit);
         if let Some(result) = self.execute_precompile(message, &mut gas) {
             let (stop, output) = match result {
                 Ok(output) => (InstrStop::Return, output.into_bytes()),
@@ -648,10 +661,10 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     }
 
     #[inline]
-    fn error_message_result(stop: InstrStop, gas_remaining: u64) -> MessageResult {
+    fn error_message_result(stop: InstrStop, message: &Message) -> MessageResult {
         MessageResult {
             stop,
-            gas: GasTracker::new(gas_remaining, gas_remaining, 0),
+            gas: GasTracker::new(message.gas_limit, message.gas_limit, message.state_gas_limit),
             ..MessageResult::default()
         }
     }
