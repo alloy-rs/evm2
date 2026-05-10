@@ -46,9 +46,9 @@ fn should_ignore(name: &str) -> bool {
 
 #[rustfmt::skip]
 const IGNORED_TESTS: &[&str] = &[
+    // Block header/blob-gas validation is consensus-level block validation, not EVM execution.
     "cancun/eip4844_blobs/test_blob_type_tx_pre_fork.json",
     "cancun/eip4844_blobs/test_invalid_blob_gas_used_in_header.json",
-    "cancun/eip4844_blobs/test_invalid_blob_tx_contract_creation.json",
     "cancun/eip4844_blobs/test_invalid_block_blob_count.json",
     "cancun/eip4844_blobs/test_invalid_excess_blob_gas_above_target_change.json",
     "cancun/eip4844_blobs/test_invalid_excess_blob_gas_change.json",
@@ -59,17 +59,28 @@ const IGNORED_TESTS: &[&str] = &[
     "cancun/eip4844_blobs/test_invalid_pre_fork_block_with_blob_fields.json",
     "cancun/eip4844_blobs/test_invalid_static_excess_blob_gas.json",
     "cancun/eip4844_blobs/test_invalid_static_excess_blob_gas_from_zero_on_blobs_above_target.json",
-    "cancun/eip4844_blobs/test_invalid_tx_blob_count.json",
     "cancun/eip4844_blobs/test_invalid_zero_excess_blob_gas_in_header.json",
+
+    // These validate block RLP encoding or full blob sidecar rejection, which this runner does not decode/validate.
+    "cancun/eip4844_blobs/test_invalid_blob_tx_contract_creation.json",
     "cancun/eip4844_blobs/test_reject_valid_full_blob_in_block_rlp.json",
+
+    // These are block-level blob count / fork transition tests, not transaction execution tests.
+    "cancun/eip4844_blobs/test_invalid_tx_blob_count.json",
     "osaka/eip7594_peerdas/test_invalid_max_blobs_per_tx.json",
     "osaka/eip7594_peerdas/test_max_blobs_per_tx_fork_transition.json",
+
+    // The harness does not track cumulative block gas allowance or validate Osaka block RLP size limits.
     "osaka/eip7825_transaction_gas_limit_cap/test_tx_gas_larger_than_block_gas_limit.json",
     "osaka/eip7934_block_rlp_limit/test_block_at_rlp_size_limit_boundary.json",
     "osaka/eip7934_block_rlp_limit/test_fork_transition_block_rlp_limit.json",
+
+    // Prague request/deposit fixtures validate EL request extraction and system-contract block processing.
     "prague/eip6110_deposits",
     "prague/eip7002_el_triggerable_withdrawals",
     "prague/eip7251_consolidations",
     "prague/eip7685_general_purpose_el_requests",
+
+    // This fixture has a block gas limit below the transaction intrinsic gas and belongs to block validation.
     "static/state_tests/stEIP1559/lowGasLimit.json",
 ];
