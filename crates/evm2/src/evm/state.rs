@@ -1,16 +1,15 @@
 //! Basic in-memory EVM host state.
 
-use super::{SStore, SYSTEM_ADDRESS, db::Database};
+use super::{SStore, db::Database, eip7708_burn_log};
 use crate::{
     EvmFeatures, SpecId, Version,
     bytecode::Bytecode,
-    constants::EIP7708_BURN_TOPIC,
     interpreter::{InstrStop, Word},
     storage_key::{StorageKey, StorageKeyMap, StorageKeySet},
 };
-use alloc::{boxed::Box, collections::BTreeMap, vec, vec::Vec};
+use alloc::{boxed::Box, collections::BTreeMap, vec::Vec};
 use alloy_primitives::{
-    Address, B256, Bytes, KECCAK256_EMPTY, Log, LogData, U256,
+    Address, B256, KECCAK256_EMPTY, Log, U256,
     map::{AddressMap, AddressSet, U256Map, hash_map},
 };
 use core::mem;
@@ -420,21 +419,6 @@ impl State {
     #[inline]
     pub fn log(&mut self, log: Log) {
         self.logs.push(log);
-    }
-
-    /// Builds an EIP-7708 ETH burn log if the burned value is non-zero.
-    pub(super) fn eip7708_burn_log(&self, address: Address, value: Word) -> Option<Log> {
-        if value.is_zero() {
-            return None;
-        }
-        let topics = vec![EIP7708_BURN_TOPIC, B256::left_padding_from(address.as_slice())];
-        Some(Log {
-            address: SYSTEM_ADDRESS,
-            data: LogData::new_unchecked(
-                topics,
-                Bytes::copy_from_slice(&value.to_be_bytes::<32>()),
-            ),
-        })
     }
 
     /// Returns a loaded persistent storage overlay slot, if present.
@@ -1093,7 +1077,7 @@ impl State {
             }
             burned.sort_by_key(|(address, _)| *address);
             for (address, balance) in burned {
-                if let Some(log) = self.eip7708_burn_log(address, balance) {
+                if let Some(log) = eip7708_burn_log(address, balance) {
                     inspect_log(&log);
                     self.log(log);
                 }
@@ -1205,7 +1189,8 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::evm::CacheDB;
+    use crate::{constants::EIP7708_BURN_TOPIC, evm::CacheDB};
+    use alloy_primitives::Bytes;
 
     #[test]
     fn storage_change_rolls_back_to_checkpoint() {

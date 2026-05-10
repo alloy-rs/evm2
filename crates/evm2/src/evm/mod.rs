@@ -7,7 +7,7 @@ use self::{
 use crate::{
     EvmConfigSelector, EvmTypes, ExecutionConfig, PrecompileError, PrecompileHalt, SpecId,
     bytecode::Bytecode,
-    constants::EIP7708_TRANSFER_TOPIC,
+    constants::{EIP7708_BURN_TOPIC, EIP7708_TRANSFER_TOPIC},
     env::{BlockEnv, TxEnv},
     interpreter::{
         Gas, GasTracker, Host, InstrStop, Interpreter, InterpreterPool, Message, MessageKind,
@@ -40,119 +40,6 @@ pub use state::{
     Account, AccountInfo, JournalEntry, State, StateChanges, StateCheckpoint, StorageChangeSet,
     StorageOverlay, Tracked,
 };
-
-/// Loaded account information.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
-pub struct AccountLoad {
-    /// Account balance.
-    pub balance: Word,
-    /// Account code hash.
-    pub code_hash: B256,
-    /// Account code bytes.
-    pub code: Bytes,
-    /// Whether the account exists in state.
-    pub exists: bool,
-    /// Whether the account is empty.
-    pub is_empty: bool,
-    /// Whether the account access was cold.
-    pub is_cold: bool,
-}
-
-/// Result of an `SLOAD` host operation.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub struct SLoad {
-    /// Storage slot value.
-    pub value: Word,
-    /// Whether the storage slot access was cold.
-    pub is_cold: bool,
-}
-
-/// Result of an `SSTORE` host operation.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub struct SStore {
-    /// Storage value at the start of the transaction.
-    pub original_value: Word,
-    /// Storage value immediately before this `SSTORE`.
-    pub present_value: Word,
-    /// Storage value written by this `SSTORE`.
-    pub new_value: Word,
-    /// Whether the storage slot access was cold.
-    pub is_cold: bool,
-}
-
-impl SStore {
-    /// Returns whether this `SSTORE` leaves the slot unchanged (`new == present`).
-    #[inline]
-    #[must_use]
-    pub fn is_noop(&self) -> bool {
-        self.new_value == self.present_value
-    }
-
-    /// Returns whether the slot is clean (`original == present`).
-    #[inline]
-    #[must_use]
-    pub fn is_clean(&self) -> bool {
-        self.original_value == self.present_value
-    }
-
-    /// Returns whether this `SSTORE` restores the slot to its original value (`new == original`).
-    #[inline]
-    #[must_use]
-    pub fn resets_original(&self) -> bool {
-        self.original_value == self.new_value
-    }
-
-    /// Returns whether the original value is zero.
-    #[inline]
-    #[must_use]
-    pub fn original_is_zero(&self) -> bool {
-        self.original_value.is_zero()
-    }
-
-    /// Returns whether the present value is zero.
-    #[inline]
-    #[must_use]
-    pub fn present_is_zero(&self) -> bool {
-        self.present_value.is_zero()
-    }
-
-    /// Returns whether the new value is zero.
-    #[inline]
-    #[must_use]
-    pub fn new_is_zero(&self) -> bool {
-        self.new_value.is_zero()
-    }
-}
-
-/// Result of a `SELFDESTRUCT` host operation.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub struct SelfDestructResult {
-    /// Whether the destroyed account had non-zero value.
-    pub had_value: bool,
-    /// Balance transferred or cleared by the destruction.
-    pub value: Word,
-    /// Whether the beneficiary is empty/non-existent for new-account gas checks.
-    pub target_is_empty: bool,
-    /// Whether the beneficiary access was cold.
-    pub is_cold: bool,
-    /// Whether this account was already destroyed in this transaction.
-    pub previously_destroyed: bool,
-}
-
-/// Result of executing a transaction.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct TxResult {
-    /// Whether execution succeeded.
-    pub status: bool,
-    /// Gas used by execution.
-    pub gas_used: u64,
-    /// Interpreter stop reason.
-    pub stop: InstrStop,
-    /// Return or revert output.
-    pub output: Bytes,
-    /// State transition and logs produced by this transaction.
-    pub state_changes: StateChanges,
-}
 
 /// EVM host and transaction dispatcher.
 #[derive(derive_more::Debug)]
@@ -368,27 +255,9 @@ impl<T: EvmTypes> Evm<T> {
         });
     }
 
-    fn eip7708_transfer_log(from: Address, to: Address, value: Word) -> Option<Log> {
-        if value.is_zero() || from == to {
-            return None;
-        }
-        let topics = vec![
-            EIP7708_TRANSFER_TOPIC,
-            B256::left_padding_from(from.as_slice()),
-            B256::left_padding_from(to.as_slice()),
-        ];
-        Some(Log {
-            address: SYSTEM_ADDRESS,
-            data: LogData::new_unchecked(
-                topics,
-                Bytes::copy_from_slice(&value.to_be_bytes::<32>()),
-            ),
-        })
-    }
-
     fn log_eip7708_transfer(&mut self, from: Address, to: Address, value: Word) {
         if self.feature(EvmFeatures::EIP7708)
-            && let Some(log) = Self::eip7708_transfer_log(from, to, value)
+            && let Some(log) = eip7708_transfer_log(from, to, value)
         {
             self.emit_log(log);
         }
@@ -880,7 +749,7 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
             }
         } else if should_destroy && !balance.is_zero() {
             if self.feature(EvmFeatures::EIP7708)
-                && let Some(log) = self.state.eip7708_burn_log(contract, balance)
+                && let Some(log) = eip7708_burn_log(contract, balance)
             {
                 self.emit_log(log);
             }
@@ -897,6 +766,145 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
             previously_destroyed,
         })
     }
+}
+
+/// Loaded account information.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct AccountLoad {
+    /// Account balance.
+    pub balance: Word,
+    /// Account code hash.
+    pub code_hash: B256,
+    /// Account code bytes.
+    pub code: Bytes,
+    /// Whether the account exists in state.
+    pub exists: bool,
+    /// Whether the account is empty.
+    pub is_empty: bool,
+    /// Whether the account access was cold.
+    pub is_cold: bool,
+}
+
+/// Result of an `SLOAD` host operation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct SLoad {
+    /// Storage slot value.
+    pub value: Word,
+    /// Whether the storage slot access was cold.
+    pub is_cold: bool,
+}
+
+/// Result of an `SSTORE` host operation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct SStore {
+    /// Storage value at the start of the transaction.
+    pub original_value: Word,
+    /// Storage value immediately before this `SSTORE`.
+    pub present_value: Word,
+    /// Storage value written by this `SSTORE`.
+    pub new_value: Word,
+    /// Whether the storage slot access was cold.
+    pub is_cold: bool,
+}
+
+impl SStore {
+    /// Returns whether this `SSTORE` leaves the slot unchanged (`new == present`).
+    #[inline]
+    #[must_use]
+    pub fn is_noop(&self) -> bool {
+        self.new_value == self.present_value
+    }
+
+    /// Returns whether the slot is clean (`original == present`).
+    #[inline]
+    #[must_use]
+    pub fn is_clean(&self) -> bool {
+        self.original_value == self.present_value
+    }
+
+    /// Returns whether this `SSTORE` restores the slot to its original value (`new == original`).
+    #[inline]
+    #[must_use]
+    pub fn resets_original(&self) -> bool {
+        self.original_value == self.new_value
+    }
+
+    /// Returns whether the original value is zero.
+    #[inline]
+    #[must_use]
+    pub fn original_is_zero(&self) -> bool {
+        self.original_value.is_zero()
+    }
+
+    /// Returns whether the present value is zero.
+    #[inline]
+    #[must_use]
+    pub fn present_is_zero(&self) -> bool {
+        self.present_value.is_zero()
+    }
+
+    /// Returns whether the new value is zero.
+    #[inline]
+    #[must_use]
+    pub fn new_is_zero(&self) -> bool {
+        self.new_value.is_zero()
+    }
+}
+
+/// Result of a `SELFDESTRUCT` host operation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct SelfDestructResult {
+    /// Whether the destroyed account had non-zero value.
+    pub had_value: bool,
+    /// Balance transferred or cleared by the destruction.
+    pub value: Word,
+    /// Whether the beneficiary is empty/non-existent for new-account gas checks.
+    pub target_is_empty: bool,
+    /// Whether the beneficiary access was cold.
+    pub is_cold: bool,
+    /// Whether this account was already destroyed in this transaction.
+    pub previously_destroyed: bool,
+}
+
+/// Result of executing a transaction.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TxResult {
+    /// Whether execution succeeded.
+    pub status: bool,
+    /// Gas used by execution.
+    pub gas_used: u64,
+    /// Interpreter stop reason.
+    pub stop: InstrStop,
+    /// Return or revert output.
+    pub output: Bytes,
+    /// State transition and logs produced by this transaction.
+    pub state_changes: StateChanges,
+}
+
+fn eip7708_transfer_log(from: Address, to: Address, value: Word) -> Option<Log> {
+    if value.is_zero() || from == to {
+        return None;
+    }
+    let topics = vec![
+        EIP7708_TRANSFER_TOPIC,
+        B256::left_padding_from(from.as_slice()),
+        B256::left_padding_from(to.as_slice()),
+    ];
+    Some(Log {
+        address: SYSTEM_ADDRESS,
+        data: LogData::new_unchecked(topics, Bytes::copy_from_slice(&value.to_be_bytes::<32>())),
+    })
+}
+
+fn eip7708_burn_log(address: Address, value: Word) -> Option<Log> {
+    if value.is_zero() {
+        return None;
+    }
+    let topics = vec![EIP7708_BURN_TOPIC, B256::left_padding_from(address.as_slice())];
+    Some(Log {
+        address: SYSTEM_ADDRESS,
+        data: LogData::new_unchecked(topics, Bytes::copy_from_slice(&value.to_be_bytes::<32>())),
+    })
 }
 
 #[cfg(test)]
