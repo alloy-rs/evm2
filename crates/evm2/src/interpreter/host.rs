@@ -1,4 +1,4 @@
-use super::{InstrStop, Message, Result, Word};
+use super::{GasTracker, InstrStop, Message, Result, Word};
 use crate::{
     SpecId,
     bytecode::Bytecode,
@@ -18,16 +18,8 @@ use alloy_primitives::{Address, B256, Bytes, Log};
 pub struct MessageResult {
     /// Interpreter stop reason.
     pub stop: InstrStop,
-    /// Gas left in the child frame before refund accounting.
-    ///
-    /// Do not use this field directly for parent-frame or transaction-level refund handling; see
-    /// the [`MessageResult`] docs and helper methods.
-    pub gas_remaining: u64,
-    /// Raw refund counter produced by this frame.
-    ///
-    /// This value may be negative locally. Do not use this field directly for propagation or final
-    /// transaction refunds; see the [`MessageResult`] docs and helper methods.
-    pub gas_refunded: i64,
+    /// Gas accounting for the child frame.
+    pub gas: GasTracker,
     /// Return or revert output.
     pub output: Bytes,
     /// Created address for successful create messages.
@@ -50,24 +42,24 @@ impl MessageResult {
     /// Returns unused gas that should be returned to the parent frame.
     #[inline]
     pub const fn gas_returned_to_parent(&self) -> u64 {
-        if self.returns_unused_gas() { self.gas_remaining } else { 0 }
+        if self.returns_unused_gas() { self.gas.remaining() } else { 0 }
     }
 
     /// Returns the refund counter delta that should be propagated to the parent frame.
     #[inline]
     pub const fn refund_propagated_to_parent(&self) -> i64 {
-        if self.stop.is_success() { self.gas_refunded } else { 0 }
+        if self.stop.is_success() { self.gas.refunded() } else { 0 }
     }
 
     /// Calculates the final refund amount for a top-level transaction.
     #[inline]
     pub const fn final_refund(&self, gas_limit: u64, is_london: bool) -> u64 {
-        if self.gas_refunded <= 0 {
+        if self.gas.refunded() <= 0 {
             return 0;
         }
         let max_refund_quotient = if is_london { 5 } else { 2 };
-        let spent = gas_limit.saturating_sub(self.gas_remaining);
-        let refund = self.gas_refunded as u64;
+        let spent = gas_limit.saturating_sub(self.gas.remaining());
+        let refund = self.gas.refunded() as u64;
         let cap = spent / max_refund_quotient;
         if refund < cap { refund } else { cap }
     }
@@ -76,7 +68,7 @@ impl MessageResult {
     #[inline]
     pub const fn gas_remaining_after_final_refund(&self, gas_limit: u64, is_london: bool) -> u64 {
         let refunded = self.final_refund(gas_limit, is_london);
-        let remaining = self.gas_remaining.saturating_add(refunded);
+        let remaining = self.gas.remaining().saturating_add(refunded);
         if remaining < gas_limit { remaining } else { gas_limit }
     }
 
