@@ -1051,6 +1051,9 @@ impl State {
     /// transaction substate such as touches and selfdestructs, while finalization
     /// turns that substate into account deletions, storage wipes, or pre-EIP-161
     /// empty-account materialization.
+    ///
+    /// The callback lets the EVM inspect logs synthesized during finalization without storing
+    /// inspector state in [`State`].
     pub(super) fn finalize_transaction(
         &mut self,
         version: &Version,
