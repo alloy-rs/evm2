@@ -1,8 +1,7 @@
 use alloy_primitives::{Address, B256};
 use evm2::{
-    StorageKey,
     bytecode::Bytecode,
-    evm::{AccountInfo, InMemoryDB, StateChanges},
+    evm::{AccountInfo, DatabaseCommit, InMemoryDB, StateChanges},
 };
 
 /// Parses fixture bytecode into evm2 bytecode.
@@ -32,30 +31,7 @@ pub(crate) fn apply_state_changes(pre: &InMemoryDB, changes: &StateChanges) -> I
 
 /// Applies state changes to an in-memory database.
 pub(crate) fn apply_state_changes_in_place(database: &mut InMemoryDB, changes: &StateChanges) {
-    for (&code_hash, code) in &changes.code {
-        database.cache.contracts.insert(code_hash, code.clone());
-    }
-    for (&address, storage) in &changes.storage {
-        if storage.wipe {
-            database.cache.storage.retain(|key, _| key.address() != address);
-        }
-        for (&key, change) in &storage.slots {
-            if change.current.is_zero() {
-                database.cache.storage.remove(&StorageKey::new(address, key));
-            } else {
-                database.cache.storage.insert(StorageKey::new(address, key), change.current);
-            }
-        }
-    }
-    for (&address, change) in &changes.accounts {
-        match &change.current {
-            Some(info) => database.insert_account_info(address, info.clone()),
-            None => {
-                database.cache.accounts.remove(&address);
-                database.cache.storage.retain(|key, _| key.address() != address);
-            }
-        }
-    }
+    database.commit(changes);
 }
 
 /// Returns whether the given system contract exists with non-empty code.

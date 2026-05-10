@@ -1,6 +1,6 @@
 //! Database helpers for the EVM state overlay.
 
-use super::state::AccountInfo;
+use super::state::{AccountInfo, StateChanges};
 use crate::{bytecode::Bytecode, interpreter::Word};
 use alloc::{boxed::Box, string::ToString};
 use alloy_primitives::{Address, B256, keccak256};
@@ -8,6 +8,12 @@ use core::any::Any;
 
 mod cache;
 pub use cache::{Cache, CacheDB, InMemoryDB};
+
+/// Commits accepted state changes to a database.
+pub trait DatabaseCommit {
+    /// Commits state changes to the database.
+    fn commit(&mut self, changes: &StateChanges);
+}
 
 /// Backing database view used to initialize mutable [`super::State`].
 pub trait Database: Any {
