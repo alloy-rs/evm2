@@ -32,7 +32,7 @@ pub use system::{
 };
 
 mod db;
-pub use db::{Cache, CacheDB, Database, EmptyDB, InMemoryDB};
+pub use db::{Cache, CacheDB, Database, DatabaseCommit, EmptyDB, InMemoryDB};
 
 mod state;
 pub use state::{

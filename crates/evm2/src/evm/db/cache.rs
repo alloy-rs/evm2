@@ -1,9 +1,9 @@
 //! In-memory cache database.
 
-use super::{Database, EmptyDB};
+use super::{Database, DatabaseCommit, EmptyDB};
 use crate::{
     bytecode::Bytecode,
-    evm::state::AccountInfo,
+    evm::state::{AccountInfo, StateChanges},
     interpreter::Word,
     storage_key::{StorageKey, StorageKeyMap},
 };
@@ -117,6 +117,35 @@ impl<ExtDB> CacheDB<ExtDB> {
     #[inline]
     pub fn insert_block_hash(&mut self, number: Word, hash: B256) {
         self.cache.block_hashes.insert(number, hash);
+    }
+}
+
+impl<ExtDB> DatabaseCommit for CacheDB<ExtDB> {
+    fn commit(&mut self, changes: &StateChanges) {
+        for (&code_hash, code) in &changes.code {
+            self.cache.contracts.insert(code_hash, code.clone());
+        }
+        for (&address, storage) in &changes.storage {
+            if storage.wipe {
+                self.cache.storage.retain(|key, _| key.address() != address);
+            }
+            for (&key, change) in &storage.slots {
+                if change.current.is_zero() {
+                    self.cache.storage.remove(&StorageKey::new(address, key));
+                } else {
+                    self.cache.storage.insert(StorageKey::new(address, key), change.current);
+                }
+            }
+        }
+        for (&address, change) in &changes.accounts {
+            match &change.current {
+                Some(info) => self.insert_account_info(address, info.clone()),
+                None => {
+                    self.cache.accounts.remove(&address);
+                    self.cache.storage.retain(|key, _| key.address() != address);
+                }
+            }
+        }
     }
 }
 
