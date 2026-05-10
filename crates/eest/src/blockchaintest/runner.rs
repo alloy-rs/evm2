@@ -50,6 +50,9 @@ const IGNORED_TESTS: &[&str] = &[
     "cancun/eip4844_blobs/test_blob_type_tx_pre_fork.json",
     "cancun/eip4844_blobs/test_invalid_blob_gas_used_in_header.json",
     "cancun/eip4844_blobs/test_invalid_block_blob_count.json",
+    // The same tests were renamed into subdirectories on BAL releases.
+    "cancun/eip4844_blobs/blob_txs/invalid_block_blob_count.json",
+    "cancun/eip4844_blobs/excess_blob_gas/invalid_blob_gas_used_in_header.json",
     "cancun/eip4844_blobs/test_invalid_excess_blob_gas_above_target_change.json",
     "cancun/eip4844_blobs/test_invalid_excess_blob_gas_change.json",
     "cancun/eip4844_blobs/test_invalid_excess_blob_gas_target_blobs_increase_from_zero.json",
@@ -57,23 +60,51 @@ const IGNORED_TESTS: &[&str] = &[
     "cancun/eip4844_blobs/test_invalid_non_multiple_excess_blob_gas.json",
     "cancun/eip4844_blobs/test_invalid_post_fork_block_without_blob_fields.json",
     "cancun/eip4844_blobs/test_invalid_pre_fork_block_with_blob_fields.json",
+    "cancun/eip4844_blobs/blob_txs/blob_type_tx_pre_fork.json",
+    "cancun/eip4844_blobs/excess_blob_gas_fork_transition/invalid_post_fork_block_without_blob_fields.json",
+    "cancun/eip4844_blobs/excess_blob_gas_fork_transition/invalid_pre_fork_block_with_blob_fields.json",
     "cancun/eip4844_blobs/test_invalid_static_excess_blob_gas.json",
     "cancun/eip4844_blobs/test_invalid_static_excess_blob_gas_from_zero_on_blobs_above_target.json",
     "cancun/eip4844_blobs/test_invalid_zero_excess_blob_gas_in_header.json",
+    // The same excess-blob-gas tests were renamed into this subdirectory on BAL releases.
+    "cancun/eip4844_blobs/excess_blob_gas/",
 
     // These validate block RLP encoding or full blob sidecar rejection, which this runner does not decode/validate.
     "cancun/eip4844_blobs/test_invalid_blob_tx_contract_creation.json",
     "cancun/eip4844_blobs/test_reject_valid_full_blob_in_block_rlp.json",
+    // The same tests were renamed into subdirectories on BAL releases.
+    "cancun/eip4844_blobs/blob_txs/invalid_blob_tx_contract_creation.json",
+    "cancun/eip4844_blobs/blob_txs_full/reject_valid_full_blob_in_block_rlp.json",
 
     // These are block-level blob count / fork transition tests, not transaction execution tests.
     "cancun/eip4844_blobs/test_invalid_tx_blob_count.json",
     "osaka/eip7594_peerdas/test_invalid_max_blobs_per_tx.json",
     "osaka/eip7594_peerdas/test_max_blobs_per_tx_fork_transition.json",
+    // The same tests were renamed into subdirectories on BAL releases.
+    "cancun/eip4844_blobs/blob_txs/invalid_tx_blob_count.json",
+    "osaka/eip7594_peerdas/max_blob_per_tx/invalid_max_blobs_per_tx.json",
+    "osaka/eip7594_peerdas/max_blob_per_tx/max_blobs_per_tx_fork_transition.json",
 
     // The harness does not track cumulative block gas allowance or validate Osaka block RLP size limits.
     "osaka/eip7825_transaction_gas_limit_cap/test_tx_gas_larger_than_block_gas_limit.json",
     "osaka/eip7934_block_rlp_limit/test_block_at_rlp_size_limit_boundary.json",
     "osaka/eip7934_block_rlp_limit/test_fork_transition_block_rlp_limit.json",
+    // The same tests were renamed into subdirectories on BAL releases.
+    "osaka/eip7825_transaction_gas_limit_cap/tx_gas_limit/tx_gas_larger_than_block_gas_limit.json",
+    "osaka/eip7934_block_rlp_limit/max_block_rlp_size/block_at_rlp_size_limit_boundary.json",
+    "osaka/eip7934_block_rlp_limit/max_block_rlp_size/fork_transition_block_rlp_limit.json",
+
+    // These validate block header fields/roots and belong to consensus-level block validation.
+    "frontier/validation/header/gas_limit_below_minimum.json",
+    "london/validation/header/invalid_header.json",
+    "shanghai/eip4895_withdrawals/withdrawals/withdrawals_root.json",
+
+    // These validate block access list format/content/hash and belong to consensus-level block validation.
+    "amsterdam/eip7928_block_level_access_lists/block_access_lists_invalid/",
+
+    // These validate block/transaction gas allowance rules, not EVM execution.
+    "amsterdam/eip8037_state_creation_gas_cost_increase/block_2d_gas_accounting/tx_rejected_when_regular_gas_exceeds_block_limit_small.json",
+    "amsterdam/eip8037_state_creation_gas_cost_increase/state_gas_reservoir/creation_tx_state_check_exceeded.json",
 
     // Prague request/deposit fixtures validate EL request extraction and system-contract block processing.
     "prague/eip6110_deposits",
