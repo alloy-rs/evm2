@@ -14,8 +14,6 @@ use alloy_primitives::{
 };
 use core::{mem, ptr::NonNull};
 
-const EIP7708_TRANSFER_TOPIC: B256 =
-    b256!("ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef");
 const EIP7708_BURN_TOPIC: B256 =
     b256!("cc16f5dbb4873280815c1ee09dbd06736cffcc184412cf7a71a0fdb75d397ca5");
 
@@ -450,30 +448,6 @@ impl<T: EvmTypes> State<T> {
         self.log(log);
     }
 
-    /// Builds an EIP-7708 ETH transfer log for non-zero cross-account value.
-    pub(super) fn eip7708_transfer_log(
-        &self,
-        from: Address,
-        to: Address,
-        value: Word,
-    ) -> Option<Log> {
-        if value.is_zero() || from == to {
-            return None;
-        }
-        let topics = vec![
-            EIP7708_TRANSFER_TOPIC,
-            B256::left_padding_from(from.as_slice()),
-            B256::left_padding_from(to.as_slice()),
-        ];
-        Some(Log {
-            address: SYSTEM_ADDRESS,
-            data: LogData::new_unchecked(
-                topics,
-                Bytes::copy_from_slice(&value.to_be_bytes::<32>()),
-            ),
-        })
-    }
-
     /// Builds an EIP-7708 ETH burn log if the burned value is non-zero.
     pub(super) fn eip7708_burn_log(&self, address: Address, value: Word) -> Option<Log> {
         if value.is_zero() {
@@ -834,23 +808,6 @@ impl<T: EvmTypes> State<T> {
     /// Transfers value between accounts.
     #[must_use]
     pub fn transfer(&mut self, from: Address, to: Address, value: Word) -> bool {
-        self.transfer_inner(from, to, value, false)
-    }
-
-    /// Transfers value between accounts and emits an EIP-7708 log for non-zero cross-account value.
-    #[must_use]
-    pub fn transfer_with_eip7708_log(&mut self, from: Address, to: Address, value: Word) -> bool {
-        self.transfer_inner(from, to, value, true)
-    }
-
-    #[must_use]
-    pub(crate) fn transfer_inner(
-        &mut self,
-        from: Address,
-        to: Address,
-        value: Word,
-        log_eip7708: bool,
-    ) -> bool {
         if value.is_zero() {
             self.touch(to);
             return true;
@@ -874,9 +831,6 @@ impl<T: EvmTypes> State<T> {
         let account = self.journal_account_change(to);
         account.balance = account.balance.saturating_add(value);
         self.touch(to);
-        if log_eip7708 && let Some(log) = self.eip7708_transfer_log(from, to, value) {
-            self.emit_log(log);
-        }
         true
     }
 
@@ -895,7 +849,7 @@ impl<T: EvmTypes> State<T> {
         caller: Address,
         address: Address,
         value: Word,
-        version: &Version,
+        spec: SpecId,
     ) -> Result<(), InstrStop> {
         if let Some(info) = self.account_info(address)
             && (info.nonce != 0 || info.code_hash != KECCAK256_EMPTY)
@@ -903,7 +857,7 @@ impl<T: EvmTypes> State<T> {
             return Err(InstrStop::CreateCollision);
         }
 
-        if !self.transfer_inner(caller, address, value, version.feature(EvmFeatures::EIP7708)) {
+        if !self.transfer(caller, address, value) {
             return Err(InstrStop::OutOfFunds);
         }
 
@@ -911,7 +865,7 @@ impl<T: EvmTypes> State<T> {
         self.wipe_storage(address);
         let account = self.journal_account_change(address);
         *account = Account {
-            nonce: u64::from(version.spec_id.enables(SpecId::SPURIOUS_DRAGON)),
+            nonce: u64::from(spec.enables(SpecId::SPURIOUS_DRAGON)),
             balance,
             code_hash: KECCAK256_EMPTY,
             code: Bytecode::default(),
@@ -1523,28 +1477,6 @@ mod tests {
         assert!(change.original.is_some());
         assert_eq!(change.current, None);
         assert!(changes.storage.get(&address).is_some_and(|storage| storage.wipe));
-    }
-
-    #[test]
-    fn eip7708_transfer_log_matches_event_shape() {
-        let from = Address::from([0x01; 20]);
-        let to = Address::from([0x02; 20]);
-        let mut state = State::new(CacheDB::default());
-        state.add_balance(from, Word::from(10));
-
-        assert!(state.transfer_with_eip7708_log(from, to, Word::from(7)));
-
-        let log = state.logs().first().expect("transfer log");
-        assert_eq!(log.address, SYSTEM_ADDRESS);
-        assert_eq!(
-            log.topics(),
-            &[
-                EIP7708_TRANSFER_TOPIC,
-                B256::left_padding_from(from.as_slice()),
-                B256::left_padding_from(to.as_slice()),
-            ]
-        );
-        assert_eq!(log.data.data, Bytes::copy_from_slice(&Word::from(7).to_be_bytes::<32>()));
     }
 
     #[test]

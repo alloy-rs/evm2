@@ -18,7 +18,7 @@ use crate::{
 };
 use alloc::boxed::Box;
 use alloy_eips::eip2718::Typed2718;
-use alloy_primitives::{Address, B256, Bytes, Log};
+use alloy_primitives::{Address, B256, Bytes, Log, LogData, b256};
 use core::ptr::NonNull;
 
 pub mod config;
@@ -40,6 +40,9 @@ pub use state::{
     Account, AccountInfo, JournalEntry, State, StateChanges, StateCheckpoint, StorageChangeSet,
     StorageOverlay, Tracked,
 };
+
+const EIP7708_TRANSFER_TOPIC: B256 =
+    b256!("ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef");
 
 /// Loaded account information.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
@@ -346,6 +349,33 @@ impl<T: EvmTypes> Evm<T> {
         self.inspector.as_mut().map(|inspector| inspector.as_mut() as &mut dyn Inspector<T>)
     }
 
+    fn eip7708_transfer_log(from: Address, to: Address, value: Word) -> Option<Log> {
+        if value.is_zero() || from == to {
+            return None;
+        }
+        let topics = vec![
+            EIP7708_TRANSFER_TOPIC,
+            B256::left_padding_from(from.as_slice()),
+            B256::left_padding_from(to.as_slice()),
+        ];
+        Some(Log {
+            address: SYSTEM_ADDRESS,
+            data: LogData::new_unchecked(
+                topics,
+                Bytes::copy_from_slice(&value.to_be_bytes::<32>()),
+            ),
+        })
+    }
+
+    #[inline]
+    fn log_eip7708_transfer(&mut self, from: Address, to: Address, value: Word) {
+        if self.feature(EvmFeatures::EIP7708)
+            && let Some(log) = Self::eip7708_transfer_log(from, to, value)
+        {
+            self.state.emit_log(log);
+        }
+    }
+
     #[inline]
     fn sync_state_inspector(&mut self) {
         let inspector = self.inspector.as_deref_mut().map(NonNull::from);
@@ -466,13 +496,13 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         }
 
         let checkpoint = self.state.checkpoint();
-        let version = self.execution_config.version();
         if let Err(stop) =
-            self.state.create_account(message.caller, address, message.value, version)
+            self.state.create_account(message.caller, address, message.value, self.spec_id())
         {
             self.state.rollback(checkpoint, self.spec_id());
             return Err(stop);
         }
+        self.log_eip7708_transfer(message.caller, address, message.value);
 
         let create_message = Message {
             destination: address,
@@ -594,16 +624,13 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             message.kind,
             MessageKind::Call | MessageKind::CallCode | MessageKind::StaticCall
         );
-        let eip7708 = self.feature(EvmFeatures::EIP7708);
         let transfer_succeeded = !transfers_balance
-            || self.state.transfer_inner(
-                message.caller,
-                message.destination,
-                message.value,
-                eip7708,
-            );
+            || self.state.transfer(message.caller, message.destination, message.value);
         if transfers_balance && !transfer_succeeded {
             return Err(InstrStop::OutOfFunds);
+        }
+        if transfers_balance {
+            self.log_eip7708_transfer(message.caller, message.destination, message.value);
         }
 
         let mut gas = Gas::new(message.gas_limit);
@@ -838,10 +865,9 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
             || self.state.is_created_in_transaction(contract);
 
         if contract != target {
-            if self.feature(EvmFeatures::EIP7708) {
-                let _ = self.state.transfer_with_eip7708_log(contract, target, balance);
-            } else {
-                let _ = self.state.transfer(contract, target, balance);
+            let transferred = self.state.transfer(contract, target, balance);
+            if transferred {
+                self.log_eip7708_transfer(contract, target, balance);
             }
         } else if should_destroy && !balance.is_zero() {
             if self.feature(EvmFeatures::EIP7708)
@@ -1240,6 +1266,16 @@ mod tests {
         evm.state.finalize_transaction_(&version);
         let changes = evm.state.build_state_changes();
         assert_eq!(changes.logs.len(), 1);
-        assert_eq!(changes.logs[0].address, SYSTEM_ADDRESS);
+        let log = &changes.logs[0];
+        assert_eq!(log.address, SYSTEM_ADDRESS);
+        assert_eq!(
+            log.topics(),
+            &[
+                EIP7708_TRANSFER_TOPIC,
+                B256::left_padding_from(caller.as_slice()),
+                B256::left_padding_from(target.as_slice()),
+            ]
+        );
+        assert_eq!(log.data.data, Bytes::copy_from_slice(&U256::from(7).to_be_bytes::<32>()));
     }
 }
