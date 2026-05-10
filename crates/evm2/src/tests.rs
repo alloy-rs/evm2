@@ -151,7 +151,7 @@ fn evm_propagates_child_sstore_negative_refund() {
     );
 
     assert!(result.stop.is_success());
-    assert_eq!(result.gas_refunded, 0);
+    assert_eq!(result.gas.refunded(), 0);
 }
 
 #[test]

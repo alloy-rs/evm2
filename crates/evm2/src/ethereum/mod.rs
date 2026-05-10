@@ -396,7 +396,7 @@ pub(super) fn rollback_failed_execution<T: EvmTypes<Host = Evm<T>>>(
     if !result.stop.is_success() {
         host.state.rollback(checkpoint, host.spec_id());
         if result.stop.is_halt() {
-            result.gas_remaining = 0;
+            result.gas.set_remaining(0);
         }
     }
 }
@@ -501,7 +501,7 @@ mod tests {
         BaseEvmTypes, ExecutionConfig, Precompiles,
         env::{BlockEnv, TxEnv},
         evm::InMemoryDB,
-        interpreter::{Host, InstrStop, op},
+        interpreter::{GasTracker, Host, InstrStop, op},
         registry::TxRegistry,
     };
     use alloc::vec;
@@ -614,8 +614,11 @@ mod tests {
     fn final_tx_gas_charges_calldata_floor_after_refund() {
         let result = MessageResult {
             stop: crate::interpreter::InstrStop::Return,
-            gas_remaining: 50_000,
-            gas_refunded: 10_000,
+            gas: {
+                let mut gas = GasTracker::new(100_000, 50_000, 0);
+                gas.set_refunded(10_000);
+                gas
+            },
             ..MessageResult::default()
         };
 
@@ -626,8 +629,7 @@ mod tests {
     fn final_tx_gas_preserves_higher_actual_usage() {
         let result = MessageResult {
             stop: crate::interpreter::InstrStop::Return,
-            gas_remaining: 30_000,
-            gas_refunded: 0,
+            gas: GasTracker::new(100_000, 30_000, 0),
             ..MessageResult::default()
         };
 

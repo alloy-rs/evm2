@@ -69,9 +69,9 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             SYSTEM_CALL_GAS_LIMIT,
         );
         let result = Host::execute_message(self, &tx_env, bytecode, &message, false);
-        let gas_spent = SYSTEM_CALL_GAS_LIMIT.saturating_sub(result.gas_remaining);
-        let gas_refunded = if result.stop.is_success() && result.gas_refunded > 0 {
-            result.gas_refunded as u64
+        let gas_spent = SYSTEM_CALL_GAS_LIMIT.saturating_sub(result.gas.remaining());
+        let gas_refunded = if result.stop.is_success() && result.gas.refunded() > 0 {
+            result.gas.refunded() as u64
         } else {
             0
         };

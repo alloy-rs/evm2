@@ -81,7 +81,7 @@ mod tests {
         ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
         evm::{AccountInfo, InMemoryDB, SelfDestructResult},
         interpreter::{
-            InstrStop, Interpreter, Message, MessageResult, Word,
+            GasTracker, InstrStop, Interpreter, Message, MessageResult, Word,
             instructions::tests::{TestHost, TestTypes, push},
             op,
         },
@@ -151,7 +151,7 @@ mod tests {
         fn call(&mut self, message: &mut Message) -> Option<MessageResult> {
             self.call_depth = Some(message.depth);
             let mut result = self.result.clone();
-            result.gas_remaining = message.gas_limit;
+            result.gas.set_remaining(message.gas_limit);
             Some(result)
         }
 
@@ -177,7 +177,7 @@ mod tests {
         fn call(&mut self, message: &mut Message) -> Option<MessageResult> {
             Some(MessageResult {
                 stop: InstrStop::Revert,
-                gas_remaining: message.gas_limit,
+                gas: GasTracker::new(message.gas_limit, message.gas_limit, 0),
                 ..Default::default()
             })
         }
@@ -199,7 +199,7 @@ mod tests {
             self.create_depth = Some(message.depth);
             Some(MessageResult {
                 stop: InstrStop::Return,
-                gas_remaining: message.gas_limit,
+                gas: GasTracker::new(message.gas_limit, message.gas_limit, 0),
                 created_address: Some(self.created),
                 ..Default::default()
             })
@@ -218,7 +218,7 @@ mod tests {
         fn create(&mut self, message: &mut Message) -> Option<MessageResult> {
             Some(MessageResult {
                 stop: InstrStop::Revert,
-                gas_remaining: message.gas_limit,
+                gas: GasTracker::new(message.gas_limit, message.gas_limit, 0),
                 ..Default::default()
             })
         }

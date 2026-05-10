@@ -75,8 +75,9 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
         initial_message(req.host, caller, tx.nonce, tx.to.into(), &tx.input, tx.value, gas_limit);
     let mut result = req.host.execute_message(&tx_env, bytecode, &message, false);
     rollback_failed_execution(req.host, execution_checkpoint, &mut result);
-    result.gas_refunded =
-        result.gas_refunded.saturating_add(i64::try_from(eip7702_refund).unwrap_or(i64::MAX));
+    result.gas.set_refunded(
+        result.gas.refunded().saturating_add(i64::try_from(eip7702_refund).unwrap_or(i64::MAX)),
+    );
 
     Ok(settle_gas(req.host, caller, gas_price, tx.gas_limit, floor_gas, result))
 }

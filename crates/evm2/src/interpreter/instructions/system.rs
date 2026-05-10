@@ -4,8 +4,8 @@ use crate::{
     EvmFeatures, EvmTypes, SpecId,
     constants::{CALL_DEPTH_LIMIT, EIP7702_BYTECODE_LEN, EIP7702_MAGIC_BYTES, EIP7702_VERSION},
     interpreter::{
-        Host, InstrStop, InterpreterState, Message, MessageKind, MessageResult, Result, StackMut,
-        Word, memory::resize_memory, private::GasInstructionCx,
+        GasTracker, Host, InstrStop, InterpreterState, Message, MessageKind, MessageResult, Result,
+        StackMut, Word, memory::resize_memory, private::GasInstructionCx,
     },
     trustme,
     utils::{word_to_address, word_to_usize},
@@ -40,7 +40,11 @@ const fn should_charge_new_account_gas(
 
 #[inline]
 fn call_too_deep_result(gas_limit: u64) -> MessageResult {
-    MessageResult { stop: InstrStop::CallTooDeep, gas_remaining: gas_limit, ..Default::default() }
+    MessageResult {
+        stop: InstrStop::CallTooDeep,
+        gas: GasTracker::new(gas_limit, gas_limit, 0),
+        ..Default::default()
+    }
 }
 
 fn resize_memory_range<T: EvmTypes>(

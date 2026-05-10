@@ -9,8 +9,8 @@ use crate::{
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
     interpreter::{
-        Gas, Host, InstrStop, Interpreter, InterpreterPool, Message, MessageKind, MessageResult,
-        Word,
+        Gas, GasTracker, Host, InstrStop, Interpreter, InterpreterPool, Message, MessageKind,
+        MessageResult, Word,
     },
     registry::{HandlerResult, TxRegistry},
     trustme,
@@ -426,24 +426,24 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         message: &Message,
         caller_is_static: bool,
     ) -> MessageResult {
-        if let Err(stop) = self.check_create_funds(message) {
-            return MessageResult {
-                stop,
-                gas_remaining: message.gas_limit,
-                ..MessageResult::default()
-            };
-        }
+        self.execute_create_message_inner(tx_env, bytecode, message, caller_is_static)
+            .unwrap_or_else(|stop| Self::error_message_result(stop, message.gas_limit))
+    }
 
+    fn execute_create_message_inner(
+        &mut self,
+        tx_env: &TxEnv,
+        bytecode: Bytecode,
+        message: &Message,
+        caller_is_static: bool,
+    ) -> Result<MessageResult, InstrStop> {
+        self.check_create_funds(message)?;
         if message.depth > 0 {
             // EIP-2681 caps account nonces at u64::MAX; CREATE/CREATE2 return zero
             // instead of wrapping or saturating the creator nonce.
             // TODO: Fold this into nonce bumping so account info is not loaded repeatedly.
             if self.state.account_info(message.caller).is_some_and(|info| info.nonce == u64::MAX) {
-                return MessageResult {
-                    stop: InstrStop::Return,
-                    gas_remaining: message.gas_limit,
-                    ..MessageResult::default()
-                };
+                return Err(InstrStop::Return);
             }
         }
 
@@ -460,11 +460,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             self.state.create_account(message.caller, address, message.value, self.spec_id())
         {
             self.state.rollback(checkpoint, self.spec_id());
-            return MessageResult {
-                stop,
-                gas_remaining: message.gas_limit,
-                ..MessageResult::default()
-            };
+            return Err(stop);
         }
 
         let create_message = Message {
@@ -485,64 +481,29 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
                 self.run_interpreter(bytecode, tx_env, &create_message, caller_is_static);
             (stop, interpreter.gas(), Bytes::copy_from_slice(interpreter.output()))
         };
-        let mut gas_remaining = gas.remaining();
-        let mut gas_refunded = if stop.is_success() { gas.refunded() } else { 0 };
 
         if stop.is_success() {
-            let stop = if self.spec_id().enables(SpecId::SPURIOUS_DRAGON)
-                && output.len() > self.version().max_code_size
-            {
-                Some(InstrStop::CreateContractSizeLimit)
-            } else if self.feature(EvmFeatures::EIP3541)
-                && output.first().is_some_and(|byte| *byte == 0xef)
-            {
-                Some(InstrStop::CreateContractStartingWithEF)
-            } else {
-                let code_deposit_gas = output
-                    .len()
-                    .saturating_mul(self.version().gas_params.get(GasId::CodeDepositCost) as usize);
-                let code_deposit_gas = u64::try_from(code_deposit_gas).unwrap_or(u64::MAX);
-                if gas.remaining() >= code_deposit_gas {
-                    gas.spend(code_deposit_gas).err()
-                } else if self.feature(EvmFeatures::EIP2) {
-                    // EIP-2 makes code-deposit OOG fail contract creation; Frontier instead
-                    // creates the account with empty code.
-                    Some(InstrStop::OutOfGas)
-                } else {
-                    output = Bytes::new();
-                    None
-                }
-            };
-
-            if let Some(stop) = stop {
+            if let Err(stop) = self.validate_create_output(&mut gas, &mut output) {
                 self.state.rollback(checkpoint, self.spec_id());
-                gas_remaining = if stop.is_halt() { 0 } else { gas.remaining() };
-                return MessageResult {
+                return Ok(MessageResult {
                     stop,
-                    gas_remaining,
-                    gas_refunded: 0,
+                    gas: Self::message_gas(*gas.tracker(), stop),
                     output,
                     created_address: None,
-                };
+                });
             }
 
-            gas_remaining = gas.remaining();
-            gas_refunded = gas.refunded();
             self.state.set_code(address, Bytecode::new_legacy(output.clone()));
         } else {
             self.state.rollback(checkpoint, self.spec_id());
-            if stop.is_halt() {
-                gas_remaining = 0;
-            }
         }
 
-        MessageResult {
+        Ok(MessageResult {
             stop,
-            gas_remaining,
-            gas_refunded: if stop.is_success() { gas_refunded } else { 0 },
+            gas: Self::message_gas(*gas.tracker(), stop),
             output,
             created_address: stop.is_success().then_some(address),
-        }
+        })
     }
 
     #[inline(never)]
@@ -555,6 +516,32 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         {
             return Err(InstrStop::OutOfFunds);
         }
+        Ok(())
+    }
+
+    fn validate_create_output(&self, gas: &mut Gas, output: &mut Bytes) -> Result<(), InstrStop> {
+        if self.spec_id().enables(SpecId::SPURIOUS_DRAGON)
+            && output.len() > self.version().max_code_size
+        {
+            return Err(InstrStop::CreateContractSizeLimit);
+        }
+        if self.feature(EvmFeatures::EIP3541) && output.first().is_some_and(|byte| *byte == 0xef) {
+            return Err(InstrStop::CreateContractStartingWithEF);
+        }
+
+        let code_deposit_gas = output
+            .len()
+            .saturating_mul(self.version().gas_params.get(GasId::CodeDepositCost) as usize);
+        let code_deposit_gas = u64::try_from(code_deposit_gas).unwrap_or(u64::MAX);
+        if gas.remaining() >= code_deposit_gas {
+            return gas.spend(code_deposit_gas);
+        }
+        if self.feature(EvmFeatures::EIP2) {
+            // EIP-2 makes code-deposit OOG fail contract creation; Frontier instead creates the
+            // account with empty code.
+            return Err(InstrStop::OutOfGas);
+        }
+        *output = Bytes::new();
         Ok(())
     }
 
@@ -578,6 +565,17 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         message: &Message,
         caller_is_static: bool,
     ) -> MessageResult {
+        self.execute_call_message_inner(tx_env, bytecode, message, caller_is_static)
+            .unwrap_or_else(|stop| Self::error_message_result(stop, message.gas_limit))
+    }
+
+    fn execute_call_message_inner(
+        &mut self,
+        tx_env: &TxEnv,
+        bytecode: Bytecode,
+        message: &Message,
+        caller_is_static: bool,
+    ) -> Result<MessageResult, InstrStop> {
         let checkpoint = self.state.checkpoint();
         // EIP-161 state clearing depends on zero-value direct call targets being touched.
         // CALLCODE also needs the value-transfer balance check.
@@ -586,39 +584,30 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             MessageKind::Call | MessageKind::CallCode | MessageKind::StaticCall
         ) && !self.state.transfer(message.caller, message.destination, message.value)
         {
-            return MessageResult {
-                stop: InstrStop::OutOfFunds,
-                gas_remaining: message.gas_limit,
-                ..MessageResult::default()
-            };
+            return Err(InstrStop::OutOfFunds);
         }
 
         let mut gas = Gas::new(message.gas_limit);
         if let Some(result) = self.execute_precompile(message, &mut gas) {
-            let (stop, gas_remaining, output) = match result {
-                Ok(output) => (InstrStop::Return, gas.remaining(), output.into_bytes()),
-                Err(PrecompileError::Revert(output)) => {
-                    (InstrStop::Revert, gas.remaining(), output)
-                }
+            let (stop, output) = match result {
+                Ok(output) => (InstrStop::Return, output.into_bytes()),
+                Err(PrecompileError::Revert(output)) => (InstrStop::Revert, output),
                 Err(PrecompileError::Halt(PrecompileHalt::OutOfGas)) => {
-                    (InstrStop::PrecompileOOG, 0, Bytes::new())
+                    (InstrStop::PrecompileOOG, Bytes::new())
                 }
                 Err(PrecompileError::Halt(_) | PrecompileError::Fatal(_)) => {
-                    let stop = InstrStop::PrecompileError;
-                    let gas_remaining = if stop.is_halt() { 0 } else { gas.remaining() };
-                    (stop, gas_remaining, Bytes::new())
+                    (InstrStop::PrecompileError, Bytes::new())
                 }
             };
             if !stop.is_success() {
                 self.state.rollback(checkpoint, self.spec_id());
             }
-            return MessageResult {
+            return Ok(MessageResult {
                 stop,
-                gas_remaining,
-                gas_refunded: 0,
+                gas: Self::message_gas(*gas.tracker(), stop),
                 output,
                 created_address: None,
-            };
+            });
         }
 
         let (stop, child_gas, output) = {
@@ -626,22 +615,37 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
                 self.run_interpreter(bytecode, tx_env, message, caller_is_static);
             (stop, interpreter.gas(), Bytes::copy_from_slice(interpreter.output()))
         };
-        let mut gas_remaining = child_gas.remaining();
 
         if !stop.is_success() {
             self.state.rollback(checkpoint, self.spec_id());
-            if stop.is_halt() {
-                gas_remaining = 0;
-            }
         }
 
-        MessageResult {
+        Ok(MessageResult {
             stop,
-            gas_remaining,
-            gas_refunded: if stop.is_success() { child_gas.refunded() } else { 0 },
+            gas: Self::message_gas(*child_gas.tracker(), stop),
             output,
             created_address: None,
+        })
+    }
+
+    #[inline]
+    fn error_message_result(stop: InstrStop, gas_remaining: u64) -> MessageResult {
+        MessageResult {
+            stop,
+            gas: GasTracker::new(gas_remaining, gas_remaining, 0),
+            ..MessageResult::default()
         }
+    }
+
+    #[inline]
+    const fn message_gas(mut gas: GasTracker, stop: InstrStop) -> GasTracker {
+        if stop.is_halt() {
+            gas.set_remaining(0);
+        }
+        if !stop.is_success() {
+            gas.set_refunded(0);
+        }
+        gas
     }
 
     #[inline(never)]
