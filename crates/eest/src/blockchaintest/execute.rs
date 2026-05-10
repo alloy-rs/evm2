@@ -130,15 +130,23 @@ fn execute_block(
     let mut beacon_root = None;
     let mut this_excess_blob_gas = None;
 
+    let mut next_block_env = *block_env;
     if let Some(header) = block_header(block) {
         block_hash = Some(header.hash);
         beacon_root = header.parent_beacon_block_root;
-        *block_env = block_env_from_header(header, *parent_excess_blob_gas, spec);
+        next_block_env = block_env_from_header(header, *parent_excess_blob_gas, spec);
         this_excess_blob_gas = header.excess_blob_gas.map(|gas| gas.saturating_to::<u64>());
     }
 
-    pre_block_system_calls(database, spec, *block_env, *parent_block_hash, beacon_root)
-        .map_err(|err| TestError::case(path, name, err))?;
+    let mut block_database = database.clone();
+    pre_block_system_calls(
+        &mut block_database,
+        spec,
+        next_block_env,
+        *parent_block_hash,
+        beacon_root,
+    )
+    .map_err(|err| TestError::case(path, name, err))?;
 
     for raw_tx in block_transactions(block) {
         let tx = match build_tx(raw_tx) {
@@ -149,9 +157,9 @@ fn execute_block(
             Err(err) => return Err(TestError::case(path, name, err)),
         };
 
-        match execute_tx(spec, *block_env, database.clone(), &tx) {
+        match execute_tx(spec, next_block_env, block_database.clone(), &tx) {
             Ok(result) => {
-                apply_state_changes_in_place(database, &result.state_changes);
+                apply_state_changes_in_place(&mut block_database, &result.state_changes);
             }
             Err(err) if should_fail => {
                 let _ = err;
@@ -166,14 +174,16 @@ fn execute_block(
         return Err(TestError::case(path, name, TestErrorKind::UnexpectedSuccess(expected)));
     }
 
-    post_block_transition(database, spec, *block_env, block_withdrawals(block))
+    post_block_transition(&mut block_database, spec, next_block_env, block_withdrawals(block))
         .map_err(|err| TestError::case(path, name, err))?;
 
     if let Some(expected_bal) = &block.block_access_list {
         assert_block_access_list(block_index, expected_bal);
     }
 
-    database.insert_block_hash(block_env.number, block_hash.unwrap_or_default());
+    block_database.insert_block_hash(next_block_env.number, block_hash.unwrap_or_default());
+    *database = block_database;
+    *block_env = next_block_env;
     *parent_block_hash = block_hash;
     if let Some(excess_blob_gas) = this_excess_blob_gas {
         *parent_excess_blob_gas = excess_blob_gas;
