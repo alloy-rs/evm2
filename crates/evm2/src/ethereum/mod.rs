@@ -449,8 +449,28 @@ pub(super) fn access_list_counts(access_list: &AccessList) -> (u64, u64) {
     (access_list.len() as u64, access_list.storage_keys_count() as u64)
 }
 
+const ACCESS_LIST_ADDRESS_FLOOR_TOKENS: u64 = 80;
+const ACCESS_LIST_STORAGE_KEY_FLOOR_TOKENS: u64 = 128;
+
+const fn access_list_floor_tokens(
+    version: &Version,
+    access_list_accounts: u64,
+    access_list_storage_keys: u64,
+) -> u64 {
+    if !version.feature(EvmFeatures::EIP7981) {
+        return 0;
+    }
+    access_list_accounts * ACCESS_LIST_ADDRESS_FLOOR_TOKENS
+        + access_list_storage_keys * ACCESS_LIST_STORAGE_KEY_FLOOR_TOKENS
+}
+
 /// Calculates transaction calldata floor gas.
-pub(super) fn floor_gas(version: &Version, input: &Bytes) -> u64 {
+pub(super) fn floor_gas(
+    version: &Version,
+    input: &Bytes,
+    access_list_accounts: u64,
+    access_list_storage_keys: u64,
+) -> u64 {
     if !version.feature(EvmFeatures::EIP7623) {
         return 0;
     }
@@ -461,7 +481,8 @@ pub(super) fn floor_gas(version: &Version, input: &Bytes) -> u64 {
     }
 
     let non_zero_multiplier = u64::from(params.get(GasId::TxTokenNonZeroByteMultiplier));
-    let mut tokens = 0;
+    let mut tokens =
+        access_list_floor_tokens(version, access_list_accounts, access_list_storage_keys);
     for byte in input {
         tokens += if *byte == 0 { 1 } else { non_zero_multiplier };
     }
@@ -485,6 +506,8 @@ pub(super) fn intrinsic_gas(
     }
     gas += access_list_accounts * u64::from(params.get(GasId::TxAccessListAddressCost));
     gas += access_list_storage_keys * u64::from(params.get(GasId::TxAccessListStorageKeyCost));
+    gas += access_list_floor_tokens(version, access_list_accounts, access_list_storage_keys)
+        * u64::from(params.get(GasId::TxFloorCostPerToken));
     if to.is_create() && version.feature(EvmFeatures::EIP2) {
         gas += 32_000;
     }
@@ -530,6 +553,16 @@ mod tests {
             intrinsic_gas(Version::base(SpecId::BERLIN), TxKind::Call(Address::ZERO), &input, 2, 3),
             21_000 + 2 * 2400 + 3 * 1900
         );
+        assert_eq!(
+            intrinsic_gas(
+                Version::base(SpecId::AMSTERDAM),
+                TxKind::Call(Address::ZERO),
+                &input,
+                1,
+                1
+            ),
+            21_000 + 2400 + 1900 + (80 + 128) * 16
+        );
     }
 
     #[test]
@@ -573,9 +606,19 @@ mod tests {
         let mut prague_without_eip7623 = Version::new(SpecId::PRAGUE);
         prague_without_eip7623.features.remove(EvmFeatures::EIP7623);
 
-        assert_eq!(floor_gas(Version::base(SpecId::SHANGHAI), &input), 0);
-        assert_eq!(floor_gas(Version::base(SpecId::PRAGUE), &input), 21_000 + 9 * 10);
-        assert_eq!(floor_gas(&prague_without_eip7623, &input), 0);
+        assert_eq!(floor_gas(Version::base(SpecId::SHANGHAI), &input, 0, 0), 0);
+        assert_eq!(floor_gas(Version::base(SpecId::PRAGUE), &input, 0, 0), 21_000 + 9 * 10);
+        assert_eq!(floor_gas(&prague_without_eip7623, &input, 0, 0), 0);
+    }
+
+    #[test]
+    fn floor_gas_charges_amsterdam_access_list_tokens() {
+        let input = Bytes::from(vec![1; 1000]);
+
+        assert_eq!(
+            floor_gas(Version::base(SpecId::AMSTERDAM), &input, 1, 1),
+            21_000 + (1000 * 4 + 80 + 128) * 16
+        );
     }
 
     #[test]

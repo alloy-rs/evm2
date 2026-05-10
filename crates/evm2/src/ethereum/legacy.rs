@@ -28,7 +28,7 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     validate_nonce_not_overflow(tx.nonce)?;
     let intrinsic = intrinsic_gas(req.host.version(), tx.to, &tx.input, 0, 0);
     validate_intrinsic_gas(tx.gas_limit, intrinsic)?;
-    let floor_gas = floor_gas(req.host.version(), &tx.input);
+    let floor_gas = floor_gas(req.host.version(), &tx.input, 0, 0);
     validate_floor_gas(tx.gas_limit, floor_gas)?;
     validate_regular_gas_limit_cap(req.host.version(), tx.gas_limit, intrinsic, floor_gas)?;
 

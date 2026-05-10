@@ -47,7 +47,8 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
         access_list_storage_keys,
     ) + eip7702_authorization_gas(req.host, tx.authorization_list.len());
     validate_intrinsic_gas(tx.gas_limit, intrinsic)?;
-    let floor_gas = floor_gas(req.host.version(), &tx.input);
+    let floor_gas =
+        floor_gas(req.host.version(), &tx.input, access_list_accounts, access_list_storage_keys);
     validate_floor_gas(tx.gas_limit, floor_gas)?;
     validate_regular_gas_limit_cap(req.host.version(), tx.gas_limit, intrinsic, floor_gas)?;
 
