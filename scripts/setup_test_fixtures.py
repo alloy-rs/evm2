@@ -6,7 +6,7 @@
 #     "rich>=15",
 # ]
 # ///
-"""Download Ethereum state test fixtures."""
+"""Download Ethereum Execution Spec Test fixtures."""
 
 from __future__ import annotations
 
@@ -75,7 +75,7 @@ class Fixture:
     label: str
     url: str
     dest: Path
-    exists_path: Path
+    exists_paths: tuple[Path, ...]
 
 
 def env_flag(name: str) -> bool:
@@ -84,7 +84,7 @@ def env_flag(name: str) -> bool:
 
 
 def main_fixture() -> Fixture:
-    if env_flag("EVM2_STATETEST_STABLE"):
+    if env_flag("EVM2_STATETEST_STABLE") or env_flag("EVM2_BLOCKCHAINTEST_STABLE") or env_flag("EVM2_EEST_STABLE"):
         dest = MAIN_STABLE_DIR
         tar_name = os.environ.get("MAIN_TAR", "fixtures_stable.tar.gz")
         label = "main stable"
@@ -97,7 +97,7 @@ def main_fixture() -> Fixture:
         label=label,
         url=f"{BASE_URL}/{MAIN_VERSION}/{tar_name}",
         dest=dest,
-        exists_path=dest / "state_tests",
+        exists_paths=(dest / "state_tests", dest / "blockchain_tests"),
     )
 
 
@@ -106,7 +106,7 @@ def legacy_fixture() -> Fixture:
         label="legacy",
         url=LEGACY_URL,
         dest=LEGACY_DIR,
-        exists_path=LEGACY_DIR / "Cancun" / "GeneralStateTests",
+        exists_paths=(LEGACY_DIR / "Cancun" / "GeneralStateTests",),
     )
 
 
@@ -123,7 +123,7 @@ def devnet_fixture() -> Fixture | None:
         label="devnet",
         url=f"{BASE_URL}/{version}/{tar_name}",
         dest=DEVNET_DIR,
-        exists_path=DEVNET_DIR / "state_tests",
+        exists_paths=(DEVNET_DIR / "state_tests", DEVNET_DIR / "blockchain_tests"),
     )
 
 
@@ -233,12 +233,13 @@ async def download_and_extract(
     fixture: Fixture,
     progress: Progress,
 ) -> None:
-    if fixture.exists_path.is_dir():
-        console.print(f"  Already exists: {fixture.exists_path}")
+    if all(path.is_dir() for path in fixture.exists_paths):
+        paths = ", ".join(str(path) for path in fixture.exists_paths)
+        console.print(f"  Already exists: {paths}")
         return
     if fixture.dest.exists():
         raise RuntimeError(
-            f"exists but does not contain the expected state tests: {fixture.dest}"
+            f"exists but does not contain the expected test fixtures: {fixture.dest}"
         )
 
     fixture.dest.mkdir(parents=True, exist_ok=True)
@@ -328,8 +329,11 @@ def print_summary() -> None:
     console.print("Fixture directories:")
     for directory in [
         MAIN_STABLE_DIR / "state_tests",
+        MAIN_STABLE_DIR / "blockchain_tests",
         MAIN_DEVELOP_DIR / "state_tests",
+        MAIN_DEVELOP_DIR / "blockchain_tests",
         DEVNET_DIR / "state_tests",
+        DEVNET_DIR / "blockchain_tests",
         LEGACY_DIR / "Cancun" / "GeneralStateTests",
         LEGACY_DIR / "Constantinople" / "GeneralStateTests",
     ]:
@@ -344,7 +348,7 @@ async def main() -> int:
         return 0
 
     FIXTURES_DIR.mkdir(parents=True, exist_ok=True)
-    console.print("=== Fetching state test fixtures ===")
+    console.print("=== Fetching EEST fixtures ===")
 
     progress = Progress(
         SpinnerColumn(),

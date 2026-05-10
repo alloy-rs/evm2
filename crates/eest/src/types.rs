@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use crate::tx::{AccessListItem, TestAuthorization};
 use alloy_primitives::{Address, B256, Bytes, U256};
 use evm2::SpecId;
 use serde::{Deserialize, Deserializer, de};
@@ -120,39 +121,6 @@ pub(crate) struct TransactionParts {
     pub(crate) blob_versioned_hashes: Vec<B256>,
     /// EIP-4844 max fee per blob gas.
     pub(crate) max_fee_per_blob_gas: Option<U256>,
-}
-
-/// Access list entry.
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct AccessListItem {
-    /// Accessed account.
-    pub(crate) address: Address,
-    /// Accessed storage keys.
-    pub(crate) storage_keys: Vec<B256>,
-}
-
-/// EIP-7702 authorization entry.
-#[derive(Clone, Debug)]
-pub(crate) struct TestAuthorization {
-    /// Raw authorization JSON.
-    pub(crate) value: serde_json::Value,
-}
-
-impl<'de> Deserialize<'de> for TestAuthorization {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let mut value = serde_json::Value::deserialize(deserializer)?;
-        if let Some(object) = value.as_object_mut()
-            && object.contains_key("v")
-            && object.contains_key("yParity")
-        {
-            object.remove("v");
-        }
-        Ok(Self { value })
-    }
 }
 
 /// State test fork name.

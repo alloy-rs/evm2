@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/evm2", "crates/macros", "crates/statetest"]
+members = ["crates/evm2", "crates/macros", "crates/eest"]
 resolver = "3"
 
 [workspace.package]
@@ -37,6 +37,7 @@ evm2 = { path = "crates/evm2", version = "0.1.0" }
 evm2-macros = { path = "crates/macros", version = "0.1.0" }
 
 alloy-consensus = { version = "2.0.4", default-features = false }
+alloy-eip7928 = { version = "0.4.0", default-features = false }
 alloy-eips = { version = "2.0.4", default-features = false }
 alloy-primitives = { version = "1.5.7", default-features = false }
 alloy-rlp = { version = "0.3", default-features = false }
