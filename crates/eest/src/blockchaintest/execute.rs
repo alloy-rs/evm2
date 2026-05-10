@@ -29,10 +29,16 @@ const ONE_GWEI: u64 = 1_000_000_000;
 const ONE_ETHER: u128 = 1_000_000_000_000_000_000;
 
 /// Execution options for a single suite.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct ExecuteConfig {
     /// Whether to validate final post-state when fixtures contain it.
     pub(crate) validate_post_state: bool,
+}
+
+impl Default for ExecuteConfig {
+    fn default() -> Self {
+        Self { validate_post_state: true }
+    }
 }
 
 /// Per-file execution summary.
@@ -448,9 +454,7 @@ fn validate_post_state(
     expected: &std::collections::BTreeMap<Address, Account>,
 ) -> Result<(), TestErrorKind> {
     for (address, expected_account) in expected {
-        let Some(info) = database.cache.accounts.get(address) else {
-            return Err(TestErrorKind::UnexpectedFailure(format!("missing account {address}")));
-        };
+        let info = database.cache.accounts.get(address).cloned().unwrap_or_default();
         if info.balance != expected_account.balance {
             return Err(TestErrorKind::UnexpectedFailure(format!(
                 "balance mismatch for {address}: got {}, expected {}",
@@ -462,6 +466,49 @@ fn validate_post_state(
                 "nonce mismatch for {address}: got {}, expected {}",
                 info.nonce, expected_account.nonce
             )));
+        }
+
+        if !expected_account.code.is_empty() {
+            let actual_code = info
+                .code
+                .as_ref()
+                .or_else(|| database.cache.contracts.get(&info.code_hash))
+                .map(|code| code.original_byte_slice())
+                .unwrap_or_default();
+            if actual_code != expected_account.code.as_ref() {
+                return Err(TestErrorKind::UnexpectedFailure(format!(
+                    "code mismatch for {address}: got 0x{}, expected 0x{}",
+                    alloy_primitives::hex::encode(actual_code),
+                    alloy_primitives::hex::encode(&expected_account.code)
+                )));
+            }
+        }
+
+        for (&key, &value) in &database.cache.storage {
+            if key.address() == *address
+                && !value.is_zero()
+                && !expected_account.storage.contains_key(&key.key())
+            {
+                return Err(TestErrorKind::UnexpectedFailure(format!(
+                    "unexpected storage for {address}[{}]: got {}, expected 0",
+                    key.key(),
+                    value
+                )));
+            }
+        }
+
+        for (&slot, &expected_value) in &expected_account.storage {
+            let actual_value = database
+                .cache
+                .storage
+                .get(&evm2::StorageKey::new(*address, slot))
+                .copied()
+                .unwrap_or_default();
+            if actual_value != expected_value {
+                return Err(TestErrorKind::UnexpectedFailure(format!(
+                    "storage mismatch for {address}[{slot}]: got {actual_value}, expected {expected_value}"
+                )));
+            }
         }
     }
     Ok(())
