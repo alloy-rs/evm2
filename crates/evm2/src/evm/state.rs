@@ -1,21 +1,19 @@
 //! Basic in-memory EVM host state.
 
-use super::{SStore, SYSTEM_ADDRESS, db::Database, inspector::Inspector};
+use super::{SStore, SYSTEM_ADDRESS, db::Database};
 use crate::{
-    EvmFeatures, EvmTypes, SpecId, Version,
+    EvmFeatures, SpecId, Version,
     bytecode::Bytecode,
+    constants::EIP7708_BURN_TOPIC,
     interpreter::{InstrStop, Word},
     storage_key::{StorageKey, StorageKeyMap, StorageKeySet},
 };
 use alloc::{boxed::Box, collections::BTreeMap, vec, vec::Vec};
 use alloy_primitives::{
-    Address, B256, Bytes, KECCAK256_EMPTY, Log, LogData, U256, b256,
+    Address, B256, Bytes, KECCAK256_EMPTY, Log, LogData, U256,
     map::{AddressMap, AddressSet, U256Map, hash_map},
 };
-use core::{mem, ptr::NonNull};
-
-const EIP7708_BURN_TOPIC: B256 =
-    b256!("cc16f5dbb4873280815c1ee09dbd06736cffcc184412cf7a71a0fdb75d397ca5");
+use core::mem;
 
 /// A value tracked together with the value it had at the start of the current
 /// transaction.
@@ -329,7 +327,7 @@ pub enum JournalEntry {
 /// Mutable EVM state with an overlay and reversible journal.
 #[derive(derive_more::Debug)]
 #[non_exhaustive]
-pub struct State<T: EvmTypes = crate::BaseEvmTypes> {
+pub struct State {
     /// Read-only initial database.
     #[debug(skip)]
     initial: Box<dyn Database>,
@@ -363,9 +361,6 @@ pub struct State<T: EvmTypes = crate::BaseEvmTypes> {
     accessed_storage: StorageKeySet,
     /// Transaction-scoped EIP-1153 transient storage keyed by account address and slot.
     transient_storage: StorageKeyMap<Word>,
-    /// Active execution inspector for state-emitted logs.
-    #[debug(skip)]
-    inspector: Option<NonNull<dyn Inspector<T>>>,
 }
 
 impl State {
@@ -374,9 +369,7 @@ impl State {
     pub fn new(initial: impl Database) -> Self {
         Self::new_mono(Box::new(initial))
     }
-}
 
-impl<T: EvmTypes> State<T> {
     #[inline]
     pub(crate) fn new_mono(initial: Box<dyn Database>) -> Self {
         Self {
@@ -390,13 +383,7 @@ impl<T: EvmTypes> State<T> {
             accessed_accounts: AddressSet::default(),
             accessed_storage: StorageKeySet::default(),
             transient_storage: StorageKeyMap::default(),
-            inspector: None,
         }
-    }
-
-    #[inline]
-    pub(super) const fn set_inspector(&mut self, inspector: Option<NonNull<dyn Inspector<T>>>) {
-        self.inspector = inspector;
     }
 
     /// Returns a checkpoint for later rollback.
@@ -433,19 +420,6 @@ impl<T: EvmTypes> State<T> {
     #[inline]
     pub fn log(&mut self, log: Log) {
         self.logs.push(log);
-    }
-
-    #[inline]
-    fn inspect_log(&mut self, log: &Log) {
-        if let Some(mut inspector) = self.inspector {
-            unsafe { inspector.as_mut() }.log(log);
-        }
-    }
-
-    #[inline]
-    pub(super) fn emit_log(&mut self, log: Log) {
-        self.inspect_log(&log);
-        self.log(log);
     }
 
     /// Builds an EIP-7708 ETH burn log if the burned value is non-zero.
@@ -1083,7 +1057,7 @@ impl<T: EvmTypes> State<T> {
 
     #[cfg(test)]
     pub(super) fn finalize_transaction_(&mut self, version: &Version) {
-        self.finalize_transaction(version);
+        self.finalize_transaction(version, |_| {});
     }
 
     /// Applies transaction-finalization account-lifetime rules to the overlay.
@@ -1093,7 +1067,11 @@ impl<T: EvmTypes> State<T> {
     /// transaction substate such as touches and selfdestructs, while finalization
     /// turns that substate into account deletions, storage wipes, or pre-EIP-161
     /// empty-account materialization.
-    pub(super) fn finalize_transaction(&mut self, version: &Version) {
+    pub(super) fn finalize_transaction(
+        &mut self,
+        version: &Version,
+        mut inspect_log: impl FnMut(&Log),
+    ) {
         let selfdestructs = mem::take(&mut self.selfdestructs);
         let touched = mem::take(&mut self.touched);
 
@@ -1116,7 +1094,8 @@ impl<T: EvmTypes> State<T> {
             burned.sort_by_key(|(address, _)| *address);
             for (address, balance) in burned {
                 if let Some(log) = self.eip7708_burn_log(address, balance) {
-                    self.emit_log(log);
+                    inspect_log(&log);
+                    self.log(log);
                 }
             }
         }
@@ -1490,9 +1469,13 @@ mod tests {
 
         state.mark_destructed(high);
         state.mark_destructed(low);
-        state.finalize_transaction_(Version::base(SpecId::AMSTERDAM));
+        let mut inspected = Vec::new();
+        state.finalize_transaction(Version::base(SpecId::AMSTERDAM), |log| {
+            inspected.push(log.clone())
+        });
 
         let changes = state.build_state_changes();
+        assert_eq!(inspected, changes.logs);
         assert_eq!(changes.logs.len(), 2);
         assert_eq!(
             changes.logs[0].topics(),

@@ -7,6 +7,7 @@ use self::{
 use crate::{
     EvmConfigSelector, EvmTypes, ExecutionConfig, PrecompileError, PrecompileHalt, SpecId,
     bytecode::Bytecode,
+    constants::EIP7708_TRANSFER_TOPIC,
     env::{BlockEnv, TxEnv},
     interpreter::{
         Gas, GasTracker, Host, InstrStop, Interpreter, InterpreterPool, Message, MessageKind,
@@ -18,8 +19,7 @@ use crate::{
 };
 use alloc::boxed::Box;
 use alloy_eips::eip2718::Typed2718;
-use alloy_primitives::{Address, B256, Bytes, Log, LogData, b256};
-use core::ptr::NonNull;
+use alloy_primitives::{Address, B256, Bytes, Log, LogData};
 
 pub mod config;
 pub mod env;
@@ -40,9 +40,6 @@ pub use state::{
     Account, AccountInfo, JournalEntry, State, StateChanges, StateCheckpoint, StorageChangeSet,
     StorageOverlay, Tracked,
 };
-
-const EIP7708_TRANSFER_TOPIC: B256 =
-    b256!("ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef");
 
 /// Loaded account information.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
@@ -168,7 +165,7 @@ pub struct Evm<T: EvmTypes> {
     pub(crate) block: BlockEnv,
     registry: TxRegistry<T::Tx, TxResult, Self>,
     #[debug(skip)]
-    pub(crate) state: State<T>,
+    pub(crate) state: State,
     #[debug(skip)]
     precompiles: Box<dyn PrecompileProvider>,
     #[debug(skip)]
@@ -297,7 +294,7 @@ impl<T: EvmTypes> Evm<T> {
 
     /// Returns the mutable EVM state.
     #[inline]
-    pub const fn state(&self) -> &State<T> {
+    pub const fn state(&self) -> &State {
         &self.state
     }
 
@@ -349,6 +346,28 @@ impl<T: EvmTypes> Evm<T> {
         self.inspector.as_mut().map(|inspector| inspector.as_mut() as &mut dyn Inspector<T>)
     }
 
+    #[inline]
+    fn inspect_log(&mut self, log: &Log) {
+        if let Some(inspector) = &mut self.inspector {
+            inspector.log(log);
+        }
+    }
+
+    #[inline]
+    fn emit_log(&mut self, log: Log) {
+        self.inspect_log(&log);
+        self.state.log(log);
+    }
+
+    #[inline]
+    fn finalize_transaction(&mut self) {
+        self.state.finalize_transaction(self.execution_config.version(), |log| {
+            if let Some(inspector) = &mut self.inspector {
+                inspector.log(log);
+            }
+        });
+    }
+
     fn eip7708_transfer_log(from: Address, to: Address, value: Word) -> Option<Log> {
         if value.is_zero() || from == to {
             return None;
@@ -367,39 +386,29 @@ impl<T: EvmTypes> Evm<T> {
         })
     }
 
-    #[inline]
     fn log_eip7708_transfer(&mut self, from: Address, to: Address, value: Word) {
         if self.feature(EvmFeatures::EIP7708)
             && let Some(log) = Self::eip7708_transfer_log(from, to, value)
         {
-            self.state.emit_log(log);
+            self.emit_log(log);
         }
-    }
-
-    #[inline]
-    fn sync_state_inspector(&mut self) {
-        let inspector = self.inspector.as_deref_mut().map(NonNull::from);
-        self.state.set_inspector(inspector);
     }
 
     /// Sets the active execution inspector.
     #[inline]
     pub fn set_inspector<I: Inspector<T> + 'static>(&mut self, inspector: I) {
         self.inspector = Some(Box::new(inspector));
-        self.sync_state_inspector();
     }
 
     /// Sets the active boxed execution inspector.
     #[inline]
     pub fn set_boxed_inspector(&mut self, inspector: Box<dyn Inspector<T>>) {
         self.inspector = Some(inspector);
-        self.sync_state_inspector();
     }
 
     /// Removes the active execution inspector.
     #[inline]
     pub fn clear_inspector(&mut self) -> Option<Box<dyn Inspector<T>>> {
-        self.state.set_inspector(None);
         self.inspector.take()
     }
 
@@ -434,7 +443,7 @@ impl<T: EvmTypes<Tx: Typed2718>> Evm<T> {
         let handler = self.registry.try_get_by_type(tx.ty())?;
         let mut result = handler.call(tx, self);
         if let Ok(result) = &mut result {
-            self.state.finalize_transaction(self.execution_config.version());
+            self.finalize_transaction();
             result.state_changes = self.state.build_state_changes();
             self.state.commit_transaction_overlay();
         };
@@ -873,7 +882,7 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
             if self.feature(EvmFeatures::EIP7708)
                 && let Some(log) = self.state.eip7708_burn_log(contract, balance)
             {
-                self.state.emit_log(log);
+                self.emit_log(log);
             }
             self.state.add_balance(contract, Word::ZERO.wrapping_sub(balance));
         }
