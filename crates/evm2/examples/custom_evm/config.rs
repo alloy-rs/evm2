@@ -59,6 +59,8 @@ impl EvmTypes for CustomTypes {
     type TxEnvExt = CustomTxEnvExt;
     type BlockEnvExt = CustomBlockEnvExt;
     type MessageExt = CustomMessageExt;
+    type MessageResultExt = CustomMessageResultExt;
+    type TxResultExt = CustomTxResultExt;
     type Host = Evm<Self>;
 }
 
@@ -75,6 +77,16 @@ pub struct CustomBlockEnvExt {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CustomMessageExt {
     pub is_system: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CustomMessageResultExt {
+    pub handled_custom_message: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CustomTxResultExt {
+    pub handled_custom_tx: bool,
 }
 
 #[derive(Clone, Copy, Debug)]

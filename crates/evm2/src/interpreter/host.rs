@@ -1,6 +1,6 @@
 use super::{GasTracker, InstrStop, Message, Result, Word};
 use crate::{
-    EvmTypes, SpecId,
+    BaseEvmTypes, EvmTypes, SpecId,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
     evm::{AccountLoad, SLoad, SStore, SelfDestructResult},
@@ -14,8 +14,8 @@ use alloy_primitives::{Address, B256, Bytes, Log};
 /// [`Self::gas_returned_to_parent`] and [`Self::refund_propagated_to_parent`] when applying a child
 /// result to a caller frame. Use [`Self::gas_remaining_after_final_refund`] or
 /// [`Self::gas_used_after_final_refund`] for top-level transaction accounting.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct MessageResult {
+#[derive(Clone, derive_more::Debug)]
+pub struct MessageResult<T: EvmTypes = BaseEvmTypes> {
     /// Interpreter stop reason.
     pub stop: InstrStop,
     /// Gas accounting for the child frame.
@@ -24,9 +24,37 @@ pub struct MessageResult {
     pub output: Bytes,
     /// Created address for successful create messages.
     pub created_address: Option<Address>,
+    /// EVM type-specific extension data.
+    pub ext: T::MessageResultExt,
 }
 
-impl MessageResult {
+impl<T: EvmTypes> PartialEq for MessageResult<T> {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.stop == other.stop
+            && self.gas == other.gas
+            && self.output == other.output
+            && self.created_address == other.created_address
+            && self.ext == other.ext
+    }
+}
+
+impl<T: EvmTypes> Eq for MessageResult<T> {}
+
+impl<T: EvmTypes> Default for MessageResult<T> {
+    #[inline]
+    fn default() -> Self {
+        Self {
+            stop: InstrStop::default(),
+            gas: GasTracker::default(),
+            output: Bytes::new(),
+            created_address: None,
+            ext: T::MessageResultExt::default(),
+        }
+    }
+}
+
+impl<T: EvmTypes> MessageResult<T> {
     /// Returns whether the message committed state changes.
     #[inline]
     pub const fn is_success(&self) -> bool {
@@ -138,7 +166,7 @@ pub trait Host<T: EvmTypes> {
         bytecode: Bytecode,
         message: &Message<T>,
         caller_is_static: bool,
-    ) -> MessageResult;
+    ) -> MessageResult<T>;
 
     /// Registers the current contract for self-destruction.
     fn selfdestruct(

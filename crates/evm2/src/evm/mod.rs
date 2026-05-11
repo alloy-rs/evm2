@@ -53,7 +53,7 @@ pub struct Evm<T: EvmTypes> {
     execution_config: ExecutionConfig<T>,
     features: EvmFeatures,
     pub(crate) block: BlockEnv<T>,
-    registry: TxRegistry<T::Tx, TxResult, Self>,
+    registry: TxRegistry<T::Tx, TxResult<T>, Self>,
     #[debug(skip)]
     pub(crate) state: State,
     #[debug(skip)]
@@ -72,7 +72,7 @@ impl<T: EvmTypes> Evm<T> {
     pub fn new(
         spec_id: T::SpecId,
         block: BlockEnv<T>,
-        registry: TxRegistry<T::Tx, TxResult, Self>,
+        registry: TxRegistry<T::Tx, TxResult<T>, Self>,
         database: impl DynDatabase,
         precompiles: impl PrecompileProvider,
     ) -> Self {
@@ -92,7 +92,7 @@ impl<T: EvmTypes> Evm<T> {
         execution_config: ExecutionConfig<T>,
         spec_id: T::SpecId,
         block: BlockEnv<T>,
-        registry: TxRegistry<T::Tx, TxResult, Self>,
+        registry: TxRegistry<T::Tx, TxResult<T>, Self>,
         database: impl DynDatabase,
         precompiles: impl PrecompileProvider,
     ) -> Self {
@@ -111,7 +111,7 @@ impl<T: EvmTypes> Evm<T> {
         execution_config: ExecutionConfig<T>,
         spec_id: T::SpecId,
         block: BlockEnv<T>,
-        registry: TxRegistry<T::Tx, TxResult, Self>,
+        registry: TxRegistry<T::Tx, TxResult<T>, Self>,
         database: Box<dyn DynDatabase>,
         precompiles: Box<dyn PrecompileProvider>,
     ) -> Self {
@@ -150,7 +150,7 @@ impl<T: EvmTypes> Evm<T> {
 impl<T: EvmTypes> Evm<T> {
     /// Returns the transaction handler registry.
     #[inline]
-    pub const fn registry(&self) -> &TxRegistry<T::Tx, TxResult, Self> {
+    pub const fn registry(&self) -> &TxRegistry<T::Tx, TxResult<T>, Self> {
         &self.registry
     }
 
@@ -333,7 +333,7 @@ impl<T: EvmTypes> Evm<T> {
 
 impl<T: EvmTypes<Tx: Typed2718>> Evm<T> {
     /// Dispatches the transaction to the handler registered for its EIP-2718 type byte.
-    pub fn transact(&mut self, tx: &T::Tx) -> HandlerResult<TxResult> {
+    pub fn transact(&mut self, tx: &T::Tx) -> HandlerResult<TxResult<T>> {
         self.db_error_code = None;
         let handler = self.registry.try_get_by_type(tx.ty())?;
         let mut result = handler.call(tx, self);
@@ -356,7 +356,7 @@ impl<T: EvmTypes<Tx: Typed2718>> Evm<T> {
     pub fn transact_iter<'a, I>(
         &'a mut self,
         txs: I,
-    ) -> impl Iterator<Item = HandlerResult<TxResult>> + 'a
+    ) -> impl Iterator<Item = HandlerResult<TxResult<T>>> + 'a
     where
         I: IntoIterator<Item = &'a T::Tx>,
         I::IntoIter: 'a,
@@ -375,7 +375,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         bytecode: Bytecode,
         message: &Message<T>,
         caller_is_static: bool,
-    ) -> MessageResult {
+    ) -> MessageResult<T> {
         self.execute_create_message_inner(tx_env, bytecode, message, caller_is_static)
             .unwrap_or_else(|stop| Self::error_message_result(stop, message.gas_limit))
     }
@@ -386,7 +386,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         bytecode: Bytecode,
         message: &Message<T>,
         caller_is_static: bool,
-    ) -> Result<MessageResult, InstrStop> {
+    ) -> Result<MessageResult<T>, InstrStop> {
         self.check_create_funds(message)?;
         if message.depth > 0 {
             // EIP-2681 caps account nonces at u64::MAX; CREATE/CREATE2 return zero
@@ -449,6 +449,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
                     gas: Self::message_gas(*gas.tracker(), stop),
                     output,
                     created_address: None,
+                    ext: T::MessageResultExt::default(),
                 });
             }
 
@@ -464,6 +465,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             gas: Self::message_gas(*gas.tracker(), stop),
             output,
             created_address: stop.is_success().then_some(address),
+            ext: T::MessageResultExt::default(),
         })
     }
 
@@ -533,7 +535,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         bytecode: Bytecode,
         message: &Message<T>,
         caller_is_static: bool,
-    ) -> MessageResult {
+    ) -> MessageResult<T> {
         self.execute_call_message_inner(tx_env, bytecode, message, caller_is_static)
             .unwrap_or_else(|stop| Self::error_message_result(stop, message.gas_limit))
     }
@@ -544,7 +546,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         bytecode: Bytecode,
         message: &Message<T>,
         caller_is_static: bool,
-    ) -> Result<MessageResult, InstrStop> {
+    ) -> Result<MessageResult<T>, InstrStop> {
         let checkpoint = self.state.checkpoint();
         // EIP-161 state clearing depends on zero-value direct call targets being touched.
         // CALLCODE also needs the value-transfer balance check.
@@ -584,6 +586,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
                 gas: Self::message_gas(*gas.tracker(), stop),
                 output,
                 created_address: None,
+                ext: T::MessageResultExt::default(),
             });
         }
 
@@ -602,11 +605,12 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             gas: Self::message_gas(*child_gas.tracker(), stop),
             output,
             created_address: None,
+            ext: T::MessageResultExt::default(),
         })
     }
 
     #[inline]
-    fn error_message_result(stop: InstrStop, gas_remaining: u64) -> MessageResult {
+    fn error_message_result(stop: InstrStop, gas_remaining: u64) -> MessageResult<T> {
         MessageResult {
             stop,
             gas: GasTracker::new(gas_remaining, gas_remaining, 0),
@@ -772,7 +776,7 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
         bytecode: Bytecode,
         message: &Message<T>,
         caller_is_static: bool,
-    ) -> MessageResult {
+    ) -> MessageResult<T> {
         match message.kind {
             MessageKind::Create | MessageKind::Create2 => {
                 self.execute_create_message(tx_env, bytecode, message, caller_is_static)
@@ -942,8 +946,8 @@ pub struct SelfDestructResult {
 }
 
 /// Result of executing a transaction.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct TxResult {
+#[derive(Clone, derive_more::Debug)]
+pub struct TxResult<T: EvmTypes = crate::BaseEvmTypes> {
     /// Whether execution succeeded.
     pub status: bool,
     /// Gas used by execution.
@@ -956,6 +960,38 @@ pub struct TxResult {
     pub state_changes: StateChanges,
     /// Database error handle, if execution stopped on a database error.
     pub db_error_code: Option<DbErrorCode>,
+    /// EVM type-specific extension data.
+    pub ext: T::TxResultExt,
+}
+
+impl<T: EvmTypes> PartialEq for TxResult<T> {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.status == other.status
+            && self.gas_used == other.gas_used
+            && self.stop == other.stop
+            && self.output == other.output
+            && self.state_changes == other.state_changes
+            && self.db_error_code == other.db_error_code
+            && self.ext == other.ext
+    }
+}
+
+impl<T: EvmTypes> Eq for TxResult<T> {}
+
+impl<T: EvmTypes> Default for TxResult<T> {
+    #[inline]
+    fn default() -> Self {
+        Self {
+            status: false,
+            gas_used: 0,
+            stop: InstrStop::default(),
+            output: Bytes::new(),
+            state_changes: StateChanges::default(),
+            db_error_code: None,
+            ext: T::TxResultExt::default(),
+        }
+    }
 }
 
 fn eip7708_transfer_log(from: Address, to: Address, value: Word) -> Option<Log> {

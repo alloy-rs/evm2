@@ -22,6 +22,8 @@ impl EvmTypes for TestTypes {
     type TxEnvExt = ();
     type BlockEnvExt = ();
     type MessageExt = ();
+    type MessageResultExt = ();
+    type TxResultExt = ();
     type Host = TestHost;
 }
 
@@ -39,7 +41,7 @@ pub(crate) struct TestHost {
     pub(super) original_storage: StorageKeyMap<Word>,
     pub(super) transient_storage: StorageKeyMap<Word>,
     pub(crate) logs: Vec<Log>,
-    pub(super) execute_result: MessageResult,
+    pub(super) execute_result: MessageResult<TestTypes>,
     pub(crate) selfdestruct_result: SelfDestructResult,
     pub(crate) selfdestruct_error: Option<InstrStop>,
     pub(crate) calls: Vec<Message<TestTypes>>,
@@ -169,7 +171,7 @@ impl Host<TestTypes> for TestHost {
         _bytecode: Bytecode,
         message: &Message<TestTypes>,
         caller_is_static: bool,
-    ) -> MessageResult {
+    ) -> MessageResult<TestTypes> {
         self.call_static_flags.push(caller_is_static || message.kind == MessageKind::StaticCall);
         self.calls.push(message.clone());
         self.execute_result.clone()

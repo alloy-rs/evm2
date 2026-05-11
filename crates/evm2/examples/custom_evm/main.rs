@@ -57,6 +57,7 @@ fn custom_opcode() -> HandlerResult<()> {
     assert_eq!(result.stop, InstrStop::Stop);
     assert!(result.status);
     assert_eq!(result.gas_used, expected_gas);
+    assert!(result.ext.handled_custom_tx);
     Ok(())
 }
 
@@ -83,6 +84,7 @@ fn l1_blocknumber_opcode() -> HandlerResult<()> {
     assert_eq!(result.stop, InstrStop::Return);
     assert!(result.status);
     assert_eq!(result.output, expected);
+    assert!(result.ext.handled_custom_tx);
     Ok(())
 }
 
@@ -221,7 +223,7 @@ impl Inspector<CustomTypes> for ExampleInspector {
         self.0.borrow_mut().logs += 1;
     }
 
-    fn call(&mut self, _message: &mut Message<CustomTypes>) -> Option<MessageResult> {
+    fn call(&mut self, _message: &mut Message<CustomTypes>) -> Option<MessageResult<CustomTypes>> {
         self.0.borrow_mut().calls += 1;
         None
     }

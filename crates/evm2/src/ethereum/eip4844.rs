@@ -19,7 +19,7 @@ use alloy_primitives::U256;
 
 pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     req: TxRequest<'_, Recovered<TxEip4844Variant>, Evm<T>>,
-) -> HandlerResult<TxResult> {
+) -> HandlerResult<TxResult<T>> {
     let caller = req.tx.signer();
     let tx = req.tx.inner().tx();
     let max_fee_per_gas = U256::from(tx.max_fee_per_gas);
