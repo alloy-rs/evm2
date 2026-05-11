@@ -63,6 +63,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             gas_price: U256::ZERO,
             chain_id: U256::from(self.version().chain_id),
             blob_hashes: Vec::new(),
+            ext: T::TxEnvExt::default(),
         };
         let Ok((bytecode, message)) = initial_message(
             self,

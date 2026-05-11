@@ -1,5 +1,7 @@
 use alloy_primitives::{Address, B256, Bytes, U256};
 
+use crate::{BaseEvmTypes, EvmTypes};
+
 /// EVM message kind.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -29,7 +31,7 @@ impl MessageKind {
 
 /// Frame-local EVM call/create message executed by the interpreter.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Message {
+pub struct Message<T: EvmTypes = BaseEvmTypes> {
     /// Message kind.
     pub kind: MessageKind,
     /// Current call depth.
@@ -52,9 +54,11 @@ pub struct Message {
     pub disable_precompiles: bool,
     /// CREATE2 salt. Ignored for other message kinds.
     pub salt: B256,
+    /// EVM type-specific extension data.
+    pub ext: T::MessageExt,
 }
 
-impl Default for Message {
+impl<T: EvmTypes> Default for Message<T> {
     #[inline]
     fn default() -> Self {
         Self {
@@ -68,6 +72,7 @@ impl Default for Message {
             code_address: Address::ZERO,
             disable_precompiles: false,
             salt: B256::ZERO,
+            ext: T::MessageExt::default(),
         }
     }
 }

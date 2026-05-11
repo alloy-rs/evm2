@@ -76,6 +76,7 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
         gas_price,
         chain_id: U256::from(req.host.version().chain_id),
         blob_hashes: tx.blob_versioned_hashes.iter().copied().map(b256_to_word).collect(),
+        ext: T::TxEnvExt::default(),
     };
     let (bytecode, message) =
         initial_message(req.host, caller, tx.nonce, tx.to.into(), &tx.input, tx.value, gas_limit)?;

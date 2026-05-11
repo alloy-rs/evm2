@@ -220,6 +220,7 @@ fn call_inner<T: EvmTypes>(
         code_address,
         disable_precompiles,
         salt: B256::ZERO,
+        ext: T::MessageExt::default(),
     };
     let caller_is_static = cx.state.is_static();
     let mut result = if let Some(result) = cx.state.inspect_call(&mut message) {
@@ -311,6 +312,7 @@ fn create_inner<T: EvmTypes>(
         code_address: current.destination,
         disable_precompiles: false,
         salt: salt.map(|salt| B256::from(salt.to_be_bytes())).unwrap_or_default(),
+        ext: T::MessageExt::default(),
     };
     let mut result = if let Some(result) = cx.state.inspect_create(&mut message) {
         result

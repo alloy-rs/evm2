@@ -1,6 +1,6 @@
 use super::{GasTracker, InstrStop, Message, Result, Word};
 use crate::{
-    SpecId,
+    EvmTypes, SpecId,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
     evm::{AccountLoad, SLoad, SStore, SelfDestructResult},
@@ -80,12 +80,12 @@ impl MessageResult {
 }
 
 /// External host operations.
-pub trait Host {
+pub trait Host<T: EvmTypes> {
     /// Returns the active base specification ID.
     fn spec_id(&self) -> SpecId;
 
     /// Returns the block environment.
-    fn block_env(&mut self) -> &BlockEnv;
+    fn block_env(&mut self) -> &BlockEnv<T>;
 
     /// Loads account information.
     fn load_account(
@@ -134,9 +134,9 @@ pub trait Host {
     /// Executes a message inside this host.
     fn execute_message(
         &mut self,
-        tx_env: &TxEnv,
+        tx_env: &TxEnv<T>,
         bytecode: Bytecode,
-        message: &Message,
+        message: &Message<T>,
         caller_is_static: bool,
     ) -> MessageResult;
 

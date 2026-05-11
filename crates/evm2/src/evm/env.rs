@@ -1,11 +1,12 @@
 //! EVM environment types.
 
+use crate::{BaseEvmTypes, EvmTypes};
 use alloc::{vec, vec::Vec};
 use alloy_primitives::{Address, U256};
 
 /// Transaction-global environment values visible to opcodes.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TxEnv {
+pub struct TxEnv<T: EvmTypes = BaseEvmTypes> {
     /// Transaction origin.
     pub origin: Address,
     /// Effective gas price.
@@ -14,9 +15,11 @@ pub struct TxEnv {
     pub chain_id: U256,
     /// Transaction blob versioned hashes.
     pub blob_hashes: Vec<U256>,
+    /// EVM type-specific extension data.
+    pub ext: T::TxEnvExt,
 }
 
-impl Default for TxEnv {
+impl<T: EvmTypes> Default for TxEnv<T> {
     #[inline]
     fn default() -> Self {
         Self {
@@ -24,13 +27,14 @@ impl Default for TxEnv {
             gas_price: U256::ZERO,
             chain_id: U256::ONE,
             blob_hashes: vec![],
+            ext: T::TxEnvExt::default(),
         }
     }
 }
 
 /// Block environment values visible to opcodes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct BlockEnv {
+#[derive(derive_more::Debug, PartialEq, Eq)]
+pub struct BlockEnv<T: EvmTypes = BaseEvmTypes> {
     /// Block number.
     pub number: U256,
     /// Block beneficiary.
@@ -49,9 +53,20 @@ pub struct BlockEnv {
     pub blob_basefee: U256,
     /// Beacon slot number.
     pub slot_num: U256,
+    /// EVM type-specific extension data.
+    pub ext: T::BlockEnvExt,
 }
 
-impl Default for BlockEnv {
+impl<T: EvmTypes> Clone for BlockEnv<T> {
+    #[inline]
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T: EvmTypes> Copy for BlockEnv<T> {}
+
+impl<T: EvmTypes> Default for BlockEnv<T> {
     #[inline]
     fn default() -> Self {
         Self {
@@ -64,6 +79,7 @@ impl Default for BlockEnv {
             prevrandao: U256::ZERO,
             blob_basefee: U256::ONE,
             slot_num: U256::ZERO,
+            ext: T::BlockEnvExt::default(),
         }
     }
 }

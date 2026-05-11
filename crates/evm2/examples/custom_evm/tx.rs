@@ -1,11 +1,12 @@
 //! Custom transaction envelope and registry handlers.
 
-use crate::config::CustomTypes;
+use crate::config::{CustomMessageExt, CustomTxEnvExt, CustomTypes};
 use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{Address, Bytes};
 use evm2::{
     Evm,
     bytecode::Bytecode,
+    env::TxEnv,
     interpreter::{Host, Message},
     registry::{HandlerResult, TxRegistry, TxRequest},
 };
@@ -54,10 +55,12 @@ pub fn execute_code(
         gas_limit: req.tx.gas_limit,
         destination: req.tx.target,
         code_address: req.tx.target,
+        ext: CustomMessageExt { is_system: false },
         ..Message::default()
     };
+    let tx_env = TxEnv { ext: CustomTxEnvExt { label: "execute-code" }, ..TxEnv::default() };
     let result = req.host.execute_message(
-        &Default::default(),
+        &tx_env,
         Bytecode::new_legacy(req.tx.code.clone()),
         &message,
         false,

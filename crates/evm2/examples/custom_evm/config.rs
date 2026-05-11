@@ -56,7 +56,25 @@ impl EvmTypes for CustomTypes {
     type ConfigSelector = CustomConfigSelector;
     type SpecId = CustomSpecId;
     type Tx = crate::tx::CustomEnvelope;
+    type TxEnvExt = CustomTxEnvExt;
+    type BlockEnvExt = CustomBlockEnvExt;
+    type MessageExt = CustomMessageExt;
     type Host = Evm<Self>;
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CustomTxEnvExt {
+    pub label: &'static str,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CustomBlockEnvExt {
+    pub l1_block_number: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CustomMessageExt {
+    pub is_system: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -85,6 +103,10 @@ pub const fn custom_version_tables<const BASE_SPEC_ID: u8, const CUSTOM_SPEC_ID:
         version.set_instruction::<opcode::custom<CustomTypes>>(
             opcode::CUSTOM_OPCODE,
             opcode::CUSTOM_OPCODE_GAS,
+        );
+        version.set_instruction::<opcode::l1_blocknumber>(
+            opcode::L1_BLOCKNUMBER_OPCODE,
+            opcode::L1_BLOCKNUMBER_GAS,
         );
     }
     version

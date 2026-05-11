@@ -334,7 +334,7 @@ pub(crate) fn initial_message<T: EvmTypes<Host = Evm<T>>>(
     input: &Bytes,
     value: U256,
     gas_limit: u64,
-) -> HandlerResult<(Bytecode, Message)> {
+) -> HandlerResult<(Bytecode, Message<T>)> {
     let r = match to {
         TxKind::Call(to) => {
             let initial_code = initial_call_code(host, to)?;
@@ -349,6 +349,7 @@ pub(crate) fn initial_message<T: EvmTypes<Host = Evm<T>>>(
                 code_address: initial_code.code_address,
                 disable_precompiles: initial_code.disable_precompiles,
                 salt: B256::ZERO,
+                ext: T::MessageExt::default(),
             };
             (initial_code.code, message)
         }
@@ -365,6 +366,7 @@ pub(crate) fn initial_message<T: EvmTypes<Host = Evm<T>>>(
                 code_address: address,
                 disable_precompiles: false,
                 salt: B256::ZERO,
+                ext: T::MessageExt::default(),
             };
             (Bytecode::new_legacy(input.clone()), message)
         }

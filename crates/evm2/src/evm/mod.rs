@@ -52,7 +52,7 @@ pub struct Evm<T: EvmTypes> {
     #[debug(skip)]
     execution_config: ExecutionConfig<T>,
     features: EvmFeatures,
-    pub(crate) block: BlockEnv,
+    pub(crate) block: BlockEnv<T>,
     registry: TxRegistry<T::Tx, TxResult, Self>,
     #[debug(skip)]
     pub(crate) state: State,
@@ -71,7 +71,7 @@ impl<T: EvmTypes> Evm<T> {
     #[inline]
     pub fn new(
         spec_id: T::SpecId,
-        block: BlockEnv,
+        block: BlockEnv<T>,
         registry: TxRegistry<T::Tx, TxResult, Self>,
         database: impl DynDatabase,
         precompiles: impl PrecompileProvider,
@@ -91,7 +91,7 @@ impl<T: EvmTypes> Evm<T> {
     pub fn new_with_execution_config(
         execution_config: ExecutionConfig<T>,
         spec_id: T::SpecId,
-        block: BlockEnv,
+        block: BlockEnv<T>,
         registry: TxRegistry<T::Tx, TxResult, Self>,
         database: impl DynDatabase,
         precompiles: impl PrecompileProvider,
@@ -110,7 +110,7 @@ impl<T: EvmTypes> Evm<T> {
     fn new_mono(
         execution_config: ExecutionConfig<T>,
         spec_id: T::SpecId,
-        block: BlockEnv,
+        block: BlockEnv<T>,
         registry: TxRegistry<T::Tx, TxResult, Self>,
         database: Box<dyn DynDatabase>,
         precompiles: Box<dyn PrecompileProvider>,
@@ -137,7 +137,7 @@ impl<T: EvmTypes> Evm<T> {
     #[inline]
     fn execute_precompile(
         &mut self,
-        message: &Message,
+        message: &Message<T>,
         gas: &mut Gas,
     ) -> Option<Result<PrecompileOutput, PrecompileError>> {
         if message.disable_precompiles {
@@ -371,9 +371,9 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     #[inline(never)]
     fn execute_create_message(
         &mut self,
-        tx_env: &TxEnv,
+        tx_env: &TxEnv<T>,
         bytecode: Bytecode,
-        message: &Message,
+        message: &Message<T>,
         caller_is_static: bool,
     ) -> MessageResult {
         self.execute_create_message_inner(tx_env, bytecode, message, caller_is_static)
@@ -382,9 +382,9 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
 
     fn execute_create_message_inner(
         &mut self,
-        tx_env: &TxEnv,
+        tx_env: &TxEnv<T>,
         bytecode: Bytecode,
-        message: &Message,
+        message: &Message<T>,
         caller_is_static: bool,
     ) -> Result<MessageResult, InstrStop> {
         self.check_create_funds(message)?;
@@ -433,6 +433,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             caller: message.caller,
             value: message.value,
             salt: message.salt,
+            ext: message.ext.clone(),
         };
         let (stop, mut gas, mut output) = {
             let (stop, interpreter) =
@@ -467,7 +468,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     }
 
     #[inline(never)]
-    fn check_create_funds(&mut self, message: &Message) -> Result<(), InstrStop> {
+    fn check_create_funds(&mut self, message: &Message<T>) -> Result<(), InstrStop> {
         if message.value > 0
             && self
                 .state
@@ -510,7 +511,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     fn create_address(
         &mut self,
         bytecode: &Bytecode,
-        message: &Message,
+        message: &Message<T>,
     ) -> Result<Address, InstrStop> {
         match message.kind {
             MessageKind::Create if message.depth == 0 => Ok(message.destination),
@@ -528,9 +529,9 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     #[inline(never)]
     fn execute_call_message(
         &mut self,
-        tx_env: &TxEnv,
+        tx_env: &TxEnv<T>,
         bytecode: Bytecode,
-        message: &Message,
+        message: &Message<T>,
         caller_is_static: bool,
     ) -> MessageResult {
         self.execute_call_message_inner(tx_env, bytecode, message, caller_is_static)
@@ -539,9 +540,9 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
 
     fn execute_call_message_inner(
         &mut self,
-        tx_env: &TxEnv,
+        tx_env: &TxEnv<T>,
         bytecode: Bytecode,
-        message: &Message,
+        message: &Message<T>,
         caller_is_static: bool,
     ) -> Result<MessageResult, InstrStop> {
         let checkpoint = self.state.checkpoint();
@@ -628,8 +629,8 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     fn run_interpreter<'frame>(
         &mut self,
         bytecode: Bytecode,
-        tx_env: &'frame TxEnv,
-        message: &'frame Message,
+        tx_env: &'frame TxEnv<T>,
+        message: &'frame Message<T>,
         caller_is_static: bool,
     ) -> (InstrStop, &mut Interpreter<'frame, T>) {
         let mut interpreter = self.interpreter_pool.pop();
@@ -660,12 +661,12 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     }
 }
 
-impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
+impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
     fn spec_id(&self) -> SpecId {
         self.spec_id()
     }
 
-    fn block_env(&mut self) -> &BlockEnv {
+    fn block_env(&mut self) -> &BlockEnv<T> {
         &self.block
     }
 
@@ -767,9 +768,9 @@ impl<T: EvmTypes<Host = Self>> Host for Evm<T> {
 
     fn execute_message(
         &mut self,
-        tx_env: &TxEnv,
+        tx_env: &TxEnv<T>,
         bytecode: Bytecode,
-        message: &Message,
+        message: &Message<T>,
         caller_is_static: bool,
     ) -> MessageResult {
         match message.kind {
