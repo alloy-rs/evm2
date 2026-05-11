@@ -2,7 +2,7 @@
 
 use super::{
     SStore,
-    db::{Database, DbResult},
+    db::{DbResult, DynDatabase},
     eip7708_burn_log,
 };
 use crate::{
@@ -333,7 +333,7 @@ pub enum JournalEntry {
 pub struct State {
     /// Read-only initial database.
     #[debug(skip)]
-    initial: Box<dyn Database>,
+    initial: Box<dyn DynDatabase>,
     /// Account data overlay keyed by address.
     ///
     /// Entries are created when account state is loaded or mutated. The tracked
@@ -369,12 +369,12 @@ pub struct State {
 impl State {
     /// Creates a new state over an initial database.
     #[inline]
-    pub fn new(initial: impl Database) -> Self {
+    pub fn new(initial: impl DynDatabase) -> Self {
         Self::new_mono(Box::new(initial))
     }
 
     #[inline]
-    pub(crate) fn new_mono(initial: Box<dyn Database>) -> Self {
+    pub(crate) fn new_mono(initial: Box<dyn DynDatabase>) -> Self {
         Self {
             initial,
             accounts: AddressMap::default(),
@@ -397,19 +397,19 @@ impl State {
 
     /// Returns the initial database.
     #[inline]
-    pub fn initial(&self) -> &dyn Database {
+    pub fn initial(&self) -> &dyn DynDatabase {
         self.initial.as_ref()
     }
 
     /// Returns the initial database mutably.
     #[inline]
-    pub fn initial_mut(&mut self) -> &mut dyn Database {
+    pub fn initial_mut(&mut self) -> &mut dyn DynDatabase {
         self.initial.as_mut()
     }
 
     /// Replaces the initial database.
     #[inline]
-    pub fn set_initial(&mut self, initial: impl Database) {
+    pub fn set_initial(&mut self, initial: impl DynDatabase) {
         self.initial = Box::new(initial);
     }
 
@@ -579,7 +579,7 @@ impl State {
     }
 
     fn ensure_account_overlay<'a>(
-        initial: &mut dyn Database,
+        initial: &mut dyn DynDatabase,
         accounts: &'a mut AddressMap<Tracked<Option<Account>>>,
         journal: &mut Vec<JournalEntry>,
         address: Address,

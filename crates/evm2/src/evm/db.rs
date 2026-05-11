@@ -48,7 +48,7 @@ impl DbErrorCode {
 pub type DbResult<T> = Result<T, DbErrorCode>;
 
 /// Backing database implementation with a concrete error type.
-pub trait DbTyped: Any {
+pub trait Database: Any {
     /// Database error type.
     type Error: Error + 'static;
 
@@ -67,12 +67,12 @@ pub trait DbTyped: Any {
 
 /// Object-safe database adapter for typed database implementations.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Db<T: DbTyped> {
+pub struct Db<T: Database> {
     db: T,
     result: Option<T::Error>,
 }
 
-impl<T: DbTyped> Db<T> {
+impl<T: Database> Db<T> {
     /// Creates a new database adapter.
     #[inline]
     pub const fn new(db: T) -> Self {
@@ -116,7 +116,7 @@ impl<T: DbTyped> Db<T> {
     }
 }
 
-impl<T: DbTyped + DatabaseCommit> DatabaseCommit for Db<T> {
+impl<T: Database + DatabaseCommit> DatabaseCommit for Db<T> {
     #[inline]
     fn commit(&mut self, changes: &StateChanges) {
         self.db.commit(changes);
@@ -142,7 +142,7 @@ impl fmt::Display for DbErrorUnavailable {
 
 impl Error for DbErrorUnavailable {}
 
-impl<T: DbTyped> Database for Db<T> {
+impl<T: Database> DynDatabase for Db<T> {
     #[inline]
     fn get_account(&mut self, address: Address) -> DbResult<Option<AccountInfo>> {
         self.db.get_account(address).map_err(|err| self.store_error(err))
@@ -175,7 +175,7 @@ impl<T: DbTyped> Database for Db<T> {
 }
 
 /// Backing database view used to initialize mutable [`super::State`].
-pub trait Database: Any {
+pub trait DynDatabase: Any {
     /// Loads account information.
     fn get_account(&mut self, address: Address) -> DbResult<Option<AccountInfo>>;
 
@@ -194,7 +194,7 @@ pub trait Database: Any {
     }
 }
 
-impl Database for Box<dyn Database> {
+impl DynDatabase for Box<dyn DynDatabase> {
     #[inline]
     fn get_account(&mut self, address: Address) -> DbResult<Option<AccountInfo>> {
         self.as_mut().get_account(address)
@@ -225,7 +225,7 @@ impl Database for Box<dyn Database> {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct EmptyDB(());
 
-impl DbTyped for EmptyDB {
+impl Database for EmptyDB {
     type Error = core::convert::Infallible;
 
     #[inline]
@@ -249,7 +249,7 @@ impl DbTyped for EmptyDB {
     }
 }
 
-impl Database for EmptyDB {
+impl DynDatabase for EmptyDB {
     #[inline]
     fn get_account(&mut self, address: Address) -> DbResult<Option<AccountInfo>> {
         Db::new(*self).get_account(address)

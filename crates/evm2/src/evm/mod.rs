@@ -34,7 +34,7 @@ pub use system::{
 
 mod db;
 pub use db::{
-    Cache, CacheDB, Database, DatabaseCommit, Db, DbErrorCode, DbResult, DbTyped, EmptyDB,
+    Cache, CacheDB, Database, DatabaseCommit, Db, DbErrorCode, DbResult, DynDatabase, EmptyDB,
     InMemoryDB,
 };
 
@@ -73,7 +73,7 @@ impl<T: EvmTypes> Evm<T> {
         spec_id: T::SpecId,
         block: BlockEnv,
         registry: TxRegistry<T::Tx, TxResult, Self>,
-        database: impl Database,
+        database: impl DynDatabase,
         precompiles: impl PrecompileProvider,
     ) -> Self {
         Self::new_with_execution_config(
@@ -93,7 +93,7 @@ impl<T: EvmTypes> Evm<T> {
         spec_id: T::SpecId,
         block: BlockEnv,
         registry: TxRegistry<T::Tx, TxResult, Self>,
-        database: impl Database,
+        database: impl DynDatabase,
         precompiles: impl PrecompileProvider,
     ) -> Self {
         Self::new_mono(
@@ -112,7 +112,7 @@ impl<T: EvmTypes> Evm<T> {
         spec_id: T::SpecId,
         block: BlockEnv,
         registry: TxRegistry<T::Tx, TxResult, Self>,
-        database: Box<dyn Database>,
+        database: Box<dyn DynDatabase>,
         precompiles: Box<dyn PrecompileProvider>,
     ) -> Self {
         assert_eq!(
@@ -156,13 +156,13 @@ impl<T: EvmTypes> Evm<T> {
 
     /// Returns the backing database.
     #[inline]
-    pub fn database(&self) -> &dyn Database {
+    pub fn database(&self) -> &dyn DynDatabase {
         self.state.initial()
     }
 
     /// Returns the backing database mutably.
     #[inline]
-    pub fn database_mut(&mut self) -> &mut dyn Database {
+    pub fn database_mut(&mut self) -> &mut dyn DynDatabase {
         self.state.initial_mut()
     }
 
@@ -174,19 +174,19 @@ impl<T: EvmTypes> Evm<T> {
 
     /// Replaces the backing database.
     #[inline]
-    pub fn set_database(&mut self, database: impl Database) {
+    pub fn set_database(&mut self, database: impl DynDatabase) {
         self.state.set_initial(database);
     }
 
     /// Returns the backing database as `D` if it has that concrete type.
     #[inline]
-    pub fn database_as<D: Database>(&self) -> Option<&D> {
+    pub fn database_as<D: DynDatabase>(&self) -> Option<&D> {
         <dyn core::any::Any>::downcast_ref(self.database())
     }
 
     /// Returns the backing database mutably as `D` if it has that concrete type.
     #[inline]
-    pub fn database_as_mut<D: Database>(&mut self) -> Option<&mut D> {
+    pub fn database_as_mut<D: DynDatabase>(&mut self) -> Option<&mut D> {
         <dyn core::any::Any>::downcast_mut(self.database_mut())
     }
 
@@ -1145,7 +1145,7 @@ mod tests {
     #[derive(Debug, Default)]
     struct FailingStorageDb;
 
-    impl DbTyped for FailingStorageDb {
+    impl Database for FailingStorageDb {
         type Error = FailingDbError;
 
         fn get_account(&mut self, _address: Address) -> Result<Option<AccountInfo>, Self::Error> {

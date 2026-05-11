@@ -1,6 +1,6 @@
 //! In-memory cache database.
 
-use super::{Database, DatabaseCommit, DbErrorCode, DbResult, EmptyDB};
+use super::{DatabaseCommit, DbErrorCode, DbResult, DynDatabase, EmptyDB};
 use crate::{
     bytecode::Bytecode,
     evm::state::{AccountInfo, StateChanges},
@@ -149,7 +149,7 @@ impl<ExtDB> DatabaseCommit for CacheDB<ExtDB> {
     }
 }
 
-impl<ExtDB: Database> Database for CacheDB<ExtDB> {
+impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
     #[inline]
     fn get_account(&mut self, address: Address) -> DbResult<Option<AccountInfo>> {
         let Cache { accounts, contracts, .. } = &mut self.cache;
@@ -221,7 +221,7 @@ mod tests {
         block_hash_loads: usize,
     }
 
-    impl crate::evm::DbTyped for CountingDB {
+    impl crate::evm::Database for CountingDB {
         type Error = core::convert::Infallible;
 
         fn get_account(&mut self, _address: Address) -> Result<Option<AccountInfo>, Self::Error> {
