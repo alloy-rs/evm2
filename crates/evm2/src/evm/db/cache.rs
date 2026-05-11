@@ -9,7 +9,7 @@ use crate::{
 };
 use alloy_primitives::{
     Address, B256, KECCAK256_EMPTY,
-    map::{AddressMap, AddressSet, B256Map, U256Map, hash_map::Entry},
+    map::{AddressMap, B256Map, U256Map, hash_map::Entry},
 };
 
 /// A database implementation that stores initial state in memory.
@@ -126,25 +126,21 @@ impl<ExtDB> DatabaseCommit for CacheDB<ExtDB> {
             self.cache.contracts.insert(code_hash, code.clone());
         }
 
-        let mut cleared_storage = AddressSet::default();
-        for (&address, storage) in &changes.storage {
-            if storage.wipe {
-                cleared_storage.insert(address);
-            }
-        }
-        let mut deleted_accounts = AddressSet::default();
-        for (&address, change) in &changes.accounts {
-            if change.current.is_none() {
-                cleared_storage.insert(address);
-                deleted_accounts.insert(address);
-            }
-        }
-        if !cleared_storage.is_empty() {
-            self.cache.storage.retain(|key, _| !cleared_storage.contains(&key.address()));
+        if changes.storage.values().any(|storage| storage.wipe)
+            || changes.accounts.values().any(|change| change.current.is_none())
+        {
+            self.cache.storage.retain(|key, _| {
+                let address = key.address();
+                !changes.storage.get(&address).is_some_and(|storage| storage.wipe)
+                    && !changes
+                        .accounts
+                        .get(&address)
+                        .is_some_and(|change| change.current.is_none())
+            });
         }
 
         for (&address, storage) in &changes.storage {
-            if deleted_accounts.contains(&address) {
+            if changes.accounts.get(&address).is_some_and(|change| change.current.is_none()) {
                 continue;
             }
             for (&key, change) in &storage.slots {
