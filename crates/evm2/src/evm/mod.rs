@@ -992,7 +992,7 @@ mod tests {
         interpreter::{MessageKind, op},
         registry::TxRequest,
     };
-    use alloc::{boxed::Box, vec, vec::Vec};
+    use alloc::{boxed::Box, string::ToString, vec, vec::Vec};
     use alloy_consensus::{TxLegacy, transaction::Recovered};
     use alloy_primitives::{Address, Bytes, KECCAK256_EMPTY, U256};
     use core::{error::Error, fmt};
