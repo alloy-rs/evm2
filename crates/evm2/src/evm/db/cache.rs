@@ -133,10 +133,11 @@ impl<ExtDB> DatabaseCommit for CacheDB<ExtDB> {
         });
 
         for (&address, storage) in &changes.storage {
-            let account_deleted =
-                changes.accounts.get(&address).is_some_and(|change| change.current.is_none());
+            if changes.accounts.get(&address).is_some_and(|change| change.current.is_none()) {
+                continue;
+            }
             for (&key, change) in &storage.slots {
-                if account_deleted || change.current.is_zero() {
+                if change.current.is_zero() {
                     self.cache.storage.remove(&StorageKey::new(address, key));
                 } else {
                     self.cache.storage.insert(StorageKey::new(address, key), change.current);
