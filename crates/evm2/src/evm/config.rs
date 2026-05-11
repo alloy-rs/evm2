@@ -27,20 +27,20 @@ pub trait EvmTypes: Sized + 'static {
     /// Transaction type handled by this EVM.
     type Tx;
 
-    /// Extra data stored in transaction environments.
-    type TxEnvExt: Clone + core::fmt::Debug + PartialEq + Eq + Default;
-
-    /// Extra data stored in block environments.
-    type BlockEnvExt: Copy + core::fmt::Debug + PartialEq + Eq + Default;
-
     /// Extra data stored in frame messages.
     type MessageExt: Clone + core::fmt::Debug + PartialEq + Eq + Default;
 
     /// Extra data stored in message execution results.
     type MessageResultExt: Clone + core::fmt::Debug + PartialEq + Eq + Default;
 
+    /// Extra data stored in transaction environments.
+    type TxEnvExt: Clone + core::fmt::Debug + PartialEq + Eq + Default;
+
     /// Extra data stored in transaction execution results.
     type TxResultExt: Clone + core::fmt::Debug + PartialEq + Eq + Default;
+
+    /// Extra data stored in block environments.
+    type BlockEnvExt: Copy + core::fmt::Debug + PartialEq + Eq + Default;
 
     /// Host type used by this EVM.
     type Host: Host<Self> + ?Sized;
@@ -198,11 +198,11 @@ impl EvmTypes for BaseEvmTypes {
     type ConfigSelector = BaseEvmConfigSelector;
     type SpecId = SpecId;
     type Tx = RecoveredTxEnvelope;
-    type TxEnvExt = ();
-    type BlockEnvExt = ();
     type MessageExt = ();
     type MessageResultExt = ();
+    type TxEnvExt = ();
     type TxResultExt = ();
+    type BlockEnvExt = ();
     type Host = crate::evm::Evm<Self>;
 }
 

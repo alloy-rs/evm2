@@ -56,22 +56,12 @@ impl EvmTypes for CustomTypes {
     type ConfigSelector = CustomConfigSelector;
     type SpecId = CustomSpecId;
     type Tx = crate::tx::CustomEnvelope;
-    type TxEnvExt = CustomTxEnvExt;
-    type BlockEnvExt = CustomBlockEnvExt;
     type MessageExt = CustomMessageExt;
     type MessageResultExt = CustomMessageResultExt;
+    type TxEnvExt = CustomTxEnvExt;
     type TxResultExt = CustomTxResultExt;
+    type BlockEnvExt = CustomBlockEnvExt;
     type Host = Evm<Self>;
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct CustomTxEnvExt {
-    pub label: &'static str,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct CustomBlockEnvExt {
-    pub l1_block_number: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -85,8 +75,18 @@ pub struct CustomMessageResultExt {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CustomTxEnvExt {
+    pub label: &'static str,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CustomTxResultExt {
     pub handled_custom_tx: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CustomBlockEnvExt {
+    pub l1_block_number: u64,
 }
 
 #[derive(Clone, Copy, Debug)]

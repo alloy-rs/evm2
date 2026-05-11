@@ -19,11 +19,11 @@ impl EvmTypes for TestTypes {
     type ConfigSelector = crate::BaseEvmConfigSelector;
     type SpecId = crate::SpecId;
     type Tx = ();
-    type TxEnvExt = ();
-    type BlockEnvExt = ();
     type MessageExt = ();
     type MessageResultExt = ();
+    type TxEnvExt = ();
     type TxResultExt = ();
+    type BlockEnvExt = ();
     type Host = TestHost;
 }
 
