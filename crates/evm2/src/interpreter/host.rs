@@ -6,6 +6,7 @@ use crate::{
     evm::{AccountLoad, SLoad, SStore, SelfDestructResult},
 };
 use alloy_primitives::{Address, B256, Bytes, Log};
+use derive_where::derive_where;
 
 /// Result of executing a call/create message.
 ///
@@ -14,7 +15,7 @@ use alloy_primitives::{Address, B256, Bytes, Log};
 /// [`Self::gas_returned_to_parent`] and [`Self::refund_propagated_to_parent`] when applying a child
 /// result to a caller frame. Use [`Self::gas_remaining_after_final_refund`] or
 /// [`Self::gas_used_after_final_refund`] for top-level transaction accounting.
-#[derive(Clone, derive_more::Debug)]
+#[derive_where(Clone, Debug, PartialEq, Eq; T::MessageResultExt)]
 pub struct MessageResult<T: EvmTypes = BaseEvmTypes> {
     /// Interpreter stop reason.
     pub stop: InstrStop,
@@ -26,28 +27,6 @@ pub struct MessageResult<T: EvmTypes = BaseEvmTypes> {
     pub created_address: Option<Address>,
     /// EVM type-specific extension data.
     pub ext: T::MessageResultExt,
-}
-
-impl<T> PartialEq for MessageResult<T>
-where
-    T: EvmTypes,
-    T::MessageResultExt: PartialEq,
-{
-    #[inline]
-    fn eq(&self, other: &Self) -> bool {
-        self.stop == other.stop
-            && self.gas == other.gas
-            && self.output == other.output
-            && self.created_address == other.created_address
-            && self.ext == other.ext
-    }
-}
-
-impl<T> Eq for MessageResult<T>
-where
-    T: EvmTypes,
-    T::MessageResultExt: Eq,
-{
 }
 
 impl<T: EvmTypes> Default for MessageResult<T> {

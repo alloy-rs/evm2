@@ -20,6 +20,7 @@ use crate::{
 use alloc::{boxed::Box, vec};
 use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{Address, B256, Bytes, Log, LogData};
+use derive_where::derive_where;
 
 pub mod config;
 pub mod env;
@@ -946,7 +947,7 @@ pub struct SelfDestructResult {
 }
 
 /// Result of executing a transaction.
-#[derive(Clone, derive_more::Debug)]
+#[derive_where(Clone, Debug, PartialEq, Eq; T::TxResultExt)]
 pub struct TxResult<T: EvmTypes = crate::BaseEvmTypes> {
     /// Whether execution succeeded.
     pub status: bool,
@@ -962,30 +963,6 @@ pub struct TxResult<T: EvmTypes = crate::BaseEvmTypes> {
     pub db_error_code: Option<DbErrorCode>,
     /// EVM type-specific extension data.
     pub ext: T::TxResultExt,
-}
-
-impl<T> PartialEq for TxResult<T>
-where
-    T: EvmTypes,
-    T::TxResultExt: PartialEq,
-{
-    #[inline]
-    fn eq(&self, other: &Self) -> bool {
-        self.status == other.status
-            && self.gas_used == other.gas_used
-            && self.stop == other.stop
-            && self.output == other.output
-            && self.state_changes == other.state_changes
-            && self.db_error_code == other.db_error_code
-            && self.ext == other.ext
-    }
-}
-
-impl<T> Eq for TxResult<T>
-where
-    T: EvmTypes,
-    T::TxResultExt: Eq,
-{
 }
 
 impl<T: EvmTypes> Default for TxResult<T> {

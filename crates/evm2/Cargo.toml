@@ -22,6 +22,7 @@ alloy-primitives.workspace = true
 alloy-rlp.workspace = true
 alloy-trie = { workspace = true, features = ["ethereum"] }
 derive_more.workspace = true
+derive-where.workspace = true
 thiserror.workspace = true
 cfg-if.workspace = true
 
