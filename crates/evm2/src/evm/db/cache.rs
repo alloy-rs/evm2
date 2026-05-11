@@ -126,23 +126,13 @@ impl<ExtDB> DatabaseCommit for CacheDB<ExtDB> {
             self.cache.contracts.insert(code_hash, code.clone());
         }
 
-        let mut cleared_storage = Vec::new();
-        for (&address, storage) in &changes.storage {
-            if storage.wipe {
-                cleared_storage.push(address);
-            }
-        }
-        for (&address, change) in &changes.accounts {
-            if change.current.is_none() {
-                cleared_storage.push(address);
-            }
-        }
-        self.cache.storage.retain(|key, _| !cleared_storage.contains(&key.address()));
+        self.cache.storage.retain(|key, _| {
+            let address = key.address();
+            !changes.storage.get(&address).is_some_and(|storage| storage.wipe)
+                && !changes.accounts.get(&address).is_some_and(|change| change.current.is_none())
+        });
 
         for (&address, storage) in &changes.storage {
-            if changes.accounts.get(&address).is_some_and(|change| change.current.is_none()) {
-                continue;
-            }
             for (&key, change) in &storage.slots {
                 if change.current.is_zero() {
                     self.cache.storage.remove(&StorageKey::new(address, key));
