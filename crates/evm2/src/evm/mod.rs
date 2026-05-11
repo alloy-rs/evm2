@@ -1154,7 +1154,7 @@ mod tests {
         }
 
         fn get_storage(&mut self, _address: Address, _key: Word) -> DbResult<Word> {
-            Err(DbErrorCode(7))
+            Err(DbErrorCode::new(7).unwrap())
         }
 
         fn get_block_hash(&mut self, _number: Word) -> DbResult<Option<B256>> {
@@ -1162,7 +1162,7 @@ mod tests {
         }
 
         fn error(&mut self, code: DbErrorCode) -> Box<dyn Error> {
-            assert_eq!(code, DbErrorCode(7));
+            assert_eq!(code.get(), 7);
             Box::new(FailingDbError)
         }
     }
@@ -1189,8 +1189,11 @@ mod tests {
         let result = Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &message, false);
 
         assert_eq!(result.stop, InstrStop::FatalExternalError);
-        assert_eq!(evm.db_error_code(), Some(DbErrorCode(7)));
-        assert_eq!(evm.database_mut().error(DbErrorCode(7)).to_string(), "storage read failed");
+        assert_eq!(evm.db_error_code().map(DbErrorCode::get), Some(7));
+        assert_eq!(
+            evm.database_mut().error(DbErrorCode::new(7).unwrap()).to_string(),
+            "storage read failed"
+        );
     }
 
     #[test]

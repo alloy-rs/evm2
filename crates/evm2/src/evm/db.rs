@@ -4,7 +4,7 @@ use super::state::{AccountInfo, StateChanges};
 use crate::{bytecode::Bytecode, interpreter::Word};
 use alloc::{boxed::Box, string::ToString};
 use alloy_primitives::{Address, B256, keccak256};
-use core::{any::Any, error::Error, fmt};
+use core::{any::Any, error::Error, fmt, num::NonZeroUsize};
 
 mod cache;
 pub use cache::{Cache, CacheDB, InMemoryDB};
@@ -16,8 +16,25 @@ pub trait DatabaseCommit {
 }
 
 /// Lightweight handle for a database error.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub struct DbErrorCode(pub usize);
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct DbErrorCode(NonZeroUsize);
+
+impl DbErrorCode {
+    /// Creates a database error code.
+    #[inline]
+    pub const fn new(code: usize) -> Option<Self> {
+        let Some(code) = NonZeroUsize::new(code) else {
+            return None;
+        };
+        Some(Self(code))
+    }
+
+    /// Returns the raw database error code.
+    #[inline]
+    pub const fn get(self) -> usize {
+        self.0.get()
+    }
+}
 
 /// Result of a database operation.
 pub type DbResult<T> = Result<T, DbErrorCode>;
