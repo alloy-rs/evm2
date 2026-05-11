@@ -34,7 +34,8 @@ pub use system::{
 
 mod db;
 pub use db::{
-    Cache, CacheDB, Database, DatabaseCommit, DbErrorCode, DbResult, EmptyDB, InMemoryDB,
+    Cache, CacheDB, Database, DatabaseCommit, Db, DbErrorCode, DbResult, DbTyped, EmptyDB,
+    InMemoryDB,
 };
 
 mod state;
@@ -992,7 +993,7 @@ mod tests {
         interpreter::{MessageKind, op},
         registry::TxRequest,
     };
-    use alloc::{boxed::Box, string::ToString, vec, vec::Vec};
+    use alloc::{string::ToString, vec, vec::Vec};
     use alloy_consensus::{TxLegacy, transaction::Recovered};
     use alloy_primitives::{Address, Bytes, KECCAK256_EMPTY, U256};
     use core::{error::Error, fmt};
@@ -1144,26 +1145,23 @@ mod tests {
     #[derive(Debug, Default)]
     struct FailingStorageDb;
 
-    impl Database for FailingStorageDb {
-        fn get_account(&mut self, _address: Address) -> DbResult<Option<AccountInfo>> {
+    impl DbTyped for FailingStorageDb {
+        type Error = FailingDbError;
+
+        fn get_account(&mut self, _address: Address) -> Result<Option<AccountInfo>, Self::Error> {
             Ok(Some(AccountInfo::default()))
         }
 
-        fn get_code_by_hash(&mut self, _code_hash: B256) -> DbResult<Bytecode> {
+        fn get_code_by_hash(&mut self, _code_hash: B256) -> Result<Bytecode, Self::Error> {
             Ok(Bytecode::default())
         }
 
-        fn get_storage(&mut self, _address: Address, _key: Word) -> DbResult<Word> {
-            Err(DbErrorCode::new(7).unwrap())
+        fn get_storage(&mut self, _address: Address, _key: Word) -> Result<Word, Self::Error> {
+            Err(FailingDbError)
         }
 
-        fn get_block_hash(&mut self, _number: Word) -> DbResult<Option<B256>> {
+        fn get_block_hash(&mut self, _number: Word) -> Result<Option<B256>, Self::Error> {
             Ok(None)
-        }
-
-        fn error(&mut self, code: DbErrorCode) -> Box<dyn Error> {
-            assert_eq!(code.get(), 7);
-            Box::new(FailingDbError)
         }
     }
 
@@ -1173,7 +1171,7 @@ mod tests {
             SpecId::OSAKA,
             BlockEnv::default(),
             TxRegistry::new(),
-            FailingStorageDb,
+            Db::new(FailingStorageDb),
             Precompiles::base(SpecId::OSAKA),
         );
         let contract = Address::from([0x11; 20]);
@@ -1189,11 +1187,8 @@ mod tests {
         let result = Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &message, false);
 
         assert_eq!(result.stop, InstrStop::FatalExternalError);
-        assert_eq!(evm.db_error_code().map(DbErrorCode::get), Some(7));
-        assert_eq!(
-            evm.database_mut().error(DbErrorCode::new(7).unwrap()).to_string(),
-            "storage read failed"
-        );
+        let error_code = evm.db_error_code().unwrap();
+        assert_eq!(evm.database_mut().error(error_code).to_string(), "storage read failed");
     }
 
     #[test]

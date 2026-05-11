@@ -221,13 +221,15 @@ mod tests {
         block_hash_loads: usize,
     }
 
-    impl Database for CountingDB {
-        fn get_account(&mut self, _address: Address) -> DbResult<Option<AccountInfo>> {
+    impl crate::evm::DbTyped for CountingDB {
+        type Error = core::convert::Infallible;
+
+        fn get_account(&mut self, _address: Address) -> Result<Option<AccountInfo>, Self::Error> {
             self.account_loads += 1;
             Ok(self.account.clone())
         }
 
-        fn get_code_by_hash(&mut self, code_hash: B256) -> DbResult<Bytecode> {
+        fn get_code_by_hash(&mut self, code_hash: B256) -> Result<Bytecode, Self::Error> {
             self.code_loads += 1;
             Ok(self
                 .account
@@ -237,12 +239,12 @@ mod tests {
                 .unwrap_or_default())
         }
 
-        fn get_storage(&mut self, _address: Address, _key: Word) -> DbResult<Word> {
+        fn get_storage(&mut self, _address: Address, _key: Word) -> Result<Word, Self::Error> {
             self.storage_loads += 1;
             Ok(self.storage)
         }
 
-        fn get_block_hash(&mut self, _number: Word) -> DbResult<Option<B256>> {
+        fn get_block_hash(&mut self, _number: Word) -> Result<Option<B256>, Self::Error> {
             self.block_hash_loads += 1;
             Ok(self.block_hash)
         }
@@ -260,21 +262,21 @@ mod tests {
             block_hash: Some(block_hash),
             ..CountingDB::default()
         };
-        let mut cache = CacheDB::new(db);
+        let mut cache = CacheDB::new(crate::evm::Db::new(db));
 
         let code_hash = code.hash_slow();
         assert_eq!(cache.get_account(address).unwrap().map(|info| info.code_hash), Some(code_hash));
         assert_eq!(cache.get_code_by_hash(code_hash).unwrap(), code);
         assert_eq!(cache.get_code_by_hash(code_hash).unwrap(), code);
-        assert_eq!(cache.db.account_loads, 1);
-        assert_eq!(cache.db.code_loads, 0);
+        assert_eq!(cache.db.inner().account_loads, 1);
+        assert_eq!(cache.db.inner().code_loads, 0);
 
         assert_eq!(cache.get_storage(address, key).unwrap(), Word::from(4));
         assert_eq!(cache.get_storage(address, key).unwrap(), Word::from(4));
-        assert_eq!(cache.db.storage_loads, 1);
+        assert_eq!(cache.db.inner().storage_loads, 1);
 
         assert_eq!(cache.get_block_hash(Word::from(5)).unwrap(), Some(block_hash));
         assert_eq!(cache.get_block_hash(Word::from(5)).unwrap(), Some(block_hash));
-        assert_eq!(cache.db.block_hash_loads, 1);
+        assert_eq!(cache.db.inner().block_hash_loads, 1);
     }
 }
