@@ -2,7 +2,7 @@
 
 use crate::config::CustomTypes;
 use evm2::{
-    interpreter::{Host, InstrStop, InterpreterState, Pc, StackMut, Word, private::Instruction},
+    interpreter::{Host, Word},
     version::{GasId, GasParams},
 };
 use evm2_macros::instruction;
@@ -25,19 +25,7 @@ pub fn custom(cx: _) -> Result<out> {
     *out = Word::from(0xdead_u64);
 }
 
-#[allow(non_camel_case_types)]
-#[derive(Clone, Copy, derive_more::Debug)]
-pub struct l1_blocknumber(core::marker::PhantomData<fn() -> CustomTypes>);
-
-impl Instruction<CustomTypes> for l1_blocknumber {
-    const DYNAMIC_GAS: bool = false;
-
-    #[inline]
-    fn execute(
-        _pc: &mut Pc,
-        mut stack: StackMut<'_>,
-        state: &mut InterpreterState<'_, CustomTypes>,
-    ) -> Result<(), InstrStop> {
-        stack.push(Word::from(state.host().block_env().ext.l1_block_number))
-    }
+#[instruction(EvmTypes = CustomTypes)]
+pub fn l1_blocknumber(cx: _) -> out {
+    *out = Word::from(cx.state.host().block_env().ext.l1_block_number);
 }

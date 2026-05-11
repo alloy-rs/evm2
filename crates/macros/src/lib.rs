@@ -6,7 +6,10 @@ use quote::quote;
 use syn::{
     AngleBracketedGenericArguments, FnArg, GenericArgument, GenericParam, Ident, ItemFn, LitStr,
     Pat, PatIdent, PatSlice, PathArguments, ReturnType, Stmt, Token, Type, TypeInfer, TypePath,
-    TypeSlice, parse_macro_input, punctuated::Punctuated,
+    TypeSlice,
+    parse::{Parse, ParseStream},
+    parse_macro_input,
+    punctuated::Punctuated,
 };
 
 /// Generates an `Instruction` impl for an instruction function definition.
@@ -32,6 +35,9 @@ use syn::{
 ///   checks.
 /// - `#[instruction(dynamic_gas)]`: Exposes `cx.gas` and marks the instruction as needing access to
 ///   mutable gas state.
+/// - `#[instruction(EvmTypes = CustomTypes)]`: Implements the instruction for a concrete `EvmTypes`
+///   implementor instead of generating a generic implementation. `:` is also accepted as the
+///   separator.
 ///
 /// ## Examples
 ///
@@ -76,7 +82,8 @@ use syn::{
 /// ```
 #[proc_macro_attribute]
 pub fn instruction(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let args = parse_macro_input!(attr with Punctuated::<Ident, Token![,]>::parse_terminated);
+    let args =
+        parse_macro_input!(attr with Punctuated::<InstructionAttr, Token![,]>::parse_terminated);
     let attrs = match InstructionAttrs::parse(args) {
         Ok(attrs) => attrs,
         Err(err) => return err.to_compile_error().into(),
@@ -85,22 +92,61 @@ pub fn instruction(attr: TokenStream, item: TokenStream) -> TokenStream {
     expand_instruction(attrs, input).into()
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+enum InstructionAttr {
+    Flag(Ident),
+    EvmTypes(Type),
+}
+
+impl Parse for InstructionAttr {
+    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
+        let ident = input.parse::<Ident>()?;
+        if ident == "EvmTypes" || ident == "evm_types" {
+            if input.peek(Token![=]) {
+                input.parse::<Token![=]>()?;
+            } else if input.peek(Token![:]) {
+                input.parse::<Token![:]>()?;
+            } else {
+                return Err(syn::Error::new_spanned(ident, "expected `=` or `:` after `EvmTypes`"));
+            }
+            Ok(Self::EvmTypes(input.parse()?))
+        } else {
+            Ok(Self::Flag(ident))
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
 struct InstructionAttrs {
     no_stack_preamble: bool,
     dynamic_gas: bool,
+    evm_types: Option<Type>,
 }
 
 impl InstructionAttrs {
-    fn parse(args: Punctuated<Ident, Token![,]>) -> syn::Result<Self> {
+    fn parse(args: Punctuated<InstructionAttr, Token![,]>) -> syn::Result<Self> {
         let mut attrs = Self::default();
         for arg in args {
-            if arg == "no_stack_preamble" {
-                attrs.no_stack_preamble = true;
-            } else if arg == "dynamic_gas" {
-                attrs.dynamic_gas = true;
-            } else {
-                return Err(syn::Error::new_spanned(arg, "unsupported #[instruction] argument"));
+            match arg {
+                InstructionAttr::Flag(arg) if arg == "no_stack_preamble" => {
+                    attrs.no_stack_preamble = true;
+                }
+                InstructionAttr::Flag(arg) if arg == "dynamic_gas" => {
+                    attrs.dynamic_gas = true;
+                }
+                InstructionAttr::Flag(arg) => {
+                    return Err(syn::Error::new_spanned(
+                        arg,
+                        "unsupported #[instruction] argument",
+                    ));
+                }
+                InstructionAttr::EvmTypes(evm_types) => {
+                    if attrs.evm_types.replace(evm_types).is_some() {
+                        return Err(syn::Error::new(
+                            proc_macro2::Span::call_site(),
+                            "duplicate `EvmTypes` argument",
+                        ));
+                    }
+                }
             }
         }
         Ok(attrs)
@@ -116,14 +162,28 @@ fn expand_instruction(instruction_attrs: InstructionAttrs, input: ItemFn) -> Tok
     let generics = sig.generics;
     let struct_where_clause = generics.where_clause.clone();
     let impl_params = generics.params.clone();
-    let evm_types = Ident::new("__Evm2T", ident.span());
-    let struct_generics = if impl_params.is_empty() {
-        quote! { <#evm_types: evm2::EvmTypes> }
-    } else {
-        quote! { <#evm_types: evm2::EvmTypes, #impl_params> }
+    let evm_types_ident = Ident::new("__Evm2T", ident.span());
+    let evm_types = instruction_attrs
+        .evm_types
+        .as_ref()
+        .map(|ty| quote! { #ty })
+        .unwrap_or_else(|| quote! { #evm_types_ident });
+    let struct_generics = match (&instruction_attrs.evm_types, impl_params.is_empty()) {
+        (Some(_), true) => quote! {},
+        (Some(_), false) => quote! { <#impl_params> },
+        (None, true) => quote! { <#evm_types_ident: evm2::EvmTypes> },
+        (None, false) => quote! { <#evm_types_ident: evm2::EvmTypes, #impl_params> },
     };
     let type_params = generics.params.iter().map(generic_param_ident);
-    let type_generics = quote! { <#evm_types #(, #type_params)*> };
+    let type_generics = if instruction_attrs.evm_types.is_some() {
+        if generics.params.is_empty() {
+            quote! {}
+        } else {
+            quote! { <#(#type_params),*> }
+        }
+    } else {
+        quote! { <#evm_types_ident #(, #type_params)*> }
+    };
     let where_predicates =
         struct_where_clause.as_ref().map(|where_clause| &where_clause.predicates);
     let impl_where_clause = where_predicates.map(|predicates| quote! { where #predicates });
