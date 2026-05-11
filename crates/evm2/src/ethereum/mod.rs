@@ -259,9 +259,13 @@ pub(super) fn validate_sender<T: EvmTypes<Host = Evm<T>>>(
     nonce: u64,
     max_upfront: U256,
 ) -> HandlerResult<AccountInfo> {
-    let sender_info = host.state.account_info(caller).unwrap_or_default();
+    let sender_info = host
+        .state
+        .account_info(caller)
+        .map_err(|code| host.db_error_handler(code))?
+        .unwrap_or_default();
     if host.feature(EvmFeatures::EIP3607) && sender_info.code_hash != KECCAK256_EMPTY {
-        let code = host.state.get_code(caller);
+        let code = host.state.get_code(caller).map_err(|code| host.db_error_handler(code))?;
         if !code.is_empty() && !code.is_eip7702() {
             return Err(HandlerError::RejectCallerWithCode);
         }
@@ -273,7 +277,9 @@ pub(super) fn validate_sender<T: EvmTypes<Host = Evm<T>>>(
         return Err(HandlerError::InsufficientFunds);
     }
     if !host.feature(EvmFeatures::BALANCE_CHECK) && sender_info.balance < max_upfront {
-        host.state.add_balance(caller, max_upfront - sender_info.balance);
+        host.state
+            .add_balance(caller, max_upfront - sender_info.balance)
+            .map_err(|code| host.db_error_handler(code))?;
     }
     Ok(sender_info)
 }
@@ -310,11 +316,14 @@ pub(super) fn charge_upfront<T: EvmTypes<Host = Evm<T>>>(
     host: &mut Evm<T>,
     caller: Address,
     max_gas_cost: U256,
-) {
+) -> HandlerResult<()> {
     if !host.feature(EvmFeatures::FEE_CHARGE) {
-        return;
+        return Ok(());
     }
-    host.state.add_balance(caller, Word::ZERO.wrapping_sub(max_gas_cost));
+    host.state
+        .add_balance(caller, Word::ZERO.wrapping_sub(max_gas_cost))
+        .map_err(|code| host.db_error_handler(code))?;
+    Ok(())
 }
 
 pub(crate) fn initial_message<T: EvmTypes<Host = Evm<T>>>(
@@ -325,10 +334,10 @@ pub(crate) fn initial_message<T: EvmTypes<Host = Evm<T>>>(
     input: &Bytes,
     value: U256,
     gas_limit: u64,
-) -> (Bytecode, Message) {
+) -> HandlerResult<(Bytecode, Message)> {
     let r = match to {
         TxKind::Call(to) => {
-            let initial_code = initial_call_code(host, to);
+            let initial_code = initial_call_code(host, to)?;
             let message = Message {
                 kind: MessageKind::Call,
                 depth: 0,
@@ -361,7 +370,7 @@ pub(crate) fn initial_message<T: EvmTypes<Host = Evm<T>>>(
         }
     };
     debug_assert_eq!(r.1.depth, 0);
-    r
+    Ok(r)
 }
 
 struct InitialCallCode {
@@ -373,19 +382,22 @@ struct InitialCallCode {
 fn initial_call_code<T: EvmTypes<Host = Evm<T>>>(
     host: &mut Evm<T>,
     to: Address,
-) -> InitialCallCode {
-    let code = host.state.get_code(to);
+) -> HandlerResult<InitialCallCode> {
+    let code = host.state.get_code(to).map_err(|code| host.db_error_handler(code))?;
     if host.spec_id().enables(SpecId::PRAGUE)
         && let Some(delegated_address) = code.eip7702_address()
     {
         let _ = host.state.warm_account(delegated_address);
-        return InitialCallCode {
-            code: host.state.get_code(delegated_address),
+        return Ok(InitialCallCode {
+            code: host
+                .state
+                .get_code(delegated_address)
+                .map_err(|code| host.db_error_handler(code))?,
             code_address: delegated_address,
             disable_precompiles: true,
-        };
+        });
     }
-    InitialCallCode { code, code_address: to, disable_precompiles: false }
+    Ok(InitialCallCode { code, code_address: to, disable_precompiles: false })
 }
 
 pub(super) fn rollback_failed_execution<T: EvmTypes<Host = Evm<T>>>(
@@ -408,26 +420,29 @@ pub(super) fn settle_gas<T: EvmTypes<Host = Evm<T>>>(
     tx_gas_limit: u64,
     floor_gas: u64,
     result: MessageResult,
-) -> TxResult {
+) -> HandlerResult<TxResult> {
     let (gas_remaining, gas_used) =
         final_tx_gas(&result, tx_gas_limit, host.feature(EvmFeatures::EIP3529), floor_gas);
     if host.feature(EvmFeatures::FEE_CHARGE) {
-        host.state.add_balance(caller, U256::from(gas_remaining) * gas_price);
+        host.state
+            .add_balance(caller, U256::from(gas_remaining) * gas_price)
+            .map_err(|code| host.db_error_handler(code))?;
         let beneficiary_gas_price = if host.feature(EvmFeatures::BASE_FEE_CHECK) {
             gas_price.saturating_sub(host.block.basefee)
         } else {
             gas_price
         };
         host.state
-            .add_balance(host.block.beneficiary, U256::from(gas_used) * beneficiary_gas_price);
+            .add_balance(host.block.beneficiary, U256::from(gas_used) * beneficiary_gas_price)
+            .map_err(|code| host.db_error_handler(code))?;
     }
-    TxResult {
+    Ok(TxResult {
         status: result.stop.is_success(),
         gas_used,
         stop: result.stop,
         output: result.output,
         ..TxResult::default()
-    }
+    })
 }
 
 const fn final_tx_gas(
@@ -687,7 +702,7 @@ mod tests {
         );
 
         assert!(validate_sender(&mut evm, caller, 0, U256::from(100)).is_ok());
-        assert_eq!(evm.state.account_info(caller).unwrap().balance, U256::from(100));
+        assert_eq!(evm.state.account_info(caller).unwrap().unwrap().balance, U256::from(100));
     }
 
     #[test]
@@ -753,7 +768,8 @@ mod tests {
             &Bytes::new(),
             U256::ZERO,
             100_000,
-        );
+        )
+        .unwrap();
         assert_eq!(message.destination, target);
         assert_eq!(message.code_address, delegated);
         assert!(message.disable_precompiles);

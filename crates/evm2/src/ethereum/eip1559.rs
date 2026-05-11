@@ -53,8 +53,8 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     warm_access_list(req.host, &tx.access_list);
 
     let effective_gas_cost = U256::from(tx.gas_limit) * gas_price;
-    charge_upfront(req.host, caller, effective_gas_cost);
-    req.host.state.increment_nonce(caller);
+    charge_upfront(req.host, caller, effective_gas_cost)?;
+    req.host.state.increment_nonce(caller).map_err(|code| req.host.db_error_handler(code))?;
     let execution_checkpoint = req.host.state.checkpoint();
 
     let gas_limit = tx.gas_limit - intrinsic;
@@ -65,9 +65,9 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
         ..TxEnv::default()
     };
     let (bytecode, message) =
-        initial_message(req.host, caller, tx.nonce, tx.to, &tx.input, tx.value, gas_limit);
+        initial_message(req.host, caller, tx.nonce, tx.to, &tx.input, tx.value, gas_limit)?;
     let mut result = req.host.execute_message(&tx_env, bytecode, &message, false);
     rollback_failed_execution(req.host, execution_checkpoint, &mut result);
 
-    Ok(settle_gas(req.host, caller, gas_price, tx.gas_limit, floor_gas, result))
+    settle_gas(req.host, caller, gas_price, tx.gas_limit, floor_gas, result)
 }

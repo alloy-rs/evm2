@@ -14,7 +14,7 @@ pub(crate) fn blockhash(cx: _, [number]: [Word]) -> Result<out> {
         } else {
             cx.state
                 .host()
-                .block_hash(number)
+                .block_hash(number)?
                 .map(b256_to_word)
                 .ok_or(InstrStop::FatalExternalError)?
         }

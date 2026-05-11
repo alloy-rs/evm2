@@ -138,7 +138,7 @@ fn load_acc_and_calc_gas<T: EvmTypes>(
         && should_charge_new_account_gas(
             spec,
             transfers_value,
-            cx.state.host().target_is_empty_for_new_account_gas(to, spec),
+            cx.state.host().target_is_empty_for_new_account_gas(to, spec)?,
         )
     {
         cost += u64::from(cx.state.gas_params().get(GasId::NewAccountCost));

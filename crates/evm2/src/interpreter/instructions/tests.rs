@@ -97,15 +97,19 @@ impl Host for TestHost {
         })
     }
 
-    fn target_is_empty_for_new_account_gas(&mut self, _address: Address, spec: SpecId) -> bool {
+    fn target_is_empty_for_new_account_gas(
+        &mut self,
+        _address: Address,
+        spec: SpecId,
+    ) -> Result<bool, InstrStop> {
         if spec.enables(SpecId::SPURIOUS_DRAGON) {
-            return !self.exists || self.is_empty;
+            return Ok(!self.exists || self.is_empty);
         }
-        !self.exists && !self.is_touched
+        Ok(!self.exists && !self.is_touched)
     }
 
-    fn block_hash(&mut self, number: Word) -> Option<B256> {
-        Some(B256::with_last_byte(number.wrapping_to::<u8>()))
+    fn block_hash(&mut self, number: Word) -> Result<Option<B256>, InstrStop> {
+        Ok(Some(B256::with_last_byte(number.wrapping_to::<u8>())))
     }
 
     fn sload(

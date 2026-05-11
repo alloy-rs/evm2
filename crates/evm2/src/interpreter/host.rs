@@ -96,10 +96,14 @@ pub trait Host {
     ) -> Result<AccountLoad, InstrStop>;
 
     /// Returns whether an account is empty/non-existent for new-account gas checks.
-    fn target_is_empty_for_new_account_gas(&mut self, address: Address, spec: SpecId) -> bool;
+    fn target_is_empty_for_new_account_gas(
+        &mut self,
+        address: Address,
+        spec: SpecId,
+    ) -> Result<bool, InstrStop>;
 
     /// Returns a historical block hash.
-    fn block_hash(&mut self, number: Word) -> Option<B256>;
+    fn block_hash(&mut self, number: Word) -> Result<Option<B256>, InstrStop>;
 
     /// Loads a persistent storage slot.
     fn sload(

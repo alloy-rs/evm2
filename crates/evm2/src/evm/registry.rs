@@ -63,6 +63,9 @@ pub type HandlerResult<T> = core::result::Result<T, HandlerError>;
 /// Registry, transaction validation, and transaction handler errors.
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
 pub enum HandlerError {
+    /// Database operation failed.
+    #[error("database error {0:?}")]
+    Database(super::DbErrorCode),
     /// No handler is registered for the transaction type byte.
     #[error("unsupported transaction type 0x{0:02x}")]
     UnsupportedTransactionType(u8),
