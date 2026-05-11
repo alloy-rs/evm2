@@ -115,7 +115,7 @@ impl Parse for InstructionAttr {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 struct InstructionAttrs {
     no_stack_preamble: bool,
     dynamic_gas: bool,
@@ -160,7 +160,6 @@ fn expand_instruction(instruction_attrs: InstructionAttrs, input: ItemFn) -> Tok
     let ident = sig.ident;
     let asm_comment = LitStr::new(&ident.to_string(), ident.span());
     let generics = sig.generics;
-    let struct_where_clause = generics.where_clause.clone();
     let impl_params = generics.params.clone();
     let evm_types_ident = Ident::new("__Evm2T", ident.span());
     let evm_types = instruction_attrs
@@ -171,8 +170,8 @@ fn expand_instruction(instruction_attrs: InstructionAttrs, input: ItemFn) -> Tok
     let struct_generics = match (&instruction_attrs.evm_types, impl_params.is_empty()) {
         (Some(_), true) => quote! {},
         (Some(_), false) => quote! { <#impl_params> },
-        (None, true) => quote! { <#evm_types_ident: evm2::EvmTypes> },
-        (None, false) => quote! { <#evm_types_ident: evm2::EvmTypes, #impl_params> },
+        (None, true) => quote! { <#evm_types_ident> },
+        (None, false) => quote! { <#evm_types_ident, #impl_params> },
     };
     let type_params = generics.params.iter().map(generic_param_ident);
     let type_generics = if instruction_attrs.evm_types.is_some() {
@@ -185,8 +184,12 @@ fn expand_instruction(instruction_attrs: InstructionAttrs, input: ItemFn) -> Tok
         quote! { <#evm_types_ident #(, #type_params)*> }
     };
     let where_predicates =
-        struct_where_clause.as_ref().map(|where_clause| &where_clause.predicates);
-    let impl_where_clause = where_predicates.map(|predicates| quote! { where #predicates });
+        generics.where_clause.as_ref().map(|where_clause| &where_clause.predicates);
+    let where_clause = if let Some(predicates) = where_predicates {
+        quote! { where #evm_types: evm2::EvmTypes, #predicates }
+    } else {
+        quote! { where #evm_types: evm2::EvmTypes }
+    };
     let (_, outputs) = parse_return(sig.output);
     let body = body(input.block.stmts, outputs.is_empty());
 
@@ -246,10 +249,10 @@ fn expand_instruction(instruction_attrs: InstructionAttrs, input: ItemFn) -> Tok
         #[allow(non_camel_case_types)]
         #vis struct #ident #struct_generics(
             core::marker::PhantomData<fn() -> #evm_types>
-        ) #struct_where_clause;
+        ) #where_clause;
 
         impl #struct_generics evm2::interpreter::private::Instruction<#evm_types> for #ident #type_generics
-        #impl_where_clause
+        #where_clause
         {
             const DYNAMIC_GAS: bool = #dynamic_gas;
 

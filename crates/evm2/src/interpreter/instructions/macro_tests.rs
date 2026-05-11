@@ -6,6 +6,7 @@ use crate::{
     interpreter::{Host, InstrStop, Interpreter, Word, op},
     version::VersionTables,
 };
+use alloc::vec::Vec;
 use alloy_primitives::Bytes;
 use evm2_macros::instruction;
 
