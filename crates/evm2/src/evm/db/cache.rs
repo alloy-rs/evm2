@@ -126,18 +126,11 @@ impl<ExtDB> DatabaseCommit for CacheDB<ExtDB> {
             self.cache.contracts.insert(code_hash, code.clone());
         }
 
-        if changes.storage.values().any(|storage| storage.wipe)
-            || changes.accounts.values().any(|change| change.current.is_none())
-        {
-            self.cache.storage.retain(|key, _| {
-                let address = key.address();
-                !changes.storage.get(&address).is_some_and(|storage| storage.wipe)
-                    && !changes
-                        .accounts
-                        .get(&address)
-                        .is_some_and(|change| change.current.is_none())
-            });
-        }
+        self.cache.storage.retain(|key, _| {
+            let address = key.address();
+            !changes.storage.get(&address).is_some_and(|storage| storage.wipe)
+                && !changes.accounts.get(&address).is_some_and(|change| change.current.is_none())
+        });
 
         for (&address, storage) in &changes.storage {
             if changes.accounts.get(&address).is_some_and(|change| change.current.is_none()) {
