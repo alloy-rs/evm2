@@ -1,6 +1,6 @@
 //! EVM tracing inspectors.
 
-use alloc::{vec::Vec};
+use alloc::vec::Vec;
 use alloy_primitives::{Address, Bytes, Log, U256};
 use evm2::{
     EvmTypes, Inspector,
@@ -27,7 +27,7 @@ impl CallTraceArena {
     }
 
     /// Returns whether no traces were recorded.
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.arena.is_empty()
     }
 
@@ -291,7 +291,7 @@ impl TracingInspector {
     }
 
     /// Returns a mutable reference to the config of the inspector.
-    pub fn config_mut(&mut self) -> &mut TracingInspectorConfig {
+    pub const fn config_mut(&mut self) -> &mut TracingInspectorConfig {
         &mut self.config
     }
 
@@ -309,7 +309,7 @@ impl TracingInspector {
     }
 
     /// Gets a mutable reference to the recorded call traces.
-    pub fn traces_mut(&mut self) -> &mut CallTraceArena {
+    pub const fn traces_mut(&mut self) -> &mut CallTraceArena {
         &mut self.traces
     }
 
@@ -372,12 +372,14 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
         }
         let stack = (self.config.record_stack_snapshots == StackSnapshotType::Full)
             .then(|| interp.stack().to_vec());
-        let memory = self
-            .config
-            .record_memory_snapshots
-            .then(|| Bytes::copy_from_slice(interp.memory_ref().slice(0, interp.memory_ref().len())));
-        let returndata =
-            if self.config.record_returndata_snapshots { interp.return_data().clone() } else { Bytes::new() };
+        let memory = self.config.record_memory_snapshots.then(|| {
+            Bytes::copy_from_slice(interp.memory_ref().slice(0, interp.memory_ref().len()))
+        });
+        let returndata = if self.config.record_returndata_snapshots {
+            interp.return_data().clone()
+        } else {
+            Bytes::new()
+        };
         let step = CallTraceStep {
             pc: interp.pc(),
             op: Some(op),
@@ -470,7 +472,7 @@ pub struct ParityTraceBuilder {
 
 impl ParityTraceBuilder {
     /// Creates a builder.
-    pub fn new(nodes: Vec<CallTraceNode>) -> Self {
+    pub const fn new(nodes: Vec<CallTraceNode>) -> Self {
         Self { nodes }
     }
 

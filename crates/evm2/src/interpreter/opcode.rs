@@ -22,6 +22,10 @@ impl OpCode {
     }
 
     /// Creates opcode metadata for a raw opcode byte without validation.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure the raw byte is acceptable for the consumer of the returned opcode.
     #[inline]
     pub const unsafe fn new_unchecked(opcode: u8) -> Self {
         Self(opcode)
@@ -171,9 +175,7 @@ impl OpInfo {
     pub const fn immediate_size(self) -> u8 {
         if self.opcode >= op::PUSH1 && self.opcode <= op::PUSH32 {
             self.opcode - op::PUSH1 + 1
-        } else if self.opcode == op::DUPN || self.opcode == op::SWAPN {
-            1
-        } else if self.opcode == op::EXCHANGE {
+        } else if matches!(self.opcode, op::DUPN | op::SWAPN | op::EXCHANGE) {
             1
         } else {
             0
@@ -184,9 +186,19 @@ impl OpInfo {
     #[inline]
     pub const fn outputs(self) -> u8 {
         match self.opcode {
-            op::STOP | op::SSTORE | op::JUMP | op::JUMPI | op::LOG0..=op::LOG4 | op::RETURN
-            | op::REVERT | op::SELFDESTRUCT => 0,
-            op::CALL | op::CALLCODE | op::DELEGATECALL | op::STATICCALL | op::CREATE
+            op::STOP
+            | op::SSTORE
+            | op::JUMP
+            | op::JUMPI
+            | op::LOG0..=op::LOG4
+            | op::RETURN
+            | op::REVERT
+            | op::SELFDESTRUCT => 0,
+            op::CALL
+            | op::CALLCODE
+            | op::DELEGATECALL
+            | op::STATICCALL
+            | op::CREATE
             | op::CREATE2 => 1,
             op::DUP1..=op::DUP16 => self.opcode - op::DUP1 + 2,
             _ => 1,

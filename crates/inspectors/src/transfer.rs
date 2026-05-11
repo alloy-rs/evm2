@@ -27,12 +27,12 @@ pub struct TransferInspector {
 
 impl TransferInspector {
     /// Creates a new transfer inspector.
-    pub fn new(internal_only: bool) -> Self {
+    pub const fn new(internal_only: bool) -> Self {
         Self { internal_only, transfers: Vec::new(), logs: Vec::new(), insert_logs: false }
     }
 
     /// Creates a new transfer inspector that only collects internal transfers.
-    pub fn internal_only() -> Self {
+    pub const fn internal_only() -> Self {
         Self::new(true)
     }
 
@@ -42,7 +42,7 @@ impl TransferInspector {
     }
 
     /// Sets whether to collect ERC20-style transfer logs.
-    pub fn with_logs(mut self, insert_logs: bool) -> Self {
+    pub const fn with_logs(mut self, insert_logs: bool) -> Self {
         self.insert_logs = insert_logs;
         self
     }

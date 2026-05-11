@@ -39,12 +39,12 @@ impl AccessListInspector {
     }
 
     /// Returns the excluded addresses.
-    pub fn excluded(&self) -> &HashSet<Address> {
+    pub const fn excluded(&self) -> &HashSet<Address> {
         &self.excluded
     }
 
     /// Returns a reference to the map of addresses and their corresponding touched storage slots.
-    pub fn touched_slots(&self) -> &HashMap<Address, BTreeSet<B256>> {
+    pub const fn touched_slots(&self) -> &HashMap<Address, BTreeSet<B256>> {
         &self.touched_slots
     }
 
