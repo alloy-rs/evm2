@@ -23,7 +23,7 @@ use boa_engine::{
 };
 use boa_gc::{empty_trace, Finalize, Trace};
 use core::cell::RefCell;
-use revm::{
+use evm2::{
     bytecode::opcode::{OpCode, PUSH0, PUSH32},
     context_interface::DBErrorMarker,
     interpreter::{SharedMemory, Stack},
@@ -1004,7 +1004,7 @@ mod tests {
     use super::*;
     use crate::tracing::js::builtins::{json_stringify, register_builtins, to_serde_value};
     use boa_engine::Source;
-    use revm::{database::CacheDB, database_interface::EmptyDB};
+    use evm2::{database::CacheDB, database_interface::EmptyDB};
 
     #[test]
     fn test_contract() {

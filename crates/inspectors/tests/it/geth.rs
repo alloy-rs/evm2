@@ -7,7 +7,7 @@ use alloy_rpc_types_trace::geth::{
     GethDebugTracerConfig, GethDebugTracerType, GethDebugTracingOptions, GethDefaultTracingOptions,
     GethTrace, PreStateConfig, PreStateFrame,
 };
-use revm::{
+use evm2::{
     bytecode::{opcode, Bytecode},
     context::TxEnv,
     context_interface::{ContextTr, TransactTo},
@@ -19,7 +19,7 @@ use revm::{
     state::AccountInfo,
     Context, InspectEvm, MainBuilder, MainContext,
 };
-use revm_inspectors::tracing::{
+use evm2_inspectors::tracing::{
     DebugInspector, MuxInspector, TracingInspector, TracingInspectorConfig,
 };
 
@@ -796,7 +796,7 @@ fn test_geth_default_tracer_empty_return_data_is_serialized_when_enabled() {
             db.insert_account_info(
                 caller,
                 AccountInfo {
-                    balance: revm::primitives::U256::from(1_000_000_000),
+                    balance: evm2::primitives::U256::from(1_000_000_000),
                     ..Default::default()
                 },
             );
@@ -862,7 +862,7 @@ fn test_geth_prestate_diff_selfdestruct(spec_id: SpecId) {
         .modify_db_chained(|db| {
             db.insert_account_info(
                 deployer,
-                revm::state::AccountInfo { balance: value, ..Default::default() },
+                evm2::state::AccountInfo { balance: value, ..Default::default() },
             );
         })
         .modify_cfg_chained(|cfg| cfg.spec = spec_id);
@@ -957,7 +957,7 @@ fn test_geth_calltracer_logs_eip7708() {
             db.insert_account_info(
                 contract,
                 AccountInfo {
-                    balance: revm::primitives::U256::from(1_000_000),
+                    balance: evm2::primitives::U256::from(1_000_000),
                     code: Some(Bytecode::new_raw(code.into())),
                     ..Default::default()
                 },
@@ -966,7 +966,7 @@ fn test_geth_calltracer_logs_eip7708() {
             db.insert_account_info(
                 caller,
                 AccountInfo {
-                    balance: revm::primitives::U256::from(1_000_000_000),
+                    balance: evm2::primitives::U256::from(1_000_000_000),
                     ..Default::default()
                 },
             );
@@ -1052,7 +1052,7 @@ fn test_geth_calltracer_logs_address_regular() {
             db.insert_account_info(
                 caller,
                 AccountInfo {
-                    balance: revm::primitives::U256::from(1_000_000_000),
+                    balance: evm2::primitives::U256::from(1_000_000_000),
                     ..Default::default()
                 },
             );
@@ -1135,7 +1135,7 @@ fn test_geth_calltracer_logs_delegatecall() {
             db.insert_account_info(
                 caller,
                 AccountInfo {
-                    balance: revm::primitives::U256::from(1_000_000_000),
+                    balance: evm2::primitives::U256::from(1_000_000_000),
                     ..Default::default()
                 },
             );

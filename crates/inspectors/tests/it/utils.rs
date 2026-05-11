@@ -1,6 +1,6 @@
 use alloy_primitives::{Address, Bytes};
 use colorchoice::ColorChoice;
-use revm::{
+use evm2::{
     context::{BlockEnv, CfgEnv, Evm, TxEnv},
     context_interface::{
         result::{ExecutionResult, HaltReason},
@@ -11,7 +11,7 @@ use revm::{
     primitives::hardfork::SpecId,
     Context, Database, DatabaseCommit, ExecuteCommitEvm, InspectCommitEvm, Inspector, Journal,
 };
-use revm_inspectors::tracing::{TraceWriter, TraceWriterConfig, TracingInspector};
+use evm2_inspectors::tracing::{TraceWriter, TraceWriterConfig, TracingInspector};
 
 pub type ContextDb<DB> = Context<BlockEnv, TxEnv, CfgEnv, DB, Journal<DB>, ()>;
 

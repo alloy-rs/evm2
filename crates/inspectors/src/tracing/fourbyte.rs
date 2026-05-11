@@ -1,71 +1,35 @@
-//! Fourbyte tracing inspector
-//!
-//! Solidity contract functions are addressed using the first four bytes of the Keccak-256 hash of
-//! their signature. Therefore when calling the function of a contract, the caller must send this
-//! function selector as well as the ABI-encoded arguments as call data.
-//!
-//! The 4byteTracer collects the function selectors of every function executed in the lifetime of a
-//! transaction, along with the size of the supplied call data. The result is a map of
-//! SELECTOR-CALLDATASIZE to number of occurrences entries, where the keys are SELECTOR-CALLDATASIZE
-//! and the values are number of occurrences of this key. For example:
-//!
-//! ```json
-//! {
-//!   "0x27dc297e-128": 1,
-//!   "0x38cc4831-0": 2,
-//!   "0x524f3889-96": 1,
-//!   "0xadf59f99-288": 1,
-//!   "0xc281d19e-0": 1
-//! }
-//! ```
-//!
-//! See also <https://geth.ethereum.org/docs/developers/evm-tracing/built-in-tracers>
+//! Fourbyte tracing inspector.
+
 use alloc::format;
-use alloy_primitives::{hex, map::HashMap, Selector};
+use alloy_primitives::{Selector, hex, map::HashMap};
 use alloy_rpc_types_trace::geth::FourByteFrame;
-use revm::{
-    context::{ContextTr, LocalContextTr},
-    interpreter::{CallInput, CallInputs, CallOutcome},
-    Inspector,
+use evm2::{
+    EvmTypes, Inspector,
+    interpreter::{Message, MessageResult},
 };
 
 /// Fourbyte tracing inspector that records all function selectors and their calldata sizes.
 #[derive(Clone, Debug, Default)]
 pub struct FourByteInspector {
-    /// The map of SELECTOR to number of occurrences entries
+    /// The map of SELECTOR to number of occurrences entries.
     inner: HashMap<(Selector, usize), u64>,
 }
 
 impl FourByteInspector {
-    /// Returns the map of SELECTOR to number of occurrences entries
+    /// Returns the map of SELECTOR to number of occurrences entries.
     pub const fn inner(&self) -> &HashMap<(Selector, usize), u64> {
         &self.inner
     }
 }
 
-impl<CTX: ContextTr> Inspector<CTX> for FourByteInspector {
-    fn call(&mut self, context: &mut CTX, inputs: &mut CallInputs) -> Option<CallOutcome> {
-        if inputs.input.len() >= 4 {
-            let r;
-            let input_bytes = match &inputs.input {
-                CallInput::SharedBuffer(range) => {
-                    match context.local().shared_memory_buffer_slice(range.clone()) {
-                        Some(slice) => {
-                            r = slice;
-                            &*r
-                        }
-                        None => &[],
-                    }
-                }
-                CallInput::Bytes(bytes) => bytes.as_ref(),
-            };
-
+impl<T: EvmTypes> Inspector<T> for FourByteInspector {
+    fn call(&mut self, message: &mut Message) -> Option<MessageResult> {
+        if message.input.len() >= 4 {
             let selector =
-                Selector::try_from(&input_bytes[..4]).expect("input is at least 4 bytes");
-            let calldata_size = input_bytes[4..].len();
+                Selector::try_from(&message.input[..4]).expect("input is at least 4 bytes");
+            let calldata_size = message.input[4..].len();
             *self.inner.entry((selector, calldata_size)).or_default() += 1;
         }
-
         None
     }
 }

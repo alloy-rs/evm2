@@ -1,15 +1,15 @@
-# revm-inspectors
+# evm2-inspectors
 
-Common [`revm`] inspector implementations.
+Common [`evm2`] inspector implementations.
 
-Originally part of [`reth`] as the `reth-revm-inspectors` crate.
+Originally part of [`reth`] as the `reth-evm2-inspectors` crate.
 
 ## Users
 
 - [`reth`]
 - [`foundry`]
 
-[`revm`]: https://github.com/bluealloy/revm/
+[`evm2`]: https://github.com/danipopes/evm2/
 [`reth`]: https://github.com/paradigmxyz/reth/
 [`reth`]: https://github.com/paradigmxyz/reth/
 [`foundry`]: https://github.com/foundry-rs/foundry/

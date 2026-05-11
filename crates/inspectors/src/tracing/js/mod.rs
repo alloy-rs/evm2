@@ -20,7 +20,7 @@ use alloy_primitives::{Address, Bytes, U256};
 pub use boa_engine::vm::RuntimeLimits;
 use boa_engine::{js_string, Context, JsError, JsObject, JsResult, JsValue, Source};
 use core::borrow::Borrow;
-use revm::{
+use evm2::{
     bytecode::OpCode,
     context::JournalTr,
     context_interface::{
@@ -695,7 +695,7 @@ mod tests {
     use super::*;
 
     use alloy_primitives::{bytes, hex, Address};
-    use revm::{
+    use evm2::{
         context::TxEnv,
         database::CacheDB,
         database_interface::EmptyDB,
@@ -704,7 +704,7 @@ mod tests {
         state::{AccountInfo, Bytecode},
         InspectEvm, MainBuilder, MainContext,
     };
-    //use revm_inspector::{inspector_handler, InspectorContext, InspectorMainEvm};
+    //use evm2_inspector::{inspector_handler, InspectorContext, InspectorMainEvm};
     use serde_json::json;
 
     #[test]
@@ -758,7 +758,7 @@ mod tests {
 
         let insp = JsInspector::new(code.to_string(), serde_json::Value::Null).unwrap();
 
-        let mut evm = revm::Context::mainnet()
+        let mut evm = evm2::Context::mainnet()
             .modify_cfg_chained(|cfg| cfg.spec = SpecId::CANCUN)
             .with_db(db)
             .build_mainnet_with_inspector(insp);

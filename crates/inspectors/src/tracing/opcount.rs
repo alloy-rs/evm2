@@ -1,26 +1,24 @@
 //! Opcount tracing inspector that simply counts all opcodes.
-//!
-//! See also <https://geth.ethereum.org/docs/developers/evm-tracing/built-in-tracers>
 
-use revm::{interpreter::Interpreter, Inspector};
+use evm2::{EvmTypes, Inspector, interpreter::Interpreter};
 
 /// An inspector that counts all opcodes.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct OpcodeCountInspector {
-    /// opcode counter
+    /// Opcode counter.
     count: usize,
 }
 
 impl OpcodeCountInspector {
-    /// Returns the opcode counter
+    /// Returns the opcode counter.
     #[inline]
     pub const fn count(&self) -> usize {
         self.count
     }
 }
 
-impl<CTX> Inspector<CTX> for OpcodeCountInspector {
-    fn step(&mut self, _interp: &mut Interpreter, _context: &mut CTX) {
+impl<T: EvmTypes> Inspector<T> for OpcodeCountInspector {
+    fn step(&mut self, _interp: &mut Interpreter<'_, T>) {
         self.count += 1;
     }
 }

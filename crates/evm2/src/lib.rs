@@ -22,6 +22,21 @@ pub use evm::{
     },
     env, inspector, precompile, registry,
 };
+pub use evm::{AccountInfo, JournalEntry};
+pub use inspector::Inspector;
+
+/// Compatibility re-exports for primitive Ethereum types.
+pub mod primitives {
+    pub use alloy_primitives::*;
+
+    /// Empty bytecode hash.
+    pub const KECCAK_EMPTY: B256 = KECCAK256_EMPTY;
+
+    /// Hardfork identifiers.
+    pub mod hardfork {
+        pub use crate::SpecId;
+    }
+}
 
 pub mod precompiles;
 pub use precompiles::{

@@ -1,4 +1,4 @@
-//! Utility functions for revm related ops
+//! Utility functions for evm2 related ops
 use crate::tracing::config::TraceStyle;
 use alloc::{
     format,
@@ -7,7 +7,7 @@ use alloc::{
 };
 use alloy_primitives::{hex, Bytes};
 use alloy_sol_types::{ContractError, GenericRevertReason};
-use revm::{
+use evm2::{
     interpreter::InstructionResult,
     primitives::{hardfork::SpecId, KECCAK_EMPTY},
     DatabaseRef,
@@ -102,7 +102,7 @@ pub(crate) fn gas_used(spec: SpecId, spent: u64, refunded: u64) -> u64 {
 #[inline]
 pub(crate) fn load_account_code<DB: DatabaseRef>(
     db: DB,
-    db_acc: &revm::state::AccountInfo,
+    db_acc: &evm2::state::AccountInfo,
 ) -> Option<Bytes> {
     db_acc.code.as_ref().map(|code| code.original_bytes()).or_else(|| {
         if db_acc.code_hash == KECCAK_EMPTY {
@@ -208,7 +208,7 @@ mod tests {
         );
     }
 
-    // <https://github.com/paradigmxyz/revm-inspectors/pull/353#issuecomment-36146608124>
+    // <https://github.com/paradigmxyz/evm2-inspectors/pull/353#issuecomment-36146608124>
     #[test]
     fn decode_string_revert() {
         let err = hex!("0x08c379a0000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000214661696c656420746f2076657269667920424950333232207369676e617475726500000000000000000000000000000000000000000000000000000000000000");

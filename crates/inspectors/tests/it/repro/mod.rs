@@ -50,14 +50,14 @@ mod prestate;
 use alloy_hardforks::{ethereum::mainnet::*, EthereumHardfork};
 use alloy_primitives::Address;
 use alloy_rpc_types_trace::geth::AccountState;
-use revm::{
+use evm2::{
     bytecode::Bytecode, database::CacheDB, database_interface::EmptyDB,
     primitives::hardfork::SpecId, state::AccountInfo,
 };
 use serde::Deserialize;
 use std::collections::BTreeMap;
 
-/// Convert an Ethereum hardfork to a revm SpecId.
+/// Convert an Ethereum hardfork to a evm2 SpecId.
 pub fn spec_id_from_ethereum_hardfork(hardfork: EthereumHardfork) -> SpecId {
     match hardfork {
         EthereumHardfork::Frontier => SpecId::FRONTIER,

@@ -9,7 +9,7 @@ use alloy_primitives::{map::HashSet, Address, U256, U64};
 use alloy_rpc_types_eth::TransactionInfo;
 use alloy_rpc_types_trace::parity::*;
 use core::iter::Peekable;
-use revm::{
+use evm2::{
     context_interface::result::{ExecutionResult, HaltReasonTr, ResultAndState},
     primitives::{hardfork::SpecId, KECCAK_EMPTY},
     state::Account,
@@ -503,7 +503,7 @@ where
 /// in the [ExecutionResult] state map and compares the balance and nonce against what's in the
 /// `db`, which should point to the beginning of the transaction.
 ///
-/// It's expected that `DB` is a revm [Database](revm::database_interface::Database) which at this
+/// It's expected that `DB` is a evm2 [Database](evm2::database_interface::Database) which at this
 /// point already contains all the accounts that are in the state map and never has to fetch them
 /// from disk.
 pub fn populate_state_diff<'a, DB, I>(

@@ -9,7 +9,7 @@ use alloy_rpc_types_trace::geth::{
     GethDebugTracerType, GethDebugTracingOptions, GethDefaultTracingOptions, GethTrace, NoopFrame,
     PreStateConfig,
 };
-use revm::{
+use evm2::{
     context_interface::{
         result::{HaltReasonTr, ResultAndState},
         Block, ContextTr, Transaction,
@@ -39,7 +39,7 @@ pub enum DebugInspector {
     /// PreStateTracer
     PreStateTracer(TracingInspector, PreStateConfig),
     /// Noop tracer
-    Noop(revm::inspector::NoOpInspector),
+    Noop(evm2::inspector::NoOpInspector),
     /// Mux tracer
     Mux(MuxInspector, MuxConfig),
     /// FlatCallTracer
@@ -110,7 +110,7 @@ impl DebugInspector {
                         )
                     }
                     GethDebugBuiltInTracerType::NoopTracer => {
-                        Self::Noop(revm::inspector::NoOpInspector)
+                        Self::Noop(evm2::inspector::NoOpInspector)
                     }
                     GethDebugBuiltInTracerType::MuxTracer => {
                         let config = tracer_config

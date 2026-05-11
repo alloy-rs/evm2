@@ -173,6 +173,25 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         &mut self.gas
     }
 
+    /// Returns the active frame-local call/create message.
+    #[inline]
+    pub const fn message(&self) -> &Message {
+        // SAFETY: `message` is initialized before inspected execution starts.
+        unsafe { self.message.unwrap_unchecked() }
+    }
+
+    /// Returns return data from the last call-like operation.
+    #[inline]
+    pub const fn return_data(&self) -> &Bytes {
+        &self.return_data
+    }
+
+    /// Returns the active base specification ID.
+    #[inline]
+    pub const fn spec(&self) -> SpecId {
+        self.spec
+    }
+
     /// Runs the interpreter until it stops.
     #[inline]
     pub fn run(&mut self, config: &ExecutionConfig<T>, host: &mut T::Host) -> InstrStop {

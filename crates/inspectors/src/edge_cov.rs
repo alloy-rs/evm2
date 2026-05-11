@@ -1,25 +1,18 @@
 use alloc::{vec, vec::Vec};
-use alloy_primitives::{map::DefaultHashBuilder, Address, U256};
+use alloy_primitives::{Address, U256, map::DefaultHashBuilder};
 use core::{
     fmt,
     hash::{BuildHasher, Hash, Hasher},
 };
-use revm::{
-    bytecode::opcode::{self},
-    interpreter::{
-        interpreter_types::{InputsTr, Jumps},
-        Interpreter,
-    },
-    Inspector,
+use evm2::{
+    EvmTypes, Inspector,
+    bytecode::opcode::op,
+    interpreter::{Interpreter, Word},
 };
 
-// This is the maximum number of edges that can be tracked. There is a tradeoff between performance
-// and precision (less collisions).
 const MAX_EDGE_COUNT: usize = 65536;
 
 /// An `Inspector` that tracks [edge coverage](https://clang.llvm.org/docs/SanitizerCoverage.html#edge-coverage).
-/// Covered edges will not wrap to zero e.g. a loop edge hit more than 255 will still be retained.
-// see https://github.com/AFLplusplus/AFLplusplus/blob/5777ceaf23f48ae4ceae60e4f3a79263802633c6/instrumentation/afl-llvm-pass.so.cc#L810-L829
 #[derive(Clone)]
 pub struct EdgeCovInspector {
     /// Map of hitcounts that can be diffed against to determine if new coverage was reached.
@@ -54,48 +47,39 @@ impl EdgeCovInspector {
         self.hitcount
     }
 
-    /// Mark the edge, H(address, pc, jump_dest), as hit.
     fn store_hit(&mut self, address: Address, pc: usize, jump_dest: U256) {
         let mut hasher = self.hash_builder.build_hasher();
         address.hash(&mut hasher);
         pc.hash(&mut hasher);
         jump_dest.hash(&mut hasher);
-        // The hash is used to index into the hitcount array,
-        // so it must be modulo the maximum edge count.
         let edge_id = (hasher.finish() % MAX_EDGE_COUNT as u64) as usize;
         self.hitcount[edge_id] = self.hitcount[edge_id].checked_add(1).unwrap_or(1);
     }
 
     #[cold]
-    fn do_step(&mut self, interp: &mut Interpreter) {
-        let address = interp.input.target_address(); // TODO track context for delegatecall?
-        let current_pc = interp.bytecode.pc();
+    fn do_step<T: EvmTypes>(&mut self, interp: &mut Interpreter<'_, T>) {
+        let address = interp.message().destination;
+        let current_pc = interp.pc();
 
-        match interp.bytecode.opcode() {
-            opcode::JUMP => {
-                // unconditional jump
-                if let Ok(jump_dest) = interp.stack.peek(0) {
+        match interp.opcode() {
+            op::JUMP => {
+                if let Some(jump_dest) = stack_peek(interp, 0) {
                     self.store_hit(address, current_pc, jump_dest);
                 }
             }
-            opcode::JUMPI => {
-                if let Ok(stack_value) = interp.stack.peek(1) {
+            op::JUMPI => {
+                if let Some(stack_value) = stack_peek(interp, 1) {
                     let jump_dest = if !stack_value.is_zero() {
-                        // branch taken
-                        interp.stack.peek(0)
+                        stack_peek(interp, 0)
                     } else {
-                        // fall through
-                        Ok(U256::from(current_pc + 1))
+                        Some(U256::from(current_pc + 1))
                     };
-
-                    if let Ok(jump_dest) = jump_dest {
+                    if let Some(jump_dest) = jump_dest {
                         self.store_hit(address, current_pc, jump_dest);
                     }
                 }
             }
-            _ => {
-                // no-op
-            }
+            _ => {}
         }
     }
 }
@@ -106,11 +90,17 @@ impl Default for EdgeCovInspector {
     }
 }
 
-impl<CTX> Inspector<CTX> for EdgeCovInspector {
+impl<T: EvmTypes> Inspector<T> for EdgeCovInspector {
     #[inline]
-    fn step(&mut self, interp: &mut Interpreter, _context: &mut CTX) {
-        if matches!(interp.bytecode.opcode(), opcode::JUMP | opcode::JUMPI) {
+    fn step(&mut self, interp: &mut Interpreter<'_, T>) {
+        if matches!(interp.opcode(), op::JUMP | op::JUMPI) {
             self.do_step(interp);
         }
     }
+}
+
+#[inline]
+fn stack_peek<T: EvmTypes>(interp: &Interpreter<'_, T>, index_from_top: usize) -> Option<Word> {
+    let stack = interp.stack();
+    stack.get(stack.len().checked_sub(index_from_top + 1)?).copied()
 }

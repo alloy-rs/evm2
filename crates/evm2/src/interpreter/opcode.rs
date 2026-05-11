@@ -10,6 +10,305 @@ macro_rules! opcodes {
     };
 }
 
+/// Opcode metadata.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct OpCode(u8);
+
+impl OpCode {
+    /// Creates opcode metadata for a raw opcode byte.
+    #[inline]
+    pub const fn new(opcode: u8) -> Option<Self> {
+        Some(Self(opcode))
+    }
+
+    /// Creates opcode metadata for a raw opcode byte without validation.
+    #[inline]
+    pub const unsafe fn new_unchecked(opcode: u8) -> Self {
+        Self(opcode)
+    }
+
+    /// Returns the raw opcode byte.
+    #[inline]
+    pub const fn get(self) -> u8 {
+        self.0
+    }
+
+    /// Returns whether this opcode is defined by evm2.
+    #[inline]
+    pub const fn is_valid(self) -> bool {
+        matches!(
+            self.0,
+            op::STOP
+                | op::ADD
+                | op::MUL
+                | op::SUB
+                | op::DIV
+                | op::SDIV
+                | op::MOD
+                | op::SMOD
+                | op::ADDMOD
+                | op::MULMOD
+                | op::EXP
+                | op::SIGNEXTEND
+                | op::LT
+                | op::GT
+                | op::SLT
+                | op::SGT
+                | op::EQ
+                | op::ISZERO
+                | op::AND
+                | op::OR
+                | op::XOR
+                | op::NOT
+                | op::BYTE
+                | op::SHL
+                | op::SHR
+                | op::SAR
+                | op::CLZ
+                | op::KECCAK256
+                | op::ADDRESS
+                | op::BALANCE
+                | op::ORIGIN
+                | op::CALLER
+                | op::CALLVALUE
+                | op::CALLDATALOAD
+                | op::CALLDATASIZE
+                | op::CALLDATACOPY
+                | op::CODESIZE
+                | op::CODECOPY
+                | op::GASPRICE
+                | op::EXTCODESIZE
+                | op::EXTCODECOPY
+                | op::EXTCODEHASH
+                | op::BLOCKHASH
+                | op::COINBASE
+                | op::TIMESTAMP
+                | op::NUMBER
+                | op::DIFFICULTY
+                | op::GASLIMIT
+                | op::CHAINID
+                | op::SELFBALANCE
+                | op::BASEFEE
+                | op::BLOBHASH
+                | op::BLOBBASEFEE
+                | op::SLOTNUM
+                | op::POP
+                | op::MLOAD
+                | op::MSTORE
+                | op::MSTORE8
+                | op::SLOAD
+                | op::SSTORE
+                | op::JUMP
+                | op::JUMPI
+                | op::PC
+                | op::MSIZE
+                | op::GAS
+                | op::JUMPDEST
+                | op::TLOAD
+                | op::TSTORE
+                | op::MCOPY
+                | op::PUSH0..=op::PUSH32
+                | op::DUP1..=op::DUP16
+                | op::SWAP1..=op::SWAP16
+                | op::LOG0..=op::LOG4
+                | op::DUPN
+                | op::SWAPN
+                | op::EXCHANGE
+                | op::CREATE
+                | op::CALL
+                | op::CALLCODE
+                | op::RETURN
+                | op::DELEGATECALL
+                | op::CREATE2
+                | op::STATICCALL
+                | op::REVERT
+                | op::INVALID
+                | op::SELFDESTRUCT
+        )
+    }
+
+    /// Returns opcode stack and immediate metadata.
+    #[inline]
+    pub const fn info(self) -> OpInfo {
+        OpInfo { opcode: self.0 }
+    }
+
+    /// Returns the immediate byte count.
+    #[inline]
+    pub const fn immediate_size(self) -> u8 {
+        self.info().immediate_size()
+    }
+
+    /// Returns the number of stack outputs.
+    #[inline]
+    pub const fn outputs(self) -> u8 {
+        self.info().outputs()
+    }
+
+    /// Returns whether the opcode can modify linear memory.
+    #[inline]
+    pub const fn modifies_memory(self) -> bool {
+        self.info().modifies_memory()
+    }
+}
+
+impl core::fmt::Display for OpCode {
+    #[inline]
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(opcode_name(self.0))
+    }
+}
+
+/// Opcode stack and immediate metadata.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct OpInfo {
+    opcode: u8,
+}
+
+impl OpInfo {
+    /// Returns the immediate byte count.
+    #[inline]
+    pub const fn immediate_size(self) -> u8 {
+        if self.opcode >= op::PUSH1 && self.opcode <= op::PUSH32 {
+            self.opcode - op::PUSH1 + 1
+        } else if self.opcode == op::DUPN || self.opcode == op::SWAPN {
+            1
+        } else if self.opcode == op::EXCHANGE {
+            1
+        } else {
+            0
+        }
+    }
+
+    /// Returns the number of stack outputs.
+    #[inline]
+    pub const fn outputs(self) -> u8 {
+        match self.opcode {
+            op::STOP | op::SSTORE | op::JUMP | op::JUMPI | op::LOG0..=op::LOG4 | op::RETURN
+            | op::REVERT | op::SELFDESTRUCT => 0,
+            op::CALL | op::CALLCODE | op::DELEGATECALL | op::STATICCALL | op::CREATE
+            | op::CREATE2 => 1,
+            op::DUP1..=op::DUP16 => self.opcode - op::DUP1 + 2,
+            _ => 1,
+        }
+    }
+
+    /// Returns whether the opcode can modify linear memory.
+    #[inline]
+    pub const fn modifies_memory(self) -> bool {
+        matches!(
+            self.opcode,
+            op::MSTORE
+                | op::MSTORE8
+                | op::CALLDATACOPY
+                | op::CODECOPY
+                | op::EXTCODECOPY
+                | op::RETURNDATACOPY
+                | op::MCOPY
+                | op::CALL
+                | op::CALLCODE
+                | op::DELEGATECALL
+                | op::STATICCALL
+                | op::CREATE
+                | op::CREATE2
+        )
+    }
+}
+
+#[inline]
+const fn opcode_name(opcode: u8) -> &'static str {
+    match opcode {
+        op::STOP => "STOP",
+        op::ADD => "ADD",
+        op::MUL => "MUL",
+        op::SUB => "SUB",
+        op::DIV => "DIV",
+        op::SDIV => "SDIV",
+        op::MOD => "MOD",
+        op::SMOD => "SMOD",
+        op::ADDMOD => "ADDMOD",
+        op::MULMOD => "MULMOD",
+        op::EXP => "EXP",
+        op::SIGNEXTEND => "SIGNEXTEND",
+        op::LT => "LT",
+        op::GT => "GT",
+        op::SLT => "SLT",
+        op::SGT => "SGT",
+        op::EQ => "EQ",
+        op::ISZERO => "ISZERO",
+        op::AND => "AND",
+        op::OR => "OR",
+        op::XOR => "XOR",
+        op::NOT => "NOT",
+        op::BYTE => "BYTE",
+        op::SHL => "SHL",
+        op::SHR => "SHR",
+        op::SAR => "SAR",
+        op::CLZ => "CLZ",
+        op::KECCAK256 => "KECCAK256",
+        op::ADDRESS => "ADDRESS",
+        op::BALANCE => "BALANCE",
+        op::ORIGIN => "ORIGIN",
+        op::CALLER => "CALLER",
+        op::CALLVALUE => "CALLVALUE",
+        op::CALLDATALOAD => "CALLDATALOAD",
+        op::CALLDATASIZE => "CALLDATASIZE",
+        op::CALLDATACOPY => "CALLDATACOPY",
+        op::CODESIZE => "CODESIZE",
+        op::CODECOPY => "CODECOPY",
+        op::GASPRICE => "GASPRICE",
+        op::EXTCODESIZE => "EXTCODESIZE",
+        op::EXTCODECOPY => "EXTCODECOPY",
+        op::EXTCODEHASH => "EXTCODEHASH",
+        op::BLOCKHASH => "BLOCKHASH",
+        op::COINBASE => "COINBASE",
+        op::TIMESTAMP => "TIMESTAMP",
+        op::NUMBER => "NUMBER",
+        op::DIFFICULTY => "DIFFICULTY",
+        op::GASLIMIT => "GASLIMIT",
+        op::CHAINID => "CHAINID",
+        op::SELFBALANCE => "SELFBALANCE",
+        op::BASEFEE => "BASEFEE",
+        op::BLOBHASH => "BLOBHASH",
+        op::BLOBBASEFEE => "BLOBBASEFEE",
+        op::SLOTNUM => "SLOTNUM",
+        op::POP => "POP",
+        op::MLOAD => "MLOAD",
+        op::MSTORE => "MSTORE",
+        op::MSTORE8 => "MSTORE8",
+        op::SLOAD => "SLOAD",
+        op::SSTORE => "SSTORE",
+        op::JUMP => "JUMP",
+        op::JUMPI => "JUMPI",
+        op::PC => "PC",
+        op::MSIZE => "MSIZE",
+        op::GAS => "GAS",
+        op::JUMPDEST => "JUMPDEST",
+        op::TLOAD => "TLOAD",
+        op::TSTORE => "TSTORE",
+        op::MCOPY => "MCOPY",
+        op::PUSH0 => "PUSH0",
+        op::PUSH1..=op::PUSH32 => "PUSH",
+        op::DUP1..=op::DUP16 => "DUP",
+        op::SWAP1..=op::SWAP16 => "SWAP",
+        op::LOG0..=op::LOG4 => "LOG",
+        op::DUPN => "DUPN",
+        op::SWAPN => "SWAPN",
+        op::EXCHANGE => "EXCHANGE",
+        op::CREATE => "CREATE",
+        op::CALL => "CALL",
+        op::CALLCODE => "CALLCODE",
+        op::RETURN => "RETURN",
+        op::DELEGATECALL => "DELEGATECALL",
+        op::CREATE2 => "CREATE2",
+        op::STATICCALL => "STATICCALL",
+        op::REVERT => "REVERT",
+        op::INVALID => "INVALID",
+        op::SELFDESTRUCT => "SELFDESTRUCT",
+        _ => "UNKNOWN",
+    }
+}
+
 opcodes! {$
     0x00 => STOP       => stop;
     0x01 => ADD        => add;

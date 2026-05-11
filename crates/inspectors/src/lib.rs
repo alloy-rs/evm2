@@ -1,4 +1,4 @@
-//! revm [Inspector](revm::Inspector) implementations, such as call tracers
+//! evm2 [Inspector](evm2::Inspector) implementations, such as call tracers
 //!
 //! ## Feature Flags
 //!
@@ -17,6 +17,13 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
 extern crate alloc;
+
+#[cfg(feature = "std")]
+use anstyle as _;
+#[cfg(feature = "std")]
+use serde as _;
+use serde_json as _;
+use thiserror as _;
 
 /// An inspector implementation for an EIP2930 Accesslist
 pub mod access_list;

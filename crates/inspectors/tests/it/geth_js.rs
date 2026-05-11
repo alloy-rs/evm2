@@ -2,7 +2,7 @@
 
 use crate::utils::deploy_contract;
 use alloy_primitives::{address, hex, Address};
-use revm::{
+use evm2::{
     context::TxEnv,
     context_interface::{ContextTr, TransactTo},
     database::CacheDB,
@@ -11,7 +11,7 @@ use revm::{
     primitives::hardfork::SpecId,
     Context, InspectEvm, MainBuilder, MainContext,
 };
-use revm_inspectors::tracing::js::JsInspector;
+use evm2_inspectors::tracing::js::JsInspector;
 use serde_json::json;
 
 #[test]

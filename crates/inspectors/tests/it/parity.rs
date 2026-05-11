@@ -6,7 +6,7 @@ use alloy_rpc_types_eth::TransactionInfo;
 use alloy_rpc_types_trace::parity::{
     Action, CallAction, CallType, CreationMethod, SelfdestructAction, TraceType,
 };
-use revm::{
+use evm2::{
     context::TxEnv,
     context_interface::{
         block::BlobExcessGasAndPrice,
@@ -21,7 +21,7 @@ use revm::{
     state::AccountInfo,
     Context, DatabaseCommit, InspectEvm, MainBuilder, MainContext,
 };
-use revm_inspectors::tracing::{
+use evm2_inspectors::tracing::{
     parity::populate_state_diff, TracingInspector, TracingInspectorConfig,
 };
 

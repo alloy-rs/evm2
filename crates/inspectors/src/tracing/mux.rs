@@ -7,7 +7,7 @@ use alloy_rpc_types_trace::geth::{
     CallConfig, FlatCallConfig, FourByteFrame, GethDebugBuiltInTracerType, GethDebugTracerType,
     NoopFrame, PreStateConfig,
 };
-use revm::{
+use evm2::{
     context_interface::{
         result::{HaltReasonTr, ResultAndState},
         ContextTr,

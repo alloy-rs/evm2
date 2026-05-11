@@ -2,12 +2,12 @@ use crate::utils::{inspect_deploy_contract, write_traces_with};
 use alloy_primitives::{address, b256, bytes, hex, Address, B256, U256};
 use alloy_sol_types::{sol, SolCall};
 use colorchoice::ColorChoice;
-use revm::{
+use evm2::{
     context::TxEnv, context_interface::TransactTo, database::CacheDB, database_interface::EmptyDB,
     inspector::InspectorEvmTr, primitives::hardfork::SpecId, Context, InspectCommitEvm, InspectEvm,
     MainBuilder, MainContext,
 };
-use revm_inspectors::tracing::{
+use evm2_inspectors::tracing::{
     types::{DecodedCallData, DecodedInternalCall, DecodedTraceStep},
     TraceWriterConfig, TracingInspector, TracingInspectorConfig,
 };

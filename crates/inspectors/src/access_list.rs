@@ -1,31 +1,21 @@
 use alloc::collections::BTreeSet;
 use alloy_primitives::{
+    Address, B256,
     map::{HashMap, HashSet},
-    Address, TxKind, B256,
 };
-use revm::context::transaction::AuthorizationTr;
-
 use alloy_rpc_types_eth::{AccessList, AccessListItem};
-use revm::{
-    bytecode::opcode,
-    context::JournalTr,
-    context_interface::{ContextTr, Transaction},
-    inspector::JournalExt,
-    interpreter::{
-        interpreter_types::{InputsTr, Jumps},
-        Interpreter,
-    },
-    Inspector,
+use evm2::{
+    EvmTypes, Inspector,
+    bytecode::opcode::op,
+    interpreter::{Interpreter, Message, MessageResult, Word},
 };
 
 /// An [Inspector] that collects touched accounts and storage slots.
-///
-/// This can be used to construct an [AccessList] for a transaction via `eth_createAccessList`
 #[derive(Debug, Default)]
 pub struct AccessListInspector {
-    /// All addresses that should be excluded from the final accesslist
+    /// All addresses that should be excluded from the final accesslist.
     excluded: HashSet<Address>,
-    /// All addresses and touched slots
+    /// All addresses and touched slots.
     touched_slots: HashMap<Address, BTreeSet<B256>>,
 }
 
@@ -36,9 +26,7 @@ impl From<AccessList> for AccessListInspector {
 }
 
 impl AccessListInspector {
-    /// Creates a new inspector instance
-    ///
-    /// The `access_list` is the provided access list from the call request
+    /// Creates a new inspector instance.
     pub fn new(access_list: AccessList) -> Self {
         Self {
             excluded: Default::default(),
@@ -66,8 +54,7 @@ impl AccessListInspector {
         self.touched_slots
     }
 
-    /// Returns list of addresses and storage keys used by the transaction. It gives you the list of
-    /// addresses and storage keys that were touched during execution.
+    /// Returns list of addresses and storage keys used by the transaction.
     pub fn into_access_list(self) -> AccessList {
         let items = self.touched_slots.into_iter().map(|(address, slots)| AccessListItem {
             address,
@@ -76,8 +63,7 @@ impl AccessListInspector {
         AccessList(items.collect())
     }
 
-    /// Returns list of addresses and storage keys used by the transaction. It gives you the list of
-    /// addresses and storage keys that were touched during execution.
+    /// Returns list of addresses and storage keys used by the transaction.
     pub fn access_list(&self) -> AccessList {
         let items = self.touched_slots.iter().map(|(address, slots)| AccessListItem {
             address: *address,
@@ -86,59 +72,38 @@ impl AccessListInspector {
         AccessList(items.collect())
     }
 
-    /// Collects addresses which should be excluded from the access list. Must be called before the
-    /// top-level call.
-    ///
-    /// Those include caller, callee and precompiles.
-    fn collect_excluded_addresses<CTX: ContextTr<Journal: JournalExt>>(&mut self, context: &CTX) {
-        let from = context.tx().caller();
-        let to = if let TxKind::Call(to) = context.tx().kind() {
-            to
-        } else {
-            // We need to exclude the created address if this is a CREATE frame.
-            //
-            // This assumes that caller has already been loaded but nonce was not increased yet.
-            let nonce = context.journal_ref().evm_state().get(&from).unwrap().info.nonce;
-            from.create(nonce)
-        };
-        let precompiles = context.journal_ref().precompile_addresses().clone();
-
-        // 7702 authorities should be excluded because those get loaded anyway
-        let auth_addrs = context.tx().authorization_list().flat_map(|a| a.authority());
-
-        self.excluded = [from, to].into_iter().chain(precompiles).chain(auth_addrs).collect();
+    fn collect_excluded_addresses(&mut self, message: &Message) {
+        self.excluded.insert(message.caller);
+        self.excluded.insert(message.destination);
     }
 }
 
-impl<CTX> Inspector<CTX> for AccessListInspector
-where
-    CTX: ContextTr<Journal: JournalExt>,
-{
-    fn step(&mut self, interp: &mut Interpreter, _context: &mut CTX) {
-        match interp.bytecode.opcode() {
-            opcode::SLOAD | opcode::SSTORE => {
-                if let Ok(slot) = interp.stack.peek(0) {
-                    let cur_contract = interp.input.target_address();
+impl<T: EvmTypes> Inspector<T> for AccessListInspector {
+    fn step(&mut self, interp: &mut Interpreter<'_, T>) {
+        match interp.opcode() {
+            op::SLOAD | op::SSTORE => {
+                if let Some(slot) = stack_peek(interp, 0) {
+                    let cur_contract = interp.message().destination;
                     self.touched_slots
                         .entry(cur_contract)
                         .or_default()
                         .insert(B256::from(slot.to_be_bytes()));
                 }
             }
-            opcode::EXTCODECOPY
-            | opcode::EXTCODEHASH
-            | opcode::EXTCODESIZE
-            | opcode::BALANCE
-            | opcode::SELFDESTRUCT => {
-                if let Ok(slot) = interp.stack.peek(0) {
+            op::EXTCODECOPY
+            | op::EXTCODEHASH
+            | op::EXTCODESIZE
+            | op::BALANCE
+            | op::SELFDESTRUCT => {
+                if let Some(slot) = stack_peek(interp, 0) {
                     let addr = Address::from_word(B256::from(slot.to_be_bytes()));
                     if !self.excluded.contains(&addr) {
                         self.touched_slots.entry(addr).or_default();
                     }
                 }
             }
-            opcode::DELEGATECALL | opcode::CALL | opcode::STATICCALL | opcode::CALLCODE => {
-                if let Ok(slot) = interp.stack.peek(1) {
+            op::DELEGATECALL | op::CALL | op::STATICCALL | op::CALLCODE => {
+                if let Some(slot) = stack_peek(interp, 1) {
                     let addr = Address::from_word(B256::from(slot.to_be_bytes()));
                     if !self.excluded.contains(&addr) {
                         self.touched_slots.entry(addr).or_default();
@@ -149,27 +114,23 @@ where
         }
     }
 
-    fn call(
-        &mut self,
-        context: &mut CTX,
-        _inputs: &mut revm::interpreter::CallInputs,
-    ) -> Option<revm::interpreter::CallOutcome> {
-        // At the top-level frame, fill the excluded addresses
-        if context.journal().depth() == 0 {
-            self.collect_excluded_addresses(context)
+    fn call(&mut self, message: &mut Message) -> Option<MessageResult> {
+        if message.depth == 1 {
+            self.collect_excluded_addresses(message);
         }
         None
     }
 
-    fn create(
-        &mut self,
-        context: &mut CTX,
-        _inputs: &mut revm::interpreter::CreateInputs,
-    ) -> Option<revm::interpreter::CreateOutcome> {
-        // At the top-level frame, fill the excluded addresses
-        if context.journal().depth() == 0 {
-            self.collect_excluded_addresses(context)
+    fn create(&mut self, message: &mut Message) -> Option<MessageResult> {
+        if message.depth == 1 {
+            self.collect_excluded_addresses(message);
         }
         None
     }
+}
+
+#[inline]
+fn stack_peek<T: EvmTypes>(interp: &Interpreter<'_, T>, index_from_top: usize) -> Option<Word> {
+    let stack = interp.stack();
+    stack.get(stack.len().checked_sub(index_from_top + 1)?).copied()
 }

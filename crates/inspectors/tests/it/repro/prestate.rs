@@ -5,11 +5,11 @@
 use super::ReproContext;
 use alloy_primitives::{address, hex, Bytes};
 use alloy_rpc_types_trace::geth::{DiffMode, PreStateConfig, PreStateFrame};
-use revm::{
+use evm2::{
     context::TxEnv, context_interface::TransactTo, primitives::hardfork::SpecId, Context,
     InspectEvm, MainBuilder, MainContext,
 };
-use revm_inspectors::tracing::{TracingInspector, TracingInspectorConfig};
+use evm2_inspectors::tracing::{TracingInspector, TracingInspectorConfig};
 
 /// Raw prestate tracer RPC response for mainnet tx:
 /// 0x391f4b6a382d3bcc3120adc2ea8c62003e604e487d97281129156fd284a1a89d

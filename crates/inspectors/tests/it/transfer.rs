@@ -1,7 +1,7 @@
 //! Transfer tests
 
 use alloy_primitives::{hex, Address, U256};
-use revm::{
+use evm2::{
     context::TxEnv,
     context_interface::{
         result::{ExecutionResult, Output},
@@ -14,7 +14,7 @@ use revm::{
     primitives::hardfork::SpecId,
     Context, DatabaseCommit, InspectEvm, MainBuilder, MainContext,
 };
-use revm_inspectors::{
+use evm2_inspectors::{
     tracing::{TracingInspector, TracingInspectorConfig},
     transfer::{TransferInspector, TransferKind, TransferOperation},
 };

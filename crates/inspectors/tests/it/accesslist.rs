@@ -1,11 +1,11 @@
 //! Accesslist tests
 
 use alloy_primitives::{address, hex};
-use revm::{
+use evm2::{
     bytecode::Bytecode, context::TxEnv, context_interface::TransactTo, database::CacheDB,
     database_interface::EmptyDB, state::AccountInfo, Context, InspectEvm, MainBuilder, MainContext,
 };
-use revm_inspectors::access_list::AccessListInspector;
+use evm2_inspectors::access_list::AccessListInspector;
 
 #[test]
 fn test_access_list_precompile() {

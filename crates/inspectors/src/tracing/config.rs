@@ -6,7 +6,7 @@ use alloy_rpc_types_trace::{
     },
     parity::TraceType,
 };
-use revm::bytecode::opcode::OpCode;
+use evm2::bytecode::opcode::OpCode;
 
 /// 256 bits each marking whether an opcode should be included into steps trace or not.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

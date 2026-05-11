@@ -19,6 +19,9 @@ mod serde_impl;
 
 pub use jump_table::{JumpTable, JumpTableRef};
 
+/// Opcode byte constants and metadata.
+pub use crate::interpreter::opcode;
+
 /// EIP-7702 decode errors.
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]

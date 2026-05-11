@@ -18,7 +18,7 @@ use alloy_rpc_types_trace::geth::{
     AccountChangeKind, AccountState, CallConfig, CallFrame, DefaultFrame, DiffMode,
     GethDefaultTracingOptions, PreStateConfig, PreStateFrame, PreStateMode, StructLog,
 };
-use revm::{
+use evm2::{
     bytecode::opcode,
     context_interface::result::{HaltReasonTr, ResultAndState},
     primitives::KECCAK_EMPTY,
@@ -115,7 +115,7 @@ impl<'a> GethTraceBuilder<'a> {
     /// Generate a geth-style trace e.g. for `debug_traceTransaction`
     ///
     /// This expects the gas used and return value for the
-    /// [[revm::context::result::ExecutionResult]] of the executed
+    /// [[evm2::context::result::ExecutionResult]] of the executed
     /// transaction.
     pub fn geth_traces(
         &self,
@@ -148,7 +148,7 @@ impl<'a> GethTraceBuilder<'a> {
     /// This decodes all call frames from the recorded traces.
     ///
     /// This expects the gas used and return value for the
-    /// [revm::context::result::ExecutionResult] of the executed
+    /// [evm2::context::result::ExecutionResult] of the executed
     /// transaction.
     pub fn geth_call_traces(&self, opts: CallConfig, gas_used: u64) -> CallFrame {
         if self.nodes.is_empty() {
@@ -467,7 +467,7 @@ impl<'a> GethTraceBuilder<'a> {
                 }
 
                 if let Some(status) = &step.status {
-                    if *status == revm::interpreter::InstructionResult::OutOfGas {
+                    if *status == evm2::interpreter::InstructionResult::OutOfGas {
                         out_of_gas = true;
                     }
                 }
@@ -587,7 +587,7 @@ fn account_was_empty(account: &AccountInfo) -> bool {
 mod tests {
     use super::*;
     use alloy_primitives::{address, U256};
-    use revm::{
+    use evm2::{
         database::CacheDB,
         database_interface::EmptyDB,
         state::{Account, AccountInfo},

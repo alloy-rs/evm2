@@ -11,8 +11,10 @@ pub(crate) mod instructions;
 #[doc(hidden)] // For macro only. Not public API.
 pub mod private;
 
-pub(crate) mod opcode;
+/// Opcode byte constants and metadata.
+pub mod opcode;
 pub use opcode::op;
+pub use InstrStop as InstructionResult;
 
 mod ctrl;
 pub use ctrl::{BytecodeRef, Pc};

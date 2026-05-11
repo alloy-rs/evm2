@@ -1,11 +1,8 @@
-use alloy_primitives::{map::HashMap, Address, B256};
-use revm::{
-    bytecode::opcode,
-    interpreter::{
-        interpreter_types::{InputsTr, Jumps},
-        Interpreter,
-    },
-    Inspector,
+use alloy_primitives::{Address, B256, map::HashMap};
+use evm2::{
+    EvmTypes, Inspector,
+    bytecode::opcode::op,
+    interpreter::{Interpreter, Word},
 };
 
 /// An Inspector that tracks warm and cold storage slot accesses.
@@ -16,7 +13,7 @@ pub struct StorageInspector {
 }
 
 impl StorageInspector {
-    /// Creates a new storage inspector
+    /// Creates a new storage inspector.
     pub fn new() -> Self {
         Self::default()
     }
@@ -30,7 +27,7 @@ impl StorageInspector {
             .count() as u64
     }
 
-    /// Returns how often slots where accessed after the initial access
+    /// Returns how often slots where accessed after the initial access.
     pub fn warm_loads(&self) -> u64 {
         self.accessed_slots
             .values()
@@ -50,18 +47,22 @@ impl StorageInspector {
     }
 }
 
-impl<CTX> Inspector<CTX> for StorageInspector {
-    fn step(&mut self, interp: &mut Interpreter, _context: &mut CTX) {
-        if interp.bytecode.opcode() == opcode::SLOAD {
-            if let Ok(slot) = interp.stack.peek(0) {
-                let address = interp.input.target_address();
-                let slot = B256::from(slot.to_be_bytes());
-
-                let slot_access_count =
-                    self.accessed_slots.entry(address).or_default().entry(slot).or_default();
-
-                *slot_access_count += 1;
-            }
+impl<T: EvmTypes> Inspector<T> for StorageInspector {
+    fn step(&mut self, interp: &mut Interpreter<'_, T>) {
+        if interp.opcode() == op::SLOAD
+            && let Some(slot) = stack_peek(interp, 0)
+        {
+            let address = interp.message().destination;
+            let slot = B256::from(slot.to_be_bytes());
+            let slot_access_count =
+                self.accessed_slots.entry(address).or_default().entry(slot).or_default();
+            *slot_access_count += 1;
         }
     }
+}
+
+#[inline]
+fn stack_peek<T: EvmTypes>(interp: &Interpreter<'_, T>, index_from_top: usize) -> Option<Word> {
+    let stack = interp.stack();
+    stack.get(stack.len().checked_sub(index_from_top + 1)?).copied()
 }
