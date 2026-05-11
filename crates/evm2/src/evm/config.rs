@@ -9,6 +9,7 @@ use crate::{
     },
     version::Version,
 };
+use derive_where::derive_where;
 
 /// Runtime EVM type family.
 ///
@@ -114,12 +115,12 @@ where
 ///
 /// Bundles the active runtime `Version` with the finalized instruction dispatch table selected for
 /// an EVM instance. This is the data passed to the interpreter when it runs.
-#[derive(derive_more::Debug)]
+#[derive_where(Debug)]
 pub struct ExecutionConfig<T: EvmTypes> {
     pub(crate) version: Version,
-    #[debug(skip)]
+    #[derive_where(skip)]
     pub(crate) instructions: &'static InstrTable<T>,
-    #[debug(skip)]
+    #[derive_where(skip)]
     pub(crate) inspect_instructions: &'static InstrTable<T>,
 }
 

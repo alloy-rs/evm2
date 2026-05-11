@@ -17,6 +17,7 @@ use alloy_primitives::{
     map::{AddressMap, AddressSet, U256Map, hash_map},
 };
 use core::mem;
+use derive_where::derive_where;
 
 /// A value tracked together with the value it had at the start of the current
 /// transaction.
@@ -328,11 +329,11 @@ pub enum JournalEntry {
 }
 
 /// Mutable EVM state with an overlay and reversible journal.
-#[derive(derive_more::Debug)]
+#[derive_where(Debug)]
 #[non_exhaustive]
 pub struct State {
     /// Read-only initial database.
-    #[debug(skip)]
+    #[derive_where(skip)]
     initial: Box<dyn DynDatabase>,
     /// Account data overlay keyed by address.
     ///

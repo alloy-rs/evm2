@@ -17,10 +17,11 @@ use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::{Address, Bytes, Log};
 #[cfg(not(tco))]
 use core::hint::cold_path;
-use core::{fmt, marker::PhantomData, ptr::NonNull};
+use core::{fmt, ptr::NonNull};
+use derive_where::derive_where;
 
 /// EVM interpreter.
-#[derive(derive_more::Debug)]
+#[derive_where(Debug)]
 pub struct Interpreter<'frame, T: EvmTypes> {
     bytecode: Bytecode,
     memory: Memory,
@@ -28,15 +29,15 @@ pub struct Interpreter<'frame, T: EvmTypes> {
 
     pc: *const u8,
     output: *const [u8],
-    #[debug(skip)]
+    #[derive_where(skip)]
     tx_env: Option<&'frame TxEnv<T>>,
-    #[debug(skip)]
+    #[derive_where(skip)]
     message: Option<&'frame Message<T>>,
     host: Option<NonNull<T::Host>>,
     inspector: Option<NonNull<dyn Inspector<T>>>,
     version: *const Version,
     stack_len: usize,
-    #[debug(skip)]
+    #[derive_where(skip)]
     stack: Box<StackBacking>,
 
     gas: Gas,
@@ -44,9 +45,6 @@ pub struct Interpreter<'frame, T: EvmTypes> {
     spec: SpecId,
     features: EvmFeatures,
     is_static: bool,
-
-    #[debug(skip)]
-    _marker: PhantomData<fn() -> T>,
 }
 
 impl<T: EvmTypes> Default for Interpreter<'_, T> {
@@ -71,7 +69,6 @@ impl<T: EvmTypes> Default for Interpreter<'_, T> {
             features: EvmFeatures::empty(),
             // SAFETY: `MaybeUninit<Word>` does not need initialization.
             stack: unsafe { Box::new_uninit().assume_init() },
-            _marker: PhantomData,
         }
     }
 }

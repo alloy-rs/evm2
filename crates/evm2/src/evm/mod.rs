@@ -46,22 +46,22 @@ pub use state::{
 };
 
 /// EVM host and transaction dispatcher.
-#[derive(derive_more::Debug)]
+#[derive_where(Debug)]
 pub struct Evm<T: EvmTypes> {
-    #[debug(skip)]
+    #[derive_where(skip)]
     spec_id: T::SpecId,
-    #[debug(skip)]
+    #[derive_where(skip)]
     execution_config: ExecutionConfig<T>,
     features: EvmFeatures,
     pub(crate) block: BlockEnv<T>,
     registry: TxRegistry<T::Tx, TxResult<T>, Self>,
-    #[debug(skip)]
+    #[derive_where(skip)]
     pub(crate) state: State,
-    #[debug(skip)]
+    #[derive_where(skip)]
     precompiles: Box<dyn PrecompileProvider>,
-    #[debug(skip)]
+    #[derive_where(skip)]
     interpreter_pool: InterpreterPool<T>,
-    #[debug(skip)]
+    #[derive_where(skip)]
     inspector: Option<Box<dyn Inspector<T>>>,
     db_error_code: Option<DbErrorCode>,
 }

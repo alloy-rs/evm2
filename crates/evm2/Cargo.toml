@@ -21,7 +21,6 @@ alloy-eips = { workspace = true, features = ["k256"] }
 alloy-primitives.workspace = true
 alloy-rlp.workspace = true
 alloy-trie = { workspace = true, features = ["ethereum"] }
-derive_more.workspace = true
 derive-where.workspace = true
 thiserror.workspace = true
 cfg-if.workspace = true
@@ -118,7 +117,6 @@ std = [
     "ark-serialize/std",
     "ark-std/std",
     "aurora-engine-modexp/std",
-    "derive_more/std",
     "k256/std",
     "once_cell/std",
     "p256/std",
