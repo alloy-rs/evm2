@@ -964,7 +964,11 @@ pub struct TxResult<T: EvmTypes = crate::BaseEvmTypes> {
     pub ext: T::TxResultExt,
 }
 
-impl<T: EvmTypes> PartialEq for TxResult<T> {
+impl<T> PartialEq for TxResult<T>
+where
+    T: EvmTypes,
+    T::TxResultExt: PartialEq,
+{
     #[inline]
     fn eq(&self, other: &Self) -> bool {
         self.status == other.status
@@ -977,7 +981,12 @@ impl<T: EvmTypes> PartialEq for TxResult<T> {
     }
 }
 
-impl<T: EvmTypes> Eq for TxResult<T> {}
+impl<T> Eq for TxResult<T>
+where
+    T: EvmTypes,
+    T::TxResultExt: Eq,
+{
+}
 
 impl<T: EvmTypes> Default for TxResult<T> {
     #[inline]

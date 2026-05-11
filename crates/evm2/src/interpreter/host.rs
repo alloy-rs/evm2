@@ -28,7 +28,11 @@ pub struct MessageResult<T: EvmTypes = BaseEvmTypes> {
     pub ext: T::MessageResultExt,
 }
 
-impl<T: EvmTypes> PartialEq for MessageResult<T> {
+impl<T> PartialEq for MessageResult<T>
+where
+    T: EvmTypes,
+    T::MessageResultExt: PartialEq,
+{
     #[inline]
     fn eq(&self, other: &Self) -> bool {
         self.stop == other.stop
@@ -39,7 +43,12 @@ impl<T: EvmTypes> PartialEq for MessageResult<T> {
     }
 }
 
-impl<T: EvmTypes> Eq for MessageResult<T> {}
+impl<T> Eq for MessageResult<T>
+where
+    T: EvmTypes,
+    T::MessageResultExt: Eq,
+{
+}
 
 impl<T: EvmTypes> Default for MessageResult<T> {
     #[inline]

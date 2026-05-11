@@ -28,19 +28,19 @@ pub trait EvmTypes: Sized + 'static {
     type Tx;
 
     /// Extra data stored in frame messages.
-    type MessageExt: Clone + core::fmt::Debug + PartialEq + Eq + Default;
+    type MessageExt: Clone + core::fmt::Debug + Default;
 
     /// Extra data stored in message execution results.
-    type MessageResultExt: Clone + core::fmt::Debug + PartialEq + Eq + Default;
+    type MessageResultExt: Clone + core::fmt::Debug + Default;
 
     /// Extra data stored in transaction environments.
-    type TxEnvExt: Clone + core::fmt::Debug + PartialEq + Eq + Default;
+    type TxEnvExt: Clone + core::fmt::Debug + Default;
 
     /// Extra data stored in transaction execution results.
-    type TxResultExt: Clone + core::fmt::Debug + PartialEq + Eq + Default;
+    type TxResultExt: Clone + core::fmt::Debug + Default;
 
     /// Extra data stored in block environments.
-    type BlockEnvExt: Copy + core::fmt::Debug + PartialEq + Eq + Default;
+    type BlockEnvExt: Copy + core::fmt::Debug + Default;
 
     /// Host type used by this EVM.
     type Host: Host<Self> + ?Sized;

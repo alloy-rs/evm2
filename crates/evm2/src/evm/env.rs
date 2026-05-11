@@ -5,7 +5,7 @@ use alloc::{vec, vec::Vec};
 use alloy_primitives::{Address, U256};
 
 /// Transaction-global environment values visible to opcodes.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct TxEnv<T: EvmTypes = BaseEvmTypes> {
     /// Transaction origin.
     pub origin: Address,
@@ -17,6 +17,28 @@ pub struct TxEnv<T: EvmTypes = BaseEvmTypes> {
     pub blob_hashes: Vec<U256>,
     /// EVM type-specific extension data.
     pub ext: T::TxEnvExt,
+}
+
+impl<T> PartialEq for TxEnv<T>
+where
+    T: EvmTypes,
+    T::TxEnvExt: PartialEq,
+{
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.origin == other.origin
+            && self.gas_price == other.gas_price
+            && self.chain_id == other.chain_id
+            && self.blob_hashes == other.blob_hashes
+            && self.ext == other.ext
+    }
+}
+
+impl<T> Eq for TxEnv<T>
+where
+    T: EvmTypes,
+    T::TxEnvExt: Eq,
+{
 }
 
 impl<T: EvmTypes> Default for TxEnv<T> {
@@ -33,7 +55,7 @@ impl<T: EvmTypes> Default for TxEnv<T> {
 }
 
 /// Block environment values visible to opcodes.
-#[derive(derive_more::Debug, PartialEq, Eq)]
+#[derive(derive_more::Debug)]
 pub struct BlockEnv<T: EvmTypes = BaseEvmTypes> {
     /// Block number.
     pub number: U256,
@@ -55,6 +77,33 @@ pub struct BlockEnv<T: EvmTypes = BaseEvmTypes> {
     pub slot_num: U256,
     /// EVM type-specific extension data.
     pub ext: T::BlockEnvExt,
+}
+
+impl<T> PartialEq for BlockEnv<T>
+where
+    T: EvmTypes,
+    T::BlockEnvExt: PartialEq,
+{
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.number == other.number
+            && self.beneficiary == other.beneficiary
+            && self.timestamp == other.timestamp
+            && self.gas_limit == other.gas_limit
+            && self.basefee == other.basefee
+            && self.difficulty == other.difficulty
+            && self.prevrandao == other.prevrandao
+            && self.blob_basefee == other.blob_basefee
+            && self.slot_num == other.slot_num
+            && self.ext == other.ext
+    }
+}
+
+impl<T> Eq for BlockEnv<T>
+where
+    T: EvmTypes,
+    T::BlockEnvExt: Eq,
+{
 }
 
 impl<T: EvmTypes> Clone for BlockEnv<T> {

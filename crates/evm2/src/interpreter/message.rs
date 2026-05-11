@@ -30,7 +30,7 @@ impl MessageKind {
 }
 
 /// Frame-local EVM call/create message executed by the interpreter.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct Message<T: EvmTypes = BaseEvmTypes> {
     /// Message kind.
     pub kind: MessageKind,
@@ -56,6 +56,34 @@ pub struct Message<T: EvmTypes = BaseEvmTypes> {
     pub salt: B256,
     /// EVM type-specific extension data.
     pub ext: T::MessageExt,
+}
+
+impl<T> PartialEq for Message<T>
+where
+    T: EvmTypes,
+    T::MessageExt: PartialEq,
+{
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.kind == other.kind
+            && self.depth == other.depth
+            && self.gas_limit == other.gas_limit
+            && self.destination == other.destination
+            && self.caller == other.caller
+            && self.input == other.input
+            && self.value == other.value
+            && self.code_address == other.code_address
+            && self.disable_precompiles == other.disable_precompiles
+            && self.salt == other.salt
+            && self.ext == other.ext
+    }
+}
+
+impl<T> Eq for Message<T>
+where
+    T: EvmTypes,
+    T::MessageExt: Eq,
+{
 }
 
 impl<T: EvmTypes> Default for Message<T> {
