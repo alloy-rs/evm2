@@ -84,6 +84,14 @@ jobs:
             flags: "--no-default-features --features no-tco"
             target: "wasm32-wasip1"
             command: "wasm-test"
+          - kind: "wasm"
+            fixture: "wasi-tail"
+            os: "ubuntu-latest"
+            rust: "stable"
+            flags: "--no-default-features"
+            rustflags: "-Ctarget-feature=+simd128,+tail-call"
+            target: "wasm32-wasip1"
+            command: "wasm-test"
           - kind: "test"
             fixture: "i686"
             os: "ubuntu-latest"
@@ -161,6 +169,7 @@ jobs:
         if: ${{ matrix.command == 'wasm-test' }}
         env:
           CARGO_TARGET_WASM32_WASIP1_RUNNER: wasmtime
+          RUSTFLAGS: ${{ matrix.rustflags }}
         run: cargo test -p evm2 --target ${{ matrix.target }} --no-fail-fast --lib --tests ${{ matrix.flags }}
       - name: doctest
         if: ${{ matrix.kind == 'test' && !matrix.target }}
