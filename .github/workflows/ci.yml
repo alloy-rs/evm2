@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   test:
-    name: ${{ matrix.kind }}${{ matrix.fixture && format(' {0}', matrix.fixture) || '' }} +${{ matrix.rust }} ${{ matrix.os }} ${{ matrix.flags }}
+    name: ${{ matrix.kind }}${{ matrix.fixture && format(' {0}', matrix.fixture) || '' }} +${{ matrix.rust }} ${{ matrix.os }}${{ matrix.target && format(' {0}', matrix.target) || '' }} ${{ matrix.flags }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -70,18 +70,53 @@ jobs:
           #   os: "ubuntu-latest"
           #   rust: "stable"
           #   flags: ""
+          # Other platforms
+          - kind: "wasm"
+            os: "ubuntu-latest"
+            rust: "stable"
+            flags: "--no-default-features"
+            target: "wasm32-unknown-unknown"
+            command: "build"
+          - kind: "test"
+            fixture: "i686"
+            os: "ubuntu-latest"
+            rust: "stable"
+            flags: ""
+            target: "i686-unknown-linux-gnu"
+            command: "cross-test"
+          - kind: "test"
+            fixture: "armv7"
+            os: "ubuntu-latest"
+            rust: "stable"
+            flags: ""
+            target: "armv7-unknown-linux-gnueabihf"
+            command: "cross-test"
+          - kind: "test"
+            os: "ubuntu-24.04-arm"
+            rust: "stable"
+            flags: ""
+            command: "nextest"
 
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
+        if: ${{ !matrix.target }}
         with:
           toolchain: ${{ matrix.rust }}
+      - uses: dtolnay/rust-toolchain@master
+        if: ${{ matrix.target }}
+        with:
+          toolchain: ${{ matrix.rust }}
+          targets: ${{ matrix.target }}
       - uses: rui314/setup-mold@v1
         if: runner.os == 'Linux'
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
       - uses: taiki-e/install-action@nextest
+        if: ${{ !matrix.command || matrix.command == 'nextest' }}
+      - uses: taiki-e/install-action@cross
+        if: ${{ matrix.command == 'cross-test' }}
       - uses: astral-sh/setup-uv@v7
         if: ${{ matrix.kind == 'eest' || matrix.flags == '--all-features' }}
       - name: Download EEST fixtures
@@ -95,6 +130,7 @@ jobs:
             fi
             ./scripts/setup_test_fixtures.py
       - name: ${{ matrix.kind }}
+        if: ${{ !matrix.command || matrix.command == 'nextest' }}
         shell: bash
         run: |
             extra_flags=()
@@ -108,24 +144,15 @@ jobs:
               export EVM2_BLOCKCHAINTEST_ROOT="test-fixtures/devnet/blockchain_tests"
             fi
             cargo nextest run --workspace --no-fail-fast ${{ matrix.flags }} "${extra_flags[@]}"
+      - name: cross test
+        if: ${{ matrix.command == 'cross-test' }}
+        run: cross test --workspace --exclude evm2-eest --target ${{ matrix.target }} --no-fail-fast --lib --bins --tests ${{ matrix.flags }}
+      - name: wasm build
+        if: ${{ matrix.command == 'build' }}
+        run: cargo build -p evm2 --target ${{ matrix.target }} ${{ matrix.flags }}
       - name: doctest
-        if: ${{ matrix.kind == 'test' }}
+        if: ${{ matrix.kind == 'test' && !matrix.target }}
         run: cargo test --workspace ${{ matrix.flags }} --doc
-
-  wasm:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
-      - uses: rui314/setup-mold@v1
-      - uses: Swatinem/rust-cache@v2
-        with:
-          cache-on-failure: true
-      - name: check
-        run: cargo build -p evm2 --target wasm32-unknown-unknown --no-default-features
 
   no-std:
     name: no_std ${{ matrix.target }}
@@ -244,7 +271,6 @@ jobs:
     if: always()
     needs:
       - test
-      - wasm
       - no-std
       - feature-checks
       - feature-propagation
