@@ -111,7 +111,7 @@ kinds = ["test", "eest"]
 t_linux_x86 = Target("ubuntu", "ubuntu-latest", tier=1)
 t_macos_arm = Target("macos", "macos-latest", tier=1)
 t_linux_arm = Target("ubuntu arm", "ubuntu-24.04-arm", cxx="clang++")
-t_windows = Target("windows", "windows-latest", flags="--no-default-features")
+t_windows = Target("windows", "windows-latest", kinds=["test"], flags="--no-default-features")
 t_wasm_unknown = Target(
     "wasm",
     "ubuntu-latest",
