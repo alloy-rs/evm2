@@ -1,7 +1,5 @@
 //! Instruction dispatch tables.
 
-#[cfg(not(tco))]
-use crate::interpreter::Gas;
 #[cfg(tco)]
 use crate::interpreter::gas::RemainingGas;
 use crate::{
@@ -124,10 +122,10 @@ macro_rules! dispatch_tables {
         {
             let mut table = match previous {
                 Some(previous) => *previous,
-                None => [dispatch::<T, C, M, 0, true> as super::InstrFn<T>; 256],
+                None => [dispatch::<T, C, M, 0, true> as super::imp::RawInstrFn<T>; 256],
             };
             let vt = C::VERSION_TABLES;
-            for_each_opcode_value!([table, T, C, M, vt, previous_version_tables, dispatch, super::InstrFn<T>] assign_instruction_table_entries);
+            for_each_opcode_value!([table, T, C, M, vt, previous_version_tables, dispatch, super::imp::RawInstrFn<T>] assign_instruction_table_entries);
 
             // Make all unknown entries point to the same dispatch function.
             let mut i = 0;
@@ -177,9 +175,6 @@ cfg_if::cfg_if! {
     }
 }
 
-/// Instruction function pointer.
-type InstrFn<T> = imp::RawInstrFn<T>;
-
 /// Instruction dispatch table.
 pub(crate) type InstrTable<T> = imp::RawInstrTable<T>;
 
@@ -196,12 +191,12 @@ pub(in crate::interpreter) fn run_table_loop<T: EvmTypes>(
     let state = InterpreterState::wrap_mut(unsafe { &mut *raw });
     let mut pc = Pc::new(interpreter.pc);
     let mut stack = Stack::new(&mut interpreter.stack, interpreter.stack_len);
-    let mut loop_state = loop_state(&interpreter.gas);
+    let mut loop_state = imp::loop_state(&interpreter.gas);
     loop {
         let op = pc.op();
         let instr = instructions[op as usize];
         let (next_pc, next_stack_len) =
-            dispatch_loop_call(instr, pc, stack.reborrow(), state, &mut loop_state);
+            imp::dispatch_loop_call(instr, pc, stack.reborrow(), state, &mut loop_state);
         pc = next_pc;
         stack.len = next_stack_len;
 
@@ -209,7 +204,7 @@ pub(in crate::interpreter) fn run_table_loop<T: EvmTypes>(
             cold_path();
             interpreter.pc = pc.as_ptr();
             interpreter.stack_len = stack.len;
-            finish_loop(&mut interpreter.gas, loop_state);
+            imp::finish_loop(&mut interpreter.gas, loop_state);
             return interpreter.result.unwrap_err();
         }
     }
@@ -234,33 +229,6 @@ pub(in crate::interpreter) fn run_tail<T: EvmTypes>(
     let instr = instructions[op as usize];
     instr(pc, stack, remaining_gas, state, (instructions as *const InstrTable<T>).cast());
     interpreter.result.unwrap_err()
-}
-
-#[cfg(not(tco))]
-type LoopState = imp::LoopState;
-
-#[cfg(not(tco))]
-#[inline(always)]
-const fn loop_state(gas: &Gas) -> LoopState {
-    imp::loop_state(gas)
-}
-
-#[cfg(not(tco))]
-#[inline(always)]
-fn dispatch_loop_call<T: EvmTypes>(
-    instr: InstrFn<T>,
-    pc: Pc,
-    stack: Stack<'_>,
-    state: &mut InterpreterState<'_, T>,
-    loop_state: &mut LoopState,
-) -> (Pc, usize) {
-    imp::dispatch_loop_call(instr, pc, stack, state, loop_state)
-}
-
-#[cfg(not(tco))]
-#[inline(always)]
-const fn finish_loop(gas: &mut Gas, loop_state: LoopState) {
-    imp::finish_loop(gas, loop_state);
 }
 
 pub(crate) struct ConfigInstrTables<T, C>(core::marker::PhantomData<fn() -> (T, C)>);

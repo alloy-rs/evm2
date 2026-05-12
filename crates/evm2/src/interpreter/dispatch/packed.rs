@@ -21,10 +21,8 @@ pub(super) type RawInstrFn<T> = extern_table!(
 
 dispatch_tables!();
 
-pub(super) type LoopState = RemainingGas;
-
 #[inline(always)]
-pub(super) const fn loop_state(gas: &Gas) -> LoopState {
+pub(super) const fn loop_state(gas: &Gas) -> RemainingGas {
     RemainingGas::new(gas.remaining())
 }
 
@@ -34,7 +32,7 @@ pub(super) fn dispatch_loop_call<T: EvmTypes>(
     pc: Pc,
     stack: Stack<'_>,
     state: &mut InterpreterState<'_, T>,
-    remaining_gas: &mut LoopState,
+    remaining_gas: &mut RemainingGas,
 ) -> (Pc, usize) {
     let (next_pc, gas_spent, next_stack_len) = unpack_ret(instr(pc, stack, *remaining_gas, state));
     *remaining_gas = RemainingGas::new(remaining_gas.get().wrapping_sub(gas_spent));
@@ -42,7 +40,7 @@ pub(super) fn dispatch_loop_call<T: EvmTypes>(
 }
 
 #[inline(always)]
-pub(super) const fn finish_loop(gas: &mut Gas, remaining_gas: LoopState) {
+pub(super) const fn finish_loop(gas: &mut Gas, remaining_gas: RemainingGas) {
     gas.set_remaining(remaining_gas.get());
 }
 

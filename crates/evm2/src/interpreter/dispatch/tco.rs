@@ -58,10 +58,10 @@ where
 {
     let mut table = match previous {
         Some(previous) => *previous,
-        None => [tail_dispatch::<T, C, M, 0xFE, false, true> as super::InstrFn<T>; 256],
+        None => [tail_dispatch::<T, C, M, 0xFE, false, true> as super::imp::RawInstrFn<T>; 256],
     };
     let vt = C::VERSION_TABLES;
-    for_each_opcode_value!([table, vt, previous_version_tables, super::InstrFn<T>, [tail_dispatch::<T, C, M,]] assign_instruction_table_entries);
+    for_each_opcode_value!([table, vt, previous_version_tables, super::imp::RawInstrFn<T>, [tail_dispatch::<T, C, M,]] assign_instruction_table_entries);
     table
 }
 
