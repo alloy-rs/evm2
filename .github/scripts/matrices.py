@@ -3,10 +3,59 @@
 import json
 
 
+# A runner target.
+class Target:
+    # GHA runner.
+    runner_label: str
+    # Rust target triple.
+    target: str
+
+    def __init__(self, runner_label: str, target: str):
+        self.runner_label = runner_label
+        self.target = target
+
+
+# A single CI suite to run.
 class Case:
+    # Name of the suite.
     name: str
+    # Test kind.
     kind: str
-    os: str
+    # Rust toolchain.
+    rust: str
+    # Cargo flags.
+    flags: str
+    # Fixture name.
+    fixture: str
+    # Command selector.
+    command: str
+    # Extra RUSTFLAGS.
+    rustflags: str
+
+    def __init__(
+        self,
+        name: str,
+        kind: str,
+        rust: str,
+        flags: str,
+        command: str = "nextest",
+        fixture: str = "",
+        rustflags: str = "",
+    ):
+        self.name = name
+        self.kind = kind
+        self.rust = rust
+        self.flags = flags
+        self.fixture = fixture
+        self.command = command
+        self.rustflags = rustflags
+
+
+# GHA matrix entry.
+class Expanded:
+    name: str
+    runner_label: str
+    kind: str
     rust: str
     flags: str
     fixture: str
@@ -17,18 +66,18 @@ class Case:
     def __init__(
         self,
         name: str,
+        runner_label: str,
         kind: str,
-        os: str,
         rust: str,
-        flags: str = "",
-        fixture: str = "",
-        target: str = "",
-        command: str = "nextest",
-        rustflags: str = "",
+        flags: str,
+        fixture: str,
+        target: str,
+        command: str,
+        rustflags: str,
     ):
         self.name = name
+        self.runner_label = runner_label
         self.kind = kind
-        self.os = os
         self.rust = rust
         self.flags = flags
         self.fixture = fixture
@@ -37,95 +86,148 @@ class Case:
         self.rustflags = rustflags
 
 
-def default_cases():
-    cases = []
-    for kind in ["test", "eest"]:
-        for rust in ["stable", "nightly"]:
-            for flags in ["--no-default-features", ""]:
-                name = f"{kind} +{rust} ubuntu-latest"
-                if flags:
-                    name += f" {flags}"
-                cases.append(Case(name=name, kind=kind, os="ubuntu-latest", rust=rust, flags=flags))
+t_linux_x86 = Target("ubuntu-latest", "")
+t_linux_arm = Target("ubuntu-24.04-arm", "")
+t_wasm_unknown = Target("ubuntu-latest", "wasm32-unknown-unknown")
+t_wasm_wasi = Target("ubuntu-latest", "wasm32-wasip1")
+t_linux_i686 = Target("ubuntu-latest", "i686-unknown-linux-gnu")
+t_linux_armv7 = Target("ubuntu-latest", "armv7-unknown-linux-gnueabihf")
 
-    return cases
-
-
-def extra_cases():
-    return [
+config = [
+    (
+        t_linux_x86,
         Case(
-            name="test +nightly ubuntu-latest --all-features",
-            kind="test",
-            os="ubuntu-latest",
-            rust="nightly",
-            flags="--all-features",
+            "test +stable ubuntu-latest --no-default-features",
+            "test",
+            "stable",
+            "--no-default-features",
         ),
+    ),
+    (t_linux_x86, Case("test +stable ubuntu-latest", "test", "stable", "")),
+    (
+        t_linux_x86,
         Case(
-            name="eest +nightly ubuntu-latest --all-features",
-            kind="eest",
-            os="ubuntu-latest",
-            rust="nightly",
-            flags="--all-features",
+            "test +nightly ubuntu-latest --no-default-features",
+            "test",
+            "nightly",
+            "--no-default-features",
         ),
+    ),
+    (t_linux_x86, Case("test +nightly ubuntu-latest", "test", "nightly", "")),
+    (
+        t_linux_x86,
         Case(
-            name="wasm +stable ubuntu-latest wasm32-unknown-unknown --no-default-features",
-            kind="wasm",
-            os="ubuntu-latest",
-            rust="stable",
-            flags="--no-default-features",
-            target="wasm32-unknown-unknown",
+            "eest +stable ubuntu-latest --no-default-features",
+            "eest",
+            "stable",
+            "--no-default-features",
+        ),
+    ),
+    (t_linux_x86, Case("eest +stable ubuntu-latest", "eest", "stable", "")),
+    (
+        t_linux_x86,
+        Case(
+            "eest +nightly ubuntu-latest --no-default-features",
+            "eest",
+            "nightly",
+            "--no-default-features",
+        ),
+    ),
+    (t_linux_x86, Case("eest +nightly ubuntu-latest", "eest", "nightly", "")),
+    (
+        t_linux_x86,
+        Case(
+            "test +nightly ubuntu-latest --all-features",
+            "test",
+            "nightly",
+            "--all-features",
+        ),
+    ),
+    (
+        t_linux_x86,
+        Case(
+            "eest +nightly ubuntu-latest --all-features",
+            "eest",
+            "nightly",
+            "--all-features",
+        ),
+    ),
+    (
+        t_wasm_unknown,
+        Case(
+            "wasm +stable ubuntu-latest wasm32-unknown-unknown --no-default-features",
+            "wasm",
+            "stable",
+            "--no-default-features",
             command="build",
         ),
+    ),
+    (
+        t_wasm_wasi,
         Case(
-            name="wasm wasi +stable ubuntu-latest wasm32-wasip1 --no-default-features --features no-tco",
-            kind="wasm",
-            os="ubuntu-latest",
-            rust="stable",
-            flags="--no-default-features --features no-tco",
+            "wasm wasi +stable ubuntu-latest wasm32-wasip1 --no-default-features --features no-tco",
+            "wasm",
+            "stable",
+            "--no-default-features --features no-tco",
+            command="wasm-test",
             fixture="wasi",
-            target="wasm32-wasip1",
-            command="wasm-test",
         ),
+    ),
+    (
+        t_wasm_wasi,
         Case(
-            name="wasm wasi-tail +stable ubuntu-latest wasm32-wasip1 --no-default-features",
-            kind="wasm",
-            os="ubuntu-latest",
-            rust="stable",
-            flags="--no-default-features",
-            fixture="wasi-tail",
-            target="wasm32-wasip1",
+            "wasm wasi-tail +stable ubuntu-latest wasm32-wasip1 --no-default-features",
+            "wasm",
+            "stable",
+            "--no-default-features",
             command="wasm-test",
+            fixture="wasi-tail",
             rustflags="-Ctarget-feature=+simd128,+tail-call",
         ),
+    ),
+    (
+        t_linux_i686,
         Case(
-            name="test i686 +stable ubuntu-latest i686-unknown-linux-gnu",
-            kind="test",
-            os="ubuntu-latest",
-            rust="stable",
+            "test i686 +stable ubuntu-latest i686-unknown-linux-gnu",
+            "test",
+            "stable",
+            "",
+            command="cross-test",
             fixture="i686",
-            target="i686-unknown-linux-gnu",
-            command="cross-test",
         ),
+    ),
+    (
+        t_linux_armv7,
         Case(
-            name="test armv7 +stable ubuntu-latest armv7-unknown-linux-gnueabihf",
-            kind="test",
-            os="ubuntu-latest",
-            rust="stable",
+            "test armv7 +stable ubuntu-latest armv7-unknown-linux-gnueabihf",
+            "test",
+            "stable",
+            "",
+            command="cross-test",
             fixture="armv7",
-            target="armv7-unknown-linux-gnueabihf",
-            command="cross-test",
         ),
-        Case(
-            name="test +stable ubuntu-24.04-arm",
-            kind="test",
-            os="ubuntu-24.04-arm",
-            rust="stable",
-        ),
-    ]
+    ),
+    (t_linux_arm, Case("test +stable ubuntu-24.04-arm", "test", "stable", "")),
+]
 
 
 def main():
-    cases = default_cases() + extra_cases()
-    print_json({"include": [vars(case) for case in cases]})
+    expanded = []
+    for target, case in config:
+        obj = Expanded(
+            name=case.name,
+            runner_label=target.runner_label,
+            kind=case.kind,
+            rust=case.rust,
+            flags=case.flags,
+            fixture=case.fixture,
+            target=target.target,
+            command=case.command,
+            rustflags=case.rustflags,
+        )
+        expanded.append(vars(obj))
+
+    print_json({"include": expanded})
 
 
 def print_json(obj):
