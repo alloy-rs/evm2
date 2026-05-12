@@ -3,7 +3,7 @@ use crate::{
     EvmConfig, EvmTypes,
     constants::STACK_LIMIT,
     interpreter::{
-        Gas, InterpreterState, Pc, Result, Stack, gas::RemainingGas, private::InstructionImplFn,
+        InterpreterState, Pc, Result, Stack, gas::RemainingGas, private::InstructionImplFn,
     },
 };
 use core::hint::cold_path;
@@ -21,33 +21,17 @@ pub(in crate::interpreter::dispatch) type RawInstrFn<T> = extern_table!(
     ) -> InstrFnRet
 );
 
-/// Packed instruction dispatch table.
-pub(in crate::interpreter::dispatch) type RawInstrTable<T> = [RawInstrFn<T>; 256];
-
 #[inline(always)]
-pub(in crate::interpreter::dispatch) const fn loop_state(gas: &Gas) -> RemainingGas {
-    RemainingGas::new(gas.remaining())
-}
-
-#[inline(always)]
-pub(in crate::interpreter::dispatch) fn dispatch_loop_call<T: EvmTypes>(
+pub(super) fn dispatch_loop_call<T: EvmTypes>(
     instr: RawInstrFn<T>,
     pc: Pc,
     stack: Stack<'_>,
     state: &mut InterpreterState<'_, T>,
-    remaining_gas: &mut RemainingGas,
+    remaining_gas: &mut super::LoopState,
 ) -> (Pc, usize) {
     let (next_pc, gas_spent, next_stack_len) = unpack_ret(instr(pc, stack, *remaining_gas, state));
     *remaining_gas = RemainingGas::new(remaining_gas.get().wrapping_sub(gas_spent));
     (next_pc, next_stack_len)
-}
-
-#[inline(always)]
-pub(in crate::interpreter::dispatch) const fn finish_loop(
-    gas: &mut Gas,
-    remaining_gas: RemainingGas,
-) {
-    gas.set_remaining(remaining_gas.get());
 }
 
 extern_table! {

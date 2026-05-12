@@ -15,27 +15,18 @@ pub(in crate::interpreter::dispatch) type RawInstrFn<T> = extern_table!(
     ) -> Pc
 );
 
-/// Single-return instruction dispatch table.
-pub(in crate::interpreter::dispatch) type RawInstrTable<T> = [RawInstrFn<T>; 256];
-
 #[inline(always)]
-pub(in crate::interpreter::dispatch) const fn loop_state(_gas: &Gas) {}
-
-#[inline(always)]
-pub(in crate::interpreter::dispatch) fn dispatch_loop_call<T: EvmTypes>(
+pub(super) fn dispatch_loop_call<T: EvmTypes>(
     instr: RawInstrFn<T>,
     pc: Pc,
     stack: Stack<'_>,
     state: &mut InterpreterState<'_, T>,
-    _loop_state: &mut (),
+    _loop_state: &mut super::LoopState,
 ) -> (Pc, usize) {
     let mut next_stack_len = stack.len;
     let next_pc = instr(pc, stack, state, &mut next_stack_len);
     (next_pc, next_stack_len)
 }
-
-#[inline(always)]
-pub(in crate::interpreter::dispatch) const fn finish_loop(_gas: &mut Gas, _loop_state: ()) {}
 
 extern_table! {
     pub(in crate::interpreter::dispatch) fn dispatch<
