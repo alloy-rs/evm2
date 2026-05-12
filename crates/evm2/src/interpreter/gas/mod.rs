@@ -417,13 +417,15 @@ pub struct MemoryGas {
     pub words_num: usize,
     /// Current total expansion cost.
     pub expansion_cost: u64,
+    #[doc(hidden)] // Not public API. Please use an existing constructor.
+    pub _non_exhaustive: (),
 }
 
 impl MemoryGas {
     /// Creates empty memory gas state.
     #[inline]
     pub const fn new() -> Self {
-        Self { words_num: 0, expansion_cost: 0 }
+        Self { words_num: 0, expansion_cost: 0, _non_exhaustive: () }
     }
 
     /// Sets memory word count and returns the expansion cost delta.

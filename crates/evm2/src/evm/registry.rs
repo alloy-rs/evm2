@@ -186,12 +186,13 @@ pub enum HandlerError {
 
 /// Request passed to a typed transaction handler.
 #[derive(Debug)]
-#[non_exhaustive]
 pub struct TxRequest<'a, Tx, Host = ()> {
     /// Concrete transaction extracted from the envelope.
     pub tx: &'a Tx,
     /// Mutable host used by this handler.
     pub host: &'a mut Host,
+    #[doc(hidden)] // Not public API. Please use an existing constructor.
+    pub _non_exhaustive: (),
 }
 
 /// A typed transaction handler.
@@ -256,7 +257,7 @@ where
     fn call(&self, env: &Env, host: &mut Host) -> HandlerResult<Output> {
         let tx = (self.extract)(env)
             .ok_or(HandlerError::WrongTransactionType { expected: self.type_id })?;
-        self.handler.call(TxRequest { tx, host })
+        self.handler.call(TxRequest { tx, host, _non_exhaustive: () })
     }
 }
 

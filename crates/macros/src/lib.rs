@@ -275,6 +275,7 @@ fn expand_instruction(instruction_attrs: InstructionAttrs, input: ItemFn) -> Tok
                     pc: __evm2_pc,
                     gas: __evm2_gas,
                     state: __evm2_state,
+                    _non_exhaustive: (),
                 };
             }
         } else {
@@ -282,6 +283,7 @@ fn expand_instruction(instruction_attrs: InstructionAttrs, input: ItemFn) -> Tok
                 let mut #cx = evm2::interpreter::private::InstructionCx::<#evm_types> {
                     pc: __evm2_pc,
                     state: __evm2_state,
+                    _non_exhaustive: (),
                 };
             }
         }

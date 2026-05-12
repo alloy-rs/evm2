@@ -435,6 +435,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             value: message.value,
             salt: message.salt,
             ext: message.ext.clone(),
+            _non_exhaustive: (),
         };
         let (stop, mut gas, mut output) = {
             let (stop, interpreter) =
@@ -451,6 +452,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
                     output,
                     created_address: None,
                     ext: T::MessageResultExt::default(),
+                    _non_exhaustive: (),
                 });
             }
 
@@ -467,6 +469,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             output,
             created_address: stop.is_success().then_some(address),
             ext: T::MessageResultExt::default(),
+            _non_exhaustive: (),
         })
     }
 
@@ -588,6 +591,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
                 output,
                 created_address: None,
                 ext: T::MessageResultExt::default(),
+                _non_exhaustive: (),
             });
         }
 
@@ -607,6 +611,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             output,
             created_address: None,
             ext: T::MessageResultExt::default(),
+            _non_exhaustive: (),
         })
     }
 
@@ -707,6 +712,7 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
             exists,
             is_empty: info.is_empty(),
             is_cold,
+            _non_exhaustive: (),
         })
     }
 
@@ -738,6 +744,7 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
         Ok(SLoad {
             value: self.state.storage(address, key).map_err(|code| self.db_error_stop(code))?,
             is_cold,
+            _non_exhaustive: (),
         })
     }
 
@@ -844,6 +851,7 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
             target_is_empty: target_is_empty_for_new_account_gas,
             is_cold,
             previously_destroyed,
+            _non_exhaustive: (),
         })
     }
 }
@@ -863,6 +871,8 @@ pub struct AccountLoad {
     pub is_empty: bool,
     /// Whether the account access was cold.
     pub is_cold: bool,
+    #[doc(hidden)] // Not public API. Please use an existing constructor.
+    pub _non_exhaustive: (),
 }
 
 /// Result of an `SLOAD` host operation.
@@ -872,6 +882,8 @@ pub struct SLoad {
     pub value: Word,
     /// Whether the storage slot access was cold.
     pub is_cold: bool,
+    #[doc(hidden)] // Not public API. Please use an existing constructor.
+    pub _non_exhaustive: (),
 }
 
 /// Result of an `SSTORE` host operation.
@@ -885,6 +897,8 @@ pub struct SStore {
     pub new_value: Word,
     /// Whether the storage slot access was cold.
     pub is_cold: bool,
+    #[doc(hidden)] // Not public API. Please use an existing constructor.
+    pub _non_exhaustive: (),
 }
 
 impl SStore {
@@ -944,6 +958,8 @@ pub struct SelfDestructResult {
     pub is_cold: bool,
     /// Whether this account was already destroyed in this transaction.
     pub previously_destroyed: bool,
+    #[doc(hidden)] // Not public API. Please use an existing constructor.
+    pub _non_exhaustive: (),
 }
 
 /// Result of executing a transaction.
@@ -963,6 +979,8 @@ pub struct TxResult<T: EvmTypes = crate::BaseEvmTypes> {
     pub db_error_code: Option<DbErrorCode>,
     /// EVM type-specific extension data.
     pub ext: T::TxResultExt,
+    #[doc(hidden)] // Not public API. Please use an existing constructor.
+    pub _non_exhaustive: (),
 }
 
 fn eip7708_transfer_log(from: Address, to: Address, value: Word) -> Option<Log> {

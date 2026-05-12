@@ -20,6 +20,8 @@ pub struct InstructionCx<'a, 'state, T: EvmTypes> {
     pub pc: &'a mut Pc,
     /// Interpreter state.
     pub state: &'a mut InterpreterState<'state, T>,
+    #[doc(hidden)] // Not public API. Please use an existing constructor.
+    pub _non_exhaustive: (),
 }
 
 /// Instruction execution context with mutable gas state.
@@ -30,6 +32,8 @@ pub struct GasInstructionCx<'a, 'state, T: EvmTypes> {
     pub gas: &'a mut Gas,
     /// Interpreter state.
     pub state: &'a mut InterpreterState<'state, T>,
+    #[doc(hidden)] // Not public API. Please use an existing constructor.
+    pub _non_exhaustive: (),
 }
 
 impl<T: EvmTypes> core::fmt::Debug for InstructionCx<'_, '_, T> {

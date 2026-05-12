@@ -1,13 +1,65 @@
 //! BN128 precompile using Arkworks BLS12-381 implementation.
 
-use super::{FQ_LEN, FQ2_LEN, G1_LEN, SCALAR_LEN};
+use super::{Bn254Ops, FQ_LEN, FQ2_LEN, G1_LEN, SCALAR_LEN};
 use crate::precompiles::PrecompileHalt;
-use alloc::vec::Vec;
 
 use ark_bn254::{Bn254, Fq, Fq2, Fr, G1Affine, G1Projective, G2Affine};
 use ark_ec::{AffineRepr, CurveGroup, pairing::Pairing};
 use ark_ff::{One, PrimeField, Zero};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
+
+pub(crate) struct ArkworksOps;
+
+impl Bn254Ops for ArkworksOps {
+    type G1 = G1Affine;
+    type G2 = G2Affine;
+    type Scalar = Fr;
+
+    #[inline]
+    fn read_g1(input: &[u8]) -> Result<Self::G1, PrecompileHalt> {
+        read_g1_point(input)
+    }
+
+    #[inline]
+    fn encode_g1(point: Self::G1) -> [u8; G1_LEN] {
+        encode_g1_point(point)
+    }
+
+    #[inline]
+    fn read_g2(input: &[u8]) -> Result<Self::G2, PrecompileHalt> {
+        read_g2_point(input)
+    }
+
+    #[inline]
+    fn read_scalar(input: &[u8]) -> Self::Scalar {
+        read_scalar(input)
+    }
+
+    #[inline]
+    fn g1_is_zero(p: &Self::G1) -> bool {
+        p.is_zero()
+    }
+
+    #[inline]
+    fn g2_is_zero(p: &Self::G2) -> bool {
+        p.is_zero()
+    }
+
+    #[inline]
+    fn g1_add(p1: Self::G1, p2: Self::G1) -> Self::G1 {
+        (G1Projective::from(p1) + p2).into_affine()
+    }
+
+    #[inline]
+    fn g1_mul(p: Self::G1, s: Self::Scalar) -> Self::G1 {
+        p.mul_bigint(s.into_bigint()).into_affine()
+    }
+
+    #[inline]
+    fn pairing_check(g1: &[Self::G1], g2: &[Self::G2]) -> bool {
+        Bn254::multi_pairing(g1, g2).0.is_one()
+    }
+}
 
 /// Reads a single `Fq` field element from the input slice.
 ///
@@ -179,64 +231,4 @@ pub(super) fn read_scalar(input: &[u8]) -> Fr {
         input.len()
     );
     Fr::from_be_bytes_mod_order(input)
-}
-
-/// Performs point addition on two G1 points.
-#[inline]
-pub(crate) fn g1_point_add(p1_bytes: &[u8], p2_bytes: &[u8]) -> Result<[u8; 64], PrecompileHalt> {
-    let p1 = read_g1_point(p1_bytes)?;
-    let p2 = read_g1_point(p2_bytes)?;
-
-    let p1_jacobian: G1Projective = p1.into();
-
-    let p3 = p1_jacobian + p2;
-    let output = encode_g1_point(p3.into_affine());
-
-    Ok(output)
-}
-
-/// Performs a G1 scalar multiplication.
-#[inline]
-pub(crate) fn g1_point_mul(
-    point_bytes: &[u8],
-    fr_bytes: &[u8],
-) -> Result<[u8; 64], PrecompileHalt> {
-    let p = read_g1_point(point_bytes)?;
-    let fr = read_scalar(fr_bytes);
-
-    let big_int = fr.into_bigint();
-    let result = p.mul_bigint(big_int);
-
-    let output = encode_g1_point(result.into_affine());
-
-    Ok(output)
-}
-
-/// pairing_check performs a pairing check on a list of G1 and G2 point pairs and
-/// returns true if the result is equal to the identity element.
-///
-/// Note: If the input is empty, this function returns true.
-/// This is different to EIP2537 which disallows the empty input.
-#[inline]
-pub(crate) fn pairing_check(pairs: &[(&[u8], &[u8])]) -> Result<bool, PrecompileHalt> {
-    let mut g1_points = Vec::with_capacity(pairs.len());
-    let mut g2_points = Vec::with_capacity(pairs.len());
-
-    for (g1_bytes, g2_bytes) in pairs {
-        let g1 = read_g1_point(g1_bytes)?;
-        let g2 = read_g2_point(g2_bytes)?;
-
-        // Skip pairs where either point is at infinity
-        if !g1.is_zero() && !g2.is_zero() {
-            g1_points.push(g1);
-            g2_points.push(g2);
-        }
-    }
-
-    if g1_points.is_empty() {
-        return Ok(true);
-    }
-
-    let pairing_result = Bn254::multi_pairing(&g1_points, &g2_points);
-    Ok(pairing_result.0.is_one())
 }

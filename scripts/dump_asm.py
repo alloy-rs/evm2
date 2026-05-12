@@ -1,0 +1,436 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.13"
+# dependencies = ["rich"]
+# ///
+"""Dump cargo-asm output for EVM dispatch functions.
+
+Examples:
+    ./scripts/dump_asm.py
+    ./scripts/dump_asm.py ADD PUSH1 SSTORE -o tmp/mydump
+    ./scripts/dump_asm.py --features evm2/no-tco ADD
+"""
+
+import argparse
+import logging
+import re
+import subprocess
+import sys
+import time
+from collections.abc import Callable
+from pathlib import Path
+from typing import TypeVar
+
+from rich.console import Console
+from rich.highlighter import NullHighlighter
+from rich.logging import RichHandler
+
+from utils import cargo_env, repo_root
+
+ROOT = Path(repo_root())
+OPCODE_RS = ROOT / "crates" / "evm2" / "src" / "interpreter" / "opcode.rs"
+DEFAULT_OUT = ROOT / "tmp" / "dump"
+DISPATCH_SYMBOLS = (
+    "evm2::interpreter::instructions::table::normal::dispatch::<",
+    "evm2::interpreter::instructions::table::tco::tail_dispatch::<",
+)
+DISPATCH_OPCODE = re.compile(r",\s*(\d+)(?:,\s*(?:true|false))*?>")
+DISPATCH_OUTPUTS = (
+    ("NoInspector", "op"),
+    ("DynInspector", "op-inspector"),
+)
+RUN_INNER_SYMBOLS = (
+    "evm2::interpreter::runtime::Interpreter<",
+)
+RUN_INNER_NAME = "run_inner"
+LOG_LEVELS = ("error", "warning", "info", "debug")
+T = TypeVar("T")
+
+
+def display_path(path: Path) -> str:
+    try:
+        return str(path.relative_to(ROOT))
+    except ValueError:
+        return str(path)
+
+
+def log(level: str, message: str) -> None:
+    logging.getLogger().log(getattr(logging, level.upper()), message)
+
+
+def parse_opcodes() -> dict[str, int]:
+    opcodes = {}
+    pattern = re.compile(r"^\s*(0x[0-9A-Fa-f]{2})\s*=>\s*([A-Z0-9_]+)\s*=>")
+    for line in OPCODE_RS.read_text().splitlines():
+        match = pattern.match(line)
+        if match:
+            value, mnemonic = match.groups()
+            opcodes[mnemonic] = int(value, 16)
+    return opcodes
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Dump cargo-asm output for EVM dispatch functions."
+    )
+    parser.add_argument(
+        "mnemonics",
+        nargs="*",
+        help="Opcode mnemonics to dump, e.g. ADD PUSH1 SSTORE. Defaults to all known opcodes.",
+    )
+    parser.add_argument(
+        "-o",
+        "--output",
+        type=Path,
+        default=DEFAULT_OUT,
+        help="Output directory. Defaults to ./tmp/dump.",
+    )
+    parser.add_argument(
+        "--package",
+        default="evm2-eest",
+        help="Cargo package passed to cargo asm. Defaults to evm2-eest.",
+    )
+    parser.add_argument(
+        "-F",
+        "--features",
+        action="append",
+        default=[],
+        help="Cargo feature(s) passed through to cargo asm. Can be repeated.",
+    )
+    parser.add_argument(
+        "--keep-everything",
+        action="store_true",
+        help="Keep the full cargo asm --everything dumps in the output directory.",
+    )
+    parser.add_argument(
+        "--all-monomorphizations",
+        action="store_true",
+        help="Dump every matching dispatch monomorphization instead of only the first.",
+    )
+    parser.add_argument(
+        "--log-level",
+        choices=LOG_LEVELS,
+        default="info",
+        help="Minimum log level to print. Defaults to info.",
+    )
+    return parser.parse_args()
+
+
+def select_opcodes(
+    opcodes: dict[str, int], mnemonics: list[str]
+) -> list[tuple[str, int]]:
+    if not mnemonics:
+        return sorted(opcodes.items(), key=lambda item: item[1])
+
+    selected = []
+    missing = []
+    for mnemonic in mnemonics:
+        key = mnemonic.upper()
+        if key in opcodes:
+            selected.append((key, opcodes[key]))
+        else:
+            missing.append(mnemonic)
+
+    if missing:
+        known = " ".join(sorted(opcodes))
+        raise SystemExit(
+            f"unknown opcode mnemonic(s): {' '.join(missing)}\nknown: {known}"
+        )
+    return selected
+
+
+def cargo_asm_everything(package: str, features: list[str], output: str) -> str:
+    cmd = ["cargo", "asm", "-q", "-s", "--simplify", "-p", package]
+    for feature in features:
+        cmd.extend(("-F", feature))
+    cmd.extend(("--lib", f"--{output}", "--everything"))
+    log("info", f"running {' '.join(cmd)}")
+    started = time.perf_counter()
+    proc = subprocess.run(
+        cmd,
+        cwd=ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=cargo_env(),
+        check=False,
+    )
+    elapsed = time.perf_counter() - started
+    if proc.returncode != 0:
+        log("error", f"failed after {elapsed:.1f}s: cargo asm --{output} --everything")
+        raise RuntimeError(
+            f"cargo asm --{output} --everything failed\n"
+            f"command: {' '.join(cmd)}\n"
+            f"stdout:\n{proc.stdout}\n"
+            f"stderr:\n{proc.stderr}"
+        )
+    log("info", f"finished cargo asm --{output} --everything in {elapsed:.1f}s")
+    return proc.stdout
+
+
+def dispatch_output(text: str) -> str | None:
+    for symbol, directory in DISPATCH_OUTPUTS:
+        if symbol in text:
+            return directory
+    return None
+
+
+def dispatch_metadata(text: str) -> tuple[int, str] | None:
+    if not any(symbol in text for symbol in DISPATCH_SYMBOLS):
+        return None
+    match = DISPATCH_OPCODE.search(text)
+    if match is None:
+        return None
+    directory = dispatch_output(text)
+    if directory is None:
+        return None
+    return int(match.group(1)), directory
+
+
+def is_run_inner_symbol(text: str) -> bool:
+    return RUN_INNER_NAME in text and any(symbol in text for symbol in RUN_INNER_SYMBOLS)
+
+
+def is_asm_symbol_label(line: str) -> bool:
+    return (
+        line.endswith(":\n")
+        and not line.startswith(("\t", " ", ".", "#", "L"))
+        and len(line) > 2
+    )
+
+
+def extract_asm_blocks(text: str, metadata: Callable[[str], T | None]) -> list[tuple[T, str]]:
+    lines = text.splitlines(keepends=True)
+    blocks = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        meta = metadata(line) if line.startswith(".section ") else None
+        if meta is not None:
+            start = i
+            i += 1
+            while i < len(lines) and not lines[i].startswith(".section "):
+                i += 1
+            block = lines[start:i]
+            if any(line.startswith(".type\t") for line in block):
+                blocks.append((meta, clean_asm_block(block).rstrip() + "\n"))
+            continue
+
+        meta = metadata(line) if is_asm_symbol_label(line) else None
+        if meta is not None:
+            start = i
+            i += 1
+            while i < len(lines) and not is_asm_symbol_label(lines[i]):
+                i += 1
+            block = lines[start:i]
+            blocks.append((meta, clean_asm_block(block).rstrip() + "\n"))
+            continue
+        i += 1
+    return blocks
+
+
+def extract_llvm_blocks(
+    text: str, metadata: Callable[[str], T | None]
+) -> list[tuple[T, str]]:
+    lines = text.splitlines(keepends=True)
+    blocks = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        meta = metadata(line) if line.startswith("; ") else None
+        if meta is not None:
+            start = i
+            i += 1
+            while i < len(lines) and not lines[i].startswith("define "):
+                i += 1
+            if i == len(lines):
+                break
+            i += 1
+            while i < len(lines):
+                if lines[i].startswith("}"):
+                    i += 1
+                    break
+                i += 1
+            blocks.append((meta, "".join(lines[start:i]).rstrip() + "\n"))
+            continue
+        i += 1
+    return blocks
+
+
+def clean_asm_block(lines: list[str]) -> str:
+    return "".join(line for line in lines if not re.match(r"\.Ltmp\d+:\n?$", line))
+
+
+def run_inner_metadata(text: str) -> bool | None:
+    return True if is_run_inner_symbol(text) else None
+
+
+def llvm_run_inner_metadata(text: str) -> bool | None:
+    return True if text.startswith("; <") and is_run_inner_symbol(text) else None
+
+
+def extract_llvm_functions(text: str) -> dict[int, dict[str, list[str]]]:
+    blocks: dict[int, dict[str, list[str]]] = {}
+    for (opcode, directory), block in extract_llvm_blocks(text, dispatch_metadata):
+        blocks.setdefault(opcode, {}).setdefault(directory, []).append(block)
+    return blocks
+
+
+def extract_asm_functions(text: str) -> dict[int, dict[str, list[str]]]:
+    blocks: dict[int, dict[str, list[str]]] = {}
+    for (opcode, directory), block in extract_asm_blocks(text, dispatch_metadata):
+        blocks.setdefault(opcode, {}).setdefault(directory, []).append(block)
+    return blocks
+
+
+def extract_asm_run_inner(text: str) -> list[str]:
+    return [block for _, block in extract_asm_blocks(text, run_inner_metadata)]
+
+
+def extract_llvm_run_inner(text: str) -> list[str]:
+    return [block for _, block in extract_llvm_blocks(text, llvm_run_inner_metadata)]
+
+
+def extract_functions(text: str, output: str) -> dict[int, dict[str, list[str]]]:
+    if output == "asm":
+        return extract_asm_functions(text)
+    if output == "llvm":
+        return extract_llvm_functions(text)
+    raise ValueError(f"unsupported cargo asm output: {output}")
+
+
+def extract_run_inner(text: str, output: str) -> list[str]:
+    if output == "asm":
+        return extract_asm_run_inner(text)
+    if output == "llvm":
+        return extract_llvm_run_inner(text)
+    raise ValueError(f"unsupported cargo asm output: {output}")
+
+
+def dump_run_inner_output(out: Path, blocks: list[str], output: str) -> Path | None:
+    if not blocks:
+        return None
+    suffix = "ll" if output == "llvm" else "s"
+    path = out / f"{RUN_INNER_NAME}.{suffix}"
+    path.write_text("\n\n".join(blocks))
+    return path
+
+
+def cleanup_stale_outputs(out: Path, selected: list[tuple[str, int]]) -> None:
+    for mnemonic, _ in selected:
+        for suffix in ("s", "ll"):
+            path = out / f"{mnemonic}.{suffix}"
+            if path.exists():
+                path.unlink()
+    for suffix in ("s", "ll"):
+        path = out / f"interpreter_loop.{suffix}"
+        if path.exists():
+            path.unlink()
+
+
+def dump_output(
+    out: Path,
+    blocks_by_opcode: dict[int, dict[str, list[str]]],
+    mnemonic: str,
+    opcode: int,
+    output: str,
+    directory: str,
+    all_monomorphizations: bool,
+) -> Path:
+    blocks = blocks_by_opcode.get(opcode, {}).get(directory, [])
+    if not blocks:
+        raise RuntimeError(
+            f"could not find cargo asm --{output} {directory} output for "
+            f"{mnemonic} ({opcode:#04x})"
+        )
+    if not all_monomorphizations and len(blocks) > 1:
+        blocks = blocks[:1]
+
+    suffix = "ll" if output == "llvm" else "s"
+    directory_path = out / directory
+    directory_path.mkdir(parents=True, exist_ok=True)
+    path = directory_path / f"{mnemonic}.{suffix}"
+    path.write_text("\n\n".join(blocks))
+    return path
+
+
+def main() -> int:
+    args = parse_args()
+    logging.basicConfig(
+        level=args.log_level.upper(),
+        format="%(message)s",
+        handlers=[
+            RichHandler(
+                console=Console(stderr=True, highlighter=NullHighlighter()),
+                highlighter=NullHighlighter(),
+                keywords=[],
+                markup=False,
+                show_path=False,
+                show_time=False,
+            )
+        ],
+    )
+    opcodes = parse_opcodes()
+    selected = select_opcodes(opcodes, args.mnemonics)
+    out = args.output if args.output.is_absolute() else ROOT / args.output
+    out.mkdir(parents=True, exist_ok=True)
+    cleanup_stale_outputs(out, selected)
+    feature_msg = f" with features {', '.join(args.features)}" if args.features else ""
+    log(
+        "info",
+        f"dumping {len(selected)} opcode(s) from package {args.package}{feature_msg} "
+        f"to {display_path(out)}"
+    )
+
+    dumps: dict[str, dict[int, dict[str, list[str]]]] = {}
+    run_inner_dumps: dict[str, list[str]] = {}
+    for output in ("asm", "llvm"):
+        text = cargo_asm_everything(args.package, args.features, output)
+        if args.keep_everything:
+            suffix = "ll" if output == "llvm" else "s"
+            log("info", f"writing full cargo asm --{output} dump")
+            (out / f"everything.{suffix}").write_text(text)
+        dumps[output] = extract_functions(text, output)
+        block_count = sum(
+            len(blocks)
+            for blocks_by_directory in dumps[output].values()
+            for blocks in blocks_by_directory.values()
+        )
+        log("debug", f"extracted {block_count} dispatch block(s) from --{output} output")
+        run_inner_dumps[output] = extract_run_inner(text, output)
+        log(
+            "debug",
+            f"extracted {len(run_inner_dumps[output])} run_inner block(s) "
+            f"from --{output} output"
+        )
+
+    tasks = [
+        (mnemonic, opcode, output, directory)
+        for mnemonic, opcode in selected
+        for output in ("asm", "llvm")
+        for _, directory in DISPATCH_OUTPUTS
+    ]
+    for mnemonic, opcode, output, directory in tasks:
+        dump_output(
+            out,
+            dumps[output],
+            mnemonic,
+            opcode,
+            output,
+            directory,
+            args.all_monomorphizations,
+        )
+    run_inner_files = 0
+    for output in ("asm", "llvm"):
+        path = dump_run_inner_output(out, run_inner_dumps[output], output)
+        if path is None:
+            log("warning", f"no run_inner found in --{output} output")
+            continue
+        run_inner_files += 1
+    print(f"wrote {len(tasks) + run_inner_files} file(s) to {display_path(out)}")
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
