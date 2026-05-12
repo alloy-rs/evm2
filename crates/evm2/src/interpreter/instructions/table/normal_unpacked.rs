@@ -5,15 +5,12 @@ use crate::{
 };
 use core::hint::cold_path;
 
-/// Single-return normal instruction function pointer.
-pub(super) type RawInstrFn<T> = extern_table!(
-    fn(
-        pc: Pc,
-        stack: Stack<'_>,
-        state: &mut InterpreterState<'_, T>,
-        next_stack_len: &mut usize,
-    ) -> Pc
-);
+/// Unpacked normal instruction return value.
+type InstrFnRet = (*const u8, usize);
+
+/// Unpacked normal instruction function pointer.
+pub(super) type RawInstrFn<T> =
+    extern_table!(fn(pc: Pc, stack: Stack<'_>, state: &mut InterpreterState<'_, T>) -> InstrFnRet);
 
 extern_table! {
     pub(super) fn dispatch<
@@ -26,10 +23,9 @@ extern_table! {
         pc: Pc,
         stack: Stack<'_>,
         state: &mut InterpreterState<'_, T>,
-        next_stack_len: &mut usize,
-    ) -> Pc {
+    ) -> InstrFnRet {
         let _ = DYNAMIC_GAS;
-        dispatch_mono::<T, C, M>(pc, stack, state, next_stack_len, OP)
+        dispatch_mono::<T, C, M>(pc, stack, state, OP)
     }
 }
 
@@ -39,9 +35,8 @@ fn dispatch_mono<T: EvmTypes, C: EvmConfig<T>, M: InspectMode<T>>(
     mut pc: Pc,
     mut stack: Stack<'_>,
     state: &mut InterpreterState<'_, T>,
-    next_stack_len: &mut usize,
     op: u8,
-) -> Pc {
+) -> InstrFnRet {
     let instr = C::VERSION_TABLES.instruction(op).instr;
     if M::INSPECT {
         M::step(state, pc, stack.len);
@@ -51,7 +46,7 @@ fn dispatch_mono<T: EvmTypes, C: EvmConfig<T>, M: InspectMode<T>>(
         Ok(()) => {
             r = instr(&mut pc, stack.as_mut(), state);
             if !M::INSPECT || r.is_ok() {
-                super::super::inc_pc(&mut pc, op);
+                super::inc_pc(&mut pc, op);
             }
         }
         Err(e) => r = Err(e),
@@ -60,15 +55,14 @@ fn dispatch_mono<T: EvmTypes, C: EvmConfig<T>, M: InspectMode<T>>(
         state.set_result(r);
         M::step_end(state, pc, stack.len);
     }
-    *next_stack_len = stack.len;
     if r.is_err() {
         cold_path();
         if !M::INSPECT {
             state.set_result(r);
         }
-        return Pc::new(core::ptr::null());
+        return (core::ptr::null(), stack.len);
     }
-    pc
+    (pc.as_ptr(), stack.len)
 }
 
 #[inline(always)]

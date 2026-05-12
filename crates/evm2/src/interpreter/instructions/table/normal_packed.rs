@@ -61,7 +61,7 @@ fn dispatch_mono<T: EvmTypes, C: EvmConfig<T>, M: InspectMode<T>, const DYNAMIC_
                 remaining_gas.set(state.gas_mut().remaining());
             }
             if !M::INSPECT || r.is_ok() {
-                super::super::inc_pc(&mut pc, op);
+                super::inc_pc(&mut pc, op);
             }
         }
         Err(e) => {

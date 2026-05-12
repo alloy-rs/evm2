@@ -6,15 +6,11 @@ use crate::{
 
 cfg_if::cfg_if! {
     if #[cfg(dispatch_single_return)] {
-        mod single_return;
-        use single_return as imp;
+        use super::normal_single_return as imp;
     } else if #[cfg(dispatch_packed)] {
-        mod packed;
-        pub(crate) use packed::unpack_ret;
-        use packed as imp;
+        use super::normal_packed as imp;
     } else {
-        mod unpacked;
-        use unpacked as imp;
+        use super::normal_unpacked as imp;
     }
 }
 

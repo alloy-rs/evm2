@@ -61,7 +61,13 @@ cfg_if::cfg_if! {
     } else {
         mod normal;
         #[cfg(dispatch_packed)]
-        pub(crate) use normal::unpack_ret;
+        mod normal_packed;
+        #[cfg(dispatch_single_return)]
+        mod normal_single_return;
+        #[cfg(dispatch_unpacked)]
+        mod normal_unpacked;
+        #[cfg(dispatch_packed)]
+        pub(crate) use normal_packed::unpack_ret;
         use normal as imp;
     }
 }
