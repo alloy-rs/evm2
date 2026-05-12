@@ -34,6 +34,8 @@ pub struct Tracked<T> {
     pub original: T,
     /// Current overlay value.
     pub current: T,
+    #[doc(hidden)] // Not public API. Please use an existing constructor.
+    pub _non_exhaustive: (),
 }
 
 impl<T> Tracked<T> {
@@ -43,7 +45,7 @@ impl<T> Tracked<T> {
     where
         T: Clone,
     {
-        Self { original: value.clone(), current: value }
+        Self { original: value.clone(), current: value, _non_exhaustive: () }
     }
 }
 
@@ -58,7 +60,6 @@ impl<T: PartialEq> Tracked<T> {
 /// Account information loaded from the backing database or emitted in a state
 /// transition.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
-#[non_exhaustive]
 pub struct AccountInfo {
     /// Account balance.
     pub balance: Word,
@@ -68,6 +69,8 @@ pub struct AccountInfo {
     pub code_hash: B256,
     /// Bytecode associated with this account.
     pub code: Option<Bytecode>,
+    #[doc(hidden)] // Not public API. Please use an existing constructor.
+    pub _non_exhaustive: (),
 }
 
 impl Default for AccountInfo {
@@ -78,6 +81,7 @@ impl Default for AccountInfo {
             nonce: 0,
             code_hash: KECCAK256_EMPTY,
             code: Some(Bytecode::default()),
+            _non_exhaustive: (),
         }
     }
 }
@@ -86,7 +90,7 @@ impl AccountInfo {
     /// Creates a new [`AccountInfo`] with the given fields.
     #[inline]
     pub const fn new(balance: Word, nonce: u64, code_hash: B256, code: Bytecode) -> Self {
-        Self { balance, nonce, code_hash, code: Some(code) }
+        Self { balance, nonce, code_hash, code: Some(code), _non_exhaustive: () }
     }
 
     /// Creates a new [`AccountInfo`] with the given code.
@@ -125,7 +129,6 @@ impl AccountInfo {
 
 /// Mutable account state cached by [`State`].
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-#[non_exhaustive]
 pub struct Account {
     /// Account nonce.
     pub nonce: u64,
@@ -139,6 +142,8 @@ pub struct Account {
     pub just_created: bool,
     /// Whether the account code has been modified.
     pub code_changed: bool,
+    #[doc(hidden)] // Not public API. Please use an existing constructor.
+    pub _non_exhaustive: (),
 }
 
 impl Account {
@@ -152,6 +157,7 @@ impl Account {
             code: info.code.unwrap_or_default(),
             just_created: false,
             code_changed: false,
+            _non_exhaustive: (),
         }
     }
 
@@ -163,6 +169,7 @@ impl Account {
             nonce: self.nonce,
             code_hash: self.code_hash,
             code: Some(self.code.clone()),
+            _non_exhaustive: (),
         }
     }
 
@@ -175,13 +182,14 @@ impl Account {
 
 /// Persistent storage overlay for one account.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-#[non_exhaustive]
 pub struct StorageOverlay {
     /// Whether consumers must delete all pre-existing storage for the account
     /// before applying individual slot changes.
     pub wiped: bool,
     /// Loaded or changed storage slots.
     pub(crate) slots: U256Map<Tracked<Word>>,
+    #[doc(hidden)] // Not public API. Please use an existing constructor.
+    pub _non_exhaustive: (),
 }
 
 /// Complete state transition and emitted logs produced by a transaction.
@@ -222,6 +230,8 @@ pub struct StateChanges {
     pub code: BTreeMap<B256, Bytecode>,
     /// Logs emitted by the transaction.
     pub logs: Vec<Log>,
+    #[doc(hidden)] // Not public API. Please use an existing constructor.
+    pub _non_exhaustive: (),
 }
 
 impl StateChanges {
@@ -244,6 +254,8 @@ pub struct StorageChangeSet {
     pub wipe: bool,
     /// Changed storage slots keyed by slot.
     pub slots: BTreeMap<Word, Tracked<Word>>,
+    #[doc(hidden)] // Not public API. Please use an existing constructor.
+    pub _non_exhaustive: (),
 }
 
 /// State checkpoint for reverting state changes.
@@ -590,7 +602,11 @@ impl State {
             hash_map::Entry::Vacant(entry) => {
                 let original = initial.get_account(address)?.map(Account::from_info);
                 journal.push(JournalEntry::AccountInserted { address });
-                Ok(entry.insert(Tracked { original: original.clone(), current: original }))
+                Ok(entry.insert(Tracked {
+                    original: original.clone(),
+                    current: original,
+                    _non_exhaustive: (),
+                }))
             }
         }
     }
@@ -734,6 +750,7 @@ impl State {
             present_value: slot.current,
             new_value: value,
             is_cold: false,
+            _non_exhaustive: (),
         };
         if slot.current != value {
             let previous = slot.current;
@@ -830,6 +847,7 @@ impl State {
             code: Bytecode::default(),
             just_created: true,
             code_changed: true,
+            _non_exhaustive: (),
         };
         self.touch(address);
         Ok(Ok(()))
@@ -850,7 +868,10 @@ impl State {
     pub fn wipe_storage(&mut self, address: Address) {
         let previous = self.storage.get(&address).cloned();
         self.journal.push(JournalEntry::StorageWipe { address, previous });
-        self.storage.insert(address, StorageOverlay { wiped: true, slots: U256Map::default() });
+        self.storage.insert(
+            address,
+            StorageOverlay { wiped: true, slots: U256Map::default(), _non_exhaustive: () },
+        );
     }
 
     /// Loads transient storage.
@@ -1021,7 +1042,10 @@ impl State {
             address,
         )?;
         account.current = None;
-        self.storage.insert(address, StorageOverlay { wiped: true, slots: U256Map::default() });
+        self.storage.insert(
+            address,
+            StorageOverlay { wiped: true, slots: U256Map::default(), _non_exhaustive: () },
+        );
         Ok(())
     }
 
@@ -1132,7 +1156,9 @@ impl State {
             let original = tracked.original.as_ref().map(Account::info);
             let current = tracked.current.as_ref().map(Account::info);
             if original != current {
-                changes.accounts.insert(address, Tracked { original, current });
+                changes
+                    .accounts
+                    .insert(address, Tracked { original, current, _non_exhaustive: () });
             }
             if let Some(account) = tracked.current.as_ref() {
                 let code_hash = account.code_hash;
@@ -1147,11 +1173,21 @@ impl State {
         }
 
         for (&address, storage) in &self.storage {
-            let mut set = StorageChangeSet { wipe: storage.wiped, slots: BTreeMap::new() };
+            let mut set = StorageChangeSet {
+                wipe: storage.wiped,
+                slots: BTreeMap::new(),
+                _non_exhaustive: (),
+            };
             for (&key, slot) in &storage.slots {
                 if slot.original != slot.current && (!set.wipe || !slot.current.is_zero()) {
-                    set.slots
-                        .insert(key, Tracked { original: slot.original, current: slot.current });
+                    set.slots.insert(
+                        key,
+                        Tracked {
+                            original: slot.original,
+                            current: slot.current,
+                            _non_exhaustive: (),
+                        },
+                    );
                 }
             }
             if set.wipe || !set.slots.is_empty() {
