@@ -83,6 +83,9 @@ jobs:
         if: ${{ !matrix.command || matrix.command == 'nextest' }}
         shell: bash
         run: |
+          if [[ -n "${{ matrix.cxx }}" ]]; then
+            export CXX="${{ matrix.cxx }}"
+          fi
           extra_flags=()
           if [[ "${{ matrix.kind }}" == "eest" ]]; then
             extra_flags+=(-p evm2-eest --ignore-default-filter)
@@ -94,10 +97,20 @@ jobs:
           cargo nextest run --workspace --no-fail-fast ${{ matrix.flags }} "${extra_flags[@]}"
       - name: cross test
         if: ${{ matrix.command == 'cross-test' }}
-        run: cross test --workspace --exclude evm2-eest --target ${{ matrix.target }} --no-fail-fast --lib --bins --tests ${{ matrix.flags }}
+        shell: bash
+        run: |
+          if [[ -n "${{ matrix.cxx }}" ]]; then
+            export CXX="${{ matrix.cxx }}"
+          fi
+          cross test --workspace --exclude evm2-eest --target ${{ matrix.target }} --no-fail-fast --lib --bins --tests ${{ matrix.flags }}
       - name: wasm build
         if: ${{ matrix.command == 'build' }}
-        run: cargo build -p evm2 --target ${{ matrix.target }} ${{ matrix.flags }}
+        shell: bash
+        run: |
+          if [[ -n "${{ matrix.cxx }}" ]]; then
+            export CXX="${{ matrix.cxx }}"
+          fi
+          cargo build -p evm2 --target ${{ matrix.target }} ${{ matrix.flags }}
       - name: wasm test
         if: ${{ matrix.command == 'wasm-test' }}
         env:

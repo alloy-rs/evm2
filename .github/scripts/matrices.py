@@ -23,6 +23,8 @@ class Target:
     fixture: str
     # Extra RUSTFLAGS.
     rustflags: str
+    # Extra CXX.
+    cxx: str
 
     def __init__(
         self,
@@ -35,6 +37,7 @@ class Target:
         flags: str = "",
         fixture: str = "",
         rustflags: str = "",
+        cxx: str = "",
     ):
         self.name = name
         self.runner_label = runner_label
@@ -45,6 +48,7 @@ class Target:
         self.flags = flags
         self.fixture = fixture
         self.rustflags = rustflags
+        self.cxx = cxx
 
 
 # A single CI suite to run.
@@ -73,6 +77,7 @@ class Expanded:
     target: str
     command: str
     rustflags: str
+    cxx: str
 
     def __init__(
         self,
@@ -85,6 +90,7 @@ class Expanded:
         target: str,
         command: str,
         rustflags: str,
+        cxx: str,
     ):
         self.name = name
         self.runner_label = runner_label
@@ -95,6 +101,7 @@ class Expanded:
         self.target = target
         self.command = command
         self.rustflags = rustflags
+        self.cxx = cxx
 
 
 toolchains = ["stable", "nightly"]
@@ -103,7 +110,7 @@ kinds = ["test", "eest"]
 
 t_linux_x86 = Target("ubuntu-latest", "ubuntu-latest", tier=1)
 t_macos_arm = Target("macos-latest", "macos-latest", tier=1)
-t_linux_arm = Target("ubuntu-24.04-arm", "ubuntu-24.04-arm")
+t_linux_arm = Target("ubuntu-24.04-arm", "ubuntu-24.04-arm", cxx="clang++")
 t_windows = Target("windows-latest", "windows-latest", flags="--no-default-features")
 t_wasm_unknown = Target(
     "wasm32-unknown-unknown",
@@ -138,6 +145,7 @@ t_linux_i686 = Target(
     target="i686-unknown-linux-gnu",
     command="cross-test",
     kinds=["test"],
+    flags="--no-default-features",
 )
 t_linux_armv7 = Target(
     "armv7-unknown-linux-gnueabihf",
@@ -145,6 +153,7 @@ t_linux_armv7 = Target(
     target="armv7-unknown-linux-gnueabihf",
     command="cross-test",
     kinds=["test"],
+    flags="--no-default-features",
 )
 
 targets = [
@@ -182,6 +191,7 @@ def main():
                 target=target.target,
                 command=target.command,
                 rustflags=target.rustflags,
+                cxx=target.cxx,
             )
             expanded.append(vars(obj))
 
