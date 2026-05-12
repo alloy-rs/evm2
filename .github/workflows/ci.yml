@@ -85,6 +85,7 @@ jobs:
         run: |
           if [[ -n "${{ matrix.cxx }}" ]]; then
             export CXX="${{ matrix.cxx }}"
+            cargo clean -p mcl_rust
           fi
           extra_flags=()
           if [[ "${{ matrix.kind }}" == "eest" ]]; then
