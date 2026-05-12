@@ -29,22 +29,14 @@ use serde as _;
 use serde_json as _;
 use thiserror as _;
 
-/// An inspector implementation for an EIP2930 Accesslist
 pub mod access_list;
 
-/// implementation of an opcode counter for the EVM.
 pub mod opcode;
 
-/// An inspector for recording traces
 pub mod tracing;
 
-/// An inspector for recording internal transfers.
 pub mod transfer;
 
-/// An inspector for tracking edge coverage.
-pub mod edge_cov;
-
-/// An inspector for tracking storage access.
 pub mod storage;
 
 pub use colorchoice::ColorChoice;

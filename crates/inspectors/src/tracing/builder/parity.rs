@@ -5,15 +5,14 @@ use crate::tracing::{
     TracingInspectorConfig,
 };
 use alloc::{collections::VecDeque, string::ToString, vec, vec::Vec};
-use alloy_primitives::{map::HashSet, Address, U256, U64};
+use alloy_primitives::{map::HashSet, Address, U256, U64, KECCAK256_EMPTY};
 use alloy_rpc_types_eth::TransactionInfo;
 use alloy_rpc_types_trace::parity::*;
 use core::iter::Peekable;
 use evm2::{
     context_interface::result::{ExecutionResult, HaltReasonTr, ResultAndState},
-    primitives::{hardfork::SpecId, KECCAK_EMPTY},
     state::Account,
-    DatabaseRef,
+    DatabaseRef, SpecId,
 };
 
 /// A type for creating parity style traces
@@ -488,7 +487,7 @@ where
             code.original_bytes()
         } else {
             let code_hash =
-                if db_acc.code_hash != KECCAK_EMPTY { db_acc.code_hash } else { continue };
+                if db_acc.code_hash != KECCAK256_EMPTY { db_acc.code_hash } else { continue };
 
             db.code_by_hash_ref(code_hash)?.original_bytes()
         };

@@ -14,7 +14,7 @@ use alloc::{
     rc::Rc,
     string::{String, ToString},
 };
-use alloy_primitives::{Address, Bytes, B256, U256};
+use alloy_primitives::{Address, Bytes, B256, U256, KECCAK256_EMPTY};
 use boa_engine::{
     js_string,
     native_function::NativeFunction,
@@ -27,7 +27,6 @@ use evm2::{
     bytecode::opcode::{OpCode, PUSH0, PUSH32},
     context_interface::DBErrorMarker,
     interpreter::{SharedMemory, Stack},
-    primitives::KECCAK_EMPTY,
     state::{AccountInfo, Bytecode, EvmState},
     DatabaseRef,
 };
@@ -805,8 +804,8 @@ impl EvmDbRef {
 
     fn read_code(&self, address: JsValue, ctx: &mut Context) -> JsResult<JsUint8Array> {
         let acc = self.read_basic(address, ctx)?;
-        let code_hash = acc.as_ref().map(|acc| acc.code_hash).unwrap_or(KECCAK_EMPTY);
-        if code_hash == KECCAK_EMPTY {
+        let code_hash = acc.as_ref().map(|acc| acc.code_hash).unwrap_or(KECCAK256_EMPTY);
+        if code_hash == KECCAK256_EMPTY {
             return JsUint8Array::from_iter(core::iter::empty(), ctx);
         }
 

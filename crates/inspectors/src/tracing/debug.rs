@@ -3,6 +3,7 @@ use crate::tracing::{
 };
 #[cfg(feature = "js-tracer")]
 use alloc::boxed::Box;
+use alloy_primitives::{Address, Log, U256};
 use alloy_rpc_types_eth::TransactionInfo;
 use alloy_rpc_types_trace::geth::{
     erc7562::Erc7562Config, mux::MuxConfig, CallConfig, FourByteFrame, GethDebugBuiltInTracerType,
@@ -17,7 +18,6 @@ use evm2::{
     handler::FrameResult,
     inspector::JournalExt,
     interpreter::{CallInputs, CallOutcome, CreateInputs, CreateOutcome, FrameInput, Interpreter},
-    primitives::{Address, Log, U256},
     DatabaseRef, Inspector,
 };
 use thiserror::Error;

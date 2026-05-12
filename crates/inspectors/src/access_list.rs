@@ -1,3 +1,5 @@
+//! Access list inspector.
+
 use alloc::collections::BTreeSet;
 use alloy_primitives::{
     Address, B256,

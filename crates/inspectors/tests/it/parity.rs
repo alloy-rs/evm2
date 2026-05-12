@@ -1,7 +1,13 @@
 //! Parity tests
 
 use crate::utils::{deploy_contract, inspect_deploy_contract, print_traces};
-use alloy_primitives::{address, hex, map::HashSet, Address, U256};
+use alloy_primitives::{
+    address,
+    eip4844::BLOB_BASE_FEE_UPDATE_FRACTION_CANCUN,
+    hex,
+    map::HashSet,
+    Address, U256,
+};
 use alloy_rpc_types_eth::TransactionInfo;
 use alloy_rpc_types_trace::parity::{
     Action, CallAction, CallType, CreationMethod, SelfdestructAction, TraceType,
@@ -17,7 +23,7 @@ use evm2::{
     database_interface::EmptyDB,
     handler::EvmTr,
     inspector::InspectorEvmTr,
-    primitives::{eip4844::BLOB_BASE_FEE_UPDATE_FRACTION_CANCUN, hardfork::SpecId},
+    SpecId,
     state::AccountInfo,
     Context, DatabaseCommit, InspectEvm, MainBuilder, MainContext,
 };

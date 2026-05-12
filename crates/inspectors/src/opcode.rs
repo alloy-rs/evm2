@@ -1,3 +1,5 @@
+//! Opcode gas inspector.
+
 use alloc::string::ToString;
 use alloy_primitives::map::HashMap;
 use alloy_rpc_types_trace::opcode::OpcodeGas;

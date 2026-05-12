@@ -1,3 +1,5 @@
+//! Storage access inspector.
+
 use alloy_primitives::{Address, B256, map::HashMap};
 use evm2::{
     EvmTypes, Inspector,

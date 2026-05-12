@@ -11,7 +11,7 @@ use alloc::{
 };
 use alloy_primitives::{
     map::{Entry, HashMap},
-    Address, Bytes, B256, U256,
+    Address, Bytes, B256, U256, KECCAK256_EMPTY,
 };
 use alloy_rpc_types_trace::geth::{
     erc7562::{AccessedSlots, CallFrameType, ContractSize, Erc7562Config, Erc7562Frame},
@@ -21,7 +21,6 @@ use alloy_rpc_types_trace::geth::{
 use evm2::{
     bytecode::opcode,
     context_interface::result::{HaltReasonTr, ResultAndState},
-    primitives::KECCAK_EMPTY,
     state::{AccountInfo, EvmState},
     DatabaseRef,
 };
@@ -467,7 +466,7 @@ impl<'a> GethTraceBuilder<'a> {
                 }
 
                 if let Some(status) = &step.status {
-                    if *status == evm2::interpreter::InstructionResult::OutOfGas {
+                    if *status == evm2::interpreter::InstrStop::OutOfGas {
                         out_of_gas = true;
                     }
                 }
@@ -479,7 +478,7 @@ impl<'a> GethTraceBuilder<'a> {
                             ext_code_access_info.push(format!("{address:?}"));
                             if let Entry::Vacant(e) = contract_size.entry(address) {
                                 if let Ok(Some(account)) = db.basic_ref(address) {
-                                    if account.code_hash != KECCAK_EMPTY {
+                                    if account.code_hash != KECCAK256_EMPTY {
                                         if let Ok(bytecode) = db.code_by_hash_ref(account.code_hash)
                                         {
                                             e.insert(ContractSize {
@@ -580,7 +579,7 @@ impl<'a> GethTraceBuilder<'a> {
 }
 
 fn account_was_empty(account: &AccountInfo) -> bool {
-    account.balance.is_zero() && account.nonce == 0 && account.code_hash == KECCAK_EMPTY
+    account.balance.is_zero() && account.nonce == 0 && account.code_hash == KECCAK256_EMPTY
 }
 
 #[cfg(test)]

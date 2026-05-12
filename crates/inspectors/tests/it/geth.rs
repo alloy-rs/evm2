@@ -1,6 +1,11 @@
 //! Geth tests
 use crate::utils::deploy_contract;
-use alloy_primitives::{address, hex, map::HashMap, Address, Bytes, TxKind, B256};
+use alloy_primitives::{
+    address, hex,
+    map::HashMap,
+    Address, Bytes, TxKind, B256,
+    eip7708::ETH_TRANSFER_LOG_ADDRESS,
+};
 use alloy_rpc_types_eth::TransactionInfo;
 use alloy_rpc_types_trace::geth::{
     erc7562::Erc7562Config, mux::MuxConfig, CallConfig, FlatCallConfig, GethDebugBuiltInTracerType,
@@ -15,7 +20,7 @@ use evm2::{
     database_interface::EmptyDB,
     handler::EvmTr,
     inspector::InspectorEvmTr,
-    primitives::{eip7708::ETH_TRANSFER_LOG_ADDRESS, hardfork::SpecId},
+    SpecId,
     state::AccountInfo,
     Context, InspectEvm, MainBuilder, MainContext,
 };
@@ -796,7 +801,7 @@ fn test_geth_default_tracer_empty_return_data_is_serialized_when_enabled() {
             db.insert_account_info(
                 caller,
                 AccountInfo {
-                    balance: evm2::primitives::U256::from(1_000_000_000),
+                    balance: alloy_primitives::U256::from(1_000_000_000),
                     ..Default::default()
                 },
             );
@@ -957,7 +962,7 @@ fn test_geth_calltracer_logs_eip7708() {
             db.insert_account_info(
                 contract,
                 AccountInfo {
-                    balance: evm2::primitives::U256::from(1_000_000),
+                    balance: alloy_primitives::U256::from(1_000_000),
                     code: Some(Bytecode::new_raw(code.into())),
                     ..Default::default()
                 },
@@ -966,7 +971,7 @@ fn test_geth_calltracer_logs_eip7708() {
             db.insert_account_info(
                 caller,
                 AccountInfo {
-                    balance: evm2::primitives::U256::from(1_000_000_000),
+                    balance: alloy_primitives::U256::from(1_000_000_000),
                     ..Default::default()
                 },
             );
@@ -1052,7 +1057,7 @@ fn test_geth_calltracer_logs_address_regular() {
             db.insert_account_info(
                 caller,
                 AccountInfo {
-                    balance: evm2::primitives::U256::from(1_000_000_000),
+                    balance: alloy_primitives::U256::from(1_000_000_000),
                     ..Default::default()
                 },
             );
@@ -1135,7 +1140,7 @@ fn test_geth_calltracer_logs_delegatecall() {
             db.insert_account_info(
                 caller,
                 AccountInfo {
-                    balance: evm2::primitives::U256::from(1_000_000_000),
+                    balance: alloy_primitives::U256::from(1_000_000_000),
                     ..Default::default()
                 },
             );
