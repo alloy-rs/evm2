@@ -77,6 +77,13 @@ jobs:
             flags: "--no-default-features"
             target: "wasm32-unknown-unknown"
             command: "build"
+          - kind: "wasm"
+            fixture: "wasi"
+            os: "ubuntu-latest"
+            rust: "stable"
+            flags: "--no-default-features --features no-tco"
+            target: "wasm32-wasip1"
+            command: "wasm-test"
           - kind: "test"
             fixture: "i686"
             os: "ubuntu-latest"
@@ -117,6 +124,8 @@ jobs:
         if: ${{ !matrix.command || matrix.command == 'nextest' }}
       - uses: taiki-e/install-action@cross
         if: ${{ matrix.command == 'cross-test' }}
+      - uses: taiki-e/install-action@wasmtime
+        if: ${{ matrix.command == 'wasm-test' }}
       - uses: astral-sh/setup-uv@v7
         if: ${{ matrix.kind == 'eest' }}
       - name: Download EEST fixtures
@@ -148,6 +157,11 @@ jobs:
       - name: wasm build
         if: ${{ matrix.command == 'build' }}
         run: cargo build -p evm2 --target ${{ matrix.target }} ${{ matrix.flags }}
+      - name: wasm test
+        if: ${{ matrix.command == 'wasm-test' }}
+        env:
+          CARGO_TARGET_WASM32_WASIP1_RUNNER: wasmtime
+        run: cargo test -p evm2 --target ${{ matrix.target }} --no-fail-fast --lib --tests ${{ matrix.flags }}
       - name: doctest
         if: ${{ matrix.kind == 'test' && !matrix.target }}
         run: cargo test --workspace ${{ matrix.flags }} --doc
