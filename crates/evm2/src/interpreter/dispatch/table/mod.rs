@@ -1,14 +1,11 @@
 use super::{InspectMode, UNKNOWN_OP, inc_pc, run_state, unknown_instruction};
 #[cfg(dispatch_packed)]
+use crate::constants::STACK_LIMIT;
+#[cfg(dispatch_packed)]
 use crate::interpreter::gas::RemainingGas;
-#[cfg(not(dispatch_packed))]
 use crate::{
-    EvmConfig,
-    interpreter::{InterpreterState, Pc, Result, Stack},
-};
-use crate::{
-    EvmTypes,
-    interpreter::{InstrStop, Interpreter, gas::Gas},
+    EvmConfig, EvmTypes,
+    interpreter::{InstrStop, Interpreter, InterpreterState, Pc, Result, Stack, gas::Gas},
 };
 use core::hint::cold_path;
 
@@ -56,28 +53,136 @@ const fn finish_loop(gas: &mut Gas, remaining_gas: LoopState) {
 #[cfg(not(dispatch_packed))]
 const fn finish_loop(_gas: &mut Gas, _loop_state: LoopState) {}
 
+trait DispatchGas: Copy {
+    fn pre_step<T: EvmTypes, C: EvmConfig<T>>(
+        &mut self,
+        state: &mut InterpreterState<'_, T>,
+        op: u8,
+    ) -> Result;
+
+    fn sync_before_exec<T: EvmTypes>(
+        &self,
+        state: &mut InterpreterState<'_, T>,
+        dynamic_gas: bool,
+        inspect: bool,
+    );
+
+    fn sync_after_exec<T: EvmTypes>(
+        &mut self,
+        state: &mut InterpreterState<'_, T>,
+        dynamic_gas: bool,
+    );
+
+    fn error_stack_len(stack_len: usize) -> usize;
+}
+
+impl DispatchGas for () {
+    #[inline(always)]
+    fn pre_step<T: EvmTypes, C: EvmConfig<T>>(
+        &mut self,
+        state: &mut InterpreterState<'_, T>,
+        op: u8,
+    ) -> Result {
+        state.gas_mut().spend(C::VERSION_TABLES.static_gas(op) as _)
+    }
+
+    #[inline(always)]
+    fn sync_before_exec<T: EvmTypes>(
+        &self,
+        _state: &mut InterpreterState<'_, T>,
+        _dynamic_gas: bool,
+        _inspect: bool,
+    ) {
+    }
+
+    #[inline(always)]
+    fn sync_after_exec<T: EvmTypes>(
+        &mut self,
+        _state: &mut InterpreterState<'_, T>,
+        _dynamic_gas: bool,
+    ) {
+    }
+
+    #[inline(always)]
+    fn error_stack_len(stack_len: usize) -> usize {
+        stack_len
+    }
+}
+
+#[cfg(dispatch_packed)]
+impl DispatchGas for RemainingGas {
+    #[inline(always)]
+    fn pre_step<T: EvmTypes, C: EvmConfig<T>>(
+        &mut self,
+        _state: &mut InterpreterState<'_, T>,
+        op: u8,
+    ) -> Result {
+        self.spend(C::VERSION_TABLES.static_gas(op) as _)
+    }
+
+    #[inline(always)]
+    fn sync_before_exec<T: EvmTypes>(
+        &self,
+        state: &mut InterpreterState<'_, T>,
+        dynamic_gas: bool,
+        inspect: bool,
+    ) {
+        if inspect || dynamic_gas {
+            state.gas_mut().set_remaining(self.get());
+        }
+    }
+
+    #[inline(always)]
+    fn sync_after_exec<T: EvmTypes>(
+        &mut self,
+        state: &mut InterpreterState<'_, T>,
+        dynamic_gas: bool,
+    ) {
+        if dynamic_gas {
+            self.set(state.gas_mut().remaining());
+        }
+    }
+
+    #[inline(always)]
+    fn error_stack_len(stack_len: usize) -> usize {
+        if stack_len <= STACK_LIMIT { stack_len } else { 0 }
+    }
+}
+
 #[cold] // Not cold, but avoids MIR inlining.
 #[inline(always)]
-#[cfg(not(dispatch_packed))]
-fn dispatch_mono<T: EvmTypes, C: EvmConfig<T>, M: InspectMode<T>, const UNKNOWN: bool>(
+fn dispatch_inner<
+    T: EvmTypes,
+    C: EvmConfig<T>,
+    M: InspectMode<T>,
+    G: DispatchGas,
+    const DYNAMIC_GAS: bool,
+    const UNKNOWN: bool,
+>(
     mut pc: Pc,
     mut stack: Stack<'_>,
+    mut gas: G,
     state: &mut InterpreterState<'_, T>,
     op: u8,
-) -> (Pc, usize) {
+) -> (Pc, G, usize) {
     let instr = if UNKNOWN { unknown_instruction } else { C::VERSION_TABLES.instruction(op).instr };
     if M::INSPECT {
         M::step(state, pc, stack.len);
     }
     let r;
-    match pre_step::<T, C>(state.gas_mut(), op) {
+    match gas.pre_step::<T, C>(state, op) {
         Ok(()) => {
+            gas.sync_before_exec(state, DYNAMIC_GAS, M::INSPECT);
             r = instr(&mut pc, stack.as_mut(), state);
+            gas.sync_after_exec(state, DYNAMIC_GAS);
             if !M::INSPECT || r.is_ok() {
                 inc_pc(&mut pc, op);
             }
         }
-        Err(e) => r = Err(e),
+        Err(e) => {
+            gas.sync_before_exec(state, false, M::INSPECT);
+            r = Err(e);
+        }
     }
     if M::INSPECT {
         state.set_result(r);
@@ -88,15 +193,9 @@ fn dispatch_mono<T: EvmTypes, C: EvmConfig<T>, M: InspectMode<T>, const UNKNOWN:
         if !M::INSPECT {
             state.set_result(r);
         }
-        return (Pc::new(core::ptr::null()), stack.len);
+        return (Pc::new(core::ptr::null()), gas, G::error_stack_len(stack.len));
     }
-    (pc, stack.len)
-}
-
-#[inline(always)]
-#[cfg(not(dispatch_packed))]
-const fn pre_step<T: EvmTypes, C: EvmConfig<T>>(gas: &mut Gas, op: u8) -> Result {
-    gas.spend(C::VERSION_TABLES.static_gas(op) as _)
+    (pc, gas, stack.len)
 }
 
 pub(in crate::interpreter) fn run<T: EvmTypes>(

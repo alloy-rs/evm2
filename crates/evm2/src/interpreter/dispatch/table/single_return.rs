@@ -41,7 +41,8 @@ extern_table! {
         next_stack_len: &mut usize,
     ) -> Pc {
         let _ = DYNAMIC_GAS;
-        let (pc, stack_len) = super::dispatch_mono::<T, C, M, false>(pc, stack, state, OP);
+        let (pc, (), stack_len) =
+            super::dispatch_inner::<T, C, M, (), false, false>(pc, stack, (), state, OP);
         *next_stack_len = stack_len;
         pc
     }
@@ -56,8 +57,14 @@ extern_table! {
         state: &mut InterpreterState<'_, T>,
         next_stack_len: &mut usize,
     ) -> Pc {
-        let (pc, stack_len) =
-            super::dispatch_mono::<T, C, M, true>(pc, stack, state, super::UNKNOWN_OP);
+        let (pc, (), stack_len) =
+            super::dispatch_inner::<T, C, M, (), false, true>(
+                pc,
+                stack,
+                (),
+                state,
+                super::UNKNOWN_OP,
+            );
         *next_stack_len = stack_len;
         pc
     }

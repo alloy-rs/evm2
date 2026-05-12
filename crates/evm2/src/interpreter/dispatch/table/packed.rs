@@ -2,9 +2,8 @@ use super::InspectMode;
 use crate::{
     EvmConfig, EvmTypes,
     constants::STACK_LIMIT,
-    interpreter::{InterpreterState, Pc, Result, Stack, gas::RemainingGas},
+    interpreter::{InterpreterState, Pc, Stack, gas::RemainingGas},
 };
-use core::hint::cold_path;
 
 /// Packed instruction return value.
 pub(crate) type InstrFnRet = (Pc, PackedGasStackLen);
@@ -45,7 +44,16 @@ extern_table! {
         remaining_gas: RemainingGas,
         state: &mut InterpreterState<'_, T>,
     ) -> InstrFnRet {
-        dispatch_mono::<T, C, M, DYNAMIC_GAS, false>(pc, stack, remaining_gas, state, OP)
+        let initial_remaining_gas = remaining_gas;
+        let (pc, remaining_gas, stack_len) =
+            super::dispatch_inner::<T, C, M, RemainingGas, DYNAMIC_GAS, false>(
+                pc,
+                stack,
+                remaining_gas,
+                state,
+                OP,
+            );
+        dispatch_return(pc, initial_remaining_gas.get().wrapping_sub(remaining_gas.get()), stack_len)
     }
 
     pub(in crate::interpreter::dispatch) fn unknown_dispatch<
@@ -58,83 +66,17 @@ extern_table! {
         remaining_gas: RemainingGas,
         state: &mut InterpreterState<'_, T>,
     ) -> InstrFnRet {
-        dispatch_mono::<T, C, M, false, true>(
-            pc,
-            stack,
-            remaining_gas,
-            state,
-            super::UNKNOWN_OP,
-        )
+        let initial_remaining_gas = remaining_gas;
+        let (pc, remaining_gas, stack_len) =
+            super::dispatch_inner::<T, C, M, RemainingGas, false, true>(
+                pc,
+                stack,
+                remaining_gas,
+                state,
+                super::UNKNOWN_OP,
+            );
+        dispatch_return(pc, initial_remaining_gas.get().wrapping_sub(remaining_gas.get()), stack_len)
     }
-}
-
-#[cold] // Not cold, but avoids MIR inlining.
-#[inline(always)]
-fn dispatch_mono<
-    T: EvmTypes,
-    C: EvmConfig<T>,
-    M: InspectMode<T>,
-    const DYNAMIC_GAS: bool,
-    const UNKNOWN: bool,
->(
-    mut pc: Pc,
-    mut stack: Stack<'_>,
-    mut remaining_gas: RemainingGas,
-    state: &mut InterpreterState<'_, T>,
-    op: u8,
-) -> InstrFnRet {
-    let initial_remaining_gas = remaining_gas;
-    let instr =
-        if UNKNOWN { super::unknown_instruction } else { C::VERSION_TABLES.instruction(op).instr };
-    if M::INSPECT {
-        M::step(state, pc, stack.len);
-    }
-    let r;
-    match pre_step::<T, C>(&mut remaining_gas, op) {
-        Ok(()) => {
-            if M::INSPECT || DYNAMIC_GAS {
-                state.gas_mut().set_remaining(remaining_gas.get());
-            }
-            r = instr(&mut pc, stack.as_mut(), state);
-            if DYNAMIC_GAS {
-                remaining_gas.set(state.gas_mut().remaining());
-            }
-            if !M::INSPECT || r.is_ok() {
-                super::inc_pc(&mut pc, op);
-            }
-        }
-        Err(e) => {
-            if M::INSPECT {
-                state.gas_mut().set_remaining(remaining_gas.get());
-            }
-            r = Err(e);
-        }
-    }
-    if M::INSPECT {
-        state.set_result(r);
-        M::step_end(state, pc, stack.len);
-    }
-    if r.is_err() {
-        cold_path();
-        if !M::INSPECT {
-            state.set_result(r);
-        }
-        let stack_len = if stack.len <= STACK_LIMIT { stack.len } else { 0 };
-        return dispatch_return(
-            Pc::new(core::ptr::null()),
-            initial_remaining_gas.get().wrapping_sub(remaining_gas.get()),
-            stack_len,
-        );
-    }
-    dispatch_return(pc, initial_remaining_gas.get().wrapping_sub(remaining_gas.get()), stack.len)
-}
-
-#[inline(always)]
-const fn pre_step<T: EvmTypes, C: EvmConfig<T>>(
-    remaining_gas: &mut RemainingGas,
-    op: u8,
-) -> Result {
-    remaining_gas.spend(C::VERSION_TABLES.static_gas(op) as _)
 }
 
 const STACK_LEN_BITS: u32 = 11;
