@@ -1,11 +1,7 @@
 //! Storage access inspector.
 
 use alloy_primitives::{Address, B256, map::HashMap};
-use evm2::{
-    EvmTypes, Inspector,
-    bytecode::opcode,
-    interpreter::{Interpreter, Word},
-};
+use evm2::{EvmTypes, Inspector, bytecode::opcode::op, interpreter::Interpreter};
 
 /// An Inspector that tracks warm and cold storage slot accesses.
 #[derive(Debug, Default, Clone)]
@@ -51,8 +47,8 @@ impl StorageInspector {
 
 impl<T: EvmTypes> Inspector<T> for StorageInspector {
     fn step(&mut self, interp: &mut Interpreter<'_, T>) {
-        if interp.opcode() == opcode::SLOAD
-            && let Some(slot) = stack_peek(interp, 0)
+        if interp.opcode() == op::SLOAD
+            && let Some(slot) = interp.stack().peek(0)
         {
             let address = interp.message().destination;
             let slot = B256::from(slot.to_be_bytes());
@@ -61,10 +57,4 @@ impl<T: EvmTypes> Inspector<T> for StorageInspector {
             *slot_access_count += 1;
         }
     }
-}
-
-#[inline]
-fn stack_peek<T: EvmTypes>(interp: &Interpreter<'_, T>, index_from_top: usize) -> Option<Word> {
-    let stack = interp.stack();
-    stack.get(stack.len().checked_sub(index_from_top + 1)?).copied()
 }

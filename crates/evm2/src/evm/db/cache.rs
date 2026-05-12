@@ -207,7 +207,7 @@ impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::interpreter::opcode;
+    use crate::interpreter::opcode::op;
     use alloy_primitives::Bytes;
 
     #[derive(Debug, Default)]
@@ -254,7 +254,7 @@ mod tests {
     fn cache_db_caches_wrapped_db_reads() {
         let address = Address::with_last_byte(1);
         let key = Word::from(2);
-        let code = Bytecode::new_legacy(Bytes::from_static(&[opcode::STOP]));
+        let code = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
         let block_hash = B256::with_last_byte(3);
         let db = CountingDB {
             account: Some(AccountInfo::default().with_code(code.clone())),

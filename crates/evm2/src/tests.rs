@@ -3,7 +3,7 @@ use crate::{
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
     evm::{AccountInfo, InMemoryDB},
-    interpreter::{Host, InstrStop, Message, Word, instructions::tests::push, opcode},
+    interpreter::{Host, InstrStop, Message, Word, instructions::tests::push, opcode::op},
     registry::TxRegistry,
 };
 use alloc::vec::Vec;
@@ -46,11 +46,7 @@ fn evm_executes_storage_transaction() {
     evm.set_database(InMemoryDB::default());
     evm.set_precompiles(Precompiles::base(SpecId::OSAKA));
 
-    run_tx(
-        &mut evm,
-        contract,
-        [opcode::PUSH1, 0x2a, opcode::PUSH1, 0x01, opcode::SSTORE, opcode::STOP],
-    );
+    run_tx(&mut evm, contract, [op::PUSH1, 0x2a, op::PUSH1, 0x01, op::SSTORE, op::STOP]);
 
     assert_eq!(
         evm.state().storage_ref(contract, Word::from(1)).map(|slot| slot.current),
@@ -76,23 +72,19 @@ fn evm_runs_transactions_against_initial_state() {
         &mut evm,
         contract,
         [
-            opcode::PUSH1,
+            op::PUSH1,
             0x01,
-            opcode::SLOAD,
-            opcode::PUSH1,
+            op::SLOAD,
+            op::PUSH1,
             0x02,
-            opcode::ADD,
-            opcode::PUSH1,
+            op::ADD,
+            op::PUSH1,
             0x02,
-            opcode::SSTORE,
-            opcode::STOP,
+            op::SSTORE,
+            op::STOP,
         ],
     );
-    run_tx(
-        &mut evm,
-        contract,
-        [opcode::PUSH1, 0x07, opcode::PUSH1, 0x01, opcode::SSTORE, opcode::STOP],
-    );
+    run_tx(&mut evm, contract, [op::PUSH1, 0x07, op::PUSH1, 0x01, op::SSTORE, op::STOP]);
 
     assert!(evm.state().account_ref(contract).is_some());
     assert_eq!(
@@ -111,7 +103,7 @@ fn evm_propagates_child_sstore_negative_refund() {
     let mut child_code = Vec::new();
     push(&mut child_code, 7);
     push(&mut child_code, 0);
-    child_code.extend([opcode::SSTORE, opcode::STOP]);
+    child_code.extend([op::SSTORE, op::STOP]);
 
     let mut database = InMemoryDB::default();
     database.insert_account_info(
@@ -134,7 +126,7 @@ fn evm_propagates_child_sstore_negative_refund() {
     let mut parent_code = Vec::new();
     push(&mut parent_code, 0);
     push(&mut parent_code, 0);
-    parent_code.push(opcode::SSTORE);
+    parent_code.push(op::SSTORE);
     push(&mut parent_code, 0); // return length
     push(&mut parent_code, 0); // return offset
     push(&mut parent_code, 0); // input length
@@ -142,7 +134,7 @@ fn evm_propagates_child_sstore_negative_refund() {
     push(&mut parent_code, 0); // value
     push(&mut parent_code, 0x44); // callee
     push(&mut parent_code, 50_000); // gas
-    parent_code.extend([opcode::CALL, opcode::STOP]);
+    parent_code.extend([op::CALL, op::STOP]);
 
     let message = Message {
         destination: contract,
@@ -181,7 +173,7 @@ fn evm_reports_invalid_transaction_execution() {
     let result = Host::execute_message(
         &mut evm,
         &TxEnv::default(),
-        Bytecode::new_legacy(Bytes::from_static(&[opcode::PUSH1, 0x01, opcode::SSTORE])),
+        Bytecode::new_legacy(Bytes::from_static(&[op::PUSH1, 0x01, op::SSTORE])),
         &message,
         false,
     );

@@ -25,7 +25,7 @@ mod tests {
         interpreter::{
             InstrStop, Word,
             instructions::tests::{RunConfig, push, run, run_stack},
-            opcode,
+            opcode::op,
         },
         utils::b256_to_word,
     };
@@ -37,8 +37,8 @@ mod tests {
         let mut code = Vec::new();
         push(&mut code, 0);
         push(&mut code, 0);
-        code.push(opcode::KECCAK256);
-        code.push(opcode::STOP);
+        code.push(op::KECCAK256);
+        code.push(op::STOP);
         let interpreter = run(RunConfig::new(code));
         assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.stack(), [b256_to_word(keccak256([]))]);
@@ -46,20 +46,20 @@ mod tests {
         let mut code = Vec::new();
         push(&mut code, Word::from(0x80));
         push(&mut code, 0);
-        code.push(opcode::MSTORE8);
+        code.push(op::MSTORE8);
         push(&mut code, Word::from(1));
         push(&mut code, 0);
-        code.push(opcode::KECCAK256);
-        code.push(opcode::STOP);
+        code.push(op::KECCAK256);
+        code.push(op::STOP);
         let interpreter = run(RunConfig::new(code));
         assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.stack(), [b256_to_word(keccak256([0x80]))]);
 
-        let interpreter = run_stack([Word::MAX, Word::from(0)], opcode::KECCAK256);
+        let interpreter = run_stack([Word::MAX, Word::from(0)], op::KECCAK256);
         assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.stack(), [b256_to_word(keccak256([]))]);
 
-        let interpreter = run_stack([Word::MAX, Word::from(1)], opcode::KECCAK256);
+        let interpreter = run_stack([Word::MAX, Word::from(1)], op::KECCAK256);
         assert!(matches!(interpreter.err, InstrStop::InvalidOperandOOG));
     }
 }

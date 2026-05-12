@@ -998,7 +998,7 @@ mod tests {
         BaseEvmConfigSelector, BaseEvmTypes, Precompiles, SpecId, Version,
         bytecode::Bytecode,
         ethereum::RecoveredTxEnvelope,
-        interpreter::{MessageKind, opcode},
+        interpreter::{MessageKind, opcode::op},
         registry::TxRequest,
     };
     use alloc::{string::ToString, vec, vec::Vec};
@@ -1126,7 +1126,7 @@ mod tests {
             Precompiles::base(SpecId::OSAKA),
         );
         let contract = Address::from([0x11; 20]);
-        let bytecode = Bytecode::new_legacy(Bytes::from_static(&[opcode::ADDRESS, opcode::STOP]));
+        let bytecode = Bytecode::new_legacy(Bytes::from_static(&[op::ADDRESS, op::STOP]));
         let message = Message {
             kind: MessageKind::Call,
             destination: contract,
@@ -1183,7 +1183,7 @@ mod tests {
             Precompiles::base(SpecId::OSAKA),
         );
         let contract = Address::from([0x11; 20]);
-        let bytecode = Bytecode::new_legacy(Bytes::from_static(&[opcode::PUSH0, opcode::SLOAD]));
+        let bytecode = Bytecode::new_legacy(Bytes::from_static(&[op::PUSH0, op::SLOAD]));
         let message = Message {
             kind: MessageKind::Call,
             destination: contract,
@@ -1210,12 +1210,8 @@ mod tests {
         );
         let contract = Address::from([0x11; 20]);
         let key = Word::ZERO;
-        let bytecode = Bytecode::new_legacy(Bytes::from_static(&[
-            opcode::PUSH1,
-            0,
-            opcode::SLOAD,
-            opcode::STOP,
-        ]));
+        let bytecode =
+            Bytecode::new_legacy(Bytes::from_static(&[op::PUSH1, 0, op::SLOAD, op::STOP]));
         let message = Message {
             kind: MessageKind::Call,
             destination: contract,
@@ -1250,13 +1246,8 @@ mod tests {
             gas_limit: 50,
             ..Message::default()
         };
-        let code = Bytecode::new_legacy(Bytes::from_static(&[
-            opcode::PUSH1,
-            1,
-            opcode::PUSH1,
-            0,
-            opcode::RETURN,
-        ]));
+        let code =
+            Bytecode::new_legacy(Bytes::from_static(&[op::PUSH1, 1, op::PUSH1, 0, op::RETURN]));
 
         let result = Host::execute_message(&mut evm, &TxEnv::default(), code, &message, false);
         assert!(result.stop.is_success());
@@ -1288,13 +1279,8 @@ mod tests {
             gas_limit: 50,
             ..Message::default()
         };
-        let code = Bytecode::new_legacy(Bytes::from_static(&[
-            opcode::PUSH1,
-            1,
-            opcode::PUSH1,
-            0,
-            opcode::RETURN,
-        ]));
+        let code =
+            Bytecode::new_legacy(Bytes::from_static(&[op::PUSH1, 1, op::PUSH1, 0, op::RETURN]));
 
         let result = Host::execute_message(&mut evm, &TxEnv::default(), code, &message, false);
         assert_eq!(result.stop, InstrStop::OutOfGas);
@@ -1383,7 +1369,7 @@ mod tests {
 
     #[test]
     fn account_info_with_code_sets_hash() {
-        let code = Bytecode::new_legacy(Bytes::from_static(&[opcode::STOP]));
+        let code = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
         let info = AccountInfo::default().with_code(code.clone());
 
         assert_eq!(info.code_hash, code.hash_slow());

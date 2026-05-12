@@ -542,7 +542,7 @@ mod tests {
         BaseEvmTypes, ExecutionConfig, Precompiles,
         env::{BlockEnv, TxEnv},
         evm::InMemoryDB,
-        interpreter::{GasTracker, Host, InstrStop, opcode},
+        interpreter::{GasTracker, Host, InstrStop, opcode::op},
         registry::TxRegistry,
     };
     use alloc::vec;
@@ -688,7 +688,7 @@ mod tests {
             caller,
             AccountInfo::default()
                 .with_nonce(7)
-                .with_code(Bytecode::new_legacy(Bytes::from_static(&[opcode::STOP]))),
+                .with_code(Bytecode::new_legacy(Bytes::from_static(&[op::STOP]))),
         );
 
         let mut version = Version::new(SpecId::OSAKA);
@@ -740,14 +740,14 @@ mod tests {
         let target = Address::with_last_byte(0x02);
         let delegated = Address::with_last_byte(0x33);
         let delegated_code = Bytecode::new_legacy(Bytes::from_static(&[
-            opcode::PUSH1,
+            op::PUSH1,
             0x2a,
-            opcode::PUSH0,
-            opcode::MSTORE,
-            opcode::PUSH1,
+            op::PUSH0,
+            op::MSTORE,
+            op::PUSH1,
             0x20,
-            opcode::PUSH0,
-            opcode::RETURN,
+            op::PUSH0,
+            op::RETURN,
         ]));
         let mut database = InMemoryDB::default();
         database.insert_account_info(

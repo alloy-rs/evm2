@@ -2,7 +2,7 @@
 use super::gas::RemainingGas;
 use super::{
     BytecodeRef, Gas, InstrStop, Memory, Message, MessageKind, MessageResult, Pc, Result, Stack,
-    StackBacking, Word,
+    StackBacking, StackMut, StackRef, Word,
 };
 use crate::{
     EvmTypes, ExecutionConfig, SpecId, Version,
@@ -150,8 +150,14 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
 
     /// Returns the current operand stack.
     #[inline]
-    pub fn stack(&self) -> &[Word] {
-        unsafe { core::slice::from_raw_parts(self.stack.as_ptr().cast(), self.stack_len) }
+    pub const fn stack(&self) -> StackRef<'_> {
+        StackRef::new(&self.stack, self.stack_len)
+    }
+
+    /// Returns the current mutable operand stack.
+    #[inline]
+    pub const fn stack_mut(&mut self) -> StackMut<'_> {
+        StackMut { stack: &mut self.stack, len: &mut self.stack_len }
     }
 
     /// Returns the current linear memory.

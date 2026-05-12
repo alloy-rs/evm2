@@ -5,7 +5,7 @@ use alloy_primitives::map::HashMap;
 use alloy_rpc_types_trace::opcode::OpcodeGas;
 use evm2::{
     EvmTypes, Inspector,
-    bytecode::opcode::{self, OpCode},
+    bytecode::opcode::{OpCode, op},
     interpreter::{Interpreter, Message, MessageKind, MessageResult},
 };
 
@@ -82,10 +82,10 @@ impl<T: EvmTypes> Inspector<T> for OpcodeGasInspector {
             return None;
         }
         let opcode = match message.kind {
-            MessageKind::Call => opcode::CALL,
-            MessageKind::CallCode => opcode::CALLCODE,
-            MessageKind::DelegateCall => opcode::DELEGATECALL,
-            MessageKind::StaticCall => opcode::STATICCALL,
+            MessageKind::Call => op::CALL,
+            MessageKind::CallCode => op::CALLCODE,
+            MessageKind::DelegateCall => op::DELEGATECALL,
+            MessageKind::StaticCall => op::STATICCALL,
             MessageKind::Create | MessageKind::Create2 => return None,
             _ => return None,
         };
@@ -98,8 +98,8 @@ impl<T: EvmTypes> Inspector<T> for OpcodeGasInspector {
             return None;
         }
         let opcode = match message.kind {
-            MessageKind::Create => opcode::CREATE,
-            MessageKind::Create2 => opcode::CREATE2,
+            MessageKind::Create => op::CREATE,
+            MessageKind::Create2 => op::CREATE2,
             _ => return None,
         };
         self.subtract_gas_limit(opcode, message.gas_limit);

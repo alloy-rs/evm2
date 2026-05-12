@@ -18,7 +18,7 @@ use alloy_rpc_types_trace::{
     },
 };
 use evm2::{
-    bytecode::opcode::{self, OpCode},
+    bytecode::opcode::{self, op, OpCode},
     interpreter::{CallScheme, CreateScheme, InstrStop},
 };
 
@@ -737,7 +737,7 @@ impl CallTraceStep {
     /// Returns true if the step is a STOP opcode
     #[inline]
     pub(crate) const fn is_stop(&self) -> bool {
-        matches!(self.op.get(), opcode::STOP)
+        matches!(self.op.get(), op::STOP)
     }
 
     /// Returns true if the step is a call operation, any of
@@ -746,12 +746,12 @@ impl CallTraceStep {
     pub(crate) const fn is_call_like_op(&self) -> bool {
         matches!(
             self.op.get(),
-            opcode::CALL
-                | opcode::DELEGATECALL
-                | opcode::STATICCALL
-                | opcode::CREATE
-                | opcode::CALLCODE
-                | opcode::CREATE2
+            op::CALL
+                | op::DELEGATECALL
+                | op::STATICCALL
+                | op::CREATE
+                | op::CALLCODE
+                | op::CREATE2
         )
     }
 
@@ -881,6 +881,6 @@ mod opcode_serde {
         D: Deserializer<'de>,
     {
         let op = u8::deserialize(deserializer)?;
-        Ok(OpCode::new(op).unwrap_or_else(|| OpCode::new(evm2::bytecode::opcode::INVALID).unwrap()))
+        Ok(OpCode::new(op).unwrap_or_else(|| OpCode::new(evm2::bytecode::opcode::op::INVALID).unwrap()))
     }
 }

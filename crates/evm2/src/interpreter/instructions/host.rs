@@ -134,7 +134,7 @@ mod tests {
         interpreter::{
             InstrStop, Message, MessageKind, Word,
             instructions::tests::{RunConfig, TestHost, push, run},
-            opcode,
+            opcode::op,
         },
         storage_key::StorageKey,
     };
@@ -148,14 +148,14 @@ mod tests {
 
         let mut code = Vec::new();
         push(&mut code, 1);
-        code.extend([opcode::SLOAD, opcode::STOP]);
+        code.extend([op::SLOAD, op::STOP]);
         let interpreter = run(RunConfig::new(code).host(&mut host));
         assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.stack(), [Word::from(0xbeef)]);
 
         let mut code = Vec::new();
         push(&mut code, 2);
-        code.extend([opcode::SLOAD, opcode::STOP]);
+        code.extend([op::SLOAD, op::STOP]);
         let interpreter = run(RunConfig::new(code).host(&mut host));
         assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.stack(), [0]);
@@ -167,9 +167,9 @@ mod tests {
         let mut code = Vec::new();
         push(&mut code, 0xbeef);
         push(&mut code, 1);
-        code.push(opcode::SSTORE);
+        code.push(op::SSTORE);
         push(&mut code, 1);
-        code.extend([opcode::SLOAD, opcode::STOP]);
+        code.extend([op::SLOAD, op::STOP]);
 
         let interpreter = run(RunConfig::new(code).host(&mut host).gas_limit(30_000));
         assert!(matches!(interpreter.err, InstrStop::Stop));
@@ -186,7 +186,7 @@ mod tests {
         let mut code = Vec::new();
         push(&mut code, 0xbeef);
         push(&mut code, 1);
-        code.extend([opcode::SSTORE, opcode::STOP]);
+        code.extend([op::SSTORE, op::STOP]);
 
         let interpreter = run(RunConfig::new(code).host(&mut host).staticcall());
         assert!(matches!(interpreter.err, InstrStop::StateChangeDuringStaticCall));
@@ -200,7 +200,7 @@ mod tests {
         let mut code = Vec::new();
         push(&mut code, 0xbeef);
         push(&mut code, 1);
-        code.extend([opcode::SSTORE, opcode::STOP]);
+        code.extend([op::SSTORE, op::STOP]);
         let message =
             Message { kind: MessageKind::StaticCall, gas_limit: 10_000, ..Default::default() };
 
@@ -217,7 +217,7 @@ mod tests {
         let mut code = Vec::new();
         push(&mut code, 0xbeef);
         push(&mut code, 1);
-        code.extend([opcode::SSTORE, opcode::STOP]);
+        code.extend([op::SSTORE, op::STOP]);
 
         let interpreter =
             run(RunConfig::new(code).host(&mut host).spec(SpecId::ISTANBUL).gas_limit(2306));
@@ -228,11 +228,10 @@ mod tests {
     #[test]
     fn sstore_static_gas() {
         let mut host = TestHost::default();
-        let interpreter =
-            run(RunConfig::new([opcode::PUSH1, 0, opcode::PUSH1, 0, opcode::SSTORE, opcode::STOP])
-                .host(&mut host)
-                .spec(SpecId::FRONTIER)
-                .gas_limit(6000));
+        let interpreter = run(RunConfig::new([op::PUSH1, 0, op::PUSH1, 0, op::SSTORE, op::STOP])
+            .host(&mut host)
+            .spec(SpecId::FRONTIER)
+            .gas_limit(6000));
         assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.gas_remaining(), 994);
     }
@@ -240,11 +239,10 @@ mod tests {
     #[test]
     fn sstore_noop_uses_warm_load_gas() {
         let mut host = TestHost::default();
-        let interpreter =
-            run(RunConfig::new([opcode::PUSH1, 0, opcode::PUSH1, 0, opcode::SSTORE, opcode::STOP])
-                .host(&mut host)
-                .spec(SpecId::BERLIN)
-                .gas_limit(3000));
+        let interpreter = run(RunConfig::new([op::PUSH1, 0, op::PUSH1, 0, op::SSTORE, op::STOP])
+            .host(&mut host)
+            .spec(SpecId::BERLIN)
+            .gas_limit(3000));
 
         assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.gas_remaining(), 2894);
@@ -256,10 +254,10 @@ mod tests {
         let mut code = Vec::new();
         push(&mut code, 1);
         push(&mut code, 0);
-        code.push(opcode::SSTORE);
+        code.push(op::SSTORE);
         push(&mut code, 2);
         push(&mut code, 0);
-        code.extend([opcode::SSTORE, opcode::STOP]);
+        code.extend([op::SSTORE, op::STOP]);
 
         let interpreter =
             run(RunConfig::new(code).host(&mut host).spec(SpecId::BERLIN).gas_limit(50_000));
@@ -276,10 +274,10 @@ mod tests {
         let mut code = Vec::new();
         push(&mut code, 7);
         push(&mut code, 0);
-        code.push(opcode::SSTORE);
+        code.push(op::SSTORE);
         push(&mut code, 5);
         push(&mut code, 0);
-        code.extend([opcode::SSTORE, opcode::STOP]);
+        code.extend([op::SSTORE, op::STOP]);
 
         let interpreter =
             run(RunConfig::new(code).host(&mut host).spec(SpecId::BERLIN).gas_limit(50_000));
@@ -292,11 +290,10 @@ mod tests {
     #[test]
     fn sstore_amsterdam_new_slot_charges_state_gas() {
         let mut host = TestHost::default();
-        let interpreter =
-            run(RunConfig::new([opcode::PUSH1, 1, opcode::PUSH1, 0, opcode::SSTORE, opcode::STOP])
-                .host(&mut host)
-                .spec(SpecId::AMSTERDAM)
-                .gas_limit(100_000));
+        let interpreter = run(RunConfig::new([op::PUSH1, 1, op::PUSH1, 0, op::SSTORE, op::STOP])
+            .host(&mut host)
+            .spec(SpecId::AMSTERDAM)
+            .gas_limit(100_000));
 
         assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.gas_remaining(), 59_526);
@@ -311,12 +308,12 @@ mod tests {
 
         let mut code = Vec::new();
         push(&mut code, 1);
-        code.extend([opcode::TLOAD, opcode::STOP]);
+        code.extend([op::TLOAD, op::STOP]);
         let interpreter = run(RunConfig::new(code).host(&mut host).spec(SpecId::CANCUN));
         assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.stack(), [Word::from(0xcafe)]);
 
-        let interpreter = run(RunConfig::new([opcode::PUSH1, 0, opcode::TLOAD, opcode::STOP])
+        let interpreter = run(RunConfig::new([op::PUSH1, 0, op::TLOAD, op::STOP])
             .host(&mut host)
             .spec(SpecId::SHANGHAI));
         assert!(matches!(interpreter.err, InstrStop::OpcodeNotFound));
@@ -329,9 +326,9 @@ mod tests {
         let mut code = Vec::new();
         push(&mut code, 0xcafe);
         push(&mut code, 1);
-        code.push(opcode::TSTORE);
+        code.push(op::TSTORE);
         push(&mut code, 1);
-        code.extend([opcode::TLOAD, opcode::STOP]);
+        code.extend([op::TLOAD, op::STOP]);
 
         let interpreter = run(RunConfig::new(code).host(&mut host).spec(SpecId::CANCUN));
         assert!(matches!(interpreter.err, InstrStop::Stop));
@@ -341,10 +338,9 @@ mod tests {
             Some(&Word::from(0xcafe))
         );
 
-        let interpreter =
-            run(RunConfig::new([opcode::PUSH1, 0, opcode::PUSH1, 0, opcode::TSTORE, opcode::STOP])
-                .host(&mut host)
-                .spec(SpecId::SHANGHAI));
+        let interpreter = run(RunConfig::new([op::PUSH1, 0, op::PUSH1, 0, op::TSTORE, op::STOP])
+            .host(&mut host)
+            .spec(SpecId::SHANGHAI));
         assert!(matches!(interpreter.err, InstrStop::OpcodeNotFound));
         assert_eq!(interpreter.stack(), [0, 0]);
     }
@@ -355,7 +351,7 @@ mod tests {
         let mut code = Vec::new();
         push(&mut code, 0xcafe);
         push(&mut code, 1);
-        code.extend([opcode::TSTORE, opcode::STOP]);
+        code.extend([op::TSTORE, op::STOP]);
 
         let interpreter =
             run(RunConfig::new(code).host(&mut host).spec(SpecId::CANCUN).staticcall());
@@ -371,14 +367,14 @@ mod tests {
         let mut code = Vec::new();
         push(&mut code, Word::from(0xbeef));
         push(&mut code, 0);
-        code.push(opcode::MSTORE);
+        code.push(op::MSTORE);
         for topic in topics.into_iter().rev() {
             push(&mut code, topic);
         }
         push(&mut code, len);
         push(&mut code, offset);
-        code.push(opcode::LOG0 + N as u8);
-        code.push(opcode::STOP);
+        code.push(op::LOG0 + N as u8);
+        code.push(op::STOP);
         code
     }
 
@@ -460,7 +456,7 @@ mod tests {
         let mut code = Vec::new();
         push(&mut code, 1);
         push(&mut code, Word::MAX);
-        code.extend([opcode::LOG0, opcode::STOP]);
+        code.extend([op::LOG0, op::STOP]);
         let interpreter = run(RunConfig::new(code).host(&mut host));
         assert!(matches!(interpreter.err, InstrStop::InvalidOperandOOG));
         assert!(host.logs.is_empty());

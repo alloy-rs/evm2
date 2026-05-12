@@ -90,7 +90,7 @@ impl<'a> GethTraceBuilder<'a> {
                     contract_storage.insert(change.key.into(), change.value.into());
                 }
 
-                if matches!(step.op.get(), opcode::SLOAD | opcode::SSTORE) {
+                if matches!(step.op.get(), op::SLOAD | op::SSTORE) {
                     log.storage = Some(contract_storage.clone());
                 }
             }
@@ -423,7 +423,7 @@ impl<'a> GethTraceBuilder<'a> {
 
                 // Accessed storage slots
                 match op {
-                    opcode::SLOAD => {
+                    op::SLOAD => {
                         if let Some(stack) = &step.stack {
                             if let Some(slot) = stack.get(stack.len().saturating_sub(1)) {
                                 let slot: B256 = (*slot).into();
@@ -438,7 +438,7 @@ impl<'a> GethTraceBuilder<'a> {
                             }
                         }
                     }
-                    opcode::SSTORE => {
+                    op::SSTORE => {
                         if let Some(stack) = &step.stack {
                             if let Some(slot) = stack.get(stack.len().saturating_sub(1)) {
                                 let slot: B256 = (*slot).into();
@@ -446,7 +446,7 @@ impl<'a> GethTraceBuilder<'a> {
                             }
                         }
                     }
-                    opcode::TLOAD => {
+                    op::TLOAD => {
                         if let Some(stack) = &step.stack {
                             if let Some(slot) = stack.get(stack.len().saturating_sub(1)) {
                                 let slot: B256 = (*slot).into();
@@ -454,7 +454,7 @@ impl<'a> GethTraceBuilder<'a> {
                             }
                         }
                     }
-                    opcode::TSTORE => {
+                    op::TSTORE => {
                         if let Some(stack) = &step.stack {
                             if let Some(slot) = stack.get(stack.len().saturating_sub(1)) {
                                 let slot: B256 = (*slot).into();
@@ -471,7 +471,7 @@ impl<'a> GethTraceBuilder<'a> {
                     }
                 }
 
-                if matches!(op, opcode::EXTCODESIZE | opcode::EXTCODECOPY | opcode::EXTCODEHASH) {
+                if matches!(op, op::EXTCODESIZE | op::EXTCODECOPY | op::EXTCODEHASH) {
                     if let Some(stack) = &step.stack {
                         if let Some(item) = stack.get(stack.len().saturating_sub(1)) {
                             let address = Address::from_word((*item).into());
@@ -495,7 +495,7 @@ impl<'a> GethTraceBuilder<'a> {
                 }
 
                 // KECCAK preimages from returndata
-                if op == opcode::KECCAK256 && !out_of_gas {
+                if op == op::KECCAK256 && !out_of_gas {
                     if let (Some(stack), Some(memory)) = (&step.stack, &step.memory) {
                         if stack.len() >= 2 {
                             let offset = stack[stack.len() - 1];

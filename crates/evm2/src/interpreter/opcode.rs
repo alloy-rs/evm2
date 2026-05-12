@@ -1,14 +1,19 @@
 macro_rules! opcodes {
     ($d:tt $($val:literal => $name:ident => $instr:path;)*) => {
-        $(
-            #[doc = concat!("Opcode byte for `", stringify!($name), "`.")]
-            pub const $name: u8 = $val;
-        )*
+        /// Opcode byte constants.
+        pub mod op {
+            $(
+                #[doc = concat!("Opcode byte for `", stringify!($name), "`.")]
+                pub const $name: u8 = $val;
+            )*
+        }
+
+        use op::*;
 
         impl OpCode {
             $(
                 #[doc = concat!("Opcode metadata for `", stringify!($name), "`.")]
-                pub const $name: Self = Self($val);
+                pub const $name: Self = Self(op::$name);
             )*
         }
 
@@ -16,7 +21,7 @@ macro_rules! opcodes {
         pub const OPCODE_INFO: [Option<OpInfo>; 256] = {
             let mut map = [None; 256];
             $(
-                map[$val] = Some(OpInfo { opcode: $val, name: stringify!($name) });
+                map[op::$name as usize] = Some(OpInfo { opcode: op::$name, name: stringify!($name) });
             )*
             map
         };

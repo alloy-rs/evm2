@@ -24,7 +24,7 @@ use boa_engine::{
 use boa_gc::{empty_trace, Finalize, Trace};
 use core::cell::RefCell;
 use evm2::{
-    bytecode::opcode::{OpCode, PUSH0, PUSH32},
+    bytecode::opcode::{op::{PUSH0, PUSH32}, OpCode},
     context_interface::DBErrorMarker,
     interpreter::{SharedMemory, Stack},
     state::{AccountInfo, Bytecode, EvmState},

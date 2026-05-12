@@ -115,7 +115,7 @@ mod tests {
         bytecode::Bytecode,
         env::BlockEnv,
         evm::{AccountInfo, InMemoryDB},
-        interpreter::{InstrStop, opcode},
+        interpreter::{InstrStop, opcode::op},
         registry::TxRegistry,
     };
 
@@ -126,15 +126,15 @@ mod tests {
         let contract = Address::from([0x42; 20]);
         let beneficiary = Address::from([0x99; 20]);
         let code = Bytecode::new_legacy(Bytes::from_static(&[
-            opcode::CALLER,
-            opcode::PUSH1,
+            op::CALLER,
+            op::PUSH1,
             0,
-            opcode::SSTORE,
-            opcode::ORIGIN,
-            opcode::PUSH1,
+            op::SSTORE,
+            op::ORIGIN,
+            op::PUSH1,
             1,
-            opcode::SSTORE,
-            opcode::STOP,
+            op::SSTORE,
+            op::STOP,
         ]));
         let mut database = InMemoryDB::default();
         database.insert_account_info(contract, AccountInfo::default().with_code(code));
@@ -162,11 +162,8 @@ mod tests {
     #[test]
     fn system_call_starts_with_warm_system_contract() {
         let contract = Address::from([0x42; 20]);
-        let code = Bytecode::new_legacy(Bytes::from_static(&[
-            opcode::ADDRESS,
-            opcode::EXTCODESIZE,
-            opcode::STOP,
-        ]));
+        let code =
+            Bytecode::new_legacy(Bytes::from_static(&[op::ADDRESS, op::EXTCODESIZE, op::STOP]));
         let mut database = InMemoryDB::default();
         database.insert_account_info(contract, AccountInfo::default().with_code(code));
         let mut evm = TestEvm::new(
@@ -209,16 +206,16 @@ mod tests {
     fn system_call_reverts_state_changes() {
         let contract = Address::from([0x42; 20]);
         let code = Bytecode::new_legacy(Bytes::from_static(&[
-            opcode::PUSH1,
+            op::PUSH1,
             1,
-            opcode::PUSH1,
+            op::PUSH1,
             0,
-            opcode::SSTORE,
-            opcode::PUSH1,
+            op::SSTORE,
+            op::PUSH1,
             0,
-            opcode::PUSH1,
+            op::PUSH1,
             0,
-            opcode::REVERT,
+            op::REVERT,
         ]));
         let mut database = InMemoryDB::default();
         database.insert_account_info(contract, AccountInfo::default().with_code(code));

@@ -5,7 +5,7 @@ use crate::{
     evm::{AccountLoad, SLoad, SStore, SelfDestructResult},
     interpreter::{
         Gas, Host, InstrStop, Interpreter, Memory, Message, MessageKind, MessageResult,
-        StackBacking, Word, opcode,
+        StackBacking, Word, opcode::op,
     },
     storage_key::{StorageKey, StorageKeyMap},
 };
@@ -341,7 +341,7 @@ pub(super) fn run_stack<T: ToWord, const N: usize>(inputs: [T; N], opcode: u8) -
     for input in inputs.into_iter().rev() {
         push(&mut code, input);
     }
-    code.extend([opcode, opcode::STOP]);
+    code.extend([opcode, op::STOP]);
     run(RunConfig::new(code))
 }
 
@@ -350,7 +350,7 @@ pub(super) fn assert_stack_words(inputs: &[Word], opcode: u8, expected: &[Word])
     for input in inputs.iter().rev() {
         push(&mut code, *input);
     }
-    code.extend([opcode, opcode::STOP]);
+    code.extend([opcode, op::STOP]);
     let interpreter = run(RunConfig::new(code));
     assert!(matches!(interpreter.err, InstrStop::Stop));
     assert_eq!(interpreter.stack(), expected);
@@ -362,7 +362,7 @@ macro_rules! assert_stack {
         let expected = [$crate::interpreter::Word::from($expected)];
         $crate::interpreter::instructions::tests::assert_stack_words(
             &inputs,
-            $crate::interpreter::opcode::$op,
+            $crate::interpreter::opcode::op::$op,
             &expected,
         );
     }};
@@ -372,13 +372,13 @@ pub(crate) use assert_stack;
 pub(crate) fn push(code: &mut Vec<u8>, value: impl ToWord) {
     let value = value.to_word();
     if value.is_zero() {
-        code.extend([opcode::PUSH1, 0]);
+        code.extend([op::PUSH1, 0]);
         return;
     }
 
     let bytes = value.to_be_bytes::<32>();
     let start = bytes.iter().position(|&byte| byte != 0).unwrap();
     let len = bytes.len() - start;
-    code.push(opcode::PUSH1 + len as u8 - 1);
+    code.push(op::PUSH1 + len as u8 - 1);
     code.extend_from_slice(&bytes[start..]);
 }

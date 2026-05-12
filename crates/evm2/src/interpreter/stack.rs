@@ -1,12 +1,19 @@
 use super::{InstrStop, Result};
 use crate::constants::STACK_LIMIT;
 use alloy_primitives::U256;
-use core::{fmt, hint::cold_path, mem::MaybeUninit};
+use core::{fmt, hint::cold_path, mem::MaybeUninit, ops::Deref};
 
 /// EVM stack word.
 pub type Word = U256;
 
 pub(crate) type StackBacking = [MaybeUninit<Word>; STACK_LIMIT];
+
+/// Immutable EVM operand stack.
+#[derive(Clone, Copy)]
+pub struct StackRef<'a> {
+    stack: &'a StackBacking,
+    len: usize,
+}
 
 /// Mutable EVM operand stack.
 pub struct Stack<'a> {
@@ -20,6 +27,12 @@ pub struct StackMut<'a> {
     pub(crate) len: &'a mut usize,
 }
 
+impl fmt::Debug for StackRef<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.as_slice().fmt(f)
+    }
+}
+
 impl fmt::Debug for Stack<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.as_slice().fmt(f)
@@ -31,6 +44,87 @@ impl fmt::Debug for StackMut<'_> {
         self.as_slice().fmt(f)
     }
 }
+
+impl<'a> StackRef<'a> {
+    pub(crate) const CAPACITY: usize = STACK_LIMIT;
+
+    #[inline]
+    pub(crate) const fn new(stack: &'a StackBacking, len: usize) -> Self {
+        debug_assert!(len <= Self::CAPACITY);
+        Self { stack, len }
+    }
+
+    #[inline]
+    const fn as_word_ptr(&self) -> *const Word {
+        self.stack.as_ptr().cast()
+    }
+
+    /// Returns the stack length.
+    #[inline]
+    pub const fn len(&self) -> usize {
+        let len = self.len;
+        // SAFETY: Type invariant.
+        unsafe { core::hint::assert_unchecked(len <= Self::CAPACITY) };
+        len
+    }
+
+    /// Returns whether the stack is empty.
+    #[inline]
+    pub const fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Returns the stack contents as a slice.
+    #[inline]
+    pub const fn as_slice(&self) -> &[Word] {
+        unsafe { core::slice::from_raw_parts(self.as_word_ptr(), self.len()) }
+    }
+
+    /// Returns the `n`th stack word from the top.
+    #[inline]
+    pub fn peek(&self, n: usize) -> Option<Word> {
+        self.as_slice().get(self.len().checked_sub(n + 1)?).copied()
+    }
+}
+
+impl Deref for StackRef<'_> {
+    type Target = [Word];
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        self.as_slice()
+    }
+}
+
+impl PartialEq for StackRef<'_> {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.as_slice() == other.as_slice()
+    }
+}
+
+impl PartialEq<[Word]> for StackRef<'_> {
+    #[inline]
+    fn eq(&self, other: &[Word]) -> bool {
+        self.as_slice() == other
+    }
+}
+
+impl PartialEq<&[Word]> for StackRef<'_> {
+    #[inline]
+    fn eq(&self, other: &&[Word]) -> bool {
+        self.as_slice() == *other
+    }
+}
+
+impl<const N: usize> PartialEq<[Word; N]> for StackRef<'_> {
+    #[inline]
+    fn eq(&self, other: &[Word; N]) -> bool {
+        self.as_slice() == other
+    }
+}
+
+impl Eq for StackRef<'_> {}
 
 impl<'a> Stack<'a> {
     pub(crate) const CAPACITY: usize = STACK_LIMIT;
@@ -120,6 +214,12 @@ impl<'a> StackMut<'a> {
     #[inline]
     pub const fn as_slice(&self) -> &[Word] {
         unsafe { core::slice::from_raw_parts(self.as_word_ptr(), self.len()) }
+    }
+
+    /// Returns the `n`th stack word from the top.
+    #[inline]
+    pub fn peek(&self, n: usize) -> Option<Word> {
+        self.as_slice().get(self.len().checked_sub(n + 1)?).copied()
     }
 
     /// Returns the stack contents as a slice.

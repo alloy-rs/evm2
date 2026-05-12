@@ -51,7 +51,7 @@ mod tests {
         interpreter::{
             InstrStop, Interpreter, Message, Word,
             instructions::tests::{RunConfig, TestHost, TestTypes, push, run, run_stack},
-            opcode,
+            opcode::op,
         },
     };
     use alloc::vec::Vec;
@@ -63,17 +63,17 @@ mod tests {
         let mut code = Vec::new();
         push(&mut code, value);
         push(&mut code, 0);
-        code.push(opcode::MSTORE);
+        code.push(op::MSTORE);
         push(&mut code, 0);
-        code.push(opcode::MLOAD);
-        code.push(opcode::STOP);
+        code.push(op::MLOAD);
+        code.push(op::STOP);
 
         let mut interpreter = run(RunConfig::new(code));
         assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.stack(), [value]);
         assert_eq!(interpreter.memory(30, 2), [0xfe, 0xed]);
 
-        let interpreter = run_stack([Word::MAX], opcode::MLOAD);
+        let interpreter = run_stack([Word::MAX], op::MLOAD);
         assert!(matches!(interpreter.err, InstrStop::InvalidOperandOOG));
     }
 
@@ -83,16 +83,16 @@ mod tests {
         let mut code = Vec::new();
         push(&mut code, value);
         push(&mut code, Word::from(8));
-        code.push(opcode::MSTORE);
-        code.push(opcode::MSIZE);
-        code.push(opcode::STOP);
+        code.push(op::MSTORE);
+        code.push(op::MSIZE);
+        code.push(op::STOP);
 
         let mut interpreter = run(RunConfig::new(code));
         assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.stack(), [Word::from(64)]);
         assert_eq!(interpreter.memory(38, 2), [0xfe, 0xed]);
 
-        let interpreter = run_stack([Word::MAX, Word::from(0)], opcode::MSTORE);
+        let interpreter = run_stack([Word::MAX, Word::from(0)], op::MSTORE);
         assert!(matches!(interpreter.err, InstrStop::InvalidOperandOOG));
     }
 
@@ -104,8 +104,8 @@ mod tests {
         let mut code = Vec::new();
         push(&mut code, Word::ZERO);
         push(&mut code, Word::from(64));
-        code.push(opcode::MSTORE);
-        code.push(opcode::STOP);
+        code.push(op::MSTORE);
+        code.push(op::STOP);
 
         let tx_env = TxEnv::default();
         let message = Message { gas_limit: 10_000, ..Message::default() };
@@ -123,32 +123,32 @@ mod tests {
         let mut code = Vec::new();
         push(&mut code, Word::from(0x01ab));
         push(&mut code, Word::from(4));
-        code.push(opcode::MSTORE8);
+        code.push(op::MSTORE8);
         push(&mut code, Word::from(4));
-        code.push(opcode::MLOAD);
-        code.push(opcode::STOP);
+        code.push(op::MLOAD);
+        code.push(op::STOP);
 
         let mut interpreter = run(RunConfig::new(code));
         assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.memory(4, 1), [0xab]);
         assert_eq!(interpreter.stack()[0] >> 248, Word::from(0xab));
 
-        let interpreter = run_stack([Word::MAX, Word::from(0)], opcode::MSTORE8);
+        let interpreter = run_stack([Word::MAX, Word::from(0)], op::MSTORE8);
         assert!(matches!(interpreter.err, InstrStop::InvalidOperandOOG));
     }
 
     #[test]
     fn msize_opcode() {
-        let interpreter = run(RunConfig::new([opcode::MSIZE, opcode::STOP]));
+        let interpreter = run(RunConfig::new([op::MSIZE, op::STOP]));
         assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.stack(), [0]);
 
         let mut code = Vec::new();
         push(&mut code, 0);
         push(&mut code, Word::from(33));
-        code.push(opcode::MSTORE);
-        code.push(opcode::MSIZE);
-        code.push(opcode::STOP);
+        code.push(op::MSTORE);
+        code.push(op::MSIZE);
+        code.push(op::STOP);
         let interpreter = run(RunConfig::new(code));
         assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.stack(), [Word::from(96)]);
@@ -160,14 +160,14 @@ mod tests {
         let mut code = Vec::new();
         push(&mut code, value);
         push(&mut code, 0);
-        code.push(opcode::MSTORE);
+        code.push(op::MSTORE);
         push(&mut code, Word::from(32));
         push(&mut code, 0);
         push(&mut code, Word::from(32));
-        code.push(opcode::MCOPY);
+        code.push(op::MCOPY);
         push(&mut code, Word::from(32));
-        code.push(opcode::MLOAD);
-        code.push(opcode::STOP);
+        code.push(op::MLOAD);
+        code.push(op::STOP);
 
         let interpreter = run(RunConfig::new(code));
         assert!(matches!(interpreter.err, InstrStop::Stop));
@@ -177,17 +177,17 @@ mod tests {
         push(&mut code, 0);
         push(&mut code, Word::from(1));
         push(&mut code, 0);
-        code.push(opcode::MCOPY);
-        code.push(opcode::MSIZE);
-        code.push(opcode::STOP);
+        code.push(op::MCOPY);
+        code.push(op::MSIZE);
+        code.push(op::STOP);
         let interpreter = run(RunConfig::new(code));
         assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.stack(), [0]);
 
-        let interpreter = run_stack([Word::MAX, Word::MAX, Word::from(0)], opcode::MCOPY);
+        let interpreter = run_stack([Word::MAX, Word::MAX, Word::from(0)], op::MCOPY);
         assert!(matches!(interpreter.err, InstrStop::Stop));
 
-        let interpreter = run_stack([Word::MAX, Word::from(0), Word::from(1)], opcode::MCOPY);
+        let interpreter = run_stack([Word::MAX, Word::from(0), Word::from(1)], op::MCOPY);
         assert!(matches!(interpreter.err, InstrStop::InvalidOperandOOG));
     }
 
@@ -196,11 +196,11 @@ mod tests {
         let mut code = Vec::new();
         push(&mut code, Word::ZERO);
         push(&mut code, 0);
-        code.push(opcode::MSTORE);
+        code.push(op::MSTORE);
         push(&mut code, Word::from(32));
         push(&mut code, 0);
         push(&mut code, 0);
-        code.extend([opcode::MCOPY, opcode::STOP]);
+        code.extend([op::MCOPY, op::STOP]);
 
         let interpreter = run(RunConfig::new(code).spec(SpecId::CANCUN).gas_limit(26));
 

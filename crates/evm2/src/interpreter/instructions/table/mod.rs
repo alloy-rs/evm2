@@ -3,7 +3,7 @@
 use crate::{
     BaseEvmConfigSelector, EvmConfig, EvmConfigSelector, EvmTypes, VersionTables,
     evm::config::SelectorVersionTables,
-    interpreter::{InstrStop, InterpreterState, Pc, Result, StackMut, opcode},
+    interpreter::{InstrStop, InterpreterState, Pc, Result, StackMut, opcode::op},
 };
 
 #[cold]
@@ -134,9 +134,9 @@ pub(super) const fn inc_pc(pc: &mut Pc, op: u8) {
 #[inline(always)]
 const fn instruction_len(op: u8) -> usize {
     match op {
-        opcode::JUMP | opcode::JUMPI => 0, // Set inside.
-        opcode::PUSH1..=opcode::PUSH32 => (op - opcode::PUSH1 + 2) as usize,
-        opcode::DUPN | opcode::SWAPN | opcode::EXCHANGE => 2,
+        op::JUMP | op::JUMPI => 0, // Set inside.
+        op::PUSH1..=op::PUSH32 => (op - op::PUSH1 + 2) as usize,
+        op::DUPN | op::SWAPN | op::EXCHANGE => 2,
         _ => 1,
     }
 }
@@ -180,7 +180,7 @@ impl<T: EvmTypes> InspectMode<T> for DynInspector {
 #[cfg(test)]
 mod tests {
     use crate::{
-        BaseEvmConfig, BaseEvmTypes, EvmConfig, SpecId, VersionTables, interpreter::opcode,
+        BaseEvmConfig, BaseEvmTypes, EvmConfig, SpecId, VersionTables, interpreter::opcode::op,
     };
 
     fn version_tables(spec: SpecId) -> &'static VersionTables<BaseEvmTypes> {
@@ -192,30 +192,30 @@ mod tests {
     #[test]
     fn default_gas_table_matches_revm_static_costs() {
         let default_gas_table = version_tables(SpecId::FRONTIER);
-        assert_eq!(default_gas_table.static_gas(opcode::STOP), 0);
-        assert_eq!(default_gas_table.static_gas(opcode::ADD), 3);
-        assert_eq!(default_gas_table.static_gas(opcode::MUL), 5);
-        assert_eq!(default_gas_table.static_gas(opcode::EXP), 10);
-        assert_eq!(default_gas_table.static_gas(opcode::BALANCE), 20);
-        assert_eq!(default_gas_table.static_gas(opcode::SLOAD), 50);
-        assert_eq!(default_gas_table.static_gas(opcode::CALL), 40);
-        assert_eq!(default_gas_table.static_gas(opcode::SELFDESTRUCT), 0);
+        assert_eq!(default_gas_table.static_gas(op::STOP), 0);
+        assert_eq!(default_gas_table.static_gas(op::ADD), 3);
+        assert_eq!(default_gas_table.static_gas(op::MUL), 5);
+        assert_eq!(default_gas_table.static_gas(op::EXP), 10);
+        assert_eq!(default_gas_table.static_gas(op::BALANCE), 20);
+        assert_eq!(default_gas_table.static_gas(op::SLOAD), 50);
+        assert_eq!(default_gas_table.static_gas(op::CALL), 40);
+        assert_eq!(default_gas_table.static_gas(op::SELFDESTRUCT), 0);
     }
 
     #[test]
     fn gas_table_applies_spec_static_costs() {
         let tangerine = version_tables(SpecId::TANGERINE);
-        assert_eq!(tangerine.static_gas(opcode::SLOAD), 200);
-        assert_eq!(tangerine.static_gas(opcode::BALANCE), 400);
-        assert_eq!(tangerine.static_gas(opcode::SELFDESTRUCT), 5000);
+        assert_eq!(tangerine.static_gas(op::SLOAD), 200);
+        assert_eq!(tangerine.static_gas(op::BALANCE), 400);
+        assert_eq!(tangerine.static_gas(op::SELFDESTRUCT), 5000);
 
         let istanbul = version_tables(SpecId::ISTANBUL);
-        assert_eq!(istanbul.static_gas(opcode::SLOAD), 800);
-        assert_eq!(istanbul.static_gas(opcode::EXTCODEHASH), 700);
+        assert_eq!(istanbul.static_gas(op::SLOAD), 800);
+        assert_eq!(istanbul.static_gas(op::EXTCODEHASH), 700);
 
         let berlin = version_tables(SpecId::BERLIN);
-        assert_eq!(berlin.static_gas(opcode::SLOAD), 100);
-        assert_eq!(berlin.static_gas(opcode::BALANCE), 100);
-        assert_eq!(berlin.static_gas(opcode::CALL), 100);
+        assert_eq!(berlin.static_gas(op::SLOAD), 100);
+        assert_eq!(berlin.static_gas(op::BALANCE), 100);
+        assert_eq!(berlin.static_gas(op::CALL), 100);
     }
 }

@@ -8,8 +8,8 @@ use alloy_primitives::{
 use alloy_rpc_types_eth::{AccessList, AccessListItem};
 use evm2::{
     EvmTypes, Inspector,
-    bytecode::opcode,
-    interpreter::{Interpreter, Message, MessageResult, Word},
+    bytecode::opcode::op,
+    interpreter::{Interpreter, Message, MessageResult},
 };
 
 /// An [Inspector] that collects touched accounts and storage slots.
@@ -83,8 +83,8 @@ impl AccessListInspector {
 impl<T: EvmTypes> Inspector<T> for AccessListInspector {
     fn step(&mut self, interp: &mut Interpreter<'_, T>) {
         match interp.opcode() {
-            opcode::SLOAD | opcode::SSTORE => {
-                if let Some(slot) = stack_peek(interp, 0) {
+            op::SLOAD | op::SSTORE => {
+                if let Some(slot) = interp.stack().peek(0) {
                     let cur_contract = interp.message().destination;
                     self.touched_slots
                         .entry(cur_contract)
@@ -92,20 +92,20 @@ impl<T: EvmTypes> Inspector<T> for AccessListInspector {
                         .insert(B256::from(slot.to_be_bytes()));
                 }
             }
-            opcode::EXTCODECOPY
-            | opcode::EXTCODEHASH
-            | opcode::EXTCODESIZE
-            | opcode::BALANCE
-            | opcode::SELFDESTRUCT => {
-                if let Some(slot) = stack_peek(interp, 0) {
+            op::EXTCODECOPY
+            | op::EXTCODEHASH
+            | op::EXTCODESIZE
+            | op::BALANCE
+            | op::SELFDESTRUCT => {
+                if let Some(slot) = interp.stack().peek(0) {
                     let addr = Address::from_word(B256::from(slot.to_be_bytes()));
                     if !self.excluded.contains(&addr) {
                         self.touched_slots.entry(addr).or_default();
                     }
                 }
             }
-            opcode::DELEGATECALL | opcode::CALL | opcode::STATICCALL | opcode::CALLCODE => {
-                if let Some(slot) = stack_peek(interp, 1) {
+            op::DELEGATECALL | op::CALL | op::STATICCALL | op::CALLCODE => {
+                if let Some(slot) = interp.stack().peek(1) {
                     let addr = Address::from_word(B256::from(slot.to_be_bytes()));
                     if !self.excluded.contains(&addr) {
                         self.touched_slots.entry(addr).or_default();
@@ -129,10 +129,4 @@ impl<T: EvmTypes> Inspector<T> for AccessListInspector {
         }
         None
     }
-}
-
-#[inline]
-fn stack_peek<T: EvmTypes>(interp: &Interpreter<'_, T>, index_from_top: usize) -> Option<Word> {
-    let stack = interp.stack();
-    stack.get(stack.len().checked_sub(index_from_top + 1)?).copied()
 }
