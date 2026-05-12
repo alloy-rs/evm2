@@ -93,12 +93,12 @@ codegen-units = 1
 
 [patch.crates-io]
 # https://github.com/arkworks-rs/algebra/issues/1104
-ark-ec = { git = "https://github.com/DaniPopes/algebra", branch = "remove-unrolls" }
-ark-bls12-381 = { git = "https://github.com/DaniPopes/algebra", branch = "remove-unrolls" }
-ark-bn254 = { git = "https://github.com/DaniPopes/algebra", branch = "remove-unrolls" }
-ark-ff = { git = "https://github.com/DaniPopes/algebra", branch = "remove-unrolls" }
-ark-ff-asm = { git = "https://github.com/DaniPopes/algebra", branch = "remove-unrolls" }
-ark-ff-macros = { git = "https://github.com/DaniPopes/algebra", branch = "remove-unrolls" }
-ark-poly = { git = "https://github.com/DaniPopes/algebra", branch = "remove-unrolls" }
-ark-serialize = { git = "https://github.com/DaniPopes/algebra", branch = "remove-unrolls" }
-ark-serialize-derive = { git = "https://github.com/DaniPopes/algebra", branch = "remove-unrolls" }
+ark-ec = { git = "https://github.com/DaniPopes/algebra", rev = "a71d9795e2e527cd0c80e6831bd957134de30d22" }
+ark-bls12-381 = { git = "https://github.com/DaniPopes/algebra", rev = "a71d9795e2e527cd0c80e6831bd957134de30d22" }
+ark-bn254 = { git = "https://github.com/DaniPopes/algebra", rev = "a71d9795e2e527cd0c80e6831bd957134de30d22" }
+ark-ff = { git = "https://github.com/DaniPopes/algebra", rev = "a71d9795e2e527cd0c80e6831bd957134de30d22" }
+ark-ff-asm = { git = "https://github.com/DaniPopes/algebra", rev = "a71d9795e2e527cd0c80e6831bd957134de30d22" }
+ark-ff-macros = { git = "https://github.com/DaniPopes/algebra", rev = "a71d9795e2e527cd0c80e6831bd957134de30d22" }
+ark-poly = { git = "https://github.com/DaniPopes/algebra", rev = "a71d9795e2e527cd0c80e6831bd957134de30d22" }
+ark-serialize = { git = "https://github.com/DaniPopes/algebra", rev = "a71d9795e2e527cd0c80e6831bd957134de30d22" }
+ark-serialize-derive = { git = "https://github.com/DaniPopes/algebra", rev = "a71d9795e2e527cd0c80e6831bd957134de30d22" }
