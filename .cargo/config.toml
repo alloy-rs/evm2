@@ -1,3 +1,5 @@
 [alias]
 cl = "clippy --workspace --all-features --all-targets"
 docs = "doc --workspace --all-features --no-deps --document-private-items"
+t = "nextest run --workspace"
+st = "nextest run --workspace --ignore-default-filter"

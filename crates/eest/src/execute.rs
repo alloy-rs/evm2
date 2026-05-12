@@ -1,28 +1,27 @@
 use crate::{
     error::{TestError, TestErrorKind},
+    state::{
+        apply_state_changes, insert_account_with_storage, parse_bytecode, storage_for_root,
+        system_contract_has_code,
+    },
+    tx::{TxFields, build_recovered_tx, recover_address, rpc_access_list, signed_authorizations},
     types::{AccountInfo, Env, Test, TestSuite, TestUnit, TransactionParts, TxPartIndices},
 };
-use alloy_consensus::{TypedTransaction, transaction::Recovered};
-use alloy_eips::{eip4844, eip7691, eip7702::SignedAuthorization};
+use alloy_eips::{eip4844, eip7691};
 use alloy_primitives::{Address, B256, Bytes, Log, TxKind, U256, keccak256};
-use alloy_rpc_types_eth::{
-    AccessList as RpcAccessList, AccessListItem as RpcAccessListItem, TransactionInput,
-    TransactionRequest,
-};
+use alloy_rpc_types_eth::AccessList as RpcAccessList;
 use alloy_trie::{
     TrieAccount,
     root::{state_root_unhashed, storage_root_unhashed},
 };
 use evm2::{
     BEACON_ROOTS_ADDRESS, BaseEvmTypes, Evm, EvmTypes, HISTORY_STORAGE_ADDRESS, Precompiles,
-    SpecId, StorageKey, TxResult,
-    bytecode::Bytecode,
+    SpecId, TxResult,
     env::BlockEnv,
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
     evm::{AccountInfo as EvmAccountInfo, InMemoryDB, StateChanges},
     registry::HandlerError,
 };
-use k256::ecdsa::SigningKey;
 use serde_json::json;
 use std::{collections::BTreeMap, fs, path::Path};
 
@@ -288,15 +287,6 @@ fn push_system_call_changes<T: EvmTypes<Host = Evm<T>>>(
     changes.push(result.state_changes);
 }
 
-fn system_contract_has_code(database: &InMemoryDB, address: Address) -> bool {
-    database
-        .cache
-        .accounts
-        .get(&address)
-        .and_then(|info| database.cache.contracts.get(&info.code_hash))
-        .is_some_and(|code| !code.is_empty())
-}
-
 fn logs_hash(logs: &[Log]) -> B256 {
     let mut out = Vec::with_capacity(alloy_rlp::list_length(logs));
     alloy_rlp::encode_list(logs, &mut out);
@@ -320,62 +310,20 @@ fn state_root_from_database(state: &InMemoryDB) -> B256 {
     state_root_unhashed(accounts)
 }
 
-fn apply_state_changes(pre: &InMemoryDB, changes: &StateChanges) -> InMemoryDB {
-    let mut post = pre.clone();
-    for (&code_hash, code) in &changes.code {
-        post.cache.contracts.insert(code_hash, code.clone());
-    }
-    for (&address, storage) in &changes.storage {
-        if storage.wipe {
-            post.cache.storage.retain(|key, _| key.address() != address);
-        }
-        for (&key, change) in &storage.slots {
-            if change.current.is_zero() {
-                post.cache.storage.remove(&StorageKey::new(address, key));
-            } else {
-                post.cache.storage.insert(StorageKey::new(address, key), change.current);
-            }
-        }
-    }
-    for (&address, change) in &changes.accounts {
-        match &change.current {
-            Some(info) => post.insert_account_info(address, info.clone()),
-            None => {
-                post.cache.accounts.remove(&address);
-                post.cache.storage.retain(|key, _| key.address() != address);
-            }
-        }
-    }
-    post
-}
-
-fn storage_for_root(state: &InMemoryDB, address: Address) -> Vec<(B256, U256)> {
-    state
-        .cache
-        .storage
-        .iter()
-        .filter_map(|(&key, &value)| {
-            (key.address() == address && !value.is_zero()).then_some((B256::from(key.key()), value))
-        })
-        .collect()
-}
-
 fn parse_state(pre: &BTreeMap<Address, AccountInfo>) -> Result<InMemoryDB, TestErrorKind> {
     let mut database = InMemoryDB::default();
     for (address, account) in pre {
         let mut info = EvmAccountInfo::default().with_code(parse_bytecode(account.code.clone()));
         info.nonce = account.nonce;
         info.balance = account.balance;
-        database.insert_account_info(*address, info);
-        for (key, value) in &account.storage {
-            database.insert_account_storage(*address, *key, *value);
-        }
+        insert_account_with_storage(
+            &mut database,
+            *address,
+            info,
+            account.storage.iter().map(|(&key, &value)| (key, value)),
+        );
     }
     Ok(database)
-}
-
-fn parse_bytecode(code: Bytes) -> Bytecode {
-    Bytecode::new_raw_checked(code.clone()).unwrap_or_else(|_| Bytecode::new_legacy(code))
 }
 
 fn parse_block(env: &Env, spec: SpecId) -> BlockEnv {
@@ -431,75 +379,23 @@ fn build_tx(
     let value = *raw.value.get(indexes.value).ok_or(TestErrorKind::BadIndex("value"))?;
     let nonce = raw.nonce.try_into().map_err(|_| TestErrorKind::Overflow("nonce"))?;
 
-    let mut request = TransactionRequest::default()
-        .from(caller)
-        .gas_limit(gas_limit)
-        .nonce(nonce)
-        .value(value)
-        .input(TransactionInput::from(data));
-    request.to = Some(TxKind::from(raw.to));
-    request.transaction_type = raw.tx_type;
-    request.chain_id = chain_id
-        .map(TryInto::try_into)
-        .transpose()
-        .map_err(|_| TestErrorKind::Overflow("chainId"))?;
-    if !matches!(raw.tx_type, Some(2..=4)) {
-        request.gas_price = raw
-            .gas_price
-            .map(TryInto::try_into)
-            .transpose()
-            .map_err(|_| TestErrorKind::Overflow("gasPrice"))?;
-        if request.gas_price.is_none()
-            && (matches!(raw.tx_type, Some(0 | 1))
-                || (raw.max_fee_per_gas.is_none() && raw.max_priority_fee_per_gas.is_none()))
-        {
-            request.gas_price = Some(0);
-        }
-    }
-    request.max_fee_per_gas = raw
-        .max_fee_per_gas
-        .map(TryInto::try_into)
-        .transpose()
-        .map_err(|_| TestErrorKind::Overflow("maxFeePerGas"))?;
-    request.max_priority_fee_per_gas =
-        if raw.max_fee_per_gas.is_some() && raw.max_priority_fee_per_gas.is_none() {
-            Some(0)
-        } else {
-            raw.max_priority_fee_per_gas
-                .map(TryInto::try_into)
-                .transpose()
-                .map_err(|_| TestErrorKind::Overflow("maxPriorityFeePerGas"))?
-        };
-    request.max_fee_per_blob_gas = raw
-        .max_fee_per_blob_gas
-        .map(TryInto::try_into)
-        .transpose()
-        .map_err(|_| TestErrorKind::Overflow("maxFeePerBlobGas"))?;
-    request.access_list = access_list(raw, indexes.data)?;
-    request.authorization_list = authorization_list(raw)?;
-    if raw.max_fee_per_blob_gas.is_some()
-        || matches!(raw.tx_type, Some(3))
-        || !raw.blob_versioned_hashes.is_empty()
-    {
-        request.blob_versioned_hashes = Some(raw.blob_versioned_hashes.clone());
-    }
-
-    let tx =
-        request.build_consensus_tx().map_err(|err| TestErrorKind::BuildTransaction(err.error))?;
-    recovered_envelope(tx, caller)
-}
-
-fn authorization_list(
-    raw: &TransactionParts,
-) -> Result<Option<Vec<SignedAuthorization>>, TestErrorKind> {
-    let Some(authorizations) = &raw.authorization_list else {
-        return Ok(None);
-    };
-    let authorizations = authorizations
-        .iter()
-        .map(|authorization| serde_json::from_value(authorization.value.clone()))
-        .collect::<Result<_, _>>()?;
-    Ok(Some(authorizations))
+    Ok(build_recovered_tx(TxFields {
+        tx_type: raw.tx_type,
+        caller,
+        kind: TxKind::from(raw.to),
+        data,
+        gas_limit,
+        nonce,
+        value,
+        chain_id,
+        gas_price: raw.gas_price,
+        max_fee_per_gas: raw.max_fee_per_gas,
+        max_priority_fee_per_gas: raw.max_priority_fee_per_gas,
+        access_list: access_list(raw, indexes.data)?,
+        authorization_list: signed_authorizations(raw.authorization_list.as_deref())?,
+        blob_versioned_hashes: raw.blob_versioned_hashes.clone(),
+        max_fee_per_blob_gas: raw.max_fee_per_blob_gas,
+    })?)
 }
 
 fn access_list(
@@ -512,44 +408,7 @@ fn access_list(
     let Some(access_list) = raw.access_lists.get(access_list_index).cloned().flatten() else {
         return Ok(matches!(raw.tx_type, Some(1)).then(RpcAccessList::default));
     };
-    Ok(Some(RpcAccessList(
-        access_list
-            .into_iter()
-            .map(|item| RpcAccessListItem {
-                address: item.address,
-                storage_keys: item.storage_keys,
-            })
-            .collect(),
-    )))
-}
-
-fn recovered_envelope(
-    tx: TypedTransaction,
-    caller: Address,
-) -> Result<RecoveredTxEnvelope, TestErrorKind> {
-    match tx {
-        TypedTransaction::Legacy(tx) => {
-            Ok(RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(tx, caller)))
-        }
-        TypedTransaction::Eip2930(tx) => {
-            Ok(RecoveredTxEnvelope::Eip2930(Recovered::new_unchecked(tx, caller)))
-        }
-        TypedTransaction::Eip1559(tx) => {
-            Ok(RecoveredTxEnvelope::Eip1559(Recovered::new_unchecked(tx, caller)))
-        }
-        TypedTransaction::Eip4844(tx) => {
-            Ok(RecoveredTxEnvelope::Eip4844(Recovered::new_unchecked(tx, caller)))
-        }
-        TypedTransaction::Eip7702(tx) => {
-            Ok(RecoveredTxEnvelope::Eip7702(Recovered::new_unchecked(tx, caller)))
-        }
-    }
-}
-
-fn recover_address(private_key: &[u8]) -> Option<Address> {
-    let key = SigningKey::from_slice(private_key).ok()?;
-    let public_key = key.verifying_key().to_encoded_point(false);
-    Some(Address::from_raw_public_key(&public_key.as_bytes()[1..]))
+    Ok(Some(rpc_access_list(access_list.iter())))
 }
 
 #[cfg(test)]
@@ -606,7 +465,7 @@ mod tests {
             sender: Some(caller),
             to: Some(Address::from([0x22; 20])),
             value: vec![U256::ZERO],
-            access_lists: vec![Some(vec![crate::types::AccessListItem {
+            access_lists: vec![Some(vec![crate::tx::AccessListItem {
                 address: access_address,
                 storage_keys: vec![B256::with_last_byte(1)],
             }])],
@@ -636,11 +495,11 @@ mod tests {
             to: Some(Address::from([0x22; 20])),
             value: vec![U256::ZERO],
             access_lists: vec![
-                Some(vec![crate::types::AccessListItem {
+                Some(vec![crate::tx::AccessListItem {
                     address: first_address,
                     storage_keys: vec![B256::with_last_byte(1)],
                 }]),
-                Some(vec![crate::types::AccessListItem {
+                Some(vec![crate::tx::AccessListItem {
                     address: second_address,
                     storage_keys: vec![B256::with_last_byte(2)],
                 }]),

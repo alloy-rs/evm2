@@ -20,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        kind: ["test", "statetest"]
+        kind: ["test", "eest"]
         os: [
           "ubuntu-latest",
           # "macos-latest",
@@ -37,13 +37,14 @@ jobs:
           # Default features
           "",
         ]
+        fixture: [""]
         include:
           # All features
           - kind: "test"
             os: "ubuntu-latest"
             rust: "nightly"
             flags: "--all-features"
-          - kind: "statetest"
+          - kind: "eest"
             os: "ubuntu-latest"
             rust: "nightly"
             flags: "--all-features"
@@ -51,7 +52,7 @@ jobs:
           #   os: "macos-latest"
           #   rust: "nightly"
           #   flags: "--all-features"
-          # - kind: "statetest"
+          # - kind: "eest"
           #   os: "macos-latest"
           #   rust: "nightly"
           #   flags: "--all-features"
@@ -59,12 +60,12 @@ jobs:
           #   os: "windows-latest"
           #   rust: "nightly"
           #   flags: "--features nightly" # Some C libraries don't support MSVC.
-          # - kind: "statetest"
+          # - kind: "eest"
           #   os: "windows-latest"
           #   rust: "nightly"
           #   flags: "--features nightly" # Some C libraries don't support MSVC.
           # Devnet
-          # - kind: "statetest"
+          # - kind: "eest"
           #   fixture: "devnet"
           #   os: "ubuntu-latest"
           #   rust: "stable"
@@ -81,8 +82,10 @@ jobs:
         with:
           cache-on-failure: true
       - uses: taiki-e/install-action@nextest
-      - name: Download state test fixtures
-        if: ${{ matrix.kind == 'statetest' }}
+      - uses: astral-sh/setup-uv@v7
+        if: ${{ matrix.kind == 'eest' }}
+      - name: Download EEST fixtures
+        if: ${{ matrix.kind == 'eest' }}
         shell: bash
         run: |
             if [[ "${{ matrix.fixture }}" == "devnet" ]]; then
@@ -90,16 +93,17 @@ jobs:
               export DEVNET_TAR="fixtures_snobal-devnet-6.tar.gz"
               export EVM2_STATETEST_DEVNET_ONLY=1
             fi
-            ./scripts/setup-test-fixtures.sh
+            ./scripts/setup_test_fixtures.py
       - name: ${{ matrix.kind }}
         shell: bash
         run: |
             extra_flags=()
-            if [[ "${{ matrix.kind }}" == "statetest" ]]; then
-              extra_flags+=(-p evm2-statetest --ignore-default-filter)
+            if [[ "${{ matrix.kind }}" == "eest" ]]; then
+              extra_flags+=(-p evm2-eest --ignore-default-filter)
             fi
             if [[ "${{ matrix.fixture }}" == "devnet" ]]; then
               export EVM2_STATETEST_ROOT="test-fixtures/devnet/state_tests"
+              export EVM2_BLOCKCHAINTEST_ROOT="test-fixtures/devnet/blockchain_tests"
             fi
             cargo nextest run --workspace --no-fail-fast ${{ matrix.flags }} "${extra_flags[@]}"
       - name: doctest

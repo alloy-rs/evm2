@@ -4,8 +4,8 @@ use crate::{
     EvmFeatures, EvmTypes, SpecId,
     constants::{CALL_DEPTH_LIMIT, EIP7702_BYTECODE_LEN, EIP7702_MAGIC_BYTES, EIP7702_VERSION},
     interpreter::{
-        Host, InstrStop, InterpreterState, Message, MessageKind, MessageResult, Result, StackMut,
-        Word, memory::resize_memory, private::GasInstructionCx,
+        GasTracker, Host, InstrStop, InterpreterState, Message, MessageKind, MessageResult, Result,
+        StackMut, Word, memory::resize_memory, private::GasInstructionCx,
     },
     trustme,
     utils::{word_to_address, word_to_usize},
@@ -40,7 +40,11 @@ const fn should_charge_new_account_gas(
 
 #[inline]
 fn call_too_deep_result(gas_limit: u64) -> MessageResult {
-    MessageResult { stop: InstrStop::CallTooDeep, gas_remaining: gas_limit, ..Default::default() }
+    MessageResult {
+        stop: InstrStop::CallTooDeep,
+        gas: GasTracker::new(gas_limit, gas_limit, 0),
+        ..Default::default()
+    }
 }
 
 fn resize_memory_range<T: EvmTypes>(
@@ -134,7 +138,7 @@ fn load_acc_and_calc_gas<T: EvmTypes>(
         && should_charge_new_account_gas(
             spec,
             transfers_value,
-            cx.state.host().target_is_empty_for_new_account_gas(to, spec),
+            cx.state.host().target_is_empty_for_new_account_gas(to, spec)?,
         )
     {
         cost += u64::from(cx.state.gas_params().get(GasId::NewAccountCost));
@@ -274,7 +278,7 @@ fn create_inner<T: EvmTypes>(
     let salt = if is_create2 { Some(stack.pop()?) } else { None };
 
     let len = word_to_usize(len)?;
-    if cx.state.version().feature(EvmFeatures::EIP3860) {
+    if cx.state.feature(EvmFeatures::EIP3860) {
         if len > cx.state.version().max_initcode_size {
             return Err(InstrStop::CreateInitCodeSizeLimit);
         }

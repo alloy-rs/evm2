@@ -64,7 +64,7 @@ pub fn execute_code(
     );
     Ok(evm2::TxResult {
         status: result.stop.is_success(),
-        gas_used: req.tx.gas_limit - result.gas_remaining,
+        gas_used: req.tx.gas_limit - result.gas.remaining(),
         stop: result.stop,
         output: result.output,
         ..Default::default()

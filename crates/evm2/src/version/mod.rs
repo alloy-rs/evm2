@@ -639,6 +639,7 @@ evm_versions! {
 
     AMSTERDAM {
         features: [
+            EIP7981,
             EIP8037,
             EIP7708,
             EIP7708_DELAYED_BURN,
@@ -671,6 +672,7 @@ evm_versions! {
             CodeDepositState: AMSTERDAM_CPSB,
             CreateState: 112 * AMSTERDAM_CPSB,
             SstoreSetRefund: 32 * AMSTERDAM_CPSB + 2800,
+            TxFloorCostPerToken: TOTAL_COST_FLOOR_PER_TOKEN_AMSTERDAM,
             TxEip7702PerEmptyAccountCost: 7500 + (112 + 23) * AMSTERDAM_CPSB,
             TxEip7702AuthRefund: 112 * AMSTERDAM_CPSB,
             TxEip7702PerAuthState: (112 + 23) * AMSTERDAM_CPSB,

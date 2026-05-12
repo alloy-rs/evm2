@@ -47,7 +47,8 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
         access_list_storage_keys,
     ) + eip7702_authorization_gas(req.host, tx.authorization_list.len());
     validate_intrinsic_gas(tx.gas_limit, intrinsic)?;
-    let floor_gas = floor_gas(req.host.version(), &tx.input);
+    let floor_gas =
+        floor_gas(req.host.version(), &tx.input, access_list_accounts, access_list_storage_keys);
     validate_floor_gas(tx.gas_limit, floor_gas)?;
     validate_regular_gas_limit_cap(req.host.version(), tx.gas_limit, intrinsic, floor_gas)?;
 
@@ -58,10 +59,10 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     warm_access_list(req.host, &tx.access_list);
 
     let effective_gas_cost = U256::from(tx.gas_limit) * gas_price;
-    charge_upfront(req.host, caller, effective_gas_cost);
-    req.host.state.increment_nonce(caller);
+    charge_upfront(req.host, caller, effective_gas_cost)?;
+    req.host.state.increment_nonce(caller).map_err(|code| req.host.db_error_handler(code))?;
     let chain_id = req.host.version().chain_id;
-    let eip7702_refund = apply_auth_list(req.host, chain_id, &tx.authorization_list);
+    let eip7702_refund = apply_auth_list(req.host, chain_id, &tx.authorization_list)?;
     let execution_checkpoint = req.host.state.checkpoint();
 
     let gas_limit = tx.gas_limit - intrinsic;
@@ -72,13 +73,14 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
         ..TxEnv::default()
     };
     let (bytecode, message) =
-        initial_message(req.host, caller, tx.nonce, tx.to.into(), &tx.input, tx.value, gas_limit);
+        initial_message(req.host, caller, tx.nonce, tx.to.into(), &tx.input, tx.value, gas_limit)?;
     let mut result = req.host.execute_message(&tx_env, bytecode, &message, false);
     rollback_failed_execution(req.host, execution_checkpoint, &mut result);
-    result.gas_refunded =
-        result.gas_refunded.saturating_add(i64::try_from(eip7702_refund).unwrap_or(i64::MAX));
+    result.gas.set_refunded(
+        result.gas.refunded().saturating_add(i64::try_from(eip7702_refund).unwrap_or(i64::MAX)),
+    );
 
-    Ok(settle_gas(req.host, caller, gas_price, tx.gas_limit, floor_gas, result))
+    settle_gas(req.host, caller, gas_price, tx.gas_limit, floor_gas, result)
 }
 
 fn eip7702_authorization_gas<T: EvmTypes<Host = Evm<T>>>(
@@ -93,7 +95,7 @@ fn apply_auth_list<T: EvmTypes<Host = Evm<T>>>(
     host: &mut Evm<T>,
     chain_id: u64,
     authorizations: &[SignedAuthorization],
-) -> u64 {
+) -> HandlerResult<u64> {
     let mut refunded_accounts = 0u64;
     for authorization in authorizations {
         if !authorization.chain_id().is_zero() && authorization.chain_id() != &U256::from(chain_id)
@@ -108,10 +110,11 @@ fn apply_auth_list<T: EvmTypes<Host = Evm<T>>>(
             continue;
         };
         host.state.warm_account_non_revertible(authority);
-        let authority_info = host.state.account_info(authority);
+        let authority_info =
+            host.state.account_info(authority).map_err(|code| host.db_error_handler(code))?;
         let existed = authority_info.is_some();
         let authority_info = authority_info.unwrap_or_default();
-        let code = host.state.get_code(authority);
+        let code = host.state.get_code(authority).map_err(|code| host.db_error_handler(code))?;
         if !code.is_empty() && !code.is_eip7702() {
             continue;
         }
@@ -122,23 +125,24 @@ fn apply_auth_list<T: EvmTypes<Host = Evm<T>>>(
         if existed {
             refunded_accounts = refunded_accounts.saturating_add(1);
         }
-        set_delegation(host, authority, *authorization.address());
+        set_delegation(host, authority, *authorization.address())?;
     }
 
     let refund_per_auth = u64::from(host.version().gas_params.get(GasId::TxEip7702AuthRefund));
-    refunded_accounts.saturating_mul(refund_per_auth)
+    Ok(refunded_accounts.saturating_mul(refund_per_auth))
 }
 
 fn set_delegation<T: EvmTypes<Host = Evm<T>>>(
     host: &mut Evm<T>,
     authority: Address,
     delegated_address: Address,
-) {
+) -> HandlerResult<()> {
     let code = if delegated_address.is_zero() {
         Bytecode::default()
     } else {
         Bytecode::new_eip7702(delegated_address)
     };
-    host.state.set_code(authority, code);
-    host.state.increment_nonce(authority);
+    host.state.set_code(authority, code).map_err(|code| host.db_error_handler(code))?;
+    host.state.increment_nonce(authority).map_err(|code| host.db_error_handler(code))?;
+    Ok(())
 }

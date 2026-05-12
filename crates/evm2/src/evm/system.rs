@@ -7,7 +7,12 @@
 //! and produces no state changes.
 
 use super::{Evm, TxResult};
-use crate::{EvmTypes, env::TxEnv, ethereum::initial_message, interpreter::Host};
+use crate::{
+    EvmTypes,
+    env::TxEnv,
+    ethereum::initial_message,
+    interpreter::{Host, InstrStop},
+};
 use alloc::vec::Vec;
 use alloy_primitives::{Address, Bytes, TxKind, U256, address};
 
@@ -59,7 +64,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             chain_id: U256::from(self.version().chain_id),
             blob_hashes: Vec::new(),
         };
-        let (bytecode, message) = initial_message(
+        let Ok((bytecode, message)) = initial_message(
             self,
             caller,
             0,
@@ -67,11 +72,14 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             &data,
             U256::ZERO,
             SYSTEM_CALL_GAS_LIMIT,
-        );
+        ) else {
+            let stop = InstrStop::FatalExternalError;
+            return TxResult { stop, db_error_code: self.db_error_code(), ..TxResult::default() };
+        };
         let result = Host::execute_message(self, &tx_env, bytecode, &message, false);
-        let gas_spent = SYSTEM_CALL_GAS_LIMIT.saturating_sub(result.gas_remaining);
-        let gas_refunded = if result.stop.is_success() && result.gas_refunded > 0 {
-            result.gas_refunded as u64
+        let gas_spent = SYSTEM_CALL_GAS_LIMIT.saturating_sub(result.gas.remaining());
+        let gas_refunded = if result.stop.is_success() && result.gas.refunded() > 0 {
+            result.gas.refunded() as u64
         } else {
             0
         };
@@ -84,9 +92,15 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             ..TxResult::default()
         };
 
-        self.state.finalize_transaction(self.spec_id());
-        result.state_changes = self.state.build_state_changes();
-        self.state.commit_transaction_overlay();
+        if let Err(stop) = self.finalize_transaction() {
+            result.status = false;
+            result.stop = stop;
+            result.output = Bytes::new();
+        } else {
+            result.state_changes = self.state.build_state_changes();
+            self.state.commit_transaction_overlay();
+        }
+        result.db_error_code = self.db_error_code();
         self.state.clear_transaction_state();
         result
     }

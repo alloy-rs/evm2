@@ -74,14 +74,15 @@ pub trait Inspector<T: EvmTypes>: Any {
 mod tests {
     use super::Inspector;
     use crate::{
-        BaseEvmConfigSelector, BaseEvmTypes, Evm, ExecutionConfig, Precompiles, SpecId,
+        BaseEvmConfigSelector, BaseEvmTypes, Evm, ExecutionConfig, Precompiles, SYSTEM_ADDRESS,
+        SpecId,
         bytecode::Bytecode,
         constants::CALL_DEPTH_LIMIT,
         env::{BlockEnv, TxEnv},
         ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
         evm::{AccountInfo, InMemoryDB, SelfDestructResult},
         interpreter::{
-            InstrStop, Interpreter, Message, MessageResult, Word,
+            GasTracker, InstrStop, Interpreter, Message, MessageResult, Word,
             instructions::tests::{TestHost, TestTypes, push},
             op,
         },
@@ -151,7 +152,7 @@ mod tests {
         fn call(&mut self, message: &mut Message) -> Option<MessageResult> {
             self.call_depth = Some(message.depth);
             let mut result = self.result.clone();
-            result.gas_remaining = message.gas_limit;
+            result.gas.set_remaining(message.gas_limit);
             Some(result)
         }
 
@@ -177,7 +178,7 @@ mod tests {
         fn call(&mut self, message: &mut Message) -> Option<MessageResult> {
             Some(MessageResult {
                 stop: InstrStop::Revert,
-                gas_remaining: message.gas_limit,
+                gas: GasTracker::new(message.gas_limit, message.gas_limit, 0),
                 ..Default::default()
             })
         }
@@ -199,7 +200,7 @@ mod tests {
             self.create_depth = Some(message.depth);
             Some(MessageResult {
                 stop: InstrStop::Return,
-                gas_remaining: message.gas_limit,
+                gas: GasTracker::new(message.gas_limit, message.gas_limit, 0),
                 created_address: Some(self.created),
                 ..Default::default()
             })
@@ -218,7 +219,7 @@ mod tests {
         fn create(&mut self, message: &mut Message) -> Option<MessageResult> {
             Some(MessageResult {
                 stop: InstrStop::Revert,
-                gas_remaining: message.gas_limit,
+                gas: GasTracker::new(message.gas_limit, message.gas_limit, 0),
                 ..Default::default()
             })
         }
@@ -694,6 +695,43 @@ mod tests {
         assert_eq!(state.logs[0].address, contract);
         assert_eq!(state.calls, 0);
         assert_eq!(state.creates, 0);
+    }
+
+    #[test]
+    fn evm_transaction_inspects_eip7708_transfer_log() {
+        let caller = Address::from([0xaa; 20]);
+        let target = Address::from([0xbb; 20]);
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(
+            caller,
+            AccountInfo::default().with_balance(U256::from(1_000_000_000_u64)),
+        );
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::AMSTERDAM,
+            BlockEnv::default(),
+            ethereum_tx_registry(SpecId::AMSTERDAM),
+            database,
+            Precompiles::base(SpecId::AMSTERDAM),
+        );
+        let state = Rc::new(RefCell::new(E2eState::default()));
+        evm.set_inspector(SharedE2eInspector(Rc::clone(&state)));
+        let tx = RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(
+            TxLegacy {
+                to: TxKind::Call(target),
+                value: U256::from(7),
+                gas_limit: 100_000,
+                ..Default::default()
+            },
+            caller,
+        ));
+
+        let result = evm.transact(&tx).unwrap();
+        let state = state.borrow();
+
+        assert!(result.status);
+        assert_eq!(result.state_changes.logs.len(), 1);
+        assert_eq!(state.logs, result.state_changes.logs);
+        assert_eq!(state.logs[0].address, SYSTEM_ADDRESS);
     }
 
     #[test]

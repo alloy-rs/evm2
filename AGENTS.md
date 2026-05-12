@@ -18,13 +18,14 @@ cargo docs # check docs
 
 cargo nextest run # test (default filter)
 cargo nextest run -E "not (test(glob*)) | package(/regex.*/)" # further filter tests
-cargo nextest run --ignore-default-filter # include statetests
+cargo nextest run -p evm2-eest --test eest --ignore-default-filter # include EEST fixtures
 ```
 
-## State Tests
+## EEST Fixtures
 
-`./scripts/setup-test-fixtures.sh` downloads fixtures into `test-fixtures/`.
+`./scripts/setup_test_fixtures.py` downloads fixtures into `test-fixtures/`.
 By default it downloads EEST develop (or stable with `EVM2_STATETEST_STABLE=1`)
-and legacy Cancun/Constantinople. Devnet fixtures are opt-in with
+and legacy Cancun/Constantinople state tests. Devnet fixtures are opt-in with
 `DEVNET_VERSION` and `DEVNET_TAR`; add `EVM2_STATETEST_DEVNET_ONLY=1` to skip
-main/legacy fixtures. Use `EVM2_STATETEST_ROOT` for a single explicit root.
+main/legacy fixtures. Use `EVM2_STATETEST_ROOT` or `EVM2_BLOCKCHAINTEST_ROOT`
+for a single explicit root.

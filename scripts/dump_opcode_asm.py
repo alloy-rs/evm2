@@ -70,8 +70,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--package",
-        default="evm2-statetest",
-        help="Cargo package passed to cargo asm. Defaults to evm2-statetest.",
+        default="evm2-eest",
+        help="Cargo package passed to cargo asm. Defaults to evm2-eest.",
     )
     parser.add_argument(
         "-F",
