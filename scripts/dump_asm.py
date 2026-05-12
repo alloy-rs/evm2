@@ -9,6 +9,7 @@ Examples:
     ./scripts/dump_asm.py
     ./scripts/dump_asm.py ADD PUSH1 SSTORE -o tmp/mydump
     ./scripts/dump_asm.py --features evm2/no-tco ADD
+    ./scripts/dump_asm.py --package evm2 --features no-tco --allow-missing ADD -- --target wasm32v1-none
 """
 
 import argparse
@@ -75,6 +76,15 @@ def parse_opcodes() -> dict[str, int]:
 
 
 def parse_args() -> argparse.Namespace:
+    raw_args = sys.argv[1:]
+    if "--" in raw_args:
+        separator = raw_args.index("--")
+        script_args = raw_args[:separator]
+        cargo_asm_args = raw_args[separator + 1 :]
+    else:
+        script_args = raw_args
+        cargo_asm_args = []
+
     parser = argparse.ArgumentParser(
         description="Dump cargo-asm output for EVM dispatch functions."
     )
@@ -113,12 +123,19 @@ def parse_args() -> argparse.Namespace:
         help="Dump every matching dispatch monomorphization instead of only the first.",
     )
     parser.add_argument(
+        "--allow-missing",
+        action="store_true",
+        help="Warn instead of failing when requested dispatch outputs are not present.",
+    )
+    parser.add_argument(
         "--log-level",
         choices=LOG_LEVELS,
         default="info",
         help="Minimum log level to print. Defaults to info.",
     )
-    return parser.parse_args()
+    args = parser.parse_args(script_args)
+    args.cargo_asm_args = cargo_asm_args
+    return args
 
 
 def select_opcodes(
@@ -144,10 +161,13 @@ def select_opcodes(
     return selected
 
 
-def cargo_asm_everything(package: str, features: list[str], output: str) -> str:
+def cargo_asm_everything(
+    package: str, features: list[str], cargo_asm_args: list[str], output: str
+) -> str:
     cmd = ["cargo", "asm", "-q", "-s", "--simplify", "-p", package]
     for feature in features:
         cmd.extend(("-F", feature))
+    cmd.extend(cargo_asm_args)
     cmd.extend(("--lib", f"--{output}", "--everything"))
     log("info", f"running {' '.join(cmd)}")
     started = time.perf_counter()
@@ -324,13 +344,15 @@ def dump_run_inner_output(out: Path, blocks: list[str], output: str) -> Path | N
 def cleanup_stale_outputs(out: Path, selected: list[tuple[str, int]]) -> None:
     for mnemonic, _ in selected:
         for suffix in ("s", "ll"):
-            path = out / f"{mnemonic}.{suffix}"
+            for directory in ("", *(directory for _, directory in DISPATCH_OUTPUTS)):
+                path = out / directory / f"{mnemonic}.{suffix}"
+                if path.exists():
+                    path.unlink()
+    for suffix in ("s", "ll"):
+        for name in ("interpreter_loop", RUN_INNER_NAME):
+            path = out / f"{name}.{suffix}"
             if path.exists():
                 path.unlink()
-    for suffix in ("s", "ll"):
-        path = out / f"interpreter_loop.{suffix}"
-        if path.exists():
-            path.unlink()
 
 
 def dump_output(
@@ -341,13 +363,18 @@ def dump_output(
     output: str,
     directory: str,
     all_monomorphizations: bool,
-) -> Path:
+    allow_missing: bool,
+) -> Path | None:
     blocks = blocks_by_opcode.get(opcode, {}).get(directory, [])
     if not blocks:
-        raise RuntimeError(
+        message = (
             f"could not find cargo asm --{output} {directory} output for "
             f"{mnemonic} ({opcode:#04x})"
         )
+        if allow_missing:
+            log("warning", message)
+            return None
+        raise RuntimeError(message)
     if not all_monomorphizations and len(blocks) > 1:
         blocks = blocks[:1]
 
@@ -382,16 +409,23 @@ def main() -> int:
     out.mkdir(parents=True, exist_ok=True)
     cleanup_stale_outputs(out, selected)
     feature_msg = f" with features {', '.join(args.features)}" if args.features else ""
+    cargo_args_msg = (
+        f" and cargo asm args {' '.join(args.cargo_asm_args)}"
+        if args.cargo_asm_args
+        else ""
+    )
     log(
         "info",
         f"dumping {len(selected)} opcode(s) from package {args.package}{feature_msg} "
-        f"to {display_path(out)}"
+        f"to {display_path(out)}{cargo_args_msg}"
     )
 
     dumps: dict[str, dict[int, dict[str, list[str]]]] = {}
     run_inner_dumps: dict[str, list[str]] = {}
     for output in ("asm", "llvm"):
-        text = cargo_asm_everything(args.package, args.features, output)
+        text = cargo_asm_everything(
+            args.package, args.features, args.cargo_asm_args, output
+        )
         if args.keep_everything:
             suffix = "ll" if output == "llvm" else "s"
             log("info", f"writing full cargo asm --{output} dump")
@@ -416,8 +450,9 @@ def main() -> int:
         for output in ("asm", "llvm")
         for _, directory in DISPATCH_OUTPUTS
     ]
+    dispatch_files = 0
     for mnemonic, opcode, output, directory in tasks:
-        dump_output(
+        path = dump_output(
             out,
             dumps[output],
             mnemonic,
@@ -425,7 +460,10 @@ def main() -> int:
             output,
             directory,
             args.all_monomorphizations,
+            args.allow_missing,
         )
+        if path is not None:
+            dispatch_files += 1
     run_inner_files = 0
     for output in ("asm", "llvm"):
         path = dump_run_inner_output(out, run_inner_dumps[output], output)
@@ -433,7 +471,10 @@ def main() -> int:
             log("warning", f"no run_inner found in --{output} output")
             continue
         run_inner_files += 1
-    log("info", f"wrote {len(tasks) + run_inner_files} file(s) to {display_path(out)}")
+    log(
+        "info",
+        f"wrote {dispatch_files + run_inner_files} file(s) to {display_path(out)}",
+    )
 
     return 0
 
