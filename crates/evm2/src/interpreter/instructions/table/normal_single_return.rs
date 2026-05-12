@@ -15,7 +15,7 @@ pub(super) type RawInstrFn<T> = extern_table!(
     ) -> Pc
 );
 
-super::normal::normal_tables!();
+normal_tables!();
 
 pub(crate) type LoopState = ();
 

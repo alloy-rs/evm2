@@ -33,7 +33,6 @@ ROOT = Path(repo_root())
 OPCODE_RS = ROOT / "crates" / "evm2" / "src" / "interpreter" / "opcode.rs"
 DEFAULT_OUT = ROOT / "tmp" / "dump"
 DISPATCH_SYMBOLS = (
-    "evm2::interpreter::instructions::table::normal::dispatch::<",
     "evm2::interpreter::instructions::table::normal_packed::dispatch::<",
     "evm2::interpreter::instructions::table::normal_single_return::dispatch::<",
     "evm2::interpreter::instructions::table::normal_unpacked::dispatch::<",

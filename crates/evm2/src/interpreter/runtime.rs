@@ -2,6 +2,8 @@ use super::{
     BytecodeRef, Gas, InstrStop, Memory, Message, MessageKind, MessageResult, Pc, Result, Stack,
     StackBacking, Word,
 };
+#[cfg(tco)]
+use crate::interpreter::gas::RemainingGas;
 use crate::{
     EvmTypes, ExecutionConfig, SpecId, Version,
     bytecode::Bytecode,

@@ -12,7 +12,7 @@ type InstrFnRet = (*const u8, usize);
 pub(super) type RawInstrFn<T> =
     extern_table!(fn(pc: Pc, stack: Stack<'_>, state: &mut InterpreterState<'_, T>) -> InstrFnRet);
 
-super::normal::normal_tables!();
+normal_tables!();
 
 pub(crate) type LoopState = ();
 

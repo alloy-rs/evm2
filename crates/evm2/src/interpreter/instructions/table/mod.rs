@@ -1,9 +1,11 @@
 //! Instruction dispatch tables.
 
+#[cfg(not(tco))]
+use crate::interpreter::{Gas, Stack};
 use crate::{
     BaseEvmConfigSelector, EvmConfig, EvmConfigSelector, EvmTypes, VersionTables,
     evm::config::SelectorVersionTables,
-    interpreter::{Gas, InstrStop, InterpreterState, Pc, Result, Stack, StackMut, op},
+    interpreter::{InstrStop, InterpreterState, Pc, Result, StackMut, op},
 };
 
 #[cold]
@@ -54,6 +56,7 @@ macro_rules! for_each_opcode_value {
     };
 }
 
+#[cfg(not(tco))]
 macro_rules! assign_normal_instruction_table_entries {
     ([$table:expr, $evm_types:ty, $config:ty, $mode:ty, $vt:ident, $previous_vt:ident, $dispatch:ident, $instr_fn:ty] $($op:literal,)*) => {
         $(
@@ -69,6 +72,7 @@ macro_rules! assign_normal_instruction_table_entries {
     };
 }
 
+#[cfg(not(tco))]
 macro_rules! make_normal_selector_tables {
     ([$($extra:tt)*] $($spec:ident $name:ident,)*) => {{
         make_normal_selector_tables!(@build [] [none]; $($spec $name,)*)
@@ -98,20 +102,71 @@ macro_rules! make_normal_selector_tables {
     };
 }
 
+#[cfg(not(tco))]
+macro_rules! normal_tables {
+    () => {
+        /// Normal instruction dispatch table.
+        pub(super) type RawInstrTable<T> = [RawInstrFn<T>; 256];
+
+        pub(crate) const fn make_table<T, C, M>(
+            previous: Option<&RawInstrTable<T>>,
+            previous_version_tables: Option<&crate::VersionTables<T>>,
+        ) -> RawInstrTable<T>
+        where
+            T: crate::EvmTypes,
+            C: crate::EvmConfig<T>,
+            M: super::InspectMode<T>,
+        {
+            let mut table = match previous {
+                Some(previous) => *previous,
+                None => [dispatch::<T, C, M, 0, true> as super::InstrFn<T>; 256],
+            };
+            let vt = C::VERSION_TABLES;
+            for_each_opcode_value!([table, T, C, M, vt, previous_version_tables, dispatch, super::InstrFn<T>] assign_normal_instruction_table_entries);
+
+            // Make all unknown entries point to the same dispatch function.
+            let mut i = 0;
+            let mut unknown_idx = None;
+            while i < 256 {
+                if C::VERSION_TABLES.is_unknown_opcode(i as u8) {
+                    if unknown_idx.is_none() {
+                        unknown_idx = Some(i);
+                    }
+                    table[i] = table[unknown_idx.unwrap()];
+                }
+                i += 1;
+            }
+
+            table
+        }
+
+        pub(crate) const fn make_selector_tables<
+            T,
+            F,
+            M,
+            const CUSTOM_SPEC_ID: u8,
+        >() -> [RawInstrTable<T>; crate::SpecId::COUNT]
+        where
+            T: crate::EvmTypes,
+            F: crate::EvmConfigSelector<T>,
+            M: super::InspectMode<T>,
+        {
+            crate::for_each_spec!([] make_normal_selector_tables)
+        }
+    };
+}
+
 cfg_if::cfg_if! {
     if #[cfg(tco)] {
         mod tco;
         use tco as imp;
     } else if #[cfg(dispatch_packed)] {
-        mod normal;
         mod normal_packed;
         use normal_packed as imp;
     } else if #[cfg(dispatch_single_return)] {
-        mod normal;
         mod normal_single_return;
         use normal_single_return as imp;
     } else {
-        mod normal;
         mod normal_unpacked;
         use normal_unpacked as imp;
     }
