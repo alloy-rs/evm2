@@ -6,7 +6,7 @@ use super::ReproContext;
 use alloy_primitives::{address, hex, Bytes};
 use alloy_rpc_types_trace::geth::{DiffMode, PreStateConfig, PreStateFrame};
 use evm2::{
-    context::TxEnv, context_interface::TransactTo, primitives::hardfork::SpecId, Context,
+    context::TxEnv, context_interface::TransactTo, SpecId, Context,
     InspectEvm, MainBuilder, MainContext,
 };
 use evm2_inspectors::tracing::{TracingInspector, TracingInspectorConfig};

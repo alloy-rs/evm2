@@ -19,7 +19,7 @@ use alloy_rpc_types_trace::{
 };
 use evm2::{
     bytecode::opcode::{self, OpCode},
-    interpreter::{CallScheme, CreateScheme, InstructionResult},
+    interpreter::{CallScheme, CreateScheme, InstrStop},
 };
 
 /// Decoded call data.
@@ -99,7 +99,7 @@ pub struct CallTrace {
     /// The cumulative refund counter for the entire transaction context at the end of this call.
     pub gas_refund_counter: u64,
     /// The final status of the call.
-    pub status: Option<InstructionResult>,
+    pub status: Option<InstrStop>,
     /// Opcode-level execution steps.
     pub steps: Vec<CallTraceStep>,
     /// Optional complementary decoded call data.
@@ -107,7 +107,7 @@ pub struct CallTrace {
 }
 
 impl CallTrace {
-    /// Returns true if the status code is an error or revert, See [InstructionResult::Revert]
+    /// Returns true if the status code is an error or revert, See [InstrStop::Revert]
     #[inline]
     pub const fn is_error(&self) -> bool {
         let Some(status) = self.status else {
@@ -119,14 +119,14 @@ impl CallTrace {
     /// Returns true if the status code is a revert.
     #[inline]
     pub fn is_revert(&self) -> bool {
-        self.status.is_some_and(|status| status == InstructionResult::Revert)
+        self.status.is_some_and(|status| status == InstrStop::Revert)
     }
 
     /// Returns `true` if this trace was a selfdestruct.
     ///
     /// See also `TracingInspector::selfdestruct`.
     ///
-    /// We can't rely entirely on [`Self::status`] being [`InstructionResult::SelfDestruct`]
+    /// We can't rely entirely on [`Self::status`] being [`InstrStop::SelfDestruct`]
     /// because there's an edge case where a new created contract (CREATE) is immediately
     /// selfdestructed.
     ///
@@ -134,7 +134,7 @@ impl CallTrace {
     /// `selfdestruct` inspector function will not be called after the Cancun hardfork.
     #[inline]
     pub const fn is_selfdestruct(&self) -> bool {
-        matches!(self.status, Some(InstructionResult::SelfDestruct))
+        matches!(self.status, Some(InstrStop::SelfDestruct))
             || self.selfdestruct_refund_target.is_some()
     }
 
@@ -317,7 +317,7 @@ impl CallTraceNode {
 
     /// Returns the status of the call
     #[inline]
-    pub const fn status(&self) -> Option<InstructionResult> {
+    pub const fn status(&self) -> Option<InstrStop> {
         self.trace.status
     }
 
@@ -689,7 +689,7 @@ pub struct CallTraceStep {
     /// Final status of the step
     ///
     /// This is set after the step was executed.
-    pub status: Option<InstructionResult>,
+    pub status: Option<InstrStop>,
     /// Immediate bytes of the step
     pub immediate_bytes: Option<Bytes>,
     /// Optional complementary decoded step data.
@@ -755,7 +755,7 @@ impl CallTraceStep {
         )
     }
 
-    // Returns true if the status code is an error or revert, See [InstructionResult::Revert]
+    // Returns true if the status code is an error or revert, See [InstrStop::Revert]
     #[inline]
     pub(crate) const fn is_error(&self) -> bool {
         let Some(status) = self.status else {

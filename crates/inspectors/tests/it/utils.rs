@@ -8,7 +8,7 @@ use evm2::{
     },
     handler::{instructions::EthInstructions, EthFrame, EthPrecompiles, EvmTr},
     interpreter::interpreter::EthInterpreter,
-    primitives::hardfork::SpecId,
+    SpecId,
     Context, Database, DatabaseCommit, ExecuteCommitEvm, InspectCommitEvm, Inspector, Journal,
 };
 use evm2_inspectors::tracing::{TraceWriter, TraceWriterConfig, TracingInspector};

@@ -52,7 +52,7 @@ use alloy_primitives::Address;
 use alloy_rpc_types_trace::geth::AccountState;
 use evm2::{
     bytecode::Bytecode, database::CacheDB, database_interface::EmptyDB,
-    primitives::hardfork::SpecId, state::AccountInfo,
+    SpecId, state::AccountInfo,
 };
 use serde::Deserialize;
 use std::collections::BTreeMap;

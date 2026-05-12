@@ -4,7 +4,7 @@ use alloy_sol_types::{sol, SolCall};
 use colorchoice::ColorChoice;
 use evm2::{
     context::TxEnv, context_interface::TransactTo, database::CacheDB, database_interface::EmptyDB,
-    inspector::InspectorEvmTr, primitives::hardfork::SpecId, Context, InspectCommitEvm, InspectEvm,
+    inspector::InspectorEvmTr, SpecId, Context, InspectCommitEvm, InspectEvm,
     MainBuilder, MainContext,
 };
 use evm2_inspectors::tracing::{

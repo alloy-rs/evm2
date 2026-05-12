@@ -11,7 +11,7 @@ use evm2::{
     database_interface::EmptyDB,
     handler::EvmTr,
     inspector::InspectorEvmTr,
-    primitives::hardfork::SpecId,
+    SpecId,
     Context, DatabaseCommit, InspectEvm, MainBuilder, MainContext,
 };
 use evm2_inspectors::{

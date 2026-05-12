@@ -30,7 +30,7 @@ use evm2::{
     inspector::JournalExt,
     interpreter::{
         interpreter_types::{Jumps, LoopControl},
-        CallInputs, CallOutcome, CallScheme, CreateInputs, CreateOutcome, Gas, InstructionResult,
+        CallInputs, CallOutcome, CallScheme, CreateInputs, CreateOutcome, Gas, InstrStop,
         Interpreter, InterpreterAction, InterpreterResult,
     },
     DatabaseRef, Inspector,
@@ -469,7 +469,7 @@ where
         if self.try_step(step, db).is_err() {
             interp
                 .bytecode
-                .set_action(InterpreterAction::new_halt(InstructionResult::Revert, interp.gas));
+                .set_action(InterpreterAction::new_halt(InstrStop::Revert, interp.gas));
         }
     }
 
@@ -683,11 +683,11 @@ pub enum JsInspectorError {
     InvalidJsonConfig(JsError),
 }
 
-/// Converts a JavaScript error into a [InstructionResult::Revert] [InterpreterResult].
+/// Converts a JavaScript error into a [InstrStop::Revert] [InterpreterResult].
 #[inline]
 fn js_error_to_revert(err: JsError) -> InterpreterResult {
     let output = err.to_string().as_bytes().to_vec();
-    InterpreterResult { result: InstructionResult::Revert, output: output.into(), gas: Gas::new(0) }
+    InterpreterResult { result: InstrStop::Revert, output: output.into(), gas: Gas::new(0) }
 }
 
 #[cfg(test)]
@@ -700,7 +700,7 @@ mod tests {
         database::CacheDB,
         database_interface::EmptyDB,
         inspector::InspectorEvmTr,
-        primitives::hardfork::SpecId,
+        SpecId,
         state::{AccountInfo, Bytecode},
         InspectEvm, MainBuilder, MainContext,
     };

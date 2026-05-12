@@ -8,7 +8,7 @@ use evm2::{
     database::CacheDB,
     database_interface::EmptyDB,
     inspector::InspectorEvmTr,
-    primitives::hardfork::SpecId,
+    SpecId,
     Context, InspectEvm, MainBuilder, MainContext,
 };
 use evm2_inspectors::tracing::js::JsInspector;
