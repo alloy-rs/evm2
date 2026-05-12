@@ -5,7 +5,7 @@ use crate::{
 };
 
 /// Unpacked instruction return value.
-type InstrFnRet = (*const u8, usize);
+type InstrFnRet = (Pc, usize);
 
 /// Unpacked instruction function pointer.
 pub(in crate::interpreter::dispatch) type RawInstrFn<T> =
@@ -19,8 +19,7 @@ pub(super) fn dispatch_loop_call<T: EvmTypes>(
     state: &mut InterpreterState<'_, T>,
     _loop_state: &mut super::LoopState,
 ) -> (Pc, usize) {
-    let (next_pc, next_stack_len) = instr(pc, stack, state);
-    (Pc::new(next_pc), next_stack_len)
+    instr(pc, stack, state)
 }
 
 extern_table! {
@@ -38,7 +37,7 @@ extern_table! {
         let _ = DYNAMIC_GAS;
         let (pc, (), stack_len) =
             super::dispatch_inner::<T, C, M, (), false, false>(pc, stack, (), state, OP);
-        (pc.as_ptr(), stack_len)
+        (pc, stack_len)
     }
 
     pub(in crate::interpreter::dispatch) fn unknown_dispatch<
@@ -58,6 +57,6 @@ extern_table! {
                 state,
                 super::UNKNOWN_OP,
             );
-        (pc.as_ptr(), stack_len)
+        (pc, stack_len)
     }
 }
