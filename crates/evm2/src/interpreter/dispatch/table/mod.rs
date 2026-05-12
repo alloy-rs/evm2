@@ -1,7 +1,5 @@
 use super::{InspectMode, UNKNOWN_OP, inc_pc, run_state, unknown_instruction};
 #[cfg(dispatch_packed)]
-use crate::constants::STACK_LIMIT;
-#[cfg(dispatch_packed)]
 use crate::interpreter::gas::RemainingGas;
 use crate::{
     EvmConfig, EvmTypes,
@@ -72,8 +70,6 @@ trait DispatchGas: Copy {
         state: &mut InterpreterState<'_, T>,
         dynamic_gas: bool,
     );
-
-    fn error_stack_len(stack_len: usize) -> usize;
 }
 
 impl DispatchGas for () {
@@ -101,11 +97,6 @@ impl DispatchGas for () {
         _state: &mut InterpreterState<'_, T>,
         _dynamic_gas: bool,
     ) {
-    }
-
-    #[inline(always)]
-    fn error_stack_len(stack_len: usize) -> usize {
-        stack_len
     }
 }
 
@@ -141,11 +132,6 @@ impl DispatchGas for RemainingGas {
         if dynamic_gas {
             self.set(state.gas_mut().remaining());
         }
-    }
-
-    #[inline(always)]
-    fn error_stack_len(stack_len: usize) -> usize {
-        if stack_len <= STACK_LIMIT { stack_len } else { 0 }
     }
 }
 
@@ -193,7 +179,7 @@ fn dispatch_inner<
         if !M::INSPECT {
             state.set_result(r);
         }
-        return (Pc::new(core::ptr::null()), gas, G::error_stack_len(stack.len));
+        return (Pc::new(core::ptr::null()), gas, stack.len);
     }
     (pc, gas, stack.len)
 }
