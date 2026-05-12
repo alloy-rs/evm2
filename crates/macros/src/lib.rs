@@ -5,8 +5,11 @@ use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::{
     AngleBracketedGenericArguments, FnArg, GenericArgument, GenericParam, Ident, ItemFn, LitStr,
-    Pat, PatIdent, PatSlice, PathArguments, ReturnType, Stmt, Token, Type, TypeInfer, TypePath,
-    TypeSlice, parse_macro_input, punctuated::Punctuated,
+    Pat, PatIdent, PatSlice, PathArguments, ReturnType, Stmt, Token, Type, TypeInfer,
+    TypeParamBound, TypePath, TypeSlice,
+    parse::{Parse, ParseStream},
+    parse_macro_input,
+    punctuated::Punctuated,
 };
 
 /// Generates an `Instruction` impl for an instruction function definition.
@@ -32,6 +35,12 @@ use syn::{
 ///   checks.
 /// - `#[instruction(dynamic_gas)]`: Exposes `cx.gas` and marks the instruction as needing access to
 ///   mutable gas state.
+/// - `#[instruction(EvmTypes = CustomTypes)]`: Implements the instruction for a concrete `EvmTypes`
+///   implementor instead of generating a generic implementation.
+/// - `#[instruction(EvmTypes: CustomTypesTrait)]`: Adds a trait bound to the generated generic
+///   `EvmTypes` type parameter.
+/// - `#[instruction(EvmTypes<Host: CustomHostTrait>)]`: Adds associated-type constraints to the
+///   generated generic `EvmTypes` implementation.
 ///
 /// ## Examples
 ///
@@ -76,7 +85,8 @@ use syn::{
 /// ```
 #[proc_macro_attribute]
 pub fn instruction(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let args = parse_macro_input!(attr with Punctuated::<Ident, Token![,]>::parse_terminated);
+    let args =
+        parse_macro_input!(attr with Punctuated::<InstructionAttr, Token![,]>::parse_terminated);
     let attrs = match InstructionAttrs::parse(args) {
         Ok(attrs) => attrs,
         Err(err) => return err.to_compile_error().into(),
@@ -85,23 +95,95 @@ pub fn instruction(attr: TokenStream, item: TokenStream) -> TokenStream {
     expand_instruction(attrs, input).into()
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+enum InstructionAttr {
+    Flag(Ident),
+    EvmTypesConcrete { span: proc_macro2::Span, evm_types: Type },
+    EvmTypesBounds { span: proc_macro2::Span, bounds: Punctuated<TypeParamBound, Token![+]> },
+    EvmTypesArgs { span: proc_macro2::Span, args: AngleBracketedGenericArguments },
+}
+
+impl Parse for InstructionAttr {
+    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
+        let ident = input.parse::<Ident>()?;
+        if ident == "EvmTypes" || ident == "evm_types" {
+            let span = ident.span();
+            if input.peek(Token![=]) {
+                input.parse::<Token![=]>()?;
+                Ok(Self::EvmTypesConcrete { span, evm_types: input.parse()? })
+            } else if input.peek(Token![:]) {
+                input.parse::<Token![:]>()?;
+                Ok(Self::EvmTypesBounds {
+                    span,
+                    bounds: Punctuated::<TypeParamBound, Token![+]>::parse_separated_nonempty(
+                        input,
+                    )?,
+                })
+            } else if input.peek(Token![<]) {
+                Ok(Self::EvmTypesArgs { span, args: input.parse()? })
+            } else {
+                Err(syn::Error::new_spanned(
+                    ident,
+                    "expected `=`, `:`, or `<...>` after `EvmTypes`",
+                ))
+            }
+        } else {
+            Ok(Self::Flag(ident))
+        }
+    }
+}
+
+#[derive(Clone, Default)]
 struct InstructionAttrs {
     no_stack_preamble: bool,
     dynamic_gas: bool,
+    evm_types: Option<Type>,
+    evm_types_span: Option<proc_macro2::Span>,
+    evm_types_bounds: Vec<Punctuated<TypeParamBound, Token![+]>>,
+    evm_types_args: Option<AngleBracketedGenericArguments>,
 }
 
 impl InstructionAttrs {
-    fn parse(args: Punctuated<Ident, Token![,]>) -> syn::Result<Self> {
+    fn parse(args: Punctuated<InstructionAttr, Token![,]>) -> syn::Result<Self> {
         let mut attrs = Self::default();
         for arg in args {
-            if arg == "no_stack_preamble" {
-                attrs.no_stack_preamble = true;
-            } else if arg == "dynamic_gas" {
-                attrs.dynamic_gas = true;
-            } else {
-                return Err(syn::Error::new_spanned(arg, "unsupported #[instruction] argument"));
+            match arg {
+                InstructionAttr::Flag(arg) if arg == "no_stack_preamble" => {
+                    attrs.no_stack_preamble = true;
+                }
+                InstructionAttr::Flag(arg) if arg == "dynamic_gas" => {
+                    attrs.dynamic_gas = true;
+                }
+                InstructionAttr::Flag(arg) => {
+                    return Err(syn::Error::new_spanned(
+                        arg,
+                        "unsupported #[instruction] argument",
+                    ));
+                }
+                InstructionAttr::EvmTypesConcrete { span, evm_types } => {
+                    if attrs.evm_types.replace(evm_types).is_some() {
+                        return Err(syn::Error::new(span, "duplicate `EvmTypes` argument"));
+                    }
+                    attrs.evm_types_span = Some(span);
+                }
+                InstructionAttr::EvmTypesBounds { span, bounds } => {
+                    attrs.evm_types_span.get_or_insert(span);
+                    attrs.evm_types_bounds.push(bounds);
+                }
+                InstructionAttr::EvmTypesArgs { span, args } => {
+                    if attrs.evm_types_args.replace(args).is_some() {
+                        return Err(syn::Error::new(span, "duplicate `EvmTypes<...>` argument"));
+                    }
+                    attrs.evm_types_span.get_or_insert(span);
+                }
             }
+        }
+        if attrs.evm_types.is_some()
+            && (!attrs.evm_types_bounds.is_empty() || attrs.evm_types_args.is_some())
+        {
+            return Err(syn::Error::new(
+                attrs.evm_types_span.unwrap_or_else(proc_macro2::Span::call_site),
+                "`EvmTypes = ...` cannot be combined with generic `EvmTypes` bounds",
+            ));
         }
         Ok(attrs)
     }
@@ -114,19 +196,43 @@ fn expand_instruction(instruction_attrs: InstructionAttrs, input: ItemFn) -> Tok
     let ident = sig.ident;
     let asm_comment = LitStr::new(&ident.to_string(), ident.span());
     let generics = sig.generics;
-    let struct_where_clause = generics.where_clause.clone();
     let impl_params = generics.params.clone();
-    let evm_types = Ident::new("__Evm2T", ident.span());
-    let struct_generics = if impl_params.is_empty() {
-        quote! { <#evm_types: evm2::EvmTypes> }
-    } else {
-        quote! { <#evm_types: evm2::EvmTypes, #impl_params> }
+    let evm_types_span = instruction_attrs.evm_types_span.unwrap_or_else(|| ident.span());
+    let evm_types_ident = Ident::new("__Evm2T", evm_types_span);
+    let evm_types = instruction_attrs
+        .evm_types
+        .as_ref()
+        .map(|ty| quote! { #ty })
+        .unwrap_or_else(|| quote! { #evm_types_ident });
+    let struct_generics = match (&instruction_attrs.evm_types, impl_params.is_empty()) {
+        (Some(_), true) => quote! {},
+        (Some(_), false) => quote! { <#impl_params> },
+        (None, true) => quote! { <#evm_types_ident> },
+        (None, false) => quote! { <#evm_types_ident, #impl_params> },
     };
     let type_params = generics.params.iter().map(generic_param_ident);
-    let type_generics = quote! { <#evm_types #(, #type_params)*> };
+    let type_generics = if instruction_attrs.evm_types.is_some() {
+        if generics.params.is_empty() {
+            quote! {}
+        } else {
+            quote! { <#(#type_params),*> }
+        }
+    } else {
+        quote! { <#evm_types_ident #(, #type_params)*> }
+    };
+    let evm_types_bound = if let Some(args) = instruction_attrs.evm_types_args {
+        quote! { evm2::EvmTypes #args }
+    } else {
+        quote! { evm2::EvmTypes }
+    };
+    let evm_types_bounds = instruction_attrs.evm_types_bounds;
     let where_predicates =
-        struct_where_clause.as_ref().map(|where_clause| &where_clause.predicates);
-    let impl_where_clause = where_predicates.map(|predicates| quote! { where #predicates });
+        generics.where_clause.as_ref().map(|where_clause| &where_clause.predicates);
+    let where_clause = if let Some(predicates) = where_predicates {
+        quote! { where #evm_types: #evm_types_bound #( + #evm_types_bounds)*, #predicates }
+    } else {
+        quote! { where #evm_types: #evm_types_bound #( + #evm_types_bounds)* }
+    };
     let (_, outputs) = parse_return(sig.output);
     let body = body(input.block.stmts, outputs.is_empty());
 
@@ -186,10 +292,10 @@ fn expand_instruction(instruction_attrs: InstructionAttrs, input: ItemFn) -> Tok
         #[allow(non_camel_case_types)]
         #vis struct #ident #struct_generics(
             core::marker::PhantomData<fn() -> #evm_types>
-        ) #struct_where_clause;
+        ) #where_clause;
 
         impl #struct_generics evm2::interpreter::private::Instruction<#evm_types> for #ident #type_generics
-        #impl_where_clause
+        #where_clause
         {
             const DYNAMIC_GAS: bool = #dynamic_gas;
 

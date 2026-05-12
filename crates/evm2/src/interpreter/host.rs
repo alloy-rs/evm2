@@ -1,11 +1,12 @@
 use super::{GasTracker, InstrStop, Message, Result, Word};
 use crate::{
-    SpecId,
+    BaseEvmTypes, EvmTypes, SpecId,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
     evm::{AccountLoad, SLoad, SStore, SelfDestructResult},
 };
 use alloy_primitives::{Address, B256, Bytes, Log};
+use derive_where::derive_where;
 
 /// Result of executing a call/create message.
 ///
@@ -14,8 +15,8 @@ use alloy_primitives::{Address, B256, Bytes, Log};
 /// [`Self::gas_returned_to_parent`] and [`Self::refund_propagated_to_parent`] when applying a child
 /// result to a caller frame. Use [`Self::gas_remaining_after_final_refund`] or
 /// [`Self::gas_used_after_final_refund`] for top-level transaction accounting.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct MessageResult {
+#[derive_where(Clone, Debug, Default, PartialEq, Eq; T::MessageResultExt)]
+pub struct MessageResult<T: EvmTypes = BaseEvmTypes> {
     /// Interpreter stop reason.
     pub stop: InstrStop,
     /// Gas accounting for the child frame.
@@ -24,9 +25,11 @@ pub struct MessageResult {
     pub output: Bytes,
     /// Created address for successful create messages.
     pub created_address: Option<Address>,
+    /// EVM type-specific extension data.
+    pub ext: T::MessageResultExt,
 }
 
-impl MessageResult {
+impl<T: EvmTypes> MessageResult<T> {
     /// Returns whether the message committed state changes.
     #[inline]
     pub const fn is_success(&self) -> bool {
@@ -80,12 +83,12 @@ impl MessageResult {
 }
 
 /// External host operations.
-pub trait Host {
+pub trait Host<T: EvmTypes> {
     /// Returns the active base specification ID.
     fn spec_id(&self) -> SpecId;
 
     /// Returns the block environment.
-    fn block_env(&mut self) -> &BlockEnv;
+    fn block_env(&mut self) -> &BlockEnv<T>;
 
     /// Loads account information.
     fn load_account(
@@ -134,11 +137,11 @@ pub trait Host {
     /// Executes a message inside this host.
     fn execute_message(
         &mut self,
-        tx_env: &TxEnv,
+        tx_env: &TxEnv<T>,
         bytecode: Bytecode,
-        message: &Message,
+        message: &Message<T>,
         caller_is_static: bool,
-    ) -> MessageResult;
+    ) -> MessageResult<T>;
 
     /// Registers the current contract for self-destruction.
     fn selfdestruct(
