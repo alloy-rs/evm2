@@ -10,7 +10,7 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
 
     let is_wasm = target_is_wasm();
-    let dispatch_packed = target_pointer_width() == Some("64") && !is_wasm;
+    let dispatch_packed = target_pointer_width() == Some(64) && !is_wasm;
     if is_wasm {
         println!("cargo:rustc-cfg=dispatch_single_return");
     }
@@ -45,13 +45,8 @@ fn target_is_wasm() -> bool {
     target_arch.starts_with("wasm") || target_family.split(',').any(|family| family == "wasm")
 }
 
-fn target_pointer_width() -> Option<&'static str> {
-    match env("CARGO_CFG_TARGET_POINTER_WIDTH").as_deref().and_then(|value| value.to_str()) {
-        Some("16") => Some("16"),
-        Some("32") => Some("32"),
-        Some("64") => Some("64"),
-        _ => None,
-    }
+fn target_pointer_width() -> Option<u32> {
+    env("CARGO_CFG_TARGET_POINTER_WIDTH")?.to_str()?.parse().ok()
 }
 
 fn rustc_is_nightly() -> bool {
