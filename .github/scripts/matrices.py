@@ -185,6 +185,7 @@ def main():
             )
             expanded.append(vars(obj))
 
+    expanded.sort(key=lambda obj: obj["name"])
     print_json({"include": expanded})
 
 
