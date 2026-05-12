@@ -33,9 +33,9 @@ ROOT = Path(repo_root())
 OPCODE_RS = ROOT / "crates" / "evm2" / "src" / "interpreter" / "opcode.rs"
 DEFAULT_OUT = ROOT / "tmp" / "dump"
 DISPATCH_SYMBOLS = (
-    "evm2::interpreter::dispatch::normal_packed::dispatch::<",
-    "evm2::interpreter::dispatch::normal_single_return::dispatch::<",
-    "evm2::interpreter::dispatch::normal_unpacked::dispatch::<",
+    "evm2::interpreter::dispatch::packed::dispatch::<",
+    "evm2::interpreter::dispatch::single_return::dispatch::<",
+    "evm2::interpreter::dispatch::unpacked::dispatch::<",
     "evm2::interpreter::dispatch::tco::tail_dispatch::<",
 )
 DISPATCH_OPCODE = re.compile(r",\s*(\d+)(?:,\s*(?:true|false))*?>")

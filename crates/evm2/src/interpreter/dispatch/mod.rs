@@ -62,7 +62,7 @@ macro_rules! for_each_opcode_value {
 }
 
 #[cfg(not(tco))]
-macro_rules! assign_normal_instruction_table_entries {
+macro_rules! assign_instruction_table_entries {
     ([$table:expr, $evm_types:ty, $config:ty, $mode:ty, $vt:ident, $previous_vt:ident, $dispatch:ident, $instr_fn:ty] $($op:literal,)*) => {
         $(
             if super::instruction_changed($vt, $previous_vt, $op) {
@@ -78,15 +78,15 @@ macro_rules! assign_normal_instruction_table_entries {
 }
 
 #[cfg(not(tco))]
-macro_rules! make_normal_selector_tables {
+macro_rules! make_selector_tables {
     ([$($extra:tt)*] $($spec:ident $name:ident,)*) => {{
-        make_normal_selector_tables!(@build [] [none]; $($spec $name,)*)
+        make_selector_tables!(@build [] [none]; $($spec $name,)*)
     }};
     (@build [$($tables:ident,)*] [$($previous_table:tt)*]; $spec:ident $name:ident, $($rest:ident $rest_name:ident,)*) => {{
         let spec = crate::SpecId::$spec;
         let previous = spec.prev();
         let $name = make_table::<T, F::Config<{ crate::SpecId::$spec as u8 }, CUSTOM_SPEC_ID>, M>(
-            make_normal_selector_tables!(@previous_table [$($previous_table)*]),
+            make_selector_tables!(@previous_table [$($previous_table)*]),
             match previous {
                 Some(previous) => {
                     Some(crate::evm::config::SelectorVersionTables::<T, F, CUSTOM_SPEC_ID>::VERSION_TABLES[previous as usize])
@@ -94,7 +94,7 @@ macro_rules! make_normal_selector_tables {
                 None => None,
             },
         );
-        make_normal_selector_tables!(@build [$($tables,)* $name,] [some $name]; $($rest $rest_name,)*)
+        make_selector_tables!(@build [$($tables,)* $name,] [some $name]; $($rest $rest_name,)*)
     }};
     (@build [$($tables:ident,)*] [$($previous_table:tt)*];) => {
         [$($tables,)*]
@@ -108,9 +108,9 @@ macro_rules! make_normal_selector_tables {
 }
 
 #[cfg(not(tco))]
-macro_rules! normal_tables {
+macro_rules! dispatch_tables {
     () => {
-        /// Normal instruction dispatch table.
+        /// Instruction dispatch table.
         pub(super) type RawInstrTable<T> = [RawInstrFn<T>; 256];
 
         pub(crate) const fn make_table<T, C, M>(
@@ -127,7 +127,7 @@ macro_rules! normal_tables {
                 None => [dispatch::<T, C, M, 0, true> as super::InstrFn<T>; 256],
             };
             let vt = C::VERSION_TABLES;
-            for_each_opcode_value!([table, T, C, M, vt, previous_version_tables, dispatch, super::InstrFn<T>] assign_normal_instruction_table_entries);
+            for_each_opcode_value!([table, T, C, M, vt, previous_version_tables, dispatch, super::InstrFn<T>] assign_instruction_table_entries);
 
             // Make all unknown entries point to the same dispatch function.
             let mut i = 0;
@@ -156,7 +156,7 @@ macro_rules! normal_tables {
             F: crate::EvmConfigSelector<T>,
             M: super::InspectMode<T>,
         {
-            crate::for_each_spec!([] make_normal_selector_tables)
+            crate::for_each_spec!([] make_selector_tables)
         }
     };
 }
@@ -166,14 +166,14 @@ cfg_if::cfg_if! {
         mod tco;
         use tco as imp;
     } else if #[cfg(dispatch_packed)] {
-        mod normal_packed;
-        use normal_packed as imp;
+        mod packed;
+        use packed as imp;
     } else if #[cfg(dispatch_single_return)] {
-        mod normal_single_return;
-        use normal_single_return as imp;
+        mod single_return;
+        use single_return as imp;
     } else {
-        mod normal_unpacked;
-        use normal_unpacked as imp;
+        mod unpacked;
+        use unpacked as imp;
     }
 }
 

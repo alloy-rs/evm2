@@ -5,7 +5,7 @@ use crate::{
 };
 use core::hint::cold_path;
 
-/// Single-return normal instruction function pointer.
+/// Single-return instruction function pointer.
 pub(super) type RawInstrFn<T> = extern_table!(
     fn(
         pc: Pc,
@@ -15,7 +15,7 @@ pub(super) type RawInstrFn<T> = extern_table!(
     ) -> Pc
 );
 
-normal_tables!();
+dispatch_tables!();
 
 pub(crate) type LoopState = ();
 

@@ -5,14 +5,14 @@ use crate::{
 };
 use core::hint::cold_path;
 
-/// Unpacked normal instruction return value.
+/// Unpacked instruction return value.
 type InstrFnRet = (*const u8, usize);
 
-/// Unpacked normal instruction function pointer.
+/// Unpacked instruction function pointer.
 pub(super) type RawInstrFn<T> =
     extern_table!(fn(pc: Pc, stack: Stack<'_>, state: &mut InterpreterState<'_, T>) -> InstrFnRet);
 
-normal_tables!();
+dispatch_tables!();
 
 pub(crate) type LoopState = ();
 

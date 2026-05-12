@@ -6,10 +6,10 @@ use crate::{
 };
 use core::hint::cold_path;
 
-/// Packed normal instruction return value.
+/// Packed instruction return value.
 pub(crate) type InstrFnRet = (Pc, PackedGasStackLen);
 
-/// Packed normal instruction function pointer.
+/// Packed instruction function pointer.
 pub(super) type RawInstrFn<T> = extern_table!(
     fn(
         pc: Pc,
@@ -19,7 +19,7 @@ pub(super) type RawInstrFn<T> = extern_table!(
     ) -> InstrFnRet
 );
 
-normal_tables!();
+dispatch_tables!();
 
 pub(crate) type LoopState = RemainingGas;
 
@@ -143,7 +143,7 @@ pub(crate) const fn unpack_ret(ret: InstrFnRet) -> (Pc, u64, usize) {
     (pc, gas_spent, stack_len)
 }
 
-/// Normal dispatch gas spent and stack length, packed into one word on 64-bit native targets.
+/// Dispatch gas spent and stack length, packed into one word on 64-bit native targets.
 #[derive(Clone, Copy)]
 #[repr(transparent)]
 pub(crate) struct PackedGasStackLen(usize);
