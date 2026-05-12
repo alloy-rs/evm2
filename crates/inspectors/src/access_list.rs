@@ -84,7 +84,7 @@ impl<T: EvmTypes> Inspector<T> for AccessListInspector {
     fn step(&mut self, interp: &mut Interpreter<'_, T>) {
         match interp.opcode() {
             op::SLOAD | op::SSTORE => {
-                if let Some(slot) = interp.stack().peek(0) {
+                if let Some([slot]) = interp.stack().peekn() {
                     let cur_contract = interp.message().destination;
                     self.touched_slots
                         .entry(cur_contract)
@@ -97,7 +97,7 @@ impl<T: EvmTypes> Inspector<T> for AccessListInspector {
             | op::EXTCODESIZE
             | op::BALANCE
             | op::SELFDESTRUCT => {
-                if let Some(slot) = interp.stack().peek(0) {
+                if let Some([slot]) = interp.stack().peekn() {
                     let addr = Address::from_word(B256::from(slot.to_be_bytes()));
                     if !self.excluded.contains(&addr) {
                         self.touched_slots.entry(addr).or_default();
@@ -105,7 +105,7 @@ impl<T: EvmTypes> Inspector<T> for AccessListInspector {
                 }
             }
             op::DELEGATECALL | op::CALL | op::STATICCALL | op::CALLCODE => {
-                if let Some(slot) = interp.stack().peek(1) {
+                if let Some([_, slot]) = interp.stack().peekn() {
                     let addr = Address::from_word(B256::from(slot.to_be_bytes()));
                     if !self.excluded.contains(&addr) {
                         self.touched_slots.entry(addr).or_default();

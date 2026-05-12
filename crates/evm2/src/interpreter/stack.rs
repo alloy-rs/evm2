@@ -85,6 +85,18 @@ impl<'a> StackRef<'a> {
     pub fn peek(&self, n: usize) -> Option<Word> {
         self.as_slice().get(self.len().checked_sub(n + 1)?).copied()
     }
+
+    /// Returns `N` stack words from the top.
+    #[inline]
+    pub fn peekn<const N: usize>(&self) -> Option<[Word; N]> {
+        let len = self.len();
+        if len < N {
+            cold_path();
+            return None;
+        }
+        let stack = self.as_slice();
+        Some(core::array::from_fn(|i| stack[len - 1 - i]))
+    }
 }
 
 impl Deref for StackRef<'_> {
@@ -220,6 +232,18 @@ impl<'a> StackMut<'a> {
     #[inline]
     pub fn peek(&self, n: usize) -> Option<Word> {
         self.as_slice().get(self.len().checked_sub(n + 1)?).copied()
+    }
+
+    /// Returns `N` stack words from the top.
+    #[inline]
+    pub fn peekn<const N: usize>(&self) -> Option<[Word; N]> {
+        let len = self.len();
+        if len < N {
+            cold_path();
+            return None;
+        }
+        let stack = self.as_slice();
+        Some(core::array::from_fn(|i| stack[len - 1 - i]))
     }
 
     /// Returns the stack contents as a slice.
@@ -536,6 +560,25 @@ mod tests {
             assert!(matches!(stack.popn_dyn(3).map(|_| ()), Err(InstrStop::StackUnderflow)));
             assert_eq!(stack.as_slice(), [Word::from(0), Word::from(1)]);
         });
+    }
+
+    #[test]
+    fn peekn() {
+        run_with_len(3, |stack| {
+            assert_eq!(stack.peek(0), Some(Word::from(2)));
+            assert_eq!(stack.peek(1), Some(Word::from(1)));
+            assert_eq!(stack.peekn::<2>(), Some([Word::from(2), Word::from(1)]));
+            assert_eq!(stack.peekn::<4>(), None);
+            assert_eq!(stack.as_slice(), [Word::from(0), Word::from(1), Word::from(2)]);
+        });
+
+        let mut backing = [MaybeUninit::new(Word::ZERO); StackRef::CAPACITY];
+        for (i, word) in backing.iter_mut().take(3).enumerate() {
+            word.write(Word::from(i));
+        }
+        let stack = StackRef::new(&backing, 3);
+        assert_eq!(stack.peekn::<3>(), Some([Word::from(2), Word::from(1), Word::from(0)]));
+        assert_eq!(stack.peekn::<4>(), None);
     }
 
     #[test]

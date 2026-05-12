@@ -48,7 +48,7 @@ impl StorageInspector {
 impl<T: EvmTypes> Inspector<T> for StorageInspector {
     fn step(&mut self, interp: &mut Interpreter<'_, T>) {
         if interp.opcode() == op::SLOAD
-            && let Some(slot) = interp.stack().peek(0)
+            && let Some([slot]) = interp.stack().peekn()
         {
             let address = interp.message().destination;
             let slot = B256::from(slot.to_be_bytes());
