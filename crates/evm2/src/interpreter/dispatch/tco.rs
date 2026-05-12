@@ -1,7 +1,9 @@
 use super::InspectMode;
 use crate::{
     EvmConfig, EvmTypes,
-    interpreter::{InterpreterState, Pc, Result, Stack, gas::RemainingGas},
+    interpreter::{
+        InterpreterState, Pc, Result, Stack, gas::RemainingGas, private::InstructionImplFn,
+    },
 };
 use core::hint::cold_path;
 
@@ -37,8 +39,7 @@ extern_table! {
         state: &mut InterpreterState<'_, T>,
         instructions: *const (),
     ) {
-        unsafe { core::hint::assert_unchecked(pc.op() == OP) };
-        tail_return!(tail_dispatch_mono::<T, C, M, DYNAMIC_GAS, false>(
+        tail_return!(tail_dispatch_mono::<T, C, M, DYNAMIC_GAS, false, OP>(
             pc,
             stack,
             remaining_gas,
@@ -60,7 +61,7 @@ extern_table! {
         state: &mut InterpreterState<'_, T>,
         instructions: *const (),
     ) {
-        tail_return!(tail_dispatch_mono::<T, C, M, false, true>(
+        tail_return!(tail_dispatch_mono::<T, C, M, false, true, { super::UNKNOWN_OP }>(
             pc,
             stack,
             remaining_gas,
@@ -78,6 +79,7 @@ extern_table! {
         M: InspectMode<T>,
         const DYNAMIC_GAS: bool,
         const UNKNOWN: bool,
+        const OP: u8,
     >(
         mut pc: Pc,
         mut stack: Stack<'_>,
@@ -85,19 +87,18 @@ extern_table! {
         state: &mut InterpreterState<'_, T>,
         instructions: *const (),
     ) {
-        let (op, instr) = if UNKNOWN {
-            (
-                pc.op(),
-                super::unknown_instruction as crate::interpreter::private::InstructionImplFn<T>,
-            )
+        if !UNKNOWN {
+            unsafe { core::hint::assert_unchecked(pc.op() == OP) };
+        }
+        let instr: InstructionImplFn<T> = if UNKNOWN {
+            super::unknown_instruction
         } else {
-            let op = pc.op();
-            (op, C::VERSION_TABLES.instruction(op).instr)
+            C::VERSION_TABLES.instruction(OP).instr
         };
         if M::INSPECT {
             M::step(state, pc, stack.len);
         }
-        if let Err(e) = pre_step::<T, C>(&mut remaining_gas, op) {
+        if let Err(e) = pre_step::<T, C, OP>(&mut remaining_gas) {
             cold_path();
             state.set_result(Err(e));
             if M::INSPECT {
@@ -120,7 +121,7 @@ extern_table! {
             }
             tail_return!(tail_call_restore::<T>(pc, stack, remaining_gas, state, instructions));
         }
-        super::inc_pc(&mut pc, op);
+        super::inc_pc(&mut pc, OP);
         if M::INSPECT {
             M::step_end(state, pc, stack.len);
         }
@@ -148,9 +149,8 @@ extern_table! {
 }
 
 #[inline(always)]
-const fn pre_step<T: EvmTypes, C: EvmConfig<T>>(
+const fn pre_step<T: EvmTypes, C: EvmConfig<T>, const OP: u8>(
     remaining_gas: &mut RemainingGas,
-    op: u8,
 ) -> Result {
-    remaining_gas.spend(C::VERSION_TABLES.static_gas(op) as _)
+    remaining_gas.spend(C::VERSION_TABLES.static_gas(OP) as _)
 }

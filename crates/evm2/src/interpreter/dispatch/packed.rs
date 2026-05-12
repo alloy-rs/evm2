@@ -2,7 +2,9 @@ use super::InspectMode;
 use crate::{
     EvmConfig, EvmTypes,
     constants::STACK_LIMIT,
-    interpreter::{Gas, InterpreterState, Pc, Result, Stack, gas::RemainingGas},
+    interpreter::{
+        Gas, InterpreterState, Pc, Result, Stack, gas::RemainingGas, private::InstructionImplFn,
+    },
 };
 use core::hint::cold_path;
 
@@ -58,7 +60,13 @@ extern_table! {
         remaining_gas: RemainingGas,
         state: &mut InterpreterState<'_, T>,
     ) -> InstrFnRet {
-        dispatch_mono::<T, C, M, DYNAMIC_GAS>(pc, stack, remaining_gas, state, OP)
+        dispatch_mono::<T, C, M, DYNAMIC_GAS, OP>(
+            pc,
+            stack,
+            remaining_gas,
+            state,
+            C::VERSION_TABLES.instruction(OP).instr,
+        )
     }
 
     pub(super) fn unknown_dispatch<
@@ -71,26 +79,37 @@ extern_table! {
         remaining_gas: RemainingGas,
         state: &mut InterpreterState<'_, T>,
     ) -> InstrFnRet {
-        dispatch_unknown::<T, C, M>(pc, stack, remaining_gas, state)
+        dispatch_mono::<T, C, M, false, { super::UNKNOWN_OP }>(
+            pc,
+            stack,
+            remaining_gas,
+            state,
+            super::unknown_instruction,
+        )
     }
 }
 
 #[cold] // Not cold, but avoids MIR inlining.
 #[inline(always)]
-fn dispatch_mono<T: EvmTypes, C: EvmConfig<T>, M: InspectMode<T>, const DYNAMIC_GAS: bool>(
+fn dispatch_mono<
+    T: EvmTypes,
+    C: EvmConfig<T>,
+    M: InspectMode<T>,
+    const DYNAMIC_GAS: bool,
+    const OP: u8,
+>(
     mut pc: Pc,
     mut stack: Stack<'_>,
     mut remaining_gas: RemainingGas,
     state: &mut InterpreterState<'_, T>,
-    op: u8,
+    instr: InstructionImplFn<T>,
 ) -> InstrFnRet {
     let initial_remaining_gas = remaining_gas;
-    let instr = C::VERSION_TABLES.instruction(op).instr;
     if M::INSPECT {
         M::step(state, pc, stack.len);
     }
     let r;
-    match pre_step::<T, C>(&mut remaining_gas, op) {
+    match pre_step::<T, C, OP>(&mut remaining_gas) {
         Ok(()) => {
             if M::INSPECT || DYNAMIC_GAS {
                 state.gas_mut().set_remaining(remaining_gas.get());
@@ -100,7 +119,7 @@ fn dispatch_mono<T: EvmTypes, C: EvmConfig<T>, M: InspectMode<T>, const DYNAMIC_
                 remaining_gas.set(state.gas_mut().remaining());
             }
             if !M::INSPECT || r.is_ok() {
-                super::inc_pc(&mut pc, op);
+                super::inc_pc(&mut pc, OP);
             }
         }
         Err(e) => {
@@ -129,53 +148,11 @@ fn dispatch_mono<T: EvmTypes, C: EvmConfig<T>, M: InspectMode<T>, const DYNAMIC_
     dispatch_return(pc, initial_remaining_gas.get().wrapping_sub(remaining_gas.get()), stack.len)
 }
 
-#[cold] // Not cold, but avoids MIR inlining.
 #[inline(always)]
-fn dispatch_unknown<T: EvmTypes, C: EvmConfig<T>, M: InspectMode<T>>(
-    mut pc: Pc,
-    mut stack: Stack<'_>,
-    mut remaining_gas: RemainingGas,
-    state: &mut InterpreterState<'_, T>,
-) -> InstrFnRet {
-    let initial_remaining_gas = remaining_gas;
-    let op = pc.op();
-    if M::INSPECT {
-        M::step(state, pc, stack.len);
-    }
-    let r = match pre_step::<T, C>(&mut remaining_gas, op) {
-        Ok(()) => {
-            state.gas_mut().set_remaining(remaining_gas.get());
-            super::unknown_instruction(&mut pc, stack.as_mut(), state)
-        }
-        Err(e) => {
-            if M::INSPECT {
-                state.gas_mut().set_remaining(remaining_gas.get());
-            }
-            Err(e)
-        }
-    };
-    if M::INSPECT {
-        state.set_result(r);
-        M::step_end(state, pc, stack.len);
-    }
-    cold_path();
-    if !M::INSPECT {
-        state.set_result(r);
-    }
-    let stack_len = if stack.len <= STACK_LIMIT { stack.len } else { 0 };
-    dispatch_return(
-        Pc::new(core::ptr::null()),
-        initial_remaining_gas.get().wrapping_sub(remaining_gas.get()),
-        stack_len,
-    )
-}
-
-#[inline(always)]
-const fn pre_step<T: EvmTypes, C: EvmConfig<T>>(
+const fn pre_step<T: EvmTypes, C: EvmConfig<T>, const OP: u8>(
     remaining_gas: &mut RemainingGas,
-    op: u8,
 ) -> Result {
-    remaining_gas.spend(C::VERSION_TABLES.static_gas(op) as _)
+    remaining_gas.spend(C::VERSION_TABLES.static_gas(OP) as _)
 }
 
 const STACK_LEN_BITS: u32 = 11;

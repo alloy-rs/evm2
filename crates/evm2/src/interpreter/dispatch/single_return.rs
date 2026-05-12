@@ -1,7 +1,7 @@
 use super::InspectMode;
 use crate::{
     EvmConfig, EvmTypes,
-    interpreter::{InterpreterState, Pc, Result, Stack, gas::Gas},
+    interpreter::{InterpreterState, Pc, Result, Stack, gas::Gas, private::InstructionImplFn},
 };
 use core::hint::cold_path;
 
@@ -51,7 +51,13 @@ extern_table! {
         next_stack_len: &mut usize,
     ) -> Pc {
         let _ = DYNAMIC_GAS;
-        dispatch_mono::<T, C, M>(pc, stack, state, next_stack_len, OP)
+        dispatch_mono::<T, C, M, OP>(
+            pc,
+            stack,
+            state,
+            next_stack_len,
+            C::VERSION_TABLES.instruction(OP).instr,
+        )
     }
 
     pub(super) fn unknown_dispatch<
@@ -64,29 +70,34 @@ extern_table! {
         state: &mut InterpreterState<'_, T>,
         next_stack_len: &mut usize,
     ) -> Pc {
-        dispatch_unknown::<T, C, M>(pc, stack, state, next_stack_len)
+        dispatch_mono::<T, C, M, { super::UNKNOWN_OP }>(
+            pc,
+            stack,
+            state,
+            next_stack_len,
+            super::unknown_instruction,
+        )
     }
 }
 
 #[cold] // Not cold, but avoids MIR inlining.
 #[inline(always)]
-fn dispatch_mono<T: EvmTypes, C: EvmConfig<T>, M: InspectMode<T>>(
+fn dispatch_mono<T: EvmTypes, C: EvmConfig<T>, M: InspectMode<T>, const OP: u8>(
     mut pc: Pc,
     mut stack: Stack<'_>,
     state: &mut InterpreterState<'_, T>,
     next_stack_len: &mut usize,
-    op: u8,
+    instr: InstructionImplFn<T>,
 ) -> Pc {
-    let instr = C::VERSION_TABLES.instruction(op).instr;
     if M::INSPECT {
         M::step(state, pc, stack.len);
     }
     let r;
-    match pre_step::<T, C>(state.gas_mut(), op) {
+    match pre_step::<T, C, OP>(state.gas_mut()) {
         Ok(()) => {
             r = instr(&mut pc, stack.as_mut(), state);
             if !M::INSPECT || r.is_ok() {
-                super::inc_pc(&mut pc, op);
+                super::inc_pc(&mut pc, OP);
             }
         }
         Err(e) => r = Err(e),
@@ -106,35 +117,7 @@ fn dispatch_mono<T: EvmTypes, C: EvmConfig<T>, M: InspectMode<T>>(
     pc
 }
 
-#[cold] // Not cold, but avoids MIR inlining.
 #[inline(always)]
-fn dispatch_unknown<T: EvmTypes, C: EvmConfig<T>, M: InspectMode<T>>(
-    mut pc: Pc,
-    mut stack: Stack<'_>,
-    state: &mut InterpreterState<'_, T>,
-    next_stack_len: &mut usize,
-) -> Pc {
-    if M::INSPECT {
-        M::step(state, pc, stack.len);
-    }
-    let r;
-    match pre_step::<T, C>(state.gas_mut(), pc.op()) {
-        Ok(()) => r = super::unknown_instruction(&mut pc, stack.as_mut(), state),
-        Err(e) => r = Err(e),
-    }
-    if M::INSPECT {
-        state.set_result(r);
-        M::step_end(state, pc, stack.len);
-    }
-    *next_stack_len = stack.len;
-    cold_path();
-    if !M::INSPECT {
-        state.set_result(r);
-    }
-    Pc::new(core::ptr::null())
-}
-
-#[inline(always)]
-const fn pre_step<T: EvmTypes, C: EvmConfig<T>>(gas: &mut Gas, op: u8) -> Result {
-    gas.spend(C::VERSION_TABLES.static_gas(op) as _)
+const fn pre_step<T: EvmTypes, C: EvmConfig<T>, const OP: u8>(gas: &mut Gas) -> Result {
+    gas.spend(C::VERSION_TABLES.static_gas(OP) as _)
 }
