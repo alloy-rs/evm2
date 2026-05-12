@@ -8,7 +8,7 @@ use crate::{
 use core::hint::cold_path;
 
 /// Normal instruction return value.
-pub(crate) type InstrFnRet = (PackedPcStackLen, RemainingGas);
+pub(crate) type InstrFnRet = (Pc, PackedGasStackLen);
 
 /// Normal instruction function pointer.
 pub(super) type RawInstrFn<T> = extern_table!(
@@ -170,9 +170,9 @@ fn dispatch_mono<T: EvmTypes, C: EvmConfig<T>, M: InspectMode<T>, const DYNAMIC_
             state.set_result(r);
         }
         let stack_len = if stack.len <= STACK_LIMIT { stack.len } else { 0 };
-        return (PackedPcStackLen::pack(core::ptr::null(), stack_len), remaining_gas);
+        return (Pc::new(core::ptr::null()), PackedGasStackLen::pack(remaining_gas, stack_len));
     }
-    (PackedPcStackLen::pack(pc.as_ptr(), stack.len), remaining_gas)
+    (pc, PackedGasStackLen::pack(remaining_gas, stack.len))
 }
 
 #[inline(always)]
@@ -184,25 +184,24 @@ const fn pre_step<T: EvmTypes, C: EvmConfig<T>>(
 }
 
 const STACK_LEN_BITS: u32 = 11;
-const PC_BITS: u32 = usize::BITS - STACK_LEN_BITS;
-const PC_MASK: usize = usize::MAX >> STACK_LEN_BITS;
+const GAS_BITS: u32 = u64::BITS;
 
 const _: () = assert!(STACK_LIMIT <= (1 << STACK_LEN_BITS));
 
-/// Packed normal dispatch pc and stack length.
+/// Packed normal dispatch remaining gas and stack length.
 #[derive(Clone, Copy)]
 #[repr(transparent)]
-pub(crate) struct PackedPcStackLen(usize);
+pub(crate) struct PackedGasStackLen(u128);
 
-impl PackedPcStackLen {
+impl PackedGasStackLen {
     #[inline(always)]
-    pub(crate) fn pack(pc: *const u8, stack_len: usize) -> Self {
+    pub(crate) const fn pack(remaining_gas: RemainingGas, stack_len: usize) -> Self {
         debug_assert!(stack_len <= STACK_LIMIT);
-        Self((stack_len << PC_BITS) | pc as usize)
+        Self(((stack_len as u128) << GAS_BITS) | remaining_gas.get() as u128)
     }
 
     #[inline(always)]
-    pub(crate) const fn unpack(self) -> (*const u8, usize) {
-        ((self.0 & PC_MASK) as *const u8, self.0 >> PC_BITS)
+    pub(crate) const fn unpack(self) -> (RemainingGas, usize) {
+        (RemainingGas::new(self.0 as u64), (self.0 >> GAS_BITS) as usize)
     }
 }
