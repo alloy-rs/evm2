@@ -1,8 +1,8 @@
 use super::tests::{RunConfig, TestHost, TestInterpreter, TestTypes, push};
 use crate::{
-    BaseEvmConfig, EvmConfig, ExecutionConfig, SpecId,
+    BaseEvmConfig, EvmConfig, EvmTypes, ExecutionConfig, SpecId,
     bytecode::Bytecode,
-    env::{BlockEnv, TxEnv},
+    env::BlockEnv,
     interpreter::{Host, InstrStop, Interpreter, Word, op},
     version::VersionTables,
 };
@@ -14,7 +14,8 @@ const ADD_OPCODE: u8 = 0x0c;
 const DYNAMIC_GAS_OPCODE: u8 = 0x0d;
 const NO_STACK_PREAMBLE_OPCODE: u8 = 0x0e;
 const CONCRETE_EQ_OPCODE: u8 = 0x0f;
-const CONCRETE_COLON_OPCODE: u8 = 0x1e;
+const TYPE_BOUND_OPCODE: u8 = 0x1d;
+const ASSOC_BOUND_OPCODE: u8 = 0x1e;
 
 #[instruction]
 fn macro_add([a, b]: [Word]) -> out {
@@ -37,9 +38,47 @@ fn macro_concrete_eq(cx: _) -> out {
     *out = cx.state.host().block_env().number;
 }
 
-#[instruction(EvmTypes: TestTypes)]
-fn macro_concrete_colon(cx: _) -> out {
-    *out = cx.state.tx().chain_id;
+trait MacroTypesExt {
+    fn macro_type_bound_value(host: &TestHost) -> Word;
+}
+
+impl MacroTypesExt for TestTypes {
+    fn macro_type_bound_value(host: &TestHost) -> Word {
+        host.block.number
+    }
+}
+
+trait MacroCxExt {
+    fn macro_type_bound_value(&mut self) -> Word;
+}
+
+impl<T> MacroCxExt for crate::interpreter::private::InstructionCx<'_, '_, T>
+where
+    T: EvmTypes<Host = TestHost> + MacroTypesExt,
+{
+    fn macro_type_bound_value(&mut self) -> Word {
+        T::macro_type_bound_value(self.state.host())
+    }
+}
+
+#[instruction(EvmTypes: MacroTypesExt, EvmTypes<Host = TestHost>)]
+fn macro_type_bound(cx: _) -> out {
+    *out = cx.macro_type_bound_value();
+}
+
+trait MacroHostExt {
+    fn macro_bound_value(&self) -> Word;
+}
+
+impl MacroHostExt for TestHost {
+    fn macro_bound_value(&self) -> Word {
+        self.block.number
+    }
+}
+
+#[instruction(EvmTypes<Host: MacroHostExt>)]
+fn macro_assoc_bound(cx: _) -> out {
+    *out = cx.state.host().macro_bound_value();
 }
 
 struct MacroConfig;
@@ -55,7 +94,8 @@ const fn macro_version_tables() -> VersionTables<TestTypes> {
     version.set_instruction::<macro_dynamic_gas<TestTypes>>(DYNAMIC_GAS_OPCODE, 2);
     version.set_instruction::<macro_no_stack_preamble<TestTypes>>(NO_STACK_PREAMBLE_OPCODE, 0);
     version.set_instruction::<macro_concrete_eq>(CONCRETE_EQ_OPCODE, 0);
-    version.set_instruction::<macro_concrete_colon>(CONCRETE_COLON_OPCODE, 0);
+    version.set_instruction::<macro_type_bound<TestTypes>>(TYPE_BOUND_OPCODE, 0);
+    version.set_instruction::<macro_assoc_bound<TestTypes>>(ASSOC_BOUND_OPCODE, 0);
     version
 }
 
@@ -117,9 +157,24 @@ fn instruction_macro_concrete_evm_types_equals_attribute() {
 }
 
 #[test]
-fn instruction_macro_concrete_evm_types_colon_attribute() {
-    let tx_env = TxEnv { chain_id: Word::from(31337), ..TxEnv::default() };
-    let interpreter = run(RunConfig::new([CONCRETE_COLON_OPCODE, op::STOP]).tx_env(tx_env));
+fn instruction_macro_evm_types_colon_bound_attribute() {
+    let mut host = TestHost {
+        block: BlockEnv { number: Word::from(31337), ..BlockEnv::default() },
+        ..TestHost::default()
+    };
+    let interpreter = run(RunConfig::new([TYPE_BOUND_OPCODE, op::STOP]).host(&mut host));
+
+    assert_eq!(interpreter.err, InstrStop::Stop);
+    assert_eq!(interpreter.stack(), [Word::from(31337)]);
+}
+
+#[test]
+fn instruction_macro_evm_types_assoc_colon_bound_attribute() {
+    let mut host = TestHost {
+        block: BlockEnv { number: Word::from(31337), ..BlockEnv::default() },
+        ..TestHost::default()
+    };
+    let interpreter = run(RunConfig::new([ASSOC_BOUND_OPCODE, op::STOP]).host(&mut host));
 
     assert_eq!(interpreter.err, InstrStop::Stop);
     assert_eq!(interpreter.stack(), [Word::from(31337)]);

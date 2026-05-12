@@ -31,7 +31,7 @@ impl MessageKind {
 }
 
 /// Frame-local EVM call/create message executed by the interpreter.
-#[derive_where(Clone, Debug, PartialEq, Eq; T::MessageExt)]
+#[derive_where(Clone, Debug, Default, PartialEq, Eq; T::MessageExt)]
 pub struct Message<T: EvmTypes = BaseEvmTypes> {
     /// Message kind.
     pub kind: MessageKind,
@@ -57,23 +57,4 @@ pub struct Message<T: EvmTypes = BaseEvmTypes> {
     pub salt: B256,
     /// EVM type-specific extension data.
     pub ext: T::MessageExt,
-}
-
-impl<T: EvmTypes> Default for Message<T> {
-    #[inline]
-    fn default() -> Self {
-        Self {
-            kind: MessageKind::Call,
-            depth: 0,
-            gas_limit: 0,
-            destination: Address::ZERO,
-            caller: Address::ZERO,
-            input: Bytes::new(),
-            value: U256::ZERO,
-            code_address: Address::ZERO,
-            disable_precompiles: false,
-            salt: B256::ZERO,
-            ext: T::MessageExt::default(),
-        }
-    }
 }

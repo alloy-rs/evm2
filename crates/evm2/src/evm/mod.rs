@@ -947,7 +947,7 @@ pub struct SelfDestructResult {
 }
 
 /// Result of executing a transaction.
-#[derive_where(Clone, Debug, PartialEq, Eq; T::TxResultExt)]
+#[derive_where(Clone, Debug, Default, PartialEq, Eq; T::TxResultExt)]
 pub struct TxResult<T: EvmTypes = crate::BaseEvmTypes> {
     /// Whether execution succeeded.
     pub status: bool,
@@ -963,21 +963,6 @@ pub struct TxResult<T: EvmTypes = crate::BaseEvmTypes> {
     pub db_error_code: Option<DbErrorCode>,
     /// EVM type-specific extension data.
     pub ext: T::TxResultExt,
-}
-
-impl<T: EvmTypes> Default for TxResult<T> {
-    #[inline]
-    fn default() -> Self {
-        Self {
-            status: false,
-            gas_used: 0,
-            stop: InstrStop::default(),
-            output: Bytes::new(),
-            state_changes: StateChanges::default(),
-            db_error_code: None,
-            ext: T::TxResultExt::default(),
-        }
-    }
 }
 
 fn eip7708_transfer_log(from: Address, to: Address, value: Word) -> Option<Log> {
