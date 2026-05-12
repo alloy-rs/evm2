@@ -381,7 +381,7 @@ mod tests {
         let mut inspector = StepInspector::default();
 
         let (stop, _) = run_with_inspector(
-            Vec::from([op::STOP]),
+            Vec::from([opcode::STOP]),
             &mut host,
             &Message::default(),
             10_000,
@@ -399,7 +399,7 @@ mod tests {
         let mut host = TestHost::default();
         let mut inspector = MessageInspector::default();
         let mut code = call_code(target);
-        code.extend([op::CALL, op::STOP]);
+        code.extend([opcode::CALL, opcode::STOP]);
 
         let (stop, stack) = run_with_inspector(
             code,
@@ -430,7 +430,7 @@ mod tests {
             call_end_stop: None,
         };
         let mut code = call_code(target);
-        code.extend([op::CALL, op::RETURNDATASIZE, op::STOP]);
+        code.extend([opcode::CALL, opcode::RETURNDATASIZE, opcode::STOP]);
 
         let (stop, stack) =
             run_with_inspector(code, &mut host, &Message::default(), 50_000, &mut inspector);
@@ -452,7 +452,7 @@ mod tests {
             call_end_stop: None,
         };
         let mut code = call_code(target);
-        code.extend([op::CALL, op::STOP]);
+        code.extend([opcode::CALL, opcode::STOP]);
 
         let (stop, stack) = run_with_inspector(
             code,
@@ -475,7 +475,7 @@ mod tests {
         let mut host = TestHost::default();
         let mut inspector = MutateCallInspector { destination: replacement };
         let mut code = call_code(target);
-        code.extend([op::CALL, op::STOP]);
+        code.extend([opcode::CALL, opcode::STOP]);
 
         let (stop, stack) =
             run_with_inspector(code, &mut host, &Message::default(), 50_000, &mut inspector);
@@ -492,7 +492,7 @@ mod tests {
         let mut host = TestHost::default();
         let mut inspector = CallEndInspector;
         let mut code = call_code(target);
-        code.extend([op::CALL, op::RETURNDATASIZE, op::STOP]);
+        code.extend([opcode::CALL, opcode::RETURNDATASIZE, opcode::STOP]);
 
         let (stop, stack) =
             run_with_inspector(code, &mut host, &Message::default(), 50_000, &mut inspector);
@@ -507,7 +507,7 @@ mod tests {
         let mut host = TestHost::default();
         let mut inspector = MessageInspector::default();
         let mut code = create_code();
-        code.extend([op::CREATE, op::STOP]);
+        code.extend([opcode::CREATE, opcode::STOP]);
 
         let (stop, stack) = run_with_inspector(
             code,
@@ -531,7 +531,7 @@ mod tests {
         let mut inspector =
             OverrideCreateInspector { created, create_depth: None, create_end_stop: None };
         let mut code = create_code();
-        code.extend([op::CREATE, op::STOP]);
+        code.extend([opcode::CREATE, opcode::STOP]);
 
         let (stop, stack) =
             run_with_inspector(code, &mut host, &Message::default(), 50_000, &mut inspector);
@@ -550,7 +550,7 @@ mod tests {
         let mut inspector =
             OverrideCreateInspector { created, create_depth: None, create_end_stop: None };
         let mut code = create_code();
-        code.extend([op::CREATE, op::STOP]);
+        code.extend([opcode::CREATE, opcode::STOP]);
 
         let (stop, stack) = run_with_inspector(
             code,
@@ -573,7 +573,7 @@ mod tests {
         let mut host = TestHost::default();
         let mut inspector = CreateEndInspector { created };
         let mut code = create_code();
-        code.extend([op::CREATE, op::STOP]);
+        code.extend([opcode::CREATE, opcode::STOP]);
 
         let (stop, stack) =
             run_with_inspector(code, &mut host, &Message::default(), 50_000, &mut inspector);
@@ -588,7 +588,7 @@ mod tests {
         let contract = Address::from([0x11; 20]);
         let mut host = TestHost::default();
         let mut inspector = LogInspector::default();
-        let code = Vec::from([op::PUSH1, 0, op::PUSH1, 0, op::LOG0, op::STOP]);
+        let code = Vec::from([opcode::PUSH1, 0, opcode::PUSH1, 0, opcode::LOG0, opcode::STOP]);
 
         let (stop, _) = run_with_inspector(
             code,
@@ -608,7 +608,7 @@ mod tests {
     fn log_opcode_oog_is_not_inspected_or_emitted_to_host() {
         let mut host = TestHost::default();
         let mut inspector = LogInspector::default();
-        let code = Vec::from([op::PUSH1, 0, op::PUSH1, 0, op::LOG0, op::STOP]);
+        let code = Vec::from([opcode::PUSH1, 0, opcode::PUSH1, 0, opcode::LOG0, opcode::STOP]);
 
         let (stop, _) = run_with_inspector(code, &mut host, &Message::default(), 6, &mut inspector);
 
@@ -623,7 +623,7 @@ mod tests {
         let mut inspector = FailingStepInspector::default();
 
         let (stop, _) = run_with_inspector(
-            Vec::from([op::INVALID]),
+            Vec::from([opcode::INVALID]),
             &mut host,
             &Message::default(),
             10_000,
@@ -646,7 +646,7 @@ mod tests {
         let mut inspector = MessageInspector::default();
         let mut code = Vec::new();
         push(&mut code, address_to_word(target));
-        code.push(op::SELFDESTRUCT);
+        code.push(opcode::SELFDESTRUCT);
 
         let (stop, _) = run_with_inspector(
             code,
@@ -668,7 +668,7 @@ mod tests {
         let mut inspector = MessageInspector::default();
         let mut code = Vec::new();
         push(&mut code, address_to_word(target));
-        code.push(op::SELFDESTRUCT);
+        code.push(opcode::SELFDESTRUCT);
 
         let (stop, _) = run_with_inspector(
             code,
@@ -687,12 +687,12 @@ mod tests {
         let caller = Address::from([0xaa; 20]);
         let contract = Address::from([0xbb; 20]);
         let code = Bytecode::new_legacy(Bytes::from_static(&[
-            op::PUSH1,
+            opcode::PUSH1,
             0,
-            op::PUSH1,
+            opcode::PUSH1,
             0,
-            op::LOG0,
-            op::STOP,
+            opcode::LOG0,
+            opcode::STOP,
         ]));
         let mut database = InMemoryDB::default();
         database.insert_account_info(
@@ -784,7 +784,7 @@ mod tests {
         let tx = RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(
             TxLegacy {
                 to: TxKind::Create,
-                input: Bytes::from_static(&[op::STOP]),
+                input: Bytes::from_static(&[opcode::STOP]),
                 gas_limit: 100_000,
                 ..Default::default()
             },

@@ -72,65 +72,72 @@ mod tests {
 
     #[test]
     fn pop_opcode() {
-        let interpreter = run_stack([1], op::POP);
+        let interpreter = run_stack([1], opcode::POP);
         assert!(matches!(interpreter.err, InstrStop::Stop));
         assert!(interpreter.stack().is_empty());
 
-        let interpreter =
-            run(RunConfig::new([op::PUSH1, 0x01, op::PUSH1, 0x02, op::POP, op::STOP]));
+        let interpreter = run(RunConfig::new([
+            opcode::PUSH1,
+            0x01,
+            opcode::PUSH1,
+            0x02,
+            opcode::POP,
+            opcode::STOP,
+        ]));
         assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.stack(), [Word::from(1)]);
     }
 
     #[test]
     fn stack_underflow() {
-        let interpreter = run(RunConfig::new([op::POP]));
+        let interpreter = run(RunConfig::new([opcode::POP]));
         assert!(matches!(interpreter.err, InstrStop::StackUnderflow));
 
-        let interpreter = run(RunConfig::new([op::DUP1]));
+        let interpreter = run(RunConfig::new([opcode::DUP1]));
         assert!(matches!(interpreter.err, InstrStop::StackUnderflow));
 
-        let interpreter = run(RunConfig::new([op::PUSH0, op::SWAP1]));
+        let interpreter = run(RunConfig::new([opcode::PUSH0, opcode::SWAP1]));
         assert!(matches!(interpreter.err, InstrStop::StackUnderflow));
 
-        let interpreter = run(RunConfig::new([op::DUPN, 0x80]).spec(SpecId::AMSTERDAM));
-        assert!(matches!(interpreter.err, InstrStop::StackUnderflow));
-
-        let interpreter = run(RunConfig::new([op::PUSH0, op::SWAPN, 0x80]).spec(SpecId::AMSTERDAM));
+        let interpreter = run(RunConfig::new([opcode::DUPN, 0x80]).spec(SpecId::AMSTERDAM));
         assert!(matches!(interpreter.err, InstrStop::StackUnderflow));
 
         let interpreter =
-            run(RunConfig::new([op::PUSH0, op::EXCHANGE, 0x8e]).spec(SpecId::AMSTERDAM));
+            run(RunConfig::new([opcode::PUSH0, opcode::SWAPN, 0x80]).spec(SpecId::AMSTERDAM));
+        assert!(matches!(interpreter.err, InstrStop::StackUnderflow));
+
+        let interpreter =
+            run(RunConfig::new([opcode::PUSH0, opcode::EXCHANGE, 0x8e]).spec(SpecId::AMSTERDAM));
         assert!(matches!(interpreter.err, InstrStop::StackUnderflow));
     }
 
     #[test]
     fn stack_overflow() {
-        let mut code = vec![op::PUSH0; StackMut::CAPACITY];
+        let mut code = vec![opcode::PUSH0; StackMut::CAPACITY];
         let interpreter = run(RunConfig::new(code.clone()));
         assert!(matches!(interpreter.err, InstrStop::Stop));
-        code.extend([op::PUSH0]);
+        code.extend([opcode::PUSH0]);
         let interpreter = run(RunConfig::new(code));
         assert!(matches!(interpreter.err, InstrStop::StackOverflow));
 
-        let mut code = vec![op::PUSH0; StackMut::CAPACITY];
-        code.extend([op::PUSH1, 0x00, op::STOP]);
+        let mut code = vec![opcode::PUSH0; StackMut::CAPACITY];
+        code.extend([opcode::PUSH1, 0x00, opcode::STOP]);
         let interpreter = run(RunConfig::new(code));
         assert!(matches!(interpreter.err, InstrStop::StackOverflow));
 
-        let mut code = vec![op::PUSH0; StackMut::CAPACITY];
-        code.extend([op::DUP1, op::STOP]);
+        let mut code = vec![opcode::PUSH0; StackMut::CAPACITY];
+        code.extend([opcode::DUP1, opcode::STOP]);
         let interpreter = run(RunConfig::new(code));
         assert!(matches!(interpreter.err, InstrStop::StackOverflow));
     }
 
     #[test]
     fn push0_opcode() {
-        let interpreter = run(RunConfig::new([op::PUSH0, op::STOP]));
+        let interpreter = run(RunConfig::new([opcode::PUSH0, opcode::STOP]));
         assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.stack(), [0]);
 
-        let interpreter = run(RunConfig::new([op::PUSH0, op::PUSH0, op::STOP]));
+        let interpreter = run(RunConfig::new([opcode::PUSH0, opcode::PUSH0, opcode::STOP]));
         assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.stack(), [0, 0]);
     }
@@ -140,7 +147,7 @@ mod tests {
             let mut code = Vec::new();
             code.push(opcode);
             code.extend_from_slice(&bytes);
-            code.push(op::STOP);
+            code.push(opcode::STOP);
 
             let interpreter = run(RunConfig::new(code));
             assert!(matches!(interpreter.err, InstrStop::Stop));
@@ -160,38 +167,38 @@ mod tests {
     }
 
     push_tests! {
-        push1_opcode, op::PUSH1, 1;
-        push2_opcode, op::PUSH2, 2;
-        push3_opcode, op::PUSH3, 3;
-        push4_opcode, op::PUSH4, 4;
-        push5_opcode, op::PUSH5, 5;
-        push6_opcode, op::PUSH6, 6;
-        push7_opcode, op::PUSH7, 7;
-        push8_opcode, op::PUSH8, 8;
-        push9_opcode, op::PUSH9, 9;
-        push10_opcode, op::PUSH10, 10;
-        push11_opcode, op::PUSH11, 11;
-        push12_opcode, op::PUSH12, 12;
-        push13_opcode, op::PUSH13, 13;
-        push14_opcode, op::PUSH14, 14;
-        push15_opcode, op::PUSH15, 15;
-        push16_opcode, op::PUSH16, 16;
-        push17_opcode, op::PUSH17, 17;
-        push18_opcode, op::PUSH18, 18;
-        push19_opcode, op::PUSH19, 19;
-        push20_opcode, op::PUSH20, 20;
-        push21_opcode, op::PUSH21, 21;
-        push22_opcode, op::PUSH22, 22;
-        push23_opcode, op::PUSH23, 23;
-        push24_opcode, op::PUSH24, 24;
-        push25_opcode, op::PUSH25, 25;
-        push26_opcode, op::PUSH26, 26;
-        push27_opcode, op::PUSH27, 27;
-        push28_opcode, op::PUSH28, 28;
-        push29_opcode, op::PUSH29, 29;
-        push30_opcode, op::PUSH30, 30;
-        push31_opcode, op::PUSH31, 31;
-        push32_opcode, op::PUSH32, 32;
+        push1_opcode, opcode::PUSH1, 1;
+        push2_opcode, opcode::PUSH2, 2;
+        push3_opcode, opcode::PUSH3, 3;
+        push4_opcode, opcode::PUSH4, 4;
+        push5_opcode, opcode::PUSH5, 5;
+        push6_opcode, opcode::PUSH6, 6;
+        push7_opcode, opcode::PUSH7, 7;
+        push8_opcode, opcode::PUSH8, 8;
+        push9_opcode, opcode::PUSH9, 9;
+        push10_opcode, opcode::PUSH10, 10;
+        push11_opcode, opcode::PUSH11, 11;
+        push12_opcode, opcode::PUSH12, 12;
+        push13_opcode, opcode::PUSH13, 13;
+        push14_opcode, opcode::PUSH14, 14;
+        push15_opcode, opcode::PUSH15, 15;
+        push16_opcode, opcode::PUSH16, 16;
+        push17_opcode, opcode::PUSH17, 17;
+        push18_opcode, opcode::PUSH18, 18;
+        push19_opcode, opcode::PUSH19, 19;
+        push20_opcode, opcode::PUSH20, 20;
+        push21_opcode, opcode::PUSH21, 21;
+        push22_opcode, opcode::PUSH22, 22;
+        push23_opcode, opcode::PUSH23, 23;
+        push24_opcode, opcode::PUSH24, 24;
+        push25_opcode, opcode::PUSH25, 25;
+        push26_opcode, opcode::PUSH26, 26;
+        push27_opcode, opcode::PUSH27, 27;
+        push28_opcode, opcode::PUSH28, 28;
+        push29_opcode, opcode::PUSH29, 29;
+        push30_opcode, opcode::PUSH30, 30;
+        push31_opcode, opcode::PUSH31, 31;
+        push32_opcode, opcode::PUSH32, 32;
     }
 
     fn assert_dup_opcode(opcode: u8, n: usize) {
@@ -201,7 +208,7 @@ mod tests {
                 push(&mut code, Word::from(value + offset));
             }
             code.push(opcode);
-            code.push(op::STOP);
+            code.push(opcode::STOP);
 
             let interpreter = run(RunConfig::new(code));
             assert!(matches!(interpreter.err, InstrStop::Stop));
@@ -222,22 +229,22 @@ mod tests {
     }
 
     dup_tests! {
-        dup1_opcode, op::DUP1, 1;
-        dup2_opcode, op::DUP2, 2;
-        dup3_opcode, op::DUP3, 3;
-        dup4_opcode, op::DUP4, 4;
-        dup5_opcode, op::DUP5, 5;
-        dup6_opcode, op::DUP6, 6;
-        dup7_opcode, op::DUP7, 7;
-        dup8_opcode, op::DUP8, 8;
-        dup9_opcode, op::DUP9, 9;
-        dup10_opcode, op::DUP10, 10;
-        dup11_opcode, op::DUP11, 11;
-        dup12_opcode, op::DUP12, 12;
-        dup13_opcode, op::DUP13, 13;
-        dup14_opcode, op::DUP14, 14;
-        dup15_opcode, op::DUP15, 15;
-        dup16_opcode, op::DUP16, 16;
+        dup1_opcode, opcode::DUP1, 1;
+        dup2_opcode, opcode::DUP2, 2;
+        dup3_opcode, opcode::DUP3, 3;
+        dup4_opcode, opcode::DUP4, 4;
+        dup5_opcode, opcode::DUP5, 5;
+        dup6_opcode, opcode::DUP6, 6;
+        dup7_opcode, opcode::DUP7, 7;
+        dup8_opcode, opcode::DUP8, 8;
+        dup9_opcode, opcode::DUP9, 9;
+        dup10_opcode, opcode::DUP10, 10;
+        dup11_opcode, opcode::DUP11, 11;
+        dup12_opcode, opcode::DUP12, 12;
+        dup13_opcode, opcode::DUP13, 13;
+        dup14_opcode, opcode::DUP14, 14;
+        dup15_opcode, opcode::DUP15, 15;
+        dup16_opcode, opcode::DUP16, 16;
     }
 
     fn assert_swap_opcode(opcode: u8, n: usize) {
@@ -247,7 +254,7 @@ mod tests {
                 push(&mut code, Word::from(value + offset));
             }
             code.push(opcode);
-            code.push(op::STOP);
+            code.push(opcode::STOP);
 
             let interpreter = run(RunConfig::new(code));
             assert!(matches!(interpreter.err, InstrStop::Stop));
@@ -269,29 +276,29 @@ mod tests {
     }
 
     swap_tests! {
-        swap1_opcode, op::SWAP1, 1;
-        swap2_opcode, op::SWAP2, 2;
-        swap3_opcode, op::SWAP3, 3;
-        swap4_opcode, op::SWAP4, 4;
-        swap5_opcode, op::SWAP5, 5;
-        swap6_opcode, op::SWAP6, 6;
-        swap7_opcode, op::SWAP7, 7;
-        swap8_opcode, op::SWAP8, 8;
-        swap9_opcode, op::SWAP9, 9;
-        swap10_opcode, op::SWAP10, 10;
-        swap11_opcode, op::SWAP11, 11;
-        swap12_opcode, op::SWAP12, 12;
-        swap13_opcode, op::SWAP13, 13;
-        swap14_opcode, op::SWAP14, 14;
-        swap15_opcode, op::SWAP15, 15;
-        swap16_opcode, op::SWAP16, 16;
+        swap1_opcode, opcode::SWAP1, 1;
+        swap2_opcode, opcode::SWAP2, 2;
+        swap3_opcode, opcode::SWAP3, 3;
+        swap4_opcode, opcode::SWAP4, 4;
+        swap5_opcode, opcode::SWAP5, 5;
+        swap6_opcode, opcode::SWAP6, 6;
+        swap7_opcode, opcode::SWAP7, 7;
+        swap8_opcode, opcode::SWAP8, 8;
+        swap9_opcode, opcode::SWAP9, 9;
+        swap10_opcode, opcode::SWAP10, 10;
+        swap11_opcode, opcode::SWAP11, 11;
+        swap12_opcode, opcode::SWAP12, 12;
+        swap13_opcode, opcode::SWAP13, 13;
+        swap14_opcode, opcode::SWAP14, 14;
+        swap15_opcode, opcode::SWAP15, 15;
+        swap16_opcode, opcode::SWAP16, 16;
     }
 
     #[test]
     fn dupn_opcode() {
-        let mut code = vec![op::PUSH1, 0x01, op::PUSH1, 0x00];
-        code.extend(core::iter::repeat_n(op::DUP1, 15));
-        code.extend([op::DUPN, 0x80, op::STOP]);
+        let mut code = vec![opcode::PUSH1, 0x01, opcode::PUSH1, 0x00];
+        code.extend(core::iter::repeat_n(opcode::DUP1, 15));
+        code.extend([opcode::DUPN, 0x80, opcode::STOP]);
         let interpreter = run(RunConfig::new(code).spec(SpecId::AMSTERDAM));
         assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.stack().len(), 18);
@@ -305,7 +312,7 @@ mod tests {
         for value in 0..145 {
             push(&mut code, Word::from(value));
         }
-        code.extend([op::DUPN, 0xff, op::STOP]);
+        code.extend([opcode::DUPN, 0xff, opcode::STOP]);
         let interpreter = run(RunConfig::new(code).spec(SpecId::AMSTERDAM));
         assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.stack().len(), 146);
@@ -314,9 +321,9 @@ mod tests {
 
     #[test]
     fn swapn_opcode() {
-        let mut code = vec![op::PUSH1, 0x01, op::PUSH1, 0x00];
-        code.extend(core::iter::repeat_n(op::DUP1, 15));
-        code.extend([op::PUSH1, 0x02, op::SWAPN, 0x80, op::STOP]);
+        let mut code = vec![opcode::PUSH1, 0x01, opcode::PUSH1, 0x00];
+        code.extend(core::iter::repeat_n(opcode::DUP1, 15));
+        code.extend([opcode::PUSH1, 0x02, opcode::SWAPN, 0x80, opcode::STOP]);
         let interpreter = run(RunConfig::new(code).spec(SpecId::AMSTERDAM));
         assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.stack().len(), 18);
@@ -330,7 +337,7 @@ mod tests {
         for value in 0..145 {
             push(&mut code, Word::from(value));
         }
-        code.extend([op::SWAPN, 0xff, op::STOP]);
+        code.extend([opcode::SWAPN, 0xff, opcode::STOP]);
         let interpreter = run(RunConfig::new(code).spec(SpecId::AMSTERDAM));
         assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.stack()[0], Word::from(144));
@@ -340,15 +347,15 @@ mod tests {
     #[test]
     fn exchange_opcode() {
         let interpreter = run(RunConfig::new([
-            op::PUSH1,
+            opcode::PUSH1,
             0x00,
-            op::PUSH1,
+            opcode::PUSH1,
             0x01,
-            op::PUSH1,
+            opcode::PUSH1,
             0x02,
-            op::EXCHANGE,
+            opcode::EXCHANGE,
             0x8e,
-            op::STOP,
+            opcode::STOP,
         ])
         .spec(SpecId::AMSTERDAM));
         assert!(matches!(interpreter.err, InstrStop::Stop));
@@ -358,7 +365,7 @@ mod tests {
         for value in 0..23 {
             push(&mut code, Word::from(value));
         }
-        code.extend([op::EXCHANGE, 0xff, op::STOP]);
+        code.extend([opcode::EXCHANGE, 0xff, opcode::STOP]);
         let interpreter = run(RunConfig::new(code).spec(SpecId::AMSTERDAM));
         assert!(matches!(interpreter.err, InstrStop::Stop));
         assert_eq!(interpreter.stack()[0], Word::from(21));
@@ -368,13 +375,13 @@ mod tests {
 
     #[test]
     fn relative_stack_opcodes_are_not_enabled_before_amsterdam() {
-        let interpreter = run(RunConfig::new([op::DUPN, 0x80]).spec(SpecId::OSAKA));
+        let interpreter = run(RunConfig::new([opcode::DUPN, 0x80]).spec(SpecId::OSAKA));
         assert!(matches!(interpreter.err, InstrStop::OpcodeNotFound));
 
-        let interpreter = run(RunConfig::new([op::SWAPN, 0x80]).spec(SpecId::OSAKA));
+        let interpreter = run(RunConfig::new([opcode::SWAPN, 0x80]).spec(SpecId::OSAKA));
         assert!(matches!(interpreter.err, InstrStop::OpcodeNotFound));
 
-        let interpreter = run(RunConfig::new([op::EXCHANGE, 0x8e]).spec(SpecId::OSAKA));
+        let interpreter = run(RunConfig::new([opcode::EXCHANGE, 0x8e]).spec(SpecId::OSAKA));
         assert!(matches!(interpreter.err, InstrStop::OpcodeNotFound));
     }
 }

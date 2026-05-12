@@ -8,7 +8,7 @@ use alloy_primitives::{
 use alloy_rpc_types_eth::{AccessList, AccessListItem};
 use evm2::{
     EvmTypes, Inspector,
-    bytecode::opcode::op,
+    bytecode::opcode,
     interpreter::{Interpreter, Message, MessageResult, Word},
 };
 
@@ -83,7 +83,7 @@ impl AccessListInspector {
 impl<T: EvmTypes> Inspector<T> for AccessListInspector {
     fn step(&mut self, interp: &mut Interpreter<'_, T>) {
         match interp.opcode() {
-            op::SLOAD | op::SSTORE => {
+            opcode::SLOAD | opcode::SSTORE => {
                 if let Some(slot) = stack_peek(interp, 0) {
                     let cur_contract = interp.message().destination;
                     self.touched_slots
@@ -92,11 +92,11 @@ impl<T: EvmTypes> Inspector<T> for AccessListInspector {
                         .insert(B256::from(slot.to_be_bytes()));
                 }
             }
-            op::EXTCODECOPY
-            | op::EXTCODEHASH
-            | op::EXTCODESIZE
-            | op::BALANCE
-            | op::SELFDESTRUCT => {
+            opcode::EXTCODECOPY
+            | opcode::EXTCODEHASH
+            | opcode::EXTCODESIZE
+            | opcode::BALANCE
+            | opcode::SELFDESTRUCT => {
                 if let Some(slot) = stack_peek(interp, 0) {
                     let addr = Address::from_word(B256::from(slot.to_be_bytes()));
                     if !self.excluded.contains(&addr) {
@@ -104,7 +104,7 @@ impl<T: EvmTypes> Inspector<T> for AccessListInspector {
                     }
                 }
             }
-            op::DELEGATECALL | op::CALL | op::STATICCALL | op::CALLCODE => {
+            opcode::DELEGATECALL | opcode::CALL | opcode::STATICCALL | opcode::CALLCODE => {
                 if let Some(slot) = stack_peek(interp, 1) {
                     let addr = Address::from_word(B256::from(slot.to_be_bytes()));
                     if !self.excluded.contains(&addr) {

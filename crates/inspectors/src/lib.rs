@@ -31,7 +31,8 @@ use thiserror as _;
 
 pub mod access_list;
 
-pub mod opcode;
+mod opcode;
+pub use opcode::{OpcodeGasInspector, immediate_size};
 
 pub mod tracing;
 

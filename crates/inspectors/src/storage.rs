@@ -3,7 +3,7 @@
 use alloy_primitives::{Address, B256, map::HashMap};
 use evm2::{
     EvmTypes, Inspector,
-    bytecode::opcode::op,
+    bytecode::opcode,
     interpreter::{Interpreter, Word},
 };
 
@@ -51,7 +51,7 @@ impl StorageInspector {
 
 impl<T: EvmTypes> Inspector<T> for StorageInspector {
     fn step(&mut self, interp: &mut Interpreter<'_, T>) {
-        if interp.opcode() == op::SLOAD
+        if interp.opcode() == opcode::SLOAD
             && let Some(slot) = stack_peek(interp, 0)
         {
             let address = interp.message().destination;

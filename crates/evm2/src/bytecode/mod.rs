@@ -2,7 +2,6 @@
 
 use crate::{
     constants::{EIP7702_BYTECODE_LEN, EIP7702_MAGIC_BYTES, EIP7702_VERSION},
-    interpreter::op,
     once_lock::OnceLock,
 };
 use alloc::sync::Arc;
@@ -131,7 +130,7 @@ impl Bytecode {
         DEFAULT.get_or_init(|| {
             Self(Arc::new(BytecodeInner {
                 kind: BytecodeKind::Legacy,
-                bytecode: Bytes::from_static(&[op::STOP]),
+                bytecode: Bytes::from_static(&[opcode::STOP]),
                 original_len: 0,
                 jump_table: JumpTable::default(),
                 hash: {
@@ -341,7 +340,7 @@ impl Bytecode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::interpreter::op as opcode;
+    use crate::interpreter::opcode;
     use alloy_primitives::{Address, Bytes};
 
     #[test]

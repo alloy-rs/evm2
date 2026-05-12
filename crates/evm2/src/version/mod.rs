@@ -6,7 +6,7 @@ use crate::{
         BLOB_BASE_FEE_UPDATE_FRACTION_CANCUN, BLOB_BASE_FEE_UPDATE_FRACTION_PRAGUE, MAX_CODE_SIZE,
         MAX_CODE_SIZE_AMSTERDAM, MAX_INITCODE_SIZE, MAX_INITCODE_SIZE_AMSTERDAM,
     },
-    interpreter::{instructions as instr, opcode::op},
+    interpreter::{instructions as instr, opcode},
 };
 use alloy_eips::{eip4844::MAX_BLOBS_PER_BLOCK_DENCUN, eip7825::MAX_TX_GAS_LIMIT_OSAKA};
 
@@ -167,12 +167,12 @@ macro_rules! apply_version_tables {
     ($v:ident, $ty:ident, features: [$($tokens:tt)*]) => {};
     ($v:ident, $ty:ident, ops: [$($name:ident: $cost:expr,)*]) => {
         $(
-            $v.set_instruction::<op_instr!($ty, $name)>(op::$name, $cost as u16);
+            $v.set_instruction::<op_instr!($ty, $name)>(opcode::$name, $cost as u16);
         )*
     };
     ($v:ident, $ty:ident, static_gas: [$($name:ident: $cost:expr,)*]) => {
         $(
-            $v.set_static_gas(op::$name, $cost as u16);
+            $v.set_static_gas(opcode::$name, $cost as u16);
         )*
     };
     ($v:ident, $ty:ident, dynamic_gas: [$($tokens:tt)*]) => {};

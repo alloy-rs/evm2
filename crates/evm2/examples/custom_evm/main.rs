@@ -11,7 +11,7 @@ use evm2::{
     env::BlockEnv,
     evm::{InMemoryDB, precompile::NoPrecompiles},
     inspector::Inspector,
-    interpreter::{InstrStop, Interpreter, Message, MessageResult, op},
+    interpreter::{InstrStop, Interpreter, Message, MessageResult, opcode},
     registry::HandlerResult,
 };
 use std::{cell::RefCell, rc::Rc};
@@ -33,10 +33,10 @@ fn custom_opcode() -> HandlerResult<()> {
     let mut evm = custom_evm();
     let tx = custom_opcode_tx(Bytes::from_static(&[
         opcode::CUSTOM_OPCODE,
-        op::PUSH1,
+        opcode::PUSH1,
         0x01,
-        op::SSTORE,
-        op::STOP,
+        opcode::SSTORE,
+        opcode::STOP,
     ]));
 
     let result = evm.transact(&tx)?;
@@ -65,12 +65,12 @@ fn l1_blocknumber_opcode() -> HandlerResult<()> {
     let mut evm = custom_evm();
     let tx = custom_opcode_tx(Bytes::from_static(&[
         opcode::L1_BLOCKNUMBER_OPCODE,
-        op::PUSH0,
-        op::MSTORE,
-        op::PUSH1,
+        opcode::PUSH0,
+        opcode::MSTORE,
+        opcode::PUSH1,
         32,
-        op::PUSH0,
-        op::RETURN,
+        opcode::PUSH0,
+        opcode::RETURN,
     ]));
 
     let result = evm.transact(&tx)?;
@@ -90,7 +90,7 @@ fn l1_blocknumber_opcode() -> HandlerResult<()> {
 
 fn mainnet_fallback() -> HandlerResult<()> {
     let mut evm = mainnet_evm();
-    let tx = custom_opcode_tx(Bytes::from_static(&[opcode::CUSTOM_OPCODE, op::STOP]));
+    let tx = custom_opcode_tx(Bytes::from_static(&[opcode::CUSTOM_OPCODE, opcode::STOP]));
 
     let result = evm.transact(&tx)?;
 
@@ -109,18 +109,19 @@ fn inspector() -> HandlerResult<()> {
     let inspector_state = Rc::new(RefCell::new(InspectorState::default()));
     evm.set_inspector(ExampleInspector(Rc::clone(&inspector_state)));
     let tx = custom_opcode_tx(Bytes::from_static(&[
-        op::PUSH1,
+        opcode::PUSH1,
         0,
-        op::PUSH1,
+        opcode::PUSH1,
         0,
-        op::LOG0,
+        opcode::LOG0,
         opcode::CUSTOM_OPCODE,
-        op::STOP,
+        opcode::STOP,
     ]));
 
     let result = evm.transact(&tx)?;
     let inspector_state = inspector_state.borrow();
-    let expected_opcodes = [op::PUSH1, op::PUSH1, op::LOG0, opcode::CUSTOM_OPCODE, op::STOP];
+    let expected_opcodes =
+        [opcode::PUSH1, opcode::PUSH1, opcode::LOG0, opcode::CUSTOM_OPCODE, opcode::STOP];
 
     println!(
         "inspector: expected status=true initialized=1 steps=5 step_ends=5 logs=1 calls=0 opcodes={expected_opcodes:?}; got status={} initialized={} steps={} step_ends={} logs={} calls={} opcodes={:?}",

@@ -397,7 +397,7 @@ mod tests {
                 Word::from(1000),
             ],
         );
-        code.extend([op::CALL, op::STOP]);
+        code.extend([opcode::CALL, opcode::STOP]);
 
         let interpreter = run(RunConfig::new(code).host(&mut host).message(Message {
             destination: caller,
@@ -429,7 +429,7 @@ mod tests {
                 Word::from(1000),
             ],
         );
-        code.extend([op::CALL, op::STOP]);
+        code.extend([opcode::CALL, opcode::STOP]);
 
         let interpreter = run(RunConfig::new(code).host(&mut host).staticcall());
         assert!(matches!(interpreter.err, InstrStop::Stop));
@@ -455,7 +455,7 @@ mod tests {
                 Word::from(1000),
             ],
         );
-        code.extend([op::CALL, op::STOP]);
+        code.extend([opcode::CALL, opcode::STOP]);
 
         let interpreter = run(RunConfig::new(code)
             .host(&mut host)
@@ -472,23 +472,23 @@ mod tests {
     fn call_with_value_too_deep_credits_stipend() {
         let mut host = TestHost::default();
         let code = [
-            op::PUSH1,
+            opcode::PUSH1,
             0xff,
-            op::PUSH1,
+            opcode::PUSH1,
             0,
-            op::PUSH1,
+            opcode::PUSH1,
             0xff,
-            op::PUSH1,
+            opcode::PUSH1,
             0,
-            op::PUSH1,
+            opcode::PUSH1,
             1,
-            op::PUSH1,
+            opcode::PUSH1,
             0xaa,
-            op::PUSH2,
+            opcode::PUSH2,
             0x80,
             0,
-            op::CALL,
-            op::POP,
+            opcode::CALL,
+            opcode::POP,
         ];
 
         let interpreter = run(RunConfig::new(code)
@@ -518,7 +518,7 @@ mod tests {
                 Word::ZERO,
             ],
         );
-        code.extend([op::CALL, op::STOP]);
+        code.extend([opcode::CALL, opcode::STOP]);
 
         let interpreter = run(RunConfig::new(code)
             .host(&mut host)
@@ -549,7 +549,7 @@ mod tests {
                 Word::ZERO,
             ],
         );
-        code.extend([op::CALL, op::STOP]);
+        code.extend([opcode::CALL, opcode::STOP]);
 
         let interpreter = run(RunConfig::new(code)
             .host(&mut host)
@@ -579,7 +579,7 @@ mod tests {
                 Word::from(1000),
             ],
         );
-        code.extend([op::CALLCODE, op::STOP]);
+        code.extend([opcode::CALLCODE, opcode::STOP]);
 
         let interpreter = run(RunConfig::new(code).host(&mut host).staticcall().gas_limit(20_000));
         assert!(matches!(interpreter.err, InstrStop::Stop));
@@ -607,7 +607,7 @@ mod tests {
                 Word::from(1000),
             ],
         );
-        code.extend([op::CALLCODE, op::STOP]);
+        code.extend([opcode::CALLCODE, opcode::STOP]);
 
         let interpreter = run(RunConfig::new(code)
             .host(&mut host)
@@ -638,7 +638,7 @@ mod tests {
                 Word::from(1000),
             ],
         );
-        code.extend([op::DELEGATECALL, op::STOP]);
+        code.extend([opcode::DELEGATECALL, opcode::STOP]);
 
         let interpreter = run(RunConfig::new(code).host(&mut host).message(Message {
             caller,
@@ -654,19 +654,19 @@ mod tests {
         assert_eq!(host.calls[0].code_address, code_address);
 
         let interpreter = run(RunConfig::new([
-            op::PUSH1,
+            opcode::PUSH1,
             0,
-            op::PUSH1,
+            opcode::PUSH1,
             0,
-            op::PUSH1,
+            opcode::PUSH1,
             0,
-            op::PUSH1,
+            opcode::PUSH1,
             0,
-            op::PUSH1,
+            opcode::PUSH1,
             0,
-            op::PUSH1,
+            opcode::PUSH1,
             0,
-            op::DELEGATECALL,
+            opcode::DELEGATECALL,
         ])
         .spec(SpecId::FRONTIER));
         assert!(matches!(interpreter.err, InstrStop::OpcodeNotFound));
@@ -688,7 +688,7 @@ mod tests {
                 Word::from(1000),
             ],
         );
-        code.extend([op::STATICCALL, op::STOP]);
+        code.extend([opcode::STATICCALL, opcode::STOP]);
 
         let interpreter = run(RunConfig::new(code).host(&mut host));
         assert!(matches!(interpreter.err, InstrStop::Stop));
@@ -697,19 +697,19 @@ mod tests {
         assert!(host.call_static_flags[0]);
 
         let interpreter = run(RunConfig::new([
-            op::PUSH1,
+            opcode::PUSH1,
             0,
-            op::PUSH1,
+            opcode::PUSH1,
             0,
-            op::PUSH1,
+            opcode::PUSH1,
             0,
-            op::PUSH1,
+            opcode::PUSH1,
             0,
-            op::PUSH1,
+            opcode::PUSH1,
             0,
-            op::PUSH1,
+            opcode::PUSH1,
             0,
-            op::STATICCALL,
+            opcode::STATICCALL,
         ])
         .spec(SpecId::HOMESTEAD));
         assert!(matches!(interpreter.err, InstrStop::OpcodeNotFound));
@@ -728,7 +728,7 @@ mod tests {
         };
         let mut code = Vec::new();
         push_all(&mut code, [Word::from(0), Word::from(0), Word::from(0)]);
-        code.extend([op::CREATE, op::STOP]);
+        code.extend([opcode::CREATE, opcode::STOP]);
 
         let interpreter = run(RunConfig::new(code).host(&mut host).gas_limit(50_000));
         assert!(matches!(interpreter.err, InstrStop::Stop));
@@ -751,7 +751,7 @@ mod tests {
         };
         let mut code = Vec::new();
         push_all(&mut code, [Word::from(0), Word::from(0), Word::from(0)]);
-        code.extend([op::CREATE, op::RETURNDATASIZE, op::STOP]);
+        code.extend([opcode::CREATE, opcode::RETURNDATASIZE, opcode::STOP]);
 
         let interpreter = run(RunConfig::new(code).host(&mut host).gas_limit(50_000));
         assert!(matches!(interpreter.err, InstrStop::Stop));
@@ -770,7 +770,7 @@ mod tests {
         };
         let mut code = Vec::new();
         push_all(&mut code, [Word::from(0), Word::from(0), Word::from(0)]);
-        code.extend([op::CREATE, op::RETURNDATASIZE, op::STOP]);
+        code.extend([opcode::CREATE, opcode::RETURNDATASIZE, opcode::STOP]);
 
         let interpreter = run(RunConfig::new(code).host(&mut host).gas_limit(50_000));
         assert!(matches!(interpreter.err, InstrStop::Stop));
@@ -782,7 +782,7 @@ mod tests {
         let mut host = TestHost::default();
         let mut code = Vec::new();
         push_all(&mut code, [Word::ZERO, Word::ZERO, Word::ZERO]);
-        code.extend([op::CREATE, op::STOP]);
+        code.extend([opcode::CREATE, opcode::STOP]);
 
         let interpreter = run(RunConfig::new(code)
             .host(&mut host)
@@ -800,7 +800,7 @@ mod tests {
         let mut host = TestHost::default();
         let mut code = Vec::new();
         push_all(&mut code, [Word::from(MAX_INITCODE_SIZE + 1), Word::ZERO, Word::ZERO]);
-        code.extend([op::CREATE, op::STOP]);
+        code.extend([opcode::CREATE, opcode::STOP]);
 
         let interpreter =
             run(RunConfig::new(code).host(&mut host).spec(SpecId::SHANGHAI).gas_limit(50_000));
@@ -821,7 +821,7 @@ mod tests {
         };
         let mut code = Vec::new();
         push_all(&mut code, [Word::from(0), Word::from(0), Word::from(0), Word::from(0)]);
-        code.extend([op::CREATE2, op::STOP]);
+        code.extend([opcode::CREATE2, opcode::STOP]);
 
         let interpreter = run(RunConfig::new(code).host(&mut host).gas_limit(50_000));
         assert!(matches!(interpreter.err, InstrStop::Stop));
@@ -829,15 +829,15 @@ mod tests {
         assert_eq!(host.calls[0].kind, MessageKind::Create2);
 
         let interpreter = run(RunConfig::new([
-            op::PUSH1,
+            opcode::PUSH1,
             0,
-            op::PUSH1,
+            opcode::PUSH1,
             0,
-            op::PUSH1,
+            opcode::PUSH1,
             0,
-            op::PUSH1,
+            opcode::PUSH1,
             0,
-            op::CREATE2,
+            opcode::CREATE2,
         ])
         .spec(SpecId::BYZANTIUM));
         assert!(matches!(interpreter.err, InstrStop::OpcodeNotFound));
@@ -850,7 +850,7 @@ mod tests {
         let mut host = TestHost::default();
         let mut code = Vec::new();
         push(&mut code, address_to_word(target));
-        code.push(op::SELFDESTRUCT);
+        code.push(opcode::SELFDESTRUCT);
 
         let interpreter = run(RunConfig::new(code).host(&mut host).message(Message {
             destination: contract,

@@ -13,7 +13,6 @@ pub mod private;
 
 /// Opcode byte constants and metadata.
 pub mod opcode;
-pub use opcode::op;
 
 mod ctrl;
 pub use ctrl::{BytecodeRef, Pc};

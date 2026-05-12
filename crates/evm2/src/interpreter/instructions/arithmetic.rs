@@ -154,7 +154,7 @@ mod tests {
         let mut code = Vec::new();
         push(&mut code, 0xff);
         push(&mut code, 2);
-        code.extend([op::EXP, op::STOP]);
+        code.extend([opcode::EXP, opcode::STOP]);
 
         let interpreter = run(RunConfig::new(code).spec(SpecId::FRONTIER).gas_limit(25));
 
@@ -166,7 +166,7 @@ mod tests {
         let mut code = Vec::new();
         push(&mut code, 0xff);
         push(&mut code, 2);
-        code.extend([op::EXP, op::STOP]);
+        code.extend([opcode::EXP, opcode::STOP]);
 
         let frontier = run(RunConfig::new(code.clone()).spec(SpecId::FRONTIER).gas_limit(65));
         let spurious_dragon = run(RunConfig::new(code).spec(SpecId::SPURIOUS_DRAGON).gas_limit(65));
