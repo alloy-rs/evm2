@@ -18,6 +18,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 from typing import TypeVar
 
@@ -56,6 +57,10 @@ def display_path(path: Path) -> str:
 
 def log(level: str, message: str) -> None:
     logging.getLogger().log(getattr(logging, level.upper()), message)
+
+
+def log_time(log_time: datetime) -> str:
+    return f"[{log_time.strftime('%Y-%m-%d %H:%M:%S')}.{log_time.microsecond // 1000:03d}]"
 
 
 def parse_opcodes() -> dict[str, int]:
@@ -366,7 +371,8 @@ def main() -> int:
                 keywords=[],
                 markup=False,
                 show_path=False,
-                show_time=False,
+                show_time=True,
+                log_time_format=log_time,
             )
         ],
     )
@@ -427,7 +433,7 @@ def main() -> int:
             log("warning", f"no run_inner found in --{output} output")
             continue
         run_inner_files += 1
-    print(f"wrote {len(tasks) + run_inner_files} file(s) to {display_path(out)}")
+    log("info", f"wrote {len(tasks) + run_inner_files} file(s) to {display_path(out)}")
 
     return 0
 
