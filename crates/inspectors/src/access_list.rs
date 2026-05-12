@@ -72,7 +72,7 @@ impl AccessListInspector {
         AccessList(items.collect())
     }
 
-    fn collect_excluded_addresses(&mut self, message: &Message) {
+    fn collect_excluded_addresses<T: EvmTypes>(&mut self, message: &Message<T>) {
         self.excluded.insert(message.caller);
         self.excluded.insert(message.destination);
     }
@@ -114,14 +114,14 @@ impl<T: EvmTypes> Inspector<T> for AccessListInspector {
         }
     }
 
-    fn call(&mut self, message: &mut Message) -> Option<MessageResult> {
+    fn call(&mut self, message: &mut Message<T>) -> Option<MessageResult<T>> {
         if message.depth == 1 {
             self.collect_excluded_addresses(message);
         }
         None
     }
 
-    fn create(&mut self, message: &mut Message) -> Option<MessageResult> {
+    fn create(&mut self, message: &mut Message<T>) -> Option<MessageResult<T>> {
         if message.depth == 1 {
             self.collect_excluded_addresses(message);
         }

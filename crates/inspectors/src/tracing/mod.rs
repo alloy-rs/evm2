@@ -318,7 +318,7 @@ impl TracingInspector {
         self.traces
     }
 
-    fn start_trace(&mut self, message: &Message) {
+    fn start_trace<T: EvmTypes>(&mut self, message: &Message<T>) {
         let parent = self.trace_stack.last().copied();
         let trace = CallTrace {
             kind: message.kind.into(),
@@ -335,7 +335,7 @@ impl TracingInspector {
         self.trace_stack.push(idx);
     }
 
-    fn end_trace(&mut self, result: &MessageResult) {
+    fn end_trace<T: EvmTypes>(&mut self, result: &MessageResult<T>) {
         let Some(idx) = self.trace_stack.pop() else {
             return;
         };
@@ -418,21 +418,21 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
         }
     }
 
-    fn call(&mut self, message: &mut Message) -> Option<MessageResult> {
+    fn call(&mut self, message: &mut Message<T>) -> Option<MessageResult<T>> {
         self.start_trace(message);
         None
     }
 
-    fn call_end(&mut self, _message: &Message, result: &mut MessageResult) {
+    fn call_end(&mut self, _message: &Message<T>, result: &mut MessageResult<T>) {
         self.end_trace(result);
     }
 
-    fn create(&mut self, message: &mut Message) -> Option<MessageResult> {
+    fn create(&mut self, message: &mut Message<T>) -> Option<MessageResult<T>> {
         self.start_trace(message);
         None
     }
 
-    fn create_end(&mut self, _message: &Message, result: &mut MessageResult) {
+    fn create_end(&mut self, _message: &Message<T>, result: &mut MessageResult<T>) {
         self.end_trace(result);
     }
 
