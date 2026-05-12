@@ -194,6 +194,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         )
     }
 
+    #[inline(never)]
     fn run_inner(
         &mut self,
         version: &Version,
