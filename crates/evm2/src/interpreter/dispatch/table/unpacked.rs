@@ -9,17 +9,17 @@ use core::hint::cold_path;
 type InstrFnRet = (*const u8, usize);
 
 /// Unpacked instruction function pointer.
-pub(super) type RawInstrFn<T> =
+pub(in crate::interpreter::dispatch) type RawInstrFn<T> =
     extern_table!(fn(pc: Pc, stack: Stack<'_>, state: &mut InterpreterState<'_, T>) -> InstrFnRet);
 
 /// Unpacked instruction dispatch table.
-pub(super) type RawInstrTable<T> = [RawInstrFn<T>; 256];
+pub(in crate::interpreter::dispatch) type RawInstrTable<T> = [RawInstrFn<T>; 256];
 
 #[inline(always)]
-pub(super) const fn loop_state(_gas: &Gas) {}
+pub(in crate::interpreter::dispatch) const fn loop_state(_gas: &Gas) {}
 
 #[inline(always)]
-pub(super) fn dispatch_loop_call<T: EvmTypes>(
+pub(in crate::interpreter::dispatch) fn dispatch_loop_call<T: EvmTypes>(
     instr: RawInstrFn<T>,
     pc: Pc,
     stack: Stack<'_>,
@@ -31,10 +31,10 @@ pub(super) fn dispatch_loop_call<T: EvmTypes>(
 }
 
 #[inline(always)]
-pub(super) const fn finish_loop(_gas: &mut Gas, _loop_state: ()) {}
+pub(in crate::interpreter::dispatch) const fn finish_loop(_gas: &mut Gas, _loop_state: ()) {}
 
 extern_table! {
-    pub(super) fn dispatch<
+    pub(in crate::interpreter::dispatch) fn dispatch<
         T: EvmTypes,
         C: EvmConfig<T>,
         M: InspectMode<T>,
@@ -54,7 +54,7 @@ extern_table! {
         )
     }
 
-    pub(super) fn unknown_dispatch<
+    pub(in crate::interpreter::dispatch) fn unknown_dispatch<
         T: EvmTypes,
         C: EvmConfig<T>,
         M: InspectMode<T>,

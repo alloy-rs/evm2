@@ -12,7 +12,7 @@ use core::hint::cold_path;
 pub(crate) type InstrFnRet = (Pc, PackedGasStackLen);
 
 /// Packed instruction function pointer.
-pub(super) type RawInstrFn<T> = extern_table!(
+pub(in crate::interpreter::dispatch) type RawInstrFn<T> = extern_table!(
     fn(
         pc: Pc,
         stack: Stack<'_>,
@@ -22,15 +22,15 @@ pub(super) type RawInstrFn<T> = extern_table!(
 );
 
 /// Packed instruction dispatch table.
-pub(super) type RawInstrTable<T> = [RawInstrFn<T>; 256];
+pub(in crate::interpreter::dispatch) type RawInstrTable<T> = [RawInstrFn<T>; 256];
 
 #[inline(always)]
-pub(super) const fn loop_state(gas: &Gas) -> RemainingGas {
+pub(in crate::interpreter::dispatch) const fn loop_state(gas: &Gas) -> RemainingGas {
     RemainingGas::new(gas.remaining())
 }
 
 #[inline(always)]
-pub(super) fn dispatch_loop_call<T: EvmTypes>(
+pub(in crate::interpreter::dispatch) fn dispatch_loop_call<T: EvmTypes>(
     instr: RawInstrFn<T>,
     pc: Pc,
     stack: Stack<'_>,
@@ -43,12 +43,15 @@ pub(super) fn dispatch_loop_call<T: EvmTypes>(
 }
 
 #[inline(always)]
-pub(super) const fn finish_loop(gas: &mut Gas, remaining_gas: RemainingGas) {
+pub(in crate::interpreter::dispatch) const fn finish_loop(
+    gas: &mut Gas,
+    remaining_gas: RemainingGas,
+) {
     gas.set_remaining(remaining_gas.get());
 }
 
 extern_table! {
-    pub(super) fn dispatch<
+    pub(in crate::interpreter::dispatch) fn dispatch<
         T: EvmTypes,
         C: EvmConfig<T>,
         M: InspectMode<T>,
@@ -69,7 +72,7 @@ extern_table! {
         )
     }
 
-    pub(super) fn unknown_dispatch<
+    pub(in crate::interpreter::dispatch) fn unknown_dispatch<
         T: EvmTypes,
         C: EvmConfig<T>,
         M: InspectMode<T>,
