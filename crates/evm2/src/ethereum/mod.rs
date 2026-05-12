@@ -94,7 +94,7 @@ impl Typed2718 for RecoveredTxEnvelope {
 /// Returns the Ethereum transaction registry for `spec_id`.
 pub fn ethereum_tx_registry<T: EvmTypes<Host = Evm<T>>>(
     spec_id: SpecId,
-) -> TxRegistry<RecoveredTxEnvelope, TxResult, Evm<T>> {
+) -> TxRegistry<RecoveredTxEnvelope, TxResult<T>, Evm<T>> {
     let mut registry =
         TxRegistry::new().with_handler(0, RecoveredTxEnvelope::as_legacy, legacy::handle::<T>);
 
@@ -334,7 +334,7 @@ pub(crate) fn initial_message<T: EvmTypes<Host = Evm<T>>>(
     input: &Bytes,
     value: U256,
     gas_limit: u64,
-) -> HandlerResult<(Bytecode, Message)> {
+) -> HandlerResult<(Bytecode, Message<T>)> {
     let r = match to {
         TxKind::Call(to) => {
             let initial_code = initial_call_code(host, to)?;
@@ -349,6 +349,7 @@ pub(crate) fn initial_message<T: EvmTypes<Host = Evm<T>>>(
                 code_address: initial_code.code_address,
                 disable_precompiles: initial_code.disable_precompiles,
                 salt: B256::ZERO,
+                ext: T::MessageExt::default(),
             };
             (initial_code.code, message)
         }
@@ -365,6 +366,7 @@ pub(crate) fn initial_message<T: EvmTypes<Host = Evm<T>>>(
                 code_address: address,
                 disable_precompiles: false,
                 salt: B256::ZERO,
+                ext: T::MessageExt::default(),
             };
             (Bytecode::new_legacy(input.clone()), message)
         }
@@ -403,7 +405,7 @@ fn initial_call_code<T: EvmTypes<Host = Evm<T>>>(
 pub(super) fn rollback_failed_execution<T: EvmTypes<Host = Evm<T>>>(
     host: &mut Evm<T>,
     checkpoint: StateCheckpoint,
-    result: &mut MessageResult,
+    result: &mut MessageResult<T>,
 ) {
     if !result.stop.is_success() {
         host.state.rollback(checkpoint, host.spec_id());
@@ -419,8 +421,8 @@ pub(super) fn settle_gas<T: EvmTypes<Host = Evm<T>>>(
     gas_price: U256,
     tx_gas_limit: u64,
     floor_gas: u64,
-    result: MessageResult,
-) -> HandlerResult<TxResult> {
+    result: MessageResult<T>,
+) -> HandlerResult<TxResult<T>> {
     let (gas_remaining, gas_used) =
         final_tx_gas(&result, tx_gas_limit, host.feature(EvmFeatures::EIP3529), floor_gas);
     if host.feature(EvmFeatures::FEE_CHARGE) {
@@ -441,12 +443,13 @@ pub(super) fn settle_gas<T: EvmTypes<Host = Evm<T>>>(
         gas_used,
         stop: result.stop,
         output: result.output,
+        ext: T::TxResultExt::default(),
         ..TxResult::default()
     })
 }
 
-const fn final_tx_gas(
-    result: &MessageResult,
+const fn final_tx_gas<T: EvmTypes>(
+    result: &MessageResult<T>,
     tx_gas_limit: u64,
     is_eip3529: bool,
     floor_gas: u64,
@@ -707,14 +710,14 @@ mod tests {
 
     #[test]
     fn final_tx_gas_charges_calldata_floor_after_refund() {
-        let result = MessageResult {
+        let result = MessageResult::<BaseEvmTypes> {
             stop: crate::interpreter::InstrStop::Return,
             gas: {
                 let mut gas = GasTracker::new(100_000, 50_000, 0);
                 gas.set_refunded(10_000);
                 gas
             },
-            ..MessageResult::default()
+            ..MessageResult::<BaseEvmTypes>::default()
         };
 
         assert_eq!(final_tx_gas(&result, 100_000, true, 60_000), (40_000, 60_000));
@@ -722,10 +725,10 @@ mod tests {
 
     #[test]
     fn final_tx_gas_preserves_higher_actual_usage() {
-        let result = MessageResult {
+        let result = MessageResult::<BaseEvmTypes> {
             stop: crate::interpreter::InstrStop::Return,
             gas: GasTracker::new(100_000, 30_000, 0),
-            ..MessageResult::default()
+            ..MessageResult::<BaseEvmTypes>::default()
         };
 
         assert_eq!(final_tx_gas(&result, 100_000, true, 60_000), (30_000, 70_000));

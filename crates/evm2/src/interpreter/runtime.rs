@@ -15,10 +15,11 @@ use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::{Address, Bytes, Log};
 #[cfg(not(tco))]
 use core::hint::cold_path;
-use core::{fmt, marker::PhantomData, ptr::NonNull};
+use core::{fmt, ptr::NonNull};
+use derive_where::derive_where;
 
 /// EVM interpreter.
-#[derive(derive_more::Debug)]
+#[derive_where(Debug)]
 pub struct Interpreter<'frame, T: EvmTypes> {
     bytecode: Bytecode,
     memory: Memory,
@@ -26,13 +27,15 @@ pub struct Interpreter<'frame, T: EvmTypes> {
 
     pc: *const u8,
     output: *const [u8],
-    tx_env: Option<&'frame TxEnv>,
-    message: Option<&'frame Message>,
+    #[derive_where(skip)]
+    tx_env: Option<&'frame TxEnv<T>>,
+    #[derive_where(skip)]
+    message: Option<&'frame Message<T>>,
     host: Option<NonNull<T::Host>>,
     inspector: Option<NonNull<dyn Inspector<T>>>,
     version: *const Version,
     stack_len: usize,
-    #[debug(skip)]
+    #[derive_where(skip)]
     stack: Box<StackBacking>,
 
     gas: Gas,
@@ -40,9 +43,6 @@ pub struct Interpreter<'frame, T: EvmTypes> {
     spec: SpecId,
     features: EvmFeatures,
     is_static: bool,
-
-    #[debug(skip)]
-    _marker: PhantomData<fn() -> T>,
 }
 
 impl<T: EvmTypes> Default for Interpreter<'_, T> {
@@ -67,7 +67,6 @@ impl<T: EvmTypes> Default for Interpreter<'_, T> {
             features: EvmFeatures::empty(),
             // SAFETY: `MaybeUninit<Word>` does not need initialization.
             stack: unsafe { Box::new_uninit().assume_init() },
-            _marker: PhantomData,
         }
     }
 }
@@ -77,8 +76,8 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
     /// frame-local message.
     pub fn new(
         bytecode: Bytecode,
-        tx_env: &'frame TxEnv,
-        message: &'frame Message,
+        tx_env: &'frame TxEnv<T>,
+        message: &'frame Message<T>,
         caller_is_static: bool,
     ) -> Self {
         let mut interpreter = Self::default();
@@ -90,8 +89,8 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
     pub(crate) fn init(
         &mut self,
         bytecode: Bytecode,
-        tx_env: &'frame TxEnv,
-        message: &'frame Message,
+        tx_env: &'frame TxEnv<T>,
+        message: &'frame Message<T>,
         caller_is_static: bool,
     ) {
         let gas_limit = message.gas_limit;
@@ -313,7 +312,7 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
 
     /// Returns the cached transaction-global environment.
     #[inline]
-    pub const fn tx(&self) -> &TxEnv {
+    pub const fn tx(&self) -> &TxEnv<T> {
         // SAFETY: `tx_env` is initialized at the beginning of `run` and remains set for
         // instruction execution.
         unsafe { self.0.tx_env.unwrap_unchecked() }
@@ -344,7 +343,7 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
 
     /// Returns the active frame-local call/create message.
     #[inline]
-    pub const fn message(&self) -> &Message {
+    pub const fn message(&self) -> &Message<T> {
         // SAFETY: `message` is initialized at the beginning of `run` and remains set for
         // instruction execution.
         unsafe { self.0.message.unwrap_unchecked() }
@@ -420,24 +419,28 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
     }
 
     #[inline]
-    pub(crate) fn inspect_call(&mut self, message: &mut Message) -> Option<MessageResult> {
+    pub(crate) fn inspect_call(&mut self, message: &mut Message<T>) -> Option<MessageResult<T>> {
         self.inspector().and_then(|inspector| inspector.call(message))
     }
 
     #[inline]
-    pub(crate) fn inspect_call_end(&mut self, message: &Message, result: &mut MessageResult) {
+    pub(crate) fn inspect_call_end(&mut self, message: &Message<T>, result: &mut MessageResult<T>) {
         if let Some(inspector) = self.inspector() {
             inspector.call_end(message, result);
         }
     }
 
     #[inline]
-    pub(crate) fn inspect_create(&mut self, message: &mut Message) -> Option<MessageResult> {
+    pub(crate) fn inspect_create(&mut self, message: &mut Message<T>) -> Option<MessageResult<T>> {
         self.inspector().and_then(|inspector| inspector.create(message))
     }
 
     #[inline]
-    pub(crate) fn inspect_create_end(&mut self, message: &Message, result: &mut MessageResult) {
+    pub(crate) fn inspect_create_end(
+        &mut self,
+        message: &Message<T>,
+        result: &mut MessageResult<T>,
+    ) {
         if let Some(inspector) = self.inspector() {
             inspector.create_end(message, result);
         }

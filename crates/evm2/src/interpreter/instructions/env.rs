@@ -186,7 +186,9 @@ mod tests {
         env::TxEnv,
         interpreter::{
             InstrStop, Message, Word,
-            instructions::tests::{RunConfig, TestHost, assert_stack, push, run, run_stack},
+            instructions::tests::{
+                RunConfig, TestHost, TestTypes, assert_stack, push, run, run_stack,
+            },
             op,
         },
         utils::{address_to_word, b256_to_word},
@@ -198,7 +200,7 @@ mod tests {
         Word::from(0).wrapping_sub(Word::from(value))
     }
 
-    fn test_message() -> Message {
+    fn test_message() -> Message<TestTypes> {
         Message { gas_limit: 10_000, ..Message::default() }
     }
 

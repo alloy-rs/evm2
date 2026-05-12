@@ -19,13 +19,18 @@ impl EvmTypes for TestTypes {
     type ConfigSelector = crate::BaseEvmConfigSelector;
     type SpecId = crate::SpecId;
     type Tx = ();
+    type MessageExt = ();
+    type MessageResultExt = ();
+    type TxEnvExt = ();
+    type TxResultExt = ();
+    type BlockEnvExt = ();
     type Host = TestHost;
 }
 
 #[derive(Debug)]
 pub(crate) struct TestHost {
     pub(super) spec_id: SpecId,
-    pub(super) block: BlockEnv,
+    pub(super) block: BlockEnv<TestTypes>,
     pub(super) code_hash: B256,
     pub(super) code: Bytes,
     pub(super) exists: bool,
@@ -36,10 +41,10 @@ pub(crate) struct TestHost {
     pub(super) original_storage: StorageKeyMap<Word>,
     pub(super) transient_storage: StorageKeyMap<Word>,
     pub(crate) logs: Vec<Log>,
-    pub(super) execute_result: MessageResult,
+    pub(super) execute_result: MessageResult<TestTypes>,
     pub(crate) selfdestruct_result: SelfDestructResult,
     pub(crate) selfdestruct_error: Option<InstrStop>,
-    pub(crate) calls: Vec<Message>,
+    pub(crate) calls: Vec<Message<TestTypes>>,
     pub(super) call_static_flags: Vec<bool>,
     pub(super) selfdestructs: Vec<(Address, Address, bool)>,
 }
@@ -69,12 +74,12 @@ impl Default for TestHost {
     }
 }
 
-impl Host for TestHost {
+impl Host<TestTypes> for TestHost {
     fn spec_id(&self) -> SpecId {
         self.spec_id
     }
 
-    fn block_env(&mut self) -> &BlockEnv {
+    fn block_env(&mut self) -> &BlockEnv<TestTypes> {
         &self.block
     }
 
@@ -162,11 +167,11 @@ impl Host for TestHost {
 
     fn execute_message(
         &mut self,
-        _tx_env: &TxEnv,
+        _tx_env: &TxEnv<TestTypes>,
         _bytecode: Bytecode,
-        message: &Message,
+        message: &Message<TestTypes>,
         caller_is_static: bool,
-    ) -> MessageResult {
+    ) -> MessageResult<TestTypes> {
         self.call_static_flags.push(caller_is_static || message.kind == MessageKind::StaticCall);
         self.calls.push(message.clone());
         self.execute_result.clone()
@@ -227,8 +232,8 @@ pub(super) struct RunConfig<'a> {
     pub(super) code: Vec<u8>,
     pub(super) host: Option<&'a mut TestHost>,
     pub(super) spec_id: SpecId,
-    pub(super) tx_env: TxEnv,
-    pub(super) message: Message,
+    pub(super) tx_env: TxEnv<TestTypes>,
+    pub(super) message: Message<TestTypes>,
     pub(super) gas_limit: u64,
     pub(super) return_data: Bytes,
 }
@@ -248,12 +253,12 @@ impl<'a> RunConfig<'a> {
         self
     }
 
-    pub(super) fn tx_env(mut self, tx_env: TxEnv) -> Self {
+    pub(super) fn tx_env(mut self, tx_env: TxEnv<TestTypes>) -> Self {
         self.tx_env = tx_env;
         self
     }
 
-    pub(super) fn message(mut self, message: Message) -> Self {
+    pub(super) fn message(mut self, message: Message<TestTypes>) -> Self {
         self.message = message;
         self
     }

@@ -20,7 +20,7 @@ use alloy_primitives::{Address, U256};
 
 pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     req: TxRequest<'_, Recovered<TxEip7702>, Evm<T>>,
-) -> HandlerResult<TxResult> {
+) -> HandlerResult<TxResult<T>> {
     let caller = req.tx.signer();
     let tx = req.tx.inner();
     if tx.authorization_list.is_empty() {
