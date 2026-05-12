@@ -1,11 +1,14 @@
 //! Custom transaction envelope and registry handlers.
 
-use crate::config::CustomTypes;
+use crate::config::{
+    CustomMessageExt, CustomMessageResultExt, CustomTxEnvExt, CustomTxResultExt, CustomTypes,
+};
 use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{Address, Bytes};
 use evm2::{
     Evm,
     bytecode::Bytecode,
+    env::TxEnv,
     interpreter::{Host, Message},
     registry::{HandlerResult, TxRegistry, TxRequest},
 };
@@ -48,30 +51,35 @@ impl ExecuteCodeTx {
 
 pub fn execute_code(
     req: TxRequest<'_, ExecuteCodeTx, Evm<CustomTypes>>,
-) -> HandlerResult<evm2::TxResult> {
+) -> HandlerResult<evm2::TxResult<CustomTypes>> {
     // The transaction handler owns policy; the interpreter still executes a normal message.
     let message = Message {
         gas_limit: req.tx.gas_limit,
         destination: req.tx.target,
         code_address: req.tx.target,
+        ext: CustomMessageExt { is_system: false },
         ..Message::default()
     };
-    let result = req.host.execute_message(
-        &Default::default(),
+    let tx_env = TxEnv { ext: CustomTxEnvExt { label: "execute-code" }, ..TxEnv::default() };
+    let mut result = req.host.execute_message(
+        &tx_env,
         Bytecode::new_legacy(req.tx.code.clone()),
         &message,
         false,
     );
-    Ok(evm2::TxResult {
+    result.ext = CustomMessageResultExt { handled_custom_message: true };
+    Ok(evm2::TxResult::<CustomTypes> {
         status: result.stop.is_success(),
         gas_used: req.tx.gas_limit - result.gas.remaining(),
         stop: result.stop,
         output: result.output,
+        ext: CustomTxResultExt { handled_custom_tx: result.ext.handled_custom_message },
         ..Default::default()
     })
 }
 
-pub fn custom_registry() -> TxRegistry<CustomEnvelope, evm2::TxResult, Evm<CustomTypes>> {
+pub fn custom_registry() -> TxRegistry<CustomEnvelope, evm2::TxResult<CustomTypes>, Evm<CustomTypes>>
+{
     // The EIP-2718 type byte selects the typed extractor and handler.
     TxRegistry::new().with_handler(
         EXECUTE_CODE_TX_TYPE,

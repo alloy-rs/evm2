@@ -39,7 +39,7 @@ const fn should_charge_new_account_gas(
 }
 
 #[inline]
-fn call_too_deep_result(gas_limit: u64) -> MessageResult {
+fn call_too_deep_result<T: EvmTypes>(gas_limit: u64) -> MessageResult<T> {
     MessageResult {
         stop: InstrStop::CallTooDeep,
         gas: GasTracker::new(gas_limit, gas_limit, 0),
@@ -220,12 +220,13 @@ fn call_inner<T: EvmTypes>(
         code_address,
         disable_precompiles,
         salt: B256::ZERO,
+        ext: T::MessageExt::default(),
     };
     let caller_is_static = cx.state.is_static();
     let mut result = if let Some(result) = cx.state.inspect_call(&mut message) {
         result
     } else if message.depth > CALL_DEPTH_LIMIT {
-        call_too_deep_result(message.gas_limit)
+        call_too_deep_result::<T>(message.gas_limit)
     } else {
         let bytecode = crate::bytecode::Bytecode::new_legacy(code);
         let tx_env = unsafe { trustme::decouple_lt(cx.state.tx()) };
@@ -311,11 +312,12 @@ fn create_inner<T: EvmTypes>(
         code_address: current.destination,
         disable_precompiles: false,
         salt: salt.map(|salt| B256::from(salt.to_be_bytes())).unwrap_or_default(),
+        ext: T::MessageExt::default(),
     };
     let mut result = if let Some(result) = cx.state.inspect_create(&mut message) {
         result
     } else if message.depth > CALL_DEPTH_LIMIT {
-        call_too_deep_result(message.gas_limit)
+        call_too_deep_result::<T>(message.gas_limit)
     } else {
         let bytecode = crate::bytecode::Bytecode::new_legacy(input);
         let tx_env = unsafe { trustme::decouple_lt(cx.state.tx()) };

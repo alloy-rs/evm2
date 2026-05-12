@@ -377,6 +377,7 @@ fn block_env_from_header(header: &BlockHeader, excess_blob_gas: u64, spec: SpecI
         },
         blob_basefee: U256::from(blob_basefee(excess_blob_gas, spec)),
         slot_num: header.slot_number.unwrap_or_default(),
+        ext: (),
     }
 }
 
