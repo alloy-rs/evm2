@@ -254,9 +254,9 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         let state = InterpreterState::wrap_mut(unsafe { &mut *raw });
         let pc = Pc::new(self.pc);
         let op = pc.op();
-        let instr = instructions[op as usize];
         let stack = Stack::new(&mut self.stack, self.stack_len);
         let remaining_gas = RemainingGas::new(self.gas.remaining());
+        let instr = instructions[op as usize];
         instr(pc, stack, remaining_gas, state, (instructions as *const InstrTable<T>).cast());
         self.result.unwrap_err()
     }
