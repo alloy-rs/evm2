@@ -206,7 +206,12 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         self.spec = version.spec_id;
         self.features = version.features;
 
-        dispatch::run(self, instructions)
+        #[cfg(tco)]
+        let r = dispatch::run_tail(self, instructions);
+        #[cfg(not(tco))]
+        let r = dispatch::run_table_loop(self, instructions);
+
+        r
     }
 }
 

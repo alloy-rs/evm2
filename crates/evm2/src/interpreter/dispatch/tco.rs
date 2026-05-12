@@ -47,7 +47,7 @@ macro_rules! assign_instruction_table_entry {
     }};
 }
 
-pub(crate) const fn make_table<T, C, M>(
+pub(super) const fn make_table<T, C, M>(
     previous: Option<&RawInstrTable<T>>,
     previous_version_tables: Option<&VersionTables<T>>,
 ) -> RawInstrTable<T>
@@ -65,7 +65,7 @@ where
     table
 }
 
-pub(crate) const fn make_selector_tables<T, F, M, const CUSTOM_SPEC_ID: u8>()
+pub(super) const fn make_selector_tables<T, F, M, const CUSTOM_SPEC_ID: u8>()
 -> [RawInstrTable<T>; SpecId::COUNT]
 where
     T: EvmTypes,

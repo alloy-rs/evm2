@@ -17,13 +17,13 @@ pub(super) type RawInstrFn<T> = extern_table!(
 
 dispatch_tables!();
 
-pub(crate) type LoopState = ();
+pub(super) type LoopState = ();
 
 #[inline(always)]
-pub(crate) const fn loop_state(_gas: &Gas) -> LoopState {}
+pub(super) const fn loop_state(_gas: &Gas) -> LoopState {}
 
 #[inline(always)]
-pub(crate) fn dispatch_loop_call<T: EvmTypes>(
+pub(super) fn dispatch_loop_call<T: EvmTypes>(
     instr: RawInstrFn<T>,
     pc: Pc,
     stack: Stack<'_>,
@@ -36,7 +36,7 @@ pub(crate) fn dispatch_loop_call<T: EvmTypes>(
 }
 
 #[inline(always)]
-pub(crate) const fn finish_loop(_gas: &mut Gas, _loop_state: LoopState) {}
+pub(super) const fn finish_loop(_gas: &mut Gas, _loop_state: LoopState) {}
 
 extern_table! {
     pub(super) fn dispatch<

@@ -113,7 +113,7 @@ macro_rules! dispatch_tables {
         /// Instruction dispatch table.
         pub(super) type RawInstrTable<T> = [RawInstrFn<T>; 256];
 
-        pub(crate) const fn make_table<T, C, M>(
+        pub(super) const fn make_table<T, C, M>(
             previous: Option<&RawInstrTable<T>>,
             previous_version_tables: Option<&crate::VersionTables<T>>,
         ) -> RawInstrTable<T>
@@ -145,7 +145,7 @@ macro_rules! dispatch_tables {
             table
         }
 
-        pub(crate) const fn make_selector_tables<
+        pub(super) const fn make_selector_tables<
             T,
             F,
             M,
@@ -178,26 +178,13 @@ cfg_if::cfg_if! {
 }
 
 /// Instruction function pointer.
-pub(crate) type InstrFn<T> = imp::RawInstrFn<T>;
+type InstrFn<T> = imp::RawInstrFn<T>;
 
 /// Instruction dispatch table.
 pub(crate) type InstrTable<T> = imp::RawInstrTable<T>;
 
-#[inline(always)]
-pub(crate) fn run<T: EvmTypes>(
-    interpreter: &mut Interpreter<'_, T>,
-    instructions: &InstrTable<T>,
-) -> InstrStop {
-    #[cfg(tco)]
-    let r = step_tail(interpreter, instructions);
-    #[cfg(not(tco))]
-    let r = run_table_loop(interpreter, instructions);
-
-    r
-}
-
 #[cfg(not(tco))]
-fn run_table_loop<T: EvmTypes>(
+pub(in crate::interpreter) fn run_table_loop<T: EvmTypes>(
     interpreter: &mut Interpreter<'_, T>,
     instructions: &InstrTable<T>,
 ) -> InstrStop {
@@ -230,7 +217,7 @@ fn run_table_loop<T: EvmTypes>(
 
 #[inline(always)]
 #[cfg(tco)]
-fn step_tail<T: EvmTypes>(
+pub(in crate::interpreter) fn run_tail<T: EvmTypes>(
     interpreter: &mut Interpreter<'_, T>,
     instructions: &InstrTable<T>,
 ) -> InstrStop {
@@ -250,17 +237,17 @@ fn step_tail<T: EvmTypes>(
 }
 
 #[cfg(not(tco))]
-pub(crate) type LoopState = imp::LoopState;
+type LoopState = imp::LoopState;
 
 #[cfg(not(tco))]
 #[inline(always)]
-pub(crate) const fn loop_state(gas: &Gas) -> LoopState {
+const fn loop_state(gas: &Gas) -> LoopState {
     imp::loop_state(gas)
 }
 
 #[cfg(not(tco))]
 #[inline(always)]
-pub(crate) fn dispatch_loop_call<T: EvmTypes>(
+fn dispatch_loop_call<T: EvmTypes>(
     instr: InstrFn<T>,
     pc: Pc,
     stack: Stack<'_>,
@@ -272,7 +259,7 @@ pub(crate) fn dispatch_loop_call<T: EvmTypes>(
 
 #[cfg(not(tco))]
 #[inline(always)]
-pub(crate) const fn finish_loop(gas: &mut Gas, loop_state: LoopState) {
+const fn finish_loop(gas: &mut Gas, loop_state: LoopState) {
     imp::finish_loop(gas, loop_state);
 }
 
@@ -321,7 +308,7 @@ where
         &imp::make_selector_tables::<T, F, DynInspector, CUSTOM_SPEC_ID>();
 }
 
-pub(super) const fn instruction_changed<T: EvmTypes>(
+const fn instruction_changed<T: EvmTypes>(
     version_tables: &VersionTables<T>,
     previous_version_tables: Option<&VersionTables<T>>,
     op: u8,
@@ -333,7 +320,7 @@ pub(super) const fn instruction_changed<T: EvmTypes>(
 }
 
 #[inline(always)]
-pub(super) const fn inc_pc(pc: &mut Pc, op: u8) {
+const fn inc_pc(pc: &mut Pc, op: u8) {
     unsafe { pc.advance_unchecked(instruction_len(op)) };
 }
 
@@ -347,7 +334,7 @@ const fn instruction_len(op: u8) -> usize {
     }
 }
 
-pub(crate) trait InspectMode<T: EvmTypes> {
+trait InspectMode<T: EvmTypes> {
     const INSPECT: bool;
 
     fn step(state: &mut InterpreterState<'_, T>, pc: Pc, stack_len: usize);
@@ -355,7 +342,7 @@ pub(crate) trait InspectMode<T: EvmTypes> {
     fn step_end(state: &mut InterpreterState<'_, T>, pc: Pc, stack_len: usize);
 }
 
-pub(crate) struct NoInspector;
+struct NoInspector;
 
 impl<T: EvmTypes> InspectMode<T> for NoInspector {
     const INSPECT: bool = false;
@@ -367,7 +354,7 @@ impl<T: EvmTypes> InspectMode<T> for NoInspector {
     fn step_end(_state: &mut InterpreterState<'_, T>, _pc: Pc, _stack_len: usize) {}
 }
 
-pub(crate) struct DynInspector;
+struct DynInspector;
 
 impl<T: EvmTypes> InspectMode<T> for DynInspector {
     const INSPECT: bool = true;
