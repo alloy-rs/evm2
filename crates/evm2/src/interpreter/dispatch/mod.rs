@@ -1,12 +1,17 @@
 //! Instruction dispatch tables.
 
 #[cfg(not(tco))]
-use crate::interpreter::{Gas, Stack};
+use crate::interpreter::Gas;
+#[cfg(tco)]
+use crate::interpreter::gas::RemainingGas;
 use crate::{
     BaseEvmConfigSelector, EvmConfig, EvmConfigSelector, EvmTypes, VersionTables,
     evm::config::SelectorVersionTables,
-    interpreter::{InstrStop, InterpreterState, Pc, Result, StackMut, op},
+    interpreter::{InstrStop, Interpreter, InterpreterState, Pc, Result, Stack, StackMut, op},
+    trustme,
 };
+#[cfg(not(tco))]
+use core::hint::cold_path;
 
 #[cold]
 pub(crate) const fn unknown_instruction<T: EvmTypes>(
@@ -177,6 +182,72 @@ pub(crate) type InstrFn<T> = imp::RawInstrFn<T>;
 
 /// Instruction dispatch table.
 pub(crate) type InstrTable<T> = imp::RawInstrTable<T>;
+
+#[inline(always)]
+pub(crate) fn run<T: EvmTypes>(
+    interpreter: &mut Interpreter<'_, T>,
+    instructions: &InstrTable<T>,
+) -> InstrStop {
+    #[cfg(tco)]
+    let r = step_tail(interpreter, instructions);
+    #[cfg(not(tco))]
+    let r = run_table_loop(interpreter, instructions);
+
+    r
+}
+
+#[cfg(not(tco))]
+fn run_table_loop<T: EvmTypes>(
+    interpreter: &mut Interpreter<'_, T>,
+    instructions: &InstrTable<T>,
+) -> InstrStop {
+    // SAFETY: Only the active interpreter lifetime is erased; this stays as a raw pointer so
+    // the dispatch loop does not create an extra `&mut` alias for `interpreter`.
+    let raw = unsafe { trustme::decouple_lt_mut_ptr(interpreter as *mut Interpreter<'_, T>) };
+    // SAFETY: Instruction methods must not access the stack through `InterpreterState` while
+    // the separate stack view is live.
+    let state = InterpreterState::wrap_mut(unsafe { &mut *raw });
+    let mut pc = Pc::new(interpreter.pc);
+    let mut stack = Stack::new(&mut interpreter.stack, interpreter.stack_len);
+    let mut loop_state = loop_state(&interpreter.gas);
+    loop {
+        let op = pc.op();
+        let instr = instructions[op as usize];
+        let (next_pc, next_stack_len) =
+            dispatch_loop_call(instr, pc, stack.reborrow(), state, &mut loop_state);
+        pc = next_pc;
+        stack.len = next_stack_len;
+
+        if pc.as_ptr().is_null() {
+            cold_path();
+            interpreter.pc = pc.as_ptr();
+            interpreter.stack_len = stack.len;
+            finish_loop(&mut interpreter.gas, loop_state);
+            return interpreter.result.unwrap_err();
+        }
+    }
+}
+
+#[inline(always)]
+#[cfg(tco)]
+fn step_tail<T: EvmTypes>(
+    interpreter: &mut Interpreter<'_, T>,
+    instructions: &InstrTable<T>,
+) -> InstrStop {
+    // SAFETY: Only the active interpreter lifetime is erased; this stays as a raw pointer so
+    // the dispatch step does not create an extra `&mut` alias for `interpreter`.
+    let raw = unsafe { trustme::decouple_lt_mut_ptr(interpreter as *mut Interpreter<'_, T>) };
+    // SAFETY: Instruction methods must not access the stack through `InterpreterState` while
+    // the separate stack view is live.
+    let state = InterpreterState::wrap_mut(unsafe { &mut *raw });
+    let pc = Pc::new(interpreter.pc);
+    let op = pc.op();
+    let stack = Stack::new(&mut interpreter.stack, interpreter.stack_len);
+    let remaining_gas = RemainingGas::new(interpreter.gas.remaining());
+    let instr = instructions[op as usize];
+    instr(pc, stack, remaining_gas, state, (instructions as *const InstrTable<T>).cast());
+    interpreter.result.unwrap_err()
+}
 
 #[cfg(not(tco))]
 pub(crate) type LoopState = imp::LoopState;

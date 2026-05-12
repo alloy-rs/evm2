@@ -29,7 +29,6 @@ mod system;
 pub(crate) use system::*;
 
 mod i256;
-pub(crate) mod table;
 
 #[cfg(test)]
 mod macro_tests;

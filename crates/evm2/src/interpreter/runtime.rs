@@ -1,22 +1,18 @@
 use super::{
-    BytecodeRef, Gas, InstrStop, Memory, Message, MessageKind, MessageResult, Pc, Result, Stack,
+    BytecodeRef, Gas, InstrStop, Memory, Message, MessageKind, MessageResult, Pc, Result,
     StackBacking, Word,
 };
-#[cfg(tco)]
-use crate::interpreter::gas::RemainingGas;
 use crate::{
     EvmTypes, ExecutionConfig, SpecId, Version,
     bytecode::Bytecode,
     env::TxEnv,
     evm::inspector::Inspector,
-    interpreter::instructions::table::{self, InstrTable},
+    interpreter::dispatch::{self, InstrTable},
     trustme,
     version::{EvmFeatures, GasParams},
 };
 use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::{Address, Bytes, Log};
-#[cfg(not(tco))]
-use core::hint::cold_path;
 use core::{fmt, ptr::NonNull};
 use derive_where::derive_where;
 
@@ -27,7 +23,7 @@ pub struct Interpreter<'frame, T: EvmTypes> {
     memory: Memory,
     return_data: Bytes,
 
-    pc: *const u8,
+    pub(in crate::interpreter) pc: *const u8,
     output: *const [u8],
     #[derive_where(skip)]
     tx_env: Option<&'frame TxEnv<T>>,
@@ -36,12 +32,12 @@ pub struct Interpreter<'frame, T: EvmTypes> {
     host: Option<NonNull<T::Host>>,
     inspector: Option<NonNull<dyn Inspector<T>>>,
     version: *const Version,
-    stack_len: usize,
+    pub(in crate::interpreter) stack_len: usize,
     #[derive_where(skip)]
-    stack: Box<StackBacking>,
+    pub(in crate::interpreter) stack: Box<StackBacking>,
 
-    gas: Gas,
-    result: Result,
+    pub(in crate::interpreter) gas: Gas,
+    pub(in crate::interpreter) result: Result,
     spec: SpecId,
     features: EvmFeatures,
     is_static: bool,
@@ -210,59 +206,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         self.spec = version.spec_id;
         self.features = version.features;
 
-        #[cfg(tco)]
-        let r = self.step_tail(instructions);
-        #[cfg(not(tco))]
-        let r = self.run_table_loop(instructions);
-
-        r
-    }
-
-    #[cfg(not(tco))]
-    fn run_table_loop(&mut self, instructions: &InstrTable<T>) -> InstrStop {
-        // SAFETY: Only the active interpreter lifetime is erased; this stays as a raw pointer so
-        // the dispatch loop does not create an extra `&mut` alias for `self`.
-        let raw = unsafe { trustme::decouple_lt_mut_ptr(self as *mut Self) };
-        // SAFETY: Instruction methods must not access the stack through `InterpreterState` while
-        // the separate stack view is live.
-        let state = InterpreterState::wrap_mut(unsafe { &mut *raw });
-        let mut pc = Pc::new(self.pc);
-        let mut stack = Stack::new(&mut self.stack, self.stack_len);
-        let mut loop_state = table::loop_state(&self.gas);
-        loop {
-            let op = pc.op();
-            let instr = instructions[op as usize];
-            let (next_pc, next_stack_len) =
-                table::dispatch_loop_call(instr, pc, stack.reborrow(), state, &mut loop_state);
-            pc = next_pc;
-            stack.len = next_stack_len;
-
-            if pc.as_ptr().is_null() {
-                cold_path();
-                self.pc = pc.as_ptr();
-                self.stack_len = stack.len;
-                table::finish_loop(&mut self.gas, loop_state);
-                return self.result.unwrap_err();
-            }
-        }
-    }
-
-    #[inline(always)]
-    #[cfg(tco)]
-    fn step_tail(&mut self, instructions: &InstrTable<T>) -> InstrStop {
-        // SAFETY: Only the active interpreter lifetime is erased; this stays as a raw pointer so
-        // the dispatch step does not create an extra `&mut` alias for `self`.
-        let raw = unsafe { trustme::decouple_lt_mut_ptr(self as *mut Self) };
-        // SAFETY: Instruction methods must not access the stack through `InterpreterState` while
-        // the separate stack view is live.
-        let state = InterpreterState::wrap_mut(unsafe { &mut *raw });
-        let pc = Pc::new(self.pc);
-        let op = pc.op();
-        let stack = Stack::new(&mut self.stack, self.stack_len);
-        let remaining_gas = RemainingGas::new(self.gas.remaining());
-        let instr = instructions[op as usize];
-        instr(pc, stack, remaining_gas, state, (instructions as *const InstrTable<T>).cast());
-        self.result.unwrap_err()
+        dispatch::run(self, instructions)
     }
 }
 
