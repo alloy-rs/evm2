@@ -1,6 +1,6 @@
 //! Configures the optional tail-call interpreter backend.
 
-use std::{env, ffi::OsString, process::Command};
+use std::{env as std_env, ffi::OsString, process::Command};
 
 fn main() {
     println!("cargo:rustc-check-cfg=cfg(dispatch_packed)");
@@ -8,11 +8,6 @@ fn main() {
     println!("cargo:rustc-check-cfg=cfg(dispatch_unpacked)");
     println!("cargo:rustc-check-cfg=cfg(tco)");
     println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-env-changed=CARGO_CFG_TARGET_ARCH");
-    println!("cargo:rerun-if-env-changed=CARGO_CFG_TARGET_FAMILY");
-    println!("cargo:rerun-if-env-changed=CARGO_CFG_TARGET_POINTER_WIDTH");
-    println!("cargo:rerun-if-env-changed=RUSTC");
-    println!("cargo:rerun-if-env-changed=TARGET");
 
     let is_wasm = target_is_wasm();
     let dispatch_packed = target_pointer_width() == Some("64") && !is_wasm;
@@ -26,8 +21,8 @@ fn main() {
         println!("cargo:rustc-cfg=dispatch_unpacked");
     }
 
-    let no_tco_requested = env::var_os("CARGO_FEATURE_NO_TCO").is_some();
-    let nightly_requested = env::var_os("CARGO_FEATURE_NIGHTLY").is_some();
+    let no_tco_requested = env("CARGO_FEATURE_NO_TCO").is_some();
+    let nightly_requested = env("CARGO_FEATURE_NIGHTLY").is_some();
     let is_nightly = rustc_is_nightly();
 
     if no_tco_requested {
@@ -42,16 +37,19 @@ fn main() {
 }
 
 fn target_is_wasm() -> bool {
-    let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
-    let target_family = env::var("CARGO_CFG_TARGET_FAMILY").unwrap_or_default();
+    let target_arch =
+        env("CARGO_CFG_TARGET_ARCH").and_then(|value| value.into_string().ok()).unwrap_or_default();
+    let target_family = env("CARGO_CFG_TARGET_FAMILY")
+        .and_then(|value| value.into_string().ok())
+        .unwrap_or_default();
     target_arch.starts_with("wasm") || target_family.split(',').any(|family| family == "wasm")
 }
 
 fn target_pointer_width() -> Option<&'static str> {
-    match env::var("CARGO_CFG_TARGET_POINTER_WIDTH").as_deref() {
-        Ok("16") => Some("16"),
-        Ok("32") => Some("32"),
-        Ok("64") => Some("64"),
+    match env("CARGO_CFG_TARGET_POINTER_WIDTH").as_deref().and_then(|value| value.to_str()) {
+        Some("16") => Some("16"),
+        Some("32") => Some("32"),
+        Some("64") => Some("64"),
         _ => None,
     }
 }
@@ -67,5 +65,10 @@ fn rustc_is_nightly() -> bool {
 }
 
 fn rustc() -> OsString {
-    env::var_os("RUSTC").unwrap_or_else(|| OsString::from("rustc"))
+    env("RUSTC").unwrap_or_else(|| OsString::from("rustc"))
+}
+
+fn env(key: &str) -> Option<OsString> {
+    println!("cargo:rerun-if-env-changed={key}");
+    std_env::var_os(key)
 }
