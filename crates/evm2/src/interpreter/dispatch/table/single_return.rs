@@ -1,9 +1,8 @@
 use super::InspectMode;
 use crate::{
     EvmConfig, EvmTypes,
-    interpreter::{InterpreterState, Pc, Result, Stack, gas::Gas, private::InstructionImplFn},
+    interpreter::{InterpreterState, Pc, Stack},
 };
-use core::hint::cold_path;
 
 /// Single-return instruction function pointer.
 pub(in crate::interpreter::dispatch) type RawInstrFn<T> = extern_table!(
@@ -42,13 +41,14 @@ extern_table! {
         next_stack_len: &mut usize,
     ) -> Pc {
         let _ = DYNAMIC_GAS;
-        dispatch_mono::<T, C, M, OP>(
+        let (pc, stack_len) = super::dispatch_mono::<T, C, M, OP>(
             pc,
             stack,
             state,
-            next_stack_len,
             C::VERSION_TABLES.instruction(OP).instr,
-        )
+        );
+        *next_stack_len = stack_len;
+        pc
     }
 
     pub(in crate::interpreter::dispatch) fn unknown_dispatch<
@@ -61,54 +61,13 @@ extern_table! {
         state: &mut InterpreterState<'_, T>,
         next_stack_len: &mut usize,
     ) -> Pc {
-        dispatch_mono::<T, C, M, { super::UNKNOWN_OP }>(
+        let (pc, stack_len) = super::dispatch_mono::<T, C, M, { super::UNKNOWN_OP }>(
             pc,
             stack,
             state,
-            next_stack_len,
             super::unknown_instruction,
-        )
+        );
+        *next_stack_len = stack_len;
+        pc
     }
-}
-
-#[cold] // Not cold, but avoids MIR inlining.
-#[inline(always)]
-fn dispatch_mono<T: EvmTypes, C: EvmConfig<T>, M: InspectMode<T>, const OP: u8>(
-    mut pc: Pc,
-    mut stack: Stack<'_>,
-    state: &mut InterpreterState<'_, T>,
-    next_stack_len: &mut usize,
-    instr: InstructionImplFn<T>,
-) -> Pc {
-    if M::INSPECT {
-        M::step(state, pc, stack.len);
-    }
-    let r;
-    match pre_step::<T, C, OP>(state.gas_mut()) {
-        Ok(()) => {
-            r = instr(&mut pc, stack.as_mut(), state);
-            if !M::INSPECT || r.is_ok() {
-                super::inc_pc(&mut pc, OP);
-            }
-        }
-        Err(e) => r = Err(e),
-    }
-    if M::INSPECT {
-        state.set_result(r);
-        M::step_end(state, pc, stack.len);
-    }
-    *next_stack_len = stack.len;
-    if r.is_err() {
-        cold_path();
-        if !M::INSPECT {
-            state.set_result(r);
-        }
-        return Pc::new(core::ptr::null());
-    }
-    pc
-}
-
-#[inline(always)]
-const fn pre_step<T: EvmTypes, C: EvmConfig<T>, const OP: u8>(gas: &mut Gas) -> Result {
-    gas.spend(C::VERSION_TABLES.static_gas(OP) as _)
 }
