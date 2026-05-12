@@ -13,104 +13,29 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  matrices:
+    name: build matrices
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      test-matrix: ${{ steps.gen.outputs.test-matrix }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Generate matrices
+        id: gen
+        run: |
+          output=$(python3 .github/scripts/matrices.py)
+          printf '::debug::test-matrix=%s\n' "$output"
+          printf 'test-matrix=%s\n' "$output" >> "$GITHUB_OUTPUT"
+
   test:
-    name: ${{ matrix.kind }}${{ matrix.fixture && format(' {0}', matrix.fixture) || '' }} +${{ matrix.rust }} ${{ matrix.os }}${{ matrix.target && format(' {0}', matrix.target) || '' }} ${{ matrix.flags }}
+    name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
+    needs: matrices
     timeout-minutes: 30
     strategy:
       fail-fast: false
-      matrix:
-        kind: ["test", "eest"]
-        os: [
-            "ubuntu-latest",
-            # "macos-latest",
-            # "windows-latest",
-          ]
-        rust: [
-            "stable",
-            "nightly",
-            # "1.95", # MSRV
-          ]
-        flags: [
-            # No features
-            "--no-default-features",
-            # Default features
-            "",
-          ]
-        fixture: [""]
-        include:
-          # All features
-          - kind: "test"
-            os: "ubuntu-latest"
-            rust: "nightly"
-            flags: "--all-features"
-          - kind: "eest"
-            os: "ubuntu-latest"
-            rust: "nightly"
-            flags: "--all-features"
-          # - kind: "test"
-          #   os: "macos-latest"
-          #   rust: "nightly"
-          #   flags: "--all-features"
-          # - kind: "eest"
-          #   os: "macos-latest"
-          #   rust: "nightly"
-          #   flags: "--all-features"
-          # - kind: "test"
-          #   os: "windows-latest"
-          #   rust: "nightly"
-          #   flags: "--features nightly" # Some C libraries don't support MSVC.
-          # - kind: "eest"
-          #   os: "windows-latest"
-          #   rust: "nightly"
-          #   flags: "--features nightly" # Some C libraries don't support MSVC.
-          # Devnet
-          # - kind: "eest"
-          #   fixture: "devnet"
-          #   os: "ubuntu-latest"
-          #   rust: "stable"
-          #   flags: ""
-          # Other platforms
-          - kind: "wasm"
-            os: "ubuntu-latest"
-            rust: "stable"
-            flags: "--no-default-features"
-            target: "wasm32-unknown-unknown"
-            command: "build"
-          - kind: "wasm"
-            fixture: "wasi"
-            os: "ubuntu-latest"
-            rust: "stable"
-            flags: "--no-default-features --features no-tco"
-            target: "wasm32-wasip1"
-            command: "wasm-test"
-          - kind: "wasm"
-            fixture: "wasi-tail"
-            os: "ubuntu-latest"
-            rust: "stable"
-            flags: "--no-default-features"
-            rustflags: "-Ctarget-feature=+simd128,+tail-call"
-            target: "wasm32-wasip1"
-            command: "wasm-test"
-          - kind: "test"
-            fixture: "i686"
-            os: "ubuntu-latest"
-            rust: "stable"
-            flags: ""
-            target: "i686-unknown-linux-gnu"
-            command: "cross-test"
-          - kind: "test"
-            fixture: "armv7"
-            os: "ubuntu-latest"
-            rust: "stable"
-            flags: ""
-            target: "armv7-unknown-linux-gnueabihf"
-            command: "cross-test"
-          - kind: "test"
-            os: "ubuntu-24.04-arm"
-            rust: "stable"
-            flags: ""
-            command: "nextest"
+      matrix: ${{ fromJson(needs.matrices.outputs.test-matrix) }}
 
     steps:
       - uses: actions/checkout@v6
@@ -291,6 +216,7 @@ jobs:
     runs-on: ubuntu-latest
     if: always()
     needs:
+      - matrices
       - test
       - no-std
       - feature-checks
