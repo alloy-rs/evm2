@@ -1,7 +1,61 @@
-use super::{FQ_LEN, FQ2_LEN, G1_LEN, SCALAR_LEN};
+use super::{Bn254Ops, FQ_LEN, FQ2_LEN, G1_LEN, SCALAR_LEN};
 use crate::precompiles::PrecompileHalt;
 use alloc::vec::Vec;
 use bn::{AffineG1, AffineG2, Fq, Fq2, G1, G2, Group, Gt};
+
+pub(crate) struct SubstrateOps;
+
+impl Bn254Ops for SubstrateOps {
+    type G1 = G1;
+    type G2 = G2;
+    type Scalar = bn::Fr;
+
+    #[inline]
+    fn read_g1(input: &[u8]) -> Result<Self::G1, PrecompileHalt> {
+        read_g1_point(input)
+    }
+
+    #[inline]
+    fn encode_g1(point: Self::G1) -> [u8; G1_LEN] {
+        encode_g1_point(point)
+    }
+
+    #[inline]
+    fn read_g2(input: &[u8]) -> Result<Self::G2, PrecompileHalt> {
+        read_g2_point(input)
+    }
+
+    #[inline]
+    fn read_scalar(input: &[u8]) -> Self::Scalar {
+        read_scalar(input)
+    }
+
+    #[inline]
+    fn g1_is_zero(p: &Self::G1) -> bool {
+        p.is_zero()
+    }
+
+    #[inline]
+    fn g2_is_zero(p: &Self::G2) -> bool {
+        p.is_zero()
+    }
+
+    #[inline]
+    fn g1_add(p1: Self::G1, p2: Self::G1) -> Self::G1 {
+        p1 + p2
+    }
+
+    #[inline]
+    fn g1_mul(p: Self::G1, s: Self::Scalar) -> Self::G1 {
+        p * s
+    }
+
+    #[inline]
+    fn pairing_check(g1: &[Self::G1], g2: &[Self::G2]) -> bool {
+        let pairs: Vec<(G1, G2)> = g1.iter().copied().zip(g2.iter().copied()).collect();
+        bn::pairing_batch(&pairs) == Gt::one()
+    }
+}
 
 /// Reads a single `Fq` field element from the input slice.
 ///
@@ -142,51 +196,4 @@ pub(super) fn read_scalar(input: &[u8]) -> bn::Fr {
     );
     // `Fr::from_slice` can only fail when the length is not `SCALAR_LEN`.
     bn::Fr::from_slice(input).unwrap()
-}
-
-/// Performs point addition on two G1 points.
-#[inline]
-pub(crate) fn g1_point_add(p1_bytes: &[u8], p2_bytes: &[u8]) -> Result<[u8; 64], PrecompileHalt> {
-    let p1 = read_g1_point(p1_bytes)?;
-    let p2 = read_g1_point(p2_bytes)?;
-    let result = p1 + p2;
-    Ok(encode_g1_point(result))
-}
-
-/// Performs a G1 scalar multiplication.
-#[inline]
-pub(crate) fn g1_point_mul(
-    point_bytes: &[u8],
-    fr_bytes: &[u8],
-) -> Result<[u8; 64], PrecompileHalt> {
-    let p = read_g1_point(point_bytes)?;
-    let fr = read_scalar(fr_bytes);
-    let result = p * fr;
-    Ok(encode_g1_point(result))
-}
-
-/// pairing_check performs a pairing check on a list of G1 and G2 point pairs and
-/// returns true if the result is equal to the identity element.
-///
-/// Note: If the input is empty, this function returns true.
-/// This is different to EIP2537 which disallows the empty input.
-#[inline]
-pub(crate) fn pairing_check(pairs: &[(&[u8], &[u8])]) -> Result<bool, PrecompileHalt> {
-    let mut parsed_pairs = Vec::with_capacity(pairs.len());
-
-    for (g1_bytes, g2_bytes) in pairs {
-        let g1 = read_g1_point(g1_bytes)?;
-        let g2 = read_g2_point(g2_bytes)?;
-
-        // Skip pairs where either point is at infinity
-        if !g1.is_zero() && !g2.is_zero() {
-            parsed_pairs.push((g1, g2));
-        }
-    }
-
-    if parsed_pairs.is_empty() {
-        return Ok(true);
-    }
-
-    Ok(bn::pairing_batch(&parsed_pairs) == Gt::one())
 }

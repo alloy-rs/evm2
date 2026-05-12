@@ -53,6 +53,7 @@ gmp-mpfr-sys = { workspace = true, default-features = false, optional = true }
 
 # bn254
 bn = { workspace = true, optional = true }
+mcl_rust = { workspace = true, optional = true }
 ark-bn254 = { workspace = true, features = ["curve"] }
 ark-ec = { workspace = true }
 ark-ff = { workspace = true, features = ["asm"] }
@@ -100,6 +101,7 @@ default = [
     "blst",
     "c-kzg",
     "portable",
+    "bn254-mcl",
     # TODO: probably shouldn't enable these library-wide.
     "asm-keccak",
     "map-foldhash",
@@ -157,6 +159,7 @@ gmp = ["dep:gmp-mpfr-sys"]
 bn = ["dep:bn"]
 c-kzg = ["dep:c-kzg"]
 blst = ["dep:blst"]
+bn254-mcl = ["std", "dep:mcl_rust"]
 portable = ["c-kzg?/portable", "blst?/portable"]
 p256-aws-lc-rs = ["dep:aws-lc-rs"]
 
