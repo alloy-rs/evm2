@@ -135,6 +135,7 @@ fn dispatch_mono<T: EvmTypes, C: EvmConfig<T>, M: InspectMode<T>, const DYNAMIC_
     state: &mut InterpreterState<'_, T>,
     op: u8,
 ) -> InstrFnRet {
+    let initial_remaining_gas = remaining_gas;
     let instr = C::VERSION_TABLES.instruction(op).instr;
     if M::INSPECT {
         M::step(state, pc, stack.len);
@@ -170,9 +171,21 @@ fn dispatch_mono<T: EvmTypes, C: EvmConfig<T>, M: InspectMode<T>, const DYNAMIC_
             state.set_result(r);
         }
         let stack_len = if stack.len <= STACK_LIMIT { stack.len } else { 0 };
-        return (Pc::new(core::ptr::null()), PackedGasStackLen::pack(remaining_gas, stack_len));
+        return (
+            Pc::new(core::ptr::null()),
+            PackedGasStackLen::pack(
+                initial_remaining_gas.get().wrapping_sub(remaining_gas.get()),
+                stack_len,
+            ),
+        );
     }
-    (pc, PackedGasStackLen::pack(remaining_gas, stack.len))
+    (
+        pc,
+        PackedGasStackLen::pack(
+            initial_remaining_gas.get().wrapping_sub(remaining_gas.get()),
+            stack.len,
+        ),
+    )
 }
 
 #[inline(always)]
@@ -184,24 +197,25 @@ const fn pre_step<T: EvmTypes, C: EvmConfig<T>>(
 }
 
 const STACK_LEN_BITS: u32 = 11;
-const GAS_BITS: u32 = u64::BITS;
+const GAS_BITS: u32 = usize::BITS - STACK_LEN_BITS;
+const GAS_MASK: usize = usize::MAX >> STACK_LEN_BITS;
 
 const _: () = assert!(STACK_LIMIT <= (1 << STACK_LEN_BITS));
 
-/// Packed normal dispatch remaining gas and stack length.
+/// Packed normal dispatch gas spent and stack length.
 #[derive(Clone, Copy)]
 #[repr(transparent)]
-pub(crate) struct PackedGasStackLen(u128);
+pub(crate) struct PackedGasStackLen(usize);
 
 impl PackedGasStackLen {
     #[inline(always)]
-    pub(crate) const fn pack(remaining_gas: RemainingGas, stack_len: usize) -> Self {
+    pub(crate) const fn pack(gas_spent: u64, stack_len: usize) -> Self {
         debug_assert!(stack_len <= STACK_LIMIT);
-        Self(((stack_len as u128) << GAS_BITS) | remaining_gas.get() as u128)
+        Self((stack_len << GAS_BITS) | (gas_spent as usize & GAS_MASK))
     }
 
     #[inline(always)]
-    pub(crate) const fn unpack(self) -> (RemainingGas, usize) {
-        (RemainingGas::new(self.0 as u64), (self.0 >> GAS_BITS) as usize)
+    pub(crate) const fn unpack(self) -> (u64, usize) {
+        ((self.0 & GAS_MASK) as u64, self.0 >> GAS_BITS)
     }
 }

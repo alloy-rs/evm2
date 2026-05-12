@@ -230,10 +230,10 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
             let op = pc.op();
             let instr = instructions[op as usize];
             let (next_pc, packed) = instr(pc, stack.reborrow(), remaining_gas, state);
-            let (next_remaining_gas, next_stack_len) = packed.unpack();
+            let (gas_spent, next_stack_len) = packed.unpack();
             pc = next_pc;
             stack.len = next_stack_len;
-            remaining_gas = next_remaining_gas;
+            remaining_gas = RemainingGas::new(remaining_gas.get().wrapping_sub(gas_spent));
             if next_pc.as_ptr().is_null() {
                 cold_path();
                 self.pc = next_pc.as_ptr();
