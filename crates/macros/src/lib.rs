@@ -97,25 +97,29 @@ pub fn instruction(attr: TokenStream, item: TokenStream) -> TokenStream {
 
 enum InstructionAttr {
     Flag(Ident),
-    EvmTypesConcrete(Type),
-    EvmTypesBounds(Punctuated<TypeParamBound, Token![+]>),
-    EvmTypesArgs(AngleBracketedGenericArguments),
+    EvmTypesConcrete { span: proc_macro2::Span, evm_types: Type },
+    EvmTypesBounds { span: proc_macro2::Span, bounds: Punctuated<TypeParamBound, Token![+]> },
+    EvmTypesArgs { span: proc_macro2::Span, args: AngleBracketedGenericArguments },
 }
 
 impl Parse for InstructionAttr {
     fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
         let ident = input.parse::<Ident>()?;
         if ident == "EvmTypes" || ident == "evm_types" {
+            let span = ident.span();
             if input.peek(Token![=]) {
                 input.parse::<Token![=]>()?;
-                Ok(Self::EvmTypesConcrete(input.parse()?))
+                Ok(Self::EvmTypesConcrete { span, evm_types: input.parse()? })
             } else if input.peek(Token![:]) {
                 input.parse::<Token![:]>()?;
-                Ok(Self::EvmTypesBounds(
-                    Punctuated::<TypeParamBound, Token![+]>::parse_separated_nonempty(input)?,
-                ))
+                Ok(Self::EvmTypesBounds {
+                    span,
+                    bounds: Punctuated::<TypeParamBound, Token![+]>::parse_separated_nonempty(
+                        input,
+                    )?,
+                })
             } else if input.peek(Token![<]) {
-                Ok(Self::EvmTypesArgs(input.parse()?))
+                Ok(Self::EvmTypesArgs { span, args: input.parse()? })
             } else {
                 Err(syn::Error::new_spanned(
                     ident,
@@ -133,6 +137,7 @@ struct InstructionAttrs {
     no_stack_preamble: bool,
     dynamic_gas: bool,
     evm_types: Option<Type>,
+    evm_types_span: Option<proc_macro2::Span>,
     evm_types_bounds: Vec<Punctuated<TypeParamBound, Token![+]>>,
     evm_types_args: Option<AngleBracketedGenericArguments>,
 }
@@ -154,24 +159,21 @@ impl InstructionAttrs {
                         "unsupported #[instruction] argument",
                     ));
                 }
-                InstructionAttr::EvmTypesConcrete(evm_types) => {
+                InstructionAttr::EvmTypesConcrete { span, evm_types } => {
                     if attrs.evm_types.replace(evm_types).is_some() {
-                        return Err(syn::Error::new(
-                            proc_macro2::Span::call_site(),
-                            "duplicate `EvmTypes` argument",
-                        ));
+                        return Err(syn::Error::new(span, "duplicate `EvmTypes` argument"));
                     }
+                    attrs.evm_types_span = Some(span);
                 }
-                InstructionAttr::EvmTypesBounds(bounds) => {
+                InstructionAttr::EvmTypesBounds { span, bounds } => {
+                    attrs.evm_types_span.get_or_insert(span);
                     attrs.evm_types_bounds.push(bounds);
                 }
-                InstructionAttr::EvmTypesArgs(args) => {
+                InstructionAttr::EvmTypesArgs { span, args } => {
                     if attrs.evm_types_args.replace(args).is_some() {
-                        return Err(syn::Error::new(
-                            proc_macro2::Span::call_site(),
-                            "duplicate `EvmTypes<...>` argument",
-                        ));
+                        return Err(syn::Error::new(span, "duplicate `EvmTypes<...>` argument"));
                     }
+                    attrs.evm_types_span.get_or_insert(span);
                 }
             }
         }
@@ -179,7 +181,7 @@ impl InstructionAttrs {
             && (!attrs.evm_types_bounds.is_empty() || attrs.evm_types_args.is_some())
         {
             return Err(syn::Error::new(
-                proc_macro2::Span::call_site(),
+                attrs.evm_types_span.unwrap_or_else(proc_macro2::Span::call_site),
                 "`EvmTypes = ...` cannot be combined with generic `EvmTypes` bounds",
             ));
         }
@@ -195,7 +197,8 @@ fn expand_instruction(instruction_attrs: InstructionAttrs, input: ItemFn) -> Tok
     let asm_comment = LitStr::new(&ident.to_string(), ident.span());
     let generics = sig.generics;
     let impl_params = generics.params.clone();
-    let evm_types_ident = Ident::new("__Evm2T", ident.span());
+    let evm_types_span = instruction_attrs.evm_types_span.unwrap_or_else(|| ident.span());
+    let evm_types_ident = Ident::new("__Evm2T", evm_types_span);
     let evm_types = instruction_attrs
         .evm_types
         .as_ref()

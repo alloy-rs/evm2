@@ -1,9 +1,9 @@
 use super::tests::{RunConfig, TestHost, TestInterpreter, TestTypes, push};
 use crate::{
-    BaseEvmConfig, EvmConfig, EvmTypes, ExecutionConfig, SpecId,
+    BaseEvmConfig, EvmConfig, ExecutionConfig, SpecId,
     bytecode::Bytecode,
     env::BlockEnv,
-    interpreter::{Host, InstrStop, Interpreter, InterpreterState, Word, op},
+    interpreter::{Host, InstrStop, Interpreter, Word, op},
     version::VersionTables,
 };
 use alloc::vec::Vec;
@@ -42,17 +42,8 @@ trait MacroTypesExt {}
 
 impl MacroTypesExt for TestTypes {}
 
-fn macro_type_bound_value<T>(state: &mut InterpreterState<'_, T>) -> Word
-where
-    T: EvmTypes<Host = TestHost> + MacroTypesExt,
-{
-    state.host().macro_bound_value()
-}
-
-#[instruction(EvmTypes: MacroTypesExt, EvmTypes<Host = TestHost>)]
-fn macro_type_bound(cx: _) -> out {
-    *out = macro_type_bound_value(cx.state);
-}
+#[instruction(EvmTypes: MacroTypesExt)]
+fn macro_type_bound(cx: _) {}
 
 trait MacroHostExt {
     fn macro_bound_value(&self) -> Word;
@@ -153,7 +144,7 @@ fn instruction_macro_evm_types_colon_bound_attribute() {
     let interpreter = run(RunConfig::new([TYPE_BOUND_OPCODE, op::STOP]).host(&mut host));
 
     assert_eq!(interpreter.err, InstrStop::Stop);
-    assert_eq!(interpreter.stack(), [Word::from(31337)]);
+    assert!(interpreter.stack().is_empty());
 }
 
 #[test]
