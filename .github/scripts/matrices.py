@@ -108,12 +108,12 @@ toolchains = ["stable", "nightly"]
 feature_sets = ["--no-default-features", "", "--all-features"]
 kinds = ["test", "eest"]
 
-t_linux_x86 = Target("ubuntu-latest", "ubuntu-latest", tier=1)
-t_macos_arm = Target("macos-latest", "macos-latest", tier=1)
-t_linux_arm = Target("ubuntu-24.04-arm", "ubuntu-24.04-arm", cxx="clang++")
-t_windows = Target("windows-latest", "windows-latest", flags="--no-default-features")
+t_linux_x86 = Target("ubuntu", "ubuntu-latest", tier=1)
+t_macos_arm = Target("macos", "macos-latest", tier=1)
+t_linux_arm = Target("ubuntu arm", "ubuntu-24.04-arm", cxx="clang++")
+t_windows = Target("windows", "windows-latest", flags="--no-default-features")
 t_wasm_unknown = Target(
-    "wasm32-unknown-unknown",
+    "wasm",
     "ubuntu-latest",
     target="wasm32-unknown-unknown",
     command="build",
@@ -121,7 +121,7 @@ t_wasm_unknown = Target(
     flags="--no-default-features",
 )
 t_wasm_wasi = Target(
-    "wasm32-wasip1",
+    "wasm wasi",
     "ubuntu-latest",
     target="wasm32-wasip1",
     command="wasm-test",
@@ -130,7 +130,7 @@ t_wasm_wasi = Target(
     fixture="wasi",
 )
 t_wasm_wasi_tail = Target(
-    "wasm32-wasip1 tail-call",
+    "wasm tail-call",
     "ubuntu-latest",
     target="wasm32-wasip1",
     command="wasm-test",
@@ -140,7 +140,7 @@ t_wasm_wasi_tail = Target(
     rustflags="-Ctarget-feature=+simd128,+tail-call",
 )
 t_linux_i686 = Target(
-    "i686-unknown-linux-gnu",
+    "i686",
     "ubuntu-latest",
     target="i686-unknown-linux-gnu",
     command="cross-test",
@@ -148,7 +148,7 @@ t_linux_i686 = Target(
     flags="--no-default-features",
 )
 t_linux_armv7 = Target(
-    "armv7-unknown-linux-gnueabihf",
+    "armv7",
     "ubuntu-latest",
     target="armv7-unknown-linux-gnueabihf",
     command="cross-test",
