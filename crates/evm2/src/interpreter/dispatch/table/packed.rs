@@ -87,7 +87,6 @@ const _: () = assert!(STACK_LIMIT <= (1 << STACK_LEN_BITS));
 
 #[inline(always)]
 const fn dispatch_return(pc: Pc, gas_spent: u64, stack_len: usize) -> InstrFnRet {
-    let stack_len = if stack_len <= STACK_LIMIT { stack_len } else { 0 };
     (pc, PackedGasStackLen::new(gas_spent, stack_len))
 }
 
