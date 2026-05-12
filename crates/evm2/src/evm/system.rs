@@ -64,6 +64,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             chain_id: U256::from(self.version().chain_id),
             blob_hashes: Vec::new(),
             ext: T::TxEnvExt::default(),
+            _non_exhaustive: (),
         };
         let Ok((bytecode, message)) = initial_message(
             self,

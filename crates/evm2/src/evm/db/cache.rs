@@ -20,7 +20,6 @@ pub type InMemoryDB = CacheDB<EmptyDB>;
 /// Accounts and code are stored separately: accounts carry the code hash, and
 /// bytecode is keyed by that hash in [`Self::contracts`].
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[non_exhaustive]
 pub struct Cache {
     /// Accounts keyed by address.
     pub accounts: AddressMap<AccountInfo>,
@@ -30,6 +29,8 @@ pub struct Cache {
     pub storage: StorageKeyMap<Word>,
     /// Cached block hashes keyed by block number.
     pub block_hashes: U256Map<B256>,
+    #[doc(hidden)] // Not public API. Please use `..Default::default()`
+    pub _non_exhaustive: (),
 }
 
 impl Default for Cache {
@@ -43,18 +44,20 @@ impl Default for Cache {
             contracts,
             storage: StorageKeyMap::default(),
             block_hashes: U256Map::default(),
+            _non_exhaustive: (),
         }
     }
 }
 
 /// A cache database over another backing database.
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[non_exhaustive]
 pub struct CacheDB<ExtDB = EmptyDB> {
     /// The cache that stores all local state.
     pub cache: Cache,
     /// Wrapped backing database.
     pub db: ExtDB,
+    #[doc(hidden)] // Not public API. Please use `..Default::default()`
+    pub _non_exhaustive: (),
 }
 
 impl Default for CacheDB<EmptyDB> {
@@ -68,7 +71,7 @@ impl<ExtDB> CacheDB<ExtDB> {
     /// Creates a new cache over a backing database.
     #[inline]
     pub fn new(db: ExtDB) -> Self {
-        Self { cache: Cache::default(), db }
+        Self { cache: Cache::default(), db, _non_exhaustive: () }
     }
 
     /// Inserts account code into the contract cache.

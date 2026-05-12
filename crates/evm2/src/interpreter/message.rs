@@ -57,4 +57,6 @@ pub struct Message<T: EvmTypes = BaseEvmTypes> {
     pub salt: B256,
     /// EVM type-specific extension data.
     pub ext: T::MessageExt,
+    #[doc(hidden)] // Not public API. Please use `..Default::default()`
+    pub _non_exhaustive: (),
 }

@@ -26,7 +26,6 @@ pub use tables::VersionTables;
 /// configuration values such as chain ID, memory limits, code size limits, gas caps, and gas
 /// parameters.
 #[derive(Clone, Copy, Debug)]
-#[non_exhaustive]
 pub struct Version {
     /// Active base specification ID.
     pub spec_id: SpecId,
@@ -51,6 +50,8 @@ pub struct Version {
     pub max_blobs_per_tx: usize,
     /// Blob base fee update fraction.
     pub blob_base_fee_update_fraction: u64,
+    #[doc(hidden)] // Not public API. Please use `..Default::default()`
+    pub _non_exhaustive: (),
 }
 
 impl Version {
@@ -119,6 +120,7 @@ static BASE_VERSIONS: [Version; SpecId::COUNT] = {
             max_initcode_size: MAX_INITCODE_SIZE,
             max_blobs_per_tx: MAX_BLOBS_PER_BLOCK_DENCUN,
             blob_base_fee_update_fraction: BLOB_BASE_FEE_UPDATE_FRACTION_CANCUN,
+            _non_exhaustive: (),
         }
     }; SpecId::COUNT];
     let mut i = 0;
@@ -135,6 +137,7 @@ static BASE_VERSIONS: [Version; SpecId::COUNT] = {
             max_initcode_size: base_max_initcode_size(spec_id),
             max_blobs_per_tx: base_max_blobs_per_tx(spec_id),
             blob_base_fee_update_fraction: base_blob_base_fee_update_fraction(spec_id),
+            _non_exhaustive: (),
         };
         i += 1;
     }
