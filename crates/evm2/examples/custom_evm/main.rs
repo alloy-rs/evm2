@@ -151,10 +151,7 @@ fn custom_evm() -> Evm<CustomTypes> {
         custom_execution_config(),
         CustomSpecId::CustomOsaka,
         BlockEnv {
-            ext: CustomBlockEnvExt {
-                l1_block_number: CUSTOM_L1_BLOCK_NUMBER,
-                ..Default::default()
-            },
+            ext: CustomBlockEnvExt { l1_block_number: CUSTOM_L1_BLOCK_NUMBER },
             ..BlockEnv::default()
         },
         custom_registry(),
@@ -167,10 +164,7 @@ fn mainnet_evm() -> Evm<CustomTypes> {
     Evm::<CustomTypes>::new(
         CustomSpecId::MainnetOsaka,
         BlockEnv {
-            ext: CustomBlockEnvExt {
-                l1_block_number: MAINNET_L1_BLOCK_NUMBER,
-                ..Default::default()
-            },
+            ext: CustomBlockEnvExt { l1_block_number: MAINNET_L1_BLOCK_NUMBER },
             ..BlockEnv::default()
         },
         custom_registry(),
@@ -189,7 +183,6 @@ fn custom_opcode_tx(code: Bytes) -> CustomEnvelope {
         target: Address::from([0xcc; 20]),
         gas_limit: 100_000,
         code,
-        ..Default::default()
     })
 }
 

@@ -67,36 +67,26 @@ impl EvmTypes for CustomTypes {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CustomMessageExt {
     pub is_system: bool,
-    #[doc(hidden)] // Not public API. Please use `..Default::default()`
-    pub _non_exhaustive: (),
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CustomMessageResultExt {
     pub handled_custom_message: bool,
-    #[doc(hidden)] // Not public API. Please use `..Default::default()`
-    pub _non_exhaustive: (),
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CustomTxEnvExt {
     pub label: &'static str,
-    #[doc(hidden)] // Not public API. Please use `..Default::default()`
-    pub _non_exhaustive: (),
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CustomTxResultExt {
     pub handled_custom_tx: bool,
-    #[doc(hidden)] // Not public API. Please use `..Default::default()`
-    pub _non_exhaustive: (),
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CustomBlockEnvExt {
     pub l1_block_number: u64,
-    #[doc(hidden)] // Not public API. Please use `..Default::default()`
-    pub _non_exhaustive: (),
 }
 
 #[derive(Clone, Copy, Debug)]

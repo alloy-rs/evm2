@@ -36,13 +36,11 @@ impl CustomEnvelope {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct ExecuteCodeTx {
     pub target: Address,
     pub code: Bytes,
     pub gas_limit: u64,
-    #[doc(hidden)] // Not public API. Please use `..Default::default()`
-    pub _non_exhaustive: (),
 }
 
 impl ExecuteCodeTx {
@@ -59,29 +57,23 @@ pub fn execute_code(
         gas_limit: req.tx.gas_limit,
         destination: req.tx.target,
         code_address: req.tx.target,
-        ext: CustomMessageExt { is_system: false, ..Default::default() },
+        ext: CustomMessageExt { is_system: false },
         ..Message::default()
     };
-    let tx_env = TxEnv {
-        ext: CustomTxEnvExt { label: "execute-code", ..Default::default() },
-        ..TxEnv::default()
-    };
+    let tx_env = TxEnv { ext: CustomTxEnvExt { label: "execute-code" }, ..TxEnv::default() };
     let mut result = req.host.execute_message(
         &tx_env,
         Bytecode::new_legacy(req.tx.code.clone()),
         &message,
         false,
     );
-    result.ext = CustomMessageResultExt { handled_custom_message: true, ..Default::default() };
+    result.ext = CustomMessageResultExt { handled_custom_message: true };
     Ok(evm2::TxResult::<CustomTypes> {
         status: result.stop.is_success(),
         gas_used: req.tx.gas_limit - result.gas.remaining(),
         stop: result.stop,
         output: result.output,
-        ext: CustomTxResultExt {
-            handled_custom_tx: result.ext.handled_custom_message,
-            ..Default::default()
-        },
+        ext: CustomTxResultExt { handled_custom_tx: result.ext.handled_custom_message },
         ..Default::default()
     })
 }
