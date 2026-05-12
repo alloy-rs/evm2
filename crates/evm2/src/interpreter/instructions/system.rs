@@ -366,7 +366,7 @@ mod tests {
         interpreter::{
             InstrStop, Message, MessageKind, MessageResult, Word,
             instructions::tests::{RunConfig, TestHost, push, run},
-            op,
+            opcode,
         },
         utils::address_to_word,
     };

@@ -101,7 +101,7 @@ mod tests {
     use crate::interpreter::{
         InstrStop, Word,
         instructions::tests::{RunConfig, push, run, run_stack},
-        op,
+        opcode,
     };
     use alloc::vec::Vec;
 

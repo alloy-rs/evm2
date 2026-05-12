@@ -84,7 +84,7 @@ mod tests {
         interpreter::{
             GasTracker, InstrStop, Interpreter, Message, MessageResult, Word,
             instructions::tests::{TestHost, TestTypes, push},
-            op,
+            opcode,
         },
         utils::address_to_word,
     };

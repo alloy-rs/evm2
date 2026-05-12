@@ -8,10 +8,11 @@ use alloy_primitives::{Address, Bytes, U256};
 use config::{CustomBlockEnvExt, CustomSpecId, CustomTypes, custom_version};
 use evm2::{
     Evm, EvmConfigSelector, ExecutionConfig, SpecId, Version,
+    bytecode::opcode as evm_opcode,
     env::BlockEnv,
     evm::{InMemoryDB, precompile::NoPrecompiles},
     inspector::Inspector,
-    interpreter::{InstrStop, Interpreter, Message, MessageResult, opcode},
+    interpreter::{InstrStop, Interpreter, Message, MessageResult},
     registry::HandlerResult,
 };
 use std::{cell::RefCell, rc::Rc};
@@ -33,10 +34,10 @@ fn custom_opcode() -> HandlerResult<()> {
     let mut evm = custom_evm();
     let tx = custom_opcode_tx(Bytes::from_static(&[
         opcode::CUSTOM_OPCODE,
-        opcode::PUSH1,
+        evm_opcode::PUSH1,
         0x01,
-        opcode::SSTORE,
-        opcode::STOP,
+        evm_opcode::SSTORE,
+        evm_opcode::STOP,
     ]));
 
     let result = evm.transact(&tx)?;
@@ -65,12 +66,12 @@ fn l1_blocknumber_opcode() -> HandlerResult<()> {
     let mut evm = custom_evm();
     let tx = custom_opcode_tx(Bytes::from_static(&[
         opcode::L1_BLOCKNUMBER_OPCODE,
-        opcode::PUSH0,
-        opcode::MSTORE,
-        opcode::PUSH1,
+        evm_opcode::PUSH0,
+        evm_opcode::MSTORE,
+        evm_opcode::PUSH1,
         32,
-        opcode::PUSH0,
-        opcode::RETURN,
+        evm_opcode::PUSH0,
+        evm_opcode::RETURN,
     ]));
 
     let result = evm.transact(&tx)?;
@@ -90,7 +91,7 @@ fn l1_blocknumber_opcode() -> HandlerResult<()> {
 
 fn mainnet_fallback() -> HandlerResult<()> {
     let mut evm = mainnet_evm();
-    let tx = custom_opcode_tx(Bytes::from_static(&[opcode::CUSTOM_OPCODE, opcode::STOP]));
+    let tx = custom_opcode_tx(Bytes::from_static(&[opcode::CUSTOM_OPCODE, evm_opcode::STOP]));
 
     let result = evm.transact(&tx)?;
 
@@ -109,19 +110,24 @@ fn inspector() -> HandlerResult<()> {
     let inspector_state = Rc::new(RefCell::new(InspectorState::default()));
     evm.set_inspector(ExampleInspector(Rc::clone(&inspector_state)));
     let tx = custom_opcode_tx(Bytes::from_static(&[
-        opcode::PUSH1,
+        evm_opcode::PUSH1,
         0,
-        opcode::PUSH1,
+        evm_opcode::PUSH1,
         0,
-        opcode::LOG0,
+        evm_opcode::LOG0,
         opcode::CUSTOM_OPCODE,
-        opcode::STOP,
+        evm_opcode::STOP,
     ]));
 
     let result = evm.transact(&tx)?;
     let inspector_state = inspector_state.borrow();
-    let expected_opcodes =
-        [opcode::PUSH1, opcode::PUSH1, opcode::LOG0, opcode::CUSTOM_OPCODE, opcode::STOP];
+    let expected_opcodes = [
+        evm_opcode::PUSH1,
+        evm_opcode::PUSH1,
+        evm_opcode::LOG0,
+        opcode::CUSTOM_OPCODE,
+        evm_opcode::STOP,
+    ];
 
     println!(
         "inspector: expected status=true initialized=1 steps=5 step_ends=5 logs=1 calls=0 opcodes={expected_opcodes:?}; got status={} initialized={} steps={} step_ends={} logs={} calls={} opcodes={:?}",

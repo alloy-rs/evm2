@@ -2,9 +2,10 @@ use crate::{cases::Bench, fixture::Suites};
 use criterion::{BatchSize, BenchmarkGroup, black_box, measurement::WallTime};
 use evm2::SpecId;
 use revm::{
-    ExecuteEvm, MainBuilder, MainContext, SpecId as RevmSpecId,
+    ExecuteEvm, MainBuilder, MainContext,
     context::{BlockEnv, CfgEnv, Context, TxEnv},
     database::{CacheDB, EmptyDB, InMemoryDB},
+    primitives::hardfork::SpecId as RevmSpecId,
     statetest_types::TestUnit,
 };
 use std::sync::Arc;

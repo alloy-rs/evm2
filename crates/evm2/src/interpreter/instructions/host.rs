@@ -134,7 +134,7 @@ mod tests {
         interpreter::{
             InstrStop, Message, MessageKind, Word,
             instructions::tests::{RunConfig, TestHost, push, run},
-            op,
+            opcode,
         },
         storage_key::StorageKey,
     };

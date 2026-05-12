@@ -51,7 +51,7 @@ mod tests {
         interpreter::{
             InstrStop, Interpreter, Message, Word,
             instructions::tests::{RunConfig, TestHost, TestTypes, push, run, run_stack},
-            op,
+            opcode,
         },
     };
     use alloc::vec::Vec;
