@@ -3,7 +3,7 @@
 use crate::{
     BaseEvmConfigSelector, EvmConfig, EvmConfigSelector, EvmTypes, VersionTables,
     evm::config::SelectorVersionTables,
-    interpreter::{InstrStop, InterpreterState, Pc, Result, StackMut, op},
+    interpreter::{Gas, InstrStop, InterpreterState, Pc, Result, Stack, StackMut, op},
 };
 
 #[cold]
@@ -54,21 +54,66 @@ macro_rules! for_each_opcode_value {
     };
 }
 
+macro_rules! assign_normal_instruction_table_entries {
+    ([$table:expr, $evm_types:ty, $config:ty, $mode:ty, $vt:ident, $previous_vt:ident, $dispatch:ident, $instr_fn:ty] $($op:literal,)*) => {
+        $(
+            if super::instruction_changed($vt, $previous_vt, $op) {
+                let instruction = <$config as crate::EvmConfig<$evm_types>>::VERSION_TABLES.instruction($op);
+                $table[$op] = if instruction.dynamic_gas {
+                    $dispatch::<$evm_types, $config, $mode, $op, true> as $instr_fn
+                } else {
+                    $dispatch::<$evm_types, $config, $mode, $op, false> as $instr_fn
+                };
+            }
+        )*
+    };
+}
+
+macro_rules! make_normal_selector_tables {
+    ([$($extra:tt)*] $($spec:ident $name:ident,)*) => {{
+        make_normal_selector_tables!(@build [] [none]; $($spec $name,)*)
+    }};
+    (@build [$($tables:ident,)*] [$($previous_table:tt)*]; $spec:ident $name:ident, $($rest:ident $rest_name:ident,)*) => {{
+        let spec = crate::SpecId::$spec;
+        let previous = spec.prev();
+        let $name = make_table::<T, F::Config<{ crate::SpecId::$spec as u8 }, CUSTOM_SPEC_ID>, M>(
+            make_normal_selector_tables!(@previous_table [$($previous_table)*]),
+            match previous {
+                Some(previous) => {
+                    Some(crate::evm::config::SelectorVersionTables::<T, F, CUSTOM_SPEC_ID>::VERSION_TABLES[previous as usize])
+                }
+                None => None,
+            },
+        );
+        make_normal_selector_tables!(@build [$($tables,)* $name,] [some $name]; $($rest $rest_name,)*)
+    }};
+    (@build [$($tables:ident,)*] [$($previous_table:tt)*];) => {
+        [$($tables,)*]
+    };
+    (@previous_table [none]) => {
+        None
+    };
+    (@previous_table [some $previous_table:ident]) => {
+        Some(&$previous_table)
+    };
+}
+
 cfg_if::cfg_if! {
     if #[cfg(tco)] {
         mod tco;
         use tco as imp;
+    } else if #[cfg(dispatch_packed)] {
+        mod normal;
+        mod normal_packed;
+        use normal_packed as imp;
+    } else if #[cfg(dispatch_single_return)] {
+        mod normal;
+        mod normal_single_return;
+        use normal_single_return as imp;
     } else {
         mod normal;
-        #[cfg(dispatch_packed)]
-        mod normal_packed;
-        #[cfg(dispatch_single_return)]
-        mod normal_single_return;
-        #[cfg(dispatch_unpacked)]
         mod normal_unpacked;
-        #[cfg(dispatch_packed)]
-        pub(crate) use normal_packed::unpack_ret;
-        use normal as imp;
+        use normal_unpacked as imp;
     }
 }
 
@@ -77,6 +122,33 @@ pub(crate) type InstrFn<T> = imp::RawInstrFn<T>;
 
 /// Instruction dispatch table.
 pub(crate) type InstrTable<T> = imp::RawInstrTable<T>;
+
+#[cfg(not(tco))]
+pub(crate) type LoopState = imp::LoopState;
+
+#[cfg(not(tco))]
+#[inline(always)]
+pub(crate) const fn loop_state(gas: &Gas) -> LoopState {
+    imp::loop_state(gas)
+}
+
+#[cfg(not(tco))]
+#[inline(always)]
+pub(crate) fn dispatch_loop_call<T: EvmTypes>(
+    instr: InstrFn<T>,
+    pc: Pc,
+    stack: Stack<'_>,
+    state: &mut InterpreterState<'_, T>,
+    loop_state: &mut LoopState,
+) -> (Pc, usize) {
+    imp::dispatch_loop_call(instr, pc, stack, state, loop_state)
+}
+
+#[cfg(not(tco))]
+#[inline(always)]
+pub(crate) const fn finish_loop(gas: &mut Gas, loop_state: LoopState) {
+    imp::finish_loop(gas, loop_state);
+}
 
 pub(crate) struct ConfigInstrTables<T, C>(core::marker::PhantomData<fn() -> (T, C)>);
 

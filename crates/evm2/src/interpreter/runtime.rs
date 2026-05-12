@@ -1,5 +1,3 @@
-#[cfg(any(tco, dispatch_packed))]
-use super::gas::RemainingGas;
 use super::{
     BytecodeRef, Gas, InstrStop, Memory, Message, MessageKind, MessageResult, Pc, Result, Stack,
     StackBacking, Word,
@@ -9,7 +7,7 @@ use crate::{
     bytecode::Bytecode,
     env::TxEnv,
     evm::inspector::Inspector,
-    interpreter::instructions::table::InstrTable,
+    interpreter::instructions::table::{self, InstrTable},
     trustme,
     version::{EvmFeatures, GasParams},
 };
@@ -228,46 +226,20 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         let state = InterpreterState::wrap_mut(unsafe { &mut *raw });
         let mut pc = Pc::new(self.pc);
         let mut stack = Stack::new(&mut self.stack, self.stack_len);
-        #[cfg(dispatch_packed)]
-        let mut remaining_gas = RemainingGas::new(self.gas.remaining());
+        let mut loop_state = table::loop_state(&self.gas);
         loop {
             let op = pc.op();
             let instr = instructions[op as usize];
-
-            #[cfg(dispatch_packed)]
-            {
-                let (next_pc, gas_spent, next_stack_len) =
-                    crate::interpreter::instructions::table::unpack_ret(instr(
-                        pc,
-                        stack.reborrow(),
-                        remaining_gas,
-                        state,
-                    ));
-                pc = next_pc;
-                stack.len = next_stack_len;
-                remaining_gas = RemainingGas::new(remaining_gas.get().wrapping_sub(gas_spent));
-            }
-
-            #[cfg(dispatch_unpacked)]
-            {
-                let (next_pc, next_stack_len) = instr(pc, stack.reborrow(), state);
-                pc = Pc::new(next_pc);
-                stack.len = next_stack_len;
-            }
-
-            #[cfg(dispatch_single_return)]
-            {
-                let mut next_stack_len = stack.len;
-                pc = instr(pc, stack.reborrow(), state, &mut next_stack_len);
-                stack.len = next_stack_len;
-            }
+            let (next_pc, next_stack_len) =
+                table::dispatch_loop_call(instr, pc, stack.reborrow(), state, &mut loop_state);
+            pc = next_pc;
+            stack.len = next_stack_len;
 
             if pc.as_ptr().is_null() {
                 cold_path();
                 self.pc = pc.as_ptr();
                 self.stack_len = stack.len;
-                #[cfg(dispatch_packed)]
-                self.gas.set_remaining(remaining_gas.get());
+                table::finish_loop(&mut self.gas, loop_state);
                 return self.result.unwrap_err();
             }
         }

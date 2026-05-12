@@ -2,7 +2,7 @@ use super::InspectMode;
 use crate::{
     EvmConfig, EvmTypes,
     constants::STACK_LIMIT,
-    interpreter::{InterpreterState, Pc, Result, Stack, gas::RemainingGas},
+    interpreter::{Gas, InterpreterState, Pc, Result, Stack, gas::RemainingGas},
 };
 use core::hint::cold_path;
 
@@ -18,6 +18,33 @@ pub(super) type RawInstrFn<T> = extern_table!(
         state: &mut InterpreterState<'_, T>,
     ) -> InstrFnRet
 );
+
+super::normal::normal_tables!();
+
+pub(crate) type LoopState = RemainingGas;
+
+#[inline(always)]
+pub(crate) const fn loop_state(gas: &Gas) -> LoopState {
+    RemainingGas::new(gas.remaining())
+}
+
+#[inline(always)]
+pub(crate) fn dispatch_loop_call<T: EvmTypes>(
+    instr: RawInstrFn<T>,
+    pc: Pc,
+    stack: Stack<'_>,
+    state: &mut InterpreterState<'_, T>,
+    remaining_gas: &mut LoopState,
+) -> (Pc, usize) {
+    let (next_pc, gas_spent, next_stack_len) = unpack_ret(instr(pc, stack, *remaining_gas, state));
+    *remaining_gas = RemainingGas::new(remaining_gas.get().wrapping_sub(gas_spent));
+    (next_pc, next_stack_len)
+}
+
+#[inline(always)]
+pub(crate) const fn finish_loop(gas: &mut Gas, remaining_gas: LoopState) {
+    gas.set_remaining(remaining_gas.get());
+}
 
 extern_table! {
     pub(super) fn dispatch<

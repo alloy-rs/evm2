@@ -12,6 +12,28 @@ type InstrFnRet = (*const u8, usize);
 pub(super) type RawInstrFn<T> =
     extern_table!(fn(pc: Pc, stack: Stack<'_>, state: &mut InterpreterState<'_, T>) -> InstrFnRet);
 
+super::normal::normal_tables!();
+
+pub(crate) type LoopState = ();
+
+#[inline(always)]
+pub(crate) const fn loop_state(_gas: &Gas) -> LoopState {}
+
+#[inline(always)]
+pub(crate) fn dispatch_loop_call<T: EvmTypes>(
+    instr: RawInstrFn<T>,
+    pc: Pc,
+    stack: Stack<'_>,
+    state: &mut InterpreterState<'_, T>,
+    _loop_state: &mut LoopState,
+) -> (Pc, usize) {
+    let (next_pc, next_stack_len) = instr(pc, stack, state);
+    (Pc::new(next_pc), next_stack_len)
+}
+
+#[inline(always)]
+pub(crate) const fn finish_loop(_gas: &mut Gas, _loop_state: LoopState) {}
+
 extern_table! {
     pub(super) fn dispatch<
         T: EvmTypes,
