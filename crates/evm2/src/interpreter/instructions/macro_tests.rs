@@ -1,9 +1,9 @@
 use super::tests::{RunConfig, TestHost, TestInterpreter, TestTypes, push};
 use crate::{
-    BaseEvmConfig, EvmConfig, ExecutionConfig, SpecId,
+    BaseEvmConfig, EvmConfig, EvmTypes, ExecutionConfig, SpecId,
     bytecode::Bytecode,
     env::BlockEnv,
-    interpreter::{Host, InstrStop, Interpreter, Word, op},
+    interpreter::{Host, InstrStop, Interpreter, InterpreterState, Word, op},
     version::VersionTables,
 };
 use alloc::vec::Vec;
@@ -38,18 +38,20 @@ fn macro_concrete_eq(cx: _) -> out {
     *out = cx.state.host().block_env().number;
 }
 
-trait MacroTypesExt {
-    const MACRO_TYPE_BOUND_VALUE: u64;
-}
+trait MacroTypesExt {}
 
-impl MacroTypesExt for TestTypes {
-    const MACRO_TYPE_BOUND_VALUE: u64 = 31337;
+impl MacroTypesExt for TestTypes {}
+
+fn macro_type_bound_value<T>(state: &mut InterpreterState<'_, T>) -> Word
+where
+    T: EvmTypes<Host = TestHost> + MacroTypesExt,
+{
+    state.host().macro_bound_value()
 }
 
 #[instruction(EvmTypes: MacroTypesExt, EvmTypes<Host = TestHost>)]
 fn macro_type_bound(cx: _) -> out {
-    let _ = cx.state.host();
-    *out = Word::from(<TestTypes as MacroTypesExt>::MACRO_TYPE_BOUND_VALUE);
+    *out = macro_type_bound_value(cx.state);
 }
 
 trait MacroHostExt {
