@@ -1,6 +1,6 @@
 use super::tests::{RunConfig, TestHost, TestInterpreter, TestTypes, push};
 use crate::{
-    BaseEvmConfig, EvmConfig, EvmTypes, ExecutionConfig, SpecId,
+    BaseEvmConfig, EvmConfig, ExecutionConfig, SpecId,
     bytecode::Bytecode,
     env::BlockEnv,
     interpreter::{Host, InstrStop, Interpreter, Word, op},
@@ -39,31 +39,17 @@ fn macro_concrete_eq(cx: _) -> out {
 }
 
 trait MacroTypesExt {
-    fn macro_type_bound_value(host: &TestHost) -> Word;
+    const MACRO_TYPE_BOUND_VALUE: u64;
 }
 
 impl MacroTypesExt for TestTypes {
-    fn macro_type_bound_value(host: &TestHost) -> Word {
-        host.block.number
-    }
-}
-
-trait MacroCxExt {
-    fn macro_type_bound_value(&mut self) -> Word;
-}
-
-impl<T> MacroCxExt for crate::interpreter::private::InstructionCx<'_, '_, T>
-where
-    T: EvmTypes<Host = TestHost> + MacroTypesExt,
-{
-    fn macro_type_bound_value(&mut self) -> Word {
-        T::macro_type_bound_value(self.state.host())
-    }
+    const MACRO_TYPE_BOUND_VALUE: u64 = 31337;
 }
 
 #[instruction(EvmTypes: MacroTypesExt, EvmTypes<Host = TestHost>)]
 fn macro_type_bound(cx: _) -> out {
-    *out = cx.macro_type_bound_value();
+    let _ = cx.state.host();
+    *out = Word::from(<TestTypes as MacroTypesExt>::MACRO_TYPE_BOUND_VALUE);
 }
 
 trait MacroHostExt {
