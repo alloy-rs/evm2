@@ -36,7 +36,7 @@ DISPATCH_SYMBOLS = (
     "evm2::interpreter::dispatch::packed::dispatch::<",
     "evm2::interpreter::dispatch::single_return::dispatch::<",
     "evm2::interpreter::dispatch::unpacked::dispatch::<",
-    "evm2::interpreter::dispatch::tco::tail_dispatch::<",
+    "evm2::interpreter::dispatch::tco::dispatch::<",
 )
 DISPATCH_OPCODE = re.compile(r",\s*(\d+)(?:,\s*(?:true|false))*?>")
 DISPATCH_OUTPUTS = (

@@ -19,7 +19,8 @@ pub(super) type RawInstrFn<T> = extern_table!(
     ) -> InstrFnRet
 );
 
-dispatch_tables!();
+/// Packed instruction dispatch table.
+pub(super) type RawInstrTable<T> = [RawInstrFn<T>; 256];
 
 #[inline(always)]
 pub(super) const fn loop_state(gas: &Gas) -> RemainingGas {
@@ -58,6 +59,19 @@ extern_table! {
         state: &mut InterpreterState<'_, T>,
     ) -> InstrFnRet {
         dispatch_mono::<T, C, M, DYNAMIC_GAS>(pc, stack, remaining_gas, state, OP)
+    }
+
+    pub(super) fn unknown_dispatch<
+        T: EvmTypes,
+        C: EvmConfig<T>,
+        M: InspectMode<T>,
+    >(
+        pc: Pc,
+        stack: Stack<'_>,
+        remaining_gas: RemainingGas,
+        state: &mut InterpreterState<'_, T>,
+    ) -> InstrFnRet {
+        dispatch_unknown::<T, C, M>(pc, stack, remaining_gas, state)
     }
 }
 
@@ -113,6 +127,47 @@ fn dispatch_mono<T: EvmTypes, C: EvmConfig<T>, M: InspectMode<T>, const DYNAMIC_
         );
     }
     dispatch_return(pc, initial_remaining_gas.get().wrapping_sub(remaining_gas.get()), stack.len)
+}
+
+#[cold] // Not cold, but avoids MIR inlining.
+#[inline(always)]
+fn dispatch_unknown<T: EvmTypes, C: EvmConfig<T>, M: InspectMode<T>>(
+    mut pc: Pc,
+    mut stack: Stack<'_>,
+    mut remaining_gas: RemainingGas,
+    state: &mut InterpreterState<'_, T>,
+) -> InstrFnRet {
+    let initial_remaining_gas = remaining_gas;
+    let op = pc.op();
+    if M::INSPECT {
+        M::step(state, pc, stack.len);
+    }
+    let r = match pre_step::<T, C>(&mut remaining_gas, op) {
+        Ok(()) => {
+            state.gas_mut().set_remaining(remaining_gas.get());
+            super::unknown_instruction(&mut pc, stack.as_mut(), state)
+        }
+        Err(e) => {
+            if M::INSPECT {
+                state.gas_mut().set_remaining(remaining_gas.get());
+            }
+            Err(e)
+        }
+    };
+    if M::INSPECT {
+        state.set_result(r);
+        M::step_end(state, pc, stack.len);
+    }
+    cold_path();
+    if !M::INSPECT {
+        state.set_result(r);
+    }
+    let stack_len = if stack.len <= STACK_LIMIT { stack.len } else { 0 };
+    dispatch_return(
+        Pc::new(core::ptr::null()),
+        initial_remaining_gas.get().wrapping_sub(remaining_gas.get()),
+        stack_len,
+    )
 }
 
 #[inline(always)]

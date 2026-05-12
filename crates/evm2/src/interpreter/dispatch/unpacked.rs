@@ -12,7 +12,8 @@ type InstrFnRet = (*const u8, usize);
 pub(super) type RawInstrFn<T> =
     extern_table!(fn(pc: Pc, stack: Stack<'_>, state: &mut InterpreterState<'_, T>) -> InstrFnRet);
 
-dispatch_tables!();
+/// Unpacked instruction dispatch table.
+pub(super) type RawInstrTable<T> = [RawInstrFn<T>; 256];
 
 #[inline(always)]
 pub(super) const fn loop_state(_gas: &Gas) {}
@@ -46,6 +47,18 @@ extern_table! {
     ) -> InstrFnRet {
         let _ = DYNAMIC_GAS;
         dispatch_mono::<T, C, M>(pc, stack, state, OP)
+    }
+
+    pub(super) fn unknown_dispatch<
+        T: EvmTypes,
+        C: EvmConfig<T>,
+        M: InspectMode<T>,
+    >(
+        pc: Pc,
+        stack: Stack<'_>,
+        state: &mut InterpreterState<'_, T>,
+    ) -> InstrFnRet {
+        dispatch_unknown::<T, C, M>(pc, stack, state)
     }
 }
 
@@ -83,6 +96,32 @@ fn dispatch_mono<T: EvmTypes, C: EvmConfig<T>, M: InspectMode<T>>(
         return (core::ptr::null(), stack.len);
     }
     (pc.as_ptr(), stack.len)
+}
+
+#[cold] // Not cold, but avoids MIR inlining.
+#[inline(always)]
+fn dispatch_unknown<T: EvmTypes, C: EvmConfig<T>, M: InspectMode<T>>(
+    mut pc: Pc,
+    mut stack: Stack<'_>,
+    state: &mut InterpreterState<'_, T>,
+) -> InstrFnRet {
+    if M::INSPECT {
+        M::step(state, pc, stack.len);
+    }
+    let r;
+    match pre_step::<T, C>(state.gas_mut(), pc.op()) {
+        Ok(()) => r = super::unknown_instruction(&mut pc, stack.as_mut(), state),
+        Err(e) => r = Err(e),
+    }
+    if M::INSPECT {
+        state.set_result(r);
+        M::step_end(state, pc, stack.len);
+    }
+    cold_path();
+    if !M::INSPECT {
+        state.set_result(r);
+    }
+    (core::ptr::null(), stack.len)
 }
 
 #[inline(always)]
