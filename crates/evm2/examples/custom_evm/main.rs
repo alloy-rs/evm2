@@ -4,8 +4,8 @@
 
 use crate::config::CustomConfigSelector;
 use alloy_eips::eip2718::Typed2718;
-use alloy_primitives::{Address, Bytes};
-use config::{CustomSpecId, CustomTypes, custom_version};
+use alloy_primitives::{Address, Bytes, U256};
+use config::{CustomBlockEnvExt, CustomSpecId, CustomTypes, custom_version};
 use evm2::{
     Evm, EvmConfigSelector, ExecutionConfig, SpecId, Version,
     env::BlockEnv,
@@ -23,6 +23,7 @@ pub mod tx;
 
 fn main() -> HandlerResult<()> {
     custom_opcode()?;
+    l1_blocknumber_opcode()?;
     mainnet_fallback()?;
     inspector()?;
     Ok(())
@@ -56,6 +57,34 @@ fn custom_opcode() -> HandlerResult<()> {
     assert_eq!(result.stop, InstrStop::Stop);
     assert!(result.status);
     assert_eq!(result.gas_used, expected_gas);
+    assert!(result.ext.handled_custom_tx);
+    Ok(())
+}
+
+fn l1_blocknumber_opcode() -> HandlerResult<()> {
+    let mut evm = custom_evm();
+    let tx = custom_opcode_tx(Bytes::from_static(&[
+        opcode::L1_BLOCKNUMBER_OPCODE,
+        op::PUSH0,
+        op::MSTORE,
+        op::PUSH1,
+        32,
+        op::PUSH0,
+        op::RETURN,
+    ]));
+
+    let result = evm.transact(&tx)?;
+    let expected = Bytes::copy_from_slice(&U256::from(CUSTOM_L1_BLOCK_NUMBER).to_be_bytes::<32>());
+
+    println!(
+        "l1 blocknumber opcode: expected status=true stop=Return output={expected:?}; got status={} stop={:?} output={:?}",
+        result.status, result.stop, result.output,
+    );
+
+    assert_eq!(result.stop, InstrStop::Return);
+    assert!(result.status);
+    assert_eq!(result.output, expected);
+    assert!(result.ext.handled_custom_tx);
     Ok(())
 }
 
@@ -114,11 +143,17 @@ fn inspector() -> HandlerResult<()> {
     Ok(())
 }
 
+const CUSTOM_L1_BLOCK_NUMBER: u64 = 42;
+const MAINNET_L1_BLOCK_NUMBER: u64 = 1;
+
 fn custom_evm() -> Evm<CustomTypes> {
     Evm::<CustomTypes>::new_with_execution_config(
         custom_execution_config(),
         CustomSpecId::CustomOsaka,
-        BlockEnv::default(),
+        BlockEnv {
+            ext: CustomBlockEnvExt { l1_block_number: CUSTOM_L1_BLOCK_NUMBER },
+            ..BlockEnv::default()
+        },
         custom_registry(),
         InMemoryDB::default(),
         NoPrecompiles::default(),
@@ -128,7 +163,10 @@ fn custom_evm() -> Evm<CustomTypes> {
 fn mainnet_evm() -> Evm<CustomTypes> {
     Evm::<CustomTypes>::new(
         CustomSpecId::MainnetOsaka,
-        BlockEnv::default(),
+        BlockEnv {
+            ext: CustomBlockEnvExt { l1_block_number: MAINNET_L1_BLOCK_NUMBER },
+            ..BlockEnv::default()
+        },
         custom_registry(),
         InMemoryDB::default(),
         NoPrecompiles::default(),
@@ -185,7 +223,7 @@ impl Inspector<CustomTypes> for ExampleInspector {
         self.0.borrow_mut().logs += 1;
     }
 
-    fn call(&mut self, _message: &mut Message) -> Option<MessageResult> {
+    fn call(&mut self, _message: &mut Message<CustomTypes>) -> Option<MessageResult<CustomTypes>> {
         self.0.borrow_mut().calls += 1;
         None
     }

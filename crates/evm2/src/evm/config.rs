@@ -9,6 +9,7 @@ use crate::{
     },
     version::Version,
 };
+use derive_where::derive_where;
 
 /// Runtime EVM type family.
 ///
@@ -27,8 +28,23 @@ pub trait EvmTypes: Sized + 'static {
     /// Transaction type handled by this EVM.
     type Tx;
 
+    /// Extra data stored in frame messages.
+    type MessageExt: Clone + core::fmt::Debug + Default;
+
+    /// Extra data stored in message execution results.
+    type MessageResultExt: Clone + core::fmt::Debug + Default;
+
+    /// Extra data stored in transaction environments.
+    type TxEnvExt: Clone + core::fmt::Debug + Default;
+
+    /// Extra data stored in transaction execution results.
+    type TxResultExt: Clone + core::fmt::Debug + Default;
+
+    /// Extra data stored in block environments.
+    type BlockEnvExt: Copy + core::fmt::Debug + Default;
+
     /// Host type used by this EVM.
-    type Host: Host + ?Sized;
+    type Host: Host<Self> + ?Sized;
 }
 
 /// Compile-time EVM table configuration.
@@ -99,12 +115,12 @@ where
 ///
 /// Bundles the active runtime `Version` with the finalized instruction dispatch table selected for
 /// an EVM instance. This is the data passed to the interpreter when it runs.
-#[derive(derive_more::Debug)]
+#[derive_where(Debug)]
 pub struct ExecutionConfig<T: EvmTypes> {
     pub(crate) version: Version,
-    #[debug(skip)]
+    #[derive_where(skip)]
     pub(crate) instructions: &'static InstrTable<T>,
-    #[debug(skip)]
+    #[derive_where(skip)]
     pub(crate) inspect_instructions: &'static InstrTable<T>,
 }
 
@@ -183,6 +199,11 @@ impl EvmTypes for BaseEvmTypes {
     type ConfigSelector = BaseEvmConfigSelector;
     type SpecId = SpecId;
     type Tx = RecoveredTxEnvelope;
+    type MessageExt = ();
+    type MessageResultExt = ();
+    type TxEnvExt = ();
+    type TxResultExt = ();
+    type BlockEnvExt = ();
     type Host = crate::evm::Evm<Self>;
 }
 

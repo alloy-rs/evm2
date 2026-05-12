@@ -21,7 +21,7 @@ alloy-eips = { workspace = true, features = ["k256"] }
 alloy-primitives.workspace = true
 alloy-rlp.workspace = true
 alloy-trie = { workspace = true, features = ["ethereum"] }
-derive_more.workspace = true
+derive-where.workspace = true
 thiserror.workspace = true
 cfg-if.workspace = true
 
@@ -53,6 +53,7 @@ gmp-mpfr-sys = { workspace = true, default-features = false, optional = true }
 
 # bn254
 bn = { workspace = true, optional = true }
+mcl_rust = { workspace = true, optional = true }
 ark-bn254 = { workspace = true, features = ["curve"] }
 ark-ec = { workspace = true }
 ark-ff = { workspace = true, features = ["asm"] }
@@ -100,6 +101,7 @@ default = [
     "blst",
     "c-kzg",
     "portable",
+    "bn254-mcl",
     # TODO: probably shouldn't enable these library-wide.
     "asm-keccak",
     "map-foldhash",
@@ -117,7 +119,6 @@ std = [
     "ark-serialize/std",
     "ark-std/std",
     "aurora-engine-modexp/std",
-    "derive_more/std",
     "k256/std",
     "once_cell/std",
     "p256/std",
@@ -133,7 +134,7 @@ serde = [
     "alloy-eips/serde",
     "alloy-primitives/serde",
     "alloy-trie/serde",
-    "ark-serialize/serde",
+    "derive-where/serde",
     "k256/serde",
     "p256/serde",
     "blst?/serde",
@@ -157,6 +158,7 @@ gmp = ["dep:gmp-mpfr-sys"]
 bn = ["dep:bn"]
 c-kzg = ["dep:c-kzg"]
 blst = ["dep:blst"]
+bn254-mcl = ["std", "dep:mcl_rust"]
 portable = ["c-kzg?/portable", "blst?/portable"]
 p256-aws-lc-rs = ["dep:aws-lc-rs"]
 

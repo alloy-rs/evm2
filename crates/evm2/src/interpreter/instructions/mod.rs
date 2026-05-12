@@ -32,4 +32,7 @@ mod i256;
 pub(crate) mod table;
 
 #[cfg(test)]
+mod macro_tests;
+
+#[cfg(test)]
 pub(crate) mod tests;

@@ -39,7 +39,7 @@ pub const CONSOLIDATION_REQUEST_ADDRESS: Address =
 impl<T: EvmTypes<Host = Self>> Evm<T> {
     /// Executes a system call from [`SYSTEM_ADDRESS`] to `system_contract_address`.
     #[inline]
-    pub fn system_call(&mut self, system_contract_address: Address, data: Bytes) -> TxResult {
+    pub fn system_call(&mut self, system_contract_address: Address, data: Bytes) -> TxResult<T> {
         self.system_call_with_caller(SYSTEM_ADDRESS, system_contract_address, data)
     }
 
@@ -56,13 +56,14 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         caller: Address,
         system_contract_address: Address,
         data: Bytes,
-    ) -> TxResult {
+    ) -> TxResult<T> {
         self.state.warm_account_non_revertible(system_contract_address);
         let tx_env = TxEnv {
             origin: caller,
             gas_price: U256::ZERO,
             chain_id: U256::from(self.version().chain_id),
             blob_hashes: Vec::new(),
+            ext: T::TxEnvExt::default(),
         };
         let Ok((bytecode, message)) = initial_message(
             self,

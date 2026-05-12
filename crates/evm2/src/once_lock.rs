@@ -1,5 +1,7 @@
 //! `OnceLock` abstraction that uses [`std::sync::OnceLock`] when available, once_cell otherwise.
 
+#![allow(dead_code)]
+
 #[cfg(not(feature = "std"))]
 use alloc::boxed::Box;
 #[cfg(feature = "std")]

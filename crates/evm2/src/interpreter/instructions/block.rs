@@ -91,7 +91,7 @@ mod tests {
         env::{BlockEnv, TxEnv},
         interpreter::{
             InstrStop, Message, Word,
-            instructions::tests::{RunConfig, TestHost, push, run},
+            instructions::tests::{RunConfig, TestHost, TestTypes, push, run},
             op,
         },
         utils::{address_to_word, b256_to_word},
@@ -99,7 +99,7 @@ mod tests {
     use alloc::vec::Vec;
     use alloy_primitives::{Address, B256};
 
-    fn test_host(block: BlockEnv) -> TestHost {
+    fn test_host(block: BlockEnv<TestTypes>) -> TestHost {
         TestHost { block, ..TestHost::default() }
     }
 
