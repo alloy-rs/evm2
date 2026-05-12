@@ -36,12 +36,7 @@ extern_table! {
         state: &mut InterpreterState<'_, T>,
     ) -> InstrFnRet {
         let _ = DYNAMIC_GAS;
-        let (pc, stack_len) = super::dispatch_mono::<T, C, M, OP>(
-            pc,
-            stack,
-            state,
-            C::VERSION_TABLES.instruction(OP).instr,
-        );
+        let (pc, stack_len) = super::dispatch_mono::<T, C, M, false>(pc, stack, state, OP);
         (pc.as_ptr(), stack_len)
     }
 
@@ -54,12 +49,8 @@ extern_table! {
         stack: Stack<'_>,
         state: &mut InterpreterState<'_, T>,
     ) -> InstrFnRet {
-        let (pc, stack_len) = super::dispatch_mono::<T, C, M, { super::UNKNOWN_OP }>(
-            pc,
-            stack,
-            state,
-            super::unknown_instruction,
-        );
+        let (pc, stack_len) =
+            super::dispatch_mono::<T, C, M, true>(pc, stack, state, super::UNKNOWN_OP);
         (pc.as_ptr(), stack_len)
     }
 }

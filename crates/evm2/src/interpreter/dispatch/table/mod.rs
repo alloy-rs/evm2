@@ -4,7 +4,7 @@ use crate::interpreter::gas::RemainingGas;
 #[cfg(not(dispatch_packed))]
 use crate::{
     EvmConfig,
-    interpreter::{InterpreterState, Pc, Result, Stack, private::InstructionImplFn},
+    interpreter::{InterpreterState, Pc, Result, Stack},
 };
 use crate::{
     EvmTypes,
@@ -59,21 +59,22 @@ const fn finish_loop(_gas: &mut Gas, _loop_state: LoopState) {}
 #[cold] // Not cold, but avoids MIR inlining.
 #[inline(always)]
 #[cfg(not(dispatch_packed))]
-fn dispatch_mono<T: EvmTypes, C: EvmConfig<T>, M: InspectMode<T>, const OP: u8>(
+fn dispatch_mono<T: EvmTypes, C: EvmConfig<T>, M: InspectMode<T>, const UNKNOWN: bool>(
     mut pc: Pc,
     mut stack: Stack<'_>,
     state: &mut InterpreterState<'_, T>,
-    instr: InstructionImplFn<T>,
+    op: u8,
 ) -> (Pc, usize) {
+    let instr = if UNKNOWN { unknown_instruction } else { C::VERSION_TABLES.instruction(op).instr };
     if M::INSPECT {
         M::step(state, pc, stack.len);
     }
     let r;
-    match pre_step::<T, C, OP>(state.gas_mut()) {
+    match pre_step::<T, C>(state.gas_mut(), op) {
         Ok(()) => {
             r = instr(&mut pc, stack.as_mut(), state);
             if !M::INSPECT || r.is_ok() {
-                inc_pc(&mut pc, OP);
+                inc_pc(&mut pc, op);
             }
         }
         Err(e) => r = Err(e),
@@ -94,8 +95,8 @@ fn dispatch_mono<T: EvmTypes, C: EvmConfig<T>, M: InspectMode<T>, const OP: u8>(
 
 #[inline(always)]
 #[cfg(not(dispatch_packed))]
-const fn pre_step<T: EvmTypes, C: EvmConfig<T>, const OP: u8>(gas: &mut Gas) -> Result {
-    gas.spend(C::VERSION_TABLES.static_gas(OP) as _)
+const fn pre_step<T: EvmTypes, C: EvmConfig<T>>(gas: &mut Gas, op: u8) -> Result {
+    gas.spend(C::VERSION_TABLES.static_gas(op) as _)
 }
 
 pub(in crate::interpreter) fn run<T: EvmTypes>(
