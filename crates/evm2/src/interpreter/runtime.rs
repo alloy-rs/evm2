@@ -206,12 +206,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         self.spec = version.spec_id;
         self.features = version.features;
 
-        #[cfg(tco)]
-        let r = dispatch::run_tail(self, instructions);
-        #[cfg(not(tco))]
-        let r = dispatch::run_table_loop(self, instructions);
-
-        r
+        dispatch::run(self, instructions)
     }
 }
 
@@ -250,13 +245,11 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
     }
 
     #[inline]
-    #[cfg(tco)]
     pub(crate) const fn result(&self) -> Result {
         self.0.result
     }
 
     #[inline]
-    #[cfg(tco)]
     pub(crate) const fn set_pc_stack_len(&mut self, pc: *const u8, stack_len: usize) {
         self.0.pc = pc;
         self.0.stack_len = stack_len;

@@ -1,8 +1,7 @@
-use super::{InspectMode, UNKNOWN_OP, inc_pc, unknown_instruction};
+use super::{InspectMode, UNKNOWN_OP, inc_pc, run_state, unknown_instruction};
 use crate::{
     EvmTypes,
-    interpreter::{InstrStop, Interpreter, InterpreterState, Pc, Stack},
-    trustme,
+    interpreter::{InstrStop, Interpreter},
 };
 use core::hint::cold_path;
 
@@ -21,19 +20,12 @@ cfg_if::cfg_if! {
 
 pub(super) use imp::{RawInstrFn, RawInstrTable, dispatch, unknown_dispatch};
 
-pub(in crate::interpreter) fn run_table_loop<T: EvmTypes>(
+pub(in crate::interpreter) fn run<T: EvmTypes>(
     interpreter: &mut Interpreter<'_, T>,
     instructions: &RawInstrTable<T>,
 ) -> InstrStop {
-    // SAFETY: Only the active interpreter lifetime is erased; this stays as a raw pointer so
-    // the dispatch loop does not create an extra `&mut` alias for `interpreter`.
-    let raw = unsafe { trustme::decouple_lt_mut_ptr(interpreter as *mut Interpreter<'_, T>) };
-    // SAFETY: Instruction methods must not access the stack through `InterpreterState` while
-    // the separate stack view is live.
-    let state = InterpreterState::wrap_mut(unsafe { &mut *raw });
-    let mut pc = Pc::new(interpreter.pc);
-    let mut stack = Stack::new(&mut interpreter.stack, interpreter.stack_len);
-    let mut loop_state = imp::loop_state(&interpreter.gas);
+    let (state, mut pc, mut stack) = run_state(interpreter);
+    let mut loop_state = imp::loop_state(state.gas_mut());
     loop {
         let op = pc.op();
         let instr = instructions[op as usize];
@@ -44,10 +36,9 @@ pub(in crate::interpreter) fn run_table_loop<T: EvmTypes>(
 
         if pc.as_ptr().is_null() {
             cold_path();
-            interpreter.pc = pc.as_ptr();
-            interpreter.stack_len = stack.len;
-            imp::finish_loop(&mut interpreter.gas, loop_state);
-            return interpreter.result.unwrap_err();
+            state.set_pc_stack_len(pc.as_ptr(), stack.len);
+            imp::finish_loop(state.gas_mut(), loop_state);
+            return state.result().unwrap_err();
         }
     }
 }

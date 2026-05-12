@@ -1,8 +1,9 @@
-use super::InspectMode;
+use super::{InspectMode, run_state};
 use crate::{
     EvmConfig, EvmTypes,
     interpreter::{
-        InterpreterState, Pc, Result, Stack, gas::RemainingGas, private::InstructionImplFn,
+        InstrStop, Interpreter, InterpreterState, Pc, Result, Stack, gas::RemainingGas,
+        private::InstructionImplFn,
     },
 };
 use core::hint::cold_path;
@@ -24,6 +25,19 @@ type TailInstrTable<T> = [TailInstrFn<T>; 256];
 pub(super) type RawInstrFn<T> = TailInstrFn<T>;
 
 pub(super) type RawInstrTable<T> = TailInstrTable<T>;
+
+#[inline(always)]
+pub(in crate::interpreter) fn run<T: EvmTypes>(
+    interpreter: &mut Interpreter<'_, T>,
+    instructions: &RawInstrTable<T>,
+) -> InstrStop {
+    let remaining_gas = RemainingGas::new(interpreter.gas.remaining());
+    let (state, pc, stack) = run_state(interpreter);
+    let op = pc.op();
+    let instr = instructions[op as usize];
+    instr(pc, stack, remaining_gas, state, (instructions as *const RawInstrTable<T>).cast());
+    state.result().unwrap_err()
+}
 
 extern_table! {
     pub(super) fn dispatch<

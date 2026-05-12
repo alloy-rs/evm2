@@ -1,15 +1,10 @@
 //! Instruction dispatch tables.
 
-#[cfg(tco)]
-use crate::interpreter::gas::RemainingGas;
-#[cfg(tco)]
-use crate::interpreter::{Interpreter, Stack};
-#[cfg(tco)]
-use crate::trustme;
 use crate::{
     BaseEvmConfigSelector, EvmConfig, EvmConfigSelector, EvmTypes, VersionTables,
     evm::config::SelectorVersionTables,
-    interpreter::{InstrStop, InterpreterState, Pc, Result, StackMut, op},
+    interpreter::{InstrStop, Interpreter, InterpreterState, Pc, Result, Stack, StackMut, op},
+    trustme,
 };
 
 #[cold]
@@ -30,30 +25,24 @@ cfg_if::cfg_if! {
     } else {
         mod table;
         use table as imp;
-
-        pub(in crate::interpreter) use table::run_table_loop;
     }
 }
 
+pub(in crate::interpreter) use imp::run;
+
 #[inline(always)]
-#[cfg(tco)]
-pub(in crate::interpreter) fn run_tail<T: EvmTypes>(
-    interpreter: &mut Interpreter<'_, T>,
-    instructions: &InstrTable<T>,
-) -> InstrStop {
+fn run_state<'a, 'frame, T: EvmTypes>(
+    interpreter: &'a mut Interpreter<'frame, T>,
+) -> (&'a mut InterpreterState<'frame, T>, Pc, Stack<'a>) {
     // SAFETY: Only the active interpreter lifetime is erased; this stays as a raw pointer so
-    // the dispatch step does not create an extra `&mut` alias for `interpreter`.
-    let raw = unsafe { trustme::decouple_lt_mut_ptr(interpreter as *mut Interpreter<'_, T>) };
+    // the dispatch loop does not create an extra `&mut` alias for `interpreter`.
+    let raw = unsafe { trustme::decouple_lt_mut_ptr(interpreter as *mut Interpreter<'frame, T>) };
     // SAFETY: Instruction methods must not access the stack through `InterpreterState` while
     // the separate stack view is live.
     let state = InterpreterState::wrap_mut(unsafe { &mut *raw });
     let pc = Pc::new(interpreter.pc);
-    let op = pc.op();
     let stack = Stack::new(&mut interpreter.stack, interpreter.stack_len);
-    let remaining_gas = RemainingGas::new(interpreter.gas.remaining());
-    let instr = instructions[op as usize];
-    instr(pc, stack, remaining_gas, state, (instructions as *const InstrTable<T>).cast());
-    interpreter.result.unwrap_err()
+    (state, pc, stack)
 }
 
 #[inline(always)]
