@@ -230,8 +230,13 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         loop {
             let op = pc.op();
             let instr = instructions[op as usize];
-            let (next_pc, packed) = instr(pc, stack.reborrow(), remaining_gas, state);
-            let (gas_spent, next_stack_len) = packed.unpack();
+            let (next_pc, gas_spent, next_stack_len) =
+                crate::interpreter::instructions::table::unpack_ret(instr(
+                    pc,
+                    stack.reborrow(),
+                    remaining_gas,
+                    state,
+                ));
             pc = next_pc;
             stack.len = next_stack_len;
             remaining_gas = RemainingGas::new(remaining_gas.get().wrapping_sub(gas_spent));

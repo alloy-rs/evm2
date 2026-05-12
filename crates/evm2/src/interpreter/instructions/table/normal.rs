@@ -8,7 +8,12 @@ use crate::{
 use core::hint::cold_path;
 
 /// Normal instruction return value.
-pub(crate) type InstrFnRet = (Pc, PackedGasStackLen);
+#[cfg(not(dispatch_single_return))]
+pub(crate) type InstrFnRet = (Pc, GasStackLen);
+
+/// Normal instruction return value.
+#[cfg(dispatch_single_return)]
+pub(crate) type InstrFnRet = DispatchResult;
 
 /// Normal instruction function pointer.
 pub(super) type RawInstrFn<T> = extern_table!(
@@ -171,21 +176,13 @@ fn dispatch_mono<T: EvmTypes, C: EvmConfig<T>, M: InspectMode<T>, const DYNAMIC_
             state.set_result(r);
         }
         let stack_len = if stack.len <= STACK_LIMIT { stack.len } else { 0 };
-        return (
+        return dispatch_return(
             Pc::new(core::ptr::null()),
-            PackedGasStackLen::pack(
-                initial_remaining_gas.get().wrapping_sub(remaining_gas.get()),
-                stack_len,
-            ),
+            initial_remaining_gas.get().wrapping_sub(remaining_gas.get()),
+            stack_len,
         );
     }
-    (
-        pc,
-        PackedGasStackLen::pack(
-            initial_remaining_gas.get().wrapping_sub(remaining_gas.get()),
-            stack.len,
-        ),
-    )
+    dispatch_return(pc, initial_remaining_gas.get().wrapping_sub(remaining_gas.get()), stack.len)
 }
 
 #[inline(always)]
@@ -196,26 +193,92 @@ const fn pre_step<T: EvmTypes, C: EvmConfig<T>>(
     remaining_gas.spend(C::VERSION_TABLES.static_gas(op) as _)
 }
 
-const STACK_LEN_BITS: u32 = 11;
-const GAS_BITS: u32 = usize::BITS - STACK_LEN_BITS;
-const GAS_MASK: usize = usize::MAX >> STACK_LEN_BITS;
-
 const _: () = assert!(STACK_LIMIT <= (1 << STACK_LEN_BITS));
 
-/// Packed normal dispatch gas spent and stack length.
+#[cfg(dispatch_packed)]
+type GasStackLen = PackedGasStackLen;
+
+#[cfg(not(dispatch_packed))]
+type GasStackLen = UnpackedGasStackLen;
+
+const STACK_LEN_BITS: u32 = 11;
+
+#[cfg(dispatch_packed)]
+const GAS_BITS: u32 = usize::BITS - STACK_LEN_BITS;
+#[cfg(dispatch_packed)]
+const GAS_MASK: usize = usize::MAX >> STACK_LEN_BITS;
+
+#[cfg(dispatch_single_return)]
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub(crate) struct DispatchResult {
+    pc: Pc,
+    gas_stack_len: GasStackLen,
+}
+
+#[inline(always)]
+const fn dispatch_return(pc: Pc, gas_spent: u64, stack_len: usize) -> InstrFnRet {
+    let gas_stack_len = GasStackLen::new(gas_spent, stack_len);
+    #[cfg(not(dispatch_single_return))]
+    {
+        (pc, gas_stack_len)
+    }
+    #[cfg(dispatch_single_return)]
+    {
+        DispatchResult { pc, gas_stack_len }
+    }
+}
+
+#[inline(always)]
+pub(crate) const fn unpack_ret(ret: InstrFnRet) -> (Pc, u64, usize) {
+    #[cfg(not(dispatch_single_return))]
+    let (pc, gas_stack_len) = ret;
+    #[cfg(dispatch_single_return)]
+    let DispatchResult { pc, gas_stack_len } = ret;
+
+    let (gas_spent, stack_len) = gas_stack_len.unpack();
+    (pc, gas_spent, stack_len)
+}
+
+/// Normal dispatch gas spent and stack length, packed into one word on 64-bit native targets.
+#[cfg(dispatch_packed)]
 #[derive(Clone, Copy)]
 #[repr(transparent)]
 pub(crate) struct PackedGasStackLen(usize);
 
+#[cfg(dispatch_packed)]
 impl PackedGasStackLen {
     #[inline(always)]
-    pub(crate) const fn pack(gas_spent: u64, stack_len: usize) -> Self {
-        debug_assert!(stack_len <= STACK_LIMIT);
+    pub(crate) const fn new(gas_spent: u64, stack_len: usize) -> Self {
+        debug_assert!(stack_len <= STACK_LIMIT && gas_spent as usize <= GAS_MASK);
         Self((stack_len << GAS_BITS) | (gas_spent as usize & GAS_MASK))
     }
 
     #[inline(always)]
     pub(crate) const fn unpack(self) -> (u64, usize) {
         ((self.0 & GAS_MASK) as u64, self.0 >> GAS_BITS)
+    }
+}
+
+/// Normal dispatch gas spent and stack length for targets where packing into `usize` is unsuitable.
+#[cfg(not(dispatch_packed))]
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub(crate) struct UnpackedGasStackLen {
+    gas_spent: u64,
+    stack_len: usize,
+}
+
+#[cfg(not(dispatch_packed))]
+impl UnpackedGasStackLen {
+    #[inline(always)]
+    pub(crate) const fn new(gas_spent: u64, stack_len: usize) -> Self {
+        debug_assert!(stack_len <= STACK_LIMIT);
+        Self { gas_spent, stack_len }
+    }
+
+    #[inline(always)]
+    pub(crate) const fn unpack(self) -> (u64, usize) {
+        (self.gas_spent, self.stack_len)
     }
 }
