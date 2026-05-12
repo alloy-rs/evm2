@@ -18,7 +18,7 @@ pub struct TxEnv<T: EvmTypes = BaseEvmTypes> {
     pub blob_hashes: Vec<U256>,
     /// EVM type-specific extension data.
     pub ext: T::TxEnvExt,
-    #[doc(hidden)] // Not public API. Please use `..Default::default()`
+    #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
 }
 
@@ -59,7 +59,7 @@ pub struct BlockEnv<T: EvmTypes = BaseEvmTypes> {
     pub slot_num: U256,
     /// EVM type-specific extension data.
     pub ext: T::BlockEnvExt,
-    #[doc(hidden)] // Not public API. Please use `..Default::default()`
+    #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
 }
 

@@ -871,7 +871,7 @@ pub struct AccountLoad {
     pub is_empty: bool,
     /// Whether the account access was cold.
     pub is_cold: bool,
-    #[doc(hidden)] // Not public API. Please use `..Default::default()`
+    #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
 }
 
@@ -882,7 +882,7 @@ pub struct SLoad {
     pub value: Word,
     /// Whether the storage slot access was cold.
     pub is_cold: bool,
-    #[doc(hidden)] // Not public API. Please use `..Default::default()`
+    #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
 }
 
@@ -897,7 +897,7 @@ pub struct SStore {
     pub new_value: Word,
     /// Whether the storage slot access was cold.
     pub is_cold: bool,
-    #[doc(hidden)] // Not public API. Please use `..Default::default()`
+    #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
 }
 
@@ -958,7 +958,7 @@ pub struct SelfDestructResult {
     pub is_cold: bool,
     /// Whether this account was already destroyed in this transaction.
     pub previously_destroyed: bool,
-    #[doc(hidden)] // Not public API. Please use `..Default::default()`
+    #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
 }
 
@@ -979,7 +979,7 @@ pub struct TxResult<T: EvmTypes = crate::BaseEvmTypes> {
     pub db_error_code: Option<DbErrorCode>,
     /// EVM type-specific extension data.
     pub ext: T::TxResultExt,
-    #[doc(hidden)] // Not public API. Please use `..Default::default()`
+    #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
 }
 

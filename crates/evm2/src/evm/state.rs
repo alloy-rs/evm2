@@ -34,7 +34,7 @@ pub struct Tracked<T> {
     pub original: T,
     /// Current overlay value.
     pub current: T,
-    #[doc(hidden)] // Not public API. Please use `..Default::default()`
+    #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
 }
 
@@ -69,7 +69,7 @@ pub struct AccountInfo {
     pub code_hash: B256,
     /// Bytecode associated with this account.
     pub code: Option<Bytecode>,
-    #[doc(hidden)] // Not public API. Please use `..Default::default()`
+    #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
 }
 
@@ -142,7 +142,7 @@ pub struct Account {
     pub just_created: bool,
     /// Whether the account code has been modified.
     pub code_changed: bool,
-    #[doc(hidden)] // Not public API. Please use `..Default::default()`
+    #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
 }
 
@@ -188,7 +188,7 @@ pub struct StorageOverlay {
     pub wiped: bool,
     /// Loaded or changed storage slots.
     pub(crate) slots: U256Map<Tracked<Word>>,
-    #[doc(hidden)] // Not public API. Please use `..Default::default()`
+    #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
 }
 
@@ -230,7 +230,7 @@ pub struct StateChanges {
     pub code: BTreeMap<B256, Bytecode>,
     /// Logs emitted by the transaction.
     pub logs: Vec<Log>,
-    #[doc(hidden)] // Not public API. Please use `..Default::default()`
+    #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
 }
 
@@ -254,7 +254,7 @@ pub struct StorageChangeSet {
     pub wipe: bool,
     /// Changed storage slots keyed by slot.
     pub slots: BTreeMap<Word, Tracked<Word>>,
-    #[doc(hidden)] // Not public API. Please use `..Default::default()`
+    #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
 }
 

@@ -191,7 +191,7 @@ pub struct TxRequest<'a, Tx, Host = ()> {
     pub tx: &'a Tx,
     /// Mutable host used by this handler.
     pub host: &'a mut Host,
-    #[doc(hidden)] // Not public API. Please use `..Default::default()`
+    #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
 }
 

@@ -20,7 +20,7 @@ pub struct InstructionCx<'a, 'state, T: EvmTypes> {
     pub pc: &'a mut Pc,
     /// Interpreter state.
     pub state: &'a mut InterpreterState<'state, T>,
-    #[doc(hidden)] // Not public API. Please use `..Default::default()`
+    #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
 }
 
@@ -32,7 +32,7 @@ pub struct GasInstructionCx<'a, 'state, T: EvmTypes> {
     pub gas: &'a mut Gas,
     /// Interpreter state.
     pub state: &'a mut InterpreterState<'state, T>,
-    #[doc(hidden)] // Not public API. Please use `..Default::default()`
+    #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
 }
 

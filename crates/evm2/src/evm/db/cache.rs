@@ -29,7 +29,7 @@ pub struct Cache {
     pub storage: StorageKeyMap<Word>,
     /// Cached block hashes keyed by block number.
     pub block_hashes: U256Map<B256>,
-    #[doc(hidden)] // Not public API. Please use `..Default::default()`
+    #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
 }
 
@@ -56,7 +56,7 @@ pub struct CacheDB<ExtDB = EmptyDB> {
     pub cache: Cache,
     /// Wrapped backing database.
     pub db: ExtDB,
-    #[doc(hidden)] // Not public API. Please use `..Default::default()`
+    #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
 }
 

@@ -419,7 +419,7 @@ pub struct MemoryGas {
     pub words_num: usize,
     /// Current total expansion cost.
     pub expansion_cost: u64,
-    #[doc(hidden)] // Not public API. Please use `..Default::default()`
+    #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
 }
 
