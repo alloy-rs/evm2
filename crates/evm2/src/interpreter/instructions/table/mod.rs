@@ -60,6 +60,7 @@ cfg_if::cfg_if! {
         use tco as imp;
     } else {
         mod normal;
+        #[cfg(dispatch_packed)]
         pub(crate) use normal::unpack_ret;
         use normal as imp;
     }

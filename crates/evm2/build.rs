@@ -5,6 +5,7 @@ use std::{env, ffi::OsString, process::Command};
 fn main() {
     println!("cargo:rustc-check-cfg=cfg(dispatch_packed)");
     println!("cargo:rustc-check-cfg=cfg(dispatch_single_return)");
+    println!("cargo:rustc-check-cfg=cfg(dispatch_unpacked)");
     println!("cargo:rustc-check-cfg=cfg(tco)");
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-env-changed=CARGO_CFG_TARGET_ARCH");
@@ -14,11 +15,15 @@ fn main() {
     println!("cargo:rerun-if-env-changed=TARGET");
 
     let is_wasm = target_is_wasm();
+    let dispatch_packed = target_pointer_width() == Some("64") && !is_wasm;
     if is_wasm {
         println!("cargo:rustc-cfg=dispatch_single_return");
     }
-    if target_pointer_width() == Some("64") && !is_wasm {
+    if dispatch_packed {
         println!("cargo:rustc-cfg=dispatch_packed");
+    }
+    if !is_wasm && !dispatch_packed {
+        println!("cargo:rustc-cfg=dispatch_unpacked");
     }
 
     let no_tco_requested = env::var_os("CARGO_FEATURE_NO_TCO").is_some();
