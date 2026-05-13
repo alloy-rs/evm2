@@ -158,14 +158,14 @@ t_linux_armv7 = Target(
 
 targets = [
     t_linux_x86,
-    # t_macos_arm,
-    # t_linux_arm,
-    # t_windows,
-    # t_wasm_unknown,
-    # t_wasm_wasi,
-    # t_wasm_wasi_tail,
-    # t_linux_i686,
-    # t_linux_armv7,
+    t_macos_arm,
+    t_linux_arm,
+    t_windows,
+    t_wasm_unknown,
+    t_wasm_wasi,
+    t_wasm_wasi_tail,
+    t_linux_i686,
+    t_linux_armv7,
 ]
 
 config = [
