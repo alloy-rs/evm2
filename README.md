@@ -37,11 +37,8 @@ fn l1_blocknumber(cx: _) -> out {
 
 fn main() -> Result<()> {
     let spec_id = CustomSpecId::Custom;
-    let mut evm = custom_evm(spec_id);
-    let tx = custom_tx(&[
-        opcode::L1_BLOCKNUMBER,
-        // ...
-    ]);
+    let mut evm = Evm::<CustomTypes>::new(.., spec_id, ..);
+    let tx = CustomTx { .. };
     let result = evm.transact(&tx)?;
     // ...
     Ok(())
