@@ -378,37 +378,15 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         message: &Message<T>,
         caller_is_static: bool,
     ) -> MessageResult<T> {
-        let address = match self.create_address(&bytecode, message) {
-            Ok(address) => address,
-            Err(stop) => return Self::error_message_result(stop, message.gas_limit),
-        };
-
-        let _ = self.state.warm_account(&address);
-
-        if message.depth > 0
-            && let Err(code) = self.state.increment_nonce(&message.caller)
-        {
-            return Self::error_message_result(self.db_error_stop(code), message.gas_limit);
-        }
-
         let checkpoint = self.state.checkpoint();
-        let create_result = match self.state.create_account(
-            &message.caller,
-            &address,
-            &message.value,
-            self.spec_id(),
-        ) {
-            Ok(result) => result,
-            Err(code) => {
-                self.state.rollback(checkpoint, self.spec_id());
-                return Self::error_message_result(self.db_error_stop(code), message.gas_limit);
-            }
-        };
-        if let Err(stop) = create_result {
-            self.state.rollback(checkpoint, self.spec_id());
+        let mut address = Address::ZERO;
+        if let Err(stop) = self.create_address(&mut address, &bytecode, message) {
             return Self::error_message_result(stop, message.gas_limit);
         }
-        self.log_eip7708_transfer(&message.caller, &address, &message.value);
+
+        if let Err(stop) = self.prepare_create_message(&checkpoint, &address, message) {
+            return Self::error_message_result(stop, message.gas_limit);
+        }
 
         let create_message = Message {
             destination: address,
@@ -431,14 +409,57 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         // the interpreter pool that owns this reference.
         let interpreter = unsafe { trustme::decouple_lt(&*interpreter) };
 
-        self.finish_create_message_run(checkpoint, address, message.gas_limit, stop, interpreter)
+        self.finish_create_message_run(
+            &checkpoint,
+            &create_message.destination,
+            message.gas_limit,
+            stop,
+            interpreter,
+        )
+    }
+
+    #[inline(never)]
+    fn prepare_create_message(
+        &mut self,
+        checkpoint: &StateCheckpoint,
+        address: &Address,
+        message: &Message<T>,
+    ) -> Result<(), InstrStop> {
+        let _ = self.state.warm_account(address);
+
+        if message.depth > 0
+            && let Err(code) = self.state.increment_nonce(&message.caller)
+        {
+            self.state.rollback(checkpoint, self.spec_id());
+            return Err(self.db_error_stop(code));
+        }
+
+        let create_result = match self.state.create_account(
+            &message.caller,
+            address,
+            &message.value,
+            self.spec_id(),
+        ) {
+            Ok(result) => result,
+            Err(code) => {
+                self.state.rollback(checkpoint, self.spec_id());
+                return Err(self.db_error_stop(code));
+            }
+        };
+        if let Err(stop) = create_result {
+            self.state.rollback(checkpoint, self.spec_id());
+            return Err(stop);
+        }
+
+        self.log_eip7708_transfer(&message.caller, address, &message.value);
+        Ok(())
     }
 
     #[inline(never)]
     fn finish_create_message_run(
         &mut self,
-        checkpoint: StateCheckpoint,
-        address: Address,
+        checkpoint: &StateCheckpoint,
+        address: &Address,
         gas_limit: u64,
         stop: InstrStop,
         interpreter: &Interpreter<'_, T>,
@@ -458,7 +479,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
                 };
             }
 
-            if let Err(code) = self.state.set_code(&address, Bytecode::new_legacy(output.clone())) {
+            if let Err(code) = self.state.set_code(address, Bytecode::new_legacy(output.clone())) {
                 self.state.rollback(checkpoint, self.spec_id());
                 return Self::error_message_result(self.db_error_stop(code), gas_limit);
             }
@@ -470,7 +491,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             stop,
             gas: Self::message_gas(*gas.tracker(), stop),
             output,
-            created_address: stop.is_success().then_some(address),
+            created_address: stop.is_success().then_some(*address),
             ext: T::MessageResultExt::default(),
             _non_exhaustive: (),
         }
@@ -505,9 +526,10 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     #[inline(never)]
     fn create_address(
         &mut self,
+        address: &mut Address,
         bytecode: &Bytecode,
         message: &Message<T>,
-    ) -> Result<Address, InstrStop> {
+    ) -> Result<(), InstrStop> {
         let info = if message.value > 0 || message.depth > 0 {
             self.state.account_info(&message.caller).map_err(|code| self.db_error_stop(code))?
         } else {
@@ -524,14 +546,15 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             return Err(InstrStop::Return);
         }
 
-        match message.kind {
-            MessageKind::Create if message.depth == 0 => Ok(message.destination),
+        *address = match message.kind {
+            MessageKind::Create if message.depth == 0 => message.destination,
             MessageKind::Create => {
-                Ok(message.caller.create(info.as_ref().map_or(0, |info| info.nonce)))
+                message.caller.create(info.as_ref().map_or(0, |info| info.nonce))
             }
-            MessageKind::Create2 => Ok(message.caller.create2(message.salt, bytecode.hash_slow())),
+            MessageKind::Create2 => message.caller.create2(message.salt, bytecode.hash_slow()),
             _ => unreachable!("invalid create message kind"),
-        }
+        };
+        Ok(())
     }
 
     #[inline(never)]
@@ -564,7 +587,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
 
         if let Some(result) = self.execute_call_precompile(message) {
             if !result.stop.is_success() {
-                self.state.rollback(checkpoint, self.spec_id());
+                self.state.rollback(&checkpoint, self.spec_id());
             }
             return result;
         }
@@ -611,7 +634,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         let child_gas = interpreter.gas();
         let output = Bytes::copy_from_slice(interpreter.output());
         if !stop.is_success() {
-            self.state.rollback(checkpoint, self.spec_id());
+            self.state.rollback(&checkpoint, self.spec_id());
         }
 
         MessageResult {

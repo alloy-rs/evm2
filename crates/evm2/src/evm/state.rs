@@ -922,7 +922,7 @@ impl State {
 
     /// Reverts state changes after the checkpoint.
     #[inline(never)]
-    pub fn rollback(&mut self, checkpoint: StateCheckpoint, spec: SpecId) {
+    pub fn rollback(&mut self, checkpoint: &StateCheckpoint, spec: SpecId) {
         assert!(checkpoint.journal_len <= self.journal.len(), "checkpoint is past journal length");
         assert!(checkpoint.logs_len <= self.logs.len(), "checkpoint is past logs length");
         self.logs.truncate(checkpoint.logs_len);
@@ -1224,7 +1224,7 @@ mod tests {
         state.set_storage(&address, &Word::from(1), &Word::from(30)).unwrap();
 
         assert_eq!(state.storage(&address, &Word::from(1)).unwrap(), Word::from(30));
-        state.rollback(checkpoint, SpecId::FRONTIER);
+        state.rollback(&checkpoint, SpecId::FRONTIER);
         assert_eq!(state.storage(&address, &Word::from(1)).unwrap(), Word::from(10));
     }
 
@@ -1238,7 +1238,7 @@ mod tests {
         state.set_transient_storage(&address, &Word::from(1), &Word::from(20));
 
         assert_eq!(state.transient_storage(&address, &Word::from(1)), Word::from(20));
-        state.rollback(checkpoint, SpecId::FRONTIER);
+        state.rollback(&checkpoint, SpecId::FRONTIER);
         assert_eq!(state.transient_storage(&address, &Word::from(1)), Word::from(10));
     }
 
@@ -1251,7 +1251,7 @@ mod tests {
         state.mark_destructed(&address);
 
         assert!(state.is_selfdestructed(&address));
-        state.rollback(checkpoint, SpecId::FRONTIER);
+        state.rollback(&checkpoint, SpecId::FRONTIER);
         assert!(!state.is_selfdestructed(&address));
     }
 
@@ -1283,7 +1283,7 @@ mod tests {
                 }
             ]
         );
-        state.rollback(checkpoint, SpecId::FRONTIER);
+        state.rollback(&checkpoint, SpecId::FRONTIER);
         assert_eq!(state.logs(), &[kept]);
     }
 
@@ -1300,7 +1300,7 @@ mod tests {
         state.touch(&precompile3);
         state.touch(&other);
 
-        state.rollback(checkpoint, SpecId::SPURIOUS_DRAGON);
+        state.rollback(&checkpoint, SpecId::SPURIOUS_DRAGON);
         assert!(state.touched.contains(&precompile3));
         assert!(!state.touched.contains(&other));
     }
@@ -1323,7 +1323,7 @@ mod tests {
         assert!(state.warm_storage(&frame_storage, &key));
         assert_eq!(state.journal.len(), 2);
 
-        state.rollback(checkpoint, SpecId::FRONTIER);
+        state.rollback(&checkpoint, SpecId::FRONTIER);
         assert!(state.is_account_warm(&base_account));
         assert!(state.is_storage_warm(&base_storage, &key));
         assert!(!state.is_account_warm(&frame_account));
