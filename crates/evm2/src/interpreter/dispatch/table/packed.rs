@@ -40,12 +40,11 @@ extern_table! {
         const DYNAMIC_GAS: bool,
     >(
         pc: Pc,
-        stack: Stack<'_>,
+        mut stack: Stack<'_>,
         remaining_gas: RemainingGas,
         state: &mut InterpreterState<'_, T>,
     ) -> InstrFnRet {
         let initial_remaining_gas = remaining_gas;
-        let mut stack = stack;
         let (pc, remaining_gas) =
             super::dispatch_inner::<T, C, M, RemainingGas, DYNAMIC_GAS, false>(
                 pc,
@@ -67,12 +66,11 @@ extern_table! {
         M: InspectMode<T>,
     >(
         pc: Pc,
-        stack: Stack<'_>,
+        mut stack: Stack<'_>,
         remaining_gas: RemainingGas,
         state: &mut InterpreterState<'_, T>,
     ) -> InstrFnRet {
         let initial_remaining_gas = remaining_gas;
-        let mut stack = stack;
         let (pc, remaining_gas) =
             super::dispatch_inner::<T, C, M, RemainingGas, false, true>(
                 pc,
