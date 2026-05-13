@@ -58,8 +58,8 @@ fn evm_executes_storage_transaction() {
 fn evm_runs_transactions_against_initial_state() {
     let contract = Address::from([0x22; 20]);
     let mut database = InMemoryDB::default();
-    database.insert_account_info(contract, AccountInfo { nonce: 1, ..Default::default() });
-    database.insert_account_storage(contract, Word::from(1), Word::from(40));
+    database.insert_account_info(&contract, AccountInfo { nonce: 1, ..Default::default() });
+    database.insert_account_storage(&contract, &Word::from(1), &Word::from(40));
     let mut evm = TestEvm::new(
         SpecId::OSAKA,
         BlockEnv::default(),
@@ -107,14 +107,14 @@ fn evm_propagates_child_sstore_negative_refund() {
 
     let mut database = InMemoryDB::default();
     database.insert_account_info(
-        contract,
+        &contract,
         AccountInfo {
             nonce: 1,
             code: Some(Bytecode::new_legacy(Bytes::from(child_code))),
             ..Default::default()
         },
     );
-    database.insert_account_storage(contract, Word::from(0), Word::from(5));
+    database.insert_account_storage(&contract, &Word::from(0), &Word::from(5));
     let mut evm = TestEvm::new(
         SpecId::LONDON,
         BlockEnv::default(),

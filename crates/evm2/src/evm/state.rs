@@ -381,12 +381,10 @@ pub struct State {
 
 impl State {
     /// Creates a new state over an initial database.
-    #[inline]
     pub fn new(initial: impl DynDatabase) -> Self {
         Self::new_mono(Box::new(initial))
     }
 
-    #[inline]
     pub(crate) fn new_mono(initial: Box<dyn DynDatabase>) -> Self {
         Self {
             initial,
@@ -576,7 +574,7 @@ impl State {
         match self.accounts.entry(*address) {
             hash_map::Entry::Occupied(entry) => Ok(Some(entry.into_mut())),
             hash_map::Entry::Vacant(entry) => {
-                let Some(info) = self.initial.get_account(*address)? else {
+                let Some(info) = self.initial.get_account(address)? else {
                     return Ok(None);
                 };
                 Ok(Some(entry.insert(Tracked::new(Some(Account::from_info(info))))))
@@ -593,7 +591,7 @@ impl State {
         match accounts.entry(*address) {
             hash_map::Entry::Occupied(entry) => Ok(entry.into_mut()),
             hash_map::Entry::Vacant(entry) => {
-                let original = initial.get_account(*address)?.map(Account::from_info);
+                let original = initial.get_account(address)?.map(Account::from_info);
                 journal.push(JournalEntry::AccountInserted { address: *address });
                 Ok(entry.insert(Tracked {
                     original: original.clone(),
@@ -604,7 +602,8 @@ impl State {
         }
     }
 
-    fn account_mut(&mut self, address: &Address) -> DbResult<&mut Account> {
+    /// Gets an existing account or inserts a new empty account.
+    pub fn get_or_insert(&mut self, address: &Address) -> DbResult<&mut Account> {
         let tracked = Self::ensure_account_overlay(
             &mut self.initial,
             &mut self.accounts,
@@ -642,7 +641,7 @@ impl State {
         if let Some(account) = self.accounts.get(address) {
             return Ok(account.current.as_ref().map(Account::info));
         }
-        self.initial.get_account(*address)
+        self.initial.get_account(address)
     }
 
     /// Returns whether an account is empty/non-existent for EIP-150 new-account gas checks.
@@ -662,11 +661,6 @@ impl State {
         Ok(self.load_account(address)?.and_then(|account| account.current.as_ref()))
     }
 
-    /// Gets an existing account or inserts a new empty account.
-    pub fn get_or_insert(&mut self, address: &Address) -> DbResult<&mut Account> {
-        self.account_mut(address)
-    }
-
     /// Gets account code.
     pub fn get_code(&mut self, address: &Address) -> DbResult<Bytecode> {
         let Some((code_hash, code)) = self.find(address)?.map(|account| {
@@ -682,7 +676,7 @@ impl State {
         if !code.is_empty() {
             return Ok(code);
         }
-        self.initial.get_code_by_hash(code_hash)
+        self.initial.get_code_by_hash(&code_hash)
     }
 
     fn storage_slot_mut(
@@ -702,7 +696,7 @@ impl State {
                 let initial = if storage_wiped || account_created {
                     Word::ZERO
                 } else {
-                    initial.get_storage(*address, *key)?
+                    initial.get_storage(address, key)?
                 };
                 if journal_insert {
                     journal.push(JournalEntry::StorageInserted { address: *address, key: *key });
@@ -728,7 +722,7 @@ impl State {
     /// host `sstore` operation instead, and only use this lower-level helper when those concerns
     /// are handled elsewhere.
     pub fn set_storage(&mut self, address: &Address, key: &Word, value: &Word) -> DbResult<SStore> {
-        let _ = self.account_mut(address)?;
+        let _ = self.get_or_insert(address)?;
         self.touch(address);
         let slot = self.storage_slot_mut(address, key, true)?;
         let result = SStore {
@@ -824,7 +818,7 @@ impl State {
             return Ok(Err(InstrStop::OutOfFunds));
         }
 
-        let balance = self.account_mut(address)?.balance;
+        let balance = self.get_or_insert(address)?.balance;
         self.wipe_storage(address);
         let account = self.journal_account_change(address)?;
         *account = Account {
@@ -1006,14 +1000,14 @@ impl State {
             return Ok(account.current.as_ref().is_some_and(Account::is_empty)
                 || (account.current.is_none() && account.original.is_some()));
         }
-        Ok(self.initial.get_account(address)?.is_some_and(|account| account.is_empty()))
+        Ok(self.initial.get_account(&address)?.is_some_and(|account| account.is_empty()))
     }
 
     fn account_exists(&mut self, address: Address) -> DbResult<bool> {
         if let Some(account) = self.accounts.get(&address) {
             return Ok(account.current.is_some());
         }
-        Ok(self.initial.get_account(address)?.is_some())
+        Ok(self.initial.get_account(&address)?.is_some())
     }
 
     fn delete_account_for_finalization(&mut self, address: Address) -> DbResult<()> {
@@ -1221,8 +1215,8 @@ mod tests {
     fn storage_change_rolls_back_to_checkpoint() {
         let address = Address::from([0x11; 20]);
         let mut database = CacheDB::default();
-        database.insert_account_info(address, AccountInfo::default());
-        database.insert_account_storage(address, Word::from(1), Word::from(10));
+        database.insert_account_info(&address, AccountInfo::default());
+        database.insert_account_storage(&address, &Word::from(1), &Word::from(10));
         let mut state = State::new(database);
 
         let checkpoint = state.checkpoint();
@@ -1298,8 +1292,8 @@ mod tests {
         let precompile3 = Address::with_last_byte(3);
         let other = Address::with_last_byte(4);
         let mut database = CacheDB::default();
-        database.insert_account_info(precompile3, AccountInfo::default());
-        database.insert_account_info(other, AccountInfo::default());
+        database.insert_account_info(&precompile3, AccountInfo::default());
+        database.insert_account_info(&other, AccountInfo::default());
         let mut state = State::new(database);
 
         let checkpoint = state.checkpoint();
@@ -1361,7 +1355,7 @@ mod tests {
     fn transfer_to_self_requires_balance() {
         let address = Address::from([0x77; 20]);
         let mut database = CacheDB::default();
-        database.insert_account_info(address, AccountInfo::default().with_balance(Word::from(3)));
+        database.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(3)));
         let mut state = State::new(database);
 
         assert!(!state.transfer(&address, &address, &Word::from(4)).unwrap());
@@ -1373,7 +1367,7 @@ mod tests {
         let address = Address::from([0x44; 20]);
         let empty = AccountInfo::default();
         let mut database = CacheDB::default();
-        database.insert_account_info(address, empty.clone());
+        database.insert_account_info(&address, empty.clone());
         let mut state = State::new(database);
 
         state.touch(&address);
@@ -1390,7 +1384,7 @@ mod tests {
     fn homestead_preserves_touched_empty_existing_account() {
         let address = Address::from([0x45; 20]);
         let mut database = CacheDB::default();
-        database.insert_account_info(address, AccountInfo::default());
+        database.insert_account_info(&address, AccountInfo::default());
         let mut state = State::new(database);
 
         state.touch(&address);
@@ -1454,8 +1448,8 @@ mod tests {
     fn selfdestruct_deletes_account_and_wipes_storage() {
         let address = Address::from([0x48; 20]);
         let mut database = CacheDB::default();
-        database.insert_account_info(address, AccountInfo::default().with_balance(Word::from(1)));
-        database.insert_account_storage(address, Word::from(1), Word::from(2));
+        database.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(1)));
+        database.insert_account_storage(&address, &Word::from(1), &Word::from(2));
         let mut state = State::new(database);
 
         state.mark_destructed(&address);
@@ -1473,8 +1467,8 @@ mod tests {
         let high = Address::from([0x22; 20]);
         let low = Address::from([0x11; 20]);
         let mut database = CacheDB::default();
-        database.insert_account_info(high, AccountInfo::default().with_balance(Word::from(2)));
-        database.insert_account_info(low, AccountInfo::default().with_balance(Word::from(1)));
+        database.insert_account_info(&high, AccountInfo::default().with_balance(Word::from(2)));
+        database.insert_account_info(&low, AccountInfo::default().with_balance(Word::from(1)));
         let mut state = State::new(database);
 
         state.mark_destructed(&high);

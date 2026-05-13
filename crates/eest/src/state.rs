@@ -16,9 +16,9 @@ pub(crate) fn insert_account_with_storage(
     info: AccountInfo,
     storage: impl IntoIterator<Item = (alloy_primitives::U256, alloy_primitives::U256)>,
 ) {
-    database.insert_account_info(address, info);
+    database.insert_account_info(&address, info);
     for (key, value) in storage {
-        database.insert_account_storage(address, key, value);
+        database.insert_account_storage(&address, &key, &value);
     }
 }
 

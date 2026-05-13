@@ -138,7 +138,7 @@ mod tests {
             op::STOP,
         ]));
         let mut database = InMemoryDB::default();
-        database.insert_account_info(contract, AccountInfo::default().with_code(code));
+        database.insert_account_info(&contract, AccountInfo::default().with_code(code));
         let block = BlockEnv { beneficiary, basefee: U256::from(7), ..BlockEnv::default() };
         let mut evm = TestEvm::new(
             SpecId::OSAKA,
@@ -166,7 +166,7 @@ mod tests {
         let code =
             Bytecode::new_legacy(Bytes::from_static(&[op::ADDRESS, op::EXTCODESIZE, op::STOP]));
         let mut database = InMemoryDB::default();
-        database.insert_account_info(contract, AccountInfo::default().with_code(code));
+        database.insert_account_info(&contract, AccountInfo::default().with_code(code));
         let mut evm = TestEvm::new(
             SpecId::OSAKA,
             BlockEnv::default(),
@@ -219,7 +219,7 @@ mod tests {
             op::REVERT,
         ]));
         let mut database = InMemoryDB::default();
-        database.insert_account_info(contract, AccountInfo::default().with_code(code));
+        database.insert_account_info(&contract, AccountInfo::default().with_code(code));
         let mut evm = TestEvm::new(
             SpecId::OSAKA,
             BlockEnv::default(),

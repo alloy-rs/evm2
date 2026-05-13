@@ -590,7 +590,7 @@ mod tests {
         let caller = Address::with_last_byte(0xaa);
         let mut database = InMemoryDB::default();
         database.insert_account_info(
-            caller,
+            &caller,
             AccountInfo::default().with_balance(U256::from(1_000_000_000u64)),
         );
         let tx = RecoveredTxEnvelope::Eip2930(Recovered::new_unchecked(
@@ -687,7 +687,7 @@ mod tests {
         let caller = Address::with_last_byte(0xaa);
         let mut database = InMemoryDB::default();
         database.insert_account_info(
-            caller,
+            &caller,
             AccountInfo::default()
                 .with_nonce(7)
                 .with_code(Bytecode::new_legacy(Bytes::from_static(&[op::STOP]))),
@@ -753,10 +753,10 @@ mod tests {
         ]));
         let mut database = InMemoryDB::default();
         database.insert_account_info(
-            target,
+            &target,
             AccountInfo::default().with_code(Bytecode::new_eip7702(delegated)),
         );
-        database.insert_account_info(delegated, AccountInfo::default().with_code(delegated_code));
+        database.insert_account_info(&delegated, AccountInfo::default().with_code(delegated_code));
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::PRAGUE,
             BlockEnv::default(),

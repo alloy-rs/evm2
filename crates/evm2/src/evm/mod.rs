@@ -750,7 +750,7 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
     }
 
     fn block_hash(&mut self, number: Word) -> Result<Option<B256>, InstrStop> {
-        self.state.initial_mut().get_block_hash(number).map_err(|code| self.db_error_stop(code))
+        self.state.initial_mut().get_block_hash(&number).map_err(|code| self.db_error_stop(code))
     }
 
     fn sload(
@@ -1200,19 +1200,19 @@ mod tests {
     impl Database for FailingStorageDb {
         type Error = FailingDbError;
 
-        fn get_account(&mut self, _address: Address) -> Result<Option<AccountInfo>, Self::Error> {
+        fn get_account(&mut self, _address: &Address) -> Result<Option<AccountInfo>, Self::Error> {
             Ok(Some(AccountInfo::default()))
         }
 
-        fn get_code_by_hash(&mut self, _code_hash: B256) -> Result<Bytecode, Self::Error> {
+        fn get_code_by_hash(&mut self, _code_hash: &B256) -> Result<Bytecode, Self::Error> {
             Ok(Bytecode::default())
         }
 
-        fn get_storage(&mut self, _address: Address, _key: Word) -> Result<Word, Self::Error> {
+        fn get_storage(&mut self, _address: &Address, _key: &Word) -> Result<Word, Self::Error> {
             Err(FailingDbError)
         }
 
-        fn get_block_hash(&mut self, _number: Word) -> Result<Option<B256>, Self::Error> {
+        fn get_block_hash(&mut self, _number: &Word) -> Result<Option<B256>, Self::Error> {
             Ok(None)
         }
     }
@@ -1275,7 +1275,7 @@ mod tests {
         let caller = Address::from([0x11; 20]);
         let created = Address::from([0x22; 20]);
         let mut database = InMemoryDB::default();
-        database.insert_account_info(caller, AccountInfo::default().with_balance(Word::from(1)));
+        database.insert_account_info(&caller, AccountInfo::default().with_balance(Word::from(1)));
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::FRONTIER,
             BlockEnv::default(),
@@ -1308,7 +1308,7 @@ mod tests {
         let caller = Address::from([0x11; 20]);
         let created = Address::from([0x22; 20]);
         let mut database = InMemoryDB::default();
-        database.insert_account_info(caller, AccountInfo::default().with_balance(Word::from(1)));
+        database.insert_account_info(&caller, AccountInfo::default().with_balance(Word::from(1)));
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::HOMESTEAD,
             BlockEnv::default(),
@@ -1338,8 +1338,8 @@ mod tests {
     fn staticcall_touches_empty_existing_destination() {
         let target = Address::from([0x11; 20]);
         let mut database = InMemoryDB::default();
-        database.insert_account_info(target, AccountInfo::default());
-        database.insert_account_storage(target, Word::ZERO, Word::from(1));
+        database.insert_account_info(&target, AccountInfo::default());
+        database.insert_account_storage(&target, &Word::ZERO, &Word::from(1));
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::SPURIOUS_DRAGON,
             BlockEnv::default(),
@@ -1378,9 +1378,9 @@ mod tests {
         let code_address = Address::from([0x22; 20]);
         let mut database = InMemoryDB::default();
         database
-            .insert_account_info(destination, AccountInfo::default().with_balance(Word::from(1)));
-        database.insert_account_info(code_address, AccountInfo::default());
-        database.insert_account_storage(code_address, Word::ZERO, Word::from(1));
+            .insert_account_info(&destination, AccountInfo::default().with_balance(Word::from(1)));
+        database.insert_account_info(&code_address, AccountInfo::default());
+        database.insert_account_storage(&code_address, &Word::ZERO, &Word::from(1));
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::SPURIOUS_DRAGON,
             BlockEnv::default(),
@@ -1442,7 +1442,7 @@ mod tests {
         let caller = Address::from([0x01; 20]);
         let target = Address::from([0x02; 20]);
         let mut database = InMemoryDB::default();
-        database.insert_account_info(caller, AccountInfo::default().with_balance(U256::from(10)));
+        database.insert_account_info(&caller, AccountInfo::default().with_balance(U256::from(10)));
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::AMSTERDAM,
             BlockEnv::default(),

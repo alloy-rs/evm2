@@ -696,10 +696,10 @@ mod tests {
         ]));
         let mut database = InMemoryDB::default();
         database.insert_account_info(
-            caller,
+            &caller,
             AccountInfo::default().with_balance(U256::from(1_000_000_000_u64)),
         );
-        database.insert_account_info(contract, AccountInfo::default().with_code(code));
+        database.insert_account_info(&contract, AccountInfo::default().with_code(code));
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
             BlockEnv::default(),
@@ -733,7 +733,7 @@ mod tests {
         let target = Address::from([0xbb; 20]);
         let mut database = InMemoryDB::default();
         database.insert_account_info(
-            caller,
+            &caller,
             AccountInfo::default().with_balance(U256::from(1_000_000_000_u64)),
         );
         let mut evm = Evm::<BaseEvmTypes>::new(
@@ -769,7 +769,7 @@ mod tests {
         let caller = Address::from([0xaa; 20]);
         let mut database = InMemoryDB::default();
         database.insert_account_info(
-            caller,
+            &caller,
             AccountInfo::default().with_balance(U256::from(1_000_000_000_u64)),
         );
         let mut evm = Evm::<BaseEvmTypes>::new(
