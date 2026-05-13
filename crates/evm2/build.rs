@@ -1,15 +1,28 @@
 //! Configures the optional tail-call interpreter backend.
 
-use std::{env, ffi::OsString, process::Command};
+use std::{env as std_env, ffi::OsString, process::Command};
 
 fn main() {
+    println!("cargo:rustc-check-cfg=cfg(dispatch_packed)");
+    println!("cargo:rustc-check-cfg=cfg(dispatch_single_return)");
+    println!("cargo:rustc-check-cfg=cfg(dispatch_unpacked)");
     println!("cargo:rustc-check-cfg=cfg(tco)");
     println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-env-changed=RUSTC");
-    println!("cargo:rerun-if-env-changed=TARGET");
 
-    let no_tco_requested = env::var_os("CARGO_FEATURE_NO_TCO").is_some();
-    let nightly_requested = env::var_os("CARGO_FEATURE_NIGHTLY").is_some();
+    let is_wasm = target_is_wasm();
+    let dispatch_packed = target_pointer_width() == Some(64) && !is_wasm;
+    if is_wasm {
+        println!("cargo:rustc-cfg=dispatch_single_return");
+    }
+    if dispatch_packed {
+        println!("cargo:rustc-cfg=dispatch_packed");
+    }
+    if !is_wasm && !dispatch_packed {
+        println!("cargo:rustc-cfg=dispatch_unpacked");
+    }
+
+    let no_tco_requested = env("CARGO_FEATURE_NO_TCO").is_some();
+    let nightly_requested = env("CARGO_FEATURE_NIGHTLY").is_some();
     let is_nightly = rustc_is_nightly();
 
     if no_tco_requested {
@@ -23,6 +36,19 @@ fn main() {
     }
 }
 
+fn target_is_wasm() -> bool {
+    let target_arch =
+        env("CARGO_CFG_TARGET_ARCH").and_then(|value| value.into_string().ok()).unwrap_or_default();
+    let target_family = env("CARGO_CFG_TARGET_FAMILY")
+        .and_then(|value| value.into_string().ok())
+        .unwrap_or_default();
+    target_arch.starts_with("wasm") || target_family.split(',').any(|family| family == "wasm")
+}
+
+fn target_pointer_width() -> Option<u32> {
+    env("CARGO_CFG_TARGET_POINTER_WIDTH")?.to_str()?.parse().ok()
+}
+
 fn rustc_is_nightly() -> bool {
     let output = Command::new(rustc()).arg("-Vv").output();
     let Ok(output) = output else { return false };
@@ -34,5 +60,10 @@ fn rustc_is_nightly() -> bool {
 }
 
 fn rustc() -> OsString {
-    env::var_os("RUSTC").unwrap_or_else(|| OsString::from("rustc"))
+    env("RUSTC").unwrap_or_else(|| OsString::from("rustc"))
+}
+
+fn env(key: &str) -> Option<OsString> {
+    println!("cargo:rerun-if-env-changed={key}");
+    std_env::var_os(key)
 }

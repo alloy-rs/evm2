@@ -106,6 +106,3 @@ ark-ff-macros = { git = "https://github.com/DaniPopes/algebra", rev = "a71d9795e
 ark-poly = { git = "https://github.com/DaniPopes/algebra", rev = "a71d9795e2e527cd0c80e6831bd957134de30d22" }
 ark-serialize = { git = "https://github.com/DaniPopes/algebra", rev = "a71d9795e2e527cd0c80e6831bd957134de30d22" }
 ark-serialize-derive = { git = "https://github.com/DaniPopes/algebra", rev = "a71d9795e2e527cd0c80e6831bd957134de30d22" }
-
-# https://github.com/herumi/mcl-rust/issues/8
-mcl_rust = { git = "https://github.com/herumi/mcl-rust", rev = "f8c96482a6831a64e4cdd5b201e0d874abc84415" }

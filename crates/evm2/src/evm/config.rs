@@ -5,7 +5,7 @@ use crate::{
     ethereum::RecoveredTxEnvelope,
     interpreter::{
         Host,
-        instructions::table::{ConfigInstrTables, InstrTable, SelectorInstrTables},
+        dispatch::{ConfigInstrTables, InstrTable, SelectorInstrTables},
     },
     version::Version,
 };
