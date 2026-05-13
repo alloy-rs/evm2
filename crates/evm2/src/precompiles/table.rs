@@ -1,5 +1,5 @@
 use crate::{
-    interpreter::Gas,
+    interpreter::GasTracker,
     precompiles::{
         PrecompileId, PrecompileResult, blake2, bls12_381, bn254, hash, identity,
         kzg_point_evaluation, modexp, secp256k1, secp256r1,
@@ -8,7 +8,7 @@ use crate::{
 use alloy_primitives::{Address, map::HashMap};
 
 /// Precompile implementation function.
-pub type PrecompileFn = fn(&[u8], &mut Gas) -> PrecompileResult;
+pub type PrecompileFn = fn(&[u8], &mut GasTracker) -> PrecompileResult;
 
 /// Precompile descriptor.
 #[derive(Clone, Debug)]

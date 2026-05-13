@@ -2,7 +2,7 @@
 
 use super::utils::{pad_g2_point, remove_g2_padding};
 use crate::{
-    interpreter::Gas,
+    interpreter::GasTracker,
     precompiles::{
         PrecompileHalt, PrecompileOutput, PrecompileResult,
         bls12_381_const::{G2_ADD_BASE_GAS_FEE, G2_ADD_INPUT_LENGTH, PADDED_G2_LENGTH},
@@ -15,7 +15,7 @@ use crate::{
 /// Output is an encoding of addition operation result - single G2 point (`256`
 /// bytes).
 /// See also <https://eips.ethereum.org/EIPS/eip-2537#abi-for-g2-addition>
-pub fn run(input: &[u8], gas: &mut Gas) -> PrecompileResult {
+pub fn run(input: &[u8], gas: &mut GasTracker) -> PrecompileResult {
     gas.spend(G2_ADD_BASE_GAS_FEE)?;
 
     if input.len() != G2_ADD_INPUT_LENGTH {

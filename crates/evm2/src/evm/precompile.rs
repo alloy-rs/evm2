@@ -1,6 +1,6 @@
 //! Precompile dispatch interface.
 
-use crate::{PrecompileError, interpreter::Gas};
+use crate::{PrecompileError, interpreter::GasTracker};
 use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::{Address, Bytes};
 use core::any::Any;
@@ -44,7 +44,7 @@ pub trait PrecompileProvider: Any {
         &mut self,
         address: Address,
         input: &[u8],
-        gas: &mut Gas,
+        gas: &mut GasTracker,
     ) -> Option<Result<PrecompileOutput, PrecompileError>>;
 }
 
@@ -59,7 +59,7 @@ impl PrecompileProvider for Box<dyn PrecompileProvider> {
         &mut self,
         address: Address,
         input: &[u8],
-        gas: &mut Gas,
+        gas: &mut GasTracker,
     ) -> Option<Result<PrecompileOutput, PrecompileError>> {
         self.as_mut().execute(address, input, gas)
     }
@@ -81,7 +81,7 @@ impl PrecompileProvider for NoPrecompiles {
         &mut self,
         _address: Address,
         _input: &[u8],
-        _gas: &mut Gas,
+        _gas: &mut GasTracker,
     ) -> Option<Result<PrecompileOutput, PrecompileError>> {
         None
     }
