@@ -3,7 +3,7 @@ use super::{InspectMode, UNKNOWN_OP, inc_pc, run_state, unknown_instruction};
 use crate::interpreter::gas::RemainingGas;
 use crate::{
     EvmConfig, EvmTypes,
-    interpreter::{InstrStop, Interpreter, InterpreterState, Pc, Result, Stack, gas::Gas},
+    interpreter::{InstrStop, Interpreter, InterpreterState, Pc, Result, StackMut, gas::Gas},
 };
 use core::hint::cold_path;
 
@@ -146,20 +146,20 @@ fn dispatch_inner<
     const UNKNOWN: bool,
 >(
     mut pc: Pc,
-    mut stack: Stack<'_>,
+    mut stack: StackMut<'_>,
     mut gas: G,
     state: &mut InterpreterState<'_, T>,
     op: u8,
-) -> (Pc, G, usize) {
+) -> (Pc, G) {
     let instr = if UNKNOWN { unknown_instruction } else { C::VERSION_TABLES.instruction(op).instr };
     if M::INSPECT {
-        M::step(state, pc, stack.len);
+        M::step(state, pc, *stack.len);
     }
     let r;
     match gas.pre_step::<T, C>(state, op) {
         Ok(()) => {
             gas.sync_before_exec(state, DYNAMIC_GAS, M::INSPECT);
-            r = instr(&mut pc, stack.as_mut(), state);
+            r = instr(&mut pc, stack.reborrow(), state);
             gas.sync_after_exec(state, DYNAMIC_GAS);
             if !M::INSPECT || r.is_ok() {
                 inc_pc(&mut pc, op);
@@ -172,16 +172,16 @@ fn dispatch_inner<
     }
     if M::INSPECT {
         state.set_result(r);
-        M::step_end(state, pc, stack.len);
+        M::step_end(state, pc, *stack.len);
     }
     if r.is_err() {
         cold_path();
         if !M::INSPECT {
             state.set_result(r);
         }
-        return (Pc::new(core::ptr::null()), gas, stack.len);
+        return (Pc::new(core::ptr::null()), gas);
     }
-    (pc, gas, stack.len)
+    (pc, gas)
 }
 
 pub(in crate::interpreter) fn run<T: EvmTypes>(
