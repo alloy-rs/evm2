@@ -18,7 +18,8 @@ fn load_account<T: EvmTypes>(
 ) -> Result<AccountLoad> {
     let cold_load_gas = cx.state.gas_params().cold_account_additional_cost();
     let skip_cold_load = cx.gas.remaining() < cold_load_gas;
-    let account = cx.state.host().load_account(word_to_address(addr), load_code, skip_cold_load)?;
+    let account_address = word_to_address(addr);
+    let account = cx.state.host().load_account(&account_address, load_code, skip_cold_load)?;
     if account.is_cold {
         cx.gas.spend(cold_load_gas)?;
     }

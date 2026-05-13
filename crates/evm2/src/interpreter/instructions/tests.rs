@@ -85,7 +85,7 @@ impl Host<TestTypes> for TestHost {
 
     fn load_account(
         &mut self,
-        address: Address,
+        address: &Address,
         load_code: bool,
         skip_cold_load: bool,
     ) -> Result<AccountLoad, InstrStop> {
@@ -109,7 +109,7 @@ impl Host<TestTypes> for TestHost {
 
     fn target_is_empty_for_new_account_gas(
         &mut self,
-        _address: Address,
+        _address: &Address,
         spec: SpecId,
     ) -> Result<bool, InstrStop> {
         if spec.enables(SpecId::SPURIOUS_DRAGON) {
@@ -118,21 +118,21 @@ impl Host<TestTypes> for TestHost {
         Ok(!self.exists && !self.is_touched)
     }
 
-    fn block_hash(&mut self, number: Word) -> Result<Option<B256>, InstrStop> {
+    fn block_hash(&mut self, number: &Word) -> Result<Option<B256>, InstrStop> {
         Ok(Some(B256::with_last_byte(number.wrapping_to::<u8>())))
     }
 
     fn sload(
         &mut self,
-        address: Address,
-        key: Word,
+        address: &Address,
+        key: &Word,
         skip_cold_load: bool,
     ) -> Result<SLoad, InstrStop> {
         if skip_cold_load && self.is_cold {
             return Err(InstrStop::OutOfGas);
         }
         Ok(SLoad {
-            value: self.storage.get(&StorageKey::new(address, key)).copied().unwrap_or_default(),
+            value: self.storage.get(&StorageKey::new(*address, *key)).copied().unwrap_or_default(),
             is_cold: self.is_cold,
             _non_exhaustive: (),
         })
@@ -140,37 +140,37 @@ impl Host<TestTypes> for TestHost {
 
     fn sstore(
         &mut self,
-        address: Address,
-        key: Word,
-        value: Word,
+        address: &Address,
+        key: &Word,
+        value: &Word,
         skip_cold_load: bool,
     ) -> Result<SStore, InstrStop> {
         if skip_cold_load && self.is_cold {
             return Err(InstrStop::OutOfGas);
         }
-        let storage_key = StorageKey::new(address, key);
+        let storage_key = StorageKey::new(*address, *key);
         let present_value = self.storage.get(&storage_key).copied().unwrap_or_default();
         let original_value = *self.original_storage.entry(storage_key).or_insert(present_value);
         if value.is_zero() {
             self.storage.remove(&storage_key);
         } else {
-            self.storage.insert(storage_key, value);
+            self.storage.insert(storage_key, *value);
         }
         Ok(SStore {
             original_value,
             present_value,
-            new_value: value,
+            new_value: *value,
             is_cold: self.is_cold,
             _non_exhaustive: (),
         })
     }
 
-    fn tload(&mut self, address: Address, key: Word) -> Word {
-        self.transient_storage.get(&StorageKey::new(address, key)).copied().unwrap_or_default()
+    fn tload(&mut self, address: &Address, key: &Word) -> Word {
+        self.transient_storage.get(&StorageKey::new(*address, *key)).copied().unwrap_or_default()
     }
 
-    fn tstore(&mut self, address: Address, key: Word, value: Word) {
-        self.transient_storage.insert(StorageKey::new(address, key), value);
+    fn tstore(&mut self, address: &Address, key: &Word, value: &Word) {
+        self.transient_storage.insert(StorageKey::new(*address, *key), *value);
     }
 
     fn log(&mut self, log: Log) {
@@ -191,14 +191,14 @@ impl Host<TestTypes> for TestHost {
 
     fn selfdestruct(
         &mut self,
-        contract: Address,
-        target: Address,
+        contract: &Address,
+        target: &Address,
         skip_cold_load: bool,
     ) -> Result<SelfDestructResult, InstrStop> {
         if let Some(err) = self.selfdestruct_error {
             return Err(err);
         }
-        self.selfdestructs.push((contract, target, skip_cold_load));
+        self.selfdestructs.push((*contract, *target, skip_cold_load));
         Ok(self.selfdestruct_result)
     }
 }

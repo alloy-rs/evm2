@@ -95,7 +95,7 @@ pub trait Host<T: EvmTypes> {
     /// Loads account information.
     fn load_account(
         &mut self,
-        address: Address,
+        address: &Address,
         load_code: bool,
         skip_cold_load: bool,
     ) -> Result<AccountLoad, InstrStop>;
@@ -103,35 +103,35 @@ pub trait Host<T: EvmTypes> {
     /// Returns whether an account is empty/non-existent for new-account gas checks.
     fn target_is_empty_for_new_account_gas(
         &mut self,
-        address: Address,
+        address: &Address,
         spec: SpecId,
     ) -> Result<bool, InstrStop>;
 
     /// Returns a historical block hash.
-    fn block_hash(&mut self, number: Word) -> Result<Option<B256>, InstrStop>;
+    fn block_hash(&mut self, number: &Word) -> Result<Option<B256>, InstrStop>;
 
     /// Loads a persistent storage slot.
     fn sload(
         &mut self,
-        address: Address,
-        key: Word,
+        address: &Address,
+        key: &Word,
         skip_cold_load: bool,
     ) -> Result<SLoad, InstrStop>;
 
     /// Stores a persistent storage slot.
     fn sstore(
         &mut self,
-        address: Address,
-        key: Word,
-        value: Word,
+        address: &Address,
+        key: &Word,
+        value: &Word,
         skip_cold_load: bool,
     ) -> Result<SStore, InstrStop>;
 
     /// Loads a transient storage slot.
-    fn tload(&mut self, address: Address, key: Word) -> Word;
+    fn tload(&mut self, address: &Address, key: &Word) -> Word;
 
     /// Stores a transient storage slot.
-    fn tstore(&mut self, address: Address, key: Word, value: Word);
+    fn tstore(&mut self, address: &Address, key: &Word, value: &Word);
 
     /// Records an emitted log.
     fn log(&mut self, log: Log);
@@ -148,8 +148,8 @@ pub trait Host<T: EvmTypes> {
     /// Registers the current contract for self-destruction.
     fn selfdestruct(
         &mut self,
-        contract: Address,
-        target: Address,
+        contract: &Address,
+        target: &Address,
         skip_cold_load: bool,
     ) -> Result<SelfDestructResult, InstrStop>;
 }

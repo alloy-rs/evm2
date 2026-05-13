@@ -269,9 +269,10 @@ impl<T: EvmTypes> Evm<T> {
             .map_err(|code| self.db_error_stop(code))
     }
 
+    #[inline(never)]
     fn log_eip7708_transfer(&mut self, from: &Address, to: &Address, value: &Word) {
         if self.feature(EvmFeatures::EIP7708)
-            && let Some(log) = eip7708_transfer_log(*from, *to, *value)
+            && let Some(log) = eip7708_transfer_log(from, to, value)
         {
             self.emit_log(log);
         }
@@ -708,27 +709,27 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
 
     fn load_account(
         &mut self,
-        address: Address,
+        address: &Address,
         load_code: bool,
         skip_cold_load: bool,
     ) -> Result<AccountLoad, InstrStop> {
         let is_cold = if self.spec_id().enables(SpecId::BERLIN) {
-            self.state.warm_account(&address)
+            self.state.warm_account(address)
         } else {
-            let _ = self.state.warm_account(&address);
+            let _ = self.state.warm_account(address);
             false
         };
         if skip_cold_load && is_cold {
             return Err(InstrStop::OutOfGas);
         }
-        let info = self.state.account_info(&address).map_err(|code| self.db_error_stop(code))?;
+        let info = self.state.account_info(address).map_err(|code| self.db_error_stop(code))?;
         let exists = info.is_some();
         let info = info.unwrap_or_default();
         Ok(AccountLoad {
             balance: info.balance,
             code_hash: if exists { info.code_hash } else { B256::ZERO },
             code: if load_code {
-                self.state.get_code(&address).map_err(|code| self.db_error_stop(code))?
+                self.state.get_code(address).map_err(|code| self.db_error_stop(code))?
             } else {
                 Bytecode::default()
             },
@@ -741,31 +742,31 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
 
     fn target_is_empty_for_new_account_gas(
         &mut self,
-        address: Address,
+        address: &Address,
         spec: SpecId,
     ) -> Result<bool, InstrStop> {
         self.state
-            .target_is_empty_for_new_account_gas(&address, spec)
+            .target_is_empty_for_new_account_gas(address, spec)
             .map_err(|code| self.db_error_stop(code))
     }
 
-    fn block_hash(&mut self, number: Word) -> Result<Option<B256>, InstrStop> {
-        self.state.initial_mut().get_block_hash(&number).map_err(|code| self.db_error_stop(code))
+    fn block_hash(&mut self, number: &Word) -> Result<Option<B256>, InstrStop> {
+        self.state.initial_mut().get_block_hash(number).map_err(|code| self.db_error_stop(code))
     }
 
     fn sload(
         &mut self,
-        address: Address,
-        key: Word,
+        address: &Address,
+        key: &Word,
         skip_cold_load: bool,
     ) -> Result<SLoad, InstrStop> {
         let is_cold =
-            self.spec_id().enables(SpecId::BERLIN) && self.state.warm_storage(&address, &key);
+            self.spec_id().enables(SpecId::BERLIN) && self.state.warm_storage(address, key);
         if skip_cold_load && is_cold {
             return Err(InstrStop::OutOfGas);
         }
         Ok(SLoad {
-            value: self.state.storage(&address, &key).map_err(|code| self.db_error_stop(code))?,
+            value: self.state.storage(address, key).map_err(|code| self.db_error_stop(code))?,
             is_cold,
             _non_exhaustive: (),
         })
@@ -773,30 +774,28 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
 
     fn sstore(
         &mut self,
-        address: Address,
-        key: Word,
-        value: Word,
+        address: &Address,
+        key: &Word,
+        value: &Word,
         skip_cold_load: bool,
     ) -> Result<SStore, InstrStop> {
         let is_cold =
-            self.spec_id().enables(SpecId::BERLIN) && self.state.warm_storage(&address, &key);
+            self.spec_id().enables(SpecId::BERLIN) && self.state.warm_storage(address, key);
         if skip_cold_load && is_cold {
             return Err(InstrStop::OutOfGas);
         }
-        let mut result = self
-            .state
-            .set_storage(&address, &key, &value)
-            .map_err(|code| self.db_error_stop(code))?;
+        let mut result =
+            self.state.set_storage(address, key, value).map_err(|code| self.db_error_stop(code))?;
         result.is_cold = is_cold;
         Ok(result)
     }
 
-    fn tload(&mut self, address: Address, key: Word) -> Word {
-        self.state.transient_storage(&address, &key)
+    fn tload(&mut self, address: &Address, key: &Word) -> Word {
+        self.state.transient_storage(address, key)
     }
 
-    fn tstore(&mut self, address: Address, key: Word, value: Word) {
-        self.state.set_transient_storage(&address, &key, &value);
+    fn tstore(&mut self, address: &Address, key: &Word, value: &Word) {
+        self.state.set_transient_storage(address, key, value);
     }
 
     fn log(&mut self, log: Log) {
@@ -826,14 +825,14 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
 
     fn selfdestruct(
         &mut self,
-        contract: Address,
-        target: Address,
+        contract: &Address,
+        target: &Address,
         skip_cold_load: bool,
     ) -> Result<SelfDestructResult, InstrStop> {
         let is_cold = if self.spec_id().enables(SpecId::BERLIN) {
-            self.state.warm_account(&target)
+            self.state.warm_account(target)
         } else {
-            let _ = self.state.warm_account(&target);
+            let _ = self.state.warm_account(target);
             false
         };
         if skip_cold_load && is_cold {
@@ -841,35 +840,35 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
         }
         let target_is_empty_for_new_account_gas =
             self.target_is_empty_for_new_account_gas(target, self.spec_id())?;
-        let previously_destroyed = self.state.is_selfdestructed(&contract);
+        let previously_destroyed = self.state.is_selfdestructed(contract);
         let balance = self
             .state
-            .account_info(&contract)
+            .account_info(contract)
             .map_err(|code| self.db_error_stop(code))?
             .map_or(Word::ZERO, |info| info.balance);
         let should_destroy = !self.spec_id().enables(SpecId::CANCUN)
-            || self.state.is_created_in_transaction(&contract);
+            || self.state.is_created_in_transaction(contract);
 
         if contract != target {
             let transferred = self
                 .state
-                .transfer(&contract, &target, &balance)
+                .transfer(contract, target, &balance)
                 .map_err(|code| self.db_error_stop(code))?;
             if transferred {
-                self.log_eip7708_transfer(&contract, &target, &balance);
+                self.log_eip7708_transfer(contract, target, &balance);
             }
         } else if should_destroy && !balance.is_zero() {
             if self.feature(EvmFeatures::EIP7708)
-                && let Some(log) = eip7708_burn_log(contract, balance)
+                && let Some(log) = eip7708_burn_log(contract, &balance)
             {
                 self.emit_log(log);
             }
             self.state
-                .add_balance(&contract, &Word::ZERO.wrapping_sub(balance))
+                .add_balance(contract, &Word::ZERO.wrapping_sub(balance))
                 .map_err(|code| self.db_error_stop(code))?;
         }
         if should_destroy {
-            self.state.mark_destructed(&contract);
+            self.state.mark_destructed(contract);
         }
         Ok(SelfDestructResult {
             had_value: !balance.is_zero(),
@@ -1009,7 +1008,7 @@ pub struct TxResult<T: EvmTypes = crate::BaseEvmTypes> {
     pub _non_exhaustive: (),
 }
 
-fn eip7708_transfer_log(from: Address, to: Address, value: Word) -> Option<Log> {
+fn eip7708_transfer_log(from: &Address, to: &Address, value: &Word) -> Option<Log> {
     if value.is_zero() || from == to {
         return None;
     }
@@ -1024,7 +1023,7 @@ fn eip7708_transfer_log(from: Address, to: Address, value: Word) -> Option<Log> 
     })
 }
 
-fn eip7708_burn_log(address: Address, value: Word) -> Option<Log> {
+fn eip7708_burn_log(address: &Address, value: &Word) -> Option<Log> {
     if value.is_zero() {
         return None;
     }

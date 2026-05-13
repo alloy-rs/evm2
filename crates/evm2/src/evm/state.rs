@@ -1083,7 +1083,7 @@ impl State {
             }
             burned.sort_by_key(|(address, _)| *address);
             for (address, balance) in burned {
-                if let Some(log) = eip7708_burn_log(address, balance) {
+                if let Some(log) = eip7708_burn_log(&address, &balance) {
                     inspect_log(&log);
                     self.log(log);
                 }

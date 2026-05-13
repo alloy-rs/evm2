@@ -98,7 +98,7 @@ fn load_acc_and_calc_gas<T: EvmTypes>(
     let additional_cold_cost = state.gas_params().cold_account_additional_cost();
     let remaining_gas = gas.remaining();
     let skip_cold_load = remaining_gas < additional_cold_cost;
-    let account = state.host().load_account(to, true, skip_cold_load)?;
+    let account = state.host().load_account(&to, true, skip_cold_load)?;
 
     let mut cost = 0;
     if account.is_cold {
@@ -115,7 +115,7 @@ fn load_acc_and_calc_gas<T: EvmTypes>(
         }
         let skip_cold_load = remaining_gas < cost.saturating_add(additional_cold_cost);
         let delegated_account =
-            state.host().load_account(delegated_address, true, skip_cold_load)?;
+            state.host().load_account(&delegated_address, true, skip_cold_load)?;
         if delegated_account.is_cold {
             cost += additional_cold_cost;
         }
@@ -127,7 +127,7 @@ fn load_acc_and_calc_gas<T: EvmTypes>(
         && should_charge_new_account_gas(
             spec,
             transfers_value,
-            state.host().target_is_empty_for_new_account_gas(to, spec)?,
+            state.host().target_is_empty_for_new_account_gas(&to, spec)?,
         )
     {
         cost += u64::from(state.gas_params().get(GasId::NewAccountCost));
@@ -373,7 +373,7 @@ pub(crate) fn selfdestruct(cx: _, [target]: [Word]) -> Result {
     let cold_load_gas = cx.state.gas_params().selfdestruct_cold_cost();
     let skip_cold_load = cx.gas.remaining() < cold_load_gas;
     let destination = cx.state.message().destination;
-    let res = cx.state.host().selfdestruct(destination, target, skip_cold_load)?;
+    let res = cx.state.host().selfdestruct(&destination, &target, skip_cold_load)?;
     cx.state.inspect_selfdestruct(destination, target, res.value);
     let should_charge_topup =
         should_charge_new_account_gas(cx.state.spec(), res.had_value, res.target_is_empty);
