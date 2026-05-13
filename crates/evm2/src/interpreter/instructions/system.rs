@@ -38,7 +38,7 @@ const fn should_charge_new_account_gas(
 fn call_too_deep_result<T: EvmTypes>(gas_limit: u64) -> MessageResult<T> {
     MessageResult {
         stop: InstrStop::CallTooDeep,
-        gas: GasTracker::new(gas_limit, gas_limit, 0),
+        gas: GasTracker::new(gas_limit),
         ..Default::default()
     }
 }

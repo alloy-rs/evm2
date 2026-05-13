@@ -597,7 +597,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
 
     #[inline(never)]
     fn execute_call_precompile(&mut self, message: &Message<T>) -> Option<MessageResult<T>> {
-        let mut gas = GasTracker::new(message.gas_limit, message.gas_limit, 0);
+        let mut gas = GasTracker::new(message.gas_limit);
         let result = self.execute_precompile(message, &mut gas)?;
         let (stop, output) = match result {
             Ok(output) => (InstrStop::Return, output.into_bytes()),
@@ -644,11 +644,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
 
     #[inline]
     fn error_message_result(stop: InstrStop, gas_remaining: u64) -> MessageResult<T> {
-        MessageResult {
-            stop,
-            gas: GasTracker::new(gas_remaining, gas_remaining, 0),
-            ..MessageResult::default()
-        }
+        MessageResult { stop, gas: GasTracker::new(gas_remaining), ..MessageResult::default() }
     }
 
     #[inline]

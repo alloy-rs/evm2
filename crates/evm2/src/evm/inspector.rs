@@ -190,7 +190,7 @@ mod tests {
         fn call(&mut self, message: &mut Message<TestTypes>) -> Option<MessageResult<TestTypes>> {
             Some(MessageResult {
                 stop: InstrStop::Revert,
-                gas: GasTracker::new(message.gas_limit, message.gas_limit, 0),
+                gas: GasTracker::new(message.gas_limit),
                 ..Default::default()
             })
         }
@@ -216,7 +216,7 @@ mod tests {
             self.create_depth = Some(message.depth);
             Some(MessageResult {
                 stop: InstrStop::Return,
-                gas: GasTracker::new(message.gas_limit, message.gas_limit, 0),
+                gas: GasTracker::new(message.gas_limit),
                 created_address: Some(self.created),
                 ..Default::default()
             })
@@ -239,7 +239,7 @@ mod tests {
         fn create(&mut self, message: &mut Message<TestTypes>) -> Option<MessageResult<TestTypes>> {
             Some(MessageResult {
                 stop: InstrStop::Revert,
-                gas: GasTracker::new(message.gas_limit, message.gas_limit, 0),
+                gas: GasTracker::new(message.gas_limit),
                 ..Default::default()
             })
         }

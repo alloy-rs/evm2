@@ -65,7 +65,7 @@ mod test {
         let input = Bytes::from(hex!(
             "000000000000000000000000000000000a2833e497b38ee3ca5c62828bf4887a9f940c9e426c7890a759c20f248c23a7210d2432f4c98a514e524b5184a0ddac00000000000000000000000000000000150772d56bf9509469f9ebcd6e47570429fd31b0e262b66d512e245c38ec37255529f2271fd70066473e393a8bead0c30000000000000000000000000000000000000000000000000000000000000000"
         ));
-        let fail = run(&input, &mut GasTracker::new(G1_MSM_BASE_GAS_FEE, G1_MSM_BASE_GAS_FEE, 0));
+        let fail = run(&input, &mut GasTracker::new(G1_MSM_BASE_GAS_FEE));
         assert_eq!(
             fail.err().and_then(|e| e.as_halt().cloned()),
             Some(PrecompileHalt::Bls12381G1NotOnCurve)

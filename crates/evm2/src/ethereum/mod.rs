@@ -715,7 +715,7 @@ mod tests {
         let result = MessageResult::<BaseEvmTypes> {
             stop: crate::interpreter::InstrStop::Return,
             gas: {
-                let mut gas = GasTracker::new(100_000, 50_000, 0);
+                let mut gas = GasTracker::new_used_gas(100_000, 50_000, 0);
                 gas.set_refunded(10_000);
                 gas
             },
@@ -729,7 +729,7 @@ mod tests {
     fn final_tx_gas_preserves_higher_actual_usage() {
         let result = MessageResult::<BaseEvmTypes> {
             stop: crate::interpreter::InstrStop::Return,
-            gas: GasTracker::new(100_000, 30_000, 0),
+            gas: GasTracker::new_used_gas(100_000, 70_000, 0),
             ..MessageResult::<BaseEvmTypes>::default()
         };
 

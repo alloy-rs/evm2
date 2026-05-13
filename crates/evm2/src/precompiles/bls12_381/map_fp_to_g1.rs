@@ -39,10 +39,7 @@ mod test {
         let input = Bytes::from(hex!(
             "000000000000000000000000000000006900000000000000636f6e7472616374595a603f343061cd305a03f40239f5ffff31818185c136bc2595f2aa18e08f17"
         ));
-        let fail = run(
-            &input,
-            &mut GasTracker::new(MAP_FP_TO_G1_BASE_GAS_FEE, MAP_FP_TO_G1_BASE_GAS_FEE, 0),
-        );
+        let fail = run(&input, &mut GasTracker::new(MAP_FP_TO_G1_BASE_GAS_FEE));
         assert_eq!(
             fail.err().and_then(|e| e.as_halt().cloned()),
             Some(PrecompileHalt::NonCanonicalFp)

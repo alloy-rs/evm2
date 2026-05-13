@@ -125,7 +125,7 @@ mod tests {
         let expected_output = hex!(
             "000000000000000000000000000000000000000000000000000000000000100073eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001"
         );
-        let mut gas = GasTracker::new(50_000, 50_000, 0);
+        let mut gas = GasTracker::new(50_000);
         let output = run(&input, &mut gas).unwrap();
         assert_eq!(gas.spent(), GAS_COST);
         assert_eq!(output.bytes()[..], expected_output);
