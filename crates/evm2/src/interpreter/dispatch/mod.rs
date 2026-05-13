@@ -69,8 +69,7 @@ where
             }
             #[cfg(not(tco))]
             {
-                let _ = core::marker::PhantomData::<$inspect>;
-                imp::dispatch::<T, $config, $op> as imp::RawInstrFn<T>
+                imp::dispatch::<T, $config, $inspect, $op> as imp::RawInstrFn<T>
             }
         }};
     }
@@ -229,45 +228,36 @@ const fn instruction_changed<T: EvmTypes>(
 }
 
 trait InspectMode<T: EvmTypes> {
-    #[cfg(tco)]
     const INSPECT: bool;
 
-    #[cfg(tco)]
     fn step(state: &mut InterpreterState<'_, T>, pc: Pc, stack_len: usize);
 
-    #[cfg(tco)]
     fn step_end(state: &mut InterpreterState<'_, T>, pc: Pc, stack_len: usize);
 }
 
 struct NoInspector;
 
 impl<T: EvmTypes> InspectMode<T> for NoInspector {
-    #[cfg(tco)]
     const INSPECT: bool = false;
 
     #[inline(always)]
-    #[cfg(tco)]
     fn step(_state: &mut InterpreterState<'_, T>, _pc: Pc, _stack_len: usize) {}
 
     #[inline(always)]
-    #[cfg(tco)]
     fn step_end(_state: &mut InterpreterState<'_, T>, _pc: Pc, _stack_len: usize) {}
 }
 
 struct DynInspector;
 
 impl<T: EvmTypes> InspectMode<T> for DynInspector {
-    #[cfg(tco)]
     const INSPECT: bool = true;
 
     #[inline(always)]
-    #[cfg(tco)]
     fn step(state: &mut InterpreterState<'_, T>, pc: Pc, stack_len: usize) {
         state.inspect_step(pc, stack_len);
     }
 
     #[inline(always)]
-    #[cfg(tco)]
     fn step_end(state: &mut InterpreterState<'_, T>, pc: Pc, stack_len: usize) {
         state.inspect_step_end(pc, stack_len);
     }

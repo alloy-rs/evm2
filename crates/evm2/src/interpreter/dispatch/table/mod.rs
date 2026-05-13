@@ -1,7 +1,7 @@
-use super::{inc_pc, run_state};
+use super::{DynInspector, InspectMode, NoInspector, inc_pc, run_state};
 use crate::{
     EvmConfig, EvmTypes,
-    interpreter::{InstrStop, Interpreter, InterpreterState, Pc, Result, StackMut},
+    interpreter::{InstrStop, Interpreter, InterpreterState, Pc, Result, Stack, StackMut},
 };
 use core::hint::cold_path;
 
@@ -30,7 +30,12 @@ trait DispatchGas: Copy {
         op: u8,
     ) -> Result;
 
-    fn sync_before_exec<T: EvmTypes>(&self, state: &mut InterpreterState<'_, T>, dynamic_gas: bool);
+    fn sync_before_exec<T: EvmTypes>(
+        &self,
+        state: &mut InterpreterState<'_, T>,
+        dynamic_gas: bool,
+        inspect: bool,
+    );
 
     fn sync_after_exec<T: EvmTypes>(
         &mut self,
@@ -54,6 +59,7 @@ impl DispatchGas for () {
         &self,
         _state: &mut InterpreterState<'_, T>,
         _dynamic_gas: bool,
+        _inspect: bool,
     ) {
     }
 
@@ -68,7 +74,7 @@ impl DispatchGas for () {
 
 #[cold] // Not cold, but avoids MIR inlining.
 #[inline(always)]
-fn dispatch_inner<T: EvmTypes, C: EvmConfig<T>, G: DispatchGas>(
+fn dispatch_inner<T: EvmTypes, C: EvmConfig<T>, M: InspectMode<T>, G: DispatchGas>(
     mut pc: Pc,
     mut stack: StackMut<'_>,
     mut gas: G,
@@ -78,23 +84,39 @@ fn dispatch_inner<T: EvmTypes, C: EvmConfig<T>, G: DispatchGas>(
     let instruction = C::VERSION_TABLES.instruction(op);
     let instr = instruction.instr;
     let dynamic_gas = instruction.dynamic_gas;
+    if M::INSPECT {
+        M::step(state, pc, *stack.len);
+        if state.result().is_err() {
+            cold_path();
+            return (Pc::new(core::ptr::null()), gas);
+        }
+    }
     let r;
     match gas.pre_step::<T, C>(state, op) {
         Ok(()) => {
-            gas.sync_before_exec(state, dynamic_gas);
+            gas.sync_before_exec(state, dynamic_gas, M::INSPECT);
             r = instr(&mut pc, stack.reborrow(), state);
-            gas.sync_after_exec(state, dynamic_gas);
             if r.is_ok() {
                 inc_pc(&mut pc, op);
             }
+            gas.sync_after_exec(state, dynamic_gas);
         }
         Err(e) => {
+            gas.sync_before_exec(state, false, M::INSPECT);
             r = Err(e);
         }
     }
-    state.set_result(r);
-    if r.is_err() {
+    if M::INSPECT {
+        state.set_result(r);
+        M::step_end(state, pc, *stack.len);
+        if state.result().is_err() {
+            cold_path();
+            return (Pc::new(core::ptr::null()), gas);
+        }
+    } else if let Err(e) = r {
+        state.set_result(Err(e));
         cold_path();
+        return (Pc::new(core::ptr::null()), gas);
     }
     (pc, gas)
 }
@@ -103,37 +125,33 @@ pub(in crate::interpreter) fn run<T: EvmTypes>(
     interpreter: &mut Interpreter<'_, T>,
     instructions: &RawInstrTable<T>,
 ) -> InstrStop {
-    let (state, mut pc, mut stack) = run_state(interpreter);
+    let (state, pc, stack) = run_state(interpreter);
+    if state.is_inspecting() {
+        return run_inner::<T, DynInspector>(state, pc, stack, instructions);
+    }
+    run_inner::<T, NoInspector>(state, pc, stack, instructions)
+}
+
+fn run_inner<T: EvmTypes, M: InspectMode<T>>(
+    state: &mut InterpreterState<'_, T>,
+    mut pc: Pc,
+    mut stack: Stack<'_>,
+    instructions: &RawInstrTable<T>,
+) -> InstrStop {
     let mut loop_state = imp::loop_state(state.gas_mut());
-    let inspect = state.is_inspecting();
     loop {
         let op = pc.op();
-        if inspect {
-            imp::sync_loop_state(state, loop_state);
-            state.inspect_step(pc, stack.len);
-            if let Err(stop) = state.result() {
-                cold_path();
-                state.set_pc_stack_len(pc.as_ptr(), stack.len);
-                imp::finish_loop(state.gas_mut(), loop_state);
-                return stop;
-            }
-        }
         let instr = instructions[op as usize];
         let (next_pc, next_stack_len) =
             imp::dispatch_loop_call(instr, pc, stack.reborrow(), state, &mut loop_state);
         pc = next_pc;
         stack.len = next_stack_len;
 
-        if inspect {
-            imp::sync_loop_state(state, loop_state);
-            state.inspect_step_end(pc, stack.len);
-        }
-
-        if let Err(stop) = state.result() {
+        if pc.as_ptr().is_null() {
             cold_path();
             state.set_pc_stack_len(pc.as_ptr(), stack.len);
             imp::finish_loop(state.gas_mut(), loop_state);
-            return stop;
+            return state.result().unwrap_err();
         }
     }
 }

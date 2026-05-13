@@ -46,14 +46,6 @@ pub(super) const fn finish_loop(gas: &mut Gas, remaining_gas: LoopState) {
     gas.set_remaining(remaining_gas.get());
 }
 
-#[inline(always)]
-pub(super) const fn sync_loop_state<T: EvmTypes>(
-    state: &mut InterpreterState<'_, T>,
-    loop_state: LoopState,
-) {
-    state.gas_mut().set_remaining(loop_state.get());
-}
-
 impl super::DispatchGas for RemainingGas {
     #[inline(always)]
     fn pre_step<T: EvmTypes, C: EvmConfig<T>>(
@@ -69,8 +61,9 @@ impl super::DispatchGas for RemainingGas {
         &self,
         state: &mut InterpreterState<'_, T>,
         dynamic_gas: bool,
+        inspect: bool,
     ) {
-        if dynamic_gas {
+        if inspect || dynamic_gas {
             state.gas_mut().set_remaining(self.get());
         }
     }
@@ -91,6 +84,7 @@ extern_table! {
     pub(in crate::interpreter::dispatch) fn dispatch<
         T: EvmTypes,
         C: EvmConfig<T>,
+        M: super::InspectMode<T>,
         const OP: u8,
     >(
         pc: Pc,
@@ -99,7 +93,7 @@ extern_table! {
         state: &mut InterpreterState<'_, T>,
     ) -> InstrFnRet {
         let (pc, remaining_gas) =
-            super::dispatch_inner::<T, C, RemainingGas>(
+            super::dispatch_inner::<T, C, M, RemainingGas>(
                 pc,
                 stack.as_mut(),
                 remaining_gas,
