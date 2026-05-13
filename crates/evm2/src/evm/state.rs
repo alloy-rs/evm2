@@ -469,6 +469,7 @@ impl State {
     /// account, the warm-set change is journaled and will be undone by [`Self::rollback`]. Use this
     /// for warmth introduced while executing EVM code or any other scope whose effects may be
     /// reverted to a checkpoint.
+    #[inline(never)]
     #[must_use]
     pub fn warm_account(&mut self, address: &Address) -> bool {
         if self.accessed_accounts.insert(*address) {
@@ -530,6 +531,7 @@ impl State {
     /// warm-set change is journaled and will be undone by [`Self::rollback`]. Use this for warmth
     /// introduced while executing EVM code or any other scope whose effects may be reverted to a
     /// checkpoint.
+    #[inline(never)]
     #[must_use]
     pub fn warm_storage(&mut self, address: &Address, key: &Word) -> bool {
         if self.accessed_storage.insert(StorageKey::new(*address, *key)) {
@@ -637,6 +639,7 @@ impl State {
     }
 
     /// Returns account info.
+    #[inline(never)]
     pub fn account_info(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
         if let Some(account) = self.accounts.get(address) {
             return Ok(account.current.as_ref().map(Account::info));
@@ -792,6 +795,7 @@ impl State {
     }
 
     /// Increments account nonce.
+    #[inline(never)]
     pub fn increment_nonce(&mut self, address: &Address) -> DbResult<()> {
         let account = self.journal_account_change(address)?;
         account.nonce = account.nonce.saturating_add(1);

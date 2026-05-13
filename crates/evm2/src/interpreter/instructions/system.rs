@@ -332,7 +332,7 @@ fn create_inner<T: EvmTypes>(
         gas_limit,
         destination: current.destination,
         caller: current.destination,
-        input: input.clone(),
+        input,
         value,
         code_address: current.destination,
         disable_precompiles: false,
@@ -345,7 +345,7 @@ fn create_inner<T: EvmTypes>(
     } else if message.depth > CALL_DEPTH_LIMIT {
         call_too_deep_result::<T>(message.gas_limit)
     } else {
-        let bytecode = crate::bytecode::Bytecode::new_legacy(input);
+        let bytecode = crate::bytecode::Bytecode::new_legacy(message.input.clone());
         let tx_env = unsafe { trustme::decouple_lt(state.tx()) };
         state.host().execute_message(tx_env, bytecode, &mut message, false)
     };
