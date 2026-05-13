@@ -1,7 +1,7 @@
 use crate::{
     EvmConfig, EvmTypes,
     interpreter::{
-        instructions::table::unknown_instruction,
+        dispatch::unknown_instruction,
         private::{Instruction, InstructionImplFn},
     },
 };
