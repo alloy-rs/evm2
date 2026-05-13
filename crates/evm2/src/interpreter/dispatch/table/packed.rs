@@ -113,7 +113,7 @@ extern_table! {
     }
 }
 
-const STACK_LEN_BITS: u32 = 11;
+const STACK_LEN_BITS: u32 = usize::BITS - STACK_LIMIT.leading_zeros();
 const GAS_BITS: u32 = usize::BITS - STACK_LEN_BITS;
 const GAS_MASK: usize = usize::MAX >> STACK_LEN_BITS;
 
