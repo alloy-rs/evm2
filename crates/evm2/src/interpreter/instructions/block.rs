@@ -14,7 +14,7 @@ pub(crate) fn blockhash(cx: _, [number]: [Word]) -> Result<out> {
         } else {
             cx.state
                 .host()
-                .block_hash(number)?
+                .block_hash(&number)?
                 .map(b256_to_word)
                 .ok_or(InstrStop::FatalExternalError)?
         }
@@ -60,7 +60,7 @@ pub(crate) fn chainid(cx: _) -> Result<out> {
 #[instruction]
 pub(crate) fn selfbalance(cx: _) -> Result<out> {
     let destination = cx.state.message().destination;
-    *out = cx.state.host().load_account(destination, false, false)?.balance;
+    *out = cx.state.host().load_account(&destination, false, false)?.balance;
 }
 
 #[instruction]

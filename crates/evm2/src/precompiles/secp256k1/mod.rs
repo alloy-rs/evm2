@@ -21,7 +21,7 @@ pub(crate) mod bitcoin_secp256k1;
 pub(crate) mod k256;
 
 use crate::{
-    interpreter::Gas,
+    interpreter::GasTracker,
     precompiles::{PrecompileOutput, PrecompileResult},
     utils::right_pad,
 };
@@ -29,7 +29,7 @@ use alloy_primitives::{B256, B512, Bytes};
 
 /// `ecrecover` precompile function. Read more about input and output format in [this module
 /// docs](self).
-pub fn run(input: &[u8], gas: &mut Gas) -> PrecompileResult {
+pub fn run(input: &[u8], gas: &mut GasTracker) -> PrecompileResult {
     const ECRECOVER_BASE: u64 = 3_000;
 
     gas.spend(ECRECOVER_BASE)?;

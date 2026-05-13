@@ -125,6 +125,20 @@ impl Memory {
         }
     }
 
+    /// Writes bytes into memory without bounds checks.
+    ///
+    /// # Safety
+    ///
+    /// If `value` is non-empty, `offset..offset + value.len()` must be in bounds.
+    #[inline]
+    pub(crate) unsafe fn set_unchecked(&mut self, offset: usize, value: &[u8]) {
+        if !value.is_empty() {
+            unsafe {
+                self.data.get_unchecked_mut(offset..offset + value.len()).copy_from_slice(value);
+            }
+        }
+    }
+
     /// Writes a data slice into memory with zero padding.
     ///
     /// # Panics

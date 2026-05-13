@@ -336,6 +336,12 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
         self.0.return_data = return_data;
     }
 
+    /// Swaps return data from the last call-like operation.
+    #[inline]
+    pub(crate) const fn swap_return_data(&mut self, return_data: &mut Bytes) {
+        core::mem::swap(&mut self.0.return_data, return_data);
+    }
+
     /// Sets the current frame output.
     #[inline]
     pub const fn set_output(&mut self, output: *const [u8]) {
@@ -399,7 +405,12 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
     }
 
     #[inline]
-    pub(crate) fn inspect_selfdestruct(&mut self, contract: Address, target: Address, value: Word) {
+    pub(crate) fn inspect_selfdestruct(
+        &mut self,
+        contract: &Address,
+        target: &Address,
+        value: &Word,
+    ) {
         if let Some(inspector) = self.inspector() {
             inspector.selfdestruct(contract, target, value);
         }
@@ -436,5 +447,12 @@ impl<T: EvmTypes> InterpreterPool<T> {
         // SAFETY: The returned borrow is tied to `&mut self`; the erased frame references are
         // empty.
         unsafe { trustme::decouple_interpreter_lt_mut(frame) }
+    }
+
+    pub(crate) fn last_mut<'frame>(&mut self) -> Option<&mut Interpreter<'frame, T>> {
+        let frame = self.frames.last_mut()?.as_mut();
+        // SAFETY: Frames stored in the pool have had their frame-local references cleared by
+        // `push`, and this borrow is tied to the pool borrow.
+        Some(unsafe { trustme::decouple_interpreter_lt_mut(frame) })
     }
 }

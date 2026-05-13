@@ -160,7 +160,7 @@ targets = [
     t_linux_x86,
     # t_macos_arm,
     # t_linux_arm,
-    # t_windows,  # TODO: EEST stack overflows on Windows max-depth fixtures.
+    # t_windows,
     # t_wasm_unknown,
     # t_wasm_wasi,
     # t_wasm_wasi_tail,

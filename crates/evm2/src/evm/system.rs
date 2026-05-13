@@ -57,7 +57,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         system_contract_address: Address,
         data: Bytes,
     ) -> TxResult<T> {
-        self.state.warm_account_non_revertible(system_contract_address);
+        self.state.warm_account_non_revertible(&system_contract_address);
         let tx_env = TxEnv {
             origin: caller,
             gas_price: U256::ZERO,
@@ -66,7 +66,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             ext: T::TxEnvExt::default(),
             _non_exhaustive: (),
         };
-        let Ok((bytecode, message)) = initial_message(
+        let Ok((bytecode, mut message)) = initial_message(
             self,
             caller,
             0,
@@ -78,7 +78,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             let stop = InstrStop::FatalExternalError;
             return TxResult { stop, db_error_code: self.db_error_code(), ..TxResult::default() };
         };
-        let result = Host::execute_message(self, &tx_env, bytecode, &message, false);
+        let result = Host::execute_message(self, &tx_env, bytecode, &mut message, false);
         let gas_spent = SYSTEM_CALL_GAS_LIMIT.saturating_sub(result.gas.remaining());
         let gas_refunded = if result.stop.is_success() && result.gas.refunded() > 0 {
             result.gas.refunded() as u64
@@ -138,7 +138,7 @@ mod tests {
             op::STOP,
         ]));
         let mut database = InMemoryDB::default();
-        database.insert_account_info(contract, AccountInfo::default().with_code(code));
+        database.insert_account_info(&contract, AccountInfo::default().with_code(code));
         let block = BlockEnv { beneficiary, basefee: U256::from(7), ..BlockEnv::default() };
         let mut evm = TestEvm::new(
             SpecId::OSAKA,
@@ -166,7 +166,7 @@ mod tests {
         let code =
             Bytecode::new_legacy(Bytes::from_static(&[op::ADDRESS, op::EXTCODESIZE, op::STOP]));
         let mut database = InMemoryDB::default();
-        database.insert_account_info(contract, AccountInfo::default().with_code(code));
+        database.insert_account_info(&contract, AccountInfo::default().with_code(code));
         let mut evm = TestEvm::new(
             SpecId::OSAKA,
             BlockEnv::default(),
@@ -219,7 +219,7 @@ mod tests {
             op::REVERT,
         ]));
         let mut database = InMemoryDB::default();
-        database.insert_account_info(contract, AccountInfo::default().with_code(code));
+        database.insert_account_info(&contract, AccountInfo::default().with_code(code));
         let mut evm = TestEvm::new(
             SpecId::OSAKA,
             BlockEnv::default(),

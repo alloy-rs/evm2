@@ -87,7 +87,7 @@ fn execute_case(
 ) -> Result<(), TestError> {
     let mut database =
         parse_state(&test_case.pre.0).map_err(|err| TestError::case(path, name, err))?;
-    database.insert_block_hash(U256::ZERO, test_case.genesis_block_header.hash);
+    database.insert_block_hash(&U256::ZERO, &test_case.genesis_block_header.hash);
 
     let spec = fork_to_spec_id(test_case.network);
     let mut parent_block_hash = Some(test_case.genesis_block_header.hash);
@@ -187,7 +187,7 @@ fn execute_block(
         assert_block_access_list(block_index, expected_bal);
     }
 
-    block_database.insert_block_hash(next_block_env.number, block_hash.unwrap_or_default());
+    block_database.insert_block_hash(&next_block_env.number, &block_hash.unwrap_or_default());
     *database = block_database;
     *block_env = next_block_env;
     *parent_block_hash = block_hash;

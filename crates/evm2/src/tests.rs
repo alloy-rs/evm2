@@ -12,7 +12,7 @@ use alloy_primitives::{Address, Bytes};
 type TestEvm = Evm<BaseEvmTypes>;
 
 fn run_tx(evm: &mut TestEvm, destination: Address, code: impl Into<Vec<u8>>) {
-    let message = Message {
+    let mut message = Message {
         destination,
         code_address: destination,
         gas_limit: 100_000,
@@ -22,7 +22,7 @@ fn run_tx(evm: &mut TestEvm, destination: Address, code: impl Into<Vec<u8>>) {
         evm,
         &TxEnv::default(),
         Bytecode::new_legacy(Bytes::from(code.into())),
-        &message,
+        &mut message,
         false,
     );
     assert!(result.stop.is_success());
@@ -49,7 +49,7 @@ fn evm_executes_storage_transaction() {
     run_tx(&mut evm, contract, [op::PUSH1, 0x2a, op::PUSH1, 0x01, op::SSTORE, op::STOP]);
 
     assert_eq!(
-        evm.state().storage_ref(contract, Word::from(1)).map(|slot| slot.current),
+        evm.state().storage_ref(&contract, &Word::from(1)).map(|slot| slot.current),
         Some(Word::from(0x2a))
     );
 }
@@ -58,8 +58,8 @@ fn evm_executes_storage_transaction() {
 fn evm_runs_transactions_against_initial_state() {
     let contract = Address::from([0x22; 20]);
     let mut database = InMemoryDB::default();
-    database.insert_account_info(contract, AccountInfo { nonce: 1, ..Default::default() });
-    database.insert_account_storage(contract, Word::from(1), Word::from(40));
+    database.insert_account_info(&contract, AccountInfo { nonce: 1, ..Default::default() });
+    database.insert_account_storage(&contract, &Word::from(1), &Word::from(40));
     let mut evm = TestEvm::new(
         SpecId::OSAKA,
         BlockEnv::default(),
@@ -86,13 +86,13 @@ fn evm_runs_transactions_against_initial_state() {
     );
     run_tx(&mut evm, contract, [op::PUSH1, 0x07, op::PUSH1, 0x01, op::SSTORE, op::STOP]);
 
-    assert!(evm.state().account_ref(contract).is_some());
+    assert!(evm.state().account_ref(&contract).is_some());
     assert_eq!(
-        evm.state().storage_ref(contract, Word::from(1)).map(|slot| slot.current),
+        evm.state().storage_ref(&contract, &Word::from(1)).map(|slot| slot.current),
         Some(Word::from(7))
     );
     assert_eq!(
-        evm.state().storage_ref(contract, Word::from(2)).map(|slot| slot.current),
+        evm.state().storage_ref(&contract, &Word::from(2)).map(|slot| slot.current),
         Some(Word::from(42))
     );
 }
@@ -107,14 +107,14 @@ fn evm_propagates_child_sstore_negative_refund() {
 
     let mut database = InMemoryDB::default();
     database.insert_account_info(
-        contract,
+        &contract,
         AccountInfo {
             nonce: 1,
             code: Some(Bytecode::new_legacy(Bytes::from(child_code))),
             ..Default::default()
         },
     );
-    database.insert_account_storage(contract, Word::from(0), Word::from(5));
+    database.insert_account_storage(&contract, &Word::from(0), &Word::from(5));
     let mut evm = TestEvm::new(
         SpecId::LONDON,
         BlockEnv::default(),
@@ -136,7 +136,7 @@ fn evm_propagates_child_sstore_negative_refund() {
     push(&mut parent_code, 50_000); // gas
     parent_code.extend([op::CALL, op::STOP]);
 
-    let message = Message {
+    let mut message = Message {
         destination: contract,
         code_address: contract,
         gas_limit: 100_000,
@@ -146,7 +146,7 @@ fn evm_propagates_child_sstore_negative_refund() {
         &mut evm,
         &TxEnv::default(),
         Bytecode::new_legacy(Bytes::from(parent_code)),
-        &message,
+        &mut message,
         false,
     );
 
@@ -164,7 +164,7 @@ fn evm_reports_invalid_transaction_execution() {
         InMemoryDB::default(),
         Precompiles::base(SpecId::OSAKA),
     );
-    let message = Message {
+    let mut message = Message {
         destination: contract,
         code_address: contract,
         gas_limit: 100_000,
@@ -174,7 +174,7 @@ fn evm_reports_invalid_transaction_execution() {
         &mut evm,
         &TxEnv::default(),
         Bytecode::new_legacy(Bytes::from_static(&[op::PUSH1, 0x01, op::SSTORE])),
-        &message,
+        &mut message,
         false,
     );
 

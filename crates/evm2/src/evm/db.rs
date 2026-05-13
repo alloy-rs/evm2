@@ -53,16 +53,16 @@ pub trait Database: Any {
     type Error: Error + 'static;
 
     /// Loads account information.
-    fn get_account(&mut self, address: Address) -> Result<Option<AccountInfo>, Self::Error>;
+    fn get_account(&mut self, address: &Address) -> Result<Option<AccountInfo>, Self::Error>;
 
     /// Loads bytecode by code hash.
-    fn get_code_by_hash(&mut self, code_hash: B256) -> Result<Bytecode, Self::Error>;
+    fn get_code_by_hash(&mut self, code_hash: &B256) -> Result<Bytecode, Self::Error>;
 
     /// Loads a persistent storage slot.
-    fn get_storage(&mut self, address: Address, key: Word) -> Result<Word, Self::Error>;
+    fn get_storage(&mut self, address: &Address, key: &Word) -> Result<Word, Self::Error>;
 
     /// Loads a historical block hash.
-    fn get_block_hash(&mut self, number: Word) -> Result<Option<B256>, Self::Error>;
+    fn get_block_hash(&mut self, number: &Word) -> Result<Option<B256>, Self::Error>;
 }
 
 /// Object-safe database adapter for typed database implementations.
@@ -144,22 +144,22 @@ impl Error for DbErrorUnavailable {}
 
 impl<T: Database> DynDatabase for Db<T> {
     #[inline]
-    fn get_account(&mut self, address: Address) -> DbResult<Option<AccountInfo>> {
+    fn get_account(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
         self.db.get_account(address).map_err(|err| self.store_error(err))
     }
 
     #[inline]
-    fn get_code_by_hash(&mut self, code_hash: B256) -> DbResult<Bytecode> {
+    fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<Bytecode> {
         self.db.get_code_by_hash(code_hash).map_err(|err| self.store_error(err))
     }
 
     #[inline]
-    fn get_storage(&mut self, address: Address, key: Word) -> DbResult<Word> {
+    fn get_storage(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
         self.db.get_storage(address, key).map_err(|err| self.store_error(err))
     }
 
     #[inline]
-    fn get_block_hash(&mut self, number: Word) -> DbResult<Option<B256>> {
+    fn get_block_hash(&mut self, number: &Word) -> DbResult<Option<B256>> {
         self.db.get_block_hash(number).map_err(|err| self.store_error(err))
     }
 
@@ -177,16 +177,16 @@ impl<T: Database> DynDatabase for Db<T> {
 /// Backing database view used to initialize mutable [`super::State`].
 pub trait DynDatabase: Any {
     /// Loads account information.
-    fn get_account(&mut self, address: Address) -> DbResult<Option<AccountInfo>>;
+    fn get_account(&mut self, address: &Address) -> DbResult<Option<AccountInfo>>;
 
     /// Loads bytecode by code hash.
-    fn get_code_by_hash(&mut self, code_hash: B256) -> DbResult<Bytecode>;
+    fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<Bytecode>;
 
     /// Loads a persistent storage slot.
-    fn get_storage(&mut self, address: Address, key: Word) -> DbResult<Word>;
+    fn get_storage(&mut self, address: &Address, key: &Word) -> DbResult<Word>;
 
     /// Loads a historical block hash.
-    fn get_block_hash(&mut self, number: Word) -> DbResult<Option<B256>>;
+    fn get_block_hash(&mut self, number: &Word) -> DbResult<Option<B256>>;
 
     /// Retrieves the full error for a previously returned error code.
     fn error(&mut self, code: DbErrorCode) -> Box<dyn Error> {
@@ -196,22 +196,22 @@ pub trait DynDatabase: Any {
 
 impl DynDatabase for Box<dyn DynDatabase> {
     #[inline]
-    fn get_account(&mut self, address: Address) -> DbResult<Option<AccountInfo>> {
+    fn get_account(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
         self.as_mut().get_account(address)
     }
 
     #[inline]
-    fn get_code_by_hash(&mut self, code_hash: B256) -> DbResult<Bytecode> {
+    fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<Bytecode> {
         self.as_mut().get_code_by_hash(code_hash)
     }
 
     #[inline]
-    fn get_storage(&mut self, address: Address, key: Word) -> DbResult<Word> {
+    fn get_storage(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
         self.as_mut().get_storage(address, key)
     }
 
     #[inline]
-    fn get_block_hash(&mut self, number: Word) -> DbResult<Option<B256>> {
+    fn get_block_hash(&mut self, number: &Word) -> DbResult<Option<B256>> {
         self.as_mut().get_block_hash(number)
     }
 
@@ -229,44 +229,44 @@ impl Database for EmptyDB {
     type Error = core::convert::Infallible;
 
     #[inline]
-    fn get_account(&mut self, _address: Address) -> Result<Option<AccountInfo>, Self::Error> {
+    fn get_account(&mut self, _address: &Address) -> Result<Option<AccountInfo>, Self::Error> {
         Ok(None)
     }
 
     #[inline]
-    fn get_code_by_hash(&mut self, _code_hash: B256) -> Result<Bytecode, Self::Error> {
+    fn get_code_by_hash(&mut self, _code_hash: &B256) -> Result<Bytecode, Self::Error> {
         Ok(Bytecode::default())
     }
 
     #[inline]
-    fn get_storage(&mut self, _address: Address, _key: Word) -> Result<Word, Self::Error> {
+    fn get_storage(&mut self, _address: &Address, _key: &Word) -> Result<Word, Self::Error> {
         Ok(Word::ZERO)
     }
 
     #[inline]
-    fn get_block_hash(&mut self, number: Word) -> Result<Option<B256>, Self::Error> {
+    fn get_block_hash(&mut self, number: &Word) -> Result<Option<B256>, Self::Error> {
         Ok(Some(keccak256(number.to_string().as_bytes())))
     }
 }
 
 impl DynDatabase for EmptyDB {
     #[inline]
-    fn get_account(&mut self, address: Address) -> DbResult<Option<AccountInfo>> {
+    fn get_account(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
         Db::new(*self).get_account(address)
     }
 
     #[inline]
-    fn get_code_by_hash(&mut self, code_hash: B256) -> DbResult<Bytecode> {
+    fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<Bytecode> {
         Db::new(*self).get_code_by_hash(code_hash)
     }
 
     #[inline]
-    fn get_storage(&mut self, address: Address, key: Word) -> DbResult<Word> {
+    fn get_storage(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
         Db::new(*self).get_storage(address, key)
     }
 
     #[inline]
-    fn get_block_hash(&mut self, number: Word) -> DbResult<Option<B256>> {
+    fn get_block_hash(&mut self, number: &Word) -> DbResult<Option<B256>> {
         Db::new(*self).get_block_hash(number)
     }
 }

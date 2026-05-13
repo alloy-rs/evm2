@@ -18,7 +18,8 @@ fn load_account<T: EvmTypes>(
 ) -> Result<AccountLoad> {
     let cold_load_gas = cx.state.gas_params().cold_account_additional_cost();
     let skip_cold_load = cx.gas.remaining() < cold_load_gas;
-    let account = cx.state.host().load_account(word_to_address(addr), load_code, skip_cold_load)?;
+    let account_address = word_to_address(addr);
+    let account = cx.state.host().load_account(&account_address, load_code, skip_cold_load)?;
     if account.is_cold {
         cx.gas.spend(cold_load_gas)?;
     }
@@ -159,7 +160,7 @@ pub(crate) fn extcodecopy(cx: _, [addr, memory_offset, code_offset, len]: [Word]
     let memory_offset = copy_memory_resize(&mut cx, memory_offset, len)?.unwrap_or(0);
 
     let code = load_account(&mut cx, addr, true)?.code;
-    set_copy_data(&mut cx, memory_offset, code_offset, len, &code);
+    set_copy_data(&mut cx, memory_offset, code_offset, len, code.original_byte_slice());
 }
 
 #[instruction]
