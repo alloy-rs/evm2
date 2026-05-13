@@ -126,10 +126,7 @@ fn run_inner<T: EvmTypes, M: InspectMode<T>>(
             imp::sync_loop_state(state, loop_state);
             M::step(state, pc, stack.len);
             if state.result().is_err() {
-                cold_path();
-                state.set_pc_stack_len(pc.as_ptr(), stack.len);
-                imp::finish_loop(state.gas_mut(), loop_state);
-                return state.result().unwrap_err();
+                return finish_run(state, pc, stack.len, loop_state);
             }
         }
 
@@ -144,16 +141,23 @@ fn run_inner<T: EvmTypes, M: InspectMode<T>>(
             imp::sync_loop_state(state, loop_state);
             M::step_end(state, pc, stack.len);
             if state.result().is_err() {
-                cold_path();
-                state.set_pc_stack_len(pc.as_ptr(), stack.len);
-                imp::finish_loop(state.gas_mut(), loop_state);
-                return state.result().unwrap_err();
+                return finish_run(state, pc, stack.len, loop_state);
             }
         } else if pc.as_ptr().is_null() {
-            cold_path();
-            state.set_pc_stack_len(pc.as_ptr(), stack.len);
-            imp::finish_loop(state.gas_mut(), loop_state);
-            return state.result().unwrap_err();
+            return finish_run(state, pc, stack.len, loop_state);
         }
     }
+}
+
+#[inline(always)]
+fn finish_run<T: EvmTypes>(
+    state: &mut InterpreterState<'_, T>,
+    pc: Pc,
+    stack_len: usize,
+    loop_state: imp::LoopState,
+) -> InstrStop {
+    cold_path();
+    state.set_pc_stack_len(pc.as_ptr(), stack_len);
+    imp::finish_loop(state.gas_mut(), loop_state);
+    state.result().unwrap_err()
 }
