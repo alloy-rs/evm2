@@ -79,12 +79,14 @@ aws-lc-rs = { workspace = true, optional = true }
 [dev-dependencies]
 alloy-primitives = { workspace = true, features = ["serde", "std"] }
 criterion = { package = "codspeed-criterion-compat", version = "4", default-features = false, features = ["cargo_bench_support"] }
-revm = { version = "38", default-features = true, features = ["test-types"] }
 serde = { workspace = true, features = ["derive", "std"] }
 serde_json = { workspace = true, features = ["std"] }
 rand = { workspace = true, features = ["std"] }
 ark-std = { workspace = true }
 rstest.workspace = true
+
+[target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
+revm = { version = "38", default-features = true, features = ["test-types"] }
 
 [[bench]]
 name = "evm"
@@ -136,6 +138,7 @@ serde = [
     "alloy-eips/serde",
     "alloy-primitives/serde",
     "alloy-trie/serde",
+    "ark-serialize/serde",
     "derive-where/serde",
     "k256/serde",
     "p256/serde",

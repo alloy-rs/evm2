@@ -33,7 +33,7 @@ unnameable-types = "warn"
 all = "warn"
 
 [workspace.dependencies]
-evm2 = { path = "crates/evm2", version = "0.1.0" }
+evm2 = { path = "crates/evm2", version = "0.1.0", default-features = false }
 evm2-macros = { path = "crates/macros", version = "0.1.0" }
 evm2-inspectors = { path = "crates/inspectors", version = "0.1.0" }
 
@@ -67,12 +67,12 @@ boa_engine = { version = "0.21", default-features = false }
 boa_gc = { version = "0.21", default-features = false }
 
 # Precompiles
-ark-bls12-381 = { version = "0.5.0", default-features = false }
-ark-bn254 = { version = "0.5.0", default-features = false }
-ark-ec = { version = "0.5.0", default-features = false }
-ark-ff = { version = "0.5.0", default-features = false }
-ark-serialize = { version = "0.5.0", default-features = false }
-ark-std = { version = "0.5.0", default-features = false }
+ark-bls12-381 = { version = "0.6.0", default-features = false }
+ark-bn254 = { version = "0.6.0", default-features = false }
+ark-ec = { version = "0.6.0", default-features = false }
+ark-ff = { version = "0.6.0", default-features = false }
+ark-serialize = { version = "0.6.0", default-features = false }
+ark-std = { version = "0.6.0", default-features = false }
 aurora-engine-modexp = { version = "1.2", default-features = false }
 aws-lc-rs = { version = "1.16.2", default-features = false, features = ["aws-lc-sys"] }
 blst = "0.3.15"

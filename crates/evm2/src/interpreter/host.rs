@@ -27,6 +27,8 @@ pub struct MessageResult<T: EvmTypes = BaseEvmTypes> {
     pub created_address: Option<Address>,
     /// EVM type-specific extension data.
     pub ext: T::MessageResultExt,
+    #[doc(hidden)] // Not public API. Please use an existing constructor.
+    pub _non_exhaustive: (),
 }
 
 impl<T: EvmTypes> MessageResult<T> {

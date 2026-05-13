@@ -13,119 +13,114 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  matrices:
+    name: build matrices
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      test-matrix: ${{ steps.gen.outputs.test-matrix }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+      - name: Generate matrices
+        id: gen
+        shell: bash
+        run: |
+          output=$(python3 .github/scripts/matrices.py)
+          printf '::debug::test-matrix=%s\n' "$output"
+          printf 'test-matrix=%s\n' "$output" >> "$GITHUB_OUTPUT"
+
   test:
-    name: ${{ matrix.kind }}${{ matrix.fixture && format(' {0}', matrix.fixture) || '' }} +${{ matrix.rust }} ${{ matrix.os }} ${{ matrix.flags }}
-    runs-on: ${{ matrix.os }}
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner_label }}
+    needs: matrices
     timeout-minutes: 30
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
-      matrix:
-        kind: ["test", "eest"]
-        os: [
-          "ubuntu-latest",
-          # "macos-latest",
-          # "windows-latest",
-        ]
-        rust: [
-          "stable",
-          "nightly",
-          # "1.95", # MSRV
-        ]
-        flags: [
-          # No features
-          "--no-default-features",
-          # Default features
-          "",
-        ]
-        fixture: [""]
-        include:
-          # All features
-          - kind: "test"
-            os: "ubuntu-latest"
-            rust: "nightly"
-            flags: "--all-features"
-          - kind: "eest"
-            os: "ubuntu-latest"
-            rust: "nightly"
-            flags: "--all-features"
-          # - kind: "test"
-          #   os: "macos-latest"
-          #   rust: "nightly"
-          #   flags: "--all-features"
-          # - kind: "eest"
-          #   os: "macos-latest"
-          #   rust: "nightly"
-          #   flags: "--all-features"
-          # - kind: "test"
-          #   os: "windows-latest"
-          #   rust: "nightly"
-          #   flags: "--features nightly" # Some C libraries don't support MSVC.
-          # - kind: "eest"
-          #   os: "windows-latest"
-          #   rust: "nightly"
-          #   flags: "--features nightly" # Some C libraries don't support MSVC.
-          # Devnet
-          # - kind: "eest"
-          #   fixture: "devnet"
-          #   os: "ubuntu-latest"
-          #   rust: "stable"
-          #   flags: ""
+      matrix: ${{ fromJson(needs.matrices.outputs.test-matrix) }}
 
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
+        if: ${{ !matrix.target }}
         with:
           toolchain: ${{ matrix.rust }}
+      - uses: dtolnay/rust-toolchain@master
+        if: ${{ matrix.target }}
+        with:
+          toolchain: ${{ matrix.rust }}
+          targets: ${{ matrix.target }}
       - uses: rui314/setup-mold@v1
         if: runner.os == 'Linux'
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
       - uses: taiki-e/install-action@nextest
+        if: ${{ !matrix.command || matrix.command == 'nextest' }}
+      - uses: taiki-e/install-action@cross
+        if: ${{ matrix.command == 'cross-test' }}
+      - uses: taiki-e/install-action@wasmtime
+        if: ${{ matrix.command == 'wasm-test' }}
       - uses: astral-sh/setup-uv@v7
-        if: ${{ matrix.kind == 'eest' || matrix.flags == '--all-features' }}
+        if: ${{ matrix.kind == 'eest' }}
       - name: Download EEST fixtures
-        if: ${{ matrix.kind == 'eest' || matrix.flags == '--all-features' }}
+        if: ${{ matrix.kind == 'eest' }}
         shell: bash
         run: |
-            if [[ "${{ matrix.fixture }}" == "devnet" ]]; then
-              export DEVNET_VERSION="snobal-devnet-6%40v1.1.0"
-              export DEVNET_TAR="fixtures_snobal-devnet-6.tar.gz"
-              export EVM2_STATETEST_DEVNET_ONLY=1
-            fi
-            ./scripts/setup_test_fixtures.py
+          if [[ "${{ matrix.fixture }}" == "devnet" ]]; then
+            export DEVNET_VERSION="snobal-devnet-6%40v1.1.0"
+            export DEVNET_TAR="fixtures_snobal-devnet-6.tar.gz"
+            export EVM2_STATETEST_DEVNET_ONLY=1
+          fi
+          ./scripts/setup_test_fixtures.py
       - name: ${{ matrix.kind }}
+        if: ${{ !matrix.command || matrix.command == 'nextest' }}
         shell: bash
         run: |
-            extra_flags=()
-            if [[ "${{ matrix.kind }}" == "eest" ]]; then
-              extra_flags+=(-p evm2-eest --ignore-default-filter)
-            elif [[ "${{ matrix.flags }}" == "--all-features" ]]; then
-              extra_flags+=(--ignore-default-filter)
-            fi
-            if [[ "${{ matrix.fixture }}" == "devnet" ]]; then
-              export EVM2_STATETEST_ROOT="test-fixtures/devnet/state_tests"
-              export EVM2_BLOCKCHAINTEST_ROOT="test-fixtures/devnet/blockchain_tests"
-            fi
-            cargo nextest run --workspace --no-fail-fast ${{ matrix.flags }} "${extra_flags[@]}"
+          if [[ -n "${{ matrix.cxx }}" ]]; then
+            export CXX="${{ matrix.cxx }}"
+            cargo clean -p mcl_rust
+          fi
+          extra_flags=()
+          if [[ "${{ matrix.kind }}" == "eest" ]]; then
+            extra_flags+=(-p evm2-eest --ignore-default-filter)
+          fi
+          if [[ "${{ matrix.fixture }}" == "devnet" ]]; then
+            export EVM2_STATETEST_ROOT="test-fixtures/devnet/state_tests"
+            export EVM2_BLOCKCHAINTEST_ROOT="test-fixtures/devnet/blockchain_tests"
+          fi
+          cargo nextest run --workspace --no-fail-fast ${{ matrix.flags }} "${extra_flags[@]}"
+      - name: cross test
+        if: ${{ matrix.command == 'cross-test' }}
+        shell: bash
+        run: |
+          if [[ -n "${{ matrix.cxx }}" ]]; then
+            export CXX="${{ matrix.cxx }}"
+          fi
+          cross test --workspace --exclude evm2-eest --target ${{ matrix.target }} --no-fail-fast --lib --bins --tests ${{ matrix.flags }}
+      - name: wasm build
+        if: ${{ matrix.command == 'build' }}
+        shell: bash
+        run: |
+          if [[ -n "${{ matrix.cxx }}" ]]; then
+            export CXX="${{ matrix.cxx }}"
+          fi
+          cargo build -p evm2 --target ${{ matrix.target }} ${{ matrix.flags }}
+      - name: wasm test
+        if: ${{ matrix.command == 'wasm-test' }}
+        env:
+          CARGO_TARGET_WASM32_WASIP1_RUNNER: wasmtime
+          RUSTFLAGS: ${{ matrix.rustflags }}
+        run: cargo test -p evm2 --target ${{ matrix.target }} --no-fail-fast --lib --tests ${{ matrix.flags }}
       - name: doctest
-        if: ${{ matrix.kind == 'test' }}
+        if: ${{ matrix.kind == 'test' && !matrix.target }}
         run: cargo test --workspace ${{ matrix.flags }} --doc
-
-  wasm:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
-      - uses: rui314/setup-mold@v1
-      - uses: Swatinem/rust-cache@v2
-        with:
-          cache-on-failure: true
-      - name: check
-        run: cargo build -p evm2 --target wasm32-unknown-unknown --no-default-features
 
   no-std:
     name: no_std ${{ matrix.target }}
@@ -243,8 +238,8 @@ jobs:
     runs-on: ubuntu-latest
     if: always()
     needs:
+      - matrices
       - test
-      - wasm
       - no-std
       - feature-checks
       - feature-propagation

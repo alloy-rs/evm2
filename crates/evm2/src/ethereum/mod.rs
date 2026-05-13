@@ -350,6 +350,7 @@ pub(crate) fn initial_message<T: EvmTypes<Host = Evm<T>>>(
                 disable_precompiles: initial_code.disable_precompiles,
                 salt: B256::ZERO,
                 ext: T::MessageExt::default(),
+                _non_exhaustive: (),
             };
             (initial_code.code, message)
         }
@@ -367,6 +368,7 @@ pub(crate) fn initial_message<T: EvmTypes<Host = Evm<T>>>(
                 disable_precompiles: false,
                 salt: B256::ZERO,
                 ext: T::MessageExt::default(),
+                _non_exhaustive: (),
             };
             (Bytecode::new_legacy(input.clone()), message)
         }

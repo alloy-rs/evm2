@@ -18,6 +18,8 @@ pub struct TxEnv<T: EvmTypes = BaseEvmTypes> {
     pub blob_hashes: Vec<U256>,
     /// EVM type-specific extension data.
     pub ext: T::TxEnvExt,
+    #[doc(hidden)] // Not public API. Please use an existing constructor.
+    pub _non_exhaustive: (),
 }
 
 impl<T: EvmTypes> Default for TxEnv<T> {
@@ -29,6 +31,7 @@ impl<T: EvmTypes> Default for TxEnv<T> {
             chain_id: U256::ONE,
             blob_hashes: vec![],
             ext: T::TxEnvExt::default(),
+            _non_exhaustive: (),
         }
     }
 }
@@ -56,6 +59,8 @@ pub struct BlockEnv<T: EvmTypes = BaseEvmTypes> {
     pub slot_num: U256,
     /// EVM type-specific extension data.
     pub ext: T::BlockEnvExt,
+    #[doc(hidden)] // Not public API. Please use an existing constructor.
+    pub _non_exhaustive: (),
 }
 
 impl<T: EvmTypes> Default for BlockEnv<T> {
@@ -72,6 +77,7 @@ impl<T: EvmTypes> Default for BlockEnv<T> {
             blob_basefee: U256::ONE,
             slot_num: U256::ZERO,
             ext: T::BlockEnvExt::default(),
+            _non_exhaustive: (),
         }
     }
 }

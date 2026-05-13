@@ -342,6 +342,7 @@ fn parse_block(env: &Env, spec: SpecId) -> BlockEnv {
             .map_or(U256::ONE, |excess| U256::from(blob_basefee(excess, spec))),
         slot_num: env.slot_number.unwrap_or_default(),
         ext: (),
+        _non_exhaustive: (),
     }
 }
 

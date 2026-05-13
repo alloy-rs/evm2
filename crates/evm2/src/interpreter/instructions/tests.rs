@@ -99,6 +99,7 @@ impl Host<TestTypes> for TestHost {
             exists: self.exists,
             is_empty: self.is_empty,
             is_cold: self.is_cold,
+            _non_exhaustive: (),
         })
     }
 
@@ -129,6 +130,7 @@ impl Host<TestTypes> for TestHost {
         Ok(SLoad {
             value: self.storage.get(&StorageKey::new(address, key)).copied().unwrap_or_default(),
             is_cold: self.is_cold,
+            _non_exhaustive: (),
         })
     }
 
@@ -150,7 +152,13 @@ impl Host<TestTypes> for TestHost {
         } else {
             self.storage.insert(storage_key, value);
         }
-        Ok(SStore { original_value, present_value, new_value: value, is_cold: self.is_cold })
+        Ok(SStore {
+            original_value,
+            present_value,
+            new_value: value,
+            is_cold: self.is_cold,
+            _non_exhaustive: (),
+        })
     }
 
     fn tload(&mut self, address: Address, key: Word) -> Word {
