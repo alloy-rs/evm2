@@ -1,7 +1,9 @@
 use crate::{
     EvmConfig, EvmTypes,
-    interpreter::{InterpreterState, Pc, Stack},
+    interpreter::{InterpreterState, Pc, Stack, gas::Gas},
 };
+
+pub(super) type LoopState = ();
 
 /// Unpacked instruction return value.
 type InstrFnRet = (Pc, usize);
@@ -16,9 +18,22 @@ pub(super) fn dispatch_loop_call<T: EvmTypes>(
     pc: Pc,
     stack: Stack<'_>,
     state: &mut InterpreterState<'_, T>,
-    _loop_state: &mut super::LoopState,
+    _loop_state: &mut LoopState,
 ) -> (Pc, usize) {
     instr(pc, stack, state)
+}
+
+#[inline(always)]
+pub(super) const fn loop_state(_gas: &Gas) -> LoopState {}
+
+#[inline(always)]
+pub(super) const fn finish_loop(_gas: &mut Gas, _loop_state: LoopState) {}
+
+#[inline(always)]
+pub(super) const fn sync_loop_state<T: EvmTypes>(
+    _state: &mut InterpreterState<'_, T>,
+    _loop_state: LoopState,
+) {
 }
 
 extern_table! {

@@ -1,9 +1,7 @@
 use super::{inc_pc, run_state};
-#[cfg(dispatch_packed)]
-use crate::interpreter::gas::RemainingGas;
 use crate::{
     EvmConfig, EvmTypes,
-    interpreter::{InstrStop, Interpreter, InterpreterState, Pc, Result, StackMut, gas::Gas},
+    interpreter::{InstrStop, Interpreter, InterpreterState, Pc, Result, StackMut},
 };
 use core::hint::cold_path;
 
@@ -24,32 +22,6 @@ pub(super) use imp::{RawInstrFn, dispatch};
 
 /// Table instruction dispatch table.
 pub(super) type RawInstrTable<T> = [RawInstrFn<T>; 256];
-
-#[cfg(dispatch_packed)]
-type LoopState = RemainingGas;
-
-#[cfg(not(dispatch_packed))]
-type LoopState = ();
-
-#[inline(always)]
-#[cfg(dispatch_packed)]
-const fn loop_state(gas: &Gas) -> LoopState {
-    RemainingGas::new(gas.remaining())
-}
-
-#[inline(always)]
-#[cfg(not(dispatch_packed))]
-const fn loop_state(_gas: &Gas) -> LoopState {}
-
-#[inline(always)]
-#[cfg(dispatch_packed)]
-const fn finish_loop(gas: &mut Gas, remaining_gas: LoopState) {
-    gas.set_remaining(remaining_gas.get());
-}
-
-#[inline(always)]
-#[cfg(not(dispatch_packed))]
-const fn finish_loop(_gas: &mut Gas, _loop_state: LoopState) {}
 
 trait DispatchGas: Copy {
     fn pre_step<T: EvmTypes, C: EvmConfig<T>>(
@@ -94,40 +66,6 @@ impl DispatchGas for () {
     }
 }
 
-#[cfg(dispatch_packed)]
-impl DispatchGas for RemainingGas {
-    #[inline(always)]
-    fn pre_step<T: EvmTypes, C: EvmConfig<T>>(
-        &mut self,
-        _state: &mut InterpreterState<'_, T>,
-        op: u8,
-    ) -> Result {
-        self.spend(C::VERSION_TABLES.static_gas(op) as _)
-    }
-
-    #[inline(always)]
-    fn sync_before_exec<T: EvmTypes>(
-        &self,
-        state: &mut InterpreterState<'_, T>,
-        dynamic_gas: bool,
-    ) {
-        if dynamic_gas {
-            state.gas_mut().set_remaining(self.get());
-        }
-    }
-
-    #[inline(always)]
-    fn sync_after_exec<T: EvmTypes>(
-        &mut self,
-        state: &mut InterpreterState<'_, T>,
-        dynamic_gas: bool,
-    ) {
-        if dynamic_gas {
-            self.set(state.gas_mut().remaining());
-        }
-    }
-}
-
 #[cold] // Not cold, but avoids MIR inlining.
 #[inline(always)]
 fn dispatch_inner<T: EvmTypes, C: EvmConfig<T>, G: DispatchGas>(
@@ -166,17 +104,17 @@ pub(in crate::interpreter) fn run<T: EvmTypes>(
     instructions: &RawInstrTable<T>,
 ) -> InstrStop {
     let (state, mut pc, mut stack) = run_state(interpreter);
-    let mut loop_state = loop_state(state.gas_mut());
+    let mut loop_state = imp::loop_state(state.gas_mut());
     let inspect = state.is_inspecting();
     loop {
         let op = pc.op();
         if inspect {
-            sync_loop_state(state, loop_state);
+            imp::sync_loop_state(state, loop_state);
             state.inspect_step(pc, stack.len);
             if let Err(stop) = state.result() {
                 cold_path();
                 state.set_pc_stack_len(pc.as_ptr(), stack.len);
-                finish_loop(state.gas_mut(), loop_state);
+                imp::finish_loop(state.gas_mut(), loop_state);
                 return stop;
             }
         }
@@ -187,25 +125,15 @@ pub(in crate::interpreter) fn run<T: EvmTypes>(
         stack.len = next_stack_len;
 
         if inspect {
-            sync_loop_state(state, loop_state);
+            imp::sync_loop_state(state, loop_state);
             state.inspect_step_end(pc, stack.len);
         }
 
         if let Err(stop) = state.result() {
             cold_path();
             state.set_pc_stack_len(pc.as_ptr(), stack.len);
-            finish_loop(state.gas_mut(), loop_state);
+            imp::finish_loop(state.gas_mut(), loop_state);
             return stop;
         }
     }
 }
-
-#[inline(always)]
-#[cfg(dispatch_packed)]
-const fn sync_loop_state<T: EvmTypes>(state: &mut InterpreterState<'_, T>, loop_state: LoopState) {
-    state.gas_mut().set_remaining(loop_state.get());
-}
-
-#[inline(always)]
-#[cfg(not(dispatch_packed))]
-fn sync_loop_state<T: EvmTypes>(_state: &mut InterpreterState<'_, T>, _loop_state: LoopState) {}
