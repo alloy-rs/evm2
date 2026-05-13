@@ -269,9 +269,9 @@ impl<T: EvmTypes> Evm<T> {
             .map_err(|code| self.db_error_stop(code))
     }
 
-    fn log_eip7708_transfer(&mut self, from: Address, to: Address, value: Word) {
+    fn log_eip7708_transfer(&mut self, from: &Address, to: &Address, value: &Word) {
         if self.feature(EvmFeatures::EIP7708)
-            && let Some(log) = eip7708_transfer_log(from, to, value)
+            && let Some(log) = eip7708_transfer_log(*from, *to, *value)
         {
             self.emit_log(log);
         }
@@ -384,7 +384,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             // EIP-2681 caps account nonces at u64::MAX; CREATE/CREATE2 return zero
             // instead of wrapping or saturating the creator nonce.
             // TODO: Fold this into nonce bumping so account info is not loaded repeatedly.
-            let info = match self.state.account_info(message.caller) {
+            let info = match self.state.account_info(&message.caller) {
                 Ok(info) => info,
                 Err(code) => {
                     return Self::error_message_result(self.db_error_stop(code), message.gas_limit);
@@ -400,28 +400,31 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             Err(stop) => return Self::error_message_result(stop, message.gas_limit),
         };
 
-        let _ = self.state.warm_account(address);
+        let _ = self.state.warm_account(&address);
 
         if message.depth > 0
-            && let Err(code) = self.state.increment_nonce(message.caller)
+            && let Err(code) = self.state.increment_nonce(&message.caller)
         {
             return Self::error_message_result(self.db_error_stop(code), message.gas_limit);
         }
 
         let checkpoint = self.state.checkpoint();
-        let create_result =
-            match self.state.create_account(message.caller, address, message.value, self.spec_id())
-            {
-                Ok(result) => result,
-                Err(code) => {
-                    return Self::error_message_result(self.db_error_stop(code), message.gas_limit);
-                }
-            };
+        let create_result = match self.state.create_account(
+            &message.caller,
+            &address,
+            &message.value,
+            self.spec_id(),
+        ) {
+            Ok(result) => result,
+            Err(code) => {
+                return Self::error_message_result(self.db_error_stop(code), message.gas_limit);
+            }
+        };
         if let Err(stop) = create_result {
             self.state.rollback(checkpoint, self.spec_id());
             return Self::error_message_result(stop, message.gas_limit);
         }
-        self.log_eip7708_transfer(message.caller, address, message.value);
+        self.log_eip7708_transfer(&message.caller, &address, &message.value);
 
         let create_message = Message {
             destination: address,
@@ -471,7 +474,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
                 };
             }
 
-            if let Err(code) = self.state.set_code(address, Bytecode::new_legacy(output.clone())) {
+            if let Err(code) = self.state.set_code(&address, Bytecode::new_legacy(output.clone())) {
                 return Self::error_message_result(self.db_error_stop(code), gas_limit);
             }
         } else {
@@ -493,7 +496,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         if message.value > 0
             && self
                 .state
-                .account_info(message.caller)
+                .account_info(&message.caller)
                 .map_err(|code| self.db_error_stop(code))?
                 .is_none_or(|info| info.balance < message.value)
         {
@@ -538,7 +541,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             MessageKind::Create if message.depth == 0 => Ok(message.destination),
             MessageKind::Create => Ok(message.caller.create(
                 self.state
-                    .account_info(message.caller)
+                    .account_info(&message.caller)
                     .map_err(|code| self.db_error_stop(code))?
                     .map_or(0, |info| info.nonce),
             )),
@@ -563,7 +566,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             MessageKind::Call | MessageKind::CallCode | MessageKind::StaticCall
         );
         let transfer_succeeded = !transfers_balance
-            || match self.state.transfer(message.caller, message.destination, message.value) {
+            || match self.state.transfer(&message.caller, &message.destination, &message.value) {
                 Ok(result) => result,
                 Err(code) => {
                     return Self::error_message_result(self.db_error_stop(code), message.gas_limit);
@@ -573,7 +576,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             return Self::error_message_result(InstrStop::OutOfFunds, message.gas_limit);
         }
         if transfers_balance {
-            self.log_eip7708_transfer(message.caller, message.destination, message.value);
+            self.log_eip7708_transfer(&message.caller, &message.destination, &message.value);
         }
 
         if let Some(result) = self.execute_call_precompile(message) {
@@ -710,22 +713,22 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
         skip_cold_load: bool,
     ) -> Result<AccountLoad, InstrStop> {
         let is_cold = if self.spec_id().enables(SpecId::BERLIN) {
-            self.state.warm_account(address)
+            self.state.warm_account(&address)
         } else {
-            let _ = self.state.warm_account(address);
+            let _ = self.state.warm_account(&address);
             false
         };
         if skip_cold_load && is_cold {
             return Err(InstrStop::OutOfGas);
         }
-        let info = self.state.account_info(address).map_err(|code| self.db_error_stop(code))?;
+        let info = self.state.account_info(&address).map_err(|code| self.db_error_stop(code))?;
         let exists = info.is_some();
         let info = info.unwrap_or_default();
         Ok(AccountLoad {
             balance: info.balance,
             code_hash: if exists { info.code_hash } else { B256::ZERO },
             code: if load_code {
-                self.state.get_code(address).map_err(|code| self.db_error_stop(code))?
+                self.state.get_code(&address).map_err(|code| self.db_error_stop(code))?
             } else {
                 Bytecode::default()
             },
@@ -742,7 +745,7 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
         spec: SpecId,
     ) -> Result<bool, InstrStop> {
         self.state
-            .target_is_empty_for_new_account_gas(address, spec)
+            .target_is_empty_for_new_account_gas(&address, spec)
             .map_err(|code| self.db_error_stop(code))
     }
 
@@ -757,12 +760,12 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
         skip_cold_load: bool,
     ) -> Result<SLoad, InstrStop> {
         let is_cold =
-            self.spec_id().enables(SpecId::BERLIN) && self.state.warm_storage(address, key);
+            self.spec_id().enables(SpecId::BERLIN) && self.state.warm_storage(&address, &key);
         if skip_cold_load && is_cold {
             return Err(InstrStop::OutOfGas);
         }
         Ok(SLoad {
-            value: self.state.storage(address, key).map_err(|code| self.db_error_stop(code))?,
+            value: self.state.storage(&address, &key).map_err(|code| self.db_error_stop(code))?,
             is_cold,
             _non_exhaustive: (),
         })
@@ -776,22 +779,24 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
         skip_cold_load: bool,
     ) -> Result<SStore, InstrStop> {
         let is_cold =
-            self.spec_id().enables(SpecId::BERLIN) && self.state.warm_storage(address, key);
+            self.spec_id().enables(SpecId::BERLIN) && self.state.warm_storage(&address, &key);
         if skip_cold_load && is_cold {
             return Err(InstrStop::OutOfGas);
         }
-        let mut result =
-            self.state.set_storage(address, key, value).map_err(|code| self.db_error_stop(code))?;
+        let mut result = self
+            .state
+            .set_storage(&address, &key, &value)
+            .map_err(|code| self.db_error_stop(code))?;
         result.is_cold = is_cold;
         Ok(result)
     }
 
     fn tload(&mut self, address: Address, key: Word) -> Word {
-        self.state.transient_storage(address, key)
+        self.state.transient_storage(&address, &key)
     }
 
     fn tstore(&mut self, address: Address, key: Word, value: Word) {
-        self.state.set_transient_storage(address, key, value);
+        self.state.set_transient_storage(&address, &key, &value);
     }
 
     fn log(&mut self, log: Log) {
@@ -826,9 +831,9 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
         skip_cold_load: bool,
     ) -> Result<SelfDestructResult, InstrStop> {
         let is_cold = if self.spec_id().enables(SpecId::BERLIN) {
-            self.state.warm_account(target)
+            self.state.warm_account(&target)
         } else {
-            let _ = self.state.warm_account(target);
+            let _ = self.state.warm_account(&target);
             false
         };
         if skip_cold_load && is_cold {
@@ -836,22 +841,22 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
         }
         let target_is_empty_for_new_account_gas =
             self.target_is_empty_for_new_account_gas(target, self.spec_id())?;
-        let previously_destroyed = self.state.is_selfdestructed(contract);
+        let previously_destroyed = self.state.is_selfdestructed(&contract);
         let balance = self
             .state
-            .account_info(contract)
+            .account_info(&contract)
             .map_err(|code| self.db_error_stop(code))?
             .map_or(Word::ZERO, |info| info.balance);
         let should_destroy = !self.spec_id().enables(SpecId::CANCUN)
-            || self.state.is_created_in_transaction(contract);
+            || self.state.is_created_in_transaction(&contract);
 
         if contract != target {
             let transferred = self
                 .state
-                .transfer(contract, target, balance)
+                .transfer(&contract, &target, &balance)
                 .map_err(|code| self.db_error_stop(code))?;
             if transferred {
-                self.log_eip7708_transfer(contract, target, balance);
+                self.log_eip7708_transfer(&contract, &target, &balance);
             }
         } else if should_destroy && !balance.is_zero() {
             if self.feature(EvmFeatures::EIP7708)
@@ -860,11 +865,11 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
                 self.emit_log(log);
             }
             self.state
-                .add_balance(contract, Word::ZERO.wrapping_sub(balance))
+                .add_balance(&contract, &Word::ZERO.wrapping_sub(balance))
                 .map_err(|code| self.db_error_stop(code))?;
         }
         if should_destroy {
-            self.state.mark_destructed(contract);
+            self.state.mark_destructed(&contract);
         }
         Ok(SelfDestructResult {
             had_value: !balance.is_zero(),
@@ -1262,7 +1267,7 @@ mod tests {
         let result = Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &message, false);
 
         assert_eq!(result.stop, InstrStop::OutOfGas);
-        assert!(!evm.state.is_storage_warm(contract, key));
+        assert!(!evm.state.is_storage_warm(&contract, &key));
     }
 
     #[test]
@@ -1419,15 +1424,15 @@ mod tests {
         let from = Address::from([0x01; 20]);
         let to = Address::from([0x02; 20]);
         let mut state = State::new(InMemoryDB::default());
-        state.add_balance(from, U256::from(10)).unwrap();
+        state.add_balance(&from, &U256::from(10)).unwrap();
 
-        assert!(state.transfer(from, to, U256::from(7)).unwrap());
+        assert!(state.transfer(&from, &to, &U256::from(7)).unwrap());
         assert_eq!(
-            state.account_info(from).expect("sender account should exist").unwrap().balance,
+            state.account_info(&from).expect("sender account should exist").unwrap().balance,
             U256::from(3)
         );
         assert_eq!(
-            state.account_info(to).expect("recipient account should exist").unwrap().balance,
+            state.account_info(&to).expect("recipient account should exist").unwrap().balance,
             U256::from(7)
         );
     }

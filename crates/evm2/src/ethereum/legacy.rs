@@ -38,7 +38,7 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     warm_base_accounts(req.host, caller, tx.to);
 
     charge_upfront(req.host, caller, max_gas_cost)?;
-    req.host.state.increment_nonce(caller).map_err(|code| req.host.db_error_handler(code))?;
+    req.host.state.increment_nonce(&caller).map_err(|code| req.host.db_error_handler(code))?;
     let execution_checkpoint = req.host.state.checkpoint();
 
     let gas_limit = tx.gas_limit - intrinsic;

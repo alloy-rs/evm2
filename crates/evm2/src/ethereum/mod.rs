@@ -261,11 +261,11 @@ pub(super) fn validate_sender<T: EvmTypes<Host = Evm<T>>>(
 ) -> HandlerResult<AccountInfo> {
     let sender_info = host
         .state
-        .account_info(caller)
+        .account_info(&caller)
         .map_err(|code| host.db_error_handler(code))?
         .unwrap_or_default();
     if host.feature(EvmFeatures::EIP3607) && sender_info.code_hash != KECCAK256_EMPTY {
-        let code = host.state.get_code(caller).map_err(|code| host.db_error_handler(code))?;
+        let code = host.state.get_code(&caller).map_err(|code| host.db_error_handler(code))?;
         if !code.is_empty() && !code.is_eip7702() {
             return Err(HandlerError::RejectCallerWithCode);
         }
@@ -278,7 +278,7 @@ pub(super) fn validate_sender<T: EvmTypes<Host = Evm<T>>>(
     }
     if !host.feature(EvmFeatures::BALANCE_CHECK) && sender_info.balance < max_upfront {
         host.state
-            .add_balance(caller, max_upfront - sender_info.balance)
+            .add_balance(&caller, &(max_upfront - sender_info.balance))
             .map_err(|code| host.db_error_handler(code))?;
     }
     Ok(sender_info)
@@ -289,12 +289,12 @@ pub(super) fn warm_base_accounts<T: EvmTypes<Host = Evm<T>>>(
     caller: Address,
     to: TxKind,
 ) {
-    host.state.warm_account_non_revertible(caller);
+    host.state.warm_account_non_revertible(&caller);
     if host.feature(EvmFeatures::EIP3651) {
-        host.state.warm_account_non_revertible(host.block.beneficiary);
+        host.state.warm_account_non_revertible(&host.block.beneficiary);
     }
     if let TxKind::Call(to) = to {
-        host.state.warm_account_non_revertible(to);
+        host.state.warm_account_non_revertible(&to);
     }
     host.state.warm_accounts_non_revertible(host.precompiles().warm_addresses());
 }
@@ -304,10 +304,10 @@ pub(super) fn warm_access_list<T: EvmTypes<Host = Evm<T>>>(
     access_list: &AccessList,
 ) {
     for item in access_list.iter() {
-        host.state.warm_account_non_revertible(item.address);
+        host.state.warm_account_non_revertible(&item.address);
         for key in &item.storage_keys {
-            let _ =
-                host.state.warm_storage_non_revertible(item.address, U256::from_be_bytes(key.0));
+            let key = U256::from_be_bytes(key.0);
+            let _ = host.state.warm_storage_non_revertible(&item.address, &key);
         }
     }
 }
@@ -321,7 +321,7 @@ pub(super) fn charge_upfront<T: EvmTypes<Host = Evm<T>>>(
         return Ok(());
     }
     host.state
-        .add_balance(caller, Word::ZERO.wrapping_sub(max_gas_cost))
+        .add_balance(&caller, &Word::ZERO.wrapping_sub(max_gas_cost))
         .map_err(|code| host.db_error_handler(code))?;
     Ok(())
 }
@@ -387,15 +387,15 @@ fn initial_call_code<T: EvmTypes<Host = Evm<T>>>(
     host: &mut Evm<T>,
     to: Address,
 ) -> HandlerResult<InitialCallCode> {
-    let code = host.state.get_code(to).map_err(|code| host.db_error_handler(code))?;
+    let code = host.state.get_code(&to).map_err(|code| host.db_error_handler(code))?;
     if host.spec_id().enables(SpecId::PRAGUE)
         && let Some(delegated_address) = code.eip7702_address()
     {
-        let _ = host.state.warm_account(delegated_address);
+        let _ = host.state.warm_account(&delegated_address);
         return Ok(InitialCallCode {
             code: host
                 .state
-                .get_code(delegated_address)
+                .get_code(&delegated_address)
                 .map_err(|code| host.db_error_handler(code))?,
             code_address: delegated_address,
             disable_precompiles: true,
@@ -429,7 +429,7 @@ pub(super) fn settle_gas<T: EvmTypes<Host = Evm<T>>>(
         final_tx_gas(&result, tx_gas_limit, host.feature(EvmFeatures::EIP3529), floor_gas);
     if host.feature(EvmFeatures::FEE_CHARGE) {
         host.state
-            .add_balance(caller, U256::from(gas_remaining) * gas_price)
+            .add_balance(&caller, &(U256::from(gas_remaining) * gas_price))
             .map_err(|code| host.db_error_handler(code))?;
         let beneficiary_gas_price = if host.feature(EvmFeatures::BASE_FEE_CHECK) {
             gas_price.saturating_sub(host.block.basefee)
@@ -437,7 +437,7 @@ pub(super) fn settle_gas<T: EvmTypes<Host = Evm<T>>>(
             gas_price
         };
         host.state
-            .add_balance(host.block.beneficiary, U256::from(gas_used) * beneficiary_gas_price)
+            .add_balance(&host.block.beneficiary, &(U256::from(gas_used) * beneficiary_gas_price))
             .map_err(|code| host.db_error_handler(code))?;
     }
     Ok(TxResult {
@@ -707,7 +707,7 @@ mod tests {
         );
 
         assert!(validate_sender(&mut evm, caller, 0, U256::from(100)).is_ok());
-        assert_eq!(evm.state.account_info(caller).unwrap().unwrap().balance, U256::from(100));
+        assert_eq!(evm.state.account_info(&caller).unwrap().unwrap().balance, U256::from(100));
     }
 
     #[test]
