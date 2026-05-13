@@ -95,7 +95,11 @@ impl Host<TestTypes> for TestHost {
         Ok(AccountLoad {
             balance: address.into_word().into(),
             code_hash: self.code_hash,
-            code: if load_code { self.code.clone() } else { Bytes::new() },
+            code: if load_code {
+                Bytecode::new_legacy(self.code.clone())
+            } else {
+                Bytecode::default()
+            },
             exists: self.exists,
             is_empty: self.is_empty,
             is_cold: self.is_cold,

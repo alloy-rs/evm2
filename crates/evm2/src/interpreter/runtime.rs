@@ -390,6 +390,12 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
         self.0.return_data = return_data;
     }
 
+    /// Swaps return data from the last call-like operation.
+    #[inline]
+    pub(crate) const fn swap_return_data(&mut self, return_data: &mut Bytes) {
+        core::mem::swap(&mut self.0.return_data, return_data);
+    }
+
     /// Sets the current frame output.
     #[inline]
     pub const fn set_output(&mut self, output: *const [u8]) {

@@ -740,7 +740,6 @@ impl State {
     /// accounting, or Amsterdam state-gas charging. Instruction implementations should call the
     /// host `sstore` operation instead, and only use this lower-level helper when those concerns
     /// are handled elsewhere.
-    #[inline]
     pub fn set_storage(&mut self, address: Address, key: Word, value: Word) -> DbResult<SStore> {
         let _ = self.account_mut(address)?;
         self.touch(address);
@@ -761,7 +760,6 @@ impl State {
     }
 
     /// Marks an account as touched by the current transaction.
-    #[inline]
     pub fn touch(&mut self, address: Address) {
         if self.touched.insert(address) {
             self.journal.push(JournalEntry::Touch { address });
@@ -769,7 +767,6 @@ impl State {
     }
 
     /// Adds a signed balance delta by wrapping two's-complement values.
-    #[inline]
     pub fn add_balance(&mut self, address: Address, delta: Word) -> DbResult<()> {
         if delta.is_zero() {
             self.touch(address);

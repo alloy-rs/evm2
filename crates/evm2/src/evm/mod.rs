@@ -381,6 +381,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             .unwrap_or_else(|stop| Self::error_message_result(stop, message.gas_limit))
     }
 
+    #[inline(always)]
     fn execute_create_message_inner(
         &mut self,
         tx_env: &TxEnv<T>,
@@ -544,6 +545,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             .unwrap_or_else(|stop| Self::error_message_result(stop, message.gas_limit))
     }
 
+    #[inline(always)]
     fn execute_call_message_inner(
         &mut self,
         tx_env: &TxEnv<T>,
@@ -702,12 +704,9 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
             balance: info.balance,
             code_hash: if exists { info.code_hash } else { B256::ZERO },
             code: if load_code {
-                self.state
-                    .get_code(address)
-                    .map_err(|code| self.db_error_stop(code))?
-                    .original_bytes()
+                self.state.get_code(address).map_err(|code| self.db_error_stop(code))?
             } else {
-                Bytes::new()
+                Bytecode::default()
             },
             exists,
             is_empty: info.is_empty(),
@@ -778,6 +777,7 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
         self.state.log(log);
     }
 
+    #[inline]
     fn execute_message(
         &mut self,
         tx_env: &TxEnv<T>,
@@ -863,8 +863,8 @@ pub struct AccountLoad {
     pub balance: Word,
     /// Account code hash.
     pub code_hash: B256,
-    /// Account code bytes.
-    pub code: Bytes,
+    /// Account bytecode.
+    pub code: Bytecode,
     /// Whether the account exists in state.
     pub exists: bool,
     /// Whether the account is empty.

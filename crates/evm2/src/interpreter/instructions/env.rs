@@ -159,7 +159,7 @@ pub(crate) fn extcodecopy(cx: _, [addr, memory_offset, code_offset, len]: [Word]
     let memory_offset = copy_memory_resize(&mut cx, memory_offset, len)?.unwrap_or(0);
 
     let code = load_account(&mut cx, addr, true)?.code;
-    set_copy_data(&mut cx, memory_offset, code_offset, len, &code);
+    set_copy_data(&mut cx, memory_offset, code_offset, len, code.original_byte_slice());
 }
 
 #[instruction]

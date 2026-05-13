@@ -2,10 +2,11 @@
 
 use crate::{
     EvmFeatures, EvmTypes, SpecId,
-    constants::{CALL_DEPTH_LIMIT, EIP7702_BYTECODE_LEN, EIP7702_MAGIC_BYTES, EIP7702_VERSION},
+    bytecode::Bytecode,
+    constants::CALL_DEPTH_LIMIT,
     interpreter::{
-        GasTracker, Host, InstrStop, InterpreterState, Message, MessageKind, MessageResult, Result,
-        StackMut, Word, memory::resize_memory, private::GasInstructionCx,
+        Gas, GasTracker, Host, InstrStop, InterpreterState, Message, MessageKind, MessageResult,
+        Result, StackMut, Word, memory::resize_memory,
     },
     trustme,
     utils::{word_to_address, word_to_usize},
@@ -21,11 +22,6 @@ const fn require_non_staticcall<T: EvmTypes>(state: &InterpreterState<'_, T>) ->
         return Err(InstrStop::StateChangeDuringStaticCall);
     }
     Ok(())
-}
-
-#[inline]
-const fn success(stop: InstrStop) -> bool {
-    matches!(stop, InstrStop::Stop | InstrStop::Return | InstrStop::SelfDestruct)
 }
 
 #[inline]
@@ -48,14 +44,15 @@ fn call_too_deep_result<T: EvmTypes>(gas_limit: u64) -> MessageResult<T> {
 }
 
 fn resize_memory_range<T: EvmTypes>(
-    cx: &mut GasInstructionCx<'_, '_, T>,
+    gas: &mut Gas,
+    state: &mut InterpreterState<'_, T>,
     offset: Word,
     len: Word,
 ) -> Result<Range<usize>> {
     let len = word_to_usize(len)?;
     let offset = if len != 0 {
         let offset = word_to_usize(offset)?;
-        resize_memory(cx.gas, cx.state.memory(), offset, len)?;
+        resize_memory(gas, state.memory(), offset, len)?;
         offset
     } else {
         usize::MAX
@@ -64,52 +61,44 @@ fn resize_memory_range<T: EvmTypes>(
 }
 
 fn get_memory_input_and_out_ranges<T: EvmTypes>(
-    cx: &mut GasInstructionCx<'_, '_, T>,
+    gas: &mut Gas,
+    state: &mut InterpreterState<'_, T>,
     input_offset: Word,
     input_len: Word,
     return_offset: Word,
     return_len: Word,
 ) -> Result<(Range<usize>, Range<usize>)> {
-    let input = resize_memory_range(cx, input_offset, input_len)?;
-    let output = resize_memory_range(cx, return_offset, return_len)?;
+    let input = resize_memory_range(gas, state, input_offset, input_len)?;
+    let output = resize_memory_range(gas, state, return_offset, return_len)?;
     Ok((input, output))
 }
 
 fn memory_range_bytes<T: EvmTypes>(
-    cx: &mut GasInstructionCx<'_, '_, T>,
+    state: &mut InterpreterState<'_, T>,
     range: Range<usize>,
 ) -> Result<Bytes> {
     if range.is_empty() {
         return Ok(Bytes::new());
     }
-    Ok(Bytes::copy_from_slice(cx.state.memory().slice(range.start, range.len())))
-}
-
-fn eip7702_address(code: &Bytes) -> Option<Address> {
-    if code.len() == EIP7702_BYTECODE_LEN
-        && code.starts_with(EIP7702_MAGIC_BYTES)
-        && code[2] == EIP7702_VERSION
-    {
-        return Some(Address::from_slice(&code[3..]));
-    }
-    None
+    Ok(Bytes::copy_from_slice(state.memory().slice(range.start, range.len())))
 }
 
 fn load_acc_and_calc_gas<T: EvmTypes>(
-    cx: &mut GasInstructionCx<'_, '_, T>,
+    gas: &mut Gas,
+    state: &mut InterpreterState<'_, T>,
     to: Address,
     transfers_value: bool,
     create_empty_account: bool,
     stack_gas_limit: u64,
-) -> Result<(u64, Bytes, Address, bool)> {
+) -> Result<(u64, Bytecode, Address, bool)> {
     if transfers_value {
-        cx.gas.spend(cx.state.gas_params().get(GasId::TransferValueCost).into())?;
+        gas.spend(state.gas_params().get(GasId::TransferValueCost).into())?;
     }
 
-    let additional_cold_cost = cx.state.gas_params().cold_account_additional_cost();
-    let remaining_gas = cx.gas.remaining();
+    let additional_cold_cost = state.gas_params().cold_account_additional_cost();
+    let remaining_gas = gas.remaining();
     let skip_cold_load = remaining_gas < additional_cold_cost;
-    let account = cx.state.host().load_account(to, true, skip_cold_load)?;
+    let account = state.host().load_account(to, true, skip_cold_load)?;
 
     let mut cost = 0;
     if account.is_cold {
@@ -117,43 +106,43 @@ fn load_acc_and_calc_gas<T: EvmTypes>(
     }
     let mut code = account.code;
     let mut code_address = to;
-    if cx.state.spec().enables(SpecId::PRAGUE)
-        && let Some(delegated_address) = eip7702_address(&code)
+    if state.spec().enables(SpecId::PRAGUE)
+        && let Some(delegated_address) = code.eip7702_address()
     {
-        cost += u64::from(cx.state.gas_params().get(GasId::WarmStorageReadCost));
+        cost += u64::from(state.gas_params().get(GasId::WarmStorageReadCost));
         if cost > remaining_gas {
             return Err(InstrStop::OutOfGas);
         }
         let skip_cold_load = remaining_gas < cost.saturating_add(additional_cold_cost);
         let delegated_account =
-            cx.state.host().load_account(delegated_address, true, skip_cold_load)?;
+            state.host().load_account(delegated_address, true, skip_cold_load)?;
         if delegated_account.is_cold {
             cost += additional_cold_cost;
         }
         code = delegated_account.code;
         code_address = delegated_address;
     }
-    let spec = cx.state.spec();
+    let spec = state.spec();
     if create_empty_account
         && should_charge_new_account_gas(
             spec,
             transfers_value,
-            cx.state.host().target_is_empty_for_new_account_gas(to, spec)?,
+            state.host().target_is_empty_for_new_account_gas(to, spec)?,
         )
     {
-        cost += u64::from(cx.state.gas_params().get(GasId::NewAccountCost));
+        cost += u64::from(state.gas_params().get(GasId::NewAccountCost));
     }
-    cx.gas.spend(cost)?;
+    gas.spend(cost)?;
 
-    let mut gas_limit = if cx.state.spec().enables(SpecId::TANGERINE) {
-        min(cx.state.gas_params().call_stipend_reduction(cx.gas.remaining()), stack_gas_limit)
+    let mut gas_limit = if state.spec().enables(SpecId::TANGERINE) {
+        min(state.gas_params().call_stipend_reduction(gas.remaining()), stack_gas_limit)
     } else {
         stack_gas_limit
     };
-    cx.gas.spend(gas_limit)?;
+    gas.spend(gas_limit)?;
 
     if transfers_value {
-        gas_limit = gas_limit.saturating_add(cx.state.gas_params().get(GasId::CallStipend).into());
+        gas_limit = gas_limit.saturating_add(state.gas_params().get(GasId::CallStipend).into());
     }
 
     let disable_precompiles = code_address != to;
@@ -161,11 +150,15 @@ fn load_acc_and_calc_gas<T: EvmTypes>(
 }
 
 #[inline(never)]
-fn call_inner<T: EvmTypes>(
+fn prepare_call<T: EvmTypes>(
     mut stack: StackMut<'_>,
-    mut cx: GasInstructionCx<'_, '_, T>,
+    gas: &mut Gas,
+    state: &mut InterpreterState<'_, T>,
     kind: MessageKind,
-) -> Result {
+    message: &mut Message<T>,
+    code: &mut Bytecode,
+    return_memory_range: &mut Range<usize>,
+) -> Result<bool> {
     let has_value = match kind {
         MessageKind::Call | MessageKind::CallCode => true,
         MessageKind::DelegateCall | MessageKind::StaticCall => false,
@@ -176,28 +169,31 @@ fn call_inner<T: EvmTypes>(
     let [input_offset, input_len, return_offset, return_len] = stack.popn::<4>()?;
     let to = word_to_address(to);
     let has_transfer = !value.is_zero();
-    if cx.state.is_static() && kind == MessageKind::Call && has_transfer {
+    if state.is_static() && kind == MessageKind::Call && has_transfer {
         return Err(InstrStop::CallNotAllowedInsideStatic);
     }
 
     let local_gas_limit = u64::try_from(local_gas_limit).unwrap_or(u64::MAX);
-    let (input_range, return_memory_range) = get_memory_input_and_out_ranges(
-        &mut cx,
+    let (input_range, prepared_return_memory_range) = get_memory_input_and_out_ranges(
+        gas,
+        state,
         input_offset,
         input_len,
         return_offset,
         return_len,
     )?;
-    let (gas_limit, code, resolved_code_address, disable_precompiles) = load_acc_and_calc_gas(
-        &mut cx,
-        to,
-        has_transfer,
-        kind == MessageKind::Call,
-        local_gas_limit,
-    )?;
-    let input = memory_range_bytes(&mut cx, input_range)?;
+    let (gas_limit, loaded_code, resolved_code_address, disable_precompiles) =
+        load_acc_and_calc_gas(
+            gas,
+            state,
+            to,
+            has_transfer,
+            kind == MessageKind::Call,
+            local_gas_limit,
+        )?;
+    let input = memory_range_bytes(state, input_range)?;
 
-    let current = cx.state.message();
+    let current = state.message();
     let (destination, caller, call_value, code_address) = match kind {
         MessageKind::Call => (to, current.destination, value, resolved_code_address),
         MessageKind::CallCode => {
@@ -209,7 +205,7 @@ fn call_inner<T: EvmTypes>(
         MessageKind::StaticCall => (to, current.destination, Word::ZERO, resolved_code_address),
         _ => unreachable!("invalid call message kind"),
     };
-    let mut message = Message {
+    *message = Message {
         kind,
         depth: current.depth.saturating_add(1),
         gas_limit,
@@ -223,85 +219,113 @@ fn call_inner<T: EvmTypes>(
         ext: T::MessageExt::default(),
         _non_exhaustive: (),
     };
-    let caller_is_static = cx.state.is_static();
-    let mut result = if let Some(result) = cx.state.inspect_call(&mut message) {
+    *code = loaded_code;
+    *return_memory_range = prepared_return_memory_range;
+    let caller_is_static = state.is_static();
+
+    Ok(caller_is_static)
+}
+
+#[inline(never)]
+fn call_inner<T: EvmTypes>(
+    mut stack: StackMut<'_>,
+    gas: &mut Gas,
+    state: &mut InterpreterState<'_, T>,
+    kind: MessageKind,
+) -> Result {
+    let mut message = Message::<T>::default();
+    let mut code = Bytecode::default();
+    let mut return_memory_range = 0..0;
+    let caller_is_static = prepare_call(
+        stack.reborrow(),
+        gas,
+        state,
+        kind,
+        &mut message,
+        &mut code,
+        &mut return_memory_range,
+    )?;
+
+    let mut result = if let Some(result) = state.inspect_call(&mut message) {
         result
     } else if message.depth > CALL_DEPTH_LIMIT {
         call_too_deep_result::<T>(message.gas_limit)
     } else {
-        let bytecode = crate::bytecode::Bytecode::new_legacy(code);
-        let tx_env = unsafe { trustme::decouple_lt(cx.state.tx()) };
-        cx.state.host().execute_message(tx_env, bytecode, &message, caller_is_static)
+        let tx_env = unsafe { trustme::decouple_lt(state.tx()) };
+        state.host().execute_message(tx_env, code, &message, caller_is_static)
     };
-    cx.state.inspect_call_end(&message, &mut result);
-    cx.gas.erase_cost(result.gas_returned_to_parent());
-    cx.gas.record_refund(result.refund_propagated_to_parent());
+    state.inspect_call_end(&message, &mut result);
+    gas.erase_cost(result.gas_returned_to_parent());
+    gas.record_refund(result.refund_propagated_to_parent());
     let copy_len = min(return_memory_range.len(), result.output.len());
-    cx.state.memory().set(return_memory_range.start, &result.output[..copy_len]);
-    cx.state.set_return_data(result.output);
-    let success = if success(result.stop) { Word::from(1) } else { Word::ZERO };
-    stack.push(success)
+    unsafe {
+        let output = result.output.get_unchecked(..copy_len);
+        state.memory().set_unchecked(return_memory_range.start, output);
+    }
+    state.swap_return_data(&mut result.output);
+    stack.push(Word::from(result.stop.is_success()))
 }
 
 #[instruction(no_stack_preamble, dynamic_gas)]
 pub(crate) fn call(cx: _) -> Result {
-    call_inner(stack, cx, MessageKind::Call)
+    call_inner(stack, cx.gas, cx.state, MessageKind::Call)
 }
 
 #[instruction(no_stack_preamble, dynamic_gas)]
 pub(crate) fn callcode(cx: _) -> Result {
-    call_inner(stack, cx, MessageKind::CallCode)
+    call_inner(stack, cx.gas, cx.state, MessageKind::CallCode)
 }
 
 #[instruction(no_stack_preamble, dynamic_gas)]
 pub(crate) fn delegatecall(cx: _) -> Result {
-    call_inner(stack, cx, MessageKind::DelegateCall)
+    call_inner(stack, cx.gas, cx.state, MessageKind::DelegateCall)
 }
 
 #[instruction(no_stack_preamble, dynamic_gas)]
 pub(crate) fn staticcall(cx: _) -> Result {
-    call_inner(stack, cx, MessageKind::StaticCall)
+    call_inner(stack, cx.gas, cx.state, MessageKind::StaticCall)
 }
 
 #[instruction(no_stack_preamble, dynamic_gas)]
 pub(crate) fn create<const IS_CREATE2: bool>(cx: _) -> Result {
-    create_inner(stack, cx, IS_CREATE2)
+    create_inner(stack, cx.gas, cx.state, IS_CREATE2)
 }
 
 #[inline(never)]
 fn create_inner<T: EvmTypes>(
     mut stack: StackMut<'_>,
-    mut cx: GasInstructionCx<'_, '_, T>,
+    gas: &mut Gas,
+    state: &mut InterpreterState<'_, T>,
     is_create2: bool,
 ) -> Result {
-    require_non_staticcall(cx.state)?;
+    require_non_staticcall(state)?;
 
     let [value, offset, len] = stack.popn::<3>()?;
     let salt = if is_create2 { Some(stack.pop()?) } else { None };
 
     let len = word_to_usize(len)?;
-    if cx.state.feature(EvmFeatures::EIP3860) {
-        if len > cx.state.version().max_initcode_size {
+    if state.feature(EvmFeatures::EIP3860) {
+        if len > state.version().max_initcode_size {
             return Err(InstrStop::CreateInitCodeSizeLimit);
         }
-        cx.gas.spend(cx.state.gas_params().initcode_cost(len))?;
+        gas.spend(state.gas_params().initcode_cost(len))?;
     }
-    let code_range = resize_memory_range(&mut cx, offset, Word::from(len))?;
-    let input = memory_range_bytes(&mut cx, code_range)?;
+    let code_range = resize_memory_range(gas, state, offset, Word::from(len))?;
+    let input = memory_range_bytes(state, code_range)?;
     let create_cost = if is_create2 {
-        cx.state.gas_params().create2_cost(len)
+        state.gas_params().create2_cost(len)
     } else {
-        cx.state.gas_params().get(GasId::Create).into()
+        state.gas_params().get(GasId::Create).into()
     };
-    cx.gas.spend(create_cost)?;
-    let gas_limit = if cx.state.spec().enables(SpecId::TANGERINE) {
-        cx.state.gas_params().call_stipend_reduction(cx.gas.remaining())
+    gas.spend(create_cost)?;
+    let gas_limit = if state.spec().enables(SpecId::TANGERINE) {
+        state.gas_params().call_stipend_reduction(gas.remaining())
     } else {
-        cx.gas.remaining()
+        gas.remaining()
     };
-    cx.gas.spend(gas_limit)?;
+    gas.spend(gas_limit)?;
 
-    let current = cx.state.message();
+    let current = state.message();
     let mut message = Message {
         kind: if is_create2 { MessageKind::Create2 } else { MessageKind::Create },
         depth: current.depth.saturating_add(1),
@@ -316,27 +340,27 @@ fn create_inner<T: EvmTypes>(
         ext: T::MessageExt::default(),
         _non_exhaustive: (),
     };
-    let mut result = if let Some(result) = cx.state.inspect_create(&mut message) {
+    let mut result = if let Some(result) = state.inspect_create(&mut message) {
         result
     } else if message.depth > CALL_DEPTH_LIMIT {
         call_too_deep_result::<T>(message.gas_limit)
     } else {
         let bytecode = crate::bytecode::Bytecode::new_legacy(input);
-        let tx_env = unsafe { trustme::decouple_lt(cx.state.tx()) };
-        cx.state.host().execute_message(tx_env, bytecode, &message, false)
+        let tx_env = unsafe { trustme::decouple_lt(state.tx()) };
+        state.host().execute_message(tx_env, bytecode, &message, false)
     };
-    cx.state.inspect_create_end(&message, &mut result);
-    cx.gas.erase_cost(result.gas_returned_to_parent());
-    cx.gas.record_refund(result.refund_propagated_to_parent());
+    state.inspect_create_end(&message, &mut result);
+    gas.erase_cost(result.gas_returned_to_parent());
+    gas.record_refund(result.refund_propagated_to_parent());
     // EIP-211 exposes CREATE failure data only for REVERT; other failures clear returndata.
     if result.stop == InstrStop::Revert {
-        cx.state.set_return_data(result.output);
+        state.set_return_data(result.output);
     } else {
-        cx.state.set_return_data(Bytes::new());
+        state.set_return_data(Bytes::new());
     }
     let address = result
         .created_address
-        .filter(|_| success(result.stop))
+        .filter(|_| result.stop.is_success())
         .map(|address| Word::from_be_slice(address.as_slice()))
         .unwrap_or_default();
     stack.push(address)
