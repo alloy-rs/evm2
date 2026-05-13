@@ -423,9 +423,17 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
         unsafe { inspector.as_mut() }.step_end(&mut self.0);
     }
 
-    #[inline]
-    pub(crate) fn inspect_call(&mut self, message: &mut Message<T>) -> Option<MessageResult<T>> {
-        self.inspector().and_then(|inspector| inspector.call(message))
+    #[inline(never)]
+    #[must_use]
+    pub(crate) fn inspect_call(
+        &mut self,
+        message: &mut Message<T>,
+        result: &mut MessageResult<T>,
+    ) -> bool {
+        let Some(inspector) = self.inspector() else { return false };
+        let Some(inspected) = inspector.call(message) else { return false };
+        *result = inspected;
+        true
     }
 
     #[inline]

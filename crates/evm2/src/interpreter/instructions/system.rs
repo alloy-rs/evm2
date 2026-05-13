@@ -246,14 +246,14 @@ fn call_inner<T: EvmTypes>(
         &mut return_memory_range,
     )?;
 
-    let mut result = if let Some(result) = state.inspect_call(&mut message) {
-        result
+    let mut result = MessageResult::<T>::default();
+    if state.inspect_call(&mut message, &mut result) {
     } else if message.depth > CALL_DEPTH_LIMIT {
-        call_too_deep_result::<T>(message.gas_limit)
+        result = call_too_deep_result::<T>(message.gas_limit);
     } else {
         let tx_env = unsafe { trustme::decouple_lt(state.tx()) };
-        state.host().execute_message(tx_env, code, &message, caller_is_static)
-    };
+        result = state.host().execute_message(tx_env, code, &message, caller_is_static);
+    }
     state.inspect_call_end(&message, &mut result);
     gas.erase_cost(result.gas_returned_to_parent());
     gas.record_refund(result.refund_propagated_to_parent());
