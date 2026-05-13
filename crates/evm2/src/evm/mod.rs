@@ -400,6 +400,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         ) {
             Ok(result) => result,
             Err(code) => {
+                self.state.rollback(checkpoint, self.spec_id());
                 return Self::error_message_result(self.db_error_stop(code), message.gas_limit);
             }
         };
@@ -458,6 +459,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             }
 
             if let Err(code) = self.state.set_code(&address, Bytecode::new_legacy(output.clone())) {
+                self.state.rollback(checkpoint, self.spec_id());
                 return Self::error_message_result(self.db_error_stop(code), gas_limit);
             }
         } else {
