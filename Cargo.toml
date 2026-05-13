@@ -10,6 +10,8 @@ authors = ["DaniPopes <57450786+DaniPopes@users.noreply.github.com>"]
 license = "MIT OR Apache-2.0"
 homepage = "https://github.com/danipopes/evm2"
 repository = "https://github.com/danipopes/evm2"
+categories = ["cryptography::cryptocurrencies", "development-tools", "no-std"]
+keywords = ["bytecode", "ethereum", "evm", "execution", "interpreter"]
 
 [workspace.lints.clippy]
 dbg-macro = "warn"

@@ -1,3 +1,1 @@
-# evm2
-
-Experimental EVM interpreter.
+../../README.md
