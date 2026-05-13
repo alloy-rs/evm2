@@ -377,49 +377,49 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         message: &Message<T>,
         caller_is_static: bool,
     ) -> MessageResult<T> {
-        self.execute_create_message_inner(tx_env, bytecode, message, caller_is_static)
-            .unwrap_or_else(|stop| Self::error_message_result(stop, message.gas_limit))
-    }
-
-    #[inline(always)]
-    fn execute_create_message_inner(
-        &mut self,
-        tx_env: &TxEnv<T>,
-        bytecode: Bytecode,
-        message: &Message<T>,
-        caller_is_static: bool,
-    ) -> Result<MessageResult<T>, InstrStop> {
-        self.check_create_funds(message)?;
+        if let Err(stop) = self.check_create_funds(message) {
+            return Self::error_message_result(stop, message.gas_limit);
+        }
         if message.depth > 0 {
             // EIP-2681 caps account nonces at u64::MAX; CREATE/CREATE2 return zero
             // instead of wrapping or saturating the creator nonce.
             // TODO: Fold this into nonce bumping so account info is not loaded repeatedly.
-            if self
-                .state
-                .account_info(message.caller)
-                .map_err(|code| self.db_error_stop(code))?
-                .is_some_and(|info| info.nonce == u64::MAX)
-            {
-                return Err(InstrStop::Return);
+            let info = match self.state.account_info(message.caller) {
+                Ok(info) => info,
+                Err(code) => {
+                    return Self::error_message_result(self.db_error_stop(code), message.gas_limit);
+                }
+            };
+            if info.is_some_and(|info| info.nonce == u64::MAX) {
+                return Self::error_message_result(InstrStop::Return, message.gas_limit);
             }
         }
 
-        let address = self.create_address(&bytecode, message)?;
+        let address = match self.create_address(&bytecode, message) {
+            Ok(address) => address,
+            Err(stop) => return Self::error_message_result(stop, message.gas_limit),
+        };
 
         let _ = self.state.warm_account(address);
 
-        if message.depth > 0 {
-            self.state.increment_nonce(message.caller).map_err(|code| self.db_error_stop(code))?;
+        if message.depth > 0
+            && let Err(code) = self.state.increment_nonce(message.caller)
+        {
+            return Self::error_message_result(self.db_error_stop(code), message.gas_limit);
         }
 
         let checkpoint = self.state.checkpoint();
-        if let Err(stop) = self
-            .state
-            .create_account(message.caller, address, message.value, self.spec_id())
-            .map_err(|code| self.db_error_stop(code))?
-        {
+        let create_result =
+            match self.state.create_account(message.caller, address, message.value, self.spec_id())
+            {
+                Ok(result) => result,
+                Err(code) => {
+                    return Self::error_message_result(self.db_error_stop(code), message.gas_limit);
+                }
+            };
+        if let Err(stop) = create_result {
             self.state.rollback(checkpoint, self.spec_id());
-            return Err(stop);
+            return Self::error_message_result(stop, message.gas_limit);
         }
         self.log_eip7708_transfer(message.caller, address, message.value);
 
@@ -438,40 +438,54 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             ext: message.ext.clone(),
             _non_exhaustive: (),
         };
-        let (stop, mut gas, mut output) = {
-            let (stop, interpreter) =
-                self.run_interpreter(bytecode, tx_env, &create_message, caller_is_static);
-            (stop, interpreter.gas(), Bytes::copy_from_slice(interpreter.output()))
-        };
+        let (stop, interpreter) =
+            self.run_interpreter(bytecode, tx_env, &create_message, caller_is_static);
+        // SAFETY: The finish helper only reads the interpreter output and gas; it does not mutate
+        // the interpreter pool that owns this reference.
+        let interpreter = unsafe { trustme::decouple_lt(&*interpreter) };
 
+        self.finish_create_message_run(checkpoint, address, message.gas_limit, stop, interpreter)
+    }
+
+    #[inline(never)]
+    fn finish_create_message_run(
+        &mut self,
+        checkpoint: StateCheckpoint,
+        address: Address,
+        gas_limit: u64,
+        stop: InstrStop,
+        interpreter: &Interpreter<'_, T>,
+    ) -> MessageResult<T> {
+        let mut gas = interpreter.gas();
+        let mut output = Bytes::copy_from_slice(interpreter.output());
         if stop.is_success() {
             if let Err(stop) = self.validate_create_output(&mut gas, &mut output) {
                 self.state.rollback(checkpoint, self.spec_id());
-                return Ok(MessageResult {
+                return MessageResult {
                     stop,
                     gas: Self::message_gas(*gas.tracker(), stop),
                     output,
                     created_address: None,
                     ext: T::MessageResultExt::default(),
                     _non_exhaustive: (),
-                });
+                };
             }
 
-            self.state
-                .set_code(address, Bytecode::new_legacy(output.clone()))
-                .map_err(|code| self.db_error_stop(code))?;
+            if let Err(code) = self.state.set_code(address, Bytecode::new_legacy(output.clone())) {
+                return Self::error_message_result(self.db_error_stop(code), gas_limit);
+            }
         } else {
             self.state.rollback(checkpoint, self.spec_id());
         }
 
-        Ok(MessageResult {
+        MessageResult {
             stop,
             gas: Self::message_gas(*gas.tracker(), stop),
             output,
             created_address: stop.is_success().then_some(address),
             ext: T::MessageResultExt::default(),
             _non_exhaustive: (),
-        })
+        }
     }
 
     #[inline(never)]
@@ -541,18 +555,6 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         message: &Message<T>,
         caller_is_static: bool,
     ) -> MessageResult<T> {
-        self.execute_call_message_inner(tx_env, bytecode, message, caller_is_static)
-            .unwrap_or_else(|stop| Self::error_message_result(stop, message.gas_limit))
-    }
-
-    #[inline(always)]
-    fn execute_call_message_inner(
-        &mut self,
-        tx_env: &TxEnv<T>,
-        bytecode: Bytecode,
-        message: &Message<T>,
-        caller_is_static: bool,
-    ) -> Result<MessageResult<T>, InstrStop> {
         let checkpoint = self.state.checkpoint();
         // EIP-161 state clearing depends on zero-value direct call targets being touched.
         // CALLCODE also needs the value-transfer balance check.
@@ -561,60 +563,79 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             MessageKind::Call | MessageKind::CallCode | MessageKind::StaticCall
         );
         let transfer_succeeded = !transfers_balance
-            || self
-                .state
-                .transfer(message.caller, message.destination, message.value)
-                .map_err(|code| self.db_error_stop(code))?;
+            || match self.state.transfer(message.caller, message.destination, message.value) {
+                Ok(result) => result,
+                Err(code) => {
+                    return Self::error_message_result(self.db_error_stop(code), message.gas_limit);
+                }
+            };
         if transfers_balance && !transfer_succeeded {
-            return Err(InstrStop::OutOfFunds);
+            return Self::error_message_result(InstrStop::OutOfFunds, message.gas_limit);
         }
         if transfers_balance {
             self.log_eip7708_transfer(message.caller, message.destination, message.value);
         }
 
-        let mut gas = Gas::new(message.gas_limit);
-        if let Some(result) = self.execute_precompile(message, &mut gas) {
-            let (stop, output) = match result {
-                Ok(output) => (InstrStop::Return, output.into_bytes()),
-                Err(PrecompileError::Revert(output)) => (InstrStop::Revert, output),
-                Err(PrecompileError::Halt(PrecompileHalt::OutOfGas)) => {
-                    (InstrStop::PrecompileOOG, Bytes::new())
-                }
-                Err(PrecompileError::Halt(_) | PrecompileError::Fatal(_)) => {
-                    (InstrStop::PrecompileError, Bytes::new())
-                }
-            };
-            if !stop.is_success() {
+        if let Some(result) = self.execute_call_precompile(message) {
+            if !result.stop.is_success() {
                 self.state.rollback(checkpoint, self.spec_id());
             }
-            return Ok(MessageResult {
-                stop,
-                gas: Self::message_gas(*gas.tracker(), stop),
-                output,
-                created_address: None,
-                ext: T::MessageResultExt::default(),
-                _non_exhaustive: (),
-            });
+            return result;
         }
 
-        let (stop, child_gas, output) = {
-            let (stop, interpreter) =
-                self.run_interpreter(bytecode, tx_env, message, caller_is_static);
-            (stop, interpreter.gas(), Bytes::copy_from_slice(interpreter.output()))
-        };
+        let (stop, interpreter) = self.run_interpreter(bytecode, tx_env, message, caller_is_static);
+        // SAFETY: The finish helper only reads the interpreter output and gas; it does not mutate
+        // the interpreter pool that owns this reference.
+        let interpreter = unsafe { trustme::decouple_lt(&*interpreter) };
 
+        self.finish_call_message_run(checkpoint, stop, interpreter)
+    }
+
+    #[inline(never)]
+    fn execute_call_precompile(&mut self, message: &Message<T>) -> Option<MessageResult<T>> {
+        let mut gas = Gas::new(message.gas_limit);
+        let result = self.execute_precompile(message, &mut gas)?;
+        let (stop, output) = match result {
+            Ok(output) => (InstrStop::Return, output.into_bytes()),
+            Err(PrecompileError::Revert(output)) => (InstrStop::Revert, output),
+            Err(PrecompileError::Halt(PrecompileHalt::OutOfGas)) => {
+                (InstrStop::PrecompileOOG, Bytes::new())
+            }
+            Err(PrecompileError::Halt(_) | PrecompileError::Fatal(_)) => {
+                (InstrStop::PrecompileError, Bytes::new())
+            }
+        };
+        Some(MessageResult {
+            stop,
+            gas: Self::message_gas(*gas.tracker(), stop),
+            output,
+            created_address: None,
+            ext: T::MessageResultExt::default(),
+            _non_exhaustive: (),
+        })
+    }
+
+    #[inline(never)]
+    fn finish_call_message_run(
+        &mut self,
+        checkpoint: StateCheckpoint,
+        stop: InstrStop,
+        interpreter: &Interpreter<'_, T>,
+    ) -> MessageResult<T> {
+        let child_gas = interpreter.gas();
+        let output = Bytes::copy_from_slice(interpreter.output());
         if !stop.is_success() {
             self.state.rollback(checkpoint, self.spec_id());
         }
 
-        Ok(MessageResult {
+        MessageResult {
             stop,
             gas: Self::message_gas(*child_gas.tracker(), stop),
             output,
             created_address: None,
             ext: T::MessageResultExt::default(),
             _non_exhaustive: (),
-        })
+        }
     }
 
     #[inline]
