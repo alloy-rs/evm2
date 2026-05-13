@@ -436,12 +436,12 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
         self.end_trace(result);
     }
 
-    fn selfdestruct(&mut self, contract: Address, target: Address, value: U256) {
+    fn selfdestruct(&mut self, contract: &Address, target: &Address, value: &U256) {
         if let Some(trace_idx) = self.trace_stack.last().copied() {
             let trace = &mut self.traces.arena[trace_idx].trace;
-            trace.selfdestruct_address = Some(contract);
-            trace.selfdestruct_refund_target = Some(target);
-            trace.selfdestruct_transferred_value = Some(value);
+            trace.selfdestruct_address = Some(*contract);
+            trace.selfdestruct_refund_target = Some(*target);
+            trace.selfdestruct_transferred_value = Some(*value);
         }
     }
 }

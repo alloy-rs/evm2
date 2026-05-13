@@ -60,7 +60,7 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
 
     let effective_gas_cost = U256::from(tx.gas_limit) * gas_price;
     charge_upfront(req.host, caller, effective_gas_cost)?;
-    req.host.state.increment_nonce(caller).map_err(|code| req.host.db_error_handler(code))?;
+    req.host.state.increment_nonce(&caller).map_err(|code| req.host.db_error_handler(code))?;
     let chain_id = req.host.version().chain_id;
     let eip7702_refund = apply_auth_list(req.host, chain_id, &tx.authorization_list)?;
     let execution_checkpoint = req.host.state.checkpoint();
@@ -72,9 +72,9 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
         chain_id: U256::from(req.host.version().chain_id),
         ..TxEnv::default()
     };
-    let (bytecode, message) =
+    let (bytecode, mut message) =
         initial_message(req.host, caller, tx.nonce, tx.to.into(), &tx.input, tx.value, gas_limit)?;
-    let mut result = req.host.execute_message(&tx_env, bytecode, &message, false);
+    let mut result = req.host.execute_message(&tx_env, bytecode, &mut message, false);
     rollback_failed_execution(req.host, execution_checkpoint, &mut result);
     result.gas.set_refunded(
         result.gas.refunded().saturating_add(i64::try_from(eip7702_refund).unwrap_or(i64::MAX)),
@@ -109,12 +109,12 @@ fn apply_auth_list<T: EvmTypes<Host = Evm<T>>>(
         let Ok(authority) = authorization.recover_authority() else {
             continue;
         };
-        host.state.warm_account_non_revertible(authority);
+        host.state.warm_account_non_revertible(&authority);
         let authority_info =
-            host.state.account_info(authority).map_err(|code| host.db_error_handler(code))?;
+            host.state.account_info(&authority).map_err(|code| host.db_error_handler(code))?;
         let existed = authority_info.is_some();
         let authority_info = authority_info.unwrap_or_default();
-        let code = host.state.get_code(authority).map_err(|code| host.db_error_handler(code))?;
+        let code = host.state.get_code(&authority).map_err(|code| host.db_error_handler(code))?;
         if !code.is_empty() && !code.is_eip7702() {
             continue;
         }
@@ -142,7 +142,7 @@ fn set_delegation<T: EvmTypes<Host = Evm<T>>>(
     } else {
         Bytecode::new_eip7702(delegated_address)
     };
-    host.state.set_code(authority, code).map_err(|code| host.db_error_handler(code))?;
-    host.state.increment_nonce(authority).map_err(|code| host.db_error_handler(code))?;
+    host.state.set_code(&authority, code).map_err(|code| host.db_error_handler(code))?;
+    host.state.increment_nonce(&authority).map_err(|code| host.db_error_handler(code))?;
     Ok(())
 }

@@ -57,16 +57,34 @@ pub struct GasTracker {
 }
 
 impl GasTracker {
+    /// Creates a gas tracker with `limit` regular gas.
+    #[inline]
+    pub const fn new(limit: u64) -> Self {
+        Self::from_parts(limit, limit, 0)
+    }
+
+    /// Creates a gas tracker with regular gas and a state gas reservoir.
+    #[inline]
+    pub const fn new_with_regular_gas_and_reservoir(limit: u64, reservoir: u64) -> Self {
+        Self::from_parts(limit, limit, reservoir)
+    }
+
+    /// Creates spent gas with a state gas reservoir.
+    #[inline]
+    pub const fn new_spent_with_reservoir(limit: u64, reservoir: u64) -> Self {
+        Self::from_parts(limit, 0, reservoir)
+    }
+
     /// Creates a gas tracker from its raw counters.
     #[inline]
-    pub const fn new(gas_limit: u64, remaining: u64, reservoir: u64) -> Self {
+    pub const fn from_parts(gas_limit: u64, remaining: u64, reservoir: u64) -> Self {
         Self { remaining, gas_limit, reservoir, state_gas_spent: 0, refunded: 0 }
     }
 
     /// Creates a gas tracker from already used gas.
     #[inline]
     pub const fn new_used_gas(gas_limit: u64, used_gas: u64, reservoir: u64) -> Self {
-        Self::new(gas_limit, gas_limit - used_gas, reservoir)
+        Self::from_parts(gas_limit, gas_limit - used_gas, reservoir)
     }
 
     /// Returns remaining regular gas.
@@ -201,13 +219,13 @@ impl GasTracker {
     }
 }
 
-/// Remaining regular gas threaded through tail calls.
-#[cfg(tco)]
+/// Remaining regular gas threaded through dispatch calls.
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[repr(transparent)]
 pub(crate) struct RemainingGas(u64);
 
-#[cfg(tco)]
+#[allow(dead_code)]
 impl RemainingGas {
     /// Creates a remaining gas counter.
     #[inline]
@@ -253,19 +271,25 @@ impl Gas {
     /// Creates gas with `limit` regular gas.
     #[inline]
     pub const fn new(limit: u64) -> Self {
-        Self { tracker: GasTracker::new(limit, limit, 0), memory: MemoryGas::new() }
+        Self { tracker: GasTracker::new(limit), memory: MemoryGas::new() }
     }
 
     /// Creates gas with regular gas and a state gas reservoir.
     #[inline]
     pub const fn new_with_regular_gas_and_reservoir(limit: u64, reservoir: u64) -> Self {
-        Self { tracker: GasTracker::new(limit, limit, reservoir), memory: MemoryGas::new() }
+        Self {
+            tracker: GasTracker::new_with_regular_gas_and_reservoir(limit, reservoir),
+            memory: MemoryGas::new(),
+        }
     }
 
     /// Creates spent gas with a state gas reservoir.
     #[inline]
     pub const fn new_spent_with_reservoir(limit: u64, reservoir: u64) -> Self {
-        Self { tracker: GasTracker::new(limit, 0, reservoir), memory: MemoryGas::new() }
+        Self {
+            tracker: GasTracker::new_spent_with_reservoir(limit, reservoir),
+            memory: MemoryGas::new(),
+        }
     }
 
     /// Returns the gas tracker.

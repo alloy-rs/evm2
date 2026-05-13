@@ -2,7 +2,7 @@
 //! For more details check [`run`] function.
 
 use crate::{
-    interpreter::Gas,
+    interpreter::GasTracker,
     precompiles::{PrecompileHalt, PrecompileOutput, PrecompileResult},
 };
 pub(crate) mod arkworks;
@@ -32,7 +32,7 @@ pub(crate) const RETURN_VALUE: &[u8; 64] = &hex!(
 /// | versioned_hash |  z  |  y  | commitment | proof |
 /// |     32         | 32  | 32  |     48     |   48  |
 /// with z and y being padded 32 byte big endian values
-pub fn run(input: &[u8], gas: &mut Gas) -> PrecompileResult {
+pub fn run(input: &[u8], gas: &mut GasTracker) -> PrecompileResult {
     gas.spend(GAS_COST)?;
 
     // Verify input length.
@@ -125,7 +125,7 @@ mod tests {
         let expected_output = hex!(
             "000000000000000000000000000000000000000000000000000000000000100073eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001"
         );
-        let mut gas = Gas::new(50_000);
+        let mut gas = GasTracker::new(50_000);
         let output = run(&input, &mut gas).unwrap();
         assert_eq!(gas.spent(), GAS_COST);
         assert_eq!(output.bytes()[..], expected_output);

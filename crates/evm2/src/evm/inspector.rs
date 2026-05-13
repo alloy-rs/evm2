@@ -63,7 +63,7 @@ pub trait Inspector<T: EvmTypes>: Any {
 
     /// Called after a contract self-destructs.
     #[inline]
-    fn selfdestruct(&mut self, contract: Address, target: Address, value: U256) {
+    fn selfdestruct(&mut self, contract: &Address, target: &Address, value: &U256) {
         let _ = contract;
         let _ = target;
         let _ = value;
@@ -145,8 +145,8 @@ mod tests {
             self.create_end_stop = Some(result.stop);
         }
 
-        fn selfdestruct(&mut self, contract: Address, target: Address, value: Word) {
-            self.selfdestruct = Some((contract, target, value));
+        fn selfdestruct(&mut self, contract: &Address, target: &Address, value: &Word) {
+            self.selfdestruct = Some((*contract, *target, *value));
         }
     }
 
@@ -190,7 +190,7 @@ mod tests {
         fn call(&mut self, message: &mut Message<TestTypes>) -> Option<MessageResult<TestTypes>> {
             Some(MessageResult {
                 stop: InstrStop::Revert,
-                gas: GasTracker::new(message.gas_limit, message.gas_limit, 0),
+                gas: GasTracker::new(message.gas_limit),
                 ..Default::default()
             })
         }
@@ -216,7 +216,7 @@ mod tests {
             self.create_depth = Some(message.depth);
             Some(MessageResult {
                 stop: InstrStop::Return,
-                gas: GasTracker::new(message.gas_limit, message.gas_limit, 0),
+                gas: GasTracker::new(message.gas_limit),
                 created_address: Some(self.created),
                 ..Default::default()
             })
@@ -239,7 +239,7 @@ mod tests {
         fn create(&mut self, message: &mut Message<TestTypes>) -> Option<MessageResult<TestTypes>> {
             Some(MessageResult {
                 stop: InstrStop::Revert,
-                gas: GasTracker::new(message.gas_limit, message.gas_limit, 0),
+                gas: GasTracker::new(message.gas_limit),
                 ..Default::default()
             })
         }
@@ -696,10 +696,10 @@ mod tests {
         ]));
         let mut database = InMemoryDB::default();
         database.insert_account_info(
-            caller,
+            &caller,
             AccountInfo::default().with_balance(U256::from(1_000_000_000_u64)),
         );
-        database.insert_account_info(contract, AccountInfo::default().with_code(code));
+        database.insert_account_info(&contract, AccountInfo::default().with_code(code));
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
             BlockEnv::default(),
@@ -733,7 +733,7 @@ mod tests {
         let target = Address::from([0xbb; 20]);
         let mut database = InMemoryDB::default();
         database.insert_account_info(
-            caller,
+            &caller,
             AccountInfo::default().with_balance(U256::from(1_000_000_000_u64)),
         );
         let mut evm = Evm::<BaseEvmTypes>::new(
@@ -769,7 +769,7 @@ mod tests {
         let caller = Address::from([0xaa; 20]);
         let mut database = InMemoryDB::default();
         database.insert_account_info(
-            caller,
+            &caller,
             AccountInfo::default().with_balance(U256::from(1_000_000_000_u64)),
         );
         let mut evm = Evm::<BaseEvmTypes>::new(

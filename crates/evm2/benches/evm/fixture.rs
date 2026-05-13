@@ -81,10 +81,10 @@ impl Case {
                 AccountInfo::default().with_code(Bytecode::new_legacy(account.code.clone()));
             info.balance = account.balance;
             info.nonce = u64_value(account.nonce);
-            db.insert_account_info(*address, info);
+            db.insert_account_info(address, info);
 
             for (key, value) in &account.storage {
-                db.insert_account_storage(*address, *key, *value);
+                db.insert_account_storage(address, key, value);
             }
         }
         db

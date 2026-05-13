@@ -1,6 +1,6 @@
 //! Precompile dispatch interface.
 
-use crate::{PrecompileError, interpreter::Gas};
+use crate::{PrecompileError, interpreter::GasTracker};
 use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::{Address, Bytes};
 use core::any::Any;
@@ -39,12 +39,15 @@ pub trait PrecompileProvider: Any {
         Vec::new()
     }
 
+    /// Returns whether `address` has a registered precompile.
+    fn contains(&self, address: &Address) -> bool;
+
     /// Executes the precompile at `address`, if one is registered.
     fn execute(
         &mut self,
         address: Address,
         input: &[u8],
-        gas: &mut Gas,
+        gas: &mut GasTracker,
     ) -> Option<Result<PrecompileOutput, PrecompileError>>;
 }
 
@@ -55,11 +58,16 @@ impl PrecompileProvider for Box<dyn PrecompileProvider> {
     }
 
     #[inline]
+    fn contains(&self, address: &Address) -> bool {
+        self.as_ref().contains(address)
+    }
+
+    #[inline]
     fn execute(
         &mut self,
         address: Address,
         input: &[u8],
-        gas: &mut Gas,
+        gas: &mut GasTracker,
     ) -> Option<Result<PrecompileOutput, PrecompileError>> {
         self.as_mut().execute(address, input, gas)
     }
@@ -77,11 +85,16 @@ impl PrecompileProvider for NoPrecompiles {
     }
 
     #[inline]
+    fn contains(&self, _address: &Address) -> bool {
+        false
+    }
+
+    #[inline]
     fn execute(
         &mut self,
         _address: Address,
         _input: &[u8],
-        _gas: &mut Gas,
+        _gas: &mut GasTracker,
     ) -> Option<Result<PrecompileOutput, PrecompileError>> {
         None
     }

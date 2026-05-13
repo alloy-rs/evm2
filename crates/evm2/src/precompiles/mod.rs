@@ -1,6 +1,8 @@
 //! EVM precompiled contracts.
 
-use crate::{SpecId, evm::precompile::PrecompileProvider, interpreter::Gas, once_lock::OnceLock};
+use crate::{
+    SpecId, evm::precompile::PrecompileProvider, interpreter::GasTracker, once_lock::OnceLock,
+};
 use alloc::{borrow::Cow, vec::Vec};
 use alloy_primitives::Address;
 
@@ -102,11 +104,16 @@ impl PrecompileProvider for Precompiles {
     }
 
     #[inline]
+    fn contains(&self, address: &Address) -> bool {
+        self.map.as_ref().contains(address)
+    }
+
+    #[inline]
     fn execute(
         &mut self,
         address: Address,
         input: &[u8],
-        gas: &mut Gas,
+        gas: &mut GasTracker,
     ) -> Option<PrecompileResult> {
         let precompile = self.map.as_ref().get_data(&address)?;
         Some(precompile.run()(input, gas))

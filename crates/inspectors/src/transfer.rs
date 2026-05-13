@@ -119,12 +119,12 @@ impl<T: EvmTypes> Inspector<T> for TransferInspector {
         self.on_transfer(message.caller, address, message.value, kind, message.depth);
     }
 
-    fn selfdestruct(&mut self, contract: Address, target: Address, value: U256) {
+    fn selfdestruct(&mut self, contract: &Address, target: &Address, value: &U256) {
         self.transfers.push(TransferOperation {
             kind: TransferKind::SelfDestruct,
-            from: contract,
-            to: target,
-            value,
+            from: *contract,
+            to: *target,
+            value: *value,
         });
     }
 }

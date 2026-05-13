@@ -238,6 +238,13 @@ macro_rules! evm_versions {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{BaseEvmConfig, BaseEvmTypes, VersionTables, interpreter::opcode::op};
+
+    fn version_tables(spec: SpecId) -> &'static VersionTables<BaseEvmTypes> {
+        crate::spec_to_generic!(spec, |BASE_SPEC_ID| {
+            <BaseEvmConfig<BASE_SPEC_ID> as EvmConfig<BaseEvmTypes>>::VERSION_TABLES
+        })
+    }
 
     #[test]
     fn base_versions_set_revm_cfg_env_defaults() {
@@ -288,6 +295,36 @@ mod tests {
         let prague = Version::base(SpecId::PRAGUE);
         assert_eq!(prague.max_blobs_per_tx, 9);
         assert_eq!(prague.blob_base_fee_update_fraction, BLOB_BASE_FEE_UPDATE_FRACTION_PRAGUE);
+    }
+
+    #[test]
+    fn default_gas_table_matches_revm_static_costs() {
+        let default_gas_table = version_tables(SpecId::FRONTIER);
+        assert_eq!(default_gas_table.static_gas(op::STOP), 0);
+        assert_eq!(default_gas_table.static_gas(op::ADD), 3);
+        assert_eq!(default_gas_table.static_gas(op::MUL), 5);
+        assert_eq!(default_gas_table.static_gas(op::EXP), 10);
+        assert_eq!(default_gas_table.static_gas(op::BALANCE), 20);
+        assert_eq!(default_gas_table.static_gas(op::SLOAD), 50);
+        assert_eq!(default_gas_table.static_gas(op::CALL), 40);
+        assert_eq!(default_gas_table.static_gas(op::SELFDESTRUCT), 0);
+    }
+
+    #[test]
+    fn gas_table_applies_spec_static_costs() {
+        let tangerine = version_tables(SpecId::TANGERINE);
+        assert_eq!(tangerine.static_gas(op::SLOAD), 200);
+        assert_eq!(tangerine.static_gas(op::BALANCE), 400);
+        assert_eq!(tangerine.static_gas(op::SELFDESTRUCT), 5000);
+
+        let istanbul = version_tables(SpecId::ISTANBUL);
+        assert_eq!(istanbul.static_gas(op::SLOAD), 800);
+        assert_eq!(istanbul.static_gas(op::EXTCODEHASH), 700);
+
+        let berlin = version_tables(SpecId::BERLIN);
+        assert_eq!(berlin.static_gas(op::SLOAD), 100);
+        assert_eq!(berlin.static_gas(op::BALANCE), 100);
+        assert_eq!(berlin.static_gas(op::CALL), 100);
     }
 }
 

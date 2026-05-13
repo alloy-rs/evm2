@@ -8,6 +8,8 @@ mod utils;
 
 pub(crate) mod instructions;
 
+pub(crate) mod dispatch;
+
 #[doc(hidden)] // For macro only. Not public API.
 pub mod private;
 

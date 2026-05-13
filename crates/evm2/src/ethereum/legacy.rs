@@ -38,7 +38,7 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     warm_base_accounts(req.host, caller, tx.to);
 
     charge_upfront(req.host, caller, max_gas_cost)?;
-    req.host.state.increment_nonce(caller).map_err(|code| req.host.db_error_handler(code))?;
+    req.host.state.increment_nonce(&caller).map_err(|code| req.host.db_error_handler(code))?;
     let execution_checkpoint = req.host.state.checkpoint();
 
     let gas_limit = tx.gas_limit - intrinsic;
@@ -48,9 +48,9 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
         chain_id: U256::from(req.host.version().chain_id),
         ..TxEnv::default()
     };
-    let (bytecode, message) =
+    let (bytecode, mut message) =
         initial_message(req.host, caller, tx.nonce, tx.to, &tx.input, tx.value, gas_limit)?;
-    let mut result = req.host.execute_message(&tx_env, bytecode, &message, false);
+    let mut result = req.host.execute_message(&tx_env, bytecode, &mut message, false);
     rollback_failed_execution(req.host, execution_checkpoint, &mut result);
 
     settle_gas(req.host, caller, gas_price, tx.gas_limit, floor_gas, result)

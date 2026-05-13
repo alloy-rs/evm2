@@ -1,7 +1,5 @@
-#[cfg(tco)]
-use super::gas::RemainingGas;
 use super::{
-    BytecodeRef, Gas, InstrStop, Memory, Message, MessageKind, MessageResult, Pc, Result, Stack,
+    BytecodeRef, Gas, InstrStop, Memory, Message, MessageKind, MessageResult, Pc, Result,
     StackBacking, StackMut, StackRef, Word,
 };
 use crate::{
@@ -9,14 +7,12 @@ use crate::{
     bytecode::Bytecode,
     env::TxEnv,
     evm::inspector::Inspector,
-    interpreter::instructions::table::InstrTable,
+    interpreter::dispatch::{self, InstrTable},
     trustme,
     version::{EvmFeatures, GasParams},
 };
 use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::{Address, Bytes, Log};
-#[cfg(not(tco))]
-use core::hint::cold_path;
 use core::{fmt, ptr::NonNull};
 use derive_where::derive_where;
 
@@ -27,7 +23,7 @@ pub struct Interpreter<'frame, T: EvmTypes> {
     memory: Memory,
     return_data: Bytes,
 
-    pc: *const u8,
+    pub(in crate::interpreter) pc: *const u8,
     output: *const [u8],
     #[derive_where(skip)]
     tx_env: Option<&'frame TxEnv<T>>,
@@ -36,12 +32,12 @@ pub struct Interpreter<'frame, T: EvmTypes> {
     host: Option<NonNull<T::Host>>,
     inspector: Option<NonNull<dyn Inspector<T>>>,
     version: *const Version,
-    stack_len: usize,
+    pub(in crate::interpreter) stack_len: usize,
     #[derive_where(skip)]
-    stack: Box<StackBacking>,
+    pub(in crate::interpreter) stack: Box<StackBacking>,
 
-    gas: Gas,
-    result: Result,
+    pub(in crate::interpreter) gas: Gas,
+    pub(in crate::interpreter) result: Result,
     spec: SpecId,
     features: EvmFeatures,
     is_static: bool,
@@ -235,55 +231,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         self.spec = version.spec_id;
         self.features = version.features;
 
-        #[cfg(tco)]
-        let r = self.step_tail(instructions);
-        #[cfg(not(tco))]
-        let r = self.run_table_loop(instructions);
-
-        r
-    }
-
-    #[cfg(not(tco))]
-    fn run_table_loop(&mut self, instructions: &InstrTable<T>) -> InstrStop {
-        // SAFETY: Only the active interpreter lifetime is erased; this stays as a raw pointer so
-        // the dispatch loop does not create an extra `&mut` alias for `self`.
-        let raw = unsafe { trustme::decouple_lt_mut_ptr(self as *mut Self) };
-        // SAFETY: Instruction methods must not access the stack through `InterpreterState` while
-        // the separate stack view is live.
-        let state = InterpreterState::wrap_mut(unsafe { &mut *raw });
-        let mut pc = Pc::new(self.pc);
-        let mut stack = Stack::new(&mut self.stack, self.stack_len);
-        loop {
-            let op = pc.op();
-            let instr = instructions[op as usize];
-            let (next_pc, next_stack_len) = instr(pc, stack.reborrow(), state);
-            pc = Pc::new(next_pc);
-            stack.len = next_stack_len;
-            if next_pc.is_null() {
-                cold_path();
-                self.pc = next_pc;
-                self.stack_len = stack.len;
-                return self.result.unwrap_err();
-            }
-        }
-    }
-
-    #[inline(always)]
-    #[cfg(tco)]
-    fn step_tail(&mut self, instructions: &InstrTable<T>) -> InstrStop {
-        // SAFETY: Only the active interpreter lifetime is erased; this stays as a raw pointer so
-        // the dispatch step does not create an extra `&mut` alias for `self`.
-        let raw = unsafe { trustme::decouple_lt_mut_ptr(self as *mut Self) };
-        // SAFETY: Instruction methods must not access the stack through `InterpreterState` while
-        // the separate stack view is live.
-        let state = InterpreterState::wrap_mut(unsafe { &mut *raw });
-        let pc = Pc::new(self.pc);
-        let op = pc.op();
-        let stack = Stack::new(&mut self.stack, self.stack_len);
-        let remaining_gas = RemainingGas::new(self.gas.remaining());
-        let instr = instructions[op as usize];
-        instr(pc, stack, remaining_gas, state, (instructions as *const InstrTable<T>).cast());
-        self.result.unwrap_err()
+        dispatch::run(self, instructions)
     }
 }
 
@@ -322,13 +270,11 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
     }
 
     #[inline]
-    #[cfg(tco)]
     pub(crate) const fn result(&self) -> Result {
         self.0.result
     }
 
     #[inline]
-    #[cfg(tco)]
     pub(crate) const fn set_pc_stack_len(&mut self, pc: *const u8, stack_len: usize) {
         self.0.pc = pc;
         self.0.stack_len = stack_len;
@@ -415,6 +361,12 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
         self.0.return_data = return_data;
     }
 
+    /// Swaps return data from the last call-like operation.
+    #[inline]
+    pub(crate) const fn swap_return_data(&mut self, return_data: &mut Bytes) {
+        core::mem::swap(&mut self.0.return_data, return_data);
+    }
+
     /// Sets the current frame output.
     #[inline]
     pub const fn set_output(&mut self, output: *const [u8]) {
@@ -478,7 +430,12 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
     }
 
     #[inline]
-    pub(crate) fn inspect_selfdestruct(&mut self, contract: Address, target: Address, value: Word) {
+    pub(crate) fn inspect_selfdestruct(
+        &mut self,
+        contract: &Address,
+        target: &Address,
+        value: &Word,
+    ) {
         if let Some(inspector) = self.inspector() {
             inspector.selfdestruct(contract, target, value);
         }
@@ -515,5 +472,12 @@ impl<T: EvmTypes> InterpreterPool<T> {
         // SAFETY: The returned borrow is tied to `&mut self`; the erased frame references are
         // empty.
         unsafe { trustme::decouple_interpreter_lt_mut(frame) }
+    }
+
+    pub(crate) fn last_mut<'frame>(&mut self) -> Option<&mut Interpreter<'frame, T>> {
+        let frame = self.frames.last_mut()?.as_mut();
+        // SAFETY: Frames stored in the pool have had their frame-local references cleared by
+        // `push`, and this borrow is tied to the pool borrow.
+        Some(unsafe { trustme::decouple_interpreter_lt_mut(frame) })
     }
 }

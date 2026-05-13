@@ -53,7 +53,7 @@ pub fn execute_code(
     req: TxRequest<'_, ExecuteCodeTx, Evm<CustomTypes>>,
 ) -> HandlerResult<evm2::TxResult<CustomTypes>> {
     // The transaction handler owns policy; the interpreter still executes a normal message.
-    let message = Message {
+    let mut message = Message {
         gas_limit: req.tx.gas_limit,
         destination: req.tx.target,
         code_address: req.tx.target,
@@ -64,7 +64,7 @@ pub fn execute_code(
     let mut result = req.host.execute_message(
         &tx_env,
         Bytecode::new_legacy(req.tx.code.clone()),
-        &message,
+        &mut message,
         false,
     );
     result.ext = CustomMessageResultExt { handled_custom_message: true };

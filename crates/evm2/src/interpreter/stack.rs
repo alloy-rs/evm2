@@ -196,6 +196,11 @@ impl<'a> StackMut<'a> {
         Self { stack, len }
     }
 
+    #[inline(always)]
+    pub(crate) const fn reborrow(&mut self) -> StackMut<'_> {
+        StackMut { stack: self.stack, len: self.len }
+    }
+
     #[inline]
     const fn as_word_ptr(&self) -> *const Word {
         self.stack.as_ptr().cast()

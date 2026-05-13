@@ -97,29 +97,29 @@ impl<ExtDB> CacheDB<ExtDB> {
 
     /// Inserts account info.
     #[inline]
-    pub fn insert_account_info(&mut self, address: Address, mut info: AccountInfo) {
+    pub fn insert_account_info(&mut self, address: &Address, mut info: AccountInfo) {
         self.insert_contract(&mut info);
         info.code = None;
-        self.cache.accounts.insert(address, info);
+        self.cache.accounts.insert(*address, info);
     }
 
     /// Returns cached account info if the account exists in the cache.
     #[inline]
-    pub fn account_info(&self, address: Address) -> Option<&AccountInfo> {
-        self.cache.accounts.get(&address)
+    pub fn account_info(&self, address: &Address) -> Option<&AccountInfo> {
+        self.cache.accounts.get(address)
     }
 
     /// Inserts persistent storage.
     #[inline]
-    pub fn insert_account_storage(&mut self, address: Address, key: Word, value: Word) {
-        self.cache.accounts.entry(address).or_default();
-        self.cache.storage.insert(StorageKey::new(address, key), value);
+    pub fn insert_account_storage(&mut self, address: &Address, key: &Word, value: &Word) {
+        self.cache.accounts.entry(*address).or_default();
+        self.cache.storage.insert(StorageKey::new(*address, *key), *value);
     }
 
     /// Sets a historical block hash.
     #[inline]
-    pub fn insert_block_hash(&mut self, number: Word, hash: B256) {
-        self.cache.block_hashes.insert(number, hash);
+    pub fn insert_block_hash(&mut self, number: &Word, hash: &B256) {
+        self.cache.block_hashes.insert(*number, *hash);
     }
 }
 
@@ -142,7 +142,7 @@ impl<ExtDB> DatabaseCommit for CacheDB<ExtDB> {
         }
         for (&address, change) in &changes.accounts {
             match &change.current {
-                Some(info) => self.insert_account_info(address, info.clone()),
+                Some(info) => self.insert_account_info(&address, info.clone()),
                 None => {
                     self.cache.accounts.remove(&address);
                     self.cache.storage.retain(|key, _| key.address() != address);
@@ -154,9 +154,9 @@ impl<ExtDB> DatabaseCommit for CacheDB<ExtDB> {
 
 impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
     #[inline]
-    fn get_account(&mut self, address: Address) -> DbResult<Option<AccountInfo>> {
+    fn get_account(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
         let Cache { accounts, contracts, .. } = &mut self.cache;
-        match accounts.entry(address) {
+        match accounts.entry(*address) {
             Entry::Occupied(entry) => Ok(Some(entry.get().clone())),
             Entry::Vacant(entry) => {
                 let Some(mut info) = self.db.get_account(address)? else {
@@ -170,16 +170,16 @@ impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
     }
 
     #[inline]
-    fn get_code_by_hash(&mut self, code_hash: B256) -> DbResult<Bytecode> {
-        match self.cache.contracts.entry(code_hash) {
+    fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<Bytecode> {
+        match self.cache.contracts.entry(*code_hash) {
             Entry::Occupied(entry) => Ok(entry.get().clone()),
             Entry::Vacant(entry) => Ok(entry.insert(self.db.get_code_by_hash(code_hash)?).clone()),
         }
     }
 
     #[inline]
-    fn get_storage(&mut self, address: Address, key: Word) -> DbResult<Word> {
-        match self.cache.storage.entry(StorageKey::new(address, key)) {
+    fn get_storage(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
+        match self.cache.storage.entry(StorageKey::new(*address, *key)) {
             Entry::Occupied(entry) => Ok(*entry.get()),
             Entry::Vacant(entry) => {
                 let value = self.db.get_storage(address, key)?;
@@ -189,8 +189,8 @@ impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
     }
 
     #[inline]
-    fn get_block_hash(&mut self, number: Word) -> DbResult<Option<B256>> {
-        match self.cache.block_hashes.entry(number) {
+    fn get_block_hash(&mut self, number: &Word) -> DbResult<Option<B256>> {
+        match self.cache.block_hashes.entry(*number) {
             Entry::Occupied(entry) => Ok(Some(*entry.get())),
             Entry::Vacant(entry) => {
                 let Some(hash) = self.db.get_block_hash(number)? else {
@@ -227,27 +227,27 @@ mod tests {
     impl crate::evm::Database for CountingDB {
         type Error = core::convert::Infallible;
 
-        fn get_account(&mut self, _address: Address) -> Result<Option<AccountInfo>, Self::Error> {
+        fn get_account(&mut self, _address: &Address) -> Result<Option<AccountInfo>, Self::Error> {
             self.account_loads += 1;
             Ok(self.account.clone())
         }
 
-        fn get_code_by_hash(&mut self, code_hash: B256) -> Result<Bytecode, Self::Error> {
+        fn get_code_by_hash(&mut self, code_hash: &B256) -> Result<Bytecode, Self::Error> {
             self.code_loads += 1;
             Ok(self
                 .account
                 .as_ref()
-                .filter(|info| info.code_hash == code_hash)
+                .filter(|info| info.code_hash == *code_hash)
                 .and_then(|info| info.code.clone())
                 .unwrap_or_default())
         }
 
-        fn get_storage(&mut self, _address: Address, _key: Word) -> Result<Word, Self::Error> {
+        fn get_storage(&mut self, _address: &Address, _key: &Word) -> Result<Word, Self::Error> {
             self.storage_loads += 1;
             Ok(self.storage)
         }
 
-        fn get_block_hash(&mut self, _number: Word) -> Result<Option<B256>, Self::Error> {
+        fn get_block_hash(&mut self, _number: &Word) -> Result<Option<B256>, Self::Error> {
             self.block_hash_loads += 1;
             Ok(self.block_hash)
         }
@@ -268,18 +268,21 @@ mod tests {
         let mut cache = CacheDB::new(crate::evm::Db::new(db));
 
         let code_hash = code.hash_slow();
-        assert_eq!(cache.get_account(address).unwrap().map(|info| info.code_hash), Some(code_hash));
-        assert_eq!(cache.get_code_by_hash(code_hash).unwrap(), code);
-        assert_eq!(cache.get_code_by_hash(code_hash).unwrap(), code);
+        assert_eq!(
+            cache.get_account(&address).unwrap().map(|info| info.code_hash),
+            Some(code_hash)
+        );
+        assert_eq!(cache.get_code_by_hash(&code_hash).unwrap(), code);
+        assert_eq!(cache.get_code_by_hash(&code_hash).unwrap(), code);
         assert_eq!(cache.db.inner().account_loads, 1);
         assert_eq!(cache.db.inner().code_loads, 0);
 
-        assert_eq!(cache.get_storage(address, key).unwrap(), Word::from(4));
-        assert_eq!(cache.get_storage(address, key).unwrap(), Word::from(4));
+        assert_eq!(cache.get_storage(&address, &key).unwrap(), Word::from(4));
+        assert_eq!(cache.get_storage(&address, &key).unwrap(), Word::from(4));
         assert_eq!(cache.db.inner().storage_loads, 1);
 
-        assert_eq!(cache.get_block_hash(Word::from(5)).unwrap(), Some(block_hash));
-        assert_eq!(cache.get_block_hash(Word::from(5)).unwrap(), Some(block_hash));
+        assert_eq!(cache.get_block_hash(&Word::from(5)).unwrap(), Some(block_hash));
+        assert_eq!(cache.get_block_hash(&Word::from(5)).unwrap(), Some(block_hash));
         assert_eq!(cache.db.inner().block_hash_loads, 1);
     }
 }
