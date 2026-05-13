@@ -39,6 +39,9 @@ pub trait PrecompileProvider: Any {
         Vec::new()
     }
 
+    /// Returns whether `address` has a registered precompile.
+    fn contains(&self, address: &Address) -> bool;
+
     /// Executes the precompile at `address`, if one is registered.
     fn execute(
         &mut self,
@@ -52,6 +55,11 @@ impl PrecompileProvider for Box<dyn PrecompileProvider> {
     #[inline]
     fn warm_addresses(&self) -> Vec<Address> {
         self.as_ref().warm_addresses()
+    }
+
+    #[inline]
+    fn contains(&self, address: &Address) -> bool {
+        self.as_ref().contains(address)
     }
 
     #[inline]
@@ -74,6 +82,11 @@ impl PrecompileProvider for NoPrecompiles {
     #[inline]
     fn warm_addresses(&self) -> Vec<Address> {
         Vec::new()
+    }
+
+    #[inline]
+    fn contains(&self, _address: &Address) -> bool {
+        false
     }
 
     #[inline]

@@ -104,6 +104,11 @@ impl PrecompileProvider for Precompiles {
     }
 
     #[inline]
+    fn contains(&self, address: &Address) -> bool {
+        self.map.as_ref().contains(address)
+    }
+
+    #[inline]
     fn execute(
         &mut self,
         address: Address,

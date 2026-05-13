@@ -136,15 +136,19 @@ impl<T: EvmTypes> Evm<T> {
     }
 
     #[inline]
+    fn contains_precompile(&self, message: &Message<T>) -> bool {
+        !message.disable_precompiles && self.precompiles.contains(&message.code_address)
+    }
+
+    #[inline]
     fn execute_precompile(
         &mut self,
         message: &Message<T>,
         gas: &mut GasTracker,
-    ) -> Option<Result<PrecompileOutput, PrecompileError>> {
-        if message.disable_precompiles {
-            return None;
-        }
-        self.precompiles.execute(message.code_address, &message.input, gas)
+    ) -> Result<PrecompileOutput, PrecompileError> {
+        self.precompiles
+            .execute(message.code_address, &message.input, gas)
+            .expect("precompile was checked before execution")
     }
 }
 
@@ -559,11 +563,8 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             self.log_eip7708_transfer(&message.caller, &message.destination, &message.value);
         }
 
-        if let Some(result) = self.execute_call_precompile(message) {
-            if !result.stop.is_success() {
-                self.state.rollback(checkpoint, self.spec_id());
-            }
-            return result;
+        if self.contains_precompile(message) {
+            return self.execute_call_precompile(checkpoint, message);
         }
 
         let stop = self.run_interpreter(bytecode, tx_env, message, caller_is_static);
@@ -572,9 +573,13 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     }
 
     #[inline(never)]
-    fn execute_call_precompile(&mut self, message: &Message<T>) -> Option<MessageResult<T>> {
+    fn execute_call_precompile(
+        &mut self,
+        checkpoint: StateCheckpoint,
+        message: &Message<T>,
+    ) -> MessageResult<T> {
         let mut gas = GasTracker::new(message.gas_limit);
-        let result = self.execute_precompile(message, &mut gas)?;
+        let result = self.execute_precompile(message, &mut gas);
         let (stop, output) = match result {
             Ok(output) => (InstrStop::Return, output.into_bytes()),
             Err(PrecompileError::Revert(output)) => (InstrStop::Revert, output),
@@ -585,14 +590,17 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
                 (InstrStop::PrecompileError, Bytes::new())
             }
         };
-        Some(MessageResult {
+        if !stop.is_success() {
+            self.state.rollback(checkpoint, self.spec_id());
+        }
+        MessageResult {
             stop,
             gas: Self::message_gas(gas, stop),
             output,
             created_address: None,
             ext: T::MessageResultExt::default(),
             _non_exhaustive: (),
-        })
+        }
     }
 
     #[inline(never)]
