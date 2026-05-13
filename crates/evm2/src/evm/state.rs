@@ -995,42 +995,42 @@ impl State {
     /// in Spurious Dragon, touched dead accounts that exist in the pre/final
     /// overlay state are deleted during transaction finalization. Non-existent
     /// touched accounts stay non-existent.
-    fn is_existing_dead(&mut self, address: Address) -> DbResult<bool> {
-        if let Some(account) = self.accounts.get(&address) {
+    fn is_existing_dead(&mut self, address: &Address) -> DbResult<bool> {
+        if let Some(account) = self.accounts.get(address) {
             return Ok(account.current.as_ref().is_some_and(Account::is_empty)
                 || (account.current.is_none() && account.original.is_some()));
         }
-        Ok(self.initial.get_account(&address)?.is_some_and(|account| account.is_empty()))
+        Ok(self.initial.get_account(address)?.is_some_and(|account| account.is_empty()))
     }
 
-    fn account_exists(&mut self, address: Address) -> DbResult<bool> {
-        if let Some(account) = self.accounts.get(&address) {
+    fn account_exists(&mut self, address: &Address) -> DbResult<bool> {
+        if let Some(account) = self.accounts.get(address) {
             return Ok(account.current.is_some());
         }
-        Ok(self.initial.get_account(&address)?.is_some())
+        Ok(self.initial.get_account(address)?.is_some())
     }
 
-    fn delete_account_for_finalization(&mut self, address: Address) -> DbResult<()> {
+    fn delete_account_for_finalization(&mut self, address: &Address) -> DbResult<()> {
         let account = Self::ensure_account_overlay(
             &mut self.initial,
             &mut self.accounts,
             &mut self.journal,
-            &address,
+            address,
         )?;
         account.current = None;
         self.storage.insert(
-            address,
+            *address,
             StorageOverlay { wiped: true, slots: U256Map::default(), _non_exhaustive: () },
         );
         Ok(())
     }
 
-    fn materialize_empty_account_for_finalization(&mut self, address: Address) -> DbResult<()> {
+    fn materialize_empty_account_for_finalization(&mut self, address: &Address) -> DbResult<()> {
         let account = Self::ensure_account_overlay(
             &mut self.initial,
             &mut self.accounts,
             &mut self.journal,
-            &address,
+            address,
         )?;
         if account.original.is_none() {
             account.current.get_or_insert_with(|| Account {
@@ -1090,21 +1090,21 @@ impl State {
             }
         }
 
-        for &address in &selfdestructs {
+        for address in &selfdestructs {
             self.delete_account_for_finalization(address)?;
         }
 
         if spec.enables(SpecId::SPURIOUS_DRAGON) {
-            for &address in &touched {
+            for address in &touched {
                 // EIP-161 deletes touched dead accounts at transaction finalization.
                 if self.is_existing_dead(address)? {
                     self.delete_account_for_finalization(address)?;
                 }
             }
         } else {
-            for &address in &touched {
+            for address in &touched {
                 // Before EIP-161, touching a non-existent account materializes it as empty.
-                if !selfdestructs.contains(&address) && !self.account_exists(address)? {
+                if !selfdestructs.contains(address) && !self.account_exists(address)? {
                     self.materialize_empty_account_for_finalization(address)?;
                 }
             }

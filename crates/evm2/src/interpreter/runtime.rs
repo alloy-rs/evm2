@@ -405,7 +405,12 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
     }
 
     #[inline]
-    pub(crate) fn inspect_selfdestruct(&mut self, contract: Address, target: Address, value: Word) {
+    pub(crate) fn inspect_selfdestruct(
+        &mut self,
+        contract: &Address,
+        target: &Address,
+        value: &Word,
+    ) {
         if let Some(inspector) = self.inspector() {
             inspector.selfdestruct(contract, target, value);
         }

@@ -63,7 +63,7 @@ pub trait Inspector<T: EvmTypes>: Any {
 
     /// Called after a contract self-destructs.
     #[inline]
-    fn selfdestruct(&mut self, contract: Address, target: Address, value: U256) {
+    fn selfdestruct(&mut self, contract: &Address, target: &Address, value: &U256) {
         let _ = contract;
         let _ = target;
         let _ = value;
@@ -145,8 +145,8 @@ mod tests {
             self.create_end_stop = Some(result.stop);
         }
 
-        fn selfdestruct(&mut self, contract: Address, target: Address, value: Word) {
-            self.selfdestruct = Some((contract, target, value));
+        fn selfdestruct(&mut self, contract: &Address, target: &Address, value: &Word) {
+            self.selfdestruct = Some((*contract, *target, *value));
         }
     }
 
