@@ -150,6 +150,12 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         unsafe { core::slice::from_raw_parts(self.stack.as_ptr().cast(), self.stack_len) }
     }
 
+    /// Stops the interpreter with `stop`.
+    #[inline]
+    pub const fn set_stop(&mut self, stop: InstrStop) {
+        self.result = Err(stop);
+    }
+
     /// Returns the current linear memory.
     #[inline]
     pub const fn memory_ref(&self) -> &Memory {

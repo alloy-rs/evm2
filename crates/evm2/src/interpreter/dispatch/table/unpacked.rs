@@ -31,8 +31,7 @@ extern_table! {
         mut stack: Stack<'_>,
         state: &mut InterpreterState<'_, T>,
     ) -> InstrFnRet {
-        let opcode = OP;
-        let (pc, ()) = super::dispatch_inner::<T, C, ()>(pc, stack.as_mut(), (), state, opcode);
+        let (pc, ()) = super::dispatch_inner::<T, C, ()>(pc, stack.as_mut(), (), state, OP);
         (pc, stack.len)
     }
 }

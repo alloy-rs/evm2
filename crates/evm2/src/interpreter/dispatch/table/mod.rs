@@ -173,6 +173,12 @@ pub(in crate::interpreter) fn run<T: EvmTypes>(
         if inspect {
             sync_loop_state(state, loop_state);
             state.inspect_step(pc, stack.len);
+            if let Err(stop) = state.result() {
+                cold_path();
+                state.set_pc_stack_len(pc.as_ptr(), stack.len);
+                finish_loop(state.gas_mut(), loop_state);
+                return stop;
+            }
         }
         let instr = instructions[op as usize];
         let (next_pc, next_stack_len) =

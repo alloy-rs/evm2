@@ -2,7 +2,7 @@ use super::{InspectMode, run_state};
 use crate::{
     EvmConfig, EvmTypes,
     interpreter::{
-        InstrStop, Interpreter, InterpreterState, Pc, Result, Stack, gas::RemainingGas, op,
+        InstrStop, Interpreter, InterpreterState, Pc, Result, Stack, gas::RemainingGas,
         private::InstructionImplFn,
     },
 };
@@ -52,17 +52,17 @@ extern_table! {
         state: &mut InterpreterState<'_, T>,
         instructions: *const (),
     ) {
-        let opcode = OP;
-        if opcode != op::INVALID {
-            unsafe { core::hint::assert_unchecked(pc.op() == opcode) };
-        }
-        let instruction = C::VERSION_TABLES.instruction(opcode);
+        let instruction = C::VERSION_TABLES.instruction(OP);
         let instr: InstructionImplFn<T> = instruction.instr;
         let dynamic_gas = instruction.dynamic_gas;
         if M::INSPECT {
             M::step(state, pc, stack.len);
+            if state.result().is_err() {
+                cold_path();
+                tail_return!(tail_call_restore(pc, stack, remaining_gas, state, instructions));
+            }
         }
-        if let Err(e) = pre_step::<T, C>(&mut remaining_gas, opcode) {
+        if let Err(e) = pre_step::<T, C>(&mut remaining_gas, OP) {
             cold_path();
             state.set_result(Err(e));
             if M::INSPECT {
@@ -85,9 +85,13 @@ extern_table! {
             }
             tail_return!(tail_call_restore(pc, stack, remaining_gas, state, instructions));
         }
-        super::inc_pc(&mut pc, opcode);
+        super::inc_pc(&mut pc, OP);
         if M::INSPECT {
             M::step_end(state, pc, stack.len);
+            if state.result().is_err() {
+                cold_path();
+                tail_return!(tail_call_restore(pc, stack, remaining_gas, state, instructions));
+            }
         }
         // SAFETY: `instructions` is a pointer to a `TailInstrTable`.
         let instructions_t = unsafe { &*instructions.cast::<TailInstrTable<T>>() };

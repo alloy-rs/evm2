@@ -29,8 +29,7 @@ extern_table! {
         stack: StackMut<'_>,
         state: &mut InterpreterState<'_, T>,
     ) -> Pc {
-        let opcode = OP;
-        let (pc, ()) = super::dispatch_inner::<T, C, ()>(pc, stack, (), state, opcode);
+        let (pc, ()) = super::dispatch_inner::<T, C, ()>(pc, stack, (), state, OP);
         pc
     }
 }

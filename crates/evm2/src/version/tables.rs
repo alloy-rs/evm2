@@ -44,7 +44,7 @@ impl<T: EvmTypes> VersionTables<T> {
     pub(super) const fn empty() -> Self {
         Self {
             static_gas_table: StaticGasTable::empty(),
-            instruction_impls: InstructionImplTable::empty_with_invalid(),
+            instruction_impls: InstructionImplTable::empty(),
             revisions: [0; 256],
         }
     }
@@ -141,14 +141,6 @@ impl<T: EvmTypes> InstructionImplTable<T> {
     #[inline]
     const fn empty() -> Self {
         Self { instrs: [None; 256], dynamic_gas: [false; 256] }
-    }
-
-    /// Creates an instruction implementation table with immutable `INVALID`.
-    #[inline]
-    const fn empty_with_invalid() -> Self {
-        let mut table = Self::empty();
-        table.instrs[op::INVALID as usize] = Some(instr::invalid::<T>::execute);
-        table
     }
 
     /// Returns the instruction implementation for `opcode`.

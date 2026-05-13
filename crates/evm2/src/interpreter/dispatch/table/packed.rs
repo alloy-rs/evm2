@@ -42,14 +42,13 @@ extern_table! {
         remaining_gas: RemainingGas,
         state: &mut InterpreterState<'_, T>,
     ) -> InstrFnRet {
-        let opcode = OP;
         let (pc, remaining_gas) =
             super::dispatch_inner::<T, C, RemainingGas>(
                 pc,
                 stack.as_mut(),
                 remaining_gas,
                 state,
-                opcode,
+                OP,
             );
         (
             pc,
