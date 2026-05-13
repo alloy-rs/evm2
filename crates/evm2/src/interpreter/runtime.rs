@@ -448,4 +448,11 @@ impl<T: EvmTypes> InterpreterPool<T> {
         // empty.
         unsafe { trustme::decouple_interpreter_lt_mut(frame) }
     }
+
+    pub(crate) fn last_mut<'frame>(&mut self) -> Option<&mut Interpreter<'frame, T>> {
+        let frame = self.frames.last_mut()?.as_mut();
+        // SAFETY: Frames stored in the pool have had their frame-local references cleared by
+        // `push`, and this borrow is tied to the pool borrow.
+        Some(unsafe { trustme::decouple_interpreter_lt_mut(frame) })
+    }
 }

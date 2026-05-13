@@ -379,18 +379,9 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         caller_is_static: bool,
     ) -> MessageResult<T> {
         let checkpoint = self.state.checkpoint();
-        let mut address = Address::ZERO;
-        if let Err(stop) = self.create_address(&mut address, &bytecode, message) {
-            return Self::error_message_result(stop, message.gas_limit);
-        }
-
-        if let Err(stop) = self.prepare_create_message(&checkpoint, &address, message) {
-            return Self::error_message_result(stop, message.gas_limit);
-        }
-
-        let create_message = Message {
-            destination: address,
-            code_address: address,
+        let mut create_message = Message {
+            destination: Address::ZERO,
+            code_address: Address::ZERO,
             disable_precompiles: false,
             input: Bytes::new(),
 
@@ -403,34 +394,39 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             ext: message.ext.clone(),
             _non_exhaustive: (),
         };
-        let (stop, interpreter) =
-            self.run_interpreter(bytecode, tx_env, &create_message, caller_is_static);
-        // SAFETY: The finish helper only reads the interpreter output and gas; it does not mutate
-        // the interpreter pool that owns this reference.
-        let interpreter = unsafe { trustme::decouple_lt(&*interpreter) };
+        if let Err(stop) =
+            self.prepare_create_message(&mut create_message.destination, &bytecode, message)
+        {
+            self.state.rollback(checkpoint, self.spec_id());
+            return Self::error_message_result(stop, message.gas_limit);
+        }
+        create_message.code_address = create_message.destination;
+
+        let stop = self.run_interpreter(bytecode, tx_env, &create_message, caller_is_static);
 
         self.finish_create_message_run(
-            &checkpoint,
+            checkpoint,
             &create_message.destination,
             message.gas_limit,
             stop,
-            interpreter,
         )
     }
 
     #[inline(never)]
     fn prepare_create_message(
         &mut self,
-        checkpoint: &StateCheckpoint,
-        address: &Address,
+        address: &mut Address,
+        bytecode: &Bytecode,
         message: &Message<T>,
     ) -> Result<(), InstrStop> {
+        self.create_address(address, bytecode, message)?;
+        let address = &*address;
+
         let _ = self.state.warm_account(address);
 
         if message.depth > 0
             && let Err(code) = self.state.increment_nonce(&message.caller)
         {
-            self.state.rollback(checkpoint, self.spec_id());
             return Err(self.db_error_stop(code));
         }
 
@@ -442,14 +438,10 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         ) {
             Ok(result) => result,
             Err(code) => {
-                self.state.rollback(checkpoint, self.spec_id());
                 return Err(self.db_error_stop(code));
             }
         };
-        if let Err(stop) = create_result {
-            self.state.rollback(checkpoint, self.spec_id());
-            return Err(stop);
-        }
+        create_result?;
 
         self.log_eip7708_transfer(&message.caller, address, &message.value);
         Ok(())
@@ -458,12 +450,12 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     #[inline(never)]
     fn finish_create_message_run(
         &mut self,
-        checkpoint: &StateCheckpoint,
+        checkpoint: StateCheckpoint,
         address: &Address,
         gas_limit: u64,
         stop: InstrStop,
-        interpreter: &Interpreter<'_, T>,
     ) -> MessageResult<T> {
+        let interpreter = self.interpreter_pool.last_mut().unwrap();
         let mut gas = interpreter.gas();
         let mut output = Bytes::copy_from_slice(interpreter.output());
         if stop.is_success() {
@@ -587,17 +579,14 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
 
         if let Some(result) = self.execute_call_precompile(message) {
             if !result.stop.is_success() {
-                self.state.rollback(&checkpoint, self.spec_id());
+                self.state.rollback(checkpoint, self.spec_id());
             }
             return result;
         }
 
-        let (stop, interpreter) = self.run_interpreter(bytecode, tx_env, message, caller_is_static);
-        // SAFETY: The finish helper only reads the interpreter output and gas; it does not mutate
-        // the interpreter pool that owns this reference.
-        let interpreter = unsafe { trustme::decouple_lt(&*interpreter) };
+        let stop = self.run_interpreter(bytecode, tx_env, message, caller_is_static);
 
-        self.finish_call_message_run(checkpoint, stop, interpreter)
+        self.finish_call_message_run(checkpoint, stop)
     }
 
     #[inline(never)]
@@ -629,12 +618,12 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         &mut self,
         checkpoint: StateCheckpoint,
         stop: InstrStop,
-        interpreter: &Interpreter<'_, T>,
     ) -> MessageResult<T> {
+        let interpreter = self.interpreter_pool.last_mut().unwrap();
         let child_gas = interpreter.gas();
         let output = Bytes::copy_from_slice(interpreter.output());
         if !stop.is_success() {
-            self.state.rollback(&checkpoint, self.spec_id());
+            self.state.rollback(checkpoint, self.spec_id());
         }
 
         MessageResult {
@@ -670,7 +659,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         tx_env: &'frame TxEnv<T>,
         message: &'frame Message<T>,
         caller_is_static: bool,
-    ) -> (InstrStop, &mut Interpreter<'frame, T>) {
+    ) -> InstrStop {
         let mut interpreter = self.interpreter_pool.pop();
         let interpreter_ref = interpreter.as_mut();
         interpreter_ref.init(bytecode, tx_env, message, caller_is_static);
@@ -688,8 +677,8 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         } else {
             interpreter_ref.run(execution_config, self)
         };
-        let interpreter = self.interpreter_pool.push(interpreter);
-        (stop, interpreter)
+        self.interpreter_pool.push(interpreter);
+        stop
     }
 
     fn inspect_initialize_interp(&mut self, interp: &mut Interpreter<'_, T>) {
