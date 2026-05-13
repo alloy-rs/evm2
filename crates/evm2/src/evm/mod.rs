@@ -375,52 +375,34 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         &mut self,
         tx_env: &TxEnv<T>,
         bytecode: Bytecode,
-        message: &Message<T>,
+        message: &mut Message<T>,
         caller_is_static: bool,
     ) -> MessageResult<T> {
         let checkpoint = self.state.checkpoint();
-        let mut create_message = Message {
-            destination: Address::ZERO,
-            code_address: Address::ZERO,
-            disable_precompiles: false,
-            input: Bytes::new(),
-
-            kind: message.kind,
-            depth: message.depth,
-            gas_limit: message.gas_limit,
-            caller: message.caller,
-            value: message.value,
-            salt: message.salt,
-            ext: message.ext.clone(),
-            _non_exhaustive: (),
-        };
-        if let Err(stop) =
-            self.prepare_create_message(&mut create_message.destination, &bytecode, message)
-        {
+        if let Err(stop) = self.prepare_create_message(&bytecode, message) {
             self.state.rollback(checkpoint, self.spec_id());
             return Self::error_message_result(stop, message.gas_limit);
         }
-        create_message.code_address = create_message.destination;
+        message.code_address = message.destination;
+        message.disable_precompiles = false;
+        let input = core::mem::take(&mut message.input);
 
-        let stop = self.run_interpreter(bytecode, tx_env, &create_message, caller_is_static);
+        let stop = self.run_interpreter(bytecode, tx_env, message, caller_is_static);
+        message.input = input;
 
-        self.finish_create_message_run(
-            checkpoint,
-            &create_message.destination,
-            message.gas_limit,
-            stop,
-        )
+        self.finish_create_message_run(checkpoint, &message.destination, message.gas_limit, stop)
     }
 
     #[inline(never)]
     fn prepare_create_message(
         &mut self,
-        address: &mut Address,
         bytecode: &Bytecode,
-        message: &Message<T>,
+        message: &mut Message<T>,
     ) -> Result<(), InstrStop> {
-        self.create_address(address, bytecode, message)?;
-        let address = &*address;
+        let mut address = Address::ZERO;
+        self.create_address(&mut address, bytecode, message)?;
+        message.destination = address;
+        let address = &message.destination;
 
         let _ = self.state.warm_account(address);
 
@@ -554,7 +536,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         &mut self,
         tx_env: &TxEnv<T>,
         bytecode: Bytecode,
-        message: &Message<T>,
+        message: &mut Message<T>,
         caller_is_static: bool,
     ) -> MessageResult<T> {
         let checkpoint = self.state.checkpoint();
@@ -797,7 +779,7 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
         &mut self,
         tx_env: &TxEnv<T>,
         bytecode: Bytecode,
-        message: &Message<T>,
+        message: &mut Message<T>,
         caller_is_static: bool,
     ) -> MessageResult<T> {
         match message.kind {
@@ -1160,7 +1142,7 @@ mod tests {
         );
         let contract = Address::from([0x11; 20]);
         let bytecode = Bytecode::new_legacy(Bytes::from_static(&[op::ADDRESS, op::STOP]));
-        let message = Message {
+        let mut message = Message {
             kind: MessageKind::Call,
             destination: contract,
             code_address: contract,
@@ -1168,7 +1150,8 @@ mod tests {
             ..Message::default()
         };
 
-        let result = Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &message, false);
+        let result =
+            Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &mut message, false);
         assert!(result.stop.is_success());
     }
 
@@ -1217,7 +1200,7 @@ mod tests {
         );
         let contract = Address::from([0x11; 20]);
         let bytecode = Bytecode::new_legacy(Bytes::from_static(&[op::PUSH0, op::SLOAD]));
-        let message = Message {
+        let mut message = Message {
             kind: MessageKind::Call,
             destination: contract,
             code_address: contract,
@@ -1225,7 +1208,8 @@ mod tests {
             ..Message::default()
         };
 
-        let result = Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &message, false);
+        let result =
+            Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &mut message, false);
 
         assert_eq!(result.stop, InstrStop::FatalExternalError);
         let error_code = evm.db_error_code().unwrap();
@@ -1245,7 +1229,7 @@ mod tests {
         let key = Word::ZERO;
         let bytecode =
             Bytecode::new_legacy(Bytes::from_static(&[op::PUSH1, 0, op::SLOAD, op::STOP]));
-        let message = Message {
+        let mut message = Message {
             kind: MessageKind::Call,
             destination: contract,
             code_address: contract,
@@ -1253,7 +1237,8 @@ mod tests {
             ..Message::default()
         };
 
-        let result = Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &message, false);
+        let result =
+            Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &mut message, false);
 
         assert_eq!(result.stop, InstrStop::OutOfGas);
         assert!(!evm.state.is_storage_warm(&contract, &key));
@@ -1272,7 +1257,7 @@ mod tests {
             database,
             Precompiles::base(SpecId::FRONTIER),
         );
-        let message = Message {
+        let mut message = Message {
             kind: MessageKind::Create,
             destination: created,
             caller,
@@ -1282,7 +1267,7 @@ mod tests {
         let code =
             Bytecode::new_legacy(Bytes::from_static(&[op::PUSH1, 1, op::PUSH1, 0, op::RETURN]));
 
-        let result = Host::execute_message(&mut evm, &TxEnv::default(), code, &message, false);
+        let result = Host::execute_message(&mut evm, &TxEnv::default(), code, &mut message, false);
         assert!(result.stop.is_success());
 
         evm.state.finalize_transaction_(Version::base(SpecId::FRONTIER));
@@ -1305,7 +1290,7 @@ mod tests {
             database,
             Precompiles::base(SpecId::HOMESTEAD),
         );
-        let message = Message {
+        let mut message = Message {
             kind: MessageKind::Create,
             destination: created,
             caller,
@@ -1315,7 +1300,7 @@ mod tests {
         let code =
             Bytecode::new_legacy(Bytes::from_static(&[op::PUSH1, 1, op::PUSH1, 0, op::RETURN]));
 
-        let result = Host::execute_message(&mut evm, &TxEnv::default(), code, &message, false);
+        let result = Host::execute_message(&mut evm, &TxEnv::default(), code, &mut message, false);
         assert_eq!(result.stop, InstrStop::OutOfGas);
 
         evm.state.finalize_transaction_(Version::base(SpecId::HOMESTEAD));
@@ -1336,7 +1321,7 @@ mod tests {
             database,
             Precompiles::base(SpecId::SPURIOUS_DRAGON),
         );
-        let message = Message {
+        let mut message = Message {
             kind: MessageKind::StaticCall,
             destination: target,
             code_address: target,
@@ -1348,7 +1333,7 @@ mod tests {
             &mut evm,
             &TxEnv::default(),
             Bytecode::default(),
-            &message,
+            &mut message,
             false,
         );
         assert!(result.stop.is_success());
@@ -1377,7 +1362,7 @@ mod tests {
             database,
             Precompiles::base(SpecId::SPURIOUS_DRAGON),
         );
-        let message = Message {
+        let mut message = Message {
             kind: MessageKind::DelegateCall,
             destination,
             code_address,
@@ -1389,7 +1374,7 @@ mod tests {
             &mut evm,
             &TxEnv::default(),
             Bytecode::default(),
-            &message,
+            &mut message,
             false,
         );
         assert!(result.stop.is_success());
@@ -1439,7 +1424,7 @@ mod tests {
             database,
             Precompiles::base(SpecId::AMSTERDAM),
         );
-        let message = Message {
+        let mut message = Message {
             kind: MessageKind::Call,
             destination: target,
             caller,
@@ -1452,7 +1437,7 @@ mod tests {
             &mut evm,
             &TxEnv::default(),
             Bytecode::default(),
-            &message,
+            &mut message,
             false,
         );
         assert!(result.stop.is_success());

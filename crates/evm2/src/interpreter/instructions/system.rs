@@ -252,7 +252,7 @@ fn call_inner<T: EvmTypes>(
         call_too_deep_result::<T>(message.gas_limit)
     } else {
         let tx_env = unsafe { trustme::decouple_lt(state.tx()) };
-        state.host().execute_message(tx_env, code, &message, caller_is_static)
+        state.host().execute_message(tx_env, code, &mut message, caller_is_static)
     };
     state.inspect_call_end(&message, &mut result);
     gas.erase_cost(result.gas_returned_to_parent());
@@ -347,7 +347,7 @@ fn create_inner<T: EvmTypes>(
     } else {
         let bytecode = crate::bytecode::Bytecode::new_legacy(input);
         let tx_env = unsafe { trustme::decouple_lt(state.tx()) };
-        state.host().execute_message(tx_env, bytecode, &message, false)
+        state.host().execute_message(tx_env, bytecode, &mut message, false)
     };
     state.inspect_create_end(&message, &mut result);
     gas.erase_cost(result.gas_returned_to_parent());

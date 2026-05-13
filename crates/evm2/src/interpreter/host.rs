@@ -141,7 +141,7 @@ pub trait Host<T: EvmTypes> {
         &mut self,
         tx_env: &TxEnv<T>,
         bytecode: Bytecode,
-        message: &Message<T>,
+        message: &mut Message<T>,
         caller_is_static: bool,
     ) -> MessageResult<T>;
 

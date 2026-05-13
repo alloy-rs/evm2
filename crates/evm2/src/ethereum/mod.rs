@@ -765,7 +765,7 @@ mod tests {
             Precompiles::base(SpecId::PRAGUE),
         );
 
-        let (bytecode, message) = initial_message(
+        let (bytecode, mut message) = initial_message(
             &mut evm,
             caller,
             0,
@@ -779,7 +779,8 @@ mod tests {
         assert_eq!(message.code_address, delegated);
         assert!(message.disable_precompiles);
 
-        let result = Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &message, false);
+        let result =
+            Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &mut message, false);
 
         assert_eq!(result.stop, InstrStop::Return);
         assert_eq!(result.output.len(), 32);

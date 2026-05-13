@@ -12,7 +12,7 @@ use alloy_primitives::{Address, Bytes};
 type TestEvm = Evm<BaseEvmTypes>;
 
 fn run_tx(evm: &mut TestEvm, destination: Address, code: impl Into<Vec<u8>>) {
-    let message = Message {
+    let mut message = Message {
         destination,
         code_address: destination,
         gas_limit: 100_000,
@@ -22,7 +22,7 @@ fn run_tx(evm: &mut TestEvm, destination: Address, code: impl Into<Vec<u8>>) {
         evm,
         &TxEnv::default(),
         Bytecode::new_legacy(Bytes::from(code.into())),
-        &message,
+        &mut message,
         false,
     );
     assert!(result.stop.is_success());
@@ -136,7 +136,7 @@ fn evm_propagates_child_sstore_negative_refund() {
     push(&mut parent_code, 50_000); // gas
     parent_code.extend([op::CALL, op::STOP]);
 
-    let message = Message {
+    let mut message = Message {
         destination: contract,
         code_address: contract,
         gas_limit: 100_000,
@@ -146,7 +146,7 @@ fn evm_propagates_child_sstore_negative_refund() {
         &mut evm,
         &TxEnv::default(),
         Bytecode::new_legacy(Bytes::from(parent_code)),
-        &message,
+        &mut message,
         false,
     );
 
@@ -164,7 +164,7 @@ fn evm_reports_invalid_transaction_execution() {
         InMemoryDB::default(),
         Precompiles::base(SpecId::OSAKA),
     );
-    let message = Message {
+    let mut message = Message {
         destination: contract,
         code_address: contract,
         gas_limit: 100_000,
@@ -174,7 +174,7 @@ fn evm_reports_invalid_transaction_execution() {
         &mut evm,
         &TxEnv::default(),
         Bytecode::new_legacy(Bytes::from_static(&[op::PUSH1, 0x01, op::SSTORE])),
-        &message,
+        &mut message,
         false,
     );
 

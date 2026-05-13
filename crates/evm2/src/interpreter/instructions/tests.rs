@@ -181,7 +181,7 @@ impl Host<TestTypes> for TestHost {
         &mut self,
         _tx_env: &TxEnv<TestTypes>,
         _bytecode: Bytecode,
-        message: &Message<TestTypes>,
+        message: &mut Message<TestTypes>,
         caller_is_static: bool,
     ) -> MessageResult<TestTypes> {
         self.call_static_flags.push(caller_is_static || message.kind == MessageKind::StaticCall);
