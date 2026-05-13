@@ -378,24 +378,6 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         message: &Message<T>,
         caller_is_static: bool,
     ) -> MessageResult<T> {
-        if let Err(stop) = self.check_create_funds(message) {
-            return Self::error_message_result(stop, message.gas_limit);
-        }
-        if message.depth > 0 {
-            // EIP-2681 caps account nonces at u64::MAX; CREATE/CREATE2 return zero
-            // instead of wrapping or saturating the creator nonce.
-            // TODO: Fold this into nonce bumping so account info is not loaded repeatedly.
-            let info = match self.state.account_info(&message.caller) {
-                Ok(info) => info,
-                Err(code) => {
-                    return Self::error_message_result(self.db_error_stop(code), message.gas_limit);
-                }
-            };
-            if info.is_some_and(|info| info.nonce == u64::MAX) {
-                return Self::error_message_result(InstrStop::Return, message.gas_limit);
-            }
-        }
-
         let address = match self.create_address(&bytecode, message) {
             Ok(address) => address,
             Err(stop) => return Self::error_message_result(stop, message.gas_limit),
@@ -492,20 +474,6 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         }
     }
 
-    #[inline(never)]
-    fn check_create_funds(&mut self, message: &Message<T>) -> Result<(), InstrStop> {
-        if message.value > 0
-            && self
-                .state
-                .account_info(&message.caller)
-                .map_err(|code| self.db_error_stop(code))?
-                .is_none_or(|info| info.balance < message.value)
-        {
-            return Err(InstrStop::OutOfFunds);
-        }
-        Ok(())
-    }
-
     fn validate_create_output(&self, gas: &mut Gas, output: &mut Bytes) -> Result<(), InstrStop> {
         if self.spec_id().enables(SpecId::SPURIOUS_DRAGON)
             && output.len() > self.version().max_code_size
@@ -538,14 +506,27 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         bytecode: &Bytecode,
         message: &Message<T>,
     ) -> Result<Address, InstrStop> {
+        let info = if message.value > 0 || message.depth > 0 {
+            self.state.account_info(&message.caller).map_err(|code| self.db_error_stop(code))?
+        } else {
+            None
+        };
+
+        if message.value > 0 && info.as_ref().is_none_or(|info| info.balance < message.value) {
+            return Err(InstrStop::OutOfFunds);
+        }
+
+        // EIP-2681 caps account nonces at u64::MAX; CREATE/CREATE2 return zero instead of
+        // wrapping or saturating the creator nonce.
+        if message.depth > 0 && info.as_ref().is_some_and(|info| info.nonce == u64::MAX) {
+            return Err(InstrStop::Return);
+        }
+
         match message.kind {
             MessageKind::Create if message.depth == 0 => Ok(message.destination),
-            MessageKind::Create => Ok(message.caller.create(
-                self.state
-                    .account_info(&message.caller)
-                    .map_err(|code| self.db_error_stop(code))?
-                    .map_or(0, |info| info.nonce),
-            )),
+            MessageKind::Create => {
+                Ok(message.caller.create(info.as_ref().map_or(0, |info| info.nonce)))
+            }
             MessageKind::Create2 => Ok(message.caller.create2(message.salt, bytecode.hash_slow())),
             _ => unreachable!("invalid create message kind"),
         }
