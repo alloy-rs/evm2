@@ -382,8 +382,11 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         message: &mut Message<T>,
         caller_is_static: bool,
     ) -> MessageResult<T> {
-        let checkpoint = self.state.checkpoint();
         if let Err(stop) = self.prepare_create_message(&bytecode, message) {
+            return Self::error_message_result(stop, message.gas_limit);
+        }
+        let checkpoint = self.state.checkpoint();
+        if let Err(stop) = self.create_message_account(message) {
             self.state.rollback(checkpoint, self.spec_id());
             return Self::error_message_result(stop, message.gas_limit);
         }
@@ -416,9 +419,14 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             return Err(self.db_error_stop(code));
         }
 
+        Ok(())
+    }
+
+    #[inline(never)]
+    fn create_message_account(&mut self, message: &Message<T>) -> Result<(), InstrStop> {
         let create_result = match self.state.create_account(
             &message.caller,
-            address,
+            &message.destination,
             &message.value,
             self.spec_id(),
         ) {
@@ -429,7 +437,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         };
         create_result?;
 
-        self.log_eip7708_transfer(&message.caller, address, &message.value);
+        self.log_eip7708_transfer(&message.caller, &message.destination, &message.value);
         Ok(())
     }
 
