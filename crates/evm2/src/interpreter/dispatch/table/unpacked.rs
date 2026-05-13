@@ -1,4 +1,3 @@
-use super::InspectMode;
 use crate::{
     EvmConfig, EvmTypes,
     interpreter::{InterpreterState, Pc, Stack},
@@ -26,7 +25,6 @@ extern_table! {
     pub(in crate::interpreter::dispatch) fn dispatch<
         T: EvmTypes,
         C: EvmConfig<T>,
-        M: InspectMode<T>,
         const OP: u8,
     >(
         pc: Pc,
@@ -34,7 +32,7 @@ extern_table! {
         state: &mut InterpreterState<'_, T>,
     ) -> InstrFnRet {
         let opcode = OP;
-        let (pc, ()) = super::dispatch_inner::<T, C, M, ()>(pc, stack.as_mut(), (), state, opcode);
+        let (pc, ()) = super::dispatch_inner::<T, C, ()>(pc, stack.as_mut(), (), state, opcode);
         (pc, stack.len)
     }
 }

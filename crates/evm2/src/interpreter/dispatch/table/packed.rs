@@ -1,4 +1,3 @@
-use super::InspectMode;
 use crate::{
     EvmConfig, EvmTypes,
     constants::STACK_LIMIT,
@@ -36,7 +35,6 @@ extern_table! {
     pub(in crate::interpreter::dispatch) fn dispatch<
         T: EvmTypes,
         C: EvmConfig<T>,
-        M: InspectMode<T>,
         const OP: u8,
     >(
         pc: Pc,
@@ -46,7 +44,7 @@ extern_table! {
     ) -> InstrFnRet {
         let opcode = OP;
         let (pc, remaining_gas) =
-            super::dispatch_inner::<T, C, M, RemainingGas>(
+            super::dispatch_inner::<T, C, RemainingGas>(
                 pc,
                 stack.as_mut(),
                 remaining_gas,

@@ -250,6 +250,12 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
     }
 
     #[inline]
+    #[cfg(not(tco))]
+    pub(crate) const fn is_inspecting(&self) -> bool {
+        self.0.inspector.is_some()
+    }
+
+    #[inline]
     pub(crate) const fn set_pc_stack_len(&mut self, pc: *const u8, stack_len: usize) {
         self.0.pc = pc;
         self.0.stack_len = stack_len;
