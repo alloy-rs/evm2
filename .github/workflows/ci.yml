@@ -98,7 +98,7 @@ jobs:
           if [[ "${{ runner.os }}" == "Windows" && "${{ matrix.kind }}" == "eest" ]]; then
             export RUSTFLAGS="-C link-arg=/STACK:8388608"
           fi
-          cargo nextest run --workspace --no-fail-fast ${{ matrix.flags }} "${extra_flags[@]}"
+          cargo-nextest nextest run --workspace --no-fail-fast ${{ matrix.flags }} "${extra_flags[@]}"
       - name: cross test
         if: ${{ matrix.command == 'cross-test' }}
         shell: bash
