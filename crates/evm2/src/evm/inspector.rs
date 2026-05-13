@@ -630,7 +630,7 @@ mod tests {
             &mut inspector,
         );
 
-        assert_eq!(stop, InstrStop::InvalidFEOpcode);
+        assert_eq!(stop, InstrStop::InvalidOpcode);
         assert_eq!(inspector.steps, 1);
         assert_eq!(inspector.step_ends, 1);
     }

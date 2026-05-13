@@ -87,13 +87,7 @@ fn return_inner<T: EvmTypes>(
 #[instruction]
 pub(crate) fn invalid() -> Result {
     cold_path();
-    Err(InstrStop::InvalidFEOpcode)
-}
-
-#[instruction]
-pub(crate) fn unknown() -> Result {
-    cold_path();
-    Err(InstrStop::OpcodeNotFound)
+    Err(InstrStop::InvalidOpcode)
 }
 
 #[cfg(test)]
@@ -117,10 +111,10 @@ mod tests {
     #[test]
     fn invalid_opcode() {
         let interpreter = run(RunConfig::new([op::INVALID]));
-        assert!(matches!(interpreter.err, InstrStop::InvalidFEOpcode));
+        assert!(matches!(interpreter.err, InstrStop::InvalidOpcode));
 
         let interpreter = run(RunConfig::new([0x0c]));
-        assert!(matches!(interpreter.err, InstrStop::OpcodeNotFound));
+        assert!(matches!(interpreter.err, InstrStop::InvalidOpcode));
     }
 
     #[test]

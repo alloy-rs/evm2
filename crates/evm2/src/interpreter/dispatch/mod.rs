@@ -3,20 +3,9 @@
 use crate::{
     BaseEvmConfigSelector, EvmConfig, EvmConfigSelector, EvmTypes, VersionTables,
     evm::config::SelectorVersionTables,
-    interpreter::{InstrStop, Interpreter, InterpreterState, Pc, Result, Stack, StackMut, op},
+    interpreter::{Interpreter, InterpreterState, Pc, Stack, op},
     trustme,
 };
-
-#[cold]
-pub(crate) const fn unknown_instruction<T: EvmTypes>(
-    _pc: &mut Pc,
-    _stack: StackMut<'_>,
-    _state: &mut InterpreterState<'_, T>,
-) -> Result {
-    Err(InstrStop::OpcodeNotFound)
-}
-
-const UNKNOWN_OP: u8 = op::INVALID;
 
 cfg_if::cfg_if! {
     if #[cfg(tco)] {
@@ -74,7 +63,7 @@ where
 {
     let mut table = match previous {
         Some(previous) => *previous,
-        None => [imp::unknown_dispatch::<T, C, M> as imp::RawInstrFn<T>; 256],
+        None => [imp::dispatch::<T, C, M, { op::INVALID }> as imp::RawInstrFn<T>; 256],
     };
     let vt = C::VERSION_TABLES;
 
@@ -82,14 +71,7 @@ where
         ($($op:literal,)*) => {
             $(
                 if instruction_changed(vt, previous_version_tables, $op) && !vt.is_unknown_opcode($op) {
-                    table[$op] = {
-                        let instruction = vt.instruction($op);
-                        if instruction.dynamic_gas {
-                            imp::dispatch::<T, C, M, $op, true> as imp::RawInstrFn<T>
-                        } else {
-                            imp::dispatch::<T, C, M, $op, false> as imp::RawInstrFn<T>
-                        }
-                    };
+                    table[$op] = imp::dispatch::<T, C, M, $op> as imp::RawInstrFn<T>;
                 }
             )*
         };

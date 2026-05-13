@@ -1,4 +1,4 @@
-use super::{InspectMode, UNKNOWN_OP, inc_pc, run_state, unknown_instruction};
+use super::{InspectMode, inc_pc, run_state};
 #[cfg(dispatch_packed)]
 use crate::interpreter::gas::RemainingGas;
 use crate::{
@@ -20,7 +20,7 @@ cfg_if::cfg_if! {
     }
 }
 
-pub(super) use imp::{RawInstrFn, dispatch, unknown_dispatch};
+pub(super) use imp::{RawInstrFn, dispatch};
 
 /// Table instruction dispatch table.
 pub(super) type RawInstrTable<T> = [RawInstrFn<T>; 256];
@@ -137,30 +137,25 @@ impl DispatchGas for RemainingGas {
 
 #[cold] // Not cold, but avoids MIR inlining.
 #[inline(always)]
-fn dispatch_inner<
-    T: EvmTypes,
-    C: EvmConfig<T>,
-    M: InspectMode<T>,
-    G: DispatchGas,
-    const DYNAMIC_GAS: bool,
-    const UNKNOWN: bool,
->(
+fn dispatch_inner<T: EvmTypes, C: EvmConfig<T>, M: InspectMode<T>, G: DispatchGas>(
     mut pc: Pc,
     mut stack: StackMut<'_>,
     mut gas: G,
     state: &mut InterpreterState<'_, T>,
     op: u8,
 ) -> (Pc, G) {
-    let instr = if UNKNOWN { unknown_instruction } else { C::VERSION_TABLES.instruction(op).instr };
+    let instruction = C::VERSION_TABLES.instruction(op);
+    let instr = instruction.instr;
+    let dynamic_gas = instruction.dynamic_gas;
     if M::INSPECT {
         M::step(state, pc, *stack.len);
     }
     let r;
     match gas.pre_step::<T, C>(state, op) {
         Ok(()) => {
-            gas.sync_before_exec(state, DYNAMIC_GAS, M::INSPECT);
+            gas.sync_before_exec(state, dynamic_gas, M::INSPECT);
             r = instr(&mut pc, stack.reborrow(), state);
-            gas.sync_after_exec(state, DYNAMIC_GAS);
+            gas.sync_after_exec(state, dynamic_gas);
             if !M::INSPECT || r.is_ok() {
                 inc_pc(&mut pc, op);
             }

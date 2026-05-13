@@ -316,7 +316,7 @@ mod tests {
         let interpreter = run(RunConfig::new([op::PUSH1, 0, op::TLOAD, op::STOP])
             .host(&mut host)
             .spec(SpecId::SHANGHAI));
-        assert!(matches!(interpreter.err, InstrStop::OpcodeNotFound));
+        assert!(matches!(interpreter.err, InstrStop::InvalidOpcode));
         assert_eq!(interpreter.stack(), [0]);
     }
 
@@ -341,7 +341,7 @@ mod tests {
         let interpreter = run(RunConfig::new([op::PUSH1, 0, op::PUSH1, 0, op::TSTORE, op::STOP])
             .host(&mut host)
             .spec(SpecId::SHANGHAI));
-        assert!(matches!(interpreter.err, InstrStop::OpcodeNotFound));
+        assert!(matches!(interpreter.err, InstrStop::InvalidOpcode));
         assert_eq!(interpreter.stack(), [0, 0]);
     }
 

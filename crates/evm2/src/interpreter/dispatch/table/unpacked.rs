@@ -28,41 +28,13 @@ extern_table! {
         C: EvmConfig<T>,
         M: InspectMode<T>,
         const OP: u8,
-        const DYNAMIC_GAS: bool,
     >(
         pc: Pc,
         mut stack: Stack<'_>,
         state: &mut InterpreterState<'_, T>,
     ) -> InstrFnRet {
-        let _ = DYNAMIC_GAS;
-        let (pc, ()) =
-            super::dispatch_inner::<T, C, M, (), false, false>(
-                pc,
-                stack.as_mut(),
-                (),
-                state,
-                OP,
-            );
-        (pc, stack.len)
-    }
-
-    pub(in crate::interpreter::dispatch) fn unknown_dispatch<
-        T: EvmTypes,
-        C: EvmConfig<T>,
-        M: InspectMode<T>,
-    >(
-        pc: Pc,
-        mut stack: Stack<'_>,
-        state: &mut InterpreterState<'_, T>,
-    ) -> InstrFnRet {
-        let (pc, ()) =
-            super::dispatch_inner::<T, C, M, (), false, true>(
-                pc,
-                stack.as_mut(),
-                (),
-                state,
-                super::UNKNOWN_OP,
-            );
+        let opcode = OP;
+        let (pc, ()) = super::dispatch_inner::<T, C, M, ()>(pc, stack.as_mut(), (), state, opcode);
         (pc, stack.len)
     }
 }

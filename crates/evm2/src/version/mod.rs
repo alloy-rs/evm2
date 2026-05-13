@@ -470,7 +470,6 @@ evm_versions! {
             CALL: 40,
             CALLCODE: 40,
             RETURN: ZERO,
-            INVALID: ZERO,
             SELFDESTRUCT: ZERO,
         ],
         dynamic_gas: [
