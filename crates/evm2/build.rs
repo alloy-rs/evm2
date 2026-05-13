@@ -1,38 +1,28 @@
 //! Configures the optional tail-call interpreter backend.
 
-use std::{env as std_env, ffi::OsString, process::Command};
+use std::{ffi::OsString, process::Command};
 
 fn main() {
-    println!("cargo:rustc-check-cfg=cfg(dispatch_packed)");
-    println!("cargo:rustc-check-cfg=cfg(dispatch_single_return)");
-    println!("cargo:rustc-check-cfg=cfg(dispatch_unpacked)");
-    println!("cargo:rustc-check-cfg=cfg(tco)");
+    for cfg in ["dispatch_packed", "dispatch_single_return", "dispatch_unpacked", "tco"] {
+        println!("cargo:rustc-check-cfg=cfg({cfg})");
+    }
     println!("cargo:rerun-if-changed=build.rs");
 
+    // Select interpreter backend.
     let is_wasm = target_is_wasm();
-    let dispatch_packed = target_pointer_width() == Some(64) && !is_wasm;
+    let target_pointer_width = target_pointer_width();
+    let no_tco = env("CARGO_FEATURE_NO_TCO");
+    let is_nightly = rustc_is_nightly();
     if is_wasm {
         println!("cargo:rustc-cfg=dispatch_single_return");
-    }
-    if dispatch_packed {
+    } else if target_pointer_width == Some(64) {
         println!("cargo:rustc-cfg=dispatch_packed");
-    }
-    if !is_wasm && !dispatch_packed {
+    } else {
         println!("cargo:rustc-cfg=dispatch_unpacked");
     }
-
-    let no_tco_requested = env("CARGO_FEATURE_NO_TCO").is_some();
-    let nightly_requested = env("CARGO_FEATURE_NIGHTLY").is_some();
-    let is_nightly = rustc_is_nightly();
-
-    if no_tco_requested {
-        return;
-    }
-
-    if is_nightly {
+    if no_tco.is_some() {
+    } else if is_nightly {
         println!("cargo:rustc-cfg=tco");
-    } else if nightly_requested {
-        panic!("requested nightly backend requires a nightly compiler");
     }
 }
 
@@ -65,5 +55,5 @@ fn rustc() -> OsString {
 
 fn env(key: &str) -> Option<OsString> {
     println!("cargo:rerun-if-env-changed={key}");
-    std_env::var_os(key)
+    std::env::var_os(key)
 }
