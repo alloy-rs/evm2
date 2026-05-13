@@ -31,13 +31,19 @@ extern_table! {
         const DYNAMIC_GAS: bool,
     >(
         pc: Pc,
-        stack: Stack<'_>,
+        mut stack: Stack<'_>,
         state: &mut InterpreterState<'_, T>,
     ) -> InstrFnRet {
         let _ = DYNAMIC_GAS;
-        let (pc, (), stack_len) =
-            super::dispatch_inner::<T, C, M, (), false, false>(pc, stack, (), state, OP);
-        (pc, stack_len)
+        let (pc, ()) =
+            super::dispatch_inner::<T, C, M, (), false, false>(
+                pc,
+                stack.as_mut(),
+                (),
+                state,
+                OP,
+            );
+        (pc, stack.len)
     }
 
     pub(in crate::interpreter::dispatch) fn unknown_dispatch<
@@ -46,17 +52,17 @@ extern_table! {
         M: InspectMode<T>,
     >(
         pc: Pc,
-        stack: Stack<'_>,
+        mut stack: Stack<'_>,
         state: &mut InterpreterState<'_, T>,
     ) -> InstrFnRet {
-        let (pc, (), stack_len) =
+        let (pc, ()) =
             super::dispatch_inner::<T, C, M, (), false, true>(
                 pc,
-                stack,
+                stack.as_mut(),
                 (),
                 state,
                 super::UNKNOWN_OP,
             );
-        (pc, stack_len)
+        (pc, stack.len)
     }
 }

@@ -40,20 +40,24 @@ extern_table! {
         const DYNAMIC_GAS: bool,
     >(
         pc: Pc,
-        stack: Stack<'_>,
+        mut stack: Stack<'_>,
         remaining_gas: RemainingGas,
         state: &mut InterpreterState<'_, T>,
     ) -> InstrFnRet {
         let initial_remaining_gas = remaining_gas;
-        let (pc, remaining_gas, stack_len) =
+        let (pc, remaining_gas) =
             super::dispatch_inner::<T, C, M, RemainingGas, DYNAMIC_GAS, false>(
                 pc,
-                stack,
+                stack.as_mut(),
                 remaining_gas,
                 state,
                 OP,
             );
-        dispatch_return(pc, initial_remaining_gas.get().wrapping_sub(remaining_gas.get()), stack_len)
+        dispatch_return(
+            pc,
+            initial_remaining_gas.get().wrapping_sub(remaining_gas.get()),
+            stack.len,
+        )
     }
 
     pub(in crate::interpreter::dispatch) fn unknown_dispatch<
@@ -62,20 +66,24 @@ extern_table! {
         M: InspectMode<T>,
     >(
         pc: Pc,
-        stack: Stack<'_>,
+        mut stack: Stack<'_>,
         remaining_gas: RemainingGas,
         state: &mut InterpreterState<'_, T>,
     ) -> InstrFnRet {
         let initial_remaining_gas = remaining_gas;
-        let (pc, remaining_gas, stack_len) =
+        let (pc, remaining_gas) =
             super::dispatch_inner::<T, C, M, RemainingGas, false, true>(
                 pc,
-                stack,
+                stack.as_mut(),
                 remaining_gas,
                 state,
                 super::UNKNOWN_OP,
             );
-        dispatch_return(pc, initial_remaining_gas.get().wrapping_sub(remaining_gas.get()), stack_len)
+        dispatch_return(
+            pc,
+            initial_remaining_gas.get().wrapping_sub(remaining_gas.get()),
+            stack.len,
+        )
     }
 }
 

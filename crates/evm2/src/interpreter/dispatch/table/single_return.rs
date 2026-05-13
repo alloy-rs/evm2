@@ -1,30 +1,23 @@
 use super::InspectMode;
 use crate::{
     EvmConfig, EvmTypes,
-    interpreter::{InterpreterState, Pc, Stack},
+    interpreter::{InterpreterState, Pc, Stack, StackMut},
 };
 
 /// Single-return instruction function pointer.
-pub(in crate::interpreter::dispatch) type RawInstrFn<T> = extern_table!(
-    fn(
-        pc: Pc,
-        stack: Stack<'_>,
-        state: &mut InterpreterState<'_, T>,
-        next_stack_len: &mut usize,
-    ) -> Pc
-);
+pub(in crate::interpreter::dispatch) type RawInstrFn<T> =
+    extern_table!(fn(pc: Pc, stack: StackMut<'_>, state: &mut InterpreterState<'_, T>) -> Pc);
 
 #[inline(always)]
 pub(super) fn dispatch_loop_call<T: EvmTypes>(
     instr: RawInstrFn<T>,
     pc: Pc,
-    stack: Stack<'_>,
+    mut stack: Stack<'_>,
     state: &mut InterpreterState<'_, T>,
     _loop_state: &mut super::LoopState,
 ) -> (Pc, usize) {
-    let mut next_stack_len = stack.len;
-    let next_pc = instr(pc, stack, state, &mut next_stack_len);
-    (next_pc, next_stack_len)
+    let next_pc = instr(pc, stack.as_mut(), state);
+    (next_pc, stack.len)
 }
 
 extern_table! {
@@ -36,14 +29,12 @@ extern_table! {
         const DYNAMIC_GAS: bool,
     >(
         pc: Pc,
-        stack: Stack<'_>,
+        stack: StackMut<'_>,
         state: &mut InterpreterState<'_, T>,
-        next_stack_len: &mut usize,
     ) -> Pc {
         let _ = DYNAMIC_GAS;
-        let (pc, (), stack_len) =
+        let (pc, ()) =
             super::dispatch_inner::<T, C, M, (), false, false>(pc, stack, (), state, OP);
-        *next_stack_len = stack_len;
         pc
     }
 
@@ -53,11 +44,10 @@ extern_table! {
         M: InspectMode<T>,
     >(
         pc: Pc,
-        stack: Stack<'_>,
+        stack: StackMut<'_>,
         state: &mut InterpreterState<'_, T>,
-        next_stack_len: &mut usize,
     ) -> Pc {
-        let (pc, (), stack_len) =
+        let (pc, ()) =
             super::dispatch_inner::<T, C, M, (), false, true>(
                 pc,
                 stack,
@@ -65,7 +55,6 @@ extern_table! {
                 state,
                 super::UNKNOWN_OP,
             );
-        *next_stack_len = stack_len;
         pc
     }
 }
