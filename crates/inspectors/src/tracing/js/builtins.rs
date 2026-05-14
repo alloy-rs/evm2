@@ -364,6 +364,7 @@ unsafe impl Trace for PrecompileList {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec;
 
     #[test]
     fn test_install_bigint() {

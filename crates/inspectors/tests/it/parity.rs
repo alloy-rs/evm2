@@ -123,7 +123,7 @@ fn test_parity_constructor_selfdestruct() {
 
     let addr = inspect_deploy_contract(&mut evm, code.into(), deployer, SpecId::LONDON)
         .created_address()
-        .expect("contect created");
+        .expect("context created");
 
     print_traces(evm.inspector());
 

@@ -62,7 +62,11 @@ pub mod js {
         },
         types::CallKind,
     };
-    use alloc::string::String;
+    use alloc::{
+        format,
+        string::{String, ToString},
+        vec::Vec,
+    };
     use alloy_primitives::{Address, Bytes, TxKind, U256, map::HashSet};
     use boa_engine::{Context, JsError, JsObject, JsValue, Source, js_string};
     use evm2::{
@@ -631,7 +635,7 @@ pub mod js {
     mod tests {
         use super::*;
         use crate::tracing::js::{bindings::JsEvmContext, builtins::to_serde_value};
-        use alloc::{rc::Rc, vec, vec::Vec};
+        use alloc::{format, rc::Rc, string::ToString, vec, vec::Vec};
         use alloy_consensus::{TxLegacy, transaction::Recovered};
         use alloy_primitives::{Address, Bytes, TxKind, U256, hex};
         use core::cell::RefCell;

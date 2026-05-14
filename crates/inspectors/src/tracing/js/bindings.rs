@@ -825,6 +825,7 @@ pub(crate) struct EvmDbGuard<'a> {
 mod tests {
     use super::*;
     use crate::tracing::js::builtins::{json_stringify, register_builtins, to_serde_value};
+    use alloc::vec;
     use boa_engine::Source;
 
     #[test]
