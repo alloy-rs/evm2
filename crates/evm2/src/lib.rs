@@ -1,6 +1,7 @@
 #![doc = include_str!("../README.md")]
 #![cfg_attr(tco, feature(explicit_tail_calls, rust_preserve_none_cc), allow(incomplete_features))]
 #![cfg_attr(not(feature = "std"), no_std)]
+#![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
 extern crate self as evm2;
 
@@ -31,7 +32,7 @@ pub use precompiles::{
 pub(crate) mod trustme;
 
 pub mod version;
-pub use version::{EvmFeatures, Version, VersionTables};
+pub use version::{EvmFeatures, OpcodeConfig, Version};
 
 mod spec_id;
 pub use spec_id::SpecId;

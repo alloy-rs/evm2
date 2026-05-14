@@ -5,7 +5,7 @@ use crate::{
         kzg_point_evaluation, modexp, secp256k1, secp256r1,
     },
 };
-use alloy_primitives::{Address, map::HashMap};
+use alloy_primitives::{Address, map::AddressMap};
 
 /// Precompile implementation function.
 pub type PrecompileFn = fn(&[u8], &mut GasTracker) -> PrecompileResult;
@@ -83,7 +83,7 @@ impl PrecompileData {
 /// Precompile dispatch map.
 #[derive(Clone, Debug, Default)]
 pub struct PrecompileMap {
-    inner: HashMap<Address, PrecompileData>,
+    inner: AddressMap<PrecompileData>,
 }
 
 impl PrecompileMap {

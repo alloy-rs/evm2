@@ -46,7 +46,7 @@ impl DispatchGas for () {
         state: &mut InterpreterState<'_, T>,
         op: u8,
     ) -> Result {
-        state.gas_mut().spend(C::VERSION_TABLES.static_gas(op) as _)
+        state.gas_mut().spend(C::OPCODE_CONFIG.static_gas(op) as _)
     }
 
     #[inline(always)]
@@ -75,7 +75,7 @@ fn dispatch_inner<T: EvmTypes, C: EvmConfig<T>, M: InspectMode<T>, G: DispatchGa
     state: &mut InterpreterState<'_, T>,
     op: u8,
 ) -> (Pc, G) {
-    let instruction = C::VERSION_TABLES.instruction(op);
+    let instruction = C::OPCODE_CONFIG.instruction(op);
     let instr = instruction.instr;
     let dynamic_gas = instruction.dynamic_gas;
     let r;

@@ -21,15 +21,12 @@ evm2-macros.workspace = true
 alloy-consensus.workspace = true
 alloy-eips = { workspace = true, features = ["k256"] }
 alloy-primitives.workspace = true
-alloy-rlp.workspace = true
-alloy-trie = { workspace = true, features = ["ethereum"] }
 derive-where.workspace = true
 thiserror.workspace = true
 cfg-if.workspace = true
 
 # no_std
 once_cell = { workspace = true, features = ["alloc"] }
-paste.workspace = true
 
 # "serde"
 serde = { workspace = true, features = ["derive", "alloc"], optional = true }
@@ -115,8 +112,6 @@ std = [
     "alloy-consensus/std",
     "alloy-eips/std",
     "alloy-primitives/std",
-    "alloy-rlp/std",
-    "alloy-trie/std",
     "ark-bls12-381/std",
     "ark-bn254/std",
     "ark-ec/std",
@@ -138,7 +133,6 @@ serde = [
     "alloy-consensus/serde",
     "alloy-eips/serde",
     "alloy-primitives/serde",
-    "alloy-trie/serde",
     "ark-serialize/serde",
     "derive-where/serde",
     "k256/serde",
@@ -151,7 +145,6 @@ arbitrary = [
     "alloy-consensus/arbitrary",
     "alloy-eips/arbitrary",
     "alloy-primitives/arbitrary",
-    "alloy-trie/arbitrary",
 ]
 
 map-hashbrown = ["alloy-primitives/map-hashbrown"]

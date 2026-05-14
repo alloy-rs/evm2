@@ -16,8 +16,8 @@ pub use gas_params::{GasId, GasParams};
 mod features;
 pub use features::EvmFeatures;
 
-mod tables;
-pub use tables::VersionTables;
+mod opcode_config;
+pub use opcode_config::OpcodeConfig;
 
 /// Runtime configuration data.
 ///
@@ -31,7 +31,7 @@ pub struct Version {
     pub spec_id: SpecId,
     /// Dynamic gas parameter table.
     // Gas params are data on the active version so changes automatically affect every
-    // instruction that reads them. Tracking instruction dependencies on version tables is not
+    // instruction that reads them. Tracking instruction dependencies on opcode config is not
     // sustainable for custom forks.
     pub gas_params: GasParams,
     /// EVM feature set.
@@ -125,7 +125,7 @@ static BASE_VERSIONS: [Version; SpecId::COUNT] = {
     }; SpecId::COUNT];
     let mut i = 0;
     while i < SpecId::COUNT {
-        let spec_id = SpecId::try_from_u8(i as u8).unwrap();
+        let spec_id = SpecId::try_from_u32(i as u32).unwrap();
         versions[i] = Version {
             spec_id,
             gas_params: base_gas_params(spec_id),
@@ -166,7 +166,7 @@ macro_rules! apply_base_features {
     ($features:ident, dynamic_gas: [$($tokens:tt)*]) => {};
 }
 
-macro_rules! apply_version_tables {
+macro_rules! apply_opcode_config {
     ($v:ident, $ty:ident, features: [$($tokens:tt)*]) => {};
     ($v:ident, $ty:ident, ops: [$($name:ident: $cost:expr,)*]) => {
         $(
@@ -216,16 +216,16 @@ macro_rules! evm_versions {
             gp
         }
 
-        const fn base_version_tables<T: EvmTypes, Cfg: EvmConfig<T>>() -> VersionTables<T> {
+        const fn base_opcode_config<T: EvmTypes, Cfg: EvmConfig<T>>() -> OpcodeConfig<T> {
             use crate::interpreter::gas::*;
 
             let spec_id = Cfg::BASE_SPEC_ID;
-            let mut v = VersionTables::empty();
+            let mut v = OpcodeConfig::empty();
 
             $(
                 if spec_id.enables(SpecId::$spec) {
                     $(
-                        apply_version_tables!(v, T, $section: [$($tokens)*]);
+                        apply_opcode_config!(v, T, $section: [$($tokens)*]);
                     )*
                 }
             )*
@@ -238,11 +238,11 @@ macro_rules! evm_versions {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{BaseEvmConfig, BaseEvmTypes, VersionTables, interpreter::op};
+    use crate::{BaseEvmConfig, BaseEvmTypes, OpcodeConfig, interpreter::op};
 
-    fn version_tables(spec: SpecId) -> &'static VersionTables<BaseEvmTypes> {
+    fn opcode_config(spec: SpecId) -> &'static OpcodeConfig<BaseEvmTypes> {
         crate::spec_to_generic!(spec, |BASE_SPEC_ID| {
-            <BaseEvmConfig<BASE_SPEC_ID> as EvmConfig<BaseEvmTypes>>::VERSION_TABLES
+            <BaseEvmConfig<BASE_SPEC_ID> as EvmConfig<BaseEvmTypes>>::OPCODE_CONFIG
         })
     }
 
@@ -299,7 +299,7 @@ mod tests {
 
     #[test]
     fn default_gas_table_matches_revm_static_costs() {
-        let default_gas_table = version_tables(SpecId::FRONTIER);
+        let default_gas_table = opcode_config(SpecId::FRONTIER);
         assert_eq!(default_gas_table.static_gas(op::STOP), 0);
         assert_eq!(default_gas_table.static_gas(op::ADD), 3);
         assert_eq!(default_gas_table.static_gas(op::MUL), 5);
@@ -312,16 +312,16 @@ mod tests {
 
     #[test]
     fn gas_table_applies_spec_static_costs() {
-        let tangerine = version_tables(SpecId::TANGERINE);
+        let tangerine = opcode_config(SpecId::TANGERINE);
         assert_eq!(tangerine.static_gas(op::SLOAD), 200);
         assert_eq!(tangerine.static_gas(op::BALANCE), 400);
         assert_eq!(tangerine.static_gas(op::SELFDESTRUCT), 5000);
 
-        let istanbul = version_tables(SpecId::ISTANBUL);
+        let istanbul = opcode_config(SpecId::ISTANBUL);
         assert_eq!(istanbul.static_gas(op::SLOAD), 800);
         assert_eq!(istanbul.static_gas(op::EXTCODEHASH), 700);
 
-        let berlin = version_tables(SpecId::BERLIN);
+        let berlin = opcode_config(SpecId::BERLIN);
         assert_eq!(berlin.static_gas(op::SLOAD), 100);
         assert_eq!(berlin.static_gas(op::BALANCE), 100);
         assert_eq!(berlin.static_gas(op::CALL), 100);

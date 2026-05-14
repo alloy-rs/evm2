@@ -41,9 +41,10 @@ pub(crate) use crate::{
     utils::{calc_linear_cost, u64_to_address},
 };
 
-// silence arkworks lint as bn impl will be used as default if both are enabled.
+// Silence backend dependency lints when another backend takes precedence.
 cfg_if::cfg_if! {
     if #[cfg(feature = "bn")] {
+        use bn as _;
         use ark_bn254 as _;
         use ark_ff as _;
         use ark_ec as _;

@@ -1,5 +1,7 @@
 //! Ethereum Execution Spec Tests for evm2.
 
+#![cfg_attr(not(test), warn(unused_crate_dependencies))]
+
 mod blockchaintest;
 mod discover;
 mod env;

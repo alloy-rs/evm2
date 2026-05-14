@@ -4,7 +4,7 @@ use crate::{
     bytecode::Bytecode,
     env::BlockEnv,
     interpreter::{Host, InstrStop, Interpreter, Word, op},
-    version::VersionTables,
+    version::OpcodeConfig,
 };
 use alloc::vec::Vec;
 use alloy_primitives::Bytes;
@@ -64,18 +64,18 @@ struct MacroConfig;
 
 impl EvmConfig<TestTypes> for MacroConfig {
     const BASE_SPEC_ID: SpecId = SpecId::OSAKA;
-    const VERSION_TABLES: &'static VersionTables<TestTypes> = &macro_version_tables();
+    const OPCODE_CONFIG: &'static OpcodeConfig<TestTypes> = &macro_opcode_config();
 }
 
-const fn macro_version_tables() -> VersionTables<TestTypes> {
-    let mut version = VersionTables::<TestTypes>::base::<BaseEvmConfig<{ SpecId::OSAKA as u8 }>>();
-    version.set_instruction::<macro_add<TestTypes>>(ADD_OPCODE, 0);
-    version.set_instruction::<macro_dynamic_gas<TestTypes>>(DYNAMIC_GAS_OPCODE, 2);
-    version.set_instruction::<macro_no_stack_preamble<TestTypes>>(NO_STACK_PREAMBLE_OPCODE, 0);
-    version.set_instruction::<macro_concrete_eq>(CONCRETE_EQ_OPCODE, 0);
-    version.set_instruction::<macro_type_bound<TestTypes>>(TYPE_BOUND_OPCODE, 0);
-    version.set_instruction::<macro_assoc_bound<TestTypes>>(ASSOC_BOUND_OPCODE, 0);
-    version
+const fn macro_opcode_config() -> OpcodeConfig<TestTypes> {
+    let mut config = OpcodeConfig::<TestTypes>::base::<BaseEvmConfig<{ SpecId::OSAKA as u32 }>>();
+    config.set_instruction::<macro_add<TestTypes>>(ADD_OPCODE, 0);
+    config.set_instruction::<macro_dynamic_gas<TestTypes>>(DYNAMIC_GAS_OPCODE, 2);
+    config.set_instruction::<macro_no_stack_preamble<TestTypes>>(NO_STACK_PREAMBLE_OPCODE, 0);
+    config.set_instruction::<macro_concrete_eq>(CONCRETE_EQ_OPCODE, 0);
+    config.set_instruction::<macro_type_bound<TestTypes>>(TYPE_BOUND_OPCODE, 0);
+    config.set_instruction::<macro_assoc_bound<TestTypes>>(ASSOC_BOUND_OPCODE, 0);
+    config
 }
 
 fn run(config: RunConfig<'_>) -> TestInterpreter {

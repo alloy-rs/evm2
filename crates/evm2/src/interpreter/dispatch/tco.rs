@@ -52,7 +52,7 @@ extern_table! {
         state: &mut InterpreterState<'_, T>,
         instructions: *const (),
     ) {
-        let instruction = C::VERSION_TABLES.instruction(OP);
+        let instruction = C::OPCODE_CONFIG.instruction(OP);
         let instr: InstructionImplFn<T> = instruction.instr;
         let dynamic_gas = instruction.dynamic_gas;
         if M::INSPECT {
@@ -122,5 +122,5 @@ const fn pre_step<T: EvmTypes, C: EvmConfig<T>>(
     remaining_gas: &mut RemainingGas,
     opcode: u8,
 ) -> Result {
-    remaining_gas.spend(C::VERSION_TABLES.static_gas(opcode) as _)
+    remaining_gas.spend(C::OPCODE_CONFIG.static_gas(opcode) as _)
 }

@@ -60,7 +60,7 @@ impl super::DispatchGas for RemainingGas {
         _state: &mut InterpreterState<'_, T>,
         op: u8,
     ) -> Result {
-        self.spend(C::VERSION_TABLES.static_gas(op) as _)
+        self.spend(C::OPCODE_CONFIG.static_gas(op) as _)
     }
 
     #[inline(always)]
