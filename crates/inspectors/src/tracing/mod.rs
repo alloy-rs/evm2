@@ -46,8 +46,8 @@ mod writer;
 #[cfg(feature = "std")]
 pub use writer::{TraceWriter, TraceWriterConfig};
 
-#[cfg(feature = "js-tracer")]
 /// JavaScript tracing support.
+#[cfg(feature = "js-tracer")]
 #[allow(dead_code)]
 pub mod js {
     pub(crate) mod builtins;
