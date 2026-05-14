@@ -50,7 +50,187 @@ pub use writer::{TraceWriter, TraceWriterConfig};
 #[cfg(feature = "js-tracer")]
 #[allow(dead_code)]
 pub mod js {
+    use alloc::string::String;
+    use boa_engine::{Context, JsError, JsObject, JsValue, Source, js_string};
+
     pub(crate) mod builtins;
+
+    use builtins::register_builtins;
+
+    /// The maximum number of iterations in a loop.
+    ///
+    /// Once exceeded, the loop will throw an error.
+    pub const LOOP_ITERATION_LIMIT: u64 = 200_000;
+
+    /// The recursion limit for function calls.
+    ///
+    /// Once exceeded, the loop will throw an error.
+    pub const RECURSION_LIMIT: usize = 10_000;
+
+    /// A javascript inspector that will delegate inspector functions to javascript functions
+    ///
+    /// See also <https://geth.ethereum.org/docs/developers/evm-tracing/custom-tracer#custom-javascript-tracing>
+    #[derive(Debug)]
+    pub struct JsInspector {
+        ctx: Context,
+        code: String,
+        _js_config_value: JsValue,
+        config: serde_json::Value,
+        obj: JsObject,
+        result_fn: JsObject,
+        fault_fn: JsObject,
+        enter_fn: Option<JsObject>,
+        exit_fn: Option<JsObject>,
+        step_fn: Option<JsObject>,
+    }
+
+    impl JsInspector {
+        /// Creates a new inspector from a javascript code snipped that evaluates to an object with
+        /// the expected fields and a config object.
+        ///
+        /// The object must have the following fields:
+        ///  - `result`: a function that will be called when the result is requested.
+        ///  - `fault`: a function that will be called when the transaction fails.
+        ///
+        /// Optional functions are invoked during inspection:
+        /// - `setup`: a function that will be called before the inspection starts.
+        /// - `enter`: a function that will be called when the execution enters a new call.
+        /// - `exit`: a function that will be called when the execution exits a call.
+        /// - `step`: a function that will be called when the execution steps to the next
+        ///   instruction.
+        pub fn new(code: String, config: serde_json::Value) -> Result<Self, JsInspectorError> {
+            let mut ctx = Context::default();
+
+            ctx.runtime_limits_mut().set_loop_iteration_limit(LOOP_ITERATION_LIMIT);
+            ctx.runtime_limits_mut().set_recursion_limit(RECURSION_LIMIT);
+
+            register_builtins(&mut ctx)?;
+
+            let wrapped = alloc::format!("({code})");
+            let obj = ctx
+                .eval(Source::from_bytes(wrapped.as_bytes()))
+                .map_err(JsInspectorError::EvalCode)?;
+
+            let obj = obj.as_object().ok_or(JsInspectorError::ExpectedJsObject)?;
+
+            let result_fn = obj
+                .get(js_string!("result"), &mut ctx)?
+                .as_object()
+                .ok_or(JsInspectorError::ResultFunctionMissing)?;
+            if !result_fn.is_callable() {
+                return Err(JsInspectorError::ResultFunctionMissing);
+            }
+
+            let fault_fn = obj
+                .get(js_string!("fault"), &mut ctx)?
+                .as_object()
+                .ok_or(JsInspectorError::FaultFunctionMissing)?;
+            if !fault_fn.is_callable() {
+                return Err(JsInspectorError::FaultFunctionMissing);
+            }
+
+            let enter_fn =
+                obj.get(js_string!("enter"), &mut ctx)?.as_object().filter(|o| o.is_callable());
+            let exit_fn =
+                obj.get(js_string!("exit"), &mut ctx)?.as_object().filter(|o| o.is_callable());
+            let step_fn =
+                obj.get(js_string!("step"), &mut ctx)?.as_object().filter(|o| o.is_callable());
+
+            let _js_config_value = JsValue::from_json(&config, &mut ctx)
+                .map_err(JsInspectorError::InvalidJsonConfig)?;
+
+            if let Some(setup_fn) = obj.get(js_string!("setup"), &mut ctx)?.as_object() {
+                if !setup_fn.is_callable() {
+                    return Err(JsInspectorError::SetupFunctionNotCallable);
+                }
+
+                setup_fn
+                    .call(&(obj.clone().into()), core::slice::from_ref(&_js_config_value), &mut ctx)
+                    .map_err(JsInspectorError::SetupCallFailed)?;
+            }
+
+            Ok(Self {
+                ctx,
+                code,
+                _js_config_value,
+                config,
+                obj,
+                result_fn,
+                fault_fn,
+                enter_fn,
+                exit_fn,
+                step_fn,
+            })
+        }
+    }
+
+    /// Error variants that can occur during JavaScript inspection.
+    #[derive(Debug, thiserror::Error)]
+    pub enum JsInspectorError {
+        /// Error originating from a JavaScript operation.
+        #[error(transparent)]
+        JsError(#[from] JsError),
+
+        /// Failure during the evaluation of JavaScript code.
+        #[error("failed to evaluate JS code: {0}")]
+        EvalCode(JsError),
+
+        /// The evaluated code is not a JavaScript object.
+        #[error("the evaluated code is not a JS object")]
+        ExpectedJsObject,
+
+        /// The trace object must expose a function named `result()`.
+        #[error("trace object must expose a function result()")]
+        ResultFunctionMissing,
+
+        /// The trace object must expose a function named `fault()`.
+        #[error("trace object must expose a function fault()")]
+        FaultFunctionMissing,
+
+        /// The setup object must be a callable function.
+        #[error("setup object must be a function")]
+        SetupFunctionNotCallable,
+
+        /// Failure during the invocation of the `setup()` function.
+        #[error("failed to call setup(): {0}")]
+        SetupCallFailed(JsError),
+
+        /// Invalid JSON configuration encountered.
+        #[error("invalid JSON config: {0}")]
+        InvalidJsonConfig(JsError),
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn test_loop_iteration_limit() {
+            let mut context = Context::default();
+            context.runtime_limits_mut().set_loop_iteration_limit(LOOP_ITERATION_LIMIT);
+
+            let code = "let i = 0; while (i++ < 69) {}";
+            let result = context.eval(Source::from_bytes(code));
+            assert!(result.is_ok());
+
+            let code = "while (true) {}";
+            let result = context.eval(Source::from_bytes(code));
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn test_fault_fn_not_callable() {
+            let code = r#"
+            {
+                result: function() {},
+                fault: {},
+            }
+        "#;
+            let config = serde_json::Value::Null;
+            let result = JsInspector::new(code.to_string(), config);
+            assert!(matches!(result, Err(JsInspectorError::FaultFunctionMissing)));
+        }
+    }
 }
 
 mod mux;
