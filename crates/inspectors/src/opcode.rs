@@ -111,3 +111,42 @@ impl<T: EvmTypes> Inspector<T> for OpcodeGasInspector {
 pub fn immediate_size(opcode: u8) -> u8 {
     OpCode::new(opcode).map_or(0, OpCode::immediate_size)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_primitives::Bytes;
+    use evm2::{BaseEvmTypes, bytecode::Bytecode, env::TxEnv};
+
+    #[test]
+    fn test_opcode_counter_inspector() {
+        let mut opcode_counter = OpcodeGasInspector::new();
+
+        let opcodes = [op::ADD, op::ADD, op::ADD, op::BYTE];
+
+        let bytecode = Bytecode::new_legacy(Bytes::from(opcodes));
+        let tx_env = TxEnv::<BaseEvmTypes>::default();
+        let message = Message::default();
+        let mut interpreter = Interpreter::new(bytecode, &tx_env, &message, false);
+
+        for _ in &opcodes {
+            opcode_counter.step(&mut interpreter);
+        }
+    }
+
+    #[test]
+    fn test_with_variety_of_opcodes() {
+        let mut opcode_counter = OpcodeGasInspector::new();
+
+        let opcodes = [op::PUSH1, op::PUSH1, op::ADD, op::PUSH1, op::SSTORE, op::STOP];
+
+        let bytecode = Bytecode::new_legacy(Bytes::from(opcodes));
+        let tx_env = TxEnv::<BaseEvmTypes>::default();
+        let message = Message::default();
+        let mut interpreter = Interpreter::new(bytecode, &tx_env, &message, false);
+
+        for _ in &opcodes {
+            opcode_counter.step(&mut interpreter);
+        }
+    }
+}
