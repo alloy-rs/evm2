@@ -183,60 +183,6 @@ impl<'a> StackMut<'a> {
         Ok(())
     }
 
-    /// # Safety
-    ///
-    /// Caller must ensure `ptr..ptr + N` is valid to read.
-    #[inline]
-    pub(crate) unsafe fn push_immediate<const N: usize>(&mut self, ptr: *const u8) -> Result {
-        debug_assert!(N <= 32);
-
-        let len = self.len();
-        if len == Self::CAPACITY {
-            cold_path();
-            return Err(InstrStop::StackOverflow);
-        }
-
-        unsafe {
-            let dst = self.as_word_mut_ptr().add(len).cast::<u64>();
-            *self.len = len + 1;
-            debug_assert!(*self.len <= Self::CAPACITY);
-
-            let whole_words = N / 8;
-            let leading_part = N % 8;
-            let leading_word = read_partial_be_u64(ptr, leading_part);
-
-            if whole_words == 0 {
-                dst.add(0).write(leading_word);
-                dst.add(1).write(0);
-                dst.add(2).write(0);
-                dst.add(3).write(0);
-            } else if whole_words == 1 {
-                dst.add(0).write(read_be_u64(ptr.add(leading_part)));
-                dst.add(1).write(leading_word);
-                dst.add(2).write(0);
-                dst.add(3).write(0);
-            } else if whole_words == 2 {
-                dst.add(0).write(read_be_u64(ptr.add(8 + leading_part)));
-                dst.add(1).write(read_be_u64(ptr.add(leading_part)));
-                dst.add(2).write(leading_word);
-                dst.add(3).write(0);
-            } else if whole_words == 3 {
-                dst.add(0).write(read_be_u64(ptr.add(16 + leading_part)));
-                dst.add(1).write(read_be_u64(ptr.add(8 + leading_part)));
-                dst.add(2).write(read_be_u64(ptr.add(leading_part)));
-                dst.add(3).write(leading_word);
-            } else {
-                debug_assert_eq!(leading_part, 0);
-                dst.add(0).write(read_be_u64(ptr.add(24)));
-                dst.add(1).write(read_be_u64(ptr.add(16)));
-                dst.add(2).write(read_be_u64(ptr.add(8)));
-                dst.add(3).write(read_be_u64(ptr));
-            }
-        }
-
-        Ok(())
-    }
-
     /// Pops one word from the stack.
     #[inline]
     pub fn pop(&mut self) -> Result<Word> {
@@ -408,18 +354,6 @@ impl<'a> StackMut<'a> {
 
         Ok(())
     }
-}
-
-#[inline(always)]
-const unsafe fn read_be_u64(ptr: *const u8) -> u64 {
-    u64::from_be_bytes(unsafe { ptr.cast::<[u8; 8]>().read_unaligned() })
-}
-
-#[inline(always)]
-const unsafe fn read_partial_be_u64(ptr: *const u8, n: usize) -> u64 {
-    let mut bytes = [0; 8];
-    unsafe { core::ptr::copy_nonoverlapping(ptr, bytes.as_mut_ptr().add(8 - n), n) };
-    u64::from_be_bytes(bytes)
 }
 
 #[cfg(test)]

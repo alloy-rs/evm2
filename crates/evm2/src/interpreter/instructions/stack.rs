@@ -6,8 +6,11 @@ pub(crate) fn pop([_value]: [Word]) -> Result {}
 
 #[instruction(no_stack_preamble)]
 pub(crate) fn push<const N: usize>(cx: _) -> Result {
-    let ptr = unsafe { cx.pc.as_ptr().add(1) };
-    unsafe { stack.push_immediate::<N>(ptr) }
+    if N == 0 {
+        return stack.push(Word::ZERO);
+    }
+    let slice = unsafe { cx.pc.read_bytes_offset_unchecked(1, N) };
+    stack.push_slice(slice)
 }
 
 #[instruction(no_stack_preamble)]
