@@ -8,5 +8,9 @@ status-level = "leak"
 
 # Run known-slow statetest groups first so they do not hold up the end of a run.
 [[profile.default.overrides]]
-filter = 'test(stTimeConsuming) | test(vmPerformance)'
-priority = 100
+filter = 'test(/stTimeConsuming|vmPerformance|50000|test_valid|test_many|until_out_of_gas/)'
+priority = 2
+
+[[profile.default.overrides]]
+filter = 'test(blockchain_tests::)'
+priority = 1
