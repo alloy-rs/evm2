@@ -2,7 +2,7 @@
 
 use crate::opcode;
 use evm2::{
-    BaseEvmConfig, Evm, EvmConfig, EvmConfigSelector, EvmTypes, ExecutionConfig, OpcodeTables,
+    BaseEvmConfig, Evm, EvmConfig, EvmConfigSelector, EvmTypes, ExecutionConfig, OpcodeConfig,
     SpecId, Version,
 };
 
@@ -96,8 +96,8 @@ impl<const BASE_SPEC_ID: u32, const CUSTOM_SPEC_ID: u32> EvmConfig<CustomTypes>
     for CustomConfig<BASE_SPEC_ID, CUSTOM_SPEC_ID>
 {
     const BASE_SPEC_ID: SpecId = SpecId::try_from_u32(BASE_SPEC_ID).unwrap();
-    const OPCODE_TABLES: &'static OpcodeTables<CustomTypes> =
-        &custom_opcode_tables::<BASE_SPEC_ID, CUSTOM_SPEC_ID>();
+    const OPCODE_CONFIG: &'static OpcodeConfig<CustomTypes> =
+        &custom_opcode_config::<BASE_SPEC_ID, CUSTOM_SPEC_ID>();
 }
 
 pub const fn custom_version(base_spec_id: SpecId) -> Version {
@@ -106,23 +106,23 @@ pub const fn custom_version(base_spec_id: SpecId) -> Version {
     version
 }
 
-pub const fn custom_opcode_tables<const BASE_SPEC_ID: u32, const CUSTOM_SPEC_ID: u32>()
--> OpcodeTables<CustomTypes> {
-    let mut tables =
-        OpcodeTables::<CustomTypes>::base::<CustomConfig<BASE_SPEC_ID, CUSTOM_SPEC_ID>>();
+pub const fn custom_opcode_config<const BASE_SPEC_ID: u32, const CUSTOM_SPEC_ID: u32>()
+-> OpcodeConfig<CustomTypes> {
+    let mut config =
+        OpcodeConfig::<CustomTypes>::base::<CustomConfig<BASE_SPEC_ID, CUSTOM_SPEC_ID>>();
     let custom_spec_id =
         CustomSpecId::try_from_u32(CUSTOM_SPEC_ID).expect("invalid custom spec id");
     if custom_spec_id.enables(CustomSpecId::CustomOsaka) {
-        tables.set_instruction::<opcode::custom<CustomTypes>>(
+        config.set_instruction::<opcode::custom<CustomTypes>>(
             opcode::CUSTOM_OPCODE,
             opcode::CUSTOM_OPCODE_GAS,
         );
-        tables.set_instruction::<opcode::l1_blocknumber>(
+        config.set_instruction::<opcode::l1_blocknumber>(
             opcode::L1_BLOCKNUMBER_OPCODE,
             opcode::L1_BLOCKNUMBER_GAS,
         );
     }
-    tables
+    config
 }
 
 #[derive(Clone, Copy, Debug)]

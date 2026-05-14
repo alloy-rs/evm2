@@ -35,7 +35,7 @@ pub use precompiles::{
 pub(crate) mod trustme;
 
 pub mod version;
-pub use version::{EvmFeatures, OpcodeTables, Version};
+pub use version::{EvmFeatures, OpcodeConfig, Version};
 
 mod spec_id;
 pub use spec_id::SpecId;

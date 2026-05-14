@@ -7,11 +7,11 @@ use crate::{
 };
 use core::fmt;
 
-/// Type-specific opcode tables.
+/// Type-specific opcode configuration.
 ///
 /// Stores the static gas table and instruction implementations for a concrete `EvmTypes` family.
-/// These tables are compile-time inputs used to build the final interpreter dispatch table.
-pub struct OpcodeTables<T: EvmTypes> {
+/// This is a compile-time input used to build the final interpreter dispatch table.
+pub struct OpcodeConfig<T: EvmTypes> {
     /// Static opcode gas table.
     static_gas_table: StaticGasTable,
     /// Instruction implementations.
@@ -26,19 +26,19 @@ pub(crate) struct InstructionInfo<T: EvmTypes> {
     pub(crate) dynamic_gas: bool,
 }
 
-impl<T: EvmTypes> fmt::Debug for OpcodeTables<T> {
+impl<T: EvmTypes> fmt::Debug for OpcodeConfig<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("OpcodeTables").finish_non_exhaustive()
+        f.debug_struct("OpcodeConfig").finish_non_exhaustive()
     }
 }
 
-impl<T: EvmTypes> OpcodeTables<T> {
-    /// Returns the base type-specific opcode tables for `C`.
+impl<T: EvmTypes> OpcodeConfig<T> {
+    /// Returns the base type-specific opcode config for `C`.
     pub const fn base<C: EvmConfig<T>>() -> Self {
-        super::base_opcode_tables::<T, C>()
+        super::base_opcode_config::<T, C>()
     }
 
-    /// Creates empty type-specific opcode tables.
+    /// Creates empty type-specific opcode config.
     #[inline]
     pub(super) const fn empty() -> Self {
         Self {
@@ -74,7 +74,7 @@ impl<T: EvmTypes> OpcodeTables<T> {
         self.instruction_impls.get(opcode)
     }
 
-    /// Returns whether `opcode` has no instruction implementation in this version.
+    /// Returns whether `opcode` has no instruction implementation in this config.
     #[inline(always)]
     pub(crate) const fn is_unknown_opcode(&self, opcode: u8) -> bool {
         self.instruction_impls.is_unknown(opcode)

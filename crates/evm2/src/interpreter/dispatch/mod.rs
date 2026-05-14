@@ -1,8 +1,8 @@
 //! Instruction dispatch tables.
 
 use crate::{
-    BaseEvmConfigSelector, EvmConfig, EvmConfigSelector, EvmTypes, OpcodeTables,
-    evm::config::SelectorOpcodeTables,
+    BaseEvmConfigSelector, EvmConfig, EvmConfigSelector, EvmTypes, OpcodeConfig,
+    evm::config::SelectorOpcodeConfig,
     interpreter::{InstrStop, Interpreter, InterpreterState, Pc, Result, Stack, StackMut, op},
     trustme,
 };
@@ -65,7 +65,7 @@ pub(crate) type InstrTable<T> = imp::RawInstrTable<T>;
 
 const fn make_table<T, C, M>(
     previous: Option<&InstrTable<T>>,
-    previous_opcode_tables: Option<&OpcodeTables<T>>,
+    previous_opcode_config: Option<&OpcodeConfig<T>>,
 ) -> InstrTable<T>
 where
     T: EvmTypes,
@@ -76,12 +76,12 @@ where
         Some(previous) => *previous,
         None => [imp::unknown_dispatch::<T, C, M> as imp::RawInstrFn<T>; 256],
     };
-    let vt = C::OPCODE_TABLES;
+    let vt = C::OPCODE_CONFIG;
 
     macro_rules! assign_instruction_table_entries {
         ($($op:literal,)*) => {
             $(
-                if instruction_changed(vt, previous_opcode_tables, $op) && !vt.is_unknown_opcode($op) {
+                if instruction_changed(vt, previous_opcode_config, $op) && !vt.is_unknown_opcode($op) {
                     table[$op] = {
                         let instruction = vt.instruction($op);
                         if instruction.dynamic_gas {
@@ -156,7 +156,7 @@ where
                 make_selector_tables!(@previous_table [$($previous_table)*]),
                 match previous {
                     Some(previous) => {
-                        Some(crate::evm::config::SelectorOpcodeTables::<T, F, CUSTOM_SPEC_ID>::OPCODE_TABLES[previous as usize])
+                        Some(crate::evm::config::SelectorOpcodeConfig::<T, F, CUSTOM_SPEC_ID>::OPCODE_CONFIG[previous as usize])
                     }
                     None => None,
                 },
@@ -190,7 +190,7 @@ where
                 [C::BASE_SPEC_ID as usize],
         ),
         Some(
-            SelectorOpcodeTables::<T, BaseEvmConfigSelector, { u32::MAX }>::OPCODE_TABLES
+            SelectorOpcodeConfig::<T, BaseEvmConfigSelector, { u32::MAX }>::OPCODE_CONFIG
                 [C::BASE_SPEC_ID as usize],
         ),
     );
@@ -200,7 +200,7 @@ where
                 [C::BASE_SPEC_ID as usize],
         ),
         Some(
-            SelectorOpcodeTables::<T, BaseEvmConfigSelector, { u32::MAX }>::OPCODE_TABLES
+            SelectorOpcodeConfig::<T, BaseEvmConfigSelector, { u32::MAX }>::OPCODE_CONFIG
                 [C::BASE_SPEC_ID as usize],
         ),
     );
@@ -222,14 +222,14 @@ where
 }
 
 const fn instruction_changed<T: EvmTypes>(
-    opcode_tables: &OpcodeTables<T>,
-    previous_opcode_tables: Option<&OpcodeTables<T>>,
+    opcode_config: &OpcodeConfig<T>,
+    previous_opcode_config: Option<&OpcodeConfig<T>>,
     op: u8,
 ) -> bool {
-    let Some(previous_opcode_tables) = previous_opcode_tables else {
+    let Some(previous_opcode_config) = previous_opcode_config else {
         return true;
     };
-    opcode_tables.revision(op) != previous_opcode_tables.revision(op)
+    opcode_config.revision(op) != previous_opcode_config.revision(op)
 }
 
 trait InspectMode<T: EvmTypes> {

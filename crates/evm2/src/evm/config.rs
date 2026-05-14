@@ -1,7 +1,7 @@
 //! EVM configuration.
 
 use crate::{
-    OpcodeTables, SpecId,
+    OpcodeConfig, SpecId,
     ethereum::RecoveredTxEnvelope,
     interpreter::{
         Host,
@@ -49,14 +49,14 @@ pub trait EvmTypes: Sized + 'static {
 
 /// Compile-time EVM table configuration.
 ///
-/// Names the inherited base `SpecId` and the type-specific `OpcodeTables` needed to build a
+/// Names the inherited base `SpecId` and the type-specific `OpcodeConfig` needed to build a
 /// dispatch table. Custom configs are modeled as overlays on a base spec, not as new base specs.
 pub trait EvmConfig<T: EvmTypes> {
     /// Inherited base specification ID.
     const BASE_SPEC_ID: SpecId;
 
-    /// Active type-specific opcode tables.
-    const OPCODE_TABLES: &'static OpcodeTables<T>;
+    /// Active type-specific opcode config.
+    const OPCODE_CONFIG: &'static OpcodeConfig<T>;
 }
 
 /// Runtime EVM config selector.
@@ -76,39 +76,39 @@ pub trait EvmConfigSelector<T: EvmTypes>: Sized {
     fn execution_config(spec_id: T::SpecId) -> ExecutionConfig<T>;
 }
 
-pub(crate) struct SelectorOpcodeTables<T, F, const CUSTOM_SPEC_ID: u32>(
+pub(crate) struct SelectorOpcodeConfig<T, F, const CUSTOM_SPEC_ID: u32>(
     core::marker::PhantomData<fn() -> (T, F)>,
 );
 
-impl<T, F, const CUSTOM_SPEC_ID: u32> SelectorOpcodeTables<T, F, CUSTOM_SPEC_ID>
+impl<T, F, const CUSTOM_SPEC_ID: u32> SelectorOpcodeConfig<T, F, CUSTOM_SPEC_ID>
 where
     T: EvmTypes,
     F: EvmConfigSelector<T>,
 {
-    pub(crate) const OPCODE_TABLES: &'static [&'static OpcodeTables<T>; SpecId::COUNT] =
-        &selector_opcode_tables::<T, F, CUSTOM_SPEC_ID>();
+    pub(crate) const OPCODE_CONFIG: &'static [&'static OpcodeConfig<T>; SpecId::COUNT] =
+        &selector_opcode_config::<T, F, CUSTOM_SPEC_ID>();
 }
 
-const fn selector_opcode_tables<T, F, const CUSTOM_SPEC_ID: u32>()
--> [&'static OpcodeTables<T>; SpecId::COUNT]
+const fn selector_opcode_config<T, F, const CUSTOM_SPEC_ID: u32>()
+-> [&'static OpcodeConfig<T>; SpecId::COUNT]
 where
     T: EvmTypes,
     F: EvmConfigSelector<T>,
 {
-    macro_rules! opcode_tables {
+    macro_rules! opcode_config {
         ([$evm_types:ty, $selector:ty] $($spec:ident $name:ident,)*) => {
             [
                 $(
                     <<$selector as EvmConfigSelector<$evm_types>>::Config<
                         { SpecId::$spec as u32 },
                         CUSTOM_SPEC_ID,
-                    > as EvmConfig<$evm_types>>::OPCODE_TABLES,
+                    > as EvmConfig<$evm_types>>::OPCODE_CONFIG,
                 )*
             ]
         };
     }
 
-    crate::for_each_spec!([T, F] opcode_tables)
+    crate::for_each_spec!([T, F] opcode_config)
 }
 
 /// Selected execution configuration.
@@ -215,7 +215,7 @@ pub struct BaseEvmConfig<const BASE_SPEC_ID: u32>(());
 
 impl<T: EvmTypes, const BASE_SPEC_ID: u32> EvmConfig<T> for BaseEvmConfig<BASE_SPEC_ID> {
     const BASE_SPEC_ID: SpecId = SpecId::try_from_u32(BASE_SPEC_ID).expect("invalid spec id");
-    const OPCODE_TABLES: &'static OpcodeTables<T> = &OpcodeTables::<T>::base::<Self>();
+    const OPCODE_CONFIG: &'static OpcodeConfig<T> = &OpcodeConfig::<T>::base::<Self>();
 }
 
 /// Base EVM config selector.
