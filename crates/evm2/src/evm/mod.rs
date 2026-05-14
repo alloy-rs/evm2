@@ -374,6 +374,48 @@ impl<T: EvmTypes<Tx: Typed2718>> Evm<T> {
 }
 
 impl<T: EvmTypes<Host = Self>> Evm<T> {
+    /// Executes the top-level transaction message with inspector call/create hooks.
+    #[inline]
+    pub(crate) fn execute_top_message(
+        &mut self,
+        tx_env: &TxEnv<T>,
+        bytecode: Bytecode,
+        message: &mut Message<T>,
+    ) -> MessageResult<T> {
+        let inspected = match message.kind {
+            MessageKind::Create | MessageKind::Create2 => {
+                self.inspector.as_deref_mut().and_then(|inspector| inspector.create(message))
+            }
+            MessageKind::Call
+            | MessageKind::CallCode
+            | MessageKind::DelegateCall
+            | MessageKind::StaticCall => {
+                self.inspector.as_deref_mut().and_then(|inspector| inspector.call(message))
+            }
+        };
+
+        let mut result =
+            inspected.unwrap_or_else(|| self.execute_message(tx_env, bytecode, message, false));
+
+        match message.kind {
+            MessageKind::Create | MessageKind::Create2 => {
+                if let Some(inspector) = self.inspector.as_deref_mut() {
+                    inspector.create_end(message, &mut result);
+                }
+            }
+            MessageKind::Call
+            | MessageKind::CallCode
+            | MessageKind::DelegateCall
+            | MessageKind::StaticCall => {
+                if let Some(inspector) = self.inspector.as_deref_mut() {
+                    inspector.call_end(message, &mut result);
+                }
+            }
+        }
+
+        result
+    }
+
     #[inline(never)]
     fn execute_create_message(
         &mut self,

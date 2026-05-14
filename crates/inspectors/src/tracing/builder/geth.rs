@@ -15,7 +15,7 @@ use alloy_rpc_types_trace::geth::{
     GethDefaultTracingOptions, PreStateConfig, PreStateFrame, PreStateMode, StructLog,
     erc7562::{AccessedSlots, CallFrameType, Erc7562Config, Erc7562Frame},
 };
-use evm2::{EvmTypes, TxResult, bytecode::opcode::op, evm::StateChanges};
+use evm2::{EvmTypes, SpecId, TxResult, bytecode::opcode::op, evm::StateChanges};
 
 /// Source of post-transaction state changes for prestate trace construction.
 pub trait TraceStateChanges {
@@ -58,19 +58,24 @@ impl<T: TraceExecutionResult + TraceStateChanges> TraceTransactionResult for T {
 pub struct GethTraceBuilder<'a> {
     /// Recorded trace nodes.
     nodes: Cow<'a, [CallTraceNode]>,
+    /// Active EVM spec.
+    spec_id: Option<SpecId>,
 }
 
 impl GethTraceBuilder<'static> {
     /// Returns a new instance of the builder from [`Cow::Owned`]
-    pub fn new(nodes: Vec<CallTraceNode>) -> GethTraceBuilder<'static> {
-        Self { nodes: Cow::Owned(nodes) }
+    pub fn new(nodes: Vec<CallTraceNode>, spec_id: Option<SpecId>) -> GethTraceBuilder<'static> {
+        Self { nodes: Cow::Owned(nodes), spec_id }
     }
 }
 
 impl<'a> GethTraceBuilder<'a> {
     /// Returns a new instance of the builder from [`Cow::Borrowed`]
-    pub fn new_borrowed(nodes: &'a [CallTraceNode]) -> GethTraceBuilder<'a> {
-        Self { nodes: Cow::Borrowed(nodes) }
+    pub fn new_borrowed(
+        nodes: &'a [CallTraceNode],
+        spec_id: Option<SpecId>,
+    ) -> GethTraceBuilder<'a> {
+        Self { nodes: Cow::Borrowed(nodes), spec_id }
     }
 
     /// Consumes the builder and returns the recorded trace nodes.
@@ -379,6 +384,14 @@ impl<'a> GethTraceBuilder<'a> {
             state_diff.post.entry(Address::ZERO).or_default().code = Some(code.original_bytes());
         }
 
+        if self.spec_id.is_some_and(|spec_id| spec_id < SpecId::CANCUN) {
+            for node in self.nodes.iter().filter(|node| node.is_selfdestruct()) {
+                if let Some(address) = node.trace.selfdestruct_address {
+                    state_diff.post.remove(&address);
+                }
+            }
+        }
+
         let _ = db;
         state_diff.retain_changed().remove_zero_storage_values();
         PreStateFrame::Diff(state_diff)
@@ -626,7 +639,7 @@ mod tests {
             },
         );
 
-        let builder = GethTraceBuilder::new(Vec::new());
+        let builder = GethTraceBuilder::new(Vec::new(), None);
         let frame = builder.geth_prestate_diff_traces(&state, (), false, false);
 
         match frame {

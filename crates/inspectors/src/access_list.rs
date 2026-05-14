@@ -2,7 +2,7 @@
 
 use alloc::collections::BTreeSet;
 use alloy_primitives::{
-    Address, B256,
+    Address, B256, address,
     map::{HashMap, HashSet},
 };
 use alloy_rpc_types_eth::{AccessList, AccessListItem};
@@ -77,6 +77,10 @@ impl AccessListInspector {
     fn collect_excluded_addresses<T: EvmTypes>(&mut self, message: &Message<T>) {
         self.excluded.insert(message.caller);
         self.excluded.insert(message.destination);
+        for i in 1..=0x11 {
+            self.excluded.insert(Address::with_last_byte(i));
+        }
+        self.excluded.insert(address!("0000000000000000000000000000000000000100"));
     }
 }
 
@@ -117,14 +121,14 @@ impl<T: EvmTypes> Inspector<T> for AccessListInspector {
     }
 
     fn call(&mut self, message: &mut Message<T>) -> Option<MessageResult<T>> {
-        if message.depth == 1 {
+        if message.depth == 0 {
             self.collect_excluded_addresses(message);
         }
         None
     }
 
     fn create(&mut self, message: &mut Message<T>) -> Option<MessageResult<T>> {
-        if message.depth == 1 {
+        if message.depth == 0 {
             self.collect_excluded_addresses(message);
         }
         None

@@ -195,7 +195,11 @@ impl TxEnvBuilder {
     }
 
     pub fn build_fill(self) -> TxEnv {
-        self.0
+        let mut tx = self.0;
+        if tx.gas_limit == 0 {
+            tx.gas_limit = 1_000_000;
+        }
+        tx
     }
 }
 
@@ -321,7 +325,13 @@ impl<I: InspectorSlot> TestEvmWithInspector<I> {
 
     pub fn inspect_tx(&mut self, tx: TxEnv) -> Result<ResultAndState, HandlerError> {
         let inspector = self.inspector.inspector_mut() as *mut I::Target;
-        self.ctx.inspect_tx(tx, Some(inspector))
+        let res = self.ctx.inspect_tx(tx, Some(inspector))?;
+        let inspector = self.inspector.inspector_mut();
+        let any = inspector as &mut dyn core::any::Any;
+        if let Some(tracer) = any.downcast_mut::<TracingInspector>() {
+            tracer.fill_storage_changes(&res.state);
+        }
+        Ok(res)
     }
 
     pub fn inspect_tx_commit(&mut self, tx: TxEnv) -> Result<ExecutionResult, HandlerError> {
@@ -565,12 +575,14 @@ pub fn deploy_contract(
     spec: SpecId,
 ) -> DeployResult {
     evm.ctx.spec = spec;
+    let value = evm.ctx.tx.value;
     let result = evm
         .inspect_tx_commit(TxEnv {
             caller: deployer,
             gas_limit: 1_000_000,
             kind: TransactTo::Create,
             data: code,
+            value,
             nonce: evm.ctx.tx.nonce,
             ..Default::default()
         })
@@ -586,12 +598,14 @@ pub fn inspect_deploy_contract<I: InspectorSlot>(
     spec: SpecId,
 ) -> DeployResult {
     evm.ctx.spec = spec;
+    let value = evm.ctx.tx.value;
     let result = evm
         .inspect_tx_commit(TxEnv {
             caller: deployer,
             gas_limit: 1_000_000,
             kind: TransactTo::Create,
             data: code,
+            value,
             nonce: evm.ctx.tx.nonce,
             ..Default::default()
         })

@@ -362,7 +362,7 @@ pub(crate) fn initial_message<T: EvmTypes<Host = Evm<T>>>(
                 gas_limit,
                 destination: address,
                 caller,
-                input: Bytes::new(),
+                input: input.clone(),
                 value,
                 code_address: address,
                 disable_precompiles: false,

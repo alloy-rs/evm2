@@ -10,7 +10,6 @@ use crate::{
     Evm, EvmTypes, TxResult,
     bytecode::Bytecode,
     env::TxEnv,
-    interpreter::Host,
     registry::{HandlerError, HandlerResult, TxRequest},
     version::GasId,
 };
@@ -74,7 +73,7 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     };
     let (bytecode, mut message) =
         initial_message(req.host, caller, tx.nonce, tx.to.into(), &tx.input, tx.value, gas_limit)?;
-    let mut result = req.host.execute_message(&tx_env, bytecode, &mut message, false);
+    let mut result = req.host.execute_top_message(&tx_env, bytecode, &mut message);
     rollback_failed_execution(req.host, execution_checkpoint, &mut result);
     result.gas.set_refunded(
         result.gas.refunded().saturating_add(i64::try_from(eip7702_refund).unwrap_or(i64::MAX)),
