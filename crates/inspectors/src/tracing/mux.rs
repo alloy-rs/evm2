@@ -9,7 +9,7 @@ use alloy_rpc_types_trace::geth::{
 };
 use core::convert::Infallible;
 use evm2::{
-    EvmTypes, Inspector,
+    Evm, EvmTypes, Inspector,
     evm::StateChanges,
     interpreter::{Interpreter, Message, MessageResult},
 };
@@ -160,7 +160,7 @@ impl MuxInspector {
     }
 }
 
-impl<T: EvmTypes> Inspector<T> for MuxInspector {
+impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for MuxInspector {
     #[inline]
     fn initialize_interp(&mut self, interp: &mut Interpreter<'_, T>, host: &mut T::Host) {
         if let Some(ref mut inspector) = self.four_byte {

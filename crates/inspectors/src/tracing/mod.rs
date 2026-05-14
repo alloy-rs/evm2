@@ -8,12 +8,13 @@ use crate::{
             CallKind, CallLog, CallTrace, CallTraceStep, RecordedMemory, StorageChange,
             StorageChangeReason, TraceMemberOrder,
         },
+        utils::gas_used,
     },
 };
 use alloc::{boxed::Box, collections::BTreeMap, vec::Vec};
 use alloy_primitives::{Address, B256, Bytes, Log, U256};
 use evm2::{
-    EvmTypes, Inspector, SpecId,
+    Evm, EvmTypes, Inspector, SpecId,
     bytecode::opcode::{OpCode, op},
     evm::StateChanges,
     interpreter::{Interpreter, Message, MessageKind, MessageResult},
@@ -1279,7 +1280,22 @@ impl TracingInspector {
         ParityTraceBuilder::new(self.traces.into_nodes(), self.spec_id, self.config)
     }
 
-    fn start_trace<T: EvmTypes>(&mut self, message: &Message<T>) {
+    fn is_deep(&self) -> bool {
+        !self.trace_stack.is_empty()
+    }
+
+    fn is_precompile_call<T: EvmTypes<Host = Evm<T>>>(
+        &self,
+        host: &Evm<T>,
+        message: &Message<T>,
+    ) -> bool {
+        !message.disable_precompiles
+            && self.is_deep()
+            && message.value.is_zero()
+            && host.precompiles().contains(&message.code_address)
+    }
+
+    fn start_trace<T: EvmTypes>(&mut self, message: &Message<T>, maybe_precompile: Option<bool>) {
         let caller = match message.kind {
             MessageKind::DelegateCall | MessageKind::CallCode => message.destination,
             _ => message.caller,
@@ -1292,7 +1308,7 @@ impl TracingInspector {
             depth: usize::from(message.depth),
             caller,
             address,
-            maybe_precompile: None,
+            maybe_precompile,
             kind: message.kind.into(),
             value: message.value,
             data: message.input.clone(),
@@ -1301,7 +1317,12 @@ impl TracingInspector {
         };
 
         let entry = self.trace_stack.last().copied().unwrap_or_default();
-        let idx = self.traces.push_trace(entry, PushTraceKind::PushAndAttachToParent, trace);
+        let push_kind = if maybe_precompile.unwrap_or(false) {
+            PushTraceKind::PushOnly
+        } else {
+            PushTraceKind::PushAndAttachToParent
+        };
+        let idx = self.traces.push_trace(entry, push_kind, trace);
         self.trace_stack.push(idx);
     }
 
@@ -1335,11 +1356,11 @@ impl From<MessageKind> for CallKind {
     }
 }
 
-impl<T: EvmTypes> Inspector<T> for TracingInspector {
+impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for TracingInspector {
     fn initialize_interp(&mut self, interp: &mut Interpreter<'_, T>, _host: &mut T::Host) {
         self.spec_id = Some(interp.spec());
         if self.trace_stack.is_empty() {
-            self.start_trace(interp.message());
+            self.start_trace(interp.message(), None);
         }
     }
 
@@ -1392,7 +1413,11 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
             returndata,
             gas_remaining: interp.gas().remaining(),
             gas_refund_counter: interp.gas().refunded().max(0) as u64,
-            gas_used: interp.gas().spent(),
+            gas_used: gas_used(
+                interp.spec(),
+                interp.gas().spent(),
+                interp.gas().refunded().max(0) as u64,
+            ),
             gas_cost: 0,
             storage_change: None,
             status: None,
@@ -1442,8 +1467,10 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
         }
     }
 
-    fn call(&mut self, message: &mut Message<T>, _host: &mut T::Host) -> Option<MessageResult<T>> {
-        self.start_trace(message);
+    fn call(&mut self, message: &mut Message<T>, host: &mut T::Host) -> Option<MessageResult<T>> {
+        let maybe_precompile =
+            self.config.exclude_precompile_calls.then(|| self.is_precompile_call(host, message));
+        self.start_trace(message, maybe_precompile);
         None
     }
 
@@ -1461,7 +1488,7 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
         message: &mut Message<T>,
         _host: &mut T::Host,
     ) -> Option<MessageResult<T>> {
-        self.start_trace(message);
+        self.start_trace(message, Some(false));
         None
     }
 

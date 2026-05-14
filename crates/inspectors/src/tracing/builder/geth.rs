@@ -15,7 +15,7 @@ use alloy_rpc_types_trace::geth::{
     GethDefaultTracingOptions, PreStateConfig, PreStateFrame, PreStateMode, StructLog,
     erc7562::{AccessedSlots, CallFrameType, Erc7562Config, Erc7562Frame},
 };
-use evm2::{SpecId, bytecode::opcode::op, evm::StateChanges};
+use evm2::{AccountInfo, SpecId, bytecode::opcode::op, evm::StateChanges};
 
 /// A type for creating geth style traces
 #[derive(Clone, Debug)]
@@ -277,6 +277,8 @@ impl<'a> GethTraceBuilder<'a> {
         storage_enabled: bool,
     ) -> PreStateFrame {
         let mut state_diff = DiffMode::default();
+        let mut account_change_kinds =
+            HashMap::with_capacity_and_hasher(state.accounts.len(), Default::default());
 
         for (&address, account) in &state.accounts {
             if let Some(original) = &account.original {
@@ -292,8 +294,7 @@ impl<'a> GethTraceBuilder<'a> {
                 }
                 state_diff.pre.insert(address, pre_state);
             }
-            if account.current.is_some() {
-                let current = account.current.as_ref().expect("checked above");
+            if let Some(current) = &account.current {
                 let post_code = code_enabled
                     .then(|| current.code.as_ref().map(|code| code.original_bytes()))
                     .flatten();
@@ -306,6 +307,18 @@ impl<'a> GethTraceBuilder<'a> {
                 }
                 state_diff.post.insert(address, post_state);
             }
+
+            let pre_change = if account.original.as_ref().is_none_or(account_was_empty) {
+                AccountChangeKind::Create
+            } else {
+                AccountChangeKind::Modify
+            };
+            let post_change = if account.current.is_none() {
+                AccountChangeKind::SelfDestruct
+            } else {
+                AccountChangeKind::Modify
+            };
+            account_change_kinds.insert(address, (pre_change, post_change));
         }
 
         for (&address, storage) in &state.storage {
@@ -337,6 +350,7 @@ impl<'a> GethTraceBuilder<'a> {
             }
         }
 
+        self.diff_traces(&mut state_diff.pre, &mut state_diff.post, account_change_kinds);
         state_diff.retain_changed().remove_zero_storage_values();
         PreStateFrame::Diff(state_diff)
     }
@@ -547,6 +561,10 @@ impl<'a> GethTraceBuilder<'a> {
             CallKind::AuthCall => CallFrameType::Call,
         }
     }
+}
+
+fn account_was_empty(account: &AccountInfo) -> bool {
+    account.is_empty()
 }
 
 #[cfg(test)]

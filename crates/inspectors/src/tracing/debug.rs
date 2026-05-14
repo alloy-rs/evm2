@@ -9,7 +9,7 @@ use alloy_rpc_types_trace::geth::{
     erc7562::Erc7562Config, mux::MuxConfig,
 };
 use evm2::{
-    EvmTypes, Inspector,
+    Evm, EvmTypes, Inspector,
     env::{BlockEnv, TxEnv},
     evm::StateChanges,
     interpreter::{Interpreter, Message, MessageResult},
@@ -303,7 +303,7 @@ impl DebugInspector {
     }
 }
 
-impl<T: EvmTypes> Inspector<T> for DebugInspector {
+impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for DebugInspector {
     fn initialize_interp(&mut self, interp: &mut Interpreter<'_, T>, host: &mut T::Host) {
         match self {
             Self::FourByte(inspector) => inspector.initialize_interp(interp, host),
