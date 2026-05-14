@@ -1,5 +1,6 @@
 use crate::{
     EvmConfig, EvmTypes,
+    constants::STACK_LIMIT,
     interpreter::{
         InterpreterState, Pc, Result, Stack,
         gas::{Gas, RemainingGas},
@@ -9,14 +10,14 @@ use crate::{
 pub(super) type LoopState = RemainingGas;
 
 /// Packed instruction return value.
-pub(crate) type InstrFnRet = (Pc, usize);
+pub(crate) type InstrFnRet = (Pc, PackedGasStackLen);
 
 /// Packed instruction function pointer.
 pub(in crate::interpreter::dispatch) type RawInstrFn<T> = extern_table!(
     fn(
         pc: Pc,
         stack: Stack<'_>,
-        remaining_gas: &mut RemainingGas,
+        remaining_gas: RemainingGas,
         state: &mut InterpreterState<'_, T>,
     ) -> InstrFnRet
 );
@@ -29,7 +30,10 @@ pub(super) fn dispatch_loop_call<T: EvmTypes>(
     state: &mut InterpreterState<'_, T>,
     remaining_gas: &mut LoopState,
 ) -> (Pc, usize) {
-    instr(pc, stack, remaining_gas, state)
+    let (next_pc, gas_stack_len) = instr(pc, stack, *remaining_gas, state);
+    let (next_remaining_gas, next_stack_len) = gas_stack_len.unpack();
+    *remaining_gas = RemainingGas::new(next_remaining_gas);
+    (next_pc, next_stack_len)
 }
 
 #[inline(always)]
@@ -50,14 +54,14 @@ pub(super) const fn sync_loop_state<T: EvmTypes>(
     state.gas_mut().set_remaining(loop_state.get());
 }
 
-impl super::DispatchGas for &mut RemainingGas {
+impl super::DispatchGas for RemainingGas {
     #[inline(always)]
     fn pre_step<T: EvmTypes, C: EvmConfig<T>>(
         &mut self,
         _state: &mut InterpreterState<'_, T>,
         op: u8,
     ) -> Result {
-        (*self).spend(C::VERSION_TABLES.static_gas(op) as _)
+        self.spend(C::VERSION_TABLES.static_gas(op) as _)
     }
 
     #[inline(always)]
@@ -67,7 +71,7 @@ impl super::DispatchGas for &mut RemainingGas {
         dynamic_gas: bool,
     ) {
         if dynamic_gas {
-            state.gas_mut().set_remaining((**self).get());
+            state.gas_mut().set_remaining(self.get());
         }
     }
 
@@ -78,7 +82,7 @@ impl super::DispatchGas for &mut RemainingGas {
         dynamic_gas: bool,
     ) {
         if dynamic_gas {
-            (*self).set(state.gas_mut().remaining());
+            self.set(state.gas_mut().remaining());
         }
     }
 }
@@ -92,17 +96,43 @@ extern_table! {
     >(
         pc: Pc,
         mut stack: Stack<'_>,
-        remaining_gas: &mut RemainingGas,
+        remaining_gas: RemainingGas,
         state: &mut InterpreterState<'_, T>,
     ) -> InstrFnRet {
-        let (pc, _) =
-            super::dispatch_inner::<T, C, M, _>(
+        let (pc, remaining_gas) =
+            super::dispatch_inner::<T, C, M, RemainingGas>(
                 pc,
                 stack.as_mut(),
                 remaining_gas,
                 state,
                 OP,
             );
-        (pc, stack.len)
+        (
+            pc,
+            PackedGasStackLen::new(remaining_gas.get(), stack.len),
+        )
+    }
+}
+
+const STACK_LEN_BITS: u32 = usize::BITS - STACK_LIMIT.leading_zeros();
+const GAS_BITS: u32 = usize::BITS - STACK_LEN_BITS;
+const GAS_MASK: usize = usize::MAX >> STACK_LEN_BITS;
+
+const _: () = assert!(STACK_LIMIT <= (1 << STACK_LEN_BITS));
+
+/// Dispatch remaining gas and stack length, packed into one word on 64-bit native targets.
+#[derive(Clone, Copy)]
+#[repr(transparent)]
+pub(crate) struct PackedGasStackLen(usize);
+
+impl PackedGasStackLen {
+    #[inline(always)]
+    const fn new(remaining_gas: u64, stack_len: usize) -> Self {
+        Self((stack_len << GAS_BITS) | (remaining_gas as usize & GAS_MASK))
+    }
+
+    #[inline(always)]
+    const fn unpack(self) -> (u64, usize) {
+        ((self.0 & GAS_MASK) as u64, self.0 >> GAS_BITS)
     }
 }

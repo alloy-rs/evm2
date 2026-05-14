@@ -23,7 +23,7 @@ pub(super) use imp::{RawInstrFn, dispatch};
 /// Table instruction dispatch table.
 pub(super) type RawInstrTable<T> = [RawInstrFn<T>; 256];
 
-trait DispatchGas {
+trait DispatchGas: Copy {
     fn pre_step<T: EvmTypes, C: EvmConfig<T>>(
         &mut self,
         state: &mut InterpreterState<'_, T>,
