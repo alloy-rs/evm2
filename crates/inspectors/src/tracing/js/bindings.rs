@@ -1,12 +1,12 @@
 //! Type bindings for js tracing inspector
 
 use crate::tracing::{
+    TransactionContext,
     js::builtins::{
         address_to_uint8_array, address_to_uint8_array_value, bytes_from_value, bytes_to_address,
         bytes_to_b256, to_bigint, to_uint8_array, to_uint8_array_value,
     },
     types::CallKind,
-    TransactionContext,
 };
 use alloc::{
     boxed::Box,
@@ -14,21 +14,23 @@ use alloc::{
     rc::Rc,
     string::{String, ToString},
 };
-use alloy_primitives::{Address, Bytes, B256, U256, KECCAK256_EMPTY};
+use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, U256};
 use boa_engine::{
-    js_string,
+    Context, JsArgs, JsError, JsNativeError, JsObject, JsResult, JsValue, js_string,
     native_function::NativeFunction,
-    object::{builtins::JsUint8Array, FunctionObjectBuilder},
-    Context, JsArgs, JsError, JsNativeError, JsObject, JsResult, JsValue,
+    object::{FunctionObjectBuilder, builtins::JsUint8Array},
 };
-use boa_gc::{empty_trace, Finalize, Trace};
+use boa_gc::{Finalize, Trace, empty_trace};
 use core::cell::RefCell;
 use evm2::{
-    bytecode::opcode::{op::{PUSH0, PUSH32}, OpCode},
+    DatabaseRef,
+    bytecode::opcode::{
+        OpCode,
+        op::{PUSH0, PUSH32},
+    },
     context_interface::DBErrorMarker,
     interpreter::{SharedMemory, Stack},
     state::{AccountInfo, Bytecode, EvmState},
-    DatabaseRef,
 };
 
 /// A macro that creates a native function that returns via [JsValue::from]
@@ -843,7 +845,7 @@ impl EvmDbRef {
             _ => {
                 return Err(JsError::from_native(JsNativeError::error().with_message(format!(
                     "Failed to read state for {address:?} at {slot:?} from database",
-                ))))
+                ))));
             }
         };
         to_uint8_array(B256::from(value), ctx)

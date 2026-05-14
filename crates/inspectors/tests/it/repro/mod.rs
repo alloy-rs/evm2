@@ -47,84 +47,65 @@
 
 mod prestate;
 
-use alloy_hardforks::{ethereum::mainnet::*, EthereumHardfork};
+use crate::utils::{AccountInfo, Bytecode, CacheDB, EmptyDB, SpecId};
 use alloy_primitives::Address;
 use alloy_rpc_types_trace::geth::AccountState;
-use evm2::{
-    bytecode::Bytecode, database::CacheDB, database_interface::EmptyDB,
-    SpecId, state::AccountInfo,
-};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 
-/// Convert an Ethereum hardfork to a evm2 SpecId.
-pub fn spec_id_from_ethereum_hardfork(hardfork: EthereumHardfork) -> SpecId {
-    match hardfork {
-        EthereumHardfork::Frontier => SpecId::FRONTIER,
-        EthereumHardfork::Homestead => SpecId::HOMESTEAD,
-        EthereumHardfork::Dao => SpecId::DAO_FORK,
-        EthereumHardfork::Tangerine => SpecId::TANGERINE,
-        EthereumHardfork::SpuriousDragon => SpecId::SPURIOUS_DRAGON,
-        EthereumHardfork::Byzantium => SpecId::BYZANTIUM,
-        EthereumHardfork::Constantinople => SpecId::CONSTANTINOPLE,
-        EthereumHardfork::Petersburg => SpecId::PETERSBURG,
-        EthereumHardfork::Istanbul => SpecId::ISTANBUL,
-        EthereumHardfork::MuirGlacier => SpecId::MUIR_GLACIER,
-        EthereumHardfork::Berlin => SpecId::BERLIN,
-        EthereumHardfork::London => SpecId::LONDON,
-        EthereumHardfork::ArrowGlacier => SpecId::ARROW_GLACIER,
-        EthereumHardfork::GrayGlacier => SpecId::GRAY_GLACIER,
-        EthereumHardfork::Paris => SpecId::MERGE,
-        EthereumHardfork::Shanghai => SpecId::SHANGHAI,
-        EthereumHardfork::Cancun => SpecId::CANCUN,
-        EthereumHardfork::Prague => SpecId::PRAGUE,
-        EthereumHardfork::Osaka => SpecId::OSAKA,
-        _ => SpecId::PRAGUE,
-    }
-}
+const MAINNET_HOMESTEAD_BLOCK: u64 = 1_150_000;
+const MAINNET_DAO_BLOCK: u64 = 1_920_000;
+const MAINNET_TANGERINE_BLOCK: u64 = 2_463_000;
+const MAINNET_SPURIOUS_DRAGON_BLOCK: u64 = 2_675_000;
+const MAINNET_BYZANTIUM_BLOCK: u64 = 4_370_000;
+const MAINNET_PETERSBURG_BLOCK: u64 = 7_280_000;
+const MAINNET_ISTANBUL_BLOCK: u64 = 9_069_000;
+const MAINNET_MUIR_GLACIER_BLOCK: u64 = 9_200_000;
+const MAINNET_BERLIN_BLOCK: u64 = 12_244_000;
+const MAINNET_LONDON_BLOCK: u64 = 12_965_000;
+const MAINNET_ARROW_GLACIER_BLOCK: u64 = 13_773_000;
+const MAINNET_GRAY_GLACIER_BLOCK: u64 = 15_050_000;
+const MAINNET_PARIS_BLOCK: u64 = 15_537_394;
+const MAINNET_SHANGHAI_BLOCK: u64 = 17_034_870;
+const MAINNET_CANCUN_BLOCK: u64 = 19_426_587;
+const MAINNET_PRAGUE_BLOCK: u64 = 22_431_084;
 
 /// Determine the SpecId from a mainnet block number.
 pub fn spec_id_from_block(block_number: u64) -> SpecId {
-    let hardfork = hardfork_from_mainnet_block(block_number);
-    spec_id_from_ethereum_hardfork(hardfork)
-}
-
-/// Determine the Ethereum hardfork active at a mainnet block number.
-fn hardfork_from_mainnet_block(block_number: u64) -> EthereumHardfork {
     if block_number >= MAINNET_PRAGUE_BLOCK {
-        EthereumHardfork::Prague
+        SpecId::PRAGUE
     } else if block_number >= MAINNET_CANCUN_BLOCK {
-        EthereumHardfork::Cancun
+        SpecId::CANCUN
     } else if block_number >= MAINNET_SHANGHAI_BLOCK {
-        EthereumHardfork::Shanghai
+        SpecId::SHANGHAI
     } else if block_number >= MAINNET_PARIS_BLOCK {
-        EthereumHardfork::Paris
-    } else if block_number >= MAINNET_GRAY_GLACIER_BLOCK {
-        EthereumHardfork::GrayGlacier
-    } else if block_number >= MAINNET_ARROW_GLACIER_BLOCK {
-        EthereumHardfork::ArrowGlacier
+        SpecId::MERGE
+    } else if block_number >= MAINNET_GRAY_GLACIER_BLOCK
+        || block_number >= MAINNET_ARROW_GLACIER_BLOCK
+    {
+        SpecId::LONDON
     } else if block_number >= MAINNET_LONDON_BLOCK {
-        EthereumHardfork::London
+        SpecId::LONDON
     } else if block_number >= MAINNET_BERLIN_BLOCK {
-        EthereumHardfork::Berlin
-    } else if block_number >= MAINNET_MUIR_GLACIER_BLOCK {
-        EthereumHardfork::MuirGlacier
-    } else if block_number >= MAINNET_ISTANBUL_BLOCK {
-        EthereumHardfork::Istanbul
+        SpecId::BERLIN
+    } else if block_number >= MAINNET_MUIR_GLACIER_BLOCK || block_number >= MAINNET_ISTANBUL_BLOCK {
+        SpecId::ISTANBUL
     } else if block_number >= MAINNET_PETERSBURG_BLOCK {
-        EthereumHardfork::Petersburg
+        SpecId::PETERSBURG
     } else if block_number >= MAINNET_BYZANTIUM_BLOCK {
-        EthereumHardfork::Byzantium
+        SpecId::BYZANTIUM
     } else if block_number >= MAINNET_SPURIOUS_DRAGON_BLOCK {
-        EthereumHardfork::SpuriousDragon
+        SpecId::SPURIOUS_DRAGON
     } else if block_number >= MAINNET_TANGERINE_BLOCK {
-        EthereumHardfork::Tangerine
+        SpecId::TANGERINE
     } else if block_number >= MAINNET_DAO_BLOCK {
-        EthereumHardfork::Dao
+        SpecId::HOMESTEAD
     } else if block_number >= MAINNET_HOMESTEAD_BLOCK {
-        EthereumHardfork::Homestead
+        SpecId::HOMESTEAD
+    } else if block_number >= MAINNET_ISTANBUL_BLOCK {
+        SpecId::ISTANBUL
     } else {
-        EthereumHardfork::Frontier
+        SpecId::FRONTIER
     }
 }
 
@@ -138,7 +119,7 @@ pub fn build_db_from_prestate(prestate: &BTreeMap<Address, AccountState>) -> Cac
         let code = state.code.as_ref().map(|c| Bytecode::new_raw(c.clone()));
 
         db.insert_account_info(
-            *addr,
+            &addr,
             AccountInfo {
                 balance,
                 nonce,
@@ -150,7 +131,7 @@ pub fn build_db_from_prestate(prestate: &BTreeMap<Address, AccountState>) -> Cac
 
         // Insert storage
         for (slot, value) in &state.storage {
-            db.insert_account_storage(*addr, (*slot).into(), (*value).into()).unwrap();
+            db.insert_account_storage(addr, &(*slot).into(), &(*value).into());
         }
     }
 

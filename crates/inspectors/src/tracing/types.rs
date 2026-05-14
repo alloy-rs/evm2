@@ -18,8 +18,8 @@ use alloy_rpc_types_trace::{
     },
 };
 use evm2::{
-    bytecode::opcode::{self, op, OpCode},
-    interpreter::{CallScheme, CreateScheme, InstrStop},
+    bytecode::opcode::{OpCode, op},
+    interpreter::InstrStop,
 };
 
 /// Decoded call data.
@@ -99,6 +99,7 @@ pub struct CallTrace {
     /// The cumulative refund counter for the entire transaction context at the end of this call.
     pub gas_refund_counter: u64,
     /// The final status of the call.
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub status: Option<InstrStop>,
     /// Opcode-level execution steps.
     pub steps: Vec<CallTraceStep>,
@@ -113,7 +114,7 @@ impl CallTrace {
         let Some(status) = self.status else {
             return false;
         };
-        !status.is_ok()
+        !status.is_success()
     }
 
     /// Returns true if the status code is a revert.
@@ -256,11 +257,7 @@ impl CallTraceNode {
     ///
     /// See `Inspector::call` impl of [TracingInspector](crate::tracing::TracingInspector)
     pub const fn execution_address(&self) -> Address {
-        if self.trace.kind.is_delegate() {
-            self.trace.caller
-        } else {
-            self.trace.address
-        }
+        if self.trace.kind.is_delegate() { self.trace.caller } else { self.trace.address }
     }
 
     /// Pushes all steps onto the stack in reverse order
@@ -562,27 +559,6 @@ impl core::fmt::Display for CallKind {
     }
 }
 
-impl From<CallScheme> for CallKind {
-    fn from(scheme: CallScheme) -> Self {
-        match scheme {
-            CallScheme::Call => Self::Call,
-            CallScheme::StaticCall => Self::StaticCall,
-            CallScheme::DelegateCall => Self::DelegateCall,
-            CallScheme::CallCode => Self::CallCode,
-        }
-    }
-}
-
-impl From<CreateScheme> for CallKind {
-    fn from(create: CreateScheme) -> Self {
-        match create {
-            CreateScheme::Create => Self::Create,
-            CreateScheme::Create2 { .. } => Self::Create2,
-            CreateScheme::Custom { .. } => Self::Create,
-        }
-    }
-}
-
 impl From<CallKind> for ActionType {
     fn from(kind: CallKind) -> Self {
         match kind {
@@ -689,6 +665,7 @@ pub struct CallTraceStep {
     /// Final status of the step
     ///
     /// This is set after the step was executed.
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub status: Option<InstrStop>,
     /// Immediate bytes of the step
     pub immediate_bytes: Option<Bytes>,
@@ -746,12 +723,7 @@ impl CallTraceStep {
     pub(crate) const fn is_call_like_op(&self) -> bool {
         matches!(
             self.op.get(),
-            op::CALL
-                | op::DELEGATECALL
-                | op::STATICCALL
-                | op::CREATE
-                | op::CALLCODE
-                | op::CREATE2
+            op::CALL | op::DELEGATECALL | op::STATICCALL | op::CREATE | op::CALLCODE | op::CREATE2
         )
     }
 
@@ -761,7 +733,7 @@ impl CallTraceStep {
         let Some(status) = self.status else {
             return false;
         };
-        status.is_error()
+        !status.is_success()
     }
 
     /// Returns the error message if it is an erroneous result.
@@ -881,6 +853,7 @@ mod opcode_serde {
         D: Deserializer<'de>,
     {
         let op = u8::deserialize(deserializer)?;
-        Ok(OpCode::new(op).unwrap_or_else(|| OpCode::new(evm2::bytecode::opcode::op::INVALID).unwrap()))
+        Ok(OpCode::new(op)
+            .unwrap_or_else(|| OpCode::new(evm2::bytecode::opcode::op::INVALID).unwrap()))
     }
 }

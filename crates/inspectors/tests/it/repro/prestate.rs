@@ -3,12 +3,9 @@
 //! These tests demonstrate replaying mainnet transactions using prestate tracer output.
 
 use super::ReproContext;
-use alloy_primitives::{address, hex, Bytes};
+use crate::utils::{Context, SpecId, TransactTo, TxEnv};
+use alloy_primitives::{Bytes, address, hex};
 use alloy_rpc_types_trace::geth::{DiffMode, PreStateConfig, PreStateFrame};
-use evm2::{
-    context::TxEnv, context_interface::TransactTo, SpecId, Context,
-    InspectEvm, MainBuilder, MainContext,
-};
 use evm2_inspectors::tracing::{TracingInspector, TracingInspectorConfig};
 
 /// Raw prestate tracer RPC response for mainnet tx:

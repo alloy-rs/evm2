@@ -1,15 +1,15 @@
 //! Builtin functions
 
 use alloc::{borrow::Cow, format, string::ToString, vec::Vec};
-use alloy_primitives::{hex, map::HashSet, Address, FixedBytes, B256, U256};
+use alloy_primitives::{Address, B256, FixedBytes, U256, hex, map::HashSet};
 use boa_engine::{
+    Context, JsArgs, JsError, JsNativeError, JsResult, JsString, JsValue, NativeFunction, Source,
     builtins::{array_buffer::ArrayBuffer, typed_array::TypedArray},
     js_string,
     object::builtins::{JsArray, JsArrayBuffer, JsTypedArray, JsUint8Array},
     property::Attribute,
-    Context, JsArgs, JsError, JsNativeError, JsResult, JsString, JsValue, NativeFunction, Source,
 };
-use boa_gc::{empty_trace, Finalize, Trace};
+use boa_gc::{Finalize, Trace, empty_trace};
 use core::borrow::Borrow;
 
 /// Converts the given `JsValue` to a `serde_json::Value`.
@@ -220,7 +220,7 @@ pub(crate) fn to_contract2(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> 
         Err(_) => {
             return Err(JsError::from_native(
                 JsNativeError::typ().with_message("invalid salt type"),
-            ))
+            ));
         }
     };
     let initcode = args.get_or_undefined(2).clone();

@@ -5,17 +5,17 @@ use alloc::{
     string::{String, ToString},
     vec::Vec,
 };
-use alloy_primitives::{hex, Bytes, KECCAK256_EMPTY};
+use alloy_primitives::{Bytes, hex};
 use alloy_sol_types::{ContractError, GenericRevertReason};
-use evm2::{interpreter::InstrStop, DatabaseRef, SpecId};
+use evm2::{AccountInfo, SpecId, interpreter::InstrStop};
 
 /// Converts a non successful [`InstrStop`] to an error message.
 ///
-/// Returns `None` if [`InstrStop::is_ok`].
+/// Returns `None` if [`InstrStop::is_success`].
 ///
 /// See also <https://github.com/ethereum/go-ethereum/blob/34d507215951fb3f4a5983b65e127577989a6db8/eth/tracers/native/call_flat.go#L39-L55>
 pub(crate) fn fmt_error_msg(res: InstrStop, kind: TraceStyle) -> Option<String> {
-    if res.is_ok() {
+    if res.is_success() {
         return None;
     }
     let msg = match res {
@@ -88,7 +88,7 @@ pub(crate) fn convert_memory(data: &[u8]) -> Vec<String> {
 /// Get the gas used, accounting for refunds
 #[inline]
 pub(crate) fn gas_used(spec: SpecId, spent: u64, refunded: u64) -> u64 {
-    let refund_quotient = if SpecId::is_enabled_in(spec, SpecId::LONDON) { 5 } else { 2 };
+    let refund_quotient = if spec.enables(SpecId::LONDON) { 5 } else { 2 };
     spent - (refunded).min(spent / refund_quotient)
 }
 
@@ -96,17 +96,8 @@ pub(crate) fn gas_used(spec: SpecId, spent: u64, refunded: u64) -> u64 {
 ///
 /// Returns None if the code hash is the KECCAK256_EMPTY hash
 #[inline]
-pub(crate) fn load_account_code<DB: DatabaseRef>(
-    db: DB,
-    db_acc: &evm2::state::AccountInfo,
-) -> Option<Bytes> {
-    db_acc.code.as_ref().map(|code| code.original_bytes()).or_else(|| {
-        if db_acc.code_hash == KECCAK256_EMPTY {
-            None
-        } else {
-            db.code_by_hash_ref(db_acc.code_hash).ok().map(|code| code.original_bytes())
-        }
-    })
+pub(crate) fn load_account_code<DB>(_db: DB, db_acc: &AccountInfo) -> Option<Bytes> {
+    db_acc.code.as_ref().map(|code| code.original_bytes())
 }
 
 /// Returns a non-empty revert reason if the output is a revert/error.
@@ -151,7 +142,9 @@ mod tests {
     // <https://etherscan.io/tx/0x105707c8e3b3675a8424a7b0820b271cbe394eaf4d5065b03c273298e3a81314>
     #[test]
     fn decode_revert_reason_with_error() {
-        let err = hex!("08c379a000000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000024556e697377617056323a20494e53554646494349454e545f494e5055545f414d4f554e5400000000000000000000000000000000000000000000000000000080");
+        let err = hex!(
+            "08c379a000000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000024556e697377617056323a20494e53554646494349454e545f494e5055545f414d4f554e5400000000000000000000000000000000000000000000000000000080"
+        );
         let reason = maybe_revert_reason(&err[..]).unwrap();
         assert_eq!(reason, "UniswapV2: INSUFFICIENT_INPUT_AMOUNT");
     }
@@ -207,7 +200,9 @@ mod tests {
     // <https://github.com/paradigmxyz/evm2-inspectors/pull/353#issuecomment-36146608124>
     #[test]
     fn decode_string_revert() {
-        let err = hex!("0x08c379a0000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000214661696c656420746f2076657269667920424950333232207369676e617475726500000000000000000000000000000000000000000000000000000000000000");
+        let err = hex!(
+            "0x08c379a0000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000214661696c656420746f2076657269667920424950333232207369676e617475726500000000000000000000000000000000000000000000000000000000000000"
+        );
         let reason = maybe_revert_reason(&err[..]).unwrap();
         assert_eq!(reason, "Failed to verify BIP322 signature".to_string());
     }

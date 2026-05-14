@@ -144,6 +144,12 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         unsafe { *self.pc }
     }
 
+    /// Returns the active bytecode.
+    #[inline]
+    pub fn bytecode(&self) -> BytecodeRef<'_> {
+        BytecodeRef::new(&self.bytecode)
+    }
+
     /// Returns the current operand stack.
     #[inline]
     pub const fn stack(&self) -> StackRef<'_> {
@@ -166,6 +172,12 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
     #[inline]
     pub const fn gas(&self) -> Gas {
         self.gas
+    }
+
+    /// Returns the current instruction result.
+    #[inline]
+    pub const fn result(&self) -> Result {
+        self.result
     }
 
     /// Returns a reference to the current gas state.

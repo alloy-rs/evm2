@@ -31,7 +31,8 @@ use thiserror as _;
 
 pub mod access_list;
 
-mod opcode;
+/// Implementation of an opcode counter for the EVM.
+pub mod opcode;
 pub use opcode::{OpcodeGasInspector, immediate_size};
 
 pub mod tracing;

@@ -1,15 +1,13 @@
-use crate::utils::{inspect_deploy_contract, write_traces_with};
-use alloy_primitives::{address, b256, bytes, hex, Address, B256, U256};
-use alloy_sol_types::{sol, SolCall};
-use colorchoice::ColorChoice;
-use evm2::{
-    context::TxEnv, context_interface::TransactTo, database::CacheDB, database_interface::EmptyDB,
-    inspector::InspectorEvmTr, SpecId, Context, InspectCommitEvm, InspectEvm,
-    MainBuilder, MainContext,
+use crate::utils::{
+    CacheDB, Context, EmptyDB, SpecId, TransactTo, TxEnv, inspect_deploy_contract,
+    write_traces_with,
 };
+use alloy_primitives::{Address, B256, U256, address, b256, bytes, hex};
+use alloy_sol_types::{SolCall, sol};
+use colorchoice::ColorChoice;
 use evm2_inspectors::tracing::{
-    types::{DecodedCallData, DecodedInternalCall, DecodedTraceStep},
     TraceWriterConfig, TracingInspector, TracingInspectorConfig,
+    types::{DecodedCallData, DecodedInternalCall, DecodedTraceStep},
 };
 use snapbox::{assert_data_eq, data::DataFormat};
 use std::path::Path;

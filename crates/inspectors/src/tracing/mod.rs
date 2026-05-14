@@ -1,12 +1,31 @@
 //! EVM tracing inspectors.
 
-use alloc::vec::Vec;
-use alloy_primitives::{Address, Bytes, Log, U256};
-use evm2::{
-    EvmTypes, Inspector,
-    bytecode::opcode::OpCode,
-    interpreter::{InstrStop, Interpreter, Message, MessageKind, MessageResult},
+use crate::{
+    opcode::immediate_size,
+    tracing::{
+        arena::PushTraceKind,
+        types::{CallKind, CallLog, CallTrace, CallTraceStep, RecordedMemory, TraceMemberOrder},
+    },
 };
+use alloc::{boxed::Box, vec::Vec};
+use alloy_primitives::{Address, B256, Bytes, Log, U256};
+use evm2::{
+    EvmTypes, Inspector, SpecId,
+    bytecode::opcode::OpCode,
+    interpreter::{Interpreter, Message, MessageKind, MessageResult},
+};
+
+mod arena;
+pub use arena::CallTraceArena;
+
+mod builder;
+pub use builder::{
+    geth::{self, GethTraceBuilder},
+    parity::{self, ParityTraceBuilder},
+};
+
+mod config;
+pub use config::{OpcodeFilter, StackSnapshotType, TracingInspectorConfig};
 
 mod fourbyte;
 pub use fourbyte::FourByteInspector;
@@ -14,262 +33,52 @@ pub use fourbyte::FourByteInspector;
 mod opcount;
 pub use opcount::OpcodeCountInspector;
 
-/// A recorded call trace arena.
-#[derive(Clone, Debug, Default)]
-pub struct CallTraceArena {
-    arena: Vec<CallTraceNode>,
-}
+pub mod types;
 
-impl CallTraceArena {
-    /// Returns all recorded trace nodes.
-    pub fn nodes(&self) -> &[CallTraceNode] {
-        &self.arena
-    }
+mod utils;
 
-    /// Returns whether no traces were recorded.
-    pub const fn is_empty(&self) -> bool {
-        self.arena.is_empty()
-    }
+#[cfg(feature = "std")]
+mod writer;
+#[cfg(feature = "std")]
+pub use writer::{TraceWriter, TraceWriterConfig};
 
-    fn clear(&mut self) {
-        self.arena.clear();
-    }
+#[cfg(feature = "js-tracer")]
+pub mod js;
 
-    fn push_trace(&mut self, trace: CallTrace, parent: Option<usize>) -> usize {
-        let idx = self.arena.len();
-        if let Some(parent) = parent {
-            self.arena[parent].children.push(idx);
-        }
-        self.arena.push(CallTraceNode { idx, parent, children: Vec::new(), trace });
-        idx
-    }
-}
+mod mux;
+pub use mux::{Error as MuxError, MuxInspector};
 
-/// A node in the recorded call trace tree.
-#[derive(Clone, Debug, Default)]
-pub struct CallTraceNode {
-    /// Node index in the arena.
-    pub idx: usize,
-    /// Parent node index.
-    pub parent: Option<usize>,
-    /// Child node indexes.
-    pub children: Vec<usize>,
-    /// Recorded trace payload.
-    pub trace: CallTrace,
-}
-
-/// A recorded call or create trace.
-#[derive(Clone, Debug, Default)]
-pub struct CallTrace {
-    /// Call kind.
-    pub kind: CallKind,
-    /// Call depth.
-    pub depth: u16,
-    /// Caller address.
-    pub caller: Address,
-    /// Destination or created address.
-    pub address: Address,
-    /// Executed code address.
-    pub code_address: Address,
-    /// Transferred value.
-    pub value: U256,
-    /// Input data.
-    pub input: Bytes,
-    /// Output data.
-    pub output: Bytes,
-    /// Gas limit.
-    pub gas_limit: u64,
-    /// Gas used by the frame.
-    pub gas_used: u64,
-    /// Whether the frame succeeded.
-    pub success: bool,
-    /// Stop status.
-    pub status: Option<InstrStop>,
-    /// Recorded steps.
-    pub steps: Vec<CallTraceStep>,
-    /// Recorded logs.
-    pub logs: Vec<Log>,
-    /// Selfdestruct source address.
-    pub selfdestruct_address: Option<Address>,
-    /// Selfdestruct refund target.
-    pub selfdestruct_refund_target: Option<Address>,
-    /// Selfdestruct transferred value.
-    pub selfdestruct_transferred_value: Option<U256>,
-}
-
-/// Trace call kind.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub enum CallKind {
-    /// CALL.
-    #[default]
-    Call,
-    /// STATICCALL.
-    StaticCall,
-    /// DELEGATECALL.
-    DelegateCall,
-    /// CALLCODE.
-    CallCode,
-    /// CREATE.
-    Create,
-    /// CREATE2.
-    Create2,
-}
-
-impl From<MessageKind> for CallKind {
-    fn from(kind: MessageKind) -> Self {
-        match kind {
-            MessageKind::Call => Self::Call,
-            MessageKind::StaticCall => Self::StaticCall,
-            MessageKind::DelegateCall => Self::DelegateCall,
-            MessageKind::CallCode => Self::CallCode,
-            MessageKind::Create => Self::Create,
-            MessageKind::Create2 => Self::Create2,
-            _ => Self::Call,
-        }
-    }
-}
-
-/// A recorded interpreter step.
-#[derive(Clone, Debug, Default)]
-pub struct CallTraceStep {
-    /// Program counter.
-    pub pc: usize,
-    /// Opcode.
-    pub op: Option<OpCode>,
-    /// Gas remaining before the opcode.
-    pub gas_remaining: u64,
-    /// Gas consumed by the opcode.
-    pub gas_cost: u64,
-    /// Operand stack snapshot.
-    pub stack: Option<Vec<U256>>,
-    /// Linear memory snapshot.
-    pub memory: Option<Bytes>,
-    /// Return data snapshot.
-    pub returndata: Bytes,
-    /// Stop status.
-    pub status: Option<InstrStop>,
-}
-
-/// Stack snapshot mode.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub enum StackSnapshotType {
-    /// Do not record stack snapshots.
-    #[default]
-    None,
-    /// Record the full stack.
-    Full,
-}
-
-/// Opcode filter.
-#[derive(Clone, Debug, Default)]
-pub struct OpcodeFilter {
-    enabled: Vec<u8>,
-}
-
-impl OpcodeFilter {
-    /// Returns whether steps with given opcode should be traced.
-    pub fn is_enabled(&self, op: OpCode) -> bool {
-        self.enabled.contains(&op.get())
-    }
-
-    /// Enables tracing of given opcode.
-    pub fn enable(&mut self, op: OpCode) -> &mut Self {
-        if !self.is_enabled(op) {
-            self.enabled.push(op.get());
-        }
-        self
-    }
-
-    /// Enables tracing of given opcode.
-    pub fn enabled(mut self, op: OpCode) -> Self {
-        self.enable(op);
-        self
-    }
-}
-
-/// Tracing inspector configuration.
-#[derive(Clone, Debug, Default)]
-pub struct TracingInspectorConfig {
-    /// Whether interpreter steps are recorded.
-    pub record_steps: bool,
-    /// Whether emitted logs are recorded.
-    pub record_logs: bool,
-    /// Whether memory snapshots are recorded for steps.
-    pub record_memory_snapshots: bool,
-    /// Stack snapshot mode.
-    pub record_stack_snapshots: StackSnapshotType,
-    /// Whether return data snapshots are recorded for steps.
-    pub record_returndata_snapshots: bool,
-    /// Optional opcode recording filter.
-    pub record_opcodes_filter: Option<OpcodeFilter>,
-}
-
-impl TracingInspectorConfig {
-    /// Returns a config that records nothing.
-    pub const fn none() -> Self {
-        Self {
-            record_steps: false,
-            record_logs: false,
-            record_memory_snapshots: false,
-            record_stack_snapshots: StackSnapshotType::None,
-            record_returndata_snapshots: false,
-            record_opcodes_filter: None,
-        }
-    }
-
-    /// Returns a config that records all currently supported trace data.
-    pub const fn all() -> Self {
-        Self {
-            record_steps: true,
-            record_logs: true,
-            record_memory_snapshots: true,
-            record_stack_snapshots: StackSnapshotType::Full,
-            record_returndata_snapshots: true,
-            record_opcodes_filter: None,
-        }
-    }
-
-    /// Returns a geth-style default config.
-    pub const fn default_geth() -> Self {
-        Self::all()
-    }
-
-    /// Returns a parity-style default config.
-    pub const fn default_parity() -> Self {
-        Self::all()
-    }
-
-    /// Sets step recording.
-    pub const fn set_steps(mut self, yes: bool) -> Self {
-        self.record_steps = yes;
-        self
-    }
-
-    /// Sets log recording.
-    pub const fn set_record_logs(mut self, yes: bool) -> Self {
-        self.record_logs = yes;
-        self
-    }
-
-    /// Returns whether the opcode should be recorded.
-    pub fn should_record_opcode(&self, op: OpCode) -> bool {
-        self.record_opcodes_filter.as_ref().is_none_or(|filter| filter.is_enabled(op))
-    }
-}
+mod debug;
+pub use debug::{DebugInspector, DebugInspectorError, TraceBlockEnv, TraceTxEnv};
 
 /// An inspector that collects call traces.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct TracingInspector {
     config: TracingInspectorConfig,
     traces: CallTraceArena,
     trace_stack: Vec<usize>,
-    step_stack: Vec<(usize, u64)>,
+    step_stack: Vec<(usize, usize, u64, usize)>,
+    log_index: u64,
+    spec_id: Option<SpecId>,
+}
+
+impl Default for TracingInspector {
+    fn default() -> Self {
+        Self::new(TracingInspectorConfig::default())
+    }
 }
 
 impl TracingInspector {
     /// Returns a new instance for the given config.
     pub fn new(config: TracingInspectorConfig) -> Self {
-        Self { config, ..Default::default() }
+        Self {
+            config,
+            traces: CallTraceArena::default(),
+            trace_stack: Vec::new(),
+            step_stack: Vec::new(),
+            log_index: 0,
+            spec_id: None,
+        }
     }
 
     /// Resets the inspector to its initial state.
@@ -277,6 +86,7 @@ impl TracingInspector {
         self.traces.clear();
         self.trace_stack.clear();
         self.step_stack.clear();
+        self.log_index = 0;
     }
 
     /// Resets the inspector to its initial state.
@@ -300,7 +110,7 @@ impl TracingInspector {
         &mut self,
         f: impl FnOnce(TracingInspectorConfig) -> TracingInspectorConfig,
     ) {
-        self.config = f(self.config.clone());
+        self.config = f(self.config);
     }
 
     /// Gets a reference to the recorded call traces.
@@ -318,20 +128,70 @@ impl TracingInspector {
         self.traces
     }
 
+    /// Sets the root transaction gas used.
+    #[inline]
+    pub fn set_transaction_gas_used(&mut self, gas_used: u64) {
+        if let Some(node) = self.traces.arena.first_mut() {
+            node.trace.gas_used = gas_used;
+        }
+    }
+
+    /// Sets the root transaction gas limit.
+    #[inline]
+    pub fn set_transaction_gas_limit(&mut self, gas_limit: u64) {
+        if let Some(node) = self.traces.arena.first_mut() {
+            node.trace.gas_limit = gas_limit;
+        }
+    }
+
+    /// Sets the root transaction caller.
+    #[inline]
+    pub fn set_transaction_caller(&mut self, caller: Address) {
+        if let Some(node) = self.traces.arena.first_mut() {
+            node.trace.caller = caller;
+        }
+    }
+
+    /// Sets the root transaction gas used and returns the inspector.
+    #[inline]
+    pub fn with_transaction_gas_used(mut self, gas_used: u64) -> Self {
+        self.set_transaction_gas_used(gas_used);
+        self
+    }
+
+    /// Returns a geth trace builder over the recorded traces.
+    #[inline]
+    pub fn geth_builder(&self) -> GethTraceBuilder<'_> {
+        GethTraceBuilder::new_borrowed(self.traces.nodes())
+    }
+
+    /// Consumes the inspector and returns a geth trace builder.
+    #[inline]
+    pub fn into_geth_builder(self) -> GethTraceBuilder<'static> {
+        GethTraceBuilder::new(self.traces.into_nodes())
+    }
+
+    /// Consumes the inspector and returns a parity trace builder.
+    #[inline]
+    pub fn into_parity_builder(self) -> ParityTraceBuilder {
+        ParityTraceBuilder::new(self.traces.into_nodes(), self.spec_id, self.config)
+    }
+
     fn start_trace<T: EvmTypes>(&mut self, message: &Message<T>) {
-        let parent = self.trace_stack.last().copied();
         let trace = CallTrace {
-            kind: message.kind.into(),
-            depth: message.depth,
+            depth: usize::from(message.depth),
             caller: message.caller,
             address: message.destination,
-            code_address: message.code_address,
+            maybe_precompile: None,
+            kind: message.kind.into(),
             value: message.value,
-            input: message.input.clone(),
+            data: message.input.clone(),
             gas_limit: message.gas_limit,
             ..Default::default()
         };
-        let idx = self.traces.push_trace(trace, parent);
+
+        let entry = self.trace_stack.last().copied().unwrap_or_default();
+        let idx = self.traces.push_trace(entry, PushTraceKind::PushAndAttachToParent, trace);
         self.trace_stack.push(idx);
     }
 
@@ -344,14 +204,30 @@ impl TracingInspector {
         trace.success = result.stop.is_success();
         trace.output = result.output.clone();
         trace.gas_used = result.gas.spent();
+        trace.gas_refund_counter = result.gas.refunded().max(0) as u64;
         if let Some(address) = result.created_address {
             trace.address = address;
         }
     }
 }
 
+impl From<MessageKind> for CallKind {
+    fn from(kind: MessageKind) -> Self {
+        match kind {
+            MessageKind::Call => Self::Call,
+            MessageKind::StaticCall => Self::StaticCall,
+            MessageKind::DelegateCall => Self::DelegateCall,
+            MessageKind::CallCode => Self::CallCode,
+            MessageKind::Create => Self::Create,
+            MessageKind::Create2 => Self::Create2,
+            _ => Self::Call,
+        }
+    }
+}
+
 impl<T: EvmTypes> Inspector<T> for TracingInspector {
     fn initialize_interp(&mut self, interp: &mut Interpreter<'_, T>) {
+        self.spec_id = Some(interp.spec());
         if self.trace_stack.is_empty() {
             self.start_trace(interp.message());
         }
@@ -364,48 +240,79 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
         let Some(trace_idx) = self.trace_stack.last().copied() else {
             return;
         };
-        let Some(op) = OpCode::new(interp.opcode()) else {
-            return;
-        };
+        let op = OpCode::new_or_unknown(interp.opcode());
         if !self.config.should_record_opcode(op) {
             return;
         }
-        let stack = (self.config.record_stack_snapshots == StackSnapshotType::Full)
-            .then(|| interp.stack().to_vec());
-        let memory = self.config.record_memory_snapshots.then(|| {
-            Bytes::copy_from_slice(interp.memory_ref().slice(0, interp.memory_ref().len()))
-        });
+
+        let stack = if self.config.record_stack_snapshots.is_full()
+            || self.config.record_stack_snapshots.is_all()
+        {
+            Some(Box::from(interp.stack().as_slice()))
+        } else {
+            None
+        };
+        let memory = self
+            .config
+            .record_memory_snapshots
+            .then(|| RecordedMemory::new(interp.memory_ref().slice(0, interp.memory_ref().len())));
         let returndata = if self.config.record_returndata_snapshots {
             interp.return_data().clone()
         } else {
             Bytes::new()
         };
+        let immediate_bytes = if self.config.record_immediate_bytes {
+            let immediate_size = usize::from(immediate_size(op.get()));
+            (immediate_size > 0).then(|| {
+                let pc = interp.pc() + 1;
+                let bytecode = interp.bytecode();
+                let bytes = bytecode.as_slice().get(pc..pc + immediate_size).unwrap_or_default();
+                Bytes::copy_from_slice(bytes)
+            })
+        } else {
+            None
+        };
         let step = CallTraceStep {
             pc: interp.pc(),
-            op: Some(op),
-            gas_remaining: interp.gas().remaining(),
+            op,
             stack,
+            push_stack: None,
             memory,
             returndata,
-            ..Default::default()
+            gas_remaining: interp.gas().remaining(),
+            gas_refund_counter: interp.gas().refunded().max(0) as u64,
+            gas_used: interp.gas().spent(),
+            gas_cost: 0,
+            storage_change: None,
+            status: None,
+            immediate_bytes,
+            decoded: None,
         };
         let step_idx = self.traces.arena[trace_idx].trace.steps.len();
+        self.traces.arena[trace_idx].ordering.push(TraceMemberOrder::Step(step_idx));
         self.traces.arena[trace_idx].trace.steps.push(step);
-        self.step_stack.push((step_idx, interp.gas().remaining()));
+        self.step_stack.push((trace_idx, step_idx, interp.gas().remaining(), interp.stack().len()));
     }
 
     fn step_end(&mut self, interp: &mut Interpreter<'_, T>) {
         if !self.config.record_steps {
             return;
         }
-        let Some(trace_idx) = self.trace_stack.last().copied() else {
-            return;
-        };
-        let Some((step_idx, gas_remaining)) = self.step_stack.pop() else {
+        let Some((trace_idx, step_idx, gas_remaining, stack_len_before)) = self.step_stack.pop()
+        else {
             return;
         };
         if let Some(step) = self.traces.arena[trace_idx].trace.steps.get_mut(step_idx) {
             step.gas_cost = gas_remaining.saturating_sub(interp.gas().remaining());
+            step.status = interp.result().err();
+            if self.config.record_stack_snapshots.is_pushes()
+                || self.config.record_stack_snapshots.is_all()
+            {
+                let stack = interp.stack();
+                if stack.len() > stack_len_before {
+                    step.push_stack = Some(Box::from(&stack.as_slice()[stack_len_before..]));
+                }
+            }
         }
     }
 
@@ -414,7 +321,13 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
             return;
         }
         if let Some(trace_idx) = self.trace_stack.last().copied() {
-            self.traces.arena[trace_idx].trace.logs.push(log.clone());
+            let node = &mut self.traces.arena[trace_idx];
+            let log_idx = node.log_count();
+            node.ordering.push(TraceMemberOrder::Log(log_idx));
+            node.logs.push(
+                CallLog::from(log.clone()).with_position(log_idx as u64).with_index(self.log_index),
+            );
+            self.log_index += 1;
         }
     }
 
@@ -446,38 +359,43 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
     }
 }
 
-/// A minimal geth trace builder over recorded call traces.
-#[derive(Clone, Debug)]
-pub struct GethTraceBuilder<'a> {
-    nodes: &'a [CallTraceNode],
+/// Contextual transaction info made available to debug tracers.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TransactionContext {
+    /// Hash of the block the transaction is contained within.
+    pub block_hash: Option<B256>,
+    /// Index of the transaction within a block.
+    pub tx_index: Option<usize>,
+    /// Hash of the transaction being traced.
+    pub tx_hash: Option<B256>,
 }
 
-impl<'a> GethTraceBuilder<'a> {
-    /// Creates a borrowed builder.
-    pub const fn new_borrowed(nodes: &'a [CallTraceNode]) -> Self {
-        Self { nodes }
+impl TransactionContext {
+    /// Sets the block hash.
+    pub const fn with_block_hash(mut self, block_hash: B256) -> Self {
+        self.block_hash = Some(block_hash);
+        self
     }
 
-    /// Returns the recorded nodes.
-    pub const fn nodes(&self) -> &[CallTraceNode] {
-        self.nodes
+    /// Sets the index of the transaction within a block.
+    pub const fn with_tx_index(mut self, tx_index: usize) -> Self {
+        self.tx_index = Some(tx_index);
+        self
+    }
+
+    /// Sets the transaction hash.
+    pub const fn with_tx_hash(mut self, tx_hash: B256) -> Self {
+        self.tx_hash = Some(tx_hash);
+        self
     }
 }
 
-/// A minimal parity trace builder over recorded call traces.
-#[derive(Clone, Debug)]
-pub struct ParityTraceBuilder {
-    nodes: Vec<CallTraceNode>,
-}
-
-impl ParityTraceBuilder {
-    /// Creates a builder.
-    pub const fn new(nodes: Vec<CallTraceNode>) -> Self {
-        Self { nodes }
-    }
-
-    /// Returns the recorded nodes.
-    pub fn nodes(&self) -> &[CallTraceNode] {
-        &self.nodes
+impl From<alloy_rpc_types_eth::TransactionInfo> for TransactionContext {
+    fn from(tx_info: alloy_rpc_types_eth::TransactionInfo) -> Self {
+        Self {
+            block_hash: tx_info.block_hash,
+            tx_index: tx_info.index.map(|idx| idx as usize),
+            tx_hash: tx_info.hash,
+        }
     }
 }

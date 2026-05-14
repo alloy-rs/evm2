@@ -72,7 +72,7 @@ impl TransferInspector {
         kind: TransferKind,
         depth: u16,
     ) {
-        if self.internal_only && depth <= 1 {
+        if self.internal_only && depth == 0 {
             return;
         }
         if value.is_zero() {

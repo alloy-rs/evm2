@@ -1,12 +1,12 @@
 use super::{
+    CallTraceArena,
     types::{
         CallKind, CallLog, CallTrace, CallTraceNode, DecodedCallData, DecodedTraceStep,
         TraceMemberOrder,
     },
-    CallTraceArena,
 };
 use alloc::{format, string::String, vec::Vec};
-use alloy_primitives::{address, hex, map::HashMap, Address, B256, U256};
+use alloy_primitives::{Address, B256, U256, address, hex, map::HashMap};
 use anstyle::{AnsiColor, Color, Style};
 use colorchoice::ColorChoice;
 use evm2::interpreter::InstrStop;
@@ -428,7 +428,7 @@ impl<W: Write> TraceWriter<W> {
         }
 
         if !self.config.write_bytecodes
-            && (trace.kind.is_any_create() && trace.status.is_none_or(|status| status.is_ok()))
+            && (trace.kind.is_any_create() && trace.status.is_none_or(|status| status.is_success()))
         {
             write!(self.writer, " {} bytes of code", trace.output.len())?;
         } else if !trace.output.is_empty() {
@@ -552,9 +552,5 @@ fn use_colors(choice: ColorChoice) -> bool {
 /// Formats the given U256 as a decimal number if it is short, otherwise as a hexadecimal
 /// byte-array.
 fn num_or_hex(x: U256) -> String {
-    if x < U256::from(1e6 as u128) {
-        x.to_string()
-    } else {
-        B256::from(x).to_string()
-    }
+    if x < U256::from(1e6 as u128) { x.to_string() } else { B256::from(x).to_string() }
 }

@@ -116,11 +116,12 @@ extern_table! {
             cold_path();
             state.set_result(Err(e));
             if M::INSPECT {
+                state.gas_mut().set_remaining(remaining_gas.get());
                 M::step_end(state, pc, stack.len);
             }
             tail_return!(tail_call_restore::<T>(pc, stack, remaining_gas, state, instructions));
         }
-        if DYNAMIC_GAS {
+        if M::INSPECT || DYNAMIC_GAS {
             state.gas_mut().set_remaining(remaining_gas.get());
         }
         let r = instr(&mut pc, stack.as_mut(), state);

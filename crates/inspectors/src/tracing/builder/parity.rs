@@ -1,19 +1,15 @@
 use super::walker::CallTraceNodeWalkerBF;
 use crate::tracing::{
-    types::{CallTraceNode, CallTraceStep},
-    utils::load_account_code,
     TracingInspectorConfig,
+    geth::{TraceExecutionResult, TraceTransactionResult},
+    types::{CallTraceNode, CallTraceStep},
 };
 use alloc::{collections::VecDeque, string::ToString, vec, vec::Vec};
-use alloy_primitives::{map::HashSet, Address, U256, U64, KECCAK256_EMPTY};
+use alloy_primitives::{Address, Bytes, U64, map::HashSet};
 use alloy_rpc_types_eth::TransactionInfo;
 use alloy_rpc_types_trace::parity::*;
-use core::iter::Peekable;
-use evm2::{
-    context_interface::result::{ExecutionResult, HaltReasonTr, ResultAndState},
-    state::Account,
-    DatabaseRef, SpecId,
-};
+use core::{convert::Infallible, iter::Peekable};
+use evm2::{SpecId, evm::StateChanges};
 
 /// A type for creating parity style traces
 ///
@@ -148,12 +144,12 @@ impl ParityTraceBuilder {
     /// be filled. Use [ParityTraceBuilder::into_trace_results_with_state] or
     /// [populate_state_diff] to populate the balance and nonce changes for the [StateDiff]
     /// using the [DatabaseRef].
-    pub fn into_trace_results(
+    pub fn into_trace_results<R: TraceExecutionResult>(
         self,
-        res: &ExecutionResult<impl HaltReasonTr>,
+        res: &R,
         trace_types: &HashSet<TraceType>,
     ) -> TraceResults {
-        let output = res.output().cloned().unwrap_or_default();
+        let output = res.trace_output();
 
         let (trace, vm_trace, state_diff) = self.into_trace_type_traces(trace_types);
 
@@ -169,14 +165,15 @@ impl ParityTraceBuilder {
     /// Note: this is considered a convenience method that takes the state map of
     /// [ResultAndState] after inspecting a transaction
     /// with the [TracingInspector](crate::tracing::TracingInspector).
-    pub fn into_trace_results_with_state<DB: DatabaseRef>(
+    pub fn into_trace_results_with_state<R, DB>(
         self,
-        res: &ResultAndState<impl HaltReasonTr>,
+        res: &R,
         trace_types: &HashSet<TraceType>,
         db: DB,
-    ) -> Result<TraceResults, DB::Error> {
-        let ResultAndState { ref result, ref state } = res;
-
+    ) -> Result<TraceResults, Infallible>
+    where
+        R: TraceTransactionResult,
+    {
         let breadth_first_addresses = if trace_types.contains(&TraceType::VmTrace) {
             CallTraceNodeWalkerBF::new(&self.nodes)
                 .map(|node| node.trace.address)
@@ -185,11 +182,11 @@ impl ParityTraceBuilder {
             vec![]
         };
 
-        let mut trace_res = self.into_trace_results(result, trace_types);
+        let mut trace_res = self.into_trace_results(res, trace_types);
 
         // check the state diff case
         if let Some(ref mut state_diff) = trace_res.state_diff {
-            populate_state_diff(state_diff, &db, state.iter())?;
+            populate_state_diff(state_diff, res.state_changes())?;
         }
 
         // check the vm trace case
@@ -462,9 +459,8 @@ pub(crate) fn populate_vm_trace_bytecodes<DB, I>(
     db: DB,
     trace: &mut VmTrace,
     breadth_first_addresses: I,
-) -> Result<(), DB::Error>
+) -> Result<(), Infallible>
 where
-    DB: DatabaseRef,
     I: IntoIterator<Item = Address>,
 {
     let mut stack: VecDeque<&mut VmTrace> = VecDeque::new();
@@ -479,117 +475,56 @@ where
             }
         }
 
-        let addr = addrs.next().expect("there should be an address");
+        let _ = addrs.next().expect("there should be an address");
+    }
 
-        let db_acc = db.basic_ref(addr)?.unwrap_or_default();
+    let _ = db;
+    Ok(())
+}
 
-        curr_ref.code = if let Some(code) = db_acc.code {
-            code.original_bytes()
-        } else {
-            let code_hash =
-                if db_acc.code_hash != KECCAK256_EMPTY { db_acc.code_hash } else { continue };
+/// Populates [StateDiff] from evm2 state changes.
+pub fn populate_state_diff(
+    state_diff: &mut StateDiff,
+    state_changes: &StateChanges,
+) -> Result<(), Infallible> {
+    for (&addr, account) in &state_changes.accounts {
+        let entry = state_diff.entry(addr).or_default();
+        match (&account.original, &account.current) {
+            (None, Some(current)) => {
+                entry.balance = Delta::Added(current.balance);
+                entry.nonce = Delta::Added(U64::from(current.nonce));
+                entry.code = Delta::Added(account_code(current));
+            }
+            (Some(original), None) => {
+                entry.balance = Delta::Removed(original.balance);
+                entry.nonce = Delta::Removed(U64::from(original.nonce));
+                entry.code = Delta::Removed(account_code(original));
+            }
+            (Some(original), Some(current)) => {
+                entry.balance = delta(original.balance, current.balance);
+                entry.nonce = delta(U64::from(original.nonce), U64::from(current.nonce));
+                entry.code = delta(account_code(original), account_code(current));
+            }
+            (None, None) => {}
+        }
+    }
 
-            db.code_by_hash_ref(code_hash)?.original_bytes()
-        };
+    for (&addr, storage) in &state_changes.storage {
+        let entry = state_diff.entry(addr).or_default();
+        for (&key, slot) in &storage.slots {
+            entry.storage.insert(key.into(), delta(slot.original.into(), slot.current.into()));
+        }
     }
 
     Ok(())
 }
 
-/// Populates [StateDiff] given iterator over [Account]s and a [DatabaseRef].
-///
-/// Loops over all state accounts in the accounts diff that contains all accounts that are included
-/// in the [ExecutionResult] state map and compares the balance and nonce against what's in the
-/// `db`, which should point to the beginning of the transaction.
-///
-/// It's expected that `DB` is a evm2 [Database](evm2::database_interface::Database) which at this
-/// point already contains all the accounts that are in the state map and never has to fetch them
-/// from disk.
-pub fn populate_state_diff<'a, DB, I>(
-    state_diff: &mut StateDiff,
-    db: DB,
-    account_diffs: I,
-) -> Result<(), DB::Error>
-where
-    I: IntoIterator<Item = (&'a Address, &'a Account)>,
-    DB: DatabaseRef,
-{
-    for (addr, changed_acc) in account_diffs.into_iter() {
-        // if the account was selfdestructed and created during the transaction, we can ignore it
-        if changed_acc.is_selfdestructed() && changed_acc.is_created() {
-            continue;
-        }
+fn account_code(account: &evm2::AccountInfo) -> Bytes {
+    account.code.as_ref().map(|code| code.original_bytes()).unwrap_or_default()
+}
 
-        let addr = *addr;
-        let entry = state_diff.entry(addr).or_default();
-
-        // we need to fetch the account from the db
-        let db_acc = db.basic_ref(addr)?.unwrap_or_default();
-
-        // we check if this account was created during the transaction
-        // where the smart contract was not touched before being created (no balance)
-        if changed_acc.is_created() && db_acc.balance == U256::ZERO {
-            // This only applies to newly created accounts without balance
-            // A non existing touched account (e.g. `to` that does not exist) is excluded here
-            entry.balance = Delta::Added(changed_acc.info.balance);
-            entry.nonce = Delta::Added(U64::from(changed_acc.info.nonce));
-
-            // accounts without code are marked as added
-            let account_code = load_account_code(&db, &changed_acc.info).unwrap_or_default();
-            entry.code = Delta::Added(account_code);
-
-            // new storage values are marked as added,
-            // however we're filtering changed here to avoid adding entries for the zero value
-            for (key, slot) in changed_acc.storage.iter().filter(|(_, slot)| slot.is_changed()) {
-                entry.storage.insert((*key).into(), Delta::Added(slot.present_value.into()));
-            }
-        } else {
-            // we check if this account was created during the transaction
-            // where the smart contract was touched before being created (has balance)
-            if changed_acc.is_created() {
-                let original_account_code = load_account_code(&db, &db_acc).unwrap_or_default();
-                let present_account_code =
-                    load_account_code(&db, &changed_acc.info).unwrap_or_default();
-                entry.code = Delta::changed(original_account_code, present_account_code);
-            }
-
-            // update _changed_ storage values
-            for (key, slot) in changed_acc.storage.iter().filter(|(_, slot)| slot.is_changed()) {
-                entry.storage.insert(
-                    (*key).into(),
-                    Delta::changed(slot.original_value.into(), slot.present_value.into()),
-                );
-            }
-
-            // check if the account was changed at all
-            if entry.storage.is_empty()
-                && db_acc == changed_acc.info
-                && !changed_acc.is_selfdestructed()
-            {
-                // clear the entry if the account was not changed
-                state_diff.remove(&addr);
-                continue;
-            }
-
-            entry.balance = if db_acc.balance == changed_acc.info.balance {
-                Delta::Unchanged
-            } else {
-                Delta::Changed(ChangedType { from: db_acc.balance, to: changed_acc.info.balance })
-            };
-
-            // this is relevant for the caller and contracts
-            entry.nonce = if db_acc.nonce == changed_acc.info.nonce {
-                Delta::Unchanged
-            } else {
-                Delta::Changed(ChangedType {
-                    from: U64::from(db_acc.nonce),
-                    to: U64::from(changed_acc.info.nonce),
-                })
-            };
-        }
-    }
-
-    Ok(())
+fn delta<T: Clone + PartialEq>(from: T, to: T) -> Delta<T> {
+    if from == to { Delta::Unchanged } else { Delta::changed(from, to) }
 }
 
 #[cfg(test)]

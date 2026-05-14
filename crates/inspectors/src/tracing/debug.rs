@@ -1,26 +1,60 @@
 use crate::tracing::{
     FourByteInspector, MuxInspector, TracingInspector, TracingInspectorConfig, TransactionContext,
+    geth::TraceTransactionResult,
 };
 #[cfg(feature = "js-tracer")]
 use alloc::boxed::Box;
 use alloy_primitives::{Address, Log, U256};
 use alloy_rpc_types_eth::TransactionInfo;
 use alloy_rpc_types_trace::geth::{
-    erc7562::Erc7562Config, mux::MuxConfig, CallConfig, FourByteFrame, GethDebugBuiltInTracerType,
-    GethDebugTracerType, GethDebugTracingOptions, GethDefaultTracingOptions, GethTrace, NoopFrame,
-    PreStateConfig,
+    CallConfig, FourByteFrame, GethDebugBuiltInTracerType, GethDebugTracerType,
+    GethDebugTracingOptions, GethDefaultTracingOptions, GethTrace, NoopFrame, PreStateConfig,
+    erc7562::Erc7562Config, mux::MuxConfig,
 };
 use evm2::{
-    context_interface::{
-        result::{HaltReasonTr, ResultAndState},
-        Block, ContextTr, Transaction,
-    },
-    handler::FrameResult,
-    inspector::JournalExt,
-    interpreter::{CallInputs, CallOutcome, CreateInputs, CreateOutcome, FrameInput, Interpreter},
-    DatabaseRef, Inspector,
+    EvmTypes, Inspector,
+    env::{BlockEnv, TxEnv},
+    interpreter::{Interpreter, Message, MessageResult},
 };
 use thiserror::Error;
+
+/// Transaction fields needed by debug trace finalization.
+pub trait TraceTxEnv {
+    /// Returns transaction gas limit.
+    fn trace_gas_limit(&self) -> u64;
+
+    /// Returns transaction caller.
+    fn trace_caller(&self) -> Address;
+}
+
+impl<T: EvmTypes> TraceTxEnv for TxEnv<T> {
+    fn trace_gas_limit(&self) -> u64 {
+        0
+    }
+
+    fn trace_caller(&self) -> Address {
+        self.origin
+    }
+}
+
+/// Block fields needed by debug trace finalization.
+pub trait TraceBlockEnv {
+    /// Returns the block number.
+    fn trace_block_number(&self) -> u64;
+
+    /// Returns the block base fee.
+    fn trace_base_fee(&self) -> u64;
+}
+
+impl<T: EvmTypes> TraceBlockEnv for BlockEnv<T> {
+    fn trace_block_number(&self) -> u64 {
+        self.number.try_into().unwrap_or(u64::MAX)
+    }
+
+    fn trace_base_fee(&self) -> u64 {
+        self.basefee.try_into().unwrap_or(u64::MAX)
+    }
+}
 
 /// Inspector for the `debug` API
 ///
@@ -39,7 +73,7 @@ pub enum DebugInspector {
     /// PreStateTracer
     PreStateTracer(TracingInspector, PreStateConfig),
     /// Noop tracer
-    Noop(evm2::inspector::NoOpInspector),
+    Noop,
     /// Mux tracer
     Mux(MuxInspector, MuxConfig),
     /// FlatCallTracer
@@ -62,7 +96,7 @@ impl DebugInspector {
             Self::PreStateTracer(inspector, config) => {
                 Self::PreStateTracer(inspector.clone(), *config)
             }
-            Self::Noop(inspector) => Self::Noop(*inspector),
+            Self::Noop => Self::Noop,
             Self::Mux(inspector, config) => Self::Mux(inspector.clone(), config.clone()),
             Self::FlatCallTracer(inspector) => Self::FlatCallTracer(inspector.clone()),
             Self::Erc7562Tracer(inspector, config) => {
@@ -109,9 +143,7 @@ impl DebugInspector {
                             config,
                         )
                     }
-                    GethDebugBuiltInTracerType::NoopTracer => {
-                        Self::Noop(evm2::inspector::NoOpInspector)
-                    }
+                    GethDebugBuiltInTracerType::NoopTracer => Self::Noop,
                     GethDebugBuiltInTracerType::MuxTracer => {
                         let config = tracer_config
                             .into_mux_config()
@@ -187,7 +219,7 @@ impl DebugInspector {
             | Self::FlatCallTracer(inspector)
             | Self::Erc7562Tracer(inspector, _)
             | Self::Default(inspector, _) => inspector.fuse(),
-            Self::Noop(_) => {}
+            Self::Noop => {}
             Self::Mux(inspector, config) => {
                 *inspector = MuxInspector::try_from_config(config.clone())?;
             }
@@ -201,47 +233,52 @@ impl DebugInspector {
     }
 
     /// Should be invoked after each transaction to obtain the resulting [`GethTrace`].
-    pub fn get_result<DB: DatabaseRef>(
+    pub fn get_result<R, TX, B, DB>(
         &mut self,
         tx_context: Option<TransactionContext>,
-        tx_env: &impl Transaction,
-        block_env: &impl Block,
-        res: &ResultAndState<impl HaltReasonTr>,
+        tx_env: &TX,
+        block_env: &B,
+        res: &R,
         db: &mut DB,
-    ) -> Result<GethTrace, DebugInspectorError<DB::Error>> {
+    ) -> Result<GethTrace, DebugInspectorError>
+    where
+        R: TraceTransactionResult,
+        TX: TraceTxEnv,
+        B: TraceBlockEnv,
+    {
         #[allow(clippy::needless_update)]
         let tx_info = TransactionInfo {
             hash: tx_context.as_ref().and_then(|c| c.tx_hash),
             index: tx_context.as_ref().and_then(|c| c.tx_index.map(|i| i as u64)),
             block_hash: tx_context.as_ref().and_then(|c| c.block_hash),
-            block_number: Some(block_env.number().saturating_to()),
-            base_fee: Some(block_env.basefee()),
+            block_number: Some(block_env.trace_block_number()),
+            base_fee: Some(block_env.trace_base_fee()),
             ..Default::default()
         };
 
         let res = match self {
             Self::FourByte(inspector) => FourByteFrame::from(&*inspector).into(),
             Self::CallTracer(inspector, config) => {
-                inspector.set_transaction_gas_limit(tx_env.gas_limit());
-                inspector.set_transaction_caller(tx_env.caller());
-                inspector.geth_builder().geth_call_traces(*config, res.result.tx_gas_used()).into()
+                inspector.set_transaction_gas_limit(tx_env.trace_gas_limit());
+                inspector.set_transaction_caller(tx_env.trace_caller());
+                inspector.geth_builder().geth_call_traces(*config, res.trace_gas_used()).into()
             }
             Self::PreStateTracer(inspector, config) => {
-                inspector.set_transaction_gas_limit(tx_env.gas_limit());
+                inspector.set_transaction_gas_limit(tx_env.trace_gas_limit());
                 inspector
                     .geth_builder()
                     .geth_prestate_traces(res, config, db)
-                    .map_err(DebugInspectorError::Database)?
+                    .unwrap_or_else(|err| match err {})
                     .into()
             }
-            Self::Noop(_) => NoopFrame::default().into(),
+            Self::Noop => NoopFrame::default().into(),
             Self::Mux(inspector, _) => inspector
                 .try_into_mux_frame(res, db, tx_info)
-                .map_err(DebugInspectorError::Database)?
+                .unwrap_or_else(|err| match err {})
                 .into(),
             Self::FlatCallTracer(inspector) => {
-                inspector.set_transaction_gas_limit(tx_env.gas_limit());
-                inspector.set_transaction_caller(tx_env.caller());
+                inspector.set_transaction_gas_limit(tx_env.trace_gas_limit());
+                inspector.set_transaction_caller(tx_env.trace_caller());
                 inspector
                     .clone()
                     .into_parity_builder()
@@ -249,23 +286,19 @@ impl DebugInspector {
                     .into()
             }
             Self::Erc7562Tracer(inspector, config) => {
-                inspector.set_transaction_gas_limit(tx_env.gas_limit());
-                inspector.set_transaction_caller(tx_env.caller());
+                inspector.set_transaction_gas_limit(tx_env.trace_gas_limit());
+                inspector.set_transaction_caller(tx_env.trace_caller());
                 inspector
                     .geth_builder()
-                    .geth_erc7562_traces(config.clone(), res.result.tx_gas_used(), db)
+                    .geth_erc7562_traces(config.clone(), res.trace_gas_used(), db)
                     .into()
             }
             Self::Default(inspector, config) => {
-                inspector.set_transaction_gas_limit(tx_env.gas_limit());
-                inspector.set_transaction_caller(tx_env.caller());
+                inspector.set_transaction_gas_limit(tx_env.trace_gas_limit());
+                inspector.set_transaction_caller(tx_env.trace_caller());
                 inspector
                     .geth_builder()
-                    .geth_traces(
-                        res.result.tx_gas_used(),
-                        res.result.output().unwrap_or_default().clone(),
-                        *config,
-                    )
+                    .geth_traces(res.trace_gas_used(), res.trace_output(), *config)
                     .into()
             }
             #[cfg(feature = "js-tracer")]
@@ -283,87 +316,152 @@ impl DebugInspector {
     }
 }
 
-macro_rules! delegate {
-    ($self:expr => $insp:ident.$method:ident($($arg:expr),*)) => {
-        match $self {
-            Self::FourByte($insp) => Inspector::<CTX>::$method($insp, $($arg),*),
-            Self::CallTracer($insp, _) => Inspector::<CTX>::$method($insp, $($arg),*),
-            Self::PreStateTracer($insp, _) => Inspector::<CTX>::$method($insp, $($arg),*),
-            Self::FlatCallTracer($insp) => Inspector::<CTX>::$method($insp, $($arg),*),
-            Self::Erc7562Tracer($insp, _) => Inspector::<CTX>::$method($insp, $($arg),*),
-            Self::Default($insp, _) => Inspector::<CTX>::$method($insp, $($arg),*),
-            Self::Noop($insp) => Inspector::<CTX>::$method($insp, $($arg),*),
-            Self::Mux($insp, _) => Inspector::<CTX>::$method($insp, $($arg),*),
+impl<T: EvmTypes> Inspector<T> for DebugInspector {
+    fn initialize_interp(&mut self, interp: &mut Interpreter<'_, T>) {
+        match self {
+            Self::FourByte(inspector) => inspector.initialize_interp(interp),
+            Self::CallTracer(inspector, _)
+            | Self::PreStateTracer(inspector, _)
+            | Self::FlatCallTracer(inspector)
+            | Self::Erc7562Tracer(inspector, _)
+            | Self::Default(inspector, _) => inspector.initialize_interp(interp),
+            Self::Noop => {}
+            Self::Mux(inspector, _) => inspector.initialize_interp(interp),
             #[cfg(feature = "js-tracer")]
-            Self::Js($insp) => Inspector::<CTX>::$method($insp, $($arg),*),
+            Self::Js(inspector) => inspector.initialize_interp(interp),
         }
-    };
-}
-
-impl<CTX> Inspector<CTX> for DebugInspector
-where
-    CTX: ContextTr<Journal: JournalExt, Db: DatabaseRef>,
-{
-    fn initialize_interp(&mut self, interp: &mut Interpreter, context: &mut CTX) {
-        delegate!(self => inspector.initialize_interp(interp, context))
     }
 
-    fn step(&mut self, interp: &mut Interpreter, context: &mut CTX) {
-        delegate!(self => inspector.step(interp, context))
+    fn step(&mut self, interp: &mut Interpreter<'_, T>) {
+        match self {
+            Self::FourByte(inspector) => inspector.step(interp),
+            Self::CallTracer(inspector, _)
+            | Self::PreStateTracer(inspector, _)
+            | Self::FlatCallTracer(inspector)
+            | Self::Erc7562Tracer(inspector, _)
+            | Self::Default(inspector, _) => inspector.step(interp),
+            Self::Noop => {}
+            Self::Mux(inspector, _) => inspector.step(interp),
+            #[cfg(feature = "js-tracer")]
+            Self::Js(inspector) => inspector.step(interp),
+        }
     }
 
-    fn step_end(&mut self, interp: &mut Interpreter, context: &mut CTX) {
-        delegate!(self => inspector.step_end(interp, context))
+    fn step_end(&mut self, interp: &mut Interpreter<'_, T>) {
+        match self {
+            Self::FourByte(inspector) => inspector.step_end(interp),
+            Self::CallTracer(inspector, _)
+            | Self::PreStateTracer(inspector, _)
+            | Self::FlatCallTracer(inspector)
+            | Self::Erc7562Tracer(inspector, _)
+            | Self::Default(inspector, _) => inspector.step_end(interp),
+            Self::Noop => {}
+            Self::Mux(inspector, _) => inspector.step_end(interp),
+            #[cfg(feature = "js-tracer")]
+            Self::Js(inspector) => inspector.step_end(interp),
+        }
     }
 
-    fn log(&mut self, context: &mut CTX, log: Log) {
-        delegate!(self => inspector.log(context, log))
+    fn log(&mut self, log: &Log) {
+        match self {
+            Self::FourByte(inspector) => <FourByteInspector as Inspector<T>>::log(inspector, log),
+            Self::CallTracer(inspector, _)
+            | Self::PreStateTracer(inspector, _)
+            | Self::FlatCallTracer(inspector)
+            | Self::Erc7562Tracer(inspector, _)
+            | Self::Default(inspector, _) => {
+                <TracingInspector as Inspector<T>>::log(inspector, log);
+            }
+            Self::Noop => {}
+            Self::Mux(inspector, _) => <MuxInspector as Inspector<T>>::log(inspector, log),
+            #[cfg(feature = "js-tracer")]
+            Self::Js(inspector) => inspector.log(log),
+        }
     }
 
-    fn log_full(&mut self, interp: &mut Interpreter, context: &mut CTX, log: Log) {
-        delegate!(self => inspector.log_full(interp, context, log))
+    fn call(&mut self, message: &mut Message<T>) -> Option<MessageResult<T>> {
+        match self {
+            Self::FourByte(inspector) => inspector.call(message),
+            Self::CallTracer(inspector, _)
+            | Self::PreStateTracer(inspector, _)
+            | Self::FlatCallTracer(inspector)
+            | Self::Erc7562Tracer(inspector, _)
+            | Self::Default(inspector, _) => inspector.call(message),
+            Self::Noop => None,
+            Self::Mux(inspector, _) => inspector.call(message),
+            #[cfg(feature = "js-tracer")]
+            Self::Js(inspector) => inspector.call(message),
+        }
     }
 
-    fn call(&mut self, context: &mut CTX, inputs: &mut CallInputs) -> Option<CallOutcome> {
-        delegate!(self => inspector.call(context, inputs))
+    fn call_end(&mut self, message: &Message<T>, result: &mut MessageResult<T>) {
+        match self {
+            Self::FourByte(inspector) => inspector.call_end(message, result),
+            Self::CallTracer(inspector, _)
+            | Self::PreStateTracer(inspector, _)
+            | Self::FlatCallTracer(inspector)
+            | Self::Erc7562Tracer(inspector, _)
+            | Self::Default(inspector, _) => inspector.call_end(message, result),
+            Self::Noop => {}
+            Self::Mux(inspector, _) => inspector.call_end(message, result),
+            #[cfg(feature = "js-tracer")]
+            Self::Js(inspector) => inspector.call_end(message, result),
+        }
     }
 
-    fn call_end(&mut self, context: &mut CTX, inputs: &CallInputs, outcome: &mut CallOutcome) {
-        delegate!(self => inspector.call_end(context, inputs, outcome))
+    fn create(&mut self, message: &mut Message<T>) -> Option<MessageResult<T>> {
+        match self {
+            Self::FourByte(inspector) => inspector.create(message),
+            Self::CallTracer(inspector, _)
+            | Self::PreStateTracer(inspector, _)
+            | Self::FlatCallTracer(inspector)
+            | Self::Erc7562Tracer(inspector, _)
+            | Self::Default(inspector, _) => inspector.create(message),
+            Self::Noop => None,
+            Self::Mux(inspector, _) => inspector.create(message),
+            #[cfg(feature = "js-tracer")]
+            Self::Js(inspector) => inspector.create(message),
+        }
     }
 
-    fn create(&mut self, context: &mut CTX, inputs: &mut CreateInputs) -> Option<CreateOutcome> {
-        delegate!(self => inspector.create(context, inputs))
+    fn create_end(&mut self, message: &Message<T>, result: &mut MessageResult<T>) {
+        match self {
+            Self::FourByte(inspector) => inspector.create_end(message, result),
+            Self::CallTracer(inspector, _)
+            | Self::PreStateTracer(inspector, _)
+            | Self::FlatCallTracer(inspector)
+            | Self::Erc7562Tracer(inspector, _)
+            | Self::Default(inspector, _) => inspector.create_end(message, result),
+            Self::Noop => {}
+            Self::Mux(inspector, _) => inspector.create_end(message, result),
+            #[cfg(feature = "js-tracer")]
+            Self::Js(inspector) => inspector.create_end(message, result),
+        }
     }
 
-    fn create_end(
-        &mut self,
-        context: &mut CTX,
-        inputs: &CreateInputs,
-        outcome: &mut CreateOutcome,
-    ) {
-        delegate!(self => inspector.create_end(context, inputs, outcome))
-    }
-
-    fn selfdestruct(&mut self, contract: Address, target: Address, value: U256) {
-        delegate!(self => inspector.selfdestruct(contract, target, value))
-    }
-
-    fn frame_start(
-        &mut self,
-        context: &mut CTX,
-        frame_input: &mut FrameInput,
-    ) -> Option<FrameResult> {
-        delegate!(self => inspector.frame_start(context, frame_input))
-    }
-
-    fn frame_end(
-        &mut self,
-        context: &mut CTX,
-        frame_input: &FrameInput,
-        frame_result: &mut FrameResult,
-    ) {
-        delegate!(self => inspector.frame_end(context, frame_input, frame_result))
+    fn selfdestruct(&mut self, contract: &Address, target: &Address, value: &U256) {
+        match self {
+            Self::FourByte(inspector) => {
+                <FourByteInspector as Inspector<T>>::selfdestruct(
+                    inspector, contract, target, value,
+                );
+            }
+            Self::CallTracer(inspector, _)
+            | Self::PreStateTracer(inspector, _)
+            | Self::FlatCallTracer(inspector)
+            | Self::Erc7562Tracer(inspector, _)
+            | Self::Default(inspector, _) => {
+                <TracingInspector as Inspector<T>>::selfdestruct(
+                    inspector, contract, target, value,
+                );
+            }
+            Self::Noop => {}
+            Self::Mux(inspector, _) => {
+                <MuxInspector as Inspector<T>>::selfdestruct(inspector, contract, target, value);
+            }
+            #[cfg(feature = "js-tracer")]
+            Self::Js(inspector) => inspector.selfdestruct(contract, target, value),
+        }
     }
 }
 

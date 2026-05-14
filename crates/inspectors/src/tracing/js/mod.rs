@@ -1,15 +1,16 @@
 //! Javascript inspector
 
 use crate::tracing::{
+    CallInputExt, TransactionContext,
     config::TraceStyle,
     js::{
         bindings::{
             CallFrame, Contract, EvmDbRef, FrameResult, JsEvmContext, MemoryRef, StackRef, StepLog,
         },
-        builtins::{register_builtins, to_serde_value, PrecompileList},
+        builtins::{PrecompileList, register_builtins, to_serde_value},
     },
     types::CallKind,
-    utils, CallInputExt, TransactionContext,
+    utils,
 };
 use alloc::{
     format,
@@ -18,22 +19,22 @@ use alloc::{
 };
 use alloy_primitives::{Address, Bytes, U256};
 pub use boa_engine::vm::RuntimeLimits;
-use boa_engine::{js_string, Context, JsError, JsObject, JsResult, JsValue, Source};
+use boa_engine::{Context, JsError, JsObject, JsResult, JsValue, Source, js_string};
 use core::borrow::Borrow;
 use evm2::{
+    DatabaseRef, Inspector,
     bytecode::OpCode,
     context::JournalTr,
     context_interface::{
-        result::{ExecutionResult, HaltReasonTr, Output, ResultAndState},
         Block, ContextTr, TransactTo, Transaction,
+        result::{ExecutionResult, HaltReasonTr, Output, ResultAndState},
     },
     inspector::JournalExt,
     interpreter::{
-        interpreter_types::{Jumps, LoopControl},
         CallInputs, CallOutcome, CallScheme, CreateInputs, CreateOutcome, Gas, InstrStop,
         Interpreter, InterpreterAction, InterpreterResult,
+        interpreter_types::{Jumps, LoopControl},
     },
-    DatabaseRef, Inspector,
 };
 
 pub(crate) mod bindings;
@@ -467,9 +468,7 @@ where
         self.set_previous_gas_spent(gas_spent);
 
         if self.try_step(step, db).is_err() {
-            interp
-                .bytecode
-                .set_action(InterpreterAction::new_halt(InstrStop::Revert, interp.gas));
+            interp.bytecode.set_action(InterpreterAction::new_halt(InstrStop::Revert, interp.gas));
         }
     }
 
@@ -694,15 +693,14 @@ fn js_error_to_revert(err: JsError) -> InterpreterResult {
 mod tests {
     use super::*;
 
-    use alloy_primitives::{bytes, hex, Address};
+    use alloy_primitives::{Address, bytes, hex};
     use evm2::{
+        InspectEvm, MainBuilder, MainContext, SpecId,
         context::TxEnv,
         database::CacheDB,
         database_interface::EmptyDB,
         inspector::InspectorEvmTr,
-        SpecId,
         state::{AccountInfo, Bytecode},
-        InspectEvm, MainBuilder, MainContext,
     };
     //use evm2_inspector::{inspector_handler, InspectorContext, InspectorMainEvm};
     use serde_json::json;
