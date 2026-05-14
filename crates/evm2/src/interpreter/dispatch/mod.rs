@@ -61,22 +61,9 @@ where
     C: EvmConfig<T>,
     M: InspectMode<T>,
 {
-    macro_rules! dispatch_fn {
-        ($config:ty, $inspect:ty, $op:expr) => {{
-            #[cfg(tco)]
-            {
-                imp::dispatch::<T, $config, $inspect, $op> as imp::RawInstrFn<T>
-            }
-            #[cfg(not(tco))]
-            {
-                imp::dispatch::<T, $config, $inspect, $op> as imp::RawInstrFn<T>
-            }
-        }};
-    }
-
     let mut table = match previous {
         Some(previous) => *previous,
-        None => [dispatch_fn!(C, M, { op::INVALID }); 256],
+        None => [imp::dispatch::<T, C, M, { op::INVALID }> as imp::RawInstrFn<T>; 256],
     };
     let vt = C::OPCODE_CONFIG;
 
@@ -84,7 +71,7 @@ where
         ($($op:literal,)*) => {
             $(
                 if instruction_changed(vt, previous_opcode_config, $op) && !vt.is_unknown_opcode($op) {
-                    table[$op] = dispatch_fn!(C, M, $op);
+                    table[$op] = imp::dispatch::<T, C, M, $op> as imp::RawInstrFn<T>;
                 }
             )*
         };
