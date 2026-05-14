@@ -1,7 +1,7 @@
 //! EVM configuration.
 
 use crate::{
-    SpecId, VersionTables,
+    OpcodeConfig, SpecId,
     ethereum::RecoveredTxEnvelope,
     interpreter::{
         Host,
@@ -49,66 +49,66 @@ pub trait EvmTypes: Sized + 'static {
 
 /// Compile-time EVM table configuration.
 ///
-/// Names the inherited base `SpecId` and the type-specific `VersionTables` needed to build a
+/// Names the inherited base `SpecId` and the type-specific `OpcodeConfig` needed to build a
 /// dispatch table. Custom configs are modeled as overlays on a base spec, not as new base specs.
 pub trait EvmConfig<T: EvmTypes> {
     /// Inherited base specification ID.
     const BASE_SPEC_ID: SpecId;
 
-    /// Active type-specific version tables.
-    const VERSION_TABLES: &'static VersionTables<T>;
+    /// Active type-specific opcode config.
+    const OPCODE_CONFIG: &'static OpcodeConfig<T>;
 }
 
 /// Runtime EVM config selector.
 ///
 /// Maps a runtime spec-id value accepted by `EvmTypes` to the `ExecutionConfig` that the EVM and
 /// interpreter use. Custom selectors can choose different configs for runtime IDs that share the
-/// same inherited base `SpecId`, while base selectors use `u8::MAX` as the custom-spec sentinel.
+/// same inherited base `SpecId`, while base selectors use `u32::MAX` as the custom-spec sentinel.
 pub trait EvmConfigSelector<T: EvmTypes>: Sized {
     /// Concrete EVM configuration for a base specification ID and custom specification ID.
     ///
     /// `BASE_SPEC_ID` is always a `crate::SpecId` discriminant, even when `T::SpecId` is a custom
-    /// runtime ID type. `CUSTOM_SPEC_ID` is a selector-specific `u8` discriminant; `u8::MAX`
+    /// runtime ID type. `CUSTOM_SPEC_ID` is a selector-specific `u32` discriminant; `u32::MAX`
     /// represents the base table inherited from `BASE_SPEC_ID`.
-    type Config<const BASE_SPEC_ID: u8, const CUSTOM_SPEC_ID: u8>: EvmConfig<T>;
+    type Config<const BASE_SPEC_ID: u32, const CUSTOM_SPEC_ID: u32>: EvmConfig<T>;
 
     /// Returns the selected execution config for `spec_id`.
     fn execution_config(spec_id: T::SpecId) -> ExecutionConfig<T>;
 }
 
-pub(crate) struct SelectorVersionTables<T, F, const CUSTOM_SPEC_ID: u8>(
+pub(crate) struct SelectorOpcodeConfig<T, F, const CUSTOM_SPEC_ID: u32>(
     core::marker::PhantomData<fn() -> (T, F)>,
 );
 
-impl<T, F, const CUSTOM_SPEC_ID: u8> SelectorVersionTables<T, F, CUSTOM_SPEC_ID>
+impl<T, F, const CUSTOM_SPEC_ID: u32> SelectorOpcodeConfig<T, F, CUSTOM_SPEC_ID>
 where
     T: EvmTypes,
     F: EvmConfigSelector<T>,
 {
-    pub(crate) const VERSION_TABLES: &'static [&'static VersionTables<T>; SpecId::COUNT] =
-        &selector_version_tables::<T, F, CUSTOM_SPEC_ID>();
+    pub(crate) const OPCODE_CONFIG: &'static [&'static OpcodeConfig<T>; SpecId::COUNT] =
+        &selector_opcode_config::<T, F, CUSTOM_SPEC_ID>();
 }
 
-const fn selector_version_tables<T, F, const CUSTOM_SPEC_ID: u8>()
--> [&'static VersionTables<T>; SpecId::COUNT]
+const fn selector_opcode_config<T, F, const CUSTOM_SPEC_ID: u32>()
+-> [&'static OpcodeConfig<T>; SpecId::COUNT]
 where
     T: EvmTypes,
     F: EvmConfigSelector<T>,
 {
-    macro_rules! version_tables {
+    macro_rules! opcode_config {
         ([$evm_types:ty, $selector:ty] $($spec:ident $name:ident,)*) => {
             [
                 $(
                     <<$selector as EvmConfigSelector<$evm_types>>::Config<
-                        { SpecId::$spec as u8 },
+                        { SpecId::$spec as u32 },
                         CUSTOM_SPEC_ID,
-                    > as EvmConfig<$evm_types>>::VERSION_TABLES,
+                    > as EvmConfig<$evm_types>>::OPCODE_CONFIG,
                 )*
             ]
         };
     }
 
-    crate::for_each_spec!([T, F] version_tables)
+    crate::for_each_spec!([T, F] opcode_config)
 }
 
 /// Selected execution configuration.
@@ -136,16 +136,16 @@ impl<T: EvmTypes> Copy for ExecutionConfig<T> {}
 impl<T: EvmTypes> ExecutionConfig<T> {
     /// Creates an execution config for a base `SpecId` through selector `F`.
     ///
-    /// This uses the selector's base inherited tables by passing `u8::MAX` as the custom-spec
+    /// This uses the selector's base inherited tables by passing `u32::MAX` as the custom-spec
     /// sentinel.
     #[inline]
     pub(crate) const fn for_base_spec<F: EvmConfigSelector<T>>(base_spec_id: SpecId) -> Self {
-        Self::for_custom_spec::<F, { u8::MAX }>(base_spec_id)
+        Self::for_custom_spec::<F, { u32::MAX }>(base_spec_id)
     }
 
     /// Creates an execution config for selector custom spec `CUSTOM_SPEC_ID` and base `SpecId`.
     #[inline]
-    pub(crate) const fn for_custom_spec<F: EvmConfigSelector<T>, const CUSTOM_SPEC_ID: u8>(
+    pub(crate) const fn for_custom_spec<F: EvmConfigSelector<T>, const CUSTOM_SPEC_ID: u32>(
         base_spec_id: SpecId,
     ) -> Self {
         let i = base_spec_id as usize;
@@ -211,11 +211,11 @@ impl EvmTypes for BaseEvmTypes {
 ///
 /// `BASE_SPEC_ID` is the raw discriminant of `crate::SpecId`, not a custom runtime spec-id value.
 #[allow(missing_copy_implementations, missing_debug_implementations)]
-pub struct BaseEvmConfig<const BASE_SPEC_ID: u8>(());
+pub struct BaseEvmConfig<const BASE_SPEC_ID: u32>(());
 
-impl<T: EvmTypes, const BASE_SPEC_ID: u8> EvmConfig<T> for BaseEvmConfig<BASE_SPEC_ID> {
-    const BASE_SPEC_ID: SpecId = SpecId::try_from_u8(BASE_SPEC_ID).expect("invalid spec id");
-    const VERSION_TABLES: &'static VersionTables<T> = &VersionTables::<T>::base::<Self>();
+impl<T: EvmTypes, const BASE_SPEC_ID: u32> EvmConfig<T> for BaseEvmConfig<BASE_SPEC_ID> {
+    const BASE_SPEC_ID: SpecId = SpecId::try_from_u32(BASE_SPEC_ID).expect("invalid spec id");
+    const OPCODE_CONFIG: &'static OpcodeConfig<T> = &OpcodeConfig::<T>::base::<Self>();
 }
 
 /// Base EVM config selector.
@@ -223,7 +223,7 @@ impl<T: EvmTypes, const BASE_SPEC_ID: u8> EvmConfig<T> for BaseEvmConfig<BASE_SP
 pub struct BaseEvmConfigSelector(());
 
 impl<T: EvmTypes> EvmConfigSelector<T> for BaseEvmConfigSelector {
-    type Config<const BASE_SPEC_ID: u8, const CUSTOM_SPEC_ID: u8> = BaseEvmConfig<BASE_SPEC_ID>;
+    type Config<const BASE_SPEC_ID: u32, const CUSTOM_SPEC_ID: u32> = BaseEvmConfig<BASE_SPEC_ID>;
 
     fn execution_config(spec_id: T::SpecId) -> ExecutionConfig<T> {
         ExecutionConfig::for_base_spec::<Self>(spec_id.into())
