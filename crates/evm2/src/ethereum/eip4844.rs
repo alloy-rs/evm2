@@ -70,12 +70,9 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     req.host.state.increment_nonce(&caller).map_err(|code| req.host.db_error_handler(code))?;
     let execution_checkpoint = req.host.state.checkpoint();
 
-    let (gas_limit, gas_reservoir) = initial_execution_gas(
-        req.host.version(),
-        tx.gas_limit,
-        intrinsic,
-        intrinsic_state_gas(req.host.version(), tx.to.into()),
-    );
+    let intrinsic_state = intrinsic_state_gas(req.host.version(), tx.to.into());
+    let (gas_limit, gas_reservoir) =
+        initial_execution_gas(req.host.version(), tx.gas_limit, intrinsic, intrinsic_state);
     let tx_env = TxEnv {
         origin: caller,
         gas_price,
@@ -90,7 +87,17 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     let mut result = req.host.execute_message(&tx_env, bytecode, &mut message, false);
     rollback_failed_execution(req.host, execution_checkpoint, &mut result);
 
-    settle_gas(req.host, caller, gas_price, tx.gas_limit, floor_gas, result)
+    settle_gas(
+        req.host,
+        caller,
+        gas_price,
+        tx.gas_limit,
+        floor_gas,
+        intrinsic,
+        intrinsic_state,
+        intrinsic_state,
+        result,
+    )
 }
 
 fn validate_blob_fee(max_fee_per_blob_gas: U256, blob_basefee: U256) -> HandlerResult<()> {

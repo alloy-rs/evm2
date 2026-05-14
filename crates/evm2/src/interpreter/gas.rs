@@ -52,7 +52,8 @@ pub struct GasTracker {
     remaining: u64,
     gas_limit: u64,
     reservoir: u64,
-    state_gas_spent: u64,
+    state_gas_spent: i64,
+    refill_amount: u64,
     refunded: i64,
 }
 
@@ -78,7 +79,7 @@ impl GasTracker {
     /// Creates a gas tracker from its raw counters.
     #[inline]
     pub const fn from_parts(gas_limit: u64, remaining: u64, reservoir: u64) -> Self {
-        Self { remaining, gas_limit, reservoir, state_gas_spent: 0, refunded: 0 }
+        Self { remaining, gas_limit, reservoir, state_gas_spent: 0, refill_amount: 0, refunded: 0 }
     }
 
     /// Creates a gas tracker from already used gas.
@@ -125,14 +126,26 @@ impl GasTracker {
 
     /// Returns spent state gas.
     #[inline]
-    pub const fn state_gas_spent(&self) -> u64 {
+    pub const fn state_gas_spent(&self) -> i64 {
         self.state_gas_spent
     }
 
     /// Sets spent state gas.
     #[inline]
-    pub const fn set_state_gas_spent(&mut self, val: u64) {
+    pub const fn set_state_gas_spent(&mut self, val: i64) {
         self.state_gas_spent = val;
+    }
+
+    /// Returns cumulative reservoir refill amount.
+    #[inline]
+    pub const fn refill_amount(&self) -> u64 {
+        self.refill_amount
+    }
+
+    /// Sets cumulative reservoir refill amount.
+    #[inline]
+    pub const fn set_refill_amount(&mut self, val: u64) {
+        self.refill_amount = val;
     }
 
     /// Returns gas refund.
@@ -187,25 +200,28 @@ impl GasTracker {
     #[inline]
     pub fn spend_state(&mut self, cost: u64) -> Result {
         if self.reservoir >= cost {
-            self.state_gas_spent = self.state_gas_spent.saturating_add(cost);
+            self.state_gas_spent = self.state_gas_spent.saturating_add_unsigned(cost);
             self.reservoir -= cost;
             return Ok(());
         }
 
         let spill = cost - self.reservoir;
+        if self.remaining < spill {
+            return Err(InstrStop::OutOfGas);
+        }
 
         self.spend(spill)?;
-        self.state_gas_spent = self.state_gas_spent.saturating_add(cost);
+        self.state_gas_spent = self.state_gas_spent.saturating_add_unsigned(cost);
         self.reservoir = 0;
         Ok(())
     }
 
-    /// Refunds state gas to the reservoir.
+    /// Refills state gas to the reservoir.
     #[inline]
-    pub fn refund_state(&mut self, amount: u64) {
-        let applied = amount.min(self.state_gas_spent);
-        self.reservoir = self.reservoir.saturating_add(applied);
-        self.state_gas_spent -= applied;
+    pub const fn refill_reservoir(&mut self, amount: u64) {
+        self.reservoir = self.reservoir.saturating_add(amount);
+        self.state_gas_spent = self.state_gas_spent.saturating_sub_unsigned(amount);
+        self.refill_amount = self.refill_amount.saturating_add(amount);
     }
 
     /// Adds gas refund.
@@ -362,14 +378,26 @@ impl Gas {
 
     /// Returns spent state gas.
     #[inline]
-    pub const fn state_gas_spent(&self) -> u64 {
+    pub const fn state_gas_spent(&self) -> i64 {
         self.tracker.state_gas_spent()
     }
 
     /// Sets spent state gas.
     #[inline]
-    pub const fn set_state_gas_spent(&mut self, val: u64) {
+    pub const fn set_state_gas_spent(&mut self, val: i64) {
         self.tracker.set_state_gas_spent(val);
+    }
+
+    /// Returns cumulative reservoir refill amount.
+    #[inline]
+    pub const fn refill_amount(&self) -> u64 {
+        self.tracker.refill_amount()
+    }
+
+    /// Sets cumulative reservoir refill amount.
+    #[inline]
+    pub const fn set_refill_amount(&mut self, val: u64) {
+        self.tracker.set_refill_amount(val);
     }
 
     /// Returns gas refund.
@@ -425,10 +453,10 @@ impl Gas {
         self.tracker.spend_state(cost)
     }
 
-    /// Refunds state gas to the reservoir.
+    /// Refills state gas to the reservoir.
     #[inline]
-    pub fn refund_state(&mut self, amount: u64) {
-        self.tracker.refund_state(amount);
+    pub const fn refill_reservoir(&mut self, amount: u64) {
+        self.tracker.refill_reservoir(amount);
     }
 
     /// Adds gas refund.

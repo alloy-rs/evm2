@@ -58,9 +58,13 @@ impl<T: EvmTypes> MessageResult<T> {
             parent_gas.set_state_gas_spent(
                 parent_gas.state_gas_spent().saturating_add(self.gas.state_gas_spent()),
             );
+            parent_gas.set_refill_amount(
+                parent_gas.refill_amount().saturating_add(self.gas.refill_amount()),
+            );
         } else {
-            parent_gas
-                .set_reservoir(self.gas.reservoir().saturating_add(self.gas.state_gas_spent()));
+            parent_gas.set_reservoir(
+                self.gas.reservoir().saturating_add_signed(self.gas.state_gas_spent()),
+            );
         }
     }
 

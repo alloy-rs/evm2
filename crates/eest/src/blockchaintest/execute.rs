@@ -153,6 +153,9 @@ fn execute_block(
             .is_some_and(|exception| exception.contains("BLOCK_ACCESS_LIST"));
     let mut bal_builder = needs_bal.then(BalBuilder::default);
     let txs = block_transactions(block);
+    let mut block_gas_allowance_used = U256::ZERO;
+    let mut block_regular_gas_used = U256::ZERO;
+    let mut block_state_gas_used = U256::ZERO;
     pre_block_system_calls(
         &mut block_database,
         spec,
@@ -171,9 +174,27 @@ fn execute_block(
             }
             Err(err) => return Err(TestError::case(path, name, err)),
         };
+        block_gas_allowance_used += U256::from(tx.gas_limit());
+        if should_fail && block_gas_allowance_used > next_block_env.gas_limit {
+            return Ok(());
+        }
 
         match execute_tx(spec, next_block_env, block_database.clone(), &tx, bal_builder.is_some()) {
             Ok(result) => {
+                block_regular_gas_used += U256::from(result.block_gas_used);
+                block_state_gas_used += U256::from(result.state_gas_used);
+                if block_regular_gas_used > next_block_env.gas_limit
+                    || block_state_gas_used > next_block_env.gas_limit
+                {
+                    if should_fail {
+                        return Ok(());
+                    }
+                    return Err(TestError::case(
+                        path,
+                        name,
+                        TestErrorKind::UnexpectedFailure("block gas used overflow".to_string()),
+                    ));
+                }
                 if let Some(bal_builder) = &mut bal_builder {
                     bal_builder.push_state_changes(
                         BlockAccessIndex::new(tx_index as u64 + 1),

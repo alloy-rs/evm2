@@ -436,12 +436,12 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         caller_is_static: bool,
     ) -> MessageResult<T> {
         if let Err(stop) = self.prepare_create_message(&bytecode, message) {
-            return Self::error_message_result(stop, message.gas_limit);
+            return Self::error_message_result(stop, message.gas_limit, message.gas_reservoir);
         }
         let checkpoint = self.state.checkpoint();
         if let Err(stop) = self.create_message_account(message) {
             self.state.rollback(checkpoint, self.spec_id());
-            return Self::error_message_result(stop, message.gas_limit);
+            return Self::error_message_result(stop, message.gas_limit, message.gas_reservoir);
         }
         message.code_address = message.destination;
         message.disable_precompiles = false;
@@ -520,7 +520,11 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
 
             if let Err(code) = self.state.set_code(address, Bytecode::new_legacy(output.clone())) {
                 self.state.rollback(checkpoint, self.spec_id());
-                return Self::error_message_result(self.db_error_stop(code), gas_limit);
+                return Self::error_message_result(
+                    self.db_error_stop(code),
+                    gas_limit,
+                    gas.reservoir(),
+                );
             }
         } else {
             self.state.rollback(checkpoint, self.spec_id());
@@ -622,11 +626,19 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             || match self.state.transfer(&message.caller, &message.destination, &message.value) {
                 Ok(result) => result,
                 Err(code) => {
-                    return Self::error_message_result(self.db_error_stop(code), message.gas_limit);
+                    return Self::error_message_result(
+                        self.db_error_stop(code),
+                        message.gas_limit,
+                        message.gas_reservoir,
+                    );
                 }
             };
         if transfers_balance && !transfer_succeeded {
-            return Self::error_message_result(InstrStop::OutOfFunds, message.gas_limit);
+            return Self::error_message_result(
+                InstrStop::OutOfFunds,
+                message.gas_limit,
+                message.gas_reservoir,
+            );
         }
         if transfers_balance {
             self.log_eip7708_transfer(&message.caller, &message.destination, &message.value);
@@ -647,7 +659,10 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         checkpoint: StateCheckpoint,
         message: &Message<T>,
     ) -> MessageResult<T> {
-        let mut gas = GasTracker::new(message.gas_limit);
+        let mut gas = GasTracker::new_with_regular_gas_and_reservoir(
+            message.gas_limit,
+            message.gas_reservoir,
+        );
         let result = self.execute_precompile(message, &mut gas);
         let (stop, output) = match result {
             Ok(output) => (InstrStop::Return, output.into_bytes()),
@@ -696,8 +711,16 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     }
 
     #[inline]
-    fn error_message_result(stop: InstrStop, gas_remaining: u64) -> MessageResult<T> {
-        MessageResult { stop, gas: GasTracker::new(gas_remaining), ..MessageResult::default() }
+    fn error_message_result(
+        stop: InstrStop,
+        gas_remaining: u64,
+        gas_reservoir: u64,
+    ) -> MessageResult<T> {
+        MessageResult {
+            stop,
+            gas: GasTracker::new_with_regular_gas_and_reservoir(gas_remaining, gas_reservoir),
+            ..MessageResult::default()
+        }
     }
 
     #[inline]
@@ -1049,6 +1072,10 @@ pub struct TxResult<T: EvmTypes = crate::BaseEvmTypes> {
     pub status: bool,
     /// Gas used by execution.
     pub gas_used: u64,
+    /// Regular gas counted against the block gas limit.
+    pub block_gas_used: u64,
+    /// State gas counted against the block state-gas budget.
+    pub state_gas_used: u64,
     /// Interpreter stop reason.
     pub stop: InstrStop,
     /// Return or revert output.

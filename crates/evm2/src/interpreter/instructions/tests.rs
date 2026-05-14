@@ -229,7 +229,7 @@ impl TestInterpreter {
         self.gas.refunded()
     }
 
-    pub(super) fn state_gas_spent(&self) -> u64 {
+    pub(super) fn state_gas_spent(&self) -> i64 {
         self.gas.state_gas_spent()
     }
 

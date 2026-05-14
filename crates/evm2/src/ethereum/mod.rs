@@ -77,6 +77,43 @@ impl RecoveredTxEnvelope {
             Self::Legacy(_) | Self::Eip2930(_) | Self::Eip1559(_) | Self::Eip4844(_) => None,
         }
     }
+
+    /// Returns the transaction gas limit.
+    pub const fn gas_limit(&self) -> u64 {
+        match self {
+            Self::Legacy(tx) => tx.inner().gas_limit,
+            Self::Eip2930(tx) => tx.inner().gas_limit,
+            Self::Eip1559(tx) => tx.inner().gas_limit,
+            Self::Eip4844(tx) => tx.inner().tx().gas_limit,
+            Self::Eip7702(tx) => tx.inner().gas_limit,
+        }
+    }
+
+    /// Returns the transaction's block regular-gas allowance.
+    pub fn block_regular_gas_limit(&self, version: &Version) -> u64 {
+        let gas_limit = self.gas_limit();
+        if !version.feature(EvmFeatures::EIP8037) {
+            return gas_limit;
+        }
+
+        let create_state_gas = |to: TxKind| {
+            if to.is_create() { u64::from(version.gas_params.get(GasId::CreateState)) } else { 0 }
+        };
+        let intrinsic_state = match self {
+            Self::Legacy(tx) => create_state_gas(tx.inner().to),
+            Self::Eip2930(tx) => create_state_gas(tx.inner().to),
+            Self::Eip1559(tx) => create_state_gas(tx.inner().to),
+            Self::Eip4844(tx) => create_state_gas(tx.inner().tx().to.into()),
+            Self::Eip7702(tx) => {
+                let auth_state = u64::from(version.gas_params.get(GasId::TxEip7702PerAuthState));
+                u64::try_from(tx.inner().authorization_list.len())
+                    .unwrap_or(u64::MAX)
+                    .saturating_mul(auth_state)
+            }
+        };
+
+        gas_limit.saturating_sub(intrinsic_state).min(version.tx_gas_limit_cap)
+    }
 }
 
 impl Typed2718 for RecoveredTxEnvelope {
@@ -212,7 +249,39 @@ pub(super) fn initial_execution_gas(
     let intrinsic_regular = intrinsic.saturating_sub(intrinsic_state);
     let regular_budget = version.tx_gas_limit_cap.saturating_sub(intrinsic_regular);
     let regular_gas = execution_gas.min(regular_budget);
-    (regular_gas, execution_gas.saturating_sub(regular_gas))
+    let reservoir = execution_gas.saturating_sub(regular_gas);
+
+    let _ = intrinsic_state;
+
+    (regular_gas, reservoir)
+}
+
+pub(super) fn initial_execution_gas_with_state_refund(
+    version: &Version,
+    tx_gas_limit: u64,
+    intrinsic_regular: u64,
+    intrinsic_state: u64,
+    state_refund: u64,
+) -> (u64, u64) {
+    if !version.feature(EvmFeatures::EIP8037) {
+        return (tx_gas_limit.saturating_sub(intrinsic_regular), 0);
+    }
+
+    let intrinsic = intrinsic_regular.saturating_add(intrinsic_state).saturating_sub(state_refund);
+    let execution_gas = tx_gas_limit.saturating_sub(intrinsic);
+    let mut regular_gas =
+        tx_gas_limit.min(version.tx_gas_limit_cap).saturating_sub(intrinsic_regular);
+    let mut reservoir = execution_gas.saturating_sub(regular_gas);
+
+    if reservoir >= intrinsic_state {
+        reservoir -= intrinsic_state;
+    } else {
+        regular_gas = regular_gas.saturating_sub(intrinsic_state - reservoir);
+        reservoir = 0;
+    }
+    reservoir = reservoir.saturating_add(state_refund);
+
+    (regular_gas, reservoir)
 }
 
 pub(super) fn intrinsic_state_gas(version: &Version, to: TxKind) -> u64 {
@@ -445,19 +514,30 @@ pub(super) fn rollback_failed_execution<T: EvmTypes<Host = Evm<T>>>(
     }
 }
 
+#[expect(clippy::too_many_arguments)]
 pub(super) fn settle_gas<T: EvmTypes<Host = Evm<T>>>(
     host: &mut Evm<T>,
     caller: Address,
     gas_price: U256,
     tx_gas_limit: u64,
     floor_gas: u64,
+    intrinsic_gas: u64,
+    intrinsic_state_gas: u64,
+    failure_intrinsic_state_refund: u64,
     result: MessageResult<T>,
 ) -> HandlerResult<TxResult<T>> {
-    let (gas_remaining, gas_used) =
-        final_tx_gas(&result, tx_gas_limit, host.feature(EvmFeatures::EIP3529), floor_gas);
+    let gas = final_tx_gas(
+        &result,
+        tx_gas_limit,
+        host.feature(EvmFeatures::EIP3529),
+        floor_gas,
+        intrinsic_gas,
+        intrinsic_state_gas,
+        failure_intrinsic_state_refund,
+    );
     if host.feature(EvmFeatures::FEE_CHARGE) {
         host.state
-            .add_balance(&caller, &(U256::from(gas_remaining) * gas_price))
+            .add_balance(&caller, &(U256::from(gas.remaining) * gas_price))
             .map_err(|code| host.db_error_handler(code))?;
         let beneficiary_gas_price = if host.feature(EvmFeatures::BASE_FEE_CHECK) {
             gas_price.saturating_sub(host.block.basefee)
@@ -465,12 +545,14 @@ pub(super) fn settle_gas<T: EvmTypes<Host = Evm<T>>>(
             gas_price
         };
         host.state
-            .add_balance(&host.block.beneficiary, &(U256::from(gas_used) * beneficiary_gas_price))
+            .add_balance(&host.block.beneficiary, &(U256::from(gas.used) * beneficiary_gas_price))
             .map_err(|code| host.db_error_handler(code))?;
     }
     Ok(TxResult {
         status: result.stop.is_success(),
-        gas_used,
+        gas_used: gas.used,
+        block_gas_used: gas.block_regular_used,
+        state_gas_used: gas.state_used,
         stop: result.stop,
         output: result.output,
         ext: T::TxResultExt::default(),
@@ -478,15 +560,31 @@ pub(super) fn settle_gas<T: EvmTypes<Host = Evm<T>>>(
     })
 }
 
-const fn final_tx_gas<T: EvmTypes>(
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct FinalTxGas {
+    remaining: u64,
+    used: u64,
+    block_regular_used: u64,
+    state_used: u64,
+}
+
+fn final_tx_gas<T: EvmTypes>(
     result: &MessageResult<T>,
     tx_gas_limit: u64,
     is_eip3529: bool,
     floor_gas: u64,
-) -> (u64, u64) {
+    intrinsic_gas: u64,
+    intrinsic_state_gas: u64,
+    failure_intrinsic_state_refund: u64,
+) -> FinalTxGas {
+    let _ = intrinsic_gas;
     let mut reservoir = result.gas.reservoir();
     if !result.stop.is_success() {
-        reservoir = reservoir.saturating_add(result.gas.state_gas_spent());
+        let failure_intrinsic_state_refund =
+            if result.stop.is_revert() { failure_intrinsic_state_refund } else { 0 };
+        reservoir = reservoir
+            .saturating_add_signed(result.gas.state_gas_spent())
+            .saturating_add(failure_intrinsic_state_refund);
     }
     let spent = tx_gas_limit.saturating_sub(result.gas.remaining()).saturating_sub(reservoir);
     let refund = if result.stop.is_success() && result.gas.refunded() > 0 {
@@ -499,12 +597,26 @@ const fn final_tx_gas<T: EvmTypes>(
     };
     let gas_remaining = result.gas.remaining().saturating_add(reservoir).saturating_add(refund);
     let gas_remaining = if gas_remaining < tx_gas_limit { gas_remaining } else { tx_gas_limit };
-    let gas_used = tx_gas_limit.saturating_sub(gas_remaining);
+    let mut gas_used = tx_gas_limit.saturating_sub(gas_remaining);
+    let execution_state_gas = if result.stop.is_success() {
+        u64::try_from(result.gas.state_gas_spent()).unwrap_or_default()
+    } else {
+        0
+    };
+    let state_used = intrinsic_state_gas.saturating_add(execution_state_gas);
+    let mut block_regular_used = spent.saturating_sub(state_used);
     // EIP-7623 charges at least the calldata floor after applying refunds.
     if gas_used < floor_gas {
-        return (tx_gas_limit.saturating_sub(floor_gas), floor_gas);
+        gas_used = floor_gas;
+        block_regular_used = floor_gas;
+        return FinalTxGas {
+            remaining: tx_gas_limit.saturating_sub(floor_gas),
+            used: gas_used,
+            block_regular_used,
+            state_used,
+        };
     }
-    (gas_remaining, gas_used)
+    FinalTxGas { remaining: gas_remaining, used: gas_used, block_regular_used, state_used }
 }
 
 pub(super) fn access_list_counts(access_list: &AccessList) -> (u64, u64) {
@@ -771,7 +883,15 @@ mod tests {
             ..MessageResult::<BaseEvmTypes>::default()
         };
 
-        assert_eq!(final_tx_gas(&result, 100_000, true, 60_000), (40_000, 60_000));
+        assert_eq!(
+            final_tx_gas(&result, 100_000, true, 60_000, 0, 0, 0),
+            FinalTxGas {
+                remaining: 40_000,
+                used: 60_000,
+                block_regular_used: 60_000,
+                state_used: 0,
+            }
+        );
     }
 
     #[test]
@@ -782,7 +902,15 @@ mod tests {
             ..MessageResult::<BaseEvmTypes>::default()
         };
 
-        assert_eq!(final_tx_gas(&result, 100_000, true, 60_000), (30_000, 70_000));
+        assert_eq!(
+            final_tx_gas(&result, 100_000, true, 60_000, 0, 0, 0),
+            FinalTxGas {
+                remaining: 30_000,
+                used: 70_000,
+                block_regular_used: 70_000,
+                state_used: 0,
+            }
+        );
     }
 
     #[test]

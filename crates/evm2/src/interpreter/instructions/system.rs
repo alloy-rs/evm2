@@ -35,10 +35,10 @@ const fn should_charge_new_account_gas(
 }
 
 #[inline]
-fn call_too_deep_result<T: EvmTypes>(gas_limit: u64) -> MessageResult<T> {
+fn call_too_deep_result<T: EvmTypes>(gas_limit: u64, gas_reservoir: u64) -> MessageResult<T> {
     MessageResult {
         stop: InstrStop::CallTooDeep,
-        gas: GasTracker::new(gas_limit),
+        gas: GasTracker::new_with_regular_gas_and_reservoir(gas_limit, gas_reservoir),
         ..Default::default()
     }
 }
@@ -123,6 +123,7 @@ fn load_acc_and_calc_gas<T: EvmTypes>(
         code_address = delegated_address;
     }
     let spec = state.spec();
+    let mut state_gas_cost = 0;
     if create_empty_account
         && should_charge_new_account_gas(
             spec,
@@ -132,10 +133,11 @@ fn load_acc_and_calc_gas<T: EvmTypes>(
     {
         cost += u64::from(state.gas_params().get(GasId::NewAccountCost));
         if state.feature(EvmFeatures::EIP8037) && transfers_value {
-            gas.spend_state(state.gas_params().get(GasId::NewAccountState).into())?;
+            state_gas_cost = state.gas_params().get(GasId::NewAccountState).into();
         }
     }
     gas.spend(cost)?;
+    gas.spend_state(state_gas_cost)?;
 
     let mut gas_limit = if state.spec().enables(SpecId::TANGERINE) {
         min(state.gas_params().call_stipend_reduction(gas.remaining()), stack_gas_limit)
@@ -253,7 +255,7 @@ fn call_inner<T: EvmTypes>(
     let mut result = if let Some(result) = state.inspect_call(&mut message) {
         result
     } else if message.depth > CALL_DEPTH_LIMIT {
-        call_too_deep_result::<T>(message.gas_limit)
+        call_too_deep_result::<T>(message.gas_limit, message.gas_reservoir)
     } else {
         let tx_env = unsafe { trustme::decouple_lt(state.tx()) };
         state.host().execute_message(tx_env, code, &mut message, caller_is_static)
@@ -356,7 +358,7 @@ fn create_inner<T: EvmTypes>(
     let mut result = if let Some(result) = state.inspect_create(&mut message) {
         result
     } else if message.depth > CALL_DEPTH_LIMIT {
-        call_too_deep_result::<T>(message.gas_limit)
+        call_too_deep_result::<T>(message.gas_limit, message.gas_reservoir)
     } else {
         let bytecode = crate::bytecode::Bytecode::new_legacy(message.input.clone());
         let tx_env = unsafe { trustme::decouple_lt(state.tx()) };
@@ -366,8 +368,8 @@ fn create_inner<T: EvmTypes>(
     gas.erase_cost(result.gas_returned_to_parent());
     gas.record_refund(result.refund_propagated_to_parent());
     result.apply_reservoir_to_parent(gas);
-    if !result.stop.is_success() {
-        gas.refund_state(create_state_gas);
+    if result.created_address.is_none() {
+        gas.refill_reservoir(create_state_gas);
     }
     // EIP-211 exposes CREATE failure data only for REVERT; other failures clear returndata.
     if result.stop == InstrStop::Revert {

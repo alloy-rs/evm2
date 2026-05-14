@@ -1,10 +1,10 @@
 use super::{
-    access_list_counts, charge_upfront, effective_gas_price, floor_gas, initial_execution_gas,
-    initial_message, intrinsic_gas, rollback_failed_execution, settle_gas,
-    validate_block_gas_limit, validate_chain_id, validate_create_initcode, validate_floor_gas,
-    validate_gas_price, validate_intrinsic_gas, validate_nonce_not_overflow, validate_priority_fee,
-    validate_regular_gas_limit_cap, validate_sender, validate_tx_gas_limit_cap, warm_access_list,
-    warm_base_accounts,
+    access_list_counts, charge_upfront, effective_gas_price, floor_gas,
+    initial_execution_gas_with_state_refund, initial_message, intrinsic_gas,
+    rollback_failed_execution, settle_gas, validate_block_gas_limit, validate_chain_id,
+    validate_create_initcode, validate_floor_gas, validate_gas_price, validate_intrinsic_gas,
+    validate_nonce_not_overflow, validate_priority_fee, validate_regular_gas_limit_cap,
+    validate_sender, validate_tx_gas_limit_cap, warm_access_list, warm_base_accounts,
 };
 use crate::{
     Evm, EvmTypes, TxResult,
@@ -12,7 +12,7 @@ use crate::{
     env::TxEnv,
     interpreter::Host,
     registry::{HandlerError, HandlerResult, TxRequest},
-    version::GasId,
+    version::{EvmFeatures, GasId},
 };
 use alloy_consensus::{TxEip7702, transaction::Recovered};
 use alloy_eips::eip7702::SignedAuthorization;
@@ -65,10 +65,17 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     req.host.state.increment_nonce(&caller).map_err(|code| req.host.db_error_handler(code))?;
     let chain_id = req.host.version().chain_id;
     let eip7702_refund = apply_auth_list(req.host, chain_id, &tx.authorization_list)?;
+    let (eip7702_state_refund, eip7702_regular_refund) =
+        split_eip7702_refund(req.host, eip7702_refund);
     let execution_checkpoint = req.host.state.checkpoint();
 
-    let (gas_limit, gas_reservoir) =
-        initial_execution_gas(req.host.version(), tx.gas_limit, intrinsic, auth_state_gas);
+    let (gas_limit, gas_reservoir) = initial_execution_gas_with_state_refund(
+        req.host.version(),
+        tx.gas_limit,
+        intrinsic.saturating_sub(auth_state_gas),
+        auth_state_gas,
+        eip7702_state_refund,
+    );
     let tx_env = TxEnv {
         origin: caller,
         gas_price,
@@ -77,11 +84,27 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     };
     let (bytecode, mut message) =
         initial_message(req.host, caller, tx.nonce, tx.to.into(), &tx.input, tx.value, gas_limit)?;
-    message.gas_reservoir = gas_reservoir.saturating_add(eip7702_refund);
+    message.gas_reservoir = gas_reservoir;
     let mut result = req.host.execute_message(&tx_env, bytecode, &mut message, false);
+    if eip7702_regular_refund > 0 {
+        result.gas.record_refund(i64::try_from(eip7702_regular_refund).unwrap_or(i64::MAX));
+    }
     rollback_failed_execution(req.host, execution_checkpoint, &mut result);
 
-    settle_gas(req.host, caller, gas_price, tx.gas_limit, floor_gas, result)
+    let intrinsic_state = auth_state_gas.saturating_sub(eip7702_state_refund);
+    let failure_intrinsic_state_refund =
+        if tx.gas_limit > req.host.version().tx_gas_limit_cap { intrinsic_state } else { 0 };
+    settle_gas(
+        req.host,
+        caller,
+        gas_price,
+        tx.gas_limit,
+        floor_gas,
+        intrinsic,
+        intrinsic_state,
+        failure_intrinsic_state_refund,
+        result,
+    )
 }
 
 fn eip7702_authorization_regular_gas<T: EvmTypes<Host = Evm<T>>>(
@@ -97,6 +120,23 @@ fn eip7702_authorization_state_gas<T: EvmTypes<Host = Evm<T>>>(
 ) -> u64 {
     let per_auth = u64::from(host.version().gas_params.get(GasId::TxEip7702PerAuthState));
     u64::try_from(authorizations).unwrap_or(u64::MAX).saturating_mul(per_auth)
+}
+
+fn split_eip7702_refund<T: EvmTypes<Host = Evm<T>>>(host: &Evm<T>, refund: u64) -> (u64, u64) {
+    if host.version().feature(EvmFeatures::EIP8037) {
+        return (refund, 0);
+    }
+
+    let per_auth_refund = u64::from(host.version().gas_params.get(GasId::TxEip7702AuthRefund));
+    let per_auth_state = u64::from(host.version().gas_params.get(GasId::TxEip7702PerAuthState));
+    if per_auth_refund == 0 || per_auth_state == 0 || refund == 0 {
+        return (0, refund);
+    }
+
+    let state_refund_per_auth = per_auth_refund.min(per_auth_state);
+    let refunded_auths = refund / per_auth_refund;
+    let state_refund = refunded_auths.saturating_mul(state_refund_per_auth);
+    (state_refund, refund.saturating_sub(state_refund))
 }
 
 fn apply_auth_list<T: EvmTypes<Host = Evm<T>>>(

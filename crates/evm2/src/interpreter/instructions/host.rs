@@ -69,7 +69,7 @@ pub(crate) fn sstore(cx: _, [key, value]: [Word]) -> Result {
     if cx.state.feature(EvmFeatures::EIP8037) {
         cx.gas.spend_state(cx.state.gas_params().sstore_state_gas(&state_load))?;
         if !state_load.is_noop() && state_load.resets_original() && state_load.original_is_zero() {
-            cx.gas.refund_state(cx.state.gas_params().get(GasId::SstoreSetState).into());
+            cx.gas.refill_reservoir(cx.state.gas_params().get(GasId::SstoreSetState).into());
         }
     }
 
