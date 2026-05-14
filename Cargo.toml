@@ -56,6 +56,7 @@ cfg-if = { version = "1.0", default-features = false }
 colorchoice = { version = "1.0", default-features = false }
 libtest-mimic = "0.8"
 once_cell = { version = "1.21", default-features = false }
+paste = { version = "1.0", default-features = false }
 phf = { version = "0.13", default-features = false }
 rand = "0.10"
 rstest = "0.26.0"
