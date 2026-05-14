@@ -292,6 +292,8 @@ pub(super) fn warm_base_accounts<T: EvmTypes<Host = Evm<T>>>(
     host.state.warm_account_non_revertible(&caller);
     if host.feature(EvmFeatures::EIP3651) {
         host.state.warm_account_non_revertible(&host.block.beneficiary);
+        let beneficiary = host.block.beneficiary;
+        host.state.record_account_access(&beneficiary);
     }
     if let TxKind::Call(to) = to {
         host.state.warm_account_non_revertible(&to);
