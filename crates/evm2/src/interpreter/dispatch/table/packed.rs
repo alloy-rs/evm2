@@ -27,7 +27,11 @@ pub(super) fn dispatch_loop_call<T: EvmTypes>(
     remaining_gas: &mut super::LoopState,
 ) -> (Pc, usize) {
     let (next_pc, gas_spent, next_stack_len) = unpack_ret(instr(pc, stack, *remaining_gas, state));
-    *remaining_gas = RemainingGas::new(remaining_gas.get().wrapping_sub(gas_spent));
+    if gas_spent == GAS_SYNC_SENTINEL {
+        remaining_gas.set(state.gas_mut().remaining());
+    } else {
+        remaining_gas.set(remaining_gas.get().wrapping_sub(gas_spent));
+    }
     (next_pc, next_stack_len)
 }
 
@@ -55,7 +59,9 @@ extern_table! {
             );
         dispatch_return(
             pc,
-            initial_remaining_gas.get().wrapping_sub(remaining_gas.get()),
+            initial_remaining_gas,
+            remaining_gas,
+            state,
             stack.len,
         )
     }
@@ -81,7 +87,9 @@ extern_table! {
             );
         dispatch_return(
             pc,
-            initial_remaining_gas.get().wrapping_sub(remaining_gas.get()),
+            initial_remaining_gas,
+            remaining_gas,
+            state,
             stack.len,
         )
     }
@@ -91,11 +99,23 @@ extern_table! {
 const STACK_LEN_BITS: u32 = 11;
 const GAS_BITS: u32 = usize::BITS - STACK_LEN_BITS;
 const GAS_MASK: usize = usize::MAX >> STACK_LEN_BITS;
+const GAS_SYNC_SENTINEL: u64 = GAS_MASK as u64;
 
 const _: () = assert!(STACK_LIMIT <= (1 << STACK_LEN_BITS));
 
 #[inline(always)]
-const fn dispatch_return(pc: Pc, gas_spent: u64, stack_len: usize) -> InstrFnRet {
+const fn dispatch_return<T: EvmTypes>(
+    pc: Pc,
+    initial_remaining_gas: RemainingGas,
+    remaining_gas: RemainingGas,
+    state: &mut InterpreterState<'_, T>,
+    stack_len: usize,
+) -> InstrFnRet {
+    let gas_spent = initial_remaining_gas.get().wrapping_sub(remaining_gas.get());
+    if gas_spent >= GAS_SYNC_SENTINEL {
+        state.gas_mut().set_remaining(remaining_gas.get());
+        return (pc, PackedGasStackLen::new(GAS_SYNC_SENTINEL, stack_len));
+    }
     (pc, PackedGasStackLen::new(gas_spent, stack_len))
 }
 
