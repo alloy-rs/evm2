@@ -11,7 +11,7 @@ use alloy_rpc_types_trace::parity::*;
 use core::{convert::Infallible, iter::Peekable};
 use evm2::{
     SpecId,
-    evm::{CacheDB, EmptyDB, StateChanges},
+    evm::{DynDatabase, StateChanges},
 };
 
 /// A type for creating parity style traces
@@ -171,13 +171,13 @@ impl ParityTraceBuilder {
         self.into_trace_results_with_state_and_db(output, state, trace_types, None)
     }
 
-    /// Consumes the inspector and returns trace results, using a cache DB for pre-state code.
+    /// Consumes the inspector and returns trace results, using a database for pre-state code.
     pub fn into_trace_results_with_state_and_db(
         self,
         output: Bytes,
         state: &StateChanges,
         trace_types: &HashSet<TraceType>,
-        db: Option<&CacheDB<EmptyDB>>,
+        mut db: Option<&mut dyn DynDatabase>,
     ) -> Result<TraceResults, Infallible> {
         let breadth_first_addresses = if trace_types.contains(&TraceType::VmTrace) {
             CallTraceNodeWalkerBF::new(&self.nodes)
@@ -191,8 +191,8 @@ impl ParityTraceBuilder {
 
         // check the state diff case
         if let Some(ref mut state_diff) = trace_res.state_diff {
-            if let Some(db) = db {
-                populate_state_diff_with_db(state_diff, state, db)?;
+            if let Some(ref mut db) = db {
+                populate_state_diff_with_db(state_diff, state, *db)?;
             } else {
                 populate_state_diff(state_diff, state)?;
             }
@@ -467,7 +467,7 @@ where
 pub(crate) fn populate_vm_trace_bytecodes<I>(
     trace: &mut VmTrace,
     breadth_first_addresses: I,
-    db: Option<&CacheDB<EmptyDB>>,
+    mut db: Option<&mut dyn DynDatabase>,
 ) -> Result<(), Infallible>
 where
     I: IntoIterator<Item = Address>,
@@ -485,11 +485,13 @@ where
         }
 
         let addr = addrs.next().expect("there should be an address");
-        if let Some(db) = db
-            && let Some(account) = db.account_info(&addr)
-            && let Some(code) = load_account_code(db, account)
-        {
-            curr_ref.code = code;
+        if let Some(db) = db.as_deref_mut() {
+            let account = db.get_account(&addr).ok().flatten();
+            if let Some(account) = account
+                && let Some(code) = load_account_code(db, &account)
+            {
+                curr_ref.code = code;
+            }
         }
     }
 
@@ -533,15 +535,15 @@ pub fn populate_state_diff(
     Ok(())
 }
 
-/// Populates [StateDiff] from evm2 state changes and a cache DB pre-state.
+/// Populates [StateDiff] from evm2 state changes and a database pre-state.
 pub fn populate_state_diff_with_db(
     state_diff: &mut StateDiff,
     state_changes: &StateChanges,
-    db: &CacheDB<EmptyDB>,
+    db: &mut dyn DynDatabase,
 ) -> Result<(), Infallible> {
     for (&addr, account) in &state_changes.accounts {
         let entry = state_diff.entry(addr).or_default();
-        let original = db.account_info(&addr).cloned().unwrap_or_default();
+        let original = db.get_account(&addr).ok().flatten().unwrap_or_default();
         match &account.current {
             Some(current) if account.original.is_none() && original.balance.is_zero() => {
                 entry.balance = Delta::Added(current.balance);
@@ -583,7 +585,7 @@ fn account_code(account: &evm2::AccountInfo) -> Bytes {
     account.code.as_ref().map(|code| code.original_bytes()).unwrap_or_default()
 }
 
-fn account_code_with_db(account: &evm2::AccountInfo, db: &CacheDB<EmptyDB>) -> Bytes {
+fn account_code_with_db(account: &evm2::AccountInfo, db: &mut dyn DynDatabase) -> Bytes {
     load_account_code(db, account).unwrap_or_default()
 }
 

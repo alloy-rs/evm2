@@ -7,11 +7,7 @@ use alloc::{
 };
 use alloy_primitives::{Bytes, KECCAK256_EMPTY, hex};
 use alloy_sol_types::{ContractError, GenericRevertReason};
-use evm2::{
-    AccountInfo, SpecId,
-    evm::{CacheDB, EmptyDB},
-    interpreter::InstrStop,
-};
+use evm2::{AccountInfo, SpecId, evm::DynDatabase, interpreter::InstrStop};
 
 /// Converts a non successful [`InstrStop`] to an error message.
 ///
@@ -95,11 +91,11 @@ pub(crate) fn gas_used(spec: SpecId, spent: u64, refunded: u64) -> u64 {
 
 /// Loads account bytecode from inline account code or the cache DB contract table.
 #[inline]
-pub(crate) fn load_account_code(db: &CacheDB<EmptyDB>, account: &AccountInfo) -> Option<Bytes> {
+pub(crate) fn load_account_code(db: &mut dyn DynDatabase, account: &AccountInfo) -> Option<Bytes> {
     account.code.as_ref().map(|code| code.original_bytes()).or_else(|| {
-        (account.code_hash != KECCAK256_EMPTY)
-            .then(|| db.cache.contracts.get(&account.code_hash).map(|code| code.original_bytes()))
-            .flatten()
+        (account.code_hash != KECCAK256_EMPTY).then(|| {
+            db.get_code_by_hash(&account.code_hash).ok().map(|code| code.original_bytes())
+        })?
     })
 }
 

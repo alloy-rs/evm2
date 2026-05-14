@@ -21,7 +21,7 @@ use alloy_rpc_types_trace::geth::{
 use evm2::{
     AccountInfo, SpecId,
     bytecode::opcode::op,
-    evm::{CacheDB, EmptyDB, StateChanges},
+    evm::{DynDatabase, StateChanges},
 };
 
 /// A type for creating geth style traces
@@ -234,7 +234,7 @@ impl<'a> GethTraceBuilder<'a> {
         &self,
         state: &StateChanges,
         prestate_config: &PreStateConfig,
-        db: Option<&CacheDB<EmptyDB>>,
+        db: Option<&mut dyn DynDatabase>,
     ) -> Result<PreStateFrame, core::convert::Infallible> {
         let code_enabled = prestate_config.code_enabled();
         let storage_enabled = prestate_config.storage_enabled();
@@ -250,7 +250,7 @@ impl<'a> GethTraceBuilder<'a> {
         state: &StateChanges,
         code_enabled: bool,
         storage_enabled: bool,
-        db: Option<&CacheDB<EmptyDB>>,
+        mut db: Option<&mut dyn DynDatabase>,
     ) -> PreStateFrame {
         let mut prestate = PreStateMode::default();
 
@@ -258,12 +258,10 @@ impl<'a> GethTraceBuilder<'a> {
             prestate.0.entry(address).or_default();
         }
         for (&address, account) in &state.accounts {
-            let info = db
-                .and_then(|db| db.account_info(&address).cloned())
+            let info = db_account(&mut db, &address)
                 .or_else(|| account.original.clone())
                 .unwrap_or_default();
-            let code =
-                code_enabled.then(|| db.and_then(|db| load_account_code(db, &info))).flatten();
+            let code = code_enabled.then(|| db_account_code(&mut db, &info)).flatten();
             let mut acc_state = AccountState::from_account_info(info.nonce, info.balance, code);
             if storage_enabled && let Some(storage) = state.storage.get(&address) {
                 for (&key, slot) in &storage.slots {
@@ -281,20 +279,16 @@ impl<'a> GethTraceBuilder<'a> {
         state: &StateChanges,
         code_enabled: bool,
         storage_enabled: bool,
-        db: Option<&CacheDB<EmptyDB>>,
+        mut db: Option<&mut dyn DynDatabase>,
     ) -> PreStateFrame {
         let mut state_diff = DiffMode::default();
         let mut account_change_kinds =
             HashMap::with_capacity_and_hasher(state.accounts.len(), Default::default());
 
         for (&address, account) in &state.accounts {
-            let original = db
-                .and_then(|db| db.account_info(&address).cloned())
-                .or_else(|| account.original.clone());
+            let original = db_account(&mut db, &address).or_else(|| account.original.clone());
             if let Some(original) = &original {
-                let pre_code = code_enabled
-                    .then(|| db.and_then(|db| load_account_code(db, original)))
-                    .flatten();
+                let pre_code = code_enabled.then(|| db_account_code(&mut db, original)).flatten();
                 let mut pre_state = AccountState::from_account_info(
                     original.nonce,
                     original.balance,
@@ -310,7 +304,7 @@ impl<'a> GethTraceBuilder<'a> {
             if let Some(current) = &account.current {
                 let post_code = code_enabled
                     .then(|| {
-                        db.and_then(|db| load_account_code(db, current))
+                        db_account_code(&mut db, current)
                             .or_else(|| current.code.as_ref().map(|code| code.original_bytes()))
                     })
                     .flatten();
@@ -404,7 +398,7 @@ impl<'a> GethTraceBuilder<'a> {
         &self,
         opts: Erc7562Config,
         gas_used: u64,
-        db: Option<&CacheDB<EmptyDB>>,
+        mut db: Option<&mut dyn DynDatabase>,
     ) -> Erc7562Frame {
         if self.nodes.is_empty() {
             return Default::default();
@@ -496,12 +490,11 @@ impl<'a> GethTraceBuilder<'a> {
                     let address = Address::from_word((*item).into());
                     ext_code_access_info.push(format!("{address:?}"));
                     if let Entry::Vacant(e) = contract_size.entry(address)
-                        && let Some((contract_size, opcode)) = db
-                            .and_then(|db| db.account_info(&address).map(|account| (db, account)))
-                            .and_then(|(db, account)| {
-                                load_account_code(db, account).map(|code| (code.len() as u64, op))
-                            })
+                        && let Some(account) = db_account(&mut db, &address)
+                        && let Some(code) = db_account_code(&mut db, &account)
                     {
+                        let contract_size = code.len() as u64;
+                        let opcode = op;
                         e.insert(ContractSize { contract_size, opcode });
                     }
                 }
@@ -590,6 +583,14 @@ impl<'a> GethTraceBuilder<'a> {
 
 fn account_was_empty(account: &AccountInfo) -> bool {
     account.is_empty()
+}
+
+fn db_account(db: &mut Option<&mut dyn DynDatabase>, address: &Address) -> Option<AccountInfo> {
+    db.as_deref_mut()?.get_account(address).ok().flatten()
+}
+
+fn db_account_code(db: &mut Option<&mut dyn DynDatabase>, account: &AccountInfo) -> Option<Bytes> {
+    load_account_code(db.as_deref_mut()?, account)
 }
 
 #[cfg(test)]

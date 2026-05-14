@@ -21,21 +21,21 @@ Source audit: `INSPECTORS_SOURCE_AUDIT.md`.
 ## Trace Builders
 
 - [x] Restore DB-backed prestate tracing for geth traces by reading account/code/storage through the EVM host/database.
-  - Uses the optional `CacheDB<EmptyDB>` passed through `DebugTraceResult::with_db`; otherwise falls back to evm2 `StateChanges`.
+  - Uses the optional `dyn DynDatabase` passed through `DebugTraceResult::with_db`; otherwise falls back to evm2 `StateChanges`.
 - [x] Restore ERC-7562 `contract_size` enrichment for `EXTCODESIZE`, `EXTCODECOPY`, and `EXTCODEHASH`.
-  - Populates size when a cache DB account/code entry is available.
+  - Populates size through the provided database reader when account/code is available.
 - [x] Restore Parity `VmTrace.code` population from account code or code hash.
   - Added DB-backed population path; existing no-DB wrapper is preserved.
 - [x] Restore Parity state-diff fidelity that compares changed accounts against DB pre-state.
   - Added `populate_state_diff_with_db` and a DB-aware trace result path.
 - [x] Reintroduce a local equivalent of upstream `load_account_code`.
-  - Implemented for evm2 `CacheDB<EmptyDB>`.
+  - Implemented over evm2 `DynDatabase`.
 
 ## Debug Inspector
 
 - [x] Wire `DebugInspector::Js` when the `js-tracer` feature is enabled.
 - [x] Pass host/database access into debug result finalization paths.
-  - `DebugTraceResult::with_db` now exposes the caller's `CacheDB<EmptyDB>` to JS `result`; generalized host/state overlay DB access is still tracked under JavaScript Tracer.
+  - `DebugTraceResult::with_db` now exposes a caller-provided `DynDatabase` to trace finalization; JS conversion still uses the cache-backed Boa binding internally.
 - [x] Fix default `TraceTxEnv for TxEnv<T>` gas limit propagation, or expose the gas limit on evm2 `TxEnv`.
   - evm2 core `TxEnv<T>` intentionally does not carry transaction gas limit, target, input, or value; callers that need debug finalization parity must use a richer `TraceTxEnv` wrapper, as the test harness does.
 - [x] Add frame/log-full hooks if evm2 grows equivalent inspector hooks.
@@ -46,9 +46,9 @@ Source audit: `INSPECTORS_SOURCE_AUDIT.md`.
 - [x] Move the active inline JS module back into `src/tracing/js/mod.rs` or remove the stale dead file.
   - Removed the stale dead `src/tracing/js/mod.rs`; active JS code remains inline with `bindings.rs` and `builtins.rs` as submodules.
 - [x] Pass a real host-backed DB/state object to JS `step` and `fault` instead of an empty `CacheDB`.
-  - Uses `host.database_as::<CacheDB<EmptyDB>>()` when available and falls back to an empty cache only for non-cache DB hosts.
+  - The current Boa DB object remains cache-backed; it uses the host cache when available and falls back to an empty cache only for non-cache DB hosts.
 - [x] Make JS `result` DB access read from in-flight state plus backing database, not cache-only state.
-  - Clones the provided cache DB and commits the transaction `StateChanges` before invoking JS `result`.
+  - For cache-backed JS finalization, clones the cache DB and commits the transaction `StateChanges` before invoking JS `result`.
 - [x] Source JS `isPrecompiled` from the active host precompile provider instead of `Precompiles::base(spec)`.
 
 ## Tracing Inspector

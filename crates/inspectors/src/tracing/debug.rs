@@ -12,10 +12,12 @@ use alloy_rpc_types_trace::geth::{
 };
 #[cfg(feature = "js-tracer")]
 use evm2::evm::DatabaseCommit;
+#[cfg(feature = "js-tracer")]
+use evm2::evm::{CacheDB, EmptyDB};
 use evm2::{
     Evm, EvmTypes, Inspector,
     env::{BlockEnv, TxEnv},
-    evm::{CacheDB, EmptyDB, StateChanges},
+    evm::{DynDatabase, StateChanges},
     interpreter::{Interpreter, Message, MessageResult},
 };
 use thiserror::Error;
@@ -97,7 +99,6 @@ impl<T: EvmTypes> TraceBlockEnv for BlockEnv<T> {
 }
 
 /// Transaction result fields needed by debug trace finalization.
-#[derive(Clone, Copy, Debug)]
 pub struct DebugTraceResult<'a> {
     /// Whether execution succeeded.
     pub status: bool,
@@ -111,8 +112,22 @@ pub struct DebugTraceResult<'a> {
     pub created_address: Option<Address>,
     /// Transaction state changes.
     pub state: &'a StateChanges,
-    /// Backing cache database for JavaScript result finalization.
-    pub db: Option<&'a CacheDB<EmptyDB>>,
+    /// Backing database for trace finalization.
+    pub db: Option<&'a mut dyn DynDatabase>,
+}
+
+impl core::fmt::Debug for DebugTraceResult<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("DebugTraceResult")
+            .field("status", &self.status)
+            .field("gas_used", &self.gas_used)
+            .field("stop", &self.stop)
+            .field("return_value", &self.return_value)
+            .field("created_address", &self.created_address)
+            .field("state", &self.state)
+            .field("db", &self.db.as_ref().map(|_| "<dyn DynDatabase>"))
+            .finish()
+    }
 }
 
 impl<'a> DebugTraceResult<'a> {
@@ -142,8 +157,8 @@ impl<'a> DebugTraceResult<'a> {
         self
     }
 
-    /// Sets the database exposed to JavaScript result finalization.
-    pub const fn with_db(mut self, db: &'a CacheDB<EmptyDB>) -> Self {
+    /// Sets the database exposed to trace finalization.
+    pub fn with_db<D: DynDatabase + 'a>(mut self, db: &'a mut D) -> Self {
         self.db = Some(db);
         self
     }
@@ -330,7 +345,7 @@ impl DebugInspector {
         tx_context: Option<TransactionContext>,
         tx_env: &TX,
         block_env: &B,
-        result: DebugTraceResult<'_>,
+        mut result: DebugTraceResult<'_>,
     ) -> Result<GethTrace, DebugInspectorError>
     where
         TX: TraceTxEnv,
@@ -357,13 +372,18 @@ impl DebugInspector {
                 inspector.set_transaction_gas_limit(tx_env.trace_gas_limit());
                 inspector
                     .geth_builder()
-                    .geth_prestate_traces(result.state, config, result.db)
+                    .geth_prestate_traces(result.state, config, result.db.as_deref_mut())
                     .unwrap_or_else(|err| match err {})
                     .into()
             }
             Self::Noop => NoopFrame::default().into(),
             Self::Mux(inspector, _) => inspector
-                .try_into_mux_frame(result.gas_used, result.state, tx_info, result.db)
+                .try_into_mux_frame(
+                    result.gas_used,
+                    result.state,
+                    tx_info,
+                    result.db.as_deref_mut(),
+                )
                 .unwrap_or_else(|err| match err {})
                 .into(),
             Self::FlatCallTracer(inspector) => {
@@ -380,7 +400,7 @@ impl DebugInspector {
                 inspector.set_transaction_caller(tx_env.trace_caller());
                 inspector
                     .geth_builder()
-                    .geth_erc7562_traces(config.clone(), result.gas_used, result.db)
+                    .geth_erc7562_traces(config.clone(), result.gas_used, result.db.as_deref_mut())
                     .into()
             }
             Self::Default(inspector, config) => {
@@ -396,7 +416,9 @@ impl DebugInspector {
                 inspector.set_transaction_context(tx_context.unwrap_or_default());
                 let empty_db;
                 let overlay_db;
-                let db = if let Some(db) = result.db {
+                let db = if let Some(db) =
+                    result.db.as_deref_mut().and_then(cache_db_from_dyn_database)
+                {
                     overlay_db = {
                         let mut db = db.clone();
                         db.commit(result.state);
@@ -433,6 +455,11 @@ impl DebugInspector {
 
         Ok(res)
     }
+}
+
+#[cfg(feature = "js-tracer")]
+fn cache_db_from_dyn_database(db: &mut dyn DynDatabase) -> Option<&mut CacheDB<EmptyDB>> {
+    <dyn core::any::Any>::downcast_mut(db)
 }
 
 impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for DebugInspector {

@@ -112,16 +112,18 @@ fn test_geth_debug_inspector_jstracer() {
     assert!(res.result.is_success());
 
     let (context, inspector) = evm.ctx_inspector();
+    let tx_env = context.tx().clone();
+    let block_env = *context.block();
     let return_value = res.result.output().unwrap_or_default().clone();
     let trace = inspector
         .get_result(
             None,
-            context.tx(),
-            context.block(),
+            &tx_env,
+            &block_env,
             DebugTraceResult::new(res.result.tx_gas_used(), &return_value, &res.state)
                 .with_status(true, InstrStop::Return)
                 .with_created_address(res.result.created_address())
-                .with_db(context.db_ref()),
+                .with_db(context.db_mut()),
         )
         .unwrap();
 
