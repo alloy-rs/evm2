@@ -7,6 +7,9 @@ extern crate self as evm2;
 
 extern crate alloc;
 
+#[cfg(test)]
+use {ark_std as _, criterion as _, rand as _, revm as _, serde as _, serde_json as _};
+
 pub mod bytecode;
 pub(crate) mod constants;
 pub mod ethereum;
