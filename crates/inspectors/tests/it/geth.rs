@@ -11,7 +11,7 @@ use alloy_rpc_types_trace::geth::{
     PreStateConfig, PreStateFrame, erc7562::Erc7562Config, mux::MuxConfig,
 };
 use evm2_inspectors::tracing::{
-    DebugInspector, DebugTraceResult, MuxInspector, TracingInspector, TracingInspectorConfig,
+    DebugInspector, MuxInspector, TracingInspector, TracingInspectorConfig,
 };
 
 #[test]
@@ -135,15 +135,8 @@ fn test_geth_erc7562_tracer() {
     let (ctx, inspector) = evm.ctx_inspector();
     let tx_env = ctx.tx().clone();
     let block_env = *ctx.block();
-    let return_value = res.result.output().unwrap_or_default().clone();
-    let trace = inspector
-        .get_result(
-            None,
-            &tx_env,
-            &block_env,
-            DebugTraceResult::new(res.result.tx_gas_used(), &return_value, &res.state),
-        )
-        .unwrap();
+    let trace =
+        inspector.get_result(None, &tx_env, &block_env, &res.tx_result, ctx.db_mut()).unwrap();
 
     match trace {
         GethTrace::Erc7562Tracer(frame) => {

@@ -15,9 +15,9 @@ use evm2::evm::DatabaseCommit;
 #[cfg(feature = "js-tracer")]
 use evm2::evm::{CacheDB, EmptyDB};
 use evm2::{
-    Evm, EvmTypes, Inspector,
+    Evm, EvmTypes, Inspector, TxResult,
     env::{BlockEnv, TxEnv},
-    evm::{DynDatabase, StateChanges},
+    evm::DynDatabase,
     interpreter::{Interpreter, Message, MessageResult},
 };
 use thiserror::Error;
@@ -95,72 +95,6 @@ impl<T: EvmTypes> TraceBlockEnv for BlockEnv<T> {
 
     fn trace_base_fee(&self) -> u64 {
         self.basefee.try_into().unwrap_or(u64::MAX)
-    }
-}
-
-/// Transaction result fields needed by debug trace finalization.
-pub struct DebugTraceResult<'a> {
-    /// Whether execution succeeded.
-    pub status: bool,
-    /// Transaction gas used.
-    pub gas_used: u64,
-    /// Interpreter stop reason.
-    pub stop: evm2::interpreter::InstrStop,
-    /// Transaction output.
-    pub return_value: &'a Bytes,
-    /// Created contract address for successful create transactions.
-    pub created_address: Option<Address>,
-    /// Transaction state changes.
-    pub state: &'a StateChanges,
-    /// Backing database for trace finalization.
-    pub db: Option<&'a mut dyn DynDatabase>,
-}
-
-impl core::fmt::Debug for DebugTraceResult<'_> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("DebugTraceResult")
-            .field("status", &self.status)
-            .field("gas_used", &self.gas_used)
-            .field("stop", &self.stop)
-            .field("return_value", &self.return_value)
-            .field("created_address", &self.created_address)
-            .field("state", &self.state)
-            .field("db", &self.db.as_ref().map(|_| "<dyn DynDatabase>"))
-            .finish()
-    }
-}
-
-impl<'a> DebugTraceResult<'a> {
-    /// Creates a new debug trace result view.
-    pub const fn new(gas_used: u64, return_value: &'a Bytes, state: &'a StateChanges) -> Self {
-        Self {
-            status: true,
-            gas_used,
-            stop: evm2::interpreter::InstrStop::Stop,
-            return_value,
-            created_address: None,
-            state,
-            db: None,
-        }
-    }
-
-    /// Sets the execution status and stop reason.
-    pub const fn with_status(mut self, status: bool, stop: evm2::interpreter::InstrStop) -> Self {
-        self.status = status;
-        self.stop = stop;
-        self
-    }
-
-    /// Sets the created address.
-    pub const fn with_created_address(mut self, created_address: Option<Address>) -> Self {
-        self.created_address = created_address;
-        self
-    }
-
-    /// Sets the database exposed to trace finalization.
-    pub fn with_db<D: DynDatabase + 'a>(mut self, db: &'a mut D) -> Self {
-        self.db = Some(db);
-        self
     }
 }
 
@@ -340,14 +274,16 @@ impl DebugInspector {
     }
 
     /// Should be invoked after each transaction to obtain the resulting [`GethTrace`].
-    pub fn get_result<TX, B>(
+    pub fn get_result<T, TX, B>(
         &mut self,
         tx_context: Option<TransactionContext>,
         tx_env: &TX,
         block_env: &B,
-        mut result: DebugTraceResult<'_>,
+        res: &TxResult<T>,
+        db: &mut dyn DynDatabase,
     ) -> Result<GethTrace, DebugInspectorError>
     where
+        T: EvmTypes,
         TX: TraceTxEnv,
         B: TraceBlockEnv,
     {
@@ -366,24 +302,19 @@ impl DebugInspector {
             Self::CallTracer(inspector, config) => {
                 inspector.set_transaction_gas_limit(tx_env.trace_gas_limit());
                 inspector.set_transaction_caller(tx_env.trace_caller());
-                inspector.geth_builder().geth_call_traces(*config, result.gas_used).into()
+                inspector.geth_builder().geth_call_traces(*config, res.gas_used).into()
             }
             Self::PreStateTracer(inspector, config) => {
                 inspector.set_transaction_gas_limit(tx_env.trace_gas_limit());
                 inspector
                     .geth_builder()
-                    .geth_prestate_traces(result.state, config, result.db.as_deref_mut())
+                    .geth_prestate_traces(&res.state_changes, config, Some(db))
                     .unwrap_or_else(|err| match err {})
                     .into()
             }
             Self::Noop => NoopFrame::default().into(),
             Self::Mux(inspector, _) => inspector
-                .try_into_mux_frame(
-                    result.gas_used,
-                    result.state,
-                    tx_info,
-                    result.db.as_deref_mut(),
-                )
+                .try_into_mux_frame(res.gas_used, &res.state_changes, tx_info, Some(db))
                 .unwrap_or_else(|err| match err {})
                 .into(),
             Self::FlatCallTracer(inspector) => {
@@ -400,7 +331,7 @@ impl DebugInspector {
                 inspector.set_transaction_caller(tx_env.trace_caller());
                 inspector
                     .geth_builder()
-                    .geth_erc7562_traces(config.clone(), result.gas_used, result.db.as_deref_mut())
+                    .geth_erc7562_traces(config.clone(), res.gas_used, Some(db))
                     .into()
             }
             Self::Default(inspector, config) => {
@@ -408,7 +339,7 @@ impl DebugInspector {
                 inspector.set_transaction_caller(tx_env.trace_caller());
                 inspector
                     .geth_builder()
-                    .geth_traces(result.gas_used, result.return_value.clone(), *config)
+                    .geth_traces(res.gas_used, res.output.clone(), *config)
                     .into()
             }
             #[cfg(feature = "js-tracer")]
@@ -416,12 +347,10 @@ impl DebugInspector {
                 inspector.set_transaction_context(tx_context.unwrap_or_default());
                 let empty_db;
                 let overlay_db;
-                let db = if let Some(db) =
-                    result.db.as_deref_mut().and_then(cache_db_from_dyn_database)
-                {
+                let db = if let Some(db) = cache_db_from_dyn_database(db) {
                     overlay_db = {
                         let mut db = db.clone();
-                        db.commit(result.state);
+                        db.commit(&res.state_changes);
                         db
                     };
                     &overlay_db
@@ -430,11 +359,11 @@ impl DebugInspector {
                     &empty_db
                 };
                 let result = crate::tracing::js::JsTraceResult {
-                    success: result.status,
-                    gas_used: result.gas_used,
-                    stop: result.stop,
-                    output: result.return_value.clone(),
-                    created_address: result.created_address,
+                    success: res.status,
+                    gas_used: res.gas_used,
+                    stop: res.stop,
+                    output: res.output.clone(),
+                    created_address: res.created_address,
                 };
                 let tx = crate::tracing::js::JsTraceTx {
                     caller: tx_env.trace_caller(),

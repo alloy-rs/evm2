@@ -1046,6 +1046,8 @@ pub struct TxResult<T: EvmTypes = crate::BaseEvmTypes> {
     pub stop: InstrStop,
     /// Return or revert output.
     pub output: Bytes,
+    /// Created contract address for successful create transactions.
+    pub created_address: Option<Address>,
     /// State transition and logs produced by this transaction.
     pub state_changes: StateChanges,
     /// Database error handle, if execution stopped on a database error.

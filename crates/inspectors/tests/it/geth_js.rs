@@ -8,7 +8,7 @@ use alloy_primitives::{Address, U256, address, hex};
 use alloy_rpc_types_trace::geth::{GethDebugTracingOptions, GethTrace};
 use evm2::interpreter::InstrStop;
 use evm2_inspectors::tracing::{
-    DebugInspector, DebugTraceResult,
+    DebugInspector,
     js::{JsInspector, JsTraceBlock, JsTraceResult, JsTraceTx},
 };
 use serde_json::json;
@@ -114,18 +114,8 @@ fn test_geth_debug_inspector_jstracer() {
     let (context, inspector) = evm.ctx_inspector();
     let tx_env = context.tx().clone();
     let block_env = *context.block();
-    let return_value = res.result.output().unwrap_or_default().clone();
-    let trace = inspector
-        .get_result(
-            None,
-            &tx_env,
-            &block_env,
-            DebugTraceResult::new(res.result.tx_gas_used(), &return_value, &res.state)
-                .with_status(true, InstrStop::Return)
-                .with_created_address(res.result.created_address())
-                .with_db(context.db_mut()),
-        )
-        .unwrap();
+    let trace =
+        inspector.get_result(None, &tx_env, &block_env, &res.tx_result, context.db_mut()).unwrap();
 
     let GethTrace::JS(result) = trace else { panic!("expected JS trace") };
     assert_eq!(result["count"], json!(3));

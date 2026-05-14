@@ -445,6 +445,7 @@ pub(super) fn settle_gas<T: EvmTypes<Host = Evm<T>>>(
         gas_used,
         stop: result.stop,
         output: result.output,
+        created_address: result.created_address,
         ext: T::TxResultExt::default(),
         ..TxResult::default()
     })

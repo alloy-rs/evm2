@@ -421,14 +421,10 @@ impl Context {
             evm.set_inspector(RawInspector { inspector });
         }
 
-        let created = match tx.kind {
-            TransactTo::Create => Some(tx.caller.create(tx.nonce)),
-            TransactTo::Call(_) => None,
-        };
         let envelope = tx.envelope();
         let result = evm.transact(&envelope)?;
         self.tx = tx;
-        Ok(ResultAndState::new(result, created))
+        Ok(ResultAndState::new(result))
     }
 }
 
@@ -453,12 +449,13 @@ impl TxEnv {
 pub struct ResultAndState {
     pub result: ExecutionResult,
     pub state: StateChanges,
+    pub tx_result: TxResult,
 }
 
 impl ResultAndState {
-    fn new(result: TxResult, created: Option<Address>) -> Self {
+    fn new(result: TxResult) -> Self {
         let state = result.state_changes.clone();
-        Self { result: ExecutionResult::from_tx_result(result, created), state }
+        Self { result: ExecutionResult::from_tx_result(result.clone()), state, tx_result: result }
     }
 }
 
@@ -470,10 +467,10 @@ pub enum ExecutionResult {
 }
 
 impl ExecutionResult {
-    fn from_tx_result(result: TxResult, created: Option<Address>) -> Self {
+    fn from_tx_result(result: TxResult) -> Self {
         if result.status {
-            let output = if created.is_some() {
-                Output::Create(result.output, created)
+            let output = if result.created_address.is_some() {
+                Output::Create(result.output, result.created_address)
             } else {
                 Output::Call(result.output)
             };

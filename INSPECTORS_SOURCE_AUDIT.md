@@ -43,13 +43,13 @@ Concrete differences:
 - Ported from revm `ContextTr`, `JournalExt`, `CallInputs`, and `CreateInputs` to evm2 `Inspector<T>`, `Interpreter<'_, T>`, and `Message<T>` hooks with the new `host` parameter ignored.
 - Opcode access changed from `interp.bytecode.opcode()` and `interp.stack.peek(...) -> Result` to evm2 `interp.opcode()` and `interp.stack().peekn()/peek(...) -> Option`.
 - Current contract for `SLOAD`/`SSTORE` changed from revm `interp.input.target_address()` to evm2 `interp.message().destination`.
-- Excluded-address collection is not equivalent to upstream:
-  - Upstream excludes the tx caller, tx target or derived create address, the active precompile address set from the journal, and EIP-7702 authority addresses.
-  - Local evm2 port excludes `message.caller`, `message.destination`, hard-coded addresses `0x01..=0x11`, and hard-coded `0x100`.
-  - This means EIP-7702 authorities are not excluded, the create address is not derived from caller nonce, and precompile exclusions are hard-coded rather than sourced from the configured host/precompile provider.
+- Excluded-address collection is ported to evm2 message/host data:
+  - Local excludes `message.caller`, `message.destination`, and `host.precompiles().warm_addresses()`.
+  - evm2 initializes create messages with the derived destination before inspector hooks, so `message.destination` is the created address for create calls.
+  - EIP-7702 authorities are not independently excluded because evm2 does not expose an inspector-visible auth list here.
 - Access-list public helpers are otherwise present: `new`, `excluded`, `touched_slots`, `into_touched_slots`, `into_access_list`, and `access_list`.
 
-Assessment: behavior gap remains in excluded-address calculation because evm2 does not currently pass full transaction/precompile/auth context into this inspector path.
+Assessment: remaining gap is limited to EIP-7702 authority exclusion visibility.
 
 ### `src/edge_cov.rs`
 
@@ -74,21 +74,18 @@ Concrete differences:
 - Ported from revm `ResultAndState`, `EvmState`, `DatabaseRef`, `HaltReasonTr`, and revm opcode constants to evm2 `StateChanges`, `SpecId`, and evm2 opcode constants.
 - Builder constructors now carry `spec_id: Option<SpecId>` so local code can handle pre-Cancun selfdestruct behavior without revm context.
 - `geth_traces` and `geth_call_traces` are otherwise structurally preserved.
-- Prestate tracing is materially different:
+- Prestate tracing is adapted to evm2 state changes and optional DB access:
   - Upstream receives `ResultAndState` plus a `DatabaseRef`, reads pre-transaction account/code/storage from the database, and returns `Result<PreStateFrame, DB::Error>`.
-  - Local evm2 port receives only `StateChanges`, uses `Tracked::original/current`, and returns `Result<_, Infallible>`.
+  - Local evm2 port receives `StateChanges`, uses `Tracked::original/current`, accepts `Option<&mut dyn DynDatabase>`, and returns `Result<_, Infallible>`.
   - Local prestate mode also seeds default entries for caller/address pairs seen in recorded trace nodes.
-  - Because there is no database reference, local code cannot fetch code by hash if it is not present in `StateChanges`.
 - Diff-mode cleanup via `diff_traces` is present locally after the follow-up fix.
 - Local diff mode has extra evm2-specific handling:
   - uses `StateChanges::code` as a fallback when post code is missing but `code_enabled` is set;
   - removes selfdestructed accounts from post state for specs before Cancun using the stored `spec_id`.
-- ERC-7562 tracing is incomplete relative to upstream:
-  - Upstream accepts `db: DatabaseRef` and fills `contract_size` for `EXTCODESIZE`, `EXTCODECOPY`, and `EXTCODEHASH`.
-  - Local evm2 port removed the DB parameter and currently leaves `contract_size` unfilled (`Entry::Vacant` is ignored).
+- ERC-7562 tracing accepts optional `DynDatabase` access and fills `contract_size` for `EXTCODESIZE`, `EXTCODECOPY`, and `EXTCODEHASH` when account/code data is available.
 - Test `prestate_diff_keeps_prefunded_created_accounts` was ported from revm `EvmState + CacheDB` to evm2 `StateChanges`.
 
-Assessment: real behavior gaps remain where upstream depends on read-only database access, especially prestate code lookup and ERC-7562 contract size enrichment.
+Assessment: remaining differences are API-shape differences from evm2 `StateChanges`/`DynDatabase`; no missing upstream behavior found in this file.
 
 ### `src/tracing/builder/parity.rs`
 
@@ -99,15 +96,15 @@ Concrete differences:
 - Ported from revm `ExecutionResult`, `ResultAndState`, `DatabaseRef`, `Account`, and `load_account_code` to evm2 `StateChanges` and explicit output `Bytes`.
 - Trace tree construction, selfdestruct ordering, VM trace shape, and transaction trace generation are otherwise preserved.
 - `into_trace_results` now takes `output: Bytes` directly instead of deriving it from revm `ExecutionResult`.
-- `into_trace_results_with_state` now takes `output: Bytes` and `&StateChanges`, returns `Result<_, Infallible>`, and no longer accepts a DB.
-- `populate_vm_trace_bytecodes` is not equivalent:
+- `into_trace_results_with_state` now takes `output: Bytes` and `&StateChanges`; `into_trace_results_with_state_and_db` adds optional `DynDatabase` access for code and state-diff fidelity.
+- `populate_vm_trace_bytecodes` is adapted to optional evm2 DB access:
   - Upstream walks breadth-first addresses and fills each `VmTrace.code` from `DatabaseRef` account code or code hash.
-  - Local evm2 port consumes the addresses only to keep traversal shape and does not fill bytecode.
-- `populate_state_diff` is not equivalent:
+  - Local fills each `VmTrace.code` from `DynDatabase` account/code when a DB is provided.
+- `populate_state_diff` has an evm2 state-changes path and a DB-backed path:
   - Upstream compares changed revm accounts against DB pre-state, handles created/selfdestructed-created accounts specially, loads code through `load_account_code`, and filters unchanged accounts.
-  - Local evm2 port derives deltas directly from `StateChanges::accounts` and `StateChanges::storage`, using only code already embedded in `AccountInfo`.
+  - Local `populate_state_diff_with_db` compares evm2 changes against DB pre-state and loads code through `load_account_code`; the no-DB helper derives deltas directly from `StateChanges`.
 
-Assessment: real behavior gaps remain for Parity `VmTrace.code` and DB-backed state diff fidelity.
+Assessment: remaining differences are API-shape differences from evm2 `StateChanges`/`DynDatabase`; DB-backed code and state-diff paths are present.
 
 ### `src/tracing/config.rs`
 
@@ -129,20 +126,16 @@ Concrete differences:
 - Ported from revm `ContextTr`, `Transaction`, `Block`, `ResultAndState`, `DatabaseRef`, `FrameInput`, and `FrameResult` to evm2-specific helper traits:
   - `TraceTxEnv`
   - `TraceBlockEnv`
-  - `DebugTraceResult`
 - Local `DebugInspector::Noop` is a plain enum variant instead of wrapping revm `NoOpInspector`.
-- JS tracer support is not equivalent:
-  - Upstream has `DebugInspector::Js(Box<JsInspector>)` behind `js-tracer` and constructs it from `GethDebugTracerType::JsTracer`.
-  - Local `DebugInspector::new` always returns `JsTracerNotEnabled` for JS tracers, even when the crate has `js-tracer` support elsewhere.
 - Result finalization is not equivalent:
   - Upstream `get_result` receives tx env, block env, `ResultAndState`, and mutable DB, then passes DB into prestate, mux, ERC-7562, and JS paths.
-  - Local `get_result` receives `DebugTraceResult` and no DB; it depends on the reduced evm2 builders described above.
+  - Local `get_result` receives tx env, block env, evm2 `TxResult`, and mutable `DynDatabase`, then passes DB into prestate, mux, ERC-7562, and JS paths.
 - Local `TraceTxEnv for TxEnv<T>` returns `0` for `trace_gas_limit()` because evm2's generic `TxEnv` does not store the transaction gas limit. This means `set_transaction_gas_limit` gets `0` unless callers provide their own `TraceTxEnv` implementation.
 - Delegation is manually expanded instead of upstream's `delegate!` macro.
 - Upstream delegates `log_full`, `frame_start`, and `frame_end`; local evm2 inspector trait has no corresponding hooks, so these are absent.
-- `DebugInspectorError` no longer carries DB errors or JS inspector errors because those paths were removed from this wrapper.
+- `DebugInspectorError` no longer carries DB errors because evm2's `DynDatabase` API reports optional values without an associated error type.
 
-Assessment: real behavior gaps remain for JS tracer wiring, frame hook delegation, database-backed trace finalization, and transaction gas-limit propagation through the default `TxEnv` implementation.
+Assessment: real behavior gaps remain for frame hook delegation and transaction gas-limit propagation through the default `TxEnv` implementation.
 
 ### `src/tracing/fourbyte.rs`
 
@@ -200,11 +193,15 @@ Status: reviewed.
 
 Concrete differences:
 
-- This file exists locally but is not the active JS module. `src/tracing/mod.rs` defines an inline `#[cfg(feature = "js-tracer")] pub mod js { ... }`, so Rust resolves active submodules through that inline module and does not compile `src/tracing/js/mod.rs`.
-- The local file is a stale revm-shaped file with names rewritten toward evm2 (`DatabaseRef`, `ContextTr`, `CallInputs`, `CreateInputs`, `ResultAndState`, etc.). It does not match the actual evm2 inspector trait and is not wired into the crate.
-- Upstream uses this file as the real JS inspector implementation. Local uses the inline JS implementation in `src/tracing/mod.rs` instead.
+- This is now the active JS module, matching upstream's file layout.
+- Ported from revm `ContextTr`, `Transaction`, `Block`, `ResultAndState`, `DatabaseRef`, `CallInputs`, `CreateInputs`, and `Interpreter` APIs to evm2 `Inspector<T>`, `Evm<T>` host, `Message<T>`, `MessageResult<T>`, `TxResult`, and cache-backed DB bindings.
+- Upstream `JsInspector::get_result` receives tx env, block env, `ResultAndState`, and DB, then passes in-flight state plus DB to the JS DB object.
+- Local exposes `json_result_from_parts` and `result_from_parts` over `JsTraceResult`, `JsTraceTx`, `JsTraceBlock`, and `&CacheDB<EmptyDB>`; `DebugInspector::get_result` adapts evm2 `TxResult` into those parts.
+- Per-step and fault DB access uses the host database when it is a `CacheDB<EmptyDB>`, otherwise it falls back to an empty cache because the Boa binding still expects the cache-backed DB shape.
+- Precompile registration uses the host's configured precompile provider.
+- Local adds evm2-native JS tests in this file.
 
-Assessment: the file itself is dead source in the current crate layout. The real behavior comparison for JS inspector logic is under `src/tracing/mod.rs`, `src/tracing/js/bindings.rs`, and `src/tracing/js/builtins.rs`.
+Assessment: real JS tracer behavior gaps remain for arbitrary `DynDatabase` visibility in the JS DB object; cache-backed hosts now get the active host cache.
 
 ### `src/tracing/mod.rs`
 
@@ -213,13 +210,7 @@ Status: reviewed.
 Concrete differences:
 
 - Ported the active tracing inspector from revm `ContextTr`, `JournalExt`, `CallInputs`, `CreateInputs`, `InterpreterResult`, and journal entries to evm2 `Inspector<T>`, `Evm<T>` host, `Message<T>`, `MessageResult<T>`, and `StateChanges`.
-- Local file contains the active inline `js` module instead of `pub mod js;`.
-- Active JS tracer is materially different from upstream:
-  - Upstream `JsInspector::get_result` receives tx env, block env, `ResultAndState`, and DB, then passes in-flight state plus DB to the JS DB object.
-  - Local exposes `json_result_from_parts` and `result_from_parts` over `JsTraceResult`, `JsTraceTx`, `JsTraceBlock`, and `&CacheDB<EmptyDB>`.
-  - Local `step` and `fault` create a fresh empty `CacheDB<EmptyDB>` for the JS DB argument, so per-step JS database access sees an empty placeholder.
-  - Local final `result` can use the provided `CacheDB<EmptyDB>`, but only with the cache-only limitations described in `src/tracing/js/bindings.rs`.
-  - Precompile registration uses `Precompiles::base(interp.spec()).warm_addresses()` rather than the host's configured precompile provider.
+- JS tracer implementation lives in `src/tracing/js/mod.rs`, matching upstream's module layout.
 - `TracingInspector` state is different:
   - Upstream tracks `record_step_end`, `last_call_return_data`, and `last_journal_len`.
   - Local tracks `step_stack` and `log_index`; it removed journal-length and last-return-data tracking.
@@ -229,9 +220,8 @@ Concrete differences:
   - Upstream computes pushed stack items from opcode output count; local records stack slice growth from `stack_len_before`, which is a different heuristic.
 - Storage diff recording is materially different:
   - Upstream uses the revm journal in `step_end` and records both `StorageChanged` and `StorageWarmed`, covering `SSTORE` changes and `SLOAD` warm-load observations.
-  - Local does not fill storage changes during `step_end`.
-  - Local adds `fill_storage_changes(&StateChanges)`, which post-processes recorded `SSTORE` steps using transaction-level `StateChanges` and recorded stack values.
-  - Local cannot record upstream-style `SLOAD` warm-load storage changes from the journal.
+  - Local records pending `SSTORE`/`SLOAD` observations from `Evm<T>::state()` before and after `step_end`, because evm2 does not expose the revm journal.
+  - Local also keeps `fill_storage_changes(&StateChanges)` as a post-processing fallback for recorded `SSTORE` steps.
 - Call/create trace setup is ported but not mechanically identical:
   - Upstream derives create addresses from caller nonce in the journal during `create`.
   - Local starts create traces from `message.destination` and updates the trace address from `result.created_address` in `create_end`.
@@ -243,11 +233,10 @@ Concrete differences:
 - Log indexing differs:
   - Upstream uses global log count for `index` and `trace.children.len()` for `position`.
   - Local uses per-node log count for `position` and a separate global `log_index` for `index`.
-- Upstream has no inline JS tests here; local adds evm2-native JS tests inside the inline module.
 - `TransactionContext` is preserved, with wording-only doc changes.
 - Upstream `CallInputExt` is removed because evm2 messages own input bytes.
 
-Assessment: real gaps remain for JS DB visibility, journal-backed storage changes, dynamic immediate bytes, host-configured JS precompile lists, and exact step/log metadata parity.
+Assessment: real gaps remain for journal-backed storage changes, dynamic immediate bytes, and exact step/log metadata parity.
 
 ### `src/tracing/mux.rs`
 
@@ -259,11 +248,11 @@ Concrete differences:
 - Config parsing and shared `TracingInspectorConfig` merge behavior are preserved.
 - `try_into_mux_frame` is not equivalent:
   - Upstream receives `ResultAndState` plus DB and passes DB into prestate traces.
-  - Local receives `gas_used` and `StateChanges`; DB-backed gaps are inherited from `GethTraceBuilder`.
+  - Local receives `gas_used`, `StateChanges`, transaction info, and optional `DynDatabase`; DB access is passed into prestate traces.
 - Inspector delegation is manually expanded with evm2 hook signatures.
 - Upstream delegates `log_full`, `frame_start`, and `frame_end`; local evm2 has no such hooks.
 
-Assessment: behavior gaps are inherited from missing DB-backed builders and missing evm2 frame/log-full hooks.
+Assessment: remaining differences are API-shape differences plus missing evm2 frame/log-full hooks.
 
 ### `src/tracing/opcount.rs`
 
@@ -299,7 +288,7 @@ Status: reviewed.
 Concrete differences:
 
 - Ported error formatting from revm `InstructionResult` to evm2 `InstrStop`.
-- Removed upstream `load_account_code<DB: DatabaseRef>`. This is the helper upstream builders use to fetch bytecode through account code or code hash; its absence is the root of the DB-backed code gaps in geth/parity builders.
+- Reintroduced a local `load_account_code` over evm2 `DynDatabase`; it loads inline account code or fetches bytecode by code hash.
 - Error message mapping is close but not identical:
   - Local has evm2-specific variants such as `PrecompileOOG`, `OutOfFunds`, `MemoryOOG`, `MemoryLimitOOG`, `InvalidOperandOOG`, `PrecompileError`, and `ReentrancySentryOOG`.
   - Upstream has revm-specific variants such as `InvalidFEOpcode` and maps that case to invalid opcode style messages.
@@ -307,7 +296,7 @@ Concrete differences:
 - `convert_memory`, `gas_used`, and `maybe_revert_reason` behavior is preserved.
 - Tests for revert reason decoding and memory chunk formatting are preserved with local naming/docs.
 
-Assessment: real builder fidelity gap remains because `load_account_code` was removed with DB access.
+Assessment: no missing upstream helper behavior found beyond the evm2 `DynDatabase` API shape.
 
 ### `src/tracing/writer.rs`
 
