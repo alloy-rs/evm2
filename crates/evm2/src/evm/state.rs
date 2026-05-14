@@ -11,7 +11,11 @@ use crate::{
     interpreter::{InstrStop, Word},
     storage_key::{StorageKey, StorageKeyMap, StorageKeySet},
 };
-use alloc::{boxed::Box, collections::BTreeMap, vec::Vec};
+use alloc::{
+    boxed::Box,
+    collections::{BTreeMap, BTreeSet},
+    vec::Vec,
+};
 use alloy_primitives::{
     Address, B256, KECCAK256_EMPTY, Log, U256,
     map::{AddressMap, AddressSet, U256Map, hash_map},
@@ -230,6 +234,8 @@ pub struct StateChanges {
     pub code: BTreeMap<B256, Bytecode>,
     /// Logs emitted by the transaction.
     pub logs: Vec<Log>,
+    /// State locations accessed while executing the transaction, when access tracking is enabled.
+    pub accesses: Option<StateAccesses>,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
 }
@@ -242,6 +248,26 @@ impl StateChanges {
             && self.storage.is_empty()
             && self.code.is_empty()
             && self.logs.is_empty()
+            && self.accesses.as_ref().is_none_or(StateAccesses::is_empty)
+    }
+}
+
+/// State locations accessed while executing a transaction.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct StateAccesses {
+    /// Accounts that were loaded or queried.
+    pub accounts: BTreeSet<Address>,
+    /// Persistent storage slots that were loaded or written, keyed by account address.
+    pub storage: BTreeMap<Address, BTreeSet<Word>>,
+    #[doc(hidden)] // Not public API. Please use an existing constructor.
+    pub _non_exhaustive: (),
+}
+
+impl StateAccesses {
+    /// Returns whether no accesses were recorded.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.accounts.is_empty() && self.storage.is_empty()
     }
 }
 
@@ -377,6 +403,12 @@ pub struct State {
     accessed_storage: StorageKeySet,
     /// Transaction-scoped EIP-1153 transient storage keyed by account address and slot.
     transient_storage: StorageKeyMap<Word>,
+    /// Whether transaction-local access tracking is enabled.
+    track_accesses: bool,
+    /// Transaction-local account accesses used for BAL construction.
+    accessed_accounts_for_changes: AddressSet,
+    /// Transaction-local persistent storage accesses used for BAL construction.
+    accessed_storage_for_changes: StorageKeySet,
 }
 
 impl State {
@@ -397,6 +429,38 @@ impl State {
             accessed_accounts: AddressSet::default(),
             accessed_storage: StorageKeySet::default(),
             transient_storage: StorageKeyMap::default(),
+            track_accesses: false,
+            accessed_accounts_for_changes: AddressSet::default(),
+            accessed_storage_for_changes: StorageKeySet::default(),
+        }
+    }
+
+    /// Enables or disables transaction-local access tracking.
+    pub fn set_access_tracking_enabled(&mut self, enabled: bool) {
+        self.track_accesses = enabled;
+        if !enabled {
+            self.accessed_accounts_for_changes.clear();
+            self.accessed_storage_for_changes.clear();
+        }
+    }
+
+    /// Returns whether transaction-local access tracking is enabled.
+    #[inline]
+    pub const fn access_tracking_enabled(&self) -> bool {
+        self.track_accesses
+    }
+
+    #[inline]
+    fn record_account_access(&mut self, address: &Address) {
+        if self.track_accesses {
+            self.accessed_accounts_for_changes.insert(*address);
+        }
+    }
+
+    #[inline]
+    fn record_storage_access(&mut self, address: &Address, key: &Word) {
+        if self.track_accesses {
+            self.accessed_storage_for_changes.insert(StorageKey::new(*address, *key));
         }
     }
 
@@ -565,6 +629,8 @@ impl State {
         self.selfdestructs.clear();
         self.accessed_accounts.clear();
         self.accessed_storage.clear();
+        self.accessed_accounts_for_changes.clear();
+        self.accessed_storage_for_changes.clear();
         self.transient_storage.clear();
         self.logs.clear();
     }
@@ -573,6 +639,7 @@ impl State {
         &mut self,
         address: &Address,
     ) -> DbResult<Option<&mut Tracked<Option<Account>>>> {
+        self.record_account_access(address);
         match self.accounts.entry(*address) {
             hash_map::Entry::Occupied(entry) => Ok(Some(entry.into_mut())),
             hash_map::Entry::Vacant(entry) => {
@@ -641,6 +708,7 @@ impl State {
     /// Returns account info.
     #[inline(never)]
     pub fn account_info(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
+        self.record_account_access(address);
         if let Some(account) = self.accounts.get(address) {
             return Ok(account.current.as_ref().map(Account::info));
         }
@@ -711,6 +779,7 @@ impl State {
 
     /// Loads persistent storage.
     pub fn storage(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
+        self.record_storage_access(address, key);
         let Some(_) = self.account_info(address)? else {
             return Ok(Word::ZERO);
         };
@@ -725,6 +794,7 @@ impl State {
     /// host `sstore` operation instead, and only use this lower-level helper when those concerns
     /// are handled elsewhere.
     pub fn set_storage(&mut self, address: &Address, key: &Word, value: &Word) -> DbResult<SStore> {
+        self.record_storage_access(address, key);
         let _ = self.get_or_insert(address)?;
         self.touch(address);
         let slot = self.storage_slot_mut(address, key, true)?;
@@ -1172,6 +1242,17 @@ impl State {
             }
             if set.wipe || !set.slots.is_empty() {
                 changes.storage.insert(address, set);
+            }
+        }
+
+        if self.track_accesses {
+            let mut accesses = StateAccesses::default();
+            accesses.accounts.extend(self.accessed_accounts_for_changes.iter().copied());
+            for key in &self.accessed_storage_for_changes {
+                accesses.storage.entry(key.address()).or_default().insert(key.key());
+            }
+            if !accesses.is_empty() {
+                changes.accesses = Some(accesses);
             }
         }
 

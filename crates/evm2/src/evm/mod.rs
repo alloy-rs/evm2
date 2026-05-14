@@ -17,16 +17,19 @@ use crate::{
     trustme,
     version::{EvmFeatures, GasId},
 };
-use alloc::{boxed::Box, vec};
+use alloc::{boxed::Box, vec, vec::Vec};
 use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{Address, B256, Bytes, Log, LogData};
 use derive_where::derive_where;
 
+mod bal;
 pub mod config;
 pub mod env;
 pub mod inspector;
 pub mod precompile;
 pub mod registry;
+pub use bal::BalBuilder;
+
 mod system;
 pub use system::{
     BEACON_ROOTS_ADDRESS, CONSOLIDATION_REQUEST_ADDRESS, HISTORY_STORAGE_ADDRESS, SYSTEM_ADDRESS,
@@ -41,8 +44,8 @@ pub use db::{
 
 mod state;
 pub use state::{
-    Account, AccountInfo, JournalEntry, State, StateChanges, StateCheckpoint, StorageChangeSet,
-    StorageOverlay, Tracked,
+    Account, AccountInfo, JournalEntry, State, StateAccesses, StateChanges, StateCheckpoint,
+    StorageChangeSet, StorageOverlay, Tracked,
 };
 
 /// EVM host and transaction dispatcher.
@@ -157,6 +160,21 @@ impl<T: EvmTypes> Evm<T> {
     #[inline]
     pub const fn registry(&self) -> &TxRegistry<T::Tx, TxResult<T>, Self> {
         &self.registry
+    }
+
+    /// Enables or disables transaction-local state access tracking.
+    ///
+    /// Access tracking is needed for block access list construction and can be disabled for
+    /// execution modes that do not consume read sets.
+    #[inline]
+    pub fn set_access_tracking_enabled(&mut self, enabled: bool) {
+        self.state.set_access_tracking_enabled(enabled);
+    }
+
+    /// Returns whether transaction-local state access tracking is enabled.
+    #[inline]
+    pub const fn access_tracking_enabled(&self) -> bool {
+        self.state.access_tracking_enabled()
     }
 
     /// Returns the backing database.
@@ -370,6 +388,40 @@ impl<T: EvmTypes<Tx: Typed2718>> Evm<T> {
         Self: 'a,
     {
         txs.into_iter().map(move |tx| self.transact(tx))
+    }
+
+    /// Dispatches transactions and builds a block access list from their state changes.
+    pub fn transact_iter_bal<'a, I>(
+        &mut self,
+        txs: I,
+    ) -> HandlerResult<(Vec<TxResult<T>>, alloy_eip7928::BlockAccessList)>
+    where
+        I: IntoIterator<Item = &'a T::Tx>,
+        T::Tx: 'a,
+    {
+        let was_tracking_accesses = self.access_tracking_enabled();
+        self.set_access_tracking_enabled(true);
+
+        let mut results = Vec::new();
+        let mut bal = BalBuilder::default();
+        for (i, tx) in txs.into_iter().enumerate() {
+            match self.transact(tx) {
+                Ok(result) => {
+                    bal.push_state_changes(
+                        alloy_eip7928::BlockAccessIndex::new(i as u64 + 1),
+                        &result.state_changes,
+                    );
+                    results.push(result);
+                }
+                Err(err) => {
+                    self.set_access_tracking_enabled(was_tracking_accesses);
+                    return Err(err);
+                }
+            }
+        }
+
+        self.set_access_tracking_enabled(was_tracking_accesses);
+        Ok((results, bal.build()))
     }
 }
 
