@@ -10,7 +10,6 @@ use evm2::{
 };
 use evm2_inspectors::tracing::{
     TraceBlockEnv, TraceTxEnv, TraceWriter, TraceWriterConfig, TracingInspector,
-    geth::{TraceExecutionResult, TraceStateChanges},
 };
 
 pub use evm2::{
@@ -438,22 +437,6 @@ impl ResultAndState {
     }
 }
 
-impl TraceStateChanges for ResultAndState {
-    fn state_changes(&self) -> &StateChanges {
-        &self.state
-    }
-}
-
-impl TraceExecutionResult for ResultAndState {
-    fn trace_gas_used(&self) -> u64 {
-        self.result.gas_used()
-    }
-
-    fn trace_output(&self) -> Bytes {
-        self.result.output().unwrap_or_default().clone()
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ExecutionResult {
     Success { output: Output, gas_used: u64 },
@@ -506,16 +489,6 @@ impl ExecutionResult {
             Self::Success { output: Output::Create(_, address), .. } => *address,
             _ => None,
         }
-    }
-}
-
-impl TraceExecutionResult for ExecutionResult {
-    fn trace_gas_used(&self) -> u64 {
-        self.tx_gas_used()
-    }
-
-    fn trace_output(&self) -> Bytes {
-        self.output().cloned().unwrap_or_default()
     }
 }
 

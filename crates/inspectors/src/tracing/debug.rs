@@ -1,8 +1,7 @@
 use crate::tracing::{
     FourByteInspector, MuxInspector, TracingInspector, TracingInspectorConfig, TransactionContext,
-    geth::TraceTransactionResult,
 };
-use alloy_primitives::{Address, Log, U256};
+use alloy_primitives::{Address, Bytes, Log, U256};
 use alloy_rpc_types_eth::TransactionInfo;
 use alloy_rpc_types_trace::geth::{
     CallConfig, FourByteFrame, GethDebugBuiltInTracerType, GethDebugTracerType,
@@ -12,6 +11,7 @@ use alloy_rpc_types_trace::geth::{
 use evm2::{
     EvmTypes, Inspector,
     env::{BlockEnv, TxEnv},
+    evm::StateChanges,
     interpreter::{Interpreter, Message, MessageResult},
 };
 use thiserror::Error;
@@ -51,6 +51,24 @@ impl<T: EvmTypes> TraceBlockEnv for BlockEnv<T> {
 
     fn trace_base_fee(&self) -> u64 {
         self.basefee.try_into().unwrap_or(u64::MAX)
+    }
+}
+
+/// Transaction result fields needed by debug trace finalization.
+#[derive(Clone, Copy, Debug)]
+pub struct DebugTraceResult<'a> {
+    /// Transaction gas used.
+    pub gas_used: u64,
+    /// Transaction output.
+    pub return_value: &'a Bytes,
+    /// Transaction state changes.
+    pub state: &'a StateChanges,
+}
+
+impl<'a> DebugTraceResult<'a> {
+    /// Creates a new debug trace result view.
+    pub const fn new(gas_used: u64, return_value: &'a Bytes, state: &'a StateChanges) -> Self {
+        Self { gas_used, return_value, state }
     }
 }
 
@@ -216,16 +234,15 @@ impl DebugInspector {
     }
 
     /// Should be invoked after each transaction to obtain the resulting [`GethTrace`].
-    pub fn get_result<R, TX, B, DB>(
+    pub fn get_result<TX, B, DB>(
         &mut self,
         tx_context: Option<TransactionContext>,
         tx_env: &TX,
         block_env: &B,
-        res: &R,
+        result: DebugTraceResult<'_>,
         db: &mut DB,
     ) -> Result<GethTrace, DebugInspectorError>
     where
-        R: TraceTransactionResult,
         TX: TraceTxEnv,
         B: TraceBlockEnv,
     {
@@ -244,19 +261,19 @@ impl DebugInspector {
             Self::CallTracer(inspector, config) => {
                 inspector.set_transaction_gas_limit(tx_env.trace_gas_limit());
                 inspector.set_transaction_caller(tx_env.trace_caller());
-                inspector.geth_builder().geth_call_traces(*config, res.trace_gas_used()).into()
+                inspector.geth_builder().geth_call_traces(*config, result.gas_used).into()
             }
             Self::PreStateTracer(inspector, config) => {
                 inspector.set_transaction_gas_limit(tx_env.trace_gas_limit());
                 inspector
                     .geth_builder()
-                    .geth_prestate_traces(res, config, db)
+                    .geth_prestate_traces(result.state, config, db)
                     .unwrap_or_else(|err| match err {})
                     .into()
             }
             Self::Noop => NoopFrame::default().into(),
             Self::Mux(inspector, _) => inspector
-                .try_into_mux_frame(res, db, tx_info)
+                .try_into_mux_frame(result.gas_used, result.state, db, tx_info)
                 .unwrap_or_else(|err| match err {})
                 .into(),
             Self::FlatCallTracer(inspector) => {
@@ -273,7 +290,7 @@ impl DebugInspector {
                 inspector.set_transaction_caller(tx_env.trace_caller());
                 inspector
                     .geth_builder()
-                    .geth_erc7562_traces(config.clone(), res.trace_gas_used(), db)
+                    .geth_erc7562_traces(config.clone(), result.gas_used, db)
                     .into()
             }
             Self::Default(inspector, config) => {
@@ -281,7 +298,7 @@ impl DebugInspector {
                 inspector.set_transaction_caller(tx_env.trace_caller());
                 inspector
                     .geth_builder()
-                    .geth_traces(res.trace_gas_used(), res.trace_output(), *config)
+                    .geth_traces(result.gas_used, result.return_value.clone(), *config)
                     .into()
             }
         };

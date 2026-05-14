@@ -11,7 +11,7 @@ use alloy_rpc_types_trace::geth::{
     PreStateConfig, PreStateFrame, erc7562::Erc7562Config, mux::MuxConfig,
 };
 use evm2_inspectors::tracing::{
-    DebugInspector, MuxInspector, TracingInspector, TracingInspectorConfig,
+    DebugInspector, DebugTraceResult, MuxInspector, TracingInspector, TracingInspectorConfig,
 };
 
 #[test]
@@ -135,7 +135,16 @@ fn test_geth_erc7562_tracer() {
     let (ctx, inspector) = evm.ctx_inspector();
     let tx_env = ctx.tx().clone();
     let block_env = ctx.block().clone();
-    let trace = inspector.get_result(None, &tx_env, &block_env, &res, ctx.db_mut()).unwrap();
+    let return_value = res.result.output().unwrap_or_default().clone();
+    let trace = inspector
+        .get_result(
+            None,
+            &tx_env,
+            &block_env,
+            DebugTraceResult::new(res.result.tx_gas_used(), &return_value, &res.state),
+            ctx.db_mut(),
+        )
+        .unwrap();
 
     match trace {
         GethTrace::Erc7562Tracer(frame) => {
@@ -234,8 +243,14 @@ fn test_geth_mux_tracer() {
     assert!(res.result.is_success());
 
     let (ctx, inspector) = evm.ctx_inspector();
-    let frame =
-        inspector.try_into_mux_frame(&res, ctx.db_ref(), TransactionInfo::default()).unwrap();
+    let frame = inspector
+        .try_into_mux_frame(
+            res.result.tx_gas_used(),
+            &res.state,
+            ctx.db_ref(),
+            TransactionInfo::default(),
+        )
+        .unwrap();
 
     assert_eq!(frame.0.len(), 4);
     assert!(frame.0.contains_key(&GethDebugTracerType::BuiltInTracer(
@@ -619,7 +634,7 @@ fn test_geth_prestate_disable_code_in_diff_mode() {
     let frame = insp
         .with_transaction_gas_used(res.result.tx_gas_used())
         .geth_builder()
-        .geth_prestate_traces(&res, &prestate_config_no_code, db)
+        .geth_prestate_traces(&res.state, &prestate_config_no_code, db)
         .unwrap();
 
     // Verify that code is not present in either pre or post states when disable_code=true
@@ -677,7 +692,7 @@ fn test_geth_prestate_disable_code_in_diff_mode() {
     let frame2 = insp2
         .with_transaction_gas_used(res2.result.tx_gas_used())
         .geth_builder()
-        .geth_prestate_traces(&res2, &prestate_config_with_code, db2)
+        .geth_prestate_traces(&res2.state, &prestate_config_with_code, db2)
         .unwrap();
 
     // Verify that code IS present when disable_code=false
@@ -906,7 +921,7 @@ fn test_geth_prestate_diff_selfdestruct(spec_id: SpecId) {
     let frame = insp
         .with_transaction_gas_used(res.result.tx_gas_used())
         .geth_builder()
-        .geth_prestate_traces(&res, &prestate_config, db)
+        .geth_prestate_traces(&res.state, &prestate_config, db)
         .unwrap();
 
     match frame {

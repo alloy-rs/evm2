@@ -1,7 +1,6 @@
 use super::walker::CallTraceNodeWalkerBF;
 use crate::tracing::{
     TracingInspectorConfig,
-    geth::{TraceExecutionResult, TraceTransactionResult},
     types::{CallTraceNode, CallTraceStep},
 };
 use alloc::{collections::VecDeque, string::ToString, vec, vec::Vec};
@@ -144,13 +143,11 @@ impl ParityTraceBuilder {
     /// be filled. Use [ParityTraceBuilder::into_trace_results_with_state] or
     /// [populate_state_diff] to populate the balance and nonce changes for the [StateDiff]
     /// using the database.
-    pub fn into_trace_results<R: TraceExecutionResult>(
+    pub fn into_trace_results(
         self,
-        res: &R,
+        output: Bytes,
         trace_types: &HashSet<TraceType>,
     ) -> TraceResults {
-        let output = res.trace_output();
-
         let (trace, vm_trace, state_diff) = self.into_trace_type_traces(trace_types);
 
         TraceResults { output, trace: trace.unwrap_or_default(), vm_trace, state_diff }
@@ -163,15 +160,13 @@ impl ParityTraceBuilder {
     ///
     /// Note: this is considered a convenience method that takes the state changes after inspecting
     /// a transaction with the [TracingInspector](crate::tracing::TracingInspector).
-    pub fn into_trace_results_with_state<R, DB>(
+    pub fn into_trace_results_with_state<DB>(
         self,
-        res: &R,
+        output: Bytes,
+        state: &StateChanges,
         trace_types: &HashSet<TraceType>,
         db: DB,
-    ) -> Result<TraceResults, Infallible>
-    where
-        R: TraceTransactionResult,
-    {
+    ) -> Result<TraceResults, Infallible> {
         let breadth_first_addresses = if trace_types.contains(&TraceType::VmTrace) {
             CallTraceNodeWalkerBF::new(&self.nodes)
                 .map(|node| node.trace.address)
@@ -180,11 +175,11 @@ impl ParityTraceBuilder {
             vec![]
         };
 
-        let mut trace_res = self.into_trace_results(res, trace_types);
+        let mut trace_res = self.into_trace_results(output, trace_types);
 
         // check the state diff case
         if let Some(ref mut state_diff) = trace_res.state_diff {
-            populate_state_diff(state_diff, res.state_changes())?;
+            populate_state_diff(state_diff, state)?;
         }
 
         // check the vm trace case

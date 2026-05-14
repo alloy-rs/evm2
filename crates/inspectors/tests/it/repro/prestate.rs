@@ -56,7 +56,7 @@ fn test_prestate_tracer_selfdestruct() {
     let frame = inspector
         .with_transaction_gas_used(res.result.tx_gas_used())
         .geth_builder()
-        .geth_prestate_traces(&res, &prestate_config, db)
+        .geth_prestate_traces(&res.state, &prestate_config, db)
         .unwrap();
 
     // Verify the trace contains expected accounts
@@ -95,7 +95,7 @@ fn test_prestate_tracer_selfdestruct_diff_mode() {
     let frame = inspector
         .with_transaction_gas_used(res.result.tx_gas_used())
         .geth_builder()
-        .geth_prestate_traces(&res, &prestate_config, db)
+        .geth_prestate_traces(&res.state, &prestate_config, db)
         .unwrap();
 
     // In diff mode, we should see the changes between pre and post state

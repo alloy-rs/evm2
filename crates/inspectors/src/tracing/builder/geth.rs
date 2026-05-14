@@ -15,43 +15,7 @@ use alloy_rpc_types_trace::geth::{
     GethDefaultTracingOptions, PreStateConfig, PreStateFrame, PreStateMode, StructLog,
     erc7562::{AccessedSlots, CallFrameType, Erc7562Config, Erc7562Frame},
 };
-use evm2::{EvmTypes, SpecId, TxResult, bytecode::opcode::op, evm::StateChanges};
-
-/// Source of post-transaction state changes for prestate trace construction.
-pub trait TraceStateChanges {
-    /// Returns state changes produced by a transaction.
-    fn state_changes(&self) -> &StateChanges;
-}
-
-impl<T: EvmTypes> TraceStateChanges for TxResult<T> {
-    fn state_changes(&self) -> &StateChanges {
-        &self.state_changes
-    }
-}
-
-/// Source of execution result fields used by trace builders.
-pub trait TraceExecutionResult {
-    /// Returns transaction gas used.
-    fn trace_gas_used(&self) -> u64;
-
-    /// Returns transaction output.
-    fn trace_output(&self) -> Bytes;
-}
-
-impl<T: EvmTypes> TraceExecutionResult for TxResult<T> {
-    fn trace_gas_used(&self) -> u64 {
-        self.gas_used
-    }
-
-    fn trace_output(&self) -> Bytes {
-        self.output.clone()
-    }
-}
-
-/// Source of transaction result fields and state changes used by trace builders.
-pub trait TraceTransactionResult: TraceExecutionResult + TraceStateChanges {}
-
-impl<T: TraceExecutionResult + TraceStateChanges> TraceTransactionResult for T {}
+use evm2::{SpecId, bytecode::opcode::op, evm::StateChanges};
 
 /// A type for creating geth style traces
 #[derive(Clone, Debug)]
@@ -263,28 +227,18 @@ impl<'a> GethTraceBuilder<'a> {
     /// * `state` - The state post-transaction execution.
     /// * `diff_mode` - if prestate is in diff or prestate mode.
     /// * `db` - The database to fetch state pre-transaction execution.
-    pub fn geth_prestate_traces<R: TraceStateChanges, DB>(
+    pub fn geth_prestate_traces<DB>(
         &self,
-        result: &R,
+        state: &StateChanges,
         prestate_config: &PreStateConfig,
         db: DB,
     ) -> Result<PreStateFrame, core::convert::Infallible> {
         let code_enabled = prestate_config.code_enabled();
         let storage_enabled = prestate_config.storage_enabled();
         if prestate_config.is_diff_mode() {
-            Ok(self.geth_prestate_diff_traces(
-                result.state_changes(),
-                db,
-                code_enabled,
-                storage_enabled,
-            ))
+            Ok(self.geth_prestate_diff_traces(state, db, code_enabled, storage_enabled))
         } else {
-            Ok(self.geth_prestate_pre_traces(
-                result.state_changes(),
-                db,
-                code_enabled,
-                storage_enabled,
-            ))
+            Ok(self.geth_prestate_pre_traces(state, db, code_enabled, storage_enabled))
         }
     }
 
