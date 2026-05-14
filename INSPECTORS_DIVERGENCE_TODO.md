@@ -25,9 +25,11 @@ Source audit: `INSPECTORS_SOURCE_AUDIT.md`.
 
 ## Debug Inspector
 
-- [ ] Wire `DebugInspector::Js` when the `js-tracer` feature is enabled.
-- [ ] Pass host/database access into debug result finalization paths.
+- [x] Wire `DebugInspector::Js` when the `js-tracer` feature is enabled.
+- [x] Pass host/database access into debug result finalization paths.
+  - `DebugTraceResult::with_db` now exposes the caller's `CacheDB<EmptyDB>` to JS `result`; generalized host/state overlay DB access is still tracked under JavaScript Tracer.
 - [ ] Fix default `TraceTxEnv for TxEnv<T>` gas limit propagation, or expose the gas limit on evm2 `TxEnv`.
+  - Test harness `TxEnv` now propagates kind/input/gas price/value into JS debug finalization; core `TxEnv<T>` still does not carry transaction gas limit, target, input, or value.
 - [ ] Add frame/log-full hooks if evm2 grows equivalent inspector hooks.
 
 ## JavaScript Tracer

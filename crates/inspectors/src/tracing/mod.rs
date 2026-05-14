@@ -207,6 +207,13 @@ pub mod js {
             &self.config
         }
 
+        /// Creates a fresh copy of this inspector, resetting all execution state.
+        pub fn try_clone(&self) -> Result<Self, JsInspectorError> {
+            let mut cloned = Self::new(self.code.clone(), self.config.clone())?;
+            cloned.set_transaction_context(self.transaction_context);
+            Ok(cloned)
+        }
+
         /// Calls the result function with an evm2-native trace context.
         pub fn json_result_from_parts(
             &mut self,

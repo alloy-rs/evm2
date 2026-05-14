@@ -35,7 +35,7 @@ impl BlobExcessGasAndPrice {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct BlockEnv {
     pub number: U256,
     pub beneficiary: Address,
@@ -90,6 +90,14 @@ impl From<&BlockEnv> for evm_env::BlockEnv {
 impl TraceBlockEnv for BlockEnv {
     fn trace_block_number(&self) -> u64 {
         self.number.try_into().unwrap_or(u64::MAX)
+    }
+
+    fn trace_coinbase(&self) -> Address {
+        self.beneficiary
+    }
+
+    fn trace_timestamp(&self) -> U256 {
+        self.timestamp
     }
 
     fn trace_base_fee(&self) -> u64 {
@@ -148,8 +156,25 @@ impl TraceTxEnv for TxEnv {
     fn trace_caller(&self) -> Address {
         self.caller
     }
+
+    fn trace_kind(&self) -> TxKind {
+        self.kind
+    }
+
+    fn trace_input(&self) -> Bytes {
+        self.data.clone()
+    }
+
+    fn trace_gas_price(&self) -> u128 {
+        self.gas_price
+    }
+
+    fn trace_value(&self) -> U256 {
+        self.value
+    }
 }
 
+#[derive(Debug)]
 pub struct TxEnvBuilder(TxEnv);
 
 impl TxEnvBuilder {
@@ -506,6 +531,7 @@ impl Output {
     }
 }
 
+#[derive(Debug)]
 pub struct DeployResult {
     result: ExecutionResult,
 }
@@ -597,6 +623,7 @@ impl DatabaseCommit for CacheDB<EmptyDB> {
     }
 }
 
+#[derive(Debug)]
 pub struct LoadedAccountMut<'a> {
     pub info: &'a mut AccountInfo,
 }

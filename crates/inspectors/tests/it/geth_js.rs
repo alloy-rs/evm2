@@ -1,12 +1,16 @@
 //! Geth Js tracer tests
 
 use crate::utils::{
-    CacheDB, Context, EmptyDB, ExecutionResult, Output, ResultAndState, SpecId, TransactTo, TxEnv,
-    deploy_contract,
+    AccountInfo, Bytecode, CacheDB, Context, EmptyDB, ExecutionResult, Output, ResultAndState,
+    SpecId, TransactTo, TxEnv, deploy_contract,
 };
-use alloy_primitives::{Address, address, hex};
+use alloy_primitives::{Address, U256, address, hex};
+use alloy_rpc_types_trace::geth::{GethDebugTracingOptions, GethTrace};
 use evm2::interpreter::InstrStop;
-use evm2_inspectors::tracing::js::{JsInspector, JsTraceBlock, JsTraceResult, JsTraceTx};
+use evm2_inspectors::tracing::{
+    DebugInspector, DebugTraceResult,
+    js::{JsInspector, JsTraceBlock, JsTraceResult, JsTraceTx},
+};
 use serde_json::json;
 
 fn js_result(insp: &mut JsInspector, res: ResultAndState, context: &Context) -> serde_json::Value {
@@ -43,6 +47,97 @@ fn js_result(insp: &mut JsInspector, res: ResultAndState, context: &Context) -> 
         context.db_ref(),
     )
     .unwrap()
+}
+
+#[test]
+fn test_geth_debug_inspector_jstracer() {
+    let account = address!("1000000000000000000000000000000000000001");
+    let caller = address!("1000000000000000000000000000000000000002");
+    let coinbase = address!("1000000000000000000000000000000000000003");
+
+    let context =
+        Context::mainnet().with_db(CacheDB::<EmptyDB>::default()).modify_db_chained(|db| {
+            db.insert_account_info(
+                &caller,
+                AccountInfo::default().with_balance(U256::from(1_000_000_000u64)),
+            );
+            db.insert_account_info(
+                &account,
+                AccountInfo {
+                    code: Some(Bytecode::new_legacy(hex!("6001600100").into())),
+                    ..Default::default()
+                },
+            );
+        });
+    let context = context
+        .modify_block_chained(|block| {
+            block.number = U256::from(42);
+            block.beneficiary = coinbase;
+            block.timestamp = U256::from(1234);
+        })
+        .modify_tx_chained(|tx| {
+            tx.gas_limit = 1_000_000;
+            tx.gas_price = 17;
+            tx.kind = TransactTo::Call(account);
+            tx.value = U256::from(3);
+        });
+
+    let code = r#"
+{
+    count: 0,
+    step: function() { this.count += 1; },
+    fault: function() {},
+    result: function(ctx, db) {
+        return {
+            count: this.count,
+            from: toHex(ctx.from),
+            to: toHex(ctx.to),
+            exists: db.exists(ctx.to),
+            codeLength: db.getCode(ctx.to).length,
+            gas: ctx.gas,
+            gasPrice: ctx.gasPrice,
+            value: ctx.value.toString(),
+            block: ctx.block,
+            time: ctx.time,
+            coinbase: toHex(ctx.coinbase),
+            error: !!ctx.error
+        };
+    }
+}"#;
+    let mut inspector = DebugInspector::new(GethDebugTracingOptions::js_tracer(code)).unwrap();
+    let mut evm = context.build_mainnet().with_inspector(&mut inspector);
+
+    let tx = evm.ctx().tx().clone();
+    let res = evm.inspect_tx(TxEnv { caller, ..tx }).unwrap();
+    assert!(res.result.is_success());
+
+    let (context, inspector) = evm.ctx_inspector();
+    let return_value = res.result.output().unwrap_or_default().clone();
+    let trace = inspector
+        .get_result(
+            None,
+            context.tx(),
+            context.block(),
+            DebugTraceResult::new(res.result.tx_gas_used(), &return_value, &res.state)
+                .with_status(true, InstrStop::Return)
+                .with_created_address(res.result.created_address())
+                .with_db(context.db_ref()),
+        )
+        .unwrap();
+
+    let GethTrace::JS(result) = trace else { panic!("expected JS trace") };
+    assert_eq!(result["count"], json!(3));
+    assert_eq!(result["from"], json!(caller));
+    assert_eq!(result["to"], json!(account));
+    assert_eq!(result["exists"], json!(true));
+    assert_eq!(result["codeLength"], json!(5));
+    assert_eq!(result["gas"], json!(1_000_000));
+    assert_eq!(result["gasPrice"], json!(17));
+    assert_eq!(result["value"], json!("3"));
+    assert_eq!(result["block"], json!(42));
+    assert_eq!(result["time"], json!("1234"));
+    assert_eq!(result["coinbase"], json!(coinbase));
+    assert_eq!(result["error"], json!(false));
 }
 
 #[test]

@@ -1,7 +1,9 @@
 use crate::tracing::{
     FourByteInspector, MuxInspector, TracingInspector, TracingInspectorConfig, TransactionContext,
 };
-use alloy_primitives::{Address, Bytes, Log, U256};
+#[cfg(feature = "js-tracer")]
+use alloc::boxed::Box;
+use alloy_primitives::{Address, Bytes, Log, TxKind, U256};
 use alloy_rpc_types_eth::TransactionInfo;
 use alloy_rpc_types_trace::geth::{
     CallConfig, FourByteFrame, GethDebugBuiltInTracerType, GethDebugTracerType,
@@ -11,7 +13,7 @@ use alloy_rpc_types_trace::geth::{
 use evm2::{
     Evm, EvmTypes, Inspector,
     env::{BlockEnv, TxEnv},
-    evm::StateChanges,
+    evm::{CacheDB, EmptyDB, StateChanges},
     interpreter::{Interpreter, Message, MessageResult},
 };
 use thiserror::Error;
@@ -23,6 +25,26 @@ pub trait TraceTxEnv {
 
     /// Returns transaction caller.
     fn trace_caller(&self) -> Address;
+
+    /// Returns transaction target kind.
+    fn trace_kind(&self) -> TxKind {
+        TxKind::Call(Address::ZERO)
+    }
+
+    /// Returns transaction input.
+    fn trace_input(&self) -> Bytes {
+        Bytes::new()
+    }
+
+    /// Returns transaction gas price.
+    fn trace_gas_price(&self) -> u128 {
+        0
+    }
+
+    /// Returns transaction value.
+    fn trace_value(&self) -> U256 {
+        U256::ZERO
+    }
 }
 
 impl<T: EvmTypes> TraceTxEnv for TxEnv<T> {
@@ -40,6 +62,16 @@ pub trait TraceBlockEnv {
     /// Returns the block number.
     fn trace_block_number(&self) -> u64;
 
+    /// Returns the block beneficiary.
+    fn trace_coinbase(&self) -> Address {
+        Address::ZERO
+    }
+
+    /// Returns the block timestamp.
+    fn trace_timestamp(&self) -> U256 {
+        U256::ZERO
+    }
+
     /// Returns the block base fee.
     fn trace_base_fee(&self) -> u64;
 }
@@ -47,6 +79,14 @@ pub trait TraceBlockEnv {
 impl<T: EvmTypes> TraceBlockEnv for BlockEnv<T> {
     fn trace_block_number(&self) -> u64 {
         self.number.try_into().unwrap_or(u64::MAX)
+    }
+
+    fn trace_coinbase(&self) -> Address {
+        self.beneficiary
+    }
+
+    fn trace_timestamp(&self) -> U256 {
+        self.timestamp
     }
 
     fn trace_base_fee(&self) -> u64 {
@@ -57,18 +97,53 @@ impl<T: EvmTypes> TraceBlockEnv for BlockEnv<T> {
 /// Transaction result fields needed by debug trace finalization.
 #[derive(Clone, Copy, Debug)]
 pub struct DebugTraceResult<'a> {
+    /// Whether execution succeeded.
+    pub status: bool,
     /// Transaction gas used.
     pub gas_used: u64,
+    /// Interpreter stop reason.
+    pub stop: evm2::interpreter::InstrStop,
     /// Transaction output.
     pub return_value: &'a Bytes,
+    /// Created contract address for successful create transactions.
+    pub created_address: Option<Address>,
     /// Transaction state changes.
     pub state: &'a StateChanges,
+    /// Backing cache database for JavaScript result finalization.
+    pub db: Option<&'a CacheDB<EmptyDB>>,
 }
 
 impl<'a> DebugTraceResult<'a> {
     /// Creates a new debug trace result view.
     pub const fn new(gas_used: u64, return_value: &'a Bytes, state: &'a StateChanges) -> Self {
-        Self { gas_used, return_value, state }
+        Self {
+            status: true,
+            gas_used,
+            stop: evm2::interpreter::InstrStop::Stop,
+            return_value,
+            created_address: None,
+            state,
+            db: None,
+        }
+    }
+
+    /// Sets the execution status and stop reason.
+    pub const fn with_status(mut self, status: bool, stop: evm2::interpreter::InstrStop) -> Self {
+        self.status = status;
+        self.stop = stop;
+        self
+    }
+
+    /// Sets the created address.
+    pub const fn with_created_address(mut self, created_address: Option<Address>) -> Self {
+        self.created_address = created_address;
+        self
+    }
+
+    /// Sets the database exposed to JavaScript result finalization.
+    pub const fn with_db(mut self, db: &'a CacheDB<EmptyDB>) -> Self {
+        self.db = Some(db);
+        self
     }
 }
 
@@ -98,6 +173,9 @@ pub enum DebugInspector {
     Erc7562Tracer(TracingInspector, Erc7562Config),
     /// Default tracer
     Default(TracingInspector, GethDefaultTracingOptions),
+    /// JS tracer
+    #[cfg(feature = "js-tracer")]
+    Js(Box<crate::tracing::js::JsInspector>),
 }
 
 impl DebugInspector {
@@ -116,6 +194,8 @@ impl DebugInspector {
                 Self::Erc7562Tracer(inspector.clone(), config.clone())
             }
             Self::Default(inspector, config) => Self::Default(inspector.clone(), *config),
+            #[cfg(feature = "js-tracer")]
+            Self::Js(inspector) => Self::Js(inspector.try_clone()?.into()),
         })
     }
 
@@ -193,9 +273,14 @@ impl DebugInspector {
                         return Err(DebugInspectorError::UnsupportedTracer);
                     }
                 },
+                #[cfg(not(feature = "js-tracer"))]
                 GethDebugTracerType::JsTracer(_) => {
                     return Err(DebugInspectorError::JsTracerNotEnabled);
                 }
+                #[cfg(feature = "js-tracer")]
+                GethDebugTracerType::JsTracer(code) => Self::Js(
+                    crate::tracing::js::JsInspector::new(code, tracer_config.into_json())?.into(),
+                ),
                 _ => {
                     // Note: this match is non-exhaustive in case we need to add support for
                     // additional tracers
@@ -227,6 +312,10 @@ impl DebugInspector {
             Self::Noop => {}
             Self::Mux(inspector, config) => {
                 *inspector = MuxInspector::try_from_config(config.clone())?;
+            }
+            #[cfg(feature = "js-tracer")]
+            Self::Js(inspector) => {
+                *inspector = inspector.try_clone()?.into();
             }
         }
 
@@ -297,6 +386,38 @@ impl DebugInspector {
                     .geth_traces(result.gas_used, result.return_value.clone(), *config)
                     .into()
             }
+            #[cfg(feature = "js-tracer")]
+            Self::Js(inspector) => {
+                inspector.set_transaction_context(tx_context.unwrap_or_default());
+                let empty_db;
+                let db = if let Some(db) = result.db {
+                    db
+                } else {
+                    empty_db = CacheDB::new(EmptyDB::default());
+                    &empty_db
+                };
+                let result = crate::tracing::js::JsTraceResult {
+                    success: result.status,
+                    gas_used: result.gas_used,
+                    stop: result.stop,
+                    output: result.return_value.clone(),
+                    created_address: result.created_address,
+                };
+                let tx = crate::tracing::js::JsTraceTx {
+                    caller: tx_env.trace_caller(),
+                    kind: tx_env.trace_kind(),
+                    input: tx_env.trace_input(),
+                    gas_limit: tx_env.trace_gas_limit(),
+                    gas_price: tx_env.trace_gas_price(),
+                    value: tx_env.trace_value(),
+                };
+                let block = crate::tracing::js::JsTraceBlock {
+                    number: block_env.trace_block_number(),
+                    coinbase: block_env.trace_coinbase(),
+                    timestamp: block_env.trace_timestamp(),
+                };
+                GethTrace::JS(inspector.json_result_from_parts(result, tx, block, db)?)
+            }
         };
 
         Ok(res)
@@ -314,6 +435,8 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for DebugInspector {
             | Self::Default(inspector, _) => inspector.initialize_interp(interp, host),
             Self::Noop => {}
             Self::Mux(inspector, _) => inspector.initialize_interp(interp, host),
+            #[cfg(feature = "js-tracer")]
+            Self::Js(inspector) => inspector.initialize_interp(interp, host),
         }
     }
 
@@ -327,6 +450,8 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for DebugInspector {
             | Self::Default(inspector, _) => inspector.step(interp, host),
             Self::Noop => {}
             Self::Mux(inspector, _) => inspector.step(interp, host),
+            #[cfg(feature = "js-tracer")]
+            Self::Js(inspector) => inspector.step(interp, host),
         }
     }
 
@@ -340,6 +465,8 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for DebugInspector {
             | Self::Default(inspector, _) => inspector.step_end(interp, host),
             Self::Noop => {}
             Self::Mux(inspector, _) => inspector.step_end(interp, host),
+            #[cfg(feature = "js-tracer")]
+            Self::Js(inspector) => inspector.step_end(interp, host),
         }
     }
 
@@ -357,6 +484,10 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for DebugInspector {
             }
             Self::Noop => {}
             Self::Mux(inspector, _) => <MuxInspector as Inspector<T>>::log(inspector, log, host),
+            #[cfg(feature = "js-tracer")]
+            Self::Js(inspector) => {
+                <crate::tracing::js::JsInspector as Inspector<T>>::log(inspector, log, host);
+            }
         }
     }
 
@@ -370,6 +501,8 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for DebugInspector {
             | Self::Default(inspector, _) => inspector.call(message, host),
             Self::Noop => None,
             Self::Mux(inspector, _) => inspector.call(message, host),
+            #[cfg(feature = "js-tracer")]
+            Self::Js(inspector) => inspector.call(message, host),
         }
     }
 
@@ -388,6 +521,8 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for DebugInspector {
             | Self::Default(inspector, _) => inspector.call_end(message, result, host),
             Self::Noop => {}
             Self::Mux(inspector, _) => inspector.call_end(message, result, host),
+            #[cfg(feature = "js-tracer")]
+            Self::Js(inspector) => inspector.call_end(message, result, host),
         }
     }
 
@@ -401,6 +536,8 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for DebugInspector {
             | Self::Default(inspector, _) => inspector.create(message, host),
             Self::Noop => None,
             Self::Mux(inspector, _) => inspector.create(message, host),
+            #[cfg(feature = "js-tracer")]
+            Self::Js(inspector) => inspector.create(message, host),
         }
     }
 
@@ -419,6 +556,8 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for DebugInspector {
             | Self::Default(inspector, _) => inspector.create_end(message, result, host),
             Self::Noop => {}
             Self::Mux(inspector, _) => inspector.create_end(message, result, host),
+            #[cfg(feature = "js-tracer")]
+            Self::Js(inspector) => inspector.create_end(message, result, host),
         }
     }
 
@@ -450,6 +589,12 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for DebugInspector {
                     inspector, contract, target, value, host,
                 );
             }
+            #[cfg(feature = "js-tracer")]
+            Self::Js(inspector) => {
+                <crate::tracing::js::JsInspector as Inspector<T>>::selfdestruct(
+                    inspector, contract, target, value, host,
+                );
+            }
         }
     }
 }
@@ -469,4 +614,8 @@ pub enum DebugInspectorError {
     /// Error from MuxInspector
     #[error(transparent)]
     MuxInspector(#[from] crate::tracing::MuxError),
+    /// Error from JS inspector
+    #[cfg(feature = "js-tracer")]
+    #[error(transparent)]
+    JsInspector(#[from] crate::tracing::js::JsInspectorError),
 }

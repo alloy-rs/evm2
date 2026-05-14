@@ -134,7 +134,7 @@ fn test_geth_erc7562_tracer() {
 
     let (ctx, inspector) = evm.ctx_inspector();
     let tx_env = ctx.tx().clone();
-    let block_env = ctx.block().clone();
+    let block_env = *ctx.block();
     let return_value = res.result.output().unwrap_or_default().clone();
     let trace = inspector
         .get_result(
