@@ -22,12 +22,13 @@ use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{Address, B256, Bytes, Log, LogData};
 use derive_where::derive_where;
 
-mod bal;
 pub mod config;
 pub mod env;
 pub mod inspector;
 pub mod precompile;
 pub mod registry;
+
+mod bal;
 pub use bal::BalBuilder;
 
 mod system;

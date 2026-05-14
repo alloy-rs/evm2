@@ -2,20 +2,20 @@
 
 use super::{AccountInfo, StateChanges};
 use crate::{bytecode::Bytecode, interpreter::Word};
-use alloc::{
-    collections::{BTreeMap, BTreeSet},
-    vec::Vec,
-};
+use alloc::vec::Vec;
 use alloy_eip7928::{
     AccountChanges, BalanceChange, BlockAccessIndex, BlockAccessList, CodeChange, NonceChange,
     SlotChanges, StorageChange,
 };
-use alloy_primitives::{Address, Bytes};
+use alloy_primitives::{
+    Address, Bytes,
+    map::{AddressMap, U256Map, U256Set},
+};
 
 /// Builder for EIP-7928 block access lists.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct BalBuilder {
-    accounts: BTreeMap<Address, AccountBalBuilder>,
+    accounts: AddressMap<AccountBalBuilder>,
 }
 
 impl BalBuilder {
@@ -75,15 +75,21 @@ impl BalBuilder {
 
     /// Consumes the builder and returns a canonical EIP-7928 block access list.
     pub fn build(self) -> BlockAccessList {
-        self.accounts.into_iter().filter_map(|(address, builder)| builder.build(address)).collect()
+        let mut accounts: BlockAccessList = self
+            .accounts
+            .into_iter()
+            .filter_map(|(address, builder)| builder.build(address))
+            .collect();
+        accounts.sort_unstable_by_key(|account| account.address);
+        accounts
     }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct AccountBalBuilder {
     accessed: bool,
-    storage_reads: BTreeSet<Word>,
-    storage_changes: BTreeMap<Word, Vec<StorageChange>>,
+    storage_reads: U256Set,
+    storage_changes: U256Map<Vec<StorageChange>>,
     balance_changes: Vec<BalanceChange>,
     nonce_changes: Vec<NonceChange>,
     code_changes: Vec<CodeChange>,
