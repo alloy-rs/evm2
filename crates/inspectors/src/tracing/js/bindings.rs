@@ -9,6 +9,7 @@ use crate::tracing::{
     types::CallKind,
 };
 use alloc::{
+    boxed::Box,
     format,
     rc::Rc,
     string::{String, ToString},
@@ -23,8 +24,11 @@ use boa_engine::{
 use boa_gc::{Finalize, Trace, empty_trace};
 use core::cell::RefCell;
 use evm2::{
-    bytecode::opcode::{OpCode, op},
-    evm::{AccountInfo, CacheDB, EmptyDB},
+    bytecode::{
+        Bytecode,
+        opcode::{OpCode, op},
+    },
+    evm::{AccountInfo, DbResult, DynDatabase, State, StateChanges},
     interpreter::{Memory, StackRef as EvmStackRef, Word},
 };
 
@@ -53,9 +57,15 @@ macro_rules! js_value_capture_getter {
     };
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 struct GuardedNullableGc<Val: 'static> {
     inner: Rc<RefCell<Option<Guarded<'static, Val>>>>,
+}
+
+impl<Val: 'static> Clone for GuardedNullableGc<Val> {
+    fn clone(&self) -> Self {
+        Self { inner: Rc::clone(&self.inner) }
+    }
 }
 
 impl<Val: 'static> GuardedNullableGc<Val> {
@@ -673,36 +683,63 @@ impl JsEvmContext {
 /// DB is the object that allows the js inspector to interact with the database.
 #[derive(Clone, Debug)]
 pub(crate) struct EvmDbRef {
-    db: GuardedNullableGc<CacheDB<EmptyDB>>,
+    db: GuardedNullableGc<RefCell<Box<dyn EvmDbReader>>>,
 }
 
 impl EvmDbRef {
-    /// Creates a new evm and db JS object.
-    pub(crate) fn new(db: &CacheDB<EmptyDB>) -> (Self, EvmDbGuard<'_>) {
-        let (db, db_guard) = GuardedNullableGc::new_ref(db);
+    /// Creates a new evm and db JS object over the in-flight state.
+    pub(crate) fn new_state(state: &mut State) -> (Self, EvmDbGuard<'_>) {
+        Self::new_reader(StateDbReader { state })
+    }
+
+    /// Creates a new evm and db JS object over transaction changes and a backing database.
+    pub(crate) fn new_changes<'a>(
+        changes: &'a StateChanges,
+        db: &'a mut dyn DynDatabase,
+    ) -> (Self, EvmDbGuard<'a>) {
+        Self::new_reader(ChangesDbReader { changes, db })
+    }
+
+    fn new_reader<'a>(reader: impl EvmDbReader + 'a) -> (Self, EvmDbGuard<'a>) {
+        let reader: Box<dyn EvmDbReader + 'a> = Box::new(reader);
+        // SAFETY:
+        //
+        // Boa requires 'static captures for native functions. The returned guard removes the
+        // reader before the borrowed state/database can be dropped.
+        let reader = unsafe {
+            core::mem::transmute::<Box<dyn EvmDbReader + 'a>, Box<dyn EvmDbReader + 'static>>(
+                reader,
+            )
+        };
+        let (db, db_guard) = GuardedNullableGc::new_owned(RefCell::new(reader));
         (Self { db }, EvmDbGuard { _db_guard: db_guard })
     }
 
     fn read_basic(&self, address: JsValue, ctx: &mut Context) -> JsResult<Option<AccountInfo>> {
         let buf = bytes_from_value(address, ctx)?;
         let address = bytes_to_address(&buf);
-        self.db.with_inner(|db| db.account_info(&address).cloned()).ok_or_else(|| {
-            JsError::from_native(
+        match self.db.with_inner(|db| db.borrow_mut().read_basic(&address)) {
+            Some(Ok(acc)) => Ok(acc),
+            _ => Err(JsError::from_native(
                 JsNativeError::error()
                     .with_message(format!("Failed to read address {address:?} from database")),
-            )
-        })
+            )),
+        }
     }
 
     fn read_code(&self, address: JsValue, ctx: &mut Context) -> JsResult<JsUint8Array> {
-        let acc = self.read_basic(address, ctx)?;
-        let code_hash = acc.as_ref().map(|acc| acc.code_hash).unwrap_or(KECCAK256_EMPTY);
-        let bytes = self
-            .db
-            .with_inner(|db| db.cache.contracts.get(&code_hash).map(|code| code.original_bytes()))
-            .flatten()
-            .unwrap_or_default();
-        to_uint8_array(bytes, ctx)
+        let buf = bytes_from_value(address, ctx)?;
+        let address = bytes_to_address(&buf);
+        let code = match self.db.with_inner(|db| db.borrow_mut().read_code(&address)) {
+            Some(Ok(code)) => code,
+            _ => {
+                return Err(JsError::from_native(
+                    JsNativeError::error()
+                        .with_message(format!("Failed to read code for {address:?} from database")),
+                ));
+            }
+        };
+        to_uint8_array(code.original_bytes(), ctx)
     }
 
     fn read_state(
@@ -716,15 +753,14 @@ impl EvmDbRef {
         let buf = bytes_from_value(slot, ctx)?;
         let slot: U256 = bytes_to_b256(&buf).into();
 
-        let value = self
-            .db
-            .with_inner(|db| db.cache.storage.get(&evm2::StorageKey::new(address, slot)).copied())
-            .ok_or_else(|| {
-                JsError::from_native(JsNativeError::error().with_message(format!(
+        let value = match self.db.with_inner(|db| db.borrow_mut().read_state(&address, &slot)) {
+            Some(Ok(value)) => value,
+            _ => {
+                return Err(JsError::from_native(JsNativeError::error().with_message(format!(
                     "Failed to read state for {address:?} at {slot:?} from database",
-                )))
-            })?
-            .unwrap_or_default();
+                ))));
+            }
+        };
         to_uint8_array(B256::from(value), ctx)
     }
 
@@ -816,9 +852,100 @@ unsafe impl Trace for EvmDbRef {
     empty_trace!();
 }
 
+trait EvmDbReader {
+    fn read_basic(&mut self, address: &Address) -> DbResult<Option<AccountInfo>>;
+
+    fn read_code(&mut self, address: &Address) -> DbResult<Bytecode>;
+
+    fn read_state(&mut self, address: &Address, slot: &Word) -> DbResult<Word>;
+}
+
+impl core::fmt::Debug for dyn EvmDbReader {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("EvmDbReader")
+    }
+}
+
+struct StateDbReader<'a> {
+    state: &'a mut State,
+}
+
+impl EvmDbReader for StateDbReader<'_> {
+    fn read_basic(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
+        self.state.account_info_ref_or_db(address)
+    }
+
+    fn read_code(&mut self, address: &Address) -> DbResult<Bytecode> {
+        self.state.code_ref_or_db(address)
+    }
+
+    fn read_state(&mut self, address: &Address, slot: &Word) -> DbResult<Word> {
+        self.state.storage_ref_or_db(address, slot)
+    }
+}
+
+struct ChangesDbReader<'a> {
+    changes: &'a StateChanges,
+    db: &'a mut dyn DynDatabase,
+}
+
+impl ChangesDbReader<'_> {
+    fn code_from_info(&mut self, info: AccountInfo) -> DbResult<Bytecode> {
+        if let Some(code) = info.code
+            && !code.is_empty()
+        {
+            return Ok(code);
+        }
+        let code_hash = info.code_hash;
+        if code_hash == KECCAK256_EMPTY {
+            return Ok(Bytecode::default());
+        }
+        if let Some(code) = self.changes.code.get(&code_hash) {
+            return Ok(code.clone());
+        }
+        self.db.get_code_by_hash(&code_hash)
+    }
+}
+
+impl EvmDbReader for ChangesDbReader<'_> {
+    fn read_basic(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
+        if let Some(account) = self.changes.accounts.get(address) {
+            return Ok(account.current.clone());
+        }
+        self.db.get_account(address)
+    }
+
+    fn read_code(&mut self, address: &Address) -> DbResult<Bytecode> {
+        let Some(info) = self.read_basic(address)? else {
+            return Ok(Bytecode::default());
+        };
+        self.code_from_info(info)
+    }
+
+    fn read_state(&mut self, address: &Address, slot: &Word) -> DbResult<Word> {
+        if let Some(storage) = self.changes.storage.get(address) {
+            if let Some(value) = storage.slots.get(slot) {
+                return Ok(value.current);
+            }
+            if storage.wipe {
+                return Ok(Word::ZERO);
+            }
+        }
+        if self
+            .changes
+            .accounts
+            .get(address)
+            .is_some_and(|account| account.current.is_none() || account.original.is_none())
+        {
+            return Ok(Word::ZERO);
+        }
+        self.db.get_storage(address, slot)
+    }
+}
+
 #[must_use]
 pub(crate) struct EvmDbGuard<'a> {
-    _db_guard: GcGuard<'a, CacheDB<EmptyDB>>,
+    _db_guard: GcGuard<'a, RefCell<Box<dyn EvmDbReader>>>,
 }
 
 #[cfg(test)]
@@ -827,6 +954,8 @@ mod tests {
     use crate::tracing::js::builtins::{json_stringify, register_builtins, to_serde_value};
     use alloc::vec;
     use boa_engine::Source;
+    use core::convert::Infallible;
+    use evm2::evm::{CacheDB, Database, Db, EmptyDB};
 
     #[test]
     fn test_contract() {
@@ -912,9 +1041,9 @@ mod tests {
 
         let f = result.as_callable().unwrap();
 
-        let mut db = CacheDB::new(EmptyDB::default());
         {
-            let (db, guard) = EvmDbRef::new(&db);
+            let mut state = State::new(CacheDB::new(EmptyDB::default()));
+            let (db, guard) = EvmDbRef::new_state(&mut state);
             let addr = Address::default();
             let addr = JsValue::from(js_string!(addr.to_string()));
             let db = db.into_js_object(&mut context).unwrap();
@@ -926,10 +1055,12 @@ mod tests {
             assert!(res.is_err());
         }
         let addr = Address::default();
+        let mut db = CacheDB::new(EmptyDB::default());
         db.insert_account_info(&addr, Default::default());
 
         {
-            let (db, guard) = EvmDbRef::new(&db);
+            let mut state = State::new(db);
+            let (db, guard) = EvmDbRef::new_state(&mut state);
             let addr = JsValue::from(js_string!(addr.to_string()));
             let db = db.into_js_object(&mut context).unwrap();
             let res = f.call(&result, &[db.clone().into(), addr.clone()], &mut context).unwrap();
@@ -963,9 +1094,9 @@ mod tests {
         let result_fn = obj.get(js_string!("result"), &mut context).unwrap().as_object().unwrap();
         let setup_fn = obj.get(js_string!("setup"), &mut context).unwrap().as_object().unwrap();
 
-        let db = CacheDB::new(EmptyDB::default());
         {
-            let (db_ref, guard) = EvmDbRef::new(&db);
+            let mut state = State::new(CacheDB::new(EmptyDB::default()));
+            let (db_ref, guard) = EvmDbRef::new_state(&mut state);
             let js_db = db_ref.into_js_object(&mut context).unwrap();
             let _res = setup_fn.call(&(obj.clone().into()), &[js_db.into()], &mut context).unwrap();
             assert!(obj.get(js_string!("db"), &mut context).unwrap().is_object());
@@ -981,6 +1112,107 @@ mod tests {
             let res = result_fn.call(&(obj.clone().into()), &[addr], &mut context);
             assert!(res.is_err());
         }
+    }
+
+    #[derive(Debug)]
+    struct BackingDb {
+        address: Address,
+        account: AccountInfo,
+        slot: Word,
+        value: Word,
+    }
+
+    impl Database for BackingDb {
+        type Error = Infallible;
+
+        fn get_account(&mut self, address: &Address) -> Result<Option<AccountInfo>, Self::Error> {
+            Ok((*address == self.address).then(|| self.account.clone()))
+        }
+
+        fn get_code_by_hash(&mut self, code_hash: &B256) -> Result<Bytecode, Self::Error> {
+            Ok(self
+                .account
+                .code
+                .clone()
+                .filter(|_| *code_hash == self.account.code_hash)
+                .unwrap_or_default())
+        }
+
+        fn get_storage(&mut self, address: &Address, key: &Word) -> Result<Word, Self::Error> {
+            Ok(if *address == self.address && *key == self.slot { self.value } else { Word::ZERO })
+        }
+
+        fn get_block_hash(&mut self, _number: &Word) -> Result<Option<B256>, Self::Error> {
+            Ok(None)
+        }
+    }
+
+    #[test]
+    fn test_evm_db_reads_backing_dyn_database() {
+        let mut context = Context::default();
+        register_builtins(&mut context).unwrap();
+        let address = Address::repeat_byte(0x42);
+        let slot = Word::from(7);
+        let value = Word::from(0xfeed);
+        let code = Bytecode::new_legacy(vec![op::PUSH1, 0x01, op::STOP].into());
+        let account = AccountInfo::default()
+            .with_balance(Word::from(1234))
+            .with_nonce(9)
+            .with_code(code.clone());
+        let mut db = Db::new(BackingDb { address, account, slot, value });
+        let changes = StateChanges::default();
+        let (db_ref, _guard) = EvmDbRef::new_changes(&changes, &mut db);
+        let js_db = db_ref.into_js_object(&mut context).unwrap();
+        let js_addr = JsValue::from(js_string!(address.to_string()));
+        let js_slot = JsValue::from(js_string!(B256::from(slot).to_string()));
+
+        let exists = js_db
+            .get(js_string!("exists"), &mut context)
+            .unwrap()
+            .as_callable()
+            .unwrap()
+            .call(&JsValue::undefined(), core::slice::from_ref(&js_addr), &mut context)
+            .unwrap();
+        assert!(exists.as_boolean().unwrap());
+
+        let balance_to_string = context
+            .eval(Source::from_bytes(
+                "(function(db, addr) { return db.getBalance(addr).toString(); })",
+            ))
+            .unwrap();
+        let balance = balance_to_string
+            .as_callable()
+            .unwrap()
+            .call(&JsValue::undefined(), &[js_db.clone().into(), js_addr.clone()], &mut context)
+            .unwrap();
+        assert_eq!(balance.to_string(&mut context).unwrap().to_std_string().unwrap(), "1234");
+
+        let nonce = js_db
+            .get(js_string!("getNonce"), &mut context)
+            .unwrap()
+            .as_callable()
+            .unwrap()
+            .call(&JsValue::undefined(), core::slice::from_ref(&js_addr), &mut context)
+            .unwrap();
+        assert_eq!(nonce.as_number().unwrap(), 9.0);
+
+        let code_res = js_db
+            .get(js_string!("getCode"), &mut context)
+            .unwrap()
+            .as_callable()
+            .unwrap()
+            .call(&JsValue::undefined(), core::slice::from_ref(&js_addr), &mut context)
+            .unwrap();
+        assert_eq!(bytes_from_value(code_res, &mut context).unwrap(), code.original_bytes());
+
+        let state = js_db
+            .get(js_string!("getState"), &mut context)
+            .unwrap()
+            .as_callable()
+            .unwrap()
+            .call(&JsValue::undefined(), &[js_addr, js_slot], &mut context)
+            .unwrap();
+        assert_eq!(bytes_from_value(state, &mut context).unwrap(), B256::from(value).as_slice());
     }
 
     #[test]

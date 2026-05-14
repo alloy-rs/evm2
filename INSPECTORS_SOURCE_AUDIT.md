@@ -130,12 +130,12 @@ Concrete differences:
 - Result finalization is not equivalent:
   - Upstream `get_result` receives tx env, block env, `ResultAndState`, and mutable DB, then passes DB into prestate, mux, ERC-7562, and JS paths.
   - Local `get_result` receives tx env, block env, evm2 `TxResult`, and mutable `DynDatabase`, then passes DB into prestate, mux, ERC-7562, and JS paths.
-- Local `TraceTxEnv for TxEnv<T>` returns `0` for `trace_gas_limit()` because evm2's generic `TxEnv` does not store the transaction gas limit. This means `set_transaction_gas_limit` gets `0` unless callers provide their own `TraceTxEnv` implementation.
+- Local intentionally does not implement `TraceTxEnv` for evm2's generic `TxEnv<T>` because that type does not store the transaction gas limit, target, input, or value. Callers must provide a richer transaction wrapper for debug finalization, matching the test harness.
 - Delegation is manually expanded instead of upstream's `delegate!` macro.
 - Upstream delegates `log_full`, `frame_start`, and `frame_end`; local evm2 inspector trait has no corresponding hooks, so these are absent.
 - `DebugInspectorError` no longer carries DB errors because evm2's `DynDatabase` API reports optional values without an associated error type.
 
-Assessment: real behavior gaps remain for frame hook delegation and transaction gas-limit propagation through the default `TxEnv` implementation.
+Assessment: real behavior gaps remain only where evm2 has no frame/log-full inspector hooks. The lossy default transaction environment implementation was removed.
 
 ### `src/tracing/fourbyte.rs`
 
@@ -156,7 +156,7 @@ Status: reviewed.
 
 Concrete differences:
 
-- Ported from revm `SharedMemory`, `Stack`, `EvmState`, and `DatabaseRef` to evm2 `Memory`, `StackRef`, `Word`, and `CacheDB<EmptyDB>`.
+- Ported from revm `SharedMemory`, `Stack`, `EvmState`, and `DatabaseRef` to evm2 `Memory`, `StackRef`, `Word`, `State`, `StateChanges`, and `DynDatabase`.
 - `MemoryRef` is not equivalent:
   - Upstream wraps a guarded reference to revm `SharedMemory`.
   - Local copies the full evm2 memory into owned `Bytes` before exposing it to JS.
@@ -165,16 +165,14 @@ Concrete differences:
   - Upstream wraps a guarded reference to revm `Stack`.
   - Local copies the stack into owned `Vec<Word>` before exposing it to JS.
   - JS `peek` still returns nth-from-top values, but snapshot/copy behavior differs.
-- DB access is materially reduced:
+- DB access is restored over evm2 equivalents:
   - Upstream has `StateRef`, `GcDb`, `EvmDbRefInner`, `JsDb<DB: DatabaseRef>`, and `StringError`; it reads first from in-flight `EvmState`, then from an arbitrary read-only `DatabaseRef`.
-  - Local removed those pieces and exposes only a guarded `&CacheDB<EmptyDB>`.
-  - Local `getCode` can only read code already present in `db.cache.contracts`; it cannot call `code_by_hash_ref`.
-  - Local `getState` can only read cached storage entries from `db.cache.storage`; it cannot call `storage_ref`.
-  - Local `exists`, `getBalance`, and `getNonce` only inspect local `CacheDB` account info.
+  - Local has `EvmDbReader` over either in-flight evm2 `State` or transaction `StateChanges` plus a caller-provided `DynDatabase`.
+  - Local `getCode`, `getState`, `exists`, `getBalance`, and `getNonce` now read from in-flight state/changes first and fall back to arbitrary `DynDatabase` access.
 - Local constant mapping changed from revm `KECCAK_EMPTY` to evm2 `KECCAK256_EMPTY`.
-- Test setup was ported from revm `CacheDB + EvmState` to evm2 `CacheDB<EmptyDB>`.
+- Test setup was ported from revm `CacheDB + EvmState` to evm2 `State`, `StateChanges`, and `DynDatabase`; a dedicated test covers a non-cache backing `DynDatabase`.
 
-Assessment: real JS tracer behavior gaps remain for database/state access. The JS DB object is cache-only, not the upstream read-only journal plus database view.
+Assessment: no missing upstream behavior found for JS database/state access. Remaining differences are evm2 API-shape and memory/stack copy lifetime differences.
 
 ### `src/tracing/js/builtins.rs`
 
@@ -196,12 +194,12 @@ Concrete differences:
 - This is now the active JS module, matching upstream's file layout.
 - Ported from revm `ContextTr`, `Transaction`, `Block`, `ResultAndState`, `DatabaseRef`, `CallInputs`, `CreateInputs`, and `Interpreter` APIs to evm2 `Inspector<T>`, `Evm<T>` host, `Message<T>`, `MessageResult<T>`, `TxResult`, and cache-backed DB bindings.
 - Upstream `JsInspector::get_result` receives tx env, block env, `ResultAndState`, and DB, then passes in-flight state plus DB to the JS DB object.
-- Local exposes `json_result_from_parts` and `result_from_parts` over `JsTraceResult`, `JsTraceTx`, `JsTraceBlock`, and `&CacheDB<EmptyDB>`; `DebugInspector::get_result` adapts evm2 `TxResult` into those parts.
-- Per-step and fault DB access uses the host database when it is a `CacheDB<EmptyDB>`, otherwise it falls back to an empty cache because the Boa binding still expects the cache-backed DB shape.
+- Local exposes `json_result_from_parts` and `result_from_parts` over `JsTraceResult`, `JsTraceTx`, `JsTraceBlock`, `StateChanges`, and `&mut dyn DynDatabase`; `DebugInspector::get_result` adapts evm2 `TxResult` into those parts.
+- Per-step and fault DB access uses the host's in-flight evm2 `State` and falls back to its backing `DynDatabase` through DB-aware state reader helpers.
 - Precompile registration uses the host's configured precompile provider.
 - Local adds evm2-native JS tests in this file.
 
-Assessment: real JS tracer behavior gaps remain for arbitrary `DynDatabase` visibility in the JS DB object; cache-backed hosts now get the active host cache.
+Assessment: arbitrary `DynDatabase` visibility is wired through the JS DB object. Remaining differences are evm2 API-shape differences and copied memory/stack snapshots.
 
 ### `src/tracing/mod.rs`
 
@@ -216,7 +214,7 @@ Concrete differences:
   - Local tracks `step_stack` and `log_index`; it removed journal-length and last-return-data tracking.
 - Step recording is not fully equivalent:
   - Upstream reuses prior memory snapshots when possible; local copies the current memory every recorded step.
-  - Upstream computes immediate bytes through bytecode-aware `immediate_size(&interp.bytecode)`; local uses opcode-only `immediate_size(op.get())`, inheriting the dynamic-immediate gap noted in `src/opcode.rs`.
+  - Upstream computes immediate bytes through bytecode-aware `immediate_size(&interp.bytecode)`. Local uses opcode-only `immediate_size(op.get())`, which is equivalent for evm2's currently implemented immediate opcodes (`PUSH*`, `DUPN`, `SWAPN`, and `EXCHANGE`) because evm2 does not currently implement a dynamic-size `RJUMPV` immediate.
   - Upstream computes pushed stack items from opcode output count; local records stack slice growth from `stack_len_before`, which is a different heuristic.
 - Storage diff recording is materially different:
   - Upstream uses the revm journal in `step_end` and records both `StorageChanged` and `StorageWarmed`, covering `SSTORE` changes and `SLOAD` warm-load observations.
@@ -236,7 +234,7 @@ Concrete differences:
 - `TransactionContext` is preserved, with wording-only doc changes.
 - Upstream `CallInputExt` is removed because evm2 messages own input bytes.
 
-Assessment: real gaps remain for journal-backed storage changes, dynamic immediate bytes, and exact step/log metadata parity.
+Assessment: remaining differences are evm2 API-shape differences plus the lack of revm journal/frame hooks; no missing upstream behavior is known for currently implemented immediate opcodes.
 
 ### `src/tracing/mux.rs`
 
@@ -323,12 +321,12 @@ Concrete differences:
   - Local evm2 port skips when `message.depth == 1`.
   - This appears to map to evm2's nested-message depth semantics, but it is not mechanically identical to upstream journal depth.
 - Call/create opcode mapping is preserved for `CALL`, `CALLCODE`, `DELEGATECALL`, `STATICCALL`, `CREATE`, and `CREATE2`.
-- `immediate_size` is not equivalent:
-  - Upstream accepts `bytecode: &impl Immediates` and can account for bytecode-dependent immediates, specifically noted for `RJUMPV`.
-  - Local evm2 port accepts only `opcode: u8` and returns `OpCode::immediate_size`, so it cannot inspect following bytes for dynamic immediate sizing.
+- `immediate_size` accepts an opcode byte instead of upstream's `bytecode: &impl Immediates`:
+  - Upstream's helper can account for bytecode-dependent immediates, specifically `RJUMPV`.
+  - Local evm2 `OpCode::immediate_size` covers every immediate opcode evm2 currently implements (`PUSH*`, `DUPN`, `SWAPN`, and `EXCHANGE`), and evm2 does not currently implement a dynamic-size `RJUMPV` immediate.
 - Tests were rewritten from revm interpreter setup to evm2 interpreter/host setup.
 
-Assessment: potential behavior gap remains in `immediate_size` for dynamic immediate opcodes if evm2 supports them; root-depth skip should be kept in mind but matches current evm2 message-depth shape.
+Assessment: no missing upstream behavior found for evm2's currently implemented opcode set; root-depth skip should be kept in mind but matches current evm2 message-depth shape.
 
 ### `src/storage.rs`
 

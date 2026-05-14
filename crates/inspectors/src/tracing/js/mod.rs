@@ -18,7 +18,7 @@ use alloy_primitives::{Address, Bytes, TxKind, U256, map::HashSet};
 use boa_engine::{Context, JsError, JsObject, JsValue, Source, js_string};
 use evm2::{
     Evm, EvmTypes, Inspector,
-    evm::{CacheDB, EmptyDB},
+    evm::{DynDatabase, StateChanges},
     interpreter::{GasTracker, InstrStop, Interpreter, Message, MessageResult},
 };
 
@@ -169,9 +169,10 @@ impl JsInspector {
         result: JsTraceResult,
         tx: JsTraceTx,
         block: JsTraceBlock,
-        db: &CacheDB<EmptyDB>,
+        state_changes: &StateChanges,
+        db: &mut dyn DynDatabase,
     ) -> Result<serde_json::Value, JsInspectorError> {
-        let result = self.result_from_parts(result, tx, block, db)?;
+        let result = self.result_from_parts(result, tx, block, state_changes, db)?;
         Ok(to_serde_value(result, &mut self.ctx)?)
     }
 
@@ -181,7 +182,8 @@ impl JsInspector {
         result: JsTraceResult,
         tx: JsTraceTx,
         block: JsTraceBlock,
-        db: &CacheDB<EmptyDB>,
+        state_changes: &StateChanges,
+        db: &mut dyn DynDatabase,
     ) -> Result<JsValue, JsInspectorError> {
         let mut to = None;
         let mut error = None;
@@ -219,7 +221,7 @@ impl JsInspector {
             error,
         };
         let ctx = ctx.into_js_object(&mut self.ctx)?;
-        let (db, _db_guard) = EvmDbRef::new(db);
+        let (db, _db_guard) = EvmDbRef::new_changes(state_changes, db);
         let db = db.into_js_object(&mut self.ctx)?;
         Ok(self.result_fn.call(
             &(self.obj.clone().into()),
@@ -367,14 +369,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for JsInspector {
             return;
         }
 
-        let empty_db;
-        let db = if let Some(db) = host.database_as::<CacheDB<EmptyDB>>() {
-            db
-        } else {
-            empty_db = CacheDB::new(EmptyDB::default());
-            &empty_db
-        };
-        let (db, _db_guard) = EvmDbRef::new(db);
+        let (db, _db_guard) = EvmDbRef::new_state(host.state_mut());
         let (stack, _stack_guard) = StackRef::new(interp.stack());
         let (memory, _memory_guard) = MemoryRef::new(interp.memory_ref());
         let active_call = self.active_call();
@@ -410,14 +405,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for JsInspector {
             return;
         }
 
-        let empty_db;
-        let db = if let Some(db) = host.database_as::<CacheDB<EmptyDB>>() {
-            db
-        } else {
-            empty_db = CacheDB::new(EmptyDB::default());
-            &empty_db
-        };
-        let (db, _db_guard) = EvmDbRef::new(db);
+        let (db, _db_guard) = EvmDbRef::new_state(host.state_mut());
         let (stack, _stack_guard) = StackRef::new(interp.stack());
         let (memory, _memory_guard) = MemoryRef::new(interp.memory_ref());
         let active_call = self.active_call();
@@ -573,7 +561,7 @@ mod tests {
         BaseEvmTypes, Evm, Precompiles, SpecId,
         bytecode::Bytecode,
         ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
-        evm::AccountInfo,
+        evm::{AccountInfo, CacheDB, EmptyDB},
     };
     use serde_json::json;
 
@@ -634,10 +622,10 @@ mod tests {
 
     fn js_result(
         insp: &mut JsInspector,
-        result: evm2::TxResult,
+        result: &evm2::TxResult,
         target: Address,
         gas_price: u128,
-        db: &CacheDB<EmptyDB>,
+        db: &mut dyn DynDatabase,
     ) -> serde_json::Value {
         let mut error = None;
         if !result.status {
@@ -658,14 +646,14 @@ mod tests {
             value: U256::ZERO,
             block: 0,
             coinbase: Address::ZERO,
-            output: result.output,
+            output: result.output.clone(),
             time: "0".to_string(),
             intrinsic_gas: 0,
             transaction_ctx: TransactionContext::default(),
             error,
         };
         let ctx = ctx.into_js_object(&mut insp.ctx).unwrap();
-        let (db, _db_guard) = EvmDbRef::new(db);
+        let (db, _db_guard) = EvmDbRef::new_changes(&result.state_changes, db);
         let db = db.into_js_object(&mut insp.ctx).unwrap();
         let result = insp
             .result_fn
@@ -715,8 +703,7 @@ mod tests {
             .expect("pass without error");
 
         assert_eq!(res.status, success);
-        let db = evm.database_as::<CacheDB<EmptyDB>>().unwrap();
-        js_result(&mut insp.borrow_mut(), res, addr, gas_price, db)
+        js_result(&mut insp.borrow_mut(), &res, addr, gas_price, evm.database_mut())
     }
 
     #[test]

@@ -36,8 +36,8 @@ Source audit: `INSPECTORS_SOURCE_AUDIT.md`.
 - [x] Wire `DebugInspector::Js` when the `js-tracer` feature is enabled.
 - [x] Pass host/database access into debug result finalization paths.
   - `DebugInspector::get_result` now takes `&TxResult` plus a caller-provided `DynDatabase`, matching upstream's result-plus-DB shape without a custom result wrapper.
-- [x] Fix default `TraceTxEnv for TxEnv<T>` gas limit propagation, or expose the gas limit on evm2 `TxEnv`.
-  - evm2 core `TxEnv<T>` intentionally does not carry transaction gas limit, target, input, or value; callers that need debug finalization parity must use a richer `TraceTxEnv` wrapper, as the test harness does.
+- [x] Remove the lossy default `TraceTxEnv for TxEnv<T>` implementation instead of returning a fake gas limit.
+  - evm2 core `TxEnv<T>` intentionally does not carry transaction gas limit, target, input, or value; callers that need debug finalization parity must provide a richer `TraceTxEnv` wrapper, as the test harness does.
 - [x] Add frame/log-full hooks if evm2 grows equivalent inspector hooks.
   - No equivalent evm2 hooks exist yet; current wiring covers the hooks currently exposed by `Inspector<T>`.
 
@@ -46,9 +46,9 @@ Source audit: `INSPECTORS_SOURCE_AUDIT.md`.
 - [x] Move the active inline JS module back into `src/tracing/js/mod.rs` or remove the stale dead file.
   - Active JS code lives in `src/tracing/js/mod.rs`, matching upstream's file layout, with `bindings.rs` and `builtins.rs` as submodules.
 - [x] Pass a real host-backed DB/state object to JS `step` and `fault` instead of an empty `CacheDB`.
-  - The current Boa DB object remains cache-backed; it uses the host cache when available and falls back to an empty cache only for non-cache DB hosts.
+  - JS DB bindings now read from evm2 in-flight `State` and fall back to the backing `DynDatabase`.
 - [x] Make JS `result` DB access read from in-flight state plus backing database, not cache-only state.
-  - For cache-backed JS finalization, clones the cache DB and commits the transaction `StateChanges` before invoking JS `result`.
+  - JS result finalization now reads from `StateChanges` first and falls back to the caller-provided `DynDatabase`.
 - [x] Source JS `isPrecompiled` from the active host precompile provider instead of `Precompiles::base(spec)`.
 
 ## Tracing Inspector
@@ -57,8 +57,8 @@ Source audit: `INSPECTORS_SOURCE_AUDIT.md`.
   - evm2 does not expose the journal, so the inspector now records the same step-level storage delta from `Evm<T>::state()` before and after the step.
 - [x] Restore journal-backed warm-load storage observations for `SLOAD`.
   - Uses `State::is_storage_warm` before/after `SLOAD` to record cold-to-warm observations.
-- [x] Replace opcode-only immediate-byte sizing with bytecode-aware sizing for dynamic immediates.
-  - evm2 `OpCode::immediate_size` covers the implemented bytecode immediates (`PUSH*`, `DUPN`, `SWAPN`, `EXCHANGE`); immediate bytes are sliced from the active bytecode at `pc + 1`.
+- [x] Recheck opcode-only immediate-byte sizing against evm2's implemented opcode set.
+  - evm2 `OpCode::immediate_size` covers the implemented bytecode immediates (`PUSH*`, `DUPN`, `SWAPN`, `EXCHANGE`); evm2 does not currently implement a dynamic-size `RJUMPV` immediate, and immediate bytes are sliced from the active bytecode at `pc + 1`.
 - [x] Verify delegate-call value and create-address behavior against upstream after the host change.
   - `start_trace` keeps upstream delegate/callcode caller/address mapping, and create traces use evm2's prederived `message.destination`, then overwrite with `result.created_address` when available.
 - [x] Recheck log `position` and `index` parity against upstream.

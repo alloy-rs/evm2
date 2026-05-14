@@ -201,6 +201,12 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         &self.state
     }
 
+    /// Returns the mutable EVM state.
+    #[inline]
+    pub const fn state_mut(&mut self) -> &mut State {
+        &mut self.state
+    }
+
     /// Returns logs emitted by the current in-flight transaction.
     #[inline]
     pub fn logs(&self) -> &[Log] {

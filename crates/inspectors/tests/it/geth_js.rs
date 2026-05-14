@@ -13,20 +13,24 @@ use evm2_inspectors::tracing::{
 };
 use serde_json::json;
 
-fn js_result(insp: &mut JsInspector, res: ResultAndState, context: &Context) -> serde_json::Value {
-    let (success, gas_used, stop, output, created_address) = match res.result {
+fn js_result(
+    insp: &mut JsInspector,
+    res: &ResultAndState,
+    context: &mut Context,
+) -> serde_json::Value {
+    let (success, gas_used, stop, output, created_address) = match &res.result {
         ExecutionResult::Success { output, gas_used } => {
             let created_address = match &output {
                 Output::Create(_, address) => *address,
                 Output::Call(_) => None,
             };
-            (true, gas_used, InstrStop::Return, output.data().clone(), created_address)
+            (true, *gas_used, InstrStop::Return, output.data().clone(), created_address)
         }
         ExecutionResult::Revert { output, gas_used } => {
-            (false, gas_used, InstrStop::Revert, output, None)
+            (false, *gas_used, InstrStop::Revert, output.clone(), None)
         }
         ExecutionResult::Halt { reason, gas_used } => {
-            (false, gas_used, reason, Default::default(), None)
+            (false, *gas_used, *reason, Default::default(), None)
         }
     };
     insp.json_result_from_parts(
@@ -44,7 +48,8 @@ fn js_result(insp: &mut JsInspector, res: ResultAndState, context: &Context) -> 
             coinbase: context.block().beneficiary,
             timestamp: context.block().timestamp,
         },
-        context.db_ref(),
+        &res.state,
+        context.db_mut(),
     )
     .unwrap()
 }
@@ -185,7 +190,7 @@ fn test_geth_jstracer_revert() {
     assert!(res.result.is_success());
 
     let (context, insp) = evm.ctx_inspector();
-    let result = js_result(insp, res, context);
+    let result = js_result(insp, &res, context);
 
     // successful operation
     assert!(!result["error"].as_bool().unwrap());
@@ -206,7 +211,7 @@ fn test_geth_jstracer_revert() {
     assert!(!res.result.is_success());
 
     let (context, insp) = evm.ctx_inspector();
-    let result = js_result(insp, res, context);
+    let result = js_result(insp, &res, context);
 
     // reverted operation
     assert!(result["error"].as_bool().unwrap());
@@ -297,6 +302,6 @@ fn test_geth_jstracer_proxy_contract() {
     assert!(res.result.is_success());
 
     let (context, insp) = evm.ctx_inspector();
-    let result = js_result(insp, res, context);
+    let result = js_result(insp, &res, context);
     assert_eq!(result, json!([{"event": "Transfer", "token": proxy_addr, "caller": deployer}]));
 }

@@ -647,6 +647,70 @@ impl State {
         self.initial.get_account(address)
     }
 
+    /// Returns account info from the overlay or backing database without inserting into the
+    /// overlay.
+    #[inline]
+    pub fn account_info_ref_or_db(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
+        self.account_info(address)
+    }
+
+    /// Returns account code from the overlay or backing database without inserting into the
+    /// overlay.
+    pub fn code_ref_or_db(&mut self, address: &Address) -> DbResult<Bytecode> {
+        let Some((code_hash, code)) = self.accounts.get(address).and_then(|account| {
+            account.current.as_ref().map(|account| (account.code_hash, account.code.clone()))
+        }) else {
+            let Some(info) = self.initial.get_account(address)? else {
+                return Ok(Bytecode::default());
+            };
+            return self.code_from_info(info);
+        };
+        self.code_from_parts(code_hash, code)
+    }
+
+    fn code_from_info(&mut self, info: AccountInfo) -> DbResult<Bytecode> {
+        if let Some(code) = info.code
+            && !code.is_empty()
+        {
+            return Ok(code);
+        }
+        self.code_from_parts(info.code_hash, Bytecode::default())
+    }
+
+    fn code_from_parts(&mut self, code_hash: B256, code: Bytecode) -> DbResult<Bytecode> {
+        if code_hash == KECCAK256_EMPTY {
+            return Ok(Bytecode::default());
+        }
+        if !code.is_empty() {
+            return Ok(code);
+        }
+        self.initial.get_code_by_hash(&code_hash)
+    }
+
+    /// Returns persistent storage from the overlay or backing database without inserting into the
+    /// overlay.
+    pub fn storage_ref_or_db(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
+        if let Some(account) = self.accounts.get(address)
+            && account.current.is_none()
+        {
+            return Ok(Word::ZERO);
+        }
+        if let Some(storage) = self.storage.get(address) {
+            if let Some(slot) = storage.slots.get(key) {
+                return Ok(slot.current);
+            }
+            if storage.wiped {
+                return Ok(Word::ZERO);
+            }
+        }
+        if let Some(account) = self.accounts.get(address)
+            && account.original.is_none()
+        {
+            return Ok(Word::ZERO);
+        }
+        self.initial.get_storage(address, key)
+    }
+
     /// Returns whether an account is empty/non-existent for EIP-150 new-account gas checks.
     pub(super) fn target_is_empty_for_new_account_gas(
         &mut self,

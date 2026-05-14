@@ -10,13 +10,9 @@ use alloy_rpc_types_trace::geth::{
     GethDebugTracingOptions, GethDefaultTracingOptions, GethTrace, NoopFrame, PreStateConfig,
     erc7562::Erc7562Config, mux::MuxConfig,
 };
-#[cfg(feature = "js-tracer")]
-use evm2::evm::DatabaseCommit;
-#[cfg(feature = "js-tracer")]
-use evm2::evm::{CacheDB, EmptyDB};
 use evm2::{
     Evm, EvmTypes, Inspector, TxResult,
-    env::{BlockEnv, TxEnv},
+    env::BlockEnv,
     evm::DynDatabase,
     interpreter::{Interpreter, Message, MessageResult},
 };
@@ -48,16 +44,6 @@ pub trait TraceTxEnv {
     /// Returns transaction value.
     fn trace_value(&self) -> U256 {
         U256::ZERO
-    }
-}
-
-impl<T: EvmTypes> TraceTxEnv for TxEnv<T> {
-    fn trace_gas_limit(&self) -> u64 {
-        0
-    }
-
-    fn trace_caller(&self) -> Address {
-        self.origin
     }
 }
 
@@ -345,19 +331,6 @@ impl DebugInspector {
             #[cfg(feature = "js-tracer")]
             Self::Js(inspector) => {
                 inspector.set_transaction_context(tx_context.unwrap_or_default());
-                let empty_db;
-                let overlay_db;
-                let db = if let Some(db) = cache_db_from_dyn_database(db) {
-                    overlay_db = {
-                        let mut db = db.clone();
-                        db.commit(&res.state_changes);
-                        db
-                    };
-                    &overlay_db
-                } else {
-                    empty_db = CacheDB::new(EmptyDB::default());
-                    &empty_db
-                };
                 let result = crate::tracing::js::JsTraceResult {
                     success: res.status,
                     gas_used: res.gas_used,
@@ -378,17 +351,18 @@ impl DebugInspector {
                     coinbase: block_env.trace_coinbase(),
                     timestamp: block_env.trace_timestamp(),
                 };
-                GethTrace::JS(inspector.json_result_from_parts(result, tx, block, db)?)
+                GethTrace::JS(inspector.json_result_from_parts(
+                    result,
+                    tx,
+                    block,
+                    &res.state_changes,
+                    db,
+                )?)
             }
         };
 
         Ok(res)
     }
-}
-
-#[cfg(feature = "js-tracer")]
-fn cache_db_from_dyn_database(db: &mut dyn DynDatabase) -> Option<&mut CacheDB<EmptyDB>> {
-    <dyn core::any::Any>::downcast_mut(db)
 }
 
 impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for DebugInspector {
