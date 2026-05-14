@@ -3,7 +3,8 @@ use crate::{
     interpreter::{InterpreterState, Pc, Stack, gas::Gas},
 };
 
-pub(super) type LoopState = ();
+#[derive(Clone, Copy)]
+pub(super) struct LoopState;
 
 /// Unpacked instruction return value.
 type InstrFnRet = (Pc, usize);
@@ -24,7 +25,9 @@ pub(super) fn dispatch_loop_call<T: EvmTypes>(
 }
 
 #[inline(always)]
-pub(super) const fn loop_state(_gas: &Gas) -> LoopState {}
+pub(super) const fn loop_state(_gas: &Gas) -> LoopState {
+    LoopState
+}
 
 #[inline(always)]
 pub(super) const fn finish_loop(_gas: &mut Gas, _loop_state: LoopState) {}

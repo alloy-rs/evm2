@@ -14,7 +14,7 @@ fn main() {
     let is_wasm = target_is_wasm();
     let target_pointer_width = target_pointer_width();
     let no_tco = env("CARGO_FEATURE_NO_TCO");
-    match dispatch_backend().resolve(is_wasm, target_pointer_width, no_tco.is_some()) {
+    match DispatchBackend::load().resolve(is_wasm, target_pointer_width, no_tco.is_some()) {
         DispatchBackend::Auto => unreachable!("auto backend must resolve to a concrete backend"),
         DispatchBackend::Tco => println!("cargo:rustc-cfg=tco"),
         DispatchBackend::Packed => println!("cargo:rustc-cfg=dispatch_packed"),
@@ -32,6 +32,23 @@ enum DispatchBackend {
 }
 
 impl DispatchBackend {
+    fn load() -> Self {
+        let Some(value) = env("EVM2_DISPATCH_BACKEND") else {
+            return Self::Auto;
+        };
+        let value = value.to_str().expect("EVM2_DISPATCH_BACKEND must be valid UTF-8");
+        match value {
+            "" | "auto" => Self::Auto,
+            "tco" => Self::Tco,
+            "packed" => Self::Packed,
+            "single_return" | "single-return" => Self::SingleReturn,
+            "unpacked" => Self::Unpacked,
+            _ => panic!(
+                "invalid EVM2_DISPATCH_BACKEND={value:?}; expected auto, tco, packed, single_return, or unpacked"
+            ),
+        }
+    }
+
     fn resolve(self, is_wasm: bool, target_pointer_width: Option<u32>, no_tco: bool) -> Self {
         match self {
             Self::Auto => {
@@ -39,7 +56,7 @@ impl DispatchBackend {
                     Self::Tco
                 } else if is_wasm {
                     Self::SingleReturn
-                } else if target_pointer_width == Some(64) {
+                } else if false && target_pointer_width == Some(64) {
                     Self::Packed
                 } else {
                     Self::Unpacked
@@ -47,23 +64,6 @@ impl DispatchBackend {
             }
             concrete => concrete,
         }
-    }
-}
-
-fn dispatch_backend() -> DispatchBackend {
-    let Some(value) = env("EVM2_DISPATCH_BACKEND") else {
-        return DispatchBackend::Auto;
-    };
-    let value = value.to_str().expect("EVM2_DISPATCH_BACKEND must be valid UTF-8");
-    match value {
-        "" | "auto" => DispatchBackend::Auto,
-        "tco" => DispatchBackend::Tco,
-        "packed" => DispatchBackend::Packed,
-        "single_return" | "single-return" => DispatchBackend::SingleReturn,
-        "unpacked" => DispatchBackend::Unpacked,
-        _ => panic!(
-            "invalid EVM2_DISPATCH_BACKEND={value:?}; expected auto, tco, packed, single_return, or unpacked"
-        ),
     }
 }
 
