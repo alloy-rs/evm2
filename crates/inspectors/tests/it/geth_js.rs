@@ -1,16 +1,12 @@
 //! Geth Js tracer tests
 
 use crate::utils::{
-    AccountInfo, Bytecode, CacheDB, Context, EmptyDB, ExecutionResult, Output, ResultAndState,
-    SpecId, TransactTo, TxEnv, deploy_contract,
+    AccountInfo, Bytecode, CacheDB, Context, EmptyDB, ResultAndState, SpecId, TransactTo, TxEnv,
+    deploy_contract,
 };
 use alloy_primitives::{Address, U256, address, hex};
 use alloy_rpc_types_trace::geth::{GethDebugTracingOptions, GethTrace};
-use evm2::interpreter::InstrStop;
-use evm2_inspectors::tracing::{
-    DebugInspector,
-    js::{JsInspector, JsTraceBlock, JsTraceResult, JsTraceTx},
-};
+use evm2_inspectors::tracing::{DebugInspector, js::JsInspector};
 use serde_json::json;
 
 fn js_result(
@@ -18,40 +14,9 @@ fn js_result(
     res: &ResultAndState,
     context: &mut Context,
 ) -> serde_json::Value {
-    let (success, gas_used, stop, output, created_address) = match &res.result {
-        ExecutionResult::Success { output, gas_used } => {
-            let created_address = match &output {
-                Output::Create(_, address) => *address,
-                Output::Call(_) => None,
-            };
-            (true, *gas_used, InstrStop::Return, output.data().clone(), created_address)
-        }
-        ExecutionResult::Revert { output, gas_used } => {
-            (false, *gas_used, InstrStop::Revert, output.clone(), None)
-        }
-        ExecutionResult::Halt { reason, gas_used } => {
-            (false, *gas_used, *reason, Default::default(), None)
-        }
-    };
-    insp.json_result_from_parts(
-        JsTraceResult { success, gas_used, stop, output, created_address },
-        JsTraceTx {
-            caller: context.tx().caller,
-            kind: context.tx().kind,
-            input: context.tx().data.clone(),
-            gas_limit: context.tx().gas_limit,
-            gas_price: context.tx().gas_price,
-            value: context.tx().value,
-        },
-        JsTraceBlock {
-            number: context.block().number.try_into().unwrap_or(u64::MAX),
-            coinbase: context.block().beneficiary,
-            timestamp: context.block().timestamp,
-        },
-        &res.state,
-        context.db_mut(),
-    )
-    .unwrap()
+    let tx = context.tx().envelope();
+    let block = *context.block();
+    insp.json_result(&res.tx_result, &tx, &block, context.db_mut()).unwrap()
 }
 
 #[test]
@@ -118,7 +83,7 @@ fn test_geth_debug_inspector_jstracer() {
 
     let (context, inspector) = evm.ctx_inspector();
     let tx_env = context.tx().envelope();
-    let block_env = evm2::env::BlockEnv::from(context.block());
+    let block_env = *context.block();
     let trace =
         inspector.get_result(None, &tx_env, &block_env, &res.tx_result, context.db_mut()).unwrap();
 

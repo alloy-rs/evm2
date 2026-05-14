@@ -340,12 +340,13 @@ fn create_inner<T: EvmTypes>(
         ext: T::MessageExt::default(),
         _non_exhaustive: (),
     };
+    let bytecode = crate::bytecode::Bytecode::new_legacy(message.input.clone());
+    message.destination = state.host().created_address(&bytecode, &message)?;
     let mut result = if let Some(result) = state.inspect_create(&mut message) {
         result
     } else if message.depth > CALL_DEPTH_LIMIT {
         call_too_deep_result::<T>(message.gas_limit)
     } else {
-        let bytecode = crate::bytecode::Bytecode::new_legacy(message.input.clone());
         let tx_env = unsafe { trustme::decouple_lt(state.tx()) };
         state.host().execute_message(tx_env, bytecode, &mut message, false)
     };

@@ -1,9 +1,8 @@
 //! Parity tests
 
 use crate::utils::{
-    AccountInfo, BLOB_BASE_FEE_UPDATE_FRACTION_CANCUN, BlobExcessGasAndPrice, CacheDB, Context,
-    DatabaseCommit, EmptyDB, ExecutionResult, Output, SpecId, TransactTo, TxEnv, deploy_contract,
-    inspect_deploy_contract, print_traces,
+    AccountInfo, CacheDB, Context, DatabaseCommit, EmptyDB, ExecutionResult, Output, SpecId,
+    TransactTo, TxEnv, deploy_contract, inspect_deploy_contract, print_traces,
 };
 use alloy_primitives::{Address, U256, address, hex, map::HashSet};
 use alloy_rpc_types_eth::TransactionInfo;
@@ -334,9 +333,8 @@ fn test_parity_statediff_blob_commit() {
             cfg.spec = SpecId::CANCUN;
         })
         .modify_block_chained(|b| {
-            b.basefee = 100;
-            b.blob_excess_gas_and_price =
-                Some(BlobExcessGasAndPrice::new(100, BLOB_BASE_FEE_UPDATE_FRACTION_CANCUN));
+            b.basefee = U256::from(100);
+            b.blob_basefee = U256::from(3_338_477);
         })
         .build_mainnet_with_inspector(TracingInspector::new(
             TracingInspectorConfig::from_parity_config(&trace_types),

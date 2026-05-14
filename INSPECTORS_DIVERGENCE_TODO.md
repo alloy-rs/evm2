@@ -15,8 +15,9 @@ Source audit: `INSPECTORS_SOURCE_AUDIT.md`.
 - [x] Source precompile exclusions from the configured host precompile provider instead of hard-coded addresses.
 - [x] Derive create-address exclusions from the transaction/message context instead of using the current message destination blindly.
   - evm2 initializes create messages with the derived create/create2 destination before inspector hooks run, so `message.destination` is the transaction/message-derived created address.
-- [x] Add EIP-7702 authority exclusions once the evm2 transaction environment exposes them to inspectors.
-  - No inspector-visible auth list exists yet; authorities are applied and warmed in the Ethereum tx handler before `TxEnv<T>` reaches inspectors.
+- [ ] Expose EIP-7702 authority exclusions to the access-list inspector.
+  - No inspector-visible auth list exists yet; authorities are applied and warmed in the Ethereum tx handler before inspector result generation.
+  - Practical divergence: generated access lists can over-report an authority account that was already transaction-warmed by EIP-7702 processing.
 
 ## Trace Builders
 
@@ -50,13 +51,17 @@ Source audit: `INSPECTORS_SOURCE_AUDIT.md`.
 - [x] Make JS `result` DB access read from in-flight state plus backing database, not cache-only state.
   - JS result finalization now reads from `StateChanges` first and falls back to the caller-provided `DynDatabase`.
 - [x] Source JS `isPrecompiled` from the active host precompile provider instead of `Precompiles::base(spec)`.
+- [x] Restore upstream JS constructor/runtime APIs.
+  - `with_transaction_context`, `transaction_context`, `set_runtime_limits`, and `RuntimeLimits` export are present.
+- [x] Match upstream JS hook behavior for root calls, selfdestruct enter/exit, step errors, and revert fault PC reporting.
 
 ## Tracing Inspector
 
-- [x] Restore journal-backed step storage changes for `SSTORE`.
-  - evm2 does not expose the journal, so the inspector now records the same step-level storage delta from `Evm<T>::state()` before and after the step.
-- [x] Restore journal-backed warm-load storage observations for `SLOAD`.
-  - Uses `State::is_storage_warm` before/after `SLOAD` to record cold-to-warm observations.
+- [ ] Expose a read-only evm2 journal/event view for tracing inspectors, or add equivalent host state-event hooks.
+  - evm2 does not expose the journal, so the inspector records step-level storage deltas from `Evm<T>::state()` before and after the step.
+  - Practical divergence: current `SSTORE` and `SLOAD` observations are derived from before/after state, not exact ordered journal entries.
+- [x] Approximate upstream journal-backed `SSTORE` step storage changes with evm2 state before/after.
+- [x] Approximate upstream journal-backed warm-load `SLOAD` observations with `State::is_storage_warm` before/after.
 - [x] Recheck opcode-only immediate-byte sizing against evm2's implemented opcode set.
   - evm2 `OpCode::immediate_size` covers the implemented bytecode immediates (`PUSH*`, `DUPN`, `SWAPN`, `EXCHANGE`); evm2 does not currently implement a dynamic-size `RJUMPV` immediate, and immediate bytes are sliced from the active bytecode at `pc + 1`.
 - [x] Verify delegate-call value and create-address behavior against upstream after the host change.

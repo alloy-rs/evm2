@@ -331,6 +331,22 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct CreateDestinationInspector {
+        destination: Option<Address>,
+    }
+
+    impl Inspector<TestTypes> for CreateDestinationInspector {
+        fn create(
+            &mut self,
+            message: &mut Message<TestTypes>,
+            _host: &mut TestHost,
+        ) -> Option<MessageResult<TestTypes>> {
+            self.destination = Some(message.destination);
+            None
+        }
+    }
+
     struct CreateEndInspector {
         created: Address,
     }
@@ -699,6 +715,29 @@ mod tests {
         assert_eq!(inspector.create_depth, Some(1));
         assert_eq!(inspector.create_end_stop, Some(InstrStop::Return));
         assert!(host.calls.is_empty());
+    }
+
+    #[test]
+    fn create_inspector_sees_derived_destination() {
+        let contract = Address::from([0x11; 20]);
+        let expected = contract.create(0);
+        let mut host = TestHost::default();
+        let mut inspector = CreateDestinationInspector::default();
+        let mut code = create_code();
+        code.extend([op::CREATE, op::STOP]);
+
+        let (stop, _) = run_with_inspector(
+            code,
+            &mut host,
+            &Message { destination: contract, ..Default::default() },
+            50_000,
+            &mut inspector,
+        );
+
+        assert!(matches!(stop, InstrStop::Stop));
+        assert_eq!(inspector.destination, Some(expected));
+        assert_eq!(host.calls.len(), 1);
+        assert_eq!(host.calls[0].destination, expected);
     }
 
     #[test]

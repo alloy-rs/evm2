@@ -15,11 +15,16 @@ use alloc::{
     vec::Vec,
 };
 use alloy_primitives::{Address, Bytes, TxKind, U256, map::HashSet};
+pub use boa_engine::vm::RuntimeLimits;
 use boa_engine::{Context, JsError, JsObject, JsValue, Source, js_string};
 use evm2::{
-    Evm, EvmTypes, Inspector,
-    evm::{DynDatabase, StateChanges},
-    interpreter::{GasTracker, InstrStop, Interpreter, Message, MessageResult},
+    Evm, EvmTypes, Inspector, TxResult,
+    env::BlockEnv,
+    ethereum::RecoveredTxEnvelope,
+    evm::DynDatabase,
+    interpreter::{
+        GasTracker, InstrStop, Interpreter, Message, MessageKind, MessageResult, opcode::op,
+    },
 };
 
 pub(crate) mod bindings;
@@ -56,7 +61,7 @@ pub struct JsInspector {
     call_stack: Vec<CallStackItem>,
     transaction_context: TransactionContext,
     precompiles_registered: bool,
-    step_error: bool,
+    last_start_step_pc: Option<usize>,
 }
 
 impl JsInspector {
@@ -73,6 +78,15 @@ impl JsInspector {
     /// - `exit`: a function that will be called when the execution exits a call.
     /// - `step`: a function that will be called when the execution steps to the next instruction.
     pub fn new(code: String, config: serde_json::Value) -> Result<Self, JsInspectorError> {
+        Self::with_transaction_context(code, config, Default::default())
+    }
+
+    /// Creates a new inspector from a javascript code snippet. See also [Self::new].
+    pub fn with_transaction_context(
+        code: String,
+        config: serde_json::Value,
+        transaction_context: TransactionContext,
+    ) -> Result<Self, JsInspectorError> {
         let mut ctx = Context::default();
 
         ctx.runtime_limits_mut().set_loop_iteration_limit(LOOP_ITERATION_LIMIT);
@@ -135,15 +149,25 @@ impl JsInspector {
             step_fn,
             previous_gas_spent: 0,
             call_stack: Vec::new(),
-            transaction_context: TransactionContext::default(),
+            transaction_context,
             precompiles_registered: false,
-            step_error: false,
+            last_start_step_pc: None,
         })
+    }
+
+    /// Returns the transaction context.
+    pub const fn transaction_context(&self) -> &TransactionContext {
+        &self.transaction_context
     }
 
     /// Set contextual transaction info.
     pub const fn set_transaction_context(&mut self, transaction_context: TransactionContext) {
         self.transaction_context = transaction_context;
+    }
+
+    /// Applies runtime limits to the JS context.
+    pub fn set_runtime_limits(&mut self, limits: RuntimeLimits) {
+        self.ctx.set_runtime_limits(limits);
     }
 
     /// Returns the javascript source code.
@@ -158,70 +182,74 @@ impl JsInspector {
 
     /// Creates a fresh copy of this inspector, resetting all execution state.
     pub fn try_clone(&self) -> Result<Self, JsInspectorError> {
-        let mut cloned = Self::new(self.code.clone(), self.config.clone())?;
-        cloned.set_transaction_context(self.transaction_context);
-        Ok(cloned)
+        Self::with_transaction_context(
+            self.code.clone(),
+            self.config.clone(),
+            self.transaction_context,
+        )
     }
 
-    /// Calls the result function with an evm2-native trace context.
-    pub fn json_result_from_parts(
+    /// Calls the result function and returns the result as [`serde_json::Value`].
+    pub fn json_result<T: EvmTypes>(
         &mut self,
-        result: JsTraceResult,
-        tx: JsTraceTx,
-        block: JsTraceBlock,
-        state_changes: &StateChanges,
+        result: &TxResult<T>,
+        tx: &RecoveredTxEnvelope,
+        block: &BlockEnv,
         db: &mut dyn DynDatabase,
     ) -> Result<serde_json::Value, JsInspectorError> {
-        let result = self.result_from_parts(result, tx, block, state_changes, db)?;
+        let result = self.result(result, tx, block, db)?;
         Ok(to_serde_value(result, &mut self.ctx)?)
     }
 
-    /// Calls the result function with an evm2-native trace context.
-    pub fn result_from_parts(
+    /// Calls the result function and returns the result.
+    pub fn result<T: EvmTypes>(
         &mut self,
-        result: JsTraceResult,
-        tx: JsTraceTx,
-        block: JsTraceBlock,
-        state_changes: &StateChanges,
+        result: &TxResult<T>,
+        tx: &RecoveredTxEnvelope,
+        block: &BlockEnv,
         db: &mut dyn DynDatabase,
     ) -> Result<JsValue, JsInspectorError> {
         let mut to = None;
         let mut error = None;
-        if result.success {
-            if let TxKind::Call(target) = tx.kind {
-                to = Some(target);
-            } else {
-                to = result.created_address;
-            }
+
+        if result.status {
+            to = result.created_address;
         } else if result.stop.is_revert() {
             error = Some("execution reverted".to_string());
         } else {
             error = Some(format!("execution halted: {:?}", result.stop));
         }
 
+        let kind = tx.kind();
+        if let TxKind::Call(target) = kind {
+            to = Some(target);
+        }
+
+        let base_fee = block.basefee.try_into().unwrap_or(u64::MAX);
+
         let ctx = JsEvmContext {
-            r#type: match tx.kind {
+            r#type: match kind {
                 TxKind::Call(_) => "CALL",
                 TxKind::Create => "CREATE",
             }
             .to_string(),
-            from: tx.caller,
+            from: tx.signer(),
             to,
-            input: tx.input,
-            gas: tx.gas_limit,
+            input: tx.input().clone(),
+            gas: tx.gas_limit(),
             gas_used: result.gas_used,
-            gas_price: tx.gas_price.try_into().unwrap_or(u64::MAX),
-            value: tx.value,
-            block: block.number,
-            coinbase: block.coinbase,
-            output: result.output,
+            gas_price: tx.effective_gas_price(Some(base_fee)).try_into().unwrap_or(u64::MAX),
+            value: tx.value(),
+            block: block.number.try_into().unwrap_or(u64::MAX),
+            coinbase: block.beneficiary,
+            output: result.output.clone(),
             time: block.timestamp.to_string(),
             intrinsic_gas: 0,
             transaction_ctx: self.transaction_context,
             error,
         };
         let ctx = ctx.into_js_object(&mut self.ctx)?;
-        let (db, _db_guard) = EvmDbRef::new_changes(state_changes, db);
+        let (db, _db_guard) = EvmDbRef::new_changes(&result.state_changes, db);
         let db = db.into_js_object(&mut self.ctx)?;
         Ok(self.result_fn.call(
             &(self.obj.clone().into()),
@@ -238,15 +266,22 @@ impl JsInspector {
         self.previous_gas_spent = spent;
     }
 
-    fn active_call(&self) -> CallStackItem {
-        self.call_stack.last().cloned().unwrap_or_default()
+    #[track_caller]
+    fn active_call(&self) -> &CallStackItem {
+        self.call_stack.last().expect("call stack is empty")
     }
 
     fn push_call<T: EvmTypes>(&mut self, message: &Message<T>) {
+        let (caller, contract) = match message.kind {
+            MessageKind::CallCode | MessageKind::DelegateCall => {
+                (message.destination, message.code_address)
+            }
+            _ => (message.caller, message.destination),
+        };
         let call = CallStackItem {
             contract: Contract {
-                caller: message.caller,
-                contract: message.destination,
+                caller,
+                contract,
                 value: message.value,
                 input: message.input.clone(),
             },
@@ -260,12 +295,16 @@ impl JsInspector {
         let _ = self.call_stack.pop();
     }
 
+    const fn is_root_call_active(&self) -> bool {
+        self.call_stack.len() == 1
+    }
+
     const fn can_call_enter(&self) -> bool {
-        self.enter_fn.is_some()
+        self.enter_fn.is_some() && !self.is_root_call_active()
     }
 
     const fn can_call_exit(&self) -> bool {
-        self.exit_fn.is_some()
+        self.exit_fn.is_some() && !self.is_root_call_active()
     }
 
     fn try_step(&mut self, step: StepLog, db: EvmDbRef) -> Result<(), JsError> {
@@ -318,60 +357,18 @@ struct CallStackItem {
     gas_limit: u64,
 }
 
-/// Execution result data passed to JavaScript `result`.
-#[derive(Clone, Debug)]
-pub struct JsTraceResult {
-    /// Whether execution succeeded.
-    pub success: bool,
-    /// Gas used by the transaction.
-    pub gas_used: u64,
-    /// Interpreter stop reason.
-    pub stop: InstrStop,
-    /// Return or revert output.
-    pub output: Bytes,
-    /// Created contract address for create transactions.
-    pub created_address: Option<Address>,
-}
-
-/// Transaction data passed to JavaScript `result`.
-#[derive(Clone, Debug)]
-pub struct JsTraceTx {
-    /// Transaction caller.
-    pub caller: Address,
-    /// Transaction target.
-    pub kind: TxKind,
-    /// Transaction input.
-    pub input: Bytes,
-    /// Transaction gas limit.
-    pub gas_limit: u64,
-    /// Transaction gas price.
-    pub gas_price: u128,
-    /// Transaction value.
-    pub value: U256,
-}
-
-/// Block data passed to JavaScript `result`.
-#[derive(Clone, Copy, Debug)]
-pub struct JsTraceBlock {
-    /// Block number.
-    pub number: u64,
-    /// Block beneficiary.
-    pub coinbase: Address,
-    /// Block timestamp.
-    pub timestamp: U256,
-}
-
 impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for JsInspector {
     fn step(&mut self, interp: &mut Interpreter<'_, T>, host: &mut T::Host) {
         self.register_precompiles(host);
+        self.last_start_step_pc = Some(interp.pc());
 
-        if self.step_fn.is_none() || self.step_error {
+        if self.step_fn.is_none() {
             return;
         }
 
-        let (db, _db_guard) = EvmDbRef::new_state(host.state_mut());
-        let (stack, _stack_guard) = StackRef::new(interp.stack());
-        let (memory, _memory_guard) = MemoryRef::new(interp.memory_ref());
+        let (db, db_guard) = EvmDbRef::new_state(host.state_mut());
+        let (stack, stack_guard) = StackRef::new(interp.stack());
+        let (memory, memory_guard) = MemoryRef::new(interp.memory_ref());
         let active_call = self.active_call();
         let message = interp.message();
         let gas_spent = interp.gas().spent();
@@ -389,19 +386,23 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for JsInspector {
                 caller: message.caller,
                 contract: message.destination,
                 value: active_call.contract.value,
-                input: active_call.contract.input,
+                input: active_call.contract.input.clone(),
             },
         };
 
         self.set_previous_gas_spent(gas_spent);
+        let step_result = self.try_step(step, db);
+        drop(memory_guard);
+        drop(stack_guard);
+        drop(db_guard);
 
-        if self.try_step(step, db).is_err() {
-            self.step_error = true;
+        if step_result.is_err() {
+            interp.set_stop(InstrStop::Revert);
         }
     }
 
     fn step_end(&mut self, interp: &mut Interpreter<'_, T>, host: &mut T::Host) {
-        if self.step_fn.is_none() || self.step_error || interp.result().is_ok() {
+        if self.step_fn.is_none() || !matches!(interp.result(), Err(stop) if stop.is_revert()) {
             return;
         }
 
@@ -413,9 +414,9 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for JsInspector {
         let gas_spent = interp.gas().spent();
         let step = StepLog {
             stack,
-            op: OpObj(interp.opcode()),
+            op: OpObj(op::REVERT),
             memory,
-            pc: interp.pc() as u64,
+            pc: self.last_start_step_pc.unwrap_or_default() as u64,
             gas_remaining: interp.gas().remaining(),
             cost: self.get_op_cost(gas_spent),
             depth: u64::from(message.depth),
@@ -425,7 +426,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for JsInspector {
                 caller: message.caller,
                 contract: message.destination,
                 value: active_call.contract.value,
-                input: active_call.contract.input,
+                input: active_call.contract.input.clone(),
             },
         };
 
@@ -436,7 +437,8 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for JsInspector {
         self.push_call(message);
         if self.can_call_enter() {
             let call = self.active_call();
-            let frame = CallFrame { contract: call.contract, kind: call.kind, gas: call.gas_limit };
+            let frame =
+                CallFrame { contract: call.contract.clone(), kind: call.kind, gas: call.gas_limit };
             if self.try_enter(frame).is_err() {
                 return Some(js_error_to_revert(message.gas_limit));
             }
@@ -461,10 +463,6 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for JsInspector {
             }
         }
 
-        if self.step_error && result.stop.is_success() {
-            result.stop = InstrStop::Revert;
-        }
-
         self.pop_call();
     }
 
@@ -476,7 +474,8 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for JsInspector {
         self.push_call(message);
         if self.can_call_enter() {
             let call = self.active_call();
-            let frame = CallFrame { contract: call.contract, kind: call.kind, gas: call.gas_limit };
+            let frame =
+                CallFrame { contract: call.contract.clone(), kind: call.kind, gas: call.gas_limit };
             if self.try_enter(frame).is_err() {
                 return Some(js_error_to_revert(message.gas_limit));
             }
@@ -501,11 +500,27 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for JsInspector {
             }
         }
 
-        if self.step_error && result.stop.is_success() {
-            result.stop = InstrStop::Revert;
+        self.pop_call();
+    }
+
+    fn selfdestruct(
+        &mut self,
+        _contract: &Address,
+        _target: &Address,
+        _value: &U256,
+        _host: &mut T::Host,
+    ) {
+        if self.enter_fn.is_some() {
+            let call = self.active_call();
+            let frame =
+                CallFrame { contract: call.contract.clone(), kind: call.kind, gas: call.gas_limit };
+            let _ = self.try_enter(frame);
         }
 
-        self.pop_call();
+        if self.exit_fn.is_some() {
+            let frame_result = FrameResult { gas_used: 0, output: Bytes::new(), error: None };
+            let _ = self.try_exit(frame_result);
+        }
     }
 }
 

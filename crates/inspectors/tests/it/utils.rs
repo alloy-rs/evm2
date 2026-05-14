@@ -18,72 +18,7 @@ pub use evm2::{
 
 pub type TransactTo = TxKind;
 
-pub const BLOB_BASE_FEE_UPDATE_FRACTION_CANCUN: u64 = 3_338_477;
 pub const ETH_TRANSFER_LOG_ADDRESS: Address = evm2::SYSTEM_ADDRESS;
-
-#[derive(Clone, Copy, Debug, Default)]
-pub struct BlobExcessGasAndPrice {
-    pub excess_blob_gas: u64,
-    pub blob_basefee: u64,
-}
-
-impl BlobExcessGasAndPrice {
-    pub const fn new(excess_blob_gas: u64, blob_basefee: u64) -> Self {
-        Self { excess_blob_gas, blob_basefee }
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct BlockEnv {
-    pub number: U256,
-    pub beneficiary: Address,
-    pub timestamp: U256,
-    pub gas_limit: U256,
-    pub basefee: u64,
-    pub difficulty: U256,
-    pub prevrandao: U256,
-    pub blob_basefee: u64,
-    pub blob_excess_gas_and_price: Option<BlobExcessGasAndPrice>,
-}
-
-impl Default for BlockEnv {
-    fn default() -> Self {
-        let block = evm_env::BlockEnv::<BaseEvmTypes>::default();
-        Self {
-            number: block.number,
-            beneficiary: block.beneficiary,
-            timestamp: block.timestamp,
-            gas_limit: block.gas_limit,
-            basefee: block.basefee.try_into().unwrap_or(u64::MAX),
-            difficulty: block.difficulty,
-            prevrandao: block.prevrandao,
-            blob_basefee: block.blob_basefee.try_into().unwrap_or(u64::MAX),
-            blob_excess_gas_and_price: None,
-        }
-    }
-}
-
-impl From<&BlockEnv> for evm_env::BlockEnv {
-    fn from(block: &BlockEnv) -> Self {
-        Self {
-            number: block.number,
-            beneficiary: block.beneficiary,
-            timestamp: block.timestamp,
-            gas_limit: block.gas_limit,
-            basefee: U256::from(block.basefee),
-            difficulty: block.difficulty,
-            prevrandao: block.prevrandao,
-            blob_basefee: U256::from(
-                block
-                    .blob_excess_gas_and_price
-                    .map_or(block.blob_basefee, |blob| blob.blob_basefee),
-            ),
-            slot_num: U256::ZERO,
-            ext: (),
-            _non_exhaustive: (),
-        }
-    }
-}
 
 #[derive(Clone, Debug)]
 pub struct TxEnv {
@@ -185,7 +120,7 @@ impl TxEnvBuilder {
 pub struct Context {
     pub db: CacheDB<EmptyDB>,
     tx: TxEnv,
-    block: BlockEnv,
+    block: evm_env::BlockEnv,
     spec: SpecId,
 }
 
@@ -200,7 +135,7 @@ impl Context {
         Self {
             db: CacheDB::new(EmptyDB::default()),
             tx: TxEnv::default(),
-            block: BlockEnv::default(),
+            block: evm_env::BlockEnv::default(),
             spec: SpecId::OSAKA,
         }
     }
@@ -222,7 +157,7 @@ impl Context {
         self
     }
 
-    pub fn modify_block_chained(mut self, f: impl FnOnce(&mut BlockEnv)) -> Self {
+    pub fn modify_block_chained(mut self, f: impl FnOnce(&mut evm_env::BlockEnv)) -> Self {
         f(&mut self.block);
         self
     }
@@ -343,7 +278,7 @@ impl Context {
         &self.tx
     }
 
-    pub const fn block(&self) -> &BlockEnv {
+    pub const fn block(&self) -> &evm_env::BlockEnv {
         &self.block
     }
 
@@ -366,7 +301,7 @@ impl Context {
     ) -> Result<ResultAndState, HandlerError> {
         let mut evm = Evm::<BaseEvmTypes>::new(
             self.spec,
-            (&self.block).into(),
+            self.block,
             ethereum_tx_registry(self.spec),
             self.db.clone(),
             Precompiles::base(self.spec),

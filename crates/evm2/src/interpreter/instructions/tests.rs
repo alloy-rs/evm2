@@ -189,6 +189,19 @@ impl Host<TestTypes> for TestHost {
         self.execute_result.clone()
     }
 
+    fn created_address(
+        &mut self,
+        bytecode: &Bytecode,
+        message: &Message<TestTypes>,
+    ) -> Result<Address, InstrStop> {
+        Ok(match message.kind {
+            MessageKind::Create if message.depth == 0 => message.destination,
+            MessageKind::Create => message.caller.create(0),
+            MessageKind::Create2 => message.caller.create2(message.salt, bytecode.hash_slow()),
+            _ => unreachable!("invalid create message kind"),
+        })
+    }
+
     fn selfdestruct(
         &mut self,
         contract: &Address,

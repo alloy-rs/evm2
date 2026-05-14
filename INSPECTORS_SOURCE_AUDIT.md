@@ -152,7 +152,7 @@ Assessment: no missing upstream behavior found for evm2's owned-input model.
 
 ### `src/tracing/js/bindings.rs`
 
-Status: reviewed.
+Status: reviewed again against upstream JS bindings.
 
 Concrete differences:
 
@@ -171,11 +171,11 @@ Concrete differences:
 - Local constant mapping changed from revm `KECCAK_EMPTY` to evm2 `KECCAK256_EMPTY`.
 - Test setup was ported from revm `CacheDB + EvmState` to evm2 `State`, `StateChanges`, and `DynDatabase`; a dedicated test covers a non-cache backing `DynDatabase`.
 
-Assessment: no missing upstream behavior found for JS database/state, memory, or stack access. Remaining differences are evm2 API-shape differences.
+Assessment: no missing upstream behavior found for JS database/state, memory, or stack access. Remaining differences are evm2 API-shape differences: evm2 uses `Memory`, `StackRef`, `State`, `StateChanges`, and `DynDatabase` instead of revm `SharedMemory`, `Stack`, `EvmState`, and `DatabaseRef`.
 
 ### `src/tracing/js/builtins.rs`
 
-Status: reviewed.
+Status: reviewed again against upstream JS builtins.
 
 Concrete differences:
 
@@ -186,19 +186,25 @@ Assessment: no missing upstream behavior found.
 
 ### `src/tracing/js/mod.rs`
 
-Status: reviewed.
+Status: reviewed again against upstream JS inspector.
 
 Concrete differences:
 
 - This is now the active JS module, matching upstream's file layout.
 - Ported from revm `ContextTr`, `Transaction`, `Block`, `ResultAndState`, `DatabaseRef`, `CallInputs`, `CreateInputs`, and `Interpreter` APIs to evm2 `Inspector<T>`, `Evm<T>` host, `Message<T>`, `MessageResult<T>`, `TxResult`, and cache-backed DB bindings.
+- Upstream public JS APIs are present locally: `new`, `with_transaction_context`, `transaction_context`, `set_transaction_context`, `set_runtime_limits`, `try_clone`, and the `RuntimeLimits` re-export.
 - Upstream `JsInspector::get_result` receives tx env, block env, `ResultAndState`, and DB, then passes in-flight state plus DB to the JS DB object.
-- Local exposes `json_result_from_parts` and `result_from_parts` over `JsTraceResult`, `JsTraceTx`, `JsTraceBlock`, `StateChanges`, and `&mut dyn DynDatabase`; `DebugInspector::get_result` adapts evm2 `TxResult` into those parts.
+- Local exposes `json_result` and `result` over concrete evm2 types: `TxResult`, `RecoveredTxEnvelope`, `BlockEnv`, and `&mut dyn DynDatabase`.
 - Per-step and fault DB access uses the host's in-flight evm2 `State` and falls back to its backing `DynDatabase` through DB-aware state reader helpers.
+- Step error handling now matches upstream behavior at the evm2 hook level: a JS `step` error calls `interp.set_stop(InstrStop::Revert)`.
+- Revert fault reporting now records the start-step PC and reports `REVERT` as the fault opcode, matching upstream's `last_start_step_pc` behavior.
+- Root call enter/exit suppression is restored: `enter`/`exit` are only invoked for non-root call frames, while selfdestruct still emits immediate enter/exit like upstream.
+- `CALLCODE`/`DELEGATECALL` JS call frames use evm2 `message.destination` plus `message.code_address` to match upstream target/bytecode-address mapping.
+- Create hooks compute and store the created address before pushing the JS call frame, matching upstream's create-frame address behavior.
 - Precompile registration uses the host's configured precompile provider.
 - Local adds evm2-native JS tests in this file.
 
-Assessment: arbitrary `DynDatabase` visibility is wired through the JS DB object. Remaining differences are evm2 API-shape differences.
+Assessment: arbitrary `DynDatabase` visibility is wired through the JS DB object. Remaining differences are evm2 API-shape differences in result finalization (`TxResult`/`RecoveredTxEnvelope`/`BlockEnv` instead of revm `ResultAndState`/traits).
 
 ### `src/tracing/mod.rs`
 

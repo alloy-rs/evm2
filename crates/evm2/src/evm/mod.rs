@@ -877,6 +877,28 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
         }
     }
 
+    fn created_address(
+        &mut self,
+        bytecode: &Bytecode,
+        message: &Message<T>,
+    ) -> Result<Address, InstrStop> {
+        let nonce = if message.depth > 0 {
+            self.state
+                .account_info(&message.caller)
+                .map_err(|code| self.db_error_stop(code))?
+                .map_or(0, |info| info.nonce)
+        } else {
+            0
+        };
+
+        Ok(match message.kind {
+            MessageKind::Create if message.depth == 0 => message.destination,
+            MessageKind::Create => message.caller.create(nonce),
+            MessageKind::Create2 => message.caller.create2(message.salt, bytecode.hash_slow()),
+            _ => unreachable!("invalid create message kind"),
+        })
+    }
+
     fn selfdestruct(
         &mut self,
         contract: &Address,

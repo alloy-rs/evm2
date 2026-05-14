@@ -268,33 +268,7 @@ impl DebugInspector {
             #[cfg(feature = "js-tracer")]
             Self::Js(inspector) => {
                 inspector.set_transaction_context(tx_context.unwrap_or_default());
-                let result = crate::tracing::js::JsTraceResult {
-                    success: res.status,
-                    gas_used: res.gas_used,
-                    stop: res.stop,
-                    output: res.output.clone(),
-                    created_address: res.created_address,
-                };
-                let tx = crate::tracing::js::JsTraceTx {
-                    caller,
-                    kind: tx.kind(),
-                    input: tx.input().clone(),
-                    gas_limit,
-                    gas_price: tx.effective_gas_price(Some(base_fee)),
-                    value: tx.value(),
-                };
-                let block = crate::tracing::js::JsTraceBlock {
-                    number: block_number,
-                    coinbase: block_env.beneficiary,
-                    timestamp: block_env.timestamp,
-                };
-                GethTrace::JS(inspector.json_result_from_parts(
-                    result,
-                    tx,
-                    block,
-                    &res.state_changes,
-                    db,
-                )?)
+                GethTrace::JS(inspector.json_result(res, tx, block_env, db)?)
             }
         };
 
