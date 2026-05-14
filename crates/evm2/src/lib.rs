@@ -1,14 +1,11 @@
 #![doc = include_str!("../README.md")]
 #![cfg_attr(tco, feature(explicit_tail_calls, rust_preserve_none_cc), allow(incomplete_features))]
 #![cfg_attr(not(feature = "std"), no_std)]
-#![warn(unused_crate_dependencies)]
+#![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
 extern crate self as evm2;
 
 extern crate alloc;
-
-#[cfg(test)]
-use {ark_std as _, criterion as _, rand as _, revm as _, serde as _, serde_json as _};
 
 pub mod bytecode;
 pub(crate) mod constants;
