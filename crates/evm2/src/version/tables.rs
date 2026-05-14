@@ -7,11 +7,11 @@ use crate::{
 };
 use core::fmt;
 
-/// Type-specific version tables.
+/// Type-specific opcode tables.
 ///
 /// Stores the static gas table and instruction implementations for a concrete `EvmTypes` family.
 /// These tables are compile-time inputs used to build the final interpreter dispatch table.
-pub struct VersionTables<T: EvmTypes> {
+pub struct OpcodeTables<T: EvmTypes> {
     /// Static opcode gas table.
     static_gas_table: StaticGasTable,
     /// Instruction implementations.
@@ -26,19 +26,19 @@ pub(crate) struct InstructionInfo<T: EvmTypes> {
     pub(crate) dynamic_gas: bool,
 }
 
-impl<T: EvmTypes> fmt::Debug for VersionTables<T> {
+impl<T: EvmTypes> fmt::Debug for OpcodeTables<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("VersionTables").finish_non_exhaustive()
+        f.debug_struct("OpcodeTables").finish_non_exhaustive()
     }
 }
 
-impl<T: EvmTypes> VersionTables<T> {
-    /// Returns the base type-specific version tables for `C`.
+impl<T: EvmTypes> OpcodeTables<T> {
+    /// Returns the base type-specific opcode tables for `C`.
     pub const fn base<C: EvmConfig<T>>() -> Self {
-        super::base_version_tables::<T, C>()
+        super::base_opcode_tables::<T, C>()
     }
 
-    /// Creates empty type-specific version tables.
+    /// Creates empty type-specific opcode tables.
     #[inline]
     pub(super) const fn empty() -> Self {
         Self {
