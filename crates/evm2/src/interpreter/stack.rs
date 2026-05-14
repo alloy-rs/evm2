@@ -411,12 +411,12 @@ impl<'a> StackMut<'a> {
 }
 
 #[inline(always)]
-unsafe fn read_be_u64(ptr: *const u8) -> u64 {
+const unsafe fn read_be_u64(ptr: *const u8) -> u64 {
     u64::from_be_bytes(unsafe { ptr.cast::<[u8; 8]>().read_unaligned() })
 }
 
 #[inline(always)]
-unsafe fn read_partial_be_u64(ptr: *const u8, n: usize) -> u64 {
+const unsafe fn read_partial_be_u64(ptr: *const u8, n: usize) -> u64 {
     let mut out = 0;
     let mut i = 0;
     while i < n {
