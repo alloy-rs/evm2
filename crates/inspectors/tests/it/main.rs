@@ -10,7 +10,7 @@ pub mod utils;
 mod edge_cov;
 #[cfg(feature = "std")]
 mod geth;
-#[cfg(any())]
+#[cfg(feature = "js-tracer")]
 mod geth_js;
 #[cfg(feature = "std")]
 mod parity;

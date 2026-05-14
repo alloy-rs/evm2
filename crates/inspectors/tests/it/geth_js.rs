@@ -1,9 +1,49 @@
 //! Geth Js tracer tests
 
-use crate::utils::{CacheDB, Context, EmptyDB, SpecId, TransactTo, TxEnv, deploy_contract};
+use crate::utils::{
+    CacheDB, Context, EmptyDB, ExecutionResult, Output, ResultAndState, SpecId, TransactTo, TxEnv,
+    deploy_contract,
+};
 use alloy_primitives::{Address, address, hex};
-use evm2_inspectors::tracing::js::JsInspector;
+use evm2::interpreter::InstrStop;
+use evm2_inspectors::tracing::js::{JsInspector, JsTraceBlock, JsTraceResult, JsTraceTx};
 use serde_json::json;
+
+fn js_result(insp: &mut JsInspector, res: ResultAndState, context: &Context) -> serde_json::Value {
+    let (success, gas_used, stop, output, created_address) = match res.result {
+        ExecutionResult::Success { output, gas_used } => {
+            let created_address = match &output {
+                Output::Create(_, address) => *address,
+                Output::Call(_) => None,
+            };
+            (true, gas_used, InstrStop::Return, output.data().clone(), created_address)
+        }
+        ExecutionResult::Revert { output, gas_used } => {
+            (false, gas_used, InstrStop::Revert, output, None)
+        }
+        ExecutionResult::Halt { reason, gas_used } => {
+            (false, gas_used, reason, Default::default(), None)
+        }
+    };
+    insp.json_result_from_parts(
+        JsTraceResult { success, gas_used, stop, output, created_address },
+        JsTraceTx {
+            caller: context.tx().caller,
+            kind: context.tx().kind,
+            input: context.tx().data.clone(),
+            gas_limit: context.tx().gas_limit,
+            gas_price: context.tx().gas_price,
+            value: context.tx().value,
+        },
+        JsTraceBlock {
+            number: context.block().number.try_into().unwrap_or(u64::MAX),
+            coinbase: context.block().beneficiary,
+            timestamp: context.block().timestamp,
+        },
+        context.db_ref(),
+    )
+    .unwrap()
+}
 
 #[test]
 fn test_geth_jstracer_revert() {
@@ -58,7 +98,7 @@ fn test_geth_jstracer_revert() {
     assert!(res.result.is_success());
 
     let (context, insp) = evm.ctx_inspector();
-    let result = insp.json_result(res, context.tx(), context.block(), context.db_ref()).unwrap();
+    let result = js_result(insp, res, context);
 
     // successful operation
     assert!(!result["error"].as_bool().unwrap());
@@ -79,7 +119,7 @@ fn test_geth_jstracer_revert() {
     assert!(!res.result.is_success());
 
     let (context, insp) = evm.ctx_inspector();
-    let result = insp.json_result(res, context.tx(), context.block(), context.db_ref()).unwrap();
+    let result = js_result(insp, res, context);
 
     // reverted operation
     assert!(result["error"].as_bool().unwrap());
@@ -170,6 +210,6 @@ fn test_geth_jstracer_proxy_contract() {
     assert!(res.result.is_success());
 
     let (context, insp) = evm.ctx_inspector();
-    let result = insp.json_result(res, context.tx(), context.block(), context.db_ref()).unwrap();
+    let result = js_result(insp, res, context);
     assert_eq!(result, json!([{"event": "Transfer", "token": proxy_addr, "caller": deployer}]));
 }

@@ -54,14 +54,15 @@ pub mod js {
         TransactionContext,
         js::{
             bindings::{
-                CallFrame, Contract, EvmDbRef, FrameResult, MemoryRef, OpObj, StackRef, StepLog,
+                CallFrame, Contract, EvmDbRef, FrameResult, JsEvmContext, MemoryRef, OpObj,
+                StackRef, StepLog,
             },
-            builtins::PrecompileList,
+            builtins::{PrecompileList, to_serde_value},
         },
         types::CallKind,
     };
     use alloc::string::String;
-    use alloy_primitives::map::HashSet;
+    use alloy_primitives::{Address, Bytes, TxKind, U256, map::HashSet};
     use boa_engine::{Context, JsError, JsObject, JsValue, Source, js_string};
     use evm2::{
         EvmTypes, Inspector, Precompiles, SpecId,
@@ -206,11 +207,76 @@ pub mod js {
             &self.config
         }
 
-        fn get_op_cost(&self, spent: u64) -> u64 {
+        /// Calls the result function with an evm2-native trace context.
+        pub fn json_result_from_parts(
+            &mut self,
+            result: JsTraceResult,
+            tx: JsTraceTx,
+            block: JsTraceBlock,
+            db: &CacheDB<EmptyDB>,
+        ) -> Result<serde_json::Value, JsInspectorError> {
+            let result = self.result_from_parts(result, tx, block, db)?;
+            Ok(to_serde_value(result, &mut self.ctx)?)
+        }
+
+        /// Calls the result function with an evm2-native trace context.
+        pub fn result_from_parts(
+            &mut self,
+            result: JsTraceResult,
+            tx: JsTraceTx,
+            block: JsTraceBlock,
+            db: &CacheDB<EmptyDB>,
+        ) -> Result<JsValue, JsInspectorError> {
+            let mut to = None;
+            let mut error = None;
+            if result.success {
+                if let TxKind::Call(target) = tx.kind {
+                    to = Some(target);
+                } else {
+                    to = result.created_address;
+                }
+            } else if result.stop.is_revert() {
+                error = Some("execution reverted".to_string());
+            } else {
+                error = Some(format!("execution halted: {:?}", result.stop));
+            }
+
+            let ctx = JsEvmContext {
+                r#type: match tx.kind {
+                    TxKind::Call(_) => "CALL",
+                    TxKind::Create => "CREATE",
+                }
+                .to_string(),
+                from: tx.caller,
+                to,
+                input: tx.input,
+                gas: tx.gas_limit,
+                gas_used: result.gas_used,
+                gas_price: tx.gas_price.try_into().unwrap_or(u64::MAX),
+                value: tx.value,
+                block: block.number,
+                coinbase: block.coinbase,
+                output: result.output,
+                time: block.timestamp.to_string(),
+                intrinsic_gas: 0,
+                transaction_ctx: self.transaction_context,
+                error,
+            };
+            let ctx = ctx.into_js_object(&mut self.ctx)?;
+            let (db, _db_guard) = EvmDbRef::new(db);
+            let db = db.into_js_object(&mut self.ctx)?;
+            Ok(self.result_fn.call(
+                &(self.obj.clone().into()),
+                &[ctx.into(), db.into()],
+                &mut self.ctx,
+            )?)
+        }
+
+        const fn get_op_cost(&self, spent: u64) -> u64 {
             spent.saturating_sub(self.previous_gas_spent)
         }
 
-        fn set_previous_gas_spent(&mut self, spent: u64) {
+        const fn set_previous_gas_spent(&mut self, spent: u64) {
             self.previous_gas_spent = spent;
         }
 
@@ -236,11 +302,11 @@ pub mod js {
             let _ = self.call_stack.pop();
         }
 
-        fn can_call_enter(&self) -> bool {
+        const fn can_call_enter(&self) -> bool {
             self.enter_fn.is_some()
         }
 
-        fn can_call_exit(&self) -> bool {
+        const fn can_call_exit(&self) -> bool {
             self.exit_fn.is_some()
         }
 
@@ -297,6 +363,49 @@ pub mod js {
         contract: Contract,
         kind: CallKind,
         gas_limit: u64,
+    }
+
+    /// Execution result data passed to JavaScript `result`.
+    #[derive(Clone, Debug)]
+    pub struct JsTraceResult {
+        /// Whether execution succeeded.
+        pub success: bool,
+        /// Gas used by the transaction.
+        pub gas_used: u64,
+        /// Interpreter stop reason.
+        pub stop: InstrStop,
+        /// Return or revert output.
+        pub output: Bytes,
+        /// Created contract address for create transactions.
+        pub created_address: Option<Address>,
+    }
+
+    /// Transaction data passed to JavaScript `result`.
+    #[derive(Clone, Debug)]
+    pub struct JsTraceTx {
+        /// Transaction caller.
+        pub caller: Address,
+        /// Transaction target.
+        pub kind: TxKind,
+        /// Transaction input.
+        pub input: Bytes,
+        /// Transaction gas limit.
+        pub gas_limit: u64,
+        /// Transaction gas price.
+        pub gas_price: u128,
+        /// Transaction value.
+        pub value: U256,
+    }
+
+    /// Block data passed to JavaScript `result`.
+    #[derive(Clone, Copy, Debug)]
+    pub struct JsTraceBlock {
+        /// Block number.
+        pub number: u64,
+        /// Block beneficiary.
+        pub coinbase: Address,
+        /// Block timestamp.
+        pub timestamp: U256,
     }
 
     impl<T: EvmTypes> Inspector<T> for JsInspector {
