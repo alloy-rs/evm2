@@ -9,10 +9,10 @@ use crate::tracing::{
     types::CallKind,
 };
 use alloc::{
-    boxed::Box,
     format,
     rc::Rc,
     string::{String, ToString},
+    vec::Vec,
 };
 use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, U256};
 use boa_engine::{
@@ -23,17 +23,11 @@ use boa_engine::{
 use boa_gc::{Finalize, Trace, empty_trace};
 use core::cell::RefCell;
 use evm2::{
-    DatabaseRef,
-    bytecode::opcode::{
-        OpCode,
-        op::{PUSH0, PUSH32},
-    },
-    context_interface::DBErrorMarker,
-    interpreter::{SharedMemory, Stack},
-    state::{AccountInfo, Bytecode, EvmState},
+    bytecode::opcode::{OpCode, op},
+    evm::{AccountInfo, CacheDB, EmptyDB},
+    interpreter::{Memory, StackRef as EvmStackRef, Word},
 };
 
-/// A macro that creates a native function that returns via [JsValue::from]
 macro_rules! js_value_getter {
     ($value:ident, $ctx:ident) => {
         FunctionObjectBuilder::new(
@@ -45,7 +39,6 @@ macro_rules! js_value_getter {
     };
 }
 
-/// A macro that creates a native function that returns a captured JsValue
 macro_rules! js_value_capture_getter {
     ($value:ident, $ctx:ident) => {
         FunctionObjectBuilder::new(
@@ -60,42 +53,16 @@ macro_rules! js_value_capture_getter {
     };
 }
 
-/// A wrapper for a value that can be garbage collected, but will not give access to the value if
-/// it has been dropped via its guard.
-///
-/// This is used to allow the JS tracer functions to access values at a certain point during
-/// inspection by ref without having to clone them and capture them in the js object.
-///
-/// JS tracer functions get access to evm internals via objects or function arguments, for example
-/// `function step(log,evm)` where log has an object `stack` that has a function `peek(number)` that
-/// returns a value from the stack.
-///
-/// These functions could get garbage collected, however the data accessed by the function is
-/// supposed to be ephemeral and only valid for the duration of the function call.
-///
-/// This type supports garbage collection of (rust) references and prevents access to the value if
-/// it has been dropped.
 #[derive(Clone, Debug)]
 struct GuardedNullableGc<Val: 'static> {
-    /// The lifetime is a lie to make it possible to use a reference in boa which requires 'static
     inner: Rc<RefCell<Option<Guarded<'static, Val>>>>,
 }
 
 impl<Val: 'static> GuardedNullableGc<Val> {
-    /// Creates a garbage collectible value to the given reference.
-    ///
-    /// # Safety
-    ///
-    /// The caller must ensure that the guard is dropped before the value is dropped.
     fn new_ref(val: &Val) -> (Self, GcGuard<'_, Val>) {
         Self::new(Guarded::Ref(val))
     }
 
-    /// Creates a garbage collectible value to the given reference.
-    ///
-    /// # Safety
-    ///
-    /// The caller must ensure that the guard is dropped before the value is dropped.
     fn new_owned<'a>(val: Val) -> (Self, GcGuard<'a, Val>) {
         Self::new(Guarded::Owned(val))
     }
@@ -111,7 +78,6 @@ impl<Val: 'static> GuardedNullableGc<Val> {
         (this, guard)
     }
 
-    /// Executes the given closure with a reference to the inner value if it is still present.
     fn with_inner<F, R>(&self, f: F) -> Option<R>
     where
         F: FnOnce(&Val) -> R,
@@ -126,7 +92,6 @@ unsafe impl<Val: 'static> Trace for GuardedNullableGc<Val> {
     empty_trace!();
 }
 
-/// A value that is either a reference or an owned value.
 #[derive(Debug)]
 enum Guarded<'a, T> {
     Ref(&'a T),
@@ -135,17 +100,14 @@ enum Guarded<'a, T> {
 
 impl<T> Guarded<'_, T> {
     #[inline]
-    fn as_ref(&self) -> &T {
+    const fn as_ref(&self) -> &T {
         match self {
-            Guarded::Ref(val) => val,
-            Guarded::Owned(val) => val,
+            Self::Ref(val) => val,
+            Self::Owned(val) => val,
         }
     }
 }
 
-/// Guard the inner value, once this value is dropped the inner value is also removed.
-///
-/// This type guarantees that it never outlives the wrapped value.
 #[derive(Debug)]
 #[must_use]
 pub(crate) struct GcGuard<'a, Val> {
@@ -202,7 +164,6 @@ impl StepLog {
         } = self;
         let obj = JsObject::with_object_proto(ctx.intrinsics());
 
-        // fields
         let op = op.into_js_object(ctx)?;
         let memory = memory.into_js_object(ctx)?;
         let stack = stack.into_js_object(ctx)?;
@@ -213,12 +174,7 @@ impl StepLog {
         obj.set(js_string!("stack"), stack, false, ctx)?;
         obj.set(js_string!("contract"), contract, false, ctx)?;
 
-        // methods
-        let error = if let Some(error) = error {
-            JsValue::from(js_string!(error))
-        } else {
-            JsValue::undefined()
-        };
+        let error = error.map(|err| JsValue::from(js_string!(err))).unwrap_or_default();
         let get_error = js_value_capture_getter!(error, ctx);
         let get_pc = js_value_getter!(pc, ctx);
         let get_gas = js_value_getter!(gas, ctx);
@@ -239,12 +195,22 @@ impl StepLog {
 
 /// Represents the memory object
 #[derive(Clone, Debug)]
-pub(crate) struct MemoryRef(GuardedNullableGc<SharedMemory>);
+pub(crate) struct MemoryRef(GuardedNullableGc<Bytes>);
 
 impl MemoryRef {
-    /// Creates a new stack reference
-    pub(crate) fn new(mem: &SharedMemory) -> (Self, GcGuard<'_, SharedMemory>) {
-        let (inner, guard) = GuardedNullableGc::new_ref(mem);
+    /// Creates a new memory reference.
+    pub(crate) fn new(mem: &Memory) -> (Self, GcGuard<'_, Bytes>) {
+        let bytes = if mem.is_empty() {
+            Bytes::new()
+        } else {
+            Bytes::copy_from_slice(mem.slice(0, mem.len()))
+        };
+        let (inner, guard) = GuardedNullableGc::new_owned(bytes);
+        (Self(inner), guard)
+    }
+
+    fn new_bytes(bytes: Bytes) -> (Self, GcGuard<'static, Bytes>) {
+        let (inner, guard) = GuardedNullableGc::new_owned(bytes);
         (Self(inner), guard)
     }
 
@@ -265,7 +231,6 @@ impl MemoryRef {
         .length(0)
         .build();
 
-        // slice returns the requested range of memory as a byte slice.
         let slice = FunctionObjectBuilder::new(
             ctx.realm(),
             NativeFunction::from_copy_closure_with_captures(
@@ -281,10 +246,9 @@ impl MemoryRef {
                     }
                     let start = start as usize;
                     let end = end as usize;
-                    let size = end - start;
                     let slice = memory
                         .0
-                        .with_inner(|mem| mem.slice_len(start, size).to_vec())
+                        .with_inner(|mem| mem.slice(start..end).to_vec())
                         .unwrap_or_default();
 
                     to_uint8_array_value(slice, ctx)
@@ -303,12 +267,14 @@ impl MemoryRef {
                     let len = memory.len();
                     let offset = offset_f64 as usize;
                     if len < offset + 32 || offset_f64 < 0. {
-                        let msg = format!("tracer accessed out of bound memory: available {len}, offset {offset}, size 32");
+                        let msg = format!(
+                            "tracer accessed out of bound memory: available {len}, offset {offset}, size 32"
+                        );
                         return Err(JsError::from_native(JsNativeError::typ().with_message(msg)));
                     }
                     let slice = memory
                         .0
-                        .with_inner(|mem| mem.slice_len(offset, 32).to_vec())
+                        .with_inner(|mem| mem.slice(offset..offset + 32).to_vec())
                         .unwrap_or_default();
                     to_uint8_array_value(slice, ctx)
                 },
@@ -331,49 +297,6 @@ unsafe impl Trace for MemoryRef {
     empty_trace!();
 }
 
-/// Represents the state object
-#[derive(Clone, Debug)]
-pub(crate) struct StateRef(GuardedNullableGc<EvmState>);
-
-impl StateRef {
-    /// Creates a new stack reference
-    pub(crate) fn new(state: &EvmState) -> (Self, GcGuard<'_, EvmState>) {
-        let (inner, guard) = GuardedNullableGc::new_ref(state);
-        (Self(inner), guard)
-    }
-
-    fn get_account(&self, address: &Address) -> Option<AccountInfo> {
-        self.0.with_inner(|state| state.get(address).map(|acc| acc.info.clone()))?
-    }
-}
-
-impl Finalize for StateRef {}
-
-unsafe impl Trace for StateRef {
-    empty_trace!();
-}
-
-/// Represents the database
-#[derive(Clone, Debug)]
-pub(crate) struct GcDb<DB: 'static>(GuardedNullableGc<DB>);
-
-impl<DB> GcDb<DB>
-where
-    DB: DatabaseRef + 'static,
-{
-    /// Creates a new stack reference
-    fn new<'a>(db: DB) -> (Self, GcGuard<'a, DB>) {
-        let (inner, guard) = GuardedNullableGc::new_owned(db);
-        (Self(inner), guard)
-    }
-}
-
-impl<DB: 'static> Finalize for GcDb<DB> {}
-
-unsafe impl<DB: 'static> Trace for GcDb<DB> {
-    empty_trace!();
-}
-
 /// Represents the opcode object
 #[derive(Debug)]
 pub(crate) struct OpObj(pub(crate) u8);
@@ -382,7 +305,7 @@ impl OpObj {
     pub(crate) fn into_js_object(self, context: &mut Context) -> JsResult<JsObject> {
         let obj = JsObject::with_object_proto(context.intrinsics());
         let value = self.0;
-        let is_push = (PUSH0..=PUSH32).contains(&value);
+        let is_push = (op::PUSH0..=op::PUSH32).contains(&value);
 
         let to_number = FunctionObjectBuilder::new(
             context.realm(),
@@ -402,10 +325,8 @@ impl OpObj {
             context.realm(),
             NativeFunction::from_copy_closure(move |_this, _args, _ctx| {
                 if let Some(op) = OpCode::new(value) {
-                    let s = op.as_str();
-                    Ok(JsValue::from(js_string!(s)))
+                    Ok(JsValue::from(js_string!(op.as_str())))
                 } else {
-                    // <https://github.com/ethereum/go-ethereum/blob/7c107c2691fa66a1da60e2b95f5946c3a3921b00/core/vm/opcodes.go#L461-L461>
                     Ok(JsValue::from(js_string!(format!("opcode {:x} not defined", value))))
                 }
             }),
@@ -427,29 +348,31 @@ impl From<u8> for OpObj {
 }
 
 /// Represents the stack object
-#[derive(Debug)]
-pub(crate) struct StackRef(GuardedNullableGc<Stack>);
+#[derive(Clone, Debug)]
+pub(crate) struct StackRef(GuardedNullableGc<Vec<Word>>);
 
 impl StackRef {
-    /// Creates a new stack reference
-    pub(crate) fn new(stack: &Stack) -> (Self, GcGuard<'_, Stack>) {
-        let (inner, guard) = GuardedNullableGc::new_ref(stack);
+    /// Creates a new stack reference.
+    pub(crate) fn new(stack: EvmStackRef<'_>) -> (Self, GcGuard<'static, Vec<Word>>) {
+        Self::new_words(stack.as_slice().to_vec())
+    }
+
+    fn new_words(words: Vec<Word>) -> (Self, GcGuard<'static, Vec<Word>>) {
+        let (inner, guard) = GuardedNullableGc::new_owned(words);
         (Self(inner), guard)
     }
 
     fn peek(&self, idx: usize, ctx: &mut Context) -> JsResult<JsValue> {
         self.0
             .with_inner(|stack| {
-                stack
-                    .peek(idx)
-                    .map_err(|_| {
-                        JsError::from_native(JsNativeError::typ().with_message(format!(
-                            "tracer accessed out of bound stack: size {}, index {}",
-                            stack.len(),
-                            idx
-                        )))
-                    })
-                    .and_then(|value| to_bigint(value, ctx))
+                let Some(value) = stack.get(stack.len().saturating_sub(idx + 1)) else {
+                    return Err(JsError::from_native(JsNativeError::typ().with_message(format!(
+                        "tracer accessed out of bound stack: size {}, index {}",
+                        stack.len(),
+                        idx
+                    ))));
+                };
+                to_bigint(*value, ctx)
             })
             .ok_or_else(|| {
                 JsError::from_native(
@@ -469,7 +392,6 @@ impl StackRef {
         .length(0)
         .build();
 
-        // peek returns the nth-from-the-top element of the stack.
         let peek = FunctionObjectBuilder::new(
             context.realm(),
             NativeFunction::from_copy_closure_with_captures(
@@ -713,8 +635,6 @@ impl JsEvmContext {
         } = self;
         let obj = JsObject::with_object_proto(ctx.intrinsics());
 
-        // add properties
-
         obj.set(js_string!("type"), js_string!(r#type), false, ctx)?;
         obj.set(js_string!("from"), address_to_uint8_array(from, ctx)?, false, ctx)?;
         if let Some(to) = to {
@@ -751,79 +671,38 @@ impl JsEvmContext {
 }
 
 /// DB is the object that allows the js inspector to interact with the database.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) struct EvmDbRef {
-    inner: Rc<EvmDbRefInner>,
+    db: GuardedNullableGc<CacheDB<EmptyDB>>,
 }
 
 impl EvmDbRef {
     /// Creates a new evm and db JS object.
-    pub(crate) fn new<'a, 'b, DB>(state: &'a EvmState, db: &'b DB) -> (Self, EvmDbGuard<'a, 'b>)
-    where
-        DB: DatabaseRef,
-        DB::Error: core::fmt::Display,
-    {
-        let (state, state_guard) = StateRef::new(state);
-
-        // SAFETY:
-        //
-        // boa requires 'static lifetime for all objects.
-        // As mentioned in the `Safety` section of [GuardedNullableGc] the caller of this function
-        // needs to guarantee that the passed-in lifetime is sufficiently long for the lifetime of
-        // the guard.
-        let db = JsDb(db);
-        let js_db = unsafe {
-            core::mem::transmute::<
-                Box<dyn DatabaseRef<Error = StringError> + '_>,
-                Box<dyn DatabaseRef<Error = StringError> + 'static>,
-            >(Box::new(db))
-        };
-
-        let (db, db_guard) = GcDb::new(js_db);
-
-        let inner = EvmDbRefInner { state, db };
-        let this = Self { inner: Rc::new(inner) };
-        let guard = EvmDbGuard { _state_guard: state_guard, _db_guard: db_guard };
-        (this, guard)
+    pub(crate) fn new(db: &CacheDB<EmptyDB>) -> (Self, EvmDbGuard<'_>) {
+        let (db, db_guard) = GuardedNullableGc::new_ref(db);
+        (Self { db }, EvmDbGuard { _db_guard: db_guard })
     }
 
     fn read_basic(&self, address: JsValue, ctx: &mut Context) -> JsResult<Option<AccountInfo>> {
         let buf = bytes_from_value(address, ctx)?;
         let address = bytes_to_address(&buf);
-        if let acc @ Some(_) = self.inner.state.get_account(&address) {
-            return Ok(acc);
-        }
-
-        let res = self.inner.db.0.with_inner(|db| db.basic_ref(address));
-        match res {
-            Some(Ok(maybe_acc)) => Ok(maybe_acc),
-            _ => Err(JsError::from_native(
+        self.db.with_inner(|db| db.account_info(&address).cloned()).ok_or_else(|| {
+            JsError::from_native(
                 JsNativeError::error()
-                    .with_message(format!("Failed to read address {address:?} from database",)),
-            )),
-        }
+                    .with_message(format!("Failed to read address {address:?} from database")),
+            )
+        })
     }
 
     fn read_code(&self, address: JsValue, ctx: &mut Context) -> JsResult<JsUint8Array> {
         let acc = self.read_basic(address, ctx)?;
         let code_hash = acc.as_ref().map(|acc| acc.code_hash).unwrap_or(KECCAK256_EMPTY);
-        if code_hash == KECCAK256_EMPTY {
-            return JsUint8Array::from_iter(core::iter::empty(), ctx);
-        }
-
-        if let Some(bytecode) = acc.as_ref().and_then(|acc| acc.code.as_ref()) {
-            return to_uint8_array(bytecode.original_bytes().to_vec(), ctx);
-        }
-
-        let Some(Ok(bytecode)) = self.inner.db.0.with_inner(|db| db.code_by_hash_ref(code_hash))
-        else {
-            return Err(JsError::from_native(
-                JsNativeError::error()
-                    .with_message(format!("Failed to read code hash {code_hash:?} from database")),
-            ));
-        };
-
-        to_uint8_array(bytecode.original_bytes().to_vec(), ctx)
+        let bytes = self
+            .db
+            .with_inner(|db| db.cache.contracts.get(&code_hash).map(|code| code.original_bytes()))
+            .flatten()
+            .unwrap_or_default();
+        to_uint8_array(bytes, ctx)
     }
 
     fn read_state(
@@ -834,20 +713,18 @@ impl EvmDbRef {
     ) -> JsResult<JsUint8Array> {
         let buf = bytes_from_value(address, ctx)?;
         let address = bytes_to_address(&buf);
-
         let buf = bytes_from_value(slot, ctx)?;
-        let slot = bytes_to_b256(&buf);
+        let slot: U256 = bytes_to_b256(&buf).into();
 
-        let res = self.inner.db.0.with_inner(|db| db.storage_ref(address, slot.into()));
-
-        let value = match res {
-            Some(Ok(value)) => value,
-            _ => {
-                return Err(JsError::from_native(JsNativeError::error().with_message(format!(
+        let value = self
+            .db
+            .with_inner(|db| db.cache.storage.get(&evm2::StorageKey::new(address, slot)).copied())
+            .ok_or_else(|| {
+                JsError::from_native(JsNativeError::error().with_message(format!(
                     "Failed to read state for {address:?} at {slot:?} from database",
-                ))));
-            }
-        };
+                )))
+            })?
+            .unwrap_or_default();
         to_uint8_array(B256::from(value), ctx)
     }
 
@@ -859,8 +736,7 @@ impl EvmDbRef {
                 move |_this, args, db, ctx| {
                     let val = args.get_or_undefined(0).clone();
                     let acc = db.read_basic(val, ctx)?;
-                    let exists = acc.is_some();
-                    Ok(JsValue::from(exists))
+                    Ok(JsValue::from(acc.is_some()))
                 },
                 self.clone(),
             ),
@@ -940,64 +816,9 @@ unsafe impl Trace for EvmDbRef {
     empty_trace!();
 }
 
-/// DB is the object that allows the js inspector to interact with the database.
-struct EvmDbRefInner {
-    state: StateRef,
-    db: GcDb<Box<dyn DatabaseRef<Error = StringError> + 'static>>,
-}
-
-/// Guard the inner references, once this value is dropped the inner reference is also removed.
-///
-/// This ensures that the guards are dropped within the lifetime of the borrowed values.
 #[must_use]
-pub(crate) struct EvmDbGuard<'a, 'b> {
-    _state_guard: GcGuard<'a, EvmState>,
-    _db_guard: GcGuard<'b, Box<dyn DatabaseRef<Error = StringError> + 'static>>,
-}
-
-/// A wrapper Database for the JS context.
-pub(crate) struct JsDb<DB: DatabaseRef>(DB);
-
-#[derive(Clone, Debug)]
-pub(crate) struct StringError(pub String);
-
-impl core::error::Error for StringError {}
-impl DBErrorMarker for StringError {}
-
-impl core::fmt::Display for StringError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl From<String> for StringError {
-    fn from(s: String) -> Self {
-        Self(s)
-    }
-}
-
-impl<DB> DatabaseRef for JsDb<DB>
-where
-    DB: DatabaseRef,
-    DB::Error: core::fmt::Display,
-{
-    type Error = StringError;
-
-    fn basic_ref(&self, _address: Address) -> Result<Option<AccountInfo>, Self::Error> {
-        self.0.basic_ref(_address).map_err(|e| e.to_string().into())
-    }
-
-    fn code_by_hash_ref(&self, _code_hash: B256) -> Result<Bytecode, Self::Error> {
-        self.0.code_by_hash_ref(_code_hash).map_err(|e| e.to_string().into())
-    }
-
-    fn storage_ref(&self, _address: Address, _index: U256) -> Result<U256, Self::Error> {
-        self.0.storage_ref(_address, _index).map_err(|e| e.to_string().into())
-    }
-
-    fn block_hash_ref(&self, _number: u64) -> Result<B256, Self::Error> {
-        self.0.block_hash_ref(_number).map_err(|e| e.to_string().into())
-    }
+pub(crate) struct EvmDbGuard<'a> {
+    _db_guard: GcGuard<'a, CacheDB<EmptyDB>>,
 }
 
 #[cfg(test)]
@@ -1005,7 +826,6 @@ mod tests {
     use super::*;
     use crate::tracing::js::builtins::{json_stringify, register_builtins, to_serde_value};
     use boa_engine::Source;
-    use evm2::{database::CacheDB, database_interface::EmptyDB};
 
     #[test]
     fn test_contract() {
@@ -1036,7 +856,7 @@ mod tests {
             .unwrap();
         assert!(res.is_object());
         let obj = res.as_object().unwrap();
-        let array_buf = JsUint8Array::from_object(obj.clone());
+        let array_buf = JsUint8Array::from_object(obj);
         assert!(array_buf.is_ok());
 
         let get_address =
@@ -1091,36 +911,32 @@ mod tests {
 
         let f = result.as_callable().unwrap();
 
-        let mut db = CacheDB::new(EmptyDB::new());
-        let state = EvmState::default();
+        let mut db = CacheDB::new(EmptyDB::default());
         {
-            let (db, guard) = EvmDbRef::new(&state, &db);
+            let (db, guard) = EvmDbRef::new(&db);
             let addr = Address::default();
             let addr = JsValue::from(js_string!(addr.to_string()));
             let db = db.into_js_object(&mut context).unwrap();
             let res = f.call(&result, &[db.clone().into(), addr.clone()], &mut context).unwrap();
             assert!(!res.as_boolean().unwrap());
 
-            // drop the db which also drops any GC values
             drop(guard);
-            let res = f.call(&result, &[db.clone().into(), addr.clone()], &mut context);
+            let res = f.call(&result, &[db.into(), addr], &mut context);
             assert!(res.is_err());
         }
         let addr = Address::default();
-        db.insert_account_info(addr, Default::default());
+        db.insert_account_info(&addr, Default::default());
 
         {
-            let (db, guard) = EvmDbRef::new(&state, &db);
+            let (db, guard) = EvmDbRef::new(&db);
             let addr = JsValue::from(js_string!(addr.to_string()));
             let db = db.into_js_object(&mut context).unwrap();
             let res = f.call(&result, &[db.clone().into(), addr.clone()], &mut context).unwrap();
 
-            // account exists
             assert!(res.as_boolean().unwrap());
 
-            // drop the db which also drops any GC values
             drop(guard);
-            let res = f.call(&result, &[db.clone().into(), addr.clone()], &mut context);
+            let res = f.call(&result, &[db.into(), addr], &mut context);
             assert!(res.is_err());
         }
     }
@@ -1146,10 +962,9 @@ mod tests {
         let result_fn = obj.get(js_string!("result"), &mut context).unwrap().as_object().unwrap();
         let setup_fn = obj.get(js_string!("setup"), &mut context).unwrap().as_object().unwrap();
 
-        let db = CacheDB::new(EmptyDB::new());
-        let state = EvmState::default();
+        let db = CacheDB::new(EmptyDB::default());
         {
-            let (db_ref, guard) = EvmDbRef::new(&state, &db);
+            let (db_ref, guard) = EvmDbRef::new(&db);
             let js_db = db_ref.into_js_object(&mut context).unwrap();
             let _res = setup_fn.call(&(obj.clone().into()), &[js_db.into()], &mut context).unwrap();
             assert!(obj.get(js_string!("db"), &mut context).unwrap().is_object());
@@ -1161,7 +976,6 @@ mod tests {
                 .unwrap();
             assert!(!res.as_boolean().unwrap());
 
-            // drop the guard which also drops any GC values
             drop(guard);
             let res = result_fn.call(&(obj.clone().into()), &[addr], &mut context);
             assert!(res.is_err());
@@ -1186,13 +1000,9 @@ mod tests {
         let result_fn = obj.get(js_string!("result"), &mut context).unwrap().as_object().unwrap();
         let step_fn = obj.get(js_string!("step"), &mut context).unwrap().as_object().unwrap();
 
-        let mut stack = Stack::new();
-        let _ = stack.push(U256::from(35000));
-        let _ = stack.push(U256::from(35000));
-        let _ = stack.push(U256::from(35000));
-        let (stack_ref, _stack_guard) = StackRef::new(&stack);
-        let mem = SharedMemory::new();
-        let (mem_ref, _mem_guard) = MemoryRef::new(&mem);
+        let (stack_ref, _stack_guard) =
+            StackRef::new_words(vec![U256::from(35000), U256::from(35000), U256::from(35000)]);
+        let (mem_ref, _mem_guard) = MemoryRef::new_bytes(Bytes::new());
 
         let step = StepLog {
             stack: stack_ref,
@@ -1276,13 +1086,9 @@ mod tests {
         let result_fn = obj.get(js_string!("result"), &mut context).unwrap().as_object().unwrap();
         let step_fn = obj.get(js_string!("step"), &mut context).unwrap().as_object().unwrap();
 
-        let mut stack = Stack::new();
-        let _ = stack.push(U256::from(35000));
-        let _ = stack.push(U256::from(35000));
-        let _ = stack.push(U256::from(35000));
-        let (stack_ref, _stack_guard) = StackRef::new(&stack);
-        let mem = SharedMemory::new();
-        let (mem_ref, _mem_guard) = MemoryRef::new(&mem);
+        let (stack_ref, _stack_guard) =
+            StackRef::new_words(vec![U256::from(35000), U256::from(35000), U256::from(35000)]);
+        let (mem_ref, _mem_guard) = MemoryRef::new_bytes(Bytes::new());
 
         let step = StepLog {
             stack: stack_ref,
@@ -1302,7 +1108,7 @@ mod tests {
         let _ = step_fn.call(&eval, &[js_step.into()], &mut context).unwrap();
 
         let res = result_fn.call(&eval, &[], &mut context).unwrap();
-        let val = json_stringify(res.clone(), &mut context).unwrap().to_std_string().unwrap();
+        let val = json_stringify(res, &mut context).unwrap().to_std_string().unwrap();
         assert_eq!(val, r#"["0000000000000000000000000000000000000000:88b8;88b8"]"#);
     }
 }

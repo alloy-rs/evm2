@@ -53,6 +53,7 @@ pub mod js {
     use alloc::string::String;
     use boa_engine::{Context, JsError, JsObject, JsValue, Source, js_string};
 
+    pub(crate) mod bindings;
     pub(crate) mod builtins;
 
     use builtins::register_builtins;
