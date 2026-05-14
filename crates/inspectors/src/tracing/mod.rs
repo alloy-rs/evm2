@@ -423,8 +423,14 @@ pub mod js {
                 return;
             }
 
-            let empty_db = CacheDB::new(EmptyDB::default());
-            let (db, _db_guard) = EvmDbRef::new(&empty_db);
+            let empty_db;
+            let db = if let Some(db) = host.database_as::<CacheDB<EmptyDB>>() {
+                db
+            } else {
+                empty_db = CacheDB::new(EmptyDB::default());
+                &empty_db
+            };
+            let (db, _db_guard) = EvmDbRef::new(db);
             let (stack, _stack_guard) = StackRef::new(interp.stack());
             let (memory, _memory_guard) = MemoryRef::new(interp.memory_ref());
             let active_call = self.active_call();
@@ -455,13 +461,19 @@ pub mod js {
             }
         }
 
-        fn step_end(&mut self, interp: &mut Interpreter<'_, T>, _host: &mut T::Host) {
+        fn step_end(&mut self, interp: &mut Interpreter<'_, T>, host: &mut T::Host) {
             if self.step_fn.is_none() || self.step_error || interp.result().is_ok() {
                 return;
             }
 
-            let empty_db = CacheDB::new(EmptyDB::default());
-            let (db, _db_guard) = EvmDbRef::new(&empty_db);
+            let empty_db;
+            let db = if let Some(db) = host.database_as::<CacheDB<EmptyDB>>() {
+                db
+            } else {
+                empty_db = CacheDB::new(EmptyDB::default());
+                &empty_db
+            };
+            let (db, _db_guard) = EvmDbRef::new(db);
             let (stack, _stack_guard) = StackRef::new(interp.stack());
             let (memory, _memory_guard) = MemoryRef::new(interp.memory_ref());
             let active_call = self.active_call();
@@ -1099,8 +1111,21 @@ pub struct TracingInspector {
     traces: CallTraceArena,
     trace_stack: Vec<usize>,
     step_stack: Vec<(usize, usize, u64, usize)>,
+    pending_storage_step: Option<PendingStorageStep>,
     log_index: u64,
     spec_id: Option<SpecId>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PendingStorageStep {
+    trace_idx: usize,
+    step_idx: usize,
+    address: Address,
+    key: U256,
+    value: Option<U256>,
+    value_before: Option<U256>,
+    was_warm: bool,
+    reason: StorageChangeReason,
 }
 
 impl Default for TracingInspector {
@@ -1117,6 +1142,7 @@ impl TracingInspector {
             traces: CallTraceArena::default(),
             trace_stack: Vec::new(),
             step_stack: Vec::new(),
+            pending_storage_step: None,
             log_index: 0,
             spec_id: None,
         }
@@ -1127,6 +1153,7 @@ impl TracingInspector {
         self.traces.clear();
         self.trace_stack.clear();
         self.step_stack.clear();
+        self.pending_storage_step = None;
         self.log_index = 0;
     }
 
@@ -1346,6 +1373,87 @@ impl TracingInspector {
             trace.address = address;
         }
     }
+
+    fn prepare_storage_step<T: EvmTypes<Host = Evm<T>>>(
+        &mut self,
+        trace_idx: usize,
+        step_idx: usize,
+        op: u8,
+        interp: &Interpreter<'_, T>,
+        host: &Evm<T>,
+    ) {
+        if !self.config.record_state_diff {
+            return;
+        }
+        let Some(reason) = (match op {
+            op::SLOAD => Some(StorageChangeReason::SLOAD),
+            op::SSTORE => Some(StorageChangeReason::SSTORE),
+            _ => None,
+        }) else {
+            return;
+        };
+        let Some((key, value)) = (match reason {
+            StorageChangeReason::SLOAD => interp.stack().peekn::<1>().map(|[key]| (key, None)),
+            StorageChangeReason::SSTORE => {
+                interp.stack().peekn::<2>().map(|[key, value]| (key, Some(value)))
+            }
+        }) else {
+            return;
+        };
+        let address = self.traces.arena[trace_idx].execution_address();
+        let slot = host.state().storage_ref(&address, &key);
+        self.pending_storage_step = Some(PendingStorageStep {
+            trace_idx,
+            step_idx,
+            address,
+            key,
+            value,
+            value_before: slot.map(|slot| slot.current),
+            was_warm: host.state().is_storage_warm(&address, &key),
+            reason,
+        });
+    }
+
+    fn fill_storage_step<T: EvmTypes<Host = Evm<T>>>(
+        step: &mut CallTraceStep,
+        pending: PendingStorageStep,
+        host: &Evm<T>,
+    ) {
+        let slot = host.state().storage_ref(&pending.address, &pending.key);
+        let value = slot
+            .map(|slot| slot.current)
+            .or(pending.value)
+            .or(pending.value_before)
+            .unwrap_or_default();
+        let warmed =
+            !pending.was_warm && host.state().is_storage_warm(&pending.address, &pending.key);
+        let changed = pending
+            .value_before
+            .map(|value_before| value_before != value)
+            .unwrap_or_else(|| slot.is_some_and(|slot| slot.original != slot.current));
+
+        let storage_change = match pending.reason {
+            StorageChangeReason::SLOAD if warmed => Some(StorageChange {
+                key: pending.key,
+                value,
+                had_value: None,
+                reason: pending.reason,
+            }),
+            StorageChangeReason::SSTORE if changed || warmed => Some(StorageChange {
+                key: pending.key,
+                value,
+                had_value: changed.then(|| {
+                    pending
+                        .value_before
+                        .or_else(|| slot.map(|slot| slot.original))
+                        .unwrap_or_default()
+                }),
+                reason: pending.reason,
+            }),
+            _ => None,
+        };
+        step.storage_change = storage_change.map(Box::new);
+    }
 }
 
 impl From<MessageKind> for CallKind {
@@ -1370,7 +1478,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for TracingInspector {
         }
     }
 
-    fn step(&mut self, interp: &mut Interpreter<'_, T>, _host: &mut T::Host) {
+    fn step(&mut self, interp: &mut Interpreter<'_, T>, host: &mut T::Host) {
         self.spec_id = Some(interp.spec());
         if !self.config.record_steps {
             return;
@@ -1433,10 +1541,11 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for TracingInspector {
         let step_idx = self.traces.arena[trace_idx].trace.steps.len();
         self.traces.arena[trace_idx].ordering.push(TraceMemberOrder::Step(step_idx));
         self.traces.arena[trace_idx].trace.steps.push(step);
+        self.prepare_storage_step(trace_idx, step_idx, op.get(), interp, host);
         self.step_stack.push((trace_idx, step_idx, interp.gas().remaining(), interp.stack().len()));
     }
 
-    fn step_end(&mut self, interp: &mut Interpreter<'_, T>, _host: &mut T::Host) {
+    fn step_end(&mut self, interp: &mut Interpreter<'_, T>, host: &mut T::Host) {
         if !self.config.record_steps {
             return;
         }
@@ -1454,6 +1563,12 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for TracingInspector {
                 if stack.len() > stack_len_before {
                     step.push_stack = Some(Box::from(&stack.as_slice()[stack_len_before..]));
                 }
+            }
+            if let Some(pending) = self.pending_storage_step.take()
+                && pending.trace_idx == trace_idx
+                && pending.step_idx == step_idx
+            {
+                Self::fill_storage_step(step, pending, host);
             }
         }
     }

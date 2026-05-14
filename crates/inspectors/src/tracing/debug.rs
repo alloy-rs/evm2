@@ -10,6 +10,8 @@ use alloy_rpc_types_trace::geth::{
     GethDebugTracingOptions, GethDefaultTracingOptions, GethTrace, NoopFrame, PreStateConfig,
     erc7562::Erc7562Config, mux::MuxConfig,
 };
+#[cfg(feature = "js-tracer")]
+use evm2::evm::DatabaseCommit;
 use evm2::{
     Evm, EvmTypes, Inspector,
     env::{BlockEnv, TxEnv},
@@ -355,13 +357,13 @@ impl DebugInspector {
                 inspector.set_transaction_gas_limit(tx_env.trace_gas_limit());
                 inspector
                     .geth_builder()
-                    .geth_prestate_traces(result.state, config)
+                    .geth_prestate_traces(result.state, config, result.db)
                     .unwrap_or_else(|err| match err {})
                     .into()
             }
             Self::Noop => NoopFrame::default().into(),
             Self::Mux(inspector, _) => inspector
-                .try_into_mux_frame(result.gas_used, result.state, tx_info)
+                .try_into_mux_frame(result.gas_used, result.state, tx_info, result.db)
                 .unwrap_or_else(|err| match err {})
                 .into(),
             Self::FlatCallTracer(inspector) => {
@@ -376,7 +378,10 @@ impl DebugInspector {
             Self::Erc7562Tracer(inspector, config) => {
                 inspector.set_transaction_gas_limit(tx_env.trace_gas_limit());
                 inspector.set_transaction_caller(tx_env.trace_caller());
-                inspector.geth_builder().geth_erc7562_traces(config.clone(), result.gas_used).into()
+                inspector
+                    .geth_builder()
+                    .geth_erc7562_traces(config.clone(), result.gas_used, result.db)
+                    .into()
             }
             Self::Default(inspector, config) => {
                 inspector.set_transaction_gas_limit(tx_env.trace_gas_limit());
@@ -390,8 +395,14 @@ impl DebugInspector {
             Self::Js(inspector) => {
                 inspector.set_transaction_context(tx_context.unwrap_or_default());
                 let empty_db;
+                let overlay_db;
                 let db = if let Some(db) = result.db {
-                    db
+                    overlay_db = {
+                        let mut db = db.clone();
+                        db.commit(result.state);
+                        db
+                    };
+                    &overlay_db
                 } else {
                     empty_db = CacheDB::new(EmptyDB::default());
                     &empty_db

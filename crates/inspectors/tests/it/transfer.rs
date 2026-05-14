@@ -106,3 +106,35 @@ fn test_internal_transfers() {
         }
     );
 }
+
+#[test]
+fn records_failed_create_transfer_attempt() {
+    let deployer = Address::ZERO;
+    let mut db = CacheDB::new(EmptyDB::default());
+    db.load_account(deployer).info.balance = U256::from(u64::MAX);
+
+    let context = Context::mainnet().with_db(db).modify_cfg_chained(|c| c.spec = SpecId::LONDON);
+    let mut evm = context.build_mainnet_with_inspector(TransferInspector::new(false));
+    let res = evm
+        .inspect_tx(TxEnv {
+            caller: deployer,
+            gas_limit: 1000000,
+            kind: TransactTo::Create,
+            data: hex!("fe").into(),
+            value: U256::from(10),
+            nonce: 0,
+            ..Default::default()
+        })
+        .unwrap();
+
+    assert!(!res.result.is_success());
+    assert_eq!(
+        evm.inspector().transfers(),
+        &[TransferOperation {
+            kind: TransferKind::Create,
+            from: deployer,
+            to: deployer.create(0),
+            value: U256::from(10),
+        }]
+    );
+}

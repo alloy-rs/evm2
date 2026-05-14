@@ -2,13 +2,17 @@ use super::walker::CallTraceNodeWalkerBF;
 use crate::tracing::{
     TracingInspectorConfig,
     types::{CallTraceNode, CallTraceStep},
+    utils::load_account_code,
 };
 use alloc::{collections::VecDeque, string::ToString, vec, vec::Vec};
 use alloy_primitives::{Address, Bytes, U64, map::HashSet};
 use alloy_rpc_types_eth::TransactionInfo;
 use alloy_rpc_types_trace::parity::*;
 use core::{convert::Infallible, iter::Peekable};
-use evm2::{SpecId, evm::StateChanges};
+use evm2::{
+    SpecId,
+    evm::{CacheDB, EmptyDB, StateChanges},
+};
 
 /// A type for creating parity style traces
 ///
@@ -164,6 +168,17 @@ impl ParityTraceBuilder {
         state: &StateChanges,
         trace_types: &HashSet<TraceType>,
     ) -> Result<TraceResults, Infallible> {
+        self.into_trace_results_with_state_and_db(output, state, trace_types, None)
+    }
+
+    /// Consumes the inspector and returns trace results, using a cache DB for pre-state code.
+    pub fn into_trace_results_with_state_and_db(
+        self,
+        output: Bytes,
+        state: &StateChanges,
+        trace_types: &HashSet<TraceType>,
+        db: Option<&CacheDB<EmptyDB>>,
+    ) -> Result<TraceResults, Infallible> {
         let breadth_first_addresses = if trace_types.contains(&TraceType::VmTrace) {
             CallTraceNodeWalkerBF::new(&self.nodes)
                 .map(|node| node.trace.address)
@@ -176,12 +191,16 @@ impl ParityTraceBuilder {
 
         // check the state diff case
         if let Some(ref mut state_diff) = trace_res.state_diff {
-            populate_state_diff(state_diff, state)?;
+            if let Some(db) = db {
+                populate_state_diff_with_db(state_diff, state, db)?;
+            } else {
+                populate_state_diff(state_diff, state)?;
+            }
         }
 
         // check the vm trace case
         if let Some(ref mut vm_trace) = trace_res.vm_trace {
-            populate_vm_trace_bytecodes(vm_trace, breadth_first_addresses)?;
+            populate_vm_trace_bytecodes(vm_trace, breadth_first_addresses, db)?;
         }
 
         Ok(trace_res)
@@ -448,6 +467,7 @@ where
 pub(crate) fn populate_vm_trace_bytecodes<I>(
     trace: &mut VmTrace,
     breadth_first_addresses: I,
+    db: Option<&CacheDB<EmptyDB>>,
 ) -> Result<(), Infallible>
 where
     I: IntoIterator<Item = Address>,
@@ -464,7 +484,13 @@ where
             }
         }
 
-        let _ = addrs.next().expect("there should be an address");
+        let addr = addrs.next().expect("there should be an address");
+        if let Some(db) = db
+            && let Some(account) = db.account_info(&addr)
+            && let Some(code) = load_account_code(db, account)
+        {
+            curr_ref.code = code;
+        }
     }
 
     Ok(())
@@ -507,8 +533,58 @@ pub fn populate_state_diff(
     Ok(())
 }
 
+/// Populates [StateDiff] from evm2 state changes and a cache DB pre-state.
+pub fn populate_state_diff_with_db(
+    state_diff: &mut StateDiff,
+    state_changes: &StateChanges,
+    db: &CacheDB<EmptyDB>,
+) -> Result<(), Infallible> {
+    for (&addr, account) in &state_changes.accounts {
+        let entry = state_diff.entry(addr).or_default();
+        let original = db.account_info(&addr).cloned().unwrap_or_default();
+        match &account.current {
+            Some(current) if account.original.is_none() && original.balance.is_zero() => {
+                entry.balance = Delta::Added(current.balance);
+                entry.nonce = Delta::Added(U64::from(current.nonce));
+                entry.code = Delta::Added(account_code_with_db(current, db));
+            }
+            Some(current) => {
+                entry.balance = delta(original.balance, current.balance);
+                entry.nonce = delta(U64::from(original.nonce), U64::from(current.nonce));
+                entry.code =
+                    delta(account_code_with_db(&original, db), account_code_with_db(current, db));
+            }
+            None => {
+                entry.balance = Delta::Removed(original.balance);
+                entry.nonce = Delta::Removed(U64::from(original.nonce));
+                entry.code = Delta::Removed(account_code_with_db(&original, db));
+            }
+        }
+    }
+
+    for (&addr, storage) in &state_changes.storage {
+        let entry = state_diff.entry(addr).or_default();
+        for (&key, slot) in &storage.slots {
+            entry.storage.insert(key.into(), delta(slot.original.into(), slot.current.into()));
+        }
+    }
+
+    state_diff.retain(|_, diff| {
+        !matches!(diff.balance, Delta::Unchanged)
+            || !matches!(diff.nonce, Delta::Unchanged)
+            || !matches!(diff.code, Delta::Unchanged)
+            || !diff.storage.is_empty()
+    });
+
+    Ok(())
+}
+
 fn account_code(account: &evm2::AccountInfo) -> Bytes {
     account.code.as_ref().map(|code| code.original_bytes()).unwrap_or_default()
+}
+
+fn account_code_with_db(account: &evm2::AccountInfo, db: &CacheDB<EmptyDB>) -> Bytes {
+    load_account_code(db, account).unwrap_or_default()
 }
 
 fn delta<T: Clone + PartialEq>(from: T, to: T) -> Delta<T> {

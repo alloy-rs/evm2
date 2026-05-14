@@ -1,5 +1,8 @@
 //! Geth trace builder
-use crate::tracing::types::{CallKind, CallTraceNode, CallTraceStepStackItem};
+use crate::tracing::{
+    types::{CallKind, CallTraceNode, CallTraceStepStackItem},
+    utils::load_account_code,
+};
 use alloc::{
     borrow::Cow,
     collections::{BTreeMap, VecDeque},
@@ -13,9 +16,13 @@ use alloy_primitives::{
 use alloy_rpc_types_trace::geth::{
     AccountChangeKind, AccountState, CallConfig, CallFrame, DefaultFrame, DiffMode,
     GethDefaultTracingOptions, PreStateConfig, PreStateFrame, PreStateMode, StructLog,
-    erc7562::{AccessedSlots, CallFrameType, Erc7562Config, Erc7562Frame},
+    erc7562::{AccessedSlots, CallFrameType, ContractSize, Erc7562Config, Erc7562Frame},
 };
-use evm2::{AccountInfo, SpecId, bytecode::opcode::op, evm::StateChanges};
+use evm2::{
+    AccountInfo, SpecId,
+    bytecode::opcode::op,
+    evm::{CacheDB, EmptyDB, StateChanges},
+};
 
 /// A type for creating geth style traces
 #[derive(Clone, Debug)]
@@ -227,13 +234,14 @@ impl<'a> GethTraceBuilder<'a> {
         &self,
         state: &StateChanges,
         prestate_config: &PreStateConfig,
+        db: Option<&CacheDB<EmptyDB>>,
     ) -> Result<PreStateFrame, core::convert::Infallible> {
         let code_enabled = prestate_config.code_enabled();
         let storage_enabled = prestate_config.storage_enabled();
         if prestate_config.is_diff_mode() {
-            Ok(self.geth_prestate_diff_traces(state, code_enabled, storage_enabled))
+            Ok(self.geth_prestate_diff_traces(state, code_enabled, storage_enabled, db))
         } else {
-            Ok(self.geth_prestate_pre_traces(state, code_enabled, storage_enabled))
+            Ok(self.geth_prestate_pre_traces(state, code_enabled, storage_enabled, db))
         }
     }
 
@@ -242,6 +250,7 @@ impl<'a> GethTraceBuilder<'a> {
         state: &StateChanges,
         code_enabled: bool,
         storage_enabled: bool,
+        db: Option<&CacheDB<EmptyDB>>,
     ) -> PreStateFrame {
         let mut prestate = PreStateMode::default();
 
@@ -249,10 +258,12 @@ impl<'a> GethTraceBuilder<'a> {
             prestate.0.entry(address).or_default();
         }
         for (&address, account) in &state.accounts {
-            let info = account.original.clone().unwrap_or_default();
-            let code = code_enabled
-                .then(|| info.code.as_ref().map(|code| code.original_bytes()))
-                .flatten();
+            let info = db
+                .and_then(|db| db.account_info(&address).cloned())
+                .or_else(|| account.original.clone())
+                .unwrap_or_default();
+            let code =
+                code_enabled.then(|| db.and_then(|db| load_account_code(db, &info))).flatten();
             let mut acc_state = AccountState::from_account_info(info.nonce, info.balance, code);
             if storage_enabled && let Some(storage) = state.storage.get(&address) {
                 for (&key, slot) in &storage.slots {
@@ -270,18 +281,25 @@ impl<'a> GethTraceBuilder<'a> {
         state: &StateChanges,
         code_enabled: bool,
         storage_enabled: bool,
+        db: Option<&CacheDB<EmptyDB>>,
     ) -> PreStateFrame {
         let mut state_diff = DiffMode::default();
         let mut account_change_kinds =
             HashMap::with_capacity_and_hasher(state.accounts.len(), Default::default());
 
         for (&address, account) in &state.accounts {
-            if let Some(original) = &account.original {
+            let original = db
+                .and_then(|db| db.account_info(&address).cloned())
+                .or_else(|| account.original.clone());
+            if let Some(original) = &original {
                 let pre_code = code_enabled
-                    .then(|| original.code.as_ref().map(|code| code.original_bytes()))
+                    .then(|| db.and_then(|db| load_account_code(db, original)))
                     .flatten();
-                let mut pre_state =
-                    AccountState::from_account_info(original.nonce, original.balance, pre_code);
+                let mut pre_state = AccountState::from_account_info(
+                    original.nonce,
+                    original.balance,
+                    pre_code.clone(),
+                );
                 if storage_enabled && let Some(storage) = state.storage.get(&address) {
                     for (&key, slot) in &storage.slots {
                         pre_state.storage.insert(key.into(), slot.original.into());
@@ -291,7 +309,10 @@ impl<'a> GethTraceBuilder<'a> {
             }
             if let Some(current) = &account.current {
                 let post_code = code_enabled
-                    .then(|| current.code.as_ref().map(|code| code.original_bytes()))
+                    .then(|| {
+                        db.and_then(|db| load_account_code(db, current))
+                            .or_else(|| current.code.as_ref().map(|code| code.original_bytes()))
+                    })
                     .flatten();
                 let mut post_state =
                     AccountState::from_account_info(current.nonce, current.balance, post_code);
@@ -303,7 +324,7 @@ impl<'a> GethTraceBuilder<'a> {
                 state_diff.post.insert(address, post_state);
             }
 
-            let pre_change = if account.original.as_ref().is_none_or(account_was_empty) {
+            let pre_change = if original.as_ref().is_none_or(account_was_empty) {
                 AccountChangeKind::Create
             } else {
                 AccountChangeKind::Modify
@@ -379,7 +400,12 @@ impl<'a> GethTraceBuilder<'a> {
     }
 
     /// Traces ERC-7562 calls using the call tracer.
-    pub fn geth_erc7562_traces(&self, opts: Erc7562Config, gas_used: u64) -> Erc7562Frame {
+    pub fn geth_erc7562_traces(
+        &self,
+        opts: Erc7562Config,
+        gas_used: u64,
+        db: Option<&CacheDB<EmptyDB>>,
+    ) -> Erc7562Frame {
         if self.nodes.is_empty() {
             return Default::default();
         }
@@ -469,8 +495,14 @@ impl<'a> GethTraceBuilder<'a> {
                 {
                     let address = Address::from_word((*item).into());
                     ext_code_access_info.push(format!("{address:?}"));
-                    if let Entry::Vacant(e) = contract_size.entry(address) {
-                        let _ = e;
+                    if let Entry::Vacant(e) = contract_size.entry(address)
+                        && let Some((contract_size, opcode)) = db
+                            .and_then(|db| db.account_info(&address).map(|account| (db, account)))
+                            .and_then(|(db, account)| {
+                                load_account_code(db, account).map(|code| (code.len() as u64, op))
+                            })
+                    {
+                        e.insert(ContractSize { contract_size, opcode });
                     }
                 }
 
@@ -590,7 +622,7 @@ mod tests {
         );
 
         let builder = GethTraceBuilder::new(Vec::new(), None);
-        let frame = builder.geth_prestate_diff_traces(&state, false, false);
+        let frame = builder.geth_prestate_diff_traces(&state, false, false, None);
 
         match frame {
             PreStateFrame::Diff(diff) => {

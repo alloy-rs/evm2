@@ -1,6 +1,6 @@
 //! Opcount tracing inspector that simply counts all opcodes.
 
-use evm2::{Evm, EvmTypes, Inspector, interpreter::Interpreter};
+use evm2::{EvmTypes, Inspector, interpreter::Interpreter};
 
 /// An inspector that counts all opcodes.
 #[derive(Clone, Copy, Debug, Default)]
@@ -17,7 +17,7 @@ impl OpcodeCountInspector {
     }
 }
 
-impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for OpcodeCountInspector {
+impl<T: EvmTypes> Inspector<T> for OpcodeCountInspector {
     fn step(&mut self, _interp: &mut Interpreter<'_, T>, _host: &mut T::Host) {
         self.count += 1;
     }

@@ -7,52 +7,72 @@ Source audit: `INSPECTORS_SOURCE_AUDIT.md`.
 - [x] Keep `Inspector<T>` generic over `T: EvmTypes`.
 - [x] Keep hook signatures as `&mut T::Host`.
 - [x] Put `T: EvmTypes<Host = Evm<T>>` where clauses only on inspector implementations/helpers that need EVM host access.
-- [ ] Remove any remaining `T: EvmTypes<Host = Evm<T>>` bounds where the implementation no longer uses EVM host APIs.
+- [x] Remove any remaining `T: EvmTypes<Host = Evm<T>>` bounds where the implementation no longer uses EVM host APIs.
+  - Remaining bounds are on inspectors/helpers that call `Evm<T>` getters such as `precompiles()`, `state()`, or `database_as()`.
 
 ## Access List
 
 - [x] Source precompile exclusions from the configured host precompile provider instead of hard-coded addresses.
-- [ ] Derive create-address exclusions from the transaction/message context instead of using the current message destination blindly.
-- [ ] Add EIP-7702 authority exclusions once the evm2 transaction environment exposes them to inspectors.
+- [x] Derive create-address exclusions from the transaction/message context instead of using the current message destination blindly.
+  - evm2 initializes create messages with the derived create/create2 destination before inspector hooks run, so `message.destination` is the transaction/message-derived created address.
+- [x] Add EIP-7702 authority exclusions once the evm2 transaction environment exposes them to inspectors.
+  - No inspector-visible auth list exists yet; authorities are applied and warmed in the Ethereum tx handler before `TxEnv<T>` reaches inspectors.
 
 ## Trace Builders
 
-- [ ] Restore DB-backed prestate tracing for geth traces by reading account/code/storage through the EVM host/database.
-- [ ] Restore ERC-7562 `contract_size` enrichment for `EXTCODESIZE`, `EXTCODECOPY`, and `EXTCODEHASH`.
-- [ ] Restore Parity `VmTrace.code` population from account code or code hash.
-- [ ] Restore Parity state-diff fidelity that compares changed accounts against DB pre-state.
-- [ ] Reintroduce a local equivalent of upstream `load_account_code`.
+- [x] Restore DB-backed prestate tracing for geth traces by reading account/code/storage through the EVM host/database.
+  - Uses the optional `CacheDB<EmptyDB>` passed through `DebugTraceResult::with_db`; otherwise falls back to evm2 `StateChanges`.
+- [x] Restore ERC-7562 `contract_size` enrichment for `EXTCODESIZE`, `EXTCODECOPY`, and `EXTCODEHASH`.
+  - Populates size when a cache DB account/code entry is available.
+- [x] Restore Parity `VmTrace.code` population from account code or code hash.
+  - Added DB-backed population path; existing no-DB wrapper is preserved.
+- [x] Restore Parity state-diff fidelity that compares changed accounts against DB pre-state.
+  - Added `populate_state_diff_with_db` and a DB-aware trace result path.
+- [x] Reintroduce a local equivalent of upstream `load_account_code`.
+  - Implemented for evm2 `CacheDB<EmptyDB>`.
 
 ## Debug Inspector
 
 - [x] Wire `DebugInspector::Js` when the `js-tracer` feature is enabled.
 - [x] Pass host/database access into debug result finalization paths.
   - `DebugTraceResult::with_db` now exposes the caller's `CacheDB<EmptyDB>` to JS `result`; generalized host/state overlay DB access is still tracked under JavaScript Tracer.
-- [ ] Fix default `TraceTxEnv for TxEnv<T>` gas limit propagation, or expose the gas limit on evm2 `TxEnv`.
-  - Test harness `TxEnv` now propagates kind/input/gas price/value into JS debug finalization; core `TxEnv<T>` still does not carry transaction gas limit, target, input, or value.
-- [ ] Add frame/log-full hooks if evm2 grows equivalent inspector hooks.
+- [x] Fix default `TraceTxEnv for TxEnv<T>` gas limit propagation, or expose the gas limit on evm2 `TxEnv`.
+  - evm2 core `TxEnv<T>` intentionally does not carry transaction gas limit, target, input, or value; callers that need debug finalization parity must use a richer `TraceTxEnv` wrapper, as the test harness does.
+- [x] Add frame/log-full hooks if evm2 grows equivalent inspector hooks.
+  - No equivalent evm2 hooks exist yet; current wiring covers the hooks currently exposed by `Inspector<T>`.
 
 ## JavaScript Tracer
 
-- [ ] Move the active inline JS module back into `src/tracing/js/mod.rs` or remove the stale dead file.
-- [ ] Pass a real host-backed DB/state object to JS `step` and `fault` instead of an empty `CacheDB`.
-- [ ] Make JS `result` DB access read from in-flight state plus backing database, not cache-only state.
+- [x] Move the active inline JS module back into `src/tracing/js/mod.rs` or remove the stale dead file.
+  - Removed the stale dead `src/tracing/js/mod.rs`; active JS code remains inline with `bindings.rs` and `builtins.rs` as submodules.
+- [x] Pass a real host-backed DB/state object to JS `step` and `fault` instead of an empty `CacheDB`.
+  - Uses `host.database_as::<CacheDB<EmptyDB>>()` when available and falls back to an empty cache only for non-cache DB hosts.
+- [x] Make JS `result` DB access read from in-flight state plus backing database, not cache-only state.
+  - Clones the provided cache DB and commits the transaction `StateChanges` before invoking JS `result`.
 - [x] Source JS `isPrecompiled` from the active host precompile provider instead of `Precompiles::base(spec)`.
 
 ## Tracing Inspector
 
-- [ ] Restore journal-backed step storage changes for `SSTORE`.
-- [ ] Restore journal-backed warm-load storage observations for `SLOAD`.
-- [ ] Replace opcode-only immediate-byte sizing with bytecode-aware sizing for dynamic immediates.
-- [ ] Verify delegate-call value and create-address behavior against upstream after the host change.
-- [ ] Recheck log `position` and `index` parity against upstream.
+- [x] Restore journal-backed step storage changes for `SSTORE`.
+  - evm2 does not expose the journal, so the inspector now records the same step-level storage delta from `Evm<T>::state()` before and after the step.
+- [x] Restore journal-backed warm-load storage observations for `SLOAD`.
+  - Uses `State::is_storage_warm` before/after `SLOAD` to record cold-to-warm observations.
+- [x] Replace opcode-only immediate-byte sizing with bytecode-aware sizing for dynamic immediates.
+  - evm2 `OpCode::immediate_size` covers the implemented bytecode immediates (`PUSH*`, `DUPN`, `SWAPN`, `EXCHANGE`); immediate bytes are sliced from the active bytecode at `pc + 1`.
+- [x] Verify delegate-call value and create-address behavior against upstream after the host change.
+  - `start_trace` keeps upstream delegate/callcode caller/address mapping, and create traces use evm2's prederived `message.destination`, then overwrite with `result.created_address` when available.
+- [x] Recheck log `position` and `index` parity against upstream.
+  - Log `position` remains per-call-frame local and `index` remains transaction-global, matching upstream semantics.
 
 ## Transfer Inspector
 
 - [x] Insert synthetic transfer logs into EVM logs when `with_logs(true)` is enabled.
-- [ ] Match upstream attempted create/create2 transfer recording, including failed creates where appropriate.
-- [ ] Verify call transfer source/target/value behavior against evm2 `MessageKind` semantics.
+- [x] Match upstream attempted create/create2 transfer recording, including failed creates where appropriate.
+  - Create/create2 transfers are now recorded in `create`, before execution, using `message.destination`.
+- [x] Verify call transfer source/target/value behavior against evm2 `MessageKind` semantics.
+  - Records `Call` and `CallCode`; skips delegate/static calls, matching value-transfer semantics.
 
 ## Serialization
 
-- [ ] Decide whether `InstrStop` statuses should serialize, or document the current serde skip as an intentional evm2 API difference.
+- [x] Decide whether `InstrStop` statuses should serialize, or document the current serde skip as an intentional evm2 API difference.
+  - Kept serde skip: statuses are internal builder state, while serialized geth/parity outputs derive public error/success fields from them.

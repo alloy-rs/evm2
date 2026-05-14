@@ -1,7 +1,7 @@
 //! Storage access inspector.
 
 use alloy_primitives::{Address, B256, map::HashMap};
-use evm2::{Evm, EvmTypes, Inspector, bytecode::opcode::op, interpreter::Interpreter};
+use evm2::{EvmTypes, Inspector, bytecode::opcode::op, interpreter::Interpreter};
 
 /// An Inspector that tracks warm and cold storage slot accesses.
 #[derive(Debug, Default, Clone)]
@@ -45,7 +45,7 @@ impl StorageInspector {
     }
 }
 
-impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for StorageInspector {
+impl<T: EvmTypes> Inspector<T> for StorageInspector {
     fn step(&mut self, interp: &mut Interpreter<'_, T>, _host: &mut T::Host) {
         if interp.opcode() == op::SLOAD
             && let Some([slot]) = interp.stack().peekn()
