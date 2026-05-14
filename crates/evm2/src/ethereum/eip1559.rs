@@ -82,6 +82,7 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
         intrinsic,
         intrinsic_state,
         intrinsic_state,
+        0,
         result,
     )
 }

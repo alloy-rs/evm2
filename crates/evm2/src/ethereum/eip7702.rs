@@ -88,9 +88,6 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
         initial_message(req.host, caller, tx.nonce, tx.to.into(), &tx.input, tx.value, gas_limit)?;
     message.gas_reservoir = gas_reservoir;
     let mut result = req.host.execute_message(&tx_env, bytecode, &mut message, false);
-    if eip7702_regular_refund > 0 {
-        result.gas.record_refund(i64::try_from(eip7702_regular_refund).unwrap_or(i64::MAX));
-    }
     rollback_failed_execution(req.host, execution_checkpoint, &mut result);
 
     let intrinsic_state = auth_state_gas.saturating_sub(eip7702_state_refund);
@@ -105,6 +102,7 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
         intrinsic,
         intrinsic_state,
         failure_intrinsic_state_refund,
+        eip7702_regular_refund,
         result,
     )
 }

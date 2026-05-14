@@ -524,6 +524,7 @@ pub(super) fn settle_gas<T: EvmTypes<Host = Evm<T>>>(
     _intrinsic_gas: u64,
     intrinsic_state_gas: u64,
     failure_intrinsic_state_refund: u64,
+    top_level_refund: u64,
     result: MessageResult<T>,
 ) -> HandlerResult<TxResult<T>> {
     let gas = final_tx_gas(
@@ -534,6 +535,7 @@ pub(super) fn settle_gas<T: EvmTypes<Host = Evm<T>>>(
         _intrinsic_gas,
         intrinsic_state_gas,
         failure_intrinsic_state_refund,
+        top_level_refund,
     );
     if host.feature(EvmFeatures::FEE_CHARGE) {
         host.state
@@ -568,6 +570,7 @@ struct FinalTxGas {
     state_used: u64,
 }
 
+#[expect(clippy::too_many_arguments)]
 const fn final_tx_gas<T: EvmTypes>(
     result: &MessageResult<T>,
     tx_gas_limit: u64,
@@ -576,6 +579,7 @@ const fn final_tx_gas<T: EvmTypes>(
     _intrinsic_gas: u64,
     intrinsic_state_gas: u64,
     failure_intrinsic_state_refund: u64,
+    top_level_refund: u64,
 ) -> FinalTxGas {
     let mut reservoir = result.gas.reservoir();
     let failure_intrinsic_state_refund =
@@ -586,15 +590,19 @@ const fn final_tx_gas<T: EvmTypes>(
             .saturating_add(failure_intrinsic_state_refund);
     }
     let spent = tx_gas_limit.saturating_sub(result.gas.remaining()).saturating_sub(reservoir);
-    let refund =
-        if (result.stop.is_success() || result.stop.is_revert()) && result.gas.refunded() > 0 {
-            let max_refund_quotient = if is_eip3529 { 5 } else { 2 };
-            let refund = result.gas.refunded() as u64;
-            let cap = spent / max_refund_quotient;
-            if refund < cap { refund } else { cap }
-        } else {
-            0
-        };
+    let execution_refund = if result.stop.is_success() && result.gas.refunded() > 0 {
+        result.gas.refunded() as u64
+    } else {
+        0
+    };
+    let refund = execution_refund.saturating_add(top_level_refund);
+    let refund = if refund > 0 {
+        let max_refund_quotient = if is_eip3529 { 5 } else { 2 };
+        let cap = spent / max_refund_quotient;
+        if refund < cap { refund } else { cap }
+    } else {
+        0
+    };
     let gas_remaining = result.gas.remaining().saturating_add(reservoir).saturating_add(refund);
     let gas_remaining = if gas_remaining < tx_gas_limit { gas_remaining } else { tx_gas_limit };
     let mut gas_used = tx_gas_limit.saturating_sub(gas_remaining);
@@ -883,7 +891,7 @@ mod tests {
         };
 
         assert_eq!(
-            final_tx_gas(&result, 100_000, true, 60_000, 0, 0, 0),
+            final_tx_gas(&result, 100_000, true, 60_000, 0, 0, 0, 0),
             FinalTxGas {
                 remaining: 40_000,
                 used: 60_000,
@@ -899,14 +907,14 @@ mod tests {
             stop: crate::interpreter::InstrStop::Revert,
             gas: {
                 let mut gas = GasTracker::new_used_gas(100_000, 50_000, 0);
-                gas.set_refunded(10_000);
+                gas.set_refunded(40_000);
                 gas
             },
             ..MessageResult::<BaseEvmTypes>::default()
         };
 
         assert_eq!(
-            final_tx_gas(&result, 100_000, true, 21_000, 0, 0, 0),
+            final_tx_gas(&result, 100_000, true, 21_000, 0, 0, 0, 10_000),
             FinalTxGas {
                 remaining: 60_000,
                 used: 40_000,
@@ -925,11 +933,30 @@ mod tests {
         };
 
         assert_eq!(
-            final_tx_gas(&result, 100_000, true, 21_000, 0, 5_000, 5_000),
+            final_tx_gas(&result, 100_000, true, 21_000, 0, 5_000, 5_000, 0),
             FinalTxGas {
                 remaining: 5_000,
                 used: 95_000,
                 block_regular_used: 95_000,
+                state_used: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn final_tx_gas_applies_top_level_refund_on_halt() {
+        let result = MessageResult::<BaseEvmTypes> {
+            stop: crate::interpreter::InstrStop::OutOfGas,
+            gas: GasTracker::new_used_gas(100_000, 100_000, 0),
+            ..MessageResult::<BaseEvmTypes>::default()
+        };
+
+        assert_eq!(
+            final_tx_gas(&result, 100_000, true, 21_000, 0, 0, 0, 10_000),
+            FinalTxGas {
+                remaining: 10_000,
+                used: 90_000,
+                block_regular_used: 100_000,
                 state_used: 0,
             }
         );
@@ -944,7 +971,7 @@ mod tests {
         };
 
         assert_eq!(
-            final_tx_gas(&result, 100_000, true, 60_000, 0, 0, 0),
+            final_tx_gas(&result, 100_000, true, 60_000, 0, 0, 0, 0),
             FinalTxGas {
                 remaining: 30_000,
                 used: 70_000,
