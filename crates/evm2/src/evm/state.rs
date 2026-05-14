@@ -451,14 +451,14 @@ impl State {
     }
 
     #[inline]
-    fn record_account_access(&mut self, address: &Address) {
+    pub(crate) fn record_account_access(&mut self, address: &Address) {
         if self.track_accesses {
             self.accessed_accounts_for_changes.insert(*address);
         }
     }
 
     #[inline]
-    fn record_storage_access(&mut self, address: &Address, key: &Word) {
+    pub(crate) fn record_storage_access(&mut self, address: &Address, key: &Word) {
         if self.track_accesses {
             self.accessed_storage_for_changes.insert(StorageKey::new(*address, *key));
         }
@@ -536,6 +536,7 @@ impl State {
     #[inline(never)]
     #[must_use]
     pub fn warm_account(&mut self, address: &Address) -> bool {
+        self.record_account_access(address);
         if self.accessed_accounts.insert(*address) {
             self.journal.push(JournalEntry::AccountWarmed { address: *address });
             true
@@ -598,6 +599,7 @@ impl State {
     #[inline(never)]
     #[must_use]
     pub fn warm_storage(&mut self, address: &Address, key: &Word) -> bool {
+        self.record_storage_access(address, key);
         if self.accessed_storage.insert(StorageKey::new(*address, *key)) {
             self.journal.push(JournalEntry::StorageWarmed { address: *address, key: *key });
             true

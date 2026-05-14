@@ -50,6 +50,9 @@ impl BalBuilder {
         }
 
         if let Some(accesses) = &changes.accesses {
+            for &address in &accesses.accounts {
+                self.accounts.entry(address).or_default();
+            }
             for (&address, slots) in &accesses.storage {
                 let changed_slots = changes.storage.get(&address);
                 let builder = self.accounts.entry(address).or_default();

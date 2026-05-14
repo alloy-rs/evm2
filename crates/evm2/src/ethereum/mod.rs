@@ -305,9 +305,11 @@ pub(super) fn warm_access_list<T: EvmTypes<Host = Evm<T>>>(
 ) {
     for item in access_list.iter() {
         host.state.warm_account_non_revertible(&item.address);
+        host.state.record_account_access(&item.address);
         for key in &item.storage_keys {
             let key = U256::from_be_bytes(key.0);
             let _ = host.state.warm_storage_non_revertible(&item.address, &key);
+            host.state.record_storage_access(&item.address, &key);
         }
     }
 }
