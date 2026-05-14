@@ -11,14 +11,10 @@ use crate::{
     interpreter::{InstrStop, Word},
     storage_key::{StorageKey, StorageKeyMap, StorageKeySet},
 };
-use alloc::{
-    boxed::Box,
-    collections::{BTreeMap, BTreeSet},
-    vec::Vec,
-};
+use alloc::{boxed::Box, collections::BTreeMap, vec::Vec};
 use alloy_primitives::{
     Address, B256, KECCAK256_EMPTY, Log, U256,
-    map::{AddressMap, AddressSet, U256Map, hash_map},
+    map::{AddressMap, AddressSet, U256Map, U256Set, hash_map},
 };
 use core::mem;
 use derive_where::derive_where;
@@ -256,9 +252,9 @@ impl StateChanges {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct StateAccesses {
     /// Accounts that were loaded or queried.
-    pub accounts: BTreeSet<Address>,
+    pub accounts: AddressSet,
     /// Persistent storage slots that were loaded or written, keyed by account address.
-    pub storage: BTreeMap<Address, BTreeSet<Word>>,
+    pub storage: AddressMap<U256Set>,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
 }
@@ -268,6 +264,64 @@ impl StateAccesses {
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.accounts.is_empty() && self.storage.is_empty()
+    }
+}
+
+#[derive(Debug, Default)]
+struct StateAccessTracker {
+    enabled: bool,
+    accesses: StateAccesses,
+}
+
+impl StateAccessTracker {
+    #[inline]
+    fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
+        if !enabled {
+            self.clear();
+        }
+    }
+
+    #[inline]
+    const fn enabled(&self) -> bool {
+        self.enabled
+    }
+
+    #[inline]
+    fn clear(&mut self) {
+        self.accesses.accounts.clear();
+        self.accesses.storage.clear();
+    }
+
+    #[inline]
+    fn record_account_access(&mut self, address: &Address) {
+        if self.enabled {
+            self.record_account_access_inner(address);
+        }
+    }
+
+    #[inline(never)]
+    fn record_account_access_inner(&mut self, address: &Address) {
+        self.accesses.accounts.insert(*address);
+    }
+
+    #[inline]
+    fn record_storage_access(&mut self, address: &Address, key: &Word) {
+        if self.enabled {
+            self.record_storage_access_inner(address, key);
+        }
+    }
+
+    #[inline(never)]
+    fn record_storage_access_inner(&mut self, address: &Address, key: &Word) {
+        self.accesses.storage.entry(*address).or_default().insert(*key);
+    }
+
+    fn take_state_accesses(&mut self) -> Option<StateAccesses> {
+        if !self.enabled || self.accesses.is_empty() {
+            return None;
+        }
+        Some(mem::take(&mut self.accesses))
     }
 }
 
@@ -403,12 +457,8 @@ pub struct State {
     accessed_storage: StorageKeySet,
     /// Transaction-scoped EIP-1153 transient storage keyed by account address and slot.
     transient_storage: StorageKeyMap<Word>,
-    /// Whether transaction-local access tracking is enabled.
-    track_accesses: bool,
-    /// Transaction-local account accesses used for BAL construction.
-    accessed_accounts_for_changes: AddressSet,
-    /// Transaction-local persistent storage accesses used for BAL construction.
-    accessed_storage_for_changes: StorageKeySet,
+    /// Transaction-local accesses used for BAL construction.
+    access_tracker: StateAccessTracker,
 }
 
 impl State {
@@ -429,39 +479,29 @@ impl State {
             accessed_accounts: AddressSet::default(),
             accessed_storage: StorageKeySet::default(),
             transient_storage: StorageKeyMap::default(),
-            track_accesses: false,
-            accessed_accounts_for_changes: AddressSet::default(),
-            accessed_storage_for_changes: StorageKeySet::default(),
+            access_tracker: StateAccessTracker::default(),
         }
     }
 
     /// Enables or disables transaction-local access tracking.
     pub fn set_access_tracking_enabled(&mut self, enabled: bool) {
-        self.track_accesses = enabled;
-        if !enabled {
-            self.accessed_accounts_for_changes.clear();
-            self.accessed_storage_for_changes.clear();
-        }
+        self.access_tracker.set_enabled(enabled);
     }
 
     /// Returns whether transaction-local access tracking is enabled.
     #[inline]
     pub const fn access_tracking_enabled(&self) -> bool {
-        self.track_accesses
+        self.access_tracker.enabled()
     }
 
     #[inline]
     pub(crate) fn record_account_access(&mut self, address: &Address) {
-        if self.track_accesses {
-            self.accessed_accounts_for_changes.insert(*address);
-        }
+        self.access_tracker.record_account_access(address);
     }
 
     #[inline]
     pub(crate) fn record_storage_access(&mut self, address: &Address, key: &Word) {
-        if self.track_accesses {
-            self.accessed_storage_for_changes.insert(StorageKey::new(*address, *key));
-        }
+        self.access_tracker.record_storage_access(address, key);
     }
 
     /// Returns a checkpoint for later rollback.
@@ -631,8 +671,7 @@ impl State {
         self.selfdestructs.clear();
         self.accessed_accounts.clear();
         self.accessed_storage.clear();
-        self.accessed_accounts_for_changes.clear();
-        self.accessed_storage_for_changes.clear();
+        self.access_tracker.clear();
         self.transient_storage.clear();
         self.logs.clear();
     }
@@ -1247,15 +1286,8 @@ impl State {
             }
         }
 
-        if self.track_accesses {
-            let mut accesses = StateAccesses::default();
-            accesses.accounts.extend(self.accessed_accounts_for_changes.iter().copied());
-            for key in &self.accessed_storage_for_changes {
-                accesses.storage.entry(key.address()).or_default().insert(key.key());
-            }
-            if !accesses.is_empty() {
-                changes.accesses = Some(accesses);
-            }
+        if let Some(accesses) = self.access_tracker.take_state_accesses() {
+            changes.accesses = Some(accesses);
         }
 
         changes
