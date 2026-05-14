@@ -587,14 +587,15 @@ fn final_tx_gas<T: EvmTypes>(
             .saturating_add(failure_intrinsic_state_refund);
     }
     let spent = tx_gas_limit.saturating_sub(result.gas.remaining()).saturating_sub(reservoir);
-    let refund = if result.stop.is_success() && result.gas.refunded() > 0 {
-        let max_refund_quotient = if is_eip3529 { 5 } else { 2 };
-        let refund = result.gas.refunded() as u64;
-        let cap = spent / max_refund_quotient;
-        if refund < cap { refund } else { cap }
-    } else {
-        0
-    };
+    let refund =
+        if (result.stop.is_success() || result.stop.is_revert()) && result.gas.refunded() > 0 {
+            let max_refund_quotient = if is_eip3529 { 5 } else { 2 };
+            let refund = result.gas.refunded() as u64;
+            let cap = spent / max_refund_quotient;
+            if refund < cap { refund } else { cap }
+        } else {
+            0
+        };
     let gas_remaining = result.gas.remaining().saturating_add(reservoir).saturating_add(refund);
     let gas_remaining = if gas_remaining < tx_gas_limit { gas_remaining } else { tx_gas_limit };
     let mut gas_used = tx_gas_limit.saturating_sub(gas_remaining);
@@ -889,6 +890,29 @@ mod tests {
                 remaining: 40_000,
                 used: 60_000,
                 block_regular_used: 60_000,
+                state_used: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn final_tx_gas_applies_top_level_refund_on_revert() {
+        let result = MessageResult::<BaseEvmTypes> {
+            stop: crate::interpreter::InstrStop::Revert,
+            gas: {
+                let mut gas = GasTracker::new_used_gas(100_000, 50_000, 0);
+                gas.set_refunded(10_000);
+                gas
+            },
+            ..MessageResult::<BaseEvmTypes>::default()
+        };
+
+        assert_eq!(
+            final_tx_gas(&result, 100_000, true, 21_000, 0, 0, 0),
+            FinalTxGas {
+                remaining: 60_000,
+                used: 40_000,
+                block_regular_used: 50_000,
                 state_used: 0,
             }
         );

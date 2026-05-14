@@ -12,7 +12,7 @@ use crate::{
     env::TxEnv,
     interpreter::Host,
     registry::{HandlerError, HandlerResult, TxRequest},
-    version::{EvmFeatures, GasId},
+    version::{EvmFeatures, GasId, Version},
 };
 use alloy_consensus::{TxEip7702, transaction::Recovered};
 use alloy_eips::eip7702::SignedAuthorization;
@@ -40,14 +40,15 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     validate_nonce_not_overflow(tx.nonce)?;
     let (access_list_accounts, access_list_storage_keys) = access_list_counts(&tx.access_list);
     let auth_state_gas = eip7702_authorization_state_gas(req.host, tx.authorization_list.len());
-    let intrinsic = intrinsic_gas(
-        req.host.version(),
-        tx.to.into(),
-        &tx.input,
-        access_list_accounts,
-        access_list_storage_keys,
-    ) + eip7702_authorization_regular_gas(req.host, tx.authorization_list.len())
-        + auth_state_gas;
+    let intrinsic =
+        intrinsic_gas(
+            req.host.version(),
+            tx.to.into(),
+            &tx.input,
+            access_list_accounts,
+            access_list_storage_keys,
+        ) + eip7702_authorization_regular_gas(req.host.version(), tx.authorization_list.len())
+            + auth_state_gas;
     validate_intrinsic_gas(tx.gas_limit, intrinsic)?;
     let floor_gas =
         floor_gas(req.host.version(), &tx.input, access_list_accounts, access_list_storage_keys);
@@ -107,11 +108,11 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     )
 }
 
-fn eip7702_authorization_regular_gas<T: EvmTypes<Host = Evm<T>>>(
-    _host: &Evm<T>,
-    authorizations: usize,
-) -> u64 {
-    u64::try_from(authorizations).unwrap_or(u64::MAX).saturating_mul(7500)
+fn eip7702_authorization_regular_gas(version: &Version, authorizations: usize) -> u64 {
+    let per_empty_account = u64::from(version.gas_params.get(GasId::TxEip7702PerEmptyAccountCost));
+    let per_auth_state = u64::from(version.gas_params.get(GasId::TxEip7702PerAuthState));
+    let per_auth_regular = per_empty_account.saturating_sub(per_auth_state);
+    u64::try_from(authorizations).unwrap_or(u64::MAX).saturating_mul(per_auth_regular)
 }
 
 fn eip7702_authorization_state_gas<T: EvmTypes<Host = Evm<T>>>(
@@ -200,4 +201,24 @@ fn set_delegation<T: EvmTypes<Host = Evm<T>>>(
     host.state.set_code(&authority, code).map_err(|code| host.db_error_handler(code))?;
     host.state.increment_nonce(&authority).map_err(|code| host.db_error_handler(code))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::SpecId;
+
+    #[test]
+    fn eip7702_prague_charges_full_empty_account_cost_upfront() {
+        let version = Version::base(SpecId::PRAGUE);
+
+        assert_eq!(eip7702_authorization_regular_gas(version, 2), 50_000);
+    }
+
+    #[test]
+    fn eip7702_amsterdam_splits_regular_and_state_auth_cost() {
+        let version = Version::base(SpecId::AMSTERDAM);
+
+        assert_eq!(eip7702_authorization_regular_gas(version, 2), 15_000);
+    }
 }
