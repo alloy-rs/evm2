@@ -36,6 +36,7 @@ from rich.text import Text
 MAIN_VERSION = os.environ.get("MAIN_VERSION", "v5.3.0")
 LEGACY_VERSION = os.environ.get("LEGACY_VERSION", "v17.2")
 BASE_URL = "https://github.com/ethereum/execution-spec-tests/releases/download"
+DEVNET_BASE_URL = os.environ.get("DEVNET_BASE_URL", BASE_URL)
 LEGACY_URL = (
     f"https://github.com/ethereum/tests/archive/refs/tags/{LEGACY_VERSION}.tar.gz"
 )
@@ -121,7 +122,7 @@ def devnet_fixture() -> Fixture | None:
 
     return Fixture(
         label="devnet",
-        url=f"{BASE_URL}/{version}/{tar_name}",
+        url=f"{DEVNET_BASE_URL}/{version}/{tar_name}",
         dest=DEVNET_DIR,
         exists_paths=(DEVNET_DIR / "state_tests", DEVNET_DIR / "blockchain_tests"),
     )

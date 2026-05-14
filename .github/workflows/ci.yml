@@ -75,7 +75,8 @@ jobs:
         shell: bash
         run: |
           if [[ "${{ matrix.fixture }}" == "devnet" ]]; then
-            export DEVNET_VERSION="bal%40v7.1.0"
+            export DEVNET_BASE_URL="https://github.com/ethereum/execution-specs/releases/download"
+            export DEVNET_VERSION="tests-bal%40v7.1.1"
             export DEVNET_TAR="fixtures_bal.tar.gz"
             export EVM2_STATETEST_DEVNET_ONLY=1
           fi
