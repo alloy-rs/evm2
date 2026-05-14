@@ -1,6 +1,5 @@
 [workspace]
 members = ["crates/evm2", "crates/macros", "crates/eest", "crates/inspectors"]
-exclude = ["vendor/proc-macro-error2"]
 resolver = "3"
 
 [workspace.package]
@@ -106,8 +105,6 @@ lto = "thin"
 codegen-units = 1
 
 [patch.crates-io]
-proc-macro-error2 = { path = "vendor/proc-macro-error2" }
-
 # less memcpys, allocas etc.: https://github.com/tokio-rs/bytes/pull/826
 bytes = { git = "https://github.com/tokio-rs/bytes", branch = "master" }
 
