@@ -125,7 +125,7 @@ static BASE_VERSIONS: [Version; SpecId::COUNT] = {
     }; SpecId::COUNT];
     let mut i = 0;
     while i < SpecId::COUNT {
-        let spec_id = SpecId::try_from_u8(i as u8).unwrap();
+        let spec_id = SpecId::try_from_u32(i as u32).unwrap();
         versions[i] = Version {
             spec_id,
             gas_params: base_gas_params(spec_id),

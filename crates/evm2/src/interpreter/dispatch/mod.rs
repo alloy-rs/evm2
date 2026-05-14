@@ -138,7 +138,7 @@ where
     table
 }
 
-const fn make_selector_tables<T, F, M, const CUSTOM_SPEC_ID: u8>()
+const fn make_selector_tables<T, F, M, const CUSTOM_SPEC_ID: u32>()
 -> [InstrTable<T>; crate::SpecId::COUNT]
 where
     T: EvmTypes,
@@ -152,7 +152,7 @@ where
         (@build [$($tables:ident,)*] [$($previous_table:tt)*]; $spec:ident $name:ident, $($rest:ident $rest_name:ident,)*) => {{
             let spec = crate::SpecId::$spec;
             let previous = spec.prev();
-            let $name = make_table::<T, F::Config<{ crate::SpecId::$spec as u8 }, CUSTOM_SPEC_ID>, M>(
+            let $name = make_table::<T, F::Config<{ crate::SpecId::$spec as u32 }, CUSTOM_SPEC_ID>, M>(
                 make_selector_tables!(@previous_table [$($previous_table)*]),
                 match previous {
                     Some(previous) => {
@@ -186,31 +186,31 @@ where
 {
     pub(crate) const INSTRUCTIONS: &'static InstrTable<T> = &make_table::<T, C, NoInspector>(
         Some(
-            &SelectorInstrTables::<T, BaseEvmConfigSelector, { u8::MAX }>::INSTRUCTIONS
+            &SelectorInstrTables::<T, BaseEvmConfigSelector, { u32::MAX }>::INSTRUCTIONS
                 [C::BASE_SPEC_ID as usize],
         ),
         Some(
-            SelectorVersionTables::<T, BaseEvmConfigSelector, { u8::MAX }>::VERSION_TABLES
+            SelectorVersionTables::<T, BaseEvmConfigSelector, { u32::MAX }>::VERSION_TABLES
                 [C::BASE_SPEC_ID as usize],
         ),
     );
     pub(crate) const INSPECT_INSTRUCTIONS: &'static InstrTable<T> = &make_table::<T, C, DynInspector>(
         Some(
-            &SelectorInstrTables::<T, BaseEvmConfigSelector, { u8::MAX }>::INSPECT_INSTRUCTIONS
+            &SelectorInstrTables::<T, BaseEvmConfigSelector, { u32::MAX }>::INSPECT_INSTRUCTIONS
                 [C::BASE_SPEC_ID as usize],
         ),
         Some(
-            SelectorVersionTables::<T, BaseEvmConfigSelector, { u8::MAX }>::VERSION_TABLES
+            SelectorVersionTables::<T, BaseEvmConfigSelector, { u32::MAX }>::VERSION_TABLES
                 [C::BASE_SPEC_ID as usize],
         ),
     );
 }
 
-pub(crate) struct SelectorInstrTables<T, F, const CUSTOM_SPEC_ID: u8>(
+pub(crate) struct SelectorInstrTables<T, F, const CUSTOM_SPEC_ID: u32>(
     core::marker::PhantomData<fn() -> (T, F)>,
 );
 
-impl<T, F, const CUSTOM_SPEC_ID: u8> SelectorInstrTables<T, F, CUSTOM_SPEC_ID>
+impl<T, F, const CUSTOM_SPEC_ID: u32> SelectorInstrTables<T, F, CUSTOM_SPEC_ID>
 where
     T: EvmTypes,
     F: EvmConfigSelector<T>,

@@ -68,7 +68,7 @@ impl EvmConfig<TestTypes> for MacroConfig {
 }
 
 const fn macro_version_tables() -> VersionTables<TestTypes> {
-    let mut version = VersionTables::<TestTypes>::base::<BaseEvmConfig<{ SpecId::OSAKA as u8 }>>();
+    let mut version = VersionTables::<TestTypes>::base::<BaseEvmConfig<{ SpecId::OSAKA as u32 }>>();
     version.set_instruction::<macro_add<TestTypes>>(ADD_OPCODE, 0);
     version.set_instruction::<macro_dynamic_gas<TestTypes>>(DYNAMIC_GAS_OPCODE, 2);
     version.set_instruction::<macro_no_stack_preamble<TestTypes>>(NO_STACK_PREAMBLE_OPCODE, 0);

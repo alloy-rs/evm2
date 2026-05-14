@@ -6,7 +6,7 @@ use evm2::{
     VersionTables,
 };
 
-#[repr(u8)]
+#[repr(u32)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CustomSpecId {
     MainnetOsaka,
@@ -18,24 +18,24 @@ impl CustomSpecId {
     pub const NEXT: Self = Self::CustomOsaka;
     pub const COUNT: usize = Self::NEXT as usize - Self::MIN as usize + 1;
 
-    pub const fn as_u8(self) -> u8 {
-        self as u8
+    pub const fn as_u32(self) -> u32 {
+        self as u32
     }
 
-    pub const fn try_from_u8(spec_id: u8) -> Option<Self> {
-        if spec_id <= Self::NEXT as u8 {
+    pub const fn try_from_u32(spec_id: u32) -> Option<Self> {
+        if spec_id <= Self::NEXT as u32 {
             // SAFETY: `spec_id` is within the valid variant range.
-            return Some(unsafe { core::mem::transmute::<u8, Self>(spec_id) });
+            return Some(unsafe { core::mem::transmute::<u32, Self>(spec_id) });
         }
         None
     }
 
     pub const fn enables(self, other: Self) -> bool {
-        self as u8 >= other as u8
+        self as u32 >= other as u32
     }
 }
 
-impl From<CustomSpecId> for u8 {
+impl From<CustomSpecId> for u32 {
     fn from(spec_id: CustomSpecId) -> Self {
         spec_id as Self
     }
@@ -90,12 +90,12 @@ pub struct CustomBlockEnvExt {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct CustomConfig<const BASE_SPEC_ID: u8, const CUSTOM_SPEC_ID: u8>(());
+pub struct CustomConfig<const BASE_SPEC_ID: u32, const CUSTOM_SPEC_ID: u32>(());
 
-impl<const BASE_SPEC_ID: u8, const CUSTOM_SPEC_ID: u8> EvmConfig<CustomTypes>
+impl<const BASE_SPEC_ID: u32, const CUSTOM_SPEC_ID: u32> EvmConfig<CustomTypes>
     for CustomConfig<BASE_SPEC_ID, CUSTOM_SPEC_ID>
 {
-    const BASE_SPEC_ID: SpecId = SpecId::try_from_u8(BASE_SPEC_ID).unwrap();
+    const BASE_SPEC_ID: SpecId = SpecId::try_from_u32(BASE_SPEC_ID).unwrap();
     const VERSION_TABLES: &'static VersionTables<CustomTypes> =
         &custom_version_tables::<BASE_SPEC_ID, CUSTOM_SPEC_ID>();
 }
@@ -106,11 +106,12 @@ pub const fn custom_version(base_spec_id: SpecId) -> Version {
     version
 }
 
-pub const fn custom_version_tables<const BASE_SPEC_ID: u8, const CUSTOM_SPEC_ID: u8>()
+pub const fn custom_version_tables<const BASE_SPEC_ID: u32, const CUSTOM_SPEC_ID: u32>()
 -> VersionTables<CustomTypes> {
     let mut version =
         VersionTables::<CustomTypes>::base::<CustomConfig<BASE_SPEC_ID, CUSTOM_SPEC_ID>>();
-    let custom_spec_id = CustomSpecId::try_from_u8(CUSTOM_SPEC_ID).expect("invalid custom spec id");
+    let custom_spec_id =
+        CustomSpecId::try_from_u32(CUSTOM_SPEC_ID).expect("invalid custom spec id");
     if custom_spec_id.enables(CustomSpecId::CustomOsaka) {
         version.set_instruction::<opcode::custom<CustomTypes>>(
             opcode::CUSTOM_OPCODE,
@@ -128,18 +129,18 @@ pub const fn custom_version_tables<const BASE_SPEC_ID: u8, const CUSTOM_SPEC_ID:
 pub struct CustomConfigSelector(());
 
 impl EvmConfigSelector<CustomTypes> for CustomConfigSelector {
-    type Config<const BASE_SPEC_ID: u8, const CUSTOM_SPEC_ID: u8> =
+    type Config<const BASE_SPEC_ID: u32, const CUSTOM_SPEC_ID: u32> =
         CustomConfig<BASE_SPEC_ID, CUSTOM_SPEC_ID>;
 
     fn execution_config(spec_id: CustomSpecId) -> ExecutionConfig<CustomTypes> {
         match spec_id {
             // Use unmodified Osaka tables.
             CustomSpecId::MainnetOsaka => {
-                ExecutionConfig::for_config::<BaseEvmConfig<{ SpecId::OSAKA as u8 }>>()
+                ExecutionConfig::for_config::<BaseEvmConfig<{ SpecId::OSAKA as u32 }>>()
             }
             // Use the same base spec, with one concrete custom table.
             CustomSpecId::CustomOsaka => ExecutionConfig::for_config::<
-                CustomConfig<{ SpecId::OSAKA as u8 }, { CustomSpecId::CustomOsaka.as_u8() }>,
+                CustomConfig<{ SpecId::OSAKA as u32 }, { CustomSpecId::CustomOsaka.as_u32() }>,
             >(),
         }
     }
