@@ -21,6 +21,14 @@ cargo nextest run -E "not (test(glob*)) | package(/regex.*/)" # further filter t
 cargo nextest run -p evm2-eest --test eest --ignore-default-filter # include EEST fixtures
 ```
 
+Use `EVM2_DISPATCH_BACKEND` to force an interpreter dispatch backend for manual
+testing. Accepted values are `auto` (default), `tco`, `packed`, `single_return`,
+and `unpacked`, for example:
+
+```bash
+EVM2_DISPATCH_BACKEND=packed cargo nextest run -p evm2-eest --test eest --ignore-default-filter
+```
+
 ## EEST Fixtures
 
 `./scripts/setup_test_fixtures.py` downloads fixtures into `test-fixtures/`.

@@ -162,6 +162,12 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         StackMut { stack: &mut self.stack, len: &mut self.stack_len }
     }
 
+    /// Stops the interpreter with `stop`.
+    #[inline]
+    pub const fn set_stop(&mut self, stop: InstrStop) {
+        self.result = Err(stop);
+    }
+
     /// Returns the current linear memory.
     #[inline]
     pub const fn memory_ref(&self) -> &Memory {
@@ -284,6 +290,12 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
     #[inline]
     pub(crate) const fn result(&self) -> Result {
         self.0.result
+    }
+
+    #[inline]
+    #[cfg(not(tco))]
+    pub(crate) const fn is_inspecting(&self) -> bool {
+        self.0.inspector.is_some()
     }
 
     #[inline]

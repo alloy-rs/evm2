@@ -369,12 +369,12 @@ mod tests {
     #[test]
     fn relative_stack_opcodes_are_not_enabled_before_amsterdam() {
         let interpreter = run(RunConfig::new([op::DUPN, 0x80]).spec(SpecId::OSAKA));
-        assert!(matches!(interpreter.err, InstrStop::OpcodeNotFound));
+        assert!(matches!(interpreter.err, InstrStop::InvalidOpcode));
 
         let interpreter = run(RunConfig::new([op::SWAPN, 0x80]).spec(SpecId::OSAKA));
-        assert!(matches!(interpreter.err, InstrStop::OpcodeNotFound));
+        assert!(matches!(interpreter.err, InstrStop::InvalidOpcode));
 
         let interpreter = run(RunConfig::new([op::EXCHANGE, 0x8e]).spec(SpecId::OSAKA));
-        assert!(matches!(interpreter.err, InstrStop::OpcodeNotFound));
+        assert!(matches!(interpreter.err, InstrStop::InvalidOpcode));
     }
 }

@@ -41,7 +41,7 @@ pub(crate) fn fmt_error_msg(res: InstrStop, kind: TraceStyle) -> Option<String> 
         InstrStop::InvalidOperandOOG => {
             if kind.is_parity() { "Out of gas" } else { "out of gas: invalid operand" }.to_string()
         }
-        InstrStop::OpcodeNotFound => {
+        InstrStop::InvalidOpcode => {
             if kind.is_parity() { "Bad instruction" } else { "invalid opcode" }.to_string()
         }
         InstrStop::StackOverflow => "Out of stack".to_string(),
@@ -51,9 +51,6 @@ pub(crate) fn fmt_error_msg(res: InstrStop, kind: TraceStyle) -> Option<String> 
         }
         InstrStop::PrecompileError => {
             if kind.is_parity() { "Built-in failed" } else { "precompiled failed" }.to_string()
-        }
-        InstrStop::InvalidFEOpcode => {
-            if kind.is_parity() { "Bad instruction" } else { "invalid opcode: INVALID" }.to_string()
         }
         InstrStop::ReentrancySentryOOG => if kind.is_parity() {
             "Out of gas"

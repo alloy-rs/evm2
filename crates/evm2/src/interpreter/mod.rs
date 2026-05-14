@@ -79,14 +79,12 @@ pub enum InstrStop {
     InvalidOperandOOG,
     /// Out of gas error encountered while checking for reentrancy sentry.
     ReentrancySentryOOG,
-    /// Unknown or invalid opcode.
-    OpcodeNotFound,
     /// Invalid `CALL` with value transfer in static context.
     CallNotAllowedInsideStatic,
     /// Invalid state modification in static call.
     StateChangeDuringStaticCall,
-    /// An undefined bytecode value encountered during execution.
-    InvalidFEOpcode,
+    /// Invalid or undefined opcode.
+    InvalidOpcode,
     /// Invalid jump destination. Dynamic jumps points to invalid not jumpdest opcode.
     InvalidJump,
     /// The feature or opcode is not activated in this version of the EVM.
