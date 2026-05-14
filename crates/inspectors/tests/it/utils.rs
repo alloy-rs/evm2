@@ -675,7 +675,7 @@ impl_owned_inspector_slot!(
     evm2_inspectors::tracing::TracingInspector,
 );
 
-#[cfg(feature = "js-tracer")]
+#[cfg(any())]
 impl_owned_inspector_slot!(evm2_inspectors::tracing::js::JsInspector);
 
 struct RawInspector<I> {

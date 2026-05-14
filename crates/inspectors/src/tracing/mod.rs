@@ -46,7 +46,7 @@ mod writer;
 #[cfg(feature = "std")]
 pub use writer::{TraceWriter, TraceWriterConfig};
 
-#[cfg(feature = "js-tracer")]
+#[cfg(any())]
 pub mod js;
 
 mod mux;

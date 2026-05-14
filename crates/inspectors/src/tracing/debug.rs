@@ -2,8 +2,6 @@ use crate::tracing::{
     FourByteInspector, MuxInspector, TracingInspector, TracingInspectorConfig, TransactionContext,
     geth::TraceTransactionResult,
 };
-#[cfg(feature = "js-tracer")]
-use alloc::boxed::Box;
 use alloy_primitives::{Address, Log, U256};
 use alloy_rpc_types_eth::TransactionInfo;
 use alloy_rpc_types_trace::geth::{
@@ -82,9 +80,6 @@ pub enum DebugInspector {
     Erc7562Tracer(TracingInspector, Erc7562Config),
     /// Default tracer
     Default(TracingInspector, GethDefaultTracingOptions),
-    #[cfg(feature = "js-tracer")]
-    /// JS tracer
-    Js(Box<crate::tracing::js::JsInspector>),
 }
 
 impl DebugInspector {
@@ -103,8 +98,6 @@ impl DebugInspector {
                 Self::Erc7562Tracer(inspector.clone(), config.clone())
             }
             Self::Default(inspector, config) => Self::Default(inspector.clone(), *config),
-            #[cfg(feature = "js-tracer")]
-            Self::Js(inspector) => Self::Js(inspector.try_clone()?.into()),
         })
     }
 
@@ -182,14 +175,8 @@ impl DebugInspector {
                         return Err(DebugInspectorError::UnsupportedTracer);
                     }
                 },
-                #[cfg(not(feature = "js-tracer"))]
                 GethDebugTracerType::JsTracer(_) => {
                     return Err(DebugInspectorError::JsTracerNotEnabled);
-                }
-                #[cfg(feature = "js-tracer")]
-                GethDebugTracerType::JsTracer(code) => {
-                    let config = tracer_config.into_json();
-                    Self::Js(crate::tracing::js::JsInspector::new(code, config)?.into())
                 }
                 _ => {
                     // Note: this match is non-exhaustive in case we need to add support for
@@ -222,10 +209,6 @@ impl DebugInspector {
             Self::Noop => {}
             Self::Mux(inspector, config) => {
                 *inspector = MuxInspector::try_from_config(config.clone())?;
-            }
-            #[cfg(feature = "js-tracer")]
-            Self::Js(inspector) => {
-                *inspector = inspector.try_clone()?.into();
             }
         }
 
@@ -301,15 +284,6 @@ impl DebugInspector {
                     .geth_traces(res.trace_gas_used(), res.trace_output(), *config)
                     .into()
             }
-            #[cfg(feature = "js-tracer")]
-            Self::Js(inspector) => {
-                inspector.set_transaction_context(tx_context.unwrap_or_default());
-                let res = inspector
-                    .json_result(res.clone(), tx_env, block_env, db)
-                    .map_err(DebugInspectorError::JsInspector)?;
-
-                GethTrace::JS(res)
-            }
         };
 
         Ok(res)
@@ -327,8 +301,6 @@ impl<T: EvmTypes> Inspector<T> for DebugInspector {
             | Self::Default(inspector, _) => inspector.initialize_interp(interp),
             Self::Noop => {}
             Self::Mux(inspector, _) => inspector.initialize_interp(interp),
-            #[cfg(feature = "js-tracer")]
-            Self::Js(inspector) => inspector.initialize_interp(interp),
         }
     }
 
@@ -342,8 +314,6 @@ impl<T: EvmTypes> Inspector<T> for DebugInspector {
             | Self::Default(inspector, _) => inspector.step(interp),
             Self::Noop => {}
             Self::Mux(inspector, _) => inspector.step(interp),
-            #[cfg(feature = "js-tracer")]
-            Self::Js(inspector) => inspector.step(interp),
         }
     }
 
@@ -357,8 +327,6 @@ impl<T: EvmTypes> Inspector<T> for DebugInspector {
             | Self::Default(inspector, _) => inspector.step_end(interp),
             Self::Noop => {}
             Self::Mux(inspector, _) => inspector.step_end(interp),
-            #[cfg(feature = "js-tracer")]
-            Self::Js(inspector) => inspector.step_end(interp),
         }
     }
 
@@ -374,8 +342,6 @@ impl<T: EvmTypes> Inspector<T> for DebugInspector {
             }
             Self::Noop => {}
             Self::Mux(inspector, _) => <MuxInspector as Inspector<T>>::log(inspector, log),
-            #[cfg(feature = "js-tracer")]
-            Self::Js(inspector) => inspector.log(log),
         }
     }
 
@@ -389,8 +355,6 @@ impl<T: EvmTypes> Inspector<T> for DebugInspector {
             | Self::Default(inspector, _) => inspector.call(message),
             Self::Noop => None,
             Self::Mux(inspector, _) => inspector.call(message),
-            #[cfg(feature = "js-tracer")]
-            Self::Js(inspector) => inspector.call(message),
         }
     }
 
@@ -404,8 +368,6 @@ impl<T: EvmTypes> Inspector<T> for DebugInspector {
             | Self::Default(inspector, _) => inspector.call_end(message, result),
             Self::Noop => {}
             Self::Mux(inspector, _) => inspector.call_end(message, result),
-            #[cfg(feature = "js-tracer")]
-            Self::Js(inspector) => inspector.call_end(message, result),
         }
     }
 
@@ -419,8 +381,6 @@ impl<T: EvmTypes> Inspector<T> for DebugInspector {
             | Self::Default(inspector, _) => inspector.create(message),
             Self::Noop => None,
             Self::Mux(inspector, _) => inspector.create(message),
-            #[cfg(feature = "js-tracer")]
-            Self::Js(inspector) => inspector.create(message),
         }
     }
 
@@ -434,8 +394,6 @@ impl<T: EvmTypes> Inspector<T> for DebugInspector {
             | Self::Default(inspector, _) => inspector.create_end(message, result),
             Self::Noop => {}
             Self::Mux(inspector, _) => inspector.create_end(message, result),
-            #[cfg(feature = "js-tracer")]
-            Self::Js(inspector) => inspector.create_end(message, result),
         }
     }
 
@@ -459,8 +417,6 @@ impl<T: EvmTypes> Inspector<T> for DebugInspector {
             Self::Mux(inspector, _) => {
                 <MuxInspector as Inspector<T>>::selfdestruct(inspector, contract, target, value);
             }
-            #[cfg(feature = "js-tracer")]
-            Self::Js(inspector) => inspector.selfdestruct(contract, target, value),
         }
     }
 }
@@ -481,9 +437,6 @@ pub enum DebugInspectorError<DBError = core::convert::Infallible> {
     #[error(transparent)]
     MuxInspector(#[from] crate::tracing::MuxError),
     /// Error from JS inspector
-    #[cfg(feature = "js-tracer")]
-    #[error(transparent)]
-    JsInspector(#[from] crate::tracing::js::JsInspectorError),
     /// Database error
     #[error("database error: {0}")]
     Database(DBError),

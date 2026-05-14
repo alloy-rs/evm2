@@ -723,7 +723,7 @@ mod tests {
         assert_eq!(state.step_ends, 4);
         assert_eq!(state.logs.len(), 1);
         assert_eq!(state.logs[0].address, contract);
-        assert_eq!(state.calls, 0);
+        assert_eq!(state.calls, 1);
         assert_eq!(state.creates, 0);
     }
 
@@ -765,7 +765,7 @@ mod tests {
     }
 
     #[test]
-    fn evm_create_transaction_initializes_interpreter_without_create_hook() {
+    fn evm_create_transaction_initializes_interpreter_with_create_hook() {
         let caller = Address::from([0xaa; 20]);
         let mut database = InMemoryDB::default();
         database.insert_account_info(
@@ -799,6 +799,6 @@ mod tests {
         assert_eq!(state.steps, 1);
         assert_eq!(state.step_ends, 1);
         assert_eq!(state.calls, 0);
-        assert_eq!(state.creates, 0);
+        assert_eq!(state.creates, 1);
     }
 }

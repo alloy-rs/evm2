@@ -1,10 +1,4 @@
 //! evm2 [Inspector](evm2::Inspector) implementations, such as call tracers
-//!
-//! ## Feature Flags
-//!
-//! - `js-tracer`: Enables a JavaScript tracer implementation. This pulls in extra dependencies
-//!   (such as `boa`, `tokio` and `serde_json`).
-
 #![doc = include_str!("../README.md")]
 #![doc(
     html_logo_url = "https://raw.githubusercontent.com/paradigmxyz/reth/main/assets/reth-docs.png",
@@ -20,10 +14,6 @@ extern crate alloc;
 
 #[cfg(feature = "std")]
 use anstyle as _;
-#[cfg(feature = "js-tracer")]
-use boa_engine as _;
-#[cfg(feature = "js-tracer")]
-use boa_gc as _;
 #[cfg(feature = "serde")]
 use serde as _;
 use serde_json as _;

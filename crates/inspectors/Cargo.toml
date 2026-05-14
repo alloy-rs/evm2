@@ -29,10 +29,6 @@ thiserror.workspace = true
 serde = { workspace = true, optional = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["alloc"] }
 
-# js-tracer
-boa_engine = { workspace = true, optional = true }
-boa_gc = { workspace = true, optional = true }
-
 [dev-dependencies]
 alloy-consensus = { workspace = true, features = ["std"] }
 snapbox = { workspace = true, features = ["term-svg"] }
@@ -50,4 +46,4 @@ std = [
     "thiserror/std",
 ]
 serde = ["dep:serde", "alloy-primitives/serde", "alloy-rpc-types-eth/serde", "evm2/serde"]
-js-tracer = ["dep:boa_engine", "dep:boa_gc"]
+js-tracer = []
