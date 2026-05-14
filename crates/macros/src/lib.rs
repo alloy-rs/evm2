@@ -1,4 +1,5 @@
 #![doc = include_str!("../README.md")]
+#![warn(unused_crate_dependencies)]
 
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
