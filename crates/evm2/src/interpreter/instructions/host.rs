@@ -294,11 +294,12 @@ mod tests {
         let interpreter = run(RunConfig::new([op::PUSH1, 1, op::PUSH1, 0, op::SSTORE, op::STOP])
             .host(&mut host)
             .spec(SpecId::AMSTERDAM)
+            .message(Message { gas_reservoir: 97_920, ..Message::default() })
             .gas_limit(100_000));
 
         assert!(matches!(interpreter.err, InstrStop::Stop));
-        assert_eq!(interpreter.gas_remaining(), 59_526);
-        assert_eq!(interpreter.state_gas_spent(), 37_568);
+        assert_eq!(interpreter.gas_remaining(), 97_094);
+        assert_eq!(interpreter.state_gas_spent(), 97_920);
     }
 
     #[test]

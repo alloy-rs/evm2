@@ -138,6 +138,7 @@ std = [
 serde = [
     "dep:serde",
     "alloy-consensus/serde",
+    "alloy-eip7928/serde",
     "alloy-eips/serde",
     "alloy-primitives/serde",
     "alloy-trie/serde",
