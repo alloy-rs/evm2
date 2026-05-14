@@ -471,7 +471,7 @@ mod tests {
         assert_eq!(interpreter.stack(), [Word::from(3)]);
 
         let interpreter = run(RunConfig::new([op::RETURNDATASIZE]).spec(SpecId::FRONTIER));
-        assert!(matches!(interpreter.err, InstrStop::OpcodeNotFound));
+        assert!(matches!(interpreter.err, InstrStop::InvalidOpcode));
     }
 
     #[test]
@@ -521,7 +521,7 @@ mod tests {
             op::RETURNDATACOPY,
         ))
         .spec(SpecId::FRONTIER));
-        assert!(matches!(interpreter.err, InstrStop::OpcodeNotFound));
+        assert!(matches!(interpreter.err, InstrStop::InvalidOpcode));
     }
 
     #[test]
@@ -537,6 +537,6 @@ mod tests {
         let interpreter = run(RunConfig::new([op::PUSH1, 0xbe, op::EXTCODEHASH, op::STOP])
             .host(&mut host)
             .spec(SpecId::BYZANTIUM));
-        assert!(matches!(interpreter.err, InstrStop::OpcodeNotFound));
+        assert!(matches!(interpreter.err, InstrStop::InvalidOpcode));
     }
 }

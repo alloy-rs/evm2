@@ -45,55 +45,6 @@ extern_table! {
         C: EvmConfig<T>,
         M: InspectMode<T>,
         const OP: u8,
-        const DYNAMIC_GAS: bool,
-    >(
-        pc: Pc,
-        stack: Stack<'_>,
-        remaining_gas: RemainingGas,
-        state: &mut InterpreterState<'_, T>,
-        instructions: *const (),
-    ) {
-        tail_return!(tail_dispatch_mono::<T, C, M, DYNAMIC_GAS, false, OP>(
-            pc,
-            stack,
-            remaining_gas,
-            state,
-            instructions
-        ));
-    }
-}
-
-extern_table! {
-    pub(super) fn unknown_dispatch<
-        T: EvmTypes,
-        C: EvmConfig<T>,
-        M: InspectMode<T>,
-    >(
-        pc: Pc,
-        stack: Stack<'_>,
-        remaining_gas: RemainingGas,
-        state: &mut InterpreterState<'_, T>,
-        instructions: *const (),
-    ) {
-        tail_return!(tail_dispatch_mono::<T, C, M, false, true, { super::UNKNOWN_OP }>(
-            pc,
-            stack,
-            remaining_gas,
-            state,
-            instructions
-        ));
-    }
-}
-
-extern_table! {
-    #[inline(always)]
-    fn tail_dispatch_mono<
-        T: EvmTypes,
-        C: EvmConfig<T>,
-        M: InspectMode<T>,
-        const DYNAMIC_GAS: bool,
-        const UNKNOWN: bool,
-        const OP: u8,
     >(
         mut pc: Pc,
         mut stack: Stack<'_>,
@@ -101,30 +52,29 @@ extern_table! {
         state: &mut InterpreterState<'_, T>,
         instructions: *const (),
     ) {
-        if !UNKNOWN {
-            unsafe { core::hint::assert_unchecked(pc.op() == OP) };
-        }
-        let instr: InstructionImplFn<T> = if UNKNOWN {
-            super::unknown_instruction
-        } else {
-            C::OPCODE_CONFIG.instruction(OP).instr
-        };
+        let instruction = C::OPCODE_CONFIG.instruction(OP);
+        let instr: InstructionImplFn<T> = instruction.instr;
+        let dynamic_gas = instruction.dynamic_gas;
         if M::INSPECT {
             M::step(state, pc, stack.len);
+            if state.result().is_err() {
+                cold_path();
+                tail_return!(tail_call_restore(pc, stack, remaining_gas, state, instructions));
+            }
         }
-        if let Err(e) = pre_step::<T, C, OP>(&mut remaining_gas) {
+        if let Err(e) = pre_step::<T, C>(&mut remaining_gas, OP) {
             cold_path();
             state.set_result(Err(e));
             if M::INSPECT {
                 M::step_end(state, pc, stack.len);
             }
-            tail_return!(tail_call_restore::<T>(pc, stack, remaining_gas, state, instructions));
+            tail_return!(tail_call_restore(pc, stack, remaining_gas, state, instructions));
         }
-        if DYNAMIC_GAS {
+        if dynamic_gas {
             state.gas_mut().set_remaining(remaining_gas.get());
         }
         let r = instr(&mut pc, stack.as_mut(), state);
-        if DYNAMIC_GAS {
+        if dynamic_gas {
             remaining_gas.set(state.gas_mut().remaining());
         }
         if let Err(e) = r {
@@ -133,20 +83,25 @@ extern_table! {
             if M::INSPECT {
                 M::step_end(state, pc, stack.len);
             }
-            tail_return!(tail_call_restore::<T>(pc, stack, remaining_gas, state, instructions));
+            tail_return!(tail_call_restore(pc, stack, remaining_gas, state, instructions));
         }
         super::inc_pc(&mut pc, OP);
         if M::INSPECT {
             M::step_end(state, pc, stack.len);
+            if state.result().is_err() {
+                cold_path();
+                tail_return!(tail_call_restore(pc, stack, remaining_gas, state, instructions));
+            }
         }
-        let instructions = instructions.cast::<TailInstrTable<T>>();
-        let instr = unsafe { (*instructions)[pc.op() as usize] };
-        tail_return!(instr(pc, stack, remaining_gas, state, instructions.cast()));
+        // SAFETY: `instructions` is a pointer to a `TailInstrTable`.
+        let instructions_t = unsafe { &*instructions.cast::<TailInstrTable<T>>() };
+        let instr = instructions_t[pc.op() as usize];
+        tail_return!(instr(pc, stack, remaining_gas, state, instructions));
     }
 }
 
 extern_table! {
-    #[inline(never)] // TODO
+    #[inline(never)]
     #[cold]
     fn tail_call_restore<T: EvmTypes>(
         pc: Pc,
@@ -163,8 +118,9 @@ extern_table! {
 }
 
 #[inline(always)]
-const fn pre_step<T: EvmTypes, C: EvmConfig<T>, const OP: u8>(
+const fn pre_step<T: EvmTypes, C: EvmConfig<T>>(
     remaining_gas: &mut RemainingGas,
+    opcode: u8,
 ) -> Result {
-    remaining_gas.spend(C::OPCODE_CONFIG.static_gas(OP) as _)
+    remaining_gas.spend(C::OPCODE_CONFIG.static_gas(opcode) as _)
 }

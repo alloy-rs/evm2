@@ -3,20 +3,9 @@
 use crate::{
     BaseEvmConfigSelector, EvmConfig, EvmConfigSelector, EvmTypes, OpcodeConfig,
     evm::config::SelectorOpcodeConfig,
-    interpreter::{InstrStop, Interpreter, InterpreterState, Pc, Result, Stack, StackMut, op},
+    interpreter::{Interpreter, InterpreterState, Pc, Stack, op},
     trustme,
 };
-
-#[cold]
-pub(crate) const fn unknown_instruction<T: EvmTypes>(
-    _pc: &mut Pc,
-    _stack: StackMut<'_>,
-    _state: &mut InterpreterState<'_, T>,
-) -> Result {
-    Err(InstrStop::OpcodeNotFound)
-}
-
-const UNKNOWN_OP: u8 = op::INVALID;
 
 cfg_if::cfg_if! {
     if #[cfg(tco)] {
@@ -72,9 +61,22 @@ where
     C: EvmConfig<T>,
     M: InspectMode<T>,
 {
+    macro_rules! dispatch_fn {
+        ($config:ty, $inspect:ty, $op:expr) => {{
+            #[cfg(tco)]
+            {
+                imp::dispatch::<T, $config, $inspect, $op> as imp::RawInstrFn<T>
+            }
+            #[cfg(not(tco))]
+            {
+                imp::dispatch::<T, $config, $inspect, $op> as imp::RawInstrFn<T>
+            }
+        }};
+    }
+
     let mut table = match previous {
         Some(previous) => *previous,
-        None => [imp::unknown_dispatch::<T, C, M> as imp::RawInstrFn<T>; 256],
+        None => [dispatch_fn!(C, M, { op::INVALID }); 256],
     };
     let vt = C::OPCODE_CONFIG;
 
@@ -82,14 +84,7 @@ where
         ($($op:literal,)*) => {
             $(
                 if instruction_changed(vt, previous_opcode_config, $op) && !vt.is_unknown_opcode($op) {
-                    table[$op] = {
-                        let instruction = vt.instruction($op);
-                        if instruction.dynamic_gas {
-                            imp::dispatch::<T, C, M, $op, true> as imp::RawInstrFn<T>
-                        } else {
-                            imp::dispatch::<T, C, M, $op, false> as imp::RawInstrFn<T>
-                        }
-                    };
+                    table[$op] = dispatch_fn!(C, M, $op);
                 }
             )*
         };

@@ -695,7 +695,7 @@ mod tests {
             op::DELEGATECALL,
         ])
         .spec(SpecId::FRONTIER));
-        assert!(matches!(interpreter.err, InstrStop::OpcodeNotFound));
+        assert!(matches!(interpreter.err, InstrStop::InvalidOpcode));
     }
 
     #[test]
@@ -738,7 +738,7 @@ mod tests {
             op::STATICCALL,
         ])
         .spec(SpecId::HOMESTEAD));
-        assert!(matches!(interpreter.err, InstrStop::OpcodeNotFound));
+        assert!(matches!(interpreter.err, InstrStop::InvalidOpcode));
     }
 
     #[test]
@@ -866,7 +866,7 @@ mod tests {
             op::CREATE2,
         ])
         .spec(SpecId::BYZANTIUM));
-        assert!(matches!(interpreter.err, InstrStop::OpcodeNotFound));
+        assert!(matches!(interpreter.err, InstrStop::InvalidOpcode));
     }
 
     #[test]

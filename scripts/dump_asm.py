@@ -33,12 +33,15 @@ ROOT = Path(repo_root())
 OPCODE_RS = ROOT / "crates" / "evm2" / "src" / "interpreter" / "opcode.rs"
 DEFAULT_OUT = ROOT / "tmp" / "dump"
 DISPATCH_SYMBOLS = (
+    "evm2::interpreter::dispatch::table::packed::dispatch::<",
+    "evm2::interpreter::dispatch::table::single_return::dispatch::<",
+    "evm2::interpreter::dispatch::table::unpacked::dispatch::<",
     "evm2::interpreter::dispatch::packed::dispatch::<",
     "evm2::interpreter::dispatch::single_return::dispatch::<",
     "evm2::interpreter::dispatch::unpacked::dispatch::<",
     "evm2::interpreter::dispatch::tco::dispatch::<",
 )
-DISPATCH_OPCODE = re.compile(r",\s*(\d+)(?:,\s*(?:true|false))*?>")
+DISPATCH_OPCODE = re.compile(r",\s*(\d+)(?:,\s*(?:true|false))?\s*>")
 DISPATCH_OUTPUTS = (
     ("NoInspector", "op"),
     ("DynInspector", "op-inspector"),
@@ -199,19 +202,21 @@ def dispatch_output(text: str) -> str | None:
     for symbol, directory in DISPATCH_OUTPUTS:
         if symbol in text:
             return directory
+    if any(symbol in text for symbol in DISPATCH_SYMBOLS):
+        return "op"
     return None
 
 
 def dispatch_metadata(text: str) -> tuple[int, str] | None:
     if not any(symbol in text for symbol in DISPATCH_SYMBOLS):
         return None
-    match = DISPATCH_OPCODE.search(text)
-    if match is None:
+    matches = DISPATCH_OPCODE.findall(text)
+    if not matches:
         return None
     directory = dispatch_output(text)
     if directory is None:
         return None
-    return int(match.group(1)), directory
+    return int(matches[-1]), directory
 
 
 def is_run_inner_symbol(text: str) -> bool:
@@ -388,6 +393,16 @@ def dump_output(
     return path
 
 
+def dispatch_directories(dumps: dict[str, dict[int, dict[str, list[str]]]]) -> list[str]:
+    directories = {
+        directory
+        for blocks_by_opcode in dumps.values()
+        for blocks_by_directory in blocks_by_opcode.values()
+        for directory in blocks_by_directory
+    }
+    return [directory for _, directory in DISPATCH_OUTPUTS if directory in directories]
+
+
 def main() -> int:
     args = parse_args()
     logging.basicConfig(
@@ -450,7 +465,7 @@ def main() -> int:
         (mnemonic, opcode, output, directory)
         for mnemonic, opcode in selected
         for output in ("asm", "llvm")
-        for _, directory in DISPATCH_OUTPUTS
+        for directory in dispatch_directories(dumps)
     ]
     dispatch_files = 0
     for mnemonic, opcode, output, directory in tasks:

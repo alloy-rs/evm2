@@ -109,6 +109,46 @@ mod tests {
         }
     }
 
+    struct StopOnStepInspector {
+        opcode: u8,
+        steps: usize,
+        step_ends: usize,
+    }
+
+    impl Inspector<TestTypes> for StopOnStepInspector {
+        fn step(&mut self, interp: &mut Interpreter<'_, TestTypes>) {
+            self.steps += 1;
+            if interp.opcode() == self.opcode {
+                interp.set_stop(InstrStop::Revert);
+            }
+        }
+
+        fn step_end(&mut self, _interp: &mut Interpreter<'_, TestTypes>) {
+            self.step_ends += 1;
+        }
+    }
+
+    struct StopOnStepEndInspector {
+        opcode: u8,
+        last_opcode: Option<u8>,
+        steps: usize,
+        step_ends: usize,
+    }
+
+    impl Inspector<TestTypes> for StopOnStepEndInspector {
+        fn step(&mut self, interp: &mut Interpreter<'_, TestTypes>) {
+            self.steps += 1;
+            self.last_opcode = Some(interp.opcode());
+        }
+
+        fn step_end(&mut self, interp: &mut Interpreter<'_, TestTypes>) {
+            self.step_ends += 1;
+            if self.last_opcode == Some(self.opcode) {
+                interp.set_stop(InstrStop::Revert);
+            }
+        }
+    }
+
     #[derive(Default)]
     struct MessageInspector {
         call_depth: Option<u16>,
@@ -394,6 +434,45 @@ mod tests {
     }
 
     #[test]
+    fn step_can_stop_before_current_opcode_executes() {
+        let mut host = TestHost::default();
+        let mut inspector = StopOnStepInspector { opcode: op::ADD, steps: 0, step_ends: 0 };
+
+        let (stop, stack) = run_with_inspector(
+            Vec::from([op::PUSH1, 1, op::PUSH1, 2, op::ADD, op::STOP]),
+            &mut host,
+            &Message::default(),
+            10_000,
+            &mut inspector,
+        );
+
+        assert_eq!(stop, InstrStop::Revert);
+        assert_eq!(stack, [Word::from(1), Word::from(2)]);
+        assert_eq!(inspector.steps, 3);
+        assert_eq!(inspector.step_ends, 2);
+    }
+
+    #[test]
+    fn step_end_can_stop_before_next_opcode_executes() {
+        let mut host = TestHost::default();
+        let mut inspector =
+            StopOnStepEndInspector { opcode: op::PUSH1, last_opcode: None, steps: 0, step_ends: 0 };
+
+        let (stop, stack) = run_with_inspector(
+            Vec::from([op::PUSH1, 1, op::PUSH1, 2, op::ADD, op::STOP]),
+            &mut host,
+            &Message::default(),
+            10_000,
+            &mut inspector,
+        );
+
+        assert_eq!(stop, InstrStop::Revert);
+        assert_eq!(stack, [Word::from(1)]);
+        assert_eq!(inspector.steps, 1);
+        assert_eq!(inspector.step_ends, 1);
+    }
+
+    #[test]
     fn call_too_deep_is_inspected_without_host_call() {
         let target = Address::from([0x22; 20]);
         let mut host = TestHost::default();
@@ -630,7 +709,7 @@ mod tests {
             &mut inspector,
         );
 
-        assert_eq!(stop, InstrStop::InvalidFEOpcode);
+        assert_eq!(stop, InstrStop::InvalidOpcode);
         assert_eq!(inspector.steps, 1);
         assert_eq!(inspector.step_ends, 1);
     }
