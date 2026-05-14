@@ -962,10 +962,12 @@ impl State {
     pub fn wipe_storage(&mut self, address: &Address) {
         let previous = self.storage.get(address).cloned();
         self.journal.push(JournalEntry::StorageWipe { address: *address, previous });
-        self.storage.insert(
-            *address,
-            StorageOverlay { wiped: true, slots: U256Map::default(), _non_exhaustive: () },
-        );
+        let mut storage = self.storage.remove(address).unwrap_or_default();
+        storage.wiped = true;
+        for slot in storage.slots.values_mut() {
+            slot.current = Word::ZERO;
+        }
+        self.storage.insert(*address, storage);
     }
 
     /// Loads transient storage.
@@ -1133,10 +1135,12 @@ impl State {
             address,
         )?;
         account.current = None;
-        self.storage.insert(
-            *address,
-            StorageOverlay { wiped: true, slots: U256Map::default(), _non_exhaustive: () },
-        );
+        let mut storage = self.storage.remove(address).unwrap_or_default();
+        storage.wiped = true;
+        for slot in storage.slots.values_mut() {
+            slot.current = Word::ZERO;
+        }
+        self.storage.insert(*address, storage);
         Ok(())
     }
 
@@ -1270,7 +1274,7 @@ impl State {
                 _non_exhaustive: (),
             };
             for (&key, slot) in &storage.slots {
-                if slot.original != slot.current && (!set.wipe || !slot.current.is_zero()) {
+                if slot.original != slot.current {
                     set.slots.insert(
                         key,
                         Tracked {
@@ -1579,6 +1583,26 @@ mod tests {
         assert!(change.original.is_some());
         assert_eq!(change.current, None);
         assert!(changes.storage.get(&address).is_some_and(|storage| storage.wipe));
+    }
+
+    #[test]
+    fn selfdestruct_zeroes_loaded_storage_slots() {
+        let address = Address::from([0x49; 20]);
+        let mut database = CacheDB::default();
+        database.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(1)));
+        database.insert_account_storage(&address, &Word::from(1), &Word::from(2));
+        let mut state = State::new(database);
+
+        assert_eq!(state.storage(&address, &Word::from(1)).unwrap(), Word::from(2));
+        state.mark_destructed(&address);
+        state.finalize_transaction_(Version::base(crate::SpecId::SPURIOUS_DRAGON));
+        let changes = state.build_state_changes();
+
+        let storage = changes.storage.get(&address).expect("selfdestruct wipes storage");
+        assert!(storage.wipe);
+        let slot = storage.slots.get(&Word::from(1)).expect("loaded slot is zeroed");
+        assert_eq!(slot.original, Word::from(2));
+        assert_eq!(slot.current, Word::ZERO);
     }
 
     #[test]

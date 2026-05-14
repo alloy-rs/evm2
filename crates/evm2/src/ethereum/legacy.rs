@@ -28,10 +28,12 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     validate_create_initcode(req.host.version(), tx.to, &tx.input)?;
     validate_nonce_not_overflow(tx.nonce)?;
     let intrinsic = intrinsic_gas(req.host.version(), tx.to, &tx.input, 0, 0);
+    let intrinsic_state = intrinsic_state_gas(req.host.version(), tx.to);
+    let intrinsic_regular = intrinsic.saturating_sub(intrinsic_state);
     validate_intrinsic_gas(tx.gas_limit, intrinsic)?;
     let floor_gas = floor_gas(req.host.version(), &tx.input, 0, 0);
     validate_floor_gas(tx.gas_limit, floor_gas)?;
-    validate_regular_gas_limit_cap(req.host.version(), tx.gas_limit, intrinsic, floor_gas)?;
+    validate_regular_gas_limit_cap(req.host.version(), tx.gas_limit, intrinsic_regular, floor_gas)?;
 
     let max_gas_cost = U256::from(tx.gas_limit) * gas_price;
     validate_sender(req.host, caller, tx.nonce, max_gas_cost.saturating_add(tx.value))?;
@@ -42,7 +44,6 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     req.host.state.increment_nonce(&caller).map_err(|code| req.host.db_error_handler(code))?;
     let execution_checkpoint = req.host.state.checkpoint();
 
-    let intrinsic_state = intrinsic_state_gas(req.host.version(), tx.to);
     let (gas_limit, gas_reservoir) =
         initial_execution_gas(req.host.version(), tx.gas_limit, intrinsic, intrinsic_state);
     let tx_env = TxEnv {

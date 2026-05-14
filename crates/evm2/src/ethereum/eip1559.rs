@@ -40,11 +40,13 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
         access_list_accounts,
         access_list_storage_keys,
     );
+    let intrinsic_state = intrinsic_state_gas(req.host.version(), tx.to);
+    let intrinsic_regular = intrinsic.saturating_sub(intrinsic_state);
     validate_intrinsic_gas(tx.gas_limit, intrinsic)?;
     let floor_gas =
         floor_gas(req.host.version(), &tx.input, access_list_accounts, access_list_storage_keys);
     validate_floor_gas(tx.gas_limit, floor_gas)?;
-    validate_regular_gas_limit_cap(req.host.version(), tx.gas_limit, intrinsic, floor_gas)?;
+    validate_regular_gas_limit_cap(req.host.version(), tx.gas_limit, intrinsic_regular, floor_gas)?;
 
     let max_gas_cost = U256::from(tx.gas_limit) * max_fee_per_gas;
     validate_sender(req.host, caller, tx.nonce, max_gas_cost.saturating_add(tx.value))?;
@@ -57,7 +59,6 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     req.host.state.increment_nonce(&caller).map_err(|code| req.host.db_error_handler(code))?;
     let execution_checkpoint = req.host.state.checkpoint();
 
-    let intrinsic_state = intrinsic_state_gas(req.host.version(), tx.to);
     let (gas_limit, gas_reservoir) =
         initial_execution_gas(req.host.version(), tx.gas_limit, intrinsic, intrinsic_state);
     let tx_env = TxEnv {

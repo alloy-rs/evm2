@@ -521,7 +521,7 @@ pub(super) fn settle_gas<T: EvmTypes<Host = Evm<T>>>(
     gas_price: U256,
     tx_gas_limit: u64,
     floor_gas: u64,
-    intrinsic_gas: u64,
+    _intrinsic_gas: u64,
     intrinsic_state_gas: u64,
     failure_intrinsic_state_refund: u64,
     result: MessageResult<T>,
@@ -531,7 +531,7 @@ pub(super) fn settle_gas<T: EvmTypes<Host = Evm<T>>>(
         tx_gas_limit,
         host.feature(EvmFeatures::EIP3529),
         floor_gas,
-        intrinsic_gas,
+        _intrinsic_gas,
         intrinsic_state_gas,
         failure_intrinsic_state_refund,
     );
@@ -568,20 +568,19 @@ struct FinalTxGas {
     state_used: u64,
 }
 
-fn final_tx_gas<T: EvmTypes>(
+const fn final_tx_gas<T: EvmTypes>(
     result: &MessageResult<T>,
     tx_gas_limit: u64,
     is_eip3529: bool,
     floor_gas: u64,
-    intrinsic_gas: u64,
+    _intrinsic_gas: u64,
     intrinsic_state_gas: u64,
     failure_intrinsic_state_refund: u64,
 ) -> FinalTxGas {
-    let _ = intrinsic_gas;
     let mut reservoir = result.gas.reservoir();
+    let failure_intrinsic_state_refund =
+        if !result.stop.is_success() { failure_intrinsic_state_refund } else { 0 };
     if !result.stop.is_success() {
-        let failure_intrinsic_state_refund =
-            if result.stop.is_revert() { failure_intrinsic_state_refund } else { 0 };
         reservoir = reservoir
             .saturating_add_signed(result.gas.state_gas_spent())
             .saturating_add(failure_intrinsic_state_refund);
@@ -599,12 +598,11 @@ fn final_tx_gas<T: EvmTypes>(
     let gas_remaining = result.gas.remaining().saturating_add(reservoir).saturating_add(refund);
     let gas_remaining = if gas_remaining < tx_gas_limit { gas_remaining } else { tx_gas_limit };
     let mut gas_used = tx_gas_limit.saturating_sub(gas_remaining);
-    let execution_state_gas = if result.stop.is_success() {
-        u64::try_from(result.gas.state_gas_spent()).unwrap_or_default()
+    let state_used = if result.stop.is_success() {
+        intrinsic_state_gas.saturating_add_signed(result.gas.state_gas_spent())
     } else {
-        0
+        intrinsic_state_gas.saturating_sub(failure_intrinsic_state_refund)
     };
-    let state_used = intrinsic_state_gas.saturating_add(execution_state_gas);
     let mut block_regular_used = spent.saturating_sub(state_used);
     // EIP-7623 charges at least the calldata floor after applying refunds.
     if gas_used < floor_gas {
@@ -919,6 +917,25 @@ mod tests {
     }
 
     #[test]
+    fn final_tx_gas_refunds_failed_create_state_gas_on_halt() {
+        let result = MessageResult::<BaseEvmTypes> {
+            stop: crate::interpreter::InstrStop::OutOfGas,
+            gas: GasTracker::new_used_gas(100_000, 100_000, 0),
+            ..MessageResult::<BaseEvmTypes>::default()
+        };
+
+        assert_eq!(
+            final_tx_gas(&result, 100_000, true, 21_000, 0, 5_000, 5_000),
+            FinalTxGas {
+                remaining: 5_000,
+                used: 95_000,
+                block_regular_used: 95_000,
+                state_used: 0,
+            }
+        );
+    }
+
+    #[test]
     fn final_tx_gas_preserves_higher_actual_usage() {
         let result = MessageResult::<BaseEvmTypes> {
             stop: crate::interpreter::InstrStop::Return,
@@ -1019,6 +1036,15 @@ mod tests {
                 gas_limit: amsterdam.tx_gas_limit_cap + 1,
                 cap: amsterdam.tx_gas_limit_cap
             })
+        );
+        assert_eq!(
+            validate_regular_gas_limit_cap(
+                amsterdam,
+                tx_gas_limit,
+                amsterdam.tx_gas_limit_cap,
+                floor_gas,
+            ),
+            Ok(())
         );
 
         let mut amsterdam_without_eip8037 = Version::new(SpecId::AMSTERDAM);
