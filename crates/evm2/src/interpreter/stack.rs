@@ -417,13 +417,9 @@ const unsafe fn read_be_u64(ptr: *const u8) -> u64 {
 
 #[inline(always)]
 const unsafe fn read_partial_be_u64(ptr: *const u8, n: usize) -> u64 {
-    let mut out = 0;
-    let mut i = 0;
-    while i < n {
-        out = (out << 8) | unsafe { *ptr.add(i) } as u64;
-        i += 1;
-    }
-    out
+    let mut bytes = [0; 8];
+    unsafe { core::ptr::copy_nonoverlapping(ptr, bytes.as_mut_ptr().add(8 - n), n) };
+    u64::from_be_bytes(bytes)
 }
 
 #[cfg(test)]
