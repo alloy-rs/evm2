@@ -89,7 +89,7 @@ impl Default for EdgeCovInspector {
 
 impl<T: EvmTypes> Inspector<T> for EdgeCovInspector {
     #[inline]
-    fn step(&mut self, interp: &mut Interpreter<'_, T>) {
+    fn step(&mut self, interp: &mut Interpreter<'_, T>, _host: &mut T::Host) {
         if matches!(interp.opcode(), opcode::op::JUMP | opcode::op::JUMPI) {
             self.do_step(interp);
         }

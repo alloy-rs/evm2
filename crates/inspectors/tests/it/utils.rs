@@ -2,7 +2,7 @@ use alloy_consensus::{TxLegacy, transaction::Recovered};
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
 use colorchoice::ColorChoice;
 use evm2::{
-    BaseEvmTypes, Evm, Inspector, Precompiles, TxResult, env as evm_env,
+    BaseEvmTypes, Evm, EvmTypes, Inspector, Precompiles, TxResult, env as evm_env,
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
     evm::StateChanges,
     interpreter::{Interpreter, Message, MessageResult},
@@ -669,50 +669,75 @@ impl<I> RawInspector<I> {
 }
 
 impl<I: Inspector<BaseEvmTypes>> Inspector<BaseEvmTypes> for RawInspector<I> {
-    fn initialize_interp(&mut self, interp: &mut Interpreter<'_, BaseEvmTypes>) {
-        self.inner().initialize_interp(interp);
+    fn initialize_interp(
+        &mut self,
+        interp: &mut Interpreter<'_, BaseEvmTypes>,
+        host: &mut <BaseEvmTypes as EvmTypes>::Host,
+    ) {
+        self.inner().initialize_interp(interp, host);
     }
 
-    fn step(&mut self, interp: &mut Interpreter<'_, BaseEvmTypes>) {
-        self.inner().step(interp);
+    fn step(
+        &mut self,
+        interp: &mut Interpreter<'_, BaseEvmTypes>,
+        host: &mut <BaseEvmTypes as EvmTypes>::Host,
+    ) {
+        self.inner().step(interp, host);
     }
 
-    fn step_end(&mut self, interp: &mut Interpreter<'_, BaseEvmTypes>) {
-        self.inner().step_end(interp);
+    fn step_end(
+        &mut self,
+        interp: &mut Interpreter<'_, BaseEvmTypes>,
+        host: &mut <BaseEvmTypes as EvmTypes>::Host,
+    ) {
+        self.inner().step_end(interp, host);
     }
 
-    fn log(&mut self, log: &alloy_primitives::Log) {
-        self.inner().log(log);
+    fn log(&mut self, log: &alloy_primitives::Log, host: &mut <BaseEvmTypes as EvmTypes>::Host) {
+        self.inner().log(log, host);
     }
 
-    fn call(&mut self, message: &mut Message<BaseEvmTypes>) -> Option<MessageResult<BaseEvmTypes>> {
-        self.inner().call(message)
+    fn call(
+        &mut self,
+        message: &mut Message<BaseEvmTypes>,
+        host: &mut <BaseEvmTypes as EvmTypes>::Host,
+    ) -> Option<MessageResult<BaseEvmTypes>> {
+        self.inner().call(message, host)
     }
 
     fn call_end(
         &mut self,
         message: &Message<BaseEvmTypes>,
         result: &mut MessageResult<BaseEvmTypes>,
+        host: &mut <BaseEvmTypes as EvmTypes>::Host,
     ) {
-        self.inner().call_end(message, result);
+        self.inner().call_end(message, result, host);
     }
 
     fn create(
         &mut self,
         message: &mut Message<BaseEvmTypes>,
+        host: &mut <BaseEvmTypes as EvmTypes>::Host,
     ) -> Option<MessageResult<BaseEvmTypes>> {
-        self.inner().create(message)
+        self.inner().create(message, host)
     }
 
     fn create_end(
         &mut self,
         message: &Message<BaseEvmTypes>,
         result: &mut MessageResult<BaseEvmTypes>,
+        host: &mut <BaseEvmTypes as EvmTypes>::Host,
     ) {
-        self.inner().create_end(message, result);
+        self.inner().create_end(message, result, host);
     }
 
-    fn selfdestruct(&mut self, contract: &Address, target: &Address, value: &U256) {
-        self.inner().selfdestruct(contract, target, value);
+    fn selfdestruct(
+        &mut self,
+        contract: &Address,
+        target: &Address,
+        value: &U256,
+        host: &mut <BaseEvmTypes as EvmTypes>::Host,
+    ) {
+        self.inner().selfdestruct(contract, target, value, host);
     }
 }

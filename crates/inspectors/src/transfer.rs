@@ -94,7 +94,7 @@ impl TransferInspector {
 }
 
 impl<T: EvmTypes> Inspector<T> for TransferInspector {
-    fn call(&mut self, message: &mut Message<T>) -> Option<MessageResult<T>> {
+    fn call(&mut self, message: &mut Message<T>, _host: &mut T::Host) -> Option<MessageResult<T>> {
         if matches!(message.kind, MessageKind::Call | MessageKind::CallCode) {
             self.on_transfer(
                 message.caller,
@@ -107,7 +107,12 @@ impl<T: EvmTypes> Inspector<T> for TransferInspector {
         None
     }
 
-    fn create_end(&mut self, message: &Message<T>, result: &mut MessageResult<T>) {
+    fn create_end(
+        &mut self,
+        message: &Message<T>,
+        result: &mut MessageResult<T>,
+        _host: &mut T::Host,
+    ) {
         let Some(address) = result.created_address else {
             return;
         };
@@ -119,7 +124,13 @@ impl<T: EvmTypes> Inspector<T> for TransferInspector {
         self.on_transfer(message.caller, address, message.value, kind, message.depth);
     }
 
-    fn selfdestruct(&mut self, contract: &Address, target: &Address, value: &U256) {
+    fn selfdestruct(
+        &mut self,
+        contract: &Address,
+        target: &Address,
+        value: &U256,
+        _host: &mut T::Host,
+    ) {
         self.transfers.push(TransferOperation {
             kind: TransferKind::SelfDestruct,
             from: *contract,

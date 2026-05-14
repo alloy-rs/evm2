@@ -162,94 +162,114 @@ impl MuxInspector {
 
 impl<T: EvmTypes> Inspector<T> for MuxInspector {
     #[inline]
-    fn initialize_interp(&mut self, interp: &mut Interpreter<'_, T>) {
+    fn initialize_interp(&mut self, interp: &mut Interpreter<'_, T>, host: &mut T::Host) {
         if let Some(ref mut inspector) = self.four_byte {
-            inspector.initialize_interp(interp);
+            inspector.initialize_interp(interp, host);
         }
         if let Some(ref mut inspector) = self.tracing {
-            inspector.initialize_interp(interp);
+            inspector.initialize_interp(interp, host);
         }
     }
 
     #[inline]
-    fn step(&mut self, interp: &mut Interpreter<'_, T>) {
+    fn step(&mut self, interp: &mut Interpreter<'_, T>, host: &mut T::Host) {
         if let Some(ref mut inspector) = self.four_byte {
-            inspector.step(interp);
+            inspector.step(interp, host);
         }
         if let Some(ref mut inspector) = self.tracing {
-            inspector.step(interp);
+            inspector.step(interp, host);
         }
     }
 
     #[inline]
-    fn step_end(&mut self, interp: &mut Interpreter<'_, T>) {
+    fn step_end(&mut self, interp: &mut Interpreter<'_, T>, host: &mut T::Host) {
         if let Some(ref mut inspector) = self.four_byte {
-            inspector.step_end(interp);
+            inspector.step_end(interp, host);
         }
         if let Some(ref mut inspector) = self.tracing {
-            inspector.step_end(interp);
+            inspector.step_end(interp, host);
         }
     }
 
     #[inline]
-    fn log(&mut self, log: &Log) {
+    fn log(&mut self, log: &Log, host: &mut T::Host) {
         if let Some(ref mut inspector) = self.four_byte {
-            <FourByteInspector as Inspector<T>>::log(inspector, log);
+            <FourByteInspector as Inspector<T>>::log(inspector, log, host);
         }
         if let Some(ref mut inspector) = self.tracing {
-            <TracingInspector as Inspector<T>>::log(inspector, log);
+            <TracingInspector as Inspector<T>>::log(inspector, log, host);
         }
     }
 
     #[inline]
-    fn call(&mut self, message: &mut Message<T>) -> Option<MessageResult<T>> {
+    fn call(&mut self, message: &mut Message<T>, host: &mut T::Host) -> Option<MessageResult<T>> {
         if let Some(ref mut inspector) = self.four_byte {
-            let _ = inspector.call(message);
+            let _ = inspector.call(message, host);
         }
         if let Some(ref mut inspector) = self.tracing {
-            return inspector.call(message);
+            return inspector.call(message, host);
         }
         None
     }
 
     #[inline]
-    fn call_end(&mut self, message: &Message<T>, result: &mut MessageResult<T>) {
+    fn call_end(
+        &mut self,
+        message: &Message<T>,
+        result: &mut MessageResult<T>,
+        host: &mut T::Host,
+    ) {
         if let Some(ref mut inspector) = self.four_byte {
-            inspector.call_end(message, result);
+            inspector.call_end(message, result, host);
         }
         if let Some(ref mut inspector) = self.tracing {
-            inspector.call_end(message, result);
+            inspector.call_end(message, result, host);
         }
     }
 
     #[inline]
-    fn create(&mut self, message: &mut Message<T>) -> Option<MessageResult<T>> {
+    fn create(&mut self, message: &mut Message<T>, host: &mut T::Host) -> Option<MessageResult<T>> {
         if let Some(ref mut inspector) = self.four_byte {
-            let _ = inspector.create(message);
+            let _ = inspector.create(message, host);
         }
         if let Some(ref mut inspector) = self.tracing {
-            return inspector.create(message);
+            return inspector.create(message, host);
         }
         None
     }
 
     #[inline]
-    fn create_end(&mut self, message: &Message<T>, result: &mut MessageResult<T>) {
+    fn create_end(
+        &mut self,
+        message: &Message<T>,
+        result: &mut MessageResult<T>,
+        host: &mut T::Host,
+    ) {
         if let Some(ref mut inspector) = self.four_byte {
-            inspector.create_end(message, result);
+            inspector.create_end(message, result, host);
         }
         if let Some(ref mut inspector) = self.tracing {
-            inspector.create_end(message, result);
+            inspector.create_end(message, result, host);
         }
     }
 
     #[inline]
-    fn selfdestruct(&mut self, contract: &Address, target: &Address, value: &U256) {
+    fn selfdestruct(
+        &mut self,
+        contract: &Address,
+        target: &Address,
+        value: &U256,
+        host: &mut T::Host,
+    ) {
         if let Some(ref mut inspector) = self.four_byte {
-            <FourByteInspector as Inspector<T>>::selfdestruct(inspector, contract, target, value);
+            <FourByteInspector as Inspector<T>>::selfdestruct(
+                inspector, contract, target, value, host,
+            );
         }
         if let Some(ref mut inspector) = self.tracing {
-            <TracingInspector as Inspector<T>>::selfdestruct(inspector, contract, target, value);
+            <TracingInspector as Inspector<T>>::selfdestruct(
+                inspector, contract, target, value, host,
+            );
         }
     }
 }

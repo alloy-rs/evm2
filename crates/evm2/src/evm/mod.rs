@@ -66,7 +66,7 @@ pub struct Evm<T: EvmTypes> {
     db_error_code: Option<DbErrorCode>,
 }
 
-impl<T: EvmTypes> Evm<T> {
+impl<T: EvmTypes<Host = Self>> Evm<T> {
     /// Creates an EVM for `spec_id` with the provided transaction registry, database, and
     /// precompile provider.
     #[inline]
@@ -152,7 +152,7 @@ impl<T: EvmTypes> Evm<T> {
     }
 }
 
-impl<T: EvmTypes> Evm<T> {
+impl<T: EvmTypes<Host = Self>> Evm<T> {
     /// Returns the transaction handler registry.
     #[inline]
     pub const fn registry(&self) -> &TxRegistry<T::Tx, TxResult<T>, Self> {
@@ -251,8 +251,9 @@ impl<T: EvmTypes> Evm<T> {
 
     #[inline]
     fn inspect_log(&mut self, log: &Log) {
-        if let Some(inspector) = &mut self.inspector {
-            inspector.log(log);
+        if let Some(mut inspector) = self.inspector.take() {
+            inspector.log(log, self);
+            self.inspector = Some(inspector);
         }
     }
 
@@ -264,10 +265,12 @@ impl<T: EvmTypes> Evm<T> {
 
     #[inline]
     fn finalize_transaction(&mut self) -> Result<(), InstrStop> {
+        let host = self as *mut Self;
         self.state
-            .finalize_transaction(self.execution_config.version(), |log| {
-                if let Some(inspector) = &mut self.inspector {
-                    inspector.log(log);
+            .finalize_transaction(self.execution_config.version(), |log| unsafe {
+                if let Some(mut inspector) = (*host).inspector.take() {
+                    inspector.log(log, &mut *host);
+                    (*host).inspector = Some(inspector);
                 }
             })
             .map_err(|code| self.db_error_stop(code))
@@ -337,7 +340,7 @@ impl<T: EvmTypes> Evm<T> {
     }
 }
 
-impl<T: EvmTypes<Tx: Typed2718>> Evm<T> {
+impl<T: EvmTypes<Host = Self, Tx: Typed2718>> Evm<T> {
     /// Dispatches the transaction to the handler registered for its EIP-2718 type byte.
     pub fn transact(&mut self, tx: &T::Tx) -> HandlerResult<TxResult<T>> {
         self.db_error_code = None;
@@ -384,13 +387,25 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     ) -> MessageResult<T> {
         let inspected = match message.kind {
             MessageKind::Create | MessageKind::Create2 => {
-                self.inspector.as_deref_mut().and_then(|inspector| inspector.create(message))
+                if let Some(mut inspector) = self.inspector.take() {
+                    let result = inspector.create(message, self);
+                    self.inspector = Some(inspector);
+                    result
+                } else {
+                    None
+                }
             }
             MessageKind::Call
             | MessageKind::CallCode
             | MessageKind::DelegateCall
             | MessageKind::StaticCall => {
-                self.inspector.as_deref_mut().and_then(|inspector| inspector.call(message))
+                if let Some(mut inspector) = self.inspector.take() {
+                    let result = inspector.call(message, self);
+                    self.inspector = Some(inspector);
+                    result
+                } else {
+                    None
+                }
             }
         };
 
@@ -399,16 +414,18 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
 
         match message.kind {
             MessageKind::Create | MessageKind::Create2 => {
-                if let Some(inspector) = self.inspector.as_deref_mut() {
-                    inspector.create_end(message, &mut result);
+                if let Some(mut inspector) = self.inspector.take() {
+                    inspector.create_end(message, &mut result, self);
+                    self.inspector = Some(inspector);
                 }
             }
             MessageKind::Call
             | MessageKind::CallCode
             | MessageKind::DelegateCall
             | MessageKind::StaticCall => {
-                if let Some(inspector) = self.inspector.as_deref_mut() {
-                    inspector.call_end(message, &mut result);
+                if let Some(mut inspector) = self.inspector.take() {
+                    inspector.call_end(message, &mut result, self);
+                    self.inspector = Some(inspector);
                 }
             }
         }
@@ -722,8 +739,9 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     }
 
     fn inspect_initialize_interp(&mut self, interp: &mut Interpreter<'_, T>) {
-        if let Some(inspector) = &mut self.inspector {
-            inspector.initialize_interp(interp);
+        if let Some(mut inspector) = self.inspector.take() {
+            inspector.initialize_interp(interp, self);
+            self.inspector = Some(inspector);
         }
     }
 }

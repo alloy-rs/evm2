@@ -23,7 +23,7 @@ impl FourByteInspector {
 }
 
 impl<T: EvmTypes> Inspector<T> for FourByteInspector {
-    fn call(&mut self, message: &mut Message<T>) -> Option<MessageResult<T>> {
+    fn call(&mut self, message: &mut Message<T>, _host: &mut T::Host) -> Option<MessageResult<T>> {
         if message.input.len() >= 4 {
             let selector =
                 Selector::try_from(&message.input[..4]).expect("input is at least 4 bytes");

@@ -398,41 +398,53 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
     }
 
     #[inline]
-    fn inspector(&mut self) -> Option<&mut dyn Inspector<T>> {
-        self.0.inspector.map(|mut x| unsafe { x.as_mut() })
-    }
-
-    #[inline]
     pub(crate) fn inspect_step(&mut self, pc: Pc, stack_len: usize) {
         self.0.pc = pc.as_ptr();
         self.0.stack_len = stack_len;
-        let mut inspector = unsafe { self.0.inspector.unwrap_unchecked() };
-        unsafe { inspector.as_mut() }.step(&mut self.0);
+        unsafe {
+            let mut inspector = self.0.inspector.unwrap_unchecked();
+            let mut host = self.0.host.unwrap_unchecked();
+            inspector.as_mut().step(&mut self.0, host.as_mut());
+        }
     }
 
     #[inline]
     pub(crate) fn inspect_step_end(&mut self, pc: Pc, stack_len: usize) {
         self.0.pc = pc.as_ptr();
         self.0.stack_len = stack_len;
-        let mut inspector = unsafe { self.0.inspector.unwrap_unchecked() };
-        unsafe { inspector.as_mut() }.step_end(&mut self.0);
+        unsafe {
+            let mut inspector = self.0.inspector.unwrap_unchecked();
+            let mut host = self.0.host.unwrap_unchecked();
+            inspector.as_mut().step_end(&mut self.0, host.as_mut());
+        }
     }
 
     #[inline]
     pub(crate) fn inspect_call(&mut self, message: &mut Message<T>) -> Option<MessageResult<T>> {
-        self.inspector().and_then(|inspector| inspector.call(message))
+        let mut inspector = self.0.inspector?;
+        unsafe {
+            let mut host = self.0.host.unwrap_unchecked();
+            inspector.as_mut().call(message, host.as_mut())
+        }
     }
 
     #[inline]
     pub(crate) fn inspect_call_end(&mut self, message: &Message<T>, result: &mut MessageResult<T>) {
-        if let Some(inspector) = self.inspector() {
-            inspector.call_end(message, result);
+        if let Some(mut inspector) = self.0.inspector {
+            unsafe {
+                let mut host = self.0.host.unwrap_unchecked();
+                inspector.as_mut().call_end(message, result, host.as_mut());
+            }
         }
     }
 
     #[inline]
     pub(crate) fn inspect_create(&mut self, message: &mut Message<T>) -> Option<MessageResult<T>> {
-        self.inspector().and_then(|inspector| inspector.create(message))
+        let mut inspector = self.0.inspector?;
+        unsafe {
+            let mut host = self.0.host.unwrap_unchecked();
+            inspector.as_mut().create(message, host.as_mut())
+        }
     }
 
     #[inline]
@@ -441,15 +453,21 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
         message: &Message<T>,
         result: &mut MessageResult<T>,
     ) {
-        if let Some(inspector) = self.inspector() {
-            inspector.create_end(message, result);
+        if let Some(mut inspector) = self.0.inspector {
+            unsafe {
+                let mut host = self.0.host.unwrap_unchecked();
+                inspector.as_mut().create_end(message, result, host.as_mut());
+            }
         }
     }
 
     #[inline]
     pub(crate) fn inspect_log(&mut self, log: &Log) {
-        if let Some(inspector) = self.inspector() {
-            inspector.log(log);
+        if let Some(mut inspector) = self.0.inspector {
+            unsafe {
+                let mut host = self.0.host.unwrap_unchecked();
+                inspector.as_mut().log(log, host.as_mut());
+            }
         }
     }
 
@@ -460,8 +478,11 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
         target: &Address,
         value: &Word,
     ) {
-        if let Some(inspector) = self.inspector() {
-            inspector.selfdestruct(contract, target, value);
+        if let Some(mut inspector) = self.0.inspector {
+            unsafe {
+                let mut host = self.0.host.unwrap_unchecked();
+                inspector.as_mut().selfdestruct(contract, target, value, host.as_mut());
+            }
         }
     }
 }

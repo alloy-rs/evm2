@@ -409,7 +409,7 @@ pub mod js {
     }
 
     impl<T: EvmTypes> Inspector<T> for JsInspector {
-        fn step(&mut self, interp: &mut Interpreter<'_, T>) {
+        fn step(&mut self, interp: &mut Interpreter<'_, T>, _host: &mut T::Host) {
             self.register_precompiles(interp.spec());
 
             if self.step_fn.is_none() || self.step_error {
@@ -448,7 +448,7 @@ pub mod js {
             }
         }
 
-        fn step_end(&mut self, interp: &mut Interpreter<'_, T>) {
+        fn step_end(&mut self, interp: &mut Interpreter<'_, T>, _host: &mut T::Host) {
             if self.step_fn.is_none() || self.step_error || interp.result().is_ok() {
                 return;
             }
@@ -481,7 +481,11 @@ pub mod js {
             let _ = self.try_fault(step, db);
         }
 
-        fn call(&mut self, message: &mut Message<T>) -> Option<MessageResult<T>> {
+        fn call(
+            &mut self,
+            message: &mut Message<T>,
+            _host: &mut T::Host,
+        ) -> Option<MessageResult<T>> {
             self.push_call(message);
             if self.can_call_enter() {
                 let call = self.active_call();
@@ -494,7 +498,12 @@ pub mod js {
             None
         }
 
-        fn call_end(&mut self, _message: &Message<T>, result: &mut MessageResult<T>) {
+        fn call_end(
+            &mut self,
+            _message: &Message<T>,
+            result: &mut MessageResult<T>,
+            _host: &mut T::Host,
+        ) {
             if self.can_call_exit() {
                 let frame_result = FrameResult {
                     gas_used: result.gas.spent(),
@@ -513,7 +522,11 @@ pub mod js {
             self.pop_call();
         }
 
-        fn create(&mut self, message: &mut Message<T>) -> Option<MessageResult<T>> {
+        fn create(
+            &mut self,
+            message: &mut Message<T>,
+            _host: &mut T::Host,
+        ) -> Option<MessageResult<T>> {
             self.push_call(message);
             if self.can_call_enter() {
                 let call = self.active_call();
@@ -526,7 +539,12 @@ pub mod js {
             None
         }
 
-        fn create_end(&mut self, _message: &Message<T>, result: &mut MessageResult<T>) {
+        fn create_end(
+            &mut self,
+            _message: &Message<T>,
+            result: &mut MessageResult<T>,
+            _host: &mut T::Host,
+        ) {
             if self.can_call_exit() {
                 let frame_result = FrameResult {
                     gas_used: result.gas.spent(),
@@ -610,42 +628,54 @@ pub mod js {
         struct SharedJsInspector(Rc<RefCell<JsInspector>>);
 
         impl Inspector<BaseEvmTypes> for SharedJsInspector {
-            fn step(&mut self, interp: &mut Interpreter<'_, BaseEvmTypes>) {
-                self.0.borrow_mut().step(interp);
+            fn step(
+                &mut self,
+                interp: &mut Interpreter<'_, BaseEvmTypes>,
+                host: &mut <BaseEvmTypes as EvmTypes>::Host,
+            ) {
+                self.0.borrow_mut().step(interp, host);
             }
 
-            fn step_end(&mut self, interp: &mut Interpreter<'_, BaseEvmTypes>) {
-                self.0.borrow_mut().step_end(interp);
+            fn step_end(
+                &mut self,
+                interp: &mut Interpreter<'_, BaseEvmTypes>,
+                host: &mut <BaseEvmTypes as EvmTypes>::Host,
+            ) {
+                self.0.borrow_mut().step_end(interp, host);
             }
 
             fn call(
                 &mut self,
                 message: &mut Message<BaseEvmTypes>,
+                host: &mut <BaseEvmTypes as EvmTypes>::Host,
             ) -> Option<MessageResult<BaseEvmTypes>> {
-                self.0.borrow_mut().call(message)
+                self.0.borrow_mut().call(message, host)
             }
 
             fn call_end(
                 &mut self,
                 message: &Message<BaseEvmTypes>,
                 result: &mut MessageResult<BaseEvmTypes>,
+                host: &mut <BaseEvmTypes as EvmTypes>::Host,
             ) {
-                self.0.borrow_mut().call_end(message, result);
+                self.0.borrow_mut().call_end(message, result, host);
             }
 
             fn create(
                 &mut self,
                 message: &mut Message<BaseEvmTypes>,
+                host: &mut <BaseEvmTypes as EvmTypes>::Host,
             ) -> Option<MessageResult<BaseEvmTypes>> {
-                self.0.borrow_mut().create(message)
+                self.0.borrow_mut().create(message, host)
             }
 
             fn create_end(
                 &mut self,
                 message: &Message<BaseEvmTypes>,
                 result: &mut MessageResult<BaseEvmTypes>,
+                host: &mut <BaseEvmTypes as EvmTypes>::Host,
             ) {
-                self.0.borrow_mut().create_end(message, result);
+                self.0.borrow_mut().create_end(message, result, host);
             }
         }
 
@@ -1306,14 +1336,14 @@ impl From<MessageKind> for CallKind {
 }
 
 impl<T: EvmTypes> Inspector<T> for TracingInspector {
-    fn initialize_interp(&mut self, interp: &mut Interpreter<'_, T>) {
+    fn initialize_interp(&mut self, interp: &mut Interpreter<'_, T>, _host: &mut T::Host) {
         self.spec_id = Some(interp.spec());
         if self.trace_stack.is_empty() {
             self.start_trace(interp.message());
         }
     }
 
-    fn step(&mut self, interp: &mut Interpreter<'_, T>) {
+    fn step(&mut self, interp: &mut Interpreter<'_, T>, _host: &mut T::Host) {
         self.spec_id = Some(interp.spec());
         if !self.config.record_steps {
             return;
@@ -1375,7 +1405,7 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
         self.step_stack.push((trace_idx, step_idx, interp.gas().remaining(), interp.stack().len()));
     }
 
-    fn step_end(&mut self, interp: &mut Interpreter<'_, T>) {
+    fn step_end(&mut self, interp: &mut Interpreter<'_, T>, _host: &mut T::Host) {
         if !self.config.record_steps {
             return;
         }
@@ -1397,7 +1427,7 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
         }
     }
 
-    fn log(&mut self, log: &Log) {
+    fn log(&mut self, log: &Log, _host: &mut T::Host) {
         if !self.config.record_logs {
             return;
         }
@@ -1412,25 +1442,45 @@ impl<T: EvmTypes> Inspector<T> for TracingInspector {
         }
     }
 
-    fn call(&mut self, message: &mut Message<T>) -> Option<MessageResult<T>> {
+    fn call(&mut self, message: &mut Message<T>, _host: &mut T::Host) -> Option<MessageResult<T>> {
         self.start_trace(message);
         None
     }
 
-    fn call_end(&mut self, _message: &Message<T>, result: &mut MessageResult<T>) {
+    fn call_end(
+        &mut self,
+        _message: &Message<T>,
+        result: &mut MessageResult<T>,
+        _host: &mut T::Host,
+    ) {
         self.end_trace(result);
     }
 
-    fn create(&mut self, message: &mut Message<T>) -> Option<MessageResult<T>> {
+    fn create(
+        &mut self,
+        message: &mut Message<T>,
+        _host: &mut T::Host,
+    ) -> Option<MessageResult<T>> {
         self.start_trace(message);
         None
     }
 
-    fn create_end(&mut self, _message: &Message<T>, result: &mut MessageResult<T>) {
+    fn create_end(
+        &mut self,
+        _message: &Message<T>,
+        result: &mut MessageResult<T>,
+        _host: &mut T::Host,
+    ) {
         self.end_trace(result);
     }
 
-    fn selfdestruct(&mut self, contract: &Address, target: &Address, value: &U256) {
+    fn selfdestruct(
+        &mut self,
+        contract: &Address,
+        target: &Address,
+        value: &U256,
+        _host: &mut T::Host,
+    ) {
         if let Some(trace_idx) = self.trace_stack.last().copied() {
             let trace = &mut self.traces.arena[trace_idx].trace;
             trace.selfdestruct_address = Some(*contract);

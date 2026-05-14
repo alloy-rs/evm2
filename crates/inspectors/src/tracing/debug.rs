@@ -304,117 +304,135 @@ impl DebugInspector {
 }
 
 impl<T: EvmTypes> Inspector<T> for DebugInspector {
-    fn initialize_interp(&mut self, interp: &mut Interpreter<'_, T>) {
+    fn initialize_interp(&mut self, interp: &mut Interpreter<'_, T>, host: &mut T::Host) {
         match self {
-            Self::FourByte(inspector) => inspector.initialize_interp(interp),
+            Self::FourByte(inspector) => inspector.initialize_interp(interp, host),
             Self::CallTracer(inspector, _)
             | Self::PreStateTracer(inspector, _)
             | Self::FlatCallTracer(inspector)
             | Self::Erc7562Tracer(inspector, _)
-            | Self::Default(inspector, _) => inspector.initialize_interp(interp),
+            | Self::Default(inspector, _) => inspector.initialize_interp(interp, host),
             Self::Noop => {}
-            Self::Mux(inspector, _) => inspector.initialize_interp(interp),
+            Self::Mux(inspector, _) => inspector.initialize_interp(interp, host),
         }
     }
 
-    fn step(&mut self, interp: &mut Interpreter<'_, T>) {
+    fn step(&mut self, interp: &mut Interpreter<'_, T>, host: &mut T::Host) {
         match self {
-            Self::FourByte(inspector) => inspector.step(interp),
+            Self::FourByte(inspector) => inspector.step(interp, host),
             Self::CallTracer(inspector, _)
             | Self::PreStateTracer(inspector, _)
             | Self::FlatCallTracer(inspector)
             | Self::Erc7562Tracer(inspector, _)
-            | Self::Default(inspector, _) => inspector.step(interp),
+            | Self::Default(inspector, _) => inspector.step(interp, host),
             Self::Noop => {}
-            Self::Mux(inspector, _) => inspector.step(interp),
+            Self::Mux(inspector, _) => inspector.step(interp, host),
         }
     }
 
-    fn step_end(&mut self, interp: &mut Interpreter<'_, T>) {
+    fn step_end(&mut self, interp: &mut Interpreter<'_, T>, host: &mut T::Host) {
         match self {
-            Self::FourByte(inspector) => inspector.step_end(interp),
+            Self::FourByte(inspector) => inspector.step_end(interp, host),
             Self::CallTracer(inspector, _)
             | Self::PreStateTracer(inspector, _)
             | Self::FlatCallTracer(inspector)
             | Self::Erc7562Tracer(inspector, _)
-            | Self::Default(inspector, _) => inspector.step_end(interp),
+            | Self::Default(inspector, _) => inspector.step_end(interp, host),
             Self::Noop => {}
-            Self::Mux(inspector, _) => inspector.step_end(interp),
+            Self::Mux(inspector, _) => inspector.step_end(interp, host),
         }
     }
 
-    fn log(&mut self, log: &Log) {
+    fn log(&mut self, log: &Log, host: &mut T::Host) {
         match self {
-            Self::FourByte(inspector) => <FourByteInspector as Inspector<T>>::log(inspector, log),
+            Self::FourByte(inspector) => {
+                <FourByteInspector as Inspector<T>>::log(inspector, log, host)
+            }
             Self::CallTracer(inspector, _)
             | Self::PreStateTracer(inspector, _)
             | Self::FlatCallTracer(inspector)
             | Self::Erc7562Tracer(inspector, _)
             | Self::Default(inspector, _) => {
-                <TracingInspector as Inspector<T>>::log(inspector, log);
+                <TracingInspector as Inspector<T>>::log(inspector, log, host);
             }
             Self::Noop => {}
-            Self::Mux(inspector, _) => <MuxInspector as Inspector<T>>::log(inspector, log),
+            Self::Mux(inspector, _) => <MuxInspector as Inspector<T>>::log(inspector, log, host),
         }
     }
 
-    fn call(&mut self, message: &mut Message<T>) -> Option<MessageResult<T>> {
+    fn call(&mut self, message: &mut Message<T>, host: &mut T::Host) -> Option<MessageResult<T>> {
         match self {
-            Self::FourByte(inspector) => inspector.call(message),
+            Self::FourByte(inspector) => inspector.call(message, host),
             Self::CallTracer(inspector, _)
             | Self::PreStateTracer(inspector, _)
             | Self::FlatCallTracer(inspector)
             | Self::Erc7562Tracer(inspector, _)
-            | Self::Default(inspector, _) => inspector.call(message),
+            | Self::Default(inspector, _) => inspector.call(message, host),
             Self::Noop => None,
-            Self::Mux(inspector, _) => inspector.call(message),
+            Self::Mux(inspector, _) => inspector.call(message, host),
         }
     }
 
-    fn call_end(&mut self, message: &Message<T>, result: &mut MessageResult<T>) {
+    fn call_end(
+        &mut self,
+        message: &Message<T>,
+        result: &mut MessageResult<T>,
+        host: &mut T::Host,
+    ) {
         match self {
-            Self::FourByte(inspector) => inspector.call_end(message, result),
+            Self::FourByte(inspector) => inspector.call_end(message, result, host),
             Self::CallTracer(inspector, _)
             | Self::PreStateTracer(inspector, _)
             | Self::FlatCallTracer(inspector)
             | Self::Erc7562Tracer(inspector, _)
-            | Self::Default(inspector, _) => inspector.call_end(message, result),
+            | Self::Default(inspector, _) => inspector.call_end(message, result, host),
             Self::Noop => {}
-            Self::Mux(inspector, _) => inspector.call_end(message, result),
+            Self::Mux(inspector, _) => inspector.call_end(message, result, host),
         }
     }
 
-    fn create(&mut self, message: &mut Message<T>) -> Option<MessageResult<T>> {
+    fn create(&mut self, message: &mut Message<T>, host: &mut T::Host) -> Option<MessageResult<T>> {
         match self {
-            Self::FourByte(inspector) => inspector.create(message),
+            Self::FourByte(inspector) => inspector.create(message, host),
             Self::CallTracer(inspector, _)
             | Self::PreStateTracer(inspector, _)
             | Self::FlatCallTracer(inspector)
             | Self::Erc7562Tracer(inspector, _)
-            | Self::Default(inspector, _) => inspector.create(message),
+            | Self::Default(inspector, _) => inspector.create(message, host),
             Self::Noop => None,
-            Self::Mux(inspector, _) => inspector.create(message),
+            Self::Mux(inspector, _) => inspector.create(message, host),
         }
     }
 
-    fn create_end(&mut self, message: &Message<T>, result: &mut MessageResult<T>) {
+    fn create_end(
+        &mut self,
+        message: &Message<T>,
+        result: &mut MessageResult<T>,
+        host: &mut T::Host,
+    ) {
         match self {
-            Self::FourByte(inspector) => inspector.create_end(message, result),
+            Self::FourByte(inspector) => inspector.create_end(message, result, host),
             Self::CallTracer(inspector, _)
             | Self::PreStateTracer(inspector, _)
             | Self::FlatCallTracer(inspector)
             | Self::Erc7562Tracer(inspector, _)
-            | Self::Default(inspector, _) => inspector.create_end(message, result),
+            | Self::Default(inspector, _) => inspector.create_end(message, result, host),
             Self::Noop => {}
-            Self::Mux(inspector, _) => inspector.create_end(message, result),
+            Self::Mux(inspector, _) => inspector.create_end(message, result, host),
         }
     }
 
-    fn selfdestruct(&mut self, contract: &Address, target: &Address, value: &U256) {
+    fn selfdestruct(
+        &mut self,
+        contract: &Address,
+        target: &Address,
+        value: &U256,
+        host: &mut T::Host,
+    ) {
         match self {
             Self::FourByte(inspector) => {
                 <FourByteInspector as Inspector<T>>::selfdestruct(
-                    inspector, contract, target, value,
+                    inspector, contract, target, value, host,
                 );
             }
             Self::CallTracer(inspector, _)
@@ -423,12 +441,14 @@ impl<T: EvmTypes> Inspector<T> for DebugInspector {
             | Self::Erc7562Tracer(inspector, _)
             | Self::Default(inspector, _) => {
                 <TracingInspector as Inspector<T>>::selfdestruct(
-                    inspector, contract, target, value,
+                    inspector, contract, target, value, host,
                 );
             }
             Self::Noop => {}
             Self::Mux(inspector, _) => {
-                <MuxInspector as Inspector<T>>::selfdestruct(inspector, contract, target, value);
+                <MuxInspector as Inspector<T>>::selfdestruct(
+                    inspector, contract, target, value, host,
+                );
             }
         }
     }

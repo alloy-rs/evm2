@@ -206,25 +206,37 @@ struct InspectorState {
 struct ExampleInspector(Rc<RefCell<InspectorState>>);
 
 impl Inspector<CustomTypes> for ExampleInspector {
-    fn initialize_interp(&mut self, _interp: &mut Interpreter<'_, CustomTypes>) {
+    fn initialize_interp(
+        &mut self,
+        _interp: &mut Interpreter<'_, CustomTypes>,
+        _host: &mut Evm<CustomTypes>,
+    ) {
         self.0.borrow_mut().initialized += 1;
     }
 
-    fn step(&mut self, interp: &mut Interpreter<'_, CustomTypes>) {
+    fn step(&mut self, interp: &mut Interpreter<'_, CustomTypes>, _host: &mut Evm<CustomTypes>) {
         let mut state = self.0.borrow_mut();
         state.steps += 1;
         state.opcodes.push(interp.opcode());
     }
 
-    fn step_end(&mut self, _interp: &mut Interpreter<'_, CustomTypes>) {
+    fn step_end(
+        &mut self,
+        _interp: &mut Interpreter<'_, CustomTypes>,
+        _host: &mut Evm<CustomTypes>,
+    ) {
         self.0.borrow_mut().step_ends += 1;
     }
 
-    fn log(&mut self, _log: &alloy_primitives::Log) {
+    fn log(&mut self, _log: &alloy_primitives::Log, _host: &mut Evm<CustomTypes>) {
         self.0.borrow_mut().logs += 1;
     }
 
-    fn call(&mut self, _message: &mut Message<CustomTypes>) -> Option<MessageResult<CustomTypes>> {
+    fn call(
+        &mut self,
+        _message: &mut Message<CustomTypes>,
+        _host: &mut Evm<CustomTypes>,
+    ) -> Option<MessageResult<CustomTypes>> {
         self.0.borrow_mut().calls += 1;
         None
     }

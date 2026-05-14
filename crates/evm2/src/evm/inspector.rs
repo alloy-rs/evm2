@@ -11,62 +11,87 @@ use core::any::Any;
 pub trait Inspector<T: EvmTypes>: Any {
     /// Called after a frame interpreter has been initialized.
     #[inline]
-    fn initialize_interp(&mut self, interp: &mut Interpreter<'_, T>) {
+    fn initialize_interp(&mut self, interp: &mut Interpreter<'_, T>, host: &mut T::Host) {
         let _ = interp;
+        let _ = host;
     }
 
     /// Called before each instruction executes.
     #[inline]
-    fn step(&mut self, interp: &mut Interpreter<'_, T>) {
+    fn step(&mut self, interp: &mut Interpreter<'_, T>, host: &mut T::Host) {
         let _ = interp;
+        let _ = host;
     }
 
     /// Called after each instruction executes.
     #[inline]
-    fn step_end(&mut self, interp: &mut Interpreter<'_, T>) {
+    fn step_end(&mut self, interp: &mut Interpreter<'_, T>, host: &mut T::Host) {
         let _ = interp;
+        let _ = host;
     }
 
     /// Called when a log is emitted.
     #[inline]
-    fn log(&mut self, log: &Log) {
+    fn log(&mut self, log: &Log, host: &mut T::Host) {
         let _ = log;
+        let _ = host;
     }
 
     /// Called before a call message executes.
     #[inline]
-    fn call(&mut self, message: &mut Message<T>) -> Option<MessageResult<T>> {
+    fn call(&mut self, message: &mut Message<T>, host: &mut T::Host) -> Option<MessageResult<T>> {
         let _ = message;
+        let _ = host;
         None
     }
 
     /// Called after a call message executes.
     #[inline]
-    fn call_end(&mut self, message: &Message<T>, result: &mut MessageResult<T>) {
+    fn call_end(
+        &mut self,
+        message: &Message<T>,
+        result: &mut MessageResult<T>,
+        host: &mut T::Host,
+    ) {
         let _ = message;
         let _ = result;
+        let _ = host;
     }
 
     /// Called before a create message executes.
     #[inline]
-    fn create(&mut self, message: &mut Message<T>) -> Option<MessageResult<T>> {
+    fn create(&mut self, message: &mut Message<T>, host: &mut T::Host) -> Option<MessageResult<T>> {
         let _ = message;
+        let _ = host;
         None
     }
 
     /// Called after a create message executes.
     #[inline]
-    fn create_end(&mut self, message: &Message<T>, result: &mut MessageResult<T>) {
+    fn create_end(
+        &mut self,
+        message: &Message<T>,
+        result: &mut MessageResult<T>,
+        host: &mut T::Host,
+    ) {
         let _ = message;
         let _ = result;
+        let _ = host;
     }
 
     /// Called after a contract self-destructs.
     #[inline]
-    fn selfdestruct(&mut self, contract: &Address, target: &Address, value: &U256) {
+    fn selfdestruct(
+        &mut self,
+        contract: &Address,
+        target: &Address,
+        value: &U256,
+        host: &mut T::Host,
+    ) {
         let _ = contract;
         let _ = target;
         let _ = value;
+        let _ = host;
     }
 }
 
@@ -100,11 +125,11 @@ mod tests {
     }
 
     impl Inspector<TestTypes> for StepInspector {
-        fn step(&mut self, _interp: &mut Interpreter<'_, TestTypes>) {
+        fn step(&mut self, _interp: &mut Interpreter<'_, TestTypes>, _host: &mut TestHost) {
             self.steps += 1;
         }
 
-        fn step_end(&mut self, _interp: &mut Interpreter<'_, TestTypes>) {
+        fn step_end(&mut self, _interp: &mut Interpreter<'_, TestTypes>, _host: &mut TestHost) {
             self.step_ends += 1;
         }
     }
@@ -116,14 +141,14 @@ mod tests {
     }
 
     impl Inspector<TestTypes> for StopOnStepInspector {
-        fn step(&mut self, interp: &mut Interpreter<'_, TestTypes>) {
+        fn step(&mut self, interp: &mut Interpreter<'_, TestTypes>, _host: &mut TestHost) {
             self.steps += 1;
             if interp.opcode() == self.opcode {
                 interp.set_stop(InstrStop::Revert);
             }
         }
 
-        fn step_end(&mut self, _interp: &mut Interpreter<'_, TestTypes>) {
+        fn step_end(&mut self, _interp: &mut Interpreter<'_, TestTypes>, _host: &mut TestHost) {
             self.step_ends += 1;
         }
     }
@@ -136,12 +161,12 @@ mod tests {
     }
 
     impl Inspector<TestTypes> for StopOnStepEndInspector {
-        fn step(&mut self, interp: &mut Interpreter<'_, TestTypes>) {
+        fn step(&mut self, interp: &mut Interpreter<'_, TestTypes>, _host: &mut TestHost) {
             self.steps += 1;
             self.last_opcode = Some(interp.opcode());
         }
 
-        fn step_end(&mut self, interp: &mut Interpreter<'_, TestTypes>) {
+        fn step_end(&mut self, interp: &mut Interpreter<'_, TestTypes>, _host: &mut TestHost) {
             self.step_ends += 1;
             if self.last_opcode == Some(self.opcode) {
                 interp.set_stop(InstrStop::Revert);
@@ -159,7 +184,11 @@ mod tests {
     }
 
     impl Inspector<TestTypes> for MessageInspector {
-        fn call(&mut self, message: &mut Message<TestTypes>) -> Option<MessageResult<TestTypes>> {
+        fn call(
+            &mut self,
+            message: &mut Message<TestTypes>,
+            _host: &mut TestHost,
+        ) -> Option<MessageResult<TestTypes>> {
             self.call_depth = Some(message.depth);
             None
         }
@@ -168,11 +197,16 @@ mod tests {
             &mut self,
             _message: &Message<TestTypes>,
             result: &mut MessageResult<TestTypes>,
+            _host: &mut TestHost,
         ) {
             self.call_end_stop = Some(result.stop);
         }
 
-        fn create(&mut self, message: &mut Message<TestTypes>) -> Option<MessageResult<TestTypes>> {
+        fn create(
+            &mut self,
+            message: &mut Message<TestTypes>,
+            _host: &mut TestHost,
+        ) -> Option<MessageResult<TestTypes>> {
             self.create_depth = Some(message.depth);
             None
         }
@@ -181,11 +215,18 @@ mod tests {
             &mut self,
             _message: &Message<TestTypes>,
             result: &mut MessageResult<TestTypes>,
+            _host: &mut TestHost,
         ) {
             self.create_end_stop = Some(result.stop);
         }
 
-        fn selfdestruct(&mut self, contract: &Address, target: &Address, value: &Word) {
+        fn selfdestruct(
+            &mut self,
+            contract: &Address,
+            target: &Address,
+            value: &Word,
+            _host: &mut TestHost,
+        ) {
             self.selfdestruct = Some((*contract, *target, *value));
         }
     }
@@ -197,7 +238,11 @@ mod tests {
     }
 
     impl Inspector<TestTypes> for OverrideCallInspector {
-        fn call(&mut self, message: &mut Message<TestTypes>) -> Option<MessageResult<TestTypes>> {
+        fn call(
+            &mut self,
+            message: &mut Message<TestTypes>,
+            _host: &mut TestHost,
+        ) -> Option<MessageResult<TestTypes>> {
             self.call_depth = Some(message.depth);
             let mut result = self.result.clone();
             result.gas.set_remaining(message.gas_limit);
@@ -208,6 +253,7 @@ mod tests {
             &mut self,
             _message: &Message<TestTypes>,
             result: &mut MessageResult<TestTypes>,
+            _host: &mut TestHost,
         ) {
             self.call_end_stop = Some(result.stop);
         }
@@ -218,7 +264,11 @@ mod tests {
     }
 
     impl Inspector<TestTypes> for MutateCallInspector {
-        fn call(&mut self, message: &mut Message<TestTypes>) -> Option<MessageResult<TestTypes>> {
+        fn call(
+            &mut self,
+            message: &mut Message<TestTypes>,
+            _host: &mut TestHost,
+        ) -> Option<MessageResult<TestTypes>> {
             message.destination = self.destination;
             None
         }
@@ -227,7 +277,11 @@ mod tests {
     struct CallEndInspector;
 
     impl Inspector<TestTypes> for CallEndInspector {
-        fn call(&mut self, message: &mut Message<TestTypes>) -> Option<MessageResult<TestTypes>> {
+        fn call(
+            &mut self,
+            message: &mut Message<TestTypes>,
+            _host: &mut TestHost,
+        ) -> Option<MessageResult<TestTypes>> {
             Some(MessageResult {
                 stop: InstrStop::Revert,
                 gas: GasTracker::new(message.gas_limit),
@@ -239,6 +293,7 @@ mod tests {
             &mut self,
             _message: &Message<TestTypes>,
             result: &mut MessageResult<TestTypes>,
+            _host: &mut TestHost,
         ) {
             result.stop = InstrStop::Return;
             result.output = Bytes::from_static(&[0xaa, 0xbb]);
@@ -252,7 +307,11 @@ mod tests {
     }
 
     impl Inspector<TestTypes> for OverrideCreateInspector {
-        fn create(&mut self, message: &mut Message<TestTypes>) -> Option<MessageResult<TestTypes>> {
+        fn create(
+            &mut self,
+            message: &mut Message<TestTypes>,
+            _host: &mut TestHost,
+        ) -> Option<MessageResult<TestTypes>> {
             self.create_depth = Some(message.depth);
             Some(MessageResult {
                 stop: InstrStop::Return,
@@ -266,6 +325,7 @@ mod tests {
             &mut self,
             _message: &Message<TestTypes>,
             result: &mut MessageResult<TestTypes>,
+            _host: &mut TestHost,
         ) {
             self.create_end_stop = Some(result.stop);
         }
@@ -276,7 +336,11 @@ mod tests {
     }
 
     impl Inspector<TestTypes> for CreateEndInspector {
-        fn create(&mut self, message: &mut Message<TestTypes>) -> Option<MessageResult<TestTypes>> {
+        fn create(
+            &mut self,
+            message: &mut Message<TestTypes>,
+            _host: &mut TestHost,
+        ) -> Option<MessageResult<TestTypes>> {
             Some(MessageResult {
                 stop: InstrStop::Revert,
                 gas: GasTracker::new(message.gas_limit),
@@ -288,6 +352,7 @@ mod tests {
             &mut self,
             _message: &Message<TestTypes>,
             result: &mut MessageResult<TestTypes>,
+            _host: &mut TestHost,
         ) {
             result.stop = InstrStop::Return;
             result.created_address = Some(self.created);
@@ -300,7 +365,7 @@ mod tests {
     }
 
     impl Inspector<TestTypes> for LogInspector {
-        fn log(&mut self, log: &Log) {
+        fn log(&mut self, log: &Log, _host: &mut TestHost) {
             self.logs.push(log.clone());
         }
     }
@@ -312,11 +377,11 @@ mod tests {
     }
 
     impl Inspector<TestTypes> for FailingStepInspector {
-        fn step(&mut self, _interp: &mut Interpreter<'_, TestTypes>) {
+        fn step(&mut self, _interp: &mut Interpreter<'_, TestTypes>, _host: &mut TestHost) {
             self.steps += 1;
         }
 
-        fn step_end(&mut self, interp: &mut Interpreter<'_, TestTypes>) {
+        fn step_end(&mut self, interp: &mut Interpreter<'_, TestTypes>, _host: &mut TestHost) {
             let _ = interp;
             self.step_ends += 1;
         }
@@ -335,25 +400,38 @@ mod tests {
     struct SharedE2eInspector(Rc<RefCell<E2eState>>);
 
     impl Inspector<BaseEvmTypes> for SharedE2eInspector {
-        fn initialize_interp(&mut self, _interp: &mut Interpreter<'_, BaseEvmTypes>) {
+        fn initialize_interp(
+            &mut self,
+            _interp: &mut Interpreter<'_, BaseEvmTypes>,
+            _host: &mut Evm<BaseEvmTypes>,
+        ) {
             self.0.borrow_mut().initialized += 1;
         }
 
-        fn step(&mut self, _interp: &mut Interpreter<'_, BaseEvmTypes>) {
+        fn step(
+            &mut self,
+            _interp: &mut Interpreter<'_, BaseEvmTypes>,
+            _host: &mut Evm<BaseEvmTypes>,
+        ) {
             self.0.borrow_mut().steps += 1;
         }
 
-        fn step_end(&mut self, _interp: &mut Interpreter<'_, BaseEvmTypes>) {
+        fn step_end(
+            &mut self,
+            _interp: &mut Interpreter<'_, BaseEvmTypes>,
+            _host: &mut Evm<BaseEvmTypes>,
+        ) {
             self.0.borrow_mut().step_ends += 1;
         }
 
-        fn log(&mut self, log: &Log) {
+        fn log(&mut self, log: &Log, _host: &mut Evm<BaseEvmTypes>) {
             self.0.borrow_mut().logs.push(log.clone());
         }
 
         fn call(
             &mut self,
             _message: &mut Message<BaseEvmTypes>,
+            _host: &mut Evm<BaseEvmTypes>,
         ) -> Option<MessageResult<BaseEvmTypes>> {
             self.0.borrow_mut().calls += 1;
             None
@@ -362,6 +440,7 @@ mod tests {
         fn create(
             &mut self,
             _message: &mut Message<BaseEvmTypes>,
+            _host: &mut Evm<BaseEvmTypes>,
         ) -> Option<MessageResult<BaseEvmTypes>> {
             self.0.borrow_mut().creates += 1;
             None
