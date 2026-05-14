@@ -34,10 +34,9 @@ pub(crate) fn sload(cx: _, [key]: [Word]) -> Result<out> {
     *out = load.value;
 }
 
-#[instruction(no_stack_preamble, dynamic_gas)]
-pub(crate) fn sstore(cx: _) -> Result {
+#[instruction(dynamic_gas)]
+pub(crate) fn sstore(cx: _, [key, value]: [Word]) -> Result {
     require_non_staticcall(cx.state)?;
-    let [key, value] = stack.popn()?;
     let is_istanbul = cx.state.spec().enables(SpecId::ISTANBUL);
 
     // EIP-2200: SSTORE may not execute with only the value-transfer stipend left. This
@@ -83,10 +82,9 @@ pub(crate) fn tload(cx: _, [key]: [Word]) -> out {
     *out = cx.state.host().tload(&destination, &key);
 }
 
-#[instruction(no_stack_preamble)]
-pub(crate) fn tstore(cx: _) -> Result {
+#[instruction]
+pub(crate) fn tstore(cx: _, [key, value]: [Word]) -> Result {
     require_non_staticcall(cx.state)?;
-    let [key, value] = stack.popn()?;
     let destination = cx.state.message().destination;
     cx.state.host().tstore(&destination, &key, &value);
 }
@@ -190,7 +188,7 @@ mod tests {
 
         let interpreter = run(RunConfig::new(code).host(&mut host).staticcall());
         assert!(matches!(interpreter.err, InstrStop::StateChangeDuringStaticCall));
-        assert_eq!(interpreter.stack(), [Word::from(0xbeef), Word::from(1)]);
+        assert!(interpreter.stack().is_empty());
         assert_eq!(host.storage.get(&StorageKey::new(Address::ZERO, Word::from(1))), None);
     }
 
@@ -207,7 +205,7 @@ mod tests {
         let interpreter = run(RunConfig::new(code).host(&mut host).message(message));
 
         assert!(matches!(interpreter.err, InstrStop::StateChangeDuringStaticCall));
-        assert_eq!(interpreter.stack(), [Word::from(0xbeef), Word::from(1)]);
+        assert!(interpreter.stack().is_empty());
         assert_eq!(host.storage.get(&StorageKey::new(Address::ZERO, Word::from(1))), None);
     }
 
@@ -356,7 +354,7 @@ mod tests {
         let interpreter =
             run(RunConfig::new(code).host(&mut host).spec(SpecId::CANCUN).staticcall());
         assert!(matches!(interpreter.err, InstrStop::StateChangeDuringStaticCall));
-        assert_eq!(interpreter.stack(), [Word::from(0xcafe), Word::from(1)]);
+        assert!(interpreter.stack().is_empty());
         assert_eq!(
             host.transient_storage.get(&StorageKey::new(Address::ZERO, Word::from(1))),
             None

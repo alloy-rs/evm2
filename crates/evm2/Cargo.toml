@@ -104,7 +104,8 @@ default = [
     "std",
     "secp256k1",
     "blst",
-    "c-kzg",
+    # c-kzg doesn't play well with nextest.
+    # "c-kzg",
     "portable",
     "bn254-mcl",
     # TODO: probably shouldn't enable these library-wide.
