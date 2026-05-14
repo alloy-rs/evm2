@@ -1,7 +1,8 @@
 use crate::{
     EvmConfig, EvmTypes,
     interpreter::{
-        dispatch::unknown_instruction,
+        instructions as instr,
+        opcode::op,
         private::{Instruction, InstructionImplFn},
     },
 };
@@ -63,6 +64,7 @@ impl<T: EvmTypes> VersionTables<T> {
     /// Sets the static gas cost for `opcode`.
     #[inline(always)]
     pub const fn set_static_gas(&mut self, opcode: u8, cost: u16) {
+        assert!(opcode != op::INVALID, "INVALID opcode cannot be overridden");
         if self.static_gas_table.set(opcode, cost) {
             self.bump_revision(opcode);
         }
@@ -86,6 +88,7 @@ impl<T: EvmTypes> VersionTables<T> {
     /// proc macro.
     #[inline(always)]
     pub const fn set_instruction<I: Instruction<T>>(&mut self, opcode: u8, gas: u16) {
+        assert!(opcode != op::INVALID, "INVALID opcode cannot be overridden");
         self.set_static_gas(opcode, gas);
         if self.instruction_impls.set(opcode, I::execute, I::DYNAMIC_GAS) {
             self.bump_revision(opcode);
@@ -147,7 +150,7 @@ impl<T: EvmTypes> InstructionImplTable<T> {
             Some(instr) => {
                 InstructionInfo { instr, dynamic_gas: self.dynamic_gas[opcode as usize] }
             }
-            None => InstructionInfo { instr: unknown_instruction::<T>, dynamic_gas: true },
+            None => InstructionInfo { instr: instr::invalid::<T>::execute, dynamic_gas: false },
         }
     }
 
@@ -164,5 +167,25 @@ impl<T: EvmTypes> InstructionImplTable<T> {
         self.instrs[index] = Some(instr);
         self.dynamic_gas[index] = dynamic_gas;
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::evm::config::BaseEvmTypes;
+
+    #[test]
+    #[should_panic(expected = "INVALID opcode cannot be overridden")]
+    fn invalid_static_gas_cannot_be_overridden() {
+        let mut tables = VersionTables::<BaseEvmTypes>::empty();
+        tables.set_static_gas(op::INVALID, 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "INVALID opcode cannot be overridden")]
+    fn invalid_instruction_cannot_be_overridden() {
+        let mut tables = VersionTables::<BaseEvmTypes>::empty();
+        tables.set_instruction::<instr::stop<BaseEvmTypes>>(op::INVALID, 0);
     }
 }

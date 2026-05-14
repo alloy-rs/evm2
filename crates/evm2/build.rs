@@ -14,17 +14,56 @@ fn main() {
     let is_wasm = target_is_wasm();
     let target_pointer_width = target_pointer_width();
     let no_tco = env("CARGO_FEATURE_NO_TCO");
-    let is_nightly = rustc_is_nightly();
-    if is_wasm {
-        println!("cargo:rustc-cfg=dispatch_single_return");
-    } else if target_pointer_width == Some(64) {
-        println!("cargo:rustc-cfg=dispatch_packed");
-    } else {
-        println!("cargo:rustc-cfg=dispatch_unpacked");
+    match DispatchBackend::load().resolve(is_wasm, target_pointer_width, no_tco.is_some()) {
+        DispatchBackend::Auto => unreachable!("auto backend must resolve to a concrete backend"),
+        DispatchBackend::Tco => println!("cargo:rustc-cfg=tco"),
+        DispatchBackend::Packed => println!("cargo:rustc-cfg=dispatch_packed"),
+        DispatchBackend::SingleReturn => println!("cargo:rustc-cfg=dispatch_single_return"),
+        DispatchBackend::Unpacked => println!("cargo:rustc-cfg=dispatch_unpacked"),
     }
-    if no_tco.is_some() {
-    } else if is_nightly {
-        println!("cargo:rustc-cfg=tco");
+}
+
+enum DispatchBackend {
+    Auto,
+    Tco,
+    Packed,
+    SingleReturn,
+    Unpacked,
+}
+
+impl DispatchBackend {
+    fn load() -> Self {
+        let Some(value) = env("EVM2_DISPATCH_BACKEND") else {
+            return Self::Auto;
+        };
+        let value = value.to_str().expect("EVM2_DISPATCH_BACKEND must be valid UTF-8");
+        match value {
+            "" | "auto" => Self::Auto,
+            "tco" => Self::Tco,
+            "packed" => Self::Packed,
+            "single_return" | "single-return" => Self::SingleReturn,
+            "unpacked" => Self::Unpacked,
+            _ => panic!(
+                "invalid EVM2_DISPATCH_BACKEND={value:?}; expected auto, tco, packed, single_return, or unpacked"
+            ),
+        }
+    }
+
+    fn resolve(self, is_wasm: bool, target_pointer_width: Option<u32>, no_tco: bool) -> Self {
+        match self {
+            Self::Auto => {
+                if !no_tco && rustc_is_nightly() {
+                    Self::Tco
+                } else if is_wasm {
+                    Self::SingleReturn
+                } else if target_pointer_width == Some(64) {
+                    Self::Packed
+                } else {
+                    Self::Unpacked
+                }
+            }
+            concrete => concrete,
+        }
     }
 }
 
