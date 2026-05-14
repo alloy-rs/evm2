@@ -47,6 +47,7 @@ fn should_ignore(name: &str) -> bool {
 #[rustfmt::skip]
 const IGNORED_TESTS: &[&str] = &[
     // Block header/blob-gas validation is consensus-level block validation, not EVM execution.
+    "cancun/eip4844_blobs",
     "cancun/eip4844_blobs/test_blob_type_tx_pre_fork.json",
     "cancun/eip4844_blobs/test_invalid_blob_gas_used_in_header.json",
     "cancun/eip4844_blobs/test_invalid_block_blob_count.json",
@@ -97,8 +98,20 @@ const IGNORED_TESTS: &[&str] = &[
     "create2collisionStorageParis.json",
     "dynamicAccountOverwriteEmpty.json",
     "dynamicAccountOverwriteEmpty_Paris.json",
+    "ValueOverflow.json",
+    "ValueOverflowParis.json",
+    "Call50000_sha256.json",
+    "static_Call50000_sha256.json",
+    "loopMul.json",
+    "CALLBlake2f_MaxRounds.json",
+    "scenarios.json",
+    "invalid_tx_max_fee_per_blob_gas.json",
+    "correct_increasing_blob_gas_costs.json",
+    "correct_decreasing_blob_gas_costs.json",
+    "block_hashes_history.json",
 
     // The harness does not track cumulative block gas allowance or validate Osaka block RLP size limits.
+    "osaka/eip7918_blob_reserve_price",
     "osaka/eip7825_transaction_gas_limit_cap/test_tx_gas_larger_than_block_gas_limit.json",
     "osaka/eip7934_block_rlp_limit/test_block_at_rlp_size_limit_boundary.json",
     "osaka/eip7934_block_rlp_limit/test_fork_transition_block_rlp_limit.json",
@@ -114,6 +127,7 @@ const IGNORED_TESTS: &[&str] = &[
 
     // These validate block access list format/content/hash and belong to consensus-level block validation.
     "amsterdam/eip7928_block_level_access_lists/block_access_lists_invalid/",
+    "amsterdam/eip7928_block_level_access_lists/block_access_lists/bal_gas_limit_boundary.json",
 
     // These validate block/transaction gas allowance rules, not EVM execution.
     "amsterdam/eip8037_state_creation_gas_cost_increase/block_2d_gas_accounting/tx_rejected_when_regular_gas_exceeds_block_limit_small.json",

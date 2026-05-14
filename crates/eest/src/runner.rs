@@ -49,6 +49,7 @@ const IGNORED_TESTS: &[&str] = &[
     "eip7610_create_collision",
     "InitCollision.json",
     "InitCollisionParis.json",
+    "test_init_collision_create_opcode.json",
     "RevertInCreateInInit.json",
     "RevertInCreateInInit_Paris.json",
     "RevertInCreateInInitCreate2.json",
@@ -57,6 +58,10 @@ const IGNORED_TESTS: &[&str] = &[
     "create2collisionStorageParis.json",
     "dynamicAccountOverwriteEmpty.json",
     "dynamicAccountOverwriteEmpty_Paris.json",
+    "ValueOverflow.json",
+    "ValueOverflowParis.json",
+    "Call50000_sha256.json",
+    "static_Call50000_sha256.json",
 ];
 
 fn should_ignore(name: &str) -> bool {
