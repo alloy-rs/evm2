@@ -1,10 +1,11 @@
 # Porting Log
 
 - `evm2-inspectors` keeps the upstream `js-tracer` feature name and compiles the pure JS builtins,
-  native BigInt tests, JS binding object tests, and constructor-only JS inspector tests, but the
-  full JS inspector remains disabled. The JS tracer implementation still depends on revm-specific
-  context, database, journal, and interpreter APIs that do not exist in evm2 yet.
-  This intentionally disables the full `JsInspector` inspection hooks and `tests/it/geth_js.rs`.
+  native BigInt tests, JS binding object tests, constructor tests, and step/result runtime unit
+  tests. The active `JsInspector` now drives JavaScript `step`, `fault`, `enter`, and `exit` hooks
+  from evm2's existing inspector callbacks, but the per-step `db` object is still backed by an
+  empty in-memory database because evm2 inspector hooks do not expose the live database or journal.
+  This intentionally keeps `tests/it/geth_js.rs` disabled.
   Porting them faithfully requires replacing revm's
   `ContextTr`/`JournalTr`/`DatabaseRef`/`JournalExt`-backed inspector context and direct
   `InterpreterAction`/`InterpreterResult` control with evm2 equivalents or exposing additional
