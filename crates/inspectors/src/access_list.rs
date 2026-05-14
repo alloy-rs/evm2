@@ -2,12 +2,12 @@
 
 use alloc::collections::BTreeSet;
 use alloy_primitives::{
-    Address, B256, address,
+    Address, B256,
     map::{HashMap, HashSet},
 };
 use alloy_rpc_types_eth::{AccessList, AccessListItem};
 use evm2::{
-    EvmTypes, Inspector,
+    Evm, EvmTypes, Inspector,
     bytecode::opcode::op,
     interpreter::{Interpreter, Message, MessageResult},
 };
@@ -74,17 +74,18 @@ impl AccessListInspector {
         AccessList(items.collect())
     }
 
-    fn collect_excluded_addresses<T: EvmTypes>(&mut self, message: &Message<T>) {
+    fn collect_excluded_addresses<T: EvmTypes<Host = Evm<T>>>(
+        &mut self,
+        message: &Message<T>,
+        host: &Evm<T>,
+    ) {
         self.excluded.insert(message.caller);
         self.excluded.insert(message.destination);
-        for i in 1..=0x11 {
-            self.excluded.insert(Address::with_last_byte(i));
-        }
-        self.excluded.insert(address!("0000000000000000000000000000000000000100"));
+        self.excluded.extend(host.precompiles().warm_addresses());
     }
 }
 
-impl<T: EvmTypes> Inspector<T> for AccessListInspector {
+impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for AccessListInspector {
     fn step(&mut self, interp: &mut Interpreter<'_, T>, _host: &mut T::Host) {
         match interp.opcode() {
             op::SLOAD | op::SSTORE => {
@@ -120,20 +121,16 @@ impl<T: EvmTypes> Inspector<T> for AccessListInspector {
         }
     }
 
-    fn call(&mut self, message: &mut Message<T>, _host: &mut T::Host) -> Option<MessageResult<T>> {
+    fn call(&mut self, message: &mut Message<T>, host: &mut T::Host) -> Option<MessageResult<T>> {
         if message.depth == 0 {
-            self.collect_excluded_addresses(message);
+            self.collect_excluded_addresses(message, host);
         }
         None
     }
 
-    fn create(
-        &mut self,
-        message: &mut Message<T>,
-        _host: &mut T::Host,
-    ) -> Option<MessageResult<T>> {
+    fn create(&mut self, message: &mut Message<T>, host: &mut T::Host) -> Option<MessageResult<T>> {
         if message.depth == 0 {
-            self.collect_excluded_addresses(message);
+            self.collect_excluded_addresses(message, host);
         }
         None
     }

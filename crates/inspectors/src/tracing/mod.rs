@@ -66,10 +66,9 @@ pub mod js {
     use alloy_primitives::{Address, Bytes, TxKind, U256, map::HashSet};
     use boa_engine::{Context, JsError, JsObject, JsValue, Source, js_string};
     use evm2::{
-        EvmTypes, Inspector, Precompiles, SpecId,
+        Evm, EvmTypes, Inspector,
         evm::{CacheDB, EmptyDB},
         interpreter::{GasTracker, InstrStop, Interpreter, Message, MessageResult},
-        precompile::PrecompileProvider,
     };
 
     pub(crate) mod bindings;
@@ -348,12 +347,12 @@ pub mod js {
             Ok(())
         }
 
-        fn register_precompiles(&mut self, spec_id: SpecId) {
+        fn register_precompiles<T: EvmTypes<Host = Evm<T>>>(&mut self, host: &Evm<T>) {
             if self.precompiles_registered {
                 return;
             }
             let precompiles =
-                PrecompileList(HashSet::from_iter(Precompiles::base(spec_id).warm_addresses()));
+                PrecompileList(HashSet::from_iter(host.precompiles().warm_addresses()));
             let _ = precompiles.register_callable(&mut self.ctx);
             self.precompiles_registered = true;
         }
@@ -409,9 +408,9 @@ pub mod js {
         pub timestamp: U256,
     }
 
-    impl<T: EvmTypes> Inspector<T> for JsInspector {
-        fn step(&mut self, interp: &mut Interpreter<'_, T>, _host: &mut T::Host) {
-            self.register_precompiles(interp.spec());
+    impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for JsInspector {
+        fn step(&mut self, interp: &mut Interpreter<'_, T>, host: &mut T::Host) {
+            self.register_precompiles(host);
 
             if self.step_fn.is_none() || self.step_error {
                 return;
@@ -618,7 +617,7 @@ pub mod js {
         use alloy_primitives::{Address, Bytes, TxKind, U256, hex};
         use core::cell::RefCell;
         use evm2::{
-            BaseEvmTypes, Evm,
+            BaseEvmTypes, Evm, Precompiles, SpecId,
             bytecode::Bytecode,
             ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
             evm::AccountInfo,
@@ -632,7 +631,7 @@ pub mod js {
             fn step(
                 &mut self,
                 interp: &mut Interpreter<'_, BaseEvmTypes>,
-                host: &mut <BaseEvmTypes as EvmTypes>::Host,
+                host: &mut Evm<BaseEvmTypes>,
             ) {
                 self.0.borrow_mut().step(interp, host);
             }
@@ -640,7 +639,7 @@ pub mod js {
             fn step_end(
                 &mut self,
                 interp: &mut Interpreter<'_, BaseEvmTypes>,
-                host: &mut <BaseEvmTypes as EvmTypes>::Host,
+                host: &mut Evm<BaseEvmTypes>,
             ) {
                 self.0.borrow_mut().step_end(interp, host);
             }
@@ -648,7 +647,7 @@ pub mod js {
             fn call(
                 &mut self,
                 message: &mut Message<BaseEvmTypes>,
-                host: &mut <BaseEvmTypes as EvmTypes>::Host,
+                host: &mut Evm<BaseEvmTypes>,
             ) -> Option<MessageResult<BaseEvmTypes>> {
                 self.0.borrow_mut().call(message, host)
             }
@@ -657,7 +656,7 @@ pub mod js {
                 &mut self,
                 message: &Message<BaseEvmTypes>,
                 result: &mut MessageResult<BaseEvmTypes>,
-                host: &mut <BaseEvmTypes as EvmTypes>::Host,
+                host: &mut Evm<BaseEvmTypes>,
             ) {
                 self.0.borrow_mut().call_end(message, result, host);
             }
@@ -665,7 +664,7 @@ pub mod js {
             fn create(
                 &mut self,
                 message: &mut Message<BaseEvmTypes>,
-                host: &mut <BaseEvmTypes as EvmTypes>::Host,
+                host: &mut Evm<BaseEvmTypes>,
             ) -> Option<MessageResult<BaseEvmTypes>> {
                 self.0.borrow_mut().create(message, host)
             }
@@ -674,7 +673,7 @@ pub mod js {
                 &mut self,
                 message: &Message<BaseEvmTypes>,
                 result: &mut MessageResult<BaseEvmTypes>,
-                host: &mut <BaseEvmTypes as EvmTypes>::Host,
+                host: &mut Evm<BaseEvmTypes>,
             ) {
                 self.0.borrow_mut().create_end(message, result, host);
             }

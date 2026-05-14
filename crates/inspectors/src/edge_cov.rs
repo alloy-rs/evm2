@@ -4,7 +4,7 @@ use core::{
     fmt,
     hash::{BuildHasher, Hash, Hasher},
 };
-use evm2::{EvmTypes, Inspector, bytecode::opcode, interpreter::Interpreter};
+use evm2::{Evm, EvmTypes, Inspector, bytecode::opcode, interpreter::Interpreter};
 
 const MAX_EDGE_COUNT: usize = 65536;
 
@@ -87,7 +87,7 @@ impl Default for EdgeCovInspector {
     }
 }
 
-impl<T: EvmTypes> Inspector<T> for EdgeCovInspector {
+impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for EdgeCovInspector {
     #[inline]
     fn step(&mut self, interp: &mut Interpreter<'_, T>, _host: &mut T::Host) {
         if matches!(interp.opcode(), opcode::op::JUMP | opcode::op::JUMPI) {

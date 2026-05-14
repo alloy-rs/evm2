@@ -4,8 +4,8 @@ use alloc::{vec, vec::Vec};
 use alloy_primitives::{Address, B256, Log, LogData, U256, address, b256};
 use alloy_sol_types::SolValue;
 use evm2::{
-    EvmTypes, Inspector,
-    interpreter::{Message, MessageKind, MessageResult},
+    Evm, EvmTypes, Inspector,
+    interpreter::{Host, Message, MessageKind, MessageResult},
 };
 
 /// Sender of ETH transfer log per `eth_simulateV1` spec.
@@ -71,6 +71,7 @@ impl TransferInspector {
         value: U256,
         kind: TransferKind,
         depth: u16,
+        mut emit_log: impl FnMut(Log),
     ) {
         if self.internal_only && depth == 0 {
             return;
@@ -85,16 +86,18 @@ impl TransferInspector {
             let to = B256::from_slice(&to.abi_encode());
             let data = value.abi_encode();
 
-            self.logs.push(Log {
+            let log = Log {
                 address: TRANSFER_LOG_EMITTER,
                 data: LogData::new_unchecked(vec![TRANSFER_EVENT_TOPIC, from, to], data.into()),
-            });
+            };
+            emit_log(log.clone());
+            self.logs.push(log);
         }
     }
 }
 
-impl<T: EvmTypes> Inspector<T> for TransferInspector {
-    fn call(&mut self, message: &mut Message<T>, _host: &mut T::Host) -> Option<MessageResult<T>> {
+impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for TransferInspector {
+    fn call(&mut self, message: &mut Message<T>, host: &mut T::Host) -> Option<MessageResult<T>> {
         if matches!(message.kind, MessageKind::Call | MessageKind::CallCode) {
             self.on_transfer(
                 message.caller,
@@ -102,6 +105,7 @@ impl<T: EvmTypes> Inspector<T> for TransferInspector {
                 message.value,
                 TransferKind::Call,
                 message.depth,
+                |log| host.log(log),
             );
         }
         None
@@ -111,7 +115,7 @@ impl<T: EvmTypes> Inspector<T> for TransferInspector {
         &mut self,
         message: &Message<T>,
         result: &mut MessageResult<T>,
-        _host: &mut T::Host,
+        host: &mut T::Host,
     ) {
         let Some(address) = result.created_address else {
             return;
@@ -121,7 +125,9 @@ impl<T: EvmTypes> Inspector<T> for TransferInspector {
             MessageKind::Create2 => TransferKind::Create2,
             _ => return,
         };
-        self.on_transfer(message.caller, address, message.value, kind, message.depth);
+        self.on_transfer(message.caller, address, message.value, kind, message.depth, |log| {
+            host.log(log);
+        });
     }
 
     fn selfdestruct(
