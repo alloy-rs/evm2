@@ -79,7 +79,7 @@ impl DispatchGas for () {
         state: &mut InterpreterState<'_, T>,
         op: u8,
     ) -> Result {
-        state.gas_mut().spend(C::VERSION_TABLES.static_gas(op) as _)
+        state.gas_mut().spend(C::OPCODE_TABLES.static_gas(op) as _)
     }
 
     #[inline(always)]
@@ -108,7 +108,7 @@ impl DispatchGas for RemainingGas {
         _state: &mut InterpreterState<'_, T>,
         op: u8,
     ) -> Result {
-        self.spend(C::VERSION_TABLES.static_gas(op) as _)
+        self.spend(C::OPCODE_TABLES.static_gas(op) as _)
     }
 
     #[inline(always)]
@@ -151,7 +151,7 @@ fn dispatch_inner<
     state: &mut InterpreterState<'_, T>,
     op: u8,
 ) -> (Pc, G) {
-    let instr = if UNKNOWN { unknown_instruction } else { C::VERSION_TABLES.instruction(op).instr };
+    let instr = if UNKNOWN { unknown_instruction } else { C::OPCODE_TABLES.instruction(op).instr };
     if M::INSPECT {
         M::step(state, pc, *stack.len);
     }

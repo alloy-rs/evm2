@@ -107,7 +107,7 @@ extern_table! {
         let instr: InstructionImplFn<T> = if UNKNOWN {
             super::unknown_instruction
         } else {
-            C::VERSION_TABLES.instruction(OP).instr
+            C::OPCODE_TABLES.instruction(OP).instr
         };
         if M::INSPECT {
             M::step(state, pc, stack.len);
@@ -166,5 +166,5 @@ extern_table! {
 const fn pre_step<T: EvmTypes, C: EvmConfig<T>, const OP: u8>(
     remaining_gas: &mut RemainingGas,
 ) -> Result {
-    remaining_gas.spend(C::VERSION_TABLES.static_gas(OP) as _)
+    remaining_gas.spend(C::OPCODE_TABLES.static_gas(OP) as _)
 }
