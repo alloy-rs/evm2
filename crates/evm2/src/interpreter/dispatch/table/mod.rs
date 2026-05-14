@@ -114,6 +114,7 @@ pub(in crate::interpreter) fn run<T: EvmTypes>(
     run_inner::<T, NoInspector>(state, pc, stack, instructions)
 }
 
+#[allow(clippy::let_unit_value)]
 fn run_inner<T: EvmTypes, M: InspectMode<T>>(
     state: &mut InterpreterState<'_, T>,
     mut pc: Pc,

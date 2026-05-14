@@ -118,6 +118,9 @@ extern_table! {
 }
 
 #[inline(always)]
-fn pre_step<T: EvmTypes, C: EvmConfig<T>>(remaining_gas: &mut RemainingGas, opcode: u8) -> Result {
+const fn pre_step<T: EvmTypes, C: EvmConfig<T>>(
+    remaining_gas: &mut RemainingGas,
+    opcode: u8,
+) -> Result {
     remaining_gas.spend(C::VERSION_TABLES.static_gas(opcode) as _)
 }
