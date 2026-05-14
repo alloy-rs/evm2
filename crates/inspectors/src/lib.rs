@@ -14,6 +14,10 @@ extern crate alloc;
 
 #[cfg(feature = "std")]
 use anstyle as _;
+#[cfg(feature = "js-tracer")]
+use boa_engine as _;
+#[cfg(feature = "js-tracer")]
+use boa_gc as _;
 #[cfg(feature = "serde")]
 use serde as _;
 use serde_json as _;

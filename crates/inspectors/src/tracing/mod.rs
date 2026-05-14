@@ -46,8 +46,12 @@ mod writer;
 #[cfg(feature = "std")]
 pub use writer::{TraceWriter, TraceWriterConfig};
 
-#[cfg(any())]
-pub mod js;
+#[cfg(feature = "js-tracer")]
+/// JavaScript tracing support.
+#[allow(dead_code)]
+pub mod js {
+    pub(crate) mod builtins;
+}
 
 mod mux;
 pub use mux::{Error as MuxError, MuxInspector};
