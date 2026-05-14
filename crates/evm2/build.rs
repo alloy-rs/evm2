@@ -14,17 +14,45 @@ fn main() {
     let is_wasm = target_is_wasm();
     let target_pointer_width = target_pointer_width();
     let no_tco = env("CARGO_FEATURE_NO_TCO");
-    let is_nightly = rustc_is_nightly();
-    if is_wasm {
-        println!("cargo:rustc-cfg=dispatch_single_return");
-    } else if target_pointer_width == Some(64) {
-        println!("cargo:rustc-cfg=dispatch_packed");
-    } else {
-        println!("cargo:rustc-cfg=dispatch_unpacked");
+    match dispatch_backend_override() {
+        Some(DispatchBackend::Tco) => println!("cargo:rustc-cfg=tco"),
+        Some(DispatchBackend::Packed) => println!("cargo:rustc-cfg=dispatch_packed"),
+        Some(DispatchBackend::SingleReturn) => println!("cargo:rustc-cfg=dispatch_single_return"),
+        Some(DispatchBackend::Unpacked) => println!("cargo:rustc-cfg=dispatch_unpacked"),
+        None => {
+            if is_wasm {
+                println!("cargo:rustc-cfg=dispatch_single_return");
+            } else if target_pointer_width == Some(64) {
+                println!("cargo:rustc-cfg=dispatch_packed");
+            } else {
+                println!("cargo:rustc-cfg=dispatch_unpacked");
+            }
+            if no_tco.is_none() && rustc_is_nightly() {
+                println!("cargo:rustc-cfg=tco");
+            }
+        }
     }
-    if no_tco.is_some() {
-    } else if is_nightly {
-        println!("cargo:rustc-cfg=tco");
+}
+
+enum DispatchBackend {
+    Tco,
+    Packed,
+    SingleReturn,
+    Unpacked,
+}
+
+fn dispatch_backend_override() -> Option<DispatchBackend> {
+    let value = env("EVM2_DISPATCH_BACKEND")?;
+    let value = value.to_str().expect("EVM2_DISPATCH_BACKEND must be valid UTF-8");
+    match value {
+        "" | "auto" => None,
+        "tco" => Some(DispatchBackend::Tco),
+        "packed" => Some(DispatchBackend::Packed),
+        "single_return" | "single-return" => Some(DispatchBackend::SingleReturn),
+        "unpacked" => Some(DispatchBackend::Unpacked),
+        _ => panic!(
+            "invalid EVM2_DISPATCH_BACKEND={value:?}; expected auto, tco, packed, single_return, or unpacked"
+        ),
     }
 }
 
