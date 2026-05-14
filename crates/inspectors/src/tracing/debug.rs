@@ -234,13 +234,12 @@ impl DebugInspector {
     }
 
     /// Should be invoked after each transaction to obtain the resulting [`GethTrace`].
-    pub fn get_result<TX, B, DB>(
+    pub fn get_result<TX, B>(
         &mut self,
         tx_context: Option<TransactionContext>,
         tx_env: &TX,
         block_env: &B,
         result: DebugTraceResult<'_>,
-        db: &mut DB,
     ) -> Result<GethTrace, DebugInspectorError>
     where
         TX: TraceTxEnv,
@@ -267,13 +266,13 @@ impl DebugInspector {
                 inspector.set_transaction_gas_limit(tx_env.trace_gas_limit());
                 inspector
                     .geth_builder()
-                    .geth_prestate_traces(result.state, config, db)
+                    .geth_prestate_traces(result.state, config)
                     .unwrap_or_else(|err| match err {})
                     .into()
             }
             Self::Noop => NoopFrame::default().into(),
             Self::Mux(inspector, _) => inspector
-                .try_into_mux_frame(result.gas_used, result.state, db, tx_info)
+                .try_into_mux_frame(result.gas_used, result.state, tx_info)
                 .unwrap_or_else(|err| match err {})
                 .into(),
             Self::FlatCallTracer(inspector) => {
@@ -288,10 +287,7 @@ impl DebugInspector {
             Self::Erc7562Tracer(inspector, config) => {
                 inspector.set_transaction_gas_limit(tx_env.trace_gas_limit());
                 inspector.set_transaction_caller(tx_env.trace_caller());
-                inspector
-                    .geth_builder()
-                    .geth_erc7562_traces(config.clone(), result.gas_used, db)
-                    .into()
+                inspector.geth_builder().geth_erc7562_traces(config.clone(), result.gas_used).into()
             }
             Self::Default(inspector, config) => {
                 inspector.set_transaction_gas_limit(tx_env.trace_gas_limit());
@@ -440,7 +436,7 @@ impl<T: EvmTypes> Inspector<T> for DebugInspector {
 
 /// Error type for [DebugInspector]
 #[derive(Debug, Error)]
-pub enum DebugInspectorError<DBError = core::convert::Infallible> {
+pub enum DebugInspectorError {
     /// Invalid tracer configuration
     #[error("invalid tracer config")]
     InvalidTracerConfig,
@@ -453,8 +449,4 @@ pub enum DebugInspectorError<DBError = core::convert::Infallible> {
     /// Error from MuxInspector
     #[error(transparent)]
     MuxInspector(#[from] crate::tracing::MuxError),
-    /// Error from JS inspector
-    /// Database error
-    #[error("database error: {0}")]
-    Database(DBError),
 }

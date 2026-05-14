@@ -5,9 +5,9 @@ use alloc::{
     string::{String, ToString},
     vec::Vec,
 };
-use alloy_primitives::{Bytes, hex};
+use alloy_primitives::hex;
 use alloy_sol_types::{ContractError, GenericRevertReason};
-use evm2::{AccountInfo, SpecId, interpreter::InstrStop};
+use evm2::{SpecId, interpreter::InstrStop};
 
 /// Converts a non successful [`InstrStop`] to an error message.
 ///
@@ -90,14 +90,6 @@ pub(crate) fn convert_memory(data: &[u8]) -> Vec<String> {
 pub(crate) fn gas_used(spec: SpecId, spent: u64, refunded: u64) -> u64 {
     let refund_quotient = if spec.enables(SpecId::LONDON) { 5 } else { 2 };
     spent - (refunded).min(spent / refund_quotient)
-}
-
-/// Loads the code for the given account from the account itself or the database
-///
-/// Returns None if the code hash is the KECCAK256_EMPTY hash
-#[inline]
-pub(crate) fn load_account_code<DB>(_db: DB, db_acc: &AccountInfo) -> Option<Bytes> {
-    db_acc.code.as_ref().map(|code| code.original_bytes())
 }
 
 /// Returns a non-empty revert reason if the output is a revert/error.

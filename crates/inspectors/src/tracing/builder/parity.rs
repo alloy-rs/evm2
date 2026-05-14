@@ -156,16 +156,13 @@ impl ParityTraceBuilder {
     /// Consumes the inspector and returns the trace results according to the configured trace
     /// types.
     ///
-    /// This also takes the database to populate the balance and nonce changes for the [StateDiff].
-    ///
     /// Note: this is considered a convenience method that takes the state changes after inspecting
     /// a transaction with the [TracingInspector](crate::tracing::TracingInspector).
-    pub fn into_trace_results_with_state<DB>(
+    pub fn into_trace_results_with_state(
         self,
         output: Bytes,
         state: &StateChanges,
         trace_types: &HashSet<TraceType>,
-        db: DB,
     ) -> Result<TraceResults, Infallible> {
         let breadth_first_addresses = if trace_types.contains(&TraceType::VmTrace) {
             CallTraceNodeWalkerBF::new(&self.nodes)
@@ -184,7 +181,7 @@ impl ParityTraceBuilder {
 
         // check the vm trace case
         if let Some(ref mut vm_trace) = trace_res.vm_trace {
-            populate_vm_trace_bytecodes(&db, vm_trace, breadth_first_addresses)?;
+            populate_vm_trace_bytecodes(vm_trace, breadth_first_addresses)?;
         }
 
         Ok(trace_res)
@@ -448,8 +445,7 @@ where
 /// walker in [crate::tracing::builder::walker]
 ///
 /// iteratively fill the [VmTrace] code fields
-pub(crate) fn populate_vm_trace_bytecodes<DB, I>(
-    db: DB,
+pub(crate) fn populate_vm_trace_bytecodes<I>(
     trace: &mut VmTrace,
     breadth_first_addresses: I,
 ) -> Result<(), Infallible>
@@ -471,7 +467,6 @@ where
         let _ = addrs.next().expect("there should be an address");
     }
 
-    let _ = db;
     Ok(())
 }
 

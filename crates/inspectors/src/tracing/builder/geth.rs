@@ -226,26 +226,23 @@ impl<'a> GethTraceBuilder<'a> {
     ///
     /// * `state` - The state post-transaction execution.
     /// * `diff_mode` - if prestate is in diff or prestate mode.
-    /// * `db` - The database to fetch state pre-transaction execution.
-    pub fn geth_prestate_traces<DB>(
+    pub fn geth_prestate_traces(
         &self,
         state: &StateChanges,
         prestate_config: &PreStateConfig,
-        db: DB,
     ) -> Result<PreStateFrame, core::convert::Infallible> {
         let code_enabled = prestate_config.code_enabled();
         let storage_enabled = prestate_config.storage_enabled();
         if prestate_config.is_diff_mode() {
-            Ok(self.geth_prestate_diff_traces(state, db, code_enabled, storage_enabled))
+            Ok(self.geth_prestate_diff_traces(state, code_enabled, storage_enabled))
         } else {
-            Ok(self.geth_prestate_pre_traces(state, db, code_enabled, storage_enabled))
+            Ok(self.geth_prestate_pre_traces(state, code_enabled, storage_enabled))
         }
     }
 
-    fn geth_prestate_pre_traces<DB>(
+    fn geth_prestate_pre_traces(
         &self,
         state: &StateChanges,
-        db: DB,
         code_enabled: bool,
         storage_enabled: bool,
     ) -> PreStateFrame {
@@ -270,14 +267,12 @@ impl<'a> GethTraceBuilder<'a> {
             prestate.0.insert(address, acc_state);
         }
 
-        let _ = db;
         PreStateFrame::Default(prestate)
     }
 
-    fn geth_prestate_diff_traces<DB>(
+    fn geth_prestate_diff_traces(
         &self,
         state: &StateChanges,
-        db: DB,
         code_enabled: bool,
         storage_enabled: bool,
     ) -> PreStateFrame {
@@ -342,7 +337,6 @@ impl<'a> GethTraceBuilder<'a> {
             }
         }
 
-        let _ = db;
         state_diff.retain_changed().remove_zero_storage_values();
         PreStateFrame::Diff(state_diff)
     }
@@ -376,12 +370,7 @@ impl<'a> GethTraceBuilder<'a> {
     }
 
     /// Traces ERC-7562 calls using the call tracer.
-    pub fn geth_erc7562_traces<DB>(
-        &self,
-        opts: Erc7562Config,
-        gas_used: u64,
-        _db: DB,
-    ) -> Erc7562Frame {
+    pub fn geth_erc7562_traces(&self, opts: Erc7562Config, gas_used: u64) -> Erc7562Frame {
         if self.nodes.is_empty() {
             return Default::default();
         }
@@ -590,7 +579,7 @@ mod tests {
         );
 
         let builder = GethTraceBuilder::new(Vec::new(), None);
-        let frame = builder.geth_prestate_diff_traces(&state, (), false, false);
+        let frame = builder.geth_prestate_diff_traces(&state, false, false);
 
         match frame {
             PreStateFrame::Diff(diff) => {

@@ -104,11 +104,10 @@ impl MuxInspector {
     }
 
     /// Try converting this [MuxInspector] into a [MuxFrame].
-    pub fn try_into_mux_frame<DB>(
+    pub fn try_into_mux_frame(
         &self,
         gas_used: u64,
         state: &StateChanges,
-        db: &DB,
         tx_info: TransactionInfo,
     ) -> Result<MuxFrame, Infallible> {
         let mut frame = HashMap::with_capacity_and_hasher(self.configs.len(), Default::default());
@@ -126,7 +125,7 @@ impl MuxInspector {
                     if let Some(inspector) = &self.tracing {
                         inspector
                             .geth_builder()
-                            .geth_prestate_traces(state, prestate_config, db)?
+                            .geth_prestate_traces(state, prestate_config)?
                             .into()
                     } else {
                         continue;
