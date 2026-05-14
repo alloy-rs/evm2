@@ -669,6 +669,7 @@ macro_rules! impl_owned_inspector_slot {
 
 impl_owned_inspector_slot!(
     evm2_inspectors::access_list::AccessListInspector,
+    evm2_inspectors::edge_cov::EdgeCovInspector,
     evm2_inspectors::transfer::TransferInspector,
     evm2_inspectors::tracing::DebugInspector,
     evm2_inspectors::tracing::MuxInspector,

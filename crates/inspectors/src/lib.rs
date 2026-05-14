@@ -21,6 +21,9 @@ use thiserror as _;
 
 pub mod access_list;
 
+/// An inspector for tracking edge coverage.
+pub mod edge_cov;
+
 /// Implementation of an opcode counter for the EVM.
 pub mod opcode;
 pub use opcode::{OpcodeGasInspector, immediate_size};
