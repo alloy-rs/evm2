@@ -114,7 +114,7 @@ pub(crate) struct PackedGasStackLen(usize);
 impl PackedGasStackLen {
     #[inline(always)]
     const fn new(gas_spent: u64, stack_len: usize) -> Self {
-        debug_assert!(remaining_gas <= GAS_MASK as u64, "gas overflow");
+        debug_assert!(gas_spent <= GAS_MASK as u64, "gas overflow");
         Self((stack_len << GAS_BITS) | (gas_spent as usize))
     }
 
