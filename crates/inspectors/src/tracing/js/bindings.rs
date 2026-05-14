@@ -205,22 +205,20 @@ impl StepLog {
 
 /// Represents the memory object
 #[derive(Clone, Debug)]
-pub(crate) struct MemoryRef(GuardedNullableGc<Bytes>);
+pub(crate) struct MemoryRef(GuardedNullableGc<Memory>);
 
 impl MemoryRef {
     /// Creates a new memory reference.
-    pub(crate) fn new(mem: &Memory) -> (Self, GcGuard<'_, Bytes>) {
-        let bytes = if mem.is_empty() {
-            Bytes::new()
-        } else {
-            Bytes::copy_from_slice(mem.slice(0, mem.len()))
-        };
-        let (inner, guard) = GuardedNullableGc::new_owned(bytes);
+    pub(crate) fn new(mem: &Memory) -> (Self, GcGuard<'_, Memory>) {
+        let (inner, guard) = GuardedNullableGc::new_ref(mem);
         (Self(inner), guard)
     }
 
-    fn new_bytes(bytes: Bytes) -> (Self, GcGuard<'static, Bytes>) {
-        let (inner, guard) = GuardedNullableGc::new_owned(bytes);
+    fn new_bytes(bytes: Bytes) -> (Self, GcGuard<'static, Memory>) {
+        let mut memory = Memory::new();
+        memory.resize(0, bytes.len()).unwrap();
+        memory.set(0, &bytes);
+        let (inner, guard) = GuardedNullableGc::new_owned(memory);
         (Self(inner), guard)
     }
 
@@ -258,7 +256,7 @@ impl MemoryRef {
                     let end = end as usize;
                     let slice = memory
                         .0
-                        .with_inner(|mem| mem.slice(start..end).to_vec())
+                        .with_inner(|mem| mem.slice(start, end - start).to_vec())
                         .unwrap_or_default();
 
                     to_uint8_array_value(slice, ctx)
@@ -284,7 +282,7 @@ impl MemoryRef {
                     }
                     let slice = memory
                         .0
-                        .with_inner(|mem| mem.slice(offset..offset + 32).to_vec())
+                        .with_inner(|mem| mem.slice(offset, 32).to_vec())
                         .unwrap_or_default();
                     to_uint8_array_value(slice, ctx)
                 },
@@ -359,30 +357,62 @@ impl From<u8> for OpObj {
 
 /// Represents the stack object
 #[derive(Clone, Debug)]
-pub(crate) struct StackRef(GuardedNullableGc<Vec<Word>>);
+pub(crate) struct StackRef(GuardedNullableGc<StackRefInner>);
+
+#[derive(Debug)]
+pub(crate) enum StackRefInner {
+    Borrowed(EvmStackRef<'static>),
+    Owned(Vec<Word>),
+}
+
+impl StackRefInner {
+    const fn len(&self) -> usize {
+        match self {
+            Self::Borrowed(stack) => stack.len(),
+            Self::Owned(stack) => stack.len(),
+        }
+    }
+
+    fn peek(&self, idx: usize) -> Option<Word> {
+        match self {
+            Self::Borrowed(stack) => stack.peek(idx),
+            Self::Owned(stack) => stack.get(stack.len().checked_sub(idx + 1)?).copied(),
+        }
+    }
+}
 
 impl StackRef {
     /// Creates a new stack reference.
-    pub(crate) fn new(stack: EvmStackRef<'_>) -> (Self, GcGuard<'static, Vec<Word>>) {
-        Self::new_words(stack.as_slice().to_vec())
+    pub(crate) fn new(stack: EvmStackRef<'_>) -> (Self, GcGuard<'_, StackRefInner>) {
+        Self::new_stack_ref(stack)
     }
 
-    fn new_words(words: Vec<Word>) -> (Self, GcGuard<'static, Vec<Word>>) {
-        let (inner, guard) = GuardedNullableGc::new_owned(words);
+    fn new_stack_ref(stack: EvmStackRef<'_>) -> (Self, GcGuard<'_, StackRefInner>) {
+        // SAFETY:
+        //
+        // Boa requires 'static captures for native functions. The returned guard removes the
+        // stack reference before the borrowed interpreter stack can be used after this JS call.
+        let stack = unsafe { core::mem::transmute::<EvmStackRef<'_>, EvmStackRef<'static>>(stack) };
+        let (inner, guard) = GuardedNullableGc::new_owned(StackRefInner::Borrowed(stack));
+        (Self(inner), guard)
+    }
+
+    fn new_words(words: Vec<Word>) -> (Self, GcGuard<'static, StackRefInner>) {
+        let (inner, guard) = GuardedNullableGc::new_owned(StackRefInner::Owned(words));
         (Self(inner), guard)
     }
 
     fn peek(&self, idx: usize, ctx: &mut Context) -> JsResult<JsValue> {
         self.0
             .with_inner(|stack| {
-                let Some(value) = stack.get(stack.len().saturating_sub(idx + 1)) else {
+                let Some(value) = stack.peek(idx) else {
                     return Err(JsError::from_native(JsNativeError::typ().with_message(format!(
                         "tracer accessed out of bound stack: size {}, index {}",
                         stack.len(),
                         idx
                     ))));
                 };
-                to_bigint(*value, ctx)
+                to_bigint(value, ctx)
             })
             .ok_or_else(|| {
                 JsError::from_native(

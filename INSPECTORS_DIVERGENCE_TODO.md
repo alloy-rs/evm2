@@ -36,8 +36,8 @@ Source audit: `INSPECTORS_SOURCE_AUDIT.md`.
 - [x] Wire `DebugInspector::Js` when the `js-tracer` feature is enabled.
 - [x] Pass host/database access into debug result finalization paths.
   - `DebugInspector::get_result` now takes `&TxResult` plus a caller-provided `DynDatabase`, matching upstream's result-plus-DB shape without a custom result wrapper.
-- [x] Remove the lossy default `TraceTxEnv for TxEnv<T>` implementation instead of returning a fake gas limit.
-  - evm2 core `TxEnv<T>` intentionally does not carry transaction gas limit, target, input, or value; callers that need debug finalization parity must provide a richer `TraceTxEnv` wrapper, as the test harness does.
+- [x] Remove debug trace transaction/block helper traits and use concrete evm2 Ethereum types.
+  - `DebugInspector::get_result` now takes `RecoveredTxEnvelope` and `BlockEnv` directly; transaction debug fields come from the concrete recovered transaction, not generic evm2 `TxEnv<T>`.
 - [x] Add frame/log-full hooks if evm2 grows equivalent inspector hooks.
   - No equivalent evm2 hooks exist yet; current wiring covers the hooks currently exposed by `Inspector<T>`.
 

@@ -56,7 +56,7 @@ mod mux;
 pub use mux::{Error as MuxError, MuxInspector};
 
 mod debug;
-pub use debug::{DebugInspector, DebugInspectorError, TraceBlockEnv, TraceTxEnv};
+pub use debug::{DebugInspector, DebugInspectorError};
 
 /// An inspector that collects call traces.
 #[derive(Clone, Debug)]

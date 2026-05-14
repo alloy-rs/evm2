@@ -123,19 +123,19 @@ Status: reviewed.
 
 Concrete differences:
 
-- Ported from revm `ContextTr`, `Transaction`, `Block`, `ResultAndState`, `DatabaseRef`, `FrameInput`, and `FrameResult` to evm2-specific helper traits:
-  - `TraceTxEnv`
-  - `TraceBlockEnv`
+- Ported from revm `ContextTr`, `Transaction`, `Block`, `ResultAndState`, `DatabaseRef`, `FrameInput`, and `FrameResult` to concrete evm2 Ethereum types:
+  - `RecoveredTxEnvelope`
+  - `BlockEnv`
 - Local `DebugInspector::Noop` is a plain enum variant instead of wrapping revm `NoOpInspector`.
 - Result finalization is not equivalent:
   - Upstream `get_result` receives tx env, block env, `ResultAndState`, and mutable DB, then passes DB into prestate, mux, ERC-7562, and JS paths.
   - Local `get_result` receives tx env, block env, evm2 `TxResult`, and mutable `DynDatabase`, then passes DB into prestate, mux, ERC-7562, and JS paths.
-- Local intentionally does not implement `TraceTxEnv` for evm2's generic `TxEnv<T>` because that type does not store the transaction gas limit, target, input, or value. Callers must provide a richer transaction wrapper for debug finalization, matching the test harness.
+- Local intentionally does not use evm2's generic `TxEnv<T>` for debug finalization because that type only carries opcode-visible transaction globals. Full transaction fields come from `RecoveredTxEnvelope`.
 - Delegation is manually expanded instead of upstream's `delegate!` macro.
 - Upstream delegates `log_full`, `frame_start`, and `frame_end`; local evm2 inspector trait has no corresponding hooks, so these are absent.
 - `DebugInspectorError` no longer carries DB errors because evm2's `DynDatabase` API reports optional values without an associated error type.
 
-Assessment: real behavior gaps remain only where evm2 has no frame/log-full inspector hooks. The lossy default transaction environment implementation was removed.
+Assessment: real behavior gaps remain only where evm2 has no frame/log-full inspector hooks. Debug finalization now uses concrete evm2 Ethereum transaction/block types.
 
 ### `src/tracing/fourbyte.rs`
 
@@ -157,14 +157,13 @@ Status: reviewed.
 Concrete differences:
 
 - Ported from revm `SharedMemory`, `Stack`, `EvmState`, and `DatabaseRef` to evm2 `Memory`, `StackRef`, `Word`, `State`, `StateChanges`, and `DynDatabase`.
-- `MemoryRef` is not equivalent:
+- `MemoryRef` is adapted to evm2 memory:
   - Upstream wraps a guarded reference to revm `SharedMemory`.
-  - Local copies the full evm2 memory into owned `Bytes` before exposing it to JS.
-  - JS behavior is preserved, but this changes lifetime/performance characteristics.
-- `StackRef` is not equivalent:
+  - Local wraps a guarded reference to evm2 `Memory` and reads slices lazily while the JS call is active.
+- `StackRef` is adapted to evm2 stack:
   - Upstream wraps a guarded reference to revm `Stack`.
-  - Local copies the stack into owned `Vec<Word>` before exposing it to JS.
-  - JS `peek` still returns nth-from-top values, but snapshot/copy behavior differs.
+  - Local wraps a guarded evm2 `StackRef`; tests still use an owned vector helper for synthetic stack fixtures.
+  - JS `peek` still returns nth-from-top values.
 - DB access is restored over evm2 equivalents:
   - Upstream has `StateRef`, `GcDb`, `EvmDbRefInner`, `JsDb<DB: DatabaseRef>`, and `StringError`; it reads first from in-flight `EvmState`, then from an arbitrary read-only `DatabaseRef`.
   - Local has `EvmDbReader` over either in-flight evm2 `State` or transaction `StateChanges` plus a caller-provided `DynDatabase`.
@@ -172,7 +171,7 @@ Concrete differences:
 - Local constant mapping changed from revm `KECCAK_EMPTY` to evm2 `KECCAK256_EMPTY`.
 - Test setup was ported from revm `CacheDB + EvmState` to evm2 `State`, `StateChanges`, and `DynDatabase`; a dedicated test covers a non-cache backing `DynDatabase`.
 
-Assessment: no missing upstream behavior found for JS database/state access. Remaining differences are evm2 API-shape and memory/stack copy lifetime differences.
+Assessment: no missing upstream behavior found for JS database/state, memory, or stack access. Remaining differences are evm2 API-shape differences.
 
 ### `src/tracing/js/builtins.rs`
 
@@ -199,7 +198,7 @@ Concrete differences:
 - Precompile registration uses the host's configured precompile provider.
 - Local adds evm2-native JS tests in this file.
 
-Assessment: arbitrary `DynDatabase` visibility is wired through the JS DB object. Remaining differences are evm2 API-shape differences and copied memory/stack snapshots.
+Assessment: arbitrary `DynDatabase` visibility is wired through the JS DB object. Remaining differences are evm2 API-shape differences.
 
 ### `src/tracing/mod.rs`
 

@@ -3,7 +3,7 @@ use crate::tracing::{
 };
 #[cfg(feature = "js-tracer")]
 use alloc::boxed::Box;
-use alloy_primitives::{Address, Bytes, Log, TxKind, U256};
+use alloy_primitives::{Address, Log, U256};
 use alloy_rpc_types_eth::TransactionInfo;
 use alloy_rpc_types_trace::geth::{
     CallConfig, FourByteFrame, GethDebugBuiltInTracerType, GethDebugTracerType,
@@ -13,76 +13,11 @@ use alloy_rpc_types_trace::geth::{
 use evm2::{
     Evm, EvmTypes, Inspector, TxResult,
     env::BlockEnv,
+    ethereum::RecoveredTxEnvelope,
     evm::DynDatabase,
     interpreter::{Interpreter, Message, MessageResult},
 };
 use thiserror::Error;
-
-/// Transaction fields needed by debug trace finalization.
-pub trait TraceTxEnv {
-    /// Returns transaction gas limit.
-    fn trace_gas_limit(&self) -> u64;
-
-    /// Returns transaction caller.
-    fn trace_caller(&self) -> Address;
-
-    /// Returns transaction target kind.
-    fn trace_kind(&self) -> TxKind {
-        TxKind::Call(Address::ZERO)
-    }
-
-    /// Returns transaction input.
-    fn trace_input(&self) -> Bytes {
-        Bytes::new()
-    }
-
-    /// Returns transaction gas price.
-    fn trace_gas_price(&self) -> u128 {
-        0
-    }
-
-    /// Returns transaction value.
-    fn trace_value(&self) -> U256 {
-        U256::ZERO
-    }
-}
-
-/// Block fields needed by debug trace finalization.
-pub trait TraceBlockEnv {
-    /// Returns the block number.
-    fn trace_block_number(&self) -> u64;
-
-    /// Returns the block beneficiary.
-    fn trace_coinbase(&self) -> Address {
-        Address::ZERO
-    }
-
-    /// Returns the block timestamp.
-    fn trace_timestamp(&self) -> U256 {
-        U256::ZERO
-    }
-
-    /// Returns the block base fee.
-    fn trace_base_fee(&self) -> u64;
-}
-
-impl<T: EvmTypes> TraceBlockEnv for BlockEnv<T> {
-    fn trace_block_number(&self) -> u64 {
-        self.number.try_into().unwrap_or(u64::MAX)
-    }
-
-    fn trace_coinbase(&self) -> Address {
-        self.beneficiary
-    }
-
-    fn trace_timestamp(&self) -> U256 {
-        self.timestamp
-    }
-
-    fn trace_base_fee(&self) -> u64 {
-        self.basefee.try_into().unwrap_or(u64::MAX)
-    }
-}
 
 /// Inspector for the `debug` API
 ///
@@ -260,38 +195,40 @@ impl DebugInspector {
     }
 
     /// Should be invoked after each transaction to obtain the resulting [`GethTrace`].
-    pub fn get_result<T, TX, B>(
+    pub fn get_result<T>(
         &mut self,
         tx_context: Option<TransactionContext>,
-        tx_env: &TX,
-        block_env: &B,
+        tx: &RecoveredTxEnvelope,
+        block_env: &BlockEnv,
         res: &TxResult<T>,
         db: &mut dyn DynDatabase,
     ) -> Result<GethTrace, DebugInspectorError>
     where
         T: EvmTypes,
-        TX: TraceTxEnv,
-        B: TraceBlockEnv,
     {
+        let block_number = block_env.number.try_into().unwrap_or(u64::MAX);
+        let base_fee = block_env.basefee.try_into().unwrap_or(u64::MAX);
+        let caller = tx.signer();
+        let gas_limit = tx.gas_limit();
         #[allow(clippy::needless_update)]
         let tx_info = TransactionInfo {
             hash: tx_context.as_ref().and_then(|c| c.tx_hash),
             index: tx_context.as_ref().and_then(|c| c.tx_index.map(|i| i as u64)),
             block_hash: tx_context.as_ref().and_then(|c| c.block_hash),
-            block_number: Some(block_env.trace_block_number()),
-            base_fee: Some(block_env.trace_base_fee()),
+            block_number: Some(block_number),
+            base_fee: Some(base_fee),
             ..Default::default()
         };
 
         let res = match self {
             Self::FourByte(inspector) => FourByteFrame::from(&*inspector).into(),
             Self::CallTracer(inspector, config) => {
-                inspector.set_transaction_gas_limit(tx_env.trace_gas_limit());
-                inspector.set_transaction_caller(tx_env.trace_caller());
+                inspector.set_transaction_gas_limit(gas_limit);
+                inspector.set_transaction_caller(caller);
                 inspector.geth_builder().geth_call_traces(*config, res.gas_used).into()
             }
             Self::PreStateTracer(inspector, config) => {
-                inspector.set_transaction_gas_limit(tx_env.trace_gas_limit());
+                inspector.set_transaction_gas_limit(gas_limit);
                 inspector
                     .geth_builder()
                     .geth_prestate_traces(&res.state_changes, config, Some(db))
@@ -304,8 +241,8 @@ impl DebugInspector {
                 .unwrap_or_else(|err| match err {})
                 .into(),
             Self::FlatCallTracer(inspector) => {
-                inspector.set_transaction_gas_limit(tx_env.trace_gas_limit());
-                inspector.set_transaction_caller(tx_env.trace_caller());
+                inspector.set_transaction_gas_limit(gas_limit);
+                inspector.set_transaction_caller(caller);
                 inspector
                     .clone()
                     .into_parity_builder()
@@ -313,16 +250,16 @@ impl DebugInspector {
                     .into()
             }
             Self::Erc7562Tracer(inspector, config) => {
-                inspector.set_transaction_gas_limit(tx_env.trace_gas_limit());
-                inspector.set_transaction_caller(tx_env.trace_caller());
+                inspector.set_transaction_gas_limit(gas_limit);
+                inspector.set_transaction_caller(caller);
                 inspector
                     .geth_builder()
                     .geth_erc7562_traces(config.clone(), res.gas_used, Some(db))
                     .into()
             }
             Self::Default(inspector, config) => {
-                inspector.set_transaction_gas_limit(tx_env.trace_gas_limit());
-                inspector.set_transaction_caller(tx_env.trace_caller());
+                inspector.set_transaction_gas_limit(gas_limit);
+                inspector.set_transaction_caller(caller);
                 inspector
                     .geth_builder()
                     .geth_traces(res.gas_used, res.output.clone(), *config)
@@ -339,17 +276,17 @@ impl DebugInspector {
                     created_address: res.created_address,
                 };
                 let tx = crate::tracing::js::JsTraceTx {
-                    caller: tx_env.trace_caller(),
-                    kind: tx_env.trace_kind(),
-                    input: tx_env.trace_input(),
-                    gas_limit: tx_env.trace_gas_limit(),
-                    gas_price: tx_env.trace_gas_price(),
-                    value: tx_env.trace_value(),
+                    caller,
+                    kind: tx.kind(),
+                    input: tx.input().clone(),
+                    gas_limit,
+                    gas_price: tx.effective_gas_price(Some(base_fee)),
+                    value: tx.value(),
                 };
                 let block = crate::tracing::js::JsTraceBlock {
-                    number: block_env.trace_block_number(),
-                    coinbase: block_env.trace_coinbase(),
-                    timestamp: block_env.trace_timestamp(),
+                    number: block_number,
+                    coinbase: block_env.beneficiary,
+                    timestamp: block_env.timestamp,
                 };
                 GethTrace::JS(inspector.json_result_from_parts(
                     result,

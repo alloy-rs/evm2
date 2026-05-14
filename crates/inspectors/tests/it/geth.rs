@@ -133,10 +133,9 @@ fn test_geth_erc7562_tracer() {
     assert!(res.result.is_success(), "{res:#?}");
 
     let (ctx, inspector) = evm.ctx_inspector();
-    let tx_env = ctx.tx().clone();
-    let block_env = *ctx.block();
-    let trace =
-        inspector.get_result(None, &tx_env, &block_env, &res.tx_result, ctx.db_mut()).unwrap();
+    let tx = ctx.tx().envelope();
+    let block = evm2::env::BlockEnv::from(ctx.block());
+    let trace = inspector.get_result(None, &tx, &block, &res.tx_result, ctx.db_mut()).unwrap();
 
     match trace {
         GethTrace::Erc7562Tracer(frame) => {

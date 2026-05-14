@@ -117,8 +117,8 @@ fn test_geth_debug_inspector_jstracer() {
     assert!(res.result.is_success());
 
     let (context, inspector) = evm.ctx_inspector();
-    let tx_env = context.tx().clone();
-    let block_env = *context.block();
+    let tx_env = context.tx().envelope();
+    let block_env = evm2::env::BlockEnv::from(context.block());
     let trace =
         inspector.get_result(None, &tx_env, &block_env, &res.tx_result, context.db_mut()).unwrap();
 

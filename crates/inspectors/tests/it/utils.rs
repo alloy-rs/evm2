@@ -8,9 +8,7 @@ use evm2::{
     interpreter::{Interpreter, Message, MessageResult},
     registry::HandlerError,
 };
-use evm2_inspectors::tracing::{
-    TraceBlockEnv, TraceTxEnv, TraceWriter, TraceWriterConfig, TracingInspector,
-};
+use evm2_inspectors::tracing::{TraceWriter, TraceWriterConfig, TracingInspector};
 
 pub use evm2::{
     SpecId,
@@ -87,24 +85,6 @@ impl From<&BlockEnv> for evm_env::BlockEnv {
     }
 }
 
-impl TraceBlockEnv for BlockEnv {
-    fn trace_block_number(&self) -> u64 {
-        self.number.try_into().unwrap_or(u64::MAX)
-    }
-
-    fn trace_coinbase(&self) -> Address {
-        self.beneficiary
-    }
-
-    fn trace_timestamp(&self) -> U256 {
-        self.timestamp
-    }
-
-    fn trace_base_fee(&self) -> u64 {
-        self.basefee
-    }
-}
-
 #[derive(Clone, Debug)]
 pub struct TxEnv {
     pub caller: Address,
@@ -145,32 +125,6 @@ impl TxEnv {
 
     pub const fn modify(self) -> TxEnvBuilder {
         TxEnvBuilder(self)
-    }
-}
-
-impl TraceTxEnv for TxEnv {
-    fn trace_gas_limit(&self) -> u64 {
-        self.gas_limit
-    }
-
-    fn trace_caller(&self) -> Address {
-        self.caller
-    }
-
-    fn trace_kind(&self) -> TxKind {
-        self.kind
-    }
-
-    fn trace_input(&self) -> Bytes {
-        self.data.clone()
-    }
-
-    fn trace_gas_price(&self) -> u128 {
-        self.gas_price
-    }
-
-    fn trace_value(&self) -> U256 {
-        self.value
     }
 }
 
@@ -429,7 +383,7 @@ impl Context {
 }
 
 impl TxEnv {
-    fn envelope(&self) -> RecoveredTxEnvelope {
+    pub fn envelope(&self) -> RecoveredTxEnvelope {
         RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(
             TxLegacy {
                 chain_id: self.chain_id,
