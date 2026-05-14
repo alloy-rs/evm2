@@ -37,7 +37,7 @@ enum TraceConfig {
 
 impl MuxInspector {
     /// Try creating a new instance of [MuxInspector] from the given [MuxConfig].
-    pub fn try_from_config(config: MuxConfig) -> Result<MuxInspector, Error> {
+    pub fn try_from_config(config: MuxConfig) -> Result<Self, Error> {
         let mut four_byte = None;
         let mut inspector_config = TracingInspectorConfig::none();
         let mut configs = Vec::new();
@@ -100,7 +100,7 @@ impl MuxInspector {
 
         let tracing = (!configs.is_empty()).then(|| TracingInspector::new(inspector_config));
 
-        Ok(MuxInspector { four_byte, tracing, configs })
+        Ok(Self { four_byte, tracing, configs })
     }
 
     /// Try converting this [MuxInspector] into a [MuxFrame].

@@ -52,7 +52,7 @@ fn test_internal_transfers() {
     };
     evm.ctx().db_mut().commit(res.state);
 
-    let acc = evm.ctx().db_mut().load_account(deployer).unwrap();
+    let acc = evm.ctx().db_mut().load_account(deployer);
     acc.info.balance = U256::from(u64::MAX);
 
     let tx_env = TxEnv {
@@ -92,7 +92,7 @@ fn test_internal_transfers() {
     );
 
     let mut evm = evm.with_inspector(TransferInspector::internal_only());
-    let res = evm.inspect_tx(tx_env.clone().modify().nonce(1).build_fill()).unwrap();
+    let res = evm.inspect_tx(tx_env.modify().nonce(1).build_fill()).unwrap();
     assert!(res.result.is_success());
 
     assert_eq!(evm.inspector().transfers().len(), 1);

@@ -30,7 +30,7 @@ fn test_edge_coverage() {
     let addr =
         deploy_contract(&mut evm, code.into(), deployer, SpecId::LONDON).created_address().unwrap();
 
-    let acc = evm.ctx().db_mut().load_account(deployer).unwrap();
+    let acc = evm.ctx().db_mut().load_account(deployer);
     acc.info.balance = U256::from(u64::MAX);
 
     let tx = TxEnv {

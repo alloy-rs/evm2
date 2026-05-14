@@ -296,7 +296,7 @@ impl CallTraceNode {
 
     /// Returns how many logs this trace already has.
     #[inline]
-    pub(crate) fn log_count(&self) -> usize {
+    pub(crate) const fn log_count(&self) -> usize {
         self.logs.len()
     }
 
@@ -544,11 +544,11 @@ impl CallKind {
 }
 
 impl From<CallKind> for CreationMethod {
-    fn from(kind: CallKind) -> CreationMethod {
+    fn from(kind: CallKind) -> Self {
         match kind {
-            CallKind::Create => CreationMethod::Create,
-            CallKind::Create2 => CreationMethod::Create2,
-            _ => CreationMethod::None,
+            CallKind::Create => Self::Create,
+            CallKind::Create2 => Self::Create2,
+            _ => Self::None,
         }
     }
 }
@@ -798,7 +798,7 @@ impl RecordedMemory {
 
     /// Returns the memory as a byte slice
     #[inline]
-    pub fn as_bytes(&self) -> &Bytes {
+    pub const fn as_bytes(&self) -> &Bytes {
         &self.0
     }
 

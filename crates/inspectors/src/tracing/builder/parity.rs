@@ -21,7 +21,7 @@ pub struct ParityTraceBuilder {
 
 impl ParityTraceBuilder {
     /// Returns a new instance of the builder
-    pub fn new(
+    pub const fn new(
         nodes: Vec<CallTraceNode>,
         _spec_id: Option<SpecId>,
         _config: TracingInspectorConfig,

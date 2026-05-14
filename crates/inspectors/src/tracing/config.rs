@@ -28,13 +28,13 @@ impl OpcodeFilter {
 
     /// Returns whether steps with given [OpCode] should be traced.
     #[inline]
-    pub fn is_enabled(&self, op: OpCode) -> bool {
+    pub const fn is_enabled(&self, op: OpCode) -> bool {
         self.0.bit(op.get() as usize)
     }
 
     /// Enables tracing of given [OpCode].
     #[inline]
-    pub fn enable(&mut self, op: OpCode) -> &mut Self {
+    pub const fn enable(&mut self, op: OpCode) -> &mut Self {
         self.0.set_bit(op.get() as usize, true);
         self
     }

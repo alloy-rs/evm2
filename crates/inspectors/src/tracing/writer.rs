@@ -57,41 +57,41 @@ impl TraceWriterConfig {
     }
 
     /// Get the current color choice. `Auto` is lost, so this returns `true` if colors are enabled.
-    pub fn get_use_colors(&self) -> bool {
+    pub const fn get_use_colors(&self) -> bool {
         self.use_colors
     }
 
     /// Color calls to the cheatcode address differently. Default: false.
-    pub fn color_cheatcodes(mut self, yes: bool) -> Self {
+    pub const fn color_cheatcodes(mut self, yes: bool) -> Self {
         self.color_cheatcodes = yes;
         self
     }
 
     /// Returns `true` if calls to the cheatcode address are colored differently.
-    pub fn get_color_cheatcodes(&self) -> bool {
+    pub const fn get_color_cheatcodes(&self) -> bool {
         self.color_cheatcodes
     }
 
     /// Write contract creation codes and deployed codes when writing "create" traces.
     /// Default: false.
-    pub fn write_bytecodes(mut self, yes: bool) -> Self {
+    pub const fn write_bytecodes(mut self, yes: bool) -> Self {
         self.write_bytecodes = yes;
         self
     }
 
     /// Returns `true` if contract creation codes and deployed codes are written.
-    pub fn get_write_bytecodes(&self) -> bool {
+    pub const fn get_write_bytecodes(&self) -> bool {
         self.write_bytecodes
     }
 
     /// Sets whether to write storage changes.
-    pub fn write_storage_changes(mut self, yes: bool) -> Self {
+    pub const fn write_storage_changes(mut self, yes: bool) -> Self {
         self.write_storage_changes = yes;
         self
     }
 
     /// Returns `true` if storage changes are written to the writer.
-    pub fn get_write_storage_changes(&self) -> bool {
+    pub const fn get_write_storage_changes(&self) -> bool {
         self.write_storage_changes
     }
 }
@@ -114,7 +114,7 @@ impl<W: Write> TraceWriter<W> {
     }
 
     /// Create a new `TraceWriter` with the given writer and configuration.
-    pub fn with_config(writer: W, config: TraceWriterConfig) -> Self {
+    pub const fn with_config(writer: W, config: TraceWriterConfig) -> Self {
         Self { writer, indentation_level: 0, config }
     }
 
@@ -127,28 +127,28 @@ impl<W: Write> TraceWriter<W> {
 
     /// Sets whether to color calls to the cheatcode address differently.
     #[inline]
-    pub fn color_cheatcodes(mut self, yes: bool) -> Self {
+    pub const fn color_cheatcodes(mut self, yes: bool) -> Self {
         self.config.color_cheatcodes = yes;
         self
     }
 
     /// Sets the starting indentation level.
     #[inline]
-    pub fn with_indentation_level(mut self, level: u16) -> Self {
+    pub const fn with_indentation_level(mut self, level: u16) -> Self {
         self.indentation_level = level;
         self
     }
 
     /// Sets whether contract creation codes and deployed codes should be written.
     #[inline]
-    pub fn write_bytecodes(mut self, yes: bool) -> Self {
+    pub const fn write_bytecodes(mut self, yes: bool) -> Self {
         self.config.write_bytecodes = yes;
         self
     }
 
     /// Sets whether to write storage changes.
     #[inline]
-    pub fn with_storage_changes(mut self, yes: bool) -> Self {
+    pub const fn with_storage_changes(mut self, yes: bool) -> Self {
         self.config.write_storage_changes = yes;
         self
     }
@@ -161,7 +161,7 @@ impl<W: Write> TraceWriter<W> {
 
     /// Returns a mutable reference to the inner writer.
     #[inline]
-    pub fn writer_mut(&mut self) -> &mut W {
+    pub const fn writer_mut(&mut self) -> &mut W {
         &mut self.writer
     }
 

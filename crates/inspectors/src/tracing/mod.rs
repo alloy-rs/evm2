@@ -1286,7 +1286,7 @@ impl TracingInspector {
         ParityTraceBuilder::new(self.traces.into_nodes(), self.spec_id, self.config)
     }
 
-    fn is_deep(&self) -> bool {
+    const fn is_deep(&self) -> bool {
         !self.trace_stack.is_empty()
     }
 

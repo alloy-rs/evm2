@@ -54,24 +54,20 @@ use serde::Deserialize;
 use std::collections::BTreeMap;
 
 const MAINNET_HOMESTEAD_BLOCK: u64 = 1_150_000;
-const MAINNET_DAO_BLOCK: u64 = 1_920_000;
 const MAINNET_TANGERINE_BLOCK: u64 = 2_463_000;
 const MAINNET_SPURIOUS_DRAGON_BLOCK: u64 = 2_675_000;
 const MAINNET_BYZANTIUM_BLOCK: u64 = 4_370_000;
 const MAINNET_PETERSBURG_BLOCK: u64 = 7_280_000;
 const MAINNET_ISTANBUL_BLOCK: u64 = 9_069_000;
-const MAINNET_MUIR_GLACIER_BLOCK: u64 = 9_200_000;
 const MAINNET_BERLIN_BLOCK: u64 = 12_244_000;
 const MAINNET_LONDON_BLOCK: u64 = 12_965_000;
-const MAINNET_ARROW_GLACIER_BLOCK: u64 = 13_773_000;
-const MAINNET_GRAY_GLACIER_BLOCK: u64 = 15_050_000;
 const MAINNET_PARIS_BLOCK: u64 = 15_537_394;
 const MAINNET_SHANGHAI_BLOCK: u64 = 17_034_870;
 const MAINNET_CANCUN_BLOCK: u64 = 19_426_587;
 const MAINNET_PRAGUE_BLOCK: u64 = 22_431_084;
 
 /// Determine the SpecId from a mainnet block number.
-pub fn spec_id_from_block(block_number: u64) -> SpecId {
+pub const fn spec_id_from_block(block_number: u64) -> SpecId {
     if block_number >= MAINNET_PRAGUE_BLOCK {
         SpecId::PRAGUE
     } else if block_number >= MAINNET_CANCUN_BLOCK {
@@ -80,15 +76,11 @@ pub fn spec_id_from_block(block_number: u64) -> SpecId {
         SpecId::SHANGHAI
     } else if block_number >= MAINNET_PARIS_BLOCK {
         SpecId::MERGE
-    } else if block_number >= MAINNET_GRAY_GLACIER_BLOCK
-        || block_number >= MAINNET_ARROW_GLACIER_BLOCK
-    {
-        SpecId::LONDON
     } else if block_number >= MAINNET_LONDON_BLOCK {
         SpecId::LONDON
     } else if block_number >= MAINNET_BERLIN_BLOCK {
         SpecId::BERLIN
-    } else if block_number >= MAINNET_MUIR_GLACIER_BLOCK || block_number >= MAINNET_ISTANBUL_BLOCK {
+    } else if block_number >= MAINNET_ISTANBUL_BLOCK {
         SpecId::ISTANBUL
     } else if block_number >= MAINNET_PETERSBURG_BLOCK {
         SpecId::PETERSBURG
@@ -98,12 +90,8 @@ pub fn spec_id_from_block(block_number: u64) -> SpecId {
         SpecId::SPURIOUS_DRAGON
     } else if block_number >= MAINNET_TANGERINE_BLOCK {
         SpecId::TANGERINE
-    } else if block_number >= MAINNET_DAO_BLOCK {
-        SpecId::HOMESTEAD
     } else if block_number >= MAINNET_HOMESTEAD_BLOCK {
         SpecId::HOMESTEAD
-    } else if block_number >= MAINNET_ISTANBUL_BLOCK {
-        SpecId::ISTANBUL
     } else {
         SpecId::FRONTIER
     }
@@ -119,7 +107,7 @@ pub fn build_db_from_prestate(prestate: &BTreeMap<Address, AccountState>) -> Cac
         let code = state.code.as_ref().map(|c| Bytecode::new_raw(c.clone()));
 
         db.insert_account_info(
-            &addr,
+            addr,
             AccountInfo {
                 balance,
                 nonce,
@@ -196,14 +184,14 @@ impl ReproContext {
 
     /// Set the spec ID (hardfork) for EVM execution.
     #[must_use]
-    pub fn with_spec_id(mut self, spec_id: SpecId) -> Self {
+    pub const fn with_spec_id(mut self, spec_id: SpecId) -> Self {
         self.spec_id = spec_id;
         self
     }
 
     /// Set the spec ID based on a mainnet block number.
     #[must_use]
-    pub fn with_block_number(mut self, block_number: u64) -> Self {
+    pub const fn with_block_number(mut self, block_number: u64) -> Self {
         self.spec_id = spec_id_from_block(block_number);
         self
     }

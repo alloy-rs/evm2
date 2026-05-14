@@ -143,7 +143,7 @@ impl TxEnv {
         TxEnvBuilder(Self::default())
     }
 
-    pub fn modify(self) -> TxEnvBuilder {
+    pub const fn modify(self) -> TxEnvBuilder {
         TxEnvBuilder(self)
     }
 }
@@ -178,27 +178,27 @@ impl TraceTxEnv for TxEnv {
 pub struct TxEnvBuilder(TxEnv);
 
 impl TxEnvBuilder {
-    pub fn caller(mut self, caller: Address) -> Self {
+    pub const fn caller(mut self, caller: Address) -> Self {
         self.0.caller = caller;
         self
     }
 
-    pub fn gas_limit(mut self, gas_limit: u64) -> Self {
+    pub const fn gas_limit(mut self, gas_limit: u64) -> Self {
         self.0.gas_limit = gas_limit;
         self
     }
 
-    pub fn gas_price(mut self, gas_price: u128) -> Self {
+    pub const fn gas_price(mut self, gas_price: u128) -> Self {
         self.0.gas_price = gas_price;
         self
     }
 
-    pub fn gas_priority_fee(mut self, gas_priority_fee: Option<u128>) -> Self {
+    pub const fn gas_priority_fee(mut self, gas_priority_fee: Option<u128>) -> Self {
         self.0.gas_priority_fee = gas_priority_fee;
         self
     }
 
-    pub fn kind(mut self, kind: TransactTo) -> Self {
+    pub const fn kind(mut self, kind: TransactTo) -> Self {
         self.0.kind = kind;
         self
     }
@@ -208,12 +208,12 @@ impl TxEnvBuilder {
         self
     }
 
-    pub fn nonce(mut self, nonce: u64) -> Self {
+    pub const fn nonce(mut self, nonce: u64) -> Self {
         self.0.nonce = nonce;
         self
     }
 
-    pub fn value(mut self, value: U256) -> Self {
+    pub const fn value(mut self, value: U256) -> Self {
         self.0.value = value;
         self
     }
@@ -282,7 +282,7 @@ impl Context {
         f(&mut self.tx);
     }
 
-    pub fn build_mainnet(self) -> TestEvm {
+    pub const fn build_mainnet(self) -> TestEvm {
         TestEvm { ctx: self }
     }
 
@@ -305,7 +305,7 @@ pub struct TestEvm {
 }
 
 impl TestEvm {
-    pub fn ctx(&mut self) -> &mut Context {
+    pub const fn ctx(&mut self) -> &mut Context {
         &mut self.ctx
     }
 
@@ -331,7 +331,7 @@ pub struct TestEvmWithInspector<I> {
 }
 
 impl<I: InspectorSlot> TestEvmWithInspector<I> {
-    pub fn ctx(&mut self) -> &mut Context {
+    pub const fn ctx(&mut self) -> &mut Context {
         &mut self.ctx
     }
 
@@ -385,23 +385,23 @@ impl TestEvmWithInspector<TracingInspector> {
 }
 
 impl Context {
-    pub fn tx(&self) -> &TxEnv {
+    pub const fn tx(&self) -> &TxEnv {
         &self.tx
     }
 
-    pub fn block(&self) -> &BlockEnv {
+    pub const fn block(&self) -> &BlockEnv {
         &self.block
     }
 
-    pub fn db(&self) -> &CacheDB<EmptyDB> {
+    pub const fn db(&self) -> &CacheDB<EmptyDB> {
         &self.db
     }
 
-    pub fn db_ref(&self) -> &CacheDB<EmptyDB> {
+    pub const fn db_ref(&self) -> &CacheDB<EmptyDB> {
         &self.db
     }
 
-    pub fn db_mut(&mut self) -> &mut CacheDB<EmptyDB> {
+    pub const fn db_mut(&mut self) -> &mut CacheDB<EmptyDB> {
         &mut self.db
     }
 
@@ -629,13 +629,13 @@ pub struct LoadedAccountMut<'a> {
 }
 
 pub trait TestDbExt {
-    fn load_account(&mut self, address: Address) -> Result<LoadedAccountMut<'_>, ()>;
+    fn load_account(&mut self, address: Address) -> LoadedAccountMut<'_>;
 }
 
 impl TestDbExt for CacheDB<EmptyDB> {
-    fn load_account(&mut self, address: Address) -> Result<LoadedAccountMut<'_>, ()> {
+    fn load_account(&mut self, address: Address) -> LoadedAccountMut<'_> {
         let info = self.cache.accounts.entry(address).or_default();
-        Ok(LoadedAccountMut { info })
+        LoadedAccountMut { info }
     }
 }
 

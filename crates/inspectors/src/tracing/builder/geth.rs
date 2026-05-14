@@ -28,17 +28,14 @@ pub struct GethTraceBuilder<'a> {
 
 impl GethTraceBuilder<'static> {
     /// Returns a new instance of the builder from [`Cow::Owned`]
-    pub fn new(nodes: Vec<CallTraceNode>, spec_id: Option<SpecId>) -> GethTraceBuilder<'static> {
+    pub const fn new(nodes: Vec<CallTraceNode>, spec_id: Option<SpecId>) -> Self {
         Self { nodes: Cow::Owned(nodes), spec_id }
     }
 }
 
 impl<'a> GethTraceBuilder<'a> {
     /// Returns a new instance of the builder from [`Cow::Borrowed`]
-    pub fn new_borrowed(
-        nodes: &'a [CallTraceNode],
-        spec_id: Option<SpecId>,
-    ) -> GethTraceBuilder<'a> {
+    pub const fn new_borrowed(nodes: &'a [CallTraceNode], spec_id: Option<SpecId>) -> Self {
         Self { nodes: Cow::Borrowed(nodes), spec_id }
     }
 
@@ -257,11 +254,9 @@ impl<'a> GethTraceBuilder<'a> {
                 .then(|| info.code.as_ref().map(|code| code.original_bytes()))
                 .flatten();
             let mut acc_state = AccountState::from_account_info(info.nonce, info.balance, code);
-            if storage_enabled {
-                if let Some(storage) = state.storage.get(&address) {
-                    for (&key, slot) in &storage.slots {
-                        acc_state.storage.insert(key.into(), slot.original.into());
-                    }
+            if storage_enabled && let Some(storage) = state.storage.get(&address) {
+                for (&key, slot) in &storage.slots {
+                    acc_state.storage.insert(key.into(), slot.original.into());
                 }
             }
             prestate.0.insert(address, acc_state);
@@ -420,83 +415,81 @@ impl<'a> GethTraceBuilder<'a> {
                 // Accessed storage slots
                 match op {
                     op::SLOAD => {
-                        if let Some(stack) = &step.stack {
-                            if let Some(slot) = stack.get(stack.len().saturating_sub(1)) {
-                                let slot: B256 = (*slot).into();
-                                let already_read = accessed_slots.reads.contains_key(&slot);
-                                let already_written = accessed_slots.writes.contains_key(&slot);
-                                if !already_read && !already_written {
-                                    if let Some(change) = &step.storage_change {
-                                        let value: B256 = change.value.into();
-                                        accessed_slots.reads.entry(slot).or_default().push(value);
-                                    }
-                                }
+                        if let Some(stack) = &step.stack
+                            && let Some(slot) = stack.get(stack.len().saturating_sub(1))
+                        {
+                            let slot: B256 = (*slot).into();
+                            let already_read = accessed_slots.reads.contains_key(&slot);
+                            let already_written = accessed_slots.writes.contains_key(&slot);
+                            if !already_read
+                                && !already_written
+                                && let Some(change) = &step.storage_change
+                            {
+                                let value: B256 = change.value.into();
+                                accessed_slots.reads.entry(slot).or_default().push(value);
                             }
                         }
                     }
                     op::SSTORE => {
-                        if let Some(stack) = &step.stack {
-                            if let Some(slot) = stack.get(stack.len().saturating_sub(1)) {
-                                let slot: B256 = (*slot).into();
-                                *accessed_slots.writes.entry(slot).or_insert(0) += 1;
-                            }
+                        if let Some(stack) = &step.stack
+                            && let Some(slot) = stack.get(stack.len().saturating_sub(1))
+                        {
+                            let slot: B256 = (*slot).into();
+                            *accessed_slots.writes.entry(slot).or_insert(0) += 1;
                         }
                     }
                     op::TLOAD => {
-                        if let Some(stack) = &step.stack {
-                            if let Some(slot) = stack.get(stack.len().saturating_sub(1)) {
-                                let slot: B256 = (*slot).into();
-                                *accessed_slots.transient_reads.entry(slot).or_insert(0) += 1;
-                            }
+                        if let Some(stack) = &step.stack
+                            && let Some(slot) = stack.get(stack.len().saturating_sub(1))
+                        {
+                            let slot: B256 = (*slot).into();
+                            *accessed_slots.transient_reads.entry(slot).or_insert(0) += 1;
                         }
                     }
                     op::TSTORE => {
-                        if let Some(stack) = &step.stack {
-                            if let Some(slot) = stack.get(stack.len().saturating_sub(1)) {
-                                let slot: B256 = (*slot).into();
-                                *accessed_slots.transient_writes.entry(slot).or_insert(0) += 1;
-                            }
+                        if let Some(stack) = &step.stack
+                            && let Some(slot) = stack.get(stack.len().saturating_sub(1))
+                        {
+                            let slot: B256 = (*slot).into();
+                            *accessed_slots.transient_writes.entry(slot).or_insert(0) += 1;
                         }
                     }
                     _ => {}
                 }
 
-                if let Some(status) = &step.status {
-                    if *status == evm2::interpreter::InstrStop::OutOfGas {
-                        out_of_gas = true;
-                    }
+                if let Some(status) = &step.status
+                    && *status == evm2::interpreter::InstrStop::OutOfGas
+                {
+                    out_of_gas = true;
                 }
 
-                if matches!(op, op::EXTCODESIZE | op::EXTCODECOPY | op::EXTCODEHASH) {
-                    if let Some(stack) = &step.stack {
-                        if let Some(item) = stack.get(stack.len().saturating_sub(1)) {
-                            let address = Address::from_word((*item).into());
-                            ext_code_access_info.push(format!("{address:?}"));
-                            if let Entry::Vacant(e) = contract_size.entry(address) {
-                                let _ = e;
-                            }
-                        }
+                if matches!(op, op::EXTCODESIZE | op::EXTCODECOPY | op::EXTCODEHASH)
+                    && let Some(stack) = &step.stack
+                    && let Some(item) = stack.get(stack.len().saturating_sub(1))
+                {
+                    let address = Address::from_word((*item).into());
+                    ext_code_access_info.push(format!("{address:?}"));
+                    if let Entry::Vacant(e) = contract_size.entry(address) {
+                        let _ = e;
                     }
                 }
 
                 // KECCAK preimages from returndata
-                if op == op::KECCAK256 && !out_of_gas {
-                    if let (Some(stack), Some(memory)) = (&step.stack, &step.memory) {
-                        if stack.len() >= 2 {
-                            let offset = stack[stack.len() - 1];
-                            let len = stack[stack.len() - 2];
-                            if let (Ok(offset), Ok(len)) =
-                                (usize::try_from(offset), usize::try_from(len))
-                            {
-                                let mut data = vec![0; len];
-                                if offset < memory.0.len() {
-                                    let end = (offset + len).min(memory.0.len());
-                                    let copy_len = end - offset;
-                                    data[..copy_len].copy_from_slice(&memory.0[offset..end]);
-                                }
-                                keccak.push(Bytes::from(data));
-                            }
+                if op == op::KECCAK256
+                    && !out_of_gas
+                    && let (Some(stack), Some(memory)) = (&step.stack, &step.memory)
+                    && stack.len() >= 2
+                {
+                    let offset = stack[stack.len() - 1];
+                    let len = stack[stack.len() - 2];
+                    if let (Ok(offset), Ok(len)) = (usize::try_from(offset), usize::try_from(len)) {
+                        let mut data = vec![0; len];
+                        if offset < memory.0.len() {
+                            let end = (offset + len).min(memory.0.len());
+                            let copy_len = end - offset;
+                            data[..copy_len].copy_from_slice(&memory.0[offset..end]);
                         }
+                        keccak.push(Bytes::from(data));
                     }
                 }
             }
@@ -550,7 +543,7 @@ impl<'a> GethTraceBuilder<'a> {
     }
 
     /// Converts a CallKind to a CallFrameType.
-    pub fn convert_call_kind(kind: CallKind) -> CallFrameType {
+    pub const fn convert_call_kind(kind: CallKind) -> CallFrameType {
         match kind {
             CallKind::Call => CallFrameType::Call,
             CallKind::CallCode => CallFrameType::CallCode,
