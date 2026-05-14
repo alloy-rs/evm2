@@ -51,11 +51,12 @@ impl BalBuilder {
 
         if let Some(accesses) = &changes.accesses {
             for &address in &accesses.accounts {
-                self.accounts.entry(address).or_default();
+                self.accounts.entry(address).or_default().accessed = true;
             }
             for (&address, slots) in &accesses.storage {
                 let changed_slots = changes.storage.get(&address);
                 let builder = self.accounts.entry(address).or_default();
+                builder.accessed = true;
                 for &slot in slots {
                     let slot_was_written =
                         changed_slots.is_some_and(|storage| storage.slots.contains_key(&slot));
@@ -80,6 +81,7 @@ impl BalBuilder {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct AccountBalBuilder {
+    accessed: bool,
     storage_reads: BTreeSet<Word>,
     storage_changes: BTreeMap<Word, Vec<StorageChange>>,
     balance_changes: Vec<BalanceChange>,
@@ -99,6 +101,7 @@ impl AccountBalBuilder {
             && self.balance_changes.is_empty()
             && self.nonce_changes.is_empty()
             && self.code_changes.is_empty()
+            && !self.accessed
         {
             return None;
         }
