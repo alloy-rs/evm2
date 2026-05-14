@@ -24,7 +24,7 @@ use evm2::{
     evm::{AccountInfo as EvmAccountInfo, BalBuilder, InMemoryDB, StateChanges, Tracked},
     registry::HandlerError,
 };
-use std::{fs, path::Path};
+use std::{collections::BTreeSet, fs, path::Path};
 
 const ONE_GWEI: u64 = 1_000_000_000;
 const ONE_ETHER: u128 = 1_000_000_000_000_000_000;
@@ -146,7 +146,12 @@ fn execute_block(
     }
 
     let mut block_database = database.clone();
-    let mut bal_builder = block.block_access_list.as_ref().map(|_| BalBuilder::default());
+    let needs_bal = block.block_access_list.is_some()
+        || block
+            .expect_exception
+            .as_ref()
+            .is_some_and(|exception| exception.contains("BLOCK_ACCESS_LIST"));
+    let mut bal_builder = needs_bal.then(BalBuilder::default);
     let txs = block_transactions(block);
     pre_block_system_calls(
         &mut block_database,
@@ -185,11 +190,6 @@ fn execute_block(
         }
     }
 
-    if should_fail {
-        let expected = block.expect_exception.clone().unwrap_or_default();
-        return Err(TestError::case(path, name, TestErrorKind::UnexpectedSuccess(expected)));
-    }
-
     post_block_transition(
         &mut block_database,
         spec,
@@ -200,10 +200,28 @@ fn execute_block(
     )
     .map_err(|err| TestError::case(path, name, err))?;
 
-    if let Some(expected_bal) = &block.block_access_list {
-        let actual_bal = bal_builder.expect("BAL builder exists when expected BAL exists").build();
-        assert_block_access_list(block_index, &actual_bal, expected_bal)
-            .map_err(|err| TestError::case(path, name, err))?;
+    if needs_bal {
+        let actual_bal =
+            bal_builder.expect("BAL builder exists when BAL validation is needed").build();
+        if block_access_list_exceeds_gas_limit(&actual_bal, next_block_env.gas_limit) {
+            if should_fail {
+                return Ok(());
+            }
+            return Err(TestError::case(
+                path,
+                name,
+                TestErrorKind::UnexpectedFailure("block access list exceeds gas limit".to_string()),
+            ));
+        }
+        if let Some(expected_bal) = &block.block_access_list {
+            assert_block_access_list(block_index, &actual_bal, expected_bal)
+                .map_err(|err| TestError::case(path, name, err))?;
+        }
+    }
+
+    if should_fail {
+        let expected = block.expect_exception.clone().unwrap_or_default();
+        return Err(TestError::case(path, name, TestErrorKind::UnexpectedSuccess(expected)));
     }
 
     block_database.insert_block_hash(&next_block_env.number, &block_hash.unwrap_or_default());
@@ -504,6 +522,8 @@ fn increment_balance(database: &mut InMemoryDB, address: Address, amount: U256) 
         changes
             .accounts
             .insert(address, Tracked { original, current: Some(info), _non_exhaustive: () });
+    } else {
+        changes.accesses.get_or_insert_default().accounts.insert(address);
     }
     changes
 }
@@ -584,6 +604,20 @@ fn assert_block_access_list(
         )));
     }
     Ok(())
+}
+
+fn block_access_list_exceeds_gas_limit(bal: &BlockAccessList, block_gas_limit: U256) -> bool {
+    let mut items = U256::ZERO;
+    for account in bal {
+        items = items.saturating_add(U256::from(1));
+        let mut slots = BTreeSet::new();
+        for slot in &account.storage_changes {
+            slots.insert(slot.slot);
+        }
+        slots.extend(account.storage_reads.iter().copied());
+        items = items.saturating_add(U256::from(slots.len()));
+    }
+    items > block_gas_limit / U256::from(2000)
 }
 
 fn fork_to_spec_id(fork: ForkSpec) -> SpecId {

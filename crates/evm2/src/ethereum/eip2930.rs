@@ -1,9 +1,10 @@
 use super::{
-    access_list_counts, charge_upfront, floor_gas, initial_message, intrinsic_gas,
-    rollback_failed_execution, settle_gas, validate_block_gas_limit, validate_chain_id,
-    validate_create_initcode, validate_floor_gas, validate_gas_price, validate_intrinsic_gas,
-    validate_nonce_not_overflow, validate_regular_gas_limit_cap, validate_sender,
-    validate_tx_gas_limit_cap, warm_access_list, warm_base_accounts,
+    access_list_counts, charge_upfront, floor_gas, initial_execution_gas, initial_message,
+    intrinsic_gas, intrinsic_state_gas, rollback_failed_execution, settle_gas,
+    validate_block_gas_limit, validate_chain_id, validate_create_initcode, validate_floor_gas,
+    validate_gas_price, validate_intrinsic_gas, validate_nonce_not_overflow,
+    validate_regular_gas_limit_cap, validate_sender, validate_tx_gas_limit_cap, warm_access_list,
+    warm_base_accounts,
 };
 use crate::{
     Evm, EvmTypes, TxResult,
@@ -51,7 +52,12 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     req.host.state.increment_nonce(&caller).map_err(|code| req.host.db_error_handler(code))?;
     let execution_checkpoint = req.host.state.checkpoint();
 
-    let gas_limit = tx.gas_limit - intrinsic;
+    let (gas_limit, gas_reservoir) = initial_execution_gas(
+        req.host.version(),
+        tx.gas_limit,
+        intrinsic,
+        intrinsic_state_gas(req.host.version(), tx.to),
+    );
     let tx_env = TxEnv {
         origin: caller,
         gas_price,
@@ -60,6 +66,7 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     };
     let (bytecode, mut message) =
         initial_message(req.host, caller, tx.nonce, tx.to, &tx.input, tx.value, gas_limit)?;
+    message.gas_reservoir = gas_reservoir;
     let mut result = req.host.execute_message(&tx_env, bytecode, &mut message, false);
     rollback_failed_execution(req.host, execution_checkpoint, &mut result);
 

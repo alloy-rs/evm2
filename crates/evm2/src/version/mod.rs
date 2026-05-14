@@ -328,7 +328,7 @@ mod tests {
     }
 }
 
-const AMSTERDAM_CPSB: u32 = 1174;
+const AMSTERDAM_CPSB: u32 = 1530;
 
 evm_versions! {
     FRONTIER {
@@ -707,15 +707,17 @@ evm_versions! {
             NewAccountCost: 0,
             NewAccountCostForSelfdestruct: 0,
             SstoreSetWithoutLoadCost: 2800,
-            SstoreSetState: 32 * AMSTERDAM_CPSB,
-            NewAccountState: 112 * AMSTERDAM_CPSB,
+            SstoreClearingSlotRefund: 4800,
+            SstoreSetRefund: 2800,
+            SstoreResetRefund: 2800,
+            SstoreSetState: 64 * AMSTERDAM_CPSB,
+            NewAccountState: 120 * AMSTERDAM_CPSB,
             CodeDepositState: AMSTERDAM_CPSB,
-            CreateState: 112 * AMSTERDAM_CPSB,
-            SstoreSetRefund: 32 * AMSTERDAM_CPSB + 2800,
+            CreateState: 120 * AMSTERDAM_CPSB,
             TxFloorCostPerToken: TOTAL_COST_FLOOR_PER_TOKEN_AMSTERDAM,
-            TxEip7702PerEmptyAccountCost: 7500 + (112 + 23) * AMSTERDAM_CPSB,
-            TxEip7702AuthRefund: 112 * AMSTERDAM_CPSB,
-            TxEip7702PerAuthState: (112 + 23) * AMSTERDAM_CPSB,
+            TxEip7702PerEmptyAccountCost: 7500 + (120 + 23) * AMSTERDAM_CPSB,
+            TxEip7702AuthRefund: 120 * AMSTERDAM_CPSB,
+            TxEip7702PerAuthState: (120 + 23) * AMSTERDAM_CPSB,
         ],
     }
 

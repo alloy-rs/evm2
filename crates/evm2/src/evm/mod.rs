@@ -551,14 +551,22 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             .saturating_mul(self.version().gas_params.get(GasId::CodeDepositCost) as usize);
         let code_deposit_gas = u64::try_from(code_deposit_gas).unwrap_or(u64::MAX);
         if gas.remaining() >= code_deposit_gas {
-            return gas.spend(code_deposit_gas);
-        }
-        if self.feature(EvmFeatures::EIP2) {
+            gas.spend(code_deposit_gas)?;
+        } else if self.feature(EvmFeatures::EIP2) {
             // EIP-2 makes code-deposit OOG fail contract creation; Frontier instead creates the
             // account with empty code.
             return Err(InstrStop::OutOfGas);
+        } else {
+            *output = Bytes::new();
         }
-        *output = Bytes::new();
+
+        if self.feature(EvmFeatures::EIP8037) {
+            gas.spend(self.version().gas_params.keccak256_word_cost(output.len()))?;
+            let code_deposit_state_gas = u64::try_from(output.len())
+                .unwrap_or(u64::MAX)
+                .saturating_mul(self.version().gas_params.get(GasId::CodeDepositState).into());
+            gas.spend_state(code_deposit_state_gas)?;
+        }
         Ok(())
     }
 
@@ -754,15 +762,17 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
         load_code: bool,
         skip_cold_load: bool,
     ) -> Result<AccountLoad, InstrStop> {
-        let is_cold = if self.spec_id().enables(SpecId::BERLIN) {
+        let is_berlin = self.spec_id().enables(SpecId::BERLIN);
+        let is_cold = is_berlin && !self.state.is_account_warm(address);
+        if skip_cold_load && is_cold {
+            return Err(InstrStop::OutOfGas);
+        }
+        let is_cold = if is_berlin {
             self.state.warm_account(address)
         } else {
             let _ = self.state.warm_account(address);
             false
         };
-        if skip_cold_load && is_cold {
-            return Err(InstrStop::OutOfGas);
-        }
         let info = self.state.account_info(address).map_err(|code| self.db_error_stop(code))?;
         let exists = info.is_some();
         let info = info.unwrap_or_default();
@@ -802,10 +812,12 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
         skip_cold_load: bool,
     ) -> Result<SLoad, InstrStop> {
         let is_cold =
-            self.spec_id().enables(SpecId::BERLIN) && self.state.warm_storage(address, key);
+            self.spec_id().enables(SpecId::BERLIN) && !self.state.is_storage_warm(address, key);
         if skip_cold_load && is_cold {
             return Err(InstrStop::OutOfGas);
         }
+        let is_cold =
+            self.spec_id().enables(SpecId::BERLIN) && self.state.warm_storage(address, key);
         Ok(SLoad {
             value: self.state.storage(address, key).map_err(|code| self.db_error_stop(code))?,
             is_cold,
@@ -821,10 +833,12 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
         skip_cold_load: bool,
     ) -> Result<SStore, InstrStop> {
         let is_cold =
-            self.spec_id().enables(SpecId::BERLIN) && self.state.warm_storage(address, key);
+            self.spec_id().enables(SpecId::BERLIN) && !self.state.is_storage_warm(address, key);
         if skip_cold_load && is_cold {
             return Err(InstrStop::OutOfGas);
         }
+        let is_cold =
+            self.spec_id().enables(SpecId::BERLIN) && self.state.warm_storage(address, key);
         let mut result =
             self.state.set_storage(address, key, value).map_err(|code| self.db_error_stop(code))?;
         result.is_cold = is_cold;

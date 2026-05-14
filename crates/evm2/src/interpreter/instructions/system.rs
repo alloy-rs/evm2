@@ -131,6 +131,9 @@ fn load_acc_and_calc_gas<T: EvmTypes>(
         )
     {
         cost += u64::from(state.gas_params().get(GasId::NewAccountCost));
+        if state.feature(EvmFeatures::EIP8037) && transfers_value {
+            gas.spend_state(state.gas_params().get(GasId::NewAccountState).into())?;
+        }
     }
     gas.spend(cost)?;
 
@@ -209,6 +212,7 @@ fn prepare_call<T: EvmTypes>(
         kind,
         depth: current.depth.saturating_add(1),
         gas_limit,
+        gas_reservoir: gas.reservoir(),
         destination,
         caller,
         input,
@@ -257,6 +261,7 @@ fn call_inner<T: EvmTypes>(
     state.inspect_call_end(&message, &mut result);
     gas.erase_cost(result.gas_returned_to_parent());
     gas.record_refund(result.refund_propagated_to_parent());
+    result.apply_reservoir_to_parent(gas);
     let copy_len = min(return_memory_range.len(), result.output.len());
     unsafe {
         let output = result.output.get_unchecked(..copy_len);
@@ -318,6 +323,13 @@ fn create_inner<T: EvmTypes>(
         state.gas_params().get(GasId::Create).into()
     };
     gas.spend(create_cost)?;
+    let create_state_gas = if state.feature(EvmFeatures::EIP8037) {
+        let create_state_gas = state.gas_params().get(GasId::CreateState).into();
+        gas.spend_state(create_state_gas)?;
+        create_state_gas
+    } else {
+        0
+    };
     let gas_limit = if state.spec().enables(SpecId::TANGERINE) {
         state.gas_params().call_stipend_reduction(gas.remaining())
     } else {
@@ -330,6 +342,7 @@ fn create_inner<T: EvmTypes>(
         kind: if is_create2 { MessageKind::Create2 } else { MessageKind::Create },
         depth: current.depth.saturating_add(1),
         gas_limit,
+        gas_reservoir: gas.reservoir(),
         destination: current.destination,
         caller: current.destination,
         input,
@@ -352,6 +365,10 @@ fn create_inner<T: EvmTypes>(
     state.inspect_create_end(&message, &mut result);
     gas.erase_cost(result.gas_returned_to_parent());
     gas.record_refund(result.refund_propagated_to_parent());
+    result.apply_reservoir_to_parent(gas);
+    if !result.stop.is_success() {
+        gas.refund_state(create_state_gas);
+    }
     // EIP-211 exposes CREATE failure data only for REVERT; other failures clear returndata.
     if result.stop == InstrStop::Revert {
         state.set_return_data(result.output);
@@ -378,6 +395,9 @@ pub(crate) fn selfdestruct(cx: _, [target]: [Word]) -> Result {
     let should_charge_topup =
         should_charge_new_account_gas(cx.state.spec(), res.had_value, res.target_is_empty);
     cx.gas.spend(cx.state.gas_params().selfdestruct_cost(should_charge_topup, res.is_cold))?;
+    if cx.state.feature(EvmFeatures::EIP8037) && should_charge_topup {
+        cx.gas.spend_state(cx.state.gas_params().get(GasId::NewAccountState).into())?;
+    }
     if !res.previously_destroyed {
         cx.gas.record_refund(cx.state.gas_params().get(GasId::SelfdestructRefund) as i64);
     }

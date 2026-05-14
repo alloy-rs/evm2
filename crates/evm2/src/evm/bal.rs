@@ -30,15 +30,15 @@ impl BalBuilder {
 
             if original.map_or(!post.balance.is_zero(), |original| original.balance != post.balance)
             {
-                builder.balance_changes.push(BalanceChange::new(index, post.balance));
+                builder.push_balance_change(index, post.balance);
             }
             if original.map_or(post.nonce != 0, |original| original.nonce != post.nonce) {
-                builder.nonce_changes.push(NonceChange::new(index, post.nonce));
+                builder.push_nonce_change(index, post.nonce);
             }
             if original.map_or(post.code_hash != alloy_primitives::KECCAK256_EMPTY, |original| {
                 original.code_hash != post.code_hash
             }) {
-                builder.code_changes.push(CodeChange::new(index, code_bytes(current)));
+                builder.push_code_change(index, code_bytes(current));
             }
         }
 
@@ -63,9 +63,7 @@ impl BalBuilder {
                     if slot_was_written {
                         continue;
                     }
-                    if changed_slots.is_some_and(|storage| storage.wipe) {
-                        builder.push_storage_change(index, slot, Word::ZERO);
-                    } else if !builder.storage_changes.contains_key(&slot) {
+                    if !builder.storage_changes.contains_key(&slot) {
                         builder.storage_reads.insert(slot);
                     }
                 }
@@ -98,7 +96,42 @@ struct AccountBalBuilder {
 impl AccountBalBuilder {
     fn push_storage_change(&mut self, index: BlockAccessIndex, slot: Word, value: Word) {
         self.storage_reads.remove(&slot);
-        self.storage_changes.entry(slot).or_default().push(StorageChange::new(index, value));
+        let changes = self.storage_changes.entry(slot).or_default();
+        if let Some(change) = changes.iter_mut().find(|change| change.block_access_index == index) {
+            change.new_value = value;
+        } else {
+            changes.push(StorageChange::new(index, value));
+        }
+    }
+
+    fn push_balance_change(&mut self, index: BlockAccessIndex, balance: Word) {
+        if let Some(change) =
+            self.balance_changes.iter_mut().find(|change| change.block_access_index == index)
+        {
+            change.post_balance = balance;
+        } else {
+            self.balance_changes.push(BalanceChange::new(index, balance));
+        }
+    }
+
+    fn push_nonce_change(&mut self, index: BlockAccessIndex, nonce: u64) {
+        if let Some(change) =
+            self.nonce_changes.iter_mut().find(|change| change.block_access_index == index)
+        {
+            change.new_nonce = change.new_nonce.max(nonce);
+        } else {
+            self.nonce_changes.push(NonceChange::new(index, nonce));
+        }
+    }
+
+    fn push_code_change(&mut self, index: BlockAccessIndex, code: Bytes) {
+        if let Some(change) =
+            self.code_changes.iter_mut().find(|change| change.block_access_index == index)
+        {
+            change.new_code = code;
+        } else {
+            self.code_changes.push(CodeChange::new(index, code));
+        }
     }
 
     fn build(self, address: Address) -> Option<AccountChanges> {

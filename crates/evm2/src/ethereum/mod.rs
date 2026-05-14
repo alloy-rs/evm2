@@ -198,6 +198,30 @@ pub(super) const fn validate_regular_gas_limit_cap(
     Ok(())
 }
 
+pub(super) fn initial_execution_gas(
+    version: &Version,
+    tx_gas_limit: u64,
+    intrinsic: u64,
+    intrinsic_state: u64,
+) -> (u64, u64) {
+    let execution_gas = tx_gas_limit.saturating_sub(intrinsic);
+    if !version.feature(EvmFeatures::EIP8037) {
+        return (execution_gas, 0);
+    }
+
+    let intrinsic_regular = intrinsic.saturating_sub(intrinsic_state);
+    let regular_budget = version.tx_gas_limit_cap.saturating_sub(intrinsic_regular);
+    let regular_gas = execution_gas.min(regular_budget);
+    (regular_gas, execution_gas.saturating_sub(regular_gas))
+}
+
+pub(super) fn intrinsic_state_gas(version: &Version, to: TxKind) -> u64 {
+    if to.is_create() && version.feature(EvmFeatures::EIP8037) {
+        return u64::from(version.gas_params.get(GasId::CreateState));
+    }
+    0
+}
+
 pub(super) const fn validate_chain_id(
     version: &Version,
     chain_id: Option<u64>,
@@ -344,6 +368,7 @@ pub(crate) fn initial_message<T: EvmTypes<Host = Evm<T>>>(
                 kind: MessageKind::Call,
                 depth: 0,
                 gas_limit,
+                gas_reservoir: 0,
                 destination: to,
                 caller,
                 input: input.clone(),
@@ -362,6 +387,7 @@ pub(crate) fn initial_message<T: EvmTypes<Host = Evm<T>>>(
                 kind: MessageKind::Create,
                 depth: 0,
                 gas_limit,
+                gas_reservoir: 0,
                 destination: address,
                 caller,
                 input: Bytes::new(),
@@ -458,8 +484,22 @@ const fn final_tx_gas<T: EvmTypes>(
     is_eip3529: bool,
     floor_gas: u64,
 ) -> (u64, u64) {
-    let gas_remaining = result.gas_remaining_after_final_refund(tx_gas_limit, is_eip3529);
-    let gas_used = result.gas_used_after_final_refund(tx_gas_limit, is_eip3529);
+    let mut reservoir = result.gas.reservoir();
+    if !result.stop.is_success() {
+        reservoir = reservoir.saturating_add(result.gas.state_gas_spent());
+    }
+    let spent = tx_gas_limit.saturating_sub(result.gas.remaining()).saturating_sub(reservoir);
+    let refund = if result.stop.is_success() && result.gas.refunded() > 0 {
+        let max_refund_quotient = if is_eip3529 { 5 } else { 2 };
+        let refund = result.gas.refunded() as u64;
+        let cap = spent / max_refund_quotient;
+        if refund < cap { refund } else { cap }
+    } else {
+        0
+    };
+    let gas_remaining = result.gas.remaining().saturating_add(reservoir).saturating_add(refund);
+    let gas_remaining = if gas_remaining < tx_gas_limit { gas_remaining } else { tx_gas_limit };
+    let gas_used = tx_gas_limit.saturating_sub(gas_remaining);
     // EIP-7623 charges at least the calldata floor after applying refunds.
     if gas_used < floor_gas {
         return (tx_gas_limit.saturating_sub(floor_gas), floor_gas);
@@ -505,8 +545,12 @@ pub(super) fn floor_gas(
     let non_zero_multiplier = u64::from(params.get(GasId::TxTokenNonZeroByteMultiplier));
     let mut tokens =
         access_list_floor_tokens(version, access_list_accounts, access_list_storage_keys);
-    for byte in input {
-        tokens += if *byte == 0 { 1 } else { non_zero_multiplier };
+    if version.feature(EvmFeatures::EIP8037) {
+        tokens += input.len() as u64 * u64::from(params.get(GasId::TxTokenCost));
+    } else {
+        for byte in input {
+            tokens += if *byte == 0 { 1 } else { non_zero_multiplier };
+        }
     }
 
     u64::from(params.get(GasId::TxFloorCostBase)) + tokens * floor_cost_per_token
@@ -535,6 +579,9 @@ pub(super) fn intrinsic_gas(
     }
     if to.is_create() && version.feature(EvmFeatures::EIP3860) {
         gas += u64::from(params.get(GasId::TxInitcodeCost)) * num_words(input.len()) as u64;
+    }
+    if to.is_create() && version.feature(EvmFeatures::EIP8037) {
+        gas += u64::from(params.get(GasId::CreateState));
     }
     gas
 }

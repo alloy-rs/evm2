@@ -1,4 +1,4 @@
-use super::{GasTracker, InstrStop, Message, Result, Word};
+use super::{Gas, GasTracker, InstrStop, Message, Result, Word};
 use crate::{
     BaseEvmTypes, EvmTypes, SpecId,
     bytecode::Bytecode,
@@ -50,6 +50,20 @@ impl<T: EvmTypes> MessageResult<T> {
         if self.returns_unused_gas() { self.gas.remaining() } else { 0 }
     }
 
+    /// Applies child-frame reservoir accounting to the parent frame.
+    #[inline]
+    pub const fn apply_reservoir_to_parent(&self, parent_gas: &mut Gas) {
+        if self.stop.is_success() {
+            parent_gas.set_reservoir(self.gas.reservoir());
+            parent_gas.set_state_gas_spent(
+                parent_gas.state_gas_spent().saturating_add(self.gas.state_gas_spent()),
+            );
+        } else {
+            parent_gas
+                .set_reservoir(self.gas.reservoir().saturating_add(self.gas.state_gas_spent()));
+        }
+    }
+
     /// Returns the refund counter delta that should be propagated to the parent frame.
     #[inline]
     pub const fn refund_propagated_to_parent(&self) -> i64 {
@@ -63,7 +77,8 @@ impl<T: EvmTypes> MessageResult<T> {
             return 0;
         }
         let max_refund_quotient = if is_london { 5 } else { 2 };
-        let spent = gas_limit.saturating_sub(self.gas.remaining());
+        let spent =
+            gas_limit.saturating_sub(self.gas.remaining()).saturating_sub(self.gas.reservoir());
         let refund = self.gas.refunded() as u64;
         let cap = spent / max_refund_quotient;
         if refund < cap { refund } else { cap }
@@ -73,7 +88,8 @@ impl<T: EvmTypes> MessageResult<T> {
     #[inline]
     pub const fn gas_remaining_after_final_refund(&self, gas_limit: u64, is_london: bool) -> u64 {
         let refunded = self.final_refund(gas_limit, is_london);
-        let remaining = self.gas.remaining().saturating_add(refunded);
+        let remaining =
+            self.gas.remaining().saturating_add(self.gas.reservoir()).saturating_add(refunded);
         if remaining < gas_limit { remaining } else { gas_limit }
     }
 

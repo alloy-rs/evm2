@@ -200,6 +200,14 @@ impl GasTracker {
         Ok(())
     }
 
+    /// Refunds state gas to the reservoir.
+    #[inline]
+    pub fn refund_state(&mut self, amount: u64) {
+        let applied = amount.min(self.state_gas_spent);
+        self.reservoir = self.reservoir.saturating_add(applied);
+        self.state_gas_spent -= applied;
+    }
+
     /// Adds gas refund.
     #[inline]
     pub const fn record_refund(&mut self, refund: i64) {
@@ -415,6 +423,12 @@ impl Gas {
     #[inline]
     pub fn spend_state(&mut self, cost: u64) -> Result {
         self.tracker.spend_state(cost)
+    }
+
+    /// Refunds state gas to the reservoir.
+    #[inline]
+    pub fn refund_state(&mut self, amount: u64) {
+        self.tracker.refund_state(amount);
     }
 
     /// Adds gas refund.

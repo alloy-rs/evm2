@@ -1,8 +1,8 @@
 use super::{
-    access_list_counts, charge_upfront, effective_gas_price, floor_gas, initial_message,
-    intrinsic_gas, rollback_failed_execution, settle_gas, validate_block_gas_limit,
-    validate_chain_id, validate_create_initcode, validate_floor_gas, validate_gas_price,
-    validate_intrinsic_gas, validate_nonce_not_overflow, validate_priority_fee,
+    access_list_counts, charge_upfront, effective_gas_price, floor_gas, initial_execution_gas,
+    initial_message, intrinsic_gas, rollback_failed_execution, settle_gas,
+    validate_block_gas_limit, validate_chain_id, validate_create_initcode, validate_floor_gas,
+    validate_gas_price, validate_intrinsic_gas, validate_nonce_not_overflow, validate_priority_fee,
     validate_regular_gas_limit_cap, validate_sender, validate_tx_gas_limit_cap, warm_access_list,
     warm_base_accounts,
 };
@@ -39,13 +39,15 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     validate_create_initcode(req.host.version(), tx.to.into(), &tx.input)?;
     validate_nonce_not_overflow(tx.nonce)?;
     let (access_list_accounts, access_list_storage_keys) = access_list_counts(&tx.access_list);
+    let auth_state_gas = eip7702_authorization_state_gas(req.host, tx.authorization_list.len());
     let intrinsic = intrinsic_gas(
         req.host.version(),
         tx.to.into(),
         &tx.input,
         access_list_accounts,
         access_list_storage_keys,
-    ) + eip7702_authorization_gas(req.host, tx.authorization_list.len());
+    ) + eip7702_authorization_regular_gas(req.host, tx.authorization_list.len())
+        + auth_state_gas;
     validate_intrinsic_gas(tx.gas_limit, intrinsic)?;
     let floor_gas =
         floor_gas(req.host.version(), &tx.input, access_list_accounts, access_list_storage_keys);
@@ -65,7 +67,8 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     let eip7702_refund = apply_auth_list(req.host, chain_id, &tx.authorization_list)?;
     let execution_checkpoint = req.host.state.checkpoint();
 
-    let gas_limit = tx.gas_limit - intrinsic;
+    let (gas_limit, gas_reservoir) =
+        initial_execution_gas(req.host.version(), tx.gas_limit, intrinsic, auth_state_gas);
     let tx_env = TxEnv {
         origin: caller,
         gas_price,
@@ -74,20 +77,25 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     };
     let (bytecode, mut message) =
         initial_message(req.host, caller, tx.nonce, tx.to.into(), &tx.input, tx.value, gas_limit)?;
+    message.gas_reservoir = gas_reservoir.saturating_add(eip7702_refund);
     let mut result = req.host.execute_message(&tx_env, bytecode, &mut message, false);
     rollback_failed_execution(req.host, execution_checkpoint, &mut result);
-    result.gas.set_refunded(
-        result.gas.refunded().saturating_add(i64::try_from(eip7702_refund).unwrap_or(i64::MAX)),
-    );
 
     settle_gas(req.host, caller, gas_price, tx.gas_limit, floor_gas, result)
 }
 
-fn eip7702_authorization_gas<T: EvmTypes<Host = Evm<T>>>(
+fn eip7702_authorization_regular_gas<T: EvmTypes<Host = Evm<T>>>(
+    _host: &Evm<T>,
+    authorizations: usize,
+) -> u64 {
+    u64::try_from(authorizations).unwrap_or(u64::MAX).saturating_mul(7500)
+}
+
+fn eip7702_authorization_state_gas<T: EvmTypes<Host = Evm<T>>>(
     host: &Evm<T>,
     authorizations: usize,
 ) -> u64 {
-    let per_auth = u64::from(host.version().gas_params.get(GasId::TxEip7702PerEmptyAccountCost));
+    let per_auth = u64::from(host.version().gas_params.get(GasId::TxEip7702PerAuthState));
     u64::try_from(authorizations).unwrap_or(u64::MAX).saturating_mul(per_auth)
 }
 
@@ -96,7 +104,7 @@ fn apply_auth_list<T: EvmTypes<Host = Evm<T>>>(
     chain_id: u64,
     authorizations: &[SignedAuthorization],
 ) -> HandlerResult<u64> {
-    let mut refunded_accounts = 0u64;
+    let mut state_refund = 0u64;
     for authorization in authorizations {
         if !authorization.chain_id().is_zero() && authorization.chain_id() != &U256::from(chain_id)
         {
@@ -122,14 +130,21 @@ fn apply_auth_list<T: EvmTypes<Host = Evm<T>>>(
             continue;
         }
 
+        host.state.record_account_access(&authority);
         if existed {
-            refunded_accounts = refunded_accounts.saturating_add(1);
+            state_refund = state_refund.saturating_add(u64::from(
+                host.version().gas_params.get(GasId::TxEip7702AuthRefund),
+            ));
+        }
+        if !code.is_empty() || authorization.address().is_zero() {
+            let auth_state = u64::from(host.version().gas_params.get(GasId::TxEip7702PerAuthState));
+            let account_state = u64::from(host.version().gas_params.get(GasId::NewAccountState));
+            state_refund = state_refund.saturating_add(auth_state.saturating_sub(account_state));
         }
         set_delegation(host, authority, *authorization.address())?;
     }
 
-    let refund_per_auth = u64::from(host.version().gas_params.get(GasId::TxEip7702AuthRefund));
-    Ok(refunded_accounts.saturating_mul(refund_per_auth))
+    Ok(state_refund)
 }
 
 fn set_delegation<T: EvmTypes<Host = Evm<T>>>(

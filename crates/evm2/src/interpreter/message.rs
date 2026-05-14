@@ -39,6 +39,8 @@ pub struct Message<T: EvmTypes = BaseEvmTypes> {
     pub depth: u16,
     /// Gas available to this message.
     pub gas_limit: u64,
+    /// State gas reservoir available to this message.
+    pub gas_reservoir: u64,
     /// Account whose context is being executed.
     pub destination: Address,
     /// Immediate caller.

@@ -465,8 +465,8 @@ mod tests {
 
         let amsterdam = gas_params(SpecId::AMSTERDAM);
         assert_eq!(amsterdam.get(GasId::Create), 9000);
-        assert_eq!(amsterdam.get(GasId::SstoreSetState), 37568);
-        assert_eq!(amsterdam.get(GasId::TxEip7702PerAuthState), 158490);
+        assert_eq!(amsterdam.get(GasId::SstoreSetState), 97920);
+        assert_eq!(amsterdam.get(GasId::TxEip7702PerAuthState), 218790);
     }
 
     #[test]
