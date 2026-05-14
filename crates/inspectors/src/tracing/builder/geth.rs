@@ -146,9 +146,7 @@ impl<'a> GethTraceBuilder<'a> {
 
     /// Generate a geth-style trace e.g. for `debug_traceTransaction`
     ///
-    /// This expects the gas used and return value for the
-    /// [[evm2::context::result::ExecutionResult]] of the executed
-    /// transaction.
+    /// This expects the gas used and return value for the executed transaction.
     pub fn geth_traces(
         &self,
         receipt_gas_used: u64,
@@ -179,9 +177,7 @@ impl<'a> GethTraceBuilder<'a> {
     ///
     /// This decodes all call frames from the recorded traces.
     ///
-    /// This expects the gas used and return value for the
-    /// [evm2::context::result::ExecutionResult] of the executed
-    /// transaction.
+    /// This expects the gas used and return value for the executed transaction.
     pub fn geth_call_traces(&self, opts: CallConfig, gas_used: u64) -> CallFrame {
         if self.nodes.is_empty() {
             return Default::default();

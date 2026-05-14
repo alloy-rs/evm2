@@ -143,7 +143,7 @@ impl ParityTraceBuilder {
     /// Warning: If `trace_types` contains [TraceType::StateDiff] the returned [StateDiff] will not
     /// be filled. Use [ParityTraceBuilder::into_trace_results_with_state] or
     /// [populate_state_diff] to populate the balance and nonce changes for the [StateDiff]
-    /// using the [DatabaseRef].
+    /// using the database.
     pub fn into_trace_results<R: TraceExecutionResult>(
         self,
         res: &R,
@@ -159,12 +159,10 @@ impl ParityTraceBuilder {
     /// Consumes the inspector and returns the trace results according to the configured trace
     /// types.
     ///
-    /// This also takes the [DatabaseRef] to populate the balance and nonce changes for the
-    /// [StateDiff].
+    /// This also takes the database to populate the balance and nonce changes for the [StateDiff].
     ///
-    /// Note: this is considered a convenience method that takes the state map of
-    /// [ResultAndState] after inspecting a transaction
-    /// with the [TracingInspector](crate::tracing::TracingInspector).
+    /// Note: this is considered a convenience method that takes the state changes after inspecting
+    /// a transaction with the [TracingInspector](crate::tracing::TracingInspector).
     pub fn into_trace_results_with_state<R, DB>(
         self,
         res: &R,

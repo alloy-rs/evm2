@@ -762,8 +762,7 @@ pub enum StorageChangeReason {
 
 /// Represents a storage change during execution.
 ///
-/// This maps to evm internals:
-/// [JournalEntry::StorageChanged](evm2::JournalEntry::StorageChanged)
+/// This maps to evm storage journal entries.
 ///
 /// It is used to track both storage change and warm load of a storage slot. For warm load in regard
 /// to EIP-2929 AccessList had_value will be None.
@@ -782,7 +781,7 @@ pub struct StorageChange {
 
 /// Represents the memory captured during execution
 ///
-/// This is a wrapper around the [SharedMemory](evm2::interpreter::SharedMemory) context memory.
+/// This is a wrapper around the [Memory](evm2::interpreter::Memory) context memory.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RecordedMemory(pub(crate) Bytes);
