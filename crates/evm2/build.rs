@@ -56,7 +56,7 @@ impl DispatchBackend {
                     Self::Tco
                 } else if is_wasm {
                     Self::SingleReturn
-                } else if false && target_pointer_width == Some(64) {
+                } else if target_pointer_width == Some(64) {
                     Self::Packed
                 } else {
                     Self::Unpacked

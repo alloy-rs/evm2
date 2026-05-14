@@ -10,7 +10,7 @@ use crate::{
 pub(super) type LoopState = RemainingGas;
 
 /// Packed instruction return value.
-pub(crate) type InstrFnRet = (Pc, PackedGasStackLen);
+pub(crate) type InstrFnRet = (PackedPc, u64);
 
 /// Packed instruction function pointer.
 pub(in crate::interpreter::dispatch) type RawInstrFn<T> = extern_table!(
@@ -30,10 +30,9 @@ pub(super) fn dispatch_loop_call<T: EvmTypes>(
     state: &mut InterpreterState<'_, T>,
     remaining_gas: &mut LoopState,
 ) -> (Pc, usize) {
-    let (next_pc, gas_stack_len) = instr(pc, stack, *remaining_gas, state);
-    let (gas_spent, next_stack_len) = gas_stack_len.unpack();
+    let (next_pc, gas_spent) = instr(pc, stack, *remaining_gas, state);
     *remaining_gas = RemainingGas::new(remaining_gas.get().wrapping_sub(gas_spent));
-    (next_pc, next_stack_len)
+    next_pc.unpack()
 }
 
 #[inline(always)]
@@ -109,34 +108,33 @@ extern_table! {
                 OP,
             );
         (
-            pc,
-            PackedGasStackLen::new(
-                initial_remaining_gas.get().wrapping_sub(remaining_gas.get()),
-                stack.len,
-            ),
+            PackedPc::new(pc, stack.len),
+            initial_remaining_gas.get().wrapping_sub(remaining_gas.get()),
         )
     }
 }
 
-const STACK_LEN_BITS: u32 = usize::BITS - STACK_LIMIT.leading_zeros();
-const GAS_BITS: u32 = usize::BITS - STACK_LEN_BITS;
-const GAS_MASK: usize = usize::MAX >> STACK_LEN_BITS;
+const STACK_LEN_BITS: u32 = STACK_LIMIT.ilog2() + 1;
+const STACK_LEN_SHIFT: u32 = usize::BITS - STACK_LEN_BITS;
+const PC_MASK: usize = (1 << STACK_LEN_SHIFT) - 1;
 
-const _: () = assert!(STACK_LIMIT <= (1 << STACK_LEN_BITS));
+const _: () = assert!(usize::BITS == 64);
+const _: () = assert!(STACK_LIMIT < (1 << STACK_LEN_BITS));
 
-/// Dispatch gas spent and stack length, packed into one word on 64-bit native targets.
+/// Program counter with stack length packed into its upper bits.
 #[derive(Clone, Copy)]
 #[repr(transparent)]
-pub(crate) struct PackedGasStackLen(usize);
+pub(crate) struct PackedPc(usize);
 
-impl PackedGasStackLen {
+impl PackedPc {
     #[inline(always)]
-    const fn new(gas_spent: u64, stack_len: usize) -> Self {
-        Self((stack_len << GAS_BITS) | (gas_spent as usize & GAS_MASK))
+    fn new(pc: Pc, stack_len: usize) -> Self {
+        Self((stack_len << STACK_LEN_SHIFT) | pc.as_ptr() as usize)
     }
 
     #[inline(always)]
-    const fn unpack(self) -> (u64, usize) {
-        ((self.0 & GAS_MASK) as u64, self.0 >> GAS_BITS)
+    const fn unpack(self) -> (Pc, usize) {
+        let pc = (self.0 & PC_MASK) as *const u8;
+        (Pc::new(pc), self.0 >> STACK_LEN_SHIFT)
     }
 }
