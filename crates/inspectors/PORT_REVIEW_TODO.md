@@ -166,11 +166,16 @@ Review status legend:
   - Original parity tests are present with evm2 helper/API substitutions and bytecode formatting.
   - Typo-only correction: `contect created` to `context created`.
 
-- [ ] `tests/it/repro/mod.rs`
-  - Pending round-2 review.
+- [x] `tests/it/repro/mod.rs`
+  - Original repro helper structure is present with evm2 cache/account/storage substitutions.
+  - Hardfork lookup uses `alloy_hardforks::EthereumHardfork::from_mainnet_block_number`; forks
+    without EVM semantic changes are folded to the active evm2 `SpecId`, and unknown future forks
+    map to `SpecId::NEXT`.
 
-- [ ] `tests/it/repro/prestate.rs`
-  - Pending round-2 review with prestate builders.
+- [x] `tests/it/repro/prestate.rs`
+  - Original prestate repro tests are present with evm2 helper/API substitutions.
+  - Builder calls pass evm2 `StateChanges` plus a mutable DB clone instead of revm `ResultAndState`
+    plus `DatabaseRef`.
 
 - [x] `tests/it/test_native_bigint.rs`
   - Identical aside from import ordering.
@@ -179,20 +184,22 @@ Review status legend:
   - Original test is present with only evm2 helper/API substitutions and bytecode formatting.
   - Adds `records_failed_create_transfer_attempt`, which confirms upstream-equivalent pre-execution create transfer recording for evm2.
 
-- [ ] `tests/it/utils.rs`
-  - Pending round-2 review. This is expected to be an evm2 harness, but random production-facing
-    structs or traits are not expected.
+- [x] `tests/it/utils.rs`
+  - This is an evm2-only test harness replacing revm's `Context`/`InspectEvm` conveniences.
+  - The additional structs/traits are test-only shims for transaction envs, result wrappers,
+    inspector slots, deployment helpers, and DB commit/load helpers; no production API surface is
+    added here.
 
 - [x] `tests/it/writer.rs`
   - Original tests and patching helper are present with only evm2 helper/API substitutions and import ordering changes.
 
 ## Fixture Coverage
 
-- [ ] `testdata/Counter.sol`
-  - Pending byte-for-byte comparison.
+- [x] `testdata/Counter.sol`
+  - Byte-for-byte identical to upstream.
 
-- [ ] `testdata/repro/tx-selfdestruct.json`
-  - Pending byte-for-byte comparison.
+- [x] `testdata/repro/tx-selfdestruct.json`
+  - Byte-for-byte identical to upstream.
 
-- [ ] `tests/it/writer/**`
-  - Pending snapshot file comparison.
+- [x] `tests/it/writer/**`
+  - File list and contents are byte-for-byte identical to upstream.
