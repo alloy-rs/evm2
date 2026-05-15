@@ -31,7 +31,7 @@ This file tracks public or behaviorally relevant function/method signature diffe
   - `populate_vm_trace_bytecodes` and `populate_state_diff` use `&mut dyn DynDatabase` and `&StateChanges`.
 
 - `src/tracing/debug.rs`
-  - `DebugInspector::Noop` is a unit variant instead of storing revm's `NoOpInspector`.
+  - `DebugInspector::Noop` stores evm2-inspectors' local `NoopInspector` instead of revm's `NoOpInspector`.
   - `DebugInspector::get_result` takes evm2 `RecoveredTxEnvelope`, `BlockEnv`, `TxResult<T>`, and `&mut dyn DynDatabase`.
   - `impl Inspector` hooks use evm2 generic `EvmTypes`, `Interpreter<'_, T>`, `Message<T>`, `MessageResult<T>`, `Log`, and host parameters.
   - `DebugInspectorError` stores evm2 `DbErrorCode` instead of being generic over `DB::Error`.

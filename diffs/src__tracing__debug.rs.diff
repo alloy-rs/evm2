@@ -1,5 +1,5 @@
 --- /home/doni/github/paradigmxyz/revm-inspectors/src/tracing/debug.rs	2026-05-14 03:45:05.355711990 +0200
-+++ /home/doni/github/danipopes/evm2.1/crates/inspectors/src/tracing/debug.rs	2026-05-15 16:45:05.638411085 +0200
++++ /home/doni/github/danipopes/evm2.1/crates/inspectors/src/tracing/debug.rs	2026-05-15 17:08:54.659916171 +0200
 @@ -3,22 +3,19 @@
  };
  #[cfg(feature = "js-tracer")]
@@ -38,11 +38,11 @@
      PreStateTracer(TracingInspector, PreStateConfig),
      /// Noop tracer
 -    Noop(revm::inspector::NoOpInspector),
-+    Noop,
++    Noop(NoopInspector),
      /// Mux tracer
      Mux(MuxInspector, MuxConfig),
      /// FlatCallTracer
-@@ -48,8 +45,8 @@
+@@ -48,11 +45,17 @@
      Erc7562Tracer(TracingInspector, Erc7562Config),
      /// Default tracer
      Default(TracingInspector, GethDefaultTracingOptions),
@@ -52,27 +52,27 @@
      Js(Box<crate::tracing::js::JsInspector>),
  }
  
-@@ -62,7 +59,7 @@
-             Self::PreStateTracer(inspector, config) => {
-                 Self::PreStateTracer(inspector.clone(), *config)
-             }
--            Self::Noop(inspector) => Self::Noop(*inspector),
-+            Self::Noop => Self::Noop,
-             Self::Mux(inspector, config) => Self::Mux(inspector.clone(), config.clone()),
-             Self::FlatCallTracer(inspector) => Self::FlatCallTracer(inspector.clone()),
-             Self::Erc7562Tracer(inspector, config) => {
-@@ -109,9 +106,7 @@
++/// Inspector that does nothing.
++#[derive(Clone, Copy, Debug, Default)]
++pub struct NoopInspector;
++
++impl<T: EvmTypes> Inspector<T> for NoopInspector {}
++
+ impl DebugInspector {
+     /// Creates a fresh copy of this inspector, resetting all execution state.
+     pub fn try_clone(&self) -> Result<Self, DebugInspectorError> {
+@@ -109,9 +112,7 @@
                              config,
                          )
                      }
 -                    GethDebugBuiltInTracerType::NoopTracer => {
 -                        Self::Noop(revm::inspector::NoOpInspector)
 -                    }
-+                    GethDebugBuiltInTracerType::NoopTracer => Self::Noop,
++                    GethDebugBuiltInTracerType::NoopTracer => Self::Noop(NoopInspector),
                      GethDebugBuiltInTracerType::MuxTracer => {
                          let config = tracer_config
                              .into_mux_config()
-@@ -155,10 +150,9 @@
+@@ -155,10 +156,9 @@
                      return Err(DebugInspectorError::JsTracerNotEnabled);
                  }
                  #[cfg(feature = "js-tracer")]
@@ -86,16 +86,7 @@
                  _ => {
                      // Note: this match is non-exhaustive in case we need to add support for
                      // additional tracers
-@@ -187,7 +181,7 @@
-             | Self::FlatCallTracer(inspector)
-             | Self::Erc7562Tracer(inspector, _)
-             | Self::Default(inspector, _) => inspector.fuse(),
--            Self::Noop(_) => {}
-+            Self::Noop => {}
-             Self::Mux(inspector, config) => {
-                 *inspector = MuxInspector::try_from_config(config.clone())?;
-             }
-@@ -201,47 +195,54 @@
+@@ -201,33 +201,40 @@
      }
  
      /// Should be invoked after each transaction to obtain the resulting [`GethTrace`].
@@ -148,11 +139,9 @@
                  inspector
                      .geth_builder()
                      .geth_prestate_traces(res, config, db)
-                     .map_err(DebugInspectorError::Database)?
-                     .into()
+@@ -236,12 +243,12 @@
              }
--            Self::Noop(_) => NoopFrame::default().into(),
-+            Self::Noop => NoopFrame::default().into(),
+             Self::Noop(_) => NoopFrame::default().into(),
              Self::Mux(inspector, _) => inspector
 -                .try_into_mux_frame(res, db, tx_info)
 +                .try_into_mux_frame(res, tx_info, db)
@@ -166,7 +155,7 @@
                  inspector
                      .clone()
                      .into_parity_builder()
-@@ -249,33 +250,26 @@
+@@ -249,33 +256,26 @@
                      .into()
              }
              Self::Erc7562Tracer(inspector, config) => {
@@ -208,12 +197,12 @@
              }
          };
  
-@@ -284,92 +278,79 @@
+@@ -284,92 +284,79 @@
  }
  
  macro_rules! delegate {
 -    ($self:expr => $insp:ident.$method:ident($($arg:expr),*)) => {
-+    ($self:expr, $noop:expr => $method:ident($($arg:expr),*)) => {
++    ($self:expr => $method:ident($($arg:expr),*)) => {
          match $self {
 -            Self::FourByte($insp) => Inspector::<CTX>::$method($insp, $($arg),*),
 -            Self::CallTracer($insp, _) => Inspector::<CTX>::$method($insp, $($arg),*),
@@ -229,7 +218,7 @@
 +            | Self::FlatCallTracer(inspector)
 +            | Self::Erc7562Tracer(inspector, _)
 +            | Self::Default(inspector, _) => <TracingInspector as Inspector<T>>::$method(inspector, $($arg),*),
-+            Self::Noop => $noop,
++            Self::Noop(inspector) => <NoopInspector as Inspector<T>>::$method(inspector, $($arg),*),
 +            Self::Mux(inspector, _) => <MuxInspector as Inspector<T>>::$method(inspector, $($arg),*),
              #[cfg(feature = "js-tracer")]
 -            Self::Js($insp) => Inspector::<CTX>::$method($insp, $($arg),*),
@@ -244,43 +233,43 @@
 -{
 -    fn initialize_interp(&mut self, interp: &mut Interpreter, context: &mut CTX) {
 -        delegate!(self => inspector.initialize_interp(interp, context))
-+impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for DebugInspector {
-+    fn initialize_interp(&mut self, interp: &mut Interpreter<'_, T>, host: &mut T::Host) {
-+        delegate!(self, {} => initialize_interp(interp, host))
-     }
- 
+-    }
+-
 -    fn step(&mut self, interp: &mut Interpreter, context: &mut CTX) {
 -        delegate!(self => inspector.step(interp, context))
-+    fn step(&mut self, interp: &mut Interpreter<'_, T>, host: &mut T::Host) {
-+        delegate!(self, {} => step(interp, host))
-     }
- 
+-    }
+-
 -    fn step_end(&mut self, interp: &mut Interpreter, context: &mut CTX) {
 -        delegate!(self => inspector.step_end(interp, context))
-+    fn step_end(&mut self, interp: &mut Interpreter<'_, T>, host: &mut T::Host) {
-+        delegate!(self, {} => step_end(interp, host))
++impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for DebugInspector {
++    fn initialize_interp(&mut self, interp: &mut Interpreter<'_, T>, host: &mut T::Host) {
++        delegate!(self => initialize_interp(interp, host))
      }
  
 -    fn log(&mut self, context: &mut CTX, log: Log) {
 -        delegate!(self => inspector.log(context, log))
-+    fn log(&mut self, log: &Log, host: &mut T::Host) {
-+        delegate!(self, {} => log(log, host))
++    fn step(&mut self, interp: &mut Interpreter<'_, T>, host: &mut T::Host) {
++        delegate!(self => step(interp, host))
      }
  
 -    fn log_full(&mut self, interp: &mut Interpreter, context: &mut CTX, log: Log) {
 -        delegate!(self => inspector.log_full(interp, context, log))
-+    fn call(&mut self, message: &mut Message<T>, host: &mut T::Host) -> Option<MessageResult<T>> {
-+        delegate!(self, None => call(message, host))
++    fn step_end(&mut self, interp: &mut Interpreter<'_, T>, host: &mut T::Host) {
++        delegate!(self => step_end(interp, host))
      }
  
 -    fn call(&mut self, context: &mut CTX, inputs: &mut CallInputs) -> Option<CallOutcome> {
 -        delegate!(self => inspector.call(context, inputs))
--    }
--
++    fn log(&mut self, log: &Log, host: &mut T::Host) {
++        delegate!(self => log(log, host))
+     }
+ 
 -    fn call_end(&mut self, context: &mut CTX, inputs: &CallInputs, outcome: &mut CallOutcome) {
 -        delegate!(self => inspector.call_end(context, inputs, outcome))
--    }
--
++    fn call(&mut self, message: &mut Message<T>, host: &mut T::Host) -> Option<MessageResult<T>> {
++        delegate!(self => call(message, host))
+     }
+ 
 -    fn create(&mut self, context: &mut CTX, inputs: &mut CreateInputs) -> Option<CreateOutcome> {
 -        delegate!(self => inspector.create(context, inputs))
 -    }
@@ -296,13 +285,13 @@
 +        host: &mut T::Host,
      ) {
 -        delegate!(self => inspector.create_end(context, inputs, outcome))
-+        delegate!(self, {} => call_end(message, result, host))
++        delegate!(self => call_end(message, result, host))
      }
  
 -    fn selfdestruct(&mut self, contract: Address, target: Address, value: U256) {
 -        delegate!(self => inspector.selfdestruct(contract, target, value))
 +    fn create(&mut self, message: &mut Message<T>, host: &mut T::Host) -> Option<MessageResult<T>> {
-+        delegate!(self, None => create(message, host))
++        delegate!(self => create(message, host))
      }
  
 -    fn frame_start(
@@ -316,7 +305,7 @@
 +        result: &mut MessageResult<T>,
 +        host: &mut T::Host,
 +    ) {
-+        delegate!(self, {} => create_end(message, result, host))
++        delegate!(self => create_end(message, result, host))
      }
  
 -    fn frame_end(
@@ -331,7 +320,7 @@
 +        host: &mut T::Host,
      ) {
 -        delegate!(self => inspector.frame_end(context, frame_input, frame_result))
-+        delegate!(self, {} => selfdestruct(contract, target, value, host))
++        delegate!(self => selfdestruct(contract, target, value, host))
      }
  }
  
@@ -342,7 +331,7 @@
      /// Invalid tracer configuration
      #[error("invalid tracer config")]
      InvalidTracerConfig,
-@@ -386,7 +367,7 @@
+@@ -386,7 +373,7 @@
      #[cfg(feature = "js-tracer")]
      #[error(transparent)]
      JsInspector(#[from] crate::tracing::js::JsInspectorError),

@@ -56,7 +56,7 @@ mod mux;
 pub use mux::{Error as MuxError, MuxInspector};
 
 mod debug;
-pub use debug::{DebugInspector, DebugInspectorError};
+pub use debug::{DebugInspector, DebugInspectorError, NoopInspector};
 
 /// An inspector that collects call traces.
 ///

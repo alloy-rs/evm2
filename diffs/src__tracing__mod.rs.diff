@@ -1,5 +1,5 @@
 --- /home/doni/github/paradigmxyz/revm-inspectors/src/tracing/mod.rs	2026-05-14 03:45:05.356711986 +0200
-+++ /home/doni/github/danipopes/evm2.1/crates/inspectors/src/tracing/mod.rs	2026-05-15 03:47:15.033998558 +0200
++++ /home/doni/github/danipopes/evm2.1/crates/inspectors/src/tracing/mod.rs	2026-05-15 17:08:57.518902918 +0200
 @@ -1,28 +1,23 @@
 +//! EVM tracing inspectors.
 +
@@ -47,7 +47,7 @@
  
  mod utils;
  
-@@ -53,7 +47,9 @@
+@@ -53,92 +47,77 @@
  #[cfg(feature = "std")]
  pub use writer::{TraceWriter, TraceWriterConfig};
  
@@ -57,7 +57,11 @@
  pub mod js;
  
  mod mux;
-@@ -64,81 +60,64 @@
+ pub use mux::{Error as MuxError, MuxInspector};
+ 
+ mod debug;
+-pub use debug::{DebugInspector, DebugInspectorError};
++pub use debug::{DebugInspector, DebugInspectorError, NoopInspector};
  
  /// An inspector that collects call traces.
  ///
