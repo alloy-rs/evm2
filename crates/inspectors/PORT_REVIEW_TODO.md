@@ -5,210 +5,144 @@ Baseline: `/home/doni/github/paradigmxyz/revm-inspectors`.
 Port: `crates/inspectors`.
 
 Scope: every original Rust source file under `src/` and every original Rust integration test file
-under `tests/it/`. Testdata and writer snapshot files were also compared byte-for-byte.
+under `tests/it/`. Non-Rust testdata and writer snapshot files are tracked under fixture coverage.
 
 Expected port-wide differences:
 - `revm` context/interpreter/database types are replaced by `evm2` types.
 - `Inspector::log_full`, `frame_start`, and `frame_end` hooks are absent in the `evm2` inspector API.
-- Imports, formatting, docs, and test harness setup differ.
+- Imports, formatting, docs, and test harness setup may differ.
+- Deprecated upstream APIs may stay omitted in this work-in-progress crate.
+
+Review status legend:
+- `[ ]`: not reviewed in the current pass.
+- `[x]`: reviewed in the current pass.
+
+## Inventory
+
+- Upstream Rust source files: 23.
+- Ported Rust source files: 22.
+- Missing source files: `src/edge_cov.rs` only; intentionally omitted.
+- Upstream Rust integration test files: 12.
+- Ported Rust integration test files: 11.
+- Missing integration test files: `tests/it/edge_cov.rs` only; intentionally omitted.
 
 ## Source Files
 
-- [x] `src/lib.rs`
-  - `edge_cov` is intentionally omitted; all other original modules are present.
-  - Root docs were shortened and changed from revm to evm2.
-  - Adds dependency keepalive imports.
-  - Adds root `pub use opcode::{OpcodeGasInspector, immediate_size};`; original did not root-reexport these.
+- [ ] `src/lib.rs`
+  - Pending round-2 review.
 
-- [x] `src/access_list.rs`
-  - Public type and methods are present.
-  - `excluded()` and `touched_slots()` are now `const fn`.
-  - Top-level exclusion collection now matches the original shape: caller, call target or computed CREATE address via `message.destination`, precompiles, and recovered EIP-7702 authorization authorities recorded by evm2 transaction handling.
-  - SLOAD/SSTORE and account-touch opcode handling is otherwise structurally equivalent using evm2 stack/message access.
+- [ ] `src/access_list.rs`
+  - Pending round-2 review with `tests/it/accesslist.rs`.
 
-- [x] `src/edge_cov.rs`
+- [ ] `src/edge_cov.rs`
   - Intentionally omitted from the evm2 port.
-  - The public `edge_cov` module and `EdgeCovInspector` are not exported.
 
-- [x] `src/opcode.rs`
-  - Public type and methods are present.
-  - `immediate_size` API changed from `pub fn immediate_size(bytecode: &impl Immediates) -> u8` to `pub fn immediate_size(opcode: u8) -> u8`; original bytecode/RJUMPV special-case shape is not preserved.
-  - Call/create gas-limit subtraction is ported, with root-depth exclusion mapped to evm2 top-level message depth `0`.
-  - Embedded tests are present with evm2 harness rewrites.
+- [ ] `src/opcode.rs`
+  - Pending round-2 review.
 
-- [x] `src/storage.rs`
-  - Public type and methods are present.
-  - `accessed_slots()` was already `const`; behavior is structurally equivalent for SLOAD counting.
-  - Address source changed to `message().destination`.
+- [ ] `src/storage.rs`
+  - Pending round-2 review.
 
-- [x] `src/transfer.rs`
-  - Public type and core methods are present.
-  - Adds public `logs()` method and `logs: Vec<Log>` storage; this is a new API surface not present upstream.
-  - `new`, `internal_only`, and `with_logs` are now `const fn`.
-  - Log insertion changed from journaling a log into revm state to emitting via evm2 `Host::log` and retaining a copy in the inspector.
-  - `TransferOperation` and `TransferKind` gained `Copy`.
-  - Create target comes from `message.destination` instead of computing from caller nonce.
+- [ ] `src/transfer.rs`
+  - Pending round-2 review with `tests/it/transfer.rs`.
 
-- [x] `src/tracing/arena.rs`
-  - Semantically identical except `nodes_mut()` is now `const fn`.
+- [ ] `src/tracing/arena.rs`
+  - Pending round-2 review.
 
-- [x] `src/tracing/builder/geth.rs`
-  - Public builder remains, but constructors now require `spec_id: Option<SpecId>`.
-  - Prestate APIs changed from `ResultAndState + DatabaseRef` to `StateChanges + &mut dyn DynDatabase` and now return `Infallible` errors.
-  - Prestate pre-mode now seeds caller/address entries from trace nodes; original iterated revm state accounts.
-  - Diff-mode logic is materially rewritten for evm2 `StateChanges`, including special post-code fallback through `state.code` and spec-based selfdestruct cleanup.
-  - ERC-7562 and code-size database reads are ported through dynamic DB helpers.
-  - Embedded `prestate_diff_keeps_prefunded_created_accounts` is present with evm2 state changes.
+- [ ] `src/tracing/builder/geth.rs`
+  - Pending round-2 review with `tests/it/geth.rs`.
 
-- [x] `src/tracing/builder/mod.rs`
-  - Identical.
+- [ ] `src/tracing/builder/mod.rs`
+  - Pending round-2 review.
 
-- [x] `src/tracing/builder/parity.rs`
-  - Public builder remains, but result/state APIs now take output bytes and evm2 `StateChanges`.
-  - `into_trace_results_with_state` and `populate_state_diff` are DB-backed like the original, using `&mut dyn DynDatabase`.
-  - `populate_state_diff` is still not perfectly identical for account lifetime edge cases because evm2 `StateChanges` does not carry revm `Account` flags such as `is_created()` plus `is_selfdestructed()`.
-  - `populate_vm_trace_bytecodes` is DB-backed like the original, with evm2 dynamic database plumbing.
-  - Embedded selfdestruct tests are present.
+- [ ] `src/tracing/builder/parity.rs`
+  - Pending round-2 review with `tests/it/parity.rs`.
 
-- [x] `src/tracing/builder/walker.rs`
-  - Identical.
+- [ ] `src/tracing/builder/walker.rs`
+  - Pending round-2 review.
 
-- [x] `src/tracing/config.rs`
-  - Semantically identical.
-  - `OpcodeFilter::is_enabled` and `enable` are now `const fn`.
-  - Embedded config tests are present.
+- [ ] `src/tracing/config.rs`
+  - Pending round-2 review.
 
-- [x] `src/tracing/debug.rs`
-  - Built-in tracer construction is preserved.
-  - `Noop` variant changed from `NoOpInspector` payload to a unit variant.
-  - `get_result` signature changed to evm2 `RecoveredTxEnvelope`, `BlockEnv`, `TxResult`, and `DynDatabase`.
-  - `DebugInspectorError` lost the generic DB error parameter and `Database` variant.
-  - Missing `log_full` and frame hooks are expected.
+- [ ] `src/tracing/debug.rs`
+  - Pending round-2 review with `tests/it/geth.rs` and `tests/it/geth_js.rs`.
 
-- [x] `src/tracing/fourbyte.rs`
-  - Public type and `inner()` are present.
-  - Call input extraction is simplified to evm2 `message.input`; semantics are equivalent if evm2 always materializes call input bytes.
+- [ ] `src/tracing/fourbyte.rs`
+  - Pending round-2 review.
 
-- [x] `src/tracing/js/bindings.rs`
-  - JS exposed objects and methods are largely preserved.
-  - Private DB plumbing was substantially rewritten: original `StateRef`, `GcDb`, `JsDb`, and `StringError` were replaced by `EvmDbReader`, `StateDbReader`, `ChangesDbReader`, and `EvmDbGuard`.
-  - Adds private `StackRefInner` and owned stack/memory test constructors.
-  - Adds embedded `test_evm_db_reads_backing_dyn_database`; all original embedded tests are present.
+- [ ] `src/tracing/js/bindings.rs`
+  - Pending round-2 review with JS tracer tests.
 
-- [x] `src/tracing/js/builtins.rs`
-  - Semantically identical; only formatting/import/test-harness adjustments.
-  - Embedded builtin tests are present.
+- [ ] `src/tracing/js/builtins.rs`
+  - Pending round-2 review with `tests/it/test_native_bigint.rs`.
 
-- [x] `src/tracing/js/mod.rs`
-  - Public JS inspector exists, with `config`, `transaction_context`, runtime limits, `try_clone`, `json_result`, and `result`.
-  - Adds public `code()` method; original did not expose it.
-  - `try_clone` resets execution and transaction context by constructing through `Self::new`, matching the original.
-  - `json_result`/`result` signatures changed to evm2 transaction/result/database types.
-  - JS hook error-to-revert output, precompile registration timing, and create-exit error reporting now match the original shape.
-  - Embedded tests are present with evm2 harness rewrites.
+- [ ] `src/tracing/js/mod.rs`
+  - Pending round-2 review with `tests/it/geth_js.rs`.
 
-- [x] `src/tracing/mod.rs`
-  - Public `TracingInspector` and transaction context APIs are mostly present.
-  - Deprecated original public methods `get_traces`, `get_traces_mut`, and `with_transaction_gas_limit` are intentionally omitted.
-  - Storage-diff recording now uses evm2 journal entries in `step_end`, scanning the current step's journal window for storage entries so evm2 bookkeeping entries do not hide `SLOAD`/`SSTORE` changes.
-  - `fuse()` clears `spec_id`, matching the original.
-  - Step recording, storage diff recording, and call lifecycle were materially rewritten around evm2 hooks/state.
-  - `CallInputExt` helper trait was removed.
+- [ ] `src/tracing/mod.rs`
+  - Pending round-2 review with tracing integration tests.
 
-- [x] `src/tracing/mux.rs`
-  - Mux configuration behavior is preserved.
-  - `try_into_mux_frame` signature changed to gas/state/tx_info/optional dynamic DB and `Infallible` errors.
-  - Missing `log_full` and frame hooks are expected.
+- [ ] `src/tracing/mux.rs`
+  - Pending round-2 review with mux coverage in `tests/it/geth.rs`.
 
-- [x] `src/tracing/opcount.rs`
-  - Semantically identical.
+- [ ] `src/tracing/opcount.rs`
+  - Pending round-2 review.
 
-- [x] `src/tracing/types.rs`
-  - Public trace data types are present.
-  - `InstructionResult` replaced by `InstrStop`.
-  - `CallTrace.status` and `CallTraceStep.status` are now skipped under serde; original serialized status when revm serde support allowed it.
-  - Removed `From<CallScheme>` and `From<CreateScheme>` impls; replacement `From<MessageKind>` lives in `tracing/mod.rs`.
-  - Other changes are formatting/const/type substitutions.
+- [ ] `src/tracing/types.rs`
+  - Pending round-2 review with geth/parity/writer tests.
 
-- [x] `src/tracing/utils.rs`
-  - Revert decoding tests and helper behavior are present.
-  - `fmt_error_msg` maps evm2 `InstrStop`; original `InvalidFEOpcode` branch is gone and merged through invalid opcode handling.
-  - `load_account_code` now needs `&mut dyn DynDatabase`; DB errors are swallowed as `None` like the original optional helper behavior.
+- [ ] `src/tracing/utils.rs`
+  - Pending round-2 review.
 
-- [x] `src/tracing/writer.rs`
-  - Writer output logic is equivalent aside from `InstrStop` substitution.
-  - Several getters/builders became `const fn`.
+- [ ] `src/tracing/writer.rs`
+  - Pending round-2 review with `tests/it/writer.rs`.
 
 ## Integration Test Files
 
-- [x] `tests/it/accesslist.rs`
-  - Original test is present.
-  - Differences are imports, helper types, bytecode formatting, and DB insertion API.
+- [ ] `tests/it/accesslist.rs`
+  - Pending round-2 review with `src/access_list.rs`.
 
-- [x] `tests/it/edge_cov.rs`
+- [ ] `tests/it/edge_cov.rs`
   - Intentionally omitted with `src/edge_cov.rs`.
 
-- [x] `tests/it/geth.rs`
-  - All original test functions are present.
-  - Differences are imports, evm2 helper APIs, `DebugInspector::get_result`/mux/prestate call shapes, opcode namespace changes, and bytecode formatting.
-  - Prestate tests now pass cloned DBs to preserve original code/prestate population semantics.
+- [ ] `tests/it/geth.rs`
+  - Pending round-2 review with geth tracing/debug/prestate files.
 
-- [x] `tests/it/geth_js.rs`
-  - Original tests are present.
-  - Adds `test_geth_debug_inspector_jstracer`.
-  - Adds `js_result` helper for evm2 result/context conversion.
+- [ ] `tests/it/geth_js.rs`
+  - Pending round-2 review with JS tracer files.
 
-- [x] `tests/it/main.rs`
-  - `edge_cov` is intentionally omitted; all other original modules are present.
-  - `geth_js` is now gated by both `std` and `js-tracer`, not only `js-tracer`.
+- [ ] `tests/it/main.rs`
+  - Pending round-2 review.
 
-- [x] `tests/it/parity.rs`
-  - All original test functions are present.
-  - Differences are helper/API rewrites and blob-fee env adaptation.
-  - State-diff population now uses the DB-backed `populate_state_diff(state_diff, &res.state, db)` shape.
+- [ ] `tests/it/parity.rs`
+  - Pending round-2 review with `src/tracing/builder/parity.rs`.
 
-- [x] `tests/it/repro/mod.rs`
-  - File is ported and uses `alloy_hardforks::EthereumHardfork::from_mainnet_block_number`; hardforks without EVM changes are intentionally mapped to the nearest supported evm2 `SpecId`, with fallback to `SpecId::NEXT`.
-  - DB construction otherwise follows the original fixture prestate intent.
+- [ ] `tests/it/repro/mod.rs`
+  - Pending round-2 review.
 
-- [x] `tests/it/repro/prestate.rs`
-  - Original tests are present.
-  - Prestate builder calls now pass evm2 state changes and DB access where needed for code/prestate population.
+- [ ] `tests/it/repro/prestate.rs`
+  - Pending round-2 review with prestate builders.
 
-- [x] `tests/it/test_native_bigint.rs`
-  - Semantically identical; import order only.
+- [ ] `tests/it/test_native_bigint.rs`
+  - Pending round-2 review with JS builtins.
 
-- [x] `tests/it/transfer.rs`
-  - Original test is present.
-  - Adds `records_failed_create_transfer_attempt`.
-  - Other differences are helper/API rewrites.
+- [ ] `tests/it/transfer.rs`
+  - Pending round-2 review with `src/transfer.rs`.
 
-- [x] `tests/it/utils.rs`
-  - This is intentionally not a direct port: it replaces the revm test harness with a large evm2 harness.
-  - Adds local `TxEnv`, `Context`, `ResultAndState`, `ExecutionResult`, `Output`, `DeployResult`, `DatabaseCommit`, `TestDbExt`, and `InspectorSlot`.
-  - Adds `TracingInspectorExt::with_transaction_gas_limit` only for tests, which masks the production `TracingInspector` API missing that original method.
-  - `TestEvmWithInspector::inspect_tx` now relies on inspector-recorded storage diffs directly.
+- [ ] `tests/it/utils.rs`
+  - Pending round-2 review. This is expected to be an evm2 harness, but random production-facing
+    structs or traits are not expected.
 
-- [x] `tests/it/writer.rs`
-  - Original tests are present.
-  - Differences are imports and helper API rewrites only.
+- [ ] `tests/it/writer.rs`
+  - Pending round-2 review with writer snapshots.
 
-## Test And Fixture Coverage
+## Fixture Coverage
 
-- [x] Original Rust test function names: all non-`edge_cov` original names are present.
-  - `edge_cov` test names are intentionally omitted with `src/edge_cov.rs`.
-  - Added tests in port: `records_failed_create_transfer_attempt`, `test_evm_db_reads_backing_dyn_database`, `test_geth_debug_inspector_jstracer`.
+- [ ] `testdata/Counter.sol`
+  - Pending byte-for-byte comparison.
 
-- [x] Non-Rust testdata and writer snapshots:
-  - `testdata/Counter.sol` matches byte-for-byte.
-  - `testdata/repro/tx-selfdestruct.json` matches byte-for-byte.
-  - `tests/it/writer/**` expected snapshot files match byte-for-byte.
+- [ ] `testdata/repro/tx-selfdestruct.json`
+  - Pending byte-for-byte comparison.
 
-## Open Review Items
-
-- [x] Decide whether production API compatibility should include original `TracingInspector::with_transaction_gas_limit`, `get_traces`, and `get_traces_mut`.
-- [x] Decide whether `OpcodeGasInspector::immediate_size` must preserve the original bytecode-based signature/RJUMPV behavior.
-- [x] Revisit access-list exclusion semantics for CREATE and EIP-7702 authorities.
-- [x] Revisit JS tracer thrown-error revert output, precompile registration timing, and create-exit error reporting.
-- [x] Revisit prestate/state-diff behavior that relies on `fill_storage_changes` post-processing.
-- [x] Revisit historical hardfork mapping in `tests/it/repro/mod.rs`.
+- [ ] `tests/it/writer/**`
+  - Pending snapshot file comparison.
