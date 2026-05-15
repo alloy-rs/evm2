@@ -1,18 +1,19 @@
 --- /home/doni/github/paradigmxyz/revm-inspectors/src/lib.rs	2025-10-21 16:19:08.905090292 +0200
-+++ /home/doni/github/danipopes/evm2.1/crates/inspectors/src/lib.rs	2026-05-15 02:47:58.037018787 +0200
-@@ -1,10 +1,4 @@
++++ /home/doni/github/danipopes/evm2.1/crates/inspectors/src/lib.rs	2026-05-15 03:38:15.955376483 +0200
+@@ -1,10 +1,9 @@
 -//! revm [Inspector](revm::Inspector) implementations, such as call tracers
--//!
--//! ## Feature Flags
--//!
--//! - `js-tracer`: Enables a JavaScript tracer implementation. This pulls in extra dependencies
++//! evm2 [Inspector](evm2::Inspector) implementations, such as call tracers.
+ //!
+ //! ## Feature Flags
+ //!
+ //! - `js-tracer`: Enables a JavaScript tracer implementation. This pulls in extra dependencies
 -//!   (such as `boa`, `tokio` and `serde_json`).
 -
-+//! evm2 [Inspector](evm2::Inspector) implementations, such as call tracers
++//!   (such as `boa` and `serde_json`).
  #![doc = include_str!("../README.md")]
  #![doc(
      html_logo_url = "https://raw.githubusercontent.com/paradigmxyz/reth/main/assets/reth-docs.png",
-@@ -18,22 +12,26 @@
+@@ -18,21 +17,29 @@
  
  extern crate alloc;
  
@@ -28,6 +29,7 @@
 +use serde_json as _;
 +use thiserror as _;
 +
++/// An inspector implementation for an EIP2930 Accesslist.
  pub mod access_list;
  
 -/// implementation of an opcode counter for the EVM.
@@ -35,15 +37,15 @@
  pub mod opcode;
  
 -/// An inspector for recording traces
++/// An inspector for recording traces.
  pub mod tracing;
  
--/// An inspector for recording internal transfers.
+ /// An inspector for recording internal transfers.
  pub mod transfer;
  
 -/// An inspector for tracking edge coverage.
 -pub mod edge_cov;
 -
--/// An inspector for tracking storage access.
+ /// An inspector for tracking storage access.
  pub mod storage;
  
- pub use colorchoice::ColorChoice;

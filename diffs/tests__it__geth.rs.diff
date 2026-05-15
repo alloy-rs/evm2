@@ -1,12 +1,12 @@
 --- /home/doni/github/paradigmxyz/revm-inspectors/tests/it/geth.rs	2026-05-14 03:45:05.356711986 +0200
-+++ /home/doni/github/danipopes/evm2.1/crates/inspectors/tests/it/geth.rs	2026-05-15 01:36:42.457136546 +0200
++++ /home/doni/github/danipopes/evm2.1/crates/inspectors/tests/it/geth.rs	2026-05-15 03:49:05.803389007 +0200
 @@ -1,25 +1,16 @@
  //! Geth tests
 -use crate::utils::deploy_contract;
 -use alloy_primitives::{address, hex, map::HashMap, Address, Bytes, TxKind, B256};
 +use crate::utils::{
-+    AccountInfo, Bytecode, CacheDB, Context, ETH_TRANSFER_LOG_ADDRESS, EmptyDB, SpecId,
-+    TracingInspectorExt, TransactTo, TxEnv, deploy_contract, opcode,
++    AccountInfo, Bytecode, CacheDB, Context, ETH_TRANSFER_LOG_ADDRESS, EmptyDB, SpecId, TransactTo,
++    TxEnv, deploy_contract, opcode,
 +};
 +use alloy_primitives::{Address, B256, Bytes, TxKind, address, hex, map::HashMap};
  use alloy_rpc_types_eth::TransactionInfo;

@@ -1,5 +1,5 @@
 --- /home/doni/github/paradigmxyz/revm-inspectors/src/tracing/builder/geth.rs	2026-05-14 03:45:05.355711990 +0200
-+++ /home/doni/github/danipopes/evm2.1/crates/inspectors/src/tracing/builder/geth.rs	2026-05-15 03:12:16.868042062 +0200
++++ /home/doni/github/danipopes/evm2.1/crates/inspectors/src/tracing/builder/geth.rs	2026-05-15 03:41:54.551048883 +0200
 @@ -1,29 +1,27 @@
  //! Geth trace builder
  use crate::tracing::{
@@ -95,11 +95,10 @@
      pub fn geth_call_traces(&self, opts: CallConfig, gas_used: u64) -> CallFrame {
          if self.nodes.is_empty() {
              return Default::default();
-@@ -234,124 +230,146 @@
-     ///
+@@ -235,123 +231,163 @@
      /// * `state` - The state post-transaction execution.
      /// * `diff_mode` - if prestate is in diff or prestate mode.
--    /// * `db` - The database to fetch state pre-transaction execution.
+     /// * `db` - The database to fetch state pre-transaction execution.
 -    pub fn geth_prestate_traces<DB: DatabaseRef>(
 +    pub fn geth_prestate_traces(
          &self,
@@ -135,33 +134,40 @@
 +    ) -> DbResult<PreStateFrame> {
          let mut prestate = PreStateMode::default();
  
--        // we only want changed accounts for things like balance changes etc
--        for (addr, changed_acc) in account_diffs {
--            let db_acc = db.basic_ref(addr)?.unwrap_or_default();
--            let code = code_enabled.then(|| load_account_code(&db, &db_acc)).flatten();
--            let mut acc_state = AccountState::from_account_info(db_acc.nonce, db_acc.balance, code);
--
--            // insert the original value of all modified storage slots
--            if storage_enabled {
--                for (key, slot) in changed_acc.storage.iter() {
--                    acc_state.storage.insert((*key).into(), slot.original_value.into());
++        // Record caller/callee accounts from traces because evm2 state changes only contain
++        // accounts that changed.
 +        for address in self.nodes.iter().flat_map(|node| [node.trace.caller, node.trace.address]) {
 +            if let BTreeEntry::Vacant(entry) = prestate.0.entry(address) {
 +                entry.insert(prestate_account(db, address, code_enabled)?);
 +            }
 +        }
++
+         // we only want changed accounts for things like balance changes etc
+-        for (addr, changed_acc) in account_diffs {
+-            let db_acc = db.basic_ref(addr)?.unwrap_or_default();
+-            let code = code_enabled.then(|| load_account_code(&db, &db_acc)).flatten();
+-            let mut acc_state = AccountState::from_account_info(db_acc.nonce, db_acc.balance, code);
 +        for (&address, account) in &state.accounts {
 +            let info =
 +                db.get_account(&address)?.or_else(|| account.original.clone()).unwrap_or_default();
 +            let code = if code_enabled { load_account_code(db, &info)? } else { None };
 +            let mut acc_state = AccountState::from_account_info(info.nonce, info.balance, code);
+ 
+             // insert the original value of all modified storage slots
+-            if storage_enabled {
+-                for (key, slot) in changed_acc.storage.iter() {
+-                    acc_state.storage.insert((*key).into(), slot.original_value.into());
 +            if storage_enabled && let Some(storage) = state.storage.get(&address) {
 +                for (&key, slot) in &storage.slots {
 +                    acc_state.storage.insert(key.into(), slot.original.into());
-+                }
-+            }
+                 }
+             }
 +            prestate.0.insert(address, acc_state);
 +        }
+ 
+-            prestate.0.insert(addr, acc_state);
++        // Record opcode-touched accounts and storage reads that evm2 does not expose in
++        // `StateChanges`.
 +        for node in self.nodes.iter() {
 +            let address = node.execution_address();
 +            for step in &node.trace.steps {
@@ -177,10 +183,8 @@
 +                        .storage
 +                        .entry(change.key.into())
 +                        .or_insert(value.into());
-                 }
-             }
--
--            prestate.0.insert(addr, acc_state);
++                }
++            }
          }
  
          Ok(PreStateFrame::Default(prestate))
@@ -220,11 +224,11 @@
 -                    })
 -                    .flatten(),
 -            );
-+            HashMap::with_capacity_and_hasher(state.accounts.len(), Default::default());
- 
+-
 -            let mut pre_state =
 -                AccountState::from_account_info(db_acc.nonce, db_acc.balance, pre_code);
--
++            HashMap::with_capacity_and_hasher(state.accounts.len(), Default::default());
+ 
 -            // handle storage changes
 -            if storage_enabled {
 -                for (key, slot) in changed_acc.storage.iter().filter(|(_, slot)| slot.is_changed())
@@ -262,14 +266,14 @@
 +                }
 +                state_diff.post.insert(address, post_state);
              }
- 
--            state_diff.pre.insert(addr, pre_state);
 -
--            // determine the change type
--            // if the account was created _and_ not empty we need to treat it as modified,
--            // so that it is retained later in `diff_traces`
--            // See <https://etherscan.io/tx/0x391f4b6a382d3bcc3120adc2ea8c62003e604e487d97281129156fd284a1a89d>
--            // <https://github.com/paradigmxyz/reth/issues/19703#issuecomment-3527067849>
+-            state_diff.pre.insert(addr, pre_state);
+ 
+             // determine the change type
+             // if the account was created _and_ not empty we need to treat it as modified,
+             // so that it is retained later in `diff_traces`
+             // See <https://etherscan.io/tx/0x391f4b6a382d3bcc3120adc2ea8c62003e604e487d97281129156fd284a1a89d>
+             // <https://github.com/paradigmxyz/reth/issues/19703#issuecomment-3527067849>
 -            let pre_change = if changed_acc.is_created() && account_was_empty(&db_acc) {
 +            let pre_change = if original.as_ref().is_none_or(|account| account.is_empty()) {
                  AccountChangeKind::Create
@@ -286,10 +290,7 @@
 +        }
  
 -            account_change_kinds.insert(addr, (pre_change, post_change));
--
--            // Don't insert selfdestructed accounts into post state
--            if !changed_acc.is_selfdestructed() {
--                state_diff.post.insert(addr, post_state);
++        // handle storage changes
 +        for (&address, storage) in &state.storage {
 +            let pre_state = state_diff.pre.entry(address).or_default();
 +            let post_state = state_diff.post.entry(address).or_default();
@@ -298,25 +299,30 @@
 +                    pre_state.storage.insert(key.into(), slot.original.into());
 +                    post_state.storage.insert(key.into(), slot.current.into());
 +                }
-             }
-         }
++            }
++        }
  
--        // ensure we're only keeping changed entries
--        state_diff.retain_changed().remove_zero_storage_values();
+-            // Don't insert selfdestructed accounts into post state
+-            if !changed_acc.is_selfdestructed() {
+-                state_diff.post.insert(addr, post_state);
++        // Don't insert selfdestructed accounts into post state before Cancun.
 +        if self.spec_id.is_some_and(|spec_id| spec_id < SpecId::CANCUN) {
 +            for node in self.nodes.iter().filter(|node| node.is_selfdestruct()) {
 +                if let Some(address) = node.trace.selfdestruct_address {
 +                    state_diff.post.remove(&address);
 +                }
-+            }
-+        }
+             }
+         }
  
+         // ensure we're only keeping changed entries
+-        state_diff.retain_changed().remove_zero_storage_values();
+-
          self.diff_traces(&mut state_diff.pre, &mut state_diff.post, account_change_kinds);
 +        state_diff.retain_changed().remove_zero_storage_values();
          Ok(PreStateFrame::Diff(state_diff))
      }
  
-@@ -384,14 +402,14 @@
+@@ -384,14 +420,14 @@
      }
  
      /// Traces ERC-7562 calls using the call tracer.
@@ -335,7 +341,7 @@
          }
  
          let include_logs = opts.with_log.unwrap_or_default();
-@@ -424,95 +442,87 @@
+@@ -424,95 +460,87 @@
  
                  // Accessed storage slots
                  match op {
@@ -493,7 +499,7 @@
                      }
                  }
              }
-@@ -560,13 +570,13 @@
+@@ -560,13 +588,13 @@
                  parent_frame.1.calls.insert(0, frame);
              } else {
                  debug_assert!(frames.is_empty(), "only one root node has no parent");
@@ -509,7 +515,7 @@
          match kind {
              CallKind::Call => CallFrameType::Call,
              CallKind::CallCode => CallFrameType::CallCode,
-@@ -579,46 +589,126 @@
+@@ -579,46 +607,126 @@
      }
  }
  
@@ -659,7 +665,7 @@
  
          match frame {
              PreStateFrame::Diff(diff) => {
-@@ -634,4 +724,59 @@
+@@ -634,4 +742,59 @@
              _ => panic!("expected diff prestate frame"),
          }
      }

@@ -93,7 +93,9 @@ pub(crate) fn gas_used(spec: SpecId, spent: u64, refunded: u64) -> u64 {
     spent - (refunded).min(spent / refund_quotient)
 }
 
-/// Loads account bytecode from inline account code or the cache DB contract table.
+/// Loads the code for the given account from the account itself or the database.
+///
+/// Returns None if the code hash is the KECCAK_EMPTY hash.
 #[inline]
 pub(crate) fn load_account_code(
     db: &mut dyn DynDatabase,
@@ -205,7 +207,7 @@ mod tests {
         );
     }
 
-    // <https://github.com/paradigmxyz/evm2-inspectors/pull/353#issuecomment-36146608124>
+    // <https://github.com/paradigmxyz/revm-inspectors/pull/353#issuecomment-36146608124>
     #[test]
     fn decode_string_revert() {
         let err = hex!(

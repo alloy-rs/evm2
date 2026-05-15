@@ -436,17 +436,6 @@ pub fn print_traces(tracer: &TracingInspector) {
     println!("{}", write_traces_with(tracer, TraceWriterConfig::new()));
 }
 
-pub trait TracingInspectorExt {
-    fn with_transaction_gas_limit(self, gas_limit: u64) -> Self;
-}
-
-impl TracingInspectorExt for TracingInspector {
-    fn with_transaction_gas_limit(mut self, gas_limit: u64) -> Self {
-        self.set_transaction_gas_limit(gas_limit);
-        self
-    }
-}
-
 pub fn deploy_contract(
     evm: &mut TestEvm,
     code: Bytes,

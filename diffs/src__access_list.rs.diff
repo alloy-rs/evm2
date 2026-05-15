@@ -1,8 +1,6 @@
 --- /home/doni/github/paradigmxyz/revm-inspectors/src/access_list.rs	2025-07-10 16:22:55.681658487 +0200
-+++ /home/doni/github/danipopes/evm2.1/crates/inspectors/src/access_list.rs	2026-05-15 02:44:04.421830128 +0200
++++ /home/doni/github/danipopes/evm2.1/crates/inspectors/src/access_list.rs	2026-05-15 03:39:41.261263518 +0200
 @@ -1,31 +1,23 @@
-+//! Access list inspector.
-+
  use alloc::collections::BTreeSet;
  use alloy_primitives::{
 +    Address, B256,
@@ -29,8 +27,9 @@
  };
  
  /// An [Inspector] that collects touched accounts and storage slots.
--///
+ ///
 -/// This can be used to construct an [AccessList] for a transaction via `eth_createAccessList`
++/// This can be used to construct an [AccessList] for a transaction via `eth_createAccessList`.
  #[derive(Debug, Default)]
  pub struct AccessListInspector {
 -    /// All addresses that should be excluded from the final accesslist
@@ -41,18 +40,19 @@
      touched_slots: HashMap<Address, BTreeSet<B256>>,
  }
  
-@@ -36,9 +28,7 @@
+@@ -36,9 +28,9 @@
  }
  
  impl AccessListInspector {
 -    /// Creates a new inspector instance
--    ///
--    /// The `access_list` is the provided access list from the call request
 +    /// Creates a new inspector instance.
+     ///
+-    /// The `access_list` is the provided access list from the call request
++    /// The `access_list` is the provided access list from the call request.
      pub fn new(access_list: AccessList) -> Self {
          Self {
              excluded: Default::default(),
-@@ -51,12 +41,12 @@
+@@ -51,12 +43,12 @@
      }
  
      /// Returns the excluded addresses.
@@ -67,34 +67,10 @@
          &self.touched_slots
      }
  
-@@ -66,8 +56,7 @@
-         self.touched_slots
-     }
- 
--    /// Returns list of addresses and storage keys used by the transaction. It gives you the list of
--    /// addresses and storage keys that were touched during execution.
-+    /// Returns list of addresses and storage keys used by the transaction.
-     pub fn into_access_list(self) -> AccessList {
-         let items = self.touched_slots.into_iter().map(|(address, slots)| AccessListItem {
-             address,
-@@ -76,8 +65,7 @@
-         AccessList(items.collect())
-     }
- 
--    /// Returns list of addresses and storage keys used by the transaction. It gives you the list of
--    /// addresses and storage keys that were touched during execution.
-+    /// Returns list of addresses and storage keys used by the transaction.
-     pub fn access_list(&self) -> AccessList {
-         let items = self.touched_slots.iter().map(|(address, slots)| AccessListItem {
-             address: *address,
-@@ -86,61 +74,51 @@
-         AccessList(items.collect())
-     }
- 
--    /// Collects addresses which should be excluded from the access list. Must be called before the
--    /// top-level call.
--    ///
--    /// Those include caller, callee and precompiles.
+@@ -90,55 +82,45 @@
+     /// top-level call.
+     ///
+     /// Those include caller, callee and precompiles.
 -    fn collect_excluded_addresses<CTX: ContextTr<Journal: JournalExt>>(&mut self, context: &CTX) {
 -        let from = context.tx().caller();
 -        let to = if let TxKind::Call(to) = context.tx().kind() {
@@ -110,6 +86,8 @@
 -
 -        // 7702 authorities should be excluded because those get loaded anyway
 -        let auth_addrs = context.tx().authorization_list().flat_map(|a| a.authority());
+-
+-        self.excluded = [from, to].into_iter().chain(precompiles).chain(auth_addrs).collect();
 +    fn collect_excluded_addresses<T: EvmTypes<Host = Evm<T>>>(
 +        &mut self,
 +        message: &Message<T>,
@@ -120,11 +98,6 @@
 +            .chain(host.precompiles().warm_addresses())
 +            .chain(host.eip7702_authorities())
 +            .collect();
-+    }
- 
--        self.excluded = [from, to].into_iter().chain(precompiles).chain(auth_addrs).collect();
-+    fn should_include_address(&self, address: &Address) -> bool {
-+        !self.excluded.contains(address)
      }
  }
  
@@ -162,8 +135,7 @@
 +            | op::SELFDESTRUCT => {
 +                if let Some([slot]) = interp.stack().peekn() {
                      let addr = Address::from_word(B256::from(slot.to_be_bytes()));
--                    if !self.excluded.contains(&addr) {
-+                    if self.should_include_address(&addr) {
+                     if !self.excluded.contains(&addr) {
                          self.touched_slots.entry(addr).or_default();
                      }
                  }
@@ -173,12 +145,9 @@
 +            op::DELEGATECALL | op::CALL | op::STATICCALL | op::CALLCODE => {
 +                if let Some([_, slot]) = interp.stack().peekn() {
                      let addr = Address::from_word(B256::from(slot.to_be_bytes()));
--                    if !self.excluded.contains(&addr) {
-+                    if self.should_include_address(&addr) {
+                     if !self.excluded.contains(&addr) {
                          self.touched_slots.entry(addr).or_default();
-                     }
-                 }
-@@ -149,26 +127,16 @@
+@@ -149,26 +131,18 @@
          }
      }
  
@@ -191,6 +160,7 @@
 -        if context.journal().depth() == 0 {
 -            self.collect_excluded_addresses(context)
 +    fn call(&mut self, message: &mut Message<T>, host: &mut T::Host) -> Option<MessageResult<T>> {
++        // At the top-level frame, fill the excluded addresses.
 +        if message.depth == 0 {
 +            self.collect_excluded_addresses(message, host);
          }
@@ -206,6 +176,7 @@
 -        if context.journal().depth() == 0 {
 -            self.collect_excluded_addresses(context)
 +    fn create(&mut self, message: &mut Message<T>, host: &mut T::Host) -> Option<MessageResult<T>> {
++        // At the top-level frame, fill the excluded addresses.
 +        if message.depth == 0 {
 +            self.collect_excluded_addresses(message, host);
          }

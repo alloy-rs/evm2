@@ -32,6 +32,7 @@ use evm2::{
     interpreter::{Memory, StackRef as EvmStackRef, Word},
 };
 
+/// A macro that creates a native function that returns via [JsValue::from].
 macro_rules! js_value_getter {
     ($value:ident, $ctx:ident) => {
         FunctionObjectBuilder::new(
@@ -43,6 +44,7 @@ macro_rules! js_value_getter {
     };
 }
 
+/// A macro that creates a native function that returns a captured JsValue.
 macro_rules! js_value_capture_getter {
     ($value:ident, $ctx:ident) => {
         FunctionObjectBuilder::new(
@@ -57,22 +59,48 @@ macro_rules! js_value_capture_getter {
     };
 }
 
+/// A wrapper for a value that can be garbage collected, but will not give access to the value if
+/// it has been dropped via its guard.
+///
+/// This is used to allow the JS tracer functions to access values at a certain point during
+/// inspection by ref without having to clone them and capture them in the js object.
+///
+/// JS tracer functions get access to evm internals via objects or function arguments, for example
+/// `function step(log,evm)` where log has an object `stack` that has a function `peek(number)` that
+/// returns a value from the stack.
+///
+/// These functions could get garbage collected, however the data accessed by the function is
+/// supposed to be ephemeral and only valid for the duration of the function call.
+///
+/// This type supports garbage collection of (rust) references and prevents access to the value if
+/// it has been dropped.
 #[derive(Debug)]
 struct GuardedNullableGc<Val: 'static> {
+    /// The lifetime is a lie to make it possible to use a reference in boa which requires 'static.
     inner: Rc<RefCell<Option<Guarded<'static, Val>>>>,
 }
 
-impl<Val: 'static> Clone for GuardedNullableGc<Val> {
+impl<Val> Clone for GuardedNullableGc<Val> {
     fn clone(&self) -> Self {
         Self { inner: Rc::clone(&self.inner) }
     }
 }
 
 impl<Val: 'static> GuardedNullableGc<Val> {
+    /// Creates a garbage collectible value to the given reference.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that the guard is dropped before the value is dropped.
     fn new_ref(val: &Val) -> (Self, GcGuard<'_, Val>) {
         Self::new(Guarded::Ref(val))
     }
 
+    /// Creates a garbage collectible value to the given value.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that the guard is dropped before the value is dropped.
     fn new_owned<'a>(val: Val) -> (Self, GcGuard<'a, Val>) {
         Self::new(Guarded::Owned(val))
     }
@@ -88,6 +116,7 @@ impl<Val: 'static> GuardedNullableGc<Val> {
         (this, guard)
     }
 
+    /// Executes the given closure with a reference to the inner value if it is still present.
     fn with_inner<F, R>(&self, f: F) -> Option<R>
     where
         F: FnOnce(&Val) -> R,
@@ -102,6 +131,7 @@ unsafe impl<Val: 'static> Trace for GuardedNullableGc<Val> {
     empty_trace!();
 }
 
+/// A value that is either a reference or an owned value.
 #[derive(Debug)]
 enum Guarded<'a, T> {
     Ref(&'a T),
@@ -118,6 +148,9 @@ impl<T> Guarded<'_, T> {
     }
 }
 
+/// Guard the inner value, once this value is dropped the inner value is also removed.
+///
+/// This type guarantees that it never outlives the wrapped value.
 #[derive(Debug)]
 #[must_use]
 pub(crate) struct GcGuard<'a, Val> {
@@ -174,6 +207,7 @@ impl StepLog {
         } = self;
         let obj = JsObject::with_object_proto(ctx.intrinsics());
 
+        // fields
         let op = op.into_js_object(ctx)?;
         let memory = memory.into_js_object(ctx)?;
         let stack = stack.into_js_object(ctx)?;
@@ -184,7 +218,12 @@ impl StepLog {
         obj.set(js_string!("stack"), stack, false, ctx)?;
         obj.set(js_string!("contract"), contract, false, ctx)?;
 
-        let error = error.map(|err| JsValue::from(js_string!(err))).unwrap_or_default();
+        // methods
+        let error = if let Some(error) = error {
+            JsValue::from(js_string!(error))
+        } else {
+            JsValue::undefined()
+        };
         let get_error = js_value_capture_getter!(error, ctx);
         let get_pc = js_value_getter!(pc, ctx);
         let get_gas = js_value_getter!(gas, ctx);
@@ -239,6 +278,7 @@ impl MemoryRef {
         .length(0)
         .build();
 
+        // slice returns the requested range of memory as a byte slice.
         let slice = FunctionObjectBuilder::new(
             ctx.realm(),
             NativeFunction::from_copy_closure_with_captures(
@@ -333,8 +373,10 @@ impl OpObj {
             context.realm(),
             NativeFunction::from_copy_closure(move |_this, _args, _ctx| {
                 if let Some(op) = OpCode::new(value) {
-                    Ok(JsValue::from(js_string!(op.as_str())))
+                    let s = op.as_str();
+                    Ok(JsValue::from(js_string!(s)))
                 } else {
+                    // <https://github.com/ethereum/go-ethereum/blob/7c107c2691fa66a1da60e2b95f5946c3a3921b00/core/vm/opcodes.go#L461-L461>
                     Ok(JsValue::from(js_string!(format!("opcode {:x} not defined", value))))
                 }
             }),
@@ -432,6 +474,7 @@ impl StackRef {
         .length(0)
         .build();
 
+        // peek returns the nth-from-the-top element of the stack.
         let peek = FunctionObjectBuilder::new(
             context.realm(),
             NativeFunction::from_copy_closure_with_captures(
@@ -675,6 +718,8 @@ impl JsEvmContext {
         } = self;
         let obj = JsObject::with_object_proto(ctx.intrinsics());
 
+        // add properties
+
         obj.set(js_string!("type"), js_string!(r#type), false, ctx)?;
         obj.set(js_string!("from"), address_to_uint8_array(from, ctx)?, false, ctx)?;
         if let Some(to) = to {
@@ -802,7 +847,8 @@ impl EvmDbRef {
                 move |_this, args, db, ctx| {
                     let val = args.get_or_undefined(0).clone();
                     let acc = db.read_basic(val, ctx)?;
-                    Ok(JsValue::from(acc.is_some()))
+                    let exists = acc.is_some();
+                    Ok(JsValue::from(exists))
                 },
                 self.clone(),
             ),
@@ -882,6 +928,7 @@ unsafe impl Trace for EvmDbRef {
     empty_trace!();
 }
 
+/// DB reader used by the JS context.
 trait EvmDbReader {
     fn read_basic(&mut self, address: &Address) -> DbResult<Option<AccountInfo>>;
 
@@ -973,6 +1020,9 @@ impl EvmDbReader for ChangesDbReader<'_> {
     }
 }
 
+/// Guard the inner references, once this value is dropped the inner reference is also removed.
+///
+/// This ensures that the guards are dropped within the lifetime of the borrowed values.
 #[must_use]
 pub(crate) struct EvmDbGuard<'a> {
     _db_guard: GcGuard<'a, RefCell<Box<dyn EvmDbReader>>>,
@@ -1080,6 +1130,7 @@ mod tests {
             let res = f.call(&result, &[db.clone().into(), addr.clone()], &mut context).unwrap();
             assert!(!res.as_boolean().unwrap());
 
+            // drop the db which also drops any GC values
             drop(guard);
             let res = f.call(&result, &[db.into(), addr], &mut context);
             assert!(res.is_err());
@@ -1095,8 +1146,10 @@ mod tests {
             let db = db.into_js_object(&mut context).unwrap();
             let res = f.call(&result, &[db.clone().into(), addr.clone()], &mut context).unwrap();
 
+            // account exists
             assert!(res.as_boolean().unwrap());
 
+            // drop the db which also drops any GC values
             drop(guard);
             let res = f.call(&result, &[db.into(), addr], &mut context);
             assert!(res.is_err());
@@ -1138,6 +1191,7 @@ mod tests {
                 .unwrap();
             assert!(!res.as_boolean().unwrap());
 
+            // drop the guard which also drops any GC values
             drop(guard);
             let res = result_fn.call(&(obj.clone().into()), &[addr], &mut context);
             assert!(res.is_err());

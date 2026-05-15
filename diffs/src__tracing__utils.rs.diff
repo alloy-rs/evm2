@@ -1,5 +1,5 @@
 --- /home/doni/github/paradigmxyz/revm-inspectors/src/tracing/utils.rs	2026-05-14 03:45:05.356711986 +0200
-+++ /home/doni/github/danipopes/evm2.1/crates/inspectors/src/tracing/utils.rs	2026-05-15 01:55:08.843487888 +0200
++++ /home/doni/github/danipopes/evm2.1/crates/inspectors/src/tracing/utils.rs	2026-05-15 03:47:43.564834691 +0200
 @@ -1,65 +1,62 @@
 -//! Utility functions for revm related ops
 +//! Utility functions for evm2 related ops
@@ -87,7 +87,7 @@
              "Out of gas"
          } else {
              "out of gas: not enough gas for reentrancy sentry"
-@@ -92,25 +89,23 @@
+@@ -92,25 +89,25 @@
  /// Get the gas used, accounting for refunds
  #[inline]
  pub(crate) fn gas_used(spec: SpecId, spent: u64, refunded: u64) -> u64 {
@@ -97,9 +97,10 @@
  }
  
 -/// Loads the code for the given account from the account itself or the database
--///
++/// Loads the code for the given account from the account itself or the database.
+ ///
 -/// Returns None if the code hash is the KECCAK_EMPTY hash
-+/// Loads account bytecode from inline account code or the cache DB contract table.
++/// Returns None if the code hash is the KECCAK_EMPTY hash.
  #[inline]
 -pub(crate) fn load_account_code<DB: DatabaseRef>(
 -    db: DB,
@@ -126,7 +127,7 @@
  }
  
  /// Returns a non-empty revert reason if the output is a revert/error.
-@@ -155,7 +150,9 @@
+@@ -155,7 +152,9 @@
      // <https://etherscan.io/tx/0x105707c8e3b3675a8424a7b0820b271cbe394eaf4d5065b03c273298e3a81314>
      #[test]
      fn decode_revert_reason_with_error() {
@@ -137,12 +138,8 @@
          let reason = maybe_revert_reason(&err[..]).unwrap();
          assert_eq!(reason, "UniswapV2: INSUFFICIENT_INPUT_AMOUNT");
      }
-@@ -208,10 +205,12 @@
-         );
-     }
- 
--    // <https://github.com/paradigmxyz/revm-inspectors/pull/353#issuecomment-36146608124>
-+    // <https://github.com/paradigmxyz/evm2-inspectors/pull/353#issuecomment-36146608124>
+@@ -211,7 +210,9 @@
+     // <https://github.com/paradigmxyz/revm-inspectors/pull/353#issuecomment-36146608124>
      #[test]
      fn decode_string_revert() {
 -        let err = hex!("0x08c379a0000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000214661696c656420746f2076657269667920424950333232207369676e617475726500000000000000000000000000000000000000000000000000000000000000");

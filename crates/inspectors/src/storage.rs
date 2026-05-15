@@ -1,5 +1,3 @@
-//! Storage access inspector.
-
 use alloy_primitives::{Address, B256, map::HashMap};
 use evm2::{EvmTypes, Inspector, bytecode::opcode::op, interpreter::Interpreter};
 
@@ -52,8 +50,10 @@ impl<T: EvmTypes> Inspector<T> for StorageInspector {
         {
             let address = interp.message().destination;
             let slot = B256::from(slot.to_be_bytes());
+
             let slot_access_count =
                 self.accessed_slots.entry(address).or_default().entry(slot).or_default();
+
             *slot_access_count += 1;
         }
     }

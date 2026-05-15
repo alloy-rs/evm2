@@ -1,4 +1,25 @@
 //! Fourbyte tracing inspector.
+//!
+//! Solidity contract functions are addressed using the first four bytes of the Keccak-256 hash of
+//! their signature. Therefore when calling the function of a contract, the caller must send this
+//! function selector as well as the ABI-encoded arguments as call data.
+//!
+//! The 4byteTracer collects the function selectors of every function executed in the lifetime of a
+//! transaction, along with the size of the supplied call data. The result is a map of
+//! SELECTOR-CALLDATASIZE to number of occurrences entries, where the keys are SELECTOR-CALLDATASIZE
+//! and the values are number of occurrences of this key. For example:
+//!
+//! ```json
+//! {
+//!   "0x27dc297e-128": 1,
+//!   "0x38cc4831-0": 2,
+//!   "0x524f3889-96": 1,
+//!   "0xadf59f99-288": 1,
+//!   "0xc281d19e-0": 1
+//! }
+//! ```
+//!
+//! See also <https://geth.ethereum.org/docs/developers/evm-tracing/built-in-tracers>
 
 use alloc::format;
 use alloy_primitives::{Selector, hex, map::HashMap};

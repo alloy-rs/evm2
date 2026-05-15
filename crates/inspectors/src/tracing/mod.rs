@@ -59,14 +59,30 @@ mod debug;
 pub use debug::{DebugInspector, DebugInspectorError};
 
 /// An inspector that collects call traces.
+///
+/// This [Inspector] can be hooked into evm2's EVM which then calls the inspector functions, such
+/// as [Inspector::call] or [Inspector::call_end].
+///
+/// The [TracingInspector] keeps track of everything by:
+///   1. start tracking steps/calls on [Inspector::step] and [Inspector::call]
+///   2. complete steps/calls on [Inspector::step_end] and [Inspector::call_end]
 #[derive(Clone, Debug)]
 pub struct TracingInspector {
+    /// Configures what and how the inspector records traces.
     config: TracingInspectorConfig,
+    /// Records all call traces.
     traces: CallTraceArena,
+    /// Tracks active calls.
     trace_stack: Vec<usize>,
+    /// Tracks recorded steps waiting for `step_end`.
     step_stack: Vec<(usize, usize, u64)>,
+    /// Tracks the journal len in the step, used in step_end to check if the journal has changed.
     last_journal_len: usize,
+    /// Tracks how many logs we already recorded.
     log_index: u64,
+    /// The spec id of the EVM.
+    ///
+    /// This is filled during execution.
     spec_id: Option<SpecId>,
 }
 
@@ -90,7 +106,8 @@ impl TracingInspector {
         }
     }
 
-    /// Resets the inspector to its initial state.
+    /// Resets the inspector to its initial state of [Self::new].
+    /// This makes the inspector ready to be used again.
     pub fn fuse(&mut self) {
         self.traces.clear();
         self.trace_stack.clear();
@@ -100,7 +117,7 @@ impl TracingInspector {
         self.spec_id = None;
     }
 
-    /// Resets the inspector to its initial state.
+    /// Resets the inspector to it's initial state of [Self::new].
     pub fn fused(mut self) -> Self {
         self.fuse();
         self
@@ -139,7 +156,12 @@ impl TracingInspector {
         self.traces
     }
 
-    /// Sets the root transaction gas used.
+    /// Manually set the gas used of the root trace.
+    ///
+    /// This is useful if the root trace's gasUsed should mirror the actual gas used by the
+    /// transaction.
+    ///
+    /// This allows setting it manually by consuming the execution result's gas for example.
     #[inline]
     pub fn set_transaction_gas_used(&mut self, gas_used: u64) {
         if let Some(node) = self.traces.arena.first_mut() {
@@ -147,7 +169,12 @@ impl TracingInspector {
         }
     }
 
-    /// Sets the root transaction gas limit.
+    /// Manually set the gas limit of the debug root trace.
+    ///
+    /// This is useful if the debug root trace's gasUsed should mirror the actual gas used by the
+    /// transaction.
+    ///
+    /// This allows setting it manually by consuming the execution result's gas for example.
     #[inline]
     pub fn set_transaction_gas_limit(&mut self, gas_limit: u64) {
         if let Some(node) = self.traces.arena.first_mut() {
@@ -155,7 +182,10 @@ impl TracingInspector {
         }
     }
 
-    /// Sets the root transaction caller.
+    /// Manually set the caller address of the root trace.
+    ///
+    /// This is useful for custom transaction types (e.g. account abstraction batches) where the
+    /// EVM's call entry point may not reflect the actual transaction sender.
     #[inline]
     pub fn set_transaction_caller(&mut self, caller: Address) {
         if let Some(node) = self.traces.arena.first_mut() {
@@ -163,35 +193,51 @@ impl TracingInspector {
         }
     }
 
-    /// Sets the root transaction gas used and returns the inspector.
+    /// Convenience function for [ParityTraceBuilder::set_transaction_gas_used] that consumes the
+    /// type.
     #[inline]
     pub fn with_transaction_gas_used(mut self, gas_used: u64) -> Self {
         self.set_transaction_gas_used(gas_used);
         self
     }
 
-    /// Returns a geth trace builder over the recorded traces.
+    /// Work with [TracingInspector::set_transaction_gas_limit] function.
+    #[inline]
+    pub fn with_transaction_gas_limit(mut self, gas_limit: u64) -> Self {
+        self.set_transaction_gas_limit(gas_limit);
+        self
+    }
+
+    /// Returns the  [GethTraceBuilder] for the recorded traces without consuming the type.
+    ///
+    /// This can be useful for multiple transaction tracing (block) where this inspector can be
+    /// reused for each transaction but caller must ensure that the traces are cleared before
+    /// starting a new transaction: [`Self::fuse`]
     #[inline]
     pub fn geth_builder(&self) -> GethTraceBuilder<'_> {
         GethTraceBuilder::new_borrowed(self.traces.nodes(), self.spec_id)
     }
 
-    /// Consumes the inspector and returns a geth trace builder.
+    /// Consumes the Inspector and returns a [GethTraceBuilder].
     #[inline]
     pub fn into_geth_builder(self) -> GethTraceBuilder<'static> {
         GethTraceBuilder::new(self.traces.into_nodes(), self.spec_id)
     }
 
-    /// Consumes the inspector and returns a parity trace builder.
+    /// Consumes the Inspector and returns a [ParityTraceBuilder].
     #[inline]
     pub fn into_parity_builder(self) -> ParityTraceBuilder {
         ParityTraceBuilder::new(self.traces.into_nodes(), self.spec_id, self.config)
     }
 
+    /// Returns true if we're no longer in the context of the root call.
     const fn is_deep(&self) -> bool {
         !self.trace_stack.is_empty()
     }
 
+    /// Returns true if this a call to a precompile contract.
+    ///
+    /// Returns true if the `to` address is a precompile contract and the value is zero.
     fn is_precompile_call<T: EvmTypes<Host = Evm<T>>>(
         &self,
         host: &Evm<T>,
@@ -225,7 +271,10 @@ impl TracingInspector {
         };
 
         let entry = self.trace_stack.last().copied().unwrap_or_default();
+        // This will only be true if the inspector is configured to exclude precompiles and the call
+        // is to a precompile.
         let push_kind = if maybe_precompile.unwrap_or(false) {
+            // We don't want to track precompiles.
             PushTraceKind::PushOnly
         } else {
             PushTraceKind::PushAndAttachToParent
@@ -262,6 +311,7 @@ impl TracingInspector {
 
         match journal_entry {
             JournalEntry::StorageChange { address, key, previous } => {
+                // SAFETY: (Address,key) exists if part if StorageChange.
                 let value = host
                     .state()
                     .storage_ref(address, key)
@@ -275,6 +325,7 @@ impl TracingInspector {
                 }))
             }
             JournalEntry::StorageWarmed { address, key } => {
+                // SAFETY: (Address,key) exists if part if StorageChange.
                 let value = host
                     .state()
                     .storage_ref(address, key)
@@ -353,7 +404,6 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for TracingInspector {
             pc: interp.pc(),
             op,
             stack,
-            push_stack: None,
             memory,
             returndata,
             gas_remaining: interp.gas().remaining(),
@@ -363,10 +413,13 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for TracingInspector {
                 interp.gas().spent(),
                 interp.gas().refunded().max(0) as u64,
             ),
+            // These fields will be populated in `step_end`.
+            push_stack: None,
             gas_cost: 0,
             storage_change: None,
             status: None,
             immediate_bytes,
+            // This is never populated in `TracingInspector`.
             decoded: None,
         };
         let step_idx = self.traces.arena[trace_idx].trace.steps.len();
@@ -384,7 +437,11 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for TracingInspector {
             return;
         };
         if let Some(step) = self.traces.arena[trace_idx].trace.steps.get_mut(step_idx) {
+            // The gas cost is the difference between the recorded gas remaining at the start of the
+            // step the remaining gas here, at the end of the step.
+            // TODO: Figure out why this can overflow. https://github.com/paradigmxyz/revm-inspectors/pull/38
             step.gas_cost = gas_remaining.saturating_sub(interp.gas().remaining());
+            // set the status
             step.status = interp.result().err();
             if self.config.record_stack_snapshots.is_pushes()
                 || self.config.record_stack_snapshots.is_all()

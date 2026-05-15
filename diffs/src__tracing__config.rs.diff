@@ -1,5 +1,5 @@
 --- /home/doni/github/paradigmxyz/revm-inspectors/src/tracing/config.rs	2026-05-14 03:45:05.355711990 +0200
-+++ /home/doni/github/danipopes/evm2.1/crates/inspectors/src/tracing/config.rs	2026-05-15 02:52:57.348937751 +0200
++++ /home/doni/github/danipopes/evm2.1/crates/inspectors/src/tracing/config.rs	2026-05-15 03:42:21.387004743 +0200
 @@ -1,12 +1,12 @@
 -use alloy_primitives::{map::HashSet, U256};
 +use alloy_primitives::{U256, map::HashSet};
@@ -33,7 +33,14 @@
          self.0.set_bit(op.get() as usize, true);
          self
      }
-@@ -245,7 +245,7 @@
+@@ -240,12 +240,12 @@
+ 
+     /// Returns a config for geth's [PrestateTracer](alloy_rpc_types_trace::geth::PreStateFrame).
+     ///
+-    /// Note: This currently returns [Self::none] because the prestate tracer result currently
+-    /// relies on the execution result entirely, see
++    /// Note: This records the data needed by the evm2 prestate builder to reconstruct touched
++    /// accounts and read storage slots, see
      /// [GethTraceBuilder::geth_prestate_traces](crate::tracing::geth::GethTraceBuilder::geth_prestate_traces)
      #[inline]
      pub const fn from_geth_prestate_config(_config: &PreStateConfig) -> Self {

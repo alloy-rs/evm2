@@ -1,3 +1,5 @@
+//! Javascript inspector.
+
 use crate::tracing::{
     TransactionContext,
     config::TraceStyle,
@@ -37,11 +39,12 @@ use builtins::register_builtins;
 /// The maximum number of iterations in a loop.
 ///
 /// Once exceeded, the loop will throw an error.
+// An empty loop with this limit takes around 50ms to fail.
 pub const LOOP_ITERATION_LIMIT: u64 = 200_000;
 
 /// The recursion limit for function calls.
 ///
-/// Once exceeded, the loop will throw an error.
+/// Once exceeded, the function will throw an error.
 pub const RECURSION_LIMIT: usize = 10_000;
 
 /// A javascript inspector that will delegate inspector functions to javascript functions
@@ -50,25 +53,47 @@ pub const RECURSION_LIMIT: usize = 10_000;
 #[derive(Debug)]
 pub struct JsInspector {
     ctx: Context,
+    /// The original javascript code used to create this inspector.
     code: String,
+    /// The javascript config provided to the inspector.
     _js_config_value: JsValue,
+    /// The input config object.
     config: serde_json::Value,
+    /// The evaluated object that contains the inspector functions.
     obj: JsObject,
+    /// The context of the transaction that is being inspected.
+    transaction_context: TransactionContext,
+
+    /// The javascript function that will be called when the result is requested.
     result_fn: JsObject,
     fault_fn: JsObject,
+
+    // EVM inspector hook functions
+    /// Invoked when the EVM enters a new call that is _NOT_ the top level call.
+    ///
+    /// Corresponds to [Inspector::call] and [Inspector::create_end] but is also invoked on
+    /// [Inspector::selfdestruct].
     enter_fn: Option<JsObject>,
+    /// Invoked when the EVM exits a call that is _NOT_ the top level call.
+    ///
+    /// Corresponds to [Inspector::call_end] and [Inspector::create_end] but also invoked after
+    /// selfdestruct.
     exit_fn: Option<JsObject>,
+    /// Executed before each instruction is executed.
     step_fn: Option<JsObject>,
-    previous_gas_spent: u64,
+    /// Keeps track of the current call stack.
     call_stack: Vec<CallStackItem>,
-    transaction_context: TransactionContext,
+    /// Marker to track whether the precompiles have been registered.
     precompiles_registered: bool,
+    /// Tracker for PC recorded in start_step.
     last_start_step_pc: Option<usize>,
+    /// Tracks gas spent in the previous step to calculate individual opcode cost.
+    previous_gas_spent: u64,
 }
 
 impl JsInspector {
-    /// Creates a new inspector from a javascript code snipped that evaluates to an object with
-    /// the expected fields and a config object.
+    /// Creates a new inspector from a javascript code snipped that evaluates to an object with the
+    /// expected fields and a config object.
     ///
     /// The object must have the following fields:
     ///  - `result`: a function that will be called when the result is requested.
@@ -79,6 +104,8 @@ impl JsInspector {
     /// - `enter`: a function that will be called when the execution enters a new call.
     /// - `exit`: a function that will be called when the execution exits a call.
     /// - `step`: a function that will be called when the execution steps to the next instruction.
+    ///
+    /// This also accepts a config object that is passed to `setup`.
     pub fn new(code: String, config: serde_json::Value) -> Result<Self, JsInspectorError> {
         Self::with_transaction_context(code, config, Default::default())
     }
@@ -89,18 +116,24 @@ impl JsInspector {
         config: serde_json::Value,
         transaction_context: TransactionContext,
     ) -> Result<Self, JsInspectorError> {
+        // Instantiate the execution context
         let mut ctx = Context::default();
 
+        // Apply the default runtime limits
+        // This is a safe guard to prevent infinite loops
         ctx.runtime_limits_mut().set_loop_iteration_limit(LOOP_ITERATION_LIMIT);
         ctx.runtime_limits_mut().set_recursion_limit(RECURSION_LIMIT);
 
         register_builtins(&mut ctx)?;
 
-        let wrapped = alloc::format!("({code})");
+        // evaluate the code
+        let wrapped = format!("({code})");
         let obj =
             ctx.eval(Source::from_bytes(wrapped.as_bytes())).map_err(JsInspectorError::EvalCode)?;
 
         let obj = obj.as_object().ok_or(JsInspectorError::ExpectedJsObject)?;
+
+        // ensure all the fields are callables, if present
 
         let result_fn = obj
             .get(js_string!("result"), &mut ctx)?
@@ -133,6 +166,7 @@ impl JsInspector {
                 return Err(JsInspectorError::SetupFunctionNotCallable);
             }
 
+            // call setup()
             setup_fn
                 .call(&(obj.clone().into()), core::slice::from_ref(&_js_config_value), &mut ctx)
                 .map_err(JsInspectorError::SetupCallFailed)?;
@@ -144,17 +178,27 @@ impl JsInspector {
             _js_config_value,
             config,
             obj,
+            transaction_context,
             result_fn,
             fault_fn,
             enter_fn,
             exit_fn,
             step_fn,
-            previous_gas_spent: 0,
             call_stack: Vec::new(),
-            transaction_context,
             precompiles_registered: false,
             last_start_step_pc: None,
+            previous_gas_spent: 0,
         })
+    }
+
+    /// Returns the config object.
+    pub const fn config(&self) -> &serde_json::Value {
+        &self.config
+    }
+
+    /// Creates a fresh inspector from the same code and config, resetting all execution state.
+    pub fn try_clone(&self) -> Result<Self, JsInspectorError> {
+        Self::new(self.code.clone(), self.config.clone())
     }
 
     /// Returns the transaction context.
@@ -162,27 +206,21 @@ impl JsInspector {
         &self.transaction_context
     }
 
-    /// Set contextual transaction info.
+    /// Sets the transaction context.
     pub const fn set_transaction_context(&mut self, transaction_context: TransactionContext) {
         self.transaction_context = transaction_context;
     }
 
-    /// Applies runtime limits to the JS context.
+    /// Applies the runtime limits to the JS context.
+    ///
+    /// By default
     pub fn set_runtime_limits(&mut self, limits: RuntimeLimits) {
         self.ctx.set_runtime_limits(limits);
     }
 
-    /// Returns the javascript tracer config.
-    pub const fn config(&self) -> &serde_json::Value {
-        &self.config
-    }
-
-    /// Creates a fresh copy of this inspector, resetting all execution state.
-    pub fn try_clone(&self) -> Result<Self, JsInspectorError> {
-        Self::new(self.code.clone(), self.config.clone())
-    }
-
-    /// Calls the result function and returns the result as [`serde_json::Value`].
+    /// Calls the result function and returns the result as [serde_json::Value].
+    ///
+    /// Note: This is supposed to be called after the inspection has finished.
     pub fn json_result<T: EvmTypes>(
         &mut self,
         result: &TxResult<T>,
@@ -251,19 +289,25 @@ impl JsInspector {
         )?)
     }
 
+    /// Calculate op cost based on previous gas spent and new spent value.
     const fn get_op_cost(&self, spent: u64) -> u64 {
         spent.saturating_sub(self.previous_gas_spent)
     }
 
+    /// Set the new previous gas spent value.
     const fn set_previous_gas_spent(&mut self, spent: u64) {
         self.previous_gas_spent = spent;
     }
 
+    /// Returns the currently active call.
+    ///
+    /// Panics: if there's no call yet.
     #[track_caller]
     fn active_call(&self) -> &CallStackItem {
         self.call_stack.last().expect("call stack is empty")
     }
 
+    /// Pushes a new call to the stack.
     fn push_call<T: EvmTypes>(&mut self, message: &Message<T>) {
         let (caller, contract) = match message.kind {
             MessageKind::CallCode | MessageKind::DelegateCall => {
@@ -285,14 +329,17 @@ impl JsInspector {
         let _ = self.call_stack.pop();
     }
 
+    /// Returns true whether the active call is the root call.
     const fn is_root_call_active(&self) -> bool {
         self.call_stack.len() == 1
     }
 
+    /// Returns true if there's an enter function and the active call is not the root call.
     const fn can_call_enter(&self) -> bool {
         self.enter_fn.is_some() && !self.is_root_call_active()
     }
 
+    /// Returns true if there's an exit function and the active call is not the root call.
     const fn can_call_exit(&self) -> bool {
         self.exit_fn.is_some() && !self.is_root_call_active()
     }
@@ -330,6 +377,7 @@ impl JsInspector {
         Ok(())
     }
 
+    /// Registers the precompiles in the JS context.
     fn register_precompiles<T: EvmTypes<Host = Evm<T>>>(&mut self, host: &Evm<T>) {
         if self.precompiles_registered {
             return;
@@ -338,13 +386,6 @@ impl JsInspector {
         let _ = precompiles.register_callable(&mut self.ctx);
         self.precompiles_registered = true;
     }
-}
-
-#[derive(Clone, Debug, Default)]
-struct CallStackItem {
-    contract: Contract,
-    kind: CallKind,
-    gas_limit: u64,
 }
 
 impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for JsInspector {
@@ -498,6 +539,8 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for JsInspector {
         _value: &U256,
         _host: &mut T::Host,
     ) {
+        // This is exempt from the root call constraint, because selfdestruct is treated as a
+        // new scope that is entered and immediately exited.
         if self.enter_fn.is_some() {
             let call = self.active_call();
             let frame =
@@ -505,11 +548,20 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for JsInspector {
             let _ = self.try_enter(frame);
         }
 
+        // exit with empty frame result ref <https://github.com/ethereum/go-ethereum/blob/0004c6b229b787281760b14fb9460ffd9c2496f1/core/vm/instructions.go#L829-L829>
         if self.exit_fn.is_some() {
             let frame_result = FrameResult { gas_used: 0, output: Bytes::new(), error: None };
             let _ = self.try_exit(frame_result);
         }
     }
+}
+
+/// Represents an active call.
+#[derive(Clone, Debug, Default)]
+struct CallStackItem {
+    contract: Contract,
+    kind: CallKind,
+    gas_limit: u64,
 }
 
 fn js_error_to_revert<T: EvmTypes>(err: JsError) -> MessageResult<T> {

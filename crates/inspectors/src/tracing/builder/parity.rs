@@ -160,6 +160,8 @@ impl ParityTraceBuilder {
     /// Consumes the inspector and returns the trace results according to the configured trace
     /// types.
     ///
+    /// This also takes the database to populate the balance and nonce changes for the [StateDiff].
+    ///
     /// Note: this is considered a convenience method that takes the state changes after inspecting
     /// a transaction with the [TracingInspector](crate::tracing::TracingInspector).
     pub fn into_trace_results_with_state(
@@ -483,6 +485,10 @@ where
 }
 
 /// Populates [StateDiff] from evm2 state changes and a database pre-state.
+///
+/// Loops over all state accounts in the state changes that contains all accounts that are included
+/// in the transaction state changes and compares the balance and nonce against what's in the `db`,
+/// which should point to the beginning of the transaction.
 pub fn populate_state_diff(
     state_diff: &mut StateDiff,
     state_changes: &StateChanges,
@@ -490,14 +496,23 @@ pub fn populate_state_diff(
 ) -> DbResult<()> {
     for (&addr, account) in &state_changes.accounts {
         let entry = state_diff.entry(addr).or_default();
+
+        // we need to fetch the account from the db
         let original = db.get_account(&addr)?.unwrap_or_default();
         match &account.current {
+            // we check if this account was created during the transaction
+            // where the smart contract was not touched before being created (no balance)
             Some(current) if account.original.is_none() && original.balance.is_zero() => {
+                // This only applies to newly created accounts without balance
+                // A non existing touched account (e.g. `to` that does not exist) is excluded here
                 entry.balance = Delta::Added(current.balance);
                 entry.nonce = Delta::Added(U64::from(current.nonce));
+
+                // accounts without code are marked as added
                 entry.code = Delta::Added(account_code(current, db)?);
             }
             Some(current) => {
+                // this is relevant for the caller and contracts
                 entry.balance = delta(original.balance, current.balance);
                 entry.nonce = delta(U64::from(original.nonce), U64::from(current.nonce));
                 entry.code = delta(account_code(&original, db)?, account_code(current, db)?);
@@ -510,6 +525,7 @@ pub fn populate_state_diff(
         }
     }
 
+    // update _changed_ storage values
     for (&addr, storage) in &state_changes.storage {
         let entry = state_diff.entry(addr).or_default();
         for (&key, slot) in &storage.slots {
@@ -517,6 +533,7 @@ pub fn populate_state_diff(
         }
     }
 
+    // check if the account was changed at all
     state_diff.retain(|_, diff| {
         !matches!(diff.balance, Delta::Unchanged)
             || !matches!(diff.nonce, Delta::Unchanged)

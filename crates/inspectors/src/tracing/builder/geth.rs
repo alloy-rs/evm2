@@ -230,6 +230,7 @@ impl<'a> GethTraceBuilder<'a> {
     ///
     /// * `state` - The state post-transaction execution.
     /// * `diff_mode` - if prestate is in diff or prestate mode.
+    /// * `db` - The database to fetch state pre-transaction execution.
     pub fn geth_prestate_traces(
         &self,
         state: &StateChanges,
@@ -254,16 +255,22 @@ impl<'a> GethTraceBuilder<'a> {
     ) -> DbResult<PreStateFrame> {
         let mut prestate = PreStateMode::default();
 
+        // Record caller/callee accounts from traces because evm2 state changes only contain
+        // accounts that changed.
         for address in self.nodes.iter().flat_map(|node| [node.trace.caller, node.trace.address]) {
             if let BTreeEntry::Vacant(entry) = prestate.0.entry(address) {
                 entry.insert(prestate_account(db, address, code_enabled)?);
             }
         }
+
+        // we only want changed accounts for things like balance changes etc
         for (&address, account) in &state.accounts {
             let info =
                 db.get_account(&address)?.or_else(|| account.original.clone()).unwrap_or_default();
             let code = if code_enabled { load_account_code(db, &info)? } else { None };
             let mut acc_state = AccountState::from_account_info(info.nonce, info.balance, code);
+
+            // insert the original value of all modified storage slots
             if storage_enabled && let Some(storage) = state.storage.get(&address) {
                 for (&key, slot) in &storage.slots {
                     acc_state.storage.insert(key.into(), slot.original.into());
@@ -271,6 +278,9 @@ impl<'a> GethTraceBuilder<'a> {
             }
             prestate.0.insert(address, acc_state);
         }
+
+        // Record opcode-touched accounts and storage reads that evm2 does not expose in
+        // `StateChanges`.
         for node in self.nodes.iter() {
             let address = node.execution_address();
             for step in &node.trace.steps {
@@ -336,6 +346,11 @@ impl<'a> GethTraceBuilder<'a> {
                 state_diff.post.insert(address, post_state);
             }
 
+            // determine the change type
+            // if the account was created _and_ not empty we need to treat it as modified,
+            // so that it is retained later in `diff_traces`
+            // See <https://etherscan.io/tx/0x391f4b6a382d3bcc3120adc2ea8c62003e604e487d97281129156fd284a1a89d>
+            // <https://github.com/paradigmxyz/reth/issues/19703#issuecomment-3527067849>
             let pre_change = if original.as_ref().is_none_or(|account| account.is_empty()) {
                 AccountChangeKind::Create
             } else {
@@ -349,6 +364,7 @@ impl<'a> GethTraceBuilder<'a> {
             account_change_kinds.insert(address, (pre_change, post_change));
         }
 
+        // handle storage changes
         for (&address, storage) in &state.storage {
             let pre_state = state_diff.pre.entry(address).or_default();
             let post_state = state_diff.post.entry(address).or_default();
@@ -360,6 +376,7 @@ impl<'a> GethTraceBuilder<'a> {
             }
         }
 
+        // Don't insert selfdestructed accounts into post state before Cancun.
         if self.spec_id.is_some_and(|spec_id| spec_id < SpecId::CANCUN) {
             for node in self.nodes.iter().filter(|node| node.is_selfdestruct()) {
                 if let Some(address) = node.trace.selfdestruct_address {
@@ -368,6 +385,7 @@ impl<'a> GethTraceBuilder<'a> {
             }
         }
 
+        // ensure we're only keeping changed entries
         self.diff_traces(&mut state_diff.pre, &mut state_diff.post, account_change_kinds);
         state_diff.retain_changed().remove_zero_storage_values();
         Ok(PreStateFrame::Diff(state_diff))

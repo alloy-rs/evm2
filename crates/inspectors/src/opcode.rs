@@ -1,5 +1,3 @@
-//! Opcode gas inspector.
-
 use alloc::string::ToString;
 use alloy_primitives::map::HashMap;
 use alloy_rpc_types_trace::opcode::OpcodeGas;
@@ -37,6 +35,8 @@ impl OpcodeGasInspector {
     }
 
     /// Returns an iterator over all opcodes with their count and combined gas usage.
+    ///
+    /// Note: this returns in no particular order.
     pub fn opcode_iter(&self) -> impl Iterator<Item = (OpCode, (u64, u64))> + '_ {
         self.opcode_counts.iter().map(move |(&opcode, &count)| {
             let gas = self.opcode_gas.get(&opcode).copied().unwrap_or_default();
@@ -45,6 +45,8 @@ impl OpcodeGasInspector {
     }
 
     /// Returns an iterator over all opcodes with their count and combined gas usage.
+    ///
+    /// Note: this returns in no particular order.
     pub fn opcode_gas_iter(&self) -> impl Iterator<Item = OpcodeGas> + '_ {
         self.opcode_iter().map(|(opcode, (count, gas_used))| OpcodeGas {
             opcode: opcode.to_string(),
@@ -53,6 +55,8 @@ impl OpcodeGasInspector {
         })
     }
 
+    /// Helper function to subtract gas limit from opcode gas tracking.
+    /// This prevents call/create opcodes from including the gas consumed within the call/create.
     fn subtract_gas_limit(&mut self, opcode_value: u8, gas_limit: u64) {
         if let Some(opcode) = OpCode::new(opcode_value) {
             let opcode_gas = self.opcode_gas.entry(opcode).or_default();
@@ -65,12 +69,16 @@ impl<T: EvmTypes> Inspector<T> for OpcodeGasInspector {
     fn step(&mut self, interp: &mut Interpreter<'_, T>, _host: &mut T::Host) {
         let opcode_value = interp.opcode();
         if let Some(opcode) = OpCode::new(opcode_value) {
+            // keep track of opcode counts.
             *self.opcode_counts.entry(opcode).or_default() += 1;
+
+            // keep track of the last opcode executed.
             self.last_opcode_gas_remaining = Some((opcode, interp.gas().remaining()));
         }
     }
 
     fn step_end(&mut self, interp: &mut Interpreter<'_, T>, _host: &mut T::Host) {
+        // update gas usage for the last opcode.
         if let Some((opcode, gas_remaining)) = self.last_opcode_gas_remaining.take() {
             let gas_cost = gas_remaining.saturating_sub(interp.gas().remaining());
             *self.opcode_gas.entry(opcode).or_default() += gas_cost;
@@ -79,8 +87,12 @@ impl<T: EvmTypes> Inspector<T> for OpcodeGasInspector {
 
     fn call(&mut self, message: &mut Message<T>, _host: &mut T::Host) -> Option<MessageResult<T>> {
         if message.depth == 0 {
+            // skip the root call.
             return None;
         }
+        // for accurate call opcode gas tracking, we need to deduct the gas limit from the opcode
+        // gas, because otherwise the call opcodes would include the total gas consumed within the
+        // call itself, but we want to track how much gas the call opcode itself consumes.
         let opcode = match message.kind {
             MessageKind::Call => op::CALL,
             MessageKind::CallCode => op::CALLCODE,
@@ -99,8 +111,12 @@ impl<T: EvmTypes> Inspector<T> for OpcodeGasInspector {
         _host: &mut T::Host,
     ) -> Option<MessageResult<T>> {
         if message.depth == 0 {
+            // skip the root create.
             return None;
         }
+        // for accurate create opcode gas tracking, we need to deduct the gas limit from the opcode
+        // gas, because otherwise the create opcodes would include the total gas consumed within the
+        // create itself, but we want to track how much gas the create opcode itself consumes.
         let opcode = match message.kind {
             MessageKind::Create => op::CREATE,
             MessageKind::Create2 => op::CREATE2,
@@ -112,6 +128,8 @@ impl<T: EvmTypes> Inspector<T> for OpcodeGasInspector {
 }
 
 /// Returns the immediate byte size for an opcode.
+///
+/// The evm2 bytecode does not implement RJUMPV immediate decoding yet.
 pub fn immediate_size(opcode: u8) -> u8 {
     OpCode::new(opcode).map_or(0, OpCode::immediate_size)
 }

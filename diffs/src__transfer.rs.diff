@@ -1,5 +1,5 @@
 --- /home/doni/github/paradigmxyz/revm-inspectors/src/transfer.rs	2026-05-14 03:45:05.356711986 +0200
-+++ /home/doni/github/danipopes/evm2.1/crates/inspectors/src/transfer.rs	2026-05-15 02:49:21.724720292 +0200
++++ /home/doni/github/danipopes/evm2.1/crates/inspectors/src/transfer.rs	2026-05-15 03:47:38.562863055 +0200
 @@ -1,11 +1,11 @@
 +//! Internal transfer inspector.
 +
@@ -18,29 +18,10 @@
  };
  
  /// Sender of ETH transfer log per `eth_simulateV1` spec.
-@@ -18,30 +18,22 @@
-     b256!("ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef");
- 
- /// An [Inspector] that collects internal ETH transfers.
--///
--/// This can be used to construct `ots_getInternalOperations` or `eth_simulateV1` response.
- #[derive(Debug, Default, Clone)]
- pub struct TransferInspector {
-     internal_only: bool,
-     transfers: Vec<TransferOperation>,
--    /// If enabled, will insert ERC20-style transfer logs emitted by [TRANSFER_LOG_EMITTER] for
--    /// each ETH transfer.
--    ///
--    /// Can be used for [eth_simulateV1](https://github.com/ethereum/execution-apis/pull/484) execution.
-+    /// If enabled, will insert ERC20-style transfer logs for each ETH transfer.
-     insert_logs: bool,
- }
- 
- impl TransferInspector {
-     /// Creates a new transfer inspector.
--    ///
--    /// If `internal_only` is set to `true`, only internal transfers are collected, in other words,
--    /// the top level call is ignored.
+@@ -36,12 +36,12 @@
+     ///
+     /// If `internal_only` is set to `true`, only internal transfers are collected, in other words,
+     /// the top level call is ignored.
 -    pub fn new(internal_only: bool) -> Self {
 +    pub const fn new(internal_only: bool) -> Self {
          Self { internal_only, transfers: Vec::new(), insert_logs: false }
@@ -52,7 +33,7 @@
          Self::new(true)
      }
  
-@@ -51,7 +43,7 @@
+@@ -51,7 +51,7 @@
      }
  
      /// Sets whether to insert ERC20-style transfer logs.
@@ -61,7 +42,7 @@
          self.insert_logs = insert_logs;
          self
      }
-@@ -66,19 +58,18 @@
+@@ -66,16 +66,17 @@
          self.transfers.iter()
      }
  
@@ -76,16 +57,13 @@
 +        depth: u16,
 +        mut emit_log: impl FnMut(Log),
      ) {
--        // skip top level transfers
+         // skip top level transfers
 -        if self.internal_only && journaled_state.depth() == 0 {
 +        if self.internal_only && depth == 0 {
              return;
          }
--        // skip zero transfers
-         if value.is_zero() {
-             return;
-         }
-@@ -89,53 +80,64 @@
+         // skip zero transfers
+@@ -89,53 +90,64 @@
              let to = B256::from_slice(&to.abi_encode());
              let data = value.abi_encode();
  
@@ -176,7 +154,7 @@
          });
      }
  }
-@@ -154,14 +156,15 @@
+@@ -154,14 +166,15 @@
  }
  
  /// The kind of transfer operation.

@@ -1,4 +1,6 @@
 //! Opcount tracing inspector that simply counts all opcodes.
+//!
+//! See also <https://geth.ethereum.org/docs/developers/evm-tracing/built-in-tracers>
 
 use evm2::{EvmTypes, Inspector, interpreter::Interpreter};
 

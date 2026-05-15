@@ -1,6 +1,6 @@
 --- /home/doni/github/paradigmxyz/revm-inspectors/src/storage.rs	2026-05-14 03:45:05.355711990 +0200
-+++ /home/doni/github/danipopes/evm2.1/crates/inspectors/src/storage.rs	2026-05-14 20:17:11.720440222 +0200
-@@ -1,12 +1,7 @@
++++ /home/doni/github/danipopes/evm2.1/crates/inspectors/src/storage.rs	2026-05-15 03:50:49.159877743 +0200
+@@ -1,12 +1,5 @@
 -use alloy_primitives::{map::HashMap, Address, B256};
 -use revm::{
 -    bytecode::opcode,
@@ -10,14 +10,12 @@
 -    },
 -    Inspector,
 -};
-+//! Storage access inspector.
-+
 +use alloy_primitives::{Address, B256, map::HashMap};
 +use evm2::{EvmTypes, Inspector, bytecode::opcode::op, interpreter::Interpreter};
  
  /// An Inspector that tracks warm and cold storage slot accesses.
  #[derive(Debug, Default, Clone)]
-@@ -16,7 +11,7 @@
+@@ -16,7 +9,7 @@
  }
  
  impl StorageInspector {
@@ -26,7 +24,7 @@
      pub fn new() -> Self {
          Self::default()
      }
-@@ -30,7 +25,7 @@
+@@ -30,7 +23,7 @@
              .count() as u64
      }
  
@@ -35,7 +33,7 @@
      pub fn warm_loads(&self) -> u64 {
          self.accessed_slots
              .values()
-@@ -50,18 +45,16 @@
+@@ -50,18 +43,18 @@
      }
  }
  
@@ -45,12 +43,6 @@
 -            if let Ok(slot) = interp.stack.peek(0) {
 -                let address = interp.input.target_address();
 -                let slot = B256::from(slot.to_be_bytes());
--
--                let slot_access_count =
--                    self.accessed_slots.entry(address).or_default().entry(slot).or_default();
--
--                *slot_access_count += 1;
--            }
 +impl<T: EvmTypes> Inspector<T> for StorageInspector {
 +    fn step(&mut self, interp: &mut Interpreter<'_, T>, _host: &mut T::Host) {
 +        if interp.opcode() == op::SLOAD
@@ -58,8 +50,14 @@
 +        {
 +            let address = interp.message().destination;
 +            let slot = B256::from(slot.to_be_bytes());
+ 
+-                let slot_access_count =
+-                    self.accessed_slots.entry(address).or_default().entry(slot).or_default();
 +            let slot_access_count =
 +                self.accessed_slots.entry(address).or_default().entry(slot).or_default();
+ 
+-                *slot_access_count += 1;
+-            }
 +            *slot_access_count += 1;
          }
      }

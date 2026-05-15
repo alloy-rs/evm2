@@ -1,5 +1,5 @@
 --- /home/doni/github/paradigmxyz/revm-inspectors/src/tracing/builder/parity.rs	2025-09-19 22:46:23.792969875 +0200
-+++ /home/doni/github/danipopes/evm2.1/crates/inspectors/src/tracing/builder/parity.rs	2026-05-15 02:06:36.431954737 +0200
++++ /home/doni/github/danipopes/evm2.1/crates/inspectors/src/tracing/builder/parity.rs	2026-05-15 03:42:11.275021411 +0200
 @@ -1,19 +1,17 @@
  use super::walker::CallTraceNodeWalkerBF;
  use crate::tracing::{
@@ -51,13 +51,14 @@
          let (trace, vm_trace, state_diff) = self.into_trace_type_traces(trace_types);
  
          TraceResults { output, trace: trace.unwrap_or_default(), vm_trace, state_diff }
-@@ -164,20 +160,15 @@
+@@ -164,20 +160,17 @@
      /// Consumes the inspector and returns the trace results according to the configured trace
      /// types.
      ///
 -    /// This also takes the [DatabaseRef] to populate the balance and nonce changes for the
 -    /// [StateDiff].
--    ///
++    /// This also takes the database to populate the balance and nonce changes for the [StateDiff].
+     ///
 -    /// Note: this is considered a convenience method that takes the state map of
 -    /// [ResultAndState] after inspecting a transaction
 -    /// with the [TracingInspector](crate::tracing::TracingInspector).
@@ -79,7 +80,7 @@
          let breadth_first_addresses = if trace_types.contains(&TraceType::VmTrace) {
              CallTraceNodeWalkerBF::new(&self.nodes)
                  .map(|node| node.trace.address)
-@@ -186,16 +177,16 @@
+@@ -186,16 +179,16 @@
              vec![]
          };
  
@@ -99,7 +100,7 @@
          }
  
          Ok(trace_res)
-@@ -459,13 +450,12 @@
+@@ -459,13 +452,12 @@
  /// walker in [crate::tracing::builder::walker]
  ///
  /// iteratively fill the [VmTrace] code fields
@@ -116,7 +117,7 @@
      I: IntoIterator<Item = Address>,
  {
      let mut stack: VecDeque<&mut VmTrace> = VecDeque::new();
-@@ -481,118 +471,70 @@
+@@ -481,118 +473,85 @@
          }
  
          let addr = addrs.next().expect("there should be an address");
@@ -143,7 +144,8 @@
  }
  
 -/// Populates [StateDiff] given iterator over [Account]s and a [DatabaseRef].
--///
++/// Populates [StateDiff] from evm2 state changes and a database pre-state.
+ ///
 -/// Loops over all state accounts in the accounts diff that contains all accounts that are included
 -/// in the [ExecutionResult] state map and compares the balance and nonce against what's in the
 -/// `db`, which should point to the beginning of the transaction.
@@ -152,7 +154,9 @@
 -/// point already contains all the accounts that are in the state map and never has to fetch them
 -/// from disk.
 -pub fn populate_state_diff<'a, DB, I>(
-+/// Populates [StateDiff] from evm2 state changes and a database pre-state.
++/// Loops over all state accounts in the state changes that contains all accounts that are included
++/// in the transaction state changes and compares the balance and nonce against what's in the `db`,
++/// which should point to the beginning of the transaction.
 +pub fn populate_state_diff(
      state_diff: &mut StateDiff,
 -    db: DB,
@@ -174,8 +178,8 @@
 +) -> DbResult<()> {
 +    for (&addr, account) in &state_changes.accounts {
          let entry = state_diff.entry(addr).or_default();
--
--        // we need to fetch the account from the db
+ 
+         // we need to fetch the account from the db
 -        let db_acc = db.basic_ref(addr)?.unwrap_or_default();
 -
 -        // we check if this account was created during the transaction
@@ -194,41 +198,35 @@
 -            // however we're filtering changed here to avoid adding entries for the zero value
 -            for (key, slot) in changed_acc.storage.iter().filter(|(_, slot)| slot.is_changed()) {
 -                entry.storage.insert((*key).into(), Delta::Added(slot.present_value.into()));
+-            }
+-        } else {
 +        let original = db.get_account(&addr)?.unwrap_or_default();
 +        match &account.current {
-+            Some(current) if account.original.is_none() && original.balance.is_zero() => {
-+                entry.balance = Delta::Added(current.balance);
-+                entry.nonce = Delta::Added(U64::from(current.nonce));
-+                entry.code = Delta::Added(account_code(current, db)?);
-             }
--        } else {
--            // we check if this account was created during the transaction
+             // we check if this account was created during the transaction
 -            // where the smart contract was touched before being created (has balance)
 -            if changed_acc.is_created() {
 -                let original_account_code = load_account_code(&db, &db_acc).unwrap_or_default();
 -                let present_account_code =
 -                    load_account_code(&db, &changed_acc.info).unwrap_or_default();
 -                entry.code = Delta::changed(original_account_code, present_account_code);
-+            Some(current) => {
-+                entry.balance = delta(original.balance, current.balance);
-+                entry.nonce = delta(U64::from(original.nonce), U64::from(current.nonce));
-+                entry.code = delta(account_code(&original, db)?, account_code(current, db)?);
-             }
--
+-            }
++            // where the smart contract was not touched before being created (no balance)
++            Some(current) if account.original.is_none() && original.balance.is_zero() => {
++                // This only applies to newly created accounts without balance
++                // A non existing touched account (e.g. `to` that does not exist) is excluded here
++                entry.balance = Delta::Added(current.balance);
++                entry.nonce = Delta::Added(U64::from(current.nonce));
+ 
 -            // update _changed_ storage values
 -            for (key, slot) in changed_acc.storage.iter().filter(|(_, slot)| slot.is_changed()) {
 -                entry.storage.insert(
 -                    (*key).into(),
 -                    Delta::changed(slot.original_value.into(), slot.present_value.into()),
 -                );
-+            None => {
-+                entry.balance = Delta::Removed(original.balance);
-+                entry.nonce = Delta::Removed(U64::from(original.nonce));
-+                entry.code = Delta::Removed(account_code(&original, db)?);
++                // accounts without code are marked as added
++                entry.code = Delta::Added(account_code(current, db)?);
              }
-+        }
-+    }
- 
+-
 -            // check if the account was changed at all
 -            if entry.storage.is_empty()
 -                && db_acc == changed_acc.info
@@ -237,8 +235,20 @@
 -                // clear the entry if the account was not changed
 -                state_diff.remove(&addr);
 -                continue;
--            }
--
++            Some(current) => {
++                // this is relevant for the caller and contracts
++                entry.balance = delta(original.balance, current.balance);
++                entry.nonce = delta(U64::from(original.nonce), U64::from(current.nonce));
++                entry.code = delta(account_code(&original, db)?, account_code(current, db)?);
+             }
++            None => {
++                entry.balance = Delta::Removed(original.balance);
++                entry.nonce = Delta::Removed(U64::from(original.nonce));
++                entry.code = Delta::Removed(account_code(&original, db)?);
++            }
++        }
++    }
+ 
 -            entry.balance = if db_acc.balance == changed_acc.info.balance {
 -                Delta::Unchanged
 -            } else {
@@ -254,6 +264,7 @@
 -                    to: U64::from(changed_acc.info.nonce),
 -                })
 -            };
++    // update _changed_ storage values
 +    for (&addr, storage) in &state_changes.storage {
 +        let entry = state_diff.entry(addr).or_default();
 +        for (&key, slot) in &storage.slots {
@@ -261,6 +272,7 @@
          }
      }
  
++    // check if the account was changed at all
 +    state_diff.retain(|_, diff| {
 +        !matches!(diff.balance, Delta::Unchanged)
 +            || !matches!(diff.nonce, Delta::Unchanged)

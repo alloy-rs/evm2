@@ -1,5 +1,3 @@
-//! Access list inspector.
-
 use alloc::collections::BTreeSet;
 use alloy_primitives::{
     Address, B256,
@@ -13,6 +11,8 @@ use evm2::{
 };
 
 /// An [Inspector] that collects touched accounts and storage slots.
+///
+/// This can be used to construct an [AccessList] for a transaction via `eth_createAccessList`.
 #[derive(Debug, Default)]
 pub struct AccessListInspector {
     /// All addresses that should be excluded from the final accesslist.
@@ -29,6 +29,8 @@ impl From<AccessList> for AccessListInspector {
 
 impl AccessListInspector {
     /// Creates a new inspector instance.
+    ///
+    /// The `access_list` is the provided access list from the call request.
     pub fn new(access_list: AccessList) -> Self {
         Self {
             excluded: Default::default(),
@@ -56,7 +58,8 @@ impl AccessListInspector {
         self.touched_slots
     }
 
-    /// Returns list of addresses and storage keys used by the transaction.
+    /// Returns list of addresses and storage keys used by the transaction. It gives you the list of
+    /// addresses and storage keys that were touched during execution.
     pub fn into_access_list(self) -> AccessList {
         let items = self.touched_slots.into_iter().map(|(address, slots)| AccessListItem {
             address,
@@ -65,7 +68,8 @@ impl AccessListInspector {
         AccessList(items.collect())
     }
 
-    /// Returns list of addresses and storage keys used by the transaction.
+    /// Returns list of addresses and storage keys used by the transaction. It gives you the list of
+    /// addresses and storage keys that were touched during execution.
     pub fn access_list(&self) -> AccessList {
         let items = self.touched_slots.iter().map(|(address, slots)| AccessListItem {
             address: *address,
@@ -74,6 +78,10 @@ impl AccessListInspector {
         AccessList(items.collect())
     }
 
+    /// Collects addresses which should be excluded from the access list. Must be called before the
+    /// top-level call.
+    ///
+    /// Those include caller, callee and precompiles.
     fn collect_excluded_addresses<T: EvmTypes<Host = Evm<T>>>(
         &mut self,
         message: &Message<T>,
@@ -84,10 +92,6 @@ impl AccessListInspector {
             .chain(host.precompiles().warm_addresses())
             .chain(host.eip7702_authorities())
             .collect();
-    }
-
-    fn should_include_address(&self, address: &Address) -> bool {
-        !self.excluded.contains(address)
     }
 }
 
@@ -110,7 +114,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for AccessListInspector {
             | op::SELFDESTRUCT => {
                 if let Some([slot]) = interp.stack().peekn() {
                     let addr = Address::from_word(B256::from(slot.to_be_bytes()));
-                    if self.should_include_address(&addr) {
+                    if !self.excluded.contains(&addr) {
                         self.touched_slots.entry(addr).or_default();
                     }
                 }
@@ -118,7 +122,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for AccessListInspector {
             op::DELEGATECALL | op::CALL | op::STATICCALL | op::CALLCODE => {
                 if let Some([_, slot]) = interp.stack().peekn() {
                     let addr = Address::from_word(B256::from(slot.to_be_bytes()));
-                    if self.should_include_address(&addr) {
+                    if !self.excluded.contains(&addr) {
                         self.touched_slots.entry(addr).or_default();
                     }
                 }
@@ -128,6 +132,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for AccessListInspector {
     }
 
     fn call(&mut self, message: &mut Message<T>, host: &mut T::Host) -> Option<MessageResult<T>> {
+        // At the top-level frame, fill the excluded addresses.
         if message.depth == 0 {
             self.collect_excluded_addresses(message, host);
         }
@@ -135,6 +140,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for AccessListInspector {
     }
 
     fn create(&mut self, message: &mut Message<T>, host: &mut T::Host) -> Option<MessageResult<T>> {
+        // At the top-level frame, fill the excluded addresses.
         if message.depth == 0 {
             self.collect_excluded_addresses(message, host);
         }

@@ -18,16 +18,24 @@ pub const TRANSFER_EVENT_TOPIC: B256 =
     b256!("ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef");
 
 /// An [Inspector] that collects internal ETH transfers.
+///
+/// This can be used to construct `ots_getInternalOperations` or `eth_simulateV1` response.
 #[derive(Debug, Default, Clone)]
 pub struct TransferInspector {
     internal_only: bool,
     transfers: Vec<TransferOperation>,
-    /// If enabled, will insert ERC20-style transfer logs for each ETH transfer.
+    /// If enabled, will insert ERC20-style transfer logs emitted by [TRANSFER_LOG_EMITTER] for
+    /// each ETH transfer.
+    ///
+    /// Can be used for [eth_simulateV1](https://github.com/ethereum/execution-apis/pull/484) execution.
     insert_logs: bool,
 }
 
 impl TransferInspector {
     /// Creates a new transfer inspector.
+    ///
+    /// If `internal_only` is set to `true`, only internal transfers are collected, in other words,
+    /// the top level call is ignored.
     pub const fn new(internal_only: bool) -> Self {
         Self { internal_only, transfers: Vec::new(), insert_logs: false }
     }
@@ -67,9 +75,11 @@ impl TransferInspector {
         depth: u16,
         mut emit_log: impl FnMut(Log),
     ) {
+        // skip top level transfers
         if self.internal_only && depth == 0 {
             return;
         }
+        // skip zero transfers
         if value.is_zero() {
             return;
         }

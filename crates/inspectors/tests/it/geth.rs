@@ -1,7 +1,7 @@
 //! Geth tests
 use crate::utils::{
-    AccountInfo, Bytecode, CacheDB, Context, ETH_TRANSFER_LOG_ADDRESS, EmptyDB, SpecId,
-    TracingInspectorExt, TransactTo, TxEnv, deploy_contract, opcode,
+    AccountInfo, Bytecode, CacheDB, Context, ETH_TRANSFER_LOG_ADDRESS, EmptyDB, SpecId, TransactTo,
+    TxEnv, deploy_contract, opcode,
 };
 use alloy_primitives::{Address, B256, Bytes, TxKind, address, hex, map::HashMap};
 use alloy_rpc_types_eth::TransactionInfo;

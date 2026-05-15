@@ -240,8 +240,8 @@ impl TracingInspectorConfig {
 
     /// Returns a config for geth's [PrestateTracer](alloy_rpc_types_trace::geth::PreStateFrame).
     ///
-    /// Note: This currently returns [Self::none] because the prestate tracer result currently
-    /// relies on the execution result entirely, see
+    /// Note: This records the data needed by the evm2 prestate builder to reconstruct touched
+    /// accounts and read storage slots, see
     /// [GethTraceBuilder::geth_prestate_traces](crate::tracing::geth::GethTraceBuilder::geth_prestate_traces)
     #[inline]
     pub const fn from_geth_prestate_config(_config: &PreStateConfig) -> Self {

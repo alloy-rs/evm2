@@ -1,5 +1,5 @@
 --- /home/doni/github/paradigmxyz/revm-inspectors/src/tracing/js/builtins.rs	2026-05-14 03:45:05.355711990 +0200
-+++ /home/doni/github/danipopes/evm2.1/crates/inspectors/src/tracing/js/builtins.rs	2026-05-14 22:33:47.099183448 +0200
++++ /home/doni/github/danipopes/evm2.1/crates/inspectors/src/tracing/js/builtins.rs	2026-05-15 03:51:00.632823941 +0200
 @@ -1,15 +1,15 @@
  //! Builtin functions
  

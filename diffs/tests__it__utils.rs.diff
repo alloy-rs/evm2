@@ -1,5 +1,5 @@
 --- /home/doni/github/paradigmxyz/revm-inspectors/tests/it/utils.rs	2025-07-10 16:22:55.682865359 +0200
-+++ /home/doni/github/danipopes/evm2.1/crates/inspectors/tests/it/utils.rs	2026-05-15 02:25:01.103787400 +0200
++++ /home/doni/github/danipopes/evm2.1/crates/inspectors/tests/it/utils.rs	2026-05-15 03:48:54.777446606 +0200
 @@ -1,19 +1,426 @@
 -use alloy_primitives::{Address, Bytes};
 +use alloy_consensus::{TxLegacy, transaction::Recovered};
@@ -440,7 +440,7 @@
  
  pub fn write_traces(tracer: &TracingInspector) -> String {
      write_traces_with(tracer, TraceWriterConfig::new().color_choice(ColorChoice::Never))
-@@ -26,61 +433,217 @@
+@@ -26,61 +433,206 @@
  }
  
  pub fn print_traces(tracer: &TracingInspector) {
@@ -459,17 +459,6 @@
 -/// Deploys a contract with the given code and deployer address.
 -pub fn deploy_contract<DB: Database + DatabaseCommit>(
 -    evm: &mut EvmDb<DB, ()>,
-+pub trait TracingInspectorExt {
-+    fn with_transaction_gas_limit(self, gas_limit: u64) -> Self;
-+}
-+
-+impl TracingInspectorExt for TracingInspector {
-+    fn with_transaction_gas_limit(mut self, gas_limit: u64) -> Self {
-+        self.set_transaction_gas_limit(gas_limit);
-+        self
-+    }
-+}
-+
 +pub fn deploy_contract(
 +    evm: &mut TestEvm,
      code: Bytes,
