@@ -89,6 +89,6 @@ Status legend:
 - [x] `tests/it/writer.rs` -> `diffs/tests__it__writer.rs.diff`
   - Reviewed. Same snapshot tests with evm2 harness imports.
 
-## Empty Diff Files
+## Identical Files
 
-The remaining 228 `.diff` files are empty and represent byte-for-byte identical upstream/port files. They require no reduction; the full per-file inventory is in `diffs/REVIEW_TODO.md`.
+Empty `.diff` files are no longer written. Files without a generated diff artifact are byte-for-byte identical to upstream or intentionally missing in the port inventory tracked by `diffs/REVIEW_TODO.md`.

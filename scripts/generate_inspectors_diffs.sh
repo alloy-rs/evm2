@@ -34,5 +34,16 @@ done
 for rel in "${files[@]}"; do
     [[ -f "$port/$rel" ]] || continue
     diff_file="$out/${rel//\//__}.diff"
-    diff -u "$upstream/$rel" "$port/$rel" > "$diff_file" || true
+    tmp_file="$(mktemp "$out/.${rel//\//__}.diff.XXXXXX")"
+    if diff -u "$upstream/$rel" "$port/$rel" > "$tmp_file"; then
+        rm "$tmp_file"
+    else
+        status=$?
+        if [[ $status -eq 1 ]]; then
+            mv "$tmp_file" "$diff_file"
+        else
+            rm "$tmp_file"
+            exit "$status"
+        fi
+    fi
 done
