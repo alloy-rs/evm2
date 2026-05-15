@@ -22,15 +22,14 @@ pub const TRANSFER_EVENT_TOPIC: B256 =
 pub struct TransferInspector {
     internal_only: bool,
     transfers: Vec<TransferOperation>,
-    logs: Vec<Log>,
-    /// If enabled, will collect ERC20-style transfer logs for each ETH transfer.
+    /// If enabled, will insert ERC20-style transfer logs for each ETH transfer.
     insert_logs: bool,
 }
 
 impl TransferInspector {
     /// Creates a new transfer inspector.
     pub const fn new(internal_only: bool) -> Self {
-        Self { internal_only, transfers: Vec::new(), logs: Vec::new(), insert_logs: false }
+        Self { internal_only, transfers: Vec::new(), insert_logs: false }
     }
 
     /// Creates a new transfer inspector that only collects internal transfers.
@@ -43,7 +42,7 @@ impl TransferInspector {
         self.transfers
     }
 
-    /// Sets whether to collect ERC20-style transfer logs.
+    /// Sets whether to insert ERC20-style transfer logs.
     pub const fn with_logs(mut self, insert_logs: bool) -> Self {
         self.insert_logs = insert_logs;
         self
@@ -52,11 +51,6 @@ impl TransferInspector {
     /// Returns a reference to the collected transfers.
     pub fn transfers(&self) -> &[TransferOperation] {
         &self.transfers
-    }
-
-    /// Returns collected ERC20-style transfer logs.
-    pub fn logs(&self) -> &[Log] {
-        &self.logs
     }
 
     /// Returns an iterator over the collected transfers.
@@ -90,8 +84,7 @@ impl TransferInspector {
                 address: TRANSFER_LOG_EMITTER,
                 data: LogData::new_unchecked(vec![TRANSFER_EVENT_TOPIC, from, to], data.into()),
             };
-            emit_log(log.clone());
-            self.logs.push(log);
+            emit_log(log);
         }
     }
 }
@@ -150,7 +143,7 @@ where
 }
 
 /// A transfer operation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransferOperation {
     /// Source of the transfer call.
     pub kind: TransferKind,
@@ -163,7 +156,8 @@ pub struct TransferOperation {
 }
 
 /// The kind of transfer operation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(missing_copy_implementations)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TransferKind {
     /// A non-zero value transfer CALL.
     Call,

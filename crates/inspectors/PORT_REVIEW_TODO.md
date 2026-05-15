@@ -28,38 +28,47 @@ Review status legend:
 
 ## Source Files
 
-- [ ] `src/lib.rs`
-  - Pending round-2 review.
+- [x] `src/lib.rs`
+  - API surface matches except `edge_cov` is intentionally not exported.
+  - Dependency keepalive imports are port-only crate hygiene.
+  - Removed the port-only root `OpcodeGasInspector`/`immediate_size` re-export to match upstream.
 
-- [ ] `src/access_list.rs`
-  - Pending round-2 review with `tests/it/accesslist.rs`.
+- [x] `src/access_list.rs`
+  - Public type and methods match; `excluded()`/`touched_slots()` are additionally `const fn`.
+  - Top-level exclusion semantics match upstream shape: caller, call/create target, precompiles, and recovered EIP-7702 authorities.
+  - Opcode handling is equivalent after evm2 stack/message substitutions.
 
-- [ ] `src/edge_cov.rs`
+- [x] `src/edge_cov.rs`
   - Intentionally omitted from the evm2 port.
 
-- [ ] `src/opcode.rs`
-  - Pending round-2 review.
+- [x] `src/opcode.rs`
+  - Public type and methods match except `immediate_size` takes an opcode byte because evm2 does not implement RJUMPV bytecode immediate decoding.
+  - Opcode counting and call/create gas-limit subtraction match upstream, with root skip mapped to evm2 message depth `0`.
+  - Embedded tests are ported to the evm2 interpreter harness.
 
-- [ ] `src/storage.rs`
-  - Pending round-2 review.
+- [x] `src/storage.rs`
+  - Public API and SLOAD counting semantics match.
+  - Address source maps from upstream target address to evm2 `message().destination`.
 
-- [ ] `src/transfer.rs`
-  - Pending round-2 review with `tests/it/transfer.rs`.
+- [x] `src/transfer.rs`
+  - Public API matches upstream after removing port-only `logs()`.
+  - `with_logs()` emits ERC20-style transfer logs through the evm2 host instead of directly journaling through revm.
+  - Call, CALLCODE, create, create2, zero-value skip, internal-only depth skip, and selfdestruct recording match upstream semantics.
 
-- [ ] `src/tracing/arena.rs`
-  - Pending round-2 review.
+- [x] `src/tracing/arena.rs`
+  - Semantically identical; `nodes_mut()` is additionally `const fn`.
 
 - [ ] `src/tracing/builder/geth.rs`
   - Pending round-2 review with `tests/it/geth.rs`.
 
-- [ ] `src/tracing/builder/mod.rs`
-  - Pending round-2 review.
+- [x] `src/tracing/builder/mod.rs`
+  - Identical.
 
 - [ ] `src/tracing/builder/parity.rs`
   - Pending round-2 review with `tests/it/parity.rs`.
 
-- [ ] `src/tracing/builder/walker.rs`
-  - Pending round-2 review.
+- [x] `src/tracing/builder/walker.rs`
+  - Identical.
 
 - [ ] `src/tracing/config.rs`
   - Pending round-2 review.
@@ -67,8 +76,9 @@ Review status legend:
 - [ ] `src/tracing/debug.rs`
   - Pending round-2 review with `tests/it/geth.rs` and `tests/it/geth_js.rs`.
 
-- [ ] `src/tracing/fourbyte.rs`
-  - Pending round-2 review.
+- [x] `src/tracing/fourbyte.rs`
+  - Public API and selector/count output match.
+  - Upstream handles shared-memory call input; evm2 messages already carry materialized input bytes.
 
 - [ ] `src/tracing/js/bindings.rs`
   - Pending round-2 review with JS tracer tests.
@@ -85,24 +95,26 @@ Review status legend:
 - [ ] `src/tracing/mux.rs`
   - Pending round-2 review with mux coverage in `tests/it/geth.rs`.
 
-- [ ] `src/tracing/opcount.rs`
-  - Pending round-2 review.
+- [x] `src/tracing/opcount.rs`
+  - Public API and behavior match.
 
 - [ ] `src/tracing/types.rs`
   - Pending round-2 review with geth/parity/writer tests.
 
-- [ ] `src/tracing/utils.rs`
-  - Pending round-2 review.
+- [x] `src/tracing/utils.rs`
+  - Revert decoding, memory conversion, and gas-used behavior match.
+  - Error mapping is ported from `InstructionResult` to evm2 `InstrStop`; `InvalidFEOpcode` is folded into invalid opcode because evm2 does not expose it separately.
+  - `load_account_code` uses `&mut dyn DynDatabase` and returns `DbResult<Option<Bytes>>`; callers preserve the original optional-code behavior.
 
 - [ ] `src/tracing/writer.rs`
   - Pending round-2 review with `tests/it/writer.rs`.
 
 ## Integration Test Files
 
-- [ ] `tests/it/accesslist.rs`
-  - Pending round-2 review with `src/access_list.rs`.
+- [x] `tests/it/accesslist.rs`
+  - Original test is present with only evm2 helper/API substitutions and bytecode formatting.
 
-- [ ] `tests/it/edge_cov.rs`
+- [x] `tests/it/edge_cov.rs`
   - Intentionally omitted with `src/edge_cov.rs`.
 
 - [ ] `tests/it/geth.rs`
@@ -111,8 +123,9 @@ Review status legend:
 - [ ] `tests/it/geth_js.rs`
   - Pending round-2 review with JS tracer files.
 
-- [ ] `tests/it/main.rs`
-  - Pending round-2 review.
+- [x] `tests/it/main.rs`
+  - Same module list except intentional `edge_cov` omission.
+  - `geth_js` is gated by `std` plus `js-tracer` because the evm2 test harness requires `std`.
 
 - [ ] `tests/it/parity.rs`
   - Pending round-2 review with `src/tracing/builder/parity.rs`.
@@ -123,11 +136,12 @@ Review status legend:
 - [ ] `tests/it/repro/prestate.rs`
   - Pending round-2 review with prestate builders.
 
-- [ ] `tests/it/test_native_bigint.rs`
-  - Pending round-2 review with JS builtins.
+- [x] `tests/it/test_native_bigint.rs`
+  - Identical aside from import ordering.
 
-- [ ] `tests/it/transfer.rs`
-  - Pending round-2 review with `src/transfer.rs`.
+- [x] `tests/it/transfer.rs`
+  - Original test is present with only evm2 helper/API substitutions and bytecode formatting.
+  - Adds `records_failed_create_transfer_attempt`, which confirms upstream-equivalent pre-execution create transfer recording for evm2.
 
 - [ ] `tests/it/utils.rs`
   - Pending round-2 review. This is expected to be an evm2 harness, but random production-facing
