@@ -1,5 +1,5 @@
 --- /home/doni/github/paradigmxyz/revm-inspectors/tests/it/repro/prestate.rs	2026-05-14 03:45:05.358570751 +0200
-+++ /home/doni/github/danipopes/evm2.1/crates/inspectors/tests/it/repro/prestate.rs	2026-05-15 01:36:25.680246485 +0200
++++ /home/doni/github/danipopes/evm2.1/crates/inspectors/tests/it/repro/prestate.rs	2026-05-15 16:45:41.313090425 +0200
 @@ -3,13 +3,10 @@
  //! These tests demonstrate replaying mainnet transactions using prestate tracer output.
  
@@ -32,7 +32,7 @@
          .with_transaction_gas_used(res.result.tx_gas_used())
          .geth_builder()
 -        .geth_prestate_traces(&res, &prestate_config, db)
-+        .geth_prestate_traces(&res.state, &prestate_config, &mut db)
++        .geth_prestate_traces(&res.tx_result, &prestate_config, &mut db)
          .unwrap();
  
      // Verify the trace contains expected accounts
@@ -51,7 +51,7 @@
          .with_transaction_gas_used(res.result.tx_gas_used())
          .geth_builder()
 -        .geth_prestate_traces(&res, &prestate_config, db)
-+        .geth_prestate_traces(&res.state, &prestate_config, &mut db)
++        .geth_prestate_traces(&res.tx_result, &prestate_config, &mut db)
          .unwrap();
  
      // In diff mode, we should see the changes between pre and post state

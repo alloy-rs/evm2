@@ -235,12 +235,7 @@ fn test_geth_mux_tracer() {
 
     let (ctx, inspector) = evm.ctx_inspector();
     let frame = inspector
-        .try_into_mux_frame(
-            res.result.tx_gas_used(),
-            &res.state,
-            TransactionInfo::default(),
-            ctx.db_mut(),
-        )
+        .try_into_mux_frame(&res.tx_result, TransactionInfo::default(), ctx.db_mut())
         .unwrap();
 
     assert_eq!(frame.0.len(), 4);
@@ -625,7 +620,7 @@ fn test_geth_prestate_disable_code_in_diff_mode() {
     let frame = insp
         .with_transaction_gas_used(res.result.tx_gas_used())
         .geth_builder()
-        .geth_prestate_traces(&res.state, &prestate_config_no_code, &mut db)
+        .geth_prestate_traces(&res.tx_result, &prestate_config_no_code, &mut db)
         .unwrap();
 
     // Verify that code is not present in either pre or post states when disable_code=true
@@ -683,7 +678,7 @@ fn test_geth_prestate_disable_code_in_diff_mode() {
     let frame2 = insp2
         .with_transaction_gas_used(res2.result.tx_gas_used())
         .geth_builder()
-        .geth_prestate_traces(&res2.state, &prestate_config_with_code, &mut db2)
+        .geth_prestate_traces(&res2.tx_result, &prestate_config_with_code, &mut db2)
         .unwrap();
 
     // Verify that code IS present when disable_code=false
@@ -910,7 +905,7 @@ fn test_geth_prestate_diff_selfdestruct(spec_id: SpecId) {
     let frame = insp
         .with_transaction_gas_used(res.result.tx_gas_used())
         .geth_builder()
-        .geth_prestate_traces(&res.state, &prestate_config, &mut db)
+        .geth_prestate_traces(&res.tx_result, &prestate_config, &mut db)
         .unwrap();
 
     match frame {

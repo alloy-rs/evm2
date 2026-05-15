@@ -1,5 +1,5 @@
 --- /home/doni/github/paradigmxyz/revm-inspectors/src/tracing/mux.rs	2026-05-14 03:45:05.356711986 +0200
-+++ /home/doni/github/danipopes/evm2.1/crates/inspectors/src/tracing/mux.rs	2026-05-15 01:54:55.859545123 +0200
++++ /home/doni/github/danipopes/evm2.1/crates/inspectors/src/tracing/mux.rs	2026-05-15 16:45:13.129972514 +0200
 @@ -1,21 +1,16 @@
  use crate::tracing::{FourByteInspector, TracingInspector, TracingInspectorConfig};
  use alloc::vec::Vec;
@@ -22,8 +22,8 @@
 -    interpreter::{CallInputs, CallOutcome, CreateInputs, CreateOutcome, FrameInput, Interpreter},
 -    DatabaseRef, Inspector,
 +use evm2::{
-+    Evm, EvmTypes, Inspector,
-+    evm::{DbResult, DynDatabase, StateChanges},
++    Evm, EvmTypes, Inspector, TxResult,
++    evm::{DbResult, DynDatabase},
 +    interpreter::{Interpreter, Message, MessageResult},
  };
  use thiserror::Error;
@@ -37,7 +37,7 @@
          let mut four_byte = None;
          let mut inspector_config = TracingInspectorConfig::none();
          let mut configs = Vec::new();
-@@ -104,26 +99,24 @@
+@@ -104,16 +99,16 @@
  
          let tracing = (!configs.is_empty()).then(|| TracingInspector::new(inspector_config));
  
@@ -47,12 +47,11 @@
  
      /// Try converting this [MuxInspector] into a [MuxFrame].
 -    pub fn try_into_mux_frame<DB: DatabaseRef>(
-+    pub fn try_into_mux_frame(
++    pub fn try_into_mux_frame<T: EvmTypes>(
          &self,
 -        result: &ResultAndState<impl HaltReasonTr>,
 -        db: &DB,
-+        gas_used: u64,
-+        state: &StateChanges,
++        result: &TxResult<T>,
          tx_info: TransactionInfo,
 -    ) -> Result<MuxFrame, DB::Error> {
 +        db: &mut dyn DynDatabase,
@@ -60,27 +59,16 @@
          let mut frame = HashMap::with_capacity_and_hasher(self.configs.len(), Default::default());
  
          for (tracer_type, config) in &self.configs {
-             let trace = match config {
-                 TraceConfig::Call(call_config) => {
-                     if let Some(inspector) = &self.tracing {
--                        inspector
--                            .geth_builder()
--                            .geth_call_traces(*call_config, result.result.tx_gas_used())
--                            .into()
-+                        inspector.geth_builder().geth_call_traces(*call_config, gas_used).into()
-                     } else {
-                         continue;
-                     }
-@@ -132,7 +125,7 @@
+@@ -122,7 +117,7 @@
                      if let Some(inspector) = &self.tracing {
                          inspector
                              .geth_builder()
--                            .geth_prestate_traces(result, prestate_config, db)?
-+                            .geth_prestate_traces(state, prestate_config, db)?
+-                            .geth_call_traces(*call_config, result.result.tx_gas_used())
++                            .geth_call_traces(*call_config, result.gas_used)
                              .into()
                      } else {
                          continue;
-@@ -167,88 +160,80 @@
+@@ -167,88 +162,80 @@
      }
  }
  
@@ -88,77 +76,77 @@
 -where
 -    CTX: ContextTr<Journal: JournalExt>,
 -{
--    #[inline]
--    fn initialize_interp(&mut self, interp: &mut Interpreter, context: &mut CTX) {
--        if let Some(ref mut inspector) = self.four_byte {
--            inspector.initialize_interp(interp, context);
--        }
--        if let Some(ref mut inspector) = self.tracing {
--            inspector.initialize_interp(interp, context);
--        }
--    }
--
 +impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for MuxInspector {
      #[inline]
--    fn step(&mut self, interp: &mut Interpreter, context: &mut CTX) {
+-    fn initialize_interp(&mut self, interp: &mut Interpreter, context: &mut CTX) {
 +    fn initialize_interp(&mut self, interp: &mut Interpreter<'_, T>, host: &mut T::Host) {
          if let Some(ref mut inspector) = self.four_byte {
--            inspector.step(interp, context);
+-            inspector.initialize_interp(interp, context);
 +            inspector.initialize_interp(interp, host);
          }
          if let Some(ref mut inspector) = self.tracing {
--            inspector.step(interp, context);
+-            inspector.initialize_interp(interp, context);
 +            inspector.initialize_interp(interp, host);
+         }
+     }
+ 
+     #[inline]
+-    fn step(&mut self, interp: &mut Interpreter, context: &mut CTX) {
++    fn step(&mut self, interp: &mut Interpreter<'_, T>, host: &mut T::Host) {
+         if let Some(ref mut inspector) = self.four_byte {
+-            inspector.step(interp, context);
++            inspector.step(interp, host);
+         }
+         if let Some(ref mut inspector) = self.tracing {
+-            inspector.step(interp, context);
++            inspector.step(interp, host);
          }
      }
  
      #[inline]
 -    fn step_end(&mut self, interp: &mut Interpreter, context: &mut CTX) {
-+    fn step(&mut self, interp: &mut Interpreter<'_, T>, host: &mut T::Host) {
++    fn step_end(&mut self, interp: &mut Interpreter<'_, T>, host: &mut T::Host) {
          if let Some(ref mut inspector) = self.four_byte {
 -            inspector.step_end(interp, context);
-+            inspector.step(interp, host);
++            inspector.step_end(interp, host);
          }
          if let Some(ref mut inspector) = self.tracing {
 -            inspector.step_end(interp, context);
-+            inspector.step(interp, host);
++            inspector.step_end(interp, host);
          }
      }
  
      #[inline]
 -    fn log(&mut self, context: &mut CTX, log: Log) {
-+    fn step_end(&mut self, interp: &mut Interpreter<'_, T>, host: &mut T::Host) {
-         if let Some(ref mut inspector) = self.four_byte {
--            inspector.log(context, log.clone());
-+            inspector.step_end(interp, host);
-         }
-         if let Some(ref mut inspector) = self.tracing {
--            inspector.log(context, log);
-+            inspector.step_end(interp, host);
-         }
-     }
- 
-     #[inline]
--    fn log_full(&mut self, interp: &mut Interpreter, context: &mut CTX, log: Log) {
 +    fn log(&mut self, log: &Log, host: &mut T::Host) {
          if let Some(ref mut inspector) = self.four_byte {
--            inspector.log_full(interp, context, log.clone());
+-            inspector.log(context, log.clone());
 +            <FourByteInspector as Inspector<T>>::log(inspector, log, host);
          }
          if let Some(ref mut inspector) = self.tracing {
--            inspector.log_full(interp, context, log);
+-            inspector.log(context, log);
 +            <TracingInspector as Inspector<T>>::log(inspector, log, host);
          }
      }
  
      #[inline]
--    fn call(&mut self, context: &mut CTX, inputs: &mut CallInputs) -> Option<CallOutcome> {
+-    fn log_full(&mut self, interp: &mut Interpreter, context: &mut CTX, log: Log) {
 +    fn call(&mut self, message: &mut Message<T>, host: &mut T::Host) -> Option<MessageResult<T>> {
          if let Some(ref mut inspector) = self.four_byte {
--            let _ = inspector.call(context, inputs);
+-            inspector.log_full(interp, context, log.clone());
 +            let _ = inspector.call(message, host);
          }
          if let Some(ref mut inspector) = self.tracing {
+-            inspector.log_full(interp, context, log);
+-        }
+-    }
+-
+-    #[inline]
+-    fn call(&mut self, context: &mut CTX, inputs: &mut CallInputs) -> Option<CallOutcome> {
+-        if let Some(ref mut inspector) = self.four_byte {
+-            let _ = inspector.call(context, inputs);
+-        }
+-        if let Some(ref mut inspector) = self.tracing {
 -            return inspector.call(context, inputs);
 +            return inspector.call(message, host);
          }
@@ -196,7 +184,7 @@
          }
          None
      }
-@@ -256,55 +241,35 @@
+@@ -256,55 +243,35 @@
      #[inline]
      fn create_end(
          &mut self,
@@ -209,13 +197,15 @@
      ) {
          if let Some(ref mut inspector) = self.four_byte {
 -            inspector.create_end(context, inputs, outcome);
--        }
--        if let Some(ref mut inspector) = self.tracing {
++            inspector.create_end(message, result, host);
+         }
+         if let Some(ref mut inspector) = self.tracing {
 -            inspector.create_end(context, inputs, outcome);
--        }
--    }
--
--    #[inline]
++            inspector.create_end(message, result, host);
+         }
+     }
+ 
+     #[inline]
 -    fn selfdestruct(&mut self, contract: Address, target: Address, value: U256) {
 -        if let Some(ref mut inspector) = self.four_byte {
 -            <FourByteInspector as Inspector<CTX>>::selfdestruct(inspector, contract, target, value);
@@ -233,16 +223,14 @@
 -    ) -> Option<FrameResult> {
 -        if let Some(ref mut inspector) = self.four_byte {
 -            let _ = inspector.frame_start(context, frame_input);
-+            inspector.create_end(message, result, host);
-         }
-         if let Some(ref mut inspector) = self.tracing {
+-        }
+-        if let Some(ref mut inspector) = self.tracing {
 -            return inspector.frame_start(context, frame_input);
-+            inspector.create_end(message, result, host);
-         }
+-        }
 -        None
-     }
- 
-     #[inline]
+-    }
+-
+-    #[inline]
 -    fn frame_end(
 +    fn selfdestruct(
          &mut self,

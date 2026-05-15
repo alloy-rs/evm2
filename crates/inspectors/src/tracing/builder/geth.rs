@@ -19,7 +19,7 @@ use alloy_rpc_types_trace::geth::{
     erc7562::{AccessedSlots, CallFrameType, ContractSize, Erc7562Config, Erc7562Frame},
 };
 use evm2::{
-    SpecId,
+    EvmTypes, SpecId, TxResult,
     bytecode::opcode::op,
     evm::{DbResult, DynDatabase, StateChanges},
 };
@@ -228,15 +228,16 @@ impl<'a> GethTraceBuilder<'a> {
     /// The prestate mode returns the accounts necessary to execute a given transaction.
     /// diff_mode returns the differences between the transaction's pre and post-state.
     ///
-    /// * `state` - The state post-transaction execution.
+    /// * `result` - The transaction execution result.
     /// * `diff_mode` - if prestate is in diff or prestate mode.
     /// * `db` - The database to fetch state pre-transaction execution.
-    pub fn geth_prestate_traces(
+    pub fn geth_prestate_traces<T: EvmTypes>(
         &self,
-        state: &StateChanges,
+        result: &TxResult<T>,
         prestate_config: &PreStateConfig,
         db: &mut dyn DynDatabase,
     ) -> DbResult<PreStateFrame> {
+        let state = &result.state_changes;
         let code_enabled = prestate_config.code_enabled();
         let storage_enabled = prestate_config.storage_enabled();
         if prestate_config.is_diff_mode() {

@@ -21,7 +21,7 @@ This file tracks public or behaviorally relevant function/method signature diffe
 
 - `src/tracing/builder/geth.rs`
   - `GethTraceBuilder::new` and `new_borrowed` take `spec_id: Option<SpecId>` so diff prestate can account for Cancun selfdestruct behavior without revm context.
-  - `geth_prestate_traces` takes `&StateChanges` and `&mut dyn DynDatabase` instead of `&ResultAndState` and `DatabaseRef`.
+  - `geth_prestate_traces` takes evm2 `&TxResult<T>` and `&mut dyn DynDatabase` instead of `&ResultAndState` and `DatabaseRef`.
   - Internal prestate helpers take `StateChanges`/`DynDatabase` and return `DbResult`.
   - `geth_erc7562_traces` takes `&mut dyn DynDatabase` and returns `DbResult<Erc7562Frame>` so code-size DB errors are propagated.
 
@@ -51,7 +51,7 @@ This file tracks public or behaviorally relevant function/method signature diffe
   - Deprecated `get_traces`/`get_traces_mut` are intentionally absent.
 
 - `src/tracing/mux.rs`
-  - `MuxInspector::try_into_mux_frame` takes `gas_used`, `&StateChanges`, `TransactionInfo`, and `&mut dyn DynDatabase` instead of `&ResultAndState` and `DatabaseRef`.
+  - `MuxInspector::try_into_mux_frame` takes evm2 `&TxResult<T>`, `TransactionInfo`, and `&mut dyn DynDatabase` instead of `&ResultAndState` and `DatabaseRef`.
   - `impl Inspector` hooks use evm2 message/result/interpreter/host types.
 
 - `src/tracing/types.rs`

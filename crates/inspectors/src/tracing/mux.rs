@@ -8,8 +8,8 @@ use alloy_rpc_types_trace::geth::{
     mux::{MuxConfig, MuxFrame},
 };
 use evm2::{
-    Evm, EvmTypes, Inspector,
-    evm::{DbResult, DynDatabase, StateChanges},
+    Evm, EvmTypes, Inspector, TxResult,
+    evm::{DbResult, DynDatabase},
     interpreter::{Interpreter, Message, MessageResult},
 };
 use thiserror::Error;
@@ -103,10 +103,9 @@ impl MuxInspector {
     }
 
     /// Try converting this [MuxInspector] into a [MuxFrame].
-    pub fn try_into_mux_frame(
+    pub fn try_into_mux_frame<T: EvmTypes>(
         &self,
-        gas_used: u64,
-        state: &StateChanges,
+        result: &TxResult<T>,
         tx_info: TransactionInfo,
         db: &mut dyn DynDatabase,
     ) -> DbResult<MuxFrame> {
@@ -116,7 +115,10 @@ impl MuxInspector {
             let trace = match config {
                 TraceConfig::Call(call_config) => {
                     if let Some(inspector) = &self.tracing {
-                        inspector.geth_builder().geth_call_traces(*call_config, gas_used).into()
+                        inspector
+                            .geth_builder()
+                            .geth_call_traces(*call_config, result.gas_used)
+                            .into()
                     } else {
                         continue;
                     }
@@ -125,7 +127,7 @@ impl MuxInspector {
                     if let Some(inspector) = &self.tracing {
                         inspector
                             .geth_builder()
-                            .geth_prestate_traces(state, prestate_config, db)?
+                            .geth_prestate_traces(result, prestate_config, db)?
                             .into()
                     } else {
                         continue;

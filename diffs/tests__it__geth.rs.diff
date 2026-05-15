@@ -1,5 +1,5 @@
 --- /home/doni/github/paradigmxyz/revm-inspectors/tests/it/geth.rs	2026-05-14 03:45:05.356711986 +0200
-+++ /home/doni/github/danipopes/evm2.1/crates/inspectors/tests/it/geth.rs	2026-05-15 03:49:05.803389007 +0200
++++ /home/doni/github/danipopes/evm2.1/crates/inspectors/tests/it/geth.rs	2026-05-15 16:45:41.312599647 +0200
 @@ -1,25 +1,16 @@
  //! Geth tests
 -use crate::utils::deploy_contract;
@@ -95,19 +95,14 @@
  
      let mut evm = evm.with_inspector(&mut insp);
  
-@@ -239,16 +234,24 @@
+@@ -239,16 +234,19 @@
      assert!(res.result.is_success());
  
      let (ctx, inspector) = evm.ctx_inspector();
 -    let frame =
 -        inspector.try_into_mux_frame(&res, ctx.db_ref(), TransactionInfo::default()).unwrap();
 +    let frame = inspector
-+        .try_into_mux_frame(
-+            res.result.tx_gas_used(),
-+            &res.state,
-+            TransactionInfo::default(),
-+            ctx.db_mut(),
-+        )
++        .try_into_mux_frame(&res.tx_result, TransactionInfo::default(), ctx.db_mut())
 +        .unwrap();
  
      assert_eq!(frame.0.len(), 4);
@@ -125,7 +120,7 @@
      assert!(frame.0.contains_key(&GethDebugTracerType::BuiltInTracer(
          GethDebugBuiltInTracerType::PreStateTracer
      )));
-@@ -375,7 +378,9 @@
+@@ -375,7 +373,9 @@
      let mut evm = Context::mainnet().with_db(CacheDB::new(EmptyDB::default())).build_mainnet();
  
      // Use the LogTracing contract from test_geth_calltracer_logs
@@ -136,7 +131,7 @@
      let deployer = Address::ZERO;
      let addr =
          deploy_contract(&mut evm, code.into(), deployer, SpecId::LONDON).created_address().unwrap();
-@@ -463,7 +468,9 @@
+@@ -463,7 +463,9 @@
      let mut evm = Context::mainnet().with_db(CacheDB::new(EmptyDB::default())).build_mainnet();
  
      // Use the LogTracing contract with nestedRevert function
@@ -147,7 +142,7 @@
      let deployer = Address::ZERO;
      let addr =
          deploy_contract(&mut evm, code.into(), deployer, SpecId::LONDON).created_address().unwrap();
-@@ -581,7 +588,9 @@
+@@ -581,7 +583,9 @@
      let mut evm = Context::mainnet().with_db(CacheDB::new(EmptyDB::default())).build_mainnet();
  
      // Deploy a simple contract
@@ -158,7 +153,7 @@
      let deployer = Address::ZERO;
      let addr =
          deploy_contract(&mut evm, code.into(), deployer, SpecId::LONDON).created_address().unwrap();
-@@ -596,8 +605,8 @@
+@@ -596,8 +600,8 @@
      let mut insp = TracingInspector::new(TracingInspectorConfig::from_geth_prestate_config(
          &prestate_config_no_code,
      ));
@@ -168,12 +163,12 @@
      let res = {
          let mut evm_with_insp = evm.with_inspector(&mut insp);
          evm_with_insp
-@@ -616,14 +625,14 @@
+@@ -616,14 +620,14 @@
      let frame = insp
          .with_transaction_gas_used(res.result.tx_gas_used())
          .geth_builder()
 -        .geth_prestate_traces(&res, &prestate_config_no_code, db)
-+        .geth_prestate_traces(&res.state, &prestate_config_no_code, &mut db)
++        .geth_prestate_traces(&res.tx_result, &prestate_config_no_code, &mut db)
          .unwrap();
  
      // Verify that code is not present in either pre or post states when disable_code=true
@@ -185,7 +180,7 @@
                  assert!(
                      account_state.code.is_none(),
                      "Code should be None in pre state when disable_code=true"
-@@ -631,7 +640,7 @@
+@@ -631,7 +635,7 @@
              }
  
              // Check that no account in post state has code
@@ -194,7 +189,7 @@
                  assert!(
                      account_state.code.is_none(),
                      "Code should be None in post state when disable_code=true"
-@@ -653,8 +662,8 @@
+@@ -653,8 +657,8 @@
          &prestate_config_with_code,
      ));
      let evm2 = Context::mainnet().with_db(CacheDB::new(EmptyDB::default())).build_mainnet();
@@ -204,16 +199,16 @@
      let res2 = {
          let mut evm2_with_insp = evm2.with_inspector(&mut insp2);
          // Deploy contract during traced transaction so code appears in diff
-@@ -674,7 +683,7 @@
+@@ -674,7 +678,7 @@
      let frame2 = insp2
          .with_transaction_gas_used(res2.result.tx_gas_used())
          .geth_builder()
 -        .geth_prestate_traces(&res2, &prestate_config_with_code, db2)
-+        .geth_prestate_traces(&res2.state, &prestate_config_with_code, &mut db2)
++        .geth_prestate_traces(&res2.tx_result, &prestate_config_with_code, &mut db2)
          .unwrap();
  
      // Verify that code IS present when disable_code=false
-@@ -687,8 +696,7 @@
+@@ -687,8 +691,7 @@
                  if let Some(code) = &account_state.code {
                      assert!(
                          !code.is_empty(),
@@ -223,7 +218,7 @@
                      );
                      found_code = true;
                  }
-@@ -699,8 +707,7 @@
+@@ -699,8 +702,7 @@
                  if let Some(code) = &account_state.code {
                      assert!(
                          !code.is_empty(),
@@ -233,7 +228,7 @@
                      );
                      found_code = true;
                  }
-@@ -727,7 +734,9 @@
+@@ -727,7 +729,9 @@
      // Deploy a simple contract that reverts with empty or null bytes
      // This bytecode reverts with 32 null bytes: revert(0, 32)
      // 60206000fd - PUSH1 32, PUSH1 0, REVERT
@@ -244,7 +239,7 @@
  
      let deployer = Address::ZERO;
      let addr =
-@@ -790,13 +799,13 @@
+@@ -790,13 +794,13 @@
          .modify_cfg_chained(|cfg| cfg.spec = SpecId::LONDON)
          .modify_db_chained(|db| {
              db.insert_account_info(
@@ -261,7 +256,7 @@
                      ..Default::default()
                  },
              );
-@@ -851,7 +860,9 @@
+@@ -851,7 +855,9 @@
      */
  
      // simple contract that selfdestructs when a function is called
@@ -272,7 +267,7 @@
  
      let deployer = alloy_primitives::address!("341348115259a8bf69f1f50101c227fced83bac6");
      let value = alloy_primitives::U256::from(69);
-@@ -860,10 +871,7 @@
+@@ -860,10 +866,7 @@
      let mut context = Context::mainnet()
          .with_db(CacheDB::<EmptyDB>::default())
          .modify_db_chained(|db| {
@@ -284,7 +279,7 @@
          })
          .modify_cfg_chained(|cfg| cfg.spec = spec_id);
  
-@@ -881,7 +889,6 @@
+@@ -881,7 +884,6 @@
      let insp =
          TracingInspector::new(TracingInspectorConfig::from_geth_prestate_config(&prestate_config));
  
@@ -292,7 +287,7 @@
      let mut evm = evm.with_inspector(insp);
  
      let res = evm
-@@ -898,11 +905,12 @@
+@@ -898,11 +900,12 @@
      assert!(res.result.is_success(), "{res:#?}");
  
      // Get the prestate diff traces
@@ -302,11 +297,11 @@
          .with_transaction_gas_used(res.result.tx_gas_used())
          .geth_builder()
 -        .geth_prestate_traces(&res, &prestate_config, db)
-+        .geth_prestate_traces(&res.state, &prestate_config, &mut db)
++        .geth_prestate_traces(&res.tx_result, &prestate_config, &mut db)
          .unwrap();
  
      match frame {
-@@ -955,18 +963,18 @@
+@@ -955,18 +958,18 @@
          .modify_db_chained(|db| {
              // Fund the contract so it can send 1 wei
              db.insert_account_info(
@@ -329,7 +324,7 @@
                      ..Default::default()
                  },
              );
-@@ -1046,13 +1054,13 @@
+@@ -1046,13 +1049,13 @@
          .modify_cfg_chained(|cfg| cfg.spec = SpecId::LONDON)
          .modify_db_chained(|db| {
              db.insert_account_info(
@@ -346,7 +341,7 @@
                      ..Default::default()
                  },
              );
-@@ -1122,20 +1130,20 @@
+@@ -1122,20 +1125,20 @@
          .modify_cfg_chained(|cfg| cfg.spec = SpecId::LONDON)
          .modify_db_chained(|db| {
              db.insert_account_info(

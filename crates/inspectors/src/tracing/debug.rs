@@ -231,13 +231,13 @@ impl DebugInspector {
                 inspector.set_transaction_gas_limit(gas_limit);
                 inspector
                     .geth_builder()
-                    .geth_prestate_traces(&res.state_changes, config, db)
+                    .geth_prestate_traces(res, config, db)
                     .map_err(DebugInspectorError::Database)?
                     .into()
             }
             Self::Noop => NoopFrame::default().into(),
             Self::Mux(inspector, _) => inspector
-                .try_into_mux_frame(res.gas_used, &res.state_changes, tx_info, db)
+                .try_into_mux_frame(res, tx_info, db)
                 .map_err(DebugInspectorError::Database)?
                 .into(),
             Self::FlatCallTracer(inspector) => {
@@ -278,58 +278,41 @@ impl DebugInspector {
 }
 
 macro_rules! delegate {
-    ($self:expr, $noop:expr => $insp:ident.$method:ident($($arg:expr),*)) => {
+    ($self:expr, $noop:expr => $method:ident($($arg:expr),*)) => {
         match $self {
-            Self::FourByte($insp) => $insp.$method($($arg),*),
-            Self::CallTracer($insp, _) => $insp.$method($($arg),*),
-            Self::PreStateTracer($insp, _) => $insp.$method($($arg),*),
-            Self::FlatCallTracer($insp) => $insp.$method($($arg),*),
-            Self::Erc7562Tracer($insp, _) => $insp.$method($($arg),*),
-            Self::Default($insp, _) => $insp.$method($($arg),*),
+            Self::FourByte(inspector) => <FourByteInspector as Inspector<T>>::$method(inspector, $($arg),*),
+            Self::CallTracer(inspector, _)
+            | Self::PreStateTracer(inspector, _)
+            | Self::FlatCallTracer(inspector)
+            | Self::Erc7562Tracer(inspector, _)
+            | Self::Default(inspector, _) => <TracingInspector as Inspector<T>>::$method(inspector, $($arg),*),
             Self::Noop => $noop,
-            Self::Mux($insp, _) => $insp.$method($($arg),*),
+            Self::Mux(inspector, _) => <MuxInspector as Inspector<T>>::$method(inspector, $($arg),*),
             #[cfg(feature = "js-tracer")]
-            Self::Js($insp) => $insp.$method($($arg),*),
+            Self::Js(inspector) => <crate::tracing::js::JsInspector as Inspector<T>>::$method(inspector, $($arg),*),
         }
     };
 }
 
 impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for DebugInspector {
     fn initialize_interp(&mut self, interp: &mut Interpreter<'_, T>, host: &mut T::Host) {
-        delegate!(self, {} => inspector.initialize_interp(interp, host))
+        delegate!(self, {} => initialize_interp(interp, host))
     }
 
     fn step(&mut self, interp: &mut Interpreter<'_, T>, host: &mut T::Host) {
-        delegate!(self, {} => inspector.step(interp, host))
+        delegate!(self, {} => step(interp, host))
     }
 
     fn step_end(&mut self, interp: &mut Interpreter<'_, T>, host: &mut T::Host) {
-        delegate!(self, {} => inspector.step_end(interp, host))
+        delegate!(self, {} => step_end(interp, host))
     }
 
     fn log(&mut self, log: &Log, host: &mut T::Host) {
-        match self {
-            Self::FourByte(inspector) => {
-                <FourByteInspector as Inspector<T>>::log(inspector, log, host)
-            }
-            Self::CallTracer(inspector, _)
-            | Self::PreStateTracer(inspector, _)
-            | Self::FlatCallTracer(inspector)
-            | Self::Erc7562Tracer(inspector, _)
-            | Self::Default(inspector, _) => {
-                <TracingInspector as Inspector<T>>::log(inspector, log, host);
-            }
-            Self::Noop => {}
-            Self::Mux(inspector, _) => <MuxInspector as Inspector<T>>::log(inspector, log, host),
-            #[cfg(feature = "js-tracer")]
-            Self::Js(inspector) => {
-                <crate::tracing::js::JsInspector as Inspector<T>>::log(inspector, log, host);
-            }
-        }
+        delegate!(self, {} => log(log, host))
     }
 
     fn call(&mut self, message: &mut Message<T>, host: &mut T::Host) -> Option<MessageResult<T>> {
-        delegate!(self, None => inspector.call(message, host))
+        delegate!(self, None => call(message, host))
     }
 
     fn call_end(
@@ -338,11 +321,11 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for DebugInspector {
         result: &mut MessageResult<T>,
         host: &mut T::Host,
     ) {
-        delegate!(self, {} => inspector.call_end(message, result, host))
+        delegate!(self, {} => call_end(message, result, host))
     }
 
     fn create(&mut self, message: &mut Message<T>, host: &mut T::Host) -> Option<MessageResult<T>> {
-        delegate!(self, None => inspector.create(message, host))
+        delegate!(self, None => create(message, host))
     }
 
     fn create_end(
@@ -351,7 +334,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for DebugInspector {
         result: &mut MessageResult<T>,
         host: &mut T::Host,
     ) {
-        delegate!(self, {} => inspector.create_end(message, result, host))
+        delegate!(self, {} => create_end(message, result, host))
     }
 
     fn selfdestruct(
@@ -361,34 +344,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for DebugInspector {
         value: &U256,
         host: &mut T::Host,
     ) {
-        match self {
-            Self::FourByte(inspector) => {
-                <FourByteInspector as Inspector<T>>::selfdestruct(
-                    inspector, contract, target, value, host,
-                );
-            }
-            Self::CallTracer(inspector, _)
-            | Self::PreStateTracer(inspector, _)
-            | Self::FlatCallTracer(inspector)
-            | Self::Erc7562Tracer(inspector, _)
-            | Self::Default(inspector, _) => {
-                <TracingInspector as Inspector<T>>::selfdestruct(
-                    inspector, contract, target, value, host,
-                );
-            }
-            Self::Noop => {}
-            Self::Mux(inspector, _) => {
-                <MuxInspector as Inspector<T>>::selfdestruct(
-                    inspector, contract, target, value, host,
-                );
-            }
-            #[cfg(feature = "js-tracer")]
-            Self::Js(inspector) => {
-                <crate::tracing::js::JsInspector as Inspector<T>>::selfdestruct(
-                    inspector, contract, target, value, host,
-                );
-            }
-        }
+        delegate!(self, {} => selfdestruct(contract, target, value, host))
     }
 }
 
@@ -407,11 +363,11 @@ pub enum DebugInspectorError {
     /// Error from MuxInspector
     #[error(transparent)]
     MuxInspector(#[from] crate::tracing::MuxError),
-    /// Database operation failed
-    #[error("database error {0:?}")]
-    Database(DbErrorCode),
     /// Error from JS inspector
     #[cfg(feature = "js-tracer")]
     #[error(transparent)]
     JsInspector(#[from] crate::tracing::js::JsInspectorError),
+    /// Database operation failed
+    #[error("database error {0:?}")]
+    Database(DbErrorCode),
 }
