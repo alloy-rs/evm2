@@ -70,8 +70,9 @@ Review status legend:
 - [x] `src/tracing/builder/walker.rs`
   - Identical.
 
-- [ ] `src/tracing/config.rs`
-  - Pending round-2 review.
+- [x] `src/tracing/config.rs`
+  - Public API and configuration semantics match.
+  - `OpcodeFilter::is_enabled` and `enable` are additionally `const fn`.
 
 - [ ] `src/tracing/debug.rs`
   - Pending round-2 review with `tests/it/geth.rs` and `tests/it/geth_js.rs`.
@@ -98,16 +99,19 @@ Review status legend:
 - [x] `src/tracing/opcount.rs`
   - Public API and behavior match.
 
-- [ ] `src/tracing/types.rs`
-  - Pending round-2 review with geth/parity/writer tests.
+- [x] `src/tracing/types.rs`
+  - Public trace data types and methods match after evm2 type substitutions.
+  - `InstructionResult` is replaced by evm2 `InstrStop`; `InstrStop` now derives serde under the `serde` feature so status fields remain serialized like upstream.
+  - `From<CallScheme>` and `From<CreateScheme>` cannot exist without revm input types; equivalent `MessageKind` mapping lives in `tracing/mod.rs`.
 
 - [x] `src/tracing/utils.rs`
   - Revert decoding, memory conversion, and gas-used behavior match.
   - Error mapping is ported from `InstructionResult` to evm2 `InstrStop`; `InvalidFEOpcode` is folded into invalid opcode because evm2 does not expose it separately.
   - `load_account_code` uses `&mut dyn DynDatabase` and returns `DbResult<Option<Bytes>>`; callers preserve the original optional-code behavior.
 
-- [ ] `src/tracing/writer.rs`
-  - Pending round-2 review with `tests/it/writer.rs`.
+- [x] `src/tracing/writer.rs`
+  - Writer public API and formatting behavior match after `InstrStop` substitution.
+  - Several builder/getter methods are additionally `const fn`.
 
 ## Integration Test Files
 
@@ -147,8 +151,8 @@ Review status legend:
   - Pending round-2 review. This is expected to be an evm2 harness, but random production-facing
     structs or traits are not expected.
 
-- [ ] `tests/it/writer.rs`
-  - Pending round-2 review with writer snapshots.
+- [x] `tests/it/writer.rs`
+  - Original tests and patching helper are present with only evm2 helper/API substitutions and import ordering changes.
 
 ## Fixture Coverage
 

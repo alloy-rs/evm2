@@ -99,7 +99,6 @@ pub struct CallTrace {
     /// The cumulative refund counter for the entire transaction context at the end of this call.
     pub gas_refund_counter: u64,
     /// The final status of the call.
-    #[cfg_attr(feature = "serde", serde(skip))]
     pub status: Option<InstrStop>,
     /// Opcode-level execution steps.
     pub steps: Vec<CallTraceStep>,
@@ -665,7 +664,6 @@ pub struct CallTraceStep {
     /// Final status of the step
     ///
     /// This is set after the step was executed.
-    #[cfg_attr(feature = "serde", serde(skip))]
     pub status: Option<InstrStop>,
     /// Immediate bytes of the step
     pub immediate_bytes: Option<Bytes>,
