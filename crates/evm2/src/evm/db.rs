@@ -1,8 +1,12 @@
 //! Database helpers for the EVM state overlay.
 
-use super::state::{AccountInfo, StateChanges};
+use super::{
+    bal::{Bal, BalBuilder},
+    state::{AccountInfo, StateChanges},
+};
 use crate::{bytecode::Bytecode, interpreter::Word};
-use alloc::{boxed::Box, string::ToString};
+use alloc::{boxed::Box, string::ToString, sync::Arc};
+use alloy_eip7928::{BlockAccessIndex, BlockAccessList};
 use alloy_primitives::{Address, B256, keccak256};
 use core::{any::Any, error::Error, fmt, num::NonZeroUsize};
 
@@ -131,6 +135,14 @@ fn stored_error_code() -> DbErrorCode {
     }
 }
 
+#[inline]
+pub(crate) fn bal_error_code() -> DbErrorCode {
+    match DbErrorCode::new(2) {
+        Some(code) => code,
+        None => unreachable!("BAL database error code is non-zero"),
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct DbErrorUnavailable(DbErrorCode);
 
@@ -192,6 +204,34 @@ pub trait DynDatabase: Any {
     fn error(&mut self, code: DbErrorCode) -> Box<dyn Error> {
         Box::new(DbErrorUnavailable(code))
     }
+
+    /// Sets the BAL used for database reads.
+    fn set_bal(&mut self, _bal: Option<Arc<Bal>>) {}
+
+    /// Enables BAL building from accepted state changes.
+    fn enable_bal_builder(&mut self) {}
+
+    /// Resets the current BAL index.
+    fn reset_bal_index(&mut self) {}
+
+    /// Sets the current BAL index.
+    fn set_bal_index(&mut self, _index: BlockAccessIndex) {}
+
+    /// Bumps the current BAL index.
+    fn bump_bal_index(&mut self) {}
+
+    /// Takes the built BAL.
+    fn take_built_bal(&mut self) -> Option<BalBuilder> {
+        None
+    }
+
+    /// Takes the built BAL as canonical EIP-7928 data.
+    fn take_built_alloy_bal(&mut self) -> Option<BlockAccessList> {
+        self.take_built_bal().map(Bal::into_alloy_bal)
+    }
+
+    /// Records accepted state changes for BAL building.
+    fn record_state_changes(&mut self, _changes: &StateChanges) {}
 }
 
 impl DynDatabase for Box<dyn DynDatabase> {
@@ -218,6 +258,46 @@ impl DynDatabase for Box<dyn DynDatabase> {
     #[inline]
     fn error(&mut self, code: DbErrorCode) -> Box<dyn Error> {
         self.as_mut().error(code)
+    }
+
+    #[inline]
+    fn set_bal(&mut self, bal: Option<Arc<Bal>>) {
+        self.as_mut().set_bal(bal);
+    }
+
+    #[inline]
+    fn enable_bal_builder(&mut self) {
+        self.as_mut().enable_bal_builder();
+    }
+
+    #[inline]
+    fn reset_bal_index(&mut self) {
+        self.as_mut().reset_bal_index();
+    }
+
+    #[inline]
+    fn set_bal_index(&mut self, index: BlockAccessIndex) {
+        self.as_mut().set_bal_index(index);
+    }
+
+    #[inline]
+    fn bump_bal_index(&mut self) {
+        self.as_mut().bump_bal_index();
+    }
+
+    #[inline]
+    fn take_built_bal(&mut self) -> Option<BalBuilder> {
+        self.as_mut().take_built_bal()
+    }
+
+    #[inline]
+    fn take_built_alloy_bal(&mut self) -> Option<BlockAccessList> {
+        self.as_mut().take_built_alloy_bal()
+    }
+
+    #[inline]
+    fn record_state_changes(&mut self, changes: &StateChanges) {
+        self.as_mut().record_state_changes(changes);
     }
 }
 

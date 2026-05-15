@@ -1,7 +1,7 @@
 //! Basic in-memory EVM host state.
 
 use super::{
-    SStore,
+    Bal, BalBuilder, SStore,
     db::{DbResult, DynDatabase},
     eip7708_burn_log,
 };
@@ -11,7 +11,8 @@ use crate::{
     interpreter::{InstrStop, Word},
     storage_key::{StorageKey, StorageKeyMap, StorageKeySet},
 };
-use alloc::{boxed::Box, collections::BTreeMap, vec::Vec};
+use alloc::{boxed::Box, collections::BTreeMap, sync::Arc, vec::Vec};
+use alloy_eip7928::{BlockAccessIndex, BlockAccessList};
 use alloy_primitives::{
     Address, B256, KECCAK256_EMPTY, Log, U256,
     map::{AddressMap, AddressSet, U256Map, U256Set, hash_map},
@@ -492,6 +493,54 @@ impl State {
     #[inline]
     pub const fn access_tracking_enabled(&self) -> bool {
         self.access_tracker.enabled()
+    }
+
+    /// Sets the BAL used for database reads.
+    #[inline]
+    pub fn set_bal(&mut self, bal: Option<Arc<Bal>>) {
+        self.initial.set_bal(bal);
+    }
+
+    /// Enables BAL building from accepted state changes.
+    #[inline]
+    pub fn enable_bal_builder(&mut self) {
+        self.initial.enable_bal_builder();
+    }
+
+    /// Resets the current BAL index.
+    #[inline]
+    pub fn reset_bal_index(&mut self) {
+        self.initial.reset_bal_index();
+    }
+
+    /// Sets the current BAL index.
+    #[inline]
+    pub fn set_bal_index(&mut self, index: BlockAccessIndex) {
+        self.initial.set_bal_index(index);
+    }
+
+    /// Bumps the current BAL index.
+    #[inline]
+    pub fn bump_bal_index(&mut self) {
+        self.initial.bump_bal_index();
+    }
+
+    /// Takes the built BAL.
+    #[inline]
+    pub fn take_built_bal(&mut self) -> Option<BalBuilder> {
+        self.initial.take_built_bal()
+    }
+
+    /// Takes the built BAL as canonical EIP-7928 data.
+    #[inline]
+    pub fn take_built_alloy_bal(&mut self) -> Option<BlockAccessList> {
+        self.initial.take_built_alloy_bal()
+    }
+
+    /// Records accepted state changes for BAL building.
+    #[inline]
+    pub(crate) fn record_state_changes(&mut self, changes: &StateChanges) {
+        self.initial.record_state_changes(changes);
     }
 
     #[inline]

@@ -100,6 +100,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             result.output = Bytes::new();
         } else {
             result.state_changes = self.state.build_state_changes();
+            self.state.record_state_changes(&result.state_changes);
             self.state.commit_transaction_overlay();
         }
         result.db_error_code = self.db_error_code();

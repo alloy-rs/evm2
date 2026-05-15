@@ -3,10 +3,15 @@
 use super::{DatabaseCommit, DbErrorCode, DbResult, DynDatabase, EmptyDB};
 use crate::{
     bytecode::Bytecode,
-    evm::state::{AccountInfo, StateChanges},
+    evm::{
+        bal::{Bal, BalBuilder},
+        state::{AccountInfo, StateChanges},
+    },
     interpreter::Word,
     storage_key::{StorageKey, StorageKeyMap},
 };
+use alloc::sync::Arc;
+use alloy_eip7928::{BlockAccessIndex, BlockAccessList};
 use alloy_primitives::{
     Address, B256, KECCAK256_EMPTY,
     map::{AddressMap, B256Map, U256Map, hash_map::Entry},
@@ -204,6 +209,46 @@ impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
     #[inline]
     fn error(&mut self, code: DbErrorCode) -> alloc::boxed::Box<dyn core::error::Error> {
         self.db.error(code)
+    }
+
+    #[inline]
+    fn set_bal(&mut self, bal: Option<Arc<Bal>>) {
+        self.db.set_bal(bal);
+    }
+
+    #[inline]
+    fn enable_bal_builder(&mut self) {
+        self.db.enable_bal_builder();
+    }
+
+    #[inline]
+    fn reset_bal_index(&mut self) {
+        self.db.reset_bal_index();
+    }
+
+    #[inline]
+    fn set_bal_index(&mut self, index: BlockAccessIndex) {
+        self.db.set_bal_index(index);
+    }
+
+    #[inline]
+    fn bump_bal_index(&mut self) {
+        self.db.bump_bal_index();
+    }
+
+    #[inline]
+    fn take_built_bal(&mut self) -> Option<BalBuilder> {
+        self.db.take_built_bal()
+    }
+
+    #[inline]
+    fn take_built_alloy_bal(&mut self) -> Option<BlockAccessList> {
+        self.db.take_built_alloy_bal()
+    }
+
+    #[inline]
+    fn record_state_changes(&mut self, changes: &StateChanges) {
+        self.db.record_state_changes(changes);
     }
 }
 

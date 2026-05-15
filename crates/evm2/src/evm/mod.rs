@@ -17,7 +17,8 @@ use crate::{
     trustme,
     version::{EvmFeatures, GasId},
 };
-use alloc::{boxed::Box, vec, vec::Vec};
+use alloc::{boxed::Box, sync::Arc, vec, vec::Vec};
+use alloy_eip7928::{BlockAccessIndex, BlockAccessList};
 use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{Address, B256, Bytes, Log, LogData};
 use derive_where::derive_where;
@@ -29,7 +30,10 @@ pub mod precompile;
 pub mod registry;
 
 mod bal;
-pub use bal::BalBuilder;
+pub use bal::{
+    AccountBal, AccountId, AccountInfoBal, Bal, BalBuilder, BalDatabase, BalError, BalState,
+    BalWrites, StorageBal,
+};
 
 mod system;
 pub use system::{
@@ -176,6 +180,48 @@ impl<T: EvmTypes> Evm<T> {
     #[inline]
     pub const fn access_tracking_enabled(&self) -> bool {
         self.state.access_tracking_enabled()
+    }
+
+    /// Sets the BAL used for database reads.
+    #[inline]
+    pub fn set_bal(&mut self, bal: Option<Arc<Bal>>) {
+        self.state.set_bal(bal);
+    }
+
+    /// Enables BAL building from accepted state changes.
+    #[inline]
+    pub fn enable_bal_builder(&mut self) {
+        self.state.enable_bal_builder();
+    }
+
+    /// Resets the current BAL index.
+    #[inline]
+    pub fn reset_bal_index(&mut self) {
+        self.state.reset_bal_index();
+    }
+
+    /// Sets the current BAL index.
+    #[inline]
+    pub fn set_bal_index(&mut self, index: BlockAccessIndex) {
+        self.state.set_bal_index(index);
+    }
+
+    /// Bumps the current BAL index.
+    #[inline]
+    pub fn bump_bal_index(&mut self) {
+        self.state.bump_bal_index();
+    }
+
+    /// Takes the built BAL.
+    #[inline]
+    pub fn take_built_bal(&mut self) -> Option<BalBuilder> {
+        self.state.take_built_bal()
+    }
+
+    /// Takes the built BAL as canonical EIP-7928 data.
+    #[inline]
+    pub fn take_built_alloy_bal(&mut self) -> Option<BlockAccessList> {
+        self.state.take_built_alloy_bal()
     }
 
     /// Returns the backing database.
@@ -369,6 +415,7 @@ impl<T: EvmTypes<Tx: Typed2718>> Evm<T> {
                 result.output = Bytes::new();
             } else {
                 result.state_changes = self.state.build_state_changes();
+                self.state.record_state_changes(&result.state_changes);
                 self.state.commit_transaction_overlay();
             }
             result.db_error_code = self.db_error_code;
