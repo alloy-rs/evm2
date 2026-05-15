@@ -58,7 +58,7 @@ Review status legend:
 - [x] `src/tracing/arena.rs`
   - Semantically identical; `nodes_mut()` is additionally `const fn`.
 
-- [ ] `src/tracing/builder/geth.rs`
+- [x] `src/tracing/builder/geth.rs`
   - Geth call/default/flat traces match after evm2 type substitutions.
   - Prestate diff mode matches the upstream state-diff-driven builder.
   - Prestate default mode intentionally records DB-backed caller/callee and opcode-touched accounts,
@@ -68,8 +68,13 @@ Review status legend:
 - [x] `src/tracing/builder/mod.rs`
   - Identical.
 
-- [ ] `src/tracing/builder/parity.rs`
-  - Pending round-2 review with `tests/it/parity.rs`.
+- [x] `src/tracing/builder/parity.rs`
+  - Parity trace, localized trace, transaction trace iterator, VM trace, and selfdestruct ordering
+    match upstream after evm2 type substitutions.
+  - `into_trace_results` takes output bytes directly because evm2 result extraction happens in the
+    caller/helper layer.
+  - State diff and VM bytecode population use evm2 `StateChanges`/`DynDatabase`; this is the
+    expected replacement for revm's `ResultAndState`/`DatabaseRef`/account flags.
 
 - [x] `src/tracing/builder/walker.rs`
   - Identical.
@@ -147,8 +152,9 @@ Review status legend:
   - Same module list except intentional `edge_cov` omission.
   - `geth_js` is gated by `std` plus `js-tracer` because the evm2 test harness requires `std`.
 
-- [ ] `tests/it/parity.rs`
-  - Pending round-2 review with `src/tracing/builder/parity.rs`.
+- [x] `tests/it/parity.rs`
+  - Original parity tests are present with evm2 helper/API substitutions and bytecode formatting.
+  - Typo-only correction: `contect created` to `context created`.
 
 - [ ] `tests/it/repro/mod.rs`
   - Pending round-2 review.
