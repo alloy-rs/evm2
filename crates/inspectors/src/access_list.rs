@@ -79,14 +79,23 @@ impl AccessListInspector {
         message: &Message<T>,
         host: &Evm<T>,
     ) {
-        self.excluded.insert(message.caller);
-        self.excluded.insert(message.destination);
-        self.excluded.extend(host.precompiles().warm_addresses());
+        self.excluded = [message.caller, message.destination]
+            .into_iter()
+            .chain(host.precompiles().warm_addresses())
+            .collect();
+    }
+
+    fn should_include_address<T: EvmTypes<Host = Evm<T>>>(
+        &self,
+        address: &Address,
+        host: &Evm<T>,
+    ) -> bool {
+        !self.excluded.contains(address) && !host.state().is_account_warm(address)
     }
 }
 
 impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for AccessListInspector {
-    fn step(&mut self, interp: &mut Interpreter<'_, T>, _host: &mut T::Host) {
+    fn step(&mut self, interp: &mut Interpreter<'_, T>, host: &mut T::Host) {
         match interp.opcode() {
             op::SLOAD | op::SSTORE => {
                 if let Some([slot]) = interp.stack().peekn() {
@@ -104,7 +113,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for AccessListInspector {
             | op::SELFDESTRUCT => {
                 if let Some([slot]) = interp.stack().peekn() {
                     let addr = Address::from_word(B256::from(slot.to_be_bytes()));
-                    if !self.excluded.contains(&addr) {
+                    if self.should_include_address(&addr, host) {
                         self.touched_slots.entry(addr).or_default();
                     }
                 }
@@ -112,7 +121,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for AccessListInspector {
             op::DELEGATECALL | op::CALL | op::STATICCALL | op::CALLCODE => {
                 if let Some([_, slot]) = interp.stack().peekn() {
                     let addr = Address::from_word(B256::from(slot.to_be_bytes()));
-                    if !self.excluded.contains(&addr) {
+                    if self.should_include_address(&addr, host) {
                         self.touched_slots.entry(addr).or_default();
                     }
                 }

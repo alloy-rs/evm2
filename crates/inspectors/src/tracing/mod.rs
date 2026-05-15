@@ -11,12 +11,11 @@ use crate::{
         utils::gas_used,
     },
 };
-use alloc::{boxed::Box, collections::BTreeMap, vec::Vec};
+use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::{Address, B256, Bytes, Log, U256};
 use evm2::{
     Evm, EvmTypes, Inspector, SpecId,
     bytecode::opcode::{OpCode, op},
-    evm::StateChanges,
     interpreter::{Interpreter, Message, MessageKind, MessageResult},
 };
 
@@ -179,74 +178,6 @@ impl TracingInspector {
     pub fn with_transaction_gas_used(mut self, gas_used: u64) -> Self {
         self.set_transaction_gas_used(gas_used);
         self
-    }
-
-    /// Fills storage changes from transaction state changes and recorded SSTORE stack values.
-    pub fn fill_storage_changes(&mut self, state: &StateChanges) {
-        let mut current_storage = BTreeMap::new();
-        for (&address, storage) in &state.storage {
-            for (&key, slot) in &storage.slots {
-                current_storage.insert((address, key), slot.original);
-            }
-        }
-
-        let mut changes = Vec::new();
-        self.collect_sstore_changes(0, &mut changes);
-
-        for (node_idx, step_idx, address, key, value) in changes {
-            let Some(had_value) = current_storage.get_mut(&(address, key)) else {
-                continue;
-            };
-            let step = &mut self.traces.arena[node_idx].trace.steps[step_idx];
-            step.storage_change = Some(Box::new(StorageChange {
-                key,
-                value,
-                had_value: Some(*had_value),
-                reason: StorageChangeReason::SSTORE,
-            }));
-            *had_value = value;
-        }
-    }
-
-    fn collect_sstore_changes(
-        &self,
-        node_idx: usize,
-        changes: &mut Vec<(usize, usize, Address, U256, U256)>,
-    ) {
-        let Some(node) = self.traces.arena.get(node_idx) else {
-            return;
-        };
-        let address = node.execution_address();
-
-        for order in &node.ordering {
-            match *order {
-                TraceMemberOrder::Step(step_idx) => {
-                    let Some(step) = node.trace.steps.get(step_idx) else {
-                        continue;
-                    };
-                    if step.op.get() != op::SSTORE || step.storage_change.is_some() {
-                        continue;
-                    }
-                    let Some(stack) = &step.stack else {
-                        continue;
-                    };
-                    let Some((key, value)) = stack
-                        .split_last()
-                        .and_then(|(&key, stack)| stack.last().map(|value| (key, *value)))
-                    else {
-                        continue;
-                    };
-                    changes.push((node_idx, step_idx, address, key, value));
-                }
-                TraceMemberOrder::Call(child_idx) => {
-                    let Some(child_idx) = node.children.get(child_idx).copied() else {
-                        continue;
-                    };
-                    self.collect_sstore_changes(child_idx, changes);
-                }
-                TraceMemberOrder::Log(_) => {}
-            }
-        }
     }
 
     /// Returns a geth trace builder over the recorded traces.

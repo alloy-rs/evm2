@@ -27,10 +27,8 @@ Expected port-wide differences:
   - SLOAD/SSTORE and account-touch opcode handling is otherwise structurally equivalent using evm2 stack/message access.
 
 - [x] `src/edge_cov.rs`
-  - Public type and methods are present.
-  - `get_hitcount()` is now `const fn`.
-  - Jump edge logic is equivalent for JUMP/JUMPI.
-  - Address source changed from revm target address to evm2 `message().code_address`; this can change delegatecall coverage semantics.
+  - Intentionally omitted from the evm2 port.
+  - The public `edge_cov` module and `EdgeCovInspector` are not exported.
 
 - [x] `src/opcode.rs`
   - Public type and methods are present.
@@ -106,15 +104,13 @@ Expected port-wide differences:
   - Adds public `code()` method; original did not expose it.
   - `try_clone` now preserves transaction context; original cloned with default transaction context.
   - `json_result`/`result` signatures changed to evm2 transaction/result/database types.
-  - JS error-to-revert behavior changed: original converted the JS error string into revert output; port creates a default revert result with empty output.
-  - Precompile registration now happens in `step`, not `call`/`create`; tracers without step hooks may not get the same `isPrecompiled` setup timing.
-  - `create_end` now reports an error string when the create result failed; original passed `None` for create exit errors.
+  - JS hook error-to-revert output, precompile registration timing, and create-exit error reporting now match the original shape.
   - Embedded tests are present with evm2 harness rewrites.
 
 - [x] `src/tracing/mod.rs`
   - Public `TracingInspector` and transaction context APIs are mostly present.
-  - Missing public methods from original: deprecated `get_traces`, deprecated `get_traces_mut`, and `with_transaction_gas_limit`.
-  - Adds public `fill_storage_changes(&StateChanges)` and private `PendingStorageStep`; these are new port-specific structures/APIs.
+  - Deprecated original public methods `get_traces`, `get_traces_mut`, and `with_transaction_gas_limit` are intentionally omitted.
+  - Adds private `PendingStorageStep` to model revm journal storage-diff recording through evm2 state hooks.
   - `fuse()` no longer clears `spec_id`; original cleared it.
   - Step recording, storage diff recording, and call lifecycle were materially rewritten around evm2 hooks/state.
   - `CallInputExt` helper trait was removed.
@@ -150,8 +146,7 @@ Expected port-wide differences:
   - Differences are imports, helper types, bytecode formatting, and DB insertion API.
 
 - [x] `tests/it/edge_cov.rs`
-  - Original test is present.
-  - Deployment setup changed to shared helper; assertions and transaction calldata are preserved.
+  - Intentionally omitted with `src/edge_cov.rs`.
 
 - [x] `tests/it/geth.rs`
   - All original test functions are present.
@@ -192,7 +187,7 @@ Expected port-wide differences:
   - This is intentionally not a direct port: it replaces the revm test harness with a large evm2 harness.
   - Adds local `TxEnv`, `Context`, `ResultAndState`, `ExecutionResult`, `Output`, `DeployResult`, `DatabaseCommit`, `TestDbExt`, and `InspectorSlot`.
   - Adds `TracingInspectorExt::with_transaction_gas_limit` only for tests, which masks the production `TracingInspector` API missing that original method.
-  - `TestEvmWithInspector::inspect_tx` calls `TracingInspector::fill_storage_changes` after execution, so state-diff behavior depends on helper post-processing.
+  - `TestEvmWithInspector::inspect_tx` now relies on inspector-recorded storage diffs directly.
 
 - [x] `tests/it/writer.rs`
   - Original tests are present.
@@ -210,9 +205,9 @@ Expected port-wide differences:
 
 ## Open Review Items
 
-- [ ] Decide whether production API compatibility should include original `TracingInspector::with_transaction_gas_limit`, `get_traces`, and `get_traces_mut`.
-- [ ] Decide whether `OpcodeGasInspector::immediate_size` must preserve the original bytecode-based signature/RJUMPV behavior.
-- [ ] Revisit access-list exclusion semantics for CREATE and EIP-7702 authorities.
-- [ ] Revisit JS tracer thrown-error revert output, precompile registration timing, and create-exit error reporting.
-- [ ] Revisit prestate/state-diff behavior that relies on `fill_storage_changes` post-processing.
+- [x] Decide whether production API compatibility should include original `TracingInspector::with_transaction_gas_limit`, `get_traces`, and `get_traces_mut`.
+- [x] Decide whether `OpcodeGasInspector::immediate_size` must preserve the original bytecode-based signature/RJUMPV behavior.
+- [x] Revisit access-list exclusion semantics for CREATE and EIP-7702 authorities.
+- [x] Revisit JS tracer thrown-error revert output, precompile registration timing, and create-exit error reporting.
+- [x] Revisit prestate/state-diff behavior that relies on `fill_storage_changes` post-processing.
 - [x] Revisit historical hardfork mapping in `tests/it/repro/mod.rs`.

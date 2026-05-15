@@ -1,5 +1,6 @@
 use crate::tracing::{
     TransactionContext,
+    config::TraceStyle,
     js::{
         bindings::{
             CallFrame, Contract, EvmDbRef, FrameResult, JsEvmContext, MemoryRef, OpObj, StackRef,
@@ -8,6 +9,7 @@ use crate::tracing::{
         builtins::{PrecompileList, to_serde_value},
     },
     types::CallKind,
+    utils,
 };
 use alloc::{
     format,
@@ -433,14 +435,15 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for JsInspector {
         let _ = self.try_fault(step, db);
     }
 
-    fn call(&mut self, message: &mut Message<T>, _host: &mut T::Host) -> Option<MessageResult<T>> {
+    fn call(&mut self, message: &mut Message<T>, host: &mut T::Host) -> Option<MessageResult<T>> {
+        self.register_precompiles(host);
         self.push_call(message);
         if self.can_call_enter() {
             let call = self.active_call();
             let frame =
                 CallFrame { contract: call.contract.clone(), kind: call.kind, gas: call.gas_limit };
-            if self.try_enter(frame).is_err() {
-                return Some(js_error_to_revert(message.gas_limit));
+            if let Err(err) = self.try_enter(frame) {
+                return Some(js_error_to_revert(err));
             }
         }
         None
@@ -456,28 +459,25 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for JsInspector {
             let frame_result = FrameResult {
                 gas_used: result.gas.spent(),
                 output: result.output.clone(),
-                error: (!result.stop.is_success()).then(|| format!("{:?}", result.stop)),
+                error: utils::fmt_error_msg(result.stop, TraceStyle::Geth),
             };
-            if self.try_exit(frame_result).is_err() {
-                *result = js_error_to_revert(result.gas.limit());
+            if let Err(err) = self.try_exit(frame_result) {
+                *result = js_error_to_revert(err);
             }
         }
 
         self.pop_call();
     }
 
-    fn create(
-        &mut self,
-        message: &mut Message<T>,
-        _host: &mut T::Host,
-    ) -> Option<MessageResult<T>> {
+    fn create(&mut self, message: &mut Message<T>, host: &mut T::Host) -> Option<MessageResult<T>> {
+        self.register_precompiles(host);
         self.push_call(message);
         if self.can_call_enter() {
             let call = self.active_call();
             let frame =
                 CallFrame { contract: call.contract.clone(), kind: call.kind, gas: call.gas_limit };
-            if self.try_enter(frame).is_err() {
-                return Some(js_error_to_revert(message.gas_limit));
+            if let Err(err) = self.try_enter(frame) {
+                return Some(js_error_to_revert(err));
             }
         }
         None
@@ -493,10 +493,10 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for JsInspector {
             let frame_result = FrameResult {
                 gas_used: result.gas.spent(),
                 output: result.output.clone(),
-                error: (!result.stop.is_success()).then(|| format!("{:?}", result.stop)),
+                error: None,
             };
-            if self.try_exit(frame_result).is_err() {
-                *result = js_error_to_revert(result.gas.limit());
+            if let Err(err) = self.try_exit(frame_result) {
+                *result = js_error_to_revert(err);
             }
         }
 
@@ -524,8 +524,13 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for JsInspector {
     }
 }
 
-fn js_error_to_revert<T: EvmTypes>(gas_limit: u64) -> MessageResult<T> {
-    MessageResult { stop: InstrStop::Revert, gas: GasTracker::new(gas_limit), ..Default::default() }
+fn js_error_to_revert<T: EvmTypes>(err: JsError) -> MessageResult<T> {
+    MessageResult {
+        stop: InstrStop::Revert,
+        output: err.to_string().into_bytes().into(),
+        gas: GasTracker::new(0),
+        ..Default::default()
+    }
 }
 
 /// Error variants that can occur during JavaScript inspection.

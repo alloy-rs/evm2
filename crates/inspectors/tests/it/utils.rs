@@ -238,13 +238,7 @@ impl<I: InspectorSlot> TestEvmWithInspector<I> {
 
     pub fn inspect_tx(&mut self, tx: TxEnv) -> Result<ResultAndState, HandlerError> {
         let inspector = self.inspector.inspector_mut() as *mut I::Target;
-        let res = self.ctx.inspect_tx(tx, Some(inspector))?;
-        let inspector = self.inspector.inspector_mut();
-        let any = inspector as &mut dyn core::any::Any;
-        if let Some(tracer) = any.downcast_mut::<TracingInspector>() {
-            tracer.fill_storage_changes(&res.state);
-        }
-        Ok(res)
+        self.ctx.inspect_tx(tx, Some(inspector))
     }
 
     pub fn inspect_tx_commit(&mut self, tx: TxEnv) -> Result<ExecutionResult, HandlerError> {
@@ -555,7 +549,6 @@ macro_rules! impl_owned_inspector_slot {
 
 impl_owned_inspector_slot!(
     evm2_inspectors::access_list::AccessListInspector,
-    evm2_inspectors::edge_cov::EdgeCovInspector,
     evm2_inspectors::transfer::TransferInspector,
     evm2_inspectors::tracing::DebugInspector,
     evm2_inspectors::tracing::MuxInspector,
