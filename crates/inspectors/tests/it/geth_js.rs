@@ -1,8 +1,8 @@
 //! Geth Js tracer tests
 
 use crate::utils::{
-    AccountInfo, Bytecode, CacheDB, Context, EmptyDB, ResultAndState, SpecId, TransactTo, TxEnv,
-    deploy_contract,
+    AccountInfo, Bytecode, CacheDB, Context, EmptyDB, ResultAndState, SpecId, TestDbExt,
+    TransactTo, TxEnv, deploy_contract,
 };
 use alloy_primitives::{Address, U256, address, hex};
 use alloy_rpc_types_trace::geth::{GethDebugTracingOptions, GethTrace};
@@ -229,6 +229,7 @@ fn test_geth_jstracer_proxy_contract() {
     let proxy_addr = deploy_contract(&mut evm, proxy_code.into(), Address::ZERO, SpecId::CANCUN)
         .created_address()
         .unwrap();
+    evm.ctx().db_mut().load_account(deployer).info.balance = U256::from(1_000_000);
 
     // Set input data for ProxyFactory.transfer(address)
     let mut input_data = hex!("1a695230").to_vec(); // keccak256("transfer(address)")[:4]
@@ -245,8 +246,9 @@ fn test_geth_jstracer_proxy_contract() {
             const topic1 = log.stack.peek(2).toString(16);
             const caller = toHex(log.contract.getCaller());
             const token = toHex(log.contract.getAddress());
+            const value = log.contract.getValue().toString();
             if (topic1 === "ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef") {
-                this.data.push({ event: "Transfer", token, caller })
+                this.data.push({ event: "Transfer", token, caller, value })
             }
         }
     },
@@ -261,6 +263,7 @@ fn test_geth_jstracer_proxy_contract() {
             gas_limit: 1000000,
             kind: TransactTo::Call(proxy_addr),
             data: input_data.into(),
+            value: U256::from(7),
             ..Default::default()
         })
         .unwrap();
@@ -268,5 +271,8 @@ fn test_geth_jstracer_proxy_contract() {
 
     let (context, insp) = evm.ctx_inspector();
     let result = js_result(insp, &res, context);
-    assert_eq!(result, json!([{"event": "Transfer", "token": proxy_addr, "caller": deployer}]));
+    assert_eq!(
+        result,
+        json!([{"event": "Transfer", "token": proxy_addr, "caller": deployer, "value": "0"}])
+    );
 }

@@ -321,7 +321,11 @@ impl<'a> GethTraceBuilder<'a> {
                 state_diff.pre.insert(address, pre_state);
             }
             if let Some(current) = &account.current {
-                let post_code = if code_enabled { load_account_code(db, current)? } else { None };
+                let post_code = if code_enabled {
+                    load_account_code_from_changes(db, state, current)?
+                } else {
+                    None
+                };
                 let mut post_state =
                     AccountState::from_account_info(current.nonce, current.balance, post_code);
                 if storage_enabled && let Some(storage) = state.storage.get(&address) {
@@ -354,16 +358,6 @@ impl<'a> GethTraceBuilder<'a> {
                     post_state.storage.insert(key.into(), slot.current.into());
                 }
             }
-        }
-
-        if code_enabled
-            && state_diff
-                .post
-                .values()
-                .all(|account| account.code.as_ref().is_none_or(|code| code.as_ref().is_empty()))
-            && let Some((_, code)) = state.code.iter().next()
-        {
-            state_diff.post.entry(Address::ZERO).or_default().code = Some(code.original_bytes());
         }
 
         if self.spec_id.is_some_and(|spec_id| spec_id < SpecId::CANCUN) {
@@ -631,6 +625,20 @@ fn prestate_account_access(step: &CallTraceStep) -> Option<Address> {
     Some(Address::from_word(B256::from(word.to_be_bytes())))
 }
 
+fn load_account_code_from_changes(
+    db: &mut dyn DynDatabase,
+    state: &StateChanges,
+    account: &evm2::AccountInfo,
+) -> DbResult<Option<Bytes>> {
+    if let Some(code) = &account.code {
+        return Ok(Some(code.original_bytes()));
+    }
+    if let Some(code) = state.code.get(&account.code_hash) {
+        return Ok(Some(code.original_bytes()));
+    }
+    load_account_code(db, account)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -711,6 +719,38 @@ mod tests {
                 assert!(
                     !diff.pre.contains_key(&empty_addr),
                     "contracts created on empty addresses are still filtered out"
+                );
+            }
+            _ => panic!("expected diff prestate frame"),
+        }
+    }
+
+    #[test]
+    fn prestate_diff_loads_post_code_from_state_changes() {
+        let mut state = StateChanges::default();
+        let address = address!("1000000000000000000000000000000000000001");
+        let code = Bytecode::new_legacy(vec![op::PUSH1, 0x01, op::STOP].into());
+        let code_hash = code.hash_slow();
+        let mut account = AccountInfo::default().with_nonce(1);
+        account.code_hash = code_hash;
+        account.code = None;
+
+        state.code.insert(code_hash, code.clone());
+        state.accounts.insert(
+            address,
+            Tracked { original: None, current: Some(account), _non_exhaustive: () },
+        );
+
+        let mut db = CacheDB::new(EmptyDB::default());
+        let builder = GethTraceBuilder::new(Vec::new(), None);
+        let frame = builder.geth_prestate_diff_traces(&state, true, false, &mut db).unwrap();
+
+        match frame {
+            PreStateFrame::Diff(diff) => {
+                assert!(!diff.post.contains_key(&Address::ZERO));
+                assert_eq!(
+                    diff.post.get(&address).and_then(|account| account.code.as_ref()),
+                    Some(&code.original_bytes())
                 );
             }
             _ => panic!("expected diff prestate frame"),

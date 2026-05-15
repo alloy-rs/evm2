@@ -271,13 +271,10 @@ impl JsInspector {
             }
             _ => (message.caller, message.destination),
         };
+        let value =
+            if message.kind == MessageKind::DelegateCall { U256::ZERO } else { message.value };
         let call = CallStackItem {
-            contract: Contract {
-                caller,
-                contract,
-                value: message.value,
-                input: message.input.clone(),
-            },
+            contract: Contract { caller, contract, value, input: message.input.clone() },
             kind: message.kind.into(),
             gas_limit: message.gas_limit,
         };
