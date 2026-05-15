@@ -97,6 +97,7 @@ impl TracingInspector {
         self.step_stack.clear();
         self.last_journal_len = 0;
         self.log_index = 0;
+        self.spec_id = None;
     }
 
     /// Resets the inspector to its initial state.
@@ -248,20 +249,18 @@ impl TracingInspector {
         }
     }
 
-    fn fill_storage_step<T: EvmTypes<Host = Evm<T>>>(
+    fn storage_step<T: EvmTypes<Host = Evm<T>>>(
         step: &mut CallTraceStep,
         journal_entry: &JournalEntry,
         host: &Evm<T>,
-    ) {
-        let Some(reason) = (match step.op.get() {
+    ) -> Option<Box<StorageChange>> {
+        let reason = (match step.op.get() {
             op::SLOAD => Some(StorageChangeReason::SLOAD),
             op::SSTORE => Some(StorageChangeReason::SSTORE),
             _ => None,
-        }) else {
-            return;
-        };
+        })?;
 
-        step.storage_change = match journal_entry {
+        match journal_entry {
             JournalEntry::StorageChange { address, key, previous } => {
                 let value = host
                     .state()
@@ -284,7 +283,7 @@ impl TracingInspector {
                 Some(Box::new(StorageChange { key: *key, value, had_value: None, reason }))
             }
             _ => None,
-        };
+        }
     }
 }
 
@@ -397,11 +396,13 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for TracingInspector {
                 }
             }
             let journal = host.state().journal();
-            if self.config.record_state_diff
-                && journal.len() != self.last_journal_len
-                && let Some(entry) = journal.last()
-            {
-                Self::fill_storage_step(step, entry, host);
+            if self.config.record_state_diff && journal.len() != self.last_journal_len {
+                step.storage_change = journal
+                    .get(self.last_journal_len..)
+                    .unwrap_or_default()
+                    .iter()
+                    .rev()
+                    .find_map(|entry| Self::storage_step(step, entry, host));
             }
         }
     }

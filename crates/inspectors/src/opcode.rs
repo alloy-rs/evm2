@@ -78,7 +78,7 @@ impl<T: EvmTypes> Inspector<T> for OpcodeGasInspector {
     }
 
     fn call(&mut self, message: &mut Message<T>, _host: &mut T::Host) -> Option<MessageResult<T>> {
-        if message.depth == 1 {
+        if message.depth == 0 {
             return None;
         }
         let opcode = match message.kind {
@@ -98,7 +98,7 @@ impl<T: EvmTypes> Inspector<T> for OpcodeGasInspector {
         message: &mut Message<T>,
         _host: &mut T::Host,
     ) -> Option<MessageResult<T>> {
-        if message.depth == 1 {
+        if message.depth == 0 {
             return None;
         }
         let opcode = match message.kind {

@@ -184,11 +184,7 @@ impl JsInspector {
 
     /// Creates a fresh copy of this inspector, resetting all execution state.
     pub fn try_clone(&self) -> Result<Self, JsInspectorError> {
-        Self::with_transaction_context(
-            self.code.clone(),
-            self.config.clone(),
-            self.transaction_context,
-        )
+        Self::new(self.code.clone(), self.config.clone())
     }
 
     /// Calls the result function and returns the result as [`serde_json::Value`].

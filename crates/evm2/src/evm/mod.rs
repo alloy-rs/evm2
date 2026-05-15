@@ -19,7 +19,7 @@ use crate::{
 };
 use alloc::{boxed::Box, vec};
 use alloy_eips::eip2718::Typed2718;
-use alloy_primitives::{Address, B256, Bytes, Log, LogData};
+use alloy_primitives::{Address, B256, Bytes, Log, LogData, map::AddressSet};
 use derive_where::derive_where;
 
 pub mod config;
@@ -63,6 +63,7 @@ pub struct Evm<T: EvmTypes> {
     interpreter_pool: InterpreterPool<T>,
     #[derive_where(skip)]
     inspector: Option<Box<dyn Inspector<T>>>,
+    eip7702_authorities: AddressSet,
     db_error_code: Option<DbErrorCode>,
 }
 
@@ -131,6 +132,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             precompiles,
             interpreter_pool: InterpreterPool::new(),
             inspector: None,
+            eip7702_authorities: AddressSet::default(),
             db_error_code: None,
         }
     }
@@ -211,6 +213,17 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     #[inline]
     pub fn logs(&self) -> &[Log] {
         self.state.logs()
+    }
+
+    /// Returns EIP-7702 authorities warmed by the current in-flight transaction.
+    #[inline]
+    pub fn eip7702_authorities(&self) -> impl Iterator<Item = Address> + '_ {
+        self.eip7702_authorities.iter().copied()
+    }
+
+    #[inline]
+    pub(crate) fn record_eip7702_authority(&mut self, authority: Address) {
+        self.eip7702_authorities.insert(authority);
     }
 
     /// Returns the precompile provider.
@@ -350,6 +363,7 @@ impl<T: EvmTypes<Host = Self, Tx: Typed2718>> Evm<T> {
     /// Dispatches the transaction to the handler registered for its EIP-2718 type byte.
     pub fn transact(&mut self, tx: &T::Tx) -> HandlerResult<TxResult<T>> {
         self.db_error_code = None;
+        self.eip7702_authorities.clear();
         let handler = self.registry.try_get_by_type(tx.ty())?;
         let mut result = handler.call(tx, self);
         if let Ok(result) = &mut result {

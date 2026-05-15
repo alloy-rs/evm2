@@ -15,7 +15,7 @@ Expected port-wide differences:
 ## Source Files
 
 - [x] `src/lib.rs`
-  - Same module set is present.
+  - `edge_cov` is intentionally omitted; all other original modules are present.
   - Root docs were shortened and changed from revm to evm2.
   - Adds dependency keepalive imports.
   - Adds root `pub use opcode::{OpcodeGasInspector, immediate_size};`; original did not root-reexport these.
@@ -23,7 +23,7 @@ Expected port-wide differences:
 - [x] `src/access_list.rs`
   - Public type and methods are present.
   - `excluded()` and `touched_slots()` are now `const fn`.
-  - Top-level exclusion collection is not semantically identical: original excluded caller, call target or computed CREATE address, precompiles, and EIP-7702 authorization authorities. Port excludes `message.caller`, `message.destination`, and precompile warm addresses only.
+  - Top-level exclusion collection now matches the original shape: caller, call target or computed CREATE address via `message.destination`, precompiles, and recovered EIP-7702 authorization authorities recorded by evm2 transaction handling.
   - SLOAD/SSTORE and account-touch opcode handling is otherwise structurally equivalent using evm2 stack/message access.
 
 - [x] `src/edge_cov.rs`
@@ -33,7 +33,7 @@ Expected port-wide differences:
 - [x] `src/opcode.rs`
   - Public type and methods are present.
   - `immediate_size` API changed from `pub fn immediate_size(bytecode: &impl Immediates) -> u8` to `pub fn immediate_size(opcode: u8) -> u8`; original bytecode/RJUMPV special-case shape is not preserved.
-  - Call/create gas-limit subtraction is ported, but root-depth check changed from revm journal depth `0` to evm2 message depth `1`.
+  - Call/create gas-limit subtraction is ported, with root-depth exclusion mapped to evm2 top-level message depth `0`.
   - Embedded tests are present with evm2 harness rewrites.
 
 - [x] `src/storage.rs`
@@ -65,9 +65,9 @@ Expected port-wide differences:
 
 - [x] `src/tracing/builder/parity.rs`
   - Public builder remains, but result/state APIs now take output bytes and evm2 `StateChanges`.
-  - Adds `into_trace_results_with_state_and_db` and `populate_state_diff_with_db`.
-  - `populate_state_diff` no longer accepts a DB; no-DB and with-DB behavior differ, and the no-DB path does not mirror the original DB-backed creation/selfdestruct filtering exactly.
-  - `populate_vm_trace_bytecodes` now silently leaves code empty without a DB instead of using `DatabaseRef`.
+  - `into_trace_results_with_state` and `populate_state_diff` are DB-backed like the original, using `&mut dyn DynDatabase`.
+  - `populate_state_diff` is still not perfectly identical for account lifetime edge cases because evm2 `StateChanges` does not carry revm `Account` flags such as `is_created()` plus `is_selfdestructed()`.
+  - `populate_vm_trace_bytecodes` is DB-backed like the original, with evm2 dynamic database plumbing.
   - Embedded selfdestruct tests are present.
 
 - [x] `src/tracing/builder/walker.rs`
@@ -102,7 +102,7 @@ Expected port-wide differences:
 - [x] `src/tracing/js/mod.rs`
   - Public JS inspector exists, with `config`, `transaction_context`, runtime limits, `try_clone`, `json_result`, and `result`.
   - Adds public `code()` method; original did not expose it.
-  - `try_clone` now preserves transaction context; original cloned with default transaction context.
+  - `try_clone` resets execution and transaction context by constructing through `Self::new`, matching the original.
   - `json_result`/`result` signatures changed to evm2 transaction/result/database types.
   - JS hook error-to-revert output, precompile registration timing, and create-exit error reporting now match the original shape.
   - Embedded tests are present with evm2 harness rewrites.
@@ -110,8 +110,8 @@ Expected port-wide differences:
 - [x] `src/tracing/mod.rs`
   - Public `TracingInspector` and transaction context APIs are mostly present.
   - Deprecated original public methods `get_traces`, `get_traces_mut`, and `with_transaction_gas_limit` are intentionally omitted.
-  - Storage-diff recording now uses evm2 journal entries in `step_end`, matching the original shape.
-  - `fuse()` no longer clears `spec_id`; original cleared it.
+  - Storage-diff recording now uses evm2 journal entries in `step_end`, scanning the current step's journal window for storage entries so evm2 bookkeeping entries do not hide `SLOAD`/`SSTORE` changes.
+  - `fuse()` clears `spec_id`, matching the original.
   - Step recording, storage diff recording, and call lifecycle were materially rewritten around evm2 hooks/state.
   - `CallInputExt` helper trait was removed.
 
@@ -159,7 +159,7 @@ Expected port-wide differences:
   - Adds `js_result` helper for evm2 result/context conversion.
 
 - [x] `tests/it/main.rs`
-  - Same modules are present.
+  - `edge_cov` is intentionally omitted; all other original modules are present.
   - `geth_js` is now gated by both `std` and `js-tracer`, not only `js-tracer`.
 
 - [x] `tests/it/parity.rs`
@@ -168,12 +168,12 @@ Expected port-wide differences:
   - State-diff population now uses the DB-backed `populate_state_diff(state_diff, &res.state, db)` shape.
 
 - [x] `tests/it/repro/mod.rs`
-  - File is ported, but hardfork mapping changed materially: dependency on `alloy_hardforks` was removed, and DAO/Muir Glacier/Arrow Glacier/Gray Glacier block ranges no longer map to their original SpecIds.
+  - File is ported and uses `alloy_hardforks::EthereumHardfork::from_mainnet_block_number`; hardforks without EVM changes are intentionally mapped to the nearest supported evm2 `SpecId`, with fallback to `SpecId::NEXT`.
   - DB construction otherwise follows the original fixture prestate intent.
 
 - [x] `tests/it/repro/prestate.rs`
   - Original tests are present.
-  - Prestate builder calls now pass evm2 state changes and `None` DB.
+  - Prestate builder calls now pass evm2 state changes and DB access where needed for code/prestate population.
 
 - [x] `tests/it/test_native_bigint.rs`
   - Semantically identical; import order only.
@@ -195,7 +195,8 @@ Expected port-wide differences:
 
 ## Test And Fixture Coverage
 
-- [x] Original Rust test function names: all original names are present.
+- [x] Original Rust test function names: all non-`edge_cov` original names are present.
+  - `edge_cov` test names are intentionally omitted with `src/edge_cov.rs`.
   - Added tests in port: `records_failed_create_transfer_attempt`, `test_evm_db_reads_backing_dyn_database`, `test_geth_debug_inspector_jstracer`.
 
 - [x] Non-Rust testdata and writer snapshots:
