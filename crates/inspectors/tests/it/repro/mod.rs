@@ -48,53 +48,44 @@
 mod prestate;
 
 use crate::utils::{AccountInfo, Bytecode, CacheDB, EmptyDB, SpecId};
+use alloy_hardforks::EthereumHardfork;
 use alloy_primitives::Address;
 use alloy_rpc_types_trace::geth::AccountState;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 
-const MAINNET_HOMESTEAD_BLOCK: u64 = 1_150_000;
-const MAINNET_TANGERINE_BLOCK: u64 = 2_463_000;
-const MAINNET_SPURIOUS_DRAGON_BLOCK: u64 = 2_675_000;
-const MAINNET_BYZANTIUM_BLOCK: u64 = 4_370_000;
-const MAINNET_PETERSBURG_BLOCK: u64 = 7_280_000;
-const MAINNET_ISTANBUL_BLOCK: u64 = 9_069_000;
-const MAINNET_BERLIN_BLOCK: u64 = 12_244_000;
-const MAINNET_LONDON_BLOCK: u64 = 12_965_000;
-const MAINNET_PARIS_BLOCK: u64 = 15_537_394;
-const MAINNET_SHANGHAI_BLOCK: u64 = 17_034_870;
-const MAINNET_CANCUN_BLOCK: u64 = 19_426_587;
-const MAINNET_PRAGUE_BLOCK: u64 = 22_431_084;
+/// Convert an Ethereum hardfork to an evm2 SpecId.
+pub const fn spec_id_from_ethereum_hardfork(hardfork: EthereumHardfork) -> SpecId {
+    match hardfork {
+        EthereumHardfork::Frontier => SpecId::FRONTIER,
+        EthereumHardfork::Homestead | EthereumHardfork::Dao => SpecId::HOMESTEAD,
+        EthereumHardfork::Tangerine => SpecId::TANGERINE,
+        EthereumHardfork::SpuriousDragon => SpecId::SPURIOUS_DRAGON,
+        EthereumHardfork::Byzantium => SpecId::BYZANTIUM,
+        EthereumHardfork::Constantinople | EthereumHardfork::Petersburg => SpecId::PETERSBURG,
+        EthereumHardfork::Istanbul | EthereumHardfork::MuirGlacier => SpecId::ISTANBUL,
+        EthereumHardfork::Berlin => SpecId::BERLIN,
+        EthereumHardfork::London
+        | EthereumHardfork::ArrowGlacier
+        | EthereumHardfork::GrayGlacier => SpecId::LONDON,
+        EthereumHardfork::Paris => SpecId::MERGE,
+        EthereumHardfork::Shanghai => SpecId::SHANGHAI,
+        EthereumHardfork::Cancun => SpecId::CANCUN,
+        EthereumHardfork::Prague => SpecId::PRAGUE,
+        EthereumHardfork::Osaka
+        | EthereumHardfork::Bpo1
+        | EthereumHardfork::Bpo2
+        | EthereumHardfork::Bpo3
+        | EthereumHardfork::Bpo4
+        | EthereumHardfork::Bpo5 => SpecId::OSAKA,
+        EthereumHardfork::Amsterdam => SpecId::AMSTERDAM,
+        _ => SpecId::NEXT,
+    }
+}
 
 /// Determine the SpecId from a mainnet block number.
 pub const fn spec_id_from_block(block_number: u64) -> SpecId {
-    if block_number >= MAINNET_PRAGUE_BLOCK {
-        SpecId::PRAGUE
-    } else if block_number >= MAINNET_CANCUN_BLOCK {
-        SpecId::CANCUN
-    } else if block_number >= MAINNET_SHANGHAI_BLOCK {
-        SpecId::SHANGHAI
-    } else if block_number >= MAINNET_PARIS_BLOCK {
-        SpecId::MERGE
-    } else if block_number >= MAINNET_LONDON_BLOCK {
-        SpecId::LONDON
-    } else if block_number >= MAINNET_BERLIN_BLOCK {
-        SpecId::BERLIN
-    } else if block_number >= MAINNET_ISTANBUL_BLOCK {
-        SpecId::ISTANBUL
-    } else if block_number >= MAINNET_PETERSBURG_BLOCK {
-        SpecId::PETERSBURG
-    } else if block_number >= MAINNET_BYZANTIUM_BLOCK {
-        SpecId::BYZANTIUM
-    } else if block_number >= MAINNET_SPURIOUS_DRAGON_BLOCK {
-        SpecId::SPURIOUS_DRAGON
-    } else if block_number >= MAINNET_TANGERINE_BLOCK {
-        SpecId::TANGERINE
-    } else if block_number >= MAINNET_HOMESTEAD_BLOCK {
-        SpecId::HOMESTEAD
-    } else {
-        SpecId::FRONTIER
-    }
+    spec_id_from_ethereum_hardfork(EthereumHardfork::from_mainnet_block_number(block_number))
 }
 
 /// Build a CacheDB from prestate AccountState map.

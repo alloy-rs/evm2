@@ -215,4 +215,4 @@ Expected port-wide differences:
 - [ ] Revisit access-list exclusion semantics for CREATE and EIP-7702 authorities.
 - [ ] Revisit JS tracer thrown-error revert output, precompile registration timing, and create-exit error reporting.
 - [ ] Revisit prestate/state-diff behavior that relies on `fill_storage_changes` post-processing.
-- [ ] Revisit historical hardfork mapping in `tests/it/repro/mod.rs`.
+- [x] Revisit historical hardfork mapping in `tests/it/repro/mod.rs`.
