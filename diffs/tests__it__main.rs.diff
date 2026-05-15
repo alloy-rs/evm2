@@ -1,0 +1,14 @@
+--- /home/doni/github/paradigmxyz/revm-inspectors/tests/it/main.rs	2026-05-14 03:45:05.356711986 +0200
++++ /home/doni/github/danipopes/evm2.1/crates/inspectors/tests/it/main.rs	2026-05-15 02:24:57.713240959 +0200
+@@ -7,10 +7,8 @@
+ pub mod utils;
+ 
+ #[cfg(feature = "std")]
+-mod edge_cov;
+-#[cfg(feature = "std")]
+ mod geth;
+-#[cfg(feature = "js-tracer")]
++#[cfg(all(feature = "std", feature = "js-tracer"))]
+ mod geth_js;
+ #[cfg(feature = "std")]
+ mod parity;

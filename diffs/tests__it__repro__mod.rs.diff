@@ -1,0 +1,143 @@
+--- /home/doni/github/paradigmxyz/revm-inspectors/tests/it/repro/mod.rs	2026-05-14 03:45:05.357711983 +0200
++++ /home/doni/github/danipopes/evm2.1/crates/inspectors/tests/it/repro/mod.rs	2026-05-15 02:16:34.355106261 +0200
+@@ -47,85 +47,45 @@
+ 
+ mod prestate;
+ 
+-use alloy_hardforks::{ethereum::mainnet::*, EthereumHardfork};
++use crate::utils::{AccountInfo, Bytecode, CacheDB, EmptyDB, SpecId};
++use alloy_hardforks::EthereumHardfork;
+ use alloy_primitives::Address;
+ use alloy_rpc_types_trace::geth::AccountState;
+-use revm::{
+-    bytecode::Bytecode, database::CacheDB, database_interface::EmptyDB,
+-    primitives::hardfork::SpecId, state::AccountInfo,
+-};
+ use serde::Deserialize;
+ use std::collections::BTreeMap;
+ 
+-/// Convert an Ethereum hardfork to a revm SpecId.
+-pub fn spec_id_from_ethereum_hardfork(hardfork: EthereumHardfork) -> SpecId {
++/// Convert an Ethereum hardfork to an evm2 SpecId.
++pub const fn spec_id_from_ethereum_hardfork(hardfork: EthereumHardfork) -> SpecId {
+     match hardfork {
+         EthereumHardfork::Frontier => SpecId::FRONTIER,
+-        EthereumHardfork::Homestead => SpecId::HOMESTEAD,
+-        EthereumHardfork::Dao => SpecId::DAO_FORK,
++        EthereumHardfork::Homestead | EthereumHardfork::Dao => SpecId::HOMESTEAD,
+         EthereumHardfork::Tangerine => SpecId::TANGERINE,
+         EthereumHardfork::SpuriousDragon => SpecId::SPURIOUS_DRAGON,
+         EthereumHardfork::Byzantium => SpecId::BYZANTIUM,
+-        EthereumHardfork::Constantinople => SpecId::CONSTANTINOPLE,
+-        EthereumHardfork::Petersburg => SpecId::PETERSBURG,
+-        EthereumHardfork::Istanbul => SpecId::ISTANBUL,
+-        EthereumHardfork::MuirGlacier => SpecId::MUIR_GLACIER,
++        EthereumHardfork::Constantinople | EthereumHardfork::Petersburg => SpecId::PETERSBURG,
++        EthereumHardfork::Istanbul | EthereumHardfork::MuirGlacier => SpecId::ISTANBUL,
+         EthereumHardfork::Berlin => SpecId::BERLIN,
+-        EthereumHardfork::London => SpecId::LONDON,
+-        EthereumHardfork::ArrowGlacier => SpecId::ARROW_GLACIER,
+-        EthereumHardfork::GrayGlacier => SpecId::GRAY_GLACIER,
++        EthereumHardfork::London
++        | EthereumHardfork::ArrowGlacier
++        | EthereumHardfork::GrayGlacier => SpecId::LONDON,
+         EthereumHardfork::Paris => SpecId::MERGE,
+         EthereumHardfork::Shanghai => SpecId::SHANGHAI,
+         EthereumHardfork::Cancun => SpecId::CANCUN,
+         EthereumHardfork::Prague => SpecId::PRAGUE,
+-        EthereumHardfork::Osaka => SpecId::OSAKA,
+-        _ => SpecId::PRAGUE,
++        EthereumHardfork::Osaka
++        | EthereumHardfork::Bpo1
++        | EthereumHardfork::Bpo2
++        | EthereumHardfork::Bpo3
++        | EthereumHardfork::Bpo4
++        | EthereumHardfork::Bpo5 => SpecId::OSAKA,
++        EthereumHardfork::Amsterdam => SpecId::AMSTERDAM,
++        _ => SpecId::NEXT,
+     }
+ }
+ 
+ /// Determine the SpecId from a mainnet block number.
+-pub fn spec_id_from_block(block_number: u64) -> SpecId {
+-    let hardfork = hardfork_from_mainnet_block(block_number);
+-    spec_id_from_ethereum_hardfork(hardfork)
+-}
+-
+-/// Determine the Ethereum hardfork active at a mainnet block number.
+-fn hardfork_from_mainnet_block(block_number: u64) -> EthereumHardfork {
+-    if block_number >= MAINNET_PRAGUE_BLOCK {
+-        EthereumHardfork::Prague
+-    } else if block_number >= MAINNET_CANCUN_BLOCK {
+-        EthereumHardfork::Cancun
+-    } else if block_number >= MAINNET_SHANGHAI_BLOCK {
+-        EthereumHardfork::Shanghai
+-    } else if block_number >= MAINNET_PARIS_BLOCK {
+-        EthereumHardfork::Paris
+-    } else if block_number >= MAINNET_GRAY_GLACIER_BLOCK {
+-        EthereumHardfork::GrayGlacier
+-    } else if block_number >= MAINNET_ARROW_GLACIER_BLOCK {
+-        EthereumHardfork::ArrowGlacier
+-    } else if block_number >= MAINNET_LONDON_BLOCK {
+-        EthereumHardfork::London
+-    } else if block_number >= MAINNET_BERLIN_BLOCK {
+-        EthereumHardfork::Berlin
+-    } else if block_number >= MAINNET_MUIR_GLACIER_BLOCK {
+-        EthereumHardfork::MuirGlacier
+-    } else if block_number >= MAINNET_ISTANBUL_BLOCK {
+-        EthereumHardfork::Istanbul
+-    } else if block_number >= MAINNET_PETERSBURG_BLOCK {
+-        EthereumHardfork::Petersburg
+-    } else if block_number >= MAINNET_BYZANTIUM_BLOCK {
+-        EthereumHardfork::Byzantium
+-    } else if block_number >= MAINNET_SPURIOUS_DRAGON_BLOCK {
+-        EthereumHardfork::SpuriousDragon
+-    } else if block_number >= MAINNET_TANGERINE_BLOCK {
+-        EthereumHardfork::Tangerine
+-    } else if block_number >= MAINNET_DAO_BLOCK {
+-        EthereumHardfork::Dao
+-    } else if block_number >= MAINNET_HOMESTEAD_BLOCK {
+-        EthereumHardfork::Homestead
+-    } else {
+-        EthereumHardfork::Frontier
+-    }
++pub const fn spec_id_from_block(block_number: u64) -> SpecId {
++    spec_id_from_ethereum_hardfork(EthereumHardfork::from_mainnet_block_number(block_number))
+ }
+ 
+ /// Build a CacheDB from prestate AccountState map.
+@@ -138,7 +98,7 @@
+         let code = state.code.as_ref().map(|c| Bytecode::new_raw(c.clone()));
+ 
+         db.insert_account_info(
+-            *addr,
++            addr,
+             AccountInfo {
+                 balance,
+                 nonce,
+@@ -150,7 +110,7 @@
+ 
+         // Insert storage
+         for (slot, value) in &state.storage {
+-            db.insert_account_storage(*addr, (*slot).into(), (*value).into()).unwrap();
++            db.insert_account_storage(addr, &(*slot).into(), &(*value).into());
+         }
+     }
+ 
+@@ -215,14 +175,14 @@
+ 
+     /// Set the spec ID (hardfork) for EVM execution.
+     #[must_use]
+-    pub fn with_spec_id(mut self, spec_id: SpecId) -> Self {
++    pub const fn with_spec_id(mut self, spec_id: SpecId) -> Self {
+         self.spec_id = spec_id;
+         self
+     }
+ 
+     /// Set the spec ID based on a mainnet block number.
+     #[must_use]
+-    pub fn with_block_number(mut self, block_number: u64) -> Self {
++    pub const fn with_block_number(mut self, block_number: u64) -> Self {
+         self.spec_id = spec_id_from_block(block_number);
+         self
+     }

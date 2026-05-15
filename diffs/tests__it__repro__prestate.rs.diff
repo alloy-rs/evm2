@@ -1,0 +1,57 @@
+--- /home/doni/github/paradigmxyz/revm-inspectors/tests/it/repro/prestate.rs	2026-05-14 03:45:05.358570751 +0200
++++ /home/doni/github/danipopes/evm2.1/crates/inspectors/tests/it/repro/prestate.rs	2026-05-15 01:36:25.680246485 +0200
+@@ -3,13 +3,10 @@
+ //! These tests demonstrate replaying mainnet transactions using prestate tracer output.
+ 
+ use super::ReproContext;
+-use alloy_primitives::{address, hex, Bytes};
++use crate::utils::{Context, SpecId, TransactTo, TxEnv};
++use alloy_primitives::{Bytes, address, hex};
+ use alloy_rpc_types_trace::geth::{DiffMode, PreStateConfig, PreStateFrame};
+-use revm::{
+-    context::TxEnv, context_interface::TransactTo, primitives::hardfork::SpecId, Context,
+-    InspectEvm, MainBuilder, MainContext,
+-};
+-use revm_inspectors::tracing::{TracingInspector, TracingInspectorConfig};
++use evm2_inspectors::tracing::{TracingInspector, TracingInspectorConfig};
+ 
+ /// Raw prestate tracer RPC response for mainnet tx:
+ /// 0x391f4b6a382d3bcc3120adc2ea8c62003e604e487d97281129156fd284a1a89d
+@@ -44,8 +41,8 @@
+ 
+     let mut inspector =
+         TracingInspector::new(TracingInspectorConfig::from_geth_prestate_config(&prestate_config));
++    let mut db = ctx.db.clone();
+ 
+-    let db = ctx.db.clone();
+     let mut evm = Context::mainnet()
+         .with_db(ctx.db.clone())
+         .modify_cfg_chained(|cfg| cfg.spec = ctx.spec_id)
+@@ -59,7 +56,7 @@
+     let frame = inspector
+         .with_transaction_gas_used(res.result.tx_gas_used())
+         .geth_builder()
+-        .geth_prestate_traces(&res, &prestate_config, db)
++        .geth_prestate_traces(&res.state, &prestate_config, &mut db)
+         .unwrap();
+ 
+     // Verify the trace contains expected accounts
+@@ -84,8 +81,8 @@
+ 
+     let mut inspector =
+         TracingInspector::new(TracingInspectorConfig::from_geth_prestate_config(&prestate_config));
++    let mut db = ctx.db.clone();
+ 
+-    let db = ctx.db.clone();
+     let mut evm = Context::mainnet()
+         .with_db(ctx.db.clone())
+         .modify_cfg_chained(|cfg| cfg.spec = ctx.spec_id)
+@@ -98,7 +95,7 @@
+     let frame = inspector
+         .with_transaction_gas_used(res.result.tx_gas_used())
+         .geth_builder()
+-        .geth_prestate_traces(&res, &prestate_config, db)
++        .geth_prestate_traces(&res.state, &prestate_config, &mut db)
+         .unwrap();
+ 
+     // In diff mode, we should see the changes between pre and post state

@@ -1,0 +1,270 @@
+--- /home/doni/github/paradigmxyz/revm-inspectors/src/tracing/mux.rs	2026-05-14 03:45:05.356711986 +0200
++++ /home/doni/github/danipopes/evm2.1/crates/inspectors/src/tracing/mux.rs	2026-05-15 01:54:55.859545123 +0200
+@@ -1,21 +1,16 @@
+ use crate::tracing::{FourByteInspector, TracingInspector, TracingInspectorConfig};
+ use alloc::vec::Vec;
+-use alloy_primitives::{map::HashMap, Address, Log, U256};
++use alloy_primitives::{Address, Log, U256, map::HashMap};
+ use alloy_rpc_types_eth::TransactionInfo;
+ use alloy_rpc_types_trace::geth::{
+-    mux::{MuxConfig, MuxFrame},
+     CallConfig, FlatCallConfig, FourByteFrame, GethDebugBuiltInTracerType, GethDebugTracerType,
+     NoopFrame, PreStateConfig,
++    mux::{MuxConfig, MuxFrame},
+ };
+-use revm::{
+-    context_interface::{
+-        result::{HaltReasonTr, ResultAndState},
+-        ContextTr,
+-    },
+-    handler::FrameResult,
+-    inspector::JournalExt,
+-    interpreter::{CallInputs, CallOutcome, CreateInputs, CreateOutcome, FrameInput, Interpreter},
+-    DatabaseRef, Inspector,
++use evm2::{
++    Evm, EvmTypes, Inspector,
++    evm::{DbResult, DynDatabase, StateChanges},
++    interpreter::{Interpreter, Message, MessageResult},
+ };
+ use thiserror::Error;
+ 
+@@ -41,7 +36,7 @@
+ 
+ impl MuxInspector {
+     /// Try creating a new instance of [MuxInspector] from the given [MuxConfig].
+-    pub fn try_from_config(config: MuxConfig) -> Result<MuxInspector, Error> {
++    pub fn try_from_config(config: MuxConfig) -> Result<Self, Error> {
+         let mut four_byte = None;
+         let mut inspector_config = TracingInspectorConfig::none();
+         let mut configs = Vec::new();
+@@ -104,26 +99,24 @@
+ 
+         let tracing = (!configs.is_empty()).then(|| TracingInspector::new(inspector_config));
+ 
+-        Ok(MuxInspector { four_byte, tracing, configs })
++        Ok(Self { four_byte, tracing, configs })
+     }
+ 
+     /// Try converting this [MuxInspector] into a [MuxFrame].
+-    pub fn try_into_mux_frame<DB: DatabaseRef>(
++    pub fn try_into_mux_frame(
+         &self,
+-        result: &ResultAndState<impl HaltReasonTr>,
+-        db: &DB,
++        gas_used: u64,
++        state: &StateChanges,
+         tx_info: TransactionInfo,
+-    ) -> Result<MuxFrame, DB::Error> {
++        db: &mut dyn DynDatabase,
++    ) -> DbResult<MuxFrame> {
+         let mut frame = HashMap::with_capacity_and_hasher(self.configs.len(), Default::default());
+ 
+         for (tracer_type, config) in &self.configs {
+             let trace = match config {
+                 TraceConfig::Call(call_config) => {
+                     if let Some(inspector) = &self.tracing {
+-                        inspector
+-                            .geth_builder()
+-                            .geth_call_traces(*call_config, result.result.tx_gas_used())
+-                            .into()
++                        inspector.geth_builder().geth_call_traces(*call_config, gas_used).into()
+                     } else {
+                         continue;
+                     }
+@@ -132,7 +125,7 @@
+                     if let Some(inspector) = &self.tracing {
+                         inspector
+                             .geth_builder()
+-                            .geth_prestate_traces(result, prestate_config, db)?
++                            .geth_prestate_traces(state, prestate_config, db)?
+                             .into()
+                     } else {
+                         continue;
+@@ -167,88 +160,80 @@
+     }
+ }
+ 
+-impl<CTX> Inspector<CTX> for MuxInspector
+-where
+-    CTX: ContextTr<Journal: JournalExt>,
+-{
+-    #[inline]
+-    fn initialize_interp(&mut self, interp: &mut Interpreter, context: &mut CTX) {
+-        if let Some(ref mut inspector) = self.four_byte {
+-            inspector.initialize_interp(interp, context);
+-        }
+-        if let Some(ref mut inspector) = self.tracing {
+-            inspector.initialize_interp(interp, context);
+-        }
+-    }
+-
++impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for MuxInspector {
+     #[inline]
+-    fn step(&mut self, interp: &mut Interpreter, context: &mut CTX) {
++    fn initialize_interp(&mut self, interp: &mut Interpreter<'_, T>, host: &mut T::Host) {
+         if let Some(ref mut inspector) = self.four_byte {
+-            inspector.step(interp, context);
++            inspector.initialize_interp(interp, host);
+         }
+         if let Some(ref mut inspector) = self.tracing {
+-            inspector.step(interp, context);
++            inspector.initialize_interp(interp, host);
+         }
+     }
+ 
+     #[inline]
+-    fn step_end(&mut self, interp: &mut Interpreter, context: &mut CTX) {
++    fn step(&mut self, interp: &mut Interpreter<'_, T>, host: &mut T::Host) {
+         if let Some(ref mut inspector) = self.four_byte {
+-            inspector.step_end(interp, context);
++            inspector.step(interp, host);
+         }
+         if let Some(ref mut inspector) = self.tracing {
+-            inspector.step_end(interp, context);
++            inspector.step(interp, host);
+         }
+     }
+ 
+     #[inline]
+-    fn log(&mut self, context: &mut CTX, log: Log) {
++    fn step_end(&mut self, interp: &mut Interpreter<'_, T>, host: &mut T::Host) {
+         if let Some(ref mut inspector) = self.four_byte {
+-            inspector.log(context, log.clone());
++            inspector.step_end(interp, host);
+         }
+         if let Some(ref mut inspector) = self.tracing {
+-            inspector.log(context, log);
++            inspector.step_end(interp, host);
+         }
+     }
+ 
+     #[inline]
+-    fn log_full(&mut self, interp: &mut Interpreter, context: &mut CTX, log: Log) {
++    fn log(&mut self, log: &Log, host: &mut T::Host) {
+         if let Some(ref mut inspector) = self.four_byte {
+-            inspector.log_full(interp, context, log.clone());
++            <FourByteInspector as Inspector<T>>::log(inspector, log, host);
+         }
+         if let Some(ref mut inspector) = self.tracing {
+-            inspector.log_full(interp, context, log);
++            <TracingInspector as Inspector<T>>::log(inspector, log, host);
+         }
+     }
+ 
+     #[inline]
+-    fn call(&mut self, context: &mut CTX, inputs: &mut CallInputs) -> Option<CallOutcome> {
++    fn call(&mut self, message: &mut Message<T>, host: &mut T::Host) -> Option<MessageResult<T>> {
+         if let Some(ref mut inspector) = self.four_byte {
+-            let _ = inspector.call(context, inputs);
++            let _ = inspector.call(message, host);
+         }
+         if let Some(ref mut inspector) = self.tracing {
+-            return inspector.call(context, inputs);
++            return inspector.call(message, host);
+         }
+         None
+     }
+ 
+     #[inline]
+-    fn call_end(&mut self, context: &mut CTX, inputs: &CallInputs, outcome: &mut CallOutcome) {
++    fn call_end(
++        &mut self,
++        message: &Message<T>,
++        result: &mut MessageResult<T>,
++        host: &mut T::Host,
++    ) {
+         if let Some(ref mut inspector) = self.four_byte {
+-            inspector.call_end(context, inputs, outcome);
++            inspector.call_end(message, result, host);
+         }
+         if let Some(ref mut inspector) = self.tracing {
+-            inspector.call_end(context, inputs, outcome);
++            inspector.call_end(message, result, host);
+         }
+     }
+ 
+     #[inline]
+-    fn create(&mut self, context: &mut CTX, inputs: &mut CreateInputs) -> Option<CreateOutcome> {
++    fn create(&mut self, message: &mut Message<T>, host: &mut T::Host) -> Option<MessageResult<T>> {
+         if let Some(ref mut inspector) = self.four_byte {
+-            let _ = inspector.create(context, inputs);
++            let _ = inspector.create(message, host);
+         }
+         if let Some(ref mut inspector) = self.tracing {
+-            return inspector.create(context, inputs);
++            return inspector.create(message, host);
+         }
+         None
+     }
+@@ -256,55 +241,35 @@
+     #[inline]
+     fn create_end(
+         &mut self,
+-        context: &mut CTX,
+-        inputs: &CreateInputs,
+-        outcome: &mut CreateOutcome,
++        message: &Message<T>,
++        result: &mut MessageResult<T>,
++        host: &mut T::Host,
+     ) {
+         if let Some(ref mut inspector) = self.four_byte {
+-            inspector.create_end(context, inputs, outcome);
+-        }
+-        if let Some(ref mut inspector) = self.tracing {
+-            inspector.create_end(context, inputs, outcome);
+-        }
+-    }
+-
+-    #[inline]
+-    fn selfdestruct(&mut self, contract: Address, target: Address, value: U256) {
+-        if let Some(ref mut inspector) = self.four_byte {
+-            <FourByteInspector as Inspector<CTX>>::selfdestruct(inspector, contract, target, value);
+-        }
+-        if let Some(ref mut inspector) = self.tracing {
+-            <TracingInspector as Inspector<CTX>>::selfdestruct(inspector, contract, target, value);
+-        }
+-    }
+-
+-    #[inline]
+-    fn frame_start(
+-        &mut self,
+-        context: &mut CTX,
+-        frame_input: &mut FrameInput,
+-    ) -> Option<FrameResult> {
+-        if let Some(ref mut inspector) = self.four_byte {
+-            let _ = inspector.frame_start(context, frame_input);
++            inspector.create_end(message, result, host);
+         }
+         if let Some(ref mut inspector) = self.tracing {
+-            return inspector.frame_start(context, frame_input);
++            inspector.create_end(message, result, host);
+         }
+-        None
+     }
+ 
+     #[inline]
+-    fn frame_end(
++    fn selfdestruct(
+         &mut self,
+-        context: &mut CTX,
+-        frame_input: &FrameInput,
+-        frame_result: &mut FrameResult,
++        contract: &Address,
++        target: &Address,
++        value: &U256,
++        host: &mut T::Host,
+     ) {
+         if let Some(ref mut inspector) = self.four_byte {
+-            inspector.frame_end(context, frame_input, frame_result);
++            <FourByteInspector as Inspector<T>>::selfdestruct(
++                inspector, contract, target, value, host,
++            );
+         }
+         if let Some(ref mut inspector) = self.tracing {
+-            inspector.frame_end(context, frame_input, frame_result);
++            <TracingInspector as Inspector<T>>::selfdestruct(
++                inspector, contract, target, value, host,
++            );
+         }
+     }
+ }

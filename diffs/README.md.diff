@@ -1,0 +1,22 @@
+--- /home/doni/github/paradigmxyz/revm-inspectors/README.md	2025-09-02 21:09:55.289784500 +0200
++++ /home/doni/github/danipopes/evm2.1/crates/inspectors/README.md	2026-05-13 19:09:24.319673560 +0200
+@@ -1,15 +1,15 @@
+-# revm-inspectors
++# evm2-inspectors
+ 
+-Common [`revm`] inspector implementations.
++Common [`evm2`] inspector implementations.
+ 
+-Originally part of [`reth`] as the `reth-revm-inspectors` crate.
++Originally part of [`reth`] as the `reth-evm2-inspectors` crate.
+ 
+ ## Users
+ 
+ - [`reth`]
+ - [`foundry`]
+ 
+-[`revm`]: https://github.com/bluealloy/revm/
++[`evm2`]: https://github.com/danipopes/evm2/
+ [`reth`]: https://github.com/paradigmxyz/reth/
+ [`reth`]: https://github.com/paradigmxyz/reth/
+ [`foundry`]: https://github.com/foundry-rs/foundry/

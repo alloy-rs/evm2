@@ -1,0 +1,319 @@
+# Fresh Upstream Diff Review Todo
+
+Baseline: `/home/doni/github/paradigmxyz/revm-inspectors`.
+
+Port: `/home/doni/github/danipopes/evm2.1/crates/inspectors`.
+
+Diff artifacts: `./diffs/*.diff`.
+
+Legend: `[ ]` pending, `[x]` reviewed, `[!]` needs follow-up.
+
+## Source and Package Files
+
+- [x] `Cargo.toml` -> `diffs/Cargo.toml.diff`
+  - Workspace metadata/dependencies/features are expected evm2 substitutions; no API concern.
+- [x] `README.md` -> `diffs/README.md.diff`
+  - Name/link substitution only.
+- [x] `src/access_list.rs` -> `diffs/src__access_list.rs.diff`
+  - API and opcode collection match; exclusions use evm2 top-level message/precompile/7702 data.
+- [x] `src/edge_cov.rs` -> missing in port
+  - Intentionally omitted with edge coverage.
+- [x] `src/lib.rs` -> `diffs/src__lib.rs.diff`
+  - Public modules match except intentional `edge_cov` omission; dependency keepalive imports only.
+- [x] `src/opcode.rs` -> `diffs/src__opcode.rs.diff`
+  - Semantics match after evm2 message substitutions; `immediate_size(u8)` difference is expected because RJUMPV decoding is not implemented.
+- [x] `src/storage.rs` -> `diffs/src__storage.rs.diff`
+  - SLOAD address/slot counting maps cleanly to evm2 message destination and stack access.
+- [x] `src/tracing/arena.rs` -> `diffs/src__tracing__arena.rs.diff`
+  - Only `nodes_mut` constness differs.
+- [x] `src/tracing/builder/geth.rs` -> `diffs/src__tracing__builder__geth.rs.diff`
+  - Geth builders preserve upstream call/default/ERC-7562 behavior with evm2 types. Prestate differs structurally because evm2 exposes `StateChanges` instead of revm's journaled state map, so touched accounts and storage are reconstructed from trace steps/state changes. Post-code loading now checks `StateChanges::code` by code hash before DB fallback.
+- [x] `src/tracing/builder/mod.rs` -> `diffs/src__tracing__builder__mod.rs.diff`
+  - Empty diff.
+- [x] `src/tracing/builder/parity.rs` -> `diffs/src__tracing__builder__parity.rs.diff`
+  - Trace/vmTrace construction matches upstream. StateDiff population maps to `StateChanges` plus pre-state DB reads, with output bytes passed directly because evm2 result plumbing already split them out.
+- [x] `src/tracing/builder/walker.rs` -> `diffs/src__tracing__builder__walker.rs.diff`
+  - Empty diff.
+- [x] `src/tracing/config.rs` -> `diffs/src__tracing__config.rs.diff`
+  - Only evm2 opcode import/constness and prestate config forcing steps/state-diffs/stack snapshots so prestate can be reconstructed without revm's state map.
+- [x] `src/tracing/debug.rs` -> `diffs/src__tracing__debug.rs.diff`
+  - Dispatcher behavior matches upstream tracers after evm2 result/tx/block/db substitutions. `Noop` is a unit variant because there is no stored revm noop inspector, and missing frame/log_full hooks are expected.
+- [x] `src/tracing/fourbyte.rs` -> `diffs/src__tracing__fourbyte.rs.diff`
+  - Selector/calldata counting matches; evm2 messages already carry materialized calldata.
+- [x] `src/tracing/js/bindings.rs` -> `diffs/src__tracing__js__bindings.rs.diff`
+  - JS object surface is preserved. Internal DB access is split into in-flight `State` reads and final `StateChanges` reads because evm2 lacks revm's `EvmState + DatabaseRef` pairing; the extra reader trait is private binding infrastructure, not public API.
+- [x] `src/tracing/js/builtins.rs` -> `diffs/src__tracing__js__builtins.rs.diff`
+  - Import/borrow formatting only; builtin semantics and tests match.
+- [x] `src/tracing/js/mod.rs` -> `diffs/src__tracing__js__mod.rs.diff`
+  - Hook behavior maps to evm2 messages/results; call stack, step/fault/result objects, precompile registration, runtime limits, and error-to-revert behavior match upstream. Delegatecall value has already been fixed to upstream semantics.
+- [x] `src/tracing/mod.rs` -> `diffs/src__tracing__mod.rs.diff`
+  - Core tracing semantics match with evm2 hooks: root trace starts in `initialize_interp`, step bookkeeping uses an explicit stack, logs use a global index, storage changes scan new journal entries, and precompile exclusion uses evm2 precompile/message data. Deprecated getters and reusable step vec pool are intentionally absent.
+- [x] `src/tracing/mux.rs` -> `diffs/src__tracing__mux.rs.diff`
+  - Mux config and output assembly match upstream. Differences are evm2 inspector hook signatures and passing gas/state/db directly into underlying builders.
+- [x] `src/tracing/opcount.rs` -> `diffs/src__tracing__opcount.rs.diff`
+  - Opcode step counting is equivalent.
+- [x] `src/tracing/types.rs` -> `diffs/src__tracing__types.rs.diff`
+  - Data shape matches after `InstrStop` substitution; removed revm-only conversion impls are replaced in `tracing/mod.rs`.
+- [x] `src/tracing/utils.rs` -> `diffs/src__tracing__utils.rs.diff`
+  - Error/gas/revert helpers are equivalent after evm2 substitutions; `load_account_code` now propagates DB errors.
+- [x] `src/tracing/writer.rs` -> `diffs/src__tracing__writer.rs.diff`
+  - Writer output logic matches upstream; changes are `InstrStop` substitution, constness, formatting, and `is_success()` naming.
+- [x] `src/transfer.rs` -> `diffs/src__transfer.rs.diff`
+  - Transfer recording matches upstream for call/create/selfdestruct after evm2 message/log substitutions.
+
+## Integration Tests and Fixtures
+
+- [x] `testdata/Counter.sol` -> `diffs/testdata__Counter.sol.diff`
+  - Empty diff.
+- [x] `testdata/repro/tx-selfdestruct.json` -> `diffs/testdata__repro__tx-selfdestruct.json.diff`
+  - Empty diff.
+- [x] `tests/it/accesslist.rs` -> `diffs/tests__it__accesslist.rs.diff`
+  - Same test scenario; harness rewritten to evm2 transaction helper.
+- [x] `tests/it/edge_cov.rs` -> missing in port
+  - Intentionally omitted with edge coverage. This is the only upstream test name absent from the port.
+- [x] `tests/it/geth.rs` -> `diffs/tests__it__geth.rs.diff`
+  - All upstream geth tests are present with evm2 harness/result substitutions. Assertions are preserved; prestate/state-diff expected values account for evm2 state reconstruction and prior fixed code-loading behavior.
+- [x] `tests/it/geth_js.rs` -> `diffs/tests__it__geth_js.rs.diff`
+  - Upstream JS tracer tests are present with evm2 harness substitutions. One additional debug-inspector JS tracer regression covers the ported dispatcher path.
+- [x] `tests/it/main.rs` -> `diffs/tests__it__main.rs.diff`
+  - Same integration module set except intentional `edge_cov` removal and shared evm2 utils module.
+- [x] `tests/it/parity.rs` -> `diffs/tests__it__parity.rs.diff`
+  - All upstream parity tests are present with evm2 harness/result substitutions. Assertions and fixture coverage are preserved.
+- [x] `tests/it/repro/mod.rs` -> `diffs/tests__it__repro__mod.rs.diff`
+  - Fixture loading/prestate conversion preserved; hardfork mapping uses alloy as requested and maps to evm2 `SpecId`.
+- [x] `tests/it/repro/prestate.rs` -> `diffs/tests__it__repro__prestate.rs.diff`
+  - Selfdestruct prestate repro tests are present with evm2 tx helper substitutions.
+- [x] `tests/it/test_native_bigint.rs` -> `diffs/tests__it__test_native_bigint.rs.diff`
+  - Empty semantic diff; module import path adjusted.
+- [x] `tests/it/transfer.rs` -> `diffs/tests__it__transfer.rs.diff`
+  - Upstream transfer test preserved with evm2 harness substitutions. Added regression for failed CREATE transfer attempt.
+- [x] `tests/it/utils.rs` -> `diffs/tests__it__utils.rs.diff`
+  - This is intentionally the largest test-only divergence: it replaces revm harness helpers with evm2 transaction/block/state helpers. No production API is introduced here.
+- [x] `tests/it/writer.rs` -> `diffs/tests__it__writer.rs.diff`
+  - Same writer tests and snapshot comparison logic; only path/harness substitutions.
+
+All `tests/it/writer/**` snapshot files below have empty diff artifacts, so their contents are byte-for-byte unchanged from upstream.
+- [x] `tests/it/writer/deploy_fail/decoded.bytecodes.storage.svg` -> `diffs/tests__it__writer__deploy_fail__decoded.bytecodes.storage.svg.diff`
+- [x] `tests/it/writer/deploy_fail/decoded.bytecodes.storage.txt` -> `diffs/tests__it__writer__deploy_fail__decoded.bytecodes.storage.txt.diff`
+- [x] `tests/it/writer/deploy_fail/decoded.bytecodes.svg` -> `diffs/tests__it__writer__deploy_fail__decoded.bytecodes.svg.diff`
+- [x] `tests/it/writer/deploy_fail/decoded.bytecodes.txt` -> `diffs/tests__it__writer__deploy_fail__decoded.bytecodes.txt.diff`
+- [x] `tests/it/writer/deploy_fail/decoded.storage.svg` -> `diffs/tests__it__writer__deploy_fail__decoded.storage.svg.diff`
+- [x] `tests/it/writer/deploy_fail/decoded.storage.txt` -> `diffs/tests__it__writer__deploy_fail__decoded.storage.txt.diff`
+- [x] `tests/it/writer/deploy_fail/decoded.svg` -> `diffs/tests__it__writer__deploy_fail__decoded.svg.diff`
+- [x] `tests/it/writer/deploy_fail/decoded.txt` -> `diffs/tests__it__writer__deploy_fail__decoded.txt.diff`
+- [x] `tests/it/writer/deploy_fail/raw.bytecodes.storage.svg` -> `diffs/tests__it__writer__deploy_fail__raw.bytecodes.storage.svg.diff`
+- [x] `tests/it/writer/deploy_fail/raw.bytecodes.storage.txt` -> `diffs/tests__it__writer__deploy_fail__raw.bytecodes.storage.txt.diff`
+- [x] `tests/it/writer/deploy_fail/raw.bytecodes.svg` -> `diffs/tests__it__writer__deploy_fail__raw.bytecodes.svg.diff`
+- [x] `tests/it/writer/deploy_fail/raw.bytecodes.txt` -> `diffs/tests__it__writer__deploy_fail__raw.bytecodes.txt.diff`
+- [x] `tests/it/writer/deploy_fail/raw.storage.svg` -> `diffs/tests__it__writer__deploy_fail__raw.storage.svg.diff`
+- [x] `tests/it/writer/deploy_fail/raw.storage.txt` -> `diffs/tests__it__writer__deploy_fail__raw.storage.txt.diff`
+- [x] `tests/it/writer/deploy_fail/raw.svg` -> `diffs/tests__it__writer__deploy_fail__raw.svg.diff`
+- [x] `tests/it/writer/deploy_fail/raw.txt` -> `diffs/tests__it__writer__deploy_fail__raw.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/0.bytecodes.decoded.svg` -> `diffs/tests__it__writer__test_trace_printing__0.bytecodes.decoded.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/0.bytecodes.decoded.txt` -> `diffs/tests__it__writer__test_trace_printing__0.bytecodes.decoded.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/0.bytecodes.storage.decoded.svg` -> `diffs/tests__it__writer__test_trace_printing__0.bytecodes.storage.decoded.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/0.bytecodes.storage.decoded.txt` -> `diffs/tests__it__writer__test_trace_printing__0.bytecodes.storage.decoded.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/0.bytecodes.storage.svg` -> `diffs/tests__it__writer__test_trace_printing__0.bytecodes.storage.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/0.bytecodes.storage.txt` -> `diffs/tests__it__writer__test_trace_printing__0.bytecodes.storage.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/0.bytecodes.svg` -> `diffs/tests__it__writer__test_trace_printing__0.bytecodes.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/0.bytecodes.txt` -> `diffs/tests__it__writer__test_trace_printing__0.bytecodes.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/0.decoded.svg` -> `diffs/tests__it__writer__test_trace_printing__0.decoded.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/0.decoded.txt` -> `diffs/tests__it__writer__test_trace_printing__0.decoded.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/0.storage.decoded.svg` -> `diffs/tests__it__writer__test_trace_printing__0.storage.decoded.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/0.storage.decoded.txt` -> `diffs/tests__it__writer__test_trace_printing__0.storage.decoded.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/0.storage.svg` -> `diffs/tests__it__writer__test_trace_printing__0.storage.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/0.storage.txt` -> `diffs/tests__it__writer__test_trace_printing__0.storage.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/0.svg` -> `diffs/tests__it__writer__test_trace_printing__0.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/0.txt` -> `diffs/tests__it__writer__test_trace_printing__0.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/1.bytecodes.decoded.svg` -> `diffs/tests__it__writer__test_trace_printing__1.bytecodes.decoded.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/1.bytecodes.decoded.txt` -> `diffs/tests__it__writer__test_trace_printing__1.bytecodes.decoded.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/1.bytecodes.storage.decoded.svg` -> `diffs/tests__it__writer__test_trace_printing__1.bytecodes.storage.decoded.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/1.bytecodes.storage.decoded.txt` -> `diffs/tests__it__writer__test_trace_printing__1.bytecodes.storage.decoded.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/1.bytecodes.storage.svg` -> `diffs/tests__it__writer__test_trace_printing__1.bytecodes.storage.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/1.bytecodes.storage.txt` -> `diffs/tests__it__writer__test_trace_printing__1.bytecodes.storage.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/1.bytecodes.svg` -> `diffs/tests__it__writer__test_trace_printing__1.bytecodes.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/1.bytecodes.txt` -> `diffs/tests__it__writer__test_trace_printing__1.bytecodes.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/1.decoded.svg` -> `diffs/tests__it__writer__test_trace_printing__1.decoded.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/1.decoded.txt` -> `diffs/tests__it__writer__test_trace_printing__1.decoded.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/1.storage.decoded.svg` -> `diffs/tests__it__writer__test_trace_printing__1.storage.decoded.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/1.storage.decoded.txt` -> `diffs/tests__it__writer__test_trace_printing__1.storage.decoded.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/1.storage.svg` -> `diffs/tests__it__writer__test_trace_printing__1.storage.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/1.storage.txt` -> `diffs/tests__it__writer__test_trace_printing__1.storage.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/1.svg` -> `diffs/tests__it__writer__test_trace_printing__1.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/1.txt` -> `diffs/tests__it__writer__test_trace_printing__1.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/10.bytecodes.decoded.svg` -> `diffs/tests__it__writer__test_trace_printing__10.bytecodes.decoded.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/10.bytecodes.decoded.txt` -> `diffs/tests__it__writer__test_trace_printing__10.bytecodes.decoded.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/10.bytecodes.storage.decoded.svg` -> `diffs/tests__it__writer__test_trace_printing__10.bytecodes.storage.decoded.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/10.bytecodes.storage.decoded.txt` -> `diffs/tests__it__writer__test_trace_printing__10.bytecodes.storage.decoded.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/10.bytecodes.storage.svg` -> `diffs/tests__it__writer__test_trace_printing__10.bytecodes.storage.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/10.bytecodes.storage.txt` -> `diffs/tests__it__writer__test_trace_printing__10.bytecodes.storage.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/10.bytecodes.svg` -> `diffs/tests__it__writer__test_trace_printing__10.bytecodes.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/10.bytecodes.txt` -> `diffs/tests__it__writer__test_trace_printing__10.bytecodes.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/10.decoded.svg` -> `diffs/tests__it__writer__test_trace_printing__10.decoded.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/10.decoded.txt` -> `diffs/tests__it__writer__test_trace_printing__10.decoded.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/10.storage.decoded.svg` -> `diffs/tests__it__writer__test_trace_printing__10.storage.decoded.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/10.storage.decoded.txt` -> `diffs/tests__it__writer__test_trace_printing__10.storage.decoded.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/10.storage.svg` -> `diffs/tests__it__writer__test_trace_printing__10.storage.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/10.storage.txt` -> `diffs/tests__it__writer__test_trace_printing__10.storage.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/10.svg` -> `diffs/tests__it__writer__test_trace_printing__10.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/10.txt` -> `diffs/tests__it__writer__test_trace_printing__10.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/11.bytecodes.decoded.svg` -> `diffs/tests__it__writer__test_trace_printing__11.bytecodes.decoded.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/11.bytecodes.decoded.txt` -> `diffs/tests__it__writer__test_trace_printing__11.bytecodes.decoded.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/11.bytecodes.storage.decoded.svg` -> `diffs/tests__it__writer__test_trace_printing__11.bytecodes.storage.decoded.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/11.bytecodes.storage.decoded.txt` -> `diffs/tests__it__writer__test_trace_printing__11.bytecodes.storage.decoded.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/11.bytecodes.storage.svg` -> `diffs/tests__it__writer__test_trace_printing__11.bytecodes.storage.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/11.bytecodes.storage.txt` -> `diffs/tests__it__writer__test_trace_printing__11.bytecodes.storage.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/11.bytecodes.svg` -> `diffs/tests__it__writer__test_trace_printing__11.bytecodes.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/11.bytecodes.txt` -> `diffs/tests__it__writer__test_trace_printing__11.bytecodes.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/11.decoded.svg` -> `diffs/tests__it__writer__test_trace_printing__11.decoded.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/11.decoded.txt` -> `diffs/tests__it__writer__test_trace_printing__11.decoded.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/11.storage.decoded.svg` -> `diffs/tests__it__writer__test_trace_printing__11.storage.decoded.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/11.storage.decoded.txt` -> `diffs/tests__it__writer__test_trace_printing__11.storage.decoded.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/11.storage.svg` -> `diffs/tests__it__writer__test_trace_printing__11.storage.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/11.storage.txt` -> `diffs/tests__it__writer__test_trace_printing__11.storage.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/11.svg` -> `diffs/tests__it__writer__test_trace_printing__11.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/11.txt` -> `diffs/tests__it__writer__test_trace_printing__11.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/12.bytecodes.decoded.svg` -> `diffs/tests__it__writer__test_trace_printing__12.bytecodes.decoded.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/12.bytecodes.decoded.txt` -> `diffs/tests__it__writer__test_trace_printing__12.bytecodes.decoded.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/12.bytecodes.storage.decoded.svg` -> `diffs/tests__it__writer__test_trace_printing__12.bytecodes.storage.decoded.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/12.bytecodes.storage.decoded.txt` -> `diffs/tests__it__writer__test_trace_printing__12.bytecodes.storage.decoded.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/12.bytecodes.storage.svg` -> `diffs/tests__it__writer__test_trace_printing__12.bytecodes.storage.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/12.bytecodes.storage.txt` -> `diffs/tests__it__writer__test_trace_printing__12.bytecodes.storage.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/12.bytecodes.svg` -> `diffs/tests__it__writer__test_trace_printing__12.bytecodes.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/12.bytecodes.txt` -> `diffs/tests__it__writer__test_trace_printing__12.bytecodes.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/12.decoded.svg` -> `diffs/tests__it__writer__test_trace_printing__12.decoded.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/12.decoded.txt` -> `diffs/tests__it__writer__test_trace_printing__12.decoded.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/12.storage.decoded.svg` -> `diffs/tests__it__writer__test_trace_printing__12.storage.decoded.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/12.storage.decoded.txt` -> `diffs/tests__it__writer__test_trace_printing__12.storage.decoded.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/12.storage.svg` -> `diffs/tests__it__writer__test_trace_printing__12.storage.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/12.storage.txt` -> `diffs/tests__it__writer__test_trace_printing__12.storage.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/12.svg` -> `diffs/tests__it__writer__test_trace_printing__12.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/12.txt` -> `diffs/tests__it__writer__test_trace_printing__12.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/2.bytecodes.decoded.svg` -> `diffs/tests__it__writer__test_trace_printing__2.bytecodes.decoded.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/2.bytecodes.decoded.txt` -> `diffs/tests__it__writer__test_trace_printing__2.bytecodes.decoded.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/2.bytecodes.storage.decoded.svg` -> `diffs/tests__it__writer__test_trace_printing__2.bytecodes.storage.decoded.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/2.bytecodes.storage.decoded.txt` -> `diffs/tests__it__writer__test_trace_printing__2.bytecodes.storage.decoded.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/2.bytecodes.storage.svg` -> `diffs/tests__it__writer__test_trace_printing__2.bytecodes.storage.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/2.bytecodes.storage.txt` -> `diffs/tests__it__writer__test_trace_printing__2.bytecodes.storage.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/2.bytecodes.svg` -> `diffs/tests__it__writer__test_trace_printing__2.bytecodes.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/2.bytecodes.txt` -> `diffs/tests__it__writer__test_trace_printing__2.bytecodes.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/2.decoded.svg` -> `diffs/tests__it__writer__test_trace_printing__2.decoded.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/2.decoded.txt` -> `diffs/tests__it__writer__test_trace_printing__2.decoded.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/2.storage.decoded.svg` -> `diffs/tests__it__writer__test_trace_printing__2.storage.decoded.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/2.storage.decoded.txt` -> `diffs/tests__it__writer__test_trace_printing__2.storage.decoded.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/2.storage.svg` -> `diffs/tests__it__writer__test_trace_printing__2.storage.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/2.storage.txt` -> `diffs/tests__it__writer__test_trace_printing__2.storage.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/2.svg` -> `diffs/tests__it__writer__test_trace_printing__2.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/2.txt` -> `diffs/tests__it__writer__test_trace_printing__2.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/3.bytecodes.decoded.svg` -> `diffs/tests__it__writer__test_trace_printing__3.bytecodes.decoded.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/3.bytecodes.decoded.txt` -> `diffs/tests__it__writer__test_trace_printing__3.bytecodes.decoded.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/3.bytecodes.storage.decoded.svg` -> `diffs/tests__it__writer__test_trace_printing__3.bytecodes.storage.decoded.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/3.bytecodes.storage.decoded.txt` -> `diffs/tests__it__writer__test_trace_printing__3.bytecodes.storage.decoded.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/3.bytecodes.storage.svg` -> `diffs/tests__it__writer__test_trace_printing__3.bytecodes.storage.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/3.bytecodes.storage.txt` -> `diffs/tests__it__writer__test_trace_printing__3.bytecodes.storage.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/3.bytecodes.svg` -> `diffs/tests__it__writer__test_trace_printing__3.bytecodes.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/3.bytecodes.txt` -> `diffs/tests__it__writer__test_trace_printing__3.bytecodes.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/3.decoded.svg` -> `diffs/tests__it__writer__test_trace_printing__3.decoded.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/3.decoded.txt` -> `diffs/tests__it__writer__test_trace_printing__3.decoded.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/3.storage.decoded.svg` -> `diffs/tests__it__writer__test_trace_printing__3.storage.decoded.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/3.storage.decoded.txt` -> `diffs/tests__it__writer__test_trace_printing__3.storage.decoded.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/3.storage.svg` -> `diffs/tests__it__writer__test_trace_printing__3.storage.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/3.storage.txt` -> `diffs/tests__it__writer__test_trace_printing__3.storage.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/3.svg` -> `diffs/tests__it__writer__test_trace_printing__3.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/3.txt` -> `diffs/tests__it__writer__test_trace_printing__3.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/4.bytecodes.decoded.svg` -> `diffs/tests__it__writer__test_trace_printing__4.bytecodes.decoded.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/4.bytecodes.decoded.txt` -> `diffs/tests__it__writer__test_trace_printing__4.bytecodes.decoded.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/4.bytecodes.storage.decoded.svg` -> `diffs/tests__it__writer__test_trace_printing__4.bytecodes.storage.decoded.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/4.bytecodes.storage.decoded.txt` -> `diffs/tests__it__writer__test_trace_printing__4.bytecodes.storage.decoded.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/4.bytecodes.storage.svg` -> `diffs/tests__it__writer__test_trace_printing__4.bytecodes.storage.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/4.bytecodes.storage.txt` -> `diffs/tests__it__writer__test_trace_printing__4.bytecodes.storage.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/4.bytecodes.svg` -> `diffs/tests__it__writer__test_trace_printing__4.bytecodes.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/4.bytecodes.txt` -> `diffs/tests__it__writer__test_trace_printing__4.bytecodes.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/4.decoded.svg` -> `diffs/tests__it__writer__test_trace_printing__4.decoded.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/4.decoded.txt` -> `diffs/tests__it__writer__test_trace_printing__4.decoded.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/4.storage.decoded.svg` -> `diffs/tests__it__writer__test_trace_printing__4.storage.decoded.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/4.storage.decoded.txt` -> `diffs/tests__it__writer__test_trace_printing__4.storage.decoded.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/4.storage.svg` -> `diffs/tests__it__writer__test_trace_printing__4.storage.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/4.storage.txt` -> `diffs/tests__it__writer__test_trace_printing__4.storage.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/4.svg` -> `diffs/tests__it__writer__test_trace_printing__4.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/4.txt` -> `diffs/tests__it__writer__test_trace_printing__4.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/5.bytecodes.decoded.svg` -> `diffs/tests__it__writer__test_trace_printing__5.bytecodes.decoded.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/5.bytecodes.decoded.txt` -> `diffs/tests__it__writer__test_trace_printing__5.bytecodes.decoded.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/5.bytecodes.storage.decoded.svg` -> `diffs/tests__it__writer__test_trace_printing__5.bytecodes.storage.decoded.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/5.bytecodes.storage.decoded.txt` -> `diffs/tests__it__writer__test_trace_printing__5.bytecodes.storage.decoded.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/5.bytecodes.storage.svg` -> `diffs/tests__it__writer__test_trace_printing__5.bytecodes.storage.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/5.bytecodes.storage.txt` -> `diffs/tests__it__writer__test_trace_printing__5.bytecodes.storage.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/5.bytecodes.svg` -> `diffs/tests__it__writer__test_trace_printing__5.bytecodes.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/5.bytecodes.txt` -> `diffs/tests__it__writer__test_trace_printing__5.bytecodes.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/5.decoded.svg` -> `diffs/tests__it__writer__test_trace_printing__5.decoded.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/5.decoded.txt` -> `diffs/tests__it__writer__test_trace_printing__5.decoded.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/5.storage.decoded.svg` -> `diffs/tests__it__writer__test_trace_printing__5.storage.decoded.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/5.storage.decoded.txt` -> `diffs/tests__it__writer__test_trace_printing__5.storage.decoded.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/5.storage.svg` -> `diffs/tests__it__writer__test_trace_printing__5.storage.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/5.storage.txt` -> `diffs/tests__it__writer__test_trace_printing__5.storage.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/5.svg` -> `diffs/tests__it__writer__test_trace_printing__5.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/5.txt` -> `diffs/tests__it__writer__test_trace_printing__5.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/6.bytecodes.decoded.svg` -> `diffs/tests__it__writer__test_trace_printing__6.bytecodes.decoded.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/6.bytecodes.decoded.txt` -> `diffs/tests__it__writer__test_trace_printing__6.bytecodes.decoded.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/6.bytecodes.storage.decoded.svg` -> `diffs/tests__it__writer__test_trace_printing__6.bytecodes.storage.decoded.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/6.bytecodes.storage.decoded.txt` -> `diffs/tests__it__writer__test_trace_printing__6.bytecodes.storage.decoded.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/6.bytecodes.storage.svg` -> `diffs/tests__it__writer__test_trace_printing__6.bytecodes.storage.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/6.bytecodes.storage.txt` -> `diffs/tests__it__writer__test_trace_printing__6.bytecodes.storage.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/6.bytecodes.svg` -> `diffs/tests__it__writer__test_trace_printing__6.bytecodes.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/6.bytecodes.txt` -> `diffs/tests__it__writer__test_trace_printing__6.bytecodes.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/6.decoded.svg` -> `diffs/tests__it__writer__test_trace_printing__6.decoded.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/6.decoded.txt` -> `diffs/tests__it__writer__test_trace_printing__6.decoded.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/6.storage.decoded.svg` -> `diffs/tests__it__writer__test_trace_printing__6.storage.decoded.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/6.storage.decoded.txt` -> `diffs/tests__it__writer__test_trace_printing__6.storage.decoded.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/6.storage.svg` -> `diffs/tests__it__writer__test_trace_printing__6.storage.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/6.storage.txt` -> `diffs/tests__it__writer__test_trace_printing__6.storage.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/6.svg` -> `diffs/tests__it__writer__test_trace_printing__6.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/6.txt` -> `diffs/tests__it__writer__test_trace_printing__6.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/7.bytecodes.decoded.svg` -> `diffs/tests__it__writer__test_trace_printing__7.bytecodes.decoded.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/7.bytecodes.decoded.txt` -> `diffs/tests__it__writer__test_trace_printing__7.bytecodes.decoded.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/7.bytecodes.storage.decoded.svg` -> `diffs/tests__it__writer__test_trace_printing__7.bytecodes.storage.decoded.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/7.bytecodes.storage.decoded.txt` -> `diffs/tests__it__writer__test_trace_printing__7.bytecodes.storage.decoded.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/7.bytecodes.storage.svg` -> `diffs/tests__it__writer__test_trace_printing__7.bytecodes.storage.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/7.bytecodes.storage.txt` -> `diffs/tests__it__writer__test_trace_printing__7.bytecodes.storage.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/7.bytecodes.svg` -> `diffs/tests__it__writer__test_trace_printing__7.bytecodes.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/7.bytecodes.txt` -> `diffs/tests__it__writer__test_trace_printing__7.bytecodes.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/7.decoded.svg` -> `diffs/tests__it__writer__test_trace_printing__7.decoded.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/7.decoded.txt` -> `diffs/tests__it__writer__test_trace_printing__7.decoded.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/7.storage.decoded.svg` -> `diffs/tests__it__writer__test_trace_printing__7.storage.decoded.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/7.storage.decoded.txt` -> `diffs/tests__it__writer__test_trace_printing__7.storage.decoded.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/7.storage.svg` -> `diffs/tests__it__writer__test_trace_printing__7.storage.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/7.storage.txt` -> `diffs/tests__it__writer__test_trace_printing__7.storage.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/7.svg` -> `diffs/tests__it__writer__test_trace_printing__7.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/7.txt` -> `diffs/tests__it__writer__test_trace_printing__7.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/8.bytecodes.decoded.svg` -> `diffs/tests__it__writer__test_trace_printing__8.bytecodes.decoded.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/8.bytecodes.decoded.txt` -> `diffs/tests__it__writer__test_trace_printing__8.bytecodes.decoded.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/8.bytecodes.storage.decoded.svg` -> `diffs/tests__it__writer__test_trace_printing__8.bytecodes.storage.decoded.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/8.bytecodes.storage.decoded.txt` -> `diffs/tests__it__writer__test_trace_printing__8.bytecodes.storage.decoded.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/8.bytecodes.storage.svg` -> `diffs/tests__it__writer__test_trace_printing__8.bytecodes.storage.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/8.bytecodes.storage.txt` -> `diffs/tests__it__writer__test_trace_printing__8.bytecodes.storage.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/8.bytecodes.svg` -> `diffs/tests__it__writer__test_trace_printing__8.bytecodes.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/8.bytecodes.txt` -> `diffs/tests__it__writer__test_trace_printing__8.bytecodes.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/8.decoded.svg` -> `diffs/tests__it__writer__test_trace_printing__8.decoded.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/8.decoded.txt` -> `diffs/tests__it__writer__test_trace_printing__8.decoded.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/8.storage.decoded.svg` -> `diffs/tests__it__writer__test_trace_printing__8.storage.decoded.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/8.storage.decoded.txt` -> `diffs/tests__it__writer__test_trace_printing__8.storage.decoded.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/8.storage.svg` -> `diffs/tests__it__writer__test_trace_printing__8.storage.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/8.storage.txt` -> `diffs/tests__it__writer__test_trace_printing__8.storage.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/8.svg` -> `diffs/tests__it__writer__test_trace_printing__8.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/8.txt` -> `diffs/tests__it__writer__test_trace_printing__8.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/9.bytecodes.decoded.svg` -> `diffs/tests__it__writer__test_trace_printing__9.bytecodes.decoded.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/9.bytecodes.decoded.txt` -> `diffs/tests__it__writer__test_trace_printing__9.bytecodes.decoded.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/9.bytecodes.storage.decoded.svg` -> `diffs/tests__it__writer__test_trace_printing__9.bytecodes.storage.decoded.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/9.bytecodes.storage.decoded.txt` -> `diffs/tests__it__writer__test_trace_printing__9.bytecodes.storage.decoded.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/9.bytecodes.storage.svg` -> `diffs/tests__it__writer__test_trace_printing__9.bytecodes.storage.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/9.bytecodes.storage.txt` -> `diffs/tests__it__writer__test_trace_printing__9.bytecodes.storage.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/9.bytecodes.svg` -> `diffs/tests__it__writer__test_trace_printing__9.bytecodes.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/9.bytecodes.txt` -> `diffs/tests__it__writer__test_trace_printing__9.bytecodes.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/9.decoded.svg` -> `diffs/tests__it__writer__test_trace_printing__9.decoded.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/9.decoded.txt` -> `diffs/tests__it__writer__test_trace_printing__9.decoded.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/9.storage.decoded.svg` -> `diffs/tests__it__writer__test_trace_printing__9.storage.decoded.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/9.storage.decoded.txt` -> `diffs/tests__it__writer__test_trace_printing__9.storage.decoded.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/9.storage.svg` -> `diffs/tests__it__writer__test_trace_printing__9.storage.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/9.storage.txt` -> `diffs/tests__it__writer__test_trace_printing__9.storage.txt.diff`
+- [x] `tests/it/writer/test_trace_printing/9.svg` -> `diffs/tests__it__writer__test_trace_printing__9.svg.diff`
+- [x] `tests/it/writer/test_trace_printing/9.txt` -> `diffs/tests__it__writer__test_trace_printing__9.txt.diff`
