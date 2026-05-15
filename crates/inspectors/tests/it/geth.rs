@@ -233,9 +233,14 @@ fn test_geth_mux_tracer() {
         .unwrap();
     assert!(res.result.is_success());
 
-    let (_, inspector) = evm.ctx_inspector();
+    let (ctx, inspector) = evm.ctx_inspector();
     let frame = inspector
-        .try_into_mux_frame(res.result.tx_gas_used(), &res.state, TransactionInfo::default(), None)
+        .try_into_mux_frame(
+            res.result.tx_gas_used(),
+            &res.state,
+            TransactionInfo::default(),
+            ctx.db_mut(),
+        )
         .unwrap();
 
     assert_eq!(frame.0.len(), 4);
@@ -600,6 +605,7 @@ fn test_geth_prestate_disable_code_in_diff_mode() {
     let mut insp = TracingInspector::new(TracingInspectorConfig::from_geth_prestate_config(
         &prestate_config_no_code,
     ));
+    let mut db = evm.ctx.db.clone();
 
     let res = {
         let mut evm_with_insp = evm.with_inspector(&mut insp);
@@ -619,7 +625,7 @@ fn test_geth_prestate_disable_code_in_diff_mode() {
     let frame = insp
         .with_transaction_gas_used(res.result.tx_gas_used())
         .geth_builder()
-        .geth_prestate_traces(&res.state, &prestate_config_no_code, None)
+        .geth_prestate_traces(&res.state, &prestate_config_no_code, &mut db)
         .unwrap();
 
     // Verify that code is not present in either pre or post states when disable_code=true
@@ -656,6 +662,7 @@ fn test_geth_prestate_disable_code_in_diff_mode() {
         &prestate_config_with_code,
     ));
     let evm2 = Context::mainnet().with_db(CacheDB::new(EmptyDB::default())).build_mainnet();
+    let mut db2 = evm2.ctx.db.clone();
 
     let res2 = {
         let mut evm2_with_insp = evm2.with_inspector(&mut insp2);
@@ -676,7 +683,7 @@ fn test_geth_prestate_disable_code_in_diff_mode() {
     let frame2 = insp2
         .with_transaction_gas_used(res2.result.tx_gas_used())
         .geth_builder()
-        .geth_prestate_traces(&res2.state, &prestate_config_with_code, None)
+        .geth_prestate_traces(&res2.state, &prestate_config_with_code, &mut db2)
         .unwrap();
 
     // Verify that code IS present when disable_code=false
@@ -898,11 +905,12 @@ fn test_geth_prestate_diff_selfdestruct(spec_id: SpecId) {
     assert!(res.result.is_success(), "{res:#?}");
 
     // Get the prestate diff traces
+    let mut db = evm.ctx.db.clone();
     let insp = evm.into_inspector();
     let frame = insp
         .with_transaction_gas_used(res.result.tx_gas_used())
         .geth_builder()
-        .geth_prestate_traces(&res.state, &prestate_config, None)
+        .geth_prestate_traces(&res.state, &prestate_config, &mut db)
         .unwrap();
 
     match frame {

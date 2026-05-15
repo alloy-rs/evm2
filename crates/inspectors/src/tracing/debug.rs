@@ -14,7 +14,7 @@ use evm2::{
     Evm, EvmTypes, Inspector, TxResult,
     env::BlockEnv,
     ethereum::RecoveredTxEnvelope,
-    evm::DynDatabase,
+    evm::{DbErrorCode, DynDatabase},
     interpreter::{Interpreter, Message, MessageResult},
 };
 use thiserror::Error;
@@ -231,14 +231,14 @@ impl DebugInspector {
                 inspector.set_transaction_gas_limit(gas_limit);
                 inspector
                     .geth_builder()
-                    .geth_prestate_traces(&res.state_changes, config, Some(db))
-                    .unwrap_or_else(|err| match err {})
+                    .geth_prestate_traces(&res.state_changes, config, db)
+                    .map_err(DebugInspectorError::Database)?
                     .into()
             }
             Self::Noop => NoopFrame::default().into(),
             Self::Mux(inspector, _) => inspector
-                .try_into_mux_frame(res.gas_used, &res.state_changes, tx_info, Some(db))
-                .unwrap_or_else(|err| match err {})
+                .try_into_mux_frame(res.gas_used, &res.state_changes, tx_info, db)
+                .map_err(DebugInspectorError::Database)?
                 .into(),
             Self::FlatCallTracer(inspector) => {
                 inspector.set_transaction_gas_limit(gas_limit);
@@ -254,7 +254,8 @@ impl DebugInspector {
                 inspector.set_transaction_caller(caller);
                 inspector
                     .geth_builder()
-                    .geth_erc7562_traces(config.clone(), res.gas_used, Some(db))
+                    .geth_erc7562_traces(config.clone(), res.gas_used, db)
+                    .map_err(DebugInspectorError::Database)?
                     .into()
             }
             Self::Default(inspector, config) => {
@@ -466,6 +467,9 @@ pub enum DebugInspectorError {
     /// Error from MuxInspector
     #[error(transparent)]
     MuxInspector(#[from] crate::tracing::MuxError),
+    /// Database operation failed
+    #[error("database error {0:?}")]
+    Database(DbErrorCode),
     /// Error from JS inspector
     #[cfg(feature = "js-tracer")]
     #[error(transparent)]

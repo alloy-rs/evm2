@@ -7,10 +7,9 @@ use alloy_rpc_types_trace::geth::{
     NoopFrame, PreStateConfig,
     mux::{MuxConfig, MuxFrame},
 };
-use core::convert::Infallible;
 use evm2::{
     Evm, EvmTypes, Inspector,
-    evm::{DynDatabase, StateChanges},
+    evm::{DbResult, DynDatabase, StateChanges},
     interpreter::{Interpreter, Message, MessageResult},
 };
 use thiserror::Error;
@@ -109,8 +108,8 @@ impl MuxInspector {
         gas_used: u64,
         state: &StateChanges,
         tx_info: TransactionInfo,
-        mut db: Option<&mut dyn DynDatabase>,
-    ) -> Result<MuxFrame, Infallible> {
+        db: &mut dyn DynDatabase,
+    ) -> DbResult<MuxFrame> {
         let mut frame = HashMap::with_capacity_and_hasher(self.configs.len(), Default::default());
 
         for (tracer_type, config) in &self.configs {
@@ -126,7 +125,7 @@ impl MuxInspector {
                     if let Some(inspector) = &self.tracing {
                         inspector
                             .geth_builder()
-                            .geth_prestate_traces(state, prestate_config, db.as_deref_mut())?
+                            .geth_prestate_traces(state, prestate_config, db)?
                             .into()
                     } else {
                         continue;

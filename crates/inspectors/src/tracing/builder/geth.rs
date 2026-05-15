@@ -19,9 +19,9 @@ use alloy_rpc_types_trace::geth::{
     erc7562::{AccessedSlots, CallFrameType, ContractSize, Erc7562Config, Erc7562Frame},
 };
 use evm2::{
-    AccountInfo, SpecId,
+    SpecId,
     bytecode::opcode::op,
-    evm::{DynDatabase, StateChanges},
+    evm::{DbResult, DynDatabase, StateChanges},
 };
 
 /// A type for creating geth style traces
@@ -234,14 +234,14 @@ impl<'a> GethTraceBuilder<'a> {
         &self,
         state: &StateChanges,
         prestate_config: &PreStateConfig,
-        db: Option<&mut dyn DynDatabase>,
-    ) -> Result<PreStateFrame, core::convert::Infallible> {
+        db: &mut dyn DynDatabase,
+    ) -> DbResult<PreStateFrame> {
         let code_enabled = prestate_config.code_enabled();
         let storage_enabled = prestate_config.storage_enabled();
         if prestate_config.is_diff_mode() {
-            Ok(self.geth_prestate_diff_traces(state, code_enabled, storage_enabled, db))
+            self.geth_prestate_diff_traces(state, code_enabled, storage_enabled, db)
         } else {
-            Ok(self.geth_prestate_pre_traces(state, code_enabled, storage_enabled, db))
+            self.geth_prestate_pre_traces(state, code_enabled, storage_enabled, db)
         }
     }
 
@@ -250,18 +250,17 @@ impl<'a> GethTraceBuilder<'a> {
         state: &StateChanges,
         code_enabled: bool,
         storage_enabled: bool,
-        mut db: Option<&mut dyn DynDatabase>,
-    ) -> PreStateFrame {
+        db: &mut dyn DynDatabase,
+    ) -> DbResult<PreStateFrame> {
         let mut prestate = PreStateMode::default();
 
         for address in self.nodes.iter().flat_map(|node| [node.trace.caller, node.trace.address]) {
             prestate.0.entry(address).or_default();
         }
         for (&address, account) in &state.accounts {
-            let info = db_account(&mut db, &address)
-                .or_else(|| account.original.clone())
-                .unwrap_or_default();
-            let code = code_enabled.then(|| db_account_code(&mut db, &info)).flatten();
+            let info =
+                db.get_account(&address)?.or_else(|| account.original.clone()).unwrap_or_default();
+            let code = if code_enabled { load_account_code(db, &info)? } else { None };
             let mut acc_state = AccountState::from_account_info(info.nonce, info.balance, code);
             if storage_enabled && let Some(storage) = state.storage.get(&address) {
                 for (&key, slot) in &storage.slots {
@@ -271,7 +270,7 @@ impl<'a> GethTraceBuilder<'a> {
             prestate.0.insert(address, acc_state);
         }
 
-        PreStateFrame::Default(prestate)
+        Ok(PreStateFrame::Default(prestate))
     }
 
     fn geth_prestate_diff_traces(
@@ -279,16 +278,16 @@ impl<'a> GethTraceBuilder<'a> {
         state: &StateChanges,
         code_enabled: bool,
         storage_enabled: bool,
-        mut db: Option<&mut dyn DynDatabase>,
-    ) -> PreStateFrame {
+        db: &mut dyn DynDatabase,
+    ) -> DbResult<PreStateFrame> {
         let mut state_diff = DiffMode::default();
         let mut account_change_kinds =
             HashMap::with_capacity_and_hasher(state.accounts.len(), Default::default());
 
         for (&address, account) in &state.accounts {
-            let original = db_account(&mut db, &address).or_else(|| account.original.clone());
+            let original = db.get_account(&address)?.or_else(|| account.original.clone());
             if let Some(original) = &original {
-                let pre_code = code_enabled.then(|| db_account_code(&mut db, original)).flatten();
+                let pre_code = if code_enabled { load_account_code(db, original)? } else { None };
                 let mut pre_state = AccountState::from_account_info(
                     original.nonce,
                     original.balance,
@@ -302,12 +301,7 @@ impl<'a> GethTraceBuilder<'a> {
                 state_diff.pre.insert(address, pre_state);
             }
             if let Some(current) = &account.current {
-                let post_code = code_enabled
-                    .then(|| {
-                        db_account_code(&mut db, current)
-                            .or_else(|| current.code.as_ref().map(|code| code.original_bytes()))
-                    })
-                    .flatten();
+                let post_code = if code_enabled { load_account_code(db, current)? } else { None };
                 let mut post_state =
                     AccountState::from_account_info(current.nonce, current.balance, post_code);
                 if storage_enabled && let Some(storage) = state.storage.get(&address) {
@@ -318,7 +312,7 @@ impl<'a> GethTraceBuilder<'a> {
                 state_diff.post.insert(address, post_state);
             }
 
-            let pre_change = if original.as_ref().is_none_or(account_was_empty) {
+            let pre_change = if original.as_ref().is_none_or(|account| account.is_empty()) {
                 AccountChangeKind::Create
             } else {
                 AccountChangeKind::Modify
@@ -362,7 +356,7 @@ impl<'a> GethTraceBuilder<'a> {
 
         self.diff_traces(&mut state_diff.pre, &mut state_diff.post, account_change_kinds);
         state_diff.retain_changed().remove_zero_storage_values();
-        PreStateFrame::Diff(state_diff)
+        Ok(PreStateFrame::Diff(state_diff))
     }
 
     /// Returns the difference between the pre and post state of the transaction depending on the
@@ -398,10 +392,10 @@ impl<'a> GethTraceBuilder<'a> {
         &self,
         opts: Erc7562Config,
         gas_used: u64,
-        mut db: Option<&mut dyn DynDatabase>,
-    ) -> Erc7562Frame {
+        db: &mut dyn DynDatabase,
+    ) -> DbResult<Erc7562Frame> {
         if self.nodes.is_empty() {
-            return Default::default();
+            return Ok(Default::default());
         }
 
         let include_logs = opts.with_log.unwrap_or_default();
@@ -490,8 +484,8 @@ impl<'a> GethTraceBuilder<'a> {
                     let address = Address::from_word((*item).into());
                     ext_code_access_info.push(format!("{address:?}"));
                     if let Entry::Vacant(e) = contract_size.entry(address)
-                        && let Some(account) = db_account(&mut db, &address)
-                        && let Some(code) = db_account_code(&mut db, &account)
+                        && let Some(account) = db.get_account(&address)?
+                        && let Some(code) = load_account_code(db, &account)?
                     {
                         let contract_size = code.len() as u64;
                         let opcode = op;
@@ -562,7 +556,7 @@ impl<'a> GethTraceBuilder<'a> {
                 parent_frame.1.calls.insert(0, frame);
             } else {
                 debug_assert!(frames.is_empty(), "only one root node has no parent");
-                return frame;
+                return Ok(frame);
             }
         }
     }
@@ -581,23 +575,44 @@ impl<'a> GethTraceBuilder<'a> {
     }
 }
 
-fn account_was_empty(account: &AccountInfo) -> bool {
-    account.is_empty()
-}
-
-fn db_account(db: &mut Option<&mut dyn DynDatabase>, address: &Address) -> Option<AccountInfo> {
-    db.as_deref_mut()?.get_account(address).ok().flatten()
-}
-
-fn db_account_code(db: &mut Option<&mut dyn DynDatabase>, account: &AccountInfo) -> Option<Bytes> {
-    load_account_code(db.as_deref_mut()?, account)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::{U256, address};
-    use evm2::{AccountInfo, evm::Tracked};
+    use alloy_primitives::{B256, U256, address};
+    use evm2::{
+        AccountInfo,
+        bytecode::Bytecode,
+        evm::{CacheDB, DbErrorCode, DbResult, DynDatabase, EmptyDB, Tracked},
+        interpreter::Word,
+    };
+
+    struct FailingDb {
+        error: DbErrorCode,
+    }
+
+    impl FailingDb {
+        fn new(error: DbErrorCode) -> Self {
+            Self { error }
+        }
+    }
+
+    impl DynDatabase for FailingDb {
+        fn get_account(&mut self, _address: &Address) -> DbResult<Option<AccountInfo>> {
+            Err(self.error)
+        }
+
+        fn get_code_by_hash(&mut self, _code_hash: &B256) -> DbResult<Bytecode> {
+            Err(self.error)
+        }
+
+        fn get_storage(&mut self, _address: &Address, _key: &Word) -> DbResult<Word> {
+            Err(self.error)
+        }
+
+        fn get_block_hash(&mut self, _number: &Word) -> DbResult<Option<B256>> {
+            Err(self.error)
+        }
+    }
 
     #[test]
     fn prestate_diff_keeps_prefunded_created_accounts() {
@@ -622,8 +637,14 @@ mod tests {
             },
         );
 
+        let mut db = CacheDB::new(EmptyDB::default());
+        db.insert_account_info(
+            &prefunded_addr,
+            AccountInfo::default().with_balance(U256::from(10)),
+        );
+
         let builder = GethTraceBuilder::new(Vec::new(), None);
-        let frame = builder.geth_prestate_diff_traces(&state, false, false, None);
+        let frame = builder.geth_prestate_diff_traces(&state, false, false, &mut db).unwrap();
 
         match frame {
             PreStateFrame::Diff(diff) => {
@@ -638,5 +659,28 @@ mod tests {
             }
             _ => panic!("expected diff prestate frame"),
         }
+    }
+
+    #[test]
+    fn prestate_propagates_db_account_errors() {
+        let mut state = StateChanges::default();
+        let address = address!("1000000000000000000000000000000000000001");
+        state.accounts.insert(
+            address,
+            Tracked {
+                original: None,
+                current: Some(AccountInfo::default().with_nonce(1)),
+                _non_exhaustive: (),
+            },
+        );
+
+        let error = DbErrorCode::new(7).unwrap();
+        let mut db = FailingDb::new(error);
+        let builder = GethTraceBuilder::new(Vec::new(), None);
+
+        assert!(matches!(
+            builder.geth_prestate_pre_traces(&state, false, false, &mut db),
+            Err(err) if err == error
+        ));
     }
 }

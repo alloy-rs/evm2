@@ -8,10 +8,10 @@ use alloc::{collections::VecDeque, string::ToString, vec, vec::Vec};
 use alloy_primitives::{Address, Bytes, U64, map::HashSet};
 use alloy_rpc_types_eth::TransactionInfo;
 use alloy_rpc_types_trace::parity::*;
-use core::{convert::Infallible, iter::Peekable};
+use core::iter::Peekable;
 use evm2::{
     SpecId,
-    evm::{DynDatabase, StateChanges},
+    evm::{DbResult, DynDatabase, StateChanges},
 };
 
 /// A type for creating parity style traces
@@ -167,18 +167,8 @@ impl ParityTraceBuilder {
         output: Bytes,
         state: &StateChanges,
         trace_types: &HashSet<TraceType>,
-    ) -> Result<TraceResults, Infallible> {
-        self.into_trace_results_with_state_and_db(output, state, trace_types, None)
-    }
-
-    /// Consumes the inspector and returns trace results, using a database for pre-state code.
-    pub fn into_trace_results_with_state_and_db(
-        self,
-        output: Bytes,
-        state: &StateChanges,
-        trace_types: &HashSet<TraceType>,
-        mut db: Option<&mut dyn DynDatabase>,
-    ) -> Result<TraceResults, Infallible> {
+        db: &mut dyn DynDatabase,
+    ) -> DbResult<TraceResults> {
         let breadth_first_addresses = if trace_types.contains(&TraceType::VmTrace) {
             CallTraceNodeWalkerBF::new(&self.nodes)
                 .map(|node| node.trace.address)
@@ -191,11 +181,7 @@ impl ParityTraceBuilder {
 
         // check the state diff case
         if let Some(ref mut state_diff) = trace_res.state_diff {
-            if let Some(ref mut db) = db {
-                populate_state_diff_with_db(state_diff, state, *db)?;
-            } else {
-                populate_state_diff(state_diff, state)?;
-            }
+            populate_state_diff(state_diff, state, db)?;
         }
 
         // check the vm trace case
@@ -467,8 +453,8 @@ where
 pub(crate) fn populate_vm_trace_bytecodes<I>(
     trace: &mut VmTrace,
     breadth_first_addresses: I,
-    mut db: Option<&mut dyn DynDatabase>,
-) -> Result<(), Infallible>
+    db: &mut dyn DynDatabase,
+) -> DbResult<()>
 where
     I: IntoIterator<Item = Address>,
 {
@@ -485,50 +471,11 @@ where
         }
 
         let addr = addrs.next().expect("there should be an address");
-        if let Some(db) = db.as_deref_mut() {
-            let account = db.get_account(&addr).ok().flatten();
-            if let Some(account) = account
-                && let Some(code) = load_account_code(db, &account)
-            {
-                curr_ref.code = code;
-            }
-        }
-    }
-
-    Ok(())
-}
-
-/// Populates [StateDiff] from evm2 state changes.
-pub fn populate_state_diff(
-    state_diff: &mut StateDiff,
-    state_changes: &StateChanges,
-) -> Result<(), Infallible> {
-    for (&addr, account) in &state_changes.accounts {
-        let entry = state_diff.entry(addr).or_default();
-        match (&account.original, &account.current) {
-            (None, Some(current)) => {
-                entry.balance = Delta::Added(current.balance);
-                entry.nonce = Delta::Added(U64::from(current.nonce));
-                entry.code = Delta::Added(account_code(current));
-            }
-            (Some(original), None) => {
-                entry.balance = Delta::Removed(original.balance);
-                entry.nonce = Delta::Removed(U64::from(original.nonce));
-                entry.code = Delta::Removed(account_code(original));
-            }
-            (Some(original), Some(current)) => {
-                entry.balance = delta(original.balance, current.balance);
-                entry.nonce = delta(U64::from(original.nonce), U64::from(current.nonce));
-                entry.code = delta(account_code(original), account_code(current));
-            }
-            (None, None) => {}
-        }
-    }
-
-    for (&addr, storage) in &state_changes.storage {
-        let entry = state_diff.entry(addr).or_default();
-        for (&key, slot) in &storage.slots {
-            entry.storage.insert(key.into(), delta(slot.original.into(), slot.current.into()));
+        let account = db.get_account(&addr)?;
+        if let Some(account) = account
+            && let Some(code) = load_account_code(db, &account)?
+        {
+            curr_ref.code = code;
         }
     }
 
@@ -536,30 +483,29 @@ pub fn populate_state_diff(
 }
 
 /// Populates [StateDiff] from evm2 state changes and a database pre-state.
-pub fn populate_state_diff_with_db(
+pub fn populate_state_diff(
     state_diff: &mut StateDiff,
     state_changes: &StateChanges,
     db: &mut dyn DynDatabase,
-) -> Result<(), Infallible> {
+) -> DbResult<()> {
     for (&addr, account) in &state_changes.accounts {
         let entry = state_diff.entry(addr).or_default();
-        let original = db.get_account(&addr).ok().flatten().unwrap_or_default();
+        let original = db.get_account(&addr)?.unwrap_or_default();
         match &account.current {
             Some(current) if account.original.is_none() && original.balance.is_zero() => {
                 entry.balance = Delta::Added(current.balance);
                 entry.nonce = Delta::Added(U64::from(current.nonce));
-                entry.code = Delta::Added(account_code_with_db(current, db));
+                entry.code = Delta::Added(account_code(current, db)?);
             }
             Some(current) => {
                 entry.balance = delta(original.balance, current.balance);
                 entry.nonce = delta(U64::from(original.nonce), U64::from(current.nonce));
-                entry.code =
-                    delta(account_code_with_db(&original, db), account_code_with_db(current, db));
+                entry.code = delta(account_code(&original, db)?, account_code(current, db)?);
             }
             None => {
                 entry.balance = Delta::Removed(original.balance);
                 entry.nonce = Delta::Removed(U64::from(original.nonce));
-                entry.code = Delta::Removed(account_code_with_db(&original, db));
+                entry.code = Delta::Removed(account_code(&original, db)?);
             }
         }
     }
@@ -581,15 +527,11 @@ pub fn populate_state_diff_with_db(
     Ok(())
 }
 
-fn account_code(account: &evm2::AccountInfo) -> Bytes {
-    account.code.as_ref().map(|code| code.original_bytes()).unwrap_or_default()
+fn account_code(account: &evm2::AccountInfo, db: &mut dyn DynDatabase) -> DbResult<Bytes> {
+    load_account_code(db, account).map(|code| code.unwrap_or_default())
 }
 
-fn account_code_with_db(account: &evm2::AccountInfo, db: &mut dyn DynDatabase) -> Bytes {
-    load_account_code(db, account).unwrap_or_default()
-}
-
-fn delta<T: Clone + PartialEq>(from: T, to: T) -> Delta<T> {
+fn delta<T: PartialEq>(from: T, to: T) -> Delta<T> {
     if from == to { Delta::Unchanged } else { Delta::changed(from, to) }
 }
 
