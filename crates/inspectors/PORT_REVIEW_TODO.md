@@ -110,7 +110,7 @@ Expected port-wide differences:
 - [x] `src/tracing/mod.rs`
   - Public `TracingInspector` and transaction context APIs are mostly present.
   - Deprecated original public methods `get_traces`, `get_traces_mut`, and `with_transaction_gas_limit` are intentionally omitted.
-  - Adds private `PendingStorageStep` to model revm journal storage-diff recording through evm2 state hooks.
+  - Storage-diff recording now uses evm2 journal entries in `step_end`, matching the original shape.
   - `fuse()` no longer clears `spec_id`; original cleared it.
   - Step recording, storage diff recording, and call lifecycle were materially rewritten around evm2 hooks/state.
   - `CallInputExt` helper trait was removed.

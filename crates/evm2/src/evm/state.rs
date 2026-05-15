@@ -430,6 +430,12 @@ impl State {
         &self.logs
     }
 
+    /// Returns the reversible journal entries for the current transaction.
+    #[inline]
+    pub fn journal(&self) -> &[JournalEntry] {
+        &self.journal
+    }
+
     /// Records a transaction log.
     #[inline]
     pub fn log(&mut self, log: Log) {

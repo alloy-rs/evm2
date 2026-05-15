@@ -16,6 +16,7 @@ use alloy_primitives::{Address, B256, Bytes, Log, U256};
 use evm2::{
     Evm, EvmTypes, Inspector, SpecId,
     bytecode::opcode::{OpCode, op},
+    evm::JournalEntry,
     interpreter::{Interpreter, Message, MessageKind, MessageResult},
 };
 
@@ -64,21 +65,9 @@ pub struct TracingInspector {
     traces: CallTraceArena,
     trace_stack: Vec<usize>,
     step_stack: Vec<(usize, usize, u64, usize)>,
-    pending_storage_step: Option<PendingStorageStep>,
+    last_journal_len: usize,
     log_index: u64,
     spec_id: Option<SpecId>,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct PendingStorageStep {
-    trace_idx: usize,
-    step_idx: usize,
-    address: Address,
-    key: U256,
-    value: Option<U256>,
-    value_before: Option<U256>,
-    was_warm: bool,
-    reason: StorageChangeReason,
 }
 
 impl Default for TracingInspector {
@@ -95,7 +84,7 @@ impl TracingInspector {
             traces: CallTraceArena::default(),
             trace_stack: Vec::new(),
             step_stack: Vec::new(),
-            pending_storage_step: None,
+            last_journal_len: 0,
             log_index: 0,
             spec_id: None,
         }
@@ -106,7 +95,7 @@ impl TracingInspector {
         self.traces.clear();
         self.trace_stack.clear();
         self.step_stack.clear();
-        self.pending_storage_step = None;
+        self.last_journal_len = 0;
         self.log_index = 0;
     }
 
@@ -259,85 +248,43 @@ impl TracingInspector {
         }
     }
 
-    fn prepare_storage_step<T: EvmTypes<Host = Evm<T>>>(
-        &mut self,
-        trace_idx: usize,
-        step_idx: usize,
-        op: u8,
-        interp: &Interpreter<'_, T>,
+    fn fill_storage_step<T: EvmTypes<Host = Evm<T>>>(
+        step: &mut CallTraceStep,
+        journal_entry: &JournalEntry,
         host: &Evm<T>,
     ) {
-        if !self.config.record_state_diff {
-            return;
-        }
-        let Some(reason) = (match op {
+        let Some(reason) = (match step.op.get() {
             op::SLOAD => Some(StorageChangeReason::SLOAD),
             op::SSTORE => Some(StorageChangeReason::SSTORE),
             _ => None,
         }) else {
             return;
         };
-        let Some((key, value)) = (match reason {
-            StorageChangeReason::SLOAD => interp.stack().peekn::<1>().map(|[key]| (key, None)),
-            StorageChangeReason::SSTORE => {
-                interp.stack().peekn::<2>().map(|[key, value]| (key, Some(value)))
+
+        step.storage_change = match journal_entry {
+            JournalEntry::StorageChange { address, key, previous } => {
+                let value = host
+                    .state()
+                    .storage_ref(address, key)
+                    .map(|slot| slot.current)
+                    .unwrap_or_default();
+                Some(Box::new(StorageChange {
+                    key: *key,
+                    value,
+                    had_value: Some(*previous),
+                    reason,
+                }))
             }
-        }) else {
-            return;
-        };
-        let address = self.traces.arena[trace_idx].execution_address();
-        let slot = host.state().storage_ref(&address, &key);
-        self.pending_storage_step = Some(PendingStorageStep {
-            trace_idx,
-            step_idx,
-            address,
-            key,
-            value,
-            value_before: slot.map(|slot| slot.current),
-            was_warm: host.state().is_storage_warm(&address, &key),
-            reason,
-        });
-    }
-
-    fn fill_storage_step<T: EvmTypes<Host = Evm<T>>>(
-        step: &mut CallTraceStep,
-        pending: PendingStorageStep,
-        host: &Evm<T>,
-    ) {
-        let slot = host.state().storage_ref(&pending.address, &pending.key);
-        let value = slot
-            .map(|slot| slot.current)
-            .or(pending.value)
-            .or(pending.value_before)
-            .unwrap_or_default();
-        let warmed =
-            !pending.was_warm && host.state().is_storage_warm(&pending.address, &pending.key);
-        let changed = pending
-            .value_before
-            .map(|value_before| value_before != value)
-            .unwrap_or_else(|| slot.is_some_and(|slot| slot.original != slot.current));
-
-        let storage_change = match pending.reason {
-            StorageChangeReason::SLOAD if warmed => Some(StorageChange {
-                key: pending.key,
-                value,
-                had_value: None,
-                reason: pending.reason,
-            }),
-            StorageChangeReason::SSTORE if changed || warmed => Some(StorageChange {
-                key: pending.key,
-                value,
-                had_value: changed.then(|| {
-                    pending
-                        .value_before
-                        .or_else(|| slot.map(|slot| slot.original))
-                        .unwrap_or_default()
-                }),
-                reason: pending.reason,
-            }),
+            JournalEntry::StorageWarmed { address, key } => {
+                let value = host
+                    .state()
+                    .storage_ref(address, key)
+                    .map(|slot| slot.current)
+                    .unwrap_or_default();
+                Some(Box::new(StorageChange { key: *key, value, had_value: None, reason }))
+            }
             _ => None,
         };
-        step.storage_change = storage_change.map(Box::new);
     }
 }
 
@@ -426,7 +373,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for TracingInspector {
         let step_idx = self.traces.arena[trace_idx].trace.steps.len();
         self.traces.arena[trace_idx].ordering.push(TraceMemberOrder::Step(step_idx));
         self.traces.arena[trace_idx].trace.steps.push(step);
-        self.prepare_storage_step(trace_idx, step_idx, op.get(), interp, host);
+        self.last_journal_len = host.state().journal().len();
         self.step_stack.push((trace_idx, step_idx, interp.gas().remaining(), interp.stack().len()));
     }
 
@@ -449,11 +396,12 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for TracingInspector {
                     step.push_stack = Some(Box::from(&stack.as_slice()[stack_len_before..]));
                 }
             }
-            if let Some(pending) = self.pending_storage_step.take()
-                && pending.trace_idx == trace_idx
-                && pending.step_idx == step_idx
+            let journal = host.state().journal();
+            if self.config.record_state_diff
+                && journal.len() != self.last_journal_len
+                && let Some(entry) = journal.last()
             {
-                Self::fill_storage_step(step, pending, host);
+                Self::fill_storage_step(step, entry, host);
             }
         }
     }
