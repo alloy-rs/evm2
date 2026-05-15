@@ -94,14 +94,22 @@ Review status legend:
   - Public API and selector/count output match.
   - Upstream handles shared-memory call input; evm2 messages already carry materialized input bytes.
 
-- [ ] `src/tracing/js/bindings.rs`
-  - Pending round-2 review with JS tracer tests.
+- [x] `src/tracing/js/bindings.rs`
+  - JS-facing objects and method/property names match upstream after evm2 type substitutions.
+  - Stack and memory wrappers preserve upstream lifetime-guard semantics with evm2 stack/memory
+    references.
+  - DB access is split into live-state and post-result readers because evm2 exposes `State` during
+    execution and `StateChanges` after execution instead of revm `EvmState + DatabaseRef`.
 
-- [ ] `src/tracing/js/builtins.rs`
-  - Pending round-2 review with `tests/it/test_native_bigint.rs`.
+- [x] `src/tracing/js/builtins.rs`
+  - Builtin functions and tests match upstream; differences are import ordering and Boa API
+    borrowing adjustments only.
 
-- [ ] `src/tracing/js/mod.rs`
-  - Pending round-2 review with `tests/it/geth_js.rs`.
+- [x] `src/tracing/js/mod.rs`
+  - Public `JsInspector` API matches upstream after evm2 transaction/result/database substitutions.
+  - Removed port-only public `code()` accessor to keep the upstream API surface.
+  - Step/fault/enter/exit/selfdestruct callback behavior matches upstream; DB objects use evm2 live
+    state during execution and post-transaction changes for `result`.
 
 - [x] `src/tracing/mod.rs`
   - `TracingInspector` public API and call/create/selfdestruct/step/log recording semantics match
@@ -145,8 +153,10 @@ Review status legend:
   - Original geth tracing tests are present with evm2 helper/API substitutions and bytecode
     formatting only.
 
-- [ ] `tests/it/geth_js.rs`
-  - Pending round-2 review with JS tracer files.
+- [x] `tests/it/geth_js.rs`
+  - Original geth JS tracer tests are present with evm2 helper/API substitutions and bytecode
+    formatting.
+  - Adds coverage for the evm2 `DebugInspector` JS tracer result path and DB reader adapter.
 
 - [x] `tests/it/main.rs`
   - Same module list except intentional `edge_cov` omission.

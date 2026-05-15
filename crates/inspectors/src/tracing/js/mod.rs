@@ -172,11 +172,6 @@ impl JsInspector {
         self.ctx.set_runtime_limits(limits);
     }
 
-    /// Returns the javascript source code.
-    pub fn code(&self) -> &str {
-        &self.code
-    }
-
     /// Returns the javascript tracer config.
     pub const fn config(&self) -> &serde_json::Value {
         &self.config
