@@ -59,7 +59,11 @@ Review status legend:
   - Semantically identical; `nodes_mut()` is additionally `const fn`.
 
 - [ ] `src/tracing/builder/geth.rs`
-  - Pending round-2 review with `tests/it/geth.rs`.
+  - Geth call/default/flat traces match after evm2 type substitutions.
+  - Prestate diff mode matches the upstream state-diff-driven builder.
+  - Prestate default mode intentionally records DB-backed caller/callee and opcode-touched accounts,
+    and reconstructs read storage from recorded storage steps, because evm2 `StateChanges` does not
+    carry revm's full touched-account/read-slot journal shape.
 
 - [x] `src/tracing/builder/mod.rs`
   - Identical.
@@ -73,9 +77,13 @@ Review status legend:
 - [x] `src/tracing/config.rs`
   - Public API and configuration semantics match.
   - `OpcodeFilter::is_enabled` and `enable` are additionally `const fn`.
+  - `from_geth_prestate_config` enables steps/state diffs/stack snapshots so the evm2 prestate
+    builder can recover touched accounts and read storage that upstream gets from revm state.
 
-- [ ] `src/tracing/debug.rs`
-  - Pending round-2 review with `tests/it/geth.rs` and `tests/it/geth_js.rs`.
+- [x] `src/tracing/debug.rs`
+  - Built-in tracer dispatch and `fuse` behavior match after evm2 DB/error type substitutions.
+  - `Noop` is a unit variant because evm2 has no `NoOpInspector` adapter type.
+  - Missing `log_full`/frame hooks are expected port-wide differences.
 
 - [x] `src/tracing/fourbyte.rs`
   - Public API and selector/count output match.
@@ -90,11 +98,18 @@ Review status legend:
 - [ ] `src/tracing/js/mod.rs`
   - Pending round-2 review with `tests/it/geth_js.rs`.
 
-- [ ] `src/tracing/mod.rs`
-  - Pending round-2 review with tracing integration tests.
+- [x] `src/tracing/mod.rs`
+  - `TracingInspector` public API and call/create/selfdestruct/step/log recording semantics match
+    after evm2 type substitutions.
+  - Deprecated upstream getters/builders remain intentionally omitted.
+  - Push-stack snapshots now use opcode output arity like upstream, including zero-output steps.
+  - Log `position` now follows upstream child-index positioning while `index` remains global.
+  - Missing `log_full`/frame hooks are expected port-wide differences.
 
-- [ ] `src/tracing/mux.rs`
-  - Pending round-2 review with mux coverage in `tests/it/geth.rs`.
+- [x] `src/tracing/mux.rs`
+  - Tracer configuration, mux delegation, and `get_result` behavior match after evm2
+    `StateChanges`/`DynDatabase` substitutions.
+  - Missing `log_full`/frame hooks are expected port-wide differences.
 
 - [x] `src/tracing/opcount.rs`
   - Public API and behavior match.
@@ -121,8 +136,9 @@ Review status legend:
 - [x] `tests/it/edge_cov.rs`
   - Intentionally omitted with `src/edge_cov.rs`.
 
-- [ ] `tests/it/geth.rs`
-  - Pending round-2 review with geth tracing/debug/prestate files.
+- [x] `tests/it/geth.rs`
+  - Original geth tracing tests are present with evm2 helper/API substitutions and bytecode
+    formatting only.
 
 - [ ] `tests/it/geth_js.rs`
   - Pending round-2 review with JS tracer files.

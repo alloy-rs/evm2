@@ -245,7 +245,7 @@ impl TracingInspectorConfig {
     /// [GethTraceBuilder::geth_prestate_traces](crate::tracing::geth::GethTraceBuilder::geth_prestate_traces)
     #[inline]
     pub const fn from_geth_prestate_config(_config: &PreStateConfig) -> Self {
-        Self::none()
+        Self::none().set_steps_and_state_diffs(true).stack_snapshots()
     }
 
     /// Merge another config into this one.

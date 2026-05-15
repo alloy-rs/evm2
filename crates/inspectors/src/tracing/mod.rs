@@ -64,7 +64,7 @@ pub struct TracingInspector {
     config: TracingInspectorConfig,
     traces: CallTraceArena,
     trace_stack: Vec<usize>,
-    step_stack: Vec<(usize, usize, u64, usize)>,
+    step_stack: Vec<(usize, usize, u64)>,
     last_journal_len: usize,
     log_index: u64,
     spec_id: Option<SpecId>,
@@ -373,15 +373,14 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for TracingInspector {
         self.traces.arena[trace_idx].ordering.push(TraceMemberOrder::Step(step_idx));
         self.traces.arena[trace_idx].trace.steps.push(step);
         self.last_journal_len = host.state().journal().len();
-        self.step_stack.push((trace_idx, step_idx, interp.gas().remaining(), interp.stack().len()));
+        self.step_stack.push((trace_idx, step_idx, interp.gas().remaining()));
     }
 
     fn step_end(&mut self, interp: &mut Interpreter<'_, T>, host: &mut T::Host) {
         if !self.config.record_steps {
             return;
         }
-        let Some((trace_idx, step_idx, gas_remaining, stack_len_before)) = self.step_stack.pop()
-        else {
+        let Some((trace_idx, step_idx, gas_remaining)) = self.step_stack.pop() else {
             return;
         };
         if let Some(step) = self.traces.arena[trace_idx].trace.steps.get_mut(step_idx) {
@@ -390,10 +389,11 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for TracingInspector {
             if self.config.record_stack_snapshots.is_pushes()
                 || self.config.record_stack_snapshots.is_all()
             {
+                let outputs = if step.op.is_valid() { step.op.outputs() as usize } else { 0 };
                 let stack = interp.stack();
-                if stack.len() > stack_len_before {
-                    step.push_stack = Some(Box::from(&stack.as_slice()[stack_len_before..]));
-                }
+                step.push_stack = Some(Box::from(
+                    stack.as_slice().get(stack.len().saturating_sub(outputs)..).unwrap_or_default(),
+                ));
             }
             let journal = host.state().journal();
             if self.config.record_state_diff && journal.len() != self.last_journal_len {
@@ -416,7 +416,9 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for TracingInspector {
             let log_idx = node.log_count();
             node.ordering.push(TraceMemberOrder::Log(log_idx));
             node.logs.push(
-                CallLog::from(log.clone()).with_position(log_idx as u64).with_index(self.log_index),
+                CallLog::from(log.clone())
+                    .with_position(node.children.len() as u64)
+                    .with_index(self.log_index),
             );
             self.log_index += 1;
         }

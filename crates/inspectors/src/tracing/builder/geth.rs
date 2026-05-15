@@ -1,11 +1,11 @@
 //! Geth trace builder
 use crate::tracing::{
-    types::{CallKind, CallTraceNode, CallTraceStepStackItem},
+    types::{CallKind, CallTraceNode, CallTraceStep, CallTraceStepStackItem},
     utils::load_account_code,
 };
 use alloc::{
     borrow::Cow,
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, VecDeque, btree_map::Entry as BTreeEntry},
     format, vec,
     vec::Vec,
 };
@@ -255,7 +255,9 @@ impl<'a> GethTraceBuilder<'a> {
         let mut prestate = PreStateMode::default();
 
         for address in self.nodes.iter().flat_map(|node| [node.trace.caller, node.trace.address]) {
-            prestate.0.entry(address).or_default();
+            if let BTreeEntry::Vacant(entry) = prestate.0.entry(address) {
+                entry.insert(prestate_account(db, address, code_enabled)?);
+            }
         }
         for (&address, account) in &state.accounts {
             let info =
@@ -268,6 +270,24 @@ impl<'a> GethTraceBuilder<'a> {
                 }
             }
             prestate.0.insert(address, acc_state);
+        }
+        for node in self.nodes.iter() {
+            let address = node.execution_address();
+            for step in &node.trace.steps {
+                if let Some(address) = prestate_account_access(step) {
+                    insert_prestate_account(&mut prestate, db, address, code_enabled)?;
+                }
+                if storage_enabled && let Some(change) = &step.storage_change {
+                    let value = change.had_value.unwrap_or(change.value);
+                    prestate
+                        .0
+                        .entry(address)
+                        .or_insert_with(AccountState::default)
+                        .storage
+                        .entry(change.key.into())
+                        .or_insert(value.into());
+                }
+            }
         }
 
         Ok(PreStateFrame::Default(prestate))
@@ -573,6 +593,42 @@ impl<'a> GethTraceBuilder<'a> {
             CallKind::AuthCall => CallFrameType::Call,
         }
     }
+}
+
+fn prestate_account(
+    db: &mut dyn DynDatabase,
+    address: Address,
+    code_enabled: bool,
+) -> DbResult<AccountState> {
+    let info = db.get_account(&address)?.unwrap_or_default();
+    let code = if code_enabled { load_account_code(db, &info)? } else { None };
+    Ok(AccountState::from_account_info(info.nonce, info.balance, code))
+}
+
+fn insert_prestate_account(
+    prestate: &mut PreStateMode,
+    db: &mut dyn DynDatabase,
+    address: Address,
+    code_enabled: bool,
+) -> DbResult<()> {
+    if let BTreeEntry::Vacant(entry) = prestate.0.entry(address) {
+        entry.insert(prestate_account(db, address, code_enabled)?);
+    }
+    Ok(())
+}
+
+fn prestate_account_access(step: &CallTraceStep) -> Option<Address> {
+    let stack = step.stack.as_deref()?;
+    let word = match step.op.get() {
+        op::EXTCODECOPY | op::EXTCODEHASH | op::EXTCODESIZE | op::BALANCE | op::SELFDESTRUCT => {
+            stack.last()?
+        }
+        op::DELEGATECALL | op::CALL | op::STATICCALL | op::CALLCODE => {
+            stack.get(stack.len().checked_sub(2)?)?
+        }
+        _ => return None,
+    };
+    Some(Address::from_word(B256::from(word.to_be_bytes())))
 }
 
 #[cfg(test)]
