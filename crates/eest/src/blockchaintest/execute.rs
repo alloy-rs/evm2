@@ -54,6 +54,13 @@ pub(crate) struct ExecuteSummary {
     pub(crate) skipped: usize,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct BalExecution<'a> {
+    read_bal: Option<&'a Arc<Bal>>,
+    index: BlockAccessIndex,
+    track_accesses: bool,
+}
+
 /// Executes a single blockchain test JSON file using explicit execution options.
 pub(crate) fn execute_test_suite(
     path: &Path,
@@ -169,13 +176,18 @@ fn execute_block(
     let mut block_database = database.clone();
     let mut bal_builder = needs_bal.then(BalBuilder::default);
     let txs = block_transactions(block);
+    let pre_block_bal = BalExecution {
+        read_bal: read_bal.as_ref(),
+        index: BlockAccessIndex::PRE_EXECUTION,
+        track_accesses: bal_builder.is_some(),
+    };
     pre_block_system_calls(
         &mut block_database,
         spec,
         next_block_env,
         *parent_block_hash,
         beacon_root,
-        read_bal.as_ref(),
+        pre_block_bal,
         bal_builder.as_mut(),
     )
     .map_err(|err| TestError::case(path, name, err))?;
@@ -194,9 +206,11 @@ fn execute_block(
             next_block_env,
             block_database.clone(),
             &tx,
-            read_bal.as_ref(),
-            BlockAccessIndex::new(tx_index as u64 + 1),
-            bal_builder.is_some(),
+            BalExecution {
+                read_bal: read_bal.as_ref(),
+                index: BlockAccessIndex::new(tx_index as u64 + 1),
+                track_accesses: bal_builder.is_some(),
+            },
         ) {
             Ok(result) => {
                 if let Some(bal_builder) = &mut bal_builder {
@@ -220,7 +234,11 @@ fn execute_block(
         spec,
         next_block_env,
         block_withdrawals(block),
-        read_bal.as_ref(),
+        BalExecution {
+            read_bal: read_bal.as_ref(),
+            index: BlockAccessIndex::new(txs.len() as u64 + 1),
+            track_accesses: bal_builder.is_some(),
+        },
         bal_builder.as_mut(),
         BlockAccessIndex::new(txs.len() as u64 + 1),
     )
@@ -281,7 +299,7 @@ fn pre_block_system_calls(
     block: BlockEnv,
     parent_block_hash: Option<B256>,
     parent_beacon_block_root: Option<B256>,
-    read_bal: Option<&Arc<Bal>>,
+    bal_execution: BalExecution<'_>,
     mut bal_builder: Option<&mut BalBuilder>,
 ) -> Result<(), TestErrorKind> {
     if block.number.is_zero() {
@@ -297,9 +315,7 @@ fn pre_block_system_calls(
             HISTORY_STORAGE_ADDRESS,
             Bytes::copy_from_slice(hash.as_slice()),
             "eip2935",
-            read_bal,
-            BlockAccessIndex::PRE_EXECUTION,
-            bal_builder.is_some(),
+            bal_execution,
         )?;
         if let Some(bal_builder) = &mut bal_builder {
             bal_builder.push_state_changes(BlockAccessIndex::PRE_EXECUTION, &changes);
@@ -315,9 +331,7 @@ fn pre_block_system_calls(
             BEACON_ROOTS_ADDRESS,
             Bytes::copy_from_slice(root.as_slice()),
             "eip4788",
-            read_bal,
-            BlockAccessIndex::PRE_EXECUTION,
-            bal_builder.is_some(),
+            bal_execution,
         )?;
         if let Some(bal_builder) = &mut bal_builder {
             bal_builder.push_state_changes(BlockAccessIndex::PRE_EXECUTION, &changes);
@@ -331,7 +345,7 @@ fn post_block_transition(
     spec: SpecId,
     block: BlockEnv,
     withdrawals: &[Withdrawal],
-    read_bal: Option<&Arc<Bal>>,
+    bal_execution: BalExecution<'_>,
     mut bal_builder: Option<&mut BalBuilder>,
     bal_index: BlockAccessIndex,
 ) -> Result<(), TestErrorKind> {
@@ -364,9 +378,7 @@ fn post_block_transition(
             WITHDRAWAL_REQUEST_ADDRESS,
             Bytes::new(),
             "eip7002",
-            read_bal,
-            bal_index,
-            bal_builder.is_some(),
+            bal_execution,
         )?;
         if let Some(bal_builder) = &mut bal_builder {
             bal_builder.push_state_changes(bal_index, &changes);
@@ -378,9 +390,7 @@ fn post_block_transition(
             evm2::CONSOLIDATION_REQUEST_ADDRESS,
             Bytes::new(),
             "eip7251",
-            read_bal,
-            bal_index,
-            bal_builder.is_some(),
+            bal_execution,
         )?;
         if let Some(bal_builder) = &mut bal_builder {
             bal_builder.push_state_changes(bal_index, &changes);
@@ -396,14 +406,12 @@ fn run_system_call(
     address: Address,
     data: Bytes,
     label: &'static str,
-    read_bal: Option<&Arc<Bal>>,
-    bal_index: BlockAccessIndex,
-    track_accesses: bool,
+    bal_execution: BalExecution<'_>,
 ) -> Result<StateChanges, TestErrorKind> {
     let mut evm_database = BalDatabase::new(database.clone());
-    if let Some(read_bal) = read_bal {
+    if let Some(read_bal) = bal_execution.read_bal {
         evm_database.bal_state.set_bal(Some(Arc::clone(read_bal)));
-        evm_database.bal_state.set_bal_index(bal_index);
+        evm_database.bal_state.set_bal_index(bal_execution.index);
     }
     let mut evm = Evm::<BaseEvmTypes>::new(
         spec,
@@ -412,7 +420,7 @@ fn run_system_call(
         evm_database,
         Precompiles::base(spec),
     );
-    evm.set_access_tracking_enabled(track_accesses);
+    evm.set_access_tracking_enabled(bal_execution.track_accesses);
     let result = evm.system_call(address, data);
     if !result.status && system_contract_has_code(database, address) {
         return Err(TestErrorKind::SystemCall(label));
@@ -426,14 +434,12 @@ fn execute_tx(
     block: BlockEnv,
     database: InMemoryDB,
     tx: &RecoveredTxEnvelope,
-    read_bal: Option<&Arc<Bal>>,
-    bal_index: BlockAccessIndex,
-    track_accesses: bool,
+    bal_execution: BalExecution<'_>,
 ) -> Result<TxResult, HandlerError> {
     let mut database = BalDatabase::new(database);
-    if let Some(read_bal) = read_bal {
+    if let Some(read_bal) = bal_execution.read_bal {
         database.bal_state.set_bal(Some(Arc::clone(read_bal)));
-        database.bal_state.set_bal_index(bal_index);
+        database.bal_state.set_bal_index(bal_execution.index);
     }
     let mut evm = Evm::<BaseEvmTypes>::new(
         spec,
@@ -442,7 +448,7 @@ fn execute_tx(
         database,
         Precompiles::base(spec),
     );
-    evm.set_access_tracking_enabled(track_accesses);
+    evm.set_access_tracking_enabled(bal_execution.track_accesses);
     evm.transact(tx)
 }
 

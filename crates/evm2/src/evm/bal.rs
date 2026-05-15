@@ -585,7 +585,7 @@ impl BalState {
 
     /// Takes the built BAL.
     #[inline]
-    pub fn take_built_bal(&mut self) -> Option<Bal> {
+    pub const fn take_built_bal(&mut self) -> Option<Bal> {
         self.reset_bal_index();
         self.bal_builder.take()
     }
