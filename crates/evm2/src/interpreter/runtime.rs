@@ -19,9 +19,9 @@ use derive_where::derive_where;
 /// EVM interpreter.
 #[derive_where(Debug)]
 pub struct Interpreter<'frame, T: EvmTypes> {
-    pub(crate) bytecode: Bytecode,
-    pub(crate) memory: Memory,
-    pub(crate) return_data: Bytes,
+    pub(in crate::interpreter) bytecode: Bytecode,
+    pub(in crate::interpreter) memory: Memory,
+    pub(in crate::interpreter) return_data: Bytes,
 
     pub(in crate::interpreter) pc: *const u8,
     output: *const [u8],
