@@ -42,6 +42,8 @@ DISPATCH_SYMBOLS = (
     "evm2::interpreter::dispatch::tco::dispatch::<",
 )
 DISPATCH_OPCODE = re.compile(r",\s*(\d+)(?:,\s*(?:true|false))?\s*>")
+MANGLED_DISPATCH_SYMBOL = "11interpreter8dispatch"
+MANGLED_DISPATCH_OPCODE = re.compile(r"Kh([0-9a-f]+)_")
 DISPATCH_OUTPUTS = (
     ("NoInspector", "op"),
     ("DynInspector", "op-inspector"),
@@ -208,15 +210,24 @@ def dispatch_output(text: str) -> str | None:
 
 
 def dispatch_metadata(text: str) -> tuple[int, str] | None:
-    if not any(symbol in text for symbol in DISPATCH_SYMBOLS):
+    is_dispatch = any(symbol in text for symbol in DISPATCH_SYMBOLS)
+    is_mangled_dispatch = MANGLED_DISPATCH_SYMBOL in text
+    if not is_dispatch and not is_mangled_dispatch:
         return None
-    matches = DISPATCH_OPCODE.findall(text)
-    if not matches:
-        return None
+    if is_mangled_dispatch:
+        matches = MANGLED_DISPATCH_OPCODE.findall(text)
+        if not matches:
+            return None
+        opcode = int(matches[-1], 16)
+    else:
+        matches = DISPATCH_OPCODE.findall(text)
+        if not matches:
+            return None
+        opcode = int(matches[-1])
     directory = dispatch_output(text)
     if directory is None:
         return None
-    return int(matches[-1]), directory
+    return opcode, directory
 
 
 def is_run_inner_symbol(text: str) -> bool:
