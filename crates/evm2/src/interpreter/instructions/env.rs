@@ -28,57 +28,18 @@ fn load_account<T: EvmTypes>(
 }
 
 #[inline]
-fn copy_memory_resize(
-    gas: &mut Gas,
-    memory: &mut Memory,
-    memory_offset: Word,
-    len: usize,
-) -> Result<Option<usize>> {
-    if len == 0 {
-        return Ok(None);
-    }
-    let memory_offset = word_to_usize(memory_offset)?;
-    resize_memory(gas, memory, memory_offset, len)?;
-    Ok(Some(memory_offset))
-}
-
-#[inline]
-fn copy_cost_and_memory_resize(
-    gas: &mut Gas,
-    memory: &mut Memory,
-    copy_cost: u64,
-    memory_offset: Word,
-    len: usize,
-) -> Result<Option<usize>> {
-    gas.spend(copy_cost)?;
-    copy_memory_resize(gas, memory, memory_offset, len)
-}
-
-#[inline]
-fn set_copy_data(
-    memory: &mut Memory,
-    memory_offset: usize,
-    data_offset: Word,
-    len: usize,
-    data: &[u8],
-) {
-    memory.set_data(memory_offset, word_to_usize_saturated(data_offset), len, data);
-}
-
-#[inline]
 fn copy_data(
     gas: &mut Gas,
     memory: &mut Memory,
-    copy_cost: u64,
     memory_offset: Word,
     data_offset: Word,
     len: usize,
     data: &[u8],
 ) -> Result {
-    if let Some(memory_offset) =
-        copy_cost_and_memory_resize(gas, memory, copy_cost, memory_offset, len)?
-    {
-        set_copy_data(memory, memory_offset, data_offset, len, data);
+    if len != 0 {
+        let memory_offset = word_to_usize(memory_offset)?;
+        resize_memory(gas, memory, memory_offset, len)?;
+        memory.set_data(memory_offset, word_to_usize_saturated(data_offset), len, data);
     }
     Ok(())
 }
@@ -128,9 +89,9 @@ pub(crate) fn calldatasize(cx: _) -> out {
 #[instruction(dynamic_gas)]
 pub(crate) fn calldatacopy(cx: _, [memory_offset, data_offset, len]: [Word]) -> Result {
     let len = word_to_usize(*len)?;
-    let copy_cost = cx.state.gas_params().copy_cost(len);
+    cx.gas.spend(cx.state.gas_params().copy_cost(len))?;
     let input = cx.state.message().input.as_ref();
-    copy_data(cx.gas, &mut cx.state.0.memory, copy_cost, *memory_offset, *data_offset, len, input)
+    copy_data(cx.gas, &mut cx.state.0.memory, *memory_offset, *data_offset, len, input)
 }
 
 #[instruction]
@@ -141,16 +102,9 @@ pub(crate) fn codesize(cx: _) -> out {
 #[instruction(dynamic_gas)]
 pub(crate) fn codecopy(cx: _, [memory_offset, code_offset, len]: [Word]) -> Result {
     let len = word_to_usize(*len)?;
-    let copy_cost = cx.state.gas_params().copy_cost(len);
-    copy_data(
-        cx.gas,
-        &mut cx.state.0.memory,
-        copy_cost,
-        *memory_offset,
-        *code_offset,
-        len,
-        cx.state.0.bytecode.original_byte_slice(),
-    )
+    cx.gas.spend(cx.state.gas_params().copy_cost(len))?;
+    let data = cx.state.0.bytecode.original_byte_slice();
+    copy_data(cx.gas, &mut cx.state.0.memory, *memory_offset, *code_offset, len, data)
 }
 
 #[instruction]
@@ -173,17 +127,15 @@ pub(crate) fn extcodehash(cx: _, [addr]: [Word]) -> Result<out> {
 pub(crate) fn extcodecopy(cx: _, [addr, memory_offset, code_offset, len]: [Word]) -> Result {
     let len = word_to_usize(*len)?;
     cx.gas.spend(cx.state.gas_params().extcodecopy_cost(len))?;
-    let memory_offset =
-        copy_memory_resize(cx.gas, &mut cx.state.0.memory, *memory_offset, len)?.unwrap_or(0);
-
     let code = load_account(&mut cx, *addr, true)?.code;
-    set_copy_data(
+    copy_data(
+        cx.gas,
         &mut cx.state.0.memory,
-        memory_offset,
+        *memory_offset,
         *code_offset,
         len,
         code.original_byte_slice(),
-    );
+    )
 }
 
 #[instruction]
@@ -199,16 +151,9 @@ pub(crate) fn returndatacopy(cx: _, [memory_offset, data_offset, len]: [Word]) -
         return Err(InstrStop::OutOfOffset);
     }
 
-    let copy_cost = cx.state.gas_params().copy_cost(len);
-    copy_data(
-        cx.gas,
-        &mut cx.state.0.memory,
-        copy_cost,
-        *memory_offset,
-        Word::from(data_offset),
-        len,
-        &cx.state.0.return_data,
-    )
+    cx.gas.spend(cx.state.gas_params().copy_cost(len))?;
+    let data = &cx.state.0.return_data;
+    copy_data(cx.gas, &mut cx.state.0.memory, *memory_offset, Word::from(data_offset), len, data)
 }
 
 #[cfg(test)]
