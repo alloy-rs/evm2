@@ -19,9 +19,9 @@ use derive_where::derive_where;
 /// EVM interpreter.
 #[derive_where(Debug)]
 pub struct Interpreter<'frame, T: EvmTypes> {
-    bytecode: Bytecode,
-    memory: Memory,
-    return_data: Bytes,
+    pub(crate) bytecode: Bytecode,
+    pub(crate) memory: Memory,
+    pub(crate) return_data: Bytes,
 
     pub(in crate::interpreter) pc: *const u8,
     output: *const [u8],
@@ -218,7 +218,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
 
 /// Interpreter state exposed to instruction implementations.
 #[repr(transparent)]
-pub struct InterpreterState<'frame, T: EvmTypes>(Interpreter<'frame, T>);
+pub struct InterpreterState<'frame, T: EvmTypes>(pub(crate) Interpreter<'frame, T>);
 
 impl<T: EvmTypes> fmt::Debug for InterpreterState<'_, T> {
     #[inline]
@@ -269,7 +269,7 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
 
     /// Returns the cached transaction-global environment.
     #[inline]
-    pub const fn tx(&self) -> &TxEnv<T> {
+    pub const fn tx(&self) -> &'frame TxEnv<T> {
         // SAFETY: `tx_env` is initialized at the beginning of `run` and remains set for
         // instruction execution.
         unsafe { self.0.tx_env.unwrap_unchecked() }
@@ -300,7 +300,7 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
 
     /// Returns the active frame-local call/create message.
     #[inline]
-    pub const fn message(&self) -> &Message<T> {
+    pub const fn message(&self) -> &'frame Message<T> {
         // SAFETY: `message` is initialized at the beginning of `run` and remains set for
         // instruction execution.
         unsafe { self.0.message.unwrap_unchecked() }

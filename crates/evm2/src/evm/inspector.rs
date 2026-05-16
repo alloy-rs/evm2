@@ -402,7 +402,7 @@ mod tests {
                 Word::ZERO,
                 Word::ZERO,
                 Word::ZERO,
-                address_to_word(target),
+                address_to_word(&target),
                 Word::from(1000),
             ],
         );
@@ -616,7 +616,7 @@ mod tests {
             run_with_inspector(code, &mut host, &Message::default(), 50_000, &mut inspector);
 
         assert!(matches!(stop, InstrStop::Stop));
-        assert_eq!(stack, [address_to_word(created)]);
+        assert_eq!(stack, [address_to_word(&created)]);
         assert_eq!(inspector.create_depth, Some(1));
         assert_eq!(inspector.create_end_stop, Some(InstrStop::Return));
         assert!(host.calls.is_empty());
@@ -640,7 +640,7 @@ mod tests {
         );
 
         assert!(matches!(stop, InstrStop::Stop));
-        assert_eq!(stack, [address_to_word(created)]);
+        assert_eq!(stack, [address_to_word(&created)]);
         assert_eq!(inspector.create_depth, Some(CALL_DEPTH_LIMIT + 1));
         assert_eq!(inspector.create_end_stop, Some(InstrStop::Return));
         assert!(host.calls.is_empty());
@@ -658,7 +658,7 @@ mod tests {
             run_with_inspector(code, &mut host, &Message::default(), 50_000, &mut inspector);
 
         assert!(matches!(stop, InstrStop::Stop));
-        assert_eq!(stack, [address_to_word(created)]);
+        assert_eq!(stack, [address_to_word(&created)]);
         assert!(host.calls.is_empty());
     }
 
@@ -724,7 +724,7 @@ mod tests {
             SelfDestructResult { had_value: true, value, ..Default::default() };
         let mut inspector = MessageInspector::default();
         let mut code = Vec::new();
-        push(&mut code, address_to_word(target));
+        push(&mut code, address_to_word(&target));
         code.push(op::SELFDESTRUCT);
 
         let (stop, _) = run_with_inspector(
@@ -746,7 +746,7 @@ mod tests {
         host.selfdestruct_error = Some(InstrStop::FatalExternalError);
         let mut inspector = MessageInspector::default();
         let mut code = Vec::new();
-        push(&mut code, address_to_word(target));
+        push(&mut code, address_to_word(&target));
         code.push(op::SELFDESTRUCT);
 
         let (stop, _) = run_with_inspector(

@@ -8,7 +8,6 @@ use crate::{
         Gas, GasTracker, Host, InstrStop, InterpreterState, Message, MessageKind, MessageResult,
         Result, StackMut, Word, memory::resize_memory,
     },
-    trustme,
     utils::{word_to_address, word_to_usize},
     version::GasId,
 };
@@ -251,7 +250,7 @@ fn call_inner<T: EvmTypes>(
     } else if message.depth > CALL_DEPTH_LIMIT {
         call_too_deep_result::<T>(message.gas_limit)
     } else {
-        let tx_env = unsafe { trustme::decouple_lt(state.tx()) };
+        let tx_env = state.tx();
         state.host().execute_message(tx_env, code, &mut message, caller_is_static)
     };
     state.inspect_call_end(&message, &mut result);
@@ -346,7 +345,7 @@ fn create_inner<T: EvmTypes>(
         call_too_deep_result::<T>(message.gas_limit)
     } else {
         let bytecode = crate::bytecode::Bytecode::new_legacy(message.input.clone());
-        let tx_env = unsafe { trustme::decouple_lt(state.tx()) };
+        let tx_env = state.tx();
         state.host().execute_message(tx_env, bytecode, &mut message, false)
     };
     state.inspect_create_end(&message, &mut result);
@@ -372,9 +371,9 @@ pub(crate) fn selfdestruct(cx: _, [target]: [Word]) -> Result {
     let target = word_to_address(*target);
     let cold_load_gas = cx.state.gas_params().selfdestruct_cold_cost();
     let skip_cold_load = cx.gas.remaining() < cold_load_gas;
-    let destination = cx.state.message().destination;
-    let res = cx.state.host().selfdestruct(&destination, &target, skip_cold_load)?;
-    cx.state.inspect_selfdestruct(&destination, &target, &res.value);
+    let destination = &cx.state.message().destination;
+    let res = cx.state.host().selfdestruct(destination, &target, skip_cold_load)?;
+    cx.state.inspect_selfdestruct(destination, &target, &res.value);
     let should_charge_topup =
         should_charge_new_account_gas(cx.state.spec(), res.had_value, res.target_is_empty);
     cx.gas.spend(cx.state.gas_params().selfdestruct_cost(should_charge_topup, res.is_cold))?;
@@ -419,7 +418,7 @@ mod tests {
                 Word::from(0),
                 Word::from(0),
                 Word::from(0),
-                address_to_word(target),
+                address_to_word(&target),
                 Word::from(1000),
             ],
         );
@@ -451,7 +450,7 @@ mod tests {
                 Word::from(0),
                 Word::from(0),
                 Word::ZERO,
-                address_to_word(target),
+                address_to_word(&target),
                 Word::from(1000),
             ],
         );
@@ -477,7 +476,7 @@ mod tests {
                 Word::ZERO,
                 Word::ZERO,
                 Word::from(1),
-                address_to_word(target),
+                address_to_word(&target),
                 Word::from(1000),
             ],
         );
@@ -540,7 +539,7 @@ mod tests {
                 Word::ZERO,
                 Word::ZERO,
                 Word::ZERO,
-                address_to_word(target),
+                address_to_word(&target),
                 Word::ZERO,
             ],
         );
@@ -571,7 +570,7 @@ mod tests {
                 Word::ZERO,
                 Word::ZERO,
                 Word::ZERO,
-                address_to_word(target),
+                address_to_word(&target),
                 Word::ZERO,
             ],
         );
@@ -601,7 +600,7 @@ mod tests {
                 Word::from(0),
                 Word::from(0),
                 Word::from(7),
-                address_to_word(code_address),
+                address_to_word(&code_address),
                 Word::from(1000),
             ],
         );
@@ -629,7 +628,7 @@ mod tests {
                 Word::from(0),
                 Word::from(0),
                 Word::from(7),
-                address_to_word(code_address),
+                address_to_word(&code_address),
                 Word::from(1000),
             ],
         );
@@ -660,7 +659,7 @@ mod tests {
                 Word::from(0),
                 Word::from(0),
                 Word::from(0),
-                address_to_word(code_address),
+                address_to_word(&code_address),
                 Word::from(1000),
             ],
         );
@@ -710,7 +709,7 @@ mod tests {
                 Word::from(0),
                 Word::from(0),
                 Word::from(0),
-                address_to_word(target),
+                address_to_word(&target),
                 Word::from(1000),
             ],
         );
@@ -758,7 +757,7 @@ mod tests {
 
         let interpreter = run(RunConfig::new(code).host(&mut host).gas_limit(50_000));
         assert!(matches!(interpreter.err, InstrStop::Stop));
-        assert_eq!(interpreter.stack(), [address_to_word(created)]);
+        assert_eq!(interpreter.stack(), [address_to_word(&created)]);
         assert_eq!(host.calls.len(), 1);
         assert_eq!(host.calls[0].kind, MessageKind::Create);
     }
@@ -781,7 +780,7 @@ mod tests {
 
         let interpreter = run(RunConfig::new(code).host(&mut host).gas_limit(50_000));
         assert!(matches!(interpreter.err, InstrStop::Stop));
-        assert_eq!(interpreter.stack(), [address_to_word(created), Word::ZERO]);
+        assert_eq!(interpreter.stack(), [address_to_word(&created), Word::ZERO]);
     }
 
     #[test]
@@ -851,7 +850,7 @@ mod tests {
 
         let interpreter = run(RunConfig::new(code).host(&mut host).gas_limit(50_000));
         assert!(matches!(interpreter.err, InstrStop::Stop));
-        assert_eq!(interpreter.stack(), [address_to_word(created)]);
+        assert_eq!(interpreter.stack(), [address_to_word(&created)]);
         assert_eq!(host.calls[0].kind, MessageKind::Create2);
 
         let interpreter = run(RunConfig::new([
@@ -875,7 +874,7 @@ mod tests {
         let target = Address::from([0x99; 20]);
         let mut host = TestHost::default();
         let mut code = Vec::new();
-        push(&mut code, address_to_word(target));
+        push(&mut code, address_to_word(&target));
         code.push(op::SELFDESTRUCT);
 
         let interpreter = run(RunConfig::new(code).host(&mut host).message(Message {
