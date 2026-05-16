@@ -31,15 +31,15 @@ fn load_account<T: EvmTypes>(
 fn copy_data(
     gas: &mut Gas,
     memory: &mut Memory,
-    memory_offset: Word,
-    data_offset: Word,
+    memory_offset: &Word,
+    data_offset: &Word,
     len: usize,
     data: &[u8],
 ) -> Result {
     if len != 0 {
-        let memory_offset = word_to_usize(memory_offset)?;
+        let memory_offset = word_to_usize(*memory_offset)?;
         resize_memory(gas, memory, memory_offset, len)?;
-        memory.set_data(memory_offset, word_to_usize_saturated(data_offset), len, data);
+        memory.set_data(memory_offset, word_to_usize_saturated(*data_offset), len, data);
     }
     Ok(())
 }
@@ -91,7 +91,7 @@ pub(crate) fn calldatacopy(cx: _, [memory_offset, data_offset, len]: [Word]) -> 
     let len = word_to_usize(*len)?;
     cx.gas.spend(cx.state.gas_params().copy_cost(len))?;
     let input = cx.state.message().input.as_ref();
-    copy_data(cx.gas, &mut cx.state.0.memory, *memory_offset, *data_offset, len, input)
+    copy_data(cx.gas, &mut cx.state.0.memory, memory_offset, data_offset, len, input)
 }
 
 #[instruction]
@@ -104,7 +104,7 @@ pub(crate) fn codecopy(cx: _, [memory_offset, code_offset, len]: [Word]) -> Resu
     let len = word_to_usize(*len)?;
     cx.gas.spend(cx.state.gas_params().copy_cost(len))?;
     let data = cx.state.0.bytecode.original_byte_slice();
-    copy_data(cx.gas, &mut cx.state.0.memory, *memory_offset, *code_offset, len, data)
+    copy_data(cx.gas, &mut cx.state.0.memory, memory_offset, code_offset, len, data)
 }
 
 #[instruction]
@@ -159,7 +159,8 @@ pub(crate) fn returndatacopy(cx: _, [memory_offset, data_offset, len]: [Word]) -
 
     cx.gas.spend(cx.state.gas_params().copy_cost(len))?;
     let data = &cx.state.0.return_data;
-    copy_data(cx.gas, &mut cx.state.0.memory, *memory_offset, Word::from(data_offset), len, data)
+    let data_offset = Word::from(data_offset);
+    copy_data(cx.gas, &mut cx.state.0.memory, memory_offset, &data_offset, len, data)
 }
 
 #[cfg(test)]
