@@ -127,15 +127,21 @@ pub(crate) fn extcodehash(cx: _, [addr]: [Word]) -> Result<out> {
 pub(crate) fn extcodecopy(cx: _, [addr, memory_offset, code_offset, len]: [Word]) -> Result {
     let len = word_to_usize(*len)?;
     cx.gas.spend(cx.state.gas_params().extcodecopy_cost(len))?;
+    let memory_offset = if len != 0 {
+        let memory_offset = word_to_usize(*memory_offset)?;
+        resize_memory(cx.gas, &mut cx.state.0.memory, memory_offset, len)?;
+        memory_offset
+    } else {
+        0
+    };
     let code = load_account(&mut cx, *addr, true)?.code;
-    copy_data(
-        cx.gas,
-        &mut cx.state.0.memory,
-        *memory_offset,
-        *code_offset,
+    cx.state.0.memory.set_data(
+        memory_offset,
+        word_to_usize_saturated(*code_offset),
         len,
         code.original_byte_slice(),
-    )
+    );
+    Ok(())
 }
 
 #[instruction]
