@@ -13,8 +13,8 @@ pub const fn num_words(len: usize) -> usize {
 
 /// Converts an address to an EVM word.
 #[inline]
-pub fn address_to_word(address: Address) -> Word {
-    address.into_word().into()
+pub fn address_to_word(address: &Address) -> Word {
+    Word::from_be_slice(address.as_slice())
 }
 
 /// Converts a 256-bit hash to an EVM word.
