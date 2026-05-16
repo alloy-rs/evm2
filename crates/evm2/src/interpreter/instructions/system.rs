@@ -369,7 +369,7 @@ fn create_inner<T: EvmTypes>(
 #[instruction(dynamic_gas)]
 pub(crate) fn selfdestruct(cx: _, [target]: [Word]) -> Result {
     require_non_staticcall(cx.state)?;
-    let target = word_to_address(target);
+    let target = word_to_address(*target);
     let cold_load_gas = cx.state.gas_params().selfdestruct_cold_cost();
     let skip_cold_load = cx.gas.remaining() < cold_load_gas;
     let destination = cx.state.message().destination;

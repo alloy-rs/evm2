@@ -15,12 +15,12 @@ pub(crate) fn gt([a, b]: [Word]) -> out {
 
 #[instruction]
 pub(crate) fn slt([a, b]: [Word]) -> out {
-    *out = Word::from(i256_cmp(&a, &b) == Ordering::Less);
+    *out = Word::from(i256_cmp(a, b) == Ordering::Less);
 }
 
 #[instruction]
 pub(crate) fn sgt([a, b]: [Word]) -> out {
-    *out = Word::from(i256_cmp(&a, &b) == Ordering::Greater);
+    *out = Word::from(i256_cmp(a, b) == Ordering::Greater);
 }
 
 #[instruction]
@@ -35,45 +35,45 @@ pub(crate) fn iszero([value]: [Word]) -> out {
 
 #[instruction]
 pub(crate) fn bitand([a, b]: [Word]) -> out {
-    *out = a & b;
+    *out = *a & *b;
 }
 
 #[instruction]
 pub(crate) fn bitor([a, b]: [Word]) -> out {
-    *out = a | b;
+    *out = *a | *b;
 }
 
 #[instruction]
 pub(crate) fn bitxor([a, b]: [Word]) -> out {
-    *out = a ^ b;
+    *out = *a ^ *b;
 }
 
 #[instruction]
 pub(crate) fn not([value]: [Word]) -> out {
-    *out = !value;
+    *out = !*value;
 }
 
 #[instruction]
 pub(crate) fn byte([index, value]: [Word]) -> out {
-    let index = word_to_usize_saturated(index);
+    let index = word_to_usize_saturated(*index);
     *out = if index < 32 { Word::from(value.byte(31 - index)) } else { Word::ZERO };
 }
 
 #[instruction]
 pub(crate) fn shl([shift, value]: [Word]) -> out {
-    let shift = word_to_usize_saturated(shift);
-    *out = if shift < 256 { value << shift } else { Word::ZERO };
+    let shift = word_to_usize_saturated(*shift);
+    *out = if shift < 256 { *value << shift } else { Word::ZERO };
 }
 
 #[instruction]
 pub(crate) fn shr([shift, value]: [Word]) -> out {
-    let shift = word_to_usize_saturated(shift);
-    *out = if shift < 256 { value >> shift } else { Word::ZERO };
+    let shift = word_to_usize_saturated(*shift);
+    *out = if shift < 256 { *value >> shift } else { Word::ZERO };
 }
 
 #[instruction]
 pub(crate) fn sar([shift, value]: [Word]) -> out {
-    let shift = word_to_usize_saturated(shift);
+    let shift = word_to_usize_saturated(*shift);
     *out = if shift < 256 {
         value.arithmetic_shr(shift)
     } else if value.bit(255) {

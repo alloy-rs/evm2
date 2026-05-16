@@ -18,13 +18,13 @@ pub(crate) fn stop() -> Result {
 
 #[instruction]
 pub(crate) fn jump(cx: _, [target]: [Word]) -> Result {
-    jump_inner(target, &mut cx)
+    jump_inner(*target, &mut cx)
 }
 
 #[instruction]
 pub(crate) fn jumpi(cx: _, [target, cond]: [Word]) -> Result {
     if !cond.is_zero() {
-        jump_inner(target, &mut cx)?;
+        jump_inner(*target, &mut cx)?;
     } else {
         unsafe { cx.pc.advance_unchecked(1) };
     };
@@ -67,13 +67,13 @@ pub(crate) fn revert(cx: _, [offset, len]: [Word]) -> Result {
 #[inline]
 fn return_inner<T: EvmTypes>(
     cx: GasInstructionCx<'_, '_, T>,
-    offset: Word,
-    len: Word,
+    offset: &Word,
+    len: &Word,
     result: InstrStop,
 ) -> Result {
-    let len = word_to_usize(len)?;
+    let len = word_to_usize(*len)?;
     let offset = if len != 0 {
-        let offset = word_to_usize(offset)?;
+        let offset = word_to_usize(*offset)?;
         resize_memory(cx.gas, cx.state.memory(), offset, len)?;
         offset
     } else {

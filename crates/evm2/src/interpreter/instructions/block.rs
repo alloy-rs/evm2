@@ -8,13 +8,13 @@ use evm2_macros::instruction;
 
 #[instruction]
 pub(crate) fn blockhash(cx: _, [number]: [Word]) -> Result<out> {
-    *out = if let Some(diff) = cx.state.host().block_env().number.checked_sub(number) {
+    *out = if let Some(diff) = cx.state.host().block_env().number.checked_sub(*number) {
         if diff == 0 || diff > BLOCK_HASH_HISTORY {
             Word::ZERO
         } else {
             cx.state
                 .host()
-                .block_hash(&number)?
+                .block_hash(number)?
                 .map(b256_to_word)
                 .ok_or(InstrStop::FatalExternalError)?
         }
@@ -70,7 +70,7 @@ pub(crate) fn basefee(cx: _) -> Result<out> {
 
 #[instruction]
 pub(crate) fn blobhash(cx: _, [index]: [Word]) -> Result<out> {
-    let index = word_to_usize_saturated(index);
+    let index = word_to_usize_saturated(*index);
     *out = cx.state.tx().blob_hashes.get(index).copied().unwrap_or_default();
 }
 

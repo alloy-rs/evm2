@@ -19,7 +19,7 @@ const ASSOC_BOUND_OPCODE: u8 = 0x1e;
 
 #[instruction]
 fn macro_add([a, b]: [Word]) -> out {
-    *out = a + b;
+    *out = *a + *b;
 }
 
 #[instruction(dynamic_gas)]
