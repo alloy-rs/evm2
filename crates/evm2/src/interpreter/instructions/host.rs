@@ -27,7 +27,7 @@ pub(crate) fn sload(cx: _, [key]: [Word]) -> Result<out> {
     let skip_cold_load =
         cx.state.spec().enables(SpecId::BERLIN) && cx.gas.remaining() < additional_cold_cost;
     let destination = cx.state.message().destination;
-    let load = cx.state.host().sload(&destination, &key, skip_cold_load)?;
+    let load = cx.state.host().sload(&destination, key, skip_cold_load)?;
     if load.is_cold {
         cx.gas.spend(additional_cold_cost)?;
     }
@@ -56,7 +56,7 @@ pub(crate) fn sstore(cx: _, [key, value]: [Word]) -> Result {
     let skip_cold_load = cx.state.spec().enables(SpecId::BERLIN)
         && cx.gas.remaining() < cx.state.gas_params().get(GasId::ColdStorageAdditionalCost).into();
     let destination = cx.state.message().destination;
-    let state_load = cx.state.host().sstore(&destination, &key, &value, skip_cold_load)?;
+    let state_load = cx.state.host().sstore(&destination, key, value, skip_cold_load)?;
 
     // EIP-2200 net gas metering depends on original, present, and new slot values:
     // clean slots pay set/reset costs, dirty slots generally only pay the load cost,
@@ -79,14 +79,14 @@ pub(crate) fn sstore(cx: _, [key, value]: [Word]) -> Result {
 #[instruction]
 pub(crate) fn tload(cx: _, [key]: [Word]) -> out {
     let destination = cx.state.message().destination;
-    *out = cx.state.host().tload(&destination, &key);
+    *out = cx.state.host().tload(&destination, key);
 }
 
 #[instruction]
 pub(crate) fn tstore(cx: _, [key, value]: [Word]) -> Result {
     require_non_staticcall(cx.state)?;
     let destination = cx.state.message().destination;
-    cx.state.host().tstore(&destination, &key, &value);
+    cx.state.host().tstore(&destination, key, value);
 }
 
 #[instruction(no_stack_preamble, dynamic_gas)]

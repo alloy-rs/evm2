@@ -4,61 +4,61 @@ use evm2_macros::instruction;
 
 #[instruction]
 pub(crate) fn add([a, b]: [Word]) -> out {
-    *out = a.wrapping_add(b);
+    *out = a.wrapping_add(*b);
 }
 
 #[instruction]
 pub(crate) fn mul([a, b]: [Word]) -> out {
-    *out = a.wrapping_mul(b);
+    *out = a.wrapping_mul(*b);
 }
 
 #[instruction]
 pub(crate) fn sub([a, b]: [Word]) -> out {
-    *out = a.wrapping_sub(b);
+    *out = a.wrapping_sub(*b);
 }
 
 #[instruction]
 pub(crate) fn div([a, b]: [Word]) -> out {
-    *out = if b.is_zero() { Word::ZERO } else { a.wrapping_div(b) };
+    *out = if b.is_zero() { Word::ZERO } else { a.wrapping_div(*b) };
 }
 
 #[instruction]
 pub(crate) fn sdiv([a, b]: [Word]) -> out {
-    *out = i256_div(a, b);
+    *out = i256_div(*a, *b);
 }
 
 #[instruction]
 pub(crate) fn rem([a, b]: [Word]) -> out {
-    *out = if b.is_zero() { Word::ZERO } else { a.wrapping_rem(b) };
+    *out = if b.is_zero() { Word::ZERO } else { a.wrapping_rem(*b) };
 }
 
 #[instruction]
 pub(crate) fn smod([a, b]: [Word]) -> out {
-    *out = i256_mod(a, b);
+    *out = i256_mod(*a, *b);
 }
 
 #[instruction]
 pub(crate) fn addmod([a, b, n]: [Word]) -> out {
-    *out = a.add_mod(b, n);
+    *out = a.add_mod(*b, *n);
 }
 
 #[instruction]
 pub(crate) fn mulmod([a, b, n]: [Word]) -> out {
-    *out = a.mul_mod(b, n);
+    *out = a.mul_mod(*b, *n);
 }
 
 #[instruction(dynamic_gas)]
 pub(crate) fn exp(cx: _, [a, b]: [Word]) -> Result<out> {
-    cx.gas.spend(cx.state.gas_params().exp_cost(b))?;
-    *out = a.wrapping_pow(b);
+    cx.gas.spend(cx.state.gas_params().exp_cost(*b))?;
+    *out = a.wrapping_pow(*b);
 }
 
 #[instruction]
 pub(crate) fn signextend([ext, value]: [Word]) -> out {
-    if ext < 31 {
+    if *ext < 31 {
         let bit_index = (8 * ext.as_limbs()[0] + 7) as usize;
         let mask = (Word::ONE << bit_index) - Word::ONE;
-        *out = if value.bit(bit_index) { value | !mask } else { value & mask };
+        *out = if value.bit(bit_index) { *value | !mask } else { *value & mask };
     }
 }
 

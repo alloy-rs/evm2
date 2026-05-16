@@ -18,13 +18,13 @@ pub(crate) fn stop() -> Result {
 
 #[instruction]
 pub(crate) fn jump(cx: _, [target]: [Word]) -> Result {
-    jump_inner(target, &mut cx)
+    jump_inner(*target, &mut cx)
 }
 
 #[instruction]
 pub(crate) fn jumpi(cx: _, [target, cond]: [Word]) -> Result {
     if !cond.is_zero() {
-        jump_inner(target, &mut cx)?;
+        jump_inner(*target, &mut cx)?;
     } else {
         unsafe { cx.pc.advance_unchecked(1) };
     };
@@ -56,12 +56,12 @@ pub(crate) fn jumpdest() {}
 
 #[instruction(dynamic_gas)]
 pub(crate) fn r#return(cx: _, [offset, len]: [Word]) -> Result {
-    return_inner(cx, offset, len, InstrStop::Return)
+    return_inner(cx, *offset, *len, InstrStop::Return)
 }
 
 #[instruction(dynamic_gas)]
 pub(crate) fn revert(cx: _, [offset, len]: [Word]) -> Result {
-    return_inner(cx, offset, len, InstrStop::Revert)
+    return_inner(cx, *offset, *len, InstrStop::Revert)
 }
 
 #[inline]

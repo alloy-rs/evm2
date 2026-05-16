@@ -20,8 +20,10 @@ use syn::{
 /// - `cx: _`: Optional instruction context. It exposes `pc`, `gas`, and `state`, which are needed
 ///   for immediates, memory, host access, dynamic gas, active version data, and message or
 ///   transaction state.
-/// - `[a, b]: [Word]`: Automatic stack inputs. The macro checks stack bounds, pops one word per
-///   binding, and creates local `Word` values with those names.
+/// - `[a, b]: [Word]`: Automatic stack inputs. The macro checks stack bounds and binds one
+///   reference per non-`_` pattern. Inputs that overlap output slots are shared reborrows of the
+///   output slot; other inputs are shared references. Use reference patterns like `[&x]: [Word]` to
+///   copy.
 /// - `-> out`: Automatic stack output. The output name is a mutable `Word` slot. Multiple outputs
 ///   can be written as `-> Result<out1, out2>` for fallible instructions.
 /// - `-> Result`: Fallible instruction with no automatic outputs. The body must evaluate to
@@ -54,7 +56,7 @@ use syn::{
 /// #[instruction]
 /// fn opcode_name(cx: _, [a, b, c]: [Word]) -> Result<out> {
 ///     cx.gas.spend(3)?;
-///     *out = a.wrapping_add(b).wrapping_add(c);
+///     *out = a.wrapping_add(*b).wrapping_add(*c);
 /// }
 /// ```
 ///
@@ -68,7 +70,7 @@ use syn::{
 ///
 /// #[instruction]
 /// fn add([a, b]: [Word]) -> out {
-///     *out = a.wrapping_add(b);
+///     *out = a.wrapping_add(*b);
 /// }
 /// ```
 ///
@@ -235,7 +237,6 @@ fn expand_instruction(instruction_attrs: InstructionAttrs, input: ItemFn) -> Tok
         quote! { where #evm_types: #evm_types_bound #( + #evm_types_bounds)* }
     };
     let (_, outputs) = parse_return(sig.output);
-    let body = body(input.block.stmts, outputs.is_empty());
 
     let mut has_cx = false;
     let mut cx_arg = None;
@@ -248,12 +249,11 @@ fn expand_instruction(instruction_attrs: InstructionAttrs, input: ItemFn) -> Tok
             cx_arg = Some(ident);
         } else if is_word_slice(&arg.ty) {
             let Pat::Slice(PatSlice { elems, .. }) = *arg.pat else { continue };
-            inputs.extend(elems.into_iter().filter_map(|pat| {
-                let Pat::Ident(PatIdent { ident, .. }) = pat else {
-                    return None;
-                };
-                Some(ident)
-            }));
+            if let Some(rest) = elems.iter().find(|pat| matches!(pat, Pat::Rest(_))) {
+                return syn::Error::new_spanned(rest, "`..` is not supported in stack inputs")
+                    .to_compile_error();
+            }
+            inputs.extend(elems);
         } else {
             return syn::Error::new_spanned(
                 arg,
@@ -263,8 +263,12 @@ fn expand_instruction(instruction_attrs: InstructionAttrs, input: ItemFn) -> Tok
         }
     }
 
-    let stack_setup =
-        (!instruction_attrs.no_stack_preamble).then(|| stack_setup(&inputs, &outputs));
+    let body = body(input.block.stmts, outputs.is_empty());
+    let stack_setup = if instruction_attrs.no_stack_preamble {
+        None
+    } else {
+        Some(stack_setup(&inputs, &outputs))
+    };
     let cx_setup = has_cx.then(|| {
         let cx = cx_arg.unwrap_or_else(|| Ident::new("cx", ident.span()));
         if instruction_attrs.dynamic_gas {
@@ -393,11 +397,10 @@ fn body(stmts: Vec<Stmt>, allow_final_result: bool) -> TokenStream2 {
     }
 }
 
-fn stack_setup(inputs: &[Ident], outputs: &[Ident]) -> TokenStream2 {
+fn stack_setup(inputs: &[Pat], outputs: &[Ident]) -> TokenStream2 {
     let input_count = inputs.len();
     let output_count = outputs.len();
-    let input_setup = stack_bindings(inputs, false);
-    let output_setup = stack_bindings(outputs, true);
+    let stack_bindings = stack_bindings(inputs, outputs);
 
     quote! {
         let ptr = evm2::interpreter::private::instr_stack_setup(
@@ -405,27 +408,54 @@ fn stack_setup(inputs: &[Ident], outputs: &[Ident]) -> TokenStream2 {
             #input_count,
             #output_count,
         )?;
-        #input_setup
-        #output_setup
+        #stack_bindings
     }
 }
 
-fn stack_bindings(bindings: &[Ident], mutable: bool) -> Option<TokenStream2> {
-    if bindings.is_empty() {
-        return None;
+fn stack_bindings(inputs: &[Pat], outputs: &[Ident]) -> TokenStream2 {
+    let count = inputs.len().max(outputs.len());
+    let mut bindings = Vec::with_capacity(count);
+    for i in 0..count {
+        let input = inputs.iter().rev().nth(i);
+        let output = outputs.iter().rev().nth(i);
+        let binding = match (input, output) {
+            (Some(Pat::Wild(_)), None) => TokenStream2::new(),
+            (Some(Pat::Wild(_)), Some(output)) | (None, Some(output)) => {
+                quote! {
+                    let #output = unsafe { &mut *ptr.add(#i) };
+                }
+            }
+            (Some(input), None) => {
+                quote! {
+                    let #input = unsafe { &*ptr.add(#i) };
+                }
+            }
+            (Some(input), Some(output)) => {
+                if simple_ident(input).is_some_and(|input| input == *output) {
+                    quote! {
+                        let #output = unsafe { &mut *ptr.add(#i) };
+                    }
+                } else {
+                    quote! {
+                        let #output = unsafe { &mut *ptr.add(#i) };
+                        let #input = &*#output;
+                    }
+                }
+            }
+            (None, None) => TokenStream2::new(),
+        };
+        bindings.push(binding);
     }
 
-    let bindings = bindings.iter().rev().enumerate().map(|(i, binding)| {
-        let value = if mutable {
-            quote! { &mut *ptr.add(#i) }
-        } else {
-            quote! { *ptr.add(#i) }
-        };
-        quote! {
-            let #binding = unsafe { #value };
-        }
-    });
-    Some(quote! {
+    quote! {
         #(#bindings)*
-    })
+    }
+}
+
+fn simple_ident(input: &Pat) -> Option<Ident> {
+    let Pat::Ident(PatIdent { by_ref: None, mutability: None, ident, subpat: None, .. }) = input
+    else {
+        return None;
+    };
+    Some(ident.clone())
 }
