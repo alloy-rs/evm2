@@ -3,7 +3,7 @@
 
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
-use quote::quote;
+use quote::{quote, quote_spanned};
 use syn::{
     AngleBracketedGenericArguments, FnArg, GenericArgument, GenericParam, Ident, ItemFn, LitStr,
     Pat, PatIdent, PatSlice, PathArguments, ReturnType, Stmt, Token, Type, TypeInfer,
@@ -11,6 +11,7 @@ use syn::{
     parse::{Parse, ParseStream},
     parse_macro_input,
     punctuated::Punctuated,
+    spanned::Spanned,
 };
 
 /// Generates an `Instruction` impl for an instruction function definition.
@@ -421,24 +422,18 @@ fn stack_bindings(inputs: &[Pat], outputs: &[Ident]) -> TokenStream2 {
         let binding = match (input, output) {
             (Some(Pat::Wild(_)), None) => TokenStream2::new(),
             (Some(Pat::Wild(_)), Some(output)) | (None, Some(output)) => {
-                quote! {
-                    let #output = unsafe { &mut *ptr.add(#i) };
-                }
+                output_binding(output, stack_slot_ptr(i, output.span()))
             }
-            (Some(input), None) => {
-                quote! {
-                    let #input = unsafe { &*ptr.add(#i) };
-                }
-            }
+            (Some(input), None) => input_binding(input, stack_slot_ptr(i, input.span())),
             (Some(input), Some(output)) => {
                 if simple_ident(input).is_some_and(|input| input == *output) {
-                    quote! {
-                        let #output = unsafe { &mut *ptr.add(#i) };
-                    }
+                    output_binding(output, stack_slot_ptr(i, output.span()))
                 } else {
+                    let output_binding = output_binding(output, stack_slot_ptr(i, output.span()));
+                    let input_binding = input_reborrow_binding(input, output);
                     quote! {
-                        let #output = unsafe { &mut *ptr.add(#i) };
-                        let #input = &*#output;
+                        #output_binding
+                        #input_binding
                     }
                 }
             }
@@ -449,6 +444,35 @@ fn stack_bindings(inputs: &[Pat], outputs: &[Ident]) -> TokenStream2 {
 
     quote! {
         #(#bindings)*
+    }
+}
+
+fn output_binding(output: &Ident, ptr: TokenStream2) -> TokenStream2 {
+    let span = output.span();
+    quote_spanned! {
+        span=> let #output = unsafe { &mut *#ptr };
+    }
+}
+
+fn input_binding(input: &Pat, ptr: TokenStream2) -> TokenStream2 {
+    let span = input.span();
+    quote_spanned! {
+        span=> let #input = unsafe { &*#ptr };
+    }
+}
+
+fn input_reborrow_binding(input: &Pat, output: &Ident) -> TokenStream2 {
+    let span = input.span();
+    quote_spanned! {
+        span=> let #input = &*#output;
+    }
+}
+
+fn stack_slot_ptr(i: usize, span: proc_macro2::Span) -> TokenStream2 {
+    if i == 0 {
+        quote_spanned! { span=> ptr }
+    } else {
+        quote_spanned! { span=> ptr.add(#i) }
     }
 }
 

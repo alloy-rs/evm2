@@ -56,24 +56,24 @@ pub(crate) fn jumpdest() {}
 
 #[instruction(dynamic_gas)]
 pub(crate) fn r#return(cx: _, [offset, len]: [Word]) -> Result {
-    return_inner(cx, *offset, *len, InstrStop::Return)
+    return_inner(cx, offset, len, InstrStop::Return)
 }
 
 #[instruction(dynamic_gas)]
 pub(crate) fn revert(cx: _, [offset, len]: [Word]) -> Result {
-    return_inner(cx, *offset, *len, InstrStop::Revert)
+    return_inner(cx, offset, len, InstrStop::Revert)
 }
 
 #[inline]
 fn return_inner<T: EvmTypes>(
     cx: GasInstructionCx<'_, '_, T>,
-    offset: Word,
-    len: Word,
+    offset: &Word,
+    len: &Word,
     result: InstrStop,
 ) -> Result {
-    let len = word_to_usize(len)?;
+    let len = word_to_usize(*len)?;
     let offset = if len != 0 {
-        let offset = word_to_usize(offset)?;
+        let offset = word_to_usize(*offset)?;
         resize_memory(cx.gas, cx.state.memory(), offset, len)?;
         offset
     } else {
