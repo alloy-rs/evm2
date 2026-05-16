@@ -1,5 +1,5 @@
 use crate::{
-    interpreter::{Word, memory::resize_memory},
+    interpreter::memory::resize_memory,
     utils::{b256_to_word, word_to_usize},
 };
 use alloy_primitives::keccak256 as keccak256_hash;

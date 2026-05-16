@@ -395,20 +395,9 @@ fn body(stmts: Vec<Stmt>, allow_final_result: bool) -> TokenStream2 {
 
 fn stack_setup(inputs: &[Ident], outputs: &[Ident]) -> TokenStream2 {
     let input_count = inputs.len();
-    let input_setup = (input_count > 0).then(|| {
-        let input_bindings = inputs.iter().rev();
-        quote! {
-            let [#(#input_bindings),*] = unsafe { ptr.cast::<[Word; #input_count]>().read() };
-        }
-    });
-
     let output_count = outputs.len();
-    let output_setup = (output_count > 0).then(|| {
-        let output_bindings = outputs.iter().rev();
-        quote! {
-            let [#(#output_bindings),*] = unsafe { &mut *ptr.cast::<[Word; #output_count]>() };
-        }
-    });
+    let input_setup = stack_bindings(inputs, false);
+    let output_setup = stack_bindings(outputs, true);
 
     quote! {
         let ptr = evm2::interpreter::private::instr_stack_setup(
@@ -419,4 +408,24 @@ fn stack_setup(inputs: &[Ident], outputs: &[Ident]) -> TokenStream2 {
         #input_setup
         #output_setup
     }
+}
+
+fn stack_bindings(bindings: &[Ident], mutable: bool) -> Option<TokenStream2> {
+    if bindings.is_empty() {
+        return None;
+    }
+
+    let bindings = bindings.iter().rev().enumerate().map(|(i, binding)| {
+        let value = if mutable {
+            quote! { &mut *ptr.add(#i) }
+        } else {
+            quote! { *ptr.add(#i) }
+        };
+        quote! {
+            let #binding = unsafe { #value };
+        }
+    });
+    Some(quote! {
+        #(#bindings)*
+    })
 }
