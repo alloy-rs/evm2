@@ -88,7 +88,7 @@ mod tests {
         },
         utils::address_to_word,
     };
-    use alloc::{sync::Arc, vec::Vec};
+    use alloc::vec::Vec;
     use alloy_consensus::{TxLegacy, transaction::Recovered};
     use alloy_primitives::{Address, Bytes, Log, TxKind, U256};
 
@@ -333,31 +333,31 @@ mod tests {
 
     #[derive(Default)]
     struct SharedE2eInspector {
-        state: Arc<E2eState>,
+        state: E2eState,
     }
 
     impl Inspector<BaseEvmTypes> for SharedE2eInspector {
         fn initialize_interp(&mut self, _interp: &mut Interpreter<'_, BaseEvmTypes>) {
-            Arc::get_mut(&mut self.state).unwrap().initialized += 1;
+            self.state.initialized += 1;
         }
 
         fn step(&mut self, _interp: &mut Interpreter<'_, BaseEvmTypes>) {
-            Arc::get_mut(&mut self.state).unwrap().steps += 1;
+            self.state.steps += 1;
         }
 
         fn step_end(&mut self, _interp: &mut Interpreter<'_, BaseEvmTypes>) {
-            Arc::get_mut(&mut self.state).unwrap().step_ends += 1;
+            self.state.step_ends += 1;
         }
 
         fn log(&mut self, log: &Log) {
-            Arc::get_mut(&mut self.state).unwrap().logs.push(log.clone());
+            self.state.logs.push(log.clone());
         }
 
         fn call(
             &mut self,
             _message: &mut Message<BaseEvmTypes>,
         ) -> Option<MessageResult<BaseEvmTypes>> {
-            Arc::get_mut(&mut self.state).unwrap().calls += 1;
+            self.state.calls += 1;
             None
         }
 
@@ -365,7 +365,7 @@ mod tests {
             &mut self,
             _message: &mut Message<BaseEvmTypes>,
         ) -> Option<MessageResult<BaseEvmTypes>> {
-            Arc::get_mut(&mut self.state).unwrap().creates += 1;
+            self.state.creates += 1;
             None
         }
     }
