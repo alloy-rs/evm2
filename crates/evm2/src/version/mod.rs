@@ -62,6 +62,8 @@ pub struct Version {
     pub max_blobs_per_tx: usize,
     /// Blob base fee update fraction.
     pub blob_base_fee_update_fraction: u64,
+
+    // Implementation config.
     /// Async database I/O mode.
     ///
     /// Currently unused unless the `"async"` feature is enabled.
@@ -70,6 +72,7 @@ pub struct Version {
     ///
     /// Currently unused unless the `"async"` feature is enabled.
     pub min_stack_size: usize,
+
     #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
 }
