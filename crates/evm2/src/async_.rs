@@ -34,12 +34,12 @@ thread_local! {
 }
 
 /// Result type used by async EVM execution helpers.
-pub type AsyncResult<T> = core::result::Result<T, AsyncError>;
+pub type AsyncResult<T, E = core::convert::Infallible> = core::result::Result<T, AsyncError<E>>;
 
 /// Error returned by async EVM execution helpers.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
-pub enum AsyncError {
+pub enum AsyncError<E = core::convert::Infallible> {
     /// The async EVM fiber was cancelled before execution completed.
     #[error("async EVM execution was cancelled")]
     Cancelled,
@@ -52,6 +52,21 @@ pub enum AsyncError {
     /// Blocking async I/O was requested outside a supported Tokio runtime.
     #[error("async host operation requires a Tokio multi-thread runtime: {0}")]
     Runtime(String),
+    /// EVM execution returned an error.
+    #[error(transparent)]
+    Evm(#[from] E),
+}
+
+impl AsyncError {
+    fn with_evm_error<E>(self) -> AsyncError<E> {
+        match self {
+            Self::Cancelled => AsyncError::Cancelled,
+            Self::Fiber(error) => AsyncError::Fiber(error),
+            Self::NotOnFiber => AsyncError::NotOnFiber,
+            Self::Runtime(error) => AsyncError::Runtime(error),
+            Self::Evm(error) => match error {},
+        }
+    }
 }
 
 trait FiberSuspend {
@@ -121,6 +136,19 @@ where
     OnFiber::new(state, stack_size, func)
 }
 
+pub(crate) fn on_fiber_result<'a, S, R, E>(
+    state: &'a mut S,
+    stack_size: usize,
+    func: impl FnOnce(&mut S) -> core::result::Result<R, E> + 'a,
+) -> impl Future<Output = AsyncResult<R, E>> + Send + 'a
+where
+    S: ?Sized,
+    R: Send + 'a,
+    E: Send + 'a,
+{
+    FlattenFiber { inner: OnFiber::new(state, stack_size, func) }
+}
+
 enum OnFiber<'a, R> {
     Running(FiberFuture<'a, R>),
     Error(Option<AsyncError>),
@@ -158,6 +186,25 @@ impl<R> Future for OnFiber<'_, R> {
                 Poll::Ready(Err(error.take().expect("async EVM fiber error already returned")))
             }
             Self::Done => panic!("async EVM fiber polled after completion"),
+        }
+    }
+}
+
+struct FlattenFiber<'a, R, E> {
+    inner: OnFiber<'a, core::result::Result<R, E>>,
+}
+
+impl<R, E> Unpin for FlattenFiber<'_, R, E> {}
+
+impl<R, E> Future for FlattenFiber<'_, R, E> {
+    type Output = AsyncResult<R, E>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        match Pin::new(&mut self.get_mut().inner).poll(cx) {
+            Poll::Ready(Ok(Ok(value))) => Poll::Ready(Ok(value)),
+            Poll::Ready(Ok(Err(error))) => Poll::Ready(Err(AsyncError::Evm(error))),
+            Poll::Ready(Err(error)) => Poll::Ready(Err(error.with_evm_error())),
+            Poll::Pending => Poll::Pending,
         }
     }
 }
@@ -591,7 +638,7 @@ mod tests {
         env::BlockEnv,
         evm::{DynDatabase, InMemoryDB},
         interpreter::Word,
-        registry::{HandlerResult, TxRegistry, TxRequest},
+        registry::{HandlerError, HandlerResult, TxRegistry, TxRequest},
     };
     use alloy_consensus::{TxLegacy, transaction::Recovered};
     use alloy_primitives::{Address, B256, Bytes};
@@ -682,9 +729,28 @@ mod tests {
         );
         let tx = test_tx(41);
 
-        let result = poll_ready(evm.transact_async(&tx)).unwrap().unwrap();
+        let result = poll_ready(evm.transact_async(&tx)).unwrap();
 
         assert_eq!(result.gas_used, 42);
+    }
+
+    #[test]
+    fn transaction_async_flattens_handler_error() {
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        let tx = test_tx(41);
+
+        let result = poll_ready(evm.transact_async(&tx));
+
+        assert!(matches!(
+            result,
+            Err(AsyncError::Evm(HandlerError::UnsupportedTransactionType(TEST_TX_TYPE)))
+        ));
     }
 
     #[test]

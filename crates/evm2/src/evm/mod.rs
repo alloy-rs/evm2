@@ -390,12 +390,14 @@ impl<T: EvmTypes<Tx: Typed2718>> Evm<T> {
     pub fn transact_async<'a>(
         &'a mut self,
         tx: &'a T::Tx,
-    ) -> impl core::future::Future<Output = crate::AsyncResult<HandlerResult<TxResult<T>>>> + Send + 'a
+    ) -> impl core::future::Future<Output = crate::AsyncResult<TxResult<T>, registry::HandlerError>>
+    + Send
+    + 'a
     where
         T::TxResultExt: Send,
     {
         let stack_size = self.version().min_stack_size;
-        crate::async_::on_fiber(self, stack_size, move |evm| evm.transact(tx))
+        crate::async_::on_fiber_result(self, stack_size, move |evm| evm.transact(tx))
     }
 
     /// Dispatches each transaction to its registered EIP-2718 handler.
