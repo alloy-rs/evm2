@@ -118,9 +118,8 @@ fn inspector() -> HandlerResult<()> {
 
     let result = evm.transact(&tx)?;
     let inspector = evm.clear_inspector().expect("inspector should be set");
-    let inspector = (inspector.as_ref() as &dyn core::any::Any)
-        .downcast_ref::<ExampleInspector>()
-        .expect("inspector should have expected type");
+    let inspector =
+        inspector.downcast_ref::<ExampleInspector>().expect("inspector should have expected type");
     let inspector_state = &inspector.state;
     let expected_opcodes = [op::PUSH1, op::PUSH1, op::LOG0, opcode::CUSTOM_OPCODE, op::STOP];
 

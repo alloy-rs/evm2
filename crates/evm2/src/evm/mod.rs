@@ -199,13 +199,13 @@ impl<T: EvmTypes> Evm<T> {
     /// Returns the backing database as `D` if it has that concrete type.
     #[inline]
     pub fn database_as<D: DynDatabase>(&self) -> Option<&D> {
-        <dyn core::any::Any>::downcast_ref(self.database())
+        self.database().downcast_ref()
     }
 
     /// Returns the backing database mutably as `D` if it has that concrete type.
     #[inline]
     pub fn database_as_mut<D: DynDatabase>(&mut self) -> Option<&mut D> {
-        <dyn core::any::Any>::downcast_mut(self.database_mut())
+        self.database_mut().downcast_mut()
     }
 
     /// Returns the mutable EVM state.
@@ -259,7 +259,7 @@ impl<T: EvmTypes> Evm<T> {
     /// Returns the active execution inspector mutably.
     #[inline]
     pub fn inspector_mut(&mut self) -> Option<&mut dyn Inspector<T>> {
-        self.inspector.as_mut().map(|inspector| inspector.as_mut() as &mut dyn Inspector<T>)
+        self.inspector.as_deref_mut()
     }
 
     #[inline]

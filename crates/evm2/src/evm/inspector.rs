@@ -70,6 +70,22 @@ pub trait Inspector<T: EvmTypes>: Any + Send {
     }
 }
 
+impl<T: EvmTypes> core::ops::Deref for dyn Inspector<T> + '_ {
+    type Target = dyn Any;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        self
+    }
+}
+
+impl<T: EvmTypes> core::ops::DerefMut for dyn Inspector<T> + '_ {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::Inspector;
@@ -795,9 +811,7 @@ mod tests {
         ));
 
         let result = evm.transact(&tx).unwrap();
-        let inspector = (evm.inspector().unwrap() as &dyn core::any::Any)
-            .downcast_ref::<SharedE2eInspector>()
-            .unwrap();
+        let inspector = evm.inspector().unwrap().downcast_ref::<SharedE2eInspector>().unwrap();
         let state = &inspector.state;
 
         assert!(result.status);
@@ -838,9 +852,7 @@ mod tests {
         ));
 
         let result = evm.transact(&tx).unwrap();
-        let inspector = (evm.inspector().unwrap() as &dyn core::any::Any)
-            .downcast_ref::<SharedE2eInspector>()
-            .unwrap();
+        let inspector = evm.inspector().unwrap().downcast_ref::<SharedE2eInspector>().unwrap();
         let state = &inspector.state;
 
         assert!(result.status);
@@ -876,9 +888,7 @@ mod tests {
         ));
 
         let result = evm.transact(&tx).unwrap();
-        let inspector = (evm.inspector().unwrap() as &dyn core::any::Any)
-            .downcast_ref::<SharedE2eInspector>()
-            .unwrap();
+        let inspector = evm.inspector().unwrap().downcast_ref::<SharedE2eInspector>().unwrap();
         let state = &inspector.state;
 
         assert!(result.status);

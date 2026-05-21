@@ -199,6 +199,22 @@ pub trait DynDatabase: Any + Send {
     }
 }
 
+impl core::ops::Deref for dyn DynDatabase + '_ {
+    type Target = dyn Any;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        self
+    }
+}
+
+impl core::ops::DerefMut for dyn DynDatabase + '_ {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self
+    }
+}
+
 impl DynDatabase for Box<dyn DynDatabase> {
     #[inline]
     fn get_account(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
