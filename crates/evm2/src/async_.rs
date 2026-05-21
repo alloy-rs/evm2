@@ -10,10 +10,7 @@ use crate::{
     evm::{AccountInfo, DatabaseCommit, DbErrorCode, DbResult, DynDatabase, StateChanges},
     interpreter::Word,
 };
-use alloc::{
-    boxed::Box,
-    string::{String, ToString},
-};
+use alloc::boxed::Box;
 use alloy_primitives::{Address, B256};
 use core::{any::Any, fmt, future::Future, pin::Pin, ptr::NonNull, task::Poll};
 use std::{cell::Cell, error::Error, task::Context};
@@ -43,27 +40,23 @@ pub enum AsyncError<E = core::convert::Infallible> {
     /// The async EVM fiber was cancelled before execution completed.
     #[error("async EVM execution was cancelled")]
     Cancelled,
-    /// A fiber stack or fiber could not be created.
-    #[error("failed to create EVM async fiber: {0}")]
-    Fiber(String),
     /// An async host operation was called outside an async EVM fiber.
     #[error("async host operation requires EVM async fiber execution")]
     NotOnFiber,
     /// Blocking async I/O was requested outside a supported Tokio runtime.
-    #[error("async host operation requires a Tokio multi-thread runtime: {0}")]
-    Runtime(String),
+    #[error("async host operation requires a Tokio multi-thread runtime")]
+    Runtime,
     /// The wrapped operation returned an error.
     #[error(transparent)]
     Inner(#[from] E),
 }
 
 impl AsyncError {
-    fn with_inner_error<E>(self) -> AsyncError<E> {
+    const fn with_inner_error<E>(self) -> AsyncError<E> {
         match self {
             Self::Cancelled => AsyncError::Cancelled,
-            Self::Fiber(error) => AsyncError::Fiber(error),
             Self::NotOnFiber => AsyncError::NotOnFiber,
-            Self::Runtime(error) => AsyncError::Runtime(error),
+            Self::Runtime => AsyncError::Runtime,
             Self::Inner(error) => match error {},
         }
     }
@@ -267,12 +260,12 @@ impl<R> Drop for FiberFuture<'_, R> {
 /// Polls `future` to completion from inside an async EVM fiber.
 ///
 /// If `future` returns `Poll::Pending`, the current EVM fiber is suspended and the outer
-/// [`on_fiber`] future returns `Poll::Pending`. When the executor wakes and polls the outer future
+/// async EVM future returns `Poll::Pending`. When the executor wakes and polls the outer future
 /// again, the EVM fiber resumes and continues polling `future`.
 ///
 /// # Errors
 ///
-/// Returns [`AsyncError::NotOnFiber`] if called outside [`on_fiber`], or
+/// Returns [`AsyncError::NotOnFiber`] if called outside async EVM execution, or
 /// [`AsyncError::Cancelled`] if the outer async EVM execution was dropped.
 pub(crate) fn block_on_current<F>(future: F) -> AsyncResult<F::Output>
 where
@@ -355,9 +348,7 @@ where
     match mode {
         IoMode::Blocking => {
             let Some(runtime) = runtime else {
-                return Err(AsyncError::Runtime(
-                    "blocking async host operation requires a Tokio runtime handle".to_string(),
-                ));
+                return Err(AsyncError::Runtime);
             };
             Ok(runtime.block_on(future))
         }
@@ -402,8 +393,8 @@ unsafe fn erase_current_fiber_lifetime<'a>(
     }
 }
 
-fn fiber_error(error: impl fmt::Display) -> AsyncError {
-    AsyncError::Fiber(error.to_string())
+fn fiber_error(_error: impl fmt::Display) -> AsyncError {
+    AsyncError::Runtime
 }
 
 /// Asynchronous backing database implementation.
