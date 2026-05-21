@@ -7,7 +7,10 @@
 use crate::{
     IoMode,
     bytecode::Bytecode,
-    evm::{AccountInfo, DatabaseCommit, DbErrorCode, DbResult, DynDatabase, StateChanges},
+    evm::{
+        AccountInfo, DatabaseCommit, DbErrorCode, DbResult, DynDatabase, StateChanges,
+        db_error_unavailable, stored_error_code,
+    },
     interpreter::Word,
 };
 use alloc::boxed::Box;
@@ -528,7 +531,7 @@ impl<D: AsyncDatabase> DynDatabase for AsyncDb<D> {
         {
             return error;
         }
-        Box::new(AsyncDbErrorUnavailable(code))
+        db_error_unavailable(code)
     }
 
     #[inline]
@@ -553,26 +556,6 @@ impl<D: AsyncDatabase + fmt::Debug> fmt::Debug for AsyncDb<D> {
         f.debug_struct("AsyncDb").field("db", &self.db).finish_non_exhaustive()
     }
 }
-
-#[inline]
-fn stored_error_code() -> DbErrorCode {
-    match DbErrorCode::new(1) {
-        Some(code) => code,
-        None => unreachable!("stored database error code is non-zero"),
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct AsyncDbErrorUnavailable(DbErrorCode);
-
-impl fmt::Display for AsyncDbErrorUnavailable {
-    #[inline]
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "async database error {:?} is unavailable", self.0)
-    }
-}
-
-impl Error for AsyncDbErrorUnavailable {}
 
 #[cfg(test)]
 mod tests {

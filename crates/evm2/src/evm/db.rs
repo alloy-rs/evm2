@@ -124,7 +124,7 @@ impl<T: Database + DatabaseCommit> DatabaseCommit for Db<T> {
 }
 
 #[inline]
-fn stored_error_code() -> DbErrorCode {
+pub(crate) fn stored_error_code() -> DbErrorCode {
     match DbErrorCode::new(1) {
         Some(code) => code,
         None => unreachable!("stored database error code is non-zero"),
@@ -141,6 +141,11 @@ impl fmt::Display for DbErrorUnavailable {
 }
 
 impl Error for DbErrorUnavailable {}
+
+#[inline]
+pub(crate) fn db_error_unavailable(code: DbErrorCode) -> Box<dyn Error + Send> {
+    Box::new(DbErrorUnavailable(code))
+}
 
 impl<T: Database> DynDatabase for Db<T> {
     #[inline]
@@ -170,7 +175,7 @@ impl<T: Database> DynDatabase for Db<T> {
         {
             return Box::new(err);
         }
-        Box::new(DbErrorUnavailable(code))
+        db_error_unavailable(code)
     }
 }
 
@@ -190,7 +195,7 @@ pub trait DynDatabase: Any + Send {
 
     /// Retrieves the full error for a previously returned error code.
     fn error(&mut self, code: DbErrorCode) -> Box<dyn Error + Send> {
-        Box::new(DbErrorUnavailable(code))
+        db_error_unavailable(code)
     }
 
     /// Sets the asynchronous database I/O mode, if supported by this database.
