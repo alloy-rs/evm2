@@ -882,34 +882,27 @@ mod tests {
     impl AsyncDatabase for TestDb {
         type Error = Infallible;
 
-        fn get_account(
+        async fn get_account(
             &mut self,
             _address: Address,
-        ) -> impl Future<Output = Result<Option<crate::evm::AccountInfo>, Self::Error>> + Send + '_
-        {
-            core::future::ready(Ok(None))
+        ) -> Result<Option<crate::evm::AccountInfo>, Self::Error> {
+            Ok(None)
         }
 
-        fn get_code_by_hash(
-            &mut self,
-            _code_hash: B256,
-        ) -> impl Future<Output = Result<Bytecode, Self::Error>> + Send + '_ {
-            core::future::ready(Ok(Bytecode::default()))
+        async fn get_code_by_hash(&mut self, _code_hash: B256) -> Result<Bytecode, Self::Error> {
+            Ok(Bytecode::default())
         }
 
-        fn get_storage(
+        async fn get_storage(
             &mut self,
             _address: Address,
             _key: Word,
-        ) -> impl Future<Output = Result<Word, Self::Error>> + Send + '_ {
-            core::future::ready(Ok(Word::from(9)))
+        ) -> Result<Word, Self::Error> {
+            Ok(Word::from(9))
         }
 
-        fn get_block_hash(
-            &mut self,
-            _number: Word,
-        ) -> impl Future<Output = Result<Option<B256>, Self::Error>> + Send + '_ {
-            core::future::ready(Ok(None))
+        async fn get_block_hash(&mut self, _number: Word) -> Result<Option<B256>, Self::Error> {
+            Ok(None)
         }
     }
 
@@ -920,34 +913,28 @@ mod tests {
     impl AsyncDatabase for PendingDb {
         type Error = Infallible;
 
-        fn get_account(
+        async fn get_account(
             &mut self,
             _address: Address,
-        ) -> impl Future<Output = Result<Option<crate::evm::AccountInfo>, Self::Error>> + Send + '_
-        {
-            core::future::ready(Ok(None))
+        ) -> Result<Option<crate::evm::AccountInfo>, Self::Error> {
+            Ok(None)
         }
 
-        fn get_code_by_hash(
-            &mut self,
-            _code_hash: B256,
-        ) -> impl Future<Output = Result<Bytecode, Self::Error>> + Send + '_ {
-            core::future::ready(Ok(Bytecode::default()))
+        async fn get_code_by_hash(&mut self, _code_hash: B256) -> Result<Bytecode, Self::Error> {
+            Ok(Bytecode::default())
         }
 
-        fn get_storage(
+        async fn get_storage(
             &mut self,
             _address: Address,
             _key: Word,
-        ) -> impl Future<Output = Result<Word, Self::Error>> + Send + '_ {
-            PendingStorage { pending: &mut self.pending }
+        ) -> Result<Word, Self::Error> {
+            PendingStorage { pending: &mut self.pending }.await;
+            Ok(Word::from(9))
         }
 
-        fn get_block_hash(
-            &mut self,
-            _number: Word,
-        ) -> impl Future<Output = Result<Option<B256>, Self::Error>> + Send + '_ {
-            core::future::ready(Ok(None))
+        async fn get_block_hash(&mut self, _number: Word) -> Result<Option<B256>, Self::Error> {
+            Ok(None)
         }
     }
 
@@ -956,14 +943,14 @@ mod tests {
     }
 
     impl Future for PendingStorage<'_> {
-        type Output = Result<Word, Infallible>;
+        type Output = ();
 
         fn poll(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
             if *self.pending {
                 *self.pending = false;
                 Poll::Pending
             } else {
-                Poll::Ready(Ok(Word::from(9)))
+                Poll::Ready(())
             }
         }
     }
@@ -973,59 +960,27 @@ mod tests {
     impl AsyncDatabase for FailingDb {
         type Error = TestError;
 
-        fn get_account(
+        async fn get_account(
             &mut self,
             _address: Address,
-        ) -> impl Future<Output = Result<Option<crate::evm::AccountInfo>, Self::Error>> + Send + '_
-        {
-            core::future::ready(Ok(None))
+        ) -> Result<Option<crate::evm::AccountInfo>, Self::Error> {
+            Ok(None)
         }
 
-        fn get_code_by_hash(
-            &mut self,
-            _code_hash: B256,
-        ) -> impl Future<Output = Result<Bytecode, Self::Error>> + Send + '_ {
-            core::future::ready(Ok(Bytecode::default()))
+        async fn get_code_by_hash(&mut self, _code_hash: B256) -> Result<Bytecode, Self::Error> {
+            Ok(Bytecode::default())
         }
 
-        fn get_storage(
+        async fn get_storage(
             &mut self,
             _address: Address,
             _key: Word,
-        ) -> impl Future<Output = Result<Word, Self::Error>> + Send + '_ {
-            core::future::ready(Err(TestError))
+        ) -> Result<Word, Self::Error> {
+            Err(TestError)
         }
 
-        fn get_block_hash(
-            &mut self,
-            _number: Word,
-        ) -> impl Future<Output = Result<Option<B256>, Self::Error>> + Send + '_ {
-            core::future::ready(Ok(None))
-        }
-    }
-
-    struct YieldOnce<T> {
-        value: Option<T>,
-        pending: bool,
-    }
-
-    impl<T> YieldOnce<T> {
-        fn new(value: T) -> Self {
-            Self { value: Some(value), pending: true }
-        }
-    }
-
-    impl<T: Unpin> Future for YieldOnce<T> {
-        type Output = T;
-
-        fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-            if self.pending {
-                self.pending = false;
-                cx.waker().wake_by_ref();
-                Poll::Pending
-            } else {
-                Poll::Ready(self.value.take().expect("yield future polled after completion"))
-            }
+        async fn get_block_hash(&mut self, _number: Word) -> Result<Option<B256>, Self::Error> {
+            Ok(None)
         }
     }
 
@@ -1034,34 +989,31 @@ mod tests {
     impl AsyncDatabase for TokioDb {
         type Error = Infallible;
 
-        fn get_account(
+        async fn get_account(
             &mut self,
             _address: Address,
-        ) -> impl Future<Output = Result<Option<crate::evm::AccountInfo>, Self::Error>> + Send + '_
-        {
-            YieldOnce::new(Ok(None))
+        ) -> Result<Option<crate::evm::AccountInfo>, Self::Error> {
+            tokio::task::yield_now().await;
+            Ok(None)
         }
 
-        fn get_code_by_hash(
-            &mut self,
-            _code_hash: B256,
-        ) -> impl Future<Output = Result<Bytecode, Self::Error>> + Send + '_ {
-            YieldOnce::new(Ok(Bytecode::default()))
+        async fn get_code_by_hash(&mut self, _code_hash: B256) -> Result<Bytecode, Self::Error> {
+            tokio::task::yield_now().await;
+            Ok(Bytecode::default())
         }
 
-        fn get_storage(
+        async fn get_storage(
             &mut self,
             _address: Address,
             _key: Word,
-        ) -> impl Future<Output = Result<Word, Self::Error>> + Send + '_ {
-            YieldOnce::new(Ok(Word::from(9)))
+        ) -> Result<Word, Self::Error> {
+            tokio::task::yield_now().await;
+            Ok(Word::from(9))
         }
 
-        fn get_block_hash(
-            &mut self,
-            _number: Word,
-        ) -> impl Future<Output = Result<Option<B256>, Self::Error>> + Send + '_ {
-            YieldOnce::new(Ok(None))
+        async fn get_block_hash(&mut self, _number: Word) -> Result<Option<B256>, Self::Error> {
+            tokio::task::yield_now().await;
+            Ok(None)
         }
     }
 
