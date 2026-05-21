@@ -58,7 +58,14 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     where
         T::TxResultExt: Send,
     {
-        crate::async_::on_fiber(move || self.system_call(system_contract_address, data))
+        let stack = self.async_stack();
+        // SAFETY: The returned future owns the exclusive `&mut self` borrow, so nothing else can
+        // access the EVM stack slot until that future is dropped.
+        unsafe {
+            crate::async_::on_fiber_with_stack(stack, move || {
+                self.system_call(system_contract_address, data)
+            })
+        }
     }
 
     /// Executes a system call from `caller` to `system_contract_address`.
@@ -140,9 +147,14 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     where
         T::TxResultExt: Send,
     {
-        crate::async_::on_fiber(move || {
-            self.system_call_with_caller(caller, system_contract_address, data)
-        })
+        let stack = self.async_stack();
+        // SAFETY: The returned future owns the exclusive `&mut self` borrow, so nothing else can
+        // access the EVM stack slot until that future is dropped.
+        unsafe {
+            crate::async_::on_fiber_with_stack(stack, move || {
+                self.system_call_with_caller(caller, system_contract_address, data)
+            })
+        }
     }
 }
 

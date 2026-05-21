@@ -65,6 +65,9 @@ pub struct Evm<T: EvmTypes> {
     interpreter_pool: InterpreterPool<T>,
     #[derive_where(skip)]
     inspector: Option<Box<dyn Inspector<T>>>,
+    #[cfg(feature = "async")]
+    #[derive_where(skip)]
+    async_stack: crate::async_::FiberStack,
     db_error_code: Option<DbErrorCode>,
 }
 
@@ -133,6 +136,8 @@ impl<T: EvmTypes> Evm<T> {
             precompiles,
             interpreter_pool: InterpreterPool::new(),
             inspector: None,
+            #[cfg(feature = "async")]
+            async_stack: crate::async_::FiberStack::default(),
             db_error_code: None,
         }
     }
@@ -183,6 +188,12 @@ impl<T: EvmTypes> Evm<T> {
     #[inline]
     pub fn set_database(&mut self, database: impl DynDatabase) {
         self.state.set_initial(database);
+    }
+
+    #[cfg(feature = "async")]
+    #[inline]
+    fn async_stack(&mut self) -> core::ptr::NonNull<crate::async_::FiberStack> {
+        core::ptr::NonNull::from(&mut self.async_stack)
     }
 
     /// Returns the backing database as `D` if it has that concrete type.
@@ -372,7 +383,10 @@ impl<T: EvmTypes<Tx: Typed2718>> Evm<T> {
     where
         T::TxResultExt: Send,
     {
-        crate::async_::on_fiber_result(move || self.transact(tx))
+        let stack = self.async_stack();
+        // SAFETY: The returned future owns the exclusive `&mut self` borrow, so nothing else can
+        // access the EVM stack slot until that future is dropped.
+        unsafe { crate::async_::on_fiber_result_with_stack(stack, move || self.transact(tx)) }
     }
 
     /// Dispatches each transaction to its registered EIP-2718 handler.

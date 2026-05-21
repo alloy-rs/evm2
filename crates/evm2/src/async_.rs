@@ -31,6 +31,28 @@ type EvmFiber<R> = Coroutine<Resume, Yield, Complete<R>, DefaultStack>;
 
 const DEFAULT_STACK_SIZE: usize = 1024 * 1024;
 
+/// Reusable async EVM fiber stack storage.
+#[derive(Default)]
+pub(crate) struct FiberStack {
+    stack: Option<DefaultStack>,
+}
+
+impl FiberStack {
+    #[inline]
+    fn take_or_new(&mut self) -> AsyncResult<DefaultStack> {
+        match self.stack.take() {
+            Some(stack) => Ok(stack),
+            None => DefaultStack::new(DEFAULT_STACK_SIZE).map_err(AsyncError::Io),
+        }
+    }
+
+    #[inline]
+    fn put(&mut self, stack: DefaultStack) {
+        debug_assert!(self.stack.is_none());
+        self.stack = Some(stack);
+    }
+}
+
 thread_local! {
     static CURRENT: Cell<Option<NonNull<CurrentFiber>>> = const { Cell::new(None) };
 }
@@ -115,6 +137,7 @@ impl Drop for ResetCurrentFiber {
 ///
 /// Synchronous code running inside `func` may call [`block_on_current`] to wait for async host
 /// operations without blocking the executor thread.
+#[cfg(test)]
 pub(crate) fn on_fiber_result<'a, R, E>(
     func: impl FnOnce() -> Result<R, E> + 'a,
 ) -> impl Future<Output = AsyncResult<R, E>> + Send + 'a
@@ -125,6 +148,24 @@ where
     OnFiber::new(func)
 }
 
+/// Runs `func` on a native fiber backed by a reusable EVM stack slot.
+///
+/// # Safety
+///
+/// `stack` must point to valid stack storage for the lifetime of the returned future. That storage
+/// must not be accessed by anything else until the returned future is dropped.
+pub(crate) unsafe fn on_fiber_result_with_stack<'a, R, E>(
+    stack: NonNull<FiberStack>,
+    func: impl FnOnce() -> Result<R, E> + 'a,
+) -> impl Future<Output = AsyncResult<R, E>> + Send + 'a
+where
+    R: Send + 'a,
+    E: Send + 'a,
+{
+    OnFiber::with_stack(stack, func)
+}
+
+#[cfg(test)]
 pub(crate) fn on_fiber<'a, R>(
     func: impl FnOnce() -> R + 'a,
 ) -> impl Future<Output = AsyncResult<R>> + Send + 'a
@@ -134,6 +175,21 @@ where
     on_fiber_result(move || Ok::<_, core::convert::Infallible>(func()))
 }
 
+/// Runs `func` on a native fiber backed by a reusable EVM stack slot.
+///
+/// # Safety
+///
+/// See [`on_fiber_result_with_stack`].
+pub(crate) unsafe fn on_fiber_with_stack<'a, R>(
+    stack: NonNull<FiberStack>,
+    func: impl FnOnce() -> R + 'a,
+) -> impl Future<Output = AsyncResult<R>> + Send + 'a
+where
+    R: Send + 'a,
+{
+    unsafe { on_fiber_result_with_stack(stack, move || Ok::<_, core::convert::Infallible>(func())) }
+}
+
 enum OnFiber<'a, R, E> {
     Running(FiberFuture<'a, Result<R, E>>),
     Error(Option<AsyncError>),
@@ -141,8 +197,20 @@ enum OnFiber<'a, R, E> {
 }
 
 impl<'a, R, E> OnFiber<'a, R, E> {
+    #[cfg(test)]
     fn new(func: impl FnOnce() -> Result<R, E> + 'a) -> Self {
-        match FiberFuture::new(func) {
+        Self::new_inner(None, func)
+    }
+
+    fn with_stack(stack: NonNull<FiberStack>, func: impl FnOnce() -> Result<R, E> + 'a) -> Self {
+        Self::new_inner(Some(stack), func)
+    }
+
+    fn new_inner(
+        stack: Option<NonNull<FiberStack>>,
+        func: impl FnOnce() -> Result<R, E> + 'a,
+    ) -> Self {
+        match FiberFuture::new(stack, func) {
             Ok(fiber) => Self::Running(fiber),
             Err(error) => Self::Error(Some(error)),
         }
@@ -180,7 +248,8 @@ impl<R, E> Future for OnFiber<'_, R, E> {
 }
 
 struct FiberFuture<'a, R> {
-    fiber: EvmFiber<R>,
+    fiber: Option<EvmFiber<R>>,
+    stack: Option<NonNull<FiberStack>>,
     _marker: PhantomData<&'a ()>,
 }
 
@@ -190,8 +259,14 @@ struct FiberFuture<'a, R> {
 unsafe impl<R: Send> Send for FiberFuture<'_, R> {}
 
 impl<'a, R> FiberFuture<'a, R> {
-    fn new(func: impl FnOnce() -> R + 'a) -> AsyncResult<Self> {
-        let stack = DefaultStack::new(DEFAULT_STACK_SIZE).map_err(AsyncError::Io)?;
+    fn new(
+        mut stack: Option<NonNull<FiberStack>>,
+        func: impl FnOnce() -> R + 'a,
+    ) -> AsyncResult<Self> {
+        let fiber_stack = match &mut stack {
+            Some(stack) => unsafe { stack.as_mut() }.take_or_new()?,
+            None => DefaultStack::new(DEFAULT_STACK_SIZE).map_err(AsyncError::Io)?,
+        };
         let body = move |suspend: &Yielder<Resume, Yield>, resume| {
             let future_cx = resume?;
             let mut current =
@@ -203,8 +278,17 @@ impl<'a, R> FiberFuture<'a, R> {
         };
         // SAFETY: The coroutine is stored inside `FiberFuture<'a, R>`, which is tied to the
         // borrowed state lifetime and dropped before those borrows can expire.
-        let fiber = unsafe { Coroutine::with_stack_unchecked(stack, body) };
-        Ok(Self { fiber, _marker: PhantomData })
+        let fiber = unsafe { Coroutine::with_stack_unchecked(fiber_stack, body) };
+        Ok(Self { fiber: Some(fiber), stack, _marker: PhantomData })
+    }
+
+    fn recycle_stack(&mut self) {
+        let Some(fiber) = self.fiber.take() else { return };
+        debug_assert!(fiber.done());
+        let stack = fiber.into_stack();
+        if let Some(mut slot) = self.stack {
+            unsafe { slot.as_mut() }.put(stack);
+        }
     }
 }
 
@@ -214,8 +298,12 @@ impl<R> Future for FiberFuture<'_, R> {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
         let cx = NonNull::from(unsafe { change_context_lifetime(cx) });
-        match this.fiber.resume(Ok(cx)) {
-            CoroutineResult::Return(result) => Poll::Ready(result),
+        let fiber = this.fiber.as_mut().expect("async EVM fiber polled after completion");
+        match fiber.resume(Ok(cx)) {
+            CoroutineResult::Return(result) => {
+                this.recycle_stack();
+                Poll::Ready(result)
+            }
             CoroutineResult::Yield(()) => Poll::Pending,
         }
     }
@@ -223,13 +311,17 @@ impl<R> Future for FiberFuture<'_, R> {
 
 impl<R> Drop for FiberFuture<'_, R> {
     fn drop(&mut self) {
-        if self.fiber.done() {
+        let Some(fiber) = self.fiber.as_mut() else {
             return;
-        }
-        if matches!(self.fiber.resume(Err(AsyncError::Cancelled)), CoroutineResult::Yield(())) {
+        };
+        if fiber.done() {
+            self.recycle_stack();
+        } else if matches!(fiber.resume(Err(AsyncError::Cancelled)), CoroutineResult::Yield(())) {
             // SAFETY: Cancellation already gave the coroutine a chance to return normally. If it
             // yields again, the stack is no longer useful to this future.
-            unsafe { self.fiber.force_reset() };
+            unsafe { fiber.force_reset() };
+        } else {
+            self.recycle_stack();
         }
     }
 }
@@ -535,7 +627,8 @@ mod tests {
     };
     use alloy_consensus::{TxLegacy, transaction::Recovered};
     use alloy_primitives::{Address, B256, Bytes};
-    use core::{convert::Infallible, fmt, future::Future, pin::Pin, task::Poll};
+    use core::{convert::Infallible, fmt, future::Future, pin::Pin, ptr::NonNull, task::Poll};
+    use corosensei::stack::Stack;
     use std::{
         error::Error,
         task::{Context, Waker},
@@ -558,6 +651,27 @@ mod tests {
 
         assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
         assert!(matches!(future.as_mut().poll(&mut cx), Poll::Ready(Ok(3))));
+    }
+
+    #[test]
+    fn fiber_reuses_stack_slot() {
+        let mut stack = super::FiberStack::default();
+        let stack_ptr = NonNull::from(&mut stack);
+
+        let first = poll_ready(unsafe {
+            super::on_fiber_result_with_stack(stack_ptr, || Ok::<_, Infallible>(1))
+        })
+        .unwrap();
+        let first_base = stack.stack.as_ref().unwrap().base();
+        let second = poll_ready(unsafe {
+            super::on_fiber_result_with_stack(stack_ptr, || Ok::<_, Infallible>(2))
+        })
+        .unwrap();
+        let second_base = stack.stack.as_ref().unwrap().base();
+
+        assert_eq!(first, 1);
+        assert_eq!(second, 2);
+        assert_eq!(first_base, second_base);
     }
 
     #[test]
