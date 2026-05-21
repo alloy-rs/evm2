@@ -43,6 +43,12 @@ pub struct Interpreter<'frame, T: EvmTypes> {
     is_static: bool,
 }
 
+// SAFETY: The interpreter's internal pointers are always valid. `pc` points into owned bytecode,
+// `output` points into owned memory or byte slices, frame-local references are cleared before
+// pooling, and host/inspector/version pointers are installed for execution and not used after the
+// owning execution context is gone.
+unsafe impl<T: EvmTypes> Send for Interpreter<'_, T> {}
+
 impl<T: EvmTypes> Default for Interpreter<'_, T> {
     fn default() -> Self {
         let bytecode = Bytecode::new();
@@ -433,11 +439,6 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
 pub(crate) struct InterpreterPool<T: EvmTypes> {
     frames: Vec<Box<Interpreter<'static, T>>>,
 }
-
-// SAFETY: Pooled interpreters have their frame-local references cleared before storage. The raw
-// pointers that remain either point into owned bytecode/output buffers or are reset on the next
-// initialization before use.
-unsafe impl<T: EvmTypes> Send for InterpreterPool<T> {}
 
 impl<T: EvmTypes> InterpreterPool<T> {
     pub(crate) const fn new() -> Self {
