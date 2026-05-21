@@ -373,6 +373,10 @@ impl<T: EvmTypes<Tx: Typed2718>> Evm<T> {
 
     /// Dispatches the transaction to the handler registered for its EIP-2718 type byte on an async
     /// fiber.
+    ///
+    /// This must be used with an async database adapter such as [`crate::AsyncDb`] to take
+    /// advantage of yielding database I/O. With a synchronous database this is mostly equivalent to
+    /// running the synchronous transaction on a fiber.
     #[cfg(feature = "async")]
     pub fn transact_async<'a>(
         &'a mut self,

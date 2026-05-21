@@ -45,6 +45,10 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
 
     /// Executes a system call from [`SYSTEM_ADDRESS`] to `system_contract_address` on an async
     /// fiber.
+    ///
+    /// This must be used with an async database adapter such as [`crate::AsyncDb`] to take
+    /// advantage of yielding database I/O. With a synchronous database this is mostly equivalent to
+    /// running the synchronous system call on a fiber.
     #[cfg(feature = "async")]
     #[inline]
     pub fn system_call_async(
@@ -133,6 +137,10 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     }
 
     /// Executes a system call from `caller` to `system_contract_address` on an async fiber.
+    ///
+    /// This must be used with an async database adapter such as [`crate::AsyncDb`] to take
+    /// advantage of yielding database I/O. With a synchronous database this is mostly equivalent to
+    /// running the synchronous system call on a fiber.
     #[cfg(feature = "async")]
     #[inline]
     pub fn system_call_with_caller_async(
