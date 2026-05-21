@@ -15,6 +15,8 @@ pub mod utils;
 
 #[cfg(feature = "async")]
 mod async_;
+#[cfg(feature = "async")]
+pub use async_::{AsyncDatabase, AsyncDb, AsyncError, AsyncResult};
 
 pub mod evm;
 pub use evm::{
@@ -31,9 +33,6 @@ pub mod precompiles;
 pub use precompiles::{
     Crypto, PrecompileError, PrecompileHalt, Precompiles, crypto, install_crypto,
 };
-
-#[cfg(feature = "async")]
-pub use async_::{AsyncDatabase, AsyncDb, AsyncError, AsyncResult};
 
 pub(crate) mod trustme;
 
