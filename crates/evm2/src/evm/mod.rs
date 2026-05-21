@@ -397,7 +397,7 @@ impl<T: EvmTypes<Tx: Typed2718>> Evm<T> {
         T::TxResultExt: Send,
     {
         let stack_size = self.version().min_stack_size;
-        crate::async_::on_fiber_result(self, stack_size, move |evm| evm.transact(tx))
+        crate::async_::on_fiber_result(stack_size, move || self.transact(tx))
     }
 
     /// Dispatches each transaction to its registered EIP-2718 handler.

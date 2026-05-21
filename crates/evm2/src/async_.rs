@@ -108,29 +108,25 @@ impl Drop for ResetCurrentFiber {
 ///
 /// Synchronous code running inside `func` may call [`block_on_current`] to wait for async host
 /// operations without blocking the executor thread.
-pub(crate) fn on_fiber_result<'a, S, R, E>(
-    state: &'a mut S,
+pub(crate) fn on_fiber_result<'a, R, E>(
     stack_size: usize,
-    func: impl FnOnce(&mut S) -> core::result::Result<R, E> + 'a,
+    func: impl FnOnce() -> core::result::Result<R, E> + 'a,
 ) -> impl Future<Output = AsyncResult<R, E>> + Send + 'a
 where
-    S: ?Sized,
     R: Send + 'a,
     E: Send + 'a,
 {
-    OnFiber::new(state, stack_size, func)
+    OnFiber::new(stack_size, func)
 }
 
-pub(crate) fn on_fiber<'a, S, R>(
-    state: &'a mut S,
+pub(crate) fn on_fiber<'a, R>(
     stack_size: usize,
-    func: impl FnOnce(&mut S) -> R + 'a,
+    func: impl FnOnce() -> R + 'a,
 ) -> impl Future<Output = AsyncResult<R>> + Send + 'a
 where
-    S: ?Sized,
     R: Send + 'a,
 {
-    on_fiber_result(state, stack_size, move |state| Ok::<_, core::convert::Infallible>(func(state)))
+    on_fiber_result(stack_size, move || Ok::<_, core::convert::Infallible>(func()))
 }
 
 enum OnFiber<'a, R, E> {
@@ -140,15 +136,8 @@ enum OnFiber<'a, R, E> {
 }
 
 impl<'a, R, E> OnFiber<'a, R, E> {
-    fn new<S>(
-        state: &'a mut S,
-        stack_size: usize,
-        func: impl FnOnce(&mut S) -> core::result::Result<R, E> + 'a,
-    ) -> Self
-    where
-        S: ?Sized,
-    {
-        match FiberFuture::new(state, stack_size, func) {
+    fn new(stack_size: usize, func: impl FnOnce() -> core::result::Result<R, E> + 'a) -> Self {
+        match FiberFuture::new(stack_size, func) {
             Ok(fiber) => Self::Running(fiber),
             Err(error) => Self::Error(Some(error)),
         }
@@ -196,16 +185,8 @@ struct FiberFuture<'a, R> {
 unsafe impl<R: Send> Send for FiberFuture<'_, R> {}
 
 impl<'a, R> FiberFuture<'a, R> {
-    fn new<S>(
-        state: &'a mut S,
-        stack_size: usize,
-        func: impl FnOnce(&mut S) -> R + 'a,
-    ) -> AsyncResult<Self>
-    where
-        S: ?Sized,
-    {
+    fn new(stack_size: usize, func: impl FnOnce() -> R + 'a) -> AsyncResult<Self> {
         let stack = DefaultStack::new(stack_size).map_err(fiber_error)?;
-        let state = core::ptr::from_mut(state);
         let body = move |suspend: &Yielder<Resume, Yield>, resume| {
             let future_cx = resume?;
             let mut current = CurrentFiber {
@@ -218,7 +199,7 @@ impl<'a, R> FiberFuture<'a, R> {
             let current = unsafe { erase_current_fiber_lifetime(current) };
             let previous = CURRENT.replace(Some(current));
             let _reset = ResetCurrentFiber(previous);
-            Ok(func(unsafe { &mut *state }))
+            Ok(func())
         };
         // SAFETY: The coroutine is stored inside `FiberFuture<'a, R>`, which is tied to the
         // borrowed state lifetime and dropped before those borrows can expire.
@@ -637,9 +618,9 @@ mod tests {
     #[test]
     fn fiber_suspends_and_resumes_pending_future() {
         let mut state = 1;
-        let mut future = core::pin::pin!(on_fiber(&mut state, stack_size(), |state| {
-            *state += block_on_current(PendingOnce { pending: true }).unwrap();
-            *state
+        let mut future = core::pin::pin!(on_fiber(stack_size(), || {
+            state += block_on_current(PendingOnce { pending: true }).unwrap();
+            state
         }));
         let waker = Waker::noop();
         let mut cx = Context::from_waker(waker);
@@ -653,8 +634,8 @@ mod tests {
         let mut db = AsyncDb::new(TestDb);
         let address = Address::ZERO;
         let key = Word::from(7);
-        let mut future = core::pin::pin!(on_fiber(&mut db, stack_size(), |db| {
-            DynDatabase::get_storage(db, &address, &key).unwrap()
+        let mut future = core::pin::pin!(on_fiber(stack_size(), || {
+            DynDatabase::get_storage(&mut db, &address, &key).unwrap()
         }));
         let waker = Waker::noop();
         let mut cx = Context::from_waker(waker);
@@ -669,8 +650,8 @@ mod tests {
         let mut db = AsyncDb::new(PendingDb { pending: true });
         let address = Address::ZERO;
         let key = Word::from(7);
-        let mut future = core::pin::pin!(on_fiber(&mut db, stack_size(), |db| {
-            DynDatabase::get_storage(db, &address, &key).unwrap()
+        let mut future = core::pin::pin!(on_fiber(stack_size(), || {
+            DynDatabase::get_storage(&mut db, &address, &key).unwrap()
         }));
         let waker = Waker::noop();
         let mut cx = Context::from_waker(waker);
@@ -686,8 +667,8 @@ mod tests {
         let mut db = AsyncDb::new(FailingDb);
         let address = Address::ZERO;
         let key = Word::from(7);
-        let code = on_fiber(&mut db, stack_size(), |db| {
-            DynDatabase::get_storage(db, &address, &key).unwrap_err()
+        let code = on_fiber(stack_size(), || {
+            DynDatabase::get_storage(&mut db, &address, &key).unwrap_err()
         });
         let code = poll_ready(code).unwrap();
 
@@ -857,11 +838,9 @@ mod tests {
     fn dropping_fiber_cancels_blocked_future() {
         let mut saw_cancel = false;
         {
-            let mut future =
-                core::pin::pin!(on_fiber(&mut saw_cancel, stack_size(), |saw_cancel| {
-                    *saw_cancel =
-                        matches!(block_on_current(PendingForever), Err(AsyncError::Cancelled));
-                }));
+            let mut future = core::pin::pin!(on_fiber(stack_size(), || {
+                saw_cancel = matches!(block_on_current(PendingForever), Err(AsyncError::Cancelled));
+            }));
             let waker = Waker::noop();
             let mut cx = Context::from_waker(waker);
 
