@@ -323,10 +323,7 @@ where
         return Ok(runtime.block_on(future));
     }
 
-    let Some(runtime) = HandleOrRuntime::current() else {
-        return Err(AsyncError::Runtime);
-    };
-    Ok(runtime.block_on(future))
+    Err(AsyncError::Runtime)
 }
 
 fn block_on_runtime_result<F, T, E>(
@@ -397,9 +394,11 @@ pub struct AsyncDb<D: AsyncDatabase> {
 
 impl<D: AsyncDatabase> AsyncDb<D> {
     /// Creates a new async database adapter.
+    ///
+    /// This captures the current Tokio runtime handle when one is available.
     #[inline]
-    pub const fn new(db: D) -> Self {
-        Self { db, error: None, runtime: None }
+    pub fn new(db: D) -> Self {
+        Self { db, error: None, runtime: HandleOrRuntime::current() }
     }
 
     /// Creates a new async database adapter using the current Tokio runtime handle.
