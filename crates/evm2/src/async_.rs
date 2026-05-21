@@ -139,8 +139,6 @@ enum OnFiber<'a, R, E> {
     Done,
 }
 
-impl<R, E> Unpin for OnFiber<'_, R, E> {}
-
 impl<'a, R, E> OnFiber<'a, R, E> {
     fn new<S>(
         state: &'a mut S,
@@ -191,8 +189,6 @@ struct FiberFuture<'a, R> {
     fiber: EvmFiber<R>,
     _marker: PhantomData<&'a mut R>,
 }
-
-impl<R> Unpin for FiberFuture<'_, R> {}
 
 // SAFETY: The future may move between polls, but the coroutine stack itself is heap allocated and
 // is only resumed through `poll` with a fresh task context. Values that can remain on the coroutine
