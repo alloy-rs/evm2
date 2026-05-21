@@ -121,18 +121,8 @@ impl<T: EvmTypes> Evm<T> {
             execution_config.version().spec_id,
             "execution config version spec mismatch"
         );
-        let database = {
-            #[cfg(feature = "async")]
-            {
-                let mut database = database;
-                database.set_io_mode(execution_config.version().io_mode);
-                database
-            }
-            #[cfg(not(feature = "async"))]
-            {
-                database
-            }
-        };
+        let mut database = database;
+        database.set_io_mode(execution_config.version().io_mode);
         Self {
             spec_id,
             features: execution_config.version().features,
@@ -193,12 +183,12 @@ impl<T: EvmTypes> Evm<T> {
     #[inline]
     pub fn set_database(&mut self, database: impl DynDatabase) {
         self.state.set_initial(database);
-        #[cfg(feature = "async")]
         self.apply_io_mode_to_database();
     }
 
     /// Sets the asynchronous database I/O mode.
-    #[cfg(feature = "async")]
+    ///
+    /// Currently unused unless the `"async"` feature is enabled.
     #[inline]
     pub fn set_io_mode(&mut self, io_mode: crate::IoMode) -> bool {
         self.execution_config.version.io_mode = io_mode;
@@ -206,13 +196,13 @@ impl<T: EvmTypes> Evm<T> {
     }
 
     /// Sets the minimum async EVM fiber stack size in bytes.
-    #[cfg(feature = "async")]
+    ///
+    /// Currently unused unless the `"async"` feature is enabled.
     #[inline]
     pub const fn set_min_stack_size(&mut self, min_stack_size: usize) {
         self.execution_config.version.min_stack_size = min_stack_size;
     }
 
-    #[cfg(feature = "async")]
     #[inline]
     fn apply_io_mode_to_database(&mut self) -> bool {
         let io_mode = self.execution_config.version.io_mode;

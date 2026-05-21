@@ -206,7 +206,6 @@ impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
         self.db.error(code)
     }
 
-    #[cfg(feature = "async")]
     #[inline]
     fn set_io_mode(&mut self, io_mode: crate::IoMode) -> bool {
         self.db.set_io_mode(io_mode)

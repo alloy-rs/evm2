@@ -20,6 +20,8 @@ mod opcode_config;
 pub use opcode_config::OpcodeConfig;
 
 /// How async database I/O should be driven from synchronous EVM host calls.
+///
+/// Currently unused unless the `"async"` feature is enabled.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum IoMode {
     /// Block the current Tokio worker with `block_in_place`.
@@ -61,8 +63,12 @@ pub struct Version {
     /// Blob base fee update fraction.
     pub blob_base_fee_update_fraction: u64,
     /// Async database I/O mode.
+    ///
+    /// Currently unused unless the `"async"` feature is enabled.
     pub io_mode: IoMode,
     /// Minimum async EVM fiber stack size in bytes.
+    ///
+    /// Currently unused unless the `"async"` feature is enabled.
     pub min_stack_size: usize,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),

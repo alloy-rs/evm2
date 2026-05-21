@@ -194,7 +194,8 @@ pub trait DynDatabase: Any + Send {
     }
 
     /// Sets the asynchronous database I/O mode, if supported by this database.
-    #[cfg(feature = "async")]
+    ///
+    /// Currently unused unless the `"async"` feature is enabled.
     fn set_io_mode(&mut self, _io_mode: crate::IoMode) -> bool {
         false
     }
@@ -226,7 +227,6 @@ impl DynDatabase for Box<dyn DynDatabase> {
         self.as_mut().error(code)
     }
 
-    #[cfg(feature = "async")]
     #[inline]
     fn set_io_mode(&mut self, io_mode: crate::IoMode) -> bool {
         self.as_mut().set_io_mode(io_mode)
