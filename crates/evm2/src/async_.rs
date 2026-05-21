@@ -124,18 +124,6 @@ impl Drop for ResetCurrentFiber {
 ///
 /// Synchronous code running inside `func` may call [`block_on_current`] to wait for async host
 /// operations without blocking the executor thread.
-pub(crate) fn on_fiber<'a, S, R>(
-    state: &'a mut S,
-    stack_size: usize,
-    func: impl FnOnce(&mut S) -> R + 'a,
-) -> impl Future<Output = AsyncResult<R>> + Send + 'a
-where
-    S: ?Sized,
-    R: Send + 'a,
-{
-    OnFiber::new(state, stack_size, func)
-}
-
 pub(crate) fn on_fiber_result<'a, S, R, E>(
     state: &'a mut S,
     stack_size: usize,
@@ -637,7 +625,7 @@ impl Error for AsyncDbErrorUnavailable {}
 
 #[cfg(test)]
 mod tests {
-    use super::{AsyncDatabase, AsyncDb, AsyncError, block_on_current, on_fiber};
+    use super::{AsyncDatabase, AsyncDb, AsyncError, block_on_current, on_fiber_result};
     use crate::{
         BaseEvmTypes, Evm, ExecutionConfig, IoMode, Precompiles, SpecId, TxResult, Version,
         bytecode::Bytecode,
@@ -662,9 +650,9 @@ mod tests {
     #[test]
     fn fiber_suspends_and_resumes_pending_future() {
         let mut state = 1;
-        let mut future = core::pin::pin!(on_fiber(&mut state, stack_size(), |state| {
+        let mut future = core::pin::pin!(on_fiber_result(&mut state, stack_size(), |state| {
             *state += block_on_current(PendingOnce { pending: true }).unwrap();
-            *state
+            Ok::<_, Infallible>(*state)
         }));
         let waker = Waker::noop();
         let mut cx = Context::from_waker(waker);
@@ -678,8 +666,8 @@ mod tests {
         let mut db = AsyncDb::new(TestDb);
         let address = Address::ZERO;
         let key = Word::from(7);
-        let mut future = core::pin::pin!(on_fiber(&mut db, stack_size(), |db| {
-            DynDatabase::get_storage(db, &address, &key).unwrap()
+        let mut future = core::pin::pin!(on_fiber_result(&mut db, stack_size(), |db| {
+            Ok::<_, Infallible>(DynDatabase::get_storage(db, &address, &key).unwrap())
         }));
         let waker = Waker::noop();
         let mut cx = Context::from_waker(waker);
@@ -694,8 +682,8 @@ mod tests {
         let mut db = AsyncDb::new(PendingDb { pending: true });
         let address = Address::ZERO;
         let key = Word::from(7);
-        let mut future = core::pin::pin!(on_fiber(&mut db, stack_size(), |db| {
-            DynDatabase::get_storage(db, &address, &key).unwrap()
+        let mut future = core::pin::pin!(on_fiber_result(&mut db, stack_size(), |db| {
+            Ok::<_, Infallible>(DynDatabase::get_storage(db, &address, &key).unwrap())
         }));
         let waker = Waker::noop();
         let mut cx = Context::from_waker(waker);
@@ -711,8 +699,8 @@ mod tests {
         let mut db = AsyncDb::new(FailingDb);
         let address = Address::ZERO;
         let key = Word::from(7);
-        let code = on_fiber(&mut db, stack_size(), |db| {
-            DynDatabase::get_storage(db, &address, &key).unwrap_err()
+        let code = on_fiber_result(&mut db, stack_size(), |db| {
+            Ok::<_, Infallible>(DynDatabase::get_storage(db, &address, &key).unwrap_err())
         });
         let code = poll_ready(code).unwrap();
 
@@ -883,9 +871,10 @@ mod tests {
         let mut saw_cancel = false;
         {
             let mut future =
-                core::pin::pin!(on_fiber(&mut saw_cancel, stack_size(), |saw_cancel| {
+                core::pin::pin!(on_fiber_result(&mut saw_cancel, stack_size(), |saw_cancel| {
                     *saw_cancel =
                         matches!(block_on_current(PendingForever), Err(AsyncError::Cancelled));
+                    Ok::<_, Infallible>(())
                 }));
             let waker = Waker::noop();
             let mut cx = Context::from_waker(waker);
