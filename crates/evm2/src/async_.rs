@@ -412,13 +412,13 @@ impl<D: AsyncDatabase> AsyncDb<D> {
 
     /// Creates a new async database adapter with a Tokio runtime.
     #[inline]
-    pub const fn with_runtime(db: D, runtime: Runtime) -> Self {
+    pub fn with_tokio_runtime(db: D, runtime: Runtime) -> Self {
         Self { db, error: None, runtime: Some(HandleOrRuntime::Runtime(runtime)) }
     }
 
     /// Creates a new async database adapter with a Tokio runtime handle.
     #[inline]
-    pub const fn with_handle(db: D, handle: Handle) -> Self {
+    pub fn with_tokio_handle(db: D, handle: Handle) -> Self {
         Self { db, error: None, runtime: Some(HandleOrRuntime::Handle(handle)) }
     }
 
@@ -676,7 +676,7 @@ mod tests {
     #[test]
     fn synchronous_database_blocks_with_stored_tokio_runtime() {
         let runtime = tokio::runtime::Runtime::new().unwrap();
-        let mut db = AsyncDb::with_runtime(TokioDb, runtime);
+        let mut db = AsyncDb::with_tokio_runtime(TokioDb, runtime);
         let address = Address::ZERO;
         let key = Word::from(7);
 
