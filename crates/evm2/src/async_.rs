@@ -28,7 +28,7 @@ type Complete<R> = AsyncResult<R>;
 type EvmFiber<R> = Coroutine<Resume, Yield, Complete<R>, DefaultStack>;
 
 thread_local! {
-    static CURRENT: Cell<Option<NonNull<CurrentFiber<'static>>>> = const { Cell::new(None) };
+    static CURRENT: Cell<Option<NonNull<CurrentFiber>>> = const { Cell::new(None) };
 }
 
 /// Result type used by async EVM execution helpers.
@@ -67,14 +67,13 @@ impl AsyncError {
     }
 }
 
-struct CurrentFiber<'a> {
+struct CurrentFiber {
     suspend: NonNull<Yielder<Resume, Yield>>,
-    _marker: PhantomData<&'a Yielder<Resume, Yield>>,
     future_cx: NonNull<Context<'static>>,
     cancelled: bool,
 }
 
-impl CurrentFiber<'_> {
+impl CurrentFiber {
     #[inline]
     fn context(&mut self) -> &mut Context<'_> {
         unsafe { restore_context_lifetime(self.future_cx.as_mut()) }
@@ -100,7 +99,7 @@ impl CurrentFiber<'_> {
     }
 }
 
-struct ResetCurrentFiber(Option<NonNull<CurrentFiber<'static>>>);
+struct ResetCurrentFiber(Option<NonNull<CurrentFiber>>);
 
 impl Drop for ResetCurrentFiber {
     fn drop(&mut self) {
@@ -193,14 +192,9 @@ impl<'a, R> FiberFuture<'a, R> {
         let stack = DefaultStack::new(stack_size).map_err(AsyncError::Io)?;
         let body = move |suspend: &Yielder<Resume, Yield>, resume| {
             let future_cx = resume?;
-            let mut current = CurrentFiber {
-                suspend: NonNull::from(suspend),
-                _marker: PhantomData,
-                future_cx,
-                cancelled: false,
-            };
+            let mut current =
+                CurrentFiber { suspend: NonNull::from(suspend), future_cx, cancelled: false };
             let current = NonNull::from(&mut current);
-            let current = unsafe { erase_current_fiber_lifetime(current) };
             let previous = CURRENT.replace(Some(current));
             let _reset = ResetCurrentFiber(previous);
             Ok(func())
@@ -353,7 +347,7 @@ where
     }
 }
 
-fn with_current<R>(f: impl FnOnce(&mut CurrentFiber<'_>) -> R) -> AsyncResult<R> {
+fn with_current<R>(f: impl FnOnce(&mut CurrentFiber) -> R) -> AsyncResult<R> {
     let mut current = CURRENT.get().ok_or(AsyncError::NotOnFiber)?;
     Ok(f(unsafe { current.as_mut() }))
 }
@@ -364,14 +358,6 @@ unsafe fn change_context_lifetime<'a>(cx: &'a mut Context<'_>) -> &'a mut Contex
 
 unsafe fn restore_context_lifetime<'a>(cx: &'a mut Context<'static>) -> &'a mut Context<'a> {
     unsafe { core::mem::transmute::<&'a mut Context<'static>, &'a mut Context<'a>>(cx) }
-}
-
-unsafe fn erase_current_fiber_lifetime<'a>(
-    fiber: NonNull<CurrentFiber<'a>>,
-) -> NonNull<CurrentFiber<'static>> {
-    unsafe {
-        core::mem::transmute::<NonNull<CurrentFiber<'a>>, NonNull<CurrentFiber<'static>>>(fiber)
-    }
 }
 
 /// Asynchronous backing database implementation.
