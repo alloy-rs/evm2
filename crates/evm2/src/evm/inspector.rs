@@ -74,11 +74,13 @@ pub trait Inspector<T: EvmTypes>: Any + Send {
 mod tests {
     use super::Inspector;
     use crate::{
-        BaseEvmConfigSelector, ExecutionConfig, SpecId,
+        BaseEvmConfigSelector, BaseEvmTypes, Evm, ExecutionConfig, Precompiles, SYSTEM_ADDRESS,
+        SpecId,
         bytecode::Bytecode,
         constants::CALL_DEPTH_LIMIT,
-        env::TxEnv,
-        evm::SelfDestructResult,
+        env::{BlockEnv, TxEnv},
+        ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
+        evm::{AccountInfo, InMemoryDB, SelfDestructResult},
         interpreter::{
             GasTracker, InstrStop, Interpreter, Message, MessageResult, Word,
             instructions::tests::{TestHost, TestTypes, push},
@@ -86,23 +88,9 @@ mod tests {
         },
         utils::address_to_word,
     };
-    #[cfg(feature = "std")]
-    use crate::{
-        BaseEvmTypes, Evm, Precompiles, SYSTEM_ADDRESS,
-        env::BlockEnv,
-        ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
-        evm::{AccountInfo, InMemoryDB},
-    };
-    #[cfg(feature = "std")]
-    use alloc::sync::Arc;
-    use alloc::vec::Vec;
-    #[cfg(feature = "std")]
+    use alloc::{sync::Arc, vec::Vec};
     use alloy_consensus::{TxLegacy, transaction::Recovered};
-    use alloy_primitives::{Address, Bytes, Log};
-    #[cfg(feature = "std")]
-    use alloy_primitives::{TxKind, U256};
-    #[cfg(feature = "std")]
-    use std::sync::Mutex;
+    use alloy_primitives::{Address, Bytes, Log, TxKind, U256};
 
     #[derive(Default)]
     struct StepInspector {
@@ -334,7 +322,6 @@ mod tests {
     }
 
     #[derive(Default)]
-    #[cfg(feature = "std")]
     struct E2eState {
         initialized: usize,
         steps: usize,
@@ -344,32 +331,33 @@ mod tests {
         creates: usize,
     }
 
-    #[cfg(feature = "std")]
-    struct SharedE2eInspector(Arc<Mutex<E2eState>>);
+    #[derive(Default)]
+    struct SharedE2eInspector {
+        state: Arc<E2eState>,
+    }
 
-    #[cfg(feature = "std")]
     impl Inspector<BaseEvmTypes> for SharedE2eInspector {
         fn initialize_interp(&mut self, _interp: &mut Interpreter<'_, BaseEvmTypes>) {
-            self.0.lock().unwrap().initialized += 1;
+            Arc::get_mut(&mut self.state).unwrap().initialized += 1;
         }
 
         fn step(&mut self, _interp: &mut Interpreter<'_, BaseEvmTypes>) {
-            self.0.lock().unwrap().steps += 1;
+            Arc::get_mut(&mut self.state).unwrap().steps += 1;
         }
 
         fn step_end(&mut self, _interp: &mut Interpreter<'_, BaseEvmTypes>) {
-            self.0.lock().unwrap().step_ends += 1;
+            Arc::get_mut(&mut self.state).unwrap().step_ends += 1;
         }
 
         fn log(&mut self, log: &Log) {
-            self.0.lock().unwrap().logs.push(log.clone());
+            Arc::get_mut(&mut self.state).unwrap().logs.push(log.clone());
         }
 
         fn call(
             &mut self,
             _message: &mut Message<BaseEvmTypes>,
         ) -> Option<MessageResult<BaseEvmTypes>> {
-            self.0.lock().unwrap().calls += 1;
+            Arc::get_mut(&mut self.state).unwrap().calls += 1;
             None
         }
 
@@ -377,7 +365,7 @@ mod tests {
             &mut self,
             _message: &mut Message<BaseEvmTypes>,
         ) -> Option<MessageResult<BaseEvmTypes>> {
-            self.0.lock().unwrap().creates += 1;
+            Arc::get_mut(&mut self.state).unwrap().creates += 1;
             None
         }
     }
@@ -776,7 +764,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "std")]
     fn evm_transaction_inspects_interpreter_steps_and_logs() {
         let caller = Address::from([0xaa; 20]);
         let contract = Address::from([0xbb; 20]);
@@ -801,15 +788,17 @@ mod tests {
             database,
             Precompiles::base(SpecId::OSAKA),
         );
-        let state = Arc::new(Mutex::new(E2eState::default()));
-        evm.set_inspector(SharedE2eInspector(Arc::clone(&state)));
+        evm.set_inspector(SharedE2eInspector::default());
         let tx = RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(
             TxLegacy { to: TxKind::Call(contract), gas_limit: 100_000, ..Default::default() },
             caller,
         ));
 
         let result = evm.transact(&tx).unwrap();
-        let state = state.lock().unwrap();
+        let inspector = (evm.inspector().unwrap() as &dyn core::any::Any)
+            .downcast_ref::<SharedE2eInspector>()
+            .unwrap();
+        let state = &inspector.state;
 
         assert!(result.status);
         assert_eq!(state.initialized, 1);
@@ -822,7 +811,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "std")]
     fn evm_transaction_inspects_eip7708_transfer_log() {
         let caller = Address::from([0xaa; 20]);
         let target = Address::from([0xbb; 20]);
@@ -838,8 +826,7 @@ mod tests {
             database,
             Precompiles::base(SpecId::AMSTERDAM),
         );
-        let state = Arc::new(Mutex::new(E2eState::default()));
-        evm.set_inspector(SharedE2eInspector(Arc::clone(&state)));
+        evm.set_inspector(SharedE2eInspector::default());
         let tx = RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(
             TxLegacy {
                 to: TxKind::Call(target),
@@ -851,7 +838,10 @@ mod tests {
         ));
 
         let result = evm.transact(&tx).unwrap();
-        let state = state.lock().unwrap();
+        let inspector = (evm.inspector().unwrap() as &dyn core::any::Any)
+            .downcast_ref::<SharedE2eInspector>()
+            .unwrap();
+        let state = &inspector.state;
 
         assert!(result.status);
         assert_eq!(result.state_changes.logs.len(), 1);
@@ -860,7 +850,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "std")]
     fn evm_create_transaction_initializes_interpreter_without_create_hook() {
         let caller = Address::from([0xaa; 20]);
         let mut database = InMemoryDB::default();
@@ -875,8 +864,7 @@ mod tests {
             database,
             Precompiles::base(SpecId::OSAKA),
         );
-        let state = Arc::new(Mutex::new(E2eState::default()));
-        evm.set_inspector(SharedE2eInspector(Arc::clone(&state)));
+        evm.set_inspector(SharedE2eInspector::default());
         let tx = RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(
             TxLegacy {
                 to: TxKind::Create,
@@ -888,7 +876,10 @@ mod tests {
         ));
 
         let result = evm.transact(&tx).unwrap();
-        let state = state.lock().unwrap();
+        let inspector = (evm.inspector().unwrap() as &dyn core::any::Any)
+            .downcast_ref::<SharedE2eInspector>()
+            .unwrap();
+        let state = &inspector.state;
 
         assert!(result.status);
         assert_eq!(state.initialized, 1);
