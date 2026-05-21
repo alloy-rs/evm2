@@ -532,13 +532,14 @@ impl Error for AsyncDbErrorUnavailable {}
 mod tests {
     use super::{AsyncDatabase, AsyncDb, AsyncError, block_on_current, on_fiber};
     use crate::{
-        BaseEvmTypes, Evm, ExecutionConfig, IoMode, Precompiles, SpecId, Version,
+        BaseEvmTypes, Evm, ExecutionConfig, IoMode, Precompiles, SpecId, TxResult, Version,
         bytecode::Bytecode,
         env::BlockEnv,
         evm::{DynDatabase, InMemoryDB},
         interpreter::Word,
-        registry::TxRegistry,
+        registry::{HandlerResult, TxRegistry, TxRequest},
     };
+    use alloy_consensus::{TxLegacy, transaction::Recovered};
     use alloy_primitives::{Address, B256, Bytes};
     use core::{convert::Infallible, fmt, future::Future, pin::Pin, task::Poll};
     use std::{
@@ -609,6 +610,27 @@ mod tests {
         let code = poll_ready(code).unwrap();
 
         assert_eq!(db.error(code).to_string(), "storage read failed");
+    }
+
+    #[test]
+    fn dispatches_transaction_async_by_typed_2718_type() {
+        let registry = TxRegistry::new().with_handler(
+            TEST_TX_TYPE,
+            crate::ethereum::RecoveredTxEnvelope::as_legacy,
+            handle_test_tx,
+        );
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            registry,
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        let tx = test_tx(41);
+
+        let result = poll_ready(evm.transact_async(&tx)).unwrap().unwrap();
+
+        assert_eq!(result.gas_used, 42);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -749,6 +771,22 @@ mod tests {
 
     fn stack_size() -> usize {
         Version::new(SpecId::OSAKA).min_stack_size
+    }
+
+    const TEST_TX_TYPE: u8 = 0x00;
+
+    fn test_tx(value: u64) -> crate::ethereum::RecoveredTxEnvelope {
+        crate::ethereum::RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(
+            TxLegacy { nonce: value, ..TxLegacy::default() },
+            Address::ZERO,
+        ))
+    }
+
+    fn handle_test_tx(
+        req: TxRequest<'_, Recovered<TxLegacy>, Evm<BaseEvmTypes>>,
+    ) -> HandlerResult<TxResult> {
+        let _ = req.host.spec_id();
+        Ok(TxResult { status: true, gas_used: req.tx.nonce + 1, ..TxResult::default() })
     }
 
     fn poll_ready<F: Future + Send>(future: F) -> F::Output {

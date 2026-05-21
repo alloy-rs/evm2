@@ -1119,28 +1119,6 @@ mod tests {
         assert_eq!(evm.transact(&tx).map(|result| result.gas_used), Ok(42));
     }
 
-    #[cfg(feature = "async")]
-    #[test]
-    fn dispatches_transaction_async_by_typed_2718_type() {
-        let registry = TxRegistry::new().with_handler(
-            TEST_TX_TYPE,
-            RecoveredTxEnvelope::as_legacy,
-            handle_test_tx,
-        );
-        let mut evm = Evm::<BaseEvmTypes>::new(
-            SpecId::OSAKA,
-            BlockEnv::default(),
-            registry,
-            InMemoryDB::default(),
-            Precompiles::base(SpecId::OSAKA),
-        );
-        let tx = test_tx(41);
-
-        let result = poll_ready(evm.transact_async(&tx)).unwrap().unwrap();
-
-        assert_eq!(result.gas_used, 42);
-    }
-
     #[test]
     fn dispatches_transaction_without_evm_config() {
         let registry = TxRegistry::new().with_handler(
@@ -1532,20 +1510,5 @@ mod tests {
             ]
         );
         assert_eq!(log.data.data, Bytes::copy_from_slice(&U256::from(7).to_be_bytes::<32>()));
-    }
-
-    #[cfg(feature = "async")]
-    fn poll_ready<F: core::future::Future + Send>(future: F) -> F::Output {
-        use core::task::Poll;
-        use std::task::{Context, Waker};
-
-        let mut future = core::pin::pin!(future);
-        let waker = Waker::noop();
-        let mut cx = Context::from_waker(waker);
-
-        match future.as_mut().poll(&mut cx) {
-            Poll::Ready(value) => value,
-            Poll::Pending => panic!("future unexpectedly pending"),
-        }
     }
 }
