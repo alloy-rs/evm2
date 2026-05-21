@@ -19,6 +19,16 @@ pub use features::EvmFeatures;
 mod opcode_config;
 pub use opcode_config::OpcodeConfig;
 
+/// How async database I/O should be driven from synchronous EVM host calls.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum IoMode {
+    /// Block the current Tokio worker with `block_in_place`.
+    Blocking,
+    /// Suspend the EVM fiber while database I/O is pending.
+    #[default]
+    Async,
+}
+
 /// Runtime configuration data.
 ///
 /// The name is a bit misleading: this is a catch-all runtime configuration object. It stores fork
@@ -50,6 +60,10 @@ pub struct Version {
     pub max_blobs_per_tx: usize,
     /// Blob base fee update fraction.
     pub blob_base_fee_update_fraction: u64,
+    /// Async database I/O mode.
+    pub io_mode: IoMode,
+    /// Minimum async EVM fiber stack size in bytes.
+    pub min_stack_size: usize,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
 }
@@ -106,6 +120,7 @@ const fn base_blob_base_fee_update_fraction(spec_id: SpecId) -> u64 {
 
 const DEFAULT_MEMORY_LIMIT: u64 = (1 << 32) - 1;
 const DEFAULT_CHAIN_ID: u64 = 1;
+const DEFAULT_MIN_STACK_SIZE: usize = 1024 * 1024;
 
 static BASE_VERSIONS: [Version; SpecId::COUNT] = {
     let mut versions = [const {
@@ -120,6 +135,8 @@ static BASE_VERSIONS: [Version; SpecId::COUNT] = {
             max_initcode_size: MAX_INITCODE_SIZE,
             max_blobs_per_tx: MAX_BLOBS_PER_BLOCK_DENCUN,
             blob_base_fee_update_fraction: BLOB_BASE_FEE_UPDATE_FRACTION_CANCUN,
+            io_mode: IoMode::Async,
+            min_stack_size: DEFAULT_MIN_STACK_SIZE,
             _non_exhaustive: (),
         }
     }; SpecId::COUNT];
@@ -137,6 +154,8 @@ static BASE_VERSIONS: [Version; SpecId::COUNT] = {
             max_initcode_size: base_max_initcode_size(spec_id),
             max_blobs_per_tx: base_max_blobs_per_tx(spec_id),
             blob_base_fee_update_fraction: base_blob_base_fee_update_fraction(spec_id),
+            io_mode: IoMode::Async,
+            min_stack_size: DEFAULT_MIN_STACK_SIZE,
             _non_exhaustive: (),
         };
         i += 1;

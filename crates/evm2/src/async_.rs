@@ -5,6 +5,7 @@
 //! suspended and the outer async task returns `Poll::Pending`.
 
 use crate::{
+    IoMode,
     bytecode::Bytecode,
     evm::{AccountInfo, DatabaseCommit, DbErrorCode, DbResult, DynDatabase, StateChanges},
     interpreter::Word,
@@ -18,9 +19,6 @@ use core::{any::Any, fmt, future::Future, pin::Pin, ptr::NonNull, task::Poll};
 use std::{cell::RefCell, error::Error, task::Context};
 use tokio::{runtime::Handle, task};
 use wasmtime_fiber::{Fiber, FiberStack, Suspend};
-
-/// Default stack size for async EVM execution.
-const DEFAULT_ASYNC_STACK_SIZE: usize = 2 * 1024 * 1024;
 
 type Resume = AsyncResult<NonNull<Context<'static>>>;
 type Yield = ();
@@ -51,16 +49,6 @@ pub enum AsyncError {
     /// Blocking async I/O was requested outside a supported Tokio runtime.
     #[error("async host operation requires a Tokio multi-thread runtime: {0}")]
     Runtime(String),
-}
-
-/// How async database I/O should be driven from synchronous EVM host calls.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub enum IoMode {
-    /// Block the current Tokio worker with `block_in_place`.
-    Blocking,
-    /// Suspend the EVM fiber while database I/O is pending.
-    #[default]
-    Async,
 }
 
 trait CurrentFiber {
@@ -114,15 +102,7 @@ impl Drop for ResetCurrentFiber {
 ///
 /// Synchronous code running inside `func` may call [`block_on_current`] to wait for async host
 /// operations without blocking the executor thread.
-pub(crate) async fn on_fiber<S, R>(state: &mut S, func: impl FnOnce(&mut S) -> R) -> AsyncResult<R>
-where
-    S: ?Sized,
-{
-    on_fiber_with_stack_size(state, DEFAULT_ASYNC_STACK_SIZE, func).await
-}
-
-/// Runs `func` on a native fiber with an explicit stack size.
-async fn on_fiber_with_stack_size<S, R>(
+pub(crate) async fn on_fiber<S, R>(
     state: &mut S,
     stack_size: usize,
     func: impl FnOnce(&mut S) -> R,
@@ -209,7 +189,7 @@ impl<R> Drop for FiberFuture<'_, R> {
 /// [`AsyncError::Cancelled`] if the outer async EVM execution was dropped.
 pub(crate) fn block_on_current<F>(future: F) -> AsyncResult<F::Output>
 where
-    F: Future,
+    F: Future + Send,
 {
     let mut future = core::pin::pin!(future);
     loop {
@@ -321,8 +301,8 @@ pub struct AsyncDb<D: AsyncDatabase> {
 impl<D: AsyncDatabase> AsyncDb<D> {
     /// Creates a new async database adapter.
     #[inline]
-    pub const fn new(db: D, io_mode: IoMode) -> Self {
-        Self { db, error: None, io_mode }
+    pub const fn new(db: D) -> Self {
+        Self { db, error: None, io_mode: IoMode::Async }
     }
 
     /// Returns the wrapped database.
@@ -446,9 +426,9 @@ impl Error for AsyncDbErrorUnavailable {}
 
 #[cfg(test)]
 mod tests {
-    use super::{AsyncDatabase, AsyncDb, AsyncError, IoMode, block_on_current, on_fiber};
+    use super::{AsyncDatabase, AsyncDb, AsyncError, block_on_current, on_fiber};
     use crate::{
-        BaseEvmTypes, Evm, Precompiles, SpecId,
+        BaseEvmTypes, Evm, ExecutionConfig, IoMode, Precompiles, SpecId, Version,
         bytecode::Bytecode,
         env::BlockEnv,
         evm::{DynDatabase, InMemoryDB},
@@ -470,7 +450,7 @@ mod tests {
     #[test]
     fn fiber_suspends_and_resumes_pending_future() {
         let mut state = 1;
-        let mut future = core::pin::pin!(on_fiber(&mut state, |state| {
+        let mut future = core::pin::pin!(on_fiber(&mut state, stack_size(), |state| {
             *state += block_on_current(PendingOnce { pending: true }).unwrap();
             *state
         }));
@@ -483,10 +463,10 @@ mod tests {
 
     #[test]
     fn async_database_adapts_to_dyn_database() {
-        let mut db = AsyncDb::new(TestDb, IoMode::Async);
+        let mut db = AsyncDb::new(TestDb);
         let address = Address::ZERO;
         let key = Word::from(7);
-        let mut future = core::pin::pin!(on_fiber(&mut db, |db| {
+        let mut future = core::pin::pin!(on_fiber(&mut db, stack_size(), |db| {
             DynDatabase::get_storage(db, &address, &key).unwrap()
         }));
         let waker = Waker::noop();
@@ -499,10 +479,10 @@ mod tests {
 
     #[test]
     fn async_database_suspends_until_ready() {
-        let mut db = AsyncDb::new(PendingDb { pending: true }, IoMode::Async);
+        let mut db = AsyncDb::new(PendingDb { pending: true });
         let address = Address::ZERO;
         let key = Word::from(7);
-        let mut future = core::pin::pin!(on_fiber(&mut db, |db| {
+        let mut future = core::pin::pin!(on_fiber(&mut db, stack_size(), |db| {
             DynDatabase::get_storage(db, &address, &key).unwrap()
         }));
         let waker = Waker::noop();
@@ -516,11 +496,12 @@ mod tests {
 
     #[test]
     fn async_database_stores_database_error() {
-        let mut db = AsyncDb::new(FailingDb, IoMode::Async);
+        let mut db = AsyncDb::new(FailingDb);
         let address = Address::ZERO;
         let key = Word::from(7);
-        let code =
-            on_fiber(&mut db, |db| DynDatabase::get_storage(db, &address, &key).unwrap_err());
+        let code = on_fiber(&mut db, stack_size(), |db| {
+            DynDatabase::get_storage(db, &address, &key).unwrap_err()
+        });
         let code = poll_ready(code).unwrap();
 
         assert_eq!(db.error(code).to_string(), "storage read failed");
@@ -528,10 +509,11 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn blocking_io_mode_blocks_with_tokio_when_not_on_fiber() {
-        let mut db = AsyncDb::new(TokioDb, IoMode::Blocking);
+        let mut db = AsyncDb::new(TokioDb);
         let address = Address::ZERO;
         let key = Word::from(7);
 
+        assert!(DynDatabase::set_io_mode(&mut db, IoMode::Blocking));
         let value = DynDatabase::get_storage(&mut db, &address, &key).unwrap();
 
         assert_eq!(value, Word::from(9));
@@ -543,13 +525,33 @@ mod tests {
             SpecId::OSAKA,
             BlockEnv::default(),
             TxRegistry::new(),
-            AsyncDb::new(TokioDb, IoMode::Async),
+            AsyncDb::new(TokioDb),
             Precompiles::base(SpecId::OSAKA),
         );
         let address = Address::ZERO;
         let key = Word::from(7);
 
-        assert!(evm.set_io_mode(IoMode::Blocking));
+        evm.set_io_mode(IoMode::Blocking);
+        let value = evm.database_mut().get_storage(&address, &key).unwrap();
+
+        assert_eq!(value, Word::from(9));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn evm_applies_version_io_mode_to_async_database() {
+        let mut version = Version::new(SpecId::OSAKA);
+        version.io_mode = IoMode::Blocking;
+        let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
+            ExecutionConfig::for_spec_and_version(SpecId::OSAKA, version),
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            AsyncDb::new(TokioDb),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        let address = Address::ZERO;
+        let key = Word::from(7);
+
         let value = evm.database_mut().get_storage(&address, &key).unwrap();
 
         assert_eq!(value, Word::from(9));
@@ -575,7 +577,7 @@ mod tests {
 
     #[test]
     fn async_io_mode_requires_fiber() {
-        let mut db = AsyncDb::new(TestDb, IoMode::Async);
+        let mut db = AsyncDb::new(TestDb);
         let address = Address::ZERO;
         let key = Word::from(7);
         let code = DynDatabase::get_storage(&mut db, &address, &key).unwrap_err();
@@ -590,16 +592,29 @@ mod tests {
     fn dropping_fiber_cancels_blocked_future() {
         let mut saw_cancel = false;
         {
-            let mut future = core::pin::pin!(on_fiber(&mut saw_cancel, |saw_cancel| {
-                *saw_cancel =
-                    matches!(block_on_current(PendingForever), Err(AsyncError::Cancelled));
-            }));
+            let mut future =
+                core::pin::pin!(on_fiber(&mut saw_cancel, stack_size(), |saw_cancel| {
+                    *saw_cancel =
+                        matches!(block_on_current(PendingForever), Err(AsyncError::Cancelled));
+                }));
             let waker = Waker::noop();
             let mut cx = Context::from_waker(waker);
 
             assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
         }
         assert!(saw_cancel);
+    }
+
+    #[test]
+    fn version_defaults_async_io_mode_and_stack_size() {
+        let version = Version::new(SpecId::OSAKA);
+
+        assert_eq!(version.io_mode, IoMode::Async);
+        assert_eq!(version.min_stack_size, 1024 * 1024);
+    }
+
+    fn stack_size() -> usize {
+        Version::new(SpecId::OSAKA).min_stack_size
     }
 
     fn poll_ready<F: Future + Send>(future: F) -> F::Output {

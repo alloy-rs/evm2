@@ -52,7 +52,11 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         system_contract_address: Address,
         data: Bytes,
     ) -> crate::AsyncResult<TxResult<T>> {
-        crate::async_::on_fiber(self, |evm| evm.system_call(system_contract_address, data)).await
+        let stack_size = self.version().min_stack_size;
+        crate::async_::on_fiber(self, stack_size, |evm| {
+            evm.system_call(system_contract_address, data)
+        })
+        .await
     }
 
     /// Executes a system call from `caller` to `system_contract_address`.
@@ -128,7 +132,8 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         system_contract_address: Address,
         data: Bytes,
     ) -> crate::AsyncResult<TxResult<T>> {
-        crate::async_::on_fiber(self, |evm| {
+        let stack_size = self.version().min_stack_size;
+        crate::async_::on_fiber(self, stack_size, |evm| {
             evm.system_call_with_caller(caller, system_contract_address, data)
         })
         .await

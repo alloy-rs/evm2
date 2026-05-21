@@ -121,6 +121,18 @@ impl<T: EvmTypes> Evm<T> {
             execution_config.version().spec_id,
             "execution config version spec mismatch"
         );
+        let database = {
+            #[cfg(feature = "async")]
+            {
+                let mut database = database;
+                database.set_io_mode(execution_config.version().io_mode);
+                database
+            }
+            #[cfg(not(feature = "async"))]
+            {
+                database
+            }
+        };
         Self {
             spec_id,
             features: execution_config.version().features,
@@ -181,13 +193,30 @@ impl<T: EvmTypes> Evm<T> {
     #[inline]
     pub fn set_database(&mut self, database: impl DynDatabase) {
         self.state.set_initial(database);
+        #[cfg(feature = "async")]
+        self.apply_io_mode_to_database();
     }
 
-    /// Sets the asynchronous database I/O mode, if supported by the backing database.
+    /// Sets the asynchronous database I/O mode.
     #[cfg(feature = "async")]
     #[inline]
-    pub fn set_io_mode(&mut self, io_mode: crate::IoMode) -> bool {
-        self.database_mut().set_io_mode(io_mode)
+    pub fn set_io_mode(&mut self, io_mode: crate::IoMode) {
+        self.execution_config.version.io_mode = io_mode;
+        self.apply_io_mode_to_database();
+    }
+
+    /// Sets the minimum async EVM fiber stack size in bytes.
+    #[cfg(feature = "async")]
+    #[inline]
+    pub const fn set_min_stack_size(&mut self, min_stack_size: usize) {
+        self.execution_config.version.min_stack_size = min_stack_size;
+    }
+
+    #[cfg(feature = "async")]
+    #[inline]
+    fn apply_io_mode_to_database(&mut self) {
+        let io_mode = self.execution_config.version.io_mode;
+        self.database_mut().set_io_mode(io_mode);
     }
 
     /// Returns the backing database as `D` if it has that concrete type.
@@ -372,7 +401,8 @@ impl<T: EvmTypes<Tx: Typed2718>> Evm<T> {
         &mut self,
         tx: &T::Tx,
     ) -> crate::AsyncResult<HandlerResult<TxResult<T>>> {
-        crate::async_::on_fiber(self, |evm| evm.transact(tx)).await
+        let stack_size = self.version().min_stack_size;
+        crate::async_::on_fiber(self, stack_size, |evm| evm.transact(tx)).await
     }
 
     /// Dispatches each transaction to its registered EIP-2718 handler.
