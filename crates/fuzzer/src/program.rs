@@ -1,0 +1,496 @@
+use crate::rng::Gen;
+use alloy_primitives::{Address, Bytes, U256};
+use evm2::{SpecId, interpreter::op};
+
+pub(crate) struct Program {
+    code: Vec<u8>,
+    stack_height: usize,
+}
+
+impl Program {
+    pub(crate) fn generate(
+        rng: &mut Gen,
+        spec: SpecId,
+        addresses: &[Address],
+        call_addresses: &[Address],
+    ) -> Self {
+        let mut program = Self { code: Vec::new(), stack_height: 0 };
+        let statements = rng.range_inclusive(1, 48);
+        for _ in 0..statements {
+            match rng.range(100) {
+                0..=24 => program.arithmetic(rng),
+                25..=39 => program.memory(rng),
+                40..=55 => program.storage(rng),
+                56..=68 => program.environment(rng, spec),
+                69..=73 => program.calldata(rng),
+                74..=79 => program.external_account(rng, spec, addresses),
+                80..=83 => program.log(rng),
+                84..=86 if spec.enables(SpecId::SPURIOUS_DRAGON) => {
+                    program.precompile_call(rng, spec)
+                }
+                84..=86 => program.literal(rng),
+                87..=89 if spec.enables(SpecId::SPURIOUS_DRAGON) => {
+                    program.generic_call(rng, spec, call_addresses)
+                }
+                87..=89 => program.literal(rng),
+                90..=91 if spec.enables(SpecId::SPURIOUS_DRAGON) => {
+                    program.returndata(rng, spec, call_addresses)
+                }
+                90..=91 => program.literal(rng),
+                92..=93 if spec.enables(SpecId::SPURIOUS_DRAGON) => program.create(rng, spec),
+                92..=93 => program.literal(rng),
+                94..=95 => program.cancun(rng, spec),
+                96 => program.jump(rng),
+                97 => program.stack_cleanup(),
+                98 if spec.enables(SpecId::SPURIOUS_DRAGON) => program.raw_invalidish(rng),
+                98 => program.literal(rng),
+                _ => program.literal(rng),
+            }
+            while program.stack_height > 16 {
+                program.emit(op::POP, 1, 0);
+            }
+        }
+        match rng.range(10) {
+            0 => program.finish_return(false),
+            1 if spec.enables(SpecId::BYZANTIUM) => program.finish_return(true),
+            _ => program.emit(op::STOP, 0, 0),
+        }
+        program
+    }
+
+    pub(crate) fn into_bytecode(self) -> Bytes {
+        self.code.into()
+    }
+
+    fn arithmetic(&mut self, rng: &mut Gen) {
+        self.push_word(rng.biased_word());
+        self.push_word(rng.biased_word());
+        let op = rng.pick(&[
+            op::ADD,
+            op::MUL,
+            op::SUB,
+            op::DIV,
+            op::MOD,
+            op::LT,
+            op::GT,
+            op::EQ,
+            op::AND,
+            op::OR,
+            op::XOR,
+        ]);
+        self.emit(op, 2, 1);
+    }
+
+    fn memory(&mut self, rng: &mut Gen) {
+        let offset = rng.pick(&[0, 1, 31, 32, 33, 64, 96, 128]);
+        if rng.one_in(2) {
+            self.push_word(rng.biased_word());
+            self.push_u64(offset);
+            self.emit(op::MSTORE, 2, 0);
+        } else {
+            self.push_u64(offset);
+            self.emit(op::MLOAD, 1, 1);
+        }
+    }
+
+    fn storage(&mut self, rng: &mut Gen) {
+        let key = rng.biased_word();
+        if rng.one_in(2) {
+            self.push_word(rng.biased_word());
+            self.push_word(key);
+            self.emit(op::SSTORE, 2, 0);
+        } else {
+            self.push_word(key);
+            self.emit(op::SLOAD, 1, 1);
+        }
+    }
+
+    fn environment(&mut self, rng: &mut Gen, spec: SpecId) {
+        let mut ops = vec![
+            op::ADDRESS,
+            op::CALLER,
+            op::CALLVALUE,
+            op::CALLDATASIZE,
+            op::CODESIZE,
+            op::GASPRICE,
+            op::COINBASE,
+            op::TIMESTAMP,
+            op::NUMBER,
+            op::GASLIMIT,
+            op::GAS,
+        ];
+        if spec.enables(SpecId::LONDON) {
+            ops.push(op::BASEFEE);
+        }
+        self.emit(rng.pick(&ops), 0, 1);
+    }
+
+    fn calldata(&mut self, rng: &mut Gen) {
+        match rng.range(3) {
+            0 => {
+                self.push_u64(rng.pick(&[0, 1, 4, 31, 32, 64]));
+                self.emit(op::CALLDATALOAD, 1, 1);
+            }
+            1 => self.emit(op::CALLDATASIZE, 0, 1),
+            _ => {
+                self.push_u64(rng.pick(&[0, 32, 64]));
+                self.push_u64(rng.pick(&[0, 1, 4, 31, 32]));
+                self.push_u64(rng.pick(&[0, 1, 4, 31, 32]));
+                self.emit(op::CALLDATACOPY, 3, 0);
+            }
+        }
+    }
+
+    fn external_account(&mut self, rng: &mut Gen, spec: SpecId, addresses: &[Address]) {
+        let address = rng.pick(addresses);
+        match rng.range(5) {
+            0 => {
+                self.push_address(address);
+                self.emit(op::BALANCE, 1, 1);
+            }
+            1 => {
+                self.push_address(address);
+                self.emit(op::EXTCODESIZE, 1, 1);
+            }
+            2 if spec.enables(SpecId::ISTANBUL) => {
+                self.push_address(address);
+                self.emit(op::EXTCODEHASH, 1, 1);
+            }
+            3 => {
+                self.push_u64(rng.pick(&[0, 1, 4, 31, 32, 33, 64]));
+                self.push_u64(rng.pick(&[0, 1, 31, 32]));
+                self.push_u64(rng.pick(&[0, 1, 31, 32, 64]));
+                self.push_address(address);
+                self.emit(op::EXTCODECOPY, 4, 0);
+            }
+            _ if spec.enables(SpecId::ISTANBUL) => self.emit(op::SELFBALANCE, 0, 1),
+            _ => {
+                self.push_address(address);
+                self.emit(op::BALANCE, 1, 1);
+            }
+        }
+    }
+
+    fn log(&mut self, rng: &mut Gen) {
+        if rng.one_in(2) {
+            self.push_word(rng.biased_word());
+            self.push_u64(rng.pick(&[0, 1, 31, 32, 33, 64, 96]));
+            self.emit(op::MSTORE, 2, 0);
+        }
+        let topics = rng.range(5);
+        let mut topic_values = Vec::with_capacity(topics);
+        for _ in 0..topics {
+            topic_values.push(rng.biased_word());
+        }
+        for topic in topic_values.into_iter().rev() {
+            self.push_word(topic);
+        }
+        self.push_u64(rng.pick(&[0, 1, 2, 31, 32, 33, 64]));
+        self.push_u64(rng.pick(&[0, 1, 30, 31, 32, 64, 96]));
+        self.emit(op::LOG0 + topics as u8, 2 + topics, 0);
+    }
+
+    fn precompile_call(&mut self, rng: &mut Gen, spec: SpecId) {
+        let precompiles: &[u8] = if spec.enables(SpecId::ISTANBUL) {
+            &[1, 2, 3, 4, 5, 6, 7, 8, 9]
+        } else if spec.enables(SpecId::BYZANTIUM) {
+            &[1, 2, 3, 4, 5, 6, 7, 8]
+        } else {
+            &[1, 2, 3, 4]
+        };
+        let precompile = Address::with_last_byte(rng.pick(precompiles));
+        let input_offset: u64 = rng.pick(&[0, 32, 64, 96]);
+        let input_len: u64 = rng.pick(&[0, 1, 20, 31, 32, 64, 96, 128, 192]);
+        let words = input_len.div_ceil(32);
+        for word in 0..words {
+            self.push_word(rng.biased_word());
+            self.push_u64(input_offset + word * 32);
+            self.emit(op::MSTORE, 2, 0);
+        }
+
+        let return_offset: u64 = rng.pick(&[0, 32, 64, 128]);
+        let return_len: u64 = rng.pick(&[0, 1, 20, 32, 64, 128]);
+        let gas: u64 = rng.pick(&[0, 1, 3_000, 10_000, 50_000, 200_000, 2_000_000]);
+        if spec.enables(SpecId::BYZANTIUM) && rng.one_in(2) {
+            self.push_u64(return_len);
+            self.push_u64(return_offset);
+            self.push_u64(input_len);
+            self.push_u64(input_offset);
+            self.push_address(precompile);
+            self.push_u64(gas);
+            self.emit(op::STATICCALL, 6, 1);
+        } else {
+            self.push_u64(return_len);
+            self.push_u64(return_offset);
+            self.push_u64(input_len);
+            self.push_u64(input_offset);
+            self.push_u64(0);
+            self.push_address(precompile);
+            self.push_u64(gas);
+            self.emit(op::CALL, 7, 1);
+        }
+    }
+
+    fn generic_call(&mut self, rng: &mut Gen, spec: SpecId, addresses: &[Address]) {
+        let address = rng.pick(addresses);
+        let input_offset: u64 = rng.pick(&[0, 32, 64, 96]);
+        let input_len: u64 = rng.pick(&[0, 1, 4, 31, 32, 64]);
+        let words = input_len.div_ceil(32);
+        for word in 0..words {
+            self.push_word(rng.biased_word());
+            self.push_u64(input_offset + word * 32);
+            self.emit(op::MSTORE, 2, 0);
+        }
+        let return_offset: u64 = rng.pick(&[0, 32, 64, 128]);
+        let return_len: u64 = rng.pick(&[0, 1, 4, 32, 64]);
+        let gas: u64 = rng.pick(&[0, 1, 2_300, 10_000, 50_000, 200_000]);
+        if spec.enables(SpecId::BYZANTIUM) && rng.one_in(3) {
+            self.push_u64(return_len);
+            self.push_u64(return_offset);
+            self.push_u64(input_len);
+            self.push_u64(input_offset);
+            self.push_address(address);
+            self.push_u64(gas);
+            self.emit(op::STATICCALL, 6, 1);
+        } else {
+            self.push_u64(return_len);
+            self.push_u64(return_offset);
+            self.push_u64(input_len);
+            self.push_u64(input_offset);
+            self.push_u64(rng.pick(&[0, 0, 0, 1, 2]));
+            self.push_address(address);
+            self.push_u64(gas);
+            self.emit(op::CALL, 7, 1);
+        }
+    }
+
+    fn returndata(&mut self, rng: &mut Gen, spec: SpecId, call_addresses: &[Address]) {
+        if !spec.enables(SpecId::BYZANTIUM) {
+            self.literal(rng);
+            return;
+        }
+        if rng.one_in(2) {
+            self.generic_call(rng, spec, call_addresses);
+        }
+        match rng.range(3) {
+            0 => self.emit(op::RETURNDATASIZE, 0, 1),
+            _ => {
+                self.push_u64(rng.pick(&[0, 1, 4, 31, 32, 64]));
+                self.push_u64(rng.pick(&[0, 1, 4, 31, 32, 64]));
+                self.push_u64(rng.pick(&[0, 1, 31, 32, 64, 128]));
+                self.emit(op::RETURNDATACOPY, 3, 0);
+            }
+        }
+    }
+
+    fn cancun(&mut self, rng: &mut Gen, spec: SpecId) {
+        if !spec.enables(SpecId::CANCUN) {
+            self.literal(rng);
+            return;
+        }
+        match rng.range(4) {
+            0 => {
+                self.push_word(rng.biased_word());
+                self.emit(op::TLOAD, 1, 1);
+            }
+            1 => {
+                self.push_word(rng.biased_word());
+                self.push_word(rng.biased_word());
+                self.emit(op::TSTORE, 2, 0);
+            }
+            2 => {
+                self.push_u64(rng.pick(&[0, 1, 2, 255]));
+                self.emit(op::BLOBHASH, 1, 1);
+            }
+            _ => self.emit(op::BLOBBASEFEE, 0, 1),
+        }
+    }
+
+    fn create(&mut self, rng: &mut Gen, spec: SpecId) {
+        let initcode = match rng.range(5) {
+            0 => Vec::new(),
+            1 => vec![op::STOP],
+            2 => vec![op::PUSH1, 0, op::PUSH1, 0, op::RETURN],
+            3 if spec.enables(SpecId::BYZANTIUM) => vec![op::PUSH1, 0, op::PUSH1, 0, op::REVERT],
+            _ => vec![
+                op::PUSH1,
+                0,
+                op::PUSH1,
+                0,
+                op::MSTORE,
+                op::PUSH1,
+                1,
+                op::PUSH1,
+                31,
+                op::RETURN,
+            ],
+        };
+        let offset: u64 = rng.pick(&[0, 32, 64]);
+        if !initcode.is_empty() {
+            self.push_bytes_word(&initcode);
+            self.push_u64(offset);
+            self.emit(op::MSTORE, 2, 0);
+        }
+        if rng.one_in(2) || !spec.enables(SpecId::ISTANBUL) {
+            self.push_u64(initcode.len() as u64);
+            self.push_u64(offset);
+            self.push_u64(rng.pick(&[0, 0, 0, 1]));
+            self.emit(op::CREATE, 3, 1);
+        } else {
+            self.push_word(rng.biased_word());
+            self.push_u64(initcode.len() as u64);
+            self.push_u64(offset);
+            self.push_u64(rng.pick(&[0, 0, 0, 1]));
+            self.emit(op::CREATE2, 4, 1);
+        }
+    }
+
+    fn jump(&mut self, rng: &mut Gen) {
+        match rng.range(10) {
+            0 => self.invalid_jump(rng),
+            1 => self.invalid_jumpi(rng),
+            2..=5 => self.forward_jump(rng),
+            _ => self.forward_jumpi(rng),
+        }
+    }
+
+    fn invalid_jump(&mut self, rng: &mut Gen) {
+        self.push_word(rng.biased_invalid_jumpdest());
+        self.emit(op::JUMP, 1, 0);
+    }
+
+    fn invalid_jumpi(&mut self, rng: &mut Gen) {
+        self.push_u8(if rng.one_in(3) { 0 } else { 1 });
+        self.push_word(rng.biased_invalid_jumpdest());
+        self.emit(op::JUMPI, 2, 0);
+    }
+
+    fn forward_jump(&mut self, rng: &mut Gen) {
+        let dest = self.push_jump_placeholder();
+        self.emit(op::JUMP, 1, 0);
+        self.skipped_block(rng);
+        self.patch_jump(dest);
+        self.emit(op::JUMPDEST, 0, 0);
+    }
+
+    fn forward_jumpi(&mut self, rng: &mut Gen) {
+        self.push_u8(if rng.one_in(2) { 0 } else { 1 });
+        let dest = self.push_jump_placeholder();
+        self.emit(op::JUMPI, 2, 0);
+        self.skipped_block(rng);
+        self.patch_jump(dest);
+        self.emit(op::JUMPDEST, 0, 0);
+    }
+
+    fn skipped_block(&mut self, rng: &mut Gen) {
+        for _ in 0..rng.range_inclusive(1, 4) {
+            self.stack_neutral_statement(rng);
+        }
+    }
+
+    fn stack_neutral_statement(&mut self, rng: &mut Gen) {
+        match rng.range(4) {
+            0 => {
+                self.push_word(rng.biased_word());
+                self.emit(op::POP, 1, 0);
+            }
+            1 => {
+                self.push_word(rng.biased_word());
+                self.push_u64(rng.pick(&[0, 1, 31, 32, 33, 64, 96, 128]));
+                self.emit(op::MSTORE, 2, 0);
+            }
+            2 => {
+                self.push_word(rng.biased_word());
+                self.push_word(rng.biased_word());
+                self.emit(op::SSTORE, 2, 0);
+            }
+            _ => self.emit(op::JUMPDEST, 0, 0),
+        }
+    }
+
+    fn stack_cleanup(&mut self) {
+        if self.stack_height == 0 {
+            self.push_u64(0);
+        }
+        self.emit(op::POP, 1, 0);
+    }
+
+    fn raw_invalidish(&mut self, rng: &mut Gen) {
+        if rng.one_in(3) {
+            self.code.push(op::PUSH4);
+            let immediate_len = rng.range_inclusive(0, 3);
+            self.code.extend(rng.bytes(immediate_len));
+            self.stack_height += 1;
+        } else {
+            self.emit(0xfe, 0, 0);
+        }
+    }
+
+    fn literal(&mut self, rng: &mut Gen) {
+        self.push_word(rng.biased_word());
+    }
+
+    fn finish_return(&mut self, revert: bool) {
+        self.push_u64(0);
+        self.push_u64(0);
+        self.emit(if revert { op::REVERT } else { op::RETURN }, 2, 0);
+    }
+
+    fn push_address(&mut self, address: Address) {
+        self.push_word(U256::from_be_slice(address.as_slice()));
+    }
+
+    fn push_bytes_word(&mut self, bytes: &[u8]) {
+        let mut word = [0; 32];
+        word[..bytes.len()].copy_from_slice(bytes);
+        self.push_word(U256::from_be_bytes(word));
+    }
+
+    fn push_word(&mut self, value: U256) {
+        if value <= U256::from(u8::MAX) {
+            self.push_u8(value.to::<u8>());
+        } else if value <= U256::from(u64::MAX) {
+            self.push_u64(value.to::<u64>());
+        } else {
+            self.code.push(op::PUSH32);
+            self.code.extend(value.to_be_bytes::<32>());
+            self.stack_height += 1;
+        }
+    }
+
+    fn push_u8(&mut self, value: u8) {
+        self.code.extend([op::PUSH1, value]);
+        self.stack_height += 1;
+    }
+
+    fn push_u64(&mut self, value: u64) {
+        if value <= u64::from(u8::MAX) {
+            self.push_u8(value as u8);
+            return;
+        }
+        let bytes = value.to_be_bytes();
+        let first = bytes.iter().position(|byte| *byte != 0).unwrap_or(bytes.len() - 1);
+        let immediate = &bytes[first..];
+        self.code.push(op::PUSH1 + immediate.len() as u8 - 1);
+        self.code.extend(immediate);
+        self.stack_height += 1;
+    }
+
+    fn push_jump_placeholder(&mut self) -> usize {
+        self.code.push(op::PUSH2);
+        let immediate = self.code.len();
+        self.code.extend([0, 0]);
+        self.stack_height += 1;
+        immediate
+    }
+
+    fn patch_jump(&mut self, immediate: usize) {
+        let dest = self.code.len() as u16;
+        self.code[immediate..immediate + 2].copy_from_slice(&dest.to_be_bytes());
+    }
+
+    fn emit(&mut self, opcode: u8, pops: usize, pushes: usize) {
+        self.code.push(opcode);
+        self.stack_height = self.stack_height.saturating_sub(pops) + pushes;
+    }
+}

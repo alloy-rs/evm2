@@ -1,0 +1,60 @@
+{
+  "spec": "PRAGUE",
+  "block": {
+    "number": "0x2da53",
+    "timestamp": "0x910c27e",
+    "gas_limit": 30000000,
+    "basefee": 0
+  },
+  "tx": {
+    "kind": "Eip7702",
+    "caller": "0x1010101010101010101010101010101010101010",
+    "target": "0x2020202020202020202020202020202020202020",
+    "gas_limit": 100000,
+    "gas_price": 1,
+    "value": "0x0",
+    "input": "0x",
+    "nonce": 0,
+    "access_list": [],
+    "blob_hashes": [
+      "0x016b0e9923182e732e788cc2062e2fd6a98a074fd61bdd001f84d5d7b90f49dd"
+    ]
+  },
+  "accounts": [
+    {
+      "address": "0x1010101010101010101010101010101010101010",
+      "balance": "0x100000000000000000000000000000000",
+      "nonce": 0,
+      "code": "0x",
+      "storage": {}
+    },
+    {
+      "address": "0x2020202020202020202020202020202020202020",
+      "balance": "0xf4240",
+      "nonce": 1,
+      "code": "0x6158a860005267ffffffffffffffff610d32602160216000a3600254427fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f63715b6f568c9eea0d0b49085ec743098c31c47eb1e29f07e450ed1f377c85040260016001601f60423c602060005260046020601f600060006002612710f161a124614b110361cf1d600152486101005460423f60216001600160423c7fce616f8e795f4747b7be59ae83a4a6ba1bbd5a3d14e9c3b68b85e767f06e23d3601f52600061010060006060a26101006021527fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff600055456140ad6080526001517f3060b9880c5289fff5784bf905219e3fe2b146f12522f0f901d755a533464ae56000526004600060046000600260816001f16001604060203e61cd76602052600060206001602060006008621e8480f17f6634a627a462235687cff3b4683631a7f87ebb4b7181f3b294a7f6337c16da4c00",
+      "storage": {}
+    },
+    {
+      "address": "0x0000000000000000000000000000000000000040",
+      "balance": "0x15f6",
+      "nonce": 0,
+      "code": "0x7fabababababababababababababababababababababababababababababababab60005260206000fd",
+      "storage": {}
+    },
+    {
+      "address": "0x0000000000000000000000000000000000000041",
+      "balance": "0x1357",
+      "nonce": 0,
+      "code": "0x7fabababababababababababababababababababababababababababababababab60005260206000fd",
+      "storage": {}
+    },
+    {
+      "address": "0x0000000000000000000000000000000000000042",
+      "balance": "0x1cf5",
+      "nonce": 2,
+      "code": "0x7fabababababababababababababababababababababababababababababababab60005260206000f3",
+      "storage": {}
+    }
+  ]
+}

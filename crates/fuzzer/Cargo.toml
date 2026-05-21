@@ -1,0 +1,26 @@
+[package]
+name = "evm2-fuzzer"
+description = "Differential fuzzing harness for evm2"
+
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+evm2.workspace = true
+alloy-consensus.workspace = true
+alloy-eips = { workspace = true, features = ["serde", "std"] }
+alloy-primitives = { workspace = true, features = ["serde", "std"] }
+clap = { version = "4.6", features = ["derive"] }
+revm = { version = "38", default-features = true }
+serde = { workspace = true, features = ["derive", "std"] }
+serde_json = { workspace = true, features = ["std"] }

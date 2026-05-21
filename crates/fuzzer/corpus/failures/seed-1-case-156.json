@@ -1,0 +1,36 @@
+{
+  "spec": "BERLIN",
+  "block": {
+    "number": "0x3441e",
+    "timestamp": "0x75ff5573",
+    "gas_limit": 30000000,
+    "basefee": 0
+  },
+  "tx": {
+    "caller": "0x1010101010101010101010101010101010101010",
+    "target": "0x2020202020202020202020202020202020202020",
+    "gas_limit": 100000,
+    "gas_price": 1,
+    "value": "0x0",
+    "input": "0xdb90ee1298c751d567350b30b3350d00dd9a36953fec3155884abb08f1a060529876a92bdefc4b0c",
+    "nonce": 0
+  },
+  "accounts": [
+    {
+      "address": "0x1010101010101010101010101010101010101010",
+      "balance": "0x100000000000000000000000000000000",
+      "nonce": 0,
+      "code": "0x",
+      "storage": {}
+    },
+    {
+      "address": "0x2020202020202020202020202020202020202020",
+      "balance": "0x0",
+      "nonce": 1,
+      "code": "0x600050601f54601f60605260403561e78a7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff55601f54610100547fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff60405261a73667ffffffffffffffff0436601f5145612d2c6001176001513361628a5438631dbf67ffffffffffffffff60205261c9616000556112e9619737116021604052610100602152366020611553025061d1455000",
+      "storage": {
+        "0x0": "0x704e"
+      }
+    }
+  ]
+}
