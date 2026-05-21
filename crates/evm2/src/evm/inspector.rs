@@ -74,13 +74,11 @@ pub trait Inspector<T: EvmTypes>: Any + Send {
 mod tests {
     use super::Inspector;
     use crate::{
-        BaseEvmConfigSelector, BaseEvmTypes, Evm, ExecutionConfig, Precompiles, SYSTEM_ADDRESS,
-        SpecId,
+        BaseEvmConfigSelector, ExecutionConfig, SpecId,
         bytecode::Bytecode,
         constants::CALL_DEPTH_LIMIT,
-        env::{BlockEnv, TxEnv},
-        ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
-        evm::{AccountInfo, InMemoryDB, SelfDestructResult},
+        env::TxEnv,
+        evm::SelfDestructResult,
         interpreter::{
             GasTracker, InstrStop, Interpreter, Message, MessageResult, Word,
             instructions::tests::{TestHost, TestTypes, push},
@@ -88,9 +86,22 @@ mod tests {
         },
         utils::address_to_word,
     };
-    use alloc::{sync::Arc, vec::Vec};
+    #[cfg(feature = "std")]
+    use crate::{
+        BaseEvmTypes, Evm, Precompiles, SYSTEM_ADDRESS,
+        env::BlockEnv,
+        ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
+        evm::{AccountInfo, InMemoryDB},
+    };
+    #[cfg(feature = "std")]
+    use alloc::sync::Arc;
+    use alloc::vec::Vec;
+    #[cfg(feature = "std")]
     use alloy_consensus::{TxLegacy, transaction::Recovered};
-    use alloy_primitives::{Address, Bytes, Log, TxKind, U256};
+    use alloy_primitives::{Address, Bytes, Log};
+    #[cfg(feature = "std")]
+    use alloy_primitives::{TxKind, U256};
+    #[cfg(feature = "std")]
     use std::sync::Mutex;
 
     #[derive(Default)]
@@ -323,6 +334,7 @@ mod tests {
     }
 
     #[derive(Default)]
+    #[cfg(feature = "std")]
     struct E2eState {
         initialized: usize,
         steps: usize,
@@ -332,8 +344,10 @@ mod tests {
         creates: usize,
     }
 
+    #[cfg(feature = "std")]
     struct SharedE2eInspector(Arc<Mutex<E2eState>>);
 
+    #[cfg(feature = "std")]
     impl Inspector<BaseEvmTypes> for SharedE2eInspector {
         fn initialize_interp(&mut self, _interp: &mut Interpreter<'_, BaseEvmTypes>) {
             self.0.lock().unwrap().initialized += 1;
@@ -762,6 +776,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "std")]
     fn evm_transaction_inspects_interpreter_steps_and_logs() {
         let caller = Address::from([0xaa; 20]);
         let contract = Address::from([0xbb; 20]);
@@ -807,6 +822,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "std")]
     fn evm_transaction_inspects_eip7708_transfer_log() {
         let caller = Address::from([0xaa; 20]);
         let target = Address::from([0xbb; 20]);
@@ -844,6 +860,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "std")]
     fn evm_create_transaction_initializes_interpreter_without_create_hook() {
         let caller = Address::from([0xaa; 20]);
         let mut database = InMemoryDB::default();
