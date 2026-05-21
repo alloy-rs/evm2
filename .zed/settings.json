@@ -3,9 +3,9 @@
     "rust-analyzer": {
       "initialization_options": {
         "cargo": {
-          "features": []
-        }
-      }
-    }
-  }
+          "features": ["std", "async"],
+        },
+      },
+    },
+  },
 }
