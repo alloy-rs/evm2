@@ -16,7 +16,7 @@ use core::{
     any::Any, fmt, future::Future, marker::PhantomData, pin::Pin, ptr::NonNull, task::Poll,
 };
 use corosensei::{Coroutine, CoroutineResult, Yielder, stack::DefaultStack};
-use std::{cell::Cell, error::Error, task::Context};
+use std::{cell::Cell, error::Error, io, task::Context};
 use tokio::{
     runtime::{Handle, Runtime},
     task,
@@ -44,20 +44,20 @@ pub enum AsyncError<E = core::convert::Infallible> {
     /// An async host operation was called outside an async EVM fiber.
     #[error("async host operation requires EVM async fiber execution")]
     NotOnFiber,
-    /// Blocking async I/O was requested outside a supported Tokio runtime.
-    #[error("async host operation requires a Tokio multi-thread runtime")]
-    Runtime,
+    /// Async fiber runtime setup failed.
+    #[error(transparent)]
+    Runtime(io::Error),
     /// The wrapped operation returned an error.
     #[error(transparent)]
     Inner(#[from] E),
 }
 
 impl AsyncError {
-    const fn with_inner_error<E>(self) -> AsyncError<E> {
+    fn with_inner_error<E>(self) -> AsyncError<E> {
         match self {
             Self::Cancelled => AsyncError::Cancelled,
             Self::NotOnFiber => AsyncError::NotOnFiber,
-            Self::Runtime => AsyncError::Runtime,
+            Self::Runtime(error) => AsyncError::Runtime(error),
             Self::Inner(error) => match error {},
         }
     }
@@ -186,7 +186,7 @@ unsafe impl<R: Send> Send for FiberFuture<'_, R> {}
 
 impl<'a, R> FiberFuture<'a, R> {
     fn new(stack_size: usize, func: impl FnOnce() -> R + 'a) -> AsyncResult<Self> {
-        let stack = DefaultStack::new(stack_size).map_err(fiber_error)?;
+        let stack = DefaultStack::new(stack_size).map_err(AsyncError::Runtime)?;
         let body = move |suspend: &Yielder<Resume, Yield>, resume| {
             let future_cx = resume?;
             let mut current = CurrentFiber {
@@ -325,7 +325,9 @@ where
     match mode {
         IoMode::Blocking => {
             let Some(runtime) = runtime else {
-                return Err(AsyncError::Runtime);
+                return Err(AsyncError::Runtime(io::Error::other(
+                    "async host operation requires a Tokio multi-thread runtime",
+                )));
             };
             Ok(runtime.block_on(future))
         }
@@ -368,10 +370,6 @@ unsafe fn erase_current_fiber_lifetime<'a>(
     unsafe {
         core::mem::transmute::<NonNull<CurrentFiber<'a>>, NonNull<CurrentFiber<'static>>>(fiber)
     }
-}
-
-fn fiber_error(_error: impl fmt::Display) -> AsyncError {
-    AsyncError::Runtime
 }
 
 /// Asynchronous backing database implementation.
