@@ -30,7 +30,7 @@ type EvmFiber<'a, R> = Fiber<'a, Resume, Yield, Complete<R>>;
 type EvmSuspend<R> = Suspend<Resume, Yield, Complete<R>>;
 
 thread_local! {
-    static CURRENT: Cell<Option<NonNull<dyn CurrentFiber>>> = const { Cell::new(None) };
+    static CURRENT: Cell<Option<NonNull<CurrentFiber<'static>>>> = const { Cell::new(None) };
 }
 
 /// Result type used by async EVM execution helpers.
@@ -54,29 +54,34 @@ pub enum AsyncError {
     Runtime(String),
 }
 
-trait CurrentFiber {
-    fn context(&mut self) -> &mut Context<'_>;
-
-    fn suspend(&mut self) -> AsyncResult<()>;
-
-    fn is_cancelled(&self) -> bool;
+trait FiberSuspend {
+    fn suspend(&mut self) -> Resume;
 }
 
-struct FiberContext<'a, R> {
-    suspend: &'a mut EvmSuspend<R>,
+impl<R> FiberSuspend for EvmSuspend<R> {
+    #[inline]
+    fn suspend(&mut self) -> Resume {
+        self.suspend(())
+    }
+}
+
+struct CurrentFiber<'a> {
+    suspend: NonNull<dyn FiberSuspend + 'a>,
     future_cx: Option<NonNull<Context<'static>>>,
     cancelled: bool,
 }
 
-impl<R> CurrentFiber for FiberContext<'_, R> {
+impl CurrentFiber<'_> {
+    #[inline]
     fn context(&mut self) -> &mut Context<'_> {
         let cx = self.future_cx.as_mut().expect("future context is not available");
         unsafe { restore_context_lifetime(cx.as_mut()) }
     }
 
+    #[inline]
     fn suspend(&mut self) -> AsyncResult<()> {
         self.future_cx = None;
-        match self.suspend.suspend(()) {
+        match unsafe { self.suspend.as_mut() }.suspend() {
             Ok(cx) => {
                 self.future_cx = Some(cx);
                 Ok(())
@@ -88,12 +93,13 @@ impl<R> CurrentFiber for FiberContext<'_, R> {
         }
     }
 
-    fn is_cancelled(&self) -> bool {
+    #[inline]
+    const fn is_cancelled(&self) -> bool {
         self.cancelled
     }
 }
 
-struct ResetCurrentFiber(Option<NonNull<dyn CurrentFiber>>);
+struct ResetCurrentFiber(Option<NonNull<CurrentFiber<'static>>>);
 
 impl Drop for ResetCurrentFiber {
     fn drop(&mut self) {
@@ -182,9 +188,12 @@ impl<'a, R> FiberFuture<'a, R> {
         let state = core::ptr::from_mut(state);
         let fiber = Fiber::new(stack, move |resume: Resume, suspend| {
             let future_cx = resume?;
-            let mut fiber_context =
-                FiberContext { suspend, future_cx: Some(future_cx), cancelled: false };
-            let current = NonNull::from(&mut fiber_context as &mut dyn CurrentFiber);
+            let mut current = CurrentFiber {
+                suspend: NonNull::from(suspend as &mut dyn FiberSuspend),
+                future_cx: Some(future_cx),
+                cancelled: false,
+            };
+            let current = NonNull::from(&mut current);
             let current = unsafe { erase_current_fiber_lifetime(current) };
             let previous = CURRENT.replace(Some(current));
             let _reset = ResetCurrentFiber(previous);
@@ -325,7 +334,7 @@ where
     }
 }
 
-fn with_current<R>(f: impl FnOnce(&mut dyn CurrentFiber) -> R) -> AsyncResult<R> {
+fn with_current<R>(f: impl FnOnce(&mut CurrentFiber<'_>) -> R) -> AsyncResult<R> {
     let mut current = CURRENT.get().ok_or(AsyncError::NotOnFiber)?;
     Ok(f(unsafe { current.as_mut() }))
 }
@@ -339,12 +348,10 @@ unsafe fn restore_context_lifetime<'a>(cx: &'a mut Context<'static>) -> &'a mut 
 }
 
 unsafe fn erase_current_fiber_lifetime<'a>(
-    fiber: NonNull<dyn CurrentFiber + 'a>,
-) -> NonNull<dyn CurrentFiber + 'static> {
+    fiber: NonNull<CurrentFiber<'a>>,
+) -> NonNull<CurrentFiber<'static>> {
     unsafe {
-        core::mem::transmute::<NonNull<dyn CurrentFiber + 'a>, NonNull<dyn CurrentFiber + 'static>>(
-            fiber,
-        )
+        core::mem::transmute::<NonNull<CurrentFiber<'a>>, NonNull<CurrentFiber<'static>>>(fiber)
     }
 }
 
