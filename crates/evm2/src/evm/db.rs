@@ -197,13 +197,6 @@ pub trait DynDatabase: Any + Send {
     fn error(&mut self, code: DbErrorCode) -> Box<dyn Error + Send> {
         db_error_unavailable(code)
     }
-
-    /// Sets the asynchronous database I/O mode, if supported by this database.
-    ///
-    /// Currently unused unless the `"async"` feature is enabled.
-    fn set_io_mode(&mut self, _io_mode: crate::IoMode) -> bool {
-        false
-    }
 }
 
 impl DynDatabase for Box<dyn DynDatabase> {
@@ -230,11 +223,6 @@ impl DynDatabase for Box<dyn DynDatabase> {
     #[inline]
     fn error(&mut self, code: DbErrorCode) -> Box<dyn Error + Send> {
         self.as_mut().error(code)
-    }
-
-    #[inline]
-    fn set_io_mode(&mut self, io_mode: crate::IoMode) -> bool {
-        self.as_mut().set_io_mode(io_mode)
     }
 }
 

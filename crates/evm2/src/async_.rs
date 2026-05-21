@@ -5,7 +5,6 @@
 //! suspended and the outer async task returns `Poll::Pending`.
 
 use crate::{
-    IoMode,
     bytecode::Bytecode,
     evm::{
         AccountInfo, DatabaseCommit, DbErrorCode, DbResult, DynDatabase, StateChanges,
@@ -35,7 +34,7 @@ thread_local! {
 }
 
 /// Result type used by async EVM execution helpers.
-pub type AsyncResult<T, E = core::convert::Infallible> = core::result::Result<T, AsyncError<E>>;
+pub type AsyncResult<T, E = core::convert::Infallible> = Result<T, AsyncError<E>>;
 
 /// Error returned by async EVM execution helpers.
 #[derive(Debug, thiserror::Error)]
@@ -116,7 +115,7 @@ impl Drop for ResetCurrentFiber {
 /// operations without blocking the executor thread.
 pub(crate) fn on_fiber_result<'a, R, E>(
     stack_size: usize,
-    func: impl FnOnce() -> core::result::Result<R, E> + 'a,
+    func: impl FnOnce() -> Result<R, E> + 'a,
 ) -> impl Future<Output = AsyncResult<R, E>> + Send + 'a
 where
     R: Send + 'a,
@@ -136,13 +135,13 @@ where
 }
 
 enum OnFiber<'a, R, E> {
-    Running(FiberFuture<'a, core::result::Result<R, E>>),
+    Running(FiberFuture<'a, Result<R, E>>),
     Error(Option<AsyncError>),
     Done,
 }
 
 impl<'a, R, E> OnFiber<'a, R, E> {
-    fn new(stack_size: usize, func: impl FnOnce() -> core::result::Result<R, E> + 'a) -> Self {
+    fn new(stack_size: usize, func: impl FnOnce() -> Result<R, E> + 'a) -> Self {
         match FiberFuture::new(stack_size, func) {
             Ok(fiber) => Self::Running(fiber),
             Err(error) => Self::Error(Some(error)),
@@ -311,37 +310,35 @@ impl HandleOrRuntime {
     }
 }
 
-fn block_on_runtime<F>(
-    mode: IoMode,
-    runtime: Option<&HandleOrRuntime>,
-    future: F,
-) -> AsyncResult<F::Output>
+fn block_on_runtime<F>(runtime: Option<&HandleOrRuntime>, future: F) -> AsyncResult<F::Output>
 where
     F: Future + Send,
     F::Output: Send,
 {
-    match mode {
-        IoMode::Blocking => {
-            let Some(runtime) = runtime else {
-                return Err(AsyncError::Runtime);
-            };
-            Ok(runtime.block_on(future))
-        }
-        IoMode::Async => block_on_current(future),
+    if CURRENT.get().is_some() {
+        return block_on_current(future);
     }
+
+    if let Some(runtime) = runtime {
+        return Ok(runtime.block_on(future));
+    }
+
+    let Some(runtime) = HandleOrRuntime::current() else {
+        return Err(AsyncError::Runtime);
+    };
+    Ok(runtime.block_on(future))
 }
 
 fn block_on_runtime_result<F, T, E>(
-    mode: IoMode,
     runtime: Option<&HandleOrRuntime>,
     future: F,
 ) -> AsyncResult<T, E>
 where
-    F: Future<Output = core::result::Result<T, E>> + Send,
+    F: Future<Output = Result<T, E>> + Send,
     T: Send,
     E: Send,
 {
-    match block_on_runtime(mode, runtime, future).map_err(AsyncError::with_inner_error)? {
+    match block_on_runtime(runtime, future).map_err(AsyncError::with_inner_error)? {
         Ok(value) => Ok(value),
         Err(error) => Err(AsyncError::Inner(error)),
     }
@@ -369,33 +366,32 @@ pub trait AsyncDatabase: Any + Send {
     fn get_account(
         &mut self,
         address: Address,
-    ) -> impl Future<Output = core::result::Result<Option<AccountInfo>, Self::Error>> + Send + '_;
+    ) -> impl Future<Output = Result<Option<AccountInfo>, Self::Error>> + Send + '_;
 
     /// Loads bytecode by code hash.
     fn get_code_by_hash(
         &mut self,
         code_hash: B256,
-    ) -> impl Future<Output = core::result::Result<Bytecode, Self::Error>> + Send + '_;
+    ) -> impl Future<Output = Result<Bytecode, Self::Error>> + Send + '_;
 
     /// Loads a persistent storage slot.
     fn get_storage(
         &mut self,
         address: Address,
         key: Word,
-    ) -> impl Future<Output = core::result::Result<Word, Self::Error>> + Send + '_;
+    ) -> impl Future<Output = Result<Word, Self::Error>> + Send + '_;
 
     /// Loads a historical block hash.
     fn get_block_hash(
         &mut self,
         number: Word,
-    ) -> impl Future<Output = core::result::Result<Option<B256>, Self::Error>> + Send + '_;
+    ) -> impl Future<Output = Result<Option<B256>, Self::Error>> + Send + '_;
 }
 
 /// Adapter that exposes an [`AsyncDatabase`] through the synchronous [`DynDatabase`] interface.
 pub struct AsyncDb<D: AsyncDatabase> {
     db: D,
     error: Option<Box<dyn Error + Send>>,
-    io_mode: IoMode,
     runtime: Option<HandleOrRuntime>,
 }
 
@@ -403,42 +399,27 @@ impl<D: AsyncDatabase> AsyncDb<D> {
     /// Creates a new async database adapter.
     #[inline]
     pub const fn new(db: D) -> Self {
-        Self { db, error: None, io_mode: IoMode::Async, runtime: None }
+        Self { db, error: None, runtime: None }
     }
 
-    /// Creates a new blocking async database adapter using the current Tokio runtime handle.
+    /// Creates a new async database adapter using the current Tokio runtime handle.
     ///
     /// Returns `None` if no Tokio runtime is available or the current runtime is current-threaded.
     #[inline]
     pub fn blocking(db: D) -> Option<Self> {
-        Some(Self {
-            db,
-            error: None,
-            io_mode: IoMode::Blocking,
-            runtime: Some(HandleOrRuntime::current()?),
-        })
+        Some(Self { db, error: None, runtime: Some(HandleOrRuntime::current()?) })
     }
 
-    /// Creates a new blocking async database adapter with a Tokio runtime.
+    /// Creates a new async database adapter with a Tokio runtime.
     #[inline]
     pub const fn with_runtime(db: D, runtime: Runtime) -> Self {
-        Self {
-            db,
-            error: None,
-            io_mode: IoMode::Blocking,
-            runtime: Some(HandleOrRuntime::Runtime(runtime)),
-        }
+        Self { db, error: None, runtime: Some(HandleOrRuntime::Runtime(runtime)) }
     }
 
-    /// Creates a new blocking async database adapter with a Tokio runtime handle.
+    /// Creates a new async database adapter with a Tokio runtime handle.
     #[inline]
     pub const fn with_handle(db: D, handle: Handle) -> Self {
-        Self {
-            db,
-            error: None,
-            io_mode: IoMode::Blocking,
-            runtime: Some(HandleOrRuntime::Handle(handle)),
-        }
+        Self { db, error: None, runtime: Some(HandleOrRuntime::Handle(handle)) }
     }
 
     /// Returns the wrapped database.
@@ -491,8 +472,8 @@ impl<D: AsyncDatabase> DynDatabase for AsyncDb<D> {
     #[inline]
     fn get_account(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
         let result = {
-            let Self { db, io_mode, runtime, .. } = self;
-            block_on_runtime_result(*io_mode, runtime.as_ref(), db.get_account(*address))
+            let Self { db, runtime, .. } = self;
+            block_on_runtime_result(runtime.as_ref(), db.get_account(*address))
         };
         self.database_result(result)
     }
@@ -500,8 +481,8 @@ impl<D: AsyncDatabase> DynDatabase for AsyncDb<D> {
     #[inline]
     fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<Bytecode> {
         let result = {
-            let Self { db, io_mode, runtime, .. } = self;
-            block_on_runtime_result(*io_mode, runtime.as_ref(), db.get_code_by_hash(*code_hash))
+            let Self { db, runtime, .. } = self;
+            block_on_runtime_result(runtime.as_ref(), db.get_code_by_hash(*code_hash))
         };
         self.database_result(result)
     }
@@ -509,8 +490,8 @@ impl<D: AsyncDatabase> DynDatabase for AsyncDb<D> {
     #[inline]
     fn get_storage(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
         let result = {
-            let Self { db, io_mode, runtime, .. } = self;
-            block_on_runtime_result(*io_mode, runtime.as_ref(), db.get_storage(*address, *key))
+            let Self { db, runtime, .. } = self;
+            block_on_runtime_result(runtime.as_ref(), db.get_storage(*address, *key))
         };
         self.database_result(result)
     }
@@ -518,8 +499,8 @@ impl<D: AsyncDatabase> DynDatabase for AsyncDb<D> {
     #[inline]
     fn get_block_hash(&mut self, number: &Word) -> DbResult<Option<B256>> {
         let result = {
-            let Self { db, io_mode, runtime, .. } = self;
-            block_on_runtime_result(*io_mode, runtime.as_ref(), db.get_block_hash(*number))
+            let Self { db, runtime, .. } = self;
+            block_on_runtime_result(runtime.as_ref(), db.get_block_hash(*number))
         };
         self.database_result(result)
     }
@@ -532,21 +513,6 @@ impl<D: AsyncDatabase> DynDatabase for AsyncDb<D> {
             return error;
         }
         db_error_unavailable(code)
-    }
-
-    #[inline]
-    fn set_io_mode(&mut self, io_mode: IoMode) -> bool {
-        if matches!(io_mode, IoMode::Blocking)
-            && self.runtime.is_none()
-            && let Some(runtime) = HandleOrRuntime::current()
-        {
-            self.runtime = Some(runtime);
-        }
-        if matches!(io_mode, IoMode::Blocking) && self.runtime.is_none() {
-            return false;
-        }
-        self.io_mode = io_mode;
-        true
     }
 }
 
@@ -561,7 +527,7 @@ impl<D: AsyncDatabase + fmt::Debug> fmt::Debug for AsyncDb<D> {
 mod tests {
     use super::{AsyncDatabase, AsyncDb, AsyncError, block_on_current, on_fiber};
     use crate::{
-        BaseEvmTypes, Evm, ExecutionConfig, IoMode, Precompiles, SpecId, TxResult, Version,
+        BaseEvmTypes, Evm, Precompiles, SpecId, TxResult, Version,
         bytecode::Bytecode,
         env::BlockEnv,
         evm::{DynDatabase, InMemoryDB},
@@ -682,14 +648,13 @@ mod tests {
     }
 
     #[test]
-    fn blocking_io_mode_blocks_with_tokio_when_not_on_fiber() {
+    fn synchronous_database_blocks_with_current_tokio_runtime() {
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let _guard = runtime.enter();
         let mut db = AsyncDb::new(TokioDb);
         let address = Address::ZERO;
         let key = Word::from(7);
 
-        assert!(DynDatabase::set_io_mode(&mut db, IoMode::Blocking));
         let value = DynDatabase::get_storage(&mut db, &address, &key).unwrap();
 
         assert_eq!(value, Word::from(9));
@@ -709,7 +674,7 @@ mod tests {
     }
 
     #[test]
-    fn blocking_io_mode_blocks_with_stored_tokio_runtime() {
+    fn synchronous_database_blocks_with_stored_tokio_runtime() {
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let mut db = AsyncDb::with_runtime(TokioDb, runtime);
         let address = Address::ZERO;
@@ -721,40 +686,23 @@ mod tests {
     }
 
     #[test]
-    fn blocking_io_mode_requires_runtime_handle() {
+    fn synchronous_database_requires_runtime_handle() {
         let mut db = AsyncDb::new(TestDb);
+        let address = Address::ZERO;
+        let key = Word::from(7);
+        let code = DynDatabase::get_storage(&mut db, &address, &key).unwrap_err();
 
-        assert!(!DynDatabase::set_io_mode(&mut db, IoMode::Blocking));
+        assert_eq!(
+            db.error(code).to_string(),
+            "async host operation requires a Tokio multi-thread runtime"
+        );
     }
 
     #[test]
-    fn evm_sets_async_database_io_mode() {
+    fn synchronous_evm_database_blocks_with_current_tokio_runtime() {
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let _guard = runtime.enter();
         let mut evm = Evm::<BaseEvmTypes>::new(
-            SpecId::OSAKA,
-            BlockEnv::default(),
-            TxRegistry::new(),
-            AsyncDb::new(TokioDb),
-            Precompiles::base(SpecId::OSAKA),
-        );
-        let address = Address::ZERO;
-        let key = Word::from(7);
-
-        assert!(evm.set_io_mode(IoMode::Blocking));
-        let value = evm.database_mut().get_storage(&address, &key).unwrap();
-
-        assert_eq!(value, Word::from(9));
-    }
-
-    #[test]
-    fn evm_applies_version_io_mode_to_async_database() {
-        let runtime = tokio::runtime::Runtime::new().unwrap();
-        let _guard = runtime.enter();
-        let mut version = Version::new(SpecId::OSAKA);
-        version.io_mode = IoMode::Blocking;
-        let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
-            ExecutionConfig::for_spec_and_version(SpecId::OSAKA, version),
             SpecId::OSAKA,
             BlockEnv::default(),
             TxRegistry::new(),
@@ -788,19 +736,6 @@ mod tests {
     }
 
     #[test]
-    fn async_io_mode_requires_fiber() {
-        let mut db = AsyncDb::new(TestDb);
-        let address = Address::ZERO;
-        let key = Word::from(7);
-        let code = DynDatabase::get_storage(&mut db, &address, &key).unwrap_err();
-
-        assert_eq!(
-            db.error(code).to_string(),
-            "async host operation requires EVM async fiber execution"
-        );
-    }
-
-    #[test]
     fn dropping_fiber_cancels_blocked_future() {
         let mut saw_cancel = false;
         {
@@ -816,10 +751,9 @@ mod tests {
     }
 
     #[test]
-    fn version_defaults_async_io_mode_and_stack_size() {
+    fn version_defaults_async_stack_size() {
         let version = Version::new(SpecId::OSAKA);
 
-        assert_eq!(version.io_mode, IoMode::Async);
         assert_eq!(version.min_stack_size, 1024 * 1024);
     }
 

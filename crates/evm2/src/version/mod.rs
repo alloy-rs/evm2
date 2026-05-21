@@ -19,18 +19,6 @@ pub use features::EvmFeatures;
 mod opcode_config;
 pub use opcode_config::OpcodeConfig;
 
-/// How async database I/O should be driven from synchronous EVM host calls.
-///
-/// Currently unused unless the `"async"` feature is enabled.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub enum IoMode {
-    /// Block the current Tokio worker with `block_in_place`.
-    Blocking,
-    /// Suspend the EVM fiber while database I/O is pending.
-    #[default]
-    Async,
-}
-
 /// Runtime configuration data.
 ///
 /// The name is a bit misleading: this is a catch-all runtime configuration object. It stores fork
@@ -64,10 +52,6 @@ pub struct Version {
     pub blob_base_fee_update_fraction: u64,
 
     // Implementation config.
-    /// Async database I/O mode.
-    ///
-    /// Currently unused unless the `"async"` feature is enabled.
-    pub io_mode: IoMode,
     /// Minimum async EVM fiber stack size in bytes.
     ///
     /// Currently unused unless the `"async"` feature is enabled.
@@ -144,7 +128,6 @@ static BASE_VERSIONS: [Version; SpecId::COUNT] = {
             max_initcode_size: MAX_INITCODE_SIZE,
             max_blobs_per_tx: MAX_BLOBS_PER_BLOCK_DENCUN,
             blob_base_fee_update_fraction: BLOB_BASE_FEE_UPDATE_FRACTION_CANCUN,
-            io_mode: IoMode::Async,
             min_stack_size: DEFAULT_MIN_STACK_SIZE,
             _non_exhaustive: (),
         }
@@ -163,7 +146,6 @@ static BASE_VERSIONS: [Version; SpecId::COUNT] = {
             max_initcode_size: base_max_initcode_size(spec_id),
             max_blobs_per_tx: base_max_blobs_per_tx(spec_id),
             blob_base_fee_update_fraction: base_blob_base_fee_update_fraction(spec_id),
-            io_mode: IoMode::Async,
             min_stack_size: DEFAULT_MIN_STACK_SIZE,
             _non_exhaustive: (),
         };

@@ -38,7 +38,7 @@ pub use async_::{AsyncDatabase, AsyncDb, AsyncError, AsyncResult};
 pub(crate) mod trustme;
 
 pub mod version;
-pub use version::{EvmFeatures, IoMode, OpcodeConfig, Version};
+pub use version::{EvmFeatures, OpcodeConfig, Version};
 
 mod spec_id;
 pub use spec_id::SpecId;
