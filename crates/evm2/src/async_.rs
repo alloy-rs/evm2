@@ -19,10 +19,7 @@ use core::{
 };
 use corosensei::{Coroutine, CoroutineResult, Yielder, stack::DefaultStack};
 use std::{cell::Cell, error::Error, io, task::Context};
-use tokio::{
-    runtime::{Handle, Runtime},
-    task,
-};
+use tokio::{runtime::Handle, task};
 
 type Resume = AsyncResult<NonNull<Context<'static>>>;
 type Yield = ();
@@ -355,54 +352,36 @@ pub(crate) fn block_on_current<F: Future>(future: F) -> AsyncResult<F::Output> {
     }
 }
 
-#[derive(Debug)]
-enum HandleOrRuntime {
-    Handle(Handle),
-    Runtime(Runtime),
-}
-
-impl HandleOrRuntime {
-    #[inline]
-    fn current() -> Option<Self> {
-        match Handle::try_current() {
-            Ok(handle) => match handle.runtime_flavor() {
-                tokio::runtime::RuntimeFlavor::CurrentThread => None,
-                _ => Some(Self::Handle(handle)),
-            },
-            Err(_) => None,
-        }
-    }
-
-    #[inline]
-    fn block_on<F>(&self, future: F) -> F::Output
-    where
-        F: Future + Send,
-        F::Output: Send,
-    {
-        match self {
-            Self::Handle(handle) => {
-                let should_use_block_in_place = Handle::try_current()
-                    .ok()
-                    .map(|current| {
-                        !matches!(
-                            current.runtime_flavor(),
-                            tokio::runtime::RuntimeFlavor::CurrentThread
-                        )
-                    })
-                    .unwrap_or(false);
-
-                if should_use_block_in_place {
-                    task::block_in_place(move || handle.block_on(future))
-                } else {
-                    handle.block_on(future)
-                }
-            }
-            Self::Runtime(runtime) => runtime.block_on(future),
-        }
+fn current_tokio_handle() -> Option<Handle> {
+    match Handle::try_current() {
+        Ok(handle) => match handle.runtime_flavor() {
+            tokio::runtime::RuntimeFlavor::CurrentThread => None,
+            _ => Some(handle),
+        },
+        Err(_) => None,
     }
 }
 
-fn block_on_runtime<F>(runtime: Option<&HandleOrRuntime>, future: F) -> AsyncResult<F::Output>
+fn block_on_handle<F>(handle: &Handle, future: F) -> F::Output
+where
+    F: Future + Send,
+    F::Output: Send,
+{
+    let should_use_block_in_place = Handle::try_current()
+        .ok()
+        .map(|current| {
+            !matches!(current.runtime_flavor(), tokio::runtime::RuntimeFlavor::CurrentThread)
+        })
+        .unwrap_or(false);
+
+    if should_use_block_in_place {
+        task::block_in_place(move || handle.block_on(future))
+    } else {
+        handle.block_on(future)
+    }
+}
+
+fn block_on_runtime<F>(runtime: Option<&Handle>, future: F) -> AsyncResult<F::Output>
 where
     F: Future + Send,
     F::Output: Send,
@@ -412,16 +391,13 @@ where
     }
 
     if let Some(runtime) = runtime {
-        return Ok(runtime.block_on(future));
+        return Ok(block_on_handle(runtime, future));
     }
 
     Err(AsyncError::Runtime)
 }
 
-fn block_on_runtime_result<F, T, E>(
-    runtime: Option<&HandleOrRuntime>,
-    future: F,
-) -> AsyncResult<T, E>
+fn block_on_runtime_result<F, T, E>(runtime: Option<&Handle>, future: F) -> AsyncResult<T, E>
 where
     F: Future<Output = Result<T, E>> + Send,
     T: Send,
@@ -481,7 +457,7 @@ pub trait AsyncDatabase: Any + Send {
 pub struct AsyncDb<D: AsyncDatabase> {
     db: D,
     error: Option<Box<dyn Error + Send>>,
-    runtime: Option<HandleOrRuntime>,
+    runtime: Option<Handle>,
 }
 
 impl<D: AsyncDatabase> AsyncDb<D> {
@@ -490,7 +466,7 @@ impl<D: AsyncDatabase> AsyncDb<D> {
     /// This captures the current Tokio runtime handle when one is available.
     #[inline]
     pub fn new(db: D) -> Self {
-        Self { db, error: None, runtime: HandleOrRuntime::current() }
+        Self { db, error: None, runtime: current_tokio_handle() }
     }
 
     /// Creates a new async database adapter using the current Tokio runtime handle.
@@ -498,19 +474,13 @@ impl<D: AsyncDatabase> AsyncDb<D> {
     /// Returns `None` if no Tokio runtime is available or the current runtime is current-threaded.
     #[inline]
     pub fn blocking(db: D) -> Option<Self> {
-        Some(Self { db, error: None, runtime: Some(HandleOrRuntime::current()?) })
-    }
-
-    /// Creates a new async database adapter with a Tokio runtime.
-    #[inline]
-    pub fn with_tokio_runtime(db: D, runtime: Runtime) -> Self {
-        Self { db, error: None, runtime: Some(HandleOrRuntime::Runtime(runtime)) }
+        Some(Self { db, error: None, runtime: Some(current_tokio_handle()?) })
     }
 
     /// Creates a new async database adapter with a Tokio runtime handle.
     #[inline]
     pub fn with_tokio_handle(db: D, handle: Handle) -> Self {
-        Self { db, error: None, runtime: Some(HandleOrRuntime::Handle(handle)) }
+        Self { db, error: None, runtime: Some(handle) }
     }
 
     /// Returns the wrapped database.
@@ -785,9 +755,9 @@ mod tests {
     }
 
     #[test]
-    fn synchronous_database_blocks_with_stored_tokio_runtime() {
+    fn synchronous_database_blocks_with_stored_tokio_handle() {
         let runtime = tokio::runtime::Runtime::new().unwrap();
-        let mut db = AsyncDb::with_tokio_runtime(TokioDb, runtime);
+        let mut db = AsyncDb::with_tokio_handle(TokioDb, runtime.handle().clone());
         let address = Address::ZERO;
         let key = Word::from(7);
 
