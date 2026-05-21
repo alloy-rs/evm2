@@ -238,12 +238,20 @@ where
 {
     let mut future = core::pin::pin!(future);
     loop {
-        if with_current(|current| current.is_cancelled())? {
-            return Err(AsyncError::Cancelled);
-        }
-        match with_current(|current| future.as_mut().poll(current.context()))? {
+        match with_current(|current| {
+            if current.is_cancelled() {
+                return Err(AsyncError::Cancelled);
+            }
+            match future.as_mut().poll(current.context()) {
+                Poll::Ready(value) => Ok(Poll::Ready(value)),
+                Poll::Pending => {
+                    current.suspend()?;
+                    Ok(Poll::Pending)
+                }
+            }
+        })?? {
             Poll::Ready(value) => return Ok(value),
-            Poll::Pending => with_current(|current| current.suspend())??,
+            Poll::Pending => {}
         }
     }
 }
