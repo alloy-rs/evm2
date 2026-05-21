@@ -105,15 +105,57 @@ impl Drop for ResetCurrentFiber {
 ///
 /// Synchronous code running inside `func` may call [`block_on_current`] to wait for async host
 /// operations without blocking the executor thread.
-pub(crate) async fn on_fiber<S, R>(
-    state: &mut S,
+pub(crate) fn on_fiber<'a, S, R>(
+    state: &'a mut S,
     stack_size: usize,
-    func: impl FnOnce(&mut S) -> R,
-) -> AsyncResult<R>
+    func: impl FnOnce(&mut S) -> R + 'a,
+) -> impl Future<Output = AsyncResult<R>> + Send + 'a
 where
     S: ?Sized,
+    R: Send + 'a,
 {
-    FiberFuture::new(state, stack_size, func)?.await
+    OnFiber::new(state, stack_size, func)
+}
+
+enum OnFiber<'a, R> {
+    Running(FiberFuture<'a, R>),
+    Error(Option<AsyncError>),
+    Done,
+}
+
+impl<R> Unpin for OnFiber<'_, R> {}
+
+impl<'a, R> OnFiber<'a, R> {
+    fn new<S>(state: &'a mut S, stack_size: usize, func: impl FnOnce(&mut S) -> R + 'a) -> Self
+    where
+        S: ?Sized,
+    {
+        match FiberFuture::new(state, stack_size, func) {
+            Ok(fiber) => Self::Running(fiber),
+            Err(error) => Self::Error(Some(error)),
+        }
+    }
+}
+
+impl<R> Future for OnFiber<'_, R> {
+    type Output = AsyncResult<R>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        match this {
+            Self::Running(fiber) => match Pin::new(fiber).poll(cx) {
+                Poll::Ready(result) => {
+                    *this = Self::Done;
+                    Poll::Ready(result)
+                }
+                Poll::Pending => Poll::Pending,
+            },
+            Self::Error(error) => {
+                Poll::Ready(Err(error.take().expect("async EVM fiber error already returned")))
+            }
+            Self::Done => panic!("async EVM fiber polled after completion"),
+        }
+    }
 }
 
 struct FiberFuture<'a, R> {
@@ -633,8 +675,10 @@ mod tests {
         assert_eq!(result.gas_used, 42);
     }
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn blocking_io_mode_blocks_with_tokio_when_not_on_fiber() {
+    #[test]
+    fn blocking_io_mode_blocks_with_tokio_when_not_on_fiber() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let _guard = runtime.enter();
         let mut db = AsyncDb::new(TokioDb);
         let address = Address::ZERO;
         let key = Word::from(7);
@@ -645,8 +689,10 @@ mod tests {
         assert_eq!(value, Word::from(9));
     }
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn blocking_constructor_uses_current_tokio_runtime() {
+    #[test]
+    fn blocking_constructor_uses_current_tokio_runtime() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let _guard = runtime.enter();
         let mut db = AsyncDb::blocking(TokioDb).unwrap();
         let address = Address::ZERO;
         let key = Word::from(7);
@@ -675,8 +721,10 @@ mod tests {
         assert!(!DynDatabase::set_io_mode(&mut db, IoMode::Blocking));
     }
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn evm_sets_async_database_io_mode() {
+    #[test]
+    fn evm_sets_async_database_io_mode() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let _guard = runtime.enter();
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
             BlockEnv::default(),
@@ -693,8 +741,10 @@ mod tests {
         assert_eq!(value, Word::from(9));
     }
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn evm_applies_version_io_mode_to_async_database() {
+    #[test]
+    fn evm_applies_version_io_mode_to_async_database() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let _guard = runtime.enter();
         let mut version = Version::new(SpecId::OSAKA);
         version.io_mode = IoMode::Blocking;
         let mut evm = Evm::<BaseEvmTypes>::new_with_execution_config(
@@ -832,27 +882,34 @@ mod tests {
     impl AsyncDatabase for TestDb {
         type Error = Infallible;
 
-        async fn get_account(
+        fn get_account(
             &mut self,
             _address: Address,
-        ) -> Result<Option<crate::evm::AccountInfo>, Self::Error> {
-            Ok(None)
+        ) -> impl Future<Output = Result<Option<crate::evm::AccountInfo>, Self::Error>> + Send + '_
+        {
+            core::future::ready(Ok(None))
         }
 
-        async fn get_code_by_hash(&mut self, _code_hash: B256) -> Result<Bytecode, Self::Error> {
-            Ok(Bytecode::default())
+        fn get_code_by_hash(
+            &mut self,
+            _code_hash: B256,
+        ) -> impl Future<Output = Result<Bytecode, Self::Error>> + Send + '_ {
+            core::future::ready(Ok(Bytecode::default()))
         }
 
-        async fn get_storage(
+        fn get_storage(
             &mut self,
             _address: Address,
             _key: Word,
-        ) -> Result<Word, Self::Error> {
-            Ok(Word::from(9))
+        ) -> impl Future<Output = Result<Word, Self::Error>> + Send + '_ {
+            core::future::ready(Ok(Word::from(9)))
         }
 
-        async fn get_block_hash(&mut self, _number: Word) -> Result<Option<B256>, Self::Error> {
-            Ok(None)
+        fn get_block_hash(
+            &mut self,
+            _number: Word,
+        ) -> impl Future<Output = Result<Option<B256>, Self::Error>> + Send + '_ {
+            core::future::ready(Ok(None))
         }
     }
 
@@ -863,28 +920,34 @@ mod tests {
     impl AsyncDatabase for PendingDb {
         type Error = Infallible;
 
-        async fn get_account(
+        fn get_account(
             &mut self,
             _address: Address,
-        ) -> Result<Option<crate::evm::AccountInfo>, Self::Error> {
-            Ok(None)
+        ) -> impl Future<Output = Result<Option<crate::evm::AccountInfo>, Self::Error>> + Send + '_
+        {
+            core::future::ready(Ok(None))
         }
 
-        async fn get_code_by_hash(&mut self, _code_hash: B256) -> Result<Bytecode, Self::Error> {
-            Ok(Bytecode::default())
+        fn get_code_by_hash(
+            &mut self,
+            _code_hash: B256,
+        ) -> impl Future<Output = Result<Bytecode, Self::Error>> + Send + '_ {
+            core::future::ready(Ok(Bytecode::default()))
         }
 
-        async fn get_storage(
+        fn get_storage(
             &mut self,
             _address: Address,
             _key: Word,
-        ) -> Result<Word, Self::Error> {
-            PendingStorage { pending: &mut self.pending }.await;
-            Ok(Word::from(9))
+        ) -> impl Future<Output = Result<Word, Self::Error>> + Send + '_ {
+            PendingStorage { pending: &mut self.pending }
         }
 
-        async fn get_block_hash(&mut self, _number: Word) -> Result<Option<B256>, Self::Error> {
-            Ok(None)
+        fn get_block_hash(
+            &mut self,
+            _number: Word,
+        ) -> impl Future<Output = Result<Option<B256>, Self::Error>> + Send + '_ {
+            core::future::ready(Ok(None))
         }
     }
 
@@ -893,14 +956,14 @@ mod tests {
     }
 
     impl Future for PendingStorage<'_> {
-        type Output = ();
+        type Output = Result<Word, Infallible>;
 
         fn poll(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
             if *self.pending {
                 *self.pending = false;
                 Poll::Pending
             } else {
-                Poll::Ready(())
+                Poll::Ready(Ok(Word::from(9)))
             }
         }
     }
@@ -910,27 +973,59 @@ mod tests {
     impl AsyncDatabase for FailingDb {
         type Error = TestError;
 
-        async fn get_account(
+        fn get_account(
             &mut self,
             _address: Address,
-        ) -> Result<Option<crate::evm::AccountInfo>, Self::Error> {
-            Ok(None)
+        ) -> impl Future<Output = Result<Option<crate::evm::AccountInfo>, Self::Error>> + Send + '_
+        {
+            core::future::ready(Ok(None))
         }
 
-        async fn get_code_by_hash(&mut self, _code_hash: B256) -> Result<Bytecode, Self::Error> {
-            Ok(Bytecode::default())
+        fn get_code_by_hash(
+            &mut self,
+            _code_hash: B256,
+        ) -> impl Future<Output = Result<Bytecode, Self::Error>> + Send + '_ {
+            core::future::ready(Ok(Bytecode::default()))
         }
 
-        async fn get_storage(
+        fn get_storage(
             &mut self,
             _address: Address,
             _key: Word,
-        ) -> Result<Word, Self::Error> {
-            Err(TestError)
+        ) -> impl Future<Output = Result<Word, Self::Error>> + Send + '_ {
+            core::future::ready(Err(TestError))
         }
 
-        async fn get_block_hash(&mut self, _number: Word) -> Result<Option<B256>, Self::Error> {
-            Ok(None)
+        fn get_block_hash(
+            &mut self,
+            _number: Word,
+        ) -> impl Future<Output = Result<Option<B256>, Self::Error>> + Send + '_ {
+            core::future::ready(Ok(None))
+        }
+    }
+
+    struct YieldOnce<T> {
+        value: Option<T>,
+        pending: bool,
+    }
+
+    impl<T> YieldOnce<T> {
+        fn new(value: T) -> Self {
+            Self { value: Some(value), pending: true }
+        }
+    }
+
+    impl<T: Unpin> Future for YieldOnce<T> {
+        type Output = T;
+
+        fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+            if self.pending {
+                self.pending = false;
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            } else {
+                Poll::Ready(self.value.take().expect("yield future polled after completion"))
+            }
         }
     }
 
@@ -939,31 +1034,34 @@ mod tests {
     impl AsyncDatabase for TokioDb {
         type Error = Infallible;
 
-        async fn get_account(
+        fn get_account(
             &mut self,
             _address: Address,
-        ) -> Result<Option<crate::evm::AccountInfo>, Self::Error> {
-            tokio::task::yield_now().await;
-            Ok(None)
+        ) -> impl Future<Output = Result<Option<crate::evm::AccountInfo>, Self::Error>> + Send + '_
+        {
+            YieldOnce::new(Ok(None))
         }
 
-        async fn get_code_by_hash(&mut self, _code_hash: B256) -> Result<Bytecode, Self::Error> {
-            tokio::task::yield_now().await;
-            Ok(Bytecode::default())
+        fn get_code_by_hash(
+            &mut self,
+            _code_hash: B256,
+        ) -> impl Future<Output = Result<Bytecode, Self::Error>> + Send + '_ {
+            YieldOnce::new(Ok(Bytecode::default()))
         }
 
-        async fn get_storage(
+        fn get_storage(
             &mut self,
             _address: Address,
             _key: Word,
-        ) -> Result<Word, Self::Error> {
-            tokio::task::yield_now().await;
-            Ok(Word::from(9))
+        ) -> impl Future<Output = Result<Word, Self::Error>> + Send + '_ {
+            YieldOnce::new(Ok(Word::from(9)))
         }
 
-        async fn get_block_hash(&mut self, _number: Word) -> Result<Option<B256>, Self::Error> {
-            tokio::task::yield_now().await;
-            Ok(None)
+        fn get_block_hash(
+            &mut self,
+            _number: Word,
+        ) -> impl Future<Output = Result<Option<B256>, Self::Error>> + Send + '_ {
+            YieldOnce::new(Ok(None))
         }
     }
 

@@ -47,16 +47,18 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     /// fiber.
     #[cfg(feature = "async")]
     #[inline]
-    pub async fn system_call_async(
+    pub fn system_call_async(
         &mut self,
         system_contract_address: Address,
         data: Bytes,
-    ) -> crate::AsyncResult<TxResult<T>> {
+    ) -> impl core::future::Future<Output = crate::AsyncResult<TxResult<T>>> + Send + '_
+    where
+        T::TxResultExt: Send,
+    {
         let stack_size = self.version().min_stack_size;
-        crate::async_::on_fiber(self, stack_size, |evm| {
+        crate::async_::on_fiber(self, stack_size, move |evm| {
             evm.system_call(system_contract_address, data)
         })
-        .await
     }
 
     /// Executes a system call from `caller` to `system_contract_address`.
@@ -126,17 +128,19 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     /// Executes a system call from `caller` to `system_contract_address` on an async fiber.
     #[cfg(feature = "async")]
     #[inline]
-    pub async fn system_call_with_caller_async(
+    pub fn system_call_with_caller_async(
         &mut self,
         caller: Address,
         system_contract_address: Address,
         data: Bytes,
-    ) -> crate::AsyncResult<TxResult<T>> {
+    ) -> impl core::future::Future<Output = crate::AsyncResult<TxResult<T>>> + Send + '_
+    where
+        T::TxResultExt: Send,
+    {
         let stack_size = self.version().min_stack_size;
-        crate::async_::on_fiber(self, stack_size, |evm| {
+        crate::async_::on_fiber(self, stack_size, move |evm| {
             evm.system_call_with_caller(caller, system_contract_address, data)
         })
-        .await
     }
 }
 
