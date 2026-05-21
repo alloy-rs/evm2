@@ -188,7 +188,7 @@ impl<R, E> Future for OnFiber<'_, R, E> {
 }
 
 struct FiberFuture<'a, R> {
-    fiber: Option<EvmFiber<R>>,
+    fiber: EvmFiber<R>,
     _marker: PhantomData<&'a mut R>,
 }
 
@@ -227,7 +227,7 @@ impl<'a, R> FiberFuture<'a, R> {
         // SAFETY: The coroutine is stored inside `FiberFuture<'a, R>`, which is tied to the
         // borrowed state lifetime and dropped before those borrows can expire.
         let fiber = unsafe { Coroutine::with_stack_unchecked(stack, body) };
-        Ok(Self { fiber: Some(fiber), _marker: PhantomData })
+        Ok(Self { fiber, _marker: PhantomData })
     }
 }
 
@@ -237,12 +237,8 @@ impl<R> Future for FiberFuture<'_, R> {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
         let cx = NonNull::from(unsafe { change_context_lifetime(cx) });
-        let fiber = this.fiber.as_mut().expect("async EVM fiber already completed");
-        match fiber.resume(Ok(cx)) {
-            CoroutineResult::Return(result) => {
-                this.fiber = None;
-                Poll::Ready(result)
-            }
+        match this.fiber.resume(Ok(cx)) {
+            CoroutineResult::Return(result) => Poll::Ready(result),
             CoroutineResult::Yield(()) => Poll::Pending,
         }
     }
@@ -250,16 +246,13 @@ impl<R> Future for FiberFuture<'_, R> {
 
 impl<R> Drop for FiberFuture<'_, R> {
     fn drop(&mut self) {
-        let Some(mut fiber) = self.fiber.take() else {
-            return;
-        };
-        if fiber.done() {
+        if self.fiber.done() {
             return;
         }
-        if matches!(fiber.resume(Err(AsyncError::Cancelled)), CoroutineResult::Yield(())) {
+        if matches!(self.fiber.resume(Err(AsyncError::Cancelled)), CoroutineResult::Yield(())) {
             // SAFETY: Cancellation already gave the coroutine a chance to return normally. If it
             // yields again, the stack is no longer useful to this future.
-            unsafe { fiber.force_reset() };
+            unsafe { self.fiber.force_reset() };
         }
     }
 }
