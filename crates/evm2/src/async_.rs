@@ -12,19 +12,20 @@ use crate::{
 };
 use alloc::boxed::Box;
 use alloy_primitives::{Address, B256};
-use core::{any::Any, fmt, future::Future, pin::Pin, ptr::NonNull, task::Poll};
+use core::{
+    any::Any, fmt, future::Future, marker::PhantomData, pin::Pin, ptr::NonNull, task::Poll,
+};
+use corosensei::{Coroutine, CoroutineResult, Yielder, stack::DefaultStack};
 use std::{cell::Cell, error::Error, task::Context};
 use tokio::{
     runtime::{Handle, Runtime},
     task,
 };
-use wasmtime_fiber::{Fiber, FiberStack, Suspend};
 
 type Resume = AsyncResult<NonNull<Context<'static>>>;
 type Yield = ();
 type Complete<R> = AsyncResult<R>;
-type EvmFiber<'a, R> = Fiber<'a, Resume, Yield, Complete<R>>;
-type EvmSuspend<R> = Suspend<Resume, Yield, Complete<R>>;
+type EvmFiber<R> = Coroutine<Resume, Yield, Complete<R>, DefaultStack>;
 
 thread_local! {
     static CURRENT: Cell<Option<NonNull<CurrentFiber<'static>>>> = const { Cell::new(None) };
@@ -62,19 +63,9 @@ impl AsyncError {
     }
 }
 
-trait FiberSuspend {
-    fn suspend(&mut self) -> Resume;
-}
-
-impl<R> FiberSuspend for EvmSuspend<R> {
-    #[inline]
-    fn suspend(&mut self) -> Resume {
-        self.suspend(())
-    }
-}
-
 struct CurrentFiber<'a> {
-    suspend: NonNull<dyn FiberSuspend + 'a>,
+    suspend: NonNull<Yielder<Resume, Yield>>,
+    _marker: PhantomData<&'a Yielder<Resume, Yield>>,
     future_cx: NonNull<Context<'static>>,
     cancelled: bool,
 }
@@ -87,7 +78,7 @@ impl CurrentFiber<'_> {
 
     #[inline]
     fn suspend(&mut self) -> AsyncResult<()> {
-        match unsafe { self.suspend.as_mut() }.suspend() {
+        match unsafe { self.suspend.as_ref() }.suspend(()) {
             Ok(cx) => {
                 self.future_cx = cx;
                 Ok(())
@@ -197,14 +188,15 @@ impl<R, E> Future for OnFiber<'_, R, E> {
 }
 
 struct FiberFuture<'a, R> {
-    fiber: Option<EvmFiber<'a, R>>,
+    fiber: Option<EvmFiber<R>>,
+    _marker: PhantomData<&'a mut R>,
 }
 
 impl<R> Unpin for FiberFuture<'_, R> {}
 
-// SAFETY: The future may move between polls, but the fiber stack itself is heap allocated by
-// `wasmtime-fiber` and is only resumed through `poll` with a fresh task context. Values that can
-// remain on the fiber stack across suspension are required to be `Send` by the blocking boundary.
+// SAFETY: The future may move between polls, but the coroutine stack itself is heap allocated and
+// is only resumed through `poll` with a fresh task context. Values that can remain on the coroutine
+// stack across suspension are required to be `Send` by the blocking boundary.
 unsafe impl<R: Send> Send for FiberFuture<'_, R> {}
 
 impl<'a, R> FiberFuture<'a, R> {
@@ -216,12 +208,13 @@ impl<'a, R> FiberFuture<'a, R> {
     where
         S: ?Sized,
     {
-        let stack = FiberStack::new(stack_size, false).map_err(fiber_error)?;
+        let stack = DefaultStack::new(stack_size).map_err(fiber_error)?;
         let state = core::ptr::from_mut(state);
-        let fiber = Fiber::new(stack, move |resume: Resume, suspend| {
+        let body = move |suspend: &Yielder<Resume, Yield>, resume| {
             let future_cx = resume?;
             let mut current = CurrentFiber {
-                suspend: NonNull::from(suspend as &mut dyn FiberSuspend),
+                suspend: NonNull::from(suspend),
+                _marker: PhantomData,
                 future_cx,
                 cancelled: false,
             };
@@ -230,9 +223,11 @@ impl<'a, R> FiberFuture<'a, R> {
             let previous = CURRENT.replace(Some(current));
             let _reset = ResetCurrentFiber(previous);
             Ok(func(unsafe { &mut *state }))
-        })
-        .map_err(fiber_error)?;
-        Ok(Self { fiber: Some(fiber) })
+        };
+        // SAFETY: The coroutine is stored inside `FiberFuture<'a, R>`, which is tied to the
+        // borrowed state lifetime and dropped before those borrows can expire.
+        let fiber = unsafe { Coroutine::with_stack_unchecked(stack, body) };
+        Ok(Self { fiber: Some(fiber), _marker: PhantomData })
     }
 }
 
@@ -242,24 +237,30 @@ impl<R> Future for FiberFuture<'_, R> {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
         let cx = NonNull::from(unsafe { change_context_lifetime(cx) });
-        let fiber = this.fiber.as_ref().expect("async EVM fiber already completed");
+        let fiber = this.fiber.as_mut().expect("async EVM fiber already completed");
         match fiber.resume(Ok(cx)) {
-            Ok(result) => {
+            CoroutineResult::Return(result) => {
                 this.fiber = None;
                 Poll::Ready(result)
             }
-            Err(()) => Poll::Pending,
+            CoroutineResult::Yield(()) => Poll::Pending,
         }
     }
 }
 
 impl<R> Drop for FiberFuture<'_, R> {
     fn drop(&mut self) {
-        let Some(fiber) = self.fiber.take() else { return };
+        let Some(mut fiber) = self.fiber.take() else {
+            return;
+        };
         if fiber.done() {
             return;
         }
-        let _ = fiber.resume(Err(AsyncError::Cancelled));
+        if matches!(fiber.resume(Err(AsyncError::Cancelled)), CoroutineResult::Yield(())) {
+            // SAFETY: Cancellation already gave the coroutine a chance to return normally. If it
+            // yields again, the stack is no longer useful to this future.
+            unsafe { fiber.force_reset() };
+        }
     }
 }
 

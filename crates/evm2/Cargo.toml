@@ -33,7 +33,7 @@ serde = { workspace = true, features = ["derive", "alloc"], optional = true }
 
 # "async"
 tokio = { workspace = true, features = ["rt-multi-thread"], optional = true }
-wasmtime-fiber = { workspace = true, features = ["std"], optional = true }
+corosensei = { workspace = true, optional = true }
 
 # ecrecover
 k256 = { workspace = true, features = ["ecdsa"] }
@@ -133,7 +133,7 @@ std = [
     "serde?/std",
 ]
 
-async = ["std", "dep:tokio", "dep:wasmtime-fiber"]
+async = ["std", "dep:tokio", "dep:corosensei"]
 
 serde = [
     "dep:serde",
