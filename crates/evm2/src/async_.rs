@@ -44,9 +44,12 @@ pub enum AsyncError<E = core::convert::Infallible> {
     /// An async host operation was called outside an async EVM fiber.
     #[error("async host operation requires EVM async fiber execution")]
     NotOnFiber,
-    /// Async fiber runtime setup failed.
+    /// Blocking async I/O was requested outside a supported Tokio runtime.
+    #[error("async host operation requires a Tokio multi-thread runtime")]
+    Runtime,
+    /// Async fiber stack setup failed.
     #[error(transparent)]
-    Runtime(io::Error),
+    Io(io::Error),
     /// The wrapped operation returned an error.
     #[error(transparent)]
     Inner(#[from] E),
@@ -57,7 +60,8 @@ impl AsyncError {
         match self {
             Self::Cancelled => AsyncError::Cancelled,
             Self::NotOnFiber => AsyncError::NotOnFiber,
-            Self::Runtime(error) => AsyncError::Runtime(error),
+            Self::Runtime => AsyncError::Runtime,
+            Self::Io(error) => AsyncError::Io(error),
             Self::Inner(error) => match error {},
         }
     }
@@ -186,7 +190,7 @@ unsafe impl<R: Send> Send for FiberFuture<'_, R> {}
 
 impl<'a, R> FiberFuture<'a, R> {
     fn new(stack_size: usize, func: impl FnOnce() -> R + 'a) -> AsyncResult<Self> {
-        let stack = DefaultStack::new(stack_size).map_err(AsyncError::Runtime)?;
+        let stack = DefaultStack::new(stack_size).map_err(AsyncError::Io)?;
         let body = move |suspend: &Yielder<Resume, Yield>, resume| {
             let future_cx = resume?;
             let mut current = CurrentFiber {
@@ -325,9 +329,7 @@ where
     match mode {
         IoMode::Blocking => {
             let Some(runtime) = runtime else {
-                return Err(AsyncError::Runtime(io::Error::other(
-                    "async host operation requires a Tokio multi-thread runtime",
-                )));
+                return Err(AsyncError::Runtime);
             };
             Ok(runtime.block_on(future))
         }
