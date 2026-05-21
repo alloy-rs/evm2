@@ -176,7 +176,7 @@ impl<R, E> Future for OnFiber<'_, R, E> {
 
 struct FiberFuture<'a, R> {
     fiber: EvmFiber<R>,
-    _marker: PhantomData<&'a mut R>,
+    _marker: PhantomData<&'a ()>,
 }
 
 // SAFETY: The future may move between polls, but the coroutine stack itself is heap allocated and
