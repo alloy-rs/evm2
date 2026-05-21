@@ -43,6 +43,18 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         self.system_call_with_caller(SYSTEM_ADDRESS, system_contract_address, data)
     }
 
+    /// Executes a system call from [`SYSTEM_ADDRESS`] to `system_contract_address` on an async
+    /// fiber.
+    #[cfg(feature = "async")]
+    #[inline]
+    pub async fn system_call_async(
+        &mut self,
+        system_contract_address: Address,
+        data: Bytes,
+    ) -> crate::AsyncResult<TxResult<T>> {
+        crate::async_::on_fiber(self, |evm| evm.system_call(system_contract_address, data)).await
+    }
+
     /// Executes a system call from `caller` to `system_contract_address`.
     ///
     /// System calls bypass normal transaction validation, nonce updates, fee charging, gas refunds,
@@ -105,6 +117,21 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         result.db_error_code = self.db_error_code();
         self.state.clear_transaction_state();
         result
+    }
+
+    /// Executes a system call from `caller` to `system_contract_address` on an async fiber.
+    #[cfg(feature = "async")]
+    #[inline]
+    pub async fn system_call_with_caller_async(
+        &mut self,
+        caller: Address,
+        system_contract_address: Address,
+        data: Bytes,
+    ) -> crate::AsyncResult<TxResult<T>> {
+        crate::async_::on_fiber(self, |evm| {
+            evm.system_call_with_caller(caller, system_contract_address, data)
+        })
+        .await
     }
 }
 
@@ -203,6 +230,25 @@ mod tests {
         assert!(result.state_changes.is_empty());
     }
 
+    #[cfg(feature = "async")]
+    #[test]
+    fn system_call_async_to_missing_code_is_noop() {
+        let contract = Address::from([0x42; 20]);
+        let mut evm = TestEvm::new(
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+
+        let result = poll_ready(evm.system_call_async(contract, Bytes::new())).unwrap();
+
+        assert!(result.status);
+        assert_eq!(result.gas_used, 0);
+        assert!(result.state_changes.is_empty());
+    }
+
     #[test]
     fn system_call_reverts_state_changes() {
         let contract = Address::from([0x42; 20]);
@@ -233,5 +279,21 @@ mod tests {
         assert!(!result.status);
         assert_eq!(result.stop, InstrStop::Revert);
         assert!(result.state_changes.is_empty());
+    }
+
+    #[cfg(feature = "async")]
+    fn poll_ready<F: core::future::Future>(future: F) -> F::Output {
+        use alloc::boxed::Box;
+        use core::task::Poll;
+        use std::task::{Context, Waker};
+
+        let mut future = Box::pin(future);
+        let waker = Waker::noop();
+        let mut cx = Context::from_waker(waker);
+
+        match future.as_mut().poll(&mut cx) {
+            Poll::Ready(value) => value,
+            Poll::Pending => panic!("future unexpectedly pending"),
+        }
     }
 }

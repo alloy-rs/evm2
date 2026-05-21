@@ -13,6 +13,9 @@ pub mod ethereum;
 pub mod interpreter;
 pub mod utils;
 
+#[cfg(feature = "async")]
+mod async_;
+
 pub mod evm;
 pub use evm::{
     BEACON_ROOTS_ADDRESS, CONSOLIDATION_REQUEST_ADDRESS, Evm, HISTORY_STORAGE_ADDRESS,
@@ -28,6 +31,9 @@ pub mod precompiles;
 pub use precompiles::{
     Crypto, PrecompileError, PrecompileHalt, Precompiles, crypto, install_crypto,
 };
+
+#[cfg(feature = "async")]
+pub use async_::{AsyncDatabase, AsyncDb, AsyncError, AsyncResult};
 
 pub(crate) mod trustme;
 

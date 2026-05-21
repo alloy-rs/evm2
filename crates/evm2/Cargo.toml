@@ -24,6 +24,7 @@ alloy-primitives.workspace = true
 derive-where.workspace = true
 thiserror.workspace = true
 cfg-if.workspace = true
+wasmtime-fiber = { workspace = true, features = ["std"], optional = true }
 
 # no_std
 once_cell = { workspace = true, features = ["alloc"] }
@@ -127,6 +128,8 @@ std = [
     "secp256k1?/std",
     "serde?/std",
 ]
+
+async = ["std", "dep:wasmtime-fiber"]
 
 serde = [
     "dep:serde",
