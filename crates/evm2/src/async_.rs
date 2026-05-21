@@ -52,19 +52,19 @@ pub enum AsyncError<E = core::convert::Infallible> {
     /// Blocking async I/O was requested outside a supported Tokio runtime.
     #[error("async host operation requires a Tokio multi-thread runtime: {0}")]
     Runtime(String),
-    /// EVM execution returned an error.
+    /// The wrapped operation returned an error.
     #[error(transparent)]
-    Evm(#[from] E),
+    Inner(#[from] E),
 }
 
 impl AsyncError {
-    fn with_evm_error<E>(self) -> AsyncError<E> {
+    fn with_inner_error<E>(self) -> AsyncError<E> {
         match self {
             Self::Cancelled => AsyncError::Cancelled,
             Self::Fiber(error) => AsyncError::Fiber(error),
             Self::NotOnFiber => AsyncError::NotOnFiber,
             Self::Runtime(error) => AsyncError::Runtime(error),
-            Self::Evm(error) => match error {},
+            Self::Inner(error) => match error {},
         }
     }
 }
@@ -202,8 +202,8 @@ impl<R, E> Future for FlattenFiber<'_, R, E> {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         match Pin::new(&mut self.get_mut().inner).poll(cx) {
             Poll::Ready(Ok(Ok(value))) => Poll::Ready(Ok(value)),
-            Poll::Ready(Ok(Err(error))) => Poll::Ready(Err(AsyncError::Evm(error))),
-            Poll::Ready(Err(error)) => Poll::Ready(Err(error.with_evm_error())),
+            Poll::Ready(Ok(Err(error))) => Poll::Ready(Err(AsyncError::Inner(error))),
+            Poll::Ready(Err(error)) => Poll::Ready(Err(error.with_inner_error())),
             Poll::Pending => Poll::Pending,
         }
     }
@@ -296,13 +296,11 @@ where
             if current.is_cancelled() {
                 return Err(AsyncError::Cancelled);
             }
-            match future.as_mut().poll(current.context()) {
-                Poll::Ready(value) => Ok(Poll::Ready(value)),
-                Poll::Pending => {
-                    current.suspend()?;
-                    Ok(Poll::Pending)
-                }
+            let poll = future.as_mut().poll(current.context());
+            if poll.is_pending() {
+                current.suspend()?;
             }
+            Ok(poll)
         })?? {
             Poll::Ready(value) => return Ok(value),
             Poll::Pending => {}
@@ -376,6 +374,22 @@ where
             Ok(runtime.block_on(future))
         }
         IoMode::Async => block_on_current(future),
+    }
+}
+
+fn block_on_runtime_result<F, T, E>(
+    mode: IoMode,
+    runtime: Option<&HandleOrRuntime>,
+    future: F,
+) -> AsyncResult<T, E>
+where
+    F: Future<Output = core::result::Result<T, E>> + Send,
+    T: Send,
+    E: Send,
+{
+    match block_on_runtime(mode, runtime, future).map_err(AsyncError::with_inner_error)? {
+        Ok(value) => Ok(value),
+        Err(error) => Err(AsyncError::Inner(error)),
     }
 }
 
@@ -514,6 +528,14 @@ impl<D: AsyncDatabase> AsyncDb<D> {
         self.error = Some(Box::new(error));
         stored_error_code()
     }
+
+    #[inline]
+    fn database_result<T>(&mut self, result: AsyncResult<T, D::Error>) -> DbResult<T> {
+        result.map_err(|error| match error {
+            AsyncError::Inner(error) => self.store_error(error),
+            error => self.store_error(error),
+        })
+    }
 }
 
 impl<D: AsyncDatabase + DatabaseCommit> DatabaseCommit for AsyncDb<D> {
@@ -528,52 +550,36 @@ impl<D: AsyncDatabase> DynDatabase for AsyncDb<D> {
     fn get_account(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
         let result = {
             let Self { db, io_mode, runtime, .. } = self;
-            block_on_runtime(*io_mode, runtime.as_ref(), db.get_account(*address))
+            block_on_runtime_result(*io_mode, runtime.as_ref(), db.get_account(*address))
         };
-        match result {
-            Ok(Ok(account)) => Ok(account),
-            Ok(Err(error)) => Err(self.store_error(error)),
-            Err(error) => Err(self.store_error(error)),
-        }
+        self.database_result(result)
     }
 
     #[inline]
     fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<Bytecode> {
         let result = {
             let Self { db, io_mode, runtime, .. } = self;
-            block_on_runtime(*io_mode, runtime.as_ref(), db.get_code_by_hash(*code_hash))
+            block_on_runtime_result(*io_mode, runtime.as_ref(), db.get_code_by_hash(*code_hash))
         };
-        match result {
-            Ok(Ok(bytecode)) => Ok(bytecode),
-            Ok(Err(error)) => Err(self.store_error(error)),
-            Err(error) => Err(self.store_error(error)),
-        }
+        self.database_result(result)
     }
 
     #[inline]
     fn get_storage(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
         let result = {
             let Self { db, io_mode, runtime, .. } = self;
-            block_on_runtime(*io_mode, runtime.as_ref(), db.get_storage(*address, *key))
+            block_on_runtime_result(*io_mode, runtime.as_ref(), db.get_storage(*address, *key))
         };
-        match result {
-            Ok(Ok(value)) => Ok(value),
-            Ok(Err(error)) => Err(self.store_error(error)),
-            Err(error) => Err(self.store_error(error)),
-        }
+        self.database_result(result)
     }
 
     #[inline]
     fn get_block_hash(&mut self, number: &Word) -> DbResult<Option<B256>> {
         let result = {
             let Self { db, io_mode, runtime, .. } = self;
-            block_on_runtime(*io_mode, runtime.as_ref(), db.get_block_hash(*number))
+            block_on_runtime_result(*io_mode, runtime.as_ref(), db.get_block_hash(*number))
         };
-        match result {
-            Ok(Ok(hash)) => Ok(hash),
-            Ok(Err(error)) => Err(self.store_error(error)),
-            Err(error) => Err(self.store_error(error)),
-        }
+        self.database_result(result)
     }
 
     #[inline]
@@ -749,7 +755,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(AsyncError::Evm(HandlerError::UnsupportedTransactionType(TEST_TX_TYPE)))
+            Err(AsyncError::Inner(HandlerError::UnsupportedTransactionType(TEST_TX_TYPE)))
         ));
     }
 
