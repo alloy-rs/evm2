@@ -17,7 +17,10 @@ use alloc::{
 use alloy_primitives::{Address, B256};
 use core::{any::Any, fmt, future::Future, pin::Pin, ptr::NonNull, task::Poll};
 use std::{cell::RefCell, error::Error, task::Context};
-use tokio::{runtime::Handle, task};
+use tokio::{
+    runtime::{Handle, Runtime},
+    task,
+};
 use wasmtime_fiber::{Fiber, FiberStack, Suspend};
 
 type Resume = AsyncResult<NonNull<Context<'static>>>;
@@ -203,28 +206,72 @@ where
     }
 }
 
-fn block_on_io<F>(mode: IoMode, future: F) -> AsyncResult<F::Output>
-where
-    F: Future + Send,
-{
-    match mode {
-        IoMode::Blocking => block_on_tokio(future),
-        IoMode::Async => block_on_current(future),
+#[derive(Debug)]
+enum HandleOrRuntime {
+    Handle(Handle),
+    Runtime(Runtime),
+}
+
+impl HandleOrRuntime {
+    #[inline]
+    fn current() -> Option<Self> {
+        match Handle::try_current() {
+            Ok(handle) => match handle.runtime_flavor() {
+                tokio::runtime::RuntimeFlavor::CurrentThread => None,
+                _ => Some(Self::Handle(handle)),
+            },
+            Err(_) => None,
+        }
+    }
+
+    #[inline]
+    fn block_on<F>(&self, future: F) -> F::Output
+    where
+        F: Future + Send,
+        F::Output: Send,
+    {
+        match self {
+            Self::Handle(handle) => {
+                let should_use_block_in_place = Handle::try_current()
+                    .ok()
+                    .map(|current| {
+                        !matches!(
+                            current.runtime_flavor(),
+                            tokio::runtime::RuntimeFlavor::CurrentThread
+                        )
+                    })
+                    .unwrap_or(false);
+
+                if should_use_block_in_place {
+                    task::block_in_place(move || handle.block_on(future))
+                } else {
+                    handle.block_on(future)
+                }
+            }
+            Self::Runtime(runtime) => runtime.block_on(future),
+        }
     }
 }
 
-fn block_on_tokio<F>(future: F) -> AsyncResult<F::Output>
+fn block_on_runtime<F>(
+    mode: IoMode,
+    runtime: Option<&HandleOrRuntime>,
+    future: F,
+) -> AsyncResult<F::Output>
 where
     F: Future + Send,
+    F::Output: Send,
 {
-    let handle = Handle::try_current().map_err(runtime_error)?;
-    match handle.runtime_flavor() {
-        tokio::runtime::RuntimeFlavor::MultiThread => {
-            Ok(task::block_in_place(|| handle.block_on(future)))
+    match mode {
+        IoMode::Blocking => {
+            let Some(runtime) = runtime else {
+                return Err(AsyncError::Runtime(
+                    "blocking async host operation requires a Tokio runtime handle".to_string(),
+                ));
+            };
+            Ok(runtime.block_on(future))
         }
-        flavor => {
-            Err(AsyncError::Runtime(format!("block_in_place is not available on {flavor:?}")))
-        }
+        IoMode::Async => block_on_current(future),
     }
 }
 
@@ -254,10 +301,6 @@ unsafe fn erase_current_fiber_lifetime<'a>(
 
 fn fiber_error(error: impl fmt::Display) -> AsyncError {
     AsyncError::Fiber(error.to_string())
-}
-
-fn runtime_error(error: impl fmt::Display) -> AsyncError {
-    AsyncError::Runtime(error.to_string())
 }
 
 /// Asynchronous backing database implementation.
@@ -296,13 +339,49 @@ pub struct AsyncDb<D: AsyncDatabase> {
     db: D,
     error: Option<Box<dyn Error + Send>>,
     io_mode: IoMode,
+    runtime: Option<HandleOrRuntime>,
 }
 
 impl<D: AsyncDatabase> AsyncDb<D> {
     /// Creates a new async database adapter.
     #[inline]
     pub const fn new(db: D) -> Self {
-        Self { db, error: None, io_mode: IoMode::Async }
+        Self { db, error: None, io_mode: IoMode::Async, runtime: None }
+    }
+
+    /// Creates a new blocking async database adapter using the current Tokio runtime handle.
+    ///
+    /// Returns `None` if no Tokio runtime is available or the current runtime is current-threaded.
+    #[inline]
+    pub fn blocking(db: D) -> Option<Self> {
+        Some(Self {
+            db,
+            error: None,
+            io_mode: IoMode::Blocking,
+            runtime: Some(HandleOrRuntime::current()?),
+        })
+    }
+
+    /// Creates a new blocking async database adapter with a Tokio runtime.
+    #[inline]
+    pub const fn with_runtime(db: D, runtime: Runtime) -> Self {
+        Self {
+            db,
+            error: None,
+            io_mode: IoMode::Blocking,
+            runtime: Some(HandleOrRuntime::Runtime(runtime)),
+        }
+    }
+
+    /// Creates a new blocking async database adapter with a Tokio runtime handle.
+    #[inline]
+    pub const fn with_handle(db: D, handle: Handle) -> Self {
+        Self {
+            db,
+            error: None,
+            io_mode: IoMode::Blocking,
+            runtime: Some(HandleOrRuntime::Handle(handle)),
+        }
     }
 
     /// Returns the wrapped database.
@@ -346,7 +425,11 @@ impl<D: AsyncDatabase + DatabaseCommit> DatabaseCommit for AsyncDb<D> {
 impl<D: AsyncDatabase> DynDatabase for AsyncDb<D> {
     #[inline]
     fn get_account(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
-        match block_on_io(self.io_mode, self.db.get_account(*address)) {
+        let result = {
+            let Self { db, io_mode, runtime, .. } = self;
+            block_on_runtime(*io_mode, runtime.as_ref(), db.get_account(*address))
+        };
+        match result {
             Ok(Ok(account)) => Ok(account),
             Ok(Err(error)) => Err(self.store_error(error)),
             Err(error) => Err(self.store_error(error)),
@@ -355,7 +438,11 @@ impl<D: AsyncDatabase> DynDatabase for AsyncDb<D> {
 
     #[inline]
     fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<Bytecode> {
-        match block_on_io(self.io_mode, self.db.get_code_by_hash(*code_hash)) {
+        let result = {
+            let Self { db, io_mode, runtime, .. } = self;
+            block_on_runtime(*io_mode, runtime.as_ref(), db.get_code_by_hash(*code_hash))
+        };
+        match result {
             Ok(Ok(bytecode)) => Ok(bytecode),
             Ok(Err(error)) => Err(self.store_error(error)),
             Err(error) => Err(self.store_error(error)),
@@ -364,7 +451,11 @@ impl<D: AsyncDatabase> DynDatabase for AsyncDb<D> {
 
     #[inline]
     fn get_storage(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
-        match block_on_io(self.io_mode, self.db.get_storage(*address, *key)) {
+        let result = {
+            let Self { db, io_mode, runtime, .. } = self;
+            block_on_runtime(*io_mode, runtime.as_ref(), db.get_storage(*address, *key))
+        };
+        match result {
             Ok(Ok(value)) => Ok(value),
             Ok(Err(error)) => Err(self.store_error(error)),
             Err(error) => Err(self.store_error(error)),
@@ -373,7 +464,11 @@ impl<D: AsyncDatabase> DynDatabase for AsyncDb<D> {
 
     #[inline]
     fn get_block_hash(&mut self, number: &Word) -> DbResult<Option<B256>> {
-        match block_on_io(self.io_mode, self.db.get_block_hash(*number)) {
+        let result = {
+            let Self { db, io_mode, runtime, .. } = self;
+            block_on_runtime(*io_mode, runtime.as_ref(), db.get_block_hash(*number))
+        };
+        match result {
             Ok(Ok(hash)) => Ok(hash),
             Ok(Err(error)) => Err(self.store_error(error)),
             Err(error) => Err(self.store_error(error)),
@@ -392,6 +487,15 @@ impl<D: AsyncDatabase> DynDatabase for AsyncDb<D> {
 
     #[inline]
     fn set_io_mode(&mut self, io_mode: IoMode) -> bool {
+        if matches!(io_mode, IoMode::Blocking)
+            && self.runtime.is_none()
+            && let Some(runtime) = HandleOrRuntime::current()
+        {
+            self.runtime = Some(runtime);
+        }
+        if matches!(io_mode, IoMode::Blocking) && self.runtime.is_none() {
+            return false;
+        }
         self.io_mode = io_mode;
         true
     }
@@ -520,6 +624,36 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn blocking_constructor_uses_current_tokio_runtime() {
+        let mut db = AsyncDb::blocking(TokioDb).unwrap();
+        let address = Address::ZERO;
+        let key = Word::from(7);
+
+        let value = DynDatabase::get_storage(&mut db, &address, &key).unwrap();
+
+        assert_eq!(value, Word::from(9));
+    }
+
+    #[test]
+    fn blocking_io_mode_blocks_with_stored_tokio_runtime() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let mut db = AsyncDb::with_runtime(TokioDb, runtime);
+        let address = Address::ZERO;
+        let key = Word::from(7);
+
+        let value = DynDatabase::get_storage(&mut db, &address, &key).unwrap();
+
+        assert_eq!(value, Word::from(9));
+    }
+
+    #[test]
+    fn blocking_io_mode_requires_runtime_handle() {
+        let mut db = AsyncDb::new(TestDb);
+
+        assert!(!DynDatabase::set_io_mode(&mut db, IoMode::Blocking));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn evm_sets_async_database_io_mode() {
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
@@ -531,7 +665,7 @@ mod tests {
         let address = Address::ZERO;
         let key = Word::from(7);
 
-        evm.set_io_mode(IoMode::Blocking);
+        assert!(evm.set_io_mode(IoMode::Blocking));
         let value = evm.database_mut().get_storage(&address, &key).unwrap();
 
         assert_eq!(value, Word::from(9));

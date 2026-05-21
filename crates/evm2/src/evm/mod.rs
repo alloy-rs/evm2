@@ -200,9 +200,9 @@ impl<T: EvmTypes> Evm<T> {
     /// Sets the asynchronous database I/O mode.
     #[cfg(feature = "async")]
     #[inline]
-    pub fn set_io_mode(&mut self, io_mode: crate::IoMode) {
+    pub fn set_io_mode(&mut self, io_mode: crate::IoMode) -> bool {
         self.execution_config.version.io_mode = io_mode;
-        self.apply_io_mode_to_database();
+        self.apply_io_mode_to_database()
     }
 
     /// Sets the minimum async EVM fiber stack size in bytes.
@@ -214,9 +214,9 @@ impl<T: EvmTypes> Evm<T> {
 
     #[cfg(feature = "async")]
     #[inline]
-    fn apply_io_mode_to_database(&mut self) {
+    fn apply_io_mode_to_database(&mut self) -> bool {
         let io_mode = self.execution_config.version.io_mode;
-        self.database_mut().set_io_mode(io_mode);
+        self.database_mut().set_io_mode(io_mode)
     }
 
     /// Returns the backing database as `D` if it has that concrete type.
