@@ -127,19 +127,35 @@ where
     R: Send + 'a,
     E: Send + 'a,
 {
-    FlattenFiber { inner: OnFiber::new(state, stack_size, func) }
+    OnFiber::new(state, stack_size, func)
 }
 
-enum OnFiber<'a, R> {
-    Running(FiberFuture<'a, R>),
+pub(crate) fn on_fiber<'a, S, R>(
+    state: &'a mut S,
+    stack_size: usize,
+    func: impl FnOnce(&mut S) -> R + 'a,
+) -> impl Future<Output = AsyncResult<R>> + Send + 'a
+where
+    S: ?Sized,
+    R: Send + 'a,
+{
+    on_fiber_result(state, stack_size, move |state| Ok::<_, core::convert::Infallible>(func(state)))
+}
+
+enum OnFiber<'a, R, E> {
+    Running(FiberFuture<'a, core::result::Result<R, E>>),
     Error(Option<AsyncError>),
     Done,
 }
 
-impl<R> Unpin for OnFiber<'_, R> {}
+impl<R, E> Unpin for OnFiber<'_, R, E> {}
 
-impl<'a, R> OnFiber<'a, R> {
-    fn new<S>(state: &'a mut S, stack_size: usize, func: impl FnOnce(&mut S) -> R + 'a) -> Self
+impl<'a, R, E> OnFiber<'a, R, E> {
+    fn new<S>(
+        state: &'a mut S,
+        stack_size: usize,
+        func: impl FnOnce(&mut S) -> core::result::Result<R, E> + 'a,
+    ) -> Self
     where
         S: ?Sized,
     {
@@ -150,42 +166,32 @@ impl<'a, R> OnFiber<'a, R> {
     }
 }
 
-impl<R> Future for OnFiber<'_, R> {
-    type Output = AsyncResult<R>;
+impl<R, E> Future for OnFiber<'_, R, E> {
+    type Output = AsyncResult<R, E>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
         match this {
             Self::Running(fiber) => match Pin::new(fiber).poll(cx) {
-                Poll::Ready(result) => {
+                Poll::Ready(Ok(Ok(value))) => {
                     *this = Self::Done;
-                    Poll::Ready(result)
+                    Poll::Ready(Ok(value))
+                }
+                Poll::Ready(Ok(Err(error))) => {
+                    *this = Self::Done;
+                    Poll::Ready(Err(AsyncError::Inner(error)))
+                }
+                Poll::Ready(Err(error)) => {
+                    *this = Self::Done;
+                    Poll::Ready(Err(error.with_inner_error()))
                 }
                 Poll::Pending => Poll::Pending,
             },
             Self::Error(error) => {
-                Poll::Ready(Err(error.take().expect("async EVM fiber error already returned")))
+                let error = error.take().expect("async EVM fiber error already returned");
+                Poll::Ready(Err(error.with_inner_error()))
             }
             Self::Done => panic!("async EVM fiber polled after completion"),
-        }
-    }
-}
-
-struct FlattenFiber<'a, R, E> {
-    inner: OnFiber<'a, core::result::Result<R, E>>,
-}
-
-impl<R, E> Unpin for FlattenFiber<'_, R, E> {}
-
-impl<R, E> Future for FlattenFiber<'_, R, E> {
-    type Output = AsyncResult<R, E>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        match Pin::new(&mut self.get_mut().inner).poll(cx) {
-            Poll::Ready(Ok(Ok(value))) => Poll::Ready(Ok(value)),
-            Poll::Ready(Ok(Err(error))) => Poll::Ready(Err(AsyncError::Inner(error))),
-            Poll::Ready(Err(error)) => Poll::Ready(Err(error.with_inner_error())),
-            Poll::Pending => Poll::Pending,
         }
     }
 }
@@ -616,7 +622,7 @@ impl Error for AsyncDbErrorUnavailable {}
 
 #[cfg(test)]
 mod tests {
-    use super::{AsyncDatabase, AsyncDb, AsyncError, block_on_current, on_fiber_result};
+    use super::{AsyncDatabase, AsyncDb, AsyncError, block_on_current, on_fiber};
     use crate::{
         BaseEvmTypes, Evm, ExecutionConfig, IoMode, Precompiles, SpecId, TxResult, Version,
         bytecode::Bytecode,
@@ -641,9 +647,9 @@ mod tests {
     #[test]
     fn fiber_suspends_and_resumes_pending_future() {
         let mut state = 1;
-        let mut future = core::pin::pin!(on_fiber_result(&mut state, stack_size(), |state| {
+        let mut future = core::pin::pin!(on_fiber(&mut state, stack_size(), |state| {
             *state += block_on_current(PendingOnce { pending: true }).unwrap();
-            Ok::<_, Infallible>(*state)
+            *state
         }));
         let waker = Waker::noop();
         let mut cx = Context::from_waker(waker);
@@ -657,8 +663,8 @@ mod tests {
         let mut db = AsyncDb::new(TestDb);
         let address = Address::ZERO;
         let key = Word::from(7);
-        let mut future = core::pin::pin!(on_fiber_result(&mut db, stack_size(), |db| {
-            Ok::<_, Infallible>(DynDatabase::get_storage(db, &address, &key).unwrap())
+        let mut future = core::pin::pin!(on_fiber(&mut db, stack_size(), |db| {
+            DynDatabase::get_storage(db, &address, &key).unwrap()
         }));
         let waker = Waker::noop();
         let mut cx = Context::from_waker(waker);
@@ -673,8 +679,8 @@ mod tests {
         let mut db = AsyncDb::new(PendingDb { pending: true });
         let address = Address::ZERO;
         let key = Word::from(7);
-        let mut future = core::pin::pin!(on_fiber_result(&mut db, stack_size(), |db| {
-            Ok::<_, Infallible>(DynDatabase::get_storage(db, &address, &key).unwrap())
+        let mut future = core::pin::pin!(on_fiber(&mut db, stack_size(), |db| {
+            DynDatabase::get_storage(db, &address, &key).unwrap()
         }));
         let waker = Waker::noop();
         let mut cx = Context::from_waker(waker);
@@ -690,8 +696,8 @@ mod tests {
         let mut db = AsyncDb::new(FailingDb);
         let address = Address::ZERO;
         let key = Word::from(7);
-        let code = on_fiber_result(&mut db, stack_size(), |db| {
-            Ok::<_, Infallible>(DynDatabase::get_storage(db, &address, &key).unwrap_err())
+        let code = on_fiber(&mut db, stack_size(), |db| {
+            DynDatabase::get_storage(db, &address, &key).unwrap_err()
         });
         let code = poll_ready(code).unwrap();
 
@@ -862,10 +868,9 @@ mod tests {
         let mut saw_cancel = false;
         {
             let mut future =
-                core::pin::pin!(on_fiber_result(&mut saw_cancel, stack_size(), |saw_cancel| {
+                core::pin::pin!(on_fiber(&mut saw_cancel, stack_size(), |saw_cancel| {
                     *saw_cancel =
                         matches!(block_on_current(PendingForever), Err(AsyncError::Cancelled));
-                    Ok::<_, Infallible>(())
                 }));
             let waker = Waker::noop();
             let mut cx = Context::from_waker(waker);

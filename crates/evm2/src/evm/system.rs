@@ -59,8 +59,8 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         T::TxResultExt: Send,
     {
         let stack_size = self.version().min_stack_size;
-        crate::async_::on_fiber_result(self, stack_size, move |evm| {
-            Ok::<_, core::convert::Infallible>(evm.system_call(system_contract_address, data))
+        crate::async_::on_fiber(self, stack_size, move |evm| {
+            evm.system_call(system_contract_address, data)
         })
     }
 
@@ -144,12 +144,8 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         T::TxResultExt: Send,
     {
         let stack_size = self.version().min_stack_size;
-        crate::async_::on_fiber_result(self, stack_size, move |evm| {
-            Ok::<_, core::convert::Infallible>(evm.system_call_with_caller(
-                caller,
-                system_contract_address,
-                data,
-            ))
+        crate::async_::on_fiber(self, stack_size, move |evm| {
+            evm.system_call_with_caller(caller, system_contract_address, data)
         })
     }
 }
