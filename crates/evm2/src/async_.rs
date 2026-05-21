@@ -67,23 +67,21 @@ impl<R> FiberSuspend for EvmSuspend<R> {
 
 struct CurrentFiber<'a> {
     suspend: NonNull<dyn FiberSuspend + 'a>,
-    future_cx: Option<NonNull<Context<'static>>>,
+    future_cx: NonNull<Context<'static>>,
     cancelled: bool,
 }
 
 impl CurrentFiber<'_> {
     #[inline]
     fn context(&mut self) -> &mut Context<'_> {
-        let cx = self.future_cx.as_mut().expect("future context is not available");
-        unsafe { restore_context_lifetime(cx.as_mut()) }
+        unsafe { restore_context_lifetime(self.future_cx.as_mut()) }
     }
 
     #[inline]
     fn suspend(&mut self) -> AsyncResult<()> {
-        self.future_cx = None;
         match unsafe { self.suspend.as_mut() }.suspend() {
             Ok(cx) => {
-                self.future_cx = Some(cx);
+                self.future_cx = cx;
                 Ok(())
             }
             Err(error) => {
@@ -190,7 +188,7 @@ impl<'a, R> FiberFuture<'a, R> {
             let future_cx = resume?;
             let mut current = CurrentFiber {
                 suspend: NonNull::from(suspend as &mut dyn FiberSuspend),
-                future_cx: Some(future_cx),
+                future_cx,
                 cancelled: false,
             };
             let current = NonNull::from(&mut current);
