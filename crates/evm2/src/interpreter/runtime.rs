@@ -13,7 +13,7 @@ use crate::{
 };
 use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::{Address, Bytes, Log};
-use core::{fmt, ptr::NonNull};
+use core::{fmt, ops::Range, ptr::NonNull};
 use derive_where::derive_where;
 
 /// EVM interpreter.
@@ -24,7 +24,7 @@ pub struct Interpreter<'frame, T: EvmTypes> {
     pub(in crate::interpreter) return_data: Bytes,
 
     pub(in crate::interpreter) pc: *const u8,
-    output: *const [u8],
+    output: Range<u32>,
     #[derive_where(skip)]
     tx_env: Option<&'frame TxEnv<T>>,
     #[derive_where(skip)]
@@ -44,9 +44,8 @@ pub struct Interpreter<'frame, T: EvmTypes> {
 }
 
 // SAFETY: The interpreter's internal pointers are always valid. `pc` points into owned bytecode,
-// `output` points into owned memory or byte slices, frame-local references are cleared before
-// pooling, and host/inspector/version pointers are installed for execution and not used after the
-// owning execution context is gone.
+// frame-local references are cleared before pooling, and host/inspector/version pointers are
+// installed for execution and not used after the owning execution context is gone.
 unsafe impl<T: EvmTypes> Send for Interpreter<'_, T> {}
 
 impl<T: EvmTypes> Default for Interpreter<'_, T> {
@@ -59,7 +58,7 @@ impl<T: EvmTypes> Default for Interpreter<'_, T> {
             gas: Gas::new(0),
             memory: Memory::new(),
             result: Ok(()),
-            output: &[],
+            output: 0..0,
             tx_env: None,
             message: None,
             is_static: false,
@@ -105,7 +104,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         self.gas = Gas::new(gas_limit);
         self.memory.clear();
         self.result = Ok(());
-        self.output = &[];
+        self.output = 0..0;
         self.tx_env = Some(tx_env);
         self.message = Some(message);
         self.is_static = is_static;
@@ -128,14 +127,15 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
     }
 
     #[cfg(test)]
-    pub(crate) fn into_parts(self) -> (Box<StackBacking>, usize, Gas, Memory, *const [u8]) {
+    pub(crate) fn into_parts(self) -> (Box<StackBacking>, usize, Gas, Memory, Range<u32>) {
         (self.stack, self.stack_len, self.gas, self.memory, self.output)
     }
 
     /// Returns output produced by `RETURN` or `REVERT`.
     #[inline]
-    pub const fn output(&self) -> &[u8] {
-        unsafe { &*self.output }
+    pub fn output(&self) -> &[u8] {
+        let start = self.output.start as usize;
+        self.memory.slice(start, self.output.len())
     }
 
     /// Returns the current bytecode-relative program counter.
@@ -362,7 +362,7 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
 
     /// Sets the current frame output.
     #[inline]
-    pub const fn set_output(&mut self, output: *const [u8]) {
+    pub const fn set_output(&mut self, output: Range<u32>) {
         self.0.output = output;
     }
 
