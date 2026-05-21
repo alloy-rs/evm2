@@ -16,7 +16,7 @@ use alloc::{
 };
 use alloy_primitives::{Address, B256};
 use core::{any::Any, fmt, future::Future, pin::Pin, ptr::NonNull, task::Poll};
-use std::{cell::RefCell, error::Error, task::Context};
+use std::{cell::Cell, error::Error, task::Context};
 use tokio::{
     runtime::{Handle, Runtime},
     task,
@@ -30,7 +30,7 @@ type EvmFiber<'a, R> = Fiber<'a, Resume, Yield, Complete<R>>;
 type EvmSuspend<R> = Suspend<Resume, Yield, Complete<R>>;
 
 thread_local! {
-    static CURRENT: RefCell<Option<NonNull<dyn CurrentFiber>>> = RefCell::new(None);
+    static CURRENT: Cell<Option<NonNull<dyn CurrentFiber>>> = const { Cell::new(None) };
 }
 
 /// Result type used by async EVM execution helpers.
@@ -97,7 +97,7 @@ struct ResetCurrentFiber(Option<NonNull<dyn CurrentFiber>>);
 
 impl Drop for ResetCurrentFiber {
     fn drop(&mut self) {
-        CURRENT.with_borrow_mut(|current| *current = self.0);
+        CURRENT.set(self.0);
     }
 }
 
@@ -186,7 +186,7 @@ impl<'a, R> FiberFuture<'a, R> {
                 FiberContext { suspend, future_cx: Some(future_cx), cancelled: false };
             let current = NonNull::from(&mut fiber_context as &mut dyn CurrentFiber);
             let current = unsafe { erase_current_fiber_lifetime(current) };
-            let previous = CURRENT.with_borrow_mut(|slot| slot.replace(current));
+            let previous = CURRENT.replace(Some(current));
             let _reset = ResetCurrentFiber(previous);
             Ok(func(unsafe { &mut *state }))
         })
@@ -318,8 +318,7 @@ where
 }
 
 fn with_current<R>(f: impl FnOnce(&mut dyn CurrentFiber) -> R) -> AsyncResult<R> {
-    let mut current =
-        CURRENT.with_borrow(|slot| slot.as_ref().copied()).ok_or(AsyncError::NotOnFiber)?;
+    let mut current = CURRENT.get().ok_or(AsyncError::NotOnFiber)?;
     Ok(f(unsafe { current.as_mut() }))
 }
 
