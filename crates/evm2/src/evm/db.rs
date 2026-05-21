@@ -48,9 +48,9 @@ impl DbErrorCode {
 pub type DbResult<T> = Result<T, DbErrorCode>;
 
 /// Backing database implementation with a concrete error type.
-pub trait Database: Any {
+pub trait Database: Any + Send {
     /// Database error type.
-    type Error: Error + 'static;
+    type Error: Error + Send + 'static;
 
     /// Loads account information.
     fn get_account(&mut self, address: &Address) -> Result<Option<AccountInfo>, Self::Error>;
@@ -124,7 +124,7 @@ impl<T: Database + DatabaseCommit> DatabaseCommit for Db<T> {
 }
 
 #[inline]
-fn stored_error_code() -> DbErrorCode {
+pub(crate) fn stored_error_code() -> DbErrorCode {
     match DbErrorCode::new(1) {
         Some(code) => code,
         None => unreachable!("stored database error code is non-zero"),
@@ -141,6 +141,11 @@ impl fmt::Display for DbErrorUnavailable {
 }
 
 impl Error for DbErrorUnavailable {}
+
+#[inline]
+pub(crate) fn db_error_unavailable(code: DbErrorCode) -> Box<dyn Error + Send> {
+    Box::new(DbErrorUnavailable(code))
+}
 
 impl<T: Database> DynDatabase for Db<T> {
     #[inline]
@@ -164,18 +169,18 @@ impl<T: Database> DynDatabase for Db<T> {
     }
 
     #[inline]
-    fn error(&mut self, code: DbErrorCode) -> Box<dyn Error> {
+    fn error(&mut self, code: DbErrorCode) -> Box<dyn Error + Send> {
         if code == stored_error_code()
             && let Some(err) = self.result.take()
         {
             return Box::new(err);
         }
-        Box::new(DbErrorUnavailable(code))
+        db_error_unavailable(code)
     }
 }
 
 /// Backing database view used to initialize mutable [`super::State`].
-pub trait DynDatabase: Any {
+pub trait DynDatabase: Any + Send {
     /// Loads account information.
     fn get_account(&mut self, address: &Address) -> DbResult<Option<AccountInfo>>;
 
@@ -189,8 +194,24 @@ pub trait DynDatabase: Any {
     fn get_block_hash(&mut self, number: &Word) -> DbResult<Option<B256>>;
 
     /// Retrieves the full error for a previously returned error code.
-    fn error(&mut self, code: DbErrorCode) -> Box<dyn Error> {
-        Box::new(DbErrorUnavailable(code))
+    fn error(&mut self, code: DbErrorCode) -> Box<dyn Error + Send> {
+        db_error_unavailable(code)
+    }
+}
+
+impl core::ops::Deref for dyn DynDatabase + '_ {
+    type Target = dyn Any;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        self
+    }
+}
+
+impl core::ops::DerefMut for dyn DynDatabase + '_ {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self
     }
 }
 
@@ -216,7 +237,7 @@ impl DynDatabase for Box<dyn DynDatabase> {
     }
 
     #[inline]
-    fn error(&mut self, code: DbErrorCode) -> Box<dyn Error> {
+    fn error(&mut self, code: DbErrorCode) -> Box<dyn Error + Send> {
         self.as_mut().error(code)
     }
 }

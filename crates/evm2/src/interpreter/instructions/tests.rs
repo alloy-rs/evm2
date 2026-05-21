@@ -11,6 +11,7 @@ use crate::{
 };
 use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::{Address, B256, Bytes, Log};
+use core::ops::Range;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct TestTypes;
@@ -208,7 +209,7 @@ pub(super) struct TestInterpreter {
     pub(super) stack_len: usize,
     pub(super) gas: Gas,
     pub(super) memory: Memory,
-    pub(super) output: *const [u8],
+    pub(super) output: Range<u32>,
     pub(super) err: InstrStop,
 }
 
@@ -234,9 +235,7 @@ impl TestInterpreter {
     }
 
     pub(super) fn output(&self) -> &[u8] {
-        // SAFETY: The output pointer is created from memory owned by this test interpreter, or is
-        // the shared empty slice pointer.
-        unsafe { &*self.output }
+        self.memory.slice(self.output.start as usize, self.output.len())
     }
 }
 

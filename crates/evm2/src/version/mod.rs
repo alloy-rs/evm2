@@ -50,6 +50,7 @@ pub struct Version {
     pub max_blobs_per_tx: usize,
     /// Blob base fee update fraction.
     pub blob_base_fee_update_fraction: u64,
+
     #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
 }

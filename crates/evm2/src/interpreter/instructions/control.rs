@@ -72,14 +72,19 @@ fn return_inner<T: EvmTypes>(
     result: InstrStop,
 ) -> Result {
     let len = word_to_usize(*len)?;
-    let offset = if len != 0 {
+    let output = if len != 0 {
         let offset = word_to_usize(*offset)?;
+        let Some(end) = offset.checked_add(len) else {
+            return Err(InstrStop::MemoryOOG);
+        };
+        if end > u32::MAX as usize {
+            return Err(InstrStop::MemoryLimitOOG);
+        }
         resize_memory(cx.gas, cx.state.memory(), offset, len)?;
-        offset
+        offset as u32..end as u32
     } else {
-        0
+        0..0
     };
-    let output = cx.state.memory().slice(offset, len) as *const [u8];
     cx.state.set_output(output);
     Err(result)
 }
@@ -232,6 +237,9 @@ mod tests {
 
         let interpreter = run_stack([Word::from(0), Word::MAX], op::RETURN);
         assert!(matches!(interpreter.err, InstrStop::InvalidOperandOOG));
+
+        let interpreter = run_stack([Word::from(u32::MAX), Word::from(1)], op::RETURN);
+        assert!(matches!(interpreter.err, InstrStop::MemoryLimitOOG));
     }
 
     #[test]
@@ -259,5 +267,8 @@ mod tests {
 
         let interpreter = run_stack([Word::from(0), Word::MAX], op::REVERT);
         assert!(matches!(interpreter.err, InstrStop::InvalidOperandOOG));
+
+        let interpreter = run_stack([Word::from(u32::MAX), Word::from(1)], op::REVERT);
+        assert!(matches!(interpreter.err, InstrStop::MemoryLimitOOG));
     }
 }

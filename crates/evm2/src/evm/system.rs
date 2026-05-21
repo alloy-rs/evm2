@@ -43,6 +43,35 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         self.system_call_with_caller(SYSTEM_ADDRESS, system_contract_address, data)
     }
 
+    /// Executes a system call from [`SYSTEM_ADDRESS`] to `system_contract_address` on an async
+    /// fiber.
+    ///
+    /// This must be used with an async database adapter such as [`crate::AsyncDb`] to take
+    /// advantage of yielding database I/O. With a synchronous database this is mostly equivalent to
+    /// running the synchronous system call on a fiber.
+    #[cfg(feature = "async")]
+    #[inline]
+    pub fn system_call_async(
+        &mut self,
+        system_contract_address: Address,
+        data: Bytes,
+    ) -> impl core::future::Future<
+        Output = crate::AsyncResult<TxResult<T>, core::convert::Infallible>,
+    > + Send
+    + '_
+    where
+        T::TxResultExt: Send,
+    {
+        let stack = self.async_stack();
+        // SAFETY: The returned future owns the exclusive `&mut self` borrow, so nothing else can
+        // access the EVM stack slot until that future is dropped.
+        unsafe {
+            crate::async_::on_fiber_with_stack(stack, move || {
+                self.system_call(system_contract_address, data)
+            })
+        }
+    }
+
     /// Executes a system call from `caller` to `system_contract_address`.
     ///
     /// System calls bypass normal transaction validation, nonce updates, fee charging, gas refunds,
@@ -105,6 +134,35 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         result.db_error_code = self.db_error_code();
         self.state.clear_transaction_state();
         result
+    }
+
+    /// Executes a system call from `caller` to `system_contract_address` on an async fiber.
+    ///
+    /// This must be used with an async database adapter such as [`crate::AsyncDb`] to take
+    /// advantage of yielding database I/O. With a synchronous database this is mostly equivalent to
+    /// running the synchronous system call on a fiber.
+    #[cfg(feature = "async")]
+    #[inline]
+    pub fn system_call_with_caller_async(
+        &mut self,
+        caller: Address,
+        system_contract_address: Address,
+        data: Bytes,
+    ) -> impl core::future::Future<
+        Output = crate::AsyncResult<TxResult<T>, core::convert::Infallible>,
+    > + Send
+    + '_
+    where
+        T::TxResultExt: Send,
+    {
+        let stack = self.async_stack();
+        // SAFETY: The returned future owns the exclusive `&mut self` borrow, so nothing else can
+        // access the EVM stack slot until that future is dropped.
+        unsafe {
+            crate::async_::on_fiber_with_stack(stack, move || {
+                self.system_call_with_caller(caller, system_contract_address, data)
+            })
+        }
     }
 }
 

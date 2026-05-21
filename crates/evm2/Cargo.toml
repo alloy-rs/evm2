@@ -31,6 +31,10 @@ once_cell = { workspace = true, features = ["alloc"] }
 # "serde"
 serde = { workspace = true, features = ["derive", "alloc"], optional = true }
 
+# "async"
+tokio = { workspace = true, features = ["rt-multi-thread"], optional = true }
+corosensei = { workspace = true, optional = true }
+
 # ecrecover
 k256 = { workspace = true, features = ["ecdsa"] }
 secp256k1 = { workspace = true, features = [
@@ -82,6 +86,7 @@ serde_json = { workspace = true, features = ["std"] }
 rand = { workspace = true, features = ["std"] }
 ark-std = { workspace = true }
 rstest.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
 revm = { version = "38", default-features = true, features = ["test-types"] }
@@ -127,6 +132,8 @@ std = [
     "secp256k1?/std",
     "serde?/std",
 ]
+
+async = ["std", "dep:tokio", "dep:corosensei"]
 
 serde = [
     "dep:serde",

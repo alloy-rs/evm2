@@ -13,6 +13,11 @@ pub mod ethereum;
 pub mod interpreter;
 pub mod utils;
 
+#[cfg(feature = "async")]
+mod async_;
+#[cfg(feature = "async")]
+pub use async_::{AsyncDatabase, AsyncDb, AsyncError, AsyncResult};
+
 pub mod evm;
 pub use evm::{
     BEACON_ROOTS_ADDRESS, CONSOLIDATION_REQUEST_ADDRESS, Evm, HISTORY_STORAGE_ADDRESS,
