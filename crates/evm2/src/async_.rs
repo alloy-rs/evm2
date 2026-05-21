@@ -242,10 +242,7 @@ impl<R> Drop for FiberFuture<'_, R> {
 ///
 /// Returns [`AsyncError::NotOnFiber`] if called outside async EVM execution, or
 /// [`AsyncError::Cancelled`] if the outer async EVM execution was dropped.
-pub(crate) fn block_on_current<F>(future: F) -> AsyncResult<F::Output>
-where
-    F: Future + Send,
-{
+pub(crate) fn block_on_current<F: Future>(future: F) -> AsyncResult<F::Output> {
     let mut future = core::pin::pin!(future);
     loop {
         match with_current(|current| {
@@ -257,7 +254,7 @@ where
                 current.suspend()?;
             }
             Ok(poll)
-        })?? {
+        })? {
             Poll::Ready(value) => return Ok(value),
             Poll::Pending => {}
         }
@@ -347,9 +344,9 @@ where
     }
 }
 
-fn with_current<R>(f: impl FnOnce(&mut CurrentFiber) -> R) -> AsyncResult<R> {
+fn with_current<R>(f: impl FnOnce(&mut CurrentFiber) -> AsyncResult<R>) -> AsyncResult<R> {
     let mut current = CURRENT.get().ok_or(AsyncError::NotOnFiber)?;
-    Ok(f(unsafe { current.as_mut() }))
+    f(unsafe { current.as_mut() })
 }
 
 unsafe fn change_context_lifetime<'a>(cx: &'a mut Context<'_>) -> &'a mut Context<'static> {
