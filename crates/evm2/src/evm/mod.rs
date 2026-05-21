@@ -38,6 +38,7 @@ pub use db::{
     Cache, CacheDB, Database, DatabaseCommit, Db, DbErrorCode, DbResult, DynDatabase, EmptyDB,
     InMemoryDB,
 };
+#[cfg(feature = "async")]
 pub(crate) use db::{db_error_unavailable, stored_error_code};
 
 mod state;
