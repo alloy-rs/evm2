@@ -185,14 +185,6 @@ impl<T: EvmTypes> Evm<T> {
         self.state.set_initial(database);
     }
 
-    /// Sets the minimum async EVM fiber stack size in bytes.
-    ///
-    /// Currently unused unless the `"async"` feature is enabled.
-    #[inline]
-    pub const fn set_min_stack_size(&mut self, min_stack_size: usize) {
-        self.execution_config.version.min_stack_size = min_stack_size;
-    }
-
     /// Returns the backing database as `D` if it has that concrete type.
     #[inline]
     pub fn database_as<D: DynDatabase>(&self) -> Option<&D> {
@@ -380,8 +372,7 @@ impl<T: EvmTypes<Tx: Typed2718>> Evm<T> {
     where
         T::TxResultExt: Send,
     {
-        let stack_size = self.version().min_stack_size;
-        crate::async_::on_fiber_result(stack_size, move || self.transact(tx))
+        crate::async_::on_fiber_result(move || self.transact(tx))
     }
 
     /// Dispatches each transaction to its registered EIP-2718 handler.

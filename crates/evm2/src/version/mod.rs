@@ -51,12 +51,6 @@ pub struct Version {
     /// Blob base fee update fraction.
     pub blob_base_fee_update_fraction: u64,
 
-    // Implementation config.
-    /// Minimum async EVM fiber stack size in bytes.
-    ///
-    /// Currently unused unless the `"async"` feature is enabled.
-    pub min_stack_size: usize,
-
     #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
 }
@@ -113,7 +107,6 @@ const fn base_blob_base_fee_update_fraction(spec_id: SpecId) -> u64 {
 
 const DEFAULT_MEMORY_LIMIT: u64 = (1 << 32) - 1;
 const DEFAULT_CHAIN_ID: u64 = 1;
-const DEFAULT_MIN_STACK_SIZE: usize = 1024 * 1024;
 
 static BASE_VERSIONS: [Version; SpecId::COUNT] = {
     let mut versions = [const {
@@ -128,7 +121,6 @@ static BASE_VERSIONS: [Version; SpecId::COUNT] = {
             max_initcode_size: MAX_INITCODE_SIZE,
             max_blobs_per_tx: MAX_BLOBS_PER_BLOCK_DENCUN,
             blob_base_fee_update_fraction: BLOB_BASE_FEE_UPDATE_FRACTION_CANCUN,
-            min_stack_size: DEFAULT_MIN_STACK_SIZE,
             _non_exhaustive: (),
         }
     }; SpecId::COUNT];
@@ -146,7 +138,6 @@ static BASE_VERSIONS: [Version; SpecId::COUNT] = {
             max_initcode_size: base_max_initcode_size(spec_id),
             max_blobs_per_tx: base_max_blobs_per_tx(spec_id),
             blob_base_fee_update_fraction: base_blob_base_fee_update_fraction(spec_id),
-            min_stack_size: DEFAULT_MIN_STACK_SIZE,
             _non_exhaustive: (),
         };
         i += 1;
