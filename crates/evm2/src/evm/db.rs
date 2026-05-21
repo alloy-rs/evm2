@@ -48,9 +48,9 @@ impl DbErrorCode {
 pub type DbResult<T> = Result<T, DbErrorCode>;
 
 /// Backing database implementation with a concrete error type.
-pub trait Database: Any {
+pub trait Database: Any + Send {
     /// Database error type.
-    type Error: Error + 'static;
+    type Error: Error + Send + 'static;
 
     /// Loads account information.
     fn get_account(&mut self, address: &Address) -> Result<Option<AccountInfo>, Self::Error>;
@@ -164,7 +164,7 @@ impl<T: Database> DynDatabase for Db<T> {
     }
 
     #[inline]
-    fn error(&mut self, code: DbErrorCode) -> Box<dyn Error> {
+    fn error(&mut self, code: DbErrorCode) -> Box<dyn Error + Send> {
         if code == stored_error_code()
             && let Some(err) = self.result.take()
         {
@@ -175,7 +175,7 @@ impl<T: Database> DynDatabase for Db<T> {
 }
 
 /// Backing database view used to initialize mutable [`super::State`].
-pub trait DynDatabase: Any {
+pub trait DynDatabase: Any + Send {
     /// Loads account information.
     fn get_account(&mut self, address: &Address) -> DbResult<Option<AccountInfo>>;
 
@@ -189,8 +189,14 @@ pub trait DynDatabase: Any {
     fn get_block_hash(&mut self, number: &Word) -> DbResult<Option<B256>>;
 
     /// Retrieves the full error for a previously returned error code.
-    fn error(&mut self, code: DbErrorCode) -> Box<dyn Error> {
+    fn error(&mut self, code: DbErrorCode) -> Box<dyn Error + Send> {
         Box::new(DbErrorUnavailable(code))
+    }
+
+    /// Sets the asynchronous database I/O mode, if supported by this database.
+    #[cfg(feature = "async")]
+    fn set_io_mode(&mut self, _io_mode: crate::IoMode) -> bool {
+        false
     }
 }
 
@@ -216,8 +222,14 @@ impl DynDatabase for Box<dyn DynDatabase> {
     }
 
     #[inline]
-    fn error(&mut self, code: DbErrorCode) -> Box<dyn Error> {
+    fn error(&mut self, code: DbErrorCode) -> Box<dyn Error + Send> {
         self.as_mut().error(code)
+    }
+
+    #[cfg(feature = "async")]
+    #[inline]
+    fn set_io_mode(&mut self, io_mode: crate::IoMode) -> bool {
+        self.as_mut().set_io_mode(io_mode)
     }
 }
 

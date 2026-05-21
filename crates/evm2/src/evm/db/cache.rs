@@ -202,8 +202,14 @@ impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
     }
 
     #[inline]
-    fn error(&mut self, code: DbErrorCode) -> alloc::boxed::Box<dyn core::error::Error> {
+    fn error(&mut self, code: DbErrorCode) -> alloc::boxed::Box<dyn core::error::Error + Send> {
         self.db.error(code)
+    }
+
+    #[cfg(feature = "async")]
+    #[inline]
+    fn set_io_mode(&mut self, io_mode: crate::IoMode) -> bool {
+        self.db.set_io_mode(io_mode)
     }
 }
 

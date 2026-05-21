@@ -434,6 +434,11 @@ pub(crate) struct InterpreterPool<T: EvmTypes> {
     frames: Vec<Box<Interpreter<'static, T>>>,
 }
 
+// SAFETY: Pooled interpreters have their frame-local references cleared before storage. The raw
+// pointers that remain either point into owned bytecode/output buffers or are reset on the next
+// initialization before use.
+unsafe impl<T: EvmTypes> Send for InterpreterPool<T> {}
+
 impl<T: EvmTypes> InterpreterPool<T> {
     pub(crate) const fn new() -> Self {
         Self { frames: Vec::new() }

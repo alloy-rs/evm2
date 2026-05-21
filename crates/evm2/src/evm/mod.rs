@@ -183,6 +183,13 @@ impl<T: EvmTypes> Evm<T> {
         self.state.set_initial(database);
     }
 
+    /// Sets the asynchronous database I/O mode, if supported by the backing database.
+    #[cfg(feature = "async")]
+    #[inline]
+    pub fn set_io_mode(&mut self, io_mode: crate::IoMode) -> bool {
+        self.database_mut().set_io_mode(io_mode)
+    }
+
     /// Returns the backing database as `D` if it has that concrete type.
     #[inline]
     pub fn database_as<D: DynDatabase>(&self) -> Option<&D> {
@@ -1508,11 +1515,11 @@ mod tests {
     }
 
     #[cfg(feature = "async")]
-    fn poll_ready<F: core::future::Future>(future: F) -> F::Output {
+    fn poll_ready<F: core::future::Future + Send>(future: F) -> F::Output {
         use core::task::Poll;
         use std::task::{Context, Waker};
 
-        let mut future = Box::pin(future);
+        let mut future = core::pin::pin!(future);
         let waker = Waker::noop();
         let mut cx = Context::from_waker(waker);
 

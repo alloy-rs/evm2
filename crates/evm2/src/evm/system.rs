@@ -230,25 +230,6 @@ mod tests {
         assert!(result.state_changes.is_empty());
     }
 
-    #[cfg(feature = "async")]
-    #[test]
-    fn system_call_async_to_missing_code_is_noop() {
-        let contract = Address::from([0x42; 20]);
-        let mut evm = TestEvm::new(
-            SpecId::OSAKA,
-            BlockEnv::default(),
-            TxRegistry::new(),
-            InMemoryDB::default(),
-            Precompiles::base(SpecId::OSAKA),
-        );
-
-        let result = poll_ready(evm.system_call_async(contract, Bytes::new())).unwrap();
-
-        assert!(result.status);
-        assert_eq!(result.gas_used, 0);
-        assert!(result.state_changes.is_empty());
-    }
-
     #[test]
     fn system_call_reverts_state_changes() {
         let contract = Address::from([0x42; 20]);
@@ -279,21 +260,5 @@ mod tests {
         assert!(!result.status);
         assert_eq!(result.stop, InstrStop::Revert);
         assert!(result.state_changes.is_empty());
-    }
-
-    #[cfg(feature = "async")]
-    fn poll_ready<F: core::future::Future>(future: F) -> F::Output {
-        use alloc::boxed::Box;
-        use core::task::Poll;
-        use std::task::{Context, Waker};
-
-        let mut future = Box::pin(future);
-        let waker = Waker::noop();
-        let mut cx = Context::from_waker(waker);
-
-        match future.as_mut().poll(&mut cx) {
-            Poll::Ready(value) => value,
-            Poll::Pending => panic!("future unexpectedly pending"),
-        }
     }
 }

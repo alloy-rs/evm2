@@ -14,7 +14,7 @@ use evm2::{
     interpreter::{InstrStop, Interpreter, Message, MessageResult, op},
     registry::HandlerResult,
 };
-use std::{cell::RefCell, rc::Rc};
+use std::sync::{Arc, Mutex};
 use tx::{CustomEnvelope, ExecuteCodeTx, custom_registry};
 
 pub mod config;
@@ -106,8 +106,8 @@ fn mainnet_fallback() -> HandlerResult<()> {
 
 fn inspector() -> HandlerResult<()> {
     let mut evm = custom_evm();
-    let inspector_state = Rc::new(RefCell::new(InspectorState::default()));
-    evm.set_inspector(ExampleInspector(Rc::clone(&inspector_state)));
+    let inspector_state = Arc::new(Mutex::new(InspectorState::default()));
+    evm.set_inspector(ExampleInspector(Arc::clone(&inspector_state)));
     let tx = custom_opcode_tx(Bytes::from_static(&[
         op::PUSH1,
         0,
@@ -119,7 +119,7 @@ fn inspector() -> HandlerResult<()> {
     ]));
 
     let result = evm.transact(&tx)?;
-    let inspector_state = inspector_state.borrow();
+    let inspector_state = inspector_state.lock().unwrap();
     let expected_opcodes = [op::PUSH1, op::PUSH1, op::LOG0, opcode::CUSTOM_OPCODE, op::STOP];
 
     println!(
@@ -202,29 +202,29 @@ struct InspectorState {
     opcodes: Vec<u8>,
 }
 
-struct ExampleInspector(Rc<RefCell<InspectorState>>);
+struct ExampleInspector(Arc<Mutex<InspectorState>>);
 
 impl Inspector<CustomTypes> for ExampleInspector {
     fn initialize_interp(&mut self, _interp: &mut Interpreter<'_, CustomTypes>) {
-        self.0.borrow_mut().initialized += 1;
+        self.0.lock().unwrap().initialized += 1;
     }
 
     fn step(&mut self, interp: &mut Interpreter<'_, CustomTypes>) {
-        let mut state = self.0.borrow_mut();
+        let mut state = self.0.lock().unwrap();
         state.steps += 1;
         state.opcodes.push(interp.opcode());
     }
 
     fn step_end(&mut self, _interp: &mut Interpreter<'_, CustomTypes>) {
-        self.0.borrow_mut().step_ends += 1;
+        self.0.lock().unwrap().step_ends += 1;
     }
 
     fn log(&mut self, _log: &alloy_primitives::Log) {
-        self.0.borrow_mut().logs += 1;
+        self.0.lock().unwrap().logs += 1;
     }
 
     fn call(&mut self, _message: &mut Message<CustomTypes>) -> Option<MessageResult<CustomTypes>> {
-        self.0.borrow_mut().calls += 1;
+        self.0.lock().unwrap().calls += 1;
         None
     }
 }

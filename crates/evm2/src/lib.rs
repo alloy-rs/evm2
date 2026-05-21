@@ -33,7 +33,7 @@ pub use precompiles::{
 };
 
 #[cfg(feature = "async")]
-pub use async_::{AsyncDatabase, AsyncDb, AsyncError, AsyncResult};
+pub use async_::{AsyncDatabase, AsyncDb, AsyncError, AsyncResult, IoMode};
 
 pub(crate) mod trustme;
 

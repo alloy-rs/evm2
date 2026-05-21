@@ -55,6 +55,7 @@ rstest = "0.26.0"
 serde = { version = "1.0", default-features = false }
 serde_json = { version = "1.0", default-features = false }
 thiserror = { version = "2.0", default-features = false }
+tokio = { version = "1", default-features = false }
 walkdir = { version = "2.5", default-features = false }
 wasmtime-fiber = { package = "wasmtime-internal-fiber", version = "44.0.1", default-features = false }
 
