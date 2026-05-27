@@ -90,13 +90,12 @@ impl<T: EvmTypes> core::ops::DerefMut for dyn Inspector<T> + '_ {
 mod tests {
     use super::Inspector;
     use crate::{
-        BaseEvmConfigSelector, BaseEvmTypes, Evm, ExecutionConfig, Precompiles, SYSTEM_ADDRESS,
-        SpecId,
+        BaseEvmConfigSelector, BaseEvmTypes, Evm, ExecutionConfig, Precompiles, SpecId,
         bytecode::Bytecode,
         constants::CALL_DEPTH_LIMIT,
         env::{BlockEnv, TxEnv},
         ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
-        evm::{AccountInfo, InMemoryDB, SelfDestructResult},
+        evm::{AccountInfo, InMemoryDB, SYSTEM_ADDRESS, SelfDestructResult},
         interpreter::{
             GasTracker, InstrStop, Interpreter, Message, MessageResult, Word,
             instructions::tests::{TestHost, TestTypes, push},
