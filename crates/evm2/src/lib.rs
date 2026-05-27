@@ -20,8 +20,7 @@ pub use async_::{AsyncDatabase, AsyncDb, AsyncError, AsyncResult};
 
 pub mod evm;
 pub use evm::{
-    BEACON_ROOTS_ADDRESS, CONSOLIDATION_REQUEST_ADDRESS, Evm, HISTORY_STORAGE_ADDRESS,
-    SYSTEM_ADDRESS, SYSTEM_CALL_GAS_LIMIT, TxResult, WITHDRAWAL_REQUEST_ADDRESS, config,
+    Evm, TxResult, config,
     config::{
         BaseEvmConfig, BaseEvmConfigSelector, BaseEvmTypes, EvmConfig, EvmConfigSelector, EvmTypes,
         ExecutionConfig,
