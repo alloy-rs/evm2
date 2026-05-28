@@ -105,4 +105,20 @@ All `tests/it/writer/**` snapshot files are byte-for-byte unchanged from upstrea
 
 ## MANUAL
 
-Manual follow-ups from the previous pass were resolved or recorded above.
+- src__tracing__builder__geth.rs.diff
+  - spec_id ... i guess its ok
+- src__tracing__builder__parity.rs.diff
+- src__tracing__config.rs.diff
+  - from_geth_prestate_config
+- src__tracing__js__bindings.rs.diff
+  - weird db stuff
+- src__tracing__js__mod.rs.diff
+  - result status enum?
+  - fn try_* gone/moved?
+  - SharedJsInspector???
+  - test indentation
+- src__tracing__mod.rs.diff
+  - why remove reusable_step_vecs
+  - fn start_trace do we need those address matchings?
+- src__tracing__utils.rs.diff
+  - fn gas_used -- could be reused
