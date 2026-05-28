@@ -28,6 +28,17 @@ impl Coverage {
             if tx.is_create() {
                 inc_string(&mut self.features, "tx_create");
             }
+            if let Some(precompile) = tx.direct_precompile() {
+                inc_string(&mut self.features, "precompile_direct_tx");
+                inc_string(&mut self.features, precompile.feature());
+                inc_string(
+                    &mut self.features,
+                    format!("precompile_input_{}", tx.precompile_input_shape(precompile)),
+                );
+                if !precompile.is_enabled(case.spec) {
+                    inc_string(&mut self.features, "precompile_future_address");
+                }
+            }
             if !tx.kind.is_enabled(case.spec) {
                 inc_string(&mut self.features, "fork_invalid_tx");
             }

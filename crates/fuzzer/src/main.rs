@@ -24,6 +24,7 @@ mod coverage;
 mod io;
 mod minimize;
 mod normalize;
+mod precompile;
 mod program;
 mod rng;
 

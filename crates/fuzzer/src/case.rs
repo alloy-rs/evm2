@@ -1,4 +1,8 @@
-use crate::{program::Program, rng::Gen};
+use crate::{
+    precompile::{self, PrecompileTarget},
+    program::Program,
+    rng::Gen,
+};
 use alloy_consensus::{
     TxEip1559, TxEip2930, TxEip4844, TxEip7702, TxLegacy,
     transaction::{Recovered, TxEip4844Variant},
@@ -92,6 +96,10 @@ impl EvmCase {
             address_pool.push(account.address);
         }
         let mut call_pool = Vec::new();
+        for precompile in precompile::targets() {
+            address_pool.push(precompile.address());
+            call_pool.push(precompile.address());
+        }
         call_pool.push(CALLER);
         call_pool.push(eip7702_authority);
         call_pool.push(EIP7702_DELEGATED_TARGET);
@@ -514,11 +522,14 @@ impl CaseTx {
         nonce: u64,
     ) -> Self {
         let kind = TxKindCase::generate(rng, spec);
-        let creates = kind.supports_create() && rng.one_in(8);
+        let direct_precompile = rng.one_in(10).then(|| precompile::random_target(rng, spec));
+        let creates = direct_precompile.is_none() && kind.supports_create() && rng.one_in(8);
         Self {
             kind,
             caller: CALLER,
-            target: if kind == TxKindCase::Eip7702 && rng.one_in(4) {
+            target: if let Some(precompile) = direct_precompile {
+                precompile.address()
+            } else if kind == TxKindCase::Eip7702 && rng.one_in(4) {
                 fixed_eip7702_authority()
             } else {
                 TARGET
@@ -533,7 +544,13 @@ impl CaseTx {
             },
             gas_price: 1,
             value: if rng.one_in(8) { rng.small_word(10) } else { U256::ZERO },
-            input: if creates { creation_input(rng, spec) } else { rng.bytes(input_len).into() },
+            input: if creates {
+                creation_input(rng, spec)
+            } else if let Some(precompile) = direct_precompile {
+                precompile::input(rng, precompile).bytes
+            } else {
+                rng.bytes(input_len).into()
+            },
             nonce,
             access_list: generate_access_list(rng, accounts),
             blob_hashes: vec![versioned_hash(rng)],
@@ -627,6 +644,14 @@ impl CaseTx {
 
     pub(crate) const fn is_create(&self) -> bool {
         self.creates
+    }
+
+    pub(crate) fn direct_precompile(&self) -> Option<PrecompileTarget> {
+        if self.creates { None } else { precompile::target_for_address(self.target) }
+    }
+
+    pub(crate) fn precompile_input_shape(&self, precompile: PrecompileTarget) -> &'static str {
+        precompile::input_shape(precompile, self.input.len())
     }
 
     const fn evm2_tx_kind(&self) -> TxKind {

@@ -1,4 +1,4 @@
-use crate::rng::Gen;
+use crate::{precompile, rng::Gen};
 use alloy_primitives::{Address, Bytes, U256};
 use evm2::{SpecId, interpreter::op};
 use std::collections::BTreeSet;
@@ -295,41 +295,44 @@ impl Program {
     }
 
     fn precompile_call(&mut self, rng: &mut Gen, spec: SpecId) {
-        let precompiles: &[u8] = if self.allow_fork_feature(rng, spec, SpecId::ISTANBUL) {
-            &[1, 2, 3, 4, 5, 6, 7, 8, 9]
-        } else if self.allow_fork_feature(rng, spec, SpecId::BYZANTIUM) {
-            &[1, 2, 3, 4, 5, 6, 7, 8]
-        } else {
-            &[1, 2, 3, 4]
-        };
-        let precompile = Address::with_last_byte(rng.pick(precompiles));
-        let input_offset: u64 = rng.pick(&[0, 32, 64, 96]);
-        let input_len: u64 = rng.pick(&[0, 1, 20, 31, 32, 64, 96, 128, 192]);
-        let words = input_len.div_ceil(32);
-        for word in 0..words {
-            self.push_word(rng.biased_word());
-            self.push_u64(input_offset + word * 32);
-            self.emit(op::MSTORE, 2, 0);
+        let precompile = precompile::random_target(rng, spec);
+        let input = precompile::input(rng, precompile);
+        self.mark("precompile_call");
+        self.mark(precompile.feature());
+        self.mark(match input.shape {
+            "empty" => "precompile_input_empty",
+            "exact" => "precompile_input_exact",
+            "short" => "precompile_input_short",
+            "long" => "precompile_input_long",
+            _ => "precompile_input_arbitrary",
+        });
+        if !precompile.is_enabled(spec) {
+            self.mark("precompile_future_address");
         }
 
+        let input_offset: u64 = rng.pick(&[0, 32, 64, 96]);
+        self.write_memory(input_offset, &input.bytes);
+
         let return_offset: u64 = rng.pick(&[0, 32, 64, 128]);
-        let return_len: u64 = rng.pick(&[0, 1, 20, 32, 64, 128]);
+        let return_len: u64 = rng.pick(&[0, 1, 20, 32, 64, 96, 128, 256]);
         let gas: u64 = rng.pick(&[0, 1, 3_000, 10_000, 50_000, 200_000, 2_000_000]);
         if self.allow_fork_feature(rng, spec, SpecId::BYZANTIUM) && rng.one_in(2) {
+            self.mark("precompile_staticcall");
             self.push_u64(return_len);
             self.push_u64(return_offset);
-            self.push_u64(input_len);
+            self.push_u64(input.bytes.len() as u64);
             self.push_u64(input_offset);
-            self.push_address(precompile);
+            self.push_address(precompile.address());
             self.push_u64(gas);
             self.emit(op::STATICCALL, 6, 1);
         } else {
+            self.mark("precompile_call_op");
             self.push_u64(return_len);
             self.push_u64(return_offset);
-            self.push_u64(input_len);
+            self.push_u64(input.bytes.len() as u64);
             self.push_u64(input_offset);
             self.push_u64(0);
-            self.push_address(precompile);
+            self.push_address(precompile.address());
             self.push_u64(gas);
             self.emit(op::CALL, 7, 1);
         }
@@ -595,6 +598,14 @@ impl Program {
             self.stack_height += 1;
         } else {
             self.emit(0xfe, 0, 0);
+        }
+    }
+
+    fn write_memory(&mut self, offset: u64, bytes: &[u8]) {
+        for (index, chunk) in bytes.chunks(32).enumerate() {
+            self.push_bytes_word(chunk);
+            self.push_u64(offset + (index as u64) * 32);
+            self.emit(op::MSTORE, 2, 0);
         }
     }
 
