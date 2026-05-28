@@ -101,6 +101,9 @@ fn normalize_error(error: String) -> String {
     if error.starts_with("IntrinsicGasTooLow") || error.starts_with("CallGasCostMoreThanGasLimit") {
         return "IntrinsicGasTooLow".to_string();
     }
+    if error.starts_with("LackOfFundForMaxFee") || error == "InsufficientFunds" {
+        return "InsufficientFunds".to_string();
+    }
     error.to_string()
 }
 
