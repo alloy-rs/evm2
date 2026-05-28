@@ -7,6 +7,14 @@ pub(crate) struct Program {
     stack_height: usize,
 }
 
+fn allow_fork_feature(rng: &mut Gen, spec: SpecId, since: SpecId) -> bool {
+    spec.enables(since) || rng.one_in(20)
+}
+
+const fn allow_state_touching_programs(spec: SpecId) -> bool {
+    spec.enables(SpecId::SPURIOUS_DRAGON)
+}
+
 impl Program {
     pub(crate) fn generate(
         rng: &mut Gen,
@@ -25,25 +33,25 @@ impl Program {
                 69..=73 => program.calldata(rng),
                 74..=79 => program.external_account(rng, spec, addresses),
                 80..=83 => program.log(rng),
-                84..=86 if spec.enables(SpecId::SPURIOUS_DRAGON) => {
+                84..=86 if allow_state_touching_programs(spec) => {
                     program.precompile_call(rng, spec)
                 }
                 84..=86 => program.literal(rng, spec),
-                87..=89 if spec.enables(SpecId::SPURIOUS_DRAGON) => {
+                87..=89 if allow_state_touching_programs(spec) => {
                     program.generic_call(rng, spec, call_addresses)
                 }
                 87..=89 => program.literal(rng, spec),
-                90..=91 if spec.enables(SpecId::SPURIOUS_DRAGON) => {
+                90..=91 if allow_state_touching_programs(spec) => {
                     program.returndata(rng, spec, call_addresses)
                 }
                 90..=91 => program.literal(rng, spec),
-                92..=93 if spec.enables(SpecId::SPURIOUS_DRAGON) => program.create(rng, spec),
+                92..=93 if allow_state_touching_programs(spec) => program.create(rng, spec),
                 92..=93 => program.literal(rng, spec),
                 94..=95 => program.cancun(rng, spec),
                 96 => program.jump(rng),
                 97 if rng.one_in(2) => program.stack_shuffle(rng),
                 97 => program.stack_cleanup(),
-                98 if spec.enables(SpecId::SPURIOUS_DRAGON) => program.raw_invalidish(rng),
+                98 if allow_state_touching_programs(spec) => program.raw_invalidish(rng),
                 98 => program.literal(rng, spec),
                 _ => program.literal(rng, spec),
             }
@@ -53,7 +61,7 @@ impl Program {
         }
         match rng.range(10) {
             0 => program.finish_return(false),
-            1 if spec.enables(SpecId::BYZANTIUM) => program.finish_return(true),
+            1 if allow_fork_feature(rng, spec, SpecId::BYZANTIUM) => program.finish_return(true),
             _ => program.emit(op::STOP, 0, 0),
         }
         program
@@ -88,7 +96,7 @@ impl Program {
                     op::XOR,
                     op::BYTE,
                 ];
-                if spec.enables(SpecId::ISTANBUL) {
+                if allow_fork_feature(rng, spec, SpecId::ISTANBUL) {
                     ops.extend([op::SHL, op::SHR, op::SAR]);
                 }
                 self.emit(rng.pick(&ops), 2, 1);
@@ -138,7 +146,7 @@ impl Program {
                 self.push_u64(offset);
                 self.emit(op::CODECOPY, 3, 0);
             }
-            6 if spec.enables(SpecId::CANCUN) => {
+            6 if allow_fork_feature(rng, spec, SpecId::CANCUN) => {
                 self.push_u64(rng.pick(&[0, 1, 31, 32, 64]));
                 self.push_u64(rng.pick(&[0, 32, 64, 96]));
                 self.push_u64(offset);
@@ -178,10 +186,10 @@ impl Program {
                     op::GASLIMIT,
                     op::GAS,
                 ];
-                if spec.enables(SpecId::ISTANBUL) {
+                if allow_fork_feature(rng, spec, SpecId::ISTANBUL) {
                     ops.push(op::CHAINID);
                 }
-                if spec.enables(SpecId::LONDON) {
+                if allow_fork_feature(rng, spec, SpecId::LONDON) {
                     ops.push(op::BASEFEE);
                 }
                 self.emit(rng.pick(&ops), 0, 1);
@@ -220,7 +228,7 @@ impl Program {
                 self.push_address(address);
                 self.emit(op::EXTCODESIZE, 1, 1);
             }
-            2 if spec.enables(SpecId::ISTANBUL) => {
+            2 if allow_fork_feature(rng, spec, SpecId::ISTANBUL) => {
                 self.push_address(address);
                 self.emit(op::EXTCODEHASH, 1, 1);
             }
@@ -231,7 +239,9 @@ impl Program {
                 self.push_address(address);
                 self.emit(op::EXTCODECOPY, 4, 0);
             }
-            _ if spec.enables(SpecId::ISTANBUL) => self.emit(op::SELFBALANCE, 0, 1),
+            _ if allow_fork_feature(rng, spec, SpecId::ISTANBUL) => {
+                self.emit(op::SELFBALANCE, 0, 1)
+            }
             _ => {
                 self.push_address(address);
                 self.emit(op::BALANCE, 1, 1);
@@ -259,9 +269,9 @@ impl Program {
     }
 
     fn precompile_call(&mut self, rng: &mut Gen, spec: SpecId) {
-        let precompiles: &[u8] = if spec.enables(SpecId::ISTANBUL) {
+        let precompiles: &[u8] = if allow_fork_feature(rng, spec, SpecId::ISTANBUL) {
             &[1, 2, 3, 4, 5, 6, 7, 8, 9]
-        } else if spec.enables(SpecId::BYZANTIUM) {
+        } else if allow_fork_feature(rng, spec, SpecId::BYZANTIUM) {
             &[1, 2, 3, 4, 5, 6, 7, 8]
         } else {
             &[1, 2, 3, 4]
@@ -279,7 +289,7 @@ impl Program {
         let return_offset: u64 = rng.pick(&[0, 32, 64, 128]);
         let return_len: u64 = rng.pick(&[0, 1, 20, 32, 64, 128]);
         let gas: u64 = rng.pick(&[0, 1, 3_000, 10_000, 50_000, 200_000, 2_000_000]);
-        if spec.enables(SpecId::BYZANTIUM) && rng.one_in(2) {
+        if allow_fork_feature(rng, spec, SpecId::BYZANTIUM) && rng.one_in(2) {
             self.push_u64(return_len);
             self.push_u64(return_offset);
             self.push_u64(input_len);
@@ -313,7 +323,7 @@ impl Program {
         let return_len: u64 = rng.pick(&[0, 1, 4, 32, 64]);
         let gas: u64 = rng.pick(&[0, 1, 2_300, 10_000, 50_000, 200_000]);
         match rng.range(4) {
-            0 if spec.enables(SpecId::BYZANTIUM) => {
+            0 if allow_fork_feature(rng, spec, SpecId::BYZANTIUM) => {
                 self.push_u64(return_len);
                 self.push_u64(return_offset);
                 self.push_u64(input_len);
@@ -322,7 +332,7 @@ impl Program {
                 self.push_u64(gas);
                 self.emit(op::STATICCALL, 6, 1);
             }
-            1 if spec.enables(SpecId::HOMESTEAD) => {
+            1 if allow_fork_feature(rng, spec, SpecId::HOMESTEAD) => {
                 self.push_u64(return_len);
                 self.push_u64(return_offset);
                 self.push_u64(input_len);
@@ -355,7 +365,7 @@ impl Program {
     }
 
     fn returndata(&mut self, rng: &mut Gen, spec: SpecId, call_addresses: &[Address]) {
-        if !spec.enables(SpecId::BYZANTIUM) {
+        if !allow_fork_feature(rng, spec, SpecId::BYZANTIUM) {
             self.literal(rng, spec);
             return;
         }
@@ -374,7 +384,7 @@ impl Program {
     }
 
     fn cancun(&mut self, rng: &mut Gen, spec: SpecId) {
-        if !spec.enables(SpecId::CANCUN) {
+        if !allow_fork_feature(rng, spec, SpecId::CANCUN) {
             self.literal(rng, spec);
             return;
         }
@@ -401,7 +411,9 @@ impl Program {
             0 => Vec::new(),
             1 => vec![op::STOP],
             2 => vec![op::PUSH1, 0, op::PUSH1, 0, op::RETURN],
-            3 if spec.enables(SpecId::BYZANTIUM) => vec![op::PUSH1, 0, op::PUSH1, 0, op::REVERT],
+            3 if allow_fork_feature(rng, spec, SpecId::BYZANTIUM) => {
+                vec![op::PUSH1, 0, op::PUSH1, 0, op::REVERT]
+            }
             _ => vec![
                 op::PUSH1,
                 0,
@@ -421,7 +433,7 @@ impl Program {
             self.push_u64(offset);
             self.emit(op::MSTORE, 2, 0);
         }
-        if rng.one_in(2) || !spec.enables(SpecId::ISTANBUL) {
+        if rng.one_in(2) || !allow_fork_feature(rng, spec, SpecId::ISTANBUL) {
             self.push_u64(initcode.len() as u64);
             self.push_u64(offset);
             self.push_u64(rng.pick(&[0, 0, 0, 1]));
@@ -530,7 +542,7 @@ impl Program {
     }
 
     fn literal(&mut self, rng: &mut Gen, spec: SpecId) {
-        if spec.enables(SpecId::SHANGHAI) && rng.one_in(8) {
+        if allow_fork_feature(rng, spec, SpecId::SHANGHAI) && rng.one_in(8) {
             self.emit(op::PUSH0, 0, 1);
         } else {
             self.push_word(rng.biased_word());
