@@ -7,19 +7,22 @@ use alloy_eips::{
     eip2930::{AccessList, AccessListItem},
     eip7702::{Authorization, SignedAuthorization},
 };
-use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256};
+use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
 use evm2::{SpecId, env::BlockEnv, ethereum::RecoveredTxEnvelope, interpreter::op};
+use k256::ecdsa::SigningKey;
 use revm::{
     context::{BlockEnv as RevmBlockEnv, TxEnv as RevmTxEnv},
     primitives::TxKind as RevmTxKind,
 };
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, str::FromStr};
+use std::collections::BTreeMap;
 
 pub(crate) const CALLER: Address = Address::new([0x10; 20]);
 pub(crate) const TARGET: Address = Address::new([0x20; 20]);
 pub(crate) const BENEFICIARY: Address = Address::new([0x30; 20]);
 const CALLER_BALANCE: U256 = U256::from_limbs([0, 0, 1, 0]);
+const EIP7702_DELEGATED_TARGET: Address =
+    Address::new([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6]);
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct EvmCase {
@@ -71,8 +74,17 @@ impl EvmCase {
                 storage: callee_storage,
             });
         }
-        let mut address_pool =
-            vec![CALLER, TARGET, BENEFICIARY, Address::ZERO, Address::new([0xff; 20])];
+        let eip7702_authority = fixed_eip7702_authority();
+        let mut address_pool = vec![
+            CALLER,
+            TARGET,
+            BENEFICIARY,
+            eip7702_authority,
+            EIP7702_DELEGATED_TARGET,
+            Address::ZERO,
+            Address::new([0xff; 20]),
+        ];
+
         for i in 1..=10 {
             address_pool.push(Address::with_last_byte(i));
         }
@@ -81,6 +93,8 @@ impl EvmCase {
         }
         let mut call_pool = Vec::new();
         call_pool.push(CALLER);
+        call_pool.push(eip7702_authority);
+        call_pool.push(EIP7702_DELEGATED_TARGET);
         for i in 1..=4 {
             call_pool.push(Address::with_last_byte(i));
         }
@@ -92,7 +106,7 @@ impl EvmCase {
             address_pool.push(address);
             call_pool.push(address);
         }
-        let (program, features) =
+        let (program, mut features) =
             Program::generate(rng, spec, &address_pool, &call_pool).into_parts();
         let mut storage = BTreeMap::new();
         for _ in 0..rng.range_inclusive(0, 4) {
@@ -117,17 +131,19 @@ impl EvmCase {
         accounts.extend(extra_accounts);
         let input_len = rng.range_inclusive(0, 64);
         let tx = CaseTx::generate(rng, spec, &accounts, input_len, 0);
-        if tx.kind == TxKindCase::Eip7702 {
-            add_eip7702_authority(&mut accounts);
-        }
         let mut extra_txs = Vec::new();
         for nonce in 1..=rng.range_inclusive(0, 3) as u64 {
             let input_len = rng.range_inclusive(0, 64);
             extra_txs.push(CaseTx::generate(rng, spec, &accounts, input_len, nonce));
-            if extra_txs.last().is_some_and(|tx| tx.kind == TxKindCase::Eip7702) {
-                add_eip7702_authority(&mut accounts);
-            }
         }
+        add_eip7702_accounts(
+            rng,
+            &mut accounts,
+            core::iter::once(&tx).chain(&extra_txs),
+            &mut features,
+        );
+        features.sort();
+        features.dedup();
         Self { spec, block, tx, extra_txs, features, accounts }
     }
 }
@@ -216,6 +232,8 @@ pub(crate) struct CaseTx {
     pub(crate) access_list: AccessList,
     #[serde(default)]
     pub(crate) blob_hashes: Vec<B256>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) authorization_list: Option<Vec<SignedAuthorization>>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -304,33 +322,159 @@ fn versioned_hash(rng: &mut Gen) -> B256 {
     B256::from_slice(&hash)
 }
 
-fn add_eip7702_authority(accounts: &mut Vec<CaseAccount>) {
-    let Ok(authority) = fixed_eip7702_auth().recover_authority() else {
-        return;
-    };
-    if accounts.iter().any(|account| account.address == authority) {
+fn generate_eip7702_authorization_list(rng: &mut Gen) -> Vec<SignedAuthorization> {
+    if rng.one_in(16) {
+        return Vec::new();
+    }
+
+    let len = rng.range_inclusive(1, 3);
+    (0..len).map(|_| generate_eip7702_authorization(rng)).collect()
+}
+
+fn generate_eip7702_authorization(rng: &mut Gen) -> SignedAuthorization {
+    match rng.range(6) {
+        0..=1 => fixed_eip7702_auth(),
+        2 => signed_eip7702_auth(Authorization {
+            chain_id: U256::ZERO,
+            address: rng.pick(&[EIP7702_DELEGATED_TARGET, TARGET, Address::ZERO]),
+            nonce: 1,
+        }),
+        3 => signed_eip7702_auth(Authorization {
+            chain_id: U256::from(1),
+            address: rng.pick(&[EIP7702_DELEGATED_TARGET, TARGET, Address::with_last_byte(8)]),
+            nonce: 1,
+        }),
+        4 => signed_eip7702_auth(Authorization {
+            chain_id: rng.pick(&[U256::from(1), U256::from(2)]),
+            address: EIP7702_DELEGATED_TARGET,
+            nonce: rng.pick(&[0, 2, u64::MAX]),
+        }),
+        _ => {
+            let auth = fixed_eip7702_auth();
+            SignedAuthorization::new_unchecked(auth.inner().clone(), 2, auth.r(), auth.s())
+        }
+    }
+}
+
+fn add_eip7702_accounts<'a>(
+    rng: &mut Gen,
+    accounts: &mut Vec<CaseAccount>,
+    txs: impl Iterator<Item = &'a CaseTx>,
+    features: &mut Vec<String>,
+) {
+    let eip7702_txs = txs.filter(|tx| tx.kind == TxKindCase::Eip7702).collect::<Vec<_>>();
+    if eip7702_txs.is_empty() {
         return;
     }
-    accounts.push(CaseAccount {
-        address: authority,
-        balance: U256::ZERO,
-        nonce: 1,
-        code: Bytes::new(),
-        storage: BTreeMap::new(),
-    });
+
+    features.push("eip7702_auth".to_string());
+    for tx in eip7702_txs {
+        let auths = tx.eip7702_authorization_list();
+        if auths.is_empty() {
+            features.push("eip7702_auth_empty".to_string());
+        }
+        if auths.len() > 1 {
+            features.push("eip7702_auth_multi".to_string());
+        }
+        for auth in auths {
+            if auth.y_parity() > 1 {
+                features.push("eip7702_auth_bad_signature".to_string());
+            }
+            if auth.chain_id() != &U256::ZERO && auth.chain_id() != &U256::from(1) {
+                features.push("eip7702_auth_bad_chain".to_string());
+            }
+            if auth.nonce() != 1 {
+                features.push("eip7702_auth_bad_nonce".to_string());
+            }
+            if auth.address() != &EIP7702_DELEGATED_TARGET {
+                features.push("eip7702_auth_alt_delegate".to_string());
+            }
+        }
+    }
+    upsert_account(
+        accounts,
+        CaseAccount {
+            address: EIP7702_DELEGATED_TARGET,
+            balance: U256::from(1_000),
+            nonce: 0,
+            code: tiny_callee_code(rng, SpecId::PRAGUE),
+            storage: BTreeMap::new(),
+        },
+    );
+
+    let authority = fixed_eip7702_authority();
+    accounts.retain(|account| account.address != authority);
+    match rng.range(5) {
+        0 => features.push("eip7702_authority_missing".to_string()),
+        1 => {
+            features.push("eip7702_authority_valid".to_string());
+            accounts.push(eip7702_authority_account(authority, 1, Bytes::new()));
+        }
+        2 => {
+            features.push("eip7702_authority_bad_nonce".to_string());
+            accounts.push(eip7702_authority_account(
+                authority,
+                rng.pick(&[2, u64::MAX]),
+                Bytes::new(),
+            ));
+        }
+        3 => {
+            features.push("eip7702_authority_regular_code".to_string());
+            accounts.push(eip7702_authority_account(authority, 1, Bytes::from_static(&[op::STOP])));
+        }
+        _ => {
+            features.push("eip7702_authority_delegated".to_string());
+            accounts.push(eip7702_authority_account(
+                authority,
+                1,
+                eip7702_designation(Address::with_last_byte(7)),
+            ));
+        }
+    }
+}
+
+fn upsert_account(accounts: &mut Vec<CaseAccount>, account: CaseAccount) {
+    accounts.retain(|existing| existing.address != account.address);
+    accounts.push(account);
+}
+
+const fn eip7702_authority_account(address: Address, nonce: u64, code: Bytes) -> CaseAccount {
+    CaseAccount { address, balance: U256::ZERO, nonce, code, storage: BTreeMap::new() }
+}
+
+fn eip7702_designation(address: Address) -> Bytes {
+    let mut code = vec![0xef, 0x01, 0x00];
+    code.extend_from_slice(address.as_slice());
+    code.into()
+}
+
+fn fixed_eip7702_authority() -> Address {
+    fixed_eip7702_auth()
+        .recover_authority()
+        .expect("hard-coded EIP-7702 authorization must recover an authority")
 }
 
 pub(crate) fn fixed_eip7702_auth() -> SignedAuthorization {
-    let auth = Authorization {
+    signed_eip7702_auth(Authorization {
         chain_id: U256::from(1),
-        address: Address::left_padding_from(&[6]),
+        address: EIP7702_DELEGATED_TARGET,
         nonce: 1,
-    };
-    let signature = Signature::from_str(
-        "48b55bfa915ac795c431978d8a6a992b628d557da5ff759b307d495a36649353efffd310ac743f371de3b9f7f9cb56c0b28ad43601b4ab949f53faa07bd2c8041b",
+    })
+}
+
+fn signed_eip7702_auth(auth: Authorization) -> SignedAuthorization {
+    let signing_key =
+        SigningKey::from_slice(&[0x77; 32]).expect("hard-coded EIP-7702 signing key must be valid");
+    let (signature, recovery_id) = signing_key
+        .sign_prehash_recoverable(auth.signature_hash().as_slice())
+        .expect("hard-coded EIP-7702 authorization signing must succeed");
+    let signature = signature.to_bytes();
+    SignedAuthorization::new_unchecked(
+        auth,
+        recovery_id.to_byte(),
+        U256::from_be_slice(&signature[..32]),
+        U256::from_be_slice(&signature[32..]),
     )
-    .expect("hard-coded EIP-7702 authorization signature must be valid");
-    auth.into_signed(signature)
 }
 
 impl CaseTx {
@@ -345,9 +489,13 @@ impl CaseTx {
         Self {
             kind,
             caller: CALLER,
-            target: TARGET,
+            target: if kind == TxKindCase::Eip7702 && rng.one_in(4) {
+                fixed_eip7702_authority()
+            } else {
+                TARGET
+            },
             gas_limit: if kind == TxKindCase::Eip7702 {
-                rng.pick(&[100_000, 250_000, 1_000_000])
+                rng.pick(&[60_000, 100_000, 250_000, 1_000_000])
             } else {
                 rng.pick(&[60_000, 80_000, 100_000, 250_000, 1_000_000])
             },
@@ -357,6 +505,8 @@ impl CaseTx {
             nonce,
             access_list: generate_access_list(rng, accounts),
             blob_hashes: vec![versioned_hash(rng)],
+            authorization_list: (kind == TxKindCase::Eip7702)
+                .then(|| generate_eip7702_authorization_list(rng)),
         }
     }
 
@@ -427,11 +577,19 @@ impl CaseTx {
                     to: self.target,
                     value: self.value,
                     access_list: self.access_list.clone(),
-                    authorization_list: vec![fixed_eip7702_auth()],
+                    authorization_list: self.eip7702_authorization_list(),
                     input: self.input.clone(),
                 },
                 self.caller,
             )),
+        }
+    }
+
+    pub(crate) fn eip7702_authorization_list(&self) -> Vec<SignedAuthorization> {
+        if self.kind == TxKindCase::Eip7702 {
+            self.authorization_list.clone().unwrap_or_else(|| vec![fixed_eip7702_auth()])
+        } else {
+            Vec::new()
         }
     }
 

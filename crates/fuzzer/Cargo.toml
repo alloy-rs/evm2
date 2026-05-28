@@ -21,6 +21,7 @@ alloy-consensus.workspace = true
 alloy-eips = { workspace = true, features = ["serde", "std"] }
 alloy-primitives = { workspace = true, features = ["serde", "std"] }
 clap = { version = "4.6", features = ["derive"] }
+k256 = { version = "0.13", features = ["ecdsa"] }
 rand.workspace = true
 revm = { version = "38", default-features = true }
 serde = { workspace = true, features = ["derive", "std"] }

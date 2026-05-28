@@ -1,5 +1,5 @@
 use crate::{
-    case::{EvmCase, TxKindCase, fixed_eip7702_auth},
+    case::{EvmCase, TxKindCase},
     normalize::{
         Outcome, OutcomeKind, TxReceipt, canonical_log, state_from_evm2_changes, state_from_revm,
     },
@@ -94,7 +94,8 @@ impl EvmBackend for RevmBackend {
         for tx in case.txs() {
             let mut tx_env = tx.revm();
             if tx.kind == TxKindCase::Eip7702 {
-                tx_env.authorization_list = vec![Either::Left(fixed_eip7702_auth())];
+                tx_env.authorization_list =
+                    tx.eip7702_authorization_list().into_iter().map(Either::Left).collect();
             }
             match evm.transact(tx_env) {
                 Ok(result) => {
