@@ -11,10 +11,6 @@ fn allow_fork_feature(rng: &mut Gen, spec: SpecId, since: SpecId) -> bool {
     spec.enables(since) || rng.one_in(20)
 }
 
-const fn allow_state_touching_programs(spec: SpecId) -> bool {
-    spec.enables(SpecId::SPURIOUS_DRAGON)
-}
-
 impl Program {
     pub(crate) fn generate(
         rng: &mut Gen,
@@ -33,25 +29,29 @@ impl Program {
                 69..=73 => program.calldata(rng),
                 74..=79 => program.external_account(rng, spec, addresses),
                 80..=83 => program.log(rng),
-                84..=86 if allow_state_touching_programs(spec) => {
+                84..=86 if allow_fork_feature(rng, spec, SpecId::SPURIOUS_DRAGON) => {
                     program.precompile_call(rng, spec)
                 }
                 84..=86 => program.literal(rng, spec),
-                87..=89 if allow_state_touching_programs(spec) => {
+                87..=89 if allow_fork_feature(rng, spec, SpecId::SPURIOUS_DRAGON) => {
                     program.generic_call(rng, spec, call_addresses)
                 }
                 87..=89 => program.literal(rng, spec),
-                90..=91 if allow_state_touching_programs(spec) => {
+                90..=91 if allow_fork_feature(rng, spec, SpecId::SPURIOUS_DRAGON) => {
                     program.returndata(rng, spec, call_addresses)
                 }
                 90..=91 => program.literal(rng, spec),
-                92..=93 if allow_state_touching_programs(spec) => program.create(rng, spec),
+                92..=93 if allow_fork_feature(rng, spec, SpecId::SPURIOUS_DRAGON) => {
+                    program.create(rng, spec)
+                }
                 92..=93 => program.literal(rng, spec),
                 94..=95 => program.cancun(rng, spec),
                 96 => program.jump(rng),
                 97 if rng.one_in(2) => program.stack_shuffle(rng),
                 97 => program.stack_cleanup(),
-                98 if allow_state_touching_programs(spec) => program.raw_invalidish(rng),
+                98 if allow_fork_feature(rng, spec, SpecId::SPURIOUS_DRAGON) => {
+                    program.raw_invalidish(rng)
+                }
                 98 => program.literal(rng, spec),
                 _ => program.literal(rng, spec),
             }
