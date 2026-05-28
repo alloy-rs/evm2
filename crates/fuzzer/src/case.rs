@@ -40,7 +40,7 @@ impl EvmCase {
     }
 
     pub(crate) fn generate(rng: &mut Gen) -> Self {
-        let spec = match rng.range(11) {
+        let spec = match rng.range(12) {
             0 => SpecId::FRONTIER,
             1 => SpecId::HOMESTEAD,
             2 => SpecId::TANGERINE,
@@ -51,7 +51,10 @@ impl EvmCase {
             7 => SpecId::LONDON,
             8 => SpecId::SHANGHAI,
             9 => SpecId::CANCUN,
-            _ => SpecId::PRAGUE,
+            10 => SpecId::PRAGUE,
+            // TODO: Re-enable Amsterdam once evm2's EIP-8037 state-gas accounting is aligned
+            // with revm. Manual Amsterdam replay remains supported through serde parsing/mapping.
+            _ => SpecId::OSAKA,
         };
         let block = CaseBlock::generate(rng, spec);
         let mut extra_accounts = Vec::new();
@@ -508,6 +511,8 @@ mod spec_serde {
             SpecId::SHANGHAI => "SHANGHAI",
             SpecId::CANCUN => "CANCUN",
             SpecId::PRAGUE => "PRAGUE",
+            SpecId::OSAKA => "OSAKA",
+            SpecId::AMSTERDAM => "AMSTERDAM",
             _ => "CANCUN",
         }
     }
@@ -525,6 +530,8 @@ mod spec_serde {
             "SHANGHAI" => Some(SpecId::SHANGHAI),
             "CANCUN" => Some(SpecId::CANCUN),
             "PRAGUE" => Some(SpecId::PRAGUE),
+            "OSAKA" => Some(SpecId::OSAKA),
+            "AMSTERDAM" => Some(SpecId::AMSTERDAM),
             _ => None,
         }
     }

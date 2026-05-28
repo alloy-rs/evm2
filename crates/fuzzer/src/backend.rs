@@ -175,6 +175,8 @@ const fn revm_spec(spec: SpecId) -> RevmSpecId {
         SpecId::SHANGHAI => RevmSpecId::SHANGHAI,
         SpecId::CANCUN => RevmSpecId::CANCUN,
         SpecId::PRAGUE => RevmSpecId::PRAGUE,
+        SpecId::OSAKA => RevmSpecId::OSAKA,
+        SpecId::AMSTERDAM => RevmSpecId::AMSTERDAM,
         _ => RevmSpecId::CANCUN,
     }
 }

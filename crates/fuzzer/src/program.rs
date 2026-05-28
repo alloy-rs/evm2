@@ -45,7 +45,8 @@ impl Program {
                 92..=93 => program.literal(rng, spec),
                 94..=95 => program.cancun(rng, spec),
                 96 => program.jump(rng),
-                97 if rng.one_in(2) => program.stack_shuffle(rng),
+                97 if rng.one_in(3) => program.stack_shuffle(rng, spec),
+                97 if rng.one_in(2) => program.selfdestruct(rng, addresses),
                 97 => program.stack_cleanup(),
                 98 if program.allow_fork_feature(rng, spec, SpecId::SPURIOUS_DRAGON) => {
                     program.raw_invalidish(rng)
@@ -118,7 +119,14 @@ impl Program {
             }
             17..=18 => {
                 self.push_word(rng.biased_word());
-                self.emit(if rng.one_in(2) { op::ISZERO } else { op::NOT }, 1, 1);
+                let opcode = if self.allow_fork_feature(rng, spec, SpecId::OSAKA) {
+                    rng.pick(&[op::ISZERO, op::NOT, op::CLZ])
+                } else if rng.one_in(2) {
+                    op::ISZERO
+                } else {
+                    op::NOT
+                };
+                self.emit(opcode, 1, 1);
             }
             _ => {
                 self.push_word(rng.biased_word());
@@ -206,6 +214,9 @@ impl Program {
                 }
                 if self.allow_fork_feature(rng, spec, SpecId::LONDON) {
                     ops.push(op::BASEFEE);
+                }
+                if self.allow_fork_feature(rng, spec, SpecId::AMSTERDAM) {
+                    ops.push(op::SLOTNUM);
                 }
                 self.emit(rng.pick(&ops), 0, 1);
             }
@@ -525,17 +536,47 @@ impl Program {
         }
     }
 
-    fn stack_shuffle(&mut self, rng: &mut Gen) {
+    fn stack_shuffle(&mut self, rng: &mut Gen, spec: SpecId) {
         while self.stack_height < 2 {
             self.push_word(rng.biased_word());
         }
-        if rng.one_in(2) {
+        if self.allow_fork_feature(rng, spec, SpecId::AMSTERDAM) && rng.one_in(3) {
+            self.relative_stack_shuffle(rng);
+        } else if rng.one_in(2) {
             let n = rng.range_inclusive(1, self.stack_height.min(16));
             self.emit(op::DUP1 + n as u8 - 1, 0, 1);
         } else {
             let n = rng.range_inclusive(1, (self.stack_height - 1).min(16));
             self.emit(op::SWAP1 + n as u8 - 1, 0, 0);
         }
+    }
+
+    fn relative_stack_shuffle(&mut self, rng: &mut Gen) {
+        match rng.range(3) {
+            0 => {
+                while self.stack_height < 18 {
+                    self.push_word(rng.biased_word());
+                }
+                self.emit_with_immediate(op::DUPN, 0x80, 0, 1);
+            }
+            1 => {
+                while self.stack_height < 18 {
+                    self.push_word(rng.biased_word());
+                }
+                self.emit_with_immediate(op::SWAPN, 0x80, 0, 0);
+            }
+            _ => {
+                while self.stack_height < 3 {
+                    self.push_word(rng.biased_word());
+                }
+                self.emit_with_immediate(op::EXCHANGE, 0x8e, 0, 0);
+            }
+        }
+    }
+
+    fn selfdestruct(&mut self, rng: &mut Gen, addresses: &[Address]) {
+        self.push_address(rng.pick(addresses));
+        self.emit(op::SELFDESTRUCT, 1, 0);
     }
 
     fn stack_cleanup(&mut self) {
@@ -560,6 +601,8 @@ impl Program {
     fn literal(&mut self, rng: &mut Gen, spec: SpecId) {
         if self.allow_fork_feature(rng, spec, SpecId::SHANGHAI) && rng.one_in(8) {
             self.emit(op::PUSH0, 0, 1);
+        } else if rng.one_in(8) {
+            self.push_random_width_word(rng);
         } else {
             self.push_word(rng.biased_word());
         }
@@ -569,6 +612,15 @@ impl Program {
         self.push_u64(0);
         self.push_u64(0);
         self.emit(if revert { op::REVERT } else { op::RETURN }, 2, 0);
+    }
+
+    fn push_random_width_word(&mut self, rng: &mut Gen) {
+        let len = rng.range_inclusive(1, 32);
+        self.mark("push");
+        self.mark("wide_push");
+        self.code.push(op::PUSH1 + len as u8 - 1);
+        self.code.extend(rng.bytes(len));
+        self.stack_height += 1;
     }
 
     fn push_address(&mut self, address: Address) {
@@ -634,11 +686,18 @@ impl Program {
         self.stack_height = self.stack_height.saturating_sub(pops) + pushes;
     }
 
+    fn emit_with_immediate(&mut self, opcode: u8, immediate: u8, pops: usize, pushes: usize) {
+        self.mark_opcode(opcode);
+        self.code.extend([opcode, immediate]);
+        self.stack_height = self.stack_height.saturating_sub(pops) + pushes;
+    }
+
     fn mark_opcode(&mut self, opcode: u8) {
         match opcode {
             op::SDIV | op::SMOD | op::SLT | op::SGT | op::SAR | op::SIGNEXTEND => {
                 self.mark("signed_arithmetic")
             }
+            op::CLZ => self.mark("clz"),
             op::ADDMOD | op::MULMOD => self.mark("modular_arithmetic"),
             op::SHL | op::SHR => self.mark("shift"),
             op::KECCAK256 => self.mark("keccak256"),
@@ -648,6 +707,7 @@ impl Program {
             op::BLOCKHASH | op::ORIGIN | op::DIFFICULTY | op::CHAINID | op::BASEFEE => {
                 self.mark("environment")
             }
+            op::SLOTNUM => self.mark("slotnum"),
             op::BALANCE | op::EXTCODESIZE | op::EXTCODEHASH | op::SELFBALANCE => {
                 self.mark("external_account")
             }
@@ -663,6 +723,7 @@ impl Program {
             op::BLOBHASH | op::BLOBBASEFEE => self.mark("blob"),
             op::JUMP | op::JUMPI | op::JUMPDEST => self.mark("jump"),
             op::DUP1..=op::DUP16 | op::SWAP1..=op::SWAP16 => self.mark("dup_swap"),
+            op::DUPN | op::SWAPN | op::EXCHANGE => self.mark("relative_stack"),
             op::PUSH0 => {
                 self.mark("push");
                 self.mark("push0");
@@ -670,6 +731,7 @@ impl Program {
             op::REVERT => self.mark("revert"),
             op::RETURN => self.mark("return"),
             op::INVALID => self.mark("invalid"),
+            op::SELFDESTRUCT => self.mark("selfdestruct"),
             _ => {}
         }
     }

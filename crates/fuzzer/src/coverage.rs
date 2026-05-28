@@ -99,6 +99,8 @@ const fn spec_name(spec: SpecId) -> &'static str {
         SpecId::SHANGHAI => "shanghai",
         SpecId::CANCUN => "cancun",
         SpecId::PRAGUE => "prague",
+        SpecId::OSAKA => "osaka",
+        SpecId::AMSTERDAM => "amsterdam",
         _ => "other",
     }
 }
