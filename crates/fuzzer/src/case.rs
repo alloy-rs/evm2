@@ -184,6 +184,28 @@ fn returning_callee_code(stop: u8) -> Bytes {
     code.into()
 }
 
+fn creation_input(rng: &mut Gen, spec: SpecId) -> Bytes {
+    match rng.range(5) {
+        0 => Bytes::new(),
+        1 => [op::PUSH1, 0, op::PUSH1, 0, op::MSTORE8, op::PUSH1, 1, op::PUSH1, 0, op::RETURN]
+            .into_iter()
+            .collect::<Vec<_>>()
+            .into(),
+        2 => returning_callee_code(op::RETURN),
+        3 if spec.enables(SpecId::BYZANTIUM) => {
+            [op::PUSH1, 0, op::PUSH1, 0, op::REVERT].into_iter().collect::<Vec<_>>().into()
+        }
+        _ => {
+            let len = rng.range_inclusive(1, 32);
+            rng.bytes(len).into()
+        }
+    }
+}
+
+const fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 impl CaseBlock {
     fn generate(rng: &mut Gen, _spec: SpecId) -> Self {
         Self {
@@ -223,6 +245,8 @@ pub(crate) struct CaseTx {
     pub(crate) kind: TxKindCase,
     pub(crate) caller: Address,
     pub(crate) target: Address,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub(crate) creates: bool,
     pub(crate) gas_limit: u64,
     pub(crate) gas_price: u128,
     pub(crate) value: U256,
@@ -265,6 +289,10 @@ impl TxKindCase {
             Self::Eip4844 => spec.enables(SpecId::CANCUN),
             Self::Eip7702 => spec.enables(SpecId::PRAGUE),
         }
+    }
+
+    const fn supports_create(self) -> bool {
+        matches!(self, Self::Legacy | Self::Eip2930 | Self::Eip1559)
     }
 
     fn generate(rng: &mut Gen, spec: SpecId) -> Self {
@@ -486,6 +514,7 @@ impl CaseTx {
         nonce: u64,
     ) -> Self {
         let kind = TxKindCase::generate(rng, spec);
+        let creates = kind.supports_create() && rng.one_in(8);
         Self {
             kind,
             caller: CALLER,
@@ -494,14 +523,17 @@ impl CaseTx {
             } else {
                 TARGET
             },
+            creates,
             gas_limit: if kind == TxKindCase::Eip7702 {
                 rng.pick(&[60_000, 100_000, 250_000, 1_000_000])
+            } else if creates {
+                rng.pick(&[80_000, 100_000, 250_000, 1_000_000])
             } else {
                 rng.pick(&[60_000, 80_000, 100_000, 250_000, 1_000_000])
             },
             gas_price: 1,
             value: if rng.one_in(8) { rng.small_word(10) } else { U256::ZERO },
-            input: rng.bytes(input_len).into(),
+            input: if creates { creation_input(rng, spec) } else { rng.bytes(input_len).into() },
             nonce,
             access_list: generate_access_list(rng, accounts),
             blob_hashes: vec![versioned_hash(rng)],
@@ -517,7 +549,7 @@ impl CaseTx {
                     nonce: self.nonce,
                     gas_price: self.gas_price,
                     gas_limit: self.gas_limit,
-                    to: TxKind::Call(self.target),
+                    to: self.evm2_tx_kind(),
                     value: self.value,
                     input: self.input.clone(),
                     chain_id: None,
@@ -530,7 +562,7 @@ impl CaseTx {
                     nonce: self.nonce,
                     gas_price: self.gas_price,
                     gas_limit: self.gas_limit,
-                    to: TxKind::Call(self.target),
+                    to: self.evm2_tx_kind(),
                     value: self.value,
                     access_list: self.access_list.clone(),
                     input: self.input.clone(),
@@ -544,7 +576,7 @@ impl CaseTx {
                     gas_limit: self.gas_limit,
                     max_fee_per_gas: self.gas_price,
                     max_priority_fee_per_gas: 0,
-                    to: TxKind::Call(self.target),
+                    to: self.evm2_tx_kind(),
                     value: self.value,
                     access_list: self.access_list.clone(),
                     input: self.input.clone(),
@@ -593,6 +625,18 @@ impl CaseTx {
         }
     }
 
+    pub(crate) const fn is_create(&self) -> bool {
+        self.creates
+    }
+
+    const fn evm2_tx_kind(&self) -> TxKind {
+        if self.creates { TxKind::Create } else { TxKind::Call(self.target) }
+    }
+
+    const fn revm_tx_kind(&self) -> RevmTxKind {
+        if self.creates { RevmTxKind::Create } else { RevmTxKind::Call(self.target) }
+    }
+
     pub(crate) fn revm(&self) -> RevmTxEnv {
         RevmTxEnv {
             tx_type: match self.kind {
@@ -605,7 +649,7 @@ impl CaseTx {
             caller: self.caller,
             gas_limit: self.gas_limit,
             gas_price: self.gas_price,
-            kind: RevmTxKind::Call(self.target),
+            kind: self.revm_tx_kind(),
             value: self.value,
             data: self.input.clone(),
             nonce: self.nonce,

@@ -25,6 +25,9 @@ impl Coverage {
         inc(&mut self.txs_per_case, tx_count);
         for tx in case.txs() {
             inc(&mut self.tx_kinds, tx.kind.name());
+            if tx.is_create() {
+                inc_string(&mut self.features, "tx_create");
+            }
             if !tx.kind.is_enabled(case.spec) {
                 inc_string(&mut self.features, "fork_invalid_tx");
             }
