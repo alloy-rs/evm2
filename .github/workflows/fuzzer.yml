@@ -43,7 +43,7 @@ jobs:
       - name: Run deterministic fuzz smoke test
         env:
           EVM2_DISPATCH_BACKEND: ${{ matrix.dispatch_backend }}
-        run: cargo run -q -p evm2-fuzzer -- --seed ${{ matrix.seed }} --cases 100000
+        run: cargo run -q -p evm2-fuzzer -- --seed ${{ matrix.seed }} --duration 3m
 
   ci-success:
     name: fuzzer success
