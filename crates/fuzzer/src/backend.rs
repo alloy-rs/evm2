@@ -15,7 +15,7 @@ use revm::{
     ExecuteCommitEvm, ExecuteEvm, MainBuilder, MainContext,
     context::{CfgEnv, Context},
     context_interface::either::Either,
-    database::{CacheDB as RevmCacheDB, EmptyDB as RevmEmptyDB, InMemoryDB as RevmInMemoryDB},
+    database::{EmptyDB as RevmEmptyDB, InMemoryDB as RevmInMemoryDB, State as RevmState},
     primitives::hardfork::SpecId as RevmSpecId,
 };
 
@@ -87,7 +87,7 @@ impl EvmBackend for RevmBackend {
         let mut evm = Context::mainnet()
             .with_cfg(cfg)
             .with_block(case.block.revm())
-            .with_db(RevmCacheDB::new(revm_db(case)))
+            .with_db(RevmState::builder().with_database(revm_db(case)).build())
             .build_mainnet();
 
         let mut receipts = Vec::new();
