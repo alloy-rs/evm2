@@ -52,7 +52,7 @@
 //! # Ok::<(), HandlerError>(())
 //! ```
 
-use alloc::rc::Rc;
+use alloc::sync::Arc;
 use alloy_primitives::{Address, U256, map::HashMap};
 use core::{fmt, marker::PhantomData};
 use thiserror::Error;
@@ -216,7 +216,7 @@ where
 /// An erased transaction handler returned by [`TxRegistry`].
 #[derive(Clone)]
 pub struct AnyTxHandler<Env, Output, Host = ()> {
-    inner: Rc<dyn ErasedTxHandler<Env, Output, Host>>,
+    inner: Arc<dyn ErasedTxHandler<Env, Output, Host>>,
 }
 
 impl<Env, Output, Host> fmt::Debug for AnyTxHandler<Env, Output, Host> {
@@ -232,7 +232,7 @@ impl<Env, Output, Host> AnyTxHandler<Env, Output, Host> {
     }
 }
 
-trait ErasedTxHandler<Env, Output, Host> {
+trait ErasedTxHandler<Env, Output, Host>: Send + Sync {
     fn call(&self, env: &Env, host: &mut Host) -> HandlerResult<Output>;
 }
 
@@ -251,8 +251,8 @@ impl<Tx, H, F> HandlerAdapter<Tx, H, F> {
 
 impl<Env, Tx, Output, Host, H, F> ErasedTxHandler<Env, Output, Host> for HandlerAdapter<Tx, H, F>
 where
-    H: TxHandler<Tx, Output, Host>,
-    F: for<'a> Fn(&'a Env) -> Option<&'a Tx>,
+    H: TxHandler<Tx, Output, Host> + Send + Sync,
+    F: for<'a> Fn(&'a Env) -> Option<&'a Tx> + Send + Sync,
 {
     fn call(&self, env: &Env, host: &mut Host) -> HandlerResult<Output> {
         let tx = (self.extract)(env)
@@ -263,7 +263,7 @@ where
 
 /// A type-erased transaction handler registry keyed by transaction type byte.
 pub struct TxRegistry<Env, Output = (), Host = ()> {
-    handlers: HashMap<u8, Rc<dyn ErasedTxHandler<Env, Output, Host>>>,
+    handlers: HashMap<u8, Arc<dyn ErasedTxHandler<Env, Output, Host>>>,
 }
 
 impl<Env, Output, Host> fmt::Debug for TxRegistry<Env, Output, Host> {
@@ -291,10 +291,10 @@ impl<Env, Output, Host> TxRegistry<Env, Output, Host> {
     pub fn register<Tx, H, F>(&mut self, type_id: u8, extract: F, handler: H) -> &mut Self
     where
         Tx: 'static,
-        H: TxHandler<Tx, Output, Host> + 'static,
-        F: for<'a> Fn(&'a Env) -> Option<&'a Tx> + 'static,
+        H: TxHandler<Tx, Output, Host> + Send + Sync + 'static,
+        F: for<'a> Fn(&'a Env) -> Option<&'a Tx> + Send + Sync + 'static,
     {
-        self.handlers.insert(type_id, Rc::new(HandlerAdapter::new(type_id, extract, handler)));
+        self.handlers.insert(type_id, Arc::new(HandlerAdapter::new(type_id, extract, handler)));
         self
     }
 
@@ -303,8 +303,8 @@ impl<Env, Output, Host> TxRegistry<Env, Output, Host> {
     pub fn with_handler<Tx, H, F>(mut self, type_id: u8, extract: F, handler: H) -> Self
     where
         Tx: 'static,
-        H: TxHandler<Tx, Output, Host> + 'static,
-        F: for<'a> Fn(&'a Env) -> Option<&'a Tx> + 'static,
+        H: TxHandler<Tx, Output, Host> + Send + Sync + 'static,
+        F: for<'a> Fn(&'a Env) -> Option<&'a Tx> + Send + Sync + 'static,
     {
         self.register(type_id, extract, handler);
         self
@@ -317,7 +317,7 @@ impl<Env, Output, Host> TxRegistry<Env, Output, Host> {
 
     /// Returns the erased handler registered for `type_id`, if any.
     pub fn get_by_type(&self, type_id: u8) -> Option<AnyTxHandler<Env, Output, Host>> {
-        self.handlers.get(&type_id).map(|inner| AnyTxHandler { inner: Rc::clone(inner) })
+        self.handlers.get(&type_id).map(|inner| AnyTxHandler { inner: Arc::clone(inner) })
     }
 
     /// Returns the erased handler registered for `type_id`.

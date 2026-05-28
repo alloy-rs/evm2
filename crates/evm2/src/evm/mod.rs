@@ -38,6 +38,8 @@ pub use db::{
     Cache, CacheDB, Database, DatabaseCommit, Db, DbErrorCode, DbResult, DynDatabase, EmptyDB,
     InMemoryDB,
 };
+#[cfg(feature = "async")]
+pub(crate) use db::{db_error_unavailable, stored_error_code};
 
 mod state;
 pub use state::{
@@ -64,6 +66,9 @@ pub struct Evm<T: EvmTypes> {
     #[derive_where(skip)]
     inspector: Option<Box<dyn Inspector<T>>>,
     eip7702_authorities: AddressSet,
+    #[cfg(feature = "async")]
+    #[derive_where(skip)]
+    async_stack: crate::async_::FiberStack,
     db_error_code: Option<DbErrorCode>,
 }
 
@@ -133,6 +138,8 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             interpreter_pool: InterpreterPool::new(),
             inspector: None,
             eip7702_authorities: AddressSet::default(),
+            #[cfg(feature = "async")]
+            async_stack: crate::async_::FiberStack::default(),
             db_error_code: None,
         }
     }
@@ -185,16 +192,22 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         self.state.set_initial(database);
     }
 
+    #[cfg(feature = "async")]
+    #[inline]
+    fn async_stack(&mut self) -> core::ptr::NonNull<crate::async_::FiberStack> {
+        core::ptr::NonNull::from(&mut self.async_stack)
+    }
+
     /// Returns the backing database as `D` if it has that concrete type.
     #[inline]
     pub fn database_as<D: DynDatabase>(&self) -> Option<&D> {
-        <dyn core::any::Any>::downcast_ref(self.database())
+        self.database().downcast_ref()
     }
 
     /// Returns the backing database mutably as `D` if it has that concrete type.
     #[inline]
     pub fn database_as_mut<D: DynDatabase>(&mut self) -> Option<&mut D> {
-        <dyn core::any::Any>::downcast_mut(self.database_mut())
+        self.database_mut().downcast_mut()
     }
 
     /// Returns the mutable EVM state.
@@ -265,7 +278,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     /// Returns the active execution inspector mutably.
     #[inline]
     pub fn inspector_mut(&mut self) -> Option<&mut dyn Inspector<T>> {
-        self.inspector.as_mut().map(|inspector| inspector.as_mut() as &mut dyn Inspector<T>)
+        self.inspector.as_deref_mut()
     }
 
     #[inline]
@@ -379,6 +392,28 @@ impl<T: EvmTypes<Host = Self, Tx: Typed2718>> Evm<T> {
         };
         self.state.clear_transaction_state();
         result
+    }
+
+    /// Dispatches the transaction to the handler registered for its EIP-2718 type byte on an async
+    /// fiber.
+    ///
+    /// This must be used with an async database adapter such as [`crate::AsyncDb`] to take
+    /// advantage of yielding database I/O. With a synchronous database this is mostly equivalent to
+    /// running the synchronous transaction on a fiber.
+    #[cfg(feature = "async")]
+    pub fn transact_async<'a>(
+        &'a mut self,
+        tx: &'a T::Tx,
+    ) -> impl core::future::Future<Output = crate::AsyncResult<TxResult<T>, registry::HandlerError>>
+    + Send
+    + 'a
+    where
+        T::TxResultExt: Send,
+    {
+        let stack = self.async_stack();
+        // SAFETY: The returned future owns the exclusive `&mut self` borrow, so nothing else can
+        // access the EVM stack slot until that future is dropped.
+        unsafe { crate::async_::on_fiber_result_with_stack(stack, move || self.transact(tx)) }
     }
 
     /// Dispatches each transaction to its registered EIP-2718 handler.

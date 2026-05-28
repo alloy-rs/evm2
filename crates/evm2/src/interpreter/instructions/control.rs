@@ -18,13 +18,13 @@ pub(crate) fn stop() -> Result {
 
 #[instruction]
 pub(crate) fn jump(cx: _, [target]: [Word]) -> Result {
-    jump_inner(target, &mut cx)
+    jump_inner(*target, &mut cx)
 }
 
 #[instruction]
 pub(crate) fn jumpi(cx: _, [target, cond]: [Word]) -> Result {
     if !cond.is_zero() {
-        jump_inner(target, &mut cx)?;
+        jump_inner(*target, &mut cx)?;
     } else {
         unsafe { cx.pc.advance_unchecked(1) };
     };
@@ -67,19 +67,24 @@ pub(crate) fn revert(cx: _, [offset, len]: [Word]) -> Result {
 #[inline]
 fn return_inner<T: EvmTypes>(
     cx: GasInstructionCx<'_, '_, T>,
-    offset: Word,
-    len: Word,
+    offset: &Word,
+    len: &Word,
     result: InstrStop,
 ) -> Result {
-    let len = word_to_usize(len)?;
-    let offset = if len != 0 {
-        let offset = word_to_usize(offset)?;
+    let len = word_to_usize(*len)?;
+    let output = if len != 0 {
+        let offset = word_to_usize(*offset)?;
+        let Some(end) = offset.checked_add(len) else {
+            return Err(InstrStop::MemoryOOG);
+        };
+        if end > u32::MAX as usize {
+            return Err(InstrStop::MemoryLimitOOG);
+        }
         resize_memory(cx.gas, cx.state.memory(), offset, len)?;
-        offset
+        offset as u32..end as u32
     } else {
-        0
+        0..0
     };
-    let output = cx.state.memory().slice(offset, len) as *const [u8];
     cx.state.set_output(output);
     Err(result)
 }
@@ -232,6 +237,9 @@ mod tests {
 
         let interpreter = run_stack([Word::from(0), Word::MAX], op::RETURN);
         assert!(matches!(interpreter.err, InstrStop::InvalidOperandOOG));
+
+        let interpreter = run_stack([Word::from(u32::MAX), Word::from(1)], op::RETURN);
+        assert!(matches!(interpreter.err, InstrStop::MemoryLimitOOG));
     }
 
     #[test]
@@ -259,5 +267,8 @@ mod tests {
 
         let interpreter = run_stack([Word::from(0), Word::MAX], op::REVERT);
         assert!(matches!(interpreter.err, InstrStop::InvalidOperandOOG));
+
+        let interpreter = run_stack([Word::from(u32::MAX), Word::from(1)], op::REVERT);
+        assert!(matches!(interpreter.err, InstrStop::MemoryLimitOOG));
     }
 }

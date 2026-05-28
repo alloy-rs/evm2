@@ -15,7 +15,6 @@ use evm2::{
     interpreter::{InstrStop, Interpreter, Message, MessageResult},
     registry::HandlerResult,
 };
-use std::{cell::RefCell, rc::Rc};
 use tx::{CustomEnvelope, ExecuteCodeTx, custom_registry};
 
 pub mod config;
@@ -107,8 +106,7 @@ fn mainnet_fallback() -> HandlerResult<()> {
 
 fn inspector() -> HandlerResult<()> {
     let mut evm = custom_evm();
-    let inspector_state = Rc::new(RefCell::new(InspectorState::default()));
-    evm.set_inspector(ExampleInspector(Rc::clone(&inspector_state)));
+    evm.set_inspector(ExampleInspector::default());
     let tx = custom_opcode_tx(Bytes::from_static(&[
         op::PUSH1,
         0,
@@ -120,7 +118,10 @@ fn inspector() -> HandlerResult<()> {
     ]));
 
     let result = evm.transact(&tx)?;
-    let inspector_state = inspector_state.borrow();
+    let inspector = evm.clear_inspector().expect("inspector should be set");
+    let inspector =
+        inspector.downcast_ref::<ExampleInspector>().expect("inspector should have expected type");
+    let inspector_state = &inspector.state;
     let expected_opcodes = [op::PUSH1, op::PUSH1, op::LOG0, opcode::CUSTOM_OPCODE, op::STOP];
 
     println!(
@@ -203,7 +204,10 @@ struct InspectorState {
     opcodes: Vec<u8>,
 }
 
-struct ExampleInspector(Rc<RefCell<InspectorState>>);
+#[derive(Default)]
+struct ExampleInspector {
+    state: InspectorState,
+}
 
 impl Inspector<CustomTypes> for ExampleInspector {
     fn initialize_interp(
@@ -211,13 +215,12 @@ impl Inspector<CustomTypes> for ExampleInspector {
         _interp: &mut Interpreter<'_, CustomTypes>,
         _host: &mut Evm<CustomTypes>,
     ) {
-        self.0.borrow_mut().initialized += 1;
+        self.state.initialized += 1;
     }
 
     fn step(&mut self, interp: &mut Interpreter<'_, CustomTypes>, _host: &mut Evm<CustomTypes>) {
-        let mut state = self.0.borrow_mut();
-        state.steps += 1;
-        state.opcodes.push(interp.opcode());
+        self.state.steps += 1;
+        self.state.opcodes.push(interp.opcode());
     }
 
     fn step_end(
@@ -225,11 +228,11 @@ impl Inspector<CustomTypes> for ExampleInspector {
         _interp: &mut Interpreter<'_, CustomTypes>,
         _host: &mut Evm<CustomTypes>,
     ) {
-        self.0.borrow_mut().step_ends += 1;
+        self.state.step_ends += 1;
     }
 
     fn log(&mut self, _log: &alloy_primitives::Log, _host: &mut Evm<CustomTypes>) {
-        self.0.borrow_mut().logs += 1;
+        self.state.logs += 1;
     }
 
     fn call(
@@ -237,7 +240,7 @@ impl Inspector<CustomTypes> for ExampleInspector {
         _message: &mut Message<CustomTypes>,
         _host: &mut Evm<CustomTypes>,
     ) -> Option<MessageResult<CustomTypes>> {
-        self.0.borrow_mut().calls += 1;
+        self.state.calls += 1;
         None
     }
 }

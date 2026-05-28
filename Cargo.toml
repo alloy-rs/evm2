@@ -54,6 +54,10 @@ derive-where = { version = "1.6", default-features = false }
 anstyle = { version = "1.0", default-features = false }
 cfg-if = { version = "1.0", default-features = false }
 colorchoice = { version = "1.0", default-features = false }
+corosensei = { version = "0.3.4", default-features = false, features = [
+    "default-stack",
+    "unwind",
+] }
 libtest-mimic = "0.8"
 once_cell = { version = "1.21", default-features = false }
 paste = { version = "1.0", default-features = false }
@@ -64,6 +68,7 @@ serde = { version = "1.0", default-features = false }
 serde_json = { version = "1.0", default-features = false }
 snapbox = "0.6"
 thiserror = { version = "2.0", default-features = false }
+tokio = { version = "1", default-features = false }
 walkdir = { version = "2.5", default-features = false }
 
 boa_engine = { version = "0.21", default-features = false }

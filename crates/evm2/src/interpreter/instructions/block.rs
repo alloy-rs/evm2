@@ -8,13 +8,13 @@ use evm2_macros::instruction;
 
 #[instruction]
 pub(crate) fn blockhash(cx: _, [number]: [Word]) -> Result<out> {
-    *out = if let Some(diff) = cx.state.host().block_env().number.checked_sub(number) {
+    *out = if let Some(diff) = cx.state.host().block_env().number.checked_sub(*number) {
         if diff == 0 || diff > BLOCK_HASH_HISTORY {
             Word::ZERO
         } else {
             cx.state
                 .host()
-                .block_hash(&number)?
+                .block_hash(number)?
                 .map(b256_to_word)
                 .ok_or(InstrStop::FatalExternalError)?
         }
@@ -25,7 +25,7 @@ pub(crate) fn blockhash(cx: _, [number]: [Word]) -> Result<out> {
 
 #[instruction]
 pub(crate) fn coinbase(cx: _) -> out {
-    *out = address_to_word(cx.state.host().block_env().beneficiary);
+    *out = address_to_word(&cx.state.host().block_env().beneficiary);
 }
 
 #[instruction]
@@ -59,8 +59,8 @@ pub(crate) fn chainid(cx: _) -> Result<out> {
 
 #[instruction]
 pub(crate) fn selfbalance(cx: _) -> Result<out> {
-    let destination = cx.state.message().destination;
-    *out = cx.state.host().load_account(&destination, false, false)?.balance;
+    let destination = &cx.state.message().destination;
+    *out = cx.state.host().load_account(destination, false, false)?.balance;
 }
 
 #[instruction]
@@ -70,7 +70,7 @@ pub(crate) fn basefee(cx: _) -> Result<out> {
 
 #[instruction]
 pub(crate) fn blobhash(cx: _, [index]: [Word]) -> Result<out> {
-    let index = word_to_usize_saturated(index);
+    let index = word_to_usize_saturated(*index);
     *out = cx.state.tx().blob_hashes.get(index).copied().unwrap_or_default();
 }
 
@@ -130,7 +130,7 @@ mod tests {
         let mut host = test_host(BlockEnv { beneficiary, ..BlockEnv::default() });
         let interpreter = run(RunConfig::new([op::COINBASE, op::STOP]).host(&mut host));
         assert!(matches!(interpreter.err, InstrStop::Stop));
-        assert_eq!(interpreter.stack(), [address_to_word(beneficiary)]);
+        assert_eq!(interpreter.stack(), [address_to_word(&beneficiary)]);
     }
 
     #[test]
@@ -196,7 +196,7 @@ mod tests {
         let interpreter =
             run(RunConfig::new([op::SELFBALANCE, op::STOP]).host(&mut host).message(message));
         assert!(matches!(interpreter.err, InstrStop::Stop));
-        assert_eq!(interpreter.stack(), [address_to_word(address)]);
+        assert_eq!(interpreter.stack(), [address_to_word(&address)]);
     }
 
     #[test]
