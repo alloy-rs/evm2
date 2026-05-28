@@ -75,7 +75,7 @@ pub(crate) enum OutcomeKind {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct CanonicalState {
-    pub(crate) accounts: BTreeMap<Address, CanonicalAccount>,
+    pub(crate) accounts: BTreeMap<Address, Option<CanonicalAccount>>,
     pub(crate) storage: BTreeMap<(Address, U256), U256>,
 }
 
@@ -110,16 +110,12 @@ fn normalize_error(error: String) -> String {
 pub(crate) fn state_from_evm2_changes(changes: &StateChanges) -> CanonicalState {
     let mut state = CanonicalState::default();
     for (&address, change) in &changes.accounts {
-        if let Some(info) = &change.current {
-            state.accounts.insert(
-                address,
-                CanonicalAccount {
-                    balance: info.balance,
-                    nonce: info.nonce,
-                    code_hash: info.code_hash,
-                },
-            );
-        }
+        let account = change.current.as_ref().map(|info| CanonicalAccount {
+            balance: info.balance,
+            nonce: info.nonce,
+            code_hash: info.code_hash,
+        });
+        state.accounts.insert(address, account);
     }
     for (&address, storage) in &changes.storage {
         for (&key, change) in &storage.slots {
@@ -137,18 +133,21 @@ pub(crate) fn state_from_revm(state: revm::state::EvmState) -> CanonicalState {
         let account_changed = account.info.balance != account.original_info.balance
             || account.info.nonce != account.original_info.nonce
             || account.info.code_hash != account.original_info.code_hash;
-        if account_changed && !account.is_selfdestructed() && !account.is_empty() {
+        if account.is_selfdestructed() {
+            if !account.original_info.is_empty() {
+                canonical.accounts.insert(address, None);
+            }
+            continue;
+        }
+        if account_changed || account.is_created() {
             canonical.accounts.insert(
                 address,
-                CanonicalAccount {
+                Some(CanonicalAccount {
                     balance: account.info.balance,
                     nonce: account.info.nonce,
                     code_hash: account.info.code_hash,
-                },
+                }),
             );
-        }
-        if account.is_selfdestructed() {
-            continue;
         }
         for (key, slot) in account.changed_storage_slots() {
             if !slot.present_value().is_zero() {
