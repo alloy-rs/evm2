@@ -12,6 +12,15 @@ pub(crate) struct Options {
     /// Run generated cases for at most this duration (for example: 30s, 5m, 1h).
     #[arg(long, global = true, value_parser = parse_duration)]
     pub(crate) duration: Option<Duration>,
+    /// Number of worker threads. Zero uses the number of logical cores.
+    #[arg(
+        long = "threads",
+        short = 'j',
+        visible_alias = "jobs",
+        default_value_t = 1,
+        global = true
+    )]
+    pub(crate) threads: usize,
     #[command(subcommand)]
     pub(crate) command: Option<Command>,
 }

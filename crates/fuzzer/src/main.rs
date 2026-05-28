@@ -39,7 +39,16 @@ use crate::{
     rng::Gen,
 };
 use clap::Parser;
-use std::{fmt, path::Path, time::Instant};
+use std::{
+    fmt,
+    path::Path,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
+    thread,
+    time::Instant,
+};
 
 fn main() {
     if let Err(err) = run(Options::parse()) {
@@ -50,28 +59,8 @@ fn main() {
 
 fn run(opts: Options) -> Result<(), String> {
     let backends: [&dyn EvmBackend; 2] = [&RevmBackend, &Evm2Backend];
-    match opts.command.unwrap_or(Command::Generate) {
-        Command::Generate => {
-            let seed = opts.seed.unwrap_or_else(rand::random);
-            println!("seed: {seed}");
-            let started = Instant::now();
-            let cases = opts.cases.or_else(|| opts.duration.is_none().then_some(256));
-            let mut case_index = 0;
-            let mut coverage = Coverage::default();
-            while cases.is_none_or(|cases| case_index < cases)
-                && opts.duration.is_none_or(|duration| started.elapsed() < duration)
-            {
-                let mut rng = Gen::new(seed ^ case_index.wrapping_mul(0x9e37_79b9_7f4a_7c15));
-                let case = EvmCase::generate(&mut rng);
-                let context = CaseContext::Generated { seed, case_index };
-                coverage.record_case(&case);
-                let outcome = compare_case(&backends, &case, context)?;
-                coverage.record_outcome(&outcome);
-                case_index += 1;
-            }
-            println!("ok: {case_index} structured differential cases");
-            coverage.print();
-        }
+    match opts.command.clone().unwrap_or(Command::Generate) {
+        Command::Generate => run_generated(&opts)?,
         Command::Replay { path } => {
             let case = read_case(&path)?;
             let mut coverage = Coverage::default();
@@ -105,6 +94,74 @@ fn run(opts: Options) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn run_generated(opts: &Options) -> Result<(), String> {
+    let seed = opts.seed.unwrap_or_else(rand::random);
+    println!("seed: {seed}");
+    let workers = resolve_threads(opts.threads);
+    if workers != 1 {
+        println!("workers: {workers}");
+    }
+
+    let started = Instant::now();
+    let cases = opts.cases.or_else(|| opts.duration.is_none().then_some(256));
+    let next_case = Arc::new(AtomicU64::new(0));
+    let stop = Arc::new(AtomicBool::new(false));
+
+    let mut coverage = Coverage::default();
+    let mut executed = 0;
+    thread::scope(|scope| {
+        let mut handles = Vec::with_capacity(workers);
+        for _ in 0..workers {
+            let next_case = Arc::clone(&next_case);
+            let stop = Arc::clone(&stop);
+            handles.push(scope.spawn(move || {
+                let backends: [&dyn EvmBackend; 2] = [&RevmBackend, &Evm2Backend];
+                let mut coverage = Coverage::default();
+                let mut executed = 0;
+                while !stop.load(Ordering::Relaxed)
+                    && opts.duration.is_none_or(|duration| started.elapsed() < duration)
+                {
+                    let case_index = next_case.fetch_add(1, Ordering::Relaxed);
+                    if cases.is_some_and(|cases| case_index >= cases) {
+                        break;
+                    }
+
+                    let mut rng = Gen::new(seed ^ case_index.wrapping_mul(0x9e37_79b9_7f4a_7c15));
+                    let case = EvmCase::generate(&mut rng);
+                    let context = CaseContext::Generated { seed, case_index };
+                    coverage.record_case(&case);
+                    let outcome = compare_case(&backends, &case, context).inspect_err(|_| {
+                        stop.store(true, Ordering::Relaxed);
+                    })?;
+                    coverage.record_outcome(&outcome);
+                    executed += 1;
+                }
+                Ok::<_, String>((executed, coverage))
+            }));
+        }
+
+        for handle in handles {
+            let (worker_executed, worker_coverage) =
+                handle.join().map_err(|_| "fuzzer worker thread panicked".to_string())??;
+            executed += worker_executed;
+            coverage.merge(worker_coverage);
+        }
+        Ok::<_, String>(())
+    })?;
+
+    println!("ok: {executed} structured differential cases");
+    coverage.print();
+    Ok(())
+}
+
+fn resolve_threads(threads: usize) -> usize {
+    if threads == 0 {
+        thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get)
+    } else {
+        threads
+    }
 }
 
 #[derive(Clone, Copy, Debug)]

@@ -58,6 +58,17 @@ impl Coverage {
         }
     }
 
+    pub(crate) fn merge(&mut self, other: Self) {
+        self.cases += other.cases;
+        merge_counts(&mut self.forks, other.forks);
+        merge_counts(&mut self.tx_kinds, other.tx_kinds);
+        merge_counts(&mut self.txs_per_case, other.txs_per_case);
+        merge_counts(&mut self.features, other.features);
+        merge_counts(&mut self.outcomes, other.outcomes);
+        merge_counts(&mut self.receipt_outcomes, other.receipt_outcomes);
+        merge_counts(&mut self.errors, other.errors);
+    }
+
     pub(crate) fn print(&self) {
         if self.cases == 0 {
             return;
@@ -76,6 +87,12 @@ impl Coverage {
 
 fn inc<K: Ord>(counts: &mut BTreeMap<K, u64>, key: K) {
     *counts.entry(key).or_default() += 1;
+}
+
+fn merge_counts<K: Ord>(counts: &mut BTreeMap<K, u64>, other: BTreeMap<K, u64>) {
+    for (key, count) in other {
+        *counts.entry(key).or_default() += count;
+    }
 }
 
 fn inc_string(counts: &mut BTreeMap<String, u64>, key: impl AsRef<str>) {

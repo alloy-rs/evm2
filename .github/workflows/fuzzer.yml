@@ -42,7 +42,7 @@ jobs:
       - name: Run random fuzz smoke test
         env:
           EVM2_DISPATCH_BACKEND: ${{ matrix.dispatch_backend }}
-        run: cargo run -q -p evm2-fuzzer -- --duration 3m
+        run: cargo run -q -p evm2-fuzzer -- --duration 3m -j 0
       - name: Upload failing fuzzer cases
         if: failure()
         uses: actions/upload-artifact@v4
