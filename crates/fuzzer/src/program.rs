@@ -18,8 +18,8 @@ impl Program {
         let statements = rng.range_inclusive(1, 48);
         for _ in 0..statements {
             match rng.range(100) {
-                0..=24 => program.arithmetic(rng),
-                25..=39 => program.memory(rng),
+                0..=24 => program.arithmetic(rng, spec),
+                25..=39 => program.memory(rng, spec),
                 40..=55 => program.storage(rng),
                 56..=68 => program.environment(rng, spec),
                 69..=73 => program.calldata(rng),
@@ -28,23 +28,24 @@ impl Program {
                 84..=86 if spec.enables(SpecId::SPURIOUS_DRAGON) => {
                     program.precompile_call(rng, spec)
                 }
-                84..=86 => program.literal(rng),
+                84..=86 => program.literal(rng, spec),
                 87..=89 if spec.enables(SpecId::SPURIOUS_DRAGON) => {
                     program.generic_call(rng, spec, call_addresses)
                 }
-                87..=89 => program.literal(rng),
+                87..=89 => program.literal(rng, spec),
                 90..=91 if spec.enables(SpecId::SPURIOUS_DRAGON) => {
                     program.returndata(rng, spec, call_addresses)
                 }
-                90..=91 => program.literal(rng),
+                90..=91 => program.literal(rng, spec),
                 92..=93 if spec.enables(SpecId::SPURIOUS_DRAGON) => program.create(rng, spec),
-                92..=93 => program.literal(rng),
+                92..=93 => program.literal(rng, spec),
                 94..=95 => program.cancun(rng, spec),
                 96 => program.jump(rng),
+                97 if rng.one_in(2) => program.stack_shuffle(rng),
                 97 => program.stack_cleanup(),
                 98 if spec.enables(SpecId::SPURIOUS_DRAGON) => program.raw_invalidish(rng),
-                98 => program.literal(rng),
-                _ => program.literal(rng),
+                98 => program.literal(rng, spec),
+                _ => program.literal(rng, spec),
             }
             while program.stack_height > 16 {
                 program.emit(op::POP, 1, 0);
@@ -62,34 +63,88 @@ impl Program {
         self.code.into()
     }
 
-    fn arithmetic(&mut self, rng: &mut Gen) {
-        self.push_word(rng.biased_word());
-        self.push_word(rng.biased_word());
-        let op = rng.pick(&[
-            op::ADD,
-            op::MUL,
-            op::SUB,
-            op::DIV,
-            op::MOD,
-            op::LT,
-            op::GT,
-            op::EQ,
-            op::AND,
-            op::OR,
-            op::XOR,
-        ]);
-        self.emit(op, 2, 1);
+    fn arithmetic(&mut self, rng: &mut Gen, spec: SpecId) {
+        match rng.range(24) {
+            0..=16 => {
+                self.push_word(rng.biased_word());
+                self.push_word(rng.biased_word());
+                let mut ops = vec![
+                    op::ADD,
+                    op::MUL,
+                    op::SUB,
+                    op::DIV,
+                    op::SDIV,
+                    op::MOD,
+                    op::SMOD,
+                    op::EXP,
+                    op::SIGNEXTEND,
+                    op::LT,
+                    op::GT,
+                    op::SLT,
+                    op::SGT,
+                    op::EQ,
+                    op::AND,
+                    op::OR,
+                    op::XOR,
+                    op::BYTE,
+                ];
+                if spec.enables(SpecId::ISTANBUL) {
+                    ops.extend([op::SHL, op::SHR, op::SAR]);
+                }
+                self.emit(rng.pick(&ops), 2, 1);
+            }
+            17..=18 => {
+                self.push_word(rng.biased_word());
+                self.emit(if rng.one_in(2) { op::ISZERO } else { op::NOT }, 1, 1);
+            }
+            _ => {
+                self.push_word(rng.biased_word());
+                self.push_word(rng.biased_word());
+                self.push_word(rng.biased_word());
+                self.emit(if rng.one_in(2) { op::ADDMOD } else { op::MULMOD }, 3, 1);
+            }
+        }
     }
 
-    fn memory(&mut self, rng: &mut Gen) {
+    fn memory(&mut self, rng: &mut Gen, spec: SpecId) {
         let offset = rng.pick(&[0, 1, 31, 32, 33, 64, 96, 128]);
-        if rng.one_in(2) {
-            self.push_word(rng.biased_word());
-            self.push_u64(offset);
-            self.emit(op::MSTORE, 2, 0);
-        } else {
-            self.push_u64(offset);
-            self.emit(op::MLOAD, 1, 1);
+        match rng.range(8) {
+            0 => {
+                self.push_word(rng.biased_word());
+                self.push_u64(offset);
+                self.emit(op::MSTORE, 2, 0);
+            }
+            1 => {
+                self.push_u64(offset);
+                self.emit(op::MLOAD, 1, 1);
+            }
+            2 => {
+                self.push_word(rng.biased_word());
+                self.push_u64(offset);
+                self.emit(op::MSTORE8, 2, 0);
+            }
+            3 => self.emit(op::MSIZE, 0, 1),
+            4 => {
+                self.push_word(rng.biased_word());
+                self.push_u64(offset);
+                self.emit(op::MSTORE, 2, 0);
+                self.push_u64(rng.pick(&[0, 1, 31, 32, 64]));
+                self.push_u64(offset);
+                self.emit(op::KECCAK256, 2, 1);
+            }
+            5 => {
+                self.push_u64(rng.pick(&[0, 1, 4, 31, 32, 64]));
+                self.push_u64(rng.pick(&[0, 1, 31, 32, 64]));
+                self.push_u64(offset);
+                self.emit(op::CODECOPY, 3, 0);
+            }
+            6 if spec.enables(SpecId::CANCUN) => {
+                self.push_u64(rng.pick(&[0, 1, 31, 32, 64]));
+                self.push_u64(rng.pick(&[0, 32, 64, 96]));
+                self.push_u64(offset);
+                self.emit(op::MCOPY, 3, 0);
+            }
+            _ => self.emit(op::PC, 0, 1),
         }
     }
 
@@ -106,23 +161,36 @@ impl Program {
     }
 
     fn environment(&mut self, rng: &mut Gen, spec: SpecId) {
-        let mut ops = vec![
-            op::ADDRESS,
-            op::CALLER,
-            op::CALLVALUE,
-            op::CALLDATASIZE,
-            op::CODESIZE,
-            op::GASPRICE,
-            op::COINBASE,
-            op::TIMESTAMP,
-            op::NUMBER,
-            op::GASLIMIT,
-            op::GAS,
-        ];
-        if spec.enables(SpecId::LONDON) {
-            ops.push(op::BASEFEE);
+        match rng.range(8) {
+            0..=4 => {
+                let mut ops = vec![
+                    op::ADDRESS,
+                    op::ORIGIN,
+                    op::CALLER,
+                    op::CALLVALUE,
+                    op::CALLDATASIZE,
+                    op::CODESIZE,
+                    op::GASPRICE,
+                    op::COINBASE,
+                    op::TIMESTAMP,
+                    op::NUMBER,
+                    op::DIFFICULTY,
+                    op::GASLIMIT,
+                    op::GAS,
+                ];
+                if spec.enables(SpecId::ISTANBUL) {
+                    ops.push(op::CHAINID);
+                }
+                if spec.enables(SpecId::LONDON) {
+                    ops.push(op::BASEFEE);
+                }
+                self.emit(rng.pick(&ops), 0, 1);
+            }
+            _ => {
+                self.push_word(rng.small_word(1_000_000));
+                self.emit(op::BLOCKHASH, 1, 1);
+            }
         }
-        self.emit(rng.pick(&ops), 0, 1);
     }
 
     fn calldata(&mut self, rng: &mut Gen) {
@@ -244,29 +312,51 @@ impl Program {
         let return_offset: u64 = rng.pick(&[0, 32, 64, 128]);
         let return_len: u64 = rng.pick(&[0, 1, 4, 32, 64]);
         let gas: u64 = rng.pick(&[0, 1, 2_300, 10_000, 50_000, 200_000]);
-        if spec.enables(SpecId::BYZANTIUM) && rng.one_in(3) {
-            self.push_u64(return_len);
-            self.push_u64(return_offset);
-            self.push_u64(input_len);
-            self.push_u64(input_offset);
-            self.push_address(address);
-            self.push_u64(gas);
-            self.emit(op::STATICCALL, 6, 1);
-        } else {
-            self.push_u64(return_len);
-            self.push_u64(return_offset);
-            self.push_u64(input_len);
-            self.push_u64(input_offset);
-            self.push_u64(rng.pick(&[0, 0, 0, 1, 2]));
-            self.push_address(address);
-            self.push_u64(gas);
-            self.emit(op::CALL, 7, 1);
+        match rng.range(4) {
+            0 if spec.enables(SpecId::BYZANTIUM) => {
+                self.push_u64(return_len);
+                self.push_u64(return_offset);
+                self.push_u64(input_len);
+                self.push_u64(input_offset);
+                self.push_address(address);
+                self.push_u64(gas);
+                self.emit(op::STATICCALL, 6, 1);
+            }
+            1 if spec.enables(SpecId::HOMESTEAD) => {
+                self.push_u64(return_len);
+                self.push_u64(return_offset);
+                self.push_u64(input_len);
+                self.push_u64(input_offset);
+                self.push_address(address);
+                self.push_u64(gas);
+                self.emit(op::DELEGATECALL, 6, 1);
+            }
+            2 => {
+                self.push_u64(return_len);
+                self.push_u64(return_offset);
+                self.push_u64(input_len);
+                self.push_u64(input_offset);
+                self.push_u64(rng.pick(&[0, 0, 0, 1, 2]));
+                self.push_address(address);
+                self.push_u64(gas);
+                self.emit(op::CALLCODE, 7, 1);
+            }
+            _ => {
+                self.push_u64(return_len);
+                self.push_u64(return_offset);
+                self.push_u64(input_len);
+                self.push_u64(input_offset);
+                self.push_u64(rng.pick(&[0, 0, 0, 1, 2]));
+                self.push_address(address);
+                self.push_u64(gas);
+                self.emit(op::CALL, 7, 1);
+            }
         }
     }
 
     fn returndata(&mut self, rng: &mut Gen, spec: SpecId, call_addresses: &[Address]) {
         if !spec.enables(SpecId::BYZANTIUM) {
-            self.literal(rng);
+            self.literal(rng, spec);
             return;
         }
         if rng.one_in(2) {
@@ -285,7 +375,7 @@ impl Program {
 
     fn cancun(&mut self, rng: &mut Gen, spec: SpecId) {
         if !spec.enables(SpecId::CANCUN) {
-            self.literal(rng);
+            self.literal(rng, spec);
             return;
         }
         match rng.range(4) {
@@ -408,6 +498,19 @@ impl Program {
         }
     }
 
+    fn stack_shuffle(&mut self, rng: &mut Gen) {
+        while self.stack_height < 2 {
+            self.push_word(rng.biased_word());
+        }
+        if rng.one_in(2) {
+            let n = rng.range_inclusive(1, self.stack_height.min(16));
+            self.emit(op::DUP1 + n as u8 - 1, 0, 1);
+        } else {
+            let n = rng.range_inclusive(1, (self.stack_height - 1).min(16));
+            self.emit(op::SWAP1 + n as u8 - 1, 0, 0);
+        }
+    }
+
     fn stack_cleanup(&mut self) {
         if self.stack_height == 0 {
             self.push_u64(0);
@@ -426,8 +529,12 @@ impl Program {
         }
     }
 
-    fn literal(&mut self, rng: &mut Gen) {
-        self.push_word(rng.biased_word());
+    fn literal(&mut self, rng: &mut Gen, spec: SpecId) {
+        if spec.enables(SpecId::SHANGHAI) && rng.one_in(8) {
+            self.emit(op::PUSH0, 0, 1);
+        } else {
+            self.push_word(rng.biased_word());
+        }
     }
 
     fn finish_return(&mut self, revert: bool) {
