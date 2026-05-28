@@ -104,6 +104,11 @@ fn normalize_error(error: String) -> String {
     if error.starts_with("LackOfFundForMaxFee") || error == "InsufficientFunds" {
         return "InsufficientFunds".to_string();
     }
+    if error.starts_with("UnsupportedTransactionType")
+        || error.ends_with("NotSupported") && error.starts_with("Eip")
+    {
+        return "UnsupportedTransactionType".to_string();
+    }
     error.to_string()
 }
 

@@ -224,6 +224,11 @@ pub(crate) enum TxKindCase {
 
 impl TxKindCase {
     fn generate(rng: &mut Gen, spec: SpecId) -> Self {
+        if rng.one_in(20)
+            && let Some(kind) = Self::generate_fork_invalid(rng, spec)
+        {
+            return kind;
+        }
         match rng.range(5) {
             0 if spec.enables(SpecId::PRAGUE) => Self::Eip7702,
             1 if spec.enables(SpecId::CANCUN) => Self::Eip4844,
@@ -231,6 +236,23 @@ impl TxKindCase {
             3 if spec.enables(SpecId::BERLIN) => Self::Eip2930,
             _ => Self::Legacy,
         }
+    }
+
+    fn generate_fork_invalid(rng: &mut Gen, spec: SpecId) -> Option<Self> {
+        let mut invalid = Vec::new();
+        if !spec.enables(SpecId::BERLIN) {
+            invalid.push(Self::Eip2930);
+        }
+        if !spec.enables(SpecId::LONDON) {
+            invalid.push(Self::Eip1559);
+        }
+        if !spec.enables(SpecId::CANCUN) {
+            invalid.push(Self::Eip4844);
+        }
+        if !spec.enables(SpecId::PRAGUE) {
+            invalid.push(Self::Eip7702);
+        }
+        (!invalid.is_empty()).then(|| rng.pick(&invalid))
     }
 }
 
