@@ -30,7 +30,7 @@ jobs:
         seed: [1, 2]
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@nightly
       - uses: rui314/setup-mold@v1
       - uses: Swatinem/rust-cache@v2
         with:
