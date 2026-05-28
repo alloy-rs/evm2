@@ -1,14 +1,12 @@
 use crate::rng::Gen;
 use alloy_primitives::{Address, Bytes, U256};
 use evm2::{SpecId, interpreter::op};
+use std::collections::BTreeSet;
 
 pub(crate) struct Program {
     code: Vec<u8>,
     stack_height: usize,
-}
-
-fn allow_fork_feature(rng: &mut Gen, spec: SpecId, since: SpecId) -> bool {
-    spec.enables(since) || rng.one_in(20)
+    features: BTreeSet<&'static str>,
 }
 
 impl Program {
@@ -18,7 +16,7 @@ impl Program {
         addresses: &[Address],
         call_addresses: &[Address],
     ) -> Self {
-        let mut program = Self { code: Vec::new(), stack_height: 0 };
+        let mut program = Self { code: Vec::new(), stack_height: 0, features: BTreeSet::new() };
         let statements = rng.range_inclusive(1, 48);
         for _ in 0..statements {
             match rng.range(100) {
@@ -29,19 +27,19 @@ impl Program {
                 69..=73 => program.calldata(rng),
                 74..=79 => program.external_account(rng, spec, addresses),
                 80..=83 => program.log(rng),
-                84..=86 if allow_fork_feature(rng, spec, SpecId::SPURIOUS_DRAGON) => {
+                84..=86 if program.allow_fork_feature(rng, spec, SpecId::SPURIOUS_DRAGON) => {
                     program.precompile_call(rng, spec)
                 }
                 84..=86 => program.literal(rng, spec),
-                87..=89 if allow_fork_feature(rng, spec, SpecId::SPURIOUS_DRAGON) => {
+                87..=89 if program.allow_fork_feature(rng, spec, SpecId::SPURIOUS_DRAGON) => {
                     program.generic_call(rng, spec, call_addresses)
                 }
                 87..=89 => program.literal(rng, spec),
-                90..=91 if allow_fork_feature(rng, spec, SpecId::SPURIOUS_DRAGON) => {
+                90..=91 if program.allow_fork_feature(rng, spec, SpecId::SPURIOUS_DRAGON) => {
                     program.returndata(rng, spec, call_addresses)
                 }
                 90..=91 => program.literal(rng, spec),
-                92..=93 if allow_fork_feature(rng, spec, SpecId::SPURIOUS_DRAGON) => {
+                92..=93 if program.allow_fork_feature(rng, spec, SpecId::SPURIOUS_DRAGON) => {
                     program.create(rng, spec)
                 }
                 92..=93 => program.literal(rng, spec),
@@ -49,7 +47,7 @@ impl Program {
                 96 => program.jump(rng),
                 97 if rng.one_in(2) => program.stack_shuffle(rng),
                 97 => program.stack_cleanup(),
-                98 if allow_fork_feature(rng, spec, SpecId::SPURIOUS_DRAGON) => {
+                98 if program.allow_fork_feature(rng, spec, SpecId::SPURIOUS_DRAGON) => {
                     program.raw_invalidish(rng)
                 }
                 98 => program.literal(rng, spec),
@@ -61,14 +59,31 @@ impl Program {
         }
         match rng.range(10) {
             0 => program.finish_return(false),
-            1 if allow_fork_feature(rng, spec, SpecId::BYZANTIUM) => program.finish_return(true),
+            1 if program.allow_fork_feature(rng, spec, SpecId::BYZANTIUM) => {
+                program.finish_return(true)
+            }
             _ => program.emit(op::STOP, 0, 0),
         }
         program
     }
 
-    pub(crate) fn into_bytecode(self) -> Bytes {
-        self.code.into()
+    pub(crate) fn into_parts(self) -> (Bytes, Vec<String>) {
+        (self.code.into(), self.features.into_iter().map(str::to_string).collect())
+    }
+
+    fn allow_fork_feature(&mut self, rng: &mut Gen, spec: SpecId, since: SpecId) -> bool {
+        if spec.enables(since) {
+            return true;
+        }
+        if rng.one_in(20) {
+            self.mark("fork_invalid_opcode");
+            return true;
+        }
+        false
+    }
+
+    fn mark(&mut self, feature: &'static str) {
+        self.features.insert(feature);
     }
 
     fn arithmetic(&mut self, rng: &mut Gen, spec: SpecId) {
@@ -96,7 +111,7 @@ impl Program {
                     op::XOR,
                     op::BYTE,
                 ];
-                if allow_fork_feature(rng, spec, SpecId::ISTANBUL) {
+                if self.allow_fork_feature(rng, spec, SpecId::ISTANBUL) {
                     ops.extend([op::SHL, op::SHR, op::SAR]);
                 }
                 self.emit(rng.pick(&ops), 2, 1);
@@ -146,7 +161,7 @@ impl Program {
                 self.push_u64(offset);
                 self.emit(op::CODECOPY, 3, 0);
             }
-            6 if allow_fork_feature(rng, spec, SpecId::CANCUN) => {
+            6 if self.allow_fork_feature(rng, spec, SpecId::CANCUN) => {
                 self.push_u64(rng.pick(&[0, 1, 31, 32, 64]));
                 self.push_u64(rng.pick(&[0, 32, 64, 96]));
                 self.push_u64(offset);
@@ -186,10 +201,10 @@ impl Program {
                     op::GASLIMIT,
                     op::GAS,
                 ];
-                if allow_fork_feature(rng, spec, SpecId::ISTANBUL) {
+                if self.allow_fork_feature(rng, spec, SpecId::ISTANBUL) {
                     ops.push(op::CHAINID);
                 }
-                if allow_fork_feature(rng, spec, SpecId::LONDON) {
+                if self.allow_fork_feature(rng, spec, SpecId::LONDON) {
                     ops.push(op::BASEFEE);
                 }
                 self.emit(rng.pick(&ops), 0, 1);
@@ -228,7 +243,7 @@ impl Program {
                 self.push_address(address);
                 self.emit(op::EXTCODESIZE, 1, 1);
             }
-            2 if allow_fork_feature(rng, spec, SpecId::ISTANBUL) => {
+            2 if self.allow_fork_feature(rng, spec, SpecId::ISTANBUL) => {
                 self.push_address(address);
                 self.emit(op::EXTCODEHASH, 1, 1);
             }
@@ -239,7 +254,7 @@ impl Program {
                 self.push_address(address);
                 self.emit(op::EXTCODECOPY, 4, 0);
             }
-            _ if allow_fork_feature(rng, spec, SpecId::ISTANBUL) => {
+            _ if self.allow_fork_feature(rng, spec, SpecId::ISTANBUL) => {
                 self.emit(op::SELFBALANCE, 0, 1)
             }
             _ => {
@@ -269,9 +284,9 @@ impl Program {
     }
 
     fn precompile_call(&mut self, rng: &mut Gen, spec: SpecId) {
-        let precompiles: &[u8] = if allow_fork_feature(rng, spec, SpecId::ISTANBUL) {
+        let precompiles: &[u8] = if self.allow_fork_feature(rng, spec, SpecId::ISTANBUL) {
             &[1, 2, 3, 4, 5, 6, 7, 8, 9]
-        } else if allow_fork_feature(rng, spec, SpecId::BYZANTIUM) {
+        } else if self.allow_fork_feature(rng, spec, SpecId::BYZANTIUM) {
             &[1, 2, 3, 4, 5, 6, 7, 8]
         } else {
             &[1, 2, 3, 4]
@@ -289,7 +304,7 @@ impl Program {
         let return_offset: u64 = rng.pick(&[0, 32, 64, 128]);
         let return_len: u64 = rng.pick(&[0, 1, 20, 32, 64, 128]);
         let gas: u64 = rng.pick(&[0, 1, 3_000, 10_000, 50_000, 200_000, 2_000_000]);
-        if allow_fork_feature(rng, spec, SpecId::BYZANTIUM) && rng.one_in(2) {
+        if self.allow_fork_feature(rng, spec, SpecId::BYZANTIUM) && rng.one_in(2) {
             self.push_u64(return_len);
             self.push_u64(return_offset);
             self.push_u64(input_len);
@@ -323,7 +338,7 @@ impl Program {
         let return_len: u64 = rng.pick(&[0, 1, 4, 32, 64]);
         let gas: u64 = rng.pick(&[0, 1, 2_300, 10_000, 50_000, 200_000]);
         match rng.range(4) {
-            0 if allow_fork_feature(rng, spec, SpecId::BYZANTIUM) => {
+            0 if self.allow_fork_feature(rng, spec, SpecId::BYZANTIUM) => {
                 self.push_u64(return_len);
                 self.push_u64(return_offset);
                 self.push_u64(input_len);
@@ -332,7 +347,7 @@ impl Program {
                 self.push_u64(gas);
                 self.emit(op::STATICCALL, 6, 1);
             }
-            1 if allow_fork_feature(rng, spec, SpecId::HOMESTEAD) => {
+            1 if self.allow_fork_feature(rng, spec, SpecId::HOMESTEAD) => {
                 self.push_u64(return_len);
                 self.push_u64(return_offset);
                 self.push_u64(input_len);
@@ -365,7 +380,7 @@ impl Program {
     }
 
     fn returndata(&mut self, rng: &mut Gen, spec: SpecId, call_addresses: &[Address]) {
-        if !allow_fork_feature(rng, spec, SpecId::BYZANTIUM) {
+        if !self.allow_fork_feature(rng, spec, SpecId::BYZANTIUM) {
             self.literal(rng, spec);
             return;
         }
@@ -384,7 +399,7 @@ impl Program {
     }
 
     fn cancun(&mut self, rng: &mut Gen, spec: SpecId) {
-        if !allow_fork_feature(rng, spec, SpecId::CANCUN) {
+        if !self.allow_fork_feature(rng, spec, SpecId::CANCUN) {
             self.literal(rng, spec);
             return;
         }
@@ -411,7 +426,7 @@ impl Program {
             0 => Vec::new(),
             1 => vec![op::STOP],
             2 => vec![op::PUSH1, 0, op::PUSH1, 0, op::RETURN],
-            3 if allow_fork_feature(rng, spec, SpecId::BYZANTIUM) => {
+            3 if self.allow_fork_feature(rng, spec, SpecId::BYZANTIUM) => {
                 vec![op::PUSH1, 0, op::PUSH1, 0, op::REVERT]
             }
             _ => vec![
@@ -433,7 +448,7 @@ impl Program {
             self.push_u64(offset);
             self.emit(op::MSTORE, 2, 0);
         }
-        if rng.one_in(2) || !allow_fork_feature(rng, spec, SpecId::ISTANBUL) {
+        if rng.one_in(2) || !self.allow_fork_feature(rng, spec, SpecId::ISTANBUL) {
             self.push_u64(initcode.len() as u64);
             self.push_u64(offset);
             self.push_u64(rng.pick(&[0, 0, 0, 1]));
@@ -532,6 +547,7 @@ impl Program {
 
     fn raw_invalidish(&mut self, rng: &mut Gen) {
         if rng.one_in(3) {
+            self.mark("truncated_push");
             self.code.push(op::PUSH4);
             let immediate_len = rng.range_inclusive(0, 3);
             self.code.extend(rng.bytes(immediate_len));
@@ -542,7 +558,7 @@ impl Program {
     }
 
     fn literal(&mut self, rng: &mut Gen, spec: SpecId) {
-        if allow_fork_feature(rng, spec, SpecId::SHANGHAI) && rng.one_in(8) {
+        if self.allow_fork_feature(rng, spec, SpecId::SHANGHAI) && rng.one_in(8) {
             self.emit(op::PUSH0, 0, 1);
         } else {
             self.push_word(rng.biased_word());
@@ -571,6 +587,7 @@ impl Program {
         } else if value <= U256::from(u64::MAX) {
             self.push_u64(value.to::<u64>());
         } else {
+            self.mark("push");
             self.code.push(op::PUSH32);
             self.code.extend(value.to_be_bytes::<32>());
             self.stack_height += 1;
@@ -578,6 +595,7 @@ impl Program {
     }
 
     fn push_u8(&mut self, value: u8) {
+        self.mark("push");
         self.code.extend([op::PUSH1, value]);
         self.stack_height += 1;
     }
@@ -590,12 +608,14 @@ impl Program {
         let bytes = value.to_be_bytes();
         let first = bytes.iter().position(|byte| *byte != 0).unwrap_or(bytes.len() - 1);
         let immediate = &bytes[first..];
+        self.mark("push");
         self.code.push(op::PUSH1 + immediate.len() as u8 - 1);
         self.code.extend(immediate);
         self.stack_height += 1;
     }
 
     fn push_jump_placeholder(&mut self) -> usize {
+        self.mark("push");
         self.code.push(op::PUSH2);
         let immediate = self.code.len();
         self.code.extend([0, 0]);
@@ -609,7 +629,48 @@ impl Program {
     }
 
     fn emit(&mut self, opcode: u8, pops: usize, pushes: usize) {
+        self.mark_opcode(opcode);
         self.code.push(opcode);
         self.stack_height = self.stack_height.saturating_sub(pops) + pushes;
+    }
+
+    fn mark_opcode(&mut self, opcode: u8) {
+        match opcode {
+            op::SDIV | op::SMOD | op::SLT | op::SGT | op::SAR | op::SIGNEXTEND => {
+                self.mark("signed_arithmetic")
+            }
+            op::ADDMOD | op::MULMOD => self.mark("modular_arithmetic"),
+            op::SHL | op::SHR => self.mark("shift"),
+            op::KECCAK256 => self.mark("keccak256"),
+            op::MLOAD | op::MSTORE | op::MSTORE8 | op::MSIZE => self.mark("memory"),
+            op::CODECOPY | op::CALLDATACOPY | op::EXTCODECOPY | op::MCOPY => self.mark("copy"),
+            op::SLOAD | op::SSTORE => self.mark("storage"),
+            op::BLOCKHASH | op::ORIGIN | op::DIFFICULTY | op::CHAINID | op::BASEFEE => {
+                self.mark("environment")
+            }
+            op::BALANCE | op::EXTCODESIZE | op::EXTCODEHASH | op::SELFBALANCE => {
+                self.mark("external_account")
+            }
+            op::LOG0..=op::LOG4 => self.mark("log"),
+            op::CALL => self.mark("call"),
+            op::STATICCALL => self.mark("staticcall"),
+            op::DELEGATECALL => self.mark("delegatecall"),
+            op::CALLCODE => self.mark("callcode"),
+            op::CREATE => self.mark("create"),
+            op::CREATE2 => self.mark("create2"),
+            op::RETURNDATASIZE | op::RETURNDATACOPY => self.mark("returndata"),
+            op::TLOAD | op::TSTORE => self.mark("transient_storage"),
+            op::BLOBHASH | op::BLOBBASEFEE => self.mark("blob"),
+            op::JUMP | op::JUMPI | op::JUMPDEST => self.mark("jump"),
+            op::DUP1..=op::DUP16 | op::SWAP1..=op::SWAP16 => self.mark("dup_swap"),
+            op::PUSH0 => {
+                self.mark("push");
+                self.mark("push0");
+            }
+            op::REVERT => self.mark("revert"),
+            op::RETURN => self.mark("return"),
+            op::INVALID => self.mark("invalid"),
+            _ => {}
+        }
     }
 }

@@ -20,6 +20,7 @@
 mod backend;
 mod case;
 mod cli;
+mod coverage;
 mod io;
 mod minimize;
 mod normalize;
@@ -30,8 +31,10 @@ use crate::{
     backend::{Evm2Backend, EvmBackend, RevmBackend},
     case::EvmCase,
     cli::{Command, Options},
+    coverage::Coverage,
     io::{case_paths, read_case, write_failure_case, write_minimized_case},
     minimize::{differs, minimize_case},
+    normalize::Outcome,
     rng::Gen,
 };
 use clap::Parser;
@@ -51,30 +54,42 @@ fn run(opts: Options) -> Result<(), String> {
             let started = Instant::now();
             let cases = opts.cases.or_else(|| opts.duration.is_none().then_some(256));
             let mut case_index = 0;
+            let mut coverage = Coverage::default();
             while cases.is_none_or(|cases| case_index < cases)
                 && opts.duration.is_none_or(|duration| started.elapsed() < duration)
             {
                 let mut rng = Gen::new(opts.seed ^ case_index.wrapping_mul(0x9e37_79b9_7f4a_7c15));
                 let case = EvmCase::generate(&mut rng);
                 let context = CaseContext::Generated { seed: opts.seed, case_index };
-                compare_case(&backends, &case, context)?;
+                coverage.record_case(&case);
+                let outcome = compare_case(&backends, &case, context)?;
+                coverage.record_outcome(&outcome);
                 case_index += 1;
             }
             println!("ok: {case_index} structured differential cases");
+            coverage.print();
         }
         Command::Replay { path } => {
             let case = read_case(&path)?;
-            compare_case(&backends, &case, CaseContext::Path(&path))?;
+            let mut coverage = Coverage::default();
+            coverage.record_case(&case);
+            let outcome = compare_case(&backends, &case, CaseContext::Path(&path))?;
+            coverage.record_outcome(&outcome);
             println!("ok: replayed {}", path.display());
+            coverage.print();
         }
         Command::Corpus { path } => {
             let mut paths = case_paths(&path)?;
             paths.sort();
+            let mut coverage = Coverage::default();
             for path in &paths {
                 let case = read_case(path)?;
-                compare_case(&backends, &case, CaseContext::Path(path))?;
+                coverage.record_case(&case);
+                let outcome = compare_case(&backends, &case, CaseContext::Path(path))?;
+                coverage.record_outcome(&outcome);
             }
             println!("ok: replayed {} corpus cases", paths.len());
+            coverage.print();
         }
         Command::Minimize { path } => {
             let case = read_case(&path)?;
@@ -110,7 +125,7 @@ fn compare_case(
     backends: &[&dyn EvmBackend; 2],
     case: &EvmCase,
     context: CaseContext<'_>,
-) -> Result<(), String> {
+) -> Result<Outcome, String> {
     let baseline = backends[0].run(case);
     for backend in &backends[1..] {
         let got = backend.run(case);
@@ -131,5 +146,5 @@ fn compare_case(
             return Err("differential mismatch".into());
         }
     }
-    Ok(())
+    Ok(baseline)
 }

@@ -29,6 +29,8 @@ pub(crate) struct EvmCase {
     pub(crate) tx: CaseTx,
     #[serde(default)]
     pub(crate) extra_txs: Vec<CaseTx>,
+    #[serde(default)]
+    pub(crate) features: Vec<String>,
     pub(crate) accounts: Vec<CaseAccount>,
 }
 
@@ -87,7 +89,8 @@ impl EvmCase {
             address_pool.push(address);
             call_pool.push(address);
         }
-        let program = Program::generate(rng, spec, &address_pool, &call_pool).into_bytecode();
+        let (program, features) =
+            Program::generate(rng, spec, &address_pool, &call_pool).into_parts();
         let mut storage = BTreeMap::new();
         for _ in 0..rng.range_inclusive(0, 4) {
             storage.insert(rng.biased_word(), rng.biased_word());
@@ -122,7 +125,7 @@ impl EvmCase {
                 add_eip7702_authority(&mut accounts);
             }
         }
-        Self { spec, block, tx, extra_txs, accounts }
+        Self { spec, block, tx, extra_txs, features, accounts }
     }
 }
 
@@ -223,6 +226,26 @@ pub(crate) enum TxKindCase {
 }
 
 impl TxKindCase {
+    pub(crate) const fn name(self) -> &'static str {
+        match self {
+            Self::Legacy => "legacy",
+            Self::Eip2930 => "eip2930",
+            Self::Eip1559 => "eip1559",
+            Self::Eip4844 => "eip4844",
+            Self::Eip7702 => "eip7702",
+        }
+    }
+
+    pub(crate) const fn is_enabled(self, spec: SpecId) -> bool {
+        match self {
+            Self::Legacy => true,
+            Self::Eip2930 => spec.enables(SpecId::BERLIN),
+            Self::Eip1559 => spec.enables(SpecId::LONDON),
+            Self::Eip4844 => spec.enables(SpecId::CANCUN),
+            Self::Eip7702 => spec.enables(SpecId::PRAGUE),
+        }
+    }
+
     fn generate(rng: &mut Gen, spec: SpecId) -> Self {
         if rng.one_in(20)
             && let Some(kind) = Self::generate_fork_invalid(rng, spec)
