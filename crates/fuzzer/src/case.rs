@@ -223,7 +223,7 @@ pub(crate) enum TxKindCase {
 }
 
 impl TxKindCase {
-    const fn generate(rng: &mut Gen, spec: SpecId) -> Self {
+    fn generate(rng: &mut Gen, spec: SpecId) -> Self {
         match rng.range(5) {
             0 if spec.enables(SpecId::PRAGUE) => Self::Eip7702,
             1 if spec.enables(SpecId::CANCUN) => Self::Eip4844,

@@ -1,40 +1,36 @@
 use alloy_primitives::U256;
+use rand::{RngExt, SeedableRng, rngs::StdRng};
 use std::fmt;
 
 pub(crate) struct Gen {
-    state: u64,
+    rng: StdRng,
 }
 
 impl fmt::Debug for Gen {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Gen").field("state", &self.state).finish()
+        f.debug_struct("Gen").finish_non_exhaustive()
     }
 }
 
 impl Gen {
     pub(crate) fn new(seed: u64) -> Self {
-        Self { state: seed.max(1) }
+        Self { rng: StdRng::seed_from_u64(seed) }
     }
 
-    const fn next_u64(&mut self) -> u64 {
-        let mut x = self.state;
-        x ^= x << 7;
-        x ^= x >> 9;
-        x ^= x << 8;
-        self.state = x;
-        x
+    fn next_u64(&mut self) -> u64 {
+        self.rng.random()
     }
 
-    pub(crate) const fn range(&mut self, end: usize) -> usize {
-        (self.next_u64() % end as u64) as usize
+    pub(crate) fn range(&mut self, end: usize) -> usize {
+        self.rng.random_range(..end)
     }
 
-    pub(crate) const fn range_inclusive(&mut self, start: usize, end: usize) -> usize {
-        start + self.range(end - start + 1)
+    pub(crate) fn range_inclusive(&mut self, start: usize, end: usize) -> usize {
+        self.rng.random_range(start..=end)
     }
 
-    pub(crate) const fn one_in(&mut self, n: usize) -> bool {
-        self.range(n) == 0
+    pub(crate) fn one_in(&mut self, n: usize) -> bool {
+        self.rng.random_range(..n) == 0
     }
 
     pub(crate) fn pick<T: Copy>(&mut self, values: &[T]) -> T {
@@ -42,15 +38,13 @@ impl Gen {
     }
 
     pub(crate) fn bytes(&mut self, len: usize) -> Vec<u8> {
-        let mut out = Vec::with_capacity(len);
-        for _ in 0..len {
-            out.push(self.next_u64() as u8);
-        }
+        let mut out = vec![0; len];
+        self.rng.fill(&mut out[..]);
         out
     }
 
     pub(crate) fn small_word(&mut self, max: u64) -> U256 {
-        U256::from(self.next_u64() % (max + 1))
+        U256::from(self.rng.random_range(..=max))
     }
 
     pub(crate) fn biased_invalid_jumpdest(&mut self) -> U256 {
