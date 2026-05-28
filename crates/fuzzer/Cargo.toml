@@ -17,12 +17,12 @@ workspace = true
 
 [dependencies]
 evm2.workspace = true
-alloy-consensus.workspace = true
+alloy-consensus = { workspace = true, features = ["secp256k1"] }
 alloy-eips = { workspace = true, features = ["serde", "std"] }
-alloy-primitives = { workspace = true, features = ["serde", "std"] }
+alloy-primitives = { workspace = true, features = ["secp256k1", "serde", "std"] }
 clap = { version = "4.6", features = ["derive"] }
-k256 = { version = "0.13", features = ["ecdsa"] }
 rand.workspace = true
+secp256k1 = { workspace = true, features = ["global-context", "recovery"] }
 revm = { version = "38", default-features = true }
 serde = { workspace = true, features = ["derive", "std"] }
 serde_json = { workspace = true, features = ["std"] }

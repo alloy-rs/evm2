@@ -13,11 +13,11 @@ use alloy_eips::{
 };
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
 use evm2::{SpecId, env::BlockEnv, ethereum::RecoveredTxEnvelope, interpreter::op};
-use k256::ecdsa::SigningKey;
 use revm::{
     context::{BlockEnv as RevmBlockEnv, TxEnv as RevmTxEnv},
     primitives::TxKind as RevmTxKind,
 };
+use secp256k1::{Message, SECP256K1, SecretKey};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -499,15 +499,14 @@ pub(crate) fn fixed_eip7702_auth() -> SignedAuthorization {
 }
 
 fn signed_eip7702_auth(auth: Authorization) -> SignedAuthorization {
-    let signing_key =
-        SigningKey::from_slice(&[0x77; 32]).expect("hard-coded EIP-7702 signing key must be valid");
-    let (signature, recovery_id) = signing_key
-        .sign_prehash_recoverable(auth.signature_hash().as_slice())
-        .expect("hard-coded EIP-7702 authorization signing must succeed");
-    let signature = signature.to_bytes();
+    let secret_key = SecretKey::from_byte_array([0x77; 32])
+        .expect("hard-coded EIP-7702 signing key must be valid");
+    let signature = SECP256K1
+        .sign_ecdsa_recoverable(Message::from_digest(auth.signature_hash().0), &secret_key);
+    let (recovery_id, signature) = signature.serialize_compact();
     SignedAuthorization::new_unchecked(
         auth,
-        recovery_id.to_byte(),
+        i32::from(recovery_id) as u8,
         U256::from_be_slice(&signature[..32]),
         U256::from_be_slice(&signature[32..]),
     )
