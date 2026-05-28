@@ -18,7 +18,7 @@ env:
 
 jobs:
   smoke:
-    name: smoke (${{ matrix.dispatch_backend }}, seed ${{ matrix.seed }})
+    name: smoke (${{ matrix.dispatch_backend }})
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -27,7 +27,6 @@ jobs:
       fail-fast: false
       matrix:
         dispatch_backend: [auto, tco, packed, single_return, unpacked]
-        seed: [1, 2]
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@nightly
@@ -40,10 +39,17 @@ jobs:
         env:
           EVM2_DISPATCH_BACKEND: ${{ matrix.dispatch_backend }}
         run: cargo run -q -p evm2-fuzzer -- corpus crates/fuzzer/corpus/failures
-      - name: Run deterministic fuzz smoke test
+      - name: Run random fuzz smoke test
         env:
           EVM2_DISPATCH_BACKEND: ${{ matrix.dispatch_backend }}
-        run: cargo run -q -p evm2-fuzzer -- --seed ${{ matrix.seed }} --duration 3m
+        run: cargo run -q -p evm2-fuzzer -- --duration 3m
+      - name: Upload failing fuzzer cases
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzzer-failures-${{ matrix.dispatch_backend }}
+          path: crates/fuzzer/corpus/failures/*.json
+          if-no-files-found: ignore
 
   ci-success:
     name: fuzzer success

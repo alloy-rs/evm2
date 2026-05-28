@@ -52,6 +52,8 @@ fn run(opts: Options) -> Result<(), String> {
     let backends: [&dyn EvmBackend; 2] = [&RevmBackend, &Evm2Backend];
     match opts.command.unwrap_or(Command::Generate) {
         Command::Generate => {
+            let seed = opts.seed.unwrap_or_else(rand::random);
+            println!("seed: {seed}");
             let started = Instant::now();
             let cases = opts.cases.or_else(|| opts.duration.is_none().then_some(256));
             let mut case_index = 0;
@@ -59,9 +61,9 @@ fn run(opts: Options) -> Result<(), String> {
             while cases.is_none_or(|cases| case_index < cases)
                 && opts.duration.is_none_or(|duration| started.elapsed() < duration)
             {
-                let mut rng = Gen::new(opts.seed ^ case_index.wrapping_mul(0x9e37_79b9_7f4a_7c15));
+                let mut rng = Gen::new(seed ^ case_index.wrapping_mul(0x9e37_79b9_7f4a_7c15));
                 let case = EvmCase::generate(&mut rng);
-                let context = CaseContext::Generated { seed: opts.seed, case_index };
+                let context = CaseContext::Generated { seed, case_index };
                 coverage.record_case(&case);
                 let outcome = compare_case(&backends, &case, context)?;
                 coverage.record_outcome(&outcome);

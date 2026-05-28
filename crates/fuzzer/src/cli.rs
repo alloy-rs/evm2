@@ -3,9 +3,9 @@ use std::{path::PathBuf, time::Duration};
 
 #[derive(Clone, Debug, Parser)]
 pub(crate) struct Options {
-    /// Seed used for deterministic structured generation.
-    #[arg(long, default_value_t = 1, global = true)]
-    pub(crate) seed: u64,
+    /// Seed used for deterministic structured generation. Random if omitted.
+    #[arg(long, global = true)]
+    pub(crate) seed: Option<u64>,
     /// Number of generated cases to run. Defaults to 256 unless --duration is set.
     #[arg(long, global = true)]
     pub(crate) cases: Option<u64>,
