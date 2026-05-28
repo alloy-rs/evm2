@@ -1,4 +1,4 @@
---- /home/doni/github/paradigmxyz/revm-inspectors/src/tracing/types.rs	2026-05-14 03:45:05.356711986 +0200
+--- /home/doni/github/paradigmxyz/revm-inspectors/src/tracing/types.rs	2026-05-28 02:57:05.688697684 +0200
 +++ /home/doni/github/danipopes/evm2.1/crates/inspectors/src/tracing/types.rs	2026-05-15 02:50:14.724529582 +0200
 @@ -17,9 +17,9 @@
          CreationMethod, SelfdestructAction, TraceOutput, TransactionTrace,
@@ -176,7 +176,7 @@
          let Some(status) = self.status else {
              return false;
          };
--        status.is_error()
+-        status.is_halt()
 +        !status.is_success()
      }
  

@@ -5,8 +5,8 @@ use crate::tracing::{
     config::TraceStyle,
     js::{
         bindings::{
-            CallFrame, Contract, EvmDbRef, FrameResult, JsEvmContext, MemoryRef, OpObj, StackRef,
-            StepLog,
+            CallFrame, Contract, EvmDbRef, FrameResult, JsEvmContext, MemoryRef, MemorySnapshot,
+            OpObj, StackRef, StepLog,
         },
         builtins::{PrecompileList, to_serde_value},
     },
@@ -27,7 +27,8 @@ use evm2::{
     ethereum::RecoveredTxEnvelope,
     evm::DynDatabase,
     interpreter::{
-        GasTracker, InstrStop, Interpreter, Message, MessageKind, MessageResult, opcode::op,
+        GasTracker, InstrStop, Interpreter, Message, MessageKind, MessageResult, Word,
+        opcode::{OpCode, op},
     },
 };
 
@@ -46,6 +47,31 @@ pub const LOOP_ITERATION_LIMIT: u64 = 200_000;
 ///
 /// Once exceeded, the function will throw an error.
 pub const RECURSION_LIMIT: usize = 10_000;
+
+/// Pre-execution state captured in `step()` to be used in `step_end()`.
+///
+/// The JS step callback needs the pre-execution stack/memory state but the post-execution gas
+/// cost. This struct holds the snapshot from `step()` so `step_end()` can invoke the callback
+/// with the correct gas cost.
+#[derive(Debug)]
+struct PendingStep {
+    /// Cloned stack from before opcode execution.
+    stack: Vec<Word>,
+    /// Program counter.
+    pc: u64,
+    /// Opcode being executed.
+    op: u8,
+    /// Gas remaining before execution.
+    gas_remaining: u64,
+    /// Call depth.
+    depth: u64,
+    /// Gas refund counter.
+    refund: u64,
+    /// Contract info.
+    contract: Contract,
+    /// Total gas spent before this opcode, to compute delta in step_end.
+    gas_spent_before: u64,
+}
 
 /// A javascript inspector that will delegate inspector functions to javascript functions
 ///
@@ -85,11 +111,17 @@ pub struct JsInspector {
     call_stack: Vec<CallStackItem>,
     /// Marker to track whether the precompiles have been registered.
     precompiles_registered: bool,
-    /// Tracker for PC recorded in start_step.
-    last_start_step_pc: Option<usize>,
-    /// Tracks gas spent in the previous step to calculate individual opcode cost.
-    previous_gas_spent: u64,
+    /// Pre-execution state captured in `step()` to be processed in `step_end()`.
+    pending_step: Option<PendingStep>,
+    /// Cached memory snapshot, only updated when the previous opcode modifies memory.
+    cached_memory: MemorySnapshot,
+    /// The opcode from the previous step, used to decide whether to re-snapshot memory.
+    prev_op: Option<OpCode>,
 }
+
+// Boa's runtime is internally `Rc`-based, but evm2 inspectors are moved as single-owner values and
+// are not shared concurrently by the interpreter.
+unsafe impl Send for JsInspector {}
 
 impl JsInspector {
     /// Creates a new inspector from a javascript code snipped that evaluates to an object with the
@@ -186,8 +218,9 @@ impl JsInspector {
             step_fn,
             call_stack: Vec::new(),
             precompiles_registered: false,
-            last_start_step_pc: None,
-            previous_gas_spent: 0,
+            pending_step: None,
+            cached_memory: MemorySnapshot::default(),
+            prev_op: None,
         })
     }
 
@@ -289,16 +322,6 @@ impl JsInspector {
         )?)
     }
 
-    /// Calculate op cost based on previous gas spent and new spent value.
-    const fn get_op_cost(&self, spent: u64) -> u64 {
-        spent.saturating_sub(self.previous_gas_spent)
-    }
-
-    /// Set the new previous gas spent value.
-    const fn set_previous_gas_spent(&mut self, spent: u64) {
-        self.previous_gas_spent = spent;
-    }
-
     /// Returns the currently active call.
     ///
     /// Panics: if there's no call yet.
@@ -391,77 +414,87 @@ impl JsInspector {
 impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for JsInspector {
     fn step(&mut self, interp: &mut Interpreter<'_, T>, host: &mut T::Host) {
         self.register_precompiles(host);
-        self.last_start_step_pc = Some(interp.pc());
 
         if self.step_fn.is_none() {
             return;
         }
 
-        let (db, db_guard) = EvmDbRef::new_state(host.state_mut());
-        let (stack, stack_guard) = StackRef::new(interp.stack());
-        let (memory, memory_guard) = MemoryRef::new(interp.memory_ref());
+        let should_update_memory = self.prev_op.is_none_or(|prev| prev.modifies_memory());
+        if should_update_memory {
+            self.cached_memory = MemorySnapshot::new(interp.memory_ref());
+        }
+
+        let op = interp.opcode();
+        self.prev_op = OpCode::new(op);
+
         let active_call = self.active_call();
         let message = interp.message();
-        let gas_spent = interp.gas().spent();
-        let step = StepLog {
-            stack,
-            op: OpObj(interp.opcode()),
-            memory,
+        self.pending_step = Some(PendingStep {
+            stack: interp.stack().as_slice().to_vec(),
             pc: interp.pc() as u64,
+            op,
             gas_remaining: interp.gas().remaining(),
-            cost: self.get_op_cost(gas_spent),
             depth: u64::from(message.depth),
             refund: interp.gas().refunded().max(0) as u64,
-            error: None,
             contract: Contract {
                 caller: message.caller,
                 contract: message.destination,
                 value: active_call.contract.value,
                 input: active_call.contract.input.clone(),
             },
-        };
-
-        self.set_previous_gas_spent(gas_spent);
-        let step_result = self.try_step(step, db);
-        drop(memory_guard);
-        drop(stack_guard);
-        drop(db_guard);
-
-        if step_result.is_err() {
-            interp.set_stop(InstrStop::Revert);
-        }
+            gas_spent_before: interp.gas().spent(),
+        });
     }
 
     fn step_end(&mut self, interp: &mut Interpreter<'_, T>, host: &mut T::Host) {
-        if self.step_fn.is_none() || !matches!(interp.result(), Err(stop) if stop.is_revert()) {
+        if self.step_fn.is_none() {
             return;
         }
 
-        let (db, _db_guard) = EvmDbRef::new_state(host.state_mut());
-        let (stack, _stack_guard) = StackRef::new(interp.stack());
-        let (memory, _memory_guard) = MemoryRef::new(interp.memory_ref());
-        let active_call = self.active_call();
-        let message = interp.message();
-        let gas_spent = interp.gas().spent();
-        let step = StepLog {
-            stack,
-            op: OpObj(op::REVERT),
-            memory,
-            pc: self.last_start_step_pc.unwrap_or_default() as u64,
-            gas_remaining: interp.gas().remaining(),
-            cost: self.get_op_cost(gas_spent),
-            depth: u64::from(message.depth),
-            refund: interp.gas().refunded().max(0) as u64,
-            error: interp.result().err().map(|err| format!("{err:?}")),
-            contract: Contract {
-                caller: message.caller,
-                contract: message.destination,
-                value: active_call.contract.value,
-                input: active_call.contract.input.clone(),
-            },
+        let Some(pending) = self.pending_step.take() else {
+            return;
         };
 
-        let _ = self.try_fault(step, db);
+        let is_revert = matches!(interp.result(), Err(stop) if stop.is_revert());
+        let cost = interp.gas().spent().saturating_sub(pending.gas_spent_before);
+
+        let (db, _db_guard) = EvmDbRef::new_state(host.state_mut());
+        let (stack, _stack_guard) = StackRef::new_words(pending.stack);
+        let (memory, _memory_guard) = MemoryRef::new_owned(self.cached_memory.clone());
+
+        if is_revert {
+            let step = StepLog {
+                stack,
+                op: OpObj(op::REVERT),
+                memory,
+                pc: pending.pc,
+                gas_remaining: pending.gas_remaining,
+                cost,
+                depth: pending.depth,
+                refund: pending.refund,
+                error: interp.result().err().map(|err| format!("{err:?}")),
+                contract: pending.contract,
+            };
+
+            let _ = self.try_fault(step, db);
+        } else {
+            let step = StepLog {
+                stack,
+                op: OpObj(pending.op),
+                memory,
+                pc: pending.pc,
+                gas_remaining: pending.gas_remaining,
+                cost,
+                depth: pending.depth,
+                refund: pending.refund,
+                error: None,
+                contract: pending.contract,
+            };
+
+            if self.try_step(step, db).is_err() && interp.result().is_ok() {
+                interp.set_stop(InstrStop::Revert);
+            }
+        }
     }
 
     fn call(&mut self, message: &mut Message<T>, host: &mut T::Host) -> Option<MessageResult<T>> {
@@ -627,6 +660,8 @@ mod tests {
 
     #[derive(Clone)]
     struct SharedJsInspector(Rc<RefCell<JsInspector>>);
+
+    unsafe impl Send for SharedJsInspector {}
 
     impl Inspector<BaseEvmTypes> for SharedJsInspector {
         fn step(
@@ -830,10 +865,106 @@ mod tests {
     }
 
     #[test]
+    fn test_stack_peek_nan() {
+        let code = r#"{
+        depths: [],
+        step: function(log) { this.depths.push(log.stack.peek(NaN)); },
+        fault: function() {},
+        result: function() { return this.depths; }
+    }"#;
+        let res = run_trace(code, None, false);
+        assert_eq!(res.as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_stack_peek_infinity() {
+        let code = r#"{
+        depths: [],
+        step: function(log) { this.depths.push(log.stack.peek(Infinity)); },
+        fault: function() {},
+        result: function() { return this.depths; }
+    }"#;
+        let res = run_trace(code, None, false);
+        assert_eq!(res.as_array().unwrap().len(), 0);
+    }
+
+    #[test]
     fn test_memory_get_uint() {
         let code = r#"{
         depths: [],
         step: function(log, db) { this.depths.push(log.memory.getUint(-64)); },
+        fault: function() {},
+        result: function() { return this.depths; }
+    }"#;
+        let res = run_trace(code, None, false);
+        assert_eq!(res.as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_memory_slice_rejects_non_finite_indexes() {
+        let code = r#"{
+        depths: [],
+        step: function(log) { this.depths.push(log.memory.slice(Infinity, NaN)); },
+        fault: function() {},
+        result: function() { return this.depths; }
+    }"#;
+        let res = run_trace(code, None, false);
+        assert_eq!(res.as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_memory_slice_rejects_non_finite_end() {
+        let code = r#"{
+        depths: [],
+        step: function(log) { this.depths.push(log.memory.slice(0, Infinity)); },
+        fault: function() {},
+        result: function() { return this.depths; }
+    }"#;
+        let res = run_trace(code, None, false);
+        assert_eq!(res.as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_memory_slice_accepts_bigint_index() {
+        let code = r#"{
+        res: [],
+        step: function(log) { this.res.push(log.memory.slice(0, 0n)); },
+        fault: function() {},
+        result: function() { return this.res; }
+    }"#;
+        let res = run_trace(code, None, true);
+        assert_eq!(res, json!([json!({}), json!({}), json!({})]));
+    }
+
+    #[test]
+    fn test_memory_slice_rejects_bigint_index_overflow() {
+        let code = r#"{
+        depths: [],
+        step: function(log) { this.depths.push(log.memory.slice(0, 340282366920938463463374607431768211455n)); },
+        fault: function() {},
+        result: function() { return this.depths; }
+    }"#;
+        let res = run_trace(code, None, false);
+        assert_eq!(res.as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_memory_get_uint_rejects_non_finite_offset() {
+        let code = r#"{
+        depths: [],
+        step: function(log, db) { this.depths.push(log.memory.getUint(Infinity)); },
+        fault: function() {},
+        result: function() { return this.depths; }
+    }"#;
+        let res = run_trace(code, None, false);
+        assert_eq!(res.as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_memory_get_uint_rejects_nan_offset() {
+        let code = r#"{
+        depths: [],
+        step: function(log, db) { this.depths.push(log.memory.getUint(NaN)); },
         fault: function() {},
         result: function() { return this.depths; }
     }"#;
@@ -953,13 +1084,15 @@ mod tests {
 
     #[test]
     fn test_memory_limit() {
+        // The JS step callback runs after the opcode executes. A JS error on the final STOP opcode
+        // cannot revert the transaction because execution has already completed.
         let code = r#"{
         res: [],
         step: function(log) { if (log.op.toString() === 'STOP') { this.res.push(log.memory.slice(5, 1025 * 1024)) } },
         fault: function() {},
         result: function() { return this.res }
     }"#;
-        let res = run_trace(code, None, false);
+        let res = run_trace(code, None, true);
         assert_eq!(res, json!([]));
     }
 
@@ -989,7 +1122,7 @@ mod tests {
 
         assert_eq!(
             res.as_array().unwrap().iter().map(|v| v.as_u64().unwrap_or(0)).collect::<Vec<u64>>(),
-            vec![0, 3, 3]
+            vec![3, 3, 0]
         );
     }
 
@@ -1065,5 +1198,31 @@ mod tests {
     }"#;
         let res = run_trace(code, Some(hex!("5F5F52600100").into()), true);
         assert_eq!(res, json!([json!({}), json!({}), json!({"0": 0})]));
+    }
+
+    #[test]
+    fn test_bigint_survives_poisoned_global() {
+        let code = r#"{
+        res: {},
+        step: function(log, db) {
+            Object.defineProperty(globalThis, 'bigint', {
+                get() { throw new Error('poisoned bigint'); },
+                configurable: true
+            });
+
+            if (log.stack.length() > 0) {
+                this.res.stackPeek = log.stack.peek(0).toString();
+            }
+            this.res.value = log.contract.getValue().toString();
+            this.res.balance = db.getBalance(log.contract.getAddress()).toString();
+        },
+        fault: function() {},
+        result: function() { return this.res }
+    }"#;
+        let res = run_trace(code, None, true);
+        let obj = res.as_object().unwrap();
+        assert_eq!(obj["stackPeek"], json!("1"));
+        assert_eq!(obj["value"], json!("0"));
+        assert_eq!(obj["balance"], json!("0"));
     }
 }

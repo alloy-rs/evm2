@@ -1,4 +1,4 @@
---- /home/doni/github/paradigmxyz/revm-inspectors/tests/it/repro/mod.rs	2026-05-14 03:45:05.357711983 +0200
+--- /home/doni/github/paradigmxyz/revm-inspectors/tests/it/repro/mod.rs	2026-05-28 02:57:05.688697684 +0200
 +++ /home/doni/github/danipopes/evm2.1/crates/inspectors/tests/it/repro/mod.rs	2026-05-15 02:16:34.355106261 +0200
 @@ -47,85 +47,45 @@
  
@@ -23,21 +23,21 @@
      match hardfork {
          EthereumHardfork::Frontier => SpecId::FRONTIER,
 -        EthereumHardfork::Homestead => SpecId::HOMESTEAD,
--        EthereumHardfork::Dao => SpecId::DAO_FORK,
+-        EthereumHardfork::Dao => SpecId::HOMESTEAD,
 +        EthereumHardfork::Homestead | EthereumHardfork::Dao => SpecId::HOMESTEAD,
          EthereumHardfork::Tangerine => SpecId::TANGERINE,
          EthereumHardfork::SpuriousDragon => SpecId::SPURIOUS_DRAGON,
          EthereumHardfork::Byzantium => SpecId::BYZANTIUM,
--        EthereumHardfork::Constantinople => SpecId::CONSTANTINOPLE,
+-        EthereumHardfork::Constantinople => SpecId::PETERSBURG,
 -        EthereumHardfork::Petersburg => SpecId::PETERSBURG,
 -        EthereumHardfork::Istanbul => SpecId::ISTANBUL,
--        EthereumHardfork::MuirGlacier => SpecId::MUIR_GLACIER,
+-        EthereumHardfork::MuirGlacier => SpecId::ISTANBUL,
 +        EthereumHardfork::Constantinople | EthereumHardfork::Petersburg => SpecId::PETERSBURG,
 +        EthereumHardfork::Istanbul | EthereumHardfork::MuirGlacier => SpecId::ISTANBUL,
          EthereumHardfork::Berlin => SpecId::BERLIN,
 -        EthereumHardfork::London => SpecId::LONDON,
--        EthereumHardfork::ArrowGlacier => SpecId::ARROW_GLACIER,
--        EthereumHardfork::GrayGlacier => SpecId::GRAY_GLACIER,
+-        EthereumHardfork::ArrowGlacier => SpecId::LONDON,
+-        EthereumHardfork::GrayGlacier => SpecId::LONDON,
 +        EthereumHardfork::London
 +        | EthereumHardfork::ArrowGlacier
 +        | EthereumHardfork::GrayGlacier => SpecId::LONDON,

@@ -1,6 +1,6 @@
 # Fresh Upstream Diff Review Todo
 
-Baseline: `/home/doni/github/paradigmxyz/revm-inspectors`.
+Baseline: `/home/doni/github/paradigmxyz/revm-inspectors` at `6566b83`.
 
 Port: `/home/doni/github/danipopes/evm2.1/crates/inspectors`.
 
@@ -41,11 +41,18 @@ Legend: `[ ]` pending, `[x]` reviewed, `[!]` needs follow-up.
 - [x] `src/tracing/fourbyte.rs` -> `diffs/src__tracing__fourbyte.rs.diff`
   - Selector/calldata counting matches; evm2 messages already carry materialized calldata.
 - [x] `src/tracing/js/bindings.rs` -> `diffs/src__tracing__js__bindings.rs.diff`
-  - JS object surface is preserved. Internal DB access is split into in-flight `State` reads and final `StateChanges` reads because evm2 lacks revm's `EvmState + DatabaseRef` pairing; the extra reader trait is private binding infrastructure, not public API.
+  - JS object surface is preserved, including upstream stack/memory index validation and owned
+    pre-step snapshots. Internal DB access is split into in-flight `State` reads and final
+    `StateChanges` reads because evm2 lacks revm's `EvmState + DatabaseRef` pairing; the extra
+    reader trait is private binding infrastructure, not public API.
 - [x] `src/tracing/js/builtins.rs` -> `diffs/src__tracing__js__builtins.rs.diff`
-  - Import/borrow formatting only; builtin semantics and tests match.
+  - Builtin semantics and tests match, including direct BigInt construction and geth `bigInt`
+    compatibility shims.
 - [x] `src/tracing/js/mod.rs` -> `diffs/src__tracing__js__mod.rs.diff`
-  - Hook behavior maps to evm2 messages/results; call stack, step/fault/result objects, precompile registration, runtime limits, and error-to-revert behavior match upstream. Delegatecall value has already been fixed to upstream semantics.
+  - Hook behavior maps to evm2 messages/results; call stack, deferred step/fault callbacks,
+    pre-step stack/memory snapshots, result objects, precompile registration, runtime limits, and
+    error-to-revert behavior match upstream. Delegatecall value has already been fixed to upstream
+    semantics.
 - [x] `src/tracing/mod.rs` -> `diffs/src__tracing__mod.rs.diff`
   - Core tracing semantics match with evm2 hooks: root trace starts in `initialize_interp`, step bookkeeping uses an explicit stack, logs use a global index, storage changes scan new journal entries, and precompile exclusion uses evm2 precompile/message data. Deprecated getters and reusable step vec pool are intentionally absent.
 - [x] `src/tracing/mux.rs` -> `diffs/src__tracing__mux.rs.diff`
@@ -57,7 +64,9 @@ Legend: `[ ]` pending, `[x]` reviewed, `[!]` needs follow-up.
 - [x] `src/tracing/utils.rs` -> `diffs/src__tracing__utils.rs.diff`
   - Error/gas/revert helpers are equivalent after evm2 substitutions; `load_account_code` now propagates DB errors.
 - [x] `src/tracing/writer.rs` -> `diffs/src__tracing__writer.rs.diff`
-  - Writer output logic matches upstream; changes are `InstrStop` substitution, constness, formatting, and `is_success()` naming.
+  - Writer output logic matches upstream, including receive/fallback display and last-write storage
+    ordering; remaining changes are `InstrStop` substitution, constness, formatting, and
+    `is_success()` naming.
 - [x] `src/transfer.rs` -> `diffs/src__transfer.rs.diff`
   - Transfer recording matches upstream for call/create/selfdestruct after evm2 message/log substitutions.
 
@@ -96,23 +105,4 @@ All `tests/it/writer/**` snapshot files are byte-for-byte unchanged from upstrea
 
 ## MANUAL
 
-- src__tracing__builder__geth.rs.diff
-  - spec_id ... i guess its ok
-- src__tracing__builder__parity.rs.diff
-- src__tracing__config.rs.diff
-  - from_geth_prestate_config
-- src__tracing__js__bindings.rs.diff
-  - weird db stuff
-- src__tracing__js__mod.rs.diff
-  - result status enum?
-  - fn try_* gone/moved?
-  - SharedJsInspector???
-  - test indentation
-- src__tracing__mod.rs.diff
-  - why remove reusable_step_vecs
-  - fn start_trace do we need those address matchings?
-- src__tracing__utils.rs.diff
-  - fn gas_used -- could be reused
-
-
-- TODO: pull latest upstream commit and regenerate diffs and fix inconsistencies
+Manual follow-ups from the previous pass were resolved or recorded above.

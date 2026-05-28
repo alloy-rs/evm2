@@ -1,5 +1,5 @@
 --- /home/doni/github/paradigmxyz/revm-inspectors/tests/it/utils.rs	2025-07-10 16:22:55.682865359 +0200
-+++ /home/doni/github/danipopes/evm2.1/crates/inspectors/tests/it/utils.rs	2026-05-15 03:48:54.777446606 +0200
++++ /home/doni/github/danipopes/evm2.1/crates/inspectors/tests/it/utils.rs	2026-05-28 03:04:10.649127866 +0200
 @@ -1,19 +1,426 @@
 -use alloy_primitives::{Address, Bytes};
 +use alloy_consensus::{TxLegacy, transaction::Recovered};
@@ -34,7 +34,7 @@
 +
 +pub type TransactTo = TxKind;
 +
-+pub const ETH_TRANSFER_LOG_ADDRESS: Address = evm2::SYSTEM_ADDRESS;
++pub const ETH_TRANSFER_LOG_ADDRESS: Address = evm2::evm::SYSTEM_ADDRESS;
 +
 +#[derive(Clone, Debug)]
 +pub struct TxEnv {
@@ -440,7 +440,7 @@
  
  pub fn write_traces(tracer: &TracingInspector) -> String {
      write_traces_with(tracer, TraceWriterConfig::new().color_choice(ColorChoice::Never))
-@@ -26,61 +433,206 @@
+@@ -26,61 +433,208 @@
  }
  
  pub fn print_traces(tracer: &TracingInspector) {
@@ -597,6 +597,8 @@
 +struct RawInspector<I> {
 +    inspector: *mut I,
 +}
++
++unsafe impl<I> Send for RawInspector<I> {}
 +
 +struct NoopInspector;
 +

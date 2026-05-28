@@ -18,7 +18,7 @@ pub use evm2::{
 
 pub type TransactTo = TxKind;
 
-pub const ETH_TRANSFER_LOG_ADDRESS: Address = evm2::SYSTEM_ADDRESS;
+pub const ETH_TRANSFER_LOG_ADDRESS: Address = evm2::evm::SYSTEM_ADDRESS;
 
 #[derive(Clone, Debug)]
 pub struct TxEnv {
@@ -550,6 +550,8 @@ impl_owned_inspector_slot!(evm2_inspectors::tracing::js::JsInspector);
 struct RawInspector<I> {
     inspector: *mut I,
 }
+
+unsafe impl<I> Send for RawInspector<I> {}
 
 struct NoopInspector;
 

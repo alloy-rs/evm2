@@ -1,4 +1,4 @@
---- /home/doni/github/paradigmxyz/revm-inspectors/src/tracing/mod.rs	2026-05-14 03:45:05.356711986 +0200
+--- /home/doni/github/paradigmxyz/revm-inspectors/src/tracing/mod.rs	2026-05-28 02:57:05.688697684 +0200
 +++ /home/doni/github/danipopes/evm2.1/crates/inspectors/src/tracing/mod.rs	2026-05-15 17:08:57.518902918 +0200
 @@ -1,28 +1,23 @@
 +//! EVM tracing inspectors.
@@ -540,7 +540,7 @@
 -    ) {
 -        // We always want an OpCode, even it is unknown because it could be an additional opcode
 -        // that not a known constant.
--        let op = unsafe { OpCode::new_unchecked(interp.bytecode.opcode()) };
+-        let op = OpCode::new_or_unknown(interp.bytecode.opcode());
 -
 -        let record = self.config.should_record_opcode(op);
 -        self.record_step_end = record;

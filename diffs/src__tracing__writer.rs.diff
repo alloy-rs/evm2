@@ -1,5 +1,5 @@
---- /home/doni/github/paradigmxyz/revm-inspectors/src/tracing/writer.rs	2026-05-14 03:45:05.356711986 +0200
-+++ /home/doni/github/danipopes/evm2.1/crates/inspectors/src/tracing/writer.rs	2026-05-14 20:11:30.032795137 +0200
+--- /home/doni/github/paradigmxyz/revm-inspectors/src/tracing/writer.rs	2026-05-28 02:57:05.688697684 +0200
++++ /home/doni/github/danipopes/evm2.1/crates/inspectors/src/tracing/writer.rs	2026-05-28 03:03:56.064126884 +0200
 @@ -1,15 +1,15 @@
  use super::{
 +    CallTraceArena,
@@ -119,7 +119,16 @@
          &mut self.writer
      }
  
-@@ -419,7 +419,7 @@
+@@ -278,7 +278,7 @@
+                 }
+                 None => {
+                     if trace.data.len() < 4 && !trace.value.is_zero() {
+-                        // Short calldata + nonzero value = receive() was invoked
++                        // Short calldata + nonzero value = receive() was invoked.
+                         ("receive".to_string(), String::new())
+                     } else if trace.data.len() < 4 {
+                         ("fallback".to_string(), hex::encode(&trace.data))
+@@ -422,7 +422,7 @@
              self.writer,
              "{style}{RETURN}[{status:?}]{style:#}",
              style = self.trace_style(trace),
@@ -128,7 +137,7 @@
          )?;
  
          if let Some(decoded) = trace.decoded_return_data() {
-@@ -428,7 +428,7 @@
+@@ -431,7 +431,7 @@
          }
  
          if !self.config.write_bytecodes
@@ -137,7 +146,17 @@
          {
              write!(self.writer, " {} bytes of code", trace.output.len())?;
          } else if !trace.output.is_empty() {
-@@ -552,9 +552,5 @@
+@@ -521,7 +521,8 @@
+         changes.sort_by_key(|(_, a)| a.2);
+         let changes = changes
+             .iter()
+-            .filter_map(|(&key, (first, last, _))| {
++            .filter_map(|(key, (first, last, _))| {
++                let key = **key;
+                 let value_before = first.had_value.unwrap_or_default();
+                 let value_after = last.value;
+                 if value_before == value_after {
+@@ -562,9 +563,5 @@
  /// Formats the given U256 as a decimal number if it is short, otherwise as a hexadecimal
  /// byte-array.
  fn num_or_hex(x: U256) -> String {
