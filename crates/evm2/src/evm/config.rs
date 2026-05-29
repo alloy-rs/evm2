@@ -228,6 +228,10 @@ impl<T: EvmTypes> ExecutionConfig<T> {
 
     #[inline]
     pub(crate) fn register_inspector(&mut self, inspector_config: &InspectorConfig) {
+        if inspector_config.set.is_empty() {
+            self.inner.inspect_instructions = *self.inner.instructions;
+            return;
+        }
         if inspector_config.set == OpcodeSet::ALL {
             self.inner.inspect_instructions = if cfg!(tco) {
                 *self.inner.inspect_instruction_source

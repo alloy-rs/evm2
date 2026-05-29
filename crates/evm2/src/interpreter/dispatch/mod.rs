@@ -17,7 +17,7 @@ cfg_if::cfg_if! {
     }
 }
 
-pub(in crate::interpreter) use imp::{run, run_inspect_loop};
+pub(in crate::interpreter) use imp::{run, run_inspect_loop, run_no_steps};
 
 #[inline(always)]
 fn run_state<'a, 'frame, T: EvmTypes>(

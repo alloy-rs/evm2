@@ -485,6 +485,31 @@ mod tests {
     }
 
     #[derive(Default)]
+    struct EmptySetLogInspector {
+        steps: usize,
+        step_ends: usize,
+        logs: Vec<Log>,
+    }
+
+    impl Inspector<TestTypes> for EmptySetLogInspector {
+        fn config(&self) -> InspectorConfig {
+            InspectorConfig::new(OpcodeSet::EMPTY)
+        }
+
+        fn step(&mut self, _interp: &mut Interpreter<'_, TestTypes>) {
+            self.steps += 1;
+        }
+
+        fn step_end(&mut self, _interp: &mut Interpreter<'_, TestTypes>) {
+            self.step_ends += 1;
+        }
+
+        fn log(&mut self, log: &Log) {
+            self.logs.push(log.clone());
+        }
+    }
+
+    #[derive(Default)]
     struct FailingStepInspector {
         steps: usize,
         step_ends: usize,
@@ -882,6 +907,29 @@ mod tests {
         );
 
         assert!(matches!(stop, InstrStop::Stop));
+        assert_eq!(inspector.logs.len(), 1);
+        assert_eq!(inspector.logs[0].address, contract);
+        assert_eq!(host.logs, inspector.logs);
+    }
+
+    #[test]
+    fn empty_opcode_set_skips_steps_but_keeps_other_hooks() {
+        let contract = Address::from([0x11; 20]);
+        let mut host = TestHost::default();
+        let mut inspector = EmptySetLogInspector::default();
+        let code = Vec::from([op::PUSH1, 0, op::PUSH1, 0, op::LOG0, op::STOP]);
+
+        let (stop, _) = run_with_inspector(
+            code,
+            &mut host,
+            &Message { destination: contract, ..Default::default() },
+            10_000,
+            &mut inspector,
+        );
+
+        assert!(matches!(stop, InstrStop::Stop));
+        assert_eq!(inspector.steps, 0);
+        assert_eq!(inspector.step_ends, 0);
         assert_eq!(inspector.logs.len(), 1);
         assert_eq!(inspector.logs[0].address, contract);
         assert_eq!(host.logs, inspector.logs);

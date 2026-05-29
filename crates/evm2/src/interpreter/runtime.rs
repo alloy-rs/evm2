@@ -198,6 +198,14 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         inspector: &mut dyn Inspector<T>,
     ) -> InstrStop {
         let inspector = Some(NonNull::from(inspector));
+        if inspector_config.set.is_empty() {
+            return self.run_inner_no_steps(
+                config.version(),
+                host,
+                inspector,
+                config.instructions(),
+            );
+        }
         if inspector_config.set == OpcodeSet::ALL && !cfg!(tco) {
             return self.run_inner_inspect_loop(
                 config.version(),
@@ -245,6 +253,25 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         self.features = version.features;
 
         dispatch::run_inspect_loop(self, instructions)
+    }
+
+    #[inline(never)]
+    fn run_inner_no_steps(
+        &mut self,
+        version: &Version,
+        host: &mut T::Host,
+        inspector: Option<NonNull<dyn Inspector<T>>>,
+        instructions: &InstrTable<T>,
+    ) -> InstrStop {
+        self.memory.set_memory_limit(version.memory_limit);
+
+        self.host = Some(NonNull::from(host));
+        self.inspector = inspector;
+        self.version = version;
+        self.spec = version.spec_id;
+        self.features = version.features;
+
+        dispatch::run_no_steps(self, instructions)
     }
 }
 

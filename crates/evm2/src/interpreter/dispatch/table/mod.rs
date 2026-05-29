@@ -137,6 +137,14 @@ pub(in crate::interpreter) fn run_inspect_loop<T: EvmTypes>(
     run_inner::<T, true, true>(state, pc, stack, instructions)
 }
 
+pub(in crate::interpreter) fn run_no_steps<T: EvmTypes>(
+    interpreter: &mut Interpreter<'_, T>,
+    instructions: &RawInstrTable<T>,
+) -> InstrStop {
+    let (state, pc, stack) = run_state(interpreter);
+    run_inner::<T, false, false>(state, pc, stack, instructions)
+}
+
 #[allow(clippy::let_unit_value)]
 fn run_inner<T: EvmTypes, const INSPECTING: bool, const LOOP_INSPECT: bool>(
     state: &mut InterpreterState<'_, T>,
