@@ -1,4 +1,4 @@
-use super::{InspectMode, inc_pc, run_state};
+use super::{DynInspector, InspectMode, inc_pc, run_state};
 use crate::{
     EvmConfig, EvmTypes,
     interpreter::{InstrStop, Interpreter, InterpreterState, Pc, Result, Stack, StackMut},
@@ -113,6 +113,9 @@ fn dispatch_inner<T: EvmTypes, C: EvmConfig<T>, M: InspectMode<T>, G: DispatchGa
     } else if let Err(e) = r {
         state.set_result(Err(e));
         cold_path();
+        if state.inspect_steps_in_loop() {
+            return (pc, gas);
+        }
         return (Pc::new(core::ptr::null()), gas);
     }
     (pc, gas)
@@ -124,13 +127,16 @@ pub(in crate::interpreter) fn run<T: EvmTypes>(
 ) -> InstrStop {
     let (state, pc, stack) = run_state(interpreter);
     if state.is_inspecting() {
-        return run_inner::<T, true>(state, pc, stack, instructions);
+        if state.inspect_steps_in_loop() {
+            return run_inner::<T, true, true>(state, pc, stack, instructions);
+        }
+        return run_inner::<T, true, false>(state, pc, stack, instructions);
     }
-    run_inner::<T, false>(state, pc, stack, instructions)
+    run_inner::<T, false, false>(state, pc, stack, instructions)
 }
 
 #[allow(clippy::let_unit_value)]
-fn run_inner<T: EvmTypes, const INSPECTING: bool>(
+fn run_inner<T: EvmTypes, const INSPECTING: bool, const LOOP_INSPECT: bool>(
     state: &mut InterpreterState<'_, T>,
     mut pc: Pc,
     mut stack: Stack<'_>,
@@ -140,12 +146,25 @@ fn run_inner<T: EvmTypes, const INSPECTING: bool>(
     loop {
         let op = pc.op();
         let instr = instructions[op as usize];
+        if LOOP_INSPECT {
+            imp::sync_loop_state(state, loop_state);
+            <DynInspector as InspectMode<T>>::step(state, pc, stack.len);
+            if state.result().is_err() {
+                return finish_run(state, pc, stack.len, loop_state);
+            }
+        }
         let (next_pc, next_stack_len) =
             imp::dispatch_loop_call(instr, pc, stack.reborrow(), state, &mut loop_state);
         pc = next_pc;
         stack.len = next_stack_len;
 
-        if INSPECTING {
+        if LOOP_INSPECT {
+            imp::sync_loop_state(state, loop_state);
+            <DynInspector as InspectMode<T>>::step_end(state, pc, stack.len);
+            if state.result().is_err() {
+                return finish_run(state, pc, stack.len, loop_state);
+            }
+        } else if INSPECTING {
             imp::sync_loop_state(state, loop_state);
             if state.result().is_err() {
                 return finish_run(state, pc, stack.len, loop_state);

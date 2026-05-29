@@ -57,9 +57,6 @@ pub(crate) fn make_inspect_table<T: EvmTypes>(
     inspect_instructions: &InstrTable<T>,
     step_opcodes: &OpcodeSet,
 ) -> InstrTable<T> {
-    if *step_opcodes == OpcodeSet::ALL {
-        return *inspect_instructions;
-    }
     let mut table = *instructions;
     for opcode in step_opcodes.bits() {
         table[opcode as usize] = inspect_instructions[opcode as usize];

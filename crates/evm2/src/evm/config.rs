@@ -3,7 +3,7 @@
 use crate::{
     OpcodeConfig, SpecId,
     ethereum::RecoveredTxEnvelope,
-    evm::inspector::InspectorConfig,
+    evm::inspector::{InspectorConfig, OpcodeSet},
     interpreter::{
         Host,
         dispatch::{self, ConfigInstrTables, InstrTable, SelectorInstrTables},
@@ -131,6 +131,7 @@ struct ExecutionConfigInner<T: EvmTypes> {
     inspect_instructions: InstrTable<T>,
     #[derive_where(skip)]
     inspect_instruction_source: &'static InstrTable<T>,
+    inspect_steps_in_loop: bool,
 }
 
 impl<T: EvmTypes> Clone for ExecutionConfig<T> {
@@ -148,6 +149,7 @@ impl<T: EvmTypes> Clone for ExecutionConfigInner<T> {
             instructions: self.instructions,
             inspect_instructions: self.inspect_instructions,
             inspect_instruction_source: self.inspect_instruction_source,
+            inspect_steps_in_loop: self.inspect_steps_in_loop,
         }
     }
 }
@@ -174,6 +176,7 @@ impl<T: EvmTypes> ExecutionConfig<T> {
                 instructions: &SelectorInstrTables::<T, F, CUSTOM_SPEC_ID>::INSTRUCTIONS[i],
                 inspect_instructions: *inspect_instruction_source,
                 inspect_instruction_source,
+                inspect_steps_in_loop: false,
             }),
         }
     }
@@ -188,6 +191,7 @@ impl<T: EvmTypes> ExecutionConfig<T> {
                 instructions: ConfigInstrTables::<T, C>::INSTRUCTIONS,
                 inspect_instructions: *inspect_instruction_source,
                 inspect_instruction_source,
+                inspect_steps_in_loop: false,
             }),
         }
     }
@@ -226,12 +230,27 @@ impl<T: EvmTypes> ExecutionConfig<T> {
         &self.inner.inspect_instructions
     }
 
+    #[inline]
+    pub(crate) fn inspect_steps_in_loop(&self) -> bool {
+        self.inner.inspect_steps_in_loop
+    }
+
     pub(crate) fn register_inspector(&mut self, inspector_config: &InspectorConfig) {
+        if inspector_config.set == OpcodeSet::ALL {
+            self.inner.inspect_instructions = if cfg!(tco) {
+                *self.inner.inspect_instruction_source
+            } else {
+                *self.inner.instructions
+            };
+            self.inner.inspect_steps_in_loop = !cfg!(tco);
+            return;
+        }
         self.inner.inspect_instructions = dispatch::make_inspect_table(
             self.inner.instructions,
             self.inner.inspect_instruction_source,
             &inspector_config.set,
         );
+        self.inner.inspect_steps_in_loop = false;
     }
 }
 

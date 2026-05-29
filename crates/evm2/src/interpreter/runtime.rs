@@ -41,6 +41,7 @@ pub struct Interpreter<'frame, T: EvmTypes> {
     spec: SpecId,
     features: EvmFeatures,
     is_static: bool,
+    inspect_steps_in_loop: bool,
 }
 
 // SAFETY: The interpreter's internal pointers are always valid. `pc` points into owned bytecode,
@@ -68,6 +69,7 @@ impl<T: EvmTypes> Default for Interpreter<'_, T> {
             version: core::ptr::null(),
             spec: SpecId::DEFAULT,
             features: EvmFeatures::empty(),
+            inspect_steps_in_loop: false,
             // SAFETY: `MaybeUninit<Word>` does not need initialization.
             stack: unsafe { Box::new_uninit().assume_init() },
         }
@@ -183,7 +185,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
     /// Runs the interpreter until it stops.
     #[inline]
     pub fn run(&mut self, config: &ExecutionConfig<T>, host: &mut T::Host) -> InstrStop {
-        self.run_inner(config.version(), host, None, config.instructions())
+        self.run_inner(config.version(), host, None, config.instructions(), false)
     }
 
     /// Runs the interpreter until it stops with an execution inspector.
@@ -201,6 +203,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
             host,
             Some(NonNull::from(inspector)),
             config.inspect_instructions(),
+            config.inspect_steps_in_loop(),
         )
     }
 
@@ -211,11 +214,13 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         host: &mut T::Host,
         inspector: Option<NonNull<dyn Inspector<T>>>,
         instructions: &InstrTable<T>,
+        inspect_steps_in_loop: bool,
     ) -> InstrStop {
         self.memory.set_memory_limit(version.memory_limit);
 
         self.host = Some(NonNull::from(host));
         self.inspector = inspector;
+        self.inspect_steps_in_loop = inspect_steps_in_loop;
         self.version = version;
         self.spec = version.spec_id;
         self.features = version.features;
@@ -267,6 +272,12 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
     #[cfg(not(tco))]
     pub(crate) const fn is_inspecting(&self) -> bool {
         self.0.inspector.is_some()
+    }
+
+    #[inline]
+    #[cfg(not(tco))]
+    pub(crate) const fn inspect_steps_in_loop(&self) -> bool {
+        self.0.inspect_steps_in_loop
     }
 
     #[inline]
