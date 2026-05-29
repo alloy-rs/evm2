@@ -7,8 +7,142 @@ use crate::{
 use alloy_primitives::{Address, Log, U256};
 use core::any::Any;
 
+/// Set of opcodes an inspector wants step hooks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(transparent)]
+pub struct OpcodeSet(U256);
+
+impl OpcodeSet {
+    /// Empty opcode set.
+    pub const EMPTY: Self = Self(U256::ZERO);
+
+    /// Set containing every opcode.
+    pub const ALL: Self = Self(U256::MAX);
+
+    /// Creates an opcode set from raw bits.
+    #[inline]
+    pub const fn new(bits: U256) -> Self {
+        Self(bits)
+    }
+
+    /// Returns the raw opcode set bits.
+    #[inline]
+    pub const fn get(&self) -> U256 {
+        self.0
+    }
+
+    /// Returns an iterator over enabled opcodes.
+    #[inline]
+    pub const fn bits(&self) -> OpcodeSetBits {
+        OpcodeSetBits { bits: self.0 }
+    }
+
+    /// Returns whether this set contains `opcode`.
+    #[inline]
+    pub const fn contains(&self, opcode: u8) -> bool {
+        self.0.bit(opcode as usize)
+    }
+
+    /// Inserts `opcode` into this set.
+    #[inline]
+    pub const fn insert(&mut self, opcode: u8) {
+        self.0.set_bit(opcode as usize, true);
+    }
+
+    /// Returns whether all opcodes in `other` are also in this set.
+    #[inline]
+    pub fn contains_set(&self, other: &Self) -> bool {
+        self.intersection(other).get() == other.get()
+    }
+
+    /// Returns whether this set and `other` share any opcodes.
+    #[inline]
+    pub fn intersects(&self, other: &Self) -> bool {
+        !self.intersection(other).is_empty()
+    }
+
+    /// Returns whether this set contains no opcodes.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_zero()
+    }
+
+    /// Removes `opcode` from this set.
+    #[inline]
+    pub const fn remove(&mut self, opcode: u8) {
+        self.0.set_bit(opcode as usize, false);
+    }
+
+    /// Returns the union of this set and `other`.
+    #[inline]
+    pub fn union(&self, other: &Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
+    /// Returns the intersection of this set and `other`.
+    #[inline]
+    pub fn intersection(&self, other: &Self) -> Self {
+        Self(self.0 & other.0)
+    }
+
+    /// Returns opcodes present in this set but not in `other`.
+    #[inline]
+    pub fn difference(&self, other: &Self) -> Self {
+        Self(self.0 & !other.0)
+    }
+
+    /// Returns opcodes present in exactly one of the two sets.
+    #[inline]
+    pub fn symmetric_difference(&self, other: &Self) -> Self {
+        Self(self.0 ^ other.0)
+    }
+}
+
+/// Iterator over enabled opcodes in an [`OpcodeSet`].
+#[derive(Clone, Copy, Debug)]
+pub struct OpcodeSetBits {
+    bits: U256,
+}
+
+impl Iterator for OpcodeSetBits {
+    type Item = u8;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.bits.is_zero() {
+            return None;
+        }
+        let bit = self.bits.trailing_zeros();
+        self.bits.set_bit(bit, false);
+        Some(bit as u8)
+    }
+}
+
+/// Execution inspection configuration.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InspectorConfig {
+    /// Set of opcodes for which step hooks are enabled.
+    pub set: OpcodeSet,
+    #[doc(hidden)] // Not public API. Please use an existing constructor.
+    pub _non_exhaustive: (),
+}
+
+impl InspectorConfig {
+    /// Creates an inspector configuration.
+    #[inline]
+    pub const fn new(set: OpcodeSet) -> Self {
+        Self { set, _non_exhaustive: () }
+    }
+}
+
 /// EVM execution inspector.
 pub trait Inspector<T: EvmTypes>: Any + Send {
+    /// Returns this inspector's execution configuration.
+    #[inline]
+    fn config(&self) -> InspectorConfig {
+        InspectorConfig::new(OpcodeSet::ALL)
+    }
+
     /// Called after a frame interpreter has been initialized.
     #[inline]
     fn initialize_interp(&mut self, interp: &mut Interpreter<'_, T>) {
@@ -88,9 +222,9 @@ impl<T: EvmTypes> core::ops::DerefMut for dyn Inspector<T> + '_ {
 
 #[cfg(test)]
 mod tests {
-    use super::Inspector;
+    use super::{Inspector, InspectorConfig, OpcodeSet};
     use crate::{
-        BaseEvmConfigSelector, BaseEvmTypes, Evm, ExecutionConfig, Precompiles, SpecId,
+        BaseEvmConfigSelector, BaseEvmTypes, Evm, EvmTypes, ExecutionConfig, Precompiles, SpecId,
         bytecode::Bytecode,
         constants::CALL_DEPTH_LIMIT,
         env::{BlockEnv, TxEnv},
@@ -106,6 +240,7 @@ mod tests {
     use alloc::vec::Vec;
     use alloy_consensus::{TxLegacy, transaction::Recovered};
     use alloy_primitives::{Address, Bytes, Log, TxKind, U256};
+    use core::marker::PhantomData;
 
     #[derive(Default)]
     struct StepInspector {
@@ -160,6 +295,36 @@ mod tests {
             if self.last_opcode == Some(self.opcode) {
                 interp.set_stop(InstrStop::Revert);
             }
+        }
+    }
+
+    struct OpcodeInterestInspector<T: EvmTypes> {
+        steps: usize,
+        step_ends: usize,
+        opcodes: Vec<u8>,
+        _marker: PhantomData<fn() -> T>,
+    }
+
+    impl<T: EvmTypes> Default for OpcodeInterestInspector<T> {
+        fn default() -> Self {
+            Self { steps: 0, step_ends: 0, opcodes: Vec::new(), _marker: PhantomData }
+        }
+    }
+
+    impl<T: EvmTypes> Inspector<T> for OpcodeInterestInspector<T> {
+        fn config(&self) -> InspectorConfig {
+            let mut set = OpcodeSet::EMPTY;
+            set.insert(op::ADD);
+            InspectorConfig::new(set)
+        }
+
+        fn step(&mut self, interp: &mut Interpreter<'_, T>) {
+            self.steps += 1;
+            self.opcodes.push(interp.opcode());
+        }
+
+        fn step_end(&mut self, _interp: &mut Interpreter<'_, T>) {
+            self.step_ends += 1;
         }
     }
 
@@ -403,7 +568,8 @@ mod tests {
         let mut message = message.clone();
         message.gas_limit = gas_limit;
         let mut inner = Interpreter::<TestTypes>::new(bytecode, &tx_env, &message, false);
-        let config = ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(SpecId::OSAKA);
+        let mut config = ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(SpecId::OSAKA);
+        config.register_inspector(&inspector.config());
         let stop = inner.run_inspect(&config, host, inspector);
         let stack = inner.stack().to_vec();
         (stop, stack)
@@ -487,6 +653,26 @@ mod tests {
         assert_eq!(stack, [Word::from(1)]);
         assert_eq!(inspector.steps, 1);
         assert_eq!(inspector.step_ends, 1);
+    }
+
+    #[test]
+    fn inspector_only_steps_interested_opcodes() {
+        let mut host = TestHost::default();
+        let mut inspector = OpcodeInterestInspector::default();
+
+        let (stop, stack) = run_with_inspector(
+            Vec::from([op::PUSH1, 1, op::PUSH1, 2, op::ADD, op::STOP]),
+            &mut host,
+            &Message::default(),
+            10_000,
+            &mut inspector,
+        );
+
+        assert_eq!(stop, InstrStop::Stop);
+        assert_eq!(stack, [Word::from(3)]);
+        assert_eq!(inspector.steps, 1);
+        assert_eq!(inspector.step_ends, 1);
+        assert_eq!(inspector.opcodes, [op::ADD]);
     }
 
     #[test]
@@ -821,6 +1007,50 @@ mod tests {
         assert_eq!(state.logs[0].address, contract);
         assert_eq!(state.calls, 0);
         assert_eq!(state.creates, 0);
+    }
+
+    #[test]
+    fn evm_transaction_registers_inspector_opcode_interest() {
+        let caller = Address::from([0xaa; 20]);
+        let contract = Address::from([0xbb; 20]);
+        let code = Bytecode::new_legacy(Bytes::from_static(&[
+            op::PUSH1,
+            1,
+            op::PUSH1,
+            2,
+            op::ADD,
+            op::STOP,
+        ]));
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(
+            &caller,
+            AccountInfo::default().with_balance(U256::from(1_000_000_000_u64)),
+        );
+        database.insert_account_info(&contract, AccountInfo::default().with_code(code));
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            ethereum_tx_registry(SpecId::OSAKA),
+            database,
+            Precompiles::base(SpecId::OSAKA),
+        );
+        evm.set_inspector(OpcodeInterestInspector::<BaseEvmTypes>::default());
+        let tx = RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(
+            TxLegacy { to: TxKind::Call(contract), gas_limit: 100_000, ..Default::default() },
+            caller,
+        ));
+
+        let result = evm.transact(&tx).unwrap();
+        let inspector = evm
+            .inspector()
+            .unwrap()
+            .downcast_ref::<OpcodeInterestInspector<BaseEvmTypes>>()
+            .unwrap();
+
+        assert!(result.status);
+        assert_eq!(inspector.steps, 1);
+        assert_eq!(inspector.step_ends, 1);
+        assert_eq!(inspector.opcodes, [op::ADD]);
     }
 
     #[test]

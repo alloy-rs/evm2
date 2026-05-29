@@ -1,4 +1,4 @@
-use super::{DynInspector, InspectMode, NoInspector, inc_pc, run_state};
+use super::{InspectMode, inc_pc, run_state};
 use crate::{
     EvmConfig, EvmTypes,
     interpreter::{InstrStop, Interpreter, InterpreterState, Pc, Result, Stack, StackMut},
@@ -30,6 +30,8 @@ trait DispatchGas: Copy {
         op: u8,
     ) -> Result;
 
+    fn sync_before_inspect<T: EvmTypes>(&self, state: &mut InterpreterState<'_, T>);
+
     fn sync_before_exec<T: EvmTypes>(&self, state: &mut InterpreterState<'_, T>, dynamic_gas: bool);
 
     fn sync_after_exec<T: EvmTypes>(
@@ -48,6 +50,9 @@ impl DispatchGas for () {
     ) -> Result {
         state.gas_mut().spend(C::OPCODE_CONFIG.static_gas(op) as _)
     }
+
+    #[inline(always)]
+    fn sync_before_inspect<T: EvmTypes>(&self, _state: &mut InterpreterState<'_, T>) {}
 
     #[inline(always)]
     fn sync_before_exec<T: EvmTypes>(
@@ -75,6 +80,14 @@ fn dispatch_inner<T: EvmTypes, C: EvmConfig<T>, M: InspectMode<T>, G: DispatchGa
     state: &mut InterpreterState<'_, T>,
     op: u8,
 ) -> (Pc, G) {
+    if M::INSPECT {
+        gas.sync_before_inspect(state);
+        M::step(state, pc, stack.len());
+        if state.result().is_err() {
+            return (pc, gas);
+        }
+    }
+
     let instruction = C::OPCODE_CONFIG.instruction(op);
     let instr = instruction.instr;
     let dynamic_gas = instruction.dynamic_gas;
@@ -95,6 +108,8 @@ fn dispatch_inner<T: EvmTypes, C: EvmConfig<T>, M: InspectMode<T>, G: DispatchGa
     }
     if M::INSPECT {
         state.set_result(r);
+        gas.sync_before_inspect(state);
+        M::step_end(state, pc, stack.len());
     } else if let Err(e) = r {
         state.set_result(Err(e));
         cold_path();
@@ -109,13 +124,13 @@ pub(in crate::interpreter) fn run<T: EvmTypes>(
 ) -> InstrStop {
     let (state, pc, stack) = run_state(interpreter);
     if state.is_inspecting() {
-        return run_inner::<T, DynInspector>(state, pc, stack, instructions);
+        return run_inner::<T, true>(state, pc, stack, instructions);
     }
-    run_inner::<T, NoInspector>(state, pc, stack, instructions)
+    run_inner::<T, false>(state, pc, stack, instructions)
 }
 
 #[allow(clippy::let_unit_value)]
-fn run_inner<T: EvmTypes, M: InspectMode<T>>(
+fn run_inner<T: EvmTypes, const INSPECTING: bool>(
     state: &mut InterpreterState<'_, T>,
     mut pc: Pc,
     mut stack: Stack<'_>,
@@ -123,14 +138,6 @@ fn run_inner<T: EvmTypes, M: InspectMode<T>>(
 ) -> InstrStop {
     let mut loop_state = imp::loop_state(state.gas_mut());
     loop {
-        if M::INSPECT {
-            imp::sync_loop_state(state, loop_state);
-            M::step(state, pc, stack.len);
-            if state.result().is_err() {
-                return finish_run(state, pc, stack.len, loop_state);
-            }
-        }
-
         let op = pc.op();
         let instr = instructions[op as usize];
         let (next_pc, next_stack_len) =
@@ -138,9 +145,8 @@ fn run_inner<T: EvmTypes, M: InspectMode<T>>(
         pc = next_pc;
         stack.len = next_stack_len;
 
-        if M::INSPECT {
+        if INSPECTING {
             imp::sync_loop_state(state, loop_state);
-            M::step_end(state, pc, stack.len);
             if state.result().is_err() {
                 return finish_run(state, pc, stack.len, loop_state);
             }

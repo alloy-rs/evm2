@@ -183,10 +183,12 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
     /// Runs the interpreter until it stops.
     #[inline]
     pub fn run(&mut self, config: &ExecutionConfig<T>, host: &mut T::Host) -> InstrStop {
-        self.run_inner(config.version(), host, None, config.instructions)
+        self.run_inner(config.version(), host, None, config.instructions())
     }
 
     /// Runs the interpreter until it stops with an execution inspector.
+    ///
+    /// `config` must already be registered with [`Inspector::config`] for `inspector`.
     #[inline]
     pub fn run_inspect(
         &mut self,
@@ -198,7 +200,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
             config.version(),
             host,
             Some(NonNull::from(inspector)),
-            config.inspect_instructions,
+            config.inspect_instructions(),
         )
     }
 

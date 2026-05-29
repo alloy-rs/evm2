@@ -2,7 +2,7 @@
 
 use crate::{
     BaseEvmConfigSelector, EvmConfig, EvmConfigSelector, EvmTypes, OpcodeConfig,
-    evm::config::SelectorOpcodeConfig,
+    evm::{config::SelectorOpcodeConfig, inspector::OpcodeSet},
     interpreter::{Interpreter, InterpreterState, Pc, Stack, op},
     trustme,
 };
@@ -51,6 +51,21 @@ const fn instruction_len(op: u8) -> usize {
 
 /// Instruction dispatch table.
 pub(crate) type InstrTable<T> = imp::RawInstrTable<T>;
+
+pub(crate) fn make_inspect_table<T: EvmTypes>(
+    instructions: &InstrTable<T>,
+    inspect_instructions: &InstrTable<T>,
+    step_opcodes: &OpcodeSet,
+) -> InstrTable<T> {
+    if *step_opcodes == OpcodeSet::ALL {
+        return *inspect_instructions;
+    }
+    let mut table = *instructions;
+    for opcode in step_opcodes.bits() {
+        table[opcode as usize] = inspect_instructions[opcode as usize];
+    }
+    table
+}
 
 const fn make_table<T, C, M>(
     previous: Option<&InstrTable<T>>,
