@@ -11,6 +11,7 @@ use crate::{
     version::Version,
 };
 use alloc::boxed::Box;
+use core::fmt;
 use derive_where::derive_where;
 
 /// Runtime EVM type family.
@@ -117,7 +118,6 @@ where
 ///
 /// Bundles the active runtime `Version` with the finalized instruction dispatch table selected for
 /// an EVM instance. This is the data passed to the interpreter when it runs.
-#[derive_where(Debug)]
 pub struct ExecutionConfig<T: EvmTypes> {
     inner: Box<ExecutionConfigInner<T>>,
 }
@@ -137,6 +137,15 @@ impl<T: EvmTypes> Clone for ExecutionConfig<T> {
     #[inline]
     fn clone(&self) -> Self {
         Self { inner: self.inner.clone() }
+    }
+}
+
+impl<T: EvmTypes> fmt::Debug for ExecutionConfig<T> {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ExecutionConfig")
+            .field("version", &self.inner.version)
+            .finish_non_exhaustive()
     }
 }
 
