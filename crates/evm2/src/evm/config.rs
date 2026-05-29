@@ -131,8 +131,6 @@ struct ExecutionConfigInner<T: EvmTypes> {
     inspect_instructions: InstrTable<T>,
     #[derive_where(skip)]
     inspect_instruction_source: &'static InstrTable<T>,
-    #[derive_where(skip)]
-    loop_inspect_instruction_source: &'static InstrTable<T>,
 }
 
 impl<T: EvmTypes> Clone for ExecutionConfig<T> {
@@ -150,7 +148,6 @@ impl<T: EvmTypes> Clone for ExecutionConfigInner<T> {
             instructions: self.instructions,
             inspect_instructions: self.inspect_instructions,
             inspect_instruction_source: self.inspect_instruction_source,
-            loop_inspect_instruction_source: self.loop_inspect_instruction_source,
         }
     }
 }
@@ -177,8 +174,6 @@ impl<T: EvmTypes> ExecutionConfig<T> {
                 instructions: &SelectorInstrTables::<T, F, CUSTOM_SPEC_ID>::INSTRUCTIONS[i],
                 inspect_instructions: *inspect_instruction_source,
                 inspect_instruction_source,
-                loop_inspect_instruction_source:
-                    &SelectorInstrTables::<T, F, CUSTOM_SPEC_ID>::LOOP_INSPECT_INSTRUCTIONS[i],
             }),
         }
     }
@@ -193,8 +188,6 @@ impl<T: EvmTypes> ExecutionConfig<T> {
                 instructions: ConfigInstrTables::<T, C>::INSTRUCTIONS,
                 inspect_instructions: *inspect_instruction_source,
                 inspect_instruction_source,
-                loop_inspect_instruction_source:
-                    ConfigInstrTables::<T, C>::LOOP_INSPECT_INSTRUCTIONS,
             }),
         }
     }
@@ -239,7 +232,7 @@ impl<T: EvmTypes> ExecutionConfig<T> {
             self.inner.inspect_instructions = if cfg!(tco) {
                 *self.inner.inspect_instruction_source
             } else {
-                *self.inner.loop_inspect_instruction_source
+                *self.inner.instructions
             };
             return;
         }

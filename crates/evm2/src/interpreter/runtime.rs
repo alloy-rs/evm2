@@ -203,7 +203,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
                 config.version(),
                 host,
                 inspector,
-                config.inspect_instructions(),
+                config.instructions(),
             );
         }
         self.run_inner(config.version(), host, inspector, config.inspect_instructions())

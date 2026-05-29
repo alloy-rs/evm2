@@ -52,7 +52,6 @@ extern_table! {
         T: EvmTypes,
         C: EvmConfig<T>,
         M: InspectMode<T>,
-        const NULL_ON_ERROR: bool,
         const OP: u8,
     >(
         mut pc: Pc,

@@ -73,13 +73,7 @@ impl DispatchGas for () {
 
 #[cold] // Not cold, but avoids MIR inlining.
 #[inline(always)]
-fn dispatch_inner<
-    T: EvmTypes,
-    C: EvmConfig<T>,
-    M: InspectMode<T>,
-    G: DispatchGas,
-    const NULL_ON_ERROR: bool,
->(
+fn dispatch_inner<T: EvmTypes, C: EvmConfig<T>, M: InspectMode<T>, G: DispatchGas>(
     mut pc: Pc,
     mut stack: StackMut<'_>,
     mut gas: G,
@@ -119,7 +113,7 @@ fn dispatch_inner<
     } else if let Err(e) = r {
         state.set_result(Err(e));
         cold_path();
-        return (if NULL_ON_ERROR { Pc::new(core::ptr::null()) } else { pc }, gas);
+        return (Pc::new(core::ptr::null()), gas);
     }
     (pc, gas)
 }
@@ -152,6 +146,7 @@ fn run_inner<T: EvmTypes, const INSPECTING: bool, const LOOP_INSPECT: bool>(
 ) -> InstrStop {
     let mut loop_state = imp::loop_state(state.gas_mut());
     loop {
+        let prev_pc = pc;
         let op = pc.op();
         let instr = instructions[op as usize];
         if LOOP_INSPECT {
@@ -168,6 +163,9 @@ fn run_inner<T: EvmTypes, const INSPECTING: bool, const LOOP_INSPECT: bool>(
 
         if LOOP_INSPECT {
             imp::sync_loop_state(state, loop_state);
+            if pc.as_ptr().is_null() {
+                pc = prev_pc;
+            }
             <DynInspector as InspectMode<T>>::step_end(state, pc, stack.len);
             if state.result().is_err() {
                 return finish_run(state, pc, stack.len, loop_state);
