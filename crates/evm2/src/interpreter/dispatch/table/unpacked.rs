@@ -41,13 +41,15 @@ extern_table! {
         T: EvmTypes,
         C: EvmConfig<T>,
         M: super::InspectMode<T>,
+        const NULL_ON_ERROR: bool,
         const OP: u8,
     >(
         pc: Pc,
         mut stack: Stack<'_>,
         state: &mut InterpreterState<'_, T>,
     ) -> InstrFnRet {
-        let (pc, ()) = super::dispatch_inner::<T, C, M, ()>(pc, stack.as_mut(), (), state, OP);
+        let (pc, ()) =
+            super::dispatch_inner::<T, C, M, (), NULL_ON_ERROR>(pc, stack.as_mut(), (), state, OP);
         (pc, stack.len)
     }
 }

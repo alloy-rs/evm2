@@ -96,6 +96,7 @@ extern_table! {
         T: EvmTypes,
         C: EvmConfig<T>,
         M: super::InspectMode<T>,
+        const NULL_ON_ERROR: bool,
         const OP: u8,
     >(
         pc: Pc,
@@ -105,7 +106,7 @@ extern_table! {
     ) -> InstrFnRet {
         let initial_remaining_gas = remaining_gas;
         let (pc, remaining_gas) =
-            super::dispatch_inner::<T, C, M, RemainingGas>(
+            super::dispatch_inner::<T, C, M, RemainingGas, NULL_ON_ERROR>(
                 pc,
                 stack.as_mut(),
                 remaining_gas,

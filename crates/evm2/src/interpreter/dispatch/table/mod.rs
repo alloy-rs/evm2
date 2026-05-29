@@ -73,7 +73,13 @@ impl DispatchGas for () {
 
 #[cold] // Not cold, but avoids MIR inlining.
 #[inline(always)]
-fn dispatch_inner<T: EvmTypes, C: EvmConfig<T>, M: InspectMode<T>, G: DispatchGas>(
+fn dispatch_inner<
+    T: EvmTypes,
+    C: EvmConfig<T>,
+    M: InspectMode<T>,
+    G: DispatchGas,
+    const NULL_ON_ERROR: bool,
+>(
     mut pc: Pc,
     mut stack: StackMut<'_>,
     mut gas: G,
@@ -113,10 +119,7 @@ fn dispatch_inner<T: EvmTypes, C: EvmConfig<T>, M: InspectMode<T>, G: DispatchGa
     } else if let Err(e) = r {
         state.set_result(Err(e));
         cold_path();
-        if state.inspect_steps_in_loop() {
-            return (pc, gas);
-        }
-        return (Pc::new(core::ptr::null()), gas);
+        return (if NULL_ON_ERROR { Pc::new(core::ptr::null()) } else { pc }, gas);
     }
     (pc, gas)
 }
@@ -127,12 +130,17 @@ pub(in crate::interpreter) fn run<T: EvmTypes>(
 ) -> InstrStop {
     let (state, pc, stack) = run_state(interpreter);
     if state.is_inspecting() {
-        if state.inspect_steps_in_loop() {
-            return run_inner::<T, true, true>(state, pc, stack, instructions);
-        }
         return run_inner::<T, true, false>(state, pc, stack, instructions);
     }
     run_inner::<T, false, false>(state, pc, stack, instructions)
+}
+
+pub(in crate::interpreter) fn run_inspect_loop<T: EvmTypes>(
+    interpreter: &mut Interpreter<'_, T>,
+    instructions: &RawInstrTable<T>,
+) -> InstrStop {
+    let (state, pc, stack) = run_state(interpreter);
+    run_inner::<T, true, true>(state, pc, stack, instructions)
 }
 
 #[allow(clippy::let_unit_value)]

@@ -714,7 +714,10 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             unsafe { trustme::decouple_lt_mut(inspector) }
         });
         let stop = if let Some(inspector) = inspector {
-            interpreter_ref.run_inspect(execution_config, self, inspector)
+            let inspector_config = self
+                .registered_inspector_config
+                .expect("inspector config must be registered before run_inspect");
+            interpreter_ref.run_inspect(execution_config, &inspector_config, self, inspector)
         } else {
             interpreter_ref.run(execution_config, self)
         };

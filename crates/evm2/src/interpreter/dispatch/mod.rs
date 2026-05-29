@@ -17,7 +17,7 @@ cfg_if::cfg_if! {
     }
 }
 
-pub(in crate::interpreter) use imp::run;
+pub(in crate::interpreter) use imp::{run, run_inspect_loop};
 
 #[inline(always)]
 fn run_state<'a, 'frame, T: EvmTypes>(
@@ -64,7 +64,7 @@ pub(crate) fn make_inspect_table<T: EvmTypes>(
     table
 }
 
-const fn make_table<T, C, M>(
+const fn make_table<T, C, M, const NULL_ON_ERROR: bool>(
     previous: Option<&InstrTable<T>>,
     previous_opcode_config: Option<&OpcodeConfig<T>>,
 ) -> InstrTable<T>
@@ -75,7 +75,9 @@ where
 {
     let mut table = match previous {
         Some(previous) => *previous,
-        None => [imp::dispatch::<T, C, M, { op::INVALID }> as imp::RawInstrFn<T>; 256],
+        None => {
+            [imp::dispatch::<T, C, M, NULL_ON_ERROR, { op::INVALID }> as imp::RawInstrFn<T>; 256]
+        }
     };
     let vt = C::OPCODE_CONFIG;
 
@@ -83,7 +85,7 @@ where
         ($($op:literal,)*) => {
             $(
                 if instruction_changed(vt, previous_opcode_config, $op) && !vt.is_unknown_opcode($op) {
-                    table[$op] = imp::dispatch::<T, C, M, $op> as imp::RawInstrFn<T>;
+                    table[$op] = imp::dispatch::<T, C, M, NULL_ON_ERROR, $op> as imp::RawInstrFn<T>;
                 }
             )*
         };
@@ -132,7 +134,7 @@ where
     table
 }
 
-const fn make_selector_tables<T, F, M, const CUSTOM_SPEC_ID: u32>()
+const fn make_selector_tables<T, F, M, const NULL_ON_ERROR: bool, const CUSTOM_SPEC_ID: u32>()
 -> [InstrTable<T>; crate::SpecId::COUNT]
 where
     T: EvmTypes,
@@ -146,7 +148,7 @@ where
         (@build [$($tables:ident,)*] [$($previous_table:tt)*]; $spec:ident $name:ident, $($rest:ident $rest_name:ident,)*) => {{
             let spec = crate::SpecId::$spec;
             let previous = spec.prev();
-            let $name = make_table::<T, F::Config<{ crate::SpecId::$spec as u32 }, CUSTOM_SPEC_ID>, M>(
+            let $name = make_table::<T, F::Config<{ crate::SpecId::$spec as u32 }, CUSTOM_SPEC_ID>, M, NULL_ON_ERROR>(
                 make_selector_tables!(@previous_table [$($previous_table)*]),
                 match previous {
                     Some(previous) => {
@@ -178,7 +180,7 @@ where
     T: EvmTypes,
     C: EvmConfig<T>,
 {
-    pub(crate) const INSTRUCTIONS: &'static InstrTable<T> = &make_table::<T, C, NoInspector>(
+    pub(crate) const INSTRUCTIONS: &'static InstrTable<T> = &make_table::<T, C, NoInspector, true>(
         Some(
             &SelectorInstrTables::<T, BaseEvmConfigSelector, { u32::MAX }>::INSTRUCTIONS
                 [C::BASE_SPEC_ID as usize],
@@ -188,7 +190,12 @@ where
                 [C::BASE_SPEC_ID as usize],
         ),
     );
-    pub(crate) const INSPECT_INSTRUCTIONS: &'static InstrTable<T> = &make_table::<T, C, DynInspector>(
+    pub(crate) const INSPECT_INSTRUCTIONS: &'static InstrTable<T> = &make_table::<
+        T,
+        C,
+        DynInspector,
+        true,
+    >(
         Some(
             &SelectorInstrTables::<T, BaseEvmConfigSelector, { u32::MAX }>::INSPECT_INSTRUCTIONS
                 [C::BASE_SPEC_ID as usize],
@@ -198,6 +205,17 @@ where
                 [C::BASE_SPEC_ID as usize],
         ),
     );
+    pub(crate) const LOOP_INSPECT_INSTRUCTIONS: &'static InstrTable<T> =
+        &make_table::<T, C, NoInspector, false>(
+            Some(
+                &SelectorInstrTables::<T, BaseEvmConfigSelector, { u32::MAX }>::LOOP_INSPECT_INSTRUCTIONS
+                    [C::BASE_SPEC_ID as usize],
+            ),
+            Some(
+                SelectorOpcodeConfig::<T, BaseEvmConfigSelector, { u32::MAX }>::OPCODE_CONFIG
+                    [C::BASE_SPEC_ID as usize],
+            ),
+        );
 }
 
 pub(crate) struct SelectorInstrTables<T, F, const CUSTOM_SPEC_ID: u32>(
@@ -210,9 +228,11 @@ where
     F: EvmConfigSelector<T>,
 {
     pub(crate) const INSTRUCTIONS: &'static [InstrTable<T>; crate::SpecId::COUNT] =
-        &make_selector_tables::<T, F, NoInspector, CUSTOM_SPEC_ID>();
+        &make_selector_tables::<T, F, NoInspector, true, CUSTOM_SPEC_ID>();
     pub(crate) const INSPECT_INSTRUCTIONS: &'static [InstrTable<T>; crate::SpecId::COUNT] =
-        &make_selector_tables::<T, F, DynInspector, CUSTOM_SPEC_ID>();
+        &make_selector_tables::<T, F, DynInspector, true, CUSTOM_SPEC_ID>();
+    pub(crate) const LOOP_INSPECT_INSTRUCTIONS: &'static [InstrTable<T>; crate::SpecId::COUNT] =
+        &make_selector_tables::<T, F, NoInspector, false, CUSTOM_SPEC_ID>();
 }
 
 const fn instruction_changed<T: EvmTypes>(

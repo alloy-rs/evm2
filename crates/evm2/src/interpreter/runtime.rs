@@ -6,7 +6,7 @@ use crate::{
     EvmTypes, ExecutionConfig, SpecId, Version,
     bytecode::Bytecode,
     env::TxEnv,
-    evm::inspector::Inspector,
+    evm::inspector::{Inspector, InspectorConfig, OpcodeSet},
     interpreter::dispatch::{self, InstrTable},
     trustme,
     version::{EvmFeatures, GasParams},
@@ -41,7 +41,6 @@ pub struct Interpreter<'frame, T: EvmTypes> {
     spec: SpecId,
     features: EvmFeatures,
     is_static: bool,
-    inspect_steps_in_loop: bool,
 }
 
 // SAFETY: The interpreter's internal pointers are always valid. `pc` points into owned bytecode,
@@ -69,7 +68,6 @@ impl<T: EvmTypes> Default for Interpreter<'_, T> {
             version: core::ptr::null(),
             spec: SpecId::DEFAULT,
             features: EvmFeatures::empty(),
-            inspect_steps_in_loop: false,
             // SAFETY: `MaybeUninit<Word>` does not need initialization.
             stack: unsafe { Box::new_uninit().assume_init() },
         }
@@ -185,26 +183,30 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
     /// Runs the interpreter until it stops.
     #[inline]
     pub fn run(&mut self, config: &ExecutionConfig<T>, host: &mut T::Host) -> InstrStop {
-        self.run_inner(config.version(), host, None, config.instructions(), false)
+        self.run_inner(config.version(), host, None, config.instructions())
     }
 
     /// Runs the interpreter until it stops with an execution inspector.
     ///
-    /// `config` must already be registered with [`Inspector::config`] for `inspector`.
+    /// `config` must already be registered with `inspector_config` for `inspector`.
     #[inline]
     pub fn run_inspect(
         &mut self,
         config: &ExecutionConfig<T>,
+        inspector_config: &InspectorConfig,
         host: &mut T::Host,
         inspector: &mut dyn Inspector<T>,
     ) -> InstrStop {
-        self.run_inner(
-            config.version(),
-            host,
-            Some(NonNull::from(inspector)),
-            config.inspect_instructions(),
-            config.inspect_steps_in_loop(),
-        )
+        let inspector = Some(NonNull::from(inspector));
+        if inspector_config.set == OpcodeSet::ALL && !cfg!(tco) {
+            return self.run_inner_inspect_loop(
+                config.version(),
+                host,
+                inspector,
+                config.inspect_instructions(),
+            );
+        }
+        self.run_inner(config.version(), host, inspector, config.inspect_instructions())
     }
 
     #[inline(never)]
@@ -214,18 +216,35 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         host: &mut T::Host,
         inspector: Option<NonNull<dyn Inspector<T>>>,
         instructions: &InstrTable<T>,
-        inspect_steps_in_loop: bool,
     ) -> InstrStop {
         self.memory.set_memory_limit(version.memory_limit);
 
         self.host = Some(NonNull::from(host));
         self.inspector = inspector;
-        self.inspect_steps_in_loop = inspect_steps_in_loop;
         self.version = version;
         self.spec = version.spec_id;
         self.features = version.features;
 
         dispatch::run(self, instructions)
+    }
+
+    #[inline(never)]
+    fn run_inner_inspect_loop(
+        &mut self,
+        version: &Version,
+        host: &mut T::Host,
+        inspector: Option<NonNull<dyn Inspector<T>>>,
+        instructions: &InstrTable<T>,
+    ) -> InstrStop {
+        self.memory.set_memory_limit(version.memory_limit);
+
+        self.host = Some(NonNull::from(host));
+        self.inspector = inspector;
+        self.version = version;
+        self.spec = version.spec_id;
+        self.features = version.features;
+
+        dispatch::run_inspect_loop(self, instructions)
     }
 }
 
@@ -272,12 +291,6 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
     #[cfg(not(tco))]
     pub(crate) const fn is_inspecting(&self) -> bool {
         self.0.inspector.is_some()
-    }
-
-    #[inline]
-    #[cfg(not(tco))]
-    pub(crate) const fn inspect_steps_in_loop(&self) -> bool {
-        self.0.inspect_steps_in_loop
     }
 
     #[inline]

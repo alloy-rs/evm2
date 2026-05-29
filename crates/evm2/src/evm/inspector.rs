@@ -569,8 +569,9 @@ mod tests {
         message.gas_limit = gas_limit;
         let mut inner = Interpreter::<TestTypes>::new(bytecode, &tx_env, &message, false);
         let mut config = ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(SpecId::OSAKA);
-        config.register_inspector(&inspector.config());
-        let stop = inner.run_inspect(&config, host, inspector);
+        let inspector_config = inspector.config();
+        config.register_inspector(&inspector_config);
+        let stop = inner.run_inspect(&config, &inspector_config, host, inspector);
         let stack = inner.stack().to_vec();
         (stop, stack)
     }
