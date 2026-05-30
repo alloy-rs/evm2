@@ -145,10 +145,6 @@ pub trait Host<T: EvmTypes> {
         caller_is_static: bool,
     ) -> MessageResult<T>;
 
-    /// Requests that the host refresh its registered inspector configuration.
-    #[inline]
-    fn request_inspector_reconfigure(&mut self) {}
-
     /// Registers the current contract for self-destruction.
     fn selfdestruct(
         &mut self,
@@ -156,4 +152,8 @@ pub trait Host<T: EvmTypes> {
         target: &Address,
         skip_cold_load: bool,
     ) -> Result<SelfDestructResult, InstrStop>;
+
+    /// Requests that the host refresh its registered inspector configuration.
+    #[inline]
+    fn request_inspector_reconfigure(&mut self) {}
 }

@@ -261,7 +261,6 @@ impl<T: EvmTypes> Evm<T> {
     /// Returns the active execution inspector mutably.
     #[inline]
     pub fn inspector_mut(&mut self) -> Option<&mut dyn Inspector<T>> {
-        self.registered_inspector_config = None;
         self.inspector.as_deref_mut()
     }
 
@@ -307,21 +306,21 @@ impl<T: EvmTypes> Evm<T> {
     /// Sets the active execution inspector.
     #[inline]
     pub fn set_inspector<I: Inspector<T> + 'static>(&mut self, inspector: I) {
-        self.registered_inspector_config = None;
+        self.request_inspector_reconfigure();
         self.inspector = Some(Box::new(inspector));
     }
 
     /// Sets the active boxed execution inspector.
     #[inline]
     pub fn set_boxed_inspector(&mut self, inspector: Box<dyn Inspector<T>>) {
-        self.registered_inspector_config = None;
+        self.request_inspector_reconfigure();
         self.inspector = Some(inspector);
     }
 
     /// Removes the active execution inspector.
     #[inline]
     pub fn clear_inspector(&mut self) -> Option<Box<dyn Inspector<T>>> {
-        self.registered_inspector_config = None;
+        self.request_inspector_reconfigure();
         self.inspector.take()
     }
 
