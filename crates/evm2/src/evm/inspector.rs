@@ -2,7 +2,7 @@
 
 use crate::{
     EvmTypes,
-    interpreter::{InstrStop, Interpreter, Message, MessageResult},
+    interpreter::{Interpreter, Message, MessageResult},
 };
 use alloy_primitives::{Address, Log, U256};
 use core::any::Any;
@@ -29,9 +29,8 @@ pub trait Inspector<T: EvmTypes>: Any + Send {
 
     /// Called before the current frame exits.
     #[inline]
-    fn exit(&mut self, interp: &mut Interpreter<'_, T>, stop: InstrStop) {
+    fn exit(&mut self, interp: &mut Interpreter<'_, T>) {
         let _ = interp;
-        let _ = stop;
     }
 
     /// Called when a log is emitted.
@@ -173,12 +172,12 @@ mod tests {
 
     #[derive(Default)]
     struct ExitInspector {
-        exits: Vec<InstrStop>,
+        exits: usize,
     }
 
     impl Inspector<TestTypes> for ExitInspector {
-        fn exit(&mut self, _interp: &mut Interpreter<'_, TestTypes>, stop: InstrStop) {
-            self.exits.push(stop);
+        fn exit(&mut self, _interp: &mut Interpreter<'_, TestTypes>) {
+            self.exits += 1;
         }
     }
 
@@ -483,7 +482,7 @@ mod tests {
         );
 
         assert_eq!(stop, InstrStop::Stop);
-        assert_eq!(inspector.exits, [InstrStop::Stop]);
+        assert_eq!(inspector.exits, 1);
     }
 
     #[test]
@@ -500,7 +499,7 @@ mod tests {
         );
 
         assert_eq!(stop, InstrStop::OutOfGas);
-        assert_eq!(inspector.exits, [InstrStop::OutOfGas]);
+        assert_eq!(inspector.exits, 1);
     }
 
     #[test]
