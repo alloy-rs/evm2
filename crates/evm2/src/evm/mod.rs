@@ -65,6 +65,7 @@ pub struct Evm<T: EvmTypes> {
     interpreter_pool: InterpreterPool<T>,
     #[derive_where(skip)]
     inspector: Option<Box<dyn Inspector<T>>>,
+    running: bool,
     #[cfg(feature = "async")]
     #[derive_where(skip)]
     async_stack: crate::async_::FiberStack,
@@ -136,6 +137,7 @@ impl<T: EvmTypes> Evm<T> {
             precompiles,
             interpreter_pool: InterpreterPool::new(),
             inspector: None,
+            running: false,
             #[cfg(feature = "async")]
             async_stack: crate::async_::FiberStack::default(),
             db_error_code: None,
@@ -253,13 +255,31 @@ impl<T: EvmTypes> Evm<T> {
     /// Returns the active execution inspector.
     #[inline]
     pub fn inspector(&self) -> Option<&dyn Inspector<T>> {
+        self.assert_inspector_not_running("inspector");
         self.inspector.as_deref()
     }
 
     /// Returns the active execution inspector mutably.
     #[inline]
     pub fn inspector_mut(&mut self) -> Option<&mut dyn Inspector<T>> {
+        self.assert_inspector_not_running("inspector_mut");
         self.inspector.as_deref_mut()
+    }
+
+    #[inline]
+    fn assert_inspector_not_running(&self, method: &str) {
+        assert!(!self.running, "Evm::{method} cannot be called while the EVM is running");
+    }
+
+    #[inline]
+    fn start_running(&mut self) {
+        assert!(!self.running, "EVM is already running");
+        self.running = true;
+    }
+
+    #[inline]
+    const fn stop_running(&mut self) {
+        self.running = false;
     }
 
     #[inline]
@@ -298,18 +318,21 @@ impl<T: EvmTypes> Evm<T> {
     /// Sets the active execution inspector.
     #[inline]
     pub fn set_inspector<I: Inspector<T> + 'static>(&mut self, inspector: I) {
+        self.assert_inspector_not_running("set_inspector");
         self.inspector = Some(Box::new(inspector));
     }
 
     /// Sets the active boxed execution inspector.
     #[inline]
     pub fn set_boxed_inspector(&mut self, inspector: Box<dyn Inspector<T>>) {
+        self.assert_inspector_not_running("set_boxed_inspector");
         self.inspector = Some(inspector);
     }
 
     /// Removes the active execution inspector.
     #[inline]
     pub fn clear_inspector(&mut self) -> Option<Box<dyn Inspector<T>>> {
+        self.assert_inspector_not_running("clear_inspector");
         self.inspector.take()
     }
 
@@ -355,6 +378,7 @@ impl<T: EvmTypes<Tx: Typed2718>> Evm<T> {
     pub fn transact(&mut self, tx: &T::Tx) -> HandlerResult<TxResult<T>> {
         self.db_error_code = None;
         let handler = self.registry.try_get_by_type(tx.ty())?;
+        self.start_running();
         let mut result = handler.call(tx, self);
         if let Ok(result) = &mut result {
             if let Err(stop) = self.finalize_transaction() {
@@ -368,6 +392,7 @@ impl<T: EvmTypes<Tx: Typed2718>> Evm<T> {
             result.db_error_code = self.db_error_code;
         };
         self.state.clear_transaction_state();
+        self.stop_running();
         result
     }
 
@@ -1071,6 +1096,7 @@ mod tests {
     use alloy_consensus::{TxLegacy, transaction::Recovered};
     use alloy_primitives::{Address, Bytes, KECCAK256_EMPTY, U256};
     use core::{error::Error, fmt};
+    use std::panic::{AssertUnwindSafe, catch_unwind};
 
     const TEST_TX_TYPE: u8 = 0x00;
 
@@ -1098,6 +1124,90 @@ mod tests {
         })
     }
 
+    #[derive(Clone, Copy)]
+    enum ForbiddenInspectorMethod {
+        Inspector,
+        InspectorMut,
+        SetInspector,
+        SetBoxedInspector,
+        ClearInspector,
+    }
+
+    impl ForbiddenInspectorMethod {
+        const ALL: [Self; 5] = [
+            Self::Inspector,
+            Self::InspectorMut,
+            Self::SetInspector,
+            Self::SetBoxedInspector,
+            Self::ClearInspector,
+        ];
+
+        const fn name(self) -> &'static str {
+            match self {
+                Self::Inspector => "inspector",
+                Self::InspectorMut => "inspector_mut",
+                Self::SetInspector => "set_inspector",
+                Self::SetBoxedInspector => "set_boxed_inspector",
+                Self::ClearInspector => "clear_inspector",
+            }
+        }
+    }
+
+    struct EmptyInspector;
+
+    impl Inspector<BaseEvmTypes> for EmptyInspector {}
+
+    fn call_forbidden_inspector_method(method: ForbiddenInspectorMethod) {
+        let registry = TxRegistry::new().with_handler(
+            TEST_TX_TYPE,
+            RecoveredTxEnvelope::as_legacy,
+            move |req: TxRequest<'_, Recovered<TxLegacy>, Evm<BaseEvmTypes>>| {
+                match method {
+                    ForbiddenInspectorMethod::Inspector => {
+                        let _ = req.host.inspector();
+                    }
+                    ForbiddenInspectorMethod::InspectorMut => {
+                        let _ = req.host.inspector_mut();
+                    }
+                    ForbiddenInspectorMethod::SetInspector => {
+                        req.host.set_inspector(EmptyInspector);
+                    }
+                    ForbiddenInspectorMethod::SetBoxedInspector => {
+                        req.host.set_boxed_inspector(Box::new(EmptyInspector));
+                    }
+                    ForbiddenInspectorMethod::ClearInspector => {
+                        let _ = req.host.clear_inspector();
+                    }
+                }
+                Ok(TxResult::default())
+            },
+        );
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            registry,
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        let tx = test_tx(0);
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let _ = evm.transact(&tx);
+        }));
+        let Err(panic) = result else {
+            panic!("Evm::{} did not panic while running", method.name());
+        };
+        let message = panic
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| panic.downcast_ref::<&str>().copied())
+            .unwrap_or("");
+        assert!(
+            message.contains("cannot be called while the EVM is running"),
+            "unexpected panic from Evm::{}: {message}",
+            method.name()
+        );
+    }
+
     #[test]
     fn dispatches_transaction_by_typed_2718_type() {
         let registry = TxRegistry::new().with_handler(
@@ -1115,6 +1225,33 @@ mod tests {
         let tx = test_tx(41);
 
         assert_eq!(evm.transact(&tx).map(|result| result.gas_used), Ok(42));
+    }
+
+    #[test]
+    fn inspector_methods_are_rejected_while_running() {
+        for method in ForbiddenInspectorMethod::ALL {
+            call_forbidden_inspector_method(method);
+        }
+    }
+
+    #[test]
+    fn inspector_methods_are_allowed_between_runs() {
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+
+        assert!(evm.inspector().is_none());
+        assert!(evm.inspector_mut().is_none());
+        evm.set_inspector(EmptyInspector);
+        assert!(evm.inspector().is_some());
+        assert!(evm.inspector_mut().is_some());
+        let inspector = evm.clear_inspector().unwrap();
+        evm.set_boxed_inspector(inspector);
+        assert!(evm.clear_inspector().is_some());
     }
 
     #[test]

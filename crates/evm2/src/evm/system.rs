@@ -107,6 +107,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             let stop = InstrStop::FatalExternalError;
             return TxResult { stop, db_error_code: self.db_error_code(), ..TxResult::default() };
         };
+        self.start_running();
         let result = Host::execute_message(self, &tx_env, bytecode, &mut message, false);
         let gas_spent = SYSTEM_CALL_GAS_LIMIT.saturating_sub(result.gas.remaining());
         let gas_refunded = if result.stop.is_success() && result.gas.refunded() > 0 {
@@ -133,6 +134,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         }
         result.db_error_code = self.db_error_code();
         self.state.clear_transaction_state();
+        self.stop_running();
         result
     }
 
