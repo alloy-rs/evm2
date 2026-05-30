@@ -265,6 +265,12 @@ impl<T: EvmTypes> Evm<T> {
         self.inspector.as_deref_mut()
     }
 
+    /// Requests that the inspector configuration is refreshed before the next interpreter run.
+    #[inline]
+    pub const fn request_inspector_reconfigure(&mut self) {
+        self.registered_inspector_config = None;
+    }
+
     #[inline]
     fn inspect_log(&mut self, log: &Log) {
         if let Some(inspector) = &mut self.inspector {
@@ -704,23 +710,27 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         let interpreter_ref = interpreter.as_mut();
         interpreter_ref.init(bytecode, tx_env, message, caller_is_static);
         self.register_inspector();
-        // SAFETY: `execution_config` points to a private field that host execution does not
-        // replace or mutate, so the pointee remains valid here.
-        let execution_config = unsafe { trustme::decouple_lt(&self.execution_config) };
         self.inspect_initialize_interp(interpreter_ref);
-        let inspector = self.inspector.as_deref_mut().map(|inspector| {
-            // SAFETY: The inspector is stored in `self` and remains alive for the duration of the
-            // interpreter run.
-            unsafe { trustme::decouple_lt_mut(inspector) }
-        });
-        let stop = if let Some(inspector) = inspector {
-            let inspector_config = self
-                .registered_inspector_config
-                .expect("inspector config must be registered before run_inspect");
-            interpreter_ref.run_inspect(execution_config, &inspector_config, self, inspector)
-        } else {
-            interpreter_ref.run(execution_config, self)
+        self.register_inspector();
+        let stop = {
+            // SAFETY: `execution_config` points to a private field that host execution does not
+            // replace or mutate, so the pointee remains valid here.
+            let execution_config = unsafe { trustme::decouple_lt(&self.execution_config) };
+            let inspector = self.inspector.as_deref_mut().map(|inspector| {
+                // SAFETY: The inspector is stored in `self` and remains alive for the duration of
+                // the interpreter run.
+                unsafe { trustme::decouple_lt_mut(inspector) }
+            });
+            if let Some(inspector) = inspector {
+                let inspector_config = self
+                    .registered_inspector_config
+                    .expect("inspector config must be registered before run_inspect");
+                interpreter_ref.run_inspect(execution_config, &inspector_config, self, inspector)
+            } else {
+                interpreter_ref.run(execution_config, self)
+            }
         };
+        self.register_inspector();
 
         self.interpreter_pool.push(interpreter);
         stop
@@ -868,6 +878,10 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
                 self.execute_call_message(tx_env, bytecode, message, caller_is_static)
             }
         }
+    }
+
+    fn request_inspector_reconfigure(&mut self) {
+        Self::request_inspector_reconfigure(self);
     }
 
     fn selfdestruct(

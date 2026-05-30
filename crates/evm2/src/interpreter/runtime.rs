@@ -1,5 +1,5 @@
 use super::{
-    BytecodeRef, Gas, InstrStop, Memory, Message, MessageKind, MessageResult, Pc, Result,
+    BytecodeRef, Gas, Host, InstrStop, Memory, Message, MessageKind, MessageResult, Pc, Result,
     StackBacking, Word,
 };
 use crate::{
@@ -160,6 +160,16 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
     #[inline]
     pub const fn set_stop(&mut self, stop: InstrStop) {
         self.result = Err(stop);
+    }
+
+    /// Requests that the host refresh the inspector configuration.
+    #[inline]
+    pub fn request_inspector_reconfigure(&mut self) {
+        if let Some(mut host) = self.host {
+            // SAFETY: `host` is initialized for the active run and the request only marks host
+            // inspector configuration dirty; it does not access interpreter-owned frame data.
+            unsafe { host.as_mut() }.request_inspector_reconfigure();
+        }
     }
 
     /// Returns the current linear memory.

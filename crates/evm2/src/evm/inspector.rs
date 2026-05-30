@@ -342,6 +342,34 @@ mod tests {
         }
     }
 
+    struct ReconfiguringInspector {
+        set: OpcodeSet,
+        steps: usize,
+        opcodes: Vec<u8>,
+    }
+
+    impl Default for ReconfiguringInspector {
+        fn default() -> Self {
+            Self { set: OpcodeSet::EMPTY, steps: 0, opcodes: Vec::new() }
+        }
+    }
+
+    impl Inspector<BaseEvmTypes> for ReconfiguringInspector {
+        fn config(&self) -> InspectorConfig {
+            InspectorConfig::new().with_opcode_set(self.set)
+        }
+
+        fn initialize_interp(&mut self, interp: &mut Interpreter<'_, BaseEvmTypes>) {
+            self.set.insert(op::ADD);
+            interp.request_inspector_reconfigure();
+        }
+
+        fn step(&mut self, interp: &mut Interpreter<'_, BaseEvmTypes>) {
+            self.steps += 1;
+            self.opcodes.push(interp.opcode());
+        }
+    }
+
     #[derive(Default)]
     struct MessageInspector {
         call_depth: Option<u16>,
@@ -1113,6 +1141,45 @@ mod tests {
         assert!(result.status);
         assert_eq!(inspector.steps, 1);
         assert_eq!(inspector.step_ends, 1);
+        assert_eq!(inspector.opcodes, [op::ADD]);
+    }
+
+    #[test]
+    fn evm_transaction_reconfigures_inspector_from_initialize() {
+        let caller = Address::from([0xaa; 20]);
+        let contract = Address::from([0xbb; 20]);
+        let code = Bytecode::new_legacy(Bytes::from_static(&[
+            op::PUSH1,
+            1,
+            op::PUSH1,
+            2,
+            op::ADD,
+            op::STOP,
+        ]));
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(
+            &caller,
+            AccountInfo::default().with_balance(U256::from(1_000_000_000_u64)),
+        );
+        database.insert_account_info(&contract, AccountInfo::default().with_code(code));
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            ethereum_tx_registry(SpecId::OSAKA),
+            database,
+            Precompiles::base(SpecId::OSAKA),
+        );
+        evm.set_inspector(ReconfiguringInspector::default());
+        let tx = RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(
+            TxLegacy { to: TxKind::Call(contract), gas_limit: 100_000, ..Default::default() },
+            caller,
+        ));
+
+        let result = evm.transact(&tx).unwrap();
+        let inspector = evm.inspector().unwrap().downcast_ref::<ReconfiguringInspector>().unwrap();
+
+        assert!(result.status);
+        assert_eq!(inspector.steps, 1);
         assert_eq!(inspector.opcodes, [op::ADD]);
     }
 

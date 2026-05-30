@@ -145,6 +145,10 @@ pub trait Host<T: EvmTypes> {
         caller_is_static: bool,
     ) -> MessageResult<T>;
 
+    /// Requests that the host refresh its registered inspector configuration.
+    #[inline]
+    fn request_inspector_reconfigure(&mut self) {}
+
     /// Registers the current contract for self-destruction.
     fn selfdestruct(
         &mut self,
