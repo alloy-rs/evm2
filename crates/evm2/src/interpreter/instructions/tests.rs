@@ -11,7 +11,7 @@ use crate::{
 };
 use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::{Address, B256, Bytes, Log};
-use core::ops::Range;
+use core::{assert_matches, ops::Range};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct TestTypes;
@@ -363,7 +363,7 @@ pub(super) fn assert_stack_words(inputs: &[Word], opcode: u8, expected: &[Word])
     }
     code.extend([opcode, op::STOP]);
     let interpreter = run(RunConfig::new(code));
-    assert!(matches!(interpreter.err, InstrStop::Stop));
+    assert_matches!(interpreter.err, InstrStop::Stop);
     assert_eq!(interpreter.stack(), expected);
 }
 

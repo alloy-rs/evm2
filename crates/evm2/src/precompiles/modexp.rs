@@ -325,6 +325,7 @@ mod tests {
     use crate::precompiles::PrecompileError;
     use alloc::{vec, vec::Vec};
     use alloy_primitives::hex;
+    use core::assert_matches;
 
     struct Test {
         input: &'static str,
@@ -785,8 +786,9 @@ mod tests {
         .unwrap();
 
         let res = run_osaka(&input_fail, &mut GasTracker::new(100_000_000));
-        assert!(
-            matches!(res, Err(PrecompileError::Halt(PrecompileHalt::ModexpEip7823LimitSize))),
+        assert_matches!(
+            res,
+            Err(PrecompileError::Halt(PrecompileHalt::ModexpEip7823LimitSize)),
             "1025-byte base should be rejected"
         );
     }
@@ -878,8 +880,9 @@ mod tests {
 
         // Provide insufficient gas
         let res = run_byzantium(&input, &mut GasTracker::new(1000));
-        assert!(
-            matches!(res, Err(PrecompileError::Halt(PrecompileHalt::OutOfGas))),
+        assert_matches!(
+            res,
+            Err(PrecompileError::Halt(PrecompileHalt::OutOfGas)),
             "Should return OutOfGas error with insufficient gas"
         );
     }

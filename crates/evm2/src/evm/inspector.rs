@@ -255,6 +255,7 @@ mod tests {
     use alloy_consensus::{TxLegacy, transaction::Recovered};
     use alloy_primitives::{Address, Bytes, Log, TxKind, U256};
     use core::marker::PhantomData;
+    use core::assert_matches;
 
     #[derive(Default)]
     struct StepInspector {
@@ -759,7 +760,7 @@ mod tests {
             &mut inspector,
         );
 
-        assert!(matches!(stop, InstrStop::Stop));
+        assert_matches!(stop, InstrStop::Stop);
         assert_eq!(stack, [Word::ZERO]);
         assert_eq!(inspector.call_depth, Some(CALL_DEPTH_LIMIT + 1));
         assert_eq!(inspector.call_end_stop, Some(InstrStop::CallTooDeep));
@@ -785,7 +786,7 @@ mod tests {
         let (stop, stack) =
             run_with_inspector(code, &mut host, &Message::default(), 50_000, &mut inspector);
 
-        assert!(matches!(stop, InstrStop::Stop));
+        assert_matches!(stop, InstrStop::Stop);
         assert_eq!(stack, [Word::from(1), Word::from(3)]);
         assert_eq!(inspector.call_depth, Some(1));
         assert_eq!(inspector.call_end_stop, Some(InstrStop::Return));
@@ -812,7 +813,7 @@ mod tests {
             &mut inspector,
         );
 
-        assert!(matches!(stop, InstrStop::Stop));
+        assert_matches!(stop, InstrStop::Stop);
         assert_eq!(stack, [Word::from(1)]);
         assert_eq!(inspector.call_end_stop, Some(InstrStop::Return));
         assert!(host.calls.is_empty());
@@ -830,7 +831,7 @@ mod tests {
         let (stop, stack) =
             run_with_inspector(code, &mut host, &Message::default(), 50_000, &mut inspector);
 
-        assert!(matches!(stop, InstrStop::Stop));
+        assert_matches!(stop, InstrStop::Stop);
         assert_eq!(stack, [Word::from(1)]);
         assert_eq!(host.calls.len(), 1);
         assert_eq!(host.calls[0].destination, replacement);
@@ -847,7 +848,7 @@ mod tests {
         let (stop, stack) =
             run_with_inspector(code, &mut host, &Message::default(), 50_000, &mut inspector);
 
-        assert!(matches!(stop, InstrStop::Stop));
+        assert_matches!(stop, InstrStop::Stop);
         assert_eq!(stack, [Word::from(1), Word::from(2)]);
         assert!(host.calls.is_empty());
     }
@@ -867,7 +868,7 @@ mod tests {
             &mut inspector,
         );
 
-        assert!(matches!(stop, InstrStop::Stop));
+        assert_matches!(stop, InstrStop::Stop);
         assert_eq!(stack, [Word::ZERO]);
         assert_eq!(inspector.create_depth, Some(CALL_DEPTH_LIMIT + 1));
         assert_eq!(inspector.create_end_stop, Some(InstrStop::CallTooDeep));
@@ -886,7 +887,7 @@ mod tests {
         let (stop, stack) =
             run_with_inspector(code, &mut host, &Message::default(), 50_000, &mut inspector);
 
-        assert!(matches!(stop, InstrStop::Stop));
+        assert_matches!(stop, InstrStop::Stop);
         assert_eq!(stack, [address_to_word(&created)]);
         assert_eq!(inspector.create_depth, Some(1));
         assert_eq!(inspector.create_end_stop, Some(InstrStop::Return));
@@ -910,7 +911,7 @@ mod tests {
             &mut inspector,
         );
 
-        assert!(matches!(stop, InstrStop::Stop));
+        assert_matches!(stop, InstrStop::Stop);
         assert_eq!(stack, [address_to_word(&created)]);
         assert_eq!(inspector.create_depth, Some(CALL_DEPTH_LIMIT + 1));
         assert_eq!(inspector.create_end_stop, Some(InstrStop::Return));
@@ -928,7 +929,7 @@ mod tests {
         let (stop, stack) =
             run_with_inspector(code, &mut host, &Message::default(), 50_000, &mut inspector);
 
-        assert!(matches!(stop, InstrStop::Stop));
+        assert_matches!(stop, InstrStop::Stop);
         assert_eq!(stack, [address_to_word(&created)]);
         assert!(host.calls.is_empty());
     }
@@ -948,7 +949,7 @@ mod tests {
             &mut inspector,
         );
 
-        assert!(matches!(stop, InstrStop::Stop));
+        assert_matches!(stop, InstrStop::Stop);
         assert_eq!(inspector.logs.len(), 1);
         assert_eq!(inspector.logs[0].address, contract);
         assert_eq!(host.logs, inspector.logs);
@@ -1029,7 +1030,7 @@ mod tests {
             &mut inspector,
         );
 
-        assert!(matches!(stop, InstrStop::SelfDestruct));
+        assert_matches!(stop, InstrStop::SelfDestruct);
         assert_eq!(inspector.selfdestruct, Some((contract, target, value)));
     }
 

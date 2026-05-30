@@ -65,6 +65,7 @@ pub(crate) fn signextend([ext, value]: [Word]) -> out {
 #[cfg(test)]
 mod tests {
     use alloc::vec::Vec;
+    use core::assert_matches;
 
     use crate::{
         SpecId,
@@ -158,7 +159,7 @@ mod tests {
 
         let interpreter = run(RunConfig::new(code).spec(SpecId::FRONTIER).gas_limit(25));
 
-        assert!(matches!(interpreter.err, InstrStop::OutOfGas));
+        assert_matches!(interpreter.err, InstrStop::OutOfGas);
     }
 
     #[test]
@@ -172,7 +173,7 @@ mod tests {
         let spurious_dragon = run(RunConfig::new(code).spec(SpecId::SPURIOUS_DRAGON).gas_limit(65));
 
         assert_eq!(frontier.err, InstrStop::Stop);
-        assert!(matches!(spurious_dragon.err, InstrStop::OutOfGas));
+        assert_matches!(spurious_dragon.err, InstrStop::OutOfGas);
     }
 
     #[test]
