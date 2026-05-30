@@ -602,7 +602,10 @@ mod tests {
     };
     use alloy_consensus::{TxLegacy, transaction::Recovered};
     use alloy_primitives::{Address, B256, Bytes};
-    use core::{convert::Infallible, fmt, future::Future, pin::Pin, ptr::NonNull, task::Poll};
+    use core::{
+        assert_matches, convert::Infallible, fmt, future::Future, pin::Pin, ptr::NonNull,
+        task::Poll,
+    };
     use corosensei::stack::Stack;
     use std::{
         error::Error,
@@ -611,7 +614,7 @@ mod tests {
 
     #[test]
     fn block_on_requires_fiber() {
-        assert!(matches!(block_on_current(core::future::ready(())), Err(AsyncError::NotOnFiber)));
+        assert_matches!(block_on_current(core::future::ready(())), Err(AsyncError::NotOnFiber));
     }
 
     #[test]
@@ -624,8 +627,8 @@ mod tests {
         let waker = Waker::noop();
         let mut cx = Context::from_waker(waker);
 
-        assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
-        assert!(matches!(future.as_mut().poll(&mut cx), Poll::Ready(Ok(3))));
+        assert_matches!(future.as_mut().poll(&mut cx), Poll::Pending);
+        assert_matches!(future.as_mut().poll(&mut cx), Poll::Ready(Ok(3)));
     }
 
     #[test]
@@ -660,8 +663,9 @@ mod tests {
         let waker = Waker::noop();
         let mut cx = Context::from_waker(waker);
 
-        assert!(
-            matches!(future.as_mut().poll(&mut cx), Poll::Ready(Ok(value)) if value == Word::from(9))
+        assert_matches!(
+            future.as_mut().poll(&mut cx),
+            Poll::Ready(Ok(value)) if value == Word::from(9),
         );
     }
 
@@ -676,9 +680,10 @@ mod tests {
         let waker = Waker::noop();
         let mut cx = Context::from_waker(waker);
 
-        assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
-        assert!(
-            matches!(future.as_mut().poll(&mut cx), Poll::Ready(Ok(value)) if value == Word::from(9))
+        assert_matches!(future.as_mut().poll(&mut cx), Poll::Pending);
+        assert_matches!(
+            future.as_mut().poll(&mut cx),
+            Poll::Ready(Ok(value)) if value == Word::from(9),
         );
     }
 
@@ -727,10 +732,10 @@ mod tests {
 
         let result = poll_ready(evm.transact_async(&tx));
 
-        assert!(matches!(
+        assert_matches!(
             result,
             Err(AsyncError::Inner(HandlerError::UnsupportedTransactionType(TEST_TX_TYPE)))
-        ));
+        );
     }
 
     #[test]
@@ -831,7 +836,7 @@ mod tests {
             let waker = Waker::noop();
             let mut cx = Context::from_waker(waker);
 
-            assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
+            assert_matches!(future.as_mut().poll(&mut cx), Poll::Pending);
         }
         assert!(saw_cancel);
     }
