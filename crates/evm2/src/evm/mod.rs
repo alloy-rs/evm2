@@ -1096,6 +1096,11 @@ mod tests {
     use alloy_consensus::{TxLegacy, transaction::Recovered};
     use alloy_primitives::{Address, Bytes, KECCAK256_EMPTY, U256};
     use core::{error::Error, fmt};
+    #[cfg(feature = "std")]
+    use std::{
+        panic::{AssertUnwindSafe, catch_unwind},
+        string::String,
+    };
 
     const TEST_TX_TYPE: u8 = 0x00;
 
@@ -1123,6 +1128,7 @@ mod tests {
         })
     }
 
+    #[cfg(feature = "std")]
     #[derive(Clone, Copy)]
     enum ForbiddenInspectorMethod {
         Inspector,
@@ -1132,7 +1138,16 @@ mod tests {
         ClearInspector,
     }
 
+    #[cfg(feature = "std")]
     impl ForbiddenInspectorMethod {
+        const ALL: [Self; 5] = [
+            Self::Inspector,
+            Self::InspectorMut,
+            Self::SetInspector,
+            Self::SetBoxedInspector,
+            Self::ClearInspector,
+        ];
+
         const fn name(self) -> &'static str {
             match self {
                 Self::Inspector => "inspector",
@@ -1148,6 +1163,7 @@ mod tests {
 
     impl Inspector<BaseEvmTypes> for EmptyInspector {}
 
+    #[cfg(feature = "std")]
     fn call_forbidden_inspector_method(method: ForbiddenInspectorMethod) {
         let registry = TxRegistry::new().with_handler(
             TEST_TX_TYPE,
@@ -1181,8 +1197,22 @@ mod tests {
             Precompiles::base(SpecId::OSAKA),
         );
         let tx = test_tx(0);
-        let _ = evm.transact(&tx);
-        panic!("Evm::{} did not panic while running", method.name());
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let _ = evm.transact(&tx);
+        }));
+        let Err(panic) = result else {
+            panic!("Evm::{} did not panic while running", method.name());
+        };
+        let message = panic
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| panic.downcast_ref::<&str>().copied())
+            .unwrap_or("");
+        assert!(
+            message.contains("cannot be called while the EVM is running"),
+            "unexpected panic from Evm::{}: {message}",
+            method.name()
+        );
     }
 
     #[test]
@@ -1205,33 +1235,11 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "cannot be called while the EVM is running")]
-    fn inspector_is_rejected_while_running() {
-        call_forbidden_inspector_method(ForbiddenInspectorMethod::Inspector);
-    }
-
-    #[test]
-    #[should_panic(expected = "cannot be called while the EVM is running")]
-    fn inspector_mut_is_rejected_while_running() {
-        call_forbidden_inspector_method(ForbiddenInspectorMethod::InspectorMut);
-    }
-
-    #[test]
-    #[should_panic(expected = "cannot be called while the EVM is running")]
-    fn set_inspector_is_rejected_while_running() {
-        call_forbidden_inspector_method(ForbiddenInspectorMethod::SetInspector);
-    }
-
-    #[test]
-    #[should_panic(expected = "cannot be called while the EVM is running")]
-    fn set_boxed_inspector_is_rejected_while_running() {
-        call_forbidden_inspector_method(ForbiddenInspectorMethod::SetBoxedInspector);
-    }
-
-    #[test]
-    #[should_panic(expected = "cannot be called while the EVM is running")]
-    fn clear_inspector_is_rejected_while_running() {
-        call_forbidden_inspector_method(ForbiddenInspectorMethod::ClearInspector);
+    #[cfg(feature = "std")]
+    fn inspector_methods_are_rejected_while_running() {
+        for method in ForbiddenInspectorMethod::ALL {
+            call_forbidden_inspector_method(method);
+        }
     }
 
     #[test]
