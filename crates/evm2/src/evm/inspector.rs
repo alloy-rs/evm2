@@ -130,8 +130,22 @@ pub struct InspectorConfig {
 impl InspectorConfig {
     /// Creates an inspector configuration.
     #[inline]
-    pub const fn new(set: OpcodeSet) -> Self {
-        Self { set, _non_exhaustive: () }
+    pub const fn new() -> Self {
+        Self { set: OpcodeSet::ALL, _non_exhaustive: () }
+    }
+
+    /// Sets the opcodes for which step hooks are enabled.
+    #[inline]
+    pub const fn with_opcode_set(mut self, set: OpcodeSet) -> Self {
+        self.set = set;
+        self
+    }
+}
+
+impl Default for InspectorConfig {
+    #[inline]
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -140,7 +154,7 @@ pub trait Inspector<T: EvmTypes>: Any + Send {
     /// Returns this inspector's execution configuration.
     #[inline]
     fn config(&self) -> InspectorConfig {
-        InspectorConfig::new(OpcodeSet::ALL)
+        InspectorConfig::new()
     }
 
     /// Called after a frame interpreter has been initialized.
@@ -315,7 +329,7 @@ mod tests {
         fn config(&self) -> InspectorConfig {
             let mut set = OpcodeSet::EMPTY;
             set.insert(op::ADD);
-            InspectorConfig::new(set)
+            InspectorConfig::new().with_opcode_set(set)
         }
 
         fn step(&mut self, interp: &mut Interpreter<'_, T>) {
@@ -493,7 +507,7 @@ mod tests {
 
     impl Inspector<TestTypes> for EmptySetLogInspector {
         fn config(&self) -> InspectorConfig {
-            InspectorConfig::new(OpcodeSet::EMPTY)
+            InspectorConfig::new().with_opcode_set(OpcodeSet::EMPTY)
         }
 
         fn step(&mut self, _interp: &mut Interpreter<'_, TestTypes>) {
