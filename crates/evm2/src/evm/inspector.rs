@@ -254,8 +254,7 @@ mod tests {
     use alloc::vec::Vec;
     use alloy_consensus::{TxLegacy, transaction::Recovered};
     use alloy_primitives::{Address, Bytes, Log, TxKind, U256};
-    use core::marker::PhantomData;
-    use core::assert_matches;
+    use core::{assert_matches, marker::PhantomData};
 
     #[derive(Default)]
     struct StepInspector {
