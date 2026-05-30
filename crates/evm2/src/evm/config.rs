@@ -3,13 +3,15 @@
 use crate::{
     OpcodeConfig, SpecId,
     ethereum::RecoveredTxEnvelope,
+    evm::inspector::{InspectorConfig, OpcodeSet},
     interpreter::{
         Host,
-        dispatch::{ConfigInstrTables, InstrTable, SelectorInstrTables},
+        dispatch::{self, ConfigInstrTables, InstrTable, SelectorInstrTables},
     },
     version::Version,
 };
-use derive_where::derive_where;
+use alloc::boxed::Box;
+use core::fmt;
 
 /// Runtime EVM type family.
 ///
@@ -115,61 +117,86 @@ where
 ///
 /// Bundles the active runtime `Version` with the finalized instruction dispatch table selected for
 /// an EVM instance. This is the data passed to the interpreter when it runs.
-#[derive_where(Debug)]
 pub struct ExecutionConfig<T: EvmTypes> {
-    pub(crate) version: Version,
-    #[derive_where(skip)]
-    pub(crate) instructions: &'static InstrTable<T>,
-    #[derive_where(skip)]
-    pub(crate) inspect_instructions: &'static InstrTable<T>,
+    inner: Box<ExecutionConfigInner<T>>,
+}
+
+struct ExecutionConfigInner<T: EvmTypes> {
+    version: Version,
+    instructions: &'static InstrTable<T>,
+    inspect_instructions: InstrTable<T>,
+    inspect_instruction_source: &'static InstrTable<T>,
 }
 
 impl<T: EvmTypes> Clone for ExecutionConfig<T> {
     #[inline]
     fn clone(&self) -> Self {
-        *self
+        Self { inner: self.inner.clone() }
     }
 }
 
-impl<T: EvmTypes> Copy for ExecutionConfig<T> {}
+impl<T: EvmTypes> fmt::Debug for ExecutionConfig<T> {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ExecutionConfig")
+            .field("version", &self.inner.version)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<T: EvmTypes> Clone for ExecutionConfigInner<T> {
+    #[inline]
+    fn clone(&self) -> Self {
+        Self {
+            version: self.version,
+            instructions: self.instructions,
+            inspect_instructions: self.inspect_instructions,
+            inspect_instruction_source: self.inspect_instruction_source,
+        }
+    }
+}
 
 impl<T: EvmTypes> ExecutionConfig<T> {
     /// Creates an execution config for a base `SpecId` through selector `F`.
     ///
     /// This uses the selector's base inherited tables by passing `u32::MAX` as the custom-spec
     /// sentinel.
-    #[inline]
-    pub(crate) const fn for_base_spec<F: EvmConfigSelector<T>>(base_spec_id: SpecId) -> Self {
+    pub(crate) fn for_base_spec<F: EvmConfigSelector<T>>(base_spec_id: SpecId) -> Self {
         Self::for_custom_spec::<F, { u32::MAX }>(base_spec_id)
     }
 
     /// Creates an execution config for selector custom spec `CUSTOM_SPEC_ID` and base `SpecId`.
-    #[inline]
-    pub(crate) const fn for_custom_spec<F: EvmConfigSelector<T>, const CUSTOM_SPEC_ID: u32>(
+    pub(crate) fn for_custom_spec<F: EvmConfigSelector<T>, const CUSTOM_SPEC_ID: u32>(
         base_spec_id: SpecId,
     ) -> Self {
         let i = base_spec_id as usize;
+        let inspect_instruction_source =
+            &SelectorInstrTables::<T, F, CUSTOM_SPEC_ID>::INSPECT_INSTRUCTIONS[i];
         Self {
-            version: Version::new(base_spec_id),
-            instructions: &SelectorInstrTables::<T, F, CUSTOM_SPEC_ID>::INSTRUCTIONS[i],
-            inspect_instructions:
-                &SelectorInstrTables::<T, F, CUSTOM_SPEC_ID>::INSPECT_INSTRUCTIONS[i],
+            inner: Box::new(ExecutionConfigInner {
+                version: Version::new(base_spec_id),
+                instructions: &SelectorInstrTables::<T, F, CUSTOM_SPEC_ID>::INSTRUCTIONS[i],
+                inspect_instructions: *inspect_instruction_source,
+                inspect_instruction_source,
+            }),
         }
     }
 
     /// Creates an execution config for concrete EVM configuration `C`.
-    #[inline]
-    pub const fn for_config<C: EvmConfig<T>>() -> Self {
+    pub fn for_config<C: EvmConfig<T>>() -> Self {
         let base_spec_id = C::BASE_SPEC_ID;
+        let inspect_instruction_source = ConfigInstrTables::<T, C>::INSPECT_INSTRUCTIONS;
         Self {
-            version: Version::new(base_spec_id),
-            instructions: ConfigInstrTables::<T, C>::INSTRUCTIONS,
-            inspect_instructions: ConfigInstrTables::<T, C>::INSPECT_INSTRUCTIONS,
+            inner: Box::new(ExecutionConfigInner {
+                version: Version::new(base_spec_id),
+                instructions: ConfigInstrTables::<T, C>::INSTRUCTIONS,
+                inspect_instructions: *inspect_instruction_source,
+                inspect_instruction_source,
+            }),
         }
     }
 
     /// Creates an execution config for `spec_id` with dynamic runtime version data.
-    #[inline]
     pub fn for_spec_and_version(spec_id: T::SpecId, version: Version) -> Self {
         let config = <T::ConfigSelector as EvmConfigSelector<T>>::execution_config(spec_id);
         assert_eq!(spec_id.into(), version.spec_id, "execution config version spec mismatch");
@@ -179,15 +206,49 @@ impl<T: EvmTypes> ExecutionConfig<T> {
     /// Replaces the runtime version data while keeping the same dispatch table.
     #[inline]
     pub fn with_version(mut self, version: Version) -> Self {
-        assert_eq!(self.version.spec_id, version.spec_id, "execution config version spec mismatch");
-        self.version = version;
+        assert_eq!(
+            self.inner.version.spec_id, version.spec_id,
+            "execution config version spec mismatch"
+        );
+        self.inner.version = version;
         self
     }
 
     /// Returns the active EVM version.
     #[inline]
-    pub const fn version(&self) -> &Version {
-        &self.version
+    pub fn version(&self) -> &Version {
+        &self.inner.version
+    }
+
+    #[inline]
+    pub(crate) fn instructions(&self) -> &InstrTable<T> {
+        self.inner.instructions
+    }
+
+    #[inline]
+    pub(crate) fn inspect_instructions(&self) -> &InstrTable<T> {
+        &self.inner.inspect_instructions
+    }
+
+    #[inline]
+    pub(crate) fn register_inspector(&mut self, inspector_config: &InspectorConfig) {
+        if inspector_config.set.is_empty() {
+            self.inner.inspect_instructions = *self.inner.instructions;
+            return;
+        }
+        if inspector_config.set == OpcodeSet::ALL {
+            self.inner.inspect_instructions = if cfg!(tco) {
+                *self.inner.inspect_instruction_source
+            } else {
+                *self.inner.instructions
+            };
+            return;
+        }
+        self.inner.inspect_instructions = dispatch::make_inspect_table(
+            self.inner.instructions,
+            self.inner.inspect_instruction_source,
+            &inspector_config.set,
+        );
     }
 }
 

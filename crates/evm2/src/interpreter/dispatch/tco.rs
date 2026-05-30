@@ -39,6 +39,22 @@ pub(in crate::interpreter) fn run<T: EvmTypes>(
     state.result().unwrap_err()
 }
 
+#[inline(always)]
+pub(in crate::interpreter) fn run_inspect_loop<T: EvmTypes>(
+    interpreter: &mut Interpreter<'_, T>,
+    instructions: &RawInstrTable<T>,
+) -> InstrStop {
+    run(interpreter, instructions)
+}
+
+#[inline(always)]
+pub(in crate::interpreter) fn run_no_steps<T: EvmTypes>(
+    interpreter: &mut Interpreter<'_, T>,
+    instructions: &RawInstrTable<T>,
+) -> InstrStop {
+    run(interpreter, instructions)
+}
+
 extern_table! {
     pub(super) fn dispatch<
         T: EvmTypes,
