@@ -739,10 +739,10 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         let Some(inspector) = &self.inspector else {
             return;
         };
-        let inspector_config = inspector.config();
-        if self.registered_inspector_config == Some(inspector_config) {
+        if self.registered_inspector_config.is_some() {
             return;
         }
+        let inspector_config = inspector.config();
         self.execution_config.register_inspector(&inspector_config);
         self.registered_inspector_config = Some(inspector_config);
     }

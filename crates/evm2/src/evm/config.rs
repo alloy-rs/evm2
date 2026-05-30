@@ -12,7 +12,6 @@ use crate::{
 };
 use alloc::boxed::Box;
 use core::fmt;
-use derive_where::derive_where;
 
 /// Runtime EVM type family.
 ///
@@ -122,14 +121,10 @@ pub struct ExecutionConfig<T: EvmTypes> {
     inner: Box<ExecutionConfigInner<T>>,
 }
 
-#[derive_where(Debug)]
 struct ExecutionConfigInner<T: EvmTypes> {
     version: Version,
-    #[derive_where(skip)]
     instructions: &'static InstrTable<T>,
-    #[derive_where(skip)]
     inspect_instructions: InstrTable<T>,
-    #[derive_where(skip)]
     inspect_instruction_source: &'static InstrTable<T>,
 }
 
