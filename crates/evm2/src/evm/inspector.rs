@@ -350,7 +350,9 @@ mod tests {
 
     impl Default for ReconfiguringInspector {
         fn default() -> Self {
-            Self { set: OpcodeSet::EMPTY, steps: 0, opcodes: Vec::new() }
+            let mut set = OpcodeSet::EMPTY;
+            set.insert(op::CALL);
+            Self { set, steps: 0, opcodes: Vec::new() }
         }
     }
 
@@ -359,12 +361,11 @@ mod tests {
             InspectorConfig::new().with_opcode_set(self.set)
         }
 
-        fn initialize_interp(&mut self, interp: &mut Interpreter<'_, BaseEvmTypes>) {
-            self.set.insert(op::ADD);
-            interp.request_inspector_reconfigure();
-        }
-
         fn step(&mut self, interp: &mut Interpreter<'_, BaseEvmTypes>) {
+            if interp.opcode() == op::CALL {
+                self.set.insert(op::SLOAD);
+                interp.request_inspector_reconfigure();
+            }
             self.steps += 1;
             self.opcodes.push(interp.opcode());
         }
@@ -1145,23 +1146,22 @@ mod tests {
     }
 
     #[test]
-    fn evm_transaction_reconfigures_inspector_from_initialize() {
+    fn evm_transaction_reconfigures_inspector_for_nested_frame() {
         let caller = Address::from([0xaa; 20]);
         let contract = Address::from([0xbb; 20]);
-        let code = Bytecode::new_legacy(Bytes::from_static(&[
-            op::PUSH1,
-            1,
-            op::PUSH1,
-            2,
-            op::ADD,
-            op::STOP,
-        ]));
+        let child = Address::from([0xcc; 20]);
+        let mut parent_code = call_code(child);
+        parent_code.extend([op::CALL, op::STOP]);
+        let parent_code = Bytecode::new_legacy(Bytes::from(parent_code));
+        let child_code =
+            Bytecode::new_legacy(Bytes::from_static(&[op::PUSH1, 0, op::SLOAD, op::STOP]));
         let mut database = InMemoryDB::default();
         database.insert_account_info(
             &caller,
             AccountInfo::default().with_balance(U256::from(1_000_000_000_u64)),
         );
-        database.insert_account_info(&contract, AccountInfo::default().with_code(code));
+        database.insert_account_info(&contract, AccountInfo::default().with_code(parent_code));
+        database.insert_account_info(&child, AccountInfo::default().with_code(child_code));
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
             BlockEnv::default(),
@@ -1179,8 +1179,8 @@ mod tests {
         let inspector = evm.inspector().unwrap().downcast_ref::<ReconfiguringInspector>().unwrap();
 
         assert!(result.status);
-        assert_eq!(inspector.steps, 1);
-        assert_eq!(inspector.opcodes, [op::ADD]);
+        assert_eq!(inspector.steps, 2);
+        assert_eq!(inspector.opcodes, [op::CALL, op::SLOAD]);
     }
 
     #[test]
