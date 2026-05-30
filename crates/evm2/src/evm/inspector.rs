@@ -256,62 +256,6 @@ mod tests {
     use alloy_primitives::{Address, Bytes, Log, TxKind, U256};
     use core::{assert_matches, marker::PhantomData};
 
-    #[derive(Default)]
-    struct StepInspector {
-        steps: usize,
-        step_ends: usize,
-    }
-
-    impl Inspector<TestTypes> for StepInspector {
-        fn step(&mut self, _interp: &mut Interpreter<'_, TestTypes>) {
-            self.steps += 1;
-        }
-
-        fn step_end(&mut self, _interp: &mut Interpreter<'_, TestTypes>) {
-            self.step_ends += 1;
-        }
-    }
-
-    struct StopOnStepInspector {
-        opcode: u8,
-        steps: usize,
-        step_ends: usize,
-    }
-
-    impl Inspector<TestTypes> for StopOnStepInspector {
-        fn step(&mut self, interp: &mut Interpreter<'_, TestTypes>) {
-            self.steps += 1;
-            if interp.opcode() == self.opcode {
-                interp.set_stop(InstrStop::Revert);
-            }
-        }
-
-        fn step_end(&mut self, _interp: &mut Interpreter<'_, TestTypes>) {
-            self.step_ends += 1;
-        }
-    }
-
-    struct StopOnStepEndInspector {
-        opcode: u8,
-        last_opcode: Option<u8>,
-        steps: usize,
-        step_ends: usize,
-    }
-
-    impl Inspector<TestTypes> for StopOnStepEndInspector {
-        fn step(&mut self, interp: &mut Interpreter<'_, TestTypes>) {
-            self.steps += 1;
-            self.last_opcode = Some(interp.opcode());
-        }
-
-        fn step_end(&mut self, interp: &mut Interpreter<'_, TestTypes>) {
-            self.step_ends += 1;
-            if self.last_opcode == Some(self.opcode) {
-                interp.set_stop(InstrStop::Revert);
-            }
-        }
-    }
-
     struct OpcodeInterestInspector<T: EvmTypes> {
         steps: usize,
         step_ends: usize,
@@ -339,35 +283,6 @@ mod tests {
 
         fn step_end(&mut self, _interp: &mut Interpreter<'_, T>) {
             self.step_ends += 1;
-        }
-    }
-
-    struct ReconfiguringInspector {
-        set: OpcodeSet,
-        steps: usize,
-        opcodes: Vec<u8>,
-    }
-
-    impl Default for ReconfiguringInspector {
-        fn default() -> Self {
-            let mut set = OpcodeSet::EMPTY;
-            set.insert(op::CALL);
-            Self { set, steps: 0, opcodes: Vec::new() }
-        }
-    }
-
-    impl Inspector<BaseEvmTypes> for ReconfiguringInspector {
-        fn config(&self) -> InspectorConfig {
-            InspectorConfig::new().with_opcode_set(self.set)
-        }
-
-        fn step(&mut self, interp: &mut Interpreter<'_, BaseEvmTypes>) {
-            if interp.opcode() == op::CALL {
-                self.set.insert(op::SLOAD);
-                interp.request_inspector_reconfigure();
-            }
-            self.steps += 1;
-            self.opcodes.push(interp.opcode());
         }
     }
 
@@ -435,38 +350,6 @@ mod tests {
         }
     }
 
-    struct MutateCallInspector {
-        destination: Address,
-    }
-
-    impl Inspector<TestTypes> for MutateCallInspector {
-        fn call(&mut self, message: &mut Message<TestTypes>) -> Option<MessageResult<TestTypes>> {
-            message.destination = self.destination;
-            None
-        }
-    }
-
-    struct CallEndInspector;
-
-    impl Inspector<TestTypes> for CallEndInspector {
-        fn call(&mut self, message: &mut Message<TestTypes>) -> Option<MessageResult<TestTypes>> {
-            Some(MessageResult {
-                stop: InstrStop::Revert,
-                gas: GasTracker::new(message.gas_limit),
-                ..Default::default()
-            })
-        }
-
-        fn call_end(
-            &mut self,
-            _message: &Message<TestTypes>,
-            result: &mut MessageResult<TestTypes>,
-        ) {
-            result.stop = InstrStop::Return;
-            result.output = Bytes::from_static(&[0xaa, 0xbb]);
-        }
-    }
-
     struct OverrideCreateInspector {
         created: Address,
         create_depth: Option<u16>,
@@ -493,29 +376,6 @@ mod tests {
         }
     }
 
-    struct CreateEndInspector {
-        created: Address,
-    }
-
-    impl Inspector<TestTypes> for CreateEndInspector {
-        fn create(&mut self, message: &mut Message<TestTypes>) -> Option<MessageResult<TestTypes>> {
-            Some(MessageResult {
-                stop: InstrStop::Revert,
-                gas: GasTracker::new(message.gas_limit),
-                ..Default::default()
-            })
-        }
-
-        fn create_end(
-            &mut self,
-            _message: &Message<TestTypes>,
-            result: &mut MessageResult<TestTypes>,
-        ) {
-            result.stop = InstrStop::Return;
-            result.created_address = Some(self.created);
-        }
-    }
-
     #[derive(Default)]
     struct LogInspector {
         logs: Vec<Log>,
@@ -524,48 +384,6 @@ mod tests {
     impl Inspector<TestTypes> for LogInspector {
         fn log(&mut self, log: &Log) {
             self.logs.push(log.clone());
-        }
-    }
-
-    #[derive(Default)]
-    struct EmptySetLogInspector {
-        steps: usize,
-        step_ends: usize,
-        logs: Vec<Log>,
-    }
-
-    impl Inspector<TestTypes> for EmptySetLogInspector {
-        fn config(&self) -> InspectorConfig {
-            InspectorConfig::new().with_opcode_set(OpcodeSet::EMPTY)
-        }
-
-        fn step(&mut self, _interp: &mut Interpreter<'_, TestTypes>) {
-            self.steps += 1;
-        }
-
-        fn step_end(&mut self, _interp: &mut Interpreter<'_, TestTypes>) {
-            self.step_ends += 1;
-        }
-
-        fn log(&mut self, log: &Log) {
-            self.logs.push(log.clone());
-        }
-    }
-
-    #[derive(Default)]
-    struct FailingStepInspector {
-        steps: usize,
-        step_ends: usize,
-    }
-
-    impl Inspector<TestTypes> for FailingStepInspector {
-        fn step(&mut self, _interp: &mut Interpreter<'_, TestTypes>) {
-            self.steps += 1;
-        }
-
-        fn step_end(&mut self, interp: &mut Interpreter<'_, TestTypes>) {
-            let _ = interp;
-            self.step_ends += 1;
         }
     }
 
@@ -669,6 +487,22 @@ mod tests {
 
     #[test]
     fn inspect_run_steps() {
+        #[derive(Default)]
+        struct StepInspector {
+            steps: usize,
+            step_ends: usize,
+        }
+
+        impl Inspector<TestTypes> for StepInspector {
+            fn step(&mut self, _interp: &mut Interpreter<'_, TestTypes>) {
+                self.steps += 1;
+            }
+
+            fn step_end(&mut self, _interp: &mut Interpreter<'_, TestTypes>) {
+                self.step_ends += 1;
+            }
+        }
+
         let mut host = TestHost::default();
         let mut inspector = StepInspector::default();
 
@@ -687,6 +521,25 @@ mod tests {
 
     #[test]
     fn step_can_stop_before_current_opcode_executes() {
+        struct StopOnStepInspector {
+            opcode: u8,
+            steps: usize,
+            step_ends: usize,
+        }
+
+        impl Inspector<TestTypes> for StopOnStepInspector {
+            fn step(&mut self, interp: &mut Interpreter<'_, TestTypes>) {
+                self.steps += 1;
+                if interp.opcode() == self.opcode {
+                    interp.set_stop(InstrStop::Revert);
+                }
+            }
+
+            fn step_end(&mut self, _interp: &mut Interpreter<'_, TestTypes>) {
+                self.step_ends += 1;
+            }
+        }
+
         let mut host = TestHost::default();
         let mut inspector = StopOnStepInspector { opcode: op::ADD, steps: 0, step_ends: 0 };
 
@@ -706,6 +559,27 @@ mod tests {
 
     #[test]
     fn step_end_can_stop_before_next_opcode_executes() {
+        struct StopOnStepEndInspector {
+            opcode: u8,
+            last_opcode: Option<u8>,
+            steps: usize,
+            step_ends: usize,
+        }
+
+        impl Inspector<TestTypes> for StopOnStepEndInspector {
+            fn step(&mut self, interp: &mut Interpreter<'_, TestTypes>) {
+                self.steps += 1;
+                self.last_opcode = Some(interp.opcode());
+            }
+
+            fn step_end(&mut self, interp: &mut Interpreter<'_, TestTypes>) {
+                self.step_ends += 1;
+                if self.last_opcode == Some(self.opcode) {
+                    interp.set_stop(InstrStop::Revert);
+                }
+            }
+        }
+
         let mut host = TestHost::default();
         let mut inspector =
             StopOnStepEndInspector { opcode: op::PUSH1, last_opcode: None, steps: 0, step_ends: 0 };
@@ -821,6 +695,20 @@ mod tests {
 
     #[test]
     fn call_inspector_can_mutate_message_before_host() {
+        struct MutateCallInspector {
+            destination: Address,
+        }
+
+        impl Inspector<TestTypes> for MutateCallInspector {
+            fn call(
+                &mut self,
+                message: &mut Message<TestTypes>,
+            ) -> Option<MessageResult<TestTypes>> {
+                message.destination = self.destination;
+                None
+            }
+        }
+
         let target = Address::from([0x22; 20]);
         let replacement = Address::from([0x33; 20]);
         let mut host = TestHost::default();
@@ -839,6 +727,30 @@ mod tests {
 
     #[test]
     fn call_end_can_mutate_result_before_opcode_observes_it() {
+        struct CallEndInspector;
+
+        impl Inspector<TestTypes> for CallEndInspector {
+            fn call(
+                &mut self,
+                message: &mut Message<TestTypes>,
+            ) -> Option<MessageResult<TestTypes>> {
+                Some(MessageResult {
+                    stop: InstrStop::Revert,
+                    gas: GasTracker::new(message.gas_limit),
+                    ..Default::default()
+                })
+            }
+
+            fn call_end(
+                &mut self,
+                _message: &Message<TestTypes>,
+                result: &mut MessageResult<TestTypes>,
+            ) {
+                result.stop = InstrStop::Return;
+                result.output = Bytes::from_static(&[0xaa, 0xbb]);
+            }
+        }
+
         let target = Address::from([0x22; 20]);
         let mut host = TestHost::default();
         let mut inspector = CallEndInspector;
@@ -920,6 +832,32 @@ mod tests {
 
     #[test]
     fn create_end_can_mutate_result_before_opcode_observes_it() {
+        struct CreateEndInspector {
+            created: Address,
+        }
+
+        impl Inspector<TestTypes> for CreateEndInspector {
+            fn create(
+                &mut self,
+                message: &mut Message<TestTypes>,
+            ) -> Option<MessageResult<TestTypes>> {
+                Some(MessageResult {
+                    stop: InstrStop::Revert,
+                    gas: GasTracker::new(message.gas_limit),
+                    ..Default::default()
+                })
+            }
+
+            fn create_end(
+                &mut self,
+                _message: &Message<TestTypes>,
+                result: &mut MessageResult<TestTypes>,
+            ) {
+                result.stop = InstrStop::Return;
+                result.created_address = Some(self.created);
+            }
+        }
+
         let created = Address::from([0x88; 20]);
         let mut host = TestHost::default();
         let mut inspector = CreateEndInspector { created };
@@ -957,6 +895,31 @@ mod tests {
 
     #[test]
     fn empty_opcode_set_skips_steps_but_keeps_other_hooks() {
+        #[derive(Default)]
+        struct EmptySetLogInspector {
+            steps: usize,
+            step_ends: usize,
+            logs: Vec<Log>,
+        }
+
+        impl Inspector<TestTypes> for EmptySetLogInspector {
+            fn config(&self) -> InspectorConfig {
+                InspectorConfig::new().with_opcode_set(OpcodeSet::EMPTY)
+            }
+
+            fn step(&mut self, _interp: &mut Interpreter<'_, TestTypes>) {
+                self.steps += 1;
+            }
+
+            fn step_end(&mut self, _interp: &mut Interpreter<'_, TestTypes>) {
+                self.step_ends += 1;
+            }
+
+            fn log(&mut self, log: &Log) {
+                self.logs.push(log.clone());
+            }
+        }
+
         let contract = Address::from([0x11; 20]);
         let mut host = TestHost::default();
         let mut inspector = EmptySetLogInspector::default();
@@ -993,6 +956,22 @@ mod tests {
 
     #[test]
     fn step_end_runs_for_failing_opcode_with_result_set() {
+        #[derive(Default)]
+        struct FailingStepInspector {
+            steps: usize,
+            step_ends: usize,
+        }
+
+        impl Inspector<TestTypes> for FailingStepInspector {
+            fn step(&mut self, _interp: &mut Interpreter<'_, TestTypes>) {
+                self.steps += 1;
+            }
+
+            fn step_end(&mut self, _interp: &mut Interpreter<'_, TestTypes>) {
+                self.step_ends += 1;
+            }
+        }
+
         let mut host = TestHost::default();
         let mut inspector = FailingStepInspector::default();
 
@@ -1147,10 +1126,56 @@ mod tests {
 
     #[test]
     fn evm_transaction_reconfigures_inspector_for_nested_frame() {
+        const CHEATCODE_ADDRESS: Address = Address::repeat_byte(0x71);
+
+        struct FakeCheatcodesInspector {
+            set: OpcodeSet,
+            steps: usize,
+            opcodes: Vec<u8>,
+            cheatcode_calls: usize,
+        }
+
+        impl Default for FakeCheatcodesInspector {
+            fn default() -> Self {
+                let mut set = OpcodeSet::EMPTY;
+                set.insert(op::CALL);
+                Self { set, steps: 0, opcodes: Vec::new(), cheatcode_calls: 0 }
+            }
+        }
+
+        impl Inspector<BaseEvmTypes> for FakeCheatcodesInspector {
+            fn config(&self) -> InspectorConfig {
+                InspectorConfig::new().with_opcode_set(self.set)
+            }
+
+            fn step(&mut self, interp: &mut Interpreter<'_, BaseEvmTypes>) {
+                self.steps += 1;
+                self.opcodes.push(interp.opcode());
+            }
+
+            fn call(
+                &mut self,
+                message: &mut Message<BaseEvmTypes>,
+            ) -> Option<MessageResult<BaseEvmTypes>> {
+                if message.destination != CHEATCODE_ADDRESS {
+                    return None;
+                }
+                self.cheatcode_calls += 1;
+                self.set.insert(op::SLOAD);
+                Some(MessageResult {
+                    stop: InstrStop::Return,
+                    gas: GasTracker::new(message.gas_limit),
+                    ..Default::default()
+                })
+            }
+        }
+
         let caller = Address::from([0xaa; 20]);
         let contract = Address::from([0xbb; 20]);
         let child = Address::from([0xcc; 20]);
-        let mut parent_code = call_code(child);
+        let mut parent_code = call_code(CHEATCODE_ADDRESS);
+        parent_code.push(op::CALL);
+        parent_code.extend(call_code(child));
         parent_code.extend([op::CALL, op::STOP]);
         let parent_code = Bytecode::new_legacy(Bytes::from(parent_code));
         let child_code =
@@ -1169,18 +1194,19 @@ mod tests {
             database,
             Precompiles::base(SpecId::OSAKA),
         );
-        evm.set_inspector(ReconfiguringInspector::default());
+        evm.set_inspector(FakeCheatcodesInspector::default());
         let tx = RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(
             TxLegacy { to: TxKind::Call(contract), gas_limit: 100_000, ..Default::default() },
             caller,
         ));
 
         let result = evm.transact(&tx).unwrap();
-        let inspector = evm.inspector().unwrap().downcast_ref::<ReconfiguringInspector>().unwrap();
+        let inspector = evm.inspector().unwrap().downcast_ref::<FakeCheatcodesInspector>().unwrap();
 
         assert!(result.status);
-        assert_eq!(inspector.steps, 2);
-        assert_eq!(inspector.opcodes, [op::CALL, op::SLOAD]);
+        assert_eq!(inspector.cheatcode_calls, 1);
+        assert_eq!(inspector.steps, 3);
+        assert_eq!(inspector.opcodes, [op::CALL, op::CALL, op::SLOAD]);
     }
 
     #[test]

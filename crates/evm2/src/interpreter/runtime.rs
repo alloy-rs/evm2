@@ -452,7 +452,10 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
 
     #[inline]
     pub(crate) fn inspect_call(&mut self, message: &mut Message<T>) -> Option<MessageResult<T>> {
-        self.inspector().and_then(|inspector| inspector.call(message))
+        let inspector = self.inspector()?;
+        let result = inspector.call(message);
+        self.host().request_inspector_reconfigure();
+        result
     }
 
     #[inline]
