@@ -160,5 +160,7 @@ fn finish_run<T: EvmTypes>(
     cold_path();
     state.set_pc_stack_len(pc.as_ptr(), stack_len);
     imp::finish_loop(state.gas_mut(), loop_state);
+    let stop = state.result().unwrap_err();
+    state.inspect_exit(stop);
     state.result().unwrap_err()
 }

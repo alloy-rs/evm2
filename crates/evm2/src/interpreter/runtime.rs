@@ -388,6 +388,13 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
     }
 
     #[inline]
+    pub(crate) fn inspect_exit(&mut self, stop: InstrStop) {
+        if let Some(mut inspector) = self.0.inspector {
+            unsafe { inspector.as_mut() }.exit(&mut self.0, stop);
+        }
+    }
+
+    #[inline]
     pub(crate) fn inspect_call(&mut self, message: &mut Message<T>) -> Option<MessageResult<T>> {
         self.inspector().and_then(|inspector| inspector.call(message))
     }

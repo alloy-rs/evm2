@@ -2,7 +2,7 @@
 
 use crate::{
     EvmTypes,
-    interpreter::{Interpreter, Message, MessageResult},
+    interpreter::{InstrStop, Interpreter, Message, MessageResult},
 };
 use alloy_primitives::{Address, Log, U256};
 use core::any::Any;
@@ -25,6 +25,13 @@ pub trait Inspector<T: EvmTypes>: Any + Send {
     #[inline]
     fn step_end(&mut self, interp: &mut Interpreter<'_, T>) {
         let _ = interp;
+    }
+
+    /// Called before the current frame exits.
+    #[inline]
+    fn exit(&mut self, interp: &mut Interpreter<'_, T>, stop: InstrStop) {
+        let _ = interp;
+        let _ = stop;
     }
 
     /// Called when a log is emitted.
@@ -161,6 +168,17 @@ mod tests {
             if self.last_opcode == Some(self.opcode) {
                 interp.set_stop(InstrStop::Revert);
             }
+        }
+    }
+
+    #[derive(Default)]
+    struct ExitInspector {
+        exits: Vec<InstrStop>,
+    }
+
+    impl Inspector<TestTypes> for ExitInspector {
+        fn exit(&mut self, _interp: &mut Interpreter<'_, TestTypes>, stop: InstrStop) {
+            self.exits.push(stop);
         }
     }
 
@@ -449,6 +467,40 @@ mod tests {
         assert_eq!(stop, InstrStop::Stop);
         assert_eq!(inspector.steps, 1);
         assert_eq!(inspector.step_ends, 1);
+    }
+
+    #[test]
+    fn exit_is_called_when_frame_stops() {
+        let mut host = TestHost::default();
+        let mut inspector = ExitInspector::default();
+
+        let (stop, _) = run_with_inspector(
+            Vec::from([op::STOP]),
+            &mut host,
+            &Message::default(),
+            10_000,
+            &mut inspector,
+        );
+
+        assert_eq!(stop, InstrStop::Stop);
+        assert_eq!(inspector.exits, [InstrStop::Stop]);
+    }
+
+    #[test]
+    fn exit_is_called_when_frame_halts() {
+        let mut host = TestHost::default();
+        let mut inspector = ExitInspector::default();
+
+        let (stop, _) = run_with_inspector(
+            Vec::from([op::ADD]),
+            &mut host,
+            &Message::default(),
+            0,
+            &mut inspector,
+        );
+
+        assert_eq!(stop, InstrStop::OutOfGas);
+        assert_eq!(inspector.exits, [InstrStop::OutOfGas]);
     }
 
     #[test]

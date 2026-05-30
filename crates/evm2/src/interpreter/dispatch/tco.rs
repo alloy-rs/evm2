@@ -36,6 +36,8 @@ pub(in crate::interpreter) fn run<T: EvmTypes>(
     let op = pc.op();
     let instr = instructions[op as usize];
     instr(pc, stack, remaining_gas, state, (instructions as *const RawInstrTable<T>).cast());
+    let stop = state.result().unwrap_err();
+    state.inspect_exit(stop);
     state.result().unwrap_err()
 }
 
