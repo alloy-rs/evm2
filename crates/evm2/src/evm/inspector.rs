@@ -436,9 +436,9 @@ mod tests {
         }
     }
 
-    fn push_all<const N: usize>(code: &mut Vec<u8>, values: [Word; N]) {
+    fn push_all(code: &mut Vec<u8>, values: &[Word]) {
         for value in values {
-            push(code, value);
+            push(code, *value);
         }
     }
 
@@ -466,7 +466,7 @@ mod tests {
         let mut code = Vec::new();
         push_all(
             &mut code,
-            [
+            &[
                 Word::ZERO,
                 Word::ZERO,
                 Word::ZERO,
@@ -481,7 +481,7 @@ mod tests {
 
     fn create_code() -> Vec<u8> {
         let mut code = Vec::new();
-        push_all(&mut code, [Word::ZERO, Word::ZERO, Word::ZERO]);
+        push_all(&mut code, &[Word::ZERO, Word::ZERO, Word::ZERO]);
         code
     }
 
