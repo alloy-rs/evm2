@@ -27,12 +27,6 @@ pub trait Inspector<T: EvmTypes>: Any + Send {
         let _ = interp;
     }
 
-    /// Called before the current frame exits.
-    #[inline]
-    fn exit(&mut self, interp: &mut Interpreter<'_, T>) {
-        let _ = interp;
-    }
-
     /// Called when a log is emitted.
     #[inline]
     fn log(&mut self, log: &Log) {
@@ -73,6 +67,12 @@ pub trait Inspector<T: EvmTypes>: Any + Send {
         let _ = contract;
         let _ = target;
         let _ = value;
+    }
+
+    /// Called before the current frame exits.
+    #[inline]
+    fn exit(&mut self, interp: &mut Interpreter<'_, T>) {
+        let _ = interp;
     }
 }
 
