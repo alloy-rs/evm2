@@ -237,6 +237,7 @@ fn resize_memory_cold(gas: &mut Gas, memory: &mut Memory, new_num_words: usize) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::assert_matches;
 
     #[test]
     fn test_num_words() {
@@ -285,10 +286,10 @@ mod tests {
         resize_memory(&mut gas, &mut memory, 0, 64).unwrap();
         assert_eq!(memory.len(), 64);
 
-        assert!(matches!(
+        assert_matches!(
             resize_memory(&mut gas, &mut memory, 0, 96),
             Err(InstrStop::MemoryLimitOOG)
-        ));
+        );
         assert_eq!(memory.len(), 64);
         assert_eq!(gas.memory().words_num, 2);
     }

@@ -179,6 +179,7 @@ mod tests {
     };
     use alloc::{vec, vec::Vec};
     use alloy_primitives::{Address, B256, Bytes};
+    use core::assert_matches;
 
     fn neg(value: u64) -> Word {
         Word::from(0).wrapping_sub(Word::from(value))
@@ -204,7 +205,7 @@ mod tests {
         let message = Message { destination: address, ..test_message() };
         let interpreter =
             run(RunConfig::new([op::ADDRESS, op::STOP]).host(&mut host).message(message));
-        assert!(matches!(interpreter.err, InstrStop::Stop));
+        assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [address_to_word(&address)]);
     }
 
@@ -221,7 +222,7 @@ mod tests {
         let interpreter = run(RunConfig::new([op::PUSH1, 0xbe, op::BALANCE, op::STOP])
             .host(&mut host)
             .spec(SpecId::BERLIN));
-        assert!(matches!(interpreter.err, InstrStop::Stop));
+        assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::from(0xbe)]);
         assert_eq!(interpreter.gas_remaining(), 7_397);
     }
@@ -233,7 +234,7 @@ mod tests {
             .host(&mut host)
             .spec(SpecId::BERLIN)
             .gas_limit(103));
-        assert!(matches!(interpreter.err, InstrStop::OutOfGas));
+        assert_matches!(interpreter.err, InstrStop::OutOfGas);
     }
 
     #[test]
@@ -243,7 +244,7 @@ mod tests {
         let tx_env = TxEnv { origin, ..TxEnv::default() };
         let interpreter =
             run(RunConfig::new([op::ORIGIN, op::STOP]).host(&mut host).tx_env(tx_env));
-        assert!(matches!(interpreter.err, InstrStop::Stop));
+        assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [address_to_word(&origin)]);
     }
 
@@ -254,7 +255,7 @@ mod tests {
         let message = Message { caller, ..test_message() };
         let interpreter =
             run(RunConfig::new([op::CALLER, op::STOP]).host(&mut host).message(message));
-        assert!(matches!(interpreter.err, InstrStop::Stop));
+        assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [address_to_word(&caller)]);
     }
 
@@ -264,7 +265,7 @@ mod tests {
         let message = Message { value: Word::from(0xbeef), ..test_message() };
         let interpreter =
             run(RunConfig::new([op::CALLVALUE, op::STOP]).host(&mut host).message(message));
-        assert!(matches!(interpreter.err, InstrStop::Stop));
+        assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::from(0xbeef)]);
     }
 
@@ -279,13 +280,13 @@ mod tests {
             .message(message.clone()));
         let mut expected = [0_u8; 32];
         expected[..3].copy_from_slice(&[1, 2, 3]);
-        assert!(matches!(interpreter.err, InstrStop::Stop));
+        assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::from_be_bytes(expected)]);
 
         let interpreter = run(RunConfig::new([op::PUSH1, 0x20, op::CALLDATALOAD, op::STOP])
             .host(&mut host)
             .message(message));
-        assert!(matches!(interpreter.err, InstrStop::Stop));
+        assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [0]);
     }
 
@@ -296,7 +297,7 @@ mod tests {
         let message = Message { input, ..test_message() };
         let interpreter =
             run(RunConfig::new([op::CALLDATASIZE, op::STOP]).host(&mut host).message(message));
-        assert!(matches!(interpreter.err, InstrStop::Stop));
+        assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::from(4)]);
     }
 
@@ -317,7 +318,7 @@ mod tests {
         let interpreter = run(RunConfig::new(code).host(&mut host).message(message.clone()));
         let mut expected = [0_u8; 32];
         expected[..2].copy_from_slice(&[0xbb, 0xcc]);
-        assert!(matches!(interpreter.err, InstrStop::Stop));
+        assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::from_be_bytes(expected)]);
 
         let interpreter = run(RunConfig::new(stack_code(
@@ -326,17 +327,17 @@ mod tests {
         ))
         .host(&mut host)
         .message(message));
-        assert!(matches!(interpreter.err, InstrStop::Stop));
+        assert_matches!(interpreter.err, InstrStop::Stop);
     }
 
     #[test]
     fn codesize_opcode() {
         let interpreter = run(RunConfig::new([op::CODESIZE, op::STOP]));
-        assert!(matches!(interpreter.err, InstrStop::Stop));
+        assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::from(2)]);
 
         let interpreter = run(RunConfig::new([op::PUSH1, 0x00, op::CODESIZE, op::STOP]));
-        assert!(matches!(interpreter.err, InstrStop::Stop));
+        assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::from(0), Word::from(4)]);
     }
 
@@ -354,7 +355,7 @@ mod tests {
         let interpreter = run(RunConfig::new(code));
         let mut expected = [0u8; 32];
         expected[..2].copy_from_slice(&[0, op::CODECOPY]);
-        assert!(matches!(interpreter.err, InstrStop::Stop));
+        assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::from_be_bytes(expected)]);
 
         let mut code = Vec::new();
@@ -366,14 +367,14 @@ mod tests {
         code.push(op::MLOAD);
         code.push(op::STOP);
         let interpreter = run(RunConfig::new(code));
-        assert!(matches!(interpreter.err, InstrStop::Stop));
+        assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [0]);
 
         let interpreter = run_stack([Word::MAX, Word::MAX, Word::from(0)], op::CODECOPY);
-        assert!(matches!(interpreter.err, InstrStop::Stop));
+        assert_matches!(interpreter.err, InstrStop::Stop);
 
         let interpreter = run_stack([Word::MAX, Word::from(0), Word::from(1)], op::CODECOPY);
-        assert!(matches!(interpreter.err, InstrStop::InvalidOperandOOG));
+        assert_matches!(interpreter.err, InstrStop::InvalidOperandOOG);
     }
 
     #[test]
@@ -382,7 +383,7 @@ mod tests {
         let tx_env = TxEnv { gas_price: Word::from(0x1234), ..TxEnv::default() };
         let interpreter =
             run(RunConfig::new([op::GASPRICE, op::STOP]).host(&mut host).tx_env(tx_env));
-        assert!(matches!(interpreter.err, InstrStop::Stop));
+        assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::from(0x1234)]);
     }
 
@@ -391,7 +392,7 @@ mod tests {
         let mut host = TestHost { code: Bytes::from(vec![0; 0x42]), ..TestHost::default() };
         let interpreter =
             run(RunConfig::new([op::PUSH1, 0xbe, op::EXTCODESIZE, op::STOP]).host(&mut host));
-        assert!(matches!(interpreter.err, InstrStop::Stop));
+        assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::from(0x42)]);
     }
 
@@ -412,7 +413,7 @@ mod tests {
         let interpreter = run(RunConfig::new(code).host(&mut host));
         let mut expected = [0_u8; 32];
         expected[..2].copy_from_slice(&[0xbb, 0xcc]);
-        assert!(matches!(interpreter.err, InstrStop::Stop));
+        assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::from_be_bytes(expected)]);
 
         let mut code = Vec::new();
@@ -427,7 +428,7 @@ mod tests {
         let interpreter = run(RunConfig::new(code).host(&mut host));
         let mut expected = [0_u8; 32];
         expected[..1].copy_from_slice(&[0xcc]);
-        assert!(matches!(interpreter.err, InstrStop::Stop));
+        assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::from_be_bytes(expected)]);
 
         let interpreter = run(RunConfig::new(stack_code(
@@ -435,14 +436,14 @@ mod tests {
             op::EXTCODECOPY,
         ))
         .host(&mut host));
-        assert!(matches!(interpreter.err, InstrStop::Stop));
+        assert_matches!(interpreter.err, InstrStop::Stop);
 
         let interpreter = run(RunConfig::new(stack_code(
             [Word::from(0xbeef), Word::MAX, Word::from(0), Word::from(1)],
             op::EXTCODECOPY,
         ))
         .host(&mut host));
-        assert!(matches!(interpreter.err, InstrStop::InvalidOperandOOG));
+        assert_matches!(interpreter.err, InstrStop::InvalidOperandOOG);
     }
 
     #[test]
@@ -450,11 +451,11 @@ mod tests {
         let interpreter = run(RunConfig::new([op::RETURNDATASIZE, op::STOP])
             .spec(SpecId::BYZANTIUM)
             .return_data(Bytes::from_static(&[0xaa, 0xbb, 0xcc])));
-        assert!(matches!(interpreter.err, InstrStop::Stop));
+        assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::from(3)]);
 
         let interpreter = run(RunConfig::new([op::RETURNDATASIZE]).spec(SpecId::FRONTIER));
-        assert!(matches!(interpreter.err, InstrStop::InvalidOpcode));
+        assert_matches!(interpreter.err, InstrStop::InvalidOpcode);
     }
 
     #[test]
@@ -472,7 +473,7 @@ mod tests {
             run(RunConfig::new(code).return_data(Bytes::from_static(&[0xaa, 0xbb, 0xcc])));
         let mut expected = [0_u8; 32];
         expected[..2].copy_from_slice(&[0xbb, 0xcc]);
-        assert!(matches!(interpreter.err, InstrStop::Stop));
+        assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::from_be_bytes(expected)]);
 
         let interpreter = run(RunConfig::new(stack_code(
@@ -481,7 +482,7 @@ mod tests {
         ))
         .spec(SpecId::BYZANTIUM)
         .return_data(Bytes::from_static(&[0xaa, 0xbb, 0xcc])));
-        assert!(matches!(interpreter.err, InstrStop::Stop));
+        assert_matches!(interpreter.err, InstrStop::Stop);
 
         let interpreter = run(RunConfig::new(stack_code(
             [Word::from(0), Word::from(4), Word::from(0)],
@@ -489,7 +490,7 @@ mod tests {
         ))
         .spec(SpecId::BYZANTIUM)
         .return_data(Bytes::from_static(&[0xaa, 0xbb, 0xcc])));
-        assert!(matches!(interpreter.err, InstrStop::OutOfOffset));
+        assert_matches!(interpreter.err, InstrStop::OutOfOffset);
 
         let interpreter = run(RunConfig::new(stack_code(
             [Word::MAX, Word::from(0), Word::from(1)],
@@ -497,14 +498,14 @@ mod tests {
         ))
         .spec(SpecId::BYZANTIUM)
         .return_data(Bytes::from_static(&[0xaa])));
-        assert!(matches!(interpreter.err, InstrStop::InvalidOperandOOG));
+        assert_matches!(interpreter.err, InstrStop::InvalidOperandOOG);
 
         let interpreter = run(RunConfig::new(stack_code(
             [Word::from(0), Word::from(0), Word::from(0)],
             op::RETURNDATACOPY,
         ))
         .spec(SpecId::FRONTIER));
-        assert!(matches!(interpreter.err, InstrStop::InvalidOpcode));
+        assert_matches!(interpreter.err, InstrStop::InvalidOpcode);
     }
 
     #[test]
@@ -514,12 +515,12 @@ mod tests {
         let interpreter = run(RunConfig::new([op::PUSH1, 0xbe, op::EXTCODEHASH, op::STOP])
             .host(&mut host)
             .spec(SpecId::PETERSBURG));
-        assert!(matches!(interpreter.err, InstrStop::Stop));
+        assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [b256_to_word(hash)]);
 
         let interpreter = run(RunConfig::new([op::PUSH1, 0xbe, op::EXTCODEHASH, op::STOP])
             .host(&mut host)
             .spec(SpecId::BYZANTIUM));
-        assert!(matches!(interpreter.err, InstrStop::InvalidOpcode));
+        assert_matches!(interpreter.err, InstrStop::InvalidOpcode);
     }
 }
