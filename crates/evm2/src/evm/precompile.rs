@@ -1,7 +1,6 @@
 //! Precompile dispatch interface.
 
-use super::Evm;
-use crate::{EvmTypes, PrecompileError, interpreter::GasTracker};
+use crate::{PrecompileError, interpreter::GasTracker};
 use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::{Address, Bytes};
 use core::any::Any;
@@ -34,7 +33,7 @@ impl PrecompileOutput {
 }
 
 /// Precompile execution hook.
-pub trait PrecompileProvider<T: EvmTypes>: Any + Send {
+pub trait PrecompileProvider: Any + Send {
     /// Returns precompile addresses that should be warm at transaction start.
     fn warm_addresses(&self) -> Vec<Address> {
         Vec::new()
@@ -46,14 +45,13 @@ pub trait PrecompileProvider<T: EvmTypes>: Any + Send {
     /// Executes the precompile at `address`, if one is registered.
     fn execute(
         &mut self,
-        evm: &mut Evm<T>,
         address: Address,
         input: &[u8],
         gas: &mut GasTracker,
     ) -> Option<Result<PrecompileOutput, PrecompileError>>;
 }
 
-impl<T: EvmTypes> PrecompileProvider<T> for Box<dyn PrecompileProvider<T>> {
+impl PrecompileProvider for Box<dyn PrecompileProvider> {
     #[inline]
     fn warm_addresses(&self) -> Vec<Address> {
         self.as_ref().warm_addresses()
@@ -67,12 +65,11 @@ impl<T: EvmTypes> PrecompileProvider<T> for Box<dyn PrecompileProvider<T>> {
     #[inline]
     fn execute(
         &mut self,
-        evm: &mut Evm<T>,
         address: Address,
         input: &[u8],
         gas: &mut GasTracker,
     ) -> Option<Result<PrecompileOutput, PrecompileError>> {
-        self.as_mut().execute(evm, address, input, gas)
+        self.as_mut().execute(address, input, gas)
     }
 }
 
@@ -81,7 +78,7 @@ impl<T: EvmTypes> PrecompileProvider<T> for Box<dyn PrecompileProvider<T>> {
 #[derive(Default)]
 pub struct NoPrecompiles(());
 
-impl<T: EvmTypes> PrecompileProvider<T> for NoPrecompiles {
+impl PrecompileProvider for NoPrecompiles {
     #[inline]
     fn warm_addresses(&self) -> Vec<Address> {
         Vec::new()
@@ -95,7 +92,6 @@ impl<T: EvmTypes> PrecompileProvider<T> for NoPrecompiles {
     #[inline]
     fn execute(
         &mut self,
-        _evm: &mut Evm<T>,
         _address: Address,
         _input: &[u8],
         _gas: &mut GasTracker,
