@@ -24,10 +24,11 @@ Source commit: `4c082e2541323d6ce34d3e0ba8b0ba574f0c85f1`
 
 ## In Progress
 
-- Compare the new block methods against alloy-rs/evm `EthBlockExecutor` behavior and close semantic gaps.
-- Port any missing revm/alloy helper types only when they are needed by the method-based evm2 API.
+- No active items at this checkpoint.
 
 ## Not Planned
 
 - Block access list support.
 - Alloy/revm's extra dynamic precompile wrapper layer, because evm2 precompile providers receive `&mut Evm` directly.
+- Alloy's block executor trait/factory and receipt-builder abstractions, because evm2 exposes block execution as inherent methods returning transaction results.
+- Alloy's chain-spec wrapper types, because evm2 uses `SpecId` plus explicit block execution context fields.
