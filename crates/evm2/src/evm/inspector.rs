@@ -35,28 +35,50 @@ pub trait Inspector<T: EvmTypes>: Any + Send {
 
     /// Called before a call message executes.
     #[inline]
-    fn call(&mut self, message: &mut Message<T>) -> Option<MessageResult<T>> {
+    fn call(
+        &mut self,
+        interp: &mut Interpreter<'_, T>,
+        message: &mut Message<T>,
+    ) -> Option<MessageResult<T>> {
+        let _ = interp;
         let _ = message;
         None
     }
 
     /// Called after a call message executes.
     #[inline]
-    fn call_end(&mut self, message: &Message<T>, result: &mut MessageResult<T>) {
+    fn call_end(
+        &mut self,
+        interp: &mut Interpreter<'_, T>,
+        message: &Message<T>,
+        result: &mut MessageResult<T>,
+    ) {
+        let _ = interp;
         let _ = message;
         let _ = result;
     }
 
     /// Called before a create message executes.
     #[inline]
-    fn create(&mut self, message: &mut Message<T>) -> Option<MessageResult<T>> {
+    fn create(
+        &mut self,
+        interp: &mut Interpreter<'_, T>,
+        message: &mut Message<T>,
+    ) -> Option<MessageResult<T>> {
+        let _ = interp;
         let _ = message;
         None
     }
 
     /// Called after a create message executes.
     #[inline]
-    fn create_end(&mut self, message: &Message<T>, result: &mut MessageResult<T>) {
+    fn create_end(
+        &mut self,
+        interp: &mut Interpreter<'_, T>,
+        message: &Message<T>,
+        result: &mut MessageResult<T>,
+    ) {
+        let _ = interp;
         let _ = message;
         let _ = result;
     }
@@ -167,36 +189,54 @@ mod tests {
     #[derive(Default)]
     struct MessageInspector {
         call_depth: Option<u16>,
+        call_opcode: Option<u8>,
+        call_end_opcode: Option<u8>,
         call_end_stop: Option<InstrStop>,
         create_depth: Option<u16>,
+        create_opcode: Option<u8>,
+        create_end_opcode: Option<u8>,
         create_end_stop: Option<InstrStop>,
         selfdestruct: Option<(Address, Address, Word)>,
     }
 
     impl Inspector<TestTypes> for MessageInspector {
-        fn call(&mut self, message: &mut Message<TestTypes>) -> Option<MessageResult<TestTypes>> {
+        fn call(
+            &mut self,
+            interp: &mut Interpreter<'_, TestTypes>,
+            message: &mut Message<TestTypes>,
+        ) -> Option<MessageResult<TestTypes>> {
             self.call_depth = Some(message.depth);
+            self.call_opcode = Some(interp.opcode());
             None
         }
 
         fn call_end(
             &mut self,
+            interp: &mut Interpreter<'_, TestTypes>,
             _message: &Message<TestTypes>,
             result: &mut MessageResult<TestTypes>,
         ) {
+            self.call_end_opcode = Some(interp.opcode());
             self.call_end_stop = Some(result.stop);
         }
 
-        fn create(&mut self, message: &mut Message<TestTypes>) -> Option<MessageResult<TestTypes>> {
+        fn create(
+            &mut self,
+            interp: &mut Interpreter<'_, TestTypes>,
+            message: &mut Message<TestTypes>,
+        ) -> Option<MessageResult<TestTypes>> {
             self.create_depth = Some(message.depth);
+            self.create_opcode = Some(interp.opcode());
             None
         }
 
         fn create_end(
             &mut self,
+            interp: &mut Interpreter<'_, TestTypes>,
             _message: &Message<TestTypes>,
             result: &mut MessageResult<TestTypes>,
         ) {
+            self.create_end_opcode = Some(interp.opcode());
             self.create_end_stop = Some(result.stop);
         }
 
@@ -212,7 +252,11 @@ mod tests {
     }
 
     impl Inspector<TestTypes> for OverrideCallInspector {
-        fn call(&mut self, message: &mut Message<TestTypes>) -> Option<MessageResult<TestTypes>> {
+        fn call(
+            &mut self,
+            _interp: &mut Interpreter<'_, TestTypes>,
+            message: &mut Message<TestTypes>,
+        ) -> Option<MessageResult<TestTypes>> {
             self.call_depth = Some(message.depth);
             let mut result = self.result.clone();
             result.gas.set_remaining(message.gas_limit);
@@ -221,6 +265,7 @@ mod tests {
 
         fn call_end(
             &mut self,
+            _interp: &mut Interpreter<'_, TestTypes>,
             _message: &Message<TestTypes>,
             result: &mut MessageResult<TestTypes>,
         ) {
@@ -233,7 +278,11 @@ mod tests {
     }
 
     impl Inspector<TestTypes> for MutateCallInspector {
-        fn call(&mut self, message: &mut Message<TestTypes>) -> Option<MessageResult<TestTypes>> {
+        fn call(
+            &mut self,
+            _interp: &mut Interpreter<'_, TestTypes>,
+            message: &mut Message<TestTypes>,
+        ) -> Option<MessageResult<TestTypes>> {
             message.destination = self.destination;
             None
         }
@@ -242,7 +291,11 @@ mod tests {
     struct CallEndInspector;
 
     impl Inspector<TestTypes> for CallEndInspector {
-        fn call(&mut self, message: &mut Message<TestTypes>) -> Option<MessageResult<TestTypes>> {
+        fn call(
+            &mut self,
+            _interp: &mut Interpreter<'_, TestTypes>,
+            message: &mut Message<TestTypes>,
+        ) -> Option<MessageResult<TestTypes>> {
             Some(MessageResult {
                 stop: InstrStop::Revert,
                 gas: GasTracker::new(message.gas_limit),
@@ -252,6 +305,7 @@ mod tests {
 
         fn call_end(
             &mut self,
+            _interp: &mut Interpreter<'_, TestTypes>,
             _message: &Message<TestTypes>,
             result: &mut MessageResult<TestTypes>,
         ) {
@@ -267,7 +321,11 @@ mod tests {
     }
 
     impl Inspector<TestTypes> for OverrideCreateInspector {
-        fn create(&mut self, message: &mut Message<TestTypes>) -> Option<MessageResult<TestTypes>> {
+        fn create(
+            &mut self,
+            _interp: &mut Interpreter<'_, TestTypes>,
+            message: &mut Message<TestTypes>,
+        ) -> Option<MessageResult<TestTypes>> {
             self.create_depth = Some(message.depth);
             Some(MessageResult {
                 stop: InstrStop::Return,
@@ -279,6 +337,7 @@ mod tests {
 
         fn create_end(
             &mut self,
+            _interp: &mut Interpreter<'_, TestTypes>,
             _message: &Message<TestTypes>,
             result: &mut MessageResult<TestTypes>,
         ) {
@@ -291,7 +350,11 @@ mod tests {
     }
 
     impl Inspector<TestTypes> for CreateEndInspector {
-        fn create(&mut self, message: &mut Message<TestTypes>) -> Option<MessageResult<TestTypes>> {
+        fn create(
+            &mut self,
+            _interp: &mut Interpreter<'_, TestTypes>,
+            message: &mut Message<TestTypes>,
+        ) -> Option<MessageResult<TestTypes>> {
             Some(MessageResult {
                 stop: InstrStop::Revert,
                 gas: GasTracker::new(message.gas_limit),
@@ -301,6 +364,7 @@ mod tests {
 
         fn create_end(
             &mut self,
+            _interp: &mut Interpreter<'_, TestTypes>,
             _message: &Message<TestTypes>,
             result: &mut MessageResult<TestTypes>,
         ) {
@@ -371,6 +435,7 @@ mod tests {
 
         fn call(
             &mut self,
+            _interp: &mut Interpreter<'_, BaseEvmTypes>,
             _message: &mut Message<BaseEvmTypes>,
         ) -> Option<MessageResult<BaseEvmTypes>> {
             self.state.calls += 1;
@@ -379,6 +444,7 @@ mod tests {
 
         fn create(
             &mut self,
+            _interp: &mut Interpreter<'_, BaseEvmTypes>,
             _message: &mut Message<BaseEvmTypes>,
         ) -> Option<MessageResult<BaseEvmTypes>> {
             self.state.creates += 1;
@@ -509,6 +575,8 @@ mod tests {
         assert_matches!(stop, InstrStop::Stop);
         assert_eq!(stack, [Word::ZERO]);
         assert_eq!(inspector.call_depth, Some(CALL_DEPTH_LIMIT + 1));
+        assert_eq!(inspector.call_opcode, Some(op::CALL));
+        assert_eq!(inspector.call_end_opcode, Some(op::CALL));
         assert_eq!(inspector.call_end_stop, Some(InstrStop::CallTooDeep));
         assert!(host.calls.is_empty());
     }
@@ -617,6 +685,8 @@ mod tests {
         assert_matches!(stop, InstrStop::Stop);
         assert_eq!(stack, [Word::ZERO]);
         assert_eq!(inspector.create_depth, Some(CALL_DEPTH_LIMIT + 1));
+        assert_eq!(inspector.create_opcode, Some(op::CREATE));
+        assert_eq!(inspector.create_end_opcode, Some(op::CREATE));
         assert_eq!(inspector.create_end_stop, Some(InstrStop::CallTooDeep));
         assert!(host.calls.is_empty());
     }

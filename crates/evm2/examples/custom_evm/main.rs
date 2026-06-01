@@ -226,7 +226,11 @@ impl Inspector<CustomTypes> for ExampleInspector {
         self.state.logs += 1;
     }
 
-    fn call(&mut self, _message: &mut Message<CustomTypes>) -> Option<MessageResult<CustomTypes>> {
+    fn call(
+        &mut self,
+        _interp: &mut Interpreter<'_, CustomTypes>,
+        _message: &mut Message<CustomTypes>,
+    ) -> Option<MessageResult<CustomTypes>> {
         self.state.calls += 1;
         None
     }
