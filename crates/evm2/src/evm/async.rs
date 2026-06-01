@@ -1,7 +1,7 @@
 //! Async execution support for synchronous EVM hosts.
 //!
 //! This module runs the synchronous EVM on a native fiber. Synchronous host methods can then use
-//! [`block_on_current`] to poll an async operation; if that operation is pending, the fiber is
+//! `block_on_current` to poll an async operation; if that operation is pending, the fiber is
 //! suspended and the outer async task returns `Poll::Pending`.
 
 use crate::{
@@ -851,7 +851,7 @@ mod tests {
     }
 
     fn handle_test_tx(
-        req: TxRequest<'_, Recovered<TxLegacy>, Evm<BaseEvmTypes>>,
+        req: TxRequest<'_, BaseEvmTypes, Recovered<TxLegacy>>,
     ) -> HandlerResult<TxResult> {
         let _ = req.host.spec_id();
         Ok(TxResult { status: true, gas_used: req.tx.nonce + 1, ..TxResult::default() })

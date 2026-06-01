@@ -20,8 +20,12 @@ use crate::{
 use alloc::{boxed::Box, vec};
 use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{Address, B256, Bytes, Log, LogData};
+#[cfg(feature = "async")]
+use core::future::Future;
 use derive_where::derive_where;
 
+#[cfg(feature = "async")]
+pub mod r#async;
 pub mod config;
 pub mod env;
 pub mod inspector;
@@ -56,7 +60,7 @@ pub struct Evm<T: EvmTypes> {
     execution_config: ExecutionConfig<T>,
     features: EvmFeatures,
     pub(crate) block: BlockEnv<T>,
-    registry: TxRegistry<T::Tx, TxResult<T>, Self>,
+    registry: TxRegistry<T, TxResult<T>>,
     #[derive_where(skip)]
     pub(crate) state: State,
     #[derive_where(skip)]
@@ -67,7 +71,7 @@ pub struct Evm<T: EvmTypes> {
     inspector: Option<Box<dyn Inspector<T>>>,
     #[cfg(feature = "async")]
     #[derive_where(skip)]
-    async_stack: crate::async_::FiberStack,
+    async_stack: r#async::FiberStack,
     db_error_code: Option<DbErrorCode>,
 }
 
@@ -78,7 +82,7 @@ impl<T: EvmTypes> Evm<T> {
     pub fn new(
         spec_id: T::SpecId,
         block: BlockEnv<T>,
-        registry: TxRegistry<T::Tx, TxResult<T>, Self>,
+        registry: TxRegistry<T, TxResult<T>>,
         database: impl DynDatabase,
         precompiles: impl PrecompileProvider,
     ) -> Self {
@@ -98,7 +102,7 @@ impl<T: EvmTypes> Evm<T> {
         execution_config: ExecutionConfig<T>,
         spec_id: T::SpecId,
         block: BlockEnv<T>,
-        registry: TxRegistry<T::Tx, TxResult<T>, Self>,
+        registry: TxRegistry<T, TxResult<T>>,
         database: impl DynDatabase,
         precompiles: impl PrecompileProvider,
     ) -> Self {
@@ -117,7 +121,7 @@ impl<T: EvmTypes> Evm<T> {
         execution_config: ExecutionConfig<T>,
         spec_id: T::SpecId,
         block: BlockEnv<T>,
-        registry: TxRegistry<T::Tx, TxResult<T>, Self>,
+        registry: TxRegistry<T, TxResult<T>>,
         database: Box<dyn DynDatabase>,
         precompiles: Box<dyn PrecompileProvider>,
     ) -> Self {
@@ -137,7 +141,7 @@ impl<T: EvmTypes> Evm<T> {
             interpreter_pool: InterpreterPool::new(),
             inspector: None,
             #[cfg(feature = "async")]
-            async_stack: crate::async_::FiberStack::default(),
+            async_stack: r#async::FiberStack::default(),
             db_error_code: None,
         }
     }
@@ -162,7 +166,7 @@ impl<T: EvmTypes> Evm<T> {
 impl<T: EvmTypes> Evm<T> {
     /// Returns the transaction handler registry.
     #[inline]
-    pub const fn registry(&self) -> &TxRegistry<T::Tx, TxResult<T>, Self> {
+    pub const fn registry(&self) -> &TxRegistry<T, TxResult<T>> {
         &self.registry
     }
 
@@ -192,7 +196,7 @@ impl<T: EvmTypes> Evm<T> {
 
     #[cfg(feature = "async")]
     #[inline]
-    fn async_stack(&mut self) -> core::ptr::NonNull<crate::async_::FiberStack> {
+    fn async_stack(&mut self) -> core::ptr::NonNull<r#async::FiberStack> {
         core::ptr::NonNull::from(&mut self.async_stack)
     }
 
@@ -350,7 +354,7 @@ impl<T: EvmTypes> Evm<T> {
     }
 }
 
-impl<T: EvmTypes<Tx: Typed2718>> Evm<T> {
+impl<T: EvmTypes<Tx: Typed2718, Host = Self>> Evm<T> {
     /// Dispatches the transaction to the handler registered for its EIP-2718 type byte.
     pub fn transact(&mut self, tx: &T::Tx) -> HandlerResult<TxResult<T>> {
         self.db_error_code = None;
@@ -374,23 +378,22 @@ impl<T: EvmTypes<Tx: Typed2718>> Evm<T> {
     /// Dispatches the transaction to the handler registered for its EIP-2718 type byte on an async
     /// fiber.
     ///
-    /// This must be used with an async database adapter such as [`crate::AsyncDb`] to take
+    /// This must be used with an async database adapter such as
+    /// [`evm::async::AsyncDb`](crate::evm::async::AsyncDb) to take
     /// advantage of yielding database I/O. With a synchronous database this is mostly equivalent to
     /// running the synchronous transaction on a fiber.
     #[cfg(feature = "async")]
     pub fn transact_async<'a>(
         &'a mut self,
         tx: &'a T::Tx,
-    ) -> impl core::future::Future<Output = crate::AsyncResult<TxResult<T>, registry::HandlerError>>
-    + Send
-    + 'a
+    ) -> impl Future<Output = r#async::AsyncResult<TxResult<T>, registry::HandlerError>> + Send + 'a
     where
         T::TxResultExt: Send,
     {
         let stack = self.async_stack();
         // SAFETY: The returned future owns the exclusive `&mut self` borrow, so nothing else can
         // access the EVM stack slot until that future is dropped.
-        unsafe { crate::async_::on_fiber_result_with_stack(stack, move || self.transact(tx)) }
+        unsafe { r#async::on_fiber_result_with_stack(stack, move || self.transact(tx)) }
     }
 
     /// Dispatches each transaction to its registered EIP-2718 handler.
@@ -1080,14 +1083,14 @@ mod tests {
     }
 
     fn handle_test_tx(
-        req: TxRequest<'_, Recovered<TxLegacy>, Evm<BaseEvmTypes>>,
+        req: TxRequest<'_, BaseEvmTypes, Recovered<TxLegacy>>,
     ) -> HandlerResult<TxResult> {
         let _ = req.host.spec_id();
         Ok(TxResult { status: true, gas_used: req.tx.nonce + 1, ..TxResult::default() })
     }
 
     fn handle_test_tx_version(
-        req: TxRequest<'_, Recovered<TxLegacy>, Evm<BaseEvmTypes>>,
+        req: TxRequest<'_, BaseEvmTypes, Recovered<TxLegacy>>,
     ) -> HandlerResult<TxResult> {
         Ok(TxResult {
             status: true,
