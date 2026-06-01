@@ -299,16 +299,42 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         parent_beacon_block_root: Option<B256>,
     ) -> Result<BlockSystemCallResult<T>, BlockExecutionError> {
         let mut result = BlockSystemCallResult::default();
-        if self.spec_id().enables(SpecId::PRAGUE) && !self.block.number.is_zero() {
-            result.system_results.push(self.block_system_call(
-                "eip2935",
-                HISTORY_STORAGE_ADDRESS,
-                Bytes::copy_from_slice(parent_block_hash.as_slice()),
-            )?);
+        if let Some(system_result) = self.apply_blockhashes_contract_call(parent_block_hash)? {
+            result.system_results.push(system_result);
         }
 
+        if let Some(system_result) =
+            self.apply_beacon_root_contract_call(parent_beacon_block_root)?
+        {
+            result.system_results.push(system_result);
+        }
+        Ok(result)
+    }
+
+    /// Applies the pre-block call to the EIP-2935 block hashes contract.
+    pub fn apply_blockhashes_contract_call(
+        &mut self,
+        parent_block_hash: B256,
+    ) -> Result<Option<TxResult<T>>, BlockExecutionError> {
+        if !self.spec_id().enables(SpecId::PRAGUE) || self.block.number.is_zero() {
+            return Ok(None);
+        }
+
+        self.block_system_call(
+            "eip2935",
+            HISTORY_STORAGE_ADDRESS,
+            Bytes::copy_from_slice(parent_block_hash.as_slice()),
+        )
+        .map(Some)
+    }
+
+    /// Applies the pre-block call to the EIP-4788 beacon root contract.
+    pub fn apply_beacon_root_contract_call(
+        &mut self,
+        parent_beacon_block_root: Option<B256>,
+    ) -> Result<Option<TxResult<T>>, BlockExecutionError> {
         if !self.spec_id().enables(SpecId::CANCUN) {
-            return Ok(result);
+            return Ok(None);
         }
 
         let parent_beacon_block_root =
@@ -319,15 +345,15 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
                     parent_beacon_block_root,
                 });
             }
-            return Ok(result);
+            return Ok(None);
         }
 
-        result.system_results.push(self.block_system_call(
+        self.block_system_call(
             "eip4788",
             BEACON_ROOTS_ADDRESS,
             Bytes::copy_from_slice(parent_beacon_block_root.as_slice()),
-        )?);
-        Ok(result)
+        )
+        .map(Some)
     }
 
     /// Applies post-block system calls for EIP-7002 and EIP-7251.
@@ -335,29 +361,48 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         &mut self,
     ) -> Result<BlockSystemCallResult<T>, BlockExecutionError> {
         let mut result = BlockSystemCallResult::default();
+        self.append_post_block_system_calls(&mut result.requests, &mut result.system_results)?;
+        Ok(result)
+    }
+
+    /// Applies post-block system calls and appends EIP-7685 requests to `requests`.
+    pub fn append_post_block_system_calls(
+        &mut self,
+        requests: &mut Requests,
+        system_results: &mut Vec<TxResult<T>>,
+    ) -> Result<(), BlockExecutionError> {
         if !self.spec_id().enables(SpecId::PRAGUE) {
-            return Ok(result);
+            return Ok(());
         }
 
-        let withdrawal =
-            self.block_system_call("eip7002", WITHDRAWAL_REQUEST_ADDRESS, Bytes::new())?;
+        let withdrawal = self.apply_withdrawal_requests_contract_call()?;
         if !withdrawal.output.is_empty() {
-            result
-                .requests
-                .push_request_with_type(WITHDRAWAL_REQUEST_TYPE, withdrawal.output.clone());
+            requests.push_request_with_type(WITHDRAWAL_REQUEST_TYPE, withdrawal.output.clone());
         }
-        result.system_results.push(withdrawal);
+        system_results.push(withdrawal);
 
-        let consolidation =
-            self.block_system_call("eip7251", CONSOLIDATION_REQUEST_ADDRESS, Bytes::new())?;
+        let consolidation = self.apply_consolidation_requests_contract_call()?;
         if !consolidation.output.is_empty() {
-            result
-                .requests
+            requests
                 .push_request_with_type(CONSOLIDATION_REQUEST_TYPE, consolidation.output.clone());
         }
-        result.system_results.push(consolidation);
+        system_results.push(consolidation);
 
-        Ok(result)
+        Ok(())
+    }
+
+    /// Applies the post-block call to the EIP-7002 withdrawal requests contract.
+    pub fn apply_withdrawal_requests_contract_call(
+        &mut self,
+    ) -> Result<TxResult<T>, BlockExecutionError> {
+        self.block_system_call("eip7002", WITHDRAWAL_REQUEST_ADDRESS, Bytes::new())
+    }
+
+    /// Applies the post-block call to the EIP-7251 consolidation requests contract.
+    pub fn apply_consolidation_requests_contract_call(
+        &mut self,
+    ) -> Result<TxResult<T>, BlockExecutionError> {
+        self.block_system_call("eip7251", CONSOLIDATION_REQUEST_ADDRESS, Bytes::new())
     }
 
     fn block_system_call(
@@ -770,5 +815,35 @@ mod tests {
             U256::from(3_000_000_000_u64)
         );
         assert!(result.requests.is_empty());
+    }
+
+    #[test]
+    fn individual_pre_block_system_calls_skip_inactive_or_genesis_blocks() {
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::PRAGUE,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            EmptyDB::default(),
+            NoPrecompiles::default(),
+        );
+
+        assert_eq!(evm.apply_blockhashes_contract_call(B256::repeat_byte(0x11)), Ok(None));
+        assert_eq!(evm.apply_beacon_root_contract_call(Some(B256::ZERO)), Ok(None));
+    }
+
+    #[test]
+    fn beacon_root_system_call_requires_root_after_genesis() {
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::CANCUN,
+            BlockEnv { number: U256::from(1), ..BlockEnv::default() },
+            TxRegistry::new(),
+            EmptyDB::default(),
+            NoPrecompiles::default(),
+        );
+
+        assert_eq!(
+            evm.apply_beacon_root_contract_call(None),
+            Err(BlockExecutionError::MissingParentBeaconBlockRoot)
+        );
     }
 }
