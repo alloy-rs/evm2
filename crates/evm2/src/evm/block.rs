@@ -5,8 +5,8 @@ use super::{
     StateChanges, WITHDRAWAL_REQUEST_ADDRESS,
 };
 use crate::{
-    BaseEvmTypes, EvmTypes, SpecId, TxResult, env::BlockEnv, ethereum::RecoveredTxEnvelope,
-    interpreter::InstrStop, registry::HandlerError,
+    BaseEvmTypes, EvmFeatures, EvmTypes, SpecId, TxResult, env::BlockEnv,
+    ethereum::RecoveredTxEnvelope, interpreter::InstrStop, registry::HandlerError,
 };
 use alloc::vec::Vec;
 use alloy_eips::{
@@ -332,7 +332,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         &mut self,
         parent_block_hash: B256,
     ) -> Result<Option<TxResult<T>>, BlockExecutionError> {
-        if !self.spec_id().enables(SpecId::PRAGUE) || self.block.number.is_zero() {
+        if !self.feature(EvmFeatures::EIP2935) || self.block.number.is_zero() {
             return Ok(None);
         }
 
@@ -349,7 +349,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         &mut self,
         parent_beacon_block_root: Option<B256>,
     ) -> Result<Option<TxResult<T>>, BlockExecutionError> {
-        if !self.spec_id().enables(SpecId::CANCUN) {
+        if !self.feature(EvmFeatures::EIP4788) {
             return Ok(None);
         }
 
@@ -412,22 +412,28 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         requests: &mut Requests,
         system_results: &mut Vec<TxResult<T>>,
     ) -> Result<(), BlockExecutionError> {
-        if !self.spec_id().enables(SpecId::PRAGUE) {
+        if !self.feature(EvmFeatures::EIP7002) && !self.feature(EvmFeatures::EIP7251) {
             return Ok(());
         }
 
-        let withdrawal = self.apply_withdrawal_requests_contract_call()?;
-        if !withdrawal.output.is_empty() {
-            requests.push_request_with_type(WITHDRAWAL_REQUEST_TYPE, withdrawal.output.clone());
+        if self.feature(EvmFeatures::EIP7002) {
+            let withdrawal = self.apply_withdrawal_requests_contract_call()?;
+            if !withdrawal.output.is_empty() {
+                requests.push_request_with_type(WITHDRAWAL_REQUEST_TYPE, withdrawal.output.clone());
+            }
+            system_results.push(withdrawal);
         }
-        system_results.push(withdrawal);
 
-        let consolidation = self.apply_consolidation_requests_contract_call()?;
-        if !consolidation.output.is_empty() {
-            requests
-                .push_request_with_type(CONSOLIDATION_REQUEST_TYPE, consolidation.output.clone());
+        if self.feature(EvmFeatures::EIP7251) {
+            let consolidation = self.apply_consolidation_requests_contract_call()?;
+            if !consolidation.output.is_empty() {
+                requests.push_request_with_type(
+                    CONSOLIDATION_REQUEST_TYPE,
+                    consolidation.output.clone(),
+                );
+            }
+            system_results.push(consolidation);
         }
-        system_results.push(consolidation);
 
         Ok(())
     }
@@ -481,7 +487,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
                 U256::from(block_reward(base_block_reward, ommers.len()));
         }
 
-        if self.spec_id().enables(SpecId::SHANGHAI)
+        if self.feature(EvmFeatures::EIP4895)
             && let Some(withdrawals) = withdrawals
         {
             for withdrawal in withdrawals {
@@ -513,7 +519,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         let checkpoint = self.state.checkpoint();
         for (address, amount) in increments {
             if let Err(code) = self.state.add_balance(&address, &amount) {
-                self.state.rollback(checkpoint, self.spec_id());
+                self.state.rollback(checkpoint, self.features);
                 self.state.clear_transaction_state();
                 return Err(BlockExecutionError::Database(code));
             }
@@ -538,7 +544,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             let balance = match self.state.account_info(address) {
                 Ok(info) => info.map_or(U256::ZERO, |info| info.balance),
                 Err(code) => {
-                    self.state.rollback(checkpoint, self.spec_id());
+                    self.state.rollback(checkpoint, self.features);
                     self.state.clear_transaction_state();
                     return Err(BlockExecutionError::Database(code));
                 }
@@ -548,7 +554,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             }
 
             if let Err(code) = self.state.add_balance(address, &U256::ZERO.wrapping_sub(balance)) {
-                self.state.rollback(checkpoint, self.spec_id());
+                self.state.rollback(checkpoint, self.features);
                 self.state.clear_transaction_state();
                 return Err(BlockExecutionError::Database(code));
             }
@@ -558,7 +564,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         if !drained.is_zero()
             && let Err(code) = self.state.add_balance(&beneficiary, &drained)
         {
-            self.state.rollback(checkpoint, self.spec_id());
+            self.state.rollback(checkpoint, self.features);
             self.state.clear_transaction_state();
             return Err(BlockExecutionError::Database(code));
         }
@@ -593,7 +599,7 @@ impl Evm<BaseEvmTypes> {
         let mut result = self.execute_block_transactions(txs)?;
         result.pre_block_system_results = pre_system.system_results;
 
-        if self.spec_id().enables(SpecId::PRAGUE) {
+        if self.feature(EvmFeatures::EIP6110) {
             let deposit_contract_address =
                 ctx.deposit_contract_address.unwrap_or(MAINNET_DEPOSIT_CONTRACT_ADDRESS);
             self.append_deposit_requests_from_tx_results(
@@ -601,11 +607,11 @@ impl Evm<BaseEvmTypes> {
                 &result.transaction_results,
                 &mut result.requests,
             )?;
-            self.append_post_block_system_calls(
-                &mut result.requests,
-                &mut result.post_block_system_results,
-            )?;
         }
+        self.append_post_block_system_calls(
+            &mut result.requests,
+            &mut result.post_block_system_results,
+        )?;
 
         result.dao_balance_changes = if ctx.apply_mainnet_dao_hardfork {
             self.apply_mainnet_dao_hardfork_balance_move()?
@@ -653,7 +659,7 @@ impl Evm<BaseEvmTypes> {
             } else {
                 result.cumulative_tx_gas_used
             };
-            if self.spec_id().enables(SpecId::CANCUN) {
+            if self.feature(EvmFeatures::EIP4844) {
                 result.blob_gas_used = result.blob_gas_used.saturating_add(tx.blob_gas_used());
             }
             result.transaction_results.push(tx_result);
@@ -770,7 +776,7 @@ const fn ommer_reward(base_block_reward: u128, block_number: u64, ommer_block_nu
 mod tests {
     use super::*;
     use crate::{
-        SpecId,
+        ExecutionConfig, SpecId,
         evm::{AccountInfo, EmptyDB, InMemoryDB, precompile::NoPrecompiles},
         registry::{HandlerError, TxRegistry},
     };
@@ -806,6 +812,21 @@ mod tests {
 
         data.extend(tail);
         data.into()
+    }
+
+    fn evm_with_version(
+        spec: SpecId,
+        version: crate::Version,
+        block: BlockEnv<BaseEvmTypes>,
+    ) -> Evm<BaseEvmTypes> {
+        Evm::<BaseEvmTypes>::new_with_execution_config(
+            ExecutionConfig::for_spec_and_version(spec, version),
+            spec,
+            block,
+            TxRegistry::new(),
+            EmptyDB::default(),
+            NoPrecompiles::default(),
+        )
     }
 
     #[test]
@@ -970,6 +991,19 @@ mod tests {
     }
 
     #[test]
+    fn post_block_balance_increments_skip_withdrawals_without_eip4895() {
+        let address = Address::with_last_byte(0x03);
+        let mut version = crate::Version::new(SpecId::SHANGHAI);
+        version.features.remove(EvmFeatures::EIP4895);
+        let evm = evm_with_version(SpecId::SHANGHAI, version, BlockEnv::default());
+        let withdrawals = [Withdrawal { index: 0, validator_index: 0, address, amount: 2 }];
+
+        let increments = evm.post_block_balance_increments(&[], Some(&withdrawals));
+
+        assert!(increments.is_empty());
+    }
+
+    #[test]
     fn apply_balance_drain_moves_balances_to_beneficiary() {
         let drained_1 = Address::with_last_byte(0x04);
         let drained_2 = Address::with_last_byte(0x05);
@@ -1080,5 +1114,18 @@ mod tests {
             evm.apply_beacon_root_contract_call(None),
             Err(BlockExecutionError::MissingParentBeaconBlockRoot)
         );
+    }
+
+    #[test]
+    fn beacon_root_system_call_skips_without_eip4788() {
+        let mut version = crate::Version::new(SpecId::CANCUN);
+        version.features.remove(EvmFeatures::EIP4788);
+        let mut evm = evm_with_version(
+            SpecId::CANCUN,
+            version,
+            BlockEnv { number: U256::from(1), ..BlockEnv::default() },
+        );
+
+        assert_eq!(evm.apply_beacon_root_contract_call(None), Ok(None));
     }
 }

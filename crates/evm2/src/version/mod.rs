@@ -260,7 +260,14 @@ mod tests {
         assert!(osaka.feature(EvmFeatures::EIP3651));
         assert!(osaka.feature(EvmFeatures::EIP3860));
         assert!(osaka.feature(EvmFeatures::EIP4399));
+        assert!(osaka.feature(EvmFeatures::EIP4895));
+        assert!(osaka.feature(EvmFeatures::EIP4844));
+        assert!(osaka.feature(EvmFeatures::EIP4788));
         assert!(osaka.feature(EvmFeatures::EIP6780));
+        assert!(osaka.feature(EvmFeatures::EIP2935));
+        assert!(osaka.feature(EvmFeatures::EIP6110));
+        assert!(osaka.feature(EvmFeatures::EIP7002));
+        assert!(osaka.feature(EvmFeatures::EIP7251));
         assert!(osaka.feature(EvmFeatures::EIP3541));
         assert!(osaka.feature(EvmFeatures::EIP3607));
         assert!(osaka.feature(EvmFeatures::EIP7623));
@@ -654,6 +661,7 @@ evm_versions! {
         features: [
             EIP3651,
             EIP3860,
+            EIP4895,
         ],
         ops: [
             PUSH0: BASE,
@@ -669,6 +677,8 @@ evm_versions! {
 
     CANCUN {
         features: [
+            EIP4844,
+            EIP4788,
             EIP6780,
         ],
         ops: [
@@ -682,6 +692,10 @@ evm_versions! {
 
     PRAGUE {
         features: [
+            EIP2935,
+            EIP6110,
+            EIP7002,
+            EIP7251,
             EIP7623,
             EIP7702,
         ],

@@ -112,6 +112,7 @@ macro_rules! evm_features {
 }
 
 evm_features! {
+    // Keep features sorted by activation hardfork when a default hardfork exists.
     /// Checks transaction chain IDs.
     ///
     /// Default: on
@@ -192,10 +193,38 @@ evm_features! {
     ///
     /// Default: on since Shanghai
     EIP3860,
+    /// Applies [EIP-4895](https://eips.ethereum.org/EIPS/eip-4895) beacon chain withdrawals.
+    ///
+    /// Default: on since Shanghai
+    EIP4895,
+    /// Applies [EIP-4844](https://eips.ethereum.org/EIPS/eip-4844) blob transaction accounting.
+    ///
+    /// Default: on since Cancun
+    EIP4844,
+    /// Applies [EIP-4788](https://eips.ethereum.org/EIPS/eip-4788) beacon block root system calls.
+    ///
+    /// Default: on since Cancun
+    EIP4788,
     /// Applies [EIP-6780](https://eips.ethereum.org/EIPS/eip-6780) SELFDESTRUCT restrictions.
     ///
     /// Default: on since Cancun
     EIP6780,
+    /// Applies [EIP-2935](https://eips.ethereum.org/EIPS/eip-2935) historical block hash system calls.
+    ///
+    /// Default: on since Prague
+    EIP2935,
+    /// Applies [EIP-6110](https://eips.ethereum.org/EIPS/eip-6110) deposit request parsing.
+    ///
+    /// Default: on since Prague
+    EIP6110,
+    /// Applies [EIP-7002](https://eips.ethereum.org/EIPS/eip-7002) execution layer withdrawal requests.
+    ///
+    /// Default: on since Prague
+    EIP7002,
+    /// Applies [EIP-7251](https://eips.ethereum.org/EIPS/eip-7251) consolidation requests.
+    ///
+    /// Default: on since Prague
+    EIP7251,
     /// Applies [EIP-7623](https://eips.ethereum.org/EIPS/eip-7623) calldata cost floor.
     ///
     /// Default: on since Prague
