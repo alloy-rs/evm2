@@ -208,6 +208,10 @@ evm_features! {
     ///
     /// Default: on since Berlin
     EIP2929,
+    /// Applies [EIP-4399](https://eips.ethereum.org/EIPS/eip-4399) PREVRANDAO opcode semantics.
+    ///
+    /// Default: on since Merge
+    EIP4399,
 }
 
 #[cfg(test)]
