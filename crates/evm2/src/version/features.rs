@@ -212,6 +212,10 @@ evm_features! {
     ///
     /// Default: on since Merge
     EIP4399,
+    /// Applies [EIP-6780](https://eips.ethereum.org/EIPS/eip-6780) SELFDESTRUCT restrictions.
+    ///
+    /// Default: on since Cancun
+    EIP6780,
 }
 
 #[cfg(test)]

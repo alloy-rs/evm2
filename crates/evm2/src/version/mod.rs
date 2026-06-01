@@ -265,6 +265,7 @@ mod tests {
         assert!(osaka.feature(EvmFeatures::EIP3651));
         assert!(osaka.feature(EvmFeatures::EIP3860));
         assert!(osaka.feature(EvmFeatures::EIP4399));
+        assert!(osaka.feature(EvmFeatures::EIP6780));
         assert!(osaka.feature(EvmFeatures::EIP3541));
         assert!(osaka.feature(EvmFeatures::EIP3607));
         assert!(osaka.feature(EvmFeatures::EIP7623));
@@ -671,6 +672,9 @@ evm_versions! {
     }
 
     CANCUN {
+        features: [
+            EIP6780,
+        ],
         ops: [
             BLOBHASH: VERYLOW,
             BLOBBASEFEE: BASE,

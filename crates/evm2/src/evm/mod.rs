@@ -867,8 +867,8 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
             .account_info(contract)
             .map_err(|code| self.db_error_stop(code))?
             .map_or(Word::ZERO, |info| info.balance);
-        let should_destroy = !self.spec_id().enables(SpecId::CANCUN)
-            || self.state.is_created_in_transaction(contract);
+        let should_destroy =
+            !self.feature(EvmFeatures::EIP6780) || self.state.is_created_in_transaction(contract);
 
         if contract != target {
             let transferred = self
