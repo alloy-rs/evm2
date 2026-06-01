@@ -196,6 +196,10 @@ evm_features! {
     ///
     /// Default: on since Spurious Dragon
     EIP161,
+    /// Checks deployed contract bytecode sizes against the active size limit.
+    ///
+    /// Default: on since Spurious Dragon
+    CODE_SIZE_CHECK,
 }
 
 #[cfg(test)]

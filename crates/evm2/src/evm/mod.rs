@@ -519,8 +519,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     }
 
     fn validate_create_output(&self, gas: &mut Gas, output: &mut Bytes) -> Result<(), InstrStop> {
-        if self.spec_id().enables(SpecId::SPURIOUS_DRAGON)
-            && output.len() > self.version().max_code_size
+        if self.feature(EvmFeatures::CODE_SIZE_CHECK) && output.len() > self.version().max_code_size
         {
             return Err(InstrStop::CreateContractSizeLimit);
         }
