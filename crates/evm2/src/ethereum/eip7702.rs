@@ -19,7 +19,7 @@ use alloy_eips::eip7702::SignedAuthorization;
 use alloy_primitives::{Address, U256};
 
 pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
-    req: TxRequest<'_, Recovered<TxEip7702>, Evm<T>>,
+    req: TxRequest<'_, T, Recovered<TxEip7702>>,
 ) -> HandlerResult<TxResult<T>> {
     let caller = req.tx.signer();
     let tx = req.tx.inner();
