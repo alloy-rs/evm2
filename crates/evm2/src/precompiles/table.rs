@@ -117,14 +117,6 @@ impl PrecompileMap {
         }
     }
 
-    /// Extends this map with precompile descriptors.
-    ///
-    /// This is a convenience alias for [`Self::extend`].
-    #[inline]
-    pub fn extend_precompiles(&mut self, precompiles: impl IntoIterator<Item = Precompile>) {
-        self.extend(precompiles);
-    }
-
     /// Inserts a precompile descriptor, replacing any existing precompile at the same address.
     #[inline]
     pub fn insert(&mut self, precompile: Precompile) -> Option<Precompile> {
@@ -228,13 +220,13 @@ impl PrecompileMap {
         self
     }
 
-    /// Builder-style version of [`Self::extend_precompiles`].
+    /// Builder-style version of [`Self::extend`].
     #[inline]
     pub fn with_extended_precompiles(
         mut self,
         precompiles: impl IntoIterator<Item = Precompile>,
     ) -> Self {
-        self.extend_precompiles(precompiles);
+        self.extend(precompiles);
         self
     }
 

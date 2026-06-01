@@ -109,98 +109,6 @@ impl Precompiles {
     pub fn as_map_mut(&mut self) -> &mut PrecompileMap {
         self.map.to_mut()
     }
-
-    /// Extends this provider with precompile descriptors.
-    #[inline]
-    pub fn extend_precompiles(&mut self, precompiles: impl IntoIterator<Item = Precompile>) {
-        self.as_map_mut().extend_precompiles(precompiles);
-    }
-
-    /// Maps the precompile at `address`, if it exists.
-    #[inline]
-    pub fn map_precompile<F>(&mut self, address: &Address, f: F)
-    where
-        F: FnOnce(Precompile) -> Precompile,
-    {
-        self.as_map_mut().map_precompile(address, f);
-    }
-
-    /// Maps all precompiles.
-    #[inline]
-    pub fn map_precompiles<F>(&mut self, f: F)
-    where
-        F: FnMut(&Address, Precompile) -> Precompile,
-    {
-        self.as_map_mut().map_precompiles(f);
-    }
-
-    /// Applies a transformation to the precompile at `address`.
-    #[inline]
-    pub fn apply_precompile<F>(&mut self, address: &Address, f: F)
-    where
-        F: FnOnce(Option<Precompile>) -> Option<Precompile>,
-    {
-        self.as_map_mut().apply_precompile(address, f);
-    }
-
-    /// Moves precompiles from source addresses to destination addresses.
-    #[inline]
-    pub fn move_precompiles<I>(&mut self, moves: I) -> Result<(), MovePrecompileError>
-    where
-        I: IntoIterator<Item = (Address, Address)>,
-    {
-        self.as_map_mut().move_precompiles(moves)
-    }
-
-    /// Builder-style version of [`Self::extend_precompiles`].
-    #[inline]
-    pub fn with_extended_precompiles(
-        mut self,
-        precompiles: impl IntoIterator<Item = Precompile>,
-    ) -> Self {
-        self.extend_precompiles(precompiles);
-        self
-    }
-
-    /// Builder-style version of [`Self::map_precompile`].
-    #[inline]
-    pub fn with_mapped_precompile<F>(mut self, address: &Address, f: F) -> Self
-    where
-        F: FnOnce(Precompile) -> Precompile,
-    {
-        self.map_precompile(address, f);
-        self
-    }
-
-    /// Builder-style version of [`Self::map_precompiles`].
-    #[inline]
-    pub fn with_mapped_precompiles<F>(mut self, f: F) -> Self
-    where
-        F: FnMut(&Address, Precompile) -> Precompile,
-    {
-        self.map_precompiles(f);
-        self
-    }
-
-    /// Builder-style version of [`Self::apply_precompile`].
-    #[inline]
-    pub fn with_applied_precompile<F>(mut self, address: &Address, f: F) -> Self
-    where
-        F: FnOnce(Option<Precompile>) -> Option<Precompile>,
-    {
-        self.apply_precompile(address, f);
-        self
-    }
-
-    /// Builder-style version of [`Self::move_precompiles`].
-    #[inline]
-    pub fn with_moved_precompiles<I>(mut self, moves: I) -> Result<Self, MovePrecompileError>
-    where
-        I: IntoIterator<Item = (Address, Address)>,
-    {
-        self.move_precompiles(moves)?;
-        Ok(self)
-    }
 }
 
 impl<T: EvmTypes> PrecompileProvider<T> for Precompiles {
@@ -305,7 +213,7 @@ mod tests {
         let moved = address!("0x0000000000000000000000000000000000001000");
         let mut precompiles = Precompiles::base(SpecId::BERLIN);
 
-        precompiles.move_precompiles([(identity, moved)]).unwrap();
+        precompiles.as_map_mut().move_precompiles([(identity, moved)]).unwrap();
 
         assert!(!precompiles.as_map().contains(&identity));
         assert!(precompiles.as_map().contains(&moved));
