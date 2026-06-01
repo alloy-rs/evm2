@@ -269,6 +269,7 @@ mod tests {
         assert!(osaka.feature(EvmFeatures::EIP3541));
         assert!(osaka.feature(EvmFeatures::EIP3607));
         assert!(osaka.feature(EvmFeatures::EIP7623));
+        assert!(osaka.feature(EvmFeatures::EIP7702));
         assert!(osaka.feature(EvmFeatures::BASE_FEE_CHECK));
         assert!(osaka.feature(EvmFeatures::PRIORITY_FEE_CHECK));
         assert!(osaka.feature(EvmFeatures::FEE_CHARGE));
@@ -687,6 +688,7 @@ evm_versions! {
     PRAGUE {
         features: [
             EIP7623,
+            EIP7702,
         ],
         dynamic_gas: [
             TxEip7702PerEmptyAccountCost: EIP7702_PER_EMPTY_ACCOUNT_COST,

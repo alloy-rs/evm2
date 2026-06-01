@@ -388,7 +388,7 @@ fn initial_call_code<T: EvmTypes<Host = Evm<T>>>(
     to: Address,
 ) -> HandlerResult<InitialCallCode> {
     let code = host.state.get_code(&to).map_err(|code| host.db_error_handler(code))?;
-    if host.spec_id().enables(SpecId::PRAGUE)
+    if host.feature(EvmFeatures::EIP7702)
         && let Some(delegated_address) = code.eip7702_address()
     {
         let _ = host.state.warm_account(&delegated_address);

@@ -1,7 +1,7 @@
 //! System opcode implementations.
 
 use crate::{
-    EvmFeatures, EvmTypes, SpecId,
+    EvmFeatures, EvmTypes,
     bytecode::Bytecode,
     constants::CALL_DEPTH_LIMIT,
     interpreter::{
@@ -104,7 +104,7 @@ fn load_acc_and_calc_gas<T: EvmTypes>(
     }
     let mut code = account.code;
     let mut code_address = to;
-    if state.spec().enables(SpecId::PRAGUE)
+    if state.feature(EvmFeatures::EIP7702)
         && let Some(delegated_address) = code.eip7702_address()
     {
         cost += u64::from(state.gas_params().get(GasId::WarmStorageReadCost));

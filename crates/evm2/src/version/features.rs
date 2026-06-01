@@ -216,6 +216,10 @@ evm_features! {
     ///
     /// Default: on since Cancun
     EIP6780,
+    /// Applies [EIP-7702](https://eips.ethereum.org/EIPS/eip-7702) delegation designators.
+    ///
+    /// Default: on since Prague
+    EIP7702,
 }
 
 #[cfg(test)]
