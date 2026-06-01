@@ -20,6 +20,8 @@ use crate::{
 use alloc::{boxed::Box, vec};
 use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{Address, B256, Bytes, Log, LogData};
+#[cfg(feature = "async")]
+use core::future::Future;
 use derive_where::derive_where;
 
 #[cfg(feature = "async")]
@@ -384,10 +386,7 @@ impl<T: EvmTypes<Tx: Typed2718>> Evm<T> {
     pub fn transact_async<'a>(
         &'a mut self,
         tx: &'a T::Tx,
-    ) -> impl core::future::Future<
-        Output = r#async::AsyncResult<TxResult<T>, registry::HandlerError>,
-    > + Send
-    + 'a
+    ) -> impl Future<Output = r#async::AsyncResult<TxResult<T>, registry::HandlerError>> + Send + 'a
     where
         T::TxResultExt: Send,
     {

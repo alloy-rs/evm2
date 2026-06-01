@@ -17,6 +17,8 @@ use crate::{
 };
 use alloc::vec::Vec;
 use alloy_primitives::{Address, Bytes, TxKind, U256, address};
+#[cfg(feature = "async")]
+use core::{convert::Infallible, future::Future};
 
 /// Caller address used by execution-layer system calls.
 pub const SYSTEM_ADDRESS: Address = address!("0xfffffffffffffffffffffffffffffffffffffffe");
@@ -58,10 +60,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         &mut self,
         system_contract_address: Address,
         data: Bytes,
-    ) -> impl core::future::Future<
-        Output = r#async::AsyncResult<TxResult<T>, core::convert::Infallible>,
-    > + Send
-    + '_
+    ) -> impl Future<Output = r#async::AsyncResult<TxResult<T>, Infallible>> + Send + '_
     where
         T::TxResultExt: Send,
     {
@@ -152,10 +151,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         caller: Address,
         system_contract_address: Address,
         data: Bytes,
-    ) -> impl core::future::Future<
-        Output = r#async::AsyncResult<TxResult<T>, core::convert::Infallible>,
-    > + Send
-    + '_
+    ) -> impl Future<Output = r#async::AsyncResult<TxResult<T>, Infallible>> + Send + '_
     where
         T::TxResultExt: Send,
     {
