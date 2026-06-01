@@ -204,6 +204,10 @@ evm_features! {
     ///
     /// Default: on since Istanbul
     EIP2200,
+    /// Applies [EIP-2929](https://eips.ethereum.org/EIPS/eip-2929) warm/cold access rules.
+    ///
+    /// Default: on since Berlin
+    EIP2929,
 }
 
 #[cfg(test)]

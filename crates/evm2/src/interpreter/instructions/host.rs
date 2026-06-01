@@ -1,5 +1,5 @@
 use crate::{
-    EvmFeatures, EvmTypes, SpecId,
+    EvmFeatures, EvmTypes,
     interpreter::{
         Host, InstrStop, InterpreterState, Result, StackMut, memory::resize_memory,
         private::GasInstructionCx,
@@ -25,7 +25,7 @@ pub(crate) fn sload(cx: _, [key]: [Word]) -> Result<out> {
     // touching the host/database if the frame cannot afford that cold surcharge.
     let additional_cold_cost = cx.state.gas_params().get(GasId::ColdStorageAdditionalCost).into();
     let skip_cold_load =
-        cx.state.spec().enables(SpecId::BERLIN) && cx.gas.remaining() < additional_cold_cost;
+        cx.state.feature(EvmFeatures::EIP2929) && cx.gas.remaining() < additional_cold_cost;
     let destination = &cx.state.message().destination;
     let load = cx.state.host().sload(destination, key, skip_cold_load)?;
     if load.is_cold {
@@ -53,7 +53,7 @@ pub(crate) fn sstore(cx: _, [key, value]: [Word]) -> Result {
     // EIP-2929: avoid performing a cold storage load if the frame cannot afford the
     // additional cold-load charge. The host performs the write and returns
     // original/present/new values for net metering.
-    let skip_cold_load = cx.state.spec().enables(SpecId::BERLIN)
+    let skip_cold_load = cx.state.feature(EvmFeatures::EIP2929)
         && cx.gas.remaining() < cx.state.gas_params().get(GasId::ColdStorageAdditionalCost).into();
     let destination = &cx.state.message().destination;
     let state_load = cx.state.host().sstore(destination, key, value, skip_cold_load)?;

@@ -735,7 +735,7 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
         load_code: bool,
         skip_cold_load: bool,
     ) -> Result<AccountLoad, InstrStop> {
-        let is_cold = if self.spec_id().enables(SpecId::BERLIN) {
+        let is_cold = if self.feature(EvmFeatures::EIP2929) {
             self.state.warm_account(address)
         } else {
             let _ = self.state.warm_account(address);
@@ -782,8 +782,7 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
         key: &Word,
         skip_cold_load: bool,
     ) -> Result<SLoad, InstrStop> {
-        let is_cold =
-            self.spec_id().enables(SpecId::BERLIN) && self.state.warm_storage(address, key);
+        let is_cold = self.feature(EvmFeatures::EIP2929) && self.state.warm_storage(address, key);
         if skip_cold_load && is_cold {
             return Err(InstrStop::OutOfGas);
         }
@@ -801,8 +800,7 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
         value: &Word,
         skip_cold_load: bool,
     ) -> Result<SStore, InstrStop> {
-        let is_cold =
-            self.spec_id().enables(SpecId::BERLIN) && self.state.warm_storage(address, key);
+        let is_cold = self.feature(EvmFeatures::EIP2929) && self.state.warm_storage(address, key);
         if skip_cold_load && is_cold {
             return Err(InstrStop::OutOfGas);
         }
@@ -851,7 +849,7 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
         target: &Address,
         skip_cold_load: bool,
     ) -> Result<SelfDestructResult, InstrStop> {
-        let is_cold = if self.spec_id().enables(SpecId::BERLIN) {
+        let is_cold = if self.feature(EvmFeatures::EIP2929) {
             self.state.warm_account(target)
         } else {
             let _ = self.state.warm_account(target);

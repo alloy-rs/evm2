@@ -260,6 +260,7 @@ mod tests {
         assert!(osaka.feature(EvmFeatures::EIP161));
         assert!(osaka.feature(EvmFeatures::EIP2028));
         assert!(osaka.feature(EvmFeatures::EIP2200));
+        assert!(osaka.feature(EvmFeatures::EIP2929));
         assert!(osaka.feature(EvmFeatures::EIP3529));
         assert!(osaka.feature(EvmFeatures::EIP3651));
         assert!(osaka.feature(EvmFeatures::EIP3860));
@@ -595,6 +596,9 @@ evm_versions! {
     }
 
     BERLIN {
+        features: [
+            EIP2929,
+        ],
         static_gas: [
             SLOAD: WARM_STORAGE_READ_COST,
             BALANCE: WARM_STORAGE_READ_COST,
