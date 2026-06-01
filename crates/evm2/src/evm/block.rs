@@ -741,7 +741,9 @@ fn decode_abi_usize(word: &[u8]) -> Result<usize, BlockExecutionError> {
     }
     let bytes = <[u8; 8]>::try_from(bytes)
         .map_err(|_| BlockExecutionError::DepositRequestDecode { reason: "short ABI word" })?;
-    Ok(usize::from_be_bytes(bytes))
+    usize::try_from(u64::from_be_bytes(bytes)).map_err(|_| {
+        BlockExecutionError::DepositRequestDecode { reason: "ABI word overflows usize" }
+    })
 }
 
 const fn base_block_reward(spec_id: SpecId) -> Option<u128> {
