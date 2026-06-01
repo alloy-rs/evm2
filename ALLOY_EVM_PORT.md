@@ -16,11 +16,12 @@ Source commit: `4c082e2541323d6ce34d3e0ba8b0ba574f0c85f1`
 - Added an Ethereum block transaction loop that enforces capped remaining block gas before each transaction.
 - Added block gas counters for cumulative transaction gas, regular gas, state gas, and final block gas.
 - Added post-block balance increment methods for block rewards, ommer rewards, and withdrawals.
+- Added DAO hardfork constants and method-based balance drain helpers, including the mainnet DAO fork block gate.
 
 ## In Progress
 
 - Compare the new block methods against alloy-rs/evm `EthBlockExecutor` behavior and close semantic gaps.
-- Decide whether DAO hardfork balance movement belongs in evm2 block methods or caller-specific consensus code.
+- Decide whether EIP-6110 deposit request parsing belongs in evm2 block methods or caller-specific receipt code.
 - Port any missing revm/alloy helper types only when they are needed by the method-based evm2 API.
 
 ## Not Planned
