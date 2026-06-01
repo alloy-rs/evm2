@@ -288,7 +288,7 @@ impl<T: EvmTypes, Output> TxRegistry<T, Output> {
 mod tests {
     use super::*;
     use crate::{
-        BaseEvmConfigSelector, EvmTypes, SpecId,
+        BaseEvmConfigSelector, EvmFeatures, EvmTypes, SpecId,
         bytecode::Bytecode,
         env::{BlockEnv, TxEnv},
         evm::{AccountLoad, SLoad, SStore, SelfDestructResult},
@@ -352,7 +352,7 @@ mod tests {
         fn target_is_empty_for_new_account_gas(
             &mut self,
             _address: &Address,
-            _spec: SpecId,
+            _features: EvmFeatures,
         ) -> Result<bool, InstrStop> {
             unimplemented!()
         }
