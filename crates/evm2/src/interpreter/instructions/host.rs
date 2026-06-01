@@ -37,11 +37,11 @@ pub(crate) fn sload(cx: _, [key]: [Word]) -> Result<out> {
 #[instruction(dynamic_gas)]
 pub(crate) fn sstore(cx: _, [key, value]: [Word]) -> Result {
     require_non_staticcall(cx.state)?;
-    let is_istanbul = cx.state.spec().enables(SpecId::ISTANBUL);
+    let is_eip2200 = cx.state.feature(EvmFeatures::EIP2200);
 
     // EIP-2200: SSTORE may not execute with only the value-transfer stipend left. This
     // check happens before any gas is charged or host storage is touched.
-    if is_istanbul && cx.gas.remaining() <= cx.state.gas_params().get(GasId::CallStipend).into() {
+    if is_eip2200 && cx.gas.remaining() <= cx.state.gas_params().get(GasId::CallStipend).into() {
         return Err(InstrStop::ReentrancySentryOOG);
     }
 
@@ -61,7 +61,7 @@ pub(crate) fn sstore(cx: _, [key, value]: [Word]) -> Result {
     // EIP-2200 net gas metering depends on original, present, and new slot values:
     // clean slots pay set/reset costs, dirty slots generally only pay the load cost,
     // and reset-to-original transitions are handled through refunds.
-    cx.gas.spend(cx.state.gas_params().sstore_dynamic_gas(is_istanbul, &state_load))?;
+    cx.gas.spend(cx.state.gas_params().sstore_dynamic_gas(is_eip2200, &state_load))?;
 
     // EIP-8037 / Amsterdam: creating a new storage slot (original == present == 0,
     // new != 0) also consumes state gas from the reservoir before spilling into
@@ -72,7 +72,7 @@ pub(crate) fn sstore(cx: _, [key, value]: [Word]) -> Result {
 
     // EIP-2200 and EIP-3529 refund rules, including negative refund adjustments for
     // dirty nonzero slots and London's reduced clearing-slot refund via gas params.
-    cx.gas.record_refund(cx.state.gas_params().sstore_refund(is_istanbul, &state_load));
+    cx.gas.record_refund(cx.state.gas_params().sstore_refund(is_eip2200, &state_load));
     Ok(())
 }
 

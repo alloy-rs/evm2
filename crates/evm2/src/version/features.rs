@@ -200,6 +200,10 @@ evm_features! {
     ///
     /// Default: on since Spurious Dragon
     CODE_SIZE_CHECK,
+    /// Applies [EIP-2200](https://eips.ethereum.org/EIPS/eip-2200) SSTORE net metering.
+    ///
+    /// Default: on since Istanbul
+    EIP2200,
 }
 
 #[cfg(test)]
