@@ -160,6 +160,16 @@ pub struct BlockExecutionResult<T: EvmTypes = BaseEvmTypes> {
     pub block_state_gas_used: u64,
     /// Blob gas used by transactions in the block.
     pub blob_gas_used: u64,
+    /// Pre-block system call results.
+    pub pre_block_system_results: Vec<TxResult<T>>,
+    /// Post-block system call results.
+    pub post_block_system_results: Vec<TxResult<T>>,
+    /// EIP-7685 requests emitted by post-block system calls.
+    pub requests: Requests,
+    /// State changes produced by post-block balance increments.
+    pub post_block_balance_changes: StateChanges,
+    /// State changes produced by DAO hardfork balance movement.
+    pub dao_balance_changes: Option<StateChanges>,
 }
 
 impl<T: EvmTypes> Default for BlockExecutionResult<T> {
@@ -171,6 +181,11 @@ impl<T: EvmTypes> Default for BlockExecutionResult<T> {
             block_regular_gas_used: 0,
             block_state_gas_used: 0,
             blob_gas_used: 0,
+            pre_block_system_results: Vec::new(),
+            post_block_system_results: Vec::new(),
+            requests: Requests::default(),
+            post_block_balance_changes: StateChanges::default(),
+            dao_balance_changes: None,
         }
     }
 }
@@ -191,6 +206,21 @@ pub struct BlockOmmer {
     pub beneficiary: Address,
     /// Ommer block number.
     pub number: u64,
+}
+
+/// Ethereum block-level execution context.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EthBlockExecutionCtx<'a> {
+    /// Parent block hash.
+    pub parent_hash: B256,
+    /// Parent beacon block root.
+    pub parent_beacon_block_root: Option<B256>,
+    /// Ommer headers.
+    pub ommers: &'a [BlockOmmer],
+    /// Withdrawals.
+    pub withdrawals: Option<&'a [Withdrawal]>,
+    /// Whether to apply the mainnet DAO hardfork balance move at block 1,920,000.
+    pub apply_mainnet_dao_hardfork: bool,
 }
 
 impl<T: EvmTypes> Default for BlockSystemCallResult<T> {
@@ -465,6 +495,33 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
 }
 
 impl Evm<BaseEvmTypes> {
+    /// Executes an Ethereum block using evm2's method-based block APIs.
+    pub fn execute_block<'a>(
+        &mut self,
+        ctx: EthBlockExecutionCtx<'a>,
+        txs: impl IntoIterator<Item = &'a RecoveredTxEnvelope>,
+    ) -> Result<BlockExecutionResult, BlockExecutionError> {
+        let pre_system =
+            self.apply_pre_block_system_calls(ctx.parent_hash, ctx.parent_beacon_block_root)?;
+
+        let mut result = self.execute_block_transactions(txs)?;
+        result.pre_block_system_results = pre_system.system_results;
+
+        let post_system = self.apply_post_block_system_calls()?;
+        result.post_block_system_results = post_system.system_results;
+        result.requests = post_system.requests;
+
+        result.dao_balance_changes = if ctx.apply_mainnet_dao_hardfork {
+            self.apply_mainnet_dao_hardfork_balance_move()?
+        } else {
+            None
+        };
+        result.post_block_balance_changes =
+            self.apply_post_block_balance_increments(ctx.ommers, ctx.withdrawals)?;
+
+        Ok(result)
+    }
+
     /// Executes Ethereum transactions in block order and advances the in-memory state overlay.
     pub fn execute_block_transactions<'a>(
         &mut self,
@@ -681,5 +738,37 @@ mod tests {
             changes.accounts[&DAO_HARDFORK_BENEFICIARY].current.as_ref().unwrap().balance,
             U256::from(5)
         );
+    }
+
+    #[test]
+    fn execute_block_applies_post_block_changes() {
+        let beneficiary = Address::with_last_byte(0x07);
+        let withdrawal_address = Address::with_last_byte(0x08);
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::SHANGHAI,
+            BlockEnv { beneficiary, ..BlockEnv::default() },
+            TxRegistry::new(),
+            EmptyDB::default(),
+            NoPrecompiles::default(),
+        );
+        let withdrawals =
+            [Withdrawal { index: 0, validator_index: 0, address: withdrawal_address, amount: 3 }];
+        let ctx = EthBlockExecutionCtx {
+            withdrawals: Some(&withdrawals),
+            ..EthBlockExecutionCtx::default()
+        };
+
+        let result = evm.execute_block(ctx, []).unwrap();
+
+        assert!(result.transaction_results.is_empty());
+        assert_eq!(
+            result.post_block_balance_changes.accounts[&withdrawal_address]
+                .current
+                .as_ref()
+                .unwrap()
+                .balance,
+            U256::from(3_000_000_000_u64)
+        );
+        assert!(result.requests.is_empty());
     }
 }

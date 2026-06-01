@@ -17,6 +17,7 @@ Source commit: `4c082e2541323d6ce34d3e0ba8b0ba574f0c85f1`
 - Added block gas counters for cumulative transaction gas, regular gas, state gas, and final block gas.
 - Added post-block balance increment methods for block rewards, ommer rewards, and withdrawals.
 - Added DAO hardfork constants and method-based balance drain helpers, including the mainnet DAO fork block gate.
+- Added `EthBlockExecutionCtx` and high-level `Evm::execute_block` orchestration for pre-block system calls, transactions, post-block system calls, post-block balance increments, requests, and optional mainnet DAO handling.
 
 ## In Progress
 
