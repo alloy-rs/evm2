@@ -117,9 +117,11 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             0
         };
         let gas_used = gas_spent.saturating_sub(gas_refunded);
+        let state_gas_used = result.gas.state_gas_spent();
         let mut result = TxResult {
             status: result.stop.is_success(),
             gas_used,
+            state_gas_used,
             stop: result.stop,
             output: result.output,
             ..TxResult::default()

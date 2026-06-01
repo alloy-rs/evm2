@@ -77,6 +77,28 @@ impl RecoveredTxEnvelope {
             Self::Legacy(_) | Self::Eip2930(_) | Self::Eip1559(_) | Self::Eip4844(_) => None,
         }
     }
+
+    /// Returns the transaction gas limit.
+    pub const fn gas_limit(&self) -> u64 {
+        match self {
+            Self::Legacy(tx) => tx.inner().gas_limit,
+            Self::Eip2930(tx) => tx.inner().gas_limit,
+            Self::Eip1559(tx) => tx.inner().gas_limit,
+            Self::Eip4844(tx) => tx.inner().tx().gas_limit,
+            Self::Eip7702(tx) => tx.inner().gas_limit,
+        }
+    }
+
+    /// Returns the blob gas used by this transaction.
+    pub const fn blob_gas_used(&self) -> u64 {
+        match self {
+            Self::Eip4844(tx) => {
+                tx.inner().tx().blob_versioned_hashes.len() as u64
+                    * alloy_eips::eip4844::DATA_GAS_PER_BLOB
+            }
+            Self::Legacy(_) | Self::Eip2930(_) | Self::Eip1559(_) | Self::Eip7702(_) => 0,
+        }
+    }
 }
 
 impl Typed2718 for RecoveredTxEnvelope {
@@ -427,6 +449,7 @@ pub(super) fn settle_gas<T: EvmTypes<Host = Evm<T>>>(
 ) -> HandlerResult<TxResult<T>> {
     let (gas_remaining, gas_used) =
         final_tx_gas(&result, tx_gas_limit, host.feature(EvmFeatures::EIP3529), floor_gas);
+    let state_gas_used = result.gas.state_gas_spent();
     if host.feature(EvmFeatures::FEE_CHARGE) {
         host.state
             .add_balance(&caller, &(U256::from(gas_remaining) * gas_price))
@@ -443,6 +466,7 @@ pub(super) fn settle_gas<T: EvmTypes<Host = Evm<T>>>(
     Ok(TxResult {
         status: result.stop.is_success(),
         gas_used,
+        state_gas_used,
         stop: result.stop,
         output: result.output,
         ext: T::TxResultExt::default(),
