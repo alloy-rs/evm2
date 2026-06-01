@@ -1133,9 +1133,9 @@ impl State {
             StateChanges { logs: core::mem::take(&mut self.logs), ..StateChanges::default() };
 
         for (&address, tracked) in &self.accounts {
-            let original = tracked.original.as_ref().map(Account::info);
-            let current = tracked.current.as_ref().map(Account::info);
-            if original != current {
+            if tracked.original != tracked.current {
+                let original = tracked.original.as_ref().map(Account::info);
+                let current = tracked.current.as_ref().map(Account::info);
                 changes
                     .accounts
                     .insert(address, Tracked { original, current, _non_exhaustive: () });
