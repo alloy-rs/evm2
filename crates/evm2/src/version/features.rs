@@ -98,16 +98,16 @@ impl core::ops::Not for EvmFeatures {
 }
 
 macro_rules! evm_features {
-    (@impl $bit:expr;) => {};
-    (@impl $bit:expr; $(#[$attr:meta])* $name:ident, $($rest:tt)*) => {
-        impl EvmFeatures {
-            $(#[$attr])*
-            pub const $name: Self = Self::from_bit($bit);
-        }
-        evm_features!(@impl $bit + 1; $($rest)*);
+    (@const $bit:expr;) => {};
+    (@const $bit:expr; $(#[$attr:meta])* $name:ident, $($rest:tt)*) => {
+        $(#[$attr])*
+        pub const $name: Self = Self::from_bit($bit);
+        evm_features!(@const $bit + 1; $($rest)*);
     };
     ($($tokens:tt)*) => {
-        evm_features!(@impl 0; $($tokens)*);
+        impl EvmFeatures {
+            evm_features!(@const 0; $($tokens)*);
+        }
     };
 }
 
