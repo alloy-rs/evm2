@@ -2,7 +2,7 @@
 
 use self::{
     inspector::Inspector,
-    precompile::{NoPrecompiles, PrecompileOutput, PrecompileProvider},
+    precompile::{PrecompileOutput, PrecompileProvider},
 };
 use crate::{
     EvmConfigSelector, EvmTypes, ExecutionConfig, PrecompileError, PrecompileHalt, SpecId,
@@ -157,13 +157,16 @@ impl<T: EvmTypes> Evm<T> {
         message: &Message<T>,
         gas: &mut GasTracker,
     ) -> Result<PrecompileOutput, PrecompileError> {
-        let mut precompiles =
-            core::mem::replace(&mut self.precompiles, Box::new(NoPrecompiles::default()));
-        let result = precompiles
-            .execute(self, message.code_address, &message.input, gas)
-            .expect("precompile was checked before execution");
-        self.precompiles = precompiles;
-        result
+        let precompiles = self.precompiles.as_mut() as *mut dyn PrecompileProvider<T>;
+        let evm = self as *mut Self;
+        // SAFETY: Precompile execution may need access to both the provider and the host EVM.
+        // The provider is not moved or replaced during this call, and `execute` is expected to
+        // preserve `Evm` invariants while using the host reference.
+        unsafe {
+            (&mut *precompiles)
+                .execute(&mut *evm, message.code_address, &message.input, gas)
+                .expect("precompile was checked before execution")
+        }
     }
 }
 
@@ -1162,6 +1165,89 @@ mod tests {
             evm.precompiles_as::<HostObservingPrecompile>().unwrap().seen_block_number,
             Some(U256::from(17))
         );
+    }
+
+    #[derive(Default)]
+    struct NestedPrecompile {
+        outer_called: bool,
+        inner_called: bool,
+    }
+
+    impl NestedPrecompile {
+        const OUTER: Address = Address::with_last_byte(0x42);
+        const INNER: Address = Address::with_last_byte(0x43);
+    }
+
+    impl PrecompileProvider<BaseEvmTypes> for NestedPrecompile {
+        fn contains(&self, address: &Address) -> bool {
+            *address == Self::OUTER || *address == Self::INNER
+        }
+
+        fn execute(
+            &mut self,
+            evm: &mut Evm<BaseEvmTypes>,
+            address: Address,
+            _input: &[u8],
+            gas: &mut GasTracker,
+        ) -> Option<Result<PrecompileOutput, PrecompileError>> {
+            if address == Self::INNER {
+                self.inner_called = true;
+                return Some(Ok(PrecompileOutput::new(Bytes::from_static(b"inner"))));
+            }
+            if address != Self::OUTER {
+                return None;
+            }
+            self.outer_called = true;
+            let message = Message {
+                kind: MessageKind::Call,
+                depth: 0,
+                gas_limit: 30_000,
+                destination: Self::INNER,
+                caller: Address::ZERO,
+                input: Bytes::new(),
+                value: U256::ZERO,
+                code_address: Self::INNER,
+                disable_precompiles: false,
+                salt: B256::ZERO,
+                ext: (),
+                _non_exhaustive: (),
+            };
+            Some(evm.execute_precompile(&message, gas))
+        }
+    }
+
+    #[test]
+    fn precompile_can_call_another_precompile() {
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            NestedPrecompile::default(),
+        );
+        let message = Message {
+            kind: MessageKind::Call,
+            depth: 0,
+            gas_limit: 30_000,
+            destination: NestedPrecompile::OUTER,
+            caller: Address::ZERO,
+            input: Bytes::new(),
+            value: U256::ZERO,
+            code_address: NestedPrecompile::OUTER,
+            disable_precompiles: false,
+            salt: B256::ZERO,
+            ext: (),
+            _non_exhaustive: (),
+        };
+
+        let output = evm
+            .execute_precompile(&message, &mut GasTracker::new(30_000))
+            .expect("precompile succeeds");
+
+        let precompile = evm.precompiles_as::<NestedPrecompile>().unwrap();
+        assert_eq!(output.bytes(), b"inner");
+        assert!(precompile.outer_called);
+        assert!(precompile.inner_called);
     }
 
     #[test]
