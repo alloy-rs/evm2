@@ -22,13 +22,10 @@ pub use opcode_config::OpcodeConfig;
 /// Runtime configuration data.
 ///
 /// The name is a bit misleading: this is a catch-all runtime configuration object. It stores fork
-/// configuration such as the active base `SpecId` and EVM features, and also stores regular runtime
-/// configuration values such as chain ID, memory limits, code size limits, gas caps, and gas
-/// parameters.
+/// configuration such as active EVM features, and also stores regular runtime configuration values
+/// such as chain ID, memory limits, code size limits, gas caps, and gas parameters.
 #[derive(Clone, Copy, Debug)]
 pub struct Version {
-    /// Active base specification ID.
-    pub spec_id: SpecId,
     /// Dynamic gas parameter table.
     // Gas params are data on the active version so changes automatically affect every
     // instruction that reads them. Tracking instruction dependencies on opcode config is not
@@ -111,7 +108,6 @@ const DEFAULT_CHAIN_ID: u64 = 1;
 static BASE_VERSIONS: [Version; SpecId::COUNT] = {
     let mut versions = [const {
         Version {
-            spec_id: SpecId::FRONTIER,
             gas_params: GasParams::empty(),
             features: EvmFeatures::empty(),
             chain_id: DEFAULT_CHAIN_ID,
@@ -128,7 +124,6 @@ static BASE_VERSIONS: [Version; SpecId::COUNT] = {
     while i < SpecId::COUNT {
         let spec_id = SpecId::try_from_u32(i as u32).unwrap();
         versions[i] = Version {
-            spec_id,
             gas_params: base_gas_params(spec_id),
             features: base_features(spec_id),
             chain_id: DEFAULT_CHAIN_ID,

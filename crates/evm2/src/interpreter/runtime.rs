@@ -3,7 +3,7 @@ use super::{
     StackBacking, Word,
 };
 use crate::{
-    EvmTypes, ExecutionConfig, SpecId, Version,
+    EvmTypes, ExecutionConfig, Version,
     bytecode::Bytecode,
     env::TxEnv,
     evm::inspector::Inspector,
@@ -38,7 +38,6 @@ pub struct Interpreter<'frame, T: EvmTypes> {
 
     pub(in crate::interpreter) gas: Gas,
     pub(in crate::interpreter) result: Result,
-    spec: SpecId,
     features: EvmFeatures,
     is_static: bool,
 }
@@ -66,7 +65,6 @@ impl<T: EvmTypes> Default for Interpreter<'_, T> {
             host: None,
             inspector: None,
             version: core::ptr::null(),
-            spec: SpecId::DEFAULT,
             features: EvmFeatures::empty(),
             // SAFETY: `MaybeUninit<Word>` does not need initialization.
             stack: unsafe { Box::new_uninit().assume_init() },
@@ -215,7 +213,6 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         self.host = Some(NonNull::from(host));
         self.inspector = inspector;
         self.version = version;
-        self.spec = version.spec_id;
         self.features = version.features;
 
         dispatch::run(self, instructions)
@@ -316,12 +313,6 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
     #[inline]
     pub const fn is_static(&self) -> bool {
         self.0.is_static
-    }
-
-    /// Returns the active spec identifier.
-    #[inline]
-    pub const fn spec(&self) -> SpecId {
-        self.0.spec
     }
 
     /// Returns `true` if the active feature set contains `feature`.

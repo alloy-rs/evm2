@@ -123,8 +123,8 @@ impl<T: EvmTypes> Evm<T> {
     ) -> Self {
         assert_eq!(
             spec_id.into(),
-            execution_config.version().spec_id,
-            "execution config version spec mismatch"
+            execution_config.base_spec_id(),
+            "execution config spec mismatch"
         );
         Self {
             spec_id,
@@ -339,8 +339,8 @@ impl<T: EvmTypes> Evm<T> {
 
     /// Returns the active base specification ID.
     #[inline]
-    pub const fn spec_id(&self) -> SpecId {
-        self.version().spec_id
+    pub fn spec_id(&self) -> SpecId {
+        self.spec_id.into()
     }
 
     /// Returns the selector-specific runtime specification ID.
