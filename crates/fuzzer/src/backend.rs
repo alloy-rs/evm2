@@ -1,7 +1,8 @@
 use crate::{
     case::{EvmCase, TxKindCase},
     normalize::{
-        Outcome, OutcomeKind, TxReceipt, canonical_log, state_from_evm2_changes, state_from_revm,
+        Outcome, OutcomeKind, TxReceipt, apply_account_changes, canonical_accounts, canonical_log,
+        state_from_evm2_changes, state_from_revm,
     },
 };
 use evm2::{
@@ -91,6 +92,7 @@ impl EvmBackend for RevmBackend {
             .build_mainnet();
 
         let mut receipts = Vec::new();
+        let mut accounts = canonical_accounts(case);
         for tx in case.txs() {
             let mut tx_env = tx.revm();
             if tx.kind == TxKindCase::Eip7702 {
@@ -105,15 +107,17 @@ impl EvmBackend for RevmBackend {
                         OutcomeKind::RevertOrHalt
                     };
                     let state = result.state;
+                    let canonical_state = state_from_revm(state.clone(), &accounts);
                     let receipt = TxReceipt {
                         kind,
                         gas_used: Some(result.result.tx_gas_used()),
                         output: result.result.output().map(|output| output.to_vec()),
                         logs: result.result.logs().iter().map(canonical_log).collect(),
-                        state: state_from_revm(state.clone()),
+                        state: canonical_state,
                         error: None,
                     };
                     evm.commit(state);
+                    apply_account_changes(&mut accounts, &receipt.state);
                     receipts.push(receipt);
                 }
                 Err(err) => {
@@ -170,9 +174,11 @@ const fn revm_spec(spec: SpecId) -> RevmSpecId {
         SpecId::TANGERINE => RevmSpecId::TANGERINE,
         SpecId::SPURIOUS_DRAGON => RevmSpecId::SPURIOUS_DRAGON,
         SpecId::BYZANTIUM => RevmSpecId::BYZANTIUM,
+        SpecId::PETERSBURG => RevmSpecId::PETERSBURG,
         SpecId::ISTANBUL => RevmSpecId::ISTANBUL,
         SpecId::BERLIN => RevmSpecId::BERLIN,
         SpecId::LONDON => RevmSpecId::LONDON,
+        SpecId::MERGE => RevmSpecId::MERGE,
         SpecId::SHANGHAI => RevmSpecId::SHANGHAI,
         SpecId::CANCUN => RevmSpecId::CANCUN,
         SpecId::PRAGUE => RevmSpecId::PRAGUE,

@@ -55,6 +55,19 @@ Minimize a reproducing case:
 cargo run -q -p evm2-fuzzer -- minimize crates/fuzzer/corpus/failures/case-....json
 ```
 
+Import the `evm-protobuf-fuzzer` corpus as replayable JSON cases:
+
+```sh
+./scripts/import_evm_protobuf_corpus.py \
+  /path/to/corp-evm-protobuf-fuzzer.tar.xz \
+  --output tmp/evm-protobuf-import --clean
+cargo run -q -p evm2-fuzzer -- corpus tmp/evm-protobuf-import
+```
+
+The import is intentionally lossy where the fuzzer case format has no field for
+the original data, such as block coinbase, difficulty, and excess blob gas. Such
+cases are tagged in `features`.
+
 ## Coverage report
 
 Generate an HTML coverage report from fuzzer execution, excluding the fuzzer

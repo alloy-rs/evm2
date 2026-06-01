@@ -1,4 +1,5 @@
-use alloy_primitives::{Address, B256, U256};
+use crate::case::EvmCase;
+use alloy_primitives::{Address, B256, U256, keccak256};
 use evm2::evm::StateChanges;
 use std::collections::BTreeMap;
 
@@ -104,6 +105,15 @@ fn normalize_error(error: String) -> String {
     if error.starts_with("LackOfFundForMaxFee") || error == "InsufficientFunds" {
         return "InsufficientFunds".to_string();
     }
+    if error.starts_with("NonceTooHigh")
+        || error.starts_with("NonceTooLow")
+        || error.starts_with("InvalidNonce")
+    {
+        return "InvalidNonce".to_string();
+    }
+    if error == "NonceOverflowInTransaction" || error == "NonceOverflow" {
+        return "NonceOverflow".to_string();
+    }
     if error.starts_with("UnsupportedTransactionType")
         || error.ends_with("NotSupported") && error.starts_with("Eip")
     {
@@ -132,19 +142,41 @@ pub(crate) fn state_from_evm2_changes(changes: &StateChanges) -> CanonicalState 
     state
 }
 
-pub(crate) fn state_from_revm(state: revm::state::EvmState) -> CanonicalState {
+pub(crate) fn state_from_revm(
+    state: revm::state::EvmState,
+    original_accounts: &BTreeMap<Address, CanonicalAccount>,
+) -> CanonicalState {
     let mut canonical = CanonicalState::default();
     for (address, account) in state {
-        let account_changed = account.info.balance != account.original_info.balance
-            || account.info.nonce != account.original_info.nonce
-            || account.info.code_hash != account.original_info.code_hash;
+        let changed_storage_slots = account.changed_storage_slots().collect::<Vec<_>>();
+        if !account.is_touched()
+            && !account.is_created()
+            && !account.is_selfdestructed()
+            && changed_storage_slots.is_empty()
+        {
+            continue;
+        }
+
+        let original = original_accounts.get(&address);
+        let account_changed = original.map_or_else(
+            || {
+                account.info.balance != account.original_info.balance
+                    || account.info.nonce != account.original_info.nonce
+                    || account.info.code_hash != account.original_info.code_hash
+            },
+            |original| {
+                account.info.balance != original.balance
+                    || account.info.nonce != original.nonce
+                    || account.info.code_hash != original.code_hash
+            },
+        );
         if account.is_selfdestructed() {
-            if !account.original_info.is_empty() {
+            if original.is_some() || !account.original_info.is_empty() {
                 canonical.accounts.insert(address, None);
             }
             continue;
         }
-        if account_changed || account.is_created() {
+        if account_changed || account.is_created() && original.is_none() {
             canonical.accounts.insert(
                 address,
                 Some(CanonicalAccount {
@@ -154,13 +186,45 @@ pub(crate) fn state_from_revm(state: revm::state::EvmState) -> CanonicalState {
                 }),
             );
         }
-        for (key, slot) in account.changed_storage_slots() {
+        for (key, slot) in changed_storage_slots {
             if !slot.present_value().is_zero() {
                 canonical.storage.insert((address, *key), slot.present_value());
             }
         }
     }
     canonical
+}
+
+pub(crate) fn canonical_accounts(case: &EvmCase) -> BTreeMap<Address, CanonicalAccount> {
+    case.accounts
+        .iter()
+        .map(|account| {
+            (
+                account.address,
+                CanonicalAccount {
+                    balance: account.balance,
+                    nonce: account.nonce,
+                    code_hash: keccak256(&account.code),
+                },
+            )
+        })
+        .collect()
+}
+
+pub(crate) fn apply_account_changes(
+    accounts: &mut BTreeMap<Address, CanonicalAccount>,
+    state: &CanonicalState,
+) {
+    for (&address, account) in &state.accounts {
+        match account {
+            Some(account) => {
+                accounts.insert(address, account.clone());
+            }
+            None => {
+                accounts.remove(&address);
+            }
+        }
+    }
 }
 
 pub(crate) fn canonical_log(log: &alloy_primitives::Log) -> CanonicalLog {
