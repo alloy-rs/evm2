@@ -188,6 +188,10 @@ evm_features! {
     ///
     /// Default: on since Amsterdam
     EIP7708_DELAYED_BURN,
+    /// Applies [EIP-150](https://eips.ethereum.org/EIPS/eip-150) call gas forwarding limits.
+    ///
+    /// Default: on since Tangerine Whistle
+    EIP150,
 }
 
 #[cfg(test)]

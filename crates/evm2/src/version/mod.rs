@@ -255,6 +255,7 @@ mod tests {
         assert!(osaka.feature(EvmFeatures::BALANCE_CHECK));
         assert!(osaka.feature(EvmFeatures::BLOCK_GAS_LIMIT_CHECK));
         assert!(osaka.feature(EvmFeatures::EIP2));
+        assert!(osaka.feature(EvmFeatures::EIP150));
         assert!(osaka.feature(EvmFeatures::EIP2028));
         assert!(osaka.feature(EvmFeatures::EIP3529));
         assert!(osaka.feature(EvmFeatures::EIP3651));
@@ -514,6 +515,9 @@ evm_versions! {
     }
 
     TANGERINE {
+        features: [
+            EIP150,
+        ],
         static_gas: [
             SLOAD: 200,
             BALANCE: 400,

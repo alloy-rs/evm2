@@ -133,7 +133,7 @@ fn load_acc_and_calc_gas<T: EvmTypes>(
     }
     gas.spend(cost)?;
 
-    let mut gas_limit = if state.spec().enables(SpecId::TANGERINE) {
+    let mut gas_limit = if state.feature(EvmFeatures::EIP150) {
         min(state.gas_params().call_stipend_reduction(gas.remaining()), stack_gas_limit)
     } else {
         stack_gas_limit
@@ -317,7 +317,7 @@ fn create_inner<T: EvmTypes>(
         state.gas_params().get(GasId::Create).into()
     };
     gas.spend(create_cost)?;
-    let gas_limit = if state.spec().enables(SpecId::TANGERINE) {
+    let gas_limit = if state.feature(EvmFeatures::EIP150) {
         state.gas_params().call_stipend_reduction(gas.remaining())
     } else {
         gas.remaining()
