@@ -1106,33 +1106,33 @@ mod tests {
         })
     }
 
-    #[derive(Default)]
-    struct HostObservingPrecompile {
-        seen_block_number: Option<U256>,
-    }
-
-    impl PrecompileProvider<BaseEvmTypes> for HostObservingPrecompile {
-        fn contains(&self, address: &Address) -> bool {
-            *address == Address::with_last_byte(0x42)
-        }
-
-        fn execute(
-            &mut self,
-            evm: &mut Evm<BaseEvmTypes>,
-            address: Address,
-            _input: &[u8],
-            _gas: &mut GasTracker,
-        ) -> Option<Result<PrecompileOutput, PrecompileError>> {
-            if !self.contains(&address) {
-                return None;
-            }
-            self.seen_block_number = Some(evm.block.number);
-            Some(Ok(PrecompileOutput::new(Bytes::copy_from_slice(&[0x42]))))
-        }
-    }
-
     #[test]
     fn passes_evm_to_precompile_provider() {
+        #[derive(Default)]
+        struct HostObservingPrecompile {
+            seen_block_number: Option<U256>,
+        }
+
+        impl PrecompileProvider<BaseEvmTypes> for HostObservingPrecompile {
+            fn contains(&self, address: &Address) -> bool {
+                *address == Address::with_last_byte(0x42)
+            }
+
+            fn execute(
+                &mut self,
+                evm: &mut Evm<BaseEvmTypes>,
+                address: Address,
+                _input: &[u8],
+                _gas: &mut GasTracker,
+            ) -> Option<Result<PrecompileOutput, PrecompileError>> {
+                if !self.contains(&address) {
+                    return None;
+                }
+                self.seen_block_number = Some(evm.block.number);
+                Some(Ok(PrecompileOutput::new(Bytes::copy_from_slice(&[0x42]))))
+            }
+        }
+
         let address = Address::with_last_byte(0x42);
         let block = BlockEnv { number: U256::from(17), ..BlockEnv::default() };
         let mut evm = Evm::<BaseEvmTypes>::new(
@@ -1167,57 +1167,57 @@ mod tests {
         );
     }
 
-    #[derive(Default)]
-    struct NestedPrecompile {
-        outer_called: bool,
-        inner_called: bool,
-    }
-
-    impl NestedPrecompile {
-        const OUTER: Address = Address::with_last_byte(0x42);
-        const INNER: Address = Address::with_last_byte(0x43);
-    }
-
-    impl PrecompileProvider<BaseEvmTypes> for NestedPrecompile {
-        fn contains(&self, address: &Address) -> bool {
-            *address == Self::OUTER || *address == Self::INNER
-        }
-
-        fn execute(
-            &mut self,
-            evm: &mut Evm<BaseEvmTypes>,
-            address: Address,
-            _input: &[u8],
-            gas: &mut GasTracker,
-        ) -> Option<Result<PrecompileOutput, PrecompileError>> {
-            if address == Self::INNER {
-                self.inner_called = true;
-                return Some(Ok(PrecompileOutput::new(Bytes::from_static(b"inner"))));
-            }
-            if address != Self::OUTER {
-                return None;
-            }
-            self.outer_called = true;
-            let message = Message {
-                kind: MessageKind::Call,
-                depth: 0,
-                gas_limit: 30_000,
-                destination: Self::INNER,
-                caller: Address::ZERO,
-                input: Bytes::new(),
-                value: U256::ZERO,
-                code_address: Self::INNER,
-                disable_precompiles: false,
-                salt: B256::ZERO,
-                ext: (),
-                _non_exhaustive: (),
-            };
-            Some(evm.execute_precompile(&message, gas))
-        }
-    }
-
     #[test]
     fn precompile_can_call_another_precompile() {
+        #[derive(Default)]
+        struct NestedPrecompile {
+            outer_called: bool,
+            inner_called: bool,
+        }
+
+        impl NestedPrecompile {
+            const OUTER: Address = Address::with_last_byte(0x42);
+            const INNER: Address = Address::with_last_byte(0x43);
+        }
+
+        impl PrecompileProvider<BaseEvmTypes> for NestedPrecompile {
+            fn contains(&self, address: &Address) -> bool {
+                *address == Self::OUTER || *address == Self::INNER
+            }
+
+            fn execute(
+                &mut self,
+                evm: &mut Evm<BaseEvmTypes>,
+                address: Address,
+                _input: &[u8],
+                gas: &mut GasTracker,
+            ) -> Option<Result<PrecompileOutput, PrecompileError>> {
+                if address == Self::INNER {
+                    self.inner_called = true;
+                    return Some(Ok(PrecompileOutput::new(Bytes::from_static(b"inner"))));
+                }
+                if address != Self::OUTER {
+                    return None;
+                }
+                self.outer_called = true;
+                let message = Message {
+                    kind: MessageKind::Call,
+                    depth: 0,
+                    gas_limit: 30_000,
+                    destination: Self::INNER,
+                    caller: Address::ZERO,
+                    input: Bytes::new(),
+                    value: U256::ZERO,
+                    code_address: Self::INNER,
+                    disable_precompiles: false,
+                    salt: B256::ZERO,
+                    ext: (),
+                    _non_exhaustive: (),
+                };
+                Some(evm.execute_precompile(&message, gas))
+            }
+        }
+
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
             BlockEnv::default(),
