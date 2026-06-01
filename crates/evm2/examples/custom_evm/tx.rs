@@ -6,7 +6,6 @@ use crate::config::{
 use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{Address, Bytes};
 use evm2::{
-    Evm,
     bytecode::Bytecode,
     env::TxEnv,
     interpreter::{Host, Message},
