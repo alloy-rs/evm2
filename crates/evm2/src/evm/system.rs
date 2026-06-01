@@ -6,6 +6,8 @@
 //! before calling [`Evm::system_call`]. Calling an address without code succeeds as an empty call
 //! and produces no state changes.
 
+#[cfg(feature = "async")]
+use super::r#async;
 use super::{Evm, TxResult};
 use crate::{
     EvmTypes,
@@ -57,7 +59,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         system_contract_address: Address,
         data: Bytes,
     ) -> impl core::future::Future<
-        Output = super::r#async::AsyncResult<TxResult<T>, core::convert::Infallible>,
+        Output = r#async::AsyncResult<TxResult<T>, core::convert::Infallible>,
     > + Send
     + '_
     where
@@ -67,7 +69,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         // SAFETY: The returned future owns the exclusive `&mut self` borrow, so nothing else can
         // access the EVM stack slot until that future is dropped.
         unsafe {
-            super::r#async::on_fiber_with_stack(stack, move || {
+            r#async::on_fiber_with_stack(stack, move || {
                 self.system_call(system_contract_address, data)
             })
         }
@@ -151,7 +153,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         system_contract_address: Address,
         data: Bytes,
     ) -> impl core::future::Future<
-        Output = super::r#async::AsyncResult<TxResult<T>, core::convert::Infallible>,
+        Output = r#async::AsyncResult<TxResult<T>, core::convert::Infallible>,
     > + Send
     + '_
     where
@@ -161,7 +163,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         // SAFETY: The returned future owns the exclusive `&mut self` borrow, so nothing else can
         // access the EVM stack slot until that future is dropped.
         unsafe {
-            super::r#async::on_fiber_with_stack(stack, move || {
+            r#async::on_fiber_with_stack(stack, move || {
                 self.system_call_with_caller(caller, system_contract_address, data)
             })
         }
