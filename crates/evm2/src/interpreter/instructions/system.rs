@@ -25,12 +25,11 @@ const fn require_non_staticcall<T: EvmTypes>(state: &InterpreterState<'_, T>) ->
 
 #[inline]
 const fn should_charge_new_account_gas(
-    spec: SpecId,
+    eip161: bool,
     transfers_value: bool,
     target_is_empty_for_new_account_gas: bool,
 ) -> bool {
-    target_is_empty_for_new_account_gas
-        && (!spec.enables(SpecId::SPURIOUS_DRAGON) || transfers_value)
+    target_is_empty_for_new_account_gas && (!eip161 || transfers_value)
 }
 
 #[inline]
@@ -121,12 +120,12 @@ fn load_acc_and_calc_gas<T: EvmTypes>(
         code = delegated_account.code;
         code_address = delegated_address;
     }
-    let spec = state.spec();
+    let features = state.version().features;
     if create_empty_account
         && should_charge_new_account_gas(
-            spec,
+            features.contains(EvmFeatures::EIP161),
             transfers_value,
-            state.host().target_is_empty_for_new_account_gas(&to, spec)?,
+            state.host().target_is_empty_for_new_account_gas(&to, features)?,
         )
     {
         cost += u64::from(state.gas_params().get(GasId::NewAccountCost));
@@ -374,8 +373,11 @@ pub(crate) fn selfdestruct(cx: _, [target]: [Word]) -> Result {
     let destination = &cx.state.message().destination;
     let res = cx.state.host().selfdestruct(destination, &target, skip_cold_load)?;
     cx.state.inspect_selfdestruct(destination, &target, &res.value);
-    let should_charge_topup =
-        should_charge_new_account_gas(cx.state.spec(), res.had_value, res.target_is_empty);
+    let should_charge_topup = should_charge_new_account_gas(
+        cx.state.feature(EvmFeatures::EIP161),
+        res.had_value,
+        res.target_is_empty,
+    );
     cx.gas.spend(cx.state.gas_params().selfdestruct_cost(should_charge_topup, res.is_cold))?;
     if !res.previously_destroyed {
         cx.gas.record_refund(cx.state.gas_params().get(GasId::SelfdestructRefund) as i64);

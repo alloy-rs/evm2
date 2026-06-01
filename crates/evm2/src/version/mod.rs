@@ -256,6 +256,7 @@ mod tests {
         assert!(osaka.feature(EvmFeatures::BLOCK_GAS_LIMIT_CHECK));
         assert!(osaka.feature(EvmFeatures::EIP2));
         assert!(osaka.feature(EvmFeatures::EIP150));
+        assert!(osaka.feature(EvmFeatures::EIP161));
         assert!(osaka.feature(EvmFeatures::EIP2028));
         assert!(osaka.feature(EvmFeatures::EIP3529));
         assert!(osaka.feature(EvmFeatures::EIP3651));
@@ -535,6 +536,9 @@ evm_versions! {
     }
 
     SPURIOUS_DRAGON {
+        features: [
+            EIP161,
+        ],
         static_gas: [
             EXP: EXP,
         ],

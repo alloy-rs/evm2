@@ -192,6 +192,10 @@ evm_features! {
     ///
     /// Default: on since Tangerine Whistle
     EIP150,
+    /// Applies [EIP-161](https://eips.ethereum.org/EIPS/eip-161) state clearing rules.
+    ///
+    /// Default: on since Spurious Dragon
+    EIP161,
 }
 
 #[cfg(test)]

@@ -1,5 +1,5 @@
 use crate::{
-    BaseEvmConfigSelector, EvmTypes, ExecutionConfig, SpecId,
+    BaseEvmConfigSelector, EvmFeatures, EvmTypes, ExecutionConfig, SpecId,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
     evm::{AccountLoad, SLoad, SStore, SelfDestructResult},
@@ -111,9 +111,9 @@ impl Host<TestTypes> for TestHost {
     fn target_is_empty_for_new_account_gas(
         &mut self,
         _address: &Address,
-        spec: SpecId,
+        features: EvmFeatures,
     ) -> Result<bool, InstrStop> {
-        if spec.enables(SpecId::SPURIOUS_DRAGON) {
+        if features.contains(EvmFeatures::EIP161) {
             return Ok(!self.exists || self.is_empty);
         }
         Ok(!self.exists && !self.is_touched)

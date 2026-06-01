@@ -422,7 +422,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         }
         let checkpoint = self.state.checkpoint();
         if let Err(stop) = self.create_message_account(message) {
-            self.state.rollback(checkpoint, self.spec_id());
+            self.state.rollback(checkpoint, self.features);
             return Self::error_message_result(stop, message.gas_limit);
         }
         message.code_address = message.destination;
@@ -463,7 +463,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             &message.caller,
             &message.destination,
             &message.value,
-            self.spec_id(),
+            self.features,
         ) {
             Ok(result) => result,
             Err(code) => {
@@ -489,7 +489,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         let mut output = Bytes::copy_from_slice(interpreter.output());
         if stop.is_success() {
             if let Err(stop) = self.validate_create_output(&mut gas, &mut output) {
-                self.state.rollback(checkpoint, self.spec_id());
+                self.state.rollback(checkpoint, self.features);
                 return MessageResult {
                     stop,
                     gas: Self::message_gas(*gas.tracker(), stop),
@@ -501,11 +501,11 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             }
 
             if let Err(code) = self.state.set_code(address, Bytecode::new_legacy(output.clone())) {
-                self.state.rollback(checkpoint, self.spec_id());
+                self.state.rollback(checkpoint, self.features);
                 return Self::error_message_result(self.db_error_stop(code), gas_limit);
             }
         } else {
-            self.state.rollback(checkpoint, self.spec_id());
+            self.state.rollback(checkpoint, self.features);
         }
 
         MessageResult {
@@ -634,7 +634,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             }
         };
         if !stop.is_success() {
-            self.state.rollback(checkpoint, self.spec_id());
+            self.state.rollback(checkpoint, self.features);
         }
         MessageResult {
             stop,
@@ -656,7 +656,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         let child_gas = interpreter.gas();
         let output = Bytes::copy_from_slice(interpreter.output());
         if !stop.is_success() {
-            self.state.rollback(checkpoint, self.spec_id());
+            self.state.rollback(checkpoint, self.features);
         }
 
         MessageResult {
@@ -766,10 +766,10 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
     fn target_is_empty_for_new_account_gas(
         &mut self,
         address: &Address,
-        spec: SpecId,
+        features: EvmFeatures,
     ) -> Result<bool, InstrStop> {
         self.state
-            .target_is_empty_for_new_account_gas(address, spec)
+            .target_is_empty_for_new_account_gas(address, features)
             .map_err(|code| self.db_error_stop(code))
     }
 
@@ -861,8 +861,9 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
         if skip_cold_load && is_cold {
             return Err(InstrStop::OutOfGas);
         }
+        let features = self.features;
         let target_is_empty_for_new_account_gas =
-            self.target_is_empty_for_new_account_gas(target, self.spec_id())?;
+            self.target_is_empty_for_new_account_gas(target, features)?;
         let previously_destroyed = self.state.is_selfdestructed(contract);
         let balance = self
             .state
