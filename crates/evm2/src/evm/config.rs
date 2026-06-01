@@ -117,6 +117,7 @@ where
 /// an EVM instance. This is the data passed to the interpreter when it runs.
 #[derive_where(Debug)]
 pub struct ExecutionConfig<T: EvmTypes> {
+    base_spec_id: SpecId,
     pub(crate) version: Version,
     #[derive_where(skip)]
     pub(crate) instructions: &'static InstrTable<T>,
@@ -150,6 +151,7 @@ impl<T: EvmTypes> ExecutionConfig<T> {
     ) -> Self {
         let i = base_spec_id as usize;
         Self {
+            base_spec_id,
             version: Version::new(base_spec_id),
             instructions: &SelectorInstrTables::<T, F, CUSTOM_SPEC_ID>::INSTRUCTIONS[i],
             inspect_instructions:
@@ -162,6 +164,7 @@ impl<T: EvmTypes> ExecutionConfig<T> {
     pub const fn for_config<C: EvmConfig<T>>() -> Self {
         let base_spec_id = C::BASE_SPEC_ID;
         Self {
+            base_spec_id,
             version: Version::new(base_spec_id),
             instructions: ConfigInstrTables::<T, C>::INSTRUCTIONS,
             inspect_instructions: ConfigInstrTables::<T, C>::INSPECT_INSTRUCTIONS,
@@ -172,16 +175,21 @@ impl<T: EvmTypes> ExecutionConfig<T> {
     #[inline]
     pub fn for_spec_and_version(spec_id: T::SpecId, version: Version) -> Self {
         let config = <T::ConfigSelector as EvmConfigSelector<T>>::execution_config(spec_id);
-        assert_eq!(spec_id.into(), version.spec_id, "execution config version spec mismatch");
+        assert_eq!(spec_id.into(), config.base_spec_id, "execution config spec mismatch");
         config.with_version(version)
     }
 
     /// Replaces the runtime version data while keeping the same dispatch table.
     #[inline]
-    pub fn with_version(mut self, version: Version) -> Self {
-        assert_eq!(self.version.spec_id, version.spec_id, "execution config version spec mismatch");
+    pub const fn with_version(mut self, version: Version) -> Self {
         self.version = version;
         self
+    }
+
+    /// Returns the active base specification ID.
+    #[inline]
+    pub const fn base_spec_id(&self) -> SpecId {
+        self.base_spec_id
     }
 
     /// Returns the active EVM version.

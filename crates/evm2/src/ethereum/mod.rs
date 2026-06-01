@@ -388,7 +388,7 @@ fn initial_call_code<T: EvmTypes<Host = Evm<T>>>(
     to: Address,
 ) -> HandlerResult<InitialCallCode> {
     let code = host.state.get_code(&to).map_err(|code| host.db_error_handler(code))?;
-    if host.spec_id().enables(SpecId::PRAGUE)
+    if host.feature(EvmFeatures::EIP7702)
         && let Some(delegated_address) = code.eip7702_address()
     {
         let _ = host.state.warm_account(&delegated_address);
@@ -410,7 +410,8 @@ pub(super) fn rollback_failed_execution<T: EvmTypes<Host = Evm<T>>>(
     result: &mut MessageResult<T>,
 ) {
     if !result.stop.is_success() {
-        host.state.rollback(checkpoint, host.spec_id());
+        let features = host.version().features;
+        host.state.rollback(checkpoint, features);
         if result.stop.is_halt() {
             result.gas.set_remaining(0);
         }

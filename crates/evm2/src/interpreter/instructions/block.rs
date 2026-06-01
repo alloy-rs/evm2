@@ -1,5 +1,5 @@
 use crate::{
-    SpecId,
+    EvmFeatures,
     constants::BLOCK_HASH_HISTORY,
     interpreter::{Host, InstrStop, Word},
     utils::{address_to_word, b256_to_word, word_to_usize_saturated},
@@ -40,7 +40,7 @@ pub(crate) fn block_number(cx: _) -> out {
 
 #[instruction]
 pub(crate) fn difficulty(cx: _) -> out {
-    *out = if cx.state.spec().enables(SpecId::MERGE) {
+    *out = if cx.state.feature(EvmFeatures::EIP4399) {
         cx.state.host().block_env().prevrandao
     } else {
         cx.state.host().block_env().difficulty
