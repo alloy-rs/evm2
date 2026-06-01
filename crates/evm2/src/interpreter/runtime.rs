@@ -396,19 +396,21 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
 
     #[inline]
     pub(crate) fn inspect_call(&mut self, message: &mut Message<T>) -> Option<MessageResult<T>> {
-        self.inspector().and_then(|inspector| inspector.call(message))
+        let mut inspector = self.0.inspector?;
+        unsafe { inspector.as_mut() }.call(&mut self.0, message)
     }
 
     #[inline]
     pub(crate) fn inspect_call_end(&mut self, message: &Message<T>, result: &mut MessageResult<T>) {
-        if let Some(inspector) = self.inspector() {
-            inspector.call_end(message, result);
+        if let Some(mut inspector) = self.0.inspector {
+            unsafe { inspector.as_mut() }.call_end(&mut self.0, message, result);
         }
     }
 
     #[inline]
     pub(crate) fn inspect_create(&mut self, message: &mut Message<T>) -> Option<MessageResult<T>> {
-        self.inspector().and_then(|inspector| inspector.create(message))
+        let mut inspector = self.0.inspector?;
+        unsafe { inspector.as_mut() }.create(&mut self.0, message)
     }
 
     #[inline]
@@ -417,8 +419,8 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
         message: &Message<T>,
         result: &mut MessageResult<T>,
     ) {
-        if let Some(inspector) = self.inspector() {
-            inspector.create_end(message, result);
+        if let Some(mut inspector) = self.0.inspector {
+            unsafe { inspector.as_mut() }.create_end(&mut self.0, message, result);
         }
     }
 
