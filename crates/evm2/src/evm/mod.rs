@@ -60,7 +60,7 @@ pub struct Evm<T: EvmTypes> {
     execution_config: ExecutionConfig<T>,
     features: EvmFeatures,
     pub(crate) block: BlockEnv<T>,
-    registry: TxRegistry<T::Tx, TxResult<T>, Self>,
+    registry: TxRegistry<T, TxResult<T>>,
     #[derive_where(skip)]
     pub(crate) state: State,
     #[derive_where(skip)]
@@ -82,7 +82,7 @@ impl<T: EvmTypes> Evm<T> {
     pub fn new(
         spec_id: T::SpecId,
         block: BlockEnv<T>,
-        registry: TxRegistry<T::Tx, TxResult<T>, Self>,
+        registry: TxRegistry<T, TxResult<T>>,
         database: impl DynDatabase,
         precompiles: impl PrecompileProvider,
     ) -> Self {
@@ -102,7 +102,7 @@ impl<T: EvmTypes> Evm<T> {
         execution_config: ExecutionConfig<T>,
         spec_id: T::SpecId,
         block: BlockEnv<T>,
-        registry: TxRegistry<T::Tx, TxResult<T>, Self>,
+        registry: TxRegistry<T, TxResult<T>>,
         database: impl DynDatabase,
         precompiles: impl PrecompileProvider,
     ) -> Self {
@@ -121,7 +121,7 @@ impl<T: EvmTypes> Evm<T> {
         execution_config: ExecutionConfig<T>,
         spec_id: T::SpecId,
         block: BlockEnv<T>,
-        registry: TxRegistry<T::Tx, TxResult<T>, Self>,
+        registry: TxRegistry<T, TxResult<T>>,
         database: Box<dyn DynDatabase>,
         precompiles: Box<dyn PrecompileProvider>,
     ) -> Self {
@@ -166,7 +166,7 @@ impl<T: EvmTypes> Evm<T> {
 impl<T: EvmTypes> Evm<T> {
     /// Returns the transaction handler registry.
     #[inline]
-    pub const fn registry(&self) -> &TxRegistry<T::Tx, TxResult<T>, Self> {
+    pub const fn registry(&self) -> &TxRegistry<T, TxResult<T>> {
         &self.registry
     }
 
@@ -354,7 +354,7 @@ impl<T: EvmTypes> Evm<T> {
     }
 }
 
-impl<T: EvmTypes<Tx: Typed2718>> Evm<T> {
+impl<T: EvmTypes<Tx: Typed2718, Host = Self>> Evm<T> {
     /// Dispatches the transaction to the handler registered for its EIP-2718 type byte.
     pub fn transact(&mut self, tx: &T::Tx) -> HandlerResult<TxResult<T>> {
         self.db_error_code = None;
@@ -1085,14 +1085,14 @@ mod tests {
     }
 
     fn handle_test_tx(
-        req: TxRequest<'_, Recovered<TxLegacy>, Evm<BaseEvmTypes>>,
+        req: TxRequest<'_, BaseEvmTypes, Recovered<TxLegacy>>,
     ) -> HandlerResult<TxResult> {
         let _ = req.host.spec_id();
         Ok(TxResult { status: true, gas_used: req.tx.nonce + 1, ..TxResult::default() })
     }
 
     fn handle_test_tx_version(
-        req: TxRequest<'_, Recovered<TxLegacy>, Evm<BaseEvmTypes>>,
+        req: TxRequest<'_, BaseEvmTypes, Recovered<TxLegacy>>,
     ) -> HandlerResult<TxResult> {
         Ok(TxResult {
             status: true,

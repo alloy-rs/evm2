@@ -92,9 +92,9 @@ impl Typed2718 for RecoveredTxEnvelope {
 }
 
 /// Returns the Ethereum transaction registry for `spec_id`.
-pub fn ethereum_tx_registry<T: EvmTypes<Host = Evm<T>>>(
+pub fn ethereum_tx_registry<T: EvmTypes<Tx = RecoveredTxEnvelope, Host = Evm<T>>>(
     spec_id: SpecId,
-) -> TxRegistry<RecoveredTxEnvelope, TxResult<T>, Evm<T>> {
+) -> TxRegistry<T, TxResult<T>> {
     let mut registry =
         TxRegistry::new().with_handler(0, RecoveredTxEnvelope::as_legacy, legacy::handle::<T>);
 

@@ -18,7 +18,7 @@ use alloy_eips::eip4844::{DATA_GAS_PER_BLOB, VERSIONED_HASH_VERSION_KZG};
 use alloy_primitives::U256;
 
 pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
-    req: TxRequest<'_, Recovered<TxEip4844Variant>, Evm<T>>,
+    req: TxRequest<'_, T, Recovered<TxEip4844Variant>>,
 ) -> HandlerResult<TxResult<T>> {
     let caller = req.tx.signer();
     let tx = req.tx.inner().tx();
