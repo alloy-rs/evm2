@@ -128,42 +128,10 @@ evm_features! {
     ///
     /// Default: on
     BLOCK_GAS_LIMIT_CHECK,
-    /// Applies [EIP-2](https://eips.ethereum.org/EIPS/eip-2) create transaction intrinsic gas.
-    ///
-    /// Default: on since Homestead
-    EIP2,
-    /// Applies [EIP-2028](https://eips.ethereum.org/EIPS/eip-2028) transaction calldata repricing.
-    ///
-    /// Default: on since Istanbul
-    EIP2028,
-    /// Applies [EIP-3529](https://eips.ethereum.org/EIPS/eip-3529) refund reductions.
-    ///
-    /// Default: on since London
-    EIP3529,
-    /// Applies [EIP-3651](https://eips.ethereum.org/EIPS/eip-3651) warm coinbase at transaction start.
-    ///
-    /// Default: on since Shanghai
-    EIP3651,
-    /// Applies [EIP-3860](https://eips.ethereum.org/EIPS/eip-3860) initcode size limits and word gas.
-    ///
-    /// Default: on since Shanghai
-    EIP3860,
-    /// Applies [EIP-3541](https://eips.ethereum.org/EIPS/eip-3541) contract code prefix rejection.
-    ///
-    /// Default: on since London
-    EIP3541,
     /// Applies [EIP-3607](https://eips.ethereum.org/EIPS/eip-3607) sender code rejection.
     ///
     /// Default: on
     EIP3607,
-    /// Applies [EIP-7623](https://eips.ethereum.org/EIPS/eip-7623) calldata cost floor.
-    ///
-    /// Default: on since Prague
-    EIP7623,
-    /// Checks [EIP-1559](https://eips.ethereum.org/EIPS/eip-1559) transaction fee caps against the block base fee.
-    ///
-    /// Default: on since London
-    BASE_FEE_CHECK,
     /// Checks [EIP-1559](https://eips.ethereum.org/EIPS/eip-1559) max priority fee against max fee.
     ///
     /// Default: on
@@ -172,6 +140,70 @@ evm_features! {
     ///
     /// Default: on
     FEE_CHARGE,
+    /// Applies [EIP-2](https://eips.ethereum.org/EIPS/eip-2) create transaction intrinsic gas.
+    ///
+    /// Default: on since Homestead
+    EIP2,
+    /// Applies [EIP-150](https://eips.ethereum.org/EIPS/eip-150) call gas forwarding limits.
+    ///
+    /// Default: on since Tangerine Whistle
+    EIP150,
+    /// Applies [EIP-161](https://eips.ethereum.org/EIPS/eip-161) state clearing rules.
+    ///
+    /// Default: on since Spurious Dragon
+    EIP161,
+    /// Checks deployed contract bytecode sizes against the active size limit.
+    ///
+    /// Default: on since Spurious Dragon
+    CODE_SIZE_CHECK,
+    /// Applies [EIP-2028](https://eips.ethereum.org/EIPS/eip-2028) transaction calldata repricing.
+    ///
+    /// Default: on since Istanbul
+    EIP2028,
+    /// Applies [EIP-2200](https://eips.ethereum.org/EIPS/eip-2200) SSTORE net metering.
+    ///
+    /// Default: on since Istanbul
+    EIP2200,
+    /// Applies [EIP-2929](https://eips.ethereum.org/EIPS/eip-2929) warm/cold access rules.
+    ///
+    /// Default: on since Berlin
+    EIP2929,
+    /// Applies [EIP-3529](https://eips.ethereum.org/EIPS/eip-3529) refund reductions.
+    ///
+    /// Default: on since London
+    EIP3529,
+    /// Applies [EIP-3541](https://eips.ethereum.org/EIPS/eip-3541) contract code prefix rejection.
+    ///
+    /// Default: on since London
+    EIP3541,
+    /// Checks [EIP-1559](https://eips.ethereum.org/EIPS/eip-1559) transaction fee caps against the block base fee.
+    ///
+    /// Default: on since London
+    BASE_FEE_CHECK,
+    /// Applies [EIP-4399](https://eips.ethereum.org/EIPS/eip-4399) PREVRANDAO opcode semantics.
+    ///
+    /// Default: on since Merge
+    EIP4399,
+    /// Applies [EIP-3651](https://eips.ethereum.org/EIPS/eip-3651) warm coinbase at transaction start.
+    ///
+    /// Default: on since Shanghai
+    EIP3651,
+    /// Applies [EIP-3860](https://eips.ethereum.org/EIPS/eip-3860) initcode size limits and word gas.
+    ///
+    /// Default: on since Shanghai
+    EIP3860,
+    /// Applies [EIP-6780](https://eips.ethereum.org/EIPS/eip-6780) SELFDESTRUCT restrictions.
+    ///
+    /// Default: on since Cancun
+    EIP6780,
+    /// Applies [EIP-7623](https://eips.ethereum.org/EIPS/eip-7623) calldata cost floor.
+    ///
+    /// Default: on since Prague
+    EIP7623,
+    /// Applies [EIP-7702](https://eips.ethereum.org/EIPS/eip-7702) delegation designators.
+    ///
+    /// Default: on since Prague
+    EIP7702,
     /// Applies [EIP-7981](https://eips.ethereum.org/EIPS/eip-7981) access-list data gas costs.
     ///
     /// Default: on since Amsterdam
@@ -188,38 +220,6 @@ evm_features! {
     ///
     /// Default: on since Amsterdam
     EIP7708_DELAYED_BURN,
-    /// Applies [EIP-150](https://eips.ethereum.org/EIPS/eip-150) call gas forwarding limits.
-    ///
-    /// Default: on since Tangerine Whistle
-    EIP150,
-    /// Applies [EIP-161](https://eips.ethereum.org/EIPS/eip-161) state clearing rules.
-    ///
-    /// Default: on since Spurious Dragon
-    EIP161,
-    /// Checks deployed contract bytecode sizes against the active size limit.
-    ///
-    /// Default: on since Spurious Dragon
-    CODE_SIZE_CHECK,
-    /// Applies [EIP-2200](https://eips.ethereum.org/EIPS/eip-2200) SSTORE net metering.
-    ///
-    /// Default: on since Istanbul
-    EIP2200,
-    /// Applies [EIP-2929](https://eips.ethereum.org/EIPS/eip-2929) warm/cold access rules.
-    ///
-    /// Default: on since Berlin
-    EIP2929,
-    /// Applies [EIP-4399](https://eips.ethereum.org/EIPS/eip-4399) PREVRANDAO opcode semantics.
-    ///
-    /// Default: on since Merge
-    EIP4399,
-    /// Applies [EIP-6780](https://eips.ethereum.org/EIPS/eip-6780) SELFDESTRUCT restrictions.
-    ///
-    /// Default: on since Cancun
-    EIP6780,
-    /// Applies [EIP-7702](https://eips.ethereum.org/EIPS/eip-7702) delegation designators.
-    ///
-    /// Default: on since Prague
-    EIP7702,
 }
 
 #[cfg(test)]
