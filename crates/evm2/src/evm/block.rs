@@ -10,13 +10,21 @@ use crate::{
 };
 use alloc::vec::Vec;
 use alloy_eips::{
-    eip4895::Withdrawal, eip7002::WITHDRAWAL_REQUEST_TYPE, eip7251::CONSOLIDATION_REQUEST_TYPE,
+    eip4895::Withdrawal,
+    eip6110::{DEPOSIT_REQUEST_TYPE, MAINNET_DEPOSIT_CONTRACT_ADDRESS},
+    eip7002::WITHDRAWAL_REQUEST_TYPE,
+    eip7251::CONSOLIDATION_REQUEST_TYPE,
     eip7685::Requests,
 };
-use alloy_primitives::{Address, B256, Bytes, U256, address, map::AddressMap};
+use alloy_primitives::{Address, B256, Bytes, Log, U256, address, b256, map::AddressMap};
 use derive_where::derive_where;
 
 const ONE_ETHER: u128 = 1_000_000_000_000_000_000;
+const DEPOSIT_BYTES_SIZE: usize = 48 + 32 + 8 + 96 + 8;
+
+/// EIP-6110 deposit event signature hash.
+pub const DEPOSIT_EVENT_SIGNATURE_HASH: B256 =
+    b256!("0x649bbc62d0e31342afea4e5cd82d4049e7e1ee912fc0889aa790803be39038c5");
 
 /// Mainnet DAO fork block.
 pub const MAINNET_DAO_HARDFORK_BLOCK: u64 = 1_920_000;
@@ -164,7 +172,7 @@ pub struct BlockExecutionResult<T: EvmTypes = BaseEvmTypes> {
     pub pre_block_system_results: Vec<TxResult<T>>,
     /// Post-block system call results.
     pub post_block_system_results: Vec<TxResult<T>>,
-    /// EIP-7685 requests emitted by post-block system calls.
+    /// EIP-7685 requests emitted by deposit logs and post-block system calls.
     pub requests: Requests,
     /// State changes produced by post-block balance increments.
     pub post_block_balance_changes: StateChanges,
@@ -219,6 +227,8 @@ pub struct EthBlockExecutionCtx<'a> {
     pub ommers: &'a [BlockOmmer],
     /// Withdrawals.
     pub withdrawals: Option<&'a [Withdrawal]>,
+    /// Deposit contract address for EIP-6110 log extraction.
+    pub deposit_contract_address: Option<Address>,
     /// Whether to apply the mainnet DAO hardfork balance move at block 1,920,000.
     pub apply_mainnet_dao_hardfork: bool,
 }
@@ -268,6 +278,12 @@ pub enum BlockExecutionError {
         address: Address,
         /// EVM stop reason.
         stop: InstrStop,
+    },
+    /// Deposit request log decoding failed.
+    #[error("failed to decode deposit request from log: {reason}")]
+    DepositRequestDecode {
+        /// Decode failure reason.
+        reason: &'static str,
     },
 }
 
@@ -363,6 +379,31 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         let mut result = BlockSystemCallResult::default();
         self.append_post_block_system_calls(&mut result.requests, &mut result.system_results)?;
         Ok(result)
+    }
+
+    /// Parses EIP-6110 deposit requests from transaction results.
+    pub fn parse_deposit_requests_from_tx_results(
+        &self,
+        deposit_contract_address: Address,
+        tx_results: &[TxResult<T>],
+    ) -> Result<Bytes, BlockExecutionError> {
+        let logs = tx_results.iter().flat_map(|result| result.state_changes.logs.iter());
+        parse_deposit_requests_from_logs(deposit_contract_address, logs)
+    }
+
+    /// Appends EIP-6110 deposit requests from transaction results to `requests`.
+    pub fn append_deposit_requests_from_tx_results(
+        &self,
+        deposit_contract_address: Address,
+        tx_results: &[TxResult<T>],
+        requests: &mut Requests,
+    ) -> Result<(), BlockExecutionError> {
+        let deposit_requests =
+            self.parse_deposit_requests_from_tx_results(deposit_contract_address, tx_results)?;
+        if !deposit_requests.is_empty() {
+            requests.push_request_with_type(DEPOSIT_REQUEST_TYPE, deposit_requests);
+        }
+        Ok(())
     }
 
     /// Applies post-block system calls and appends EIP-7685 requests to `requests`.
@@ -552,9 +593,19 @@ impl Evm<BaseEvmTypes> {
         let mut result = self.execute_block_transactions(txs)?;
         result.pre_block_system_results = pre_system.system_results;
 
-        let post_system = self.apply_post_block_system_calls()?;
-        result.post_block_system_results = post_system.system_results;
-        result.requests = post_system.requests;
+        if self.spec_id().enables(SpecId::PRAGUE) {
+            let deposit_contract_address =
+                ctx.deposit_contract_address.unwrap_or(MAINNET_DEPOSIT_CONTRACT_ADDRESS);
+            self.append_deposit_requests_from_tx_results(
+                deposit_contract_address,
+                &result.transaction_results,
+                &mut result.requests,
+            )?;
+            self.append_post_block_system_calls(
+                &mut result.requests,
+                &mut result.post_block_system_results,
+            )?;
+        }
 
         result.dao_balance_changes = if ctx.apply_mainnet_dao_hardfork {
             self.apply_mainnet_dao_hardfork_balance_move()?
@@ -612,6 +663,87 @@ impl Evm<BaseEvmTypes> {
     }
 }
 
+/// Parses EIP-6110 deposit requests from logs.
+pub fn parse_deposit_requests_from_logs<'a>(
+    deposit_contract_address: Address,
+    logs: impl IntoIterator<Item = &'a Log>,
+) -> Result<Bytes, BlockExecutionError> {
+    let mut out = Vec::new();
+    accumulate_deposit_requests_from_logs(deposit_contract_address, logs, &mut out)?;
+    Ok(out.into())
+}
+
+/// Accumulates EIP-6110 deposit requests from logs into `out`.
+pub fn accumulate_deposit_requests_from_logs<'a>(
+    deposit_contract_address: Address,
+    logs: impl IntoIterator<Item = &'a Log>,
+    out: &mut Vec<u8>,
+) -> Result<(), BlockExecutionError> {
+    for log in logs {
+        if log.address == deposit_contract_address
+            && log.topics().first() == Some(&DEPOSIT_EVENT_SIGNATURE_HASH)
+        {
+            accumulate_deposit_request_from_log(log, out)?;
+        }
+    }
+    Ok(())
+}
+
+/// Accumulates an EIP-6110 deposit request from a deposit event log.
+pub fn accumulate_deposit_request_from_log(
+    log: &Log,
+    out: &mut Vec<u8>,
+) -> Result<(), BlockExecutionError> {
+    let data = log.data.data.as_ref();
+    out.reserve(DEPOSIT_BYTES_SIZE);
+    for field in 0..5 {
+        out.extend_from_slice(decode_deposit_event_bytes_field(data, field)?);
+    }
+    Ok(())
+}
+
+fn decode_deposit_event_bytes_field(
+    data: &[u8],
+    field: usize,
+) -> Result<&[u8], BlockExecutionError> {
+    let offset_word_start = field
+        .checked_mul(32)
+        .ok_or(BlockExecutionError::DepositRequestDecode { reason: "field offset overflow" })?;
+    let offset_word = data
+        .get(offset_word_start..offset_word_start + 32)
+        .ok_or(BlockExecutionError::DepositRequestDecode { reason: "missing field offset" })?;
+    let offset = decode_abi_usize(offset_word)?;
+    let len_word = data
+        .get(offset..offset + 32)
+        .ok_or(BlockExecutionError::DepositRequestDecode { reason: "missing field length" })?;
+    let len = decode_abi_usize(len_word)?;
+    let start = offset
+        .checked_add(32)
+        .ok_or(BlockExecutionError::DepositRequestDecode { reason: "field start overflow" })?;
+    let end = start
+        .checked_add(len)
+        .ok_or(BlockExecutionError::DepositRequestDecode { reason: "field end overflow" })?;
+    data.get(start..end)
+        .ok_or(BlockExecutionError::DepositRequestDecode { reason: "field data out of bounds" })
+}
+
+fn decode_abi_usize(word: &[u8]) -> Result<usize, BlockExecutionError> {
+    let prefix = word
+        .get(..24)
+        .ok_or(BlockExecutionError::DepositRequestDecode { reason: "short ABI word" })?;
+    let bytes = word
+        .get(24..32)
+        .ok_or(BlockExecutionError::DepositRequestDecode { reason: "short ABI word" })?;
+    if prefix.iter().any(|&byte| byte != 0) {
+        return Err(BlockExecutionError::DepositRequestDecode {
+            reason: "ABI word overflows usize",
+        });
+    }
+    let bytes = <[u8; 8]>::try_from(bytes)
+        .map_err(|_| BlockExecutionError::DepositRequestDecode { reason: "short ABI word" })?;
+    Ok(usize::from_be_bytes(bytes))
+}
+
 const fn base_block_reward(spec_id: SpecId) -> Option<u128> {
     if spec_id.enables(SpecId::MERGE) {
         None
@@ -640,7 +772,39 @@ mod tests {
         evm::{AccountInfo, EmptyDB, InMemoryDB, precompile::NoPrecompiles},
         registry::{HandlerError, TxRegistry},
     };
+    use alloc::vec;
     use alloy_consensus::{TxLegacy, transaction::Recovered};
+    use alloy_primitives::LogData;
+
+    fn deposit_log(address: Address, fields: [&[u8]; 5]) -> Log {
+        Log {
+            address,
+            data: LogData::new_unchecked(
+                vec![DEPOSIT_EVENT_SIGNATURE_HASH],
+                encode_deposit_event_data(fields),
+            ),
+        }
+    }
+
+    fn encode_deposit_event_data(fields: [&[u8]; 5]) -> Bytes {
+        let head_len = fields.len() * 32;
+        let mut data = vec![0; head_len];
+        let mut tail = Vec::new();
+
+        for (index, field) in fields.into_iter().enumerate() {
+            let offset = head_len + tail.len();
+            data[index * 32 + 24..index * 32 + 32].copy_from_slice(&(offset as u64).to_be_bytes());
+
+            tail.extend_from_slice(&[0; 24]);
+            tail.extend_from_slice(&(field.len() as u64).to_be_bytes());
+            tail.extend_from_slice(field);
+            let padding = (32 - field.len() % 32) % 32;
+            tail.resize(tail.len() + padding, 0);
+        }
+
+        data.extend(tail);
+        data.into()
+    }
 
     #[test]
     fn execute_block_transactions_rejects_tx_over_remaining_block_gas() {
@@ -690,6 +854,75 @@ mod tests {
             err,
             BlockExecutionError::Transaction(HandlerError::UnsupportedTransactionType(0))
         );
+    }
+
+    #[test]
+    fn parse_deposit_requests_from_logs_filters_and_concatenates_fields() {
+        let address = MAINNET_DEPOSIT_CONTRACT_ADDRESS;
+        let pubkey = [0x11; 48];
+        let withdrawal_credentials = [0x22; 32];
+        let amount = [0x33; 8];
+        let signature = [0x44; 96];
+        let index = [0x55; 8];
+        let log =
+            deposit_log(address, [&pubkey, &withdrawal_credentials, &amount, &signature, &index]);
+        let ignored = Log { address: Address::with_last_byte(0xee), data: log.data.clone() };
+
+        let deposits = parse_deposit_requests_from_logs(address, [&ignored, &log]).unwrap();
+
+        let mut expected = Vec::new();
+        expected.extend_from_slice(&pubkey);
+        expected.extend_from_slice(&withdrawal_credentials);
+        expected.extend_from_slice(&amount);
+        expected.extend_from_slice(&signature);
+        expected.extend_from_slice(&index);
+        assert_eq!(deposits.as_ref(), expected.as_slice());
+    }
+
+    #[test]
+    fn parse_deposit_requests_from_logs_errors_on_malformed_event_data() {
+        let log = Log {
+            address: MAINNET_DEPOSIT_CONTRACT_ADDRESS,
+            data: LogData::new_unchecked(
+                vec![DEPOSIT_EVENT_SIGNATURE_HASH],
+                Bytes::from_static(&[0; 32]),
+            ),
+        };
+
+        let err =
+            parse_deposit_requests_from_logs(MAINNET_DEPOSIT_CONTRACT_ADDRESS, [&log]).unwrap_err();
+
+        assert!(matches!(err, BlockExecutionError::DepositRequestDecode { .. }));
+    }
+
+    #[test]
+    fn append_deposit_requests_from_tx_results_appends_typed_request() {
+        let address = MAINNET_DEPOSIT_CONTRACT_ADDRESS;
+        let pubkey = [0x11; 48];
+        let withdrawal_credentials = [0x22; 32];
+        let amount = [0x33; 8];
+        let signature = [0x44; 96];
+        let index = [0x55; 8];
+        let log =
+            deposit_log(address, [&pubkey, &withdrawal_credentials, &amount, &signature, &index]);
+        let result = TxResult {
+            state_changes: StateChanges { logs: vec![log], ..Default::default() },
+            ..Default::default()
+        };
+        let evm = Evm::<BaseEvmTypes>::new(
+            SpecId::PRAGUE,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            EmptyDB::default(),
+            NoPrecompiles::default(),
+        );
+        let mut requests = Requests::default();
+
+        evm.append_deposit_requests_from_tx_results(address, &[result], &mut requests).unwrap();
+
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0][0], DEPOSIT_REQUEST_TYPE);
+        assert_eq!(requests[0].len(), 1 + DEPOSIT_BYTES_SIZE);
     }
 
     #[test]

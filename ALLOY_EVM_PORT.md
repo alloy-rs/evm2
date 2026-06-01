@@ -15,6 +15,7 @@ Source commit: `4c082e2541323d6ce34d3e0ba8b0ba574f0c85f1`
 - Added pre-block system call helpers for EIP-2935 and EIP-4788.
 - Added post-block system call helpers for EIP-7002 and EIP-7251 with EIP-7685 request collection.
 - Added individual block system-call methods matching alloy's `SystemCaller` surface.
+- Added EIP-6110 deposit request extraction from transaction logs into block requests.
 - Added an Ethereum block transaction loop that enforces capped remaining block gas before each transaction.
 - Added block gas counters for cumulative transaction gas, regular gas, state gas, and final block gas.
 - Added post-block balance increment methods for block rewards, ommer rewards, and withdrawals.
@@ -24,7 +25,6 @@ Source commit: `4c082e2541323d6ce34d3e0ba8b0ba574f0c85f1`
 ## In Progress
 
 - Compare the new block methods against alloy-rs/evm `EthBlockExecutor` behavior and close semantic gaps.
-- Decide whether EIP-6110 deposit request parsing belongs in evm2 block methods or caller-specific receipt code.
 - Port any missing revm/alloy helper types only when they are needed by the method-based evm2 API.
 
 ## Not Planned
