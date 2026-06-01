@@ -8,6 +8,7 @@ Source commit: `4c082e2541323d6ce34d3e0ba8b0ba574f0c85f1`
 
 - Changed `PrecompileProvider` so execution receives `&mut Evm<T>`.
 - Updated the built-in `Precompiles` provider to the new provider API.
+- Added precompile map/provider customization helpers for map, apply, extend, and move operations.
 - Added coverage that verifies a precompile can observe the host EVM during execution.
 - Added `crates/evm2/src/evm/block.rs` for block-level APIs as inherent `Evm` methods.
 - Added block environment accessors: `block`, `block_mut`, and `set_block`.
@@ -29,3 +30,4 @@ Source commit: `4c082e2541323d6ce34d3e0ba8b0ba574f0c85f1`
 ## Not Planned
 
 - Block access list support.
+- Alloy/revm's extra dynamic precompile wrapper layer, because evm2 precompile providers receive `&mut Evm` directly.
