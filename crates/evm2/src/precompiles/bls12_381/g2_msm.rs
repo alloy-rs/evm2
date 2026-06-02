@@ -2,7 +2,7 @@
 
 use super::utils::{pad_g2_point, remove_g2_padding};
 use crate::{
-    interpreter::GasTracker,
+    interpreter::{GasTracker, Message},
     precompiles::{
         PrecompileHalt, PrecompileOutput, PrecompileResult,
         bls12_381_const::{
@@ -21,7 +21,8 @@ use crate::{
 /// Output is an encoding of multi-scalar-multiplication operation result - single G2
 /// point (`256` bytes).
 /// See also: <https://eips.ethereum.org/EIPS/eip-2537#abi-for-g2-multiexponentiation>
-pub fn run(input: &[u8], gas: &mut GasTracker) -> PrecompileResult {
+pub fn run(message: &Message, gas: &mut GasTracker) -> PrecompileResult {
+    let input = message.input.as_ref();
     let input_len = input.len();
     if input_len == 0 || !input_len.is_multiple_of(G2_MSM_INPUT_LENGTH) {
         return Err(PrecompileHalt::Bls12381G2MsmInputLength.into());

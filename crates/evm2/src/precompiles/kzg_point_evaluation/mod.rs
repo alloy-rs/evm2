@@ -2,7 +2,7 @@
 //! For more details check [`run`] function.
 
 use crate::{
-    interpreter::GasTracker,
+    interpreter::{GasTracker, Message},
     precompiles::{PrecompileHalt, PrecompileOutput, PrecompileResult},
 };
 pub(crate) mod arkworks;
@@ -32,7 +32,8 @@ pub(crate) const RETURN_VALUE: &[u8; 64] = &hex!(
 /// | versioned_hash |  z  |  y  | commitment | proof |
 /// |     32         | 32  | 32  |     48     |   48  |
 /// with z and y being padded 32 byte big endian values
-pub fn run(input: &[u8], gas: &mut GasTracker) -> PrecompileResult {
+pub fn run(message: &Message, gas: &mut GasTracker) -> PrecompileResult {
+    let input = message.input.as_ref();
     gas.spend(GAS_COST)?;
 
     // Verify input length.
@@ -105,6 +106,10 @@ pub(crate) fn verify_kzg_proof(
 mod tests {
     use super::*;
 
+    fn message(input: Vec<u8>) -> Message {
+        Message { input: input.into(), ..Message::default() }
+    }
+
     #[test]
     fn basic_test() {
         // Test data from: https://github.com/ethereum/c-kzg-4844/blob/main/tests/verify_kzg_proof/kzg-mainnet/verify_kzg_proof_case_correct_proof_4_4/data.yaml
@@ -126,7 +131,7 @@ mod tests {
             "000000000000000000000000000000000000000000000000000000000000100073eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001"
         );
         let mut gas = GasTracker::new(50_000);
-        let output = run(&input, &mut gas).unwrap();
+        let output = run(&message(input), &mut gas).unwrap();
         assert_eq!(gas.spent(), GAS_COST);
         assert_eq!(output.bytes()[..], expected_output);
     }

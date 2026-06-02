@@ -2,7 +2,7 @@
 
 use super::calc_linear_cost;
 use crate::{
-    interpreter::GasTracker,
+    interpreter::{GasTracker, Message},
     precompiles::{PrecompileOutput, PrecompileResult},
 };
 use alloy_primitives::Bytes;
@@ -17,7 +17,8 @@ pub(crate) const IDENTITY_PER_WORD: u64 = 3;
 /// See: <https://ethereum.github.io/yellowpaper/paper.pdf>
 ///
 /// See: <https://etherscan.io/address/0000000000000000000000000000000000000004>
-pub fn run(input: &[u8], gas: &mut GasTracker) -> PrecompileResult {
+pub fn run(message: &Message, gas: &mut GasTracker) -> PrecompileResult {
+    let input = message.input.as_ref();
     let gas_used = calc_linear_cost(input.len(), IDENTITY_BASE, IDENTITY_PER_WORD);
     gas.spend(gas_used)?;
     Ok(PrecompileOutput::new(Bytes::copy_from_slice(input)))

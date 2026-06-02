@@ -1,7 +1,10 @@
 //! Precompile dispatch interface.
 
 use super::Evm;
-use crate::{EvmTypes, PrecompileError, interpreter::GasTracker};
+use crate::{
+    EvmTypes, PrecompileError,
+    interpreter::{GasTracker, Message},
+};
 use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::{Address, Bytes};
 use core::any::Any;
@@ -47,8 +50,7 @@ pub trait PrecompileProvider<T: EvmTypes>: Any + Send {
     fn execute(
         &mut self,
         evm: &mut Evm<T>,
-        address: Address,
-        input: &[u8],
+        message: &Message<T>,
         gas: &mut GasTracker,
     ) -> Option<Result<PrecompileOutput, PrecompileError>>;
 }
@@ -68,11 +70,10 @@ impl<T: EvmTypes> PrecompileProvider<T> for Box<dyn PrecompileProvider<T>> {
     fn execute(
         &mut self,
         evm: &mut Evm<T>,
-        address: Address,
-        input: &[u8],
+        message: &Message<T>,
         gas: &mut GasTracker,
     ) -> Option<Result<PrecompileOutput, PrecompileError>> {
-        self.as_mut().execute(evm, address, input, gas)
+        self.as_mut().execute(evm, message, gas)
     }
 }
 
@@ -96,8 +97,7 @@ impl<T: EvmTypes> PrecompileProvider<T> for NoPrecompiles {
     fn execute(
         &mut self,
         _evm: &mut Evm<T>,
-        _address: Address,
-        _input: &[u8],
+        _message: &Message<T>,
         _gas: &mut GasTracker,
     ) -> Option<Result<PrecompileOutput, PrecompileError>> {
         None

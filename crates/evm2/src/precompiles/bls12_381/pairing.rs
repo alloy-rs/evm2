@@ -5,7 +5,7 @@ use super::{
     utils::{remove_g1_padding, remove_g2_padding},
 };
 use crate::{
-    interpreter::GasTracker,
+    interpreter::{GasTracker, Message},
     precompiles::{
         PrecompileHalt, PrecompileOutput, PrecompileResult,
         bls12_381_const::{
@@ -29,7 +29,8 @@ use alloy_primitives::B256;
 /// target field and 0x00 otherwise.
 ///
 /// See also: <https://eips.ethereum.org/EIPS/eip-2537#abi-for-pairing>
-pub fn run(input: &[u8], gas: &mut GasTracker) -> PrecompileResult {
+pub fn run(message: &Message, gas: &mut GasTracker) -> PrecompileResult {
+    let input = message.input.as_ref();
     let input_len = input.len();
     if input_len == 0 || !input_len.is_multiple_of(PAIRING_INPUT_LENGTH) {
         return Err(PrecompileHalt::Bls12381PairingInputLength.into());

@@ -1,7 +1,9 @@
 //! EVM precompiled contracts.
 
 use crate::{
-    Evm, EvmTypes, SpecId, evm::precompile::PrecompileProvider, interpreter::GasTracker,
+    BaseEvmTypes, Evm, SpecId,
+    evm::precompile::PrecompileProvider,
+    interpreter::{GasTracker, Message},
     once_lock::OnceLock,
 };
 use alloc::{borrow::Cow, vec::Vec};
@@ -111,7 +113,7 @@ impl Precompiles {
     }
 }
 
-impl<T: EvmTypes> PrecompileProvider<T> for Precompiles {
+impl PrecompileProvider<BaseEvmTypes> for Precompiles {
     #[inline]
     fn warm_addresses(&self) -> Vec<Address> {
         self.map.as_ref().addresses().collect()
@@ -125,13 +127,12 @@ impl<T: EvmTypes> PrecompileProvider<T> for Precompiles {
     #[inline]
     fn execute(
         &mut self,
-        _evm: &mut Evm<T>,
-        address: Address,
-        input: &[u8],
+        _evm: &mut Evm<BaseEvmTypes>,
+        message: &Message,
         gas: &mut GasTracker,
     ) -> Option<PrecompileResult> {
-        let precompile = self.map.as_ref().get_data(&address)?;
-        Some(precompile.run()(input, gas))
+        let precompile = self.map.as_ref().get_data(&message.code_address)?;
+        Some(precompile.run()(message, gas))
     }
 }
 

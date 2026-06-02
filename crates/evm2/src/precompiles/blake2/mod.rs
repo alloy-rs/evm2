@@ -11,7 +11,7 @@
 )]
 
 use crate::{
-    interpreter::GasTracker,
+    interpreter::{GasTracker, Message},
     precompiles::{PrecompileHalt, PrecompileOutput, PrecompileResult},
 };
 
@@ -80,7 +80,8 @@ pub(crate) fn compress(rounds: u32, h: &mut [Word; 8], m: &[Word; 16], t: &[Word
 /// input format:
 /// [4 bytes for rounds][64 bytes for h][128 bytes for m][8 bytes for t_0][8 bytes for t_1][1 byte
 /// for f]
-pub fn run(input: &[u8], gas: &mut GasTracker) -> PrecompileResult {
+pub fn run(message: &Message, gas: &mut GasTracker) -> PrecompileResult {
+    let input = message.input.as_ref();
     if input.len() != INPUT_LENGTH {
         return Err(PrecompileHalt::Blake2WrongLength.into());
     }
