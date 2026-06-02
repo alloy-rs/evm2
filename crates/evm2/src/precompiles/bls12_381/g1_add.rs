@@ -2,7 +2,7 @@
 
 use super::utils::{pad_g1_point, remove_g1_padding};
 use crate::{
-    interpreter::{GasTracker, Message},
+    interpreter::GasTracker,
     precompiles::{
         PrecompileHalt, PrecompileOutput, PrecompileResult,
         bls12_381_const::{G1_ADD_BASE_GAS_FEE, G1_ADD_INPUT_LENGTH, PADDED_G1_LENGTH},
@@ -14,8 +14,7 @@ use crate::{
 /// Output is an encoding of addition operation result - single G1 point (`128`
 /// bytes).
 /// See also: <https://eips.ethereum.org/EIPS/eip-2537#abi-for-g1-addition>
-pub fn run(message: &Message, gas: &mut GasTracker) -> PrecompileResult {
-    let input = message.input.as_ref();
+pub fn run(input: &[u8], gas: &mut GasTracker) -> PrecompileResult {
     gas.spend(G1_ADD_BASE_GAS_FEE)?;
 
     if input.len() != G1_ADD_INPUT_LENGTH {

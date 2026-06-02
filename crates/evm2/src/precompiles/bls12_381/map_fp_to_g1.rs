@@ -2,7 +2,7 @@
 
 use super::utils::{pad_g1_point, remove_fp_padding};
 use crate::{
-    interpreter::{GasTracker, Message},
+    interpreter::GasTracker,
     precompiles::{
         PrecompileHalt, PrecompileOutput, PrecompileResult,
         bls12_381_const::{MAP_FP_TO_G1_BASE_GAS_FEE, PADDED_FP_LENGTH},
@@ -12,8 +12,7 @@ use crate::{
 /// Field-to-curve call expects 64 bytes as an input that is interpreted as an
 /// element of Fp. Output of this call is 128 bytes and is an encoded G1 point.
 /// See also: <https://eips.ethereum.org/EIPS/eip-2537#abi-for-mapping-fp-element-to-g1-point>
-pub fn run(message: &Message, gas: &mut GasTracker) -> PrecompileResult {
-    let input = message.input.as_ref();
+pub fn run(input: &[u8], gas: &mut GasTracker) -> PrecompileResult {
     gas.spend(MAP_FP_TO_G1_BASE_GAS_FEE)?;
 
     if input.len() != PADDED_FP_LENGTH {
@@ -34,17 +33,12 @@ pub fn run(message: &Message, gas: &mut GasTracker) -> PrecompileResult {
 mod test {
     use super::*;
     use alloy_primitives::{Bytes, hex};
-
-    fn message(input: Bytes) -> Message {
-        Message { input, ..Message::default() }
-    }
-
     #[test]
     fn sanity_test() {
         let input = Bytes::from(hex!(
             "000000000000000000000000000000006900000000000000636f6e7472616374595a603f343061cd305a03f40239f5ffff31818185c136bc2595f2aa18e08f17"
         ));
-        let fail = run(&message(input), &mut GasTracker::new(MAP_FP_TO_G1_BASE_GAS_FEE));
+        let fail = run(&input, &mut GasTracker::new(MAP_FP_TO_G1_BASE_GAS_FEE));
         assert_eq!(
             fail.err().and_then(|e| e.as_halt().cloned()),
             Some(PrecompileHalt::NonCanonicalFp)

@@ -1,5 +1,5 @@
 use crate::{
-    interpreter::{GasTracker, Message},
+    interpreter::GasTracker,
     precompiles::{
         PrecompileId, PrecompileResult, blake2, bls12_381, bn254, hash, identity,
         kzg_point_evaluation, modexp, secp256k1, secp256r1,
@@ -10,7 +10,7 @@ use alloy_primitives::{Address, map::AddressMap};
 use core::fmt::{self, Display};
 
 /// Precompile implementation function.
-pub type PrecompileFn = fn(&Message, &mut GasTracker) -> PrecompileResult;
+pub type PrecompileFn = fn(&[u8], &mut GasTracker) -> PrecompileResult;
 
 /// Precompile descriptor.
 #[derive(Clone, Debug)]
@@ -71,7 +71,7 @@ impl Precompile {
     }
 }
 
-fn dummy_precompile(_message: &Message, _gas: &mut GasTracker) -> PrecompileResult {
+fn dummy_precompile(_input: &[u8], _gas: &mut GasTracker) -> PrecompileResult {
     unreachable!("dummy precompile data must be replaced before use")
 }
 
@@ -428,11 +428,11 @@ mod tests {
     use alloy_primitives::{Bytes, address};
     use core::assert_matches;
 
-    fn test_run_a(_message: &Message, _gas: &mut GasTracker) -> PrecompileResult {
+    fn test_run_a(_input: &[u8], _gas: &mut GasTracker) -> PrecompileResult {
         Ok(PrecompileOutput::new(Bytes::from_static(b"a")))
     }
 
-    fn test_run_b(_message: &Message, _gas: &mut GasTracker) -> PrecompileResult {
+    fn test_run_b(_input: &[u8], _gas: &mut GasTracker) -> PrecompileResult {
         Ok(PrecompileOutput::new(Bytes::from_static(b"b")))
     }
 

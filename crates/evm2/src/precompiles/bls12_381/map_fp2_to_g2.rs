@@ -2,7 +2,7 @@
 
 use super::utils::{pad_g2_point, remove_fp_padding};
 use crate::{
-    interpreter::{GasTracker, Message},
+    interpreter::GasTracker,
     precompiles::{
         PrecompileHalt, PrecompileOutput, PrecompileResult,
         bls12_381_const::{MAP_FP2_TO_G2_BASE_GAS_FEE, PADDED_FP_LENGTH, PADDED_FP2_LENGTH},
@@ -13,8 +13,7 @@ use crate::{
 /// an element of Fp2. Output of this call is 256 bytes and is an encoded G2
 /// point.
 /// See also: <https://eips.ethereum.org/EIPS/eip-2537#abi-for-mapping-fp2-element-to-g2-point>
-pub fn run(message: &Message, gas: &mut GasTracker) -> PrecompileResult {
-    let input = message.input.as_ref();
+pub fn run(input: &[u8], gas: &mut GasTracker) -> PrecompileResult {
     gas.spend(MAP_FP2_TO_G2_BASE_GAS_FEE)?;
 
     if input.len() != PADDED_FP2_LENGTH {

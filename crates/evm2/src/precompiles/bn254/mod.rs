@@ -1,7 +1,7 @@
 //! BN254 precompiles added in [`EIP-1962`](https://eips.ethereum.org/EIPS/eip-1962)
 
 use crate::{
-    interpreter::{GasTracker, Message},
+    interpreter::GasTracker,
     precompiles::{PrecompileHalt, PrecompileOutput, PrecompileResult},
     utils::{bool_to_bytes32, right_pad},
 };
@@ -92,14 +92,12 @@ pub mod add {
     pub(crate) const BYZANTIUM_ADD_GAS_COST: u64 = 500;
 
     /// Runs the Istanbul BN254 point addition precompile.
-    pub fn run_istanbul(message: &Message, gas: &mut GasTracker) -> PrecompileResult {
-        let input = message.input.as_ref();
+    pub fn run_istanbul(input: &[u8], gas: &mut GasTracker) -> PrecompileResult {
         run(input, ISTANBUL_ADD_GAS_COST, gas)
     }
 
     /// Runs the Byzantium BN254 point addition precompile.
-    pub fn run_byzantium(message: &Message, gas: &mut GasTracker) -> PrecompileResult {
-        let input = message.input.as_ref();
+    pub fn run_byzantium(input: &[u8], gas: &mut GasTracker) -> PrecompileResult {
         run(input, BYZANTIUM_ADD_GAS_COST, gas)
     }
 
@@ -116,14 +114,12 @@ pub mod mul {
     pub(crate) const BYZANTIUM_MUL_GAS_COST: u64 = 40_000;
 
     /// Runs the Istanbul BN254 scalar multiplication precompile.
-    pub fn run_istanbul(message: &Message, gas: &mut GasTracker) -> PrecompileResult {
-        let input = message.input.as_ref();
+    pub fn run_istanbul(input: &[u8], gas: &mut GasTracker) -> PrecompileResult {
         run(input, ISTANBUL_MUL_GAS_COST, gas)
     }
 
     /// Runs the Byzantium BN254 scalar multiplication precompile.
-    pub fn run_byzantium(message: &Message, gas: &mut GasTracker) -> PrecompileResult {
-        let input = message.input.as_ref();
+    pub fn run_byzantium(input: &[u8], gas: &mut GasTracker) -> PrecompileResult {
         run(input, BYZANTIUM_MUL_GAS_COST, gas)
     }
 
@@ -142,14 +138,12 @@ pub mod pair {
     pub(crate) const BYZANTIUM_PAIR_BASE: u64 = 100_000;
 
     /// Runs the Istanbul BN254 pairing precompile.
-    pub fn run_istanbul(message: &Message, gas: &mut GasTracker) -> PrecompileResult {
-        let input = message.input.as_ref();
+    pub fn run_istanbul(input: &[u8], gas: &mut GasTracker) -> PrecompileResult {
         run(input, ISTANBUL_PAIR_PER_POINT, ISTANBUL_PAIR_BASE, gas)
     }
 
     /// Runs the Byzantium BN254 pairing precompile.
-    pub fn run_byzantium(message: &Message, gas: &mut GasTracker) -> PrecompileResult {
-        let input = message.input.as_ref();
+    pub fn run_byzantium(input: &[u8], gas: &mut GasTracker) -> PrecompileResult {
         run(input, BYZANTIUM_PAIR_PER_POINT, BYZANTIUM_PAIR_BASE, gas)
     }
 
