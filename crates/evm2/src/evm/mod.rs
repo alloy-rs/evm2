@@ -70,7 +70,7 @@ pub struct Evm<T: EvmTypes> {
     #[derive_where(skip)]
     inspector: Option<Box<dyn Inspector<T>>>,
     #[derive_where(skip)]
-    inside_execution: bool,
+    running: bool,
     #[cfg(feature = "async")]
     #[derive_where(skip)]
     async_stack: r#async::FiberStack,
@@ -142,7 +142,7 @@ impl<T: EvmTypes> Evm<T> {
             precompiles,
             interpreter_pool: InterpreterPool::new(),
             inspector: None,
-            inside_execution: false,
+            running: false,
             #[cfg(feature = "async")]
             async_stack: r#async::FiberStack::default(),
             db_error_code: None,
@@ -168,41 +168,35 @@ impl<T: EvmTypes> Evm<T> {
 
     #[inline]
     fn assert_precompiles_accessible(&self) {
-        assert!(
-            !self.inside_execution,
-            "precompile provider cannot be accessed during EVM execution"
-        );
+        assert!(!self.running, "precompile provider cannot be accessed during EVM execution");
     }
 
     #[inline]
     fn assert_precompiles_mutable(&self) {
-        assert!(
-            !self.inside_execution,
-            "precompile provider cannot be modified during EVM execution"
-        );
+        assert!(!self.running, "precompile provider cannot be modified during EVM execution");
     }
 
     #[inline]
     fn assert_inspector_accessible(&self) {
-        assert!(!self.inside_execution, "inspector cannot be accessed during EVM execution");
+        assert!(!self.running, "inspector cannot be accessed during EVM execution");
     }
 
     #[inline]
     fn assert_inspector_mutable(&self) {
-        assert!(!self.inside_execution, "inspector cannot be modified during EVM execution");
+        assert!(!self.running, "inspector cannot be modified during EVM execution");
     }
 
     #[inline]
     const fn enter_execution(&mut self) -> ExecutionGuard {
-        let was_inside_execution = self.inside_execution;
-        self.inside_execution = true;
-        ExecutionGuard { inside_execution: &mut self.inside_execution, was_inside_execution }
+        let was_running = self.running;
+        self.running = true;
+        ExecutionGuard { running: &mut self.running, was_running }
     }
 }
 
 struct ExecutionGuard {
-    inside_execution: *mut bool,
-    was_inside_execution: bool,
+    running: *mut bool,
+    was_running: bool,
 }
 
 impl Drop for ExecutionGuard {
@@ -211,7 +205,7 @@ impl Drop for ExecutionGuard {
         // SAFETY: The guard is created from an `Evm` field and dropped before that `Evm` can be
         // dropped. It only restores the execution-state flag updated by this guard.
         unsafe {
-            *self.inside_execution = self.was_inside_execution;
+            *self.running = self.was_running;
         }
     }
 }
@@ -1175,7 +1169,7 @@ mod tests {
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
         );
-        evm.inside_execution = true;
+        evm.running = true;
 
         assert_panics(|| {
             let _ = evm.precompiles();
@@ -1206,7 +1200,7 @@ mod tests {
             Precompiles::base(SpecId::OSAKA),
         );
         evm.set_inspector(TestInspector);
-        evm.inside_execution = true;
+        evm.running = true;
 
         assert_panics(|| {
             let _ = evm.inspector();
