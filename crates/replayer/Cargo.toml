@@ -20,8 +20,9 @@ alloy-consensus = { workspace = true, features = ["k256", "std"] }
 alloy-eips = { workspace = true, features = ["std"] }
 alloy-primitives = { workspace = true, features = ["serde", "std"] }
 alloy-rlp = { workspace = true, features = ["std"] }
-bincode.workspace = true
 clap.workspace = true
 serde = { workspace = true, features = ["derive", "std"] }
+serde-wincode = { workspace = true, features = ["std"] }
 serde_json = { workspace = true, features = ["std"] }
 thiserror = { workspace = true, features = ["std"] }
+wincode = { workspace = true, features = ["std"] }

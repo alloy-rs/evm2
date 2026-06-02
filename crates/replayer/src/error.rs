@@ -32,7 +32,7 @@ pub(crate) enum Error {
     DecodeBlock {
         path: PathBuf,
         #[source]
-        source: bincode::Error,
+        source: wincode::error::ReadError,
     },
     #[error("failed to read replay manifest from {path}")]
     ReadManifest {

@@ -2,6 +2,7 @@ use crate::error::{Error, Result};
 use alloy_primitives::{Address, B256, Bytes, U256};
 use serde::{Deserialize, Serialize};
 use std::{fs, path::Path};
+use wincode::{SchemaRead, io::Reader};
 
 pub(crate) const FORMAT_VERSION: u32 = 1;
 
@@ -82,8 +83,20 @@ pub(crate) struct BlockHash {
 pub(crate) fn read_block(path: &Path) -> Result<Block> {
     let bytes =
         fs::read(path).map_err(|source| Error::ReadBlock { path: path.to_path_buf(), source })?;
-    bincode::deserialize(&bytes)
-        .map_err(|source| Error::DecodeBlock { path: path.to_path_buf(), source })
+    let mut remaining = bytes.as_slice();
+    let block =
+        <serde_wincode::SerdeCompat<Block> as SchemaRead<wincode::config::Configuration>>::get(
+            remaining.by_ref(),
+        )
+        .map_err(|source| Error::DecodeBlock { path: path.to_path_buf(), source })?;
+    if remaining.is_empty() {
+        Ok(block)
+    } else {
+        Err(Error::DecodeBlock {
+            path: path.to_path_buf(),
+            source: wincode::error::ReadError::Custom("trailing bytes"),
+        })
+    }
 }
 
 pub(crate) fn read_manifest(path: &Path) -> Result<Manifest> {
