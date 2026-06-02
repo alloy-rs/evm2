@@ -88,7 +88,6 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         system_contract_address: Address,
         data: Bytes,
     ) -> TxResult<T> {
-        self.running = true;
         self.state.warm_account_non_revertible(&system_contract_address);
         let tx_env = TxEnv {
             origin: caller,
@@ -108,7 +107,6 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             SYSTEM_CALL_GAS_LIMIT,
         ) else {
             let stop = InstrStop::FatalExternalError;
-            self.running = false;
             return TxResult { stop, db_error_code: self.db_error_code(), ..TxResult::default() };
         };
         let result = Host::execute_message(self, &tx_env, bytecode, &mut message, false);
@@ -137,7 +135,6 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         }
         result.db_error_code = self.db_error_code();
         self.state.clear_transaction_state();
-        self.running = false;
         result
     }
 

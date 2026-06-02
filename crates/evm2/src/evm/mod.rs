@@ -166,6 +166,7 @@ impl<T: EvmTypes> Evm<T> {
         // The provider is not moved or replaced during this call, and `execute` is expected to
         // preserve `Evm` invariants while using the host reference.
         unsafe {
+            let _guard = self.enter_execution();
             (&mut *precompiles)
                 .execute(&mut *evm, message.code_address, &message.input, gas)
                 .expect("precompile was checked before execution")
@@ -195,6 +196,29 @@ impl<T: EvmTypes> Evm<T> {
     #[inline]
     fn assert_inspector_mutable(&self) {
         assert!(!self.running, "inspector cannot be modified during EVM execution");
+    }
+
+    #[inline]
+    const fn enter_execution(&mut self) -> ExecutionGuard {
+        let was_running = self.running;
+        self.running = true;
+        ExecutionGuard { running: &mut self.running, was_running }
+    }
+}
+
+struct ExecutionGuard {
+    running: *mut bool,
+    was_running: bool,
+}
+
+impl Drop for ExecutionGuard {
+    #[inline]
+    fn drop(&mut self) {
+        // SAFETY: The guard is created from an `Evm` field and dropped before that `Evm` can be
+        // dropped. It only restores the execution-state flag updated by this guard.
+        unsafe {
+            *self.running = self.was_running;
+        }
     }
 }
 
@@ -401,15 +425,8 @@ impl<T: EvmTypes> Evm<T> {
 impl<T: EvmTypes<Tx: Typed2718, Host = Self>> Evm<T> {
     /// Dispatches the transaction to the handler registered for its EIP-2718 type byte.
     pub fn transact(&mut self, tx: &T::Tx) -> HandlerResult<TxResult<T>> {
-        self.running = true;
         self.db_error_code = None;
-        let handler = match self.registry.try_get_by_type(tx.ty()) {
-            Ok(handler) => handler,
-            Err(err) => {
-                self.running = false;
-                return Err(err);
-            }
-        };
+        let handler = self.registry.try_get_by_type(tx.ty())?;
         let mut result = handler.call(tx, self);
         if let Ok(result) = &mut result {
             if let Err(stop) = self.finalize_transaction() {
@@ -423,7 +440,6 @@ impl<T: EvmTypes<Tx: Typed2718, Host = Self>> Evm<T> {
             result.db_error_code = self.db_error_code;
         };
         self.state.clear_transaction_state();
-        self.running = false;
         result
     }
 
@@ -748,6 +764,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         caller_is_static: bool,
     ) -> InstrStop {
         let mut interpreter = self.interpreter_pool.pop();
+        let _guard = self.enter_execution();
         let interpreter_ref = interpreter.as_mut();
         interpreter_ref.init(bytecode, tx_env, message, caller_is_static);
         // SAFETY: `execution_config` points to a private field that host execution does not
