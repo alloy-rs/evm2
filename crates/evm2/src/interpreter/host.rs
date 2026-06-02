@@ -1,6 +1,6 @@
 use super::{GasTracker, InstrStop, Message, Result, Word};
 use crate::{
-    BaseEvmTypes, EvmTypes, SpecId,
+    BaseEvmTypes, EvmFeatures, EvmTypes, SpecId,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
     evm::{AccountLoad, SLoad, SStore, SelfDestructResult},
@@ -58,11 +58,11 @@ impl<T: EvmTypes> MessageResult<T> {
 
     /// Calculates the final refund amount for a top-level transaction.
     #[inline]
-    pub const fn final_refund(&self, gas_limit: u64, is_london: bool) -> u64 {
+    pub const fn final_refund(&self, gas_limit: u64, is_eip3529: bool) -> u64 {
         if self.gas.refunded() <= 0 {
             return 0;
         }
-        let max_refund_quotient = if is_london { 5 } else { 2 };
+        let max_refund_quotient = if is_eip3529 { 5 } else { 2 };
         let spent = gas_limit.saturating_sub(self.gas.remaining());
         let refund = self.gas.refunded() as u64;
         let cap = spent / max_refund_quotient;
@@ -71,16 +71,16 @@ impl<T: EvmTypes> MessageResult<T> {
 
     /// Returns top-level gas remaining after applying the final refund cap.
     #[inline]
-    pub const fn gas_remaining_after_final_refund(&self, gas_limit: u64, is_london: bool) -> u64 {
-        let refunded = self.final_refund(gas_limit, is_london);
+    pub const fn gas_remaining_after_final_refund(&self, gas_limit: u64, is_eip3529: bool) -> u64 {
+        let refunded = self.final_refund(gas_limit, is_eip3529);
         let remaining = self.gas.remaining().saturating_add(refunded);
         if remaining < gas_limit { remaining } else { gas_limit }
     }
 
     /// Returns top-level gas used after applying the final refund cap.
     #[inline]
-    pub const fn gas_used_after_final_refund(&self, gas_limit: u64, is_london: bool) -> u64 {
-        gas_limit.saturating_sub(self.gas_remaining_after_final_refund(gas_limit, is_london))
+    pub const fn gas_used_after_final_refund(&self, gas_limit: u64, is_eip3529: bool) -> u64 {
+        gas_limit.saturating_sub(self.gas_remaining_after_final_refund(gas_limit, is_eip3529))
     }
 }
 
@@ -104,7 +104,7 @@ pub trait Host<T: EvmTypes> {
     fn target_is_empty_for_new_account_gas(
         &mut self,
         address: &Address,
-        spec: SpecId,
+        features: EvmFeatures,
     ) -> Result<bool, InstrStop>;
 
     /// Returns a historical block hash.
