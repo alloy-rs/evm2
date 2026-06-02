@@ -179,18 +179,8 @@ impl<T: EvmTypes> Evm<T> {
     }
 
     #[inline]
-    fn assert_precompiles_accessible(&self) {
-        assert!(!self.running, "precompile provider cannot be accessed during EVM execution");
-    }
-
-    #[inline]
     fn assert_precompiles_mutable(&self) {
         assert!(!self.running, "precompile provider cannot be modified during EVM execution");
-    }
-
-    #[inline]
-    fn assert_inspector_accessible(&self) {
-        assert!(!self.running, "inspector cannot be accessed during EVM execution");
     }
 
     #[inline]
@@ -286,7 +276,6 @@ impl<T: EvmTypes> Evm<T> {
     /// Returns the precompile provider.
     #[inline]
     pub fn precompiles(&self) -> &dyn PrecompileProvider<T> {
-        self.assert_precompiles_accessible();
         self.precompiles.as_ref()
     }
 
@@ -320,7 +309,6 @@ impl<T: EvmTypes> Evm<T> {
     /// Returns the active execution inspector.
     #[inline]
     pub fn inspector(&self) -> Option<&dyn Inspector<T>> {
-        self.assert_inspector_accessible();
         self.inspector.as_deref()
     }
 
@@ -1171,8 +1159,6 @@ mod tests {
 
     #[derive(Clone, Copy)]
     enum PrecompileAccess {
-        Ref,
-        As,
         Mut,
         AsMut,
         Set,
@@ -1202,12 +1188,6 @@ mod tests {
                 return None;
             }
             match self.access {
-                PrecompileAccess::Ref => {
-                    let _ = evm.precompiles();
-                }
-                PrecompileAccess::As => {
-                    let _ = evm.precompiles_as::<Self>();
-                }
                 PrecompileAccess::Mut => {
                     let _ = evm.precompiles_mut();
                 }
@@ -1246,15 +1226,53 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "precompile provider cannot be accessed during EVM execution")]
-    fn precompiles_panics_during_execution() {
-        run_precompile_access(PrecompileAccess::Ref);
-    }
+    fn immutable_precompile_access_is_allowed_during_execution() {
+        struct ReadingPrecompile;
 
-    #[test]
-    #[should_panic(expected = "precompile provider cannot be accessed during EVM execution")]
-    fn precompiles_as_panics_during_execution() {
-        run_precompile_access(PrecompileAccess::As);
+        impl PrecompileProvider<BaseEvmTypes> for ReadingPrecompile {
+            fn contains(&self, address: &Address) -> bool {
+                *address == AccessingPrecompile::ADDRESS
+            }
+
+            fn execute(
+                &mut self,
+                evm: &mut Evm<BaseEvmTypes>,
+                address: Address,
+                _input: &[u8],
+                _gas: &mut GasTracker,
+            ) -> Option<Result<PrecompileOutput, PrecompileError>> {
+                if !self.contains(&address) {
+                    return None;
+                }
+                let _ = evm.precompiles();
+                let _ = evm.precompiles_as::<Self>();
+                Some(Ok(PrecompileOutput::new(Bytes::new())))
+            }
+        }
+
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            ReadingPrecompile,
+        );
+        let message = Message {
+            kind: MessageKind::Call,
+            depth: 0,
+            gas_limit: 30_000,
+            destination: AccessingPrecompile::ADDRESS,
+            caller: Address::ZERO,
+            input: Bytes::new(),
+            value: U256::ZERO,
+            code_address: AccessingPrecompile::ADDRESS,
+            disable_precompiles: false,
+            salt: B256::ZERO,
+            ext: (),
+            _non_exhaustive: (),
+        };
+
+        evm.execute_precompile(&message, &mut GasTracker::new(30_000)).unwrap();
     }
 
     #[test]
@@ -1277,7 +1295,6 @@ mod tests {
 
     #[derive(Clone, Copy)]
     enum InspectorAccess {
-        Ref,
         Mut,
         Set,
         SetBoxed,
@@ -1295,9 +1312,6 @@ mod tests {
         fn initialize_interp(&mut self, _interp: &mut Interpreter<'_, BaseEvmTypes>) {
             let evm = unsafe { &mut *self.evm };
             match self.access {
-                InspectorAccess::Ref => {
-                    let _ = evm.inspector();
-                }
                 InspectorAccess::Mut => {
                     let _ = evm.inspector_mut();
                 }
@@ -1331,9 +1345,34 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "inspector cannot be accessed during EVM execution")]
-    fn inspector_panics_during_execution() {
-        run_inspector_access(InspectorAccess::Ref);
+    fn immutable_inspector_access_is_allowed_during_execution() {
+        struct ReadingInspector {
+            evm: *const Evm<BaseEvmTypes>,
+        }
+
+        unsafe impl Send for ReadingInspector {}
+
+        impl Inspector<BaseEvmTypes> for ReadingInspector {
+            fn initialize_interp(&mut self, _interp: &mut Interpreter<'_, BaseEvmTypes>) {
+                let evm = unsafe { &*self.evm };
+                let _ = evm.inspector();
+            }
+        }
+
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        let evm_ptr = &evm as *const Evm<BaseEvmTypes>;
+        evm.set_inspector(ReadingInspector { evm: evm_ptr });
+        let message = Message::default();
+        let tx_env = TxEnv::default();
+        let bytecode = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
+
+        let _ = evm.run_interpreter(bytecode, &tx_env, &message, false);
     }
 
     #[test]
