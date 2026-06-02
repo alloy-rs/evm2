@@ -7,7 +7,7 @@ use crate::{
 };
 use alloc::vec::Vec;
 
-#[cfg_attr(any(feature = "bn", feature = "bn254-mcl"), expect(dead_code))]
+#[cfg_attr(all(feature = "bn", not(feature = "bn254-mcl")), expect(dead_code))]
 pub(crate) mod arkworks;
 
 cfg_if::cfg_if! {

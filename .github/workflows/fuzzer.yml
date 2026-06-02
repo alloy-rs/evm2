@@ -1,0 +1,64 @@
+name: Differential Fuzzer
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/fuzzer.yml"
+      - "Cargo.toml"
+      - "crates/evm2/**"
+      - "crates/fuzzer/**"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  smoke:
+    name: smoke (${{ matrix.dispatch_backend }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        dispatch_backend: [tco, packed, single_return, unpacked]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: rui314/setup-mold@v1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          cache-bin: false
+      - name: Replay regression corpus
+        env:
+          EVM2_DISPATCH_BACKEND: ${{ matrix.dispatch_backend }}
+        run: cargo run -q -p evm2-fuzzer -- corpus crates/fuzzer/corpus/failures
+      - name: Run random fuzz smoke test
+        env:
+          EVM2_DISPATCH_BACKEND: ${{ matrix.dispatch_backend }}
+        run: cargo run -q -p evm2-fuzzer -- --duration 3m -j 0
+      - name: Upload failing fuzzer cases
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzzer-failures-${{ matrix.dispatch_backend }}
+          path: crates/fuzzer/corpus/failures/*.json
+          if-no-files-found: ignore
+
+  ci-success:
+    name: fuzzer success
+    runs-on: ubuntu-latest
+    if: always()
+    needs:
+      - smoke
+    steps:
+      - name: Decide whether the needed jobs succeeded or failed
+        uses: re-actors/alls-green@release/v1
+        with:
+          jobs: ${{ toJSON(needs) }}
