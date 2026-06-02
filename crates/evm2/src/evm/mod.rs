@@ -1163,12 +1163,7 @@ mod tests {
         })
     }
 
-    fn assert_panics(f: impl FnOnce()) {
-        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).is_err());
-    }
-
-    #[test]
-    fn precompile_access_panics_during_execution() {
+    fn running_evm() -> Evm<BaseEvmTypes> {
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
             BlockEnv::default(),
@@ -1177,49 +1172,89 @@ mod tests {
             Precompiles::base(SpecId::OSAKA),
         );
         evm.running = true;
-
-        assert_panics(|| {
-            let _ = evm.precompiles();
-        });
-        assert_panics(|| {
-            let _ = evm.precompiles_as::<Precompiles>();
-        });
-        assert_panics(|| {
-            let _ = evm.precompiles_mut();
-        });
-        assert_panics(|| {
-            let _ = evm.precompiles_as_mut::<Precompiles>();
-        });
-        assert_panics(|| evm.set_precompiles(Precompiles::base(SpecId::OSAKA)));
+        evm
     }
 
     #[test]
-    fn inspector_access_panics_during_execution() {
-        struct TestInspector;
+    #[should_panic(expected = "precompile provider cannot be accessed during EVM execution")]
+    fn precompiles_panics_during_execution() {
+        let evm = running_evm();
+        let _ = evm.precompiles();
+    }
 
-        impl Inspector<BaseEvmTypes> for TestInspector {}
+    #[test]
+    #[should_panic(expected = "precompile provider cannot be accessed during EVM execution")]
+    fn precompiles_as_panics_during_execution() {
+        let evm = running_evm();
+        let _ = evm.precompiles_as::<Precompiles>();
+    }
 
-        let mut evm = Evm::<BaseEvmTypes>::new(
-            SpecId::OSAKA,
-            BlockEnv::default(),
-            TxRegistry::new(),
-            InMemoryDB::default(),
-            Precompiles::base(SpecId::OSAKA),
-        );
+    #[test]
+    #[should_panic(expected = "precompile provider cannot be modified during EVM execution")]
+    fn precompiles_mut_panics_during_execution() {
+        let mut evm = running_evm();
+        let _ = evm.precompiles_mut();
+    }
+
+    #[test]
+    #[should_panic(expected = "precompile provider cannot be modified during EVM execution")]
+    fn precompiles_as_mut_panics_during_execution() {
+        let mut evm = running_evm();
+        let _ = evm.precompiles_as_mut::<Precompiles>();
+    }
+
+    #[test]
+    #[should_panic(expected = "precompile provider cannot be modified during EVM execution")]
+    fn set_precompiles_panics_during_execution() {
+        let mut evm = running_evm();
+        evm.set_precompiles(Precompiles::base(SpecId::OSAKA));
+    }
+
+    struct TestInspector;
+
+    impl Inspector<BaseEvmTypes> for TestInspector {}
+
+    fn running_evm_with_inspector() -> Evm<BaseEvmTypes> {
+        let mut evm = running_evm();
+        evm.running = false;
         evm.set_inspector(TestInspector);
         evm.running = true;
+        evm
+    }
 
-        assert_panics(|| {
-            let _ = evm.inspector();
-        });
-        assert_panics(|| {
-            let _ = evm.inspector_mut();
-        });
-        assert_panics(|| evm.set_inspector(TestInspector));
-        assert_panics(|| evm.set_boxed_inspector(Box::new(TestInspector)));
-        assert_panics(|| {
-            let _ = evm.clear_inspector();
-        });
+    #[test]
+    #[should_panic(expected = "inspector cannot be accessed during EVM execution")]
+    fn inspector_panics_during_execution() {
+        let evm = running_evm_with_inspector();
+        let _ = evm.inspector();
+    }
+
+    #[test]
+    #[should_panic(expected = "inspector cannot be modified during EVM execution")]
+    fn inspector_mut_panics_during_execution() {
+        let mut evm = running_evm_with_inspector();
+        let _ = evm.inspector_mut();
+    }
+
+    #[test]
+    #[should_panic(expected = "inspector cannot be modified during EVM execution")]
+    fn set_inspector_panics_during_execution() {
+        let mut evm = running_evm_with_inspector();
+        evm.set_inspector(TestInspector);
+    }
+
+    #[test]
+    #[should_panic(expected = "inspector cannot be modified during EVM execution")]
+    fn set_boxed_inspector_panics_during_execution() {
+        let mut evm = running_evm_with_inspector();
+        evm.set_boxed_inspector(Box::new(TestInspector));
+    }
+
+    #[test]
+    #[should_panic(expected = "inspector cannot be modified during EVM execution")]
+    fn clear_inspector_panics_during_execution() {
+        let mut evm = running_evm_with_inspector();
+        let _ = evm.clear_inspector();
     }
 
     #[test]
