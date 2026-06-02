@@ -1,7 +1,8 @@
 //! EVM precompiled contracts.
 
 use crate::{
-    SpecId, evm::precompile::PrecompileProvider, interpreter::GasTracker, once_lock::OnceLock,
+    Evm, EvmTypes, SpecId, evm::precompile::PrecompileProvider, interpreter::GasTracker,
+    once_lock::OnceLock,
 };
 use alloc::{borrow::Cow, vec::Vec};
 use alloy_primitives::Address;
@@ -96,9 +97,21 @@ impl Precompiles {
     pub fn map(precompiles: impl IntoIterator<Item = Precompile>) -> PrecompileMap {
         PrecompileMap::from_precompiles(precompiles)
     }
+
+    /// Returns the underlying precompile map.
+    #[inline]
+    pub fn as_map(&self) -> &PrecompileMap {
+        self.map.as_ref()
+    }
+
+    /// Returns the underlying precompile map mutably.
+    #[inline]
+    pub fn as_map_mut(&mut self) -> &mut PrecompileMap {
+        self.map.to_mut()
+    }
 }
 
-impl PrecompileProvider for Precompiles {
+impl<T: EvmTypes> PrecompileProvider<T> for Precompiles {
     #[inline]
     fn warm_addresses(&self) -> Vec<Address> {
         self.map.as_ref().addresses().collect()
@@ -112,6 +125,7 @@ impl PrecompileProvider for Precompiles {
     #[inline]
     fn execute(
         &mut self,
+        _evm: &mut Evm<T>,
         address: Address,
         input: &[u8],
         gas: &mut GasTracker,
@@ -186,4 +200,23 @@ fn base_precompiles(spec: SpecId) -> &'static PrecompileMap {
 
         precompiles
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_primitives::address;
+
+    #[test]
+    fn provider_helpers_clone_static_base_on_mutation() {
+        let identity = IDENTITY.address();
+        let moved = address!("0x0000000000000000000000000000000000001000");
+        let mut precompiles = Precompiles::base(SpecId::BERLIN);
+
+        precompiles.as_map_mut().move_precompiles([(identity, moved)]).unwrap();
+
+        assert!(!precompiles.as_map().contains(&identity));
+        assert!(precompiles.as_map().contains(&moved));
+        assert!(Precompiles::base(SpecId::BERLIN).as_map().contains(&identity));
+    }
 }
