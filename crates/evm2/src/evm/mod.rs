@@ -189,25 +189,7 @@ impl<T: EvmTypes> Evm<T> {
         self.running = true;
         ExecutionGuard { running: &mut self.running, was_running }
     }
-}
 
-struct ExecutionGuard {
-    running: *mut bool,
-    was_running: bool,
-}
-
-impl Drop for ExecutionGuard {
-    #[inline]
-    fn drop(&mut self) {
-        // SAFETY: The guard is created from an `Evm` field and dropped before that `Evm` can be
-        // dropped. It only restores the execution-state flag updated by this guard.
-        unsafe {
-            *self.running = self.was_running;
-        }
-    }
-}
-
-impl<T: EvmTypes> Evm<T> {
     /// Returns the transaction handler registry.
     #[inline]
     pub const fn registry(&self) -> &TxRegistry<T, TxResult<T>> {
@@ -402,6 +384,22 @@ impl<T: EvmTypes> Evm<T> {
     #[inline]
     pub const fn config_spec_id(&self) -> T::SpecId {
         self.spec_id
+    }
+}
+
+struct ExecutionGuard {
+    running: *mut bool,
+    was_running: bool,
+}
+
+impl Drop for ExecutionGuard {
+    #[inline]
+    fn drop(&mut self) {
+        // SAFETY: The guard is created from an `Evm` field and dropped before that `Evm` can be
+        // dropped. It only restores the execution-state flag updated by this guard.
+        unsafe {
+            *self.running = self.was_running;
+        }
     }
 }
 
