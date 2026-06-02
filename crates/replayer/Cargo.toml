@@ -1,0 +1,27 @@
+[package]
+name = "evm2-replayer"
+description = "Replay revm-oomph block corpora with evm2"
+
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+evm2 = { workspace = true, default-features = true }
+
+alloy-consensus = { workspace = true, features = ["k256", "std"] }
+alloy-eips = { workspace = true, features = ["std"] }
+alloy-primitives = { workspace = true, features = ["serde", "std"] }
+alloy-rlp = { workspace = true, features = ["std"] }
+bincode.workspace = true
+clap.workspace = true
+serde = { workspace = true, features = ["derive", "std"] }
+serde_json = { workspace = true, features = ["std"] }
+thiserror = { workspace = true, features = ["std"] }
