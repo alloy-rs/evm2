@@ -70,7 +70,7 @@ pub struct Evm<T: EvmTypes> {
     #[derive_where(skip)]
     inspector: Option<Box<dyn Inspector<T>>>,
     #[derive_where(skip)]
-    execution_depth: usize,
+    inside_execution: bool,
     #[cfg(feature = "async")]
     #[derive_where(skip)]
     async_stack: r#async::FiberStack,
@@ -142,7 +142,7 @@ impl<T: EvmTypes> Evm<T> {
             precompiles,
             interpreter_pool: InterpreterPool::new(),
             inspector: None,
-            execution_depth: 0,
+            inside_execution: false,
             #[cfg(feature = "async")]
             async_stack: r#async::FiberStack::default(),
             db_error_code: None,
@@ -168,48 +168,50 @@ impl<T: EvmTypes> Evm<T> {
 
     #[inline]
     fn assert_precompiles_accessible(&self) {
-        assert_eq!(
-            self.execution_depth, 0,
+        assert!(
+            !self.inside_execution,
             "precompile provider cannot be accessed during EVM execution"
         );
     }
 
     #[inline]
     fn assert_precompiles_mutable(&self) {
-        assert_eq!(
-            self.execution_depth, 0,
+        assert!(
+            !self.inside_execution,
             "precompile provider cannot be modified during EVM execution"
         );
     }
 
     #[inline]
     fn assert_inspector_accessible(&self) {
-        assert_eq!(self.execution_depth, 0, "inspector cannot be accessed during EVM execution");
+        assert!(!self.inside_execution, "inspector cannot be accessed during EVM execution");
     }
 
     #[inline]
     fn assert_inspector_mutable(&self) {
-        assert_eq!(self.execution_depth, 0, "inspector cannot be modified during EVM execution");
+        assert!(!self.inside_execution, "inspector cannot be modified during EVM execution");
     }
 
     #[inline]
     const fn enter_execution(&mut self) -> ExecutionGuard {
-        self.execution_depth += 1;
-        ExecutionGuard { depth: &mut self.execution_depth }
+        let was_inside_execution = self.inside_execution;
+        self.inside_execution = true;
+        ExecutionGuard { inside_execution: &mut self.inside_execution, was_inside_execution }
     }
 }
 
 struct ExecutionGuard {
-    depth: *mut usize,
+    inside_execution: *mut bool,
+    was_inside_execution: bool,
 }
 
 impl Drop for ExecutionGuard {
     #[inline]
     fn drop(&mut self) {
         // SAFETY: The guard is created from an `Evm` field and dropped before that `Evm` can be
-        // dropped. It only restores the execution-depth counter incremented by this guard.
+        // dropped. It only restores the execution-state flag updated by this guard.
         unsafe {
-            *self.depth -= 1;
+            *self.inside_execution = self.was_inside_execution;
         }
     }
 }
@@ -1173,7 +1175,7 @@ mod tests {
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
         );
-        evm.execution_depth = 1;
+        evm.inside_execution = true;
 
         assert_panics(|| {
             let _ = evm.precompiles();
@@ -1204,7 +1206,7 @@ mod tests {
             Precompiles::base(SpecId::OSAKA),
         );
         evm.set_inspector(TestInspector);
-        evm.execution_depth = 1;
+        evm.inside_execution = true;
 
         assert_panics(|| {
             let _ = evm.inspector();
