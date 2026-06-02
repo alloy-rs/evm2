@@ -132,7 +132,7 @@ impl PrecompileProvider<BaseEvmTypes> for Precompiles {
         gas: &mut GasTracker,
     ) -> Option<PrecompileResult> {
         let precompile = self.map.as_ref().get_data(&message.code_address)?;
-        Some(precompile.run()(message.input.as_ref(), gas))
+        Some(precompile.run()(message, gas))
     }
 }
 
