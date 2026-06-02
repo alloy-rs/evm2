@@ -1,7 +1,7 @@
 //! EVM precompiled contracts.
 
 use crate::{
-    BaseEvmTypes, Evm, SpecId,
+    Evm, EvmTypes, SpecId,
     evm::precompile::PrecompileProvider,
     interpreter::{GasTracker, Message},
     once_lock::OnceLock,
@@ -113,7 +113,7 @@ impl Precompiles {
     }
 }
 
-impl PrecompileProvider<BaseEvmTypes> for Precompiles {
+impl<T: EvmTypes> PrecompileProvider<T> for Precompiles {
     #[inline]
     fn warm_addresses(&self) -> Vec<Address> {
         self.map.as_ref().addresses().collect()
@@ -127,12 +127,26 @@ impl PrecompileProvider<BaseEvmTypes> for Precompiles {
     #[inline]
     fn execute(
         &mut self,
-        _evm: &mut Evm<BaseEvmTypes>,
-        message: &Message,
+        _evm: &mut Evm<T>,
+        message: &Message<T>,
         gas: &mut GasTracker,
     ) -> Option<PrecompileResult> {
         let precompile = self.map.as_ref().get_data(&message.code_address)?;
-        Some(precompile.run()(message, gas))
+        let message = Message {
+            kind: message.kind,
+            depth: message.depth,
+            gas_limit: message.gas_limit,
+            destination: message.destination,
+            caller: message.caller,
+            input: message.input.clone(),
+            value: message.value,
+            code_address: message.code_address,
+            disable_precompiles: message.disable_precompiles,
+            salt: message.salt,
+            ext: (),
+            _non_exhaustive: (),
+        };
+        Some(precompile.run()(&message, gas))
     }
 }
 

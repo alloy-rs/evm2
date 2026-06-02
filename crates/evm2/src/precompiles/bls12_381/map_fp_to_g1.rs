@@ -33,6 +33,7 @@ pub fn run(input: &[u8], gas: &mut GasTracker) -> PrecompileResult {
 mod test {
     use super::*;
     use alloy_primitives::{Bytes, hex};
+
     #[test]
     fn sanity_test() {
         let input = Bytes::from(hex!(

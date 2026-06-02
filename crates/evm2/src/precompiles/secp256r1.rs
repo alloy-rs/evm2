@@ -114,6 +114,7 @@ mod test {
     use crate::precompiles::PrecompileHalt;
     use alloy_primitives::hex::FromHex;
     use rstest::rstest;
+
     #[rstest]
     // Test vectors from https://github.com/daimo-eth/p256-verifier/tree/master/test-vectors
     #[case::ok_1(

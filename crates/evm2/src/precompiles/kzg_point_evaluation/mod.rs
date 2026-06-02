@@ -104,6 +104,7 @@ pub(crate) fn verify_kzg_proof(
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn basic_test() {
         // Test data from: https://github.com/ethereum/c-kzg-4844/blob/main/tests/verify_kzg_proof/kzg-mainnet/verify_kzg_proof_case_correct_proof_4_4/data.yaml

@@ -326,6 +326,7 @@ mod tests {
     use alloc::{vec, vec::Vec};
     use alloy_primitives::hex;
     use core::assert_matches;
+
     struct Test {
         input: &'static str,
         expected: &'static str,
@@ -683,12 +684,12 @@ mod tests {
         // Test minimum gas consumption with empty input
         // Byzantium has min_gas of 0 for empty input
         let mut gas = GasTracker::new(gas_limit);
-        run_byzantium(&Bytes::new(), &mut gas).unwrap();
+        run_byzantium(&[], &mut gas).unwrap();
         assert_eq!(gas.spent(), 0, "Empty input should use 0 gas for Byzantium");
 
         // Berlin has min_gas of 200
         let mut gas = GasTracker::new(gas_limit);
-        run_berlin(&Bytes::new(), &mut gas).unwrap();
+        run_berlin(&[], &mut gas).unwrap();
         assert_eq!(gas.spent(), 200, "Empty input should use minimum gas 200 for Berlin");
 
         // Test gas consumption with very small inputs

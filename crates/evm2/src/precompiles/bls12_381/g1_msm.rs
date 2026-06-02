@@ -59,6 +59,7 @@ pub fn run(input: &[u8], gas: &mut GasTracker) -> PrecompileResult {
 mod test {
     use super::*;
     use alloy_primitives::{Bytes, hex};
+
     #[test]
     fn bls_g1multiexp_g1_not_on_curve_but_in_subgroup() {
         let input = Bytes::from(hex!(
