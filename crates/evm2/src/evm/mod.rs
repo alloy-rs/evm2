@@ -401,11 +401,16 @@ impl<T: EvmTypes> Evm<T> {
 impl<T: EvmTypes<Tx: Typed2718, Host = Self>> Evm<T> {
     /// Dispatches the transaction to the handler registered for its EIP-2718 type byte.
     pub fn transact(&mut self, tx: &T::Tx) -> HandlerResult<TxResult<T>> {
-        self.db_error_code = None;
-        let handler = self.registry.try_get_by_type(tx.ty())?;
         self.running = true;
+        self.db_error_code = None;
+        let handler = match self.registry.try_get_by_type(tx.ty()) {
+            Ok(handler) => handler,
+            Err(err) => {
+                self.running = false;
+                return Err(err);
+            }
+        };
         let mut result = handler.call(tx, self);
-        self.running = false;
         if let Ok(result) = &mut result {
             if let Err(stop) = self.finalize_transaction() {
                 result.status = false;
@@ -418,6 +423,7 @@ impl<T: EvmTypes<Tx: Typed2718, Host = Self>> Evm<T> {
             result.db_error_code = self.db_error_code;
         };
         self.state.clear_transaction_state();
+        self.running = false;
         result
     }
 
