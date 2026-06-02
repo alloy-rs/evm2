@@ -69,6 +69,8 @@ pub struct Evm<T: EvmTypes> {
     interpreter_pool: InterpreterPool<T>,
     #[derive_where(skip)]
     inspector: Option<Box<dyn Inspector<T>>>,
+    #[derive_where(skip)]
+    execution_depth: usize,
     #[cfg(feature = "async")]
     #[derive_where(skip)]
     async_stack: r#async::FiberStack,
@@ -140,6 +142,7 @@ impl<T: EvmTypes> Evm<T> {
             precompiles,
             interpreter_pool: InterpreterPool::new(),
             inspector: None,
+            execution_depth: 0,
             #[cfg(feature = "async")]
             async_stack: r#async::FiberStack::default(),
             db_error_code: None,
@@ -157,9 +160,57 @@ impl<T: EvmTypes> Evm<T> {
         message: &Message<T>,
         gas: &mut GasTracker,
     ) -> Result<PrecompileOutput, PrecompileError> {
+        let _guard = self.enter_execution();
         self.precompiles
             .execute(message.code_address, &message.input, gas)
             .expect("precompile was checked before execution")
+    }
+
+    #[inline]
+    fn assert_precompiles_accessible(&self) {
+        assert_eq!(
+            self.execution_depth, 0,
+            "precompile provider cannot be accessed during EVM execution"
+        );
+    }
+
+    #[inline]
+    fn assert_precompiles_mutable(&self) {
+        assert_eq!(
+            self.execution_depth, 0,
+            "precompile provider cannot be modified during EVM execution"
+        );
+    }
+
+    #[inline]
+    fn assert_inspector_accessible(&self) {
+        assert_eq!(self.execution_depth, 0, "inspector cannot be accessed during EVM execution");
+    }
+
+    #[inline]
+    fn assert_inspector_mutable(&self) {
+        assert_eq!(self.execution_depth, 0, "inspector cannot be modified during EVM execution");
+    }
+
+    #[inline]
+    const fn enter_execution(&mut self) -> ExecutionGuard {
+        self.execution_depth += 1;
+        ExecutionGuard { depth: &mut self.execution_depth }
+    }
+}
+
+struct ExecutionGuard {
+    depth: *mut usize,
+}
+
+impl Drop for ExecutionGuard {
+    #[inline]
+    fn drop(&mut self) {
+        // SAFETY: The guard is created from an `Evm` field and dropped before that `Evm` can be
+        // dropped. It only restores the execution-depth counter incremented by this guard.
+        unsafe {
+            *self.depth -= 1;
+        }
     }
 }
 
@@ -227,18 +278,21 @@ impl<T: EvmTypes> Evm<T> {
     /// Returns the precompile provider.
     #[inline]
     pub fn precompiles(&self) -> &dyn PrecompileProvider {
+        self.assert_precompiles_accessible();
         self.precompiles.as_ref()
     }
 
     /// Returns the precompile provider mutably.
     #[inline]
     pub fn precompiles_mut(&mut self) -> &mut dyn PrecompileProvider {
+        self.assert_precompiles_mutable();
         self.precompiles.as_mut()
     }
 
     /// Replaces the precompile provider.
     #[inline]
     pub fn set_precompiles(&mut self, precompiles: impl PrecompileProvider) {
+        self.assert_precompiles_mutable();
         self.precompiles = Box::new(precompiles);
     }
 
@@ -251,18 +305,21 @@ impl<T: EvmTypes> Evm<T> {
     /// Returns the precompile provider mutably as `P` if it has that concrete type.
     #[inline]
     pub fn precompiles_as_mut<P: PrecompileProvider>(&mut self) -> Option<&mut P> {
+        self.assert_precompiles_mutable();
         <dyn core::any::Any>::downcast_mut(self.precompiles_mut())
     }
 
     /// Returns the active execution inspector.
     #[inline]
     pub fn inspector(&self) -> Option<&dyn Inspector<T>> {
+        self.assert_inspector_accessible();
         self.inspector.as_deref()
     }
 
     /// Returns the active execution inspector mutably.
     #[inline]
     pub fn inspector_mut(&mut self) -> Option<&mut dyn Inspector<T>> {
+        self.assert_inspector_mutable();
         self.inspector.as_deref_mut()
     }
 
@@ -302,18 +359,21 @@ impl<T: EvmTypes> Evm<T> {
     /// Sets the active execution inspector.
     #[inline]
     pub fn set_inspector<I: Inspector<T> + 'static>(&mut self, inspector: I) {
+        self.assert_inspector_mutable();
         self.inspector = Some(Box::new(inspector));
     }
 
     /// Sets the active boxed execution inspector.
     #[inline]
     pub fn set_boxed_inspector(&mut self, inspector: Box<dyn Inspector<T>>) {
+        self.assert_inspector_mutable();
         self.inspector = Some(inspector);
     }
 
     /// Removes the active execution inspector.
     #[inline]
     pub fn clear_inspector(&mut self) -> Option<Box<dyn Inspector<T>>> {
+        self.assert_inspector_mutable();
         self.inspector.take()
     }
 
@@ -696,6 +756,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         caller_is_static: bool,
     ) -> InstrStop {
         let mut interpreter = self.interpreter_pool.pop();
+        let _guard = self.enter_execution();
         let interpreter_ref = interpreter.as_mut();
         interpreter_ref.init(bytecode, tx_env, message, caller_is_static);
         // SAFETY: `execution_config` points to a private field that host execution does not
@@ -1097,6 +1158,65 @@ mod tests {
             gas_used: req.host.version().tx_gas_limit_cap,
             ..TxResult::default()
         })
+    }
+
+    fn assert_panics(f: impl FnOnce()) {
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).is_err());
+    }
+
+    #[test]
+    fn precompile_access_panics_during_execution() {
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        evm.execution_depth = 1;
+
+        assert_panics(|| {
+            let _ = evm.precompiles();
+        });
+        assert_panics(|| {
+            let _ = evm.precompiles_as::<Precompiles>();
+        });
+        assert_panics(|| {
+            let _ = evm.precompiles_mut();
+        });
+        assert_panics(|| {
+            let _ = evm.precompiles_as_mut::<Precompiles>();
+        });
+        assert_panics(|| evm.set_precompiles(Precompiles::base(SpecId::OSAKA)));
+    }
+
+    #[test]
+    fn inspector_access_panics_during_execution() {
+        struct TestInspector;
+
+        impl Inspector<BaseEvmTypes> for TestInspector {}
+
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        evm.set_inspector(TestInspector);
+        evm.execution_depth = 1;
+
+        assert_panics(|| {
+            let _ = evm.inspector();
+        });
+        assert_panics(|| {
+            let _ = evm.inspector_mut();
+        });
+        assert_panics(|| evm.set_inspector(TestInspector));
+        assert_panics(|| evm.set_boxed_inspector(Box::new(TestInspector)));
+        assert_panics(|| {
+            let _ = evm.clear_inspector();
+        });
     }
 
     #[test]
