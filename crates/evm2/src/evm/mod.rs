@@ -20,8 +20,12 @@ use crate::{
 use alloc::{boxed::Box, vec};
 use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{Address, B256, Bytes, Log, LogData};
+#[cfg(feature = "async")]
+use core::future::Future;
 use derive_where::derive_where;
 
+#[cfg(feature = "async")]
+pub mod r#async;
 pub mod config;
 pub mod env;
 pub mod inspector;
@@ -56,7 +60,7 @@ pub struct Evm<T: EvmTypes> {
     execution_config: ExecutionConfig<T>,
     features: EvmFeatures,
     pub(crate) block: BlockEnv<T>,
-    registry: TxRegistry<T::Tx, TxResult<T>, Self>,
+    registry: TxRegistry<T, TxResult<T>>,
     #[derive_where(skip)]
     pub(crate) state: State,
     #[derive_where(skip)]
@@ -67,7 +71,7 @@ pub struct Evm<T: EvmTypes> {
     inspector: Option<Box<dyn Inspector<T>>>,
     #[cfg(feature = "async")]
     #[derive_where(skip)]
-    async_stack: crate::async_::FiberStack,
+    async_stack: r#async::FiberStack,
     db_error_code: Option<DbErrorCode>,
 }
 
@@ -78,7 +82,7 @@ impl<T: EvmTypes> Evm<T> {
     pub fn new(
         spec_id: T::SpecId,
         block: BlockEnv<T>,
-        registry: TxRegistry<T::Tx, TxResult<T>, Self>,
+        registry: TxRegistry<T, TxResult<T>>,
         database: impl DynDatabase,
         precompiles: impl PrecompileProvider,
     ) -> Self {
@@ -98,7 +102,7 @@ impl<T: EvmTypes> Evm<T> {
         execution_config: ExecutionConfig<T>,
         spec_id: T::SpecId,
         block: BlockEnv<T>,
-        registry: TxRegistry<T::Tx, TxResult<T>, Self>,
+        registry: TxRegistry<T, TxResult<T>>,
         database: impl DynDatabase,
         precompiles: impl PrecompileProvider,
     ) -> Self {
@@ -117,14 +121,14 @@ impl<T: EvmTypes> Evm<T> {
         execution_config: ExecutionConfig<T>,
         spec_id: T::SpecId,
         block: BlockEnv<T>,
-        registry: TxRegistry<T::Tx, TxResult<T>, Self>,
+        registry: TxRegistry<T, TxResult<T>>,
         database: Box<dyn DynDatabase>,
         precompiles: Box<dyn PrecompileProvider>,
     ) -> Self {
         assert_eq!(
             spec_id.into(),
-            execution_config.version().spec_id,
-            "execution config version spec mismatch"
+            execution_config.base_spec_id(),
+            "execution config spec mismatch"
         );
         Self {
             spec_id,
@@ -137,7 +141,7 @@ impl<T: EvmTypes> Evm<T> {
             interpreter_pool: InterpreterPool::new(),
             inspector: None,
             #[cfg(feature = "async")]
-            async_stack: crate::async_::FiberStack::default(),
+            async_stack: r#async::FiberStack::default(),
             db_error_code: None,
         }
     }
@@ -162,7 +166,7 @@ impl<T: EvmTypes> Evm<T> {
 impl<T: EvmTypes> Evm<T> {
     /// Returns the transaction handler registry.
     #[inline]
-    pub const fn registry(&self) -> &TxRegistry<T::Tx, TxResult<T>, Self> {
+    pub const fn registry(&self) -> &TxRegistry<T, TxResult<T>> {
         &self.registry
     }
 
@@ -192,7 +196,7 @@ impl<T: EvmTypes> Evm<T> {
 
     #[cfg(feature = "async")]
     #[inline]
-    fn async_stack(&mut self) -> core::ptr::NonNull<crate::async_::FiberStack> {
+    fn async_stack(&mut self) -> core::ptr::NonNull<r#async::FiberStack> {
         core::ptr::NonNull::from(&mut self.async_stack)
     }
 
@@ -339,8 +343,8 @@ impl<T: EvmTypes> Evm<T> {
 
     /// Returns the active base specification ID.
     #[inline]
-    pub const fn spec_id(&self) -> SpecId {
-        self.version().spec_id
+    pub fn spec_id(&self) -> SpecId {
+        self.spec_id.into()
     }
 
     /// Returns the selector-specific runtime specification ID.
@@ -350,7 +354,7 @@ impl<T: EvmTypes> Evm<T> {
     }
 }
 
-impl<T: EvmTypes<Tx: Typed2718>> Evm<T> {
+impl<T: EvmTypes<Tx: Typed2718, Host = Self>> Evm<T> {
     /// Dispatches the transaction to the handler registered for its EIP-2718 type byte.
     pub fn transact(&mut self, tx: &T::Tx) -> HandlerResult<TxResult<T>> {
         self.db_error_code = None;
@@ -374,23 +378,22 @@ impl<T: EvmTypes<Tx: Typed2718>> Evm<T> {
     /// Dispatches the transaction to the handler registered for its EIP-2718 type byte on an async
     /// fiber.
     ///
-    /// This must be used with an async database adapter such as [`crate::AsyncDb`] to take
+    /// This must be used with an async database adapter such as
+    /// [`evm::async::AsyncDb`](crate::evm::async::AsyncDb) to take
     /// advantage of yielding database I/O. With a synchronous database this is mostly equivalent to
     /// running the synchronous transaction on a fiber.
     #[cfg(feature = "async")]
     pub fn transact_async<'a>(
         &'a mut self,
         tx: &'a T::Tx,
-    ) -> impl core::future::Future<Output = crate::AsyncResult<TxResult<T>, registry::HandlerError>>
-    + Send
-    + 'a
+    ) -> impl Future<Output = r#async::AsyncResult<TxResult<T>, registry::HandlerError>> + Send + 'a
     where
         T::TxResultExt: Send,
     {
         let stack = self.async_stack();
         // SAFETY: The returned future owns the exclusive `&mut self` borrow, so nothing else can
         // access the EVM stack slot until that future is dropped.
-        unsafe { crate::async_::on_fiber_result_with_stack(stack, move || self.transact(tx)) }
+        unsafe { r#async::on_fiber_result_with_stack(stack, move || self.transact(tx)) }
     }
 
     /// Dispatches each transaction to its registered EIP-2718 handler.
@@ -422,7 +425,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         }
         let checkpoint = self.state.checkpoint();
         if let Err(stop) = self.create_message_account(message) {
-            self.state.rollback(checkpoint, self.spec_id());
+            self.state.rollback(checkpoint, self.features);
             return Self::error_message_result(stop, message.gas_limit);
         }
         message.code_address = message.destination;
@@ -463,7 +466,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             &message.caller,
             &message.destination,
             &message.value,
-            self.spec_id(),
+            self.features,
         ) {
             Ok(result) => result,
             Err(code) => {
@@ -489,7 +492,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         let mut output = Bytes::copy_from_slice(interpreter.output());
         if stop.is_success() {
             if let Err(stop) = self.validate_create_output(&mut gas, &mut output) {
-                self.state.rollback(checkpoint, self.spec_id());
+                self.state.rollback(checkpoint, self.features);
                 return MessageResult {
                     stop,
                     gas: Self::message_gas(*gas.tracker(), stop),
@@ -501,11 +504,11 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             }
 
             if let Err(code) = self.state.set_code(address, Bytecode::new_legacy(output.clone())) {
-                self.state.rollback(checkpoint, self.spec_id());
+                self.state.rollback(checkpoint, self.features);
                 return Self::error_message_result(self.db_error_stop(code), gas_limit);
             }
         } else {
-            self.state.rollback(checkpoint, self.spec_id());
+            self.state.rollback(checkpoint, self.features);
         }
 
         MessageResult {
@@ -519,8 +522,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     }
 
     fn validate_create_output(&self, gas: &mut Gas, output: &mut Bytes) -> Result<(), InstrStop> {
-        if self.spec_id().enables(SpecId::SPURIOUS_DRAGON)
-            && output.len() > self.version().max_code_size
+        if self.feature(EvmFeatures::CODE_SIZE_CHECK) && output.len() > self.version().max_code_size
         {
             return Err(InstrStop::CreateContractSizeLimit);
         }
@@ -634,7 +636,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             }
         };
         if !stop.is_success() {
-            self.state.rollback(checkpoint, self.spec_id());
+            self.state.rollback(checkpoint, self.features);
         }
         MessageResult {
             stop,
@@ -656,7 +658,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         let child_gas = interpreter.gas();
         let output = Bytes::copy_from_slice(interpreter.output());
         if !stop.is_success() {
-            self.state.rollback(checkpoint, self.spec_id());
+            self.state.rollback(checkpoint, self.features);
         }
 
         MessageResult {
@@ -736,7 +738,7 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
         load_code: bool,
         skip_cold_load: bool,
     ) -> Result<AccountLoad, InstrStop> {
-        let is_cold = if self.spec_id().enables(SpecId::BERLIN) {
+        let is_cold = if self.feature(EvmFeatures::EIP2929) {
             self.state.warm_account(address)
         } else {
             let _ = self.state.warm_account(address);
@@ -766,10 +768,10 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
     fn target_is_empty_for_new_account_gas(
         &mut self,
         address: &Address,
-        spec: SpecId,
+        features: EvmFeatures,
     ) -> Result<bool, InstrStop> {
         self.state
-            .target_is_empty_for_new_account_gas(address, spec)
+            .target_is_empty_for_new_account_gas(address, features)
             .map_err(|code| self.db_error_stop(code))
     }
 
@@ -783,8 +785,7 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
         key: &Word,
         skip_cold_load: bool,
     ) -> Result<SLoad, InstrStop> {
-        let is_cold =
-            self.spec_id().enables(SpecId::BERLIN) && self.state.warm_storage(address, key);
+        let is_cold = self.feature(EvmFeatures::EIP2929) && self.state.warm_storage(address, key);
         if skip_cold_load && is_cold {
             return Err(InstrStop::OutOfGas);
         }
@@ -802,8 +803,7 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
         value: &Word,
         skip_cold_load: bool,
     ) -> Result<SStore, InstrStop> {
-        let is_cold =
-            self.spec_id().enables(SpecId::BERLIN) && self.state.warm_storage(address, key);
+        let is_cold = self.feature(EvmFeatures::EIP2929) && self.state.warm_storage(address, key);
         if skip_cold_load && is_cold {
             return Err(InstrStop::OutOfGas);
         }
@@ -852,7 +852,7 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
         target: &Address,
         skip_cold_load: bool,
     ) -> Result<SelfDestructResult, InstrStop> {
-        let is_cold = if self.spec_id().enables(SpecId::BERLIN) {
+        let is_cold = if self.feature(EvmFeatures::EIP2929) {
             self.state.warm_account(target)
         } else {
             let _ = self.state.warm_account(target);
@@ -861,16 +861,17 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
         if skip_cold_load && is_cold {
             return Err(InstrStop::OutOfGas);
         }
+        let features = self.features;
         let target_is_empty_for_new_account_gas =
-            self.target_is_empty_for_new_account_gas(target, self.spec_id())?;
+            self.target_is_empty_for_new_account_gas(target, features)?;
         let previously_destroyed = self.state.is_selfdestructed(contract);
         let balance = self
             .state
             .account_info(contract)
             .map_err(|code| self.db_error_stop(code))?
             .map_or(Word::ZERO, |info| info.balance);
-        let should_destroy = !self.spec_id().enables(SpecId::CANCUN)
-            || self.state.is_created_in_transaction(contract);
+        let should_destroy =
+            !self.feature(EvmFeatures::EIP6780) || self.state.is_created_in_transaction(contract);
 
         if contract != target {
             let transferred = self
@@ -1082,14 +1083,14 @@ mod tests {
     }
 
     fn handle_test_tx(
-        req: TxRequest<'_, Recovered<TxLegacy>, Evm<BaseEvmTypes>>,
+        req: TxRequest<'_, BaseEvmTypes, Recovered<TxLegacy>>,
     ) -> HandlerResult<TxResult> {
         let _ = req.host.spec_id();
         Ok(TxResult { status: true, gas_used: req.tx.nonce + 1, ..TxResult::default() })
     }
 
     fn handle_test_tx_version(
-        req: TxRequest<'_, Recovered<TxLegacy>, Evm<BaseEvmTypes>>,
+        req: TxRequest<'_, BaseEvmTypes, Recovered<TxLegacy>>,
     ) -> HandlerResult<TxResult> {
         Ok(TxResult {
             status: true,

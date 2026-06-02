@@ -1,7 +1,7 @@
 //! Async execution support for synchronous EVM hosts.
 //!
 //! This module runs the synchronous EVM on a native fiber. Synchronous host methods can then use
-//! [`block_on_current`] to poll an async operation; if that operation is pending, the fiber is
+//! `block_on_current` to poll an async operation; if that operation is pending, the fiber is
 //! suspended and the outer async task returns `Poll::Pending`.
 
 use crate::{
@@ -602,7 +602,10 @@ mod tests {
     };
     use alloy_consensus::{TxLegacy, transaction::Recovered};
     use alloy_primitives::{Address, B256, Bytes};
-    use core::{convert::Infallible, fmt, future::Future, pin::Pin, ptr::NonNull, task::Poll};
+    use core::{
+        assert_matches, convert::Infallible, fmt, future::Future, pin::Pin, ptr::NonNull,
+        task::Poll,
+    };
     use corosensei::stack::Stack;
     use std::{
         error::Error,
@@ -611,7 +614,7 @@ mod tests {
 
     #[test]
     fn block_on_requires_fiber() {
-        assert!(matches!(block_on_current(core::future::ready(())), Err(AsyncError::NotOnFiber)));
+        assert_matches!(block_on_current(core::future::ready(())), Err(AsyncError::NotOnFiber));
     }
 
     #[test]
@@ -624,8 +627,8 @@ mod tests {
         let waker = Waker::noop();
         let mut cx = Context::from_waker(waker);
 
-        assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
-        assert!(matches!(future.as_mut().poll(&mut cx), Poll::Ready(Ok(3))));
+        assert_matches!(future.as_mut().poll(&mut cx), Poll::Pending);
+        assert_matches!(future.as_mut().poll(&mut cx), Poll::Ready(Ok(3)));
     }
 
     #[test]
@@ -660,8 +663,9 @@ mod tests {
         let waker = Waker::noop();
         let mut cx = Context::from_waker(waker);
 
-        assert!(
-            matches!(future.as_mut().poll(&mut cx), Poll::Ready(Ok(value)) if value == Word::from(9))
+        assert_matches!(
+            future.as_mut().poll(&mut cx),
+            Poll::Ready(Ok(value)) if value == Word::from(9),
         );
     }
 
@@ -676,9 +680,10 @@ mod tests {
         let waker = Waker::noop();
         let mut cx = Context::from_waker(waker);
 
-        assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
-        assert!(
-            matches!(future.as_mut().poll(&mut cx), Poll::Ready(Ok(value)) if value == Word::from(9))
+        assert_matches!(future.as_mut().poll(&mut cx), Poll::Pending);
+        assert_matches!(
+            future.as_mut().poll(&mut cx),
+            Poll::Ready(Ok(value)) if value == Word::from(9),
         );
     }
 
@@ -727,10 +732,10 @@ mod tests {
 
         let result = poll_ready(evm.transact_async(&tx));
 
-        assert!(matches!(
+        assert_matches!(
             result,
             Err(AsyncError::Inner(HandlerError::UnsupportedTransactionType(TEST_TX_TYPE)))
-        ));
+        );
     }
 
     #[test]
@@ -831,7 +836,7 @@ mod tests {
             let waker = Waker::noop();
             let mut cx = Context::from_waker(waker);
 
-            assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
+            assert_matches!(future.as_mut().poll(&mut cx), Poll::Pending);
         }
         assert!(saw_cancel);
     }
@@ -846,7 +851,7 @@ mod tests {
     }
 
     fn handle_test_tx(
-        req: TxRequest<'_, Recovered<TxLegacy>, Evm<BaseEvmTypes>>,
+        req: TxRequest<'_, BaseEvmTypes, Recovered<TxLegacy>>,
     ) -> HandlerResult<TxResult> {
         let _ = req.host.spec_id();
         Ok(TxResult { status: true, gas_used: req.tx.nonce + 1, ..TxResult::default() })

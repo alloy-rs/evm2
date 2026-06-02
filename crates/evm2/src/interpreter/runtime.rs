@@ -3,7 +3,7 @@ use super::{
     StackBacking, Word,
 };
 use crate::{
-    EvmTypes, ExecutionConfig, SpecId, Version,
+    EvmTypes, ExecutionConfig, Version,
     bytecode::Bytecode,
     env::TxEnv,
     evm::inspector::Inspector,
@@ -38,7 +38,6 @@ pub struct Interpreter<'frame, T: EvmTypes> {
 
     pub(in crate::interpreter) gas: Gas,
     pub(in crate::interpreter) result: Result,
-    spec: SpecId,
     features: EvmFeatures,
     is_static: bool,
 }
@@ -66,7 +65,6 @@ impl<T: EvmTypes> Default for Interpreter<'_, T> {
             host: None,
             inspector: None,
             version: core::ptr::null(),
-            spec: SpecId::DEFAULT,
             features: EvmFeatures::empty(),
             // SAFETY: `MaybeUninit<Word>` does not need initialization.
             stack: unsafe { Box::new_uninit().assume_init() },
@@ -215,7 +213,6 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         self.host = Some(NonNull::from(host));
         self.inspector = inspector;
         self.version = version;
-        self.spec = version.spec_id;
         self.features = version.features;
 
         dispatch::run(self, instructions)
@@ -318,12 +315,6 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
         self.0.is_static
     }
 
-    /// Returns the active spec identifier.
-    #[inline]
-    pub const fn spec(&self) -> SpecId {
-        self.0.spec
-    }
-
     /// Returns `true` if the active feature set contains `feature`.
     #[inline]
     pub const fn feature(&self, feature: EvmFeatures) -> bool {
@@ -389,19 +380,21 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
 
     #[inline]
     pub(crate) fn inspect_call(&mut self, message: &mut Message<T>) -> Option<MessageResult<T>> {
-        self.inspector().and_then(|inspector| inspector.call(message))
+        let mut inspector = self.0.inspector?;
+        unsafe { inspector.as_mut() }.call(&mut self.0, message)
     }
 
     #[inline]
     pub(crate) fn inspect_call_end(&mut self, message: &Message<T>, result: &mut MessageResult<T>) {
-        if let Some(inspector) = self.inspector() {
-            inspector.call_end(message, result);
+        if let Some(mut inspector) = self.0.inspector {
+            unsafe { inspector.as_mut() }.call_end(&mut self.0, message, result);
         }
     }
 
     #[inline]
     pub(crate) fn inspect_create(&mut self, message: &mut Message<T>) -> Option<MessageResult<T>> {
-        self.inspector().and_then(|inspector| inspector.create(message))
+        let mut inspector = self.0.inspector?;
+        unsafe { inspector.as_mut() }.create(&mut self.0, message)
     }
 
     #[inline]
@@ -410,8 +403,8 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
         message: &Message<T>,
         result: &mut MessageResult<T>,
     ) {
-        if let Some(inspector) = self.inspector() {
-            inspector.create_end(message, result);
+        if let Some(mut inspector) = self.0.inspector {
+            unsafe { inspector.as_mut() }.create_end(&mut self.0, message, result);
         }
     }
 

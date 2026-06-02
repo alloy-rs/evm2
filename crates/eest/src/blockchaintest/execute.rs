@@ -16,11 +16,13 @@ use alloy_eips::{eip4844, eip7691};
 use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, U256};
 use alloy_rpc_types_eth::AccessList as RpcAccessList;
 use evm2::{
-    BEACON_ROOTS_ADDRESS, BaseEvmTypes, Evm, HISTORY_STORAGE_ADDRESS, Precompiles, SpecId,
-    TxResult, WITHDRAWAL_REQUEST_ADDRESS,
+    BaseEvmTypes, Evm, Precompiles, SpecId, TxResult,
     env::BlockEnv,
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
-    evm::{AccountInfo as EvmAccountInfo, InMemoryDB},
+    evm::{
+        AccountInfo as EvmAccountInfo, BEACON_ROOTS_ADDRESS, HISTORY_STORAGE_ADDRESS, InMemoryDB,
+        WITHDRAWAL_REQUEST_ADDRESS,
+    },
     registry::HandlerError,
 };
 use std::{fs, path::Path};
@@ -293,7 +295,7 @@ fn post_block_transition(
             database,
             spec,
             block,
-            evm2::CONSOLIDATION_REQUEST_ADDRESS,
+            evm2::evm::CONSOLIDATION_REQUEST_ADDRESS,
             Bytes::new(),
             "eip7251",
         )?;

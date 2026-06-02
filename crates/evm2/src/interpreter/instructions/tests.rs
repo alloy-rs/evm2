@@ -1,5 +1,5 @@
 use crate::{
-    BaseEvmConfigSelector, EvmTypes, ExecutionConfig, SpecId,
+    BaseEvmConfigSelector, EvmFeatures, EvmTypes, ExecutionConfig, SpecId,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
     evm::{AccountLoad, SLoad, SStore, SelfDestructResult},
@@ -11,7 +11,7 @@ use crate::{
 };
 use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::{Address, B256, Bytes, Log};
-use core::ops::Range;
+use core::{assert_matches, ops::Range};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct TestTypes;
@@ -111,9 +111,9 @@ impl Host<TestTypes> for TestHost {
     fn target_is_empty_for_new_account_gas(
         &mut self,
         _address: &Address,
-        spec: SpecId,
+        features: EvmFeatures,
     ) -> Result<bool, InstrStop> {
-        if spec.enables(SpecId::SPURIOUS_DRAGON) {
+        if features.contains(EvmFeatures::EIP161) {
             return Ok(!self.exists || self.is_empty);
         }
         Ok(!self.exists && !self.is_touched)
@@ -363,7 +363,7 @@ pub(super) fn assert_stack_words(inputs: &[Word], opcode: u8, expected: &[Word])
     }
     code.extend([opcode, op::STOP]);
     let interpreter = run(RunConfig::new(code));
-    assert!(matches!(interpreter.err, InstrStop::Stop));
+    assert_matches!(interpreter.err, InstrStop::Stop);
     assert_eq!(interpreter.stack(), expected);
 }
 
