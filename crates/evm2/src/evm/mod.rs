@@ -17,7 +17,7 @@ use crate::{
     trustme,
     version::{EvmFeatures, GasId},
 };
-use alloc::{boxed::Box, vec, vec::Vec};
+use alloc::{boxed::Box, vec};
 use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{Address, B256, Bytes, Log, LogData};
 #[cfg(feature = "async")]
@@ -171,11 +171,6 @@ impl<T: EvmTypes> Evm<T> {
                 .execute(&mut *evm, message.code_address, &message.input, gas)
                 .expect("precompile was checked before execution")
         }
-    }
-
-    #[inline]
-    pub(crate) fn precompile_warm_addresses(&self) -> Vec<Address> {
-        self.precompiles.warm_addresses()
     }
 
     #[inline]
