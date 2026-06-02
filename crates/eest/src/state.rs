@@ -40,6 +40,7 @@ pub(crate) fn system_contract_has_code(database: &InMemoryDB, address: Address) 
         .cache
         .accounts
         .get(&address)
+        .and_then(Option::as_ref)
         .and_then(|info| database.cache.contracts.get(&info.code_hash))
         .is_some_and(|code| !code.is_empty())
 }
@@ -53,7 +54,7 @@ pub(crate) fn storage_for_root(
         .cache
         .storage
         .iter()
-        .filter_map(|(&key, &value)| {
+        .filter_map(|(key, &value)| {
             (key.address() == address && !value.is_zero()).then_some((B256::from(key.key()), value))
         })
         .collect()

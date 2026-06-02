@@ -445,12 +445,16 @@ const fn block_reward(spec: SpecId, ommers: usize) -> u128 {
 }
 
 fn increment_balance(database: &mut InMemoryDB, address: Address, amount: U256) {
-    let mut info = database.cache.accounts.get(&address).cloned().unwrap_or_default();
+    let info = database
+        .cache
+        .accounts
+        .entry(address)
+        .or_insert_with(|| Some(EvmAccountInfo::default()))
+        .get_or_insert_with(EvmAccountInfo::default);
     info.balance = info.balance.saturating_add(amount);
     if info.code_hash.is_zero() {
         info.code_hash = KECCAK256_EMPTY;
     }
-    database.cache.accounts.insert(address, info);
 }
 
 fn validate_post_state(
@@ -458,7 +462,14 @@ fn validate_post_state(
     expected: &std::collections::BTreeMap<Address, Account>,
 ) -> Result<(), TestErrorKind> {
     for (address, expected_account) in expected {
-        let info = database.cache.accounts.get(address).cloned().unwrap_or_default();
+        let default_info;
+        let info = match database.cache.accounts.get(address) {
+            Some(Some(info)) => info,
+            _ => {
+                default_info = EvmAccountInfo::default();
+                &default_info
+            }
+        };
         if info.balance != expected_account.balance {
             return Err(TestErrorKind::UnexpectedFailure(format!(
                 "balance mismatch for {address}: got {}, expected {}",
@@ -473,10 +484,10 @@ fn validate_post_state(
         }
 
         if !expected_account.code.is_empty() {
-            let actual_code = info
-                .code
-                .as_ref()
-                .or_else(|| database.cache.contracts.get(&info.code_hash))
+            let actual_code = database
+                .cache
+                .contracts
+                .get(&info.code_hash)
                 .map(|code| code.original_byte_slice())
                 .unwrap_or_default();
             if actual_code != expected_account.code.as_ref() {
@@ -494,9 +505,8 @@ fn validate_post_state(
                 && !expected_account.storage.contains_key(&key.key())
             {
                 return Err(TestErrorKind::UnexpectedFailure(format!(
-                    "unexpected storage for {address}[{}]: got {}, expected 0",
-                    key.key(),
-                    value
+                    "unexpected storage for {address}[{}]: got {value}, expected 0",
+                    key.key()
                 )));
             }
         }

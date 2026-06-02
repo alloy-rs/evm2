@@ -373,8 +373,7 @@ impl<T: EvmTypes<Tx: Typed2718, Host = Self>> Evm<T> {
                 result.stop = stop;
                 result.output = Bytes::new();
             } else {
-                result.state_changes = self.state.build_state_changes();
-                self.state.commit_transaction_overlay();
+                result.state_changes = self.state.accept_transaction();
             }
             result.db_error_code = self.db_error_code;
         };
@@ -783,7 +782,7 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
     }
 
     fn block_hash(&mut self, number: &Word) -> Result<Option<B256>, InstrStop> {
-        self.state.initial_mut().get_block_hash(number).map_err(|code| self.db_error_stop(code))
+        self.state.block_hash(number).map_err(|code| self.db_error_stop(code))
     }
 
     fn sload(
