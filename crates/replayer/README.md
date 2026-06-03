@@ -1,6 +1,6 @@
 # evm2-replayer
 
-Replays flattened `revm-oomph` mainnet block corpora with `evm2`.
+Replays of mainnet block corpora with `evm2`.
 
 The replayer decodes each corpus block, reconstructs the consensus block from
 the raw RLP header/body, prepares an `evm2` block environment from the header,
