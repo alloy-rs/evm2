@@ -409,25 +409,22 @@ macro_rules! define_precompiles {
         $vis:vis const $name:ident = ($address:expr, $id:expr) => $f:path;
     )*) => {
         $(
-            #[allow(non_snake_case)]
-            pub(super) mod $name {
-                use super::*;
-
-                pub(crate) const fn precompile<T: EvmTypes>() -> Precompile<T> {
-                    fn run<T: EvmTypes>(
-                        message: &Message<T>,
-                        gas: &mut GasTracker,
-                    ) -> PrecompileResult {
-                        $f(message.input.as_ref(), gas)
-                    }
-
-                    Precompile::new($crate::define_precompiles!(@address $address), $id, run::<T>)
-                }
-            }
-
             $(#[$attr])*
-            $vis const $name: $crate::precompiles::Precompile =
-                $name::precompile::<$crate::BaseEvmTypes>();
+            #[allow(non_snake_case)]
+            $vis const fn $name<T: $crate::EvmTypes>() -> $crate::precompiles::Precompile<T> {
+                fn run<T: $crate::EvmTypes>(
+                    message: &$crate::interpreter::Message<T>,
+                    gas: &mut $crate::interpreter::GasTracker,
+                ) -> $crate::precompiles::PrecompileResult {
+                    $f(message.input.as_ref(), gas)
+                }
+
+                $crate::precompiles::Precompile::new(
+                    $crate::define_precompiles!(@address $address),
+                    $id,
+                    run::<T>,
+                )
+            }
         )*
     };
 }
@@ -502,8 +499,9 @@ mod tests {
 
     #[test]
     fn map_precompile_updates_data_at_target_address() {
-        let address = IDENTITY.address();
-        let mut map = PrecompileMap::from_precompiles([IDENTITY]);
+        let identity = IDENTITY::<BaseEvmTypes>();
+        let address = identity.address();
+        let mut map = PrecompileMap::from_precompiles([identity]);
 
         map.map_precompile(&address, |precompile| {
             precompile.with_id(PrecompileId::Sha256).with_run(test_run_a)
@@ -532,25 +530,29 @@ mod tests {
 
     #[test]
     fn map_precompiles_preserves_existing_addresses() {
-        let mut map = PrecompileMap::from_precompiles([IDENTITY, SHA256]);
+        let identity = IDENTITY::<BaseEvmTypes>();
+        let sha256 = SHA256::<BaseEvmTypes>();
+        let mut map = PrecompileMap::from_precompiles([identity.clone(), sha256.clone()]);
 
         map.map_precompiles(|_, precompile| {
             assert_matches!(precompile.id(), PrecompileId::Identity | PrecompileId::Sha256);
             precompile.with_id(PrecompileId::Ripemd160).with_run(test_run_b)
         });
 
-        assert_eq!(map.get(&IDENTITY.address()).unwrap().id(), &PrecompileId::Ripemd160);
-        assert_eq!(map.get(&SHA256.address()).unwrap().id(), &PrecompileId::Ripemd160);
+        assert_eq!(map.get(&identity.address()).unwrap().id(), &PrecompileId::Ripemd160);
+        assert_eq!(map.get(&sha256.address()).unwrap().id(), &PrecompileId::Ripemd160);
     }
 
     #[test]
     fn move_precompiles_validates_before_mutating() {
-        let source = IDENTITY.address();
+        let identity = IDENTITY::<BaseEvmTypes>();
+        let sha256 = SHA256::<BaseEvmTypes>();
+        let source = identity.address();
         let missing = address!("0x0000000000000000000000000000000000000999");
         let dest = address!("0x0000000000000000000000000000000000001000");
-        let mut map = PrecompileMap::from_precompiles([IDENTITY]);
+        let mut map = PrecompileMap::from_precompiles([identity]);
 
-        let err = map.move_precompiles([(source, dest), (missing, SHA256.address())]);
+        let err = map.move_precompiles([(source, dest), (missing, sha256.address())]);
 
         assert_eq!(err, Err(MovePrecompileError::NotAPrecompile(missing)));
         assert!(map.contains(&source));
@@ -559,28 +561,32 @@ mod tests {
 
     #[test]
     fn move_precompiles_moves_after_validation() {
-        let identity = IDENTITY.address();
-        let sha256 = SHA256.address();
+        let identity = IDENTITY::<BaseEvmTypes>();
+        let sha256 = SHA256::<BaseEvmTypes>();
+        let identity_address = identity.address();
+        let sha256_address = sha256.address();
         let new_identity = address!("0x0000000000000000000000000000000000001001");
         let new_sha256 = address!("0x0000000000000000000000000000000000001002");
-        let mut map = PrecompileMap::from_precompiles([IDENTITY, SHA256]);
+        let mut map = PrecompileMap::from_precompiles([identity, sha256]);
 
-        map.move_precompiles([(identity, new_identity), (sha256, new_sha256)]).unwrap();
+        map.move_precompiles([(identity_address, new_identity), (sha256_address, new_sha256)])
+            .unwrap();
 
-        assert!(!map.contains(&identity));
-        assert!(!map.contains(&sha256));
+        assert!(!map.contains(&identity_address));
+        assert!(!map.contains(&sha256_address));
         assert!(map.contains(&new_identity));
         assert!(map.contains(&new_sha256));
     }
 
     #[test]
     fn move_precompiles_skips_duplicate_sources_after_first_move() {
-        let identity = IDENTITY.address();
+        let identity = IDENTITY::<BaseEvmTypes>();
+        let identity_address = identity.address();
         let first = address!("0x0000000000000000000000000000000000001001");
         let second = address!("0x0000000000000000000000000000000000001002");
-        let mut map = PrecompileMap::from_precompiles([IDENTITY]);
+        let mut map = PrecompileMap::from_precompiles([identity]);
 
-        map.move_precompiles([(identity, first), (identity, second)]).unwrap();
+        map.move_precompiles([(identity_address, first), (identity_address, second)]).unwrap();
 
         assert!(map.contains(&first));
         assert!(!map.contains(&second));

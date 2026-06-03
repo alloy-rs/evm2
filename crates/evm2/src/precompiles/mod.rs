@@ -140,55 +140,49 @@ fn base_precompiles<T: EvmTypes>(spec: SpecId) -> PrecompileMap<T> {
     let mut precompiles = PrecompileMap::new();
 
     {
-        precompiles.extend([
-            table::SECP256K1_ECRECOVER::precompile(),
-            table::SHA256::precompile(),
-            table::RIPEMD160::precompile(),
-            table::IDENTITY::precompile(),
-        ]);
+        precompiles.extend([SECP256K1_ECRECOVER(), SHA256(), RIPEMD160(), IDENTITY()]);
     }
 
     if spec.enables(SpecId::BYZANTIUM) {
         precompiles.extend([
-            table::MODEXP_BYZANTIUM::precompile(),
-            table::BN254_ADD_BYZANTIUM::precompile(),
-            table::BN254_MUL_BYZANTIUM::precompile(),
-            table::BN254_PAIR_BYZANTIUM::precompile(),
+            MODEXP_BYZANTIUM(),
+            BN254_ADD_BYZANTIUM(),
+            BN254_MUL_BYZANTIUM(),
+            BN254_PAIR_BYZANTIUM(),
         ]);
     }
 
     if spec.enables(SpecId::ISTANBUL) {
         precompiles.extend([
-            table::BN254_ADD_ISTANBUL::precompile(),
-            table::BN254_MUL_ISTANBUL::precompile(),
-            table::BN254_PAIR_ISTANBUL::precompile(),
-            table::BLAKE2F::precompile(),
+            BN254_ADD_ISTANBUL(),
+            BN254_MUL_ISTANBUL(),
+            BN254_PAIR_ISTANBUL(),
+            BLAKE2F(),
         ]);
     }
 
     if spec.enables(SpecId::BERLIN) {
-        precompiles.extend([table::MODEXP_BERLIN::precompile()]);
+        precompiles.extend([MODEXP_BERLIN()]);
     }
 
     if spec.enables(SpecId::CANCUN) {
-        precompiles.extend([table::KZG_POINT_EVALUATION::precompile()]);
+        precompiles.extend([KZG_POINT_EVALUATION()]);
     }
 
     if spec.enables(SpecId::PRAGUE) {
         precompiles.extend([
-            table::BLS12_381_G1_ADD::precompile(),
-            table::BLS12_381_G1_MSM::precompile(),
-            table::BLS12_381_G2_ADD::precompile(),
-            table::BLS12_381_G2_MSM::precompile(),
-            table::BLS12_381_PAIRING::precompile(),
-            table::BLS12_381_MAP_FP_TO_G1::precompile(),
-            table::BLS12_381_MAP_FP2_TO_G2::precompile(),
+            BLS12_381_G1_ADD(),
+            BLS12_381_G1_MSM(),
+            BLS12_381_G2_ADD(),
+            BLS12_381_G2_MSM(),
+            BLS12_381_PAIRING(),
+            BLS12_381_MAP_FP_TO_G1(),
+            BLS12_381_MAP_FP2_TO_G2(),
         ]);
     }
 
     if spec.enables(SpecId::OSAKA) {
-        precompiles
-            .extend([table::MODEXP_OSAKA::precompile(), table::P256VERIFY_OSAKA::precompile()]);
+        precompiles.extend([MODEXP_OSAKA(), P256VERIFY_OSAKA()]);
     }
 
     precompiles.shrink_to_fit();
@@ -203,7 +197,7 @@ mod tests {
 
     #[test]
     fn provider_helpers_mutate_base_map() {
-        let identity = IDENTITY.address();
+        let identity = IDENTITY::<crate::BaseEvmTypes>().address();
         let moved = address!("0x0000000000000000000000000000000000001000");
         let mut precompiles = Precompiles::<crate::BaseEvmTypes>::base(SpecId::BERLIN);
 
