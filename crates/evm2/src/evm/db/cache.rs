@@ -9,7 +9,7 @@ use crate::{
 };
 use alloy_primitives::{
     Address, B256, KECCAK256_EMPTY,
-    map::{AddressMap, B256Map, U256Map, hash_map::Entry},
+    map::{AddressMap, AddressSet, B256Map, U256Map, hash_map::Entry},
 };
 
 /// A database implementation that stores initial state in memory.
@@ -18,15 +18,20 @@ pub type InMemoryDB = CacheDB<EmptyDB>;
 /// Cache used by [`CacheDB`].
 ///
 /// Accounts and code are stored separately: accounts carry the code hash, and
-/// bytecode is keyed by that hash in [`Self::contracts`].
+/// bytecode is keyed by that hash in [`Self::contracts`]. Account and storage
+/// entries are authoritative for this cache layer: a cached `None` account or wiped storage
+/// overlay shadows the wrapped database instead of falling through to it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Cache {
-    /// Accounts keyed by address.
-    pub accounts: AddressMap<AccountInfo>,
+    /// Accounts keyed by address. `None` means the account is known to be absent/deleted.
+    pub accounts: AddressMap<Option<AccountInfo>>,
     /// Contracts keyed by code hash.
     pub contracts: B256Map<Bytecode>,
     /// Persistent storage keyed by account and slot.
     pub storage: StorageKeyMap<Word>,
+    /// Accounts whose missing storage slots are known to be zero because all pre-existing storage
+    /// was deleted.
+    pub wiped_storage: AddressSet,
     /// Cached block hashes keyed by block number.
     pub block_hashes: U256Map<B256>,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
@@ -43,6 +48,7 @@ impl Default for Cache {
             accounts: AddressMap::default(),
             contracts,
             storage: StorageKeyMap::default(),
+            wiped_storage: AddressSet::default(),
             block_hashes: U256Map::default(),
             _non_exhaustive: (),
         }
@@ -100,19 +106,35 @@ impl<ExtDB> CacheDB<ExtDB> {
     pub fn insert_account_info(&mut self, address: &Address, mut info: AccountInfo) {
         self.insert_contract(&mut info);
         info.code = None;
-        self.cache.accounts.insert(*address, info);
+        self.cache.accounts.insert(*address, Some(info));
     }
 
     /// Returns cached account info if the account exists in the cache.
     #[inline]
     pub fn account_info(&self, address: &Address) -> Option<&AccountInfo> {
-        self.cache.accounts.get(address)
+        self.cache.accounts.get(address).and_then(Option::as_ref)
+    }
+
+    /// Returns whether the account is known to be absent from the cache layer.
+    #[inline]
+    pub(crate) fn account_absent(&self, address: &Address) -> bool {
+        self.cache.accounts.get(address).is_some_and(Option::is_none)
+    }
+
+    /// Returns a cached storage value if it is known without loading the wrapped database.
+    #[inline]
+    pub(crate) fn storage_ref(&self, address: &Address, key: &Word) -> Option<Word> {
+        self.cache
+            .storage
+            .get(&StorageKey::new(*address, *key))
+            .copied()
+            .or_else(|| self.cache.wiped_storage.contains(address).then_some(Word::ZERO))
     }
 
     /// Inserts persistent storage.
     #[inline]
     pub fn insert_account_storage(&mut self, address: &Address, key: &Word, value: &Word) {
-        self.cache.accounts.entry(*address).or_default();
+        self.cache.accounts.entry(*address).or_insert_with(|| Some(AccountInfo::default()));
         self.cache.storage.insert(StorageKey::new(*address, *key), *value);
     }
 
@@ -130,13 +152,15 @@ impl<ExtDB> DatabaseCommit for CacheDB<ExtDB> {
         }
         for (&address, storage) in &changes.storage {
             if storage.wipe {
+                self.cache.wiped_storage.insert(address);
                 self.cache.storage.retain(|key, _| key.address() != address);
             }
             for (&key, change) in &storage.slots {
-                if change.current.is_zero() {
-                    self.cache.storage.remove(&StorageKey::new(address, key));
+                let storage_key = StorageKey::new(address, key);
+                if storage.wipe && change.current.is_zero() {
+                    self.cache.storage.remove(&storage_key);
                 } else {
-                    self.cache.storage.insert(StorageKey::new(address, key), change.current);
+                    self.cache.storage.insert(storage_key, change.current);
                 }
             }
         }
@@ -144,7 +168,8 @@ impl<ExtDB> DatabaseCommit for CacheDB<ExtDB> {
             match &change.current {
                 Some(info) => self.insert_account_info(&address, info.clone()),
                 None => {
-                    self.cache.accounts.remove(&address);
+                    self.cache.accounts.insert(address, None);
+                    self.cache.wiped_storage.insert(address);
                     self.cache.storage.retain(|key, _| key.address() != address);
                 }
             }
@@ -157,14 +182,14 @@ impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
     fn get_account(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
         let Cache { accounts, contracts, .. } = &mut self.cache;
         match accounts.entry(*address) {
-            Entry::Occupied(entry) => Ok(Some(entry.get().clone())),
+            Entry::Occupied(entry) => Ok(entry.get().clone()),
             Entry::Vacant(entry) => {
                 let Some(mut info) = self.db.get_account(address)? else {
-                    return Ok(None);
+                    return Ok(entry.insert(None).clone());
                 };
                 Self::insert_contract_inner(contracts, &mut info);
                 info.code = None;
-                Ok(Some(entry.insert(info).clone()))
+                Ok(entry.insert(Some(info)).clone())
             }
         }
     }
@@ -179,9 +204,17 @@ impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
 
     #[inline]
     fn get_storage(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
-        match self.cache.storage.entry(StorageKey::new(*address, *key)) {
+        if self.account_absent(address) {
+            return Ok(Word::ZERO);
+        }
+
+        let storage_key = StorageKey::new(*address, *key);
+        match self.cache.storage.entry(storage_key) {
             Entry::Occupied(entry) => Ok(*entry.get()),
             Entry::Vacant(entry) => {
+                if self.cache.wiped_storage.contains(address) {
+                    return Ok(Word::ZERO);
+                }
                 let value = self.db.get_storage(address, key)?;
                 Ok(*entry.insert(value))
             }

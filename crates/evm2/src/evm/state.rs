@@ -2,7 +2,7 @@
 
 use super::{
     SStore,
-    db::{DbResult, DynDatabase},
+    db::{CacheDB, DatabaseCommit, DbResult, DynDatabase},
     eip7708_burn_log,
 };
 use crate::{
@@ -187,7 +187,7 @@ pub struct StorageOverlay {
     /// before applying individual slot changes.
     pub wiped: bool,
     /// Loaded or changed storage slots.
-    pub(crate) slots: U256Map<Tracked<Word>>,
+    pub slots: U256Map<Tracked<Word>>,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
 }
@@ -340,21 +340,16 @@ pub enum JournalEntry {
     },
 }
 
-/// Mutable EVM state with an overlay and reversible journal.
+/// Mutable EVM state with an accepted-state cache, transaction layer, and reversible journal.
 #[derive_where(Debug)]
 #[non_exhaustive]
 pub struct State {
-    /// Read-only initial database.
+    /// Database plus accepted transaction-boundary state overlay.
     #[derive_where(skip)]
-    initial: Box<dyn DynDatabase>,
-    /// Account data overlay keyed by address.
-    ///
-    /// Entries are created when account state is loaded or mutated. The tracked
-    /// `original`/`current` pair is used to execute against the in-memory overlay
-    /// and later derive account-level [`StateChanges`]. Presence here does not by
-    /// itself mean the account was touched or warmed.
-    accounts: AddressMap<Tracked<Option<Account>>>,
-    /// Persistent storage overlay keyed by account address.
+    database: CacheDB<Box<dyn DynDatabase>>,
+    /// Account writes for the current transaction.
+    accounts: AddressMap<Option<Account>>,
+    /// Persistent storage writes for the current transaction.
     storage: AddressMap<StorageOverlay>,
     /// Revert journal.
     journal: Vec<JournalEntry>,
@@ -387,7 +382,7 @@ impl State {
 
     pub(crate) fn new_mono(initial: Box<dyn DynDatabase>) -> Self {
         Self {
-            initial,
+            database: CacheDB::new(initial),
             accounts: AddressMap::default(),
             storage: AddressMap::default(),
             journal: Vec::new(),
@@ -409,19 +404,26 @@ impl State {
     /// Returns the initial database.
     #[inline]
     pub fn initial(&self) -> &dyn DynDatabase {
-        self.initial.as_ref()
+        self.database.db.as_ref()
     }
 
     /// Returns the initial database mutably.
     #[inline]
     pub fn initial_mut(&mut self) -> &mut dyn DynDatabase {
-        self.initial.as_mut()
+        self.database.db.as_mut()
     }
 
-    /// Replaces the initial database.
+    /// Replaces the initial database and clears all in-memory state layers.
     #[inline]
     pub fn set_initial(&mut self, initial: impl DynDatabase) {
-        self.initial = Box::new(initial);
+        self.database = CacheDB::new(Box::new(initial));
+        self.clear_transaction_state();
+    }
+
+    /// Loads a historical block hash.
+    #[inline]
+    pub(crate) fn block_hash(&mut self, number: &Word) -> DbResult<Option<B256>> {
+        self.database.get_block_hash(number)
     }
 
     /// Returns logs emitted by the current in-flight transaction.
@@ -441,11 +443,19 @@ impl State {
     /// This is a non-mutating overlay lookup. It does not load the account or slot from the
     /// backing database; use [`Self::storage`] when database-backed loading is desired.
     #[inline]
-    pub fn storage_ref(&self, address: &Address, key: &Word) -> Option<&Tracked<Word>> {
-        self.storage.get(address)?.slots.get(key)
+    pub fn storage_ref(&self, address: &Address, key: &Word) -> Option<Word> {
+        if let Some(storage) = self.storage.get(address) {
+            if let Some(slot) = storage.slots.get(key) {
+                return Some(slot.current);
+            }
+            if storage.wiped {
+                return Some(Word::ZERO);
+            }
+        }
+        self.database.storage_ref(address, key)
     }
 
-    /// Returns the current account overlay if present and not deleted.
+    /// Returns the current transaction account overlay if present and not deleted.
     ///
     /// This is a non-mutating overlay lookup. It does not load the account from the backing
     /// database; use [`Self::account_info`] or [`Self::find`] when database-backed loading is
@@ -453,7 +463,7 @@ impl State {
     #[inline]
     #[must_use]
     pub fn account_ref(&self, address: &Address) -> Option<&Account> {
-        self.accounts.get(address)?.current.as_ref()
+        self.accounts.get(address)?.as_ref()
     }
 
     /// Returns whether an account is warm in the current transaction.
@@ -560,6 +570,8 @@ impl State {
 
     /// Clears transaction-scoped substate.
     pub fn clear_transaction_state(&mut self) {
+        self.accounts.clear();
+        self.storage.clear();
         self.journal.clear();
         self.touched.clear();
         self.selfdestructs.clear();
@@ -569,82 +581,60 @@ impl State {
         self.logs.clear();
     }
 
-    fn load_account(
-        &mut self,
-        address: &Address,
-    ) -> DbResult<Option<&mut Tracked<Option<Account>>>> {
-        match self.accounts.entry(*address) {
-            hash_map::Entry::Occupied(entry) => Ok(Some(entry.into_mut())),
-            hash_map::Entry::Vacant(entry) => {
-                let Some(info) = self.initial.get_account(address)? else {
-                    return Ok(None);
-                };
-                Ok(Some(entry.insert(Tracked::new(Some(Account::from_info(info))))))
-            }
-        }
+    fn load_account(&mut self, address: &Address) -> DbResult<Option<Account>> {
+        Ok(self.database.get_account(address)?.map(Account::from_info))
     }
 
-    fn ensure_account_overlay<'a>(
-        initial: &mut dyn DynDatabase,
-        accounts: &'a mut AddressMap<Tracked<Option<Account>>>,
+    fn ensure_transaction_account<'a>(
+        database: &mut dyn DynDatabase,
+        accounts: &'a mut AddressMap<Option<Account>>,
         journal: &mut Vec<JournalEntry>,
         address: &Address,
-    ) -> DbResult<&'a mut Tracked<Option<Account>>> {
+    ) -> DbResult<&'a mut Option<Account>> {
         match accounts.entry(*address) {
             hash_map::Entry::Occupied(entry) => Ok(entry.into_mut()),
             hash_map::Entry::Vacant(entry) => {
-                let original = initial.get_account(address)?.map(Account::from_info);
+                let original = database.get_account(address)?.map(Account::from_info);
                 journal.push(JournalEntry::AccountInserted { address: *address });
-                Ok(entry.insert(Tracked {
-                    original: original.clone(),
-                    current: original,
-                    _non_exhaustive: (),
-                }))
+                Ok(entry.insert(original))
             }
         }
     }
 
     /// Gets an existing account or inserts a new empty account.
     pub fn get_or_insert(&mut self, address: &Address) -> DbResult<&mut Account> {
-        let tracked = Self::ensure_account_overlay(
-            &mut self.initial,
+        let account = Self::ensure_transaction_account(
+            &mut self.database,
             &mut self.accounts,
             &mut self.journal,
             address,
         )?;
-        if tracked.current.is_none() {
+        Ok(account.get_or_insert_with(|| {
             self.journal.push(JournalEntry::AccountChange { address: *address, previous: None });
-        }
-        Ok(tracked.current.get_or_insert_with(|| Account {
-            code_hash: KECCAK256_EMPTY,
-            code: Bytecode::default(),
-            ..Account::default()
+            Account { code_hash: KECCAK256_EMPTY, ..Account::default() }
         }))
     }
 
     fn journal_account_change(&mut self, address: &Address) -> DbResult<&mut Account> {
-        let tracked = Self::ensure_account_overlay(
-            &mut self.initial,
+        let account = Self::ensure_transaction_account(
+            &mut self.database,
             &mut self.accounts,
             &mut self.journal,
             address,
         )?;
-        let previous = tracked.current.clone();
+        let previous = account.clone();
         self.journal.push(JournalEntry::AccountChange { address: *address, previous });
-        Ok(tracked.current.get_or_insert_with(|| Account {
-            code_hash: KECCAK256_EMPTY,
-            code: Bytecode::default(),
-            ..Account::default()
-        }))
+        Ok(account
+            .get_or_insert_with(|| Account { code_hash: KECCAK256_EMPTY, ..Account::default() }))
     }
 
     /// Returns account info.
     #[inline(never)]
     pub fn account_info(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
         if let Some(account) = self.accounts.get(address) {
-            return Ok(account.current.as_ref().map(Account::info));
+            return Ok(account.as_ref().map(Account::info));
         }
-        self.initial.get_account(address)
+        self.database.get_account(address)
     }
 
     /// Returns whether an account is empty/non-existent for EIP-150 new-account gas checks.
@@ -661,50 +651,80 @@ impl State {
 
     /// Returns an account if it exists.
     pub fn find(&mut self, address: &Address) -> DbResult<Option<&Account>> {
-        Ok(self.load_account(address)?.and_then(|account| account.current.as_ref()))
+        let account = Self::ensure_transaction_account(
+            &mut self.database,
+            &mut self.accounts,
+            &mut self.journal,
+            address,
+        )?;
+        Ok(account.as_ref())
     }
 
     /// Gets account code.
     pub fn get_code(&mut self, address: &Address) -> DbResult<Bytecode> {
-        let Some((code_hash, code)) = self.find(address)?.map(|account| {
+        if let Some(account) = self.accounts.get(address).and_then(Option::as_ref) {
+            if account.code_hash == KECCAK256_EMPTY {
+                return Ok(Bytecode::default());
+            }
+            if !account.code.is_empty() {
+                return Ok(account.code.clone());
+            }
             let code_hash = account.code_hash;
-            let code = account.code.clone();
-            (code_hash, code)
-        }) else {
+            return self.database.get_code_by_hash(&code_hash);
+        }
+
+        let Some(info) = self.database.get_account(address)? else {
             return Ok(Bytecode::default());
         };
-        if code_hash == KECCAK256_EMPTY {
+        if info.code_hash == KECCAK256_EMPTY {
             return Ok(Bytecode::default());
         }
-        if !code.is_empty() {
+        if let Some(code) = info.code
+            && !code.is_empty()
+        {
             return Ok(code);
         }
-        self.initial.get_code_by_hash(&code_hash)
+        self.database.get_code_by_hash(&info.code_hash)
     }
 
-    fn storage_slot_mut(
+    fn current_storage(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
+        if let Some(storage) = self.storage.get(address) {
+            if let Some(slot) = storage.slots.get(key) {
+                return Ok(slot.current);
+            }
+            if storage.wiped {
+                return Ok(Word::ZERO);
+            }
+        }
+        if self.database.account_absent(address) {
+            return Ok(Word::ZERO);
+        }
+        self.database.get_storage(address, key)
+    }
+
+    fn insert_transaction_storage(
         &mut self,
         address: &Address,
         key: &Word,
-        journal_insert: bool,
-    ) -> DbResult<&mut Tracked<Word>> {
-        let Self { initial, accounts, storage, journal, .. } = self;
-        let account_created =
-            accounts.get(address).is_some_and(|account| account.original.is_none());
-        let storage = storage.entry(*address).or_default();
-        let storage_wiped = storage.wiped;
+        original: Word,
+        value: Word,
+    ) {
+        let storage = self.storage.entry(*address).or_default();
         match storage.slots.entry(*key) {
-            hash_map::Entry::Occupied(entry) => Ok(entry.into_mut()),
-            hash_map::Entry::Vacant(entry) => {
-                let initial = if storage_wiped || account_created {
-                    Word::ZERO
-                } else {
-                    initial.get_storage(address, key)?
-                };
-                if journal_insert {
-                    journal.push(JournalEntry::StorageInserted { address: *address, key: *key });
+            hash_map::Entry::Occupied(mut entry) => {
+                let previous = entry.get().current;
+                if previous != value {
+                    entry.get_mut().current = value;
+                    self.journal.push(JournalEntry::StorageChange {
+                        address: *address,
+                        key: *key,
+                        previous,
+                    });
                 }
-                Ok(entry.insert(Tracked::new(initial)))
+            }
+            hash_map::Entry::Vacant(entry) => {
+                entry.insert(Tracked { original, current: value, _non_exhaustive: () });
+                self.journal.push(JournalEntry::StorageInserted { address: *address, key: *key });
             }
         }
     }
@@ -714,7 +734,7 @@ impl State {
         let Some(_) = self.account_info(address)? else {
             return Ok(Word::ZERO);
         };
-        Ok(self.storage_slot_mut(address, key, false)?.current)
+        self.current_storage(address, key)
     }
 
     /// Stores persistent storage and returns values needed for `SSTORE` gas metering.
@@ -727,22 +747,25 @@ impl State {
     pub fn set_storage(&mut self, address: &Address, key: &Word, value: &Word) -> DbResult<SStore> {
         let _ = self.get_or_insert(address)?;
         self.touch(address);
-        let slot = self.storage_slot_mut(address, key, true)?;
+        let storage = self.storage.get(address);
+        let original_value =
+            if storage.is_some_and(|s| s.wiped) || self.database.account_absent(address) {
+                Word::ZERO
+            } else {
+                self.database.get_storage(address, key)?
+            };
+        let present_value = storage
+            .and_then(|storage| storage.slots.get(key))
+            .map_or(original_value, |slot| slot.current);
         let result = SStore {
-            original_value: slot.original,
-            present_value: slot.current,
+            original_value,
+            present_value,
             new_value: *value,
             is_cold: false,
             _non_exhaustive: (),
         };
-        if slot.current != *value {
-            let previous = slot.current;
-            slot.current = *value;
-            self.journal.push(JournalEntry::StorageChange {
-                address: *address,
-                key: *key,
-                previous,
-            });
+        if present_value != *value {
+            self.insert_transaction_storage(address, key, original_value, *value);
         }
         Ok(result)
     }
@@ -849,12 +872,11 @@ impl State {
 
     /// Marks all prior persistent storage for `address` as deleted.
     pub fn wipe_storage(&mut self, address: &Address) {
-        let previous = self.storage.get(address).cloned();
-        self.journal.push(JournalEntry::StorageWipe { address: *address, previous });
-        self.storage.insert(
+        let previous = self.storage.insert(
             *address,
             StorageOverlay { wiped: true, slots: U256Map::default(), _non_exhaustive: () },
         );
+        self.journal.push(JournalEntry::StorageWipe { address: *address, previous });
     }
 
     /// Loads transient storage.
@@ -898,8 +920,8 @@ impl State {
 
     /// Marks an account as self-destructed in the current transaction.
     pub fn mark_destructed(&mut self, address: &Address) {
-        let _ = Self::ensure_account_overlay(
-            &mut self.initial,
+        let _ = Self::ensure_transaction_account(
+            &mut self.database,
             &mut self.accounts,
             &mut self.journal,
             address,
@@ -937,7 +959,7 @@ impl State {
             match entry {
                 JournalEntry::AccountChange { address, previous } => {
                     if let Some(account) = self.accounts.get_mut(&address) {
-                        account.current = previous;
+                        *account = previous;
                     }
                 }
                 JournalEntry::AccountInserted { address } => {
@@ -1001,46 +1023,46 @@ impl State {
     /// touched accounts stay non-existent.
     fn is_existing_dead(&mut self, address: &Address) -> DbResult<bool> {
         if let Some(account) = self.accounts.get(address) {
-            return Ok(account.current.as_ref().is_some_and(Account::is_empty)
-                || (account.current.is_none() && account.original.is_some()));
+            return Ok(account.as_ref().is_some_and(Account::is_empty)
+                || (account.is_none() && self.database.account_info(address).is_some()));
         }
-        Ok(self.initial.get_account(address)?.is_some_and(|account| account.is_empty()))
+        Ok(self.load_account(address)?.as_ref().is_some_and(Account::is_empty))
     }
 
     fn account_exists(&mut self, address: &Address) -> DbResult<bool> {
         if let Some(account) = self.accounts.get(address) {
-            return Ok(account.current.is_some());
+            return Ok(account.is_some());
         }
-        Ok(self.initial.get_account(address)?.is_some())
+        Ok(self.load_account(address)?.is_some())
     }
 
     fn delete_account_for_finalization(&mut self, address: &Address) -> DbResult<()> {
-        let account = Self::ensure_account_overlay(
-            &mut self.initial,
+        let account = Self::ensure_transaction_account(
+            &mut self.database,
             &mut self.accounts,
             &mut self.journal,
             address,
         )?;
-        account.current = None;
-        self.storage.insert(
-            *address,
-            StorageOverlay { wiped: true, slots: U256Map::default(), _non_exhaustive: () },
-        );
+        let previous = account.clone();
+        self.journal.push(JournalEntry::AccountChange { address: *address, previous });
+        *account = None;
+        self.wipe_storage(address);
         Ok(())
     }
 
     fn materialize_empty_account_for_finalization(&mut self, address: &Address) -> DbResult<()> {
-        let account = Self::ensure_account_overlay(
-            &mut self.initial,
+        let original_exists = self.load_account(address)?.is_some();
+        let account = Self::ensure_transaction_account(
+            &mut self.database,
             &mut self.accounts,
             &mut self.journal,
             address,
         )?;
-        if account.original.is_none() {
-            account.current.get_or_insert_with(|| Account {
-                code_hash: KECCAK256_EMPTY,
-                code: Bytecode::default(),
-                ..Account::default()
+        if !original_exists {
+            account.get_or_insert_with(|| {
+                self.journal
+                    .push(JournalEntry::AccountChange { address: *address, previous: None });
+                Account { code_hash: KECCAK256_EMPTY, ..Account::default() }
             });
         }
         Ok(())
@@ -1077,7 +1099,7 @@ impl State {
                 if let Some(balance) = self
                     .accounts
                     .get(&address)
-                    .and_then(|account| account.current.as_ref())
+                    .and_then(Option::as_ref)
                     .map(|account| account.balance)
                     && !balance.is_zero()
                 {
@@ -1131,15 +1153,29 @@ impl State {
         let mut changes =
             StateChanges { logs: core::mem::take(&mut self.logs), ..StateChanges::default() };
 
-        for (&address, tracked) in &self.accounts {
-            if tracked.original != tracked.current {
-                let original = tracked.original.as_ref().map(Account::info);
-                let current = tracked.current.as_ref().map(Account::info);
-                changes
-                    .accounts
-                    .insert(address, Tracked { original, current, _non_exhaustive: () });
+        for (&address, current) in &self.accounts {
+            let original = self.database.account_info(&address);
+            let current = current.as_ref();
+            let account_changed = match (original, current) {
+                (Some(original), Some(current)) => {
+                    original.balance != current.balance
+                        || original.nonce != current.nonce
+                        || original.code_hash != current.code_hash
+                }
+                (None, None) => false,
+                _ => true,
+            };
+            if account_changed {
+                changes.accounts.insert(
+                    address,
+                    Tracked {
+                        original: original.cloned(),
+                        current: current.map(Account::info),
+                        _non_exhaustive: (),
+                    },
+                );
             }
-            if let Some(account) = tracked.current.as_ref() {
+            if let Some(account) = current {
                 let code_hash = account.code_hash;
                 if account.code_changed
                     && !account.code.is_empty()
@@ -1177,34 +1213,23 @@ impl State {
         changes
     }
 
-    /// Marks the current transaction's overlay values as the new baseline.
-    ///
-    /// After [`Self::finalize_transaction`] and [`Self::build_state_changes`] have
-    /// produced the transaction write-set, the overlay must stop treating those
-    /// writes as pending changes. This rolls the current account and storage
-    /// values forward into their `original` slots and applies local deletion/wipe
-    /// bookkeeping. It only advances the in-memory overlay; callers are still
-    /// responsible for committing the emitted write-set to their backing database
-    /// and clearing transaction-local state.
-    pub(super) fn commit_transaction_overlay(&mut self) {
-        for account in self.accounts.values_mut() {
-            if let Some(current) = &mut account.current {
-                current.just_created = false;
-                current.code_changed = false;
-            }
-            account.original.clone_from(&account.current);
-        }
+    /// Builds and accepts the current transaction's state transition.
+    pub(crate) fn accept_transaction(&mut self) -> StateChanges {
+        let changes = self.build_state_changes();
+        self.database.commit(&changes);
+        self.accounts.clear();
+        self.storage.clear();
+        changes
+    }
 
-        self.storage.retain(|_, storage| {
-            if storage.wiped {
-                storage.slots.retain(|_, slot| !slot.current.is_zero());
-            }
-            for slot in storage.slots.values_mut() {
-                slot.original = slot.current;
-            }
-            storage.wiped = false;
-            !storage.slots.is_empty()
-        });
+    /// Marks the current transaction's write layer as accepted state.
+    ///
+    /// This applies the transaction write-set to the accepted in-memory database overlay and clears
+    /// the transaction layer. It does not write to the wrapped backing database; callers remain
+    /// responsible for committing the emitted write-set.
+    #[cfg(test)]
+    pub(super) fn commit_transaction_overlay(&mut self) {
+        let _ = self.accept_transaction();
     }
 }
 
@@ -1368,7 +1393,7 @@ mod tests {
     #[test]
     fn spurious_dragon_deletes_touched_empty_existing_account() {
         let address = Address::from([0x44; 20]);
-        let empty = AccountInfo::default();
+        let empty = AccountInfo { code: None, ..AccountInfo::default() };
         let mut database = CacheDB::default();
         database.insert_account_info(&address, empty.clone());
         let mut state = State::new(database);
