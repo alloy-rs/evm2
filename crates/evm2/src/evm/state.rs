@@ -368,6 +368,8 @@ pub struct State {
     touched: AddressSet,
     /// Accounts self-destructed in the current transaction.
     selfdestructs: AddressSet,
+    /// Self-destructed accounts whose final account info matches their original account info.
+    finalized_selfdestructs: AddressSet,
     /// Transaction-scoped warm account set for EIP-2929 gas accounting.
     ///
     /// This tracks whether account access is warm or cold. It does not imply the
@@ -394,6 +396,7 @@ impl State {
             logs: Vec::new(),
             touched: AddressSet::default(),
             selfdestructs: AddressSet::default(),
+            finalized_selfdestructs: AddressSet::default(),
             accessed_accounts: AddressSet::default(),
             accessed_storage: StorageKeySet::default(),
             transient_storage: StorageKeyMap::default(),
@@ -563,6 +566,7 @@ impl State {
         self.journal.clear();
         self.touched.clear();
         self.selfdestructs.clear();
+        self.finalized_selfdestructs.clear();
         self.accessed_accounts.clear();
         self.accessed_storage.clear();
         self.transient_storage.clear();
@@ -1095,6 +1099,13 @@ impl State {
 
         for address in &selfdestructs {
             self.delete_account_for_finalization(address)?;
+            if self
+                .accounts
+                .get(address)
+                .is_some_and(|account| account.original.is_none() && account.current.is_none())
+            {
+                self.finalized_selfdestructs.insert(*address);
+            }
         }
 
         if version.feature(EvmFeatures::EIP161) {
@@ -1149,6 +1160,13 @@ impl State {
                     changes.code.insert(code_hash, account.code.clone());
                 }
             }
+        }
+        for address in core::mem::take(&mut self.finalized_selfdestructs) {
+            changes.accounts.entry(address).or_insert_with(|| Tracked {
+                original: None,
+                current: None,
+                _non_exhaustive: (),
+            });
         }
 
         for (&address, storage) in &self.storage {
@@ -1463,6 +1481,32 @@ mod tests {
         assert!(change.original.is_some());
         assert_eq!(change.current, None);
         assert!(changes.storage.get(&address).is_some_and(|storage| storage.wipe));
+    }
+
+    #[test]
+    fn selfdestruct_emits_created_account_deletion() {
+        let caller = Address::from([0x48; 20]);
+        let address = Address::from([0x49; 20]);
+        let mut database = CacheDB::default();
+        database.insert_account_info(&caller, AccountInfo::default().with_balance(Word::from(1)));
+        let mut state = State::new(database);
+
+        state
+            .create_account(
+                &caller,
+                &address,
+                &Word::ZERO,
+                Version::base(crate::SpecId::SPURIOUS_DRAGON).features,
+            )
+            .unwrap()
+            .unwrap();
+        state.mark_destructed(&address);
+        state.finalize_transaction_(Version::base(crate::SpecId::SPURIOUS_DRAGON));
+        let changes = state.build_state_changes();
+
+        let change = changes.accounts.get(&address).expect("created selfdestruct is deleted");
+        assert_eq!(change.original, None);
+        assert_eq!(change.current, None);
     }
 
     #[test]
