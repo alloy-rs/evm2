@@ -164,32 +164,32 @@ impl MuxInspector {
 
 impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for MuxInspector {
     #[inline]
-    fn initialize_interp(&mut self, interp: &mut Interpreter<'_, T>, host: &mut T::Host) {
+    fn initialize_interp(&mut self, interp: &mut Interpreter<'_, T>) {
         if let Some(ref mut inspector) = self.four_byte {
-            inspector.initialize_interp(interp, host);
+            inspector.initialize_interp(interp);
         }
         if let Some(ref mut inspector) = self.tracing {
-            inspector.initialize_interp(interp, host);
+            inspector.initialize_interp(interp);
         }
     }
 
     #[inline]
-    fn step(&mut self, interp: &mut Interpreter<'_, T>, host: &mut T::Host) {
+    fn step(&mut self, interp: &mut Interpreter<'_, T>) {
         if let Some(ref mut inspector) = self.four_byte {
-            inspector.step(interp, host);
+            inspector.step(interp);
         }
         if let Some(ref mut inspector) = self.tracing {
-            inspector.step(interp, host);
+            inspector.step(interp);
         }
     }
 
     #[inline]
-    fn step_end(&mut self, interp: &mut Interpreter<'_, T>, host: &mut T::Host) {
+    fn step_end(&mut self, interp: &mut Interpreter<'_, T>) {
         if let Some(ref mut inspector) = self.four_byte {
-            inspector.step_end(interp, host);
+            inspector.step_end(interp);
         }
         if let Some(ref mut inspector) = self.tracing {
-            inspector.step_end(interp, host);
+            inspector.step_end(interp);
         }
     }
 
@@ -208,13 +208,12 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for MuxInspector {
         &mut self,
         interp: &mut Interpreter<'_, T>,
         message: &mut Message<T>,
-        host: &mut T::Host,
     ) -> Option<MessageResult<T>> {
         if let Some(ref mut inspector) = self.four_byte {
-            let _ = inspector.call(interp, message, host);
+            let _ = inspector.call(interp, message);
         }
         if let Some(ref mut inspector) = self.tracing {
-            return inspector.call(interp, message, host);
+            return inspector.call(interp, message);
         }
         None
     }
@@ -225,13 +224,12 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for MuxInspector {
         interp: &mut Interpreter<'_, T>,
         message: &Message<T>,
         result: &mut MessageResult<T>,
-        host: &mut T::Host,
     ) {
         if let Some(ref mut inspector) = self.four_byte {
-            inspector.call_end(interp, message, result, host);
+            inspector.call_end(interp, message, result);
         }
         if let Some(ref mut inspector) = self.tracing {
-            inspector.call_end(interp, message, result, host);
+            inspector.call_end(interp, message, result);
         }
     }
 
@@ -240,13 +238,12 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for MuxInspector {
         &mut self,
         interp: &mut Interpreter<'_, T>,
         message: &mut Message<T>,
-        host: &mut T::Host,
     ) -> Option<MessageResult<T>> {
         if let Some(ref mut inspector) = self.four_byte {
-            let _ = inspector.create(interp, message, host);
+            let _ = inspector.create(interp, message);
         }
         if let Some(ref mut inspector) = self.tracing {
-            return inspector.create(interp, message, host);
+            return inspector.create(interp, message);
         }
         None
     }
@@ -257,13 +254,12 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for MuxInspector {
         interp: &mut Interpreter<'_, T>,
         message: &Message<T>,
         result: &mut MessageResult<T>,
-        host: &mut T::Host,
     ) {
         if let Some(ref mut inspector) = self.four_byte {
-            inspector.create_end(interp, message, result, host);
+            inspector.create_end(interp, message, result);
         }
         if let Some(ref mut inspector) = self.tracing {
-            inspector.create_end(interp, message, result, host);
+            inspector.create_end(interp, message, result);
         }
     }
 

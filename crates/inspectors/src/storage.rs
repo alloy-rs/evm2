@@ -44,7 +44,7 @@ impl StorageInspector {
 }
 
 impl<T: EvmTypes> Inspector<T> for StorageInspector {
-    fn step(&mut self, interp: &mut Interpreter<'_, T>, _host: &mut T::Host) {
+    fn step(&mut self, interp: &mut Interpreter<'_, T>) {
         if interp.opcode() == op::SLOAD
             && let Some([slot]) = interp.stack().peekn()
         {

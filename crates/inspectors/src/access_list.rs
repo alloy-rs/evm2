@@ -96,7 +96,7 @@ impl AccessListInspector {
 }
 
 impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for AccessListInspector {
-    fn step(&mut self, interp: &mut Interpreter<'_, T>, _host: &mut T::Host) {
+    fn step(&mut self, interp: &mut Interpreter<'_, T>) {
         match interp.opcode() {
             op::SLOAD | op::SSTORE => {
                 if let Some([slot]) = interp.stack().peekn() {
@@ -133,26 +133,24 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for AccessListInspector {
 
     fn call(
         &mut self,
-        _interp: &mut Interpreter<'_, T>,
+        interp: &mut Interpreter<'_, T>,
         message: &mut Message<T>,
-        host: &mut T::Host,
     ) -> Option<MessageResult<T>> {
         // At the top-level frame, fill the excluded addresses.
         if message.depth == 0 {
-            self.collect_excluded_addresses(message, host);
+            self.collect_excluded_addresses(message, interp.host());
         }
         None
     }
 
     fn create(
         &mut self,
-        _interp: &mut Interpreter<'_, T>,
+        interp: &mut Interpreter<'_, T>,
         message: &mut Message<T>,
-        host: &mut T::Host,
     ) -> Option<MessageResult<T>> {
         // At the top-level frame, fill the excluded addresses.
         if message.depth == 0 {
-            self.collect_excluded_addresses(message, host);
+            self.collect_excluded_addresses(message, interp.host());
         }
         None
     }

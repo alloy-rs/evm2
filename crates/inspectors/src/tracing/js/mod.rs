@@ -412,8 +412,8 @@ impl JsInspector {
 }
 
 impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for JsInspector {
-    fn step(&mut self, interp: &mut Interpreter<'_, T>, host: &mut T::Host) {
-        self.register_precompiles(host);
+    fn step(&mut self, interp: &mut Interpreter<'_, T>) {
+        self.register_precompiles(interp.host());
 
         if self.step_fn.is_none() {
             return;
@@ -446,7 +446,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for JsInspector {
         });
     }
 
-    fn step_end(&mut self, interp: &mut Interpreter<'_, T>, host: &mut T::Host) {
+    fn step_end(&mut self, interp: &mut Interpreter<'_, T>) {
         if self.step_fn.is_none() {
             return;
         }
@@ -455,55 +455,60 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for JsInspector {
             return;
         };
 
-        let is_revert = matches!(interp.result(), Err(stop) if stop.is_revert());
+        let result = interp.result();
+        let is_revert = matches!(result, Err(stop) if stop.is_revert());
         let cost = interp.gas().spent().saturating_sub(pending.gas_spent_before);
 
-        let (db, _db_guard) = EvmDbRef::new_state(host.state_mut());
-        let (stack, _stack_guard) = StackRef::new_words(pending.stack);
-        let (memory, _memory_guard) = MemoryRef::new_owned(self.cached_memory.clone());
+        let mut stop = false;
+        {
+            let (db, _db_guard) = EvmDbRef::new_state(interp.host().state_mut());
+            let (stack, _stack_guard) = StackRef::new_words(pending.stack);
+            let (memory, _memory_guard) = MemoryRef::new_owned(self.cached_memory.clone());
 
-        if is_revert {
-            let step = StepLog {
-                stack,
-                op: OpObj(op::REVERT),
-                memory,
-                pc: pending.pc,
-                gas_remaining: pending.gas_remaining,
-                cost,
-                depth: pending.depth,
-                refund: pending.refund,
-                error: interp.result().err().map(|err| format!("{err:?}")),
-                contract: pending.contract,
-            };
+            if is_revert {
+                let step = StepLog {
+                    stack,
+                    op: OpObj(op::REVERT),
+                    memory,
+                    pc: pending.pc,
+                    gas_remaining: pending.gas_remaining,
+                    cost,
+                    depth: pending.depth,
+                    refund: pending.refund,
+                    error: result.err().map(|err| format!("{err:?}")),
+                    contract: pending.contract,
+                };
 
-            let _ = self.try_fault(step, db);
-        } else {
-            let step = StepLog {
-                stack,
-                op: OpObj(pending.op),
-                memory,
-                pc: pending.pc,
-                gas_remaining: pending.gas_remaining,
-                cost,
-                depth: pending.depth,
-                refund: pending.refund,
-                error: None,
-                contract: pending.contract,
-            };
+                let _ = self.try_fault(step, db);
+            } else {
+                let step = StepLog {
+                    stack,
+                    op: OpObj(pending.op),
+                    memory,
+                    pc: pending.pc,
+                    gas_remaining: pending.gas_remaining,
+                    cost,
+                    depth: pending.depth,
+                    refund: pending.refund,
+                    error: None,
+                    contract: pending.contract,
+                };
 
-            if self.try_step(step, db).is_err() && interp.result().is_ok() {
-                interp.set_stop(InstrStop::Revert);
+                stop = self.try_step(step, db).is_err() && result.is_ok();
             }
+        }
+
+        if stop {
+            interp.set_stop(InstrStop::Revert);
         }
     }
 
     fn call(
         &mut self,
-        _interp: &mut Interpreter<'_, T>,
+        interp: &mut Interpreter<'_, T>,
         message: &mut Message<T>,
-        host: &mut T::Host,
     ) -> Option<MessageResult<T>> {
-        self.register_precompiles(host);
+        self.register_precompiles(interp.host());
         self.push_call(message);
         if self.can_call_enter() {
             let call = self.active_call();
@@ -521,7 +526,6 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for JsInspector {
         _interp: &mut Interpreter<'_, T>,
         _message: &Message<T>,
         result: &mut MessageResult<T>,
-        _host: &mut T::Host,
     ) {
         if self.can_call_exit() {
             let frame_result = FrameResult {
@@ -539,11 +543,10 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for JsInspector {
 
     fn create(
         &mut self,
-        _interp: &mut Interpreter<'_, T>,
+        interp: &mut Interpreter<'_, T>,
         message: &mut Message<T>,
-        host: &mut T::Host,
     ) -> Option<MessageResult<T>> {
-        self.register_precompiles(host);
+        self.register_precompiles(interp.host());
         self.push_call(message);
         if self.can_call_enter() {
             let call = self.active_call();
@@ -561,7 +564,6 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for JsInspector {
         _interp: &mut Interpreter<'_, T>,
         _message: &Message<T>,
         result: &mut MessageResult<T>,
-        _host: &mut T::Host,
     ) {
         if self.can_call_exit() {
             let frame_result = FrameResult {
@@ -676,29 +678,20 @@ mod tests {
     unsafe impl Send for SharedJsInspector {}
 
     impl Inspector<BaseEvmTypes> for SharedJsInspector {
-        fn step(
-            &mut self,
-            interp: &mut Interpreter<'_, BaseEvmTypes>,
-            host: &mut Evm<BaseEvmTypes>,
-        ) {
-            self.0.borrow_mut().step(interp, host);
+        fn step(&mut self, interp: &mut Interpreter<'_, BaseEvmTypes>) {
+            self.0.borrow_mut().step(interp);
         }
 
-        fn step_end(
-            &mut self,
-            interp: &mut Interpreter<'_, BaseEvmTypes>,
-            host: &mut Evm<BaseEvmTypes>,
-        ) {
-            self.0.borrow_mut().step_end(interp, host);
+        fn step_end(&mut self, interp: &mut Interpreter<'_, BaseEvmTypes>) {
+            self.0.borrow_mut().step_end(interp);
         }
 
         fn call(
             &mut self,
             interp: &mut Interpreter<'_, BaseEvmTypes>,
             message: &mut Message<BaseEvmTypes>,
-            host: &mut Evm<BaseEvmTypes>,
         ) -> Option<MessageResult<BaseEvmTypes>> {
-            self.0.borrow_mut().call(interp, message, host)
+            self.0.borrow_mut().call(interp, message)
         }
 
         fn call_end(
@@ -706,18 +699,16 @@ mod tests {
             interp: &mut Interpreter<'_, BaseEvmTypes>,
             message: &Message<BaseEvmTypes>,
             result: &mut MessageResult<BaseEvmTypes>,
-            host: &mut Evm<BaseEvmTypes>,
         ) {
-            self.0.borrow_mut().call_end(interp, message, result, host);
+            self.0.borrow_mut().call_end(interp, message, result);
         }
 
         fn create(
             &mut self,
             interp: &mut Interpreter<'_, BaseEvmTypes>,
             message: &mut Message<BaseEvmTypes>,
-            host: &mut Evm<BaseEvmTypes>,
         ) -> Option<MessageResult<BaseEvmTypes>> {
-            self.0.borrow_mut().create(interp, message, host)
+            self.0.borrow_mut().create(interp, message)
         }
 
         fn create_end(
@@ -725,9 +716,8 @@ mod tests {
             interp: &mut Interpreter<'_, BaseEvmTypes>,
             message: &Message<BaseEvmTypes>,
             result: &mut MessageResult<BaseEvmTypes>,
-            host: &mut Evm<BaseEvmTypes>,
         ) {
-            self.0.borrow_mut().create_end(interp, message, result, host);
+            self.0.borrow_mut().create_end(interp, message, result);
         }
     }
 

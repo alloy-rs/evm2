@@ -210,24 +210,16 @@ struct ExampleInspector {
 }
 
 impl Inspector<CustomTypes> for ExampleInspector {
-    fn initialize_interp(
-        &mut self,
-        _interp: &mut Interpreter<'_, CustomTypes>,
-        _host: &mut Evm<CustomTypes>,
-    ) {
+    fn initialize_interp(&mut self, _interp: &mut Interpreter<'_, CustomTypes>) {
         self.state.initialized += 1;
     }
 
-    fn step(&mut self, interp: &mut Interpreter<'_, CustomTypes>, _host: &mut Evm<CustomTypes>) {
+    fn step(&mut self, interp: &mut Interpreter<'_, CustomTypes>) {
         self.state.steps += 1;
         self.state.opcodes.push(interp.opcode());
     }
 
-    fn step_end(
-        &mut self,
-        _interp: &mut Interpreter<'_, CustomTypes>,
-        _host: &mut Evm<CustomTypes>,
-    ) {
+    fn step_end(&mut self, _interp: &mut Interpreter<'_, CustomTypes>) {
         self.state.step_ends += 1;
     }
 
@@ -239,7 +231,6 @@ impl Inspector<CustomTypes> for ExampleInspector {
         &mut self,
         _interp: &mut Interpreter<'_, CustomTypes>,
         _message: &mut Message<CustomTypes>,
-        _host: &mut Evm<CustomTypes>,
     ) -> Option<MessageResult<CustomTypes>> {
         self.state.calls += 1;
         None

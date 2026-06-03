@@ -83,9 +83,9 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         message: &'frame Message<T>,
         caller_is_static: bool,
     ) -> Self {
-        let mut interpreter = Self::default();
-        interpreter.init(bytecode, tx_env, message, caller_is_static);
-        interpreter
+        let mut interp = Self::default();
+        interp.init(bytecode, tx_env, message, caller_is_static);
+        interp
     }
 
     /// Initializes this interpreter for a new frame, retaining reusable allocations.
@@ -211,6 +211,13 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         &self.return_data
     }
 
+    /// Returns the host implementation.
+    #[inline]
+    pub const fn host(&mut self) -> &mut T::Host {
+        // SAFETY: `host` is initialized at the beginning of inspected execution.
+        unsafe { self.host.unwrap_unchecked().as_mut() }
+    }
+
     /// Returns the active base specification ID.
     #[inline]
     pub const fn spec(&self) -> SpecId {
@@ -259,6 +266,19 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
 
         dispatch::run(self, instructions)
     }
+
+    #[inline]
+    pub(crate) fn set_inspection_context(
+        &mut self,
+        spec: SpecId,
+        version: &Version,
+        host: &mut T::Host,
+    ) {
+        self.host = Some(NonNull::from(host));
+        self.version = version;
+        self.spec = spec;
+        self.features = version.features;
+    }
 }
 
 /// Interpreter state exposed to instruction implementations.
@@ -274,9 +294,9 @@ impl<T: EvmTypes> fmt::Debug for InterpreterState<'_, T> {
 
 impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
     #[inline]
-    pub(crate) const fn wrap_mut<'a>(interpreter: &'a mut Interpreter<'frame, T>) -> &'a mut Self {
+    pub(crate) const fn wrap_mut<'a>(interp: &'a mut Interpreter<'frame, T>) -> &'a mut Self {
         // SAFETY: `InterpreterState` is a transparent wrapper over `Interpreter`.
-        unsafe { core::mem::transmute::<&mut Interpreter<'frame, T>, &mut Self>(interpreter) }
+        unsafe { core::mem::transmute::<&mut Interpreter<'frame, T>, &mut Self>(interp) }
     }
 
     #[inline]
@@ -405,8 +425,7 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
         self.0.stack_len = stack_len;
         unsafe {
             let mut inspector = self.0.inspector.unwrap_unchecked();
-            let mut host = self.0.host.unwrap_unchecked();
-            inspector.as_mut().step(&mut self.0, host.as_mut());
+            inspector.as_mut().step(&mut self.0);
         }
     }
 
@@ -416,37 +435,27 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
         self.0.stack_len = stack_len;
         unsafe {
             let mut inspector = self.0.inspector.unwrap_unchecked();
-            let mut host = self.0.host.unwrap_unchecked();
-            inspector.as_mut().step_end(&mut self.0, host.as_mut());
+            inspector.as_mut().step_end(&mut self.0);
         }
     }
 
     #[inline]
     pub(crate) fn inspect_call(&mut self, message: &mut Message<T>) -> Option<MessageResult<T>> {
         let mut inspector = self.0.inspector?;
-        unsafe {
-            let mut host = self.0.host.unwrap_unchecked();
-            inspector.as_mut().call(&mut self.0, message, host.as_mut())
-        }
+        unsafe { inspector.as_mut().call(&mut self.0, message) }
     }
 
     #[inline]
     pub(crate) fn inspect_call_end(&mut self, message: &Message<T>, result: &mut MessageResult<T>) {
         if let Some(mut inspector) = self.0.inspector {
-            unsafe {
-                let mut host = self.0.host.unwrap_unchecked();
-                inspector.as_mut().call_end(&mut self.0, message, result, host.as_mut());
-            }
+            unsafe { inspector.as_mut().call_end(&mut self.0, message, result) };
         }
     }
 
     #[inline]
     pub(crate) fn inspect_create(&mut self, message: &mut Message<T>) -> Option<MessageResult<T>> {
         let mut inspector = self.0.inspector?;
-        unsafe {
-            let mut host = self.0.host.unwrap_unchecked();
-            inspector.as_mut().create(&mut self.0, message, host.as_mut())
-        }
+        unsafe { inspector.as_mut().create(&mut self.0, message) }
     }
 
     #[inline]
@@ -456,10 +465,7 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
         result: &mut MessageResult<T>,
     ) {
         if let Some(mut inspector) = self.0.inspector {
-            unsafe {
-                let mut host = self.0.host.unwrap_unchecked();
-                inspector.as_mut().create_end(&mut self.0, message, result, host.as_mut());
-            }
+            unsafe { inspector.as_mut().create_end(&mut self.0, message, result) };
         }
     }
 

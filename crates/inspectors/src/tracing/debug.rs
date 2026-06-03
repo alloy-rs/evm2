@@ -301,16 +301,16 @@ macro_rules! delegate {
 }
 
 impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for DebugInspector {
-    fn initialize_interp(&mut self, interp: &mut Interpreter<'_, T>, host: &mut T::Host) {
-        delegate!(self => initialize_interp(interp, host))
+    fn initialize_interp(&mut self, interp: &mut Interpreter<'_, T>) {
+        delegate!(self => initialize_interp(interp))
     }
 
-    fn step(&mut self, interp: &mut Interpreter<'_, T>, host: &mut T::Host) {
-        delegate!(self => step(interp, host))
+    fn step(&mut self, interp: &mut Interpreter<'_, T>) {
+        delegate!(self => step(interp))
     }
 
-    fn step_end(&mut self, interp: &mut Interpreter<'_, T>, host: &mut T::Host) {
-        delegate!(self => step_end(interp, host))
+    fn step_end(&mut self, interp: &mut Interpreter<'_, T>) {
+        delegate!(self => step_end(interp))
     }
 
     fn log(&mut self, log: &Log, host: &mut T::Host) {
@@ -321,9 +321,8 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for DebugInspector {
         &mut self,
         interp: &mut Interpreter<'_, T>,
         message: &mut Message<T>,
-        host: &mut T::Host,
     ) -> Option<MessageResult<T>> {
-        delegate!(self => call(interp, message, host))
+        delegate!(self => call(interp, message))
     }
 
     fn call_end(
@@ -331,18 +330,16 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for DebugInspector {
         interp: &mut Interpreter<'_, T>,
         message: &Message<T>,
         result: &mut MessageResult<T>,
-        host: &mut T::Host,
     ) {
-        delegate!(self => call_end(interp, message, result, host))
+        delegate!(self => call_end(interp, message, result))
     }
 
     fn create(
         &mut self,
         interp: &mut Interpreter<'_, T>,
         message: &mut Message<T>,
-        host: &mut T::Host,
     ) -> Option<MessageResult<T>> {
-        delegate!(self => create(interp, message, host))
+        delegate!(self => create(interp, message))
     }
 
     fn create_end(
@@ -350,9 +347,8 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for DebugInspector {
         interp: &mut Interpreter<'_, T>,
         message: &Message<T>,
         result: &mut MessageResult<T>,
-        host: &mut T::Host,
     ) {
-        delegate!(self => create_end(interp, message, result, host))
+        delegate!(self => create_end(interp, message, result))
     }
 
     fn selfdestruct(

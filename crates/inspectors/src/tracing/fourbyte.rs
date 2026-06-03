@@ -48,7 +48,6 @@ impl<T: EvmTypes> Inspector<T> for FourByteInspector {
         &mut self,
         _interp: &mut Interpreter<'_, T>,
         message: &mut Message<T>,
-        _host: &mut T::Host,
     ) -> Option<MessageResult<T>> {
         if message.input.len() >= 4 {
             let selector =

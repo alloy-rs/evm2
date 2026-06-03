@@ -66,7 +66,7 @@ impl OpcodeGasInspector {
 }
 
 impl<T: EvmTypes> Inspector<T> for OpcodeGasInspector {
-    fn step(&mut self, interp: &mut Interpreter<'_, T>, _host: &mut T::Host) {
+    fn step(&mut self, interp: &mut Interpreter<'_, T>) {
         let opcode_value = interp.opcode();
         if let Some(opcode) = OpCode::new(opcode_value) {
             // keep track of opcode counts.
@@ -77,7 +77,7 @@ impl<T: EvmTypes> Inspector<T> for OpcodeGasInspector {
         }
     }
 
-    fn step_end(&mut self, interp: &mut Interpreter<'_, T>, _host: &mut T::Host) {
+    fn step_end(&mut self, interp: &mut Interpreter<'_, T>) {
         // update gas usage for the last opcode.
         if let Some((opcode, gas_remaining)) = self.last_opcode_gas_remaining.take() {
             let gas_cost = gas_remaining.saturating_sub(interp.gas().remaining());
@@ -89,7 +89,6 @@ impl<T: EvmTypes> Inspector<T> for OpcodeGasInspector {
         &mut self,
         _interp: &mut Interpreter<'_, T>,
         message: &mut Message<T>,
-        _host: &mut T::Host,
     ) -> Option<MessageResult<T>> {
         if message.depth == 0 {
             // skip the root call.
@@ -114,7 +113,6 @@ impl<T: EvmTypes> Inspector<T> for OpcodeGasInspector {
         &mut self,
         _interp: &mut Interpreter<'_, T>,
         message: &mut Message<T>,
-        _host: &mut T::Host,
     ) -> Option<MessageResult<T>> {
         if message.depth == 0 {
             // skip the root create.
@@ -144,52 +142,37 @@ pub fn immediate_size(opcode: u8) -> u8 {
 mod tests {
     use super::*;
     use alloy_primitives::Bytes;
-    use evm2::{
-        BaseEvmTypes, Evm, Precompiles, SpecId, bytecode::Bytecode, env::TxEnv,
-        ethereum::ethereum_tx_registry, evm::InMemoryDB,
-    };
-
-    fn host() -> Evm<BaseEvmTypes> {
-        Evm::new(
-            SpecId::OSAKA,
-            Default::default(),
-            ethereum_tx_registry(SpecId::OSAKA),
-            InMemoryDB::default(),
-            Precompiles::base(SpecId::OSAKA),
-        )
-    }
+    use evm2::{BaseEvmTypes, bytecode::Bytecode, env::TxEnv};
 
     #[test]
     fn test_opcode_counter_inspector() {
         let mut opcode_counter = OpcodeGasInspector::new();
-        let mut host = host();
 
         let opcodes = [op::ADD, op::ADD, op::ADD, op::BYTE];
 
         let bytecode = Bytecode::new_legacy(Bytes::from(opcodes));
         let tx_env = TxEnv::<BaseEvmTypes>::default();
         let message = Message::default();
-        let mut interpreter = Interpreter::new(bytecode, &tx_env, &message, false);
+        let mut interp = Interpreter::new(bytecode, &tx_env, &message, false);
 
         for _ in &opcodes {
-            opcode_counter.step(&mut interpreter, &mut host);
+            opcode_counter.step(&mut interp);
         }
     }
 
     #[test]
     fn test_with_variety_of_opcodes() {
         let mut opcode_counter = OpcodeGasInspector::new();
-        let mut host = host();
 
         let opcodes = [op::PUSH1, op::PUSH1, op::ADD, op::PUSH1, op::SSTORE, op::STOP];
 
         let bytecode = Bytecode::new_legacy(Bytes::from(opcodes));
         let tx_env = TxEnv::<BaseEvmTypes>::default();
         let message = Message::default();
-        let mut interpreter = Interpreter::new(bytecode, &tx_env, &message, false);
+        let mut interp = Interpreter::new(bytecode, &tx_env, &message, false);
 
         for _ in &opcodes {
-            opcode_counter.step(&mut interpreter, &mut host);
+            opcode_counter.step(&mut interp);
         }
     }
 }

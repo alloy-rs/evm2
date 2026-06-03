@@ -375,9 +375,9 @@ pub(super) fn assert_stack_words(inputs: &[Word], opcode: u8, expected: &[Word])
         push(&mut code, *input);
     }
     code.extend([opcode, op::STOP]);
-    let interpreter = run(RunConfig::new(code));
-    assert_matches!(interpreter.err, InstrStop::Stop);
-    assert_eq!(interpreter.stack(), expected);
+    let interp = run(RunConfig::new(code));
+    assert_matches!(interp.err, InstrStop::Stop);
+    assert_eq!(interp.stack(), expected);
 }
 
 macro_rules! assert_stack {

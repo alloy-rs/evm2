@@ -353,14 +353,14 @@ impl From<MessageKind> for CallKind {
 }
 
 impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for TracingInspector {
-    fn initialize_interp(&mut self, interp: &mut Interpreter<'_, T>, _host: &mut T::Host) {
+    fn initialize_interp(&mut self, interp: &mut Interpreter<'_, T>) {
         self.spec_id = Some(interp.spec());
         if self.trace_stack.is_empty() {
             self.start_trace(interp.message(), None);
         }
     }
 
-    fn step(&mut self, interp: &mut Interpreter<'_, T>, host: &mut T::Host) {
+    fn step(&mut self, interp: &mut Interpreter<'_, T>) {
         self.spec_id = Some(interp.spec());
         if !self.config.record_steps {
             return;
@@ -425,11 +425,12 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for TracingInspector {
         let step_idx = self.traces.arena[trace_idx].trace.steps.len();
         self.traces.arena[trace_idx].ordering.push(TraceMemberOrder::Step(step_idx));
         self.traces.arena[trace_idx].trace.steps.push(step);
-        self.last_journal_len = host.state().journal().len();
-        self.step_stack.push((trace_idx, step_idx, interp.gas().remaining()));
+        let gas_remaining = interp.gas().remaining();
+        self.last_journal_len = interp.host().state().journal().len();
+        self.step_stack.push((trace_idx, step_idx, gas_remaining));
     }
 
-    fn step_end(&mut self, interp: &mut Interpreter<'_, T>, host: &mut T::Host) {
+    fn step_end(&mut self, interp: &mut Interpreter<'_, T>) {
         if !self.config.record_steps {
             return;
         }
@@ -452,6 +453,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for TracingInspector {
                     stack.as_slice().get(stack.len().saturating_sub(outputs)..).unwrap_or_default(),
                 ));
             }
+            let host = interp.host();
             let journal = host.state().journal();
             if self.config.record_state_diff && journal.len() != self.last_journal_len {
                 step.storage_change = journal
@@ -483,12 +485,13 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for TracingInspector {
 
     fn call(
         &mut self,
-        _interp: &mut Interpreter<'_, T>,
+        interp: &mut Interpreter<'_, T>,
         message: &mut Message<T>,
-        host: &mut T::Host,
     ) -> Option<MessageResult<T>> {
-        let maybe_precompile =
-            self.config.exclude_precompile_calls.then(|| self.is_precompile_call(host, message));
+        let maybe_precompile = self
+            .config
+            .exclude_precompile_calls
+            .then(|| self.is_precompile_call(interp.host(), message));
         self.start_trace(message, maybe_precompile);
         None
     }
@@ -498,7 +501,6 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for TracingInspector {
         _interp: &mut Interpreter<'_, T>,
         _message: &Message<T>,
         result: &mut MessageResult<T>,
-        _host: &mut T::Host,
     ) {
         self.end_trace(result);
     }
@@ -507,7 +509,6 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for TracingInspector {
         &mut self,
         _interp: &mut Interpreter<'_, T>,
         message: &mut Message<T>,
-        _host: &mut T::Host,
     ) -> Option<MessageResult<T>> {
         self.start_trace(message, Some(false));
         None
@@ -518,7 +519,6 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for TracingInspector {
         _interp: &mut Interpreter<'_, T>,
         _message: &Message<T>,
         result: &mut MessageResult<T>,
-        _host: &mut T::Host,
     ) {
         self.end_trace(result);
     }

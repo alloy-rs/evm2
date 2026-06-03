@@ -105,9 +105,8 @@ where
 {
     fn call(
         &mut self,
-        _interp: &mut Interpreter<'_, T>,
+        interp: &mut Interpreter<'_, T>,
         message: &mut Message<T>,
-        host: &mut T::Host,
     ) -> Option<MessageResult<T>> {
         if matches!(message.kind, MessageKind::Call | MessageKind::CallCode) {
             self.on_transfer(
@@ -116,7 +115,7 @@ where
                 message.value,
                 TransferKind::Call,
                 message.depth,
-                |log| host.log(log),
+                |log| interp.host().log(log),
             );
         }
         None
@@ -124,9 +123,8 @@ where
 
     fn create(
         &mut self,
-        _interp: &mut Interpreter<'_, T>,
+        interp: &mut Interpreter<'_, T>,
         message: &mut Message<T>,
-        host: &mut T::Host,
     ) -> Option<MessageResult<T>> {
         let kind = match message.kind {
             MessageKind::Create => TransferKind::Create,
@@ -140,7 +138,7 @@ where
             kind,
             message.depth,
             |log| {
-                host.log(log);
+                interp.host().log(log);
             },
         );
         None

@@ -15,7 +15,7 @@ use crate::{
     },
     registry::{HandlerResult, TxRegistry},
     trustme,
-    version::{EvmFeatures, GasId},
+    version::{EvmFeatures, GasId, Version},
 };
 use alloc::{boxed::Box, vec};
 use alloy_eips::eip2718::Typed2718;
@@ -492,15 +492,20 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         bytecode: Bytecode,
         message: &mut Message<T>,
     ) -> MessageResult<T> {
+        let spec = self.spec_id();
+        let version = self.execution_config.version() as *const Version;
         let top_bytecode = bytecode.clone();
         let mut frame = self.interpreter_pool.pop();
         let frame_message = message.clone();
         frame.init(top_bytecode.clone(), tx_env, &frame_message, false);
+        // SAFETY: The version pointer comes from `self.execution_config` and remains valid for the
+        // duration of the temporary top-level inspection frame.
+        frame.set_inspection_context(spec, unsafe { &*version }, self);
 
         let inspected = match message.kind {
             MessageKind::Create | MessageKind::Create2 => {
                 if let Some(mut inspector) = self.inspector.take() {
-                    let result = inspector.create(&mut frame, message, self);
+                    let result = inspector.create(&mut frame, message);
                     self.inspector = Some(inspector);
                     result
                 } else {
@@ -512,7 +517,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             | MessageKind::DelegateCall
             | MessageKind::StaticCall => {
                 if let Some(mut inspector) = self.inspector.take() {
-                    let result = inspector.call(&mut frame, message, self);
+                    let result = inspector.call(&mut frame, message);
                     self.inspector = Some(inspector);
                     result
                 } else {
@@ -529,11 +534,14 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         let mut frame = self.interpreter_pool.pop();
         let frame_message = message.clone();
         frame.init(top_bytecode, tx_env, &frame_message, false);
+        // SAFETY: The version pointer comes from `self.execution_config` and remains valid for the
+        // duration of the temporary top-level inspection frame.
+        frame.set_inspection_context(spec, unsafe { &*version }, self);
 
         match message.kind {
             MessageKind::Create | MessageKind::Create2 => {
                 if let Some(mut inspector) = self.inspector.take() {
-                    inspector.create_end(&mut frame, message, &mut result, self);
+                    inspector.create_end(&mut frame, message, &mut result);
                     self.inspector = Some(inspector);
                 }
             }
@@ -542,7 +550,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             | MessageKind::DelegateCall
             | MessageKind::StaticCall => {
                 if let Some(mut inspector) = self.inspector.take() {
-                    inspector.call_end(&mut frame, message, &mut result, self);
+                    inspector.call_end(&mut frame, message, &mut result);
                     self.inspector = Some(inspector);
                 }
             }
@@ -628,9 +636,9 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         gas_limit: u64,
         stop: InstrStop,
     ) -> MessageResult<T> {
-        let interpreter = self.interpreter_pool.last_mut().unwrap();
-        let mut gas = interpreter.gas();
-        let mut output = Bytes::copy_from_slice(interpreter.output());
+        let interp = self.interpreter_pool.last_mut().unwrap();
+        let mut gas = interp.gas();
+        let mut output = Bytes::copy_from_slice(interp.output());
         if stop.is_success() {
             if let Err(stop) = self.validate_create_output(&mut gas, &mut output) {
                 self.state.rollback(checkpoint, self.features);
@@ -795,9 +803,9 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         checkpoint: StateCheckpoint,
         stop: InstrStop,
     ) -> MessageResult<T> {
-        let interpreter = self.interpreter_pool.last_mut().unwrap();
-        let child_gas = interpreter.gas();
-        let output = Bytes::copy_from_slice(interpreter.output());
+        let interp = self.interpreter_pool.last_mut().unwrap();
+        let child_gas = interp.gas();
+        let output = Bytes::copy_from_slice(interp.output());
         if !stop.is_success() {
             self.state.rollback(checkpoint, self.features);
         }
@@ -836,31 +844,31 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         message: &'frame Message<T>,
         caller_is_static: bool,
     ) -> InstrStop {
-        let mut interpreter = self.interpreter_pool.pop();
+        let mut interp = self.interpreter_pool.pop();
         let _guard = self.enter_execution();
-        let interpreter_ref = interpreter.as_mut();
-        interpreter_ref.init(bytecode, tx_env, message, caller_is_static);
+        let interp_ref = interp.as_mut();
+        interp_ref.init(bytecode, tx_env, message, caller_is_static);
         // SAFETY: `execution_config` points to a private field that host execution does not
         // replace or mutate, so the pointee remains valid here.
         let execution_config = unsafe { trustme::decouple_lt(&self.execution_config) };
-        self.inspect_initialize_interp(interpreter_ref);
+        self.inspect_initialize_interp(interp_ref);
         let inspector = self.inspector.as_deref_mut().map(|inspector| {
             // SAFETY: The inspector is stored in `self` and remains alive for the duration of the
             // interpreter run.
             unsafe { trustme::decouple_lt_mut(inspector) }
         });
         let stop = if let Some(inspector) = inspector {
-            interpreter_ref.run_inspect(execution_config, self, inspector)
+            interp_ref.run_inspect(execution_config, self, inspector)
         } else {
-            interpreter_ref.run(execution_config, self)
+            interp_ref.run(execution_config, self)
         };
-        self.interpreter_pool.push(interpreter);
+        self.interpreter_pool.push(interp);
         stop
     }
 
     fn inspect_initialize_interp(&mut self, interp: &mut Interpreter<'_, T>) {
         if let Some(mut inspector) = self.inspector.take() {
-            inspector.initialize_interp(interp, self);
+            inspector.initialize_interp(interp);
             self.inspector = Some(inspector);
         }
     }
@@ -1417,11 +1425,7 @@ mod tests {
     unsafe impl Send for AccessingInspector {}
 
     impl Inspector<BaseEvmTypes> for AccessingInspector {
-        fn initialize_interp(
-            &mut self,
-            _interp: &mut Interpreter<'_, BaseEvmTypes>,
-            _host: &mut Evm<BaseEvmTypes>,
-        ) {
+        fn initialize_interp(&mut self, _interp: &mut Interpreter<'_, BaseEvmTypes>) {
             let evm = unsafe { &mut *self.evm };
             match self.access {
                 InspectorAccess::Mut => {
@@ -1465,11 +1469,7 @@ mod tests {
         unsafe impl Send for ReadingInspector {}
 
         impl Inspector<BaseEvmTypes> for ReadingInspector {
-            fn initialize_interp(
-                &mut self,
-                _interp: &mut Interpreter<'_, BaseEvmTypes>,
-                _host: &mut Evm<BaseEvmTypes>,
-            ) {
+            fn initialize_interp(&mut self, _interp: &mut Interpreter<'_, BaseEvmTypes>) {
                 let evm = unsafe { &*self.evm };
                 let _ = evm.inspector();
             }

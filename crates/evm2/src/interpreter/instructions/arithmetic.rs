@@ -157,9 +157,9 @@ mod tests {
         push(&mut code, 2);
         code.extend([op::EXP, op::STOP]);
 
-        let interpreter = run(RunConfig::new(code).spec(SpecId::FRONTIER).gas_limit(25));
+        let interp = run(RunConfig::new(code).spec(SpecId::FRONTIER).gas_limit(25));
 
-        assert_matches!(interpreter.err, InstrStop::OutOfGas);
+        assert_matches!(interp.err, InstrStop::OutOfGas);
     }
 
     #[test]
