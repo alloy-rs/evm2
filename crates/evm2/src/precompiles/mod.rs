@@ -12,7 +12,7 @@ use alloy_primitives::Address;
 #[cfg(feature = "std")]
 use core::any::{Any, TypeId};
 #[cfg(feature = "std")]
-use std::{collections::HashMap, sync::Mutex};
+use std::{collections::HashMap, sync::RwLock};
 
 pub mod blake2;
 pub mod bls12_381;
@@ -151,32 +151,60 @@ impl<T: EvmTypes> PrecompileProvider<T> for Precompiles<T> {
 }
 
 #[cfg(feature = "std")]
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-struct BasePrecompileKey {
-    evm_types: TypeId,
-    spec: SpecId,
-}
+type BasePrecompileCache = [&'static (dyn Any + Send + Sync); SpecId::COUNT];
 
 #[cfg(feature = "std")]
-static BASE_PRECOMPILES: Mutex<
-    Option<HashMap<BasePrecompileKey, &'static (dyn Any + Send + Sync)>>,
-> = Mutex::new(None);
+static BASE_PRECOMPILES: RwLock<Option<HashMap<TypeId, BasePrecompileCache>>> = RwLock::new(None);
 
 #[cfg(feature = "std")]
 fn cached_base_precompiles<T: EvmTypes>(spec: SpecId) -> &'static PrecompileMap<T> {
-    let key = BasePrecompileKey { evm_types: TypeId::of::<T>(), spec };
-    let mut cache = BASE_PRECOMPILES.lock().expect("base precompile cache poisoned");
+    let type_id = TypeId::of::<T>();
+    let index = spec as usize;
+
+    {
+        let cache = BASE_PRECOMPILES.read().expect("base precompile cache poisoned");
+        if let Some(precompiles) = cache.as_ref().and_then(|cache| cache.get(&type_id)) {
+            return precompiles[index]
+                .downcast_ref::<PrecompileMap<T>>()
+                .expect("base precompile cache type mismatch");
+        }
+    }
+
+    let mut cache = BASE_PRECOMPILES.write().expect("base precompile cache poisoned");
     let cache = cache.get_or_insert_with(HashMap::new);
 
-    if let Some(precompiles) = cache.get(&key) {
-        return precompiles
+    if let Some(precompiles) = cache.get(&type_id) {
+        return precompiles[index]
             .downcast_ref::<PrecompileMap<T>>()
             .expect("base precompile cache type mismatch");
     }
 
-    let precompiles = Box::leak(Box::new(base_precompiles::<T>(spec)));
-    cache.insert(key, precompiles);
-    precompiles
+    let precompiles = base_precompile_cache::<T>();
+    cache.insert(type_id, precompiles);
+    precompiles[index]
+        .downcast_ref::<PrecompileMap<T>>()
+        .expect("base precompile cache type mismatch")
+}
+
+#[cfg(feature = "std")]
+fn base_precompile_cache<T: EvmTypes>() -> BasePrecompileCache {
+    let frontier = cached_base_precompile::<T>(SpecId::FRONTIER);
+    let byzantium = cached_base_precompile::<T>(SpecId::BYZANTIUM);
+    let istanbul = cached_base_precompile::<T>(SpecId::ISTANBUL);
+    let berlin = cached_base_precompile::<T>(SpecId::BERLIN);
+    let cancun = cached_base_precompile::<T>(SpecId::CANCUN);
+    let prague = cached_base_precompile::<T>(SpecId::PRAGUE);
+    let osaka = cached_base_precompile::<T>(SpecId::OSAKA);
+
+    [
+        frontier, frontier, frontier, frontier, byzantium, byzantium, istanbul, berlin, berlin,
+        berlin, berlin, cancun, prague, osaka, osaka,
+    ]
+}
+
+#[cfg(feature = "std")]
+fn cached_base_precompile<T: EvmTypes>(spec: SpecId) -> &'static (dyn Any + Send + Sync) {
+    Box::leak(Box::new(base_precompiles::<T>(spec)))
 }
 
 const fn base_precompile_capacity(spec: SpecId) -> usize {
