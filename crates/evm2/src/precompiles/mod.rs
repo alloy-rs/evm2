@@ -127,12 +127,12 @@ impl<T: EvmTypes> PrecompileProvider<T> for Precompiles<T> {
     #[inline]
     fn execute(
         &mut self,
-        _evm: &mut Evm<T>,
+        evm: &mut Evm<T>,
         message: &Message<T>,
         gas: &mut GasTracker,
     ) -> Option<PrecompileResult> {
         let precompile = self.map.as_ref().get_data(&message.code_address)?;
-        Some(precompile.execute(message, gas))
+        Some(precompile.execute(evm, message, gas))
     }
 }
 

@@ -1,5 +1,5 @@
 use crate::{
-    BaseEvmTypes, EvmTypes,
+    BaseEvmTypes, Evm, EvmTypes,
     interpreter::{GasTracker, Message},
     precompiles::{
         PrecompileId, PrecompileResult, blake2, bls12_381, bn254, hash, identity,
@@ -11,7 +11,8 @@ use alloy_primitives::{Address, map::AddressMap};
 use core::fmt::{self, Display};
 
 /// Precompile implementation function.
-pub type PrecompileFn<T = BaseEvmTypes> = fn(&Message<T>, &mut GasTracker) -> PrecompileResult;
+pub type PrecompileFn<T = BaseEvmTypes> =
+    fn(&mut Evm<T>, &Message<T>, &mut GasTracker) -> PrecompileResult;
 
 /// Precompile descriptor.
 pub struct Precompile<T: EvmTypes = BaseEvmTypes> {
@@ -86,7 +87,11 @@ impl<T: EvmTypes> fmt::Debug for Precompile<T> {
     }
 }
 
-fn dummy_precompile<T: EvmTypes>(_message: &Message<T>, _gas: &mut GasTracker) -> PrecompileResult {
+fn dummy_precompile<T: EvmTypes>(
+    _evm: &mut Evm<T>,
+    _message: &Message<T>,
+    _gas: &mut GasTracker,
+) -> PrecompileResult {
     unreachable!("dummy precompile data must be replaced before use")
 }
 
@@ -132,8 +137,13 @@ impl<T: EvmTypes> PrecompileData<T> {
     }
 
     #[inline]
-    pub(super) fn execute(&self, message: &Message<T>, gas: &mut GasTracker) -> PrecompileResult {
-        (self.run)(message, gas)
+    pub(super) fn execute(
+        &self,
+        evm: &mut Evm<T>,
+        message: &Message<T>,
+        gas: &mut GasTracker,
+    ) -> PrecompileResult {
+        (self.run)(evm, message, gas)
     }
 }
 
@@ -413,6 +423,7 @@ macro_rules! define_precompiles {
             #[allow(non_snake_case)]
             $vis const fn $name<T: $crate::EvmTypes>() -> $crate::precompiles::Precompile<T> {
                 fn run<T: $crate::EvmTypes>(
+                    _evm: &mut $crate::Evm<T>,
                     message: &$crate::interpreter::Message<T>,
                     gas: &mut $crate::interpreter::GasTracker,
                 ) -> $crate::precompiles::PrecompileResult {
@@ -489,11 +500,19 @@ mod tests {
     use alloy_primitives::{Bytes, address};
     use core::assert_matches;
 
-    fn test_run_a(_message: &Message, _gas: &mut GasTracker) -> PrecompileResult {
+    fn test_run_a(
+        _evm: &mut Evm<BaseEvmTypes>,
+        _message: &Message,
+        _gas: &mut GasTracker,
+    ) -> PrecompileResult {
         Ok(PrecompileOutput::new(Bytes::from_static(b"a")))
     }
 
-    fn test_run_b(_message: &Message, _gas: &mut GasTracker) -> PrecompileResult {
+    fn test_run_b(
+        _evm: &mut Evm<BaseEvmTypes>,
+        _message: &Message,
+        _gas: &mut GasTracker,
+    ) -> PrecompileResult {
         Ok(PrecompileOutput::new(Bytes::from_static(b"b")))
     }
 
