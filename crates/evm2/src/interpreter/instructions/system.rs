@@ -372,7 +372,6 @@ pub(crate) fn selfdestruct(cx: _, [target]: [Word]) -> Result {
     let skip_cold_load = cx.gas.remaining() < cold_load_gas;
     let destination = &cx.state.message().destination;
     let res = cx.state.host().selfdestruct(destination, &target, skip_cold_load)?;
-    cx.state.inspect_selfdestruct(destination, &target, &res.value);
     let should_charge_topup = should_charge_new_account_gas(
         cx.state.feature(EvmFeatures::EIP161),
         res.had_value,

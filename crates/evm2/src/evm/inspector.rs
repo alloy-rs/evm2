@@ -4,7 +4,7 @@ use crate::{
     EvmTypes,
     interpreter::{Interpreter, Message, MessageResult},
 };
-use alloy_primitives::{Address, Log, U256};
+use alloy_primitives::{Address, Log};
 use core::any::Any;
 
 /// EVM execution inspector.
@@ -82,14 +82,6 @@ pub trait Inspector<T: EvmTypes>: Any + Send {
         let _ = message;
         let _ = result;
     }
-
-    /// Called after a contract self-destructs.
-    #[inline]
-    fn selfdestruct(&mut self, contract: &Address, target: &Address, value: &U256) {
-        let _ = contract;
-        let _ = target;
-        let _ = value;
-    }
 }
 
 impl<T: EvmTypes> core::ops::Deref for dyn Inspector<T> + '_ {
@@ -117,7 +109,7 @@ mod tests {
         constants::CALL_DEPTH_LIMIT,
         env::{BlockEnv, TxEnv},
         ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
-        evm::{AccountInfo, InMemoryDB, SYSTEM_ADDRESS, SelfDestructResult},
+        evm::{AccountInfo, InMemoryDB, SYSTEM_ADDRESS},
         interpreter::{
             GasTracker, InstrStop, Interpreter, Message, MessageResult, Word,
             instructions::tests::{TestHost, TestTypes, push},
@@ -196,7 +188,6 @@ mod tests {
         create_opcode: Option<u8>,
         create_end_opcode: Option<u8>,
         create_end_stop: Option<InstrStop>,
-        selfdestruct: Option<(Address, Address, Word)>,
     }
 
     impl Inspector<TestTypes> for MessageInspector {
@@ -238,10 +229,6 @@ mod tests {
         ) {
             self.create_end_opcode = Some(interp.opcode());
             self.create_end_stop = Some(result.stop);
-        }
-
-        fn selfdestruct(&mut self, contract: &Address, target: &Address, value: &Word) {
-            self.selfdestruct = Some((*contract, *target, *value));
         }
     }
 
@@ -800,53 +787,6 @@ mod tests {
         assert_eq!(stop, InstrStop::InvalidOpcode);
         assert_eq!(inspector.steps, 1);
         assert_eq!(inspector.step_ends, 1);
-    }
-
-    #[test]
-    fn selfdestruct_is_inspected_from_opcode() {
-        let contract = Address::from([0x11; 20]);
-        let target = Address::from([0x99; 20]);
-        let value = Word::from(0xbeef);
-        let mut host = TestHost::default();
-        host.selfdestruct_result =
-            SelfDestructResult { had_value: true, value, ..Default::default() };
-        let mut inspector = MessageInspector::default();
-        let mut code = Vec::new();
-        push(&mut code, address_to_word(&target));
-        code.push(op::SELFDESTRUCT);
-
-        let (stop, _) = run_with_inspector(
-            code,
-            &mut host,
-            &Message { destination: contract, gas_limit: 10_000, ..Default::default() },
-            10_000,
-            &mut inspector,
-        );
-
-        assert_matches!(stop, InstrStop::SelfDestruct);
-        assert_eq!(inspector.selfdestruct, Some((contract, target, value)));
-    }
-
-    #[test]
-    fn selfdestruct_host_error_is_not_inspected() {
-        let target = Address::from([0x99; 20]);
-        let mut host = TestHost::default();
-        host.selfdestruct_error = Some(InstrStop::FatalExternalError);
-        let mut inspector = MessageInspector::default();
-        let mut code = Vec::new();
-        push(&mut code, address_to_word(&target));
-        code.push(op::SELFDESTRUCT);
-
-        let (stop, _) = run_with_inspector(
-            code,
-            &mut host,
-            &Message { gas_limit: 10_000, ..Default::default() },
-            10_000,
-            &mut inspector,
-        );
-
-        assert_eq!(stop, InstrStop::FatalExternalError);
-        assert_eq!(inspector.selfdestruct, None);
     }
 
     #[test]
