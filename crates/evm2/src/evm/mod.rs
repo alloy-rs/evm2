@@ -22,7 +22,7 @@ use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{Address, B256, Bytes, Log, LogData};
 use core::any::TypeId;
 #[cfg(feature = "async")]
-use core::{future::Future, marker::PhantomData, ptr::NonNull};
+use core::future::Future;
 use derive_where::derive_where;
 
 #[cfg(feature = "async")]
@@ -477,8 +477,7 @@ impl Drop for ExecutionGuard {
 
 #[cfg(feature = "async")]
 struct SendEvmRef<'a, T: EvmTypes> {
-    evm: NonNull<Evm<T>>,
-    _marker: PhantomData<&'a mut Evm<T>>,
+    evm: &'a mut Evm<T>,
 }
 
 #[cfg(feature = "async")]
@@ -500,15 +499,8 @@ where
 #[cfg(feature = "async")]
 impl<'a, T: EvmTypes> SendEvmRef<'a, T> {
     #[inline]
-    fn new(evm: &'a mut Evm<T>) -> Self {
-        Self { evm: NonNull::from(evm), _marker: PhantomData }
-    }
-
-    #[inline]
-    const fn as_mut(&mut self) -> &mut Evm<T> {
-        // SAFETY: The returned future owns the exclusive `&mut Evm` borrow represented by
-        // `_marker`, and all access goes through this wrapper until it is dropped.
-        unsafe { self.evm.as_mut() }
+    const fn new(evm: &'a mut Evm<T>) -> Self {
+        Self { evm }
     }
 }
 
@@ -516,7 +508,7 @@ impl<'a, T: EvmTypes> SendEvmRef<'a, T> {
 impl<T: EvmTypes<Tx: Typed2718, Host = Evm<T>>> SendEvmRef<'_, T> {
     #[inline]
     fn transact(&mut self, tx: &T::Tx) -> HandlerResult<TxResult<T>> {
-        self.as_mut().transact(tx)
+        self.evm.transact(tx)
     }
 }
 

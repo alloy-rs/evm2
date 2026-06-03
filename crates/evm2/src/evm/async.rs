@@ -432,26 +432,26 @@ pub trait AsyncDatabase: Any {
     fn get_account(
         &mut self,
         address: Address,
-    ) -> impl Future<Output = Result<Option<AccountInfo>, Self::Error>> + '_;
+    ) -> impl Future<Output = Result<Option<AccountInfo>, Self::Error>> + Send + '_;
 
     /// Loads bytecode by code hash.
     fn get_code_by_hash(
         &mut self,
         code_hash: B256,
-    ) -> impl Future<Output = Result<Bytecode, Self::Error>> + '_;
+    ) -> impl Future<Output = Result<Bytecode, Self::Error>> + Send + '_;
 
     /// Loads a persistent storage slot.
     fn get_storage(
         &mut self,
         address: Address,
         key: Word,
-    ) -> impl Future<Output = Result<Word, Self::Error>> + '_;
+    ) -> impl Future<Output = Result<Word, Self::Error>> + Send + '_;
 
     /// Loads a historical block hash.
     fn get_block_hash(
         &mut self,
         number: Word,
-    ) -> impl Future<Output = Result<Option<B256>, Self::Error>> + '_;
+    ) -> impl Future<Output = Result<Option<B256>, Self::Error>> + Send + '_;
 }
 
 /// Adapter that exposes an [`AsyncDatabase`] through the synchronous [`DynDatabase`] interface.
@@ -694,6 +694,16 @@ mod tests {
         let code = poll_ready(code).unwrap();
 
         assert_eq!(db.error(code).to_string(), "storage read failed");
+    }
+
+    #[test]
+    fn async_database_inner_futures_are_send() {
+        let mut db = TestDb;
+
+        drop(assert_send(db.get_account(Address::ZERO)));
+        drop(assert_send(db.get_code_by_hash(B256::ZERO)));
+        drop(assert_send(db.get_storage(Address::ZERO, Word::ZERO)));
+        drop(assert_send(db.get_block_hash(Word::ZERO)));
     }
 
     #[test]

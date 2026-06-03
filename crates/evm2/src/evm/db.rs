@@ -215,34 +215,7 @@ impl core::ops::DerefMut for dyn DynDatabase + '_ {
     }
 }
 
-impl DynDatabase for Box<dyn DynDatabase> {
-    #[inline]
-    fn get_account(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
-        self.as_mut().get_account(address)
-    }
-
-    #[inline]
-    fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<Bytecode> {
-        self.as_mut().get_code_by_hash(code_hash)
-    }
-
-    #[inline]
-    fn get_storage(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
-        self.as_mut().get_storage(address, key)
-    }
-
-    #[inline]
-    fn get_block_hash(&mut self, number: &Word) -> DbResult<Option<B256>> {
-        self.as_mut().get_block_hash(number)
-    }
-
-    #[inline]
-    fn error(&mut self, code: DbErrorCode) -> Box<dyn Error> {
-        self.as_mut().error(code)
-    }
-}
-
-impl DynDatabase for Box<dyn DynDatabase + Send> {
+impl<T: DynDatabase + ?Sized> DynDatabase for Box<T> {
     #[inline]
     fn get_account(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
         self.as_mut().get_account(address)

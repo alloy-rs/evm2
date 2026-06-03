@@ -185,7 +185,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
 impl<T: EvmTypes<Host = Evm<T>>> SendEvmRef<'_, T> {
     #[inline]
     fn system_call(&mut self, system_contract_address: Address, data: Bytes) -> TxResult<T> {
-        self.as_mut().system_call(system_contract_address, data)
+        self.evm.system_call(system_contract_address, data)
     }
 
     #[inline]
@@ -195,7 +195,7 @@ impl<T: EvmTypes<Host = Evm<T>>> SendEvmRef<'_, T> {
         system_contract_address: Address,
         data: Bytes,
     ) -> TxResult<T> {
-        self.as_mut().system_call_with_caller(caller, system_contract_address, data)
+        self.evm.system_call_with_caller(caller, system_contract_address, data)
     }
 }
 
