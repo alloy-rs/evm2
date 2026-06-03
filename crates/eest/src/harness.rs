@@ -2,6 +2,7 @@ use crate::discover::find_json_tests;
 use libtest_mimic::{Arguments, Failed, Trial};
 use std::{
     env,
+    ffi::OsString,
     path::{Path, PathBuf},
     process::ExitCode,
 };
@@ -41,7 +42,7 @@ pub(crate) fn run_json_harness(
     should_ignore: fn(&str) -> bool,
     run_file: fn(PathBuf) -> Result<(), Failed>,
 ) -> ExitCode {
-    run_json_harnesses(vec![TestSuite {
+    run_json_harnesses_with_nextest_check(vec![TestSuite {
         name: suite_name,
         roots,
         should_descend,
@@ -52,8 +53,32 @@ pub(crate) fn run_json_harness(
 
 /// Runs cargo-nextest JSON fixture harnesses in one test binary.
 pub(crate) fn run_json_harnesses(suites: Vec<TestSuite>) -> ExitCode {
-    let mut args = Arguments::from_args();
-    if !args.list && env::var_os(NEXTEST_ENV).is_none() {
+    run_json_harnesses_with_nextest_check(suites)
+}
+
+/// Runs JSON fixture harnesses directly.
+pub(crate) fn run_json_harnesses_direct(suites: Vec<TestSuite>) -> ExitCode {
+    run_json_harnesses_direct_from_iter(suites, env::args_os())
+}
+
+/// Runs JSON fixture harnesses directly with explicit command line arguments.
+pub(crate) fn run_json_harnesses_direct_from_iter<I>(suites: Vec<TestSuite>, args: I) -> ExitCode
+where
+    I: IntoIterator<Item = OsString>,
+{
+    run_json_harnesses_inner(suites, Arguments::from_iter(args), false)
+}
+
+fn run_json_harnesses_with_nextest_check(suites: Vec<TestSuite>) -> ExitCode {
+    run_json_harnesses_inner(suites, Arguments::from_args(), true)
+}
+
+fn run_json_harnesses_inner(
+    suites: Vec<TestSuite>,
+    mut args: Arguments,
+    require_nextest: bool,
+) -> ExitCode {
+    if require_nextest && !args.list && env::var_os(NEXTEST_ENV).is_none() {
         let suite_names = suites.iter().map(|suite| suite.name).collect::<Vec<_>>().join(", ");
         eprintln!("Skipping {suite_names} tests: run this target through cargo nextest.");
         return ExitCode::SUCCESS;
