@@ -9,12 +9,14 @@ use crate::{
 use alloc::vec::Vec;
 use alloy_primitives::{Address, map::AddressMap};
 use core::fmt::{self, Display};
+use derive_where::derive_where;
 
 /// Precompile implementation function.
 pub type PrecompileFn<T = BaseEvmTypes> =
     fn(&mut Evm<T>, &Message<T>, &mut GasTracker) -> PrecompileResult;
 
 /// Precompile descriptor.
+#[derive_where(Clone, Debug)]
 pub struct Precompile<T: EvmTypes = BaseEvmTypes> {
     /// Precompile address.
     address: Address,
@@ -72,21 +74,6 @@ impl<T: EvmTypes> Precompile<T> {
     }
 }
 
-impl<T: EvmTypes> Clone for Precompile<T> {
-    fn clone(&self) -> Self {
-        Self { address: self.address, data: self.data.clone() }
-    }
-}
-
-impl<T: EvmTypes> fmt::Debug for Precompile<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Precompile")
-            .field("address", &self.address)
-            .field("data", &self.data)
-            .finish()
-    }
-}
-
 fn dummy_precompile<T: EvmTypes>(
     _evm: &mut Evm<T>,
     _message: &Message<T>,
@@ -96,6 +83,7 @@ fn dummy_precompile<T: EvmTypes>(
 }
 
 /// Address-free precompile data.
+#[derive_where(Clone, Debug)]
 pub struct PrecompileData<T: EvmTypes = BaseEvmTypes> {
     /// Precompile implementation function.
     run: PrecompileFn<T>,
@@ -147,39 +135,10 @@ impl<T: EvmTypes> PrecompileData<T> {
     }
 }
 
-impl<T: EvmTypes> Clone for PrecompileData<T> {
-    fn clone(&self) -> Self {
-        Self { id: self.id.clone(), run: self.run }
-    }
-}
-
-impl<T: EvmTypes> fmt::Debug for PrecompileData<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("PrecompileData").field("id", &self.id).finish_non_exhaustive()
-    }
-}
-
 /// Precompile dispatch map.
+#[derive_where(Clone, Debug, Default)]
 pub struct PrecompileMap<T: EvmTypes = BaseEvmTypes> {
     inner: AddressMap<PrecompileData<T>>,
-}
-
-impl<T: EvmTypes> Default for PrecompileMap<T> {
-    fn default() -> Self {
-        Self { inner: AddressMap::default() }
-    }
-}
-
-impl<T: EvmTypes> Clone for PrecompileMap<T> {
-    fn clone(&self) -> Self {
-        Self { inner: self.inner.clone() }
-    }
-}
-
-impl<T: EvmTypes> fmt::Debug for PrecompileMap<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("PrecompileMap").field("inner", &self.inner).finish()
-    }
 }
 
 impl<T: EvmTypes> PrecompileMap<T> {
