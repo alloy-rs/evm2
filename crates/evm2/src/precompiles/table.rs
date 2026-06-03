@@ -13,9 +13,6 @@ use core::fmt::{self, Display};
 /// Precompile implementation function.
 pub type PrecompileFn<T = BaseEvmTypes> = fn(&Message<T>, &mut GasTracker) -> PrecompileResult;
 
-#[doc(hidden)]
-pub type InputPrecompileFn = fn(&[u8], &mut GasTracker) -> PrecompileResult;
-
 /// Precompile descriptor.
 pub struct Precompile<T: EvmTypes = BaseEvmTypes> {
     /// Precompile address.
@@ -29,12 +26,6 @@ impl<T: EvmTypes> Precompile<T> {
     #[inline]
     pub const fn new(address: Address, id: PrecompileId, f: PrecompileFn<T>) -> Self {
         Self { address, data: PrecompileData::new(id, f) }
-    }
-
-    #[doc(hidden)]
-    #[inline]
-    pub const fn new_input(address: Address, id: PrecompileId, f: InputPrecompileFn) -> Self {
-        Self { address, data: PrecompileData::new_input(id, f) }
     }
 
     /// Returns the precompile address.
@@ -80,13 +71,6 @@ impl<T: EvmTypes> Precompile<T> {
     }
 }
 
-impl Precompile {
-    #[inline]
-    pub(super) fn typed<T: EvmTypes>(self) -> Precompile<T> {
-        Precompile { address: self.address, data: self.data.typed() }
-    }
-}
-
 impl<T: EvmTypes> Clone for Precompile<T> {
     fn clone(&self) -> Self {
         Self { address: self.address, data: self.data.clone() }
@@ -110,7 +94,6 @@ fn dummy_precompile<T: EvmTypes>(_message: &Message<T>, _gas: &mut GasTracker) -
 pub struct PrecompileData<T: EvmTypes = BaseEvmTypes> {
     /// Precompile implementation function.
     run: PrecompileFn<T>,
-    input: Option<InputPrecompileFn>,
     /// Precompile ID.
     id: PrecompileId,
 }
@@ -121,25 +104,19 @@ impl<T: EvmTypes> PrecompileData<T> {
     /// Creates precompile data.
     #[inline]
     pub const fn new(id: PrecompileId, f: PrecompileFn<T>) -> Self {
-        Self { id, run: f, input: None }
-    }
-
-    #[doc(hidden)]
-    #[inline]
-    pub const fn new_input(id: PrecompileId, f: InputPrecompileFn) -> Self {
-        Self { id, run: dummy_precompile, input: Some(f) }
+        Self { id, run: f }
     }
 
     /// Returns this precompile data with a different ID.
     #[inline]
     pub fn with_id(self, id: PrecompileId) -> Self {
-        Self { id, run: self.run, input: self.input }
+        Self { id, run: self.run }
     }
 
     /// Returns this precompile data with a different implementation function.
     #[inline]
     pub fn with_run(self, f: PrecompileFn<T>) -> Self {
-        Self { id: self.id, run: f, input: None }
+        Self { id: self.id, run: f }
     }
 
     /// Returns the precompile ID.
@@ -156,33 +133,19 @@ impl<T: EvmTypes> PrecompileData<T> {
 
     #[inline]
     pub(super) fn execute(&self, message: &Message<T>, gas: &mut GasTracker) -> PrecompileResult {
-        if let Some(f) = self.input {
-            return f(message.input.as_ref(), gas);
-        }
-
         (self.run)(message, gas)
-    }
-}
-
-impl PrecompileData {
-    #[inline]
-    fn typed<T: EvmTypes>(self) -> PrecompileData<T> {
-        PrecompileData { id: self.id, run: dummy_precompile, input: self.input }
     }
 }
 
 impl<T: EvmTypes> Clone for PrecompileData<T> {
     fn clone(&self) -> Self {
-        Self { id: self.id.clone(), run: self.run, input: self.input }
+        Self { id: self.id.clone(), run: self.run }
     }
 }
 
 impl<T: EvmTypes> fmt::Debug for PrecompileData<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("PrecompileData")
-            .field("id", &self.id)
-            .field("has_input", &self.input.is_some())
-            .finish_non_exhaustive()
+        f.debug_struct("PrecompileData").field("id", &self.id).finish_non_exhaustive()
     }
 }
 
@@ -446,9 +409,25 @@ macro_rules! define_precompiles {
         $vis:vis const $name:ident = ($address:expr, $id:expr) => $f:path;
     )*) => {
         $(
+            #[allow(non_snake_case)]
+            pub(super) mod $name {
+                use super::*;
+
+                pub(crate) const fn precompile<T: EvmTypes>() -> Precompile<T> {
+                    fn run<T: EvmTypes>(
+                        message: &Message<T>,
+                        gas: &mut GasTracker,
+                    ) -> PrecompileResult {
+                        $f(message.input.as_ref(), gas)
+                    }
+
+                    Precompile::new($crate::define_precompiles!(@address $address), $id, run::<T>)
+                }
+            }
+
             $(#[$attr])*
             $vis const $name: $crate::precompiles::Precompile =
-                $crate::precompiles::Precompile::new_input($crate::define_precompiles!(@address $address), $id, $f);
+                $name::precompile::<$crate::BaseEvmTypes>();
         )*
     };
 }

@@ -141,53 +141,54 @@ fn base_precompiles<T: EvmTypes>(spec: SpecId) -> PrecompileMap<T> {
 
     {
         precompiles.extend([
-            SECP256K1_ECRECOVER.typed(),
-            SHA256.typed(),
-            RIPEMD160.typed(),
-            IDENTITY.typed(),
+            table::SECP256K1_ECRECOVER::precompile(),
+            table::SHA256::precompile(),
+            table::RIPEMD160::precompile(),
+            table::IDENTITY::precompile(),
         ]);
     }
 
     if spec.enables(SpecId::BYZANTIUM) {
         precompiles.extend([
-            MODEXP_BYZANTIUM.typed(),
-            BN254_ADD_BYZANTIUM.typed(),
-            BN254_MUL_BYZANTIUM.typed(),
-            BN254_PAIR_BYZANTIUM.typed(),
+            table::MODEXP_BYZANTIUM::precompile(),
+            table::BN254_ADD_BYZANTIUM::precompile(),
+            table::BN254_MUL_BYZANTIUM::precompile(),
+            table::BN254_PAIR_BYZANTIUM::precompile(),
         ]);
     }
 
     if spec.enables(SpecId::ISTANBUL) {
         precompiles.extend([
-            BN254_ADD_ISTANBUL.typed(),
-            BN254_MUL_ISTANBUL.typed(),
-            BN254_PAIR_ISTANBUL.typed(),
-            BLAKE2F.typed(),
+            table::BN254_ADD_ISTANBUL::precompile(),
+            table::BN254_MUL_ISTANBUL::precompile(),
+            table::BN254_PAIR_ISTANBUL::precompile(),
+            table::BLAKE2F::precompile(),
         ]);
     }
 
     if spec.enables(SpecId::BERLIN) {
-        precompiles.extend([MODEXP_BERLIN.typed()]);
+        precompiles.extend([table::MODEXP_BERLIN::precompile()]);
     }
 
     if spec.enables(SpecId::CANCUN) {
-        precompiles.extend([KZG_POINT_EVALUATION.typed()]);
+        precompiles.extend([table::KZG_POINT_EVALUATION::precompile()]);
     }
 
     if spec.enables(SpecId::PRAGUE) {
         precompiles.extend([
-            BLS12_381_G1_ADD.typed(),
-            BLS12_381_G1_MSM.typed(),
-            BLS12_381_G2_ADD.typed(),
-            BLS12_381_G2_MSM.typed(),
-            BLS12_381_PAIRING.typed(),
-            BLS12_381_MAP_FP_TO_G1.typed(),
-            BLS12_381_MAP_FP2_TO_G2.typed(),
+            table::BLS12_381_G1_ADD::precompile(),
+            table::BLS12_381_G1_MSM::precompile(),
+            table::BLS12_381_G2_ADD::precompile(),
+            table::BLS12_381_G2_MSM::precompile(),
+            table::BLS12_381_PAIRING::precompile(),
+            table::BLS12_381_MAP_FP_TO_G1::precompile(),
+            table::BLS12_381_MAP_FP2_TO_G2::precompile(),
         ]);
     }
 
     if spec.enables(SpecId::OSAKA) {
-        precompiles.extend([MODEXP_OSAKA.typed(), P256VERIFY_OSAKA.typed()]);
+        precompiles
+            .extend([table::MODEXP_OSAKA::precompile(), table::P256VERIFY_OSAKA::precompile()]);
     }
 
     precompiles.shrink_to_fit();
