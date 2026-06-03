@@ -609,11 +609,10 @@ impl State {
             &mut self.journal,
             address,
         )?;
-        if account.is_none() {
+        Ok(account.get_or_insert_with(|| {
             self.journal.push(JournalEntry::AccountChange { address: *address, previous: None });
-            *account = Some(Account { code_hash: KECCAK256_EMPTY, ..Account::default() });
-        }
-        Ok(account.as_mut().expect("account was inserted above"))
+            Account { code_hash: KECCAK256_EMPTY, ..Account::default() }
+        }))
     }
 
     fn journal_account_change(&mut self, address: &Address) -> DbResult<&mut Account> {
@@ -625,10 +624,8 @@ impl State {
         )?;
         let previous = account.clone();
         self.journal.push(JournalEntry::AccountChange { address: *address, previous });
-        if account.is_none() {
-            *account = Some(Account { code_hash: KECCAK256_EMPTY, ..Account::default() });
-        }
-        Ok(account.as_mut().expect("account was inserted above"))
+        Ok(account
+            .get_or_insert_with(|| Account { code_hash: KECCAK256_EMPTY, ..Account::default() }))
     }
 
     /// Returns account info.
@@ -1061,9 +1058,12 @@ impl State {
             &mut self.journal,
             address,
         )?;
-        if !original_exists && account.is_none() {
-            self.journal.push(JournalEntry::AccountChange { address: *address, previous: None });
-            *account = Some(Account { code_hash: KECCAK256_EMPTY, ..Account::default() });
+        if !original_exists {
+            account.get_or_insert_with(|| {
+                self.journal
+                    .push(JournalEntry::AccountChange { address: *address, previous: None });
+                Account { code_hash: KECCAK256_EMPTY, ..Account::default() }
+            });
         }
         Ok(())
     }
