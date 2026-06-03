@@ -195,34 +195,8 @@ fn cached_base_precompiles<T: EvmTypes>(spec: SpecId) -> &'static PrecompileMap<
     precompiles[index].get_or_init(|| base_precompiles::<T>(spec))
 }
 
-const fn base_precompile_capacity(spec: SpecId) -> usize {
-    let mut capacity = 4;
-
-    if spec.enables(SpecId::BYZANTIUM) {
-        capacity = 8;
-    }
-
-    if spec.enables(SpecId::ISTANBUL) {
-        capacity = 9;
-    }
-
-    if spec.enables(SpecId::CANCUN) {
-        capacity = 10;
-    }
-
-    if spec.enables(SpecId::PRAGUE) {
-        capacity = 17;
-    }
-
-    if spec.enables(SpecId::OSAKA) {
-        capacity = 18;
-    }
-
-    capacity
-}
-
 fn base_precompiles<T: EvmTypes>(spec: SpecId) -> PrecompileMap<T> {
-    let mut precompiles = PrecompileMap::with_capacity(base_precompile_capacity(spec));
+    let mut precompiles = PrecompileMap::with_capacity(32);
 
     {
         precompiles.extend([SECP256K1_ECRECOVER(), SHA256(), RIPEMD160(), IDENTITY()]);
