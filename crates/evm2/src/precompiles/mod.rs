@@ -4,7 +4,6 @@ use crate::{
     Evm, EvmTypes, SpecId,
     evm::precompile::PrecompileProvider,
     interpreter::{GasTracker, Message},
-    once_lock::OnceLock,
 };
 use alloc::{borrow::Cow, vec::Vec};
 use alloy_primitives::Address;
@@ -41,6 +40,7 @@ pub use result::{AnyError, PrecompileError, PrecompileHalt, PrecompileResult};
 
 pub(crate) use crate::{
     evm::precompile::PrecompileOutput,
+    once_lock::OnceLock,
     utils::{calc_linear_cost, u64_to_address},
 };
 
@@ -77,43 +77,43 @@ use p256 as _;
 
 /// Default precompile provider.
 #[derive(Clone, Debug)]
-pub struct Precompiles {
-    map: Cow<'static, PrecompileMap>,
+pub struct Precompiles<T: EvmTypes = crate::BaseEvmTypes> {
+    map: Cow<'static, PrecompileMap<T>>,
 }
 
-impl Precompiles {
+impl<T: EvmTypes> Precompiles<T> {
     /// Creates a precompile provider from a static precompile map.
     #[inline]
-    pub const fn new(map: Cow<'static, PrecompileMap>) -> Self {
+    pub const fn new(map: Cow<'static, PrecompileMap<T>>) -> Self {
         Self { map }
     }
 
     /// Creates a precompile provider for a base EVM specification.
     #[inline]
     pub fn base(spec_id: SpecId) -> Self {
-        Self::new(Cow::Borrowed(base_precompiles(spec_id)))
+        Self::new(Cow::Owned(base_precompiles(spec_id)))
     }
 
     /// Creates a precompile map from precompile descriptors.
     #[inline]
-    pub fn map(precompiles: impl IntoIterator<Item = Precompile>) -> PrecompileMap {
+    pub fn map(precompiles: impl IntoIterator<Item = Precompile<T>>) -> PrecompileMap<T> {
         PrecompileMap::from_precompiles(precompiles)
     }
 
     /// Returns the underlying precompile map.
     #[inline]
-    pub fn as_map(&self) -> &PrecompileMap {
+    pub fn as_map(&self) -> &PrecompileMap<T> {
         self.map.as_ref()
     }
 
     /// Returns the underlying precompile map mutably.
     #[inline]
-    pub fn as_map_mut(&mut self) -> &mut PrecompileMap {
+    pub fn as_map_mut(&mut self) -> &mut PrecompileMap<T> {
         self.map.to_mut()
     }
 }
 
-impl<T: EvmTypes> PrecompileProvider<T> for Precompiles {
+impl<T: EvmTypes> PrecompileProvider<T> for Precompiles<T> {
     #[inline]
     fn warm_addresses(&self) -> Vec<Address> {
         self.map.as_ref().addresses().collect()
@@ -132,89 +132,67 @@ impl<T: EvmTypes> PrecompileProvider<T> for Precompiles {
         gas: &mut GasTracker,
     ) -> Option<PrecompileResult> {
         let precompile = self.map.as_ref().get_data(&message.code_address)?;
-        let message = Message {
-            kind: message.kind,
-            depth: message.depth,
-            gas_limit: message.gas_limit,
-            destination: message.destination,
-            caller: message.caller,
-            input: message.input.clone(),
-            value: message.value,
-            code_address: message.code_address,
-            disable_precompiles: message.disable_precompiles,
-            salt: message.salt,
-            ext: (),
-            _non_exhaustive: (),
-        };
-        Some(precompile.run()(&message, gas))
+        Some(precompile.execute(message, gas))
     }
 }
 
-fn base_precompiles(spec: SpecId) -> &'static PrecompileMap {
-    static CACHE: [OnceLock<PrecompileMap>; 7] = [const { OnceLock::new() }; 7];
+fn base_precompiles<T: EvmTypes>(spec: SpecId) -> PrecompileMap<T> {
+    let mut precompiles = PrecompileMap::new();
 
-    let index = match spec {
-        SpecId::FRONTIER | SpecId::HOMESTEAD | SpecId::TANGERINE | SpecId::SPURIOUS_DRAGON => 0,
-        SpecId::BYZANTIUM | SpecId::PETERSBURG => 1,
-        SpecId::ISTANBUL => 2,
-        SpecId::BERLIN | SpecId::LONDON | SpecId::MERGE | SpecId::SHANGHAI => 3,
-        SpecId::CANCUN => 4,
-        SpecId::PRAGUE => 5,
-        SpecId::OSAKA | SpecId::AMSTERDAM => 6,
-    };
-    CACHE[index].get_or_init(|| {
-        let mut precompiles = PrecompileMap::new();
+    {
+        precompiles.extend([
+            SECP256K1_ECRECOVER.typed(),
+            SHA256.typed(),
+            RIPEMD160.typed(),
+            IDENTITY.typed(),
+        ]);
+    }
 
-        {
-            precompiles.extend([SECP256K1_ECRECOVER, SHA256, RIPEMD160, IDENTITY]);
-        }
+    if spec.enables(SpecId::BYZANTIUM) {
+        precompiles.extend([
+            MODEXP_BYZANTIUM.typed(),
+            BN254_ADD_BYZANTIUM.typed(),
+            BN254_MUL_BYZANTIUM.typed(),
+            BN254_PAIR_BYZANTIUM.typed(),
+        ]);
+    }
 
-        if spec.enables(SpecId::BYZANTIUM) {
-            precompiles.extend([
-                MODEXP_BYZANTIUM,
-                BN254_ADD_BYZANTIUM,
-                BN254_MUL_BYZANTIUM,
-                BN254_PAIR_BYZANTIUM,
-            ]);
-        }
+    if spec.enables(SpecId::ISTANBUL) {
+        precompiles.extend([
+            BN254_ADD_ISTANBUL.typed(),
+            BN254_MUL_ISTANBUL.typed(),
+            BN254_PAIR_ISTANBUL.typed(),
+            BLAKE2F.typed(),
+        ]);
+    }
 
-        if spec.enables(SpecId::ISTANBUL) {
-            precompiles.extend([
-                BN254_ADD_ISTANBUL,
-                BN254_MUL_ISTANBUL,
-                BN254_PAIR_ISTANBUL,
-                BLAKE2F,
-            ]);
-        }
+    if spec.enables(SpecId::BERLIN) {
+        precompiles.extend([MODEXP_BERLIN.typed()]);
+    }
 
-        if spec.enables(SpecId::BERLIN) {
-            precompiles.extend([MODEXP_BERLIN]);
-        }
+    if spec.enables(SpecId::CANCUN) {
+        precompiles.extend([KZG_POINT_EVALUATION.typed()]);
+    }
 
-        if spec.enables(SpecId::CANCUN) {
-            precompiles.extend([KZG_POINT_EVALUATION]);
-        }
+    if spec.enables(SpecId::PRAGUE) {
+        precompiles.extend([
+            BLS12_381_G1_ADD.typed(),
+            BLS12_381_G1_MSM.typed(),
+            BLS12_381_G2_ADD.typed(),
+            BLS12_381_G2_MSM.typed(),
+            BLS12_381_PAIRING.typed(),
+            BLS12_381_MAP_FP_TO_G1.typed(),
+            BLS12_381_MAP_FP2_TO_G2.typed(),
+        ]);
+    }
 
-        if spec.enables(SpecId::PRAGUE) {
-            precompiles.extend([
-                BLS12_381_G1_ADD,
-                BLS12_381_G1_MSM,
-                BLS12_381_G2_ADD,
-                BLS12_381_G2_MSM,
-                BLS12_381_PAIRING,
-                BLS12_381_MAP_FP_TO_G1,
-                BLS12_381_MAP_FP2_TO_G2,
-            ]);
-        }
+    if spec.enables(SpecId::OSAKA) {
+        precompiles.extend([MODEXP_OSAKA.typed(), P256VERIFY_OSAKA.typed()]);
+    }
 
-        if spec.enables(SpecId::OSAKA) {
-            precompiles.extend([MODEXP_OSAKA, P256VERIFY_OSAKA]);
-        }
+    precompiles.shrink_to_fit();
 
-        precompiles.shrink_to_fit();
-
-        precompiles
-    })
+    precompiles
 }
 
 #[cfg(test)]
@@ -223,15 +201,17 @@ mod tests {
     use alloy_primitives::address;
 
     #[test]
-    fn provider_helpers_clone_static_base_on_mutation() {
+    fn provider_helpers_mutate_base_map() {
         let identity = IDENTITY.address();
         let moved = address!("0x0000000000000000000000000000000000001000");
-        let mut precompiles = Precompiles::base(SpecId::BERLIN);
+        let mut precompiles = Precompiles::<crate::BaseEvmTypes>::base(SpecId::BERLIN);
 
         precompiles.as_map_mut().move_precompiles([(identity, moved)]).unwrap();
 
         assert!(!precompiles.as_map().contains(&identity));
         assert!(precompiles.as_map().contains(&moved));
-        assert!(Precompiles::base(SpecId::BERLIN).as_map().contains(&identity));
+        assert!(
+            Precompiles::<crate::BaseEvmTypes>::base(SpecId::BERLIN).as_map().contains(&identity)
+        );
     }
 }

@@ -1,4 +1,5 @@
 use crate::{
+    BaseEvmTypes, EvmTypes,
     interpreter::{GasTracker, Message},
     precompiles::{
         PrecompileId, PrecompileResult, blake2, bls12_381, bn254, hash, identity,
@@ -10,22 +11,30 @@ use alloy_primitives::{Address, map::AddressMap};
 use core::fmt::{self, Display};
 
 /// Precompile implementation function.
-pub type PrecompileFn = fn(&Message, &mut GasTracker) -> PrecompileResult;
+pub type PrecompileFn<T = BaseEvmTypes> = fn(&Message<T>, &mut GasTracker) -> PrecompileResult;
+
+#[doc(hidden)]
+pub type InputPrecompileFn = fn(&[u8], &mut GasTracker) -> PrecompileResult;
 
 /// Precompile descriptor.
-#[derive(Clone, Debug)]
-pub struct Precompile {
+pub struct Precompile<T: EvmTypes = BaseEvmTypes> {
     /// Precompile address.
     address: Address,
     /// Precompile data.
-    data: PrecompileData,
+    data: PrecompileData<T>,
 }
 
-impl Precompile {
+impl<T: EvmTypes> Precompile<T> {
     /// Creates a precompile descriptor.
     #[inline]
-    pub const fn new(address: Address, id: PrecompileId, f: PrecompileFn) -> Self {
+    pub const fn new(address: Address, id: PrecompileId, f: PrecompileFn<T>) -> Self {
         Self { address, data: PrecompileData::new(id, f) }
+    }
+
+    #[doc(hidden)]
+    #[inline]
+    pub const fn new_input(address: Address, id: PrecompileId, f: InputPrecompileFn) -> Self {
+        Self { address, data: PrecompileData::new_input(id, f) }
     }
 
     /// Returns the precompile address.
@@ -42,19 +51,19 @@ impl Precompile {
 
     /// Returns this precompile descriptor with different data.
     #[inline]
-    pub fn with_data(self, data: PrecompileData) -> Self {
+    pub fn with_data(self, data: PrecompileData<T>) -> Self {
         Self { address: self.address, data }
     }
 
     /// Returns the precompile data.
     #[inline]
-    pub const fn data(&self) -> &PrecompileData {
+    pub const fn data(&self) -> &PrecompileData<T> {
         &self.data
     }
 
     /// Consumes the precompile descriptor and returns its data.
     #[inline]
-    pub fn into_data(self) -> PrecompileData {
+    pub fn into_data(self) -> PrecompileData<T> {
         self.data
     }
 
@@ -66,43 +75,71 @@ impl Precompile {
 
     /// Returns the precompile implementation function.
     #[inline]
-    pub const fn run(&self) -> PrecompileFn {
+    pub const fn run(&self) -> PrecompileFn<T> {
         self.data.run()
     }
 }
 
-fn dummy_precompile(_message: &Message, _gas: &mut GasTracker) -> PrecompileResult {
+impl Precompile {
+    #[inline]
+    pub(super) fn typed<T: EvmTypes>(self) -> Precompile<T> {
+        Precompile { address: self.address, data: self.data.typed() }
+    }
+}
+
+impl<T: EvmTypes> Clone for Precompile<T> {
+    fn clone(&self) -> Self {
+        Self { address: self.address, data: self.data.clone() }
+    }
+}
+
+impl<T: EvmTypes> fmt::Debug for Precompile<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Precompile")
+            .field("address", &self.address)
+            .field("data", &self.data)
+            .finish()
+    }
+}
+
+fn dummy_precompile<T: EvmTypes>(_message: &Message<T>, _gas: &mut GasTracker) -> PrecompileResult {
     unreachable!("dummy precompile data must be replaced before use")
 }
 
 /// Address-free precompile data.
-#[derive(Clone, Debug)]
-pub struct PrecompileData {
+pub struct PrecompileData<T: EvmTypes = BaseEvmTypes> {
     /// Precompile implementation function.
-    run: PrecompileFn,
+    run: PrecompileFn<T>,
+    input: Option<InputPrecompileFn>,
     /// Precompile ID.
     id: PrecompileId,
 }
 
-impl PrecompileData {
+impl<T: EvmTypes> PrecompileData<T> {
     const DUMMY: Self = Self::new(PrecompileId::custom("__dummy__"), dummy_precompile);
 
     /// Creates precompile data.
     #[inline]
-    pub const fn new(id: PrecompileId, f: PrecompileFn) -> Self {
-        Self { id, run: f }
+    pub const fn new(id: PrecompileId, f: PrecompileFn<T>) -> Self {
+        Self { id, run: f, input: None }
+    }
+
+    #[doc(hidden)]
+    #[inline]
+    pub const fn new_input(id: PrecompileId, f: InputPrecompileFn) -> Self {
+        Self { id, run: dummy_precompile, input: Some(f) }
     }
 
     /// Returns this precompile data with a different ID.
     #[inline]
     pub fn with_id(self, id: PrecompileId) -> Self {
-        Self { id, run: self.run }
+        Self { id, run: self.run, input: self.input }
     }
 
     /// Returns this precompile data with a different implementation function.
     #[inline]
-    pub fn with_run(self, f: PrecompileFn) -> Self {
-        Self { id: self.id, run: f }
+    pub fn with_run(self, f: PrecompileFn<T>) -> Self {
+        Self { id: self.id, run: f, input: None }
     }
 
     /// Returns the precompile ID.
@@ -113,18 +150,66 @@ impl PrecompileData {
 
     /// Returns the precompile implementation function.
     #[inline]
-    pub const fn run(&self) -> PrecompileFn {
+    pub const fn run(&self) -> PrecompileFn<T> {
         self.run
+    }
+
+    #[inline]
+    pub(super) fn execute(&self, message: &Message<T>, gas: &mut GasTracker) -> PrecompileResult {
+        if let Some(f) = self.input {
+            return f(message.input.as_ref(), gas);
+        }
+
+        (self.run)(message, gas)
+    }
+}
+
+impl PrecompileData {
+    #[inline]
+    fn typed<T: EvmTypes>(self) -> PrecompileData<T> {
+        PrecompileData { id: self.id, run: dummy_precompile, input: self.input }
+    }
+}
+
+impl<T: EvmTypes> Clone for PrecompileData<T> {
+    fn clone(&self) -> Self {
+        Self { id: self.id.clone(), run: self.run, input: self.input }
+    }
+}
+
+impl<T: EvmTypes> fmt::Debug for PrecompileData<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PrecompileData")
+            .field("id", &self.id)
+            .field("has_input", &self.input.is_some())
+            .finish_non_exhaustive()
     }
 }
 
 /// Precompile dispatch map.
-#[derive(Clone, Debug, Default)]
-pub struct PrecompileMap {
-    inner: AddressMap<PrecompileData>,
+pub struct PrecompileMap<T: EvmTypes = BaseEvmTypes> {
+    inner: AddressMap<PrecompileData<T>>,
 }
 
-impl PrecompileMap {
+impl<T: EvmTypes> Default for PrecompileMap<T> {
+    fn default() -> Self {
+        Self { inner: AddressMap::default() }
+    }
+}
+
+impl<T: EvmTypes> Clone for PrecompileMap<T> {
+    fn clone(&self) -> Self {
+        Self { inner: self.inner.clone() }
+    }
+}
+
+impl<T: EvmTypes> fmt::Debug for PrecompileMap<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PrecompileMap").field("inner", &self.inner).finish()
+    }
+}
+
+impl<T: EvmTypes> PrecompileMap<T> {
     /// Creates an empty precompile map.
     #[inline]
     pub fn new() -> Self {
@@ -133,7 +218,7 @@ impl PrecompileMap {
 
     /// Creates a precompile map from precompile descriptors.
     #[inline]
-    pub fn from_precompiles(precompiles: impl IntoIterator<Item = Precompile>) -> Self {
+    pub fn from_precompiles(precompiles: impl IntoIterator<Item = Precompile<T>>) -> Self {
         let mut map = Self::new();
         map.extend(precompiles);
         map
@@ -141,7 +226,7 @@ impl PrecompileMap {
 
     /// Extends this map with precompile descriptors.
     #[inline]
-    pub fn extend(&mut self, precompiles: impl IntoIterator<Item = Precompile>) {
+    pub fn extend(&mut self, precompiles: impl IntoIterator<Item = Precompile<T>>) {
         for precompile in precompiles {
             self.insert(precompile);
         }
@@ -149,32 +234,32 @@ impl PrecompileMap {
 
     /// Inserts a precompile descriptor, replacing any existing precompile at the same address.
     #[inline]
-    pub fn insert(&mut self, precompile: Precompile) -> Option<Precompile> {
+    pub fn insert(&mut self, precompile: Precompile<T>) -> Option<Precompile<T>> {
         let address = precompile.address();
         self.inner.insert(address, precompile.into_data()).map(|data| Precompile { address, data })
     }
 
     /// Removes a precompile by address.
     #[inline]
-    pub fn remove(&mut self, address: Address) -> Option<Precompile> {
+    pub fn remove(&mut self, address: Address) -> Option<Precompile<T>> {
         self.inner.remove(&address).map(|data| Precompile { address, data })
     }
 
     /// Removes a precompile by descriptor address.
     #[inline]
-    pub fn remove_precompile(&mut self, precompile: &Precompile) -> Option<Precompile> {
+    pub fn remove_precompile(&mut self, precompile: &Precompile<T>) -> Option<Precompile<T>> {
         self.remove(precompile.address())
     }
 
     /// Returns the precompile at `address`, if any.
     #[inline]
-    pub fn get(&self, address: &Address) -> Option<Precompile> {
+    pub fn get(&self, address: &Address) -> Option<Precompile<T>> {
         self.inner.get(address).cloned().map(|data| Precompile { address: *address, data })
     }
 
     /// Returns the precompile data at `address`, if any.
     #[inline]
-    pub(super) fn get_data(&self, address: &Address) -> Option<&PrecompileData> {
+    pub(super) fn get_data(&self, address: &Address) -> Option<&PrecompileData<T>> {
         self.inner.get(address)
     }
 
@@ -182,7 +267,7 @@ impl PrecompileMap {
     #[inline]
     pub fn map_precompile<F>(&mut self, address: &Address, f: F)
     where
-        F: FnOnce(PrecompileData) -> PrecompileData,
+        F: FnOnce(PrecompileData<T>) -> PrecompileData<T>,
     {
         if let Some(data) = self.inner.get_mut(address) {
             *data = f(core::mem::replace(data, PrecompileData::DUMMY));
@@ -193,7 +278,7 @@ impl PrecompileMap {
     #[inline]
     pub fn map_precompiles<F>(&mut self, mut f: F)
     where
-        F: FnMut(&Address, PrecompileData) -> PrecompileData,
+        F: FnMut(&Address, PrecompileData<T>) -> PrecompileData<T>,
     {
         for (address, data) in &mut self.inner {
             *data = f(address, core::mem::replace(data, PrecompileData::DUMMY));
@@ -207,7 +292,7 @@ impl PrecompileMap {
     #[inline]
     pub fn apply_precompile<F>(&mut self, address: &Address, f: F)
     where
-        F: FnOnce(Option<PrecompileData>) -> Option<PrecompileData>,
+        F: FnOnce(Option<PrecompileData<T>>) -> Option<PrecompileData<T>>,
     {
         if let Some(data) = self.inner.get_mut(address) {
             let current = core::mem::replace(data, PrecompileData::DUMMY);
@@ -225,7 +310,7 @@ impl PrecompileMap {
     #[inline]
     pub fn with_mapped_precompile<F>(mut self, address: &Address, f: F) -> Self
     where
-        F: FnOnce(PrecompileData) -> PrecompileData,
+        F: FnOnce(PrecompileData<T>) -> PrecompileData<T>,
     {
         self.map_precompile(address, f);
         self
@@ -235,7 +320,7 @@ impl PrecompileMap {
     #[inline]
     pub fn with_mapped_precompiles<F>(mut self, f: F) -> Self
     where
-        F: FnMut(&Address, PrecompileData) -> PrecompileData,
+        F: FnMut(&Address, PrecompileData<T>) -> PrecompileData<T>,
     {
         self.map_precompiles(f);
         self
@@ -245,7 +330,7 @@ impl PrecompileMap {
     #[inline]
     pub fn with_applied_precompile<F>(mut self, address: &Address, f: F) -> Self
     where
-        F: FnOnce(Option<PrecompileData>) -> Option<PrecompileData>,
+        F: FnOnce(Option<PrecompileData<T>>) -> Option<PrecompileData<T>>,
     {
         self.apply_precompile(address, f);
         self
@@ -255,7 +340,7 @@ impl PrecompileMap {
     #[inline]
     pub fn with_extended_precompiles(
         mut self,
-        precompiles: impl IntoIterator<Item = Precompile>,
+        precompiles: impl IntoIterator<Item = Precompile<T>>,
     ) -> Self {
         self.extend(precompiles);
         self
@@ -362,20 +447,8 @@ macro_rules! define_precompiles {
     )*) => {
         $(
             $(#[$attr])*
-            $vis const $name: $crate::precompiles::Precompile = {
-                fn run(
-                    message: &$crate::interpreter::Message,
-                    gas: &mut $crate::interpreter::GasTracker,
-                ) -> $crate::precompiles::PrecompileResult {
-                    $f(message.input.as_ref(), gas)
-                }
-
-                $crate::precompiles::Precompile::new(
-                    $crate::define_precompiles!(@address $address),
-                    $id,
-                    run,
-                )
-            };
+            $vis const $name: $crate::precompiles::Precompile =
+                $crate::precompiles::Precompile::new_input($crate::define_precompiles!(@address $address), $id, $f);
         )*
     };
 }
