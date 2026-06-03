@@ -27,7 +27,7 @@
 +use evm2::{
 +    Evm, EvmTypes, Inspector, TxResult,
 +    env::BlockEnv,
-+    ethereum::RecoveredTxEnvelope,
++    ethereum::{EthereumTxEnv, RecoveredTxEnvelope},
 +    evm::{DbErrorCode, DynDatabase},
 +    interpreter::{Interpreter, Message, MessageResult},
  };
@@ -86,7 +86,7 @@
                  _ => {
                      // Note: this match is non-exhaustive in case we need to add support for
                      // additional tracers
-@@ -201,33 +201,40 @@
+@@ -201,33 +201,77 @@
      }
  
      /// Should be invoked after each transaction to obtain the resulting [`GethTrace`].
@@ -107,10 +107,47 @@
 +    where
 +        T: EvmTypes,
 +    {
++        self.get_result_with_tx(
++            tx_context,
++            tx.signer(),
++            tx.gas_limit(),
++            Some(tx),
++            block_env,
++            res,
++            db,
++        )
++    }
++
++    /// Should be invoked after each unsigned transaction to obtain the resulting [`GethTrace`].
++    pub fn get_result_tx_env<T>(
++        &mut self,
++        tx_context: Option<TransactionContext>,
++        tx: &EthereumTxEnv,
++        block_env: &BlockEnv,
++        res: &TxResult<T>,
++        db: &mut dyn DynDatabase,
++    ) -> Result<GethTrace, DebugInspectorError>
++    where
++        T: EvmTypes,
++    {
++        self.get_result_with_tx(tx_context, tx.caller, tx.gas_limit, None, block_env, res, db)
++    }
++
++    fn get_result_with_tx<T>(
++        &mut self,
++        tx_context: Option<TransactionContext>,
++        caller: Address,
++        gas_limit: u64,
++        _tx: Option<&RecoveredTxEnvelope>,
++        block_env: &BlockEnv,
++        res: &TxResult<T>,
++        db: &mut dyn DynDatabase,
++    ) -> Result<GethTrace, DebugInspectorError>
++    where
++        T: EvmTypes,
++    {
 +        let block_number = block_env.number.try_into().unwrap_or(u64::MAX);
 +        let base_fee = block_env.basefee.try_into().unwrap_or(u64::MAX);
-+        let caller = tx.signer();
-+        let gas_limit = tx.gas_limit();
          #[allow(clippy::needless_update)]
          let tx_info = TransactionInfo {
              hash: tx_context.as_ref().and_then(|c| c.tx_hash),
@@ -139,7 +176,7 @@
                  inspector
                      .geth_builder()
                      .geth_prestate_traces(res, config, db)
-@@ -236,12 +243,12 @@
+@@ -236,12 +280,12 @@
              }
              Self::Noop(_) => NoopFrame::default().into(),
              Self::Mux(inspector, _) => inspector
@@ -155,7 +192,7 @@
                  inspector
                      .clone()
                      .into_parity_builder()
-@@ -249,33 +256,26 @@
+@@ -249,33 +293,27 @@
                      .into()
              }
              Self::Erc7562Tracer(inspector, config) => {
@@ -193,11 +230,12 @@
 -                    .map_err(DebugInspectorError::JsInspector)?;
 -
 -                GethTrace::JS(res)
++                let Some(tx) = _tx else { return Err(DebugInspectorError::UnsupportedTracer) };
 +                GethTrace::JS(inspector.json_result(res, tx, block_env, db)?)
              }
          };
  
-@@ -284,92 +284,87 @@
+@@ -284,92 +322,87 @@
  }
  
  macro_rules! delegate {
@@ -339,7 +377,7 @@
      /// Invalid tracer configuration
      #[error("invalid tracer config")]
      InvalidTracerConfig,
-@@ -386,7 +381,7 @@
+@@ -386,7 +419,7 @@
      #[cfg(feature = "js-tracer")]
      #[error(transparent)]
      JsInspector(#[from] crate::tracing::js::JsInspectorError),
