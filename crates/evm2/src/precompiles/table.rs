@@ -124,8 +124,9 @@ impl<T: EvmTypes> PrecompileData<T> {
         self.run
     }
 
+    /// Executes this precompile.
     #[inline]
-    pub(super) fn execute(
+    pub fn execute(
         &self,
         evm: &mut Evm<T>,
         message: &Message<T>,

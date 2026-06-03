@@ -1429,7 +1429,7 @@ mod tests {
         );
         let message = Message {
             kind: MessageKind::Call,
-            depth: 7,
+            depth: 67,
             gas_limit: 30_000,
             destination: address,
             caller: Address::with_last_byte(0x7a),
