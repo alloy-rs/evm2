@@ -1,5 +1,5 @@
---- /home/doni/github/paradigmxyz/revm-inspectors/tests/it/test_native_bigint.rs	2025-07-10 17:09:05.548539554 +0200
-+++ /home/doni/github/danipopes/evm2.1/crates/inspectors/tests/it/test_native_bigint.rs	2026-05-14 04:04:03.743772265 +0200
+--- upstream/tests/it/test_native_bigint.rs
++++ evm2/tests/it/test_native_bigint.rs
 @@ -1,7 +1,7 @@
  //! Tests for native BigInt support in Boa
  

@@ -1,5 +1,5 @@
---- /home/doni/github/paradigmxyz/revm-inspectors/tests/it/transfer.rs	2025-07-10 16:22:55.682865359 +0200
-+++ /home/doni/github/danipopes/evm2.1/crates/inspectors/tests/it/transfer.rs	2026-05-14 20:23:44.708908788 +0200
+--- upstream/tests/it/transfer.rs
++++ evm2/tests/it/transfer.rs
 @@ -1,20 +1,11 @@
  //! Transfer tests
  

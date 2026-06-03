@@ -1,0 +1,6 @@
+--- upstream/tests/it/writer/test_trace_printing/5.bytecodes.storage.txt
++++ evm2/tests/it/writer/test_trace_printing/5.bytecodes.storage.txt
+@@ -1,2 +1,2 @@
+-  [2348] 0xBd770416a3345F91E4B34576cb804a576fa48EB1::8381f58a()
++  [2370] 0xBd770416a3345F91E4B34576cb804a576fa48EB1::8381f58a()
+     └─ ← [Return] 0x0000000000000000000000000000000000000000000000000000000000000045

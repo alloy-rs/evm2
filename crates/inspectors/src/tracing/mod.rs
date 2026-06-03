@@ -235,9 +235,9 @@ impl TracingInspector {
         !self.trace_stack.is_empty()
     }
 
-    /// Returns true if this a call to a precompile contract.
+    /// Returns true if this is a call to a precompile contract.
     ///
-    /// Returns true if the `to` address is a precompile contract and the value is zero.
+    /// Returns true if the code address is a precompile contract and the value is zero.
     fn is_precompile_call<T: EvmTypes<Host = Evm<T>>>(
         &self,
         host: &Evm<T>,
@@ -311,7 +311,7 @@ impl TracingInspector {
 
         match journal_entry {
             JournalEntry::StorageChange { address, key, previous } => {
-                // SAFETY: (Address,key) exists if part if StorageChange.
+                // SAFETY: (Address, key) exists if part of StorageChange.
                 let value = host
                     .state()
                     .storage_ref(address, key)
@@ -325,7 +325,7 @@ impl TracingInspector {
                 }))
             }
             JournalEntry::StorageWarmed { address, key } => {
-                // SAFETY: (Address,key) exists if part if StorageChange.
+                // SAFETY: (Address, key) exists if part of StorageChange.
                 let value = host
                     .state()
                     .storage_ref(address, key)

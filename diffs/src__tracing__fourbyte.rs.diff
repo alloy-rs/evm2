@@ -1,12 +1,12 @@
---- /home/doni/github/paradigmxyz/revm-inspectors/src/tracing/fourbyte.rs	2025-07-10 16:22:55.681658487 +0200
-+++ /home/doni/github/danipopes/evm2.1/crates/inspectors/src/tracing/fourbyte.rs	2026-05-15 03:42:31.933960877 +0200
+--- upstream/src/tracing/fourbyte.rs
++++ evm2/src/tracing/fourbyte.rs
 @@ -1,4 +1,4 @@
 -//! Fourbyte tracing inspector
 +//! Fourbyte tracing inspector.
  //!
  //! Solidity contract functions are addressed using the first four bytes of the Keccak-256 hash of
  //! their signature. Therefore when calling the function of a contract, the caller must send this
-@@ -20,52 +20,37 @@
+@@ -20,52 +20,41 @@
  //! ```
  //!
  //! See also <https://geth.ethereum.org/docs/developers/evm-tracing/built-in-tracers>
@@ -21,7 +21,7 @@
 -    Inspector,
 +use evm2::{
 +    EvmTypes, Inspector,
-+    interpreter::{Message, MessageResult},
++    interpreter::{Interpreter, Message, MessageResult},
  };
  
  /// Fourbyte tracing inspector that records all function selectors and their calldata sizes.
@@ -58,7 +58,11 @@
 -            };
 -
 +impl<T: EvmTypes> Inspector<T> for FourByteInspector {
-+    fn call(&mut self, message: &mut Message<T>, _host: &mut T::Host) -> Option<MessageResult<T>> {
++    fn call(
++        &mut self,
++        _interp: &mut Interpreter<'_, T>,
++        message: &mut Message<T>,
++    ) -> Option<MessageResult<T>> {
 +        if message.input.len() >= 4 {
              let selector =
 -                Selector::try_from(&input_bytes[..4]).expect("input is at least 4 bytes");

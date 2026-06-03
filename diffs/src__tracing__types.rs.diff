@@ -1,5 +1,5 @@
---- /home/doni/github/paradigmxyz/revm-inspectors/src/tracing/types.rs	2026-05-28 02:57:05.688697684 +0200
-+++ /home/doni/github/danipopes/evm2.1/crates/inspectors/src/tracing/types.rs	2026-05-15 02:50:14.724529582 +0200
+--- upstream/src/tracing/types.rs
++++ evm2/src/tracing/types.rs
 @@ -17,9 +17,9 @@
          CreationMethod, SelfdestructAction, TraceOutput, TransactionTrace,
      },
@@ -109,10 +109,13 @@
          }
      }
  }
-@@ -562,27 +558,6 @@
-     }
- }
- 
+@@ -559,30 +555,9 @@
+ impl core::fmt::Display for CallKind {
+     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+         f.write_str(self.to_str())
+-    }
+-}
+-
 -impl From<CallScheme> for CallKind {
 -    fn from(scheme: CallScheme) -> Self {
 -        match scheme {
@@ -121,9 +124,9 @@
 -            CallScheme::DelegateCall => Self::DelegateCall,
 -            CallScheme::CallCode => Self::CallCode,
 -        }
--    }
--}
--
+     }
+ }
+ 
 -impl From<CreateScheme> for CallKind {
 -    fn from(create: CreateScheme) -> Self {
 -        match create {
@@ -176,7 +179,7 @@
          let Some(status) = self.status else {
              return false;
          };
--        status.is_halt()
+-        status.is_error()
 +        !status.is_success()
      }
  

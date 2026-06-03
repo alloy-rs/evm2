@@ -1,5 +1,5 @@
---- /home/doni/github/paradigmxyz/revm-inspectors/src/transfer.rs	2026-05-14 03:45:05.356711986 +0200
-+++ /home/doni/github/danipopes/evm2.1/crates/inspectors/src/transfer.rs	2026-05-15 03:47:38.562863055 +0200
+--- upstream/src/transfer.rs
++++ evm2/src/transfer.rs
 @@ -1,11 +1,11 @@
 +//! Internal transfer inspector.
 +
@@ -14,7 +14,7 @@
 -    Database, Inspector,
 +use evm2::{
 +    EvmTypes, Inspector,
-+    interpreter::{Host, Message, MessageKind, MessageResult},
++    interpreter::{Host, Interpreter, Message, MessageKind, MessageResult},
  };
  
  /// Sender of ETH transfer log per `eth_simulateV1` spec.
@@ -63,7 +63,7 @@
              return;
          }
          // skip zero transfers
-@@ -89,53 +90,64 @@
+@@ -89,53 +90,72 @@
              let to = B256::from_slice(&to.abi_encode());
              let data = value.abi_encode();
  
@@ -86,7 +86,11 @@
  {
 -    fn call(&mut self, context: &mut CTX, inputs: &mut CallInputs) -> Option<CallOutcome> {
 -        if let Some(value) = inputs.transfer_value() {
-+    fn call(&mut self, message: &mut Message<T>, host: &mut T::Host) -> Option<MessageResult<T>> {
++    fn call(
++        &mut self,
++        interp: &mut Interpreter<'_, T>,
++        message: &mut Message<T>,
++    ) -> Option<MessageResult<T>> {
 +        if matches!(message.kind, MessageKind::Call | MessageKind::CallCode) {
              self.on_transfer(
 -                inputs.transfer_from(),
@@ -98,7 +102,7 @@
                  TransferKind::Call,
 -                context.journal_mut(),
 +                message.depth,
-+                |log| host.log(log),
++                |log| interp.host().log(log),
              );
          }
 -
@@ -113,7 +117,11 @@
 -            CreateScheme::Create => TransferKind::Create,
 -            CreateScheme::Create2 { .. } => TransferKind::Create2,
 -            CreateScheme::Custom { .. } => return None,
-+    fn create(&mut self, message: &mut Message<T>, host: &mut T::Host) -> Option<MessageResult<T>> {
++    fn create(
++        &mut self,
++        interp: &mut Interpreter<'_, T>,
++        message: &mut Message<T>,
++    ) -> Option<MessageResult<T>> {
 +        let kind = match message.kind {
 +            MessageKind::Create => TransferKind::Create,
 +            MessageKind::Create2 => TransferKind::Create2,
@@ -129,7 +137,7 @@
 +            kind,
 +            message.depth,
 +            |log| {
-+                host.log(log);
++                interp.host().log(log);
 +            },
 +        );
          None
@@ -154,7 +162,7 @@
          });
      }
  }
-@@ -154,14 +166,15 @@
+@@ -154,14 +174,15 @@
  }
  
  /// The kind of transfer operation.

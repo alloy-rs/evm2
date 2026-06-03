@@ -1,5 +1,5 @@
---- /home/doni/github/paradigmxyz/revm-inspectors/src/tracing/mux.rs	2026-05-14 03:45:05.356711986 +0200
-+++ /home/doni/github/danipopes/evm2.1/crates/inspectors/src/tracing/mux.rs	2026-05-15 16:45:13.129972514 +0200
+--- upstream/src/tracing/mux.rs
++++ evm2/src/tracing/mux.rs
 @@ -1,21 +1,16 @@
  use crate::tracing::{FourByteInspector, TracingInspector, TracingInspectorConfig};
  use alloc::vec::Vec;
@@ -68,7 +68,7 @@
                              .into()
                      } else {
                          continue;
-@@ -167,88 +162,80 @@
+@@ -167,88 +162,88 @@
      }
  }
  
@@ -79,40 +79,40 @@
 +impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for MuxInspector {
      #[inline]
 -    fn initialize_interp(&mut self, interp: &mut Interpreter, context: &mut CTX) {
-+    fn initialize_interp(&mut self, interp: &mut Interpreter<'_, T>, host: &mut T::Host) {
++    fn initialize_interp(&mut self, interp: &mut Interpreter<'_, T>) {
          if let Some(ref mut inspector) = self.four_byte {
 -            inspector.initialize_interp(interp, context);
-+            inspector.initialize_interp(interp, host);
++            inspector.initialize_interp(interp);
          }
          if let Some(ref mut inspector) = self.tracing {
 -            inspector.initialize_interp(interp, context);
-+            inspector.initialize_interp(interp, host);
++            inspector.initialize_interp(interp);
          }
      }
  
      #[inline]
 -    fn step(&mut self, interp: &mut Interpreter, context: &mut CTX) {
-+    fn step(&mut self, interp: &mut Interpreter<'_, T>, host: &mut T::Host) {
++    fn step(&mut self, interp: &mut Interpreter<'_, T>) {
          if let Some(ref mut inspector) = self.four_byte {
 -            inspector.step(interp, context);
-+            inspector.step(interp, host);
++            inspector.step(interp);
          }
          if let Some(ref mut inspector) = self.tracing {
 -            inspector.step(interp, context);
-+            inspector.step(interp, host);
++            inspector.step(interp);
          }
      }
  
      #[inline]
 -    fn step_end(&mut self, interp: &mut Interpreter, context: &mut CTX) {
-+    fn step_end(&mut self, interp: &mut Interpreter<'_, T>, host: &mut T::Host) {
++    fn step_end(&mut self, interp: &mut Interpreter<'_, T>) {
          if let Some(ref mut inspector) = self.four_byte {
 -            inspector.step_end(interp, context);
-+            inspector.step_end(interp, host);
++            inspector.step_end(interp);
          }
          if let Some(ref mut inspector) = self.tracing {
 -            inspector.step_end(interp, context);
-+            inspector.step_end(interp, host);
++            inspector.step_end(interp);
          }
      }
  
@@ -131,14 +131,19 @@
  
      #[inline]
 -    fn log_full(&mut self, interp: &mut Interpreter, context: &mut CTX, log: Log) {
-+    fn call(&mut self, message: &mut Message<T>, host: &mut T::Host) -> Option<MessageResult<T>> {
++    fn call(
++        &mut self,
++        interp: &mut Interpreter<'_, T>,
++        message: &mut Message<T>,
++    ) -> Option<MessageResult<T>> {
          if let Some(ref mut inspector) = self.four_byte {
 -            inspector.log_full(interp, context, log.clone());
-+            let _ = inspector.call(message, host);
++            let _ = inspector.call(interp, message);
          }
          if let Some(ref mut inspector) = self.tracing {
 -            inspector.log_full(interp, context, log);
--        }
++            return inspector.call(interp, message);
+         }
 -    }
 -
 -    #[inline]
@@ -148,8 +153,7 @@
 -        }
 -        if let Some(ref mut inspector) = self.tracing {
 -            return inspector.call(context, inputs);
-+            return inspector.call(message, host);
-         }
+-        }
          None
      }
  
@@ -157,51 +161,55 @@
 -    fn call_end(&mut self, context: &mut CTX, inputs: &CallInputs, outcome: &mut CallOutcome) {
 +    fn call_end(
 +        &mut self,
++        interp: &mut Interpreter<'_, T>,
 +        message: &Message<T>,
 +        result: &mut MessageResult<T>,
-+        host: &mut T::Host,
 +    ) {
          if let Some(ref mut inspector) = self.four_byte {
 -            inspector.call_end(context, inputs, outcome);
-+            inspector.call_end(message, result, host);
++            inspector.call_end(interp, message, result);
          }
          if let Some(ref mut inspector) = self.tracing {
 -            inspector.call_end(context, inputs, outcome);
-+            inspector.call_end(message, result, host);
++            inspector.call_end(interp, message, result);
          }
      }
  
      #[inline]
 -    fn create(&mut self, context: &mut CTX, inputs: &mut CreateInputs) -> Option<CreateOutcome> {
-+    fn create(&mut self, message: &mut Message<T>, host: &mut T::Host) -> Option<MessageResult<T>> {
++    fn create(
++        &mut self,
++        interp: &mut Interpreter<'_, T>,
++        message: &mut Message<T>,
++    ) -> Option<MessageResult<T>> {
          if let Some(ref mut inspector) = self.four_byte {
 -            let _ = inspector.create(context, inputs);
-+            let _ = inspector.create(message, host);
++            let _ = inspector.create(interp, message);
          }
          if let Some(ref mut inspector) = self.tracing {
 -            return inspector.create(context, inputs);
-+            return inspector.create(message, host);
++            return inspector.create(interp, message);
          }
          None
      }
-@@ -256,55 +243,35 @@
+@@ -256,55 +251,35 @@
      #[inline]
      fn create_end(
          &mut self,
 -        context: &mut CTX,
 -        inputs: &CreateInputs,
 -        outcome: &mut CreateOutcome,
++        interp: &mut Interpreter<'_, T>,
 +        message: &Message<T>,
 +        result: &mut MessageResult<T>,
-+        host: &mut T::Host,
      ) {
          if let Some(ref mut inspector) = self.four_byte {
 -            inspector.create_end(context, inputs, outcome);
-+            inspector.create_end(message, result, host);
++            inspector.create_end(interp, message, result);
          }
          if let Some(ref mut inspector) = self.tracing {
 -            inspector.create_end(context, inputs, outcome);
-+            inspector.create_end(message, result, host);
++            inspector.create_end(interp, message, result);
          }
      }
  
@@ -217,7 +225,8 @@
 -
 -    #[inline]
 -    fn frame_start(
--        &mut self,
++    fn selfdestruct(
+         &mut self,
 -        context: &mut CTX,
 -        frame_input: &mut FrameInput,
 -    ) -> Option<FrameResult> {
@@ -232,8 +241,7 @@
 -
 -    #[inline]
 -    fn frame_end(
-+    fn selfdestruct(
-         &mut self,
+-        &mut self,
 -        context: &mut CTX,
 -        frame_input: &FrameInput,
 -        frame_result: &mut FrameResult,

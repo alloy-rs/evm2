@@ -1,5 +1,5 @@
---- /home/doni/github/paradigmxyz/revm-inspectors/src/lib.rs	2026-05-28 02:57:05.688697684 +0200
-+++ /home/doni/github/danipopes/evm2.1/crates/inspectors/src/lib.rs	2026-05-15 03:38:15.955376483 +0200
+--- upstream/src/lib.rs
++++ evm2/src/lib.rs
 @@ -1,10 +1,9 @@
 -//! revm [Inspector](revm::Inspector) implementations, such as call tracers
 +//! evm2 [Inspector](evm2::Inspector) implementations, such as call tracers.
@@ -13,7 +13,7 @@
  #![doc = include_str!("../README.md")]
  #![doc(
      html_logo_url = "https://raw.githubusercontent.com/paradigmxyz/reth/main/assets/reth-docs.png",
-@@ -18,13 +17,24 @@
+@@ -18,21 +17,29 @@
  
  extern crate alloc;
  
@@ -41,3 +41,11 @@
  pub mod tracing;
  
  /// An inspector for recording internal transfers.
+ pub mod transfer;
+ 
+-/// An inspector for tracking edge coverage.
+-pub mod edge_cov;
+-
+ /// An inspector for tracking storage access.
+ pub mod storage;
+ 

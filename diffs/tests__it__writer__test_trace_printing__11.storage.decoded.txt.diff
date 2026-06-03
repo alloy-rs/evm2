@@ -1,0 +1,7 @@
+--- upstream/tests/it/writer/test_trace_printing/11.storage.decoded.txt
++++ evm2/tests/it/writer/test_trace_printing/11.storage.decoded.txt
+@@ -1,3 +1,3 @@
+-  [4242] Counter::log1()
++  [4267] Counter::log1()
+     ├─ emit Log1(foo: 0x0000000000000000000000000000000000000000000000000000000000000048)
+     └─ ← [Stop]

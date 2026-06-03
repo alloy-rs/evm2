@@ -1,5 +1,5 @@
---- /home/doni/github/paradigmxyz/revm-inspectors/src/tracing/debug.rs	2026-05-28 02:57:05.688697684 +0200
-+++ /home/doni/github/danipopes/evm2.1/crates/inspectors/src/tracing/debug.rs	2026-05-15 17:08:54.659916171 +0200
+--- upstream/src/tracing/debug.rs
++++ evm2/src/tracing/debug.rs
 @@ -3,22 +3,19 @@
  };
  #[cfg(feature = "js-tracer")]
@@ -197,7 +197,7 @@
              }
          };
  
-@@ -284,92 +284,79 @@
+@@ -284,92 +284,87 @@
  }
  
  macro_rules! delegate {
@@ -229,88 +229,96 @@
  
 -impl<CTX> Inspector<CTX> for DebugInspector
 -where
--    CTX: ContextTr<Journal: JournalExt>,
+-    CTX: ContextTr<Journal: JournalExt, Db: DatabaseRef>,
 -{
 -    fn initialize_interp(&mut self, interp: &mut Interpreter, context: &mut CTX) {
 -        delegate!(self => inspector.initialize_interp(interp, context))
--    }
--
++impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for DebugInspector {
++    fn initialize_interp(&mut self, interp: &mut Interpreter<'_, T>) {
++        delegate!(self => initialize_interp(interp))
+     }
+ 
 -    fn step(&mut self, interp: &mut Interpreter, context: &mut CTX) {
 -        delegate!(self => inspector.step(interp, context))
--    }
--
++    fn step(&mut self, interp: &mut Interpreter<'_, T>) {
++        delegate!(self => step(interp))
+     }
+ 
 -    fn step_end(&mut self, interp: &mut Interpreter, context: &mut CTX) {
 -        delegate!(self => inspector.step_end(interp, context))
-+impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for DebugInspector {
-+    fn initialize_interp(&mut self, interp: &mut Interpreter<'_, T>, host: &mut T::Host) {
-+        delegate!(self => initialize_interp(interp, host))
++    fn step_end(&mut self, interp: &mut Interpreter<'_, T>) {
++        delegate!(self => step_end(interp))
      }
  
 -    fn log(&mut self, context: &mut CTX, log: Log) {
 -        delegate!(self => inspector.log(context, log))
-+    fn step(&mut self, interp: &mut Interpreter<'_, T>, host: &mut T::Host) {
-+        delegate!(self => step(interp, host))
-     }
- 
--    fn log_full(&mut self, interp: &mut Interpreter, context: &mut CTX, log: Log) {
--        delegate!(self => inspector.log_full(interp, context, log))
-+    fn step_end(&mut self, interp: &mut Interpreter<'_, T>, host: &mut T::Host) {
-+        delegate!(self => step_end(interp, host))
-     }
- 
--    fn call(&mut self, context: &mut CTX, inputs: &mut CallInputs) -> Option<CallOutcome> {
--        delegate!(self => inspector.call(context, inputs))
 +    fn log(&mut self, log: &Log, host: &mut T::Host) {
 +        delegate!(self => log(log, host))
      }
  
+-    fn log_full(&mut self, interp: &mut Interpreter, context: &mut CTX, log: Log) {
+-        delegate!(self => inspector.log_full(interp, context, log))
++    fn call(
++        &mut self,
++        interp: &mut Interpreter<'_, T>,
++        message: &mut Message<T>,
++    ) -> Option<MessageResult<T>> {
++        delegate!(self => call(interp, message))
+     }
+ 
+-    fn call(&mut self, context: &mut CTX, inputs: &mut CallInputs) -> Option<CallOutcome> {
+-        delegate!(self => inspector.call(context, inputs))
++    fn call_end(
++        &mut self,
++        interp: &mut Interpreter<'_, T>,
++        message: &Message<T>,
++        result: &mut MessageResult<T>,
++    ) {
++        delegate!(self => call_end(interp, message, result))
+     }
+ 
 -    fn call_end(&mut self, context: &mut CTX, inputs: &CallInputs, outcome: &mut CallOutcome) {
 -        delegate!(self => inspector.call_end(context, inputs, outcome))
-+    fn call(&mut self, message: &mut Message<T>, host: &mut T::Host) -> Option<MessageResult<T>> {
-+        delegate!(self => call(message, host))
++    fn create(
++        &mut self,
++        interp: &mut Interpreter<'_, T>,
++        message: &mut Message<T>,
++    ) -> Option<MessageResult<T>> {
++        delegate!(self => create(interp, message))
      }
  
 -    fn create(&mut self, context: &mut CTX, inputs: &mut CreateInputs) -> Option<CreateOutcome> {
 -        delegate!(self => inspector.create(context, inputs))
 -    }
 -
--    fn create_end(
-+    fn call_end(
+     fn create_end(
          &mut self,
 -        context: &mut CTX,
 -        inputs: &CreateInputs,
 -        outcome: &mut CreateOutcome,
++        interp: &mut Interpreter<'_, T>,
 +        message: &Message<T>,
 +        result: &mut MessageResult<T>,
-+        host: &mut T::Host,
      ) {
 -        delegate!(self => inspector.create_end(context, inputs, outcome))
-+        delegate!(self => call_end(message, result, host))
++        delegate!(self => create_end(interp, message, result))
      }
  
 -    fn selfdestruct(&mut self, contract: Address, target: Address, value: U256) {
 -        delegate!(self => inspector.selfdestruct(contract, target, value))
-+    fn create(&mut self, message: &mut Message<T>, host: &mut T::Host) -> Option<MessageResult<T>> {
-+        delegate!(self => create(message, host))
-     }
- 
+-    }
+-
 -    fn frame_start(
-+    fn create_end(
++    fn selfdestruct(
          &mut self,
 -        context: &mut CTX,
 -        frame_input: &mut FrameInput,
 -    ) -> Option<FrameResult> {
 -        delegate!(self => inspector.frame_start(context, frame_input))
-+        message: &Message<T>,
-+        result: &mut MessageResult<T>,
-+        host: &mut T::Host,
-+    ) {
-+        delegate!(self => create_end(message, result, host))
-     }
- 
+-    }
+-
 -    fn frame_end(
-+    fn selfdestruct(
-         &mut self,
+-        &mut self,
 -        context: &mut CTX,
 -        frame_input: &FrameInput,
 -        frame_result: &mut FrameResult,
@@ -331,7 +339,7 @@
      /// Invalid tracer configuration
      #[error("invalid tracer config")]
      InvalidTracerConfig,
-@@ -386,7 +373,7 @@
+@@ -386,7 +381,7 @@
      #[cfg(feature = "js-tracer")]
      #[error(transparent)]
      JsInspector(#[from] crate::tracing::js::JsInspectorError),

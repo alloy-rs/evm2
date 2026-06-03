@@ -1,5 +1,5 @@
---- /home/doni/github/paradigmxyz/revm-inspectors/src/tracing/arena.rs	2025-10-29 11:07:06.983570679 +0100
-+++ /home/doni/github/danipopes/evm2.1/crates/inspectors/src/tracing/arena.rs	2026-05-15 03:39:43.912562258 +0200
+--- upstream/src/tracing/arena.rs
++++ evm2/src/tracing/arena.rs
 @@ -29,7 +29,7 @@
  
      /// Returns a mutable reference to the nodes in the arena.

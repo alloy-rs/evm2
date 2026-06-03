@@ -35,7 +35,7 @@ for rel in "${files[@]}"; do
     [[ -f "$port/$rel" ]] || continue
     diff_file="$out/${rel//\//__}.diff"
     tmp_file="$(mktemp "$out/.${rel//\//__}.diff.XXXXXX")"
-    if diff -u "$upstream/$rel" "$port/$rel" > "$tmp_file"; then
+    if diff -u --label "upstream/$rel" --label "evm2/$rel" "$upstream/$rel" "$port/$rel" > "$tmp_file"; then
         rm "$tmp_file"
     else
         status=$?

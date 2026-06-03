@@ -1,5 +1,5 @@
---- /home/doni/github/paradigmxyz/revm-inspectors/tests/it/accesslist.rs	2025-07-10 16:22:55.682865359 +0200
-+++ /home/doni/github/danipopes/evm2.1/crates/inspectors/tests/it/accesslist.rs	2026-05-14 04:04:03.733772279 +0200
+--- upstream/tests/it/accesslist.rs
++++ evm2/tests/it/accesslist.rs
 @@ -1,11 +1,8 @@
  //! Accesslist tests
  

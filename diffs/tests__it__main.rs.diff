@@ -1,8 +1,11 @@
---- /home/doni/github/paradigmxyz/revm-inspectors/tests/it/main.rs	2026-05-28 02:57:05.688697684 +0200
-+++ /home/doni/github/danipopes/evm2.1/crates/inspectors/tests/it/main.rs	2026-05-15 02:24:57.713240959 +0200
-@@ -8,7 +8,7 @@
+--- upstream/tests/it/main.rs
++++ evm2/tests/it/main.rs
+@@ -7,10 +7,8 @@
+ pub mod utils;
  
  #[cfg(feature = "std")]
+-mod edge_cov;
+-#[cfg(feature = "std")]
  mod geth;
 -#[cfg(feature = "js-tracer")]
 +#[cfg(all(feature = "std", feature = "js-tracer"))]

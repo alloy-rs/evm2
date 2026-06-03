@@ -1,5 +1,5 @@
---- /home/doni/github/paradigmxyz/revm-inspectors/src/access_list.rs	2025-07-10 16:22:55.681658487 +0200
-+++ /home/doni/github/danipopes/evm2.1/crates/inspectors/src/access_list.rs	2026-05-15 03:39:41.261263518 +0200
+--- upstream/src/access_list.rs
++++ evm2/src/access_list.rs
 @@ -1,31 +1,23 @@
  use alloc::collections::BTreeSet;
  use alloy_primitives::{
@@ -111,7 +111,7 @@
 -                if let Ok(slot) = interp.stack.peek(0) {
 -                    let cur_contract = interp.input.target_address();
 +impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for AccessListInspector {
-+    fn step(&mut self, interp: &mut Interpreter<'_, T>, _host: &mut T::Host) {
++    fn step(&mut self, interp: &mut Interpreter<'_, T>) {
 +        match interp.opcode() {
 +            op::SLOAD | op::SSTORE => {
 +                if let Some([slot]) = interp.stack().peekn() {
@@ -147,38 +147,40 @@
                      let addr = Address::from_word(B256::from(slot.to_be_bytes()));
                      if !self.excluded.contains(&addr) {
                          self.touched_slots.entry(addr).or_default();
-@@ -149,26 +131,18 @@
-         }
-     }
+@@ -151,24 +133,24 @@
  
--    fn call(
--        &mut self,
+     fn call(
+         &mut self,
 -        context: &mut CTX,
 -        _inputs: &mut revm::interpreter::CallInputs,
 -    ) -> Option<revm::interpreter::CallOutcome> {
 -        // At the top-level frame, fill the excluded addresses
 -        if context.journal().depth() == 0 {
 -            self.collect_excluded_addresses(context)
-+    fn call(&mut self, message: &mut Message<T>, host: &mut T::Host) -> Option<MessageResult<T>> {
++        interp: &mut Interpreter<'_, T>,
++        message: &mut Message<T>,
++    ) -> Option<MessageResult<T>> {
 +        // At the top-level frame, fill the excluded addresses.
 +        if message.depth == 0 {
-+            self.collect_excluded_addresses(message, host);
++            self.collect_excluded_addresses(message, interp.host());
          }
          None
      }
  
--    fn create(
--        &mut self,
+     fn create(
+         &mut self,
 -        context: &mut CTX,
 -        _inputs: &mut revm::interpreter::CreateInputs,
 -    ) -> Option<revm::interpreter::CreateOutcome> {
 -        // At the top-level frame, fill the excluded addresses
 -        if context.journal().depth() == 0 {
 -            self.collect_excluded_addresses(context)
-+    fn create(&mut self, message: &mut Message<T>, host: &mut T::Host) -> Option<MessageResult<T>> {
++        interp: &mut Interpreter<'_, T>,
++        message: &mut Message<T>,
++    ) -> Option<MessageResult<T>> {
 +        // At the top-level frame, fill the excluded addresses.
 +        if message.depth == 0 {
-+            self.collect_excluded_addresses(message, host);
++            self.collect_excluded_addresses(message, interp.host());
          }
          None
      }

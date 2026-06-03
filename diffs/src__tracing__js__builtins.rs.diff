@@ -1,6 +1,6 @@
---- /home/doni/github/paradigmxyz/revm-inspectors/src/tracing/js/builtins.rs	2026-05-28 02:57:05.688697684 +0200
-+++ /home/doni/github/danipopes/evm2.1/crates/inspectors/src/tracing/js/builtins.rs	2026-05-28 03:06:25.743135740 +0200
-@@ -1,16 +1,16 @@
+--- upstream/src/tracing/js/builtins.rs
++++ evm2/src/tracing/js/builtins.rs
+@@ -1,15 +1,16 @@
  //! Builtin functions
  
  use alloc::{borrow::Cow, format, string::ToString, vec::Vec};
@@ -13,15 +13,67 @@
      js_string,
      object::builtins::{JsArray, JsArrayBuffer, JsTypedArray, JsUint8Array},
      property::Attribute,
--    Context, JsArgs, JsBigInt, JsError, JsNativeError, JsResult, JsString, JsValue, NativeFunction,
--    Source,
+-    Context, JsArgs, JsError, JsNativeError, JsResult, JsString, JsValue, NativeFunction, Source,
  };
 -use boa_gc::{empty_trace, Finalize, Trace};
 +use boa_gc::{Finalize, Trace, empty_trace};
  use core::borrow::Borrow;
  
  /// Converts the given `JsValue` to a `serde_json::Value`.
-@@ -241,7 +241,7 @@
+@@ -64,12 +65,30 @@
+ /// addresses, see [PrecompileList::register_callable].
+ pub(crate) fn register_builtins(ctx: &mut Context) -> JsResult<()> {
+     let big_int = ctx.global_object().get(js_string!("BigInt"), ctx)?;
+-    // Add toJSON method to BigInt prototype for JSON serialization support
++    // Add toJSON method and geth-compatible polyfill shims to BigInt prototype.
++    //
++    // Geth's JS tracer uses the BigInteger.js polyfill (peterolson/BigInteger.js) which exposes
++    // a global `bigInt` (camelCase) function returning objects with methods like `.equals()`,
++    // `.toJSNumber()`, `.plus()`, `.minus()`, etc. Reth uses Boa's native BigInt which lacks
++    // these methods. We add shims so geth-compatible tracers (including geth's built-in
++    // call_tracer_legacy.js) work unmodified.
++    //
++    // See: https://github.com/ethereum/go-ethereum/blob/master/eth/tracers/js/bigint.go
+     ctx.eval(Source::from_bytes(
+-        b"BigInt.prototype.toJSON = function() { return this.toString(); }",
++        br#"
++BigInt.prototype.toJSON = function() { return this.toString(); };
++BigInt.prototype.equals = function(other) { return this == other; };
++BigInt.prototype.toJSNumber = function() { return Number(this); };
++BigInt.prototype.plus = function(other) { return this + BigInt(other); };
++BigInt.prototype.minus = function(other) { return this - BigInt(other); };
++"#,
+     ))?;
+     // Create global 'bigint' alias for native BigInt constructor (lowercase for compatibility)
+-    ctx.register_global_property(js_string!("bigint"), big_int, Attribute::all())?;
++    ctx.register_global_property(js_string!("bigint"), big_int.clone(), Attribute::all())?;
++    // Create global 'bigInt' alias (camelCase) for geth BigInteger.js polyfill compatibility.
++    // Geth's goja engine runs `var bigInt = function(){...}()` at global scope, making `bigInt`
++    // the standard way to construct big integers in geth JS tracers.
++    ctx.register_global_property(js_string!("bigInt"), big_int, Attribute::all())?;
+     ctx.register_global_builtin_callable(
+         js_string!("toHex"),
+         1,
+@@ -194,11 +213,13 @@
+     FixedBytes::left_padding_from(bytes)
+ }
+ 
+-/// Converts a U256 to a bigint using the global bigint alias.
+-pub(crate) fn to_bigint(value: U256, ctx: &mut Context) -> JsResult<JsValue> {
+-    let bigint = ctx.global_object().get(js_string!("bigint"), ctx)?;
+-    let Some(bigint) = bigint.as_callable() else { return Ok(JsValue::undefined()) };
+-    bigint.call(&JsValue::undefined(), &[JsValue::from(js_string!(value.to_string()))], ctx)
++/// Converts a U256 to a Boa bigint value.
++pub(crate) fn to_bigint(value: U256) -> JsResult<JsValue> {
++    JsBigInt::from_string(&value.to_string()).map(Into::into).ok_or_else(|| {
++        JsError::from_native(
++            JsNativeError::error().with_message("failed to convert U256 to BigInt"),
++        )
++    })
+ }
+ 
+ /// Compute the address of a contract created using CREATE2.
+@@ -220,7 +241,7 @@
          Err(_) => {
              return Err(JsError::from_native(
                  JsNativeError::typ().with_message("invalid salt type"),
@@ -30,7 +82,7 @@
          }
      };
      let initcode = args.get_or_undefined(2).clone();
-@@ -385,6 +385,7 @@
+@@ -364,6 +385,7 @@
  #[cfg(test)]
  mod tests {
      use super::*;
@@ -38,7 +90,25 @@
  
      #[test]
      fn test_install_bigint() {
-@@ -443,13 +444,84 @@
+@@ -399,7 +421,7 @@
+         ];
+ 
+         for (value, expected) in test_cases {
+-            let result = to_bigint(value, &mut ctx).unwrap();
++            let result = to_bigint(value).unwrap();
+             assert!(result.is_bigint(), "Result should be a bigint for value {value}");
+             let result_str = result.to_string(&mut ctx).unwrap().to_std_string().unwrap();
+             assert_eq!(result_str, expected, "BigInt conversion failed for {value}");
+@@ -407,7 +429,7 @@
+ 
+         // Test that the result can be used in JavaScript operations
+         let big_value = U256::from(999u64);
+-        let bigint_result = to_bigint(big_value, &mut ctx).unwrap();
++        let bigint_result = to_bigint(big_value).unwrap();
+ 
+         // Set it as a global variable
+         ctx.global_object().set(js_string!("testBigInt"), bigint_result, false, &mut ctx).unwrap();
+@@ -422,13 +444,84 @@
          assert!(comparison_test.as_boolean().unwrap());
      }
  
@@ -124,82 +194,3 @@
          array.length(&mut Context::default()).unwrap()
      }
  
-@@ -532,78 +604,4 @@
-             "0x8a0d8a428b30200a296dfbe693310e5d6d2c64c5"
-         );
-     }
--
--    #[test]
--    fn test_bigint_camelcase_alias() {
--        let mut ctx = Context::default();
--        register_builtins(&mut ctx).unwrap();
--
--        let bigint = ctx.global_object().get(js_string!("bigInt"), &mut ctx).unwrap();
--        assert!(bigint.is_callable());
--
--        let result = ctx.eval(Source::from_bytes(b"bigInt(42).toString()")).unwrap();
--        assert_eq!(result.to_string(&mut ctx).unwrap().to_std_string().unwrap(), "42");
--
--        let result = ctx.eval(Source::from_bytes(b"bigInt('100').toString(16)")).unwrap();
--        assert_eq!(result.to_string(&mut ctx).unwrap().to_std_string().unwrap(), "64");
--    }
--
--    #[test]
--    fn test_bigint_equals_shim() {
--        let mut ctx = Context::default();
--        register_builtins(&mut ctx).unwrap();
--
--        let result = ctx.eval(Source::from_bytes(b"bigInt(1).equals(bigInt(1))")).unwrap();
--        assert!(result.as_boolean().unwrap());
--
--        let result = ctx.eval(Source::from_bytes(b"bigInt(1).equals(bigInt(2))")).unwrap();
--        assert!(!result.as_boolean().unwrap());
--
--        let result = ctx.eval(Source::from_bytes(b"BigInt(0).equals(0)")).unwrap();
--        assert!(result.as_boolean().unwrap());
--    }
--
--    #[test]
--    fn test_bigint_to_js_number_shim() {
--        let mut ctx = Context::default();
--        register_builtins(&mut ctx).unwrap();
--
--        let result = ctx.eval(Source::from_bytes(b"bigInt(42).toJSNumber()")).unwrap();
--        assert_eq!(result.to_number(&mut ctx).unwrap(), 42.0);
--
--        let result = ctx.eval(Source::from_bytes(b"typeof bigInt(42).toJSNumber()")).unwrap();
--        assert_eq!(result.to_string(&mut ctx).unwrap().to_std_string().unwrap(), "number");
--    }
--
--    #[test]
--    fn test_bigint_plus_minus_shim() {
--        let mut ctx = Context::default();
--        register_builtins(&mut ctx).unwrap();
--
--        let result = ctx.eval(Source::from_bytes(b"bigInt(1).plus(bigInt(2)).toString()")).unwrap();
--        assert_eq!(result.to_string(&mut ctx).unwrap().to_std_string().unwrap(), "3");
--
--        let result =
--            ctx.eval(Source::from_bytes(b"bigInt(10).minus(bigInt(3)).toString()")).unwrap();
--        assert_eq!(result.to_string(&mut ctx).unwrap().to_std_string().unwrap(), "7");
--    }
--
--    #[test]
--    fn test_bigint_geth_call_tracer_pattern() {
--        let mut ctx = Context::default();
--        register_builtins(&mut ctx).unwrap();
--
--        // Simulates geth's call_tracer_legacy.js patterns:
--        // bigInt(gasIn - gasCost - gas).toString(16)
--        let result =
--            ctx.eval(Source::from_bytes(b"'0x' + bigInt(1000 - 200 - 100).toString(16)")).unwrap();
--        assert_eq!(result.to_string(&mut ctx).unwrap().to_std_string().unwrap(), "0x2bc");
--
--        // !ret.equals(0) pattern
--        let result = ctx.eval(Source::from_bytes(b"var ret = bigInt(1); !ret.equals(0)")).unwrap();
--        assert!(result.as_boolean().unwrap());
--
--        let result = ctx.eval(Source::from_bytes(b"var ret = bigInt(0); !ret.equals(0)")).unwrap();
--        assert!(!result.as_boolean().unwrap());
--    }
- }

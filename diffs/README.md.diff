@@ -1,5 +1,5 @@
---- /home/doni/github/paradigmxyz/revm-inspectors/README.md	2025-09-02 21:09:55.289784500 +0200
-+++ /home/doni/github/danipopes/evm2.1/crates/inspectors/README.md	2026-05-13 19:09:24.319673560 +0200
+--- upstream/README.md
++++ evm2/README.md
 @@ -1,15 +1,15 @@
 -# revm-inspectors
 +# evm2-inspectors

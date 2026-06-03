@@ -1,5 +1,5 @@
---- /home/doni/github/paradigmxyz/revm-inspectors/src/tracing/utils.rs	2026-05-14 03:45:05.356711986 +0200
-+++ /home/doni/github/danipopes/evm2.1/crates/inspectors/src/tracing/utils.rs	2026-05-15 03:47:43.564834691 +0200
+--- upstream/src/tracing/utils.rs
++++ evm2/src/tracing/utils.rs
 @@ -1,65 +1,62 @@
 -//! Utility functions for revm related ops
 +//! Utility functions for evm2 related ops

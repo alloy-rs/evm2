@@ -1,5 +1,5 @@
---- /home/doni/github/paradigmxyz/revm-inspectors/src/storage.rs	2026-05-14 03:45:05.355711990 +0200
-+++ /home/doni/github/danipopes/evm2.1/crates/inspectors/src/storage.rs	2026-05-15 03:50:49.159877743 +0200
+--- upstream/src/storage.rs
++++ evm2/src/storage.rs
 @@ -1,12 +1,5 @@
 -use alloy_primitives::{map::HashMap, Address, B256};
 -use revm::{
@@ -44,7 +44,7 @@
 -                let address = interp.input.target_address();
 -                let slot = B256::from(slot.to_be_bytes());
 +impl<T: EvmTypes> Inspector<T> for StorageInspector {
-+    fn step(&mut self, interp: &mut Interpreter<'_, T>, _host: &mut T::Host) {
++    fn step(&mut self, interp: &mut Interpreter<'_, T>) {
 +        if interp.opcode() == op::SLOAD
 +            && let Some([slot]) = interp.stack().peekn()
 +        {
