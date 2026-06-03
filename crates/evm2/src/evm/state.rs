@@ -461,6 +461,15 @@ impl State {
         self.database.storage_ref(address, key)
     }
 
+    /// Returns a loaded persistent storage overlay slot with original and current values.
+    ///
+    /// This is a non-mutating transaction-layer lookup. It does not load the account or slot from
+    /// the backing database; use [`Self::storage`] when database-backed loading is desired.
+    #[inline]
+    pub fn storage_tracked_ref(&self, address: &Address, key: &Word) -> Option<&Tracked<Word>> {
+        self.storage.get(address)?.slots.get(key)
+    }
+
     /// Returns the current transaction account overlay if present and not deleted.
     ///
     /// This is a non-mutating overlay lookup. It does not load the account from the backing
@@ -653,15 +662,16 @@ impl State {
     /// Returns account code from the overlay or backing database without inserting into the
     /// overlay.
     pub fn code_ref_or_db(&mut self, address: &Address) -> DbResult<Bytecode> {
-        let Some((code_hash, code)) = self.accounts.get(address).and_then(|account| {
-            account.current.as_ref().map(|account| (account.code_hash, account.code.clone()))
-        }) else {
-            let Some(info) = self.initial.get_account(address)? else {
+        if let Some(account) = self.accounts.get(address) {
+            let Some(account) = account else {
                 return Ok(Bytecode::default());
             };
-            return self.code_from_info(info);
+            return self.code_from_parts(account.code_hash, account.code.clone());
+        }
+        let Some(info) = self.database.get_account(address)? else {
+            return Ok(Bytecode::default());
         };
-        self.code_from_parts(code_hash, code)
+        self.code_from_info(info)
     }
 
     fn code_from_info(&mut self, info: AccountInfo) -> DbResult<Bytecode> {
@@ -680,14 +690,14 @@ impl State {
         if !code.is_empty() {
             return Ok(code);
         }
-        self.initial.get_code_by_hash(&code_hash)
+        self.database.get_code_by_hash(&code_hash)
     }
 
     /// Returns persistent storage from the overlay or backing database without inserting into the
     /// overlay.
     pub fn storage_ref_or_db(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
         if let Some(account) = self.accounts.get(address)
-            && account.current.is_none()
+            && account.is_none()
         {
             return Ok(Word::ZERO);
         }
@@ -699,12 +709,10 @@ impl State {
                 return Ok(Word::ZERO);
             }
         }
-        if let Some(account) = self.accounts.get(address)
-            && account.original.is_none()
-        {
+        if self.database.account_absent(address) {
             return Ok(Word::ZERO);
         }
-        self.initial.get_storage(address, key)
+        self.database.get_storage(address, key)
     }
 
     /// Returns whether an account is empty/non-existent for EIP-150 new-account gas checks.

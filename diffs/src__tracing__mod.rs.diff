@@ -257,7 +257,7 @@
      }
  
      /// Returns the  [GethTraceBuilder] for the recorded traces without consuming the type.
-@@ -260,467 +215,338 @@
+@@ -260,467 +215,339 @@
      /// starting a new transaction: [`Self::fuse`]
      #[inline]
      pub fn geth_builder(&self) -> GethTraceBuilder<'_> {
@@ -469,11 +469,7 @@
 +        match journal_entry {
 +            JournalEntry::StorageChange { address, key, previous } => {
 +                // SAFETY: (Address, key) exists if part of StorageChange.
-+                let value = host
-+                    .state()
-+                    .storage_ref(address, key)
-+                    .map(|slot| slot.current)
-+                    .unwrap_or_default();
++                let value = host.state().storage_ref(address, key).unwrap_or_default();
 +                Some(Box::new(StorageChange {
 +                    key: *key,
 +                    value,
@@ -481,13 +477,18 @@
 +                    reason,
 +                }))
 +            }
++            JournalEntry::StorageInserted { address, key } => {
++                let slot = host.state().storage_tracked_ref(address, key)?;
++                Some(Box::new(StorageChange {
++                    key: *key,
++                    value: slot.current,
++                    had_value: Some(slot.original),
++                    reason,
++                }))
++            }
 +            JournalEntry::StorageWarmed { address, key } => {
 +                // SAFETY: (Address, key) exists if part of StorageChange.
-+                let value = host
-+                    .state()
-+                    .storage_ref(address, key)
-+                    .map(|slot| slot.current)
-+                    .unwrap_or_default();
++                let value = host.state().storage_ref(address, key).unwrap_or_default();
 +                Some(Box::new(StorageChange { key: *key, value, had_value: None, reason }))
 +            }
 +            _ => None,
@@ -970,7 +971,7 @@
      pub tx_hash: Option<B256>,
  }
  
-@@ -737,7 +563,7 @@
+@@ -737,7 +564,7 @@
          self
      }
  
@@ -979,7 +980,7 @@
      pub const fn with_tx_hash(mut self, tx_hash: B256) -> Self {
          self.tx_hash = Some(tx_hash);
          self
-@@ -753,21 +579,3 @@
+@@ -753,21 +580,3 @@
          }
      }
  }

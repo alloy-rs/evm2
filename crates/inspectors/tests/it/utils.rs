@@ -503,7 +503,7 @@ pub trait TestDbExt {
 
 impl TestDbExt for CacheDB<EmptyDB> {
     fn load_account(&mut self, address: Address) -> LoadedAccountMut<'_> {
-        let info = self.cache.accounts.entry(address).or_default();
+        let info = self.cache.accounts.entry(address).or_default().get_or_insert_default();
         LoadedAccountMut { info }
     }
 }

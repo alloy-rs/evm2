@@ -188,7 +188,7 @@ fn test_parity_call_selfdestruct() {
     let to =
         deploy_contract(&mut evm, code.into(), deployer, SpecId::LONDON).created_address().unwrap();
 
-    evm.ctx().db_mut().cache.accounts.get_mut(&to).unwrap().balance = balance;
+    evm.ctx().db_mut().cache.accounts.get_mut(&to).unwrap().as_mut().unwrap().balance = balance;
 
     let mut evm =
         evm.with_inspector(TracingInspector::new(TracingInspectorConfig::default_parity()));
