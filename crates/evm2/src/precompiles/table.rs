@@ -1,5 +1,6 @@
 use crate::{
-    interpreter::GasTracker,
+    BaseEvmTypes, Evm, EvmTypes,
+    interpreter::{GasTracker, Message},
     precompiles::{
         PrecompileId, PrecompileResult, blake2, bls12_381, bn254, hash, identity,
         kzg_point_evaluation, modexp, secp256k1, secp256r1,
@@ -8,23 +9,25 @@ use crate::{
 use alloc::vec::Vec;
 use alloy_primitives::{Address, map::AddressMap};
 use core::fmt::{self, Display};
+use derive_where::derive_where;
 
 /// Precompile implementation function.
-pub type PrecompileFn = fn(&[u8], &mut GasTracker) -> PrecompileResult;
+pub type PrecompileFn<T = BaseEvmTypes> =
+    fn(&mut Evm<T>, &Message<T>, &mut GasTracker) -> PrecompileResult;
 
 /// Precompile descriptor.
-#[derive(Clone, Debug)]
-pub struct Precompile {
+#[derive_where(Clone, Debug)]
+pub struct Precompile<T: EvmTypes = BaseEvmTypes> {
     /// Precompile address.
     address: Address,
     /// Precompile data.
-    data: PrecompileData,
+    data: PrecompileData<T>,
 }
 
-impl Precompile {
+impl<T: EvmTypes> Precompile<T> {
     /// Creates a precompile descriptor.
     #[inline]
-    pub const fn new(address: Address, id: PrecompileId, f: PrecompileFn) -> Self {
+    pub const fn new(address: Address, id: PrecompileId, f: PrecompileFn<T>) -> Self {
         Self { address, data: PrecompileData::new(id, f) }
     }
 
@@ -42,19 +45,19 @@ impl Precompile {
 
     /// Returns this precompile descriptor with different data.
     #[inline]
-    pub fn with_data(self, data: PrecompileData) -> Self {
+    pub fn with_data(self, data: PrecompileData<T>) -> Self {
         Self { address: self.address, data }
     }
 
     /// Returns the precompile data.
     #[inline]
-    pub const fn data(&self) -> &PrecompileData {
+    pub const fn data(&self) -> &PrecompileData<T> {
         &self.data
     }
 
     /// Consumes the precompile descriptor and returns its data.
     #[inline]
-    pub fn into_data(self) -> PrecompileData {
+    pub fn into_data(self) -> PrecompileData<T> {
         self.data
     }
 
@@ -66,30 +69,34 @@ impl Precompile {
 
     /// Returns the precompile implementation function.
     #[inline]
-    pub const fn run(&self) -> PrecompileFn {
+    pub const fn run(&self) -> PrecompileFn<T> {
         self.data.run()
     }
 }
 
-fn dummy_precompile(_input: &[u8], _gas: &mut GasTracker) -> PrecompileResult {
+fn dummy_precompile<T: EvmTypes>(
+    _evm: &mut Evm<T>,
+    _message: &Message<T>,
+    _gas: &mut GasTracker,
+) -> PrecompileResult {
     unreachable!("dummy precompile data must be replaced before use")
 }
 
 /// Address-free precompile data.
-#[derive(Clone, Debug)]
-pub struct PrecompileData {
+#[derive_where(Clone, Debug)]
+pub struct PrecompileData<T: EvmTypes = BaseEvmTypes> {
     /// Precompile implementation function.
-    run: PrecompileFn,
+    run: PrecompileFn<T>,
     /// Precompile ID.
     id: PrecompileId,
 }
 
-impl PrecompileData {
+impl<T: EvmTypes> PrecompileData<T> {
     const DUMMY: Self = Self::new(PrecompileId::custom("__dummy__"), dummy_precompile);
 
     /// Creates precompile data.
     #[inline]
-    pub const fn new(id: PrecompileId, f: PrecompileFn) -> Self {
+    pub const fn new(id: PrecompileId, f: PrecompileFn<T>) -> Self {
         Self { id, run: f }
     }
 
@@ -101,7 +108,7 @@ impl PrecompileData {
 
     /// Returns this precompile data with a different implementation function.
     #[inline]
-    pub fn with_run(self, f: PrecompileFn) -> Self {
+    pub fn with_run(self, f: PrecompileFn<T>) -> Self {
         Self { id: self.id, run: f }
     }
 
@@ -113,27 +120,50 @@ impl PrecompileData {
 
     /// Returns the precompile implementation function.
     #[inline]
-    pub const fn run(&self) -> PrecompileFn {
+    pub const fn run(&self) -> PrecompileFn<T> {
         self.run
+    }
+
+    /// Executes this precompile.
+    #[inline]
+    pub fn execute(
+        &self,
+        evm: &mut Evm<T>,
+        message: &Message<T>,
+        gas: &mut GasTracker,
+    ) -> PrecompileResult {
+        (self.run)(evm, message, gas)
     }
 }
 
 /// Precompile dispatch map.
-#[derive(Clone, Debug, Default)]
-pub struct PrecompileMap {
-    inner: AddressMap<PrecompileData>,
+#[derive_where(Clone, Debug, Default)]
+pub struct PrecompileMap<T: EvmTypes = BaseEvmTypes> {
+    inner: AddressMap<PrecompileData<T>>,
 }
 
-impl PrecompileMap {
+impl<T: EvmTypes> PrecompileMap<T> {
     /// Creates an empty precompile map.
     #[inline]
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Creates an empty precompile map with at least the specified capacity.
+    #[inline]
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self { inner: AddressMap::with_capacity_and_hasher(capacity, Default::default()) }
+    }
+
+    /// Reserves capacity for at least `additional` more precompiles.
+    #[inline]
+    pub fn reserve(&mut self, additional: usize) {
+        self.inner.reserve(additional);
+    }
+
     /// Creates a precompile map from precompile descriptors.
     #[inline]
-    pub fn from_precompiles(precompiles: impl IntoIterator<Item = Precompile>) -> Self {
+    pub fn from_precompiles(precompiles: impl IntoIterator<Item = Precompile<T>>) -> Self {
         let mut map = Self::new();
         map.extend(precompiles);
         map
@@ -141,7 +171,7 @@ impl PrecompileMap {
 
     /// Extends this map with precompile descriptors.
     #[inline]
-    pub fn extend(&mut self, precompiles: impl IntoIterator<Item = Precompile>) {
+    pub fn extend(&mut self, precompiles: impl IntoIterator<Item = Precompile<T>>) {
         for precompile in precompiles {
             self.insert(precompile);
         }
@@ -149,32 +179,32 @@ impl PrecompileMap {
 
     /// Inserts a precompile descriptor, replacing any existing precompile at the same address.
     #[inline]
-    pub fn insert(&mut self, precompile: Precompile) -> Option<Precompile> {
+    pub fn insert(&mut self, precompile: Precompile<T>) -> Option<Precompile<T>> {
         let address = precompile.address();
         self.inner.insert(address, precompile.into_data()).map(|data| Precompile { address, data })
     }
 
     /// Removes a precompile by address.
     #[inline]
-    pub fn remove(&mut self, address: Address) -> Option<Precompile> {
+    pub fn remove(&mut self, address: Address) -> Option<Precompile<T>> {
         self.inner.remove(&address).map(|data| Precompile { address, data })
     }
 
     /// Removes a precompile by descriptor address.
     #[inline]
-    pub fn remove_precompile(&mut self, precompile: &Precompile) -> Option<Precompile> {
+    pub fn remove_precompile(&mut self, precompile: &Precompile<T>) -> Option<Precompile<T>> {
         self.remove(precompile.address())
     }
 
     /// Returns the precompile at `address`, if any.
     #[inline]
-    pub fn get(&self, address: &Address) -> Option<Precompile> {
+    pub fn get(&self, address: &Address) -> Option<Precompile<T>> {
         self.inner.get(address).cloned().map(|data| Precompile { address: *address, data })
     }
 
     /// Returns the precompile data at `address`, if any.
     #[inline]
-    pub(super) fn get_data(&self, address: &Address) -> Option<&PrecompileData> {
+    pub(super) fn get_data(&self, address: &Address) -> Option<&PrecompileData<T>> {
         self.inner.get(address)
     }
 
@@ -182,7 +212,7 @@ impl PrecompileMap {
     #[inline]
     pub fn map_precompile<F>(&mut self, address: &Address, f: F)
     where
-        F: FnOnce(PrecompileData) -> PrecompileData,
+        F: FnOnce(PrecompileData<T>) -> PrecompileData<T>,
     {
         if let Some(data) = self.inner.get_mut(address) {
             *data = f(core::mem::replace(data, PrecompileData::DUMMY));
@@ -193,7 +223,7 @@ impl PrecompileMap {
     #[inline]
     pub fn map_precompiles<F>(&mut self, mut f: F)
     where
-        F: FnMut(&Address, PrecompileData) -> PrecompileData,
+        F: FnMut(&Address, PrecompileData<T>) -> PrecompileData<T>,
     {
         for (address, data) in &mut self.inner {
             *data = f(address, core::mem::replace(data, PrecompileData::DUMMY));
@@ -207,7 +237,7 @@ impl PrecompileMap {
     #[inline]
     pub fn apply_precompile<F>(&mut self, address: &Address, f: F)
     where
-        F: FnOnce(Option<PrecompileData>) -> Option<PrecompileData>,
+        F: FnOnce(Option<PrecompileData<T>>) -> Option<PrecompileData<T>>,
     {
         if let Some(data) = self.inner.get_mut(address) {
             let current = core::mem::replace(data, PrecompileData::DUMMY);
@@ -225,7 +255,7 @@ impl PrecompileMap {
     #[inline]
     pub fn with_mapped_precompile<F>(mut self, address: &Address, f: F) -> Self
     where
-        F: FnOnce(PrecompileData) -> PrecompileData,
+        F: FnOnce(PrecompileData<T>) -> PrecompileData<T>,
     {
         self.map_precompile(address, f);
         self
@@ -235,7 +265,7 @@ impl PrecompileMap {
     #[inline]
     pub fn with_mapped_precompiles<F>(mut self, f: F) -> Self
     where
-        F: FnMut(&Address, PrecompileData) -> PrecompileData,
+        F: FnMut(&Address, PrecompileData<T>) -> PrecompileData<T>,
     {
         self.map_precompiles(f);
         self
@@ -245,7 +275,7 @@ impl PrecompileMap {
     #[inline]
     pub fn with_applied_precompile<F>(mut self, address: &Address, f: F) -> Self
     where
-        F: FnOnce(Option<PrecompileData>) -> Option<PrecompileData>,
+        F: FnOnce(Option<PrecompileData<T>>) -> Option<PrecompileData<T>>,
     {
         self.apply_precompile(address, f);
         self
@@ -255,7 +285,7 @@ impl PrecompileMap {
     #[inline]
     pub fn with_extended_precompiles(
         mut self,
-        precompiles: impl IntoIterator<Item = Precompile>,
+        precompiles: impl IntoIterator<Item = Precompile<T>>,
     ) -> Self {
         self.extend(precompiles);
         self
@@ -362,8 +392,22 @@ macro_rules! define_precompiles {
     )*) => {
         $(
             $(#[$attr])*
-            $vis const $name: $crate::precompiles::Precompile =
-                $crate::precompiles::Precompile::new($crate::define_precompiles!(@address $address), $id, $f);
+            #[allow(non_snake_case)]
+            $vis const fn $name<T: $crate::EvmTypes>() -> $crate::precompiles::Precompile<T> {
+                fn run<T: $crate::EvmTypes>(
+                    _evm: &mut $crate::Evm<T>,
+                    message: &$crate::interpreter::Message<T>,
+                    gas: &mut $crate::interpreter::GasTracker,
+                ) -> $crate::precompiles::PrecompileResult {
+                    $f(message.input.as_ref(), gas)
+                }
+
+                $crate::precompiles::Precompile::new(
+                    $crate::define_precompiles!(@address $address),
+                    $id,
+                    run::<T>,
+                )
+            }
         )*
     };
 }
@@ -428,18 +472,27 @@ mod tests {
     use alloy_primitives::{Bytes, address};
     use core::assert_matches;
 
-    fn test_run_a(_input: &[u8], _gas: &mut GasTracker) -> PrecompileResult {
+    fn test_run_a(
+        _evm: &mut Evm<BaseEvmTypes>,
+        _message: &Message,
+        _gas: &mut GasTracker,
+    ) -> PrecompileResult {
         Ok(PrecompileOutput::new(Bytes::from_static(b"a")))
     }
 
-    fn test_run_b(_input: &[u8], _gas: &mut GasTracker) -> PrecompileResult {
+    fn test_run_b(
+        _evm: &mut Evm<BaseEvmTypes>,
+        _message: &Message,
+        _gas: &mut GasTracker,
+    ) -> PrecompileResult {
         Ok(PrecompileOutput::new(Bytes::from_static(b"b")))
     }
 
     #[test]
     fn map_precompile_updates_data_at_target_address() {
-        let address = IDENTITY.address();
-        let mut map = PrecompileMap::from_precompiles([IDENTITY]);
+        let identity = IDENTITY::<BaseEvmTypes>();
+        let address = identity.address();
+        let mut map = PrecompileMap::from_precompiles([identity]);
 
         map.map_precompile(&address, |precompile| {
             precompile.with_id(PrecompileId::Sha256).with_run(test_run_a)
@@ -468,25 +521,29 @@ mod tests {
 
     #[test]
     fn map_precompiles_preserves_existing_addresses() {
-        let mut map = PrecompileMap::from_precompiles([IDENTITY, SHA256]);
+        let identity = IDENTITY::<BaseEvmTypes>();
+        let sha256 = SHA256::<BaseEvmTypes>();
+        let mut map = PrecompileMap::from_precompiles([identity.clone(), sha256.clone()]);
 
         map.map_precompiles(|_, precompile| {
             assert_matches!(precompile.id(), PrecompileId::Identity | PrecompileId::Sha256);
             precompile.with_id(PrecompileId::Ripemd160).with_run(test_run_b)
         });
 
-        assert_eq!(map.get(&IDENTITY.address()).unwrap().id(), &PrecompileId::Ripemd160);
-        assert_eq!(map.get(&SHA256.address()).unwrap().id(), &PrecompileId::Ripemd160);
+        assert_eq!(map.get(&identity.address()).unwrap().id(), &PrecompileId::Ripemd160);
+        assert_eq!(map.get(&sha256.address()).unwrap().id(), &PrecompileId::Ripemd160);
     }
 
     #[test]
     fn move_precompiles_validates_before_mutating() {
-        let source = IDENTITY.address();
+        let identity = IDENTITY::<BaseEvmTypes>();
+        let sha256 = SHA256::<BaseEvmTypes>();
+        let source = identity.address();
         let missing = address!("0x0000000000000000000000000000000000000999");
         let dest = address!("0x0000000000000000000000000000000000001000");
-        let mut map = PrecompileMap::from_precompiles([IDENTITY]);
+        let mut map = PrecompileMap::from_precompiles([identity]);
 
-        let err = map.move_precompiles([(source, dest), (missing, SHA256.address())]);
+        let err = map.move_precompiles([(source, dest), (missing, sha256.address())]);
 
         assert_eq!(err, Err(MovePrecompileError::NotAPrecompile(missing)));
         assert!(map.contains(&source));
@@ -495,28 +552,32 @@ mod tests {
 
     #[test]
     fn move_precompiles_moves_after_validation() {
-        let identity = IDENTITY.address();
-        let sha256 = SHA256.address();
+        let identity = IDENTITY::<BaseEvmTypes>();
+        let sha256 = SHA256::<BaseEvmTypes>();
+        let identity_address = identity.address();
+        let sha256_address = sha256.address();
         let new_identity = address!("0x0000000000000000000000000000000000001001");
         let new_sha256 = address!("0x0000000000000000000000000000000000001002");
-        let mut map = PrecompileMap::from_precompiles([IDENTITY, SHA256]);
+        let mut map = PrecompileMap::from_precompiles([identity, sha256]);
 
-        map.move_precompiles([(identity, new_identity), (sha256, new_sha256)]).unwrap();
+        map.move_precompiles([(identity_address, new_identity), (sha256_address, new_sha256)])
+            .unwrap();
 
-        assert!(!map.contains(&identity));
-        assert!(!map.contains(&sha256));
+        assert!(!map.contains(&identity_address));
+        assert!(!map.contains(&sha256_address));
         assert!(map.contains(&new_identity));
         assert!(map.contains(&new_sha256));
     }
 
     #[test]
     fn move_precompiles_skips_duplicate_sources_after_first_move() {
-        let identity = IDENTITY.address();
+        let identity = IDENTITY::<BaseEvmTypes>();
+        let identity_address = identity.address();
         let first = address!("0x0000000000000000000000000000000000001001");
         let second = address!("0x0000000000000000000000000000000000001002");
-        let mut map = PrecompileMap::from_precompiles([IDENTITY]);
+        let mut map = PrecompileMap::from_precompiles([identity]);
 
-        map.move_precompiles([(identity, first), (identity, second)]).unwrap();
+        map.move_precompiles([(identity_address, first), (identity_address, second)]).unwrap();
 
         assert!(map.contains(&first));
         assert!(!map.contains(&second));

@@ -168,7 +168,7 @@ impl<T: EvmTypes> Evm<T> {
         unsafe {
             let _guard = self.enter_execution();
             (&mut *precompiles)
-                .execute(&mut *evm, message.code_address, &message.input, gas)
+                .execute(&mut *evm, message, gas)
                 .expect("precompile was checked before execution")
         }
     }
@@ -1173,11 +1173,10 @@ mod tests {
         fn execute(
             &mut self,
             evm: &mut Evm<BaseEvmTypes>,
-            address: Address,
-            _input: &[u8],
+            message: &Message,
             _gas: &mut GasTracker,
         ) -> Option<Result<PrecompileOutput, PrecompileError>> {
-            if address != Self::ADDRESS {
+            if message.code_address != Self::ADDRESS {
                 return None;
             }
             match self.access {
@@ -1230,11 +1229,10 @@ mod tests {
             fn execute(
                 &mut self,
                 evm: &mut Evm<BaseEvmTypes>,
-                address: Address,
-                _input: &[u8],
+                message: &Message,
                 _gas: &mut GasTracker,
             ) -> Option<Result<PrecompileOutput, PrecompileError>> {
-                if !self.contains(&address) {
+                if !self.contains(&message.code_address) {
                     return None;
                 }
                 let _ = evm.precompiles();
@@ -1397,6 +1395,7 @@ mod tests {
         #[derive(Default)]
         struct HostObservingPrecompile {
             seen_block_number: Option<U256>,
+            seen_message: Option<Message>,
         }
 
         impl PrecompileProvider<BaseEvmTypes> for HostObservingPrecompile {
@@ -1407,14 +1406,14 @@ mod tests {
             fn execute(
                 &mut self,
                 evm: &mut Evm<BaseEvmTypes>,
-                address: Address,
-                _input: &[u8],
+                message: &Message,
                 _gas: &mut GasTracker,
             ) -> Option<Result<PrecompileOutput, PrecompileError>> {
-                if !self.contains(&address) {
+                if !self.contains(&message.code_address) {
                     return None;
                 }
                 self.seen_block_number = Some(evm.block.number);
+                self.seen_message = Some(message.clone());
                 Some(Ok(PrecompileOutput::new(Bytes::copy_from_slice(&[0x42]))))
             }
         }
@@ -1430,12 +1429,12 @@ mod tests {
         );
         let message = Message {
             kind: MessageKind::Call,
-            depth: 0,
+            depth: 67,
             gas_limit: 30_000,
             destination: address,
-            caller: Address::ZERO,
-            input: Bytes::new(),
-            value: U256::ZERO,
+            caller: Address::with_last_byte(0x7a),
+            input: Bytes::from_static(b"message input"),
+            value: U256::from(99),
             code_address: address,
             disable_precompiles: false,
             salt: B256::ZERO,
@@ -1450,6 +1449,10 @@ mod tests {
         assert_eq!(
             evm.precompiles_as::<HostObservingPrecompile>().unwrap().seen_block_number,
             Some(U256::from(17))
+        );
+        assert_eq!(
+            evm.precompiles_as::<HostObservingPrecompile>().unwrap().seen_message,
+            Some(message)
         );
     }
 
@@ -1474,15 +1477,14 @@ mod tests {
             fn execute(
                 &mut self,
                 evm: &mut Evm<BaseEvmTypes>,
-                address: Address,
-                _input: &[u8],
+                message: &Message,
                 gas: &mut GasTracker,
             ) -> Option<Result<PrecompileOutput, PrecompileError>> {
-                if address == Self::INNER {
+                if message.code_address == Self::INNER {
                     self.inner_called = true;
                     return Some(Ok(PrecompileOutput::new(Bytes::from_static(b"inner"))));
                 }
-                if address != Self::OUTER {
+                if message.code_address != Self::OUTER {
                     return None;
                 }
                 self.outer_called = true;
