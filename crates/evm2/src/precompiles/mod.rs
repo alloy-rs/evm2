@@ -5,8 +5,14 @@ use crate::{
     evm::precompile::PrecompileProvider,
     interpreter::{GasTracker, Message},
 };
+#[cfg(feature = "std")]
+use alloc::boxed::Box;
 use alloc::{borrow::Cow, vec::Vec};
 use alloy_primitives::Address;
+#[cfg(feature = "std")]
+use core::any::{Any, TypeId};
+#[cfg(feature = "std")]
+use std::{collections::HashMap, sync::Mutex};
 
 pub mod blake2;
 pub mod bls12_381;
@@ -91,7 +97,15 @@ impl<T: EvmTypes> Precompiles<T> {
     /// Creates a precompile provider for a base EVM specification.
     #[inline]
     pub fn base(spec_id: SpecId) -> Self {
-        Self::new(Cow::Owned(base_precompiles(spec_id)))
+        #[cfg(feature = "std")]
+        {
+            Self::new(Cow::Borrowed(cached_base_precompiles(spec_id)))
+        }
+
+        #[cfg(not(feature = "std"))]
+        {
+            Self::new(Cow::Owned(base_precompiles(spec_id)))
+        }
     }
 
     /// Creates a precompile map from precompile descriptors.
@@ -134,6 +148,35 @@ impl<T: EvmTypes> PrecompileProvider<T> for Precompiles<T> {
         let precompile = self.map.as_ref().get_data(&message.code_address)?;
         Some(precompile.execute(evm, message, gas))
     }
+}
+
+#[cfg(feature = "std")]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct BasePrecompileKey {
+    evm_types: TypeId,
+    spec: SpecId,
+}
+
+#[cfg(feature = "std")]
+static BASE_PRECOMPILES: Mutex<
+    Option<HashMap<BasePrecompileKey, &'static (dyn Any + Send + Sync)>>,
+> = Mutex::new(None);
+
+#[cfg(feature = "std")]
+fn cached_base_precompiles<T: EvmTypes>(spec: SpecId) -> &'static PrecompileMap<T> {
+    let key = BasePrecompileKey { evm_types: TypeId::of::<T>(), spec };
+    let mut cache = BASE_PRECOMPILES.lock().expect("base precompile cache poisoned");
+    let cache = cache.get_or_insert_with(HashMap::new);
+
+    if let Some(precompiles) = cache.get(&key) {
+        return precompiles
+            .downcast_ref::<PrecompileMap<T>>()
+            .expect("base precompile cache type mismatch");
+    }
+
+    let precompiles = Box::leak(Box::new(base_precompiles::<T>(spec)));
+    cache.insert(key, precompiles);
+    precompiles
 }
 
 fn base_precompiles<T: EvmTypes>(spec: SpecId) -> PrecompileMap<T> {
