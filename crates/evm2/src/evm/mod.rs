@@ -20,6 +20,7 @@ use crate::{
 use alloc::{boxed::Box, vec};
 use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{Address, B256, Bytes, Log, LogData};
+use core::any::TypeId;
 #[cfg(feature = "async")]
 use core::future::Future;
 use derive_where::derive_where;
@@ -74,6 +75,7 @@ pub struct Evm<T: EvmTypes> {
     #[cfg(feature = "async")]
     #[derive_where(skip)]
     async_stack: r#async::FiberStack,
+    evm_send: bool,
     db_error_code: Option<DbErrorCode>,
 }
 
@@ -145,6 +147,7 @@ impl<T: EvmTypes> Evm<T> {
             running: false,
             #[cfg(feature = "async")]
             async_stack: r#async::FiberStack::default(),
+            evm_send: false,
             db_error_code: None,
         }
     }
@@ -218,12 +221,77 @@ impl<T: EvmTypes> Evm<T> {
     #[inline]
     pub fn set_database(&mut self, database: impl DynDatabase) {
         self.state.set_initial(database);
+        self.evm_send = false;
     }
 
     #[cfg(feature = "async")]
     #[inline]
     fn async_stack(&mut self) -> core::ptr::NonNull<r#async::FiberStack> {
         core::ptr::NonNull::from(&mut self.async_stack)
+    }
+
+    #[cfg(feature = "async")]
+    #[inline]
+    fn assert_erased_send(&self) {
+        assert!(
+            self.evm_send,
+            "async EVM execution requires EVM erased fields to be verified as Send with \
+             Evm::evm_is_send"
+        );
+    }
+
+    /// Marks this EVM as thread-sendable after checking the current erased field types.
+    ///
+    /// This requires no active inspector. Use [`Self::evm_is_send_with_inspector`] when an
+    /// inspector is installed.
+    #[inline]
+    pub fn evm_is_send<D, P>(&mut self) -> &mut Self
+    where
+        D: DynDatabase + Send,
+        P: PrecompileProvider<T> + Send,
+    {
+        self.assert_database_type::<D>();
+        self.assert_precompiles_type::<P>();
+        assert!(self.inspector.is_none(), "inspector type mismatch");
+        self.evm_send = true;
+        self
+    }
+
+    /// Marks this EVM as thread-sendable after checking the current erased field types.
+    #[inline]
+    pub fn evm_is_send_with_inspector<D, P, I>(&mut self) -> &mut Self
+    where
+        D: DynDatabase + Send,
+        P: PrecompileProvider<T> + Send,
+        I: Inspector<T> + Send,
+    {
+        self.assert_database_type::<D>();
+        self.assert_precompiles_type::<P>();
+        self.assert_inspector_type::<I>();
+        self.evm_send = true;
+        self
+    }
+
+    #[inline]
+    fn assert_database_type<D: DynDatabase>(&self) {
+        assert_eq!(self.database().type_id(), TypeId::of::<D>(), "database type mismatch");
+    }
+
+    #[inline]
+    fn assert_precompiles_type<P: PrecompileProvider<T>>(&self) {
+        assert_eq!(
+            self.precompiles().type_id(),
+            TypeId::of::<P>(),
+            "precompile provider type mismatch"
+        );
+    }
+
+    #[inline]
+    fn assert_inspector_type<I: Inspector<T>>(&self) {
+        let Some(inspector) = self.inspector() else {
+            panic!("inspector type mismatch");
+        };
+        assert_eq!(inspector.type_id(), TypeId::of::<I>(), "inspector type mismatch");
     }
 
     /// Returns the backing database as `D` if it has that concrete type.
@@ -268,6 +336,7 @@ impl<T: EvmTypes> Evm<T> {
     pub fn set_precompiles(&mut self, precompiles: impl PrecompileProvider<T>) {
         self.assert_precompiles_mutable();
         self.precompiles = Box::new(precompiles);
+        self.evm_send = false;
     }
 
     /// Returns the precompile provider as `P` if it has that concrete type.
@@ -334,6 +403,7 @@ impl<T: EvmTypes> Evm<T> {
     pub fn set_inspector<I: Inspector<T> + 'static>(&mut self, inspector: I) {
         self.assert_inspector_mutable();
         self.inspector = Some(Box::new(inspector));
+        self.evm_send = false;
     }
 
     /// Sets the active boxed execution inspector.
@@ -341,12 +411,14 @@ impl<T: EvmTypes> Evm<T> {
     pub fn set_boxed_inspector(&mut self, inspector: Box<dyn Inspector<T>>) {
         self.assert_inspector_mutable();
         self.inspector = Some(inspector);
+        self.evm_send = false;
     }
 
     /// Removes the active execution inspector.
     #[inline]
     pub fn clear_inspector(&mut self) -> Option<Box<dyn Inspector<T>>> {
         self.assert_inspector_mutable();
+        self.evm_send = false;
         self.inspector.take()
     }
 
@@ -403,6 +475,43 @@ impl Drop for ExecutionGuard {
     }
 }
 
+#[cfg(feature = "async")]
+struct SendEvmRef<'a, T: EvmTypes> {
+    evm: &'a mut Evm<T>,
+}
+
+#[cfg(feature = "async")]
+// SAFETY: `SendEvmRef` is only constructed by async entrypoints after `Evm::evm_is_send` has
+// verified the concrete erased field types as `Send`.
+unsafe impl<T> Send for SendEvmRef<'_, T>
+where
+    T: EvmTypes,
+    T::SpecId: Send,
+    T::Tx: Send,
+    T::MessageExt: Send,
+    T::MessageResultExt: Send,
+    T::TxEnvExt: Send,
+    T::TxResultExt: Send,
+    T::BlockEnvExt: Send,
+{
+}
+
+#[cfg(feature = "async")]
+impl<'a, T: EvmTypes> SendEvmRef<'a, T> {
+    #[inline]
+    const fn new(evm: &'a mut Evm<T>) -> Self {
+        Self { evm }
+    }
+}
+
+#[cfg(feature = "async")]
+impl<T: EvmTypes<Tx: Typed2718, Host = Evm<T>>> SendEvmRef<'_, T> {
+    #[inline]
+    fn transact(&mut self, tx: &T::Tx) -> HandlerResult<TxResult<T>> {
+        self.evm.transact(tx)
+    }
+}
+
 impl<T: EvmTypes<Tx: Typed2718, Host = Self>> Evm<T> {
     /// Dispatches the transaction to the handler registered for its EIP-2718 type byte.
     pub fn transact(&mut self, tx: &T::Tx) -> HandlerResult<TxResult<T>> {
@@ -430,18 +539,26 @@ impl<T: EvmTypes<Tx: Typed2718, Host = Self>> Evm<T> {
     /// [`evm::async::AsyncDb`](crate::evm::async::AsyncDb) to take
     /// advantage of yielding database I/O. With a synchronous database this is mostly equivalent to
     /// running the synchronous transaction on a fiber.
+    ///
+    /// This returns a `Send` future. Before calling it, the current erased database, precompile
+    /// provider, and optional inspector must be verified with [`Self::evm_is_send`] or
+    /// [`Self::evm_is_send_with_inspector`].
     #[cfg(feature = "async")]
     pub fn transact_async<'a>(
         &'a mut self,
         tx: &'a T::Tx,
     ) -> impl Future<Output = r#async::AsyncResult<TxResult<T>, registry::HandlerError>> + Send + 'a
     where
+        T::Tx: Sync,
         T::TxResultExt: Send,
     {
+        self.assert_erased_send();
         let stack = self.async_stack();
+        let mut evm = SendEvmRef::new(self);
         // SAFETY: The returned future owns the exclusive `&mut self` borrow, so nothing else can
-        // access the EVM stack slot until that future is dropped.
-        unsafe { r#async::on_fiber_result_with_stack(stack, move || self.transact(tx)) }
+        // access the EVM stack slot until that future is dropped. The send marker checked above
+        // requires all erased EVM fields to have been verified by `Evm::evm_is_send`.
+        unsafe { r#async::on_fiber_result_with_stack(stack, move || evm.transact(tx)) }
     }
 
     /// Dispatches each transaction to its registered EIP-2718 handler.

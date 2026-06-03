@@ -48,9 +48,9 @@ impl DbErrorCode {
 pub type DbResult<T> = Result<T, DbErrorCode>;
 
 /// Backing database implementation with a concrete error type.
-pub trait Database: Any + Send {
+pub trait Database: Any {
     /// Database error type.
-    type Error: Error + Send + 'static;
+    type Error: Error + 'static;
 
     /// Loads account information.
     fn get_account(&mut self, address: &Address) -> Result<Option<AccountInfo>, Self::Error>;
@@ -143,7 +143,7 @@ impl fmt::Display for DbErrorUnavailable {
 impl Error for DbErrorUnavailable {}
 
 #[inline]
-pub(crate) fn db_error_unavailable(code: DbErrorCode) -> Box<dyn Error + Send> {
+pub(crate) fn db_error_unavailable(code: DbErrorCode) -> Box<dyn Error> {
     Box::new(DbErrorUnavailable(code))
 }
 
@@ -169,7 +169,7 @@ impl<T: Database> DynDatabase for Db<T> {
     }
 
     #[inline]
-    fn error(&mut self, code: DbErrorCode) -> Box<dyn Error + Send> {
+    fn error(&mut self, code: DbErrorCode) -> Box<dyn Error> {
         if code == stored_error_code()
             && let Some(err) = self.result.take()
         {
@@ -180,7 +180,7 @@ impl<T: Database> DynDatabase for Db<T> {
 }
 
 /// Backing database view used to initialize mutable [`super::State`].
-pub trait DynDatabase: Any + Send {
+pub trait DynDatabase: Any {
     /// Loads account information.
     fn get_account(&mut self, address: &Address) -> DbResult<Option<AccountInfo>>;
 
@@ -194,7 +194,7 @@ pub trait DynDatabase: Any + Send {
     fn get_block_hash(&mut self, number: &Word) -> DbResult<Option<B256>>;
 
     /// Retrieves the full error for a previously returned error code.
-    fn error(&mut self, code: DbErrorCode) -> Box<dyn Error + Send> {
+    fn error(&mut self, code: DbErrorCode) -> Box<dyn Error> {
         db_error_unavailable(code)
     }
 }
@@ -215,7 +215,7 @@ impl core::ops::DerefMut for dyn DynDatabase + '_ {
     }
 }
 
-impl DynDatabase for Box<dyn DynDatabase> {
+impl<T: DynDatabase + ?Sized> DynDatabase for Box<T> {
     #[inline]
     fn get_account(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
         self.as_mut().get_account(address)
@@ -237,7 +237,7 @@ impl DynDatabase for Box<dyn DynDatabase> {
     }
 
     #[inline]
-    fn error(&mut self, code: DbErrorCode) -> Box<dyn Error + Send> {
+    fn error(&mut self, code: DbErrorCode) -> Box<dyn Error> {
         self.as_mut().error(code)
     }
 }
