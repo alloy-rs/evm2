@@ -148,6 +148,18 @@ impl<T: EvmTypes> PrecompileMap<T> {
         Self::default()
     }
 
+    /// Creates an empty precompile map with at least the specified capacity.
+    #[inline]
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self { inner: AddressMap::with_capacity_and_hasher(capacity, Default::default()) }
+    }
+
+    /// Reserves capacity for at least `additional` more precompiles.
+    #[inline]
+    pub fn reserve(&mut self, additional: usize) {
+        self.inner.reserve(additional);
+    }
+
     /// Creates a precompile map from precompile descriptors.
     #[inline]
     pub fn from_precompiles(precompiles: impl IntoIterator<Item = Precompile<T>>) -> Self {
