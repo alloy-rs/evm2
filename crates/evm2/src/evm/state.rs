@@ -138,6 +138,10 @@ pub struct Account {
     pub code_hash: B256,
     /// Cached account bytecode.
     pub code: Bytecode,
+    /// Whether the account was created in the current transaction.
+    pub just_created: bool,
+    /// Whether the account code has been modified.
+    pub code_changed: bool,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
 }
@@ -151,6 +155,8 @@ impl Account {
             balance: info.balance,
             code_hash: info.code_hash,
             code: info.code.unwrap_or_default(),
+            just_created: false,
+            code_changed: false,
             _non_exhaustive: (),
         }
     }
@@ -177,11 +183,11 @@ impl Account {
 /// Persistent storage overlay for one account.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct StorageOverlay {
-    /// Whether missing storage slots are known to be zero because all pre-existing storage was
-    /// deleted.
+    /// Whether consumers must delete all pre-existing storage for the account
+    /// before applying individual slot changes.
     pub wiped: bool,
     /// Loaded or changed storage slots.
-    pub slots: U256Map<Word>,
+    pub slots: U256Map<Tracked<Word>>,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
 }
@@ -283,11 +289,6 @@ pub enum JournalEntry {
         /// Account address.
         address: Address,
     },
-    /// Account was marked as created in the current transaction.
-    Created {
-        /// Account address.
-        address: Address,
-    },
     /// Account was self-destructed.
     SelfDestruct {
         /// Account address.
@@ -360,8 +361,6 @@ pub struct State {
     /// touched account may have no field changes, but can still matter for empty
     /// account deletion/materialization rules across forks.
     touched: AddressSet,
-    /// Accounts created in the current transaction.
-    created: AddressSet,
     /// Accounts self-destructed in the current transaction.
     selfdestructs: AddressSet,
     /// Transaction-scoped warm account set for EIP-2929 gas accounting.
@@ -389,7 +388,6 @@ impl State {
             journal: Vec::new(),
             logs: Vec::new(),
             touched: AddressSet::default(),
-            created: AddressSet::default(),
             selfdestructs: AddressSet::default(),
             accessed_accounts: AddressSet::default(),
             accessed_storage: StorageKeySet::default(),
@@ -447,8 +445,8 @@ impl State {
     #[inline]
     pub fn storage_ref(&self, address: &Address, key: &Word) -> Option<Word> {
         if let Some(storage) = self.storage.get(address) {
-            if let Some(value) = storage.slots.get(key) {
-                return Some(*value);
+            if let Some(slot) = storage.slots.get(key) {
+                return Some(slot.current);
             }
             if storage.wiped {
                 return Some(Word::ZERO);
@@ -576,7 +574,6 @@ impl State {
         self.storage.clear();
         self.journal.clear();
         self.touched.clear();
-        self.created.clear();
         self.selfdestructs.clear();
         self.accessed_accounts.clear();
         self.accessed_storage.clear();
@@ -695,8 +692,8 @@ impl State {
 
     fn current_storage(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
         if let Some(storage) = self.storage.get(address) {
-            if let Some(value) = storage.slots.get(key) {
-                return Ok(*value);
+            if let Some(slot) = storage.slots.get(key) {
+                return Ok(slot.current);
             }
             if storage.wiped {
                 return Ok(Word::ZERO);
@@ -708,13 +705,19 @@ impl State {
         self.database.get_storage(address, key)
     }
 
-    fn insert_transaction_storage(&mut self, address: &Address, key: &Word, value: Word) {
+    fn insert_transaction_storage(
+        &mut self,
+        address: &Address,
+        key: &Word,
+        original: Word,
+        value: Word,
+    ) {
         let storage = self.storage.entry(*address).or_default();
         match storage.slots.entry(*key) {
             hash_map::Entry::Occupied(mut entry) => {
-                let previous = *entry.get();
+                let previous = entry.get().current;
                 if previous != value {
-                    entry.insert(value);
+                    entry.get_mut().current = value;
                     self.journal.push(JournalEntry::StorageChange {
                         address: *address,
                         key: *key,
@@ -723,7 +726,7 @@ impl State {
                 }
             }
             hash_map::Entry::Vacant(entry) => {
-                entry.insert(value);
+                entry.insert(Tracked { original, current: value, _non_exhaustive: () });
                 self.journal.push(JournalEntry::StorageInserted { address: *address, key: *key });
             }
         }
@@ -754,8 +757,9 @@ impl State {
             } else {
                 self.database.get_storage(address, key)?
             };
-        let present_value =
-            storage.and_then(|storage| storage.slots.get(key)).copied().unwrap_or(original_value);
+        let present_value = storage
+            .and_then(|storage| storage.slots.get(key))
+            .map_or(original_value, |slot| slot.current);
         let result = SStore {
             original_value,
             present_value,
@@ -764,7 +768,7 @@ impl State {
             _non_exhaustive: (),
         };
         if present_value != *value {
-            self.insert_transaction_storage(address, key, *value);
+            self.insert_transaction_storage(address, key, original_value, *value);
         }
         Ok(result)
     }
@@ -852,9 +856,10 @@ impl State {
             balance,
             code_hash: KECCAK256_EMPTY,
             code: Bytecode::default(),
+            just_created: true,
+            code_changed: true,
             _non_exhaustive: (),
         };
-        self.mark_created(address);
         self.touch(address);
         Ok(Ok(()))
     }
@@ -864,6 +869,7 @@ impl State {
         let account = self.journal_account_change(address)?;
         account.code_hash = code.hash_slow();
         account.code = code;
+        account.code_changed = true;
         Ok(())
     }
 
@@ -915,12 +921,6 @@ impl State {
         }
     }
 
-    fn mark_created(&mut self, address: &Address) {
-        if self.created.insert(*address) {
-            self.journal.push(JournalEntry::Created { address: *address });
-        }
-    }
-
     /// Marks an account as self-destructed in the current transaction.
     pub fn mark_destructed(&mut self, address: &Address) {
         let _ = Self::ensure_transaction_account(
@@ -946,7 +946,7 @@ impl State {
     #[inline]
     #[must_use]
     pub(super) fn is_created_in_transaction(&self, address: &Address) -> bool {
-        self.created.contains(address)
+        self.account_ref(address).is_some_and(|account| account.just_created)
     }
 
     /// Reverts state changes after the checkpoint.
@@ -977,15 +977,14 @@ impl State {
                     }
                     self.touched.remove(&address);
                 }
-                JournalEntry::Created { address } => {
-                    self.created.remove(&address);
-                }
                 JournalEntry::SelfDestruct { address } => {
                     self.selfdestructs.remove(&address);
                 }
                 JournalEntry::StorageChange { address, key, previous } => {
-                    if let Some(storage) = self.storage.get_mut(&address) {
-                        storage.slots.insert(key, previous);
+                    if let Some(storage) = self.storage.get_mut(&address)
+                        && let Some(slot) = storage.slots.get_mut(&key)
+                    {
+                        slot.current = previous;
                     }
                 }
                 JournalEntry::StorageInserted { address, key } => {
@@ -1028,7 +1027,7 @@ impl State {
     fn is_existing_dead(&mut self, address: &Address) -> DbResult<bool> {
         if let Some(account) = self.accounts.get(address) {
             return Ok(account.as_ref().is_some_and(Account::is_empty)
-                || (account.is_none() && self.database.account_ref(address).is_some()));
+                || (account.is_none() && self.database.account_info(address).is_some()));
         }
         Ok(self.load_account(address)?.as_ref().is_some_and(Account::is_empty))
     }
@@ -1155,7 +1154,7 @@ impl State {
             StateChanges { logs: core::mem::take(&mut self.logs), ..StateChanges::default() };
 
         for (&address, current) in &self.accounts {
-            let original = self.database.account_ref(&address);
+            let original = self.database.account_info(&address);
             let current = current.as_ref();
             let account_changed = match (original, current) {
                 (Some(original), Some(current)) => {
@@ -1170,28 +1169,15 @@ impl State {
                 changes.accounts.insert(
                     address,
                     Tracked {
-                        original: original.map(|info| AccountInfo {
-                            balance: info.balance,
-                            nonce: info.nonce,
-                            code_hash: info.code_hash,
-                            code: None,
-                            _non_exhaustive: (),
-                        }),
-                        current: current.map(|account| AccountInfo {
-                            balance: account.balance,
-                            nonce: account.nonce,
-                            code_hash: account.code_hash,
-                            code: None,
-                            _non_exhaustive: (),
-                        }),
+                        original: original.cloned(),
+                        current: current.map(Account::info),
                         _non_exhaustive: (),
                     },
                 );
             }
             if let Some(account) = current {
                 let code_hash = account.code_hash;
-                let code_changed = original.is_none_or(|original| original.code_hash != code_hash);
-                if code_changed
+                if account.code_changed
                     && !account.code.is_empty()
                     && !code_hash.is_zero()
                     && code_hash != KECCAK256_EMPTY
@@ -1201,21 +1187,22 @@ impl State {
             }
         }
 
-        let Self { database, storage, .. } = self;
-        for (&address, storage) in storage {
+        for (&address, storage) in &self.storage {
             let mut set = StorageChangeSet {
                 wipe: storage.wiped,
                 slots: BTreeMap::new(),
                 _non_exhaustive: (),
             };
-            for (&key, &current) in &storage.slots {
-                let original = if set.wipe {
-                    Word::ZERO
-                } else {
-                    database.storage_ref(&address, &key).unwrap_or_default()
-                };
-                if original != current && (!set.wipe || !current.is_zero()) {
-                    set.slots.insert(key, Tracked { original, current, _non_exhaustive: () });
+            for (&key, slot) in &storage.slots {
+                if slot.original != slot.current && (!set.wipe || !slot.current.is_zero()) {
+                    set.slots.insert(
+                        key,
+                        Tracked {
+                            original: slot.original,
+                            current: slot.current,
+                            _non_exhaustive: (),
+                        },
+                    );
                 }
             }
             if set.wipe || !set.slots.is_empty() {

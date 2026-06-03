@@ -112,19 +112,13 @@ impl<ExtDB> CacheDB<ExtDB> {
     /// Returns cached account info if the account exists in the cache.
     #[inline]
     pub fn account_info(&self, address: &Address) -> Option<&AccountInfo> {
-        self.account_ref(address)
+        self.cache.accounts.get(address).and_then(Option::as_ref)
     }
 
     /// Returns whether the account is known to be absent from the cache layer.
     #[inline]
     pub(crate) fn account_absent(&self, address: &Address) -> bool {
         self.cache.accounts.get(address).is_some_and(Option::is_none)
-    }
-
-    /// Returns the cached account if it exists in the cache.
-    #[inline]
-    pub(crate) fn account_ref(&self, address: &Address) -> Option<&AccountInfo> {
-        self.cache.accounts.get(address).and_then(Option::as_ref)
     }
 
     /// Returns a cached storage value if it is known without loading the wrapped database.
@@ -190,12 +184,12 @@ impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
         match accounts.entry(*address) {
             Entry::Occupied(entry) => Ok(entry.get().clone()),
             Entry::Vacant(entry) => {
-                let account = self.db.get_account(address)?.map(|mut info| {
-                    Self::insert_contract_inner(contracts, &mut info);
-                    info.code = None;
-                    info
-                });
-                Ok(entry.insert(account).clone())
+                let Some(mut info) = self.db.get_account(address)? else {
+                    return Ok(entry.insert(None).clone());
+                };
+                Self::insert_contract_inner(contracts, &mut info);
+                info.code = None;
+                Ok(entry.insert(Some(info)).clone())
             }
         }
     }
@@ -232,11 +226,10 @@ impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
         match self.cache.block_hashes.entry(*number) {
             Entry::Occupied(entry) => Ok(Some(*entry.get())),
             Entry::Vacant(entry) => {
-                let hash = self.db.get_block_hash(number)?;
-                if let Some(hash) = hash {
-                    entry.insert(hash);
-                }
-                Ok(hash)
+                let Some(hash) = self.db.get_block_hash(number)? else {
+                    return Ok(None);
+                };
+                Ok(Some(*entry.insert(hash)))
             }
         }
     }
