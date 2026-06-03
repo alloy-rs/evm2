@@ -13,7 +13,7 @@ use alloy_rpc_types_trace::geth::{
 use evm2::{
     Evm, EvmTypes, Inspector, TxResult,
     env::BlockEnv,
-    ethereum::RecoveredTxEnvelope,
+    ethereum::{EthereumTxEnv, RecoveredTxEnvelope},
     evm::{DbErrorCode, DynDatabase},
     interpreter::{Interpreter, Message, MessageResult},
 };
@@ -212,10 +212,47 @@ impl DebugInspector {
     where
         T: EvmTypes,
     {
+        self.get_result_with_tx(
+            tx_context,
+            tx.signer(),
+            tx.gas_limit(),
+            Some(tx),
+            block_env,
+            res,
+            db,
+        )
+    }
+
+    /// Should be invoked after each unsigned transaction to obtain the resulting [`GethTrace`].
+    pub fn get_result_tx_env<T>(
+        &mut self,
+        tx_context: Option<TransactionContext>,
+        tx: &EthereumTxEnv,
+        block_env: &BlockEnv,
+        res: &TxResult<T>,
+        db: &mut dyn DynDatabase,
+    ) -> Result<GethTrace, DebugInspectorError>
+    where
+        T: EvmTypes,
+    {
+        self.get_result_with_tx(tx_context, tx.caller, tx.gas_limit, None, block_env, res, db)
+    }
+
+    fn get_result_with_tx<T>(
+        &mut self,
+        tx_context: Option<TransactionContext>,
+        caller: Address,
+        gas_limit: u64,
+        _tx: Option<&RecoveredTxEnvelope>,
+        block_env: &BlockEnv,
+        res: &TxResult<T>,
+        db: &mut dyn DynDatabase,
+    ) -> Result<GethTrace, DebugInspectorError>
+    where
+        T: EvmTypes,
+    {
         let block_number = block_env.number.try_into().unwrap_or(u64::MAX);
         let base_fee = block_env.basefee.try_into().unwrap_or(u64::MAX);
-        let caller = tx.signer();
-        let gas_limit = tx.gas_limit();
         #[allow(clippy::needless_update)]
         let tx_info = TransactionInfo {
             hash: tx_context.as_ref().and_then(|c| c.tx_hash),
@@ -275,6 +312,7 @@ impl DebugInspector {
             #[cfg(feature = "js-tracer")]
             Self::Js(inspector) => {
                 inspector.set_transaction_context(tx_context.unwrap_or_default());
+                let Some(tx) = _tx else { return Err(DebugInspectorError::UnsupportedTracer) };
                 GethTrace::JS(inspector.json_result(res, tx, block_env, db)?)
             }
         };
