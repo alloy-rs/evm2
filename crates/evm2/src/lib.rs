@@ -13,11 +13,6 @@ pub mod ethereum;
 pub mod interpreter;
 pub mod utils;
 
-#[cfg(feature = "async")]
-mod async_;
-#[cfg(feature = "async")]
-pub use async_::{AsyncDatabase, AsyncDb, AsyncError, AsyncResult};
-
 pub mod evm;
 pub use evm::{
     AccountInfo, Evm, JournalEntry, TxResult, config,

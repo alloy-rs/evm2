@@ -39,7 +39,13 @@ pub trait Inspector<T: EvmTypes>: Any + Send {
 
     /// Called before a call message executes.
     #[inline]
-    fn call(&mut self, message: &mut Message<T>, host: &mut T::Host) -> Option<MessageResult<T>> {
+    fn call(
+        &mut self,
+        interp: &mut Interpreter<'_, T>,
+        message: &mut Message<T>,
+        host: &mut T::Host,
+    ) -> Option<MessageResult<T>> {
+        let _ = interp;
         let _ = message;
         let _ = host;
         None
@@ -49,10 +55,12 @@ pub trait Inspector<T: EvmTypes>: Any + Send {
     #[inline]
     fn call_end(
         &mut self,
+        interp: &mut Interpreter<'_, T>,
         message: &Message<T>,
         result: &mut MessageResult<T>,
         host: &mut T::Host,
     ) {
+        let _ = interp;
         let _ = message;
         let _ = result;
         let _ = host;
@@ -60,7 +68,13 @@ pub trait Inspector<T: EvmTypes>: Any + Send {
 
     /// Called before a create message executes.
     #[inline]
-    fn create(&mut self, message: &mut Message<T>, host: &mut T::Host) -> Option<MessageResult<T>> {
+    fn create(
+        &mut self,
+        interp: &mut Interpreter<'_, T>,
+        message: &mut Message<T>,
+        host: &mut T::Host,
+    ) -> Option<MessageResult<T>> {
+        let _ = interp;
         let _ = message;
         let _ = host;
         None
@@ -70,10 +84,12 @@ pub trait Inspector<T: EvmTypes>: Any + Send {
     #[inline]
     fn create_end(
         &mut self,
+        interp: &mut Interpreter<'_, T>,
         message: &Message<T>,
         result: &mut MessageResult<T>,
         host: &mut T::Host,
     ) {
+        let _ = interp;
         let _ = message;
         let _ = result;
         let _ = host;
@@ -131,6 +147,7 @@ mod tests {
     use alloc::vec::Vec;
     use alloy_consensus::{TxLegacy, transaction::Recovered};
     use alloy_primitives::{Address, Bytes, Log, TxKind, U256};
+    use core::assert_matches;
 
     #[derive(Default)]
     struct StepInspector {
@@ -191,8 +208,12 @@ mod tests {
     #[derive(Default)]
     struct MessageInspector {
         call_depth: Option<u16>,
+        call_opcode: Option<u8>,
+        call_end_opcode: Option<u8>,
         call_end_stop: Option<InstrStop>,
         create_depth: Option<u16>,
+        create_opcode: Option<u8>,
+        create_end_opcode: Option<u8>,
         create_end_stop: Option<InstrStop>,
         selfdestruct: Option<(Address, Address, Word)>,
     }
@@ -200,37 +221,45 @@ mod tests {
     impl Inspector<TestTypes> for MessageInspector {
         fn call(
             &mut self,
+            interp: &mut Interpreter<'_, TestTypes>,
             message: &mut Message<TestTypes>,
             _host: &mut TestHost,
         ) -> Option<MessageResult<TestTypes>> {
             self.call_depth = Some(message.depth);
+            self.call_opcode = Some(interp.opcode());
             None
         }
 
         fn call_end(
             &mut self,
+            interp: &mut Interpreter<'_, TestTypes>,
             _message: &Message<TestTypes>,
             result: &mut MessageResult<TestTypes>,
             _host: &mut TestHost,
         ) {
+            self.call_end_opcode = Some(interp.opcode());
             self.call_end_stop = Some(result.stop);
         }
 
         fn create(
             &mut self,
+            interp: &mut Interpreter<'_, TestTypes>,
             message: &mut Message<TestTypes>,
             _host: &mut TestHost,
         ) -> Option<MessageResult<TestTypes>> {
             self.create_depth = Some(message.depth);
+            self.create_opcode = Some(interp.opcode());
             None
         }
 
         fn create_end(
             &mut self,
+            interp: &mut Interpreter<'_, TestTypes>,
             _message: &Message<TestTypes>,
             result: &mut MessageResult<TestTypes>,
             _host: &mut TestHost,
         ) {
+            self.create_end_opcode = Some(interp.opcode());
             self.create_end_stop = Some(result.stop);
         }
 
@@ -254,6 +283,7 @@ mod tests {
     impl Inspector<TestTypes> for OverrideCallInspector {
         fn call(
             &mut self,
+            _interp: &mut Interpreter<'_, TestTypes>,
             message: &mut Message<TestTypes>,
             _host: &mut TestHost,
         ) -> Option<MessageResult<TestTypes>> {
@@ -265,6 +295,7 @@ mod tests {
 
         fn call_end(
             &mut self,
+            _interp: &mut Interpreter<'_, TestTypes>,
             _message: &Message<TestTypes>,
             result: &mut MessageResult<TestTypes>,
             _host: &mut TestHost,
@@ -280,6 +311,7 @@ mod tests {
     impl Inspector<TestTypes> for MutateCallInspector {
         fn call(
             &mut self,
+            _interp: &mut Interpreter<'_, TestTypes>,
             message: &mut Message<TestTypes>,
             _host: &mut TestHost,
         ) -> Option<MessageResult<TestTypes>> {
@@ -293,6 +325,7 @@ mod tests {
     impl Inspector<TestTypes> for CallEndInspector {
         fn call(
             &mut self,
+            _interp: &mut Interpreter<'_, TestTypes>,
             message: &mut Message<TestTypes>,
             _host: &mut TestHost,
         ) -> Option<MessageResult<TestTypes>> {
@@ -305,6 +338,7 @@ mod tests {
 
         fn call_end(
             &mut self,
+            _interp: &mut Interpreter<'_, TestTypes>,
             _message: &Message<TestTypes>,
             result: &mut MessageResult<TestTypes>,
             _host: &mut TestHost,
@@ -323,6 +357,7 @@ mod tests {
     impl Inspector<TestTypes> for OverrideCreateInspector {
         fn create(
             &mut self,
+            _interp: &mut Interpreter<'_, TestTypes>,
             message: &mut Message<TestTypes>,
             _host: &mut TestHost,
         ) -> Option<MessageResult<TestTypes>> {
@@ -337,6 +372,7 @@ mod tests {
 
         fn create_end(
             &mut self,
+            _interp: &mut Interpreter<'_, TestTypes>,
             _message: &Message<TestTypes>,
             result: &mut MessageResult<TestTypes>,
             _host: &mut TestHost,
@@ -353,6 +389,7 @@ mod tests {
     impl Inspector<TestTypes> for CreateDestinationInspector {
         fn create(
             &mut self,
+            _interp: &mut Interpreter<'_, TestTypes>,
             message: &mut Message<TestTypes>,
             _host: &mut TestHost,
         ) -> Option<MessageResult<TestTypes>> {
@@ -368,6 +405,7 @@ mod tests {
     impl Inspector<TestTypes> for CreateEndInspector {
         fn create(
             &mut self,
+            _interp: &mut Interpreter<'_, TestTypes>,
             message: &mut Message<TestTypes>,
             _host: &mut TestHost,
         ) -> Option<MessageResult<TestTypes>> {
@@ -380,6 +418,7 @@ mod tests {
 
         fn create_end(
             &mut self,
+            _interp: &mut Interpreter<'_, TestTypes>,
             _message: &Message<TestTypes>,
             result: &mut MessageResult<TestTypes>,
             _host: &mut TestHost,
@@ -463,6 +502,7 @@ mod tests {
 
         fn call(
             &mut self,
+            _interp: &mut Interpreter<'_, BaseEvmTypes>,
             _message: &mut Message<BaseEvmTypes>,
             _host: &mut Evm<BaseEvmTypes>,
         ) -> Option<MessageResult<BaseEvmTypes>> {
@@ -472,6 +512,7 @@ mod tests {
 
         fn create(
             &mut self,
+            _interp: &mut Interpreter<'_, BaseEvmTypes>,
             _message: &mut Message<BaseEvmTypes>,
             _host: &mut Evm<BaseEvmTypes>,
         ) -> Option<MessageResult<BaseEvmTypes>> {
@@ -600,9 +641,11 @@ mod tests {
             &mut inspector,
         );
 
-        assert!(matches!(stop, InstrStop::Stop));
+        assert_matches!(stop, InstrStop::Stop);
         assert_eq!(stack, [Word::ZERO]);
         assert_eq!(inspector.call_depth, Some(CALL_DEPTH_LIMIT + 1));
+        assert_eq!(inspector.call_opcode, Some(op::CALL));
+        assert_eq!(inspector.call_end_opcode, Some(op::CALL));
         assert_eq!(inspector.call_end_stop, Some(InstrStop::CallTooDeep));
         assert!(host.calls.is_empty());
     }
@@ -626,7 +669,7 @@ mod tests {
         let (stop, stack) =
             run_with_inspector(code, &mut host, &Message::default(), 50_000, &mut inspector);
 
-        assert!(matches!(stop, InstrStop::Stop));
+        assert_matches!(stop, InstrStop::Stop);
         assert_eq!(stack, [Word::from(1), Word::from(3)]);
         assert_eq!(inspector.call_depth, Some(1));
         assert_eq!(inspector.call_end_stop, Some(InstrStop::Return));
@@ -653,7 +696,7 @@ mod tests {
             &mut inspector,
         );
 
-        assert!(matches!(stop, InstrStop::Stop));
+        assert_matches!(stop, InstrStop::Stop);
         assert_eq!(stack, [Word::from(1)]);
         assert_eq!(inspector.call_end_stop, Some(InstrStop::Return));
         assert!(host.calls.is_empty());
@@ -671,7 +714,7 @@ mod tests {
         let (stop, stack) =
             run_with_inspector(code, &mut host, &Message::default(), 50_000, &mut inspector);
 
-        assert!(matches!(stop, InstrStop::Stop));
+        assert_matches!(stop, InstrStop::Stop);
         assert_eq!(stack, [Word::from(1)]);
         assert_eq!(host.calls.len(), 1);
         assert_eq!(host.calls[0].destination, replacement);
@@ -688,7 +731,7 @@ mod tests {
         let (stop, stack) =
             run_with_inspector(code, &mut host, &Message::default(), 50_000, &mut inspector);
 
-        assert!(matches!(stop, InstrStop::Stop));
+        assert_matches!(stop, InstrStop::Stop);
         assert_eq!(stack, [Word::from(1), Word::from(2)]);
         assert!(host.calls.is_empty());
     }
@@ -708,9 +751,11 @@ mod tests {
             &mut inspector,
         );
 
-        assert!(matches!(stop, InstrStop::Stop));
+        assert_matches!(stop, InstrStop::Stop);
         assert_eq!(stack, [Word::ZERO]);
         assert_eq!(inspector.create_depth, Some(CALL_DEPTH_LIMIT + 1));
+        assert_eq!(inspector.create_opcode, Some(op::CREATE));
+        assert_eq!(inspector.create_end_opcode, Some(op::CREATE));
         assert_eq!(inspector.create_end_stop, Some(InstrStop::CallTooDeep));
         assert!(host.calls.is_empty());
     }
@@ -727,7 +772,7 @@ mod tests {
         let (stop, stack) =
             run_with_inspector(code, &mut host, &Message::default(), 50_000, &mut inspector);
 
-        assert!(matches!(stop, InstrStop::Stop));
+        assert_matches!(stop, InstrStop::Stop);
         assert_eq!(stack, [address_to_word(&created)]);
         assert_eq!(inspector.create_depth, Some(1));
         assert_eq!(inspector.create_end_stop, Some(InstrStop::Return));
@@ -774,7 +819,7 @@ mod tests {
             &mut inspector,
         );
 
-        assert!(matches!(stop, InstrStop::Stop));
+        assert_matches!(stop, InstrStop::Stop);
         assert_eq!(stack, [address_to_word(&created)]);
         assert_eq!(inspector.create_depth, Some(CALL_DEPTH_LIMIT + 1));
         assert_eq!(inspector.create_end_stop, Some(InstrStop::Return));
@@ -792,7 +837,7 @@ mod tests {
         let (stop, stack) =
             run_with_inspector(code, &mut host, &Message::default(), 50_000, &mut inspector);
 
-        assert!(matches!(stop, InstrStop::Stop));
+        assert_matches!(stop, InstrStop::Stop);
         assert_eq!(stack, [address_to_word(&created)]);
         assert!(host.calls.is_empty());
     }
@@ -812,7 +857,7 @@ mod tests {
             &mut inspector,
         );
 
-        assert!(matches!(stop, InstrStop::Stop));
+        assert_matches!(stop, InstrStop::Stop);
         assert_eq!(inspector.logs.len(), 1);
         assert_eq!(inspector.logs[0].address, contract);
         assert_eq!(host.logs, inspector.logs);
@@ -870,7 +915,7 @@ mod tests {
             &mut inspector,
         );
 
-        assert!(matches!(stop, InstrStop::SelfDestruct));
+        assert_matches!(stop, InstrStop::SelfDestruct);
         assert_eq!(inspector.selfdestruct, Some((contract, target, value)));
     }
 

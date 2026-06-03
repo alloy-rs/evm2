@@ -85,7 +85,12 @@ impl<T: EvmTypes> Inspector<T> for OpcodeGasInspector {
         }
     }
 
-    fn call(&mut self, message: &mut Message<T>, _host: &mut T::Host) -> Option<MessageResult<T>> {
+    fn call(
+        &mut self,
+        _interp: &mut Interpreter<'_, T>,
+        message: &mut Message<T>,
+        _host: &mut T::Host,
+    ) -> Option<MessageResult<T>> {
         if message.depth == 0 {
             // skip the root call.
             return None;
@@ -107,6 +112,7 @@ impl<T: EvmTypes> Inspector<T> for OpcodeGasInspector {
 
     fn create(
         &mut self,
+        _interp: &mut Interpreter<'_, T>,
         message: &mut Message<T>,
         _host: &mut T::Host,
     ) -> Option<MessageResult<T>> {

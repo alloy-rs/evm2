@@ -1,7 +1,7 @@
 //! System opcode implementations.
 
 use crate::{
-    EvmFeatures, EvmTypes, SpecId,
+    EvmFeatures, EvmTypes,
     bytecode::Bytecode,
     constants::CALL_DEPTH_LIMIT,
     interpreter::{
@@ -25,12 +25,11 @@ const fn require_non_staticcall<T: EvmTypes>(state: &InterpreterState<'_, T>) ->
 
 #[inline]
 const fn should_charge_new_account_gas(
-    spec: SpecId,
+    eip161: bool,
     transfers_value: bool,
     target_is_empty_for_new_account_gas: bool,
 ) -> bool {
-    target_is_empty_for_new_account_gas
-        && (!spec.enables(SpecId::SPURIOUS_DRAGON) || transfers_value)
+    target_is_empty_for_new_account_gas && (!eip161 || transfers_value)
 }
 
 #[inline]
@@ -105,7 +104,7 @@ fn load_acc_and_calc_gas<T: EvmTypes>(
     }
     let mut code = account.code;
     let mut code_address = to;
-    if state.spec().enables(SpecId::PRAGUE)
+    if state.feature(EvmFeatures::EIP7702)
         && let Some(delegated_address) = code.eip7702_address()
     {
         cost += u64::from(state.gas_params().get(GasId::WarmStorageReadCost));
@@ -121,19 +120,19 @@ fn load_acc_and_calc_gas<T: EvmTypes>(
         code = delegated_account.code;
         code_address = delegated_address;
     }
-    let spec = state.spec();
+    let features = state.version().features;
     if create_empty_account
         && should_charge_new_account_gas(
-            spec,
+            features.contains(EvmFeatures::EIP161),
             transfers_value,
-            state.host().target_is_empty_for_new_account_gas(&to, spec)?,
+            state.host().target_is_empty_for_new_account_gas(&to, features)?,
         )
     {
         cost += u64::from(state.gas_params().get(GasId::NewAccountCost));
     }
     gas.spend(cost)?;
 
-    let mut gas_limit = if state.spec().enables(SpecId::TANGERINE) {
+    let mut gas_limit = if state.feature(EvmFeatures::EIP150) {
         min(state.gas_params().call_stipend_reduction(gas.remaining()), stack_gas_limit)
     } else {
         stack_gas_limit
@@ -317,7 +316,7 @@ fn create_inner<T: EvmTypes>(
         state.gas_params().get(GasId::Create).into()
     };
     gas.spend(create_cost)?;
-    let gas_limit = if state.spec().enables(SpecId::TANGERINE) {
+    let gas_limit = if state.feature(EvmFeatures::EIP150) {
         state.gas_params().call_stipend_reduction(gas.remaining())
     } else {
         gas.remaining()
@@ -375,8 +374,11 @@ pub(crate) fn selfdestruct(cx: _, [target]: [Word]) -> Result {
     let destination = &cx.state.message().destination;
     let res = cx.state.host().selfdestruct(destination, &target, skip_cold_load)?;
     cx.state.inspect_selfdestruct(destination, &target, &res.value);
-    let should_charge_topup =
-        should_charge_new_account_gas(cx.state.spec(), res.had_value, res.target_is_empty);
+    let should_charge_topup = should_charge_new_account_gas(
+        cx.state.feature(EvmFeatures::EIP161),
+        res.had_value,
+        res.target_is_empty,
+    );
     cx.gas.spend(cx.state.gas_params().selfdestruct_cost(should_charge_topup, res.is_cold))?;
     if !res.previously_destroyed {
         cx.gas.record_refund(cx.state.gas_params().get(GasId::SelfdestructRefund) as i64);
@@ -398,6 +400,7 @@ mod tests {
     };
     use alloc::vec::Vec;
     use alloy_primitives::{Address, Bytes};
+    use core::assert_matches;
 
     fn push_all<const N: usize>(code: &mut Vec<u8>, values: [Word; N]) {
         for value in values {
@@ -430,7 +433,7 @@ mod tests {
             gas_limit: 10_000,
             ..Default::default()
         }));
-        assert!(matches!(interpreter.err, InstrStop::Stop));
+        assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::from(1)]);
         assert_eq!(host.calls.len(), 1);
         assert_eq!(host.calls[0].kind, MessageKind::Call);
@@ -458,7 +461,7 @@ mod tests {
         code.extend([op::CALL, op::STOP]);
 
         let interpreter = run(RunConfig::new(code).host(&mut host).staticcall());
-        assert!(matches!(interpreter.err, InstrStop::Stop));
+        assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(host.calls.len(), 1);
         assert_eq!(host.calls[0].kind, MessageKind::Call);
         assert!(host.call_static_flags[0]);
@@ -488,7 +491,7 @@ mod tests {
             .spec(SpecId::BERLIN)
             .message(Message { depth: CALL_DEPTH_LIMIT, ..Default::default() })
             .gas_limit(50_000));
-        assert!(matches!(interpreter.err, InstrStop::Stop));
+        assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::ZERO]);
         assert_eq!(interpreter.gas_remaining(), 15_679);
         assert!(host.calls.is_empty());
@@ -522,7 +525,7 @@ mod tests {
             .spec(SpecId::TANGERINE)
             .message(Message { depth: CALL_DEPTH_LIMIT, ..Default::default() })
             .gas_limit(50_000));
-        assert!(matches!(interpreter.err, InstrStop::Stop));
+        assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.gas_remaining(), 42_553);
         assert!(host.calls.is_empty());
     }
@@ -551,7 +554,7 @@ mod tests {
             .spec(SpecId::TANGERINE)
             .message(Message { depth: CALL_DEPTH_LIMIT, ..Default::default() })
             .gas_limit(50_000));
-        assert!(matches!(interpreter.err, InstrStop::Stop));
+        assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::ZERO]);
         assert_eq!(interpreter.gas_remaining(), 24_279);
         assert!(host.calls.is_empty());
@@ -582,7 +585,7 @@ mod tests {
             .spec(SpecId::TANGERINE)
             .message(Message { depth: CALL_DEPTH_LIMIT, ..Default::default() })
             .gas_limit(50_000));
-        assert!(matches!(interpreter.err, InstrStop::Stop));
+        assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::ZERO]);
         assert_eq!(interpreter.gas_remaining(), 49_279);
         assert!(host.calls.is_empty());
@@ -608,7 +611,7 @@ mod tests {
         code.extend([op::CALLCODE, op::STOP]);
 
         let interpreter = run(RunConfig::new(code).host(&mut host).staticcall().gas_limit(20_000));
-        assert!(matches!(interpreter.err, InstrStop::Stop));
+        assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(host.calls.len(), 1);
         assert_eq!(host.calls[0].kind, MessageKind::CallCode);
         assert_eq!(host.calls[0].value, Word::from(7));
@@ -639,7 +642,7 @@ mod tests {
             .host(&mut host)
             .message(Message { destination, ..Default::default() })
             .gas_limit(20_000));
-        assert!(matches!(interpreter.err, InstrStop::Stop));
+        assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::from(1)]);
         assert_eq!(host.calls[0].kind, MessageKind::CallCode);
         assert_eq!(host.calls[0].destination, destination);
@@ -672,7 +675,7 @@ mod tests {
             gas_limit: 10_000,
             ..Default::default()
         }));
-        assert!(matches!(interpreter.err, InstrStop::Stop));
+        assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::from(1)]);
         assert_eq!(host.calls[0].kind, MessageKind::DelegateCall);
         assert_eq!(host.calls[0].caller, caller);
@@ -695,7 +698,7 @@ mod tests {
             op::DELEGATECALL,
         ])
         .spec(SpecId::FRONTIER));
-        assert!(matches!(interpreter.err, InstrStop::InvalidOpcode));
+        assert_matches!(interpreter.err, InstrStop::InvalidOpcode);
     }
 
     #[test]
@@ -717,7 +720,7 @@ mod tests {
         code.extend([op::STATICCALL, op::STOP]);
 
         let interpreter = run(RunConfig::new(code).host(&mut host));
-        assert!(matches!(interpreter.err, InstrStop::Stop));
+        assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::from(1)]);
         assert_eq!(host.calls[0].kind, MessageKind::StaticCall);
         assert!(host.call_static_flags[0]);
@@ -738,7 +741,7 @@ mod tests {
             op::STATICCALL,
         ])
         .spec(SpecId::HOMESTEAD));
-        assert!(matches!(interpreter.err, InstrStop::InvalidOpcode));
+        assert_matches!(interpreter.err, InstrStop::InvalidOpcode);
     }
 
     #[test]
@@ -757,7 +760,7 @@ mod tests {
         code.extend([op::CREATE, op::STOP]);
 
         let interpreter = run(RunConfig::new(code).host(&mut host).gas_limit(50_000));
-        assert!(matches!(interpreter.err, InstrStop::Stop));
+        assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [address_to_word(&created)]);
         assert_eq!(host.calls.len(), 1);
         assert_eq!(host.calls[0].kind, MessageKind::Create);
@@ -780,7 +783,7 @@ mod tests {
         code.extend([op::CREATE, op::RETURNDATASIZE, op::STOP]);
 
         let interpreter = run(RunConfig::new(code).host(&mut host).gas_limit(50_000));
-        assert!(matches!(interpreter.err, InstrStop::Stop));
+        assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [address_to_word(&created), Word::ZERO]);
     }
 
@@ -799,7 +802,7 @@ mod tests {
         code.extend([op::CREATE, op::RETURNDATASIZE, op::STOP]);
 
         let interpreter = run(RunConfig::new(code).host(&mut host).gas_limit(50_000));
-        assert!(matches!(interpreter.err, InstrStop::Stop));
+        assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::ZERO, Word::from(2)]);
     }
 
@@ -815,7 +818,7 @@ mod tests {
             .spec(SpecId::BERLIN)
             .message(Message { depth: CALL_DEPTH_LIMIT, ..Default::default() })
             .gas_limit(50_000));
-        assert!(matches!(interpreter.err, InstrStop::Stop));
+        assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [Word::ZERO]);
         assert_eq!(interpreter.gas_remaining(), 17_991);
         assert!(host.calls.is_empty());
@@ -830,7 +833,7 @@ mod tests {
 
         let interpreter =
             run(RunConfig::new(code).host(&mut host).spec(SpecId::SHANGHAI).gas_limit(50_000));
-        assert!(matches!(interpreter.err, InstrStop::CreateInitCodeSizeLimit));
+        assert_matches!(interpreter.err, InstrStop::CreateInitCodeSizeLimit);
         assert!(host.calls.is_empty());
     }
 
@@ -850,7 +853,7 @@ mod tests {
         code.extend([op::CREATE2, op::STOP]);
 
         let interpreter = run(RunConfig::new(code).host(&mut host).gas_limit(50_000));
-        assert!(matches!(interpreter.err, InstrStop::Stop));
+        assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [address_to_word(&created)]);
         assert_eq!(host.calls[0].kind, MessageKind::Create2);
 
@@ -866,7 +869,7 @@ mod tests {
             op::CREATE2,
         ])
         .spec(SpecId::BYZANTIUM));
-        assert!(matches!(interpreter.err, InstrStop::InvalidOpcode));
+        assert_matches!(interpreter.err, InstrStop::InvalidOpcode);
     }
 
     #[test]
@@ -883,7 +886,7 @@ mod tests {
             gas_limit: 10_000,
             ..Default::default()
         }));
-        assert!(matches!(interpreter.err, InstrStop::SelfDestruct));
+        assert_matches!(interpreter.err, InstrStop::SelfDestruct);
         assert_eq!(host.selfdestructs, [(contract, target, false)]);
     }
 }

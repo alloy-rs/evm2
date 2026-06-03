@@ -178,31 +178,32 @@ pub(crate) const fn bool_to_b256(value: bool) -> &'static B256 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::assert_matches;
 
     #[test]
     fn get_with_right_padding() {
         let data = [1, 2, 3, 4];
         let padded = right_pad_with_offset::<8>(&data, 4);
-        assert!(matches!(padded, Cow::Owned(_)));
+        assert_matches!(padded, Cow::Owned(_));
         assert_eq!(padded[..], [0, 0, 0, 0, 0, 0, 0, 0]);
         let padded = right_pad_with_offset_vec(&data, 4, 8);
-        assert!(matches!(padded, Cow::Owned(_)));
+        assert_matches!(padded, Cow::Owned(_));
         assert_eq!(padded[..], [0, 0, 0, 0, 0, 0, 0, 0]);
 
         let data = [1, 2, 3, 4, 5, 6, 7, 8];
         let padded = right_pad_with_offset::<8>(&data, 0);
-        assert!(matches!(padded, Cow::Borrowed(_)));
+        assert_matches!(padded, Cow::Borrowed(_));
         assert_eq!(padded[..], [1, 2, 3, 4, 5, 6, 7, 8]);
         let padded = right_pad_with_offset_vec(&data, 0, 8);
-        assert!(matches!(padded, Cow::Borrowed(_)));
+        assert_matches!(padded, Cow::Borrowed(_));
         assert_eq!(padded[..], [1, 2, 3, 4, 5, 6, 7, 8]);
 
         let data = [1, 2, 3, 4, 5, 6, 7, 8];
         let padded = right_pad_with_offset::<8>(&data, 4);
-        assert!(matches!(padded, Cow::Owned(_)));
+        assert_matches!(padded, Cow::Owned(_));
         assert_eq!(padded[..], [5, 6, 7, 8, 0, 0, 0, 0]);
         let padded = right_pad_with_offset_vec(&data, 4, 8);
-        assert!(matches!(padded, Cow::Owned(_)));
+        assert_matches!(padded, Cow::Owned(_));
         assert_eq!(padded[..], [5, 6, 7, 8, 0, 0, 0, 0]);
     }
 
@@ -210,18 +211,18 @@ mod tests {
     fn right_padding() {
         let data = [1, 2, 3, 4];
         let padded = right_pad::<8>(&data);
-        assert!(matches!(padded, Cow::Owned(_)));
+        assert_matches!(padded, Cow::Owned(_));
         assert_eq!(padded[..], [1, 2, 3, 4, 0, 0, 0, 0]);
         let padded = right_pad_vec(&data, 8);
-        assert!(matches!(padded, Cow::Owned(_)));
+        assert_matches!(padded, Cow::Owned(_));
         assert_eq!(padded[..], [1, 2, 3, 4, 0, 0, 0, 0]);
 
         let data = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
         let padded = right_pad::<8>(&data);
-        assert!(matches!(padded, Cow::Borrowed(_)));
+        assert_matches!(padded, Cow::Borrowed(_));
         assert_eq!(padded[..], [1, 2, 3, 4, 5, 6, 7, 8]);
         let padded = right_pad_vec(&data, 8);
-        assert!(matches!(padded, Cow::Borrowed(_)));
+        assert_matches!(padded, Cow::Borrowed(_));
         assert_eq!(padded[..], [1, 2, 3, 4, 5, 6, 7, 8]);
     }
 
@@ -229,18 +230,18 @@ mod tests {
     fn left_padding() {
         let data = [1, 2, 3, 4];
         let padded = left_pad::<8>(&data);
-        assert!(matches!(padded, Cow::Owned(_)));
+        assert_matches!(padded, Cow::Owned(_));
         assert_eq!(padded[..], [0, 0, 0, 0, 1, 2, 3, 4]);
         let padded = left_pad_vec(&data, 8);
-        assert!(matches!(padded, Cow::Owned(_)));
+        assert_matches!(padded, Cow::Owned(_));
         assert_eq!(padded[..], [0, 0, 0, 0, 1, 2, 3, 4]);
 
         let data = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
         let padded = left_pad::<8>(&data);
-        assert!(matches!(padded, Cow::Borrowed(_)));
+        assert_matches!(padded, Cow::Borrowed(_));
         assert_eq!(padded[..], [1, 2, 3, 4, 5, 6, 7, 8]);
         let padded = left_pad_vec(&data, 8);
-        assert!(matches!(padded, Cow::Borrowed(_)));
+        assert_matches!(padded, Cow::Borrowed(_));
         assert_eq!(padded[..], [1, 2, 3, 4, 5, 6, 7, 8]);
     }
 
@@ -248,17 +249,17 @@ mod tests {
     fn left_padding_be() {
         let data = [1, 2, 3, 4];
         let padded = left_pad_vec_be(&data, 8);
-        assert!(matches!(padded, Cow::Owned(_)));
+        assert_matches!(padded, Cow::Owned(_));
         assert_eq!(padded[..], [0, 0, 0, 0, 1, 2, 3, 4]);
 
         let data = [0, 0, 1, 2, 3, 4];
         let padded = left_pad_vec_be(&data, 4);
-        assert!(matches!(padded, Cow::Borrowed(_)));
+        assert_matches!(padded, Cow::Borrowed(_));
         assert_eq!(padded[..], [1, 2, 3, 4]);
 
         let data = [1, 2, 3, 4];
         let padded = left_pad_vec_be(&data, 4);
-        assert!(matches!(padded, Cow::Borrowed(_)));
+        assert_matches!(padded, Cow::Borrowed(_));
         assert_eq!(padded[..], [1, 2, 3, 4]);
     }
 

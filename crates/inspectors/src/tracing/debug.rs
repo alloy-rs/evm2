@@ -317,30 +317,42 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for DebugInspector {
         delegate!(self => log(log, host))
     }
 
-    fn call(&mut self, message: &mut Message<T>, host: &mut T::Host) -> Option<MessageResult<T>> {
-        delegate!(self => call(message, host))
+    fn call(
+        &mut self,
+        interp: &mut Interpreter<'_, T>,
+        message: &mut Message<T>,
+        host: &mut T::Host,
+    ) -> Option<MessageResult<T>> {
+        delegate!(self => call(interp, message, host))
     }
 
     fn call_end(
         &mut self,
+        interp: &mut Interpreter<'_, T>,
         message: &Message<T>,
         result: &mut MessageResult<T>,
         host: &mut T::Host,
     ) {
-        delegate!(self => call_end(message, result, host))
+        delegate!(self => call_end(interp, message, result, host))
     }
 
-    fn create(&mut self, message: &mut Message<T>, host: &mut T::Host) -> Option<MessageResult<T>> {
-        delegate!(self => create(message, host))
+    fn create(
+        &mut self,
+        interp: &mut Interpreter<'_, T>,
+        message: &mut Message<T>,
+        host: &mut T::Host,
+    ) -> Option<MessageResult<T>> {
+        delegate!(self => create(interp, message, host))
     }
 
     fn create_end(
         &mut self,
+        interp: &mut Interpreter<'_, T>,
         message: &Message<T>,
         result: &mut MessageResult<T>,
         host: &mut T::Host,
     ) {
-        delegate!(self => create_end(message, result, host))
+        delegate!(self => create_end(interp, message, result, host))
     }
 
     fn selfdestruct(

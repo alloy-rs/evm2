@@ -237,6 +237,7 @@ impl Inspector<CustomTypes> for ExampleInspector {
 
     fn call(
         &mut self,
+        _interp: &mut Interpreter<'_, CustomTypes>,
         _message: &mut Message<CustomTypes>,
         _host: &mut Evm<CustomTypes>,
     ) -> Option<MessageResult<CustomTypes>> {

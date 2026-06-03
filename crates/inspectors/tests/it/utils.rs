@@ -596,36 +596,40 @@ impl<I: Inspector<BaseEvmTypes>> Inspector<BaseEvmTypes> for RawInspector<I> {
 
     fn call(
         &mut self,
+        interp: &mut Interpreter<'_, BaseEvmTypes>,
         message: &mut Message<BaseEvmTypes>,
         host: &mut <BaseEvmTypes as EvmTypes>::Host,
     ) -> Option<MessageResult<BaseEvmTypes>> {
-        self.inner().call(message, host)
+        self.inner().call(interp, message, host)
     }
 
     fn call_end(
         &mut self,
+        interp: &mut Interpreter<'_, BaseEvmTypes>,
         message: &Message<BaseEvmTypes>,
         result: &mut MessageResult<BaseEvmTypes>,
         host: &mut <BaseEvmTypes as EvmTypes>::Host,
     ) {
-        self.inner().call_end(message, result, host);
+        self.inner().call_end(interp, message, result, host);
     }
 
     fn create(
         &mut self,
+        interp: &mut Interpreter<'_, BaseEvmTypes>,
         message: &mut Message<BaseEvmTypes>,
         host: &mut <BaseEvmTypes as EvmTypes>::Host,
     ) -> Option<MessageResult<BaseEvmTypes>> {
-        self.inner().create(message, host)
+        self.inner().create(interp, message, host)
     }
 
     fn create_end(
         &mut self,
+        interp: &mut Interpreter<'_, BaseEvmTypes>,
         message: &Message<BaseEvmTypes>,
         result: &mut MessageResult<BaseEvmTypes>,
         host: &mut <BaseEvmTypes as EvmTypes>::Host,
     ) {
-        self.inner().create_end(message, result, host);
+        self.inner().create_end(interp, message, result, host);
     }
 
     fn selfdestruct(

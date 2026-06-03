@@ -497,7 +497,12 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for JsInspector {
         }
     }
 
-    fn call(&mut self, message: &mut Message<T>, host: &mut T::Host) -> Option<MessageResult<T>> {
+    fn call(
+        &mut self,
+        _interp: &mut Interpreter<'_, T>,
+        message: &mut Message<T>,
+        host: &mut T::Host,
+    ) -> Option<MessageResult<T>> {
         self.register_precompiles(host);
         self.push_call(message);
         if self.can_call_enter() {
@@ -513,6 +518,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for JsInspector {
 
     fn call_end(
         &mut self,
+        _interp: &mut Interpreter<'_, T>,
         _message: &Message<T>,
         result: &mut MessageResult<T>,
         _host: &mut T::Host,
@@ -531,7 +537,12 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for JsInspector {
         self.pop_call();
     }
 
-    fn create(&mut self, message: &mut Message<T>, host: &mut T::Host) -> Option<MessageResult<T>> {
+    fn create(
+        &mut self,
+        _interp: &mut Interpreter<'_, T>,
+        message: &mut Message<T>,
+        host: &mut T::Host,
+    ) -> Option<MessageResult<T>> {
         self.register_precompiles(host);
         self.push_call(message);
         if self.can_call_enter() {
@@ -547,6 +558,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for JsInspector {
 
     fn create_end(
         &mut self,
+        _interp: &mut Interpreter<'_, T>,
         _message: &Message<T>,
         result: &mut MessageResult<T>,
         _host: &mut T::Host,
@@ -682,36 +694,40 @@ mod tests {
 
         fn call(
             &mut self,
+            interp: &mut Interpreter<'_, BaseEvmTypes>,
             message: &mut Message<BaseEvmTypes>,
             host: &mut Evm<BaseEvmTypes>,
         ) -> Option<MessageResult<BaseEvmTypes>> {
-            self.0.borrow_mut().call(message, host)
+            self.0.borrow_mut().call(interp, message, host)
         }
 
         fn call_end(
             &mut self,
+            interp: &mut Interpreter<'_, BaseEvmTypes>,
             message: &Message<BaseEvmTypes>,
             result: &mut MessageResult<BaseEvmTypes>,
             host: &mut Evm<BaseEvmTypes>,
         ) {
-            self.0.borrow_mut().call_end(message, result, host);
+            self.0.borrow_mut().call_end(interp, message, result, host);
         }
 
         fn create(
             &mut self,
+            interp: &mut Interpreter<'_, BaseEvmTypes>,
             message: &mut Message<BaseEvmTypes>,
             host: &mut Evm<BaseEvmTypes>,
         ) -> Option<MessageResult<BaseEvmTypes>> {
-            self.0.borrow_mut().create(message, host)
+            self.0.borrow_mut().create(interp, message, host)
         }
 
         fn create_end(
             &mut self,
+            interp: &mut Interpreter<'_, BaseEvmTypes>,
             message: &Message<BaseEvmTypes>,
             result: &mut MessageResult<BaseEvmTypes>,
             host: &mut Evm<BaseEvmTypes>,
         ) {
-            self.0.borrow_mut().create_end(message, result, host);
+            self.0.borrow_mut().create_end(interp, message, result, host);
         }
     }
 

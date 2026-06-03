@@ -204,12 +204,17 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for MuxInspector {
     }
 
     #[inline]
-    fn call(&mut self, message: &mut Message<T>, host: &mut T::Host) -> Option<MessageResult<T>> {
+    fn call(
+        &mut self,
+        interp: &mut Interpreter<'_, T>,
+        message: &mut Message<T>,
+        host: &mut T::Host,
+    ) -> Option<MessageResult<T>> {
         if let Some(ref mut inspector) = self.four_byte {
-            let _ = inspector.call(message, host);
+            let _ = inspector.call(interp, message, host);
         }
         if let Some(ref mut inspector) = self.tracing {
-            return inspector.call(message, host);
+            return inspector.call(interp, message, host);
         }
         None
     }
@@ -217,25 +222,31 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for MuxInspector {
     #[inline]
     fn call_end(
         &mut self,
+        interp: &mut Interpreter<'_, T>,
         message: &Message<T>,
         result: &mut MessageResult<T>,
         host: &mut T::Host,
     ) {
         if let Some(ref mut inspector) = self.four_byte {
-            inspector.call_end(message, result, host);
+            inspector.call_end(interp, message, result, host);
         }
         if let Some(ref mut inspector) = self.tracing {
-            inspector.call_end(message, result, host);
+            inspector.call_end(interp, message, result, host);
         }
     }
 
     #[inline]
-    fn create(&mut self, message: &mut Message<T>, host: &mut T::Host) -> Option<MessageResult<T>> {
+    fn create(
+        &mut self,
+        interp: &mut Interpreter<'_, T>,
+        message: &mut Message<T>,
+        host: &mut T::Host,
+    ) -> Option<MessageResult<T>> {
         if let Some(ref mut inspector) = self.four_byte {
-            let _ = inspector.create(message, host);
+            let _ = inspector.create(interp, message, host);
         }
         if let Some(ref mut inspector) = self.tracing {
-            return inspector.create(message, host);
+            return inspector.create(interp, message, host);
         }
         None
     }
@@ -243,15 +254,16 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for MuxInspector {
     #[inline]
     fn create_end(
         &mut self,
+        interp: &mut Interpreter<'_, T>,
         message: &Message<T>,
         result: &mut MessageResult<T>,
         host: &mut T::Host,
     ) {
         if let Some(ref mut inspector) = self.four_byte {
-            inspector.create_end(message, result, host);
+            inspector.create_end(interp, message, result, host);
         }
         if let Some(ref mut inspector) = self.tracing {
-            inspector.create_end(message, result, host);
+            inspector.create_end(interp, message, result, host);
         }
     }
 

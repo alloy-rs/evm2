@@ -131,7 +131,12 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for AccessListInspector {
         }
     }
 
-    fn call(&mut self, message: &mut Message<T>, host: &mut T::Host) -> Option<MessageResult<T>> {
+    fn call(
+        &mut self,
+        _interp: &mut Interpreter<'_, T>,
+        message: &mut Message<T>,
+        host: &mut T::Host,
+    ) -> Option<MessageResult<T>> {
         // At the top-level frame, fill the excluded addresses.
         if message.depth == 0 {
             self.collect_excluded_addresses(message, host);
@@ -139,7 +144,12 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for AccessListInspector {
         None
     }
 
-    fn create(&mut self, message: &mut Message<T>, host: &mut T::Host) -> Option<MessageResult<T>> {
+    fn create(
+        &mut self,
+        _interp: &mut Interpreter<'_, T>,
+        message: &mut Message<T>,
+        host: &mut T::Host,
+    ) -> Option<MessageResult<T>> {
         // At the top-level frame, fill the excluded addresses.
         if message.depth == 0 {
             self.collect_excluded_addresses(message, host);

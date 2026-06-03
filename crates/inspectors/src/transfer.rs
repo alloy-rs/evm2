@@ -5,7 +5,7 @@ use alloy_primitives::{Address, B256, Log, LogData, U256, address, b256};
 use alloy_sol_types::SolValue;
 use evm2::{
     EvmTypes, Inspector,
-    interpreter::{Host, Message, MessageKind, MessageResult},
+    interpreter::{Host, Interpreter, Message, MessageKind, MessageResult},
 };
 
 /// Sender of ETH transfer log per `eth_simulateV1` spec.
@@ -103,7 +103,12 @@ impl<T: EvmTypes> Inspector<T> for TransferInspector
 where
     T::Host: Host<T>,
 {
-    fn call(&mut self, message: &mut Message<T>, host: &mut T::Host) -> Option<MessageResult<T>> {
+    fn call(
+        &mut self,
+        _interp: &mut Interpreter<'_, T>,
+        message: &mut Message<T>,
+        host: &mut T::Host,
+    ) -> Option<MessageResult<T>> {
         if matches!(message.kind, MessageKind::Call | MessageKind::CallCode) {
             self.on_transfer(
                 message.caller,
@@ -117,7 +122,12 @@ where
         None
     }
 
-    fn create(&mut self, message: &mut Message<T>, host: &mut T::Host) -> Option<MessageResult<T>> {
+    fn create(
+        &mut self,
+        _interp: &mut Interpreter<'_, T>,
+        message: &mut Message<T>,
+        host: &mut T::Host,
+    ) -> Option<MessageResult<T>> {
         let kind = match message.kind {
             MessageKind::Create => TransferKind::Create,
             MessageKind::Create2 => TransferKind::Create2,

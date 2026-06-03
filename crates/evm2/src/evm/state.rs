@@ -6,7 +6,7 @@ use super::{
     eip7708_burn_log,
 };
 use crate::{
-    EvmFeatures, SpecId, Version,
+    EvmFeatures, Version,
     bytecode::Bytecode,
     interpreter::{InstrStop, Word},
     storage_key::{StorageKey, StorageKeyMap, StorageKeySet},
@@ -721,9 +721,9 @@ impl State {
     pub(super) fn target_is_empty_for_new_account_gas(
         &mut self,
         address: &Address,
-        spec: SpecId,
+        features: EvmFeatures,
     ) -> DbResult<bool> {
-        if spec.enables(SpecId::SPURIOUS_DRAGON) {
+        if features.contains(EvmFeatures::EIP161) {
             return Ok(self.account_info(address)?.is_none_or(|info| info.is_empty()));
         }
         Ok(self.account_info(address)?.is_none() && !self.touched.contains(address))
@@ -880,7 +880,7 @@ impl State {
         caller: &Address,
         address: &Address,
         value: &Word,
-        spec: SpecId,
+        features: EvmFeatures,
     ) -> DbResult<Result<(), InstrStop>> {
         if let Some(info) = self.account_info(address)?
             && (info.nonce != 0 || info.code_hash != KECCAK256_EMPTY)
@@ -896,7 +896,7 @@ impl State {
         self.wipe_storage(address);
         let account = self.journal_account_change(address)?;
         *account = Account {
-            nonce: u64::from(spec.enables(SpecId::SPURIOUS_DRAGON)),
+            nonce: u64::from(features.contains(EvmFeatures::EIP161)),
             balance,
             code_hash: KECCAK256_EMPTY,
             code: Bytecode::default(),
@@ -996,7 +996,7 @@ impl State {
 
     /// Reverts state changes after the checkpoint.
     #[inline(never)]
-    pub fn rollback(&mut self, checkpoint: StateCheckpoint, spec: SpecId) {
+    pub fn rollback(&mut self, checkpoint: StateCheckpoint, features: EvmFeatures) {
         assert!(checkpoint.journal_len <= self.journal.len(), "checkpoint is past journal length");
         assert!(checkpoint.logs_len <= self.logs.len(), "checkpoint is past logs length");
         self.logs.truncate(checkpoint.logs_len);
@@ -1015,7 +1015,7 @@ impl State {
                 }
                 JournalEntry::Touch { address } => {
                     // EIP-161 preserves the historical Yellow Paper K.1 precompile-3 touch.
-                    if spec.enables(SpecId::SPURIOUS_DRAGON)
+                    if features.contains(EvmFeatures::EIP161)
                         && address == Address::with_last_byte(3)
                     {
                         continue;
@@ -1139,7 +1139,6 @@ impl State {
         let selfdestructs = mem::take(&mut self.selfdestructs);
         let touched = mem::take(&mut self.touched);
 
-        let spec = version.spec_id;
         let delayed_burn_logs =
             version.feature(EvmFeatures::EIP7708 | EvmFeatures::EIP7708_DELAYED_BURN);
         if delayed_burn_logs {
@@ -1168,7 +1167,7 @@ impl State {
             self.delete_account_for_finalization(address)?;
         }
 
-        if spec.enables(SpecId::SPURIOUS_DRAGON) {
+        if version.feature(EvmFeatures::EIP161) {
             for address in &touched {
                 // EIP-161 deletes touched dead accounts at transaction finalization.
                 if self.is_existing_dead(address)? {
@@ -1203,9 +1202,9 @@ impl State {
             StateChanges { logs: core::mem::take(&mut self.logs), ..StateChanges::default() };
 
         for (&address, tracked) in &self.accounts {
-            let original = tracked.original.as_ref().map(Account::info);
-            let current = tracked.current.as_ref().map(Account::info);
-            if original != current {
+            if tracked.original != tracked.current {
+                let original = tracked.original.as_ref().map(Account::info);
+                let current = tracked.current.as_ref().map(Account::info);
                 changes
                     .accounts
                     .insert(address, Tracked { original, current, _non_exhaustive: () });
@@ -1282,7 +1281,7 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{constants::EIP7708_BURN_TOPIC, evm::CacheDB};
+    use crate::{SpecId, constants::EIP7708_BURN_TOPIC, evm::CacheDB};
     use alloy_primitives::Bytes;
 
     #[test]
@@ -1298,7 +1297,7 @@ mod tests {
         state.set_storage(&address, &Word::from(1), &Word::from(30)).unwrap();
 
         assert_eq!(state.storage(&address, &Word::from(1)).unwrap(), Word::from(30));
-        state.rollback(checkpoint, SpecId::FRONTIER);
+        state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
         assert_eq!(state.storage(&address, &Word::from(1)).unwrap(), Word::from(10));
     }
 
@@ -1312,7 +1311,7 @@ mod tests {
         state.set_transient_storage(&address, &Word::from(1), &Word::from(20));
 
         assert_eq!(state.transient_storage(&address, &Word::from(1)), Word::from(20));
-        state.rollback(checkpoint, SpecId::FRONTIER);
+        state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
         assert_eq!(state.transient_storage(&address, &Word::from(1)), Word::from(10));
     }
 
@@ -1325,7 +1324,7 @@ mod tests {
         state.mark_destructed(&address);
 
         assert!(state.is_selfdestructed(&address));
-        state.rollback(checkpoint, SpecId::FRONTIER);
+        state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
         assert!(!state.is_selfdestructed(&address));
     }
 
@@ -1357,7 +1356,7 @@ mod tests {
                 }
             ]
         );
-        state.rollback(checkpoint, SpecId::FRONTIER);
+        state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
         assert_eq!(state.logs(), &[kept]);
     }
 
@@ -1374,7 +1373,7 @@ mod tests {
         state.touch(&precompile3);
         state.touch(&other);
 
-        state.rollback(checkpoint, SpecId::SPURIOUS_DRAGON);
+        state.rollback(checkpoint, Version::base(SpecId::SPURIOUS_DRAGON).features);
         assert!(state.touched.contains(&precompile3));
         assert!(!state.touched.contains(&other));
     }
@@ -1397,7 +1396,7 @@ mod tests {
         assert!(state.warm_storage(&frame_storage, &key));
         assert_eq!(state.journal.len(), 2);
 
-        state.rollback(checkpoint, SpecId::FRONTIER);
+        state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
         assert!(state.is_account_warm(&base_account));
         assert!(state.is_storage_warm(&base_storage, &key));
         assert!(!state.is_account_warm(&frame_account));

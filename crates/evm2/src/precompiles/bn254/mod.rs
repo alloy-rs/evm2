@@ -7,7 +7,7 @@ use crate::{
 };
 use alloc::vec::Vec;
 
-#[cfg_attr(any(feature = "bn", feature = "bn254-mcl"), expect(dead_code))]
+#[cfg_attr(all(feature = "bn", not(feature = "bn254-mcl")), expect(dead_code))]
 pub(crate) mod arkworks;
 
 cfg_if::cfg_if! {
@@ -269,6 +269,7 @@ mod tests {
         },
     };
     use alloy_primitives::hex;
+    use core::assert_matches;
 
     use super::*;
 
@@ -323,7 +324,7 @@ mod tests {
 
         let res = run_add(&input, BYZANTIUM_ADD_GAS_COST, &mut GasTracker::new(499));
 
-        assert!(matches!(res, Err(PrecompileError::Halt(PrecompileHalt::OutOfGas))));
+        assert_matches!(res, Err(PrecompileError::Halt(PrecompileHalt::OutOfGas)));
 
         // No input test
         let input = [0u8; 0];
@@ -348,8 +349,9 @@ mod tests {
         .unwrap();
 
         let res = run_add(&input, BYZANTIUM_ADD_GAS_COST, &mut GasTracker::new(500));
-        assert!(
-            matches!(res, Err(ref f) if *f == PrecompileError::Halt(PrecompileHalt::Bn254AffineGFailedToCreate))
+        assert_matches!(
+            res,
+            Err(ref f) if *f == PrecompileError::Halt(PrecompileHalt::Bn254AffineGFailedToCreate),
         );
     }
 
@@ -383,7 +385,7 @@ mod tests {
         .unwrap();
 
         let res = run_mul(&input, BYZANTIUM_MUL_GAS_COST, &mut GasTracker::new(39_999));
-        assert!(matches!(res, Err(PrecompileError::Halt(PrecompileHalt::OutOfGas))));
+        assert_matches!(res, Err(PrecompileError::Halt(PrecompileHalt::OutOfGas)));
 
         // Zero multiplication test
         let input = hex::decode(
@@ -427,8 +429,9 @@ mod tests {
         .unwrap();
 
         let res = run_mul(&input, BYZANTIUM_MUL_GAS_COST, &mut GasTracker::new(40_000));
-        assert!(
-            matches!(res, Err(ref f) if *f == PrecompileError::Halt(PrecompileHalt::Bn254AffineGFailedToCreate))
+        assert_matches!(
+            res,
+            Err(ref f) if *f == PrecompileError::Halt(PrecompileHalt::Bn254AffineGFailedToCreate),
         );
     }
 
@@ -487,7 +490,7 @@ mod tests {
             BYZANTIUM_PAIR_BASE,
             &mut GasTracker::new(259_999),
         );
-        assert!(matches!(res, Err(PrecompileError::Halt(PrecompileHalt::OutOfGas))));
+        assert_matches!(res, Err(PrecompileError::Halt(PrecompileHalt::OutOfGas)));
 
         // No input test
         let input = [0u8; 0];
@@ -522,8 +525,9 @@ mod tests {
             BYZANTIUM_PAIR_BASE,
             &mut GasTracker::new(260_000),
         );
-        assert!(
-            matches!(res, Err(ref f) if *f == PrecompileError::Halt(PrecompileHalt::Bn254AffineGFailedToCreate))
+        assert_matches!(
+            res,
+            Err(ref f) if *f == PrecompileError::Halt(PrecompileHalt::Bn254AffineGFailedToCreate),
         );
 
         // Invalid input length
@@ -542,7 +546,7 @@ mod tests {
             BYZANTIUM_PAIR_BASE,
             &mut GasTracker::new(260_000),
         );
-        assert!(matches!(res, Err(PrecompileError::Halt(PrecompileHalt::Bn254PairLength))));
+        assert_matches!(res, Err(PrecompileError::Halt(PrecompileHalt::Bn254PairLength)));
 
         // Test with point at infinity - should return true (identity element)
         // G1 point at infinity (0,0) followed by a valid G2 point

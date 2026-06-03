@@ -6,6 +6,8 @@
 //! before calling [`Evm::system_call`]. Calling an address without code succeeds as an empty call
 //! and produces no state changes.
 
+#[cfg(feature = "async")]
+use super::r#async;
 use super::{Evm, TxResult};
 use crate::{
     EvmTypes,
@@ -15,6 +17,8 @@ use crate::{
 };
 use alloc::vec::Vec;
 use alloy_primitives::{Address, Bytes, TxKind, U256, address};
+#[cfg(feature = "async")]
+use core::{convert::Infallible, future::Future};
 
 /// Caller address used by execution-layer system calls.
 pub const SYSTEM_ADDRESS: Address = address!("0xfffffffffffffffffffffffffffffffffffffffe");
@@ -46,7 +50,8 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     /// Executes a system call from [`SYSTEM_ADDRESS`] to `system_contract_address` on an async
     /// fiber.
     ///
-    /// This must be used with an async database adapter such as [`crate::AsyncDb`] to take
+    /// This must be used with an async database adapter such as
+    /// [`evm::async::AsyncDb`](crate::evm::async::AsyncDb) to take
     /// advantage of yielding database I/O. With a synchronous database this is mostly equivalent to
     /// running the synchronous system call on a fiber.
     #[cfg(feature = "async")]
@@ -55,10 +60,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         &mut self,
         system_contract_address: Address,
         data: Bytes,
-    ) -> impl core::future::Future<
-        Output = crate::AsyncResult<TxResult<T>, core::convert::Infallible>,
-    > + Send
-    + '_
+    ) -> impl Future<Output = r#async::AsyncResult<TxResult<T>, Infallible>> + Send + '_
     where
         T::TxResultExt: Send,
     {
@@ -66,7 +68,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         // SAFETY: The returned future owns the exclusive `&mut self` borrow, so nothing else can
         // access the EVM stack slot until that future is dropped.
         unsafe {
-            crate::async_::on_fiber_with_stack(stack, move || {
+            r#async::on_fiber_with_stack(stack, move || {
                 self.system_call(system_contract_address, data)
             })
         }
@@ -138,7 +140,8 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
 
     /// Executes a system call from `caller` to `system_contract_address` on an async fiber.
     ///
-    /// This must be used with an async database adapter such as [`crate::AsyncDb`] to take
+    /// This must be used with an async database adapter such as
+    /// [`evm::async::AsyncDb`](crate::evm::async::AsyncDb) to take
     /// advantage of yielding database I/O. With a synchronous database this is mostly equivalent to
     /// running the synchronous system call on a fiber.
     #[cfg(feature = "async")]
@@ -148,10 +151,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         caller: Address,
         system_contract_address: Address,
         data: Bytes,
-    ) -> impl core::future::Future<
-        Output = crate::AsyncResult<TxResult<T>, core::convert::Infallible>,
-    > + Send
-    + '_
+    ) -> impl Future<Output = r#async::AsyncResult<TxResult<T>, Infallible>> + Send + '_
     where
         T::TxResultExt: Send,
     {
@@ -159,7 +159,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         // SAFETY: The returned future owns the exclusive `&mut self` borrow, so nothing else can
         // access the EVM stack slot until that future is dropped.
         unsafe {
-            crate::async_::on_fiber_with_stack(stack, move || {
+            r#async::on_fiber_with_stack(stack, move || {
                 self.system_call_with_caller(caller, system_contract_address, data)
             })
         }

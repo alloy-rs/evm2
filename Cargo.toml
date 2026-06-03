@@ -1,11 +1,18 @@
 [workspace]
-members = ["crates/evm2", "crates/macros", "crates/eest", "crates/inspectors"]
+members = [
+    "crates/evm2",
+    "crates/macros",
+    "crates/eest",
+    "crates/inspectors",
+    "crates/fuzzer",
+    "crates/replayer",
+]
 resolver = "3"
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.95"
+rust-version = "1.96"
 authors = ["DaniPopes <57450786+DaniPopes@users.noreply.github.com>"]
 license = "MIT OR Apache-2.0"
 homepage = "https://github.com/danipopes/evm2"
@@ -54,6 +61,14 @@ derive-where = { version = "1.6", default-features = false }
 anstyle = { version = "1.0", default-features = false }
 cfg-if = { version = "1.0", default-features = false }
 colorchoice = { version = "1.0", default-features = false }
+clap = { version = "4.5", default-features = false, features = [
+    "derive",
+    "error-context",
+    "help",
+    "std",
+    "suggestions",
+    "usage",
+] }
 corosensei = { version = "0.3.4", default-features = false, features = [
     "default-stack",
     "unwind",
@@ -65,6 +80,7 @@ phf = { version = "0.13", default-features = false }
 rand = "0.10"
 rstest = "0.26.0"
 serde = { version = "1.0", default-features = false }
+serde-wincode = { version = "0.1.0", default-features = false }
 serde_json = { version = "1.0", default-features = false }
 snapbox = "0.6"
 thiserror = { version = "2.0", default-features = false }
@@ -73,6 +89,7 @@ walkdir = { version = "2.5", default-features = false }
 
 boa_engine = { version = "0.21", default-features = false }
 boa_gc = { version = "0.21", default-features = false }
+wincode = { version = "0.4", default-features = false }
 
 # Precompiles
 ark-bls12-381 = { version = "0.6.0", default-features = false }

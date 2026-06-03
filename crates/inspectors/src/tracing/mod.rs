@@ -481,7 +481,12 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for TracingInspector {
         }
     }
 
-    fn call(&mut self, message: &mut Message<T>, host: &mut T::Host) -> Option<MessageResult<T>> {
+    fn call(
+        &mut self,
+        _interp: &mut Interpreter<'_, T>,
+        message: &mut Message<T>,
+        host: &mut T::Host,
+    ) -> Option<MessageResult<T>> {
         let maybe_precompile =
             self.config.exclude_precompile_calls.then(|| self.is_precompile_call(host, message));
         self.start_trace(message, maybe_precompile);
@@ -490,6 +495,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for TracingInspector {
 
     fn call_end(
         &mut self,
+        _interp: &mut Interpreter<'_, T>,
         _message: &Message<T>,
         result: &mut MessageResult<T>,
         _host: &mut T::Host,
@@ -499,6 +505,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for TracingInspector {
 
     fn create(
         &mut self,
+        _interp: &mut Interpreter<'_, T>,
         message: &mut Message<T>,
         _host: &mut T::Host,
     ) -> Option<MessageResult<T>> {
@@ -508,6 +515,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for TracingInspector {
 
     fn create_end(
         &mut self,
+        _interp: &mut Interpreter<'_, T>,
         _message: &Message<T>,
         result: &mut MessageResult<T>,
         _host: &mut T::Host,

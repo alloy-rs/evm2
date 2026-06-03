@@ -22,13 +22,10 @@ pub use opcode_config::OpcodeConfig;
 /// Runtime configuration data.
 ///
 /// The name is a bit misleading: this is a catch-all runtime configuration object. It stores fork
-/// configuration such as the active base `SpecId` and EVM features, and also stores regular runtime
-/// configuration values such as chain ID, memory limits, code size limits, gas caps, and gas
-/// parameters.
+/// configuration such as active EVM features, and also stores regular runtime configuration values
+/// such as chain ID, memory limits, code size limits, gas caps, and gas parameters.
 #[derive(Clone, Copy, Debug)]
 pub struct Version {
-    /// Active base specification ID.
-    pub spec_id: SpecId,
     /// Dynamic gas parameter table.
     // Gas params are data on the active version so changes automatically affect every
     // instruction that reads them. Tracking instruction dependencies on opcode config is not
@@ -111,7 +108,6 @@ const DEFAULT_CHAIN_ID: u64 = 1;
 static BASE_VERSIONS: [Version; SpecId::COUNT] = {
     let mut versions = [const {
         Version {
-            spec_id: SpecId::FRONTIER,
             gas_params: GasParams::empty(),
             features: EvmFeatures::empty(),
             chain_id: DEFAULT_CHAIN_ID,
@@ -128,7 +124,6 @@ static BASE_VERSIONS: [Version; SpecId::COUNT] = {
     while i < SpecId::COUNT {
         let spec_id = SpecId::try_from_u32(i as u32).unwrap();
         versions[i] = Version {
-            spec_id,
             gas_params: base_gas_params(spec_id),
             features: base_features(spec_id),
             chain_id: DEFAULT_CHAIN_ID,
@@ -254,14 +249,22 @@ mod tests {
         assert!(osaka.feature(EvmFeatures::NONCE_CHECK));
         assert!(osaka.feature(EvmFeatures::BALANCE_CHECK));
         assert!(osaka.feature(EvmFeatures::BLOCK_GAS_LIMIT_CHECK));
+        assert!(osaka.feature(EvmFeatures::CODE_SIZE_CHECK));
         assert!(osaka.feature(EvmFeatures::EIP2));
+        assert!(osaka.feature(EvmFeatures::EIP150));
+        assert!(osaka.feature(EvmFeatures::EIP161));
         assert!(osaka.feature(EvmFeatures::EIP2028));
+        assert!(osaka.feature(EvmFeatures::EIP2200));
+        assert!(osaka.feature(EvmFeatures::EIP2929));
         assert!(osaka.feature(EvmFeatures::EIP3529));
         assert!(osaka.feature(EvmFeatures::EIP3651));
         assert!(osaka.feature(EvmFeatures::EIP3860));
+        assert!(osaka.feature(EvmFeatures::EIP4399));
+        assert!(osaka.feature(EvmFeatures::EIP6780));
         assert!(osaka.feature(EvmFeatures::EIP3541));
         assert!(osaka.feature(EvmFeatures::EIP3607));
         assert!(osaka.feature(EvmFeatures::EIP7623));
+        assert!(osaka.feature(EvmFeatures::EIP7702));
         assert!(osaka.feature(EvmFeatures::BASE_FEE_CHECK));
         assert!(osaka.feature(EvmFeatures::PRIORITY_FEE_CHECK));
         assert!(osaka.feature(EvmFeatures::FEE_CHARGE));
@@ -514,6 +517,9 @@ evm_versions! {
     }
 
     TANGERINE {
+        features: [
+            EIP150,
+        ],
         static_gas: [
             SLOAD: 200,
             BALANCE: 400,
@@ -531,6 +537,10 @@ evm_versions! {
     }
 
     SPURIOUS_DRAGON {
+        features: [
+            EIP161,
+            CODE_SIZE_CHECK,
+        ],
         static_gas: [
             EXP: EXP,
         ],
@@ -561,6 +571,7 @@ evm_versions! {
     ISTANBUL {
         features: [
             EIP2028,
+            EIP2200,
         ],
         ops: [
             CHAINID: BASE,
@@ -583,6 +594,9 @@ evm_versions! {
     }
 
     BERLIN {
+        features: [
+            EIP2929,
+        ],
         static_gas: [
             SLOAD: WARM_STORAGE_READ_COST,
             BALANCE: WARM_STORAGE_READ_COST,
@@ -630,7 +644,11 @@ evm_versions! {
         ],
     }
 
-    MERGE {}
+    MERGE {
+        features: [
+            EIP4399,
+        ],
+    }
 
     SHANGHAI {
         features: [
@@ -650,6 +668,9 @@ evm_versions! {
     }
 
     CANCUN {
+        features: [
+            EIP6780,
+        ],
         ops: [
             BLOBHASH: VERYLOW,
             BLOBBASEFEE: BASE,
@@ -662,6 +683,7 @@ evm_versions! {
     PRAGUE {
         features: [
             EIP7623,
+            EIP7702,
         ],
         dynamic_gas: [
             TxEip7702PerEmptyAccountCost: EIP7702_PER_EMPTY_ACCOUNT_COST,

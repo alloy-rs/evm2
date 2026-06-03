@@ -220,7 +220,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
     /// Runs the interpreter until it stops.
     #[inline]
     pub fn run(&mut self, config: &ExecutionConfig<T>, host: &mut T::Host) -> InstrStop {
-        self.run_inner(config.version(), host, None, config.instructions)
+        self.run_inner(config.base_spec_id(), config.version(), host, None, config.instructions)
     }
 
     /// Runs the interpreter until it stops with an execution inspector.
@@ -232,6 +232,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         inspector: &mut dyn Inspector<T>,
     ) -> InstrStop {
         self.run_inner(
+            config.base_spec_id(),
             config.version(),
             host,
             Some(NonNull::from(inspector)),
@@ -242,6 +243,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
     #[inline(never)]
     fn run_inner(
         &mut self,
+        spec: SpecId,
         version: &Version,
         host: &mut T::Host,
         inspector: Option<NonNull<dyn Inspector<T>>>,
@@ -252,7 +254,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         self.host = Some(NonNull::from(host));
         self.inspector = inspector;
         self.version = version;
-        self.spec = version.spec_id;
+        self.spec = spec;
         self.features = version.features;
 
         dispatch::run(self, instructions)
@@ -355,12 +357,6 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
         self.0.is_static
     }
 
-    /// Returns the active spec identifier.
-    #[inline]
-    pub const fn spec(&self) -> SpecId {
-        self.0.spec
-    }
-
     /// Returns `true` if the active feature set contains `feature`.
     #[inline]
     pub const fn feature(&self, feature: EvmFeatures) -> bool {
@@ -430,7 +426,7 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
         let mut inspector = self.0.inspector?;
         unsafe {
             let mut host = self.0.host.unwrap_unchecked();
-            inspector.as_mut().call(message, host.as_mut())
+            inspector.as_mut().call(&mut self.0, message, host.as_mut())
         }
     }
 
@@ -439,7 +435,7 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
         if let Some(mut inspector) = self.0.inspector {
             unsafe {
                 let mut host = self.0.host.unwrap_unchecked();
-                inspector.as_mut().call_end(message, result, host.as_mut());
+                inspector.as_mut().call_end(&mut self.0, message, result, host.as_mut());
             }
         }
     }
@@ -449,7 +445,7 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
         let mut inspector = self.0.inspector?;
         unsafe {
             let mut host = self.0.host.unwrap_unchecked();
-            inspector.as_mut().create(message, host.as_mut())
+            inspector.as_mut().create(&mut self.0, message, host.as_mut())
         }
     }
 
@@ -462,7 +458,7 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
         if let Some(mut inspector) = self.0.inspector {
             unsafe {
                 let mut host = self.0.host.unwrap_unchecked();
-                inspector.as_mut().create_end(message, result, host.as_mut());
+                inspector.as_mut().create_end(&mut self.0, message, result, host.as_mut());
             }
         }
     }

@@ -14,7 +14,7 @@ use alloy_consensus::{TxEip2930, transaction::Recovered};
 use alloy_primitives::U256;
 
 pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
-    req: TxRequest<'_, Recovered<TxEip2930>, Evm<T>>,
+    req: TxRequest<'_, T, Recovered<TxEip2930>>,
 ) -> HandlerResult<TxResult<T>> {
     let caller = req.tx.signer();
     let tx = req.tx.inner();

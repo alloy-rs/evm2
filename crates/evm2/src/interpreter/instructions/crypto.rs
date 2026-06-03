@@ -31,6 +31,7 @@ mod tests {
     };
     use alloc::vec::Vec;
     use alloy_primitives::keccak256;
+    use core::assert_matches;
 
     #[test]
     fn keccak256_opcode() {
@@ -40,7 +41,7 @@ mod tests {
         code.push(op::KECCAK256);
         code.push(op::STOP);
         let interpreter = run(RunConfig::new(code));
-        assert!(matches!(interpreter.err, InstrStop::Stop));
+        assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [b256_to_word(keccak256([]))]);
 
         let mut code = Vec::new();
@@ -52,14 +53,14 @@ mod tests {
         code.push(op::KECCAK256);
         code.push(op::STOP);
         let interpreter = run(RunConfig::new(code));
-        assert!(matches!(interpreter.err, InstrStop::Stop));
+        assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [b256_to_word(keccak256([0x80]))]);
 
         let interpreter = run_stack([Word::MAX, Word::from(0)], op::KECCAK256);
-        assert!(matches!(interpreter.err, InstrStop::Stop));
+        assert_matches!(interpreter.err, InstrStop::Stop);
         assert_eq!(interpreter.stack(), [b256_to_word(keccak256([]))]);
 
         let interpreter = run_stack([Word::MAX, Word::from(1)], op::KECCAK256);
-        assert!(matches!(interpreter.err, InstrStop::InvalidOperandOOG));
+        assert_matches!(interpreter.err, InstrStop::InvalidOperandOOG);
     }
 }
