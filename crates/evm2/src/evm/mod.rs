@@ -20,6 +20,7 @@ use crate::{
 use alloc::{boxed::Box, vec};
 use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{Address, B256, Bytes, Log, LogData, map::AddressSet};
+use core::any::TypeId;
 #[cfg(feature = "async")]
 use core::future::Future;
 use derive_where::derive_where;
@@ -370,6 +371,25 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     pub fn clear_inspector(&mut self) -> Option<Box<dyn Inspector<T>>> {
         self.assert_inspector_mutable();
         self.inspector.take()
+    }
+
+    /// Removes the active execution inspector if it has type `I`.
+    #[inline]
+    pub fn clear_inspector_as<I: Inspector<T> + 'static>(&mut self) -> Option<Box<I>> {
+        self.assert_inspector_mutable();
+        let inspector = self.inspector.take()?;
+        let raw = Box::into_raw(inspector);
+        // SAFETY: The raw pointer is created from a live boxed inspector. If the type ID matches
+        // `I`, the allocation was originally created for `I`; otherwise we restore the original
+        // trait object box before returning.
+        unsafe {
+            if (*raw).type_id() == TypeId::of::<I>() {
+                Some(Box::from_raw(raw.cast::<I>()))
+            } else {
+                self.inspector = Some(Box::from_raw(raw));
+                None
+            }
+        }
     }
 
     /// Returns the active EVM version.
