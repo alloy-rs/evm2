@@ -130,8 +130,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             result.stop = stop;
             result.output = Bytes::new();
         } else {
-            result.state_changes = self.state.build_state_changes();
-            self.state.commit_transaction_overlay();
+            result.state_changes = self.state.accept_transaction();
         }
         result.db_error_code = self.db_error_code();
         self.state.clear_transaction_state();

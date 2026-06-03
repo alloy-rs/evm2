@@ -40,6 +40,7 @@ pub(crate) fn system_contract_has_code(database: &InMemoryDB, address: Address) 
         .cache
         .accounts
         .get(&address)
+        .and_then(Option::as_ref)
         .and_then(|info| database.cache.contracts.get(&info.code_hash))
         .is_some_and(|code| !code.is_empty())
 }

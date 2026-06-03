@@ -445,12 +445,12 @@ const fn block_reward(spec: SpecId, ommers: usize) -> u128 {
 }
 
 fn increment_balance(database: &mut InMemoryDB, address: Address, amount: U256) {
-    let mut info = database.cache.accounts.get(&address).cloned().unwrap_or_default();
+    let mut info = database.cache.accounts.get(&address).cloned().flatten().unwrap_or_default();
     info.balance = info.balance.saturating_add(amount);
     if info.code_hash.is_zero() {
         info.code_hash = KECCAK256_EMPTY;
     }
-    database.cache.accounts.insert(address, info);
+    database.cache.accounts.insert(address, Some(info));
 }
 
 fn validate_post_state(
@@ -458,7 +458,7 @@ fn validate_post_state(
     expected: &std::collections::BTreeMap<Address, Account>,
 ) -> Result<(), TestErrorKind> {
     for (address, expected_account) in expected {
-        let info = database.cache.accounts.get(address).cloned().unwrap_or_default();
+        let info = database.cache.accounts.get(address).cloned().flatten().unwrap_or_default();
         if info.balance != expected_account.balance {
             return Err(TestErrorKind::UnexpectedFailure(format!(
                 "balance mismatch for {address}: got {}, expected {}",

@@ -296,9 +296,10 @@ fn logs_hash(logs: &[Log]) -> B256 {
 }
 
 fn state_root_from_database(state: &InMemoryDB) -> B256 {
-    let accounts = state.cache.accounts.iter().map(|(&address, info)| {
+    let accounts = state.cache.accounts.iter().filter_map(|(&address, info)| {
+        let info = info.as_ref()?;
         let storage = storage_for_root(state, address);
-        (
+        Some((
             address,
             TrieAccount {
                 nonce: info.nonce,
@@ -306,7 +307,7 @@ fn state_root_from_database(state: &InMemoryDB) -> B256 {
                 storage_root: storage_root_unhashed(storage),
                 code_hash: info.code_hash,
             },
-        )
+        ))
     });
 
     state_root_unhashed(accounts)

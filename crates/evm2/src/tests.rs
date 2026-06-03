@@ -48,10 +48,7 @@ fn evm_executes_storage_transaction() {
 
     run_tx(&mut evm, contract, [op::PUSH1, 0x2a, op::PUSH1, 0x01, op::SSTORE, op::STOP]);
 
-    assert_eq!(
-        evm.state().storage_ref(&contract, &Word::from(1)).map(|slot| slot.current),
-        Some(Word::from(0x2a))
-    );
+    assert_eq!(evm.state().storage_ref(&contract, &Word::from(1)), Some(Word::from(0x2a)));
 }
 
 #[test]
@@ -86,15 +83,8 @@ fn evm_runs_transactions_against_initial_state() {
     );
     run_tx(&mut evm, contract, [op::PUSH1, 0x07, op::PUSH1, 0x01, op::SSTORE, op::STOP]);
 
-    assert!(evm.state().account_ref(&contract).is_some());
-    assert_eq!(
-        evm.state().storage_ref(&contract, &Word::from(1)).map(|slot| slot.current),
-        Some(Word::from(7))
-    );
-    assert_eq!(
-        evm.state().storage_ref(&contract, &Word::from(2)).map(|slot| slot.current),
-        Some(Word::from(42))
-    );
+    assert_eq!(evm.state().storage_ref(&contract, &Word::from(1)), Some(Word::from(7)));
+    assert_eq!(evm.state().storage_ref(&contract, &Word::from(2)), Some(Word::from(42)));
 }
 
 #[test]
