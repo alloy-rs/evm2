@@ -112,42 +112,42 @@ mod tests {
         code.push(op::BLOCKHASH);
         code.push(op::STOP);
 
-        let interpreter = run(RunConfig::new(code).host(&mut host));
-        assert_matches!(interpreter.err, InstrStop::Stop);
-        assert_eq!(interpreter.stack(), [b256_to_word(B256::with_last_byte(9))]);
+        let interp = run(RunConfig::new(code).host(&mut host));
+        assert_matches!(interp.err, InstrStop::Stop);
+        assert_eq!(interp.stack(), [b256_to_word(B256::with_last_byte(9))]);
 
         let mut code = Vec::new();
         push(&mut code, 10);
         code.push(op::BLOCKHASH);
         code.push(op::STOP);
-        let interpreter = run(RunConfig::new(code).host(&mut host));
-        assert_matches!(interpreter.err, InstrStop::Stop);
-        assert_eq!(interpreter.stack(), [0]);
+        let interp = run(RunConfig::new(code).host(&mut host));
+        assert_matches!(interp.err, InstrStop::Stop);
+        assert_eq!(interp.stack(), [0]);
     }
 
     #[test]
     fn coinbase_opcode() {
         let beneficiary = Address::from([0x44; 20]);
         let mut host = test_host(BlockEnv { beneficiary, ..BlockEnv::default() });
-        let interpreter = run(RunConfig::new([op::COINBASE, op::STOP]).host(&mut host));
-        assert_matches!(interpreter.err, InstrStop::Stop);
-        assert_eq!(interpreter.stack(), [address_to_word(&beneficiary)]);
+        let interp = run(RunConfig::new([op::COINBASE, op::STOP]).host(&mut host));
+        assert_matches!(interp.err, InstrStop::Stop);
+        assert_eq!(interp.stack(), [address_to_word(&beneficiary)]);
     }
 
     #[test]
     fn timestamp_opcode() {
         let mut host = test_host(BlockEnv { timestamp: Word::from(12), ..BlockEnv::default() });
-        let interpreter = run(RunConfig::new([op::TIMESTAMP, op::STOP]).host(&mut host));
-        assert_matches!(interpreter.err, InstrStop::Stop);
-        assert_eq!(interpreter.stack(), [Word::from(12)]);
+        let interp = run(RunConfig::new([op::TIMESTAMP, op::STOP]).host(&mut host));
+        assert_matches!(interp.err, InstrStop::Stop);
+        assert_eq!(interp.stack(), [Word::from(12)]);
     }
 
     #[test]
     fn number_opcode() {
         let mut host = test_host(BlockEnv { number: Word::from(13), ..BlockEnv::default() });
-        let interpreter = run(RunConfig::new([op::NUMBER, op::STOP]).host(&mut host));
-        assert_matches!(interpreter.err, InstrStop::Stop);
-        assert_eq!(interpreter.stack(), [Word::from(13)]);
+        let interp = run(RunConfig::new([op::NUMBER, op::STOP]).host(&mut host));
+        assert_matches!(interp.err, InstrStop::Stop);
+        assert_eq!(interp.stack(), [Word::from(13)]);
     }
 
     #[test]
@@ -158,35 +158,35 @@ mod tests {
             prevrandao: b256_to_word(randao),
             ..BlockEnv::default()
         });
-        let interpreter =
+        let interp =
             run(RunConfig::new([op::DIFFICULTY, op::STOP]).host(&mut host).spec(SpecId::FRONTIER));
-        assert_matches!(interpreter.err, InstrStop::Stop);
-        assert_eq!(interpreter.stack(), [Word::from(14)]);
+        assert_matches!(interp.err, InstrStop::Stop);
+        assert_eq!(interp.stack(), [Word::from(14)]);
 
-        let interpreter =
+        let interp =
             run(RunConfig::new([op::DIFFICULTY, op::STOP]).host(&mut host).spec(SpecId::MERGE));
-        assert_matches!(interpreter.err, InstrStop::Stop);
-        assert_eq!(interpreter.stack(), [b256_to_word(randao)]);
+        assert_matches!(interp.err, InstrStop::Stop);
+        assert_eq!(interp.stack(), [b256_to_word(randao)]);
     }
 
     #[test]
     fn gaslimit_opcode() {
         let mut host = test_host(BlockEnv { gas_limit: Word::from(15), ..BlockEnv::default() });
-        let interpreter = run(RunConfig::new([op::GASLIMIT, op::STOP]).host(&mut host));
-        assert_matches!(interpreter.err, InstrStop::Stop);
-        assert_eq!(interpreter.stack(), [Word::from(15)]);
+        let interp = run(RunConfig::new([op::GASLIMIT, op::STOP]).host(&mut host));
+        assert_matches!(interp.err, InstrStop::Stop);
+        assert_eq!(interp.stack(), [Word::from(15)]);
     }
 
     #[test]
     fn chainid_opcode() {
         let mut host = TestHost::default();
         let tx_env = TxEnv { chain_id: Word::from(1), ..TxEnv::default() };
-        let interpreter = run(RunConfig::new([op::CHAINID, op::STOP])
+        let interp = run(RunConfig::new([op::CHAINID, op::STOP])
             .host(&mut host)
             .tx_env(tx_env)
             .spec(SpecId::ISTANBUL));
-        assert_matches!(interpreter.err, InstrStop::Stop);
-        assert_eq!(interpreter.stack(), [Word::from(1)]);
+        assert_matches!(interp.err, InstrStop::Stop);
+        assert_eq!(interp.stack(), [Word::from(1)]);
     }
 
     #[test]
@@ -194,19 +194,19 @@ mod tests {
         let address = Address::from([0x66; 20]);
         let mut host = TestHost::default();
         let message = Message { destination: address, gas_limit: 10_000, ..Default::default() };
-        let interpreter =
+        let interp =
             run(RunConfig::new([op::SELFBALANCE, op::STOP]).host(&mut host).message(message));
-        assert_matches!(interpreter.err, InstrStop::Stop);
-        assert_eq!(interpreter.stack(), [address_to_word(&address)]);
+        assert_matches!(interp.err, InstrStop::Stop);
+        assert_eq!(interp.stack(), [address_to_word(&address)]);
     }
 
     #[test]
     fn basefee_opcode() {
         let mut host = test_host(BlockEnv { basefee: Word::from(16), ..BlockEnv::default() });
-        let interpreter =
+        let interp =
             run(RunConfig::new([op::BASEFEE, op::STOP]).host(&mut host).spec(SpecId::LONDON));
-        assert_matches!(interpreter.err, InstrStop::Stop);
-        assert_eq!(interpreter.stack(), [Word::from(16)]);
+        assert_matches!(interp.err, InstrStop::Stop);
+        assert_eq!(interp.stack(), [Word::from(16)]);
     }
 
     #[test]
@@ -215,36 +215,36 @@ mod tests {
         let mut host = TestHost::default();
         let tx_env = TxEnv { blob_hashes: Vec::from([b256_to_word(hash)]), ..TxEnv::default() };
 
-        let interpreter = run(RunConfig::new([op::PUSH0, op::BLOBHASH, op::STOP])
+        let interp = run(RunConfig::new([op::PUSH0, op::BLOBHASH, op::STOP])
             .host(&mut host)
             .tx_env(tx_env.clone())
             .spec(SpecId::CANCUN));
-        assert_matches!(interpreter.err, InstrStop::Stop);
-        assert_eq!(interpreter.stack(), [b256_to_word(hash)]);
+        assert_matches!(interp.err, InstrStop::Stop);
+        assert_eq!(interp.stack(), [b256_to_word(hash)]);
 
-        let interpreter = run(RunConfig::new([op::PUSH1, 0x01, op::BLOBHASH, op::STOP])
+        let interp = run(RunConfig::new([op::PUSH1, 0x01, op::BLOBHASH, op::STOP])
             .host(&mut host)
             .tx_env(tx_env)
             .spec(SpecId::CANCUN));
-        assert_matches!(interpreter.err, InstrStop::Stop);
-        assert_eq!(interpreter.stack(), [0]);
+        assert_matches!(interp.err, InstrStop::Stop);
+        assert_eq!(interp.stack(), [0]);
     }
 
     #[test]
     fn blobbasefee_opcode() {
         let mut host = test_host(BlockEnv { blob_basefee: Word::from(17), ..BlockEnv::default() });
-        let interpreter =
+        let interp =
             run(RunConfig::new([op::BLOBBASEFEE, op::STOP]).host(&mut host).spec(SpecId::CANCUN));
-        assert_matches!(interpreter.err, InstrStop::Stop);
-        assert_eq!(interpreter.stack(), [Word::from(17)]);
+        assert_matches!(interp.err, InstrStop::Stop);
+        assert_eq!(interp.stack(), [Word::from(17)]);
     }
 
     #[test]
     fn slotnum_opcode() {
         let mut host = test_host(BlockEnv { slot_num: Word::from(18), ..BlockEnv::default() });
-        let interpreter =
+        let interp =
             run(RunConfig::new([op::SLOTNUM, op::STOP]).host(&mut host).spec(SpecId::AMSTERDAM));
-        assert_matches!(interpreter.err, InstrStop::Stop);
-        assert_eq!(interpreter.stack(), [Word::from(18)]);
+        assert_matches!(interp.err, InstrStop::Stop);
+        assert_eq!(interp.stack(), [Word::from(18)]);
     }
 }

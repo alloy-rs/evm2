@@ -81,9 +81,9 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         message: &'frame Message<T>,
         caller_is_static: bool,
     ) -> Self {
-        let mut interpreter = Self::default();
-        interpreter.init(bytecode, tx_env, message, caller_is_static);
-        interpreter
+        let mut interp = Self::default();
+        interp.init(bytecode, tx_env, message, caller_is_static);
+        interp
     }
 
     /// Initializes this interpreter for a new frame, retaining reusable allocations.

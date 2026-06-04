@@ -100,27 +100,27 @@ fn instruction_macro_stack_inputs_and_output() {
     push(&mut code, 3);
     code.extend([ADD_OPCODE, op::STOP]);
 
-    let interpreter = run(RunConfig::new(code));
+    let interp = run(RunConfig::new(code));
 
-    assert_eq!(interpreter.err, InstrStop::Stop);
-    assert_eq!(interpreter.stack(), [Word::from(5)]);
+    assert_eq!(interp.err, InstrStop::Stop);
+    assert_eq!(interp.stack(), [Word::from(5)]);
 }
 
 #[test]
 fn instruction_macro_dynamic_gas_attribute() {
-    let interpreter = run(RunConfig::new([DYNAMIC_GAS_OPCODE, op::STOP]));
+    let interp = run(RunConfig::new([DYNAMIC_GAS_OPCODE, op::STOP]));
 
-    assert_eq!(interpreter.err, InstrStop::Stop);
-    assert_eq!(interpreter.stack(), [Word::from(0xda_u64)]);
-    assert_eq!(interpreter.gas_remaining(), 9_995);
+    assert_eq!(interp.err, InstrStop::Stop);
+    assert_eq!(interp.stack(), [Word::from(0xda_u64)]);
+    assert_eq!(interp.gas_remaining(), 9_995);
 }
 
 #[test]
 fn instruction_macro_no_stack_preamble_attribute() {
-    let interpreter = run(RunConfig::new([NO_STACK_PREAMBLE_OPCODE, op::STOP]));
+    let interp = run(RunConfig::new([NO_STACK_PREAMBLE_OPCODE, op::STOP]));
 
-    assert_eq!(interpreter.err, InstrStop::Stop);
-    assert_eq!(interpreter.stack(), [Word::from(0xbeef_u64)]);
+    assert_eq!(interp.err, InstrStop::Stop);
+    assert_eq!(interp.stack(), [Word::from(0xbeef_u64)]);
 }
 
 #[test]
@@ -129,10 +129,10 @@ fn instruction_macro_concrete_evm_types_equals_attribute() {
         block: BlockEnv { number: Word::from(42), ..BlockEnv::default() },
         ..TestHost::default()
     };
-    let interpreter = run(RunConfig::new([CONCRETE_EQ_OPCODE, op::STOP]).host(&mut host));
+    let interp = run(RunConfig::new([CONCRETE_EQ_OPCODE, op::STOP]).host(&mut host));
 
-    assert_eq!(interpreter.err, InstrStop::Stop);
-    assert_eq!(interpreter.stack(), [Word::from(42)]);
+    assert_eq!(interp.err, InstrStop::Stop);
+    assert_eq!(interp.stack(), [Word::from(42)]);
 }
 
 #[test]
@@ -141,10 +141,10 @@ fn instruction_macro_evm_types_colon_bound_attribute() {
         block: BlockEnv { number: Word::from(31337), ..BlockEnv::default() },
         ..TestHost::default()
     };
-    let interpreter = run(RunConfig::new([TYPE_BOUND_OPCODE, op::STOP]).host(&mut host));
+    let interp = run(RunConfig::new([TYPE_BOUND_OPCODE, op::STOP]).host(&mut host));
 
-    assert_eq!(interpreter.err, InstrStop::Stop);
-    assert!(interpreter.stack().is_empty());
+    assert_eq!(interp.err, InstrStop::Stop);
+    assert!(interp.stack().is_empty());
 }
 
 #[test]
@@ -153,8 +153,8 @@ fn instruction_macro_evm_types_assoc_colon_bound_attribute() {
         block: BlockEnv { number: Word::from(31337), ..BlockEnv::default() },
         ..TestHost::default()
     };
-    let interpreter = run(RunConfig::new([ASSOC_BOUND_OPCODE, op::STOP]).host(&mut host));
+    let interp = run(RunConfig::new([ASSOC_BOUND_OPCODE, op::STOP]).host(&mut host));
 
-    assert_eq!(interpreter.err, InstrStop::Stop);
-    assert_eq!(interpreter.stack(), [Word::from(31337)]);
+    assert_eq!(interp.err, InstrStop::Stop);
+    assert_eq!(interp.stack(), [Word::from(31337)]);
 }
