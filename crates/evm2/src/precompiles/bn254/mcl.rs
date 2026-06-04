@@ -151,6 +151,9 @@ fn read_fp(input: &[u8]) -> Result<Fp, PrecompileHalt> {
     if !fp.set_little_endian(&le_bytes) {
         return Err(PrecompileHalt::Bn254FieldPointNotAMember);
     }
+    if encode_fp(&fp).as_slice() != input {
+        return Err(PrecompileHalt::Bn254FieldPointNotAMember);
+    }
     Ok(fp)
 }
 
