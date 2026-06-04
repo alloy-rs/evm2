@@ -27,6 +27,8 @@ cfg-if.workspace = true
 
 # no_std
 once_cell = { workspace = true, features = ["alloc"] }
+paste = { workspace = true, optional = true }
+phf = { workspace = true, features = ["macros"], optional = true }
 
 # "serde"
 serde = { workspace = true, features = ["derive", "alloc"], optional = true }
@@ -127,6 +129,7 @@ std = [
     "k256/std",
     "once_cell/std",
     "p256/std",
+    "phf?/std",
     "thiserror/std",
     "c-kzg?/std",
     "secp256k1?/std",
@@ -144,6 +147,7 @@ serde = [
     "derive-where/serde",
     "k256/serde",
     "p256/serde",
+    "phf?/serde",
     "blst?/serde",
     "c-kzg?/serde",
     "secp256k1?/serde",
@@ -167,6 +171,7 @@ blst = ["dep:blst"]
 bn254-mcl = ["std", "dep:mcl_rust"]
 portable = ["c-kzg?/portable", "blst?/portable"]
 p256-aws-lc-rs = ["dep:aws-lc-rs"]
+parse = ["dep:paste", "dep:phf"]
 
 nightly = []
 no-tco = []
