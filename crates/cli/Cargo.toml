@@ -33,7 +33,7 @@ alloy-consensus = { workspace = true, features = ["k256", "secp256k1", "std"] }
 alloy-chains.workspace = true
 alloy-eips = { workspace = true, features = ["serde", "std"] }
 alloy-hardforks.workspace = true
-alloy-primitives = { workspace = true, features = ["secp256k1", "serde", "std"] }
+alloy-primitives = { workspace = true, features = ["keccak-cache-global", "secp256k1", "serde", "std"] }
 alloy-rlp = { workspace = true, features = ["std"] }
 clap.workspace = true
 rand.workspace = true
