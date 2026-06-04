@@ -37,7 +37,7 @@ alloy-primitives = { workspace = true, features = ["keccak-cache-global", "secp2
 alloy-rlp = { workspace = true, features = ["std"] }
 clap.workspace = true
 rand.workspace = true
-revm = { version = "38", default-features = true }
+revm.workspace = true
 secp256k1 = { workspace = true, features = ["global-context", "recovery"] }
 serde = { workspace = true, features = ["derive", "std"] }
 serde_json = { workspace = true, features = ["std"] }
