@@ -27,6 +27,8 @@ pub(crate) const BENEFICIARY: Address = Address::new([0x30; 20]);
 const CALLER_BALANCE: U256 = U256::from_limbs([0, 0, 1, 0]);
 const EIP7702_DELEGATED_TARGET: Address =
     Address::new([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6]);
+const EIP7702_TX_CHANCE: usize = 8;
+const EIP7702_MULTI_AUTH_CHANCE: usize = 8;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct EvmCase {
@@ -309,11 +311,15 @@ impl TxKindCase {
         {
             return kind;
         }
-        match rng.range(5) {
-            0 if spec.enables(SpecId::PRAGUE) => Self::Eip7702,
-            1 if spec.enables(SpecId::CANCUN) => Self::Eip4844,
-            2 if spec.enables(SpecId::LONDON) => Self::Eip1559,
-            3 if spec.enables(SpecId::BERLIN) => Self::Eip2930,
+
+        if spec.enables(SpecId::PRAGUE) && rng.one_in(EIP7702_TX_CHANCE) {
+            return Self::Eip7702;
+        }
+
+        match rng.range(4) {
+            0 if spec.enables(SpecId::CANCUN) => Self::Eip4844,
+            1 if spec.enables(SpecId::LONDON) => Self::Eip1559,
+            2 if spec.enables(SpecId::BERLIN) => Self::Eip2930,
             _ => Self::Legacy,
         }
     }
@@ -363,7 +369,7 @@ fn generate_eip7702_authorization_list(rng: &mut Gen) -> Vec<SignedAuthorization
         return Vec::new();
     }
 
-    let len = rng.range_inclusive(1, 3);
+    let len = if rng.one_in(EIP7702_MULTI_AUTH_CHANCE) { 2 } else { 1 };
     (0..len).map(|_| generate_eip7702_authorization(rng)).collect()
 }
 
