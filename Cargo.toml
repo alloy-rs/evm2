@@ -72,6 +72,7 @@ once_cell = { version = "1.21", default-features = false }
 paste = { version = "1.0", default-features = false }
 phf = { version = "0.13", default-features = false }
 rand = "0.10"
+revm = { version = "38", default-features = true, features = ["asm-keccak"] }
 rstest = "0.26.0"
 serde = { version = "1.0", default-features = false }
 serde_json = { version = "1.0", default-features = false }
