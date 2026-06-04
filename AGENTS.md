@@ -32,6 +32,8 @@ EVM2_DISPATCH_BACKEND=packed cargo nextest run -p evm2-eest --test eest --ignore
 ## EEST Fixtures
 
 `./scripts/setup_test_fixtures.py` downloads fixtures into `test-fixtures/`.
+If fixtures are already available in another worktree, symlink `test-fixtures`
+to that directory instead of re-downloading them.
 By default it downloads EEST develop (or stable with `EVM2_STATETEST_STABLE=1`)
 and legacy Cancun/Constantinople state tests. Devnet fixtures are opt-in with
 `DEVNET_VERSION` and `DEVNET_TAR`; add `EVM2_STATETEST_DEVNET_ONLY=1` to skip
