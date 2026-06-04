@@ -143,6 +143,19 @@ impl<ExtDB> CacheDB<ExtDB> {
     pub fn insert_block_hash(&mut self, number: &Word, hash: &B256) {
         self.cache.block_hashes.insert(*number, *hash);
     }
+
+    #[doc(hidden)]
+    #[inline]
+    pub fn merge_cache(&mut self, cache: Cache) {
+        self.cache.contracts.extend(cache.contracts);
+        self.cache.accounts.extend(cache.accounts);
+        self.cache.block_hashes.extend(cache.block_hashes);
+        for address in cache.wiped_storage {
+            self.cache.wiped_storage.insert(address);
+            self.cache.storage.retain(|key, _| key.address() != address);
+        }
+        self.cache.storage.extend(cache.storage);
+    }
 }
 
 impl<ExtDB> DatabaseCommit for CacheDB<ExtDB> {
@@ -237,6 +250,11 @@ impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
     #[inline]
     fn error(&mut self, code: DbErrorCode) -> alloc::boxed::Box<dyn core::error::Error> {
         self.db.error(code)
+    }
+
+    #[inline]
+    fn into_any(self: alloc::boxed::Box<Self>) -> alloc::boxed::Box<dyn core::any::Any> {
+        self
     }
 }
 

@@ -7,10 +7,7 @@ use super::{
 };
 use crate::{
     filter::EntryPoint,
-    state::{
-        apply_state_changes_in_place, insert_account_with_storage, parse_bytecode,
-        system_contract_has_code,
-    },
+    state::{insert_account_with_storage, parse_bytecode, system_contract_has_code},
     tx::{TxFields, build_recovered_tx, rpc_access_list, signed_authorizations},
 };
 use alloy_eips::eip7840::BlobParams;
@@ -26,7 +23,7 @@ use evm2::{
     },
     registry::HandlerError,
 };
-use std::{fs, path::Path};
+use std::{fs, mem, path::Path};
 
 const ONE_GWEI: u64 = 1_000_000_000;
 const ONE_ETHER: u128 = 1_000_000_000_000_000_000;
@@ -180,10 +177,8 @@ fn execute_block(
             Err(err) => return Err(TestError::case(path, name, err)),
         };
 
-        match execute_tx(spec, next_block_env, block_database.clone(), &tx) {
-            Ok(result) => {
-                apply_state_changes_in_place(&mut block_database, &result.state_changes);
-            }
+        match execute_tx(spec, next_block_env, &mut block_database, &tx) {
+            Ok(_) => {}
             Err(err) if should_fail => {
                 let _ = err;
                 return Ok(());
@@ -330,31 +325,33 @@ fn run_system_call(
         spec,
         block,
         ethereum_tx_registry(spec),
-        database.clone(),
+        mem::take(database),
         Precompiles::base(spec),
     );
     let result = evm.system_call(address, data);
+    *database = evm.into_cache_db();
     if !result.status && system_contract_has_code(database, address) {
         return Err(TestErrorKind::SystemCall(label));
     }
-    apply_state_changes_in_place(database, &result.state_changes);
     Ok(())
 }
 
 fn execute_tx(
     spec: SpecId,
     block: BlockEnv,
-    database: InMemoryDB,
+    database: &mut InMemoryDB,
     tx: &RecoveredTxEnvelope,
 ) -> Result<TxResult, HandlerError> {
     let mut evm = Evm::<BaseEvmTypes>::new(
         spec,
         block,
         ethereum_tx_registry(spec),
-        database,
+        mem::take(database),
         Precompiles::base(spec),
     );
-    evm.transact(tx)
+    let result = evm.transact(tx);
+    *database = evm.into_cache_db();
+    result
 }
 
 fn parse_state(

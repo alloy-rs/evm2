@@ -306,6 +306,13 @@ impl<T: EvmTypes> Evm<T> {
         self.database_mut().downcast_mut()
     }
 
+    /// Consumes the EVM and returns the backing cache database with accepted cache entries merged
+    /// in.
+    #[inline]
+    pub fn into_cache_db<ExtDB: DynDatabase>(self) -> CacheDB<ExtDB> {
+        self.state.into_initial_cache_db()
+    }
+
     /// Returns the mutable EVM state.
     #[inline]
     pub const fn state(&self) -> &State {

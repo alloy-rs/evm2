@@ -177,6 +177,11 @@ impl<T: Database> DynDatabase for Db<T> {
         }
         db_error_unavailable(code)
     }
+
+    #[inline]
+    fn into_any(self: Box<Self>) -> Box<dyn Any> {
+        self
+    }
 }
 
 /// Backing database view used to initialize mutable [`super::State`].
@@ -197,6 +202,9 @@ pub trait DynDatabase: Any {
     fn error(&mut self, code: DbErrorCode) -> Box<dyn Error> {
         db_error_unavailable(code)
     }
+
+    #[doc(hidden)]
+    fn into_any(self: Box<Self>) -> Box<dyn Any>;
 }
 
 impl core::ops::Deref for dyn DynDatabase + '_ {
@@ -239,6 +247,11 @@ impl<T: DynDatabase + ?Sized> DynDatabase for Box<T> {
     #[inline]
     fn error(&mut self, code: DbErrorCode) -> Box<dyn Error> {
         self.as_mut().error(code)
+    }
+
+    #[inline]
+    fn into_any(self: Box<Self>) -> Box<dyn Any> {
+        self
     }
 }
 
@@ -289,5 +302,10 @@ impl DynDatabase for EmptyDB {
     #[inline]
     fn get_block_hash(&mut self, number: &Word) -> DbResult<Option<B256>> {
         Db::new(*self).get_block_hash(number)
+    }
+
+    #[inline]
+    fn into_any(self: Box<Self>) -> Box<dyn Any> {
+        self
     }
 }
