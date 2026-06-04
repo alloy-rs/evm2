@@ -576,11 +576,6 @@ impl<D: AsyncDatabase> DynDatabase for AsyncDb<D> {
         }
         db_error_unavailable(code)
     }
-
-    #[inline]
-    fn into_any(self: Box<Self>) -> Box<dyn Any> {
-        self
-    }
 }
 
 impl<D: AsyncDatabase + fmt::Debug> fmt::Debug for AsyncDb<D> {
