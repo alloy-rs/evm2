@@ -37,9 +37,10 @@ alloy-primitives = { workspace = true, features = ["keccak-cache-global", "secp2
 alloy-rlp = { workspace = true, features = ["std"] }
 clap.workspace = true
 rand.workspace = true
+reqwest = { workspace = true, features = ["json", "rustls"] }
 revm.workspace = true
 secp256k1 = { workspace = true, features = ["global-context", "recovery"] }
 serde = { workspace = true, features = ["derive", "std"] }
 serde_json = { workspace = true, features = ["std"] }
 thiserror = { workspace = true, features = ["std"] }
-ureq = { workspace = true, features = ["json", "rustls"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time"] }

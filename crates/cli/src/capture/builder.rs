@@ -36,14 +36,14 @@ impl CaptureBuilder {
         self.chain_id
     }
 
-    pub(super) fn capture_block_hashes(
+    pub(super) async fn capture_block_hashes(
         &mut self,
         rpc: &RpcEndpoint,
         first_block: u64,
     ) -> Result<(), CaptureError> {
         let start = first_block.saturating_sub(256);
         for number in start..first_block {
-            let raw_block = rpc.raw_block(&hex_quantity(number))?;
+            let raw_block = rpc.raw_block(&hex_quantity(number)).await?;
             let block = block::decode_consensus_block(&raw_block)?;
             self.block_hashes.insert(block.header.number, block.header.hash_slow());
         }

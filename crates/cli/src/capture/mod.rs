@@ -11,8 +11,12 @@ pub(crate) use error::CaptureError;
 
 use crate::{args::Capture, error::Result, ethereum};
 use alloy_consensus::transaction::SignerRecoverable;
+use alloy_primitives::Bytes;
 use serde_json::Value;
-use std::{fs::File, io::BufWriter, time::Instant};
+use std::{fs::File, io::BufWriter, sync::Arc, time::Instant};
+use tokio::{sync::Semaphore, task::JoinHandle};
+
+const MAX_CONCURRENT_BLOCK_REQUESTS: usize = 8;
 
 pub(crate) struct CaptureSummary {
     pub(crate) blocks: usize,
@@ -25,7 +29,12 @@ pub(crate) struct CaptureSummary {
 pub(crate) fn run(command: Capture) -> Result<()> {
     let from = *command.range.start();
     let to = *command.range.end();
-    let summary = capture(&command.rpc, from, to, &command)
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|source| crate::error::Error::Capture { source: CaptureError::Runtime(source) })?;
+    let summary = runtime
+        .block_on(capture(&command.rpc, from, to, &command))
         .map_err(|source| crate::error::Error::Capture { source })?;
     println!(
         "captured EEST {}: {} blocks, {} txs, {} base accounts, {} base storage slots in {:.2}s",
@@ -39,7 +48,7 @@ pub(crate) fn run(command: Capture) -> Result<()> {
     Ok(())
 }
 
-fn capture(
+async fn capture(
     rpc_url: &str,
     from: u64,
     to: u64,
@@ -56,16 +65,13 @@ fn capture(
     let mut block_inputs = Vec::with_capacity((to - from + 1) as usize);
     let mut transaction_count = 0usize;
 
-    builder.capture_block_hashes(&rpc, from)?;
+    builder.capture_block_hashes(&rpc, from).await?;
+    let block_tasks = spawn_block_tasks(&rpc, from, to);
 
-    for number in from..=to {
+    for task in block_tasks {
         let block_started_at = Instant::now();
-        let block_id = rpc::hex_quantity(number);
-        let raw_block = rpc.raw_block(&block_id)?;
-        let consensus_block = block::decode_consensus_block(&raw_block)?;
-
-        let pre_traces = rpc.trace_block(&block_id, rpc::TraceMode::PreState)?;
-        let diff_traces = rpc.trace_block(&block_id, rpc::TraceMode::Diff)?;
+        let FetchedBlock { number, raw_block, consensus_block, pre_traces, diff_traces } =
+            task.await.map_err(CaptureError::TaskJoin)??;
         if pre_traces.len() != consensus_block.body.transactions.len()
             || diff_traces.len() != consensus_block.body.transactions.len()
         {
@@ -142,4 +148,36 @@ fn capture(
         base_storage_slots,
         elapsed_sec: started_at.elapsed().as_secs_f64(),
     })
+}
+
+struct FetchedBlock {
+    number: u64,
+    raw_block: Bytes,
+    consensus_block: block::MainnetBlock,
+    pre_traces: Vec<Value>,
+    diff_traces: Vec<Value>,
+}
+
+fn spawn_block_tasks(
+    rpc: &rpc::RpcEndpoint,
+    from: u64,
+    to: u64,
+) -> Vec<JoinHandle<std::result::Result<FetchedBlock, CaptureError>>> {
+    let permits = Arc::new(Semaphore::new(MAX_CONCURRENT_BLOCK_REQUESTS));
+    (from..=to)
+        .map(|number| {
+            let rpc = rpc.clone();
+            let permits = Arc::clone(&permits);
+            tokio::spawn(async move {
+                let _permit =
+                    permits.acquire_owned().await.expect("capture semaphore is not closed");
+                let block_id = rpc::hex_quantity(number);
+                let raw_block = rpc.raw_block(&block_id).await?;
+                let consensus_block = block::decode_consensus_block(&raw_block)?;
+                let pre_traces = rpc.trace_block(&block_id, rpc::TraceMode::PreState).await?;
+                let diff_traces = rpc.trace_block(&block_id, rpc::TraceMode::Diff).await?;
+                Ok(FetchedBlock { number, raw_block, consensus_block, pre_traces, diff_traces })
+            })
+        })
+        .collect()
 }
