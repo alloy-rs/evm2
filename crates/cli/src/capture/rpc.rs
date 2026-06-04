@@ -4,7 +4,7 @@ use alloy_provider::{Provider, RootProvider};
 use alloy_rpc_client::RpcClient;
 use alloy_rpc_types_eth::BlockNumberOrTag;
 use alloy_rpc_types_trace::geth::{GethDebugTracingOptions, PreStateConfig};
-use serde_json::Value;
+use serde_json::{Value, value::RawValue};
 use std::{borrow::Cow, sync::Arc, time::Duration};
 use tokio::sync::Semaphore;
 
@@ -78,13 +78,22 @@ impl RpcEndpoint {
         };
         let options =
             GethDebugTracingOptions::prestate_tracer(config).with_timeout(Duration::from_secs(120));
-        self.call(|| {
-            self.provider.raw_request(
-                Cow::Borrowed("debug_traceBlockByNumber"),
-                (BlockNumberOrTag::Number(block_number), &options),
-            )
-        })
-        .await
+        let raw = self
+            .call(|| {
+                self.provider.raw_request(
+                    Cow::Borrowed("debug_traceBlockByNumber"),
+                    (BlockNumberOrTag::Number(block_number), &options),
+                )
+            })
+            .await?;
+        Self::decode_trace(raw).await
+    }
+
+    async fn decode_trace(raw: Box<RawValue>) -> Result<Vec<Value>, CaptureError> {
+        tokio::task::spawn_blocking(move || serde_json::from_str(raw.get()))
+            .await
+            .map_err(CaptureError::JoinTraceDecoder)?
+            .map_err(CaptureError::DecodeTrace)
     }
 
     async fn call<R, F, Fut>(&self, call: F) -> Result<R, CaptureError>

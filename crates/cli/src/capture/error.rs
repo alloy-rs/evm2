@@ -16,6 +16,10 @@ pub(crate) enum CaptureError {
     Runtime(#[source] std::io::Error),
     #[error("failed to encode JSON")]
     EncodeJson(#[source] serde_json::Error),
+    #[error("failed to decode RPC trace response")]
+    DecodeTrace(#[source] serde_json::Error),
+    #[error("failed to join blocking RPC trace decoder")]
+    JoinTraceDecoder(#[source] tokio::task::JoinError),
     #[error(
         "block {block_number} trace transaction count mismatch: expected {expected}, prestate {prestate}, diff {diff}"
     )]
