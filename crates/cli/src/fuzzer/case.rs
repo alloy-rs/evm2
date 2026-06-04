@@ -19,7 +19,7 @@ use revm::{
 };
 use secp256k1::{Message, SECP256K1, SecretKey};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::OnceLock};
 
 pub(crate) const CALLER: Address = Address::new([0x10; 20]);
 pub(crate) const TARGET: Address = Address::new([0x20; 20]);
@@ -485,9 +485,12 @@ fn eip7702_designation(address: Address) -> Bytes {
 }
 
 fn fixed_eip7702_authority() -> Address {
-    fixed_eip7702_auth()
-        .recover_authority()
-        .expect("hard-coded EIP-7702 authorization must recover an authority")
+    static AUTHORITY: OnceLock<Address> = OnceLock::new();
+    *AUTHORITY.get_or_init(|| {
+        fixed_eip7702_auth()
+            .recover_authority()
+            .expect("hard-coded EIP-7702 authorization must recover an authority")
+    })
 }
 
 pub(crate) fn fixed_eip7702_auth() -> SignedAuthorization {
