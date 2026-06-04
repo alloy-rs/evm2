@@ -1,5 +1,5 @@
 use super::{
-    CaptureError, block,
+    CaptureError,
     overlay::Overlay,
     parse::{parse_address, parse_b256, parse_bytes, parse_u64, parse_u256},
     rpc::RpcEndpoint,
@@ -45,9 +45,8 @@ impl CaptureBuilder {
         let start = first_block.saturating_sub(256);
         let mut block_hashes = stream::iter(start..first_block)
             .map(|number| async move {
-                let raw_block = rpc.raw_block(number).await?;
-                let block = block::decode_consensus_block(&raw_block)?;
-                Ok::<_, CaptureError>((block.header.number, block.header.hash_slow()))
+                let hash = rpc.block_hash(number).await?;
+                Ok::<_, CaptureError>((number, hash))
             })
             .buffered(rpc.max_concurrent_requests());
 
@@ -144,7 +143,7 @@ impl CaptureBuilder {
 
     pub(super) fn finish(self, mut block_inputs: Vec<CapturedBlock>) -> CapturedCase {
         let input = if block_inputs.len() == 1 {
-            CapturedInput::Block(block_inputs.pop().expect("single block exists"))
+            CapturedInput::Block(Box::new(block_inputs.pop().expect("single block exists")))
         } else {
             CapturedInput::Blocks(CapturedBlocks { blocks: block_inputs })
         };

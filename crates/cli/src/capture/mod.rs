@@ -1,4 +1,3 @@
-mod block;
 mod builder;
 mod error;
 mod export;
@@ -10,11 +9,14 @@ mod rpc;
 pub(crate) use error::CaptureError;
 
 use crate::{args::Capture, error::Result, ethereum};
-use alloy_consensus::transaction::SignerRecoverable;
-use alloy_primitives::Bytes;
+use alloy_consensus::{
+    Block as ConsensusBlock, EthereumTxEnvelope, TxEip4844, transaction::SignerRecoverable,
+};
 use futures_util::{StreamExt, stream};
 use serde_json::Value;
 use std::{fs::File, io::BufWriter, time::Instant};
+
+type MainnetBlock = ConsensusBlock<EthereumTxEnvelope<TxEip4844>>;
 
 pub(crate) struct CaptureSummary {
     pub(crate) blocks: usize,
@@ -74,7 +76,7 @@ async fn capture(
 
     while let Some(block) = blocks.next().await {
         let block_started_at = Instant::now();
-        let FetchedBlock { number, raw_block, consensus_block, pre_traces, diff_traces } = block?;
+        let FetchedBlock { number, consensus_block, pre_traces, diff_traces } = block?;
         if pre_traces.len() != consensus_block.body.transactions.len()
             || diff_traces.len() != consensus_block.body.transactions.len()
         {
@@ -114,18 +116,13 @@ async fn capture(
             })
             .collect::<std::result::Result<Vec<_>, CaptureError>>()?;
 
-        transaction_count += transactions.len();
-        block_inputs.push(model::CapturedBlock {
-            number: consensus_block.header.number,
-            hash: consensus_block.header.hash_slow(),
-            parent_hash: consensus_block.header.parent_hash,
-            raw_block,
-            transactions,
-        });
+        let block_transaction_count = transactions.len();
+        transaction_count += block_transaction_count;
+        block_inputs.push(model::CapturedBlock { block: consensus_block, transactions });
 
         eprintln!(
             "captured block {number} ({} txs) in {:.2}s",
-            consensus_block.body.transactions.len(),
+            block_transaction_count,
             block_started_at.elapsed().as_secs_f64()
         );
     }
@@ -155,8 +152,7 @@ async fn capture(
 
 struct FetchedBlock {
     number: u64,
-    raw_block: Bytes,
-    consensus_block: block::MainnetBlock,
+    consensus_block: MainnetBlock,
     pre_traces: Vec<Value>,
     diff_traces: Vec<Value>,
 }
@@ -165,11 +161,10 @@ async fn fetch_block(
     rpc: &rpc::RpcEndpoint,
     number: u64,
 ) -> std::result::Result<FetchedBlock, CaptureError> {
-    let (raw_block, pre_traces, diff_traces) = tokio::try_join!(
-        rpc.raw_block(number),
+    let (consensus_block, pre_traces, diff_traces) = tokio::try_join!(
+        rpc.block(number),
         rpc.trace_block(number, rpc::TraceMode::PreState),
         rpc.trace_block(number, rpc::TraceMode::Diff),
     )?;
-    let consensus_block = block::decode_consensus_block(&raw_block)?;
-    Ok(FetchedBlock { number, raw_block, consensus_block, pre_traces, diff_traces })
+    Ok(FetchedBlock { number, consensus_block, pre_traces, diff_traces })
 }

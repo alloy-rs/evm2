@@ -1,6 +1,6 @@
-use super::CaptureError;
-use alloy_primitives::Bytes;
-use alloy_provider::{Provider, RootProvider, ext::DebugApi};
+use super::{CaptureError, MainnetBlock};
+use alloy_primitives::B256;
+use alloy_provider::{Provider, RootProvider};
 use alloy_rpc_client::RpcClient;
 use alloy_rpc_types_eth::BlockNumberOrTag;
 use alloy_rpc_types_trace::geth::{GethDebugTracingOptions, PreStateConfig};
@@ -48,8 +48,23 @@ impl RpcEndpoint {
         self.max_concurrent_requests
     }
 
-    pub(super) async fn raw_block(&self, block_number: u64) -> Result<Bytes, CaptureError> {
-        self.call(|| self.provider.debug_get_raw_block(block_number.into())).await
+    pub(super) async fn block(&self, block_number: u64) -> Result<MainnetBlock, CaptureError> {
+        let block = self
+            .call(|| async {
+                self.provider
+                    .get_block_by_number(BlockNumberOrTag::Number(block_number))
+                    .full()
+                    .await
+            })
+            .await?;
+        block.map(Into::into).ok_or(CaptureError::MissingBlock(block_number))
+    }
+
+    pub(super) async fn block_hash(&self, block_number: u64) -> Result<B256, CaptureError> {
+        let header = self
+            .call(|| self.provider.get_header_by_number(BlockNumberOrTag::Number(block_number)))
+            .await?;
+        header.map(|header| header.hash).ok_or(CaptureError::MissingBlockHeader(block_number))
     }
 
     pub(super) async fn trace_block(
