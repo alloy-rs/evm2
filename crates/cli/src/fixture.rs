@@ -25,6 +25,73 @@ pub(crate) fn read_text(path: &Path) -> Result<String> {
 }
 
 pub(crate) fn detect_str(path: &Path, input: &str) -> Result<Option<FixtureKind>> {
+    struct FixtureKindVisitor;
+
+    impl<'de> Visitor<'de> for FixtureKindVisitor {
+        type Value = Option<FixtureKind>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("an EEST fixture object")
+        }
+
+        fn visit_map<A>(self, mut map: A) -> std::result::Result<Self::Value, A::Error>
+        where
+            A: MapAccess<'de>,
+        {
+            let mut kind = None;
+            while map.next_key::<IgnoredAny>()?.is_some() {
+                if kind.is_none() {
+                    kind = map.next_value_seed(FixtureCaseVisitor)?;
+                } else {
+                    map.next_value::<IgnoredAny>()?;
+                }
+            }
+            Ok(kind)
+        }
+    }
+
+    struct FixtureCaseVisitor;
+
+    impl<'de> DeserializeSeed<'de> for FixtureCaseVisitor {
+        type Value = Option<FixtureKind>;
+
+        fn deserialize<D>(self, deserializer: D) -> std::result::Result<Self::Value, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            deserializer.deserialize_any(self)
+        }
+    }
+
+    impl<'de> Visitor<'de> for FixtureCaseVisitor {
+        type Value = Option<FixtureKind>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("an EEST fixture case object")
+        }
+
+        fn visit_map<A>(self, mut map: A) -> std::result::Result<Self::Value, A::Error>
+        where
+            A: MapAccess<'de>,
+        {
+            let mut is_blockchain = false;
+            let mut is_state = false;
+            while let Some(field) = map.next_key::<&str>()? {
+                is_blockchain |=
+                    matches!(field, "blocks" | "genesisBlockHeader" | "lastblockhash" | "network");
+                is_state |= matches!(field, "env" | "post" | "transaction");
+                map.next_value::<IgnoredAny>()?;
+            }
+            Ok(if is_blockchain {
+                Some(FixtureKind::BlockchainTest)
+            } else if is_state {
+                Some(FixtureKind::StateTest)
+            } else {
+                None
+            })
+        }
+    }
+
     serde_json::Deserializer::from_str(input)
         .deserialize_any(FixtureKindVisitor)
         .map_err(|source| Error::DecodeJson { path: path.to_path_buf(), source })
@@ -51,73 +118,6 @@ pub(crate) fn entrypoints(value: &Value) -> Option<Vec<&str>> {
 
 fn has_any(object: &serde_json::Map<String, Value>, fields: &[&str]) -> bool {
     fields.iter().any(|field| object.contains_key(*field))
-}
-
-struct FixtureKindVisitor;
-
-impl<'de> Visitor<'de> for FixtureKindVisitor {
-    type Value = Option<FixtureKind>;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("an EEST fixture object")
-    }
-
-    fn visit_map<A>(self, mut map: A) -> std::result::Result<Self::Value, A::Error>
-    where
-        A: MapAccess<'de>,
-    {
-        let mut kind = None;
-        while map.next_key::<IgnoredAny>()?.is_some() {
-            if kind.is_none() {
-                kind = map.next_value_seed(FixtureCaseVisitor)?;
-            } else {
-                map.next_value::<IgnoredAny>()?;
-            }
-        }
-        Ok(kind)
-    }
-}
-
-struct FixtureCaseVisitor;
-
-impl<'de> DeserializeSeed<'de> for FixtureCaseVisitor {
-    type Value = Option<FixtureKind>;
-
-    fn deserialize<D>(self, deserializer: D) -> std::result::Result<Self::Value, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        deserializer.deserialize_any(self)
-    }
-}
-
-impl<'de> Visitor<'de> for FixtureCaseVisitor {
-    type Value = Option<FixtureKind>;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("an EEST fixture case object")
-    }
-
-    fn visit_map<A>(self, mut map: A) -> std::result::Result<Self::Value, A::Error>
-    where
-        A: MapAccess<'de>,
-    {
-        let mut is_blockchain = false;
-        let mut is_state = false;
-        while let Some(field) = map.next_key::<&str>()? {
-            is_blockchain |=
-                matches!(field, "blocks" | "genesisBlockHeader" | "lastblockhash" | "network");
-            is_state |= matches!(field, "env" | "post" | "transaction");
-            map.next_value::<IgnoredAny>()?;
-        }
-        Ok(if is_blockchain {
-            Some(FixtureKind::BlockchainTest)
-        } else if is_state {
-            Some(FixtureKind::StateTest)
-        } else {
-            None
-        })
-    }
 }
 
 #[cfg(test)]
