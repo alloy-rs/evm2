@@ -104,7 +104,7 @@ fn execute_case(
 ) -> Result<(), TestError> {
     let mut database =
         parse_state(&test_case.pre.0).map_err(|err| TestError::case(path, name, err))?;
-    database.insert_block_hash(&U256::ZERO, &test_case.genesis_block_header.hash);
+    seed_block_hashes(&mut database, test_case);
 
     let spec = fork_to_spec_id(test_case.network);
     let mut parent_block_hash = Some(test_case.genesis_block_header.hash);
@@ -134,6 +134,16 @@ fn execute_case(
     }
 
     Ok(())
+}
+
+fn seed_block_hashes(database: &mut InMemoryDB, test_case: &BlockchainTestCase) {
+    for block_hash in &test_case.block_hashes {
+        database.insert_block_hash(&block_hash.number, &block_hash.hash);
+    }
+    database.insert_block_hash(
+        &test_case.genesis_block_header.number,
+        &test_case.genesis_block_header.hash,
+    );
 }
 
 #[expect(clippy::too_many_arguments)]
