@@ -1,5 +1,6 @@
 use crate::{
     error::{TestError, TestErrorKind},
+    filter::EntryPoint,
     state::{
         apply_state_changes, insert_account_with_storage, parse_bytecode, storage_for_root,
         system_contract_has_code,
@@ -44,29 +45,54 @@ pub(crate) struct SpecOutcome {
 
 /// Execution options for a single suite.
 #[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct ExecuteConfig {
+pub struct ExecuteConfig {
     /// Whether to print revm-style JSON outcome records.
-    pub(crate) print_json_outcome: bool,
+    pub print_json_outcome: bool,
+}
+
+/// Per-file execution summary.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ExecuteSummary {
+    /// Number of executed test units.
+    pub executed: usize,
+    /// Number of test units skipped by the entrypoint filter.
+    pub skipped: usize,
 }
 
 /// Executes a single state test JSON file using explicit execution options.
 pub(crate) fn execute_test_suite(path: &Path, config: ExecuteConfig) -> Result<(), TestError> {
     let input = fs::read_to_string(path).map_err(|err| TestError::unknown(path, err.into()))?;
-    execute_str_with_config(path, &input, config)
+    execute_str_with_config(path, &input, config).map(|_| ())
 }
 
 /// Executes a loaded state test JSON file using explicit execution options.
-pub(crate) fn execute_str_with_config(
+pub fn execute_str_with_config(
     path: &Path,
     input: &str,
     config: ExecuteConfig,
-) -> Result<(), TestError> {
+) -> Result<ExecuteSummary, TestError> {
+    execute_str_with_filter(path, input, config, &EntryPoint::default())
+}
+
+/// Executes a loaded state test JSON file, selecting test units by entrypoint.
+pub fn execute_str_with_filter(
+    path: &Path,
+    input: &str,
+    config: ExecuteConfig,
+    entrypoint: &EntryPoint,
+) -> Result<ExecuteSummary, TestError> {
     let suite: TestSuite =
         serde_json::from_str(input).map_err(|err| TestError::unknown(path, err.into()))?;
+    let mut summary = ExecuteSummary::default();
     for (name, unit) in suite.0 {
+        if !entrypoint.matches(&name) {
+            summary.skipped += 1;
+            continue;
+        }
         execute_unit(path, &name, unit, config)?;
+        summary.executed += 1;
     }
-    Ok(())
+    Ok(summary)
 }
 
 fn execute_unit(

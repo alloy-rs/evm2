@@ -364,8 +364,7 @@ fn current_tokio_handle() -> Option<Handle> {
 
 fn block_on_handle<F>(handle: &Handle, future: F) -> F::Output
 where
-    F: Future + Send,
-    F::Output: Send,
+    F: Future,
 {
     let should_use_block_in_place = Handle::try_current()
         .ok()
@@ -383,8 +382,7 @@ where
 
 fn block_on_runtime<F>(runtime: Option<&Handle>, future: F) -> AsyncResult<F::Output>
 where
-    F: Future + Send,
-    F::Output: Send,
+    F: Future,
 {
     if CURRENT.get().is_some() {
         return block_on_current(future);
@@ -399,9 +397,7 @@ where
 
 fn block_on_runtime_result<F, T, E>(runtime: Option<&Handle>, future: F) -> AsyncResult<T, E>
 where
-    F: Future<Output = Result<T, E>> + Send,
-    T: Send,
-    E: Send,
+    F: Future<Output = Result<T, E>>,
 {
     match block_on_runtime(runtime, future).map_err(AsyncError::with_inner_error)? {
         Ok(value) => Ok(value),
@@ -428,7 +424,7 @@ unsafe fn restore_context_lifetime<'a>(cx: &'a mut Context<'static>) -> &'a mut 
 /// async EVM entrypoints such as [`crate::Evm::transact_async`]. Calling synchronous EVM
 /// entrypoints with an [`AsyncDb`] can still execute the futures by blocking on Tokio, but it
 /// cannot suspend the EVM fiber and yield back to the caller.
-pub trait AsyncDatabase: Any + Send {
+pub trait AsyncDatabase: Any {
     /// Database error type.
     type Error: Error + Send + 'static;
 
@@ -572,7 +568,7 @@ impl<D: AsyncDatabase> DynDatabase for AsyncDb<D> {
     }
 
     #[inline]
-    fn error(&mut self, code: DbErrorCode) -> Box<dyn Error + Send> {
+    fn error(&mut self, code: DbErrorCode) -> Box<dyn Error> {
         if code == stored_error_code()
             && let Some(error) = self.error.take()
         {
@@ -593,11 +589,12 @@ impl<D: AsyncDatabase + fmt::Debug> fmt::Debug for AsyncDb<D> {
 mod tests {
     use super::{AsyncDatabase, AsyncDb, AsyncError, block_on_current, on_fiber};
     use crate::{
-        BaseEvmTypes, Evm, Precompiles, SpecId, TxResult,
+        BaseEvmTypes, Evm, PrecompileError, Precompiles, SpecId, TxResult,
         bytecode::Bytecode,
         env::BlockEnv,
-        evm::{DynDatabase, InMemoryDB},
-        interpreter::Word,
+        evm::{Database, Db, DynDatabase, InMemoryDB, PrecompileProvider},
+        interpreter::{GasTracker, Message, Word},
+        precompile::PrecompileOutput,
         registry::{HandlerError, HandlerResult, TxRegistry, TxRequest},
     };
     use alloy_consensus::{TxLegacy, transaction::Recovered};
@@ -609,6 +606,7 @@ mod tests {
     use corosensei::stack::Stack;
     use std::{
         error::Error,
+        rc::Rc,
         task::{Context, Waker},
     };
 
@@ -699,6 +697,16 @@ mod tests {
     }
 
     #[test]
+    fn async_database_inner_futures_are_send() {
+        let mut db = TestDb;
+
+        drop(assert_send(db.get_account(Address::ZERO)));
+        drop(assert_send(db.get_code_by_hash(B256::ZERO)));
+        drop(assert_send(db.get_storage(Address::ZERO, Word::ZERO)));
+        drop(assert_send(db.get_block_hash(Word::ZERO)));
+    }
+
+    #[test]
     fn dispatches_transaction_async_by_typed_2718_type() {
         let registry = TxRegistry::new().with_handler(
             TEST_TX_TYPE,
@@ -712,11 +720,117 @@ mod tests {
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
         );
+        evm.evm_is_send::<InMemoryDB, Precompiles<BaseEvmTypes>>();
         let tx = test_tx(41);
 
         let result = poll_ready(evm.transact_async(&tx)).unwrap();
 
         assert_eq!(result.gas_used, 42);
+    }
+
+    #[test]
+    fn transaction_async_future_is_send_with_send_erased_fields() {
+        let registry = TxRegistry::new().with_handler(
+            TEST_TX_TYPE,
+            crate::ethereum::RecoveredTxEnvelope::as_legacy,
+            handle_test_tx,
+        );
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            registry,
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        evm.evm_is_send::<InMemoryDB, Precompiles<BaseEvmTypes>>();
+        let tx = test_tx(41);
+
+        let result = poll_ready(assert_send(evm.transact_async(&tx))).unwrap();
+
+        assert_eq!(result.gas_used, 42);
+    }
+
+    #[test]
+    fn transaction_async_future_is_send_after_type_check() {
+        let registry = TxRegistry::new().with_handler(
+            TEST_TX_TYPE,
+            crate::ethereum::RecoveredTxEnvelope::as_legacy,
+            handle_test_tx,
+        );
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            registry,
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        evm.set_inspector(SendInspector);
+        evm.evm_is_send_with_inspector::<InMemoryDB, Precompiles<BaseEvmTypes>, SendInspector>();
+        let tx = test_tx(41);
+
+        let result = poll_ready(assert_send(evm.transact_async(&tx))).unwrap();
+
+        assert_eq!(result.gas_used, 42);
+    }
+
+    #[test]
+    #[should_panic = "async EVM execution requires EVM erased fields to be verified as Send with Evm::evm_is_send"]
+    fn transaction_async_panics_with_non_send_erased_fields() {
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        let tx = test_tx(41);
+
+        drop(evm.transact_async(&tx));
+    }
+
+    #[test]
+    #[should_panic = "async EVM execution requires EVM erased fields to be verified as Send with Evm::evm_is_send"]
+    fn transaction_async_panics_after_non_send_setter() {
+        let marker = Rc::new(());
+        let registry = TxRegistry::new().with_handler(
+            TEST_TX_TYPE,
+            crate::ethereum::RecoveredTxEnvelope::as_legacy,
+            handle_test_tx,
+        );
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            registry,
+            InMemoryDB::default(),
+            Precompiles::base(SpecId::OSAKA),
+        );
+        evm.evm_is_send::<InMemoryDB, Precompiles<BaseEvmTypes>>();
+        evm.set_inspector(NonSendInspector { marker });
+        let tx = test_tx(41);
+
+        drop(evm.transact_async(&tx));
+    }
+
+    #[test]
+    fn evm_accepts_non_send_erased_fields() {
+        let marker = Rc::new(());
+        let database = Db::new(NonSendDb { marker: Rc::clone(&marker) });
+        let precompiles = NonSendPrecompiles { marker: Rc::clone(&marker) };
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            database,
+            precompiles,
+        );
+
+        evm.set_inspector(NonSendInspector { marker });
+
+        let address = Address::ZERO;
+        let key = Word::from(7);
+        let value = evm.database_mut().get_storage(&address, &key).unwrap();
+
+        assert_eq!(value, Word::from(9));
     }
 
     #[test]
@@ -728,6 +842,7 @@ mod tests {
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
         );
+        evm.evm_is_send::<InMemoryDB, Precompiles<BaseEvmTypes>>();
         let tx = test_tx(41);
 
         let result = poll_ready(evm.transact_async(&tx));
@@ -800,6 +915,7 @@ mod tests {
             AsyncDb::new(TokioDb),
             Precompiles::base(SpecId::OSAKA),
         );
+        evm.evm_is_send::<AsyncDb<TokioDb>, Precompiles<BaseEvmTypes>>();
         let address = Address::ZERO;
         let key = Word::from(7);
 
@@ -818,6 +934,7 @@ mod tests {
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
         );
+        evm.evm_is_send::<InMemoryDB, Precompiles<BaseEvmTypes>>();
 
         let result = poll_ready(evm.system_call_async(contract, Bytes::new())).unwrap();
 
@@ -867,6 +984,73 @@ mod tests {
             Poll::Pending => panic!("future unexpectedly pending"),
         }
     }
+
+    fn assert_send<F: Future + Send>(future: F) -> F {
+        future
+    }
+
+    struct NonSendDb {
+        marker: Rc<()>,
+    }
+
+    impl Database for NonSendDb {
+        type Error = Infallible;
+
+        fn get_account(
+            &mut self,
+            _address: &Address,
+        ) -> Result<Option<crate::evm::AccountInfo>, Self::Error> {
+            let _ = Rc::strong_count(&self.marker);
+            Ok(None)
+        }
+
+        fn get_code_by_hash(&mut self, _code_hash: &B256) -> Result<Bytecode, Self::Error> {
+            Ok(Bytecode::default())
+        }
+
+        fn get_storage(&mut self, _address: &Address, _key: &Word) -> Result<Word, Self::Error> {
+            let _ = Rc::strong_count(&self.marker);
+            Ok(Word::from(9))
+        }
+
+        fn get_block_hash(&mut self, _number: &Word) -> Result<Option<B256>, Self::Error> {
+            Ok(None)
+        }
+    }
+
+    struct NonSendPrecompiles {
+        marker: Rc<()>,
+    }
+
+    impl PrecompileProvider<BaseEvmTypes> for NonSendPrecompiles {
+        fn contains(&self, _address: &Address) -> bool {
+            let _ = Rc::strong_count(&self.marker);
+            false
+        }
+
+        fn execute(
+            &mut self,
+            _evm: &mut Evm<BaseEvmTypes>,
+            _message: &Message<BaseEvmTypes>,
+            _gas: &mut GasTracker,
+        ) -> Option<Result<PrecompileOutput, PrecompileError>> {
+            None
+        }
+    }
+
+    struct NonSendInspector {
+        marker: Rc<()>,
+    }
+
+    impl crate::evm::Inspector<BaseEvmTypes> for NonSendInspector {
+        fn step(&mut self, _interp: &mut crate::interpreter::Interpreter<'_, BaseEvmTypes>) {
+            let _ = Rc::strong_count(&self.marker);
+        }
+    }
+
+    struct SendInspector;
+
+    impl crate::evm::Inspector<BaseEvmTypes> for SendInspector {}
 
     struct PendingOnce {
         pending: bool,

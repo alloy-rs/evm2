@@ -7,6 +7,8 @@
 //! and produces no state changes.
 
 #[cfg(feature = "async")]
+use super::SendEvmRef;
+#[cfg(feature = "async")]
 use super::r#async;
 use super::{Evm, TxResult};
 use crate::{
@@ -54,6 +56,10 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     /// [`evm::async::AsyncDb`](crate::evm::async::AsyncDb) to take
     /// advantage of yielding database I/O. With a synchronous database this is mostly equivalent to
     /// running the synchronous system call on a fiber.
+    ///
+    /// This returns a `Send` future. Before calling it, the current erased database, precompile
+    /// provider, and optional inspector must be verified with [`Evm::evm_is_send`] or
+    /// [`Evm::evm_is_send_with_inspector`].
     #[cfg(feature = "async")]
     #[inline]
     pub fn system_call_async(
@@ -64,12 +70,15 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     where
         T::TxResultExt: Send,
     {
+        self.assert_erased_send();
         let stack = self.async_stack();
+        let mut evm = SendEvmRef::new(self);
         // SAFETY: The returned future owns the exclusive `&mut self` borrow, so nothing else can
-        // access the EVM stack slot until that future is dropped.
+        // access the EVM stack slot until that future is dropped. The send marker checked above
+        // requires all erased EVM fields to have been verified by `Evm::evm_is_send`.
         unsafe {
             r#async::on_fiber_with_stack(stack, move || {
-                self.system_call(system_contract_address, data)
+                evm.system_call(system_contract_address, data)
             })
         }
     }
@@ -143,6 +152,10 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     /// [`evm::async::AsyncDb`](crate::evm::async::AsyncDb) to take
     /// advantage of yielding database I/O. With a synchronous database this is mostly equivalent to
     /// running the synchronous system call on a fiber.
+    ///
+    /// This returns a `Send` future. Before calling it, the current erased database, precompile
+    /// provider, and optional inspector must be verified with [`Evm::evm_is_send`] or
+    /// [`Evm::evm_is_send_with_inspector`].
     #[cfg(feature = "async")]
     #[inline]
     pub fn system_call_with_caller_async(
@@ -154,14 +167,35 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     where
         T::TxResultExt: Send,
     {
+        self.assert_erased_send();
         let stack = self.async_stack();
+        let mut evm = SendEvmRef::new(self);
         // SAFETY: The returned future owns the exclusive `&mut self` borrow, so nothing else can
-        // access the EVM stack slot until that future is dropped.
+        // access the EVM stack slot until that future is dropped. The send marker checked above
+        // requires all erased EVM fields to have been verified by `Evm::evm_is_send`.
         unsafe {
             r#async::on_fiber_with_stack(stack, move || {
-                self.system_call_with_caller(caller, system_contract_address, data)
+                evm.system_call_with_caller(caller, system_contract_address, data)
             })
         }
+    }
+}
+
+#[cfg(feature = "async")]
+impl<T: EvmTypes<Host = Evm<T>>> SendEvmRef<'_, T> {
+    #[inline]
+    fn system_call(&mut self, system_contract_address: Address, data: Bytes) -> TxResult<T> {
+        self.evm.system_call(system_contract_address, data)
+    }
+
+    #[inline]
+    fn system_call_with_caller(
+        &mut self,
+        caller: Address,
+        system_contract_address: Address,
+        data: Bytes,
+    ) -> TxResult<T> {
+        self.evm.system_call_with_caller(caller, system_contract_address, data)
     }
 }
 

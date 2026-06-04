@@ -37,7 +37,7 @@ impl PrecompileOutput {
 }
 
 /// Precompile execution hook.
-pub trait PrecompileProvider<T: EvmTypes>: Any + Send {
+pub trait PrecompileProvider<T: EvmTypes>: Any {
     /// Returns precompile addresses that should be warm at transaction start.
     fn warm_addresses(&self) -> Vec<Address> {
         Vec::new()
@@ -55,7 +55,7 @@ pub trait PrecompileProvider<T: EvmTypes>: Any + Send {
     ) -> Option<Result<PrecompileOutput, PrecompileError>>;
 }
 
-impl<T: EvmTypes> PrecompileProvider<T> for Box<dyn PrecompileProvider<T>> {
+impl<T: EvmTypes, P: PrecompileProvider<T> + ?Sized> PrecompileProvider<T> for Box<P> {
     #[inline]
     fn warm_addresses(&self) -> Vec<Address> {
         self.as_ref().warm_addresses()
