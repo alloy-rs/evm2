@@ -538,7 +538,7 @@
 -    ) {
 -        // We always want an OpCode, even it is unknown because it could be an additional opcode
 -        // that not a known constant.
--        let op = unsafe { OpCode::new_unchecked(interp.bytecode.opcode()) };
+-        let op = OpCode::new_or_unknown(interp.bytecode.opcode());
 +impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for TracingInspector {
 +    fn initialize_interp(&mut self, interp: &mut Interpreter<'_, T>) {
 +        self.spec_id = Some(interp.spec());

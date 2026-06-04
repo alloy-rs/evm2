@@ -1,6 +1,0 @@
---- upstream/tests/it/writer/test_trace_printing/3.bytecodes.storage.decoded.txt
-+++ evm2/tests/it/writer/test_trace_printing/3.bytecodes.storage.decoded.txt
-@@ -1,2 +1,2 @@
--  [2348] Counter::number()
-+  [2370] Counter::number()
-     └─ ← [Return] 1

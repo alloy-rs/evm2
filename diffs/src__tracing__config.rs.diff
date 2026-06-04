@@ -33,7 +33,16 @@
          self.0.set_bit(op.get() as usize, true);
          self
      }
-@@ -240,12 +240,12 @@
+@@ -222,8 +222,6 @@
+             .set_memory_snapshots(true)
+             // need stack snapshots for keccak preimages
+             .set_stack_snapshots(StackSnapshotType::Full)
+-            // need state diffs to capture SLOAD values in accessedSlots.reads
+-            .set_state_diffs(true)
+             .steps()
+     }
+ 
+@@ -242,12 +240,12 @@
  
      /// Returns a config for geth's [PrestateTracer](alloy_rpc_types_trace::geth::PreStateFrame).
      ///

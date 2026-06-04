@@ -1,6 +1,0 @@
---- upstream/tests/it/writer/test_trace_printing/2.decoded.txt
-+++ evm2/tests/it/writer/test_trace_printing/2.decoded.txt
-@@ -1,2 +1,2 @@
--  [22452] Counter::increment()
-+  [22518] Counter::increment()
-     └─ ← [Return]

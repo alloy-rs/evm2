@@ -1,6 +1,0 @@
---- upstream/tests/it/writer/test_trace_printing/2.bytecodes.txt
-+++ evm2/tests/it/writer/test_trace_printing/2.bytecodes.txt
-@@ -1,2 +1,2 @@
--  [22452] 0xBd770416a3345F91E4B34576cb804a576fa48EB1::d09de08a()
-+  [22518] 0xBd770416a3345F91E4B34576cb804a576fa48EB1::d09de08a()
-     └─ ← [Return]

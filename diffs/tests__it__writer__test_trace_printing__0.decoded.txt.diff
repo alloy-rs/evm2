@@ -1,7 +1,0 @@
---- upstream/tests/it/writer/test_trace_printing/0.decoded.txt
-+++ evm2/tests/it/writer/test_trace_printing/0.decoded.txt
-@@ -1,2 +1,2 @@
--  [209257] → new Counter@0xBd770416a3345F91E4B34576cb804a576fa48EB1
--    └─ ← [Return] 1045 bytes of code
-+  [243694] → new Counter@0xBd770416a3345F91E4B34576cb804a576fa48EB1
-+    └─ ← [Return] 1217 bytes of code

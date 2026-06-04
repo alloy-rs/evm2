@@ -164,7 +164,7 @@ Review status legend:
 
 - [x] `tests/it/parity.rs`
   - Original parity tests are present with evm2 helper/API substitutions and bytecode formatting.
-  - Typo-only correction: `contect created` to `context created`.
+  - Typo-only correction in the created-context assertion message.
 
 - [x] `tests/it/repro/mod.rs`
   - Original repro helper structure is present with evm2 cache/account/storage substitutions.

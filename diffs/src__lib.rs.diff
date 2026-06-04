@@ -13,7 +13,7 @@
  #![doc = include_str!("../README.md")]
  #![doc(
      html_logo_url = "https://raw.githubusercontent.com/paradigmxyz/reth/main/assets/reth-docs.png",
-@@ -18,21 +17,29 @@
+@@ -18,13 +17,24 @@
  
  extern crate alloc;
  
@@ -41,11 +41,3 @@
  pub mod tracing;
  
  /// An inspector for recording internal transfers.
- pub mod transfer;
- 
--/// An inspector for tracking edge coverage.
--pub mod edge_cov;
--
- /// An inspector for tracking storage access.
- pub mod storage;
- 

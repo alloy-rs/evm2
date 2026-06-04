@@ -1,8 +1,0 @@
---- upstream/tests/it/writer/test_trace_printing/2.bytecodes.storage.txt
-+++ evm2/tests/it/writer/test_trace_printing/2.bytecodes.storage.txt
-@@ -1,4 +1,4 @@
--  [22452] 0xBd770416a3345F91E4B34576cb804a576fa48EB1::d09de08a()
-+  [22518] 0xBd770416a3345F91E4B34576cb804a576fa48EB1::d09de08a()
-     ├─  storage changes:
-     │   @ 0: 0 → 1
-     └─ ← [Return]

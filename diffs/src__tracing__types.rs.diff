@@ -179,7 +179,7 @@
          let Some(status) = self.status else {
              return false;
          };
--        status.is_error()
+-        status.is_halt()
 +        !status.is_success()
      }
  
