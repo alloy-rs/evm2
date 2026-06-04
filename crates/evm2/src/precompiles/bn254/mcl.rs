@@ -2,8 +2,12 @@
 
 use super::{Bn254Ops, FQ_LEN, FQ2_LEN, G1_LEN, SCALAR_LEN};
 use crate::precompiles::PrecompileHalt;
+use alloy_primitives::hex;
 use mcl_rust::{CurveType, Fp, Fp2, Fr, G1, G2, GT};
 use std::sync::Once;
+
+const FQ_MODULUS: [u8; FQ_LEN] =
+    hex!("30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001");
 
 #[inline]
 fn ensure_init() {
@@ -143,6 +147,10 @@ impl Bn254Ops for MclOps {
 
 #[inline]
 fn read_fp(input: &[u8]) -> Result<Fp, PrecompileHalt> {
+    if input >= FQ_MODULUS.as_slice() {
+        return Err(PrecompileHalt::Bn254FieldPointNotAMember);
+    }
+
     let mut le_bytes = [0u8; FQ_LEN];
     le_bytes.copy_from_slice(&input[..FQ_LEN]);
     le_bytes.reverse();

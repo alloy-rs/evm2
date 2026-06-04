@@ -353,6 +353,13 @@ mod tests {
             res,
             Err(ref f) if *f == PrecompileError::Halt(PrecompileHalt::Bn254AffineGFailedToCreate),
         );
+
+        // Short input is right-padded. This makes the first field element non-canonical.
+        let res = run_add(&[0x40], BYZANTIUM_ADD_GAS_COST, &mut GasTracker::new(500));
+        assert_matches!(
+            res,
+            Err(ref f) if *f == PrecompileError::Halt(PrecompileHalt::Bn254FieldPointNotAMember),
+        );
     }
 
     #[test]
@@ -432,6 +439,13 @@ mod tests {
         assert_matches!(
             res,
             Err(ref f) if *f == PrecompileError::Halt(PrecompileHalt::Bn254AffineGFailedToCreate),
+        );
+
+        // Short input is right-padded. This makes the point x-coordinate non-canonical.
+        let res = run_mul(&[0x40], BYZANTIUM_MUL_GAS_COST, &mut GasTracker::new(40_000));
+        assert_matches!(
+            res,
+            Err(ref f) if *f == PrecompileError::Halt(PrecompileHalt::Bn254FieldPointNotAMember),
         );
     }
 
@@ -528,6 +542,19 @@ mod tests {
         assert_matches!(
             res,
             Err(ref f) if *f == PrecompileError::Halt(PrecompileHalt::Bn254AffineGFailedToCreate),
+        );
+
+        let mut input = [0u8; PAIR_ELEMENT_LEN];
+        input[0] = 0x40;
+        let res = run_pair(
+            &input,
+            BYZANTIUM_PAIR_PER_POINT,
+            BYZANTIUM_PAIR_BASE,
+            &mut GasTracker::new(180_000),
+        );
+        assert_matches!(
+            res,
+            Err(ref f) if *f == PrecompileError::Halt(PrecompileHalt::Bn254FieldPointNotAMember),
         );
 
         // Invalid input length
