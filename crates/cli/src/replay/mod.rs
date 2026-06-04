@@ -9,13 +9,13 @@ use evm2_eest::{
 };
 
 pub(crate) fn run(command: Replay) -> Result<()> {
-    let input = fixture::read(&command.path)?;
+    let input = fixture::read_text(&command.path)?;
     let entrypoint = EntryPoint::new(command.entrypoint);
-    match fixture::detect(&input.json) {
+    match fixture::detect_str(&command.path, &input)? {
         Some(FixtureKind::StateTest) => {
             let summary = execute_state_tests_str_with_filter(
                 &command.path,
-                &input.text,
+                &input,
                 StateTestExecuteConfig::default(),
                 &entrypoint,
             )
@@ -31,7 +31,7 @@ pub(crate) fn run(command: Replay) -> Result<()> {
         Some(FixtureKind::BlockchainTest) => {
             let summary = execute_blockchain_tests_str_with_filter(
                 &command.path,
-                &input.text,
+                &input,
                 BlockchainTestExecuteConfig::default(),
                 &entrypoint,
             )
