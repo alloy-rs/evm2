@@ -1,6 +1,6 @@
 use super::{
     BytecodeRef, Gas, InstrStop, Memory, Message, MessageKind, MessageResult, Pc, Result,
-    StackBacking, Word,
+    StackBacking, StackRef, Word,
 };
 use crate::{
     EvmTypes, ExecutionConfig, Version,
@@ -150,8 +150,8 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
 
     /// Returns the current operand stack.
     #[inline]
-    pub fn stack(&self) -> &[Word] {
-        unsafe { core::slice::from_raw_parts(self.stack.as_ptr().cast(), self.stack_len) }
+    pub const fn stack(&self) -> StackRef<'_> {
+        StackRef::new(&self.stack, self.stack_len)
     }
 
     /// Stops the interpreter with `stop`.
