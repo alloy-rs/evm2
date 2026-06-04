@@ -21,6 +21,7 @@ pub(super) enum TraceMode {
 pub(super) struct RpcEndpoint {
     provider: RootProvider,
     permits: Arc<Semaphore>,
+    max_concurrent_requests: usize,
 }
 
 impl RpcEndpoint {
@@ -39,7 +40,12 @@ impl RpcEndpoint {
         Ok(Self {
             provider: RootProvider::new(client),
             permits: Arc::new(Semaphore::new(max_concurrent_requests)),
+            max_concurrent_requests,
         })
+    }
+
+    pub(super) const fn max_concurrent_requests(&self) -> usize {
+        self.max_concurrent_requests
     }
 
     pub(super) async fn raw_block(&self, block_number: u64) -> Result<Bytes, CaptureError> {

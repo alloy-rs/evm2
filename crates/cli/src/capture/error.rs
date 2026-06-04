@@ -10,8 +10,6 @@ pub(crate) enum CaptureError {
     Transport(#[from] alloy_provider::transport::TransportError),
     #[error("failed to create Tokio runtime for capture")]
     Runtime(#[source] std::io::Error),
-    #[error("capture block task failed")]
-    TaskJoin(#[source] tokio::task::JoinError),
     #[error("failed to encode JSON")]
     EncodeJson(#[source] serde_json::Error),
     #[error(

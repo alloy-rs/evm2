@@ -9,6 +9,7 @@ use crate::capture::model::{
     CapturedVersions, Code, CodeTable, State, StorageEntry,
 };
 use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, U256, keccak256};
+use futures_util::{StreamExt, stream};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
 
@@ -42,20 +43,17 @@ impl CaptureBuilder {
         first_block: u64,
     ) -> Result<(), CaptureError> {
         let start = first_block.saturating_sub(256);
-        let block_tasks = (start..first_block)
-            .map(|number| {
-                let rpc = rpc.clone();
-                tokio::spawn(async move {
-                    let raw_block = rpc.raw_block(number).await?;
-                    Ok::<_, CaptureError>((number, raw_block))
-                })
+        let mut block_hashes = stream::iter(start..first_block)
+            .map(|number| async move {
+                let raw_block = rpc.raw_block(number).await?;
+                let block = block::decode_consensus_block(&raw_block)?;
+                Ok::<_, CaptureError>((block.header.number, block.header.hash_slow()))
             })
-            .collect::<Vec<_>>();
+            .buffered(rpc.max_concurrent_requests());
 
-        for task in block_tasks {
-            let (_number, raw_block) = task.await.map_err(CaptureError::TaskJoin)??;
-            let block = block::decode_consensus_block(&raw_block)?;
-            self.block_hashes.insert(block.header.number, block.header.hash_slow());
+        while let Some(block_hash) = block_hashes.next().await {
+            let (number, hash) = block_hash?;
+            self.block_hashes.insert(number, hash);
         }
         Ok(())
     }

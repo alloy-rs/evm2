@@ -40,6 +40,7 @@ alloy-rpc-client = { workspace = true, features = ["reqwest"] }
 alloy-rpc-types-eth = { workspace = true, features = ["serde", "std"] }
 alloy-rpc-types-trace.workspace = true
 clap.workspace = true
+futures-util.workspace = true
 rand.workspace = true
 revm.workspace = true
 secp256k1 = { workspace = true, features = ["global-context", "recovery"] }

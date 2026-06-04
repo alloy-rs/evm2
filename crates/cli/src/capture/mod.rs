@@ -12,9 +12,9 @@ pub(crate) use error::CaptureError;
 use crate::{args::Capture, error::Result, ethereum};
 use alloy_consensus::transaction::SignerRecoverable;
 use alloy_primitives::Bytes;
+use futures_util::{StreamExt, stream};
 use serde_json::Value;
 use std::{fs::File, io::BufWriter, time::Instant};
-use tokio::task::JoinHandle;
 
 pub(crate) struct CaptureSummary {
     pub(crate) blocks: usize,
@@ -65,12 +65,13 @@ async fn capture(
     let mut transaction_count = 0usize;
 
     builder.capture_block_hashes(&rpc, from).await?;
-    let block_tasks = spawn_block_tasks(&rpc, from, to);
+    let mut blocks = stream::iter(from..=to)
+        .map(|number| fetch_block(&rpc, number))
+        .buffered(rpc.max_concurrent_requests());
 
-    for task in block_tasks {
+    while let Some(block) = blocks.next().await {
         let block_started_at = Instant::now();
-        let FetchedBlock { number, raw_block, consensus_block, pre_traces, diff_traces } =
-            task.await.map_err(CaptureError::TaskJoin)??;
+        let FetchedBlock { number, raw_block, consensus_block, pre_traces, diff_traces } = block?;
         if pre_traces.len() != consensus_block.body.transactions.len()
             || diff_traces.len() != consensus_block.body.transactions.len()
         {
@@ -157,23 +158,15 @@ struct FetchedBlock {
     diff_traces: Vec<Value>,
 }
 
-fn spawn_block_tasks(
+async fn fetch_block(
     rpc: &rpc::RpcEndpoint,
-    from: u64,
-    to: u64,
-) -> Vec<JoinHandle<std::result::Result<FetchedBlock, CaptureError>>> {
-    (from..=to)
-        .map(|number| {
-            let rpc = rpc.clone();
-            tokio::spawn(async move {
-                let (raw_block, pre_traces, diff_traces) = tokio::try_join!(
-                    rpc.raw_block(number),
-                    rpc.trace_block(number, rpc::TraceMode::PreState),
-                    rpc.trace_block(number, rpc::TraceMode::Diff),
-                )?;
-                let consensus_block = block::decode_consensus_block(&raw_block)?;
-                Ok(FetchedBlock { number, raw_block, consensus_block, pre_traces, diff_traces })
-            })
-        })
-        .collect()
+    number: u64,
+) -> std::result::Result<FetchedBlock, CaptureError> {
+    let (raw_block, pre_traces, diff_traces) = tokio::try_join!(
+        rpc.raw_block(number),
+        rpc.trace_block(number, rpc::TraceMode::PreState),
+        rpc.trace_block(number, rpc::TraceMode::Diff),
+    )?;
+    let consensus_block = block::decode_consensus_block(&raw_block)?;
+    Ok(FetchedBlock { number, raw_block, consensus_block, pre_traces, diff_traces })
 }

@@ -70,6 +70,7 @@ corosensei = { version = "0.3.4", default-features = false, features = [
     "default-stack",
     "unwind",
 ] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 libtest-mimic = "0.8"
 once_cell = { version = "1.21", default-features = false }
 paste = { version = "1.0", default-features = false }
