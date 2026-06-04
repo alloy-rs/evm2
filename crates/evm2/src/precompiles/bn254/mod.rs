@@ -360,6 +360,24 @@ mod tests {
             res,
             Err(ref f) if *f == PrecompileError::Halt(PrecompileHalt::Bn254FieldPointNotAMember),
         );
+
+        let input = hex::decode(
+            "\
+            0000000000000000000000000000000000000000000000000000000000000001\
+            30644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd45\
+            0000000000000000000000000000000000000000000000000000000000000001\
+            30644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd45",
+        )
+        .unwrap();
+        let expected = hex::decode(
+            "\
+            030644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd3\
+            1a76dae6d3272396d0cbe61fced2bc532edac647851e3ac53ce1cc9c7e645a83",
+        )
+        .unwrap();
+
+        let outcome = run_add(&input, BYZANTIUM_ADD_GAS_COST, &mut GasTracker::new(500)).unwrap();
+        assert_eq!(outcome.bytes(), expected);
     }
 
     #[test]
@@ -447,6 +465,24 @@ mod tests {
             res,
             Err(ref f) if *f == PrecompileError::Halt(PrecompileHalt::Bn254FieldPointNotAMember),
         );
+
+        let input = hex::decode(
+            "\
+            0000000000000000000000000000000000000000000000000000000000000001\
+            30644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd45\
+            0000000000000000000000000000000000000000000000000000000000000002",
+        )
+        .unwrap();
+        let expected = hex::decode(
+            "\
+            030644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd3\
+            1a76dae6d3272396d0cbe61fced2bc532edac647851e3ac53ce1cc9c7e645a83",
+        )
+        .unwrap();
+
+        let outcome =
+            run_mul(&input, BYZANTIUM_MUL_GAS_COST, &mut GasTracker::new(40_000)).unwrap();
+        assert_eq!(outcome.bytes(), expected);
     }
 
     #[test]
