@@ -111,9 +111,6 @@ default = [
     # "c-kzg",
     "portable",
     "bn254-mcl",
-    # TODO: probably shouldn't enable these library-wide.
-    "asm-keccak",
-    "map-foldhash",
 ]
 std = [
     "alloy-consensus/std",

@@ -353,6 +353,31 @@ mod tests {
             res,
             Err(ref f) if *f == PrecompileError::Halt(PrecompileHalt::Bn254AffineGFailedToCreate),
         );
+
+        // Short input is right-padded. This makes the first field element non-canonical.
+        let res = run_add(&[0x40], BYZANTIUM_ADD_GAS_COST, &mut GasTracker::new(500));
+        assert_matches!(
+            res,
+            Err(ref f) if *f == PrecompileError::Halt(PrecompileHalt::Bn254FieldPointNotAMember),
+        );
+
+        let input = hex::decode(
+            "\
+            0000000000000000000000000000000000000000000000000000000000000001\
+            30644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd45\
+            0000000000000000000000000000000000000000000000000000000000000001\
+            30644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd45",
+        )
+        .unwrap();
+        let expected = hex::decode(
+            "\
+            030644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd3\
+            1a76dae6d3272396d0cbe61fced2bc532edac647851e3ac53ce1cc9c7e645a83",
+        )
+        .unwrap();
+
+        let outcome = run_add(&input, BYZANTIUM_ADD_GAS_COST, &mut GasTracker::new(500)).unwrap();
+        assert_eq!(outcome.bytes(), expected);
     }
 
     #[test]
@@ -433,6 +458,31 @@ mod tests {
             res,
             Err(ref f) if *f == PrecompileError::Halt(PrecompileHalt::Bn254AffineGFailedToCreate),
         );
+
+        // Short input is right-padded. This makes the point x-coordinate non-canonical.
+        let res = run_mul(&[0x40], BYZANTIUM_MUL_GAS_COST, &mut GasTracker::new(40_000));
+        assert_matches!(
+            res,
+            Err(ref f) if *f == PrecompileError::Halt(PrecompileHalt::Bn254FieldPointNotAMember),
+        );
+
+        let input = hex::decode(
+            "\
+            0000000000000000000000000000000000000000000000000000000000000001\
+            30644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd45\
+            0000000000000000000000000000000000000000000000000000000000000002",
+        )
+        .unwrap();
+        let expected = hex::decode(
+            "\
+            030644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd3\
+            1a76dae6d3272396d0cbe61fced2bc532edac647851e3ac53ce1cc9c7e645a83",
+        )
+        .unwrap();
+
+        let outcome =
+            run_mul(&input, BYZANTIUM_MUL_GAS_COST, &mut GasTracker::new(40_000)).unwrap();
+        assert_eq!(outcome.bytes(), expected);
     }
 
     #[test]
@@ -528,6 +578,19 @@ mod tests {
         assert_matches!(
             res,
             Err(ref f) if *f == PrecompileError::Halt(PrecompileHalt::Bn254AffineGFailedToCreate),
+        );
+
+        let mut input = [0u8; PAIR_ELEMENT_LEN];
+        input[0] = 0x40;
+        let res = run_pair(
+            &input,
+            BYZANTIUM_PAIR_PER_POINT,
+            BYZANTIUM_PAIR_BASE,
+            &mut GasTracker::new(180_000),
+        );
+        assert_matches!(
+            res,
+            Err(ref f) if *f == PrecompileError::Halt(PrecompileHalt::Bn254FieldPointNotAMember),
         );
 
         // Invalid input length

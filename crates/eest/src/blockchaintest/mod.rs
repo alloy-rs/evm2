@@ -13,6 +13,6 @@ pub use execute::{
 pub use runner::run;
 pub(crate) use runner::suite;
 pub use types::{
-    Account, Block, BlockHeader, BlockchainTest, BlockchainTestCase, DecodedBlock, ForkSpec,
-    SealEngine, State, Transaction, Withdrawal,
+    Account, Block, BlockHash, BlockHeader, BlockchainTest, BlockchainTestCase, DecodedBlock,
+    ForkSpec, SealEngine, State, Transaction, Withdrawal,
 };

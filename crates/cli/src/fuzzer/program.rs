@@ -1,4 +1,4 @@
-use crate::{precompile, rng::Gen};
+use crate::fuzzer::{precompile, rng::Gen};
 use alloy_primitives::{Address, Bytes, U256};
 use evm2::{SpecId, interpreter::opcode::op};
 use std::collections::BTreeSet;

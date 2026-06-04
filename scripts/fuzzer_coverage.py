@@ -4,7 +4,7 @@
 # ///
 """Generate an evm2 coverage report from the differential fuzzer.
 
-The report intentionally excludes the fuzzer crate itself so the resulting
+The report intentionally excludes the fuzzer module itself so the resulting
 coverage reflects evm2 and other runtime code exercised by generated cases.
 
 Examples:
@@ -23,7 +23,7 @@ from utils import cargo_env, repo_root
 
 ROOT = Path(repo_root())
 DEFAULT_OUTPUT_DIR = ROOT / "target" / "llvm-cov" / "fuzzer-html"
-DEFAULT_IGNORE_REGEX = r"(^|/)crates/fuzzer/"
+DEFAULT_IGNORE_REGEX = r"(^|/)crates/cli/src/fuzzer/"
 BACKENDS = ("tco", "packed", "single_return", "unpacked")
 
 
@@ -64,7 +64,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "fuzzer_args",
         nargs=argparse.REMAINDER,
-        help="Additional arguments passed to evm2-fuzzer after --",
+        help="Additional arguments passed to evm2 fuzzer after --",
     )
     args = parser.parse_args()
     if args.fuzzer_args and args.fuzzer_args[0] == "--":
@@ -114,9 +114,10 @@ def main() -> int:
                 "llvm-cov",
                 "run",
                 "-p",
-                "evm2-fuzzer",
+                "evm2-cli",
                 "--no-report",
                 "--",
+                "fuzzer",
                 *base_fuzzer_args,
             ],
             env=env,

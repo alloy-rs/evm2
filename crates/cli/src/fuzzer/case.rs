@@ -1,4 +1,4 @@
-use crate::{
+use crate::fuzzer::{
     precompile::{self, PrecompileTarget},
     program::Program,
     rng::Gen,
@@ -19,7 +19,7 @@ use revm::{
 };
 use secp256k1::{Message, SECP256K1, SecretKey};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::OnceLock};
 
 pub(crate) const CALLER: Address = Address::new([0x10; 20]);
 pub(crate) const TARGET: Address = Address::new([0x20; 20]);
@@ -485,24 +485,34 @@ fn eip7702_designation(address: Address) -> Bytes {
 }
 
 fn fixed_eip7702_authority() -> Address {
-    fixed_eip7702_auth()
-        .recover_authority()
-        .expect("hard-coded EIP-7702 authorization must recover an authority")
-}
-
-pub(crate) fn fixed_eip7702_auth() -> SignedAuthorization {
-    signed_eip7702_auth(Authorization {
-        chain_id: U256::from(1),
-        address: EIP7702_DELEGATED_TARGET,
-        nonce: 1,
+    static AUTHORITY: OnceLock<Address> = OnceLock::new();
+    *AUTHORITY.get_or_init(|| {
+        fixed_eip7702_auth()
+            .recover_authority()
+            .expect("hard-coded EIP-7702 authorization must recover an authority")
     })
 }
 
+pub(crate) fn fixed_eip7702_auth() -> SignedAuthorization {
+    static AUTH: OnceLock<SignedAuthorization> = OnceLock::new();
+    AUTH.get_or_init(|| {
+        signed_eip7702_auth(Authorization {
+            chain_id: U256::from(1),
+            address: EIP7702_DELEGATED_TARGET,
+            nonce: 1,
+        })
+    })
+    .clone()
+}
+
 fn signed_eip7702_auth(auth: Authorization) -> SignedAuthorization {
-    let secret_key = SecretKey::from_byte_array([0x77; 32])
-        .expect("hard-coded EIP-7702 signing key must be valid");
-    let signature = SECP256K1
-        .sign_ecdsa_recoverable(Message::from_digest(auth.signature_hash().0), &secret_key);
+    static SECRET_KEY: OnceLock<SecretKey> = OnceLock::new();
+    let secret_key = SECRET_KEY.get_or_init(|| {
+        SecretKey::from_byte_array([0x77; 32])
+            .expect("hard-coded EIP-7702 signing key must be valid")
+    });
+    let signature =
+        SECP256K1.sign_ecdsa_recoverable(Message::from_digest(auth.signature_hash().0), secret_key);
     let (recovery_id, signature) = signature.serialize_compact();
     SignedAuthorization::new_unchecked(
         auth,

@@ -1,4 +1,4 @@
-use crate::rng::Gen;
+use crate::fuzzer::rng::Gen;
 use alloy_primitives::{Address, Bytes};
 use evm2::SpecId;
 
