@@ -13,8 +13,8 @@ use evm2::SpecId;
 use evm2_eest::{
     AccessListItem, TestAuthorization,
     blockchaintest::{
-        Account, Block, BlockHeader, BlockchainTest, BlockchainTestCase, ForkSpec, SealEngine,
-        State as EestState, Transaction, Withdrawal,
+        Account, Block, BlockHash as EestBlockHash, BlockHeader, BlockchainTest,
+        BlockchainTestCase, ForkSpec, SealEngine, State as EestState, Transaction, Withdrawal,
     },
 };
 use serde_json::json;
@@ -48,12 +48,25 @@ pub(super) fn suite(capture: &CapturedCase) -> Result<BlockchainTest, CaptureErr
             blocks: decoded_blocks,
             post_state: capture.post_state.as_ref().map(|state| export_state(capture, state).0),
             pre: export_state(capture, &capture.pre_state),
+            block_hashes: export_block_hashes(capture),
             lastblockhash,
             network,
             seal_engine: SealEngine::NoProof,
         },
     );
     Ok(BlockchainTest(cases))
+}
+
+fn export_block_hashes(capture: &CapturedCase) -> Vec<EestBlockHash> {
+    capture
+        .pre_state
+        .block_hashes
+        .iter()
+        .map(|block_hash| EestBlockHash {
+            number: U256::from(block_hash.number),
+            hash: block_hash.hash,
+        })
+        .collect()
 }
 
 const fn captured_blocks(capture: &CapturedCase) -> Result<&[CapturedBlock], CaptureError> {

@@ -29,6 +29,9 @@ pub struct BlockchainTestCase {
     pub post_state: Option<BTreeMap<Address, Account>>,
     /// Pre-state accounts.
     pub pre: State,
+    /// Historical block hashes available to the `BLOCKHASH` opcode before the first block.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub block_hashes: Vec<BlockHash>,
     /// Last block hash.
     pub lastblockhash: B256,
     /// Network specification.
@@ -36,6 +39,16 @@ pub struct BlockchainTestCase {
     /// Seal engine type.
     #[serde(default)]
     pub seal_engine: SealEngine,
+}
+
+/// Historical block hash entry.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BlockHash {
+    /// Block number.
+    pub number: U256,
+    /// Block hash.
+    pub hash: B256,
 }
 
 /// Block header structure.
