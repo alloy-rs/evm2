@@ -7,7 +7,7 @@ use thiserror::Error;
 /// State test runner error.
 #[derive(Debug, Error)]
 #[error("Path: {path}\nName: {name}\nError: {kind}")]
-pub(crate) struct TestError {
+pub struct TestError {
     /// Test path.
     pub(crate) path: String,
     /// Test name.

@@ -7,23 +7,32 @@ use alloy_rpc_types_eth::{
 };
 use evm2::ethereum::RecoveredTxEnvelope;
 use k256::ecdsa::SigningKey;
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// Access list entry shared by EEST fixture formats.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct AccessListItem {
+pub struct AccessListItem {
     /// Accessed account.
-    pub(crate) address: Address,
+    pub address: Address,
     /// Accessed storage keys.
-    pub(crate) storage_keys: Vec<B256>,
+    pub storage_keys: Vec<B256>,
 }
 
 /// EIP-7702 authorization entry shared by EEST fixture formats.
 #[derive(Clone, Debug)]
-pub(crate) struct TestAuthorization {
+pub struct TestAuthorization {
     /// Raw authorization JSON.
-    pub(crate) value: serde_json::Value,
+    pub value: serde_json::Value,
+}
+
+impl Serialize for TestAuthorization {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        self.value.serialize(serializer)
+    }
 }
 
 impl<'de> Deserialize<'de> for TestAuthorization {
@@ -201,5 +210,26 @@ fn recovered_envelope(tx: TypedTransaction, caller: Address) -> RecoveredTxEnvel
         TypedTransaction::Eip7702(tx) => {
             RecoveredTxEnvelope::Eip7702(Recovered::new_unchecked(tx, caller))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TestAuthorization;
+    use serde_json::json;
+
+    #[test]
+    fn test_authorization_serializes_as_raw_fixture_value() {
+        let value = json!({
+            "chainId": "0x1",
+            "address": "0x0000000000000000000000000000000000000001",
+            "nonce": "0x0",
+            "yParity": "0x1",
+            "r": "0x2",
+            "s": "0x3",
+        });
+        let authorization = TestAuthorization { value: value.clone() };
+
+        assert_eq!(serde_json::to_value(authorization).unwrap(), value);
     }
 }

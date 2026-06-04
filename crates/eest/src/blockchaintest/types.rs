@@ -3,220 +3,232 @@
 use crate::tx::{AccessListItem, TestAuthorization};
 use alloy_eip7928::BlockAccessList;
 use alloy_primitives::{Address, B256, Bytes, FixedBytes, TxKind, U256};
-use serde::{Deserialize, Deserializer, de};
+use serde::{Deserialize, Deserializer, Serialize, de};
 use std::collections::BTreeMap;
 
 /// Top-level blockchain test suite.
-#[derive(Debug, Deserialize)]
-pub(crate) struct BlockchainTest(pub(crate) BTreeMap<String, BlockchainTestCase>);
+#[derive(Debug, Deserialize, Serialize)]
+pub struct BlockchainTest(
+    /// Test cases keyed by name.
+    pub BTreeMap<String, BlockchainTestCase>,
+);
 
 /// Individual blockchain test case.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct BlockchainTestCase {
+pub struct BlockchainTestCase {
     /// Genesis block header.
-    pub(crate) genesis_block_header: BlockHeader,
+    pub genesis_block_header: BlockHeader,
     /// Genesis block RLP encoding.
-    #[serde(rename = "genesisRLP")]
-    pub(crate) genesis_rlp: Option<Bytes>,
+    #[serde(rename = "genesisRLP", skip_serializing_if = "Option::is_none")]
+    pub genesis_rlp: Option<Bytes>,
     /// Blocks in the test.
-    pub(crate) blocks: Vec<Block>,
+    pub blocks: Vec<Block>,
     /// Expected post-state accounts.
-    pub(crate) post_state: Option<BTreeMap<Address, Account>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub post_state: Option<BTreeMap<Address, Account>>,
     /// Pre-state accounts.
-    pub(crate) pre: State,
+    pub pre: State,
     /// Last block hash.
-    pub(crate) lastblockhash: B256,
+    pub lastblockhash: B256,
     /// Network specification.
-    pub(crate) network: ForkSpec,
+    pub network: ForkSpec,
     /// Seal engine type.
     #[serde(default)]
-    pub(crate) seal_engine: SealEngine,
+    pub seal_engine: SealEngine,
 }
 
 /// Block header structure.
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct BlockHeader {
+pub struct BlockHeader {
     /// Bloom filter for logs.
-    pub(crate) bloom: Bytes,
+    pub bloom: Bytes,
     /// Block coinbase/beneficiary address.
-    pub(crate) coinbase: Address,
+    pub coinbase: Address,
     /// Block difficulty.
     #[serde(default)]
-    pub(crate) difficulty: U256,
+    pub difficulty: U256,
     /// Extra data field.
-    pub(crate) extra_data: Bytes,
+    pub extra_data: Bytes,
     /// Block gas limit.
-    pub(crate) gas_limit: U256,
+    pub gas_limit: U256,
     /// Block gas used.
-    pub(crate) gas_used: U256,
+    pub gas_used: U256,
     /// Block hash.
-    pub(crate) hash: B256,
+    pub hash: B256,
     /// Mix hash.
     #[serde(default)]
-    pub(crate) mix_hash: B256,
+    pub mix_hash: B256,
     /// PoW nonce.
     #[serde(default)]
-    pub(crate) nonce: FixedBytes<8>,
+    pub nonce: FixedBytes<8>,
     /// Block number.
-    pub(crate) number: U256,
+    pub number: U256,
     /// Parent block hash.
-    pub(crate) parent_hash: B256,
+    pub parent_hash: B256,
     /// Receipt trie root.
-    pub(crate) receipt_trie: B256,
+    pub receipt_trie: B256,
     /// State root hash.
-    pub(crate) state_root: B256,
+    pub state_root: B256,
     /// Block timestamp.
-    pub(crate) timestamp: U256,
+    pub timestamp: U256,
     /// Transaction trie root.
-    pub(crate) transactions_trie: B256,
+    pub transactions_trie: B256,
     /// Uncle hash.
-    pub(crate) uncle_hash: B256,
+    pub uncle_hash: B256,
     /// Base fee per gas.
-    pub(crate) base_fee_per_gas: Option<U256>,
+    pub base_fee_per_gas: Option<U256>,
     /// Withdrawals root.
-    pub(crate) withdrawals_root: Option<B256>,
+    pub withdrawals_root: Option<B256>,
     /// Blob gas used.
-    pub(crate) blob_gas_used: Option<U256>,
+    pub blob_gas_used: Option<U256>,
     /// Excess blob gas.
-    pub(crate) excess_blob_gas: Option<U256>,
+    pub excess_blob_gas: Option<U256>,
     /// Parent beacon block root.
-    pub(crate) parent_beacon_block_root: Option<B256>,
+    pub parent_beacon_block_root: Option<B256>,
     /// Requests hash.
-    pub(crate) requests_hash: Option<B256>,
+    pub requests_hash: Option<B256>,
     /// Target blobs per block.
-    pub(crate) target_blobs_per_block: Option<U256>,
+    pub target_blobs_per_block: Option<U256>,
     /// Slot number.
-    pub(crate) slot_number: Option<U256>,
+    pub slot_number: Option<U256>,
 }
 
 /// Block structure containing header and transactions.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct Block {
+pub struct Block {
     /// Block header.
-    pub(crate) block_header: Option<BlockHeader>,
+    pub block_header: Option<BlockHeader>,
     /// Decoded block payload used by blockchain fixtures that primarily carry block RLP.
     #[serde(rename = "rlp_decoded")]
-    #[serde(default)]
-    pub(crate) rlp_decoded: Option<DecodedBlock>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rlp_decoded: Option<DecodedBlock>,
     /// RLP-encoded block data.
-    #[serde(default)]
-    pub(crate) rlp: Bytes,
+    #[serde(default, skip_serializing_if = "is_empty_bytes")]
+    pub rlp: Bytes,
     /// Expected exception for invalid blocks.
-    pub(crate) expect_exception: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expect_exception: Option<String>,
     /// Transactions in the block.
-    pub(crate) transactions: Option<Vec<Transaction>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transactions: Option<Vec<Transaction>>,
     /// Uncle/ommer headers.
-    pub(crate) uncle_headers: Option<Vec<BlockHeader>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uncle_headers: Option<Vec<BlockHeader>>,
     /// Withdrawals in the block.
-    pub(crate) withdrawals: Option<Vec<Withdrawal>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub withdrawals: Option<Vec<Withdrawal>>,
     /// Block access list.
-    pub(crate) block_access_list: Option<BlockAccessList>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub block_access_list: Option<BlockAccessList>,
 }
 
 /// Decoded contents of an RLP-backed block fixture.
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct DecodedBlock {
+pub struct DecodedBlock {
     /// Block header.
-    pub(crate) block_header: Option<BlockHeader>,
+    pub block_header: Option<BlockHeader>,
     /// Transactions in the block.
     #[serde(default)]
-    pub(crate) transactions: Vec<Transaction>,
+    pub transactions: Vec<Transaction>,
     /// Uncle/ommer headers.
     #[serde(default)]
-    pub(crate) uncle_headers: Vec<BlockHeader>,
+    pub uncle_headers: Vec<BlockHeader>,
     /// Withdrawals in the block.
     #[serde(default)]
-    pub(crate) withdrawals: Vec<Withdrawal>,
+    pub withdrawals: Vec<Withdrawal>,
 }
 
 /// Transaction structure.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct Transaction {
+pub struct Transaction {
     /// Transaction type.
     #[serde(rename = "type")]
-    pub(crate) transaction_type: Option<U256>,
+    pub transaction_type: Option<U256>,
     /// Transaction sender.
     #[serde(default)]
-    pub(crate) sender: Option<Address>,
+    pub sender: Option<Address>,
     /// Transaction data/input.
-    pub(crate) data: Bytes,
+    pub data: Bytes,
     /// Gas limit.
-    pub(crate) gas_limit: U256,
+    pub gas_limit: U256,
     /// Legacy gas price.
-    pub(crate) gas_price: Option<U256>,
+    pub gas_price: Option<U256>,
     /// Transaction nonce.
-    pub(crate) nonce: U256,
+    pub nonce: U256,
     /// Signature r.
-    pub(crate) r: U256,
+    pub r: U256,
     /// Signature s.
-    pub(crate) s: U256,
+    pub s: U256,
     /// Signature v.
-    pub(crate) v: U256,
+    pub v: U256,
     /// Ether value.
-    pub(crate) value: U256,
+    pub value: U256,
     /// Target address.
     #[serde(default, deserialize_with = "deserialize_maybe_empty")]
-    pub(crate) to: Option<Address>,
+    pub to: Option<Address>,
     /// Chain ID.
-    pub(crate) chain_id: Option<U256>,
+    pub chain_id: Option<U256>,
     /// Access list.
     #[serde(default)]
-    pub(crate) access_list: Option<Vec<AccessListItem>>,
+    pub access_list: Option<Vec<AccessListItem>>,
     /// Maximum fee per gas.
-    pub(crate) max_fee_per_gas: Option<U256>,
+    pub max_fee_per_gas: Option<U256>,
     /// Maximum priority fee per gas.
-    pub(crate) max_priority_fee_per_gas: Option<U256>,
+    pub max_priority_fee_per_gas: Option<U256>,
     /// Blob versioned hashes.
     #[serde(default)]
-    pub(crate) blob_versioned_hashes: Vec<B256>,
+    pub blob_versioned_hashes: Vec<B256>,
     /// Maximum fee per blob gas.
-    pub(crate) max_fee_per_blob_gas: Option<U256>,
+    pub max_fee_per_blob_gas: Option<U256>,
     /// Authorization list.
-    pub(crate) authorization_list: Option<Vec<TestAuthorization>>,
+    pub authorization_list: Option<Vec<TestAuthorization>>,
     /// Transaction hash.
-    pub(crate) hash: Option<B256>,
+    pub hash: Option<B256>,
 }
 
 /// Withdrawal structure.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct Withdrawal {
+pub struct Withdrawal {
     /// Withdrawal index.
-    pub(crate) index: U256,
+    pub index: U256,
     /// Validator index.
-    pub(crate) validator_index: U256,
+    pub validator_index: U256,
     /// Recipient address.
-    pub(crate) address: Address,
+    pub address: Address,
     /// Amount in gwei.
-    pub(crate) amount: U256,
+    pub amount: U256,
 }
 
 /// Ethereum blockchain test data state.
-#[derive(Clone, Debug, Default, Deserialize)]
-pub(crate) struct State(pub(crate) BTreeMap<Address, Account>);
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct State(
+    /// Accounts keyed by address.
+    pub BTreeMap<Address, Account>,
+);
 
 /// An account.
-#[derive(Clone, Debug, Default, Deserialize)]
-pub(crate) struct Account {
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct Account {
     /// Balance.
-    pub(crate) balance: U256,
+    pub balance: U256,
     /// Code.
-    pub(crate) code: Bytes,
+    pub code: Bytes,
     /// Nonce.
-    pub(crate) nonce: U256,
+    pub nonce: U256,
     /// Storage.
     #[serde(default)]
-    pub(crate) storage: BTreeMap<U256, U256>,
+    pub storage: BTreeMap<U256, U256>,
 }
 
 /// Fork specification.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize)]
-pub(crate) enum ForkSpec {
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
+pub enum ForkSpec {
     /// Frontier.
     Frontier,
     /// Frontier to Homestead transition.
@@ -319,8 +331,8 @@ impl ForkSpec {
 }
 
 /// Possible seal engines.
-#[derive(Debug, Default, Deserialize)]
-pub(crate) enum SealEngine {
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
+pub enum SealEngine {
     /// No consensus checks.
     #[default]
     NoProof,
@@ -340,6 +352,10 @@ where
         serde_json::Value::String(string) => string.parse().map(Some).map_err(de::Error::custom),
         other => serde_json::from_value(other).map(Some).map_err(de::Error::custom),
     }
+}
+
+fn is_empty_bytes(bytes: &Bytes) -> bool {
+    bytes.as_ref().is_empty()
 }
 
 impl Transaction {
