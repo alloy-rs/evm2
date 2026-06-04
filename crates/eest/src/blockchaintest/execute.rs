@@ -26,7 +26,7 @@ use evm2::{
     },
     registry::HandlerError,
 };
-use std::{fs, path::Path};
+use std::{fs, mem, path::Path};
 
 const ONE_GWEI: u64 = 1_000_000_000;
 const ONE_ETHER: u128 = 1_000_000_000_000_000_000;
@@ -180,7 +180,7 @@ fn execute_block(
             Err(err) => return Err(TestError::case(path, name, err)),
         };
 
-        match execute_tx(spec, next_block_env, block_database.clone(), &tx) {
+        match execute_tx(spec, next_block_env, &mut block_database, &tx) {
             Ok(result) => {
                 apply_state_changes_in_place(&mut block_database, &result.state_changes);
             }
@@ -330,10 +330,11 @@ fn run_system_call(
         spec,
         block,
         ethereum_tx_registry(spec),
-        database.clone(),
+        mem::take(database),
         Precompiles::base(spec),
     );
     let result = evm.system_call(address, data);
+    *database = mem::take(evm.database_as_mut::<InMemoryDB>().expect("database type mismatch"));
     if !result.status && system_contract_has_code(database, address) {
         return Err(TestErrorKind::SystemCall(label));
     }
@@ -344,17 +345,19 @@ fn run_system_call(
 fn execute_tx(
     spec: SpecId,
     block: BlockEnv,
-    database: InMemoryDB,
+    database: &mut InMemoryDB,
     tx: &RecoveredTxEnvelope,
 ) -> Result<TxResult, HandlerError> {
     let mut evm = Evm::<BaseEvmTypes>::new(
         spec,
         block,
         ethereum_tx_registry(spec),
-        database,
+        mem::take(database),
         Precompiles::base(spec),
     );
-    evm.transact(tx)
+    let result = evm.transact(tx);
+    *database = mem::take(evm.database_as_mut::<InMemoryDB>().expect("database type mismatch"));
+    result
 }
 
 fn parse_state(
