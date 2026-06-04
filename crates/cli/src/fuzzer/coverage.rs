@@ -1,4 +1,4 @@
-use crate::{
+use crate::fuzzer::{
     case::EvmCase,
     normalize::{Outcome, OutcomeKind},
 };

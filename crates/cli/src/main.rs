@@ -5,6 +5,7 @@ mod capture;
 mod error;
 mod ethereum;
 mod fixture;
+mod fuzzer;
 mod list;
 mod replay;
 
@@ -28,6 +29,7 @@ fn main() -> ExitCode {
 fn run() -> Result<()> {
     match Args::parse().command {
         args::Command::Capture(command) => capture::run(command),
+        args::Command::Fuzzer(command) => fuzzer::run(command).map_err(error::Error::Fuzzer),
         args::Command::List(command) => list::run(command),
         args::Command::Replay(command) => replay::run(command),
     }

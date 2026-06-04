@@ -1,4 +1,4 @@
-use crate::case::EvmCase;
+use crate::fuzzer::case::EvmCase;
 use alloy_primitives::keccak256;
 use std::{
     fs, io,
@@ -29,7 +29,7 @@ pub(crate) fn write_minimized_case(case: &EvmCase) -> Result<PathBuf, String> {
 }
 
 fn write_hashed_case(prefix: &str, case: &EvmCase) -> Result<(PathBuf, bool), String> {
-    let dir = PathBuf::from("crates/fuzzer/corpus/failures");
+    let dir = PathBuf::from("crates/cli/fuzzer/corpus/failures");
     fs::create_dir_all(&dir).map_err(|err| format!("failed to create {}: {err}", dir.display()))?;
     let canonical = serde_json::to_vec(case)
         .map_err(|err| format!("failed to serialize case for hashing: {err}"))?;

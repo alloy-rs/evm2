@@ -11,6 +11,8 @@ pub(crate) struct Args {
 pub(crate) enum Command {
     /// Capture a mainnet block range from JSON-RPC into an EEST fixture.
     Capture(Capture),
+    /// Run the differential fuzzer against revm.
+    Fuzzer(crate::fuzzer::Options),
     /// List replay entrypoints in an EEST fixture.
     List(List),
     /// Replay an EEST JSON fixture.
