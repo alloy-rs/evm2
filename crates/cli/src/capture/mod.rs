@@ -57,8 +57,11 @@ async fn capture(
     }
 
     let started_at = Instant::now();
-    let rpc =
-        rpc::RpcEndpoint::parse(rpc_url, command.max_concurrent_requests, command.rpc_retries)?;
+    let rpc = rpc::RpcEndpoint::parse(
+        rpc_url,
+        command.max_concurrent_requests.get(),
+        command.rpc_retries,
+    )?;
     let mut builder = builder::CaptureBuilder::mainnet();
     let mut overlay = overlay::Overlay::default();
     let mut block_inputs = Vec::with_capacity((to - from + 1) as usize);
