@@ -2,6 +2,10 @@ use super::{CaptureError, parse};
 use alloy_primitives::Bytes;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use std::{thread, time::Duration};
+
+const MAX_RPC_RESPONSE_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_RPC_ATTEMPTS: usize = 4;
 
 #[derive(Clone, Copy)]
 pub(super) enum TraceMode {
@@ -59,16 +63,43 @@ impl RpcEndpoint {
             "method": method,
             "params": params,
         });
-        let response = ureq::post(&self.url)
-            .send_json(&request)
-            .map_err(CaptureError::Http)?
-            .body_mut()
-            .read_json::<RpcResponse>()
-            .map_err(CaptureError::Http)?;
+        let response = self.call_with_retries(method, &request)?;
         if let Some(error) = response.error {
             return Err(CaptureError::Rpc { method: method.to_owned(), error });
         }
         response.result.ok_or_else(|| CaptureError::MissingRpcResult(method.to_owned()))
+    }
+
+    fn call_with_retries(
+        &self,
+        method: &str,
+        request: &Value,
+    ) -> Result<RpcResponse, CaptureError> {
+        for attempt in 1..=MAX_RPC_ATTEMPTS {
+            match self.send_request(request) {
+                Ok(response) => return Ok(response),
+                Err(error) if attempt < MAX_RPC_ATTEMPTS => {
+                    eprintln!(
+                        "RPC {method} attempt {attempt}/{MAX_RPC_ATTEMPTS} failed: {error}; retrying"
+                    );
+                    thread::sleep(Duration::from_millis(500 * attempt as u64));
+                }
+                Err(error) => return Err(CaptureError::Http(error)),
+            }
+        }
+        unreachable!("attempt loop always returns")
+    }
+
+    fn send_request(&self, request: &Value) -> Result<RpcResponse, ureq::Error> {
+        let response = ureq::post(&self.url)
+            .header("User-Agent", "evm2-cli/0.1")
+            .header("Connection", "close")
+            .send_json(request)?
+            .body_mut()
+            .with_config()
+            .limit(MAX_RPC_RESPONSE_BYTES)
+            .read_json::<RpcResponse>()?;
+        Ok(response)
     }
 }
 

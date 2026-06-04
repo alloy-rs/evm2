@@ -10,6 +10,8 @@ use alloy_primitives::{Address, B256, U256};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
+const ONE_GWEI: u64 = 1_000_000_000;
+
 #[derive(Default)]
 pub(super) struct Overlay {
     accounts: BTreeMap<Address, OverlayAccount>,
@@ -30,6 +32,10 @@ impl Overlay {
             .is_some_and(|account| account.deleted || account.storage.contains(slot))
     }
 
+    pub(super) fn withdrawal_balance(&self, address: &Address) -> U256 {
+        self.accounts.get(address).map_or(U256::ZERO, |account| account.withdrawal_balance)
+    }
+
     pub(super) fn apply_post(&mut self, post: &Value) {
         let Some(accounts) = post.as_object() else {
             return;
@@ -45,6 +51,7 @@ impl Overlay {
                 account.balance = false;
                 account.nonce = false;
                 account.code = false;
+                account.withdrawal_balance = U256::ZERO;
                 account.storage.clear();
                 continue;
             }
@@ -107,11 +114,18 @@ impl Overlay {
             return;
         };
         for withdrawal in withdrawals.iter() {
-            let account = self.accounts.entry(withdrawal.address).or_default();
-            account.deleted = false;
-            account.exists = true;
-            account.balance = true;
+            self.apply_withdrawal(
+                withdrawal.address,
+                U256::from(withdrawal.amount).saturating_mul(U256::from(ONE_GWEI)),
+            );
         }
+    }
+
+    pub(super) fn apply_withdrawal(&mut self, address: Address, amount: U256) {
+        let account = self.accounts.entry(address).or_default();
+        account.deleted = false;
+        account.exists = true;
+        account.withdrawal_balance = account.withdrawal_balance.saturating_add(amount);
     }
 }
 
@@ -122,6 +136,7 @@ struct OverlayAccount {
     balance: bool,
     nonce: bool,
     code: bool,
+    withdrawal_balance: U256,
     storage: BTreeSet<B256>,
 }
 

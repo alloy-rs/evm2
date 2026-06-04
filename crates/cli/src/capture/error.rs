@@ -1,4 +1,4 @@
-use alloy_primitives::B256;
+use alloy_primitives::{Address, B256, U256};
 use serde_json::Value;
 
 #[derive(Debug, thiserror::Error)]
@@ -46,6 +46,10 @@ pub(crate) enum CaptureError {
     UnsupportedSpec(u32),
     #[error("capture has conflicting bytecode for code hash {code_hash}")]
     CodeHashCollision { code_hash: B256 },
+    #[error(
+        "withdrawal balance for {address} exceeds traced balance: traced {traced_balance}, withdrawals {withdrawal_balance}"
+    )]
+    WithdrawalBalanceUnderflow { address: Address, traced_balance: U256, withdrawal_balance: U256 },
     #[error("block hash mismatch: expected {expected}, got {actual}")]
     BlockHashMismatch { expected: B256, actual: B256 },
     #[error("block number mismatch: expected {expected}, got {actual}")]

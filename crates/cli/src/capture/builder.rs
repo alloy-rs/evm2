@@ -182,8 +182,19 @@ impl CaptureBuilder {
                     return Ok(());
                 }
                 if let Some(balance) = account.get("balance") {
-                    let balance = parse_u256(balance)?;
-                    if overlay.account_exists(&address) && balance.is_zero() {
+                    let traced_balance = parse_u256(balance)?;
+                    if overlay.account_exists(&address) && traced_balance.is_zero() {
+                        return Ok(());
+                    }
+                    let withdrawal_balance = overlay.withdrawal_balance(&address);
+                    let balance = traced_balance.checked_sub(withdrawal_balance).ok_or(
+                        CaptureError::WithdrawalBalanceUnderflow {
+                            address,
+                            traced_balance,
+                            withdrawal_balance,
+                        },
+                    )?;
+                    if balance.is_zero() && withdrawal_balance != U256::ZERO {
                         return Ok(());
                     }
                     let state = self.account_state(address);
@@ -317,6 +328,41 @@ fn is_absent_account_probe(account: &Map<String, Value>) -> Result<bool, Capture
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn account_trace(address: Address, account: Value) -> Value {
+        let mut accounts = Map::new();
+        accounts.insert(address.to_string(), account);
+        Value::Object(accounts)
+    }
+
+    #[test]
+    fn balance_capture_subtracts_prior_withdrawals() {
+        let address = Address::repeat_byte(0x11);
+        let mut overlay = Overlay::default();
+        overlay.apply_withdrawal(address, U256::from(7));
+        let mut builder = CaptureBuilder::mainnet();
+        let pre = account_trace(address, json!({ "balance": "0xa", "nonce": 1 }));
+
+        builder.capture_base_requirements(1, 0, &pre, &overlay).unwrap();
+
+        let account = builder.accounts.get(&address).unwrap();
+        assert_eq!(account.balance, U256::from(3));
+        assert_eq!(account.nonce, 1);
+    }
+
+    #[test]
+    fn balance_capture_skips_pure_withdrawal_balance() {
+        let address = Address::repeat_byte(0x11);
+        let mut overlay = Overlay::default();
+        overlay.apply_withdrawal(address, U256::from(7));
+        let mut builder = CaptureBuilder::mainnet();
+        let pre = account_trace(address, json!({ "balance": "0x7" }));
+
+        builder.capture_base_requirements(1, 0, &pre, &overlay).unwrap();
+
+        assert!(!builder.accounts.contains_key(&address));
+        assert!(!builder.captured_balances.contains(&address));
+    }
 
     #[test]
     fn absent_account_probe_accepts_zero_balance() {
