@@ -49,8 +49,10 @@ alloy-eip7928 = { version = "0.4.0", default-features = false }
 alloy-eips = { version = "2.0.4", default-features = false }
 alloy-hardforks = { version = "0.4", default-features = false }
 alloy-primitives = { version = "1.5.7", default-features = false }
+alloy-provider = { version = "2.0.4", default-features = false }
 alloy-rlp = { version = "0.3", default-features = false }
 alloy-rpc-types-eth = { version = "2.0.4", default-features = false }
+alloy-rpc-types-trace = { version = "2.0.4", default-features = false }
 alloy-trie = { version = "0.9", default-features = false }
 derive-where = { version = "1.6", default-features = false }
 
@@ -72,7 +74,6 @@ once_cell = { version = "1.21", default-features = false }
 paste = { version = "1.0", default-features = false }
 phf = { version = "0.13", default-features = false }
 rand = "0.10"
-reqwest = { version = "0.13", default-features = false }
 revm = { version = "38", default-features = true, features = ["asm-keccak"] }
 rstest = "0.26.0"
 serde = { version = "1.0", default-features = false }

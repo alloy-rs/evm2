@@ -2,7 +2,7 @@ use super::{
     CaptureError, block,
     overlay::Overlay,
     parse::{parse_address, parse_b256, parse_bytes, parse_u64, parse_u256},
-    rpc::{RpcEndpoint, hex_quantity},
+    rpc::RpcEndpoint,
 };
 use crate::capture::model::{
     AccountState, BlockHash, CapturedBlock, CapturedBlocks, CapturedCase, CapturedInput,
@@ -43,7 +43,7 @@ impl CaptureBuilder {
     ) -> Result<(), CaptureError> {
         let start = first_block.saturating_sub(256);
         for number in start..first_block {
-            let raw_block = rpc.raw_block(&hex_quantity(number)).await?;
+            let raw_block = rpc.raw_block(number).await?;
             let block = block::decode_consensus_block(&raw_block)?;
             self.block_hashes.insert(block.header.number, block.header.hash_slow());
         }

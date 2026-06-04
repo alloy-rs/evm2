@@ -16,7 +16,7 @@ use serde_json::Value;
 use std::{fs::File, io::BufWriter, sync::Arc, time::Instant};
 use tokio::{sync::Semaphore, task::JoinHandle};
 
-const MAX_CONCURRENT_BLOCK_REQUESTS: usize = 8;
+const MAX_CONCURRENT_BLOCK_FETCHES: usize = 8;
 
 pub(crate) struct CaptureSummary {
     pub(crate) blocks: usize,
@@ -163,7 +163,7 @@ fn spawn_block_tasks(
     from: u64,
     to: u64,
 ) -> Vec<JoinHandle<std::result::Result<FetchedBlock, CaptureError>>> {
-    let permits = Arc::new(Semaphore::new(MAX_CONCURRENT_BLOCK_REQUESTS));
+    let permits = Arc::new(Semaphore::new(MAX_CONCURRENT_BLOCK_FETCHES));
     (from..=to)
         .map(|number| {
             let rpc = rpc.clone();
@@ -171,11 +171,12 @@ fn spawn_block_tasks(
             tokio::spawn(async move {
                 let _permit =
                     permits.acquire_owned().await.expect("capture semaphore is not closed");
-                let block_id = rpc::hex_quantity(number);
-                let raw_block = rpc.raw_block(&block_id).await?;
+                let (raw_block, pre_traces, diff_traces) = tokio::try_join!(
+                    rpc.raw_block(number),
+                    rpc.trace_block(number, rpc::TraceMode::PreState),
+                    rpc.trace_block(number, rpc::TraceMode::Diff),
+                )?;
                 let consensus_block = block::decode_consensus_block(&raw_block)?;
-                let pre_traces = rpc.trace_block(&block_id, rpc::TraceMode::PreState).await?;
-                let diff_traces = rpc.trace_block(&block_id, rpc::TraceMode::Diff).await?;
                 Ok(FetchedBlock { number, raw_block, consensus_block, pre_traces, diff_traces })
             })
         })

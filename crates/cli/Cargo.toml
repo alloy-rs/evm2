@@ -34,10 +34,12 @@ alloy-chains.workspace = true
 alloy-eips = { workspace = true, features = ["serde", "std"] }
 alloy-hardforks.workspace = true
 alloy-primitives = { workspace = true, features = ["keccak-cache-global", "secp256k1", "serde", "std"] }
+alloy-provider = { workspace = true, features = ["debug-api", "reqwest", "reqwest-rustls-tls"] }
 alloy-rlp = { workspace = true, features = ["std"] }
+alloy-rpc-types-eth = { workspace = true, features = ["serde", "std"] }
+alloy-rpc-types-trace.workspace = true
 clap.workspace = true
 rand.workspace = true
-reqwest = { workspace = true, features = ["json", "rustls"] }
 revm.workspace = true
 secp256k1 = { workspace = true, features = ["global-context", "recovery"] }
 serde = { workspace = true, features = ["derive", "std"] }
