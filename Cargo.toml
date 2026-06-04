@@ -110,6 +110,13 @@ opt-level = 3
 opt-level = 3
 panic = "abort"
 
+# Use the `--profile profiling` flag to show symbols in release mode.
+# e.g. `cargo build --profile profiling`
+[profile.profiling]
+inherits = "release"
+debug = "full"
+strip = "none"
+
 [profile.bench]
 inherits = "release"
 lto = "thin"
