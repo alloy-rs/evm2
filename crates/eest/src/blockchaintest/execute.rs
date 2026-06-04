@@ -1,5 +1,9 @@
 use super::{
     error::{TestError, TestErrorKind},
+    hook::{
+        BlockFailed, BlockFinished, BlockStarted, CaseStarted, Hook, NoopHook, TransactionFailed,
+        TransactionFinished, TransactionStarted,
+    },
     types::{
         Account, Block, BlockHeader, BlockchainTest, BlockchainTestCase, ForkSpec, Transaction,
         Withdrawal,
@@ -59,38 +63,28 @@ pub(crate) fn execute_test_suite(
     config: ExecuteConfig,
 ) -> Result<ExecuteSummary, TestError> {
     let input = fs::read_to_string(path).map_err(|err| TestError::unknown(path, err.into()))?;
-    execute_str_with_config(path, &input, config)
+    let entrypoint = EntryPoint::default();
+    let mut hook = NoopHook;
+    execute_str(path, &input, config, &entrypoint, &mut hook)
 }
 
-/// Executes a loaded blockchain test JSON file using explicit execution options.
-pub fn execute_str_with_config(
-    path: &Path,
-    input: &str,
-    config: ExecuteConfig,
-) -> Result<ExecuteSummary, TestError> {
-    execute_str_with_filter(path, input, config, &EntryPoint::default())
-}
-
-/// Executes a loaded blockchain test JSON file, selecting cases by entrypoint.
-pub fn execute_str_with_filter(
+/// Executes a loaded blockchain test JSON file.
+pub fn execute_str(
     path: &Path,
     input: &str,
     config: ExecuteConfig,
     entrypoint: &EntryPoint,
+    hook: &mut dyn Hook,
 ) -> Result<ExecuteSummary, TestError> {
     let suite: BlockchainTest =
         serde_json::from_str(input).map_err(|err| TestError::unknown(path, err.into()))?;
     let mut summary = ExecuteSummary::default();
-    for (name, unit) in suite.0 {
-        if !entrypoint.matches(&name) {
+    for (name, test_case) in suite.0 {
+        if !entrypoint.matches(&name) || test_case.network.is_transition() {
             summary.skipped += 1;
             continue;
         }
-        if unit.network.is_transition() {
-            summary.skipped += 1;
-            continue;
-        }
-        execute_case(path, &name, &unit, config)?;
+        execute_case(path, &name, &test_case, config, hook)?;
         summary.executed += 1;
     }
     Ok(summary)
@@ -101,6 +95,7 @@ fn execute_case(
     name: &str,
     test_case: &BlockchainTestCase,
     config: ExecuteConfig,
+    hook: &mut dyn Hook,
 ) -> Result<(), TestError> {
     let mut database =
         parse_state(&test_case.pre.0).map_err(|err| TestError::case(path, name, err))?;
@@ -112,19 +107,53 @@ fn execute_case(
         test_case.genesis_block_header.excess_blob_gas.unwrap_or_default().saturating_to::<u64>();
     let mut block_env =
         block_env_from_header(&test_case.genesis_block_header, parent_excess_blob_gas, spec);
+    let total_blocks = test_case.blocks.len();
+
+    hook.case_started(CaseStarted { name, total_blocks, network: test_case.network });
 
     for (block_index, block) in test_case.blocks.iter().enumerate() {
-        execute_block(
+        let block_number = block_number(block);
+        let block_gas_used = block_gas_used(block);
+        let total_transactions = block_transactions(block).len();
+        hook.block_started(BlockStarted {
+            block_index,
+            total_blocks,
+            block_number,
+            block_gas_used,
+            total_transactions,
+        });
+        match execute_block(
             path,
             name,
             block_index,
+            total_blocks,
+            block_number,
+            total_transactions,
             block,
             spec,
             &mut database,
             &mut block_env,
             &mut parent_block_hash,
             &mut parent_excess_blob_gas,
-        )?;
+            hook,
+        ) {
+            Ok(()) => hook.block_finished(BlockFinished {
+                block_index,
+                total_blocks,
+                block_number,
+                block_gas_used,
+            }),
+            Err(err) => {
+                hook.block_failed(BlockFailed {
+                    block_index,
+                    total_blocks,
+                    block_number,
+                    block_gas_used,
+                    error: &err,
+                });
+                return Err(err);
+            }
+        }
     }
 
     if config.validate_post_state
@@ -132,7 +161,6 @@ fn execute_case(
     {
         validate_post_state(&database, expected).map_err(|err| TestError::case(path, name, err))?;
     }
-
     Ok(())
 }
 
@@ -151,12 +179,16 @@ fn execute_block(
     path: &Path,
     name: &str,
     block_index: usize,
+    total_blocks: usize,
+    block_number: Option<U256>,
+    total_transactions: usize,
     block: &Block,
     spec: SpecId,
     database: &mut InMemoryDB,
     block_env: &mut BlockEnv,
     parent_block_hash: &mut Option<B256>,
     parent_excess_blob_gas: &mut u64,
+    hook: &mut dyn Hook,
 ) -> Result<(), TestError> {
     let should_fail = block.expect_exception.is_some();
     let mut block_hash = None;
@@ -181,24 +213,59 @@ fn execute_block(
     )
     .map_err(|err| TestError::case(path, name, err))?;
 
-    for raw_tx in block_transactions(block) {
+    let transactions = block_transactions(block);
+    for (transaction_index, raw_tx) in transactions.iter().enumerate() {
+        hook.transaction_started(TransactionStarted {
+            block_index,
+            total_blocks,
+            block_number,
+            transaction_index,
+            total_transactions,
+        });
         let tx = match build_tx(raw_tx) {
             Ok(tx) => tx,
             Err(_err) if should_fail => {
                 return Ok(());
             }
-            Err(err) => return Err(TestError::case(path, name, err)),
+            Err(err) => {
+                hook.transaction_failed(TransactionFailed {
+                    block_index,
+                    total_blocks,
+                    block_number,
+                    transaction_index,
+                    total_transactions,
+                    error: &err,
+                });
+                return Err(TestError::case(path, name, err));
+            }
         };
 
         match execute_tx(spec, next_block_env, &mut block_database, &tx) {
             Ok(result) => {
                 apply_state_changes_in_place(&mut block_database, &result.state_changes);
+                hook.transaction_finished(TransactionFinished {
+                    block_index,
+                    total_blocks,
+                    block_number,
+                    transaction_index,
+                    total_transactions,
+                });
             }
             Err(err) if should_fail => {
                 let _ = err;
                 return Ok(());
             }
-            Err(err) => return Err(TestError::case(path, name, err.into())),
+            Err(err) => {
+                hook.transaction_failed(TransactionFailed {
+                    block_index,
+                    total_blocks,
+                    block_number,
+                    transaction_index,
+                    total_transactions,
+                    error: &err,
+                });
+                return Err(TestError::case(path, name, err.into()));
+            }
         }
     }
 
@@ -222,6 +289,14 @@ fn execute_block(
         *parent_excess_blob_gas = excess_blob_gas;
     }
     Ok(())
+}
+
+fn block_number(block: &Block) -> Option<U256> {
+    block_header(block).map(|header| header.number)
+}
+
+fn block_gas_used(block: &Block) -> Option<U256> {
+    block_header(block).map(|header| header.gas_used)
 }
 
 fn block_header(block: &Block) -> Option<&BlockHeader> {

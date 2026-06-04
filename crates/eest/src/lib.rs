@@ -16,10 +16,14 @@ mod tx;
 mod types;
 
 pub use blockchaintest::{
+    BlockFailed as BlockchainTestBlockFailed, BlockFinished as BlockchainTestBlockFinished,
+    BlockStarted as BlockchainTestBlockStarted, CaseStarted as BlockchainTestCaseStarted,
     ExecuteConfig as BlockchainTestExecuteConfig, ExecuteSummary as BlockchainTestExecuteSummary,
-    TestError as BlockchainTestError, execute_str_with_config as execute_blockchain_tests_str,
-    execute_str_with_filter as execute_blockchain_tests_str_with_filter,
-    run as run_blockchaintests,
+    Hook as BlockchainTestHook, NoopHook as BlockchainTestNoopHook,
+    TestError as BlockchainTestError, TransactionFailed as BlockchainTestTransactionFailed,
+    TransactionFinished as BlockchainTestTransactionFinished,
+    TransactionStarted as BlockchainTestTransactionStarted,
+    execute_str as execute_blockchain_tests_str, run as run_blockchaintests,
 };
 pub use error::TestError as StateTestError;
 pub use execute::{
