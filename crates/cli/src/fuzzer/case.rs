@@ -494,18 +494,25 @@ fn fixed_eip7702_authority() -> Address {
 }
 
 pub(crate) fn fixed_eip7702_auth() -> SignedAuthorization {
-    signed_eip7702_auth(Authorization {
-        chain_id: U256::from(1),
-        address: EIP7702_DELEGATED_TARGET,
-        nonce: 1,
+    static AUTH: OnceLock<SignedAuthorization> = OnceLock::new();
+    AUTH.get_or_init(|| {
+        signed_eip7702_auth(Authorization {
+            chain_id: U256::from(1),
+            address: EIP7702_DELEGATED_TARGET,
+            nonce: 1,
+        })
     })
+    .clone()
 }
 
 fn signed_eip7702_auth(auth: Authorization) -> SignedAuthorization {
-    let secret_key = SecretKey::from_byte_array([0x77; 32])
-        .expect("hard-coded EIP-7702 signing key must be valid");
-    let signature = SECP256K1
-        .sign_ecdsa_recoverable(Message::from_digest(auth.signature_hash().0), &secret_key);
+    static SECRET_KEY: OnceLock<SecretKey> = OnceLock::new();
+    let secret_key = SECRET_KEY.get_or_init(|| {
+        SecretKey::from_byte_array([0x77; 32])
+            .expect("hard-coded EIP-7702 signing key must be valid")
+    });
+    let signature =
+        SECP256K1.sign_ecdsa_recoverable(Message::from_digest(auth.signature_hash().0), secret_key);
     let (recovery_id, signature) = signature.serialize_compact();
     SignedAuthorization::new_unchecked(
         auth,
