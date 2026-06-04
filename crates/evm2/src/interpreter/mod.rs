@@ -13,7 +13,7 @@ pub(crate) mod dispatch;
 #[doc(hidden)] // For macro only. Not public API.
 pub mod private;
 
-pub(crate) mod opcode;
+pub mod opcode;
 pub use opcode::op;
 
 mod ctrl;
