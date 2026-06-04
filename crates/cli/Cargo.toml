@@ -36,6 +36,7 @@ alloy-hardforks.workspace = true
 alloy-primitives = { workspace = true, features = ["keccak-cache-global", "secp256k1", "serde", "std"] }
 alloy-provider = { workspace = true, features = ["debug-api", "reqwest", "reqwest-rustls-tls"] }
 alloy-rlp = { workspace = true, features = ["std"] }
+alloy-rpc-client = { workspace = true, features = ["reqwest"] }
 alloy-rpc-types-eth = { workspace = true, features = ["serde", "std"] }
 alloy-rpc-types-trace.workspace = true
 clap.workspace = true

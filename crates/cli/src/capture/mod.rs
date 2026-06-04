@@ -13,10 +13,8 @@ use crate::{args::Capture, error::Result, ethereum};
 use alloy_consensus::transaction::SignerRecoverable;
 use alloy_primitives::Bytes;
 use serde_json::Value;
-use std::{fs::File, io::BufWriter, sync::Arc, time::Instant};
-use tokio::{sync::Semaphore, task::JoinHandle};
-
-const MAX_CONCURRENT_BLOCK_FETCHES: usize = 8;
+use std::{fs::File, io::BufWriter, time::Instant};
+use tokio::task::JoinHandle;
 
 pub(crate) struct CaptureSummary {
     pub(crate) blocks: usize,
@@ -59,7 +57,8 @@ async fn capture(
     }
 
     let started_at = Instant::now();
-    let rpc = rpc::RpcEndpoint::parse(rpc_url)?;
+    let rpc =
+        rpc::RpcEndpoint::parse(rpc_url, command.max_concurrent_requests, command.rpc_retries)?;
     let mut builder = builder::CaptureBuilder::mainnet();
     let mut overlay = overlay::Overlay::default();
     let mut block_inputs = Vec::with_capacity((to - from + 1) as usize);
@@ -163,14 +162,10 @@ fn spawn_block_tasks(
     from: u64,
     to: u64,
 ) -> Vec<JoinHandle<std::result::Result<FetchedBlock, CaptureError>>> {
-    let permits = Arc::new(Semaphore::new(MAX_CONCURRENT_BLOCK_FETCHES));
     (from..=to)
         .map(|number| {
             let rpc = rpc.clone();
-            let permits = Arc::clone(&permits);
             tokio::spawn(async move {
-                let _permit =
-                    permits.acquire_owned().await.expect("capture semaphore is not closed");
                 let (raw_block, pre_traces, diff_traces) = tokio::try_join!(
                     rpc.raw_block(number),
                     rpc.trace_block(number, rpc::TraceMode::PreState),

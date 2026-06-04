@@ -42,8 +42,18 @@ impl CaptureBuilder {
         first_block: u64,
     ) -> Result<(), CaptureError> {
         let start = first_block.saturating_sub(256);
-        for number in start..first_block {
-            let raw_block = rpc.raw_block(number).await?;
+        let block_tasks = (start..first_block)
+            .map(|number| {
+                let rpc = rpc.clone();
+                tokio::spawn(async move {
+                    let raw_block = rpc.raw_block(number).await?;
+                    Ok::<_, CaptureError>((number, raw_block))
+                })
+            })
+            .collect::<Vec<_>>();
+
+        for task in block_tasks {
+            let (_number, raw_block) = task.await.map_err(CaptureError::TaskJoin)??;
             let block = block::decode_consensus_block(&raw_block)?;
             self.block_hashes.insert(block.header.number, block.header.hash_slow());
         }

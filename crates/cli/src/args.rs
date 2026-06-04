@@ -1,5 +1,8 @@
 use std::{ops::RangeInclusive, path::PathBuf};
 
+const DEFAULT_MAX_CONCURRENT_REQUESTS: usize = 8;
+const DEFAULT_RPC_RETRIES: u32 = 3;
+
 #[derive(Debug, clap::Parser)]
 #[command(name = "evm2", version, about = "Capture and replay Ethereum execution fixtures.")]
 pub(crate) struct Args {
@@ -30,6 +33,16 @@ pub(crate) struct Capture {
     /// EEST JSON file to write.
     #[arg(long, value_name = "PATH")]
     pub(crate) output: PathBuf,
+    /// Maximum number of in-flight JSON-RPC requests.
+    #[arg(
+        long,
+        default_value_t = DEFAULT_MAX_CONCURRENT_REQUESTS,
+        value_parser = parse_nonzero_usize,
+    )]
+    pub(crate) max_concurrent_requests: usize,
+    /// Maximum number of Alloy retry attempts for retryable RPC errors.
+    #[arg(long, default_value_t = DEFAULT_RPC_RETRIES)]
+    pub(crate) rpc_retries: u32,
 }
 
 #[derive(Debug, clap::Args)]
@@ -62,9 +75,17 @@ fn parse_block_range(value: &str) -> Result<RangeInclusive<u64>, String> {
     Ok(start..=end)
 }
 
+fn parse_nonzero_usize(value: &str) -> Result<usize, String> {
+    let value = value.parse::<usize>().map_err(|err| format!("invalid value {value:?}: {err}"))?;
+    if value == 0 {
+        return Err("value must be greater than zero".to_string());
+    }
+    Ok(value)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::parse_block_range;
+    use super::{parse_block_range, parse_nonzero_usize};
 
     #[test]
     fn parse_block_range_accepts_inclusive_range() {
@@ -76,5 +97,10 @@ mod tests {
     #[test]
     fn parse_block_range_rejects_reversed_range() {
         assert!(parse_block_range("12-10").unwrap_err().contains("greater"));
+    }
+
+    #[test]
+    fn parse_nonzero_usize_rejects_zero() {
+        assert!(parse_nonzero_usize("0").unwrap_err().contains("greater than zero"));
     }
 }
