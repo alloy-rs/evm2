@@ -5,8 +5,8 @@ on:
     paths:
       - ".github/workflows/fuzzer.yml"
       - "Cargo.toml"
+      - "crates/cli/**"
       - "crates/evm2/**"
-      - "crates/fuzzer/**"
   workflow_dispatch:
 
 concurrency:
@@ -38,17 +38,17 @@ jobs:
       - name: Replay regression corpus
         env:
           EVM2_DISPATCH_BACKEND: ${{ matrix.dispatch_backend }}
-        run: cargo run -q -p evm2-fuzzer -- corpus crates/fuzzer/corpus/failures
+        run: cargo run -q -p evm2-cli -- fuzzer corpus crates/cli/fuzzer/corpus/failures
       - name: Run random fuzz smoke test
         env:
           EVM2_DISPATCH_BACKEND: ${{ matrix.dispatch_backend }}
-        run: cargo run -q -p evm2-fuzzer -- --duration 3m -j 0
+        run: cargo run -q -p evm2-cli -- fuzzer --duration 3m -j 0
       - name: Upload failing fuzzer cases
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: fuzzer-failures-${{ matrix.dispatch_backend }}
-          path: crates/fuzzer/corpus/failures/*.json
+          path: crates/cli/fuzzer/corpus/failures/*.json
           if-no-files-found: ignore
 
   ci-success:
