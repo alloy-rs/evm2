@@ -1,4 +1,4 @@
-use crate::case::EvmCase;
+use crate::fuzzer::case::EvmCase;
 use alloy_primitives::{Address, B256, U256, keccak256};
 use evm2::evm::StateChanges;
 use std::collections::BTreeMap;

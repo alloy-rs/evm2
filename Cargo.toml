@@ -4,7 +4,6 @@ members = [
     "crates/evm2",
     "crates/macros",
     "crates/eest",
-    "crates/fuzzer",
 ]
 resolver = "3"
 

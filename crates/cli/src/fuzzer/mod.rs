@@ -1,21 +1,21 @@
-//! Small differential fuzzing proof-of-concept for evm2 against revm.
+//! Differential fuzzing proof-of-concept for evm2 against revm.
 //!
 //! This is intentionally a structured, deterministic generator rather than a
 //! property-test harness. Run it with, for example:
 //!
-//! `cargo run -p evm2-fuzzer -- --seed 1 --cases 1000`
+//! `cargo run -p evm2-cli -- fuzzer --seed 1 --cases 1000`
 //!
 //! or by duration:
 //!
-//! `cargo run -p evm2-fuzzer -- --seed 1 --duration 30s`
+//! `cargo run -p evm2-cli -- fuzzer --seed 1 --duration 30s`
 //!
 //! Re-run saved cases with:
 //!
-//! `cargo run -p evm2-fuzzer -- replay crates/fuzzer/corpus/failures/seed-1-case-0.json`
+//! `cargo run -p evm2-cli -- fuzzer replay crates/cli/fuzzer/corpus/failures/case-....json`
 //!
 //! or run a directory of cases with:
 //!
-//! `cargo run -p evm2-fuzzer -- corpus crates/fuzzer/corpus/regressions`
+//! `cargo run -p evm2-cli -- fuzzer corpus crates/cli/fuzzer/corpus/failures`
 
 mod backend;
 mod case;
@@ -28,17 +28,16 @@ mod precompile;
 mod program;
 mod rng;
 
-use crate::{
+use self::{
     backend::{Evm2Backend, EvmBackend, RevmBackend},
     case::EvmCase,
-    cli::{Command, Options},
+    cli::Command,
     coverage::Coverage,
     io::{case_paths, read_case, write_failure_case, write_minimized_case},
     minimize::{differs, minimize_case},
     normalize::Outcome,
     rng::Gen,
 };
-use clap::Parser;
 use std::{
     fmt,
     path::Path,
@@ -50,14 +49,9 @@ use std::{
     time::Instant,
 };
 
-fn main() {
-    if let Err(err) = run(Options::parse()) {
-        eprintln!("{err}");
-        std::process::exit(1);
-    }
-}
+pub(crate) use cli::Options;
 
-fn run(opts: Options) -> Result<(), String> {
+pub(crate) fn run(opts: Options) -> Result<(), String> {
     let backends: [&dyn EvmBackend; 2] = [&RevmBackend, &Evm2Backend];
     match opts.command.clone().unwrap_or(Command::Generate) {
         Command::Generate => run_generated(&opts)?,

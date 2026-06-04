@@ -1,4 +1,4 @@
-use crate::{
+use crate::fuzzer::{
     case::{EvmCase, TxKindCase},
     normalize::{
         Outcome, OutcomeKind, TxReceipt, apply_account_changes, canonical_accounts, canonical_log,

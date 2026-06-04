@@ -1,4 +1,4 @@
-use crate::{
+use crate::fuzzer::{
     precompile::{self, PrecompileTarget},
     program::Program,
     rng::Gen,

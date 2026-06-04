@@ -21,13 +21,16 @@ workspace = true
 evm2-eest = { path = "../eest", version = "0.1.0" }
 evm2 = { workspace = true, default-features = true }
 
-alloy-consensus = { workspace = true, features = ["k256", "std"] }
+alloy-consensus = { workspace = true, features = ["k256", "secp256k1", "std"] }
 alloy-chains.workspace = true
-alloy-eips = { workspace = true, features = ["std"] }
+alloy-eips = { workspace = true, features = ["serde", "std"] }
 alloy-hardforks.workspace = true
-alloy-primitives = { workspace = true, features = ["serde", "std"] }
+alloy-primitives = { workspace = true, features = ["secp256k1", "serde", "std"] }
 alloy-rlp = { workspace = true, features = ["std"] }
 clap.workspace = true
+rand.workspace = true
+revm = { version = "38", default-features = true }
+secp256k1 = { workspace = true, features = ["global-context", "recovery"] }
 serde = { workspace = true, features = ["derive", "std"] }
 serde_json = { workspace = true, features = ["std"] }
 thiserror = { workspace = true, features = ["std"] }

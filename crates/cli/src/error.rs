@@ -29,6 +29,8 @@ pub(crate) enum Error {
         #[source]
         source: crate::capture::CaptureError,
     },
+    #[error("fuzzer failed: {0}")]
+    Fuzzer(String),
     #[error("could not detect EEST fixture kind in {path}")]
     UnknownFixtureKind { path: std::path::PathBuf },
 }
