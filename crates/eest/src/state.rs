@@ -53,9 +53,9 @@ pub(crate) fn storage_for_root(
     state
         .cache
         .storage
-        .iter()
-        .filter_map(|(&key, &value)| {
-            (key.address() == address && !value.is_zero()).then_some((B256::from(key.key()), value))
-        })
+        .get(&address)
+        .into_iter()
+        .flat_map(|storage| storage.slots.iter())
+        .filter_map(|(&key, &value)| (!value.is_zero()).then_some((B256::from(key), value)))
         .collect()
 }

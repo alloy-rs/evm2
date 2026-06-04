@@ -244,7 +244,7 @@ fn execute_spec(
         Precompiles::base(spec),
     );
     let system_changes = pre_block_system_calls(&mut evm, spec, env, &database);
-    let result = evm.transact(tx)?;
+    let result = evm.transact(tx)?.detach();
     Ok(spec_outcome(database, result, &system_changes))
 }
 
@@ -261,7 +261,7 @@ fn spec_outcome(
 
     SpecOutcome {
         state_root: state_root_from_database(&post),
-        logs_root: logs_hash(&result.state_changes.logs),
+        logs_root: logs_hash(&result.logs),
         output: result.output,
         gas_used: result.gas_used,
         evm_result: format!("{:?}", result.stop),

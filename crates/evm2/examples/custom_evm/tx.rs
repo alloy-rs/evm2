@@ -50,7 +50,7 @@ impl ExecuteCodeTx {
 
 pub fn execute_code(
     req: TxRequest<'_, CustomTypes, ExecuteCodeTx>,
-) -> HandlerResult<evm2::TxResult<CustomTypes>> {
+) -> HandlerResult<evm2::TxOutcome<CustomTypes>> {
     // The transaction handler owns policy; the interpreter still executes a normal message.
     let mut message = Message {
         gas_limit: req.tx.gas_limit,
@@ -67,9 +67,9 @@ pub fn execute_code(
         false,
     );
     result.ext = CustomMessageResultExt { handled_custom_message: true };
-    Ok(evm2::TxResult::<CustomTypes> {
+    Ok(evm2::TxOutcome::<CustomTypes> {
         status: result.stop.is_success(),
-        gas_used: req.tx.gas_limit - result.gas.remaining(),
+        gas: evm2::TxGas::from_tx_gas_used(req.tx.gas_limit - result.gas.remaining()),
         stop: result.stop,
         output: result.output,
         ext: CustomTxResultExt { handled_custom_tx: result.ext.handled_custom_message },
@@ -77,7 +77,7 @@ pub fn execute_code(
     })
 }
 
-pub fn custom_registry() -> TxRegistry<CustomTypes, evm2::TxResult<CustomTypes>> {
+pub fn custom_registry() -> TxRegistry<CustomTypes, evm2::TxOutcome<CustomTypes>> {
     // The EIP-2718 type byte selects the typed extractor and handler.
     TxRegistry::new().with_handler(
         EXECUTE_CODE_TX_TYPE,

@@ -5,7 +5,7 @@ use super::{
     validate_regular_gas_limit_cap, validate_sender, validate_tx_gas_limit_cap, warm_base_accounts,
 };
 use crate::{
-    Evm, EvmTypes, TxResult,
+    Evm, EvmTypes, TxOutcome,
     env::TxEnv,
     interpreter::Host,
     registry::{HandlerResult, TxRequest},
@@ -15,7 +15,7 @@ use alloy_primitives::U256;
 
 pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     req: TxRequest<'_, T, Recovered<TxLegacy>>,
-) -> HandlerResult<TxResult<T>> {
+) -> HandlerResult<TxOutcome<T>> {
     let caller = req.tx.signer();
     let tx = req.tx.inner();
     let gas_price = U256::from(tx.gas_price);

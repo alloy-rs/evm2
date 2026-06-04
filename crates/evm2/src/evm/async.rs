@@ -589,7 +589,7 @@ impl<D: AsyncDatabase + fmt::Debug> fmt::Debug for AsyncDb<D> {
 mod tests {
     use super::{AsyncDatabase, AsyncDb, AsyncError, block_on_current, on_fiber};
     use crate::{
-        BaseEvmTypes, Evm, PrecompileError, Precompiles, SpecId, TxResult,
+        BaseEvmTypes, Evm, PrecompileError, Precompiles, SpecId, TxGas, TxOutcome,
         bytecode::Bytecode,
         env::BlockEnv,
         evm::{Database, Db, DynDatabase, InMemoryDB, PrecompileProvider},
@@ -725,7 +725,7 @@ mod tests {
 
         let result = poll_ready(evm.transact_async(&tx)).unwrap();
 
-        assert_eq!(result.gas_used, 42);
+        assert_eq!(result.gas_used(), 42);
     }
 
     #[test]
@@ -747,7 +747,7 @@ mod tests {
 
         let result = poll_ready(assert_send(evm.transact_async(&tx))).unwrap();
 
-        assert_eq!(result.gas_used, 42);
+        assert_eq!(result.gas_used(), 42);
     }
 
     #[test]
@@ -770,7 +770,7 @@ mod tests {
 
         let result = poll_ready(assert_send(evm.transact_async(&tx))).unwrap();
 
-        assert_eq!(result.gas_used, 42);
+        assert_eq!(result.gas_used(), 42);
     }
 
     #[test]
@@ -969,9 +969,13 @@ mod tests {
 
     fn handle_test_tx(
         req: TxRequest<'_, BaseEvmTypes, Recovered<TxLegacy>>,
-    ) -> HandlerResult<TxResult> {
+    ) -> HandlerResult<TxOutcome> {
         let _ = req.host.spec_id();
-        Ok(TxResult { status: true, gas_used: req.tx.nonce + 1, ..TxResult::default() })
+        Ok(TxOutcome {
+            status: true,
+            gas: TxGas::from_tx_gas_used(req.tx.nonce + 1),
+            ..TxOutcome::default()
+        })
     }
 
     fn poll_ready<F: Future + Send>(future: F) -> F::Output {

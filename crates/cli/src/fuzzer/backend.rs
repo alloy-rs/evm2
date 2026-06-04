@@ -9,7 +9,7 @@ use evm2::{
     BaseEvmTypes, Evm, Precompiles, SpecId,
     bytecode::Bytecode,
     ethereum::ethereum_tx_registry,
-    evm::{AccountInfo as Evm2AccountInfo, InMemoryDB},
+    evm::{AccountInfo as Evm2AccountInfo, DatabaseCommit, InMemoryDB},
     interpreter::InstrStop,
 };
 use revm::{
@@ -34,16 +34,20 @@ impl EvmBackend for Evm2Backend {
     }
 
     fn run(&self, case: &EvmCase) -> Outcome {
-        let mut evm = Evm::<BaseEvmTypes>::new(
-            case.spec,
-            case.block.evm2(),
-            ethereum_tx_registry(case.spec),
-            evm2_db(case),
-            Precompiles::base(case.spec),
-        );
+        let mut database = evm2_db(case);
         let mut receipts = Vec::new();
         for tx in case.txs() {
-            let result = evm.transact(&tx.evm2()).map_err(|err| format!("{err:?}"));
+            let mut evm = Evm::<BaseEvmTypes>::new(
+                case.spec,
+                case.block.evm2(),
+                ethereum_tx_registry(case.spec),
+                database.clone(),
+                Precompiles::base(case.spec),
+            );
+            let result = evm
+                .transact(&tx.evm2())
+                .map(|pending| pending.detach())
+                .map_err(|err| format!("{err:?}"));
             match result {
                 Ok(result) => {
                     let output = if result.status || result.stop == InstrStop::Revert {
@@ -51,6 +55,7 @@ impl EvmBackend for Evm2Backend {
                     } else {
                         None
                     };
+                    database.commit(&result.state_changes);
                     receipts.push(TxReceipt {
                         kind: if result.status {
                             OutcomeKind::Success
@@ -59,7 +64,7 @@ impl EvmBackend for Evm2Backend {
                         },
                         gas_used: Some(result.gas_used),
                         output,
-                        logs: result.state_changes.logs.iter().map(canonical_log).collect(),
+                        logs: result.logs.iter().map(canonical_log).collect(),
                         state: state_from_evm2_changes(&result.state_changes),
                         error: None,
                     });

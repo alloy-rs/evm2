@@ -38,7 +38,7 @@ fn custom_opcode() -> HandlerResult<()> {
         op::STOP,
     ]));
 
-    let result = evm.transact(&tx)?;
+    let result = evm.transact(&tx)?.commit();
     let expected_gas = u64::from(opcode::CUSTOM_OPCODE_GAS)
         + u64::from(opcode::CUSTOM_OPCODE_DYNAMIC_GAS)
         + 3
@@ -50,12 +50,12 @@ fn custom_opcode() -> HandlerResult<()> {
         tx.ty(),
         result.status,
         result.stop,
-        result.gas_used,
+        result.gas_used(),
     );
 
     assert_eq!(result.stop, InstrStop::Stop);
     assert!(result.status);
-    assert_eq!(result.gas_used, expected_gas);
+    assert_eq!(result.gas_used(), expected_gas);
     assert!(result.ext.handled_custom_tx);
     Ok(())
 }
@@ -72,7 +72,7 @@ fn l1_blocknumber_opcode() -> HandlerResult<()> {
         op::RETURN,
     ]));
 
-    let result = evm.transact(&tx)?;
+    let result = evm.transact(&tx)?.discard();
     let expected = Bytes::copy_from_slice(&U256::from(CUSTOM_L1_BLOCK_NUMBER).to_be_bytes::<32>());
 
     println!(
@@ -91,7 +91,7 @@ fn mainnet_fallback() -> HandlerResult<()> {
     let mut evm = mainnet_evm();
     let tx = custom_opcode_tx(Bytes::from_static(&[opcode::CUSTOM_OPCODE, op::STOP]));
 
-    let result = evm.transact(&tx)?;
+    let result = evm.transact(&tx)?.discard();
 
     println!(
         "mainnet fallback: expected status=false stop=InvalidOpcode; got status={} stop={:?}",
@@ -116,7 +116,7 @@ fn inspector() -> HandlerResult<()> {
         op::STOP,
     ]));
 
-    let result = evm.transact(&tx)?;
+    let result = evm.transact(&tx)?.discard();
     let inspector = evm.clear_inspector().expect("inspector should be set");
     let inspector =
         inspector.downcast_ref::<ExampleInspector>().expect("inspector should have expected type");

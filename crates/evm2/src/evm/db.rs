@@ -7,7 +7,7 @@ use alloy_primitives::{Address, B256, keccak256};
 use core::{any::Any, error::Error, fmt, num::NonZeroUsize};
 
 mod cache;
-pub use cache::{Cache, CacheDB, InMemoryDB};
+pub use cache::{AccountStorageCache, Cache, CacheDB, CacheDbSink, InMemoryDB};
 
 /// Commits accepted state changes to a database.
 pub trait DatabaseCommit {

@@ -138,7 +138,9 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             result.status = false;
             result.stop = stop;
             result.output = Bytes::new();
+            result.logs.clear();
         } else {
+            result.logs = self.state.take_logs();
             result.state_changes = self.state.accept_transaction();
         }
         result.db_error_code = self.db_error_code();
