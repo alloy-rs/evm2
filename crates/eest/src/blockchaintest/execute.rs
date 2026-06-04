@@ -181,7 +181,9 @@ fn execute_block(
         };
 
         match execute_tx(spec, next_block_env, &mut block_database, &tx) {
-            Ok(_) => {}
+            Ok(result) => {
+                apply_state_changes_in_place(&mut block_database, &result.state_changes);
+            }
             Err(err) if should_fail => {
                 let _ = err;
                 return Ok(());
@@ -355,9 +357,6 @@ fn execute_tx(
     );
     let result = evm.transact(tx);
     *database = mem::take(evm.database_as_mut::<InMemoryDB>().expect("database type mismatch"));
-    if let Ok(result) = &result {
-        apply_state_changes_in_place(database, &result.state_changes);
-    }
     result
 }
 
