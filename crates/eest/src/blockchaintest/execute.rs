@@ -7,7 +7,10 @@ use super::{
 };
 use crate::{
     filter::EntryPoint,
-    state::{insert_account_with_storage, parse_bytecode, system_contract_has_code},
+    state::{
+        apply_state_changes_in_place, insert_account_with_storage, parse_bytecode,
+        system_contract_has_code,
+    },
     tx::{TxFields, build_recovered_tx, rpc_access_list, signed_authorizations},
 };
 use alloy_eips::eip7840::BlobParams;
@@ -18,8 +21,8 @@ use evm2::{
     env::BlockEnv,
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
     evm::{
-        AccountInfo as EvmAccountInfo, BEACON_ROOTS_ADDRESS, EmptyDB, HISTORY_STORAGE_ADDRESS,
-        InMemoryDB, WITHDRAWAL_REQUEST_ADDRESS,
+        AccountInfo as EvmAccountInfo, BEACON_ROOTS_ADDRESS, HISTORY_STORAGE_ADDRESS, InMemoryDB,
+        WITHDRAWAL_REQUEST_ADDRESS,
     },
     registry::HandlerError,
 };
@@ -329,11 +332,11 @@ fn run_system_call(
         Precompiles::base(spec),
     );
     let result = evm.system_call(address, data);
-    evm.merge_cache::<EmptyDB>();
     *database = mem::take(evm.database_as_mut::<InMemoryDB>().expect("database type mismatch"));
     if !result.status && system_contract_has_code(database, address) {
         return Err(TestErrorKind::SystemCall(label));
     }
+    apply_state_changes_in_place(database, &result.state_changes);
     Ok(())
 }
 
@@ -351,8 +354,10 @@ fn execute_tx(
         Precompiles::base(spec),
     );
     let result = evm.transact(tx);
-    evm.merge_cache::<EmptyDB>();
     *database = mem::take(evm.database_as_mut::<InMemoryDB>().expect("database type mismatch"));
+    if let Ok(result) = &result {
+        apply_state_changes_in_place(database, &result.state_changes);
+    }
     result
 }
 

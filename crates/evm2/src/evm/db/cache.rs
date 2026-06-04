@@ -55,21 +55,6 @@ impl Default for Cache {
     }
 }
 
-impl Cache {
-    /// Extends this cache with entries from another cache layer.
-    #[inline]
-    pub fn extend(&mut self, cache: Self) {
-        self.contracts.extend(cache.contracts);
-        self.accounts.extend(cache.accounts);
-        self.block_hashes.extend(cache.block_hashes);
-        for address in cache.wiped_storage {
-            self.wiped_storage.insert(address);
-            self.storage.retain(|key, _| key.address() != address);
-        }
-        self.storage.extend(cache.storage);
-    }
-}
-
 /// A cache database over another backing database.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CacheDB<ExtDB = EmptyDB> {
@@ -157,12 +142,6 @@ impl<ExtDB> CacheDB<ExtDB> {
     #[inline]
     pub fn insert_block_hash(&mut self, number: &Word, hash: &B256) {
         self.cache.block_hashes.insert(*number, *hash);
-    }
-
-    #[doc(hidden)]
-    #[inline]
-    pub fn merge_cache(&mut self, cache: Cache) {
-        self.cache.extend(cache);
     }
 }
 

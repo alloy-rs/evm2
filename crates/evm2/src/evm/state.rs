@@ -413,18 +413,6 @@ impl State {
         self.database.db.as_mut()
     }
 
-    /// Merges accepted cache entries into the initial cache database.
-    #[inline]
-    pub fn merge_cache<ExtDB: DynDatabase>(&mut self) {
-        let cache = core::mem::take(&mut self.database.cache);
-        let initial = self
-            .database
-            .db
-            .downcast_mut::<CacheDB<ExtDB>>()
-            .unwrap_or_else(|| panic!("database type mismatch"));
-        initial.merge_cache(cache);
-    }
-
     /// Replaces the initial database and clears all in-memory state layers.
     #[inline]
     pub fn set_initial(&mut self, initial: impl DynDatabase) {
