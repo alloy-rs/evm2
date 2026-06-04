@@ -113,11 +113,13 @@ fn execute_case(
 
     for (block_index, block) in test_case.blocks.iter().enumerate() {
         let block_number = block_number(block);
+        let block_gas_used = block_gas_used(block);
         let total_transactions = block_transactions(block).len();
         hook.block_started(BlockStarted {
             block_index,
             total_blocks,
             block_number,
+            block_gas_used,
             total_transactions,
         });
         match execute_block(
@@ -135,14 +137,18 @@ fn execute_case(
             &mut parent_excess_blob_gas,
             hook,
         ) {
-            Ok(()) => {
-                hook.block_finished(BlockFinished { block_index, total_blocks, block_number })
-            }
+            Ok(()) => hook.block_finished(BlockFinished {
+                block_index,
+                total_blocks,
+                block_number,
+                block_gas_used,
+            }),
             Err(err) => {
                 hook.block_failed(BlockFailed {
                     block_index,
                     total_blocks,
                     block_number,
+                    block_gas_used,
                     error: &err,
                 });
                 return Err(err);
@@ -287,6 +293,10 @@ fn execute_block(
 
 fn block_number(block: &Block) -> Option<U256> {
     block_header(block).map(|header| header.number)
+}
+
+fn block_gas_used(block: &Block) -> Option<U256> {
+    block_header(block).map(|header| header.gas_used)
 }
 
 fn block_header(block: &Block) -> Option<&BlockHeader> {

@@ -50,8 +50,10 @@ pub struct BlockStarted {
     pub block_index: usize,
     /// Number of blocks in the case.
     pub total_blocks: usize,
-    /// Block number, if the fixture provides a header.
+    /// Header `number`, if the fixture provides a header.
     pub block_number: Option<U256>,
+    /// Header `gasUsed`, if the fixture provides a header.
+    pub block_gas_used: Option<U256>,
     /// Number of transactions in the block.
     pub total_transactions: usize,
 }
@@ -63,8 +65,10 @@ pub struct BlockFinished {
     pub block_index: usize,
     /// Number of blocks in the case.
     pub total_blocks: usize,
-    /// Block number, if the fixture provides a header.
+    /// Header `number`, if the fixture provides a header.
     pub block_number: Option<U256>,
+    /// Header `gasUsed`, if the fixture provides a header.
+    pub block_gas_used: Option<U256>,
 }
 
 /// Block failure event.
@@ -73,8 +77,10 @@ pub struct BlockFailed<'a> {
     pub block_index: usize,
     /// Number of blocks in the case.
     pub total_blocks: usize,
-    /// Block number, if the fixture provides a header.
+    /// Header `number`, if the fixture provides a header.
     pub block_number: Option<U256>,
+    /// Header `gasUsed`, if the fixture provides a header.
+    pub block_gas_used: Option<U256>,
     /// Execution error.
     pub error: &'a dyn fmt::Display,
 }
@@ -86,6 +92,7 @@ impl fmt::Debug for BlockFailed<'_> {
             .field("block_index", &self.block_index)
             .field("total_blocks", &self.total_blocks)
             .field("block_number", &self.block_number)
+            .field("block_gas_used", &self.block_gas_used)
             .field("error", &self.error.to_string())
             .finish()
     }
@@ -98,7 +105,7 @@ pub struct TransactionStarted {
     pub block_index: usize,
     /// Number of blocks in the case.
     pub total_blocks: usize,
-    /// Block number, if the fixture provides a header.
+    /// Header `number`, if the fixture provides a header.
     pub block_number: Option<U256>,
     /// Zero-based transaction index in the block.
     pub transaction_index: usize,
@@ -113,7 +120,7 @@ pub struct TransactionFinished {
     pub block_index: usize,
     /// Number of blocks in the case.
     pub total_blocks: usize,
-    /// Block number, if the fixture provides a header.
+    /// Header `number`, if the fixture provides a header.
     pub block_number: Option<U256>,
     /// Zero-based transaction index in the block.
     pub transaction_index: usize,
@@ -127,7 +134,7 @@ pub struct TransactionFailed<'a> {
     pub block_index: usize,
     /// Number of blocks in the case.
     pub total_blocks: usize,
-    /// Block number, if the fixture provides a header.
+    /// Header `number`, if the fixture provides a header.
     pub block_number: Option<U256>,
     /// Zero-based transaction index in the block.
     pub transaction_index: usize,
