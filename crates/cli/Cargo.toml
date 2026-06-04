@@ -19,7 +19,10 @@ workspace = true
 
 [dependencies]
 evm2-eest = { path = "../eest", version = "0.1.0" }
-evm2 = { workspace = true, default-features = true }
+evm2 = { workspace = true, default-features = true, features = [
+    "asm-keccak",
+    "map-foldhash",
+] }
 
 alloy-consensus = { workspace = true, features = ["k256", "secp256k1", "std"] }
 alloy-chains.workspace = true
