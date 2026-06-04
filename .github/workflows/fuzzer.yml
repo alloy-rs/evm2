@@ -39,10 +39,10 @@ jobs:
         env:
           EVM2_DISPATCH_BACKEND: ${{ matrix.dispatch_backend }}
         run: cargo run -q -p evm2-cli -- fuzzer corpus crates/cli/fuzzer/corpus/failures
-      - name: Run generated fuzz smoke test
+      - name: Run random fuzz smoke test
         env:
           EVM2_DISPATCH_BACKEND: ${{ matrix.dispatch_backend }}
-        run: cargo run -q -p evm2-cli -- fuzzer --seed 1 --cases 64 -j 1
+        run: cargo run -q -p evm2-cli -- fuzzer --duration 3m -j 0
       - name: Upload failing fuzzer cases
         if: failure()
         uses: actions/upload-artifact@v4
