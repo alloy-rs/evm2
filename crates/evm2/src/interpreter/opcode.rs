@@ -1,3 +1,5 @@
+//! Opcode byte constants and metadata.
+
 macro_rules! opcodes {
     ($($val:literal => $name:ident => $instr:path => $($modifier:ident $(( $($modifier_arg:expr),* ))?),*;)*) => {
         /// Opcode byte constants.
