@@ -12,13 +12,14 @@ pub(crate) use error::CaptureError;
 use crate::{args::Capture, error::Result, ethereum};
 use alloy_consensus::transaction::SignerRecoverable;
 use serde_json::Value;
-use std::{fs::File, io::BufWriter};
+use std::{fs::File, io::BufWriter, time::Instant};
 
 pub(crate) struct CaptureSummary {
     pub(crate) blocks: usize,
     pub(crate) transactions: usize,
     pub(crate) base_accounts: usize,
     pub(crate) base_storage_slots: usize,
+    pub(crate) elapsed_sec: f64,
 }
 
 pub(crate) fn run(command: Capture) -> Result<()> {
@@ -27,12 +28,13 @@ pub(crate) fn run(command: Capture) -> Result<()> {
     let summary = capture(&command.rpc, from, to, &command)
         .map_err(|source| crate::error::Error::Capture { source })?;
     println!(
-        "captured EEST {}: {} blocks, {} txs, {} base accounts, {} base storage slots",
+        "captured EEST {}: {} blocks, {} txs, {} base accounts, {} base storage slots in {:.2}s",
         command.output.display(),
         summary.blocks,
         summary.transactions,
         summary.base_accounts,
-        summary.base_storage_slots
+        summary.base_storage_slots,
+        summary.elapsed_sec
     );
     Ok(())
 }
@@ -47,6 +49,7 @@ fn capture(
         return Err(CaptureError::InvalidRange { from, to });
     }
 
+    let started_at = Instant::now();
     let rpc = rpc::RpcEndpoint::parse(rpc_url)?;
     let mut builder = builder::CaptureBuilder::mainnet();
     let mut overlay = overlay::Overlay::default();
@@ -56,6 +59,7 @@ fn capture(
     builder.capture_block_hashes(&rpc, from)?;
 
     for number in from..=to {
+        let block_started_at = Instant::now();
         let block_id = rpc::hex_quantity(number);
         let raw_block = rpc.raw_block(&block_id)?;
         let consensus_block = block::decode_consensus_block(&raw_block)?;
@@ -110,7 +114,11 @@ fn capture(
             transactions,
         });
 
-        eprintln!("captured block {number} ({} txs)", consensus_block.body.transactions.len());
+        eprintln!(
+            "captured block {number} ({} txs) in {:.2}s",
+            consensus_block.body.transactions.len(),
+            block_started_at.elapsed().as_secs_f64()
+        );
     }
 
     let capture = builder.finish(block_inputs);
@@ -132,5 +140,6 @@ fn capture(
         transactions: transaction_count,
         base_accounts,
         base_storage_slots,
+        elapsed_sec: started_at.elapsed().as_secs_f64(),
     })
 }
