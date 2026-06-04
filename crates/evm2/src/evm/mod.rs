@@ -306,6 +306,16 @@ impl<T: EvmTypes> Evm<T> {
         self.database_mut().downcast_mut()
     }
 
+    /// Consumes the EVM and returns the backing database if it has concrete type `D`.
+    ///
+    /// Accepted transaction state is held in the EVM's overlay cache. Callers that need a fully
+    /// materialized database should apply returned transaction state changes to this database after
+    /// extraction.
+    #[inline]
+    pub fn into_database<D: DynDatabase>(self) -> Option<D> {
+        self.state.into_initial().into_any().downcast::<D>().ok().map(|database| *database)
+    }
+
     /// Returns the mutable EVM state.
     #[inline]
     pub const fn state(&self) -> &State {

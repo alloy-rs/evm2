@@ -413,6 +413,12 @@ impl State {
         self.database.db.as_mut()
     }
 
+    /// Consumes the state and returns the initial database.
+    #[inline]
+    pub fn into_initial(self) -> Box<dyn DynDatabase> {
+        self.database.db
+    }
+
     /// Replaces the initial database and clears all in-memory state layers.
     #[inline]
     pub fn set_initial(&mut self, initial: impl DynDatabase) {

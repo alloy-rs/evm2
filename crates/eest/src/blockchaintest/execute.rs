@@ -22,7 +22,7 @@ use evm2::{
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
     evm::{
         AccountInfo as EvmAccountInfo, BEACON_ROOTS_ADDRESS, HISTORY_STORAGE_ADDRESS, InMemoryDB,
-        WITHDRAWAL_REQUEST_ADDRESS,
+        StateChanges, WITHDRAWAL_REQUEST_ADDRESS,
     },
     registry::HandlerError,
 };
@@ -161,6 +161,24 @@ fn execute_block(
         this_excess_blob_gas = header.excess_blob_gas.map(|gas| gas.saturating_to::<u64>());
     }
 
+    if !should_fail {
+        return execute_valid_block(
+            path,
+            name,
+            block_index,
+            block,
+            spec,
+            database,
+            block_env,
+            parent_block_hash,
+            parent_excess_blob_gas,
+            block_hash,
+            beacon_root,
+            next_block_env,
+            this_excess_blob_gas,
+        );
+    }
+
     let mut block_database = database.clone();
     pre_block_system_calls(
         &mut block_database,
@@ -212,6 +230,98 @@ fn execute_block(
         *parent_excess_blob_gas = excess_blob_gas;
     }
     Ok(())
+}
+
+#[expect(clippy::too_many_arguments)]
+fn execute_valid_block(
+    path: &Path,
+    name: &str,
+    block_index: usize,
+    block: &Block,
+    spec: SpecId,
+    database: &mut InMemoryDB,
+    block_env: &mut BlockEnv,
+    parent_block_hash: &mut Option<B256>,
+    parent_excess_blob_gas: &mut u64,
+    block_hash: Option<B256>,
+    beacon_root: Option<B256>,
+    next_block_env: BlockEnv,
+    this_excess_blob_gas: Option<u64>,
+) -> Result<(), TestError> {
+    let mut evm = Evm::<BaseEvmTypes>::new(
+        spec,
+        next_block_env,
+        ethereum_tx_registry(spec),
+        std::mem::take(database),
+        Precompiles::base(spec),
+    );
+    let mut accepted_changes = Vec::new();
+    pre_block_system_calls_evm(
+        &mut evm,
+        spec,
+        next_block_env,
+        *parent_block_hash,
+        beacon_root,
+        &mut accepted_changes,
+    )
+    .map_err(|err| TestError::case(path, name, err))?;
+
+    for raw_tx in block_transactions(block) {
+        let tx = build_tx(raw_tx).map_err(|err| TestError::case(path, name, err))?;
+        let result = evm.transact(&tx).map_err(|err| TestError::case(path, name, err.into()))?;
+        accepted_changes.push(result.state_changes);
+    }
+
+    post_block_system_calls_evm(&mut evm, spec, &mut accepted_changes)
+        .map_err(|err| TestError::case(path, name, err))?;
+
+    let mut block_database =
+        evm.into_database::<InMemoryDB>().expect("block replay EVM uses an in-memory database");
+    for changes in accepted_changes {
+        apply_state_changes_in_place(&mut block_database, &changes);
+    }
+    apply_block_balance_transitions(
+        &mut block_database,
+        spec,
+        next_block_env,
+        block_withdrawals(block),
+    );
+
+    if let Some(expected_bal) = &block.block_access_list {
+        assert_block_access_list(block_index, expected_bal);
+    }
+
+    accept_block(
+        database,
+        block_env,
+        parent_block_hash,
+        parent_excess_blob_gas,
+        block_hash,
+        next_block_env,
+        this_excess_blob_gas,
+        block_database,
+    );
+    Ok(())
+}
+
+#[expect(clippy::too_many_arguments)]
+fn accept_block(
+    database: &mut InMemoryDB,
+    block_env: &mut BlockEnv,
+    parent_block_hash: &mut Option<B256>,
+    parent_excess_blob_gas: &mut u64,
+    block_hash: Option<B256>,
+    next_block_env: BlockEnv,
+    this_excess_blob_gas: Option<u64>,
+    mut block_database: InMemoryDB,
+) {
+    block_database.insert_block_hash(&next_block_env.number, &block_hash.unwrap_or_default());
+    *database = block_database;
+    *block_env = next_block_env;
+    *parent_block_hash = block_hash;
+    if let Some(excess_blob_gas) = this_excess_blob_gas {
+        *parent_excess_blob_gas = excess_blob_gas;
+    }
 }
 
 fn block_header(block: &Block) -> Option<&BlockHeader> {
@@ -276,12 +386,58 @@ fn pre_block_system_calls(
     Ok(())
 }
 
+fn pre_block_system_calls_evm(
+    evm: &mut Evm<BaseEvmTypes>,
+    spec: SpecId,
+    block: BlockEnv,
+    parent_block_hash: Option<B256>,
+    parent_beacon_block_root: Option<B256>,
+    accepted_changes: &mut Vec<StateChanges>,
+) -> Result<(), TestErrorKind> {
+    if block.number.is_zero() {
+        return Ok(());
+    }
+    if spec.enables(SpecId::PRAGUE)
+        && let Some(hash) = parent_block_hash
+    {
+        run_system_call_evm(
+            evm,
+            HISTORY_STORAGE_ADDRESS,
+            Bytes::copy_from_slice(hash.as_slice()),
+            "eip2935",
+            accepted_changes,
+        )?;
+    }
+    if spec.enables(SpecId::CANCUN)
+        && let Some(root) = parent_beacon_block_root
+    {
+        run_system_call_evm(
+            evm,
+            BEACON_ROOTS_ADDRESS,
+            Bytes::copy_from_slice(root.as_slice()),
+            "eip4788",
+            accepted_changes,
+        )?;
+    }
+    Ok(())
+}
+
 fn post_block_transition(
     database: &mut InMemoryDB,
     spec: SpecId,
     block: BlockEnv,
     withdrawals: &[Withdrawal],
 ) -> Result<(), TestErrorKind> {
+    apply_block_balance_transitions(database, spec, block, withdrawals);
+    post_block_system_calls(database, spec, block)
+}
+
+fn apply_block_balance_transitions(
+    database: &mut InMemoryDB,
+    spec: SpecId,
+    block: BlockEnv,
+    withdrawals: &[Withdrawal],
+) {
     let reward = block_reward(spec, 0);
     if reward != 0 {
         increment_balance(database, block.beneficiary, U256::from(reward));
@@ -296,7 +452,13 @@ fn post_block_transition(
             );
         }
     }
+}
 
+fn post_block_system_calls(
+    database: &mut InMemoryDB,
+    spec: SpecId,
+    block: BlockEnv,
+) -> Result<(), TestErrorKind> {
     if spec.enables(SpecId::PRAGUE) {
         run_system_call(
             database,
@@ -313,6 +475,30 @@ fn post_block_transition(
             evm2::evm::CONSOLIDATION_REQUEST_ADDRESS,
             Bytes::new(),
             "eip7251",
+        )?;
+    }
+    Ok(())
+}
+
+fn post_block_system_calls_evm(
+    evm: &mut Evm<BaseEvmTypes>,
+    spec: SpecId,
+    accepted_changes: &mut Vec<StateChanges>,
+) -> Result<(), TestErrorKind> {
+    if spec.enables(SpecId::PRAGUE) {
+        run_system_call_evm(
+            evm,
+            WITHDRAWAL_REQUEST_ADDRESS,
+            Bytes::new(),
+            "eip7002",
+            accepted_changes,
+        )?;
+        run_system_call_evm(
+            evm,
+            evm2::evm::CONSOLIDATION_REQUEST_ADDRESS,
+            Bytes::new(),
+            "eip7251",
+            accepted_changes,
         )?;
     }
     Ok(())
@@ -338,6 +524,21 @@ fn run_system_call(
         return Err(TestErrorKind::SystemCall(label));
     }
     apply_state_changes_in_place(database, &result.state_changes);
+    Ok(())
+}
+
+fn run_system_call_evm(
+    evm: &mut Evm<BaseEvmTypes>,
+    address: Address,
+    data: Bytes,
+    label: &'static str,
+    accepted_changes: &mut Vec<StateChanges>,
+) -> Result<(), TestErrorKind> {
+    let result = evm.system_call(address, data);
+    if !result.status {
+        return Err(TestErrorKind::SystemCall(label));
+    }
+    accepted_changes.push(result.state_changes);
     Ok(())
 }
 
