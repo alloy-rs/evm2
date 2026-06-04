@@ -329,7 +329,7 @@ fn run_system_call(
         Precompiles::base(spec),
     );
     let result = evm.system_call(address, data);
-    evm.merge_cache_into_database::<EmptyDB>();
+    evm.merge_cache::<EmptyDB>();
     *database = mem::take(evm.database_as_mut::<InMemoryDB>().expect("database type mismatch"));
     if !result.status && system_contract_has_code(database, address) {
         return Err(TestErrorKind::SystemCall(label));
@@ -351,7 +351,7 @@ fn execute_tx(
         Precompiles::base(spec),
     );
     let result = evm.transact(tx);
-    evm.merge_cache_into_database::<EmptyDB>();
+    evm.merge_cache::<EmptyDB>();
     *database = mem::take(evm.database_as_mut::<InMemoryDB>().expect("database type mismatch"));
     result
 }

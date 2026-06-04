@@ -308,8 +308,8 @@ impl<T: EvmTypes> Evm<T> {
 
     /// Merges accepted cache entries into the backing cache database.
     #[inline]
-    pub fn merge_cache_into_database<ExtDB: DynDatabase>(&mut self) {
-        self.state.merge_cache_into_initial_cache_db::<ExtDB>();
+    pub fn merge_cache<ExtDB: DynDatabase>(&mut self) {
+        self.state.merge_cache::<ExtDB>();
     }
 
     /// Returns the mutable EVM state.

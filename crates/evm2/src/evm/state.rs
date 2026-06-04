@@ -415,7 +415,7 @@ impl State {
 
     /// Merges accepted cache entries into the initial cache database.
     #[inline]
-    pub fn merge_cache_into_initial_cache_db<ExtDB: DynDatabase>(&mut self) {
+    pub fn merge_cache<ExtDB: DynDatabase>(&mut self) {
         let cache = core::mem::take(&mut self.database.cache);
         let initial = self
             .database
