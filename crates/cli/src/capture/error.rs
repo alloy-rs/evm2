@@ -18,8 +18,8 @@ pub(crate) enum CaptureError {
     EncodeJson(#[source] serde_json::Error),
     #[error("failed to decode RPC trace response")]
     DecodeTrace(#[source] serde_json::Error),
-    #[error("failed to join blocking RPC trace decoder")]
-    JoinTraceDecoder(#[source] tokio::task::JoinError),
+    #[error("failed to join blocking capture block preparation")]
+    JoinBlockPreparation(#[source] tokio::task::JoinError),
     #[error(
         "block {block_number} trace transaction count mismatch: expected {expected}, prestate {prestate}, diff {diff}"
     )]
