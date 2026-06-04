@@ -21,7 +21,11 @@ workspace = true
 evm2-eest = { path = "../eest", version = "0.1.0" }
 evm2 = { workspace = true, default-features = true, features = [
     "asm-keccak",
+    "blst",
+    "c-kzg",
     "map-foldhash",
+    "p256-aws-lc-rs",
+    "secp256k1",
 ] }
 
 alloy-consensus = { workspace = true, features = ["k256", "secp256k1", "std"] }
