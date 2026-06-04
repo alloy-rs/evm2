@@ -1,12 +1,19 @@
 use super::{InstrStop, Result};
 use crate::constants::STACK_LIMIT;
 use alloy_primitives::U256;
-use core::{debug_assert_matches, fmt, hint::cold_path, mem::MaybeUninit};
+use core::{debug_assert_matches, fmt, hint::cold_path, mem::MaybeUninit, ops::Deref};
 
 /// EVM stack word.
 pub type Word = U256;
 
 pub(crate) type StackBacking = [MaybeUninit<Word>; STACK_LIMIT];
+
+/// Immutable EVM operand stack.
+#[derive(Clone, Copy)]
+pub struct StackRef<'a> {
+    stack: &'a StackBacking,
+    len: usize,
+}
 
 /// Mutable EVM operand stack.
 pub struct Stack<'a> {
@@ -20,6 +27,12 @@ pub struct StackMut<'a> {
     pub(crate) len: &'a mut usize,
 }
 
+impl fmt::Debug for StackRef<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.as_slice().fmt(f)
+    }
+}
+
 impl fmt::Debug for Stack<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.as_slice().fmt(f)
@@ -31,6 +44,99 @@ impl fmt::Debug for StackMut<'_> {
         self.as_slice().fmt(f)
     }
 }
+
+impl<'a> StackRef<'a> {
+    pub(crate) const CAPACITY: usize = STACK_LIMIT;
+
+    #[inline]
+    pub(crate) const fn new(stack: &'a StackBacking, len: usize) -> Self {
+        debug_assert!(len <= Self::CAPACITY);
+        Self { stack, len }
+    }
+
+    #[inline]
+    const fn as_word_ptr(&self) -> *const Word {
+        self.stack.as_ptr().cast()
+    }
+
+    /// Returns the stack length.
+    #[inline]
+    pub const fn len(&self) -> usize {
+        let len = self.len;
+        // SAFETY: Type invariant.
+        unsafe { core::hint::assert_unchecked(len <= Self::CAPACITY) };
+        len
+    }
+
+    /// Returns whether the stack is empty.
+    #[inline]
+    pub const fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Returns the stack contents as a slice.
+    #[inline]
+    pub const fn as_slice(&self) -> &[Word] {
+        unsafe { core::slice::from_raw_parts(self.as_word_ptr(), self.len()) }
+    }
+
+    /// Returns the `n`th stack word from the top.
+    #[inline]
+    pub fn peek(&self, n: usize) -> Option<Word> {
+        self.as_slice().get(self.len().checked_sub(n + 1)?).copied()
+    }
+
+    /// Returns `N` stack words from the top.
+    #[inline]
+    pub fn peekn<const N: usize>(&self) -> Option<[Word; N]> {
+        let len = self.len();
+        if len < N {
+            cold_path();
+            return None;
+        }
+        let stack = self.as_slice();
+        Some(core::array::from_fn(|i| stack[len - 1 - i]))
+    }
+}
+
+impl Deref for StackRef<'_> {
+    type Target = [Word];
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        self.as_slice()
+    }
+}
+
+impl PartialEq for StackRef<'_> {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.as_slice() == other.as_slice()
+    }
+}
+
+impl PartialEq<[Word]> for StackRef<'_> {
+    #[inline]
+    fn eq(&self, other: &[Word]) -> bool {
+        self.as_slice() == other
+    }
+}
+
+impl PartialEq<&[Word]> for StackRef<'_> {
+    #[inline]
+    fn eq(&self, other: &&[Word]) -> bool {
+        self.as_slice() == *other
+    }
+}
+
+impl<const N: usize> PartialEq<[Word; N]> for StackRef<'_> {
+    #[inline]
+    fn eq(&self, other: &[Word; N]) -> bool {
+        self.as_slice() == other
+    }
+}
+
+impl Eq for StackRef<'_> {}
 
 impl<'a> Stack<'a> {
     pub(crate) const CAPACITY: usize = STACK_LIMIT;
@@ -125,6 +231,24 @@ impl<'a> StackMut<'a> {
     #[inline]
     pub const fn as_slice(&self) -> &[Word] {
         unsafe { core::slice::from_raw_parts(self.as_word_ptr(), self.len()) }
+    }
+
+    /// Returns the `n`th stack word from the top.
+    #[inline]
+    pub fn peek(&self, n: usize) -> Option<Word> {
+        self.as_slice().get(self.len().checked_sub(n + 1)?).copied()
+    }
+
+    /// Returns `N` stack words from the top.
+    #[inline]
+    pub fn peekn<const N: usize>(&self) -> Option<[Word; N]> {
+        let len = self.len();
+        if len < N {
+            cold_path();
+            return None;
+        }
+        let stack = self.as_slice();
+        Some(core::array::from_fn(|i| stack[len - 1 - i]))
     }
 
     /// Returns the stack contents as a slice.
@@ -442,6 +566,25 @@ mod tests {
             assert_matches!(stack.popn_dyn(3).map(|_| ()), Err(InstrStop::StackUnderflow));
             assert_eq!(stack.as_slice(), [Word::from(0), Word::from(1)]);
         });
+    }
+
+    #[test]
+    fn peekn() {
+        run_with_len(3, |stack| {
+            assert_eq!(stack.peek(0), Some(Word::from(2)));
+            assert_eq!(stack.peek(1), Some(Word::from(1)));
+            assert_eq!(stack.peekn::<2>(), Some([Word::from(2), Word::from(1)]));
+            assert_eq!(stack.peekn::<4>(), None);
+            assert_eq!(stack.as_slice(), [Word::from(0), Word::from(1), Word::from(2)]);
+        });
+
+        let mut backing = [MaybeUninit::new(Word::ZERO); StackRef::CAPACITY];
+        for (i, word) in backing.iter_mut().take(3).enumerate() {
+            word.write(Word::from(i));
+        }
+        let stack = StackRef::new(&backing, 3);
+        assert_eq!(stack.peekn::<3>(), Some([Word::from(2), Word::from(1), Word::from(0)]));
+        assert_eq!(stack.peekn::<4>(), None);
     }
 
     #[test]
