@@ -6,13 +6,14 @@ use super::{
     },
 };
 use crate::{
+    filter::EntryPoint,
     state::{
         apply_state_changes_in_place, insert_account_with_storage, parse_bytecode,
         system_contract_has_code,
     },
     tx::{TxFields, build_recovered_tx, rpc_access_list, signed_authorizations},
 };
-use alloy_eips::{eip4844, eip7691};
+use alloy_eips::eip7840::BlobParams;
 use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, U256};
 use alloy_rpc_types_eth::AccessList as RpcAccessList;
 use evm2::{
@@ -32,9 +33,9 @@ const ONE_ETHER: u128 = 1_000_000_000_000_000_000;
 
 /// Execution options for a single suite.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct ExecuteConfig {
+pub struct ExecuteConfig {
     /// Whether to validate final post-state when fixtures contain it.
-    pub(crate) validate_post_state: bool,
+    pub validate_post_state: bool,
 }
 
 impl Default for ExecuteConfig {
@@ -45,11 +46,11 @@ impl Default for ExecuteConfig {
 
 /// Per-file execution summary.
 #[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct ExecuteSummary {
+pub struct ExecuteSummary {
     /// Number of executed test cases.
-    pub(crate) executed: usize,
+    pub executed: usize,
     /// Number of skipped test cases.
-    pub(crate) skipped: usize,
+    pub skipped: usize,
 }
 
 /// Executes a single blockchain test JSON file using explicit execution options.
@@ -62,15 +63,29 @@ pub(crate) fn execute_test_suite(
 }
 
 /// Executes a loaded blockchain test JSON file using explicit execution options.
-pub(crate) fn execute_str_with_config(
+pub fn execute_str_with_config(
     path: &Path,
     input: &str,
     config: ExecuteConfig,
+) -> Result<ExecuteSummary, TestError> {
+    execute_str_with_filter(path, input, config, &EntryPoint::default())
+}
+
+/// Executes a loaded blockchain test JSON file, selecting cases by entrypoint.
+pub fn execute_str_with_filter(
+    path: &Path,
+    input: &str,
+    config: ExecuteConfig,
+    entrypoint: &EntryPoint,
 ) -> Result<ExecuteSummary, TestError> {
     let suite: BlockchainTest =
         serde_json::from_str(input).map_err(|err| TestError::unknown(path, err.into()))?;
     let mut summary = ExecuteSummary::default();
     for (name, unit) in suite.0 {
+        if !entrypoint.matches(&name) {
+            summary.skipped += 1;
+            continue;
+        }
         if unit.network.is_transition() {
             summary.skipped += 1;
             continue;
@@ -377,22 +392,29 @@ fn block_env_from_header(header: &BlockHeader, excess_blob_gas: u64, spec: SpecI
         } else {
             U256::ZERO
         },
-        blob_basefee: U256::from(blob_basefee(excess_blob_gas, spec)),
+        blob_basefee: U256::from(
+            blob_params_for_timestamp(header.timestamp, spec).calc_blob_fee(excess_blob_gas),
+        ),
         slot_num: header.slot_number.unwrap_or_default(),
         ext: (),
         _non_exhaustive: (),
     }
 }
 
-const fn blob_basefee(excess_blob_gas: u64, spec: SpecId) -> u128 {
-    if spec.enables(SpecId::PRAGUE) {
-        eip7691::calc_blob_gasprice(excess_blob_gas)
+fn blob_params_for_timestamp(timestamp: U256, spec: SpecId) -> BlobParams {
+    const MAINNET_BPO1_TIMESTAMP: u64 = 1_765_290_071;
+    const MAINNET_BPO2_TIMESTAMP: u64 = 1_767_747_671;
+
+    if timestamp.to::<u64>() >= MAINNET_BPO2_TIMESTAMP {
+        BlobParams::bpo2()
+    } else if timestamp.to::<u64>() >= MAINNET_BPO1_TIMESTAMP {
+        BlobParams::bpo1()
+    } else if spec.enables(SpecId::OSAKA) {
+        BlobParams::osaka()
+    } else if spec.enables(SpecId::PRAGUE) {
+        BlobParams::prague()
     } else {
-        eip4844::fake_exponential(
-            eip4844::BLOB_TX_MIN_BLOB_GASPRICE,
-            excess_blob_gas as u128,
-            eip4844::BLOB_GASPRICE_UPDATE_FRACTION,
-        )
+        BlobParams::cancun()
     }
 }
 

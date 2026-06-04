@@ -1,6 +1,6 @@
 [package]
-name = "evm2-replayer"
-description = "Replay revm-oomph block corpora with evm2"
+name = "evm2-cli"
+description = "Command-line tools for capturing and replaying evm2 fixtures"
 
 version.workspace = true
 edition.workspace = true
@@ -10,19 +10,25 @@ license.workspace = true
 homepage.workspace = true
 repository.workspace = true
 
+[[bin]]
+name = "evm2"
+path = "src/main.rs"
+
 [lints]
 workspace = true
 
 [dependencies]
+evm2-eest = { path = "../eest", version = "0.1.0" }
 evm2 = { workspace = true, default-features = true }
 
 alloy-consensus = { workspace = true, features = ["k256", "std"] }
+alloy-chains.workspace = true
 alloy-eips = { workspace = true, features = ["std"] }
+alloy-hardforks.workspace = true
 alloy-primitives = { workspace = true, features = ["serde", "std"] }
 alloy-rlp = { workspace = true, features = ["std"] }
 clap.workspace = true
 serde = { workspace = true, features = ["derive", "std"] }
-serde-wincode = { workspace = true, features = ["std"] }
 serde_json = { workspace = true, features = ["std"] }
 thiserror = { workspace = true, features = ["std"] }
-wincode = { workspace = true, features = ["std"] }
+ureq = { workspace = true, features = ["json", "rustls"] }
