@@ -1,14 +1,15 @@
 use super::{
-    CaptureError, block,
+    CaptureError,
     overlay::Overlay,
     parse::{parse_address, parse_b256, parse_bytes, parse_u64, parse_u256},
-    rpc::{RpcEndpoint, hex_quantity},
+    rpc::RpcEndpoint,
 };
 use crate::capture::model::{
     AccountState, BlockHash, CapturedBlock, CapturedBlocks, CapturedCase, CapturedInput,
     CapturedVersions, Code, CodeTable, State, StorageEntry,
 };
 use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, U256, keccak256};
+use futures_util::{StreamExt, stream};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
 
@@ -36,16 +37,22 @@ impl CaptureBuilder {
         self.chain_id
     }
 
-    pub(super) fn capture_block_hashes(
+    pub(super) async fn capture_block_hashes(
         &mut self,
         rpc: &RpcEndpoint,
         first_block: u64,
     ) -> Result<(), CaptureError> {
         let start = first_block.saturating_sub(256);
-        for number in start..first_block {
-            let raw_block = rpc.raw_block(&hex_quantity(number))?;
-            let block = block::decode_consensus_block(&raw_block)?;
-            self.block_hashes.insert(block.header.number, block.header.hash_slow());
+        let mut block_hashes = stream::iter(start..first_block)
+            .map(|number| async move {
+                let hash = rpc.block_hash(number).await?;
+                Ok::<_, CaptureError>((number, hash))
+            })
+            .buffered(rpc.max_concurrent_requests());
+
+        while let Some(block_hash) = block_hashes.next().await {
+            let (number, hash) = block_hash?;
+            self.block_hashes.insert(number, hash);
         }
         Ok(())
     }
@@ -136,7 +143,7 @@ impl CaptureBuilder {
 
     pub(super) fn finish(self, mut block_inputs: Vec<CapturedBlock>) -> CapturedCase {
         let input = if block_inputs.len() == 1 {
-            CapturedInput::Block(block_inputs.pop().expect("single block exists"))
+            CapturedInput::Block(Box::new(block_inputs.pop().expect("single block exists")))
         } else {
             CapturedInput::Blocks(CapturedBlocks { blocks: block_inputs })
         };

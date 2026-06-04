@@ -1,5 +1,4 @@
 use super::{
-    block::{self, MainnetBlock},
     error::CaptureError,
     model::{CapturedBlock, CapturedCase, CapturedInput, State as CapturedState},
 };
@@ -23,14 +22,8 @@ use std::collections::BTreeMap;
 pub(super) fn suite(capture: &CapturedCase) -> Result<BlockchainTest, CaptureError> {
     let network = network(capture)?;
     let inputs = captured_blocks(capture)?;
-    let decoded_blocks = inputs
-        .iter()
-        .map(|input| {
-            let block = block::decode_consensus_block(&input.raw_block)?;
-            validate_block(input, &block)?;
-            export_block(input, &block)
-        })
-        .collect::<Result<Vec<_>, CaptureError>>()?;
+    let decoded_blocks =
+        inputs.iter().map(export_block).collect::<Result<Vec<_>, CaptureError>>()?;
     let first = decoded_blocks.first().expect("blocks is not empty");
     let last = decoded_blocks.last().expect("blocks is not empty");
     let first_header = first.block_header.as_ref().expect("exported blocks include headers");
@@ -69,9 +62,9 @@ fn export_block_hashes(capture: &CapturedCase) -> Vec<EestBlockHash> {
         .collect()
 }
 
-const fn captured_blocks(capture: &CapturedCase) -> Result<&[CapturedBlock], CaptureError> {
+fn captured_blocks(capture: &CapturedCase) -> Result<&[CapturedBlock], CaptureError> {
     let blocks = match &capture.input {
-        CapturedInput::Block(block) => std::slice::from_ref(block),
+        CapturedInput::Block(block) => std::slice::from_ref(block.as_ref()),
         CapturedInput::Blocks(blocks) => blocks.blocks.as_slice(),
     };
     if blocks.is_empty() {
@@ -105,32 +98,6 @@ fn network(capture: &CapturedCase) -> Result<ForkSpec, CaptureError> {
         SpecId::AMSTERDAM => Ok(ForkSpec::Amsterdam),
         _ => Err(CaptureError::UnsupportedSpec(first.spec_id)),
     }
-}
-
-fn validate_block(input: &CapturedBlock, block: &MainnetBlock) -> Result<(), CaptureError> {
-    let actual_hash = block.header.hash_slow();
-    if input.hash != actual_hash {
-        return Err(CaptureError::BlockHashMismatch { expected: input.hash, actual: actual_hash });
-    }
-    if input.number != block.header.number {
-        return Err(CaptureError::BlockNumberMismatch {
-            expected: input.number,
-            actual: block.header.number,
-        });
-    }
-    if input.parent_hash != block.header.parent_hash {
-        return Err(CaptureError::ParentHashMismatch {
-            expected: input.parent_hash,
-            actual: block.header.parent_hash,
-        });
-    }
-    if input.transactions.len() != block.body.transactions.len() {
-        return Err(CaptureError::TransactionCountMismatch {
-            expected: input.transactions.len(),
-            actual: block.body.transactions.len(),
-        });
-    }
-    Ok(())
 }
 
 fn export_state(capture: &CapturedCase, state: &CapturedState) -> EestState {
@@ -176,7 +143,8 @@ fn parent_header(first: &Block) -> BlockHeader {
     header
 }
 
-fn export_block(input: &CapturedBlock, block: &MainnetBlock) -> Result<Block, CaptureError> {
+fn export_block(input: &CapturedBlock) -> Result<Block, CaptureError> {
+    let block = &input.block;
     Ok(Block {
         block_header: Some(export_header(&block.header)),
         rlp: Bytes::new(),

@@ -1,11 +1,15 @@
-use super::{CaptureError, parse};
-use alloy_primitives::Bytes;
-use serde::Deserialize;
-use serde_json::{Value, json};
-use std::{thread, time::Duration};
+use super::{CaptureError, MainnetBlock};
+use alloy_primitives::B256;
+use alloy_provider::{Provider, RootProvider};
+use alloy_rpc_client::RpcClient;
+use alloy_rpc_types_eth::BlockNumberOrTag;
+use alloy_rpc_types_trace::geth::{GethDebugTracingOptions, PreStateConfig};
+use serde_json::Value;
+use std::{borrow::Cow, sync::Arc, time::Duration};
+use tokio::sync::Semaphore;
 
-const MAX_RPC_RESPONSE_BYTES: u64 = 512 * 1024 * 1024;
-const MAX_RPC_ATTEMPTS: usize = 4;
+const RPC_INITIAL_BACKOFF_MS: u64 = 500;
+const RPC_COMPUTE_UNITS_PER_SECOND: u64 = 330;
 
 #[derive(Clone, Copy)]
 pub(super) enum TraceMode {
@@ -13,98 +17,82 @@ pub(super) enum TraceMode {
     Diff,
 }
 
-pub(super) fn hex_quantity(value: u64) -> String {
-    format!("0x{value:x}")
-}
-
+#[derive(Clone)]
 pub(super) struct RpcEndpoint {
-    url: String,
+    provider: RootProvider,
+    permits: Arc<Semaphore>,
+    max_concurrent_requests: usize,
 }
 
 impl RpcEndpoint {
-    pub(super) fn parse(url: &str) -> Result<Self, CaptureError> {
-        Ok(Self { url: url.to_owned() })
+    pub(super) fn parse(
+        url: &str,
+        max_concurrent_requests: usize,
+        rpc_retries: u32,
+    ) -> Result<Self, CaptureError> {
+        let url = url.parse().map_err(|_| CaptureError::InvalidRpcUrl(url.to_owned()))?;
+        let retry_layer = alloy_provider::transport::layers::RetryBackoffLayer::new(
+            rpc_retries,
+            RPC_INITIAL_BACKOFF_MS,
+            RPC_COMPUTE_UNITS_PER_SECOND,
+        );
+        let client = RpcClient::builder().layer(retry_layer).http(url);
+        Ok(Self {
+            provider: RootProvider::new(client),
+            permits: Arc::new(Semaphore::new(max_concurrent_requests)),
+            max_concurrent_requests,
+        })
     }
 
-    pub(super) fn raw_block(&self, block_id: &str) -> Result<Bytes, CaptureError> {
-        let value = self.call("debug_getRawBlock", json!([block_id]))?;
-        parse::parse_bytes(&value)
+    pub(super) const fn max_concurrent_requests(&self) -> usize {
+        self.max_concurrent_requests
     }
 
-    pub(super) fn trace_block(
+    pub(super) async fn block(&self, block_number: u64) -> Result<MainnetBlock, CaptureError> {
+        let block = self
+            .call(|| async {
+                self.provider
+                    .get_block_by_number(BlockNumberOrTag::Number(block_number))
+                    .full()
+                    .await
+            })
+            .await?;
+        block.map(Into::into).ok_or(CaptureError::MissingBlock(block_number))
+    }
+
+    pub(super) async fn block_hash(&self, block_number: u64) -> Result<B256, CaptureError> {
+        let header = self
+            .call(|| self.provider.get_header_by_number(BlockNumberOrTag::Number(block_number)))
+            .await?;
+        header.map(|header| header.hash).ok_or(CaptureError::MissingBlockHeader(block_number))
+    }
+
+    pub(super) async fn trace_block(
         &self,
-        block_id: &str,
+        block_number: u64,
         mode: TraceMode,
     ) -> Result<Vec<Value>, CaptureError> {
-        let tracer_config = match mode {
-            TraceMode::PreState => json!({}),
-            TraceMode::Diff => json!({ "diffMode": true }),
+        let config = match mode {
+            TraceMode::PreState => PreStateConfig::default(),
+            TraceMode::Diff => PreStateConfig { diff_mode: Some(true), ..Default::default() },
         };
-        let traces = self.call(
-            "debug_traceBlockByNumber",
-            json!([
-                block_id,
-                {
-                    "tracer": "prestateTracer",
-                    "tracerConfig": tracer_config,
-                    "timeout": "120s"
-                }
-            ]),
-        )?;
-        traces.as_array().cloned().ok_or(CaptureError::InvalidTraceResult(
-            "debug_traceBlockByNumber result was not an array",
-        ))
+        let options =
+            GethDebugTracingOptions::prestate_tracer(config).with_timeout(Duration::from_secs(120));
+        self.call(|| {
+            self.provider.raw_request(
+                Cow::Borrowed("debug_traceBlockByNumber"),
+                (BlockNumberOrTag::Number(block_number), &options),
+            )
+        })
+        .await
     }
 
-    fn call(&self, method: &str, params: Value) -> Result<Value, CaptureError> {
-        let request = json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": method,
-            "params": params,
-        });
-        let response = self.call_with_retries(method, &request)?;
-        if let Some(error) = response.error {
-            return Err(CaptureError::Rpc { method: method.to_owned(), error });
-        }
-        response.result.ok_or_else(|| CaptureError::MissingRpcResult(method.to_owned()))
+    async fn call<R, F, Fut>(&self, call: F) -> Result<R, CaptureError>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = alloy_provider::transport::TransportResult<R>>,
+    {
+        let _permit = self.permits.acquire().await.expect("capture semaphore is not closed");
+        call().await.map_err(CaptureError::Transport)
     }
-
-    fn call_with_retries(
-        &self,
-        method: &str,
-        request: &Value,
-    ) -> Result<RpcResponse, CaptureError> {
-        for attempt in 1..=MAX_RPC_ATTEMPTS {
-            match self.send_request(request) {
-                Ok(response) => return Ok(response),
-                Err(error) if attempt < MAX_RPC_ATTEMPTS => {
-                    eprintln!(
-                        "RPC {method} attempt {attempt}/{MAX_RPC_ATTEMPTS} failed: {error}; retrying"
-                    );
-                    thread::sleep(Duration::from_millis(500 * attempt as u64));
-                }
-                Err(error) => return Err(CaptureError::Http(error)),
-            }
-        }
-        unreachable!("attempt loop always returns")
-    }
-
-    fn send_request(&self, request: &Value) -> Result<RpcResponse, ureq::Error> {
-        let response = ureq::post(&self.url)
-            .header("User-Agent", "evm2-cli/0.1")
-            .header("Connection", "close")
-            .send_json(request)?
-            .body_mut()
-            .with_config()
-            .limit(MAX_RPC_RESPONSE_BYTES)
-            .read_json::<RpcResponse>()?;
-        Ok(response)
-    }
-}
-
-#[derive(Debug, Deserialize)]
-struct RpcResponse {
-    result: Option<Value>,
-    error: Option<Value>,
 }

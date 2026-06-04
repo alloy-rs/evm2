@@ -1,9 +1,9 @@
 //! Normalized capture model used between RPC collection and EEST export.
 //!
-//! Capture has two distinct phases. The builder first reads raw blocks and trace output from RPC
+//! Capture has two distinct phases. The builder first reads blocks and trace output from RPC
 //! and reduces them into the small set of data needed to replay the block range: a base pre-state,
 //! optional final post-state, historical block hashes, deduplicated bytecode, execution versions,
-//! and the raw blocks with recovered transaction signers. The exporter then turns this model into
+//! and the blocks with recovered transaction signers. The exporter then turns this model into
 //! the EEST blockchain-test JSON shape.
 //!
 //! Keeping this model separate from the serialized EEST structs lets capture stay focused on
@@ -11,6 +11,7 @@
 //! storing bytecode once by code hash. It also keeps the exporter as a format boundary instead of
 //! mixing RPC trace interpretation with JSON layout details.
 
+use super::MainnetBlock;
 use alloy_primitives::{Address, B256, Bytes, U256};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -76,7 +77,7 @@ pub(super) struct BlockHash {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum CapturedInput {
-    Block(CapturedBlock),
+    Block(Box<CapturedBlock>),
     Blocks(CapturedBlocks),
 }
 
@@ -87,10 +88,7 @@ pub(super) struct CapturedBlocks {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct CapturedBlock {
-    pub(super) number: u64,
-    pub(super) hash: B256,
-    pub(super) parent_hash: B256,
-    pub(super) raw_block: Bytes,
+    pub(super) block: MainnetBlock,
     pub(super) transactions: Vec<CapturedTransaction>,
 }
 
