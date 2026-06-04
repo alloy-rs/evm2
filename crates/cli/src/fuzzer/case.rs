@@ -19,7 +19,7 @@ use revm::{
 };
 use secp256k1::{Message, SECP256K1, SecretKey};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::OnceLock};
 
 pub(crate) const CALLER: Address = Address::new([0x10; 20]);
 pub(crate) const TARGET: Address = Address::new([0x20; 20]);
@@ -27,8 +27,6 @@ pub(crate) const BENEFICIARY: Address = Address::new([0x30; 20]);
 const CALLER_BALANCE: U256 = U256::from_limbs([0, 0, 1, 0]);
 const EIP7702_DELEGATED_TARGET: Address =
     Address::new([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6]);
-const EIP7702_TX_CHANCE: usize = 8;
-const EIP7702_MULTI_AUTH_CHANCE: usize = 8;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct EvmCase {
@@ -311,15 +309,11 @@ impl TxKindCase {
         {
             return kind;
         }
-
-        if spec.enables(SpecId::PRAGUE) && rng.one_in(EIP7702_TX_CHANCE) {
-            return Self::Eip7702;
-        }
-
-        match rng.range(4) {
-            0 if spec.enables(SpecId::CANCUN) => Self::Eip4844,
-            1 if spec.enables(SpecId::LONDON) => Self::Eip1559,
-            2 if spec.enables(SpecId::BERLIN) => Self::Eip2930,
+        match rng.range(5) {
+            0 if spec.enables(SpecId::PRAGUE) => Self::Eip7702,
+            1 if spec.enables(SpecId::CANCUN) => Self::Eip4844,
+            2 if spec.enables(SpecId::LONDON) => Self::Eip1559,
+            3 if spec.enables(SpecId::BERLIN) => Self::Eip2930,
             _ => Self::Legacy,
         }
     }
@@ -369,7 +363,7 @@ fn generate_eip7702_authorization_list(rng: &mut Gen) -> Vec<SignedAuthorization
         return Vec::new();
     }
 
-    let len = if rng.one_in(EIP7702_MULTI_AUTH_CHANCE) { 2 } else { 1 };
+    let len = rng.range_inclusive(1, 3);
     (0..len).map(|_| generate_eip7702_authorization(rng)).collect()
 }
 
@@ -491,9 +485,12 @@ fn eip7702_designation(address: Address) -> Bytes {
 }
 
 fn fixed_eip7702_authority() -> Address {
-    fixed_eip7702_auth()
-        .recover_authority()
-        .expect("hard-coded EIP-7702 authorization must recover an authority")
+    static AUTHORITY: OnceLock<Address> = OnceLock::new();
+    *AUTHORITY.get_or_init(|| {
+        fixed_eip7702_auth()
+            .recover_authority()
+            .expect("hard-coded EIP-7702 authorization must recover an authority")
+    })
 }
 
 pub(crate) fn fixed_eip7702_auth() -> SignedAuthorization {
