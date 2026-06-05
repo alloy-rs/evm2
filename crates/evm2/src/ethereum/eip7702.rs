@@ -72,8 +72,21 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
         chain_id: U256::from(req.host.version().chain_id),
         ..TxEnv::default()
     };
-    let (bytecode, mut message) =
-        initial_message(req.host, caller, tx.nonce, tx.to.into(), &tx.input, tx.value, gas_limit)?;
+    let (bytecode, mut message) = match initial_message(
+        req.host,
+        caller,
+        tx.nonce,
+        tx.to.into(),
+        &tx.input,
+        tx.value,
+        gas_limit,
+    ) {
+        Ok(message) => message,
+        Err(err) => {
+            req.host.state.rollback(execution_checkpoint, req.host.version().features);
+            return Err(err);
+        }
+    };
     let mut result = req.host.execute_message(&tx_env, bytecode, &mut message, false);
     rollback_failed_execution(req.host, execution_checkpoint, &mut result);
     result.gas.set_refunded(

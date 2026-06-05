@@ -415,6 +415,8 @@ pub(super) fn rollback_failed_execution<T: EvmTypes<Host = Evm<T>>>(
         if result.stop.is_halt() {
             result.gas.set_remaining(0);
         }
+    } else {
+        host.state.commit(checkpoint);
     }
 }
 

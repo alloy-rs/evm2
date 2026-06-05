@@ -672,6 +672,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
                 self.state.rollback(checkpoint, self.features);
                 return Self::error_message_result(self.db_error_stop(code), gas_limit);
             }
+            self.state.commit(checkpoint);
         } else {
             self.state.rollback(checkpoint, self.features);
         }
@@ -763,10 +764,12 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             || match self.state.transfer(&message.caller, &message.destination, &message.value) {
                 Ok(result) => result,
                 Err(code) => {
+                    self.state.rollback(checkpoint, self.features);
                     return Self::error_message_result(self.db_error_stop(code), message.gas_limit);
                 }
             };
         if transfers_balance && !transfer_succeeded {
+            self.state.rollback(checkpoint, self.features);
             return Self::error_message_result(InstrStop::OutOfFunds, message.gas_limit);
         }
         if transfers_balance {
@@ -802,6 +805,8 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         };
         if !stop.is_success() {
             self.state.rollback(checkpoint, self.features);
+        } else {
+            self.state.commit(checkpoint);
         }
         MessageResult {
             stop,
@@ -824,6 +829,8 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         let output = Bytes::copy_from_slice(interp.output());
         if !stop.is_success() {
             self.state.rollback(checkpoint, self.features);
+        } else {
+            self.state.commit(checkpoint);
         }
 
         MessageResult {

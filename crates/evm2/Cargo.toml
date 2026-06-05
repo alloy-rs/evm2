@@ -32,6 +32,7 @@ phf = { workspace = true, features = ["macros"], optional = true }
 
 # "serde"
 serde = { workspace = true, features = ["derive", "alloc"], optional = true }
+stumpalo.workspace = true
 
 # "async"
 tokio = { workspace = true, features = ["rt-multi-thread"], optional = true }

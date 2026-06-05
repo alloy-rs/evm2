@@ -18,6 +18,7 @@ use alloy_primitives::{
 };
 use core::mem;
 use derive_where::derive_where;
+use stumpalo::{FrameStack, StackFrame};
 
 /// A value tracked together with the value it had at the start of the current
 /// transaction.
@@ -263,7 +264,7 @@ pub struct StorageChangeSet {
 #[derive(Debug, Eq, PartialEq)]
 pub struct StateCheckpoint {
     /// Revert journal length at the checkpoint.
-    journal_len: usize,
+    journal_frame: StackFrame<JournalEntry>,
     /// Emitted log count at the checkpoint.
     logs_len: usize,
 }
@@ -352,7 +353,7 @@ pub struct State {
     /// Persistent storage writes for the current transaction.
     storage: AddressMap<StorageOverlay>,
     /// Revert journal.
-    journal: Vec<JournalEntry>,
+    journal: FrameStack<JournalEntry>,
     /// Logs emitted by the current transaction.
     logs: Vec<Log>,
     /// Accounts touched for transaction-finalization account-lifetime rules.
@@ -385,7 +386,7 @@ impl State {
             database: CacheDB::new(initial),
             accounts: AddressMap::default(),
             storage: AddressMap::default(),
-            journal: Vec::new(),
+            journal: FrameStack::new(),
             logs: Vec::new(),
             touched: AddressSet::default(),
             selfdestructs: AddressSet::default(),
@@ -397,8 +398,8 @@ impl State {
 
     /// Returns a checkpoint for later rollback.
     #[inline]
-    pub const fn checkpoint(&self) -> StateCheckpoint {
-        StateCheckpoint { journal_len: self.journal.len(), logs_len: self.logs.len() }
+    pub fn checkpoint(&mut self) -> StateCheckpoint {
+        StateCheckpoint { journal_frame: self.journal.checkpoint(), logs_len: self.logs.len() }
     }
 
     /// Returns the initial database.
@@ -588,7 +589,7 @@ impl State {
     fn ensure_transaction_account<'a>(
         database: &mut dyn DynDatabase,
         accounts: &'a mut AddressMap<Option<Account>>,
-        journal: &mut Vec<JournalEntry>,
+        journal: &mut FrameStack<JournalEntry>,
         address: &Address,
     ) -> DbResult<&'a mut Option<Account>> {
         match accounts.entry(*address) {
@@ -949,13 +950,10 @@ impl State {
     /// Reverts state changes after the checkpoint.
     #[inline(never)]
     pub fn rollback(&mut self, checkpoint: StateCheckpoint, features: EvmFeatures) {
-        assert!(checkpoint.journal_len <= self.journal.len(), "checkpoint is past journal length");
         assert!(checkpoint.logs_len <= self.logs.len(), "checkpoint is past logs length");
         self.logs.truncate(checkpoint.logs_len);
-        while self.journal.len() != checkpoint.journal_len {
-            let Some(entry) = self.journal.pop() else {
-                unreachable!("checkpoint is checked above")
-            };
+        let entries: Vec<_> = self.journal.rollback(checkpoint.journal_frame).collect();
+        for entry in entries {
             match entry {
                 JournalEntry::AccountChange { address, previous } => {
                     if let Some(account) = self.accounts.get_mut(&address) {
@@ -1013,6 +1011,12 @@ impl State {
                 }
             }
         }
+    }
+
+    /// Commits state changes after the checkpoint.
+    #[inline]
+    pub fn commit(&mut self, checkpoint: StateCheckpoint) {
+        self.journal.commit(checkpoint.journal_frame);
     }
 
     /// Returns whether an existing account is dead by the EIP-161 definition.
