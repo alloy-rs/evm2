@@ -48,8 +48,8 @@ pub(crate) use db::{db_error_unavailable, stored_error_code};
 
 mod state;
 pub use state::{
-    Account, AccountInfo, JournalEntry, State, StateChanges, StateCheckpoint, StorageChangeSet,
-    StorageOverlay, StorageSlot, Tracked,
+    Account, AccountInfo, JournalEntry, JournaledAccount, State, StateChanges, StateCheckpoint,
+    StorageChangeSet, StorageOverlay, StorageSlot, Tracked,
 };
 
 mod warm_addresses;

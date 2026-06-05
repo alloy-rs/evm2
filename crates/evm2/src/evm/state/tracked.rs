@@ -1,5 +1,9 @@
 //! Tracked overlay values.
 
+use super::TrackedAccount;
+use alloy_primitives::{Address, map::AddressMap};
+use core::ops::{Deref, DerefMut};
+
 /// A value tracked together with the value it had at the start of the current
 /// transaction.
 ///
@@ -35,5 +39,71 @@ impl<T: PartialEq> Tracked<T> {
     #[inline]
     pub fn is_changed(&self) -> bool {
         self.original != self.current
+    }
+}
+
+/// Revm-style account access list for the current transaction.
+///
+/// This is the single account-side transaction map: account overlays, touched-account state, and
+/// EIP-2929 account warmth all live in the same entry. A warm or touched account does not have to
+/// be loaded from the database, matching revm's separation between warm access metadata and
+/// database-backed account loads.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(super) struct TrackedAccountMap {
+    accounts: AddressMap<TrackedAccount>,
+}
+
+impl TrackedAccountMap {
+    /// Returns whether the account is warm for EIP-2929 gas accounting.
+    #[inline]
+    pub(super) fn is_warm(&self, address: &Address) -> bool {
+        self.accounts.get(address).is_some_and(|entry| entry.is_warm)
+    }
+
+    /// Returns whether the account is touched for account-lifetime rules.
+    #[inline]
+    pub(super) fn is_touched(&self, address: &Address) -> bool {
+        self.accounts.get(address).is_some_and(|entry| entry.is_touched)
+    }
+
+    /// Marks the account as warm, inserting an entry if needed.
+    ///
+    /// Returns `true` if the account was previously cold.
+    #[inline]
+    pub(super) fn warm_account(&mut self, address: Address) -> bool {
+        let entry = self.accounts.entry(address).or_default();
+        let was_cold = !entry.is_warm;
+        entry.is_warm = true;
+        was_cold
+    }
+
+    /// Marks the account as touched, inserting an entry if needed.
+    ///
+    /// Returns `true` if this is the first touch of the account.
+    #[inline]
+    pub(super) fn touch(&mut self, address: Address) -> bool {
+        let entry = self.accounts.entry(address).or_default();
+        if entry.is_touched {
+            false
+        } else {
+            entry.is_touched = true;
+            true
+        }
+    }
+}
+
+impl Deref for TrackedAccountMap {
+    type Target = AddressMap<TrackedAccount>;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &self.accounts
+    }
+}
+
+impl DerefMut for TrackedAccountMap {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.accounts
     }
 }

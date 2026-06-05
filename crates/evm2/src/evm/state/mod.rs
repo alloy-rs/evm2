@@ -7,10 +7,11 @@ mod storage;
 mod tracked;
 
 use account::TrackedAccount;
-pub use account::{Account, AccountInfo};
+pub use account::{Account, AccountInfo, JournaledAccount};
 pub use changes::{StateChanges, StorageChangeSet};
 pub use journal::{JournalEntry, StateCheckpoint};
 pub use storage::{StorageOverlay, StorageSlot};
+use tracked::TrackedAccountMap;
 pub use tracked::Tracked;
 
 use super::{
@@ -29,77 +30,8 @@ use alloy_primitives::{
     Address, B256, KECCAK256_EMPTY, Log,
     map::{AddressMap, AddressSet, HashSet, U256Map, hash_map},
 };
-use core::{
-    mem,
-    ops::{Deref, DerefMut},
-};
+use core::mem;
 use derive_where::derive_where;
-
-/// Revm-style account access list for the current transaction.
-///
-/// This is the single account-side transaction map: account overlays, touched-account state, and
-/// EIP-2929 account warmth all live in the same entry. A warm or touched account does not have to
-/// be loaded from the database, matching revm's separation between warm access metadata and
-/// database-backed account loads.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-struct TrackedAccountMap {
-    accounts: AddressMap<TrackedAccount>,
-}
-
-impl TrackedAccountMap {
-    /// Returns whether the account is warm for EIP-2929 gas accounting.
-    #[inline]
-    fn is_warm(&self, address: &Address) -> bool {
-        self.accounts.get(address).is_some_and(|entry| entry.is_warm)
-    }
-
-    /// Returns whether the account is touched for account-lifetime rules.
-    #[inline]
-    fn is_touched(&self, address: &Address) -> bool {
-        self.accounts.get(address).is_some_and(|entry| entry.is_touched)
-    }
-
-    /// Marks the account as warm, inserting an entry if needed.
-    ///
-    /// Returns `true` if the account was previously cold.
-    #[inline]
-    fn warm_account(&mut self, address: Address) -> bool {
-        let entry = self.accounts.entry(address).or_default();
-        let was_cold = !entry.is_warm;
-        entry.is_warm = true;
-        was_cold
-    }
-
-    /// Marks the account as touched, inserting an entry if needed.
-    ///
-    /// Returns `true` if this is the first touch of the account.
-    #[inline]
-    fn touch(&mut self, address: Address) -> bool {
-        let entry = self.accounts.entry(address).or_default();
-        if entry.is_touched {
-            false
-        } else {
-            entry.is_touched = true;
-            true
-        }
-    }
-}
-
-impl Deref for TrackedAccountMap {
-    type Target = AddressMap<TrackedAccount>;
-
-    #[inline]
-    fn deref(&self) -> &Self::Target {
-        &self.accounts
-    }
-}
-
-impl DerefMut for TrackedAccountMap {
-    #[inline]
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.accounts
-    }
-}
 
 /// Mutable EVM state with an accepted-state cache, transaction layer, and reversible journal.
 #[derive_where(Debug)]
@@ -387,62 +319,74 @@ impl State {
         accounts: &'a mut TrackedAccountMap,
         journal: &mut Vec<JournalEntry>,
         address: &Address,
-    ) -> DbResult<&'a mut Option<Account>> {
+    ) -> DbResult<&'a mut TrackedAccount> {
         match accounts.entry(*address) {
-            hash_map::Entry::Occupied(mut entry) => {
-                if !entry.get().is_loaded {
+            hash_map::Entry::Occupied(entry) => {
+                let entry = entry.into_mut();
+                if !entry.is_loaded {
                     let original = database.get_account(address)?;
                     let present = original.clone().map(Account::from_info);
-                    let entry = entry.get_mut();
                     entry.original = original;
                     entry.present = present;
                     entry.is_loaded = true;
                     journal.push(JournalEntry::AccountInserted { address: *address });
                 }
-                Ok(&mut entry.into_mut().present)
+                Ok(entry)
             }
             hash_map::Entry::Vacant(entry) => {
                 let original = database.get_account(address)?;
                 let present = original.clone().map(Account::from_info);
                 journal.push(JournalEntry::AccountInserted { address: *address });
-                Ok(&mut entry
-                    .insert(TrackedAccount {
-                        original,
-                        present,
-                        is_loaded: true,
-                        ..TrackedAccount::default()
-                    })
-                    .present)
+                Ok(entry.insert(TrackedAccount {
+                    original,
+                    present,
+                    is_loaded: true,
+                    ..TrackedAccount::default()
+                }))
             }
         }
     }
 
     /// Gets an existing account or inserts a new empty account.
     pub fn get_or_insert(&mut self, address: &Address) -> DbResult<&mut Account> {
-        let account = Self::ensure_transaction_account(
+        let entry = Self::ensure_transaction_account(
             &mut self.database,
             &mut self.accounts,
             &mut self.journal,
             address,
         )?;
-        if account.is_none() {
+        if entry.present.is_none() {
             self.journal.push(JournalEntry::AccountChange { address: *address, previous: None });
-            *account = Some(Account { code_hash: KECCAK256_EMPTY, ..Account::default() });
+            entry.present = Some(Account { code_hash: KECCAK256_EMPTY, ..Account::default() });
         }
-        Ok(account.as_mut().expect("account is inserted above"))
+        Ok(entry.present.as_mut().expect("account is inserted above"))
+    }
+
+    /// Loads `address` into the transaction overlay and returns a journaled mutation handle.
+    ///
+    /// Unlike [`Self::account_info`], which reads the backing database without caching, this reads
+    /// the account once and preserves it in the transaction overlay. The returned
+    /// [`JournaledAccount`] records a revert snapshot on its first mutation, so any changes made
+    /// through it are undone together by [`Self::rollback`]. The account is materialized as empty
+    /// only when it is first mutated while absent. This mirrors revm's `JournaledAccount`.
+    pub fn journaled_account(&mut self, address: &Address) -> DbResult<JournaledAccount<'_>> {
+        let tracked = Self::ensure_transaction_account(
+            &mut self.database,
+            &mut self.accounts,
+            &mut self.journal,
+            address,
+        )?;
+        Ok(JournaledAccount::new(
+            *address,
+            tracked,
+            &mut self.journal,
+            &mut self.database,
+            &mut self.warm_addresses,
+        ))
     }
 
     fn journal_account_change(&mut self, address: &Address) -> DbResult<&mut Account> {
-        let account = Self::ensure_transaction_account(
-            &mut self.database,
-            &mut self.accounts,
-            &mut self.journal,
-            address,
-        )?;
-        let previous = account.clone();
-        self.journal.push(JournalEntry::AccountChange { address: *address, previous });
-        Ok(account
-            .get_or_insert_with(|| Account { code_hash: KECCAK256_EMPTY, ..Account::default() }))
+        Ok(self.journaled_account(address)?.into_account_mut())
     }
 
     /// Returns account info.
@@ -470,13 +414,13 @@ impl State {
 
     /// Returns an account if it exists.
     pub fn find(&mut self, address: &Address) -> DbResult<Option<&Account>> {
-        let account = Self::ensure_transaction_account(
+        let entry = Self::ensure_transaction_account(
             &mut self.database,
             &mut self.accounts,
             &mut self.journal,
             address,
         )?;
-        Ok(account.as_ref())
+        Ok(entry.present.as_ref())
     }
 
     /// Gets account code.
@@ -932,30 +876,30 @@ impl State {
     }
 
     fn delete_account_for_finalization(&mut self, address: &Address) -> DbResult<()> {
-        let account = Self::ensure_transaction_account(
+        let entry = Self::ensure_transaction_account(
             &mut self.database,
             &mut self.accounts,
             &mut self.journal,
             address,
         )?;
-        let previous = account.clone();
+        let previous = entry.present.clone();
         self.journal.push(JournalEntry::AccountChange { address: *address, previous });
-        *account = None;
+        entry.present = None;
         self.wipe_storage(address);
         Ok(())
     }
 
     fn materialize_empty_account_for_finalization(&mut self, address: &Address) -> DbResult<()> {
         let original_exists = self.load_account(address)?.is_some();
-        let account = Self::ensure_transaction_account(
+        let entry = Self::ensure_transaction_account(
             &mut self.database,
             &mut self.accounts,
             &mut self.journal,
             address,
         )?;
-        if !original_exists && account.is_none() {
+        if !original_exists && entry.present.is_none() {
             self.journal.push(JournalEntry::AccountChange { address: *address, previous: None });
-            *account = Some(Account { code_hash: KECCAK256_EMPTY, ..Account::default() });
+            entry.present = Some(Account { code_hash: KECCAK256_EMPTY, ..Account::default() });
         }
         Ok(())
     }
