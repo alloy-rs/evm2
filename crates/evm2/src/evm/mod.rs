@@ -2002,8 +2002,8 @@ mod tests {
         let frozen = block_state.freeze();
         let storage = frozen.storage_sorted();
         assert_eq!(storage.len(), 1);
-        assert_eq!(storage[0].original, Word::from(1));
-        assert_eq!(storage[0].current, Word::from(9));
+        assert_eq!(storage[0].1.original, Word::from(1));
+        assert_eq!(storage[0].1.current, Word::from(9));
         assert_eq!(
             evm.state.storage_ref(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY),
             Some(Word::from(9))
@@ -2022,8 +2022,8 @@ mod tests {
             .commit_with(&mut tee)
             .expect("block accumulators are infallible");
 
-        assert_eq!(left.freeze().storage_sorted()[0].current, Word::from(7));
-        assert_eq!(right.freeze().storage_sorted()[0].current, Word::from(7));
+        assert_eq!(left.freeze().storage_sorted()[0].1.current, Word::from(7));
+        assert_eq!(right.freeze().storage_sorted()[0].1.current, Word::from(7));
     }
 
     #[test]

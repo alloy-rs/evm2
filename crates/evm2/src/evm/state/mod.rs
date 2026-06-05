@@ -1412,15 +1412,57 @@ mod tests {
         let frozen = accumulator.freeze();
         let accounts = frozen.accounts_sorted();
         assert_eq!(accounts.len(), 1);
-        assert_eq!(accounts[0].original.as_ref(), Some(&without_code(original)));
-        assert_eq!(accounts[0].current.as_ref(), Some(&without_code(recreated)));
-        assert!(accounts[0].storage_wiped);
+        assert_eq!(accounts[0].1.original.as_ref(), Some(&without_code(original)));
+        assert_eq!(accounts[0].1.current.as_ref(), Some(&without_code(recreated)));
+        assert!(accounts[0].1.storage_wiped);
 
         let storage = frozen.storage_sorted();
         assert_eq!(storage.len(), 1);
-        assert_eq!(storage[0].key, key);
-        assert_eq!(storage[0].current, Word::from(7));
-        assert!(storage[0].after_wipe);
+        assert_eq!(storage[0].0.key(), key);
+        assert_eq!(storage[0].1.current, Word::from(7));
+    }
+
+    #[test]
+    fn block_accumulator_keeps_nonzero_write_after_storage_wipe() {
+        let address = Address::from([0x52; 20]);
+        let key = Word::from(1);
+        let original = AccountInfo::default().with_balance(Word::from(3));
+        let mut accumulator = BlockStateAccumulator::new();
+
+        let mut wipe_and_restore = account_change(address, Some(original.clone()), Some(original));
+        wipe_and_restore.storage =
+            storage_change(address, key, Word::from(5), Word::from(5), true).storage;
+        wipe_and_restore.visit(&mut accumulator).expect("block accumulator is infallible");
+
+        let frozen = accumulator.freeze();
+        let accounts = frozen.accounts_sorted();
+        assert_eq!(accounts.len(), 1);
+        assert!(accounts[0].1.storage_wiped);
+
+        let storage = frozen.storage_sorted();
+        assert_eq!(storage.len(), 1);
+        assert_eq!(storage[0].0.key(), key);
+        assert_eq!(storage[0].1.current, Word::from(5));
+    }
+
+    #[test]
+    fn block_accumulator_deletion_subsumes_storage_writes() {
+        let address = Address::from([0x56; 20]);
+        let key = Word::from(1);
+        let original = AccountInfo::default().with_balance(Word::from(3));
+        let mut accumulator = BlockStateAccumulator::new();
+
+        let mut delete = account_change(address, Some(original), None);
+        delete.storage = storage_change(address, key, Word::from(5), Word::from(7), true).storage;
+        delete.visit(&mut accumulator).expect("block accumulator is infallible");
+
+        let frozen = accumulator.freeze();
+        let accounts = frozen.accounts_sorted();
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0].0, address);
+        assert!(accounts[0].1.current.is_none());
+        assert!(accounts[0].1.storage_wiped);
+        assert!(frozen.storage_sorted().is_empty());
     }
 
     #[test]
@@ -1436,7 +1478,7 @@ mod tests {
         let frozen = accumulator.freeze();
         let accounts = frozen.accounts_sorted();
         assert_eq!(accounts.len(), 1);
-        assert!(accounts[0].storage_wiped);
+        assert!(accounts[0].1.storage_wiped);
         assert!(frozen.storage_sorted().is_empty());
     }
 
@@ -1459,18 +1501,17 @@ mod tests {
         let frozen = accumulator.freeze();
         let accounts = frozen.accounts_sorted();
         assert_eq!(accounts.len(), 1);
-        assert_eq!(accounts[0].address, account_address);
-        assert_eq!(accounts[0].original.as_ref(), Some(&without_code(original)));
-        assert_eq!(accounts[0].current.as_ref(), Some(&without_code(current)));
-        assert!(!accounts[0].storage_wiped);
+        assert_eq!(accounts[0].0, account_address);
+        assert_eq!(accounts[0].1.original.as_ref(), Some(&without_code(original)));
+        assert_eq!(accounts[0].1.current.as_ref(), Some(&without_code(current)));
+        assert!(!accounts[0].1.storage_wiped);
 
         let storage = frozen.storage_sorted();
         assert_eq!(storage.len(), 1);
-        assert_eq!(storage[0].address, storage_address);
-        assert_eq!(storage[0].key, key);
-        assert_eq!(storage[0].original, Word::from(3));
-        assert_eq!(storage[0].current, Word::from(4));
-        assert!(!storage[0].after_wipe);
+        assert_eq!(storage[0].0.address(), storage_address);
+        assert_eq!(storage[0].0.key(), key);
+        assert_eq!(storage[0].1.original, Word::from(3));
+        assert_eq!(storage[0].1.current, Word::from(4));
     }
 
     #[test]
