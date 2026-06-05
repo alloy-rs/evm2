@@ -4,7 +4,7 @@ use alloy_provider::{Provider, RootProvider};
 use alloy_rpc_client::RpcClient;
 use alloy_rpc_types_eth::BlockNumberOrTag;
 use alloy_rpc_types_trace::geth::{GethDebugTracingOptions, PreStateConfig};
-use serde_json::Value;
+use serde_json::value::RawValue;
 use std::{borrow::Cow, sync::Arc, time::Duration};
 use tokio::sync::Semaphore;
 
@@ -71,7 +71,7 @@ impl RpcEndpoint {
         &self,
         block_number: u64,
         mode: TraceMode,
-    ) -> Result<Vec<Value>, CaptureError> {
+    ) -> Result<Box<RawValue>, CaptureError> {
         let config = match mode {
             TraceMode::PreState => PreStateConfig::default(),
             TraceMode::Diff => PreStateConfig { diff_mode: Some(true), ..Default::default() },
