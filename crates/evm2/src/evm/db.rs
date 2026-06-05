@@ -141,7 +141,7 @@ impl<T: Database + DatabaseCommit> DatabaseCommit for Db<T> {
 }
 
 #[inline]
-pub(crate) fn stored_error_code() -> DbErrorCode {
+pub(crate) const fn stored_error_code() -> DbErrorCode {
     DbErrorCode::new_const(1)
 }
 

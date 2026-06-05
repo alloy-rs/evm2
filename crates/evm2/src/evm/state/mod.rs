@@ -10,7 +10,7 @@ use account::TrackedAccount;
 pub use account::{Account, AccountInfo, JournaledAccount};
 pub use changes::{StateChanges, StorageChangeSet};
 pub use journal::{JournalEntry, StateCheckpoint};
-pub use storage::{StorageOverlay, StorageSlot};
+pub use storage::{JournaledStorage, JournaledStorageSlot, StorageOverlay, StorageSlot};
 use tracked::TrackedAccountMap;
 pub use tracked::Tracked;
 
@@ -411,6 +411,26 @@ impl State {
 
     fn journal_account_change(&mut self, address: &Address) -> DbResult<&mut Account> {
         Ok(self.journaled_account(address)?.into_account_mut())
+    }
+
+    /// Returns a journaled mutation handle to `address`'s persistent storage overlay.
+    ///
+    /// The returned [`JournaledStorage`] ties the account's storage slots to the revert journal, so
+    /// any slot warmed or written through it is undone together by [`Self::rollback`]. Slot values
+    /// are read from the backing database lazily, only when a slot is loaded or first written. This
+    /// mirrors [`Self::journaled_account`] on the storage side.
+    ///
+    /// Unlike [`Self::storage`] and [`Self::set_storage`], this does not load or touch the owning
+    /// account; callers that need the account materialized must do so separately.
+    pub fn journaled_storage(&mut self, address: &Address) -> JournaledStorage<'_> {
+        let storage = self.storage.entry(*address).or_default();
+        JournaledStorage::new(
+            *address,
+            storage,
+            &mut self.journal,
+            &mut self.database,
+            &mut self.warm_addresses,
+        )
     }
 
     /// Returns account info.
