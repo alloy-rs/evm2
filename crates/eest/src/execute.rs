@@ -310,8 +310,9 @@ fn push_system_call_changes<T: EvmTypes<Host = Evm<T>>>(
     address: Address,
     data: Bytes,
 ) {
-    let result = evm.system_call(address, data);
+    let result = evm.system_call(address, data).detach();
     assert!(result.status, "pre-block system call failed: {address}");
+    evm.commit_source(&result.state_changes);
     changes.push(result.state_changes);
 }
 

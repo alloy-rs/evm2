@@ -188,7 +188,7 @@ impl<ExtDB> StateChangeSink for CacheDB<ExtDB> {
     #[inline]
     fn storage(&mut self, change: StorageChangeRef) -> Result<(), Self::Error> {
         let storage = self.cache.storage.entry(change.address).or_default();
-        if change.after_wipe && change.current.is_zero() {
+        if storage.wiped && change.current.is_zero() {
             storage.slots.remove(&change.key);
         } else {
             storage.slots.insert(change.key, change.current);

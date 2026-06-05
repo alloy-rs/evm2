@@ -87,7 +87,6 @@ impl StateChangeSource for StateChanges {
                     key,
                     original: slot.original,
                     current: slot.current,
-                    after_wipe: storage.wipe,
                 })?;
             }
         }

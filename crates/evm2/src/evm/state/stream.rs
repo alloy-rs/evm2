@@ -99,8 +99,6 @@ pub struct StorageChangeRef {
     pub original: Word,
     /// Slot value after the change.
     pub current: Word,
-    /// Whether this slot is emitted after a storage wipe for the same account.
-    pub after_wipe: bool,
 }
 
 /// Consumer of borrowed transaction or block state changes.
@@ -121,6 +119,9 @@ pub trait StateChangeSink {
     }
 
     /// Observes a storage wipe marker for an account.
+    ///
+    /// Sources emit this before any storage slot changes for the same account so sinks can apply
+    /// the wipe once, then apply subsequent slot writes.
     #[inline]
     fn storage_wipe(&mut self, _address: Address) -> Result<(), Self::Error> {
         Ok(())

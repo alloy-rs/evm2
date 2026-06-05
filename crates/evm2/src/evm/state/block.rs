@@ -12,7 +12,7 @@ use crate::{
 use alloc::vec::Vec;
 use alloy_primitives::{
     Address, B256,
-    map::{AddressMap, B256Map, hash_map},
+    map::{AddressMap, AddressSet, B256Map, hash_map},
 };
 use core::convert::Infallible;
 
@@ -23,8 +23,6 @@ pub struct BlockAccountDelta {
     pub original: Option<AccountInfo>,
     /// Account after the latest committed transaction.
     pub current: Option<AccountInfo>,
-    /// Whether storage was wiped for this account during the block.
-    pub storage_wiped: bool,
 }
 
 /// Block-level storage delta accumulated from committed transactions.
@@ -32,8 +30,8 @@ pub struct BlockAccountDelta {
 pub struct BlockStorageDelta {
     /// Slot value from the first observed non-wipe change.
     ///
-    /// If the account's [`BlockAccountDelta::storage_wiped`] flag is set, consumers should apply
-    /// the wipe before this slot and treat `current` as the value to write after the wipe.
+    /// If this slot's address appears in [`FrozenBlockState::storage_wipes`], consumers should
+    /// apply the wipe before this slot and treat `current` as the value to write after the wipe.
     pub original: Word,
     /// Slot value after the latest committed transaction.
     pub current: Word,
@@ -43,6 +41,7 @@ pub struct BlockStorageDelta {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct BlockStateAccumulator {
     accounts: AddressMap<BlockAccountDelta>,
+    storage_wipes: AddressSet,
     storage: StorageKeyMap<BlockStorageDelta>,
     code: B256Map<Bytecode>,
 }
@@ -57,13 +56,21 @@ impl BlockStateAccumulator {
     /// Returns whether the accumulator contains no state changes.
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.accounts.is_empty() && self.storage.is_empty() && self.code.is_empty()
+        self.accounts.is_empty()
+            && self.storage_wipes.is_empty()
+            && self.storage.is_empty()
+            && self.code.is_empty()
     }
 
     /// Freezes the accumulator into immutable block state.
     #[inline]
     pub fn freeze(self) -> FrozenBlockState {
-        FrozenBlockState { accounts: self.accounts, storage: self.storage, code: self.code }
+        FrozenBlockState {
+            accounts: self.accounts,
+            storage_wipes: self.storage_wipes,
+            storage: self.storage,
+            code: self.code,
+        }
     }
 }
 
@@ -80,28 +87,27 @@ impl StateChangeSink for BlockStateAccumulator {
         let original = change.original.map(AccountInfoRef::to_account_info_without_code);
         let current = change.current.map(AccountInfoRef::to_account_info_without_code);
         let deletes_account = current.is_none();
+
         match self.accounts.entry(change.address) {
             hash_map::Entry::Occupied(mut entry) => {
                 let delta = entry.get_mut();
-                if delta.original.is_none() && delta.current.is_none() && delta.storage_wiped {
-                    delta.original = original;
-                }
                 delta.current = current;
-                if delta.original.is_none() {
-                    delta.storage_wiped = false;
-                }
-                if delta.original == delta.current && !delta.storage_wiped {
+                if delta.original == delta.current {
                     entry.remove();
                 }
             }
             hash_map::Entry::Vacant(entry) => {
                 if original != current {
-                    entry.insert(BlockAccountDelta { original, current, storage_wiped: false });
+                    entry.insert(BlockAccountDelta { original, current });
                 }
             }
         }
+
         if deletes_account {
+            self.storage_wipes.remove(&change.address);
             self.storage.retain(|key, _| key.address() != change.address);
+        } else if self.accounts.get(&change.address).is_some_and(|delta| delta.original.is_none()) {
+            self.storage_wipes.remove(&change.address);
         }
         Ok(())
     }
@@ -109,37 +115,28 @@ impl StateChangeSink for BlockStateAccumulator {
     fn storage_wipe(&mut self, address: Address) -> Result<(), Self::Error> {
         let record_wipe = self.accounts.get(&address).is_none_or(|delta| delta.original.is_some());
         if record_wipe {
-            self.accounts
-                .entry(address)
-                .and_modify(|delta| delta.storage_wiped = true)
-                .or_insert_with(|| BlockAccountDelta {
-                    original: None,
-                    current: None,
-                    storage_wiped: true,
-                });
+            self.storage_wipes.insert(address);
         }
-
         self.storage.retain(|key, _| key.address() != address);
         Ok(())
     }
 
     fn storage(&mut self, change: StorageChangeRef) -> Result<(), Self::Error> {
         let storage_key = StorageKey::new(change.address, change.key);
-        let after_wipe = change.after_wipe
-            || self.accounts.get(&change.address).is_some_and(|delta| delta.storage_wiped);
+        let storage_wiped = self.storage_wipes.contains(&change.address);
         match self.storage.entry(storage_key) {
             hash_map::Entry::Occupied(mut entry) => {
                 let delta = entry.get_mut();
                 delta.current = change.current;
-                if (after_wipe && delta.current.is_zero())
-                    || (!after_wipe && delta.original == delta.current)
+                if (storage_wiped && delta.current.is_zero())
+                    || (!storage_wiped && delta.original == delta.current)
                 {
                     entry.remove();
                 }
             }
             hash_map::Entry::Vacant(entry) => {
-                if (after_wipe && change.current.is_zero())
-                    || (!after_wipe && change.original == change.current)
+                if (storage_wiped && change.current.is_zero())
+                    || (!storage_wiped && change.original == change.current)
                 {
                     return Ok(());
                 }
@@ -156,12 +153,13 @@ impl StateChangeSink for BlockStateAccumulator {
 impl StateChangeSource for BlockStateAccumulator {
     #[inline]
     fn visit<S: StateChangeSink>(&self, sink: &mut S) -> Result<(), S::Error> {
-        visit_block_changes(&self.accounts, &self.storage, &self.code, sink)
+        visit_block_changes(&self.accounts, &self.storage_wipes, &self.storage, &self.code, sink)
     }
 }
 
 fn visit_block_changes<S: StateChangeSink>(
     accounts: &AddressMap<BlockAccountDelta>,
+    storage_wipes: &AddressSet,
     storage: &StorageKeyMap<BlockStorageDelta>,
     code: &B256Map<Bytecode>,
     sink: &mut S,
@@ -172,35 +170,31 @@ fn visit_block_changes<S: StateChangeSink>(
         sink.bytecode(code_hash, code)?;
     }
 
-    let mut account_deltas = accounts.iter().collect::<Vec<_>>();
-    account_deltas.sort_by_key(|entry| *entry.0);
-    for (address, delta) in &account_deltas {
-        if delta.storage_wiped {
-            sink.storage_wipe(**address)?;
-        }
+    let mut storage_wipes = storage_wipes.iter().copied().collect::<Vec<_>>();
+    storage_wipes.sort_unstable();
+    for address in &storage_wipes {
+        sink.storage_wipe(*address)?;
     }
 
     let mut storage_deltas = storage.iter().collect::<Vec<_>>();
     storage_deltas.sort_by_key(|entry| (entry.0.address(), entry.0.key()));
     for (key, delta) in storage_deltas {
-        let address = key.address();
         sink.storage(StorageChangeRef {
-            address,
+            address: key.address(),
             key: key.key(),
             original: delta.original,
             current: delta.current,
-            after_wipe: accounts.get(&address).is_some_and(|delta| delta.storage_wiped),
         })?;
     }
 
+    let mut account_deltas = accounts.iter().collect::<Vec<_>>();
+    account_deltas.sort_by_key(|entry| *entry.0);
     for (address, delta) in account_deltas {
-        if delta.original != delta.current {
-            sink.account(AccountChangeRef {
-                address: *address,
-                original: delta.original.as_ref().map(AccountInfoRef::from_info),
-                current: delta.current.as_ref().map(AccountInfoRef::from_info),
-            })?;
-        }
+        sink.account(AccountChangeRef {
+            address: *address,
+            original: delta.original.as_ref().map(AccountInfoRef::from_info),
+            current: delta.current.as_ref().map(AccountInfoRef::from_info),
+        })?;
     }
     Ok(())
 }
@@ -209,6 +203,7 @@ fn visit_block_changes<S: StateChangeSink>(
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct FrozenBlockState {
     accounts: AddressMap<BlockAccountDelta>,
+    storage_wipes: AddressSet,
     storage: StorageKeyMap<BlockStorageDelta>,
     code: B256Map<Bytecode>,
 }
@@ -218,6 +213,12 @@ impl FrozenBlockState {
     #[inline]
     pub fn accounts(&self) -> impl Iterator<Item = (Address, &BlockAccountDelta)> {
         self.accounts.iter().map(|(&address, delta)| (address, delta))
+    }
+
+    /// Returns storage-wipe addresses in arbitrary set order.
+    #[inline]
+    pub fn storage_wipes(&self) -> impl Iterator<Item = Address> + '_ {
+        self.storage_wipes.iter().copied()
     }
 
     /// Returns storage deltas with storage keys in arbitrary map order.
@@ -239,6 +240,13 @@ impl FrozenBlockState {
         accounts
     }
 
+    /// Returns storage-wipe addresses sorted by address.
+    pub fn storage_wipes_sorted(&self) -> Vec<Address> {
+        let mut storage_wipes = self.storage_wipes().collect::<Vec<_>>();
+        storage_wipes.sort_unstable();
+        storage_wipes
+    }
+
     /// Returns storage deltas with storage keys sorted by address and slot.
     pub fn storage_sorted(&self) -> Vec<(StorageKey, &BlockStorageDelta)> {
         let mut storage = self.storage().collect::<Vec<_>>();
@@ -250,6 +258,6 @@ impl FrozenBlockState {
 impl StateChangeSource for FrozenBlockState {
     #[inline]
     fn visit<S: StateChangeSink>(&self, sink: &mut S) -> Result<(), S::Error> {
-        visit_block_changes(&self.accounts, &self.storage, &self.code, sink)
+        visit_block_changes(&self.accounts, &self.storage_wipes, &self.storage, &self.code, sink)
     }
 }

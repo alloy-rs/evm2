@@ -22,9 +22,9 @@ use evm2::{
     env::BlockEnv,
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
     evm::{
-        AccountInfo as EvmAccountInfo, BEACON_ROOTS_ADDRESS, BlockStateAccumulator, DbErrorCode,
-        HISTORY_STORAGE_ADDRESS, InMemoryDB, StateChangeSource, StateChanges, Tracked,
-        WITHDRAWAL_REQUEST_ADDRESS,
+        AccountChangeRef, AccountInfo as EvmAccountInfo, AccountInfoRef, BEACON_ROOTS_ADDRESS,
+        BlockStateAccumulator, DbErrorCode, HISTORY_STORAGE_ADDRESS, InMemoryDB, StateChangeSink,
+        StateChangeSource, WITHDRAWAL_REQUEST_ADDRESS,
     },
     registry::HandlerError,
 };
@@ -446,8 +446,9 @@ fn run_system_call(
     data: Bytes,
     label: &'static str,
 ) -> Result<(), TestErrorKind> {
-    let result = evm.system_call(address, data);
-    if !result.status {
+    let executed = evm.system_call(address, data);
+    if !executed.outcome().status {
+        executed.discard();
         let has_code = match evm.account_code(&address) {
             Ok(code) => !code.is_empty(),
             Err(code) => return Err(database_error(evm, code)),
@@ -455,8 +456,9 @@ fn run_system_call(
         if has_code {
             return Err(TestErrorKind::SystemCall(label));
         }
+        return Ok(());
     }
-    record_state_changes(block_state, &result.state_changes);
+    executed.commit_to(block_state);
     Ok(())
 }
 
@@ -468,20 +470,48 @@ fn execute_tx(
     Ok(evm.transact(tx)?.commit_to(block_state))
 }
 
-fn record_state_changes(block_state: &mut BlockStateAccumulator, changes: &StateChanges) {
+fn record_state_changes<S: StateChangeSource>(
+    block_state: &mut BlockStateAccumulator,
+    changes: &S,
+) {
     match changes.visit(block_state) {
         Ok(()) => {}
         Err(err) => match err {},
     }
 }
 
-fn commit_state_changes(
+fn commit_state_changes<S: StateChangeSource>(
     evm: &mut Evm<BaseEvmTypes>,
     block_state: &mut BlockStateAccumulator,
-    changes: &StateChanges,
+    changes: &S,
 ) {
     evm.commit_source(changes);
     record_state_changes(block_state, changes);
+}
+
+struct AccountStateChange {
+    address: Address,
+    original: Option<EvmAccountInfo>,
+    current: Option<EvmAccountInfo>,
+}
+
+impl StateChangeSource for AccountStateChange {
+    fn visit<S: StateChangeSink>(&self, sink: &mut S) -> Result<(), S::Error> {
+        sink.account(AccountChangeRef {
+            address: self.address,
+            original: self.original.as_ref().map(account_info_ref),
+            current: self.current.as_ref().map(account_info_ref),
+        })
+    }
+}
+
+const fn account_info_ref(info: &EvmAccountInfo) -> AccountInfoRef<'_> {
+    AccountInfoRef {
+        balance: info.balance,
+        nonce: info.nonce,
+        code_hash: info.code_hash,
+        code: info.code.as_ref(),
+    }
 }
 
 fn database_error(evm: &mut Evm<BaseEvmTypes>, code: DbErrorCode) -> TestErrorKind {
@@ -613,11 +643,8 @@ fn increment_balance(
         current.code_hash = KECCAK256_EMPTY;
     }
 
-    let mut changes = StateChanges::default();
-    changes
-        .accounts
-        .insert(address, Tracked { original, current: Some(current), _non_exhaustive: () });
-    commit_state_changes(evm, block_state, &changes);
+    let change = AccountStateChange { address, original, current: Some(current) };
+    commit_state_changes(evm, block_state, &change);
     Ok(())
 }
 

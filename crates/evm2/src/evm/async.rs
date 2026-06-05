@@ -932,7 +932,6 @@ mod tests {
 
         assert!(result.status);
         assert_eq!(result.gas_used, 0);
-        assert!(result.state_changes.is_empty());
     }
 
     #[test]

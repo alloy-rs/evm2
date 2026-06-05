@@ -101,6 +101,35 @@ impl<'evm, T: EvmTypes> ExecutedTx<'evm, T> {
         }
     }
 
+    #[inline]
+    fn clear_pending_state(&mut self) {
+        if self.has_pending_state() {
+            self.evm.state.clear_transaction_state();
+            self.state = PendingState::Cleared;
+        }
+    }
+
+    #[inline]
+    fn commit_pending_state(&mut self) {
+        if self.has_pending_state() {
+            self.evm.state.commit_transaction();
+            self.evm.state.clear_transaction_state();
+            self.state = PendingState::Cleared;
+        }
+    }
+
+    #[inline]
+    fn take_state_changes(&mut self) -> StateChanges {
+        if self.has_pending_state() {
+            let changes = self.evm.state.build_state_changes();
+            self.evm.state.clear_transaction_state();
+            self.state = PendingState::Cleared;
+            changes
+        } else {
+            StateChanges::default()
+        }
+    }
+
     /// Returns the transaction outcome without resolving state changes.
     #[inline]
     pub fn outcome(&self) -> &TxOutcome<T> {
@@ -115,11 +144,7 @@ impl<'evm, T: EvmTypes> ExecutedTx<'evm, T> {
     /// This makes the transaction's state effects visible to later transactions executed by the
     /// same EVM. It clears transaction scratch and returns the result-only [`TxOutcome`].
     pub fn commit(mut self) -> TxOutcome<T> {
-        if self.has_pending_state() {
-            self.evm.state.commit_transaction();
-            self.evm.state.clear_transaction_state();
-            self.state = PendingState::Cleared;
-        }
+        self.commit_pending_state();
         self.take_outcome()
     }
 
@@ -133,9 +158,7 @@ impl<'evm, T: EvmTypes> ExecutedTx<'evm, T> {
                 Ok(()) => {}
                 Err(err) => match err {},
             }
-            self.evm.state.commit_transaction();
-            self.evm.state.clear_transaction_state();
-            self.state = PendingState::Cleared;
+            self.commit_pending_state();
         }
         self.take_outcome()
     }
@@ -150,9 +173,7 @@ impl<'evm, T: EvmTypes> ExecutedTx<'evm, T> {
     ) -> Result<TxOutcome<T>, S::Error> {
         if self.has_pending_state() {
             self.evm.state.visit_transaction_changes(sink)?;
-            self.evm.state.commit_transaction();
-            self.evm.state.clear_transaction_state();
-            self.state = PendingState::Cleared;
+            self.commit_pending_state();
         }
         Ok(self.take_outcome())
     }
@@ -162,10 +183,7 @@ impl<'evm, T: EvmTypes> ExecutedTx<'evm, T> {
     /// Discarding does not mutate the accepted overlay and does not materialize [`StateChanges`].
     /// This is the intended path for result-only execution such as `eth_call`.
     pub fn discard(mut self) -> TxOutcome<T> {
-        if self.has_pending_state() {
-            self.evm.state.clear_transaction_state();
-            self.state = PendingState::Cleared;
-        }
+        self.clear_pending_state();
         self.take_outcome()
     }
 
@@ -175,14 +193,7 @@ impl<'evm, T: EvmTypes> ExecutedTx<'evm, T> {
     /// [`TxResult`] that can be moved or stored. The detached state is not accepted into this EVM's
     /// internal overlay unless the caller commits it separately.
     pub fn detach(mut self) -> TxResult<T> {
-        let state_changes = if self.has_pending_state() {
-            let changes = self.evm.state.build_state_changes();
-            self.evm.state.clear_transaction_state();
-            self.state = PendingState::Cleared;
-            changes
-        } else {
-            StateChanges::default()
-        };
+        let state_changes = self.take_state_changes();
         let outcome = self.take_outcome();
         TxResult {
             status: outcome.status,
@@ -201,16 +212,13 @@ impl<'evm, T: EvmTypes> ExecutedTx<'evm, T> {
 impl<T: EvmTypes> Drop for ExecutedTx<'_, T> {
     #[inline]
     fn drop(&mut self) {
-        if self.has_pending_state() {
-            self.evm.state.clear_transaction_state();
-            self.state = PendingState::Cleared;
-        }
+        self.clear_pending_state();
     }
 }
 
 /// Result of executing a transaction with an owned state diff.
 ///
-/// This is the materialized shape produced by [`ExecutedTx::detach`] and system-call execution. It
+/// This is the materialized shape produced by [`ExecutedTx::detach`]. It
 /// pairs [`TxOutcome`]-style execution output with an owned [`StateChanges`] value. Prefer
 /// resolving [`Evm::transact`] with [`ExecutedTx::commit`] or [`ExecutedTx::discard`] when an owned
 /// write-set is unnecessary.

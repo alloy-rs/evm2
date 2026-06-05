@@ -886,6 +886,21 @@ impl State {
         }
     }
 
+    #[inline]
+    fn changed_code(account: &Account) -> Option<(B256, &Bytecode)> {
+        let code_hash = account.code_hash;
+        (account.code_changed
+            && !account.code.is_empty()
+            && !code_hash.is_zero()
+            && code_hash != KECCAK256_EMPTY)
+            .then_some((code_hash, &account.code))
+    }
+
+    #[inline]
+    fn storage_slot_changed(storage_wiped: bool, slot: &Tracked<Word>) -> bool {
+        slot.original != slot.current && (!storage_wiped || !slot.current.is_zero())
+    }
+
     /// Visits transaction state changes in database application order.
     ///
     /// This borrows changes directly from the transaction layer. It does not materialize
@@ -895,13 +910,8 @@ impl State {
         sink: &mut S,
     ) -> Result<(), S::Error> {
         for current in self.scratch.accounts.values().flatten() {
-            let code_hash = current.code_hash;
-            if current.code_changed
-                && !current.code.is_empty()
-                && !code_hash.is_zero()
-                && code_hash != KECCAK256_EMPTY
-            {
-                sink.bytecode(code_hash, &current.code)?;
+            if let Some((code_hash, code)) = Self::changed_code(current) {
+                sink.bytecode(code_hash, code)?;
             }
         }
 
@@ -910,13 +920,12 @@ impl State {
                 sink.storage_wipe(address)?;
             }
             for (&key, slot) in &storage.slots {
-                if slot.original != slot.current && (!storage.wiped || !slot.current.is_zero()) {
+                if Self::storage_slot_changed(storage.wiped, slot) {
                     sink.storage(StorageChangeRef {
                         address,
                         key,
                         original: slot.original,
                         current: slot.current,
-                        after_wipe: storage.wiped,
                     })?;
                 }
             }
@@ -944,16 +953,10 @@ impl State {
         for (&address, current) in &self.scratch.accounts {
             let original = self.database.account_info(&address);
             let current = current.as_ref();
-            let account_changed = match (original, current) {
-                (Some(original), Some(current)) => {
-                    original.balance != current.balance
-                        || original.nonce != current.nonce
-                        || original.code_hash != current.code_hash
-                }
-                (None, None) => false,
-                _ => true,
-            };
-            if account_changed {
+            if Self::account_changed(
+                original.map(AccountInfoRef::from_info),
+                current.map(AccountInfoRef::from_account),
+            ) {
                 changes.accounts.insert(
                     address,
                     Tracked {
@@ -963,15 +966,10 @@ impl State {
                     },
                 );
             }
-            if let Some(account) = current {
-                let code_hash = account.code_hash;
-                if account.code_changed
-                    && !account.code.is_empty()
-                    && !code_hash.is_zero()
-                    && code_hash != KECCAK256_EMPTY
-                {
-                    changes.code.insert(code_hash, account.code.clone());
-                }
+            if let Some(account) = current
+                && let Some((code_hash, code)) = Self::changed_code(account)
+            {
+                changes.code.insert(code_hash, code.clone());
             }
         }
 
@@ -982,7 +980,7 @@ impl State {
                 _non_exhaustive: (),
             };
             for (&key, slot) in &storage.slots {
-                if slot.original != slot.current && (!set.wipe || !slot.current.is_zero()) {
+                if Self::storage_slot_changed(set.wipe, slot) {
                     set.slots.insert(
                         key,
                         Tracked {
@@ -1004,13 +1002,8 @@ impl State {
     /// Accepts the current transaction's state transition without materializing it.
     pub(crate) fn commit_transaction(&mut self) {
         for current in self.scratch.accounts.values().flatten() {
-            let code_hash = current.code_hash;
-            if current.code_changed
-                && !current.code.is_empty()
-                && !code_hash.is_zero()
-                && code_hash != KECCAK256_EMPTY
-            {
-                self.database.cache.contracts.insert(code_hash, current.code.clone());
+            if let Some((code_hash, code)) = Self::changed_code(current) {
+                self.database.cache.contracts.insert(code_hash, code.clone());
             }
         }
 
@@ -1019,7 +1012,7 @@ impl State {
                 self.database.cache.storage.entry(address).or_default().wipe();
             }
             for (&key, slot) in &storage.slots {
-                if slot.original == slot.current || (storage.wiped && slot.current.is_zero()) {
+                if !Self::storage_slot_changed(storage.wiped, slot) {
                     continue;
                 }
                 self.database
@@ -1054,6 +1047,7 @@ impl State {
     }
 
     /// Builds and accepts the current transaction's state transition.
+    #[cfg(test)]
     pub(crate) fn accept_transaction(&mut self) -> StateChanges {
         let changes = self.build_state_changes();
         self.database.commit_source(&changes);
@@ -1390,6 +1384,7 @@ mod tests {
 
         let frozen = accumulator.freeze();
         assert!(frozen.accounts_sorted().is_empty());
+        assert!(frozen.storage_wipes_sorted().is_empty());
         assert!(frozen.storage_sorted().is_empty());
     }
 
@@ -1414,7 +1409,7 @@ mod tests {
         assert_eq!(accounts.len(), 1);
         assert_eq!(accounts[0].1.original.as_ref(), Some(&without_code(original)));
         assert_eq!(accounts[0].1.current.as_ref(), Some(&without_code(recreated)));
-        assert!(accounts[0].1.storage_wiped);
+        assert_eq!(frozen.storage_wipes_sorted(), vec![address]);
 
         let storage = frozen.storage_sorted();
         assert_eq!(storage.len(), 1);
@@ -1435,9 +1430,8 @@ mod tests {
         wipe_and_restore.visit(&mut accumulator).expect("block accumulator is infallible");
 
         let frozen = accumulator.freeze();
-        let accounts = frozen.accounts_sorted();
-        assert_eq!(accounts.len(), 1);
-        assert!(accounts[0].1.storage_wiped);
+        assert!(frozen.accounts_sorted().is_empty());
+        assert_eq!(frozen.storage_wipes_sorted(), vec![address]);
 
         let storage = frozen.storage_sorted();
         assert_eq!(storage.len(), 1);
@@ -1461,7 +1455,7 @@ mod tests {
         assert_eq!(accounts.len(), 1);
         assert_eq!(accounts[0].0, address);
         assert!(accounts[0].1.current.is_none());
-        assert!(accounts[0].1.storage_wiped);
+        assert!(frozen.storage_wipes_sorted().is_empty());
         assert!(frozen.storage_sorted().is_empty());
     }
 
@@ -1476,9 +1470,8 @@ mod tests {
         storage_wipe(address).visit(&mut accumulator).expect("block accumulator is infallible");
 
         let frozen = accumulator.freeze();
-        let accounts = frozen.accounts_sorted();
-        assert_eq!(accounts.len(), 1);
-        assert!(accounts[0].1.storage_wiped);
+        assert!(frozen.accounts_sorted().is_empty());
+        assert_eq!(frozen.storage_wipes_sorted(), vec![address]);
         assert!(frozen.storage_sorted().is_empty());
     }
 
@@ -1504,7 +1497,7 @@ mod tests {
         assert_eq!(accounts[0].0, account_address);
         assert_eq!(accounts[0].1.original.as_ref(), Some(&without_code(original)));
         assert_eq!(accounts[0].1.current.as_ref(), Some(&without_code(current)));
-        assert!(!accounts[0].1.storage_wiped);
+        assert!(frozen.storage_wipes_sorted().is_empty());
 
         let storage = frozen.storage_sorted();
         assert_eq!(storage.len(), 1);
@@ -1533,7 +1526,6 @@ mod tests {
             .unwrap();
 
         let logs = state.take_logs();
-        let _changes = state.build_state_changes();
         assert_eq!(inspected, logs);
         assert_eq!(logs.len(), 2);
         assert_eq!(

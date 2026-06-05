@@ -47,8 +47,8 @@
 //! execution output, not database state.
 //!
 //! [`StateChanges`] is the owned materialized write-set. It is produced only by
-//! [`ExecutedTx::detach`] and system-call helpers that need owned output. Normal serial block
-//! execution can build receipts from [`TxOutcome`] and stream state directly into a
+//! [`ExecutedTx::detach`]. Normal serial block execution can build receipts from [`TxOutcome`] and
+//! stream state directly into a
 //! [`BlockStateAccumulator`] without first allocating a per-transaction [`StateChanges`] map.
 //!
 //! ## Source and sink API
