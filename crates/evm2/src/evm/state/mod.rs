@@ -6,6 +6,7 @@ mod journal;
 mod storage;
 mod tracked;
 
+use account::TrackedAccount;
 pub use account::{Account, AccountInfo};
 pub use changes::{StateChanges, StorageChangeSet};
 pub use journal::{JournalEntry, StateCheckpoint};
@@ -34,44 +35,6 @@ use core::{
 };
 use derive_where::derive_where;
 
-/// Current-transaction account overlay and EIP-2929/account-lifetime metadata.
-///
-/// `original_info` captures the account at the start of the transaction when it is first loaded,
-/// while `present_info` is the live overlay after EVM mutations. Keeping both lets [`State`] emit
-/// the transaction's account transition without re-reading the backing database. A warm- or
-/// touch-only entry can exist without being loaded; `loaded` distinguishes a not-yet-loaded entry
-/// from one that was loaded as non-existent or deleted.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-struct TrackedAccount {
-    /// Account info at the start of the transaction. `None` means the account did not exist. Only
-    /// meaningful when `loaded` is true.
-    original_info: Option<AccountInfo>,
-    /// Present account overlay after mutations. `None` means the account is absent/deleted.
-    present_info: Option<Account>,
-    /// Whether the account has been loaded from the backing database in this transaction.
-    loaded: bool,
-    /// Whether this account is warm in the current transaction.
-    is_warm: bool,
-    /// Whether this account is touched for transaction-finalization account-lifetime rules.
-    is_touched: bool,
-}
-
-impl TrackedAccount {
-    #[inline]
-    const fn is_empty(&self) -> bool {
-        !self.loaded && !self.is_warm && !self.is_touched
-    }
-
-    /// Returns the present account overlay if the account has been loaded this transaction.
-    ///
-    /// `Some(&None)` means the account was loaded as non-existent or deleted; `None` means the
-    /// account has not been loaded in this transaction.
-    #[inline]
-    const fn present_if_loaded(&self) -> Option<&Option<Account>> {
-        if self.loaded { Some(&self.present_info) } else { None }
-    }
-}
-
 /// Revm-style account access list for the current transaction.
 ///
 /// This is the single account-side transaction map: account overlays, touched-account state, and
@@ -79,11 +42,11 @@ impl TrackedAccount {
 /// be loaded from the database, matching revm's separation between warm access metadata and
 /// database-backed account loads.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-struct AccessList {
+struct TrackedAccountMap {
     accounts: AddressMap<TrackedAccount>,
 }
 
-impl AccessList {
+impl TrackedAccountMap {
     #[inline]
     fn is_warm(&self, address: &Address) -> bool {
         self.accounts.get(address).is_some_and(|entry| entry.is_warm)
@@ -114,7 +77,7 @@ impl AccessList {
     }
 }
 
-impl Deref for AccessList {
+impl Deref for TrackedAccountMap {
     type Target = AddressMap<TrackedAccount>;
 
     #[inline]
@@ -123,7 +86,7 @@ impl Deref for AccessList {
     }
 }
 
-impl DerefMut for AccessList {
+impl DerefMut for TrackedAccountMap {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.accounts
@@ -138,7 +101,7 @@ pub struct State {
     #[derive_where(skip)]
     database: CacheDB<Box<dyn DynDatabase>>,
     /// Account writes plus touch and warm-access metadata for the current transaction.
-    accounts: AccessList,
+    accounts: TrackedAccountMap,
     /// Transaction-initial base warm set: precompiles, coinbase, and the EIP-2930 access list.
     warm_addresses: WarmAddresses,
     /// Persistent storage writes plus warm slot metadata for the current transaction.
@@ -162,7 +125,7 @@ impl State {
     pub(crate) fn new_mono(initial: Box<dyn DynDatabase>) -> Self {
         Self {
             database: CacheDB::new(initial),
-            accounts: AccessList::default(),
+            accounts: TrackedAccountMap::default(),
             warm_addresses: WarmAddresses::new(),
             storage: AddressMap::default(),
             journal: Vec::new(),
@@ -240,7 +203,7 @@ impl State {
     #[inline]
     #[must_use]
     pub fn account_ref(&self, address: &Address) -> Option<&Account> {
-        self.accounts.get(address)?.present_info.as_ref()
+        self.accounts.get(address)?.present.as_ref()
     }
 
     /// Returns whether an account is warm in the current transaction.
@@ -413,22 +376,22 @@ impl State {
 
     fn ensure_transaction_account<'a>(
         database: &mut dyn DynDatabase,
-        accounts: &'a mut AccessList,
+        accounts: &'a mut TrackedAccountMap,
         journal: &mut Vec<JournalEntry>,
         address: &Address,
     ) -> DbResult<&'a mut Option<Account>> {
         match accounts.entry(*address) {
             hash_map::Entry::Occupied(mut entry) => {
-                if !entry.get().loaded {
+                if !entry.get().is_loaded {
                     let original = database.get_account(address)?;
                     let present = original.clone().map(Account::from_info);
                     let entry = entry.get_mut();
-                    entry.original_info = original;
-                    entry.present_info = present;
-                    entry.loaded = true;
+                    entry.original = original;
+                    entry.present = present;
+                    entry.is_loaded = true;
                     journal.push(JournalEntry::AccountInserted { address: *address });
                 }
-                Ok(&mut entry.into_mut().present_info)
+                Ok(&mut entry.into_mut().present)
             }
             hash_map::Entry::Vacant(entry) => {
                 let original = database.get_account(address)?;
@@ -436,12 +399,12 @@ impl State {
                 journal.push(JournalEntry::AccountInserted { address: *address });
                 Ok(&mut entry
                     .insert(TrackedAccount {
-                        original_info: original,
-                        present_info: present,
-                        loaded: true,
+                        original,
+                        present,
+                        is_loaded: true,
                         ..TrackedAccount::default()
                     })
-                    .present_info)
+                    .present)
             }
         }
     }
@@ -510,9 +473,7 @@ impl State {
 
     /// Gets account code.
     pub fn get_code(&mut self, address: &Address) -> DbResult<Bytecode> {
-        if let Some(account) =
-            self.accounts.get(address).and_then(|entry| entry.present_info.as_ref())
-        {
+        if let Some(account) = self.accounts.get(address).and_then(|entry| entry.present.as_ref()) {
             if account.code_hash == KECCAK256_EMPTY {
                 return Ok(Bytecode::default());
             }
@@ -861,14 +822,14 @@ impl State {
             match entry {
                 JournalEntry::AccountChange { address, previous } => {
                     if let Some(entry) = self.accounts.get_mut(&address) {
-                        entry.present_info = previous;
+                        entry.present = previous;
                     }
                 }
                 JournalEntry::AccountInserted { address } => {
                     if let Some(entry) = self.accounts.get_mut(&address) {
-                        entry.loaded = false;
-                        entry.original_info = None;
-                        entry.present_info = None;
+                        entry.is_loaded = false;
+                        entry.original = None;
+                        entry.present = None;
                     }
                     self.cleanup_account_entry(&address);
                 }
@@ -945,10 +906,10 @@ impl State {
     /// touched accounts stay non-existent.
     fn is_existing_dead(&mut self, address: &Address) -> DbResult<bool> {
         if let Some(entry) = self.accounts.get(address)
-            && entry.loaded
+            && entry.is_loaded
         {
-            return Ok(entry.present_info.as_ref().is_some_and(Account::is_empty)
-                || (entry.present_info.is_none() && entry.original_info.is_some()));
+            return Ok(entry.present.as_ref().is_some_and(Account::is_empty)
+                || (entry.present.is_none() && entry.original.is_some()));
         }
         Ok(self.load_account(address)?.as_ref().is_some_and(Account::is_empty))
     }
@@ -1026,7 +987,7 @@ impl State {
                 if let Some(balance) = self
                     .accounts
                     .get(&address)
-                    .and_then(|entry| entry.present_info.as_ref())
+                    .and_then(|entry| entry.present.as_ref())
                     .map(|account| account.balance)
                     && !balance.is_zero()
                 {
@@ -1085,11 +1046,11 @@ impl State {
             StateChanges { logs: core::mem::take(&mut self.logs), ..StateChanges::default() };
 
         for (&address, entry) in self.accounts.iter() {
-            if !entry.loaded {
+            if !entry.is_loaded {
                 continue;
             }
-            let original = entry.original_info.as_ref();
-            let current = entry.present_info.as_ref();
+            let original = entry.original.as_ref();
+            let current = entry.present.as_ref();
             let account_changed = match (original, current) {
                 (Some(original), Some(current)) => {
                     original.balance != current.balance

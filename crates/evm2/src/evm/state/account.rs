@@ -126,6 +126,44 @@ impl Account {
     }
 }
 
+/// Current-transaction account overlay and EIP-2929/account-lifetime metadata.
+///
+/// `original_info` captures the account at the start of the transaction when it is first loaded,
+/// while `present_info` is the live overlay after EVM mutations. Keeping both lets
+/// [`State`](super::State) emit the transaction's account transition without re-reading the backing
+/// database. A warm- or touch-only entry can exist without being loaded; `loaded` distinguishes a
+/// not-yet-loaded entry from one that was loaded as non-existent or deleted.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(super) struct TrackedAccount {
+    /// Account info at the start of the transaction. `None` means the account did not exist. Only
+    /// meaningful when `loaded` is true.
+    pub(super) original: Option<AccountInfo>,
+    /// Present account overlay after mutations. `None` means the account is absent/deleted.
+    pub(super) present: Option<Account>,
+    /// Whether the account has been loaded from the backing database in this transaction.
+    pub(super) is_loaded: bool,
+    /// Whether this account is warm in the current transaction.
+    pub(super) is_warm: bool,
+    /// Whether this account is touched for transaction-finalization account-lifetime rules.
+    pub(super) is_touched: bool,
+}
+
+impl TrackedAccount {
+    #[inline]
+    pub(super) const fn is_empty(&self) -> bool {
+        !self.is_loaded && !self.is_warm && !self.is_touched
+    }
+
+    /// Returns the present account overlay if the account has been loaded this transaction.
+    ///
+    /// `Some(&None)` means the account was loaded as non-existent or deleted; `None` means the
+    /// account has not been loaded in this transaction.
+    #[inline]
+    pub(super) const fn present_if_loaded(&self) -> Option<&Option<Account>> {
+        if self.is_loaded { Some(&self.present) } else { None }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
