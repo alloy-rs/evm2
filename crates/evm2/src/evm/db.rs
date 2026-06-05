@@ -20,6 +20,10 @@ pub trait DatabaseCommit {
 pub struct DbErrorCode(NonZeroUsize);
 
 impl DbErrorCode {
+    /// Reserved code signalling that a cold database load was skipped because the caller could not
+    /// afford the cold access (see `skip_cold_load`). No backing-database error occurred.
+    pub const COLD_LOAD_SKIPPED: Self = Self::new_const(2);
+
     /// Creates a database error code.
     #[inline]
     pub const fn new(code: usize) -> Option<Self> {
@@ -27,6 +31,19 @@ impl DbErrorCode {
             return None;
         };
         Some(Self(code))
+    }
+
+    /// Creates a database error code from a non-zero constant.
+    ///
+    /// # Panics
+    ///
+    /// Panics at compile time if `code` is zero.
+    #[inline]
+    pub const fn new_const(code: usize) -> Self {
+        match Self::new(code) {
+            Some(code) => code,
+            None => panic!("database error code must be non-zero"),
+        }
     }
 
     /// Returns the raw database error code.
@@ -125,10 +142,7 @@ impl<T: Database + DatabaseCommit> DatabaseCommit for Db<T> {
 
 #[inline]
 pub(crate) fn stored_error_code() -> DbErrorCode {
-    match DbErrorCode::new(1) {
-        Some(code) => code,
-        None => unreachable!("stored database error code is non-zero"),
-    }
+    DbErrorCode::new_const(1)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

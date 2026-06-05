@@ -916,17 +916,24 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
         if skip_cold_load && is_cold {
             return Err(InstrStop::OutOfGas);
         }
-        let info = self.state.account_info(address).map_err(|code| self.db_error_stop(code))?;
-        let exists = info.is_some();
-        let info = info.unwrap_or_default();
+        let mut account = match self.state.journaled_account(address) {
+            Ok(account) => account,
+            Err(code) => return Err(self.db_error_stop(code)),
+        };
+
+        let exists = account.get().is_some();
+        let info = account.get().map(Account::info).unwrap_or_default();
+
+        // load code
+        let code = if load_code {
+            account.load_code().map_err(|code| self.db_error_stop(code))?
+        } else {
+            Bytecode::default()
+        };
         Ok(AccountLoad {
             balance: info.balance,
             code_hash: if exists { info.code_hash } else { B256::ZERO },
-            code: if load_code {
-                self.state.get_code(address).map_err(|code| self.db_error_stop(code))?
-            } else {
-                Bytecode::default()
-            },
+            code,
             exists,
             is_empty: info.is_empty(),
             is_cold,

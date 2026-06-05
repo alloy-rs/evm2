@@ -16,7 +16,7 @@ pub use tracked::Tracked;
 
 use super::{
     SStore, WarmAddresses,
-    db::{CacheDB, DatabaseCommit, DbResult, DynDatabase},
+    db::{CacheDB, DatabaseCommit, DbErrorCode, DbResult, DynDatabase},
     eip7708_burn_log,
 };
 use crate::{
@@ -320,10 +320,31 @@ impl State {
         journal: &mut Vec<JournalEntry>,
         address: &Address,
     ) -> DbResult<&'a mut TrackedAccount> {
+        Self::ensure_transaction_account_skip_cold(database, accounts, journal, address, false)
+    }
+
+    /// Ensures the account is present in the transaction overlay, loading it from the backing
+    /// database when it has not been loaded yet.
+    ///
+    /// When `skip_cold` is true and the account is not already loaded, the cold database read is
+    /// skipped and [`DbErrorCode::COLD_LOAD_SKIPPED`] is returned, leaving the overlay untouched.
+    /// This mirrors revm's `skip_cold_load`/`ColdLoadSkipped` so callers can detect a cold access
+    /// without paying for the load. With `skip_cold` false (or when the account is already loaded)
+    /// the entry is always returned.
+    fn ensure_transaction_account_skip_cold<'a>(
+        database: &mut dyn DynDatabase,
+        accounts: &'a mut TrackedAccountMap,
+        journal: &mut Vec<JournalEntry>,
+        address: &Address,
+        skip_cold: bool,
+    ) -> DbResult<&'a mut TrackedAccount> {
         match accounts.entry(*address) {
             hash_map::Entry::Occupied(entry) => {
                 let entry = entry.into_mut();
                 if !entry.is_loaded {
+                    if skip_cold {
+                        return Err(DbErrorCode::COLD_LOAD_SKIPPED);
+                    }
                     let original = database.get_account(address)?;
                     let present = original.clone().map(Account::from_info);
                     entry.original = original;
@@ -334,6 +355,9 @@ impl State {
                 Ok(entry)
             }
             hash_map::Entry::Vacant(entry) => {
+                if skip_cold {
+                    return Err(DbErrorCode::COLD_LOAD_SKIPPED);
+                }
                 let original = database.get_account(address)?;
                 let present = original.clone().map(Account::from_info);
                 journal.push(JournalEntry::AccountInserted { address: *address });
