@@ -49,8 +49,11 @@ pub(crate) use db::{db_error_unavailable, stored_error_code};
 mod state;
 pub use state::{
     Account, AccountInfo, JournalEntry, State, StateChanges, StateCheckpoint, StorageChangeSet,
-    StorageOverlay, Tracked,
+    StorageOverlay, StorageSlot, Tracked,
 };
+
+mod warm_addresses;
+pub use warm_addresses::{SHORT_ADDRESS_CAP, WarmAddresses};
 
 /// EVM host and transaction dispatcher.
 #[derive_where(Debug)]

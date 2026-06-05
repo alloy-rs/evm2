@@ -165,7 +165,7 @@ mod tests {
     }
 
     #[test]
-    fn finalization_preserves_touched_set_capacity() {
+    fn finalization_clears_touched_account_entry_flags() {
         let mut state = State::new(CacheDB::default());
 
         for i in 0..32 {
@@ -173,14 +173,12 @@ mod tests {
             state.mark_destructed(&Address::from([i + 32; 20]));
         }
 
-        let touched_capacity = state.touched.capacity();
         let selfdestructs_capacity = state.selfdestructs.capacity();
 
         state.finalize_transaction_(Version::base(crate::SpecId::SPURIOUS_DRAGON));
 
-        assert!(state.touched.is_empty());
+        assert!(state.accounts.values().all(|entry| !entry.is_touched));
         assert!(state.selfdestructs.is_empty());
-        assert_eq!(state.touched.capacity(), touched_capacity);
         assert_eq!(state.selfdestructs.capacity(), selfdestructs_capacity);
     }
 

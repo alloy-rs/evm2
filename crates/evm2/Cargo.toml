@@ -27,6 +27,7 @@ cfg-if.workspace = true
 
 # no_std
 once_cell = { workspace = true, features = ["alloc"] }
+bitvec = { version = "1", default-features = false, features = ["alloc"] }
 paste = { workspace = true, optional = true }
 phf = { workspace = true, features = ["macros"], optional = true }
 

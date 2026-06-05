@@ -158,8 +158,8 @@ mod tests {
         state.touch(&other);
 
         state.rollback(checkpoint, Version::base(SpecId::SPURIOUS_DRAGON).features);
-        assert!(state.touched.contains(&precompile3));
-        assert!(!state.touched.contains(&other));
+        assert!(state.is_account_touched(&precompile3));
+        assert!(!state.is_account_touched(&other));
     }
 
     #[test]
@@ -185,5 +185,83 @@ mod tests {
         assert!(state.is_storage_warm(&base_storage, &key));
         assert!(!state.is_account_warm(&frame_account));
         assert!(!state.is_storage_warm(&frame_storage, &key));
+    }
+
+    #[test]
+    fn warm_only_entries_do_not_emit_state_changes() {
+        let account = Address::with_last_byte(0x14);
+        let storage_account = Address::with_last_byte(0x15);
+        let key = Word::from(1);
+        let mut state = State::new(CacheDB::default());
+
+        state.warm_account_non_revertible(&account);
+        assert!(state.warm_storage_non_revertible(&storage_account, &key));
+
+        let changes = state.build_state_changes();
+        assert!(changes.is_empty());
+        assert!(state.is_account_warm(&account));
+        assert!(state.is_storage_warm(&storage_account, &key));
+
+        state.clear_transaction_state();
+        assert!(!state.is_account_warm(&account));
+        assert!(!state.is_storage_warm(&storage_account, &key));
+    }
+
+    #[test]
+    fn rollback_preserves_non_revertible_account_warmth_after_load() {
+        let account = Address::with_last_byte(0x16);
+        let mut database = CacheDB::default();
+        database.insert_account_info(&account, AccountInfo::default().with_balance(Word::from(1)));
+        let mut state = State::new(database);
+
+        state.warm_account_non_revertible(&account);
+        let checkpoint = state.checkpoint();
+        assert!(state.find(&account).unwrap().is_some());
+        assert!(state.account_ref(&account).is_some());
+
+        state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
+        assert!(state.is_account_warm(&account));
+        assert!(state.account_ref(&account).is_none());
+        assert!(state.build_state_changes().is_empty());
+    }
+
+    #[test]
+    fn rollback_preserves_non_revertible_storage_warmth_after_write() {
+        let account = Address::with_last_byte(0x17);
+        let key = Word::from(1);
+        let mut database = CacheDB::default();
+        database.insert_account_info(&account, AccountInfo::default().with_balance(Word::from(1)));
+        let mut state = State::new(database);
+
+        assert!(state.warm_storage_non_revertible(&account, &key));
+        let checkpoint = state.checkpoint();
+        state.set_storage(&account, &key, &Word::from(7)).unwrap();
+        assert_eq!(state.storage_ref(&account, &key), Some(Word::from(7)));
+
+        state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
+        assert!(state.is_storage_warm(&account, &key));
+        assert!(state.build_state_changes().is_empty());
+    }
+
+    #[test]
+    fn rollback_reverts_storage_warmth_without_discarding_cached_value() {
+        let account = Address::with_last_byte(0x18);
+        let key = Word::from(1);
+        let value = Word::from(9);
+        let mut database = CacheDB::default();
+        database.insert_account_info(&account, AccountInfo::default().with_balance(Word::from(1)));
+        database.insert_account_storage(&account, &key, &value);
+        let mut state = State::new(database);
+
+        let checkpoint = state.checkpoint();
+        assert!(state.warm_storage(&account, &key));
+        assert_eq!(state.storage(&account, &key).unwrap(), value);
+
+        state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
+        assert!(!state.is_storage_warm(&account, &key));
+        assert_eq!(state.storage_ref(&account, &key), Some(value));
+        assert!(state.build_state_changes().is_empty());
+
+        assert!(state.warm_storage(&account, &key));
     }
 }
