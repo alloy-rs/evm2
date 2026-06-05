@@ -1,10 +1,20 @@
-//! Accepted-state overlay and transaction scratch state.
+//! Basic in-memory EVM host state.
 
-use super::{
-    Account, AccountChangeRef, AccountInfo, AccountInfoRef, JournalEntry, StateChangeSink,
-    StateChangeSource, StateChanges, StateCheckpoint, StorageChangeRef, StorageChangeSet,
-    StorageOverlay, Tracked,
+mod account;
+mod block;
+mod changes;
+mod journal;
+mod stream;
+
+pub use account::{Account, AccountInfo, StorageOverlay, Tracked};
+pub use block::{BlockAccountDelta, BlockStateAccumulator, BlockStorageDelta, FrozenBlockState};
+pub use changes::{StateChanges, StorageChangeSet};
+pub use journal::{JournalEntry, StateCheckpoint};
+pub use stream::{
+    AccountChangeRef, AccountInfoRef, NoopChangeSink, StateChangeSink, StateChangeSource,
+    StorageChangeRef, Tee,
 };
+
 use crate::{
     EvmFeatures, Version,
     bytecode::Bytecode,
@@ -23,9 +33,6 @@ use alloy_primitives::{
 };
 use core::mem;
 use derive_where::derive_where;
-
-#[cfg(test)]
-use super::BlockStateAccumulator;
 
 /// Reusable transaction-local state.
 #[derive(Debug, Default)]
