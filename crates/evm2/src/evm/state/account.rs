@@ -1,8 +1,7 @@
 //! Account models held by the state overlay and emitted in transitions.
 
-use super::{CacheDB, DbResult, DynDatabase, JournalEntry, WarmAddresses};
+use super::{DbResult, DynDatabase, JournalEntry, StateInner};
 use crate::{bytecode::Bytecode, interpreter::Word};
-use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::{Address, B256, KECCAK256_EMPTY, U256};
 use derive_where::derive_where;
 
@@ -179,23 +178,19 @@ impl TrackedAccount {
 /// reverted together by [`State::rollback`](super::State::rollback). A handle used only for reads
 /// records nothing. Mutating a currently-absent account materializes an empty one.
 ///
-/// The handle also carries the backing database and the transaction-initial base warm set, so it
-/// can load storage and code on demand and answer warm-access queries without going back through
-/// [`State`](super::State), mirroring the database and access-list references revm's
-/// `JournaledAccount` holds.
+/// The handle also carries the shared [`StateInner`] (backing database, revert journal, and
+/// transaction-initial base warm set), so it can journal mutations, load code on demand, and answer
+/// warm-access queries without going back through [`State`](super::State), mirroring the database
+/// and access-list references revm's `JournaledAccount` holds.
 #[derive_where(Debug)]
 pub struct JournaledAccount<'a> {
     /// Address of the account.
     address: Address,
     /// Transaction overlay entry: account overlay plus warm/touched access metadata.
     tracked: &'a mut TrackedAccount,
-    /// Revert journal shared with the owning [`State`](super::State).
-    journal: &'a mut Vec<JournalEntry>,
-    /// Database plus accepted transaction-boundary overlay, for on-demand storage and code loads.
+    /// Shared inner state: backing database, revert journal, and base warm set.
     #[derive_where(skip)]
-    database: &'a mut CacheDB<Box<dyn DynDatabase>>,
-    /// Transaction-initial base warm set (precompiles, coinbase, EIP-2930 access list).
-    warm_addresses: &'a mut WarmAddresses,
+    inner: &'a mut StateInner,
     /// Whether the revert snapshot has already been recorded for this handle.
     snapshotted: bool,
 }
@@ -207,17 +202,15 @@ fn empty_account() -> Account {
 }
 
 impl<'a> JournaledAccount<'a> {
-    /// Creates a handle over a loaded account overlay slot, the revert journal, the backing
-    /// database, and the transaction-initial base warm set.
+    /// Creates a handle over a loaded account overlay slot and the shared inner state (backing
+    /// database, revert journal, and transaction-initial base warm set).
     #[inline]
     pub(super) const fn new(
         address: Address,
         tracked: &'a mut TrackedAccount,
-        journal: &'a mut Vec<JournalEntry>,
-        database: &'a mut CacheDB<Box<dyn DynDatabase>>,
-        warm_addresses: &'a mut WarmAddresses,
+        inner: &'a mut StateInner,
     ) -> Self {
-        Self { address, tracked, journal, database, warm_addresses, snapshotted: false }
+        Self { address, tracked, inner, snapshotted: false }
     }
 
     /// Returns the account address.
@@ -261,7 +254,7 @@ impl<'a> JournaledAccount<'a> {
     /// warmth recorded during execution.
     #[inline]
     pub fn is_warm(&self) -> bool {
-        self.tracked.is_warm || self.warm_addresses.is_warm(&self.address)
+        self.tracked.is_warm || self.inner.warm_addresses.is_warm(&self.address)
     }
 
     /// Loads the account's bytecode, reading it from the backing database by code hash when it is
@@ -280,7 +273,7 @@ impl<'a> JournaledAccount<'a> {
             return Ok(account.code.clone());
         }
         let code_hash = account.code_hash;
-        self.database.get_code_by_hash(&code_hash)
+        self.inner.database.get_code_by_hash(&code_hash)
     }
 
     /// Touches the account, recording a [`JournalEntry::Touch`] the first time it is touched.
@@ -291,7 +284,7 @@ impl<'a> JournaledAccount<'a> {
     pub fn touch(&mut self) {
         if !self.tracked.is_touched {
             self.tracked.is_touched = true;
-            self.journal.push(JournalEntry::Touch { address: self.address });
+            self.inner.journal.push(JournalEntry::Touch { address: self.address });
         }
     }
 
@@ -302,13 +295,13 @@ impl<'a> JournaledAccount<'a> {
     /// base warm set stay warm across rollback, so warming them again records nothing.
     #[inline]
     pub fn warm(&mut self) -> bool {
-        if self.warm_addresses.is_warm(&self.address) {
+        if self.inner.warm_addresses.is_warm(&self.address) {
             return false;
         }
         let was_cold = !self.tracked.is_warm;
         self.tracked.is_warm = true;
         if was_cold {
-            self.journal.push(JournalEntry::AccountWarmed { address: self.address });
+            self.inner.journal.push(JournalEntry::AccountWarmed { address: self.address });
         }
         was_cold
     }
@@ -368,7 +361,7 @@ impl<'a> JournaledAccount<'a> {
     #[inline]
     pub fn get_or_insert(&mut self) -> &mut Account {
         if !self.snapshotted {
-            self.journal.push(JournalEntry::AccountChange {
+            self.inner.journal.push(JournalEntry::AccountChange {
                 address: self.address,
                 previous: self.tracked.present.clone(),
             });
@@ -381,9 +374,11 @@ impl<'a> JournaledAccount<'a> {
     /// remainder of the overlay borrow, materializing an empty one when it is currently absent.
     #[inline]
     pub fn into_account_mut(self) -> &'a mut Account {
-        let Self { address, tracked, journal, snapshotted, .. } = self;
+        let Self { address, tracked, inner, snapshotted } = self;
         if !snapshotted {
-            journal.push(JournalEntry::AccountChange { address, previous: tracked.present.clone() });
+            inner
+                .journal
+                .push(JournalEntry::AccountChange { address, previous: tracked.present.clone() });
         }
         tracked.present.get_or_insert_with(empty_account)
     }

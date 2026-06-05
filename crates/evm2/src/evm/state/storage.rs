@@ -1,8 +1,7 @@
 //! Transaction-scoped persistent storage overlay.
 
-use super::{CacheDB, DbResult, DynDatabase, JournalEntry, Tracked, WarmAddresses};
+use super::{DbResult, DynDatabase, JournalEntry, StateInner, Tracked};
 use crate::interpreter::Word;
-use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::{Address, map::U256Map};
 use derive_where::derive_where;
 
@@ -59,27 +58,21 @@ pub struct JournaledStorage<'a> {
     address: Address,
     /// Transaction overlay entry: the per-account storage slots plus the wipe flag.
     storage: &'a mut StorageOverlay,
-    /// Revert journal shared with the owning [`State`](super::State).
-    journal: &'a mut Vec<JournalEntry>,
-    /// Database plus accepted transaction-boundary overlay, for on-demand slot loads.
+    /// Shared inner state: backing database, revert journal, and base warm set.
     #[derive_where(skip)]
-    database: &'a mut CacheDB<Box<dyn DynDatabase>>,
-    /// Transaction-initial base warm set (EIP-2930 access-list storage slots).
-    warm_addresses: &'a mut WarmAddresses,
+    inner: &'a mut StateInner,
 }
 
 impl<'a> JournaledStorage<'a> {
-    /// Creates a handle over an account's storage overlay, the revert journal, the backing
-    /// database, and the transaction-initial base warm set.
+    /// Creates a handle over an account's storage overlay and the shared inner state (backing
+    /// database, revert journal, and transaction-initial base warm set).
     #[inline]
     pub(super) const fn new(
         address: Address,
         storage: &'a mut StorageOverlay,
-        journal: &'a mut Vec<JournalEntry>,
-        database: &'a mut CacheDB<Box<dyn DynDatabase>>,
-        warm_addresses: &'a mut WarmAddresses,
+        inner: &'a mut StateInner,
     ) -> Self {
-        Self { address, storage, journal, database, warm_addresses }
+        Self { address, storage, inner }
     }
 
     /// Returns the account address.
@@ -104,15 +97,7 @@ impl<'a> JournaledStorage<'a> {
     pub fn slot(&mut self, key: Word) -> JournaledStorageSlot<'_> {
         let wiped = self.storage.wiped;
         let slot = self.storage.slots.entry(key).or_default();
-        JournaledStorageSlot {
-            address: self.address,
-            key,
-            slot,
-            journal: &mut *self.journal,
-            database: &mut *self.database,
-            warm_addresses: &mut *self.warm_addresses,
-            wiped,
-        }
+        JournaledStorageSlot { address: self.address, key, slot, inner: &mut *self.inner, wiped }
     }
 }
 
@@ -123,7 +108,8 @@ impl<'a> JournaledStorage<'a> {
 /// [`JournalEntry::StorageInserted`], so every effect made through the handle is undone together by
 /// [`State::rollback`](super::State::rollback). A handle used only for reads records nothing.
 ///
-/// The handle carries the backing database and the account's wipe flag so it can resolve the slot's
+/// The handle carries the shared [`StateInner`] (backing database, revert journal, and base warm
+/// set) and the account's wipe flag so it can journal effects and resolve the slot's
 /// transaction-boundary original value on demand without going back through
 /// [`State`](super::State).
 #[derive_where(Debug)]
@@ -134,13 +120,9 @@ pub struct JournaledStorageSlot<'a> {
     key: Word,
     /// Transaction overlay entry: the slot value plus its warm-access metadata.
     slot: &'a mut StorageSlot,
-    /// Revert journal shared with the owning [`State`](super::State).
-    journal: &'a mut Vec<JournalEntry>,
-    /// Database plus accepted transaction-boundary overlay, for on-demand original-value loads.
+    /// Shared inner state: backing database, revert journal, and base warm set.
     #[derive_where(skip)]
-    database: &'a mut CacheDB<Box<dyn DynDatabase>>,
-    /// Transaction-initial base warm set (EIP-2930 access-list storage slots).
-    warm_addresses: &'a mut WarmAddresses,
+    inner: &'a mut StateInner,
     /// Whether the owning account's storage is wiped, so cold reads resolve to zero.
     wiped: bool,
 }
@@ -182,7 +164,7 @@ impl JournaledStorageSlot<'_> {
     /// execution.
     #[inline]
     pub fn is_warm(&self) -> bool {
-        self.slot.warm || self.warm_addresses.is_storage_warm(&self.address, &self.key)
+        self.slot.warm || self.inner.warm_addresses.is_storage_warm(&self.address, &self.key)
     }
 
     /// Marks the slot warm for EIP-2929 gas accounting, recording a [`JournalEntry::StorageWarmed`]
@@ -192,11 +174,13 @@ impl JournaledStorageSlot<'_> {
     /// warm set stay warm across rollback, so warming them again records nothing.
     #[inline]
     pub fn warm(&mut self) -> bool {
-        if self.warm_addresses.is_storage_warm(&self.address, &self.key) {
+        if self.inner.warm_addresses.is_storage_warm(&self.address, &self.key) {
             return false;
         }
         if self.slot.mark_warm() {
-            self.journal.push(JournalEntry::StorageWarmed { address: self.address, key: self.key });
+            self.inner
+                .journal
+                .push(JournalEntry::StorageWarmed { address: self.address, key: self.key });
             true
         } else {
             false
@@ -232,7 +216,7 @@ impl JournaledStorageSlot<'_> {
                     return Ok(());
                 }
                 tracked.current = value;
-                self.journal.push(JournalEntry::StorageChange {
+                self.inner.journal.push(JournalEntry::StorageChange {
                     address: self.address,
                     key: self.key,
                     previous,
@@ -241,7 +225,8 @@ impl JournaledStorageSlot<'_> {
             None => {
                 let original = self.load_original()?;
                 self.slot.value = Some(Tracked { original, current: value, _non_exhaustive: () });
-                self.journal
+                self.inner
+                    .journal
                     .push(JournalEntry::StorageInserted { address: self.address, key: self.key });
             }
         }
@@ -252,10 +237,10 @@ impl JournaledStorageSlot<'_> {
     /// wiped or absent account.
     #[inline]
     fn load_original(&mut self) -> DbResult<Word> {
-        if self.wiped || self.database.account_absent(&self.address) {
+        if self.wiped || self.inner.database.account_absent(&self.address) {
             return Ok(Word::ZERO);
         }
-        self.database.get_storage(&self.address, &self.key)
+        self.inner.database.get_storage(&self.address, &self.key)
     }
 }
 
