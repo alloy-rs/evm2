@@ -1,7 +1,7 @@
 use alloy_primitives::{Address, B256};
 use evm2::{
     bytecode::Bytecode,
-    evm::{AccountInfo, DatabaseCommit, InMemoryDB, StateChanges},
+    evm::{AccountInfo, InMemoryDB, StateChanges},
 };
 
 /// Parses fixture bytecode into evm2 bytecode.
@@ -31,7 +31,7 @@ pub(crate) fn apply_state_changes(pre: &InMemoryDB, changes: &StateChanges) -> I
 
 /// Applies state changes to an in-memory database.
 pub(crate) fn apply_state_changes_in_place(database: &mut InMemoryDB, changes: &StateChanges) {
-    database.commit(changes);
+    database.commit_source(changes);
 }
 
 /// Returns whether the given system contract exists with non-empty code.

@@ -1,10 +1,10 @@
 //! In-memory cache database.
 
-use super::{DatabaseCommit, DbErrorCode, DbResult, DynDatabase, EmptyDB};
+use super::{DbErrorCode, DbResult, DynDatabase, EmptyDB};
 use crate::{
     bytecode::Bytecode,
     evm::state::{
-        AccountChangeRef, AccountInfo, StateChanges, StorageChangeRef, TxChangeSink, TxChangeSource,
+        AccountChangeRef, AccountInfo, StateChangeSink, StateChangeSource, StorageChangeRef,
     },
     interpreter::Word,
 };
@@ -84,59 +84,6 @@ pub struct CacheDB<ExtDB = EmptyDB> {
     pub _non_exhaustive: (),
 }
 
-/// Sink that applies borrowed state changes to a [`CacheDB`].
-#[derive(Debug)]
-pub struct CacheDbSink<'a, ExtDB = EmptyDB> {
-    db: &'a mut CacheDB<ExtDB>,
-}
-
-impl<'a, ExtDB> CacheDbSink<'a, ExtDB> {
-    /// Creates a new cache database sink.
-    #[inline]
-    pub const fn new(db: &'a mut CacheDB<ExtDB>) -> Self {
-        Self { db }
-    }
-}
-
-impl<ExtDB> TxChangeSink for CacheDbSink<'_, ExtDB> {
-    type Error = Infallible;
-
-    #[inline]
-    fn bytecode(&mut self, code_hash: B256, code: &Bytecode) -> Result<(), Self::Error> {
-        self.db.cache.contracts.insert(code_hash, code.clone());
-        Ok(())
-    }
-
-    #[inline]
-    fn storage_wipe(&mut self, address: Address) -> Result<(), Self::Error> {
-        self.db.cache.storage.entry(address).or_default().wipe();
-        Ok(())
-    }
-
-    #[inline]
-    fn storage(&mut self, change: StorageChangeRef) -> Result<(), Self::Error> {
-        let storage = self.db.cache.storage.entry(change.address).or_default();
-        if change.after_wipe && change.current.is_zero() {
-            storage.slots.remove(&change.key);
-        } else {
-            storage.slots.insert(change.key, change.current);
-        }
-        Ok(())
-    }
-
-    #[inline]
-    fn account(&mut self, change: AccountChangeRef<'_>) -> Result<(), Self::Error> {
-        match change.current {
-            Some(info) => self.db.insert_account_info(&change.address, info.to_account_info()),
-            None => {
-                self.db.cache.accounts.insert(change.address, None);
-                self.db.cache.storage.entry(change.address).or_default().wipe();
-            }
-        }
-        Ok(())
-    }
-}
-
 impl Default for CacheDB<EmptyDB> {
     #[inline]
     fn default() -> Self {
@@ -153,9 +100,8 @@ impl<ExtDB> CacheDB<ExtDB> {
 
     /// Applies borrowed state changes to this cache.
     #[inline]
-    pub fn commit_source<S: TxChangeSource>(&mut self, source: &S) {
-        let mut sink = CacheDbSink::new(self);
-        match source.visit(&mut sink) {
+    pub fn commit_source<S: StateChangeSource>(&mut self, source: &S) {
+        match source.visit(self) {
             Ok(()) => {}
             Err(err) => match err {},
         }
@@ -224,9 +170,42 @@ impl<ExtDB> CacheDB<ExtDB> {
     }
 }
 
-impl<ExtDB> DatabaseCommit for CacheDB<ExtDB> {
-    fn commit(&mut self, changes: &StateChanges) {
-        self.commit_source(changes);
+impl<ExtDB> StateChangeSink for CacheDB<ExtDB> {
+    type Error = Infallible;
+
+    #[inline]
+    fn bytecode(&mut self, code_hash: B256, code: &Bytecode) -> Result<(), Self::Error> {
+        self.cache.contracts.insert(code_hash, code.clone());
+        Ok(())
+    }
+
+    #[inline]
+    fn storage_wipe(&mut self, address: Address) -> Result<(), Self::Error> {
+        self.cache.storage.entry(address).or_default().wipe();
+        Ok(())
+    }
+
+    #[inline]
+    fn storage(&mut self, change: StorageChangeRef) -> Result<(), Self::Error> {
+        let storage = self.cache.storage.entry(change.address).or_default();
+        if change.after_wipe && change.current.is_zero() {
+            storage.slots.remove(&change.key);
+        } else {
+            storage.slots.insert(change.key, change.current);
+        }
+        Ok(())
+    }
+
+    #[inline]
+    fn account(&mut self, change: AccountChangeRef<'_>) -> Result<(), Self::Error> {
+        match change.current {
+            Some(info) => self.insert_account_info(&change.address, info.to_account_info()),
+            None => {
+                self.cache.accounts.insert(change.address, None);
+                self.cache.storage.entry(change.address).or_default().wipe();
+            }
+        }
+        Ok(())
     }
 }
 

@@ -1,4 +1,5 @@
 #![doc = include_str!("../README.md")]
+#![doc = "\n\nFor the transaction lifecycle and state-output model, see [`evm`]."]
 #![cfg_attr(tco, feature(explicit_tail_calls, rust_preserve_none_cc), allow(incomplete_features))]
 #![cfg_attr(not(feature = "std"), no_std)]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
@@ -15,8 +16,8 @@ pub mod utils;
 
 pub mod evm;
 pub use evm::{
-    BlockStateAccumulator, Evm, FrozenBlockState, PendingTx, Tee, TxChangeSink, TxGas, TxOutcome,
-    TxResult, config,
+    BlockStateAccumulator, Evm, ExecutedTx, FrozenBlockState, StateChangeSink, StateChangeSource,
+    Tee, TxOutcome, TxResult, config,
     config::{
         BaseEvmConfig, BaseEvmConfigSelector, BaseEvmTypes, EvmConfig, EvmConfigSelector, EvmTypes,
         ExecutionConfig,

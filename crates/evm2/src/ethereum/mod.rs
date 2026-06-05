@@ -7,7 +7,7 @@ mod eip7702;
 mod legacy;
 
 use crate::{
-    Evm, EvmFeatures, EvmTypes, SpecId, TxGas, TxOutcome, Version,
+    Evm, EvmFeatures, EvmTypes, SpecId, TxOutcome, Version,
     bytecode::Bytecode,
     evm::{AccountInfo, StateCheckpoint},
     interpreter::{Message, MessageKind, MessageResult, Word},
@@ -443,7 +443,7 @@ pub(super) fn settle_gas<T: EvmTypes<Host = Evm<T>>>(
     }
     Ok(TxOutcome {
         status: result.stop.is_success(),
-        gas: TxGas::from_tx_gas_used(gas_used),
+        gas_used,
         stop: result.stop,
         output: result.output,
         ext: T::TxResultExt::default(),
@@ -616,7 +616,7 @@ mod tests {
         );
 
         assert_eq!(
-            evm.transact(&tx).map(|pending| pending.discard()),
+            evm.transact(&tx).map(|executed| executed.discard()),
             Err(HandlerError::IntrinsicGasTooLow { required: 21_000, got: 20_999 })
         );
     }

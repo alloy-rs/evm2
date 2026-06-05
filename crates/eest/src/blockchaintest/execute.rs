@@ -23,7 +23,7 @@ use evm2::{
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
     evm::{
         AccountInfo as EvmAccountInfo, BEACON_ROOTS_ADDRESS, BlockStateAccumulator, DbErrorCode,
-        HISTORY_STORAGE_ADDRESS, InMemoryDB, StateChanges, Tracked, TxChangeSource,
+        HISTORY_STORAGE_ADDRESS, InMemoryDB, StateChangeSource, StateChanges, Tracked,
         WITHDRAWAL_REQUEST_ADDRESS,
     },
     registry::HandlerError,

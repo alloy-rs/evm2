@@ -31,8 +31,8 @@ fn main() -> Result<()> {
     let spec_id = CustomSpecId::Custom;
     let mut evm = Evm::<CustomTypes>::new(spec_id, ..);
     let tx = CustomTx { .. };
-    let pending = evm.transact(&tx)?;
-    let result = pending.commit();
+    let executed = evm.transact(&tx)?;
+    let result = executed.commit();
     // ...
     Ok(())
 }

@@ -67,7 +67,7 @@ impl Runner {
     }
 
     fn run(&mut self) -> evm2::registry::HandlerResult<evm2::TxOutcome> {
-        self.evm.transact(&self.tx).map(evm2::PendingTx::commit)
+        self.evm.transact(&self.tx).map(evm2::ExecutedTx::commit)
     }
 }
 

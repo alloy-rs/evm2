@@ -7,8 +7,7 @@
 use crate::{
     bytecode::Bytecode,
     evm::{
-        AccountInfo, DatabaseCommit, DbErrorCode, DbResult, DynDatabase, StateChanges,
-        db_error_unavailable, stored_error_code,
+        AccountInfo, DbErrorCode, DbResult, DynDatabase, db_error_unavailable, stored_error_code,
     },
     interpreter::Word,
 };
@@ -523,13 +522,6 @@ impl<D: AsyncDatabase> AsyncDb<D> {
     }
 }
 
-impl<D: AsyncDatabase + DatabaseCommit> DatabaseCommit for AsyncDb<D> {
-    #[inline]
-    fn commit(&mut self, changes: &StateChanges) {
-        self.db.commit(changes);
-    }
-}
-
 impl<D: AsyncDatabase> DynDatabase for AsyncDb<D> {
     #[inline]
     fn get_account(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
@@ -589,7 +581,7 @@ impl<D: AsyncDatabase + fmt::Debug> fmt::Debug for AsyncDb<D> {
 mod tests {
     use super::{AsyncDatabase, AsyncDb, AsyncError, block_on_current, on_fiber};
     use crate::{
-        BaseEvmTypes, Evm, PrecompileError, Precompiles, SpecId, TxGas, TxOutcome,
+        BaseEvmTypes, Evm, PrecompileError, Precompiles, SpecId, TxOutcome,
         bytecode::Bytecode,
         env::BlockEnv,
         evm::{Database, Db, DynDatabase, InMemoryDB, PrecompileProvider},
@@ -971,11 +963,7 @@ mod tests {
         req: TxRequest<'_, BaseEvmTypes, Recovered<TxLegacy>>,
     ) -> HandlerResult<TxOutcome> {
         let _ = req.host.spec_id();
-        Ok(TxOutcome {
-            status: true,
-            gas: TxGas::from_tx_gas_used(req.tx.nonce + 1),
-            ..TxOutcome::default()
-        })
+        Ok(TxOutcome { status: true, gas_used: req.tx.nonce + 1, ..TxOutcome::default() })
     }
 
     fn poll_ready<F: Future + Send>(future: F) -> F::Output {

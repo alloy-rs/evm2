@@ -1,8 +1,262 @@
 //! EVM execution host.
 //!
-//! See [`state-output.md`](../../docs/state-output.md) for the transaction lifecycle and
-//! state-output model behind `transact`, `commit`, `commit_to`, `commit_with`, `discard`, and
-//! `detach`.
+//! ## State output and transaction lifecycle
+//!
+//! This document describes the intended `evm2` state-output model. The goal is to
+//! make the cheap paths cheap while still supporting owned materialized output when a caller needs
+//! it.
+//!
+//! The core rule is: transaction execution should not imply state materialization.
+//! Execution produces an outcome and leaves writes in transaction scratch.
+//! The caller then explicitly commits, discards, or detaches that unresolved state.
+//!
+//! ## State layers
+//!
+//! `evm2` state is split conceptually into three layers.
+//!
+//! 1. **Accepted overlay**
+//!
+//!    The accepted overlay is transaction-boundary state. It contains all changes
+//!    from transactions that the caller has committed so far and shadows the
+//!    wrapped backing database. Later transactions read this overlay as part of
+//!    their starting state.
+//!
+//! 2. **Transaction scratch**
+//!
+//!    Transaction scratch contains writes, warm-access state, transient storage,
+//!    the revert journal, touched accounts, selfdestruct markers, and logs for the
+//!    currently executing transaction. This layer is reusable: after commit,
+//!    discard, or detach it is cleared while retaining capacity where possible.
+//!
+//! 3. **Block accumulator**
+//!
+//!    A block accumulator records block-level changes as transactions are
+//!    committed. It keeps the first value observed at the block boundary and the
+//!    latest value after the last committed transaction. At block end it can be
+//!    frozen and exposed through borrowed or sorted views.
+//!
+//! The accepted overlay is for execution correctness between transactions. The
+//! block accumulator is for final block output. They are related, but they serve
+//! different consumers.
+//!
+//! ## Lifecycle terms
+//!
+//! ### `transact`
+//!
+//! `transact` validates and executes a transaction through the registered handler.
+//! If execution reaches transaction finalization, the resulting post-finalization
+//! writes remain in transaction scratch and the function returns an `ExecutedTx`
+//! handle.
+//!
+//! `transact` does **not** commit to the accepted overlay, does **not** update the
+//! block accumulator, and does **not** build an owned `StateChanges` value unless a
+//! materialization path asks for one later.
+//!
+//! ### `ExecutedTx`
+//!
+//! An `ExecutedTx` is an exclusive handle to the EVM while transaction scratch
+//! contains the transaction's post-finalization writes. Because it borrows the EVM
+//! mutably, another transaction cannot start until the handle is resolved.
+//!
+//! An `ExecutedTx` must be resolved in one of these ways:
+//!
+//! - `commit`
+//! - `commit_to`
+//! - `commit_with`
+//! - `discard`
+//! - `detach`
+//!
+//! If an `ExecutedTx` handle is dropped without being resolved, it is treated as
+//! `discard` so scratch cannot leak into the next transaction.
+//!
+//! ### `commit`
+//!
+//! `commit` accepts the executed transaction's state.
+//!
+//! It means:
+//!
+//! - apply transaction writes to the accepted overlay so later transactions can read them;
+//! - clear transaction scratch for reuse;
+//! - return the transaction outcome.
+//!
+//! `commit` is the normal serial block-execution path. A reverted EVM transaction
+//! can still be committed: the transaction outcome may have `status = false`, but
+//! transaction-level effects such as nonce/gas accounting are still accepted if the
+//! handler finalized successfully.
+//!
+//! ### `discard`
+//!
+//! `discard` rejects the executed transaction's state.
+//!
+//! It means:
+//!
+//! - do not mutate the accepted overlay;
+//! - do not mutate the block accumulator;
+//! - do not stream writes to state sinks;
+//! - clear transaction scratch for reuse;
+//! - return the transaction outcome.
+//!
+//! Use `discard` for result-only execution such as `eth_call`, gas estimation trial
+//! runs, or conditional execution where the caller decided not to accept the
+//! transaction.
+//!
+//! Important: after `discard`, the transaction's writes are **not** visible to the
+//! next transaction.
+//!
+//! ### `detach`
+//!
+//! `detach` materializes an owned transaction diff and clears scratch.
+//!
+//! It means:
+//!
+//! - build an owned `StateChanges`/owned transaction result from transaction scratch;
+//! - do not mutate the accepted overlay;
+//! - do not mutate the block accumulator;
+//! - clear transaction scratch for reuse;
+//! - return owned state that can be moved, stored, sent to another worker, or committed later by
+//!   the caller.
+//!
+//! Use `detach` for debugging/tracing that needs an owned write-set, and
+//! parallel/BAL-style workers that need to move a transaction diff between threads.
+//!
+//! The difference between `discard` and `detach` is ownership of the writes:
+//!
+//! - `discard` drops the writes;
+//! - `detach` keeps the writes in an owned materialized value.
+//!
+//! Neither one commits the writes to the accepted overlay.
+//!
+//! ### `commit_to`
+//!
+//! `commit_to` accepts the executed transaction's state and records the same borrowed change
+//! stream in a block accumulator.
+//!
+//! It means:
+//!
+//! - stream transaction writes into the supplied `BlockStateAccumulator`;
+//! - apply transaction writes to the accepted overlay so later transactions can read them;
+//! - clear transaction scratch for reuse;
+//! - return the transaction outcome.
+//!
+//! Use `commit_to` for serial block execution when the caller wants block-level
+//! coalesced state output.
+//!
+//! ### `commit_with`
+//!
+//! `commit_with` streams transaction writes into an arbitrary sink before accepting the
+//! transaction. Use it to feed tracing, witness, trie, cache, or tee sinks without
+//! building an owned `StateChanges`.
+//!
+//! ### `freeze`
+//!
+//! `freeze` finishes a block accumulator and returns immutable block state. Frozen
+//! state exposes borrowed account/storage/code iteration and sorted account/storage views. Sorting
+//! happens at freeze/view time, not per transaction.
+//!
+//! ## Execution outcomes and logs
+//!
+//! Logs are execution output. They are not database state.
+//!
+//! `TxOutcome` carries logs together with status, gas used, output, stop reason, database
+//! error handle, and extension data. Detached `TxResult` values also carry logs next to the
+//! materialized `StateChanges`; the state diff itself contains database changes only. Normal block
+//! execution can build receipts from `TxOutcome` without materializing a state diff.
+//!
+//! ## Error and status behavior
+//!
+//! - **Successful execution** returns an `ExecutedTx` whose outcome has `status = true`. The caller
+//!   chooses `commit`, `commit_to`, `commit_with`, `discard`, or `detach`.
+//! - **EVM revert/halt** can still return an `ExecutedTx`. The outcome records the failed
+//!   status/stop/output, while transaction-level state effects remain unresolved if transaction
+//!   finalization completed.
+//! - **Invalid transaction / handler error** returns a handler error and clears transaction
+//!   scratch. There is no executed transaction to resolve.
+//! - **Database error during execution/finalization** is recorded in the outcome's database error
+//!   handle when execution can produce a transaction result. If no valid transaction state remains,
+//!   resolving the handle is a no-op for state.
+//!
+//! ## Allocation guide
+//!
+//! Cheapest paths:
+//!
+//! ```text
+//! eth_call / simulation: transact -> discard
+//! serial block:          transact -> commit
+//! ```
+//!
+//! Materializing paths:
+//!
+//! ```text
+//! materialized tx diff: transact -> detach -> TxResult
+//! parallel worker:      transact -> detach -> send owned diff
+//! block accumulator:    transact -> commit_to -> FrozenBlockState
+//! ```
+//!
+//! The design aims for the serial block path to walk transaction scratch once and
+//! fan out changes to the accepted overlay, block accumulator, and optional sinks.
+//! Owned `StateChanges` is a materialized view, not a mandatory hot-path intermediate.
+//!
+//! ## Source and sink terminology
+//!
+//! A **source** exposes state changes. Examples: transaction scratch, owned
+//! `StateChanges`, frozen block state.
+//!
+//! A **sink** consumes changes. Examples: block accumulator, hashed-trie updater,
+//! execution cache, witness recorder, or test recorder.
+//!
+//! The `StateChangeSource`/`StateChangeSink` API is a borrowed visitor over state changes. It lets
+//! the common path stream changes directly from scratch into multiple consumers without first
+//! building an owned per-transaction map.
+//!
+//! ## Example flows
+//!
+//! ### Result-only call
+//!
+//! ```rust,ignore
+//! let executed = evm.transact(&tx)?;
+//! let outcome = executed.discard();
+//! assert!(!outcome.logs.is_empty() || outcome.output.is_empty());
+//! ```
+//!
+//! ### Serial block execution
+//!
+//! ```rust,ignore
+//! let mut block_state = BlockStateAccumulator::new();
+//!
+//! for tx in block.transactions() {
+//!     let executed = evm.transact(tx)?;
+//!     receipt_builder.observe(executed.outcome());
+//!     let outcome = executed.commit_to(&mut block_state);
+//!     receipts.push(receipt_builder.finish(outcome));
+//! }
+//!
+//! let frozen_state = block_state.freeze();
+//! ```
+//!
+//! ### Conditional commit
+//!
+//! ```rust,ignore
+//! let executed = evm.transact(&tx)?;
+//! if should_accept(executed.outcome()) {
+//!     executed.commit_to(&mut block_state);
+//! } else {
+//!     executed.discard();
+//! }
+//! ```
+//!
+//! ### Detached worker
+//!
+//! ```rust,ignore
+//! let executed = worker_evm.transact(&tx)?;
+//! let owned = executed.detach();
+//! work_queue.send(owned)?;
+//! ```
+//!
+//! ### Materialized output
+//!
+//! ```rust,ignore
+//! let materialized: TxResult<_> = evm.transact(&tx)?.detach();
+//! ```
 
 use self::{
     inspector::Inspector,
@@ -21,12 +275,12 @@ use crate::{
     trustme,
     version::{EvmFeatures, GasId},
 };
-use alloc::{boxed::Box, vec, vec::Vec};
+use alloc::{boxed::Box, vec};
 use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{Address, B256, Bytes, Log, LogData};
+use core::any::TypeId;
 #[cfg(feature = "async")]
 use core::future::Future;
-use core::{any::TypeId, fmt};
 use derive_where::derive_where;
 
 #[cfg(feature = "async")]
@@ -44,18 +298,21 @@ pub use system::{
 
 mod db;
 pub use db::{
-    AccountStorageCache, Cache, CacheDB, CacheDbSink, Database, DatabaseCommit, Db, DbErrorCode,
-    DbResult, DynDatabase, EmptyDB, InMemoryDB,
+    AccountStorageCache, Cache, CacheDB, Database, Db, DbErrorCode, DbResult, DynDatabase, EmptyDB,
+    InMemoryDB,
 };
 #[cfg(feature = "async")]
 pub(crate) use db::{db_error_unavailable, stored_error_code};
+
+mod tx;
+pub use tx::{ExecutedTx, TxOutcome, TxResult};
 
 mod state;
 pub use state::{
     Account, AccountChangeRef, AccountInfo, AccountInfoRef, BlockAccountDelta,
     BlockStateAccumulator, BlockStorageDelta, FrozenBlockState, JournalEntry, NoopChangeSink,
-    State, StateChanges, StateCheckpoint, StorageChangeRef, StorageChangeSet, StorageOverlay, Tee,
-    Tracked, TxChangeSink, TxChangeSource,
+    State, StateChangeSink, StateChangeSource, StateChanges, StateCheckpoint, StorageChangeRef,
+    StorageChangeSet, StorageOverlay, Tee, Tracked,
 };
 
 /// EVM host and transaction dispatcher.
@@ -249,7 +506,7 @@ impl<T: EvmTypes> Evm<T> {
 
     /// Applies borrowed changes to the accepted state overlay.
     #[inline]
-    pub fn commit_source<S: TxChangeSource>(&mut self, source: &S) {
+    pub fn commit_source<S: StateChangeSource>(&mut self, source: &S) {
         self.state.commit_source(source);
     }
 
@@ -544,19 +801,19 @@ impl<'a, T: EvmTypes> SendEvmRef<'a, T> {
 impl<T: EvmTypes<Tx: Typed2718, Host = Evm<T>>> SendEvmRef<'_, T> {
     #[inline]
     fn transact(&mut self, tx: &T::Tx) -> HandlerResult<TxOutcome<T>> {
-        self.evm.transact(tx).map(PendingTx::commit)
+        self.evm.transact(tx).map(ExecutedTx::commit)
     }
 }
 
 impl<T: EvmTypes<Tx: Typed2718, Host = Self>> Evm<T> {
-    /// Dispatches the transaction to its handler and returns a pending transaction.
+    /// Dispatches the transaction to its handler and returns an executed transaction handle.
     ///
-    /// The returned [`PendingTx`] keeps post-finalization writes in the transaction scratch layer.
-    /// Callers must resolve it with [`PendingTx::commit`], [`PendingTx::commit_to`],
-    /// [`PendingTx::commit_with`], [`PendingTx::discard`], or [`PendingTx::detach`] before another
-    /// transaction can be executed. Dropping the pending
-    /// handle is equivalent to [`PendingTx::discard`].
-    pub fn transact(&mut self, tx: &T::Tx) -> HandlerResult<PendingTx<'_, T>> {
+    /// The returned [`ExecutedTx`] keeps post-finalization writes in the transaction scratch layer.
+    /// Callers must resolve it with [`ExecutedTx::commit`], [`ExecutedTx::commit_to`],
+    /// [`ExecutedTx::commit_with`], [`ExecutedTx::discard`], or [`ExecutedTx::detach`] before
+    /// another transaction can be executed. Dropping the handle is equivalent to
+    /// [`ExecutedTx::discard`].
+    pub fn transact(&mut self, tx: &T::Tx) -> HandlerResult<ExecutedTx<'_, T>> {
         self.db_error_code = None;
         let handler = self.registry.try_get_by_type(tx.ty())?;
         let mut result = handler.call(tx, self);
@@ -575,7 +832,7 @@ impl<T: EvmTypes<Tx: Typed2718, Host = Self>> Evm<T> {
             result.db_error_code = self.db_error_code;
         };
         match result {
-            Ok(result) => Ok(PendingTx::from_outcome(self, result, has_pending_state)),
+            Ok(result) => Ok(ExecutedTx::from_outcome(self, result, has_pending_state)),
             Err(err) => {
                 self.state.clear_transaction_state();
                 Err(err)
@@ -586,10 +843,10 @@ impl<T: EvmTypes<Tx: Typed2718, Host = Self>> Evm<T> {
     /// Executes a transaction for its outcome and discards its state changes.
     ///
     /// This is the cheapest convenience entrypoint for `eth_call`-style simulations: execution
-    /// output and logs are returned, but pending writes are not accepted and no owned
+    /// output and logs are returned, but transaction writes are not accepted and no owned
     /// [`StateChanges`] is materialized.
     pub fn call_tx(&mut self, tx: &T::Tx) -> HandlerResult<TxOutcome<T>> {
-        self.transact(tx).map(PendingTx::discard)
+        self.transact(tx).map(ExecutedTx::discard)
     }
 
     /// Dispatches the transaction to the handler registered for its EIP-2718 type byte on an async
@@ -600,7 +857,7 @@ impl<T: EvmTypes<Tx: Typed2718, Host = Self>> Evm<T> {
     /// advantage of yielding database I/O. With a synchronous database this is mostly equivalent to
     /// running the synchronous transaction on a fiber.
     ///
-    /// This commits the pending transaction on the fiber and returns the result-only
+    /// This commits the executed transaction on the fiber and returns the result-only
     /// [`TxOutcome`].
     ///
     /// This returns a `Send` future. Before calling it, the current erased database, precompile
@@ -638,7 +895,7 @@ impl<T: EvmTypes<Tx: Typed2718, Host = Self>> Evm<T> {
         T::Tx: 'a,
         Self: 'a,
     {
-        txs.into_iter().map(move |tx| self.transact(tx).map(PendingTx::commit))
+        txs.into_iter().map(move |tx| self.transact(tx).map(ExecutedTx::commit))
     }
 }
 
@@ -1243,274 +1500,6 @@ pub struct SelfDestructResult {
     pub _non_exhaustive: (),
 }
 
-/// Gas accounting values reported by transaction execution.
-///
-/// `tx_gas_used` is the transaction gas-used value exposed by [`TxOutcome::gas_used`] and
-/// [`TxResult::gas_used`]. Additional
-/// fields make room for block-level accounting such as regular/state gas splits, refunds, and
-/// floor-gas accounting without forcing callers to infer them from a single number.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub struct TxGas {
-    /// Gas used by the transaction.
-    pub tx_gas_used: u64,
-    /// Regular gas contribution to block gas accounting.
-    pub block_regular_gas_used: u64,
-    /// State gas contribution to block gas accounting.
-    pub block_state_gas_used: u64,
-    /// Total gas spent by the transaction before caller-specific fee accounting.
-    pub total_spent: u64,
-    /// Gas refunded by execution before final refund caps are applied.
-    pub refunded: u64,
-    /// Floor gas used for forks that apply transaction floor-gas rules.
-    pub floor_gas: u64,
-    #[doc(hidden)] // Not public API. Please use an existing constructor.
-    pub _non_exhaustive: (),
-}
-
-impl TxGas {
-    /// Creates gas accounting from a single gas-used value.
-    #[inline]
-    pub const fn from_tx_gas_used(tx_gas_used: u64) -> Self {
-        Self {
-            tx_gas_used,
-            block_regular_gas_used: tx_gas_used,
-            block_state_gas_used: 0,
-            total_spent: tx_gas_used,
-            refunded: 0,
-            floor_gas: 0,
-            _non_exhaustive: (),
-        }
-    }
-}
-
-/// Transaction execution outcome without an owned state diff.
-///
-/// This is the result-only half of transaction execution: status, gas, output, stop reason, logs,
-/// database error handle, and extension data. Logs live here because they are execution output, not
-/// database state. Use [`PendingTx::detach`] only when an owned [`StateChanges`] value is required.
-#[derive_where(Clone, Debug, Default, PartialEq, Eq; T::TxResultExt)]
-pub struct TxOutcome<T: EvmTypes = crate::BaseEvmTypes> {
-    /// Whether execution succeeded.
-    pub status: bool,
-    /// Gas accounting reported by execution.
-    pub gas: TxGas,
-    /// Interpreter stop reason.
-    pub stop: InstrStop,
-    /// Return or revert output.
-    pub output: Bytes,
-    /// Logs emitted by the transaction.
-    pub logs: Vec<Log>,
-    /// Database error handle, if execution stopped on a database error.
-    pub db_error_code: Option<DbErrorCode>,
-    /// EVM type-specific extension data.
-    pub ext: T::TxResultExt,
-    #[doc(hidden)] // Not public API. Please use an existing constructor.
-    pub _non_exhaustive: (),
-}
-
-impl<T: EvmTypes> TxOutcome<T> {
-    /// Returns the transaction gas-used value.
-    #[inline]
-    pub const fn gas_used(&self) -> u64 {
-        self.gas.tx_gas_used
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PendingState {
-    Present,
-    Cleared,
-}
-
-/// A transaction whose post-finalization state is still pending.
-///
-/// `PendingTx` borrows the EVM mutably until the caller chooses what to do with the pending
-/// transaction scratch:
-///
-/// - [`Self::commit`] accepts the state into the internal accepted overlay;
-/// - [`Self::discard`] drops the state and keeps only the outcome;
-/// - [`Self::detach`] materializes an owned [`StateChanges`] value without committing it;
-/// - [`Self::commit_to`] accepts the state and records it in a block accumulator;
-/// - [`Self::commit_with`] accepts the state and first streams it to an external sink.
-///
-/// Dropping `PendingTx` without calling one of those methods is equivalent to [`Self::discard`].
-#[must_use = "pending transaction state must be committed, discarded, or detached"]
-pub struct PendingTx<'evm, T: EvmTypes = crate::BaseEvmTypes> {
-    evm: &'evm mut Evm<T>,
-    outcome: Option<TxOutcome<T>>,
-    state: PendingState,
-}
-
-impl<T: EvmTypes> fmt::Debug for PendingTx<'_, T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("PendingTx")
-            .field("has_pending_state", &self.has_pending_state())
-            .finish_non_exhaustive()
-    }
-}
-
-impl<'evm, T: EvmTypes> PendingTx<'evm, T> {
-    #[inline]
-    const fn from_outcome(
-        evm: &'evm mut Evm<T>,
-        outcome: TxOutcome<T>,
-        has_pending_state: bool,
-    ) -> Self {
-        Self {
-            evm,
-            outcome: Some(outcome),
-            state: if has_pending_state { PendingState::Present } else { PendingState::Cleared },
-        }
-    }
-
-    #[inline]
-    fn has_pending_state(&self) -> bool {
-        self.state == PendingState::Present
-    }
-
-    #[inline]
-    fn take_outcome(&mut self) -> TxOutcome<T> {
-        match self.outcome.take() {
-            Some(outcome) => outcome,
-            None => unreachable!("pending transaction outcome was already taken"),
-        }
-    }
-
-    /// Returns the transaction outcome without resolving the pending state.
-    #[inline]
-    pub fn outcome(&self) -> &TxOutcome<T> {
-        match &self.outcome {
-            Some(outcome) => outcome,
-            None => unreachable!("pending transaction outcome was already taken"),
-        }
-    }
-
-    /// Accepts the pending transaction into the internal accepted overlay.
-    ///
-    /// This makes the transaction's state effects visible to later transactions executed by the
-    /// same EVM. It clears transaction scratch and returns the result-only [`TxOutcome`].
-    ///
-    /// The block accumulator/sink variant will be layered on top of this lifecycle; this initial
-    /// API commits to the internal accepted overlay only.
-    pub fn commit(mut self) -> TxOutcome<T> {
-        if self.has_pending_state() {
-            self.evm.state.commit_transaction();
-            self.evm.state.clear_transaction_state();
-            self.state = PendingState::Cleared;
-        }
-        self.take_outcome()
-    }
-
-    /// Accepts the pending transaction and records its changes in a block accumulator.
-    ///
-    /// This streams pending changes into `block_state`, commits them to the accepted overlay, and
-    /// returns the result-only [`TxOutcome`]. No owned [`StateChanges`] is materialized.
-    pub fn commit_to(mut self, block_state: &mut BlockStateAccumulator) -> TxOutcome<T> {
-        if self.has_pending_state() {
-            match self.evm.state.visit_transaction_changes(block_state) {
-                Ok(()) => {}
-                Err(err) => match err {},
-            }
-            self.evm.state.commit_transaction();
-            self.evm.state.clear_transaction_state();
-            self.state = PendingState::Cleared;
-        }
-        self.take_outcome()
-    }
-
-    /// Streams pending changes into `sink`, then accepts the transaction.
-    ///
-    /// If the sink returns an error, the transaction is not committed and the pending handle is
-    /// dropped, which discards the transaction scratch. Use infallible sinks on the block hot path.
-    pub fn commit_with<S: TxChangeSink>(mut self, sink: &mut S) -> Result<TxOutcome<T>, S::Error> {
-        if self.has_pending_state() {
-            self.evm.state.visit_transaction_changes(sink)?;
-            self.evm.state.commit_transaction();
-            self.evm.state.clear_transaction_state();
-            self.state = PendingState::Cleared;
-        }
-        Ok(self.take_outcome())
-    }
-
-    /// Discards the pending transaction state and returns the outcome.
-    ///
-    /// Discarding does not mutate the accepted overlay and does not materialize [`StateChanges`].
-    /// This is the intended path for result-only execution such as `eth_call`.
-    pub fn discard(mut self) -> TxOutcome<T> {
-        if self.has_pending_state() {
-            self.evm.state.clear_transaction_state();
-            self.state = PendingState::Cleared;
-        }
-        self.take_outcome()
-    }
-
-    /// Detaches the pending transaction into an owned state diff without committing it.
-    ///
-    /// Detaching materializes [`StateChanges`], clears transaction scratch, and returns a
-    /// [`TxResult`] that can be moved or stored. The detached state is not accepted into this EVM's
-    /// internal overlay unless the caller commits it separately.
-    pub fn detach(mut self) -> TxResult<T> {
-        let state_changes = if self.has_pending_state() {
-            let changes = self.evm.state.build_state_changes();
-            self.evm.state.clear_transaction_state();
-            self.state = PendingState::Cleared;
-            changes
-        } else {
-            StateChanges::default()
-        };
-        let outcome = self.take_outcome();
-        TxResult {
-            status: outcome.status,
-            gas_used: outcome.gas.tx_gas_used,
-            stop: outcome.stop,
-            output: outcome.output,
-            logs: outcome.logs,
-            state_changes,
-            db_error_code: outcome.db_error_code,
-            ext: outcome.ext,
-            _non_exhaustive: (),
-        }
-    }
-}
-
-impl<T: EvmTypes> Drop for PendingTx<'_, T> {
-    #[inline]
-    fn drop(&mut self) {
-        if self.has_pending_state() {
-            self.evm.state.clear_transaction_state();
-            self.state = PendingState::Cleared;
-        }
-    }
-}
-
-/// Result of executing a transaction with an owned state diff.
-///
-/// This is the materialized shape produced by [`PendingTx::detach`] and system-call execution. It
-/// pairs [`TxOutcome`]-style execution output with an owned [`StateChanges`] value. Prefer
-/// resolving [`Evm::transact`] with [`PendingTx::commit`] or [`PendingTx::discard`] when an owned
-/// write-set is unnecessary.
-#[derive_where(Clone, Debug, Default, PartialEq, Eq; T::TxResultExt)]
-pub struct TxResult<T: EvmTypes = crate::BaseEvmTypes> {
-    /// Whether execution succeeded.
-    pub status: bool,
-    /// Gas used by execution.
-    pub gas_used: u64,
-    /// Interpreter stop reason.
-    pub stop: InstrStop,
-    /// Return or revert output.
-    pub output: Bytes,
-    /// Logs emitted by the transaction.
-    pub logs: Vec<Log>,
-    /// State transition produced by this transaction.
-    pub state_changes: StateChanges,
-    /// Database error handle, if execution stopped on a database error.
-    pub db_error_code: Option<DbErrorCode>,
-    /// EVM type-specific extension data.
-    pub ext: T::TxResultExt,
-    #[doc(hidden)] // Not public API. Please use an existing constructor.
-    pub _non_exhaustive: (),
-}
-
 fn eip7708_transfer_log(from: &Address, to: &Address, value: &Word) -> Option<Log> {
     if value.is_zero() || from == to {
         return None;
@@ -1566,11 +1555,7 @@ mod tests {
         req: TxRequest<'_, BaseEvmTypes, Recovered<TxLegacy>>,
     ) -> HandlerResult<TxOutcome> {
         let _ = req.host.spec_id();
-        Ok(TxOutcome {
-            status: true,
-            gas: TxGas::from_tx_gas_used(req.tx.nonce + 1),
-            ..TxOutcome::default()
-        })
+        Ok(TxOutcome { status: true, gas_used: req.tx.nonce + 1, ..TxOutcome::default() })
     }
 
     fn handle_test_tx_version(
@@ -1578,7 +1563,7 @@ mod tests {
     ) -> HandlerResult<TxOutcome> {
         Ok(TxOutcome {
             status: true,
-            gas: TxGas::from_tx_gas_used(req.host.version().tx_gas_limit_cap),
+            gas_used: req.host.version().tx_gas_limit_cap,
             ..TxOutcome::default()
         })
     }
@@ -1598,11 +1583,7 @@ mod tests {
             address: LIFECYCLE_ACCOUNT,
             data: LogData::new_unchecked(vec![], Bytes::new()),
         });
-        Ok(TxOutcome {
-            status: true,
-            gas: TxGas::from_tx_gas_used(req.tx.nonce),
-            ..TxOutcome::default()
-        })
+        Ok(TxOutcome { status: true, gas_used: req.tx.nonce, ..TxOutcome::default() })
     }
 
     fn lifecycle_evm() -> Evm<BaseEvmTypes> {
@@ -2030,7 +2011,7 @@ mod tests {
         );
         let tx = test_tx(41);
 
-        assert_eq!(evm.transact(&tx).map(|pending| pending.discard().gas_used()), Ok(42));
+        assert_eq!(evm.transact(&tx).map(|executed| executed.discard().gas_used()), Ok(42));
     }
 
     #[test]
@@ -2050,7 +2031,7 @@ mod tests {
         );
         let tx = test_tx(41);
 
-        assert_eq!(evm.transact(&tx).map(|pending| pending.discard().gas_used()), Ok(42));
+        assert_eq!(evm.transact(&tx).map(|executed| executed.discard().gas_used()), Ok(42));
     }
 
     #[test]
@@ -2072,7 +2053,7 @@ mod tests {
         );
         let tx = test_tx(0);
 
-        assert_eq!(evm.transact(&tx).map(|pending| pending.discard().gas_used()), Ok(42));
+        assert_eq!(evm.transact(&tx).map(|executed| executed.discard().gas_used()), Ok(42));
     }
 
     #[test]
@@ -2099,7 +2080,7 @@ mod tests {
     }
 
     #[test]
-    fn pending_transaction_discard_drops_state_but_keeps_outcome_logs() {
+    fn executed_transaction_discard_drops_state_but_keeps_outcome_logs() {
         let mut evm = lifecycle_evm();
         let outcome =
             evm.transact(&test_tx(7)).expect("lifecycle transaction should execute").discard();
@@ -2113,7 +2094,7 @@ mod tests {
     }
 
     #[test]
-    fn pending_transaction_detach_materializes_without_committing() {
+    fn executed_transaction_detach_materializes_without_committing() {
         let mut evm = lifecycle_evm();
         let result =
             evm.transact(&test_tx(7)).expect("lifecycle transaction should execute").detach();
@@ -2135,7 +2116,7 @@ mod tests {
     }
 
     #[test]
-    fn pending_transaction_commit_updates_accepted_overlay() {
+    fn executed_transaction_commit_updates_accepted_overlay() {
         let mut evm = lifecycle_evm();
         let outcome =
             evm.transact(&test_tx(7)).expect("lifecycle transaction should execute").commit();
@@ -2154,7 +2135,7 @@ mod tests {
     }
 
     #[test]
-    fn pending_transaction_commit_to_accumulates_block_state() {
+    fn executed_transaction_commit_to_accumulates_block_state() {
         let mut evm = lifecycle_evm();
         let mut block_state = BlockStateAccumulator::new();
 
@@ -2177,7 +2158,7 @@ mod tests {
     }
 
     #[test]
-    fn pending_transaction_commit_with_tee_fans_out_changes() {
+    fn executed_transaction_commit_with_tee_fans_out_changes() {
         let mut evm = lifecycle_evm();
         let mut left = BlockStateAccumulator::new();
         let mut right = BlockStateAccumulator::new();
@@ -2193,7 +2174,7 @@ mod tests {
     }
 
     #[test]
-    fn dropped_pending_transaction_discards_state() {
+    fn dropped_executed_transaction_discards_state() {
         let mut evm = lifecycle_evm();
         drop(evm.transact(&test_tx(7)).expect("lifecycle transaction should execute"));
 

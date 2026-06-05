@@ -9,7 +9,7 @@ use evm2::{
     BaseEvmTypes, Evm, Precompiles, SpecId,
     bytecode::Bytecode,
     ethereum::ethereum_tx_registry,
-    evm::{AccountInfo as Evm2AccountInfo, DatabaseCommit, InMemoryDB},
+    evm::{AccountInfo as Evm2AccountInfo, InMemoryDB},
     interpreter::InstrStop,
 };
 use revm::{
@@ -46,7 +46,7 @@ impl EvmBackend for Evm2Backend {
             );
             let result = evm
                 .transact(&tx.evm2())
-                .map(|pending| pending.detach())
+                .map(|executed| executed.detach())
                 .map_err(|err| format!("{err:?}"));
             match result {
                 Ok(result) => {
@@ -55,7 +55,7 @@ impl EvmBackend for Evm2Backend {
                     } else {
                         None
                     };
-                    database.commit(&result.state_changes);
+                    database.commit_source(&result.state_changes);
                     receipts.push(TxReceipt {
                         kind: if result.status {
                             OutcomeKind::Success

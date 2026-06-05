@@ -69,7 +69,7 @@ pub fn execute_code(
     result.ext = CustomMessageResultExt { handled_custom_message: true };
     Ok(evm2::TxOutcome::<CustomTypes> {
         status: result.stop.is_success(),
-        gas: evm2::TxGas::from_tx_gas_used(req.tx.gas_limit - result.gas.remaining()),
+        gas_used: req.tx.gas_limit - result.gas.remaining(),
         stop: result.stop,
         output: result.output,
         ext: CustomTxResultExt { handled_custom_tx: result.ext.handled_custom_message },
