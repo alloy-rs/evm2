@@ -15,24 +15,6 @@
  
  /// An Inspector that tracks warm and cold storage slot accesses.
  #[derive(Debug, Default, Clone)]
-@@ -16,7 +9,7 @@
- }
- 
- impl StorageInspector {
--    /// Creates a new storage inspector
-+    /// Creates a new storage inspector.
-     pub fn new() -> Self {
-         Self::default()
-     }
-@@ -30,7 +23,7 @@
-             .count() as u64
-     }
- 
--    /// Returns how often slots where accessed after the initial access
-+    /// Returns how often slots where accessed after the initial access.
-     pub fn warm_loads(&self) -> u64 {
-         self.accessed_slots
-             .values()
 @@ -50,18 +43,18 @@
      }
  }

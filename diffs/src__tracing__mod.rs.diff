@@ -39,7 +39,7 @@
  };
  
  mod arena;
-@@ -53,37 +46,39 @@
+@@ -53,24 +46,26 @@
  #[cfg(feature = "std")]
  pub use writer::{TraceWriter, TraceWriterConfig};
  
@@ -70,11 +70,9 @@
  pub struct TracingInspector {
      /// Configures what and how the inspector records traces.
      config: TracingInspectorConfig,
--    /// Records all call traces
-+    /// Records all call traces.
+@@ -78,12 +73,12 @@
      traces: CallTraceArena,
--    /// Tracks active calls
-+    /// Tracks active calls.
+     /// Tracks active calls
      trace_stack: Vec<usize>,
 -    /// Tracks whether the next `step_end` should be recorded. Set in `start_step`.
 -    record_step_end: bool,
@@ -101,8 +99,7 @@
 +}
 +
  impl TracingInspector {
--    /// Returns a new instance for the given config
-+    /// Returns a new instance for the given config.
+     /// Returns a new instance for the given config
      pub fn new(config: TracingInspectorConfig) -> Self {
 -        Self { config, ..Default::default() }
 +        Self {
@@ -195,15 +192,6 @@
          &mut self.traces
      }
  
-@@ -223,7 +207,7 @@
-         self
-     }
- 
--    /// Work with [TracingInspector::set_transaction_gas_limit] function
-+    /// Work with [TracingInspector::set_transaction_gas_limit] function.
-     #[inline]
-     pub fn with_transaction_gas_limit(mut self, gas_limit: u64) -> Self {
-         self.set_transaction_gas_limit(gas_limit);
 @@ -244,13 +228,7 @@
      /// Consumes the Inspector and returns a [ParityTraceBuilder].
      #[inline]
@@ -219,7 +207,7 @@
      }
  
      /// Returns the  [GethTraceBuilder] for the recorded traces without consuming the type.
-@@ -260,449 +238,323 @@
+@@ -260,92 +238,57 @@
      /// starting a new transaction: [`Self::fuse`]
      #[inline]
      pub fn geth_builder(&self) -> GethTraceBuilder<'_> {
@@ -349,12 +337,9 @@
 -    ) {
 +        let entry = self.trace_stack.last().copied().unwrap_or_default();
          // This will only be true if the inspector is configured to exclude precompiles and the call
--        // is to a precompile
-+        // is to a precompile.
+         // is to a precompile
          let push_kind = if maybe_precompile.unwrap_or(false) {
--            // We don't want to track precompiles
-+            // We don't want to track precompiles.
-             PushTraceKind::PushOnly
+@@ -354,355 +297,264 @@
          } else {
              PushTraceKind::PushAndAttachToParent
          };

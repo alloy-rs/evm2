@@ -1,6 +1,6 @@
 --- upstream/src/tracing/opcount.rs
 +++ evm2/src/tracing/opcount.rs
-@@ -2,25 +2,25 @@
+@@ -2,12 +2,12 @@
  //!
  //! See also <https://geth.ethereum.org/docs/developers/evm-tracing/built-in-tracers>
  
@@ -15,12 +15,7 @@
      count: usize,
  }
  
- impl OpcodeCountInspector {
--    /// Returns the opcode counter
-+    /// Returns the opcode counter.
-     #[inline]
-     pub const fn count(&self) -> usize {
-         self.count
+@@ -19,8 +19,8 @@
      }
  }
  

@@ -14,7 +14,7 @@ pub struct OpcodeGasInspector {
     opcode_counts: HashMap<OpCode, u64>,
     /// Map of total gas used per opcode.
     opcode_gas: HashMap<OpCode, u64>,
-    /// Keep track of the last opcode executed and the remaining gas.
+    /// Keep track of the last opcode executed and the remaining gas
     last_opcode_gas_remaining: Option<(OpCode, u64)>,
 }
 
@@ -69,16 +69,16 @@ impl<T: EvmTypes> Inspector<T> for OpcodeGasInspector {
     fn step(&mut self, interp: &mut Interpreter<'_, T>) {
         let opcode_value = interp.opcode();
         if let Some(opcode) = OpCode::new(opcode_value) {
-            // keep track of opcode counts.
+            // keep track of opcode counts
             *self.opcode_counts.entry(opcode).or_default() += 1;
 
-            // keep track of the last opcode executed.
+            // keep track of the last opcode executed
             self.last_opcode_gas_remaining = Some((opcode, interp.gas().remaining()));
         }
     }
 
     fn step_end(&mut self, interp: &mut Interpreter<'_, T>) {
-        // update gas usage for the last opcode.
+        // update gas usage for the last opcode
         if let Some((opcode, gas_remaining)) = self.last_opcode_gas_remaining.take() {
             let gas_cost = gas_remaining.saturating_sub(interp.gas().remaining());
             *self.opcode_gas.entry(opcode).or_default() += gas_cost;
@@ -91,9 +91,10 @@ impl<T: EvmTypes> Inspector<T> for OpcodeGasInspector {
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
         if message.depth == 0 {
-            // skip the root call.
+            // skip the root call
             return None;
         }
+
         // for accurate call opcode gas tracking, we need to deduct the gas limit from the opcode
         // gas, because otherwise the call opcodes would include the total gas consumed within the
         // call itself, but we want to track how much gas the call opcode itself consumes.
@@ -106,6 +107,7 @@ impl<T: EvmTypes> Inspector<T> for OpcodeGasInspector {
             _ => return None,
         };
         self.subtract_gas_limit(opcode, message.gas_limit);
+
         None
     }
 
@@ -115,9 +117,10 @@ impl<T: EvmTypes> Inspector<T> for OpcodeGasInspector {
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
         if message.depth == 0 {
-            // skip the root create.
+            // skip the root create
             return None;
         }
+
         // for accurate create opcode gas tracking, we need to deduct the gas limit from the opcode
         // gas, because otherwise the create opcodes would include the total gas consumed within the
         // create itself, but we want to track how much gas the create opcode itself consumes.
@@ -127,13 +130,12 @@ impl<T: EvmTypes> Inspector<T> for OpcodeGasInspector {
             _ => return None,
         };
         self.subtract_gas_limit(opcode, message.gas_limit);
+
         None
     }
 }
 
 /// Returns the immediate byte size for an opcode.
-///
-/// The evm2 bytecode does not implement RJUMPV immediate decoding yet.
 pub fn immediate_size(opcode: u8) -> u8 {
     OpCode::new(opcode).map_or(0, OpCode::immediate_size)
 }

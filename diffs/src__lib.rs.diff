@@ -13,7 +13,7 @@
  #![doc = include_str!("../README.md")]
  #![doc(
      html_logo_url = "https://raw.githubusercontent.com/paradigmxyz/reth/main/assets/reth-docs.png",
-@@ -18,13 +17,22 @@
+@@ -18,10 +17,19 @@
  
  extern crate alloc;
  
@@ -34,8 +34,4 @@
 +/// Implementation of an opcode counter for the EVM.
  pub mod opcode;
  
--/// An inspector for recording traces
-+/// An inspector for recording traces.
- pub mod tracing;
- 
- /// An inspector for recording internal transfers.
+ /// An inspector for recording traces

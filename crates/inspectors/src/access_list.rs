@@ -12,12 +12,12 @@ use evm2::{
 
 /// An [Inspector] that collects touched accounts and storage slots.
 ///
-/// This can be used to construct an [AccessList] for a transaction via `eth_createAccessList`.
+/// This can be used to construct an [AccessList] for a transaction via `eth_createAccessList`
 #[derive(Debug, Default)]
 pub struct AccessListInspector {
-    /// All addresses that should be excluded from the final accesslist.
+    /// All addresses that should be excluded from the final accesslist
     excluded: HashSet<Address>,
-    /// All addresses and touched slots.
+    /// All addresses and touched slots
     touched_slots: HashMap<Address, BTreeSet<B256>>,
 }
 
@@ -28,9 +28,9 @@ impl From<AccessList> for AccessListInspector {
 }
 
 impl AccessListInspector {
-    /// Creates a new inspector instance.
+    /// Creates a new inspector instance
     ///
-    /// The `access_list` is the provided access list from the call request.
+    /// The `access_list` is the provided access list from the call request
     pub fn new(access_list: AccessList) -> Self {
         Self {
             excluded: Default::default(),

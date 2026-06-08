@@ -162,23 +162,11 @@
          });
      }
  }
-@@ -154,14 +174,15 @@
+@@ -154,6 +174,7 @@
  }
  
  /// The kind of transfer operation.
 +#[allow(missing_copy_implementations)]
  #[derive(Debug, Clone, PartialEq, Eq)]
  pub enum TransferKind {
--    /// A non-zero value transfer CALL
-+    /// A non-zero value transfer CALL.
-     Call,
--    /// A CREATE operation
-+    /// A CREATE operation.
-     Create,
--    /// A CREATE2 operation
-+    /// A CREATE2 operation.
-     Create2,
--    /// A SELFDESTRUCT operation
-+    /// A SELFDESTRUCT operation.
-     SelfDestruct,
- }
+     /// A non-zero value transfer CALL

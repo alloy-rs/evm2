@@ -1,4 +1,4 @@
-//! Javascript inspector.
+//! Javascript inspector
 
 use crate::tracing::{
     TransactionContext,
@@ -57,15 +57,15 @@ struct PendingStep {
     stack: Vec<Word>,
     /// Program counter.
     pc: u64,
-    /// Opcode being executed.
+    /// Opcode being executed
     op: u8,
-    /// Gas remaining before execution.
+    /// Gas remaining before execution
     gas_remaining: u64,
-    /// Call depth.
+    /// Call depth
     depth: u64,
-    /// Gas refund counter.
+    /// Gas refund counter
     refund: u64,
-    /// Contract info.
+    /// Contract info
     contract: Contract,
     /// Total gas spent before this opcode, to compute delta in step_end.
     gas_spent_before: u64,
@@ -356,9 +356,9 @@ impl JsInspector {
         Ok(())
     }
 
-    /// Returns the currently active call.
+    /// Returns the currently active call
     ///
-    /// Panics: if there's no call yet.
+    /// Panics: if there's no call yet
     #[track_caller]
     fn active_call(&self) -> &CallStackItem {
         self.call_stack.last().expect("call stack is empty")

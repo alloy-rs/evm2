@@ -278,7 +278,7 @@ impl<W: Write> TraceWriter<W> {
                 }
                 None => {
                     if trace.data.len() < 4 && !trace.value.is_zero() {
-                        // Short calldata + nonzero value = receive() was invoked.
+                        // Short calldata + nonzero value = receive() was invoked
                         ("receive".to_string(), String::new())
                     } else if trace.data.len() < 4 {
                         ("fallback".to_string(), hex::encode(&trace.data))

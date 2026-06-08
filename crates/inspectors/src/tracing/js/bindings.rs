@@ -32,7 +32,7 @@ use evm2::{
     interpreter::{Memory, StackRef as EvmStackRef, Word},
 };
 
-/// A macro that creates a native function that returns via [JsValue::from].
+/// A macro that creates a native function that returns via [JsValue::from]
 macro_rules! js_value_getter {
     ($value:ident, $ctx:ident) => {
         FunctionObjectBuilder::new(
@@ -44,7 +44,7 @@ macro_rules! js_value_getter {
     };
 }
 
-/// A macro that creates a native function that returns a captured JsValue.
+/// A macro that creates a native function that returns a captured JsValue
 macro_rules! js_value_capture_getter {
     ($value:ident, $ctx:ident) => {
         FunctionObjectBuilder::new(
@@ -76,7 +76,7 @@ macro_rules! js_value_capture_getter {
 /// it has been dropped.
 #[derive(Debug)]
 struct GuardedNullableGc<Val: 'static> {
-    /// The lifetime is a lie to make it possible to use a reference in boa which requires 'static.
+    /// The lifetime is a lie to make it possible to use a reference in boa which requires 'static
     inner: Rc<RefCell<Option<Guarded<'static, Val>>>>,
 }
 

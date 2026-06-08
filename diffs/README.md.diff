@@ -1,6 +1,6 @@
 --- upstream/README.md
 +++ evm2/README.md
-@@ -1,15 +1,15 @@
+@@ -1,16 +1,18 @@
 -# revm-inspectors
 +# evm2-inspectors
  
@@ -8,7 +8,9 @@
 +Common [`evm2`] inspector implementations.
  
 -Originally part of [`reth`] as the `reth-revm-inspectors` crate.
-+Originally part of [`reth`] as the `reth-evm2-inspectors` crate.
++Originally:
++- [`revm-inspectors`]
++- part of [`reth`] as the `reth-revm-inspectors` crate.
  
  ## Users
  
@@ -16,7 +18,9 @@
  - [`foundry`]
  
 -[`revm`]: https://github.com/bluealloy/revm/
+-[`reth`]: https://github.com/paradigmxyz/reth/
 +[`evm2`]: https://github.com/danipopes/evm2/
- [`reth`]: https://github.com/paradigmxyz/reth/
++[`revm-inspectors`]: https://github.com/paradigmxyz/revm-inspectors/
  [`reth`]: https://github.com/paradigmxyz/reth/
  [`foundry`]: https://github.com/foundry-rs/foundry/
+ 

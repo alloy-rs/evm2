@@ -69,9 +69,9 @@ pub use debug::{DebugInspector, DebugInspectorError, NoopInspector};
 pub struct TracingInspector {
     /// Configures what and how the inspector records traces.
     config: TracingInspectorConfig,
-    /// Records all call traces.
+    /// Records all call traces
     traces: CallTraceArena,
-    /// Tracks active calls.
+    /// Tracks active calls
     trace_stack: Vec<usize>,
     /// Tracks recorded steps waiting for `step_end`.
     step_stack: Vec<(usize, usize, u64)>,
@@ -96,7 +96,7 @@ impl Default for TracingInspector {
 }
 
 impl TracingInspector {
-    /// Returns a new instance for the given config.
+    /// Returns a new instance for the given config
     pub fn new(config: TracingInspectorConfig) -> Self {
         Self {
             config,
@@ -207,7 +207,7 @@ impl TracingInspector {
         self
     }
 
-    /// Work with [TracingInspector::set_transaction_gas_limit] function.
+    /// Work with [TracingInspector::set_transaction_gas_limit] function
     #[inline]
     pub fn with_transaction_gas_limit(mut self, gas_limit: u64) -> Self {
         self.set_transaction_gas_limit(gas_limit);
@@ -290,9 +290,9 @@ impl TracingInspector {
 
         let entry = self.trace_stack.last().copied().unwrap_or_default();
         // This will only be true if the inspector is configured to exclude precompiles and the call
-        // is to a precompile.
+        // is to a precompile
         let push_kind = if maybe_precompile.unwrap_or(false) {
-            // We don't want to track precompiles.
+            // We don't want to track precompiles
             PushTraceKind::PushOnly
         } else {
             PushTraceKind::PushAndAttachToParent

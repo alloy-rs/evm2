@@ -87,7 +87,7 @@
              "Out of gas"
          } else {
              "out of gas: not enough gas for reentrancy sentry"
-@@ -92,25 +89,25 @@
+@@ -92,7 +89,7 @@
  /// Get the gas used, accounting for refunds
  #[inline]
  pub(crate) fn gas_used(spec: SpecId, spent: u64, refunded: u64) -> u64 {
@@ -96,11 +96,9 @@
      spent - (refunded).min(spent / refund_quotient)
  }
  
--/// Loads the code for the given account from the account itself or the database
-+/// Loads the code for the given account from the account itself or the database.
+@@ -100,17 +97,17 @@
  ///
--/// Returns None if the code hash is the KECCAK_EMPTY hash
-+/// Returns None if the code hash is the KECCAK_EMPTY hash.
+ /// Returns None if the code hash is the KECCAK_EMPTY hash
  #[inline]
 -pub(crate) fn load_account_code<DB: DatabaseRef>(
 -    db: DB,

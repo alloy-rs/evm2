@@ -46,14 +46,7 @@
      );
  
      let mut evm = Context::mainnet()
-@@ -329,14 +327,14 @@
-         .created_address()
-         .unwrap();
- 
--    // Call with empty calldata and nonzero value - should show receive()
-+    // Call with empty calldata and nonzero value - should show receive().
-     evm.set_inspector(TracingInspector::new(TracingInspectorConfig::all()));
-     let result = evm
+@@ -335,8 +333,8 @@
          .inspect_tx_commit(
              TxEnv::builder()
                  .caller(caller)
@@ -64,34 +57,16 @@
                  .kind(TransactTo::Call(address))
                  .gas_priority_fee(None)
                  .nonce(1)
-@@ -348,7 +346,7 @@
- 
-     let trace_output = write_traces(evm.inspector());
- 
--    // The trace should show "receive" not "fallback" for short calldata + nonzero value
-+    // The trace should show "receive" not "fallback" for short calldata + nonzero value.
-     assert!(
-         trace_output.contains("::receive"),
-         "Empty calldata with value call should show 'receive' in trace, got:\n{trace_output}"
-@@ -362,9 +360,9 @@
- /// Test that non-empty calldata (< 4 bytes) with successful call shows "fallback".
- #[test]
+@@ -364,7 +362,7 @@
  fn test_fallback_short_calldata() {
--    // Simple contract that STOPs on any call
-+    // Simple contract that STOPs on any call.
+     // Simple contract that STOPs on any call
      let initcode = bytes!(
 -        "6001600c60003960016000f300" // Deploy STOP
 +        "6001600c60003960016000f300" // Deploy STOP.
      );
  
      let mut evm = Context::mainnet()
-@@ -375,12 +373,12 @@
-         .created_address()
-         .unwrap();
- 
--    // Call with short calldata (1-3 bytes) - should show fallback()
-+    // Call with short calldata (1-3 bytes) - should show fallback().
-     evm.set_inspector(TracingInspector::new(TracingInspectorConfig::all()));
+@@ -380,7 +378,7 @@
      let result = evm
          .inspect_tx_commit(
              TxEnv::builder()
@@ -100,12 +75,3 @@
                  .kind(TransactTo::Call(address))
                  .gas_priority_fee(None)
                  .nonce(1)
-@@ -392,7 +390,7 @@
- 
-     let trace_output = write_traces(evm.inspector());
- 
--    // Short non-empty calldata should show "fallback"
-+    // Short non-empty calldata should show "fallback".
-     assert!(
-         trace_output.contains("::fallback("),
-         "Short calldata call should show 'fallback' in trace, got:\n{trace_output}"

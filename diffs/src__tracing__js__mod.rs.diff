@@ -1,8 +1,7 @@
 --- upstream/src/tracing/js/mod.rs
 +++ evm2/src/tracing/js/mod.rs
 @@ -1,41 +1,35 @@
--//! Javascript inspector
-+//! Javascript inspector.
+ //! Javascript inspector
  
  use crate::tracing::{
 +    TransactionContext,
@@ -56,7 +55,7 @@
  };
  
  pub(crate) mod bindings;
-@@ -59,21 +53,21 @@
+@@ -59,9 +53,9 @@
  /// with the correct gas cost.
  #[derive(Debug)]
  struct PendingStep {
@@ -67,20 +66,11 @@
 +    stack: Vec<Word>,
 +    /// Program counter.
      pc: u64,
--    /// Opcode being executed
-+    /// Opcode being executed.
+     /// Opcode being executed
      op: u8,
--    /// Gas remaining before execution
-+    /// Gas remaining before execution.
-     gas_remaining: u64,
--    /// Call depth
-+    /// Call depth.
-     depth: u64,
--    /// Gas refund counter
-+    /// Gas refund counter.
+@@ -73,7 +67,7 @@
      refund: u64,
--    /// Contract info
-+    /// Contract info.
+     /// Contract info
      contract: Contract,
 -    /// Total gas spent before this opcode (to compute delta in step_end)
 +    /// Total gas spent before this opcode, to compute delta in step_end.
@@ -244,7 +234,7 @@
          let db = db.into_js_object(&mut self.ctx)?;
          Ok(self.result_fn.call(
              &(self.obj.clone().into()),
-@@ -350,140 +323,131 @@
+@@ -350,35 +323,36 @@
          )?)
      }
  
@@ -300,13 +290,7 @@
          Ok(())
      }
  
--    /// Returns the currently active call
-+    /// Returns the currently active call.
-     ///
--    /// Panics: if there's no call yet
-+    /// Panics: if there's no call yet.
-     #[track_caller]
-     fn active_call(&self) -> &CallStackItem {
+@@ -390,100 +364,90 @@
          self.call_stack.last().expect("call stack is empty")
      }
  

@@ -177,12 +177,12 @@ pub struct TransferOperation {
 #[allow(missing_copy_implementations)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TransferKind {
-    /// A non-zero value transfer CALL.
+    /// A non-zero value transfer CALL
     Call,
-    /// A CREATE operation.
+    /// A CREATE operation
     Create,
-    /// A CREATE2 operation.
+    /// A CREATE2 operation
     Create2,
-    /// A SELFDESTRUCT operation.
+    /// A SELFDESTRUCT operation
     SelfDestruct,
 }

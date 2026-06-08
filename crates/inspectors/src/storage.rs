@@ -9,7 +9,7 @@ pub struct StorageInspector {
 }
 
 impl StorageInspector {
-    /// Creates a new storage inspector.
+    /// Creates a new storage inspector
     pub fn new() -> Self {
         Self::default()
     }
@@ -23,7 +23,7 @@ impl StorageInspector {
             .count() as u64
     }
 
-    /// Returns how often slots where accessed after the initial access.
+    /// Returns how often slots where accessed after the initial access
     pub fn warm_loads(&self) -> u64 {
         self.accessed_slots
             .values()

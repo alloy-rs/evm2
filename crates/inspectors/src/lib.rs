@@ -32,7 +32,7 @@ pub mod access_list;
 /// Implementation of an opcode counter for the EVM.
 pub mod opcode;
 
-/// An inspector for recording traces.
+/// An inspector for recording traces
 pub mod tracing;
 
 /// An inspector for recording internal transfers.

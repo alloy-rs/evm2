@@ -327,7 +327,7 @@ fn test_receive_vs_fallback_empty_calldata() {
         .created_address()
         .unwrap();
 
-    // Call with empty calldata and nonzero value - should show receive().
+    // Call with empty calldata and nonzero value - should show receive()
     evm.set_inspector(TracingInspector::new(TracingInspectorConfig::all()));
     let result = evm
         .inspect_tx_commit(
@@ -346,7 +346,7 @@ fn test_receive_vs_fallback_empty_calldata() {
 
     let trace_output = write_traces(evm.inspector());
 
-    // The trace should show "receive" not "fallback" for short calldata + nonzero value.
+    // The trace should show "receive" not "fallback" for short calldata + nonzero value
     assert!(
         trace_output.contains("::receive"),
         "Empty calldata with value call should show 'receive' in trace, got:\n{trace_output}"
@@ -360,7 +360,7 @@ fn test_receive_vs_fallback_empty_calldata() {
 /// Test that non-empty calldata (< 4 bytes) with successful call shows "fallback".
 #[test]
 fn test_fallback_short_calldata() {
-    // Simple contract that STOPs on any call.
+    // Simple contract that STOPs on any call
     let initcode = bytes!(
         "6001600c60003960016000f300" // Deploy STOP.
     );
@@ -373,7 +373,7 @@ fn test_fallback_short_calldata() {
         .created_address()
         .unwrap();
 
-    // Call with short calldata (1-3 bytes) - should show fallback().
+    // Call with short calldata (1-3 bytes) - should show fallback()
     evm.set_inspector(TracingInspector::new(TracingInspectorConfig::all()));
     let result = evm
         .inspect_tx_commit(
@@ -390,7 +390,7 @@ fn test_fallback_short_calldata() {
 
     let trace_output = write_traces(evm.inspector());
 
-    // Short non-empty calldata should show "fallback".
+    // Short non-empty calldata should show "fallback"
     assert!(
         trace_output.contains("::fallback("),
         "Short calldata call should show 'fallback' in trace, got:\n{trace_output}"

@@ -93,9 +93,9 @@ pub(crate) fn gas_used(spec: SpecId, spent: u64, refunded: u64) -> u64 {
     spent - (refunded).min(spent / refund_quotient)
 }
 
-/// Loads the code for the given account from the account itself or the database.
+/// Loads the code for the given account from the account itself or the database
 ///
-/// Returns None if the code hash is the KECCAK_EMPTY hash.
+/// Returns None if the code hash is the KECCAK_EMPTY hash
 #[inline]
 pub(crate) fn load_account_code(
     db: &mut dyn DynDatabase,

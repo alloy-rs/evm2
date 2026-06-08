@@ -1,4 +1,4 @@
-//! Fourbyte tracing inspector.
+//! Fourbyte tracing inspector
 //!
 //! Solidity contract functions are addressed using the first four bytes of the Keccak-256 hash of
 //! their signature. Therefore when calling the function of a contract, the caller must send this
@@ -32,12 +32,12 @@ use evm2::{
 /// Fourbyte tracing inspector that records all function selectors and their calldata sizes.
 #[derive(Clone, Debug, Default)]
 pub struct FourByteInspector {
-    /// The map of SELECTOR to number of occurrences entries.
+    /// The map of SELECTOR to number of occurrences entries
     inner: HashMap<(Selector, usize), u64>,
 }
 
 impl FourByteInspector {
-    /// Returns the map of SELECTOR to number of occurrences entries.
+    /// Returns the map of SELECTOR to number of occurrences entries
     pub const fn inner(&self) -> &HashMap<(Selector, usize), u64> {
         &self.inner
     }
