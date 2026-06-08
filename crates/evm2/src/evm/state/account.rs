@@ -14,21 +14,49 @@ use alloy_primitives::{B256, KECCAK256_EMPTY, U256, map::U256Map};
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub struct Tracked<T> {
     /// Value at the start of the aggregation boundary.
-    pub original: T,
+    original: T,
     /// Value after observed mutations in the aggregation boundary.
-    pub current: T,
-    #[doc(hidden)] // Not public API. Please use an existing constructor.
-    pub _non_exhaustive: (),
+    current: T,
 }
 
 impl<T> Tracked<T> {
+    /// Creates a tracked value from distinct original and current values.
+    #[inline]
+    pub const fn from_parts(original: T, current: T) -> Self {
+        Self { original, current }
+    }
+
     /// Creates a tracked value whose original and current values are equal.
     #[inline]
     pub fn new(value: T) -> Self
     where
         T: Clone,
     {
-        Self { original: value.clone(), current: value, _non_exhaustive: () }
+        Self { original: value.clone(), current: value }
+    }
+
+    /// Returns the original value.
+    #[inline]
+    pub const fn original(&self) -> &T {
+        &self.original
+    }
+
+    /// Returns the current value.
+    #[inline]
+    pub const fn current(&self) -> &T {
+        &self.current
+    }
+
+    /// Updates the current value.
+    #[inline]
+    pub fn set_current(&mut self, current: T) {
+        self.current = current;
+    }
+
+    /// Splits this tracked value into original and current values.
+    #[inline]
+    pub fn into_parts(self) -> (T, T) {
+        (self.original, self.current)
     }
 }
 

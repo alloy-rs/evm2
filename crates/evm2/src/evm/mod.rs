@@ -164,7 +164,7 @@ mod state;
 pub use state::{
     Account, AccountChangeRef, AccountInfo, AccountInfoRef, BlockStateAccumulator, JournalEntry,
     NoopChangeSink, State, StateChangeSink, StateChangeSource, StateChanges, StateCheckpoint,
-    StorageChangeRef, StorageChangeSet, StorageOverlay, Tee, Tracked,
+    StorageChange, StorageChangeSet, StorageOverlay, Tee, Tracked,
 };
 
 /// EVM host and transaction dispatcher.
@@ -1967,8 +1967,8 @@ mod tests {
             .expect("storage change should be present");
         let slot =
             storage.slots.get(&LIFECYCLE_STORAGE_KEY).expect("storage slot should be present");
-        assert_eq!(slot.original, Word::from(1));
-        assert_eq!(slot.current, Word::from(7));
+        assert_eq!(*slot.original(), Word::from(1));
+        assert_eq!(*slot.current(), Word::from(7));
         assert_eq!(
             evm.state.storage_ref(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY),
             Some(Word::from(1))
@@ -2008,8 +2008,8 @@ mod tests {
 
         let storage = block_state.storage_sorted();
         assert_eq!(storage.len(), 1);
-        assert_eq!(storage[0].1.original, Word::from(1));
-        assert_eq!(storage[0].1.current, Word::from(9));
+        assert_eq!(*storage[0].1.original(), Word::from(1));
+        assert_eq!(*storage[0].1.current(), Word::from(9));
         assert_eq!(
             evm.state.storage_ref(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY),
             Some(Word::from(9))
@@ -2028,8 +2028,8 @@ mod tests {
             .commit_with(&mut tee)
             .expect("block accumulators are infallible");
 
-        assert_eq!(left.storage_sorted()[0].1.current, Word::from(7));
-        assert_eq!(right.storage_sorted()[0].1.current, Word::from(7));
+        assert_eq!(*left.storage_sorted()[0].1.current(), Word::from(7));
+        assert_eq!(*right.storage_sorted()[0].1.current(), Word::from(7));
     }
 
     #[test]
@@ -2185,7 +2185,7 @@ mod tests {
         evm.state.finalize_transaction_(Version::base(SpecId::FRONTIER));
         let changes = evm.state.build_state_changes();
         let account =
-            changes.accounts.get(&created).and_then(|change| change.current.as_ref()).unwrap();
+            changes.accounts.get(&created).and_then(|change| change.current().as_ref()).unwrap();
         assert_eq!(account.code_hash, KECCAK256_EMPTY);
     }
 
@@ -2253,8 +2253,8 @@ mod tests {
         evm.state.finalize_transaction_(Version::base(SpecId::SPURIOUS_DRAGON));
         let changes = evm.state.build_state_changes();
         let account = changes.accounts.get(&target).expect("empty destination should be deleted");
-        assert!(account.original.is_some());
-        assert_eq!(account.current, None);
+        assert!(account.original().is_some());
+        assert_eq!(account.current(), &None);
         assert!(changes.storage.get(&target).is_some_and(|storage| storage.wipe));
     }
 

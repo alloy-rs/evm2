@@ -4,7 +4,7 @@ use super::{DbErrorCode, DbResult, DynDatabase, EmptyDB};
 use crate::{
     bytecode::Bytecode,
     evm::state::{
-        AccountChangeRef, AccountInfo, StateChangeSink, StateChangeSource, StorageChangeRef,
+        AccountChangeRef, AccountInfo, StateChangeSink, StateChangeSource, StorageChange,
     },
     interpreter::Word,
 };
@@ -186,7 +186,7 @@ impl<ExtDB> StateChangeSink for CacheDB<ExtDB> {
     }
 
     #[inline]
-    fn storage(&mut self, change: StorageChangeRef) -> Result<(), Self::Error> {
+    fn storage(&mut self, change: StorageChange) -> Result<(), Self::Error> {
         let storage = self.cache.storage.entry(change.address).or_default();
         if storage.wiped && change.current.is_zero() {
             storage.slots.remove(&change.key);

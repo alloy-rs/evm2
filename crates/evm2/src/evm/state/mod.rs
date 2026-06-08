@@ -12,7 +12,7 @@ pub use changes::{StateChanges, StorageChangeSet};
 pub use journal::{JournalEntry, StateCheckpoint};
 pub use stream::{
     AccountChangeRef, AccountInfoRef, NoopChangeSink, StateChangeSink, StateChangeSource,
-    StorageChangeRef, Tee,
+    StorageChange, Tee,
 };
 
 use crate::{
@@ -178,7 +178,7 @@ impl State {
     pub fn storage_ref(&self, address: &Address, key: &Word) -> Option<Word> {
         if let Some(storage) = self.scratch.storage.get(address) {
             if let Some(slot) = storage.slots.get(key) {
-                return Some(slot.current);
+                return Some(*slot.current());
             }
             if storage.wiped {
                 return Some(Word::ZERO);
@@ -416,7 +416,7 @@ impl State {
     fn current_storage(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
         if let Some(storage) = self.scratch.storage.get(address) {
             if let Some(slot) = storage.slots.get(key) {
-                return Ok(slot.current);
+                return Ok(*slot.current());
             }
             if storage.wiped {
                 return Ok(Word::ZERO);
@@ -438,9 +438,9 @@ impl State {
         let storage = self.scratch.storage.entry(*address).or_default();
         match storage.slots.entry(*key) {
             hash_map::Entry::Occupied(mut entry) => {
-                let previous = entry.get().current;
+                let previous = *entry.get().current();
                 if previous != value {
-                    entry.get_mut().current = value;
+                    entry.get_mut().set_current(value);
                     self.scratch.journal.push(JournalEntry::StorageChange {
                         address: *address,
                         key: *key,
@@ -449,7 +449,7 @@ impl State {
                 }
             }
             hash_map::Entry::Vacant(entry) => {
-                entry.insert(Tracked { original, current: value, _non_exhaustive: () });
+                entry.insert(Tracked::from_parts(original, value));
                 self.scratch
                     .journal
                     .push(JournalEntry::StorageInserted { address: *address, key: *key });
@@ -484,7 +484,7 @@ impl State {
             };
         let present_value = storage
             .and_then(|storage| storage.slots.get(key))
-            .map_or(original_value, |slot| slot.current);
+            .map_or(original_value, |slot| *slot.current());
         let result = SStore {
             original_value,
             present_value,
@@ -716,7 +716,7 @@ impl State {
                     if let Some(storage) = self.scratch.storage.get_mut(&address)
                         && let Some(slot) = storage.slots.get_mut(&key)
                     {
-                        slot.current = previous;
+                        slot.set_current(previous);
                     }
                 }
                 JournalEntry::StorageInserted { address, key } => {
@@ -910,7 +910,7 @@ impl State {
 
     #[inline]
     fn storage_slot_changed(storage_wiped: bool, slot: &Tracked<Word>) -> bool {
-        slot.original != slot.current && (!storage_wiped || !slot.current.is_zero())
+        slot.is_changed() && (!storage_wiped || !slot.current().is_zero())
     }
 
     /// Visits transaction state changes in database application order.
@@ -933,11 +933,11 @@ impl State {
             }
             for (&key, slot) in &storage.slots {
                 if Self::storage_slot_changed(storage.wiped, slot) {
-                    sink.storage(StorageChangeRef {
+                    sink.storage(StorageChange {
                         address,
                         key,
-                        original: slot.original,
-                        current: slot.current,
+                        original: *slot.original(),
+                        current: *slot.current(),
                     })?;
                 }
             }
@@ -971,11 +971,7 @@ impl State {
             ) {
                 changes.accounts.insert(
                     address,
-                    Tracked {
-                        original: original.cloned(),
-                        current: current.map(Account::info),
-                        _non_exhaustive: (),
-                    },
+                    Tracked::from_parts(original.cloned(), current.map(Account::info)),
                 );
             }
             if let Some(account) = current
@@ -993,14 +989,7 @@ impl State {
             };
             for (&key, slot) in &storage.slots {
                 if Self::storage_slot_changed(set.wipe, slot) {
-                    set.slots.insert(
-                        key,
-                        Tracked {
-                            original: slot.original,
-                            current: slot.current,
-                            _non_exhaustive: (),
-                        },
-                    );
+                    set.slots.insert(key, Tracked::from_parts(*slot.original(), *slot.current()));
                 }
             }
             if set.wipe || !set.slots.is_empty() {
@@ -1033,7 +1022,7 @@ impl State {
                     .entry(address)
                     .or_default()
                     .slots
-                    .insert(key, slot.current);
+                    .insert(key, *slot.current());
             }
         }
 
@@ -1249,8 +1238,8 @@ mod tests {
         let changes = state.build_state_changes();
 
         let change = changes.accounts.get(&address).expect("touched empty account is deleted");
-        assert_eq!(change.original, Some(empty));
-        assert_eq!(change.current, None);
+        assert_eq!(change.original(), &Some(empty));
+        assert_eq!(change.current(), &None);
         assert!(changes.storage.get(&address).is_some_and(|storage| storage.wipe));
     }
 
@@ -1280,8 +1269,8 @@ mod tests {
 
         let change =
             changes.accounts.get(&address).expect("pre-spurious empty touch creates account");
-        assert_eq!(change.original, None);
-        let current = change.current.as_ref().expect("created empty account");
+        assert_eq!(change.original(), &None);
+        let current = change.current().as_ref().expect("created empty account");
         assert!(current.is_empty());
     }
 
@@ -1331,8 +1320,8 @@ mod tests {
         let changes = state.build_state_changes();
 
         let change = changes.accounts.get(&address).expect("selfdestruct deletes account");
-        assert!(change.original.is_some());
-        assert_eq!(change.current, None);
+        assert!(change.original().is_some());
+        assert_eq!(change.current(), &None);
         assert!(changes.storage.get(&address).is_some_and(|storage| storage.wipe));
     }
 
@@ -1342,7 +1331,7 @@ mod tests {
         current: Option<AccountInfo>,
     ) -> StateChanges {
         let mut changes = StateChanges::default();
-        changes.accounts.insert(address, Tracked { original, current, _non_exhaustive: () });
+        changes.accounts.insert(address, Tracked::from_parts(original, current));
         changes
     }
 
@@ -1358,10 +1347,7 @@ mod tests {
             address,
             StorageChangeSet {
                 wipe,
-                slots: U256Map::from_iter([(
-                    key,
-                    Tracked { original, current, _non_exhaustive: () },
-                )]),
+                slots: U256Map::from_iter([(key, Tracked::from_parts(original, current))]),
                 _non_exhaustive: (),
             },
         );
@@ -1420,14 +1406,14 @@ mod tests {
 
         let accounts = accumulator.accounts_sorted();
         assert_eq!(accounts.len(), 1);
-        assert_eq!(accounts[0].1.original.as_ref(), Some(&without_code(original)));
-        assert_eq!(accounts[0].1.current.as_ref(), Some(&without_code(recreated)));
+        assert_eq!(accounts[0].1.original().as_ref(), Some(&without_code(original)));
+        assert_eq!(accounts[0].1.current().as_ref(), Some(&without_code(recreated)));
         assert_eq!(accumulator.storage_wipes_sorted(), [address]);
 
         let storage = accumulator.storage_sorted();
         assert_eq!(storage.len(), 1);
         assert_eq!(storage[0].0.key(), key);
-        assert_eq!(storage[0].1.current, Word::from(7));
+        assert_eq!(*storage[0].1.current(), Word::from(7));
     }
 
     #[test]
@@ -1448,7 +1434,7 @@ mod tests {
         let storage = accumulator.storage_sorted();
         assert_eq!(storage.len(), 1);
         assert_eq!(storage[0].0.key(), key);
-        assert_eq!(storage[0].1.current, Word::from(5));
+        assert_eq!(*storage[0].1.current(), Word::from(5));
     }
 
     #[test]
@@ -1465,7 +1451,7 @@ mod tests {
         let accounts = accumulator.accounts_sorted();
         assert_eq!(accounts.len(), 1);
         assert_eq!(accounts[0].0, address);
-        assert!(accounts[0].1.current.is_none());
+        assert!(accounts[0].1.current().is_none());
         assert!(accumulator.storage_wipes_sorted().is_empty());
         assert!(accumulator.storage_sorted().is_empty());
     }
@@ -1504,16 +1490,16 @@ mod tests {
         let accounts = accumulator.accounts_sorted();
         assert_eq!(accounts.len(), 1);
         assert_eq!(accounts[0].0, account_address);
-        assert_eq!(accounts[0].1.original.as_ref(), Some(&without_code(original)));
-        assert_eq!(accounts[0].1.current.as_ref(), Some(&without_code(current)));
+        assert_eq!(accounts[0].1.original().as_ref(), Some(&without_code(original)));
+        assert_eq!(accounts[0].1.current().as_ref(), Some(&without_code(current)));
         assert!(accumulator.storage_wipes_sorted().is_empty());
 
         let storage = accumulator.storage_sorted();
         assert_eq!(storage.len(), 1);
         assert_eq!(storage[0].0.address(), storage_address);
         assert_eq!(storage[0].0.key(), key);
-        assert_eq!(storage[0].1.original, Word::from(3));
-        assert_eq!(storage[0].1.current, Word::from(4));
+        assert_eq!(*storage[0].1.original(), Word::from(3));
+        assert_eq!(*storage[0].1.current(), Word::from(4));
     }
 
     #[test]

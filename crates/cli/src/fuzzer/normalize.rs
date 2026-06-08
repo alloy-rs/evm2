@@ -125,7 +125,7 @@ fn normalize_error(error: String) -> String {
 pub(crate) fn state_from_evm2_changes(changes: &StateChanges) -> CanonicalState {
     let mut state = CanonicalState::default();
     for (&address, change) in &changes.accounts {
-        let account = change.current.as_ref().map(|info| CanonicalAccount {
+        let account = change.current().as_ref().map(|info| CanonicalAccount {
             balance: info.balance,
             nonce: info.nonce,
             code_hash: info.code_hash,
@@ -134,8 +134,8 @@ pub(crate) fn state_from_evm2_changes(changes: &StateChanges) -> CanonicalState 
     }
     for (&address, storage) in &changes.storage {
         for (&key, change) in &storage.slots {
-            if !change.current.is_zero() {
-                state.storage.insert((address, key), change.current);
+            if !change.current().is_zero() {
+                state.storage.insert((address, key), *change.current());
             }
         }
     }

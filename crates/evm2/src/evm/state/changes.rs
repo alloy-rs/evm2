@@ -2,7 +2,7 @@
 
 use super::{
     AccountChangeRef, AccountInfo, AccountInfoRef, StateChangeSink, StateChangeSource,
-    StorageChangeRef, Tracked,
+    StorageChange, Tracked,
 };
 use crate::{bytecode::Bytecode, interpreter::Word};
 use alloc::vec::Vec;
@@ -90,11 +90,11 @@ impl StateChangeSource for StateChanges {
             let mut slots = storage.slots.iter().collect::<Vec<_>>();
             slots.sort_by_key(|entry| *entry.0);
             for (&key, slot) in slots {
-                sink.storage(StorageChangeRef {
+                sink.storage(StorageChange {
                     address,
                     key,
-                    original: slot.original,
-                    current: slot.current,
+                    original: *slot.original(),
+                    current: *slot.current(),
                 })?;
             }
         }
@@ -104,8 +104,8 @@ impl StateChangeSource for StateChanges {
         for (&address, change) in account_entries {
             sink.account(AccountChangeRef {
                 address,
-                original: change.original.as_ref().map(AccountInfoRef::from_info),
-                current: change.current.as_ref().map(AccountInfoRef::from_info),
+                original: change.original().as_ref().map(AccountInfoRef::from_info),
+                current: change.current().as_ref().map(AccountInfoRef::from_info),
             })?;
         }
         Ok(())

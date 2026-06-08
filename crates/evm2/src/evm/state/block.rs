@@ -2,7 +2,7 @@
 
 use super::{
     AccountChangeRef, AccountInfo, AccountInfoRef, StateChangeSink, StateChangeSource,
-    StorageChangeRef, Tracked,
+    StorageChange, Tracked,
 };
 use crate::{
     bytecode::Bytecode,
@@ -107,14 +107,14 @@ impl StateChangeSink for BlockStateAccumulator {
         match self.accounts.entry(change.address) {
             hash_map::Entry::Occupied(mut entry) => {
                 let delta = entry.get_mut();
-                delta.current = current;
-                if delta.original == delta.current {
+                delta.set_current(current);
+                if !delta.is_changed() {
                     entry.remove();
                 }
             }
             hash_map::Entry::Vacant(entry) => {
                 if original != current {
-                    entry.insert(Tracked { original, current, _non_exhaustive: () });
+                    entry.insert(Tracked::from_parts(original, current));
                 }
             }
         }
@@ -122,14 +122,16 @@ impl StateChangeSink for BlockStateAccumulator {
         if deletes_account {
             self.storage_wipes.remove(&change.address);
             self.storage.retain(|key, _| key.address() != change.address);
-        } else if self.accounts.get(&change.address).is_some_and(|delta| delta.original.is_none()) {
+        } else if self.accounts.get(&change.address).is_some_and(|delta| delta.original().is_none())
+        {
             self.storage_wipes.remove(&change.address);
         }
         Ok(())
     }
 
     fn storage_wipe(&mut self, address: Address) -> Result<(), Self::Error> {
-        let record_wipe = self.accounts.get(&address).is_none_or(|delta| delta.original.is_some());
+        let record_wipe =
+            self.accounts.get(&address).is_none_or(|delta| delta.original().is_some());
         if record_wipe {
             self.storage_wipes.insert(address);
         }
@@ -137,15 +139,15 @@ impl StateChangeSink for BlockStateAccumulator {
         Ok(())
     }
 
-    fn storage(&mut self, change: StorageChangeRef) -> Result<(), Self::Error> {
+    fn storage(&mut self, change: StorageChange) -> Result<(), Self::Error> {
         let storage_key = StorageKey::new(change.address, change.key);
         let storage_wiped = self.storage_wipes.contains(&change.address);
         match self.storage.entry(storage_key) {
             hash_map::Entry::Occupied(mut entry) => {
                 let delta = entry.get_mut();
-                delta.current = change.current;
-                if (storage_wiped && delta.current.is_zero())
-                    || (!storage_wiped && delta.original == delta.current)
+                delta.set_current(change.current);
+                if (storage_wiped && delta.current().is_zero())
+                    || (!storage_wiped && !delta.is_changed())
                 {
                     entry.remove();
                 }
@@ -156,11 +158,7 @@ impl StateChangeSink for BlockStateAccumulator {
                 {
                     return Ok(());
                 }
-                entry.insert(Tracked {
-                    original: change.original,
-                    current: change.current,
-                    _non_exhaustive: (),
-                });
+                entry.insert(Tracked::from_parts(change.original, change.current));
             }
         }
         Ok(())
@@ -196,11 +194,11 @@ fn visit_block_changes<S: StateChangeSink>(
     let mut storage_deltas = storage.iter().collect::<Vec<_>>();
     storage_deltas.sort_by_key(|entry| (entry.0.address(), entry.0.key()));
     for (key, delta) in storage_deltas {
-        sink.storage(StorageChangeRef {
+        sink.storage(StorageChange {
             address: key.address(),
             key: key.key(),
-            original: delta.original,
-            current: delta.current,
+            original: *delta.original(),
+            current: *delta.current(),
         })?;
     }
 
@@ -209,8 +207,8 @@ fn visit_block_changes<S: StateChangeSink>(
     for (address, delta) in account_deltas {
         sink.account(AccountChangeRef {
             address: *address,
-            original: delta.original.as_ref().map(AccountInfoRef::from_info),
-            current: delta.current.as_ref().map(AccountInfoRef::from_info),
+            original: delta.original().as_ref().map(AccountInfoRef::from_info),
+            current: delta.current().as_ref().map(AccountInfoRef::from_info),
         })?;
     }
     Ok(())

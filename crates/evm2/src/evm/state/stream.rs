@@ -88,9 +88,9 @@ impl AccountChangeRef<'_> {
     }
 }
 
-/// Borrowed storage change passed to [`StateChangeSink`].
+/// Storage slot change passed to [`StateChangeSink`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct StorageChangeRef {
+pub struct StorageChange {
     /// Account address.
     pub address: Address,
     /// Storage slot key.
@@ -129,7 +129,7 @@ pub trait StateChangeSink {
 
     /// Observes a storage slot change.
     #[inline]
-    fn storage(&mut self, _change: StorageChangeRef) -> Result<(), Self::Error> {
+    fn storage(&mut self, _change: StorageChange) -> Result<(), Self::Error> {
         Ok(())
     }
 }
@@ -156,7 +156,7 @@ where
     }
 
     #[inline]
-    fn storage(&mut self, change: StorageChangeRef) -> Result<(), Self::Error> {
+    fn storage(&mut self, change: StorageChange) -> Result<(), Self::Error> {
         (**self).storage(change)
     }
 }
@@ -178,10 +178,8 @@ impl StateChangeSink for NoopChangeSink {
 /// Sink that forwards each change to two sinks.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Tee<A, B> {
-    /// First sink.
-    pub a: A,
-    /// Second sink.
-    pub b: B,
+    a: A,
+    b: B,
 }
 
 impl<A, B> Tee<A, B> {
@@ -218,7 +216,7 @@ where
     }
 
     #[inline]
-    fn storage(&mut self, change: StorageChangeRef) -> Result<(), Self::Error> {
+    fn storage(&mut self, change: StorageChange) -> Result<(), Self::Error> {
         self.a.storage(change)?;
         self.b.storage(change)
     }
