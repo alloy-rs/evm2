@@ -170,10 +170,11 @@ impl State {
         self.scratch.logs.push(log);
     }
 
-    /// Returns a loaded persistent storage overlay slot, if present.
+    /// Returns a persistent storage value if it is known without loading the backing database.
     ///
-    /// This is a non-mutating overlay lookup. It does not load the account or slot from the
-    /// backing database; use [`Self::storage`] when database-backed loading is desired.
+    /// This is a non-mutating overlay lookup. It checks transaction storage, accepted storage, and
+    /// accounts known to be absent. It does not load the account or slot from the backing database;
+    /// use [`Self::storage`] when database-backed loading is desired.
     #[inline]
     pub fn storage_ref(&self, address: &Address, key: &Word) -> Option<Word> {
         if let Some(storage) = self.scratch.storage.get(address) {
@@ -183,6 +184,9 @@ impl State {
             if storage.wiped {
                 return Some(Word::ZERO);
             }
+        }
+        if self.account_known_absent(address) {
+            return Some(Word::ZERO);
         }
         self.database.storage_ref(address, key)
     }
@@ -354,6 +358,12 @@ impl State {
             .get_or_insert_with(|| Account { code_hash: KECCAK256_EMPTY, ..Account::default() }))
     }
 
+    #[inline]
+    fn account_known_absent(&self, address: &Address) -> bool {
+        self.scratch.accounts.get(address).is_some_and(Option::is_none)
+            || self.database.account_absent(address)
+    }
+
     /// Returns account info.
     #[inline(never)]
     pub fn account_info(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
@@ -413,21 +423,6 @@ impl State {
         self.database.get_code_by_hash(&info.code_hash)
     }
 
-    fn current_storage(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
-        if let Some(storage) = self.scratch.storage.get(address) {
-            if let Some(slot) = storage.slots.get(key) {
-                return Ok(*slot.current());
-            }
-            if storage.wiped {
-                return Ok(Word::ZERO);
-            }
-        }
-        if self.database.account_absent(address) {
-            return Ok(Word::ZERO);
-        }
-        self.database.get_storage(address, key)
-    }
-
     fn insert_transaction_storage(
         &mut self,
         address: &Address,
@@ -459,10 +454,18 @@ impl State {
 
     /// Loads persistent storage.
     pub fn storage(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
-        let Some(_) = self.account_info(address)? else {
+        if let Some(storage) = self.scratch.storage.get(address) {
+            if let Some(slot) = storage.slots.get(key) {
+                return Ok(*slot.current());
+            }
+            if storage.wiped {
+                return Ok(Word::ZERO);
+            }
+        }
+        if self.account_known_absent(address) {
             return Ok(Word::ZERO);
-        };
-        self.current_storage(address, key)
+        }
+        self.database.get_storage(address, key)
     }
 
     /// Stores persistent storage and returns values needed for `SSTORE` gas metering.
