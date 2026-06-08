@@ -38,7 +38,7 @@ const ONE_ETHER: u128 = 1_000_000_000_000_000_000;
 /// Execution options for a single suite.
 #[derive(Clone, Copy, Debug)]
 pub struct ExecuteConfig {
-    /// Whether to validate final post-state when fixtures contain it.
+    /// Whether to validate final post-state when fixtures contain it, and block gas used.
     pub validate_post_state: bool,
 }
 
@@ -135,6 +135,7 @@ fn execute_case(
             &mut block_env,
             &mut parent_block_hash,
             &mut parent_excess_blob_gas,
+            config.validate_post_state,
             hook,
         ) {
             Ok(()) => hook.block_finished(BlockFinished {
@@ -188,6 +189,7 @@ fn execute_block(
     block_env: &mut BlockEnv,
     parent_block_hash: &mut Option<B256>,
     parent_excess_blob_gas: &mut u64,
+    validate_post_state: bool,
     hook: &mut dyn Hook,
 ) -> Result<(), TestError> {
     let should_fail = block.expect_exception.is_some();
@@ -213,6 +215,7 @@ fn execute_block(
     )
     .map_err(|err| TestError::case(path, name, err))?;
 
+    let mut cumulative_gas_used = U256::ZERO;
     let transactions = block_transactions(block);
     for (transaction_index, raw_tx) in transactions.iter().enumerate() {
         hook.transaction_started(TransactionStarted {
@@ -242,6 +245,8 @@ fn execute_block(
 
         match execute_tx(spec, next_block_env, &mut block_database, &tx) {
             Ok(result) => {
+                cumulative_gas_used =
+                    cumulative_gas_used.saturating_add(U256::from(result.gas_used));
                 apply_state_changes_in_place(&mut block_database, &result.state_changes);
                 hook.transaction_finished(TransactionFinished {
                     block_index,
@@ -272,6 +277,20 @@ fn execute_block(
     if should_fail {
         let expected = block.expect_exception.clone().unwrap_or_default();
         return Err(TestError::case(path, name, TestErrorKind::UnexpectedSuccess(expected)));
+    }
+
+    if validate_post_state
+        && let Some(header) = block_header(block)
+        && cumulative_gas_used != header.gas_used
+    {
+        return Err(TestError::case(
+            path,
+            name,
+            TestErrorKind::BlockGasUsedMismatch {
+                got: cumulative_gas_used,
+                expected: header.gas_used,
+            },
+        ));
     }
 
     post_block_transition(&mut block_database, spec, next_block_env, block_withdrawals(block))

@@ -1,4 +1,5 @@
 use crate::tx::TxBuildError;
+use alloy_primitives::U256;
 use evm2::registry::HandlerError;
 use std::{io, path::PathBuf};
 use thiserror::Error;
@@ -58,6 +59,14 @@ pub(crate) enum TestErrorKind {
     /// EVM execution unexpectedly succeeded.
     #[error("execution succeeded, but expected exception: {0}")]
     UnexpectedSuccess(String),
+    /// Block transaction gas used did not match the header.
+    #[error("block gas used mismatch: got {got}, expected {expected}")]
+    BlockGasUsedMismatch {
+        /// Gas used computed from transaction execution outcomes.
+        got: U256,
+        /// Gas used recorded in the block header.
+        expected: U256,
+    },
     /// A system call failed.
     #[error("system call failed: {0}")]
     SystemCall(&'static str),
