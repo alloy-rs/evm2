@@ -103,14 +103,14 @@
 -    ///
 -    /// All `Vec<CallTraceStep>` are always empty but may have capacity.
 -    reusable_step_vecs: Vec<Vec<CallTraceStep>>,
- }
- 
++}
++
 +impl Default for TracingInspector {
 +    fn default() -> Self {
 +        Self::new(TracingInspectorConfig::default())
 +    }
-+}
-+
+ }
+ 
  impl TracingInspector {
 -    /// Returns a new instance for the given config
 +    /// Returns a new instance for the given config.
@@ -184,7 +184,7 @@
          &mut self.config
      }
  
-@@ -167,23 +146,11 @@
+@@ -167,20 +146,8 @@
          &self.traces
      }
  
@@ -196,19 +196,16 @@
 -
      /// Gets a mutable reference to the recorded call traces.
 -    pub fn traces_mut(&mut self) -> &mut CallTraceArena {
+-        &mut self.traces
+-    }
+-
+-    #[doc(hidden)]
+-    #[deprecated = "use `traces_mut` instead"]
+-    pub fn get_traces_mut(&mut self) -> &mut CallTraceArena {
 +    pub const fn traces_mut(&mut self) -> &mut CallTraceArena {
          &mut self.traces
      }
  
--    #[doc(hidden)]
--    #[deprecated = "use `traces_mut` instead"]
--    pub fn get_traces_mut(&mut self) -> &mut CallTraceArena {
--        &mut self.traces
--    }
--
-     /// Consumes the inspector and returns the recorded call traces.
-     pub fn into_traces(self) -> CallTraceArena {
-         self.traces
 @@ -215,21 +182,6 @@
          }
      }
@@ -262,67 +259,112 @@
      #[inline]
      pub fn geth_builder(&self) -> GethTraceBuilder<'_> {
 -        GethTraceBuilder::new_borrowed(&self.traces.arena)
-+        GethTraceBuilder::new_borrowed(self.traces.nodes(), self.spec_id)
-     }
- 
+-    }
+-
 -    /// Returns true if we're no longer in the context of the root call.
 -    fn is_deep(&self) -> bool {
 -        // the root call will always be the first entry in the trace stack
 -        !self.trace_stack.is_empty()
-+    /// Consumes the Inspector and returns a [GethTraceBuilder].
-+    #[inline]
-+    pub fn into_geth_builder(self) -> GethTraceBuilder<'static> {
-+        GethTraceBuilder::new(self.traces.into_nodes(), self.spec_id)
-     }
- 
+-    }
+-
 -    /// Returns how many logs we already recorded.
 -    fn log_count(&self) -> usize {
 -        self.traces.nodes().iter().map(|trace| trace.log_count()).sum()
-+    /// Consumes the Inspector and returns a [ParityTraceBuilder].
-+    #[inline]
-+    pub fn into_parity_builder(self) -> ParityTraceBuilder {
-+        ParityTraceBuilder::new(self.traces.into_nodes(), self.spec_id, self.config)
-     }
- 
+-    }
+-
 -    /// Returns true if this a call to a precompile contract.
-+    /// Returns true if we're no longer in the context of the root call.
-+    const fn is_deep(&self) -> bool {
-+        !self.trace_stack.is_empty()
-+    }
-+
-+    /// Returns true if this is a call to a precompile contract.
-     ///
+-    ///
 -    /// Returns true if the `to` address is a precompile contract and the value is zero.
 -    #[inline]
 -    fn is_precompile_call<CTX: ContextTr<Journal: JournalExt>>(
-+    /// Returns true if the code address is a precompile contract and the value is zero.
-+    fn is_precompile_call<T: EvmTypes<Host = Evm<T>>>(
-         &self,
+-        &self,
 -        context: &CTX,
 -        to: &Address,
 -        value: &U256,
-+        host: &Evm<T>,
-+        message: &Message<T>,
-     ) -> bool {
+-    ) -> bool {
 -        if context.journal_ref().precompile_addresses().contains(to) {
 -            // only if this is _not_ the root call
 -            return self.is_deep() && value.is_zero();
 -        }
 -        false
-+        !message.disable_precompiles
-+            && self.is_deep()
-+            && message.value.is_zero()
-+            && host.precompiles().contains(&message.code_address)
++        GethTraceBuilder::new_borrowed(self.traces.nodes(), self.spec_id)
      }
  
 -    /// Returns the currently active call trace.
 -    ///
 -    /// This will be the last call trace pushed to the stack: the call we entered most recently.
 -    #[track_caller]
--    #[inline]
++    /// Consumes the Inspector and returns a [GethTraceBuilder].
+     #[inline]
 -    fn active_trace(&self) -> Option<&CallTraceNode> {
 -        self.trace_stack.last().map(|idx| &self.traces.arena[*idx])
--    }
++    pub fn into_geth_builder(self) -> GethTraceBuilder<'static> {
++        GethTraceBuilder::new(self.traces.into_nodes(), self.spec_id)
+     }
+ 
+-    /// Returns the last trace [CallTrace] index from the stack.
+-    ///
+-    /// This will be the currently active call trace.
+-    ///
+-    /// # Panics
+-    ///
+-    /// If no [CallTrace] was pushed
+-    #[track_caller]
++    /// Consumes the Inspector and returns a [ParityTraceBuilder].
+     #[inline]
+-    fn last_trace_idx(&self) -> usize {
+-        self.trace_stack.last().copied().expect("can't start step without starting a trace first")
++    pub fn into_parity_builder(self) -> ParityTraceBuilder {
++        ParityTraceBuilder::new(self.traces.into_nodes(), self.spec_id, self.config)
+     }
+ 
+-    /// Returns a mutable reference to the last trace [CallTrace] from the stack.
+-    #[track_caller]
+-    fn last_trace(&mut self) -> &mut CallTraceNode {
+-        let idx = self.last_trace_idx();
+-        &mut self.traces.arena[idx]
++    /// Returns true if we're no longer in the context of the root call.
++    const fn is_deep(&self) -> bool {
++        !self.trace_stack.is_empty()
+     }
+ 
+-    /// _Removes_ the last trace [CallTrace] index from the stack.
+-    ///
+-    /// # Panics
++    /// Returns true if this is a call to a precompile contract.
+     ///
+-    /// If no [CallTrace] was pushed
+-    #[track_caller]
+-    #[inline]
+-    fn pop_trace_idx(&mut self) -> usize {
+-        self.trace_stack.pop().expect("more traces were filled than started")
++    /// Returns true if the code address is a precompile contract and the value is zero.
++    fn is_precompile_call<T: EvmTypes<Host = Evm<T>>>(
++        &self,
++        host: &Evm<T>,
++        message: &Message<T>,
++    ) -> bool {
++        !message.disable_precompiles
++            && self.is_deep()
++            && message.value.is_zero()
++            && host.precompiles().contains(&message.code_address)
+     }
+ 
+-    /// Starts tracking a new trace.
+-    ///
+-    /// Invoked on [Inspector::call].
+-    #[allow(clippy::too_many_arguments)]
+-    fn start_trace_on_call<CTX: ContextTr>(
+-        &mut self,
+-        context: &mut CTX,
+-        address: Address,
+-        input_data: Bytes,
+-        value: U256,
+-        kind: CallKind,
+-        caller: Address,
+-        gas_limit: u64,
+-        maybe_precompile: Option<bool>,
+-    ) {
 +    fn start_trace<T: EvmTypes>(&mut self, message: &Message<T>, maybe_precompile: Option<bool>) {
 +        let caller = match message.kind {
 +            MessageKind::DelegateCall | MessageKind::CallCode => message.destination,
@@ -343,53 +385,7 @@
 +            gas_limit: message.gas_limit,
 +            ..Default::default()
 +        };
- 
--    /// Returns the last trace [CallTrace] index from the stack.
--    ///
--    /// This will be the currently active call trace.
--    ///
--    /// # Panics
--    ///
--    /// If no [CallTrace] was pushed
--    #[track_caller]
--    #[inline]
--    fn last_trace_idx(&self) -> usize {
--        self.trace_stack.last().copied().expect("can't start step without starting a trace first")
--    }
--
--    /// Returns a mutable reference to the last trace [CallTrace] from the stack.
--    #[track_caller]
--    fn last_trace(&mut self) -> &mut CallTraceNode {
--        let idx = self.last_trace_idx();
--        &mut self.traces.arena[idx]
--    }
--
--    /// _Removes_ the last trace [CallTrace] index from the stack.
--    ///
--    /// # Panics
--    ///
--    /// If no [CallTrace] was pushed
--    #[track_caller]
--    #[inline]
--    fn pop_trace_idx(&mut self) -> usize {
--        self.trace_stack.pop().expect("more traces were filled than started")
--    }
--
--    /// Starts tracking a new trace.
--    ///
--    /// Invoked on [Inspector::call].
--    #[allow(clippy::too_many_arguments)]
--    fn start_trace_on_call<CTX: ContextTr>(
--        &mut self,
--        context: &mut CTX,
--        address: Address,
--        input_data: Bytes,
--        value: U256,
--        kind: CallKind,
--        caller: Address,
--        gas_limit: u64,
--        maybe_precompile: Option<bool>,
--    ) {
++
 +        let entry = self.trace_stack.last().copied().unwrap_or_default();
          // This will only be true if the inspector is configured to exclude precompiles and the call
 -        // is to a precompile
@@ -401,10 +397,7 @@
          } else {
              PushTraceKind::PushAndAttachToParent
          };
-+        let idx = self.traces.push_trace(entry, push_kind, trace);
-+        self.trace_stack.push(idx);
-+    }
- 
+-
 -        // find an empty steps vec or create a new one
 -        let steps = self.reusable_step_vecs.pop().unwrap_or_default();
 -
@@ -425,19 +418,8 @@
 -                ..Default::default()
 -            },
 -        ));
-+    fn end_trace<T: EvmTypes>(&mut self, result: &MessageResult<T>) {
-+        let Some(idx) = self.trace_stack.pop() else {
-+            return;
-+        };
-+        let trace = &mut self.traces.arena[idx].trace;
-+        trace.status = Some(result.stop);
-+        trace.success = result.stop.is_success();
-+        trace.output = result.output.clone();
-+        trace.gas_used = result.gas.spent();
-+        trace.gas_refund_counter = result.gas.refunded().max(0) as u64;
-+        if let Some(address) = result.created_address {
-+            trace.address = address;
-+        }
++        let idx = self.traces.push_trace(entry, push_kind, trace);
++        self.trace_stack.push(idx);
      }
  
 -    /// Fills the current trace with the outcome of a call.
@@ -453,6 +435,30 @@
 -        created_address: Option<Address>,
 -    ) {
 -        let InterpreterResult { result, ref output, ref gas } = *result;
+-
+-        let trace_idx = self.pop_trace_idx();
+-        let trace = &mut self.traces.arena[trace_idx].trace;
+-
+-        trace.gas_used = gas.total_gas_spent();
+-        trace.gas_refund_counter = gas.refunded().max(0) as u64;
++    fn end_trace<T: EvmTypes>(&mut self, result: &MessageResult<T>) {
++        let Some(idx) = self.trace_stack.pop() else {
++            return;
++        };
++        let trace = &mut self.traces.arena[idx].trace;
++        trace.status = Some(result.stop);
++        trace.success = result.stop.is_success();
++        trace.output = result.output.clone();
++        trace.gas_used = result.gas.spent();
++        trace.gas_refund_counter = result.gas.refunded().max(0) as u64;
++        if let Some(address) = result.created_address {
++            trace.address = address;
++        }
++    }
+ 
+-        trace.status = Some(result);
+-        trace.success = trace.status.is_some_and(|status| status.is_ok());
+-        trace.output = output.clone();
 +    fn storage_step<T: EvmTypes<Host = Evm<T>>>(
 +        step: &mut CallTraceStep,
 +        journal_entry: &JournalEntry,
@@ -463,9 +469,7 @@
 +            op::SSTORE => Some(StorageChangeReason::SSTORE),
 +            _ => None,
 +        })?;
- 
--        let trace_idx = self.pop_trace_idx();
--        let trace = &mut self.traces.arena[trace_idx].trace;
++
 +        match journal_entry {
 +            JournalEntry::StorageChange { address, key, previous } => {
 +                // SAFETY: (Address, key) exists if part of StorageChange.
@@ -496,18 +500,7 @@
 +    }
 +}
  
--        trace.gas_used = gas.total_gas_spent();
--        trace.gas_refund_counter = gas.refunded().max(0) as u64;
--
--        trace.status = Some(result);
--        trace.success = trace.status.is_some_and(|status| status.is_ok());
--        trace.output = output.clone();
--
 -        self.last_call_return_data = Some(output.clone());
--
--        if let Some(address) = created_address {
--            // A new contract was created via CREATE
--            trace.address = address;
 +impl From<MessageKind> for CallKind {
 +    fn from(kind: MessageKind) -> Self {
 +        match kind {
@@ -518,9 +511,20 @@
 +            MessageKind::Create => Self::Create,
 +            MessageKind::Create2 => Self::Create2,
 +            _ => Self::Call,
++        }
++    }
++}
+ 
+-        if let Some(address) = created_address {
+-            // A new contract was created via CREATE
+-            trace.address = address;
++impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for TracingInspector {
++    fn initialize_interp(&mut self, interp: &mut Interpreter<'_, T>) {
++        self.spec_id = Some(interp.spec());
++        if self.trace_stack.is_empty() {
++            self.start_trace(interp.message(), None);
          }
      }
-+}
  
 -    /// Starts tracking a step
 -    ///
@@ -539,29 +543,22 @@
 -        // We always want an OpCode, even it is unknown because it could be an additional opcode
 -        // that not a known constant.
 -        let op = OpCode::new_or_unknown(interp.bytecode.opcode());
-+impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for TracingInspector {
-+    fn initialize_interp(&mut self, interp: &mut Interpreter<'_, T>) {
-+        self.spec_id = Some(interp.spec());
-+        if self.trace_stack.is_empty() {
-+            self.start_trace(interp.message(), None);
-+        }
-+    }
- 
+-
 -        let record = self.config.should_record_opcode(op);
 -        self.record_step_end = record;
 -        if !record {
 +    fn step(&mut self, interp: &mut Interpreter<'_, T>) {
 +        self.spec_id = Some(interp.spec());
 +        if !self.config.record_steps {
-             return;
-         }
++            return;
++        }
 +        let Some(trace_idx) = self.trace_stack.last().copied() else {
 +            return;
 +        };
 +        let op = OpCode::new_or_unknown(interp.opcode());
 +        if !self.config.should_record_opcode(op) {
-+            return;
-+        }
+             return;
+         }
  
 -        let trace_idx = self.last_trace_idx();
 -        let node = &mut self.traces.arena[trace_idx];
@@ -777,11 +774,7 @@
 -            } else {
 -                None
 -            };
-+                    .iter()
-+                    .rev()
-+                    .find_map(|entry| Self::storage_step(step, entry, host));
-+            }
-         }
+-        }
 -
 -        // The gas cost is the difference between the recorded gas remaining at the start of the
 -        // step the remaining gas here, at the end of the step.
@@ -790,9 +783,9 @@
 -
 -        // set the status
 -        step.status = interp.bytecode.action().as_ref().and_then(|i| i.instruction_result())
-     }
+-    }
 -}
- 
+-
 -impl<CTX> Inspector<CTX> for TracingInspector
 -where
 -    CTX: ContextTr<Journal: JournalExt>,
@@ -801,17 +794,21 @@
 -    fn step(&mut self, interp: &mut Interpreter, context: &mut CTX) {
 -        if self.config.record_steps {
 -            self.start_step(interp, context);
-+    fn log(&mut self, log: &Log, _host: &mut T::Host) {
-+        if !self.config.record_logs {
-+            return;
++                    .iter()
++                    .rev()
++                    .find_map(|entry| Self::storage_step(step, entry, host));
++            }
          }
--    }
--
+     }
+ 
 -    #[inline]
 -    fn step_end(&mut self, interp: &mut Interpreter, context: &mut CTX) {
 -        if self.config.record_steps {
 -            self.fill_step_on_step_end(interp, context);
--        }
++    fn log(&mut self, log: &Log, _host: &mut T::Host) {
++        if !self.config.record_logs {
++            return;
+         }
 -    }
 -
 -    fn log(&mut self, _context: &mut CTX, log: Log) {

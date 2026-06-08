@@ -38,12 +38,10 @@
  
      #[test]
      fn test_install_bigint() {
-@@ -441,6 +442,77 @@
-         // Test comparison
-         let comparison_test = ctx.eval(Source::from_bytes(b"testBigInt > BigInt(500)")).unwrap();
+@@ -443,13 +444,84 @@
          assert!(comparison_test.as_boolean().unwrap());
-+    }
-+
+     }
+ 
 +    #[test]
 +    fn test_bigint_camelcase_alias() {
 +        let mut ctx = Context::default();
@@ -113,10 +111,11 @@
 +
 +        let result = ctx.eval(Source::from_bytes(b"var ret = bigInt(0); !ret.equals(0)")).unwrap();
 +        assert!(!result.as_boolean().unwrap());
-     }
- 
++    }
++
      fn as_length<T>(array: T) -> usize
-@@ -449,7 +521,7 @@
+     where
+         T: Borrow<JsValue>,
      {
          let array = array.borrow();
          let array = array.as_object().unwrap();

@@ -382,10 +382,8 @@
 +        let db = db.into_js_object(&mut self.ctx)?;
 +        step_fn.call(&(self.obj.clone().into()), &[js_step.into(), db.into()], &mut self.ctx)?;
 +        Ok(())
-     }
- 
--    /// Registers the precompiles in the JS context
--    fn register_precompiles<CTX: ContextTr<Journal: JournalExt>>(&mut self, context: &mut CTX) {
++    }
++
 +    fn try_fault(&mut self, step: StepLog, db: EvmDbRef) -> Result<(), JsError> {
 +        let js_step = step.into_js_object(&mut self.ctx)?;
 +        let db = db.into_js_object(&mut self.ctx)?;
@@ -395,8 +393,10 @@
 +            &mut self.ctx,
 +        )?;
 +        Ok(())
-+    }
-+
+     }
+ 
+-    /// Registers the precompiles in the JS context
+-    fn register_precompiles<CTX: ContextTr<Journal: JournalExt>>(&mut self, context: &mut CTX) {
 +    fn try_enter(&mut self, frame: CallFrame) -> Result<(), JsError> {
 +        let Some(enter_fn) = &self.enter_fn else { return Ok(()) };
 +        let frame = frame.into_js_object(&mut self.ctx)?;
@@ -493,51 +493,16 @@
 -            .action()
 -            .as_ref()
 -            .is_some_and(|a| a.instruction_result().map(|r| r.is_revert()).unwrap_or(false));
-+        let result = interp.result();
-+        let is_revert = matches!(result, Err(stop) if stop.is_revert());
-+        let cost = interp.gas().spent().saturating_sub(pending.gas_spent_before);
- 
+-
 -        // Compute the actual gas cost now that the opcode has executed
 -        let cost = interp.gas.total_gas_spent().saturating_sub(pending.gas_spent_before);
-+        let mut stop = false;
-+        {
-+            let (db, _db_guard) = EvmDbRef::new_state(interp.host().state_mut());
-+            let (stack, _stack_guard) = StackRef::new_words(pending.stack);
-+            let (memory, _memory_guard) = MemoryRef::new_owned(self.cached_memory.clone());
- 
+-
 -        let (db_mut, state) = context.journal_mut().db_and_state_mut();
 -        let (db, _db_guard) = EvmDbRef::new(state, db_mut);
-+            if is_revert {
-+                let step = StepLog {
-+                    stack,
-+                    op: OpObj(op::REVERT),
-+                    memory,
-+                    pc: pending.pc,
-+                    gas_remaining: pending.gas_remaining,
-+                    cost,
-+                    depth: pending.depth,
-+                    refund: pending.refund,
-+                    error: result.err().map(|err| format!("{err:?}")),
-+                    contract: pending.contract,
-+                };
- 
+-
 -        let (stack, _stack_guard) = StackRef::new_owned(pending.stack);
 -        let (memory, _memory_guard) = MemoryRef::new_owned(self.cached_memory.clone());
-+                let _ = self.try_fault(step, db);
-+            } else {
-+                let step = StepLog {
-+                    stack,
-+                    op: OpObj(pending.op),
-+                    memory,
-+                    pc: pending.pc,
-+                    gas_remaining: pending.gas_remaining,
-+                    cost,
-+                    depth: pending.depth,
-+                    refund: pending.refund,
-+                    error: None,
-+                    contract: pending.contract,
-+                };
- 
+-
 -        if is_revert {
 -            let step = StepLog {
 -                stack,
@@ -578,26 +543,61 @@
 -                        interp.gas,
 -                    ));
 -                }
-+                stop = self.try_step(step, db).is_err() && result.is_ok();
-             }
-         }
-+
-+        if stop {
-+            interp.set_stop(InstrStop::Revert);
-+        }
-     }
- 
+-            }
+-        }
+-    }
+-
 -    fn call(&mut self, context: &mut CTX, inputs: &mut CallInputs) -> Option<CallOutcome> {
 -        self.register_precompiles(context);
--
++        let result = interp.result();
++        let is_revert = matches!(result, Err(stop) if stop.is_revert());
++        let cost = interp.gas().spent().saturating_sub(pending.gas_spent_before);
++
++        let mut stop = false;
++        {
++            let (db, _db_guard) = EvmDbRef::new_state(interp.host().state_mut());
++            let (stack, _stack_guard) = StackRef::new_words(pending.stack);
++            let (memory, _memory_guard) = MemoryRef::new_owned(self.cached_memory.clone());
++
++            if is_revert {
++                let step = StepLog {
++                    stack,
++                    op: OpObj(op::REVERT),
++                    memory,
++                    pc: pending.pc,
++                    gas_remaining: pending.gas_remaining,
++                    cost,
++                    depth: pending.depth,
++                    refund: pending.refund,
++                    error: result.err().map(|err| format!("{err:?}")),
++                    contract: pending.contract,
++                };
++
++                let _ = self.try_fault(step, db);
++            } else {
++                let step = StepLog {
++                    stack,
++                    op: OpObj(pending.op),
++                    memory,
++                    pc: pending.pc,
++                    gas_remaining: pending.gas_remaining,
++                    cost,
++                    depth: pending.depth,
++                    refund: pending.refund,
++                    error: None,
++                    contract: pending.contract,
++                };
+ 
 -        // determine contract and caller based on the call scheme
 -        let (caller, contract) = match inputs.scheme {
 -            CallScheme::DelegateCall | CallScheme::CallCode => {
 -                (inputs.target_address, inputs.bytecode_address)
--            }
++                stop = self.try_step(step, db).is_err() && result.is_ok();
+             }
 -            _ => (inputs.caller, inputs.target_address),
 -        };
--
++        }
+ 
 -        let value = inputs.transfer_value().unwrap_or_default();
 -        self.push_call(
 -            contract,
@@ -607,7 +607,11 @@
 -            caller,
 -            inputs.gas_limit,
 -        );
--
++        if stop {
++            interp.set_stop(InstrStop::Revert);
++        }
++    }
+ 
 +    fn call(
 +        &mut self,
 +        interp: &mut Interpreter<'_, T>,
@@ -1369,14 +1373,15 @@
 -        // Since we invoke the JS step callback in step_end (after the opcode executes),
 -        // a JS error on the final STOP opcode cannot revert the transaction — it has
 -        // already completed. The transaction succeeds but the trace result is empty.
-+        // The JS step callback runs after the opcode executes. A JS error on the final STOP opcode
-+        // cannot revert the transaction because execution has already completed.
-         let code = r#"{
+-        let code = r#"{
 -            res: [],
 -            step: function(log) { if (log.op.toString() === 'STOP') { this.res.push(log.memory.slice(5, 1025 * 1024)) } },
 -            fault: function() {},
 -            result: function() { return this.res }
 -        }"#;
++        // The JS step callback runs after the opcode executes. A JS error on the final STOP opcode
++        // cannot revert the transaction because execution has already completed.
++        let code = r#"{
 +        res: [],
 +        step: function(log) { if (log.op.toString() === 'STOP') { this.res.push(log.memory.slice(5, 1025 * 1024)) } },
 +        fault: function() {},
@@ -1438,21 +1443,12 @@
 -                this.res.push(toHex(slice(hex, 0, 2)));
 -                this.res.push(toHex(slice(hex, 2, 4)));
 -                this.res.push(toHex(slice(hex, 4, 6)));
-+        res: [],
-+        step: function(log) {
-+            var hex = '0xdeadbeefcafe';
-+            this.res.push(toHex(slice(hex, 0, 2)));
-+            this.res.push(toHex(slice(hex, 2, 4)));
-+            this.res.push(toHex(slice(hex, 4, 6)));
- 
+-
 -                // Test slicing an array
 -                var arr = [0x01, 0x02, 0x03, 0x04, 0x05];
 -                this.res.push(toHex(slice(arr, 0, 3)));
 -                this.res.push(toHex(slice(arr, 1, 4)));
-+            var arr = [0x01, 0x02, 0x03, 0x04, 0x05];
-+            this.res.push(toHex(slice(arr, 0, 3)));
-+            this.res.push(toHex(slice(arr, 1, 4)));
- 
+-
 -                // Test slicing a Uint8Array
 -                var uint8 = new Uint8Array([0xff, 0xee, 0xdd, 0xcc, 0xbb]);
 -                this.res.push(toHex(slice(uint8, 0, 2)));
@@ -1462,6 +1458,17 @@
 -            result: function() { return this.res }
 -        }"#;
 -        let res = run_trace(code, Some(bytes!("0x00")), true);
++        res: [],
++        step: function(log) {
++            var hex = '0xdeadbeefcafe';
++            this.res.push(toHex(slice(hex, 0, 2)));
++            this.res.push(toHex(slice(hex, 2, 4)));
++            this.res.push(toHex(slice(hex, 4, 6)));
++
++            var arr = [0x01, 0x02, 0x03, 0x04, 0x05];
++            this.res.push(toHex(slice(arr, 0, 3)));
++            this.res.push(toHex(slice(arr, 1, 4)));
++
 +            var uint8 = new Uint8Array([0xff, 0xee, 0xdd, 0xcc, 0xbb]);
 +            this.res.push(toHex(slice(uint8, 0, 2)));
 +            this.res.push(toHex(slice(uint8, 2, 5)));
@@ -1558,13 +1565,7 @@
 -                    get() { throw new Error('poisoned bigint'); },
 -                    configurable: true
 -                });
-+        res: {},
-+        step: function(log, db) {
-+            Object.defineProperty(globalThis, 'bigint', {
-+                get() { throw new Error('poisoned bigint'); },
-+                configurable: true
-+            });
- 
+-
 -                if (log.stack.length() > 0) {
 -                    // stack.peek internally uses to_bigint
 -                    this.res.stackPeek = log.stack.peek(0).toString();
@@ -1577,6 +1578,13 @@
 -            fault: function() {},
 -            result: function() { return this.res }
 -        }"#;
++        res: {},
++        step: function(log, db) {
++            Object.defineProperty(globalThis, 'bigint', {
++                get() { throw new Error('poisoned bigint'); },
++                configurable: true
++            });
++
 +            if (log.stack.length() > 0) {
 +                this.res.stackPeek = log.stack.peek(0).toString();
 +            }

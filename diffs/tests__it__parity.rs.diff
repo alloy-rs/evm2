@@ -1,6 +1,6 @@
 --- upstream/tests/it/parity.rs
 +++ evm2/tests/it/parity.rs
-@@ -1,29 +1,17 @@
+@@ -1,28 +1,16 @@
  //! Parity tests
  
 -use crate::utils::{deploy_contract, inspect_deploy_contract, print_traces};
@@ -28,15 +28,14 @@
 -    primitives::{eip4844::BLOB_BASE_FEE_UPDATE_FRACTION_CANCUN, hardfork::SpecId},
 -    state::AccountInfo,
 -    Context, DatabaseCommit, InspectEvm, MainBuilder, MainContext,
+-};
+-use revm_inspectors::tracing::{
+-    parity::populate_state_diff, TracingInspector, TracingInspectorConfig,
 +use evm2_inspectors::tracing::{
 +    TracingInspector, TracingInspectorConfig, parity::populate_state_diff,
  };
--use revm_inspectors::tracing::{
--    parity::populate_state_diff, TracingInspector, TracingInspectorConfig,
--};
  
  #[test]
- fn test_parity_selfdestruct_london() {
 @@ -46,14 +34,16 @@
      */
  

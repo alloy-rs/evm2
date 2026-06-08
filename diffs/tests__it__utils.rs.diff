@@ -1,6 +1,6 @@
 --- upstream/tests/it/utils.rs
 +++ evm2/tests/it/utils.rs
-@@ -1,20 +1,427 @@
+@@ -1,19 +1,426 @@
 -use alloy_primitives::{Address, Bytes};
 +use alloy_consensus::{TxLegacy, transaction::Recovered};
 +use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
@@ -343,7 +343,7 @@
 +        ))
 +    }
 +}
- 
++
 +#[derive(Clone, Debug)]
 +pub struct ResultAndState {
 +    pub result: ExecutionResult,
@@ -437,10 +437,9 @@
 +        self.result.created_address()
 +    }
 +}
-+
+ 
  pub fn write_traces(tracer: &TracingInspector) -> String {
      write_traces_with(tracer, TraceWriterConfig::new().color_choice(ColorChoice::Never))
- }
 @@ -26,61 +433,196 @@
  }
  
@@ -479,6 +478,11 @@
 -        tx.nonce += 1;
 -    });
 -    out
+-}
+-
+-/// Deploys a contract with the given code and deployer address.
+-pub fn inspect_deploy_contract<DB: Database + DatabaseCommit, INSP: Inspector<ContextDb<DB>>>(
+-    evm: &mut EvmDb<DB, INSP>,
 +) -> DeployResult {
 +    evm.ctx.spec = spec;
 +    let value = evm.ctx.tx.value;
@@ -495,11 +499,8 @@
 +        .expect("Expect to be executed");
 +    evm.ctx.tx.nonce += 1;
 +    DeployResult { result }
- }
- 
--/// Deploys a contract with the given code and deployer address.
--pub fn inspect_deploy_contract<DB: Database + DatabaseCommit, INSP: Inspector<ContextDb<DB>>>(
--    evm: &mut EvmDb<DB, INSP>,
++}
++
 +pub fn inspect_deploy_contract<I: InspectorSlot>(
 +    evm: &mut TestEvmWithInspector<I>,
      code: Bytes,
@@ -527,14 +528,10 @@
 +    evm.ctx.tx.nonce += 1;
 +    DeployResult { result }
 +}
- 
--    evm.ctx().modify_tx(|tx| {
--        tx.nonce += 1;
--    });
--    output
++
 +pub trait DatabaseCommit {
 +    fn commit(&mut self, changes: StateChanges);
- }
++}
 +
 +impl DatabaseCommit for CacheDB<EmptyDB> {
 +    fn commit(&mut self, changes: StateChanges) {
@@ -665,7 +662,11 @@
 +    ) {
 +        self.inner().create_end(interp, message, result);
 +    }
-+
+ 
+-    evm.ctx().modify_tx(|tx| {
+-        tx.nonce += 1;
+-    });
+-    output
 +    fn selfdestruct(
 +        &mut self,
 +        contract: &Address,
@@ -675,4 +676,4 @@
 +    ) {
 +        self.inner().selfdestruct(contract, target, value, host);
 +    }
-+}
+ }

@@ -109,13 +109,10 @@
          }
      }
  }
-@@ -559,30 +555,9 @@
- impl core::fmt::Display for CallKind {
-     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-         f.write_str(self.to_str())
--    }
--}
--
+@@ -562,27 +558,6 @@
+     }
+ }
+ 
 -impl From<CallScheme> for CallKind {
 -    fn from(scheme: CallScheme) -> Self {
 -        match scheme {
@@ -124,9 +121,9 @@
 -            CallScheme::DelegateCall => Self::DelegateCall,
 -            CallScheme::CallCode => Self::CallCode,
 -        }
-     }
- }
- 
+-    }
+-}
+-
 -impl From<CreateScheme> for CallKind {
 -    fn from(create: CreateScheme) -> Self {
 -        match create {

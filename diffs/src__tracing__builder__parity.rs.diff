@@ -181,16 +181,7 @@
  
          // we need to fetch the account from the db
 -        let db_acc = db.basic_ref(addr)?.unwrap_or_default();
-+        let original = db.get_account(&addr)?.unwrap_or_default();
-+        match &account.current {
-+            // we check if this account was created during the transaction
-+            // where the smart contract was not touched before being created (no balance)
-+            Some(current) if account.original.is_none() && original.balance.is_zero() => {
-+                // This only applies to newly created accounts without balance
-+                // A non existing touched account (e.g. `to` that does not exist) is excluded here
-+                entry.balance = Delta::Added(current.balance);
-+                entry.nonce = Delta::Added(U64::from(current.nonce));
- 
+-
 -        // we check if this account was created during the transaction
 -        // where the smart contract was not touched before being created (no balance)
 -        if changed_acc.is_created() && db_acc.balance == U256::ZERO {
@@ -207,38 +198,35 @@
 -            // however we're filtering changed here to avoid adding entries for the zero value
 -            for (key, slot) in changed_acc.storage.iter().filter(|(_, slot)| slot.is_changed()) {
 -                entry.storage.insert((*key).into(), Delta::Added(slot.present_value.into()));
-+                // accounts without code are marked as added
-+                entry.code = Delta::Added(account_code(current, db)?);
-             }
+-            }
 -        } else {
--            // we check if this account was created during the transaction
++        let original = db.get_account(&addr)?.unwrap_or_default();
++        match &account.current {
+             // we check if this account was created during the transaction
 -            // where the smart contract was touched before being created (has balance)
 -            if changed_acc.is_created() {
 -                let original_account_code = load_account_code(&db, &db_acc).unwrap_or_default();
 -                let present_account_code =
 -                    load_account_code(&db, &changed_acc.info).unwrap_or_default();
 -                entry.code = Delta::changed(original_account_code, present_account_code);
-+            Some(current) => {
-+                // this is relevant for the caller and contracts
-+                entry.balance = delta(original.balance, current.balance);
-+                entry.nonce = delta(U64::from(original.nonce), U64::from(current.nonce));
-+                entry.code = delta(account_code(&original, db)?, account_code(current, db)?);
-             }
--
+-            }
++            // where the smart contract was not touched before being created (no balance)
++            Some(current) if account.original.is_none() && original.balance.is_zero() => {
++                // This only applies to newly created accounts without balance
++                // A non existing touched account (e.g. `to` that does not exist) is excluded here
++                entry.balance = Delta::Added(current.balance);
++                entry.nonce = Delta::Added(U64::from(current.nonce));
+ 
 -            // update _changed_ storage values
 -            for (key, slot) in changed_acc.storage.iter().filter(|(_, slot)| slot.is_changed()) {
 -                entry.storage.insert(
 -                    (*key).into(),
 -                    Delta::changed(slot.original_value.into(), slot.present_value.into()),
 -                );
-+            None => {
-+                entry.balance = Delta::Removed(original.balance);
-+                entry.nonce = Delta::Removed(U64::from(original.nonce));
-+                entry.code = Delta::Removed(account_code(&original, db)?);
++                // accounts without code are marked as added
++                entry.code = Delta::Added(account_code(current, db)?);
              }
-+        }
-+    }
- 
+-
 -            // check if the account was changed at all
 -            if entry.storage.is_empty()
 -                && db_acc == changed_acc.info
@@ -247,8 +235,20 @@
 -                // clear the entry if the account was not changed
 -                state_diff.remove(&addr);
 -                continue;
--            }
--
++            Some(current) => {
++                // this is relevant for the caller and contracts
++                entry.balance = delta(original.balance, current.balance);
++                entry.nonce = delta(U64::from(original.nonce), U64::from(current.nonce));
++                entry.code = delta(account_code(&original, db)?, account_code(current, db)?);
+             }
++            None => {
++                entry.balance = Delta::Removed(original.balance);
++                entry.nonce = Delta::Removed(U64::from(original.nonce));
++                entry.code = Delta::Removed(account_code(&original, db)?);
++            }
++        }
++    }
+ 
 -            entry.balance = if db_acc.balance == changed_acc.info.balance {
 -                Delta::Unchanged
 -            } else {

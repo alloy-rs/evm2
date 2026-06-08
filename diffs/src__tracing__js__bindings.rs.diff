@@ -114,7 +114,7 @@
  ///
  /// Uses `Rc` internally so cloning is cheap (reference count bump) rather than
  /// copying the entire memory buffer on every step.
-@@ -245,11 +250,15 @@
+@@ -245,9 +250,13 @@
  pub(crate) struct MemorySnapshot(Rc<Vec<u8>>);
  
  impl MemorySnapshot {
@@ -124,15 +124,13 @@
 +    /// Creates a snapshot by copying the interpreter memory.
 +    pub(crate) fn new(mem: &Memory) -> Self {
 +        Self(Rc::new(mem.slice(0, mem.len()).to_vec()))
-     }
- 
-+    fn from_bytes(bytes: Bytes) -> Self {
-+        Self(Rc::new(bytes.to_vec()))
 +    }
 +
-     fn len(&self) -> usize {
-         self.0.len()
++    fn from_bytes(bytes: Bytes) -> Self {
++        Self(Rc::new(bytes.to_vec()))
      }
+ 
+     fn len(&self) -> usize {
 @@ -264,12 +273,21 @@
  pub(crate) struct MemoryRef(GuardedNullableGc<MemorySnapshot>);
  
@@ -229,7 +227,7 @@
  
          let to_number = FunctionObjectBuilder::new(
              context.realm(),
-@@ -490,16 +465,52 @@
+@@ -490,13 +465,49 @@
  }
  
  /// Represents the stack object
@@ -242,7 +240,7 @@
 +    Borrowed(EvmStackRef<'static>),
 +    Owned(Vec<Word>),
 +}
- 
++
 +impl StackRefInner {
 +    const fn len(&self) -> usize {
 +        match self {
@@ -258,7 +256,7 @@
 +        }
 +    }
 +}
-+
+ 
  impl StackRef {
 -    /// Creates a new stack reference from an owned stack.
 -    pub(crate) fn new_owned(stack: Stack) -> (Self, GcGuard<'static, Stack>) {
@@ -275,17 +273,14 @@
 +        // stack reference before the borrowed interpreter stack can be used after this JS call.
 +        let stack = unsafe { core::mem::transmute::<EvmStackRef<'_>, EvmStackRef<'static>>(stack) };
 +        let (inner, guard) = GuardedNullableGc::new_owned(StackRefInner::Borrowed(stack));
-         (Self(inner), guard)
-     }
- 
-+    pub(crate) fn new_words(words: Vec<Word>) -> (Self, GcGuard<'static, StackRefInner>) {
-+        let (inner, guard) = GuardedNullableGc::new_owned(StackRefInner::Owned(words));
 +        (Self(inner), guard)
 +    }
 +
-     fn parse_index(value: &JsValue, len: usize, ctx: &mut Context) -> JsResult<usize> {
-         let index = value.to_numeric_number(ctx)?;
-         if !index.is_finite() || index < 0. || index > usize::MAX as f64 {
++    pub(crate) fn new_words(words: Vec<Word>) -> (Self, GcGuard<'static, StackRefInner>) {
++        let (inner, guard) = GuardedNullableGc::new_owned(StackRefInner::Owned(words));
+         (Self(inner), guard)
+     }
+ 
 @@ -513,16 +524,14 @@
      fn peek(&self, idx: usize) -> JsResult<JsValue> {
          self.0
@@ -436,10 +431,10 @@
 -
          let buf = bytes_from_value(slot, ctx)?;
 -        let slot = bytes_to_b256(&buf);
+-
+-        let res = self.inner.db.0.with_inner(|db| db.storage_ref(address, slot.into()));
 +        let slot: U256 = bytes_to_b256(&buf).into();
  
--        let res = self.inner.db.0.with_inner(|db| db.storage_ref(address, slot.into()));
--
 -        let value = match res {
 +        let value = match self.db.with_inner(|db| db.borrow_mut().read_state(&address, &slot)) {
              Some(Ok(value)) => value,
@@ -459,14 +454,10 @@
 -struct EvmDbRefInner {
 -    state: StateRef,
 -    db: GcDb<Box<dyn DatabaseRef<Error = StringError> + 'static>>,
+-}
 +/// DB reader used by the JS context.
 +trait EvmDbReader {
 +    fn read_basic(&mut self, address: &Address) -> DbResult<Option<AccountInfo>>;
-+
-+    fn read_code(&mut self, address: &Address) -> DbResult<Bytecode>;
-+
-+    fn read_state(&mut self, address: &Address, slot: &Word) -> DbResult<Word>;
- }
  
 -/// Guard the inner references, once this value is dropped the inner reference is also removed.
 -///
@@ -475,10 +466,9 @@
 -pub(crate) struct EvmDbGuard<'a, 'b> {
 -    _state_guard: GcGuard<'a, EvmState>,
 -    _db_guard: GcGuard<'b, Box<dyn DatabaseRef<Error = StringError> + 'static>>,
-+impl core::fmt::Debug for dyn EvmDbReader {
-+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-+        f.write_str("EvmDbReader")
-+    }
++    fn read_code(&mut self, address: &Address) -> DbResult<Bytecode>;
++
++    fn read_state(&mut self, address: &Address, slot: &Word) -> DbResult<Word>;
  }
  
 -/// A wrapper Database for the JS context.
@@ -486,38 +476,39 @@
 -/// Wraps a `&mut DB: Database` in a `RefCell` so that the `&self` methods of
 -/// [`DatabaseRef`] can drive the underlying `Database` (which requires `&mut self`).
 -pub(crate) struct JsDb<'a, DB>(RefCell<&'a mut DB>);
-+struct StateDbReader<'a> {
-+    state: &'a mut State,
++impl core::fmt::Debug for dyn EvmDbReader {
++    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
++        f.write_str("EvmDbReader")
++    }
 +}
  
 -#[derive(Clone, Debug)]
 -pub(crate) struct StringError(pub String);
++struct StateDbReader<'a> {
++    state: &'a mut State,
++}
+ 
+-impl core::error::Error for StringError {}
+-impl DBErrorMarker for StringError {}
 +impl EvmDbReader for StateDbReader<'_> {
 +    fn read_basic(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
 +        self.state.account_info_ref_or_db(address)
 +    }
  
--impl core::error::Error for StringError {}
--impl DBErrorMarker for StringError {}
-+    fn read_code(&mut self, address: &Address) -> DbResult<Bytecode> {
-+        self.state.code_ref_or_db(address)
-+    }
- 
 -impl core::fmt::Display for StringError {
 -    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
 -        write!(f, "{}", self.0)
-+    fn read_state(&mut self, address: &Address, slot: &Word) -> DbResult<Word> {
-+        self.state.storage_ref_or_db(address, slot)
++    fn read_code(&mut self, address: &Address) -> DbResult<Bytecode> {
++        self.state.code_ref_or_db(address)
      }
- }
+-}
  
 -impl From<String> for StringError {
 -    fn from(s: String) -> Self {
 -        Self(s)
--    }
-+struct ChangesDbReader<'a> {
-+    changes: &'a StateChanges,
-+    db: &'a mut dyn DynDatabase,
++    fn read_state(&mut self, address: &Address, slot: &Word) -> DbResult<Word> {
++        self.state.storage_ref_or_db(address, slot)
+     }
  }
  
 -impl<DB> DatabaseRef for JsDb<'_, DB>
@@ -526,7 +517,11 @@
 -    DB::Error: core::fmt::Display,
 -{
 -    type Error = StringError;
--
++struct ChangesDbReader<'a> {
++    changes: &'a StateChanges,
++    db: &'a mut dyn DynDatabase,
++}
+ 
 -    fn basic_ref(&self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
 -        self.0.borrow_mut().basic(address).map_err(|e| e.to_string().into())
 +impl ChangesDbReader<'_> {
@@ -673,7 +668,7 @@
              let js_db = db_ref.into_js_object(&mut context).unwrap();
              let _res = setup_fn.call(&(obj.clone().into()), &[js_db.into()], &mut context).unwrap();
              assert!(obj.get(js_string!("db"), &mut context).unwrap().is_object());
-@@ -1243,7 +1274,108 @@
+@@ -1243,6 +1274,107 @@
          }
      }
  
@@ -710,7 +705,7 @@
 +        }
 +    }
 +
-     #[test]
++    #[test]
 +    fn test_evm_db_reads_backing_dyn_database() {
 +        let mut context = Context::default();
 +        register_builtins(&mut context).unwrap();
@@ -778,10 +773,9 @@
 +        assert_eq!(bytes_from_value(state, &mut context).unwrap(), B256::from(value).as_slice());
 +    }
 +
-+    #[test]
+     #[test]
      fn test_big_int() {
          let mut context = Context::default();
-         register_builtins(&mut context).unwrap();
 @@ -1261,13 +1393,9 @@
          let result_fn = obj.get(js_string!("result"), &mut context).unwrap().as_object().unwrap();
          let step_fn = obj.get(js_string!("step"), &mut context).unwrap().as_object().unwrap();

@@ -1,6 +1,6 @@
 --- upstream/tests/it/repro/mod.rs
 +++ evm2/tests/it/repro/mod.rs
-@@ -47,87 +47,47 @@
+@@ -47,85 +47,45 @@
  
  mod prestate;
  
@@ -62,10 +62,8 @@
 -pub fn spec_id_from_block(block_number: u64) -> SpecId {
 -    let hardfork = hardfork_from_mainnet_block(block_number);
 -    spec_id_from_ethereum_hardfork(hardfork)
-+pub const fn spec_id_from_block(block_number: u64) -> SpecId {
-+    spec_id_from_ethereum_hardfork(EthereumHardfork::from_mainnet_block_number(block_number))
- }
- 
+-}
+-
 -/// Determine the Ethereum hardfork active at a mainnet block number.
 -fn hardfork_from_mainnet_block(block_number: u64) -> EthereumHardfork {
 -    if block_number >= MAINNET_PRAGUE_BLOCK {
@@ -103,11 +101,11 @@
 -    } else {
 -        EthereumHardfork::Frontier
 -    }
--}
--
++pub const fn spec_id_from_block(block_number: u64) -> SpecId {
++    spec_id_from_ethereum_hardfork(EthereumHardfork::from_mainnet_block_number(block_number))
+ }
+ 
  /// Build a CacheDB from prestate AccountState map.
- pub fn build_db_from_prestate(prestate: &BTreeMap<Address, AccountState>) -> CacheDB<EmptyDB> {
-     let mut db = CacheDB::new(EmptyDB::default());
 @@ -138,7 +98,7 @@
          let code = state.code.as_ref().map(|c| Bytecode::new_raw(c.clone()));
  

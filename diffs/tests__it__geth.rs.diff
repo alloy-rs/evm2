@@ -14,10 +14,7 @@
 -    erc7562::Erc7562Config, mux::MuxConfig, CallConfig, FlatCallConfig, GethDebugBuiltInTracerType,
 -    GethDebugTracerConfig, GethDebugTracerType, GethDebugTracingOptions, GethDefaultTracingOptions,
 -    GethTrace, PreStateConfig, PreStateFrame,
-+    CallConfig, FlatCallConfig, GethDebugBuiltInTracerType, GethDebugTracerConfig,
-+    GethDebugTracerType, GethDebugTracingOptions, GethDefaultTracingOptions, GethTrace,
-+    PreStateConfig, PreStateFrame, erc7562::Erc7562Config, mux::MuxConfig,
- };
+-};
 -use revm::{
 -    bytecode::{opcode, Bytecode},
 -    context::TxEnv,
@@ -29,7 +26,10 @@
 -    primitives::{eip7708::ETH_TRANSFER_LOG_ADDRESS, hardfork::SpecId},
 -    state::AccountInfo,
 -    Context, InspectEvm, MainBuilder, MainContext,
--};
++    CallConfig, FlatCallConfig, GethDebugBuiltInTracerType, GethDebugTracerConfig,
++    GethDebugTracerType, GethDebugTracingOptions, GethDefaultTracingOptions, GethTrace,
++    PreStateConfig, PreStateFrame, erc7562::Erc7562Config, mux::MuxConfig,
+ };
 -use revm_inspectors::tracing::{
 +use evm2_inspectors::tracing::{
      DebugInspector, MuxInspector, TracingInspector, TracingInspectorConfig,

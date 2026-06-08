@@ -99,13 +99,8 @@
      /// Should be invoked after each transaction to obtain the resulting [`GethTrace`].
 -    pub fn get_result<DB: DatabaseRef>(
 +    pub fn get_result<T>(
-         &mut self,
-         tx_context: Option<TransactionContext>,
--        tx_env: &impl Transaction,
--        block_env: &impl Block,
--        res: &ResultAndState<impl HaltReasonTr>,
--        db: &mut DB,
--    ) -> Result<GethTrace, DebugInspectorError<DB::Error>> {
++        &mut self,
++        tx_context: Option<TransactionContext>,
 +        tx: &RecoveredTxEnvelope,
 +        block_env: &BlockEnv,
 +        res: &TxResult<T>,
@@ -149,8 +144,13 @@
 +    }
 +
 +    fn get_result_with_tx<T>(
-+        &mut self,
-+        tx_context: Option<TransactionContext>,
+         &mut self,
+         tx_context: Option<TransactionContext>,
+-        tx_env: &impl Transaction,
+-        block_env: &impl Block,
+-        res: &ResultAndState<impl HaltReasonTr>,
+-        db: &mut DB,
+-    ) -> Result<GethTrace, DebugInspectorError<DB::Error>> {
 +        tx: DebugTransaction<'_>,
 +        block_env: &BlockEnv,
 +        res: &TxResult<T>,
@@ -286,31 +286,43 @@
 -{
 -    fn initialize_interp(&mut self, interp: &mut Interpreter, context: &mut CTX) {
 -        delegate!(self => inspector.initialize_interp(interp, context))
+-    }
+-
+-    fn step(&mut self, interp: &mut Interpreter, context: &mut CTX) {
+-        delegate!(self => inspector.step(interp, context))
+-    }
+-
+-    fn step_end(&mut self, interp: &mut Interpreter, context: &mut CTX) {
+-        delegate!(self => inspector.step_end(interp, context))
+-    }
+-
+-    fn log(&mut self, context: &mut CTX, log: Log) {
+-        delegate!(self => inspector.log(context, log))
 +impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for DebugInspector {
 +    fn initialize_interp(&mut self, interp: &mut Interpreter<'_, T>) {
 +        delegate!(self => initialize_interp(interp))
      }
  
--    fn step(&mut self, interp: &mut Interpreter, context: &mut CTX) {
--        delegate!(self => inspector.step(interp, context))
+-    fn log_full(&mut self, interp: &mut Interpreter, context: &mut CTX, log: Log) {
+-        delegate!(self => inspector.log_full(interp, context, log))
 +    fn step(&mut self, interp: &mut Interpreter<'_, T>) {
 +        delegate!(self => step(interp))
      }
  
--    fn step_end(&mut self, interp: &mut Interpreter, context: &mut CTX) {
--        delegate!(self => inspector.step_end(interp, context))
+-    fn call(&mut self, context: &mut CTX, inputs: &mut CallInputs) -> Option<CallOutcome> {
+-        delegate!(self => inspector.call(context, inputs))
 +    fn step_end(&mut self, interp: &mut Interpreter<'_, T>) {
 +        delegate!(self => step_end(interp))
      }
  
--    fn log(&mut self, context: &mut CTX, log: Log) {
--        delegate!(self => inspector.log(context, log))
+-    fn call_end(&mut self, context: &mut CTX, inputs: &CallInputs, outcome: &mut CallOutcome) {
+-        delegate!(self => inspector.call_end(context, inputs, outcome))
 +    fn log(&mut self, log: &Log, host: &mut T::Host) {
 +        delegate!(self => log(log, host))
      }
  
--    fn log_full(&mut self, interp: &mut Interpreter, context: &mut CTX, log: Log) {
--        delegate!(self => inspector.log_full(interp, context, log))
+-    fn create(&mut self, context: &mut CTX, inputs: &mut CreateInputs) -> Option<CreateOutcome> {
+-        delegate!(self => inspector.create(context, inputs))
 +    fn call(
 +        &mut self,
 +        interp: &mut Interpreter<'_, T>,
@@ -319,32 +331,8 @@
 +        delegate!(self => call(interp, message))
      }
  
--    fn call(&mut self, context: &mut CTX, inputs: &mut CallInputs) -> Option<CallOutcome> {
--        delegate!(self => inspector.call(context, inputs))
+-    fn create_end(
 +    fn call_end(
-+        &mut self,
-+        interp: &mut Interpreter<'_, T>,
-+        message: &Message<T>,
-+        result: &mut MessageResult<T>,
-+    ) {
-+        delegate!(self => call_end(interp, message, result))
-     }
- 
--    fn call_end(&mut self, context: &mut CTX, inputs: &CallInputs, outcome: &mut CallOutcome) {
--        delegate!(self => inspector.call_end(context, inputs, outcome))
-+    fn create(
-+        &mut self,
-+        interp: &mut Interpreter<'_, T>,
-+        message: &mut Message<T>,
-+    ) -> Option<MessageResult<T>> {
-+        delegate!(self => create(interp, message))
-     }
- 
--    fn create(&mut self, context: &mut CTX, inputs: &mut CreateInputs) -> Option<CreateOutcome> {
--        delegate!(self => inspector.create(context, inputs))
--    }
--
-     fn create_end(
          &mut self,
 -        context: &mut CTX,
 -        inputs: &CreateInputs,
@@ -354,24 +342,36 @@
 +        result: &mut MessageResult<T>,
      ) {
 -        delegate!(self => inspector.create_end(context, inputs, outcome))
-+        delegate!(self => create_end(interp, message, result))
++        delegate!(self => call_end(interp, message, result))
      }
  
 -    fn selfdestruct(&mut self, contract: Address, target: Address, value: U256) {
 -        delegate!(self => inspector.selfdestruct(contract, target, value))
--    }
--
++    fn create(
++        &mut self,
++        interp: &mut Interpreter<'_, T>,
++        message: &mut Message<T>,
++    ) -> Option<MessageResult<T>> {
++        delegate!(self => create(interp, message))
+     }
+ 
 -    fn frame_start(
-+    fn selfdestruct(
++    fn create_end(
          &mut self,
 -        context: &mut CTX,
 -        frame_input: &mut FrameInput,
 -    ) -> Option<FrameResult> {
 -        delegate!(self => inspector.frame_start(context, frame_input))
--    }
--
++        interp: &mut Interpreter<'_, T>,
++        message: &Message<T>,
++        result: &mut MessageResult<T>,
++    ) {
++        delegate!(self => create_end(interp, message, result))
+     }
+ 
 -    fn frame_end(
--        &mut self,
++    fn selfdestruct(
+         &mut self,
 -        context: &mut CTX,
 -        frame_input: &FrameInput,
 -        frame_result: &mut FrameResult,

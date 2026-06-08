@@ -139,11 +139,6 @@
 +    ) -> DbResult<PreStateFrame> {
          let mut prestate = PreStateMode::default();
  
--        // we only want changed accounts for things like balance changes etc
--        for (addr, changed_acc) in account_diffs {
--            let db_acc = db.basic_ref(addr)?.unwrap_or_default();
--            let code = code_enabled.then(|| load_account_code(&db, &db_acc)).flatten();
--            let mut acc_state = AccountState::from_account_info(db_acc.nonce, db_acc.balance, code);
 +        // Record caller/callee accounts from traces because evm2 state changes only contain
 +        // accounts that changed.
 +        for address in self.nodes.iter().flat_map(|node| [node.trace.caller, node.trace.address]) {
@@ -151,14 +146,18 @@
 +                entry.insert(prestate_account(db, address, code_enabled)?);
 +            }
 +        }
- 
-+        // we only want changed accounts for things like balance changes etc
++
+         // we only want changed accounts for things like balance changes etc
+-        for (addr, changed_acc) in account_diffs {
+-            let db_acc = db.basic_ref(addr)?.unwrap_or_default();
+-            let code = code_enabled.then(|| load_account_code(&db, &db_acc)).flatten();
+-            let mut acc_state = AccountState::from_account_info(db_acc.nonce, db_acc.balance, code);
 +        for (&address, account) in &state.accounts {
 +            let info =
 +                db.get_account(&address)?.or_else(|| account.original.clone()).unwrap_or_default();
 +            let code = if code_enabled { load_account_code(db, &info)? } else { None };
 +            let mut acc_state = AccountState::from_account_info(info.nonce, info.balance, code);
-+
+ 
              // insert the original value of all modified storage slots
 -            if storage_enabled {
 -                for (key, slot) in changed_acc.storage.iter() {
@@ -230,11 +229,11 @@
 -                    })
 -                    .flatten(),
 -            );
-+            HashMap::with_capacity_and_hasher(state.accounts.len(), Default::default());
- 
+-
 -            let mut pre_state =
 -                AccountState::from_account_info(db_acc.nonce, db_acc.balance, pre_code);
--
++            HashMap::with_capacity_and_hasher(state.accounts.len(), Default::default());
+ 
 -            // handle storage changes
 -            if storage_enabled {
 -                for (key, slot) in changed_acc.storage.iter().filter(|(_, slot)| slot.is_changed())
@@ -256,7 +255,7 @@
 +                    }
                  }
 +                state_diff.pre.insert(address, pre_state);
-             }
++            }
 +            if let Some(current) = &account.current {
 +                let post_code = if code_enabled {
 +                    load_account_code_from_changes(db, state, current)?
@@ -271,10 +270,10 @@
 +                    }
 +                }
 +                state_diff.post.insert(address, post_state);
-+            }
- 
--            state_diff.pre.insert(addr, pre_state);
+             }
 -
+-            state_diff.pre.insert(addr, pre_state);
+ 
              // determine the change type
              // if the account was created _and_ not empty we need to treat it as modified,
              // so that it is retained later in `diff_traces`
@@ -535,8 +534,8 @@
 +    let info = db.get_account(&address)?.unwrap_or_default();
 +    let code = if code_enabled { load_account_code(db, &info)? } else { None };
 +    Ok(AccountState::from_account_info(info.nonce, info.balance, code))
- }
- 
++}
++
 +fn insert_prestate_account(
 +    prestate: &mut PreStateMode,
 +    db: &mut dyn DynDatabase,
@@ -575,8 +574,8 @@
 +        return Ok(Some(code.original_bytes()));
 +    }
 +    load_account_code(db, account)
-+}
-+
+ }
+ 
  #[cfg(test)]
  mod tests {
      use super::*;
@@ -633,6 +632,11 @@
 -        prefunded_account.info.balance = U256::from(1);
 -        prefunded_account.info.nonce = 1;
 -        state.insert(prefunded_addr, prefunded_account);
+-
+-        let mut empty_account = Account::default();
+-        empty_account.mark_created();
+-        empty_account.info.nonce = 1;
+-        state.insert(empty_addr, empty_account);
 +        state.accounts.insert(
 +            prefunded_addr,
 +            Tracked {
@@ -650,11 +654,6 @@
 +            },
 +        );
  
--        let mut empty_account = Account::default();
--        empty_account.mark_created();
--        empty_account.info.nonce = 1;
--        state.insert(empty_addr, empty_account);
--
          let mut db = CacheDB::new(EmptyDB::default());
          db.insert_account_info(
 -            prefunded_addr,
