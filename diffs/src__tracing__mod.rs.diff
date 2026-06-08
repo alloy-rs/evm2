@@ -1,18 +1,17 @@
 --- upstream/src/tracing/mod.rs
 +++ evm2/src/tracing/mod.rs
-@@ -1,28 +1,23 @@
+@@ -1,28 +1,21 @@
 +//! EVM tracing inspectors.
 +
  use crate::{
      opcode::immediate_size,
      tracing::{
          arena::PushTraceKind,
-         types::{
+-        types::{
 -            CallKind, CallTraceNode, RecordedMemory, StorageChange, StorageChangeReason,
 -            TraceMemberOrder,
-+            CallKind, CallLog, CallTrace, CallTraceStep, RecordedMemory, StorageChange,
-+            StorageChangeReason, TraceMemberOrder,
-         },
+-        },
++        types::{CallKind, RecordedMemory, StorageChange, StorageChangeReason, TraceMemberOrder},
          utils::gas_used,
      },
  };
@@ -31,6 +30,7 @@
 -    primitives::{hardfork::SpecId, Address, Bytes, Log, B256, U256},
 -    Inspector, JournalEntry,
 +use alloy_primitives::{Address, B256, Bytes, Log, U256};
++use core::mem;
 +use evm2::{
 +    Evm, EvmTypes, Inspector, SpecId,
 +    bytecode::opcode::{OpCode, op},
@@ -39,15 +39,7 @@
  };
  
  mod arena;
-@@ -44,7 +39,6 @@
- pub use opcount::OpcodeCountInspector;
- 
- pub mod types;
--use types::{CallLog, CallTrace, CallTraceStep};
- 
- mod utils;
- 
-@@ -53,92 +47,77 @@
+@@ -53,37 +46,39 @@
  #[cfg(feature = "std")]
  pub use writer::{TraceWriter, TraceWriterConfig};
  
@@ -98,19 +90,16 @@
      /// The spec id of the EVM.
      ///
      /// This is filled during execution.
-     spec_id: Option<SpecId>,
--    /// Pool of reusable _empty_ step vectors to reduce allocations.
--    ///
--    /// All `Vec<CallTraceStep>` are always empty but may have capacity.
--    reusable_step_vecs: Vec<Vec<CallTraceStep>>,
-+}
-+
+@@ -94,47 +89,48 @@
+     reusable_step_vecs: Vec<Vec<CallTraceStep>>,
+ }
+ 
 +impl Default for TracingInspector {
 +    fn default() -> Self {
 +        Self::new(TracingInspectorConfig::default())
 +    }
- }
- 
++}
++
  impl TracingInspector {
 -    /// Returns a new instance for the given config
 +    /// Returns a new instance for the given config.
@@ -124,6 +113,7 @@
 +            last_journal_len: 0,
 +            log_index: 0,
 +            spec_id: None,
++            reusable_step_vecs: Vec::new(),
 +        }
      }
  
@@ -131,7 +121,7 @@
      /// This makes the inspector ready to be used again.
 -    ///
 -    /// Note that this method has no effect on the allocated capacity of the vector.
--    #[inline]
+     #[inline]
      pub fn fuse(&mut self) {
 -        let Self {
 -            traces,
@@ -145,17 +135,20 @@
 -            reusable_step_vecs,
 -        } = self;
 -
--        // if we record steps we can reuse the individual calltracestep vecs
+         // if we record steps we can reuse the individual calltracestep vecs
 -        if config.record_steps {
 -            for node in &mut traces.arena {
--                // move out and store the reusable steps vec
--                let mut steps = mem::take(&mut node.trace.steps);
--                // ensure steps are cleared
--                steps.clear();
++        if self.config.record_steps {
++            for node in &mut self.traces.arena {
+                 // move out and store the reusable steps vec
+                 let mut steps = mem::take(&mut node.trace.steps);
+                 // ensure steps are cleared
+                 steps.clear();
 -                reusable_step_vecs.push(steps);
--            }
--        }
--
++                self.reusable_step_vecs.push(steps);
+             }
+         }
+ 
 -        traces.clear();
 -        trace_stack.clear();
 -        last_call_return_data.take();
@@ -171,11 +164,7 @@
      }
  
      /// Resets the inspector to it's initial state of [Self::new].
--    #[inline]
-     pub fn fused(mut self) -> Self {
-         self.fuse();
-         self
-@@ -150,7 +129,7 @@
+@@ -150,7 +146,7 @@
      }
  
      /// Returns a mutable reference to the config of the inspector.
@@ -184,7 +173,7 @@
          &mut self.config
      }
  
-@@ -167,20 +146,8 @@
+@@ -167,20 +163,8 @@
          &self.traces
      }
  
@@ -206,100 +195,89 @@
          &mut self.traces
      }
  
-@@ -215,21 +182,6 @@
-         }
+@@ -223,7 +207,7 @@
+         self
      }
  
--    /// Convenience function for [ParityTraceBuilder::set_transaction_gas_used] that consumes the
--    /// type.
--    #[inline]
--    pub fn with_transaction_gas_used(mut self, gas_used: u64) -> Self {
--        self.set_transaction_gas_used(gas_used);
--        self
--    }
--
 -    /// Work with [TracingInspector::set_transaction_gas_limit] function
--    #[inline]
--    pub fn with_transaction_gas_limit(mut self, gas_limit: u64) -> Self {
--        self.set_transaction_gas_limit(gas_limit);
--        self
--    }
--
-     /// Manually set the caller address of the root trace.
-     ///
-     /// This is useful for custom transaction types (e.g. account abstraction batches) where the
-@@ -241,16 +193,19 @@
-         }
-     }
- 
--    /// Consumes the Inspector and returns a [ParityTraceBuilder].
-+    /// Convenience function for [ParityTraceBuilder::set_transaction_gas_used] that consumes the
-+    /// type.
-     #[inline]
--    pub fn into_parity_builder(self) -> ParityTraceBuilder {
--        ParityTraceBuilder::new(self.traces.arena, self.spec_id, self.config)
-+    pub fn with_transaction_gas_used(mut self, gas_used: u64) -> Self {
-+        self.set_transaction_gas_used(gas_used);
-+        self
-     }
- 
--    /// Consumes the Inspector and returns a [GethTraceBuilder].
 +    /// Work with [TracingInspector::set_transaction_gas_limit] function.
      #[inline]
+     pub fn with_transaction_gas_limit(mut self, gas_limit: u64) -> Self {
+         self.set_transaction_gas_limit(gas_limit);
+@@ -244,13 +228,7 @@
+     /// Consumes the Inspector and returns a [ParityTraceBuilder].
+     #[inline]
+     pub fn into_parity_builder(self) -> ParityTraceBuilder {
+-        ParityTraceBuilder::new(self.traces.arena, self.spec_id, self.config)
+-    }
+-
+-    /// Consumes the Inspector and returns a [GethTraceBuilder].
+-    #[inline]
 -    pub fn into_geth_builder(self) -> GethTraceBuilder<'static> {
 -        GethTraceBuilder::new(self.traces.arena)
-+    pub fn with_transaction_gas_limit(mut self, gas_limit: u64) -> Self {
-+        self.set_transaction_gas_limit(gas_limit);
-+        self
++        ParityTraceBuilder::new(self.traces.into_nodes(), self.spec_id, self.config)
      }
  
      /// Returns the  [GethTraceBuilder] for the recorded traces without consuming the type.
-@@ -260,467 +215,339 @@
+@@ -260,449 +238,323 @@
      /// starting a new transaction: [`Self::fuse`]
      #[inline]
      pub fn geth_builder(&self) -> GethTraceBuilder<'_> {
 -        GethTraceBuilder::new_borrowed(&self.traces.arena)
--    }
--
++        GethTraceBuilder::new_borrowed(self.traces.nodes(), self.spec_id)
+     }
+ 
 -    /// Returns true if we're no longer in the context of the root call.
 -    fn is_deep(&self) -> bool {
 -        // the root call will always be the first entry in the trace stack
 -        !self.trace_stack.is_empty()
--    }
--
++    /// Consumes the Inspector and returns a [GethTraceBuilder].
++    #[inline]
++    pub fn into_geth_builder(self) -> GethTraceBuilder<'static> {
++        GethTraceBuilder::new(self.traces.into_nodes(), self.spec_id)
+     }
+ 
 -    /// Returns how many logs we already recorded.
 -    fn log_count(&self) -> usize {
 -        self.traces.nodes().iter().map(|trace| trace.log_count()).sum()
--    }
--
++    /// Returns true if we're no longer in the context of the root call.
++    const fn is_deep(&self) -> bool {
++        !self.trace_stack.is_empty()
+     }
+ 
 -    /// Returns true if this a call to a precompile contract.
--    ///
++    /// Returns true if this is a call to a precompile contract.
+     ///
 -    /// Returns true if the `to` address is a precompile contract and the value is zero.
 -    #[inline]
 -    fn is_precompile_call<CTX: ContextTr<Journal: JournalExt>>(
--        &self,
++    /// Returns true if the code address is a precompile contract and the value is zero.
++    fn is_precompile_call<T: EvmTypes<Host = Evm<T>>>(
+         &self,
 -        context: &CTX,
 -        to: &Address,
 -        value: &U256,
--    ) -> bool {
++        host: &Evm<T>,
++        message: &Message<T>,
+     ) -> bool {
 -        if context.journal_ref().precompile_addresses().contains(to) {
 -            // only if this is _not_ the root call
 -            return self.is_deep() && value.is_zero();
 -        }
 -        false
-+        GethTraceBuilder::new_borrowed(self.traces.nodes(), self.spec_id)
-     }
- 
+-    }
+-
 -    /// Returns the currently active call trace.
 -    ///
 -    /// This will be the last call trace pushed to the stack: the call we entered most recently.
 -    #[track_caller]
-+    /// Consumes the Inspector and returns a [GethTraceBuilder].
-     #[inline]
+-    #[inline]
 -    fn active_trace(&self) -> Option<&CallTraceNode> {
 -        self.trace_stack.last().map(|idx| &self.traces.arena[*idx])
-+    pub fn into_geth_builder(self) -> GethTraceBuilder<'static> {
-+        GethTraceBuilder::new(self.traces.into_nodes(), self.spec_id)
++        !message.disable_precompiles
++            && self.is_deep()
++            && message.value.is_zero()
++            && host.precompiles().contains(&message.code_address)
      }
  
 -    /// Returns the last trace [CallTrace] index from the stack.
@@ -310,61 +288,28 @@
 -    ///
 -    /// If no [CallTrace] was pushed
 -    #[track_caller]
-+    /// Consumes the Inspector and returns a [ParityTraceBuilder].
-     #[inline]
+-    #[inline]
 -    fn last_trace_idx(&self) -> usize {
 -        self.trace_stack.last().copied().expect("can't start step without starting a trace first")
-+    pub fn into_parity_builder(self) -> ParityTraceBuilder {
-+        ParityTraceBuilder::new(self.traces.into_nodes(), self.spec_id, self.config)
-     }
- 
+-    }
+-
 -    /// Returns a mutable reference to the last trace [CallTrace] from the stack.
 -    #[track_caller]
 -    fn last_trace(&mut self) -> &mut CallTraceNode {
 -        let idx = self.last_trace_idx();
 -        &mut self.traces.arena[idx]
-+    /// Returns true if we're no longer in the context of the root call.
-+    const fn is_deep(&self) -> bool {
-+        !self.trace_stack.is_empty()
-     }
- 
+-    }
+-
 -    /// _Removes_ the last trace [CallTrace] index from the stack.
 -    ///
 -    /// # Panics
-+    /// Returns true if this is a call to a precompile contract.
-     ///
+-    ///
 -    /// If no [CallTrace] was pushed
 -    #[track_caller]
 -    #[inline]
 -    fn pop_trace_idx(&mut self) -> usize {
 -        self.trace_stack.pop().expect("more traces were filled than started")
-+    /// Returns true if the code address is a precompile contract and the value is zero.
-+    fn is_precompile_call<T: EvmTypes<Host = Evm<T>>>(
-+        &self,
-+        host: &Evm<T>,
-+        message: &Message<T>,
-+    ) -> bool {
-+        !message.disable_precompiles
-+            && self.is_deep()
-+            && message.value.is_zero()
-+            && host.precompiles().contains(&message.code_address)
-     }
- 
--    /// Starts tracking a new trace.
--    ///
--    /// Invoked on [Inspector::call].
--    #[allow(clippy::too_many_arguments)]
--    fn start_trace_on_call<CTX: ContextTr>(
--        &mut self,
--        context: &mut CTX,
--        address: Address,
--        input_data: Bytes,
--        value: U256,
--        kind: CallKind,
--        caller: Address,
--        gas_limit: u64,
--        maybe_precompile: Option<bool>,
--    ) {
+-    }
 +    fn start_trace<T: EvmTypes>(&mut self, message: &Message<T>, maybe_precompile: Option<bool>) {
 +        let caller = match message.kind {
 +            MessageKind::DelegateCall | MessageKind::CallCode => message.destination,
@@ -383,9 +328,25 @@
 +            value: message.value,
 +            data: message.input.clone(),
 +            gas_limit: message.gas_limit,
++            steps: self.reusable_step_vecs.pop().unwrap_or_default(),
 +            ..Default::default()
 +        };
-+
+ 
+-    /// Starts tracking a new trace.
+-    ///
+-    /// Invoked on [Inspector::call].
+-    #[allow(clippy::too_many_arguments)]
+-    fn start_trace_on_call<CTX: ContextTr>(
+-        &mut self,
+-        context: &mut CTX,
+-        address: Address,
+-        input_data: Bytes,
+-        value: U256,
+-        kind: CallKind,
+-        caller: Address,
+-        gas_limit: u64,
+-        maybe_precompile: Option<bool>,
+-    ) {
 +        let entry = self.trace_stack.last().copied().unwrap_or_default();
          // This will only be true if the inspector is configured to exclude precompiles and the call
 -        // is to a precompile
@@ -948,36 +909,7 @@
      }
  }
  
--/// Contains some contextual infos for a transaction execution that is made available to the JS
--/// object.
-+/// Contextual transaction info made available to debug tracers.
- #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
- pub struct TransactionContext {
--    /// Hash of the block the tx is contained within.
--    ///
--    /// `None` if this is a call.
-+    /// Hash of the block the transaction is contained within.
-     pub block_hash: Option<B256>,
-     /// Index of the transaction within a block.
--    ///
--    /// `None` if this is a call.
-     pub tx_index: Option<usize>,
-     /// Hash of the transaction being traced.
--    ///
--    /// `None` if this is a call.
-     pub tx_hash: Option<B256>,
- }
- 
-@@ -737,7 +564,7 @@
-         self
-     }
- 
--    /// Sets the hash of the transaction.
-+    /// Sets the transaction hash.
-     pub const fn with_tx_hash(mut self, tx_hash: B256) -> Self {
-         self.tx_hash = Some(tx_hash);
-         self
-@@ -753,21 +580,3 @@
+@@ -753,21 +605,3 @@
          }
      }
  }

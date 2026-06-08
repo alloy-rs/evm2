@@ -91,29 +91,15 @@
      ///
      /// # Safety
      ///
-@@ -135,10 +140,10 @@
+@@ -135,7 +140,7 @@
  
  impl<T> Guarded<'_, T> {
      #[inline]
 -    fn as_ref(&self) -> &T {
 +    const fn as_ref(&self) -> &T {
          match self {
--            Guarded::Ref(val) => val,
--            Guarded::Owned(val) => val,
-+            Self::Ref(val) => val,
-+            Self::Owned(val) => val,
-         }
-     }
- }
-@@ -237,7 +242,7 @@
-     }
- }
- 
--/// An owned snapshot of memory contents.
-+/// Represents the memory object
- ///
- /// Uses `Rc` internally so cloning is cheap (reference count bump) rather than
- /// copying the entire memory buffer on every step.
+             Guarded::Ref(val) => val,
+             Guarded::Owned(val) => val,
 @@ -245,9 +250,13 @@
  pub(crate) struct MemorySnapshot(Rc<Vec<u8>>);
  
@@ -329,7 +315,7 @@
 +    pub(crate) fn new_state(state: &mut State) -> (Self, EvmDbGuard<'_>) {
 +        Self::new_reader(StateDbReader { state })
 +    }
- 
++
 +    /// Creates a new evm and db JS object over transaction changes and a backing database.
 +    pub(crate) fn new_changes<'a>(
 +        changes: &'a StateChanges,
@@ -337,7 +323,7 @@
 +    ) -> (Self, EvmDbGuard<'a>) {
 +        Self::new_reader(ChangesDbReader { changes, db })
 +    }
-+
+ 
 +    fn new_reader<'a>(reader: impl EvmDbReader + 'a) -> (Self, EvmDbGuard<'a>) {
 +        let reader: Box<dyn EvmDbReader + 'a> = Box::new(reader);
          // SAFETY:
@@ -431,10 +417,10 @@
 -
          let buf = bytes_from_value(slot, ctx)?;
 -        let slot = bytes_to_b256(&buf);
--
--        let res = self.inner.db.0.with_inner(|db| db.storage_ref(address, slot.into()));
 +        let slot: U256 = bytes_to_b256(&buf).into();
  
+-        let res = self.inner.db.0.with_inner(|db| db.storage_ref(address, slot.into()));
+-
 -        let value = match res {
 +        let value = match self.db.with_inner(|db| db.borrow_mut().read_state(&address, &slot)) {
              Some(Ok(value)) => value,

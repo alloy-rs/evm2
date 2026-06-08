@@ -8,7 +8,7 @@ use crate::tracing::{
             CallFrame, Contract, EvmDbRef, FrameResult, JsEvmContext, MemoryRef, MemorySnapshot,
             OpObj, StackRef, StepLog,
         },
-        builtins::{PrecompileList, to_serde_value},
+        builtins::{PrecompileList, register_builtins, to_serde_value},
     },
     types::CallKind,
     utils,
@@ -34,8 +34,6 @@ use evm2::{
 
 pub(crate) mod bindings;
 pub(crate) mod builtins;
-
-use builtins::register_builtins;
 
 /// The maximum number of iterations in a loop.
 ///
@@ -143,6 +141,9 @@ impl JsInspector {
     }
 
     /// Creates a new inspector from a javascript code snippet. See also [Self::new].
+    ///
+    /// This also accepts a [TransactionContext] that gives the JS code access to some contextual
+    /// transaction infos.
     pub fn with_transaction_context(
         code: String,
         config: serde_json::Value,
@@ -216,7 +217,7 @@ impl JsInspector {
             enter_fn,
             exit_fn,
             step_fn,
-            call_stack: Vec::new(),
+            call_stack: Default::default(),
             precompiles_registered: false,
             pending_step: None,
             cached_memory: MemorySnapshot::default(),
@@ -322,30 +323,45 @@ impl JsInspector {
         )?)
     }
 
+    fn try_fault(&mut self, step: StepLog, db: EvmDbRef) -> Result<(), JsError> {
+        let js_step = step.into_js_object(&mut self.ctx)?;
+        let db = db.into_js_object(&mut self.ctx)?;
+        self.fault_fn.call(
+            &(self.obj.clone().into()),
+            &[js_step.into(), db.into()],
+            &mut self.ctx,
+        )?;
+        Ok(())
+    }
+
+    fn try_step(&mut self, step: StepLog, db: EvmDbRef) -> Result<(), JsError> {
+        let Some(step_fn) = &self.step_fn else { return Ok(()) };
+        let js_step = step.into_js_object(&mut self.ctx)?;
+        let db = db.into_js_object(&mut self.ctx)?;
+        step_fn.call(&(self.obj.clone().into()), &[js_step.into(), db.into()], &mut self.ctx)?;
+        Ok(())
+    }
+
+    fn try_enter(&mut self, frame: CallFrame) -> Result<(), JsError> {
+        let Some(enter_fn) = &self.enter_fn else { return Ok(()) };
+        let frame = frame.into_js_object(&mut self.ctx)?;
+        enter_fn.call(&(self.obj.clone().into()), &[frame.into()], &mut self.ctx)?;
+        Ok(())
+    }
+
+    fn try_exit(&mut self, frame_result: FrameResult) -> Result<(), JsError> {
+        let Some(exit_fn) = &self.exit_fn else { return Ok(()) };
+        let frame_result = frame_result.into_js_object(&mut self.ctx)?;
+        exit_fn.call(&(self.obj.clone().into()), &[frame_result.into()], &mut self.ctx)?;
+        Ok(())
+    }
+
     /// Returns the currently active call.
     ///
     /// Panics: if there's no call yet.
     #[track_caller]
     fn active_call(&self) -> &CallStackItem {
         self.call_stack.last().expect("call stack is empty")
-    }
-
-    /// Pushes a new call to the stack.
-    fn push_call<T: EvmTypes>(&mut self, message: &Message<T>) {
-        let (caller, contract) = match message.kind {
-            MessageKind::CallCode | MessageKind::DelegateCall => {
-                (message.destination, message.code_address)
-            }
-            _ => (message.caller, message.destination),
-        };
-        let value =
-            if message.kind == MessageKind::DelegateCall { U256::ZERO } else { message.value };
-        let call = CallStackItem {
-            contract: Contract { caller, contract, value, input: message.input.clone() },
-            kind: message.kind.into(),
-            gas_limit: message.gas_limit,
-        };
-        self.call_stack.push(call);
     }
 
     fn pop_call(&mut self) {
@@ -367,37 +383,22 @@ impl JsInspector {
         self.exit_fn.is_some() && !self.is_root_call_active()
     }
 
-    fn try_step(&mut self, step: StepLog, db: EvmDbRef) -> Result<(), JsError> {
-        let Some(step_fn) = &self.step_fn else { return Ok(()) };
-        let js_step = step.into_js_object(&mut self.ctx)?;
-        let db = db.into_js_object(&mut self.ctx)?;
-        step_fn.call(&(self.obj.clone().into()), &[js_step.into(), db.into()], &mut self.ctx)?;
-        Ok(())
-    }
-
-    fn try_fault(&mut self, step: StepLog, db: EvmDbRef) -> Result<(), JsError> {
-        let js_step = step.into_js_object(&mut self.ctx)?;
-        let db = db.into_js_object(&mut self.ctx)?;
-        self.fault_fn.call(
-            &(self.obj.clone().into()),
-            &[js_step.into(), db.into()],
-            &mut self.ctx,
-        )?;
-        Ok(())
-    }
-
-    fn try_enter(&mut self, frame: CallFrame) -> Result<(), JsError> {
-        let Some(enter_fn) = &self.enter_fn else { return Ok(()) };
-        let frame = frame.into_js_object(&mut self.ctx)?;
-        enter_fn.call(&(self.obj.clone().into()), &[frame.into()], &mut self.ctx)?;
-        Ok(())
-    }
-
-    fn try_exit(&mut self, frame_result: FrameResult) -> Result<(), JsError> {
-        let Some(exit_fn) = &self.exit_fn else { return Ok(()) };
-        let frame_result = frame_result.into_js_object(&mut self.ctx)?;
-        exit_fn.call(&(self.obj.clone().into()), &[frame_result.into()], &mut self.ctx)?;
-        Ok(())
+    /// Pushes a new call to the stack.
+    fn push_call<T: EvmTypes>(&mut self, message: &Message<T>) {
+        let (caller, contract) = match message.kind {
+            MessageKind::CallCode | MessageKind::DelegateCall => {
+                (message.destination, message.code_address)
+            }
+            _ => (message.caller, message.destination),
+        };
+        let value =
+            if message.kind == MessageKind::DelegateCall { U256::ZERO } else { message.value };
+        let call = CallStackItem {
+            contract: Contract { caller, contract, value, input: message.input.clone() },
+            kind: message.kind.into(),
+            gas_limit: message.gas_limit,
+        };
+        self.call_stack.push(call);
     }
 
     /// Registers the precompiles in the JS context.
@@ -660,10 +661,9 @@ pub enum JsInspectorError {
 mod tests {
     use super::*;
     use crate::tracing::js::{bindings::JsEvmContext, builtins::to_serde_value};
-    use alloc::{format, rc::Rc, string::ToString, vec, vec::Vec};
+    use alloc::{format, string::ToString, vec, vec::Vec};
     use alloy_consensus::{TxLegacy, transaction::Recovered};
-    use alloy_primitives::{Address, Bytes, TxKind, U256, hex};
-    use core::cell::RefCell;
+    use alloy_primitives::{Address, Bytes, TxKind, U256, bytes, hex};
     use evm2::{
         BaseEvmTypes, Evm, Precompiles, SpecId,
         bytecode::Bytecode,
@@ -671,55 +671,6 @@ mod tests {
         evm::{AccountInfo, CacheDB, EmptyDB},
     };
     use serde_json::json;
-
-    #[derive(Clone)]
-    struct SharedJsInspector(Rc<RefCell<JsInspector>>);
-
-    unsafe impl Send for SharedJsInspector {}
-
-    impl Inspector<BaseEvmTypes> for SharedJsInspector {
-        fn step(&mut self, interp: &mut Interpreter<'_, BaseEvmTypes>) {
-            self.0.borrow_mut().step(interp);
-        }
-
-        fn step_end(&mut self, interp: &mut Interpreter<'_, BaseEvmTypes>) {
-            self.0.borrow_mut().step_end(interp);
-        }
-
-        fn call(
-            &mut self,
-            interp: &mut Interpreter<'_, BaseEvmTypes>,
-            message: &mut Message<BaseEvmTypes>,
-        ) -> Option<MessageResult<BaseEvmTypes>> {
-            self.0.borrow_mut().call(interp, message)
-        }
-
-        fn call_end(
-            &mut self,
-            interp: &mut Interpreter<'_, BaseEvmTypes>,
-            message: &Message<BaseEvmTypes>,
-            result: &mut MessageResult<BaseEvmTypes>,
-        ) {
-            self.0.borrow_mut().call_end(interp, message, result);
-        }
-
-        fn create(
-            &mut self,
-            interp: &mut Interpreter<'_, BaseEvmTypes>,
-            message: &mut Message<BaseEvmTypes>,
-        ) -> Option<MessageResult<BaseEvmTypes>> {
-            self.0.borrow_mut().create(interp, message)
-        }
-
-        fn create_end(
-            &mut self,
-            interp: &mut Interpreter<'_, BaseEvmTypes>,
-            message: &Message<BaseEvmTypes>,
-            result: &mut MessageResult<BaseEvmTypes>,
-        ) {
-            self.0.borrow_mut().create_end(interp, message, result);
-        }
-    }
 
     fn js_result(
         insp: &mut JsInspector,
@@ -778,9 +729,7 @@ mod tests {
             )),
         );
 
-        let insp = Rc::new(RefCell::new(
-            JsInspector::new(code.to_string(), serde_json::Value::Null).unwrap(),
-        ));
+        let insp = JsInspector::new(code.to_string(), serde_json::Value::Null).unwrap();
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::CANCUN,
             evm2::env::BlockEnv::default(),
@@ -788,7 +737,7 @@ mod tests {
             db,
             Precompiles::base(SpecId::CANCUN),
         );
-        evm.set_inspector(SharedJsInspector(Rc::clone(&insp)));
+        evm.set_inspector(insp);
 
         let gas_price = 1024;
         let res = evm
@@ -804,7 +753,8 @@ mod tests {
             .expect("pass without error");
 
         assert_eq!(res.status, success);
-        js_result(&mut insp.borrow_mut(), &res, addr, gas_price, evm.database_mut())
+        let mut insp = evm.clear_inspector_as::<JsInspector>().expect("inspector should be set");
+        js_result(&mut insp, &res, addr, gas_price, evm.database_mut())
     }
 
     #[test]
@@ -824,10 +774,10 @@ mod tests {
     #[test]
     fn test_fault_fn_not_callable() {
         let code = r#"
-        {
-            result: function() {},
-            fault: {},
-        }
+            {
+                result: function() {},
+                fault: {},
+            }
     "#;
         let config = serde_json::Value::Null;
         let result = JsInspector::new(code.to_string(), config);
@@ -837,11 +787,11 @@ mod tests {
     #[test]
     fn test_general_counting() {
         let code = r#"{
-        count: 0,
-        step: function() { this.count += 1; },
-        fault: function() {},
-        result: function() { return this.count; }
-    }"#;
+            count: 0,
+            step: function() { this.count += 1; },
+            fault: function() {},
+            result: function() { return this.count; }
+        }"#;
         let res = run_trace(code, None, true);
         assert_eq!(res.as_u64().unwrap(), 3);
     }
@@ -849,59 +799,11 @@ mod tests {
     #[test]
     fn test_memory_access() {
         let code = r#"{
-        depths: [],
-        step: function(log) { this.depths.push(log.memory.slice(-1,-2)); },
-        fault: function() {},
-        result: function() { return this.depths; }
-    }"#;
-        let res = run_trace(code, None, false);
-        assert_eq!(res.as_array().unwrap().len(), 0);
-    }
-
-    #[test]
-    fn test_stack_peek() {
-        let code = r#"{
-        depths: [],
-        step: function(log) { this.depths.push(log.stack.peek(-1)); },
-        fault: function() {},
-        result: function() { return this.depths; }
-    }"#;
-        let res = run_trace(code, None, false);
-        assert_eq!(res.as_array().unwrap().len(), 0);
-    }
-
-    #[test]
-    fn test_stack_peek_nan() {
-        let code = r#"{
-        depths: [],
-        step: function(log) { this.depths.push(log.stack.peek(NaN)); },
-        fault: function() {},
-        result: function() { return this.depths; }
-    }"#;
-        let res = run_trace(code, None, false);
-        assert_eq!(res.as_array().unwrap().len(), 0);
-    }
-
-    #[test]
-    fn test_stack_peek_infinity() {
-        let code = r#"{
-        depths: [],
-        step: function(log) { this.depths.push(log.stack.peek(Infinity)); },
-        fault: function() {},
-        result: function() { return this.depths; }
-    }"#;
-        let res = run_trace(code, None, false);
-        assert_eq!(res.as_array().unwrap().len(), 0);
-    }
-
-    #[test]
-    fn test_memory_get_uint() {
-        let code = r#"{
-        depths: [],
-        step: function(log, db) { this.depths.push(log.memory.getUint(-64)); },
-        fault: function() {},
-        result: function() { return this.depths; }
-    }"#;
+            depths: [],
+            step: function(log) { this.depths.push(log.memory.slice(-1,-2)); },
+            fault: function() {},
+            result: function() { return this.depths; }
+        }"#;
         let res = run_trace(code, None, false);
         assert_eq!(res.as_array().unwrap().len(), 0);
     }
@@ -909,11 +811,11 @@ mod tests {
     #[test]
     fn test_memory_slice_rejects_non_finite_indexes() {
         let code = r#"{
-        depths: [],
-        step: function(log) { this.depths.push(log.memory.slice(Infinity, NaN)); },
-        fault: function() {},
-        result: function() { return this.depths; }
-    }"#;
+            depths: [],
+            step: function(log) { this.depths.push(log.memory.slice(Infinity, NaN)); },
+            fault: function() {},
+            result: function() { return this.depths; }
+        }"#;
         let res = run_trace(code, None, false);
         assert_eq!(res.as_array().unwrap().len(), 0);
     }
@@ -921,11 +823,11 @@ mod tests {
     #[test]
     fn test_memory_slice_rejects_non_finite_end() {
         let code = r#"{
-        depths: [],
-        step: function(log) { this.depths.push(log.memory.slice(0, Infinity)); },
-        fault: function() {},
-        result: function() { return this.depths; }
-    }"#;
+            depths: [],
+            step: function(log) { this.depths.push(log.memory.slice(0, Infinity)); },
+            fault: function() {},
+            result: function() { return this.depths; }
+        }"#;
         let res = run_trace(code, None, false);
         assert_eq!(res.as_array().unwrap().len(), 0);
     }
@@ -933,11 +835,11 @@ mod tests {
     #[test]
     fn test_memory_slice_accepts_bigint_index() {
         let code = r#"{
-        res: [],
-        step: function(log) { this.res.push(log.memory.slice(0, 0n)); },
-        fault: function() {},
-        result: function() { return this.res; }
-    }"#;
+            res: [],
+            step: function(log) { this.res.push(log.memory.slice(0, 0n)); },
+            fault: function() {},
+            result: function() { return this.res; }
+        }"#;
         let res = run_trace(code, None, true);
         assert_eq!(res, json!([json!({}), json!({}), json!({})]));
     }
@@ -945,11 +847,59 @@ mod tests {
     #[test]
     fn test_memory_slice_rejects_bigint_index_overflow() {
         let code = r#"{
-        depths: [],
-        step: function(log) { this.depths.push(log.memory.slice(0, 340282366920938463463374607431768211455n)); },
-        fault: function() {},
-        result: function() { return this.depths; }
-    }"#;
+            depths: [],
+            step: function(log) { this.depths.push(log.memory.slice(0, 340282366920938463463374607431768211455n)); },
+            fault: function() {},
+            result: function() { return this.depths; }
+        }"#;
+        let res = run_trace(code, None, false);
+        assert_eq!(res.as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_stack_peek() {
+        let code = r#"{
+            depths: [],
+            step: function(log) { this.depths.push(log.stack.peek(-1)); },
+            fault: function() {},
+            result: function() { return this.depths; }
+        }"#;
+        let res = run_trace(code, None, false);
+        assert_eq!(res.as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_stack_peek_nan() {
+        let code = r#"{
+            depths: [],
+            step: function(log) { this.depths.push(log.stack.peek(NaN)); },
+            fault: function() {},
+            result: function() { return this.depths; }
+        }"#;
+        let res = run_trace(code, None, false);
+        assert_eq!(res.as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_stack_peek_infinity() {
+        let code = r#"{
+            depths: [],
+            step: function(log) { this.depths.push(log.stack.peek(Infinity)); },
+            fault: function() {},
+            result: function() { return this.depths; }
+        }"#;
+        let res = run_trace(code, None, false);
+        assert_eq!(res.as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_memory_get_uint() {
+        let code = r#"{
+            depths: [],
+            step: function(log, db) { this.depths.push(log.memory.getUint(-64)); },
+            fault: function() {},
+            result: function() { return this.depths; }
+        }"#;
         let res = run_trace(code, None, false);
         assert_eq!(res.as_array().unwrap().len(), 0);
     }
@@ -957,11 +907,11 @@ mod tests {
     #[test]
     fn test_memory_get_uint_rejects_non_finite_offset() {
         let code = r#"{
-        depths: [],
-        step: function(log, db) { this.depths.push(log.memory.getUint(Infinity)); },
-        fault: function() {},
-        result: function() { return this.depths; }
-    }"#;
+            depths: [],
+            step: function(log, db) { this.depths.push(log.memory.getUint(Infinity)); },
+            fault: function() {},
+            result: function() { return this.depths; }
+        }"#;
         let res = run_trace(code, None, false);
         assert_eq!(res.as_array().unwrap().len(), 0);
     }
@@ -969,11 +919,11 @@ mod tests {
     #[test]
     fn test_memory_get_uint_rejects_nan_offset() {
         let code = r#"{
-        depths: [],
-        step: function(log, db) { this.depths.push(log.memory.getUint(NaN)); },
-        fault: function() {},
-        result: function() { return this.depths; }
-    }"#;
+            depths: [],
+            step: function(log, db) { this.depths.push(log.memory.getUint(NaN)); },
+            fault: function() {},
+            result: function() { return this.depths; }
+        }"#;
         let res = run_trace(code, None, false);
         assert_eq!(res.as_array().unwrap().len(), 0);
     }
@@ -981,11 +931,11 @@ mod tests {
     #[test]
     fn test_stack_depth() {
         let code = r#"{
-        depths: [],
-        step: function(log) { this.depths.push(log.stack.length()); },
-        fault: function() {},
-        result: function() { return this.depths; }
-    }"#;
+            depths: [],
+            step: function(log) { this.depths.push(log.stack.length()); },
+            fault: function() {},
+            result: function() { return this.depths; }
+        }"#;
         let res = run_trace(code, None, true);
         assert_eq!(res, json!([0, 1, 2]));
     }
@@ -993,11 +943,11 @@ mod tests {
     #[test]
     fn test_memory_length() {
         let code = r#"{
-        lengths: [],
-        step: function(log) { this.lengths.push(log.memory.length()); },
-        fault: function() {},
-        result: function() { return this.lengths; }
-    }"#;
+            lengths: [],
+            step: function(log) { this.lengths.push(log.memory.length()); },
+            fault: function() {},
+            result: function() { return this.lengths; }
+        }"#;
         let res = run_trace(code, None, true);
         assert_eq!(res, json!([0, 0, 0]));
     }
@@ -1005,11 +955,11 @@ mod tests {
     #[test]
     fn test_opcode_to_string() {
         let code = r#"{
-         opcodes: [],
-         step: function(log) { this.opcodes.push(log.op.toString()); },
-         fault: function() {},
-         result: function() { return this.opcodes; }
-     }"#;
+             opcodes: [],
+             step: function(log) { this.opcodes.push(log.op.toString()); },
+             fault: function() {},
+             result: function() { return this.opcodes; }
+         }"#;
         let res = run_trace(code, None, true);
         assert_eq!(res, json!(["PUSH1", "PUSH1", "STOP"]));
     }
@@ -1017,11 +967,11 @@ mod tests {
     #[test]
     fn test_gas_used() {
         let code = r#"{
-        depths: [],
-        step: function() {},
-        fault: function() {},
-        result: function(ctx) { return ctx.gasPrice+'.'+ctx.gasUsed; }
-    }"#;
+            depths: [],
+            step: function() {},
+            fault: function() {},
+            result: function(ctx) { return ctx.gasPrice+'.'+ctx.gasUsed; }
+        }"#;
         let res = run_trace(code, None, true);
         assert_eq!(res.as_str().unwrap(), "1024.21006");
     }
@@ -1029,11 +979,11 @@ mod tests {
     #[test]
     fn test_to_word() {
         let code = r#"{
-        res: null,
-        step: function(log) {},
-        fault: function() {},
-        result: function() { return toWord('0xffaa') }
-    }"#;
+            res: null,
+            step: function(log) {},
+            fault: function() {},
+            result: function() { return toWord('0xffaa') }
+        }"#;
         let res = run_trace(code, None, true);
         assert_eq!(
             res,
@@ -1049,11 +999,11 @@ mod tests {
     #[test]
     fn test_to_address() {
         let code = r#"{
-        res: null,
-        step: function(log) { var address = log.contract.getAddress(); this.res = toAddress(address); },
-        fault: function() {},
-        result: function() { return toHex(this.res) }
-    }"#;
+            res: null,
+            step: function(log) { var address = log.contract.getAddress(); this.res = toAddress(address); },
+            fault: function() {},
+            result: function() { return toHex(this.res) }
+        }"#;
         let res = run_trace(code, None, true);
         assert_eq!(res.as_str().unwrap(), "0x0101010101010101010101010101010101010101");
     }
@@ -1061,11 +1011,11 @@ mod tests {
     #[test]
     fn test_to_address_string() {
         let code = r#"{
-        res: null,
-        step: function(log) { var address = '0x0000000000000000000000000000000000000000'; this.res = toAddress(address); },
-        fault: function() {},
-        result: function() { return this.res }
-    }"#;
+            res: null,
+            step: function(log) { var address = '0x0000000000000000000000000000000000000000'; this.res = toAddress(address); },
+            fault: function() {},
+            result: function() { return this.res }
+        }"#;
         let res = run_trace(code, None, true);
         assert_eq!(res.as_object().unwrap().values().map(|v| v.as_u64().unwrap()).sum::<u64>(), 0);
     }
@@ -1073,31 +1023,33 @@ mod tests {
     #[test]
     fn test_memory_slice() {
         let code = r#"{
-        res: [],
-        step: function(log) {
-            var op = log.op.toString();
-            if (op === 'MSTORE8' || op === 'STOP') {
-                this.res.push(log.memory.slice(0, 2))
-            }
-        },
-        fault: function() {},
-        result: function() { return this.res }
-    }"#;
-        let contract = hex!("60ff60005300");
+            res: [],
+            step: function(log) {
+                var op = log.op.toString();
+                if (op === 'MSTORE8' || op === 'STOP') {
+                    this.res.push(log.memory.slice(0, 2))
+                }
+            },
+            fault: function() {},
+            result: function() { return this.res }
+        }"#;
+        let contract = hex!("60ff60005300"); // PUSH1, 0xff, PUSH1, 0x00, MSTORE8, STOP
         let res = run_trace(code, Some(contract.into()), false);
         assert_eq!(res, json!([]));
     }
 
     #[test]
     fn test_memory_limit() {
-        // The JS step callback runs after the opcode executes. A JS error on the final STOP opcode
-        // cannot revert the transaction because execution has already completed.
+        // Accessing out-of-bounds memory in the tracer results in an empty array.
+        // Since we invoke the JS step callback in step_end (after the opcode executes),
+        // a JS error on the final STOP opcode cannot revert the transaction — it has
+        // already completed. The transaction succeeds but the trace result is empty.
         let code = r#"{
-        res: [],
-        step: function(log) { if (log.op.toString() === 'STOP') { this.res.push(log.memory.slice(5, 1025 * 1024)) } },
-        fault: function() {},
-        result: function() { return this.res }
-    }"#;
+            res: [],
+            step: function(log) { if (log.op.toString() === 'STOP') { this.res.push(log.memory.slice(5, 1025 * 1024)) } },
+            fault: function() {},
+            result: function() { return this.res }
+        }"#;
         let res = run_trace(code, None, true);
         assert_eq!(res, json!([]));
     }
@@ -1105,11 +1057,11 @@ mod tests {
     #[test]
     fn test_coinbase() {
         let code = r#"{
-        lengths: [],
-        step: function(log) { },
-        fault: function() {},
-        result: function(ctx) { var coinbase = ctx.coinbase; return toAddress(coinbase); }
-    }"#;
+            lengths: [],
+            step: function(log) { },
+            fault: function() {},
+            result: function(ctx) { var coinbase = ctx.coinbase; return toAddress(coinbase); }
+        }"#;
         let res = run_trace(code, None, true);
         assert_eq!(res.as_object().unwrap().values().map(|v| v.as_u64().unwrap()).sum::<u64>(), 0);
     }
@@ -1117,15 +1069,17 @@ mod tests {
     #[test]
     fn test_individual_opcode_costs() {
         let code = r#"{
-        res: [],
-        step: function(log) {
-            this.res.push(log.getCost());
-        },
-        fault: function() {},
-        result: function() { return this.res }
-    }"#;
+            res: [],
+            step: function(log) {
+                this.res.push(log.getCost());
+            },
+            fault: function() {},
+            result: function() { return this.res }
+        }"#;
         let res = run_trace(code, None, true);
 
+        // The bytecode is: PUSH1 0x01, PUSH1 0x01, STOP
+        // Expected costs: PUSH1=3, PUSH1=3, STOP=0
         assert_eq!(
             res.as_array().unwrap().iter().map(|v| v.as_u64().unwrap_or(0)).collect::<Vec<u64>>(),
             vec![3, 3, 0]
@@ -1135,25 +1089,28 @@ mod tests {
     #[test]
     fn test_slice_builtin() {
         let code = r#"{
-        res: [],
-        step: function(log) {
-            var hex = '0xdeadbeefcafe';
-            this.res.push(toHex(slice(hex, 0, 2)));
-            this.res.push(toHex(slice(hex, 2, 4)));
-            this.res.push(toHex(slice(hex, 4, 6)));
+            res: [],
+            step: function(log) {
+                // Test slicing a hex string
+                var hex = '0xdeadbeefcafe';
+                this.res.push(toHex(slice(hex, 0, 2)));
+                this.res.push(toHex(slice(hex, 2, 4)));
+                this.res.push(toHex(slice(hex, 4, 6)));
 
-            var arr = [0x01, 0x02, 0x03, 0x04, 0x05];
-            this.res.push(toHex(slice(arr, 0, 3)));
-            this.res.push(toHex(slice(arr, 1, 4)));
+                // Test slicing an array
+                var arr = [0x01, 0x02, 0x03, 0x04, 0x05];
+                this.res.push(toHex(slice(arr, 0, 3)));
+                this.res.push(toHex(slice(arr, 1, 4)));
 
-            var uint8 = new Uint8Array([0xff, 0xee, 0xdd, 0xcc, 0xbb]);
-            this.res.push(toHex(slice(uint8, 0, 2)));
-            this.res.push(toHex(slice(uint8, 2, 5)));
-        },
-        fault: function() {},
-        result: function() { return this.res }
-    }"#;
-        let res = run_trace(code, Some(Bytes::from_static(&[0x00])), true);
+                // Test slicing a Uint8Array
+                var uint8 = new Uint8Array([0xff, 0xee, 0xdd, 0xcc, 0xbb]);
+                this.res.push(toHex(slice(uint8, 0, 2)));
+                this.res.push(toHex(slice(uint8, 2, 5)));
+            },
+            fault: function() {},
+            result: function() { return this.res }
+        }"#;
+        let res = run_trace(code, Some(bytes!("0x00")), true);
         assert_eq!(
             res,
             json!(["0xdead", "0xbeef", "0xcafe", "0x010203", "0x020304", "0xffee", "0xddccbb"])
@@ -1163,68 +1120,72 @@ mod tests {
     #[test]
     fn test_is_precompiled_builtin() {
         let code = r#"{
-        res: [],
-        step: function(log) {
-            this.res.push(isPrecompiled("0x01"));
-            this.res.push(isPrecompiled("0x0000000000000000000000000000000000000002"));
-            this.res.push(isPrecompiled("0x0000000000000000000000000000000000000000"));
-        },
-        fault: function() {},
-        result: function() { return this.res }
-    }"#;
-        let res = run_trace(code, Some(Bytes::from_static(&[0x00])), true);
+            res: [],
+            step: function(log) {
+                this.res.push(isPrecompiled("0x01"));
+                this.res.push(isPrecompiled("0x0000000000000000000000000000000000000002"));
+                this.res.push(isPrecompiled("0x0000000000000000000000000000000000000000"));
+            },
+            fault: function() {},
+            result: function() { return this.res }
+        }"#;
+        let res = run_trace(code, Some(bytes!("0x00")), true);
         assert_eq!(res, json!([true, true, false]));
     }
 
     #[test]
     fn test_has_own_property() {
         let code = r#"{
-        res: [],
-        step: function(log) {
-            this.res.push(log.hasOwnProperty("stack"));
-        },
-        fault: function() {},
-        result: function() { return this.res }
-    }"#;
-        let res = run_trace(code, Some(Bytes::from_static(&[0x00])), true);
+            res: [],
+            step: function(log) {
+                this.res.push(log.hasOwnProperty("stack"));
+            },
+            fault: function() {},
+            result: function() { return this.res }
+        }"#;
+        let res = run_trace(code, Some(bytes!("0x00")), true);
         assert_eq!(res, json!([true]));
     }
 
     #[test]
     fn test_slice_with_stack_values() {
         let code = r#"{
-        res: [],
-        step: function(log) {
-            if ((log.stack.length() > 0) && log.memory.length() >= log.stack.peek(0)) {
-                this.res.push(log.memory.slice(0, log.stack.peek(0)));
-            }
-        },
-        fault: function() {},
-        result: function() { return this.res }
-    }"#;
-        let res = run_trace(code, Some(hex!("5F5F52600100").into()), true);
+            res: [],
+            step: function(log) {
+                if ((log.stack.length() > 0) && log.memory.length() >= log.stack.peek(0)) {
+                    this.res.push(log.memory.slice(0, log.stack.peek(0)));
+                }
+            },
+            fault: function() {},
+            result: function() { return this.res }
+        }"#;
+        let res = run_trace(code, Some(bytes!("0x5F5F52600100")), true);
         assert_eq!(res, json!([json!({}), json!({}), json!({"0": 0})]));
     }
 
     #[test]
     fn test_bigint_survives_poisoned_global() {
         let code = r#"{
-        res: {},
-        step: function(log, db) {
-            Object.defineProperty(globalThis, 'bigint', {
-                get() { throw new Error('poisoned bigint'); },
-                configurable: true
-            });
+            res: {},
+            step: function(log, db) {
+                // Poison the global bigint alias
+                Object.defineProperty(globalThis, 'bigint', {
+                    get() { throw new Error('poisoned bigint'); },
+                    configurable: true
+                });
 
-            if (log.stack.length() > 0) {
-                this.res.stackPeek = log.stack.peek(0).toString();
-            }
-            this.res.value = log.contract.getValue().toString();
-            this.res.balance = db.getBalance(log.contract.getAddress()).toString();
-        },
-        fault: function() {},
-        result: function() { return this.res }
-    }"#;
+                if (log.stack.length() > 0) {
+                    // stack.peek internally uses to_bigint
+                    this.res.stackPeek = log.stack.peek(0).toString();
+                }
+                // contract.getValue internally uses to_bigint
+                this.res.value = log.contract.getValue().toString();
+                // db.getBalance internally uses to_bigint
+                this.res.balance = db.getBalance(log.contract.getAddress()).toString();
+            },
+            fault: function() {},
+            result: function() { return this.res }
+        }"#;
         let res = run_trace(code, None, true);
         let obj = res.as_object().unwrap();
         assert_eq!(obj["stackPeek"], json!("1"));

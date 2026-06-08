@@ -54,7 +54,7 @@ Legend: `[ ]` pending, `[x]` reviewed, `[!]` needs follow-up.
     error-to-revert behavior match upstream. Delegatecall value has already been fixed to upstream
     semantics.
 - [x] `src/tracing/mod.rs` -> `diffs/src__tracing__mod.rs.diff`
-  - Core tracing semantics match with evm2 hooks: root trace starts in `initialize_interp`, step bookkeeping uses an explicit stack, logs use a global index, storage changes scan new journal entries, and precompile exclusion uses evm2 precompile/message data. Deprecated getters and reusable step vec pool are intentionally absent.
+  - Core tracing semantics match with evm2 hooks: root trace starts in `initialize_interp`, step bookkeeping uses an explicit stack, logs use a global index, storage changes scan new journal entries, and precompile exclusion uses evm2 precompile/message data. Deprecated getters are intentionally absent; the reusable step vec pool is restored.
 - [x] `src/tracing/mux.rs` -> `diffs/src__tracing__mux.rs.diff`
   - Mux config and output assembly match upstream. Differences are evm2 inspector hook signatures and passing gas/state/db directly into underlying builders.
 - [x] `src/tracing/opcount.rs` -> `diffs/src__tracing__opcount.rs.diff`
@@ -106,19 +106,70 @@ All `tests/it/writer/**` snapshot files are byte-for-byte unchanged from upstrea
 ## MANUAL
 
 - src__tracing__builder__geth.rs.diff
-  - spec_id ... i guess its ok
+  - `spec_id` is intentionally threaded into the geth builder so diff-mode prestate can apply
+    Cancun selfdestruct behavior while evm2 `StateChanges` lacks revm's journal state shape.
 - src__tracing__builder__parity.rs.diff
+  - State diff and vmTrace bytecode population use evm2 `StateChanges` plus mutable DB reads; the
+    helper API shape differs from upstream `DatabaseRef` but preserves output construction.
 - src__tracing__config.rs.diff
-  - from_geth_prestate_config
+  - `from_geth_prestate_config` intentionally enables steps/state diffs/stack snapshots because
+    evm2 prestate reconstruction needs opcode-touched accounts and storage reads.
 - src__tracing__js__bindings.rs.diff
-  - weird db stuff
+  - DB access is intentionally split between in-flight `State` reads and post-transaction
+    `StateChanges` reads because evm2 does not expose revm's `EvmState + DatabaseRef` pairing.
 - src__tracing__js__mod.rs.diff
-  - result status enum?
-  - fn try_* gone/moved?
-  - SharedJsInspector???
-  - test indentation
+  - Result status handling maps revm `ExecutionResult` to evm2 `TxResult`/`InstrStop`; JS result
+    surface stays aligned with geth tracer expectations.
+  - fn try_* ordering addressed in cleanup pass
+  - SharedJsInspector removed in cleanup pass
+  - test indentation/order addressed in cleanup pass
 - src__tracing__mod.rs.diff
-  - why remove reusable_step_vecs
-  - fn start_trace do we need those address matchings?
+  - reusable_step_vecs restored in cleanup pass
+  - `start_trace` address matching preserves upstream call/delegatecall/callcode caller/address
+    semantics using evm2 `MessageKind`.
 - src__tracing__utils.rs.diff
-  - fn gas_used -- could be reused
+  - fn gas_used keeps evm2 `SpecId::enables`; upstream-shaped `is_enabled_in` is deprecated here
+
+## Cleanup Pass
+
+- [x] `src/tracing/utils.rs`
+  - Long `hex!` test literals match upstream semantically, but `cargo fmt --all` keeps them
+    multiline in this repo.
+- [x] `src/tracing/mod.rs`
+  - Restored upstream public helper ordering around transaction setters/builders where evm2
+    signatures still require different call arguments.
+- [x] `src/tracing/js/mod.rs`
+  - Restored upstream raw-string indentation, nearby test comments, and test ordering while keeping
+    evm2 harness substitutions.
+- [x] `src/tracing/js/mod.rs`
+  - Restored private `try_fault`/`try_step`/`try_enter`/`try_exit` helper ordering and moved
+    `push_call` back after the call-stack predicate helpers.
+- [x] `src/tracing/js/mod.rs`
+  - Removed the test-only `SharedJsInspector` wrapper; tests now recover `JsInspector` with
+    `Evm::clear_inspector_as` after execution.
+- [x] `src/tracing/mod.rs`
+  - Restored upstream reusable empty `CallTraceStep` vector pool across `fuse()` and `start_trace`.
+- [x] `src/tracing/mod.rs`
+  - Restored upstream `#[inline]` annotations on `fuse` and `fused`.
+- [x] `src/tracing/js/mod.rs`
+  - Restored upstream `Default::default()` initialization for `call_stack`.
+- [x] `src/tracing/js/bindings.rs`
+  - Restored upstream wording for `MemorySnapshot` docs and enum variant qualification in
+    `Guarded::as_ref`.
+- [x] `src/tracing/mod.rs`
+  - Restored upstream-style local `use types::{CallLog, CallTrace, CallTraceStep};`.
+- [x] `src/tracing/js/mod.rs`
+  - Folded `register_builtins` back into the `js::builtins` import group and restored
+    `TransactionContext` import placement.
+- [x] `src/tracing/js/builtins.rs`
+  - Restored upstream order for BigInt compatibility tests and explanatory geth-pattern comments.
+- [x] `tests/it/writer.rs`
+  - Restored removed receive/fallback regression comments while keeping local punctuation style.
+- [x] `tests/it/geth_js.rs`
+  - Moved the additional debug-inspector JS tracer regression after the upstream tests.
+- [x] `src/tracing/debug.rs`
+  - Restored upstream JS tracer config temporary while keeping evm2 result handling.
+- [x] `src/tracing/mod.rs`
+  - Restored upstream `TransactionContext` documentation text.
+- [x] `src/tracing/js/mod.rs`
+  - Restored upstream transaction-context doc note and test byte literal macro usage.

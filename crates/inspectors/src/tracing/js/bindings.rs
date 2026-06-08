@@ -242,7 +242,7 @@ impl StepLog {
     }
 }
 
-/// Represents the memory object
+/// An owned snapshot of memory contents.
 ///
 /// Uses `Rc` internally so cloning is cheap (reference count bump) rather than
 /// copying the entire memory buffer on every step.

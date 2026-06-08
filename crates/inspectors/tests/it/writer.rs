@@ -289,8 +289,18 @@ fn assert_traces(
 }
 
 /// Test that short calldata (< 4 bytes) with nonzero value shows "receive" instead of "fallback".
+///
+/// Regression test for https://github.com/foundry-rs/foundry/issues/12962
+///
+/// When a contract is called with short calldata and nonzero value, the trace should
+/// show `receive()` (since that's what Solidity invokes for value transfers), not
+/// `fallback()`.
 #[test]
 fn test_receive_vs_fallback_empty_calldata() {
+    // Deploy a minimal contract that just STOPs immediately (runtime = 0x00).
+    // Deploy the contract using a minimal constructor that just returns the runtime code.
+    // Constructor: PUSH1 0x01, PUSH1 0x0c, PUSH1 0x00, CODECOPY, PUSH1 0x01, PUSH1 0x00, RETURN.
+    // Then the runtime code (0x00 = STOP).
     let initcode = bytes!(
         "6001" // PUSH1 0x01 (size of runtime code)
         "600c" // PUSH1 0x0c (offset where runtime code starts in initcode)
@@ -317,13 +327,14 @@ fn test_receive_vs_fallback_empty_calldata() {
         .created_address()
         .unwrap();
 
+    // Call with empty calldata and nonzero value - should show receive().
     evm.set_inspector(TracingInspector::new(TracingInspectorConfig::all()));
     let result = evm
         .inspect_tx_commit(
             TxEnv::builder()
                 .caller(caller)
-                .data(bytes!())
-                .value(U256::from(1))
+                .data(bytes!()) // Empty calldata.
+                .value(U256::from(1)) // Nonzero value.
                 .kind(TransactTo::Call(address))
                 .gas_priority_fee(None)
                 .nonce(1)
@@ -334,6 +345,8 @@ fn test_receive_vs_fallback_empty_calldata() {
     assert!(result.is_success(), "Call with empty calldata and value should succeed");
 
     let trace_output = write_traces(evm.inspector());
+
+    // The trace should show "receive" not "fallback" for short calldata + nonzero value.
     assert!(
         trace_output.contains("::receive"),
         "Empty calldata with value call should show 'receive' in trace, got:\n{trace_output}"
@@ -347,6 +360,7 @@ fn test_receive_vs_fallback_empty_calldata() {
 /// Test that non-empty calldata (< 4 bytes) with successful call shows "fallback".
 #[test]
 fn test_fallback_short_calldata() {
+    // Simple contract that STOPs on any call.
     let initcode = bytes!(
         "6001600c60003960016000f300" // Deploy STOP.
     );
@@ -359,11 +373,12 @@ fn test_fallback_short_calldata() {
         .created_address()
         .unwrap();
 
+    // Call with short calldata (1-3 bytes) - should show fallback().
     evm.set_inspector(TracingInspector::new(TracingInspectorConfig::all()));
     let result = evm
         .inspect_tx_commit(
             TxEnv::builder()
-                .data(bytes!("ab"))
+                .data(bytes!("ab")) // Short calldata (1 byte).
                 .kind(TransactTo::Call(address))
                 .gas_priority_fee(None)
                 .nonce(1)
@@ -374,6 +389,8 @@ fn test_fallback_short_calldata() {
     assert!(result.is_success(), "Call with short calldata should succeed");
 
     let trace_output = write_traces(evm.inspector());
+
+    // Short non-empty calldata should show "fallback".
     assert!(
         trace_output.contains("::fallback("),
         "Short calldata call should show 'fallback' in trace, got:\n{trace_output}"

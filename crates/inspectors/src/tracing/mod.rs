@@ -4,15 +4,13 @@ use crate::{
     opcode::immediate_size,
     tracing::{
         arena::PushTraceKind,
-        types::{
-            CallKind, CallLog, CallTrace, CallTraceStep, RecordedMemory, StorageChange,
-            StorageChangeReason, TraceMemberOrder,
-        },
+        types::{CallKind, RecordedMemory, StorageChange, StorageChangeReason, TraceMemberOrder},
         utils::gas_used,
     },
 };
 use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::{Address, B256, Bytes, Log, U256};
+use core::mem;
 use evm2::{
     Evm, EvmTypes, Inspector, SpecId,
     bytecode::opcode::{OpCode, op},
@@ -39,6 +37,7 @@ mod opcount;
 pub use opcount::OpcodeCountInspector;
 
 pub mod types;
+use types::{CallLog, CallTrace, CallTraceStep};
 
 mod utils;
 
@@ -84,6 +83,10 @@ pub struct TracingInspector {
     ///
     /// This is filled during execution.
     spec_id: Option<SpecId>,
+    /// Pool of reusable _empty_ step vectors to reduce allocations.
+    ///
+    /// All `Vec<CallTraceStep>` are always empty but may have capacity.
+    reusable_step_vecs: Vec<Vec<CallTraceStep>>,
 }
 
 impl Default for TracingInspector {
@@ -103,12 +106,25 @@ impl TracingInspector {
             last_journal_len: 0,
             log_index: 0,
             spec_id: None,
+            reusable_step_vecs: Vec::new(),
         }
     }
 
     /// Resets the inspector to its initial state of [Self::new].
     /// This makes the inspector ready to be used again.
+    #[inline]
     pub fn fuse(&mut self) {
+        // if we record steps we can reuse the individual calltracestep vecs
+        if self.config.record_steps {
+            for node in &mut self.traces.arena {
+                // move out and store the reusable steps vec
+                let mut steps = mem::take(&mut node.trace.steps);
+                // ensure steps are cleared
+                steps.clear();
+                self.reusable_step_vecs.push(steps);
+            }
+        }
+
         self.traces.clear();
         self.trace_stack.clear();
         self.step_stack.clear();
@@ -118,6 +134,7 @@ impl TracingInspector {
     }
 
     /// Resets the inspector to it's initial state of [Self::new].
+    #[inline]
     pub fn fused(mut self) -> Self {
         self.fuse();
         self
@@ -182,17 +199,6 @@ impl TracingInspector {
         }
     }
 
-    /// Manually set the caller address of the root trace.
-    ///
-    /// This is useful for custom transaction types (e.g. account abstraction batches) where the
-    /// EVM's call entry point may not reflect the actual transaction sender.
-    #[inline]
-    pub fn set_transaction_caller(&mut self, caller: Address) {
-        if let Some(node) = self.traces.arena.first_mut() {
-            node.trace.caller = caller;
-        }
-    }
-
     /// Convenience function for [ParityTraceBuilder::set_transaction_gas_used] that consumes the
     /// type.
     #[inline]
@@ -206,6 +212,23 @@ impl TracingInspector {
     pub fn with_transaction_gas_limit(mut self, gas_limit: u64) -> Self {
         self.set_transaction_gas_limit(gas_limit);
         self
+    }
+
+    /// Manually set the caller address of the root trace.
+    ///
+    /// This is useful for custom transaction types (e.g. account abstraction batches) where the
+    /// EVM's call entry point may not reflect the actual transaction sender.
+    #[inline]
+    pub fn set_transaction_caller(&mut self, caller: Address) {
+        if let Some(node) = self.traces.arena.first_mut() {
+            node.trace.caller = caller;
+        }
+    }
+
+    /// Consumes the Inspector and returns a [ParityTraceBuilder].
+    #[inline]
+    pub fn into_parity_builder(self) -> ParityTraceBuilder {
+        ParityTraceBuilder::new(self.traces.into_nodes(), self.spec_id, self.config)
     }
 
     /// Returns the  [GethTraceBuilder] for the recorded traces without consuming the type.
@@ -222,12 +245,6 @@ impl TracingInspector {
     #[inline]
     pub fn into_geth_builder(self) -> GethTraceBuilder<'static> {
         GethTraceBuilder::new(self.traces.into_nodes(), self.spec_id)
-    }
-
-    /// Consumes the Inspector and returns a [ParityTraceBuilder].
-    #[inline]
-    pub fn into_parity_builder(self) -> ParityTraceBuilder {
-        ParityTraceBuilder::new(self.traces.into_nodes(), self.spec_id, self.config)
     }
 
     /// Returns true if we're no longer in the context of the root call.
@@ -267,6 +284,7 @@ impl TracingInspector {
             value: message.value,
             data: message.input.clone(),
             gas_limit: message.gas_limit,
+            steps: self.reusable_step_vecs.pop().unwrap_or_default(),
             ..Default::default()
         };
 
@@ -540,14 +558,21 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for TracingInspector {
     }
 }
 
-/// Contextual transaction info made available to debug tracers.
+/// Contains some contextual infos for a transaction execution that is made available to the JS
+/// object.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TransactionContext {
-    /// Hash of the block the transaction is contained within.
+    /// Hash of the block the tx is contained within.
+    ///
+    /// `None` if this is a call.
     pub block_hash: Option<B256>,
     /// Index of the transaction within a block.
+    ///
+    /// `None` if this is a call.
     pub tx_index: Option<usize>,
     /// Hash of the transaction being traced.
+    ///
+    /// `None` if this is a call.
     pub tx_hash: Option<B256>,
 }
 
@@ -564,7 +589,7 @@ impl TransactionContext {
         self
     }
 
-    /// Sets the transaction hash.
+    /// Sets the hash of the transaction.
     pub const fn with_tx_hash(mut self, tx_hash: B256) -> Self {
         self.tx_hash = Some(tx_hash);
         self

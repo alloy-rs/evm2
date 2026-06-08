@@ -163,9 +163,10 @@ impl DebugInspector {
                     return Err(DebugInspectorError::JsTracerNotEnabled);
                 }
                 #[cfg(feature = "js-tracer")]
-                GethDebugTracerType::JsTracer(code) => Self::Js(
-                    crate::tracing::js::JsInspector::new(code, tracer_config.into_json())?.into(),
-                ),
+                GethDebugTracerType::JsTracer(code) => {
+                    let config = tracer_config.into_json();
+                    Self::Js(crate::tracing::js::JsInspector::new(code, config)?.into())
+                }
                 _ => {
                     // Note: this match is non-exhaustive in case we need to add support for
                     // additional tracers
