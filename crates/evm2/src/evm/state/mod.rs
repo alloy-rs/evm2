@@ -7,7 +7,7 @@ mod journal;
 mod stream;
 
 pub use account::{Account, AccountInfo, StorageOverlay, Tracked};
-pub use block::{BlockAccountDelta, BlockStateAccumulator, BlockStorageDelta, FrozenBlockState};
+pub use block::{BlockStateAccumulator, FrozenBlockState};
 pub use changes::{StateChanges, StorageChangeSet};
 pub use journal::{JournalEntry, StateCheckpoint};
 pub use stream::{

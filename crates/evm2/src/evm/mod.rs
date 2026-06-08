@@ -162,10 +162,10 @@ pub use tx::{ExecutedTx, TxOutcome, TxResult};
 
 mod state;
 pub use state::{
-    Account, AccountChangeRef, AccountInfo, AccountInfoRef, BlockAccountDelta,
-    BlockStateAccumulator, BlockStorageDelta, FrozenBlockState, JournalEntry, NoopChangeSink,
-    State, StateChangeSink, StateChangeSource, StateChanges, StateCheckpoint, StorageChangeRef,
-    StorageChangeSet, StorageOverlay, Tee, Tracked,
+    Account, AccountChangeRef, AccountInfo, AccountInfoRef, BlockStateAccumulator,
+    FrozenBlockState, JournalEntry, NoopChangeSink, State, StateChangeSink, StateChangeSource,
+    StateChanges, StateCheckpoint, StorageChangeRef, StorageChangeSet, StorageOverlay, Tee,
+    Tracked,
 };
 
 /// EVM host and transaction dispatcher.

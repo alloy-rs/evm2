@@ -3,20 +3,19 @@
 use crate::{bytecode::Bytecode, interpreter::Word};
 use alloy_primitives::{B256, KECCAK256_EMPTY, U256, map::U256Map};
 
-/// A value tracked together with the value it had at the start of the current
-/// transaction.
+/// A value tracked together with the value it had at an aggregation boundary.
 ///
-/// `Tracked` is used by [`super::State`] to keep an overlay over the backing database
-/// and by [`super::StateChanges`] to describe account and storage transitions.
-/// `original` is the value at the current transaction boundary, while `current`
-/// is the value after all in-flight EVM mutations. When a transaction is
-/// accepted, `current` becomes the next transaction's `original` without writing
-/// anything to the backing database.
+/// `Tracked` is used by [`super::State`] to keep a transaction overlay over the backing
+/// database, by [`super::StateChanges`] to describe transaction transitions, and by
+/// [`super::BlockStateAccumulator`] to describe block transitions. `original` is the value at the
+/// start of the current transaction or block, while `current` is the value after all observed
+/// mutations in that boundary. When a transaction is accepted, `current` becomes the next
+/// transaction's `original` without writing anything to the backing database.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub struct Tracked<T> {
-    /// Value at the start of the current transaction.
+    /// Value at the start of the aggregation boundary.
     pub original: T,
-    /// Current overlay value.
+    /// Value after observed mutations in the aggregation boundary.
     pub current: T,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),

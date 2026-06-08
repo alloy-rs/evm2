@@ -2,7 +2,7 @@
 
 use super::{
     AccountChangeRef, AccountInfo, AccountInfoRef, StateChangeSink, StateChangeSource,
-    StorageChangeRef,
+    StorageChangeRef, Tracked,
 };
 use crate::{
     bytecode::Bytecode,
@@ -16,33 +16,12 @@ use alloy_primitives::{
 };
 use core::convert::Infallible;
 
-/// Block-level account delta accumulated from committed transactions.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct BlockAccountDelta {
-    /// Account at the beginning of the block.
-    pub original: Option<AccountInfo>,
-    /// Account after the latest committed transaction.
-    pub current: Option<AccountInfo>,
-}
-
-/// Block-level storage delta accumulated from committed transactions.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct BlockStorageDelta {
-    /// Slot value from the first observed non-wipe change.
-    ///
-    /// If this slot's address appears in [`FrozenBlockState::storage_wipes`], consumers should
-    /// apply the wipe before this slot and treat `current` as the value to write after the wipe.
-    pub original: Word,
-    /// Slot value after the latest committed transaction.
-    pub current: Word,
-}
-
 /// Mutable block-level state accumulator.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct BlockStateAccumulator {
-    accounts: AddressMap<BlockAccountDelta>,
+    accounts: AddressMap<Tracked<Option<AccountInfo>>>,
     storage_wipes: AddressSet,
-    storage: StorageKeyMap<BlockStorageDelta>,
+    storage: StorageKeyMap<Tracked<Word>>,
     code: B256Map<Bytecode>,
 }
 
@@ -98,7 +77,7 @@ impl StateChangeSink for BlockStateAccumulator {
             }
             hash_map::Entry::Vacant(entry) => {
                 if original != current {
-                    entry.insert(BlockAccountDelta { original, current });
+                    entry.insert(Tracked { original, current, _non_exhaustive: () });
                 }
             }
         }
@@ -140,9 +119,10 @@ impl StateChangeSink for BlockStateAccumulator {
                 {
                     return Ok(());
                 }
-                entry.insert(BlockStorageDelta {
+                entry.insert(Tracked {
                     original: change.original,
                     current: change.current,
+                    _non_exhaustive: (),
                 });
             }
         }
@@ -158,9 +138,9 @@ impl StateChangeSource for BlockStateAccumulator {
 }
 
 fn visit_block_changes<S: StateChangeSink>(
-    accounts: &AddressMap<BlockAccountDelta>,
+    accounts: &AddressMap<Tracked<Option<AccountInfo>>>,
     storage_wipes: &AddressSet,
-    storage: &StorageKeyMap<BlockStorageDelta>,
+    storage: &StorageKeyMap<Tracked<Word>>,
     code: &B256Map<Bytecode>,
     sink: &mut S,
 ) -> Result<(), S::Error> {
@@ -202,16 +182,16 @@ fn visit_block_changes<S: StateChangeSink>(
 /// Immutable block state produced by [`BlockStateAccumulator::freeze`].
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct FrozenBlockState {
-    accounts: AddressMap<BlockAccountDelta>,
+    accounts: AddressMap<Tracked<Option<AccountInfo>>>,
     storage_wipes: AddressSet,
-    storage: StorageKeyMap<BlockStorageDelta>,
+    storage: StorageKeyMap<Tracked<Word>>,
     code: B256Map<Bytecode>,
 }
 
 impl FrozenBlockState {
     /// Returns account deltas with addresses in arbitrary map order.
     #[inline]
-    pub fn accounts(&self) -> impl Iterator<Item = (Address, &BlockAccountDelta)> {
+    pub fn accounts(&self) -> impl Iterator<Item = (Address, &Tracked<Option<AccountInfo>>)> {
         self.accounts.iter().map(|(&address, delta)| (address, delta))
     }
 
@@ -222,8 +202,11 @@ impl FrozenBlockState {
     }
 
     /// Returns storage deltas with storage keys in arbitrary map order.
+    ///
+    /// If a slot's address appears in [`Self::storage_wipes`], consumers should apply the wipe
+    /// before this slot and treat [`Tracked::current`] as the value to write after the wipe.
     #[inline]
-    pub fn storage(&self) -> impl Iterator<Item = (StorageKey, &BlockStorageDelta)> {
+    pub fn storage(&self) -> impl Iterator<Item = (StorageKey, &Tracked<Word>)> {
         self.storage.iter().map(|(&key, delta)| (key, delta))
     }
 
@@ -234,7 +217,7 @@ impl FrozenBlockState {
     }
 
     /// Returns account deltas with addresses sorted by address.
-    pub fn accounts_sorted(&self) -> Vec<(Address, &BlockAccountDelta)> {
+    pub fn accounts_sorted(&self) -> Vec<(Address, &Tracked<Option<AccountInfo>>)> {
         let mut accounts = self.accounts().collect::<Vec<_>>();
         accounts.sort_by_key(|(address, _)| *address);
         accounts
@@ -248,7 +231,7 @@ impl FrozenBlockState {
     }
 
     /// Returns storage deltas with storage keys sorted by address and slot.
-    pub fn storage_sorted(&self) -> Vec<(StorageKey, &BlockStorageDelta)> {
+    pub fn storage_sorted(&self) -> Vec<(StorageKey, &Tracked<Word>)> {
         let mut storage = self.storage().collect::<Vec<_>>();
         storage.sort_by_key(|(key, _)| (key.address(), key.key()));
         storage
