@@ -2,7 +2,7 @@
 +++ evm2/src/tracing/utils.rs
 @@ -1,65 +1,62 @@
 -//! Utility functions for revm related ops
-+//! Utility functions for evm2 related ops
++//! Utility functions for evm2 related ops.
  use crate::tracing::config::TraceStyle;
  use alloc::{
      format,

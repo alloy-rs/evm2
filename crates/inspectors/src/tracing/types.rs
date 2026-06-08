@@ -107,7 +107,7 @@ pub struct CallTrace {
 }
 
 impl CallTrace {
-    /// Returns true if the status code is an error or revert, See [InstrStop::Revert]
+    /// Returns true if the status code is an error or revert, See [InstrStop::Revert].
     #[inline]
     pub const fn is_error(&self) -> bool {
         let Some(status) = self.status else {

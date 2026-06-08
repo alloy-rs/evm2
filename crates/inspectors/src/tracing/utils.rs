@@ -1,4 +1,4 @@
-//! Utility functions for evm2 related ops
+//! Utility functions for evm2 related ops.
 use crate::tracing::config::TraceStyle;
 use alloc::{
     format,

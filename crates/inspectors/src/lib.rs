@@ -25,8 +25,6 @@ use boa_engine as _;
 use boa_gc as _;
 #[cfg(feature = "serde")]
 use serde as _;
-use serde_json as _;
-use thiserror as _;
 
 /// An inspector implementation for an EIP2930 Accesslist.
 pub mod access_list;

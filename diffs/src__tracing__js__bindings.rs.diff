@@ -91,15 +91,20 @@
      ///
      /// # Safety
      ///
-@@ -135,7 +140,7 @@
+@@ -135,10 +140,10 @@
  
  impl<T> Guarded<'_, T> {
      #[inline]
 -    fn as_ref(&self) -> &T {
 +    const fn as_ref(&self) -> &T {
          match self {
-             Guarded::Ref(val) => val,
-             Guarded::Owned(val) => val,
+-            Guarded::Ref(val) => val,
+-            Guarded::Owned(val) => val,
++            Self::Ref(val) => val,
++            Self::Owned(val) => val,
+         }
+     }
+ }
 @@ -245,9 +250,13 @@
  pub(crate) struct MemorySnapshot(Rc<Vec<u8>>);
  
