@@ -34,16 +34,15 @@ impl EvmBackend for Evm2Backend {
     }
 
     fn run(&self, case: &EvmCase) -> Outcome {
-        let mut database = evm2_db(case);
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            case.spec,
+            case.block.evm2(),
+            ethereum_tx_registry(case.spec),
+            evm2_db(case),
+            Precompiles::base(case.spec),
+        );
         let mut receipts = Vec::new();
         for tx in case.txs() {
-            let mut evm = Evm::<BaseEvmTypes>::new(
-                case.spec,
-                case.block.evm2(),
-                ethereum_tx_registry(case.spec),
-                database.clone(),
-                Precompiles::base(case.spec),
-            );
             let result = evm
                 .transact(&tx.evm2())
                 .map(|executed| executed.detach())
@@ -55,7 +54,7 @@ impl EvmBackend for Evm2Backend {
                     } else {
                         None
                     };
-                    database.commit_source(&result.state_changes);
+                    evm.commit_source(&result.state_changes);
                     receipts.push(TxReceipt {
                         kind: if result.status {
                             OutcomeKind::Success
