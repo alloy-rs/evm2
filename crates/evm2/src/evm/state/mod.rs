@@ -1409,7 +1409,7 @@ mod tests {
         assert_eq!(accounts.len(), 1);
         assert_eq!(accounts[0].1.original.as_ref(), Some(&without_code(original)));
         assert_eq!(accounts[0].1.current.as_ref(), Some(&without_code(recreated)));
-        assert_eq!(frozen.storage_wipes_sorted(), vec![address]);
+        assert_eq!(frozen.storage_wipes_sorted(), [address]);
 
         let storage = frozen.storage_sorted();
         assert_eq!(storage.len(), 1);
@@ -1431,7 +1431,7 @@ mod tests {
 
         let frozen = accumulator.freeze();
         assert!(frozen.accounts_sorted().is_empty());
-        assert_eq!(frozen.storage_wipes_sorted(), vec![address]);
+        assert_eq!(frozen.storage_wipes_sorted(), [address]);
 
         let storage = frozen.storage_sorted();
         assert_eq!(storage.len(), 1);
@@ -1471,7 +1471,7 @@ mod tests {
 
         let frozen = accumulator.freeze();
         assert!(frozen.accounts_sorted().is_empty());
-        assert_eq!(frozen.storage_wipes_sorted(), vec![address]);
+        assert_eq!(frozen.storage_wipes_sorted(), [address]);
         assert!(frozen.storage_sorted().is_empty());
     }
 
