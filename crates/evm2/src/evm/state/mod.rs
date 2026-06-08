@@ -26,7 +26,7 @@ use crate::{
     interpreter::{InstrStop, Word},
     storage_key::{StorageKey, StorageKeyMap, StorageKeySet},
 };
-use alloc::{boxed::Box, collections::BTreeMap, vec::Vec};
+use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::{
     Address, B256, KECCAK256_EMPTY, Log,
     map::{AddressMap, AddressSet, U256Map, hash_map},
@@ -988,7 +988,7 @@ impl State {
         for (&address, storage) in &self.scratch.storage {
             let mut set = StorageChangeSet {
                 wipe: storage.wiped,
-                slots: BTreeMap::new(),
+                slots: U256Map::default(),
                 _non_exhaustive: (),
             };
             for (&key, slot) in &storage.slots {
@@ -1358,7 +1358,10 @@ mod tests {
             address,
             StorageChangeSet {
                 wipe,
-                slots: BTreeMap::from([(key, Tracked { original, current, _non_exhaustive: () })]),
+                slots: U256Map::from_iter([(
+                    key,
+                    Tracked { original, current, _non_exhaustive: () },
+                )]),
                 _non_exhaustive: (),
             },
         );
@@ -1369,7 +1372,7 @@ mod tests {
         let mut changes = StateChanges::default();
         changes.storage.insert(
             address,
-            StorageChangeSet { wipe: true, slots: BTreeMap::new(), _non_exhaustive: () },
+            StorageChangeSet { wipe: true, slots: U256Map::default(), _non_exhaustive: () },
         );
         changes
     }

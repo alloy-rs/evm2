@@ -5,8 +5,8 @@ use super::{
     StorageChangeRef, Tracked,
 };
 use crate::{bytecode::Bytecode, interpreter::Word};
-use alloc::collections::BTreeMap;
-use alloy_primitives::{Address, B256};
+use alloc::vec::Vec;
+use alloy_primitives::map::{AddressMap, B256Map, U256Map};
 
 /// Complete owned state transition produced by a transaction.
 ///
@@ -38,15 +38,15 @@ pub struct StateChanges {
     /// [`Tracked::current`] is the account after transaction execution and EVM
     /// account-lifetime rules have been evaluated. `current = None` is an explicit account
     /// deletion.
-    pub accounts: BTreeMap<Address, Tracked<Option<AccountInfo>>>,
+    pub accounts: AddressMap<Tracked<Option<AccountInfo>>>,
     /// Persistent storage changes keyed by account address.
     ///
     /// Each slot change's [`Tracked::original`] value is the slot value at the beginning of the
     /// transaction, after any storage wipe/re-incarnation semantics that occurred before the slot
     /// was loaded. `current = 0` means the consumer should delete the slot.
-    pub storage: BTreeMap<Address, StorageChangeSet>,
+    pub storage: AddressMap<StorageChangeSet>,
     /// Newly created or modified bytecode keyed by code hash.
-    pub code: BTreeMap<B256, Bytecode>,
+    pub code: B256Map<Bytecode>,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
 }
@@ -67,21 +67,29 @@ pub struct StorageChangeSet {
     /// re-incarnation semantics using an explicit storage wipe marker.
     pub wipe: bool,
     /// Changed storage slots keyed by slot.
-    pub slots: BTreeMap<Word, Tracked<Word>>,
+    pub slots: U256Map<Tracked<Word>>,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
 }
 
 impl StateChangeSource for StateChanges {
     fn visit<S: StateChangeSink>(&self, sink: &mut S) -> Result<(), S::Error> {
-        for (&code_hash, code) in &self.code {
+        let mut code_entries = self.code.iter().collect::<Vec<_>>();
+        code_entries.sort_by_key(|(code_hash, _)| **code_hash);
+        for (&code_hash, code) in code_entries {
             sink.bytecode(code_hash, code)?;
         }
-        for (&address, storage) in &self.storage {
+
+        let mut storage_entries = self.storage.iter().collect::<Vec<_>>();
+        storage_entries.sort_by_key(|entry| *entry.0);
+        for (&address, storage) in storage_entries {
             if storage.wipe {
                 sink.storage_wipe(address)?;
             }
-            for (&key, slot) in &storage.slots {
+
+            let mut slots = storage.slots.iter().collect::<Vec<_>>();
+            slots.sort_by_key(|entry| *entry.0);
+            for (&key, slot) in slots {
                 sink.storage(StorageChangeRef {
                     address,
                     key,
@@ -90,7 +98,10 @@ impl StateChangeSource for StateChanges {
                 })?;
             }
         }
-        for (&address, change) in &self.accounts {
+
+        let mut account_entries = self.accounts.iter().collect::<Vec<_>>();
+        account_entries.sort_by_key(|entry| *entry.0);
+        for (&address, change) in account_entries {
             sink.account(AccountChangeRef {
                 address,
                 original: change.original.as_ref().map(AccountInfoRef::from_info),
