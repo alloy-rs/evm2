@@ -24,7 +24,7 @@ use evm2::{
     evm::{
         AccountChangeRef, AccountInfo as EvmAccountInfo, AccountInfoRef, BEACON_ROOTS_ADDRESS,
         BlockStateAccumulator, DbErrorCode, HISTORY_STORAGE_ADDRESS, InMemoryDB, StateChangeSink,
-        StateChangeSource, WITHDRAWAL_REQUEST_ADDRESS,
+        StateChangeSource, Tee, WITHDRAWAL_REQUEST_ADDRESS,
     },
     registry::HandlerError,
 };
@@ -470,23 +470,16 @@ fn execute_tx(
     Ok(evm.transact(tx)?.commit_to(block_state))
 }
 
-fn record_state_changes<S: StateChangeSource>(
-    block_state: &mut BlockStateAccumulator,
-    changes: &S,
-) {
-    match changes.visit(block_state) {
-        Ok(()) => {}
-        Err(err) => match err {},
-    }
-}
-
 fn commit_state_changes<S: StateChangeSource>(
     evm: &mut Evm<BaseEvmTypes>,
     block_state: &mut BlockStateAccumulator,
     changes: &S,
 ) {
-    evm.commit_source(changes);
-    record_state_changes(block_state, changes);
+    let mut sink = Tee::new(evm.overlay_db_mut(), block_state);
+    match changes.visit(&mut sink) {
+        Ok(()) => {}
+        Err(err) => match err {},
+    }
 }
 
 struct AccountStateChange {

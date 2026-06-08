@@ -109,6 +109,18 @@ impl State {
         }
     }
 
+    /// Returns the accepted-state overlay database.
+    #[inline]
+    pub fn overlay_db(&self) -> &CacheDB<Box<dyn DynDatabase>> {
+        &self.database
+    }
+
+    /// Returns the accepted-state overlay database mutably.
+    #[inline]
+    pub fn overlay_db_mut(&mut self) -> &mut CacheDB<Box<dyn DynDatabase>> {
+        &mut self.database
+    }
+
     /// Returns the initial database.
     #[inline]
     pub fn initial(&self) -> &dyn DynDatabase {

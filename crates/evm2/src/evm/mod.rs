@@ -315,6 +315,26 @@ impl<T: EvmTypes> Evm<T> {
         &self.registry
     }
 
+    /// Returns the accepted-state overlay database.
+    ///
+    /// This cache contains state changes committed through transaction lifecycle methods or
+    /// [`Self::commit_source`]. The wrapped backing database is available through
+    /// [`Self::database`].
+    #[inline]
+    pub fn overlay_db(&self) -> &CacheDB<Box<dyn DynDatabase>> {
+        self.state.overlay_db()
+    }
+
+    /// Returns the accepted-state overlay database mutably.
+    ///
+    /// This is useful when an external state-change source should be streamed into the accepted
+    /// overlay with a [`Tee`] or another [`StateChangeSink`]. The wrapped backing database is
+    /// available through [`Self::database_mut`].
+    #[inline]
+    pub fn overlay_db_mut(&mut self) -> &mut CacheDB<Box<dyn DynDatabase>> {
+        self.state.overlay_db_mut()
+    }
+
     /// Returns the backing database.
     #[inline]
     pub fn database(&self) -> &dyn DynDatabase {
@@ -325,18 +345,6 @@ impl<T: EvmTypes> Evm<T> {
     #[inline]
     pub fn database_mut(&mut self) -> &mut dyn DynDatabase {
         self.state.initial_mut()
-    }
-
-    /// Returns the accepted database overlay.
-    #[inline]
-    pub fn overlay_db(&self) -> &CacheDB<Box<dyn DynDatabase>> {
-        self.state.overlay_db()
-    }
-
-    /// Returns the accepted database overlay mutably.
-    #[inline]
-    pub fn overlay_db_mut(&mut self) -> &mut CacheDB<Box<dyn DynDatabase>> {
-        self.state.overlay_db_mut()
     }
 
     /// Returns the latest database error code raised during execution.
