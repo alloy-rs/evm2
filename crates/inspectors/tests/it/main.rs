@@ -8,7 +8,7 @@ pub mod utils;
 
 #[cfg(feature = "std")]
 mod geth;
-#[cfg(all(feature = "std", feature = "js-tracer"))]
+#[cfg(feature = "js-tracer")]
 mod geth_js;
 #[cfg(feature = "std")]
 mod parity;
