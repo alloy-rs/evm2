@@ -91,7 +91,7 @@ rstest.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
-revm = { version = "38", default-features = true, features = ["test-types"] }
+revm = { workspace = true, features = ["test-types"] }
 
 [[bench]]
 name = "evm"

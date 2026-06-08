@@ -1,4 +1,7 @@
-use std::{ops::RangeInclusive, path::PathBuf};
+use std::{num::NonZeroUsize, ops::RangeInclusive, path::PathBuf};
+
+const DEFAULT_MAX_CONCURRENT_REQUESTS: NonZeroUsize = NonZeroUsize::new(8).unwrap();
+const DEFAULT_RPC_RETRIES: u32 = 3;
 
 #[derive(Debug, clap::Parser)]
 #[command(name = "evm2", version, about = "Capture and replay Ethereum execution fixtures.")]
@@ -30,6 +33,12 @@ pub(crate) struct Capture {
     /// EEST JSON file to write.
     #[arg(long, value_name = "PATH")]
     pub(crate) output: PathBuf,
+    /// Maximum number of in-flight JSON-RPC requests.
+    #[arg(long, default_value_t = DEFAULT_MAX_CONCURRENT_REQUESTS)]
+    pub(crate) max_concurrent_requests: NonZeroUsize,
+    /// Maximum number of Alloy retry attempts for retryable RPC errors.
+    #[arg(long, default_value_t = DEFAULT_RPC_RETRIES)]
+    pub(crate) rpc_retries: u32,
 }
 
 #[derive(Debug, clap::Args)]

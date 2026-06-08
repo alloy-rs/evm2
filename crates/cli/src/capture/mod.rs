@@ -1,4 +1,3 @@
-mod block;
 mod builder;
 mod error;
 mod export;
@@ -10,34 +9,46 @@ mod rpc;
 pub(crate) use error::CaptureError;
 
 use crate::{args::Capture, error::Result, ethereum};
-use alloy_consensus::transaction::SignerRecoverable;
-use serde_json::Value;
-use std::{fs::File, io::BufWriter};
+use alloy_consensus::{
+    Block as ConsensusBlock, EthereumTxEnvelope, TxEip4844, transaction::SignerRecoverable,
+};
+use futures_util::{StreamExt, stream};
+use serde_json::{Value, value::RawValue};
+use std::{fs::File, io::BufWriter, time::Instant};
+
+type MainnetBlock = ConsensusBlock<EthereumTxEnvelope<TxEip4844>>;
 
 pub(crate) struct CaptureSummary {
     pub(crate) blocks: usize,
     pub(crate) transactions: usize,
     pub(crate) base_accounts: usize,
     pub(crate) base_storage_slots: usize,
+    pub(crate) elapsed_sec: f64,
 }
 
 pub(crate) fn run(command: Capture) -> Result<()> {
     let from = *command.range.start();
     let to = *command.range.end();
-    let summary = capture(&command.rpc, from, to, &command)
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|source| crate::error::Error::Capture { source: CaptureError::Runtime(source) })?;
+    let summary = runtime
+        .block_on(capture(&command.rpc, from, to, &command))
         .map_err(|source| crate::error::Error::Capture { source })?;
     println!(
-        "captured EEST {}: {} blocks, {} txs, {} base accounts, {} base storage slots",
+        "captured EEST {}: {} blocks, {} txs, {} base accounts, {} base storage slots in {:.2}s",
         command.output.display(),
         summary.blocks,
         summary.transactions,
         summary.base_accounts,
-        summary.base_storage_slots
+        summary.base_storage_slots,
+        summary.elapsed_sec
     );
     Ok(())
 }
 
-fn capture(
+async fn capture(
     rpc_url: &str,
     from: u64,
     to: u64,
@@ -47,31 +58,26 @@ fn capture(
         return Err(CaptureError::InvalidRange { from, to });
     }
 
-    let rpc = rpc::RpcEndpoint::parse(rpc_url)?;
+    let started_at = Instant::now();
+    let rpc = rpc::RpcEndpoint::parse(
+        rpc_url,
+        command.max_concurrent_requests.get(),
+        command.rpc_retries,
+    )?;
     let mut builder = builder::CaptureBuilder::mainnet();
     let mut overlay = overlay::Overlay::default();
     let mut block_inputs = Vec::with_capacity((to - from + 1) as usize);
     let mut transaction_count = 0usize;
 
-    builder.capture_block_hashes(&rpc, from)?;
+    builder.capture_block_hashes(&rpc, from).await?;
+    let mut blocks = stream::iter(from..=to)
+        .map(|number| fetch_block(&rpc, number))
+        .buffered(rpc.max_concurrent_requests());
 
-    for number in from..=to {
-        let block_id = rpc::hex_quantity(number);
-        let raw_block = rpc.raw_block(&block_id)?;
-        let consensus_block = block::decode_consensus_block(&raw_block)?;
-
-        let pre_traces = rpc.trace_block(&block_id, rpc::TraceMode::PreState)?;
-        let diff_traces = rpc.trace_block(&block_id, rpc::TraceMode::Diff)?;
-        if pre_traces.len() != consensus_block.body.transactions.len()
-            || diff_traces.len() != consensus_block.body.transactions.len()
-        {
-            return Err(CaptureError::TraceTransactionCountMismatch {
-                block_number: number,
-                expected: consensus_block.body.transactions.len(),
-                prestate: pre_traces.len(),
-                diff: diff_traces.len(),
-            });
-        }
+    while let Some(block) = blocks.next().await {
+        let block_started_at = Instant::now();
+        let PreparedBlock { number, consensus_block, pre_traces, diff_traces, transactions } =
+            block?;
 
         for (tx_index, ((pre_trace, diff_trace), tx)) in pre_traces
             .iter()
@@ -91,26 +97,15 @@ fn capture(
 
         let spec = ethereum::mainnet_spec_for_header(&consensus_block.header);
         let _version_index = builder.version_index(spec)?;
-        let transactions = consensus_block
-            .body
-            .transactions
-            .iter()
-            .map(|tx| {
-                let signer = tx.recover_signer().map_err(CaptureError::RecoverSigner)?;
-                Ok(model::CapturedTransaction { signer })
-            })
-            .collect::<std::result::Result<Vec<_>, CaptureError>>()?;
+        let block_transaction_count = transactions.len();
+        transaction_count += block_transaction_count;
+        block_inputs.push(model::CapturedBlock { block: consensus_block, transactions });
 
-        transaction_count += transactions.len();
-        block_inputs.push(model::CapturedBlock {
-            number: consensus_block.header.number,
-            hash: consensus_block.header.hash_slow(),
-            parent_hash: consensus_block.header.parent_hash,
-            raw_block,
-            transactions,
-        });
-
-        eprintln!("captured block {number} ({} txs)", consensus_block.body.transactions.len());
+        eprintln!(
+            "captured block {number} ({} txs) in {:.2}s",
+            block_transaction_count,
+            block_started_at.elapsed().as_secs_f64()
+        );
     }
 
     let capture = builder.finish(block_inputs);
@@ -132,5 +127,66 @@ fn capture(
         transactions: transaction_count,
         base_accounts,
         base_storage_slots,
+        elapsed_sec: started_at.elapsed().as_secs_f64(),
     })
+}
+
+struct FetchedBlock {
+    number: u64,
+    consensus_block: MainnetBlock,
+    pre_traces: Box<RawValue>,
+    diff_traces: Box<RawValue>,
+}
+
+struct PreparedBlock {
+    number: u64,
+    consensus_block: MainnetBlock,
+    pre_traces: Vec<Value>,
+    diff_traces: Vec<Value>,
+    transactions: Vec<model::CapturedTransaction>,
+}
+
+async fn fetch_block(
+    rpc: &rpc::RpcEndpoint,
+    number: u64,
+) -> std::result::Result<PreparedBlock, CaptureError> {
+    let (consensus_block, pre_traces, diff_traces) = tokio::try_join!(
+        rpc.block(number),
+        rpc.trace_block(number, rpc::TraceMode::PreState),
+        rpc.trace_block(number, rpc::TraceMode::Diff),
+    )?;
+    prepare_block(FetchedBlock { number, consensus_block, pre_traces, diff_traces }).await
+}
+
+async fn prepare_block(block: FetchedBlock) -> std::result::Result<PreparedBlock, CaptureError> {
+    tokio::task::spawn_blocking(move || {
+        let FetchedBlock { number, consensus_block, pre_traces, diff_traces } = block;
+        let pre_traces: Vec<Value> =
+            serde_json::from_str(pre_traces.get()).map_err(CaptureError::DecodeTrace)?;
+        let diff_traces: Vec<Value> =
+            serde_json::from_str(diff_traces.get()).map_err(CaptureError::DecodeTrace)?;
+        let expected = consensus_block.body.transactions.len();
+        if pre_traces.len() != expected || diff_traces.len() != expected {
+            return Err(CaptureError::TraceTransactionCountMismatch {
+                block_number: number,
+                expected,
+                prestate: pre_traces.len(),
+                diff: diff_traces.len(),
+            });
+        }
+
+        let transactions = consensus_block
+            .body
+            .transactions
+            .iter()
+            .map(|tx| {
+                let signer = tx.recover_signer().map_err(CaptureError::RecoverSigner)?;
+                Ok(model::CapturedTransaction { signer })
+            })
+            .collect::<std::result::Result<Vec<_>, CaptureError>>()?;
+
+        Ok(PreparedBlock { number, consensus_block, pre_traces, diff_traces, transactions })
+    })
+    .await
+    .map_err(CaptureError::JoinBlockPreparation)?
 }

@@ -52,7 +52,9 @@ alloy-eips = { version = "2.0.4", default-features = false }
 alloy-hardforks = { version = "0.4.7", default-features = false }
 wincode = { version = "0.4", default-features = false }
 alloy-primitives = { version = "1.5.7", default-features = false }
+alloy-provider = { version = "2.0.4", default-features = false }
 alloy-rlp = { version = "0.3", default-features = false }
+alloy-rpc-client = { version = "2.0.4", default-features = false }
 alloy-rpc-types-eth = { version = "2.0.4", default-features = false }
 alloy-rpc-types-trace = { version = "2.0.4", default-features = false }
 alloy-sol-types = { version = "1.5.7", default-features = false }
@@ -73,18 +75,19 @@ corosensei = { version = "0.3.4", default-features = false, features = [
     "default-stack",
     "unwind",
 ] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 libtest-mimic = "0.8"
 once_cell = { version = "1.21", default-features = false }
 paste = { version = "1.0", default-features = false }
 phf = { version = "0.13", default-features = false }
 rand = "0.10"
+revm = { version = "38", default-features = true, features = ["asm-keccak"] }
 rstest = "0.26.0"
 serde = { version = "1.0", default-features = false }
 serde_json = { version = "1.0", default-features = false }
 snapbox = "0.6"
 thiserror = { version = "2.0", default-features = false }
 tokio = { version = "1", default-features = false }
-ureq = { version = "3.3.0", default-features = false }
 walkdir = { version = "2.5", default-features = false }
 boa_engine = { version = "0.21", default-features = false }
 boa_gc = { version = "0.21", default-features = false }

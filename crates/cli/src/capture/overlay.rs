@@ -1,5 +1,5 @@
 use super::{
-    block::MainnetBlock,
+    MainnetBlock,
     builder::AccountField,
     parse::{parse_address, parse_b256},
 };
