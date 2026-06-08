@@ -7,7 +7,7 @@ mod journal;
 mod stream;
 
 pub use account::{Account, AccountInfo, StorageOverlay, Tracked};
-pub use block::{BlockStateAccumulator, FrozenBlockState};
+pub use block::BlockStateAccumulator;
 pub use changes::{StateChanges, StorageChangeSet};
 pub use journal::{JournalEntry, StateCheckpoint};
 pub use stream::{
@@ -1394,10 +1394,9 @@ mod tests {
         delete.storage = storage_wipe(address).storage;
         delete.visit(&mut accumulator).expect("block accumulator is infallible");
 
-        let frozen = accumulator.freeze();
-        assert!(frozen.accounts_sorted().is_empty());
-        assert!(frozen.storage_wipes_sorted().is_empty());
-        assert!(frozen.storage_sorted().is_empty());
+        assert!(accumulator.accounts_sorted().is_empty());
+        assert!(accumulator.storage_wipes_sorted().is_empty());
+        assert!(accumulator.storage_sorted().is_empty());
     }
 
     #[test]
@@ -1416,14 +1415,13 @@ mod tests {
         create.storage = storage_change(address, key, Word::ZERO, Word::from(7), true).storage;
         create.visit(&mut accumulator).expect("block accumulator is infallible");
 
-        let frozen = accumulator.freeze();
-        let accounts = frozen.accounts_sorted();
+        let accounts = accumulator.accounts_sorted();
         assert_eq!(accounts.len(), 1);
         assert_eq!(accounts[0].1.original.as_ref(), Some(&without_code(original)));
         assert_eq!(accounts[0].1.current.as_ref(), Some(&without_code(recreated)));
-        assert_eq!(frozen.storage_wipes_sorted(), [address]);
+        assert_eq!(accumulator.storage_wipes_sorted(), [address]);
 
-        let storage = frozen.storage_sorted();
+        let storage = accumulator.storage_sorted();
         assert_eq!(storage.len(), 1);
         assert_eq!(storage[0].0.key(), key);
         assert_eq!(storage[0].1.current, Word::from(7));
@@ -1441,11 +1439,10 @@ mod tests {
             storage_change(address, key, Word::from(5), Word::from(5), true).storage;
         wipe_and_restore.visit(&mut accumulator).expect("block accumulator is infallible");
 
-        let frozen = accumulator.freeze();
-        assert!(frozen.accounts_sorted().is_empty());
-        assert_eq!(frozen.storage_wipes_sorted(), [address]);
+        assert!(accumulator.accounts_sorted().is_empty());
+        assert_eq!(accumulator.storage_wipes_sorted(), [address]);
 
-        let storage = frozen.storage_sorted();
+        let storage = accumulator.storage_sorted();
         assert_eq!(storage.len(), 1);
         assert_eq!(storage[0].0.key(), key);
         assert_eq!(storage[0].1.current, Word::from(5));
@@ -1462,13 +1459,12 @@ mod tests {
         delete.storage = storage_change(address, key, Word::from(5), Word::from(7), true).storage;
         delete.visit(&mut accumulator).expect("block accumulator is infallible");
 
-        let frozen = accumulator.freeze();
-        let accounts = frozen.accounts_sorted();
+        let accounts = accumulator.accounts_sorted();
         assert_eq!(accounts.len(), 1);
         assert_eq!(accounts[0].0, address);
         assert!(accounts[0].1.current.is_none());
-        assert!(frozen.storage_wipes_sorted().is_empty());
-        assert!(frozen.storage_sorted().is_empty());
+        assert!(accumulator.storage_wipes_sorted().is_empty());
+        assert!(accumulator.storage_sorted().is_empty());
     }
 
     #[test]
@@ -1481,10 +1477,9 @@ mod tests {
         first.visit(&mut accumulator).expect("block accumulator is infallible");
         storage_wipe(address).visit(&mut accumulator).expect("block accumulator is infallible");
 
-        let frozen = accumulator.freeze();
-        assert!(frozen.accounts_sorted().is_empty());
-        assert_eq!(frozen.storage_wipes_sorted(), [address]);
-        assert!(frozen.storage_sorted().is_empty());
+        assert!(accumulator.accounts_sorted().is_empty());
+        assert_eq!(accumulator.storage_wipes_sorted(), [address]);
+        assert!(accumulator.storage_sorted().is_empty());
     }
 
     #[test]
@@ -1503,15 +1498,14 @@ mod tests {
             .visit(&mut accumulator)
             .expect("block accumulator is infallible");
 
-        let frozen = accumulator.freeze();
-        let accounts = frozen.accounts_sorted();
+        let accounts = accumulator.accounts_sorted();
         assert_eq!(accounts.len(), 1);
         assert_eq!(accounts[0].0, account_address);
         assert_eq!(accounts[0].1.original.as_ref(), Some(&without_code(original)));
         assert_eq!(accounts[0].1.current.as_ref(), Some(&without_code(current)));
-        assert!(frozen.storage_wipes_sorted().is_empty());
+        assert!(accumulator.storage_wipes_sorted().is_empty());
 
-        let storage = frozen.storage_sorted();
+        let storage = accumulator.storage_sorted();
         assert_eq!(storage.len(), 1);
         assert_eq!(storage[0].0.address(), storage_address);
         assert_eq!(storage[0].0.key(), key);

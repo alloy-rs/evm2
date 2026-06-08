@@ -16,8 +16,8 @@ pub mod utils;
 
 pub mod evm;
 pub use evm::{
-    BlockStateAccumulator, Evm, ExecutedTx, FrozenBlockState, StateChangeSink, StateChangeSource,
-    Tee, TxOutcome, TxResult, config,
+    BlockStateAccumulator, Evm, ExecutedTx, StateChangeSink, StateChangeSource, Tee, TxOutcome,
+    TxResult, config,
     config::{
         BaseEvmConfig, BaseEvmConfigSelector, BaseEvmTypes, EvmConfig, EvmConfigSelector, EvmTypes,
         ExecutionConfig,

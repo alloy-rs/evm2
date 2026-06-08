@@ -35,7 +35,7 @@
 //!    is cleared after `commit`, `commit_to`, `commit_with`, `discard`, or `detach` while retaining
 //!    capacity where possible.
 //! 3. **Block accumulator**: optional block-level state output. It coalesces committed transaction
-//!    writes, keeps block-boundary originals, and can be frozen into [`FrozenBlockState`].
+//!    writes and keeps block-boundary originals.
 //!
 //! The accepted overlay is for execution correctness between transactions. The block accumulator
 //! is for final block output.
@@ -54,9 +54,9 @@
 //! ## Source and sink API
 //!
 //! [`StateChangeSource`] and [`StateChangeSink`] provide borrowed state-change streaming. Sources
-//! include transaction scratch, [`StateChanges`], [`BlockStateAccumulator`], and
-//! [`FrozenBlockState`]. Sinks include [`BlockStateAccumulator`], [`CacheDB`], [`Tee`], and custom
-//! consumers such as trie updaters, witnesses, execution caches, or test recorders.
+//! include transaction scratch, [`StateChanges`], and [`BlockStateAccumulator`]. Sinks include
+//! [`BlockStateAccumulator`], [`CacheDB`], [`Tee`], and custom consumers such as trie updaters,
+//! witnesses, execution caches, or test recorders.
 //!
 //! The common hot path can therefore stream the same transaction writes into multiple consumers
 //! without cloning or materializing the write-set first.
@@ -78,7 +78,7 @@
 //! ```text
 //! eth_call / simulation: transact -> discard
 //! serial block:          transact -> commit
-//! block output:          transact -> commit_to -> FrozenBlockState
+//! block output:          transact -> commit_to -> BlockStateAccumulator
 //! materialized tx diff:  transact -> detach -> TxResult
 //! parallel worker:       transact -> detach -> send owned diff
 //! ```
@@ -102,7 +102,7 @@
 //!     receipts.push(receipt_builder.finish(outcome));
 //! }
 //!
-//! let frozen_state = block_state.freeze();
+//! let storage_deltas = block_state.storage_sorted();
 //! ```
 //!
 //! Detached materialized output:
@@ -162,10 +162,9 @@ pub use tx::{ExecutedTx, TxOutcome, TxResult};
 
 mod state;
 pub use state::{
-    Account, AccountChangeRef, AccountInfo, AccountInfoRef, BlockStateAccumulator,
-    FrozenBlockState, JournalEntry, NoopChangeSink, State, StateChangeSink, StateChangeSource,
-    StateChanges, StateCheckpoint, StorageChangeRef, StorageChangeSet, StorageOverlay, Tee,
-    Tracked,
+    Account, AccountChangeRef, AccountInfo, AccountInfoRef, BlockStateAccumulator, JournalEntry,
+    NoopChangeSink, State, StateChangeSink, StateChangeSource, StateChanges, StateCheckpoint,
+    StorageChangeRef, StorageChangeSet, StorageOverlay, Tee, Tracked,
 };
 
 /// EVM host and transaction dispatcher.
@@ -2007,8 +2006,7 @@ mod tests {
             .expect("lifecycle transaction should execute")
             .commit_to(&mut block_state);
 
-        let frozen = block_state.freeze();
-        let storage = frozen.storage_sorted();
+        let storage = block_state.storage_sorted();
         assert_eq!(storage.len(), 1);
         assert_eq!(storage[0].1.original, Word::from(1));
         assert_eq!(storage[0].1.current, Word::from(9));
@@ -2030,8 +2028,8 @@ mod tests {
             .commit_with(&mut tee)
             .expect("block accumulators are infallible");
 
-        assert_eq!(left.freeze().storage_sorted()[0].1.current, Word::from(7));
-        assert_eq!(right.freeze().storage_sorted()[0].1.current, Word::from(7));
+        assert_eq!(left.storage_sorted()[0].1.current, Word::from(7));
+        assert_eq!(right.storage_sorted()[0].1.current, Word::from(7));
     }
 
     #[test]
