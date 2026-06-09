@@ -440,7 +440,7 @@ impl JsInspector {
         if self.precompiles_registered {
             return;
         }
-        let precompiles = PrecompileList(HashSet::from_iter(host.precompiles().warm_addresses()));
+        let precompiles = PrecompileList(HashSet::from_iter(host.precompiles().addresses()));
 
         let _ = precompiles.register_callable(&mut self.ctx);
 

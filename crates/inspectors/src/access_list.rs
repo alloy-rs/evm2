@@ -89,7 +89,7 @@ impl AccessListInspector {
     ) {
         self.excluded = [message.caller, message.destination]
             .into_iter()
-            .chain(host.precompiles().warm_addresses())
+            .chain(host.precompiles().addresses())
             .chain(host.eip7702_authorities())
             .collect();
     }
