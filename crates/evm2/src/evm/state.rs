@@ -413,6 +413,18 @@ impl State {
         self.database.db.as_mut()
     }
 
+    /// Returns the accepted database overlay.
+    #[inline]
+    pub const fn overlay_db(&self) -> &CacheDB<Box<dyn DynDatabase>> {
+        &self.database
+    }
+
+    /// Returns the accepted database overlay mutably.
+    #[inline]
+    pub const fn overlay_db_mut(&mut self) -> &mut CacheDB<Box<dyn DynDatabase>> {
+        &mut self.database
+    }
+
     /// Replaces the initial database and clears all in-memory state layers.
     #[inline]
     pub fn set_initial(&mut self, initial: impl DynDatabase) {

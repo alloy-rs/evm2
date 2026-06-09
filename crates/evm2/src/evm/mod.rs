@@ -211,6 +211,18 @@ impl<T: EvmTypes> Evm<T> {
         self.state.initial_mut()
     }
 
+    /// Returns the accepted database overlay.
+    #[inline]
+    pub fn overlay_db(&self) -> &CacheDB<Box<dyn DynDatabase>> {
+        self.state.overlay_db()
+    }
+
+    /// Returns the accepted database overlay mutably.
+    #[inline]
+    pub fn overlay_db_mut(&mut self) -> &mut CacheDB<Box<dyn DynDatabase>> {
+        self.state.overlay_db_mut()
+    }
+
     /// Returns the latest database error code raised during execution.
     #[inline]
     pub const fn db_error_code(&self) -> Option<DbErrorCode> {
