@@ -101,7 +101,8 @@ pub trait Inspector<T: EvmTypes>: Any {
 }
 
 /// Inspector that does nothing.
-#[derive(Clone, Copy, Debug, Default)]
+#[allow(missing_copy_implementations)]
+#[derive(Clone, Debug, Default)]
 pub struct NoopInspector(());
 
 impl<T: EvmTypes> Inspector<T> for NoopInspector {}

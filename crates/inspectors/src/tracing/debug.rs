@@ -68,7 +68,7 @@ impl DebugInspector {
             Self::PreStateTracer(inspector, config) => {
                 Self::PreStateTracer(inspector.clone(), *config)
             }
-            Self::Noop(inspector) => Self::Noop(*inspector),
+            Self::Noop(inspector) => Self::Noop(inspector.clone()),
             Self::Mux(inspector, config) => Self::Mux(inspector.clone(), config.clone()),
             Self::FlatCallTracer(inspector) => Self::FlatCallTracer(inspector.clone()),
             Self::Erc7562Tracer(inspector, config) => {

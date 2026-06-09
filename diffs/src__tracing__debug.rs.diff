@@ -67,6 +67,15 @@
  impl DebugInspector {
      /// Creates a fresh copy of this inspector, resetting all execution state.
      pub fn try_clone(&self) -> Result<Self, DebugInspectorError> {
+@@ -62,7 +68,7 @@
+             Self::PreStateTracer(inspector, config) => {
+                 Self::PreStateTracer(inspector.clone(), *config)
+             }
+-            Self::Noop(inspector) => Self::Noop(*inspector),
++            Self::Noop(inspector) => Self::Noop(inspector.clone()),
+             Self::Mux(inspector, config) => Self::Mux(inspector.clone(), config.clone()),
+             Self::FlatCallTracer(inspector) => Self::FlatCallTracer(inspector.clone()),
+             Self::Erc7562Tracer(inspector, config) => {
 @@ -109,9 +115,7 @@
                              config,
                          )

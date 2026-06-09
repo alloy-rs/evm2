@@ -79,7 +79,7 @@ impl<T: EvmTypes, P: PrecompileProvider<T> + ?Sized> PrecompileProvider<T> for B
 
 /// Empty precompile provider.
 #[allow(missing_debug_implementations, missing_copy_implementations)]
-#[derive(Default)]
+#[derive(Clone, Debug, Default)]
 pub struct NoPrecompiles(());
 
 impl<T: EvmTypes> PrecompileProvider<T> for NoPrecompiles {
