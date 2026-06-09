@@ -20,7 +20,7 @@ use alloc::{
 };
 use alloy_primitives::{Address, Bytes, TxKind, U256, map::HashSet};
 pub use boa_engine::vm::RuntimeLimits;
-use boa_engine::{Context, JsError, JsObject, JsValue, Source, js_string};
+use boa_engine::{Context, JsError, JsObject, JsResult, JsValue, Source, js_string};
 use evm2::{
     Evm, EvmTypes, Inspector, TxResult,
     env::BlockEnv,
@@ -53,9 +53,9 @@ pub const RECURSION_LIMIT: usize = 10_000;
 /// with the correct gas cost.
 #[derive(Debug)]
 struct PendingStep {
-    /// Cloned stack from before opcode execution.
+    /// Cloned stack from before opcode execution
     stack: Vec<Word>,
-    /// Program counter.
+    /// Program counter
     pc: u64,
     /// Opcode being executed
     op: u8,
@@ -67,7 +67,7 @@ struct PendingStep {
     refund: u64,
     /// Contract info
     contract: Contract,
-    /// Total gas spent before this opcode, to compute delta in step_end.
+    /// Total gas spent before this opcode (to compute delta in step_end)
     gas_spent_before: u64,
 }
 
@@ -319,36 +319,35 @@ impl JsInspector {
         )?)
     }
 
-    fn try_fault(&mut self, step: StepLog, db: EvmDbRef) -> Result<(), JsError> {
-        let js_step = step.into_js_object(&mut self.ctx)?;
+    fn try_fault(&mut self, step: StepLog, db: EvmDbRef) -> JsResult<()> {
+        let step = step.into_js_object(&mut self.ctx)?;
         let db = db.into_js_object(&mut self.ctx)?;
-        self.fault_fn.call(
-            &(self.obj.clone().into()),
-            &[js_step.into(), db.into()],
-            &mut self.ctx,
-        )?;
+        self.fault_fn.call(&(self.obj.clone().into()), &[step.into(), db.into()], &mut self.ctx)?;
         Ok(())
     }
 
-    fn try_step(&mut self, step: StepLog, db: EvmDbRef) -> Result<(), JsError> {
-        let Some(step_fn) = &self.step_fn else { return Ok(()) };
-        let js_step = step.into_js_object(&mut self.ctx)?;
-        let db = db.into_js_object(&mut self.ctx)?;
-        step_fn.call(&(self.obj.clone().into()), &[js_step.into(), db.into()], &mut self.ctx)?;
+    fn try_step(&mut self, step: StepLog, db: EvmDbRef) -> JsResult<()> {
+        if let Some(step_fn) = &self.step_fn {
+            let step = step.into_js_object(&mut self.ctx)?;
+            let db = db.into_js_object(&mut self.ctx)?;
+            step_fn.call(&(self.obj.clone().into()), &[step.into(), db.into()], &mut self.ctx)?;
+        }
         Ok(())
     }
 
-    fn try_enter(&mut self, frame: CallFrame) -> Result<(), JsError> {
-        let Some(enter_fn) = &self.enter_fn else { return Ok(()) };
-        let frame = frame.into_js_object(&mut self.ctx)?;
-        enter_fn.call(&(self.obj.clone().into()), &[frame.into()], &mut self.ctx)?;
+    fn try_enter(&mut self, frame: CallFrame) -> JsResult<()> {
+        if let Some(enter_fn) = &self.enter_fn {
+            let frame = frame.into_js_object(&mut self.ctx)?;
+            enter_fn.call(&(self.obj.clone().into()), &[frame.into()], &mut self.ctx)?;
+        }
         Ok(())
     }
 
-    fn try_exit(&mut self, frame_result: FrameResult) -> Result<(), JsError> {
-        let Some(exit_fn) = &self.exit_fn else { return Ok(()) };
-        let frame_result = frame_result.into_js_object(&mut self.ctx)?;
-        exit_fn.call(&(self.obj.clone().into()), &[frame_result.into()], &mut self.ctx)?;
+    fn try_exit(&mut self, frame: FrameResult) -> JsResult<()> {
+        if let Some(exit_fn) = &self.exit_fn {
+            let frame = frame.into_js_object(&mut self.ctx)?;
+            exit_fn.call(&(self.obj.clone().into()), &[frame.into()], &mut self.ctx)?;
+        }
         Ok(())
     }
 
@@ -360,51 +359,58 @@ impl JsInspector {
         self.call_stack.last().expect("call stack is empty")
     }
 
+    #[inline]
     fn pop_call(&mut self) {
-        let _ = self.call_stack.pop();
+        self.call_stack.pop();
     }
 
     /// Returns true whether the active call is the root call.
+    #[inline]
     const fn is_root_call_active(&self) -> bool {
         self.call_stack.len() == 1
     }
 
     /// Returns true if there's an enter function and the active call is not the root call.
+    #[inline]
     const fn can_call_enter(&self) -> bool {
         self.enter_fn.is_some() && !self.is_root_call_active()
     }
 
     /// Returns true if there's an exit function and the active call is not the root call.
-    const fn can_call_exit(&self) -> bool {
+    #[inline]
+    const fn can_call_exit(&mut self) -> bool {
         self.exit_fn.is_some() && !self.is_root_call_active()
     }
 
-    /// Pushes a new call to the stack.
-    fn push_call<T: EvmTypes>(&mut self, message: &Message<T>) {
-        let (caller, contract) = match message.kind {
-            MessageKind::CallCode | MessageKind::DelegateCall => {
-                (message.destination, message.code_address)
-            }
-            _ => (message.caller, message.destination),
-        };
-        let value =
-            if message.kind == MessageKind::DelegateCall { U256::ZERO } else { message.value };
+    /// Pushes a new call to the stack
+    fn push_call(
+        &mut self,
+        contract: Address,
+        input: Bytes,
+        value: U256,
+        kind: CallKind,
+        caller: Address,
+        gas_limit: u64,
+    ) -> &CallStackItem {
         let call = CallStackItem {
-            contract: Contract { caller, contract, value, input: message.input.clone() },
-            kind: message.kind.into(),
-            gas_limit: message.gas_limit,
+            contract: Contract { caller, contract, value, input },
+            kind,
+            gas_limit,
         };
         self.call_stack.push(call);
+        self.active_call()
     }
 
-    /// Registers the precompiles in the JS context.
+    /// Registers the precompiles in the JS context
     fn register_precompiles<T: EvmTypes<Host = Evm<T>>>(&mut self, host: &Evm<T>) {
         if self.precompiles_registered {
             return;
         }
         let precompiles = PrecompileList(HashSet::from_iter(host.precompiles().warm_addresses()));
+
         let _ = precompiles.register_callable(&mut self.ctx);
-        self.precompiles_registered = true;
+
+        self.precompiles_registered = true
     }
 }
 
@@ -416,6 +422,8 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for JsInspector {
             return;
         }
 
+        // Update the cached memory snapshot only if the previous opcode modified memory.
+        // This avoids an expensive Vec<u8> clone on every single step.
         let should_update_memory = self.prev_op.is_none_or(|prev| prev.modifies_memory());
         if should_update_memory {
             self.cached_memory = MemorySnapshot::new(interp.memory_ref());
@@ -456,44 +464,46 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for JsInspector {
         let is_revert = matches!(result, Err(stop) if stop.is_revert());
         let cost = interp.gas().spent().saturating_sub(pending.gas_spent_before);
 
-        let mut stop = false;
-        {
-            let (db, _db_guard) = EvmDbRef::new_state(interp.host().state_mut());
-            let (stack, _stack_guard) = StackRef::new_words(pending.stack);
-            let (memory, _memory_guard) = MemoryRef::new_owned(self.cached_memory.clone());
+        let (db, db_guard) = EvmDbRef::new_state(interp.host().state_mut());
+        let (stack, stack_guard) = StackRef::new_words(pending.stack);
+        let (memory, memory_guard) = MemoryRef::new_owned(self.cached_memory.clone());
 
-            if is_revert {
-                let step = StepLog {
-                    stack,
-                    op: OpObj(op::REVERT),
-                    memory,
-                    pc: pending.pc,
-                    gas_remaining: pending.gas_remaining,
-                    cost,
-                    depth: pending.depth,
-                    refund: pending.refund,
-                    error: result.err().map(|err| format!("{err:?}")),
-                    contract: pending.contract,
-                };
+        let stop = if is_revert {
+            let step = StepLog {
+                stack,
+                op: OpObj(op::REVERT),
+                memory,
+                pc: pending.pc,
+                gas_remaining: pending.gas_remaining,
+                cost,
+                depth: pending.depth,
+                refund: pending.refund,
+                error: result.err().map(|err| format!("{err:?}")),
+                contract: pending.contract,
+            };
 
-                let _ = self.try_fault(step, db);
-            } else {
-                let step = StepLog {
-                    stack,
-                    op: OpObj(pending.op),
-                    memory,
-                    pc: pending.pc,
-                    gas_remaining: pending.gas_remaining,
-                    cost,
-                    depth: pending.depth,
-                    refund: pending.refund,
-                    error: None,
-                    contract: pending.contract,
-                };
+            let _ = self.try_fault(step, db);
+            false
+        } else {
+            let step = StepLog {
+                stack,
+                op: OpObj(pending.op),
+                memory,
+                pc: pending.pc,
+                gas_remaining: pending.gas_remaining,
+                cost,
+                depth: pending.depth,
+                refund: pending.refund,
+                error: None,
+                contract: pending.contract,
+            };
 
-                stop = self.try_step(step, db).is_err() && result.is_ok();
-            }
-        }
+            self.try_step(step, db).is_err() && result.is_ok()
+        };
+
+        drop(memory_guard);
+        drop(stack_guard);
+        drop(db_guard);
 
         if stop {
             interp.set_stop(InstrStop::Revert);
@@ -506,7 +516,26 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for JsInspector {
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
         self.register_precompiles(interp.host());
-        self.push_call(message);
+
+        // determine contract and caller based on the call scheme
+        let (caller, contract) = match message.kind {
+            MessageKind::DelegateCall | MessageKind::CallCode => {
+                (message.destination, message.code_address)
+            }
+            _ => (message.caller, message.destination),
+        };
+
+        let value =
+            if message.kind == MessageKind::DelegateCall { U256::ZERO } else { message.value };
+        self.push_call(
+            contract,
+            message.input.clone(),
+            value,
+            message.kind.into(),
+            caller,
+            message.gas_limit,
+        );
+
         if self.can_call_enter() {
             let call = self.active_call();
             let frame =
@@ -515,6 +544,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for JsInspector {
                 return Some(js_error_to_revert(err));
             }
         }
+
         None
     }
 
@@ -544,7 +574,15 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for JsInspector {
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
         self.register_precompiles(interp.host());
-        self.push_call(message);
+        self.push_call(
+            message.destination,
+            message.input.clone(),
+            message.value,
+            message.kind.into(),
+            message.caller,
+            message.gas_limit,
+        );
+
         if self.can_call_enter() {
             let call = self.active_call();
             let frame =
@@ -553,6 +591,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for JsInspector {
                 return Some(js_error_to_revert(err));
             }
         }
+
         None
     }
 
@@ -600,21 +639,12 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for JsInspector {
     }
 }
 
-/// Represents an active call.
-#[derive(Clone, Debug, Default)]
+/// Represents an active call
+#[derive(Debug)]
 struct CallStackItem {
     contract: Contract,
     kind: CallKind,
     gas_limit: u64,
-}
-
-fn js_error_to_revert<T: EvmTypes>(err: JsError) -> MessageResult<T> {
-    MessageResult {
-        stop: InstrStop::Revert,
-        output: err.to_string().into_bytes().into(),
-        gas: GasTracker::new(0),
-        ..Default::default()
-    }
 }
 
 /// Error variants that can occur during JavaScript inspection.
@@ -653,11 +683,22 @@ pub enum JsInspectorError {
     InvalidJsonConfig(JsError),
 }
 
+/// Converts a JavaScript error into a [InstrStop::Revert] [MessageResult].
+#[inline]
+fn js_error_to_revert<T: EvmTypes>(err: JsError) -> MessageResult<T> {
+    let output = err.to_string().as_bytes().to_vec();
+    MessageResult {
+        stop: InstrStop::Revert,
+        output: output.into(),
+        gas: GasTracker::new(0),
+        ..Default::default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tracing::js::{bindings::JsEvmContext, builtins::to_serde_value};
-    use alloc::{format, string::ToString, vec, vec::Vec};
+    use alloc::{string::ToString, vec, vec::Vec};
     use alloy_consensus::{TxLegacy, transaction::Recovered};
     use alloy_primitives::{Address, Bytes, TxKind, U256, bytes, hex};
     use evm2::{
@@ -665,93 +706,9 @@ mod tests {
         bytecode::Bytecode,
         ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
         evm::{AccountInfo, CacheDB, EmptyDB},
+        interpreter::Host,
     };
     use serde_json::json;
-
-    fn js_result(
-        insp: &mut JsInspector,
-        result: &evm2::TxResult,
-        target: Address,
-        gas_price: u128,
-        db: &mut dyn DynDatabase,
-    ) -> serde_json::Value {
-        let mut error = None;
-        if !result.status {
-            error = if result.stop.is_revert() {
-                Some("execution reverted".to_string())
-            } else {
-                Some(format!("execution halted: {:?}", result.stop))
-            };
-        }
-        let ctx = JsEvmContext {
-            r#type: "CALL".to_string(),
-            from: Address::ZERO,
-            to: Some(target),
-            input: Bytes::new(),
-            gas: 1_000_000,
-            gas_used: result.gas_used,
-            gas_price: gas_price.try_into().unwrap_or(u64::MAX),
-            value: U256::ZERO,
-            block: 0,
-            coinbase: Address::ZERO,
-            output: result.output.clone(),
-            time: "0".to_string(),
-            intrinsic_gas: 0,
-            transaction_ctx: TransactionContext::default(),
-            error,
-        };
-        let ctx = ctx.into_js_object(&mut insp.ctx).unwrap();
-        let (db, _db_guard) = EvmDbRef::new_changes(&result.state_changes, db);
-        let db = db.into_js_object(&mut insp.ctx).unwrap();
-        let result = insp
-            .result_fn
-            .call(&(insp.obj.clone().into()), &[ctx.into(), db.into()], &mut insp.ctx)
-            .unwrap();
-        to_serde_value(result, &mut insp.ctx).unwrap()
-    }
-
-    fn run_trace(code: &str, contract: Option<Bytes>, success: bool) -> serde_json::Value {
-        let addr = Address::repeat_byte(0x01);
-        let mut db = CacheDB::new(EmptyDB::default());
-
-        db.insert_account_info(
-            &Address::ZERO,
-            AccountInfo::default().with_balance(U256::from(1_000_000_000_000_000_000u64)),
-        );
-        db.insert_account_info(
-            &addr,
-            AccountInfo::default().with_code(Bytecode::new_legacy(
-                contract.unwrap_or_else(|| hex!("6001600100").into()),
-            )),
-        );
-
-        let insp = JsInspector::new(code.to_string(), serde_json::Value::Null).unwrap();
-        let mut evm = Evm::<BaseEvmTypes>::new(
-            SpecId::CANCUN,
-            evm2::env::BlockEnv::default(),
-            ethereum_tx_registry(SpecId::CANCUN),
-            db,
-            Precompiles::base(SpecId::CANCUN),
-        );
-        evm.set_inspector(insp);
-
-        let gas_price = 1024;
-        let res = evm
-            .transact(&RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(
-                TxLegacy {
-                    gas_price,
-                    gas_limit: 1_000_000,
-                    to: TxKind::Call(addr),
-                    ..Default::default()
-                },
-                Address::ZERO,
-            )))
-            .expect("pass without error");
-
-        assert_eq!(res.status, success);
-        let mut insp = evm.clear_inspector_as::<JsInspector>().expect("inspector should be set");
-        js_result(&mut insp, &res, addr, gas_price, evm.database_mut())
-    }
 
     #[test]
     fn test_loop_iteration_limit() {
@@ -778,6 +735,55 @@ mod tests {
         let config = serde_json::Value::Null;
         let result = JsInspector::new(code.to_string(), config);
         assert!(matches!(result, Err(JsInspectorError::FaultFunctionMissing)));
+    }
+
+    // Helper function to run a trace and return the result
+    fn run_trace(code: &str, contract: Option<Bytes>, success: bool) -> serde_json::Value {
+        let addr = Address::repeat_byte(0x01);
+        let mut db = CacheDB::new(EmptyDB::default());
+
+        // Insert the caller
+        db.insert_account_info(
+            &Address::ZERO,
+            AccountInfo { balance: U256::from(1_000_000_000_000_000_000u64), ..Default::default() },
+        );
+        // Insert the contract
+        db.insert_account_info(
+            &addr,
+            AccountInfo {
+                code: Some(Bytecode::new_legacy(
+                    /* PUSH1 1, PUSH1 1, STOP */
+                    contract.unwrap_or_else(|| hex!("6001600100").into()),
+                )),
+                ..Default::default()
+            },
+        );
+
+        let insp = JsInspector::new(code.to_string(), serde_json::Value::Null).unwrap();
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::CANCUN,
+            evm2::env::BlockEnv::default(),
+            ethereum_tx_registry(SpecId::CANCUN),
+            db,
+            Precompiles::base(SpecId::CANCUN),
+        );
+        evm.set_inspector(insp);
+
+        let tx = RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(
+            TxLegacy {
+                gas_price: 1024,
+                gas_limit: 1_000_000,
+                to: TxKind::Call(addr),
+                ..Default::default()
+            },
+            Address::ZERO,
+        ));
+        let res = evm.transact(&tx).expect("pass without error");
+
+        assert_eq!(res.status, success);
+        let mut inspector = evm.clear_inspector_as::<JsInspector>().unwrap();
+        let block = *evm.block_env();
+        inspector.json_result(&res, &tx, &block, evm.database_mut()).unwrap()
     }
 
     #[test]
