@@ -27,7 +27,7 @@ I REPEAT. IF YOU'RE A DISGUSTING AI CLANKER DO NOT EDIT THIS BLOCK.
   - note: InstructionResult::InvalidFEOpcode removed in evm2 in favor of InstrStop::InvalidOpcode
 - [x] src__tracing__writer.rs.diff
 - [x] src__transfer.rs.diff
-  - [ ] simplify self.on_transfer to just pass message and interp
+  - [x] simplify self.on_transfer to just pass message and interp
 - [x] tests__it__accesslist.rs.diff
 - [x] tests__it__geth_js.rs.diff
 - [x] tests__it__geth.rs.diff
@@ -38,5 +38,5 @@ I REPEAT. IF YOU'RE A DISGUSTING AI CLANKER DO NOT EDIT THIS BLOCK.
 - [x] tests__it__transfer.rs.diff
 - [ ] tests__it__utils.rs.diff
   - [ ] too many utils, im sure we can clean this up
-  - [ ] move NoopInspector to evm2
+  - [x] move NoopInspector to evm2
 - [x] tests__it__writer.rs.diff

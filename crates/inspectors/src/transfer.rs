@@ -66,23 +66,26 @@ impl TransferInspector {
         self.transfers.iter()
     }
 
-    fn on_transfer(
-        &mut self,
-        from: Address,
-        to: Address,
-        value: U256,
-        kind: TransferKind,
-        depth: u16,
-        mut emit_log: impl FnMut(Log),
-    ) {
+    fn on_transfer<T: EvmTypes>(&mut self, message: &Message<T>, interp: &mut Interpreter<'_, T>) {
+        let kind = match message.kind {
+            MessageKind::Call | MessageKind::CallCode => TransferKind::Call,
+            MessageKind::Create => TransferKind::Create,
+            MessageKind::Create2 => TransferKind::Create2,
+            _ => return,
+        };
+
         // skip top level transfers
-        if self.internal_only && depth == 0 {
+        if self.internal_only && message.depth == 0 {
             return;
         }
         // skip zero transfers
+        let value = message.value;
         if value.is_zero() {
             return;
         }
+
+        let from = message.caller;
+        let to = message.destination;
         self.transfers.push(TransferOperation { kind, from, to, value });
 
         if self.insert_logs {
@@ -94,7 +97,7 @@ impl TransferInspector {
                 address: TRANSFER_LOG_EMITTER,
                 data: LogData::new_unchecked(vec![TRANSFER_EVENT_TOPIC, from, to], data.into()),
             };
-            emit_log(log);
+            interp.host().log(log);
         }
     }
 }
@@ -108,16 +111,7 @@ where
         interp: &mut Interpreter<'_, T>,
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
-        if matches!(message.kind, MessageKind::Call | MessageKind::CallCode) {
-            self.on_transfer(
-                message.caller,
-                message.destination,
-                message.value,
-                TransferKind::Call,
-                message.depth,
-                |log| interp.host().log(log),
-            );
-        }
+        self.on_transfer(message, interp);
         None
     }
 
@@ -126,21 +120,7 @@ where
         interp: &mut Interpreter<'_, T>,
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
-        let kind = match message.kind {
-            MessageKind::Create => TransferKind::Create,
-            MessageKind::Create2 => TransferKind::Create2,
-            _ => return None,
-        };
-        self.on_transfer(
-            message.caller,
-            message.destination,
-            message.value,
-            kind,
-            message.depth,
-            |log| {
-                interp.host().log(log);
-            },
-        );
+        self.on_transfer(message, interp);
         None
     }
 

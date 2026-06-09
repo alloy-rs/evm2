@@ -100,6 +100,12 @@ pub trait Inspector<T: EvmTypes>: Any {
     }
 }
 
+/// Inspector that does nothing.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NoopInspector(());
+
+impl<T: EvmTypes> Inspector<T> for NoopInspector {}
+
 impl<T: EvmTypes> core::ops::Deref for dyn Inspector<T> + '_ {
     type Target = dyn Any;
 

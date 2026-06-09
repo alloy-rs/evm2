@@ -2,7 +2,7 @@ use alloy_consensus::{TxLegacy, transaction::Recovered};
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
 use colorchoice::ColorChoice;
 use evm2::{
-    BaseEvmTypes, Evm, EvmTypes, Inspector, Precompiles, TxResult, env as evm_env,
+    BaseEvmTypes, Evm, EvmTypes, Inspector, NoopInspector, Precompiles, TxResult, env as evm_env,
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
     evm::StateChanges,
     interpreter::{Interpreter, Message, MessageResult},
@@ -552,10 +552,6 @@ struct RawInspector<I> {
 }
 
 unsafe impl<I> Send for RawInspector<I> {}
-
-struct NoopInspector;
-
-impl Inspector<BaseEvmTypes> for NoopInspector {}
 
 impl<I> RawInspector<I> {
     fn inner(&mut self) -> &mut I {

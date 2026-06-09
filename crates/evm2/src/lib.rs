@@ -22,7 +22,7 @@ pub use evm::{
     },
     env, inspector, precompile, registry,
 };
-pub use inspector::Inspector;
+pub use inspector::{Inspector, NoopInspector};
 
 pub mod precompiles;
 pub use precompiles::{

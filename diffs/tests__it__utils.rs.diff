@@ -16,7 +16,7 @@
 -    primitives::hardfork::SpecId,
 -    Context, Database, DatabaseCommit, ExecuteCommitEvm, InspectCommitEvm, Inspector, Journal,
 +use evm2::{
-+    BaseEvmTypes, Evm, EvmTypes, Inspector, Precompiles, TxResult, env as evm_env,
++    BaseEvmTypes, Evm, EvmTypes, Inspector, NoopInspector, Precompiles, TxResult, env as evm_env,
 +    ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
 +    evm::StateChanges,
 +    interpreter::{Interpreter, Message, MessageResult},
@@ -440,7 +440,7 @@
  
  pub fn write_traces(tracer: &TracingInspector) -> String {
      write_traces_with(tracer, TraceWriterConfig::new().color_choice(ColorChoice::Never))
-@@ -26,61 +433,196 @@
+@@ -26,61 +433,192 @@
  }
  
  pub fn print_traces(tracer: &TracingInspector) {
@@ -599,10 +599,6 @@
 +}
 +
 +unsafe impl<I> Send for RawInspector<I> {}
-+
-+struct NoopInspector;
-+
-+impl Inspector<BaseEvmTypes> for NoopInspector {}
 +
 +impl<I> RawInspector<I> {
 +    fn inner(&mut self) -> &mut I {

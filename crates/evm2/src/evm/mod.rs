@@ -1382,7 +1382,7 @@ fn eip7708_burn_log(address: &Address, value: &Word) -> Option<Log> {
 mod tests {
     use super::*;
     use crate::{
-        BaseEvmConfigSelector, BaseEvmTypes, Precompiles, SpecId, Version,
+        BaseEvmConfigSelector, BaseEvmTypes, NoopInspector, Precompiles, SpecId, Version,
         bytecode::Bytecode,
         env::TxEnv,
         ethereum::RecoveredTxEnvelope,
@@ -1576,18 +1576,16 @@ mod tests {
                 InspectorAccess::Mut => {
                     let _ = evm.inspector_mut();
                 }
-                InspectorAccess::Set => evm.set_inspector(NoopInspector),
-                InspectorAccess::SetBoxed => evm.set_boxed_inspector(Box::new(NoopInspector)),
+                InspectorAccess::Set => evm.set_inspector(NoopInspector::default()),
+                InspectorAccess::SetBoxed => {
+                    evm.set_boxed_inspector(Box::<NoopInspector>::default());
+                }
                 InspectorAccess::Clear => {
                     let _ = evm.clear_inspector();
                 }
             }
         }
     }
-
-    struct NoopInspector;
-
-    impl Inspector<BaseEvmTypes> for NoopInspector {}
 
     fn run_inspector_access(access: InspectorAccess) {
         let mut evm = Evm::<BaseEvmTypes>::new(

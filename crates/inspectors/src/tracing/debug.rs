@@ -19,6 +19,8 @@ use evm2::{
 };
 use thiserror::Error;
 
+pub use evm2::NoopInspector;
+
 /// Inspector for the `debug` API
 ///
 /// This inspector is used to trace the execution of a transaction or call and supports all variants
@@ -49,12 +51,6 @@ pub enum DebugInspector {
     #[cfg(feature = "js-tracer")]
     Js(Box<crate::tracing::js::JsInspector>),
 }
-
-/// Inspector that does nothing.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct NoopInspector;
-
-impl<T: EvmTypes> Inspector<T> for NoopInspector {}
 
 #[derive(Clone, Copy, Debug)]
 struct DebugTransaction<'a> {
@@ -119,7 +115,7 @@ impl DebugInspector {
                             config,
                         )
                     }
-                    GethDebugBuiltInTracerType::NoopTracer => Self::Noop(NoopInspector),
+                    GethDebugBuiltInTracerType::NoopTracer => Self::Noop(NoopInspector::default()),
                     GethDebugBuiltInTracerType::MuxTracer => {
                         let config = tracer_config
                             .into_mux_config()
