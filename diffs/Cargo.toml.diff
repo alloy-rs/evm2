@@ -1,10 +1,10 @@
 --- upstream/Cargo.toml
 +++ evm2/Cargo.toml
-@@ -1,68 +1,54 @@
+@@ -1,74 +1,54 @@
  [package]
 -name = "revm-inspectors"
 -description = "Revm inspector implementations"
--version = "0.40.0"
+-version = "0.40.1"
 -edition = "2021"
 -rust-version = "1.91"
 -license = "MIT OR Apache-2.0"
@@ -71,16 +71,21 @@
 +serde = { workspace = true, optional = true, features = ["derive"] }
 +serde_json = { workspace = true, features = ["alloc"] }
  
--# js-tracer
+ # js-tracer
 -boa_engine = { version = "0.21", optional = true }
 -boa_gc = { version = "0.21", optional = true }
-+# js-tracer builtins
 +boa_engine = { workspace = true, optional = true }
 +boa_gc = { workspace = true, optional = true }
  
  [dev-dependencies]
 -alloy-hardforks = "0.4"
+-criterion = "0.8"
 -snapbox = { version = "1.2", features = ["term-svg"] }
+-
+-[[bench]]
+-name = "js_tracer"
+-path = "benches/js_tracer.rs"
+-harness = false
 +alloy-hardforks.workspace = true
 +alloy-consensus = { workspace = true, features = ["std"] }
 +snapbox = { workspace = true, features = ["term-svg"] }

@@ -1,6 +1,6 @@
 --- upstream/src/tracing/js/mod.rs
 +++ evm2/src/tracing/js/mod.rs
-@@ -1,41 +1,35 @@
+@@ -1,6 +1,7 @@
  //! Javascript inspector
  
  use crate::tracing::{
@@ -8,9 +8,9 @@
      config::TraceStyle,
      js::{
          bindings::{
-             CallFrame, Contract, EvmDbRef, FrameResult, JsEvmContext, MemoryRef, MemorySnapshot,
--            StackRef, StepLog,
-+            OpObj, StackRef, StepLog,
+@@ -8,35 +9,28 @@
+             ReusableCallFrame, ReusableEvmDb, ReusableFrameResult, ReusableStepLog, StackRef,
+             StepLog,
          },
 -        builtins::{register_builtins, to_serde_value, PrecompileList},
 +        builtins::{PrecompileList, register_builtins, to_serde_value},
@@ -49,13 +49,13 @@
 -        CallInputs, CallOutcome, CallScheme, CreateInputs, CreateOutcome, Gas, InstructionResult,
 -        Interpreter, InterpreterAction, InterpreterResult, Stack,
 +        GasTracker, InstrStop, Interpreter, Message, MessageKind, MessageResult, Word,
-+        opcode::{OpCode, op},
++        opcode::OpCode,
      },
 -    DatabaseRef, Inspector,
  };
  
  pub(crate) mod bindings;
-@@ -60,7 +54,7 @@
+@@ -61,7 +55,7 @@
  #[derive(Debug)]
  struct PendingStep {
      /// Cloned stack from before opcode execution
@@ -64,17 +64,7 @@
      /// Program counter
      pc: u64,
      /// Opcode being executed
-@@ -137,8 +131,7 @@
-     /// - `exit`: a function that will be called when the execution exits a call.
-     /// - `step`: a function that will be called when the execution steps to the next instruction.
-     ///
--    /// This also accepts a sender half of a channel to communicate with the database service so the
--    /// DB can be queried from inside the inspector.
-+    /// This also accepts a config object that is passed to `setup`.
-     pub fn new(code: String, config: serde_json::Value) -> Result<Self, JsInspectorError> {
-         Self::with_transaction_context(code, config, Default::default())
-     }
-@@ -244,7 +237,7 @@
+@@ -265,7 +259,7 @@
      }
  
      /// Sets the transaction context.
@@ -83,7 +73,7 @@
          self.transaction_context = transaction_context;
      }
  
-@@ -258,90 +251,66 @@
+@@ -279,90 +273,66 @@
      /// Calls the result function and returns the result as [serde_json::Value].
      ///
      /// Note: This is supposed to be called after the inspection has finished.
@@ -210,7 +200,7 @@
          let db = db.into_js_object(&mut self.ctx)?;
          Ok(self.result_fn.call(
              &(self.obj.clone().into()),
-@@ -397,19 +366,19 @@
+@@ -430,19 +400,19 @@
  
      /// Returns true whether the active call is the root call.
      #[inline]
@@ -233,7 +223,7 @@
          self.exit_fn.is_some() && !self.is_root_call_active()
      }
  
-@@ -433,12 +402,11 @@
+@@ -466,12 +436,11 @@
      }
  
      /// Registers the precompiles in the JS context
@@ -248,7 +238,7 @@
  
          let _ = precompiles.register_callable(&mut self.ctx);
  
-@@ -446,11 +414,8 @@
+@@ -479,11 +448,8 @@
      }
  }
  
@@ -262,7 +252,7 @@
          if self.step_fn.is_none() {
              return;
          }
-@@ -459,31 +424,32 @@
+@@ -492,31 +458,32 @@
          // This avoids an expensive Vec<u8> clone on every single step.
          let should_update_memory = self.prev_op.is_none_or(|prev| prev.modifies_memory());
          if should_update_memory {
@@ -306,7 +296,7 @@
          if self.step_fn.is_none() {
              return;
          }
-@@ -492,43 +458,34 @@
+@@ -525,22 +492,15 @@
              return;
          };
  
@@ -318,6 +308,12 @@
 -
 -        // Compute the actual gas cost now that the opcode has executed
 -        let cost = interp.gas.total_gas_spent().saturating_sub(pending.gas_spent_before);
+-
+-        let (db_mut, state) = context.journal_mut().db_and_state_mut();
+-        let (db, _db_guard) = EvmDbRef::new(state, db_mut);
+-
+-        let (stack, _stack_guard) = StackRef::new_owned(pending.stack);
+-        let (memory, _memory_guard) = MemoryRef::new_owned(self.cached_memory.clone());
 +        let result = interp.result();
 +        let is_revert = matches!(result, Err(stop) if stop.is_revert());
 +        let cost = interp.gas().spent().saturating_sub(pending.gas_spent_before);
@@ -326,22 +322,12 @@
 +        let (stack, stack_guard) = StackRef::new_words(pending.stack);
 +        let (memory, memory_guard) = MemoryRef::new_owned(self.cached_memory.clone());
  
--        let (db_mut, state) = context.journal_mut().db_and_state_mut();
--        let (db, _db_guard) = EvmDbRef::new(state, db_mut);
--
--        let (stack, _stack_guard) = StackRef::new_owned(pending.stack);
--        let (memory, _memory_guard) = MemoryRef::new_owned(self.cached_memory.clone());
--
 -        if is_revert {
 +        let stop = if is_revert {
              let step = StepLog {
                  stack,
--                op: OpCode::REVERT.get().into(),
--                pc: pending.pc,
-+                op: OpObj(op::REVERT),
-                 memory,
-+                pc: pending.pc,
-                 gas_remaining: pending.gas_remaining,
+                 op: OpCode::REVERT.get().into(),
+@@ -550,14 +510,12 @@
                  cost,
                  depth: pending.depth,
                  refund: pending.refund,
@@ -359,12 +345,7 @@
          } else {
              let step = StepLog {
                  stack,
--                op: pending.op.into(),
-+                op: OpObj(pending.op),
-                 memory,
-                 pc: pending.pc,
-                 gas_remaining: pending.gas_remaining,
-@@ -538,85 +495,90 @@
+@@ -571,85 +529,90 @@
                  error: None,
                  contract: pending.contract,
              };
@@ -500,7 +481,7 @@
          );
  
          if self.can_call_enter() {
-@@ -624,7 +586,7 @@
+@@ -657,7 +620,7 @@
              let frame =
                  CallFrame { contract: call.contract.clone(), kind: call.kind, gas: call.gas_limit };
              if let Err(err) = self.try_enter(frame) {
@@ -509,7 +490,7 @@
              }
          }
  
-@@ -633,25 +595,31 @@
+@@ -666,25 +629,31 @@
  
      fn create_end(
          &mut self,
@@ -548,7 +529,7 @@
          // This is exempt from the root call constraint, because selfdestruct is treated as a
          // new scope that is entered and immediately exited.
          if self.enter_fn.is_some() {
-@@ -713,28 +681,31 @@
+@@ -746,28 +715,31 @@
      InvalidJsonConfig(JsError),
  }
  
@@ -594,23 +575,13 @@
      use serde_json::json;
  
      #[test]
-@@ -758,7 +729,7 @@
-                 result: function() {},
-                 fault: {},
-             }
--        "#;
-+    "#;
-         let config = serde_json::Value::Null;
-         let result = JsInspector::new(code.to_string(), config);
-         assert!(matches!(result, Err(JsInspectorError::FaultFunctionMissing)));
-@@ -771,12 +742,12 @@
+@@ -804,12 +776,12 @@
  
          // Insert the caller
          db.insert_account_info(
 -            Address::ZERO,
--            AccountInfo { balance: U256::from(1e18), ..Default::default() },
 +            &Address::ZERO,
-+            AccountInfo { balance: U256::from(1_000_000_000_000_000_000u64), ..Default::default() },
+             AccountInfo { balance: U256::from(1e18), ..Default::default() },
          );
          // Insert the contract
          db.insert_account_info(
@@ -619,7 +590,7 @@
              AccountInfo {
                  code: Some(Bytecode::new_legacy(
                      /* PUSH1 1, PUSH1 1, STOP */
-@@ -787,27 +758,30 @@
+@@ -820,27 +792,30 @@
          );
  
          let insp = JsInspector::new(code.to_string(), serde_json::Value::Null).unwrap();

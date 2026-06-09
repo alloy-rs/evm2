@@ -6,7 +6,8 @@ use crate::tracing::{
     js::{
         bindings::{
             CallFrame, Contract, EvmDbRef, FrameResult, JsEvmContext, MemoryRef, MemorySnapshot,
-            OpObj, StackRef, StepLog,
+            ReusableCallFrame, ReusableEvmDb, ReusableFrameResult, ReusableStepLog, StackRef,
+            StepLog,
         },
         builtins::{PrecompileList, register_builtins, to_serde_value},
     },
@@ -28,7 +29,7 @@ use evm2::{
     evm::DynDatabase,
     interpreter::{
         GasTracker, InstrStop, Interpreter, Message, MessageKind, MessageResult, Word,
-        opcode::{OpCode, op},
+        opcode::OpCode,
     },
 };
 
@@ -105,6 +106,14 @@ pub struct JsInspector {
     exit_fn: Option<JsObject>,
     /// Executed before each instruction is executed.
     step_fn: Option<JsObject>,
+    /// Reused step wrapper to avoid rebuilding the JS object graph per opcode.
+    reusable_step_log: ReusableStepLog,
+    /// Reused frame wrapper to avoid rebuilding the JS object graph per enter callback.
+    reusable_call_frame: ReusableCallFrame,
+    /// Reused frame wrapper to avoid rebuilding the JS object graph per exit callback.
+    reusable_frame_result: ReusableFrameResult,
+    /// Reused database wrapper shared by all callbacks.
+    reusable_db: ReusableEvmDb,
     /// Keeps track of the current call stack.
     call_stack: Vec<CallStackItem>,
     /// Marker to track whether the precompiles have been registered.
@@ -131,7 +140,8 @@ impl JsInspector {
     /// - `exit`: a function that will be called when the execution exits a call.
     /// - `step`: a function that will be called when the execution steps to the next instruction.
     ///
-    /// This also accepts a config object that is passed to `setup`.
+    /// This also accepts a sender half of a channel to communicate with the database service so the
+    /// DB can be queried from inside the inspector.
     pub fn new(code: String, config: serde_json::Value) -> Result<Self, JsInspectorError> {
         Self::with_transaction_context(code, config, Default::default())
     }
@@ -201,6 +211,14 @@ impl JsInspector {
                 .map_err(JsInspectorError::SetupCallFailed)?;
         }
 
+        let reusable_step_log =
+            ReusableStepLog::new(&mut ctx).map_err(JsInspectorError::EvalCode)?;
+        let reusable_call_frame =
+            ReusableCallFrame::new(&mut ctx).map_err(JsInspectorError::EvalCode)?;
+        let reusable_frame_result =
+            ReusableFrameResult::new(&mut ctx).map_err(JsInspectorError::EvalCode)?;
+        let reusable_db = ReusableEvmDb::new(&mut ctx).map_err(JsInspectorError::EvalCode)?;
+
         Ok(Self {
             ctx,
             code,
@@ -213,6 +231,10 @@ impl JsInspector {
             enter_fn,
             exit_fn,
             step_fn,
+            reusable_step_log,
+            reusable_call_frame,
+            reusable_frame_result,
+            reusable_db,
             call_stack: Default::default(),
             precompiles_registered: false,
             pending_step: None,
@@ -320,33 +342,45 @@ impl JsInspector {
     }
 
     fn try_fault(&mut self, step: StepLog, db: EvmDbRef) -> JsResult<()> {
-        let step = step.into_js_object(&mut self.ctx)?;
-        let db = db.into_js_object(&mut self.ctx)?;
-        self.fault_fn.call(&(self.obj.clone().into()), &[step.into(), db.into()], &mut self.ctx)?;
+        self.reusable_step_log.update(step);
+        self.reusable_db.update(db);
+        let step = self.reusable_step_log.value();
+        let db = self.reusable_db.value();
+        self.fault_fn.call(&(self.obj.clone().into()), &[step, db], &mut self.ctx)?;
         Ok(())
     }
 
     fn try_step(&mut self, step: StepLog, db: EvmDbRef) -> JsResult<()> {
         if let Some(step_fn) = &self.step_fn {
-            let step = step.into_js_object(&mut self.ctx)?;
-            let db = db.into_js_object(&mut self.ctx)?;
-            step_fn.call(&(self.obj.clone().into()), &[step.into(), db.into()], &mut self.ctx)?;
+            self.reusable_step_log.update(step);
+            self.reusable_db.update(db);
+            let step = self.reusable_step_log.value();
+            let db = self.reusable_db.value();
+            step_fn.call(&(self.obj.clone().into()), &[step, db], &mut self.ctx)?;
         }
         Ok(())
     }
 
     fn try_enter(&mut self, frame: CallFrame) -> JsResult<()> {
         if let Some(enter_fn) = &self.enter_fn {
-            let frame = frame.into_js_object(&mut self.ctx)?;
-            enter_fn.call(&(self.obj.clone().into()), &[frame.into()], &mut self.ctx)?;
+            self.reusable_call_frame.update(frame);
+            enter_fn.call(
+                &(self.obj.clone().into()),
+                &[self.reusable_call_frame.value()],
+                &mut self.ctx,
+            )?;
         }
         Ok(())
     }
 
     fn try_exit(&mut self, frame: FrameResult) -> JsResult<()> {
         if let Some(exit_fn) = &self.exit_fn {
-            let frame = frame.into_js_object(&mut self.ctx)?;
-            exit_fn.call(&(self.obj.clone().into()), &[frame.into()], &mut self.ctx)?;
+            self.reusable_frame_result.update(frame);
+            exit_fn.call(
+                &(self.obj.clone().into()),
+                &[self.reusable_frame_result.value()],
+                &mut self.ctx,
+            )?;
         }
         Ok(())
     }
@@ -469,9 +503,9 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for JsInspector {
         let stop = if is_revert {
             let step = StepLog {
                 stack,
-                op: OpObj(op::REVERT),
-                memory,
+                op: OpCode::REVERT.get().into(),
                 pc: pending.pc,
+                memory,
                 gas_remaining: pending.gas_remaining,
                 cost,
                 depth: pending.depth,
@@ -485,7 +519,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for JsInspector {
         } else {
             let step = StepLog {
                 stack,
-                op: OpObj(pending.op),
+                op: pending.op.into(),
                 memory,
                 pc: pending.pc,
                 gas_remaining: pending.gas_remaining,
@@ -729,7 +763,7 @@ mod tests {
                 result: function() {},
                 fault: {},
             }
-    "#;
+        "#;
         let config = serde_json::Value::Null;
         let result = JsInspector::new(code.to_string(), config);
         assert!(matches!(result, Err(JsInspectorError::FaultFunctionMissing)));
@@ -743,7 +777,7 @@ mod tests {
         // Insert the caller
         db.insert_account_info(
             &Address::ZERO,
-            AccountInfo { balance: U256::from(1_000_000_000_000_000_000u64), ..Default::default() },
+            AccountInfo { balance: U256::from(1e18), ..Default::default() },
         );
         // Insert the contract
         db.insert_account_info(
@@ -1145,6 +1179,35 @@ mod tests {
         }"#;
         let res = run_trace(code, Some(bytes!("0x00")), true);
         assert_eq!(res, json!([true]));
+    }
+
+    #[test]
+    fn test_step_reuses_log_and_db_objects() {
+        let code = r#"{
+            prevLog: null,
+            prevDb: null,
+            sameLog: [],
+            sameDb: [],
+            step: function(log, db) {
+                if (this.prevLog !== null) {
+                    this.sameLog.push(this.prevLog === log);
+                }
+                if (this.prevDb !== null) {
+                    this.sameDb.push(this.prevDb === db);
+                }
+                this.prevLog = log;
+                this.prevDb = db;
+            },
+            fault: function() {},
+            result: function() {
+                return {
+                    sameLog: this.sameLog,
+                    sameDb: this.sameDb,
+                };
+            }
+        }"#;
+        let res = run_trace(code, None, true);
+        assert_eq!(res, json!({ "sameLog": [true, true], "sameDb": [true, true] }));
     }
 
     #[test]

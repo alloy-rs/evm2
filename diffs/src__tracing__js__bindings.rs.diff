@@ -44,11 +44,74 @@
 +        opcode::{OpCode, op},
 +    },
 +    evm::{AccountInfo, DbResult, DynDatabase, State, StateChanges},
-+    interpreter::{Memory, StackRef as EvmStackRef, Word},
++    interpreter::{Memory, Word},
  };
  
- /// A macro that creates a native function that returns via [JsValue::from]
-@@ -75,12 +74,18 @@
+ /// Shared mutable state captured by JS native functions.
+@@ -528,7 +527,7 @@
+         context.realm(),
+         NativeFunction::from_copy_closure_with_captures(
+             move |_this, _args, state, _ctx| {
+-                Ok(JsValue::from((PUSH0..=PUSH32).contains(&state.0.borrow().op)))
++                Ok(JsValue::from((op::PUSH0..=op::PUSH32).contains(&state.0.borrow().op)))
+             },
+             state.clone(),
+         ),
+@@ -546,7 +545,7 @@
+                     Ok(JsValue::from(js_string!(format!("opcode {:x} not defined", value))))
+                 }
+             },
+-            state.clone(),
++            state,
+         ),
+     )
+     .length(0)
+@@ -572,7 +571,7 @@
+                     .borrow()
+                     .stack
+                     .as_ref()
+-                    .and_then(|stack| stack.0.with_inner(Stack::len))
++                    .and_then(|stack| stack.0.with_inner(Vec::len))
+                     .unwrap_or_default();
+                 Ok(JsValue::from(len))
+             },
+@@ -591,7 +590,7 @@
+                             .with_message("tracer accessed stack before it was initialized"),
+                     )
+                 })?;
+-                let len = stack.0.with_inner(Stack::len).unwrap_or_default();
++                let len = stack.0.with_inner(Vec::len).unwrap_or_default();
+                 let idx = StackRef::parse_index(args.get_or_undefined(0), len, ctx)?;
+                 if len <= idx {
+                     return Err(JsError::from_native(JsNativeError::typ().with_message(format!(
+@@ -600,7 +599,7 @@
+                 }
+                 stack.peek(idx)
+             },
+-            state.clone(),
++            state,
+         ),
+     )
+     .length(1)
+@@ -683,7 +682,7 @@
+                     .unwrap_or_default();
+                 to_uint8_array_value(slice, ctx)
+             },
+-            state.clone(),
++            state,
+         ),
+     )
+     .length(1)
+@@ -737,7 +736,7 @@
+             move |_this, _args, state, ctx| {
+                 to_uint8_array_value(state.0.borrow().contract.input.clone(), ctx)
+             },
+-            state.clone(),
++            state,
+         ),
+     )
+     .length(0)
+@@ -765,12 +764,18 @@
  ///
  /// This type supports garbage collection of (rust) references and prevents access to the value if
  /// it has been dropped.
@@ -68,30 +131,16 @@
  impl<Val: 'static> GuardedNullableGc<Val> {
      /// Creates a garbage collectible value to the given reference.
      ///
-@@ -91,7 +96,7 @@
-         Self::new(Guarded::Ref(val))
-     }
- 
--    /// Creates a garbage collectible value to the given reference.
-+    /// Creates a garbage collectible value to the given value.
-     ///
-     /// # Safety
-     ///
-@@ -135,10 +140,10 @@
+@@ -825,7 +830,7 @@
  
  impl<T> Guarded<'_, T> {
      #[inline]
 -    fn as_ref(&self) -> &T {
 +    const fn as_ref(&self) -> &T {
          match self {
--            Guarded::Ref(val) => val,
--            Guarded::Owned(val) => val,
-+            Self::Ref(val) => val,
-+            Self::Owned(val) => val,
-         }
-     }
- }
-@@ -245,9 +250,13 @@
+             Guarded::Ref(val) => val,
+             Guarded::Owned(val) => val,
+@@ -881,9 +886,9 @@
  pub(crate) struct MemorySnapshot(Rc<Vec<u8>>);
  
  impl MemorySnapshot {
@@ -101,36 +150,10 @@
 +    /// Creates a snapshot by copying the interpreter memory.
 +    pub(crate) fn new(mem: &Memory) -> Self {
 +        Self(Rc::new(mem.slice(0, mem.len()).to_vec()))
-+    }
-+
-+    fn from_bytes(bytes: Bytes) -> Self {
-+        Self(Rc::new(bytes.to_vec()))
      }
  
      fn len(&self) -> usize {
-@@ -264,12 +273,21 @@
- pub(crate) struct MemoryRef(GuardedNullableGc<MemorySnapshot>);
- 
- impl MemoryRef {
-+    /// Creates a new memory reference.
-+    pub(crate) fn new(mem: &Memory) -> (Self, GcGuard<'static, MemorySnapshot>) {
-+        Self::new_owned(MemorySnapshot::new(mem))
-+    }
-+
-     /// Creates a new memory reference from an owned snapshot.
-     pub(crate) fn new_owned(mem: MemorySnapshot) -> (Self, GcGuard<'static, MemorySnapshot>) {
-         let (inner, guard) = GuardedNullableGc::new_owned(mem);
-         (Self(inner), guard)
-     }
- 
-+    fn new_bytes(bytes: Bytes) -> (Self, GcGuard<'static, MemorySnapshot>) {
-+        Self::new_owned(MemorySnapshot::from_bytes(bytes))
-+    }
-+
-     fn len(&self) -> usize {
-         self.0.with_inner(|mem| mem.len()).unwrap_or_default()
-     }
-@@ -291,10 +309,10 @@
+@@ -927,10 +932,10 @@
          if value.is_undefined() {
              return Err(Self::invalid_index_error(name, "undefined"));
          }
@@ -145,7 +168,7 @@
          }
          // Boa's `ToIndex` rejects BigInt, but stack-derived tracer values are BigInt.
          if let Some(index) = value.as_bigint() {
-@@ -394,49 +412,6 @@
+@@ -958,49 +963,6 @@
      empty_trace!();
  }
  
@@ -195,70 +218,24 @@
  /// Represents the opcode object
  #[derive(Debug)]
  pub(crate) struct OpObj(pub(crate) u8);
-@@ -445,7 +420,7 @@
-     pub(crate) fn into_js_object(self, context: &mut Context) -> JsResult<JsObject> {
-         let obj = JsObject::with_object_proto(context.intrinsics());
-         let value = self.0;
--        let is_push = (PUSH0..=PUSH32).contains(&value);
-+        let is_push = (op::PUSH0..=op::PUSH32).contains(&value);
- 
-         let to_number = FunctionObjectBuilder::new(
-             context.realm(),
-@@ -490,13 +465,49 @@
- }
+@@ -1013,12 +975,12 @@
  
  /// Represents the stack object
-+#[derive(Clone, Debug)]
-+pub(crate) struct StackRef(GuardedNullableGc<StackRefInner>);
-+
- #[derive(Debug)]
+ #[derive(Clone, Debug)]
 -pub(crate) struct StackRef(GuardedNullableGc<Stack>);
-+pub(crate) enum StackRefInner {
-+    Borrowed(EvmStackRef<'static>),
-+    Owned(Vec<Word>),
-+}
-+
-+impl StackRefInner {
-+    const fn len(&self) -> usize {
-+        match self {
-+            Self::Borrowed(stack) => stack.len(),
-+            Self::Owned(stack) => stack.len(),
-+        }
-+    }
-+
-+    fn peek(&self, idx: usize) -> Option<Word> {
-+        match self {
-+            Self::Borrowed(stack) => stack.peek(idx),
-+            Self::Owned(stack) => stack.get(stack.len().checked_sub(idx + 1)?).copied(),
-+        }
-+    }
-+}
++pub(crate) struct StackRef(GuardedNullableGc<Vec<Word>>);
  
  impl StackRef {
 -    /// Creates a new stack reference from an owned stack.
 -    pub(crate) fn new_owned(stack: Stack) -> (Self, GcGuard<'static, Stack>) {
 -        let (inner, guard) = GuardedNullableGc::new_owned(stack);
-+    /// Creates a new stack reference.
-+    pub(crate) fn new(stack: EvmStackRef<'_>) -> (Self, GcGuard<'_, StackRefInner>) {
-+        Self::new_stack_ref(stack)
-+    }
-+
-+    fn new_stack_ref(stack: EvmStackRef<'_>) -> (Self, GcGuard<'_, StackRefInner>) {
-+        // SAFETY:
-+        //
-+        // Boa requires 'static captures for native functions. The returned guard removes the
-+        // stack reference before the borrowed interpreter stack can be used after this JS call.
-+        let stack = unsafe { core::mem::transmute::<EvmStackRef<'_>, EvmStackRef<'static>>(stack) };
-+        let (inner, guard) = GuardedNullableGc::new_owned(StackRefInner::Borrowed(stack));
-+        (Self(inner), guard)
-+    }
-+
-+    pub(crate) fn new_words(words: Vec<Word>) -> (Self, GcGuard<'static, StackRefInner>) {
-+        let (inner, guard) = GuardedNullableGc::new_owned(StackRefInner::Owned(words));
++    /// Creates a new stack reference from owned words.
++    pub(crate) fn new_words(words: Vec<Word>) -> (Self, GcGuard<'static, Vec<Word>>) {
++        let (inner, guard) = GuardedNullableGc::new_owned(words);
          (Self(inner), guard)
      }
  
-@@ -513,16 +524,14 @@
+@@ -1035,16 +997,19 @@
      fn peek(&self, idx: usize) -> JsResult<JsValue> {
          self.0
              .with_inner(|stack| {
@@ -272,7 +249,12 @@
 -                        )))
 -                    })
 -                    .and_then(to_bigint)
-+                let Some(value) = stack.peek(idx) else {
++                let Some(value) = idx
++                    .checked_add(1)
++                    .and_then(|idx| stack.len().checked_sub(idx))
++                    .and_then(|idx| stack.get(idx))
++                    .copied()
++                else {
 +                    return Err(JsError::from_native(JsNativeError::typ().with_message(format!(
 +                        "tracer accessed out of bound stack: size {}, index {}",
 +                        stack.len(),
@@ -283,15 +265,16 @@
              })
              .ok_or_else(|| {
                  JsError::from_native(
-@@ -823,79 +832,65 @@
- }
- 
+@@ -1176,7 +1141,7 @@
  /// DB is the object that allows the js inspector to interact with the database.
--#[derive(Clone)]
-+#[derive(Clone, Debug)]
+ #[derive(Clone)]
  pub(crate) struct EvmDbRef {
 -    inner: Rc<EvmDbRefInner>,
 +    db: GuardedNullableGc<RefCell<Box<dyn EvmDbReader>>>,
+ }
+ 
+ impl core::fmt::Debug for EvmDbRef {
+@@ -1186,73 +1151,59 @@
  }
  
  impl EvmDbRef {
@@ -397,11 +380,11 @@
          };
 -
 -        to_uint8_array(bytecode.original_bytes().to_vec(), ctx)
-+        to_uint8_array(code.original_bytes(), ctx)
++        to_uint8_array(code.original_bytes().to_vec(), ctx)
      }
  
      fn read_state(
-@@ -906,18 +901,15 @@
+@@ -1263,18 +1214,15 @@
      ) -> JsResult<JsUint8Array> {
          let buf = bytes_from_value(address, ctx)?;
          let address = bytes_to_address(&buf);
@@ -423,7 +406,7 @@
              }
          };
          to_uint8_array(B256::from(value), ctx)
-@@ -1012,75 +1004,114 @@
+@@ -1369,75 +1317,114 @@
      empty_trace!();
  }
  
@@ -581,7 +564,17 @@
  
      #[test]
      fn test_contract() {
-@@ -1111,7 +1142,7 @@
+@@ -1450,8 +1437,7 @@
+         };
+         register_builtins(&mut ctx).unwrap();
+ 
+-        let stack = Stack::new();
+-        let (stack_ref, _stack_guard) = StackRef::new_owned(stack);
++        let (stack_ref, _stack_guard) = StackRef::new_words(Vec::new());
+         let mem = MemorySnapshot::default();
+         let (mem_ref, _mem_guard) = MemoryRef::new_owned(mem);
+         let step = StepLog {
+@@ -1486,7 +1472,7 @@
              .unwrap();
          assert!(res.is_object());
          let obj = res.as_object().unwrap();
@@ -590,25 +583,28 @@
          assert!(array_buf.is_ok());
  
          let get_address =
-@@ -1166,10 +1197,9 @@
+@@ -1537,12 +1523,11 @@
+         assert!(result.is_callable());
  
          let f = result.as_callable().unwrap();
- 
+-
 -        let mut db = CacheDB::new(EmptyDB::new());
 -        let state = EvmState::default();
+         let reusable_db = ReusableEvmDb::new(&mut context).unwrap();
++
          {
 -            let (db, guard) = EvmDbRef::new(&state, &mut db);
 +            let mut state = State::new(CacheDB::new(EmptyDB::default()));
 +            let (db, guard) = EvmDbRef::new_state(&mut state);
              let addr = Address::default();
              let addr = JsValue::from(js_string!(addr.to_string()));
-             let db = db.into_js_object(&mut context).unwrap();
-@@ -1178,14 +1208,16 @@
+             reusable_db.update(db);
+@@ -1552,14 +1537,16 @@
  
              // drop the db which also drops any GC values
              drop(guard);
--            let res = f.call(&result, &[db.clone().into(), addr.clone()], &mut context);
-+            let res = f.call(&result, &[db.into(), addr], &mut context);
+-            let res = f.call(&result, &[db.clone(), addr.clone()], &mut context);
++            let res = f.call(&result, &[db, addr], &mut context);
              assert!(res.is_err());
          }
          let addr = Address::default();
@@ -621,18 +617,18 @@
 +            let mut state = State::new(db);
 +            let (db, guard) = EvmDbRef::new_state(&mut state);
              let addr = JsValue::from(js_string!(addr.to_string()));
-             let db = db.into_js_object(&mut context).unwrap();
-             let res = f.call(&result, &[db.clone().into(), addr.clone()], &mut context).unwrap();
-@@ -1195,7 +1227,7 @@
+             reusable_db.update(db);
+             let db = reusable_db.value();
+@@ -1570,7 +1557,7 @@
  
              // drop the db which also drops any GC values
              drop(guard);
--            let res = f.call(&result, &[db.clone().into(), addr.clone()], &mut context);
-+            let res = f.call(&result, &[db.into(), addr], &mut context);
+-            let res = f.call(&result, &[db.clone(), addr.clone()], &mut context);
++            let res = f.call(&result, &[db, addr], &mut context);
              assert!(res.is_err());
          }
      }
-@@ -1221,10 +1253,9 @@
+@@ -1596,10 +1583,9 @@
          let result_fn = obj.get(js_string!("result"), &mut context).unwrap().as_object().unwrap();
          let setup_fn = obj.get(js_string!("setup"), &mut context).unwrap().as_object().unwrap();
  
@@ -642,10 +638,10 @@
 -            let (db_ref, guard) = EvmDbRef::new(&state, &mut db);
 +            let mut state = State::new(CacheDB::new(EmptyDB::default()));
 +            let (db_ref, guard) = EvmDbRef::new_state(&mut state);
-             let js_db = db_ref.into_js_object(&mut context).unwrap();
-             let _res = setup_fn.call(&(obj.clone().into()), &[js_db.into()], &mut context).unwrap();
-             assert!(obj.get(js_string!("db"), &mut context).unwrap().is_object());
-@@ -1243,6 +1274,107 @@
+             let reusable_db = ReusableEvmDb::new(&mut context).unwrap();
+             reusable_db.update(db_ref);
+             let _res =
+@@ -1620,6 +1606,107 @@
          }
      }
  
@@ -753,7 +749,7 @@
      #[test]
      fn test_big_int() {
          let mut context = Context::default();
-@@ -1261,13 +1393,9 @@
+@@ -1638,11 +1725,8 @@
          let result_fn = obj.get(js_string!("result"), &mut context).unwrap().as_object().unwrap();
          let step_fn = obj.get(js_string!("step"), &mut context).unwrap().as_object().unwrap();
  
@@ -762,15 +758,12 @@
 -        let _ = stack.push(U256::from(35000));
 -        let _ = stack.push(U256::from(35000));
 -        let (stack_ref, _stack_guard) = StackRef::new_owned(stack);
--        let mem = MemorySnapshot::default();
--        let (mem_ref, _mem_guard) = MemoryRef::new_owned(mem);
 +        let (stack_ref, _stack_guard) =
 +            StackRef::new_words(vec![U256::from(35000), U256::from(35000), U256::from(35000)]);
-+        let (mem_ref, _mem_guard) = MemoryRef::new_bytes(Bytes::new());
+         let mem = MemorySnapshot::default();
+         let (mem_ref, _mem_guard) = MemoryRef::new_owned(mem);
  
-         let step = StepLog {
-             stack: stack_ref,
-@@ -1351,13 +1479,9 @@
+@@ -1729,11 +1813,8 @@
          let result_fn = obj.get(js_string!("result"), &mut context).unwrap().as_object().unwrap();
          let step_fn = obj.get(js_string!("step"), &mut context).unwrap().as_object().unwrap();
  
@@ -779,16 +772,13 @@
 -        let _ = stack.push(U256::from(35000));
 -        let _ = stack.push(U256::from(35000));
 -        let (stack_ref, _stack_guard) = StackRef::new_owned(stack);
--        let mem = MemorySnapshot::default();
--        let (mem_ref, _mem_guard) = MemoryRef::new_owned(mem);
 +        let (stack_ref, _stack_guard) =
 +            StackRef::new_words(vec![U256::from(35000), U256::from(35000), U256::from(35000)]);
-+        let (mem_ref, _mem_guard) = MemoryRef::new_bytes(Bytes::new());
+         let mem = MemorySnapshot::default();
+         let (mem_ref, _mem_guard) = MemoryRef::new_owned(mem);
  
-         let step = StepLog {
-             stack: stack_ref,
-@@ -1377,7 +1501,7 @@
-         let _ = step_fn.call(&eval, &[js_step.into()], &mut context).unwrap();
+@@ -1756,7 +1837,7 @@
+         let _ = step_fn.call(&eval, &[reusable_step.value()], &mut context).unwrap();
  
          let res = result_fn.call(&eval, &[], &mut context).unwrap();
 -        let val = json_stringify(res.clone(), &mut context).unwrap().to_std_string().unwrap();

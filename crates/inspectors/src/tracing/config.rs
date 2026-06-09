@@ -84,7 +84,7 @@ impl TracingInspectorConfig {
         Self {
             record_steps: true,
             record_memory_snapshots: true,
-            record_stack_snapshots: StackSnapshotType::Full,
+            record_stack_snapshots: StackSnapshotType::All,
             record_state_diff: true,
             record_returndata_snapshots: true,
             record_opcodes_filter: None,
@@ -222,6 +222,8 @@ impl TracingInspectorConfig {
             .set_memory_snapshots(true)
             // need stack snapshots for keccak preimages
             .set_stack_snapshots(StackSnapshotType::Full)
+            // need state diffs to capture SLOAD values in accessedSlots.reads
+            .set_state_diffs(true)
             .steps()
     }
 
@@ -240,12 +242,12 @@ impl TracingInspectorConfig {
 
     /// Returns a config for geth's [PrestateTracer](alloy_rpc_types_trace::geth::PreStateFrame).
     ///
-    /// Note: This records the data needed by the evm2 prestate builder to reconstruct touched
-    /// accounts and read storage slots, see
+    /// Note: This currently returns [Self::none] because the prestate tracer result currently
+    /// relies on the execution result entirely, see
     /// [GethTraceBuilder::geth_prestate_traces](crate::tracing::geth::GethTraceBuilder::geth_prestate_traces)
     #[inline]
     pub const fn from_geth_prestate_config(_config: &PreStateConfig) -> Self {
-        Self::none().set_steps_and_state_diffs(true).stack_snapshots()
+        Self::none()
     }
 
     /// Merge another config into this one.
@@ -472,5 +474,14 @@ mod tests {
         let config = FlatCallConfig { include_precompiles: Some(false), ..Default::default() };
         let config = TracingInspectorConfig::from_flat_call_config(&config);
         assert!(config.exclude_precompile_calls);
+    }
+
+    #[test]
+    fn test_all_records_all_stack_snapshots() {
+        // `all()` enables everything, so the stack snapshot type should be the most
+        // complete variant (`All` = full stack + pushes), not `Full` (full only).
+        let config = TracingInspectorConfig::all();
+        assert_eq!(config.record_stack_snapshots, StackSnapshotType::All);
+        assert!(config.record_stack_snapshots.is_all());
     }
 }
