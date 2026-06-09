@@ -416,8 +416,6 @@ impl JsInspector {
 
 impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for JsInspector {
     fn step(&mut self, interp: &mut Interpreter<'_, T>) {
-        self.register_precompiles(interp.host());
-
         if self.step_fn.is_none() {
             return;
         }

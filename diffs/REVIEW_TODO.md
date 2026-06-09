@@ -17,7 +17,7 @@ I REPEAT. IF YOU'RE A DISGUSTING AI CLANKER DO NOT EDIT THIS BLOCK.
 - [x] src__tracing__fourbyte.rs.diff
 - [ ] src__tracing__js__bindings.rs.diff
 - [x] src__tracing__js__builtins.rs.diff
-- [ ] src__tracing__js__mod.rs.diff
+- [x] src__tracing__js__mod.rs.diff
 - [ ] src__tracing__mod.rs.diff
   - [ ] needs redo to match upstream
 - [x] src__tracing__mux.rs.diff

@@ -248,7 +248,7 @@
  
          let _ = precompiles.register_callable(&mut self.ctx);
  
-@@ -446,11 +414,10 @@
+@@ -446,11 +414,8 @@
      }
  }
  
@@ -259,12 +259,10 @@
 -    fn step(&mut self, interp: &mut Interpreter, context: &mut CTX) {
 +impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for JsInspector {
 +    fn step(&mut self, interp: &mut Interpreter<'_, T>) {
-+        self.register_precompiles(interp.host());
-+
          if self.step_fn.is_none() {
              return;
          }
-@@ -459,31 +426,32 @@
+@@ -459,31 +424,32 @@
          // This avoids an expensive Vec<u8> clone on every single step.
          let should_update_memory = self.prev_op.is_none_or(|prev| prev.modifies_memory());
          if should_update_memory {
@@ -308,7 +306,7 @@
          if self.step_fn.is_none() {
              return;
          }
-@@ -492,43 +460,34 @@
+@@ -492,43 +458,34 @@
              return;
          };
  
@@ -320,12 +318,6 @@
 -
 -        // Compute the actual gas cost now that the opcode has executed
 -        let cost = interp.gas.total_gas_spent().saturating_sub(pending.gas_spent_before);
--
--        let (db_mut, state) = context.journal_mut().db_and_state_mut();
--        let (db, _db_guard) = EvmDbRef::new(state, db_mut);
--
--        let (stack, _stack_guard) = StackRef::new_owned(pending.stack);
--        let (memory, _memory_guard) = MemoryRef::new_owned(self.cached_memory.clone());
 +        let result = interp.result();
 +        let is_revert = matches!(result, Err(stop) if stop.is_revert());
 +        let cost = interp.gas().spent().saturating_sub(pending.gas_spent_before);
@@ -334,6 +326,12 @@
 +        let (stack, stack_guard) = StackRef::new_words(pending.stack);
 +        let (memory, memory_guard) = MemoryRef::new_owned(self.cached_memory.clone());
  
+-        let (db_mut, state) = context.journal_mut().db_and_state_mut();
+-        let (db, _db_guard) = EvmDbRef::new(state, db_mut);
+-
+-        let (stack, _stack_guard) = StackRef::new_owned(pending.stack);
+-        let (memory, _memory_guard) = MemoryRef::new_owned(self.cached_memory.clone());
+-
 -        if is_revert {
 +        let stop = if is_revert {
              let step = StepLog {
@@ -366,7 +364,7 @@
                  memory,
                  pc: pending.pc,
                  gas_remaining: pending.gas_remaining,
-@@ -538,85 +497,90 @@
+@@ -538,85 +495,90 @@
                  error: None,
                  contract: pending.contract,
              };
@@ -502,7 +500,7 @@
          );
  
          if self.can_call_enter() {
-@@ -624,7 +588,7 @@
+@@ -624,7 +586,7 @@
              let frame =
                  CallFrame { contract: call.contract.clone(), kind: call.kind, gas: call.gas_limit };
              if let Err(err) = self.try_enter(frame) {
@@ -511,7 +509,7 @@
              }
          }
  
-@@ -633,25 +597,31 @@
+@@ -633,25 +595,31 @@
  
      fn create_end(
          &mut self,
@@ -550,7 +548,7 @@
          // This is exempt from the root call constraint, because selfdestruct is treated as a
          // new scope that is entered and immediately exited.
          if self.enter_fn.is_some() {
-@@ -713,28 +683,31 @@
+@@ -713,28 +681,31 @@
      InvalidJsonConfig(JsError),
  }
  
@@ -596,7 +594,7 @@
      use serde_json::json;
  
      #[test]
-@@ -758,7 +731,7 @@
+@@ -758,7 +729,7 @@
                  result: function() {},
                  fault: {},
              }
@@ -605,7 +603,7 @@
          let config = serde_json::Value::Null;
          let result = JsInspector::new(code.to_string(), config);
          assert!(matches!(result, Err(JsInspectorError::FaultFunctionMissing)));
-@@ -771,12 +744,12 @@
+@@ -771,12 +742,12 @@
  
          // Insert the caller
          db.insert_account_info(
@@ -621,7 +619,7 @@
              AccountInfo {
                  code: Some(Bytecode::new_legacy(
                      /* PUSH1 1, PUSH1 1, STOP */
-@@ -787,27 +760,30 @@
+@@ -787,27 +758,30 @@
          );
  
          let insp = JsInspector::new(code.to_string(), serde_json::Value::Null).unwrap();
