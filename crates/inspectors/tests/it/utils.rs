@@ -551,8 +551,6 @@ struct RawInspector<I> {
     inspector: *mut I,
 }
 
-unsafe impl<I> Send for RawInspector<I> {}
-
 impl<I> RawInspector<I> {
     fn inner(&mut self) -> &mut I {
         // SAFETY: `RawInspector` is installed only for the duration of one synchronous

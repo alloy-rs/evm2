@@ -117,10 +117,6 @@ pub struct JsInspector {
     prev_op: Option<OpCode>,
 }
 
-// Boa's runtime is internally `Rc`-based, but evm2 inspectors are moved as single-owner values and
-// are not shared concurrently by the interpreter.
-unsafe impl Send for JsInspector {}
-
 impl JsInspector {
     /// Creates a new inspector from a javascript code snipped that evaluates to an object with the
     /// expected fields and a config object.

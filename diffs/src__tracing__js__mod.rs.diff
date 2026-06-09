@@ -77,18 +77,7 @@
      gas_spent_before: u64,
  }
  
-@@ -123,6 +117,10 @@
-     prev_op: Option<OpCode>,
- }
- 
-+// Boa's runtime is internally `Rc`-based, but evm2 inspectors are moved as single-owner values and
-+// are not shared concurrently by the interpreter.
-+unsafe impl Send for JsInspector {}
-+
- impl JsInspector {
-     /// Creates a new inspector from a javascript code snipped that evaluates to an object with the
-     /// expected fields and a config object.
-@@ -137,8 +135,7 @@
+@@ -137,8 +131,7 @@
      /// - `exit`: a function that will be called when the execution exits a call.
      /// - `step`: a function that will be called when the execution steps to the next instruction.
      ///
@@ -98,7 +87,7 @@
      pub fn new(code: String, config: serde_json::Value) -> Result<Self, JsInspectorError> {
          Self::with_transaction_context(code, config, Default::default())
      }
-@@ -244,7 +241,7 @@
+@@ -244,7 +237,7 @@
      }
  
      /// Sets the transaction context.
@@ -107,7 +96,7 @@
          self.transaction_context = transaction_context;
      }
  
-@@ -258,90 +255,66 @@
+@@ -258,90 +251,66 @@
      /// Calls the result function and returns the result as [serde_json::Value].
      ///
      /// Note: This is supposed to be called after the inspection has finished.
@@ -234,7 +223,7 @@
          let db = db.into_js_object(&mut self.ctx)?;
          Ok(self.result_fn.call(
              &(self.obj.clone().into()),
-@@ -350,35 +323,36 @@
+@@ -350,35 +319,36 @@
          )?)
      }
  
@@ -290,7 +279,7 @@
          Ok(())
      }
  
-@@ -390,100 +364,90 @@
+@@ -390,100 +360,90 @@
          self.call_stack.last().expect("call stack is empty")
      }
  
@@ -428,7 +417,7 @@
          if self.step_fn.is_none() {
              return;
          }
-@@ -492,166 +456,137 @@
+@@ -492,166 +452,137 @@
              return;
          };
  
@@ -530,7 +519,7 @@
              }
          }
 -    }
--
+ 
 -    fn call(&mut self, context: &mut CTX, inputs: &mut CallInputs) -> Option<CallOutcome> {
 -        self.register_precompiles(context);
 -
@@ -541,7 +530,7 @@
 -            }
 -            _ => (inputs.caller, inputs.target_address),
 -        };
- 
+-
 -        let value = inputs.transfer_value().unwrap_or_default();
 -        self.push_call(
 -            contract,
@@ -680,7 +669,7 @@
          // This is exempt from the root call constraint, because selfdestruct is treated as a
          // new scope that is entered and immediately exited.
          if self.enter_fn.is_some() {
-@@ -669,14 +604,23 @@
+@@ -669,14 +600,23 @@
      }
  }
  
@@ -706,7 +695,7 @@
  /// Error variants that can occur during JavaScript inspection.
  #[derive(Debug, thiserror::Error)]
  pub enum JsInspectorError {
-@@ -713,30 +657,106 @@
+@@ -713,30 +653,106 @@
      InvalidJsonConfig(JsError),
  }
  
@@ -831,7 +820,7 @@
      #[test]
      fn test_loop_iteration_limit() {
          let mut context = Context::default();
-@@ -758,58 +778,12 @@
+@@ -758,58 +774,12 @@
                  result: function() {},
                  fault: {},
              }

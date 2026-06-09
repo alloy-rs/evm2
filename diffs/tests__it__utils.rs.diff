@@ -440,7 +440,7 @@
  
  pub fn write_traces(tracer: &TracingInspector) -> String {
      write_traces_with(tracer, TraceWriterConfig::new().color_choice(ColorChoice::Never))
-@@ -26,61 +433,192 @@
+@@ -26,61 +433,190 @@
  }
  
  pub fn print_traces(tracer: &TracingInspector) {
@@ -597,8 +597,6 @@
 +struct RawInspector<I> {
 +    inspector: *mut I,
 +}
-+
-+unsafe impl<I> Send for RawInspector<I> {}
 +
 +impl<I> RawInspector<I> {
 +    fn inner(&mut self) -> &mut I {

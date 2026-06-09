@@ -1562,32 +1562,29 @@ mod tests {
         Clear,
     }
 
-    struct AccessingInspector {
-        access: InspectorAccess,
-        evm: *mut Evm<BaseEvmTypes>,
-    }
+    fn run_inspector_access(access: InspectorAccess) {
+        struct AccessingInspector {
+            access: InspectorAccess,
+        }
 
-    unsafe impl Send for AccessingInspector {}
-
-    impl Inspector<BaseEvmTypes> for AccessingInspector {
-        fn initialize_interp(&mut self, _interp: &mut Interpreter<'_, BaseEvmTypes>) {
-            let evm = unsafe { &mut *self.evm };
-            match self.access {
-                InspectorAccess::Mut => {
-                    let _ = evm.inspector_mut();
-                }
-                InspectorAccess::Set => evm.set_inspector(NoopInspector::default()),
-                InspectorAccess::SetBoxed => {
-                    evm.set_boxed_inspector(Box::<NoopInspector>::default());
-                }
-                InspectorAccess::Clear => {
-                    let _ = evm.clear_inspector();
+        impl Inspector<BaseEvmTypes> for AccessingInspector {
+            fn initialize_interp(&mut self, interp: &mut Interpreter<'_, BaseEvmTypes>) {
+                let evm = interp.host();
+                match self.access {
+                    InspectorAccess::Mut => {
+                        let _ = evm.inspector_mut();
+                    }
+                    InspectorAccess::Set => evm.set_inspector(NoopInspector::default()),
+                    InspectorAccess::SetBoxed => {
+                        evm.set_boxed_inspector(Box::<NoopInspector>::default());
+                    }
+                    InspectorAccess::Clear => {
+                        let _ = evm.clear_inspector();
+                    }
                 }
             }
         }
-    }
 
-    fn run_inspector_access(access: InspectorAccess) {
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
             BlockEnv::default(),
@@ -1595,8 +1592,7 @@ mod tests {
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
         );
-        let evm_ptr = &mut evm as *mut Evm<BaseEvmTypes>;
-        evm.set_inspector(AccessingInspector { access, evm: evm_ptr });
+        evm.set_inspector(AccessingInspector { access });
         let message = Message::default();
         let tx_env = TxEnv::default();
         let bytecode = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
@@ -1605,16 +1601,11 @@ mod tests {
 
     #[test]
     fn immutable_inspector_access_is_allowed_during_execution() {
-        struct ReadingInspector {
-            evm: *const Evm<BaseEvmTypes>,
-        }
-
-        unsafe impl Send for ReadingInspector {}
+        struct ReadingInspector {}
 
         impl Inspector<BaseEvmTypes> for ReadingInspector {
-            fn initialize_interp(&mut self, _interp: &mut Interpreter<'_, BaseEvmTypes>) {
-                let evm = unsafe { &*self.evm };
-                let _ = evm.inspector();
+            fn initialize_interp(&mut self, interp: &mut Interpreter<'_, BaseEvmTypes>) {
+                let _ = interp.host().inspector();
             }
         }
 
@@ -1625,8 +1616,7 @@ mod tests {
             InMemoryDB::default(),
             Precompiles::base(SpecId::OSAKA),
         );
-        let evm_ptr = &evm as *const Evm<BaseEvmTypes>;
-        evm.set_inspector(ReadingInspector { evm: evm_ptr });
+        evm.set_inspector(ReadingInspector {});
         let message = Message::default();
         let tx_env = TxEnv::default();
         let bytecode = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));

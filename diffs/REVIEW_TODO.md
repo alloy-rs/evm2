@@ -19,10 +19,11 @@ I REPEAT. IF YOU'RE A DISGUSTING AI CLANKER DO NOT EDIT THIS BLOCK.
 - [x] src__tracing__js__builtins.rs.diff
 - [ ] src__tracing__js__mod.rs.diff
 - [ ] src__tracing__mod.rs.diff
+  - [ ] needs redo to match upstream
 - [x] src__tracing__mux.rs.diff
 - [x] src__tracing__opcount.rs.diff
 - [x] src__tracing__types.rs.diff
-  - [ ] use MessageKind instead of CallKind
+  - [/] use MessageKind instead of CallKind -- eh whatever
 - [x] src__tracing__utils.rs.diff
   - note: InstructionResult::InvalidFEOpcode removed in evm2 in favor of InstrStop::InvalidOpcode
 - [x] src__tracing__writer.rs.diff
@@ -37,6 +38,6 @@ I REPEAT. IF YOU'RE A DISGUSTING AI CLANKER DO NOT EDIT THIS BLOCK.
 - [x] tests__it__test_native_bigint.rs.diff
 - [x] tests__it__transfer.rs.diff
 - [ ] tests__it__utils.rs.diff
-  - [ ] too many utils, im sure we can clean this up
+  - [ ] temp revm-like api to minimize diff
   - [x] move NoopInspector to evm2
 - [x] tests__it__writer.rs.diff
