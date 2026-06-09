@@ -38,8 +38,8 @@ impl PrecompileOutput {
 
 /// Precompile execution hook.
 pub trait PrecompileProvider<T: EvmTypes>: Any {
-    /// Returns precompile addresses that should be warm at transaction start.
-    fn warm_addresses(&self) -> Vec<Address> {
+    /// Returns precompile addresses.
+    fn addresses(&self) -> Vec<Address> {
         Vec::new()
     }
 
@@ -57,8 +57,8 @@ pub trait PrecompileProvider<T: EvmTypes>: Any {
 
 impl<T: EvmTypes, P: PrecompileProvider<T> + ?Sized> PrecompileProvider<T> for Box<P> {
     #[inline]
-    fn warm_addresses(&self) -> Vec<Address> {
-        self.as_ref().warm_addresses()
+    fn addresses(&self) -> Vec<Address> {
+        self.as_ref().addresses()
     }
 
     #[inline]
@@ -84,7 +84,7 @@ pub struct NoPrecompiles(());
 
 impl<T: EvmTypes> PrecompileProvider<T> for NoPrecompiles {
     #[inline]
-    fn warm_addresses(&self) -> Vec<Address> {
+    fn addresses(&self) -> Vec<Address> {
         Vec::new()
     }
 

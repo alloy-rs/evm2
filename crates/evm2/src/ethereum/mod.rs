@@ -525,7 +525,7 @@ pub(super) fn warm_base_accounts<T: EvmTypes<Host = Evm<T>>>(
     if let TxKind::Call(to) = to {
         host.state.warm_account_non_revertible(&to);
     }
-    host.state.warm_accounts_non_revertible(host.precompiles().warm_addresses());
+    host.state.warm_accounts_non_revertible(host.precompiles().addresses());
 }
 
 pub(super) fn warm_access_list<T: EvmTypes<Host = Evm<T>>>(
