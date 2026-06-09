@@ -129,7 +129,7 @@ impl<T: EvmTypes> Precompiles<T> {
 
 impl<T: EvmTypes> PrecompileProvider<T> for Precompiles<T> {
     #[inline]
-    fn warm_addresses(&self) -> Vec<Address> {
+    fn addresses(&self) -> Vec<Address> {
         self.map.as_ref().addresses().collect()
     }
 
