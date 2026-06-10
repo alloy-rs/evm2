@@ -476,10 +476,7 @@ fn commit_state_changes<S: StateChangeSource>(
     changes: &S,
 ) {
     let mut sink = Tee::new(evm.overlay_db_mut(), block_state);
-    match changes.visit(&mut sink) {
-        Ok(()) => {}
-        Err(err) => match err {},
-    }
+    let Ok(()) = changes.visit(&mut sink);
 }
 
 struct AccountStateChange {

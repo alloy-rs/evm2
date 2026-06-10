@@ -154,10 +154,8 @@ impl<'evm, T: EvmTypes> ExecutedTx<'evm, T> {
     /// This streams transaction changes into `block_state`, commits them to the accepted overlay,
     /// and returns the result-only [`TxResult`]. No owned [`StateChanges`] is materialized.
     pub fn commit_to(self, block_state: &mut BlockStateAccumulator) -> TxResult<T> {
-        match self.commit_with(block_state) {
-            Ok(result) => result,
-            Err(err) => match err {},
-        }
+        let Ok(result) = self.commit_with(block_state);
+        result
     }
 
     /// Streams transaction changes into `sink`, then accepts the transaction.

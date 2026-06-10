@@ -243,10 +243,7 @@ fn execute_spec(
     );
     let mut post = database;
     pre_block_system_calls(&mut evm, &mut post, spec, env);
-    let result = match evm.transact(tx)?.commit_with(&mut post) {
-        Ok(result) => result,
-        Err(err) => match err {},
-    };
+    let Ok(result) = evm.transact(tx)?.commit_with(&mut post);
     Ok(spec_outcome(post, result))
 }
 

@@ -101,10 +101,7 @@ impl<ExtDB> CacheDB<ExtDB> {
     /// Applies borrowed state changes to this cache.
     #[inline]
     pub fn commit_source<S: StateChangeSource>(&mut self, source: &S) {
-        match source.visit(self) {
-            Ok(()) => {}
-            Err(err) => match err {},
-        }
+        let Ok(()) = source.visit(self);
     }
 
     /// Inserts account code into the contract cache.
