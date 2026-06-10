@@ -1,5 +1,8 @@
 use alloy_primitives::{Address, B256, map::HashMap};
-use evm2::{EvmTypes, Inspector, bytecode::opcode::op, interpreter::Interpreter};
+use evm2::{
+    EvmTypes, Inspector,
+    interpreter::{Interpreter, opcode::op},
+};
 
 /// An Inspector that tracks warm and cold storage slot accesses.
 #[derive(Debug, Default, Clone)]

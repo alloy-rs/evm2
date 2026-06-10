@@ -3,8 +3,10 @@ use alloy_primitives::map::HashMap;
 use alloy_rpc_types_trace::opcode::OpcodeGas;
 use evm2::{
     EvmTypes, Inspector,
-    bytecode::opcode::{OpCode, op},
-    interpreter::{Interpreter, Message, MessageKind, MessageResult},
+    interpreter::{
+        Interpreter, Message, MessageKind, MessageResult,
+        opcode::{OpCode, op},
+    },
 };
 
 /// An Inspector that counts opcodes and measures gas usage per opcode.

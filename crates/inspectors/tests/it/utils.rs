@@ -13,8 +13,9 @@ use evm2_inspectors::tracing::{TraceWriter, TraceWriterConfig, TracingInspector}
 
 pub use evm2::{
     SpecId,
-    bytecode::{Bytecode, opcode},
+    bytecode::Bytecode,
     evm::{AccountInfo, CacheDB, EmptyDB},
+    interpreter::opcode,
 };
 
 pub type TransactTo = TxKind;

@@ -8,14 +8,14 @@ use alloy_primitives::{Address, B256, Bytes, U256};
 use config::{CustomBlockEnvExt, CustomSpecId, CustomTypes, custom_version};
 use evm2::{
     Evm, EvmConfigSelector, ExecutionConfig, SpecId, Version,
-    bytecode::{Bytecode, opcode::op},
+    bytecode::Bytecode,
     env::BlockEnv,
     evm::{
         AccountChangeRef, AccountInfo, InMemoryDB, StateChangeSink, StorageChange,
         precompile::NoPrecompiles,
     },
     inspector::Inspector,
-    interpreter::{InstrStop, Interpreter, Message, MessageResult},
+    interpreter::{InstrStop, Interpreter, Message, MessageResult, opcode::op},
     registry::HandlerResult,
 };
 use tx::{CustomEnvelope, ExecuteCodeTx, custom_registry};

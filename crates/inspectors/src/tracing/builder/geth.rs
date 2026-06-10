@@ -20,8 +20,8 @@ use alloy_rpc_types_trace::geth::{
 };
 use evm2::{
     EvmTypes, TxResultWithState,
-    bytecode::opcode::op,
     evm::{DbResult, DynDatabase, StateChanges},
+    interpreter::opcode::op,
 };
 
 /// A type for creating geth style traces

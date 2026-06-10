@@ -16,9 +16,11 @@ use alloy_primitives::{Address, B256, Bytes, Log, U256};
 use core::mem;
 use evm2::{
     Evm, EvmTypes, Inspector, SpecId,
-    bytecode::opcode::{OpCode, op},
     evm::JournalEntry,
-    interpreter::{Interpreter, Message, MessageKind, MessageResult},
+    interpreter::{
+        Interpreter, Message, MessageKind, MessageResult,
+        opcode::{OpCode, op},
+    },
 };
 
 mod arena;
