@@ -1,19 +1,13 @@
 //! Database helpers for the EVM state overlay.
 
-use super::state::{AccountInfo, StateChanges};
+use super::state::AccountInfo;
 use crate::{bytecode::Bytecode, interpreter::Word};
 use alloc::{boxed::Box, string::ToString};
 use alloy_primitives::{Address, B256, keccak256};
 use core::{any::Any, error::Error, fmt, num::NonZeroUsize};
 
 mod cache;
-pub use cache::{Cache, CacheDB, InMemoryDB};
-
-/// Commits accepted state changes to a database.
-pub trait DatabaseCommit {
-    /// Commits state changes to the database.
-    fn commit(&mut self, changes: &StateChanges);
-}
+pub use cache::{AccountStorageCache, Cache, CacheDB, InMemoryDB};
 
 /// Lightweight handle for a database error.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -113,13 +107,6 @@ impl<T: Database> Db<T> {
     fn store_error(&mut self, err: T::Error) -> DbErrorCode {
         self.result = Some(err);
         stored_error_code()
-    }
-}
-
-impl<T: Database + DatabaseCommit> DatabaseCommit for Db<T> {
-    #[inline]
-    fn commit(&mut self, changes: &StateChanges) {
-        self.db.commit(changes);
     }
 }
 

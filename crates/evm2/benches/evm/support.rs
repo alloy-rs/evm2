@@ -33,7 +33,7 @@ impl PreparedBench {
 
     pub(crate) fn sanity_check(&self) {
         let mut runner = Runner::new(self);
-        runner.run().unwrap_or_else(|err| {
+        let _ = runner.run().unwrap_or_else(|err| {
             panic!("{} benchmark transaction must execute: {err:?}", self.name)
         });
     }
@@ -67,7 +67,7 @@ impl Runner {
     }
 
     fn run(&mut self) -> evm2::registry::HandlerResult<evm2::TxResult> {
-        self.evm.transact(&self.tx)
+        self.evm.transact(&self.tx).map(evm2::ExecutedTx::commit)
     }
 }
 

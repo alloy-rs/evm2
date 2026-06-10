@@ -616,7 +616,7 @@ mod tests {
         );
 
         assert_eq!(
-            evm.transact(&tx),
+            evm.transact(&tx).map(|executed| executed.discard()),
             Err(HandlerError::IntrinsicGasTooLow { required: 21_000, got: 20_999 })
         );
     }
