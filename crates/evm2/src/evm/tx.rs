@@ -54,10 +54,11 @@ enum PendingState {
 /// transaction scratch:
 ///
 /// - [`Self::commit`] accepts the state into the internal accepted overlay;
-/// - [`Self::discard`] drops the state and keeps only the result;
-/// - [`Self::detach`] materializes an owned [`StateChanges`] value without committing it;
 /// - [`Self::commit_to`] accepts the state and records it in a block accumulator;
-/// - [`Self::commit_with`] accepts the state and first streams it to an external sink.
+/// - [`Self::commit_with`] accepts the state and first streams it to an external sink;
+/// - [`Self::discard`] drops the state and keeps only the result;
+/// - [`Self::discard_with`] streams the state to an external sink and then drops it;
+/// - [`Self::detach`] materializes an owned [`StateChanges`] value without committing it.
 ///
 /// Dropping `ExecutedTx` without calling one of those methods is equivalent to [`Self::discard`].
 #[must_use = "executed transaction state must be committed, discarded, or detached"]
@@ -180,6 +181,22 @@ impl<'evm, T: EvmTypes> ExecutedTx<'evm, T> {
     pub fn discard(mut self) -> TxResult<T> {
         self.clear_pending_state();
         self.take_result()
+    }
+
+    /// Streams transaction changes into `sink`, then discards the transaction state.
+    ///
+    /// This observes the same pending writes as [`Self::commit_with`], but does not mutate the
+    /// accepted overlay. If the sink returns an error, the executed handle is dropped, which
+    /// discards the transaction scratch.
+    pub fn discard_with<S: StateChangeSink>(
+        mut self,
+        sink: &mut S,
+    ) -> Result<TxResult<T>, S::Error> {
+        if self.has_pending_state() {
+            self.evm.state.visit_transaction_changes(sink)?;
+            self.clear_pending_state();
+        }
+        Ok(self.take_result())
     }
 
     /// Detaches the transaction into an owned state diff without committing it.
