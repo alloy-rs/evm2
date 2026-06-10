@@ -152,15 +152,11 @@ impl<'evm, T: EvmTypes> ExecutedTx<'evm, T> {
     ///
     /// This streams transaction changes into `block_state`, commits them to the accepted overlay,
     /// and returns the result-only [`TxOutcome`]. No owned [`StateChanges`] is materialized.
-    pub fn commit_to(mut self, block_state: &mut BlockStateAccumulator) -> TxOutcome<T> {
-        if self.has_pending_state() {
-            match self.evm.state.visit_transaction_changes(block_state) {
-                Ok(()) => {}
-                Err(err) => match err {},
-            }
-            self.commit_pending_state();
+    pub fn commit_to(self, block_state: &mut BlockStateAccumulator) -> TxOutcome<T> {
+        match self.commit_with(block_state) {
+            Ok(outcome) => outcome,
+            Err(err) => match err {},
         }
-        self.take_outcome()
     }
 
     /// Streams transaction changes into `sink`, then accepts the transaction.
