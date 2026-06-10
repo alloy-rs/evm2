@@ -251,8 +251,8 @@ mod tests {
 
         let result = evm.system_call(contract, Bytes::new()).detach();
 
-        assert!(result.status);
-        assert!(result.gas_used < SYSTEM_CALL_GAS_LIMIT);
+        assert!(result.result.status);
+        assert!(result.result.gas_used < SYSTEM_CALL_GAS_LIMIT);
         assert!(!result.state_changes.accounts.contains_key(&SYSTEM_ADDRESS));
         assert!(!result.state_changes.accounts.contains_key(&beneficiary));
         let storage = result.state_changes.storage.get(&contract).expect("storage changed");
@@ -299,8 +299,8 @@ mod tests {
 
         let result = evm.system_call(contract, Bytes::new()).detach();
 
-        assert!(result.status);
-        assert_eq!(result.gas_used, 0);
+        assert!(result.result.status);
+        assert_eq!(result.result.gas_used, 0);
         assert!(result.state_changes.is_empty());
     }
 
@@ -331,8 +331,8 @@ mod tests {
 
         let result = evm.system_call(contract, Bytes::new()).detach();
 
-        assert!(!result.status);
-        assert_eq!(result.stop, InstrStop::Revert);
+        assert!(!result.result.status);
+        assert_eq!(result.result.stop, InstrStop::Revert);
         assert!(result.state_changes.is_empty());
     }
 }

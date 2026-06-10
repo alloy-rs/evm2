@@ -1959,7 +1959,7 @@ mod tests {
         let result =
             evm.transact(&test_tx(7)).expect("lifecycle transaction should execute").detach();
 
-        assert_eq!(result.logs.len(), 1);
+        assert_eq!(result.result.logs.len(), 1);
         let storage = result
             .state_changes
             .storage
@@ -1987,7 +1987,7 @@ mod tests {
             Some(Word::from(7))
         );
 
-        evm.transact(&test_tx(9)).expect("lifecycle transaction should execute").commit();
+        let _ = evm.transact(&test_tx(9)).expect("lifecycle transaction should execute").commit();
         assert_eq!(
             evm.state.storage_ref(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY),
             Some(Word::from(9))
@@ -1999,10 +1999,12 @@ mod tests {
         let mut evm = lifecycle_evm();
         let mut block_state = BlockStateAccumulator::new();
 
-        evm.transact(&test_tx(7))
+        let _ = evm
+            .transact(&test_tx(7))
             .expect("lifecycle transaction should execute")
             .commit_to(&mut block_state);
-        evm.transact(&test_tx(9))
+        let _ = evm
+            .transact(&test_tx(9))
             .expect("lifecycle transaction should execute")
             .commit_to(&mut block_state);
 
@@ -2023,7 +2025,8 @@ mod tests {
         let mut right = BlockStateAccumulator::new();
         let mut tee = Tee::new(&mut left, &mut right);
 
-        evm.transact(&test_tx(7))
+        let _ = evm
+            .transact(&test_tx(7))
             .expect("lifecycle transaction should execute")
             .commit_with(&mut tee)
             .expect("block accumulators are infallible");
@@ -2254,7 +2257,7 @@ mod tests {
         let changes = evm.state.build_state_changes();
         let account = changes.accounts.get(&target).expect("empty destination should be deleted");
         assert!(account.original.is_some());
-        assert_eq!(account.current, &None);
+        assert_eq!(account.current, None);
         assert!(changes.storage.get(&target).is_some_and(|storage| storage.wipe));
     }
 

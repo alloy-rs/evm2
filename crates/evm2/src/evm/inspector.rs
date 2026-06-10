@@ -925,9 +925,9 @@ mod tests {
         let inspector = evm.inspector().unwrap().downcast_ref::<SharedE2eInspector>().unwrap();
         let state = &inspector.state;
 
-        assert!(result.status);
-        assert_eq!(result.logs.len(), 1);
-        assert_eq!(state.logs, result.logs);
+        assert!(result.result.status);
+        assert_eq!(result.result.logs.len(), 1);
+        assert_eq!(state.logs, result.result.logs);
         assert_eq!(state.logs[0].address, SYSTEM_ADDRESS);
     }
 

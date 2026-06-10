@@ -1241,8 +1241,8 @@ mod tests {
         let changes = state.build_state_changes();
 
         let change = changes.accounts.get(&address).expect("touched empty account is deleted");
-        assert_eq!(change.original, &Some(empty));
-        assert_eq!(change.current, &None);
+        assert_eq!(change.original, Some(empty));
+        assert_eq!(change.current, None);
         assert!(changes.storage.get(&address).is_some_and(|storage| storage.wipe));
     }
 
@@ -1272,7 +1272,7 @@ mod tests {
 
         let change =
             changes.accounts.get(&address).expect("pre-spurious empty touch creates account");
-        assert_eq!(change.original, &None);
+        assert_eq!(change.original, None);
         let current = change.current.as_ref().expect("created empty account");
         assert!(current.is_empty());
     }
@@ -1324,7 +1324,7 @@ mod tests {
 
         let change = changes.accounts.get(&address).expect("selfdestruct deletes account");
         assert!(change.original.is_some());
-        assert_eq!(change.current, &None);
+        assert_eq!(change.current, None);
         assert!(changes.storage.get(&address).is_some_and(|storage| storage.wipe));
     }
 
