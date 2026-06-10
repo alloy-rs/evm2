@@ -292,13 +292,18 @@ impl JsInspector {
         block: &BlockEnv,
         db: &mut dyn DynDatabase,
     ) -> Result<JsValue, JsInspectorError> {
+        let (db, _db_guard) = EvmDbRef::new_changes(&result.state_changes, db);
+
         let mut to = None;
+        let mut output_bytes = None;
         let mut error = None;
 
         if result.status {
             to = result.created_address;
+            output_bytes = Some(result.output.clone());
         } else if result.stop.is_revert() {
             error = Some("execution reverted".to_string());
+            output_bytes = Some(result.output.clone());
         } else {
             error = Some(format!("execution halted: {:?}", result.stop));
         }
@@ -325,14 +330,13 @@ impl JsInspector {
             value: tx.value(),
             block: block.number.try_into().unwrap_or(u64::MAX),
             coinbase: block.beneficiary,
-            output: result.output.clone(),
+            output: output_bytes.unwrap_or_default(),
             time: block.timestamp.to_string(),
             intrinsic_gas: 0,
             transaction_ctx: self.transaction_context,
             error,
         };
         let ctx = ctx.into_js_object(&mut self.ctx)?;
-        let (db, _db_guard) = EvmDbRef::new_changes(&result.state_changes, db);
         let db = db.into_js_object(&mut self.ctx)?;
         Ok(self.result_fn.call(
             &(self.obj.clone().into()),
@@ -472,7 +476,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for JsInspector {
             op,
             gas_remaining: interp.gas().remaining(),
             depth: u64::from(message.depth),
-            refund: interp.gas().refunded().max(0) as u64,
+            refund: interp.gas().refunded() as u64,
             contract: Contract {
                 caller: message.caller,
                 contract: message.destination,

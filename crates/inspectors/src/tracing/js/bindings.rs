@@ -1346,7 +1346,8 @@ impl EvmDbReader for StateDbReader<'_> {
     }
 
     fn read_state(&mut self, address: &Address, slot: &Word) -> DbResult<Word> {
-        self.state.storage_ref_or_db(address, slot)
+        // Matches upstream: storage is always read from the backing database, not the journal.
+        self.state.overlay_db_mut().get_storage(address, slot)
     }
 }
 
@@ -1389,22 +1390,7 @@ impl EvmDbReader for ChangesDbReader<'_> {
     }
 
     fn read_state(&mut self, address: &Address, slot: &Word) -> DbResult<Word> {
-        if let Some(storage) = self.changes.storage.get(address) {
-            if let Some(value) = storage.slots.get(slot) {
-                return Ok(value.current);
-            }
-            if storage.wipe {
-                return Ok(Word::ZERO);
-            }
-        }
-        if self
-            .changes
-            .accounts
-            .get(address)
-            .is_some_and(|account| account.current.is_none() || account.original.is_none())
-        {
-            return Ok(Word::ZERO);
-        }
+        // Matches upstream: storage is always read from the backing database, not the changes.
         self.db.get_storage(address, slot)
     }
 }

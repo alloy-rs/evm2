@@ -484,62 +484,89 @@ where
     Ok(())
 }
 
-/// Populates [StateDiff] from evm2 state changes and a database pre-state.
+/// Populates [StateDiff] from evm2 [StateChanges] and a database.
 ///
-/// Loops over all state accounts in the state changes that contains all accounts that are included
-/// in the transaction state changes and compares the balance and nonce against what's in the `db`,
-/// which should point to the beginning of the transaction.
+/// Loops over all state accounts in the accounts diff that contains all accounts that are included
+/// in the [StateChanges] and compares the balance and nonce against what's in the `db`, which
+/// should point to the beginning of the transaction.
 pub fn populate_state_diff(
     state_diff: &mut StateDiff,
     state_changes: &StateChanges,
     db: &mut dyn DynDatabase,
 ) -> DbResult<()> {
-    for (&addr, account) in &state_changes.accounts {
+    for (&addr, changed_acc) in &state_changes.accounts {
+        // if the account was selfdestructed and created during the transaction, we can ignore it
+        if changed_acc.original.is_none() && changed_acc.current.is_none() {
+            continue;
+        }
+
         let entry = state_diff.entry(addr).or_default();
 
         // we need to fetch the account from the db
-        let original = db.get_account(&addr)?.unwrap_or_default();
-        match &account.current {
+        let db_acc = db.get_account(&addr)?.unwrap_or_default();
+
+        // changed storage slots for this account; `evm2` only records changed slots
+        let changed_storage = state_changes.storage.get(&addr).into_iter().flat_map(|s| &s.slots);
+
+        match &changed_acc.current {
             // we check if this account was created during the transaction
             // where the smart contract was not touched before being created (no balance)
-            Some(current) if account.original.is_none() && original.balance.is_zero() => {
+            Some(info) if changed_acc.original.is_none() && db_acc.balance.is_zero() => {
                 // This only applies to newly created accounts without balance
                 // A non existing touched account (e.g. `to` that does not exist) is excluded here
-                entry.balance = Delta::Added(current.balance);
-                entry.nonce = Delta::Added(U64::from(current.nonce));
+                entry.balance = Delta::Added(info.balance);
+                entry.nonce = Delta::Added(U64::from(info.nonce));
 
                 // accounts without code are marked as added
-                entry.code = Delta::Added(account_code(current, db)?);
+                entry.code = Delta::Added(account_code(info, db)?);
+
+                // new storage values are marked as added
+                for (&key, slot) in changed_storage {
+                    entry.storage.insert(key.into(), Delta::Added(slot.current.into()));
+                }
             }
-            Some(current) => {
+            Some(info) => {
+                // we check if this account was created during the transaction
+                // where the smart contract was touched before being created (has balance)
+                if db_acc.code_hash != info.code_hash {
+                    let original_account_code = account_code(&db_acc, db)?;
+                    let present_account_code = account_code(info, db)?;
+                    entry.code = Delta::changed(original_account_code, present_account_code);
+                }
+
+                // update _changed_ storage values
+                for (&key, slot) in changed_storage {
+                    entry.storage.insert(
+                        key.into(),
+                        Delta::changed(slot.original.into(), slot.current.into()),
+                    );
+                }
+
                 // this is relevant for the caller and contracts
-                entry.balance = delta(original.balance, current.balance);
-                entry.nonce = delta(U64::from(original.nonce), U64::from(current.nonce));
-                entry.code = delta(account_code(&original, db)?, account_code(current, db)?);
+                entry.balance = delta(db_acc.balance, info.balance);
+                entry.nonce = delta(U64::from(db_acc.nonce), U64::from(info.nonce));
             }
+            // the account was selfdestructed during the transaction
             None => {
-                entry.balance = Delta::Removed(original.balance);
-                entry.nonce = Delta::Removed(U64::from(original.nonce));
-                entry.code = Delta::Removed(account_code(&original, db)?);
+                entry.balance = Delta::Removed(db_acc.balance);
+                entry.nonce = Delta::Removed(U64::from(db_acc.nonce));
+                entry.code = Delta::Removed(account_code(&db_acc, db)?);
             }
         }
     }
 
-    // update _changed_ storage values
+    // update _changed_ storage values for accounts whose info did not change
     for (&addr, storage) in &state_changes.storage {
+        if state_changes.accounts.contains_key(&addr) {
+            continue;
+        }
         let entry = state_diff.entry(addr).or_default();
         for (&key, slot) in &storage.slots {
-            entry.storage.insert(key.into(), delta(slot.original.into(), slot.current.into()));
+            entry
+                .storage
+                .insert(key.into(), Delta::changed(slot.original.into(), slot.current.into()));
         }
     }
-
-    // check if the account was changed at all
-    state_diff.retain(|_, diff| {
-        !matches!(diff.balance, Delta::Unchanged)
-            || !matches!(diff.nonce, Delta::Unchanged)
-            || !matches!(diff.code, Delta::Unchanged)
-            || !diff.storage.is_empty()
-    });
 
     Ok(())
 }

@@ -244,12 +244,9 @@
              }
          };
  
-@@ -284,92 +334,87 @@
- }
- 
+@@ -286,90 +336,85 @@
  macro_rules! delegate {
--    ($self:expr => $insp:ident.$method:ident($($arg:expr),*)) => {
-+    ($self:expr => $method:ident($($arg:expr),*)) => {
+     ($self:expr => $insp:ident.$method:ident($($arg:expr),*)) => {
          match $self {
 -            Self::FourByte($insp) => Inspector::<CTX>::$method($insp, $($arg),*),
 -            Self::CallTracer($insp, _) => Inspector::<CTX>::$method($insp, $($arg),*),
@@ -259,17 +256,17 @@
 -            Self::Default($insp, _) => Inspector::<CTX>::$method($insp, $($arg),*),
 -            Self::Noop($insp) => Inspector::<CTX>::$method($insp, $($arg),*),
 -            Self::Mux($insp, _) => Inspector::<CTX>::$method($insp, $($arg),*),
-+            Self::FourByte(inspector) => <FourByteInspector as Inspector<T>>::$method(inspector, $($arg),*),
-+            Self::CallTracer(inspector, _)
-+            | Self::PreStateTracer(inspector, _)
-+            | Self::FlatCallTracer(inspector)
-+            | Self::Erc7562Tracer(inspector, _)
-+            | Self::Default(inspector, _) => <TracingInspector as Inspector<T>>::$method(inspector, $($arg),*),
-+            Self::Noop(inspector) => <NoopInspector as Inspector<T>>::$method(inspector, $($arg),*),
-+            Self::Mux(inspector, _) => <MuxInspector as Inspector<T>>::$method(inspector, $($arg),*),
++            Self::FourByte($insp) => Inspector::<T>::$method($insp, $($arg),*),
++            Self::CallTracer($insp, _) => Inspector::<T>::$method($insp, $($arg),*),
++            Self::PreStateTracer($insp, _) => Inspector::<T>::$method($insp, $($arg),*),
++            Self::FlatCallTracer($insp) => Inspector::<T>::$method($insp, $($arg),*),
++            Self::Erc7562Tracer($insp, _) => Inspector::<T>::$method($insp, $($arg),*),
++            Self::Default($insp, _) => Inspector::<T>::$method($insp, $($arg),*),
++            Self::Noop($insp) => Inspector::<T>::$method($insp, $($arg),*),
++            Self::Mux($insp, _) => Inspector::<T>::$method($insp, $($arg),*),
              #[cfg(feature = "js-tracer")]
 -            Self::Js($insp) => Inspector::<CTX>::$method($insp, $($arg),*),
-+            Self::Js(inspector) => <crate::tracing::js::JsInspector as Inspector<T>>::$method(inspector, $($arg),*),
++            Self::Js($insp) => Inspector::<T>::$method(&mut **$insp, $($arg),*),
          }
      };
  }
@@ -288,33 +285,33 @@
 -
 -    fn step_end(&mut self, interp: &mut Interpreter, context: &mut CTX) {
 -        delegate!(self => inspector.step_end(interp, context))
--    }
--
--    fn log(&mut self, context: &mut CTX, log: Log) {
--        delegate!(self => inspector.log(context, log))
 +impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for DebugInspector {
 +    fn initialize_interp(&mut self, interp: &mut Interpreter<'_, T>) {
-+        delegate!(self => initialize_interp(interp))
++        delegate!(self => inspector.initialize_interp(interp))
+     }
+ 
+-    fn log(&mut self, context: &mut CTX, log: Log) {
+-        delegate!(self => inspector.log(context, log))
++    fn step(&mut self, interp: &mut Interpreter<'_, T>) {
++        delegate!(self => inspector.step(interp))
      }
  
 -    fn log_full(&mut self, interp: &mut Interpreter, context: &mut CTX, log: Log) {
 -        delegate!(self => inspector.log_full(interp, context, log))
-+    fn step(&mut self, interp: &mut Interpreter<'_, T>) {
-+        delegate!(self => step(interp))
++    fn step_end(&mut self, interp: &mut Interpreter<'_, T>) {
++        delegate!(self => inspector.step_end(interp))
      }
  
 -    fn call(&mut self, context: &mut CTX, inputs: &mut CallInputs) -> Option<CallOutcome> {
 -        delegate!(self => inspector.call(context, inputs))
-+    fn step_end(&mut self, interp: &mut Interpreter<'_, T>) {
-+        delegate!(self => step_end(interp))
++    fn log(&mut self, log: &Log, host: &mut T::Host) {
++        delegate!(self => inspector.log(log, host))
      }
  
 -    fn call_end(&mut self, context: &mut CTX, inputs: &CallInputs, outcome: &mut CallOutcome) {
 -        delegate!(self => inspector.call_end(context, inputs, outcome))
-+    fn log(&mut self, log: &Log, host: &mut T::Host) {
-+        delegate!(self => log(log, host))
-     }
- 
+-    }
+-
 -    fn create(&mut self, context: &mut CTX, inputs: &mut CreateInputs) -> Option<CreateOutcome> {
 -        delegate!(self => inspector.create(context, inputs))
 +    fn call(
@@ -322,7 +319,7 @@
 +        interp: &mut Interpreter<'_, T>,
 +        message: &mut Message<T>,
 +    ) -> Option<MessageResult<T>> {
-+        delegate!(self => call(interp, message))
++        delegate!(self => inspector.call(interp, message))
      }
  
 -    fn create_end(
@@ -336,7 +333,7 @@
 +        result: &mut MessageResult<T>,
      ) {
 -        delegate!(self => inspector.create_end(context, inputs, outcome))
-+        delegate!(self => call_end(interp, message, result))
++        delegate!(self => inspector.call_end(interp, message, result))
      }
  
 -    fn selfdestruct(&mut self, contract: Address, target: Address, value: U256) {
@@ -346,7 +343,7 @@
 +        interp: &mut Interpreter<'_, T>,
 +        message: &mut Message<T>,
 +    ) -> Option<MessageResult<T>> {
-+        delegate!(self => create(interp, message))
++        delegate!(self => inspector.create(interp, message))
      }
  
 -    fn frame_start(
@@ -360,7 +357,7 @@
 +        message: &Message<T>,
 +        result: &mut MessageResult<T>,
 +    ) {
-+        delegate!(self => create_end(interp, message, result))
++        delegate!(self => inspector.create_end(interp, message, result))
      }
  
 -    fn frame_end(
@@ -375,7 +372,7 @@
 +        host: &mut T::Host,
      ) {
 -        delegate!(self => inspector.frame_end(context, frame_input, frame_result))
-+        delegate!(self => selfdestruct(contract, target, value, host))
++        delegate!(self => inspector.selfdestruct(contract, target, value, host))
      }
  }
  

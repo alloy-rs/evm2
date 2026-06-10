@@ -19,7 +19,7 @@ use alloy_rpc_types_trace::geth::{
     erc7562::{AccessedSlots, CallFrameType, ContractSize, Erc7562Config, Erc7562Frame},
 };
 use evm2::{
-    EvmTypes, SpecId, TxResult,
+    EvmTypes, TxResult,
     bytecode::opcode::op,
     evm::{DbResult, DynDatabase, StateChanges},
 };
@@ -29,21 +29,19 @@ use evm2::{
 pub struct GethTraceBuilder<'a> {
     /// Recorded trace nodes.
     nodes: Cow<'a, [CallTraceNode]>,
-    /// Active EVM spec.
-    spec_id: Option<SpecId>,
 }
 
 impl GethTraceBuilder<'static> {
     /// Returns a new instance of the builder from [`Cow::Owned`]
-    pub const fn new(nodes: Vec<CallTraceNode>, spec_id: Option<SpecId>) -> Self {
-        Self { nodes: Cow::Owned(nodes), spec_id }
+    pub const fn new(nodes: Vec<CallTraceNode>) -> Self {
+        Self { nodes: Cow::Owned(nodes) }
     }
 }
 
 impl<'a> GethTraceBuilder<'a> {
     /// Returns a new instance of the builder from [`Cow::Borrowed`]
-    pub const fn new_borrowed(nodes: &'a [CallTraceNode], spec_id: Option<SpecId>) -> Self {
-        Self { nodes: Cow::Borrowed(nodes), spec_id }
+    pub const fn new_borrowed(nodes: &'a [CallTraceNode]) -> Self {
+        Self { nodes: Cow::Borrowed(nodes) }
     }
 
     /// Consumes the builder and returns the recorded trace nodes.
@@ -366,10 +364,10 @@ impl<'a> GethTraceBuilder<'a> {
         }
 
         // handle storage changes
-        for (&address, storage) in &state.storage {
-            let pre_state = state_diff.pre.entry(address).or_default();
-            let post_state = state_diff.post.entry(address).or_default();
-            if storage_enabled {
+        if storage_enabled {
+            for (&address, storage) in &state.storage {
+                let pre_state = state_diff.pre.entry(address).or_default();
+                let post_state = state_diff.post.entry(address).or_default();
                 for (&key, slot) in &storage.slots {
                     pre_state.storage.insert(key.into(), slot.original.into());
                     post_state.storage.insert(key.into(), slot.current.into());
@@ -377,18 +375,10 @@ impl<'a> GethTraceBuilder<'a> {
             }
         }
 
-        // Don't insert selfdestructed accounts into post state before Cancun.
-        if self.spec_id.is_some_and(|spec_id| spec_id < SpecId::CANCUN) {
-            for node in self.nodes.iter().filter(|node| node.is_selfdestruct()) {
-                if let Some(address) = node.trace.selfdestruct_address {
-                    state_diff.post.remove(&address);
-                }
-            }
-        }
-
         // ensure we're only keeping changed entries
-        self.diff_traces(&mut state_diff.pre, &mut state_diff.post, account_change_kinds);
         state_diff.retain_changed().remove_zero_storage_values();
+
+        self.diff_traces(&mut state_diff.pre, &mut state_diff.post, account_change_kinds);
         Ok(PreStateFrame::Diff(state_diff))
     }
 
@@ -520,9 +510,7 @@ impl<'a> GethTraceBuilder<'a> {
                         && let Some(account) = db.get_account(&address)?
                         && let Some(code) = load_account_code(db, &account)?
                     {
-                        let contract_size = code.len() as u64;
-                        let opcode = op;
-                        e.insert(ContractSize { contract_size, opcode });
+                        e.insert(ContractSize { contract_size: code.len() as u64, opcode: op });
                     }
                 }
 
@@ -726,7 +714,7 @@ mod tests {
             AccountInfo::default().with_balance(U256::from(10)),
         );
 
-        let builder = GethTraceBuilder::new(Vec::new(), None);
+        let builder = GethTraceBuilder::new(Vec::new());
         let frame = builder.geth_prestate_diff_traces(&state, false, false, &mut db).unwrap();
 
         match frame {
@@ -761,7 +749,7 @@ mod tests {
         );
 
         let mut db = CacheDB::new(EmptyDB::default());
-        let builder = GethTraceBuilder::new(Vec::new(), None);
+        let builder = GethTraceBuilder::new(Vec::new());
         let frame = builder.geth_prestate_diff_traces(&state, true, false, &mut db).unwrap();
 
         match frame {
@@ -791,7 +779,7 @@ mod tests {
 
         let error = DbErrorCode::new(7).unwrap();
         let mut db = FailingDb::new(error);
-        let builder = GethTraceBuilder::new(Vec::new(), None);
+        let builder = GethTraceBuilder::new(Vec::new());
 
         assert!(matches!(
             builder.geth_prestate_pre_traces(&state, false, false, &mut db),

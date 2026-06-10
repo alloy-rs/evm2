@@ -73,7 +73,7 @@
          self.transaction_context = transaction_context;
      }
  
-@@ -279,90 +273,66 @@
+@@ -279,85 +273,65 @@
      /// Calls the result function and returns the result as [serde_json::Value].
      ///
      /// Note: This is supposed to be called after the inspection has finished.
@@ -116,15 +116,16 @@
 -        let ResultAndState { result, state } = res;
 -        let mut db = WrapDatabaseRef(db);
 -        let (db, _db_guard) = EvmDbRef::new(&state, &mut db);
--
--        let gas_used = result.tx_gas_used();
 +        result: &TxResult<T>,
 +        tx: &RecoveredTxEnvelope,
 +        block: &BlockEnv,
 +        db: &mut dyn DynDatabase,
 +    ) -> Result<JsValue, JsInspectorError> {
++        let (db, _db_guard) = EvmDbRef::new_changes(&result.state_changes, db);
+ 
+-        let gas_used = result.tx_gas_used();
          let mut to = None;
--        let mut output_bytes = None;
+         let mut output_bytes = None;
          let mut error = None;
 -        match result {
 -            ExecutionResult::Success { output, .. } => match output {
@@ -148,8 +149,10 @@
 -        if let TransactTo::Call(target) = tx.kind() {
 +        if result.status {
 +            to = result.created_address;
++            output_bytes = Some(result.output.clone());
 +        } else if result.stop.is_revert() {
 +            error = Some("execution reverted".to_string());
++            output_bytes = Some(result.output.clone());
 +        } else {
 +            error = Some(format!("execution halted: {:?}", result.stop));
 +        }
@@ -185,22 +188,15 @@
              value: tx.value(),
 -            block: block.number().try_into().unwrap_or(u64::MAX),
 -            coinbase: block.beneficiary(),
--            output: output_bytes.unwrap_or_default(),
--            time: block.timestamp().to_string(),
 +            block: block.number.try_into().unwrap_or(u64::MAX),
 +            coinbase: block.beneficiary,
-+            output: result.output.clone(),
+             output: output_bytes.unwrap_or_default(),
+-            time: block.timestamp().to_string(),
 +            time: block.timestamp.to_string(),
              intrinsic_gas: 0,
              transaction_ctx: self.transaction_context,
              error,
-         };
-         let ctx = ctx.into_js_object(&mut self.ctx)?;
-+        let (db, _db_guard) = EvmDbRef::new_changes(&result.state_changes, db);
-         let db = db.into_js_object(&mut self.ctx)?;
-         Ok(self.result_fn.call(
-             &(self.obj.clone().into()),
-@@ -430,19 +400,19 @@
+@@ -430,19 +404,19 @@
  
      /// Returns true whether the active call is the root call.
      #[inline]
@@ -223,7 +219,7 @@
          self.exit_fn.is_some() && !self.is_root_call_active()
      }
  
-@@ -466,12 +436,11 @@
+@@ -466,12 +440,11 @@
      }
  
      /// Registers the precompiles in the JS context
@@ -234,11 +230,11 @@
          }
 -        let precompiles =
 -            PrecompileList(context.journal().precompile_addresses().iter().copied().collect());
-+        let precompiles = PrecompileList(HashSet::from_iter(host.precompiles().warm_addresses()));
++        let precompiles = PrecompileList(HashSet::from_iter(host.precompiles().addresses()));
  
          let _ = precompiles.register_callable(&mut self.ctx);
  
-@@ -479,11 +448,8 @@
+@@ -479,11 +452,8 @@
      }
  }
  
@@ -252,7 +248,7 @@
          if self.step_fn.is_none() {
              return;
          }
-@@ -492,31 +458,32 @@
+@@ -492,31 +462,32 @@
          // This avoids an expensive Vec<u8> clone on every single step.
          let should_update_memory = self.prev_op.is_none_or(|prev| prev.modifies_memory());
          if should_update_memory {
@@ -277,7 +273,7 @@
 -            refund: interp.gas.refunded() as u64,
 +            gas_remaining: interp.gas().remaining(),
 +            depth: u64::from(message.depth),
-+            refund: interp.gas().refunded().max(0) as u64,
++            refund: interp.gas().refunded() as u64,
              contract: Contract {
 -                caller: interp.input.caller_address,
 -                contract: interp.input.target_address,
@@ -296,7 +292,7 @@
          if self.step_fn.is_none() {
              return;
          }
-@@ -525,22 +492,15 @@
+@@ -525,22 +496,15 @@
              return;
          };
  
@@ -308,12 +304,6 @@
 -
 -        // Compute the actual gas cost now that the opcode has executed
 -        let cost = interp.gas.total_gas_spent().saturating_sub(pending.gas_spent_before);
--
--        let (db_mut, state) = context.journal_mut().db_and_state_mut();
--        let (db, _db_guard) = EvmDbRef::new(state, db_mut);
--
--        let (stack, _stack_guard) = StackRef::new_owned(pending.stack);
--        let (memory, _memory_guard) = MemoryRef::new_owned(self.cached_memory.clone());
 +        let result = interp.result();
 +        let is_revert = matches!(result, Err(stop) if stop.is_revert());
 +        let cost = interp.gas().spent().saturating_sub(pending.gas_spent_before);
@@ -322,12 +312,18 @@
 +        let (stack, stack_guard) = StackRef::new_words(pending.stack);
 +        let (memory, memory_guard) = MemoryRef::new_owned(self.cached_memory.clone());
  
+-        let (db_mut, state) = context.journal_mut().db_and_state_mut();
+-        let (db, _db_guard) = EvmDbRef::new(state, db_mut);
+-
+-        let (stack, _stack_guard) = StackRef::new_owned(pending.stack);
+-        let (memory, _memory_guard) = MemoryRef::new_owned(self.cached_memory.clone());
+-
 -        if is_revert {
 +        let stop = if is_revert {
              let step = StepLog {
                  stack,
                  op: OpCode::REVERT.get().into(),
-@@ -550,14 +510,12 @@
+@@ -550,14 +514,12 @@
                  cost,
                  depth: pending.depth,
                  refund: pending.refund,
@@ -345,7 +341,7 @@
          } else {
              let step = StepLog {
                  stack,
-@@ -571,85 +529,90 @@
+@@ -571,85 +533,90 @@
                  error: None,
                  contract: pending.contract,
              };
@@ -481,7 +477,7 @@
          );
  
          if self.can_call_enter() {
-@@ -657,7 +620,7 @@
+@@ -657,7 +624,7 @@
              let frame =
                  CallFrame { contract: call.contract.clone(), kind: call.kind, gas: call.gas_limit };
              if let Err(err) = self.try_enter(frame) {
@@ -490,7 +486,7 @@
              }
          }
  
-@@ -666,25 +629,31 @@
+@@ -666,25 +633,31 @@
  
      fn create_end(
          &mut self,
@@ -529,7 +525,7 @@
          // This is exempt from the root call constraint, because selfdestruct is treated as a
          // new scope that is entered and immediately exited.
          if self.enter_fn.is_some() {
-@@ -746,28 +715,31 @@
+@@ -746,28 +719,31 @@
      InvalidJsonConfig(JsError),
  }
  
@@ -575,7 +571,7 @@
      use serde_json::json;
  
      #[test]
-@@ -804,12 +776,12 @@
+@@ -804,12 +780,12 @@
  
          // Insert the caller
          db.insert_account_info(
@@ -590,7 +586,7 @@
              AccountInfo {
                  code: Some(Bytecode::new_legacy(
                      /* PUSH1 1, PUSH1 1, STOP */
-@@ -820,27 +792,30 @@
+@@ -820,27 +796,30 @@
          );
  
          let insp = JsInspector::new(code.to_string(), serde_json::Value::Null).unwrap();

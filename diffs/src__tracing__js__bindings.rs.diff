@@ -406,7 +406,7 @@
              }
          };
          to_uint8_array(B256::from(value), ctx)
-@@ -1369,75 +1317,114 @@
+@@ -1369,75 +1317,100 @@
      empty_trace!();
  }
  
@@ -467,7 +467,8 @@
 -    fn from(s: String) -> Self {
 -        Self(s)
 +    fn read_state(&mut self, address: &Address, slot: &Word) -> DbResult<Word> {
-+        self.state.storage_ref_or_db(address, slot)
++        // Matches upstream: storage is always read from the backing database, not the journal.
++        self.state.overlay_db_mut().get_storage(address, slot)
      }
  }
  
@@ -524,22 +525,7 @@
 -    fn block_hash_ref(&self, number: u64) -> Result<B256, Self::Error> {
 -        self.0.borrow_mut().block_hash(number).map_err(|e| e.to_string().into())
 +    fn read_state(&mut self, address: &Address, slot: &Word) -> DbResult<Word> {
-+        if let Some(storage) = self.changes.storage.get(address) {
-+            if let Some(value) = storage.slots.get(slot) {
-+                return Ok(value.current);
-+            }
-+            if storage.wipe {
-+                return Ok(Word::ZERO);
-+            }
-+        }
-+        if self
-+            .changes
-+            .accounts
-+            .get(address)
-+            .is_some_and(|account| account.current.is_none() || account.original.is_none())
-+        {
-+            return Ok(Word::ZERO);
-+        }
++        // Matches upstream: storage is always read from the backing database, not the changes.
 +        self.db.get_storage(address, slot)
      }
  }
@@ -564,7 +550,7 @@
  
      #[test]
      fn test_contract() {
-@@ -1450,8 +1437,7 @@
+@@ -1450,8 +1423,7 @@
          };
          register_builtins(&mut ctx).unwrap();
  
@@ -574,7 +560,7 @@
          let mem = MemorySnapshot::default();
          let (mem_ref, _mem_guard) = MemoryRef::new_owned(mem);
          let step = StepLog {
-@@ -1486,7 +1472,7 @@
+@@ -1486,7 +1458,7 @@
              .unwrap();
          assert!(res.is_object());
          let obj = res.as_object().unwrap();
@@ -583,7 +569,7 @@
          assert!(array_buf.is_ok());
  
          let get_address =
-@@ -1537,12 +1523,11 @@
+@@ -1537,12 +1509,11 @@
          assert!(result.is_callable());
  
          let f = result.as_callable().unwrap();
@@ -599,7 +585,7 @@
              let addr = Address::default();
              let addr = JsValue::from(js_string!(addr.to_string()));
              reusable_db.update(db);
-@@ -1552,14 +1537,16 @@
+@@ -1552,14 +1523,16 @@
  
              // drop the db which also drops any GC values
              drop(guard);
@@ -619,7 +605,7 @@
              let addr = JsValue::from(js_string!(addr.to_string()));
              reusable_db.update(db);
              let db = reusable_db.value();
-@@ -1570,7 +1557,7 @@
+@@ -1570,7 +1543,7 @@
  
              // drop the db which also drops any GC values
              drop(guard);
@@ -628,7 +614,7 @@
              assert!(res.is_err());
          }
      }
-@@ -1596,10 +1583,9 @@
+@@ -1596,10 +1569,9 @@
          let result_fn = obj.get(js_string!("result"), &mut context).unwrap().as_object().unwrap();
          let setup_fn = obj.get(js_string!("setup"), &mut context).unwrap().as_object().unwrap();
  
@@ -641,7 +627,7 @@
              let reusable_db = ReusableEvmDb::new(&mut context).unwrap();
              reusable_db.update(db_ref);
              let _res =
-@@ -1620,6 +1606,107 @@
+@@ -1620,6 +1592,107 @@
          }
      }
  
@@ -749,7 +735,7 @@
      #[test]
      fn test_big_int() {
          let mut context = Context::default();
-@@ -1638,11 +1725,8 @@
+@@ -1638,11 +1711,8 @@
          let result_fn = obj.get(js_string!("result"), &mut context).unwrap().as_object().unwrap();
          let step_fn = obj.get(js_string!("step"), &mut context).unwrap().as_object().unwrap();
  
@@ -763,7 +749,7 @@
          let mem = MemorySnapshot::default();
          let (mem_ref, _mem_guard) = MemoryRef::new_owned(mem);
  
-@@ -1729,11 +1813,8 @@
+@@ -1729,11 +1799,8 @@
          let result_fn = obj.get(js_string!("result"), &mut context).unwrap().as_object().unwrap();
          let step_fn = obj.get(js_string!("step"), &mut context).unwrap().as_object().unwrap();
  
@@ -777,7 +763,7 @@
          let mem = MemorySnapshot::default();
          let (mem_ref, _mem_guard) = MemoryRef::new_owned(mem);
  
-@@ -1756,7 +1837,7 @@
+@@ -1756,7 +1823,7 @@
          let _ = step_fn.call(&eval, &[reusable_step.value()], &mut context).unwrap();
  
          let res = result_fn.call(&eval, &[], &mut context).unwrap();

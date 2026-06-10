@@ -32,39 +32,30 @@
 -    state::{AccountInfo, EvmState},
 -    DatabaseRef,
 +use evm2::{
-+    EvmTypes, SpecId, TxResult,
++    EvmTypes, TxResult,
 +    bytecode::opcode::op,
 +    evm::{DbResult, DynDatabase, StateChanges},
  };
  
  /// A type for creating geth style traces
-@@ -31,19 +29,21 @@
- pub struct GethTraceBuilder<'a> {
-     /// Recorded trace nodes.
-     nodes: Cow<'a, [CallTraceNode]>,
-+    /// Active EVM spec.
-+    spec_id: Option<SpecId>,
- }
+@@ -35,14 +33,14 @@
  
  impl GethTraceBuilder<'static> {
      /// Returns a new instance of the builder from [`Cow::Owned`]
 -    pub fn new(nodes: Vec<CallTraceNode>) -> GethTraceBuilder<'static> {
--        Self { nodes: Cow::Owned(nodes) }
-+    pub const fn new(nodes: Vec<CallTraceNode>, spec_id: Option<SpecId>) -> Self {
-+        Self { nodes: Cow::Owned(nodes), spec_id }
++    pub const fn new(nodes: Vec<CallTraceNode>) -> Self {
+         Self { nodes: Cow::Owned(nodes) }
      }
  }
  
  impl<'a> GethTraceBuilder<'a> {
      /// Returns a new instance of the builder from [`Cow::Borrowed`]
 -    pub fn new_borrowed(nodes: &'a [CallTraceNode]) -> GethTraceBuilder<'a> {
--        Self { nodes: Cow::Borrowed(nodes) }
-+    pub const fn new_borrowed(nodes: &'a [CallTraceNode], spec_id: Option<SpecId>) -> Self {
-+        Self { nodes: Cow::Borrowed(nodes), spec_id }
++    pub const fn new_borrowed(nodes: &'a [CallTraceNode]) -> Self {
+         Self { nodes: Cow::Borrowed(nodes) }
      }
  
-     /// Consumes the builder and returns the recorded trace nodes.
-@@ -91,7 +91,7 @@
+@@ -91,7 +89,7 @@
                      contract_storage.insert(change.key.into(), change.value.into());
                  }
  
@@ -73,7 +64,7 @@
                      log.storage = Some(contract_storage.clone());
                  }
              }
-@@ -114,9 +114,7 @@
+@@ -114,9 +112,7 @@
  
      /// Generate a geth-style trace e.g. for `debug_traceTransaction`
      ///
@@ -84,7 +75,7 @@
      pub fn geth_traces(
          &self,
          receipt_gas_used: u64,
-@@ -147,9 +145,7 @@
+@@ -147,9 +143,7 @@
      ///
      /// This decodes all call frames from the recorded traces.
      ///
@@ -95,7 +86,7 @@
      pub fn geth_call_traces(&self, opts: CallConfig, gas_used: u64) -> CallFrame {
          if self.nodes.is_empty() {
              return Default::default();
-@@ -232,126 +228,167 @@
+@@ -232,119 +226,152 @@
      /// The prestate mode returns the accounts necessary to execute a given transaction.
      /// diff_mode returns the differences between the transaction's pre and post-state.
      ///
@@ -232,14 +223,15 @@
 -
 -            let mut pre_state =
 -                AccountState::from_account_info(db_acc.nonce, db_acc.balance, pre_code);
-+            HashMap::with_capacity_and_hasher(state.accounts.len(), Default::default());
- 
+-
 -            // handle storage changes
 -            if storage_enabled {
 -                for (key, slot) in changed_acc.storage.iter().filter(|(_, slot)| slot.is_changed())
 -                {
 -                    pre_state.storage.insert((*key).into(), slot.original_value.into());
 -                    post_state.storage.insert((*key).into(), slot.present_value.into());
++            HashMap::with_capacity_and_hasher(state.accounts.len(), Default::default());
++
 +        for (&address, account) in &state.accounts {
 +            let original = db.get_account(&address)?.or_else(|| account.original.clone());
 +            if let Some(original) = &original {
@@ -295,39 +287,23 @@
 +        }
  
 -            account_change_kinds.insert(addr, (pre_change, post_change));
+-
+-            // Don't insert selfdestructed accounts into post state
+-            if !changed_acc.is_selfdestructed() {
+-                state_diff.post.insert(addr, post_state);
 +        // handle storage changes
-+        for (&address, storage) in &state.storage {
-+            let pre_state = state_diff.pre.entry(address).or_default();
-+            let post_state = state_diff.post.entry(address).or_default();
-+            if storage_enabled {
++        if storage_enabled {
++            for (&address, storage) in &state.storage {
++                let pre_state = state_diff.pre.entry(address).or_default();
++                let post_state = state_diff.post.entry(address).or_default();
 +                for (&key, slot) in &storage.slots {
 +                    pre_state.storage.insert(key.into(), slot.original.into());
 +                    post_state.storage.insert(key.into(), slot.current.into());
 +                }
-+            }
-+        }
- 
--            // Don't insert selfdestructed accounts into post state
--            if !changed_acc.is_selfdestructed() {
--                state_diff.post.insert(addr, post_state);
-+        // Don't insert selfdestructed accounts into post state before Cancun.
-+        if self.spec_id.is_some_and(|spec_id| spec_id < SpecId::CANCUN) {
-+            for node in self.nodes.iter().filter(|node| node.is_selfdestruct()) {
-+                if let Some(address) = node.trace.selfdestruct_address {
-+                    state_diff.post.remove(&address);
-+                }
              }
          }
  
-         // ensure we're only keeping changed entries
--        state_diff.retain_changed().remove_zero_storage_values();
--
-         self.diff_traces(&mut state_diff.pre, &mut state_diff.post, account_change_kinds);
-+        state_diff.retain_changed().remove_zero_storage_values();
-         Ok(PreStateFrame::Diff(state_diff))
-     }
- 
-@@ -384,14 +421,14 @@
+@@ -384,14 +411,14 @@
      }
  
      /// Traces ERC-7562 calls using the call tracer.
@@ -346,7 +322,7 @@
          }
  
          let include_logs = opts.with_log.unwrap_or_default();
-@@ -424,95 +461,87 @@
+@@ -424,95 +451,85 @@
  
                  // Accessed storage slots
                  match op {
@@ -463,9 +439,7 @@
 +                        && let Some(account) = db.get_account(&address)?
 +                        && let Some(code) = load_account_code(db, &account)?
 +                    {
-+                        let contract_size = code.len() as u64;
-+                        let opcode = op;
-+                        e.insert(ContractSize { contract_size, opcode });
++                        e.insert(ContractSize { contract_size: code.len() as u64, opcode: op });
                      }
                  }
  
@@ -504,7 +478,7 @@
                      }
                  }
              }
-@@ -560,13 +589,13 @@
+@@ -560,13 +577,13 @@
                  parent_frame.1.calls.insert(0, frame);
              } else {
                  debug_assert!(frames.is_empty(), "only one root node has no parent");
@@ -520,7 +494,7 @@
          match kind {
              CallKind::Call => CallFrameType::Call,
              CallKind::CallCode => CallFrameType::CallCode,
-@@ -579,46 +608,126 @@
+@@ -579,46 +596,126 @@
      }
  }
  
@@ -662,15 +636,14 @@
 +            AccountInfo::default().with_balance(U256::from(10)),
          );
  
--        let builder = GethTraceBuilder::new(Vec::new());
+         let builder = GethTraceBuilder::new(Vec::new());
 -        let frame =
 -            builder.geth_prestate_diff_traces(&state, db, false, false).expect("diff frame");
-+        let builder = GethTraceBuilder::new(Vec::new(), None);
 +        let frame = builder.geth_prestate_diff_traces(&state, false, false, &mut db).unwrap();
  
          match frame {
              PreStateFrame::Diff(diff) => {
-@@ -634,4 +743,59 @@
+@@ -634,4 +731,59 @@
              _ => panic!("expected diff prestate frame"),
          }
      }
@@ -692,7 +665,7 @@
 +        );
 +
 +        let mut db = CacheDB::new(EmptyDB::default());
-+        let builder = GethTraceBuilder::new(Vec::new(), None);
++        let builder = GethTraceBuilder::new(Vec::new());
 +        let frame = builder.geth_prestate_diff_traces(&state, true, false, &mut db).unwrap();
 +
 +        match frame {
@@ -722,7 +695,7 @@
 +
 +        let error = DbErrorCode::new(7).unwrap();
 +        let mut db = FailingDb::new(error);
-+        let builder = GethTraceBuilder::new(Vec::new(), None);
++        let builder = GethTraceBuilder::new(Vec::new());
 +
 +        assert!(matches!(
 +            builder.geth_prestate_pre_traces(&state, false, false, &mut db),

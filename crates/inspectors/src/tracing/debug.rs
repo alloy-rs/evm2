@@ -334,37 +334,37 @@ impl DebugInspector {
 }
 
 macro_rules! delegate {
-    ($self:expr => $method:ident($($arg:expr),*)) => {
+    ($self:expr => $insp:ident.$method:ident($($arg:expr),*)) => {
         match $self {
-            Self::FourByte(inspector) => <FourByteInspector as Inspector<T>>::$method(inspector, $($arg),*),
-            Self::CallTracer(inspector, _)
-            | Self::PreStateTracer(inspector, _)
-            | Self::FlatCallTracer(inspector)
-            | Self::Erc7562Tracer(inspector, _)
-            | Self::Default(inspector, _) => <TracingInspector as Inspector<T>>::$method(inspector, $($arg),*),
-            Self::Noop(inspector) => <NoopInspector as Inspector<T>>::$method(inspector, $($arg),*),
-            Self::Mux(inspector, _) => <MuxInspector as Inspector<T>>::$method(inspector, $($arg),*),
+            Self::FourByte($insp) => Inspector::<T>::$method($insp, $($arg),*),
+            Self::CallTracer($insp, _) => Inspector::<T>::$method($insp, $($arg),*),
+            Self::PreStateTracer($insp, _) => Inspector::<T>::$method($insp, $($arg),*),
+            Self::FlatCallTracer($insp) => Inspector::<T>::$method($insp, $($arg),*),
+            Self::Erc7562Tracer($insp, _) => Inspector::<T>::$method($insp, $($arg),*),
+            Self::Default($insp, _) => Inspector::<T>::$method($insp, $($arg),*),
+            Self::Noop($insp) => Inspector::<T>::$method($insp, $($arg),*),
+            Self::Mux($insp, _) => Inspector::<T>::$method($insp, $($arg),*),
             #[cfg(feature = "js-tracer")]
-            Self::Js(inspector) => <crate::tracing::js::JsInspector as Inspector<T>>::$method(inspector, $($arg),*),
+            Self::Js($insp) => Inspector::<T>::$method(&mut **$insp, $($arg),*),
         }
     };
 }
 
 impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for DebugInspector {
     fn initialize_interp(&mut self, interp: &mut Interpreter<'_, T>) {
-        delegate!(self => initialize_interp(interp))
+        delegate!(self => inspector.initialize_interp(interp))
     }
 
     fn step(&mut self, interp: &mut Interpreter<'_, T>) {
-        delegate!(self => step(interp))
+        delegate!(self => inspector.step(interp))
     }
 
     fn step_end(&mut self, interp: &mut Interpreter<'_, T>) {
-        delegate!(self => step_end(interp))
+        delegate!(self => inspector.step_end(interp))
     }
 
     fn log(&mut self, log: &Log, host: &mut T::Host) {
-        delegate!(self => log(log, host))
+        delegate!(self => inspector.log(log, host))
     }
 
     fn call(
@@ -372,7 +372,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for DebugInspector {
         interp: &mut Interpreter<'_, T>,
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
-        delegate!(self => call(interp, message))
+        delegate!(self => inspector.call(interp, message))
     }
 
     fn call_end(
@@ -381,7 +381,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for DebugInspector {
         message: &Message<T>,
         result: &mut MessageResult<T>,
     ) {
-        delegate!(self => call_end(interp, message, result))
+        delegate!(self => inspector.call_end(interp, message, result))
     }
 
     fn create(
@@ -389,7 +389,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for DebugInspector {
         interp: &mut Interpreter<'_, T>,
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
-        delegate!(self => create(interp, message))
+        delegate!(self => inspector.create(interp, message))
     }
 
     fn create_end(
@@ -398,7 +398,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for DebugInspector {
         message: &Message<T>,
         result: &mut MessageResult<T>,
     ) {
-        delegate!(self => create_end(interp, message, result))
+        delegate!(self => inspector.create_end(interp, message, result))
     }
 
     fn selfdestruct(
@@ -408,7 +408,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for DebugInspector {
         value: &U256,
         host: &mut T::Host,
     ) {
-        delegate!(self => selfdestruct(contract, target, value, host))
+        delegate!(self => inspector.selfdestruct(contract, target, value, host))
     }
 }
 
