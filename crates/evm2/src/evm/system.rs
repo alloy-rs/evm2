@@ -10,7 +10,7 @@
 use super::SendEvmRef;
 #[cfg(feature = "async")]
 use super::r#async;
-use super::{Evm, ExecutedTx, TxOutcome};
+use super::{Evm, ExecutedTx, TxResult};
 use crate::{
     EvmTypes,
     env::TxEnv,
@@ -70,7 +70,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         &mut self,
         system_contract_address: Address,
         data: Bytes,
-    ) -> impl Future<Output = r#async::AsyncResult<TxOutcome<T>, Infallible>> + Send + '_
+    ) -> impl Future<Output = r#async::AsyncResult<TxResult<T>, Infallible>> + Send + '_
     where
         T::TxResultExt: Send,
     {
@@ -122,8 +122,8 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             self.state.clear_transaction_state();
             let stop = InstrStop::FatalExternalError;
             let outcome =
-                TxOutcome { stop, db_error_code: self.db_error_code(), ..TxOutcome::default() };
-            return ExecutedTx::from_outcome(self, outcome, false);
+                TxResult { stop, db_error_code: self.db_error_code(), ..TxResult::default() };
+            return ExecutedTx::from_result(self, outcome, false);
         };
         let result = Host::execute_message(self, &tx_env, bytecode, &mut message, false);
         let gas_spent = SYSTEM_CALL_GAS_LIMIT.saturating_sub(result.gas.remaining());
@@ -133,12 +133,12 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             0
         };
         let gas_used = gas_spent.saturating_sub(gas_refunded);
-        let mut outcome = TxOutcome {
+        let mut outcome = TxResult {
             status: result.stop.is_success(),
             gas_used,
             stop: result.stop,
             output: result.output,
-            ..TxOutcome::default()
+            ..TxResult::default()
         };
 
         let has_pending_state = if let Err(stop) = self.finalize_transaction() {
@@ -153,7 +153,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             true
         };
         outcome.db_error_code = self.db_error_code();
-        ExecutedTx::from_outcome(self, outcome, has_pending_state)
+        ExecutedTx::from_result(self, outcome, has_pending_state)
     }
 
     /// Executes a system call from `caller` to `system_contract_address` on an async fiber.
@@ -173,7 +173,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         caller: Address,
         system_contract_address: Address,
         data: Bytes,
-    ) -> impl Future<Output = r#async::AsyncResult<TxOutcome<T>, Infallible>> + Send + '_
+    ) -> impl Future<Output = r#async::AsyncResult<TxResult<T>, Infallible>> + Send + '_
     where
         T::TxResultExt: Send,
     {
@@ -194,7 +194,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
 #[cfg(feature = "async")]
 impl<T: EvmTypes<Host = Evm<T>>> SendEvmRef<'_, T> {
     #[inline]
-    fn system_call(&mut self, system_contract_address: Address, data: Bytes) -> TxOutcome<T> {
+    fn system_call(&mut self, system_contract_address: Address, data: Bytes) -> TxResult<T> {
         self.evm.system_call(system_contract_address, data).commit()
     }
 
@@ -204,7 +204,7 @@ impl<T: EvmTypes<Host = Evm<T>>> SendEvmRef<'_, T> {
         caller: Address,
         system_contract_address: Address,
         data: Bytes,
-    ) -> TxOutcome<T> {
+    ) -> TxResult<T> {
         self.evm.system_call_with_caller(caller, system_contract_address, data).commit()
     }
 }

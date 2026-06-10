@@ -18,7 +18,7 @@ use alloy_eips::eip7840::BlobParams;
 use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, U256};
 use alloy_rpc_types_eth::AccessList as RpcAccessList;
 use evm2::{
-    BaseEvmTypes, Evm, Precompiles, SpecId, TxOutcome,
+    BaseEvmTypes, Evm, Precompiles, SpecId, TxResult,
     env::BlockEnv,
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
     evm::{
@@ -447,7 +447,7 @@ fn run_system_call(
     label: &'static str,
 ) -> Result<(), TestErrorKind> {
     let executed = evm.system_call(address, data);
-    if !executed.outcome().status {
+    if !executed.result().status {
         executed.discard();
         let has_code = match evm.account_code(&address) {
             Ok(code) => !code.is_empty(),
@@ -466,7 +466,7 @@ fn execute_tx(
     evm: &mut Evm<BaseEvmTypes>,
     block_state: &mut BlockStateAccumulator,
     tx: &RecoveredTxEnvelope,
-) -> Result<TxOutcome, HandlerError> {
+) -> Result<TxResult, HandlerError> {
     Ok(evm.transact(tx)?.commit_to(block_state))
 }
 

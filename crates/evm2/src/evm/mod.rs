@@ -17,9 +17,9 @@
 //! - [`ExecutedTx::commit_to`] accepts it and records the same writes in a
 //!   [`BlockStateAccumulator`];
 //! - [`ExecutedTx::commit_with`] streams writes to a [`StateChangeSink`] and then accepts them;
-//! - [`ExecutedTx::discard`] drops the writes and returns only the outcome;
-//! - [`ExecutedTx::detach`] materializes an owned [`TxResult`] and [`StateChanges`] without
-//!   accepting the writes.
+//! - [`ExecutedTx::discard`] drops the writes and returns only the result;
+//! - [`ExecutedTx::detach`] materializes an owned [`TxResultWithState`] without accepting the
+//!   writes.
 //!
 //! Dropping an unresolved [`ExecutedTx`] is equivalent to [`ExecutedTx::discard`], so transaction
 //! scratch cannot leak into later execution.
@@ -42,12 +42,12 @@
 //!
 //! ## Outcomes, logs, and materialized state
 //!
-//! [`TxOutcome`] is the cheap result-only shape: status, gas used, output, stop reason, logs,
-//! database error handle, and extension data. Logs live in [`TxOutcome`] because logs are
+//! [`TxResult`] is the cheap result-only shape: status, gas used, output, stop reason, logs,
+//! database error handle, and extension data. Logs live in [`TxResult`] because logs are
 //! execution output, not database state.
 //!
 //! [`StateChanges`] is the owned materialized write-set. It is produced only by
-//! [`ExecutedTx::detach`]. Normal serial block execution can build receipts from [`TxOutcome`] and
+//! [`ExecutedTx::detach`]. Normal serial block execution can build receipts from [`TxResult`] and
 //! stream state directly into a
 //! [`BlockStateAccumulator`] without first allocating a per-transaction [`StateChanges`] map.
 //!
@@ -63,13 +63,13 @@
 //!
 //! ## Error and status behavior
 //!
-//! - Successful execution returns an [`ExecutedTx`] whose outcome has `status = true`.
-//! - EVM revert/halt can still return an [`ExecutedTx`]. The outcome records the failed
+//! - Successful execution returns an [`ExecutedTx`] whose result has `status = true`.
+//! - EVM revert/halt can still return an [`ExecutedTx`]. The result records the failed
 //!   status/stop/output, while transaction-level effects remain resolvable if finalization
 //!   completed.
 //! - Invalid transactions and handler errors return a handler error and clear transaction scratch;
 //!   there is no [`ExecutedTx`] to resolve.
-//! - Database errors during execution/finalization are recorded in the outcome's database error
+//! - Database errors during execution/finalization are recorded in the result's database error
 //!   handle when execution can still produce a transaction result. If no valid transaction state
 //!   remains, resolving the handle is a no-op for state.
 //!
@@ -79,7 +79,7 @@
 //! eth_call / simulation: transact -> discard
 //! serial block:          transact -> commit
 //! block output:          transact -> commit_to -> BlockStateAccumulator
-//! materialized tx diff:  transact -> detach -> TxResult
+//! materialized tx diff:  transact -> detach -> TxResultWithState
 //! parallel worker:       transact -> detach -> send owned diff
 //! ```
 //!
@@ -97,7 +97,7 @@
 //!
 //! for tx in block.transactions() {
 //!     let executed = evm.transact(tx)?;
-//!     receipt_builder.observe(executed.outcome());
+//!     receipt_builder.observe(executed.result());
 //!     let outcome = executed.commit_to(&mut block_state);
 //!     receipts.push(receipt_builder.finish(outcome));
 //! }
@@ -108,7 +108,7 @@
 //! Detached materialized output:
 //!
 //! ```rust,ignore
-//! let result: TxResult<_> = evm.transact(&tx)?.detach();
+//! let result: TxResultWithState<_> = evm.transact(&tx)?.detach();
 //! ```
 
 use self::{
@@ -158,7 +158,7 @@ pub use db::{
 pub(crate) use db::{db_error_unavailable, stored_error_code};
 
 mod tx;
-pub use tx::{ExecutedTx, TxOutcome, TxResult};
+pub use tx::{ExecutedTx, TxResult, TxResultWithState};
 
 mod state;
 pub use state::{
@@ -176,7 +176,7 @@ pub struct Evm<T: EvmTypes> {
     execution_config: ExecutionConfig<T>,
     features: EvmFeatures,
     pub(crate) block: BlockEnv<T>,
-    registry: TxRegistry<T, TxOutcome<T>>,
+    registry: TxRegistry<T, TxResult<T>>,
     #[derive_where(skip)]
     pub(crate) state: State,
     #[derive_where(skip)]
@@ -201,7 +201,7 @@ impl<T: EvmTypes> Evm<T> {
     pub fn new(
         spec_id: T::SpecId,
         block: BlockEnv<T>,
-        registry: TxRegistry<T, TxOutcome<T>>,
+        registry: TxRegistry<T, TxResult<T>>,
         database: impl DynDatabase,
         precompiles: impl PrecompileProvider<T>,
     ) -> Self {
@@ -221,7 +221,7 @@ impl<T: EvmTypes> Evm<T> {
         execution_config: ExecutionConfig<T>,
         spec_id: T::SpecId,
         block: BlockEnv<T>,
-        registry: TxRegistry<T, TxOutcome<T>>,
+        registry: TxRegistry<T, TxResult<T>>,
         database: impl DynDatabase,
         precompiles: impl PrecompileProvider<T>,
     ) -> Self {
@@ -240,7 +240,7 @@ impl<T: EvmTypes> Evm<T> {
         execution_config: ExecutionConfig<T>,
         spec_id: T::SpecId,
         block: BlockEnv<T>,
-        registry: TxRegistry<T, TxOutcome<T>>,
+        registry: TxRegistry<T, TxResult<T>>,
         database: Box<dyn DynDatabase>,
         precompiles: Box<dyn PrecompileProvider<T>>,
     ) -> Self {
@@ -310,7 +310,7 @@ impl<T: EvmTypes> Evm<T> {
 
     /// Returns the transaction handler registry.
     #[inline]
-    pub const fn registry(&self) -> &TxRegistry<T, TxOutcome<T>> {
+    pub const fn registry(&self) -> &TxRegistry<T, TxResult<T>> {
         &self.registry
     }
 
@@ -660,7 +660,7 @@ impl<'a, T: EvmTypes> SendEvmRef<'a, T> {
 #[cfg(feature = "async")]
 impl<T: EvmTypes<Tx: Typed2718, Host = Evm<T>>> SendEvmRef<'_, T> {
     #[inline]
-    fn transact(&mut self, tx: &T::Tx) -> HandlerResult<TxOutcome<T>> {
+    fn transact(&mut self, tx: &T::Tx) -> HandlerResult<TxResult<T>> {
         self.evm.transact(tx).map(ExecutedTx::commit)
     }
 }
@@ -692,7 +692,7 @@ impl<T: EvmTypes<Tx: Typed2718, Host = Self>> Evm<T> {
             result.db_error_code = self.db_error_code;
         };
         match result {
-            Ok(result) => Ok(ExecutedTx::from_outcome(self, result, has_pending_state)),
+            Ok(result) => Ok(ExecutedTx::from_result(self, result, has_pending_state)),
             Err(err) => {
                 self.state.clear_transaction_state();
                 Err(err)
@@ -705,7 +705,7 @@ impl<T: EvmTypes<Tx: Typed2718, Host = Self>> Evm<T> {
     /// This is the cheapest convenience entrypoint for `eth_call`-style simulations: execution
     /// output and logs are returned, but transaction writes are not accepted and no owned
     /// [`StateChanges`] is materialized.
-    pub fn call_tx(&mut self, tx: &T::Tx) -> HandlerResult<TxOutcome<T>> {
+    pub fn call_tx(&mut self, tx: &T::Tx) -> HandlerResult<TxResult<T>> {
         self.transact(tx).map(ExecutedTx::discard)
     }
 
@@ -718,7 +718,7 @@ impl<T: EvmTypes<Tx: Typed2718, Host = Self>> Evm<T> {
     /// running the synchronous transaction on a fiber.
     ///
     /// This commits the executed transaction on the fiber and returns the result-only
-    /// [`TxOutcome`].
+    /// [`TxResult`].
     ///
     /// This returns a `Send` future. Before calling it, the current erased database, precompile
     /// provider, and optional inspector must be verified with [`Self::evm_is_send`] or
@@ -727,7 +727,7 @@ impl<T: EvmTypes<Tx: Typed2718, Host = Self>> Evm<T> {
     pub fn transact_async<'a>(
         &'a mut self,
         tx: &'a T::Tx,
-    ) -> impl Future<Output = r#async::AsyncResult<TxOutcome<T>, registry::HandlerError>> + Send + 'a
+    ) -> impl Future<Output = r#async::AsyncResult<TxResult<T>, registry::HandlerError>> + Send + 'a
     where
         T::Tx: Sync,
         T::TxResultExt: Send,
@@ -748,7 +748,7 @@ impl<T: EvmTypes<Tx: Typed2718, Host = Self>> Evm<T> {
     pub fn transact_iter<'a, I>(
         &'a mut self,
         txs: I,
-    ) -> impl Iterator<Item = HandlerResult<TxOutcome<T>>> + 'a
+    ) -> impl Iterator<Item = HandlerResult<TxResult<T>>> + 'a
     where
         I: IntoIterator<Item = &'a T::Tx>,
         I::IntoIter: 'a,
@@ -1413,18 +1413,18 @@ mod tests {
 
     fn handle_test_tx(
         req: TxRequest<'_, BaseEvmTypes, Recovered<TxLegacy>>,
-    ) -> HandlerResult<TxOutcome> {
+    ) -> HandlerResult<TxResult> {
         let _ = req.host.spec_id();
-        Ok(TxOutcome { status: true, gas_used: req.tx.nonce + 1, ..TxOutcome::default() })
+        Ok(TxResult { status: true, gas_used: req.tx.nonce + 1, ..TxResult::default() })
     }
 
     fn handle_test_tx_version(
         req: TxRequest<'_, BaseEvmTypes, Recovered<TxLegacy>>,
-    ) -> HandlerResult<TxOutcome> {
-        Ok(TxOutcome {
+    ) -> HandlerResult<TxResult> {
+        Ok(TxResult {
             status: true,
             gas_used: req.host.version().tx_gas_limit_cap,
-            ..TxOutcome::default()
+            ..TxResult::default()
         })
     }
 
@@ -1433,7 +1433,7 @@ mod tests {
 
     fn handle_lifecycle_tx(
         req: TxRequest<'_, BaseEvmTypes, Recovered<TxLegacy>>,
-    ) -> HandlerResult<TxOutcome> {
+    ) -> HandlerResult<TxResult> {
         let value = Word::from(req.tx.nonce);
         req.host
             .state
@@ -1443,7 +1443,7 @@ mod tests {
             address: LIFECYCLE_ACCOUNT,
             data: LogData::new_unchecked(vec![], Bytes::new()),
         });
-        Ok(TxOutcome { status: true, gas_used: req.tx.nonce, ..TxOutcome::default() })
+        Ok(TxResult { status: true, gas_used: req.tx.nonce, ..TxResult::default() })
     }
 
     fn lifecycle_evm() -> Evm<BaseEvmTypes> {

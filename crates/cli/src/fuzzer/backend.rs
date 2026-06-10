@@ -49,21 +49,22 @@ impl EvmBackend for Evm2Backend {
                 .map_err(|err| format!("{err:?}"));
             match result {
                 Ok(result) => {
-                    let output = if result.status || result.stop == InstrStop::Revert {
-                        Some(result.output.to_vec())
+                    let tx_result = &result.result;
+                    let output = if tx_result.status || tx_result.stop == InstrStop::Revert {
+                        Some(tx_result.output.to_vec())
                     } else {
                         None
                     };
                     evm.commit_source(&result.state_changes);
                     receipts.push(TxReceipt {
-                        kind: if result.status {
+                        kind: if tx_result.status {
                             OutcomeKind::Success
                         } else {
                             OutcomeKind::RevertOrHalt
                         },
-                        gas_used: Some(result.gas_used),
+                        gas_used: Some(tx_result.gas_used),
                         output,
-                        logs: result.logs.iter().map(canonical_log).collect(),
+                        logs: tx_result.logs.iter().map(canonical_log).collect(),
                         state: state_from_evm2_changes(&result.state_changes),
                         error: None,
                     });

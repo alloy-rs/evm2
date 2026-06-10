@@ -961,7 +961,7 @@ impl State {
     ///
     /// This does not apply changes to the backing database, apply transaction-finalization rules,
     /// take logs, or advance the overlay to the next transaction. Logs are execution output and are
-    /// exposed through [`crate::TxOutcome`] and [`crate::TxResult`].
+    /// exposed through [`crate::TxResult`] and [`crate::TxResultWithState`].
     pub(crate) fn build_state_changes(&mut self) -> StateChanges {
         let mut changes = StateChanges::default();
 

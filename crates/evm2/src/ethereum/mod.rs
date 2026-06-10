@@ -7,7 +7,7 @@ mod eip7702;
 mod legacy;
 
 use crate::{
-    Evm, EvmFeatures, EvmTypes, SpecId, TxOutcome, Version,
+    Evm, EvmFeatures, EvmTypes, SpecId, TxResult, Version,
     bytecode::Bytecode,
     evm::{AccountInfo, StateCheckpoint},
     interpreter::{Message, MessageKind, MessageResult, Word},
@@ -94,7 +94,7 @@ impl Typed2718 for RecoveredTxEnvelope {
 /// Returns the Ethereum transaction registry for `spec_id`.
 pub fn ethereum_tx_registry<T: EvmTypes<Tx = RecoveredTxEnvelope, Host = Evm<T>>>(
     spec_id: SpecId,
-) -> TxRegistry<T, TxOutcome<T>> {
+) -> TxRegistry<T, TxResult<T>> {
     let mut registry =
         TxRegistry::new().with_handler(0, RecoveredTxEnvelope::as_legacy, legacy::handle::<T>);
 
@@ -425,7 +425,7 @@ pub(super) fn settle_gas<T: EvmTypes<Host = Evm<T>>>(
     tx_gas_limit: u64,
     floor_gas: u64,
     result: MessageResult<T>,
-) -> HandlerResult<TxOutcome<T>> {
+) -> HandlerResult<TxResult<T>> {
     let (gas_remaining, gas_used) =
         final_tx_gas(&result, tx_gas_limit, host.feature(EvmFeatures::EIP3529), floor_gas);
     if host.feature(EvmFeatures::FEE_CHARGE) {
@@ -441,13 +441,13 @@ pub(super) fn settle_gas<T: EvmTypes<Host = Evm<T>>>(
             .add_balance(&host.block.beneficiary, &(U256::from(gas_used) * beneficiary_gas_price))
             .map_err(|code| host.db_error_handler(code))?;
     }
-    Ok(TxOutcome {
+    Ok(TxResult {
         status: result.stop.is_success(),
         gas_used,
         stop: result.stop,
         output: result.output,
         ext: T::TxResultExt::default(),
-        ..TxOutcome::default()
+        ..TxResult::default()
     })
 }
 

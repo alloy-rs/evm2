@@ -7,7 +7,7 @@ use super::{
     warm_base_accounts,
 };
 use crate::{
-    Evm, EvmTypes, TxOutcome,
+    Evm, EvmTypes, TxResult,
     env::TxEnv,
     interpreter::Host,
     registry::{HandlerResult, TxRequest},
@@ -17,7 +17,7 @@ use alloy_primitives::U256;
 
 pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     req: TxRequest<'_, T, Recovered<TxEip1559>>,
-) -> HandlerResult<TxOutcome<T>> {
+) -> HandlerResult<TxResult<T>> {
     let caller = req.tx.signer();
     let tx = req.tx.inner();
     let max_fee_per_gas = U256::from(tx.max_fee_per_gas);

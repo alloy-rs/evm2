@@ -581,7 +581,7 @@ impl<D: AsyncDatabase + fmt::Debug> fmt::Debug for AsyncDb<D> {
 mod tests {
     use super::{AsyncDatabase, AsyncDb, AsyncError, block_on_current, on_fiber};
     use crate::{
-        BaseEvmTypes, Evm, PrecompileError, Precompiles, SpecId, TxOutcome,
+        BaseEvmTypes, Evm, PrecompileError, Precompiles, SpecId, TxResult,
         bytecode::Bytecode,
         env::BlockEnv,
         evm::{Database, Db, DynDatabase, InMemoryDB, PrecompileProvider},
@@ -960,9 +960,9 @@ mod tests {
 
     fn handle_test_tx(
         req: TxRequest<'_, BaseEvmTypes, Recovered<TxLegacy>>,
-    ) -> HandlerResult<TxOutcome> {
+    ) -> HandlerResult<TxResult> {
         let _ = req.host.spec_id();
-        Ok(TxOutcome { status: true, gas_used: req.tx.nonce + 1, ..TxOutcome::default() })
+        Ok(TxResult { status: true, gas_used: req.tx.nonce + 1, ..TxResult::default() })
     }
 
     fn poll_ready<F: Future + Send>(future: F) -> F::Output {

@@ -11,12 +11,12 @@ use alloy_primitives::map::{AddressMap, B256Map, U256Map};
 /// Complete owned state transition produced by a transaction.
 ///
 /// `StateChanges` is the public, materialized write-set returned in
-/// [`crate::TxResult`] and by detached transaction APIs. It is intentionally
+/// [`crate::TxResultWithState`] and by detached transaction APIs. It is intentionally
 /// explicit so embedding clients can update their own database and compute
 /// post-state roots without reimplementing EVM account-lifetime rules.
 ///
 /// Logs are execution output rather than database state and are exposed on
-/// [`crate::TxOutcome`] and [`crate::TxResult`].
+/// [`crate::TxResult`] and [`crate::TxResultWithState`].
 ///
 /// Consumers should apply database changes in this order:
 ///

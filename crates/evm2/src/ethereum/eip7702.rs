@@ -7,7 +7,7 @@ use super::{
     warm_base_accounts,
 };
 use crate::{
-    Evm, EvmTypes, TxOutcome,
+    Evm, EvmTypes, TxResult,
     bytecode::Bytecode,
     env::TxEnv,
     interpreter::Host,
@@ -20,7 +20,7 @@ use alloy_primitives::{Address, U256};
 
 pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     req: TxRequest<'_, T, Recovered<TxEip7702>>,
-) -> HandlerResult<TxOutcome<T>> {
+) -> HandlerResult<TxResult<T>> {
     let caller = req.tx.signer();
     let tx = req.tx.inner();
     if tx.authorization_list.is_empty() {

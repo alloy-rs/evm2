@@ -15,7 +15,7 @@ use alloy_trie::{
     root::{state_root_unhashed, storage_root_unhashed},
 };
 use evm2::{
-    BaseEvmTypes, Evm, EvmTypes, Precompiles, SpecId, TxOutcome,
+    BaseEvmTypes, Evm, EvmTypes, Precompiles, SpecId, TxResult,
     env::BlockEnv,
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
     evm::{
@@ -250,7 +250,7 @@ fn execute_spec(
     Ok(spec_outcome(post, result))
 }
 
-fn spec_outcome(post: InMemoryDB, result: TxOutcome) -> SpecOutcome {
+fn spec_outcome(post: InMemoryDB, result: TxResult) -> SpecOutcome {
     SpecOutcome {
         state_root: state_root_from_database(&post),
         logs_root: logs_hash(&result.logs),
@@ -301,7 +301,7 @@ fn commit_system_call<T: EvmTypes<Host = Evm<T>>>(
     data: Bytes,
 ) {
     let executed = evm.system_call(address, data);
-    assert!(executed.outcome().status, "pre-block system call failed: {address}");
+    assert!(executed.result().status, "pre-block system call failed: {address}");
     let Ok(_) = executed.commit_with(post);
 }
 
