@@ -602,19 +602,10 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     #[inline]
     pub fn clear_inspector_as<I: Inspector<T> + 'static>(&mut self) -> Option<Box<I>> {
         self.assert_inspector_mutable();
-        let inspector = self.inspector.take()?;
-        let raw = Box::into_raw(inspector);
-        // SAFETY: The raw pointer is created from a live boxed inspector. If the type ID matches
-        // `I`, the allocation was originally created for `I`; otherwise we restore the original
-        // trait object box before returning.
-        unsafe {
-            if (*raw).type_id() == TypeId::of::<I>() {
-                Some(Box::from_raw(raw.cast::<I>()))
-            } else {
-                self.inspector = Some(Box::from_raw(raw));
-                None
-            }
+        if !self.inspector.as_ref()?.is::<I>() {
+            return None;
         }
+        Some((self.inspector.take()? as Box<dyn core::any::Any>).downcast().unwrap())
     }
 
     /// Returns the active EVM version.

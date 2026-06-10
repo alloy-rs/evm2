@@ -1031,6 +1031,7 @@ impl State {
                 }
             }
         }
+
         for (&address, current) in &self.scratch.accounts {
             let original = self.database.account_info(&address).map(AccountInfoRef::from_info);
             let current = current.as_ref().map(AccountInfoRef::from_account);
