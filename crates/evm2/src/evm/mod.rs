@@ -1538,7 +1538,7 @@ mod tests {
         bytecode::Bytecode,
         env::TxEnv,
         ethereum::RecoveredTxEnvelope,
-        interpreter::{GasTracker, Interpreter, MessageKind, opcode::op},
+        interpreter::{GasTracker, Interpreter, MessageKind, op},
         registry::TxRequest,
     };
     use alloc::{string::ToString, vec, vec::Vec};

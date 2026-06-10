@@ -25,7 +25,7 @@ mod tests {
         interpreter::{
             InstrStop, Word,
             instructions::tests::{RunConfig, push, run, run_stack},
-            opcode::op,
+            op,
         },
         utils::b256_to_word,
     };

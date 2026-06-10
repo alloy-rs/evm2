@@ -3,7 +3,7 @@
 use crate::{
     BaseEvmConfigSelector, EvmConfig, EvmConfigSelector, EvmTypes, OpcodeConfig,
     evm::config::SelectorOpcodeConfig,
-    interpreter::{Interpreter, InterpreterState, Pc, Stack, opcode::op},
+    interpreter::{Interpreter, InterpreterState, Pc, Stack, op},
     trustme,
 };
 

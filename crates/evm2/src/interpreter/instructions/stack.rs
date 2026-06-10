@@ -65,7 +65,7 @@ mod tests {
         interpreter::{
             InstrStop, StackMut, Word,
             instructions::tests::{RunConfig, push, run, run_stack},
-            opcode::op,
+            op,
         },
     };
     use alloc::{vec, vec::Vec};

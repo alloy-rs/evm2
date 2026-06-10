@@ -70,8 +70,8 @@
          GethTrace::Erc7562Tracer(frame) => {
 -            assert!(frame.used_opcodes.contains_key(&opcode::KECCAK256));
 -            assert!(frame.used_opcodes.contains_key(&opcode::SSTORE));
-+            assert!(frame.used_opcodes.contains_key(&opcode::op::KECCAK256));
-+            assert!(frame.used_opcodes.contains_key(&opcode::op::SSTORE));
++            assert!(frame.used_opcodes.contains_key(&op::KECCAK256));
++            assert!(frame.used_opcodes.contains_key(&op::SSTORE));
              assert!(frame.accessed_slots.writes.contains_key(&B256::ZERO));
              assert!(!frame.keccak.is_empty());
          }

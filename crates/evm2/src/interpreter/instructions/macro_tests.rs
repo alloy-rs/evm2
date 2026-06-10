@@ -3,7 +3,7 @@ use crate::{
     BaseEvmConfig, EvmConfig, ExecutionConfig, SpecId,
     bytecode::Bytecode,
     env::BlockEnv,
-    interpreter::{Host, InstrStop, Interpreter, Word, opcode::op},
+    interpreter::{Host, InstrStop, Interpreter, Word, op},
     version::OpcodeConfig,
 };
 use alloc::vec::Vec;

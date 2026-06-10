@@ -2,7 +2,7 @@
 
 use crate::{
     constants::{EIP7702_BYTECODE_LEN, EIP7702_MAGIC_BYTES, EIP7702_VERSION},
-    interpreter::opcode::op,
+    interpreter::op,
     once_lock::OnceLock,
 };
 use alloc::sync::Arc;
@@ -338,7 +338,7 @@ impl Bytecode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::interpreter::opcode::op;
+    use crate::interpreter::op;
     use alloy_primitives::{Address, Bytes};
 
     #[test]

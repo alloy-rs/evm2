@@ -3,7 +3,7 @@
 @@ -1,15 +1,12 @@
  use alloc::string::ToString;
  use alloy_primitives::map::HashMap;
- use alloy_rpc_types_trace::opcode::OpcodeGas;
+ use alloy_rpc_types_trace::opcodeGas;
 -use revm::{
 -    bytecode::opcode::{self, OpCode},
 -    context::{ContextTr, JournalTr},

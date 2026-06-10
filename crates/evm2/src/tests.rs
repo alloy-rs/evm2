@@ -3,7 +3,7 @@ use crate::{
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
     evm::{AccountInfo, InMemoryDB},
-    interpreter::{Host, InstrStop, Message, Word, instructions::tests::push, opcode::op},
+    interpreter::{Host, InstrStop, Message, Word, instructions::tests::push, op},
     registry::TxRegistry,
 };
 use alloc::vec::Vec;

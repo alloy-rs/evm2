@@ -5,7 +5,7 @@ use crate::{
     evm::{AccountLoad, SLoad, SStore, SelfDestructResult},
     interpreter::{
         Gas, Host, InstrStop, Interpreter, Memory, Message, MessageKind, MessageResult,
-        StackBacking, Word, opcode::op,
+        StackBacking, Word, op,
     },
     storage_key::{StorageKey, StorageKeyMap},
 };
@@ -386,7 +386,7 @@ macro_rules! assert_stack {
         let expected = [$crate::interpreter::Word::from($expected)];
         $crate::interpreter::instructions::tests::assert_stack_words(
             &inputs,
-            $crate::interpreter::opcode::op::$op,
+            $crate::interpreter::op::$op,
             &expected,
         );
     }};

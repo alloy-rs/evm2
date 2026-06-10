@@ -283,7 +283,7 @@ impl<ExtDB: DynDatabase> DynDatabase for CacheDB<ExtDB> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::interpreter::opcode::op;
+    use crate::interpreter::op;
     use alloy_primitives::Bytes;
 
     #[derive(Debug, Default)]

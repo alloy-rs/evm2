@@ -15,7 +15,7 @@ use evm2::{
         precompile::NoPrecompiles,
     },
     inspector::Inspector,
-    interpreter::{InstrStop, Interpreter, Message, MessageResult, opcode::op},
+    interpreter::{InstrStop, Interpreter, Message, MessageResult, op},
     registry::HandlerResult,
 };
 use tx::{CustomEnvelope, ExecuteCodeTx, custom_registry};

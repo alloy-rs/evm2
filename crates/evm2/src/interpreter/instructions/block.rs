@@ -92,7 +92,7 @@ mod tests {
         interpreter::{
             InstrStop, Message, Word,
             instructions::tests::{RunConfig, TestHost, TestTypes, push, run},
-            opcode::op,
+            op,
         },
         utils::{address_to_word, b256_to_word},
     };

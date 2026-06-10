@@ -72,7 +72,7 @@ mod tests {
         interpreter::{
             InstrStop, Word,
             instructions::tests::{RunConfig, assert_stack, push, run},
-            opcode::op,
+            op,
         },
     };
 

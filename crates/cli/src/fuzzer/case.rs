@@ -12,7 +12,7 @@ use alloy_eips::{
     eip7702::{Authorization, SignedAuthorization},
 };
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
-use evm2::{SpecId, env::BlockEnv, ethereum::RecoveredTxEnvelope, interpreter::opcode::op};
+use evm2::{SpecId, env::BlockEnv, ethereum::RecoveredTxEnvelope, interpreter::op};
 use revm::{
     context::{BlockEnv as RevmBlockEnv, TxEnv as RevmTxEnv},
     primitives::TxKind as RevmTxKind,

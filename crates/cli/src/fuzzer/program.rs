@@ -1,6 +1,6 @@
 use crate::fuzzer::{precompile, rng::Gen};
 use alloy_primitives::{Address, Bytes, U256};
-use evm2::{SpecId, interpreter::opcode::op};
+use evm2::{SpecId, interpreter::op};
 use std::collections::BTreeSet;
 
 pub(crate) struct Program {

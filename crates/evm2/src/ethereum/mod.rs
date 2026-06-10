@@ -612,7 +612,7 @@ mod tests {
         BaseEvmTypes, ExecutionConfig, Precompiles,
         env::{BlockEnv, TxEnv},
         evm::InMemoryDB,
-        interpreter::{GasTracker, Host, InstrStop, opcode::op},
+        interpreter::{GasTracker, Host, InstrStop, op},
         registry::TxRegistry,
     };
     use alloc::vec;

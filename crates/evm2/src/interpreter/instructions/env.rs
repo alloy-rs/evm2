@@ -173,7 +173,7 @@ mod tests {
             instructions::tests::{
                 RunConfig, TestHost, TestTypes, assert_stack, push, run, run_stack,
             },
-            opcode::op,
+            op,
         },
         utils::{address_to_word, b256_to_word},
     };

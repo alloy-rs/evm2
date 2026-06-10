@@ -2,7 +2,7 @@ use crate::fuzzer::{
     backend::EvmBackend,
     case::{EvmCase, TARGET},
 };
-use evm2::interpreter::opcode::op;
+use evm2::interpreter::op;
 
 pub(crate) fn differs(backends: &[&dyn EvmBackend; 2], case: &EvmCase) -> bool {
     backends[0].run(case) != backends[1].run(case)

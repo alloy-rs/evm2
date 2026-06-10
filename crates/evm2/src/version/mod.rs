@@ -6,7 +6,7 @@ use crate::{
         BLOB_BASE_FEE_UPDATE_FRACTION_CANCUN, BLOB_BASE_FEE_UPDATE_FRACTION_PRAGUE, MAX_CODE_SIZE,
         MAX_CODE_SIZE_AMSTERDAM, MAX_INITCODE_SIZE, MAX_INITCODE_SIZE_AMSTERDAM,
     },
-    interpreter::{instructions as instr, opcode::op},
+    interpreter::{instructions as instr, op},
 };
 use alloy_eips::{eip4844::MAX_BLOBS_PER_BLOCK_DENCUN, eip7825::MAX_TX_GAS_LIMIT_OSAKA};
 
@@ -234,7 +234,7 @@ macro_rules! evm_versions {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{BaseEvmConfig, BaseEvmTypes, OpcodeConfig, interpreter::opcode::op};
+    use crate::{BaseEvmConfig, BaseEvmTypes, OpcodeConfig, interpreter::op};
 
     fn opcode_config(spec: SpecId) -> &'static OpcodeConfig<BaseEvmTypes> {
         crate::spec_to_generic!(spec, |BASE_SPEC_ID| {

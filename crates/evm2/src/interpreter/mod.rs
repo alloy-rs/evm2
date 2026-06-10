@@ -14,6 +14,7 @@ pub(crate) mod dispatch;
 pub mod private;
 
 pub mod opcode;
+pub use opcode::op;
 
 mod ctrl;
 pub use ctrl::{BytecodeRef, Pc};

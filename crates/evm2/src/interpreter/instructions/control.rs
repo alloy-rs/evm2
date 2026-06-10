@@ -100,7 +100,7 @@ mod tests {
     use crate::interpreter::{
         InstrStop, Word,
         instructions::tests::{RunConfig, push, run, run_stack},
-        opcode::op,
+        op,
     };
     use alloc::vec::Vec;
     use core::assert_matches;

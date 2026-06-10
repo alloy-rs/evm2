@@ -220,7 +220,7 @@ mod tests {
         bytecode::Bytecode,
         env::BlockEnv,
         evm::{AccountInfo, InMemoryDB},
-        interpreter::{InstrStop, opcode::op},
+        interpreter::{InstrStop, op},
         registry::TxRegistry,
     };
 

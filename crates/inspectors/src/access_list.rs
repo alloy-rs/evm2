@@ -6,7 +6,7 @@ use alloy_primitives::{
 use alloy_rpc_types_eth::{AccessList, AccessListItem};
 use evm2::{
     Evm, EvmTypes, Inspector,
-    interpreter::{Interpreter, Message, MessageResult, opcode::op},
+    interpreter::{Interpreter, Message, MessageResult, op},
 };
 
 /// An [Inspector] that collects touched accounts and storage slots.

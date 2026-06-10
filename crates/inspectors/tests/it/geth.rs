@@ -1,7 +1,7 @@
 //! Geth tests
 use crate::utils::{
     AccountInfo, Bytecode, CacheDB, Context, ETH_TRANSFER_LOG_ADDRESS, EmptyDB, SpecId, TransactTo,
-    TxEnv, deploy_contract, opcode,
+    TxEnv, deploy_contract, op,
 };
 use alloy_primitives::{Address, B256, Bytes, TxKind, address, hex, map::HashMap};
 use alloy_rpc_types_eth::TransactionInfo;
@@ -139,8 +139,8 @@ fn test_geth_erc7562_tracer() {
 
     match trace {
         GethTrace::Erc7562Tracer(frame) => {
-            assert!(frame.used_opcodes.contains_key(&opcode::op::KECCAK256));
-            assert!(frame.used_opcodes.contains_key(&opcode::op::SSTORE));
+            assert!(frame.used_opcodes.contains_key(&op::KECCAK256));
+            assert!(frame.used_opcodes.contains_key(&op::SSTORE));
             assert!(frame.accessed_slots.writes.contains_key(&B256::ZERO));
             assert!(!frame.keccak.is_empty());
         }
