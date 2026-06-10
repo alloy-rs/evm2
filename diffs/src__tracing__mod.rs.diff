@@ -6,7 +6,7 @@
  use crate::{
      opcode::immediate_size,
      tracing::{
-@@ -10,19 +12,13 @@
+@@ -10,19 +12,15 @@
      },
  };
  use alloc::{boxed::Box, vec::Vec};
@@ -16,24 +16,24 @@
 -    context::{JournalTr, LocalContextTr},
 -    context_interface::ContextTr,
 -    inspector::JournalExt,
--    interpreter::{
--        interpreter_types::{Immediates, Jumps, LoopControl, ReturnData, RuntimeFlag},
--        CallInput, CallInputs, CallOutcome, CallScheme, CreateInputs, CreateOutcome, Interpreter,
--        InterpreterResult,
--    },
--    primitives::{hardfork::SpecId, Address, Bytes, Log, B256, U256},
--    Inspector, JournalEntry,
 +use alloy_primitives::{Address, B256, Bytes, Log, U256};
 +use core::mem;
 +use evm2::{
 +    Evm, EvmTypes, Inspector, SpecId,
-+    bytecode::opcode::{OpCode, op},
 +    evm::JournalEntry,
-+    interpreter::{Interpreter, Message, MessageKind, MessageResult},
+     interpreter::{
+-        interpreter_types::{Immediates, Jumps, LoopControl, ReturnData, RuntimeFlag},
+-        CallInput, CallInputs, CallOutcome, CallScheme, CreateInputs, CreateOutcome, Interpreter,
+-        InterpreterResult,
++        Interpreter, Message, MessageKind, MessageResult,
++        opcode::{OpCode, op},
+     },
+-    primitives::{hardfork::SpecId, Address, Bytes, Log, B256, U256},
+-    Inspector, JournalEntry,
  };
  
  mod arena;
-@@ -53,19 +49,21 @@
+@@ -53,19 +51,21 @@
  #[cfg(feature = "std")]
  pub use writer::{TraceWriter, TraceWriterConfig};
  
@@ -58,7 +58,7 @@
  ///
  /// The [TracingInspector] keeps track of everything by:
  ///   1. start tracking steps/calls on [Inspector::step] and [Inspector::call]
-@@ -78,10 +76,11 @@
+@@ -78,10 +78,11 @@
      traces: CallTraceArena,
      /// Tracks active calls
      trace_stack: Vec<usize>,
@@ -74,7 +74,7 @@
      /// Tracks the journal len in the step, used in step_end to check if the journal has changed
      last_journal_len: usize,
      /// The spec id of the EVM.
-@@ -109,10 +108,9 @@
+@@ -109,10 +110,9 @@
          let Self {
              traces,
              trace_stack,
@@ -86,7 +86,7 @@
              // kept
              config,
              reusable_step_vecs,
-@@ -131,10 +129,9 @@
+@@ -131,10 +131,9 @@
  
          traces.clear();
          trace_stack.clear();
@@ -98,7 +98,7 @@
      }
  
      /// Resets the inspector to it's initial state of [Self::new].
-@@ -150,7 +147,7 @@
+@@ -150,7 +149,7 @@
      }
  
      /// Returns a mutable reference to the config of the inspector.
@@ -107,7 +107,7 @@
          &mut self.config
      }
  
-@@ -167,20 +164,8 @@
+@@ -167,20 +166,8 @@
          &self.traces
      }
  
@@ -129,7 +129,7 @@
          &mut self.traces
      }
  
-@@ -264,7 +249,7 @@
+@@ -264,7 +251,7 @@
      }
  
      /// Returns true if we're no longer in the context of the root call.
@@ -138,7 +138,7 @@
          // the root call will always be the first entry in the trace stack
          !self.trace_stack.is_empty()
      }
-@@ -278,13 +263,13 @@
+@@ -278,13 +265,13 @@
      ///
      /// Returns true if the `to` address is a precompile contract and the value is zero.
      #[inline]
@@ -155,7 +155,7 @@
              // only if this is _not_ the root call
              return self.is_deep() && value.is_zero();
          }
-@@ -335,9 +320,9 @@
+@@ -335,9 +322,9 @@
      ///
      /// Invoked on [Inspector::call].
      #[allow(clippy::too_many_arguments)]
@@ -167,7 +167,7 @@
          address: Address,
          input_data: Bytes,
          value: U256,
-@@ -362,7 +347,7 @@
+@@ -362,7 +349,7 @@
              0,
              push_kind,
              CallTrace {
@@ -176,7 +176,7 @@
                  address,
                  kind,
                  data: input_data,
-@@ -384,26 +369,18 @@
+@@ -384,26 +371,18 @@
      /// # Panics
      ///
      /// This expects an existing trace [Self::start_trace_on_call]
@@ -193,24 +193,24 @@
  
 -        trace.gas_used = gas.total_gas_spent();
 -        trace.gas_refund_counter = gas.refunded().max(0) as u64;
--
--        trace.status = Some(result);
--        trace.success = trace.status.is_some_and(|status| status.is_ok());
--        trace.output = output.clone();
 +        trace.gas_used = result.gas.spent();
 +        trace.gas_refund_counter = result.gas.refunded().max(0) as u64;
  
--        self.last_call_return_data = Some(output.clone());
+-        trace.status = Some(result);
+-        trace.success = trace.status.is_some_and(|status| status.is_ok());
+-        trace.output = output.clone();
 +        trace.status = Some(result.stop);
 +        trace.success = result.stop.is_success();
 +        trace.output = result.output.clone();
  
+-        self.last_call_return_data = Some(output.clone());
+-
 -        if let Some(address) = created_address {
 +        if let Some(address) = result.created_address {
              // A new contract was created via CREATE
              trace.address = address;
          }
-@@ -418,80 +395,73 @@
+@@ -418,80 +397,73 @@
      /// This expects an existing [CallTrace], in other words, this panics if not within the context
      /// of a call.
      #[cold]
@@ -316,7 +316,7 @@
              gas_used,
              immediate_bytes,
  
-@@ -506,26 +476,25 @@
+@@ -506,26 +478,25 @@
          });
  
          node.ordering.push(TraceMemberOrder::Step(step_idx));
@@ -352,7 +352,7 @@
  
          // See comments in `start_step`.
          debug_assert!(
-@@ -541,149 +510,200 @@
+@@ -541,149 +512,200 @@
              || self.config.record_stack_snapshots.is_pushes()
          {
              let outputs = if step.op.is_valid() { step.op.outputs() as usize } else { 0 };
@@ -632,7 +632,7 @@
              Some(false),
          );
          None
-@@ -691,18 +711,24 @@
+@@ -691,18 +713,24 @@
  
      fn create_end(
          &mut self,
@@ -665,7 +665,7 @@
      }
  }
  
-@@ -753,21 +779,3 @@
+@@ -753,21 +781,3 @@
          }
      }
  }

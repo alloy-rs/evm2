@@ -13,7 +13,7 @@ use alloy_rpc_types_trace::geth::{
 use evm2::{
     Evm, EvmTypes, Inspector, TxResultWithState,
     env::BlockEnv,
-    ethereum::{EthereumTxEnv, RecoveredTxEnvelope},
+    ethereum::RecoveredTxEnvelope,
     evm::{DbErrorCode, DynDatabase},
     interpreter::{Interpreter, Message, MessageResult},
 };
@@ -50,13 +50,6 @@ pub enum DebugInspector {
     /// JS tracer
     #[cfg(feature = "js-tracer")]
     Js(Box<crate::tracing::js::JsInspector>),
-}
-
-#[derive(Clone, Copy, Debug)]
-struct DebugTransaction<'a> {
-    caller: Address,
-    gas_limit: u64,
-    _envelope: Option<&'a RecoveredTxEnvelope>,
 }
 
 impl DebugInspector {
@@ -213,45 +206,6 @@ impl DebugInspector {
         res: &TxResultWithState<T>,
         db: &mut dyn DynDatabase,
     ) -> Result<GethTrace, DebugInspectorError> {
-        self.get_result_with_tx(
-            tx_context,
-            DebugTransaction {
-                caller: tx.signer(),
-                gas_limit: tx.gas_limit(),
-                _envelope: Some(tx),
-            },
-            block_env,
-            res,
-            db,
-        )
-    }
-
-    /// Should be invoked after each unsigned transaction to obtain the resulting [`GethTrace`].
-    pub fn get_result_tx_env<T: EvmTypes>(
-        &mut self,
-        tx_context: Option<TransactionContext>,
-        tx: &EthereumTxEnv,
-        block_env: &BlockEnv,
-        res: &TxResultWithState<T>,
-        db: &mut dyn DynDatabase,
-    ) -> Result<GethTrace, DebugInspectorError> {
-        self.get_result_with_tx(
-            tx_context,
-            DebugTransaction { caller: tx.caller, gas_limit: tx.gas_limit, _envelope: None },
-            block_env,
-            res,
-            db,
-        )
-    }
-
-    fn get_result_with_tx<T: EvmTypes>(
-        &mut self,
-        tx_context: Option<TransactionContext>,
-        tx: DebugTransaction<'_>,
-        block_env: &BlockEnv,
-        res: &TxResultWithState<T>,
-        db: &mut dyn DynDatabase,
-    ) -> Result<GethTrace, DebugInspectorError> {
         #[allow(clippy::needless_update)]
         let tx_info = TransactionInfo {
             hash: tx_context.as_ref().and_then(|c| c.tx_hash),
@@ -265,12 +219,12 @@ impl DebugInspector {
         let res = match self {
             Self::FourByte(inspector) => FourByteFrame::from(&*inspector).into(),
             Self::CallTracer(inspector, config) => {
-                inspector.set_transaction_gas_limit(tx.gas_limit);
-                inspector.set_transaction_caller(tx.caller);
+                inspector.set_transaction_gas_limit(tx.gas_limit());
+                inspector.set_transaction_caller(tx.signer());
                 inspector.geth_builder().geth_call_traces(*config, res.result.gas_used).into()
             }
             Self::PreStateTracer(inspector, config) => {
-                inspector.set_transaction_gas_limit(tx.gas_limit);
+                inspector.set_transaction_gas_limit(tx.gas_limit());
                 inspector
                     .geth_builder()
                     .geth_prestate_traces(res, config, db)
@@ -283,8 +237,8 @@ impl DebugInspector {
                 .map_err(DebugInspectorError::Database)?
                 .into(),
             Self::FlatCallTracer(inspector) => {
-                inspector.set_transaction_gas_limit(tx.gas_limit);
-                inspector.set_transaction_caller(tx.caller);
+                inspector.set_transaction_gas_limit(tx.gas_limit());
+                inspector.set_transaction_caller(tx.signer());
                 inspector
                     .clone()
                     .into_parity_builder()
@@ -292,8 +246,8 @@ impl DebugInspector {
                     .into()
             }
             Self::Erc7562Tracer(inspector, config) => {
-                inspector.set_transaction_gas_limit(tx.gas_limit);
-                inspector.set_transaction_caller(tx.caller);
+                inspector.set_transaction_gas_limit(tx.gas_limit());
+                inspector.set_transaction_caller(tx.signer());
                 inspector
                     .geth_builder()
                     .geth_erc7562_traces(config.clone(), res.result.gas_used, db)
@@ -301,8 +255,8 @@ impl DebugInspector {
                     .into()
             }
             Self::Default(inspector, config) => {
-                inspector.set_transaction_gas_limit(tx.gas_limit);
-                inspector.set_transaction_caller(tx.caller);
+                inspector.set_transaction_gas_limit(tx.gas_limit());
+                inspector.set_transaction_caller(tx.signer());
                 inspector
                     .geth_builder()
                     .geth_traces(res.result.gas_used, res.result.output.clone(), *config)
@@ -311,10 +265,7 @@ impl DebugInspector {
             #[cfg(feature = "js-tracer")]
             Self::Js(inspector) => {
                 inspector.set_transaction_context(tx_context.unwrap_or_default());
-                let Some(envelope) = tx._envelope else {
-                    return Err(DebugInspectorError::UnsupportedTracer);
-                };
-                GethTrace::JS(inspector.json_result(res, envelope, block_env, db)?)
+                GethTrace::JS(inspector.json_result(res, tx, block_env, db)?)
             }
         };
 

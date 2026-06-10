@@ -24,12 +24,12 @@ use boa_engine::{
 use boa_gc::{Finalize, Trace, empty_trace};
 use core::cell::RefCell;
 use evm2::{
-    bytecode::{
-        Bytecode,
+    bytecode::Bytecode,
+    evm::{AccountInfo, DbResult, DynDatabase, State, StateChanges},
+    interpreter::{
+        Memory, Word,
         opcode::{OpCode, op},
     },
-    evm::{AccountInfo, DbResult, DynDatabase, State, StateChanges},
-    interpreter::{Memory, Word},
 };
 
 /// Shared mutable state captured by JS native functions.

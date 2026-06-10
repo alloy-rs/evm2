@@ -716,22 +716,10 @@ impl<T: EvmTypes<Tx: Typed2718, Host = Self>> Evm<T> {
     /// another transaction can be executed. Dropping the handle is equivalent to
     /// [`ExecutedTx::discard`].
     pub fn transact(&mut self, tx: &T::Tx) -> HandlerResult<ExecutedTx<'_, T>> {
-        self.transact_with(|host| {
-            let handler = host.registry.try_get_by_type(tx.ty())?;
-            handler.call(tx, host)
-        })
-    }
-
-    /// Executes an Ethereum transaction handler and finalizes its state transition.
-    ///
-    /// See [`Self::transact`] for the returned [`ExecutedTx`] lifecycle.
-    pub fn transact_with(
-        &mut self,
-        f: impl FnOnce(&mut Self) -> HandlerResult<TxResult<T>>,
-    ) -> HandlerResult<ExecutedTx<'_, T>> {
         self.db_error_code = None;
         self.eip7702_authorities.clear();
-        let mut result = f(self);
+        let handler = self.registry.try_get_by_type(tx.ty())?;
+        let mut result = handler.call(tx, self);
         let mut has_pending_state = false;
         if let Ok(result) = &mut result {
             if let Err(stop) = self.finalize_transaction() {

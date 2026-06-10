@@ -1,6 +1,6 @@
 --- upstream/src/access_list.rs
 +++ evm2/src/access_list.rs
-@@ -1,21 +1,13 @@
+@@ -1,21 +1,12 @@
  use alloc::collections::BTreeSet;
  use alloy_primitives::{
 +    Address, B256,
@@ -22,12 +22,11 @@
 -    Inspector,
 +use evm2::{
 +    Evm, EvmTypes, Inspector,
-+    bytecode::opcode::op,
-+    interpreter::{Interpreter, Message, MessageResult},
++    interpreter::{Interpreter, Message, MessageResult, opcode::op},
  };
  
  /// An [Inspector] that collects touched accounts and storage slots.
-@@ -51,12 +43,12 @@
+@@ -51,12 +42,12 @@
      }
  
      /// Returns the excluded addresses.
@@ -42,7 +41,7 @@
          &self.touched_slots
      }
  
-@@ -90,55 +82,45 @@
+@@ -90,55 +81,45 @@
      /// top-level call.
      ///
      /// Those include caller, callee and precompiles.
@@ -122,7 +121,7 @@
                      let addr = Address::from_word(B256::from(slot.to_be_bytes()));
                      if !self.excluded.contains(&addr) {
                          self.touched_slots.entry(addr).or_default();
-@@ -151,24 +133,24 @@
+@@ -151,24 +132,24 @@
  
      fn call(
          &mut self,

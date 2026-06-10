@@ -1,6 +1,6 @@
 --- upstream/src/storage.rs
 +++ evm2/src/storage.rs
-@@ -1,12 +1,5 @@
+@@ -1,11 +1,7 @@
 -use alloy_primitives::{map::HashMap, Address, B256};
 -use revm::{
 -    bytecode::opcode,
@@ -9,13 +9,14 @@
 -        Interpreter,
 -    },
 -    Inspector,
--};
 +use alloy_primitives::{Address, B256, map::HashMap};
-+use evm2::{EvmTypes, Inspector, bytecode::opcode::op, interpreter::Interpreter};
++use evm2::{
++    EvmTypes, Inspector,
++    interpreter::{Interpreter, opcode::op},
+ };
  
  /// An Inspector that tracks warm and cold storage slot accesses.
- #[derive(Debug, Default, Clone)]
-@@ -50,18 +43,18 @@
+@@ -50,18 +46,18 @@
      }
  }
  

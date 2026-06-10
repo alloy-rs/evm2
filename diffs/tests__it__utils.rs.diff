@@ -1,6 +1,6 @@
 --- upstream/tests/it/utils.rs
 +++ evm2/tests/it/utils.rs
-@@ -1,19 +1,451 @@
+@@ -1,19 +1,452 @@
 -use alloy_primitives::{Address, Bytes};
 +use alloy_consensus::{TxEip4844, TxLegacy, transaction::Recovered};
 +use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
@@ -29,8 +29,9 @@
 -pub type ContextDb<DB> = Context<BlockEnv, TxEnv, CfgEnv, DB, Journal<DB>, ()>;
 +pub use evm2::{
 +    SpecId,
-+    bytecode::{Bytecode, opcode},
++    bytecode::Bytecode,
 +    evm::{AccountInfo, CacheDB, EmptyDB},
++    interpreter::opcode,
 +};
 +
 +pub type TransactTo = TxKind;
@@ -465,7 +466,7 @@
  
  pub fn write_traces(tracer: &TracingInspector) -> String {
      write_traces_with(tracer, TraceWriterConfig::new().color_choice(ColorChoice::Never))
-@@ -30,57 +462,187 @@
+@@ -30,57 +463,187 @@
      println!("{}", write_traces_with(tracer, TraceWriterConfig::new()));
  }
  

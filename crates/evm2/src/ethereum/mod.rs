@@ -9,17 +9,17 @@ mod legacy;
 use crate::{
     Evm, EvmFeatures, EvmTypes, SpecId, TxResult, Version,
     bytecode::Bytecode,
-    evm::{AccountInfo, ExecutedTx, StateCheckpoint},
-    interpreter::{Host, Message, MessageKind, MessageResult, Word},
+    evm::{AccountInfo, StateCheckpoint},
+    interpreter::{Message, MessageKind, MessageResult, Word},
     registry::{HandlerError, HandlerResult, TxRegistry},
-    utils::{b256_to_word, num_words},
+    utils::num_words,
     version::GasId,
 };
 use alloy_consensus::{
     TxEip1559, TxEip2930, TxEip7702, TxLegacy,
     transaction::{Recovered, Transaction, TxEip4844Variant},
 };
-use alloy_eips::{eip2718::Typed2718, eip2930::AccessList, eip4844::DATA_GAS_PER_BLOB};
+use alloy_eips::{eip2718::Typed2718, eip2930::AccessList};
 use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, TxKind, U256};
 
 /// Ethereum transaction envelope containing recovered transactions.
@@ -143,171 +143,6 @@ impl RecoveredTxEnvelope {
             Self::Eip7702(tx) => tx.value(),
         }
     }
-}
-
-/// Ethereum transaction environment for unsigned execution.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct EthereumTxEnv {
-    /// Transaction type.
-    pub tx_type: u8,
-    /// Transaction caller.
-    pub caller: Address,
-    /// Transaction gas limit.
-    pub gas_limit: u64,
-    /// Gas price or max fee per gas.
-    pub gas_price: U256,
-    /// Transaction target.
-    pub kind: TxKind,
-    /// Transaction value.
-    pub value: U256,
-    /// Transaction input.
-    pub input: Bytes,
-    /// Transaction nonce.
-    pub nonce: u64,
-    /// Transaction chain ID.
-    pub chain_id: Option<u64>,
-    /// Transaction access list.
-    pub access_list: AccessList,
-    /// Max priority fee per gas for EIP-1559 and later transactions.
-    pub max_priority_fee_per_gas: Option<U256>,
-    /// Blob versioned hashes for EIP-4844 transactions.
-    pub blob_hashes: Vec<B256>,
-    /// Max fee per blob gas for EIP-4844 transactions.
-    pub max_fee_per_blob_gas: U256,
-}
-
-/// Executes an unsigned Ethereum transaction environment.
-///
-/// See [`Evm::transact`] for the returned [`ExecutedTx`] lifecycle.
-pub fn transact_tx_env<'evm, T: EvmTypes<Host = Evm<T>>>(
-    host: &'evm mut Evm<T>,
-    tx: &EthereumTxEnv,
-) -> HandlerResult<ExecutedTx<'evm, T>>
-where
-    T::Tx: Typed2718,
-{
-    host.transact_with(|host| execute_tx_env(host, tx))
-}
-
-fn execute_tx_env<T: EvmTypes<Host = Evm<T>>>(
-    host: &mut Evm<T>,
-    tx: &EthereumTxEnv,
-) -> HandlerResult<TxResult<T>> {
-    let gas_price = match tx.tx_type {
-        0 | 1 => {
-            validate_gas_price(host.version(), tx.gas_price, host.block.basefee)?;
-            tx.gas_price
-        }
-        2..=4 => {
-            let max_priority_fee_per_gas = tx.max_priority_fee_per_gas.unwrap_or(tx.gas_price);
-            validate_priority_fee(host.version(), tx.gas_price, max_priority_fee_per_gas)?;
-            let gas_price =
-                effective_gas_price(tx.gas_price, max_priority_fee_per_gas, host.block.basefee);
-            validate_gas_price(host.version(), gas_price, host.block.basefee)?;
-            gas_price
-        }
-        ty => return Err(HandlerError::UnsupportedTransactionType(ty)),
-    };
-
-    let chain_id_required = tx.tx_type != 0;
-    validate_chain_id(host.version(), tx.chain_id, !chain_id_required)?;
-    if tx.tx_type == 3 {
-        validate_blob_fee(tx.max_fee_per_blob_gas, host.block.blob_basefee)?;
-        validate_blobs(&tx.blob_hashes, host.version().max_blobs_per_tx)?;
-    }
-    if tx.tx_type == 4 {
-        return Err(HandlerError::EmptyAuthorizationList);
-    }
-
-    validate_tx_gas_limit_cap(host.version(), tx.gas_limit)?;
-    validate_block_gas_limit(host.version(), tx.gas_limit, host.block.gas_limit)?;
-    validate_create_initcode(host.version(), tx.kind, &tx.input)?;
-    validate_nonce_not_overflow(tx.nonce)?;
-
-    let (access_list_accounts, access_list_storage_keys) = access_list_counts(&tx.access_list);
-    let intrinsic = intrinsic_gas(
-        host.version(),
-        tx.kind,
-        &tx.input,
-        access_list_accounts,
-        access_list_storage_keys,
-    );
-    validate_intrinsic_gas(tx.gas_limit, intrinsic)?;
-    let floor_gas =
-        floor_gas(host.version(), &tx.input, access_list_accounts, access_list_storage_keys);
-    validate_floor_gas(tx.gas_limit, floor_gas)?;
-    validate_regular_gas_limit_cap(host.version(), tx.gas_limit, intrinsic, floor_gas)?;
-
-    let blob_gas_cost = if tx.tx_type == 3 {
-        U256::from(DATA_GAS_PER_BLOB) * U256::from(tx.blob_hashes.len())
-    } else {
-        U256::ZERO
-    };
-    let max_gas_cost = U256::from(tx.gas_limit) * tx.gas_price;
-    validate_sender(
-        host,
-        tx.caller,
-        tx.nonce,
-        max_gas_cost
-            .saturating_add(blob_gas_cost.saturating_mul(tx.max_fee_per_blob_gas))
-            .saturating_add(tx.value),
-    )?;
-
-    warm_base_accounts(host, tx.caller, tx.kind);
-    warm_access_list(host, &tx.access_list);
-
-    let effective_gas_cost = U256::from(tx.gas_limit) * gas_price;
-    let blob_basefee_cost = blob_gas_cost * host.block.blob_basefee;
-    charge_upfront(host, tx.caller, effective_gas_cost + blob_basefee_cost)?;
-    host.state.increment_nonce(&tx.caller).map_err(|code| host.db_error_handler(code))?;
-    let execution_checkpoint = host.state.checkpoint();
-
-    let evm_tx_env = crate::env::TxEnv {
-        origin: tx.caller,
-        gas_price,
-        chain_id: U256::from(host.version().chain_id),
-        blob_hashes: tx.blob_hashes.iter().copied().map(b256_to_word).collect(),
-        ext: T::TxEnvExt::default(),
-        _non_exhaustive: (),
-    };
-    let (bytecode, mut message) = initial_message(
-        host,
-        tx.caller,
-        tx.nonce,
-        tx.kind,
-        &tx.input,
-        tx.value,
-        tx.gas_limit - intrinsic,
-    )?;
-    let mut result = host.execute_message(&evm_tx_env, bytecode, &mut message, false);
-    rollback_failed_execution(host, execution_checkpoint, &mut result);
-
-    settle_gas(host, tx.caller, gas_price, tx.gas_limit, floor_gas, result)
-}
-
-fn validate_blob_fee(max_fee_per_blob_gas: U256, blob_basefee: U256) -> HandlerResult<()> {
-    if max_fee_per_blob_gas < blob_basefee {
-        return Err(HandlerError::BlobFeeCapLessThanBlobBaseFee {
-            max_fee_per_blob_gas,
-            blob_base_fee: blob_basefee,
-        });
-    }
-    Ok(())
-}
-
-fn validate_blobs(blob_hashes: &[B256], max_blobs_per_tx: usize) -> HandlerResult<()> {
-    if blob_hashes.is_empty() {
-        return Err(HandlerError::EmptyBlobs);
-    }
-    if blob_hashes.len() > max_blobs_per_tx {
-        return Err(HandlerError::TooManyBlobs { have: blob_hashes.len(), max: max_blobs_per_tx });
-    }
-    for hash in blob_hashes {
-        if hash[0] != 0x01 {
-            return Err(HandlerError::BlobVersionNotSupported);
-        }
-    }
-    Ok(())
 }
 
 impl Typed2718 for RecoveredTxEnvelope {
