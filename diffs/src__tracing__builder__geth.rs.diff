@@ -86,7 +86,7 @@
      pub fn geth_call_traces(&self, opts: CallConfig, gas_used: u64) -> CallFrame {
          if self.nodes.is_empty() {
              return Default::default();
-@@ -232,119 +226,152 @@
+@@ -232,119 +226,151 @@
      /// The prestate mode returns the accounts necessary to execute a given transaction.
      /// diff_mode returns the differences between the transaction's pre and post-state.
      ///
@@ -98,13 +98,12 @@
 +    pub fn geth_prestate_traces<T: EvmTypes>(
          &self,
 -        ResultAndState { state, .. }: &ResultAndState<impl HaltReasonTr>,
-+        result: &TxResult<T>,
++        TxResult { state_changes: state, .. }: &TxResult<T>,
          prestate_config: &PreStateConfig,
 -        db: DB,
 -    ) -> Result<PreStateFrame, DB::Error> {
 +        db: &mut dyn DynDatabase,
 +    ) -> DbResult<PreStateFrame> {
-+        let state = &result.state_changes;
          let code_enabled = prestate_config.code_enabled();
          let storage_enabled = prestate_config.storage_enabled();
          if prestate_config.is_diff_mode() {
@@ -142,12 +141,11 @@
 -        for (addr, changed_acc) in account_diffs {
 -            let db_acc = db.basic_ref(addr)?.unwrap_or_default();
 -            let code = code_enabled.then(|| load_account_code(&db, &db_acc)).flatten();
--            let mut acc_state = AccountState::from_account_info(db_acc.nonce, db_acc.balance, code);
 +        for (&address, account) in &state.accounts {
-+            let info =
++            let db_acc =
 +                db.get_account(&address)?.or_else(|| account.original.clone()).unwrap_or_default();
-+            let code = if code_enabled { load_account_code(db, &info)? } else { None };
-+            let mut acc_state = AccountState::from_account_info(info.nonce, info.balance, code);
++            let code = if code_enabled { load_account_code(db, &db_acc)? } else { None };
+             let mut acc_state = AccountState::from_account_info(db_acc.nonce, db_acc.balance, code);
  
              // insert the original value of all modified storage slots
 -            if storage_enabled {
@@ -303,7 +301,7 @@
              }
          }
  
-@@ -384,14 +411,14 @@
+@@ -384,14 +410,14 @@
      }
  
      /// Traces ERC-7562 calls using the call tracer.
@@ -322,7 +320,7 @@
          }
  
          let include_logs = opts.with_log.unwrap_or_default();
-@@ -424,95 +451,85 @@
+@@ -424,95 +450,85 @@
  
                  // Accessed storage slots
                  match op {
@@ -478,7 +476,7 @@
                      }
                  }
              }
-@@ -560,13 +577,13 @@
+@@ -560,13 +576,13 @@
                  parent_frame.1.calls.insert(0, frame);
              } else {
                  debug_assert!(frames.is_empty(), "only one root node has no parent");
@@ -494,7 +492,7 @@
          match kind {
              CallKind::Call => CallFrameType::Call,
              CallKind::CallCode => CallFrameType::CallCode,
-@@ -579,46 +596,126 @@
+@@ -579,46 +595,126 @@
      }
  }
  
@@ -643,7 +641,7 @@
  
          match frame {
              PreStateFrame::Diff(diff) => {
-@@ -634,4 +731,59 @@
+@@ -634,4 +730,59 @@
              _ => panic!("expected diff prestate frame"),
          }
      }

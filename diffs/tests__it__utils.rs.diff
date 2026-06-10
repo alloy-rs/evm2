@@ -460,11 +460,7 @@
  
  pub fn write_traces(tracer: &TracingInspector) -> String {
      write_traces_with(tracer, TraceWriterConfig::new().color_choice(ColorChoice::Never))
-@@ -26,61 +453,190 @@
- }
- 
- pub fn print_traces(tracer: &TracingInspector) {
--    // Use `println!` so that the output is captured by the test runner.
+@@ -30,57 +457,187 @@
      println!("{}", write_traces_with(tracer, TraceWriterConfig::new()));
  }
  
@@ -509,7 +505,7 @@
 +    let result = evm
 +        .inspect_tx_commit(TxEnv {
 +            caller: deployer,
-+            gas_limit: 1_000_000,
++            gas_limit: 1000000,
 +            kind: TransactTo::Create,
 +            data: code,
 +            value,
@@ -536,8 +532,7 @@
 +    let result = evm
          .inspect_tx_commit(TxEnv {
              caller: deployer,
--            gas_limit: 1000000,
-+            gas_limit: 1_000_000,
+             gas_limit: 1000000,
              kind: TransactTo::Create,
              data: code,
 +            value,

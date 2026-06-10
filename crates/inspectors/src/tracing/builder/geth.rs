@@ -231,11 +231,10 @@ impl<'a> GethTraceBuilder<'a> {
     /// * `db` - The database to fetch state pre-transaction execution.
     pub fn geth_prestate_traces<T: EvmTypes>(
         &self,
-        result: &TxResult<T>,
+        TxResult { state_changes: state, .. }: &TxResult<T>,
         prestate_config: &PreStateConfig,
         db: &mut dyn DynDatabase,
     ) -> DbResult<PreStateFrame> {
-        let state = &result.state_changes;
         let code_enabled = prestate_config.code_enabled();
         let storage_enabled = prestate_config.storage_enabled();
         if prestate_config.is_diff_mode() {
@@ -264,10 +263,10 @@ impl<'a> GethTraceBuilder<'a> {
 
         // we only want changed accounts for things like balance changes etc
         for (&address, account) in &state.accounts {
-            let info =
+            let db_acc =
                 db.get_account(&address)?.or_else(|| account.original.clone()).unwrap_or_default();
-            let code = if code_enabled { load_account_code(db, &info)? } else { None };
-            let mut acc_state = AccountState::from_account_info(info.nonce, info.balance, code);
+            let code = if code_enabled { load_account_code(db, &db_acc)? } else { None };
+            let mut acc_state = AccountState::from_account_info(db_acc.nonce, db_acc.balance, code);
 
             // insert the original value of all modified storage slots
             if storage_enabled && let Some(storage) = state.storage.get(&address) {

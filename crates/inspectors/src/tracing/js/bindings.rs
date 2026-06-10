@@ -978,8 +978,8 @@ impl From<u8> for OpObj {
 pub(crate) struct StackRef(GuardedNullableGc<Vec<Word>>);
 
 impl StackRef {
-    /// Creates a new stack reference from owned words.
-    pub(crate) fn new_words(words: Vec<Word>) -> (Self, GcGuard<'static, Vec<Word>>) {
+    /// Creates a new stack reference from an owned stack.
+    pub(crate) fn new_owned(words: Vec<Word>) -> (Self, GcGuard<'static, Vec<Word>>) {
         let (inner, guard) = GuardedNullableGc::new_owned(words);
         (Self(inner), guard)
     }
@@ -1423,7 +1423,7 @@ mod tests {
         };
         register_builtins(&mut ctx).unwrap();
 
-        let (stack_ref, _stack_guard) = StackRef::new_words(Vec::new());
+        let (stack_ref, _stack_guard) = StackRef::new_owned(Vec::new());
         let mem = MemorySnapshot::default();
         let (mem_ref, _mem_guard) = MemoryRef::new_owned(mem);
         let step = StepLog {
@@ -1712,7 +1712,7 @@ mod tests {
         let step_fn = obj.get(js_string!("step"), &mut context).unwrap().as_object().unwrap();
 
         let (stack_ref, _stack_guard) =
-            StackRef::new_words(vec![U256::from(35000), U256::from(35000), U256::from(35000)]);
+            StackRef::new_owned(vec![U256::from(35000), U256::from(35000), U256::from(35000)]);
         let mem = MemorySnapshot::default();
         let (mem_ref, _mem_guard) = MemoryRef::new_owned(mem);
 
@@ -1800,7 +1800,7 @@ mod tests {
         let step_fn = obj.get(js_string!("step"), &mut context).unwrap().as_object().unwrap();
 
         let (stack_ref, _stack_guard) =
-            StackRef::new_words(vec![U256::from(35000), U256::from(35000), U256::from(35000)]);
+            StackRef::new_owned(vec![U256::from(35000), U256::from(35000), U256::from(35000)]);
         let mem = MemorySnapshot::default();
         let (mem_ref, _mem_guard) = MemoryRef::new_owned(mem);
 

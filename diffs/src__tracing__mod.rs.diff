@@ -138,7 +138,7 @@
          // the root call will always be the first entry in the trace stack
          !self.trace_stack.is_empty()
      }
-@@ -278,28 +263,19 @@
+@@ -278,13 +263,13 @@
      ///
      /// Returns true if the `to` address is a precompile contract and the value is zero.
      #[inline]
@@ -155,22 +155,7 @@
              // only if this is _not_ the root call
              return self.is_deep() && value.is_zero();
          }
-         false
-     }
- 
--    /// Returns the currently active call trace.
--    ///
--    /// This will be the last call trace pushed to the stack: the call we entered most recently.
--    #[track_caller]
--    #[inline]
--    fn active_trace(&self) -> Option<&CallTraceNode> {
--        self.trace_stack.last().map(|idx| &self.traces.arena[*idx])
--    }
--
-     /// Returns the last trace [CallTrace] index from the stack.
-     ///
-     /// This will be the currently active call trace.
-@@ -335,9 +311,9 @@
+@@ -335,9 +320,9 @@
      ///
      /// Invoked on [Inspector::call].
      #[allow(clippy::too_many_arguments)]
@@ -182,7 +167,7 @@
          address: Address,
          input_data: Bytes,
          value: U256,
-@@ -362,7 +338,7 @@
+@@ -362,7 +347,7 @@
              0,
              push_kind,
              CallTrace {
@@ -191,7 +176,7 @@
                  address,
                  kind,
                  data: input_data,
-@@ -384,26 +360,18 @@
+@@ -384,26 +369,18 @@
      /// # Panics
      ///
      /// This expects an existing trace [Self::start_trace_on_call]
@@ -225,7 +210,7 @@
              // A new contract was created via CREATE
              trace.address = address;
          }
-@@ -418,80 +386,73 @@
+@@ -418,80 +395,73 @@
      /// This expects an existing [CallTrace], in other words, this panics if not within the context
      /// of a call.
      #[cold]
@@ -331,7 +316,7 @@
              gas_used,
              immediate_bytes,
  
-@@ -506,26 +467,25 @@
+@@ -506,26 +476,25 @@
          });
  
          node.ordering.push(TraceMemberOrder::Step(step_idx));
@@ -367,7 +352,7 @@
  
          // See comments in `start_step`.
          debug_assert!(
-@@ -541,149 +501,195 @@
+@@ -541,149 +510,200 @@
              || self.config.record_stack_snapshots.is_pushes()
          {
              let outputs = if step.op.is_valid() { step.op.outputs() as usize } else { 0 };
@@ -570,16 +555,18 @@
          };
  
 -        let value = if matches!(inputs.scheme, CallScheme::DelegateCall) {
--            // for delegate calls we need to use the value of the top trace
++        let value = if matches!(message.kind, MessageKind::DelegateCall) {
+             // for delegate calls we need to use the value of the top trace
 -            if let Some(parent) = self.active_trace() {
 -                parent.trace.value
 -            } else {
 -                inputs.call_value()
 -            }
--        } else {
++            if let Some(parent) = self.active_trace() { parent.trace.value } else { message.value }
+         } else {
 -            inputs.call_value()
--        };
-+        let value = message.value;
++            message.value
+         };
  
          // if calls to precompiles should be excluded, check whether this is a call to a precompile
 -        let maybe_precompile = self
@@ -645,7 +632,7 @@
              Some(false),
          );
          None
-@@ -691,18 +697,24 @@
+@@ -691,18 +711,24 @@
  
      fn create_end(
          &mut self,
@@ -678,7 +665,7 @@
      }
  }
  
-@@ -753,21 +765,3 @@
+@@ -753,21 +779,3 @@
          }
      }
  }

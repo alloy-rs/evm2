@@ -453,6 +453,7 @@ pub fn write_traces_with(tracer: &TracingInspector, config: TraceWriterConfig) -
 }
 
 pub fn print_traces(tracer: &TracingInspector) {
+    // Use `println!` so that the output is captured by the test runner.
     println!("{}", write_traces_with(tracer, TraceWriterConfig::new()));
 }
 
@@ -467,7 +468,7 @@ pub fn deploy_contract(
     let result = evm
         .inspect_tx_commit(TxEnv {
             caller: deployer,
-            gas_limit: 1_000_000,
+            gas_limit: 1000000,
             kind: TransactTo::Create,
             data: code,
             value,
@@ -490,7 +491,7 @@ pub fn inspect_deploy_contract<I: InspectorSlot>(
     let result = evm
         .inspect_tx_commit(TxEnv {
             caller: deployer,
-            gas_limit: 1_000_000,
+            gas_limit: 1000000,
             kind: TransactTo::Create,
             data: code,
             value,

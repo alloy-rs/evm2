@@ -205,17 +205,14 @@ impl DebugInspector {
     }
 
     /// Should be invoked after each transaction to obtain the resulting [`GethTrace`].
-    pub fn get_result<T>(
+    pub fn get_result<T: EvmTypes>(
         &mut self,
         tx_context: Option<TransactionContext>,
         tx: &RecoveredTxEnvelope,
         block_env: &BlockEnv,
         res: &TxResult<T>,
         db: &mut dyn DynDatabase,
-    ) -> Result<GethTrace, DebugInspectorError>
-    where
-        T: EvmTypes,
-    {
+    ) -> Result<GethTrace, DebugInspectorError> {
         self.get_result_with_tx(
             tx_context,
             DebugTransaction {
@@ -230,17 +227,14 @@ impl DebugInspector {
     }
 
     /// Should be invoked after each unsigned transaction to obtain the resulting [`GethTrace`].
-    pub fn get_result_tx_env<T>(
+    pub fn get_result_tx_env<T: EvmTypes>(
         &mut self,
         tx_context: Option<TransactionContext>,
         tx: &EthereumTxEnv,
         block_env: &BlockEnv,
         res: &TxResult<T>,
         db: &mut dyn DynDatabase,
-    ) -> Result<GethTrace, DebugInspectorError>
-    where
-        T: EvmTypes,
-    {
+    ) -> Result<GethTrace, DebugInspectorError> {
         self.get_result_with_tx(
             tx_context,
             DebugTransaction { caller: tx.caller, gas_limit: tx.gas_limit, _envelope: None },
@@ -250,26 +244,21 @@ impl DebugInspector {
         )
     }
 
-    fn get_result_with_tx<T>(
+    fn get_result_with_tx<T: EvmTypes>(
         &mut self,
         tx_context: Option<TransactionContext>,
         tx: DebugTransaction<'_>,
         block_env: &BlockEnv,
         res: &TxResult<T>,
         db: &mut dyn DynDatabase,
-    ) -> Result<GethTrace, DebugInspectorError>
-    where
-        T: EvmTypes,
-    {
-        let block_number = block_env.number.try_into().unwrap_or(u64::MAX);
-        let base_fee = block_env.basefee.try_into().unwrap_or(u64::MAX);
+    ) -> Result<GethTrace, DebugInspectorError> {
         #[allow(clippy::needless_update)]
         let tx_info = TransactionInfo {
             hash: tx_context.as_ref().and_then(|c| c.tx_hash),
             index: tx_context.as_ref().and_then(|c| c.tx_index.map(|i| i as u64)),
             block_hash: tx_context.as_ref().and_then(|c| c.block_hash),
-            block_number: Some(block_number),
-            base_fee: Some(base_fee),
+            block_number: Some(block_env.number.try_into().unwrap_or(u64::MAX)),
+            base_fee: Some(block_env.basefee.try_into().unwrap_or(u64::MAX)),
             ..Default::default()
         };
 

@@ -276,6 +276,15 @@ impl TracingInspector {
         false
     }
 
+    /// Returns the currently active call trace.
+    ///
+    /// This will be the last call trace pushed to the stack: the call we entered most recently.
+    #[track_caller]
+    #[inline]
+    fn active_trace(&self) -> Option<&CallTraceNode> {
+        self.trace_stack.last().map(|idx| &self.traces.arena[*idx])
+    }
+
     /// Returns the last trace [CallTrace] index from the stack.
     ///
     /// This will be the currently active call trace.
@@ -647,7 +656,12 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for TracingInspector {
             _ => (message.caller, message.destination),
         };
 
-        let value = message.value;
+        let value = if matches!(message.kind, MessageKind::DelegateCall) {
+            // for delegate calls we need to use the value of the top trace
+            if let Some(parent) = self.active_trace() { parent.trace.value } else { message.value }
+        } else {
+            message.value
+        };
 
         // if calls to precompiles should be excluded, check whether this is a call to a precompile
         let maybe_precompile = self.config.exclude_precompile_calls.then(|| {

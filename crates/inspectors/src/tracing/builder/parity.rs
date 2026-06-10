@@ -5,7 +5,7 @@ use crate::tracing::{
     utils::load_account_code,
 };
 use alloc::{collections::VecDeque, string::ToString, vec, vec::Vec};
-use alloy_primitives::{Address, Bytes, U64, map::HashSet};
+use alloy_primitives::{Address, Bytes, KECCAK256_EMPTY, U64, map::HashSet};
 use alloy_rpc_types_eth::TransactionInfo;
 use alloy_rpc_types_trace::parity::*;
 use core::iter::Peekable;
@@ -473,12 +473,17 @@ where
         }
 
         let addr = addrs.next().expect("there should be an address");
-        let account = db.get_account(&addr)?;
-        if let Some(account) = account
-            && let Some(code) = load_account_code(db, &account)?
-        {
-            curr_ref.code = code;
-        }
+
+        let db_acc = db.get_account(&addr)?.unwrap_or_default();
+
+        curr_ref.code = if let Some(code) = db_acc.code {
+            code.original_bytes()
+        } else {
+            let code_hash =
+                if db_acc.code_hash != KECCAK256_EMPTY { db_acc.code_hash } else { continue };
+
+            db.get_code_by_hash(&code_hash)?.original_bytes()
+        };
     }
 
     Ok(())
@@ -518,7 +523,8 @@ pub fn populate_state_diff(
                 entry.nonce = Delta::Added(U64::from(info.nonce));
 
                 // accounts without code are marked as added
-                entry.code = Delta::Added(account_code(info, db)?);
+                let account_code = load_account_code(db, info)?.unwrap_or_default();
+                entry.code = Delta::Added(account_code);
 
                 // new storage values are marked as added
                 for (&key, slot) in changed_storage {
@@ -529,8 +535,8 @@ pub fn populate_state_diff(
                 // we check if this account was created during the transaction
                 // where the smart contract was touched before being created (has balance)
                 if db_acc.code_hash != info.code_hash {
-                    let original_account_code = account_code(&db_acc, db)?;
-                    let present_account_code = account_code(info, db)?;
+                    let original_account_code = load_account_code(db, &db_acc)?.unwrap_or_default();
+                    let present_account_code = load_account_code(db, info)?.unwrap_or_default();
                     entry.code = Delta::changed(original_account_code, present_account_code);
                 }
 
@@ -550,7 +556,7 @@ pub fn populate_state_diff(
             None => {
                 entry.balance = Delta::Removed(db_acc.balance);
                 entry.nonce = Delta::Removed(U64::from(db_acc.nonce));
-                entry.code = Delta::Removed(account_code(&db_acc, db)?);
+                entry.code = Delta::Removed(load_account_code(db, &db_acc)?.unwrap_or_default());
             }
         }
     }
@@ -569,10 +575,6 @@ pub fn populate_state_diff(
     }
 
     Ok(())
-}
-
-fn account_code(account: &evm2::AccountInfo, db: &mut dyn DynDatabase) -> DbResult<Bytes> {
-    load_account_code(db, account).map(|code| code.unwrap_or_default())
 }
 
 fn delta<T: PartialEq>(from: T, to: T) -> Delta<T> {

@@ -501,7 +501,7 @@ impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for JsInspector {
         let cost = interp.gas().spent().saturating_sub(pending.gas_spent_before);
 
         let (db, db_guard) = EvmDbRef::new_state(interp.host().state_mut());
-        let (stack, stack_guard) = StackRef::new_words(pending.stack);
+        let (stack, stack_guard) = StackRef::new_owned(pending.stack);
         let (memory, memory_guard) = MemoryRef::new_owned(self.cached_memory.clone());
 
         let stop = if is_revert {
