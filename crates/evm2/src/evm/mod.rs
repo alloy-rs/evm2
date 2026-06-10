@@ -602,10 +602,8 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     #[inline]
     pub fn clear_inspector_as<I: Inspector<T> + 'static>(&mut self) -> Option<Box<I>> {
         self.assert_inspector_mutable();
-        if !self.inspector.as_ref()?.is::<I>() {
-            return None;
-        }
-        Some((self.inspector.take()? as Box<dyn core::any::Any>).downcast().unwrap())
+        let i = self.inspector.take_if(|i| i.is::<I>())?;
+        (i as Box<dyn core::any::Any>).downcast().ok()
     }
 
     /// Returns the active EVM version.
