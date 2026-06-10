@@ -448,7 +448,7 @@ fn run_system_call(
 ) -> Result<(), TestErrorKind> {
     let executed = evm.system_call(address, data);
     if !executed.result().status {
-        executed.discard();
+        let _ = executed.discard();
         let has_code = match evm.account_code(&address) {
             Ok(code) => !code.is_empty(),
             Err(code) => return Err(database_error(evm, code)),
@@ -458,7 +458,7 @@ fn run_system_call(
         }
         return Ok(());
     }
-    executed.commit_to(block_state);
+    let _ = executed.commit_to(block_state);
     Ok(())
 }
 

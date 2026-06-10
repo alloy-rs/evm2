@@ -13,6 +13,7 @@ use derive_where::derive_where;
 /// logs, database error handle, and extension data. Logs live here because they are execution
 /// output, not database state. Use [`ExecutedTx::detach`] only when an owned [`StateChanges`] value
 /// is required.
+#[must_use = "transaction results contain execution status, gas, logs, and errors"]
 #[derive_where(Clone, Debug, Default, PartialEq, Eq; T::TxResultExt)]
 pub struct TxResult<T: EvmTypes = crate::BaseEvmTypes> {
     /// Whether execution succeeded.
