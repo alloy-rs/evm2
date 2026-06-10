@@ -14,9 +14,9 @@ use alloy_primitives::{B256, KECCAK256_EMPTY, U256, map::U256Map};
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub struct Tracked<T> {
     /// Value at the start of the aggregation boundary.
-    original: T,
+    pub original: T,
     /// Value after observed mutations in the aggregation boundary.
-    current: T,
+    pub current: T,
 }
 
 impl<T> Tracked<T> {
@@ -33,18 +33,6 @@ impl<T> Tracked<T> {
         T: Clone,
     {
         Self { original: value.clone(), current: value }
-    }
-
-    /// Returns the original value.
-    #[inline]
-    pub const fn original(&self) -> &T {
-        &self.original
-    }
-
-    /// Returns the current value.
-    #[inline]
-    pub const fn current(&self) -> &T {
-        &self.current
     }
 
     /// Updates the current value.

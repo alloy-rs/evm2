@@ -122,16 +122,14 @@ impl StateChangeSink for BlockStateAccumulator {
         if deletes_account {
             self.storage_wipes.remove(&change.address);
             self.storage.retain(|key, _| key.address() != change.address);
-        } else if self.accounts.get(&change.address).is_some_and(|delta| delta.original().is_none())
-        {
+        } else if self.accounts.get(&change.address).is_some_and(|delta| delta.original.is_none()) {
             self.storage_wipes.remove(&change.address);
         }
         Ok(())
     }
 
     fn storage_wipe(&mut self, address: Address) -> Result<(), Self::Error> {
-        let record_wipe =
-            self.accounts.get(&address).is_none_or(|delta| delta.original().is_some());
+        let record_wipe = self.accounts.get(&address).is_none_or(|delta| delta.original.is_some());
         if record_wipe {
             self.storage_wipes.insert(address);
         }
@@ -146,7 +144,7 @@ impl StateChangeSink for BlockStateAccumulator {
             hash_map::Entry::Occupied(mut entry) => {
                 let delta = entry.get_mut();
                 delta.set_current(change.current);
-                if (storage_wiped && delta.current().is_zero())
+                if (storage_wiped && delta.current.is_zero())
                     || (!storage_wiped && !delta.is_changed())
                 {
                     entry.remove();
@@ -197,8 +195,8 @@ fn visit_block_changes<S: StateChangeSink>(
         sink.storage(StorageChange {
             address: key.address(),
             key: key.key(),
-            original: *delta.original(),
-            current: *delta.current(),
+            original: delta.original,
+            current: delta.current,
         })?;
     }
 
@@ -207,8 +205,8 @@ fn visit_block_changes<S: StateChangeSink>(
     for (address, delta) in account_deltas {
         sink.account(AccountChangeRef {
             address: *address,
-            original: delta.original().as_ref().map(AccountInfoRef::from_info),
-            current: delta.current().as_ref().map(AccountInfoRef::from_info),
+            original: delta.original.as_ref().map(AccountInfoRef::from_info),
+            current: delta.current.as_ref().map(AccountInfoRef::from_info),
         })?;
     }
     Ok(())
@@ -304,14 +302,14 @@ mod tests {
 
         let accounts = accumulator.accounts_sorted();
         assert_eq!(accounts.len(), 1);
-        assert_eq!(accounts[0].1.original().as_ref(), Some(&without_code(original)));
-        assert_eq!(accounts[0].1.current().as_ref(), Some(&without_code(recreated)));
+        assert_eq!(accounts[0].1.original.as_ref(), Some(&without_code(original)));
+        assert_eq!(accounts[0].1.current.as_ref(), Some(&without_code(recreated)));
         assert_eq!(accumulator.storage_wipes_sorted(), [address]);
 
         let storage = accumulator.storage_sorted();
         assert_eq!(storage.len(), 1);
         assert_eq!(storage[0].0.key(), key);
-        assert_eq!(*storage[0].1.current(), Word::from(7));
+        assert_eq!(storage[0].1.current, Word::from(7));
     }
 
     #[test]
@@ -332,7 +330,7 @@ mod tests {
         let storage = accumulator.storage_sorted();
         assert_eq!(storage.len(), 1);
         assert_eq!(storage[0].0.key(), key);
-        assert_eq!(*storage[0].1.current(), Word::from(5));
+        assert_eq!(storage[0].1.current, Word::from(5));
     }
 
     #[test]
@@ -349,7 +347,7 @@ mod tests {
         let accounts = accumulator.accounts_sorted();
         assert_eq!(accounts.len(), 1);
         assert_eq!(accounts[0].0, address);
-        assert!(accounts[0].1.current().is_none());
+        assert!(accounts[0].1.current.is_none());
         assert!(accumulator.storage_wipes_sorted().is_empty());
         assert!(accumulator.storage_sorted().is_empty());
     }
@@ -388,15 +386,15 @@ mod tests {
         let accounts = accumulator.accounts_sorted();
         assert_eq!(accounts.len(), 1);
         assert_eq!(accounts[0].0, account_address);
-        assert_eq!(accounts[0].1.original().as_ref(), Some(&without_code(original)));
-        assert_eq!(accounts[0].1.current().as_ref(), Some(&without_code(current)));
+        assert_eq!(accounts[0].1.original.as_ref(), Some(&without_code(original)));
+        assert_eq!(accounts[0].1.current.as_ref(), Some(&without_code(current)));
         assert!(accumulator.storage_wipes_sorted().is_empty());
 
         let storage = accumulator.storage_sorted();
         assert_eq!(storage.len(), 1);
         assert_eq!(storage[0].0.address(), storage_address);
         assert_eq!(storage[0].0.key(), key);
-        assert_eq!(*storage[0].1.original(), Word::from(3));
-        assert_eq!(*storage[0].1.current(), Word::from(4));
+        assert_eq!(storage[0].1.original, Word::from(3));
+        assert_eq!(storage[0].1.current, Word::from(4));
     }
 }

@@ -179,7 +179,7 @@ impl State {
     pub fn storage_ref(&self, address: &Address, key: &Word) -> Option<Word> {
         if let Some(storage) = self.scratch.storage.get(address) {
             if let Some(slot) = storage.slots.get(key) {
-                return Some(*slot.current());
+                return Some(slot.current);
             }
             if storage.wiped {
                 return Some(Word::ZERO);
@@ -433,7 +433,7 @@ impl State {
         let storage = self.scratch.storage.entry(*address).or_default();
         match storage.slots.entry(*key) {
             hash_map::Entry::Occupied(mut entry) => {
-                let previous = *entry.get().current();
+                let previous = entry.get().current;
                 if previous != value {
                     entry.get_mut().set_current(value);
                     self.scratch.journal.push(JournalEntry::StorageChange {
@@ -456,7 +456,7 @@ impl State {
     pub fn storage(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
         if let Some(storage) = self.scratch.storage.get(address) {
             if let Some(slot) = storage.slots.get(key) {
-                return Ok(*slot.current());
+                return Ok(slot.current);
             }
             if storage.wiped {
                 return Ok(Word::ZERO);
@@ -487,7 +487,7 @@ impl State {
             };
         let present_value = storage
             .and_then(|storage| storage.slots.get(key))
-            .map_or(original_value, |slot| *slot.current());
+            .map_or(original_value, |slot| slot.current);
         let result = SStore {
             original_value,
             present_value,
@@ -913,7 +913,7 @@ impl State {
 
     #[inline]
     fn storage_slot_changed(storage_wiped: bool, slot: &Tracked<Word>) -> bool {
-        slot.is_changed() && (!storage_wiped || !slot.current().is_zero())
+        slot.is_changed() && (!storage_wiped || !slot.current.is_zero())
     }
 
     /// Visits transaction state changes in database application order.
@@ -939,8 +939,8 @@ impl State {
                     sink.storage(StorageChange {
                         address,
                         key,
-                        original: *slot.original(),
-                        current: *slot.current(),
+                        original: slot.original,
+                        current: slot.current,
                     })?;
                 }
             }
@@ -992,7 +992,7 @@ impl State {
             };
             for (&key, slot) in &storage.slots {
                 if Self::storage_slot_changed(set.wipe, slot) {
-                    set.slots.insert(key, Tracked::from_parts(*slot.original(), *slot.current()));
+                    set.slots.insert(key, Tracked::from_parts(slot.original, slot.current));
                 }
             }
             if set.wipe || !set.slots.is_empty() {
@@ -1025,7 +1025,7 @@ impl State {
                     .entry(address)
                     .or_default()
                     .slots
-                    .insert(key, *slot.current());
+                    .insert(key, slot.current);
             }
         }
 
@@ -1241,8 +1241,8 @@ mod tests {
         let changes = state.build_state_changes();
 
         let change = changes.accounts.get(&address).expect("touched empty account is deleted");
-        assert_eq!(change.original(), &Some(empty));
-        assert_eq!(change.current(), &None);
+        assert_eq!(change.original, &Some(empty));
+        assert_eq!(change.current, &None);
         assert!(changes.storage.get(&address).is_some_and(|storage| storage.wipe));
     }
 
@@ -1272,8 +1272,8 @@ mod tests {
 
         let change =
             changes.accounts.get(&address).expect("pre-spurious empty touch creates account");
-        assert_eq!(change.original(), &None);
-        let current = change.current().as_ref().expect("created empty account");
+        assert_eq!(change.original, &None);
+        let current = change.current.as_ref().expect("created empty account");
         assert!(current.is_empty());
     }
 
@@ -1323,8 +1323,8 @@ mod tests {
         let changes = state.build_state_changes();
 
         let change = changes.accounts.get(&address).expect("selfdestruct deletes account");
-        assert!(change.original().is_some());
-        assert_eq!(change.current(), &None);
+        assert!(change.original.is_some());
+        assert_eq!(change.current, &None);
         assert!(changes.storage.get(&address).is_some_and(|storage| storage.wipe));
     }
 

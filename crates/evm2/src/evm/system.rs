@@ -257,11 +257,8 @@ mod tests {
         assert!(!result.state_changes.accounts.contains_key(&beneficiary));
         let storage = result.state_changes.storage.get(&contract).expect("storage changed");
         let system_address = U256::from_be_slice(SYSTEM_ADDRESS.as_slice());
-        assert_eq!(
-            storage.slots.get(&U256::ZERO).map(|slot| *slot.current()),
-            Some(system_address)
-        );
-        assert_eq!(storage.slots.get(&U256::ONE).map(|slot| *slot.current()), Some(system_address));
+        assert_eq!(storage.slots.get(&U256::ZERO).map(|slot| slot.current), Some(system_address));
+        assert_eq!(storage.slots.get(&U256::ONE).map(|slot| slot.current), Some(system_address));
     }
 
     #[test]
