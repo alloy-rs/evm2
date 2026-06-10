@@ -302,10 +302,7 @@ fn commit_system_call<T: EvmTypes<Host = Evm<T>>>(
 ) {
     let executed = evm.system_call(address, data);
     assert!(executed.outcome().status, "pre-block system call failed: {address}");
-    match executed.commit_with(post) {
-        Ok(_) => {}
-        Err(err) => match err {},
-    }
+    let Ok(_) = executed.commit_with(post);
 }
 
 fn logs_hash(logs: &[Log]) -> B256 {
