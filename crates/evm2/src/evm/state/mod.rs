@@ -36,7 +36,7 @@ use derive_where::derive_where;
 
 /// Reusable transaction-local state.
 #[derive(Debug, Default)]
-struct Scratch {
+struct TxScratch {
     /// Account writes for the current transaction.
     accounts: AddressMap<Option<Account>>,
     /// Persistent storage writes for the current transaction.
@@ -64,7 +64,7 @@ struct Scratch {
     transient_storage: StorageKeyMap<Word>,
 }
 
-impl Scratch {
+impl TxScratch {
     /// Clears transaction-scoped substate while retaining allocated buffers.
     fn clear_transaction_state(&mut self) {
         self.accounts.clear();
@@ -87,7 +87,7 @@ pub struct State {
     #[derive_where(skip)]
     database: CacheDB<Box<dyn DynDatabase>>,
     /// Reusable transaction-local state.
-    scratch: Scratch,
+    scratch: TxScratch,
 }
 
 impl State {
@@ -97,7 +97,7 @@ impl State {
     }
 
     pub(crate) fn new_mono(initial: Box<dyn DynDatabase>) -> Self {
-        Self { database: CacheDB::new(initial), scratch: Scratch::default() }
+        Self { database: CacheDB::new(initial), scratch: TxScratch::default() }
     }
 
     /// Returns a checkpoint for later rollback.
