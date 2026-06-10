@@ -90,6 +90,12 @@ pub trait Inspector<T: EvmTypes>: Any {
         let _ = target;
         let _ = value;
     }
+
+    /// Called before the current frame exits.
+    #[inline]
+    fn exit(&mut self, interp: &mut Interpreter<'_, T>) {
+        let _ = interp;
+    }
 }
 
 impl<T: EvmTypes> core::ops::Deref for dyn Inspector<T> + '_ {
@@ -183,6 +189,17 @@ mod tests {
             if self.last_opcode == Some(self.opcode) {
                 interp.set_stop(InstrStop::Revert);
             }
+        }
+    }
+
+    #[derive(Default)]
+    struct ExitInspector {
+        exits: usize,
+    }
+
+    impl Inspector<TestTypes> for ExitInspector {
+        fn exit(&mut self, _interp: &mut Interpreter<'_, TestTypes>) {
+            self.exits += 1;
         }
     }
 
@@ -406,6 +423,7 @@ mod tests {
         initialized: usize,
         steps: usize,
         step_ends: usize,
+        exits: usize,
         logs: Vec<Log>,
         calls: usize,
         creates: usize,
@@ -427,6 +445,10 @@ mod tests {
 
         fn step_end(&mut self, _interp: &mut Interpreter<'_, BaseEvmTypes>) {
             self.state.step_ends += 1;
+        }
+
+        fn exit(&mut self, _interp: &mut Interpreter<'_, BaseEvmTypes>) {
+            self.state.exits += 1;
         }
 
         fn log(&mut self, log: &Log) {
@@ -515,6 +537,40 @@ mod tests {
         assert_eq!(stop, InstrStop::Stop);
         assert_eq!(inspector.steps, 1);
         assert_eq!(inspector.step_ends, 1);
+    }
+
+    #[test]
+    fn exit_is_called_when_frame_stops() {
+        let mut host = TestHost::default();
+        let mut inspector = ExitInspector::default();
+
+        let (stop, _) = run_with_inspector(
+            Vec::from([op::STOP]),
+            &mut host,
+            &Message::default(),
+            10_000,
+            &mut inspector,
+        );
+
+        assert_eq!(stop, InstrStop::Stop);
+        assert_eq!(inspector.exits, 1);
+    }
+
+    #[test]
+    fn exit_is_called_when_frame_halts() {
+        let mut host = TestHost::default();
+        let mut inspector = ExitInspector::default();
+
+        let (stop, _) = run_with_inspector(
+            Vec::from([op::ADD]),
+            &mut host,
+            &Message::default(),
+            0,
+            &mut inspector,
+        );
+
+        assert_eq!(stop, InstrStop::OutOfGas);
+        assert_eq!(inspector.exits, 1);
     }
 
     #[test]
@@ -853,20 +909,22 @@ mod tests {
     fn evm_transaction_inspects_interpreter_steps_and_logs() {
         let caller = Address::from([0xaa; 20]);
         let contract = Address::from([0xbb; 20]);
-        let code = Bytecode::new_legacy(Bytes::from_static(&[
-            op::PUSH1,
-            0,
-            op::PUSH1,
-            0,
-            op::LOG0,
-            op::STOP,
-        ]));
+        let child = Address::from([0xcc; 20]);
+        let mut code = call_code(child);
+        code.extend([op::CALL, op::PUSH1, 0, op::PUSH1, 0, op::LOG0, op::STOP]);
         let mut database = InMemoryDB::default();
         database.insert_account_info(
             &caller,
             AccountInfo::default().with_balance(U256::from(1_000_000_000_u64)),
         );
-        database.insert_account_info(&contract, AccountInfo::default().with_code(code));
+        database.insert_account_info(
+            &contract,
+            AccountInfo::default().with_code(Bytecode::new_legacy(Bytes::from(code))),
+        );
+        database.insert_account_info(
+            &child,
+            AccountInfo::default().with_code(Bytecode::new_legacy(Bytes::from_static(&[op::STOP]))),
+        );
         let mut evm = Evm::<BaseEvmTypes>::new(
             SpecId::OSAKA,
             BlockEnv::default(),
@@ -885,12 +943,13 @@ mod tests {
         let state = &inspector.state;
 
         assert!(result.status);
-        assert_eq!(state.initialized, 1);
-        assert_eq!(state.steps, 4);
-        assert_eq!(state.step_ends, 4);
+        assert_eq!(state.initialized, 2);
+        assert_eq!(state.steps, 13);
+        assert_eq!(state.step_ends, 13);
+        assert_eq!(state.exits, 2);
         assert_eq!(state.logs.len(), 1);
         assert_eq!(state.logs[0].address, contract);
-        assert_eq!(state.calls, 0);
+        assert_eq!(state.calls, 1);
         assert_eq!(state.creates, 0);
     }
 
@@ -965,6 +1024,7 @@ mod tests {
         assert_eq!(state.initialized, 1);
         assert_eq!(state.steps, 1);
         assert_eq!(state.step_ends, 1);
+        assert_eq!(state.exits, 1);
         assert_eq!(state.calls, 0);
         assert_eq!(state.creates, 0);
     }
