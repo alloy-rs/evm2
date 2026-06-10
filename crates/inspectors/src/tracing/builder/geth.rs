@@ -19,7 +19,7 @@ use alloy_rpc_types_trace::geth::{
     erc7562::{AccessedSlots, CallFrameType, ContractSize, Erc7562Config, Erc7562Frame},
 };
 use evm2::{
-    EvmTypes, TxResult,
+    EvmTypes, TxResultWithState,
     bytecode::opcode::op,
     evm::{DbResult, DynDatabase, StateChanges},
 };
@@ -231,7 +231,7 @@ impl<'a> GethTraceBuilder<'a> {
     /// * `db` - The database to fetch state pre-transaction execution.
     pub fn geth_prestate_traces<T: EvmTypes>(
         &self,
-        TxResult { state_changes: state, .. }: &TxResult<T>,
+        TxResultWithState { state_changes: state, .. }: &TxResultWithState<T>,
         prestate_config: &PreStateConfig,
         db: &mut dyn DynDatabase,
     ) -> DbResult<PreStateFrame> {
@@ -695,16 +695,11 @@ mod tests {
             Tracked {
                 original: Some(AccountInfo::default().with_balance(U256::from(10))),
                 current: Some(AccountInfo::default().with_balance(U256::from(1)).with_nonce(1)),
-                _non_exhaustive: (),
             },
         );
         state.accounts.insert(
             empty_addr,
-            Tracked {
-                original: None,
-                current: Some(AccountInfo::default().with_nonce(1)),
-                _non_exhaustive: (),
-            },
+            Tracked { original: None, current: Some(AccountInfo::default().with_nonce(1)) },
         );
 
         let mut db = CacheDB::new(EmptyDB::default());
@@ -742,10 +737,7 @@ mod tests {
         account.code = None;
 
         state.code.insert(code_hash, code.clone());
-        state.accounts.insert(
-            address,
-            Tracked { original: None, current: Some(account), _non_exhaustive: () },
-        );
+        state.accounts.insert(address, Tracked { original: None, current: Some(account) });
 
         let mut db = CacheDB::new(EmptyDB::default());
         let builder = GethTraceBuilder::new(Vec::new());
@@ -769,11 +761,7 @@ mod tests {
         let address = address!("1000000000000000000000000000000000000001");
         state.accounts.insert(
             address,
-            Tracked {
-                original: None,
-                current: Some(AccountInfo::default().with_nonce(1)),
-                _non_exhaustive: (),
-            },
+            Tracked { original: None, current: Some(AccountInfo::default().with_nonce(1)) },
         );
 
         let error = DbErrorCode::new(7).unwrap();

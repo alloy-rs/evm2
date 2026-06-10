@@ -11,7 +11,7 @@ use alloy_rpc_types_trace::geth::{
     erc7562::Erc7562Config, mux::MuxConfig,
 };
 use evm2::{
-    Evm, EvmTypes, Inspector, TxResult,
+    Evm, EvmTypes, Inspector, TxResultWithState,
     env::BlockEnv,
     ethereum::{EthereumTxEnv, RecoveredTxEnvelope},
     evm::{DbErrorCode, DynDatabase},
@@ -210,7 +210,7 @@ impl DebugInspector {
         tx_context: Option<TransactionContext>,
         tx: &RecoveredTxEnvelope,
         block_env: &BlockEnv,
-        res: &TxResult<T>,
+        res: &TxResultWithState<T>,
         db: &mut dyn DynDatabase,
     ) -> Result<GethTrace, DebugInspectorError> {
         self.get_result_with_tx(
@@ -232,7 +232,7 @@ impl DebugInspector {
         tx_context: Option<TransactionContext>,
         tx: &EthereumTxEnv,
         block_env: &BlockEnv,
-        res: &TxResult<T>,
+        res: &TxResultWithState<T>,
         db: &mut dyn DynDatabase,
     ) -> Result<GethTrace, DebugInspectorError> {
         self.get_result_with_tx(
@@ -249,7 +249,7 @@ impl DebugInspector {
         tx_context: Option<TransactionContext>,
         tx: DebugTransaction<'_>,
         block_env: &BlockEnv,
-        res: &TxResult<T>,
+        res: &TxResultWithState<T>,
         db: &mut dyn DynDatabase,
     ) -> Result<GethTrace, DebugInspectorError> {
         #[allow(clippy::needless_update)]
@@ -267,7 +267,7 @@ impl DebugInspector {
             Self::CallTracer(inspector, config) => {
                 inspector.set_transaction_gas_limit(tx.gas_limit);
                 inspector.set_transaction_caller(tx.caller);
-                inspector.geth_builder().geth_call_traces(*config, res.gas_used).into()
+                inspector.geth_builder().geth_call_traces(*config, res.result.gas_used).into()
             }
             Self::PreStateTracer(inspector, config) => {
                 inspector.set_transaction_gas_limit(tx.gas_limit);
@@ -296,7 +296,7 @@ impl DebugInspector {
                 inspector.set_transaction_caller(tx.caller);
                 inspector
                     .geth_builder()
-                    .geth_erc7562_traces(config.clone(), res.gas_used, db)
+                    .geth_erc7562_traces(config.clone(), res.result.gas_used, db)
                     .map_err(DebugInspectorError::Database)?
                     .into()
             }
@@ -305,7 +305,7 @@ impl DebugInspector {
                 inspector.set_transaction_caller(tx.caller);
                 inspector
                     .geth_builder()
-                    .geth_traces(res.gas_used, res.output.clone(), *config)
+                    .geth_traces(res.result.gas_used, res.result.output.clone(), *config)
                     .into()
             }
             #[cfg(feature = "js-tracer")]

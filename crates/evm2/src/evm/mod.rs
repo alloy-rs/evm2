@@ -1,4 +1,115 @@
 //! EVM execution host.
+//!
+//! This module exposes the [`Evm`] dispatcher, transaction result types, database adapters,
+//! state-change streaming traits, and block-state accumulator used by the host.
+//!
+//! ## State output and transaction lifecycle
+//!
+//! Transaction execution separates execution output from state materialization. [`Evm::transact`]
+//! validates and executes a transaction through the registered handler, finalizes transaction-level
+//! effects, and returns an [`ExecutedTx`] handle. The handle owns no copied write-set; it keeps the
+//! transaction's post-finalization writes in reusable scratch state until the caller chooses how to
+//! resolve them.
+//!
+//! Resolve an [`ExecutedTx`] with one of these methods:
+//!
+//! - [`ExecutedTx::commit`] accepts the transaction into the accepted overlay;
+//! - [`ExecutedTx::commit_to`] accepts it and records the same writes in a
+//!   [`BlockStateAccumulator`];
+//! - [`ExecutedTx::commit_with`] streams writes to a [`StateChangeSink`] and then accepts them;
+//! - [`ExecutedTx::discard`] drops the writes and returns only the result;
+//! - [`ExecutedTx::detach`] materializes an owned [`TxResultWithState`] without accepting the
+//!   writes.
+//!
+//! Dropping an unresolved [`ExecutedTx`] is equivalent to [`ExecutedTx::discard`], so transaction
+//! scratch cannot leak into later execution.
+//!
+//! ## State layers
+//!
+//! The host state is split into three layers:
+//!
+//! 1. **Accepted overlay**: transaction-boundary state accepted by prior commits. It shadows the
+//!    wrapped database and is visible to later transactions executed by the same [`Evm`].
+//! 2. **Transaction scratch**: writes, warm-access state, transient storage, journal entries,
+//!    touched accounts, selfdestruct markers, and logs for the currently executing transaction. It
+//!    is cleared after `commit`, `commit_to`, `commit_with`, `discard`, or `detach` while retaining
+//!    capacity where possible.
+//! 3. **Block accumulator**: optional block-level state output. It coalesces committed transaction
+//!    writes and keeps block-boundary originals.
+//!
+//! The accepted overlay is for execution correctness between transactions. The block accumulator
+//! is for final block output.
+//!
+//! ## Outcomes, logs, and materialized state
+//!
+//! [`TxResult`] is the cheap result-only shape: status, gas used, output, stop reason, logs,
+//! database error handle, and extension data. Logs live in [`TxResult`] because logs are
+//! execution output, not database state.
+//!
+//! [`StateChanges`] is the owned materialized write-set. It is produced only by
+//! [`ExecutedTx::detach`]. Normal serial block execution can build receipts from [`TxResult`] and
+//! stream state directly into a
+//! [`BlockStateAccumulator`] without first allocating a per-transaction [`StateChanges`] map.
+//!
+//! ## Source and sink API
+//!
+//! [`StateChangeSource`] and [`StateChangeSink`] provide borrowed state-change streaming. Sources
+//! include transaction scratch, [`StateChanges`], and [`BlockStateAccumulator`]. Sinks include
+//! [`BlockStateAccumulator`], [`CacheDB`], [`Tee`], and custom consumers such as trie updaters,
+//! witnesses, execution caches, or test recorders.
+//!
+//! The common hot path can therefore stream the same transaction writes into multiple consumers
+//! without cloning or materializing the write-set first.
+//!
+//! ## Error and status behavior
+//!
+//! - Successful execution returns an [`ExecutedTx`] whose result has `status = true`.
+//! - EVM revert/halt can still return an [`ExecutedTx`]. The result records the failed
+//!   status/stop/output, while transaction-level effects remain resolvable if finalization
+//!   completed.
+//! - Invalid transactions and handler errors return a handler error and clear transaction scratch;
+//!   there is no [`ExecutedTx`] to resolve.
+//! - Database errors during execution/finalization are recorded in the result's database error
+//!   handle when execution can still produce a transaction result. If no valid transaction state
+//!   remains, resolving the handle is a no-op for state.
+//!
+//! ## Common flows
+//!
+//! ```text
+//! eth_call / simulation: transact -> discard
+//! serial block:          transact -> commit
+//! block output:          transact -> commit_to -> BlockStateAccumulator
+//! materialized tx diff:  transact -> detach -> TxResultWithState
+//! parallel worker:       transact -> detach -> send owned diff
+//! ```
+//!
+//! Result-only execution:
+//!
+//! ```rust,ignore
+//! let executed = evm.transact(&tx)?;
+//! let outcome = executed.discard();
+//! ```
+//!
+//! Serial block execution with coalesced block output:
+//!
+//! ```rust,ignore
+//! let mut block_state = BlockStateAccumulator::new();
+//!
+//! for tx in block.transactions() {
+//!     let executed = evm.transact(tx)?;
+//!     receipt_builder.observe(executed.result());
+//!     let outcome = executed.commit_to(&mut block_state);
+//!     receipts.push(receipt_builder.finish(outcome));
+//! }
+//!
+//! let storage_deltas = block_state.storage_sorted();
+//! ```
+//!
+//! Detached materialized output:
+//!
+//! ```rust,ignore
+//! let result: TxResultWithState<_> = evm.transact(&tx)?.detach();
+//! ```
 
 use self::{
     inspector::Inspector,
@@ -40,16 +151,20 @@ pub use system::{
 
 mod db;
 pub use db::{
-    Cache, CacheDB, Database, DatabaseCommit, Db, DbErrorCode, DbResult, DynDatabase, EmptyDB,
+    AccountStorageCache, Cache, CacheDB, Database, Db, DbErrorCode, DbResult, DynDatabase, EmptyDB,
     InMemoryDB,
 };
 #[cfg(feature = "async")]
 pub(crate) use db::{db_error_unavailable, stored_error_code};
 
+mod tx;
+pub use tx::{ExecutedTx, TxResult, TxResultWithState};
+
 mod state;
 pub use state::{
-    Account, AccountInfo, JournalEntry, State, StateChanges, StateCheckpoint, StorageChangeSet,
-    StorageOverlay, Tracked,
+    Account, AccountChangeRef, AccountInfo, AccountInfoRef, BlockStateAccumulator, JournalEntry,
+    NoopChangeSink, State, StateChangeSink, StateChangeSource, StateChanges, StateCheckpoint,
+    StorageChange, StorageChangeSet, StorageOverlay, Tee, Tracked,
 };
 
 /// EVM host and transaction dispatcher.
@@ -201,6 +316,26 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         &self.registry
     }
 
+    /// Returns the accepted-state overlay database.
+    ///
+    /// This cache contains state changes committed through transaction lifecycle methods or
+    /// [`Self::commit_source`]. The wrapped backing database is available through
+    /// [`Self::database`].
+    #[inline]
+    pub fn overlay_db(&self) -> &CacheDB<Box<dyn DynDatabase>> {
+        self.state.overlay_db()
+    }
+
+    /// Returns the accepted-state overlay database mutably.
+    ///
+    /// This is useful when an external state-change source should be streamed into the accepted
+    /// overlay with a [`Tee`] or another [`StateChangeSink`]. The wrapped backing database is
+    /// available through [`Self::database_mut`].
+    #[inline]
+    pub fn overlay_db_mut(&mut self) -> &mut CacheDB<Box<dyn DynDatabase>> {
+        self.state.overlay_db_mut()
+    }
+
     /// Returns the backing database.
     #[inline]
     pub fn database(&self) -> &dyn DynDatabase {
@@ -213,22 +348,28 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         self.state.initial_mut()
     }
 
-    /// Returns the accepted database overlay.
-    #[inline]
-    pub fn overlay_db(&self) -> &CacheDB<Box<dyn DynDatabase>> {
-        self.state.overlay_db()
-    }
-
-    /// Returns the accepted database overlay mutably.
-    #[inline]
-    pub fn overlay_db_mut(&mut self) -> &mut CacheDB<Box<dyn DynDatabase>> {
-        self.state.overlay_db_mut()
-    }
-
     /// Returns the latest database error code raised during execution.
     #[inline]
     pub const fn db_error_code(&self) -> Option<DbErrorCode> {
         self.db_error_code
+    }
+
+    /// Returns account information visible through the accepted state overlay.
+    #[inline]
+    pub fn account_info(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
+        self.state.account_info(address)
+    }
+
+    /// Returns account bytecode visible through the accepted state overlay.
+    #[inline]
+    pub fn account_code(&mut self, address: &Address) -> DbResult<Bytecode> {
+        self.state.get_code(address)
+    }
+
+    /// Applies borrowed changes to the accepted state overlay.
+    #[inline]
+    pub fn commit_source<S: StateChangeSource>(&mut self, source: &S) {
+        self.state.commit_source(source);
     }
 
     /// Replaces the backing database.
@@ -561,13 +702,19 @@ impl<'a, T: EvmTypes> SendEvmRef<'a, T> {
 impl<T: EvmTypes<Tx: Typed2718, Host = Evm<T>>> SendEvmRef<'_, T> {
     #[inline]
     fn transact(&mut self, tx: &T::Tx) -> HandlerResult<TxResult<T>> {
-        self.evm.transact(tx)
+        self.evm.transact(tx).map(ExecutedTx::commit)
     }
 }
 
 impl<T: EvmTypes<Tx: Typed2718, Host = Self>> Evm<T> {
-    /// Dispatches the transaction to the handler registered for its EIP-2718 type byte.
-    pub fn transact(&mut self, tx: &T::Tx) -> HandlerResult<TxResult<T>> {
+    /// Dispatches the transaction to its handler and returns an executed transaction handle.
+    ///
+    /// The returned [`ExecutedTx`] keeps post-finalization writes in the transaction scratch layer.
+    /// Callers must resolve it with [`ExecutedTx::commit`], [`ExecutedTx::commit_to`],
+    /// [`ExecutedTx::commit_with`], [`ExecutedTx::discard`], or [`ExecutedTx::detach`] before
+    /// another transaction can be executed. Dropping the handle is equivalent to
+    /// [`ExecutedTx::discard`].
+    pub fn transact(&mut self, tx: &T::Tx) -> HandlerResult<ExecutedTx<'_, T>> {
         self.transact_with(|host| {
             let handler = host.registry.try_get_by_type(tx.ty())?;
             handler.call(tx, host)
@@ -575,25 +722,45 @@ impl<T: EvmTypes<Tx: Typed2718, Host = Self>> Evm<T> {
     }
 
     /// Executes an Ethereum transaction handler and finalizes its state transition.
+    ///
+    /// See [`Self::transact`] for the returned [`ExecutedTx`] lifecycle.
     pub fn transact_with(
         &mut self,
         f: impl FnOnce(&mut Self) -> HandlerResult<TxResult<T>>,
-    ) -> HandlerResult<TxResult<T>> {
+    ) -> HandlerResult<ExecutedTx<'_, T>> {
         self.db_error_code = None;
         self.eip7702_authorities.clear();
         let mut result = f(self);
+        let mut has_pending_state = false;
         if let Ok(result) = &mut result {
             if let Err(stop) = self.finalize_transaction() {
                 result.status = false;
                 result.stop = stop;
                 result.output = Bytes::new();
+                result.logs.clear();
+                self.state.clear_transaction_state();
             } else {
-                result.state_changes = self.state.accept_transaction();
+                has_pending_state = true;
+                result.logs = self.state.take_logs();
             }
             result.db_error_code = self.db_error_code;
         };
-        self.state.clear_transaction_state();
-        result
+        match result {
+            Ok(result) => Ok(ExecutedTx::from_result(self, result, has_pending_state)),
+            Err(err) => {
+                self.state.clear_transaction_state();
+                Err(err)
+            }
+        }
+    }
+
+    /// Executes a transaction for its outcome and discards its state changes.
+    ///
+    /// This is the cheapest convenience entrypoint for `eth_call`-style simulations: execution
+    /// output and logs are returned, but transaction writes are not accepted and no owned
+    /// [`StateChanges`] is materialized.
+    pub fn call_tx(&mut self, tx: &T::Tx) -> HandlerResult<TxResult<T>> {
+        self.transact(tx).map(ExecutedTx::discard)
     }
 
     /// Dispatches the transaction to the handler registered for its EIP-2718 type byte on an async
@@ -603,6 +770,9 @@ impl<T: EvmTypes<Tx: Typed2718, Host = Self>> Evm<T> {
     /// [`evm::async::AsyncDb`](crate::evm::async::AsyncDb) to take
     /// advantage of yielding database I/O. With a synchronous database this is mostly equivalent to
     /// running the synchronous transaction on a fiber.
+    ///
+    /// This commits the executed transaction on the fiber and returns the result-only
+    /// [`TxResult`].
     ///
     /// This returns a `Send` future. Before calling it, the current erased database, precompile
     /// provider, and optional inspector must be verified with [`Self::evm_is_send`] or
@@ -625,7 +795,10 @@ impl<T: EvmTypes<Tx: Typed2718, Host = Self>> Evm<T> {
         unsafe { r#async::on_fiber_result_with_stack(stack, move || evm.transact(tx)) }
     }
 
-    /// Dispatches each transaction to its registered EIP-2718 handler.
+    /// Dispatches each transaction to its registered EIP-2718 handler and commits it.
+    ///
+    /// Use [`Self::transact`] directly when the caller wants to choose between commit, discard,
+    /// detach, and accumulator/sink commits for each transaction.
     pub fn transact_iter<'a, I>(
         &'a mut self,
         txs: I,
@@ -636,7 +809,7 @@ impl<T: EvmTypes<Tx: Typed2718, Host = Self>> Evm<T> {
         T::Tx: 'a,
         Self: 'a,
     {
-        txs.into_iter().map(move |tx| self.transact(tx))
+        txs.into_iter().map(move |tx| self.transact(tx).map(ExecutedTx::commit))
     }
 }
 
@@ -1337,29 +1510,7 @@ pub struct SelfDestructResult {
     pub is_cold: bool,
     /// Whether this account was already destroyed in this transaction.
     pub previously_destroyed: bool,
-    #[doc(hidden)] // Not public API. Please use an existing constructor.
-    pub _non_exhaustive: (),
-}
 
-/// Result of executing a transaction.
-#[derive_where(Clone, Debug, Default, PartialEq, Eq; T::TxResultExt)]
-pub struct TxResult<T: EvmTypes = crate::BaseEvmTypes> {
-    /// Whether execution succeeded.
-    pub status: bool,
-    /// Gas used by execution.
-    pub gas_used: u64,
-    /// Interpreter stop reason.
-    pub stop: InstrStop,
-    /// Return or revert output.
-    pub output: Bytes,
-    /// Created contract address for successful create transactions.
-    pub created_address: Option<Address>,
-    /// State transition and logs produced by this transaction.
-    pub state_changes: StateChanges,
-    /// Database error handle, if execution stopped on a database error.
-    pub db_error_code: Option<DbErrorCode>,
-    /// EVM type-specific extension data.
-    pub ext: T::TxResultExt,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
 }
@@ -1430,6 +1581,45 @@ mod tests {
             gas_used: req.host.version().tx_gas_limit_cap,
             ..TxResult::default()
         })
+    }
+
+    const LIFECYCLE_ACCOUNT: Address = Address::with_last_byte(0x7a);
+    const LIFECYCLE_STORAGE_KEY: Word = Word::from_limbs([1, 0, 0, 0]);
+
+    fn handle_lifecycle_tx(
+        req: TxRequest<'_, BaseEvmTypes, Recovered<TxLegacy>>,
+    ) -> HandlerResult<TxResult> {
+        let value = Word::from(req.tx.nonce);
+        req.host
+            .state
+            .set_storage(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY, &value)
+            .map_err(registry::HandlerError::Database)?;
+        req.host.state.log(Log {
+            address: LIFECYCLE_ACCOUNT,
+            data: LogData::new_unchecked(vec![], Bytes::new()),
+        });
+        Ok(TxResult { status: true, gas_used: req.tx.nonce, ..TxResult::default() })
+    }
+
+    fn lifecycle_evm() -> Evm<BaseEvmTypes> {
+        let registry = TxRegistry::new().with_handler(
+            TEST_TX_TYPE,
+            RecoveredTxEnvelope::as_legacy,
+            handle_lifecycle_tx,
+        );
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(
+            &LIFECYCLE_ACCOUNT,
+            AccountInfo::default().with_balance(Word::from(1)),
+        );
+        database.insert_account_storage(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY, &Word::from(1));
+        Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            registry,
+            database,
+            Precompiles::base(SpecId::OSAKA),
+        )
     }
 
     #[derive(Clone, Copy)]
@@ -1824,7 +2014,7 @@ mod tests {
         );
         let tx = test_tx(41);
 
-        assert_eq!(evm.transact(&tx).map(|result| result.gas_used), Ok(42));
+        assert_eq!(evm.transact(&tx).map(|executed| executed.discard().gas_used()), Ok(42));
     }
 
     #[test]
@@ -1844,7 +2034,7 @@ mod tests {
         );
         let tx = test_tx(41);
 
-        assert_eq!(evm.transact(&tx).map(|result| result.gas_used), Ok(42));
+        assert_eq!(evm.transact(&tx).map(|executed| executed.discard().gas_used()), Ok(42));
     }
 
     #[test]
@@ -1866,7 +2056,7 @@ mod tests {
         );
         let tx = test_tx(0);
 
-        assert_eq!(evm.transact(&tx).map(|result| result.gas_used), Ok(42));
+        assert_eq!(evm.transact(&tx).map(|executed| executed.discard().gas_used()), Ok(42));
     }
 
     #[test]
@@ -1886,10 +2076,117 @@ mod tests {
         let txs = [test_tx(1), test_tx(2)];
         let gas_used = evm
             .transact_iter(&txs)
-            .map(|result| result.map(|result| result.gas_used))
+            .map(|result| result.map(|result| result.gas_used()))
             .collect::<HandlerResult<Vec<_>>>();
 
         assert_eq!(gas_used, Ok(vec![2, 3]));
+    }
+
+    #[test]
+    fn executed_transaction_discard_drops_state_but_keeps_outcome_logs() {
+        let mut evm = lifecycle_evm();
+        let outcome =
+            evm.transact(&test_tx(7)).expect("lifecycle transaction should execute").discard();
+
+        assert_eq!(outcome.gas_used(), 7);
+        assert_eq!(outcome.logs.len(), 1);
+        assert_eq!(
+            evm.state.storage_ref(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY),
+            Some(Word::from(1))
+        );
+    }
+
+    #[test]
+    fn executed_transaction_detach_materializes_without_committing() {
+        let mut evm = lifecycle_evm();
+        let result =
+            evm.transact(&test_tx(7)).expect("lifecycle transaction should execute").detach();
+
+        assert_eq!(result.result.logs.len(), 1);
+        let storage = result
+            .state_changes
+            .storage
+            .get(&LIFECYCLE_ACCOUNT)
+            .expect("storage change should be present");
+        let slot =
+            storage.slots.get(&LIFECYCLE_STORAGE_KEY).expect("storage slot should be present");
+        assert_eq!(slot.original, Word::from(1));
+        assert_eq!(slot.current, Word::from(7));
+        assert_eq!(
+            evm.state.storage_ref(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY),
+            Some(Word::from(1))
+        );
+    }
+
+    #[test]
+    fn executed_transaction_commit_updates_accepted_overlay() {
+        let mut evm = lifecycle_evm();
+        let outcome =
+            evm.transact(&test_tx(7)).expect("lifecycle transaction should execute").commit();
+
+        assert_eq!(outcome.logs.len(), 1);
+        assert_eq!(
+            evm.state.storage_ref(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY),
+            Some(Word::from(7))
+        );
+
+        let _ = evm.transact(&test_tx(9)).expect("lifecycle transaction should execute").commit();
+        assert_eq!(
+            evm.state.storage_ref(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY),
+            Some(Word::from(9))
+        );
+    }
+
+    #[test]
+    fn executed_transaction_commit_to_accumulates_block_state() {
+        let mut evm = lifecycle_evm();
+        let mut block_state = BlockStateAccumulator::new();
+
+        let _ = evm
+            .transact(&test_tx(7))
+            .expect("lifecycle transaction should execute")
+            .commit_to(&mut block_state);
+        let _ = evm
+            .transact(&test_tx(9))
+            .expect("lifecycle transaction should execute")
+            .commit_to(&mut block_state);
+
+        let storage = block_state.storage_sorted();
+        assert_eq!(storage.len(), 1);
+        assert_eq!(storage[0].1.original, Word::from(1));
+        assert_eq!(storage[0].1.current, Word::from(9));
+        assert_eq!(
+            evm.state.storage_ref(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY),
+            Some(Word::from(9))
+        );
+    }
+
+    #[test]
+    fn executed_transaction_commit_with_tee_fans_out_changes() {
+        let mut evm = lifecycle_evm();
+        let mut left = BlockStateAccumulator::new();
+        let mut right = BlockStateAccumulator::new();
+        let mut tee = Tee::new(&mut left, &mut right);
+
+        let _ = evm
+            .transact(&test_tx(7))
+            .expect("lifecycle transaction should execute")
+            .commit_with(&mut tee)
+            .expect("block accumulators are infallible");
+
+        assert_eq!(left.storage_sorted()[0].1.current, Word::from(7));
+        assert_eq!(right.storage_sorted()[0].1.current, Word::from(7));
+    }
+
+    #[test]
+    fn dropped_executed_transaction_discards_state() {
+        let mut evm = lifecycle_evm();
+        drop(evm.transact(&test_tx(7)).expect("lifecycle transaction should execute"));
+
+        assert_eq!(
+            evm.state.storage_ref(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY),
+            Some(Word::from(1))
+        );
     }
 
     #[test]
@@ -2205,9 +2502,10 @@ mod tests {
 
         let version = *evm.version();
         evm.state.finalize_transaction_(&version);
-        let changes = evm.state.build_state_changes();
-        assert_eq!(changes.logs.len(), 1);
-        let log = &changes.logs[0];
+        let logs = evm.state.take_logs();
+        let _changes = evm.state.build_state_changes();
+        assert_eq!(logs.len(), 1);
+        let log = &logs[0];
         assert_eq!(log.address, SYSTEM_ADDRESS);
         assert_eq!(
             log.topics(),

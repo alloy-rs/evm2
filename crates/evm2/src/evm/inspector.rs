@@ -940,7 +940,7 @@ mod tests {
             caller,
         ));
 
-        let result = evm.transact(&tx).unwrap();
+        let result = evm.transact(&tx).expect("transaction should execute").discard();
         let inspector = evm.inspector().unwrap().downcast_ref::<SharedE2eInspector>().unwrap();
         let state = &inspector.state;
 
@@ -981,13 +981,13 @@ mod tests {
             caller,
         ));
 
-        let result = evm.transact(&tx).unwrap();
+        let result = evm.transact(&tx).expect("transaction should execute").detach();
         let inspector = evm.inspector().unwrap().downcast_ref::<SharedE2eInspector>().unwrap();
         let state = &inspector.state;
 
-        assert!(result.status);
-        assert_eq!(result.state_changes.logs.len(), 1);
-        assert_eq!(state.logs, result.state_changes.logs);
+        assert!(result.result.status);
+        assert_eq!(result.result.logs.len(), 1);
+        assert_eq!(state.logs, result.result.logs);
         assert_eq!(state.logs[0].address, SYSTEM_ADDRESS);
     }
 
@@ -1017,7 +1017,7 @@ mod tests {
             caller,
         ));
 
-        let result = evm.transact(&tx).unwrap();
+        let result = evm.transact(&tx).expect("transaction should execute").discard();
         let inspector = evm.inspector().unwrap().downcast_ref::<SharedE2eInspector>().unwrap();
         let state = &inspector.state;
 

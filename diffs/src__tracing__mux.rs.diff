@@ -22,7 +22,7 @@
 -    interpreter::{CallInputs, CallOutcome, CreateInputs, CreateOutcome, FrameInput, Interpreter},
 -    DatabaseRef, Inspector,
 +use evm2::{
-+    Evm, EvmTypes, Inspector, TxResult,
++    Evm, EvmTypes, Inspector, TxResultWithState,
 +    evm::{DbResult, DynDatabase},
 +    interpreter::{Interpreter, Message, MessageResult},
  };
@@ -51,7 +51,7 @@
          &self,
 -        result: &ResultAndState<impl HaltReasonTr>,
 -        db: &DB,
-+        result: &TxResult<T>,
++        result: &TxResultWithState<T>,
          tx_info: TransactionInfo,
 -    ) -> Result<MuxFrame, DB::Error> {
 +        db: &mut dyn DynDatabase,
@@ -64,7 +64,7 @@
                          inspector
                              .geth_builder()
 -                            .geth_call_traces(*call_config, result.result.tx_gas_used())
-+                            .geth_call_traces(*call_config, result.gas_used)
++                            .geth_call_traces(*call_config, result.result.gas_used)
                              .into()
                      } else {
                          continue;

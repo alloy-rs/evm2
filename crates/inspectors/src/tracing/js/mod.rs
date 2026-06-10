@@ -23,7 +23,7 @@ use alloy_primitives::{Address, Bytes, TxKind, U256, map::HashSet};
 pub use boa_engine::vm::RuntimeLimits;
 use boa_engine::{Context, JsError, JsObject, JsResult, JsValue, Source, js_string};
 use evm2::{
-    Evm, EvmTypes, Inspector, TxResult,
+    Evm, EvmTypes, Inspector, TxResultWithState,
     env::BlockEnv,
     ethereum::RecoveredTxEnvelope,
     evm::DynDatabase,
@@ -275,24 +275,25 @@ impl JsInspector {
     /// Note: This is supposed to be called after the inspection has finished.
     pub fn json_result<T: EvmTypes>(
         &mut self,
-        result: &TxResult<T>,
+        res: &TxResultWithState<T>,
         tx: &RecoveredTxEnvelope,
         block: &BlockEnv,
         db: &mut dyn DynDatabase,
     ) -> Result<serde_json::Value, JsInspectorError> {
-        let result = self.result(result, tx, block, db)?;
+        let result = self.result(res, tx, block, db)?;
         Ok(to_serde_value(result, &mut self.ctx)?)
     }
 
     /// Calls the result function and returns the result.
     pub fn result<T: EvmTypes>(
         &mut self,
-        result: &TxResult<T>,
+        res: &TxResultWithState<T>,
         tx: &RecoveredTxEnvelope,
         block: &BlockEnv,
         db: &mut dyn DynDatabase,
     ) -> Result<JsValue, JsInspectorError> {
-        let (db, _db_guard) = EvmDbRef::new_changes(&result.state_changes, db);
+        let TxResultWithState { result, state_changes: state, .. } = res;
+        let (db, _db_guard) = EvmDbRef::new_changes(state, db);
 
         let mut to = None;
         let mut output_bytes = None;
@@ -814,9 +815,9 @@ mod tests {
             },
             Address::ZERO,
         ));
-        let res = evm.transact(&tx).expect("pass without error");
+        let res = evm.transact(&tx).expect("pass without error").detach();
 
-        assert_eq!(res.status, success);
+        assert_eq!(res.result.status, success);
         let mut inspector = evm.clear_inspector_as::<JsInspector>().unwrap();
         let block = *evm.block_env();
         inspector.json_result(&res, &tx, &block, evm.database_mut()).unwrap()

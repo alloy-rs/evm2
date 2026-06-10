@@ -9,7 +9,7 @@ mod legacy;
 use crate::{
     Evm, EvmFeatures, EvmTypes, SpecId, TxResult, Version,
     bytecode::Bytecode,
-    evm::{AccountInfo, StateCheckpoint},
+    evm::{AccountInfo, ExecutedTx, StateCheckpoint},
     interpreter::{Message, MessageKind, MessageResult, Word},
     registry::{HandlerError, HandlerResult, TxRegistry},
     utils::{b256_to_word, num_words},
@@ -177,10 +177,12 @@ pub struct EthereumTxEnv {
 }
 
 /// Executes an unsigned Ethereum transaction environment.
-pub fn transact_tx_env<T: EvmTypes<Host = Evm<T>>>(
-    host: &mut Evm<T>,
+///
+/// See [`Evm::transact`] for the returned [`ExecutedTx`] lifecycle.
+pub fn transact_tx_env<'evm, T: EvmTypes<Host = Evm<T>>>(
+    host: &'evm mut Evm<T>,
     tx: &EthereumTxEnv,
-) -> HandlerResult<TxResult<T>>
+) -> HandlerResult<ExecutedTx<'evm, T>>
 where
     T::Tx: Typed2718,
 {
@@ -846,7 +848,7 @@ mod tests {
         );
 
         assert_eq!(
-            evm.transact(&tx),
+            evm.transact(&tx).map(|executed| executed.discard()),
             Err(HandlerError::IntrinsicGasTooLow { required: 21_000, got: 20_999 })
         );
     }

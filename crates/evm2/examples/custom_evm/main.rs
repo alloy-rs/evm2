@@ -4,13 +4,16 @@
 
 use crate::config::CustomConfigSelector;
 use alloy_eips::eip2718::Typed2718;
-use alloy_primitives::{Address, Bytes, U256};
+use alloy_primitives::{Address, B256, Bytes, U256};
 use config::{CustomBlockEnvExt, CustomSpecId, CustomTypes, custom_version};
 use evm2::{
     Evm, EvmConfigSelector, ExecutionConfig, SpecId, Version,
-    bytecode::opcode::op,
+    bytecode::{Bytecode, opcode::op},
     env::BlockEnv,
-    evm::{InMemoryDB, precompile::NoPrecompiles},
+    evm::{
+        AccountChangeRef, AccountInfo, InMemoryDB, StateChangeSink, StorageChange,
+        precompile::NoPrecompiles,
+    },
     inspector::Inspector,
     interpreter::{InstrStop, Interpreter, Message, MessageResult},
     registry::HandlerResult,
@@ -23,6 +26,7 @@ pub mod tx;
 
 fn main() -> HandlerResult<()> {
     custom_opcode()?;
+    state_change_consumer()?;
     l1_blocknumber_opcode()?;
     mainnet_fallback()?;
     inspector()?;
@@ -39,7 +43,7 @@ fn custom_opcode() -> HandlerResult<()> {
         op::STOP,
     ]));
 
-    let result = evm.transact(&tx)?;
+    let result = evm.transact(&tx)?.commit();
     let expected_gas = u64::from(opcode::CUSTOM_OPCODE_GAS)
         + u64::from(opcode::CUSTOM_OPCODE_DYNAMIC_GAS)
         + 3
@@ -51,13 +55,49 @@ fn custom_opcode() -> HandlerResult<()> {
         tx.ty(),
         result.status,
         result.stop,
-        result.gas_used,
+        result.gas_used(),
     );
 
     assert_eq!(result.stop, InstrStop::Stop);
     assert!(result.status);
-    assert_eq!(result.gas_used, expected_gas);
+    assert_eq!(result.gas_used(), expected_gas);
     assert!(result.ext.handled_custom_tx);
+    Ok(())
+}
+
+fn state_change_consumer() -> HandlerResult<()> {
+    let target = Address::from([0xcc; 20]);
+    let mut database = InMemoryDB::default();
+    database.insert_account_info(&target, AccountInfo::default().with_nonce(1));
+    let mut evm = custom_evm_with_database(database);
+    let mut consumer = ExampleStateConsumer::default();
+    let tx = CustomEnvelope::ExecuteCode(ExecuteCodeTx {
+        target,
+        gas_limit: 100_000,
+        code: Bytes::from_static(&[opcode::CUSTOM_OPCODE, op::PUSH1, 0x01, op::SSTORE, op::STOP]),
+    });
+
+    let Ok(result) = evm.transact(&tx)?.commit_with(&mut consumer);
+    let storage_change = consumer.storage_changes.first().expect("storage change observed");
+
+    println!(
+        "state consumer: expected status=true accounts=0 storage_writes=1 slot=1 value=0xdead; got status={} accounts={} storage_writes={} slot={} value={:#x}",
+        result.status,
+        consumer.account_changes,
+        consumer.storage_changes.len(),
+        storage_change.key,
+        storage_change.current,
+    );
+
+    assert!(result.status);
+    assert_eq!(consumer.bytecodes, 0);
+    assert_eq!(consumer.account_changes, 0);
+    assert_eq!(consumer.storage_wipes, 0);
+    assert_eq!(consumer.storage_changes.len(), 1);
+    assert_eq!(storage_change.address, target);
+    assert_eq!(storage_change.key, U256::from(1));
+    assert_eq!(storage_change.original, U256::ZERO);
+    assert_eq!(storage_change.current, U256::from(0xdead_u64));
     Ok(())
 }
 
@@ -73,7 +113,7 @@ fn l1_blocknumber_opcode() -> HandlerResult<()> {
         op::RETURN,
     ]));
 
-    let result = evm.transact(&tx)?;
+    let result = evm.transact(&tx)?.discard();
     let expected = Bytes::copy_from_slice(&U256::from(CUSTOM_L1_BLOCK_NUMBER).to_be_bytes::<32>());
 
     println!(
@@ -92,7 +132,7 @@ fn mainnet_fallback() -> HandlerResult<()> {
     let mut evm = mainnet_evm();
     let tx = custom_opcode_tx(Bytes::from_static(&[opcode::CUSTOM_OPCODE, op::STOP]));
 
-    let result = evm.transact(&tx)?;
+    let result = evm.transact(&tx)?.discard();
 
     println!(
         "mainnet fallback: expected status=false stop=InvalidOpcode; got status={} stop={:?}",
@@ -117,7 +157,7 @@ fn inspector() -> HandlerResult<()> {
         op::STOP,
     ]));
 
-    let result = evm.transact(&tx)?;
+    let result = evm.transact(&tx)?.discard();
     let inspector = evm.clear_inspector().expect("inspector should be set");
     let inspector =
         inspector.downcast_ref::<ExampleInspector>().expect("inspector should have expected type");
@@ -149,6 +189,10 @@ const CUSTOM_L1_BLOCK_NUMBER: u64 = 42;
 const MAINNET_L1_BLOCK_NUMBER: u64 = 1;
 
 fn custom_evm() -> Evm<CustomTypes> {
+    custom_evm_with_database(InMemoryDB::default())
+}
+
+fn custom_evm_with_database(database: InMemoryDB) -> Evm<CustomTypes> {
     Evm::<CustomTypes>::new_with_execution_config(
         custom_execution_config(),
         CustomSpecId::CustomOsaka,
@@ -157,7 +201,7 @@ fn custom_evm() -> Evm<CustomTypes> {
             ..BlockEnv::default()
         },
         custom_registry(),
-        InMemoryDB::default(),
+        database,
         NoPrecompiles::default(),
     )
 }
@@ -192,6 +236,38 @@ pub fn configured_custom_version() -> Version {
     let mut version = custom_version(SpecId::OSAKA);
     version.memory_limit = 1 << 20;
     version
+}
+
+#[derive(Default)]
+struct ExampleStateConsumer {
+    bytecodes: usize,
+    account_changes: usize,
+    storage_wipes: usize,
+    storage_changes: Vec<StorageChange>,
+}
+
+impl StateChangeSink for ExampleStateConsumer {
+    type Error = core::convert::Infallible;
+
+    fn bytecode(&mut self, _code_hash: B256, _code: &Bytecode) -> Result<(), Self::Error> {
+        self.bytecodes += 1;
+        Ok(())
+    }
+
+    fn account(&mut self, _change: AccountChangeRef<'_>) -> Result<(), Self::Error> {
+        self.account_changes += 1;
+        Ok(())
+    }
+
+    fn storage_wipe(&mut self, _address: Address) -> Result<(), Self::Error> {
+        self.storage_wipes += 1;
+        Ok(())
+    }
+
+    fn storage(&mut self, change: StorageChange) -> Result<(), Self::Error> {
+        self.storage_changes.push(change);
+        Ok(())
+    }
 }
 
 #[derive(Default)]

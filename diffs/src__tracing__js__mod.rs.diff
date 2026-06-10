@@ -40,7 +40,7 @@
 -    inspector::JournalExt,
 +use boa_engine::{Context, JsError, JsObject, JsResult, JsValue, Source, js_string};
 +use evm2::{
-+    Evm, EvmTypes, Inspector, TxResult,
++    Evm, EvmTypes, Inspector, TxResultWithState,
 +    env::BlockEnv,
 +    ethereum::RecoveredTxEnvelope,
 +    evm::DynDatabase,
@@ -73,7 +73,7 @@
          self.transaction_context = transaction_context;
      }
  
-@@ -279,85 +273,65 @@
+@@ -279,85 +273,66 @@
      /// Calls the result function and returns the result as [serde_json::Value].
      ///
      /// Note: This is supposed to be called after the inspection has finished.
@@ -89,13 +89,12 @@
 -        DB: DatabaseRef,
 -        <DB as DatabaseRef>::Error: core::fmt::Display,
 -    {
--        let result = self.result(res, tx, block, db)?;
-+        result: &TxResult<T>,
++        res: &TxResultWithState<T>,
 +        tx: &RecoveredTxEnvelope,
 +        block: &BlockEnv,
 +        db: &mut dyn DynDatabase,
 +    ) -> Result<serde_json::Value, JsInspectorError> {
-+        let result = self.result(result, tx, block, db)?;
+         let result = self.result(res, tx, block, db)?;
          Ok(to_serde_value(result, &mut self.ctx)?)
      }
  
@@ -116,12 +115,13 @@
 -        let ResultAndState { result, state } = res;
 -        let mut db = WrapDatabaseRef(db);
 -        let (db, _db_guard) = EvmDbRef::new(&state, &mut db);
-+        result: &TxResult<T>,
++        res: &TxResultWithState<T>,
 +        tx: &RecoveredTxEnvelope,
 +        block: &BlockEnv,
 +        db: &mut dyn DynDatabase,
 +    ) -> Result<JsValue, JsInspectorError> {
-+        let (db, _db_guard) = EvmDbRef::new_changes(&result.state_changes, db);
++        let TxResultWithState { result, state_changes: state, .. } = res;
++        let (db, _db_guard) = EvmDbRef::new_changes(state, db);
  
 -        let gas_used = result.tx_gas_used();
          let mut to = None;
@@ -196,7 +196,7 @@
              intrinsic_gas: 0,
              transaction_ctx: self.transaction_context,
              error,
-@@ -430,19 +404,19 @@
+@@ -430,19 +405,19 @@
  
      /// Returns true whether the active call is the root call.
      #[inline]
@@ -219,7 +219,7 @@
          self.exit_fn.is_some() && !self.is_root_call_active()
      }
  
-@@ -466,12 +440,11 @@
+@@ -466,12 +441,11 @@
      }
  
      /// Registers the precompiles in the JS context
@@ -234,7 +234,7 @@
  
          let _ = precompiles.register_callable(&mut self.ctx);
  
-@@ -479,11 +452,8 @@
+@@ -479,11 +453,8 @@
      }
  }
  
@@ -248,7 +248,7 @@
          if self.step_fn.is_none() {
              return;
          }
-@@ -492,31 +462,32 @@
+@@ -492,31 +463,32 @@
          // This avoids an expensive Vec<u8> clone on every single step.
          let should_update_memory = self.prev_op.is_none_or(|prev| prev.modifies_memory());
          if should_update_memory {
@@ -292,7 +292,7 @@
          if self.step_fn.is_none() {
              return;
          }
-@@ -525,22 +496,15 @@
+@@ -525,22 +497,15 @@
              return;
          };
  
@@ -323,7 +323,7 @@
              let step = StepLog {
                  stack,
                  op: OpCode::REVERT.get().into(),
-@@ -550,14 +514,12 @@
+@@ -550,14 +515,12 @@
                  cost,
                  depth: pending.depth,
                  refund: pending.refund,
@@ -341,7 +341,7 @@
          } else {
              let step = StepLog {
                  stack,
-@@ -571,85 +533,90 @@
+@@ -571,85 +534,90 @@
                  error: None,
                  contract: pending.contract,
              };
@@ -477,7 +477,7 @@
          );
  
          if self.can_call_enter() {
-@@ -657,7 +624,7 @@
+@@ -657,7 +625,7 @@
              let frame =
                  CallFrame { contract: call.contract.clone(), kind: call.kind, gas: call.gas_limit };
              if let Err(err) = self.try_enter(frame) {
@@ -486,7 +486,7 @@
              }
          }
  
-@@ -666,25 +633,31 @@
+@@ -666,25 +634,31 @@
  
      fn create_end(
          &mut self,
@@ -525,7 +525,7 @@
          // This is exempt from the root call constraint, because selfdestruct is treated as a
          // new scope that is entered and immediately exited.
          if self.enter_fn.is_some() {
-@@ -746,28 +719,31 @@
+@@ -746,28 +720,31 @@
      InvalidJsonConfig(JsError),
  }
  
@@ -571,7 +571,7 @@
      use serde_json::json;
  
      #[test]
-@@ -804,12 +780,12 @@
+@@ -804,12 +781,12 @@
  
          // Insert the caller
          db.insert_account_info(
@@ -586,7 +586,7 @@
              AccountInfo {
                  code: Some(Bytecode::new_legacy(
                      /* PUSH1 1, PUSH1 1, STOP */
-@@ -820,27 +796,30 @@
+@@ -820,27 +797,30 @@
          );
  
          let insp = JsInspector::new(code.to_string(), serde_json::Value::Null).unwrap();
@@ -619,14 +619,14 @@
 +            },
 +            Address::ZERO,
 +        ));
-+        let res = evm.transact(&tx).expect("pass without error");
++        let res = evm.transact(&tx).expect("pass without error").detach();
  
 -        assert_eq!(res.result.is_success(), success);
 -        let (ctx, inspector) = evm.ctx_inspector();
 -        let tx = ctx.tx().clone();
 -        let block = ctx.block().clone();
 -        inspector.json_result(res, &tx, &block, ctx.db_mut()).unwrap()
-+        assert_eq!(res.status, success);
++        assert_eq!(res.result.status, success);
 +        let mut inspector = evm.clear_inspector_as::<JsInspector>().unwrap();
 +        let block = *evm.block_env();
 +        inspector.json_result(&res, &tx, &block, evm.database_mut()).unwrap()

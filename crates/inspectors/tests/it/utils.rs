@@ -2,7 +2,8 @@ use alloy_consensus::{TxEip4844, TxLegacy, transaction::Recovered};
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
 use colorchoice::ColorChoice;
 use evm2::{
-    BaseEvmTypes, Evm, EvmTypes, Inspector, NoopInspector, Precompiles, TxResult, env as evm_env,
+    BaseEvmTypes, Evm, EvmTypes, Inspector, NoopInspector, Precompiles, TxResult,
+    TxResultWithState, env as evm_env,
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
     evm::StateChanges,
     interpreter::{Interpreter, Message, MessageResult},
@@ -305,7 +306,7 @@ impl Context {
         }
 
         let envelope = tx.envelope();
-        let result = evm.transact(&envelope)?;
+        let result = evm.transact(&envelope)?.detach();
         self.tx = tx;
         Ok(ResultAndState::new(result))
     }
@@ -352,13 +353,17 @@ impl TxEnv {
 pub struct ResultAndState {
     pub result: ExecutionResult,
     pub state: StateChanges,
-    pub tx_result: TxResult,
+    pub tx_result: TxResultWithState,
 }
 
 impl ResultAndState {
-    fn new(result: TxResult) -> Self {
+    fn new(result: TxResultWithState) -> Self {
         let state = result.state_changes.clone();
-        Self { result: ExecutionResult::from_tx_result(result.clone()), state, tx_result: result }
+        Self {
+            result: ExecutionResult::from_tx_result(result.result.clone()),
+            state,
+            tx_result: result,
+        }
     }
 }
 
@@ -509,7 +514,7 @@ pub trait DatabaseCommit {
 
 impl DatabaseCommit for CacheDB<EmptyDB> {
     fn commit(&mut self, changes: StateChanges) {
-        evm2::evm::DatabaseCommit::commit(self, &changes);
+        self.commit_source(&changes);
     }
 }
 
