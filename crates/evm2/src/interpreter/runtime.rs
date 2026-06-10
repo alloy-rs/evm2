@@ -200,7 +200,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
 
     /// Returns the active frame-local call/create message.
     #[inline]
-    pub const fn message(&self) -> &Message<T> {
+    pub const fn message(&self) -> &'frame Message<T> {
         // SAFETY: `message` is initialized before inspected execution starts.
         unsafe { self.message.unwrap_unchecked() }
     }

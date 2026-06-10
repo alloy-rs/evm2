@@ -126,7 +126,7 @@ use crate::{
     },
     registry::{HandlerResult, TxRegistry},
     trustme,
-    version::{EvmFeatures, GasId, Version},
+    version::{EvmFeatures, GasId},
 };
 use alloc::{boxed::Box, vec};
 use alloy_eips::eip2718::Typed2718;
@@ -539,9 +539,11 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
 
     #[inline]
     fn inspect_log(&mut self, log: &Log) {
-        if let Some(mut inspector) = self.inspector.take() {
+        if let Some(inspector) = self.inspector.as_deref_mut() {
+            // SAFETY: The inspector is stored in `self` and remains alive for the duration of the
+            // hook.
+            let inspector = unsafe { trustme::decouple_lt_mut(inspector) };
             inspector.log(log, self);
-            self.inspector = Some(inspector);
         }
     }
 
@@ -555,11 +557,10 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     fn finalize_transaction(&mut self) -> Result<(), InstrStop> {
         let host = self as *mut Self;
         self.state
-            .finalize_transaction(self.execution_config.version(), |log| unsafe {
-                if let Some(mut inspector) = (*host).inspector.take() {
-                    inspector.log(log, &mut *host);
-                    (*host).inspector = Some(inspector);
-                }
+            .finalize_transaction(self.execution_config.version(), |log| {
+                // SAFETY: `State::finalize_transaction` only invokes this hook with finalization
+                // logs and does not otherwise touch the host through it.
+                unsafe { (*host).inspect_log(log) }
             })
             .map_err(|code| self.db_error_stop(code))
     }
@@ -814,76 +815,73 @@ impl<T: EvmTypes<Tx: Typed2718, Host = Self>> Evm<T> {
 }
 
 impl<T: EvmTypes<Host = Self>> Evm<T> {
-    /// Executes the top-level transaction message with inspector call/create hooks.
     #[inline]
-    pub(crate) fn execute_top_message(
+    fn execute_message_impl(
         &mut self,
         tx_env: &TxEnv<T>,
         bytecode: Bytecode,
         message: &mut Message<T>,
+        caller_is_static: bool,
     ) -> MessageResult<T> {
-        let spec = self.spec_id();
-        let version = self.execution_config.version() as *const Version;
-        let top_bytecode = bytecode.clone();
-        let mut frame = self.interpreter_pool.pop();
-        let frame_message = message.clone();
-        frame.init(top_bytecode.clone(), tx_env, &frame_message, false);
-        // SAFETY: The version pointer comes from `self.execution_config` and remains valid for the
-        // duration of the temporary top-level inspection frame.
-        frame.set_inspection_context(spec, unsafe { &*version }, self);
-
-        let inspected = match message.kind {
-            MessageKind::Create | MessageKind::Create2 => {
-                if let Some(mut inspector) = self.inspector.take() {
-                    let result = inspector.create(&mut frame, message);
-                    self.inspector = Some(inspector);
-                    result
-                } else {
-                    None
-                }
-            }
-            MessageKind::Call
-            | MessageKind::CallCode
-            | MessageKind::DelegateCall
-            | MessageKind::StaticCall => {
-                if let Some(mut inspector) = self.inspector.take() {
-                    let result = inspector.call(&mut frame, message);
-                    self.inspector = Some(inspector);
-                    result
-                } else {
-                    None
-                }
-            }
-        };
-
-        let _ = self.interpreter_pool.push(frame);
-
-        let mut result =
-            inspected.unwrap_or_else(|| self.execute_message(tx_env, bytecode, message, false));
-
-        let mut frame = self.interpreter_pool.pop();
-        let frame_message = message.clone();
-        frame.init(top_bytecode, tx_env, &frame_message, false);
-        // SAFETY: The version pointer comes from `self.execution_config` and remains valid for the
-        // duration of the temporary top-level inspection frame.
-        frame.set_inspection_context(spec, unsafe { &*version }, self);
-
         match message.kind {
             MessageKind::Create | MessageKind::Create2 => {
-                if let Some(mut inspector) = self.inspector.take() {
-                    inspector.create_end(&mut frame, message, &mut result);
-                    self.inspector = Some(inspector);
-                }
+                self.execute_create_message(tx_env, bytecode, message, caller_is_static)
             }
             MessageKind::Call
             | MessageKind::CallCode
             | MessageKind::DelegateCall
             | MessageKind::StaticCall => {
-                if let Some(mut inspector) = self.inspector.take() {
-                    inspector.call_end(&mut frame, message, &mut result);
-                    self.inspector = Some(inspector);
-                }
+                self.execute_call_message(tx_env, bytecode, message, caller_is_static)
             }
+        }
+    }
+
+    /// Fires the inspector call/create hooks around top-level message execution.
+    ///
+    /// Nested messages fire these hooks from the parent interpreter frame inside the call
+    /// instructions; the top-level message has no parent frame, so a temporary frame is set up to
+    /// invoke them.
+    #[inline(never)]
+    fn execute_message_inspected(
+        &mut self,
+        tx_env: &TxEnv<T>,
+        bytecode: Bytecode,
+        message: &mut Message<T>,
+        caller_is_static: bool,
+    ) -> MessageResult<T> {
+        let Some(inspector) = self.inspector.as_deref_mut() else {
+            return self.execute_message_impl(tx_env, bytecode, message, caller_is_static);
+        };
+        // SAFETY: The inspector is stored in `self` and remains alive for the duration of the
+        // top-level message execution.
+        let inspector = unsafe { trustme::decouple_lt_mut(inspector) };
+
+        let is_create = matches!(message.kind, MessageKind::Create | MessageKind::Create2);
+
+        let mut frame = self.interpreter_pool.pop();
+        // TODO: aliases with argument
+        // SAFETY: The message outlives the frame, which is returned to the pool below.
+        let frame_message = unsafe { trustme::decouple_lt(&*message) };
+        frame.init(bytecode.clone(), tx_env, frame_message, caller_is_static);
+        // SAFETY: `execution_config` points to a private field that host execution does not
+        // replace or mutate, so the pointee remains valid for the lifetime of the frame.
+        let version = unsafe { trustme::decouple_lt(self.execution_config.version()) };
+        frame.set_inspection_context(self.spec_id(), version, self);
+
+        let inspected = if is_create {
+            inspector.create(&mut frame, message)
+        } else {
+            inspector.call(&mut frame, message)
+        };
+
+        let mut result = inspected.unwrap_or_else(|| {
+            self.execute_message_impl(tx_env, bytecode, message, caller_is_static)
+        });
+
+        if is_create {
+            inspector.create_end(&mut frame, message, &mut result);
+        } else {
+            inspector.call_end(&mut frame, message, &mut result);
         }
 
         let _ = self.interpreter_pool.push(frame);
@@ -1197,9 +1195,17 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     }
 
     fn inspect_initialize_interp(&mut self, interp: &mut Interpreter<'_, T>) {
-        if let Some(mut inspector) = self.inspector.take() {
+        if let Some(inspector) = self.inspector.as_deref_mut() {
+            // SAFETY: The inspector is stored in `self` and remains alive for the duration of the
+            // hook.
+            let inspector = unsafe { trustme::decouple_lt_mut(inspector) };
+            // The host and spec are normally wired up by the interpreter run; set them up early so
+            // that the hook can access them.
+            // SAFETY: `execution_config` points to a private field that host execution does not
+            // replace or mutate, so the pointee remains valid here.
+            let version = unsafe { trustme::decouple_lt(self.execution_config.version()) };
+            interp.set_inspection_context(self.spec_id(), version, self);
             inspector.initialize_interp(interp);
-            self.inspector = Some(inspector);
         }
     }
 }
@@ -1314,17 +1320,12 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
         message: &mut Message<T>,
         caller_is_static: bool,
     ) -> MessageResult<T> {
-        match message.kind {
-            MessageKind::Create | MessageKind::Create2 => {
-                self.execute_create_message(tx_env, bytecode, message, caller_is_static)
-            }
-            MessageKind::Call
-            | MessageKind::CallCode
-            | MessageKind::DelegateCall
-            | MessageKind::StaticCall => {
-                self.execute_call_message(tx_env, bytecode, message, caller_is_static)
-            }
+        // The top-level message has no parent frame to fire the inspector call/create hooks from,
+        // so they are fired here; nested messages fire them inside the call instructions.
+        if message.depth == 0 && self.inspector.is_some() {
+            return self.execute_message_inspected(tx_env, bytecode, message, caller_is_static);
         }
+        self.execute_message_impl(tx_env, bytecode, message, caller_is_static)
     }
 
     fn created_address(

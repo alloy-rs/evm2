@@ -125,7 +125,10 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
                 TxResult { stop, db_error_code: self.db_error_code(), ..TxResult::default() };
             return ExecutedTx::from_result(self, outcome, false);
         };
+        // System calls are not inspected.
+        let inspector = self.inspector.take();
         let result = Host::execute_message(self, &tx_env, bytecode, &mut message, false);
+        self.inspector = inspector;
         let gas_spent = SYSTEM_CALL_GAS_LIMIT.saturating_sub(result.gas.remaining());
         let gas_refunded = if result.stop.is_success() && result.gas.refunded() > 0 {
             result.gas.refunded() as u64

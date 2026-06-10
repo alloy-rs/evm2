@@ -7,6 +7,7 @@ use super::{
 use crate::{
     Evm, EvmTypes, TxResult,
     env::TxEnv,
+    interpreter::Host,
     registry::{HandlerResult, TxRequest},
 };
 use alloy_consensus::{TxLegacy, transaction::Recovered};
@@ -49,7 +50,7 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     };
     let (bytecode, mut message) =
         initial_message(req.host, caller, tx.nonce, tx.to, &tx.input, tx.value, gas_limit)?;
-    let mut result = req.host.execute_top_message(&tx_env, bytecode, &mut message);
+    let mut result = req.host.execute_message(&tx_env, bytecode, &mut message, false);
     rollback_failed_execution(req.host, execution_checkpoint, &mut result);
 
     settle_gas(req.host, caller, gas_price, tx.gas_limit, floor_gas, result)

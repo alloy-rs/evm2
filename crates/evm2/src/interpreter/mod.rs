@@ -13,7 +13,6 @@ pub(crate) mod dispatch;
 #[doc(hidden)] // For macro only. Not public API.
 pub mod private;
 
-/// Opcode byte constants and metadata.
 pub mod opcode;
 
 mod ctrl;

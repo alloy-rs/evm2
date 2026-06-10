@@ -10,7 +10,7 @@ use crate::{
     Evm, EvmFeatures, EvmTypes, SpecId, TxResult, Version,
     bytecode::Bytecode,
     evm::{AccountInfo, ExecutedTx, StateCheckpoint},
-    interpreter::{Message, MessageKind, MessageResult, Word},
+    interpreter::{Host, Message, MessageKind, MessageResult, Word},
     registry::{HandlerError, HandlerResult, TxRegistry},
     utils::{b256_to_word, num_words},
     version::GasId,
@@ -279,7 +279,7 @@ fn execute_tx_env<T: EvmTypes<Host = Evm<T>>>(
         tx.value,
         tx.gas_limit - intrinsic,
     )?;
-    let mut result = host.execute_top_message(&evm_tx_env, bytecode, &mut message);
+    let mut result = host.execute_message(&evm_tx_env, bytecode, &mut message, false);
     rollback_failed_execution(host, execution_checkpoint, &mut result);
 
     settle_gas(host, tx.caller, gas_price, tx.gas_limit, floor_gas, result)
