@@ -5,12 +5,12 @@ use crate::tracing::{
     utils::load_account_code,
 };
 use alloc::{collections::VecDeque, string::ToString, vec, vec::Vec};
-use alloy_primitives::{Address, Bytes, KECCAK256_EMPTY, U64, map::HashSet};
+use alloy_primitives::{Address, KECCAK256_EMPTY, U64, U256, map::HashSet};
 use alloy_rpc_types_eth::TransactionInfo;
 use alloy_rpc_types_trace::parity::*;
 use core::iter::Peekable;
 use evm2::{
-    SpecId,
+    AccountInfo, EvmTypes, SpecId, TxResult, TxResultWithState,
     evm::{DbResult, DynDatabase, StateChanges},
 };
 
@@ -147,11 +147,13 @@ impl ParityTraceBuilder {
     /// be filled. Use [ParityTraceBuilder::into_trace_results_with_state] or
     /// [populate_state_diff] to populate the balance and nonce changes for the [StateDiff]
     /// using the database.
-    pub fn into_trace_results(
+    pub fn into_trace_results<T: EvmTypes>(
         self,
-        output: Bytes,
+        res: &TxResult<T>,
         trace_types: &HashSet<TraceType>,
     ) -> TraceResults {
+        let output = res.output.clone();
+
         let (trace, vm_trace, state_diff) = self.into_trace_type_traces(trace_types);
 
         TraceResults { output, trace: trace.unwrap_or_default(), vm_trace, state_diff }
@@ -164,13 +166,14 @@ impl ParityTraceBuilder {
     ///
     /// Note: this is considered a convenience method that takes the state changes after inspecting
     /// a transaction with the [TracingInspector](crate::tracing::TracingInspector).
-    pub fn into_trace_results_with_state(
+    pub fn into_trace_results_with_state<T: EvmTypes>(
         self,
-        output: Bytes,
-        state: &StateChanges,
+        res: &TxResultWithState<T>,
         trace_types: &HashSet<TraceType>,
         db: &mut dyn DynDatabase,
     ) -> DbResult<TraceResults> {
+        let TxResultWithState { ref result, state_changes: ref state, .. } = *res;
+
         let breadth_first_addresses = if trace_types.contains(&TraceType::VmTrace) {
             CallTraceNodeWalkerBF::new(&self.nodes)
                 .map(|node| node.trace.address)
@@ -179,16 +182,16 @@ impl ParityTraceBuilder {
             vec![]
         };
 
-        let mut trace_res = self.into_trace_results(output, trace_types);
+        let mut trace_res = self.into_trace_results(result, trace_types);
 
         // check the state diff case
         if let Some(ref mut state_diff) = trace_res.state_diff {
-            populate_state_diff(state_diff, state, db)?;
+            populate_state_diff(state_diff, db, state)?;
         }
 
         // check the vm trace case
         if let Some(ref mut vm_trace) = trace_res.vm_trace {
-            populate_vm_trace_bytecodes(vm_trace, breadth_first_addresses, db)?;
+            populate_vm_trace_bytecodes(db, vm_trace, breadth_first_addresses)?;
         }
 
         Ok(trace_res)
@@ -453,9 +456,9 @@ where
 ///
 /// iteratively fill the [VmTrace] code fields
 pub(crate) fn populate_vm_trace_bytecodes<I>(
+    db: &mut dyn DynDatabase,
     trace: &mut VmTrace,
     breadth_first_addresses: I,
-    db: &mut dyn DynDatabase,
 ) -> DbResult<()>
 where
     I: IntoIterator<Item = Address>,
@@ -489,96 +492,99 @@ where
     Ok(())
 }
 
-/// Populates [StateDiff] from evm2 [StateChanges] and a database.
+/// Populates [StateDiff] given the [StateChanges] of a transaction and a database.
 ///
 /// Loops over all state accounts in the accounts diff that contains all accounts that are included
 /// in the [StateChanges] and compares the balance and nonce against what's in the `db`, which
 /// should point to the beginning of the transaction.
 pub fn populate_state_diff(
     state_diff: &mut StateDiff,
-    state_changes: &StateChanges,
     db: &mut dyn DynDatabase,
+    state_changes: &StateChanges,
 ) -> DbResult<()> {
-    for (&addr, changed_acc) in &state_changes.accounts {
+    for (addr, changed_acc) in state_changes.accounts.iter() {
         // if the account was selfdestructed and created during the transaction, we can ignore it
-        if changed_acc.original.is_none() && changed_acc.current.is_none() {
+        if changed_acc.is_selfdestructed() && changed_acc.is_created() {
             continue;
         }
 
-        let entry = state_diff.entry(addr).or_default();
+        let entry = state_diff.entry(*addr).or_default();
 
         // we need to fetch the account from the db
-        let db_acc = db.get_account(&addr)?.unwrap_or_default();
+        let db_acc = db.get_account(addr)?.unwrap_or_default();
 
-        // changed storage slots for this account; `evm2` only records changed slots
-        let changed_storage = state_changes.storage.get(&addr).into_iter().flat_map(|s| &s.slots);
+        // deleted accounts behave like revm's drained selfdestructed accounts: the balance is
+        // zero and nonce and code are unchanged
+        let info = changed_acc
+            .current
+            .clone()
+            .unwrap_or_else(|| AccountInfo { balance: U256::ZERO, ..db_acc.clone() });
 
-        match &changed_acc.current {
+        // we check if this account was created during the transaction
+        // where the smart contract was not touched before being created (no balance)
+        if changed_acc.is_created() && db_acc.balance == U256::ZERO {
+            // This only applies to newly created accounts without balance
+            // A non existing touched account (e.g. `to` that does not exist) is excluded here
+            entry.balance = Delta::Added(info.balance);
+            entry.nonce = Delta::Added(U64::from(info.nonce));
+
+            // accounts without code are marked as added
+            let account_code = load_account_code(db, &info)?.unwrap_or_default();
+            entry.code = Delta::Added(account_code);
+
+            // new storage values are marked as added,
+            // however we're filtering changed here to avoid adding entries for the zero value
+            for (key, slot) in changed_acc.storage.iter().filter(|(_, slot)| slot.is_changed()) {
+                entry.storage.insert((*key).into(), Delta::Added(slot.current.into()));
+            }
+        } else {
             // we check if this account was created during the transaction
-            // where the smart contract was not touched before being created (no balance)
-            Some(info) if changed_acc.original.is_none() && db_acc.balance.is_zero() => {
-                // This only applies to newly created accounts without balance
-                // A non existing touched account (e.g. `to` that does not exist) is excluded here
-                entry.balance = Delta::Added(info.balance);
-                entry.nonce = Delta::Added(U64::from(info.nonce));
-
-                // accounts without code are marked as added
-                let account_code = load_account_code(db, info)?.unwrap_or_default();
-                entry.code = Delta::Added(account_code);
-
-                // new storage values are marked as added
-                for (&key, slot) in changed_storage {
-                    entry.storage.insert(key.into(), Delta::Added(slot.current.into()));
-                }
+            // where the smart contract was touched before being created (has balance)
+            if changed_acc.is_created() {
+                let original_account_code = load_account_code(db, &db_acc)?.unwrap_or_default();
+                let present_account_code = load_account_code(db, &info)?.unwrap_or_default();
+                entry.code = Delta::changed(original_account_code, present_account_code);
             }
-            Some(info) => {
-                // we check if this account was created during the transaction
-                // where the smart contract was touched before being created (has balance)
-                if db_acc.code_hash != info.code_hash {
-                    let original_account_code = load_account_code(db, &db_acc)?.unwrap_or_default();
-                    let present_account_code = load_account_code(db, info)?.unwrap_or_default();
-                    entry.code = Delta::changed(original_account_code, present_account_code);
-                }
 
-                // update _changed_ storage values
-                for (&key, slot) in changed_storage {
-                    entry.storage.insert(
-                        key.into(),
-                        Delta::changed(slot.original.into(), slot.current.into()),
-                    );
-                }
-
-                // this is relevant for the caller and contracts
-                entry.balance = delta(db_acc.balance, info.balance);
-                entry.nonce = delta(U64::from(db_acc.nonce), U64::from(info.nonce));
+            // update _changed_ storage values
+            for (key, slot) in changed_acc.storage.iter().filter(|(_, slot)| slot.is_changed()) {
+                entry.storage.insert(
+                    (*key).into(),
+                    Delta::changed(slot.original.into(), slot.current.into()),
+                );
             }
-            // the account was selfdestructed during the transaction
-            None => {
-                entry.balance = Delta::Removed(db_acc.balance);
-                entry.nonce = Delta::Removed(U64::from(db_acc.nonce));
-                entry.code = Delta::Removed(load_account_code(db, &db_acc)?.unwrap_or_default());
-            }
-        }
-    }
 
-    // update _changed_ storage values for accounts whose info did not change
-    for (&addr, storage) in &state_changes.storage {
-        if state_changes.accounts.contains_key(&addr) {
-            continue;
-        }
-        let entry = state_diff.entry(addr).or_default();
-        for (&key, slot) in &storage.slots {
-            entry
-                .storage
-                .insert(key.into(), Delta::changed(slot.original.into(), slot.current.into()));
+            // check if the account was changed at all
+            if entry.storage.is_empty()
+                && db_acc.balance == info.balance
+                && db_acc.nonce == info.nonce
+                && db_acc.code_hash == info.code_hash
+                && !changed_acc.is_selfdestructed()
+            {
+                // clear the entry if the account was not changed
+                state_diff.remove(addr);
+                continue;
+            }
+
+            entry.balance = if db_acc.balance == info.balance {
+                Delta::Unchanged
+            } else {
+                Delta::Changed(ChangedType { from: db_acc.balance, to: info.balance })
+            };
+
+            // this is relevant for the caller and contracts
+            entry.nonce = if db_acc.nonce == info.nonce {
+                Delta::Unchanged
+            } else {
+                Delta::Changed(ChangedType {
+                    from: U64::from(db_acc.nonce),
+                    to: U64::from(info.nonce),
+                })
+            };
         }
     }
 
     Ok(())
-}
-
-fn delta<T: PartialEq>(from: T, to: T) -> Delta<T> {
-    if from == to { Delta::Unchanged } else { Delta::changed(from, to) }
 }
 
 #[cfg(test)]

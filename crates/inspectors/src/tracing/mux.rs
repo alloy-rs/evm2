@@ -106,8 +106,8 @@ impl MuxInspector {
     pub fn try_into_mux_frame<T: EvmTypes>(
         &self,
         result: &TxResultWithState<T>,
-        tx_info: TransactionInfo,
         db: &mut dyn DynDatabase,
+        tx_info: TransactionInfo,
     ) -> DbResult<MuxFrame> {
         let mut frame = HashMap::with_capacity_and_hasher(self.configs.len(), Default::default());
 

@@ -48,24 +48,6 @@
  };
  
  /// Shared mutable state captured by JS native functions.
-@@ -384,7 +383,7 @@
-         )
-         .length(1)
-         .build();
--        let get_code = FunctionObjectBuilder::new(
-+        let code = FunctionObjectBuilder::new(
-             ctx.realm(),
-             NativeFunction::from_copy_closure_with_captures(
-                 move |_this, args, state, ctx| {
-@@ -417,7 +416,7 @@
- 
-         object.set(js_string!("getBalance"), get_balance, false, ctx)?;
-         object.set(js_string!("getNonce"), get_nonce, false, ctx)?;
--        object.set(js_string!("getCode"), get_code, false, ctx)?;
-+        object.set(js_string!("getCode"), code, false, ctx)?;
-         object.set(js_string!("getState"), get_state, false, ctx)?;
-         object.set(js_string!("exists"), exists, false, ctx)?;
- 
 @@ -528,7 +527,7 @@
          context.realm(),
          NativeFunction::from_copy_closure_with_captures(
@@ -423,25 +405,7 @@
              }
          };
          to_uint8_array(B256::from(value), ctx)
-@@ -1327,7 +1275,7 @@
-         .length(1)
-         .build();
- 
--        let get_code = FunctionObjectBuilder::new(
-+        let code = FunctionObjectBuilder::new(
-             ctx.realm(),
-             NativeFunction::from_copy_closure_with_captures(
-                 move |_this, args, db, ctx| {
-@@ -1356,7 +1304,7 @@
- 
-         obj.set(js_string!("getBalance"), get_balance, false, ctx)?;
-         obj.set(js_string!("getNonce"), get_nonce, false, ctx)?;
--        obj.set(js_string!("getCode"), get_code, false, ctx)?;
-+        obj.set(js_string!("getCode"), code, false, ctx)?;
-         obj.set(js_string!("getState"), get_state, false, ctx)?;
-         obj.set(js_string!("exists"), exists, false, ctx)?;
-         Ok(obj)
-@@ -1369,75 +1317,99 @@
+@@ -1369,75 +1317,97 @@
      empty_trace!();
  }
  
@@ -521,6 +485,7 @@
 -        self.0.borrow_mut().basic(address).map_err(|e| e.to_string().into())
 +impl ChangesDbReader<'_> {
 +    fn code_from_info(&mut self, info: AccountInfo) -> DbResult<Bytecode> {
++        // Note: the changed account from the state output always holds the code.
 +        if let Some(code) = info.code
 +            && !code.is_empty()
 +        {
@@ -529,9 +494,6 @@
 +        let code_hash = info.code_hash;
 +        if code_hash == KECCAK256_EMPTY {
 +            return Ok(Bytecode::default());
-+        }
-+        if let Some(code) = self.changes.code.get(&code_hash) {
-+            return Ok(code.clone());
 +        }
 +        self.db.get_code_by_hash(&code_hash)
      }
@@ -584,7 +546,7 @@
  
      #[test]
      fn test_contract() {
-@@ -1450,8 +1422,7 @@
+@@ -1450,8 +1420,7 @@
          };
          register_builtins(&mut ctx).unwrap();
  
@@ -594,7 +556,7 @@
          let mem = MemorySnapshot::default();
          let (mem_ref, _mem_guard) = MemoryRef::new_owned(mem);
          let step = StepLog {
-@@ -1486,7 +1457,7 @@
+@@ -1486,7 +1455,7 @@
              .unwrap();
          assert!(res.is_object());
          let obj = res.as_object().unwrap();
@@ -603,7 +565,7 @@
          assert!(array_buf.is_ok());
  
          let get_address =
-@@ -1537,12 +1508,11 @@
+@@ -1537,12 +1506,11 @@
          assert!(result.is_callable());
  
          let f = result.as_callable().unwrap();
@@ -619,7 +581,7 @@
              let addr = Address::default();
              let addr = JsValue::from(js_string!(addr.to_string()));
              reusable_db.update(db);
-@@ -1552,14 +1522,16 @@
+@@ -1552,14 +1520,16 @@
  
              // drop the db which also drops any GC values
              drop(guard);
@@ -639,7 +601,7 @@
              let addr = JsValue::from(js_string!(addr.to_string()));
              reusable_db.update(db);
              let db = reusable_db.value();
-@@ -1570,7 +1542,7 @@
+@@ -1570,7 +1540,7 @@
  
              // drop the db which also drops any GC values
              drop(guard);
@@ -648,7 +610,7 @@
              assert!(res.is_err());
          }
      }
-@@ -1596,10 +1568,9 @@
+@@ -1596,10 +1566,9 @@
          let result_fn = obj.get(js_string!("result"), &mut context).unwrap().as_object().unwrap();
          let setup_fn = obj.get(js_string!("setup"), &mut context).unwrap().as_object().unwrap();
  
@@ -661,7 +623,7 @@
              let reusable_db = ReusableEvmDb::new(&mut context).unwrap();
              reusable_db.update(db_ref);
              let _res =
-@@ -1620,6 +1591,107 @@
+@@ -1620,6 +1589,107 @@
          }
      }
  
@@ -769,7 +731,7 @@
      #[test]
      fn test_big_int() {
          let mut context = Context::default();
-@@ -1638,11 +1710,8 @@
+@@ -1638,11 +1708,8 @@
          let result_fn = obj.get(js_string!("result"), &mut context).unwrap().as_object().unwrap();
          let step_fn = obj.get(js_string!("step"), &mut context).unwrap().as_object().unwrap();
  
@@ -783,7 +745,7 @@
          let mem = MemorySnapshot::default();
          let (mem_ref, _mem_guard) = MemoryRef::new_owned(mem);
  
-@@ -1729,11 +1798,8 @@
+@@ -1729,11 +1796,8 @@
          let result_fn = obj.get(js_string!("result"), &mut context).unwrap().as_object().unwrap();
          let step_fn = obj.get(js_string!("step"), &mut context).unwrap().as_object().unwrap();
  
@@ -797,7 +759,7 @@
          let mem = MemorySnapshot::default();
          let (mem_ref, _mem_guard) = MemoryRef::new_owned(mem);
  
-@@ -1756,7 +1822,7 @@
+@@ -1756,7 +1820,7 @@
          let _ = step_fn.call(&eval, &[reusable_step.value()], &mut context).unwrap();
  
          let res = result_fn.call(&eval, &[], &mut context).unwrap();

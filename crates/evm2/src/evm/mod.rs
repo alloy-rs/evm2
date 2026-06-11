@@ -162,9 +162,9 @@ pub use tx::{ExecutedTx, TxResult, TxResultWithState};
 
 mod state;
 pub use state::{
-    Account, AccountChangeRef, AccountInfo, AccountInfoRef, BlockStateAccumulator, JournalEntry,
-    NoopChangeSink, State, StateChangeSink, StateChangeSource, StateChanges, StateCheckpoint,
-    StorageChange, StorageChangeSet, StorageOverlay, Tee, Tracked,
+    Account, AccountChange, AccountChangeRef, AccountInfo, AccountInfoRef, BlockStateAccumulator,
+    JournalEntry, NoopChangeSink, State, StateChangeSink, StateChangeSource, StateChanges,
+    StateCheckpoint, StorageChange, StorageOverlay, Tee, Tracked,
 };
 
 /// EVM host and transaction dispatcher.
@@ -1240,7 +1240,8 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
         if skip_cold_load && is_cold {
             return Err(InstrStop::OutOfGas);
         }
-        let info = self.state.account_info(address).map_err(|code| self.db_error_stop(code))?;
+        let info =
+            self.state.load_account_info(address).map_err(|code| self.db_error_stop(code))?;
         let exists = info.is_some();
         let info = info.unwrap_or_default();
         Ok(AccountLoad {
@@ -1283,7 +1284,10 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
             return Err(InstrStop::OutOfGas);
         }
         Ok(SLoad {
-            value: self.state.storage(address, key).map_err(|code| self.db_error_stop(code))?,
+            value: self
+                .state
+                .load_storage(address, key)
+                .map_err(|code| self.db_error_stop(code))?,
             is_cold,
             _non_exhaustive: (),
         })
@@ -2088,11 +2092,11 @@ mod tests {
         assert_eq!(result.result.logs.len(), 1);
         let storage = result
             .state_changes
-            .storage
+            .accounts
             .get(&LIFECYCLE_ACCOUNT)
             .expect("storage change should be present");
         let slot =
-            storage.slots.get(&LIFECYCLE_STORAGE_KEY).expect("storage slot should be present");
+            storage.storage.get(&LIFECYCLE_STORAGE_KEY).expect("storage slot should be present");
         assert_eq!(slot.original, Word::from(1));
         assert_eq!(slot.current, Word::from(7));
         assert_eq!(
@@ -2346,7 +2350,7 @@ mod tests {
 
         evm.state.finalize_transaction_(Version::base(SpecId::HOMESTEAD));
         let changes = evm.state.build_state_changes();
-        assert!(!changes.accounts.contains_key(&created));
+        assert!(changes.accounts.get(&created).is_none_or(|change| change.current.is_none()));
     }
 
     #[test]
@@ -2384,7 +2388,7 @@ mod tests {
         let account = changes.accounts.get(&target).expect("empty destination should be deleted");
         assert!(account.original.is_some());
         assert_eq!(account.current, None);
-        assert!(changes.storage.get(&target).is_some_and(|storage| storage.wipe));
+        assert!(account.is_storage_wiped());
     }
 
     #[test]
@@ -2422,8 +2426,7 @@ mod tests {
 
         evm.state.finalize_transaction_(Version::base(SpecId::SPURIOUS_DRAGON));
         let changes = evm.state.build_state_changes();
-        assert!(!changes.accounts.contains_key(&code_address));
-        assert!(!changes.storage.contains_key(&code_address));
+        assert!(changes.accounts.get(&code_address).is_none_or(|change| !change.is_changed()));
     }
 
     #[test]

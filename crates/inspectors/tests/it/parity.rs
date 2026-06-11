@@ -212,10 +212,10 @@ fn test_parity_call_selfdestruct() {
     }
     evm.ctx().db_mut().commit(res.state);
 
-    let traces = evm.into_inspector().into_parity_builder().into_trace_results(
-        res.result.output().unwrap_or_default().clone(),
-        &HashSet::from_iter([TraceType::Trace]),
-    );
+    let traces = evm
+        .into_inspector()
+        .into_parity_builder()
+        .into_trace_results(&res.tx_result.result, &HashSet::from_iter([TraceType::Trace]));
     assert_eq!(traces.trace.len(), 2);
 
     assert_eq!(
@@ -355,13 +355,11 @@ fn test_parity_statediff_blob_commit() {
             ..Default::default()
         })
         .unwrap();
-    let mut full_trace = evm
-        .inspector
-        .into_parity_builder()
-        .into_trace_results(res.result.output().unwrap_or_default().clone(), &trace_types);
+    let mut full_trace =
+        evm.inspector.into_parity_builder().into_trace_results(&res.tx_result.result, &trace_types);
 
     let state_diff = full_trace.state_diff.as_mut().unwrap();
-    populate_state_diff(state_diff, &res.state, &mut db).unwrap();
+    populate_state_diff(state_diff, &mut db, &res.state).unwrap();
 
     assert!(!state_diff.contains_key(&to));
     assert!(state_diff.contains_key(&caller));

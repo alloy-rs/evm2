@@ -1,11 +1,11 @@
 //! Geth trace builder
 use crate::tracing::{
-    types::{CallKind, CallTraceNode, CallTraceStep, CallTraceStepStackItem},
+    types::{CallKind, CallTraceNode, CallTraceStepStackItem},
     utils::load_account_code,
 };
 use alloc::{
     borrow::Cow,
-    collections::{BTreeMap, VecDeque, btree_map::Entry as BTreeEntry},
+    collections::{BTreeMap, VecDeque},
     format, vec,
     vec::Vec,
 };
@@ -226,7 +226,7 @@ impl<'a> GethTraceBuilder<'a> {
     /// The prestate mode returns the accounts necessary to execute a given transaction.
     /// diff_mode returns the differences between the transaction's pre and post-state.
     ///
-    /// * `result` - The transaction execution result.
+    /// * `state` - The state post-transaction execution.
     /// * `diff_mode` - if prestate is in diff or prestate mode.
     /// * `db` - The database to fetch state pre-transaction execution.
     pub fn geth_prestate_traces<T: EvmTypes>(
@@ -238,64 +238,36 @@ impl<'a> GethTraceBuilder<'a> {
         let code_enabled = prestate_config.code_enabled();
         let storage_enabled = prestate_config.storage_enabled();
         if prestate_config.is_diff_mode() {
-            self.geth_prestate_diff_traces(state, code_enabled, storage_enabled, db)
+            self.geth_prestate_diff_traces(state, db, code_enabled, storage_enabled)
         } else {
-            self.geth_prestate_pre_traces(state, code_enabled, storage_enabled, db)
+            self.geth_prestate_pre_traces(state, db, code_enabled, storage_enabled)
         }
     }
 
     fn geth_prestate_pre_traces(
         &self,
         state: &StateChanges,
+        db: &mut dyn DynDatabase,
         code_enabled: bool,
         storage_enabled: bool,
-        db: &mut dyn DynDatabase,
     ) -> DbResult<PreStateFrame> {
+        let account_diffs = state.accounts.iter().map(|(addr, acc)| (*addr, acc));
         let mut prestate = PreStateMode::default();
 
-        // Record caller/callee accounts from traces because evm2 state changes only contain
-        // accounts that changed.
-        for address in self.nodes.iter().flat_map(|node| [node.trace.caller, node.trace.address]) {
-            if let BTreeEntry::Vacant(entry) = prestate.0.entry(address) {
-                entry.insert(prestate_account(db, address, code_enabled)?);
-            }
-        }
-
         // we only want changed accounts for things like balance changes etc
-        for (&address, account) in &state.accounts {
-            let db_acc =
-                db.get_account(&address)?.or_else(|| account.original.clone()).unwrap_or_default();
+        for (addr, changed_acc) in account_diffs {
+            let db_acc = db.get_account(&addr)?.unwrap_or_default();
             let code = if code_enabled { load_account_code(db, &db_acc)? } else { None };
             let mut acc_state = AccountState::from_account_info(db_acc.nonce, db_acc.balance, code);
 
             // insert the original value of all modified storage slots
-            if storage_enabled && let Some(storage) = state.storage.get(&address) {
-                for (&key, slot) in &storage.slots {
-                    acc_state.storage.insert(key.into(), slot.original.into());
+            if storage_enabled {
+                for (key, slot) in changed_acc.storage.iter() {
+                    acc_state.storage.insert((*key).into(), slot.original.into());
                 }
             }
-            prestate.0.insert(address, acc_state);
-        }
 
-        // Record opcode-touched accounts and storage reads that evm2 does not expose in
-        // `StateChanges`.
-        for node in self.nodes.iter() {
-            let address = node.execution_address();
-            for step in &node.trace.steps {
-                if let Some(address) = prestate_account_access(step) {
-                    insert_prestate_account(&mut prestate, db, address, code_enabled)?;
-                }
-                if storage_enabled && let Some(change) = &step.storage_change {
-                    let value = change.had_value.unwrap_or(change.value);
-                    prestate
-                        .0
-                        .entry(address)
-                        .or_insert_with(AccountState::default)
-                        .storage
-                        .entry(change.key.into())
-                        .or_insert(value.into());
-                }
-            }
+            prestate.0.insert(addr, acc_state);
         }
 
         Ok(PreStateFrame::Default(prestate))
@@ -304,73 +276,73 @@ impl<'a> GethTraceBuilder<'a> {
     fn geth_prestate_diff_traces(
         &self,
         state: &StateChanges,
+        db: &mut dyn DynDatabase,
         code_enabled: bool,
         storage_enabled: bool,
-        db: &mut dyn DynDatabase,
     ) -> DbResult<PreStateFrame> {
+        let account_diffs = state.accounts.iter().map(|(addr, acc)| (*addr, acc));
         let mut state_diff = DiffMode::default();
         let mut account_change_kinds =
-            HashMap::with_capacity_and_hasher(state.accounts.len(), Default::default());
+            HashMap::with_capacity_and_hasher(account_diffs.len(), Default::default());
+        for (addr, changed_acc) in account_diffs {
+            let db_acc = db.get_account(&addr)?.unwrap_or_default();
 
-        for (&address, account) in &state.accounts {
-            let original = db.get_account(&address)?.or_else(|| account.original.clone());
-            if let Some(original) = &original {
-                let pre_code = if code_enabled { load_account_code(db, original)? } else { None };
-                let mut pre_state = AccountState::from_account_info(
-                    original.nonce,
-                    original.balance,
-                    pre_code.clone(),
-                );
-                if storage_enabled && let Some(storage) = state.storage.get(&address) {
-                    for (&key, slot) in &storage.slots {
-                        pre_state.storage.insert(key.into(), slot.original.into());
+            let pre_code = if code_enabled { load_account_code(db, &db_acc)? } else { None };
+
+            // deleted accounts behave like revm's drained selfdestructed accounts: the post info
+            // is empty
+            let info = changed_acc.current.clone().unwrap_or_default();
+
+            let mut post_state = AccountState::from_account_info(
+                info.nonce,
+                info.balance,
+                if code_enabled {
+                    if info.code_hash == db_acc.code_hash {
+                        pre_code.clone()
+                    } else {
+                        // Note: the changed account from the state output always holds the code
+                        info.code.as_ref().map(|code| code.original_bytes())
                     }
-                }
-                state_diff.pre.insert(address, pre_state);
-            }
-            if let Some(current) = &account.current {
-                let post_code = if code_enabled {
-                    load_account_code_from_changes(db, state, current)?
                 } else {
                     None
-                };
-                let mut post_state =
-                    AccountState::from_account_info(current.nonce, current.balance, post_code);
-                if storage_enabled && let Some(storage) = state.storage.get(&address) {
-                    for (&key, slot) in &storage.slots {
-                        post_state.storage.insert(key.into(), slot.current.into());
-                    }
+                },
+            );
+
+            let mut pre_state =
+                AccountState::from_account_info(db_acc.nonce, db_acc.balance, pre_code);
+
+            // handle storage changes
+            if storage_enabled {
+                for (key, slot) in changed_acc.storage.iter().filter(|(_, slot)| slot.is_changed())
+                {
+                    pre_state.storage.insert((*key).into(), slot.original.into());
+                    post_state.storage.insert((*key).into(), slot.current.into());
                 }
-                state_diff.post.insert(address, post_state);
             }
+
+            state_diff.pre.insert(addr, pre_state);
 
             // determine the change type
             // if the account was created _and_ not empty we need to treat it as modified,
             // so that it is retained later in `diff_traces`
             // See <https://etherscan.io/tx/0x391f4b6a382d3bcc3120adc2ea8c62003e604e487d97281129156fd284a1a89d>
             // <https://github.com/paradigmxyz/reth/issues/19703#issuecomment-3527067849>
-            let pre_change = if original.as_ref().is_none_or(|account| account.is_empty()) {
+            let pre_change = if changed_acc.is_created() && db_acc.is_empty() {
                 AccountChangeKind::Create
             } else {
                 AccountChangeKind::Modify
             };
-            let post_change = if account.current.is_none() {
+            let post_change = if changed_acc.is_selfdestructed() {
                 AccountChangeKind::SelfDestruct
             } else {
                 AccountChangeKind::Modify
             };
-            account_change_kinds.insert(address, (pre_change, post_change));
-        }
 
-        // handle storage changes
-        if storage_enabled {
-            for (&address, storage) in &state.storage {
-                let pre_state = state_diff.pre.entry(address).or_default();
-                let post_state = state_diff.post.entry(address).or_default();
-                for (&key, slot) in &storage.slots {
-                    pre_state.storage.insert(key.into(), slot.original.into());
-                    post_state.storage.insert(key.into(), slot.current.into());
-                }
+            account_change_kinds.insert(addr, (pre_change, post_change));
+
+            // Don't insert selfdestructed accounts into post state
+            if !changed_acc.is_selfdestructed() {
+                state_diff.post.insert(addr, post_state);
             }
         }
 
@@ -595,56 +567,6 @@ impl<'a> GethTraceBuilder<'a> {
     }
 }
 
-fn prestate_account(
-    db: &mut dyn DynDatabase,
-    address: Address,
-    code_enabled: bool,
-) -> DbResult<AccountState> {
-    let info = db.get_account(&address)?.unwrap_or_default();
-    let code = if code_enabled { load_account_code(db, &info)? } else { None };
-    Ok(AccountState::from_account_info(info.nonce, info.balance, code))
-}
-
-fn insert_prestate_account(
-    prestate: &mut PreStateMode,
-    db: &mut dyn DynDatabase,
-    address: Address,
-    code_enabled: bool,
-) -> DbResult<()> {
-    if let BTreeEntry::Vacant(entry) = prestate.0.entry(address) {
-        entry.insert(prestate_account(db, address, code_enabled)?);
-    }
-    Ok(())
-}
-
-fn prestate_account_access(step: &CallTraceStep) -> Option<Address> {
-    let stack = step.stack.as_deref()?;
-    let word = match step.op.get() {
-        op::EXTCODECOPY | op::EXTCODEHASH | op::EXTCODESIZE | op::BALANCE | op::SELFDESTRUCT => {
-            stack.last()?
-        }
-        op::DELEGATECALL | op::CALL | op::STATICCALL | op::CALLCODE => {
-            stack.get(stack.len().checked_sub(2)?)?
-        }
-        _ => return None,
-    };
-    Some(Address::from_word(B256::from(word.to_be_bytes())))
-}
-
-fn load_account_code_from_changes(
-    db: &mut dyn DynDatabase,
-    state: &StateChanges,
-    account: &evm2::AccountInfo,
-) -> DbResult<Option<Bytes>> {
-    if let Some(code) = &account.code {
-        return Ok(Some(code.original_bytes()));
-    }
-    if let Some(code) = state.code.get(&account.code_hash) {
-        return Ok(Some(code.original_bytes()));
-    }
-    load_account_code(db, account)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -652,7 +574,7 @@ mod tests {
     use evm2::{
         AccountInfo,
         bytecode::Bytecode,
-        evm::{CacheDB, DbErrorCode, DbResult, DynDatabase, EmptyDB, Tracked},
+        evm::{AccountChange, CacheDB, DbErrorCode, DbResult, DynDatabase, EmptyDB},
         interpreter::Word,
     };
 
@@ -690,17 +612,17 @@ mod tests {
         let prefunded_addr = address!("1000000000000000000000000000000000000001");
         let empty_addr = address!("2000000000000000000000000000000000000002");
 
-        state.accounts.insert(
-            prefunded_addr,
-            Tracked {
-                original: Some(AccountInfo::default().with_balance(U256::from(10))),
-                current: Some(AccountInfo::default().with_balance(U256::from(1)).with_nonce(1)),
-            },
-        );
-        state.accounts.insert(
-            empty_addr,
-            Tracked { original: None, current: Some(AccountInfo::default().with_nonce(1)) },
-        );
+        let mut prefunded_account = AccountChange::default();
+        prefunded_account.mark_created();
+        prefunded_account.original = Some(AccountInfo::default().with_balance(U256::from(10)));
+        prefunded_account.current =
+            Some(AccountInfo::default().with_balance(U256::from(1)).with_nonce(1));
+        state.accounts.insert(prefunded_addr, prefunded_account);
+
+        let mut empty_account = AccountChange::default();
+        empty_account.mark_created();
+        empty_account.current = Some(AccountInfo::default().with_nonce(1));
+        state.accounts.insert(empty_addr, empty_account);
 
         let mut db = CacheDB::new(EmptyDB::default());
         db.insert_account_info(
@@ -709,7 +631,7 @@ mod tests {
         );
 
         let builder = GethTraceBuilder::new(Vec::new());
-        let frame = builder.geth_prestate_diff_traces(&state, false, false, &mut db).unwrap();
+        let frame = builder.geth_prestate_diff_traces(&state, &mut db, false, false).unwrap();
 
         match frame {
             PreStateFrame::Diff(diff) => {
@@ -731,17 +653,17 @@ mod tests {
         let mut state = StateChanges::default();
         let address = address!("1000000000000000000000000000000000000001");
         let code = Bytecode::new_legacy(vec![op::PUSH1, 0x01, op::STOP].into());
-        let code_hash = code.hash_slow();
-        let mut account = AccountInfo::default().with_nonce(1);
-        account.code_hash = code_hash;
-        account.code = None;
+        // the changed account from the state output always holds the code
+        let account = AccountInfo::default().with_nonce(1).with_code(code.clone());
 
-        state.code.insert(code_hash, code.clone());
-        state.accounts.insert(address, Tracked { original: None, current: Some(account) });
+        let mut change = AccountChange::default();
+        change.mark_created();
+        change.current = Some(account);
+        state.accounts.insert(address, change);
 
         let mut db = CacheDB::new(EmptyDB::default());
         let builder = GethTraceBuilder::new(Vec::new());
-        let frame = builder.geth_prestate_diff_traces(&state, true, false, &mut db).unwrap();
+        let frame = builder.geth_prestate_diff_traces(&state, &mut db, true, false).unwrap();
 
         match frame {
             PreStateFrame::Diff(diff) => {
@@ -759,17 +681,17 @@ mod tests {
     fn prestate_propagates_db_account_errors() {
         let mut state = StateChanges::default();
         let address = address!("1000000000000000000000000000000000000001");
-        state.accounts.insert(
-            address,
-            Tracked { original: None, current: Some(AccountInfo::default().with_nonce(1)) },
-        );
+        let mut change = AccountChange::default();
+        change.mark_created();
+        change.current = Some(AccountInfo::default().with_nonce(1));
+        state.accounts.insert(address, change);
 
         let error = DbErrorCode::new(7).unwrap();
         let mut db = FailingDb::new(error);
         let builder = GethTraceBuilder::new(Vec::new());
 
         assert!(matches!(
-            builder.geth_prestate_pre_traces(&state, false, false, &mut db),
+            builder.geth_prestate_pre_traces(&state, &mut db, false, false),
             Err(err) if err == error
         ));
     }

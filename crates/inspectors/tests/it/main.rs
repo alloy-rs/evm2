@@ -18,3 +18,5 @@ mod test_native_bigint;
 mod transfer;
 #[cfg(feature = "std")]
 mod writer;
+
+mod compat;

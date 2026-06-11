@@ -18,7 +18,7 @@ use alloy_rpc_types_trace::{
     },
 };
 use evm2::interpreter::{
-    InstrStop,
+    InstrStop, MessageKind,
     opcode::{OpCode, op},
 };
 
@@ -555,6 +555,20 @@ impl From<CallKind> for CreationMethod {
 impl core::fmt::Display for CallKind {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str(self.to_str())
+    }
+}
+
+impl From<MessageKind> for CallKind {
+    fn from(kind: MessageKind) -> Self {
+        match kind {
+            MessageKind::Call => Self::Call,
+            MessageKind::StaticCall => Self::StaticCall,
+            MessageKind::DelegateCall => Self::DelegateCall,
+            MessageKind::CallCode => Self::CallCode,
+            MessageKind::Create => Self::Create,
+            MessageKind::Create2 => Self::Create2,
+            _ => Self::Call,
+        }
     }
 }
 

@@ -211,8 +211,8 @@ impl DebugInspector {
             hash: tx_context.as_ref().and_then(|c| c.tx_hash),
             index: tx_context.as_ref().and_then(|c| c.tx_index.map(|i| i as u64)),
             block_hash: tx_context.as_ref().and_then(|c| c.block_hash),
-            block_number: Some(block_env.number.try_into().unwrap_or(u64::MAX)),
-            base_fee: Some(block_env.basefee.try_into().unwrap_or(u64::MAX)),
+            block_number: Some(block_env.number.saturating_to()),
+            base_fee: Some(block_env.basefee.saturating_to()),
             ..Default::default()
         };
 
@@ -233,7 +233,7 @@ impl DebugInspector {
             }
             Self::Noop(_) => NoopFrame::default().into(),
             Self::Mux(inspector, _) => inspector
-                .try_into_mux_frame(res, tx_info, db)
+                .try_into_mux_frame(res, db, tx_info)
                 .map_err(DebugInspectorError::Database)?
                 .into(),
             Self::FlatCallTracer(inspector) => {

@@ -458,6 +458,10 @@ fn initial_call_code<T: EvmTypes<Host = Evm<T>>>(
         && let Some(delegated_address) = code.eip7702_address()
     {
         let _ = host.state.warm_account(&delegated_address);
+        let _ = host
+            .state
+            .load_account_info(&delegated_address)
+            .map_err(|code| host.db_error_handler(code))?;
         return Ok(InitialCallCode {
             code: host
                 .state

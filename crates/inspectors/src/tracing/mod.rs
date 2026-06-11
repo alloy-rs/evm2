@@ -527,12 +527,51 @@ impl TracingInspector {
 
         // If journal has not changed, there is no state change to be recorded.
         if self.config.record_state_diff && journal.len() != self.last_journal_len {
-            step.storage_change = journal
-                .get(self.last_journal_len..)
-                .unwrap_or_default()
-                .iter()
-                .rev()
-                .find_map(|entry| Self::storage_step(step, entry, host));
+            let op = step.op.get();
+
+            step.storage_change = if matches!(op, op::SLOAD | op::SSTORE) {
+                let reason = match op {
+                    op::SLOAD => StorageChangeReason::SLOAD,
+                    op::SSTORE => StorageChangeReason::SSTORE,
+                    _ => unreachable!(),
+                };
+
+                match journal.last() {
+                    Some(JournalEntry::StorageChange { address, key, previous }) => {
+                        // SAFETY: (Address,key) exists if part if StorageChange
+                        let value =
+                            host.state().storage_cached_ref(address, key).unwrap_or_default();
+                        let change =
+                            StorageChange { key: *key, value, had_value: Some(*previous), reason };
+                        Some(Box::new(change))
+                    }
+                    Some(JournalEntry::StorageInserted { address, key }) => {
+                        // SAFETY: (Address,key) exists if part if StorageChange
+                        let slot = host
+                            .state()
+                            .storage_tracked_ref(address, key)
+                            .copied()
+                            .unwrap_or_default();
+                        let change = StorageChange {
+                            key: *key,
+                            value: slot.current,
+                            had_value: Some(slot.original),
+                            reason,
+                        };
+                        Some(Box::new(change))
+                    }
+                    Some(JournalEntry::StorageWarmed { key, address }) => {
+                        // SAFETY: (Address,key) exists if part if StorageChange
+                        let value =
+                            host.state().storage_cached_ref(address, key).unwrap_or_default();
+                        let change = StorageChange { key: *key, value, had_value: None, reason };
+                        Some(Box::new(change))
+                    }
+                    _ => None,
+                }
+            } else {
+                None
+            };
         }
 
         // The gas cost is the difference between the recorded gas remaining at the start of the
@@ -543,80 +582,9 @@ impl TracingInspector {
         // set the status
         step.status = interp.result().err();
     }
-
-    fn storage_step<T: EvmTypes<Host = Evm<T>>>(
-        step: &mut CallTraceStep,
-        journal_entry: &JournalEntry,
-        host: &Evm<T>,
-    ) -> Option<Box<StorageChange>> {
-        let reason = (match step.op.get() {
-            op::SLOAD => Some(StorageChangeReason::SLOAD),
-            op::SSTORE => Some(StorageChangeReason::SSTORE),
-            _ => None,
-        })?;
-
-        match journal_entry {
-            JournalEntry::StorageChange { address, key, previous } => {
-                // SAFETY: (Address, key) exists if part of StorageChange.
-                let value = host.state().storage_cached_ref(address, key).unwrap_or_default();
-                Some(Box::new(StorageChange {
-                    key: *key,
-                    value,
-                    had_value: Some(*previous),
-                    reason,
-                }))
-            }
-            JournalEntry::StorageInserted { address, key } => {
-                let slot = host.state().storage_tracked_ref(address, key)?;
-                Some(Box::new(StorageChange {
-                    key: *key,
-                    value: slot.current,
-                    had_value: Some(slot.original),
-                    reason,
-                }))
-            }
-            JournalEntry::StorageWarmed { address, key } => {
-                // SAFETY: (Address, key) exists if part of StorageChange.
-                let value = host.state().storage_cached_ref(address, key).unwrap_or_default();
-                Some(Box::new(StorageChange { key: *key, value, had_value: None, reason }))
-            }
-            _ => None,
-        }
-    }
-}
-
-impl From<MessageKind> for CallKind {
-    fn from(kind: MessageKind) -> Self {
-        match kind {
-            MessageKind::Call => Self::Call,
-            MessageKind::StaticCall => Self::StaticCall,
-            MessageKind::DelegateCall => Self::DelegateCall,
-            MessageKind::CallCode => Self::CallCode,
-            MessageKind::Create => Self::Create,
-            MessageKind::Create2 => Self::Create2,
-            _ => Self::Call,
-        }
-    }
 }
 
 impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for TracingInspector {
-    fn initialize_interp(&mut self, interp: &mut Interpreter<'_, T>) {
-        self.spec_id = Some(interp.spec());
-        if self.trace_stack.is_empty() {
-            let message = interp.message();
-            self.start_trace_on_call(
-                usize::from(message.depth),
-                message.destination,
-                message.input.clone(),
-                message.value,
-                message.kind.into(),
-                message.caller,
-                message.gas_limit,
-                None,
-            );
-        }
-    }
-
     #[inline]
     fn step(&mut self, interp: &mut Interpreter<'_, T>) {
         if self.config.record_steps {

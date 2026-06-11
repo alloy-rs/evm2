@@ -8,7 +8,7 @@
 -    bytecode::opcode::{self, OpCode},
 -    interpreter::{CallScheme, CreateScheme, InstructionResult},
 +use evm2::interpreter::{
-+    InstrStop,
++    InstrStop, MessageKind,
 +    opcode::{OpCode, op},
  };
  
@@ -109,7 +109,7 @@
          }
      }
  }
-@@ -562,27 +558,6 @@
+@@ -562,23 +558,16 @@
      }
  }
  
@@ -130,14 +130,20 @@
 -            CreateScheme::Create => Self::Create,
 -            CreateScheme::Create2 { .. } => Self::Create2,
 -            CreateScheme::Custom { .. } => Self::Create,
--        }
--    }
--}
--
- impl From<CallKind> for ActionType {
-     fn from(kind: CallKind) -> Self {
-         match kind {
-@@ -689,7 +664,7 @@
++impl From<MessageKind> for CallKind {
++    fn from(kind: MessageKind) -> Self {
++        match kind {
++            MessageKind::Call => Self::Call,
++            MessageKind::StaticCall => Self::StaticCall,
++            MessageKind::DelegateCall => Self::DelegateCall,
++            MessageKind::CallCode => Self::CallCode,
++            MessageKind::Create => Self::Create,
++            MessageKind::Create2 => Self::Create2,
++            _ => Self::Call,
+         }
+     }
+ }
+@@ -689,7 +678,7 @@
      /// Final status of the step
      ///
      /// This is set after the step was executed.
@@ -146,7 +152,7 @@
      /// Immediate bytes of the step
      pub immediate_bytes: Option<Bytes>,
      /// Optional complementary decoded step data.
-@@ -737,7 +712,7 @@
+@@ -737,7 +726,7 @@
      /// Returns true if the step is a STOP opcode
      #[inline]
      pub(crate) const fn is_stop(&self) -> bool {
@@ -155,7 +161,7 @@
      }
  
      /// Returns true if the step is a call operation, any of
-@@ -746,22 +721,17 @@
+@@ -746,22 +735,17 @@
      pub(crate) const fn is_call_like_op(&self) -> bool {
          matches!(
              self.op.get(),
@@ -181,7 +187,7 @@
      }
  
      /// Returns the error message if it is an erroneous result.
-@@ -790,8 +760,7 @@
+@@ -790,8 +774,7 @@
  
  /// Represents a storage change during execution.
  ///
@@ -191,7 +197,7 @@
  ///
  /// It is used to track both storage change and warm load of a storage slot. For warm load in regard
  /// to EIP-2929 AccessList had_value will be None.
-@@ -810,7 +779,7 @@
+@@ -810,7 +793,7 @@
  
  /// Represents the memory captured during execution
  ///
@@ -200,7 +206,7 @@
  #[derive(Clone, Debug, Default, PartialEq, Eq)]
  #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
  pub struct RecordedMemory(pub(crate) Bytes);
-@@ -827,7 +796,7 @@
+@@ -827,7 +810,7 @@
  
      /// Returns the memory as a byte slice
      #[inline]
@@ -209,7 +215,7 @@
          &self.0
      }
  
-@@ -866,7 +835,7 @@
+@@ -866,7 +849,7 @@
  
  #[cfg(feature = "serde")]
  mod opcode_serde {
@@ -218,7 +224,7 @@
      use serde::{Deserialize, Deserializer, Serializer};
  
      pub(super) fn serialize<S>(op: &OpCode, serializer: S) -> Result<S::Ok, S::Error>
-@@ -881,6 +850,6 @@
+@@ -881,6 +864,6 @@
          D: Deserializer<'de>,
      {
          let op = u8::deserialize(deserializer)?;

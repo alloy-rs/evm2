@@ -383,7 +383,7 @@ impl ReusableEvmDb {
         )
         .length(1)
         .build();
-        let code = FunctionObjectBuilder::new(
+        let get_code = FunctionObjectBuilder::new(
             ctx.realm(),
             NativeFunction::from_copy_closure_with_captures(
                 move |_this, args, state, ctx| {
@@ -416,7 +416,7 @@ impl ReusableEvmDb {
 
         object.set(js_string!("getBalance"), get_balance, false, ctx)?;
         object.set(js_string!("getNonce"), get_nonce, false, ctx)?;
-        object.set(js_string!("getCode"), code, false, ctx)?;
+        object.set(js_string!("getCode"), get_code, false, ctx)?;
         object.set(js_string!("getState"), get_state, false, ctx)?;
         object.set(js_string!("exists"), exists, false, ctx)?;
 
@@ -1275,7 +1275,7 @@ impl EvmDbRef {
         .length(1)
         .build();
 
-        let code = FunctionObjectBuilder::new(
+        let get_code = FunctionObjectBuilder::new(
             ctx.realm(),
             NativeFunction::from_copy_closure_with_captures(
                 move |_this, args, db, ctx| {
@@ -1304,7 +1304,7 @@ impl EvmDbRef {
 
         obj.set(js_string!("getBalance"), get_balance, false, ctx)?;
         obj.set(js_string!("getNonce"), get_nonce, false, ctx)?;
-        obj.set(js_string!("getCode"), code, false, ctx)?;
+        obj.set(js_string!("getCode"), get_code, false, ctx)?;
         obj.set(js_string!("getState"), get_state, false, ctx)?;
         obj.set(js_string!("exists"), exists, false, ctx)?;
         Ok(obj)
@@ -1357,6 +1357,7 @@ struct ChangesDbReader<'a> {
 
 impl ChangesDbReader<'_> {
     fn code_from_info(&mut self, info: AccountInfo) -> DbResult<Bytecode> {
+        // Note: the changed account from the state output always holds the code.
         if let Some(code) = info.code
             && !code.is_empty()
         {
@@ -1365,9 +1366,6 @@ impl ChangesDbReader<'_> {
         let code_hash = info.code_hash;
         if code_hash == KECCAK256_EMPTY {
             return Ok(Bytecode::default());
-        }
-        if let Some(code) = self.changes.code.get(&code_hash) {
-            return Ok(code.clone());
         }
         self.db.get_code_by_hash(&code_hash)
     }

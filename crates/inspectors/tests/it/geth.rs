@@ -235,7 +235,7 @@ fn test_geth_mux_tracer() {
 
     let (ctx, inspector) = evm.ctx_inspector();
     let frame = inspector
-        .try_into_mux_frame(&res.tx_result, TransactionInfo::default(), ctx.db_mut())
+        .try_into_mux_frame(&res.tx_result, ctx.db_mut(), TransactionInfo::default())
         .unwrap();
 
     assert_eq!(frame.0.len(), 4);
