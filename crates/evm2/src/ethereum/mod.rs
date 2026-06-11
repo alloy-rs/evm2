@@ -9,7 +9,7 @@ mod legacy;
 use crate::{
     Evm, EvmFeatures, EvmTypes, SpecId, TxResult, Version,
     bytecode::Bytecode,
-    evm::{AccountInfo, StateCheckpoint},
+    evm::{AccountInfo, StateCheckpoint, db_error_handler},
     interpreter::{Message, MessageKind, MessageResult, Word},
     registry::{HandlerError, HandlerResult, TxRegistry},
     utils::num_words,
@@ -268,11 +268,12 @@ pub(super) fn validate_sender<T: EvmTypes<Host = Evm<T>>>(
         .map_err(|code| host.db_error_handler(code))?
         .unwrap_or_default();
     if host.feature(EvmFeatures::EIP3607) && sender_info.code_hash != KECCAK256_EMPTY {
-        let mut account = match host.state.account_entry(&caller, false) {
-            Ok(account) => account,
-            Err(code) => return Err(host.db_error_handler(code)),
-        };
-        let code = account.load_code().map_err(|code| host.db_error_handler(code))?;
+        let code = host
+            .state
+            .account_entry(&caller, false)
+            .map_err(db_error_handler!(host))?
+            .load_code()
+            .map_err(db_error_handler!(host))?;
         if !code.is_empty() && !code.is_eip7702() {
             return Err(HandlerError::RejectCallerWithCode);
         }
@@ -285,10 +286,10 @@ pub(super) fn validate_sender<T: EvmTypes<Host = Evm<T>>>(
     }
     if !host.feature(EvmFeatures::BALANCE_CHECK) && sender_info.balance < max_upfront {
         let delta = max_upfront - sender_info.balance;
-        match host.state.account_entry(&caller, false) {
-            Ok(mut account) => account.add_balance(delta),
-            Err(code) => return Err(host.db_error_handler(code)),
-        }
+        host.state
+            .account_entry(&caller, false)
+            .map_err(db_error_handler!(host))?
+            .add_balance(delta);
     }
     Ok(sender_info)
 }
@@ -332,10 +333,7 @@ pub(super) fn charge_upfront<T: EvmTypes<Host = Evm<T>>>(
         return Ok(());
     }
     let delta = Word::ZERO.wrapping_sub(max_gas_cost);
-    match host.state.account_entry(&caller, false) {
-        Ok(mut account) => account.add_balance(delta),
-        Err(code) => return Err(host.db_error_handler(code)),
-    }
+    host.state.account_entry(&caller, false).map_err(db_error_handler!(host))?.add_balance(delta);
     Ok(())
 }
 
@@ -400,24 +398,22 @@ fn initial_call_code<T: EvmTypes<Host = Evm<T>>>(
     host: &mut Evm<T>,
     to: Address,
 ) -> HandlerResult<InitialCallCode> {
-    let code = {
-        let mut account = match host.state.account_entry(&to, false) {
-            Ok(account) => account,
-            Err(code) => return Err(host.db_error_handler(code)),
-        };
-        account.load_code().map_err(|code| host.db_error_handler(code))?
-    };
+    let code = host
+        .state
+        .account_entry(&to, false)
+        .map_err(db_error_handler!(host))?
+        .load_code()
+        .map_err(db_error_handler!(host))?;
     if host.feature(EvmFeatures::EIP7702)
         && let Some(delegated_address) = code.eip7702_address()
     {
         let _ = host.state.warm_account(&delegated_address);
-        let delegated_code = {
-            let mut account = match host.state.account_entry(&delegated_address, false) {
-                Ok(account) => account,
-                Err(code) => return Err(host.db_error_handler(code)),
-            };
-            account.load_code().map_err(|code| host.db_error_handler(code))?
-        };
+        let delegated_code = host
+            .state
+            .account_entry(&delegated_address, false)
+            .map_err(db_error_handler!(host))?
+            .load_code()
+            .map_err(db_error_handler!(host))?;
         return Ok(InitialCallCode {
             code: delegated_code,
             code_address: delegated_address,
@@ -453,10 +449,10 @@ pub(super) fn settle_gas<T: EvmTypes<Host = Evm<T>>>(
         final_tx_gas(&result, tx_gas_limit, host.feature(EvmFeatures::EIP3529), floor_gas);
     if host.feature(EvmFeatures::FEE_CHARGE) {
         let caller_refund = U256::from(gas_remaining) * gas_price;
-        match host.state.account_entry(&caller, false) {
-            Ok(mut account) => account.add_balance(caller_refund),
-            Err(code) => return Err(host.db_error_handler(code)),
-        }
+        host.state
+            .account_entry(&caller, false)
+            .map_err(db_error_handler!(host))?
+            .add_balance(caller_refund);
         let beneficiary_gas_price = if host.feature(EvmFeatures::BASE_FEE_CHECK) {
             gas_price.saturating_sub(host.block.basefee)
         } else {
@@ -464,10 +460,10 @@ pub(super) fn settle_gas<T: EvmTypes<Host = Evm<T>>>(
         };
         let beneficiary = host.block.beneficiary;
         let beneficiary_reward = U256::from(gas_used) * beneficiary_gas_price;
-        match host.state.account_entry(&beneficiary, false) {
-            Ok(mut account) => account.add_balance(beneficiary_reward),
-            Err(code) => return Err(host.db_error_handler(code)),
-        }
+        host.state
+            .account_entry(&beneficiary, false)
+            .map_err(db_error_handler!(host))?
+            .add_balance(beneficiary_reward);
     }
     Ok(TxResult {
         status: result.stop.is_success(),

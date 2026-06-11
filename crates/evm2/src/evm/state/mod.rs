@@ -589,7 +589,8 @@ impl State {
                 JournalEntry::StorageInserted { address, key } => {
                     // Undo the slot insert, then drop the slot (and the account's overlay when it
                     // is left empty and un-wiped) unless warm metadata keeps it alive.
-                    if let hash_map::Entry::Occupied(mut storage_entry) = self.storage.entry(address)
+                    if let hash_map::Entry::Occupied(mut storage_entry) =
+                        self.storage.entry(address)
                     {
                         let storage = storage_entry.get_mut();
                         if let Some(slot) = storage.slots.get_mut(&key) {
@@ -724,7 +725,8 @@ impl State {
         } else {
             for address in &touched {
                 // Before EIP-161, touching a non-existent account materializes it as empty.
-                if !selfdestructs.contains(address) && !self.account_entry(address, false)?.exists() {
+                if !selfdestructs.contains(address) && !self.account_entry(address, false)?.exists()
+                {
                     self.materialize_empty_account_for_finalization(address)?;
                 }
             }
@@ -935,5 +937,4 @@ impl State {
         self.accounts.clear();
         self.storage.clear();
     }
-
 }

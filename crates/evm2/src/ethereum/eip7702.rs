@@ -10,6 +10,7 @@ use crate::{
     Evm, EvmTypes, TxResult,
     bytecode::Bytecode,
     env::TxEnv,
+    evm::db_error_handler,
     interpreter::Host,
     registry::{HandlerError, HandlerResult, TxRequest},
     version::GasId,
@@ -60,12 +61,7 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
 
     let effective_gas_cost = U256::from(tx.gas_limit) * gas_price;
     charge_upfront(req.host, caller, effective_gas_cost)?;
-    match req.host.state.account_entry(&caller, false) {
-        Ok(mut account) => {
-            account.bump_nonce();
-        }
-        Err(code) => return Err(req.host.db_error_handler(code)),
-    }
+    req.host.state.account_entry(&caller, false).map_err(db_error_handler!(req.host))?.bump_nonce();
     let chain_id = req.host.version().chain_id;
     let eip7702_refund = apply_auth_list(req.host, chain_id, &tx.authorization_list)?;
     let execution_checkpoint = req.host.state.checkpoint();
@@ -119,10 +115,8 @@ fn apply_auth_list<T: EvmTypes<Host = Evm<T>>>(
         // probed in the overlay once instead of once per `account_info`/`get_code`. The handle is
         // confined to this block; `set_delegation` reacquires the now-loaded account for the write.
         let (existed, authority_nonce, code) = {
-            let mut account = match host.state.account_entry(&authority, false) {
-                Ok(account) => account,
-                Err(code) => return Err(host.db_error_handler(code)),
-            };
+            let mut account =
+                host.state.account_entry(&authority, false).map_err(db_error_handler!(host))?;
             (account.exists(), account.nonce(), account.load_code())
         };
         let code = code.map_err(|code| host.db_error_handler(code))?;
@@ -156,10 +150,8 @@ fn set_delegation<T: EvmTypes<Host = Evm<T>>>(
     // One handle serves both writes, so the authority is looked up once and the two mutations
     // share a single revert snapshot. `set_code_slow` touches the account, matching the touch the
     // former `increment_nonce` performed.
-    let mut account = match host.state.account_entry(&authority, false) {
-        Ok(account) => account,
-        Err(code) => return Err(host.db_error_handler(code)),
-    };
+    let mut account =
+        host.state.account_entry(&authority, false).map_err(db_error_handler!(host))?;
     account.set_code_slow(code);
     account.bump_nonce();
     Ok(())

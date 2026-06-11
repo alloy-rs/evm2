@@ -337,9 +337,15 @@ mod tests {
         state.storage_entry(&address).slot(Word::from(1)).write(Word::from(20), false).unwrap();
         state.storage_entry(&address).slot(Word::from(1)).write(Word::from(30), false).unwrap();
 
-        assert_eq!(state.storage_entry(&address).slot(Word::from(1)).load(false).unwrap(), Word::from(30));
+        assert_eq!(
+            state.storage_entry(&address).slot(Word::from(1)).load(false).unwrap(),
+            Word::from(30)
+        );
         state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
-        assert_eq!(state.storage_entry(&address).slot(Word::from(1)).load(false).unwrap(), Word::from(10));
+        assert_eq!(
+            state.storage_entry(&address).slot(Word::from(1)).load(false).unwrap(),
+            Word::from(10)
+        );
     }
 
     #[test]

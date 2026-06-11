@@ -491,7 +491,8 @@ mod tests {
         }
 
         assert!(state.account_entry(&address, false).unwrap().is_warm());
-        let info = state.peek_account_info(&address).unwrap().expect("account materialized by mutation");
+        let info =
+            state.peek_account_info(&address).unwrap().expect("account materialized by mutation");
         assert_eq!(info.balance, Word::from(100));
         assert_eq!(info.nonce, 8);
         assert_ne!(info.code_hash, KECCAK256_EMPTY);
@@ -530,10 +531,7 @@ mod tests {
         let mut state = State::new(database);
 
         // A cold, not-yet-loaded account signals the skip instead of reading the database.
-        assert!(matches!(
-            state.account_entry(&address, true),
-            Err(DbErrorCode::COLD_LOAD_SKIPPED)
-        ));
+        assert!(matches!(state.account_entry(&address, true), Err(DbErrorCode::COLD_LOAD_SKIPPED)));
         // Skipping leaves the overlay untouched, so a later non-skipped load still works.
         let account = state.account_entry(&address, false).unwrap();
         assert_eq!(account.balance(), Word::from(5));

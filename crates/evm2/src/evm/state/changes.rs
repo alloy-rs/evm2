@@ -268,17 +268,11 @@ mod tests {
             logs[0].topics(),
             &[EIP7708_BURN_TOPIC, B256::left_padding_from(low.as_slice())]
         );
-        assert_eq!(
-            logs[0].data.data,
-            Bytes::copy_from_slice(&Word::from(1).to_be_bytes::<32>())
-        );
+        assert_eq!(logs[0].data.data, Bytes::copy_from_slice(&Word::from(1).to_be_bytes::<32>()));
         assert_eq!(
             logs[1].topics(),
             &[EIP7708_BURN_TOPIC, B256::left_padding_from(high.as_slice())]
         );
-        assert_eq!(
-            logs[1].data.data,
-            Bytes::copy_from_slice(&Word::from(2).to_be_bytes::<32>())
-        );
+        assert_eq!(logs[1].data.data, Bytes::copy_from_slice(&Word::from(2).to_be_bytes::<32>()));
     }
 }

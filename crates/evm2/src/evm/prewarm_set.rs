@@ -36,7 +36,6 @@ fn short_address(address: &Address) -> Option<usize> {
     None
 }
 
-
 /// Stores addresses that are warm-loaded for the current transaction.
 ///
 /// Contains the precompile addresses (which change infrequently), the coinbase address, and the

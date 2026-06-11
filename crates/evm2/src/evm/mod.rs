@@ -173,6 +173,24 @@ pub use state::{
 mod prewarm_set;
 pub use prewarm_set::{PrewarmSet, SHORT_ADDRESS_CAP};
 
+/// Builds a `map_err` closure that records the database error code on `$host` and returns
+/// [`registry::HandlerError::Database`].
+///
+/// This inlines the body of [`Evm::db_error_handler`] rather than calling it, so Rust 2021 disjoint
+/// closure capture borrows only `$host.db_error_code`. That lets it be used in `.map_err(..)` on a
+/// `Result` that already mutably borrows another field of `$host` (such as `$host.state` through a
+/// live [`AccountEntry`]), where a closure calling the `&mut self` method `db_error_handler` would
+/// conflict on the whole `$host` borrow.
+macro_rules! db_error_handler {
+    ($host:expr) => {
+        |code| {
+            $host.db_error_code = ::core::option::Option::Some(code);
+            $crate::registry::HandlerError::Database(code)
+        }
+    };
+}
+pub(crate) use db_error_handler;
+
 /// EVM host and transaction dispatcher.
 #[derive_where(Debug)]
 pub struct Evm<T: EvmTypes> {
@@ -197,7 +215,7 @@ pub struct Evm<T: EvmTypes> {
     #[derive_where(skip)]
     async_stack: r#async::FiberStack,
     evm_send: bool,
-    db_error_code: Option<DbErrorCode>,
+    pub(crate) db_error_code: Option<DbErrorCode>,
 }
 
 impl<T: EvmTypes> Evm<T> {
@@ -917,7 +935,9 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         message: &Message<T>,
     ) -> Result<(), InstrStop> {
         let info = if message.value > 0 || message.depth > 0 {
-            self.state.peek_account_info(&message.caller).map_err(|code| self.db_error_stop(code))?
+            self.state
+                .peek_account_info(&message.caller)
+                .map_err(|code| self.db_error_stop(code))?
         } else {
             None
         };
@@ -1305,9 +1325,7 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
                 Err(code) => return Err(self.db_error_stop(code)),
             }
         }
-        if should_destroy
-            && let Ok(mut account) = self.state.account_entry(contract, false)
-        {
+        if should_destroy && let Ok(mut account) = self.state.account_entry(contract, false) {
             account.mark_destructed();
         }
         Ok(SelfDestructResult {
