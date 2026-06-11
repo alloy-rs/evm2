@@ -28,7 +28,8 @@ use evm2::{
     ethereum::RecoveredTxEnvelope,
     evm::DynDatabase,
     interpreter::{
-        GasTracker, InstrStop, Interpreter, Message, MessageKind, MessageResult, OpCode, Word,
+        GasTracker, InstrStop, Interpreter, Message, MessageKind, MessageResult, Word,
+        opcode::OpCode,
     },
 };
 

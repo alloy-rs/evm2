@@ -15,7 +15,7 @@ pub use evm2::{
     SpecId,
     bytecode::Bytecode,
     evm::{AccountInfo, CacheDB, EmptyDB},
-    interpreter::opcode,
+    interpreter::{opcode, opcode::op},
 };
 
 pub type TransactTo = TxKind;

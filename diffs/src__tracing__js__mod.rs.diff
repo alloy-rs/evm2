@@ -49,7 +49,7 @@
 -        CallInputs, CallOutcome, CallScheme, CreateInputs, CreateOutcome, Gas, InstructionResult,
 -        Interpreter, InterpreterAction, InterpreterResult, Stack,
 +        GasTracker, InstrStop, Interpreter, Message, MessageKind, MessageResult, Word,
-+        opCode,
++        opcode::OpCode,
      },
 -    DatabaseRef, Inspector,
  };

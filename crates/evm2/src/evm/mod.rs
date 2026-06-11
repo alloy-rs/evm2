@@ -118,7 +118,7 @@ use self::{
 use crate::{
     EvmConfigSelector, EvmTypes, ExecutionConfig, PrecompileError, PrecompileHalt, SpecId,
     bytecode::Bytecode,
-    constants::{EIP7708_BURN_TOPIC, EIP7708_TRANSFER_TOPIC},
+    constants::{CALL_DEPTH_LIMIT, EIP7708_BURN_TOPIC, EIP7708_TRANSFER_TOPIC},
     env::{BlockEnv, TxEnv},
     interpreter::{
         Gas, GasTracker, Host, InstrStop, Interpreter, InterpreterPool, Message, MessageKind,
@@ -131,9 +131,9 @@ use crate::{
 use alloc::{boxed::Box, vec};
 use alloy_eips::eip2718::Typed2718;
 use alloy_primitives::{Address, B256, Bytes, Log, LogData, map::AddressSet};
-use core::any::TypeId;
 #[cfg(feature = "async")]
 use core::future::Future;
+use core::{any::TypeId, ptr::NonNull};
 use derive_where::derive_where;
 
 #[cfg(feature = "async")]
@@ -185,6 +185,11 @@ pub struct Evm<T: EvmTypes> {
     interpreter_pool: InterpreterPool<T>,
     #[derive_where(skip)]
     inspector: Option<Box<dyn Inspector<T>>>,
+    /// The currently running interpreter frame, if any.
+    ///
+    /// This is passed to the inspector call and create hooks as the parent frame.
+    #[derive_where(skip)]
+    current_frame: Option<NonNull<Interpreter<'static, T>>>,
     eip7702_authorities: AddressSet,
     #[derive_where(skip)]
     running: bool,
@@ -260,6 +265,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             precompiles,
             interpreter_pool: InterpreterPool::new(),
             inspector: None,
+            current_frame: None,
             eip7702_authorities: AddressSet::default(),
             running: false,
             #[cfg(feature = "async")]
@@ -800,6 +806,9 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         message: &mut Message<T>,
         caller_is_static: bool,
     ) -> MessageResult<T> {
+        if message.depth > CALL_DEPTH_LIMIT {
+            return Self::error_message_result(InstrStop::CallTooDeep, message.gas_limit);
+        }
         match message.kind {
             MessageKind::Create | MessageKind::Create2 => {
                 self.execute_create_message(tx_env, bytecode, message, caller_is_static)
@@ -813,11 +822,10 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         }
     }
 
-    /// Fires the inspector call/create hooks around top-level message execution.
+    /// Fires the inspector call/create hooks around message execution.
     ///
-    /// Nested messages fire these hooks from the parent interpreter frame inside the call
-    /// instructions; the top-level message has no parent frame, so a temporary frame is set up to
-    /// invoke them.
+    /// This is invoked for every message when an inspector is installed; hook overrides skip
+    /// execution entirely, including the call depth check.
     #[inline(never)]
     fn execute_message_inspected(
         &mut self,
@@ -830,25 +838,44 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             return self.execute_message_impl(tx_env, bytecode, message, caller_is_static);
         };
         // SAFETY: The inspector is stored in `self` and remains alive for the duration of the
-        // top-level message execution.
+        // message execution.
         let inspector = unsafe { trustme::decouple_lt_mut(inspector) };
 
         let is_create = matches!(message.kind, MessageKind::Create | MessageKind::Create2);
+        if is_create {
+            // Derive the destination early so that the create hook can observe it; execution
+            // re-derives it together with its semantic checks.
+            match self.created_address(&bytecode, message) {
+                Ok(address) => message.destination = address,
+                Err(stop) => return Self::error_message_result(stop, message.gas_limit),
+            }
+        }
 
-        let mut frame = self.interpreter_pool.pop();
-        // TODO: aliases with argument
-        // SAFETY: The message outlives the frame, which is returned to the pool below.
-        let frame_message = unsafe { trustme::decouple_lt(&*message) };
-        frame.init(bytecode.clone(), tx_env, frame_message, caller_is_static);
-        // SAFETY: `execution_config` points to a private field that host execution does not
-        // replace or mutate, so the pointee remains valid for the lifetime of the frame.
-        let version = unsafe { trustme::decouple_lt(self.execution_config.version()) };
-        frame.set_inspection_context(self.spec_id(), version, self);
+        let mut top_frame = None;
+        let frame = match self.current_frame {
+            // SAFETY: The parent frame is suspended on this call stack for the duration of the
+            // message execution.
+            Some(mut frame) => unsafe { frame.as_mut() },
+            None => {
+                let frame = top_frame.insert(self.interpreter_pool.pop());
+                // SAFETY: The message outlives the frame, which is returned to the pool below.
+                let frame_message = unsafe { trustme::decouple_lt(&*message) };
+                frame.init(bytecode.clone(), tx_env, frame_message, caller_is_static);
+                // SAFETY: `execution_config` points to a private field that host execution does
+                // not replace or mutate, so the pointee remains valid for the lifetime of the
+                // frame.
+                let version = unsafe { trustme::decouple_lt(self.execution_config.version()) };
+                frame.set_inspection_context(self.spec_id(), version, self);
+                frame
+            }
+        };
+        // SAFETY: The frame outlives the hook invocations below.
+        let frame = unsafe { trustme::decouple_lt_mut(frame) };
 
         let inspected = if is_create {
-            inspector.create(&mut frame, message)
+            inspector.create(frame, message)
         } else {
-            inspector.call(&mut frame, message)
+            inspector.call(frame, message)
         };
 
         let mut result = inspected.unwrap_or_else(|| {
@@ -856,12 +883,14 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         });
 
         if is_create {
-            inspector.create_end(&mut frame, message, &mut result);
+            inspector.create_end(frame, message, &mut result);
         } else {
-            inspector.call_end(&mut frame, message, &mut result);
+            inspector.call_end(frame, message, &mut result);
         }
 
-        let _ = self.interpreter_pool.push(frame);
+        if let Some(frame) = top_frame {
+            let _ = self.interpreter_pool.push(frame);
+        }
 
         result
     }
@@ -1023,15 +1052,36 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             return Err(InstrStop::Return);
         }
 
-        *address = match message.kind {
+        *address =
+            Self::derive_create_address(bytecode, message, info.map_or(0, |info| info.nonce));
+        Ok(())
+    }
+
+    /// Derives the destination address for a create message.
+    fn derive_create_address(bytecode: &Bytecode, message: &Message<T>, nonce: u64) -> Address {
+        match message.kind {
             MessageKind::Create if message.depth == 0 => message.destination,
-            MessageKind::Create => {
-                message.caller.create(info.as_ref().map_or(0, |info| info.nonce))
-            }
+            MessageKind::Create => message.caller.create(nonce),
             MessageKind::Create2 => message.caller.create2(message.salt, bytecode.hash_slow()),
             _ => unreachable!("invalid create message kind"),
+        }
+    }
+
+    /// Derives the destination address for a create message, loading the creator nonce.
+    fn created_address(
+        &mut self,
+        bytecode: &Bytecode,
+        message: &Message<T>,
+    ) -> Result<Address, InstrStop> {
+        let nonce = if message.depth > 0 {
+            self.state
+                .account_info(&message.caller)
+                .map_err(|code| self.db_error_stop(code))?
+                .map_or(0, |info| info.nonce)
+        } else {
+            0
         };
-        Ok(())
+        Ok(Self::derive_create_address(bytecode, message, nonce))
     }
 
     #[inline(never)]
@@ -1162,11 +1212,15 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             // interpreter run.
             unsafe { trustme::decouple_lt_mut(inspector) }
         });
+        let prev_frame = self
+            .current_frame
+            .replace(NonNull::from(&mut *interp_ref).cast::<Interpreter<'static, T>>());
         let stop = if let Some(inspector) = inspector {
             interp_ref.run_inspect(execution_config, self, inspector)
         } else {
             interp_ref.run(execution_config, self)
         };
+        self.current_frame = prev_frame;
         self.interpreter_pool.push(interp);
         stop
     }
@@ -1297,34 +1351,10 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
         message: &mut Message<T>,
         caller_is_static: bool,
     ) -> MessageResult<T> {
-        // The top-level message has no parent frame to fire the inspector call/create hooks from,
-        // so they are fired here; nested messages fire them inside the call instructions.
-        if message.depth == 0 && self.inspector.is_some() {
+        if self.inspector.is_some() {
             return self.execute_message_inspected(tx_env, bytecode, message, caller_is_static);
         }
         self.execute_message_impl(tx_env, bytecode, message, caller_is_static)
-    }
-
-    fn created_address(
-        &mut self,
-        bytecode: &Bytecode,
-        message: &Message<T>,
-    ) -> Result<Address, InstrStop> {
-        let nonce = if message.depth > 0 {
-            self.state
-                .account_info(&message.caller)
-                .map_err(|code| self.db_error_stop(code))?
-                .map_or(0, |info| info.nonce)
-        } else {
-            0
-        };
-
-        Ok(match message.kind {
-            MessageKind::Create if message.depth == 0 => message.destination,
-            MessageKind::Create => message.caller.create(nonce),
-            MessageKind::Create2 => message.caller.create2(message.salt, bytecode.hash_slow()),
-            _ => unreachable!("invalid create message kind"),
-        })
     }
 
     fn selfdestruct(

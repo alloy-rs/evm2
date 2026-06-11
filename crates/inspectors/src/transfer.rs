@@ -66,7 +66,7 @@ impl TransferInspector {
         self.transfers.iter()
     }
 
-    fn on_transfer<T: EvmTypes>(&mut self, message: &Message<T>, interp: &mut Interpreter<'_, T>) {
+    fn on_transfer<T: EvmTypes>(&mut self, message: &Message<T>, host: &mut T::Host) {
         let kind = match message.kind {
             MessageKind::Call | MessageKind::CallCode => TransferKind::Call,
             MessageKind::Create => TransferKind::Create,
@@ -97,7 +97,7 @@ impl TransferInspector {
                 address: TRANSFER_LOG_EMITTER,
                 data: LogData::new_unchecked(vec![TRANSFER_EVENT_TOPIC, from, to], data.into()),
             };
-            interp.host().log(log);
+            host.log(log);
         }
     }
 }
@@ -111,7 +111,7 @@ where
         interp: &mut Interpreter<'_, T>,
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
-        self.on_transfer(message, interp);
+        self.on_transfer(message, interp.host());
         None
     }
 
@@ -120,7 +120,7 @@ where
         interp: &mut Interpreter<'_, T>,
         message: &mut Message<T>,
     ) -> Option<MessageResult<T>> {
-        self.on_transfer(message, interp);
+        self.on_transfer(message, interp.host());
         None
     }
 

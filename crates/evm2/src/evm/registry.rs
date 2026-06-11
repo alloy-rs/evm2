@@ -402,14 +402,6 @@ mod tests {
             unimplemented!()
         }
 
-        fn created_address(
-            &mut self,
-            _bytecode: &Bytecode,
-            _message: &Message<TestTypes>,
-        ) -> Result<Address, InstrStop> {
-            unimplemented!()
-        }
-
         fn selfdestruct(
             &mut self,
             _contract: &Address,

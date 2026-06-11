@@ -1,6 +1,6 @@
 use super::{
-    BytecodeRef, Gas, InstrStop, Memory, Message, MessageKind, MessageResult, Pc, Result,
-    StackBacking, StackMut, StackRef, Word,
+    BytecodeRef, Gas, InstrStop, Memory, Message, MessageKind, Pc, Result, StackBacking, StackMut,
+    StackRef, Word,
 };
 use crate::{
     EvmTypes, ExecutionConfig, SpecId, Version,
@@ -436,36 +436,6 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
         unsafe {
             let mut inspector = self.0.inspector.unwrap_unchecked();
             inspector.as_mut().step_end(&mut self.0);
-        }
-    }
-
-    #[inline]
-    pub(crate) fn inspect_call(&mut self, message: &mut Message<T>) -> Option<MessageResult<T>> {
-        let mut inspector = self.0.inspector?;
-        unsafe { inspector.as_mut().call(&mut self.0, message) }
-    }
-
-    #[inline]
-    pub(crate) fn inspect_call_end(&mut self, message: &Message<T>, result: &mut MessageResult<T>) {
-        if let Some(mut inspector) = self.0.inspector {
-            unsafe { inspector.as_mut().call_end(&mut self.0, message, result) };
-        }
-    }
-
-    #[inline]
-    pub(crate) fn inspect_create(&mut self, message: &mut Message<T>) -> Option<MessageResult<T>> {
-        let mut inspector = self.0.inspector?;
-        unsafe { inspector.as_mut().create(&mut self.0, message) }
-    }
-
-    #[inline]
-    pub(crate) fn inspect_create_end(
-        &mut self,
-        message: &Message<T>,
-        result: &mut MessageResult<T>,
-    ) {
-        if let Some(mut inspector) = self.0.inspector {
-            unsafe { inspector.as_mut().create_end(&mut self.0, message, result) };
         }
     }
 

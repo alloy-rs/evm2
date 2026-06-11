@@ -145,13 +145,6 @@ pub trait Host<T: EvmTypes> {
         caller_is_static: bool,
     ) -> MessageResult<T>;
 
-    /// Derives the destination address for a create message before it is inspected.
-    fn created_address(
-        &mut self,
-        bytecode: &Bytecode,
-        message: &Message<T>,
-    ) -> Result<Address, InstrStop>;
-
     /// Registers the current contract for self-destruction.
     fn selfdestruct(
         &mut self,
