@@ -4,7 +4,12 @@ mod eip1559;
 mod eip2930;
 mod eip4844;
 mod eip7702;
+mod lazy_eip7702;
 mod legacy;
+
+pub use lazy_eip7702::{LazyAuthorization, LazyTxEip7702};
+#[cfg(test)]
+use lazy_eip7702::{authority_recovery_attempts, reset_authority_recovery_attempts};
 
 use crate::{
     Evm, EvmFeatures, EvmTypes, SpecId, TxResult, Version,
@@ -34,7 +39,7 @@ pub enum RecoveredTxEnvelope {
     /// EIP-4844 blob transaction.
     Eip4844(Recovered<TxEip4844Variant>),
     /// EIP-7702 set-code transaction.
-    Eip7702(Recovered<TxEip7702>),
+    Eip7702(Recovered<LazyTxEip7702>),
 }
 
 impl RecoveredTxEnvelope {
@@ -71,11 +76,23 @@ impl RecoveredTxEnvelope {
     }
 
     /// Returns the contained EIP-7702 transaction, if this is EIP-7702.
-    pub const fn as_eip7702(&self) -> Option<&Recovered<TxEip7702>> {
+    pub const fn as_eip7702(&self) -> Option<&Recovered<LazyTxEip7702>> {
         match self {
             Self::Eip7702(tx) => Some(tx),
             Self::Legacy(_) | Self::Eip2930(_) | Self::Eip1559(_) | Self::Eip4844(_) => None,
         }
+    }
+}
+
+impl From<Recovered<TxEip7702>> for RecoveredTxEnvelope {
+    fn from(tx: Recovered<TxEip7702>) -> Self {
+        Self::Eip7702(tx.convert())
+    }
+}
+
+impl From<Recovered<LazyTxEip7702>> for RecoveredTxEnvelope {
+    fn from(tx: Recovered<LazyTxEip7702>) -> Self {
+        Self::Eip7702(tx)
     }
 }
 
