@@ -806,9 +806,6 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         message: &mut Message<T>,
         caller_is_static: bool,
     ) -> MessageResult<T> {
-        if message.depth > CALL_DEPTH_LIMIT {
-            return Self::error_message_result(InstrStop::CallTooDeep, message.gas_limit);
-        }
         match message.kind {
             MessageKind::Create | MessageKind::Create2 => {
                 self.execute_create_message(tx_env, bytecode, message, caller_is_static)
@@ -845,10 +842,18 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         if is_create {
             // Derive the destination early so that the create hook can observe it; execution
             // re-derives it together with its semantic checks.
-            match self.created_address(&bytecode, message) {
-                Ok(address) => message.destination = address,
-                Err(stop) => return Self::error_message_result(stop, message.gas_limit),
-            }
+            let nonce = if message.depth > 0 {
+                match self.state.account_info(&message.caller) {
+                    Ok(info) => info.map_or(0, |info| info.nonce),
+                    Err(code) => {
+                        let stop = self.db_error_stop(code);
+                        return Self::error_message_result(stop, message.gas_limit);
+                    }
+                }
+            } else {
+                0
+            };
+            message.destination = Self::derive_create_address(&bytecode, message, nonce);
         }
 
         let mut top_frame = None;
@@ -903,6 +908,9 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         message: &mut Message<T>,
         caller_is_static: bool,
     ) -> MessageResult<T> {
+        if message.depth > CALL_DEPTH_LIMIT {
+            return Self::error_message_result(InstrStop::CallTooDeep, message.gas_limit);
+        }
         if let Err(stop) = self.prepare_create_message(&bytecode, message) {
             return Self::error_message_result(stop, message.gas_limit);
         }
@@ -927,12 +935,30 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         bytecode: &Bytecode,
         message: &mut Message<T>,
     ) -> Result<(), InstrStop> {
-        let mut address = Address::ZERO;
-        self.create_address(&mut address, bytecode, message)?;
-        message.destination = address;
-        let address = &message.destination;
+        let info = if message.value > 0 || message.depth > 0 {
+            self.state.account_info(&message.caller).map_err(|code| self.db_error_stop(code))?
+        } else {
+            None
+        };
 
-        let _ = self.state.warm_account(address);
+        if message.value > 0 && info.as_ref().is_none_or(|info| info.balance < message.value) {
+            return Err(InstrStop::OutOfFunds);
+        }
+
+        // EIP-2681 caps account nonces at u64::MAX; CREATE/CREATE2 return zero instead of
+        // wrapping or saturating the creator nonce.
+        if message.depth > 0 && info.as_ref().is_some_and(|info| info.nonce == u64::MAX) {
+            return Err(InstrStop::Return);
+        }
+
+        // When an inspector is installed, the destination is already derived for the create hook,
+        // and inspector mutations of it are respected.
+        if self.inspector.is_none() {
+            message.destination =
+                Self::derive_create_address(bytecode, message, info.map_or(0, |info| info.nonce));
+        }
+
+        let _ = self.state.warm_account(&message.destination);
 
         if message.depth > 0
             && let Err(code) = self.state.increment_nonce(&message.caller)
@@ -945,18 +971,9 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
 
     #[inline(never)]
     fn create_message_account(&mut self, message: &Message<T>) -> Result<(), InstrStop> {
-        let create_result = match self.state.create_account(
-            &message.caller,
-            &message.destination,
-            &message.value,
-            self.features,
-        ) {
-            Ok(result) => result,
-            Err(code) => {
-                return Err(self.db_error_stop(code));
-            }
-        };
-        create_result?;
+        self.state
+            .create_account(&message.caller, &message.destination, &message.value, self.features)
+            .map_err(|code| self.db_error_stop(code))??;
 
         self.log_eip7708_transfer(&message.caller, &message.destination, &message.value);
         Ok(())
@@ -1029,34 +1046,6 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         Ok(())
     }
 
-    #[inline(never)]
-    fn create_address(
-        &mut self,
-        address: &mut Address,
-        bytecode: &Bytecode,
-        message: &Message<T>,
-    ) -> Result<(), InstrStop> {
-        let info = if message.value > 0 || message.depth > 0 {
-            self.state.account_info(&message.caller).map_err(|code| self.db_error_stop(code))?
-        } else {
-            None
-        };
-
-        if message.value > 0 && info.as_ref().is_none_or(|info| info.balance < message.value) {
-            return Err(InstrStop::OutOfFunds);
-        }
-
-        // EIP-2681 caps account nonces at u64::MAX; CREATE/CREATE2 return zero instead of
-        // wrapping or saturating the creator nonce.
-        if message.depth > 0 && info.as_ref().is_some_and(|info| info.nonce == u64::MAX) {
-            return Err(InstrStop::Return);
-        }
-
-        *address =
-            Self::derive_create_address(bytecode, message, info.map_or(0, |info| info.nonce));
-        Ok(())
-    }
-
     /// Derives the destination address for a create message.
     fn derive_create_address(bytecode: &Bytecode, message: &Message<T>, nonce: u64) -> Address {
         match message.kind {
@@ -1067,23 +1056,6 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         }
     }
 
-    /// Derives the destination address for a create message, loading the creator nonce.
-    fn created_address(
-        &mut self,
-        bytecode: &Bytecode,
-        message: &Message<T>,
-    ) -> Result<Address, InstrStop> {
-        let nonce = if message.depth > 0 {
-            self.state
-                .account_info(&message.caller)
-                .map_err(|code| self.db_error_stop(code))?
-                .map_or(0, |info| info.nonce)
-        } else {
-            0
-        };
-        Ok(Self::derive_create_address(bytecode, message, nonce))
-    }
-
     #[inline(never)]
     fn execute_call_message(
         &mut self,
@@ -1092,6 +1064,9 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         message: &mut Message<T>,
         caller_is_static: bool,
     ) -> MessageResult<T> {
+        if message.depth > CALL_DEPTH_LIMIT {
+            return Self::error_message_result(InstrStop::CallTooDeep, message.gas_limit);
+        }
         let checkpoint = self.state.checkpoint();
         // EIP-161 state clearing depends on zero-value direct call targets being touched.
         let transfers_balance = matches!(
