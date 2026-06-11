@@ -10,7 +10,7 @@
 use super::SendEvmRef;
 #[cfg(feature = "async")]
 use super::r#async;
-use super::{Evm, TxResult};
+use super::{Evm, ExecutedTx, TxResult};
 use crate::{
     EvmTypes,
     env::TxEnv,
@@ -45,7 +45,11 @@ pub const CONSOLIDATION_REQUEST_ADDRESS: Address =
 impl<T: EvmTypes<Host = Self>> Evm<T> {
     /// Executes a system call from [`SYSTEM_ADDRESS`] to `system_contract_address`.
     #[inline]
-    pub fn system_call(&mut self, system_contract_address: Address, data: Bytes) -> TxResult<T> {
+    pub fn system_call(
+        &mut self,
+        system_contract_address: Address,
+        data: Bytes,
+    ) -> ExecutedTx<'_, T> {
         self.system_call_with_caller(SYSTEM_ADDRESS, system_contract_address, data)
     }
 
@@ -87,7 +91,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     ///
     /// System calls bypass normal transaction validation, nonce updates, fee charging, gas refunds,
     /// and beneficiary rewards. They execute a top-level `CALL` with zero value and
-    /// [`SYSTEM_CALL_GAS_LIMIT`] gas, then finalize and return the produced state changes.
+    /// [`SYSTEM_CALL_GAS_LIMIT`] gas, then finalize and return an executed transaction handle.
     ///
     /// The target system contract bytecode must already be present in state. This method does not
     /// deploy protocol system contracts or synthesize their bytecode.
@@ -96,7 +100,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         caller: Address,
         system_contract_address: Address,
         data: Bytes,
-    ) -> TxResult<T> {
+    ) -> ExecutedTx<'_, T> {
         self.state.prewarmset_mut().warm_account(&system_contract_address);
         let tx_env = TxEnv {
             origin: caller,
@@ -115,8 +119,11 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             U256::ZERO,
             SYSTEM_CALL_GAS_LIMIT,
         ) else {
+            self.state.clear_transaction_state();
             let stop = InstrStop::FatalExternalError;
-            return TxResult { stop, db_error_code: self.db_error_code(), ..TxResult::default() };
+            let outcome =
+                TxResult { stop, db_error_code: self.db_error_code(), ..TxResult::default() };
+            return ExecutedTx::from_result(self, outcome, false);
         };
         let result = Host::execute_message(self, &tx_env, bytecode, &mut message, false);
         let gas_spent = SYSTEM_CALL_GAS_LIMIT.saturating_sub(result.gas.remaining());
@@ -126,7 +133,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             0
         };
         let gas_used = gas_spent.saturating_sub(gas_refunded);
-        let mut result = TxResult {
+        let mut outcome = TxResult {
             status: result.stop.is_success(),
             gas_used,
             stop: result.stop,
@@ -134,16 +141,19 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             ..TxResult::default()
         };
 
-        if let Err(stop) = self.finalize_transaction() {
-            result.status = false;
-            result.stop = stop;
-            result.output = Bytes::new();
+        let has_pending_state = if let Err(stop) = self.finalize_transaction() {
+            outcome.status = false;
+            outcome.stop = stop;
+            outcome.output = Bytes::new();
+            outcome.logs.clear();
+            self.state.clear_transaction_state();
+            false
         } else {
-            result.state_changes = self.state.accept_transaction();
-        }
-        result.db_error_code = self.db_error_code();
-        self.state.clear_transaction_state();
-        result
+            outcome.logs = self.state.take_logs();
+            true
+        };
+        outcome.db_error_code = self.db_error_code();
+        ExecutedTx::from_result(self, outcome, has_pending_state)
     }
 
     /// Executes a system call from `caller` to `system_contract_address` on an async fiber.
@@ -185,7 +195,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
 impl<T: EvmTypes<Host = Evm<T>>> SendEvmRef<'_, T> {
     #[inline]
     fn system_call(&mut self, system_contract_address: Address, data: Bytes) -> TxResult<T> {
-        self.evm.system_call(system_contract_address, data)
+        self.evm.system_call(system_contract_address, data).commit()
     }
 
     #[inline]
@@ -195,7 +205,7 @@ impl<T: EvmTypes<Host = Evm<T>>> SendEvmRef<'_, T> {
         system_contract_address: Address,
         data: Bytes,
     ) -> TxResult<T> {
-        self.evm.system_call_with_caller(caller, system_contract_address, data)
+        self.evm.system_call_with_caller(caller, system_contract_address, data).commit()
     }
 }
 
@@ -239,10 +249,10 @@ mod tests {
             Precompiles::base(SpecId::OSAKA),
         );
 
-        let result = evm.system_call(contract, Bytes::new());
+        let result = evm.system_call(contract, Bytes::new()).detach();
 
-        assert!(result.status);
-        assert!(result.gas_used < SYSTEM_CALL_GAS_LIMIT);
+        assert!(result.result.status);
+        assert!(result.result.gas_used < SYSTEM_CALL_GAS_LIMIT);
         assert!(!result.state_changes.accounts.contains_key(&SYSTEM_ADDRESS));
         assert!(!result.state_changes.accounts.contains_key(&beneficiary));
         let storage = result.state_changes.storage.get(&contract).expect("storage changed");
@@ -266,13 +276,13 @@ mod tests {
             Precompiles::base(SpecId::OSAKA),
         );
 
-        let result = evm.system_call(contract, Bytes::new());
+        let outcome = evm.system_call(contract, Bytes::new()).discard();
 
-        assert!(result.status);
+        assert!(outcome.status);
         assert!(
-            result.gas_used < 1_000,
+            outcome.gas_used < 1_000,
             "system contract should be warm before execution, got {} gas used",
-            result.gas_used
+            outcome.gas_used
         );
     }
 
@@ -287,10 +297,10 @@ mod tests {
             Precompiles::base(SpecId::OSAKA),
         );
 
-        let result = evm.system_call(contract, Bytes::new());
+        let result = evm.system_call(contract, Bytes::new()).detach();
 
-        assert!(result.status);
-        assert_eq!(result.gas_used, 0);
+        assert!(result.result.status);
+        assert_eq!(result.result.gas_used, 0);
         assert!(result.state_changes.is_empty());
     }
 
@@ -319,10 +329,10 @@ mod tests {
             Precompiles::base(SpecId::OSAKA),
         );
 
-        let result = evm.system_call(contract, Bytes::new());
+        let result = evm.system_call(contract, Bytes::new()).detach();
 
-        assert!(!result.status);
-        assert_eq!(result.stop, InstrStop::Revert);
+        assert!(!result.result.status);
+        assert_eq!(result.result.stop, InstrStop::Revert);
         assert!(result.state_changes.is_empty());
     }
 }

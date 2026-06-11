@@ -2,8 +2,7 @@ use crate::{
     error::{TestError, TestErrorKind},
     filter::EntryPoint,
     state::{
-        apply_state_changes, insert_account_with_storage, parse_bytecode, storage_for_root,
-        system_contract_has_code,
+        insert_account_with_storage, parse_bytecode, storage_for_root, system_contract_has_code,
     },
     tx::{TxFields, build_recovered_tx, recover_address, rpc_access_list, signed_authorizations},
     types::{AccountInfo, Env, Test, TestSuite, TestUnit, TransactionParts, TxPartIndices},
@@ -21,7 +20,6 @@ use evm2::{
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
     evm::{
         AccountInfo as EvmAccountInfo, BEACON_ROOTS_ADDRESS, HISTORY_STORAGE_ADDRESS, InMemoryDB,
-        StateChanges,
     },
     registry::HandlerError,
 };
@@ -243,25 +241,16 @@ fn execute_spec(
         database.clone(),
         Precompiles::base(spec),
     );
-    let system_changes = pre_block_system_calls(&mut evm, spec, env, &database);
-    let result = evm.transact(tx)?;
-    Ok(spec_outcome(database, result, &system_changes))
+    let mut post = database;
+    pre_block_system_calls(&mut evm, &mut post, spec, env);
+    let Ok(result) = evm.transact(tx)?.commit_with(&mut post);
+    Ok(spec_outcome(post, result))
 }
 
-fn spec_outcome(
-    database: InMemoryDB,
-    result: TxResult,
-    system_changes: &[StateChanges],
-) -> SpecOutcome {
-    let mut post = database;
-    for changes in system_changes {
-        post = apply_state_changes(&post, changes);
-    }
-    post = apply_state_changes(&post, &result.state_changes);
-
+fn spec_outcome(post: InMemoryDB, result: TxResult) -> SpecOutcome {
     SpecOutcome {
         state_root: state_root_from_database(&post),
-        logs_root: logs_hash(&result.state_changes.logs),
+        logs_root: logs_hash(&result.logs),
         output: result.output,
         gas_used: result.gas_used,
         evm_result: format!("{:?}", result.stop),
@@ -270,49 +259,47 @@ fn spec_outcome(
 
 fn pre_block_system_calls<T: EvmTypes<Host = Evm<T>>>(
     evm: &mut Evm<T>,
+    post: &mut InMemoryDB,
     spec: SpecId,
     env: &Env,
-    database: &InMemoryDB,
-) -> Vec<StateChanges> {
+) {
     if env.current_number.is_zero() {
-        return Vec::new();
+        return;
     }
 
-    let mut changes = Vec::new();
     if spec.enables(SpecId::PRAGUE)
         && let Some(previous_hash) = env.previous_hash
-        && system_contract_has_code(database, HISTORY_STORAGE_ADDRESS)
+        && system_contract_has_code(post, HISTORY_STORAGE_ADDRESS)
     {
-        push_system_call_changes(
+        commit_system_call(
             evm,
-            &mut changes,
+            post,
             HISTORY_STORAGE_ADDRESS,
             Bytes::copy_from_slice(previous_hash.as_slice()),
         );
     }
     if spec.enables(SpecId::CANCUN)
         && let Some(beacon_root) = env.current_beacon_root
-        && system_contract_has_code(database, BEACON_ROOTS_ADDRESS)
+        && system_contract_has_code(post, BEACON_ROOTS_ADDRESS)
     {
-        push_system_call_changes(
+        commit_system_call(
             evm,
-            &mut changes,
+            post,
             BEACON_ROOTS_ADDRESS,
             Bytes::copy_from_slice(beacon_root.as_slice()),
         );
     }
-    changes
 }
 
-fn push_system_call_changes<T: EvmTypes<Host = Evm<T>>>(
+fn commit_system_call<T: EvmTypes<Host = Evm<T>>>(
     evm: &mut Evm<T>,
-    changes: &mut Vec<StateChanges>,
+    post: &mut InMemoryDB,
     address: Address,
     data: Bytes,
 ) {
-    let result = evm.system_call(address, data);
-    assert!(result.status, "pre-block system call failed: {address}");
-    changes.push(result.state_changes);
+    let executed = evm.system_call(address, data);
+    assert!(executed.result().status, "pre-block system call failed: {address}");
+    let Ok(_) = executed.commit_with(post);
 }
 
 fn logs_hash(logs: &[Log]) -> B256 {

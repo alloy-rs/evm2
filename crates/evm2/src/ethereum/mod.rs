@@ -305,7 +305,7 @@ pub(super) fn warm_base_accounts<T: EvmTypes<Host = Evm<T>>>(
     if let TxKind::Call(to) = to {
         host.state.prewarmset_mut().warm_account(&to);
     }
-    let precompiles: AddressSet = host.precompiles().warm_addresses().into_iter().collect();
+    let precompiles: AddressSet = host.precompiles().addresses().into_iter().collect();
     host.state.prewarmset_mut().set_precompile_addresses(&precompiles);
 }
 
@@ -644,7 +644,7 @@ mod tests {
         );
 
         assert_eq!(
-            evm.transact(&tx),
+            evm.transact(&tx).map(|executed| executed.discard()),
             Err(HandlerError::IntrinsicGasTooLow { required: 21_000, got: 20_999 })
         );
     }

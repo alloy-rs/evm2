@@ -1,16 +1,22 @@
-//! Public write-set emitted by a transaction.
+//! Owned materialized state changes.
 
-use super::{AccountInfo, Tracked};
+use super::{
+    AccountChangeRef, AccountInfo, AccountInfoRef, StateChangeSink, StateChangeSource,
+    StorageChange, Tracked,
+};
 use crate::{bytecode::Bytecode, interpreter::Word};
-use alloc::{collections::BTreeMap, vec::Vec};
-use alloy_primitives::{Address, B256, Log};
+use alloc::vec::Vec;
+use alloy_primitives::map::{AddressMap, B256Map, U256Map};
 
-/// Complete state transition and emitted logs produced by a transaction.
+/// Complete owned state transition produced by a transaction.
 ///
-/// `StateChanges` is the public write-set returned in [`crate::TxResult`]. It
-/// is intentionally explicit so embedding clients can update their own database
-/// and compute post-state roots without reimplementing EVM account-lifetime
-/// rules. It also carries the logs emitted by the transaction.
+/// `StateChanges` is the public, materialized write-set returned in
+/// [`crate::TxResultWithState`] and by detached transaction APIs. It is intentionally
+/// explicit so embedding clients can update their own database and compute
+/// post-state roots without reimplementing EVM account-lifetime rules.
+///
+/// Logs are execution output rather than database state and are exposed on
+/// [`crate::TxResult`] and [`crate::TxResultWithState`].
 ///
 /// Consumers should apply database changes in this order:
 ///
@@ -32,29 +38,24 @@ pub struct StateChanges {
     /// [`Tracked::current`] is the account after transaction execution and EVM
     /// account-lifetime rules have been evaluated. `current = None` is an explicit account
     /// deletion.
-    pub accounts: BTreeMap<Address, Tracked<Option<AccountInfo>>>,
+    pub accounts: AddressMap<Tracked<Option<AccountInfo>>>,
     /// Persistent storage changes keyed by account address.
     ///
     /// Each slot change's [`Tracked::original`] value is the slot value at the beginning of the
     /// transaction, after any storage wipe/re-incarnation semantics that occurred before the slot
     /// was loaded. `current = 0` means the consumer should delete the slot.
-    pub storage: BTreeMap<Address, StorageChangeSet>,
+    pub storage: AddressMap<StorageChangeSet>,
     /// Newly created or modified bytecode keyed by code hash.
-    pub code: BTreeMap<B256, Bytecode>,
-    /// Logs emitted by the transaction.
-    pub logs: Vec<Log>,
+    pub code: B256Map<Bytecode>,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
 }
 
 impl StateChanges {
-    /// Returns whether this transition contains no changes or logs.
+    /// Returns whether this transition contains no changes.
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.accounts.is_empty()
-            && self.storage.is_empty()
-            && self.code.is_empty()
-            && self.logs.is_empty()
+        self.accounts.is_empty() && self.storage.is_empty() && self.code.is_empty()
     }
 }
 
@@ -66,9 +67,49 @@ pub struct StorageChangeSet {
     /// re-incarnation semantics using an explicit storage wipe marker.
     pub wipe: bool,
     /// Changed storage slots keyed by slot.
-    pub slots: BTreeMap<Word, Tracked<Word>>,
+    pub slots: U256Map<Tracked<Word>>,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
+}
+
+impl StateChangeSource for StateChanges {
+    fn visit<S: StateChangeSink>(&self, sink: &mut S) -> Result<(), S::Error> {
+        let mut code_entries = self.code.iter().collect::<Vec<_>>();
+        code_entries.sort_by_key(|(code_hash, _)| **code_hash);
+        for (&code_hash, code) in code_entries {
+            sink.bytecode(code_hash, code)?;
+        }
+
+        let mut storage_entries = self.storage.iter().collect::<Vec<_>>();
+        storage_entries.sort_by_key(|entry| *entry.0);
+        for (&address, storage) in storage_entries {
+            if storage.wipe {
+                sink.storage_wipe(address)?;
+            }
+
+            let mut slots = storage.slots.iter().collect::<Vec<_>>();
+            slots.sort_by_key(|entry| *entry.0);
+            for (&key, slot) in slots {
+                sink.storage(StorageChange {
+                    address,
+                    key,
+                    original: slot.original,
+                    current: slot.current,
+                })?;
+            }
+        }
+
+        let mut account_entries = self.accounts.iter().collect::<Vec<_>>();
+        account_entries.sort_by_key(|entry| *entry.0);
+        for (&address, change) in account_entries {
+            sink.account(AccountChangeRef {
+                address,
+                original: change.original.as_ref().map(AccountInfoRef::from_info),
+                current: change.current.as_ref().map(AccountInfoRef::from_info),
+            })?;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -79,11 +120,11 @@ mod tests {
         constants::EIP7708_BURN_TOPIC,
         evm::{CacheDB, state::State},
     };
-    use alloy_primitives::Bytes;
+    use alloy_primitives::{Address, B256, Bytes, Log};
 
     #[test]
-    fn state_changes_take_logs_from_transaction_state() {
-        use alloy_primitives::{Bytes, LogData};
+    fn build_state_changes_leaves_logs_on_transaction_state() {
+        use alloy_primitives::LogData;
 
         let mut state = State::new(CacheDB::default());
         let log = Log {
@@ -92,12 +133,12 @@ mod tests {
         };
 
         state.log(log.clone());
-        state.finalize_transaction_(Version::base(crate::SpecId::SPURIOUS_DRAGON));
+        state.finalize_transaction_(Version::base(SpecId::SPURIOUS_DRAGON));
         let changes = state.build_state_changes();
-        assert_eq!(changes.logs.as_slice(), core::slice::from_ref(&log));
-        assert!(state.logs().is_empty());
+        assert!(changes.is_empty());
+        assert_eq!(state.logs(), core::slice::from_ref(&log));
 
-        state.commit_transaction_overlay();
+        state.commit_transaction();
         state.clear_transaction_state();
         assert!(state.logs().is_empty());
     }
@@ -111,7 +152,7 @@ mod tests {
         let mut state = State::new(database);
 
         state.account_entry(&address, false).unwrap().touch();
-        state.finalize_transaction_(Version::base(crate::SpecId::SPURIOUS_DRAGON));
+        state.finalize_transaction_(Version::base(SpecId::SPURIOUS_DRAGON));
         let changes = state.build_state_changes();
 
         let change = changes.accounts.get(&address).expect("touched empty account is deleted");
@@ -128,7 +169,7 @@ mod tests {
         let mut state = State::new(database);
 
         state.account_entry(&address, false).unwrap().touch();
-        state.finalize_transaction_(Version::base(crate::SpecId::HOMESTEAD));
+        state.finalize_transaction_(Version::base(SpecId::HOMESTEAD));
         let changes = state.build_state_changes();
 
         assert!(!changes.accounts.contains_key(&address));
@@ -141,7 +182,7 @@ mod tests {
         let mut state = State::new(CacheDB::default());
 
         state.account_entry(&address, false).unwrap().touch();
-        state.finalize_transaction_(Version::base(crate::SpecId::HOMESTEAD));
+        state.finalize_transaction_(Version::base(SpecId::HOMESTEAD));
         let changes = state.build_state_changes();
 
         let change =
@@ -157,7 +198,7 @@ mod tests {
         let mut state = State::new(CacheDB::default());
 
         state.account_entry(&address, false).unwrap().touch();
-        state.finalize_transaction_(Version::base(crate::SpecId::SPURIOUS_DRAGON));
+        state.finalize_transaction_(Version::base(SpecId::SPURIOUS_DRAGON));
         let changes = state.build_state_changes();
 
         assert!(!changes.accounts.contains_key(&address));
@@ -175,7 +216,7 @@ mod tests {
 
         let selfdestructs_capacity = state.selfdestructs.capacity();
 
-        state.finalize_transaction_(Version::base(crate::SpecId::SPURIOUS_DRAGON));
+        state.finalize_transaction_(Version::base(SpecId::SPURIOUS_DRAGON));
 
         assert!(state.accounts.values().all(|entry| !entry.is_touched));
         assert!(state.selfdestructs.is_empty());
@@ -191,7 +232,7 @@ mod tests {
         let mut state = State::new(database);
 
         state.account_entry(&address, false).unwrap().mark_destructed();
-        state.finalize_transaction_(Version::base(crate::SpecId::SPURIOUS_DRAGON));
+        state.finalize_transaction_(Version::base(SpecId::SPURIOUS_DRAGON));
         let changes = state.build_state_changes();
 
         let change = changes.accounts.get(&address).expect("selfdestruct deletes account");
@@ -218,23 +259,25 @@ mod tests {
             })
             .unwrap();
 
-        let changes = state.build_state_changes();
-        assert_eq!(inspected, changes.logs);
-        assert_eq!(changes.logs.len(), 2);
+        // Burn logs are execution output and stay on the transaction state, not in StateChanges.
+        let logs: Vec<Log> = state.logs().to_vec();
+        let _changes = state.build_state_changes();
+        assert_eq!(inspected, logs);
+        assert_eq!(logs.len(), 2);
         assert_eq!(
-            changes.logs[0].topics(),
+            logs[0].topics(),
             &[EIP7708_BURN_TOPIC, B256::left_padding_from(low.as_slice())]
         );
         assert_eq!(
-            changes.logs[0].data.data,
+            logs[0].data.data,
             Bytes::copy_from_slice(&Word::from(1).to_be_bytes::<32>())
         );
         assert_eq!(
-            changes.logs[1].topics(),
+            logs[1].topics(),
             &[EIP7708_BURN_TOPIC, B256::left_padding_from(high.as_slice())]
         );
         assert_eq!(
-            changes.logs[1].data.data,
+            logs[1].data.data,
             Bytes::copy_from_slice(&Word::from(2).to_be_bytes::<32>())
         );
     }

@@ -1,22 +1,29 @@
 //! Basic in-memory EVM host state.
 
 mod account;
+mod block;
 mod changes;
 mod journal;
 mod storage;
+mod stream;
 mod tracked;
 
 use account::TrackedAccount;
 pub use account::{Account, AccountEntry, AccountInfo};
+pub use block::BlockStateAccumulator;
 pub use changes::{StateChanges, StorageChangeSet};
 pub use journal::{JournalEntry, StateCheckpoint};
 pub use storage::{StorageOverlay, StorageSlot, StorageSlotEntry, StoragesEntry};
+pub use stream::{
+    AccountChangeRef, AccountInfoRef, NoopChangeSink, StateChangeSink, StateChangeSource,
+    StorageChange, Tee,
+};
 pub use tracked::Tracked;
 use tracked::TrackedAccountMap;
 
 use super::{
     PrewarmSet,
-    db::{CacheDB, DatabaseCommit, DbErrorCode, DbResult, DynDatabase},
+    db::{CacheDB, DbErrorCode, DbResult, DynDatabase},
     eip7708_burn_log,
 };
 use crate::{
@@ -25,10 +32,10 @@ use crate::{
     interpreter::{InstrStop, Word},
     storage_key::{StorageKey, StorageKeyMap},
 };
-use alloc::{boxed::Box, collections::BTreeMap, vec::Vec};
+use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::{
     Address, B256, KECCAK256_EMPTY, Log,
-    map::{AddressMap, AddressSet, hash_map},
+    map::{AddressMap, AddressSet, U256Map, hash_map},
 };
 use core::mem;
 use core::ops::{Deref, DerefMut};
@@ -131,6 +138,24 @@ impl State {
         self.clear_transaction_state();
     }
 
+    /// Returns the accepted-state overlay database.
+    #[inline]
+    pub fn overlay_db(&self) -> &CacheDB<Box<dyn DynDatabase>> {
+        &self.inner.database
+    }
+
+    /// Returns the accepted-state overlay database mutably.
+    #[inline]
+    pub fn overlay_db_mut(&mut self) -> &mut CacheDB<Box<dyn DynDatabase>> {
+        &mut self.inner.database
+    }
+
+    /// Applies borrowed changes to the accepted state overlay.
+    #[inline]
+    pub fn commit_source<S: StateChangeSource>(&mut self, source: &S) {
+        self.inner.database.commit_source(source);
+    }
+
     /// Loads a historical block hash.
     #[inline]
     pub(crate) fn block_hash(&mut self, number: &Word) -> DbResult<Option<B256>> {
@@ -141,6 +166,12 @@ impl State {
     #[inline]
     pub fn logs(&self) -> &[Log] {
         &self.logs
+    }
+
+    /// Takes logs emitted by the current in-flight transaction.
+    #[inline]
+    pub(crate) fn take_logs(&mut self) -> Vec<Log> {
+        mem::take(&mut self.inner.logs)
     }
 
     /// Records a transaction log.
@@ -713,72 +744,126 @@ impl State {
         Ok(())
     }
 
-    /// Builds the state transition and takes emitted logs for the current transaction.
+    #[inline]
+    fn account_changed(original: Option<&AccountInfo>, current: Option<&Account>) -> bool {
+        match (original, current) {
+            (Some(original), Some(current)) => {
+                original.balance != current.balance
+                    || original.nonce != current.nonce
+                    || original.code_hash != current.code_hash
+            }
+            (None, None) => false,
+            _ => true,
+        }
+    }
+
+    #[inline]
+    fn changed_code(account: &Account) -> Option<(B256, &Bytecode)> {
+        let code_hash = account.code_hash;
+        (account.code_changed
+            && !account.code.is_empty()
+            && !code_hash.is_zero()
+            && code_hash != KECCAK256_EMPTY)
+            .then_some((code_hash, &account.code))
+    }
+
+    #[inline]
+    fn storage_slot_changed(storage_wiped: bool, slot: &Tracked<Word>) -> bool {
+        slot.is_changed() && (!storage_wiped || !slot.current.is_zero())
+    }
+
+    /// Visits transaction state changes in database application order.
     ///
-    /// This does not apply changes to the backing database, apply transaction-finalization rules,
-    /// or advance the overlay to the next transaction. It does move transaction-local logs into the
-    /// returned [`StateChanges`], since callers clear transaction-local state immediately after
-    /// accepting or discarding the transaction.
-    pub(crate) fn build_state_changes(&mut self) -> StateChanges {
-        let mut changes =
-            StateChanges { logs: core::mem::take(&mut self.logs), ..StateChanges::default() };
+    /// This borrows changes directly from the transaction layer. It does not materialize
+    /// [`StateChanges`] and does not mutate the accepted overlay.
+    pub(crate) fn visit_transaction_changes<S: StateChangeSink>(
+        &self,
+        sink: &mut S,
+    ) -> Result<(), S::Error> {
+        for (_, entry) in self.accounts.iter() {
+            if !entry.is_loaded {
+                continue;
+            }
+            if let Some(account) = entry.present.as_ref()
+                && let Some((code_hash, code)) = Self::changed_code(account)
+            {
+                sink.bytecode(code_hash, code)?;
+            }
+        }
+
+        for (&address, storage) in &self.storage {
+            if storage.wiped {
+                sink.storage_wipe(address)?;
+            }
+            for (&key, slot) in &storage.slots {
+                if let Some(tracked) = slot.value.as_ref()
+                    && Self::storage_slot_changed(storage.wiped, tracked)
+                {
+                    sink.storage(StorageChange {
+                        address,
+                        key,
+                        original: tracked.original,
+                        current: tracked.current,
+                    })?;
+                }
+            }
+        }
 
         for (&address, entry) in self.accounts.iter() {
             if !entry.is_loaded {
                 continue;
             }
-            let original = entry.original.as_ref();
-            let current = entry.present.as_ref();
-            let account_changed = match (original, current) {
-                (Some(original), Some(current)) => {
-                    original.balance != current.balance
-                        || original.nonce != current.nonce
-                        || original.code_hash != current.code_hash
-                }
-                (None, None) => false,
-                _ => true,
-            };
-            if account_changed {
+            if Self::account_changed(entry.original.as_ref(), entry.present.as_ref()) {
+                sink.account(AccountChangeRef {
+                    address,
+                    original: entry.original.as_ref().map(AccountInfoRef::from_info),
+                    current: entry.present.as_ref().map(AccountInfoRef::from_account),
+                })?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Builds the state transition for the current transaction.
+    ///
+    /// This does not apply changes to the backing database, apply transaction-finalization rules,
+    /// take logs, or advance the overlay to the next transaction. Logs are execution output and are
+    /// exposed through [`crate::TxResult`] and [`crate::TxResultWithState`].
+    pub(crate) fn build_state_changes(&mut self) -> StateChanges {
+        let mut changes = StateChanges::default();
+
+        for (&address, entry) in self.accounts.iter() {
+            if !entry.is_loaded {
+                continue;
+            }
+            if Self::account_changed(entry.original.as_ref(), entry.present.as_ref()) {
                 changes.accounts.insert(
                     address,
-                    Tracked {
-                        original: original.cloned(),
-                        current: current.map(Account::info),
-                        _non_exhaustive: (),
-                    },
+                    Tracked::from_parts(
+                        entry.original.clone(),
+                        entry.present.as_ref().map(Account::info),
+                    ),
                 );
             }
-            if let Some(account) = current {
-                let code_hash = account.code_hash;
-                if account.code_changed
-                    && !account.code.is_empty()
-                    && !code_hash.is_zero()
-                    && code_hash != KECCAK256_EMPTY
-                {
-                    changes.code.insert(code_hash, account.code.clone());
-                }
+            if let Some(account) = entry.present.as_ref()
+                && let Some((code_hash, code)) = Self::changed_code(account)
+            {
+                changes.code.insert(code_hash, code.clone());
             }
         }
 
         for (&address, storage) in &self.storage {
             let mut set = StorageChangeSet {
                 wipe: storage.wiped,
-                slots: BTreeMap::new(),
+                slots: U256Map::default(),
                 _non_exhaustive: (),
             };
             for (&key, slot) in &storage.slots {
-                let Some(slot) = slot.value.as_ref() else {
-                    continue;
-                };
-                if slot.original != slot.current && (!set.wipe || !slot.current.is_zero()) {
-                    set.slots.insert(
-                        key,
-                        Tracked {
-                            original: slot.original,
-                            current: slot.current,
-                            _non_exhaustive: (),
-                        },
-                    );
+                if let Some(tracked) = slot.value.as_ref()
+                    && Self::storage_slot_changed(set.wipe, tracked)
+                {
+                    set.slots.insert(key, Tracked::from_parts(tracked.original, tracked.current));
                 }
             }
             if set.wipe || !set.slots.is_empty() {
@@ -789,22 +874,66 @@ impl State {
         changes
     }
 
-    /// Builds and accepts the current transaction's state transition.
-    pub(crate) fn accept_transaction(&mut self) -> StateChanges {
-        let changes = self.build_state_changes();
-        self.database.commit(&changes);
+    /// Accepts the current transaction's state transition into the accepted overlay.
+    ///
+    /// This advances the in-memory accepted overlay by the transaction's write-set and clears the
+    /// transaction account/storage layers. It does not materialize [`StateChanges`], take logs, or
+    /// write to the wrapped backing database.
+    pub(crate) fn commit_transaction(&mut self) {
+        for (_, entry) in self.accounts.iter() {
+            if !entry.is_loaded {
+                continue;
+            }
+            if let Some(account) = entry.present.as_ref()
+                && let Some((code_hash, code)) = Self::changed_code(account)
+            {
+                self.inner.database.cache.contracts.insert(code_hash, code.clone());
+            }
+        }
+
+        for (&address, storage) in &self.storage {
+            if storage.wiped {
+                self.inner.database.cache.storage.entry(address).or_default().wipe();
+            }
+            for (&key, slot) in &storage.slots {
+                let Some(tracked) = slot.value.as_ref() else {
+                    continue;
+                };
+                if !Self::storage_slot_changed(storage.wiped, tracked) {
+                    continue;
+                }
+                self.inner
+                    .database
+                    .cache
+                    .storage
+                    .entry(address)
+                    .or_default()
+                    .slots
+                    .insert(key, tracked.current);
+            }
+        }
+
+        for (&address, entry) in self.accounts.iter() {
+            if !entry.is_loaded {
+                continue;
+            }
+            if !Self::account_changed(entry.original.as_ref(), entry.present.as_ref()) {
+                continue;
+            }
+            match entry.present.as_ref() {
+                Some(account) => self.inner.database.insert_account_info(
+                    &address,
+                    AccountInfoRef::from_account(account).to_account_info_without_code(),
+                ),
+                None => {
+                    self.inner.database.cache.accounts.insert(address, None);
+                    self.inner.database.cache.storage.entry(address).or_default().wipe();
+                }
+            }
+        }
+
         self.accounts.clear();
         self.storage.clear();
-        changes
     }
 
-    /// Marks the current transaction's write layer as accepted state.
-    ///
-    /// This applies the transaction write-set to the accepted in-memory database overlay and clears
-    /// the transaction layer. It does not write to the wrapped backing database; callers remain
-    /// responsible for committing the emitted write-set.
-    #[cfg(test)]
-    pub(super) fn commit_transaction_overlay(&mut self) {
-        let _ = self.accept_transaction();
-    }
 }

@@ -276,7 +276,7 @@ impl StorageSlotEntry<'_> {
                     return Err(DbErrorCode::COLD_LOAD_SKIPPED);
                 }
                 let original = self.load_original()?;
-                self.slot.value = Some(Tracked { original, current: value, _non_exhaustive: () });
+                self.slot.value = Some(Tracked::from_parts(original, value));
                 self.inner
                     .journal
                     .push(JournalEntry::StorageInserted { address: self.address, key: self.key });

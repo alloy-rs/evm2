@@ -7,8 +7,7 @@
 use crate::{
     bytecode::Bytecode,
     evm::{
-        AccountInfo, DatabaseCommit, DbErrorCode, DbResult, DynDatabase, StateChanges,
-        db_error_unavailable, stored_error_code,
+        AccountInfo, DbErrorCode, DbResult, DynDatabase, db_error_unavailable, stored_error_code,
     },
     interpreter::Word,
 };
@@ -523,13 +522,6 @@ impl<D: AsyncDatabase> AsyncDb<D> {
     }
 }
 
-impl<D: AsyncDatabase + DatabaseCommit> DatabaseCommit for AsyncDb<D> {
-    #[inline]
-    fn commit(&mut self, changes: &StateChanges) {
-        self.db.commit(changes);
-    }
-}
-
 impl<D: AsyncDatabase> DynDatabase for AsyncDb<D> {
     #[inline]
     fn get_account(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
@@ -725,7 +717,7 @@ mod tests {
 
         let result = poll_ready(evm.transact_async(&tx)).unwrap();
 
-        assert_eq!(result.gas_used, 42);
+        assert_eq!(result.gas_used(), 42);
     }
 
     #[test]
@@ -747,7 +739,7 @@ mod tests {
 
         let result = poll_ready(assert_send(evm.transact_async(&tx))).unwrap();
 
-        assert_eq!(result.gas_used, 42);
+        assert_eq!(result.gas_used(), 42);
     }
 
     #[test]
@@ -770,7 +762,7 @@ mod tests {
 
         let result = poll_ready(assert_send(evm.transact_async(&tx))).unwrap();
 
-        assert_eq!(result.gas_used, 42);
+        assert_eq!(result.gas_used(), 42);
     }
 
     #[test]
@@ -940,7 +932,6 @@ mod tests {
 
         assert!(result.status);
         assert_eq!(result.gas_used, 0);
-        assert!(result.state_changes.is_empty());
     }
 
     #[test]

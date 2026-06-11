@@ -1,7 +1,7 @@
 use alloy_primitives::{Address, B256};
 use evm2::{
     bytecode::Bytecode,
-    evm::{AccountInfo, DatabaseCommit, InMemoryDB, StateChanges},
+    evm::{AccountInfo, InMemoryDB},
 };
 
 /// Parses fixture bytecode into evm2 bytecode.
@@ -20,18 +20,6 @@ pub(crate) fn insert_account_with_storage(
     for (key, value) in storage {
         database.insert_account_storage(&address, &key, &value);
     }
-}
-
-/// Applies state changes to a cloned database and returns the post-state.
-pub(crate) fn apply_state_changes(pre: &InMemoryDB, changes: &StateChanges) -> InMemoryDB {
-    let mut post = pre.clone();
-    apply_state_changes_in_place(&mut post, changes);
-    post
-}
-
-/// Applies state changes to an in-memory database.
-pub(crate) fn apply_state_changes_in_place(database: &mut InMemoryDB, changes: &StateChanges) {
-    database.commit(changes);
 }
 
 /// Returns whether the given system contract exists with non-empty code.
@@ -53,9 +41,9 @@ pub(crate) fn storage_for_root(
     state
         .cache
         .storage
-        .iter()
-        .filter_map(|(&key, &value)| {
-            (key.address() == address && !value.is_zero()).then_some((B256::from(key.key()), value))
-        })
+        .get(&address)
+        .into_iter()
+        .flat_map(|storage| storage.slots.iter())
+        .filter_map(|(&key, &value)| (!value.is_zero()).then_some((B256::from(key), value)))
         .collect()
 }

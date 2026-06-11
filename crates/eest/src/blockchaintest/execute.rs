@@ -11,10 +11,7 @@ use super::{
 };
 use crate::{
     filter::EntryPoint,
-    state::{
-        apply_state_changes_in_place, insert_account_with_storage, parse_bytecode,
-        system_contract_has_code,
-    },
+    state::{insert_account_with_storage, parse_bytecode},
     tx::{TxFields, build_recovered_tx, rpc_access_list, signed_authorizations},
 };
 use alloy_eips::eip7840::BlobParams;
@@ -25,8 +22,9 @@ use evm2::{
     env::BlockEnv,
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
     evm::{
-        AccountInfo as EvmAccountInfo, BEACON_ROOTS_ADDRESS, HISTORY_STORAGE_ADDRESS, InMemoryDB,
-        WITHDRAWAL_REQUEST_ADDRESS,
+        AccountChangeRef, AccountInfo as EvmAccountInfo, AccountInfoRef, BEACON_ROOTS_ADDRESS,
+        BlockStateAccumulator, DbErrorCode, HISTORY_STORAGE_ADDRESS, InMemoryDB, StateChangeSink,
+        StateChangeSource, Tee, WITHDRAWAL_REQUEST_ADDRESS,
     },
     registry::HandlerError,
 };
@@ -174,6 +172,12 @@ fn seed_block_hashes(database: &mut InMemoryDB, test_case: &BlockchainTestCase) 
     );
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BlockResolution {
+    Commit,
+    Discard,
+}
+
 #[expect(clippy::too_many_arguments)]
 fn execute_block(
     path: &Path,
@@ -203,92 +207,131 @@ fn execute_block(
         this_excess_blob_gas = header.excess_blob_gas.map(|gas| gas.saturating_to::<u64>());
     }
 
-    let mut block_database = database.clone();
-    pre_block_system_calls(
-        &mut block_database,
+    let initial_database = mem::take(database);
+    let mut evm = Evm::<BaseEvmTypes>::new(
         spec,
         next_block_env,
-        *parent_block_hash,
-        beacon_root,
-    )
-    .map_err(|err| TestError::case(path, name, err))?;
+        ethereum_tx_registry(spec),
+        initial_database,
+        Precompiles::base(spec),
+    );
+    let mut block_state = BlockStateAccumulator::new();
 
-    let transactions = block_transactions(block);
-    for (transaction_index, raw_tx) in transactions.iter().enumerate() {
-        hook.transaction_started(TransactionStarted {
-            block_index,
-            total_blocks,
-            block_number,
-            transaction_index,
-            total_transactions,
-        });
-        let tx = match build_tx(raw_tx) {
-            Ok(tx) => tx,
-            Err(_err) if should_fail => {
-                return Ok(());
-            }
-            Err(err) => {
-                hook.transaction_failed(TransactionFailed {
-                    block_index,
-                    total_blocks,
-                    block_number,
-                    transaction_index,
-                    total_transactions,
-                    error: &err,
-                });
-                return Err(TestError::case(path, name, err));
-            }
-        };
-
-        match execute_tx(spec, next_block_env, &mut block_database, &tx) {
-            Ok(result) => {
-                apply_state_changes_in_place(&mut block_database, &result.state_changes);
-                hook.transaction_finished(TransactionFinished {
-                    block_index,
-                    total_blocks,
-                    block_number,
-                    transaction_index,
-                    total_transactions,
-                });
-            }
-            Err(err) if should_fail => {
-                let _ = err;
-                return Ok(());
-            }
-            Err(err) => {
-                hook.transaction_failed(TransactionFailed {
-                    block_index,
-                    total_blocks,
-                    block_number,
-                    transaction_index,
-                    total_transactions,
-                    error: &err,
-                });
-                return Err(TestError::case(path, name, err.into()));
-            }
-        }
-    }
-
-    if should_fail {
-        let expected = block.expect_exception.clone().unwrap_or_default();
-        return Err(TestError::case(path, name, TestErrorKind::UnexpectedSuccess(expected)));
-    }
-
-    post_block_transition(&mut block_database, spec, next_block_env, block_withdrawals(block))
+    let result = (|| -> Result<BlockResolution, TestError> {
+        pre_block_system_calls(
+            &mut evm,
+            &mut block_state,
+            spec,
+            next_block_env,
+            *parent_block_hash,
+            beacon_root,
+        )
         .map_err(|err| TestError::case(path, name, err))?;
 
-    if let Some(expected_bal) = &block.block_access_list {
-        assert_block_access_list(block_index, expected_bal);
-    }
+        let transactions = block_transactions(block);
+        for (transaction_index, raw_tx) in transactions.iter().enumerate() {
+            hook.transaction_started(TransactionStarted {
+                block_index,
+                total_blocks,
+                block_number,
+                transaction_index,
+                total_transactions,
+            });
+            let tx = match build_tx(raw_tx) {
+                Ok(tx) => tx,
+                Err(_err) if should_fail => {
+                    return Ok(BlockResolution::Discard);
+                }
+                Err(err) => {
+                    hook.transaction_failed(TransactionFailed {
+                        block_index,
+                        total_blocks,
+                        block_number,
+                        transaction_index,
+                        total_transactions,
+                        error: &err,
+                    });
+                    return Err(TestError::case(path, name, err));
+                }
+            };
 
-    block_database.insert_block_hash(&next_block_env.number, &block_hash.unwrap_or_default());
-    *database = block_database;
-    *block_env = next_block_env;
-    *parent_block_hash = block_hash;
-    if let Some(excess_blob_gas) = this_excess_blob_gas {
-        *parent_excess_blob_gas = excess_blob_gas;
+            match execute_tx(&mut evm, &mut block_state, &tx) {
+                Ok(_) => {
+                    hook.transaction_finished(TransactionFinished {
+                        block_index,
+                        total_blocks,
+                        block_number,
+                        transaction_index,
+                        total_transactions,
+                    });
+                }
+                Err(err) if should_fail => {
+                    let _ = err;
+                    return Ok(BlockResolution::Discard);
+                }
+                Err(err) => {
+                    hook.transaction_failed(TransactionFailed {
+                        block_index,
+                        total_blocks,
+                        block_number,
+                        transaction_index,
+                        total_transactions,
+                        error: &err,
+                    });
+                    return Err(TestError::case(path, name, err.into()));
+                }
+            }
+        }
+
+        if should_fail {
+            let expected = block.expect_exception.clone().unwrap_or_default();
+            return Err(TestError::case(path, name, TestErrorKind::UnexpectedSuccess(expected)));
+        }
+
+        post_block_transition(
+            &mut evm,
+            &mut block_state,
+            spec,
+            next_block_env,
+            block_withdrawals(block),
+        )
+        .map_err(|err| TestError::case(path, name, err))?;
+
+        if let Some(expected_bal) = &block.block_access_list {
+            assert_block_access_list(block_index, expected_bal);
+        }
+
+        Ok(BlockResolution::Commit)
+    })();
+
+    // The EVM was constructed with this concrete database above; recover it before returning so
+    // invalid blocks leave the caller's state unchanged.
+    let mut restored_database = mem::take(
+        evm.database_as_mut::<InMemoryDB>().expect("block EVM database should be InMemoryDB"),
+    );
+
+    match result {
+        Ok(BlockResolution::Commit) => {
+            restored_database.commit_source(&block_state);
+            restored_database
+                .insert_block_hash(&next_block_env.number, &block_hash.unwrap_or_default());
+            *database = restored_database;
+            *block_env = next_block_env;
+            *parent_block_hash = block_hash;
+            if let Some(excess_blob_gas) = this_excess_blob_gas {
+                *parent_excess_blob_gas = excess_blob_gas;
+            }
+            Ok(())
+        }
+        Ok(BlockResolution::Discard) => {
+            *database = restored_database;
+            Ok(())
+        }
+        Err(err) => {
+            *database = restored_database;
+            Err(err)
+        }
     }
-    Ok(())
 }
 
 fn block_number(block: &Block) -> Option<U256> {
@@ -325,7 +368,8 @@ fn block_withdrawals(block: &Block) -> &[Withdrawal] {
 }
 
 fn pre_block_system_calls(
-    database: &mut InMemoryDB,
+    evm: &mut Evm<BaseEvmTypes>,
+    block_state: &mut BlockStateAccumulator,
     spec: SpecId,
     block: BlockEnv,
     parent_block_hash: Option<B256>,
@@ -338,9 +382,8 @@ fn pre_block_system_calls(
         && let Some(hash) = parent_block_hash
     {
         run_system_call(
-            database,
-            spec,
-            block,
+            evm,
+            block_state,
             HISTORY_STORAGE_ADDRESS,
             Bytes::copy_from_slice(hash.as_slice()),
             "eip2935",
@@ -350,9 +393,8 @@ fn pre_block_system_calls(
         && let Some(root) = parent_beacon_block_root
     {
         run_system_call(
-            database,
-            spec,
-            block,
+            evm,
+            block_state,
             BEACON_ROOTS_ADDRESS,
             Bytes::copy_from_slice(root.as_slice()),
             "eip4788",
@@ -362,39 +404,33 @@ fn pre_block_system_calls(
 }
 
 fn post_block_transition(
-    database: &mut InMemoryDB,
+    evm: &mut Evm<BaseEvmTypes>,
+    block_state: &mut BlockStateAccumulator,
     spec: SpecId,
     block: BlockEnv,
     withdrawals: &[Withdrawal],
 ) -> Result<(), TestErrorKind> {
     let reward = block_reward(spec, 0);
     if reward != 0 {
-        increment_balance(database, block.beneficiary, U256::from(reward));
+        increment_balance(evm, block_state, block.beneficiary, U256::from(reward))?;
     }
 
     if spec.enables(SpecId::SHANGHAI) {
         for withdrawal in withdrawals {
             increment_balance(
-                database,
+                evm,
+                block_state,
                 withdrawal.address,
                 withdrawal.amount.saturating_mul(U256::from(ONE_GWEI)),
-            );
+            )?;
         }
     }
 
     if spec.enables(SpecId::PRAGUE) {
+        run_system_call(evm, block_state, WITHDRAWAL_REQUEST_ADDRESS, Bytes::new(), "eip7002")?;
         run_system_call(
-            database,
-            spec,
-            block,
-            WITHDRAWAL_REQUEST_ADDRESS,
-            Bytes::new(),
-            "eip7002",
-        )?;
-        run_system_call(
-            database,
-            spec,
-            block,
+            evm,
+            block_state,
             evm2::evm::CONSOLIDATION_REQUEST_ADDRESS,
             Bytes::new(),
             "eip7251",
@@ -404,45 +440,72 @@ fn post_block_transition(
 }
 
 fn run_system_call(
-    database: &mut InMemoryDB,
-    spec: SpecId,
-    block: BlockEnv,
+    evm: &mut Evm<BaseEvmTypes>,
+    block_state: &mut BlockStateAccumulator,
     address: Address,
     data: Bytes,
     label: &'static str,
 ) -> Result<(), TestErrorKind> {
-    let mut evm = Evm::<BaseEvmTypes>::new(
-        spec,
-        block,
-        ethereum_tx_registry(spec),
-        mem::take(database),
-        Precompiles::base(spec),
-    );
-    let result = evm.system_call(address, data);
-    *database = mem::take(evm.database_as_mut::<InMemoryDB>().expect("database type mismatch"));
-    if !result.status && system_contract_has_code(database, address) {
-        return Err(TestErrorKind::SystemCall(label));
+    let executed = evm.system_call(address, data);
+    if !executed.result().status {
+        let _ = executed.discard();
+        let has_code = match evm.account_code(&address) {
+            Ok(code) => !code.is_empty(),
+            Err(code) => return Err(database_error(evm, code)),
+        };
+        if has_code {
+            return Err(TestErrorKind::SystemCall(label));
+        }
+        return Ok(());
     }
-    apply_state_changes_in_place(database, &result.state_changes);
+    let _ = executed.commit_to(block_state);
     Ok(())
 }
 
 fn execute_tx(
-    spec: SpecId,
-    block: BlockEnv,
-    database: &mut InMemoryDB,
+    evm: &mut Evm<BaseEvmTypes>,
+    block_state: &mut BlockStateAccumulator,
     tx: &RecoveredTxEnvelope,
 ) -> Result<TxResult, HandlerError> {
-    let mut evm = Evm::<BaseEvmTypes>::new(
-        spec,
-        block,
-        ethereum_tx_registry(spec),
-        mem::take(database),
-        Precompiles::base(spec),
-    );
-    let result = evm.transact(tx);
-    *database = mem::take(evm.database_as_mut::<InMemoryDB>().expect("database type mismatch"));
-    result
+    Ok(evm.transact(tx)?.commit_to(block_state))
+}
+
+fn commit_state_changes<S: StateChangeSource>(
+    evm: &mut Evm<BaseEvmTypes>,
+    block_state: &mut BlockStateAccumulator,
+    changes: &S,
+) {
+    let mut sink = Tee::new(evm.overlay_db_mut(), block_state);
+    let Ok(()) = changes.visit(&mut sink);
+}
+
+struct AccountStateChange {
+    address: Address,
+    original: Option<EvmAccountInfo>,
+    current: Option<EvmAccountInfo>,
+}
+
+impl StateChangeSource for AccountStateChange {
+    fn visit<S: StateChangeSink>(&self, sink: &mut S) -> Result<(), S::Error> {
+        sink.account(AccountChangeRef {
+            address: self.address,
+            original: self.original.as_ref().map(account_info_ref),
+            current: self.current.as_ref().map(account_info_ref),
+        })
+    }
+}
+
+const fn account_info_ref(info: &EvmAccountInfo) -> AccountInfoRef<'_> {
+    AccountInfoRef {
+        balance: info.balance,
+        nonce: info.nonce,
+        code_hash: info.code_hash,
+        code: info.code.as_ref(),
+    }
+}
+
+fn database_error(evm: &mut Evm<BaseEvmTypes>, code: DbErrorCode) -> TestErrorKind {
+    TestErrorKind::UnexpectedFailure(evm.database_mut().error(code).to_string())
 }
 
 fn parse_state(
@@ -554,13 +617,25 @@ const fn block_reward(spec: SpecId, ommers: usize) -> u128 {
     reward + (reward >> 5) * ommers as u128
 }
 
-fn increment_balance(database: &mut InMemoryDB, address: Address, amount: U256) {
-    let mut info = database.cache.accounts.get(&address).cloned().flatten().unwrap_or_default();
-    info.balance = info.balance.saturating_add(amount);
-    if info.code_hash.is_zero() {
-        info.code_hash = KECCAK256_EMPTY;
+fn increment_balance(
+    evm: &mut Evm<BaseEvmTypes>,
+    block_state: &mut BlockStateAccumulator,
+    address: Address,
+    amount: U256,
+) -> Result<(), TestErrorKind> {
+    let original = match evm.account_info(&address) {
+        Ok(info) => info,
+        Err(code) => return Err(database_error(evm, code)),
+    };
+    let mut current = original.clone().unwrap_or_default();
+    current.balance = current.balance.saturating_add(amount);
+    if current.code_hash.is_zero() {
+        current.code_hash = KECCAK256_EMPTY;
     }
-    database.cache.accounts.insert(address, Some(info));
+
+    let change = AccountStateChange { address, original, current: Some(current) };
+    commit_state_changes(evm, block_state, &change);
+    Ok(())
 }
 
 fn validate_post_state(
@@ -598,16 +673,13 @@ fn validate_post_state(
             }
         }
 
-        for (&key, &value) in &database.cache.storage {
-            if key.address() == *address
-                && !value.is_zero()
-                && !expected_account.storage.contains_key(&key.key())
-            {
-                return Err(TestErrorKind::UnexpectedFailure(format!(
-                    "unexpected storage for {address}[{}]: got {}, expected 0",
-                    key.key(),
-                    value
-                )));
+        if let Some(storage) = database.cache.storage.get(address) {
+            for (&key, &value) in &storage.slots {
+                if !value.is_zero() && !expected_account.storage.contains_key(&key) {
+                    return Err(TestErrorKind::UnexpectedFailure(format!(
+                        "unexpected storage for {address}[{key}]: got {value}, expected 0"
+                    )));
+                }
             }
         }
 
@@ -615,7 +687,8 @@ fn validate_post_state(
             let actual_value = database
                 .cache
                 .storage
-                .get(&evm2::StorageKey::new(*address, slot))
+                .get(address)
+                .and_then(|storage| storage.slots.get(&slot))
                 .copied()
                 .unwrap_or_default();
             if actual_value != expected_value {
