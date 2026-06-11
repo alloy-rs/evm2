@@ -185,7 +185,7 @@ impl State {
     /// accounts known to be absent. It does not load the account or slot from the backing database;
     /// use [`Self::storage`] when database-backed loading is desired.
     #[inline]
-    pub fn storage_ref(&self, address: &Address, key: &Word) -> Option<Word> {
+    pub fn storage_cached_ref(&self, address: &Address, key: &Word) -> Option<Word> {
         if let Some(storage) = self.scratch.storage.get(address) {
             if let Some(slot) = storage.slots.get(key) {
                 return Some(slot.current);
@@ -218,6 +218,119 @@ impl State {
     #[must_use]
     pub fn account_ref(&self, address: &Address) -> Option<&Account> {
         self.scratch.accounts.get(address)?.as_ref()
+    }
+
+    /// Returns account info.
+    #[inline(never)]
+    pub fn account_info(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
+        if let Some(account) = self.scratch.accounts.get(address) {
+            return Ok(account.as_ref().map(Account::info));
+        }
+        self.database.get_account(address)
+    }
+
+    /// Returns account code without touching the transaction scratch or journal.
+    ///
+    /// This matches revm's JS database object semantics: account info is read from the current
+    /// transaction state first, and missing bytecode is resolved through the database by hash.
+    pub fn code_untracked(&mut self, address: &Address) -> DbResult<Bytecode> {
+        let Some(info) = self.account_info(address)? else {
+            return Ok(Bytecode::default());
+        };
+        self.code_from_info(info)
+    }
+
+    fn code_from_info(&mut self, info: AccountInfo) -> DbResult<Bytecode> {
+        if let Some(code) = info.code
+            && !code.is_empty()
+        {
+            return Ok(code);
+        }
+        self.code_from_parts(info.code_hash, Bytecode::default())
+    }
+
+    fn code_from_parts(&mut self, code_hash: B256, code: Bytecode) -> DbResult<Bytecode> {
+        if code_hash == KECCAK256_EMPTY {
+            return Ok(Bytecode::default());
+        }
+        if !code.is_empty() {
+            return Ok(code);
+        }
+        self.database.get_code_by_hash(&code_hash)
+    }
+
+    /// Returns persistent storage without touching the transaction scratch or journal.
+    ///
+    /// This matches revm's JS database object semantics: storage reads go directly through the
+    /// database layer and do not observe the current transaction state.
+    pub fn storage_untracked(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
+        self.database.get_storage(address, key)
+    }
+
+    /// Returns whether an account is empty/non-existent for EIP-150 new-account gas checks.
+    pub(crate) fn target_is_empty_for_new_account_gas(
+        &mut self,
+        address: &Address,
+        features: EvmFeatures,
+    ) -> DbResult<bool> {
+        if features.contains(EvmFeatures::EIP161) {
+            return Ok(self.account_info(address)?.is_none_or(|info| info.is_empty()));
+        }
+        Ok(self.account_info(address)?.is_none() && !self.scratch.touched.contains(address))
+    }
+
+    /// Returns an account if it exists.
+    pub fn find(&mut self, address: &Address) -> DbResult<Option<&Account>> {
+        let account = Self::ensure_transaction_account(
+            &mut self.database,
+            &mut self.scratch.accounts,
+            &mut self.scratch.journal,
+            address,
+        )?;
+        Ok(account.as_ref())
+    }
+
+    /// Gets account code.
+    pub fn code(&mut self, address: &Address) -> DbResult<Bytecode> {
+        if let Some(account) = self.scratch.accounts.get(address).and_then(Option::as_ref) {
+            if account.code_hash == KECCAK256_EMPTY {
+                return Ok(Bytecode::default());
+            }
+            if !account.code.is_empty() {
+                return Ok(account.code.clone());
+            }
+            let code_hash = account.code_hash;
+            return self.database.get_code_by_hash(&code_hash);
+        }
+
+        let Some(info) = self.database.get_account(address)? else {
+            return Ok(Bytecode::default());
+        };
+        if info.code_hash == KECCAK256_EMPTY {
+            return Ok(Bytecode::default());
+        }
+        if let Some(code) = info.code
+            && !code.is_empty()
+        {
+            return Ok(code);
+        }
+        self.database.get_code_by_hash(&info.code_hash)
+    }
+
+    /// Loads persistent storage.
+    pub fn storage(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
+        if let Some(storage) = self.scratch.storage.get(address) {
+            if let Some(slot) = storage.slots.get(key) {
+                return Ok(slot.current);
+            }
+            if storage.wiped {
+                return Ok(Word::ZERO);
+            }
+        }
+        if self.account_known_absent(address) {
+            return Ok(Word::ZERO);
+        }
+        self.database.get_storage(address, key)
     }
 
     /// Returns whether an account is warm in the current transaction.
@@ -382,128 +495,6 @@ impl State {
             || self.database.account_absent(address)
     }
 
-    /// Returns account info.
-    #[inline(never)]
-    pub fn account_info(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
-        if let Some(account) = self.scratch.accounts.get(address) {
-            return Ok(account.as_ref().map(Account::info));
-        }
-        self.database.get_account(address)
-    }
-
-    /// Returns account info from the overlay or backing database without inserting into the
-    /// overlay.
-    #[inline]
-    pub fn account_info_ref_or_db(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
-        self.account_info(address)
-    }
-
-    /// Returns account code from the overlay or backing database without inserting into the
-    /// overlay.
-    pub fn code_ref_or_db(&mut self, address: &Address) -> DbResult<Bytecode> {
-        if let Some(account) = self.scratch.accounts.get(address) {
-            let Some(account) = account else {
-                return Ok(Bytecode::default());
-            };
-            return self.code_from_parts(account.code_hash, account.code.clone());
-        }
-        let Some(info) = self.database.get_account(address)? else {
-            return Ok(Bytecode::default());
-        };
-        self.code_from_info(info)
-    }
-
-    fn code_from_info(&mut self, info: AccountInfo) -> DbResult<Bytecode> {
-        if let Some(code) = info.code
-            && !code.is_empty()
-        {
-            return Ok(code);
-        }
-        self.code_from_parts(info.code_hash, Bytecode::default())
-    }
-
-    fn code_from_parts(&mut self, code_hash: B256, code: Bytecode) -> DbResult<Bytecode> {
-        if code_hash == KECCAK256_EMPTY {
-            return Ok(Bytecode::default());
-        }
-        if !code.is_empty() {
-            return Ok(code);
-        }
-        self.database.get_code_by_hash(&code_hash)
-    }
-
-    /// Returns persistent storage from the overlay or backing database without inserting into the
-    /// overlay.
-    pub fn storage_ref_or_db(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
-        if let Some(account) = self.scratch.accounts.get(address)
-            && account.is_none()
-        {
-            return Ok(Word::ZERO);
-        }
-        if let Some(storage) = self.scratch.storage.get(address) {
-            if let Some(slot) = storage.slots.get(key) {
-                return Ok(slot.current);
-            }
-            if storage.wiped {
-                return Ok(Word::ZERO);
-            }
-        }
-        if self.database.account_absent(address) {
-            return Ok(Word::ZERO);
-        }
-        self.database.get_storage(address, key)
-    }
-
-    /// Returns whether an account is empty/non-existent for EIP-150 new-account gas checks.
-    pub(crate) fn target_is_empty_for_new_account_gas(
-        &mut self,
-        address: &Address,
-        features: EvmFeatures,
-    ) -> DbResult<bool> {
-        if features.contains(EvmFeatures::EIP161) {
-            return Ok(self.account_info(address)?.is_none_or(|info| info.is_empty()));
-        }
-        Ok(self.account_info(address)?.is_none() && !self.scratch.touched.contains(address))
-    }
-
-    /// Returns an account if it exists.
-    pub fn find(&mut self, address: &Address) -> DbResult<Option<&Account>> {
-        let account = Self::ensure_transaction_account(
-            &mut self.database,
-            &mut self.scratch.accounts,
-            &mut self.scratch.journal,
-            address,
-        )?;
-        Ok(account.as_ref())
-    }
-
-    /// Gets account code.
-    pub fn get_code(&mut self, address: &Address) -> DbResult<Bytecode> {
-        if let Some(account) = self.scratch.accounts.get(address).and_then(Option::as_ref) {
-            if account.code_hash == KECCAK256_EMPTY {
-                return Ok(Bytecode::default());
-            }
-            if !account.code.is_empty() {
-                return Ok(account.code.clone());
-            }
-            let code_hash = account.code_hash;
-            return self.database.get_code_by_hash(&code_hash);
-        }
-
-        let Some(info) = self.database.get_account(address)? else {
-            return Ok(Bytecode::default());
-        };
-        if info.code_hash == KECCAK256_EMPTY {
-            return Ok(Bytecode::default());
-        }
-        if let Some(code) = info.code
-            && !code.is_empty()
-        {
-            return Ok(code);
-        }
-        self.database.get_code_by_hash(&info.code_hash)
-    }
-
     fn insert_transaction_storage(
         &mut self,
         address: &Address,
@@ -531,22 +522,6 @@ impl State {
                     .push(JournalEntry::StorageInserted { address: *address, key: *key });
             }
         }
-    }
-
-    /// Loads persistent storage.
-    pub fn storage(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
-        if let Some(storage) = self.scratch.storage.get(address) {
-            if let Some(slot) = storage.slots.get(key) {
-                return Ok(slot.current);
-            }
-            if storage.wiped {
-                return Ok(Word::ZERO);
-            }
-        }
-        if self.account_known_absent(address) {
-            return Ok(Word::ZERO);
-        }
-        self.database.get_storage(address, key)
     }
 
     /// Stores persistent storage and returns values needed for `SSTORE` gas metering.
@@ -1286,6 +1261,21 @@ mod tests {
         assert!(state.is_storage_warm(&base_storage, &key));
         assert!(!state.is_account_warm(&frame_account));
         assert!(!state.is_storage_warm(&frame_storage, &key));
+    }
+
+    #[test]
+    fn storage_untracked_ignores_transaction_overlay() {
+        let address = Address::with_last_byte(0x11);
+        let key = Word::from(0x22);
+        let mut database = CacheDB::default();
+        database.insert_account_info(&address, AccountInfo::default());
+        database.insert_account_storage(&address, &key, &Word::from(1));
+        let mut state = State::new(database);
+
+        let _ = state.set_storage(&address, &key, &Word::from(2)).unwrap();
+
+        assert_eq!(state.storage(&address, &key).unwrap(), Word::from(2));
+        assert_eq!(state.storage_untracked(&address, &key).unwrap(), Word::from(1));
     }
 
     #[test]

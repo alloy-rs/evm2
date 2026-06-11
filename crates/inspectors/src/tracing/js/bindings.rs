@@ -383,7 +383,7 @@ impl ReusableEvmDb {
         )
         .length(1)
         .build();
-        let get_code = FunctionObjectBuilder::new(
+        let code = FunctionObjectBuilder::new(
             ctx.realm(),
             NativeFunction::from_copy_closure_with_captures(
                 move |_this, args, state, ctx| {
@@ -416,7 +416,7 @@ impl ReusableEvmDb {
 
         object.set(js_string!("getBalance"), get_balance, false, ctx)?;
         object.set(js_string!("getNonce"), get_nonce, false, ctx)?;
-        object.set(js_string!("getCode"), get_code, false, ctx)?;
+        object.set(js_string!("getCode"), code, false, ctx)?;
         object.set(js_string!("getState"), get_state, false, ctx)?;
         object.set(js_string!("exists"), exists, false, ctx)?;
 
@@ -1275,7 +1275,7 @@ impl EvmDbRef {
         .length(1)
         .build();
 
-        let get_code = FunctionObjectBuilder::new(
+        let code = FunctionObjectBuilder::new(
             ctx.realm(),
             NativeFunction::from_copy_closure_with_captures(
                 move |_this, args, db, ctx| {
@@ -1304,7 +1304,7 @@ impl EvmDbRef {
 
         obj.set(js_string!("getBalance"), get_balance, false, ctx)?;
         obj.set(js_string!("getNonce"), get_nonce, false, ctx)?;
-        obj.set(js_string!("getCode"), get_code, false, ctx)?;
+        obj.set(js_string!("getCode"), code, false, ctx)?;
         obj.set(js_string!("getState"), get_state, false, ctx)?;
         obj.set(js_string!("exists"), exists, false, ctx)?;
         Ok(obj)
@@ -1338,16 +1338,15 @@ struct StateDbReader<'a> {
 
 impl EvmDbReader for StateDbReader<'_> {
     fn read_basic(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
-        self.state.account_info_ref_or_db(address)
+        self.state.account_info(address)
     }
 
     fn read_code(&mut self, address: &Address) -> DbResult<Bytecode> {
-        self.state.code_ref_or_db(address)
+        self.state.code_untracked(address)
     }
 
     fn read_state(&mut self, address: &Address, slot: &Word) -> DbResult<Word> {
-        // Matches upstream: storage is always read from the backing database, not the journal.
-        self.state.overlay_db_mut().get_storage(address, slot)
+        self.state.storage_untracked(address, slot)
     }
 }
 

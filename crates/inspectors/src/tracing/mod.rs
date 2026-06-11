@@ -558,7 +558,7 @@ impl TracingInspector {
         match journal_entry {
             JournalEntry::StorageChange { address, key, previous } => {
                 // SAFETY: (Address, key) exists if part of StorageChange.
-                let value = host.state().storage_ref(address, key).unwrap_or_default();
+                let value = host.state().storage_cached_ref(address, key).unwrap_or_default();
                 Some(Box::new(StorageChange {
                     key: *key,
                     value,
@@ -577,7 +577,7 @@ impl TracingInspector {
             }
             JournalEntry::StorageWarmed { address, key } => {
                 // SAFETY: (Address, key) exists if part of StorageChange.
-                let value = host.state().storage_ref(address, key).unwrap_or_default();
+                let value = host.state().storage_cached_ref(address, key).unwrap_or_default();
                 Some(Box::new(StorageChange { key: *key, value, had_value: None, reason }))
             }
             _ => None,

@@ -331,7 +331,7 @@ pub(super) fn validate_sender<T: EvmTypes<Host = Evm<T>>>(
         .map_err(|code| host.db_error_handler(code))?
         .unwrap_or_default();
     if host.feature(EvmFeatures::EIP3607) && sender_info.code_hash != KECCAK256_EMPTY {
-        let code = host.state.get_code(&caller).map_err(|code| host.db_error_handler(code))?;
+        let code = host.state.code(&caller).map_err(|code| host.db_error_handler(code))?;
         if !code.is_empty() && !code.is_eip7702() {
             return Err(HandlerError::RejectCallerWithCode);
         }
@@ -453,7 +453,7 @@ fn initial_call_code<T: EvmTypes<Host = Evm<T>>>(
     host: &mut Evm<T>,
     to: Address,
 ) -> HandlerResult<InitialCallCode> {
-    let code = host.state.get_code(&to).map_err(|code| host.db_error_handler(code))?;
+    let code = host.state.code(&to).map_err(|code| host.db_error_handler(code))?;
     if host.feature(EvmFeatures::EIP7702)
         && let Some(delegated_address) = code.eip7702_address()
     {
@@ -461,7 +461,7 @@ fn initial_call_code<T: EvmTypes<Host = Evm<T>>>(
         return Ok(InitialCallCode {
             code: host
                 .state
-                .get_code(&delegated_address)
+                .code(&delegated_address)
                 .map_err(|code| host.db_error_handler(code))?,
             code_address: delegated_address,
             disable_precompiles: true,

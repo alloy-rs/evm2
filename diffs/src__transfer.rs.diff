@@ -42,21 +42,19 @@
          self.insert_logs = insert_logs;
          self
      }
-@@ -66,22 +66,30 @@
+@@ -66,22 +66,26 @@
          self.transfers.iter()
      }
  
 -    fn on_transfer<DB: Database, JOURNAL: JournalTr<Database = DB>>(
-+    fn on_transfer<T: EvmTypes>(
-         &mut self,
+-        &mut self,
 -        from: Address,
 -        to: Address,
 -        value: U256,
 -        kind: TransferKind,
 -        journaled_state: &mut JOURNAL,
-+        message: &Message<T>,
-+        host: &mut T::Host,
-     ) {
+-    ) {
++    fn on_transfer<T: EvmTypes>(&mut self, message: &Message<T>, host: &mut T::Host) {
 +        let kind = match message.kind {
 +            MessageKind::Call | MessageKind::CallCode => TransferKind::Call,
 +            MessageKind::Create => TransferKind::Create,
@@ -80,7 +78,7 @@
          self.transfers.push(TransferOperation { kind, from, to, value });
  
          if self.insert_logs {
-@@ -89,53 +97,49 @@
+@@ -89,53 +93,49 @@
              let to = B256::from_slice(&to.abi_encode());
              let data = value.abi_encode();
  
@@ -161,7 +159,7 @@
          });
      }
  }
-@@ -154,6 +158,7 @@
+@@ -154,6 +154,7 @@
  }
  
  /// The kind of transfer operation.

@@ -369,7 +369,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     /// Returns account bytecode visible through the accepted state overlay.
     #[inline]
     pub fn account_code(&mut self, address: &Address) -> DbResult<Bytecode> {
-        self.state.get_code(address)
+        self.state.code(address)
     }
 
     /// Applies borrowed changes to the accepted state overlay.
@@ -1247,7 +1247,7 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
             balance: info.balance,
             code_hash: if exists { info.code_hash } else { B256::ZERO },
             code: if load_code {
-                self.state.get_code(address).map_err(|code| self.db_error_stop(code))?
+                self.state.code(address).map_err(|code| self.db_error_stop(code))?
             } else {
                 Bytecode::default()
             },
@@ -2074,7 +2074,7 @@ mod tests {
         assert_eq!(outcome.gas_used(), 7);
         assert_eq!(outcome.logs.len(), 1);
         assert_eq!(
-            evm.state.storage_ref(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY),
+            evm.state.storage_cached_ref(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY),
             Some(Word::from(1))
         );
     }
@@ -2096,7 +2096,7 @@ mod tests {
         assert_eq!(slot.original, Word::from(1));
         assert_eq!(slot.current, Word::from(7));
         assert_eq!(
-            evm.state.storage_ref(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY),
+            evm.state.storage_cached_ref(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY),
             Some(Word::from(1))
         );
     }
@@ -2109,13 +2109,13 @@ mod tests {
 
         assert_eq!(outcome.logs.len(), 1);
         assert_eq!(
-            evm.state.storage_ref(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY),
+            evm.state.storage_cached_ref(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY),
             Some(Word::from(7))
         );
 
         let _ = evm.transact(&test_tx(9)).expect("lifecycle transaction should execute").commit();
         assert_eq!(
-            evm.state.storage_ref(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY),
+            evm.state.storage_cached_ref(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY),
             Some(Word::from(9))
         );
     }
@@ -2139,7 +2139,7 @@ mod tests {
         assert_eq!(storage[0].1.original, Word::from(1));
         assert_eq!(storage[0].1.current, Word::from(9));
         assert_eq!(
-            evm.state.storage_ref(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY),
+            evm.state.storage_cached_ref(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY),
             Some(Word::from(9))
         );
     }
@@ -2167,7 +2167,7 @@ mod tests {
         drop(evm.transact(&test_tx(7)).expect("lifecycle transaction should execute"));
 
         assert_eq!(
-            evm.state.storage_ref(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY),
+            evm.state.storage_cached_ref(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY),
             Some(Word::from(1))
         );
     }
