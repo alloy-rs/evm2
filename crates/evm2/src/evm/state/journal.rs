@@ -105,11 +105,11 @@ mod tests {
         let mut state = State::new(CacheDB::default());
 
         let checkpoint = state.checkpoint();
-        state.mark_destructed(&address);
+        state.account_entry(&address, false).unwrap().mark_destructed();
 
-        assert!(state.is_selfdestructed(&address));
+        assert!(state.account_entry(&address, false).unwrap().is_destructed());
         state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
-        assert!(!state.is_selfdestructed(&address));
+        assert!(!state.account_entry(&address, false).unwrap().is_destructed());
     }
 
     #[test]
@@ -154,12 +154,12 @@ mod tests {
         let mut state = State::new(database);
 
         let checkpoint = state.checkpoint();
-        state.touch(&precompile3);
-        state.touch(&other);
+        state.account_entry(&precompile3, false).unwrap().touch();
+        state.account_entry(&other, false).unwrap().touch();
 
         state.rollback(checkpoint, Version::base(SpecId::SPURIOUS_DRAGON).features);
-        assert!(state.is_account_touched(&precompile3));
-        assert!(!state.is_account_touched(&other));
+        assert!(state.account_entry(&precompile3, false).unwrap().is_touched());
+        assert!(!state.account_entry(&other, false).unwrap().is_touched());
     }
 
     #[test]
@@ -171,8 +171,8 @@ mod tests {
         let key = Word::from(1);
         let mut state = State::new(CacheDB::default());
 
-        state.warm_account_non_revertible(&base_account);
-        assert!(state.warm_storage_non_revertible(&base_storage, &key));
+        state.prewarmset_mut().warm_account(&base_account);
+        assert!(state.prewarmset_mut().warm_storage(&base_storage, &key));
         assert!(state.journal.is_empty());
 
         let checkpoint = state.checkpoint();
@@ -181,10 +181,10 @@ mod tests {
         assert_eq!(state.journal.len(), 2);
 
         state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
-        assert!(state.is_account_warm(&base_account));
-        assert!(state.is_storage_warm(&base_storage, &key));
-        assert!(!state.is_account_warm(&frame_account));
-        assert!(!state.is_storage_warm(&frame_storage, &key));
+        assert!(state.account_entry(&base_account, false).unwrap().is_warm());
+        assert!(state.storage_slot_entry(&base_storage, key).is_warm());
+        assert!(!state.account_entry(&frame_account, false).unwrap().is_warm());
+        assert!(!state.storage_slot_entry(&frame_storage, key).is_warm());
     }
 
     #[test]
@@ -194,17 +194,17 @@ mod tests {
         let key = Word::from(1);
         let mut state = State::new(CacheDB::default());
 
-        state.warm_account_non_revertible(&account);
-        assert!(state.warm_storage_non_revertible(&storage_account, &key));
+        state.prewarmset_mut().warm_account(&account);
+        assert!(state.prewarmset_mut().warm_storage(&storage_account, &key));
 
         let changes = state.build_state_changes();
         assert!(changes.is_empty());
-        assert!(state.is_account_warm(&account));
-        assert!(state.is_storage_warm(&storage_account, &key));
+        assert!(state.account_entry(&account, false).unwrap().is_warm());
+        assert!(state.storage_slot_entry(&storage_account, key).is_warm());
 
         state.clear_transaction_state();
-        assert!(!state.is_account_warm(&account));
-        assert!(!state.is_storage_warm(&storage_account, &key));
+        assert!(!state.account_entry(&account, false).unwrap().is_warm());
+        assert!(!state.storage_slot_entry(&storage_account, key).is_warm());
     }
 
     #[test]
@@ -214,14 +214,16 @@ mod tests {
         database.insert_account_info(&account, AccountInfo::default().with_balance(Word::from(1)));
         let mut state = State::new(database);
 
-        state.warm_account_non_revertible(&account);
+        state.prewarmset_mut().warm_account(&account);
         let checkpoint = state.checkpoint();
-        assert!(state.find(&account).unwrap().is_some());
-        assert!(state.account_ref(&account).is_some());
+        assert!(state.account_entry(&account, false).unwrap().exists());
+        assert!(state.account_lookup(&account).is_some());
 
         state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
-        assert!(state.is_account_warm(&account));
-        assert!(state.account_ref(&account).is_none());
+        // Warmth is non-revertible (base warm set), so check it without re-loading the account,
+        // which would otherwise repopulate the overlay the rollback just cleared.
+        assert!(state.prewarmset().is_warm(&account));
+        assert!(state.account_lookup(&account).is_none());
         assert!(state.build_state_changes().is_empty());
     }
 
@@ -233,13 +235,13 @@ mod tests {
         database.insert_account_info(&account, AccountInfo::default().with_balance(Word::from(1)));
         let mut state = State::new(database);
 
-        assert!(state.warm_storage_non_revertible(&account, &key));
+        assert!(state.prewarmset_mut().warm_storage(&account, &key));
         let checkpoint = state.checkpoint();
-        state.set_storage(&account, &key, &Word::from(7)).unwrap();
-        assert_eq!(state.storage_ref(&account, &key), Some(Word::from(7)));
+        state.storage_entry(&account).slot(key).write(Word::from(7), false).unwrap();
+        assert_eq!(state.storage_lookup(&account, &key), Some(Word::from(7)));
 
         state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
-        assert!(state.is_storage_warm(&account, &key));
+        assert!(state.storage_slot_entry(&account, key).is_warm());
         assert!(state.build_state_changes().is_empty());
     }
 
@@ -255,11 +257,11 @@ mod tests {
 
         let checkpoint = state.checkpoint();
         assert!(state.warm_storage(&account, &key));
-        assert_eq!(state.storage(&account, &key).unwrap(), value);
+        assert_eq!(state.storage_entry(&account).slot(key).load(false).unwrap(), value);
 
         state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
-        assert!(!state.is_storage_warm(&account, &key));
-        assert_eq!(state.storage_ref(&account, &key), Some(value));
+        assert!(!state.storage_slot_entry(&account, key).is_warm());
+        assert_eq!(state.storage_lookup(&account, &key), Some(value));
         assert!(state.build_state_changes().is_empty());
 
         assert!(state.warm_storage(&account, &key));

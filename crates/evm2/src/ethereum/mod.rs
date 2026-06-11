@@ -264,11 +264,15 @@ pub(super) fn validate_sender<T: EvmTypes<Host = Evm<T>>>(
 ) -> HandlerResult<AccountInfo> {
     let sender_info = host
         .state
-        .account_info(&caller)
+        .peek_account_info(&caller)
         .map_err(|code| host.db_error_handler(code))?
         .unwrap_or_default();
     if host.feature(EvmFeatures::EIP3607) && sender_info.code_hash != KECCAK256_EMPTY {
-        let code = host.state.get_code(&caller).map_err(|code| host.db_error_handler(code))?;
+        let mut account = match host.state.account_entry(&caller, false) {
+            Ok(account) => account,
+            Err(code) => return Err(host.db_error_handler(code)),
+        };
+        let code = account.load_code().map_err(|code| host.db_error_handler(code))?;
         if !code.is_empty() && !code.is_eip7702() {
             return Err(HandlerError::RejectCallerWithCode);
         }
@@ -280,9 +284,11 @@ pub(super) fn validate_sender<T: EvmTypes<Host = Evm<T>>>(
         return Err(HandlerError::InsufficientFunds);
     }
     if !host.feature(EvmFeatures::BALANCE_CHECK) && sender_info.balance < max_upfront {
-        host.state
-            .add_balance(&caller, &(max_upfront - sender_info.balance))
-            .map_err(|code| host.db_error_handler(code))?;
+        let delta = max_upfront - sender_info.balance;
+        match host.state.account_entry(&caller, false) {
+            Ok(mut account) => account.add_balance(delta),
+            Err(code) => return Err(host.db_error_handler(code)),
+        }
     }
     Ok(sender_info)
 }
@@ -292,15 +298,15 @@ pub(super) fn warm_base_accounts<T: EvmTypes<Host = Evm<T>>>(
     caller: Address,
     to: TxKind,
 ) {
-    host.state.warm_account_non_revertible(&caller);
+    host.state.prewarmset_mut().warm_account(&caller);
     if host.feature(EvmFeatures::EIP3651) {
-        host.state.warm_coinbase(host.block.beneficiary);
+        host.state.prewarmset_mut().set_coinbase(host.block.beneficiary);
     }
     if let TxKind::Call(to) = to {
-        host.state.warm_account_non_revertible(&to);
+        host.state.prewarmset_mut().warm_account(&to);
     }
     let precompiles: AddressSet = host.precompiles().warm_addresses().into_iter().collect();
-    host.state.warm_precompiles(&precompiles);
+    host.state.prewarmset_mut().set_precompile_addresses(&precompiles);
 }
 
 pub(super) fn warm_access_list<T: EvmTypes<Host = Evm<T>>>(
@@ -314,7 +320,7 @@ pub(super) fn warm_access_list<T: EvmTypes<Host = Evm<T>>>(
             slots.insert(U256::from_be_bytes(key.0));
         }
     }
-    host.state.warm_access_list(warm);
+    host.state.prewarmset_mut().set_access_list(warm);
 }
 
 pub(super) fn charge_upfront<T: EvmTypes<Host = Evm<T>>>(
@@ -325,9 +331,11 @@ pub(super) fn charge_upfront<T: EvmTypes<Host = Evm<T>>>(
     if !host.feature(EvmFeatures::FEE_CHARGE) {
         return Ok(());
     }
-    host.state
-        .add_balance(&caller, &Word::ZERO.wrapping_sub(max_gas_cost))
-        .map_err(|code| host.db_error_handler(code))?;
+    let delta = Word::ZERO.wrapping_sub(max_gas_cost);
+    match host.state.account_entry(&caller, false) {
+        Ok(mut account) => account.add_balance(delta),
+        Err(code) => return Err(host.db_error_handler(code)),
+    }
     Ok(())
 }
 
@@ -392,16 +400,26 @@ fn initial_call_code<T: EvmTypes<Host = Evm<T>>>(
     host: &mut Evm<T>,
     to: Address,
 ) -> HandlerResult<InitialCallCode> {
-    let code = host.state.get_code(&to).map_err(|code| host.db_error_handler(code))?;
+    let code = {
+        let mut account = match host.state.account_entry(&to, false) {
+            Ok(account) => account,
+            Err(code) => return Err(host.db_error_handler(code)),
+        };
+        account.load_code().map_err(|code| host.db_error_handler(code))?
+    };
     if host.feature(EvmFeatures::EIP7702)
         && let Some(delegated_address) = code.eip7702_address()
     {
         let _ = host.state.warm_account(&delegated_address);
+        let delegated_code = {
+            let mut account = match host.state.account_entry(&delegated_address, false) {
+                Ok(account) => account,
+                Err(code) => return Err(host.db_error_handler(code)),
+            };
+            account.load_code().map_err(|code| host.db_error_handler(code))?
+        };
         return Ok(InitialCallCode {
-            code: host
-                .state
-                .get_code(&delegated_address)
-                .map_err(|code| host.db_error_handler(code))?,
+            code: delegated_code,
             code_address: delegated_address,
             disable_precompiles: true,
         });
@@ -434,17 +452,22 @@ pub(super) fn settle_gas<T: EvmTypes<Host = Evm<T>>>(
     let (gas_remaining, gas_used) =
         final_tx_gas(&result, tx_gas_limit, host.feature(EvmFeatures::EIP3529), floor_gas);
     if host.feature(EvmFeatures::FEE_CHARGE) {
-        host.state
-            .add_balance(&caller, &(U256::from(gas_remaining) * gas_price))
-            .map_err(|code| host.db_error_handler(code))?;
+        let caller_refund = U256::from(gas_remaining) * gas_price;
+        match host.state.account_entry(&caller, false) {
+            Ok(mut account) => account.add_balance(caller_refund),
+            Err(code) => return Err(host.db_error_handler(code)),
+        }
         let beneficiary_gas_price = if host.feature(EvmFeatures::BASE_FEE_CHECK) {
             gas_price.saturating_sub(host.block.basefee)
         } else {
             gas_price
         };
-        host.state
-            .add_balance(&host.block.beneficiary, &(U256::from(gas_used) * beneficiary_gas_price))
-            .map_err(|code| host.db_error_handler(code))?;
+        let beneficiary = host.block.beneficiary;
+        let beneficiary_reward = U256::from(gas_used) * beneficiary_gas_price;
+        match host.state.account_entry(&beneficiary, false) {
+            Ok(mut account) => account.add_balance(beneficiary_reward),
+            Err(code) => return Err(host.db_error_handler(code)),
+        }
     }
     Ok(TxResult {
         status: result.stop.is_success(),
@@ -713,7 +736,7 @@ mod tests {
         );
 
         assert!(validate_sender(&mut evm, caller, 0, U256::from(100)).is_ok());
-        assert_eq!(evm.state.account_info(&caller).unwrap().unwrap().balance, U256::from(100));
+        assert_eq!(evm.state.peek_account_info(&caller).unwrap().unwrap().balance, U256::from(100));
     }
 
     #[test]

@@ -111,7 +111,7 @@ impl<ExtDB> CacheDB<ExtDB> {
 
     /// Returns cached account info if the account exists in the cache.
     #[inline]
-    pub fn account_info(&self, address: &Address) -> Option<&AccountInfo> {
+    pub fn peek_account_info(&self, address: &Address) -> Option<&AccountInfo> {
         self.cache.accounts.get(address).and_then(Option::as_ref)
     }
 

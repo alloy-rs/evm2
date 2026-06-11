@@ -7,15 +7,15 @@ mod storage;
 mod tracked;
 
 use account::TrackedAccount;
-pub use account::{Account, AccountInfo, JournaledAccount};
+pub use account::{Account, AccountEntry, AccountInfo};
 pub use changes::{StateChanges, StorageChangeSet};
 pub use journal::{JournalEntry, StateCheckpoint};
-pub use storage::{JournaledStorage, JournaledStorageSlot, StorageOverlay, StorageSlot};
+pub use storage::{StorageOverlay, StorageSlot, StorageSlotEntry, StoragesEntry};
 pub use tracked::Tracked;
 use tracked::TrackedAccountMap;
 
 use super::{
-    SStore, WarmAddresses,
+    PrewarmSet,
     db::{CacheDB, DatabaseCommit, DbErrorCode, DbResult, DynDatabase},
     eip7708_burn_log,
 };
@@ -28,7 +28,7 @@ use crate::{
 use alloc::{boxed::Box, collections::BTreeMap, vec::Vec};
 use alloy_primitives::{
     Address, B256, KECCAK256_EMPTY, Log,
-    map::{AddressMap, AddressSet, HashSet, U256Map, hash_map},
+    map::{AddressMap, AddressSet, hash_map},
 };
 use core::mem;
 use core::ops::{Deref, DerefMut};
@@ -64,9 +64,9 @@ impl DerefMut for State {
 
 /// Shared inner state borrowed by journaled mutation handles.
 ///
-/// Holds the parts of [`State`] that a [`JournaledAccount`] or [`JournaledStorage`] needs while it
+/// Holds the parts of [`State`] that a [`AccountEntry`] or [`StoragesEntry`] needs while it
 /// borrows an account or storage overlay: the backing database, the revert journal, and the
-/// transaction-initial base warm set. Splitting these out of [`State`] lets a handle borrow them
+/// pre-warmed set. Splitting these out of [`State`] lets a handle borrow them
 /// together as one `&mut StateInner` disjointly from the account/storage maps it mutates. [`State`]
 /// derefs to this type, so its fields and methods are reachable directly on a [`State`].
 #[derive_where(Debug)]
@@ -75,8 +75,8 @@ pub struct StateInner {
     /// Database plus accepted transaction-boundary state overlay.
     #[derive_where(skip)]
     database: CacheDB<Box<dyn DynDatabase>>,
-    /// Transaction-initial base warm set: precompiles, coinbase, and the EIP-2930 access list.
-    warm_addresses: WarmAddresses,
+    /// Pre-warmed set: precompiles, coinbase, and the EIP-2930 access list.
+    prewarm_set: PrewarmSet,
     /// Revert journal.
     journal: Vec<JournalEntry>,
     /// Logs emitted by the current transaction.
@@ -98,7 +98,7 @@ impl State {
             transient_storage: StorageKeyMap::default(),
             inner: StateInner {
                 database: CacheDB::new(initial),
-                warm_addresses: WarmAddresses::new(),
+                prewarm_set: PrewarmSet::new(),
                 journal: Vec::new(),
                 logs: Vec::new(),
                 selfdestructs: AddressSet::default(),
@@ -154,7 +154,7 @@ impl State {
     /// This is a non-mutating overlay lookup. It does not load the account or slot from the
     /// backing database; use [`Self::storage`] when database-backed loading is desired.
     #[inline]
-    pub fn storage_ref(&self, address: &Address, key: &Word) -> Option<Word> {
+    pub fn storage_lookup(&self, address: &Address, key: &Word) -> Option<Word> {
         if let Some(storage) = self.storage.get(address) {
             if let Some(slot) = storage.slots.get(key).and_then(|slot| slot.value.as_ref()) {
                 return Some(slot.current);
@@ -169,70 +169,57 @@ impl State {
     /// Returns the current transaction account overlay if present and not deleted.
     ///
     /// This is a non-mutating overlay lookup. It does not load the account from the backing
-    /// database; use [`Self::account_info`] or [`Self::find`] when database-backed loading is
+    /// database; use [`Self::peek_account_info`] or [`Self::find`] when database-backed loading is
     /// desired.
     #[inline]
     #[must_use]
-    pub fn account_ref(&self, address: &Address) -> Option<&Account> {
+    pub fn account_lookup(&self, address: &Address) -> Option<&Account> {
         self.accounts.get(address)?.present.as_ref()
     }
 
-    /// Returns whether an account is warm in the current transaction.
+    /// Returns the pre-warmed set (precompiles, coinbase, access list).
+    ///
+    /// This is not the complete EIP-2929 initial warm set — sender and recipient are warmed per
+    /// account instead. See [`PrewarmSet`].
     #[inline]
     #[must_use]
-    pub fn is_account_warm(&self, address: &Address) -> bool {
-        self.accounts.is_warm(address) || self.warm_addresses.is_warm(address)
+    pub const fn prewarmset(&self) -> &PrewarmSet {
+        &self.inner.prewarm_set
     }
 
-    /// Returns the transaction-initial base warm set (precompiles, coinbase, access list).
-    #[inline]
-    #[must_use]
-    pub const fn warm_addresses(&self) -> &WarmAddresses {
-        &self.inner.warm_addresses
-    }
-
-    /// Marks the precompile addresses as warm for the current transaction.
+    /// Returns the pre-warmed set mutably so callers can install precompiles, coinbase, the
+    /// EIP-2930 access list, or non-revertible base warm accounts/slots.
     ///
-    /// This populates the base warm set and survives [`Self::rollback`], like the other
-    /// `*_non_revertible` warming. The set persists until overwritten or until
-    /// [`Self::clear_transaction_state`].
+    /// Entries added through this handle survive [`Self::rollback`] and are cleared per transaction
+    /// by [`Self::clear_transaction_state`] (precompiles persist across transactions).
     #[inline]
-    pub fn warm_precompiles(&mut self, addresses: &AddressSet) {
-        self.warm_addresses.set_precompile_addresses(addresses);
+    pub const fn prewarmset_mut(&mut self) -> &mut PrewarmSet {
+        &mut self.inner.prewarm_set
     }
 
-    /// Marks the coinbase/beneficiary address as warm for the current transaction (EIP-3651).
-    #[inline]
-    pub const fn warm_coinbase(&mut self, address: Address) {
-        self.inner.warm_addresses.set_coinbase(address);
-    }
-
-    /// Installs the EIP-2930 access list into the base warm set.
+    /// Replaces the pre-warmed set wholesale.
     ///
-    /// Each address becomes warm, and each of its slots becomes a warm storage slot. Replaces any
-    /// previously installed access list.
+    /// Use [`PrewarmSet`]'s builder methods to construct the set. The installed set survives
+    /// [`Self::rollback`] and is cleared per transaction by [`Self::clear_transaction_state`].
     #[inline]
-    pub fn warm_access_list(&mut self, access_list: AddressMap<HashSet<Word>>) {
-        self.warm_addresses.set_access_list(access_list);
+    pub fn set_prewarm_set(&mut self, prewarm_set: PrewarmSet) {
+        self.inner.prewarm_set = prewarm_set;
     }
 
-    /// Returns whether an account is touched in the current transaction.
-    #[inline]
-    #[must_use]
-    fn is_account_touched(&self, address: &Address) -> bool {
-        self.accounts.is_touched(address)
-    }
-
-    /// Marks an account as warm in a revertible execution context.
+    /// Marks an account as warm in a revertible execution context, returning whether it was cold.
     ///
-    /// Returns whether the account was cold before this access. If this call newly warms the
-    /// account, the warm-set change is journaled and will be undone by [`Self::rollback`]. Use this
-    /// for warmth introduced while executing EVM code or any other scope whose effects may be
-    /// reverted to a checkpoint.
+    /// If this call newly warms the account, the warm-set change is journaled and will be undone by
+    /// [`Self::rollback`]. Use this for warmth introduced while executing EVM code or any other
+    /// scope whose effects may be reverted to a checkpoint.
+    ///
+    /// Unlike [`Self::account_entry`] followed by [`AccountEntry::warm`], this marks warmth
+    /// **without loading the account** from the backing database, so a caller that detects a cold
+    /// access under `skip_cold_load` can bail before paying for the cold read. That no-load fast
+    /// path is why this remains a dedicated method rather than going through a loaded handle.
     #[inline(never)]
     #[must_use]
     pub fn warm_account(&mut self, address: &Address) -> bool {
-        if self.warm_addresses.is_warm(address) {
+        if self.prewarm_set.is_warm(address) {
             return false;
         }
         if self.accounts.warm_account(*address) {
@@ -241,55 +228,6 @@ impl State {
         } else {
             false
         }
-    }
-
-    /// Marks an account as warm outside all revertible execution contexts.
-    ///
-    /// This intentionally does **not** journal the warm-set change. It must only be used for
-    /// transaction-initial warmth that is established before any checkpoint that might be rolled
-    /// back, such as base transaction warm addresses, precompiles, access-list entries, or other
-    /// pre-execution transaction setup. Warmth added by this method survives [`Self::rollback`] and
-    /// is cleared only by [`Self::clear_transaction_state`].
-    ///
-    /// Do not call this from EVM execution, nested calls, precompile execution, or any other
-    /// revertible scope. Use [`Self::warm_account`] there so failed frames correctly restore the
-    /// EIP-2929 access set.
-    pub fn warm_account_non_revertible(&mut self, address: &Address) {
-        let _ = self.accounts.warm_account(*address);
-    }
-
-    /// Marks accounts as warm in a revertible execution context.
-    ///
-    /// See [`Self::warm_account`] for rollback semantics.
-    pub fn warm_accounts(&mut self, addresses: impl IntoIterator<Item = Address>) {
-        let addresses = addresses.into_iter();
-        self.accounts.reserve(addresses.size_hint().0);
-        for address in addresses {
-            let _ = self.warm_account(&address);
-        }
-    }
-
-    /// Marks accounts as warm outside all revertible execution contexts.
-    ///
-    /// See [`Self::warm_account_non_revertible`] for the required usage restrictions. In
-    /// particular, these warm-set changes are not journaled and are not undone by rollback.
-    pub fn warm_accounts_non_revertible(&mut self, addresses: impl IntoIterator<Item = Address>) {
-        let addresses = addresses.into_iter();
-        self.accounts.reserve(addresses.size_hint().0);
-        for address in addresses {
-            self.warm_account_non_revertible(&address);
-        }
-    }
-
-    /// Returns whether a storage slot is warm in the current transaction.
-    #[inline]
-    #[must_use]
-    pub fn is_storage_warm(&self, address: &Address, key: &Word) -> bool {
-        self.storage
-            .get(address)
-            .and_then(|storage| storage.slots.get(key))
-            .is_some_and(|slot| slot.warm)
-            || self.warm_addresses.is_storage_warm(address, key)
     }
 
     /// Marks a storage slot as warm in a revertible execution context.
@@ -301,39 +239,13 @@ impl State {
     #[inline(never)]
     #[must_use]
     pub fn warm_storage(&mut self, address: &Address, key: &Word) -> bool {
-        if self.warm_addresses.is_storage_warm(address, key) {
-            return false;
-        }
-        let slot = self.storage.entry(*address).or_default().slots.entry(*key).or_default();
-        if slot.mark_warm() {
-            self.journal.push(JournalEntry::StorageWarmed { address: *address, key: *key });
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Marks a storage slot as warm outside all revertible execution contexts.
-    ///
-    /// Returns whether the slot was cold before this access. This intentionally does **not**
-    /// journal the warm-set change. It must only be used for transaction-initial warmth that is
-    /// established before any checkpoint that might be rolled back, such as access-list storage
-    /// slots. Warmth added by this method survives [`Self::rollback`] and is cleared only by
-    /// [`Self::clear_transaction_state`].
-    ///
-    /// Do not call this from EVM execution, nested calls, precompile execution, or any other
-    /// revertible scope. Use [`Self::warm_storage`] there so failed frames correctly restore the
-    /// EIP-2929 access set.
-    #[must_use]
-    pub fn warm_storage_non_revertible(&mut self, address: &Address, key: &Word) -> bool {
-        let slot = self.storage.entry(*address).or_default().slots.entry(*key).or_default();
-        slot.mark_warm()
+        self.storage_entry(address).slot(*key).warm()
     }
 
     /// Clears transaction-scoped substate.
     pub fn clear_transaction_state(&mut self) {
         self.accounts.clear();
-        self.warm_addresses.clear_coinbase_and_access_list();
+        self.prewarm_set.clear_per_transaction();
         self.storage.clear();
         self.journal.clear();
         self.selfdestructs.clear();
@@ -402,8 +314,7 @@ impl State {
 
     /// Gets an existing account or inserts a new empty account.
     pub fn get_or_insert(&mut self, address: &Address) -> DbResult<&mut Account> {
-        let entry =
-            Self::ensure_transaction_account(&mut self.inner, &mut self.accounts, address)?;
+        let entry = Self::ensure_transaction_account(&mut self.inner, &mut self.accounts, address)?;
         if entry.present.is_none() {
             self.inner
                 .journal
@@ -415,38 +326,59 @@ impl State {
 
     /// Loads `address` into the transaction overlay and returns a journaled mutation handle.
     ///
-    /// Unlike [`Self::account_info`], which reads the backing database without caching, this reads
-    /// the account once and preserves it in the transaction overlay. The returned
-    /// [`JournaledAccount`] records a revert snapshot on its first mutation, so any changes made
+    /// Unlike [`Self::peek_account_info`], which reads the backing database without caching, this
+    /// reads the account once and preserves it in the transaction overlay. The returned
+    /// [`AccountEntry`] records a revert snapshot on its first mutation, so any changes made
     /// through it are undone together by [`Self::rollback`]. The account is materialized as empty
-    /// only when it is first mutated while absent. This mirrors revm's `JournaledAccount`.
-    pub fn journaled_account(&mut self, address: &Address) -> DbResult<JournaledAccount<'_>> {
-        let tracked =
-            Self::ensure_transaction_account(&mut self.inner, &mut self.accounts, address)?;
-        Ok(JournaledAccount::new(*address, tracked, &mut self.inner))
-    }
-
-    fn journal_account_change(&mut self, address: &Address) -> DbResult<&mut Account> {
-        Ok(self.journaled_account(address)?.into_account_mut())
+    /// only when it is first mutated while absent. This mirrors revm's `AccountEntry`.
+    ///
+    /// When `skip_cold_load` is true and the account has not been loaded into the overlay yet, the
+    /// cold database read is skipped and [`DbErrorCode::COLD_LOAD_SKIPPED`] is returned, leaving the
+    /// overlay untouched. Callers that cannot afford a cold access use this to detect it without
+    /// paying for the load. An already-loaded account always yields a handle.
+    pub fn account_entry(
+        &mut self,
+        address: &Address,
+        skip_cold_load: bool,
+    ) -> DbResult<AccountEntry<'_>> {
+        let tracked = Self::ensure_transaction_account_skip_cold(
+            &mut self.inner,
+            &mut self.accounts,
+            address,
+            skip_cold_load,
+        )?;
+        Ok(AccountEntry::new(*address, tracked, &mut self.inner))
     }
 
     /// Returns a journaled mutation handle to `address`'s persistent storage overlay.
     ///
-    /// The returned [`JournaledStorage`] ties the account's storage slots to the revert journal, so
+    /// The returned [`StoragesEntry`] ties the account's storage slots to the revert journal, so
     /// any slot warmed or written through it is undone together by [`Self::rollback`]. Slot values
     /// are read from the backing database lazily, only when a slot is loaded or first written. This
-    /// mirrors [`Self::journaled_account`] on the storage side.
+    /// mirrors [`Self::account_entry`] on the storage side.
     ///
-    /// Unlike [`Self::storage`] and [`Self::set_storage`], this does not load or touch the owning
-    /// account; callers that need the account materialized must do so separately.
-    pub fn journaled_storage(&mut self, address: &Address) -> JournaledStorage<'_> {
+    /// This does not load or touch the owning account; callers that need the account materialized
+    /// must do so separately via [`Self::account_entry`].
+    pub fn storage_entry(&mut self, address: &Address) -> StoragesEntry<'_> {
         let storage = self.storage.entry(*address).or_default();
-        JournaledStorage::new(*address, storage, &mut self.inner)
+        StoragesEntry::new(*address, storage, &mut self.inner)
     }
 
-    /// Returns account info.
+    /// Returns a journaled mutation handle to a single persistent storage slot of `address`.
+    ///
+    /// This is [`Self::storage_entry`] narrowed to one slot — a convenience for callers that need
+    /// exactly one [`StorageSlotEntry`]. See [`StoragesEntry::slot`] for the per-slot semantics.
+    pub fn storage_slot_entry(&mut self, address: &Address, key: Word) -> StorageSlotEntry<'_> {
+        self.storage_entry(address).into_slot(key)
+    }
+
+    /// Returns account info from the overlay or the backing database.
+    ///
+    /// This is a non-loading peek: it returns the overlay account when one has been loaded this
+    /// transaction, otherwise it reads the backing database directly without caching the result in
+    /// the overlay. Use [`Self::account_entry`] when the account should be loaded and preserved.
     #[inline(never)]
-    pub fn account_info(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
+    pub fn peek_account_info(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
         if let Some(present) =
             self.accounts.get(address).and_then(TrackedAccount::present_if_loaded)
         {
@@ -455,212 +387,36 @@ impl State {
         self.database.get_account(address)
     }
 
-    /// Returns whether an account is empty/non-existent for EIP-150 new-account gas checks.
-    pub(super) fn target_is_empty_for_new_account_gas(
-        &mut self,
-        address: &Address,
-        features: EvmFeatures,
-    ) -> DbResult<bool> {
-        if features.contains(EvmFeatures::EIP161) {
-            return Ok(self.account_info(address)?.is_none_or(|info| info.is_empty()));
-        }
-        Ok(self.account_info(address)?.is_none() && !self.is_account_touched(address))
-    }
-
-    /// Returns an account if it exists.
-    pub fn find(&mut self, address: &Address) -> DbResult<Option<&Account>> {
-        let entry =
-            Self::ensure_transaction_account(&mut self.inner, &mut self.accounts, address)?;
-        Ok(entry.present.as_ref())
-    }
-
-    /// Gets account code.
-    pub fn get_code(&mut self, address: &Address) -> DbResult<Bytecode> {
-        if let Some(account) = self.accounts.get(address).and_then(|entry| entry.present.as_ref()) {
-            if account.code_hash == KECCAK256_EMPTY {
-                return Ok(Bytecode::default());
-            }
-            if !account.code.is_empty() {
-                return Ok(account.code.clone());
-            }
-            let code_hash = account.code_hash;
-            return self.database.get_code_by_hash(&code_hash);
-        }
-
-        let Some(info) = self.database.get_account(address)? else {
-            return Ok(Bytecode::default());
-        };
-        if info.code_hash == KECCAK256_EMPTY {
-            return Ok(Bytecode::default());
-        }
-        if let Some(code) = info.code
-            && !code.is_empty()
-        {
-            return Ok(code);
-        }
-        self.database.get_code_by_hash(&info.code_hash)
-    }
-
-    fn current_storage(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
-        if let Some(storage) = self.storage.get(address) {
-            if let Some(slot) = storage.slots.get(key).and_then(|slot| slot.value.as_ref()) {
-                return Ok(slot.current);
-            }
-            if storage.wiped {
-                return Ok(Word::ZERO);
-            }
-        }
-        if self.database.account_absent(address) {
-            return Ok(Word::ZERO);
-        }
-        self.database.get_storage(address, key)
-    }
-
-    fn cache_storage_value(&mut self, address: &Address, key: &Word, value: Word) {
-        let slot = self.storage.entry(*address).or_default().slots.entry(*key).or_default();
-        slot.value.get_or_insert(Tracked::new(value));
-    }
-
-    fn insert_transaction_storage(
-        &mut self,
-        address: &Address,
-        key: &Word,
-        original: Word,
-        value: Word,
-    ) {
-        let storage = self.storage.entry(*address).or_default();
-        match storage.slots.entry(*key) {
-            hash_map::Entry::Occupied(mut entry) => {
-                let slot = entry.get_mut();
-                match &mut slot.value {
-                    Some(tracked) => {
-                        let previous = tracked.current;
-                        if previous != value {
-                            tracked.current = value;
-                            self.journal.push(JournalEntry::StorageChange {
-                                address: *address,
-                                key: *key,
-                                previous,
-                            });
-                        }
-                    }
-                    None => {
-                        slot.value =
-                            Some(Tracked { original, current: value, _non_exhaustive: () });
-                        self.journal
-                            .push(JournalEntry::StorageInserted { address: *address, key: *key });
-                    }
-                }
-            }
-            hash_map::Entry::Vacant(entry) => {
-                entry.insert(StorageSlot {
-                    value: Some(Tracked { original, current: value, _non_exhaustive: () }),
-                    warm: false,
-                    _non_exhaustive: (),
-                });
-                self.journal.push(JournalEntry::StorageInserted { address: *address, key: *key });
-            }
-        }
-    }
-
-    /// Loads persistent storage.
-    pub fn storage(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
-        let Some(_) = self.account_info(address)? else {
-            return Ok(Word::ZERO);
-        };
-        let value = self.current_storage(address, key)?;
-        self.cache_storage_value(address, key, value);
-        Ok(value)
-    }
-
-    /// Stores persistent storage and returns values needed for `SSTORE` gas metering.
-    ///
-    /// This is a raw state mutation helper, not the full EVM `SSTORE` host operation. It does
-    /// not perform static-call checks, gas/stipend checks, EIP-2929 cold-access handling, refund
-    /// accounting, or Amsterdam state-gas charging. Instruction implementations should call the
-    /// host `sstore` operation instead, and only use this lower-level helper when those concerns
-    /// are handled elsewhere.
-    pub fn set_storage(&mut self, address: &Address, key: &Word, value: &Word) -> DbResult<SStore> {
-        let _ = self.get_or_insert(address)?;
-        self.touch(address);
-        let storage = self.storage.get(address);
-        let original_value =
-            if storage.is_some_and(|s| s.wiped) || self.inner.database.account_absent(address) {
-                Word::ZERO
-            } else {
-                self.inner.database.get_storage(address, key)?
-            };
-        let present_value = storage
-            .and_then(|storage| storage.slots.get(key))
-            .and_then(|slot| slot.value.as_ref())
-            .map_or(original_value, |slot| slot.current);
-        let result = SStore {
-            original_value,
-            present_value,
-            new_value: *value,
-            is_cold: false,
-            _non_exhaustive: (),
-        };
-        if present_value != *value {
-            self.insert_transaction_storage(address, key, original_value, *value);
-        }
-        Ok(result)
-    }
-
-    /// Marks an account as touched by the current transaction.
-    pub fn touch(&mut self, address: &Address) {
-        if self.accounts.touch(*address) {
-            self.journal.push(JournalEntry::Touch { address: *address });
-        }
-    }
-
-    /// Adds a signed balance delta by wrapping two's-complement values.
-    pub fn add_balance(&mut self, address: &Address, delta: &Word) -> DbResult<()> {
-        if delta.is_zero() {
-            self.touch(address);
-            return Ok(());
-        }
-        let account = self.journal_account_change(address)?;
-        account.balance = account.balance.wrapping_add(*delta);
-        self.touch(address);
-        Ok(())
-    }
-
     /// Transfers value between accounts.
     pub fn transfer(&mut self, from: &Address, to: &Address, value: &Word) -> DbResult<bool> {
         if value.is_zero() {
-            self.touch(to);
+            self.account_entry(to, false)?.touch();
             return Ok(true);
         }
 
-        let from_balance = self.account_info(from)?.map_or(Word::ZERO, |info| info.balance);
         if from == to {
-            if from_balance < *value {
+            let mut account = self.account_entry(from, false)?;
+            if account.balance() < *value {
                 return Ok(false);
             }
-            self.touch(to);
+            account.touch();
             return Ok(true);
         }
-        let Some(new_from_balance) = from_balance.checked_sub(*value) else {
-            return Ok(false);
-        };
 
-        self.journal_account_change(from)?.balance = new_from_balance;
-        self.touch(from);
-
-        let account = self.journal_account_change(to)?;
-        account.balance = account.balance.saturating_add(*value);
-        self.touch(to);
+        {
+            let mut from_account = self.account_entry(from, false)?;
+            let Some(new_from_balance) = from_account.balance().checked_sub(*value) else {
+                return Ok(false);
+            };
+            // `set_balance` touches the account, matching the touch the prior `transfer` performed.
+            from_account.set_balance(new_from_balance);
+        }
+        {
+            let mut to_account = self.account_entry(to, false)?;
+            let new_to_balance = to_account.balance().saturating_add(*value);
+            to_account.set_balance(new_to_balance);
+        }
         Ok(true)
-    }
-
-    /// Increments account nonce.
-    #[inline(never)]
-    pub fn increment_nonce(&mut self, address: &Address) -> DbResult<()> {
-        let account = self.journal_account_change(address)?;
-        account.nonce = account.nonce.saturating_add(1);
-        self.touch(address);
-        Ok(())
     }
 
     /// Creates a contract account and transfers endowment from the caller.
@@ -672,20 +428,31 @@ impl State {
         value: &Word,
         features: EvmFeatures,
     ) -> DbResult<Result<(), InstrStop>> {
-        if let Some(info) = self.account_info(address)?
-            && (info.nonce != 0 || info.code_hash != KECCAK256_EMPTY)
+        if self
+            .account_entry(address, false)?
+            .get()
+            .is_some_and(|account| account.nonce != 0 || account.code_hash != KECCAK256_EMPTY)
         {
             return Ok(Err(InstrStop::CreateCollision));
         }
 
-        if !self.transfer(caller, address, value)? {
-            return Ok(Err(InstrStop::OutOfFunds));
+        // Deduct the endowment from the caller. A zero endowment moves nothing and leaves the
+        // caller untouched, matching the prior `transfer` behaviour.
+        if !value.is_zero() {
+            let mut caller_account = self.account_entry(caller, false)?;
+            let Some(new_caller_balance) = caller_account.balance().checked_sub(*value) else {
+                return Ok(Err(InstrStop::OutOfFunds));
+            };
+            caller_account.set_balance(new_caller_balance);
         }
 
-        let balance = self.get_or_insert(address)?.balance;
-        self.wipe_storage(address);
-        let account = self.journal_account_change(address)?;
-        *account = Account {
+        self.storage_entry(address).wipe();
+
+        let mut target = self.account_entry(address, false)?;
+        // Preserve any balance the address already held (e.g. funds sent before creation) and add
+        // the endowment.
+        let balance = target.balance().wrapping_add(*value);
+        *target.get_or_insert() = Account {
             nonce: u64::from(features.contains(EvmFeatures::EIP161)),
             balance,
             code_hash: KECCAK256_EMPTY,
@@ -694,45 +461,18 @@ impl State {
             code_changed: true,
             _non_exhaustive: (),
         };
-        self.touch(address);
+        target.touch();
         Ok(Ok(()))
     }
 
-    /// Sets account bytecode.
-    pub fn set_code(&mut self, address: &Address, code: Bytecode) -> DbResult<()> {
-        let account = self.journal_account_change(address)?;
-        account.code_hash = code.hash_slow();
-        account.code = code;
-        account.code_changed = true;
-        Ok(())
-    }
-
-    /// Marks all prior persistent storage for `address` as deleted.
-    pub fn wipe_storage(&mut self, address: &Address) {
-        let previous = self.storage.get(address).cloned();
-        let mut wiped =
-            StorageOverlay { wiped: true, slots: U256Map::default(), _non_exhaustive: () };
-        if let Some(previous) = &previous {
-            for (&key, slot) in &previous.slots {
-                if slot.warm {
-                    wiped
-                        .slots
-                        .insert(key, StorageSlot { value: None, warm: true, _non_exhaustive: () });
-                }
-            }
-        }
-        self.storage.insert(*address, wiped);
-        self.journal.push(JournalEntry::StorageWipe { address: *address, previous });
-    }
-
-    /// Loads transient storage.
+    /// Loads transient (EIP-1153) storage.
     #[must_use]
-    pub fn transient_storage(&mut self, address: &Address, key: &Word) -> Word {
+    pub fn tload(&mut self, address: &Address, key: &Word) -> Word {
         self.transient_storage.get(&StorageKey::new(*address, *key)).copied().unwrap_or_default()
     }
 
-    /// Stores transient storage.
-    pub fn set_transient_storage(&mut self, address: &Address, key: &Word, value: &Word) {
+    /// Stores transient (EIP-1153) storage.
+    pub fn tstore(&mut self, address: &Address, key: &Word, value: &Word) {
         match self.transient_storage.entry(StorageKey::new(*address, *key)) {
             hash_map::Entry::Occupied(mut entry) => {
                 let previous = *entry.get();
@@ -764,49 +504,6 @@ impl State {
         }
     }
 
-    /// Marks an account as self-destructed in the current transaction.
-    pub fn mark_destructed(&mut self, address: &Address) {
-        let _ = Self::ensure_transaction_account(&mut self.inner, &mut self.accounts, address);
-        if self.inner.selfdestructs.insert(*address) {
-            self.inner.journal.push(JournalEntry::SelfDestruct { address: *address });
-        }
-        self.touch(address);
-    }
-
-    /// Returns whether an account has been marked self-destructed in the current transaction.
-    #[inline]
-    #[must_use]
-    pub fn is_selfdestructed(&self, address: &Address) -> bool {
-        self.selfdestructs.contains(address)
-    }
-
-    /// Returns whether an account was created in the current transaction.
-    #[inline]
-    #[must_use]
-    pub(super) fn is_created_in_transaction(&self, address: &Address) -> bool {
-        self.account_ref(address).is_some_and(|account| account.just_created)
-    }
-
-    fn cleanup_account_entry(&mut self, address: &Address) {
-        if self.accounts.get(address).is_some_and(TrackedAccount::is_empty) {
-            self.accounts.remove(address);
-        }
-    }
-
-    fn cleanup_storage_slot(&mut self, address: &Address, key: &Word) {
-        let remove_storage = if let Some(storage) = self.storage.get_mut(address) {
-            if storage.slots.get(key).is_some_and(StorageSlot::is_empty) {
-                storage.slots.remove(key);
-            }
-            !storage.wiped && storage.slots.is_empty()
-        } else {
-            false
-        };
-        if remove_storage {
-            self.storage.remove(address);
-        }
-    }
-
     /// Reverts state changes after the checkpoint.
     #[inline(never)]
     pub fn rollback(&mut self, checkpoint: StateCheckpoint, features: EvmFeatures) {
@@ -824,12 +521,17 @@ impl State {
                     }
                 }
                 JournalEntry::AccountInserted { address } => {
-                    if let Some(entry) = self.accounts.get_mut(&address) {
-                        entry.is_loaded = false;
-                        entry.original = None;
-                        entry.present = None;
+                    // Undo the database load that inserted this entry, then drop the entry unless
+                    // it still carries warm or touched metadata recorded before the load.
+                    if let hash_map::Entry::Occupied(mut entry) = self.accounts.entry(address) {
+                        let account = entry.get_mut();
+                        account.is_loaded = false;
+                        account.original = None;
+                        account.present = None;
+                        if account.is_empty() {
+                            entry.remove();
+                        }
                     }
-                    self.cleanup_account_entry(&address);
                 }
                 JournalEntry::Touch { address } => {
                     // EIP-161 preserves the historical Yellow Paper K.1 precompile-3 touch.
@@ -841,7 +543,6 @@ impl State {
                     if let Some(entry) = self.accounts.get_mut(&address) {
                         entry.is_touched = false;
                     }
-                    self.cleanup_account_entry(&address);
                 }
                 JournalEntry::SelfDestruct { address } => {
                     self.selfdestructs.remove(&address);
@@ -855,12 +556,21 @@ impl State {
                     }
                 }
                 JournalEntry::StorageInserted { address, key } => {
-                    if let Some(storage) = self.storage.get_mut(&address)
-                        && let Some(slot) = storage.slots.get_mut(&key)
+                    // Undo the slot insert, then drop the slot (and the account's overlay when it
+                    // is left empty and un-wiped) unless warm metadata keeps it alive.
+                    if let hash_map::Entry::Occupied(mut storage_entry) = self.storage.entry(address)
                     {
-                        slot.value = None;
+                        let storage = storage_entry.get_mut();
+                        if let Some(slot) = storage.slots.get_mut(&key) {
+                            slot.value = None;
+                            if slot.is_empty() {
+                                storage.slots.remove(&key);
+                            }
+                        }
+                        if !storage.wiped && storage.slots.is_empty() {
+                            storage_entry.remove();
+                        }
                     }
-                    self.cleanup_storage_slot(&address, &key);
                 }
                 JournalEntry::StorageWipe { address, previous } => match previous {
                     Some(storage) => {
@@ -879,10 +589,12 @@ impl State {
                     }
                 },
                 JournalEntry::AccountWarmed { address } => {
-                    if let Some(entry) = self.accounts.get_mut(&address) {
-                        entry.is_warm = false;
+                    if let hash_map::Entry::Occupied(mut entry) = self.accounts.entry(address) {
+                        entry.get_mut().is_warm = false;
+                        if entry.get().is_empty() {
+                            entry.remove();
+                        }
                     }
-                    self.cleanup_account_entry(&address);
                 }
                 JournalEntry::StorageWarmed { address, key } => {
                     if let Some(storage) = self.storage.get_mut(&address)
@@ -890,51 +602,23 @@ impl State {
                     {
                         slot.warm = false;
                     }
-                    self.cleanup_storage_slot(&address, &key);
                 }
             }
         }
     }
 
-    /// Returns whether an existing account is dead by the EIP-161 definition.
-    ///
-    /// Accounts with zero nonce, zero balance, and empty code are dead. Starting
-    /// in Spurious Dragon, touched dead accounts that exist in the pre/final
-    /// overlay state are deleted during transaction finalization. Non-existent
-    /// touched accounts stay non-existent.
-    fn is_existing_dead(&mut self, address: &Address) -> DbResult<bool> {
-        if let Some(entry) = self.accounts.get(address)
-            && entry.is_loaded
-        {
-            return Ok(entry.present.as_ref().is_some_and(Account::is_empty)
-                || (entry.present.is_none() && entry.original.is_some()));
-        }
-        Ok(self.load_account(address)?.as_ref().is_some_and(Account::is_empty))
-    }
-
-    fn account_exists(&mut self, address: &Address) -> DbResult<bool> {
-        if let Some(present) =
-            self.accounts.get(address).and_then(TrackedAccount::present_if_loaded)
-        {
-            return Ok(present.is_some());
-        }
-        Ok(self.load_account(address)?.is_some())
-    }
-
     fn delete_account_for_finalization(&mut self, address: &Address) -> DbResult<()> {
-        let entry =
-            Self::ensure_transaction_account(&mut self.inner, &mut self.accounts, address)?;
+        let entry = Self::ensure_transaction_account(&mut self.inner, &mut self.accounts, address)?;
         let previous = entry.present.clone();
         self.inner.journal.push(JournalEntry::AccountChange { address: *address, previous });
         entry.present = None;
-        self.wipe_storage(address);
+        self.storage_entry(address).wipe();
         Ok(())
     }
 
     fn materialize_empty_account_for_finalization(&mut self, address: &Address) -> DbResult<()> {
         let original_exists = self.load_account(address)?.is_some();
-        let entry =
-            Self::ensure_transaction_account(&mut self.inner, &mut self.accounts, address)?;
+        let entry = Self::ensure_transaction_account(&mut self.inner, &mut self.accounts, address)?;
         if !original_exists && entry.present.is_none() {
             self.inner
                 .journal
@@ -1002,14 +686,14 @@ impl State {
         if version.feature(EvmFeatures::EIP161) {
             for address in &touched {
                 // EIP-161 deletes touched dead accounts at transaction finalization.
-                if self.is_existing_dead(address)? {
+                if self.account_entry(address, false)?.is_existing_dead() {
                     self.delete_account_for_finalization(address)?;
                 }
             }
         } else {
             for address in &touched {
                 // Before EIP-161, touching a non-existent account materializes it as empty.
-                if !selfdestructs.contains(address) && !self.account_exists(address)? {
+                if !selfdestructs.contains(address) && !self.account_entry(address, false)?.exists() {
                     self.materialize_empty_account_for_finalization(address)?;
                 }
             }
@@ -1019,10 +703,12 @@ impl State {
         self.selfdestructs.clear();
 
         for address in touched {
-            if let Some(entry) = self.accounts.get_mut(&address) {
-                entry.is_touched = false;
+            if let hash_map::Entry::Occupied(mut entry) = self.accounts.entry(address) {
+                entry.get_mut().is_touched = false;
+                if entry.get().is_empty() {
+                    entry.remove();
+                }
             }
-            self.cleanup_account_entry(&address);
         }
         Ok(())
     }

@@ -1,6 +1,6 @@
 //! Transaction-scoped persistent storage overlay.
 
-use super::{DbResult, DynDatabase, JournalEntry, StateInner, Tracked};
+use super::{DbErrorCode, DbResult, DynDatabase, JournalEntry, StateInner, Tracked};
 use crate::interpreter::Word;
 use alloy_primitives::{Address, map::U256Map};
 use derive_where::derive_where;
@@ -44,16 +44,16 @@ impl StorageSlot {
 
 /// A mutable, journaled handle to one account's persistent storage overlay.
 ///
-/// Returned by [`State::journaled_storage`](super::State::journaled_storage). It ties the account's
+/// Returned by [`State::storage_entry`](super::State::storage_entry). It ties the account's
 /// [`StorageOverlay`] to the revert journal, the backing database, and the transaction-initial base
-/// warm set, mirroring [`JournaledAccount`](super::JournaledAccount) on the storage side: a slot
+/// warm set, mirroring [`AccountEntry`](super::AccountEntry) on the storage side: a slot
 /// mutation and its rollback bookkeeping cannot drift apart.
 ///
-/// Individual slots are reached through [`Self::slot`], which yields a [`JournaledStorageSlot`]
+/// Individual slots are reached through [`Self::slot`], which yields a [`StorageSlotEntry`]
 /// scoped to one key. The handle itself records nothing; journaling happens per-slot when a slot is
 /// warmed or written.
 #[derive_where(Debug)]
-pub struct JournaledStorage<'a> {
+pub struct StoragesEntry<'a> {
     /// Address of the account whose storage this handle exposes.
     address: Address,
     /// Transaction overlay entry: the per-account storage slots plus the wipe flag.
@@ -63,7 +63,7 @@ pub struct JournaledStorage<'a> {
     inner: &'a mut StateInner,
 }
 
-impl<'a> JournaledStorage<'a> {
+impl<'a> StoragesEntry<'a> {
     /// Creates a handle over an account's storage overlay and the shared inner state (backing
     /// database, revert journal, and transaction-initial base warm set).
     #[inline]
@@ -91,19 +91,57 @@ impl<'a> JournaledStorage<'a> {
     /// Returns a journaled handle to the storage slot at `key`, inserting an empty overlay slot
     /// when it has not been touched yet.
     ///
-    /// The returned [`JournaledStorageSlot`] reborrows this handle, so it cannot outlive it; hold
+    /// The returned [`StorageSlotEntry`] reborrows this handle, so it cannot outlive it; hold
     /// the storage handle and call this repeatedly to operate on several slots.
     #[inline]
-    pub fn slot(&mut self, key: Word) -> JournaledStorageSlot<'_> {
+    pub fn slot(&mut self, key: Word) -> StorageSlotEntry<'_> {
         let wiped = self.storage.wiped;
         let slot = self.storage.slots.entry(key).or_default();
-        JournaledStorageSlot { address: self.address, key, slot, inner: &mut *self.inner, wiped }
+        StorageSlotEntry { address: self.address, key, slot, inner: &mut *self.inner, wiped }
+    }
+
+    /// Consumes the handle and returns a journaled handle to the storage slot at `key` for the
+    /// full borrow, inserting an empty overlay slot when it has not been touched yet.
+    ///
+    /// Unlike [`Self::slot`], which reborrows, this hands the underlying overlay and inner-state
+    /// borrows to the returned [`StorageSlotEntry`], letting it outlive this handle. Used by
+    /// [`State::storage_slot_entry`](super::State::storage_slot_entry) to reach a single slot
+    /// directly.
+    #[inline]
+    pub fn into_slot(self, key: Word) -> StorageSlotEntry<'a> {
+        let wiped = self.storage.wiped;
+        let slot = self.storage.slots.entry(key).or_default();
+        StorageSlotEntry { address: self.address, key, slot, inner: self.inner, wiped }
+    }
+
+    /// Marks all of the account's prior persistent storage as deleted.
+    ///
+    /// The overlay is replaced by a wiped one that keeps only the warm-access metadata of
+    /// previously warmed slots, so EIP-2929 warmth survives the wipe while their values resolve to
+    /// zero. A [`JournalEntry::StorageWipe`] snapshot of the prior overlay is recorded so the wipe
+    /// is undone by [`State::rollback`](super::State::rollback).
+    #[inline]
+    pub fn wipe(&mut self) {
+        let previous = self.storage.clone();
+        let mut wiped =
+            StorageOverlay { wiped: true, slots: U256Map::default(), _non_exhaustive: () };
+        for (&key, slot) in &previous.slots {
+            if slot.warm {
+                wiped
+                    .slots
+                    .insert(key, StorageSlot { value: None, warm: true, _non_exhaustive: () });
+            }
+        }
+        *self.storage = wiped;
+        self.inner
+            .journal
+            .push(JournalEntry::StorageWipe { address: self.address, previous: Some(previous) });
     }
 }
 
 /// A mutable, journaled handle to a single persistent storage slot.
 ///
-/// Returned by [`JournaledStorage::slot`]. Warming the slot records a
+/// Returned by [`StoragesEntry::slot`]. Warming the slot records a
 /// [`JournalEntry::StorageWarmed`], and writing it records a [`JournalEntry::StorageChange`] or
 /// [`JournalEntry::StorageInserted`], so every effect made through the handle is undone together by
 /// [`State::rollback`](super::State::rollback). A handle used only for reads records nothing.
@@ -113,7 +151,7 @@ impl<'a> JournaledStorage<'a> {
 /// transaction-boundary original value on demand without going back through
 /// [`State`](super::State).
 #[derive_where(Debug)]
-pub struct JournaledStorageSlot<'a> {
+pub struct StorageSlotEntry<'a> {
     /// Address of the account that owns the slot.
     address: Address,
     /// Storage key of the slot.
@@ -127,7 +165,7 @@ pub struct JournaledStorageSlot<'a> {
     wiped: bool,
 }
 
-impl JournaledStorageSlot<'_> {
+impl StorageSlotEntry<'_> {
     /// Returns the account address.
     #[inline]
     pub const fn address(&self) -> Address {
@@ -164,7 +202,7 @@ impl JournaledStorageSlot<'_> {
     /// execution.
     #[inline]
     pub fn is_warm(&self) -> bool {
-        self.slot.warm || self.inner.warm_addresses.is_storage_warm(&self.address, &self.key)
+        self.slot.warm || self.inner.prewarm_set.is_storage_warm(&self.address, &self.key)
     }
 
     /// Marks the slot warm for EIP-2929 gas accounting, recording a [`JournalEntry::StorageWarmed`]
@@ -174,7 +212,7 @@ impl JournaledStorageSlot<'_> {
     /// warm set stay warm across rollback, so warming them again records nothing.
     #[inline]
     pub fn warm(&mut self) -> bool {
-        if self.inner.warm_addresses.is_storage_warm(&self.address, &self.key) {
+        if self.inner.prewarm_set.is_storage_warm(&self.address, &self.key) {
             return false;
         }
         if self.slot.mark_warm() {
@@ -192,10 +230,17 @@ impl JournaledStorageSlot<'_> {
     ///
     /// A pure load records no revert entry: the cached value's original equals its current, so it
     /// is left in place by [`State::rollback`](super::State::rollback) as a harmless cache.
+    ///
+    /// When `skip_cold_load` is true and the slot has not been loaded into the overlay yet, the cold
+    /// database read is skipped and [`DbErrorCode::COLD_LOAD_SKIPPED`] is returned, leaving the slot
+    /// untouched. An already-loaded slot always returns its value.
     #[inline]
-    pub fn load(&mut self) -> DbResult<Word> {
+    pub fn load(&mut self, skip_cold_load: bool) -> DbResult<Word> {
         if let Some(tracked) = self.slot.value.as_ref() {
             return Ok(tracked.current);
+        }
+        if skip_cold_load {
+            return Err(DbErrorCode::COLD_LOAD_SKIPPED);
         }
         let value = self.load_original()?;
         self.slot.value.get_or_insert(Tracked::new(value));
@@ -207,8 +252,12 @@ impl JournaledStorageSlot<'_> {
     /// The first write to a not-yet-loaded slot resolves its original value from the backing
     /// database and records a [`JournalEntry::StorageInserted`]; later writes record a
     /// [`JournalEntry::StorageChange`]. Writing the value the slot already holds records nothing.
+    ///
+    /// When `skip_cold_load` is true and the slot has not been loaded into the overlay yet, the cold
+    /// database read needed to resolve its original value is skipped and
+    /// [`DbErrorCode::COLD_LOAD_SKIPPED`] is returned, leaving the slot untouched.
     #[inline]
-    pub fn set(&mut self, value: Word) -> DbResult<()> {
+    pub fn set(&mut self, value: Word, skip_cold_load: bool) -> DbResult<()> {
         match self.slot.value {
             Some(ref mut tracked) => {
                 let previous = tracked.current;
@@ -223,6 +272,9 @@ impl JournaledStorageSlot<'_> {
                 });
             }
             None => {
+                if skip_cold_load {
+                    return Err(DbErrorCode::COLD_LOAD_SKIPPED);
+                }
                 let original = self.load_original()?;
                 self.slot.value = Some(Tracked { original, current: value, _non_exhaustive: () });
                 self.inner
@@ -231,6 +283,23 @@ impl JournaledStorageSlot<'_> {
             }
         }
         Ok(())
+    }
+
+    /// Writes `value`, returning the slot's transaction-boundary original value and the value the
+    /// slot held just before this write — the pair `SSTORE` net-gas metering needs.
+    ///
+    /// This is [`Self::load`] followed by a conditional [`Self::set`]: the original is resolved
+    /// from the backing database on first access, and a revert entry is recorded only when the
+    /// value actually changes. Passing `skip_cold_load` propagates
+    /// [`DbErrorCode::COLD_LOAD_SKIPPED`] from the underlying load when the slot is cold.
+    #[inline]
+    pub fn write(&mut self, value: Word, skip_cold_load: bool) -> DbResult<(Word, Word)> {
+        let present_value = self.load(skip_cold_load)?;
+        let original_value = self.original().unwrap_or(present_value);
+        if present_value != value {
+            self.set(value, skip_cold_load)?;
+        }
+        Ok((original_value, present_value))
     }
 
     /// Resolves the slot's transaction-boundary value from the backing database, accounting for a
@@ -265,12 +334,12 @@ mod tests {
         let mut state = State::new(database);
 
         let checkpoint = state.checkpoint();
-        state.set_storage(&address, &Word::from(1), &Word::from(20)).unwrap();
-        state.set_storage(&address, &Word::from(1), &Word::from(30)).unwrap();
+        state.storage_entry(&address).slot(Word::from(1)).write(Word::from(20), false).unwrap();
+        state.storage_entry(&address).slot(Word::from(1)).write(Word::from(30), false).unwrap();
 
-        assert_eq!(state.storage(&address, &Word::from(1)).unwrap(), Word::from(30));
+        assert_eq!(state.storage_entry(&address).slot(Word::from(1)).load(false).unwrap(), Word::from(30));
         state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
-        assert_eq!(state.storage(&address, &Word::from(1)).unwrap(), Word::from(10));
+        assert_eq!(state.storage_entry(&address).slot(Word::from(1)).load(false).unwrap(), Word::from(10));
     }
 
     #[test]
@@ -278,13 +347,13 @@ mod tests {
         let address = Address::from([0x22; 20]);
         let mut state = State::new(CacheDB::default());
 
-        state.set_transient_storage(&address, &Word::from(1), &Word::from(10));
+        state.tstore(&address, &Word::from(1), &Word::from(10));
         let checkpoint = state.checkpoint();
-        state.set_transient_storage(&address, &Word::from(1), &Word::from(20));
+        state.tstore(&address, &Word::from(1), &Word::from(20));
 
-        assert_eq!(state.transient_storage(&address, &Word::from(1)), Word::from(20));
+        assert_eq!(state.tload(&address, &Word::from(1)), Word::from(20));
         state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
-        assert_eq!(state.transient_storage(&address, &Word::from(1)), Word::from(10));
+        assert_eq!(state.tload(&address, &Word::from(1)), Word::from(10));
     }
 
     #[test]
@@ -298,14 +367,14 @@ mod tests {
         database.insert_account_storage(&account, &cold_key, &Word::from(4));
         let mut state = State::new(database);
 
-        assert!(state.warm_storage_non_revertible(&account, &warm_key));
-        state.set_storage(&account, &cold_key, &Word::from(5)).unwrap();
+        assert!(state.prewarmset_mut().warm_storage(&account, &warm_key));
+        state.storage_entry(&account).slot(cold_key).write(Word::from(5), false).unwrap();
 
-        state.wipe_storage(&account);
-        assert!(state.is_storage_warm(&account, &warm_key));
-        assert!(!state.is_storage_warm(&account, &cold_key));
-        assert_eq!(state.storage_ref(&account, &warm_key), Some(Word::ZERO));
-        assert_eq!(state.storage_ref(&account, &cold_key), Some(Word::ZERO));
+        state.storage_entry(&account).wipe();
+        assert!(state.storage_slot_entry(&account, warm_key).is_warm());
+        assert!(!state.storage_slot_entry(&account, cold_key).is_warm());
+        assert_eq!(state.storage_lookup(&account, &warm_key), Some(Word::ZERO));
+        assert_eq!(state.storage_lookup(&account, &cold_key), Some(Word::ZERO));
 
         let changes = state.build_state_changes();
         let storage = changes.storage.get(&account).expect("wipe must be emitted");
@@ -324,22 +393,22 @@ mod tests {
 
         let checkpoint = state.checkpoint();
         {
-            let mut storage = state.journaled_storage(&address);
+            let mut storage = state.storage_entry(&address);
             let mut slot = storage.slot(key);
-            assert_eq!(slot.load().unwrap(), Word::from(10));
+            assert_eq!(slot.load(false).unwrap(), Word::from(10));
             assert_eq!(slot.original(), Some(Word::from(10)));
             assert!(slot.warm(), "first access is cold");
             assert!(!slot.warm(), "second access is warm");
-            slot.set(Word::from(20)).unwrap();
-            slot.set(Word::from(30)).unwrap();
+            slot.set(Word::from(20), false).unwrap();
+            slot.set(Word::from(30), false).unwrap();
         }
 
-        assert!(state.is_storage_warm(&address, &key));
-        assert_eq!(state.storage(&address, &key).unwrap(), Word::from(30));
+        assert!(state.storage_slot_entry(&address, key).is_warm());
+        assert_eq!(state.storage_entry(&address).slot(key).load(false).unwrap(), Word::from(30));
 
         state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
-        assert!(!state.is_storage_warm(&address, &key));
-        assert_eq!(state.storage(&address, &key).unwrap(), Word::from(10));
+        assert!(!state.storage_slot_entry(&address, key).is_warm());
+        assert_eq!(state.storage_entry(&address).slot(key).load(false).unwrap(), Word::from(10));
         assert!(state.build_state_changes().is_empty());
     }
 
@@ -354,13 +423,33 @@ mod tests {
 
         let checkpoint = state.checkpoint();
         {
-            let mut storage = state.journaled_storage(&address);
+            let mut storage = state.storage_entry(&address);
             let mut slot = storage.slot(key);
-            assert_eq!(slot.load().unwrap(), Word::from(5));
+            assert_eq!(slot.load(false).unwrap(), Word::from(5));
             assert_eq!(slot.current(), Some(Word::from(5)));
         }
         // Loading caches the value but a read-only handle records no transition.
         state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
         assert!(state.build_state_changes().is_empty());
+    }
+
+    #[test]
+    fn journaled_storage_slot_skip_cold_load_signals_skip() {
+        let address = Address::from([0x35; 20]);
+        let key = Word::from(9);
+        let mut database = CacheDB::default();
+        database.insert_account_info(&address, AccountInfo::default());
+        database.insert_account_storage(&address, &key, &Word::from(42));
+        let mut state = State::new(database);
+
+        let mut storage = state.storage_entry(&address);
+        let mut slot = storage.slot(key);
+        // A cold, not-yet-loaded slot signals the skip instead of reading the database.
+        assert_eq!(slot.load(true), Err(DbErrorCode::COLD_LOAD_SKIPPED));
+        assert_eq!(slot.set(Word::from(7), true), Err(DbErrorCode::COLD_LOAD_SKIPPED));
+        assert_eq!(slot.current(), None, "skipping leaves the slot untouched");
+        // Once loaded, skipping no longer applies.
+        assert_eq!(slot.load(false).unwrap(), Word::from(42));
+        assert_eq!(slot.load(true).unwrap(), Word::from(42));
     }
 }

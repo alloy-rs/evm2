@@ -54,18 +54,6 @@ pub(super) struct TrackedAccountMap {
 }
 
 impl TrackedAccountMap {
-    /// Returns whether the account is warm for EIP-2929 gas accounting.
-    #[inline]
-    pub(super) fn is_warm(&self, address: &Address) -> bool {
-        self.accounts.get(address).is_some_and(|entry| entry.is_warm)
-    }
-
-    /// Returns whether the account is touched for account-lifetime rules.
-    #[inline]
-    pub(super) fn is_touched(&self, address: &Address) -> bool {
-        self.accounts.get(address).is_some_and(|entry| entry.is_touched)
-    }
-
     /// Marks the account as warm, inserting an entry if needed.
     ///
     /// Returns `true` if the account was previously cold.
@@ -75,20 +63,6 @@ impl TrackedAccountMap {
         let was_cold = !entry.is_warm;
         entry.is_warm = true;
         was_cold
-    }
-
-    /// Marks the account as touched, inserting an entry if needed.
-    ///
-    /// Returns `true` if this is the first touch of the account.
-    #[inline]
-    pub(super) fn touch(&mut self, address: Address) -> bool {
-        let entry = self.accounts.entry(address).or_default();
-        if entry.is_touched {
-            false
-        } else {
-            entry.is_touched = true;
-            true
-        }
     }
 }
 

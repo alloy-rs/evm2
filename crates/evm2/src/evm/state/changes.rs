@@ -110,7 +110,7 @@ mod tests {
         database.insert_account_info(&address, empty.clone());
         let mut state = State::new(database);
 
-        state.touch(&address);
+        state.account_entry(&address, false).unwrap().touch();
         state.finalize_transaction_(Version::base(crate::SpecId::SPURIOUS_DRAGON));
         let changes = state.build_state_changes();
 
@@ -127,7 +127,7 @@ mod tests {
         database.insert_account_info(&address, AccountInfo::default());
         let mut state = State::new(database);
 
-        state.touch(&address);
+        state.account_entry(&address, false).unwrap().touch();
         state.finalize_transaction_(Version::base(crate::SpecId::HOMESTEAD));
         let changes = state.build_state_changes();
 
@@ -140,7 +140,7 @@ mod tests {
         let address = Address::from([0x46; 20]);
         let mut state = State::new(CacheDB::default());
 
-        state.touch(&address);
+        state.account_entry(&address, false).unwrap().touch();
         state.finalize_transaction_(Version::base(crate::SpecId::HOMESTEAD));
         let changes = state.build_state_changes();
 
@@ -156,7 +156,7 @@ mod tests {
         let address = Address::from([0x47; 20]);
         let mut state = State::new(CacheDB::default());
 
-        state.touch(&address);
+        state.account_entry(&address, false).unwrap().touch();
         state.finalize_transaction_(Version::base(crate::SpecId::SPURIOUS_DRAGON));
         let changes = state.build_state_changes();
 
@@ -169,8 +169,8 @@ mod tests {
         let mut state = State::new(CacheDB::default());
 
         for i in 0..32 {
-            state.touch(&Address::from([i; 20]));
-            state.mark_destructed(&Address::from([i + 32; 20]));
+            state.account_entry(&Address::from([i; 20]), false).unwrap().touch();
+            state.account_entry(&Address::from([i + 32; 20]), false).unwrap().mark_destructed();
         }
 
         let selfdestructs_capacity = state.selfdestructs.capacity();
@@ -190,7 +190,7 @@ mod tests {
         database.insert_account_storage(&address, &Word::from(1), &Word::from(2));
         let mut state = State::new(database);
 
-        state.mark_destructed(&address);
+        state.account_entry(&address, false).unwrap().mark_destructed();
         state.finalize_transaction_(Version::base(crate::SpecId::SPURIOUS_DRAGON));
         let changes = state.build_state_changes();
 
@@ -209,8 +209,8 @@ mod tests {
         database.insert_account_info(&low, AccountInfo::default().with_balance(Word::from(1)));
         let mut state = State::new(database);
 
-        state.mark_destructed(&high);
-        state.mark_destructed(&low);
+        state.account_entry(&high, false).unwrap().mark_destructed();
+        state.account_entry(&low, false).unwrap().mark_destructed();
         let mut inspected = Vec::new();
         state
             .finalize_transaction(Version::base(SpecId::AMSTERDAM), |log| {

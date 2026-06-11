@@ -1,7 +1,7 @@
 //! Account models held by the state overlay and emitted in transitions.
 
 use super::{DbResult, DynDatabase, JournalEntry, StateInner};
-use crate::{bytecode::Bytecode, interpreter::Word};
+use crate::{EvmFeatures, bytecode::Bytecode, interpreter::Word};
 use alloy_primitives::{Address, B256, KECCAK256_EMPTY, U256};
 use derive_where::derive_where;
 
@@ -168,10 +168,10 @@ impl TrackedAccount {
 
 /// A mutable, journaled handle to an account loaded into the transaction overlay.
 ///
-/// Returned by [`State::journaled_account`](super::State::journaled_account). The account has
+/// Returned by [`State::account_entry`](super::State::account_entry). The account has
 /// already been read from the backing database and preserved in the transaction overlay; this
 /// handle ties that overlay slot to the revert journal so a mutation and its rollback bookkeeping
-/// cannot drift apart, mirroring revm's `JournaledAccount`.
+/// cannot drift apart, mirroring revm's `AccountEntry`.
 ///
 /// The first mutating access records a single [`JournalEntry::AccountChange`] snapshot of the
 /// account as it was when the handle was created, so every change made through the handle is
@@ -181,9 +181,9 @@ impl TrackedAccount {
 /// The handle also carries the shared [`StateInner`] (backing database, revert journal, and
 /// transaction-initial base warm set), so it can journal mutations, load code on demand, and answer
 /// warm-access queries without going back through [`State`](super::State), mirroring the database
-/// and access-list references revm's `JournaledAccount` holds.
+/// and access-list references revm's `AccountEntry` holds.
 #[derive_where(Debug)]
-pub struct JournaledAccount<'a> {
+pub struct AccountEntry<'a> {
     /// Address of the account.
     address: Address,
     /// Transaction overlay entry: account overlay plus warm/touched access metadata.
@@ -201,7 +201,7 @@ fn empty_account() -> Account {
     Account { code_hash: KECCAK256_EMPTY, ..Account::default() }
 }
 
-impl<'a> JournaledAccount<'a> {
+impl<'a> AccountEntry<'a> {
     /// Creates a handle over a loaded account overlay slot and the shared inner state (backing
     /// database, revert journal, and transaction-initial base warm set).
     #[inline]
@@ -254,7 +254,48 @@ impl<'a> JournaledAccount<'a> {
     /// warmth recorded during execution.
     #[inline]
     pub fn is_warm(&self) -> bool {
-        self.tracked.is_warm || self.inner.warm_addresses.is_warm(&self.address)
+        self.tracked.is_warm || self.inner.prewarm_set.is_warm(&self.address)
+    }
+
+    /// Returns whether the account has been marked self-destructed in the current transaction.
+    #[inline]
+    pub fn is_destructed(&self) -> bool {
+        self.inner.selfdestructs.contains(&self.address)
+    }
+
+    /// Returns whether the account is touched for transaction-finalization account-lifetime rules.
+    #[inline]
+    pub const fn is_touched(&self) -> bool {
+        self.tracked.is_touched
+    }
+
+    /// Returns whether the account was created in the current transaction.
+    #[inline]
+    pub fn is_created(&self) -> bool {
+        self.tracked.present.as_ref().is_some_and(|account| account.just_created)
+    }
+
+    /// Returns whether the account is dead by the EIP-161 definition while existing in the overlay.
+    ///
+    /// An account is existing-dead when it has zero nonce, zero balance, and empty code, or when it
+    /// was deleted in this transaction but existed at the transaction boundary. Spurious Dragon
+    /// deletes such touched accounts during transaction finalization.
+    #[inline]
+    pub fn is_existing_dead(&self) -> bool {
+        self.tracked.present.as_ref().is_some_and(Account::is_empty)
+            || (self.tracked.present.is_none() && self.tracked.original.is_some())
+    }
+
+    /// Returns whether the account is empty for EIP-150 new-account gas checks.
+    ///
+    /// Under EIP-161 an absent or empty account is empty; before EIP-161 only an absent, untouched
+    /// account counts as empty.
+    #[inline]
+    pub fn is_empty_for_new_account_gas(&self, features: EvmFeatures) -> bool {
+        if features.contains(EvmFeatures::EIP161) {
+            return self.tracked.present.as_ref().is_none_or(Account::is_empty);
+        }
+        self.tracked.present.is_none() && !self.tracked.is_touched
     }
 
     /// Loads the account's bytecode, reading it from the backing database by code hash when it is
@@ -288,6 +329,19 @@ impl<'a> JournaledAccount<'a> {
         }
     }
 
+    /// Marks the account self-destructed in the current transaction, recording a
+    /// [`JournalEntry::SelfDestruct`] the first time and touching the account.
+    ///
+    /// Touching makes the account participate in EIP-158/161 cleanup, and the self-destruct set
+    /// membership is undone by [`State::rollback`](super::State::rollback).
+    #[inline]
+    pub fn mark_destructed(&mut self) {
+        if self.inner.selfdestructs.insert(self.address) {
+            self.inner.journal.push(JournalEntry::SelfDestruct { address: self.address });
+        }
+        self.touch();
+    }
+
     /// Marks the account warm for EIP-2929 gas accounting, recording a
     /// [`JournalEntry::AccountWarmed`] when this access transitions it from cold to warm.
     ///
@@ -295,7 +349,7 @@ impl<'a> JournaledAccount<'a> {
     /// base warm set stay warm across rollback, so warming them again records nothing.
     #[inline]
     pub fn warm(&mut self) -> bool {
-        if self.inner.warm_addresses.is_warm(&self.address) {
+        if self.inner.prewarm_set.is_warm(&self.address) {
             return false;
         }
         let was_cold = !self.tracked.is_warm;
@@ -311,6 +365,19 @@ impl<'a> JournaledAccount<'a> {
     pub fn set_balance(&mut self, balance: Word) {
         self.touch();
         self.get_or_insert().balance = balance;
+    }
+
+    /// Adds a signed balance delta by wrapping two's-complement values, touching the account.
+    ///
+    /// A zero delta only touches the account, matching the EVM's value-bearing-call semantics.
+    #[inline]
+    pub fn add_balance(&mut self, delta: Word) {
+        if delta.is_zero() {
+            self.touch();
+            return;
+        }
+        let balance = self.balance().wrapping_add(delta);
+        self.set_balance(balance);
     }
 
     /// Sets the account nonce, touching the account and recording a revert snapshot.
@@ -403,15 +470,15 @@ mod tests {
 
     #[test]
     fn journaled_account_mutations_journal_and_roll_back() {
-        use crate::{SpecId, Version};
         use crate::bytecode::Bytecode;
+        use crate::{SpecId, Version};
 
         let address = Address::from([0x88; 20]);
         let mut state = State::new(CacheDB::default());
 
         let checkpoint = state.checkpoint();
         {
-            let mut account = state.journaled_account(&address).unwrap();
+            let mut account = state.account_entry(&address, false).unwrap();
             assert!(!account.exists());
             assert!(account.warm(), "first access is cold");
             assert!(!account.warm(), "second access is warm");
@@ -423,15 +490,15 @@ mod tests {
             ])));
         }
 
-        assert!(state.is_account_warm(&address));
-        let info = state.account_info(&address).unwrap().expect("account materialized by mutation");
+        assert!(state.account_entry(&address, false).unwrap().is_warm());
+        let info = state.peek_account_info(&address).unwrap().expect("account materialized by mutation");
         assert_eq!(info.balance, Word::from(100));
         assert_eq!(info.nonce, 8);
         assert_ne!(info.code_hash, KECCAK256_EMPTY);
 
         state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
-        assert!(!state.is_account_warm(&address));
-        assert!(state.account_info(&address).unwrap().is_none());
+        assert!(!state.account_entry(&address, false).unwrap().is_warm());
+        assert!(state.peek_account_info(&address).unwrap().is_none());
         assert!(state.build_state_changes().is_empty());
     }
 
@@ -444,12 +511,33 @@ mod tests {
 
         let checkpoint = state.checkpoint();
         {
-            let account = state.journaled_account(&address).unwrap();
+            let account = state.account_entry(&address, false).unwrap();
             assert_eq!(account.balance(), Word::from(5));
             assert_eq!(account.nonce(), 0);
         }
         // Loading preserves the account but a read-only handle records no transition.
         state.rollback(checkpoint, crate::Version::base(crate::SpecId::FRONTIER).features);
         assert!(state.build_state_changes().is_empty());
+    }
+
+    #[test]
+    fn journaled_account_skip_cold_load_signals_skip() {
+        use crate::evm::DbErrorCode;
+
+        let address = Address::from([0x8a; 20]);
+        let mut database = CacheDB::default();
+        database.insert_account_info(&address, AccountInfo::default().with_balance(Word::from(5)));
+        let mut state = State::new(database);
+
+        // A cold, not-yet-loaded account signals the skip instead of reading the database.
+        assert!(matches!(
+            state.account_entry(&address, true),
+            Err(DbErrorCode::COLD_LOAD_SKIPPED)
+        ));
+        // Skipping leaves the overlay untouched, so a later non-skipped load still works.
+        let account = state.account_entry(&address, false).unwrap();
+        assert_eq!(account.balance(), Word::from(5));
+        // An already-loaded account yields a handle even when skipping is requested.
+        assert!(state.account_entry(&address, true).is_ok());
     }
 }
