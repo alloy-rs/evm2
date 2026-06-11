@@ -6,6 +6,7 @@ use alloy_primitives::{
 use alloy_rpc_types_eth::{AccessList, AccessListItem};
 use evm2::{
     Evm, EvmTypes, Inspector,
+    ethereum::RecoveredTxEnvelope,
     interpreter::{Interpreter, Message, MessageResult, op},
 };
 
@@ -39,6 +40,27 @@ impl AccessListInspector {
                 .map(|v| (v.address, v.storage_keys.into_iter().collect()))
                 .collect(),
         }
+    }
+
+    /// Excludes additional addresses from the final access list.
+    ///
+    /// The caller, callee and precompiles are excluded automatically; see
+    /// [`Self::with_excluded_from_tx`] for the transaction-derived exclusions.
+    pub fn with_excluded(mut self, addresses: impl IntoIterator<Item = Address>) -> Self {
+        self.excluded.extend(addresses);
+        self
+    }
+
+    /// Excludes the transaction's addresses from the final access list.
+    ///
+    /// 7702 authorities should be excluded because those get loaded anyway.
+    pub fn with_excluded_from_tx(self, tx: &RecoveredTxEnvelope) -> Self {
+        let authorities = tx
+            .as_eip7702()
+            .into_iter()
+            .flat_map(|tx| &tx.inner().authorization_list)
+            .filter_map(|authorization| authorization.recover_authority().ok());
+        self.with_excluded(authorities)
     }
 
     /// Returns the excluded addresses.
@@ -86,11 +108,9 @@ impl AccessListInspector {
         message: &Message<T>,
         host: &Evm<T>,
     ) {
-        self.excluded = [message.caller, message.destination]
-            .into_iter()
-            .chain(host.precompiles().addresses())
-            .chain(host.eip7702_authorities())
-            .collect();
+        self.excluded.extend(
+            [message.caller, message.destination].into_iter().chain(host.precompiles().addresses()),
+        );
     }
 }
 

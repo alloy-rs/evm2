@@ -130,7 +130,7 @@ use crate::{
 };
 use alloc::{boxed::Box, vec};
 use alloy_eips::eip2718::Typed2718;
-use alloy_primitives::{Address, B256, Bytes, Log, LogData, map::AddressSet};
+use alloy_primitives::{Address, B256, Bytes, Log, LogData};
 #[cfg(feature = "async")]
 use core::future::Future;
 use core::{any::TypeId, ptr::NonNull};
@@ -190,7 +190,6 @@ pub struct Evm<T: EvmTypes> {
     /// This is passed to the inspector call and create hooks as the parent frame.
     #[derive_where(skip)]
     current_frame: Option<NonNull<Interpreter<'static, T>>>,
-    eip7702_authorities: AddressSet,
     #[derive_where(skip)]
     running: bool,
     #[cfg(feature = "async")]
@@ -266,7 +265,6 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             interpreter_pool: InterpreterPool::new(),
             inspector: None,
             current_frame: None,
-            eip7702_authorities: AddressSet::default(),
             running: false,
             #[cfg(feature = "async")]
             async_stack: r#async::FiberStack::default(),
@@ -485,17 +483,6 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         self.state.logs()
     }
 
-    /// Returns EIP-7702 authorities warmed by the current in-flight transaction.
-    #[inline]
-    pub fn eip7702_authorities(&self) -> impl Iterator<Item = Address> + '_ {
-        self.eip7702_authorities.iter().copied()
-    }
-
-    #[inline]
-    pub(crate) fn record_eip7702_authority(&mut self, authority: Address) {
-        self.eip7702_authorities.insert(authority);
-    }
-
     /// Returns the precompile provider.
     #[inline]
     pub fn precompiles(&self) -> &dyn PrecompileProvider<T> {
@@ -712,7 +699,6 @@ impl<T: EvmTypes<Tx: Typed2718, Host = Self>> Evm<T> {
     /// [`ExecutedTx::discard`].
     pub fn transact(&mut self, tx: &T::Tx) -> HandlerResult<ExecutedTx<'_, T>> {
         self.db_error_code = None;
-        self.eip7702_authorities.clear();
         let handler = self.registry.try_get_by_type(tx.ty())?;
         let mut result = handler.call(tx, self);
         let mut has_pending_state = false;
