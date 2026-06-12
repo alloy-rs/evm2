@@ -214,7 +214,7 @@
                  entry.code = Delta::changed(original_account_code, present_account_code);
              }
  
-@@ -558,33 +550,35 @@
+@@ -558,33 +550,30 @@
              for (key, slot) in changed_acc.storage.iter().filter(|(_, slot)| slot.is_changed()) {
                  entry.storage.insert(
                      (*key).into(),
@@ -224,13 +224,11 @@
              }
  
              // check if the account was changed at all
-             if entry.storage.is_empty()
+-            if entry.storage.is_empty()
 -                && db_acc == changed_acc.info
-+                && db_acc.balance == info.balance
-+                && db_acc.nonce == info.nonce
-+                && db_acc.code_hash == info.code_hash
-                 && !changed_acc.is_selfdestructed()
-             {
+-                && !changed_acc.is_selfdestructed()
+-            {
++            if entry.storage.is_empty() && db_acc == info && !changed_acc.is_selfdestructed() {
                  // clear the entry if the account was not changed
 -                state_diff.remove(&addr);
 +                state_diff.remove(addr);

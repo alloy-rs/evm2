@@ -58,7 +58,11 @@ impl<T: PartialEq> Tracked<T> {
 
 /// Account information loaded from the backing database or emitted in a state
 /// transition.
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+///
+/// Equality and hashing only consider [`Self::balance`], [`Self::nonce`], and
+/// [`Self::code_hash`]; [`Self::code`] is a cache keyed by the code hash and may or may not be
+/// populated.
+#[derive(Clone, Debug)]
 pub struct AccountInfo {
     /// Account balance.
     pub balance: Word,
@@ -70,6 +74,24 @@ pub struct AccountInfo {
     pub code: Option<Bytecode>,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
+}
+
+impl PartialEq for AccountInfo {
+    fn eq(&self, other: &Self) -> bool {
+        self.balance == other.balance
+            && self.nonce == other.nonce
+            && self.code_hash == other.code_hash
+    }
+}
+
+impl Eq for AccountInfo {}
+
+impl core::hash::Hash for AccountInfo {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        self.balance.hash(state);
+        self.nonce.hash(state);
+        self.code_hash.hash(state);
+    }
 }
 
 impl Default for AccountInfo {

@@ -555,12 +555,7 @@ pub fn populate_state_diff(
             }
 
             // check if the account was changed at all
-            if entry.storage.is_empty()
-                && db_acc.balance == info.balance
-                && db_acc.nonce == info.nonce
-                && db_acc.code_hash == info.code_hash
-                && !changed_acc.is_selfdestructed()
-            {
+            if entry.storage.is_empty() && db_acc == info && !changed_acc.is_selfdestructed() {
                 // clear the entry if the account was not changed
                 state_diff.remove(addr);
                 continue;

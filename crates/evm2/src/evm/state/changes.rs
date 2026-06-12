@@ -147,15 +147,7 @@ impl AccountChange {
     /// This compares balance, nonce, code hash, and existence; it does not consider storage.
     #[inline]
     pub fn is_changed(&self) -> bool {
-        match (&self.original, &self.current) {
-            (Some(original), Some(current)) => {
-                original.balance != current.balance
-                    || original.nonce != current.nonce
-                    || original.code_hash != current.code_hash
-            }
-            (None, None) => false,
-            _ => true,
-        }
+        self.original != self.current
     }
 
     /// Returns the changed storage slots of this account.

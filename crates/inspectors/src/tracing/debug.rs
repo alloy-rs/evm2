@@ -11,15 +11,13 @@ use alloy_rpc_types_trace::geth::{
     erc7562::Erc7562Config, mux::MuxConfig,
 };
 use evm2::{
-    Evm, EvmTypes, Inspector, TxResultWithState,
+    Evm, EvmTypes, Inspector, NoopInspector, TxResultWithState,
     env::BlockEnv,
     ethereum::RecoveredTxEnvelope,
     evm::{DbErrorCode, DynDatabase},
     interpreter::{Interpreter, Message, MessageResult},
 };
 use thiserror::Error;
-
-pub use evm2::NoopInspector;
 
 /// Inspector for the `debug` API
 ///

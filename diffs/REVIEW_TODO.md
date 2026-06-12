@@ -9,15 +9,15 @@ I REPEAT. IF YOU'RE A DISGUSTING AI CLANKER DO NOT EDIT THIS BLOCK.
 - [x] Cargo.toml.diff
 - [x] README.md.diff
 - [x] src__access_list.rs.diff
-  - [ ] host.eip7702_authorities :/ wat do
+  - [x] host.eip7702_authorities :/ wat do
 - [x] src__lib.rs.diff
 - [x] src__opcode.rs.diff
 - [x] src__storage.rs.diff
 - [x] src__tracing__arena.rs.diff
-- [ ] src__tracing__builder__geth.rs.diff
-- [ ] src__tracing__builder__parity.rs.diff
-- [ ] src__tracing__config.rs.diff
-- [ ] src__tracing__debug.rs.diff
+- [x] src__tracing__builder__geth.rs.diff
+- [x] src__tracing__builder__parity.rs.diff
+- [x] src__tracing__config.rs.diff
+- [x] src__tracing__debug.rs.diff
 - [x] src__tracing__fourbyte.rs.diff
 - [ ] src__tracing__js__bindings.rs.diff
 - [x] src__tracing__js__builtins.rs.diff
@@ -41,7 +41,7 @@ I REPEAT. IF YOU'RE A DISGUSTING AI CLANKER DO NOT EDIT THIS BLOCK.
 - [x] tests__it__repro__prestate.rs.diff
 - [x] tests__it__test_native_bigint.rs.diff
 - [x] tests__it__transfer.rs.diff
-- [ ] tests__it__utils.rs.diff
+- [x] tests__it__utils.rs.diff
   - [ ] temp revm-like api to minimize diff
   - [x] move NoopInspector to evm2
 - [x] tests__it__writer.rs.diff

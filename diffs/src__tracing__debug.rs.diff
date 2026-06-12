@@ -1,6 +1,6 @@
 --- upstream/src/tracing/debug.rs
 +++ evm2/src/tracing/debug.rs
-@@ -3,25 +3,24 @@
+@@ -3,22 +3,19 @@
  };
  #[cfg(feature = "js-tracer")]
  use alloc::boxed::Box;
@@ -25,7 +25,7 @@
 -    primitives::{Address, Log, U256},
 -    DatabaseRef, Inspector,
 +use evm2::{
-+    Evm, EvmTypes, Inspector, TxResultWithState,
++    Evm, EvmTypes, Inspector, NoopInspector, TxResultWithState,
 +    env::BlockEnv,
 +    ethereum::RecoveredTxEnvelope,
 +    evm::{DbErrorCode, DynDatabase},
@@ -33,12 +33,7 @@
  };
  use thiserror::Error;
  
-+pub use evm2::NoopInspector;
-+
- /// Inspector for the `debug` API
- ///
- /// This inspector is used to trace the execution of a transaction or call and supports all variants
-@@ -39,7 +38,7 @@
+@@ -39,7 +36,7 @@
      /// PreStateTracer
      PreStateTracer(TracingInspector, PreStateConfig),
      /// Noop tracer
@@ -47,7 +42,7 @@
      /// Mux tracer
      Mux(MuxInspector, MuxConfig),
      /// FlatCallTracer
-@@ -48,8 +47,8 @@
+@@ -48,8 +45,8 @@
      Erc7562Tracer(TracingInspector, Erc7562Config),
      /// Default tracer
      Default(TracingInspector, GethDefaultTracingOptions),
@@ -57,7 +52,7 @@
      Js(Box<crate::tracing::js::JsInspector>),
  }
  
-@@ -62,7 +61,7 @@
+@@ -62,7 +59,7 @@
              Self::PreStateTracer(inspector, config) => {
                  Self::PreStateTracer(inspector.clone(), *config)
              }
@@ -66,7 +61,7 @@
              Self::Mux(inspector, config) => Self::Mux(inspector.clone(), config.clone()),
              Self::FlatCallTracer(inspector) => Self::FlatCallTracer(inspector.clone()),
              Self::Erc7562Tracer(inspector, config) => {
-@@ -109,9 +108,7 @@
+@@ -109,9 +106,7 @@
                              config,
                          )
                      }
@@ -77,7 +72,7 @@
                      GethDebugBuiltInTracerType::MuxTracer => {
                          let config = tracer_config
                              .into_mux_config()
-@@ -201,33 +198,33 @@
+@@ -201,33 +196,33 @@
      }
  
      /// Should be invoked after each transaction to obtain the resulting [`GethTrace`].
@@ -123,7 +118,7 @@
                  inspector
                      .geth_builder()
                      .geth_prestate_traces(res, config, db)
-@@ -240,8 +237,8 @@
+@@ -240,8 +235,8 @@
                  .map_err(DebugInspectorError::Database)?
                  .into(),
              Self::FlatCallTracer(inspector) => {
@@ -134,7 +129,7 @@
                  inspector
                      .clone()
                      .into_parity_builder()
-@@ -249,33 +246,26 @@
+@@ -249,33 +244,26 @@
                      .into()
              }
              Self::Erc7562Tracer(inspector, config) => {
@@ -176,7 +171,7 @@
              }
          };
  
-@@ -286,90 +276,85 @@
+@@ -286,90 +274,85 @@
  macro_rules! delegate {
      ($self:expr => $insp:ident.$method:ident($($arg:expr),*)) => {
          match $self {
@@ -213,37 +208,37 @@
 -
 -    fn step(&mut self, interp: &mut Interpreter, context: &mut CTX) {
 -        delegate!(self => inspector.step(interp, context))
+-    }
+-
+-    fn step_end(&mut self, interp: &mut Interpreter, context: &mut CTX) {
+-        delegate!(self => inspector.step_end(interp, context))
+-    }
+-
+-    fn log(&mut self, context: &mut CTX, log: Log) {
+-        delegate!(self => inspector.log(context, log))
 +impl<T: EvmTypes<Host = Evm<T>>> Inspector<T> for DebugInspector {
 +    fn initialize_interp(&mut self, interp: &mut Interpreter<'_, T>) {
 +        delegate!(self => inspector.initialize_interp(interp))
      }
  
--    fn step_end(&mut self, interp: &mut Interpreter, context: &mut CTX) {
--        delegate!(self => inspector.step_end(interp, context))
+-    fn log_full(&mut self, interp: &mut Interpreter, context: &mut CTX, log: Log) {
+-        delegate!(self => inspector.log_full(interp, context, log))
 +    fn step(&mut self, interp: &mut Interpreter<'_, T>) {
 +        delegate!(self => inspector.step(interp))
      }
  
--    fn log(&mut self, context: &mut CTX, log: Log) {
--        delegate!(self => inspector.log(context, log))
+-    fn call(&mut self, context: &mut CTX, inputs: &mut CallInputs) -> Option<CallOutcome> {
+-        delegate!(self => inspector.call(context, inputs))
 +    fn step_end(&mut self, interp: &mut Interpreter<'_, T>) {
 +        delegate!(self => inspector.step_end(interp))
      }
  
--    fn log_full(&mut self, interp: &mut Interpreter, context: &mut CTX, log: Log) {
--        delegate!(self => inspector.log_full(interp, context, log))
+-    fn call_end(&mut self, context: &mut CTX, inputs: &CallInputs, outcome: &mut CallOutcome) {
+-        delegate!(self => inspector.call_end(context, inputs, outcome))
 +    fn log(&mut self, log: &Log, host: &mut T::Host) {
 +        delegate!(self => inspector.log(log, host))
      }
  
--    fn call(&mut self, context: &mut CTX, inputs: &mut CallInputs) -> Option<CallOutcome> {
--        delegate!(self => inspector.call(context, inputs))
--    }
--
--    fn call_end(&mut self, context: &mut CTX, inputs: &CallInputs, outcome: &mut CallOutcome) {
--        delegate!(self => inspector.call_end(context, inputs, outcome))
--    }
--
 -    fn create(&mut self, context: &mut CTX, inputs: &mut CreateInputs) -> Option<CreateOutcome> {
 -        delegate!(self => inspector.create(context, inputs))
 +    fn call(
@@ -315,7 +310,7 @@
      /// Invalid tracer configuration
      #[error("invalid tracer config")]
      InvalidTracerConfig,
-@@ -386,7 +371,7 @@
+@@ -386,7 +369,7 @@
      #[cfg(feature = "js-tracer")]
      #[error(transparent)]
      JsInspector(#[from] crate::tracing::js::JsInspectorError),
