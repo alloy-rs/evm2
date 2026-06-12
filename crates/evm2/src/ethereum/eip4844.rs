@@ -68,7 +68,7 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     let effective_gas_cost = U256::from(tx.gas_limit) * gas_price;
     let blob_basefee_cost = blob_gas_cost * req.host.block.blob_basefee;
     charge_upfront(req.host, caller, effective_gas_cost + blob_basefee_cost)?;
-    req.host.state.account_entry(&caller, false).map_err(db_error_handler!(req.host))?.bump_nonce();
+    req.host.state.account(&caller, false).map_err(db_error_handler!(req.host))?.bump_nonce();
     let execution_checkpoint = req.host.state.checkpoint();
 
     let gas_limit = tx.gas_limit - intrinsic;

@@ -9,17 +9,17 @@ mod stream;
 mod tracked;
 
 use account::TrackedAccount;
-pub use account::{Account, AccountEntry, AccountInfo};
+pub use account::{Account, AccountHandle, AccountInfo};
 pub use block::BlockStateAccumulator;
 pub use changes::{StateChanges, StorageChangeSet};
 pub use journal::{JournalEntry, StateCheckpoint};
-pub use storage::{StorageOverlay, StorageSlot, StorageSlotEntry, StoragesEntry};
+pub use storage::{StorageOverlay, StorageSlot, StorageSlotHandle, StorageHandle};
 pub use stream::{
     AccountChangeRef, AccountInfoRef, NoopChangeSink, StateChangeSink, StateChangeSource,
     StorageChange, Tee,
 };
-pub use tracked::Tracked;
 use tracked::AccountMap;
+pub use tracked::Tracked;
 
 use super::{
     PrewarmSet,
@@ -71,7 +71,7 @@ impl DerefMut for State {
 
 /// Shared inner state borrowed by journaled mutation handles.
 ///
-/// Holds the parts of [`State`] that a [`AccountEntry`] or [`StoragesEntry`] needs while it
+/// Holds the parts of [`State`] that a [`AccountHandle`] or [`StorageHandle`] needs while it
 /// borrows an account or storage overlay: the backing database, the revert journal, and the
 /// pre-warmed set. Splitting these out of [`State`] lets a handle borrow them
 /// together as one `&mut StateInner` disjointly from the account/storage maps it mutates. [`State`]
@@ -217,10 +217,11 @@ impl State {
     ///
     /// This loads the account into the transaction overlay, so it returns a [`DbResult`] to surface
     /// any backing-database error.
+    /// TODO(AI) remove this function and in its place use account(address,false).warm()
     #[inline(never)]
     #[must_use]
     pub fn warm_account(&mut self, address: &Address) -> DbResult<bool> {
-        Ok(self.account_entry(address, false)?.warm())
+        Ok(self.account(address, false)?.warm())
     }
 
     /// Marks a storage slot as warm in a revertible execution context.
@@ -229,10 +230,11 @@ impl State {
     /// warm-set change is journaled and will be undone by [`Self::rollback`]. Use this for warmth
     /// introduced while executing EVM code or any other scope whose effects may be reverted to a
     /// checkpoint.
+    /// TODO(AI) remove this function and in its place use storage_slot(address,key,false).warm()
     #[inline(never)]
     #[must_use]
     pub fn warm_storage(&mut self, address: &Address, key: &Word) -> bool {
-        self.storage_entry(address).slot(*key).warm()
+        self.storage(address).slot(*key).warm()
     }
 
     /// Clears transaction-scoped substate.
@@ -246,6 +248,7 @@ impl State {
         self.logs.clear();
     }
 
+    // TODO(AI) remove this function and use ensure_transaction_account_skip_cold instead.
     fn ensure_transaction_account<'a>(
         inner: &mut StateInner,
         accounts: &'a mut AccountMap,
@@ -305,55 +308,56 @@ impl State {
     ///
     /// Unlike [`Self::peek_account_info`], which reads the backing database without caching, this
     /// reads the account once and preserves it in the transaction overlay. The returned
-    /// [`AccountEntry`] records a revert snapshot on its first mutation, so any changes made
+    /// [`AccountHandle`] records a revert snapshot on its first mutation, so any changes made
     /// through it are undone together by [`Self::rollback`]. The account is materialized as empty
-    /// only when it is first mutated while absent. This mirrors revm's `AccountEntry`.
+    /// only when it is first mutated while absent. This mirrors revm's `AccountHandle`.
     ///
     /// When `skip_cold_load` is true and the account has not been loaded into the overlay yet, the
     /// cold database read is skipped and [`DbErrorCode::COLD_LOAD_SKIPPED`] is returned, leaving the
     /// overlay untouched. Callers that cannot afford a cold access use this to detect it without
     /// paying for the load. An already-loaded account always yields a handle.
-    pub fn account_entry(
+    pub fn account(
         &mut self,
         address: &Address,
         skip_cold_load: bool,
-    ) -> DbResult<AccountEntry<'_>> {
+    ) -> DbResult<AccountHandle<'_>> {
         let tracked = Self::ensure_transaction_account_skip_cold(
             &mut self.inner,
             &mut self.accounts,
             address,
             skip_cold_load,
         )?;
-        Ok(AccountEntry::new(*address, tracked, &mut self.inner))
+        Ok(AccountHandle::new(*address, tracked, &mut self.inner))
     }
 
     /// Returns a journaled mutation handle to `address`'s persistent storage overlay.
     ///
-    /// The returned [`StoragesEntry`] ties the account's storage slots to the revert journal, so
+    /// The returned [`StorageHandle`] ties the account's storage slots to the revert journal, so
     /// any slot warmed or written through it is undone together by [`Self::rollback`]. Slot values
     /// are read from the backing database lazily, only when a slot is loaded or first written. This
-    /// mirrors [`Self::account_entry`] on the storage side.
+    /// mirrors [`Self::account`] on the storage side.
     ///
     /// This does not load or touch the owning account; callers that need the account materialized
-    /// must do so separately via [`Self::account_entry`].
-    pub fn storage_entry(&mut self, address: &Address) -> StoragesEntry<'_> {
+    /// must do so separately via [`Self::account`].
+    pub fn storage(&mut self, address: &Address) -> StorageHandle<'_> {
         let storage = self.storage.entry(*address).or_default();
-        StoragesEntry::new(*address, storage, &mut self.inner)
+        StorageHandle::new(*address, storage, &mut self.inner)
     }
 
     /// Returns a journaled mutation handle to a single persistent storage slot of `address`.
     ///
-    /// This is [`Self::storage_entry`] narrowed to one slot — a convenience for callers that need
-    /// exactly one [`StorageSlotEntry`]. See [`StoragesEntry::slot`] for the per-slot semantics.
-    pub fn storage_slot_entry(&mut self, address: &Address, key: Word) -> StorageSlotEntry<'_> {
-        self.storage_entry(address).into_slot(key)
+    /// This is [`Self::storage`] narrowed to one slot — a convenience for callers that need
+    /// exactly one [`StorageSlotHandle`]. See [`StorageHandle::slot`] for the per-slot semantics.
+    pub fn storage_slot(&mut self, address: &Address, key: Word) -> StorageSlotHandle<'_> {
+        self.storage(address).into_slot(key)
     }
 
     /// Returns account info from the overlay or the backing database.
     ///
     /// This is a non-loading peek: it returns the overlay account when one has been loaded this
     /// transaction, otherwise it reads the backing database directly without caching the result in
-    /// the overlay. Use [`Self::account_entry`] when the account should be loaded and preserved.
+    /// the overlay. Use [`Self::account`] when the account should be loaded and preserved.
+    /// TODO(AI) renameto account_info_peek instead.
     #[inline(never)]
     pub fn peek_account_info(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
         if let Some(present) =
@@ -367,12 +371,12 @@ impl State {
     /// Transfers value between accounts.
     pub fn transfer(&mut self, from: &Address, to: &Address, value: &Word) -> DbResult<bool> {
         if value.is_zero() {
-            self.account_entry(to, false)?.touch();
+            self.account(to, false)?.touch();
             return Ok(true);
         }
 
         if from == to {
-            let mut account = self.account_entry(from, false)?;
+            let mut account = self.account(from, false)?;
             if account.balance() < *value {
                 return Ok(false);
             }
@@ -381,17 +385,19 @@ impl State {
         }
 
         {
-            let mut from_account = self.account_entry(from, false)?;
+            let mut from_account = self.account(from, false)?;
             let Some(new_from_balance) = from_account.balance().checked_sub(*value) else {
                 return Ok(false);
             };
             // `set_balance` touches the account, matching the touch the prior `transfer` performed.
             from_account.set_balance(new_from_balance);
+            from_account.touch();
         }
         {
-            let mut to_account = self.account_entry(to, false)?;
+            let mut to_account = self.account(to, false)?;
             let new_to_balance = to_account.balance().saturating_add(*value);
             to_account.set_balance(new_to_balance);
+            to_account.touch();
         }
         Ok(true)
     }
@@ -405,8 +411,9 @@ impl State {
         value: &Word,
         features: EvmFeatures,
     ) -> DbResult<Result<(), InstrStop>> {
+        // TODO check order of operations, we could potentially simplify it and do a lot more with only one hashmap lookup.
         if self
-            .account_entry(address, false)?
+            .account(address, false)?
             .get()
             .is_some_and(|account| account.nonce != 0 || account.code_hash != KECCAK256_EMPTY)
         {
@@ -416,16 +423,16 @@ impl State {
         // Deduct the endowment from the caller. A zero endowment moves nothing and leaves the
         // caller untouched, matching the prior `transfer` behaviour.
         if !value.is_zero() {
-            let mut caller_account = self.account_entry(caller, false)?;
+            let mut caller_account = self.account(caller, false)?;
             let Some(new_caller_balance) = caller_account.balance().checked_sub(*value) else {
                 return Ok(Err(InstrStop::OutOfFunds));
             };
             caller_account.set_balance(new_caller_balance);
         }
 
-        self.storage_entry(address).wipe();
+        self.storage(address).wipe();
 
-        let mut target = self.account_entry(address, false)?;
+        let mut target = self.account(address, false)?;
         // Preserve any balance the address already held (e.g. funds sent before creation) and add
         // the endowment.
         let balance = target.balance().wrapping_add(*value);
@@ -535,10 +542,10 @@ impl State {
                 JournalEntry::StorageInserted { address, key } => {
                     // Undo the slot insert, then drop the slot (and the account's overlay when it
                     // is left empty and un-wiped) unless warm metadata keeps it alive.
-                    if let hash_map::Entry::Occupied(mut storage_entry) =
+                    if let hash_map::Entry::Occupied(mut overlay_entry) =
                         self.storage.entry(address)
                     {
-                        let storage = storage_entry.get_mut();
+                        let storage = overlay_entry.get_mut();
                         if let Some(slot) = storage.slots.get_mut(&key) {
                             slot.value = None;
                             if slot.is_empty() {
@@ -546,7 +553,7 @@ impl State {
                             }
                         }
                         if !storage.wiped && storage.slots.is_empty() {
-                            storage_entry.remove();
+                            overlay_entry.remove();
                         }
                     }
                 }
@@ -590,7 +597,7 @@ impl State {
         let previous = entry.present.clone();
         self.inner.journal.push(JournalEntry::AccountChange { address: *address, previous });
         entry.present = None;
-        self.storage_entry(address).wipe();
+        self.storage(address).wipe();
         Ok(())
     }
 
@@ -665,14 +672,14 @@ impl State {
         if version.feature(EvmFeatures::EIP161) {
             for address in &touched {
                 // EIP-161 deletes touched dead accounts at transaction finalization.
-                if self.account_entry(address, false)?.is_existing_dead() {
+                if self.account(address, false)?.is_existing_dead() {
                     self.delete_account_for_finalization(address)?;
                 }
             }
         } else {
             for address in &touched {
                 // Before EIP-161, touching a non-existent account materializes it as empty.
-                if !selfdestructs.contains(address) && !self.account_entry(address, false)?.exists()
+                if !selfdestructs.contains(address) && !self.account(address, false)?.exists()
                 {
                     self.materialize_empty_account_for_finalization(address)?;
                 }

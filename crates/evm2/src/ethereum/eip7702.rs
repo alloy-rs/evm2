@@ -61,7 +61,7 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
 
     let effective_gas_cost = U256::from(tx.gas_limit) * gas_price;
     charge_upfront(req.host, caller, effective_gas_cost)?;
-    req.host.state.account_entry(&caller, false).map_err(db_error_handler!(req.host))?.bump_nonce();
+    req.host.state.account(&caller, false).map_err(db_error_handler!(req.host))?.bump_nonce();
     let chain_id = req.host.version().chain_id;
     let eip7702_refund = apply_auth_list(req.host, chain_id, &tx.authorization_list)?;
     let execution_checkpoint = req.host.state.checkpoint();
@@ -115,7 +115,7 @@ fn apply_auth_list<T: EvmTypes<Host = Evm<T>>>(
         // confined to this block; `set_delegation` reacquires the now-loaded account for the write.
         let (existed, authority_nonce, code) = {
             let mut account =
-                host.state.account_entry(&authority, false).map_err(db_error_handler!(host))?;
+                host.state.account(&authority, false).map_err(db_error_handler!(host))?;
             // mark account as warm
             account.warm();
             (account.exists(), account.nonce(), account.load_code())
@@ -152,7 +152,7 @@ fn set_delegation<T: EvmTypes<Host = Evm<T>>>(
     // share a single revert snapshot. `set_code_slow` touches the account, matching the touch the
     // former `increment_nonce` performed.
     let mut account =
-        host.state.account_entry(&authority, false).map_err(db_error_handler!(host))?;
+        host.state.account(&authority, false).map_err(db_error_handler!(host))?;
     account.set_code_slow(code);
     account.bump_nonce();
     Ok(())

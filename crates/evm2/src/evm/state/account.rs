@@ -168,10 +168,10 @@ impl TrackedAccount {
 
 /// A mutable, journaled handle to an account loaded into the transaction overlay.
 ///
-/// Returned by [`State::account_entry`](super::State::account_entry). The account has
+/// Returned by [`State::account`](super::State::account). The account has
 /// already been read from the backing database and preserved in the transaction overlay; this
 /// handle ties that overlay slot to the revert journal so a mutation and its rollback bookkeeping
-/// cannot drift apart, mirroring revm's `AccountEntry`.
+/// cannot drift apart, mirroring revm's `AccountHandle`.
 ///
 /// The first mutating access records a single [`JournalEntry::AccountChange`] snapshot of the
 /// account as it was when the handle was created, so every change made through the handle is
@@ -181,9 +181,9 @@ impl TrackedAccount {
 /// The handle also carries the shared [`StateInner`] (backing database, revert journal, and
 /// transaction-initial base warm set), so it can journal mutations, load code on demand, and answer
 /// warm-access queries without going back through [`State`](super::State), mirroring the database
-/// and access-list references revm's `AccountEntry` holds.
+/// and access-list references revm's `AccountHandle` holds.
 #[derive_where(Debug)]
-pub struct AccountEntry<'a> {
+pub struct AccountHandle<'a> {
     /// Address of the account.
     address: Address,
     /// Transaction overlay entry: account overlay plus warm/touched access metadata.
@@ -201,7 +201,7 @@ fn empty_account() -> Account {
     Account { code_hash: KECCAK256_EMPTY, ..Account::default() }
 }
 
-impl<'a> AccountEntry<'a> {
+impl<'a> AccountHandle<'a> {
     /// Creates a handle over a loaded account overlay slot and the shared inner state (backing
     /// database, revert journal, and transaction-initial base warm set).
     #[inline]
@@ -475,7 +475,7 @@ mod tests {
 
         let checkpoint = state.checkpoint();
         {
-            let mut account = state.account_entry(&address, false).unwrap();
+            let mut account = state.account(&address, false).unwrap();
             assert!(!account.exists());
             assert!(account.warm(), "first access is cold");
             assert!(!account.warm(), "second access is warm");
@@ -487,7 +487,7 @@ mod tests {
             ])));
         }
 
-        assert!(state.account_entry(&address, false).unwrap().is_warm());
+        assert!(state.account(&address, false).unwrap().is_warm());
         let info =
             state.peek_account_info(&address).unwrap().expect("account materialized by mutation");
         assert_eq!(info.balance, Word::from(100));
@@ -495,7 +495,7 @@ mod tests {
         assert_ne!(info.code_hash, KECCAK256_EMPTY);
 
         state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
-        assert!(!state.account_entry(&address, false).unwrap().is_warm());
+        assert!(!state.account(&address, false).unwrap().is_warm());
         assert!(state.peek_account_info(&address).unwrap().is_none());
         assert!(state.build_state_changes().is_empty());
     }
@@ -509,7 +509,7 @@ mod tests {
 
         let checkpoint = state.checkpoint();
         {
-            let account = state.account_entry(&address, false).unwrap();
+            let account = state.account(&address, false).unwrap();
             assert_eq!(account.balance(), Word::from(5));
             assert_eq!(account.nonce(), 0);
         }
@@ -528,11 +528,11 @@ mod tests {
         let mut state = State::new(database);
 
         // A cold, not-yet-loaded account signals the skip instead of reading the database.
-        assert!(matches!(state.account_entry(&address, true), Err(DbErrorCode::COLD_LOAD_SKIPPED)));
+        assert!(matches!(state.account(&address, true), Err(DbErrorCode::COLD_LOAD_SKIPPED)));
         // Skipping leaves the overlay untouched, so a later non-skipped load still works.
-        let account = state.account_entry(&address, false).unwrap();
+        let account = state.account(&address, false).unwrap();
         assert_eq!(account.balance(), Word::from(5));
         // An already-loaded account yields a handle even when skipping is requested.
-        assert!(state.account_entry(&address, true).is_ok());
+        assert!(state.account(&address, true).is_ok());
     }
 }

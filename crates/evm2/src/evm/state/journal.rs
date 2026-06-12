@@ -18,6 +18,9 @@ pub struct StateCheckpoint {
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum JournalEntry {
+    // TODO(AI) Add BalanceChanged
+    // TODO(AI) Add NonceChanged
+    // TODO(AI) Add CodeChanged
     /// Account current value changed.
     AccountChange {
         /// Account address.
@@ -26,6 +29,7 @@ pub enum JournalEntry {
         previous: Option<Account>,
     },
     /// Account overlay entry was inserted.
+    /// TODO(AI) remove this entry as it should not be necessary. AccountInserted should be used as a action that loaded the account.
     AccountInserted {
         /// Account address.
         address: Address,
@@ -50,12 +54,14 @@ pub enum JournalEntry {
         previous: Word,
     },
     /// Persistent storage slot overlay was inserted.
+    /// TODO(AI) remove this entry as it should not be necessary. StorageWarmed should be used as a action that loaded the storage slot.
     StorageInserted {
         /// Account address.
         address: Address,
         /// Storage key.
         key: Word,
     },
+    // TODO(AI) remove this entry as it should not be necessary.
     /// Account storage wipe flag changed.
     StorageWipe {
         /// Account address.
@@ -105,11 +111,11 @@ mod tests {
         let mut state = State::new(CacheDB::default());
 
         let checkpoint = state.checkpoint();
-        state.account_entry(&address, false).unwrap().mark_destructed();
+        state.account(&address, false).unwrap().mark_destructed();
 
-        assert!(state.account_entry(&address, false).unwrap().is_destructed());
+        assert!(state.account(&address, false).unwrap().is_destructed());
         state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
-        assert!(!state.account_entry(&address, false).unwrap().is_destructed());
+        assert!(!state.account(&address, false).unwrap().is_destructed());
     }
 
     #[test]
@@ -154,12 +160,12 @@ mod tests {
         let mut state = State::new(database);
 
         let checkpoint = state.checkpoint();
-        state.account_entry(&precompile3, false).unwrap().touch();
-        state.account_entry(&other, false).unwrap().touch();
+        state.account(&precompile3, false).unwrap().touch();
+        state.account(&other, false).unwrap().touch();
 
         state.rollback(checkpoint, Version::base(SpecId::SPURIOUS_DRAGON).features);
-        assert!(state.account_entry(&precompile3, false).unwrap().is_touched());
-        assert!(!state.account_entry(&other, false).unwrap().is_touched());
+        assert!(state.account(&precompile3, false).unwrap().is_touched());
+        assert!(!state.account(&other, false).unwrap().is_touched());
     }
 
     #[test]
@@ -183,10 +189,10 @@ mod tests {
         assert_eq!(state.journal.len(), 3);
 
         state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
-        assert!(state.account_entry(&base_account, false).unwrap().is_warm());
-        assert!(state.storage_slot_entry(&base_storage, key).is_warm());
-        assert!(!state.account_entry(&frame_account, false).unwrap().is_warm());
-        assert!(!state.storage_slot_entry(&frame_storage, key).is_warm());
+        assert!(state.account(&base_account, false).unwrap().is_warm());
+        assert!(state.storage_slot(&base_storage, key).is_warm());
+        assert!(!state.account(&frame_account, false).unwrap().is_warm());
+        assert!(!state.storage_slot(&frame_storage, key).is_warm());
     }
 
     #[test]
@@ -201,12 +207,12 @@ mod tests {
 
         let changes = state.build_state_changes();
         assert!(changes.is_empty());
-        assert!(state.account_entry(&account, false).unwrap().is_warm());
-        assert!(state.storage_slot_entry(&storage_account, key).is_warm());
+        assert!(state.account(&account, false).unwrap().is_warm());
+        assert!(state.storage_slot(&storage_account, key).is_warm());
 
         state.clear_transaction_state();
-        assert!(!state.account_entry(&account, false).unwrap().is_warm());
-        assert!(!state.storage_slot_entry(&storage_account, key).is_warm());
+        assert!(!state.account(&account, false).unwrap().is_warm());
+        assert!(!state.storage_slot(&storage_account, key).is_warm());
     }
 
     #[test]
@@ -218,15 +224,15 @@ mod tests {
 
         state.prewarmset_mut().warm_account(&account);
         let checkpoint = state.checkpoint();
-        assert!(state.account_entry(&account, false).unwrap().exists());
-        assert!(state.account_entry(&account, false).unwrap().get().is_some());
+        assert!(state.account(&account, false).unwrap().exists());
+        assert!(state.account(&account, false).unwrap().get().is_some());
 
         state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
         // Warmth is non-revertible (base warm set), so check it without re-loading the account,
         // which would otherwise repopulate the overlay the rollback just cleared. A skip-cold-load
         // entry surfaces COLD_LOAD_SKIPPED when the account is absent from the overlay.
         assert!(state.prewarmset().is_warm(&account));
-        assert!(state.account_entry(&account, true).is_err());
+        assert!(state.account(&account, true).is_err());
         assert!(state.build_state_changes().is_empty());
     }
 
@@ -240,11 +246,11 @@ mod tests {
 
         assert!(state.prewarmset_mut().warm_storage(&account, &key));
         let checkpoint = state.checkpoint();
-        state.storage_entry(&account).slot(key).write(Word::from(7), false).unwrap();
-        assert_eq!(state.storage_slot_entry(&account, key).load(false).unwrap(), Word::from(7));
+        state.storage(&account).slot(key).write(Word::from(7), false).unwrap();
+        assert_eq!(state.storage_slot(&account, key).load(false).unwrap(), Word::from(7));
 
         state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
-        assert!(state.storage_slot_entry(&account, key).is_warm());
+        assert!(state.storage_slot(&account, key).is_warm());
         assert!(state.build_state_changes().is_empty());
     }
 
@@ -260,11 +266,11 @@ mod tests {
 
         let checkpoint = state.checkpoint();
         assert!(state.warm_storage(&account, &key));
-        assert_eq!(state.storage_entry(&account).slot(key).load(false).unwrap(), value);
+        assert_eq!(state.storage(&account).slot(key).load(false).unwrap(), value);
 
         state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
-        assert!(!state.storage_slot_entry(&account, key).is_warm());
-        assert_eq!(state.storage_slot_entry(&account, key).load(false).unwrap(), value);
+        assert!(!state.storage_slot(&account, key).is_warm());
+        assert_eq!(state.storage_slot(&account, key).load(false).unwrap(), value);
         assert!(state.build_state_changes().is_empty());
 
         assert!(state.warm_storage(&account, &key));

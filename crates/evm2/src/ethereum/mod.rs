@@ -270,7 +270,7 @@ pub(super) fn validate_sender<T: EvmTypes<Host = Evm<T>>>(
     if host.feature(EvmFeatures::EIP3607) && sender_info.code_hash != KECCAK256_EMPTY {
         let code = host
             .state
-            .account_entry(&caller, false)
+            .account(&caller, false)
             .map_err(db_error_handler!(host))?
             .load_code()
             .map_err(db_error_handler!(host))?;
@@ -287,7 +287,7 @@ pub(super) fn validate_sender<T: EvmTypes<Host = Evm<T>>>(
     if !host.feature(EvmFeatures::BALANCE_CHECK) && sender_info.balance < max_upfront {
         let delta = max_upfront - sender_info.balance;
         host.state
-            .account_entry(&caller, false)
+            .account(&caller, false)
             .map_err(db_error_handler!(host))?
             .add_balance(delta);
     }
@@ -333,7 +333,7 @@ pub(super) fn charge_upfront<T: EvmTypes<Host = Evm<T>>>(
         return Ok(());
     }
     let delta = Word::ZERO.wrapping_sub(max_gas_cost);
-    host.state.account_entry(&caller, false).map_err(db_error_handler!(host))?.add_balance(delta);
+    host.state.account(&caller, false).map_err(db_error_handler!(host))?.add_balance(delta);
     Ok(())
 }
 
@@ -400,7 +400,7 @@ fn initial_call_code<T: EvmTypes<Host = Evm<T>>>(
 ) -> HandlerResult<InitialCallCode> {
     let code = host
         .state
-        .account_entry(&to, false)
+        .account(&to, false)
         .map_err(db_error_handler!(host))?
         .load_code()
         .map_err(db_error_handler!(host))?;
@@ -410,7 +410,7 @@ fn initial_call_code<T: EvmTypes<Host = Evm<T>>>(
         host.state.warm_account(&delegated_address).map_err(db_error_handler!(host))?;
         let delegated_code = host
             .state
-            .account_entry(&delegated_address, false)
+            .account(&delegated_address, false)
             .map_err(db_error_handler!(host))?
             .load_code()
             .map_err(db_error_handler!(host))?;
@@ -450,7 +450,7 @@ pub(super) fn settle_gas<T: EvmTypes<Host = Evm<T>>>(
     if host.feature(EvmFeatures::FEE_CHARGE) {
         let caller_refund = U256::from(gas_remaining) * gas_price;
         host.state
-            .account_entry(&caller, false)
+            .account(&caller, false)
             .map_err(db_error_handler!(host))?
             .add_balance(caller_refund);
         let beneficiary_gas_price = if host.feature(EvmFeatures::BASE_FEE_CHECK) {
@@ -461,7 +461,7 @@ pub(super) fn settle_gas<T: EvmTypes<Host = Evm<T>>>(
         let beneficiary = host.block.beneficiary;
         let beneficiary_reward = U256::from(gas_used) * beneficiary_gas_price;
         host.state
-            .account_entry(&beneficiary, false)
+            .account(&beneficiary, false)
             .map_err(db_error_handler!(host))?
             .add_balance(beneficiary_reward);
     }

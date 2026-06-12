@@ -164,10 +164,10 @@ pub use tx::{ExecutedTx, TxResult, TxResultWithState};
 
 mod state;
 pub use state::{
-    Account, AccountChangeRef, AccountEntry, AccountInfo, AccountInfoRef, BlockStateAccumulator,
+    Account, AccountChangeRef, AccountHandle, AccountInfo, AccountInfoRef, BlockStateAccumulator,
     JournalEntry, NoopChangeSink, State, StateChangeSink, StateChangeSource, StateChanges,
     StateCheckpoint, StateInner, StorageChange, StorageChangeSet, StorageOverlay, StorageSlot,
-    StorageSlotEntry, StoragesEntry, Tee, Tracked,
+    StorageSlotHandle, StorageHandle, Tee, Tracked,
 };
 
 mod prewarm_set;
@@ -179,7 +179,7 @@ pub use prewarm_set::{PrewarmSet, SHORT_ADDRESS_CAP};
 /// This inlines the body of [`Evm::db_error_handler`] rather than calling it, so Rust 2021 disjoint
 /// closure capture borrows only `$host.db_error_code`. That lets it be used in `.map_err(..)` on a
 /// `Result` that already mutably borrows another field of `$host` (such as `$host.state` through a
-/// live [`AccountEntry`]), where a closure calling the `&mut self` method `db_error_handler` would
+/// live [`AccountHandle`]), where a closure calling the `&mut self` method `db_error_handler` would
 /// conflict on the whole `$host` borrow.
 macro_rules! db_error_handler {
     ($host:expr) => {
@@ -385,7 +385,7 @@ impl<T: EvmTypes> Evm<T> {
     /// Returns account bytecode visible through the accepted state overlay.
     #[inline]
     pub fn account_code(&mut self, address: &Address) -> DbResult<Bytecode> {
-        self.state.account_entry(address, false)?.load_code()
+        self.state.account(address, false)?.load_code()
     }
 
     /// Applies borrowed changes to the accepted state overlay.
@@ -827,7 +827,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         }
 
         if message.depth > 0 {
-            match self.state.account_entry(&message.caller, false) {
+            match self.state.account(&message.caller, false) {
                 Ok(mut account) => {
                     account.bump_nonce();
                 }
@@ -881,7 +881,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
                 };
             }
 
-            match self.state.account_entry(address, false) {
+            match self.state.account(address, false) {
                 Ok(mut account) => {
                     account.set_code_slow(Bytecode::new_legacy(output.clone()));
                 }
@@ -1129,7 +1129,7 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
         // overlay, so warmth — not overlay residency — decides the cold-access surcharge. Only a
         // genuinely cold account may skip the load and go out of gas when it cannot be afforded.
         let skip_cold_load = skip_cold_load && !self.state.prewarmset().is_warm(address);
-        let mut account = match self.state.account_entry(address, skip_cold_load) {
+        let mut account = match self.state.account(address, skip_cold_load) {
             Ok(account) => account,
             Err(DbErrorCode::COLD_LOAD_SKIPPED) => return Err(InstrStop::OutOfGas),
             Err(code) => return Err(self.db_error_stop(code)),
@@ -1162,7 +1162,7 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
         address: &Address,
         features: EvmFeatures,
     ) -> Result<bool, InstrStop> {
-        match self.state.account_entry(address, false) {
+        match self.state.account(address, false) {
             Ok(account) => Ok(account.is_empty_for_new_account_gas(features)),
             Err(code) => Err(self.db_error_stop(code)),
         }
@@ -1183,7 +1183,7 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
         // probed once instead of once per `warm_storage`/`storage` call. Warming is cheap and
         // happens before the skip check; the database read in `load` stays after it.
         let (is_cold, loaded) = {
-            let mut storage = self.state.storage_entry(address);
+            let mut storage = self.state.storage(address);
             let mut slot = storage.slot(*key);
             let is_cold = eip2929 && slot.warm();
             if skip_cold_load && is_cold {
@@ -1207,7 +1207,7 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
         // rather than once per `warm_storage`/`set_storage` call. Warming precedes the skip check;
         // the database-touching write stays after it, so a skipped cold access reads nothing.
         let (is_cold, write) = {
-            let mut storage = self.state.storage_entry(address);
+            let mut storage = self.state.storage(address);
             let mut slot = storage.slot(*key);
             let is_cold = eip2929 && slot.warm();
             if skip_cold_load && is_cold {
@@ -1221,7 +1221,7 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
         };
         // Materialize and touch the account after the storage write; the two overlays are
         // independent and both effects are journaled, so the order does not affect rollback.
-        match self.state.account_entry(address, false) {
+        match self.state.account(address, false) {
             Ok(mut account) => {
                 let _ = account.get_or_insert();
                 account.touch();
@@ -1293,7 +1293,7 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
         let features = self.features;
         let target_is_empty_for_new_account_gas =
             self.target_is_empty_for_new_account_gas(target, features)?;
-        let previously_destroyed = match self.state.account_entry(contract, false) {
+        let previously_destroyed = match self.state.account(contract, false) {
             Ok(account) => account.is_destructed(),
             Err(code) => return Err(self.db_error_stop(code)),
         };
@@ -1303,7 +1303,7 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
             .map_err(|code| self.db_error_stop(code))?
             .map_or(Word::ZERO, |info| info.balance);
         let should_destroy = if self.feature(EvmFeatures::EIP6780) {
-            match self.state.account_entry(contract, false) {
+            match self.state.account(contract, false) {
                 Ok(account) => account.is_created(),
                 Err(code) => return Err(self.db_error_stop(code)),
             }
@@ -1326,12 +1326,12 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
                 self.emit_log(log);
             }
             let delta = Word::ZERO.wrapping_sub(balance);
-            match self.state.account_entry(contract, false) {
+            match self.state.account(contract, false) {
                 Ok(mut account) => account.add_balance(delta),
                 Err(code) => return Err(self.db_error_stop(code)),
             }
         }
-        if should_destroy && let Ok(mut account) = self.state.account_entry(contract, false) {
+        if should_destroy && let Ok(mut account) = self.state.account(contract, false) {
             account.mark_destructed();
         }
         Ok(SelfDestructResult {
@@ -1529,13 +1529,13 @@ mod tests {
         let mut account = req
             .host
             .state
-            .account_entry(&LIFECYCLE_ACCOUNT, false)
+            .account(&LIFECYCLE_ACCOUNT, false)
             .map_err(registry::HandlerError::Database)?;
         account.get_or_insert();
         account.touch();
         req.host
             .state
-            .storage_entry(&LIFECYCLE_ACCOUNT)
+            .storage(&LIFECYCLE_ACCOUNT)
             .slot(LIFECYCLE_STORAGE_KEY)
             .write(value, false)
             .map_err(registry::HandlerError::Database)?;
@@ -2049,7 +2049,7 @@ mod tests {
         assert_eq!(outcome.logs.len(), 1);
         assert_eq!(
             evm.state
-                .storage_slot_entry(&LIFECYCLE_ACCOUNT, LIFECYCLE_STORAGE_KEY)
+                .storage_slot(&LIFECYCLE_ACCOUNT, LIFECYCLE_STORAGE_KEY)
                 .load(false)
                 .unwrap(),
             Word::from(1)
@@ -2075,7 +2075,7 @@ mod tests {
         assert_eq!(storage[0].1.current, Word::from(7));
         assert_eq!(
             evm.state
-                .storage_slot_entry(&LIFECYCLE_ACCOUNT, LIFECYCLE_STORAGE_KEY)
+                .storage_slot(&LIFECYCLE_ACCOUNT, LIFECYCLE_STORAGE_KEY)
                 .load(false)
                 .unwrap(),
             Word::from(1)
@@ -2100,7 +2100,7 @@ mod tests {
         assert_eq!(slot.current, Word::from(7));
         assert_eq!(
             evm.state
-                .storage_slot_entry(&LIFECYCLE_ACCOUNT, LIFECYCLE_STORAGE_KEY)
+                .storage_slot(&LIFECYCLE_ACCOUNT, LIFECYCLE_STORAGE_KEY)
                 .load(false)
                 .unwrap(),
             Word::from(1)
@@ -2116,7 +2116,7 @@ mod tests {
         assert_eq!(outcome.logs.len(), 1);
         assert_eq!(
             evm.state
-                .storage_slot_entry(&LIFECYCLE_ACCOUNT, LIFECYCLE_STORAGE_KEY)
+                .storage_slot(&LIFECYCLE_ACCOUNT, LIFECYCLE_STORAGE_KEY)
                 .load(false)
                 .unwrap(),
             Word::from(7)
@@ -2125,7 +2125,7 @@ mod tests {
         let _ = evm.transact(&test_tx(9)).expect("lifecycle transaction should execute").commit();
         assert_eq!(
             evm.state
-                .storage_slot_entry(&LIFECYCLE_ACCOUNT, LIFECYCLE_STORAGE_KEY)
+                .storage_slot(&LIFECYCLE_ACCOUNT, LIFECYCLE_STORAGE_KEY)
                 .load(false)
                 .unwrap(),
             Word::from(9)
@@ -2152,7 +2152,7 @@ mod tests {
         assert_eq!(storage[0].1.current, Word::from(9));
         assert_eq!(
             evm.state
-                .storage_slot_entry(&LIFECYCLE_ACCOUNT, LIFECYCLE_STORAGE_KEY)
+                .storage_slot(&LIFECYCLE_ACCOUNT, LIFECYCLE_STORAGE_KEY)
                 .load(false)
                 .unwrap(),
             Word::from(9)
@@ -2183,7 +2183,7 @@ mod tests {
 
         assert_eq!(
             evm.state
-                .storage_slot_entry(&LIFECYCLE_ACCOUNT, LIFECYCLE_STORAGE_KEY)
+                .storage_slot(&LIFECYCLE_ACCOUNT, LIFECYCLE_STORAGE_KEY)
                 .load(false)
                 .unwrap(),
             Word::from(1)
@@ -2300,7 +2300,7 @@ mod tests {
             Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &mut message, false);
 
         assert_eq!(result.stop, InstrStop::OutOfGas);
-        assert!(!evm.state.storage_slot_entry(&contract, key).is_warm());
+        assert!(!evm.state.storage_slot(&contract, key).is_warm());
     }
 
     #[test]
@@ -2457,7 +2457,7 @@ mod tests {
         let from = Address::from([0x01; 20]);
         let to = Address::from([0x02; 20]);
         let mut state = State::new(InMemoryDB::default());
-        state.account_entry(&from, false).unwrap().add_balance(U256::from(10));
+        state.account(&from, false).unwrap().add_balance(U256::from(10));
 
         assert!(state.transfer(&from, &to, &U256::from(7)).unwrap());
         assert_eq!(
