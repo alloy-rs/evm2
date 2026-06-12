@@ -1,6 +1,7 @@
 use crate::{
     error::{TestError, TestErrorKind},
     filter::EntryPoint,
+    forks::is_fork_skipped,
     state::{
         insert_account_with_storage, parse_bytecode, storage_for_root, system_contract_has_code,
     },
@@ -104,6 +105,9 @@ fn execute_unit(
         let Some(spec) = spec_name.to_spec_id() else {
             continue;
         };
+        if is_fork_skipped(spec) {
+            continue;
+        }
         let block = parse_block(&unit.env, spec);
         for post in posts {
             let tx = match build_tx(&unit.transaction, &post.indexes, unit.env.current_chain_id) {

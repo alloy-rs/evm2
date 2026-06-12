@@ -11,6 +11,7 @@ use super::{
 };
 use crate::{
     filter::EntryPoint,
+    forks::is_fork_skipped,
     state::{insert_account_with_storage, parse_bytecode},
     tx::{TxFields, build_recovered_tx, rpc_access_list, signed_authorizations},
 };
@@ -78,7 +79,10 @@ pub fn execute_str(
         serde_json::from_str(input).map_err(|err| TestError::unknown(path, err.into()))?;
     let mut summary = ExecuteSummary::default();
     for (name, test_case) in suite.0 {
-        if !entrypoint.matches(&name) || test_case.network.is_transition() {
+        if !entrypoint.matches(&name)
+            || test_case.network.is_transition()
+            || is_fork_skipped(fork_to_spec_id(test_case.network))
+        {
             summary.skipped += 1;
             continue;
         }
