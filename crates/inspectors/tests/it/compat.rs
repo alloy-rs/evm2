@@ -1,0 +1,589 @@
+//! A revm-like API shim so that the test files can stay as close to upstream as possible.
+
+use alloy_consensus::{TxEip4844, TxLegacy, transaction::Recovered};
+use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
+use evm2::{
+    BaseEvmTypes, Evm, EvmTypes, Inspector, NoopInspector, Precompiles, TxResult,
+    TxResultWithState, env as evm_env,
+    ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
+    evm::StateChanges,
+    interpreter::{Interpreter, Message, MessageResult},
+    registry::HandlerError,
+};
+use evm2_inspectors::tracing::TracingInspector;
+
+pub use evm2::{
+    SpecId,
+    bytecode::Bytecode,
+    evm::{AccountInfo, CacheDB, EmptyDB},
+    interpreter::{opcode, opcode::op},
+};
+
+pub type TransactTo = TxKind;
+
+pub const ETH_TRANSFER_LOG_ADDRESS: Address = evm2::evm::SYSTEM_ADDRESS;
+
+#[derive(Clone, Debug)]
+pub struct TxEnv {
+    pub caller: Address,
+    pub gas_limit: u64,
+    pub gas_price: u128,
+    pub gas_priority_fee: Option<u128>,
+    pub kind: TransactTo,
+    pub data: Bytes,
+    pub nonce: u64,
+    pub value: U256,
+    pub chain_id: Option<u64>,
+    pub blob_hashes: Vec<B256>,
+    pub max_fee_per_blob_gas: u128,
+}
+
+impl Default for TxEnv {
+    fn default() -> Self {
+        Self {
+            caller: Address::ZERO,
+            gas_limit: 0,
+            gas_price: 0,
+            gas_priority_fee: None,
+            kind: TransactTo::Call(Address::ZERO),
+            data: Bytes::new(),
+            nonce: 0,
+            value: U256::ZERO,
+            chain_id: None,
+            blob_hashes: Vec::new(),
+            max_fee_per_blob_gas: 0,
+        }
+    }
+}
+
+impl TxEnv {
+    pub fn builder() -> TxEnvBuilder {
+        TxEnvBuilder(Self::default())
+    }
+
+    pub const fn modify(self) -> TxEnvBuilder {
+        TxEnvBuilder(self)
+    }
+}
+
+#[derive(Debug)]
+pub struct TxEnvBuilder(TxEnv);
+
+impl TxEnvBuilder {
+    pub const fn caller(mut self, caller: Address) -> Self {
+        self.0.caller = caller;
+        self
+    }
+
+    pub const fn gas_limit(mut self, gas_limit: u64) -> Self {
+        self.0.gas_limit = gas_limit;
+        self
+    }
+
+    pub const fn gas_price(mut self, gas_price: u128) -> Self {
+        self.0.gas_price = gas_price;
+        self
+    }
+
+    pub const fn gas_priority_fee(mut self, gas_priority_fee: Option<u128>) -> Self {
+        self.0.gas_priority_fee = gas_priority_fee;
+        self
+    }
+
+    pub const fn kind(mut self, kind: TransactTo) -> Self {
+        self.0.kind = kind;
+        self
+    }
+
+    pub fn data(mut self, data: Bytes) -> Self {
+        self.0.data = data;
+        self
+    }
+
+    pub const fn nonce(mut self, nonce: u64) -> Self {
+        self.0.nonce = nonce;
+        self
+    }
+
+    pub const fn value(mut self, value: U256) -> Self {
+        self.0.value = value;
+        self
+    }
+
+    pub fn build_fill(self) -> TxEnv {
+        let mut tx = self.0;
+        if tx.gas_limit == 0 {
+            tx.gas_limit = 1_000_000;
+        }
+        tx
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Context {
+    pub db: CacheDB<EmptyDB>,
+    pub(crate) tx: TxEnv,
+    block: evm_env::BlockEnv,
+    pub(crate) spec: SpecId,
+}
+
+impl Default for Context {
+    fn default() -> Self {
+        Self::mainnet()
+    }
+}
+
+impl Context {
+    pub fn mainnet() -> Self {
+        Self {
+            db: CacheDB::new(EmptyDB::default()),
+            tx: TxEnv::default(),
+            block: evm_env::BlockEnv::default(),
+            spec: SpecId::OSAKA,
+        }
+    }
+
+    pub fn with_db(mut self, db: CacheDB<EmptyDB>) -> Self {
+        self.db = db;
+        self
+    }
+
+    pub fn modify_db_chained(mut self, f: impl FnOnce(&mut CacheDB<EmptyDB>)) -> Self {
+        f(&mut self.db);
+        self
+    }
+
+    pub fn modify_cfg_chained(mut self, f: impl FnOnce(&mut CfgEnv)) -> Self {
+        let mut cfg = CfgEnv { spec: self.spec };
+        f(&mut cfg);
+        self.spec = cfg.spec;
+        self
+    }
+
+    pub fn modify_block_chained(mut self, f: impl FnOnce(&mut evm_env::BlockEnv)) -> Self {
+        f(&mut self.block);
+        self
+    }
+
+    pub fn modify_tx_chained(mut self, f: impl FnOnce(&mut TxEnv)) -> Self {
+        f(&mut self.tx);
+        self
+    }
+
+    pub fn modify_tx(&mut self, f: impl FnOnce(&mut TxEnv)) {
+        f(&mut self.tx);
+    }
+
+    pub const fn build_mainnet(self) -> TestEvm {
+        TestEvm { ctx: self }
+    }
+
+    pub fn build_mainnet_with_inspector<I: InspectorSlot>(
+        self,
+        inspector: I,
+    ) -> TestEvmWithInspector<I> {
+        self.build_mainnet().with_inspector(inspector)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct CfgEnv {
+    pub spec: SpecId,
+}
+
+#[derive(Debug)]
+pub struct TestEvm {
+    pub ctx: Context,
+}
+
+impl TestEvm {
+    pub const fn ctx(&mut self) -> &mut Context {
+        &mut self.ctx
+    }
+
+    pub fn with_inspector<I: InspectorSlot>(self, inspector: I) -> TestEvmWithInspector<I> {
+        TestEvmWithInspector { ctx: self.ctx, inspector }
+    }
+
+    pub fn inspect_tx(&mut self, tx: TxEnv) -> Result<ResultAndState, HandlerError> {
+        self.ctx.inspect_tx::<NoopInspector>(tx, None)
+    }
+
+    pub fn inspect_tx_commit(&mut self, tx: TxEnv) -> Result<ExecutionResult, HandlerError> {
+        let res = self.inspect_tx(tx)?;
+        self.ctx.db.commit(res.state.clone());
+        Ok(res.result)
+    }
+}
+
+#[derive(Debug)]
+pub struct TestEvmWithInspector<I> {
+    pub ctx: Context,
+    pub inspector: I,
+}
+
+impl<I: InspectorSlot> TestEvmWithInspector<I> {
+    pub const fn ctx(&mut self) -> &mut Context {
+        &mut self.ctx
+    }
+
+    pub fn ctx_inspector(&mut self) -> (&mut Context, &mut I::Target) {
+        (&mut self.ctx, self.inspector.inspector_mut())
+    }
+
+    pub fn inspector(&mut self) -> &mut I::Target {
+        self.inspector.inspector_mut()
+    }
+
+    pub fn into_inspector(self) -> I {
+        self.inspector
+    }
+
+    pub fn inspect_tx(&mut self, tx: TxEnv) -> Result<ResultAndState, HandlerError> {
+        let inspector = self.inspector.inspector_mut() as *mut I::Target;
+        self.ctx.inspect_tx(tx, Some(inspector))
+    }
+
+    pub fn inspect_tx_commit(&mut self, tx: TxEnv) -> Result<ExecutionResult, HandlerError> {
+        let res = self.inspect_tx(tx)?;
+        self.ctx.db.commit(res.state.clone());
+        Ok(res.result)
+    }
+
+    pub fn with_inspector<J: InspectorSlot>(self, inspector: J) -> TestEvmWithInspector<J> {
+        TestEvmWithInspector { ctx: self.ctx, inspector }
+    }
+}
+
+impl TestEvmWithInspector<TracingInspector> {
+    pub fn set_inspector(&mut self, inspector: TracingInspector) {
+        self.inspector = inspector;
+    }
+
+    pub fn inspect(
+        &mut self,
+        tx: TxEnv,
+        inspector: TracingInspector,
+    ) -> Result<ResultAndState, HandlerError> {
+        self.set_inspector(inspector);
+        self.inspect_tx(tx)
+    }
+}
+
+impl Context {
+    pub const fn tx(&self) -> &TxEnv {
+        &self.tx
+    }
+
+    pub const fn block(&self) -> &evm_env::BlockEnv {
+        &self.block
+    }
+
+    pub const fn db(&self) -> &CacheDB<EmptyDB> {
+        &self.db
+    }
+
+    pub const fn db_ref(&self) -> &CacheDB<EmptyDB> {
+        &self.db
+    }
+
+    pub const fn db_mut(&mut self) -> &mut CacheDB<EmptyDB> {
+        &mut self.db
+    }
+
+    fn inspect_tx<I: Inspector<BaseEvmTypes>>(
+        &mut self,
+        tx: TxEnv,
+        inspector: Option<*mut I>,
+    ) -> Result<ResultAndState, HandlerError> {
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            self.spec,
+            self.block,
+            ethereum_tx_registry(self.spec),
+            self.db.clone(),
+            Precompiles::base(self.spec),
+        );
+        if let Some(inspector) = inspector {
+            evm.set_inspector(RawInspector { inspector });
+        }
+
+        let envelope = tx.envelope();
+        let result = evm.transact(&envelope)?.detach();
+        self.tx = tx;
+        Ok(ResultAndState::new(result))
+    }
+}
+
+impl TxEnv {
+    pub fn envelope(&self) -> RecoveredTxEnvelope {
+        if !self.blob_hashes.is_empty() {
+            let TxKind::Call(to) = self.kind else { panic!("blob transactions must be calls") };
+            return RecoveredTxEnvelope::Eip4844(Recovered::new_unchecked(
+                TxEip4844 {
+                    chain_id: self.chain_id.unwrap_or(1),
+                    nonce: self.nonce,
+                    gas_limit: self.gas_limit,
+                    max_fee_per_gas: self.gas_price,
+                    max_priority_fee_per_gas: self.gas_priority_fee.unwrap_or_default(),
+                    to,
+                    value: self.value,
+                    access_list: Default::default(),
+                    blob_versioned_hashes: self.blob_hashes.clone(),
+                    max_fee_per_blob_gas: self.max_fee_per_blob_gas,
+                    input: self.data.clone(),
+                }
+                .into(),
+                self.caller,
+            ));
+        }
+        RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(
+            TxLegacy {
+                chain_id: self.chain_id,
+                nonce: self.nonce,
+                gas_price: self.gas_price,
+                gas_limit: self.gas_limit,
+                to: self.kind,
+                value: self.value,
+                input: self.data.clone(),
+            },
+            self.caller,
+        ))
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ResultAndState {
+    pub result: ExecutionResult,
+    pub state: StateChanges,
+    pub tx_result: TxResultWithState,
+}
+
+impl ResultAndState {
+    fn new(result: TxResultWithState) -> Self {
+        let state = result.state_changes.clone();
+        Self {
+            result: ExecutionResult::from_tx_result(result.result.clone()),
+            state,
+            tx_result: result,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ExecutionResult {
+    Success { output: Output, gas_used: u64 },
+    Revert { output: Bytes, gas_used: u64 },
+    Halt { reason: evm2::interpreter::InstrStop, gas_used: u64 },
+}
+
+impl ExecutionResult {
+    fn from_tx_result(result: TxResult) -> Self {
+        if result.status {
+            let output = if result.created_address.is_some() {
+                Output::Create(result.output, result.created_address)
+            } else {
+                Output::Call(result.output)
+            };
+            Self::Success { output, gas_used: result.gas_used }
+        } else if result.stop.is_revert() {
+            Self::Revert { output: result.output, gas_used: result.gas_used }
+        } else {
+            Self::Halt { reason: result.stop, gas_used: result.gas_used }
+        }
+    }
+
+    pub const fn is_success(&self) -> bool {
+        matches!(self, Self::Success { .. })
+    }
+
+    pub const fn tx_gas_used(&self) -> u64 {
+        match self {
+            Self::Success { gas_used, .. }
+            | Self::Revert { gas_used, .. }
+            | Self::Halt { gas_used, .. } => *gas_used,
+        }
+    }
+
+    pub const fn gas_used(&self) -> u64 {
+        self.tx_gas_used()
+    }
+
+    pub const fn output(&self) -> Option<&Bytes> {
+        match self {
+            Self::Success { output, .. } => Some(output.data()),
+            Self::Revert { output, .. } => Some(output),
+            Self::Halt { .. } => None,
+        }
+    }
+
+    pub const fn created_address(&self) -> Option<Address> {
+        match self {
+            Self::Success { output: Output::Create(_, address), .. } => *address,
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Output {
+    Call(Bytes),
+    Create(Bytes, Option<Address>),
+}
+
+impl Output {
+    pub const fn data(&self) -> &Bytes {
+        match self {
+            Self::Call(data) | Self::Create(data, _) => data,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct DeployResult {
+    pub(crate) result: ExecutionResult,
+}
+
+impl DeployResult {
+    pub const fn created_address(&self) -> Option<Address> {
+        self.result.created_address()
+    }
+}
+
+pub trait DatabaseCommit {
+    fn commit(&mut self, changes: StateChanges);
+}
+
+impl DatabaseCommit for CacheDB<EmptyDB> {
+    fn commit(&mut self, changes: StateChanges) {
+        self.commit_source(&changes);
+    }
+}
+
+#[derive(Debug)]
+pub struct LoadedAccountMut<'a> {
+    pub info: &'a mut AccountInfo,
+}
+
+pub trait TestDbExt {
+    fn load_account(&mut self, address: Address) -> LoadedAccountMut<'_>;
+}
+
+impl TestDbExt for CacheDB<EmptyDB> {
+    fn load_account(&mut self, address: Address) -> LoadedAccountMut<'_> {
+        let info = self.cache.accounts.entry(address).or_default().get_or_insert_default();
+        LoadedAccountMut { info }
+    }
+}
+
+pub trait InspectorSlot {
+    type Target: Inspector<BaseEvmTypes>;
+
+    fn inspector_mut(&mut self) -> &mut Self::Target;
+}
+
+impl<I: Inspector<BaseEvmTypes>> InspectorSlot for &mut I {
+    type Target = I;
+
+    fn inspector_mut(&mut self) -> &mut Self::Target {
+        self
+    }
+}
+
+macro_rules! impl_owned_inspector_slot {
+    ($($ty:path),* $(,)?) => {
+        $(
+            impl InspectorSlot for $ty {
+                type Target = Self;
+
+                fn inspector_mut(&mut self) -> &mut Self::Target {
+                    self
+                }
+            }
+        )*
+    };
+}
+
+impl_owned_inspector_slot!(
+    evm2_inspectors::access_list::AccessListInspector,
+    evm2_inspectors::transfer::TransferInspector,
+    evm2_inspectors::tracing::DebugInspector,
+    evm2_inspectors::tracing::MuxInspector,
+    evm2_inspectors::tracing::TracingInspector,
+);
+
+#[cfg(feature = "js-tracer")]
+impl_owned_inspector_slot!(evm2_inspectors::tracing::js::JsInspector);
+
+struct RawInspector<I> {
+    inspector: *mut I,
+}
+
+impl<I> RawInspector<I> {
+    fn inner(&mut self) -> &mut I {
+        // SAFETY: `RawInspector` is installed only for the duration of one synchronous
+        // transaction, and the caller clears the temporary EVM immediately after execution.
+        unsafe { &mut *self.inspector }
+    }
+}
+
+impl<I: Inspector<BaseEvmTypes>> Inspector<BaseEvmTypes> for RawInspector<I> {
+    fn initialize_interp(&mut self, interp: &mut Interpreter<'_, BaseEvmTypes>) {
+        self.inner().initialize_interp(interp);
+    }
+
+    fn step(&mut self, interp: &mut Interpreter<'_, BaseEvmTypes>) {
+        self.inner().step(interp);
+    }
+
+    fn step_end(&mut self, interp: &mut Interpreter<'_, BaseEvmTypes>) {
+        self.inner().step_end(interp);
+    }
+
+    fn log(&mut self, log: &alloy_primitives::Log, host: &mut <BaseEvmTypes as EvmTypes>::Host) {
+        self.inner().log(log, host);
+    }
+
+    fn call(
+        &mut self,
+        interp: &mut Interpreter<'_, BaseEvmTypes>,
+        message: &mut Message<BaseEvmTypes>,
+    ) -> Option<MessageResult<BaseEvmTypes>> {
+        self.inner().call(interp, message)
+    }
+
+    fn call_end(
+        &mut self,
+        interp: &mut Interpreter<'_, BaseEvmTypes>,
+        message: &Message<BaseEvmTypes>,
+        result: &mut MessageResult<BaseEvmTypes>,
+    ) {
+        self.inner().call_end(interp, message, result);
+    }
+
+    fn create(
+        &mut self,
+        interp: &mut Interpreter<'_, BaseEvmTypes>,
+        message: &mut Message<BaseEvmTypes>,
+    ) -> Option<MessageResult<BaseEvmTypes>> {
+        self.inner().create(interp, message)
+    }
+
+    fn create_end(
+        &mut self,
+        interp: &mut Interpreter<'_, BaseEvmTypes>,
+        message: &Message<BaseEvmTypes>,
+        result: &mut MessageResult<BaseEvmTypes>,
+    ) {
+        self.inner().create_end(interp, message, result);
+    }
+
+    fn selfdestruct(
+        &mut self,
+        contract: &Address,
+        target: &Address,
+        value: &U256,
+        host: &mut <BaseEvmTypes as EvmTypes>::Host,
+    ) {
+        self.inner().selfdestruct(contract, target, value, host);
+    }
+}

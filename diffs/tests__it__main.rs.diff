@@ -1,0 +1,8 @@
+--- upstream/tests/it/main.rs
++++ evm2/tests/it/main.rs
+@@ -18,3 +18,5 @@
+ mod transfer;
+ #[cfg(feature = "std")]
+ mod writer;
++
++mod compat;

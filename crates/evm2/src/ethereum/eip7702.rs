@@ -111,10 +111,10 @@ fn apply_auth_list<T: EvmTypes<Host = Evm<T>>>(
         };
         host.state.warm_account_non_revertible(&authority);
         let authority_info =
-            host.state.account_info(&authority).map_err(|code| host.db_error_handler(code))?;
+            host.state.load_account_info(&authority).map_err(|code| host.db_error_handler(code))?;
         let existed = authority_info.is_some();
         let authority_info = authority_info.unwrap_or_default();
-        let code = host.state.get_code(&authority).map_err(|code| host.db_error_handler(code))?;
+        let code = host.state.code(&authority).map_err(|code| host.db_error_handler(code))?;
         if !code.is_empty() && !code.is_eip7702() {
             continue;
         }

@@ -42,6 +42,7 @@ pub type Result<T = (), E = InstrStop> = core::result::Result<T, E>;
 /// Result of executing an EVM instruction.
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
 pub enum InstrStop {
     /// Encountered a `STOP` opcode

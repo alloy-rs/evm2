@@ -8,7 +8,7 @@ mod stream;
 
 pub use account::{Account, AccountInfo, StorageOverlay, Tracked};
 pub use block::BlockStateAccumulator;
-pub use changes::{StateChanges, StorageChangeSet};
+pub use changes::{AccountChange, StateChanges};
 pub use journal::{JournalEntry, StateCheckpoint};
 pub use stream::{
     AccountChangeRef, AccountInfoRef, NoopChangeSink, StateChangeSink, StateChangeSource,
@@ -53,6 +53,8 @@ struct TxScratch {
     touched: AddressSet,
     /// Accounts self-destructed in the current transaction.
     selfdestructs: AddressSet,
+    /// Self-destructed accounts that were also created in the current transaction.
+    created_selfdestructs: AddressSet,
     /// Transaction-scoped warm account set for EIP-2929 gas accounting.
     ///
     /// This tracks whether account access is warm or cold. It does not imply the account was
@@ -72,6 +74,7 @@ impl TxScratch {
         self.journal.clear();
         self.touched.clear();
         self.selfdestructs.clear();
+        self.created_selfdestructs.clear();
         self.accessed_accounts.clear();
         self.accessed_storage.clear();
         self.transient_storage.clear();
@@ -164,6 +167,12 @@ impl State {
         mem::take(&mut self.scratch.logs)
     }
 
+    /// Returns the reversible journal entries for the current transaction.
+    #[inline]
+    pub fn journal(&self) -> &[JournalEntry] {
+        &self.scratch.journal
+    }
+
     /// Records a transaction log.
     #[inline]
     pub fn log(&mut self, log: Log) {
@@ -176,7 +185,7 @@ impl State {
     /// accounts known to be absent. It does not load the account or slot from the backing database;
     /// use [`Self::storage`] when database-backed loading is desired.
     #[inline]
-    pub fn storage_ref(&self, address: &Address, key: &Word) -> Option<Word> {
+    pub fn storage_cached_ref(&self, address: &Address, key: &Word) -> Option<Word> {
         if let Some(storage) = self.scratch.storage.get(address) {
             if let Some(slot) = storage.slots.get(key) {
                 return Some(slot.current);
@@ -191,6 +200,15 @@ impl State {
         self.database.storage_ref(address, key)
     }
 
+    /// Returns a loaded persistent storage overlay slot with original and current values.
+    ///
+    /// This is a non-mutating transaction-layer lookup. It does not load the account or slot from
+    /// the backing database; use [`Self::storage`] when database-backed loading is desired.
+    #[inline]
+    pub fn storage_tracked_ref(&self, address: &Address, key: &Word) -> Option<&Tracked<Word>> {
+        self.scratch.storage.get(address)?.slots.get(key)
+    }
+
     /// Returns the current transaction account overlay if present and not deleted.
     ///
     /// This is a non-mutating overlay lookup. It does not load the account from the backing
@@ -200,6 +218,153 @@ impl State {
     #[must_use]
     pub fn account_ref(&self, address: &Address) -> Option<&Account> {
         self.scratch.accounts.get(address)?.as_ref()
+    }
+
+    /// Returns account info.
+    #[inline(never)]
+    pub fn account_info(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
+        if let Some(account) = self.scratch.accounts.get(address) {
+            return Ok(account.as_ref().map(Account::info));
+        }
+        self.database.get_account(address)
+    }
+
+    /// Returns account info, recording the account in the transaction state.
+    ///
+    /// This is the EVM-semantic account load: like revm's journaled `load_account`, the loaded
+    /// account becomes part of the transaction state and is emitted in [`StateChanges`] even if it
+    /// is never changed. Use [`Self::account_info`] for reads that must not be recorded.
+    #[inline(never)]
+    pub fn load_account_info(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
+        let account = Self::ensure_transaction_account(
+            &mut self.database,
+            &mut self.scratch.accounts,
+            &mut self.scratch.journal,
+            address,
+        )?;
+        Ok(account.as_ref().map(Account::info))
+    }
+
+    /// Returns account code without touching the transaction scratch or journal.
+    ///
+    /// This matches revm's JS database object semantics: account info is read from the current
+    /// transaction state first, and missing bytecode is resolved through the database by hash.
+    pub fn code_untracked(&mut self, address: &Address) -> DbResult<Bytecode> {
+        let Some(info) = self.account_info(address)? else {
+            return Ok(Bytecode::default());
+        };
+        self.code_from_info(info)
+    }
+
+    fn code_from_info(&mut self, info: AccountInfo) -> DbResult<Bytecode> {
+        if let Some(code) = info.code
+            && !code.is_empty()
+        {
+            return Ok(code);
+        }
+        self.code_from_parts(info.code_hash, Bytecode::default())
+    }
+
+    fn code_from_parts(&mut self, code_hash: B256, code: Bytecode) -> DbResult<Bytecode> {
+        if code_hash == KECCAK256_EMPTY {
+            return Ok(Bytecode::default());
+        }
+        if !code.is_empty() {
+            return Ok(code);
+        }
+        self.database.get_code_by_hash(&code_hash)
+    }
+
+    /// Returns persistent storage without touching the transaction scratch or journal.
+    ///
+    /// This matches revm's JS database object semantics: storage reads go directly through the
+    /// database layer and do not observe the current transaction state.
+    pub fn storage_untracked(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
+        self.database.get_storage(address, key)
+    }
+
+    /// Returns whether an account is empty/non-existent for EIP-150 new-account gas checks.
+    pub(crate) fn target_is_empty_for_new_account_gas(
+        &mut self,
+        address: &Address,
+        features: EvmFeatures,
+    ) -> DbResult<bool> {
+        if features.contains(EvmFeatures::EIP161) {
+            return Ok(self.account_info(address)?.is_none_or(|info| info.is_empty()));
+        }
+        Ok(self.account_info(address)?.is_none() && !self.scratch.touched.contains(address))
+    }
+
+    /// Returns an account if it exists.
+    pub fn find(&mut self, address: &Address) -> DbResult<Option<&Account>> {
+        let account = Self::ensure_transaction_account(
+            &mut self.database,
+            &mut self.scratch.accounts,
+            &mut self.scratch.journal,
+            address,
+        )?;
+        Ok(account.as_ref())
+    }
+
+    /// Gets account code.
+    pub fn code(&mut self, address: &Address) -> DbResult<Bytecode> {
+        if let Some(account) = self.scratch.accounts.get(address).and_then(Option::as_ref) {
+            if account.code_hash == KECCAK256_EMPTY {
+                return Ok(Bytecode::default());
+            }
+            if !account.code.is_empty() {
+                return Ok(account.code.clone());
+            }
+            let code_hash = account.code_hash;
+            return self.database.get_code_by_hash(&code_hash);
+        }
+
+        let Some(info) = self.database.get_account(address)? else {
+            return Ok(Bytecode::default());
+        };
+        if info.code_hash == KECCAK256_EMPTY {
+            return Ok(Bytecode::default());
+        }
+        if let Some(code) = info.code
+            && !code.is_empty()
+        {
+            return Ok(code);
+        }
+        self.database.get_code_by_hash(&info.code_hash)
+    }
+
+    /// Loads persistent storage.
+    pub fn storage(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
+        if let Some(storage) = self.scratch.storage.get(address) {
+            if let Some(slot) = storage.slots.get(key) {
+                return Ok(slot.current);
+            }
+            if storage.wiped {
+                return Ok(Word::ZERO);
+            }
+        }
+        if self.account_known_absent(address) {
+            return Ok(Word::ZERO);
+        }
+        self.database.get_storage(address, key)
+    }
+
+    /// Loads persistent storage, recording the slot in the transaction state.
+    ///
+    /// This is the EVM-semantic storage load: like revm's journaled `sload`, the loaded slot
+    /// becomes part of the transaction state and is emitted in [`StateChanges`] even if it is
+    /// never written. The recorded slot is intentionally not journaled so that it survives
+    /// rollback. Use [`Self::storage`] for reads that must not be recorded.
+    pub fn load_storage(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
+        let value = self.storage(address, key)?;
+        self.scratch
+            .storage
+            .entry(*address)
+            .or_default()
+            .slots
+            .entry(*key)
+            .or_insert_with(|| Tracked::new(value));
+        Ok(value)
     }
 
     /// Returns whether an account is warm in the current transaction.
@@ -364,65 +529,6 @@ impl State {
             || self.database.account_absent(address)
     }
 
-    /// Returns account info.
-    #[inline(never)]
-    pub fn account_info(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
-        if let Some(account) = self.scratch.accounts.get(address) {
-            return Ok(account.as_ref().map(Account::info));
-        }
-        self.database.get_account(address)
-    }
-
-    /// Returns whether an account is empty/non-existent for EIP-150 new-account gas checks.
-    pub(crate) fn target_is_empty_for_new_account_gas(
-        &mut self,
-        address: &Address,
-        features: EvmFeatures,
-    ) -> DbResult<bool> {
-        if features.contains(EvmFeatures::EIP161) {
-            return Ok(self.account_info(address)?.is_none_or(|info| info.is_empty()));
-        }
-        Ok(self.account_info(address)?.is_none() && !self.scratch.touched.contains(address))
-    }
-
-    /// Returns an account if it exists.
-    pub fn find(&mut self, address: &Address) -> DbResult<Option<&Account>> {
-        let account = Self::ensure_transaction_account(
-            &mut self.database,
-            &mut self.scratch.accounts,
-            &mut self.scratch.journal,
-            address,
-        )?;
-        Ok(account.as_ref())
-    }
-
-    /// Gets account code.
-    pub fn get_code(&mut self, address: &Address) -> DbResult<Bytecode> {
-        if let Some(account) = self.scratch.accounts.get(address).and_then(Option::as_ref) {
-            if account.code_hash == KECCAK256_EMPTY {
-                return Ok(Bytecode::default());
-            }
-            if !account.code.is_empty() {
-                return Ok(account.code.clone());
-            }
-            let code_hash = account.code_hash;
-            return self.database.get_code_by_hash(&code_hash);
-        }
-
-        let Some(info) = self.database.get_account(address)? else {
-            return Ok(Bytecode::default());
-        };
-        if info.code_hash == KECCAK256_EMPTY {
-            return Ok(Bytecode::default());
-        }
-        if let Some(code) = info.code
-            && !code.is_empty()
-        {
-            return Ok(code);
-        }
-        self.database.get_code_by_hash(&info.code_hash)
-    }
-
     fn insert_transaction_storage(
         &mut self,
         address: &Address,
@@ -450,22 +556,6 @@ impl State {
                     .push(JournalEntry::StorageInserted { address: *address, key: *key });
             }
         }
-    }
-
-    /// Loads persistent storage.
-    pub fn storage(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
-        if let Some(storage) = self.scratch.storage.get(address) {
-            if let Some(slot) = storage.slots.get(key) {
-                return Ok(slot.current);
-            }
-            if storage.wiped {
-                return Ok(Word::ZERO);
-            }
-        }
-        if self.account_known_absent(address) {
-            return Ok(Word::ZERO);
-        }
-        self.database.get_storage(address, key)
     }
 
     /// Stores persistent storage and returns values needed for `SSTORE` gas metering.
@@ -511,6 +601,7 @@ impl State {
     /// Adds a signed balance delta by wrapping two's-complement values.
     pub fn add_balance(&mut self, address: &Address, delta: &Word) -> DbResult<()> {
         if delta.is_zero() {
+            let _ = self.load_account_info(address)?;
             self.touch(address);
             return Ok(());
         }
@@ -523,11 +614,12 @@ impl State {
     /// Transfers value between accounts.
     pub fn transfer(&mut self, from: &Address, to: &Address, value: &Word) -> DbResult<bool> {
         if value.is_zero() {
+            let _ = self.load_account_info(to)?;
             self.touch(to);
             return Ok(true);
         }
 
-        let from_balance = self.account_info(from)?.map_or(Word::ZERO, |info| info.balance);
+        let from_balance = self.load_account_info(from)?.map_or(Word::ZERO, |info| info.balance);
         if from == to {
             if from_balance < *value {
                 return Ok(false);
@@ -701,7 +793,14 @@ impl State {
                     }
                 }
                 JournalEntry::AccountInserted { address } => {
-                    self.scratch.accounts.remove(&address);
+                    // Keep the account recorded as a load so that reverted frames still
+                    // contribute loaded accounts to [`StateChanges`], like revm. The original
+                    // database value is cached by the insertion in
+                    // [`Self::ensure_transaction_account`].
+                    if let Some(account) = self.scratch.accounts.get_mut(&address) {
+                        *account =
+                            self.database.account_info(&address).cloned().map(Account::from_info);
+                    }
                 }
                 JournalEntry::Touch { address } => {
                     // EIP-161 preserves the historical Yellow Paper K.1 precompile-3 touch.
@@ -723,8 +822,12 @@ impl State {
                     }
                 }
                 JournalEntry::StorageInserted { address, key } => {
-                    if let Some(storage) = self.scratch.storage.get_mut(&address) {
-                        storage.slots.remove(&key);
+                    // Keep the slot recorded as a load so that reverted frames still contribute
+                    // loaded slots to [`StateChanges`], like revm.
+                    if let Some(storage) = self.scratch.storage.get_mut(&address)
+                        && let Some(slot) = storage.slots.get_mut(&key)
+                    {
+                        slot.set_current(slot.original);
                     }
                 }
                 JournalEntry::StorageWipe { address, previous } => match previous {
@@ -858,7 +961,16 @@ impl State {
         }
 
         for address in &selfdestructs {
+            let created = self
+                .scratch
+                .accounts
+                .get(address)
+                .and_then(Option::as_ref)
+                .is_some_and(|account| account.just_created);
             self.delete_account_for_finalization(address)?;
+            if created {
+                self.scratch.created_selfdestructs.insert(*address);
+            }
         }
 
         if version.feature(EvmFeatures::EIP161) {
@@ -877,11 +989,11 @@ impl State {
             }
         }
 
+        // Keep the substate sets so that [`Self::build_state_changes`] can derive account status
+        // flags; they are cleared with the rest of the scratch by
+        // [`Self::clear_transaction_state`].
         self.scratch.selfdestructs = selfdestructs;
-        self.scratch.selfdestructs.clear();
-
         self.scratch.touched = touched;
-        self.scratch.touched.clear();
         Ok(())
     }
 
@@ -965,42 +1077,54 @@ impl State {
     pub(crate) fn build_state_changes(&mut self) -> StateChanges {
         let mut changes = StateChanges::default();
 
-        for (&address, current) in &self.scratch.accounts {
-            let original = self.database.account_info(&address);
-            let current = current.as_ref();
-            if Self::account_changed(
-                original.map(AccountInfoRef::from_info),
-                current.map(AccountInfoRef::from_account),
-            ) {
-                changes.accounts.insert(
-                    address,
-                    Tracked::from_parts(original.cloned(), current.map(Account::info)),
-                );
-            }
-            if let Some(account) = current
-                && let Some((code_hash, code)) = Self::changed_code(account)
-            {
-                changes.code.insert(code_hash, code.clone());
-            }
+        for (address, account) in &self.scratch.accounts {
+            let original = self.database.account_info(address).cloned();
+            changes.accounts.insert(
+                *address,
+                AccountChange {
+                    original,
+                    current: account.as_ref().map(Self::account_change_info),
+                    storage: U256Map::default(),
+                    wipe_storage: false,
+                    created: account.as_ref().is_some_and(|account| account.just_created)
+                        || self.scratch.created_selfdestructs.contains(address),
+                    selfdestructed: self.scratch.selfdestructs.contains(address),
+                },
+            );
         }
 
-        for (&address, storage) in &self.scratch.storage {
-            let mut set = StorageChangeSet {
-                wipe: storage.wiped,
-                slots: U256Map::default(),
-                _non_exhaustive: (),
-            };
-            for (&key, slot) in &storage.slots {
-                if Self::storage_slot_changed(set.wipe, slot) {
-                    set.slots.insert(key, Tracked::from_parts(slot.original, slot.current));
+        for (address, storage) in &self.scratch.storage {
+            let entry = changes.accounts.entry(*address).or_insert_with(|| {
+                let info = self.database.account_info(address);
+                AccountChange {
+                    original: info.cloned(),
+                    current: info.cloned(),
+                    ..AccountChange::default()
                 }
-            }
-            if set.wipe || !set.slots.is_empty() {
-                changes.storage.insert(address, set);
-            }
+            });
+            entry.wipe_storage = storage.wiped;
+            entry.storage = storage.slots.clone();
         }
 
         changes
+    }
+
+    /// Materializes account info for [`StateChanges`].
+    ///
+    /// The bytecode is included only when it is actually known so that consumers can distinguish
+    /// "no code" from "code not loaded"; changed code is always known.
+    fn account_change_info(account: &Account) -> AccountInfo {
+        let code = (account.code_changed
+            || !account.code.is_empty()
+            || account.code_hash == KECCAK256_EMPTY)
+            .then(|| account.code.clone());
+        AccountInfo {
+            balance: account.balance,
+            nonce: account.nonce,
+            code_hash: account.code_hash,
+            code,
+            _non_exhaustive: (),
+        }
     }
 
     /// Accepts the current transaction's state transition without materializing it.
@@ -1197,6 +1321,21 @@ mod tests {
     }
 
     #[test]
+    fn storage_untracked_ignores_transaction_overlay() {
+        let address = Address::with_last_byte(0x11);
+        let key = Word::from(0x22);
+        let mut database = CacheDB::default();
+        database.insert_account_info(&address, AccountInfo::default());
+        database.insert_account_storage(&address, &key, &Word::from(1));
+        let mut state = State::new(database);
+
+        let _ = state.set_storage(&address, &key, &Word::from(2)).unwrap();
+
+        assert_eq!(state.storage(&address, &key).unwrap(), Word::from(2));
+        assert_eq!(state.storage_untracked(&address, &key).unwrap(), Word::from(1));
+    }
+
+    #[test]
     fn build_state_changes_leaves_logs_on_transaction_state() {
         use alloy_primitives::{Bytes, LogData};
 
@@ -1243,7 +1382,7 @@ mod tests {
         let change = changes.accounts.get(&address).expect("touched empty account is deleted");
         assert_eq!(change.original, Some(empty));
         assert_eq!(change.current, None);
-        assert!(changes.storage.get(&address).is_some_and(|storage| storage.wipe));
+        assert!(change.is_storage_wiped());
     }
 
     #[test]
@@ -1257,8 +1396,7 @@ mod tests {
         state.finalize_transaction_(Version::base(crate::SpecId::HOMESTEAD));
         let changes = state.build_state_changes();
 
-        assert!(!changes.accounts.contains_key(&address));
-        assert!(!changes.storage.contains_key(&address));
+        assert!(changes.accounts.get(&address).is_none_or(|change| !change.is_changed()));
     }
 
     #[test]
@@ -1286,8 +1424,7 @@ mod tests {
         state.finalize_transaction_(Version::base(crate::SpecId::SPURIOUS_DRAGON));
         let changes = state.build_state_changes();
 
-        assert!(!changes.accounts.contains_key(&address));
-        assert!(!changes.storage.contains_key(&address));
+        assert!(changes.accounts.get(&address).is_none_or(|change| !change.is_changed()));
     }
 
     #[test]
@@ -1304,6 +1441,12 @@ mod tests {
 
         state.finalize_transaction_(Version::base(crate::SpecId::SPURIOUS_DRAGON));
 
+        // The substate sets are preserved for `build_state_changes` and only cleared together
+        // with the rest of the transaction scratch.
+        assert_eq!(state.scratch.touched.capacity(), touched_capacity);
+        assert_eq!(state.scratch.selfdestructs.capacity(), selfdestructs_capacity);
+
+        state.clear_transaction_state();
         assert!(state.scratch.touched.is_empty());
         assert!(state.scratch.selfdestructs.is_empty());
         assert_eq!(state.scratch.touched.capacity(), touched_capacity);
@@ -1325,7 +1468,36 @@ mod tests {
         let change = changes.accounts.get(&address).expect("selfdestruct deletes account");
         assert!(change.original.is_some());
         assert_eq!(change.current, None);
-        assert!(changes.storage.get(&address).is_some_and(|storage| storage.wipe));
+        assert!(change.is_selfdestructed());
+        assert!(change.is_storage_wiped());
+    }
+
+    #[test]
+    fn selfdestruct_emits_created_account_deletion() {
+        let caller = Address::from([0x48; 20]);
+        let address = Address::from([0x49; 20]);
+        let mut database = CacheDB::default();
+        database.insert_account_info(&caller, AccountInfo::default().with_balance(Word::from(1)));
+        let mut state = State::new(database);
+
+        state
+            .create_account(
+                &caller,
+                &address,
+                &Word::ZERO,
+                Version::base(crate::SpecId::SPURIOUS_DRAGON).features,
+            )
+            .unwrap()
+            .unwrap();
+        state.mark_destructed(&address);
+        state.finalize_transaction_(Version::base(crate::SpecId::SPURIOUS_DRAGON));
+        let changes = state.build_state_changes();
+
+        let change = changes.accounts.get(&address).expect("created selfdestruct is deleted");
+        assert_eq!(change.original, None);
+        assert_eq!(change.current, None);
+        assert!(change.is_created());
+        assert!(change.is_selfdestructed());
     }
 
     #[test]

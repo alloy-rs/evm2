@@ -299,7 +299,7 @@ impl Inspector<CustomTypes> for ExampleInspector {
         self.state.step_ends += 1;
     }
 
-    fn log(&mut self, _log: &alloy_primitives::Log) {
+    fn log(&mut self, _log: &alloy_primitives::Log, _host: &mut Evm<CustomTypes>) {
         self.state.logs += 1;
     }
 

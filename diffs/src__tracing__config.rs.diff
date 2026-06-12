@@ -1,0 +1,35 @@
+--- upstream/src/tracing/config.rs
++++ evm2/src/tracing/config.rs
+@@ -1,12 +1,12 @@
+-use alloy_primitives::{map::HashSet, U256};
++use alloy_primitives::{U256, map::HashSet};
+ use alloy_rpc_types_trace::{
+     geth::{
+-        erc7562::Erc7562Config, CallConfig, FlatCallConfig, GethDefaultTracingOptions,
+-        PreStateConfig,
++        CallConfig, FlatCallConfig, GethDefaultTracingOptions, PreStateConfig,
++        erc7562::Erc7562Config,
+     },
+     parity::TraceType,
+ };
+-use revm::bytecode::opcode::OpCode;
++use evm2::interpreter::opcode::OpCode;
+ 
+ /// 256 bits each marking whether an opcode should be included into steps trace or not.
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+@@ -28,13 +28,13 @@
+ 
+     /// Returns whether steps with given [OpCode] should be traced.
+     #[inline]
+-    pub fn is_enabled(&self, op: OpCode) -> bool {
++    pub const fn is_enabled(&self, op: OpCode) -> bool {
+         self.0.bit(op.get() as usize)
+     }
+ 
+     /// Enables tracing of given [OpCode].
+     #[inline]
+-    pub fn enable(&mut self, op: OpCode) -> &mut Self {
++    pub const fn enable(&mut self, op: OpCode) -> &mut Self {
+         self.0.set_bit(op.get() as usize, true);
+         self
+     }

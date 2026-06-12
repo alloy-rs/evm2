@@ -15,13 +15,15 @@ pub mod utils;
 
 pub mod evm;
 pub use evm::{
-    BlockStateAccumulator, Evm, ExecutedTx, TxResult, TxResultWithState, config,
+    AccountInfo, BlockStateAccumulator, Evm, ExecutedTx, JournalEntry, TxResult, TxResultWithState,
+    config,
     config::{
         BaseEvmConfig, BaseEvmConfigSelector, BaseEvmTypes, EvmConfig, EvmConfigSelector, EvmTypes,
         ExecutionConfig,
     },
     env, inspector, precompile, registry,
 };
+pub use inspector::{Inspector, NoopInspector};
 
 pub mod precompiles;
 pub use precompiles::{

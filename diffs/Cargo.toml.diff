@@ -1,0 +1,109 @@
+--- upstream/Cargo.toml
++++ evm2/Cargo.toml
+@@ -1,74 +1,54 @@
+ [package]
+-name = "revm-inspectors"
+-description = "Revm inspector implementations"
+-version = "0.40.1"
+-edition = "2021"
+-rust-version = "1.91"
+-license = "MIT OR Apache-2.0"
+-homepage = "https://github.com/paradigmxyz/revm-inspectors"
+-repository = "https://github.com/paradigmxyz/revm-inspectors"
+-categories = ["cryptography"]
+-keywords = ["ethereum", "evm", "inspectors", "tracing", "debugging"]
+-exclude = [
+-    ".github",
+-    "scripts",
+-    "testdata",
+-    "tests",
+-    "cliff.toml",
+-    "deny.toml",
+-    "release.toml",
+-]
++name = "evm2-inspectors"
++description = "evm2 inspector implementations"
++
++version.workspace = true
++edition.workspace = true
++rust-version.workspace = true
++authors.workspace = true
++license.workspace = true
++homepage.workspace = true
++repository.workspace = true
+ 
+ [lints]
+-rust.missing_debug_implementations = "warn"
+-rust.missing_docs = "warn"
+-rust.unreachable_pub = "warn"
+-rust.unused_must_use = "deny"
+-rust.rust_2018_idioms = "deny"
+-rustdoc.all = "warn"
+-clippy.lint_groups_priority = "allow"
++workspace = true
+ 
+ [dependencies]
+ # eth
+-alloy-rpc-types-eth = { version = "2.0", default-features = false }
+-alloy-rpc-types-trace = { version = "2.0", default-features = false }
+-alloy-sol-types = { version = "1.4", default-features = false }
+-alloy-primitives = { version = "1.4", default-features = false, features = [
+-    "map",
+-] }
+-revm = { version = "40.0.0", default-features = false }
+-
+-anstyle = { version = "1.0", optional = true }
+-colorchoice = "1.0"
+-thiserror = { version = "2.0", default-features = false }
++alloy-rpc-types-eth.workspace = true
++alloy-rpc-types-trace.workspace = true
++alloy-sol-types.workspace = true
++alloy-primitives = { workspace = true, features = ["map"] }
++evm2.workspace = true
++
++anstyle = { workspace = true, optional = true }
++colorchoice.workspace = true
++thiserror.workspace = true
+ 
+ # serde
+-serde = { version = "1", optional = true, features = ["derive"] }
+-serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
++serde = { workspace = true, optional = true, features = ["derive"] }
++serde_json = { workspace = true, features = ["alloc"] }
+ 
+ # js-tracer
+-boa_engine = { version = "0.21", optional = true }
+-boa_gc = { version = "0.21", optional = true }
++boa_engine = { workspace = true, optional = true }
++boa_gc = { workspace = true, optional = true }
+ 
+ [dev-dependencies]
+-alloy-hardforks = "0.4"
+-criterion = "0.8"
+-snapbox = { version = "1.2", features = ["term-svg"] }
+-
+-[[bench]]
+-name = "js_tracer"
+-path = "benches/js_tracer.rs"
+-harness = false
++alloy-hardforks.workspace = true
++alloy-consensus = { workspace = true, features = ["std"] }
++snapbox = { workspace = true, features = ["term-svg"] }
+ 
+ [features]
+ default = ["std"]
+ std = [
+     "alloy-primitives/std",
++    "alloy-rpc-types-eth/std",
++    "alloy-sol-types/std",
+     "anstyle/std",
+     "serde/std",
+     "serde_json/std",
+-    "revm/std",
++    "evm2/std",
+     "thiserror/std",
+ ]
+-serde = ["dep:serde", "revm/serde"]
+-js-tracer = ["dep:boa_engine", "dep:boa_gc"]
++serde = ["dep:serde", "alloy-primitives/serde", "alloy-rpc-types-eth/serde", "evm2/serde"]
++js-tracer = ["std", "dep:boa_engine", "dep:boa_gc"]

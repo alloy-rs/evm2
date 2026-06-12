@@ -1,5 +1,7 @@
 //! Opcode byte constants and metadata.
 
+use core::{fmt, ptr::NonNull};
+
 macro_rules! opcodes {
     ($($val:literal => $name:ident => $instr:path => $($modifier:ident $(( $($modifier_arg:expr),* ))?),*;)*) => {
         /// Opcode byte constants.
@@ -63,8 +65,6 @@ macro_rules! stringify_with_cb {
         $callback! { $(#[doc = "" $id ""] $id)* }
     }};
 }
-
-use core::{fmt, ptr::NonNull};
 
 /// Opcode metadata.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]

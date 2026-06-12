@@ -1,0 +1,11 @@
+--- upstream/tests/it/test_native_bigint.rs
++++ evm2/tests/it/test_native_bigint.rs
+@@ -1,7 +1,7 @@
+ //! Tests for native BigInt support in Boa
+ 
+ use alloy_primitives::U256;
+-use boa_engine::{js_string, Context, JsValue, Source};
++use boa_engine::{Context, JsValue, Source, js_string};
+ 
+ #[test]
+ fn test_boa_native_bigint_support() {

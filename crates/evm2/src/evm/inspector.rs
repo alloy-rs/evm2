@@ -29,11 +29,15 @@ pub trait Inspector<T: EvmTypes>: Any {
 
     /// Called when a log is emitted.
     #[inline]
-    fn log(&mut self, log: &Log) {
+    fn log(&mut self, log: &Log, host: &mut T::Host) {
         let _ = log;
+        let _ = host;
     }
 
     /// Called before a call message executes.
+    ///
+    /// The interpreter is the currently running frame whose instruction produced the message; for
+    /// the top-level message it is a frame initialized with the message itself.
     #[inline]
     fn call(
         &mut self,
@@ -59,6 +63,9 @@ pub trait Inspector<T: EvmTypes>: Any {
     }
 
     /// Called before a create message executes.
+    ///
+    /// The interpreter is the currently running frame whose instruction produced the message; for
+    /// the top-level message it is a frame initialized with the message itself.
     #[inline]
     fn create(
         &mut self,
@@ -85,12 +92,26 @@ pub trait Inspector<T: EvmTypes>: Any {
 
     /// Called after a contract self-destructs.
     #[inline]
-    fn selfdestruct(&mut self, contract: &Address, target: &Address, value: &U256) {
+    fn selfdestruct(
+        &mut self,
+        contract: &Address,
+        target: &Address,
+        value: &U256,
+        host: &mut T::Host,
+    ) {
         let _ = contract;
         let _ = target;
         let _ = value;
+        let _ = host;
     }
 }
+
+/// Inspector that does nothing.
+#[allow(missing_copy_implementations)]
+#[derive(Clone, Debug, Default)]
+pub struct NoopInspector(());
+
+impl<T: EvmTypes> Inspector<T> for NoopInspector {}
 
 impl<T: EvmTypes> core::ops::Deref for dyn Inspector<T> + '_ {
     type Target = dyn Any;
@@ -112,17 +133,18 @@ impl<T: EvmTypes> core::ops::DerefMut for dyn Inspector<T> + '_ {
 mod tests {
     use super::Inspector;
     use crate::{
-        BaseEvmConfigSelector, BaseEvmTypes, Evm, ExecutionConfig, Precompiles, SpecId,
+        BaseEvmConfigSelector, BaseEvmTypes, Evm, EvmTypes, ExecutionConfig, Precompiles, SpecId,
         bytecode::Bytecode,
         constants::CALL_DEPTH_LIMIT,
         env::{BlockEnv, TxEnv},
         ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
-        evm::{AccountInfo, InMemoryDB, SYSTEM_ADDRESS, SelfDestructResult},
+        evm::{AccountInfo, InMemoryDB, SYSTEM_ADDRESS},
         interpreter::{
-            GasTracker, InstrStop, Interpreter, Message, MessageResult, Word,
+            GasTracker, Host, InstrStop, Interpreter, Message, MessageResult, Word,
             instructions::tests::{TestHost, TestTypes, push},
             op,
         },
+        registry::TxRegistry,
         utils::address_to_word,
     };
     use alloc::vec::Vec;
@@ -136,127 +158,143 @@ mod tests {
         step_ends: usize,
     }
 
-    impl Inspector<TestTypes> for StepInspector {
-        fn step(&mut self, _interp: &mut Interpreter<'_, TestTypes>) {
+    impl<T: EvmTypes> Inspector<T> for StepInspector {
+        fn step(&mut self, _interp: &mut Interpreter<'_, T>) {
             self.steps += 1;
         }
 
-        fn step_end(&mut self, _interp: &mut Interpreter<'_, TestTypes>) {
+        fn step_end(&mut self, _interp: &mut Interpreter<'_, T>) {
             self.step_ends += 1;
         }
     }
 
+    #[derive(Default)]
     struct StopOnStepInspector {
         opcode: u8,
         steps: usize,
         step_ends: usize,
+        stack: Vec<Word>,
     }
 
-    impl Inspector<TestTypes> for StopOnStepInspector {
-        fn step(&mut self, interp: &mut Interpreter<'_, TestTypes>) {
+    impl<T: EvmTypes> Inspector<T> for StopOnStepInspector {
+        fn step(&mut self, interp: &mut Interpreter<'_, T>) {
             self.steps += 1;
             if interp.opcode() == self.opcode {
+                self.stack = interp.stack().to_vec();
                 interp.set_stop(InstrStop::Revert);
             }
         }
 
-        fn step_end(&mut self, _interp: &mut Interpreter<'_, TestTypes>) {
+        fn step_end(&mut self, _interp: &mut Interpreter<'_, T>) {
             self.step_ends += 1;
         }
     }
 
+    #[derive(Default)]
     struct StopOnStepEndInspector {
         opcode: u8,
         last_opcode: Option<u8>,
         steps: usize,
         step_ends: usize,
+        stack: Vec<Word>,
     }
 
-    impl Inspector<TestTypes> for StopOnStepEndInspector {
-        fn step(&mut self, interp: &mut Interpreter<'_, TestTypes>) {
+    impl<T: EvmTypes> Inspector<T> for StopOnStepEndInspector {
+        fn step(&mut self, interp: &mut Interpreter<'_, T>) {
             self.steps += 1;
             self.last_opcode = Some(interp.opcode());
         }
 
-        fn step_end(&mut self, interp: &mut Interpreter<'_, TestTypes>) {
+        fn step_end(&mut self, interp: &mut Interpreter<'_, T>) {
             self.step_ends += 1;
             if self.last_opcode == Some(self.opcode) {
+                self.stack = interp.stack().to_vec();
                 interp.set_stop(InstrStop::Revert);
             }
         }
     }
 
     #[derive(Default)]
-    struct MessageInspector {
-        call_depth: Option<u16>,
-        call_opcode: Option<u8>,
-        call_end_opcode: Option<u8>,
-        call_end_stop: Option<InstrStop>,
-        create_depth: Option<u16>,
-        create_opcode: Option<u8>,
-        create_end_opcode: Option<u8>,
-        create_end_stop: Option<InstrStop>,
+    struct SelfdestructInspector {
         selfdestruct: Option<(Address, Address, Word)>,
     }
 
-    impl Inspector<TestTypes> for MessageInspector {
+    impl<T: EvmTypes> Inspector<T> for SelfdestructInspector {
+        fn selfdestruct(
+            &mut self,
+            contract: &Address,
+            target: &Address,
+            value: &Word,
+            _host: &mut T::Host,
+        ) {
+            self.selfdestruct = Some((*contract, *target, *value));
+        }
+    }
+
+    #[derive(Default)]
+    struct HookInspector {
+        call_depths: Vec<u16>,
+        call_end_stops: Vec<InstrStop>,
+        create_depths: Vec<u16>,
+        create_destinations: Vec<Address>,
+        create_end_stops: Vec<InstrStop>,
+    }
+
+    impl Inspector<BaseEvmTypes> for HookInspector {
         fn call(
             &mut self,
-            interp: &mut Interpreter<'_, TestTypes>,
-            message: &mut Message<TestTypes>,
-        ) -> Option<MessageResult<TestTypes>> {
-            self.call_depth = Some(message.depth);
-            self.call_opcode = Some(interp.opcode());
+            _interp: &mut Interpreter<'_, BaseEvmTypes>,
+            message: &mut Message<BaseEvmTypes>,
+        ) -> Option<MessageResult<BaseEvmTypes>> {
+            self.call_depths.push(message.depth);
             None
         }
 
         fn call_end(
             &mut self,
-            interp: &mut Interpreter<'_, TestTypes>,
-            _message: &Message<TestTypes>,
-            result: &mut MessageResult<TestTypes>,
+            _interp: &mut Interpreter<'_, BaseEvmTypes>,
+            _message: &Message<BaseEvmTypes>,
+            result: &mut MessageResult<BaseEvmTypes>,
         ) {
-            self.call_end_opcode = Some(interp.opcode());
-            self.call_end_stop = Some(result.stop);
+            self.call_end_stops.push(result.stop);
         }
 
         fn create(
             &mut self,
-            interp: &mut Interpreter<'_, TestTypes>,
-            message: &mut Message<TestTypes>,
-        ) -> Option<MessageResult<TestTypes>> {
-            self.create_depth = Some(message.depth);
-            self.create_opcode = Some(interp.opcode());
+            _interp: &mut Interpreter<'_, BaseEvmTypes>,
+            message: &mut Message<BaseEvmTypes>,
+        ) -> Option<MessageResult<BaseEvmTypes>> {
+            self.create_depths.push(message.depth);
+            self.create_destinations.push(message.destination);
             None
         }
 
         fn create_end(
             &mut self,
-            interp: &mut Interpreter<'_, TestTypes>,
-            _message: &Message<TestTypes>,
-            result: &mut MessageResult<TestTypes>,
+            _interp: &mut Interpreter<'_, BaseEvmTypes>,
+            _message: &Message<BaseEvmTypes>,
+            result: &mut MessageResult<BaseEvmTypes>,
         ) {
-            self.create_end_opcode = Some(interp.opcode());
-            self.create_end_stop = Some(result.stop);
-        }
-
-        fn selfdestruct(&mut self, contract: &Address, target: &Address, value: &Word) {
-            self.selfdestruct = Some((*contract, *target, *value));
+            self.create_end_stops.push(result.stop);
         }
     }
 
     struct OverrideCallInspector {
-        result: MessageResult<TestTypes>,
+        result: MessageResult<BaseEvmTypes>,
+        min_depth: u16,
         call_depth: Option<u16>,
         call_end_stop: Option<InstrStop>,
     }
 
-    impl Inspector<TestTypes> for OverrideCallInspector {
+    impl Inspector<BaseEvmTypes> for OverrideCallInspector {
         fn call(
             &mut self,
-            _interp: &mut Interpreter<'_, TestTypes>,
-            message: &mut Message<TestTypes>,
-        ) -> Option<MessageResult<TestTypes>> {
+            _interp: &mut Interpreter<'_, BaseEvmTypes>,
+            message: &mut Message<BaseEvmTypes>,
+        ) -> Option<MessageResult<BaseEvmTypes>> {
+            if message.depth < self.min_depth {
+                return None;
+            }
             self.call_depth = Some(message.depth);
             let mut result = self.result.clone();
             result.gas.set_remaining(message.gas_limit);
@@ -265,11 +303,13 @@ mod tests {
 
         fn call_end(
             &mut self,
-            _interp: &mut Interpreter<'_, TestTypes>,
-            _message: &Message<TestTypes>,
-            result: &mut MessageResult<TestTypes>,
+            _interp: &mut Interpreter<'_, BaseEvmTypes>,
+            message: &Message<BaseEvmTypes>,
+            result: &mut MessageResult<BaseEvmTypes>,
         ) {
-            self.call_end_stop = Some(result.stop);
+            if message.depth >= self.min_depth {
+                self.call_end_stop = Some(result.stop);
+            }
         }
     }
 
@@ -277,25 +317,31 @@ mod tests {
         destination: Address,
     }
 
-    impl Inspector<TestTypes> for MutateCallInspector {
+    impl Inspector<BaseEvmTypes> for MutateCallInspector {
         fn call(
             &mut self,
-            _interp: &mut Interpreter<'_, TestTypes>,
-            message: &mut Message<TestTypes>,
-        ) -> Option<MessageResult<TestTypes>> {
-            message.destination = self.destination;
+            _interp: &mut Interpreter<'_, BaseEvmTypes>,
+            message: &mut Message<BaseEvmTypes>,
+        ) -> Option<MessageResult<BaseEvmTypes>> {
+            if message.depth > 0 {
+                message.destination = self.destination;
+                message.code_address = self.destination;
+            }
             None
         }
     }
 
     struct CallEndInspector;
 
-    impl Inspector<TestTypes> for CallEndInspector {
+    impl Inspector<BaseEvmTypes> for CallEndInspector {
         fn call(
             &mut self,
-            _interp: &mut Interpreter<'_, TestTypes>,
-            message: &mut Message<TestTypes>,
-        ) -> Option<MessageResult<TestTypes>> {
+            _interp: &mut Interpreter<'_, BaseEvmTypes>,
+            message: &mut Message<BaseEvmTypes>,
+        ) -> Option<MessageResult<BaseEvmTypes>> {
+            if message.depth == 0 {
+                return None;
+            }
             Some(MessageResult {
                 stop: InstrStop::Revert,
                 gas: GasTracker::new(message.gas_limit),
@@ -305,12 +351,14 @@ mod tests {
 
         fn call_end(
             &mut self,
-            _interp: &mut Interpreter<'_, TestTypes>,
-            _message: &Message<TestTypes>,
-            result: &mut MessageResult<TestTypes>,
+            _interp: &mut Interpreter<'_, BaseEvmTypes>,
+            message: &Message<BaseEvmTypes>,
+            result: &mut MessageResult<BaseEvmTypes>,
         ) {
-            result.stop = InstrStop::Return;
-            result.output = Bytes::from_static(&[0xaa, 0xbb]);
+            if message.depth > 0 {
+                result.stop = InstrStop::Return;
+                result.output = Bytes::from_static(&[0xaa, 0xbb]);
+            }
         }
     }
 
@@ -320,12 +368,12 @@ mod tests {
         create_end_stop: Option<InstrStop>,
     }
 
-    impl Inspector<TestTypes> for OverrideCreateInspector {
+    impl Inspector<BaseEvmTypes> for OverrideCreateInspector {
         fn create(
             &mut self,
-            _interp: &mut Interpreter<'_, TestTypes>,
-            message: &mut Message<TestTypes>,
-        ) -> Option<MessageResult<TestTypes>> {
+            _interp: &mut Interpreter<'_, BaseEvmTypes>,
+            message: &mut Message<BaseEvmTypes>,
+        ) -> Option<MessageResult<BaseEvmTypes>> {
             self.create_depth = Some(message.depth);
             Some(MessageResult {
                 stop: InstrStop::Return,
@@ -337,9 +385,9 @@ mod tests {
 
         fn create_end(
             &mut self,
-            _interp: &mut Interpreter<'_, TestTypes>,
-            _message: &Message<TestTypes>,
-            result: &mut MessageResult<TestTypes>,
+            _interp: &mut Interpreter<'_, BaseEvmTypes>,
+            _message: &Message<BaseEvmTypes>,
+            result: &mut MessageResult<BaseEvmTypes>,
         ) {
             self.create_end_stop = Some(result.stop);
         }
@@ -349,12 +397,12 @@ mod tests {
         created: Address,
     }
 
-    impl Inspector<TestTypes> for CreateEndInspector {
+    impl Inspector<BaseEvmTypes> for CreateEndInspector {
         fn create(
             &mut self,
-            _interp: &mut Interpreter<'_, TestTypes>,
-            message: &mut Message<TestTypes>,
-        ) -> Option<MessageResult<TestTypes>> {
+            _interp: &mut Interpreter<'_, BaseEvmTypes>,
+            message: &mut Message<BaseEvmTypes>,
+        ) -> Option<MessageResult<BaseEvmTypes>> {
             Some(MessageResult {
                 stop: InstrStop::Revert,
                 gas: GasTracker::new(message.gas_limit),
@@ -364,9 +412,9 @@ mod tests {
 
         fn create_end(
             &mut self,
-            _interp: &mut Interpreter<'_, TestTypes>,
-            _message: &Message<TestTypes>,
-            result: &mut MessageResult<TestTypes>,
+            _interp: &mut Interpreter<'_, BaseEvmTypes>,
+            _message: &Message<BaseEvmTypes>,
+            result: &mut MessageResult<BaseEvmTypes>,
         ) {
             result.stop = InstrStop::Return;
             result.created_address = Some(self.created);
@@ -378,8 +426,8 @@ mod tests {
         logs: Vec<Log>,
     }
 
-    impl Inspector<TestTypes> for LogInspector {
-        fn log(&mut self, log: &Log) {
+    impl<T: EvmTypes> Inspector<T> for LogInspector {
+        fn log(&mut self, log: &Log, _host: &mut T::Host) {
             self.logs.push(log.clone());
         }
     }
@@ -390,12 +438,12 @@ mod tests {
         step_ends: usize,
     }
 
-    impl Inspector<TestTypes> for FailingStepInspector {
-        fn step(&mut self, _interp: &mut Interpreter<'_, TestTypes>) {
+    impl<T: EvmTypes> Inspector<T> for FailingStepInspector {
+        fn step(&mut self, _interp: &mut Interpreter<'_, T>) {
             self.steps += 1;
         }
 
-        fn step_end(&mut self, interp: &mut Interpreter<'_, TestTypes>) {
+        fn step_end(&mut self, interp: &mut Interpreter<'_, T>) {
             let _ = interp;
             self.step_ends += 1;
         }
@@ -429,7 +477,7 @@ mod tests {
             self.state.step_ends += 1;
         }
 
-        fn log(&mut self, log: &Log) {
+        fn log(&mut self, log: &Log, _host: &mut Evm<BaseEvmTypes>) {
             self.state.logs.push(log.clone());
         }
 
@@ -458,22 +506,42 @@ mod tests {
         }
     }
 
-    fn run_with_inspector<I: Inspector<TestTypes>>(
+    fn run_evm_with_inspector<I: Inspector<BaseEvmTypes> + 'static>(
         code: Vec<u8>,
-        host: &mut TestHost,
-        message: &Message<TestTypes>,
+        message: &Message<BaseEvmTypes>,
         gas_limit: u64,
-        inspector: &mut I,
-    ) -> (InstrStop, Vec<Word>) {
+        inspector: I,
+    ) -> (MessageResult<BaseEvmTypes>, Box<I>, Evm<BaseEvmTypes>) {
+        run_evm_with_inspector_db(InMemoryDB::default(), code, message, gas_limit, inspector)
+    }
+
+    fn run_evm_with_inspector_db<I: Inspector<BaseEvmTypes> + 'static>(
+        db: InMemoryDB,
+        code: Vec<u8>,
+        message: &Message<BaseEvmTypes>,
+        gas_limit: u64,
+        inspector: I,
+    ) -> (MessageResult<BaseEvmTypes>, Box<I>, Evm<BaseEvmTypes>) {
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            db,
+            Precompiles::base(SpecId::OSAKA),
+        );
+        evm.set_inspector(inspector);
         let tx_env = TxEnv::default();
         let bytecode = Bytecode::new_legacy(Bytes::from(code));
         let mut message = message.clone();
         message.gas_limit = gas_limit;
-        let mut inner = Interpreter::<TestTypes>::new(bytecode, &tx_env, &message, false);
-        let config = ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(SpecId::OSAKA);
-        let stop = inner.run_inspect(&config, host, inspector);
-        let stack = inner.stack().to_vec();
-        (stop, stack)
+        let result = Host::execute_message(&mut evm, &tx_env, bytecode, &mut message, false);
+        let inspector = evm.clear_inspector_as::<I>().unwrap();
+        (result, inspector, evm)
+    }
+
+    /// Appends code that returns the word at the top of the stack as the frame output.
+    fn return_top_word(code: &mut Vec<u8>) {
+        code.extend([op::PUSH0, op::MSTORE, op::PUSH1, 32, op::PUSH0, op::RETURN]);
     }
 
     fn call_code(target: Address) -> Vec<u8> {
@@ -501,303 +569,314 @@ mod tests {
 
     #[test]
     fn inspect_run_steps() {
-        let mut host = TestHost::default();
-        let mut inspector = StepInspector::default();
-
-        let (stop, _) = run_with_inspector(
+        let (result, inspector, _) = run_evm_with_inspector(
             Vec::from([op::STOP]),
-            &mut host,
             &Message::default(),
             10_000,
-            &mut inspector,
+            StepInspector::default(),
         );
 
-        assert_eq!(stop, InstrStop::Stop);
+        assert_eq!(result.stop, InstrStop::Stop);
         assert_eq!(inspector.steps, 1);
         assert_eq!(inspector.step_ends, 1);
     }
 
     #[test]
     fn step_can_stop_before_current_opcode_executes() {
-        let mut host = TestHost::default();
-        let mut inspector = StopOnStepInspector { opcode: op::ADD, steps: 0, step_ends: 0 };
-
-        let (stop, stack) = run_with_inspector(
+        let (result, inspector, _) = run_evm_with_inspector(
             Vec::from([op::PUSH1, 1, op::PUSH1, 2, op::ADD, op::STOP]),
-            &mut host,
             &Message::default(),
             10_000,
-            &mut inspector,
+            StopOnStepInspector { opcode: op::ADD, ..Default::default() },
         );
 
-        assert_eq!(stop, InstrStop::Revert);
-        assert_eq!(stack, [Word::from(1), Word::from(2)]);
+        assert_eq!(result.stop, InstrStop::Revert);
+        assert_eq!(inspector.stack, [Word::from(1), Word::from(2)]);
         assert_eq!(inspector.steps, 3);
         assert_eq!(inspector.step_ends, 2);
     }
 
     #[test]
     fn step_end_can_stop_before_next_opcode_executes() {
-        let mut host = TestHost::default();
-        let mut inspector =
-            StopOnStepEndInspector { opcode: op::PUSH1, last_opcode: None, steps: 0, step_ends: 0 };
-
-        let (stop, stack) = run_with_inspector(
+        let (result, inspector, _) = run_evm_with_inspector(
             Vec::from([op::PUSH1, 1, op::PUSH1, 2, op::ADD, op::STOP]),
-            &mut host,
             &Message::default(),
             10_000,
-            &mut inspector,
+            StopOnStepEndInspector { opcode: op::PUSH1, ..Default::default() },
         );
 
-        assert_eq!(stop, InstrStop::Revert);
-        assert_eq!(stack, [Word::from(1)]);
+        assert_eq!(result.stop, InstrStop::Revert);
+        assert_eq!(inspector.stack, [Word::from(1)]);
         assert_eq!(inspector.steps, 1);
         assert_eq!(inspector.step_ends, 1);
     }
 
     #[test]
-    fn call_too_deep_is_inspected_without_host_call() {
+    fn call_too_deep_is_inspected_without_executing() {
         let target = Address::from([0x22; 20]);
-        let mut host = TestHost::default();
-        let mut inspector = MessageInspector::default();
         let mut code = call_code(target);
         code.extend([op::CALL, op::STOP]);
 
-        let (stop, stack) = run_with_inspector(
+        let (result, inspector, _) = run_evm_with_inspector(
             code,
-            &mut host,
             &Message { depth: CALL_DEPTH_LIMIT, ..Default::default() },
             50_000,
-            &mut inspector,
+            HookInspector::default(),
         );
 
-        assert_matches!(stop, InstrStop::Stop);
-        assert_eq!(stack, [Word::ZERO]);
-        assert_eq!(inspector.call_depth, Some(CALL_DEPTH_LIMIT + 1));
-        assert_eq!(inspector.call_opcode, Some(op::CALL));
-        assert_eq!(inspector.call_end_opcode, Some(op::CALL));
-        assert_eq!(inspector.call_end_stop, Some(InstrStop::CallTooDeep));
-        assert!(host.calls.is_empty());
+        assert_matches!(result.stop, InstrStop::Stop);
+        assert_eq!(inspector.call_depths, [CALL_DEPTH_LIMIT, CALL_DEPTH_LIMIT + 1]);
+        assert_eq!(inspector.call_end_stops, [InstrStop::CallTooDeep, InstrStop::Stop]);
     }
 
     #[test]
-    fn call_inspector_override_skips_host_and_still_calls_end() {
+    fn call_inspector_override_skips_execution_and_still_calls_end() {
         let target = Address::from([0x22; 20]);
-        let mut host = TestHost::default();
-        let mut inspector = OverrideCallInspector {
+        let inspector = OverrideCallInspector {
             result: MessageResult {
                 stop: InstrStop::Return,
                 output: Bytes::from_static(&[0xaa, 0xbb, 0xcc]),
                 ..Default::default()
             },
+            min_depth: 1,
             call_depth: None,
             call_end_stop: None,
         };
         let mut code = call_code(target);
-        code.extend([op::CALL, op::RETURNDATASIZE, op::STOP]);
+        code.extend([op::CALL, op::POP, op::RETURNDATASIZE]);
+        return_top_word(&mut code);
 
-        let (stop, stack) =
-            run_with_inspector(code, &mut host, &Message::default(), 50_000, &mut inspector);
+        let (result, inspector, _) =
+            run_evm_with_inspector(code, &Message::default(), 50_000, inspector);
 
-        assert_matches!(stop, InstrStop::Stop);
-        assert_eq!(stack, [Word::from(1), Word::from(3)]);
+        assert_matches!(result.stop, InstrStop::Return);
+        // The override output is observed by the parent frame's RETURNDATASIZE.
+        assert_eq!(Word::from_be_slice(&result.output), Word::from(3));
         assert_eq!(inspector.call_depth, Some(1));
         assert_eq!(inspector.call_end_stop, Some(InstrStop::Return));
-        assert!(host.calls.is_empty());
     }
 
     #[test]
     fn call_inspector_override_wins_at_max_depth() {
         let target = Address::from([0x22; 20]);
-        let mut host = TestHost::default();
-        let mut inspector = OverrideCallInspector {
+        let inspector = OverrideCallInspector {
             result: MessageResult { stop: InstrStop::Return, ..Default::default() },
+            min_depth: CALL_DEPTH_LIMIT + 1,
             call_depth: None,
             call_end_stop: None,
         };
         let mut code = call_code(target);
-        code.extend([op::CALL, op::STOP]);
+        code.extend([op::CALL]);
+        return_top_word(&mut code);
 
-        let (stop, stack) = run_with_inspector(
+        let (result, inspector, _) = run_evm_with_inspector(
             code,
-            &mut host,
             &Message { depth: CALL_DEPTH_LIMIT, ..Default::default() },
             50_000,
-            &mut inspector,
+            inspector,
         );
 
-        assert_matches!(stop, InstrStop::Stop);
-        assert_eq!(stack, [Word::from(1)]);
+        assert_matches!(result.stop, InstrStop::Return);
+        // The override wins over the call depth check: the call succeeds.
+        assert_eq!(Word::from_be_slice(&result.output), Word::from(1));
+        assert_eq!(inspector.call_depth, Some(CALL_DEPTH_LIMIT + 1));
         assert_eq!(inspector.call_end_stop, Some(InstrStop::Return));
-        assert!(host.calls.is_empty());
     }
 
     #[test]
-    fn call_inspector_can_mutate_message_before_host() {
+    fn call_inspector_can_mutate_message_before_execution() {
         let target = Address::from([0x22; 20]);
         let replacement = Address::from([0x33; 20]);
-        let mut host = TestHost::default();
-        let mut inspector = MutateCallInspector { destination: replacement };
-        let mut code = call_code(target);
+        let mut db = InMemoryDB::default();
+        db.insert_account_info(
+            &Address::ZERO,
+            AccountInfo::default().with_balance(U256::from(100)),
+        );
+        let mut code = Vec::new();
+        push_all(
+            &mut code,
+            [
+                Word::ZERO,
+                Word::ZERO,
+                Word::ZERO,
+                Word::ZERO,
+                Word::from(7),
+                address_to_word(&target),
+                Word::from(50_000),
+            ],
+        );
         code.extend([op::CALL, op::STOP]);
 
-        let (stop, stack) =
-            run_with_inspector(code, &mut host, &Message::default(), 50_000, &mut inspector);
+        let mut evm = Evm::<BaseEvmTypes>::new(
+            SpecId::OSAKA,
+            BlockEnv::default(),
+            TxRegistry::new(),
+            db,
+            Precompiles::base(SpecId::OSAKA),
+        );
+        evm.set_inspector(MutateCallInspector { destination: replacement });
+        let tx_env = TxEnv::default();
+        let bytecode = Bytecode::new_legacy(Bytes::from(code));
+        let mut message = Message { gas_limit: 100_000, ..Default::default() };
+        let result = Host::execute_message(&mut evm, &tx_env, bytecode, &mut message, false);
 
-        assert_matches!(stop, InstrStop::Stop);
-        assert_eq!(stack, [Word::from(1)]);
-        assert_eq!(host.calls.len(), 1);
-        assert_eq!(host.calls[0].destination, replacement);
+        assert_matches!(result.stop, InstrStop::Stop);
+        // The redirected call transferred the value to the replacement, not the target.
+        let mut balance = |address| {
+            evm.state_mut().account_info(&address).unwrap().map_or(U256::ZERO, |info| info.balance)
+        };
+        assert_eq!(balance(replacement), U256::from(7));
+        assert_eq!(balance(target), U256::ZERO);
     }
 
     #[test]
-    fn call_end_can_mutate_result_before_opcode_observes_it() {
+    fn call_end_can_mutate_result_before_caller_observes_it() {
         let target = Address::from([0x22; 20]);
-        let mut host = TestHost::default();
-        let mut inspector = CallEndInspector;
         let mut code = call_code(target);
-        code.extend([op::CALL, op::RETURNDATASIZE, op::STOP]);
+        code.extend([op::CALL, op::POP, op::RETURNDATASIZE]);
+        return_top_word(&mut code);
 
-        let (stop, stack) =
-            run_with_inspector(code, &mut host, &Message::default(), 50_000, &mut inspector);
+        let (result, _, _) =
+            run_evm_with_inspector(code, &Message::default(), 50_000, CallEndInspector);
 
-        assert_matches!(stop, InstrStop::Stop);
-        assert_eq!(stack, [Word::from(1), Word::from(2)]);
-        assert!(host.calls.is_empty());
+        assert_matches!(result.stop, InstrStop::Return);
+        // `call_end` upgraded the override from a revert to a 2-byte return.
+        assert_eq!(Word::from_be_slice(&result.output), Word::from(2));
     }
 
     #[test]
-    fn create_too_deep_is_inspected_without_host_call() {
-        let mut host = TestHost::default();
-        let mut inspector = MessageInspector::default();
+    fn create_too_deep_is_inspected_without_executing() {
         let mut code = create_code();
         code.extend([op::CREATE, op::STOP]);
 
-        let (stop, stack) = run_with_inspector(
+        let (result, inspector, _) = run_evm_with_inspector(
             code,
-            &mut host,
             &Message { depth: CALL_DEPTH_LIMIT, ..Default::default() },
             50_000,
-            &mut inspector,
+            HookInspector::default(),
         );
 
-        assert_matches!(stop, InstrStop::Stop);
-        assert_eq!(stack, [Word::ZERO]);
-        assert_eq!(inspector.create_depth, Some(CALL_DEPTH_LIMIT + 1));
-        assert_eq!(inspector.create_opcode, Some(op::CREATE));
-        assert_eq!(inspector.create_end_opcode, Some(op::CREATE));
-        assert_eq!(inspector.create_end_stop, Some(InstrStop::CallTooDeep));
-        assert!(host.calls.is_empty());
+        assert_matches!(result.stop, InstrStop::Stop);
+        assert_eq!(inspector.create_depths, [CALL_DEPTH_LIMIT + 1]);
+        assert_eq!(inspector.create_end_stops, [InstrStop::CallTooDeep]);
     }
 
     #[test]
-    fn create_inspector_override_skips_host_and_still_calls_end() {
+    fn create_inspector_override_skips_execution_and_still_calls_end() {
         let created = Address::from([0x77; 20]);
-        let mut host = TestHost::default();
-        let mut inspector =
+        let inspector =
             OverrideCreateInspector { created, create_depth: None, create_end_stop: None };
+        let mut code = create_code();
+        code.extend([op::CREATE]);
+        return_top_word(&mut code);
+
+        let (result, inspector, _) =
+            run_evm_with_inspector(code, &Message::default(), 50_000, inspector);
+
+        assert_matches!(result.stop, InstrStop::Return);
+        assert_eq!(Word::from_be_slice(&result.output), address_to_word(&created));
+        assert_eq!(inspector.create_depth, Some(1));
+        assert_eq!(inspector.create_end_stop, Some(InstrStop::Return));
+    }
+
+    #[test]
+    fn create_inspector_sees_derived_destination() {
+        let contract = Address::from([0x11; 20]);
+        let expected = contract.create(0);
         let mut code = create_code();
         code.extend([op::CREATE, op::STOP]);
 
-        let (stop, stack) =
-            run_with_inspector(code, &mut host, &Message::default(), 50_000, &mut inspector);
+        let (result, inspector, _) = run_evm_with_inspector(
+            code,
+            &Message { destination: contract, ..Default::default() },
+            50_000,
+            HookInspector::default(),
+        );
 
-        assert_matches!(stop, InstrStop::Stop);
-        assert_eq!(stack, [address_to_word(&created)]);
-        assert_eq!(inspector.create_depth, Some(1));
-        assert_eq!(inspector.create_end_stop, Some(InstrStop::Return));
-        assert!(host.calls.is_empty());
+        assert_matches!(result.stop, InstrStop::Stop);
+        assert_eq!(inspector.create_destinations, [expected]);
     }
 
     #[test]
     fn create_inspector_override_wins_at_max_depth() {
         let created = Address::from([0x77; 20]);
-        let mut host = TestHost::default();
-        let mut inspector =
+        let inspector =
             OverrideCreateInspector { created, create_depth: None, create_end_stop: None };
         let mut code = create_code();
-        code.extend([op::CREATE, op::STOP]);
+        code.extend([op::CREATE]);
+        return_top_word(&mut code);
 
-        let (stop, stack) = run_with_inspector(
+        let (result, inspector, _) = run_evm_with_inspector(
             code,
-            &mut host,
             &Message { depth: CALL_DEPTH_LIMIT, ..Default::default() },
             50_000,
-            &mut inspector,
+            inspector,
         );
 
-        assert_matches!(stop, InstrStop::Stop);
-        assert_eq!(stack, [address_to_word(&created)]);
+        assert_matches!(result.stop, InstrStop::Return);
+        assert_eq!(Word::from_be_slice(&result.output), address_to_word(&created));
         assert_eq!(inspector.create_depth, Some(CALL_DEPTH_LIMIT + 1));
         assert_eq!(inspector.create_end_stop, Some(InstrStop::Return));
-        assert!(host.calls.is_empty());
     }
 
     #[test]
-    fn create_end_can_mutate_result_before_opcode_observes_it() {
+    fn create_end_can_mutate_result_before_caller_observes_it() {
         let created = Address::from([0x88; 20]);
-        let mut host = TestHost::default();
-        let mut inspector = CreateEndInspector { created };
         let mut code = create_code();
-        code.extend([op::CREATE, op::STOP]);
+        code.extend([op::CREATE]);
+        return_top_word(&mut code);
 
-        let (stop, stack) =
-            run_with_inspector(code, &mut host, &Message::default(), 50_000, &mut inspector);
+        let (result, _, _) = run_evm_with_inspector(
+            code,
+            &Message::default(),
+            50_000,
+            CreateEndInspector { created },
+        );
 
-        assert_matches!(stop, InstrStop::Stop);
-        assert_eq!(stack, [address_to_word(&created)]);
-        assert!(host.calls.is_empty());
+        assert_matches!(result.stop, InstrStop::Return);
+        assert_eq!(Word::from_be_slice(&result.output), address_to_word(&created));
     }
 
     #[test]
     fn log_opcode_is_inspected_and_emitted_to_host() {
         let contract = Address::from([0x11; 20]);
-        let mut host = TestHost::default();
-        let mut inspector = LogInspector::default();
         let code = Vec::from([op::PUSH1, 0, op::PUSH1, 0, op::LOG0, op::STOP]);
 
-        let (stop, _) = run_with_inspector(
+        let (result, inspector, evm) = run_evm_with_inspector(
             code,
-            &mut host,
             &Message { destination: contract, ..Default::default() },
             10_000,
-            &mut inspector,
+            LogInspector::default(),
         );
 
-        assert_matches!(stop, InstrStop::Stop);
+        assert_matches!(result.stop, InstrStop::Stop);
         assert_eq!(inspector.logs.len(), 1);
         assert_eq!(inspector.logs[0].address, contract);
-        assert_eq!(host.logs, inspector.logs);
+        assert_eq!(evm.logs(), inspector.logs);
     }
 
     #[test]
     fn log_opcode_oog_is_not_inspected_or_emitted_to_host() {
-        let mut host = TestHost::default();
-        let mut inspector = LogInspector::default();
         let code = Vec::from([op::PUSH1, 0, op::PUSH1, 0, op::LOG0, op::STOP]);
 
-        let (stop, _) = run_with_inspector(code, &mut host, &Message::default(), 6, &mut inspector);
+        let (result, inspector, evm) =
+            run_evm_with_inspector(code, &Message::default(), 6, LogInspector::default());
 
-        assert_eq!(stop, InstrStop::OutOfGas);
+        assert_eq!(result.stop, InstrStop::OutOfGas);
         assert!(inspector.logs.is_empty());
-        assert!(host.logs.is_empty());
+        assert!(evm.logs().is_empty());
     }
 
     #[test]
     fn step_end_runs_for_failing_opcode_with_result_set() {
-        let mut host = TestHost::default();
-        let mut inspector = FailingStepInspector::default();
-
-        let (stop, _) = run_with_inspector(
+        let (result, inspector, _) = run_evm_with_inspector(
             Vec::from([op::INVALID]),
-            &mut host,
             &Message::default(),
             10_000,
-            &mut inspector,
+            FailingStepInspector::default(),
         );
 
-        assert_eq!(stop, InstrStop::InvalidOpcode);
+        assert_eq!(result.stop, InstrStop::InvalidOpcode);
         assert_eq!(inspector.steps, 1);
         assert_eq!(inspector.step_ends, 1);
     }
@@ -807,43 +886,41 @@ mod tests {
         let contract = Address::from([0x11; 20]);
         let target = Address::from([0x99; 20]);
         let value = Word::from(0xbeef);
-        let mut host = TestHost::default();
-        host.selfdestruct_result =
-            SelfDestructResult { had_value: true, value, ..Default::default() };
-        let mut inspector = MessageInspector::default();
+        let mut db = InMemoryDB::default();
+        db.insert_account_info(&contract, AccountInfo::default().with_balance(value));
         let mut code = Vec::new();
         push(&mut code, address_to_word(&target));
         code.push(op::SELFDESTRUCT);
 
-        let (stop, _) = run_with_inspector(
+        let (result, inspector, _) = run_evm_with_inspector_db(
+            db,
             code,
-            &mut host,
-            &Message { destination: contract, gas_limit: 10_000, ..Default::default() },
-            10_000,
-            &mut inspector,
+            &Message { destination: contract, ..Default::default() },
+            50_000,
+            SelfdestructInspector::default(),
         );
 
-        assert_matches!(stop, InstrStop::SelfDestruct);
+        assert_matches!(result.stop, InstrStop::SelfDestruct);
         assert_eq!(inspector.selfdestruct, Some((contract, target, value)));
     }
 
     #[test]
     fn selfdestruct_host_error_is_not_inspected() {
+        // Host failures are injected through the mock host; this intentionally uses [`TestHost`].
         let target = Address::from([0x99; 20]);
         let mut host = TestHost::default();
         host.selfdestruct_error = Some(InstrStop::FatalExternalError);
-        let mut inspector = MessageInspector::default();
+        let mut inspector = SelfdestructInspector::default();
         let mut code = Vec::new();
         push(&mut code, address_to_word(&target));
         code.push(op::SELFDESTRUCT);
 
-        let (stop, _) = run_with_inspector(
-            code,
-            &mut host,
-            &Message { gas_limit: 10_000, ..Default::default() },
-            10_000,
-            &mut inspector,
-        );
+        let tx_env = TxEnv::default();
+        let bytecode = Bytecode::new_legacy(Bytes::from(code));
+        let message = Message::<TestTypes> { gas_limit: 10_000, ..Default::default() };
+        let mut interp = Interpreter::<TestTypes>::new(bytecode, &tx_env, &message, false);
+        let config = ExecutionConfig::for_base_spec::<BaseEvmConfigSelector>(SpecId::OSAKA);
+        let stop = interp.run_inspect(&config, &mut host, &mut inspector);
 
         assert_eq!(stop, InstrStop::FatalExternalError);
         assert_eq!(inspector.selfdestruct, None);
@@ -890,7 +967,7 @@ mod tests {
         assert_eq!(state.step_ends, 4);
         assert_eq!(state.logs.len(), 1);
         assert_eq!(state.logs[0].address, contract);
-        assert_eq!(state.calls, 0);
+        assert_eq!(state.calls, 1);
         assert_eq!(state.creates, 0);
     }
 
@@ -932,7 +1009,7 @@ mod tests {
     }
 
     #[test]
-    fn evm_create_transaction_initializes_interpreter_without_create_hook() {
+    fn evm_create_transaction_initializes_interpreter_with_create_hook() {
         let caller = Address::from([0xaa; 20]);
         let mut database = InMemoryDB::default();
         database.insert_account_info(
@@ -966,6 +1043,6 @@ mod tests {
         assert_eq!(state.steps, 1);
         assert_eq!(state.step_ends, 1);
         assert_eq!(state.calls, 0);
-        assert_eq!(state.creates, 0);
+        assert_eq!(state.creates, 1);
     }
 }

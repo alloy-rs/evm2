@@ -1,0 +1,77 @@
+--- upstream/tests/it/writer.rs
++++ evm2/tests/it/writer.rs
+@@ -1,15 +1,13 @@
+-use crate::utils::{inspect_deploy_contract, write_traces, write_traces_with};
+-use alloy_primitives::{address, b256, bytes, hex, Address, B256, U256};
+-use alloy_sol_types::{sol, SolCall};
+-use colorchoice::ColorChoice;
+-use revm::{
+-    context::TxEnv, context_interface::TransactTo, database::CacheDB, database_interface::EmptyDB,
+-    inspector::InspectorEvmTr, primitives::hardfork::SpecId, Context, InspectCommitEvm, InspectEvm,
+-    MainBuilder, MainContext,
++use crate::utils::{
++    AccountInfo, CacheDB, Context, EmptyDB, SpecId, TransactTo, TxEnv, inspect_deploy_contract,
++    write_traces, write_traces_with,
+ };
+-use revm_inspectors::tracing::{
+-    types::{DecodedCallData, DecodedInternalCall, DecodedTraceStep},
++use alloy_primitives::{Address, B256, U256, address, b256, bytes, hex};
++use alloy_sol_types::{SolCall, sol};
++use colorchoice::ColorChoice;
++use evm2_inspectors::tracing::{
+     TraceWriterConfig, TracingInspector, TracingInspectorConfig,
++    types::{DecodedCallData, DecodedInternalCall, DecodedTraceStep},
+ };
+ use snapbox::{assert_data_eq, data::DataFormat};
+ use std::path::Path;
+@@ -301,8 +299,8 @@
+ fn test_receive_vs_fallback_empty_calldata() {
+     // Deploy a minimal contract that just STOPs immediately (runtime = 0x00).
+     // Deploy the contract using a minimal constructor that just returns the runtime code.
+-    // Constructor: PUSH1 0x01, PUSH1 0x0c, PUSH1 0x00, CODECOPY, PUSH1 0x01, PUSH1 0x00, RETURN
+-    // Then the runtime code (0x00 = STOP)
++    // Constructor: PUSH1 0x01, PUSH1 0x0c, PUSH1 0x00, CODECOPY, PUSH1 0x01, PUSH1 0x00, RETURN.
++    // Then the runtime code (0x00 = STOP).
+     let initcode = bytes!(
+         "6001" // PUSH1 0x01 (size of runtime code)
+         "600c" // PUSH1 0x0c (offset where runtime code starts in initcode)
+@@ -317,8 +315,8 @@
+     let caller = address!("0x0000000000000000000000000000000000000001");
+     let mut db = CacheDB::new(EmptyDB::default());
+     db.insert_account_info(
+-        caller,
+-        revm::state::AccountInfo { balance: U256::from(1_000_000), ..Default::default() },
++        &caller,
++        AccountInfo { balance: U256::from(1_000_000), ..Default::default() },
+     );
+ 
+     let mut evm = Context::mainnet()
+@@ -335,8 +333,8 @@
+         .inspect_tx_commit(
+             TxEnv::builder()
+                 .caller(caller)
+-                .data(bytes!()) // Empty calldata
+-                .value(U256::from(1)) // Nonzero value
++                .data(bytes!()) // Empty calldata.
++                .value(U256::from(1)) // Nonzero value.
+                 .kind(TransactTo::Call(address))
+                 .gas_priority_fee(None)
+                 .nonce(1)
+@@ -364,7 +362,7 @@
+ fn test_fallback_short_calldata() {
+     // Simple contract that STOPs on any call
+     let initcode = bytes!(
+-        "6001600c60003960016000f300" // Deploy STOP
++        "6001600c60003960016000f300" // Deploy STOP.
+     );
+ 
+     let mut evm = Context::mainnet()
+@@ -380,7 +378,7 @@
+     let result = evm
+         .inspect_tx_commit(
+             TxEnv::builder()
+-                .data(bytes!("ab")) // Short calldata (1 byte)
++                .data(bytes!("ab")) // Short calldata (1 byte).
+                 .kind(TransactTo::Call(address))
+                 .gas_priority_fee(None)
+                 .nonce(1)

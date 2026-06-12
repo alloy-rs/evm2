@@ -1,9 +1,9 @@
 use super::{
-    BytecodeRef, Gas, InstrStop, Memory, Message, MessageKind, MessageResult, Pc, Result,
-    StackBacking, StackRef, Word,
+    BytecodeRef, Gas, InstrStop, Memory, Message, MessageKind, Pc, Result, StackBacking, StackMut,
+    StackRef, Word,
 };
 use crate::{
-    EvmTypes, ExecutionConfig, Version,
+    EvmTypes, ExecutionConfig, SpecId, Version,
     bytecode::Bytecode,
     env::TxEnv,
     evm::inspector::Inspector,
@@ -38,6 +38,7 @@ pub struct Interpreter<'frame, T: EvmTypes> {
 
     pub(in crate::interpreter) gas: Gas,
     pub(in crate::interpreter) result: Result,
+    spec: SpecId,
     features: EvmFeatures,
     is_static: bool,
 }
@@ -65,6 +66,7 @@ impl<T: EvmTypes> Default for Interpreter<'_, T> {
             host: None,
             inspector: None,
             version: core::ptr::null(),
+            spec: SpecId::DEFAULT,
             features: EvmFeatures::empty(),
             // SAFETY: `MaybeUninit<Word>` does not need initialization.
             stack: unsafe { Box::new_uninit().assume_init() },
@@ -148,10 +150,22 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         unsafe { *self.pc }
     }
 
+    /// Returns the active bytecode.
+    #[inline]
+    pub fn bytecode(&self) -> BytecodeRef<'_> {
+        BytecodeRef::new(&self.bytecode)
+    }
+
     /// Returns the current operand stack.
     #[inline]
     pub const fn stack(&self) -> StackRef<'_> {
         StackRef::new(&self.stack, self.stack_len)
+    }
+
+    /// Returns the current mutable operand stack.
+    #[inline]
+    pub const fn stack_mut(&mut self) -> StackMut<'_> {
+        StackMut { stack: &mut self.stack, len: &mut self.stack_len }
     }
 
     /// Stops the interpreter with `stop`.
@@ -172,16 +186,48 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         self.gas
     }
 
+    /// Returns the current instruction result.
+    #[inline]
+    pub const fn result(&self) -> Result {
+        self.result
+    }
+
     /// Returns a reference to the current gas state.
     #[inline]
     pub const fn gas_mut(&mut self) -> &mut Gas {
         &mut self.gas
     }
 
+    /// Returns the active frame-local call/create message.
+    #[inline]
+    pub const fn message(&self) -> &'frame Message<T> {
+        // SAFETY: `message` is initialized before inspected execution starts.
+        unsafe { self.message.unwrap_unchecked() }
+    }
+
+    /// Returns return data from the last call-like operation.
+    #[inline]
+    pub const fn return_data(&self) -> &Bytes {
+        &self.return_data
+    }
+
+    /// Returns the host implementation.
+    #[inline]
+    pub const fn host(&mut self) -> &mut T::Host {
+        // SAFETY: `host` is initialized at the beginning of inspected execution.
+        unsafe { self.host.unwrap_unchecked().as_mut() }
+    }
+
+    /// Returns the active base specification ID.
+    #[inline]
+    pub const fn spec(&self) -> SpecId {
+        self.spec
+    }
+
     /// Runs the interpreter until it stops.
     #[inline]
     pub fn run(&mut self, config: &ExecutionConfig<T>, host: &mut T::Host) -> InstrStop {
-        self.run_inner(config.version(), host, None, config.instructions)
+        self.run_inner(config.base_spec_id(), config.version(), host, None, config.instructions)
     }
 
     /// Runs the interpreter until it stops with an execution inspector.
@@ -193,6 +239,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         inspector: &mut dyn Inspector<T>,
     ) -> InstrStop {
         self.run_inner(
+            config.base_spec_id(),
             config.version(),
             host,
             Some(NonNull::from(inspector)),
@@ -203,6 +250,7 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
     #[inline(never)]
     fn run_inner(
         &mut self,
+        spec: SpecId,
         version: &Version,
         host: &mut T::Host,
         inspector: Option<NonNull<dyn Inspector<T>>>,
@@ -213,9 +261,23 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         self.host = Some(NonNull::from(host));
         self.inspector = inspector;
         self.version = version;
+        self.spec = spec;
         self.features = version.features;
 
         dispatch::run(self, instructions)
+    }
+
+    #[inline]
+    pub(crate) fn set_inspection_context(
+        &mut self,
+        spec: SpecId,
+        version: &Version,
+        host: &mut T::Host,
+    ) {
+        self.host = Some(NonNull::from(host));
+        self.version = version;
+        self.spec = spec;
+        self.features = version.features;
     }
 }
 
@@ -232,9 +294,9 @@ impl<T: EvmTypes> fmt::Debug for InterpreterState<'_, T> {
 
 impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
     #[inline]
-    pub(crate) const fn wrap_mut<'a>(interpreter: &'a mut Interpreter<'frame, T>) -> &'a mut Self {
+    pub(crate) const fn wrap_mut<'a>(interp: &'a mut Interpreter<'frame, T>) -> &'a mut Self {
         // SAFETY: `InterpreterState` is a transparent wrapper over `Interpreter`.
-        unsafe { core::mem::transmute::<&mut Interpreter<'frame, T>, &mut Self>(interpreter) }
+        unsafe { core::mem::transmute::<&mut Interpreter<'frame, T>, &mut Self>(interp) }
     }
 
     #[inline]
@@ -358,60 +420,32 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
     }
 
     #[inline]
-    fn inspector(&mut self) -> Option<&mut dyn Inspector<T>> {
-        self.0.inspector.map(|mut x| unsafe { x.as_mut() })
-    }
-
-    #[inline]
     pub(crate) fn inspect_step(&mut self, pc: Pc, stack_len: usize) {
         self.0.pc = pc.as_ptr();
         self.0.stack_len = stack_len;
-        let mut inspector = unsafe { self.0.inspector.unwrap_unchecked() };
-        unsafe { inspector.as_mut() }.step(&mut self.0);
+        unsafe {
+            let mut inspector = self.0.inspector.unwrap_unchecked();
+            inspector.as_mut().step(&mut self.0);
+        }
     }
 
     #[inline]
     pub(crate) fn inspect_step_end(&mut self, pc: Pc, stack_len: usize) {
         self.0.pc = pc.as_ptr();
         self.0.stack_len = stack_len;
-        let mut inspector = unsafe { self.0.inspector.unwrap_unchecked() };
-        unsafe { inspector.as_mut() }.step_end(&mut self.0);
-    }
-
-    #[inline]
-    pub(crate) fn inspect_call(&mut self, message: &mut Message<T>) -> Option<MessageResult<T>> {
-        let mut inspector = self.0.inspector?;
-        unsafe { inspector.as_mut() }.call(&mut self.0, message)
-    }
-
-    #[inline]
-    pub(crate) fn inspect_call_end(&mut self, message: &Message<T>, result: &mut MessageResult<T>) {
-        if let Some(mut inspector) = self.0.inspector {
-            unsafe { inspector.as_mut() }.call_end(&mut self.0, message, result);
-        }
-    }
-
-    #[inline]
-    pub(crate) fn inspect_create(&mut self, message: &mut Message<T>) -> Option<MessageResult<T>> {
-        let mut inspector = self.0.inspector?;
-        unsafe { inspector.as_mut() }.create(&mut self.0, message)
-    }
-
-    #[inline]
-    pub(crate) fn inspect_create_end(
-        &mut self,
-        message: &Message<T>,
-        result: &mut MessageResult<T>,
-    ) {
-        if let Some(mut inspector) = self.0.inspector {
-            unsafe { inspector.as_mut() }.create_end(&mut self.0, message, result);
+        unsafe {
+            let mut inspector = self.0.inspector.unwrap_unchecked();
+            inspector.as_mut().step_end(&mut self.0);
         }
     }
 
     #[inline]
     pub(crate) fn inspect_log(&mut self, log: &Log) {
-        if let Some(inspector) = self.inspector() {
-            inspector.log(log);
+        if let Some(mut inspector) = self.0.inspector {
+            unsafe {
+                let mut host = self.0.host.unwrap_unchecked();
+                inspector.as_mut().log(log, host.as_mut());
+            }
         }
     }
 
@@ -422,8 +456,11 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
         target: &Address,
         value: &Word,
     ) {
-        if let Some(inspector) = self.inspector() {
-            inspector.selfdestruct(contract, target, value);
+        if let Some(mut inspector) = self.0.inspector {
+            unsafe {
+                let mut host = self.0.host.unwrap_unchecked();
+                inspector.as_mut().selfdestruct(contract, target, value, host.as_mut());
+            }
         }
     }
 }

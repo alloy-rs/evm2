@@ -1,0 +1,110 @@
+--- upstream/tests/it/utils.rs
++++ evm2/tests/it/utils.rs
+@@ -1,19 +1,8 @@
+ use alloy_primitives::{Address, Bytes};
+ use colorchoice::ColorChoice;
+-use revm::{
+-    context::{BlockEnv, CfgEnv, Evm, TxEnv},
+-    context_interface::{
+-        result::{ExecutionResult, HaltReason},
+-        TransactTo,
+-    },
+-    handler::{instructions::EthInstructions, EthFrame, EthPrecompiles, EvmTr},
+-    interpreter::interpreter::EthInterpreter,
+-    primitives::hardfork::SpecId,
+-    Context, Database, DatabaseCommit, ExecuteCommitEvm, InspectCommitEvm, Inspector, Journal,
+-};
+-use revm_inspectors::tracing::{TraceWriter, TraceWriterConfig, TracingInspector};
++use evm2_inspectors::tracing::{TraceWriter, TraceWriterConfig, TracingInspector};
+ 
+-pub type ContextDb<DB> = Context<BlockEnv, TxEnv, CfgEnv, DB, Journal<DB>, ()>;
++pub use crate::compat::*;
+ 
+ pub fn write_traces(tracer: &TracingInspector) -> String {
+     write_traces_with(tracer, TraceWriterConfig::new().color_choice(ColorChoice::Never))
+@@ -30,57 +19,48 @@
+     println!("{}", write_traces_with(tracer, TraceWriterConfig::new()));
+ }
+ 
+-pub type EvmDb<DB, INSP> = Evm<
+-    ContextDb<DB>,
+-    INSP,
+-    EthInstructions<EthInterpreter, ContextDb<DB>>,
+-    EthPrecompiles,
+-    EthFrame,
+->;
+-
+-/// Deploys a contract with the given code and deployer address.
+-pub fn deploy_contract<DB: Database + DatabaseCommit>(
+-    evm: &mut EvmDb<DB, ()>,
++pub fn deploy_contract(
++    evm: &mut TestEvm,
+     code: Bytes,
+     deployer: Address,
+     spec: SpecId,
+-) -> ExecutionResult<HaltReason> {
+-    evm.ctx().modify_tx(|tx| {
+-        tx.caller = deployer;
+-        tx.gas_limit = 1000000;
+-        tx.kind = TransactTo::Create;
+-        tx.data = code;
+-    });
+-    evm.ctx().modify_cfg(|cfg| cfg.spec = spec);
+-
+-    let out = evm.replay_commit().expect("Expect to be executed");
+-    evm.modify_tx(|tx| {
+-        tx.nonce += 1;
+-    });
+-    out
++) -> DeployResult {
++    evm.ctx.spec = spec;
++    let value = evm.ctx.tx.value;
++    let result = evm
++        .inspect_tx_commit(TxEnv {
++            caller: deployer,
++            gas_limit: 1000000,
++            kind: TransactTo::Create,
++            data: code,
++            value,
++            nonce: evm.ctx.tx.nonce,
++            ..Default::default()
++        })
++        .expect("Expect to be executed");
++    evm.ctx.tx.nonce += 1;
++    DeployResult { result }
+ }
+ 
+-/// Deploys a contract with the given code and deployer address.
+-pub fn inspect_deploy_contract<DB: Database + DatabaseCommit, INSP: Inspector<ContextDb<DB>>>(
+-    evm: &mut EvmDb<DB, INSP>,
++pub fn inspect_deploy_contract<I: InspectorSlot>(
++    evm: &mut TestEvmWithInspector<I>,
+     code: Bytes,
+     deployer: Address,
+     spec: SpecId,
+-) -> ExecutionResult<HaltReason> {
+-    evm.ctx().modify_cfg(|cfg| cfg.spec = spec);
+-
+-    let output = evm
++) -> DeployResult {
++    evm.ctx.spec = spec;
++    let value = evm.ctx.tx.value;
++    let result = evm
+         .inspect_tx_commit(TxEnv {
+             caller: deployer,
+             gas_limit: 1000000,
+             kind: TransactTo::Create,
+             data: code,
++            value,
++            nonce: evm.ctx.tx.nonce,
+             ..Default::default()
+         })
+         .expect("Expect to be executed");
+-
+-    evm.ctx().modify_tx(|tx| {
+-        tx.nonce += 1;
+-    });
+-    output
++    evm.ctx.tx.nonce += 1;
++    DeployResult { result }
+ }

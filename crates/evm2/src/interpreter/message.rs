@@ -1,7 +1,6 @@
+use crate::{BaseEvmTypes, EvmTypes};
 use alloy_primitives::{Address, B256, Bytes, U256};
 use derive_where::derive_where;
-
-use crate::{BaseEvmTypes, EvmTypes};
 
 /// EVM message kind.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
