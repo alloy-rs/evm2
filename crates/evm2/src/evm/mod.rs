@@ -822,7 +822,9 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         message.destination = address;
         let address = &message.destination;
 
-        let _ = self.state.warm_account(address);
+        if let Err(code) = self.state.warm_account(address) {
+            return Err(self.db_error_stop(code));
+        }
 
         if message.depth > 0 {
             match self.state.account_entry(&message.caller, false) {
@@ -1122,19 +1124,18 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
         load_code: bool,
         skip_cold_load: bool,
     ) -> Result<AccountLoad, InstrStop> {
-        let is_cold = if self.feature(EvmFeatures::EIP2929) {
-            self.state.warm_account(address)
-        } else {
-            let _ = self.state.warm_account(address);
-            false
-        };
-        if skip_cold_load && is_cold {
-            return Err(InstrStop::OutOfGas);
-        }
-        let mut account = match self.state.account_entry(address, false) {
+        // A prewarmed account (EIP-3651 coinbase, EIP-2930 access list, precompiles, sender,
+        // recipient, authorities, system contracts) is warm without yet being resident in the
+        // overlay, so warmth — not overlay residency — decides the cold-access surcharge. Only a
+        // genuinely cold account may skip the load and go out of gas when it cannot be afforded.
+        let skip_cold_load = skip_cold_load && !self.state.prewarmset().is_warm(address);
+        let mut account = match self.state.account_entry(address, skip_cold_load) {
             Ok(account) => account,
+            Err(DbErrorCode::COLD_LOAD_SKIPPED) => return Err(InstrStop::OutOfGas),
             Err(code) => return Err(self.db_error_stop(code)),
         };
+        // mark account as warm
+        let is_cold = account.warm();
 
         let exists = account.get().is_some();
         let info = account.get().map(Account::info).unwrap_or_default();
@@ -1276,9 +1277,14 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
         skip_cold_load: bool,
     ) -> Result<SelfDestructResult, InstrStop> {
         let is_cold = if self.feature(EvmFeatures::EIP2929) {
-            self.state.warm_account(target)
+            match self.state.warm_account(target) {
+                Ok(is_cold) => is_cold,
+                Err(code) => return Err(self.db_error_stop(code)),
+            }
         } else {
-            let _ = self.state.warm_account(target);
+            if let Err(code) = self.state.warm_account(target) {
+                return Err(self.db_error_stop(code));
+            }
             false
         };
         if skip_cold_load && is_cold {
@@ -2042,8 +2048,11 @@ mod tests {
         assert_eq!(outcome.gas_used(), 7);
         assert_eq!(outcome.logs.len(), 1);
         assert_eq!(
-            evm.state.storage_lookup(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY),
-            Some(Word::from(1))
+            evm.state
+                .storage_slot_entry(&LIFECYCLE_ACCOUNT, LIFECYCLE_STORAGE_KEY)
+                .load(false)
+                .unwrap(),
+            Word::from(1)
         );
     }
 
@@ -2065,8 +2074,11 @@ mod tests {
         assert_eq!(storage[0].1.original, Word::from(1));
         assert_eq!(storage[0].1.current, Word::from(7));
         assert_eq!(
-            evm.state.storage_lookup(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY),
-            Some(Word::from(1))
+            evm.state
+                .storage_slot_entry(&LIFECYCLE_ACCOUNT, LIFECYCLE_STORAGE_KEY)
+                .load(false)
+                .unwrap(),
+            Word::from(1)
         );
     }
 
@@ -2087,8 +2099,11 @@ mod tests {
         assert_eq!(slot.original, Word::from(1));
         assert_eq!(slot.current, Word::from(7));
         assert_eq!(
-            evm.state.storage_lookup(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY),
-            Some(Word::from(1))
+            evm.state
+                .storage_slot_entry(&LIFECYCLE_ACCOUNT, LIFECYCLE_STORAGE_KEY)
+                .load(false)
+                .unwrap(),
+            Word::from(1)
         );
     }
 
@@ -2100,14 +2115,20 @@ mod tests {
 
         assert_eq!(outcome.logs.len(), 1);
         assert_eq!(
-            evm.state.storage_lookup(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY),
-            Some(Word::from(7))
+            evm.state
+                .storage_slot_entry(&LIFECYCLE_ACCOUNT, LIFECYCLE_STORAGE_KEY)
+                .load(false)
+                .unwrap(),
+            Word::from(7)
         );
 
         let _ = evm.transact(&test_tx(9)).expect("lifecycle transaction should execute").commit();
         assert_eq!(
-            evm.state.storage_lookup(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY),
-            Some(Word::from(9))
+            evm.state
+                .storage_slot_entry(&LIFECYCLE_ACCOUNT, LIFECYCLE_STORAGE_KEY)
+                .load(false)
+                .unwrap(),
+            Word::from(9)
         );
     }
 
@@ -2130,8 +2151,11 @@ mod tests {
         assert_eq!(storage[0].1.original, Word::from(1));
         assert_eq!(storage[0].1.current, Word::from(9));
         assert_eq!(
-            evm.state.storage_lookup(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY),
-            Some(Word::from(9))
+            evm.state
+                .storage_slot_entry(&LIFECYCLE_ACCOUNT, LIFECYCLE_STORAGE_KEY)
+                .load(false)
+                .unwrap(),
+            Word::from(9)
         );
     }
 
@@ -2158,8 +2182,11 @@ mod tests {
         drop(evm.transact(&test_tx(7)).expect("lifecycle transaction should execute"));
 
         assert_eq!(
-            evm.state.storage_lookup(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY),
-            Some(Word::from(1))
+            evm.state
+                .storage_slot_entry(&LIFECYCLE_ACCOUNT, LIFECYCLE_STORAGE_KEY)
+                .load(false)
+                .unwrap(),
+            Word::from(1)
         );
     }
 

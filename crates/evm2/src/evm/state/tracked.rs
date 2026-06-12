@@ -1,7 +1,7 @@
 //! Tracked overlay values.
 
 use super::TrackedAccount;
-use alloy_primitives::{Address, map::AddressMap};
+use alloy_primitives::map::AddressMap;
 use core::ops::{Deref, DerefMut};
 
 /// A value tracked together with the value it had at an aggregation boundary.
@@ -57,31 +57,16 @@ impl<T: PartialEq> Tracked<T> {
     }
 }
 
-/// Revm-style account access list for the current transaction.
+/// Per-transaction map of account overlays.
 ///
-/// This is the single account-side transaction map: account overlays, touched-account state, and
-/// EIP-2929 account warmth all live in the same entry. A warm or touched account does not have to
-/// be loaded from the database, matching revm's separation between warm access metadata and
-/// database-backed account loads.
+/// Account overlays, touched-account state, and EIP-2929 account warmth all live in the same
+/// entry, so a warm or touched account does not have to be loaded from the database.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(super) struct TrackedAccountMap {
+pub(super) struct AccountMap {
     accounts: AddressMap<TrackedAccount>,
 }
 
-impl TrackedAccountMap {
-    /// Marks the account as warm, inserting an entry if needed.
-    ///
-    /// Returns `true` if the account was previously cold.
-    #[inline]
-    pub(super) fn warm_account(&mut self, address: Address) -> bool {
-        let entry = self.accounts.entry(address).or_default();
-        let was_cold = !entry.is_warm;
-        entry.is_warm = true;
-        was_cold
-    }
-}
-
-impl Deref for TrackedAccountMap {
+impl Deref for AccountMap {
     type Target = AddressMap<TrackedAccount>;
 
     #[inline]
@@ -90,7 +75,7 @@ impl Deref for TrackedAccountMap {
     }
 }
 
-impl DerefMut for TrackedAccountMap {
+impl DerefMut for AccountMap {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.accounts

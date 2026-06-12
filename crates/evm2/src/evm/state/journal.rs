@@ -176,9 +176,11 @@ mod tests {
         assert!(state.journal.is_empty());
 
         let checkpoint = state.checkpoint();
-        assert!(state.warm_account(&frame_account));
+        assert!(state.warm_account(&frame_account).unwrap());
         assert!(state.warm_storage(&frame_storage, &key));
-        assert_eq!(state.journal.len(), 2);
+        // Warming the frame account loads it (AccountInserted) and marks it warm (AccountWarmed),
+        // and warming the slot records StorageWarmed: three revertible entries in total.
+        assert_eq!(state.journal.len(), 3);
 
         state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
         assert!(state.account_entry(&base_account, false).unwrap().is_warm());
@@ -217,13 +219,14 @@ mod tests {
         state.prewarmset_mut().warm_account(&account);
         let checkpoint = state.checkpoint();
         assert!(state.account_entry(&account, false).unwrap().exists());
-        assert!(state.account_lookup(&account).is_some());
+        assert!(state.account_entry(&account, false).unwrap().get().is_some());
 
         state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
         // Warmth is non-revertible (base warm set), so check it without re-loading the account,
-        // which would otherwise repopulate the overlay the rollback just cleared.
+        // which would otherwise repopulate the overlay the rollback just cleared. A skip-cold-load
+        // entry surfaces COLD_LOAD_SKIPPED when the account is absent from the overlay.
         assert!(state.prewarmset().is_warm(&account));
-        assert!(state.account_lookup(&account).is_none());
+        assert!(state.account_entry(&account, true).is_err());
         assert!(state.build_state_changes().is_empty());
     }
 
@@ -238,7 +241,7 @@ mod tests {
         assert!(state.prewarmset_mut().warm_storage(&account, &key));
         let checkpoint = state.checkpoint();
         state.storage_entry(&account).slot(key).write(Word::from(7), false).unwrap();
-        assert_eq!(state.storage_lookup(&account, &key), Some(Word::from(7)));
+        assert_eq!(state.storage_slot_entry(&account, key).load(false).unwrap(), Word::from(7));
 
         state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
         assert!(state.storage_slot_entry(&account, key).is_warm());
@@ -261,7 +264,7 @@ mod tests {
 
         state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
         assert!(!state.storage_slot_entry(&account, key).is_warm());
-        assert_eq!(state.storage_lookup(&account, &key), Some(value));
+        assert_eq!(state.storage_slot_entry(&account, key).load(false).unwrap(), value);
         assert!(state.build_state_changes().is_empty());
 
         assert!(state.warm_storage(&account, &key));

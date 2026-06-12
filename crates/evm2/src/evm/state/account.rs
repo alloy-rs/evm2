@@ -349,15 +349,12 @@ impl<'a> AccountEntry<'a> {
     /// base warm set stay warm across rollback, so warming them again records nothing.
     #[inline]
     pub fn warm(&mut self) -> bool {
-        if self.inner.prewarm_set.is_warm(&self.address) {
+        if self.tracked.is_warm || self.inner.prewarm_set.is_warm(&self.address) {
             return false;
         }
-        let was_cold = !self.tracked.is_warm;
         self.tracked.is_warm = true;
-        if was_cold {
-            self.inner.journal.push(JournalEntry::AccountWarmed { address: self.address });
-        }
-        was_cold
+        self.inner.journal.push(JournalEntry::AccountWarmed { address: self.address });
+        true
     }
 
     /// Sets the account balance, touching the account and recording a revert snapshot.

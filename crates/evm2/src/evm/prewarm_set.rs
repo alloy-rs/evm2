@@ -55,6 +55,7 @@ pub struct PrewarmSet {
     coinbase: Option<Address>,
     /// EIP-2930 access list keyed by address, each holding its warm storage slots.
     access_list: AddressMap<HashSet<Word>>,
+    //TODO(AI) remove warm_addresses and warm_storage_slots and replace them with access_list.
     /// Non-revertible base warm accounts (sender, recipient, authorities, system contracts) that
     /// are warmed before or alongside execution and survive [`crate::evm::State::rollback`].
     warm_addresses: AddressSet,

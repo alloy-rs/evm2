@@ -379,8 +379,8 @@ mod tests {
         state.storage_entry(&account).wipe();
         assert!(state.storage_slot_entry(&account, warm_key).is_warm());
         assert!(!state.storage_slot_entry(&account, cold_key).is_warm());
-        assert_eq!(state.storage_lookup(&account, &warm_key), Some(Word::ZERO));
-        assert_eq!(state.storage_lookup(&account, &cold_key), Some(Word::ZERO));
+        assert_eq!(state.storage_slot_entry(&account, warm_key).load(false).unwrap(), Word::ZERO);
+        assert_eq!(state.storage_slot_entry(&account, cold_key).load(false).unwrap(), Word::ZERO);
 
         let changes = state.build_state_changes();
         let storage = changes.storage.get(&account).expect("wipe must be emitted");

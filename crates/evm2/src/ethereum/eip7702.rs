@@ -110,13 +110,14 @@ fn apply_auth_list<T: EvmTypes<Host = Evm<T>>>(
         let Ok(authority) = authorization.recover_authority() else {
             continue;
         };
-        host.state.prewarmset_mut().warm_account(&authority);
         // One account handle backs the existence, nonce, and code reads, so the authority is
         // probed in the overlay once instead of once per `account_info`/`get_code`. The handle is
         // confined to this block; `set_delegation` reacquires the now-loaded account for the write.
         let (existed, authority_nonce, code) = {
             let mut account =
                 host.state.account_entry(&authority, false).map_err(db_error_handler!(host))?;
+            // mark account as warm
+            account.warm();
             (account.exists(), account.nonce(), account.load_code())
         };
         let code = code.map_err(|code| host.db_error_handler(code))?;

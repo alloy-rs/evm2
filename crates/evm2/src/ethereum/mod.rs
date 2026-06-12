@@ -407,7 +407,7 @@ fn initial_call_code<T: EvmTypes<Host = Evm<T>>>(
     if host.feature(EvmFeatures::EIP7702)
         && let Some(delegated_address) = code.eip7702_address()
     {
-        let _ = host.state.warm_account(&delegated_address);
+        host.state.warm_account(&delegated_address).map_err(db_error_handler!(host))?;
         let delegated_code = host
             .state
             .account_entry(&delegated_address, false)

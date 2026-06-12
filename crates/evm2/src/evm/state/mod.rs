@@ -19,7 +19,7 @@ pub use stream::{
     StorageChange, Tee,
 };
 pub use tracked::Tracked;
-use tracked::TrackedAccountMap;
+use tracked::AccountMap;
 
 use super::{
     PrewarmSet,
@@ -46,7 +46,7 @@ use derive_where::derive_where;
 #[non_exhaustive]
 pub struct State {
     /// Account writes plus touch and warm-access metadata for the current transaction.
-    accounts: TrackedAccountMap,
+    accounts: AccountMap,
     /// Persistent storage writes plus warm slot metadata for the current transaction.
     storage: AddressMap<StorageOverlay>,
     /// Transaction-scoped EIP-1153 transient storage keyed by account address and slot.
@@ -100,7 +100,7 @@ impl State {
 
     pub(crate) fn new_mono(initial: Box<dyn DynDatabase>) -> Self {
         Self {
-            accounts: TrackedAccountMap::default(),
+            accounts: AccountMap::default(),
             storage: AddressMap::default(),
             transient_storage: StorageKeyMap::default(),
             inner: StateInner {
@@ -180,34 +180,6 @@ impl State {
         self.logs.push(log);
     }
 
-    /// Returns a loaded persistent storage overlay slot, if present.
-    ///
-    /// This is a non-mutating overlay lookup. It does not load the account or slot from the
-    /// backing database; use [`Self::storage`] when database-backed loading is desired.
-    #[inline]
-    pub fn storage_lookup(&self, address: &Address, key: &Word) -> Option<Word> {
-        if let Some(storage) = self.storage.get(address) {
-            if let Some(slot) = storage.slots.get(key).and_then(|slot| slot.value.as_ref()) {
-                return Some(slot.current);
-            }
-            if storage.wiped {
-                return Some(Word::ZERO);
-            }
-        }
-        self.database.storage_ref(address, key)
-    }
-
-    /// Returns the current transaction account overlay if present and not deleted.
-    ///
-    /// This is a non-mutating overlay lookup. It does not load the account from the backing
-    /// database; use [`Self::peek_account_info`] or [`Self::find`] when database-backed loading is
-    /// desired.
-    #[inline]
-    #[must_use]
-    pub fn account_lookup(&self, address: &Address) -> Option<&Account> {
-        self.accounts.get(address)?.present.as_ref()
-    }
-
     /// Returns the pre-warmed set (precompiles, coinbase, access list).
     ///
     /// This is not the complete EIP-2929 initial warm set — sender and recipient are warmed per
@@ -243,22 +215,12 @@ impl State {
     /// [`Self::rollback`]. Use this for warmth introduced while executing EVM code or any other
     /// scope whose effects may be reverted to a checkpoint.
     ///
-    /// Unlike [`Self::account_entry`] followed by [`AccountEntry::warm`], this marks warmth
-    /// **without loading the account** from the backing database, so a caller that detects a cold
-    /// access under `skip_cold_load` can bail before paying for the cold read. That no-load fast
-    /// path is why this remains a dedicated method rather than going through a loaded handle.
+    /// This loads the account into the transaction overlay, so it returns a [`DbResult`] to surface
+    /// any backing-database error.
     #[inline(never)]
     #[must_use]
-    pub fn warm_account(&mut self, address: &Address) -> bool {
-        if self.prewarm_set.is_warm(address) {
-            return false;
-        }
-        if self.accounts.warm_account(*address) {
-            self.journal.push(JournalEntry::AccountWarmed { address: *address });
-            true
-        } else {
-            false
-        }
+    pub fn warm_account(&mut self, address: &Address) -> DbResult<bool> {
+        Ok(self.account_entry(address, false)?.warm())
     }
 
     /// Marks a storage slot as warm in a revertible execution context.
@@ -284,13 +246,9 @@ impl State {
         self.logs.clear();
     }
 
-    fn load_account(&mut self, address: &Address) -> DbResult<Option<Account>> {
-        Ok(self.database.get_account(address)?.map(Account::from_info))
-    }
-
     fn ensure_transaction_account<'a>(
         inner: &mut StateInner,
-        accounts: &'a mut TrackedAccountMap,
+        accounts: &'a mut AccountMap,
         address: &Address,
     ) -> DbResult<&'a mut TrackedAccount> {
         Self::ensure_transaction_account_skip_cold(inner, accounts, address, false)
@@ -306,7 +264,7 @@ impl State {
     /// the entry is always returned.
     fn ensure_transaction_account_skip_cold<'a>(
         inner: &mut StateInner,
-        accounts: &'a mut TrackedAccountMap,
+        accounts: &'a mut AccountMap,
         address: &Address,
         skip_cold: bool,
     ) -> DbResult<&'a mut TrackedAccount> {
@@ -341,18 +299,6 @@ impl State {
                 }))
             }
         }
-    }
-
-    /// Gets an existing account or inserts a new empty account.
-    pub fn get_or_insert(&mut self, address: &Address) -> DbResult<&mut Account> {
-        let entry = Self::ensure_transaction_account(&mut self.inner, &mut self.accounts, address)?;
-        if entry.present.is_none() {
-            self.inner
-                .journal
-                .push(JournalEntry::AccountChange { address: *address, previous: None });
-            entry.present = Some(Account { code_hash: KECCAK256_EMPTY, ..Account::default() });
-        }
-        Ok(entry.present.as_mut().expect("account is inserted above"))
     }
 
     /// Loads `address` into the transaction overlay and returns a journaled mutation handle.
@@ -649,9 +595,10 @@ impl State {
     }
 
     fn materialize_empty_account_for_finalization(&mut self, address: &Address) -> DbResult<()> {
-        let original_exists = self.load_account(address)?.is_some();
+        // `ensure_transaction_account` loads the backing-database account into `original`, so its
+        // existence is read from the same source rather than via a separate database read.
         let entry = Self::ensure_transaction_account(&mut self.inner, &mut self.accounts, address)?;
-        if !original_exists && entry.present.is_none() {
+        if entry.original.is_none() && entry.present.is_none() {
             self.inner
                 .journal
                 .push(JournalEntry::AccountChange { address: *address, previous: None });
