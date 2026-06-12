@@ -9,6 +9,7 @@ mod error;
 mod execute;
 mod filter;
 mod fixtures;
+mod forks;
 mod harness;
 mod runner;
 mod state;
