@@ -1250,6 +1250,10 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
         })
     }
 
+    fn selfbalance(&mut self, address: &Address) -> Result<Word, InstrStop> {
+        self.state.read_balance(address).map_err(|code| self.db_error_stop(code))
+    }
+
     fn target_is_empty_for_new_account_gas(
         &mut self,
         address: &Address,

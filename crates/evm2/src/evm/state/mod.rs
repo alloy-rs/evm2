@@ -268,6 +268,21 @@ impl State {
         self.database.get_account(address)
     }
 
+    /// Returns account balance without recording an account load in transaction state.
+    #[inline]
+    pub(crate) fn read_balance(&mut self, address: &Address) -> DbResult<Word> {
+        if let Some(account) = self.scratch.accounts.get(address) {
+            return Ok(account.as_ref().map_or(Word::ZERO, |account| account.balance));
+        }
+        if self.database.account_absent(address) {
+            return Ok(Word::ZERO);
+        }
+        if let Some(info) = self.database.account_info(address) {
+            return Ok(info.balance);
+        }
+        Ok(self.database.get_account(address)?.map_or(Word::ZERO, |info| info.balance))
+    }
+
     /// Loads account info and records the account in transaction state.
     ///
     /// This is the EVM-semantic account load: the loaded account becomes part of the transaction

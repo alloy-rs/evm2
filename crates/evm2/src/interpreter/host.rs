@@ -100,6 +100,12 @@ pub trait Host<T: EvmTypes> {
         skip_cold_load: bool,
     ) -> Result<AccountLoad, InstrStop>;
 
+    /// Returns the current account balance for `SELFBALANCE`.
+    #[inline]
+    fn selfbalance(&mut self, address: &Address) -> Result<Word, InstrStop> {
+        Ok(self.load_account(address, false, false)?.balance)
+    }
+
     /// Returns whether an account is empty/non-existent for new-account gas checks.
     fn target_is_empty_for_new_account_gas(
         &mut self,

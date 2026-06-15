@@ -60,7 +60,7 @@ pub(crate) fn chainid(cx: _) -> Result<out> {
 #[instruction]
 pub(crate) fn selfbalance(cx: _) -> Result<out> {
     let destination = &cx.state.message().destination;
-    *out = cx.state.host().load_account(destination, false, false)?.balance;
+    *out = cx.state.host().selfbalance(destination)?;
 }
 
 #[instruction]
