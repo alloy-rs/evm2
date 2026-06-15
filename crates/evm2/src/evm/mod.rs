@@ -2067,7 +2067,7 @@ mod tests {
         assert_eq!(outcome.gas_used(), 7);
         assert_eq!(outcome.logs.len(), 1);
         assert_eq!(
-            evm.state.storage_ref(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY),
+            evm.state.storage_cached_ref(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY),
             Some(Word::from(1))
         );
     }
