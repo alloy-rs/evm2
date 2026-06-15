@@ -591,17 +591,46 @@ impl State {
     /// are handled elsewhere.
     pub fn set_storage(&mut self, address: &Address, key: &Word, value: &Word) -> DbResult<SStore> {
         let _ = self.get_or_insert(address)?;
+        self.set_storage_current_account(address, key, value)
+    }
+
+    /// Stores persistent storage for the currently executing account.
+    ///
+    /// This avoids forcing the account into the transaction account overlay. The interpreter only
+    /// writes storage for the active frame destination, whose account was already selected before
+    /// execution entered the frame. Storage slots remain loaded lazily for gas/refund accounting.
+    pub(crate) fn set_storage_current_account(
+        &mut self,
+        address: &Address,
+        key: &Word,
+        value: &Word,
+    ) -> DbResult<SStore> {
         self.touch(address);
+
+        if let Some(slot) =
+            self.scratch.storage.get(address).and_then(|storage| storage.slots.get(key)).copied()
+        {
+            let result = SStore {
+                original_value: slot.original,
+                present_value: slot.current,
+                new_value: *value,
+                is_cold: false,
+                _non_exhaustive: (),
+            };
+            if slot.current != *value {
+                self.insert_transaction_storage(address, key, slot.original, *value);
+            }
+            return Ok(result);
+        }
+
         let storage = self.scratch.storage.get(address);
         let original_value =
-            if storage.is_some_and(|s| s.wiped) || self.database.account_absent(address) {
+            if storage.is_some_and(|s| s.wiped) || self.account_known_absent(address) {
                 Word::ZERO
             } else {
                 self.database.get_storage(address, key)?
             };
-        let present_value = storage
-            .and_then(|storage| storage.slots.get(key))
-            .map_or(original_value, |slot| slot.current);
+        let present_value = original_value;
         let result = SStore {
             original_value,
             present_value,

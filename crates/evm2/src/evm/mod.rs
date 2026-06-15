@@ -1295,8 +1295,10 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
         if skip_cold_load && is_cold {
             return Err(InstrStop::OutOfGas);
         }
-        let mut result =
-            self.state.set_storage(address, key, value).map_err(|code| self.db_error_stop(code))?;
+        let mut result = self
+            .state
+            .set_storage_current_account(address, key, value)
+            .map_err(|code| self.db_error_stop(code))?;
         result.is_cold = is_cold;
         Ok(result)
     }
