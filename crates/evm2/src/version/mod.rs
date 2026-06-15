@@ -243,7 +243,7 @@ mod tests {
     }
 
     #[test]
-    fn base_versions_set_revm_cfg_env_defaults() {
+    fn base_versions_set_cfg_env_defaults() {
         let osaka = Version::base(SpecId::OSAKA);
         assert!(osaka.feature(EvmFeatures::TX_CHAIN_ID_CHECK));
         assert!(osaka.feature(EvmFeatures::NONCE_CHECK));
@@ -302,7 +302,7 @@ mod tests {
     }
 
     #[test]
-    fn default_gas_table_matches_revm_static_costs() {
+    fn default_gas_table_static_costs() {
         let default_gas_table = opcode_config(SpecId::FRONTIER);
         assert_eq!(default_gas_table.static_gas(op::STOP), 0);
         assert_eq!(default_gas_table.static_gas(op::ADD), 3);

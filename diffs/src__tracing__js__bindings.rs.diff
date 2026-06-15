@@ -521,7 +521,7 @@
 -    fn block_hash_ref(&self, number: u64) -> Result<B256, Self::Error> {
 -        self.0.borrow_mut().block_hash(number).map_err(|e| e.to_string().into())
 +    fn read_state(&mut self, address: &Address, slot: &Word) -> DbResult<Word> {
-+        // Matches upstream: storage is always read from the backing database, not the changes.
++        // Storage is always read from the backing database, not the transaction changes.
 +        self.db.get_storage(address, slot)
      }
  }

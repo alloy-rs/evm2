@@ -221,57 +221,14 @@ mod tests {
     use crate::interpreter::Word;
     use alloy_primitives::{Address, map::U256Map};
 
-    fn account_change(
-        address: Address,
-        original: Option<AccountInfo>,
-        current: Option<AccountInfo>,
-    ) -> StateChanges {
+    fn changes(address: Address, change: AccountChange) -> StateChanges {
         let mut changes = StateChanges::default();
-        changes
-            .accounts
-            .insert(address, AccountChange { original, current, ..AccountChange::default() });
+        changes.accounts.insert(address, change);
         changes
     }
 
-    fn storage_change(
-        address: Address,
-        key: Word,
-        original: Word,
-        current: Word,
-        wipe: bool,
-    ) -> StateChanges {
-        let mut changes = StateChanges::default();
-        changes.accounts.insert(
-            address,
-            AccountChange {
-                storage: U256Map::from_iter([(key, Tracked::from_parts(original, current))]),
-                wipe_storage: wipe,
-                ..AccountChange::default()
-            },
-        );
-        changes
-    }
-
-    fn storage_wipe(address: Address) -> StateChanges {
-        let mut changes = StateChanges::default();
-        changes
-            .accounts
-            .insert(address, AccountChange { wipe_storage: true, ..AccountChange::default() });
-        changes
-    }
-
-    fn merge(mut account: StateChanges, storage: StateChanges) -> StateChanges {
-        for (address, change) in storage.accounts {
-            let entry = account.accounts.entry(address).or_default();
-            entry.storage = change.storage;
-            entry.wipe_storage = change.wipe_storage;
-        }
-        account
-    }
-
-    fn without_code(mut info: AccountInfo) -> AccountInfo {
-        info.code = None;
-        info
+    fn slot(key: Word, original: Word, current: Word) -> U256Map<Tracked<Word>> {
+        U256Map::from_iter([(key, Tracked::from_parts(original, current))])
     }
 
     #[test]
@@ -281,13 +238,25 @@ mod tests {
         let created = AccountInfo::default().with_nonce(1);
         let mut accumulator = BlockStateAccumulator::new();
 
-        let create = merge(
-            account_change(address, None, Some(created.clone())),
-            storage_change(address, key, Word::ZERO, Word::from(7), true),
+        let create = changes(
+            address,
+            AccountChange {
+                current: Some(created.clone()),
+                storage: slot(key, Word::ZERO, Word::from(7)),
+                wipe_storage: true,
+                ..AccountChange::default()
+            },
         );
         create.visit(&mut accumulator).expect("block accumulator is infallible");
 
-        let delete = merge(account_change(address, Some(created), None), storage_wipe(address));
+        let delete = changes(
+            address,
+            AccountChange {
+                original: Some(created),
+                wipe_storage: true,
+                ..AccountChange::default()
+            },
+        );
         delete.visit(&mut accumulator).expect("block accumulator is infallible");
 
         assert!(accumulator.accounts_sorted().is_empty());
@@ -303,20 +272,31 @@ mod tests {
         let recreated = AccountInfo::default().with_nonce(1);
         let mut accumulator = BlockStateAccumulator::new();
 
-        let delete =
-            merge(account_change(address, Some(original.clone()), None), storage_wipe(address));
+        let delete = changes(
+            address,
+            AccountChange {
+                original: Some(original.clone()),
+                wipe_storage: true,
+                ..AccountChange::default()
+            },
+        );
         delete.visit(&mut accumulator).expect("block accumulator is infallible");
 
-        let create = merge(
-            account_change(address, None, Some(recreated.clone())),
-            storage_change(address, key, Word::ZERO, Word::from(7), true),
+        let create = changes(
+            address,
+            AccountChange {
+                current: Some(recreated.clone()),
+                storage: slot(key, Word::ZERO, Word::from(7)),
+                wipe_storage: true,
+                ..AccountChange::default()
+            },
         );
         create.visit(&mut accumulator).expect("block accumulator is infallible");
 
         let accounts = accumulator.accounts_sorted();
         assert_eq!(accounts.len(), 1);
-        assert_eq!(accounts[0].1.original.as_ref(), Some(&without_code(original)));
-        assert_eq!(accounts[0].1.current.as_ref(), Some(&without_code(recreated)));
+        assert_eq!(accounts[0].1.original.as_ref(), Some(&original));
+        assert_eq!(accounts[0].1.current.as_ref(), Some(&recreated));
         assert_eq!(accumulator.storage_wipes_sorted(), [address]);
 
         let storage = accumulator.storage_sorted();
@@ -332,9 +312,15 @@ mod tests {
         let original = AccountInfo::default().with_balance(Word::from(3));
         let mut accumulator = BlockStateAccumulator::new();
 
-        let wipe_and_restore = merge(
-            account_change(address, Some(original.clone()), Some(original)),
-            storage_change(address, key, Word::ZERO, Word::from(5), true),
+        let wipe_and_restore = changes(
+            address,
+            AccountChange {
+                original: Some(original.clone()),
+                current: Some(original),
+                storage: slot(key, Word::ZERO, Word::from(5)),
+                wipe_storage: true,
+                ..AccountChange::default()
+            },
         );
         wipe_and_restore.visit(&mut accumulator).expect("block accumulator is infallible");
 
@@ -354,9 +340,14 @@ mod tests {
         let original = AccountInfo::default().with_balance(Word::from(3));
         let mut accumulator = BlockStateAccumulator::new();
 
-        let delete = merge(
-            account_change(address, Some(original), None),
-            storage_change(address, key, Word::from(5), Word::from(7), true),
+        let delete = changes(
+            address,
+            AccountChange {
+                original: Some(original),
+                storage: slot(key, Word::from(5), Word::from(7)),
+                wipe_storage: true,
+                ..AccountChange::default()
+            },
         );
         delete.visit(&mut accumulator).expect("block accumulator is infallible");
 
@@ -374,9 +365,18 @@ mod tests {
         let key = Word::from(1);
         let mut accumulator = BlockStateAccumulator::new();
 
-        let first = storage_change(address, key, Word::from(5), Word::from(7), true);
+        let first = changes(
+            address,
+            AccountChange {
+                storage: slot(key, Word::from(5), Word::from(7)),
+                wipe_storage: true,
+                ..AccountChange::default()
+            },
+        );
         first.visit(&mut accumulator).expect("block accumulator is infallible");
-        storage_wipe(address).visit(&mut accumulator).expect("block accumulator is infallible");
+        changes(address, AccountChange { wipe_storage: true, ..AccountChange::default() })
+            .visit(&mut accumulator)
+            .expect("block accumulator is infallible");
 
         assert!(accumulator.accounts_sorted().is_empty());
         assert_eq!(accumulator.storage_wipes_sorted(), [address]);
@@ -392,18 +392,31 @@ mod tests {
         let current = AccountInfo::default().with_balance(Word::from(2));
         let mut accumulator = BlockStateAccumulator::new();
 
-        account_change(account_address, Some(original.clone()), Some(current.clone()))
-            .visit(&mut accumulator)
-            .expect("block accumulator is infallible");
-        storage_change(storage_address, key, Word::from(3), Word::from(4), false)
-            .visit(&mut accumulator)
-            .expect("block accumulator is infallible");
+        changes(
+            account_address,
+            AccountChange {
+                original: Some(original.clone()),
+                current: Some(current.clone()),
+                ..AccountChange::default()
+            },
+        )
+        .visit(&mut accumulator)
+        .expect("block accumulator is infallible");
+        changes(
+            storage_address,
+            AccountChange {
+                storage: slot(key, Word::from(3), Word::from(4)),
+                ..AccountChange::default()
+            },
+        )
+        .visit(&mut accumulator)
+        .expect("block accumulator is infallible");
 
         let accounts = accumulator.accounts_sorted();
         assert_eq!(accounts.len(), 1);
         assert_eq!(accounts[0].0, account_address);
-        assert_eq!(accounts[0].1.original.as_ref(), Some(&without_code(original)));
-        assert_eq!(accounts[0].1.current.as_ref(), Some(&without_code(current)));
+        assert_eq!(accounts[0].1.original.as_ref(), Some(&original));
+        assert_eq!(accounts[0].1.current.as_ref(), Some(&current));
         assert!(accumulator.storage_wipes_sorted().is_empty());
 
         let storage = accumulator.storage_sorted();

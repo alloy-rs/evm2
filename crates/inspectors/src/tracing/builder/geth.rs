@@ -289,8 +289,7 @@ impl<'a> GethTraceBuilder<'a> {
 
             let pre_code = if code_enabled { load_account_code(db, &db_acc)? } else { None };
 
-            // deleted accounts behave like revm's drained selfdestructed accounts: the post info
-            // is empty
+            // deleted accounts are treated as drained: the post info is empty
             let info = changed_acc.current.clone().unwrap_or_default();
 
             let mut post_state = AccountState::from_account_info(

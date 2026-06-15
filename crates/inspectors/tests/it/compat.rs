@@ -1,4 +1,4 @@
-//! A revm-like API shim so that the test files can stay as close to upstream as possible.
+//! API shim so that the test files can stay as close to upstream as possible.
 
 use alloy_consensus::{TxEip4844, TxLegacy, transaction::Recovered};
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};

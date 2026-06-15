@@ -7,29 +7,35 @@ use super::{
 use crate::{bytecode::Bytecode, interpreter::Word};
 use alloc::vec::Vec;
 use alloy_primitives::{
-    B256, KECCAK256_EMPTY,
-    map::{AddressMap, U256Map},
+    Address,
+    map::{AddressMap, B256Map, U256Map},
 };
 
 /// Complete owned state transition produced by a transaction.
 ///
 /// `StateChanges` is the public, materialized post-transaction state returned in
-/// [`crate::TxResultWithState`] and by detached transaction APIs. Like revm's `EvmState`, it
-/// contains every account and storage slot that was loaded during transaction execution, not just
-/// the ones that changed; consumers applying changes should filter with
-/// [`AccountChange::is_changed`] and [`Tracked::is_changed`].
+/// [`crate::TxResultWithState`] and by detached transaction APIs. It contains every account and
+/// storage slot that was loaded during transaction execution, not just the ones that changed;
+/// consumers applying changes should filter with [`AccountChange::is_changed`] and
+/// [`Tracked::is_changed`].
 ///
 /// Logs are execution output rather than database state and are exposed on
 /// [`crate::TxResult`] and [`crate::TxResultWithState`].
 ///
-/// Consumers should apply database changes in this order, per account:
+/// Consumers should apply database changes in this order:
 ///
-/// 1. write bytecode for every changed account whose current info holds non-empty code;
-/// 2. if [`AccountChange::is_storage_wiped`] is true, delete all storage for that account;
+/// 1. write bytecode from [`Self::code`] for every code hash they do not already have;
+/// 2. for each account with [`AccountChange::is_storage_wiped`], delete all storage for that
+///    account;
 /// 3. apply each changed storage slot: a zero [`Tracked::current`] means delete the slot, otherwise
 ///    write the slot value;
 /// 4. apply changed accounts: `current = Some(..)` means upsert the account, `current = None` means
 ///    delete the account.
+///
+/// Persistence consumers should prefer consuming changes through
+/// [`StateChangeSource::visit`] with a [`StateChangeSink`], or stream them without materializing
+/// this type at all via [`crate::evm::ExecutedTx::commit_with`]; both yield only changed entries,
+/// deduplicated bytecode, and a deterministic application order.
 ///
 /// `evm2` does not write to the backing database. These changes describe what
 /// happened; applying them is the responsibility of the caller.
@@ -37,6 +43,11 @@ use alloy_primitives::{
 pub struct StateChanges {
     /// Accounts loaded or changed by the transaction, keyed by address.
     pub accounts: AddressMap<AccountChange>,
+    /// Newly created or modified bytecode keyed by code hash.
+    ///
+    /// This deduplicates code shared by multiple changed accounts; each changed account also
+    /// holds its bytecode in [`AccountInfo::code`].
+    pub code: B256Map<Bytecode>,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
 }
@@ -59,12 +70,25 @@ impl StateChanges {
                 || account.changed_storage().next().is_some()
         })
     }
+
+    /// Returns the accounts whose info changed during the transaction.
+    ///
+    /// Loaded-but-unchanged accounts are skipped; accounts with only storage changes are
+    /// included.
+    #[inline]
+    pub fn changed_accounts(&self) -> impl Iterator<Item = (&Address, &AccountChange)> {
+        self.accounts.iter().filter(|(_, account)| {
+            account.is_changed()
+                || account.wipe_storage
+                || account.changed_storage().next().is_some()
+        })
+    }
 }
 
 /// State of a single account across a transaction.
 ///
-/// This mirrors revm's `Account`: it is present for every account loaded during execution and
-/// holds the account's storage slots, including loaded-but-unchanged slots.
+/// An entry is present for every account loaded during execution and holds the account's storage
+/// slots, including loaded-but-unchanged slots.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct AccountChange {
     /// Account info at the beginning of the transaction. `None` means the account did not exist.
@@ -157,32 +181,18 @@ impl AccountChange {
             slot.is_changed() && (!self.wipe_storage || !slot.current.is_zero())
         })
     }
-
-    /// Returns the new bytecode if the account's code changed during the transaction.
-    #[inline]
-    fn changed_code(&self) -> Option<(B256, &Bytecode)> {
-        let current = self.current.as_ref()?;
-        let code = current.code.as_ref()?;
-        let original_code_hash =
-            self.original.as_ref().map_or(KECCAK256_EMPTY, |original| original.code_hash);
-        (current.code_hash != original_code_hash
-            && !code.is_empty()
-            && !current.code_hash.is_zero()
-            && current.code_hash != KECCAK256_EMPTY)
-            .then_some((current.code_hash, code))
-    }
 }
 
 impl StateChangeSource for StateChanges {
     fn visit<S: StateChangeSink>(&self, sink: &mut S) -> Result<(), S::Error> {
+        let mut code_entries = self.code.iter().collect::<Vec<_>>();
+        code_entries.sort_by_key(|(code_hash, _)| **code_hash);
+        for (&code_hash, code) in code_entries {
+            sink.bytecode(code_hash, code)?;
+        }
+
         let mut account_entries = self.accounts.iter().collect::<Vec<_>>();
         account_entries.sort_by_key(|entry| *entry.0);
-
-        for (_, change) in &account_entries {
-            if let Some((code_hash, code)) = change.changed_code() {
-                sink.bytecode(code_hash, code)?;
-            }
-        }
 
         for &(&address, change) in &account_entries {
             if change.wipe_storage {

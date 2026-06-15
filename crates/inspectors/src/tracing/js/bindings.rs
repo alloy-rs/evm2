@@ -1387,7 +1387,7 @@ impl EvmDbReader for ChangesDbReader<'_> {
     }
 
     fn read_state(&mut self, address: &Address, slot: &Word) -> DbResult<Word> {
-        // Matches upstream: storage is always read from the backing database, not the changes.
+        // Storage is always read from the backing database, not the transaction changes.
         self.db.get_storage(address, slot)
     }
 }

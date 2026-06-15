@@ -231,9 +231,9 @@ impl State {
 
     /// Returns account info, recording the account in the transaction state.
     ///
-    /// This is the EVM-semantic account load: like revm's journaled `load_account`, the loaded
-    /// account becomes part of the transaction state and is emitted in [`StateChanges`] even if it
-    /// is never changed. Use [`Self::account_info`] for reads that must not be recorded.
+    /// This is the EVM-semantic account load: the loaded account becomes part of the transaction
+    /// state and is emitted in [`StateChanges`] even if it is never changed. Use
+    /// [`Self::account_info`] for reads that must not be recorded.
     #[inline(never)]
     pub fn load_account_info(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
         let account = Self::ensure_transaction_account(
@@ -247,8 +247,8 @@ impl State {
 
     /// Returns account code without touching the transaction scratch or journal.
     ///
-    /// This matches revm's JS database object semantics: account info is read from the current
-    /// transaction state first, and missing bytecode is resolved through the database by hash.
+    /// Account info is read from the current transaction state first, and missing bytecode is
+    /// resolved through the database by hash.
     pub fn code_untracked(&mut self, address: &Address) -> DbResult<Bytecode> {
         let Some(info) = self.account_info(address)? else {
             return Ok(Bytecode::default());
@@ -277,8 +277,8 @@ impl State {
 
     /// Returns persistent storage without touching the transaction scratch or journal.
     ///
-    /// This matches revm's JS database object semantics: storage reads go directly through the
-    /// database layer and do not observe the current transaction state.
+    /// Storage reads go directly through the database layer and do not observe the current
+    /// transaction state.
     pub fn storage_untracked(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
         self.database.get_storage(address, key)
     }
@@ -351,10 +351,10 @@ impl State {
 
     /// Loads persistent storage, recording the slot in the transaction state.
     ///
-    /// This is the EVM-semantic storage load: like revm's journaled `sload`, the loaded slot
-    /// becomes part of the transaction state and is emitted in [`StateChanges`] even if it is
-    /// never written. The recorded slot is intentionally not journaled so that it survives
-    /// rollback. Use [`Self::storage`] for reads that must not be recorded.
+    /// This is the EVM-semantic storage load: the loaded slot becomes part of the transaction
+    /// state and is emitted in [`StateChanges`] even if it is never written. The recorded slot is
+    /// intentionally not journaled so that it survives rollback. Use [`Self::storage`] for reads
+    /// that must not be recorded.
     pub fn load_storage(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
         let value = self.storage(address, key)?;
         self.scratch
@@ -794,9 +794,8 @@ impl State {
                 }
                 JournalEntry::AccountInserted { address } => {
                     // Keep the account recorded as a load so that reverted frames still
-                    // contribute loaded accounts to [`StateChanges`], like revm. The original
-                    // database value is cached by the insertion in
-                    // [`Self::ensure_transaction_account`].
+                    // contribute loaded accounts to [`StateChanges`]. The original database value
+                    // is cached by the insertion in [`Self::ensure_transaction_account`].
                     if let Some(account) = self.scratch.accounts.get_mut(&address) {
                         *account =
                             self.database.account_info(&address).cloned().map(Account::from_info);
@@ -823,7 +822,7 @@ impl State {
                 }
                 JournalEntry::StorageInserted { address, key } => {
                     // Keep the slot recorded as a load so that reverted frames still contribute
-                    // loaded slots to [`StateChanges`], like revm.
+                    // loaded slots to [`StateChanges`].
                     if let Some(storage) = self.scratch.storage.get_mut(&address)
                         && let Some(slot) = storage.slots.get_mut(&key)
                     {
@@ -1091,6 +1090,11 @@ impl State {
                     selfdestructed: self.scratch.selfdestructs.contains(address),
                 },
             );
+            if let Some(account) = account
+                && let Some((code_hash, code)) = Self::changed_code(account)
+            {
+                changes.code.entry(code_hash).or_insert_with(|| code.clone());
+            }
         }
 
         for (address, storage) in &self.scratch.storage {
@@ -1451,6 +1455,28 @@ mod tests {
         assert!(state.scratch.selfdestructs.is_empty());
         assert_eq!(state.scratch.touched.capacity(), touched_capacity);
         assert_eq!(state.scratch.selfdestructs.capacity(), selfdestructs_capacity);
+    }
+
+    #[test]
+    fn build_state_changes_deduplicates_code() {
+        let code = Bytecode::new_legacy(alloy_primitives::Bytes::from_static(&[0x00]));
+        let code_hash = code.hash_slow();
+        let first = Address::from([0x48; 20]);
+        let second = Address::from([0x49; 20]);
+        let mut state = State::new(CacheDB::default());
+
+        state.set_code(&first, code.clone()).unwrap();
+        state.set_code(&second, code.clone()).unwrap();
+        state.finalize_transaction_(Version::base(crate::SpecId::SPURIOUS_DRAGON));
+        let changes = state.build_state_changes();
+
+        assert_eq!(changes.code.len(), 1);
+        assert_eq!(changes.code.get(&code_hash), Some(&code));
+        for address in [first, second] {
+            let current = changes.accounts.get(&address).unwrap().current.as_ref().unwrap();
+            assert_eq!(current.code_hash, code_hash);
+            assert_eq!(current.code.as_ref(), Some(&code));
+        }
     }
 
     #[test]

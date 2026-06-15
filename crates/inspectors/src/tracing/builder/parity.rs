@@ -513,8 +513,8 @@ pub fn populate_state_diff(
         // we need to fetch the account from the db
         let db_acc = db.get_account(addr)?.unwrap_or_default();
 
-        // deleted accounts behave like revm's drained selfdestructed accounts: the balance is
-        // zero and nonce and code are unchanged
+        // deleted accounts are treated as drained: the balance is zero and nonce and code are
+        // unchanged
         let info = changed_acc
             .current
             .clone()

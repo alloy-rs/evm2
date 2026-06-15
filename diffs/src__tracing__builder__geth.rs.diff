@@ -127,7 +127,7 @@
                  }
              }
  
-@@ -279,35 +273,39 @@
+@@ -279,35 +273,38 @@
          Ok(PreStateFrame::Default(prestate))
      }
  
@@ -154,8 +154,7 @@
 -            let pre_code = code_enabled.then(|| load_account_code(&db, &db_acc)).flatten();
 +            let pre_code = if code_enabled { load_account_code(db, &db_acc)? } else { None };
 +
-+            // deleted accounts behave like revm's drained selfdestructed accounts: the post info
-+            // is empty
++            // deleted accounts are treated as drained: the post info is empty
 +            let info = changed_acc.current.clone().unwrap_or_default();
  
              let mut post_state = AccountState::from_account_info(
@@ -186,7 +185,7 @@
              );
  
              let mut pre_state =
-@@ -317,8 +315,8 @@
+@@ -317,8 +314,8 @@
              if storage_enabled {
                  for (key, slot) in changed_acc.storage.iter().filter(|(_, slot)| slot.is_changed())
                  {
@@ -197,7 +196,7 @@
                  }
              }
  
-@@ -329,7 +327,7 @@
+@@ -329,7 +326,7 @@
              // so that it is retained later in `diff_traces`
              // See <https://etherscan.io/tx/0x391f4b6a382d3bcc3120adc2ea8c62003e604e487d97281129156fd284a1a89d>
              // <https://github.com/paradigmxyz/reth/issues/19703#issuecomment-3527067849>
@@ -206,7 +205,7 @@
                  AccountChangeKind::Create
              } else {
                  AccountChangeKind::Modify
-@@ -384,14 +382,14 @@
+@@ -384,14 +381,14 @@
      }
  
      /// Traces ERC-7562 calls using the call tracer.
@@ -225,7 +224,7 @@
          }
  
          let include_logs = opts.with_log.unwrap_or_default();
-@@ -424,95 +422,85 @@
+@@ -424,95 +421,85 @@
  
                  // Accessed storage slots
                  match op {
@@ -381,7 +380,7 @@
                      }
                  }
              }
-@@ -560,13 +548,13 @@
+@@ -560,13 +547,13 @@
                  parent_frame.1.calls.insert(0, frame);
              } else {
                  debug_assert!(frames.is_empty(), "only one root node has no parent");
@@ -397,7 +396,7 @@
          match kind {
              CallKind::Call => CallFrameType::Call,
              CallKind::CallCode => CallFrameType::CallCode,
-@@ -579,46 +567,71 @@
+@@ -579,46 +566,71 @@
      }
  }
  
@@ -490,7 +489,7 @@
  
          match frame {
              PreStateFrame::Diff(diff) => {
-@@ -634,4 +647,52 @@
+@@ -634,4 +646,52 @@
              _ => panic!("expected diff prestate frame"),
          }
      }
