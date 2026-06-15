@@ -215,31 +215,6 @@ jobs:
           cache-bin: false
       - run: cargo clippy --workspace --all-targets --all-features
 
-  codspeed:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          cache-on-failure: true
-          cache-bin: false
-      - name: Install cargo-codspeed
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-codspeed
-      - name: Build the benchmark target
-        run: cargo codspeed build --profile profiling -p evm2 --bench evm
-      - name: Run the benchmarks
-        uses: CodSpeedHQ/action@v4
-        with:
-          run: cargo codspeed run -p evm2 evm
-          mode: instrumentation
-          token: ${{ secrets.CODSPEED_TOKEN }}
-
   docs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -280,7 +255,6 @@ jobs:
       - examples
       - typos
       - clippy
-      - codspeed
       - docs
       - fmt
       - deny
