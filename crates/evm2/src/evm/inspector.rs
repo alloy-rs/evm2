@@ -147,7 +147,7 @@ mod tests {
         registry::TxRegistry,
         utils::address_to_word,
     };
-    use alloc::vec::Vec;
+    use alloc::{boxed::Box, vec::Vec};
     use alloy_consensus::{TxLegacy, transaction::Recovered};
     use alloy_primitives::{Address, Bytes, Log, TxKind, U256};
     use core::assert_matches;

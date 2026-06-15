@@ -295,8 +295,8 @@ impl State {
         Ok(self.account_info(address)?.is_none() && !self.scratch.touched.contains(address))
     }
 
-    /// Returns an account if it exists.
-    pub fn find(&mut self, address: &Address) -> DbResult<Option<&Account>> {
+    /// Loads an account into transaction state if it exists.
+    pub fn load_account(&mut self, address: &Address) -> DbResult<Option<&Account>> {
         let account = Self::ensure_transaction_account(
             &mut self.database,
             &mut self.scratch.accounts,
@@ -308,29 +308,17 @@ impl State {
 
     /// Gets account code.
     pub fn code(&mut self, address: &Address) -> DbResult<Bytecode> {
-        if let Some(account) = self.scratch.accounts.get(address).and_then(Option::as_ref) {
-            if account.code_hash == KECCAK256_EMPTY {
+        if let Some(account) = self.scratch.accounts.get(address) {
+            let Some(account) = account else {
                 return Ok(Bytecode::default());
-            }
-            if !account.code.is_empty() {
-                return Ok(account.code.clone());
-            }
-            let code_hash = account.code_hash;
-            return self.database.get_code_by_hash(&code_hash);
+            };
+            return self.code_from_parts(account.code_hash, account.code.clone());
         }
 
         let Some(info) = self.database.get_account(address)? else {
             return Ok(Bytecode::default());
         };
-        if info.code_hash == KECCAK256_EMPTY {
-            return Ok(Bytecode::default());
-        }
-        if let Some(code) = info.code
-            && !code.is_empty()
-        {
-            return Ok(code);
-        }
-        self.database.get_code_by_hash(&info.code_hash)
+        self.code_from_info(info)
     }
 
     /// Loads persistent storage.
@@ -474,7 +462,7 @@ impl State {
         self.scratch.clear_transaction_state();
     }
 
-    fn load_account(&mut self, address: &Address) -> DbResult<Option<Account>> {
+    fn get_db_account(&mut self, address: &Address) -> DbResult<Option<Account>> {
         Ok(self.database.get_account(address)?.map(Account::from_info))
     }
 
@@ -868,14 +856,14 @@ impl State {
             return Ok(account.as_ref().is_some_and(Account::is_empty)
                 || (account.is_none() && self.database.account_info(address).is_some()));
         }
-        Ok(self.load_account(address)?.as_ref().is_some_and(Account::is_empty))
+        Ok(self.get_db_account(address)?.as_ref().is_some_and(Account::is_empty))
     }
 
     fn account_exists(&mut self, address: &Address) -> DbResult<bool> {
         if let Some(account) = self.scratch.accounts.get(address) {
             return Ok(account.is_some());
         }
-        Ok(self.load_account(address)?.is_some())
+        Ok(self.get_db_account(address)?.is_some())
     }
 
     fn delete_account_for_finalization(&mut self, address: &Address) -> DbResult<()> {
@@ -893,7 +881,7 @@ impl State {
     }
 
     fn materialize_empty_account_for_finalization(&mut self, address: &Address) -> DbResult<()> {
-        let original_exists = self.load_account(address)?.is_some();
+        let original_exists = self.get_db_account(address)?.is_some();
         let account = Self::ensure_transaction_account(
             &mut self.database,
             &mut self.scratch.accounts,
@@ -1496,6 +1484,22 @@ mod tests {
         assert_eq!(change.current, None);
         assert!(change.is_selfdestructed());
         assert!(change.is_storage_wiped());
+    }
+
+    #[test]
+    fn code_respects_deleted_transaction_overlay() {
+        let address = Address::from([0x4a; 20]);
+        let code = Bytecode::new_legacy(Bytes::from_static(&[0x00]));
+        let mut database = CacheDB::default();
+        database.insert_account_info(&address, AccountInfo::default().with_code(code.clone()));
+        let mut state = State::new(database);
+
+        assert_eq!(state.code(&address).unwrap(), code);
+        state.mark_destructed(&address);
+        state.finalize_transaction_(Version::base(crate::SpecId::SPURIOUS_DRAGON));
+
+        assert_eq!(state.code(&address).unwrap(), Bytecode::default());
+        assert_eq!(state.code_untracked(&address).unwrap(), Bytecode::default());
     }
 
     #[test]
