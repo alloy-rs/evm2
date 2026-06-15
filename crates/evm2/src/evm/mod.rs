@@ -18,6 +18,7 @@
 //!   [`BlockStateAccumulator`];
 //! - [`ExecutedTx::commit_with`] streams writes to a [`StateChangeSink`] and then accepts them;
 //! - [`ExecutedTx::discard`] drops the writes and returns only the result;
+//! - [`ExecutedTx::discard_with`] streams writes to a [`StateChangeSink`] and then drops them;
 //! - [`ExecutedTx::detach`] materializes an owned [`TxResultWithState`] without accepting the
 //!   writes.
 //!
@@ -32,8 +33,8 @@
 //!    wrapped database and is visible to later transactions executed by the same [`Evm`].
 //! 2. **Transaction scratch**: writes, warm-access state, transient storage, journal entries,
 //!    touched accounts, selfdestruct markers, and logs for the currently executing transaction. It
-//!    is cleared after `commit`, `commit_to`, `commit_with`, `discard`, or `detach` while retaining
-//!    capacity where possible.
+//!    is cleared after `commit`, `commit_to`, `commit_with`, `discard`, `discard_with`, or `detach`
+//!    while retaining capacity where possible.
 //! 3. **Block accumulator**: optional block-level state output. It coalesces committed transaction
 //!    writes and keeps block-boundary originals.
 //!
@@ -79,6 +80,7 @@
 //! eth_call / simulation: transact -> discard
 //! serial block:          transact -> commit
 //! block output:          transact -> commit_to -> BlockStateAccumulator
+//! traced simulation:     transact -> discard_with -> Sink
 //! materialized tx diff:  transact -> detach -> TxResultWithState
 //! parallel worker:       transact -> detach -> send owned diff
 //! ```
@@ -694,7 +696,8 @@ impl<T: EvmTypes<Tx: Typed2718, Host = Self>> Evm<T> {
     ///
     /// The returned [`ExecutedTx`] keeps post-finalization writes in the transaction scratch layer.
     /// Callers must resolve it with [`ExecutedTx::commit`], [`ExecutedTx::commit_to`],
-    /// [`ExecutedTx::commit_with`], [`ExecutedTx::discard`], or [`ExecutedTx::detach`] before
+    /// [`ExecutedTx::commit_with`], [`ExecutedTx::discard`], [`ExecutedTx::discard_with`], or
+    /// [`ExecutedTx::detach`] before
     /// another transaction can be executed. Dropping the handle is equivalent to
     /// [`ExecutedTx::discard`].
     pub fn transact(&mut self, tx: &T::Tx) -> HandlerResult<ExecutedTx<'_, T>> {
@@ -2063,6 +2066,29 @@ mod tests {
 
         assert_eq!(outcome.gas_used(), 7);
         assert_eq!(outcome.logs.len(), 1);
+        assert_eq!(
+            evm.state.storage_ref(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY),
+            Some(Word::from(1))
+        );
+    }
+
+    #[test]
+    fn executed_transaction_discard_with_streams_without_committing() {
+        let mut evm = lifecycle_evm();
+        let mut sink = BlockStateAccumulator::new();
+
+        let outcome = evm
+            .transact(&test_tx(7))
+            .expect("lifecycle transaction should execute")
+            .discard_with(&mut sink)
+            .expect("block accumulator is infallible");
+
+        assert_eq!(outcome.gas_used(), 7);
+        assert_eq!(outcome.logs.len(), 1);
+        let storage = sink.storage_sorted();
+        assert_eq!(storage.len(), 1);
+        assert_eq!(storage[0].1.original, Word::from(1));
+        assert_eq!(storage[0].1.current, Word::from(7));
         assert_eq!(
             evm.state.storage_cached_ref(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY),
             Some(Word::from(1))
