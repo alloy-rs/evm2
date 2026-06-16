@@ -1,0 +1,20 @@
+--- upstream/crates/revmc-runtime/src/runtime/backend.rs
++++ evm2/crates/jit/runtime/src/runtime/backend.rs
+@@ -32,7 +32,7 @@
+ #[cfg(feature = "llvm")]
+ use crate::llvm::jit_memory_usage;
+ #[cfg(feature = "llvm")]
+-use revmc_context::RawEvmCompilerFn;
++use evm2_jit_context::RawEvmCompilerFn;
+ 
+ /// The resident map type: code_hash+spec_id → compiled program.
+ pub(crate) type ResidentMap = DashMap<RuntimeCacheKey, Arc<CompiledProgram>, DefaultHashBuilder>;
+@@ -87,7 +87,7 @@
+             .builtin_symbols
+             .iter()
+             .map(|name| {
+-                let addr = revmc_builtins::Builtin::parse(name)
++                let addr = evm2_jit_builtins::Builtin::parse(name)
+                     .ok_or_else(|| eyre::eyre!("unknown builtin symbol: {name}"))?
+                     .addr();
+                 Ok((CString::new(name.as_str())?, addr))

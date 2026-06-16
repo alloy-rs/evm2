@@ -1,0 +1,12 @@
+--- upstream/crates/revmc-runtime/src/runtime/storage.rs
++++ evm2/crates/jit/runtime/src/runtime/storage.rs
+@@ -172,8 +172,8 @@
+         RuntimeCacheKey,
+     };
+     use alloy_primitives::B256;
++    use evm2_jit_backend::OptimizationLevel;
+     use revm_primitives::hardfork::SpecId;
+-    use revmc_backend::OptimizationLevel;
+ 
+     fn artifact_key(code_hash: B256) -> ArtifactKey {
+         ArtifactKey {

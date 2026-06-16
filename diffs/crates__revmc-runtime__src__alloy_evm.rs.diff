@@ -1,0 +1,8 @@
+--- upstream/crates/revmc-runtime/src/alloy_evm.rs
++++ evm2/crates/jit/runtime/src/alloy_evm.rs
+@@ -1,4 +1,4 @@
+-//! [`alloy_evm`] bindings for the revmc runtime.
++//! [`alloy_evm`] bindings for the evm2_jit runtime.
+ //!
+ //! Provides [`JitEvm`] and [`JitEvmFactory`] which wrap the standard Ethereum EVM with
+ //! JIT-compiled function dispatch via [`JitBackend`].

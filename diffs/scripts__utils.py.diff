@@ -1,0 +1,17 @@
+--- upstream/scripts/utils.py
++++ evm2/crates/jit/scripts/utils.py
+@@ -1,4 +1,4 @@
+-"""Shared utilities for revmc analysis scripts."""
++"""Shared utilities for evm2-jit analysis scripts."""
+ 
+ import os
+ import re
+@@ -39,7 +39,7 @@
+     if not incremental:
+         env["CARGO_INCREMENTAL"] = "0"
+     subprocess.run(["cargo", "build", "--quiet"], check=True, cwd=root, env=env)
+-    return os.path.join(target_dir, "debug", "revmc")
++    return os.path.join(target_dir, "debug", "evm2-jit")
+ 
+ 
+ def get_benches(binary: str) -> list[str]:

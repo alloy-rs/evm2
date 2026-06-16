@@ -9,6 +9,28 @@ This is a work-in-progress repo with no public API stability guarantees. Do not 
 backwards-compatibility aliases, deprecated wrappers, compatibility shims, or similar
 transitional API layers unless explicitly requested.
 
+## Temporary Branch Context
+
+This branch is porting `paradigmxyz/revmc` into `crates/jit` as the `evm2-jit`
+crate while keeping the port's diff against upstream as small and intentional as
+possible. The tracked upstream revision is recorded in `diffs/TODO.md`.
+
+The `diffs/` directory tracks generated unified diffs between upstream `revmc`
+and the local `crates/jit` port. After every source change that affects the JIT
+port, run `./scripts/generate_jit_diffs.sh` and inspect the relevant file in
+`diffs/`. Use those generated diffs while editing: if a hunk only reflects
+formatting, stale naming, import ordering, or another unnecessary divergence from
+upstream, fix the source instead of accepting the diff.
+
+`diffs/TODO.md` is a user-owned manual review checklist generated from the
+non-empty diff files. Do not edit or regenerate that checklist unless the user
+explicitly tells you to.
+
+Do not add new comments, docs, or identifiers that compare behavior to revm.
+Describe behavior self-containedly. Existing comments and crate references
+inherited from upstream `revmc` may remain while the port is being minimized and
+adapted.
+
 ## Commands
 
 ```bash

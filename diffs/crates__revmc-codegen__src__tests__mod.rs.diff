@@ -1,0 +1,29 @@
+--- upstream/crates/revmc-codegen/src/tests/mod.rs
++++ evm2/crates/jit/codegen/src/tests/mod.rs
+@@ -7,6 +7,7 @@
+ )]
+ 
+ use crate::*;
++use evm2_jit_builtins::gas;
+ use revm_bytecode::opcode as op;
+ use revm_context_interface as context_interface;
+ use revm_interpreter as interpreter;
+@@ -16,7 +17,6 @@
+ use revm_primitives::{
+     Address, B256, Bytes, KECCAK_EMPTY, Log, LogData, hardfork::SpecId, hex, keccak256,
+ };
+-use revmc_builtins::gas;
+ 
+ /// `KECCAK256` opcode gas cost (base + dynamic).
+ const fn keccak256_cost(len: u64) -> Option<u64> {
+@@ -60,8 +60,8 @@
+ 
+ #[cfg(feature = "llvm")]
+ pub fn with_jit_compiler<R>(
+-    opt_level: revmc_backend::OptimizationLevel,
+-    f: fn(&mut EvmCompiler<revmc_llvm::EvmLlvmBackend>) -> R,
++    opt_level: evm2_jit_backend::OptimizationLevel,
++    f: fn(&mut EvmCompiler<evm2_jit_llvm::EvmLlvmBackend>) -> R,
+ ) -> R {
+     init_tracing();
+     let mut compiler = EvmCompiler::new_llvm(false).unwrap();

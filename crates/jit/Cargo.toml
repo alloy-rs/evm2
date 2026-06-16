@@ -1,0 +1,51 @@
+[package]
+name = "evm2-jit"
+description = "EVM bytecode compiler"
+homepage = "https://github.com/danipopes/evm2-jit/tree/main/crates/evm2-jit"
+
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+categories.workspace = true
+keywords.workspace = true
+repository.workspace = true
+exclude.workspace = true
+
+[package.metadata.docs.rs]
+no-default-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[lints]
+workspace = true
+
+[dependencies]
+evm2-jit-backend.workspace = true
+evm2-jit-builtins = { workspace = true, features = ["ir"] }
+evm2-jit-codegen.workspace = true
+evm2-jit-context = { workspace = true, features = ["evm"] }
+evm2-jit-llvm = { workspace = true, optional = true }
+evm2-jit-runtime.workspace = true
+
+revm-bytecode.workspace = true
+revm-context-interface.workspace = true
+revm-handler.workspace = true
+revm-inspector.workspace = true
+revm-interpreter.workspace = true
+revm-primitives.workspace = true
+
+[build-dependencies]
+evm2-jit-build.workspace = true
+
+[dev-dependencies]
+evm2-jit-statetest = { path = "statetest" }
+
+[features]
+default = ["llvm"]
+llvm = ["dep:evm2-jit-llvm", "evm2-jit-codegen/llvm", "evm2-jit-runtime/llvm"]
+llvm-prefer-static = ["llvm", "evm2-jit-codegen/llvm-prefer-static", "evm2-jit-runtime/llvm-prefer-static"]
+llvm-prefer-dynamic = ["llvm", "evm2-jit-codegen/llvm-prefer-dynamic", "evm2-jit-runtime/llvm-prefer-dynamic"]
+alloy-evm = ["evm2-jit-runtime/alloy-evm"]
+asm-keccak = ["evm2-jit-codegen/asm-keccak", "evm2-jit-runtime/asm-keccak"]
+__fuzzing = ["evm2-jit-codegen/__fuzzing"]

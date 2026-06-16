@@ -1,0 +1,30 @@
+[package]
+name = "evm2-jit-examples-runner"
+publish = false
+
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+categories.workspace = true
+keywords.workspace = true
+repository.workspace = true
+exclude.workspace = true
+
+[build-dependencies]
+evm2-jit = { workspace = true, features = ["llvm-prefer-dynamic"] }
+evm2-jit-build.workspace = true
+cc = "1.0"
+
+[dependencies]
+evm2-jit-builtins = { workspace = true, default-features = false }
+evm2-jit-context = { workspace = true, default-features = false, features = ["evm"] }
+
+revm-bytecode = { workspace = true, default-features = false }
+revm-context = { workspace = true, default-features = false }
+revm-database = { workspace = true, default-features = false }
+revm-database-interface = { workspace = true, default-features = false }
+revm-handler = { workspace = true, default-features = false }
+revm-primitives = { workspace = true, default-features = false }
+revm-state = { workspace = true, default-features = false }

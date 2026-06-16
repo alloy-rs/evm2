@@ -1,0 +1,47 @@
+--- upstream/scripts/bench.py
++++ evm2/crates/jit/scripts/bench.py
+@@ -3,7 +3,7 @@
+ # requires-python = ">=3.13"
+ # dependencies = ["tabulate>=0.9", "tqdm>=4.67.3"]
+ # ///
+-"""Unified benchmark tool for revmc.
++"""Unified benchmark tool for evm2-jit.
+ 
+ Collects codegen stats, compile times, jump resolution, and constant-input
+ statistics across benchmarks. Supports diffing against a base git revision.
+@@ -685,7 +685,7 @@
+         return False
+ 
+     def rust_log(self) -> str | None:
+-        return "revmc_codegen::bytecode=trace"
++        return "evm2_jit_codegen::bytecode=trace"
+ 
+     @staticmethod
+     def _last_match(pattern: str, text: str) -> int:
+@@ -770,7 +770,7 @@
+         return False
+ 
+     def rust_log(self) -> str | None:
+-        return "revmc_codegen::bytecode=trace"
++        return "evm2_jit_codegen::bytecode=trace"
+ 
+     @staticmethod
+     def _parse(output: str) -> dict[str, float] | None:
+@@ -845,7 +845,7 @@
+         return False
+ 
+     def rust_log(self) -> str | None:
+-        return "revmc_codegen::bytecode=trace"
++        return "evm2_jit_codegen::bytecode=trace"
+ 
+     @staticmethod
+     def _pct(a, b):
+@@ -1002,7 +1002,7 @@
+ 
+ def main():
+     parser = argparse.ArgumentParser(
+-        description="Unified benchmark tool for revmc.",
++        description="Unified benchmark tool for evm2-jit.",
+         formatter_class=argparse.RawDescriptionHelpFormatter,
+         epilog=__doc__,
+     )

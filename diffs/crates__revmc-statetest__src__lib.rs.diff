@@ -1,0 +1,11 @@
+--- upstream/crates/revmc-statetest/src/lib.rs
++++ evm2/crates/jit/statetest/src/lib.rs
+@@ -67,7 +67,7 @@
+ 
+ /// Get the path to downloaded test fixtures (`test-fixtures/`).
+ pub fn get_fixtures_path() -> PathBuf {
+-    if let Ok(path) = std::env::var("REVMC_TEST_FIXTURES") {
++    if let Ok(path) = std::env::var("EVM2_JIT_TEST_FIXTURES") {
+         return PathBuf::from(path);
+     }
+     workspace_root().join(DEFAULT_FIXTURES_PATH)

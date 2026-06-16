@@ -1,0 +1,11 @@
+--- upstream/crates/revmc-context/src/lib.rs
++++ evm2/crates/jit/context/src/lib.rs
+@@ -204,7 +204,7 @@
+ /// # Examples
+ ///
+ /// ```no_run
+-/// use revmc_context::{EvmCompilerFn, extern_revmc};
++/// use evm2_jit_context::{EvmCompilerFn, extern_revmc};
+ ///
+ /// extern_revmc! {
+ ///    /// A simple function.

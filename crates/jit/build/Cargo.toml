@@ -1,0 +1,17 @@
+[package]
+name = "evm2-jit-build"
+description = "EVM bytecode compiler build script support"
+homepage = "https://github.com/danipopes/evm2-jit/tree/main/crates/evm2-jit-build"
+
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+categories.workspace = true
+keywords.workspace = true
+repository.workspace = true
+exclude = ["build.rs"]
+
+[lints]
+workspace = true

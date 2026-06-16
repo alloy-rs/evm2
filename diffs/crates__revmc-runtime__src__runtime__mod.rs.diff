@@ -1,0 +1,11 @@
+--- upstream/crates/revmc-runtime/src/runtime/mod.rs
++++ evm2/crates/jit/runtime/src/runtime/mod.rs
+@@ -61,7 +61,7 @@
+     }
+     #[cfg(not(all(feature = "llvm", unix)))]
+     {
+-        if std::env::var_os("REVMC_JIT_HELPER").is_some() {
++        if std::env::var_os("EVM2_JIT_JIT_HELPER").is_some() {
+             eyre::bail!("out-of-process JIT helper is only available on Unix with LLVM")
+         }
+         Ok(ControlFlow::Continue(()))

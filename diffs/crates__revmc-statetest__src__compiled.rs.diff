@@ -1,0 +1,17 @@
+--- upstream/crates/revmc-statetest/src/compiled.rs
++++ evm2/crates/jit/statetest/src/compiled.rs
+@@ -1,4 +1,4 @@
+-// revmc-specific code: compilation, handler integration, and test orchestration.
++// evm2_jit-specific code: compilation, handler integration, and test orchestration.
+ 
+ use crate::runner::{
+     TestError, TestErrorKind, TestRunnerState, check_evm_execution, execute_test_suite, skip_test,
+@@ -36,7 +36,7 @@
+ 
+ // ── Runtime backend mode ─────────────────────────────────────────────────────
+ 
+-use revmc::{
++use evm2_jit::{
+     revm_evm::JitEvm,
+     runtime::{ArtifactStore, JitBackend, RuntimeArtifactStore, RuntimeConfig, RuntimeTuning},
+ };

@@ -1,0 +1,11 @@
+--- upstream/scripts/changelog.sh
++++ evm2/crates/jit/scripts/changelog.sh
+@@ -13,7 +13,7 @@
+ crate=$CRATE_ROOT
+ crate_glob="${crate#"$root/"}/**"
+ 
+-if [[ "$crate" = */tests/* || "$crate" = */examples/* || "$crate" = *test-utils* || "$crate" = "revmc-cli" ]]; then
++if [[ "$crate" = */tests/* || "$crate" = */examples/* || "$crate" = *test-utils* || "$crate" = "evm2-jit-cli" ]]; then
+     exit 0
+ fi
+ 

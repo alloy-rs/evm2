@@ -1,0 +1,8 @@
+--- upstream/examples/compiler/build.rs
++++ evm2/crates/jit/examples/compiler/build.rs
+@@ -1,4 +1,4 @@
+ fn main() {
+     // Emit the configuration to run compiled bytecodes.
+-    revmc_build::emit();
++    evm2_jit_build::emit();
+ }

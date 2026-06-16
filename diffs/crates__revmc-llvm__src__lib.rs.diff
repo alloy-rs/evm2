@@ -1,0 +1,219 @@
+--- upstream/crates/revmc-llvm/src/lib.rs
++++ evm2/crates/jit/llvm/src/lib.rs
+@@ -6,6 +6,10 @@
+ extern crate tracing;
+ 
+ use alloy_primitives::map::{FxBuildHasher, HashSet};
++use evm2_jit_backend::{
++    Backend, BackendConfig, BackendTypes, Builder, CallConv, IntCC, OptimizationLevel, Result,
++    TailCallKind, TypeMethods, U256, eyre, format_bytes,
++};
+ use inkwell::{
+     AddressSpace, IntPredicate,
+     attributes::{Attribute, AttributeLoc},
+@@ -30,10 +34,6 @@
+     },
+ };
+ use object::{Object, ObjectSymbol};
+-use revmc_backend::{
+-    Backend, BackendConfig, BackendTypes, Builder, CallConv, IntCC, OptimizationLevel, Result,
+-    TailCallKind, TypeMethods, U256, eyre, format_bytes,
+-};
+ use std::{
+     cell::Cell,
+     ffi::{CStr, CString},
+@@ -263,7 +263,7 @@
+                     data_bytes: AtomicUsize::new(0),
+                 }));
+             orc::cvt(unsafe {
+-                cpp::revmc_llvm_lljit_enable_memory_usage(
++                cpp::evm2_jit_llvm_lljit_enable_memory_usage(
+                     jit.as_inner(),
+                     &memory_counters.code_bytes,
+                     &memory_counters.data_bytes,
+@@ -271,7 +271,8 @@
+             })
+             .map_err(|e| e.to_string())?;
+ 
+-            let builtins_jd = jit.get_execution_session().create_bare_jit_dylib(c"revmc.builtins");
++            let builtins_jd =
++                jit.get_execution_session().create_bare_jit_dylib(c"evm2_jit.builtins");
+ 
+             Ok(Self {
+                 jit,
+@@ -290,7 +291,7 @@
+     /// Creates a fresh JITDylib for a compiler.
+     fn create_jit_dylib(&self) -> orc::JITDylibRef {
+         let id = self.next_dylib_id.fetch_add(1, Ordering::Relaxed);
+-        let name = CString::new(format!("revmc.compiler.{id}")).unwrap();
++        let name = CString::new(format!("evm2_jit.compiler.{id}")).unwrap();
+         let es = self.jit.get_execution_session();
+         let jd = es.create_bare_jit_dylib(&name);
+         // Link against the builtins JD so compiled code can resolve builtin symbols.
+@@ -686,7 +687,7 @@
+             DWARFSourceLanguage::C,
+             &filename,
+             &directory,
+-            "revmc",
++            "evm2_jit",
+             is_optimized,
+             &flags,
+             0,
+@@ -793,7 +794,7 @@
+     /// Pops and returns the [`ResourceTracker`](orc::ResourceTracker) for the last committed
+     /// JIT module.
+     ///
+-    /// Each call to [`jit_function`](revmc_backend::Backend::jit_function) commits a module
++    /// Each call to [`jit_function`](evm2_jit_backend::Backend::jit_function) commits a module
+     /// with its own tracker. The caller takes ownership and is responsible for calling
+     /// `tracker.remove()` to free the machine code when it is no longer needed.
+     ///
+@@ -887,7 +888,7 @@
+         }
+         if self.backend_config.opt_level != config.opt_level {
+             unsafe {
+-                cpp::revmc_llvm_target_machine_set_opt_level(
++                cpp::evm2_jit_llvm_target_machine_set_opt_level(
+                     self.machine.as_mut_ptr(),
+                     convert_opt_level(config.opt_level).into(),
+                 );
+@@ -928,7 +929,7 @@
+         ret: Option<Self::Type>,
+         params: &[Self::Type],
+         param_names: &[&str],
+-        linkage: revmc_backend::Linkage,
++        linkage: evm2_jit_backend::Linkage,
+     ) -> Result<(Self::Builder<'_>, Self::FuncId)> {
+         if !self.aot {
+             self.ensure_orc()?;
+@@ -1014,14 +1015,14 @@
+         // quadratic on large functions — e.g. +430ms on snailtracer (7770 BBs) vs +0ms on
+         // fibonacci (45 BBs). We skip it for functions with >4000 basic blocks.
+         //
+-        // Can be overridden with `REVMC_PASSES` env var for experimentation.
++        // Can be overridden with `EVM2_JIT_PASSES` env var for experimentation.
+         // From `opt --help`, `-passes`.
+ 
+         static PASSES_OVERRIDE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+         static PASSES: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+         static PASSES_WITH_LICM: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+ 
+-        let passes = PASSES_OVERRIDE.get_or_init(|| std::env::var("REVMC_PASSES").ok());
++        let passes = PASSES_OVERRIDE.get_or_init(|| std::env::var("EVM2_JIT_PASSES").ok());
+         let passes = passes.as_deref().unwrap_or_else(|| match self.backend_config.opt_level {
+             OptimizationLevel::None => "default<O0>",
+             OptimizationLevel::Less | OptimizationLevel::Default => {
+@@ -1849,7 +1850,7 @@
+         name: &str,
+         params: &[Self::Type],
+         ret: Option<Self::Type>,
+-        linkage: revmc_backend::Linkage,
++        linkage: evm2_jit_backend::Linkage,
+         build: impl FnOnce(&mut Self),
+     ) -> Self::Function {
+         if let Some(function) = self.module().get_function(name) {
+@@ -1898,7 +1899,7 @@
+         params: &[Self::Type],
+         ret: Option<Self::Type>,
+         address: Option<usize>,
+-        linkage: revmc_backend::Linkage,
++        linkage: evm2_jit_backend::Linkage,
+         call_conv: CallConv,
+     ) -> Self::Function {
+         let func_ty = self.fn_type(ret, params);
+@@ -1934,8 +1935,8 @@
+         cpp::set_dso_local(stub);
+         self.add_function_attribute(
+             Some(stub),
+-            revmc_backend::Attribute::NoInline,
+-            revmc_backend::FunctionAttributeLocation::Function,
++            evm2_jit_backend::Attribute::NoInline,
++            evm2_jit_backend::FunctionAttributeLocation::Function,
+         );
+ 
+         let before = self.bcx.get_insert_block();
+@@ -1965,8 +1966,8 @@
+     fn add_function_attribute(
+         &mut self,
+         function: Option<Self::Function>,
+-        attribute: revmc_backend::Attribute,
+-        loc: revmc_backend::FunctionAttributeLocation,
++        attribute: evm2_jit_backend::Attribute,
++        loc: evm2_jit_backend::FunctionAttributeLocation,
+     ) {
+         let func = function.unwrap_or(self.function);
+         let loc = convert_attribute_loc(loc);
+@@ -2033,8 +2034,8 @@
+         install_fatal_error_handler(report_fatal_error);
+     }
+ 
+-    // Collect extra LLVM args from `REVMC_LLVM_ARGS` env var (space-separated).
+-    let extra: Vec<CString> = std::env::var("REVMC_LLVM_ARGS")
++    // Collect extra LLVM args from `EVM2_JIT_LLVM_ARGS` env var (space-separated).
++    let extra: Vec<CString> = std::env::var("EVM2_JIT_LLVM_ARGS")
+         .ok()
+         .iter()
+         .flat_map(|s| s.split_whitespace().filter_map(|s| CString::new(s).ok()).collect::<Vec<_>>())
+@@ -2045,7 +2046,7 @@
+ 
+     // The first arg is only used in `-help` output AFAICT.
+     let mut args = vec![
+-        c"revmc-llvm".as_ptr(),
++        c"evm2-jit-llvm".as_ptr(),
+         c"-x86-asm-syntax=intel".as_ptr(),
+         // CodeGenPrepare's memory optimization has a pathological interaction with our IR shape:
+         // repeated stores to the same `gas_remaining` pointer in a huge function cause
+@@ -2131,8 +2132,8 @@
+     }
+ }
+ 
+-fn convert_attribute(bcx: &EvmLlvmBuilder<'_>, attr: revmc_backend::Attribute) -> Attribute {
+-    use revmc_backend::Attribute as OurAttr;
++fn convert_attribute(bcx: &EvmLlvmBuilder<'_>, attr: evm2_jit_backend::Attribute) -> Attribute {
++    use evm2_jit_backend::Attribute as OurAttr;
+ 
+     enum AttrValue<'a> {
+         String(&'a str),
+@@ -2201,11 +2202,11 @@
+     }
+ }
+ 
+-fn convert_attribute_loc(loc: revmc_backend::FunctionAttributeLocation) -> AttributeLoc {
++fn convert_attribute_loc(loc: evm2_jit_backend::FunctionAttributeLocation) -> AttributeLoc {
+     match loc {
+-        revmc_backend::FunctionAttributeLocation::Return => AttributeLoc::Return,
+-        revmc_backend::FunctionAttributeLocation::Param(i) => AttributeLoc::Param(i),
+-        revmc_backend::FunctionAttributeLocation::Function => AttributeLoc::Function,
++        evm2_jit_backend::FunctionAttributeLocation::Return => AttributeLoc::Return,
++        evm2_jit_backend::FunctionAttributeLocation::Param(i) => AttributeLoc::Param(i),
++        evm2_jit_backend::FunctionAttributeLocation::Function => AttributeLoc::Function,
+     }
+ }
+ 
+@@ -2229,11 +2230,11 @@
+     }
+ }
+ 
+-fn convert_linkage(linkage: revmc_backend::Linkage) -> inkwell::module::Linkage {
++fn convert_linkage(linkage: evm2_jit_backend::Linkage) -> inkwell::module::Linkage {
+     match linkage {
+-        revmc_backend::Linkage::Public => inkwell::module::Linkage::External,
+-        revmc_backend::Linkage::Import => inkwell::module::Linkage::External,
+-        revmc_backend::Linkage::Private => inkwell::module::Linkage::Private,
++        evm2_jit_backend::Linkage::Public => inkwell::module::Linkage::External,
++        evm2_jit_backend::Linkage::Import => inkwell::module::Linkage::External,
++        evm2_jit_backend::Linkage::Private => inkwell::module::Linkage::Private,
+     }
+ }
+ 
+@@ -2247,8 +2248,8 @@
+ }
+ 
+ // No `#[track_caller]` because `map_err` doesn't propagate it.
+-fn error_msg(msg: inkwell::support::LLVMString) -> revmc_backend::Error {
+-    revmc_backend::Error::msg(msg.to_string_lossy().trim_end().to_string())
++fn error_msg(msg: inkwell::support::LLVMString) -> evm2_jit_backend::Error {
++    evm2_jit_backend::Error::msg(msg.to_string_lossy().trim_end().to_string())
+ }
+ 
+ fn fmt_ty(ty: BasicTypeEnum<'_>) -> impl std::fmt::Display {

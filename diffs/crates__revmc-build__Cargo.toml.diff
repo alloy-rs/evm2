@@ -1,0 +1,12 @@
+--- upstream/crates/revmc-build/Cargo.toml
++++ evm2/crates/jit/build/Cargo.toml
+@@ -1,7 +1,7 @@
+ [package]
+-name = "revmc-build"
++name = "evm2-jit-build"
+ description = "EVM bytecode compiler build script support"
+-homepage = "https://github.com/danipopes/revmc/tree/main/crates/revmc-build"
++homepage = "https://github.com/danipopes/evm2-jit/tree/main/crates/evm2-jit-build"
+ 
+ version.workspace = true
+ authors.workspace = true

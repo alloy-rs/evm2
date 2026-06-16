@@ -1,0 +1,27 @@
+--- upstream/examples/runner/Cargo.toml
++++ evm2/crates/jit/examples/runner/Cargo.toml
+@@ -1,5 +1,5 @@
+ [package]
+-name = "revmc-examples-runner"
++name = "evm2-jit-examples-runner"
+ publish = false
+ 
+ version.workspace = true
+@@ -13,13 +13,13 @@
+ exclude.workspace = true
+ 
+ [build-dependencies]
+-revmc = { workspace = true, features = ["llvm-prefer-dynamic"] }
+-revmc-build.workspace = true
++evm2-jit = { workspace = true, features = ["llvm-prefer-dynamic"] }
++evm2-jit-build.workspace = true
+ cc = "1.0"
+ 
+ [dependencies]
+-revmc-builtins = { workspace = true, default-features = false }
+-revmc-context = { workspace = true, default-features = false, features = ["evm"] }
++evm2-jit-builtins = { workspace = true, default-features = false }
++evm2-jit-context = { workspace = true, default-features = false, features = ["evm"] }
+ 
+ revm-bytecode = { workspace = true, default-features = false }
+ revm-context = { workspace = true, default-features = false }

@@ -1,0 +1,14 @@
+--- upstream/crates/revmc-codegen/src/compiler/translate/peephole.rs
++++ evm2/crates/jit/codegen/src/compiler/translate/peephole.rs
+@@ -6,10 +6,10 @@
+ 
+ use super::FunctionCx;
+ use crate::{Backend, Builder, InstData, IntCC};
++use evm2_jit_builtins::Builtin;
+ use revm_bytecode::opcode as op;
+ use revm_interpreter::InstructionResult;
+ use revm_primitives::U256;
+-use revmc_builtins::Builtin;
+ 
+ /// i256 INT_MIN: 1 << 255.
+ const INT_MIN: U256 = U256::ONE.wrapping_shl(255);

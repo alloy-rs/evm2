@@ -1,0 +1,17 @@
+--- upstream/crates/revmc-cli/src/benches.rs
++++ evm2/crates/jit/cli/src/benches.rs
+@@ -1,4 +1,4 @@
+-use revmc::SpecId;
++use evm2_jit::SpecId;
+ use std::borrow::Cow;
+ 
+ /// Benchmark definition.
+@@ -21,7 +21,7 @@
+ }
+ 
+ pub fn fixture_from_bytecode(name: &'static str, bytecode: Vec<u8>, spec_id: SpecId) -> Bench {
+-    let bytecode = revmc::primitives::hex::encode(bytecode);
++    let bytecode = evm2_jit::primitives::hex::encode(bytecode);
+     Bench {
+         name,
+         fixture_json: Some(Cow::Owned(format!(

@@ -1,0 +1,48 @@
+[package]
+name = "evm2-jit-statetest"
+description = "EVM statetest runner"
+homepage = "https://github.com/danipopes/evm2-jit/tree/main/crates/evm2-jit-statetest"
+
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+categories.workspace = true
+keywords.workspace = true
+repository.workspace = true
+exclude.workspace = true
+
+[dependencies]
+evm2-jit = { workspace = true, features = ["llvm"] }
+
+revm-context = { workspace = true, features = ["std"] }
+revm-context-interface = { workspace = true, features = ["std"] }
+revm-database = { workspace = true, features = ["std"] }
+revm-database-interface = { workspace = true, features = ["std"] }
+revm-handler = { workspace = true, features = ["std"] }
+revm-inspector = { workspace = true, features = ["std", "tracer"] }
+revm-bytecode = { workspace = true, features = ["std"] }
+revm-interpreter.workspace = true
+revm-primitives = { workspace = true, features = ["std"] }
+revm-state = { workspace = true, features = ["std"] }
+revm-statetest-types.workspace = true
+
+alloy-rlp = { version = "0.3", features = ["arrayvec", "derive"] }
+alloy-trie = { version = "0.9", features = ["ethereum"] }
+console = "0.16"
+dashmap = "6"
+eyre.workspace = true
+indicatif = "0.18"
+k256 = { version = "0.13", features = ["ecdsa"] }
+libloading = "0.9"
+serde_json = { version = "1.0", features = ["preserve_order"] }
+tempfile = "3"
+thiserror = "2"
+thread_local = "1"
+tracing-subscriber.workspace = true
+tracing.workspace = true
+walkdir = "2.5"
+
+[lib]
+path = "src/lib.rs"

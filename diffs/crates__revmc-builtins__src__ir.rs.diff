@@ -1,0 +1,50 @@
+--- upstream/crates/revmc-builtins/src/ir.rs
++++ evm2/crates/jit/builtins/src/ir.rs
+@@ -1,4 +1,4 @@
+-use revmc_backend::{
++use evm2_jit_backend::{
+     Attribute, Backend, Builder, CallConv, FunctionAttributeLocation, TypeMethods,
+ };
+ 
+@@ -53,7 +53,7 @@
+         let ret = builtin.ret(bcx);
+         let params = builtin.params(bcx);
+         let address = builtin.addr();
+-        let linkage = revmc_backend::Linkage::Import;
++        let linkage = evm2_jit_backend::Linkage::Import;
+         let f = bcx.add_function(name, &params, ret, Some(address), linkage, CallConv::Default);
+         Self::add_attrs(builtin, f, bcx);
+         match builtin.call_conv() {
+@@ -81,7 +81,7 @@
+         // GEP/bitcast). Builtins that take a writable `EvmContext` mutate state through
+         // `ecx.host`, `ecx.gas`, etc., which are loaded from `ecx` and thus outside
+         // `argmem`. Apply `ArgMemOnly` only when no parameter is a writable `EvmContext`.
+-        let evm_ctx_size = core::mem::size_of::<revmc_context::EvmContext<'static>>() as u64;
++        let evm_ctx_size = core::mem::size_of::<evm2_jit_context::EvmContext<'static>>() as u64;
+         let writes_ecx = param_attrs.iter().any(|p| {
+             let writable = p.iter().any(|a| matches!(a, Attribute::Writable));
+             let is_ecx =
+@@ -243,20 +243,20 @@
+             (0, 0)
+         };
+ 
+-        let ecx_base = size_and_align::<revmc_context::EvmContext<'static>>();
++        let ecx_base = size_and_align::<evm2_jit_context::EvmContext<'static>>();
+         let mut ecx = ecx_base.clone();
+         ecx.push(Attribute::Writable);
+         let mut ecx_ro = ecx_base;
+         ecx_ro.push(Attribute::ReadOnly);
+ 
+-        let sp_base = size_and_align_with(None, core::mem::align_of::<revmc_context::EvmWord>());
++        let sp_base = size_and_align_with(None, core::mem::align_of::<evm2_jit_context::EvmWord>());
+         let mut sp_dyn = sp_base.clone();
+         sp_dyn.push(Attribute::Writable);
+ 
+         let mut sp = sp_base;
+         // `sp` is at `top - inputs`, we have access to `max(inputs, outputs)` words.
+         let n_stack_words = inputs.max(outputs);
+-        let size_of_word = core::mem::size_of::<revmc_context::EvmWord>();
++        let size_of_word = core::mem::size_of::<evm2_jit_context::EvmWord>();
+         sp.push(Attribute::Dereferenceable(size_of_word as u64 * n_stack_words as u64));
+         match (inputs, outputs) {
+             (0, 0) => sp.push(Attribute::ReadNone),

@@ -1,0 +1,14 @@
+--- upstream/crates/revmc-codegen/src/tests/meta.rs
++++ evm2/crates/jit/codegen/src/tests/meta.rs
+@@ -181,9 +181,9 @@
+ #[test]
+ fn jit_memory_usage_tracking() {
+     use super::with_jit_compiler;
+-    use revmc_llvm::jit_memory_usage;
++    use evm2_jit_llvm::jit_memory_usage;
+ 
+-    with_jit_compiler(revmc_backend::OptimizationLevel::default(), |compiler| {
++    with_jit_compiler(evm2_jit_backend::OptimizationLevel::default(), |compiler| {
+         let baseline = jit_memory_usage().map(|u| u.total_bytes()).unwrap_or(0);
+ 
+         let code_a = push_stop(0x42);

@@ -1,0 +1,11 @@
+--- upstream/crates/revmc-codegen/src/tests/runner.rs
++++ evm2/crates/jit/codegen/src/tests/runner.rs
+@@ -462,7 +462,7 @@
+     let mut dump_path = root.to_path_buf();
+     dump_path.push("target");
+     dump_path.push("tests_dump");
+-    // Skip `revmc::tests`.
++    // Skip `evm2_jit::tests`.
+     dump_path.extend(module_path.split("::").skip(2));
+     dump_path.push(format!("{:?}", compiler.opt_level()));
+     compiler.set_dump_to(Some(dump_path));

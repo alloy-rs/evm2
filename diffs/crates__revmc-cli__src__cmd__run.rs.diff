@@ -1,0 +1,69 @@
+--- upstream/crates/revmc-cli/src/cmd/run.rs
++++ evm2/crates/jit/cli/src/cmd/run.rs
+@@ -1,10 +1,10 @@
+ use clap::{Parser, ValueEnum};
+ use color_eyre::{Result, eyre::eyre};
+ use revm_primitives::{B256Map, keccak256};
+-use revmc::{
++use evm2_jit::{
+     EvmCompiler, OptimizationLevel, eyre::ensure, primitives::hardfork::SpecId, shared_library_path,
+ };
+-use revmc_cli::{
++use evm2_jit_cli::{
+     PreparedBench, fixture_entry_bytecode, fixture_from_bytecode, get_benches, read_code_path,
+     read_code_string,
+ };
+@@ -15,7 +15,7 @@
+ 
+ #[derive(Parser)]
+ pub(crate) struct RunArgs {
+-    /// Benchmark name, path to a file or revmc dump dir, raw hex bytecode, or
++    /// Benchmark name, path to a file or evm2_jit dump dir, raw hex bytecode, or
+     /// EVM assembly. Auto-detected from the input.
+     ///
+     /// Use `--list` to see all available benchmark names.
+@@ -112,7 +112,7 @@
+ 
+         // Resolve bench entry. Auto-detected from the input:
+         //   1. Match against the built-in benchmark catalog by name.
+-        //   2. If a path exists, load from file or revmc dump dir.
++        //   2. If a path exists, load from file or evm2_jit dump dir.
+         //   3. Otherwise parse as inline EVM hex/asm.
+         let bench_entry = if let Some(b) = get_benches().into_iter().find(|b| b.name == bench_name)
+         {
+@@ -148,7 +148,7 @@
+         };
+ 
+         let name = bench_entry.name;
+-        let default_aot_dir = || std::env::temp_dir().join("revmc-cli").join(&bench_name);
++        let default_aot_dir = || std::env::temp_dir().join("evm2-jit-cli").join(&bench_name);
+         let mut aot_dir = None;
+         let mut pending_jit = None;
+ 
+@@ -162,7 +162,7 @@
+             let out_dir = if self.out_dir.is_some() {
+                 self.out_dir.clone()
+             } else if self.dot.is_some() || self.display || self.parse_only {
+-                Some(std::env::temp_dir().join("revmc-cli"))
++                Some(std::env::temp_dir().join("evm2-jit-cli"))
+             } else {
+                 None
+             };
+@@ -214,7 +214,7 @@
+ 
+                 if !self.no_link {
+                     let shared_lib = shared_library_path(&out_dir, "a");
+-                    let linker = revmc::Linker::new();
++                    let linker = evm2_jit::Linker::new();
+                     linker.link(&shared_lib, [obj.to_str().unwrap()])?;
+                     ensure!(shared_lib.exists(), "Failed to link object file");
+                     eprintln!("Linked shared object file to {}", shared_lib.display());
+@@ -311,7 +311,7 @@
+             r#"<!DOCTYPE html>
+ <html><head>
+ <meta charset="utf-8">
+-<title>revmc CFG</title>
++<title>evm2_jit CFG</title>
+ <style>
+ html,body{{margin:0;height:100%;overflow:hidden;background:#1a1a2e}}
+ #graph{{width:100%;height:100%}}

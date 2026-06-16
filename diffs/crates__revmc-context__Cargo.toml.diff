@@ -1,0 +1,12 @@
+--- upstream/crates/revmc-context/Cargo.toml
++++ evm2/crates/jit/context/Cargo.toml
+@@ -1,7 +1,7 @@
+ [package]
+-name = "revmc-context"
++name = "evm2-jit-context"
+ description = "EVM bytecode compiler runtime context"
+-homepage = "https://github.com/danipopes/revmc/tree/main/crates/revmc-context"
++homepage = "https://github.com/danipopes/evm2-jit/tree/main/crates/evm2-jit-context"
+ 
+ version.workspace = true
+ authors.workspace = true

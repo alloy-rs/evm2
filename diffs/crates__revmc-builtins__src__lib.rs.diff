@@ -1,0 +1,35 @@
+--- upstream/crates/revmc-builtins/src/lib.rs
++++ evm2/crates/jit/builtins/src/lib.rs
+@@ -11,13 +11,13 @@
+ extern crate tracing;
+ 
+ use alloc::{boxed::Box, vec::Vec};
++use evm2_jit_context::{EvmContext, EvmWord};
+ use revm_interpreter::{
+     CallInput, CallInputs, CallScheme, CallValue, CreateInputs, CreateScheme, FrameInput,
+     InstructionResult, InterpreterAction, InterpreterResult, as_u64_saturated, as_usize_saturated,
+     interpreter_types::{InputsTr, MemoryTr},
+ };
+ use revm_primitives::{B256, Bytes, KECCAK_EMPTY, Log, LogData, U256, hardfork::SpecId};
+-use revmc_context::{EvmContext, EvmWord};
+ 
+ pub mod gas;
+ 
+@@ -78,7 +78,7 @@
+ #[cold]
+ fn fail(ecx: &mut EvmContext<'_>, e: BuiltinError) -> ! {
+     ecx.exit_result = e.into();
+-    unsafe { revmc_context::revmc_exit(ecx) }
++    unsafe { evm2_jit_context::revmc_exit(ecx) }
+ }
+ 
+ macro_rules! builtins {
+@@ -118,7 +118,7 @@
+ pub unsafe extern "C" fn __revmc_builtin_assert_spec_id(ecx: &EvmContext<'_>, expected: SpecId) {
+     assert_eq!(
+         ecx.spec_id, expected,
+-        "revmc panic: runtime spec_id does not match compilation spec_id"
++        "evm2_jit panic: runtime spec_id does not match compilation spec_id"
+     );
+ }
+ 

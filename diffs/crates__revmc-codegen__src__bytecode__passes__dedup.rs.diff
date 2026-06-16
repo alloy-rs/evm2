@@ -1,0 +1,20 @@
+--- upstream/crates/revmc-codegen/src/bytecode/passes/dedup.rs
++++ evm2/crates/jit/codegen/src/bytecode/passes/dedup.rs
+@@ -393,7 +393,7 @@
+         // Two byte-identical non-JUMPDEST JUMP tails with different resolved static targets.
+         // Must NOT be merged — the JUMP target is context-sensitive.
+         // Regression test for:
+-        // revmc-dedup-non-jumpdest-fallthrough-jump-tail-static-target-confusion
++        // evm2_jit-dedup-non-jumpdest-fallthrough-jump-tail-static-target-confusion
+         let bytecode = analyze_asm_with(
+             "
+             CALLDATASIZE
+@@ -442,7 +442,7 @@
+ 
+     #[test]
+     fn dedup_weth() {
+-        let code = fixture_entry_code(include_str!("../../../../../data/weth.json"));
++        let code = fixture_entry_code(include_str!("../../../../data/weth.json"));
+         let mut bytecode = crate::Bytecode::test(code);
+         bytecode.config = AnalysisConfig::DEDUP;
+         bytecode.analyze().unwrap();

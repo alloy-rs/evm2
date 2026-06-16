@@ -1,0 +1,22 @@
+[package]
+name = "evm2-jit-cli-tests"
+description = "EVM bytecode compiler CLI tests"
+homepage = "https://github.com/danipopes/evm2-jit/tree/main/crates/evm2-jit-cli-test"
+publish = false
+
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+categories.workspace = true
+keywords.workspace = true
+repository.workspace = true
+exclude.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+walkdir = "2.5"
+tester = "0.9"

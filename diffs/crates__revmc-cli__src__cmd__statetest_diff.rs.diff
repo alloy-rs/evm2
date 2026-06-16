@@ -1,0 +1,22 @@
+--- upstream/crates/revmc-cli/src/cmd/statetest_diff.rs
++++ evm2/crates/jit/cli/src/cmd/statetest_diff.rs
+@@ -3,8 +3,8 @@
+ use revm_context::cfg::CfgEnv;
+ use revm_primitives::{U256, hardfork::SpecId as SI};
+ use revm_statetest_types::{SpecName, TestSuite};
+-use revmc::runtime::{JitBackend, RuntimeConfig, RuntimeTuning};
+-use revmc_statetest::{diagnostic, runner::skip_test};
++use evm2_jit::runtime::{JitBackend, RuntimeConfig, RuntimeTuning};
++use evm2_jit_statetest::{diagnostic, runner::skip_test};
+ use std::path::PathBuf;
+ 
+ #[derive(Parser)]
+@@ -35,7 +35,7 @@
+             return Err(eyre!("Path not found: {}", self.path.display()));
+         }
+ 
+-        let test_files = revmc_statetest::find_all_json_tests(&self.path);
++        let test_files = evm2_jit_statetest::find_all_json_tests(&self.path);
+         if test_files.is_empty() {
+             return Err(eyre!("No JSON test files found in {}", self.path.display()));
+         }

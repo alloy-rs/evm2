@@ -1,0 +1,22 @@
+--- upstream/examples/compiler/Cargo.toml
++++ evm2/crates/jit/examples/compiler/Cargo.toml
+@@ -1,5 +1,5 @@
+ [package]
+-name = "revmc-examples-compiler"
++name = "evm2-jit-examples-compiler"
+ publish = false
+ 
+ version.workspace = true
+@@ -13,10 +13,10 @@
+ exclude.workspace = true
+ 
+ [build-dependencies]
+-revmc-build.workspace = true
++evm2-jit-build.workspace = true
+ 
+ [dependencies]
+-revmc = { workspace = true, features = ["llvm-prefer-dynamic"] }
++evm2-jit = { workspace = true, features = ["llvm-prefer-dynamic"] }
+ 
+ clap = { version = "4", features = ["derive"] }
+ eyre.workspace = true

@@ -1,0 +1,33 @@
+--- upstream/crates/revmc-runtime/src/runtime/worker.rs
++++ evm2/crates/jit/runtime/src/runtime/worker.rs
+@@ -212,7 +212,7 @@
+         let pool = (worker_count > 0).then(|| {
+             ThreadPoolBuilder::new()
+                 .num_threads(worker_count)
+-                .thread_name(|i| format!("revmc-{i:02}"))
++                .thread_name(|i| format!("evm2_jit-{i:02}"))
+                 .exit_handler(|_| clear_thread_local_compilers())
+                 .build()
+                 .expect("failed to spawn compile workers")
+@@ -478,7 +478,7 @@
+         match CompilerState::new(config, target) {
+             Ok(new_state) => {
+                 *state_slot = Some(new_state);
+-                revmc_llvm::global_gc();
++                evm2_jit_llvm::global_gc();
+             }
+             Err(e) => {
+                 error!(error = %e, "failed to recreate compiler");
+@@ -587,8 +587,10 @@
+         .map(|name| name.to_string_lossy().into_owned())
+         .collect();
+     if builtin_symbols.is_empty() {
+-        builtin_symbols =
+-            revmc_builtins::Builtin::ALL.iter().map(|builtin| builtin.name().to_string()).collect();
++        builtin_symbols = evm2_jit_builtins::Builtin::ALL
++            .iter()
++            .map(|builtin| builtin.name().to_string())
++            .collect();
+     }
+ 
+     debug!(

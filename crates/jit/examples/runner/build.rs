@@ -1,0 +1,24 @@
+use evm2_jit::{EvmCompiler, Result, SpecId, primitives::hex};
+use std::path::PathBuf;
+
+include!("./src/common.rs");
+
+fn main() -> Result<()> {
+    // Emit the configuration to run compiled bytecodes.
+    // This not used if we are only using statically linked bytecodes.
+    evm2_jit_build::emit();
+
+    // Compile and statically link a bytecode.
+    let name = "fibonacci";
+    let bytecode = FIBONACCI_CODE;
+
+    let out_dir = PathBuf::from(std::env::var("OUT_DIR")?);
+    let mut compiler = EvmCompiler::new_llvm(true)?;
+    compiler.translate(name, bytecode, SpecId::CANCUN)?;
+    let object = out_dir.join(name).with_extension("o");
+    compiler.write_object_to_file(&object)?;
+
+    cc::Build::new().object(&object).compile(name);
+
+    Ok(())
+}

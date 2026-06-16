@@ -1,0 +1,51 @@
+--- upstream/crates/revmc-codegen/src/compiler/mod.rs
++++ evm2/crates/jit/codegen/src/compiler/mod.rs
+@@ -4,13 +4,13 @@
+     Backend, Builder, Bytecode, EvmCompilerFn, EvmContext, EvmStack, FxHashMap, GasParams, Result,
+     bytecode::AnalysisConfig,
+ };
+-use revm_primitives::{Bytes, hardfork::SpecId};
+-use revmc_backend::{
++use evm2_jit_backend::{
+     Attribute, BackendConfig, FunctionAttributeLocation, Linkage, OptimizationLevel, eyre::ensure,
+     format_bytes,
+ };
+-use revmc_builtins::Builtins;
+-use revmc_context::RawEvmCompilerFn;
++use evm2_jit_builtins::Builtins;
++use evm2_jit_context::RawEvmCompilerFn;
++use revm_primitives::{Bytes, hardfork::SpecId};
+ use std::{
+     cell::Cell,
+     fs,
+@@ -112,10 +112,10 @@
+ }
+ 
+ #[cfg(feature = "llvm")]
+-impl EvmCompiler<revmc_llvm::EvmLlvmBackend> {
++impl EvmCompiler<evm2_jit_llvm::EvmLlvmBackend> {
+     /// Creates a new instance of the compiler with the LLVM backend.
+     pub fn new_llvm(aot: bool) -> Result<Self> {
+-        revmc_llvm::EvmLlvmBackend::new(aot).map(Self::new)
++        evm2_jit_llvm::EvmLlvmBackend::new(aot).map(Self::new)
+     }
+ }
+ 
+@@ -850,7 +850,7 @@
+             let file = fs::File::create(dump_dir.join("bytecode.dot"))?;
+             let mut writer = io::BufWriter::new(file);
+             let mut dot = String::new();
+-            bytecode.write_dot(&mut dot).map_err(|e| revmc_backend::eyre::eyre!("{e}"))?;
++            bytecode.write_dot(&mut dot).map_err(|e| evm2_jit_backend::eyre::eyre!("{e}"))?;
+             writer.write_all(dot.as_bytes())?;
+             writer.flush()?;
+         }
+@@ -987,7 +987,7 @@
+ 
+ #[allow(dead_code)]
+ mod default_attrs {
+-    use revmc_backend::Attribute;
++    use evm2_jit_backend::Attribute;
+ 
+     pub(crate) fn for_fn() -> impl Iterator<Item = Attribute> {
+         [

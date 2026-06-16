@@ -1,0 +1,11 @@
+--- upstream/crates/revmc-codegen/build.rs
++++ evm2/crates/jit/codegen/build.rs
+@@ -1,7 +1,7 @@
+ #![allow(missing_docs)]
+ 
+ fn main() {
+-    revmc_build::emit();
++    evm2_jit_build::emit();
+ 
+     // Detect `-Cforce-frame-pointers=yes` in rustflags and expose as a cfg.
+     println!("cargo:rustc-check-cfg=cfg(force_frame_pointers)");

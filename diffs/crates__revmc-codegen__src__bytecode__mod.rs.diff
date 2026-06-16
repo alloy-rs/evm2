@@ -1,0 +1,14 @@
+--- upstream/crates/revmc-codegen/src/bytecode/mod.rs
++++ evm2/crates/jit/codegen/src/bytecode/mod.rs
+@@ -2,10 +2,10 @@
+ 
+ use crate::FxHashMap;
+ use bitvec::vec::BitVec;
++use evm2_jit_backend::Result;
+ use oxc_index::IndexVec;
+ use revm_bytecode::opcode as op;
+ use revm_primitives::{U256, hardfork::SpecId};
+-use revmc_backend::Result;
+ use smallvec::SmallVec;
+ use std::{borrow::Cow, cell::RefCell};
+ 

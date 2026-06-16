@@ -1,0 +1,18 @@
+--- upstream/crates/revmc-statetest/src/diagnostic.rs
++++ evm2/crates/jit/statetest/src/diagnostic.rs
+@@ -1,6 +1,7 @@
+ // Diagnostic utilities for comparing interpreter vs JIT execution.
+ 
+ use crate::merkle_trie::compute_test_roots;
++use evm2_jit::{revm_evm::JitEvm, runtime::JitBackend};
+ use revm_context::{Context, block::BlockEnv, cfg::CfgEnv, tx::TxEnv};
+ use revm_context_interface::result::{EVMError, ExecutionResult, HaltReason, InvalidTransaction};
+ use revm_database::{self as database, bal::EvmDatabaseError};
+@@ -8,7 +9,6 @@
+ use revm_handler::{ExecuteCommitEvm, Handler, MainBuilder, MainContext};
+ use revm_inspector::{InspectCommitEvm, inspectors::TracerEip3155};
+ use revm_primitives::{B256, Bytes};
+-use revmc::{revm_evm::JitEvm, runtime::JitBackend};
+ use std::{convert::Infallible, io::stderr};
+ 
+ type ExecResult =
