@@ -51,3 +51,4 @@ evm = [
     "dep:revm-inspector",
     "dep:revm-state",
 ]
+evm2 = ["dep:evm2"]
