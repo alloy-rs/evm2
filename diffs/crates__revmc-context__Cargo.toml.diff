@@ -10,3 +10,21 @@
  
  version.workspace = true
  authors.workspace = true
+@@ -17,6 +17,8 @@
+ workspace = true
+ 
+ [dependencies]
++alloy-primitives.workspace = true
++evm2 = { workspace = true, optional = true }
+ revm-interpreter.workspace = true
+ revm-primitives.workspace = true
+ ruint.workspace = true
+@@ -30,6 +32,8 @@
+ [features]
+ default = ["std"]
+ std = [
++    "alloy-primitives/std",
++    "evm2?/std",
+     "revm-interpreter/std",
+     "revm-primitives/std",
+     "revm-context?/std",

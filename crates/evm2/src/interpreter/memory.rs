@@ -174,6 +174,18 @@ impl Memory {
         }
         self.slice_range(offset..offset + len)
     }
+
+    /// Returns all initialized memory bytes.
+    #[inline]
+    pub const fn as_slice(&self) -> &[u8] {
+        self.data.as_slice()
+    }
+
+    /// Returns all initialized memory bytes mutably.
+    #[inline]
+    pub const fn as_mut_slice(&mut self) -> &mut [u8] {
+        self.data.as_mut_slice()
+    }
 }
 
 unsafe fn set_data(dst: &mut [u8], src: &[u8], dst_offset: usize, src_offset: usize, len: usize) {

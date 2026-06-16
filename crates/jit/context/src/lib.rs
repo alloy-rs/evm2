@@ -28,6 +28,9 @@ mod jit_evm;
 #[cfg(feature = "evm")]
 pub use jit_evm::JitEvm;
 
+#[cfg(feature = "evm2")]
+pub mod evm2_api;
+
 /// Resume point for compiled EVM code after a CALL/CREATE suspension.
 ///
 /// Encoded as the interpreter's bytecode PC. `0` means no resume (initial state),

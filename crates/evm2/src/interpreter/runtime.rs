@@ -43,6 +43,47 @@ pub struct Interpreter<'frame, T: EvmTypes> {
     is_static: bool,
 }
 
+/// Interpreter state needed to build an external JIT call context.
+#[doc(hidden)]
+pub struct InterpreterJitContextParts<'a, 'frame, T: EvmTypes> {
+    /// Linear memory.
+    pub memory: &'a mut Memory,
+    /// Operand stack base pointer.
+    pub stack: *mut Word,
+    /// Active operand stack length.
+    pub stack_len: &'a mut usize,
+    /// Interpreter gas state.
+    pub gas: Gas,
+    /// Transaction-global environment.
+    pub tx_env: &'frame TxEnv<T>,
+    /// Frame-local message.
+    pub message: &'frame Message<T>,
+    /// Last call-like return data.
+    pub return_data: &'a Bytes,
+    /// Active bytecode.
+    pub bytecode: &'a Bytecode,
+    /// Active base specification ID.
+    pub spec: SpecId,
+    /// Active runtime version data.
+    pub version: &'a Version,
+    /// Whether the active frame forbids state-changing operations.
+    pub is_static: bool,
+}
+
+impl<T: EvmTypes> fmt::Debug for InterpreterJitContextParts<'_, '_, T> {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("InterpreterJitContextParts")
+            .field("memory", &self.memory)
+            .field("stack", &self.stack)
+            .field("stack_len", &self.stack_len)
+            .field("gas", &self.gas)
+            .field("spec", &self.spec)
+            .field("is_static", &self.is_static)
+            .finish_non_exhaustive()
+    }
+}
+
 // SAFETY: The interpreter's internal pointers are always valid. `pc` points into owned bytecode,
 // frame-local references are cleared before pooling, and host/inspector/version pointers are
 // installed for execution and not used after the owning execution context is gone.
@@ -122,11 +163,6 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
     }
 
     #[cfg(test)]
-    pub(crate) fn set_return_data(&mut self, return_data: Bytes) {
-        self.return_data = return_data;
-    }
-
-    #[cfg(test)]
     pub(crate) fn into_parts(self) -> (Box<StackBacking>, usize, Gas, Memory, Range<u32>) {
         (self.stack, self.stack_len, self.gas, self.memory, self.output)
     }
@@ -142,6 +178,14 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
     #[inline]
     pub fn pc(&self) -> usize {
         unsafe { self.pc.offset_from(self.bytecode.original_byte_slice().as_ptr()) as usize }
+    }
+
+    /// Sets the current bytecode-relative program counter.
+    #[inline]
+    #[doc(hidden)]
+    pub fn set_pc(&mut self, pc: usize) {
+        debug_assert!(pc <= self.bytecode.bytes_slice().len());
+        self.pc = unsafe { self.bytecode.bytes_slice().as_ptr().add(pc) };
     }
 
     /// Returns the current opcode.
@@ -168,10 +212,45 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         StackMut { stack: &mut self.stack, len: &mut self.stack_len }
     }
 
+    /// Returns the interpreter fields needed by external JIT execution.
+    #[inline]
+    #[doc(hidden)]
+    pub fn jit_context_parts_mut(&mut self) -> InterpreterJitContextParts<'_, 'frame, T> {
+        InterpreterJitContextParts {
+            memory: &mut self.memory,
+            stack: self.stack.as_mut_ptr().cast(),
+            stack_len: &mut self.stack_len,
+            gas: self.gas,
+            tx_env: {
+                // SAFETY: `tx_env` is initialized before execution starts.
+                unsafe { self.tx_env.unwrap_unchecked() }
+            },
+            message: {
+                // SAFETY: `message` is initialized before execution starts.
+                unsafe { self.message.unwrap_unchecked() }
+            },
+            return_data: &self.return_data,
+            bytecode: &self.bytecode,
+            spec: self.spec,
+            version: {
+                // SAFETY: `version` is initialized before execution starts.
+                unsafe { &*self.version }
+            },
+            is_static: self.is_static,
+        }
+    }
+
     /// Stops the interpreter with `stop`.
     #[inline]
     pub const fn set_stop(&mut self, stop: InstrStop) {
         self.result = Err(stop);
+    }
+
+    /// Sets the current interpreter gas state.
+    #[inline]
+    #[doc(hidden)]
+    pub const fn set_gas(&mut self, gas: Gas) {
+        self.gas = gas;
     }
 
     /// Returns the current linear memory.
@@ -209,6 +288,20 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
     #[inline]
     pub const fn return_data(&self) -> &Bytes {
         &self.return_data
+    }
+
+    /// Sets return data from the last call-like operation.
+    #[inline]
+    #[doc(hidden)]
+    pub fn set_return_data(&mut self, return_data: Bytes) {
+        self.return_data = return_data;
+    }
+
+    /// Returns a mutable reference to return data from the last call-like operation.
+    #[inline]
+    #[doc(hidden)]
+    pub const fn return_data_mut(&mut self) -> &mut Bytes {
+        &mut self.return_data
     }
 
     /// Returns the host implementation.
