@@ -177,7 +177,7 @@ macro_rules! builtins {
             }
 
             fn op(self) -> u8 {
-                use revm_bytecode::opcode::*;
+                use evm2::interpreter::op::*;
 
                 // _in_out
                 const _0_0: u8 = STOP;
@@ -232,7 +232,7 @@ builtins! {
         }
 
         let op = op.op();
-        let (inputs, outputs) = if let Some(info) = revm_bytecode::opcode::OPCODE_INFO[op as usize] {
+        let (inputs, outputs) = if let Some(info) = evm2::interpreter::opcode::OPCODE_INFO[op as usize] {
             (info.inputs(), info.outputs())
         } else {
             (0, 0)

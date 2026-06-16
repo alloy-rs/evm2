@@ -36,7 +36,23 @@
          let writes_ecx = param_attrs.iter().any(|p| {
              let writable = p.iter().any(|a| matches!(a, Attribute::Writable));
              let is_ecx =
-@@ -243,20 +238,20 @@
+@@ -182,7 +177,7 @@
+             }
+
+             fn op(self) -> u8 {
+-                use revm_bytecode::opcode::*;
++                use evm2::interpreter::op::*;
+
+                 // _in_out
+                 const _0_0: u8 = STOP;
+@@ -237,26 +232,26 @@
+         }
+
+         let op = op.op();
+-        let (inputs, outputs) = if let Some(info) = revm_bytecode::opcode::OPCODE_INFO[op as usize] {
++        let (inputs, outputs) = if let Some(info) = evm2::interpreter::opcode::OPCODE_INFO[op as usize] {
+             (info.inputs(), info.outputs())
+         } else {
              (0, 0)
          };
 

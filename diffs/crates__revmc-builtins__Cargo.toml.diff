@@ -10,16 +10,17 @@
 
  version.workspace = true
  authors.workspace = true
-@@ -17,7 +17,7 @@
+@@ -17,18 +17,18 @@
  workspace = true
 
  [dependencies]
 -revmc-context.workspace = true
++evm2.workspace = true
 +evm2-jit-context.workspace = true
 
  revm-primitives.workspace = true
  revm-interpreter.workspace = true
-@@ -25,10 +25,10 @@
+-revm-bytecode.workspace = true
  revm-context-interface.workspace = true
  paste.workspace = true
 
