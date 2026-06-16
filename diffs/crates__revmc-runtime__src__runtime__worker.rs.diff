@@ -29,5 +29,5 @@
 +            .map(|builtin| builtin.name().to_string())
 +            .collect();
      }
- 
+
      debug!(

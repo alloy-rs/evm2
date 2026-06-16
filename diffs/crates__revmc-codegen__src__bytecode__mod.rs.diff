@@ -1,7 +1,7 @@
 --- upstream/crates/revmc-codegen/src/bytecode/mod.rs
 +++ evm2/crates/jit/codegen/src/bytecode/mod.rs
 @@ -2,10 +2,10 @@
- 
+
  use crate::FxHashMap;
  use bitvec::vec::BitVec;
 +use evm2_jit_backend::Result;
@@ -11,11 +11,11 @@
 -use revmc_backend::Result;
  use smallvec::SmallVec;
  use std::{borrow::Cow, cell::RefCell};
- 
+
 @@ -31,10 +31,6 @@
  mod opcode;
  pub use opcode::*;
- 
+
 -/// Noop opcode used to test suspend-resume.
 -#[cfg(any(feature = "__fuzzing", test))]
 -pub(crate) const TEST_SUSPEND: u8 = 0x25;
@@ -46,16 +46,16 @@
 @@ -439,7 +435,7 @@
              self.dead_store_elim();
          }
- 
+
 -        self.calc_may_suspend();
 +        self.calc_has_recursive_frame_opcode();
- 
+
          self.construct_sections();
          self.construct_memory_sections();
 @@ -564,13 +560,12 @@
          marked_jump_dead
      }
- 
+
 -    /// Calculates whether the bytecode suspend suspend execution.
 -    ///
 -    /// This can only happen if the bytecode contains `*CALL*` or `*CREATE*` instructions.
@@ -70,12 +70,12 @@
 +            self.iter_insts().any(|(_, data)| data.is_recursive_frame_opcode());
 +        self.has_recursive_frame_opcode = has_recursive_frame_opcode;
      }
- 
+
      /// Constructs the sections in the bytecode.
 @@ -641,15 +636,14 @@
          self.has_dynamic_jumps
      }
- 
+
 -    /// Returns `true` if the bytecode may suspend execution, to be resumed later.
 -    pub(crate) fn may_suspend(&self) -> bool {
 -        self.may_suspend
@@ -83,7 +83,7 @@
 +    pub(crate) fn has_recursive_frame_opcode(&self) -> bool {
 +        self.has_recursive_frame_opcode
      }
- 
+
 -    /// Returns `true` if the stack argument's contents are observed by the caller after the
 -    /// function returns (either through `inspect_stack` mode or because execution may suspend).
 +    /// Returns `true` if the stack argument's contents are observed by the caller.
@@ -91,7 +91,7 @@
 -        self.config.contains(AnalysisConfig::INSPECT_STACK) || self.may_suspend()
 +        self.config.contains(AnalysisConfig::INSPECT_STACK)
      }
- 
+
      /// Returns `true` if the instruction is diverging.
 @@ -833,7 +827,7 @@
          let mut live = 0usize;
@@ -155,7 +155,7 @@
 @@ -1159,14 +1148,9 @@
              )
      }
- 
+
 -    /// Returns `true` if this instruction may suspend execution.
 +    /// Returns `true` if this instruction starts a recursive EVM frame.
      #[inline]

@@ -6,16 +6,16 @@
  # ///
 -"""Unified benchmark tool for revmc.
 +"""Unified benchmark tool for evm2-jit.
- 
+
  Collects codegen stats, compile times, jump resolution, and constant-input
  statistics across benchmarks. Supports diffing against a base git revision.
 @@ -685,7 +685,7 @@
          return False
- 
+
      def rust_log(self) -> str | None:
 -        return "revmc_codegen::bytecode=trace"
 +        return "evm2_jit_codegen::bytecode=trace"
- 
+
      @staticmethod
      def _last_match(pattern: str, text: str) -> int:
 @@ -756,7 +756,7 @@
@@ -29,11 +29,11 @@
      "block_max",
 @@ -770,7 +770,7 @@
          return False
- 
+
      def rust_log(self) -> str | None:
 -        return "revmc_codegen::bytecode=trace"
 +        return "evm2_jit_codegen::bytecode=trace"
- 
+
      @staticmethod
      def _parse(output: str) -> dict[str, float] | None:
 @@ -780,7 +780,7 @@
@@ -56,15 +56,15 @@
              "block_max": int(m.group(8)),
 @@ -845,7 +845,7 @@
          return False
- 
+
      def rust_log(self) -> str | None:
 -        return "revmc_codegen::bytecode=trace"
 +        return "evm2_jit_codegen::bytecode=trace"
- 
+
      @staticmethod
      def _pct(a, b):
 @@ -1002,7 +1002,7 @@
- 
+
  def main():
      parser = argparse.ArgumentParser(
 -        description="Unified benchmark tool for revmc.",
@@ -80,4 +80,4 @@
 +        help="Report IR stats (inst counts, block size distribution, recursive frame opcodes)",
      )
      args = parser.parse_args()
- 
+

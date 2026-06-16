@@ -1120,7 +1120,7 @@ pub trait CustomDefinitionGenerator {
     /// LookupState will contain a pointer to an LLVMOrcLookupStateRef object. This can optionally
     /// be modified to make the definition generation process asynchronous: If the LookupStateRef
     /// value is copied, and the original LLVMOrcLookupStateRef set to null, the lookup will be
-    /// suspended. Once the asynchronous definition process has been completed clients must call
+    /// paused. Once the asynchronous definition process has been completed clients must call
     /// LLVMOrcLookupStateContinueLookup to continue the lookup (this should be done
     /// unconditionally, even if errors have occurred in the mean time, to free the lookup state
     /// memory and notify the query object of the failures). If LookupState is captured this

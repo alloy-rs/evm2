@@ -3,7 +3,7 @@
 @@ -10,14 +10,13 @@
  #[cfg(feature = "ir")]
  extern crate tracing;
- 
+
 -use alloc::{boxed::Box, vec::Vec};
 +use alloc::vec::Vec;
 +use evm2_jit_context::{EvmContext, EvmWord};
@@ -15,13 +15,13 @@
  };
  use revm_primitives::{B256, Bytes, KECCAK_EMPTY, Log, LogData, U256, hardfork::SpecId};
 -use revmc_context::{EvmContext, EvmWord};
- 
+
  pub mod gas;
- 
+
 @@ -47,17 +46,6 @@
      StaticCall,
  }
- 
+
 -impl From<CallKind> for CallScheme {
 -    fn from(kind: CallKind) -> Self {
 -        match kind {
@@ -43,7 +43,7 @@
 -    unsafe { revmc_context::revmc_exit(ecx) }
 +    unsafe { evm2_jit_context::revmc_exit(ecx) }
  }
- 
+
  macro_rules! builtins {
 @@ -118,7 +106,7 @@
  pub unsafe extern "C" fn __revmc_builtin_assert_spec_id(ecx: &EvmContext<'_>, expected: SpecId) {
@@ -53,7 +53,7 @@
 +        "evm2_jit panic: runtime spec_id does not match compilation spec_id"
      );
  }
- 
+
 @@ -635,66 +623,8 @@
      sp: *mut EvmWord,
      create_kind: CreateKind,
@@ -121,7 +121,7 @@
 +    let _ = (ecx, sp, create_kind);
 +    Err(InstructionResult::FatalExternalError.into())
  }
- 
+
  #[unsafe(no_mangle)]
 @@ -703,123 +633,8 @@
      sp: *mut EvmWord,
@@ -247,7 +247,7 @@
 +    let _ = (ecx, sp, call_kind);
 +    Err(InstructionResult::FatalExternalError.into())
  }
- 
+
  #[unsafe(no_mangle)]
 @@ -837,8 +652,7 @@
      } else {
@@ -258,7 +258,7 @@
 +    ecx.output = output;
      Err(result.into())
  }
- 
+
 @@ -857,8 +671,7 @@
      } else {
          Bytes::new()
@@ -268,4 +268,4 @@
 +    ecx.output = output;
      Err(result.into())
  }
- 
+

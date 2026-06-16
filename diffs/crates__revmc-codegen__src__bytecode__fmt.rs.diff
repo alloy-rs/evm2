@@ -55,7 +55,7 @@
      pub(super) const BRANCH_BORDER: &str = TEAL;
 @@ -377,13 +377,14 @@
              let first = self.inst(block.insts.start);
- 
+
              // Color based on block behavior.
 -            let has_suspend = block.insts().any(|i| self.inst(i).may_suspend());
 +            let has_recursive_frame =
@@ -73,7 +73,7 @@
              } else {
 @@ -528,7 +529,7 @@
      use revm_primitives::hardfork::SpecId;
- 
+
      /// Test bytecode with SSTORE (splits gas but not stack), a loop (back-edge), and CALL
 -    /// (suspending instruction that splits both gas and stack sections).
 +    /// (recursive frame instruction that splits both gas and stack sections).
@@ -88,12 +88,12 @@
 -; insts=19 live=19 dead=0 noops=10 suspends=1 blocks=3 block_min=2 block_max=10 block_avg=6.3 block_median=7
 +; spec_id=Osaka has_dynamic_jumps=false has_recursive_frame_opcode=true
 +; insts=19 live=19 dead=0 noops=11 recursive_frame_opcodes=1 blocks=3 block_min=2 block_max=10 block_avg=6.3 block_median=7
- 
+
  bb0:           ; stack_in=0 max_growth=1 predecessors=
    PUSH1 0x03   ; ic= 0 pc= 0 gas=11 noop
 @@ -581,14 +582,14 @@
    JUMPI %bb1   ; ic= 8 pc=12
- 
+
  bb2:           ; stack_in=0 max_growth=7 predecessors=bb1
 -  PUSH1 0x00   ; ic= 9 pc=13 gas=121
 +  PUSH1 0x00   ; ic= 9 pc=13 gas=121 noop
@@ -107,4 +107,4 @@
 +  CALL         ; ic=16 pc=28 recursive_frame
    POP          ; ic=17 pc=29 gas=2 stack_in=1 max_growth=0
    STOP         ; ic=18 pc=30
- 
+

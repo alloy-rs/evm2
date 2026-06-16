@@ -1,16 +1,16 @@
 --- upstream/crates/revmc-llvm/cpp/lib.cpp
 +++ evm2/crates/jit/llvm/cpp/lib.cpp
 @@ -22,7 +22,7 @@
- 
+
  using namespace llvm;
- 
+
 -extern "C" LLVMAttributeRef revmc_llvm_create_initializes_attr(LLVMContextRef C,
 +extern "C" LLVMAttributeRef evm2_jit_llvm_create_initializes_attr(LLVMContextRef C,
                                                                 int64_t Lower,
                                                                 int64_t Upper) {
    auto &Ctx = *unwrap(C);
 @@ -33,7 +33,7 @@
- 
+
  /// Remove a JITDylib from the ExecutionSession.
  extern "C" LLVMErrorRef
 -revmc_llvm_execution_session_remove_jit_dylib(LLVMOrcExecutionSessionRef ES,
@@ -19,7 +19,7 @@
    auto *Session = reinterpret_cast<orc::ExecutionSession *>(ES);
    auto *Dylib = reinterpret_cast<orc::JITDylib *>(JD);
 @@ -42,7 +42,7 @@
- 
+
  /// Add a JITDylib to the link order of another JITDylib.
  extern "C" void
 -revmc_llvm_jit_dylib_add_to_link_order(LLVMOrcJITDylibRef JD,
@@ -83,7 +83,7 @@
    const auto &TT = Jit->getTargetTriple();
 @@ -338,7 +338,7 @@
  }
- 
+
  extern "C" void
 -revmc_llvm_target_machine_set_opt_level(LLVMTargetMachineRef TM,
 +evm2_jit_llvm_target_machine_set_opt_level(LLVMTargetMachineRef TM,
@@ -93,7 +93,7 @@
 @@ -359,6 +359,6 @@
    Machine->setOptLevel(L);
  }
- 
+
 -extern "C" void revmc_llvm_set_dso_local(LLVMValueRef Val, bool Local) {
 +extern "C" void evm2_jit_llvm_set_dso_local(LLVMValueRef Val, bool Local) {
    unwrap<GlobalValue>(Val)->setDSOLocal(Local);

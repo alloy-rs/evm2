@@ -10,7 +10,7 @@
              "
              CALLDATASIZE
 @@ -442,7 +442,7 @@
- 
+
      #[test]
      fn dedup_weth() {
 -        let code = fixture_entry_code(include_str!("../../../../../data/weth.json"));

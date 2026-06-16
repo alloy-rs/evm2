@@ -2,7 +2,7 @@
 +++ evm2/crates/jit/codegen/src/tests/mod.rs
 @@ -7,16 +7,14 @@
  )]
- 
+
  use crate::*;
 +use evm2_jit_builtins::gas;
  use revm_bytecode::opcode as op;
@@ -16,19 +16,19 @@
      Address, B256, Bytes, KECCAK_EMPTY, Log, LogData, hardfork::SpecId, hex, keccak256,
  };
 -use revmc_builtins::gas;
- 
+
  /// `KECCAK256` opcode gas cost (base + dynamic).
  const fn keccak256_cost(len: u64) -> Option<u64> {
 @@ -52,16 +50,14 @@
  mod meta;
- 
+
  mod fibonacci;
 -mod resume;
 -mod resume_at_call;
- 
+
  mod runner;
  pub use runner::*;
- 
+
  #[cfg(feature = "llvm")]
  pub fn with_jit_compiler<R>(
 -    opt_level: revmc_backend::OptimizationLevel,
@@ -41,7 +41,7 @@
 @@ -86,6 +82,44 @@
      0x7FFFFFFFFFFFFFFF,
  ]);
- 
+
 +matrix_tests!(
 +    reject_recursive_frame_opcodes = |jit| {
 +        let cases: &[&[u8]] = &[
@@ -225,7 +225,7 @@
 @@ -1456,277 +1375,6 @@
          }),
      }
- 
+
 -    // Tests for CALL gas accounting fix.
 -    // JIT CALL gas must match interpreter across specs and value-transfer scenarios.
 -    call_gas {
@@ -513,7 +513,7 @@
 -            ),
 +            expected_output: Some(&U256::from(0x2a).to_be_bytes::<32>()),
          }),
- 
+
          // Same class of bug but triggered by a deduped reachable JUMPDEST block rather than
 @@ -2041,13 +1683,7 @@
              expected_return: InstructionResult::Return,
@@ -528,7 +528,7 @@
 -            ),
 +            expected_output: Some(&U256::from(0x2a).to_be_bytes::<32>()),
          }),
- 
+
          dedup_false_jumpi_non_jumpdest_fallthrough(@raw {
 @@ -2214,13 +1850,7 @@
              expected_stack: STACK_WHAT_INTERPRETER_SAYS,

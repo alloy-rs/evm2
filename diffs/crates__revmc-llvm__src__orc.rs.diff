@@ -17,7 +17,16 @@
 +            crate::cpp::evm2_jit_llvm_jit_dylib_add_to_link_order(self.as_inner(), other.as_inner())
          };
      }
- 
+
+@@ -1120,7 +1120,7 @@
+     /// LookupState will contain a pointer to an LLVMOrcLookupStateRef object. This can optionally
+     /// be modified to make the definition generation process asynchronous: If the LookupStateRef
+     /// value is copied, and the original LLVMOrcLookupStateRef set to null, the lookup will be
+-    /// suspended. Once the asynchronous definition process has been completed clients must call
++    /// paused. Once the asynchronous definition process has been completed clients must call
+     /// LLVMOrcLookupStateContinueLookup to continue the lookup (this should be done
+     /// unconditionally, even if errors have occurred in the mean time, to free the lookup state
+     /// memory and notify the query object of the failures). If LookupState is captured this
 @@ -1295,7 +1295,7 @@
      /// runs inline on the thread that triggers it — no background threads.
      pub fn concurrent_compiler(mut self) -> Self {
@@ -43,7 +52,7 @@
 -        cvt(unsafe { crate::cpp::revmc_llvm_lljit_enable_perf_support(self.as_inner()) })
 +        cvt(unsafe { crate::cpp::evm2_jit_llvm_lljit_enable_perf_support(self.as_inner()) })
      }
- 
+
      /// Install `SimplePerfSupportPlugin` on the LLJIT's `ObjectLinkingLayer`.
 @@ -1500,7 +1500,7 @@
      /// indefinitely. Prefer [`enable_perf_support`](Self::enable_perf_support)
@@ -52,7 +61,7 @@
 -        cvt(unsafe { crate::cpp::revmc_llvm_lljit_enable_simple_perf(self.as_inner()) })
 +        cvt(unsafe { crate::cpp::evm2_jit_llvm_lljit_enable_simple_perf(self.as_inner()) })
      }
- 
+
      /// Install the plugin that submits debug objects to the executor via the
 @@ -1514,7 +1514,7 @@
      /// automatically registered so that GDB, LLDB, `perf`, and other profilers
@@ -62,4 +71,4 @@
 +        cvt(unsafe { crate::cpp::evm2_jit_llvm_lljit_enable_debug_support(self.as_inner()) })
      }
  }
- 
+

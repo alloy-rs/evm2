@@ -74,12 +74,6 @@ local_rel_for() {
         crates/revmc-builtins/*)
             printf 'crates/jit/builtins/%s\n' "${rel#crates/revmc-builtins/}"
             ;;
-        crates/revmc-cli/*)
-            printf 'crates/jit/cli/%s\n' "${rel#crates/revmc-cli/}"
-            ;;
-        crates/revmc-cli-tests/*)
-            printf 'crates/jit/cli-tests/%s\n' "${rel#crates/revmc-cli-tests/}"
-            ;;
         crates/revmc-codegen/*)
             printf 'crates/jit/codegen/%s\n' "${rel#crates/revmc-codegen/}"
             ;;
@@ -92,10 +86,7 @@ local_rel_for() {
         crates/revmc-runtime/*)
             printf 'crates/jit/runtime/%s\n' "${rel#crates/revmc-runtime/}"
             ;;
-        crates/revmc-statetest/*)
-            printf 'crates/jit/statetest/%s\n' "${rel#crates/revmc-statetest/}"
-            ;;
-        data/* | docs/* | examples/* | fuzz/* | scripts/* | tests/codegen/*)
+        data/* | docs/* | examples/* | scripts/* | tests/codegen/*)
             printf 'crates/jit/%s\n' "$rel"
             ;;
         *)
@@ -108,7 +99,7 @@ add_file AGENTS.md
 add_file CHANGELOG.md
 add_file README.md
 
-for dir in crates data docs examples fuzz scripts tests/codegen; do
+for dir in crates data docs examples scripts tests/codegen; do
     add_tree "$dir"
 done
 
@@ -127,6 +118,7 @@ for rel in "${files[@]}"; do
         status=$?
         if [[ $status -eq 1 ]]; then
             mv "$tmp_file" "$diff_file"
+            sed -i 's/[[:blank:]]\+$//' "$diff_file"
         else
             rm "$tmp_file"
             exit "$status"

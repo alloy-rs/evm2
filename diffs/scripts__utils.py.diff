@@ -3,7 +3,7 @@
 @@ -1,4 +1,4 @@
 -"""Shared utilities for revmc analysis scripts."""
 +"""Shared utilities for evm2-jit analysis scripts."""
- 
+
  import os
  import re
 @@ -39,7 +39,7 @@
@@ -12,6 +12,6 @@
      subprocess.run(["cargo", "build", "--quiet"], check=True, cwd=root, env=env)
 -    return os.path.join(target_dir, "debug", "revmc")
 +    return os.path.join(target_dir, "debug", "evm2-jit")
- 
- 
+
+
  def get_benches(binary: str) -> list[str]:

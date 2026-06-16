@@ -1,13 +1,11 @@
 //! Simple JIT compiler example.
-//!
-//! For a more complete example, see the `evm2-jit-cli` crate.
 
 use clap::Parser;
 use eyre::Context;
 use evm2_jit::{
     EvmCompiler, SpecId as Evm2SpecId,
-    context_interface::host::DummyHost,
     interpreter::{
+        context_interface::host::DummyHost,
         Interpreter,
         interpreter::{ExtBytecode, InputsImpl, SharedMemory},
     },

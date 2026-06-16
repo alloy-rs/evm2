@@ -24,10 +24,10 @@ Using LLVM ORC's remote executor APIs (`ExecutorProcessControl`, `SimpleRemoteEP
 Current prototype:
 
 - `RuntimeConfig::jit_mode = JitMode::OutOfProcess` makes the runtime keep a global persistent helper process spawned via `RuntimeConfig::jit_helper_path`, or `std::env::current_exe()` when unset.
-- `RuntimeConfig::default()` uses plain in-process defaults. `JitBackend::new` applies `RuntimeConfig::with_env_overrides()`, which recognizes `EVM2_JIT_JIT_MODE=out-of-process` and `EVM2_JIT_JIT_MODE=in-process`; other spellings are rejected. `EVM2_JIT_JIT_HELPER_PATH` overrides the helper executable path. Test harnesses should point this at a binary that calls `evm2-jit::runtime::maybe_run_jit_helper()` at startup, such as `target/debug/evm2-jit`.
+- `RuntimeConfig::default()` uses plain in-process defaults. `JitBackend::new` applies `RuntimeConfig::with_env_overrides()`, which recognizes `EVM2_JIT_JIT_MODE=out-of-process` and `EVM2_JIT_JIT_MODE=in-process`; other spellings are rejected. `EVM2_JIT_JIT_HELPER_PATH` overrides the helper executable path. Test harnesses should point this at a binary that calls `evm2-jit::runtime::maybe_run_jit_helper()` at startup, such as `target/debug/evm2` built with the `jit` feature.
 - `EVM2_JIT_JIT_HELPER_MEMORY_LIMIT_BYTES` applies a Unix `RLIMIT_AS` limit to helper processes before `exec`.
 - `EVM2_JIT_JIT_HELPER_CPU_COUNT` limits helper CPU affinity on Linux before `exec`.
-- Helper binaries must call `evm2-jit::runtime::maybe_run_jit_helper()` at process startup. `evm2-jit-cli` does this already.
+- Helper binaries must call `evm2-jit::runtime::maybe_run_jit_helper()` at process startup. The root `evm2` binary does this when built with the `jit` feature.
 - Workers send length-prefixed wincode-serialized JIT object requests to the helper over stdin and receive length-prefixed wincode-serialized responses from stdout.
 - The parent links returned object bytes into its local ORC instance, resolves the symbol, and constructs `JitCodeBacking` with a parent-owned `ResourceTracker`.
 - `RuntimeTuning::jit_timeout` bounds each helper compilation; timed-out helpers are killed and replaced on the next job.

@@ -17,7 +17,7 @@
  #[cfg(feature = "llvm")]
 -use revmc_context::RawEvmCompilerFn;
 +use evm2_jit_context::RawEvmCompilerFn;
- 
+
  /// The resident map type: code_hash+spec_id → compiled program.
  pub(crate) type ResidentMap = DashMap<RuntimeCacheKey, Arc<CompiledProgram>, DefaultHashBuilder>;
 @@ -87,7 +88,7 @@
@@ -35,6 +35,6 @@
      };
 -    use revm_primitives::hardfork::SpecId;
 +    use evm2::SpecId;
- 
+
      /// PUSH1 0x42 PUSH0 MSTORE PUSH1 0x20 PUSH0 RETURN.
      const BYTECODE_RET42: &[u8] = &[0x60, 0x42, 0x5f, 0x52, 0x60, 0x20, 0x5f, 0xf3];

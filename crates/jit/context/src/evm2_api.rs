@@ -632,12 +632,11 @@ fn to_revm_spec_id(spec_id: SpecId) -> RevmSpecId {
 /// value to [`InstrStop`]: evm2 intentionally uses a different layout for some invalid-opcode
 /// variants.
 #[inline]
-pub const fn instr_stop_from_instruction_result(result: InstructionResult) -> InstrStop {
+pub fn instr_stop_from_instruction_result(result: InstructionResult) -> InstrStop {
     match result {
         InstructionResult::Stop => InstrStop::Stop,
         InstructionResult::Return => InstrStop::Return,
         InstructionResult::SelfDestruct => InstrStop::SelfDestruct,
-        InstructionResult::Suspend => InstrStop::FatalExternalError,
         InstructionResult::Revert => InstrStop::Revert,
         InstructionResult::CallTooDeep => InstrStop::CallTooDeep,
         InstructionResult::OutOfFunds => InstrStop::OutOfFunds,
@@ -669,6 +668,7 @@ pub const fn instr_stop_from_instruction_result(result: InstructionResult) -> In
         InstructionResult::CreateInitCodeSizeLimit => InstrStop::CreateInitCodeSizeLimit,
         InstructionResult::FatalExternalError => InstrStop::FatalExternalError,
         InstructionResult::InvalidImmediateEncoding => InstrStop::InvalidImmediateEncoding,
+        _ => unreachable!("compiled evm2 JIT code returned unsupported instruction result"),
     }
 }
 
@@ -696,10 +696,6 @@ mod tests {
         assert_eq!(
             instr_stop_from_instruction_result(InstructionResult::InvalidFEOpcode),
             InstrStop::InvalidOpcode
-        );
-        assert_eq!(
-            instr_stop_from_instruction_result(InstructionResult::Suspend),
-            InstrStop::FatalExternalError
         );
     }
 

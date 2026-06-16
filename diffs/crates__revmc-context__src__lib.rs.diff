@@ -12,11 +12,16 @@
 +    interpreter_types::{LegacyBytecode, ReturnData, RuntimeFlag},
  };
  use revm_primitives::{Address, B256, Bytes, Log, U256, hardfork::SpecId, ruint};
- 
-@@ -28,51 +27,8 @@
- #[cfg(feature = "evm")]
- pub use jit_evm::JitEvm;
- 
+
+@@ -23,56 +22,8 @@
+ use arch::revmc_entry;
+ pub use arch::revmc_exit;
+
+-#[cfg(feature = "evm")]
+-mod jit_evm;
+-#[cfg(feature = "evm")]
+-pub use jit_evm::JitEvm;
+-
 -/// Resume point for compiled EVM code after a CALL/CREATE suspension.
 -///
 -/// Encoded as the interpreter's bytecode PC. `0` means no resume (initial state),
@@ -64,10 +69,10 @@
 -}
 +#[cfg(feature = "evm2")]
 +pub mod evm2_api;
- 
+
  /// The EVM bytecode compiler runtime context.
  ///
-@@ -92,17 +48,12 @@
+@@ -92,17 +43,12 @@
      pub gas: Gas,
      /// The host.
      pub host: &'a mut dyn Host,
@@ -85,7 +90,7 @@
      /// The contract bytecode, for CODECOPY at runtime.
      pub bytecode: *const [u8],
      /// Optional callback invoked by the LOG builtin after constructing the log,
-@@ -126,6 +77,9 @@
+@@ -126,6 +72,9 @@
      /// Cached length of the current memory context in bytes.
      /// Refreshed after any memory resize.
      pub mem_len: usize,
@@ -93,10 +98,10 @@
 +    #[doc(hidden)]
 +    pub output: Bytes,
  }
- 
+
  // Static assertions to ensure the struct layout matches expectations.
-@@ -135,10 +89,6 @@
- 
+@@ -135,10 +84,6 @@
+
      // Key fields accessed by JIT code
      assert!(offset_of!(EvmContext<'_>, memory) == 0);
 -    assert!(offset_of!(EvmContext<'_>, gas) == 16);
@@ -104,9 +109,9 @@
 -    assert!(offset_of!(EvmContext<'_>, resume_at) == 120);
 -    assert!(offset_of!(EvmContext<'_>, calldatasize) == 160);
  };
- 
+
  impl fmt::Debug for EvmContext<'_> {
-@@ -160,7 +110,6 @@
+@@ -160,7 +105,6 @@
          interpreter: &'a mut Interpreter,
          host: &'b mut dyn Host,
      ) -> (Self, &'a mut EvmStack, &'a mut usize) {
@@ -114,7 +119,7 @@
          let (stack, stack_len) = EvmStack::from_interpreter_stack(&mut interpreter.stack);
          let bytecode = interpreter.bytecode.bytecode_slice() as *const [u8];
          let calldatasize = interpreter.input.input.len();
-@@ -170,11 +119,9 @@
+@@ -170,11 +114,9 @@
              input: &mut interpreter.input,
              gas: interpreter.gas,
              host,
@@ -126,7 +131,7 @@
              bytecode,
              on_log: None,
              calldatasize,
-@@ -183,6 +130,7 @@
+@@ -183,6 +125,7 @@
              gas_params,
              mem_base: ptr::null_mut(),
              mem_len: 0,
@@ -134,7 +139,7 @@
          };
          this.refresh_memory_cache();
          (this, stack, stack_len)
-@@ -204,7 +152,7 @@
+@@ -204,7 +147,7 @@
  /// # Examples
  ///
  /// ```no_run
@@ -143,8 +148,8 @@
  ///
  /// extern_revmc! {
  ///    /// A simple function.
-@@ -274,8 +222,8 @@
- 
+@@ -274,8 +217,8 @@
+
      /// Calls the function by re-using the interpreter's resources.
      ///
 -    /// This behaves similarly to `Interpreter::run_plain`, returning an [`InstructionResult`]
@@ -154,7 +159,7 @@
      ///
      /// # Safety
      ///
-@@ -284,7 +232,7 @@
+@@ -284,7 +227,7 @@
          self,
          interpreter: &mut Interpreter,
          host: &mut dyn Host,
@@ -162,8 +167,8 @@
 +    ) -> InterpreterResult {
          self.call_with_interpreter_inner(interpreter, host, |_| {})
      }
- 
-@@ -303,7 +251,7 @@
+
+@@ -303,7 +246,7 @@
          interpreter: &mut Interpreter,
          host: &mut dyn Host,
          configure: impl FnOnce(&mut EvmContext<'_>),
@@ -171,8 +176,8 @@
 +    ) -> InterpreterResult {
          self.call_with_interpreter_inner(interpreter, host, configure)
      }
- 
-@@ -312,16 +260,12 @@
+
+@@ -312,16 +255,12 @@
          interpreter: &mut Interpreter,
          host: &mut dyn Host,
          configure: impl FnOnce(&mut EvmContext<'_>),
@@ -184,26 +189,26 @@
              EvmContext::from_interpreter_with_stack(interpreter, host);
          configure(&mut ecx);
          let result = self.call(stack, stack_len, &mut ecx);
- 
+
 -        let resume_at = ecx.resume_at;
 -
          // Set the remaining gas to 0 if the result is `OutOfGas`,
          // as it might have overflown inside of the function.
          if result == InstructionResult::OutOfGas {
-@@ -329,23 +273,16 @@
+@@ -329,23 +268,16 @@
          }
- 
+
          let return_data_is_empty = ecx.return_data.is_empty();
 -        interpreter.gas = ecx.gas;
 +        let gas = ecx.gas;
 +        let output = core::mem::take(&mut ecx.output);
 +        drop(ecx);
 +        interpreter.gas = gas;
- 
+
          if return_data_is_empty {
              interpreter.return_data.0.clear();
          }
- 
+
 -        resume_at.store(interpreter);
 -
 -        if let Some(action) = interpreter.bytecode.action.take() {
@@ -217,5 +222,5 @@
 -        }
 +        InterpreterResult { result, output, gas: interpreter.gas }
      }
- 
+
      /// Calls the function.

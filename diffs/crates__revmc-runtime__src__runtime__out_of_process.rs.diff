@@ -14,12 +14,12 @@
 @@ -35,7 +35,7 @@
  use wait_timeout::ChildExt;
  use wincode::{SchemaRead, SchemaWrite};
- 
+
 -const HELPER_ENV: &str = "REVMC_JIT_HELPER";
 +const HELPER_ENV: &str = "EVM2_JIT_JIT_HELPER";
  const GAS_PARAM_COUNT: usize = 256;
  const HELPER_PAUSE_TIMEOUT: Duration = Duration::from_millis(100);
- 
+
 @@ -566,7 +566,7 @@
      let req = HelperRequest::Compile(HelperCompile {
          id,
@@ -46,5 +46,5 @@
 +    let spec_id = SpecId::try_from_u32(u32::from(req.spec_id))
 +        .ok_or_else(|| eyre::eyre!("invalid spec id"))?;
      let opt_level = opt_level_from_u8(req.opt_level)?;
- 
+
      let job = CompileJob {

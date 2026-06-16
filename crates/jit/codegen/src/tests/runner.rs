@@ -8,7 +8,7 @@ use context_interface::{
 };
 use revm_bytecode::opcode as op;
 use revm_interpreter::{
-    CallInput, Gas, Host, InputsImpl, Interpreter, InterpreterAction, SharedMemory,
+    CallInput, Gas, Host, InputsImpl, Interpreter, SharedMemory,
     instructions::{gas_table_spec, instruction_table},
     interpreter::ExtBytecode,
 };
@@ -522,12 +522,12 @@ fn run_compiled_test_case(test_case: &TestCase<'_>, f: EvmCompilerFn) {
         let table = instruction_table::<revm_interpreter::interpreter::EthInterpreter, TestHost>();
         let gas_table = gas_table_spec(spec_id);
         let mut int_host = TestHost::with_spec(spec_id);
-        let interpreter_action = interpreter.run_plain(&table, &gas_table, &mut int_host);
-
-        let (int_result, interpreter_output) = match &interpreter_action {
-            InterpreterAction::Return(result) => (result.result, result.output.clone()),
-            _ => (InstructionResult::Stop, Bytes::new()),
-        };
+        let interpreter_result = interpreter
+            .run_plain(&table, &gas_table, &mut int_host)
+            .into_result_return()
+            .expect("plain interpreter run should return a result");
+        let int_result = interpreter_result.result;
+        let interpreter_output = interpreter_result.output;
 
         let mut expected_return = expected_return;
         if expected_return == RETURN_WHAT_INTERPRETER_SAYS {

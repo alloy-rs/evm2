@@ -24,7 +24,7 @@ workspace = true
 evm2.workspace = true
 evm2-jit-backend.workspace = true
 evm2-jit-builtins = { workspace = true, features = ["ir"] }
-evm2-jit-context = { workspace = true, features = ["evm"] }
+evm2-jit-context.workspace = true
 evm2-jit-llvm = { workspace = true, optional = true }
 
 alloy-primitives = { workspace = true, features = ["std", "map-fxhash"] }
@@ -59,7 +59,6 @@ evm2-jit-build.workspace = true
 
 [dev-dependencies]
 evm2-jit-context.workspace = true
-evm2-jit-statetest = { path = "../statetest" }
 
 paste.workspace = true
 similar-asserts = "2.0"

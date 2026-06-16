@@ -21,7 +21,7 @@
 @@ -235,9 +235,12 @@
              self.gas.process_extra(bytecode.gas_params.exp_cost(exponent));
          }
- 
+
 -        // Dynamic-gas, branching, and suspending instructions end both sections.
 +        // Dynamic-gas, branching, and recursive-frame instructions end both sections.
          let next = inst + 1;

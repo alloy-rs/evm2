@@ -2,7 +2,7 @@
 +++ evm2/crates/jit/builtins/src/macros.rs
 @@ -37,16 +37,6 @@
  }
- 
+
  #[collapse_debuginfo(yes)]
 -macro_rules! pop {
 -    ($sp:expr; $($x:ident),* $(,)?) => {

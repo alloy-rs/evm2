@@ -8,11 +8,11 @@
  use revm_bytecode::opcode as op;
  use revm_interpreter::InstructionResult;
 @@ -21,7 +21,7 @@
- 
+
      unsafe { compiler.clear() }.unwrap();
      compiler.inspect_stack(true);
 -    let f = unsafe { compiler.jit("fib", &code, DEF_SPEC) }.unwrap();
 +    let f = unsafe { compiler.jit("fib", &code, from_revm_spec_id(DEF_SPEC)) }.unwrap();
- 
+
      with_evm_context(&code, DEF_SPEC, |ecx, stack, stack_len| {
          if dynamic {

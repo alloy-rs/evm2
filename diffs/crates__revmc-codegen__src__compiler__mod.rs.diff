@@ -1,7 +1,7 @@
 --- upstream/crates/revmc-codegen/src/compiler/mod.rs
 +++ evm2/crates/jit/codegen/src/compiler/mod.rs
 @@ -2,15 +2,16 @@
- 
+
  use crate::{
      Backend, Builder, Bytecode, EvmCompilerFn, EvmContext, EvmStack, FxHashMap, GasParams, Result,
 -    bytecode::AnalysisConfig,
@@ -24,7 +24,7 @@
      fs,
 @@ -112,10 +113,10 @@
  }
- 
+
  #[cfg(feature = "llvm")]
 -impl EvmCompiler<revmc_llvm::EvmLlvmBackend> {
 +impl EvmCompiler<evm2_jit_llvm::EvmLlvmBackend> {
@@ -34,13 +34,13 @@
 +        evm2_jit_llvm::EvmLlvmBackend::new(aot).map(Self::new)
      }
  }
- 
+
 @@ -568,6 +569,7 @@
      ) -> Result<Bytecode<'a>> {
          let _t = self.remarks.time(|r| &r.parse);
          let EvmCompilerInput::Code(bytecode) = input;
 +        let spec_id = to_revm_spec_id(spec_id);
- 
+
          let mut bytecode = Bytecode::new(bytecode, spec_id, self.gas_params.clone());
          bytecode.compiler_gas_limit = self.compiler_gas_limit;
 @@ -575,6 +577,10 @@
@@ -64,11 +64,11 @@
              writer.flush()?;
          }
 @@ -987,7 +993,7 @@
- 
+
  #[allow(dead_code)]
  mod default_attrs {
 -    use revmc_backend::Attribute;
 +    use evm2_jit_backend::Attribute;
- 
+
      pub(crate) fn for_fn() -> impl Iterator<Item = Attribute> {
          [

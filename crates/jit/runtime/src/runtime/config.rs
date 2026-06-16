@@ -51,7 +51,7 @@ pub struct RuntimeConfig {
     pub debug_assertions: bool,
 
     /// Collapse every JIT failure path to a single
-    /// [`OutOfGas`](revm_interpreter::InstructionResult::OutOfGas) constant.
+    /// `OutOfGas` instruction result constant.
     ///
     /// Failures (stack under/overflow, invalid jump, real OOG, invalid opcode, etc.) are
     /// semantically interchangeable for callers that only branch on success vs failure, so

@@ -22,11 +22,6 @@ mod arch;
 use arch::revmc_entry;
 pub use arch::revmc_exit;
 
-#[cfg(feature = "evm")]
-mod jit_evm;
-#[cfg(feature = "evm")]
-pub use jit_evm::JitEvm;
-
 #[cfg(feature = "evm2")]
 pub mod evm2_api;
 

@@ -1,15 +1,15 @@
 --- upstream/crates/revmc/src/lib.rs
 +++ evm2/crates/jit/src/lib.rs
-@@ -4,28 +4,30 @@
+@@ -4,46 +4,32 @@
  #![cfg_attr(docsrs, feature(doc_cfg))]
- 
+
  #[doc(inline)]
 -pub use revmc_codegen::*;
 +pub use evm2_jit_codegen::*;
  #[doc(inline)]
 -pub use revmc_runtime::{revm_evm, runtime};
-+pub use evm2_jit_runtime::{evm2_evm, revm_evm, runtime};
- 
++pub use evm2_jit_runtime::{evm2_evm, runtime};
+
  #[allow(ambiguous_glob_reexports)]
  #[doc(inline)]
 -pub use revmc_backend::*;
@@ -18,7 +18,7 @@
  #[doc(inline)]
 -pub use revmc_context::*;
 +pub use evm2_jit_context::*;
- 
+
  #[cfg(feature = "llvm")]
 +#[doc(inline)]
 +pub use evm2_jit_llvm as llvm;
@@ -28,29 +28,32 @@
 -#[cfg(feature = "llvm")]
 -#[doc(inline)]
 -pub use revmc_llvm as llvm;
- 
+
  #[doc(hidden)]
 -pub use revmc_builtins as builtins;
 +pub use evm2_jit_builtins as builtins;
- 
+
  #[doc(no_inline)]
+-pub use revm_bytecode;
+-#[doc(no_inline)]
+-pub use revm_context_interface as context_interface;
 +pub use evm2::SpecId;
-+#[doc(no_inline)]
- pub use revm_bytecode;
  #[doc(no_inline)]
- pub use revm_context_interface as context_interface;
-@@ -37,8 +39,6 @@
+-pub use revm_handler as handler;
+-#[doc(no_inline)]
+-pub use revm_inspector as inspector;
++pub use revm_bytecode;
+ #[doc(no_inline)]
  pub use revm_interpreter::{self as interpreter};
  #[doc(no_inline)]
  pub use revm_primitives as primitives;
 -#[doc(no_inline)]
 -pub use revm_primitives::hardfork::SpecId;
- 
- /// Internal tests and testing utilities. Not public API.
- #[cfg(test)]
-@@ -46,4 +46,4 @@
- 
- #[cfg(feature = "alloy-evm")]
- #[doc(inline)]
+-
+-/// Internal tests and testing utilities. Not public API.
+-#[cfg(test)]
+-pub mod tests;
+-
+-#[cfg(feature = "alloy-evm")]
+-#[doc(inline)]
 -pub use revmc_runtime::alloy_evm;
-+pub use evm2_jit_runtime::alloy_evm;

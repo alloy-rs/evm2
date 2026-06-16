@@ -27,6 +27,13 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<()> {
+    #[cfg(feature = "jit")]
+    if let std::ops::ControlFlow::Break(()) = evm2_jit_runtime::runtime::maybe_run_jit_helper()
+        .map_err(|source| error::Error::JitHelper { source })?
+    {
+        return Ok(());
+    }
+
     match Args::parse().command {
         args::Command::Capture(command) => capture::run(command),
         args::Command::Fuzzer(command) => fuzzer::run(command).map_err(error::Error::Fuzzer),

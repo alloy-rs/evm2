@@ -5,7 +5,7 @@
 +use evm2_jit_backend::{
      Attribute, Backend, Builder, CallConv, FunctionAttributeLocation, TypeMethods,
  };
- 
+
 @@ -53,7 +53,7 @@
          let ret = builtin.ret(bcx);
          let params = builtin.params(bcx);
@@ -27,19 +27,19 @@
 @@ -243,20 +243,20 @@
              (0, 0)
          };
- 
+
 -        let ecx_base = size_and_align::<revmc_context::EvmContext<'static>>();
 +        let ecx_base = size_and_align::<evm2_jit_context::EvmContext<'static>>();
          let mut ecx = ecx_base.clone();
          ecx.push(Attribute::Writable);
          let mut ecx_ro = ecx_base;
          ecx_ro.push(Attribute::ReadOnly);
- 
+
 -        let sp_base = size_and_align_with(None, core::mem::align_of::<revmc_context::EvmWord>());
 +        let sp_base = size_and_align_with(None, core::mem::align_of::<evm2_jit_context::EvmWord>());
          let mut sp_dyn = sp_base.clone();
          sp_dyn.push(Attribute::Writable);
- 
+
          let mut sp = sp_base;
          // `sp` is at `top - inputs`, we have access to `max(inputs, outputs)` words.
          let n_stack_words = inputs.max(outputs);

@@ -11,7 +11,7 @@
  use revm_bytecode::opcode as op;
  use revm_interpreter::{
 -    CallInput, Host, InputsImpl, Interpreter, SharedMemory,
-+    CallInput, Gas, Host, InputsImpl, Interpreter, InterpreterAction, SharedMemory,
++    CallInput, Gas, Host, InputsImpl, Interpreter, SharedMemory,
      instructions::{gas_table_spec, instruction_table},
      interpreter::ExtBytecode,
  };
@@ -61,7 +61,7 @@
 -        output: Bytes::from_static(MEMORY_WHAT_INTERPRETER_SAYS),
 -        result: RETURN_WHAT_INTERPRETER_SAYS,
 -    });
- 
+
  pub fn def_storage() -> &'static HashMap<U256, U256> {
      DEF_STORAGE.get_or_init(|| {
 @@ -462,7 +457,7 @@
@@ -81,7 +81,7 @@
 +    let f = unsafe { compiler.jit("test", bytecode, from_revm_spec_id(spec_id)) }.unwrap();
      run_compiled_test_case(test_case, f);
  }
- 
+
 @@ -488,7 +483,7 @@
          expected_stack,
          expected_memory,
@@ -91,23 +91,29 @@
          assert_host,
          assert_ecx,
      } = *test_case;
-@@ -529,9 +524,9 @@
+@@ -527,12 +522,12 @@
+         let table = instruction_table::<revm_interpreter::interpreter::EthInterpreter, TestHost>();
+         let gas_table = gas_table_spec(spec_id);
          let mut int_host = TestHost::with_spec(spec_id);
-         let interpreter_action = interpreter.run_plain(&table, &gas_table, &mut int_host);
- 
+-        let interpreter_action = interpreter.run_plain(&table, &gas_table, &mut int_host);
+-
 -        let int_result = match &interpreter_action {
 -            InterpreterAction::Return(result) => result.result,
 -            _ => InstructionResult::Stop,
-+        let (int_result, interpreter_output) = match &interpreter_action {
-+            InterpreterAction::Return(result) => (result.result, result.output.clone()),
-+            _ => (InstructionResult::Stop, Bytes::new()),
-         };
- 
+-        };
++        let interpreter_result = interpreter
++            .run_plain(&table, &gas_table, &mut int_host)
++            .into_result_return()
++            .expect("plain interpreter run should return a result");
++        let int_result = interpreter_result.result;
++        let interpreter_output = interpreter_result.output;
+
          let mut expected_return = expected_return;
+         if expected_return == RETURN_WHAT_INTERPRETER_SAYS {
 @@ -586,6 +581,21 @@
              assert_eq!(interpreter.gas.total_gas_spent(), expected_gas, "interpreter gas mismatch");
          }
- 
+
 +        let expected_output = if let Some(expected_output) = expected_output {
 +            if !skip_interpreter_checks {
 +                assert_eq!(
@@ -129,7 +135,7 @@
 @@ -594,22 +604,6 @@
          let skip_jit_gas =
              skip_interpreter_checks && test_case.expected_gas == GAS_WHAT_INTERPRETER_SAYS;
- 
+
 -        // This is what the interpreter returns when the internal action is None in `run`.
 -        let default_action = InterpreterAction::Return(InterpreterResult {
 -            result: int_result,
@@ -152,7 +158,7 @@
 @@ -655,11 +649,9 @@
              }
          }
- 
+
 -        let actual_next_action = match ecx.next_action.as_ref() {
 -            Some(action) => action,
 -            None => &default_action,
@@ -161,7 +167,7 @@
 +        if let Some(expected_output) = expected_output {
 +            assert_eq!(ecx.output.as_ref(), expected_output, "output mismatch");
 +        }
- 
+
          if let Some(_assert_host) = assert_host {
              let host = unsafe { &*(ecx.host as *mut dyn Host as *mut TestHost) };
 @@ -680,105 +672,3 @@

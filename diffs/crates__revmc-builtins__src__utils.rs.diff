@@ -7,6 +7,6 @@
  use revm_interpreter::{InstructionResult, as_usize_saturated, host::LoadError};
  use revm_primitives::Address;
 -use revmc_context::{EvmContext, EvmWord};
- 
+
  pub type BuiltinResult = Result<(), BuiltinError>;
- 
+

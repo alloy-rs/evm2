@@ -7,12 +7,12 @@
  description = "EVM bytecode compiler code generation"
 -homepage = "https://github.com/danipopes/revmc/tree/main/crates/revmc-codegen"
 +homepage = "https://github.com/danipopes/evm2-jit/tree/main/crates/evm2-jit-codegen"
- 
+
  version.workspace = true
  authors.workspace = true
 @@ -21,10 +21,11 @@
  workspace = true
- 
+
  [dependencies]
 -revmc-backend.workspace = true
 -revmc-builtins = { workspace = true, features = ["ir"] }
@@ -21,28 +21,27 @@
 +evm2.workspace = true
 +evm2-jit-backend.workspace = true
 +evm2-jit-builtins = { workspace = true, features = ["ir"] }
-+evm2-jit-context = { workspace = true, features = ["evm"] }
++evm2-jit-context.workspace = true
 +evm2-jit-llvm = { workspace = true, optional = true }
- 
+
  alloy-primitives = { workspace = true, features = ["std", "map-fxhash"] }
- 
-@@ -54,11 +55,11 @@
+
+@@ -54,11 +55,10 @@
  indexmap = "2.13.0"
- 
+
  [build-dependencies]
 -revmc-build.workspace = true
 +evm2-jit-build.workspace = true
- 
+
  [dev-dependencies]
 -revmc-context.workspace = true
 -revmc-statetest = { path = "../revmc-statetest" }
 +evm2-jit-context.workspace = true
-+evm2-jit-statetest = { path = "../statetest" }
- 
+
  paste.workspace = true
  similar-asserts = "2.0"
-@@ -68,9 +69,9 @@
- 
+@@ -68,9 +68,9 @@
+
  [features]
  default = ["llvm"]
 -llvm = ["dep:revmc-llvm"]
@@ -51,6 +50,6 @@
 +llvm = ["dep:evm2-jit-llvm"]
 +llvm-prefer-static = ["llvm", "evm2-jit-llvm?/prefer-static"]
 +llvm-prefer-dynamic = ["llvm", "evm2-jit-llvm?/prefer-dynamic"]
- 
+
  asm-keccak = ["alloy-primitives/asm-keccak"]
- 
+

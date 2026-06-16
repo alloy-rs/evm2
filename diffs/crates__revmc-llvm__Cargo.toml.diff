@@ -7,21 +7,21 @@
  description = "EVM bytecode compiler LLVM backend"
 -homepage = "https://github.com/danipopes/revmc/tree/main/crates/revmc-llvm"
 +homepage = "https://github.com/danipopes/evm2-jit/tree/main/crates/evm2-jit-llvm"
- 
+
  version.workspace = true
  authors.workspace = true
 @@ -17,7 +17,7 @@
  workspace = true
- 
+
  [dependencies]
 -revmc-backend.workspace = true
 +evm2-jit-backend.workspace = true
- 
+
  inkwell = { version = "0.9.0", features = ["llvm22-1"] }
  alloy-primitives = { workspace = true, features = ["std", "map-fxhash"] }
 @@ -28,5 +28,5 @@
  cc = "1"
- 
+
  [features]
 -prefer-static = ["inkwell/llvm22-1-prefer-static"]
 -prefer-dynamic = ["inkwell/llvm22-1-prefer-dynamic"]

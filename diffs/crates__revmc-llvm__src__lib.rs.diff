@@ -2,7 +2,7 @@
 +++ evm2/crates/jit/llvm/src/lib.rs
 @@ -6,6 +6,10 @@
  extern crate tracing;
- 
+
  use alloy_primitives::map::{FxBuildHasher, HashSet};
 +use evm2_jit_backend::{
 +    Backend, BackendConfig, BackendTypes, Builder, CallConv, IntCC, OptimizationLevel, Result,
@@ -34,11 +34,11 @@
 @@ -271,7 +271,8 @@
              })
              .map_err(|e| e.to_string())?;
- 
+
 -            let builtins_jd = jit.get_execution_session().create_bare_jit_dylib(c"revmc.builtins");
 +            let builtins_jd =
 +                jit.get_execution_session().create_bare_jit_dylib(c"evm2_jit.builtins");
- 
+
              Ok(Self {
                  jit,
 @@ -290,7 +291,7 @@
@@ -93,11 +93,11 @@
 -        // Can be overridden with `REVMC_PASSES` env var for experimentation.
 +        // Can be overridden with `EVM2_JIT_PASSES` env var for experimentation.
          // From `opt --help`, `-passes`.
- 
+
          static PASSES_OVERRIDE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
          static PASSES: std::sync::OnceLock<String> = std::sync::OnceLock::new();
          static PASSES_WITH_LICM: std::sync::OnceLock<String> = std::sync::OnceLock::new();
- 
+
 -        let passes = PASSES_OVERRIDE.get_or_init(|| std::env::var("REVMC_PASSES").ok());
 +        let passes = PASSES_OVERRIDE.get_or_init(|| std::env::var("EVM2_JIT_PASSES").ok());
          let passes = passes.as_deref().unwrap_or_else(|| match self.backend_config.opt_level {
@@ -130,7 +130,7 @@
 +            evm2_jit_backend::Attribute::NoInline,
 +            evm2_jit_backend::FunctionAttributeLocation::Function,
          );
- 
+
          let before = self.bcx.get_insert_block();
 @@ -1965,8 +1966,8 @@
      fn add_function_attribute(
@@ -146,7 +146,7 @@
 @@ -2033,8 +2034,8 @@
          install_fatal_error_handler(report_fatal_error);
      }
- 
+
 -    // Collect extra LLVM args from `REVMC_LLVM_ARGS` env var (space-separated).
 -    let extra: Vec<CString> = std::env::var("REVMC_LLVM_ARGS")
 +    // Collect extra LLVM args from `EVM2_JIT_LLVM_ARGS` env var (space-separated).
@@ -155,7 +155,7 @@
          .iter()
          .flat_map(|s| s.split_whitespace().filter_map(|s| CString::new(s).ok()).collect::<Vec<_>>())
 @@ -2045,7 +2046,7 @@
- 
+
      // The first arg is only used in `-help` output AFAICT.
      let mut args = vec![
 -        c"revmc-llvm".as_ptr(),
@@ -166,18 +166,18 @@
 @@ -2131,8 +2132,8 @@
      }
  }
- 
+
 -fn convert_attribute(bcx: &EvmLlvmBuilder<'_>, attr: revmc_backend::Attribute) -> Attribute {
 -    use revmc_backend::Attribute as OurAttr;
 +fn convert_attribute(bcx: &EvmLlvmBuilder<'_>, attr: evm2_jit_backend::Attribute) -> Attribute {
 +    use evm2_jit_backend::Attribute as OurAttr;
- 
+
      enum AttrValue<'a> {
          String(&'a str),
 @@ -2201,11 +2202,11 @@
      }
  }
- 
+
 -fn convert_attribute_loc(loc: revmc_backend::FunctionAttributeLocation) -> AttributeLoc {
 +fn convert_attribute_loc(loc: evm2_jit_backend::FunctionAttributeLocation) -> AttributeLoc {
      match loc {
@@ -189,11 +189,11 @@
 +        evm2_jit_backend::FunctionAttributeLocation::Function => AttributeLoc::Function,
      }
  }
- 
+
 @@ -2229,11 +2230,11 @@
      }
  }
- 
+
 -fn convert_linkage(linkage: revmc_backend::Linkage) -> inkwell::module::Linkage {
 +fn convert_linkage(linkage: evm2_jit_backend::Linkage) -> inkwell::module::Linkage {
      match linkage {
@@ -205,15 +205,15 @@
 +        evm2_jit_backend::Linkage::Private => inkwell::module::Linkage::Private,
      }
  }
- 
+
 @@ -2247,8 +2248,8 @@
  }
- 
+
  // No `#[track_caller]` because `map_err` doesn't propagate it.
 -fn error_msg(msg: inkwell::support::LLVMString) -> revmc_backend::Error {
 -    revmc_backend::Error::msg(msg.to_string_lossy().trim_end().to_string())
 +fn error_msg(msg: inkwell::support::LLVMString) -> evm2_jit_backend::Error {
 +    evm2_jit_backend::Error::msg(msg.to_string_lossy().trim_end().to_string())
  }
- 
+
  fn fmt_ty(ty: BasicTypeEnum<'_>) -> impl std::fmt::Display {

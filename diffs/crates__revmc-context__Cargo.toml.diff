@@ -7,19 +7,25 @@
  description = "EVM bytecode compiler runtime context"
 -homepage = "https://github.com/danipopes/revmc/tree/main/crates/revmc-context"
 +homepage = "https://github.com/danipopes/evm2-jit/tree/main/crates/evm2-jit-context"
- 
+
  version.workspace = true
  authors.workspace = true
-@@ -17,6 +17,8 @@
+@@ -17,33 +17,18 @@
  workspace = true
- 
+
  [dependencies]
 +alloy-primitives.workspace = true
 +evm2 = { workspace = true, optional = true }
  revm-interpreter.workspace = true
  revm-primitives.workspace = true
  ruint.workspace = true
-@@ -30,6 +32,8 @@
+
+-revm-context = { workspace = true, optional = true }
+-revm-context-interface = { workspace = true, optional = true }
+-revm-handler = { workspace = true, optional = true }
+-revm-inspector = { workspace = true, optional = true }
+-revm-state = { workspace = true, optional = true }
+-
  [features]
  default = ["std"]
  std = [
@@ -27,9 +33,19 @@
 +    "evm2?/std",
      "revm-interpreter/std",
      "revm-primitives/std",
-     "revm-context?/std",
-@@ -47,3 +51,4 @@
-     "dep:revm-inspector",
-     "dep:revm-state",
+-    "revm-context?/std",
+-    "revm-context-interface?/std",
+-    "revm-handler?/std",
+-    "revm-inspector?/std",
+-    "revm-state?/std",
+-]
+-# Enables the [`JitEvm`] wrapper that dispatches calls to compiled bytecodes
+-# from a regular `revm` EVM by code hash.
+-evm = [
+-    "dep:revm-context",
+-    "dep:revm-context-interface",
+-    "dep:revm-handler",
+-    "dep:revm-inspector",
+-    "dep:revm-state",
  ]
 +evm2 = ["dep:evm2"]

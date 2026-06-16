@@ -1,9 +1,0 @@
---- upstream/crates/revmc-cli/build.rs
-+++ evm2/crates/jit/cli/build.rs
-@@ -1,5 +1,5 @@
- #![allow(missing_docs)]
- 
- fn main() {
--    revmc_build::emit();
-+    evm2_jit_build::emit();
- }

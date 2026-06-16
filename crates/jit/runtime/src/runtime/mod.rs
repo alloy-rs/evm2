@@ -15,7 +15,6 @@ use backend::{Command, CompileJitRequest, EventQueue, PrepareAotRequest, Residen
 use crossbeam_channel as chan;
 use crossbeam_queue::ArrayQueue;
 use evm2::SpecId;
-use revm_primitives::hints_util::cold_path;
 use stats::RuntimeStats;
 use std::{
     ops::ControlFlow,
@@ -40,8 +39,6 @@ mod backend;
 mod stats;
 pub use stats::RuntimeStatsSnapshot;
 
-pub(crate) mod spec;
-
 mod storage;
 pub use storage::{
     ArtifactKey, ArtifactManifest, ArtifactStore, BackendSelection, RuntimeArtifactStore,
@@ -52,6 +49,9 @@ pub use storage::{
 mod out_of_process;
 
 mod worker;
+
+#[cold]
+const fn cold_path() {}
 
 /// Runs the out-of-process JIT helper if this process was launched as one.
 ///

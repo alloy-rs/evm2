@@ -3,7 +3,7 @@
 @@ -6,8 +6,8 @@
              #[allow(unused_imports)]
              use similar_asserts::assert_eq;
- 
+
 -            fn run_llvm(compiler: &mut EvmCompiler<revmc_llvm::EvmLlvmBackend>) {
 -                if std::env::var_os("REVMC_TEST_DUMP").is_some() {
 +            fn run_llvm(compiler: &mut EvmCompiler<evm2_jit_llvm::EvmLlvmBackend>) {
@@ -12,7 +12,7 @@
                  }
                  $run(compiler);
 @@ -15,13 +15,16 @@
- 
+
              #[test]
              fn unopt() {
 -                crate::tests::with_jit_compiler(revmc_backend::OptimizationLevel::None, run_llvm);
@@ -21,7 +21,7 @@
 +                    run_llvm,
 +                );
              }
- 
+
              #[test]
              fn opt() {
                  crate::tests::with_jit_compiler(

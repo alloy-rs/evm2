@@ -10,10 +10,10 @@
 -                stack.fill(AbsValue::Top);
 -            }
          }
- 
+
          true
 @@ -1692,7 +1687,7 @@
- 
+
      #[test]
      fn hash_10k() {
 -        let code = fixture_entry_code(include_str!("../../../../../data/hash_10k.json"));

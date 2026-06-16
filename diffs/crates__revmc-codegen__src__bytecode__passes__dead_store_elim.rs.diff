@@ -2,7 +2,7 @@
 +++ evm2/crates/jit/codegen/src/bytecode/passes/dead_store_elim.rs
 @@ -65,12 +65,8 @@
              let max_height = entry_height + section.max_growth as i32;
- 
+
              // If the block's terminator diverges, no successor will read the stack,
 -            // so all exit positions are dead. Unless `inspect_stack` is set (the caller
 -            // observes every store) or the block contains a suspending instruction
@@ -12,7 +12,7 @@
 -                !inspect_stack && !has_suspend && self.insts[block.terminator()].is_diverging();
 +            // so all exit positions are dead unless `inspect_stack` is set.
 +            let term_diverges = !inspect_stack && self.insts[block.terminator()].is_diverging();
- 
+
              live.clear();
              live.resize(exit_height.max(0) as usize, !term_diverges);
 @@ -127,16 +123,6 @@
@@ -31,7 +31,7 @@
 -                }
              }
          }
- 
+
 @@ -1043,35 +1029,4 @@
              "PUSH 0 should be skipped (const input)"
          );

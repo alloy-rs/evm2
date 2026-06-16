@@ -15,15 +15,15 @@
 +from the repository root, and the user-owned checklist is `../../diffs/TODO.md`.
 +Do not edit or regenerate that checklist unless the user explicitly tells you to.
 +
-+The copied upstream CLI under `cli/` is reference material until it is either
-+adapted or replaced by the root `evm2` CLI integration.
- 
++The root `evm2` CLI owns JIT-facing commands; do not revive the copied upstream
++CLI/statetest paths.
+
  ## Commands
- 
-@@ -17,15 +31,15 @@
- 
+
+@@ -17,15 +31,13 @@
+
  ## Architecture
- 
+
 -- `revmc` — thin umbrella crate that re-exports codegen and runtime APIs.
 -- `revmc-codegen` — EVM compiler, bytecode analysis, linker, and compiler test infrastructure.
 -- `revmc-runtime` — runtime JIT/AOT backend, worker pool, artifact store, and revm integration.
@@ -35,18 +35,16 @@
 -- `revmc-statetest` — Ethereum state test runner.
 +- `evm2-jit` — thin umbrella crate that re-exports codegen and runtime APIs.
 +- `evm2-jit-codegen` — EVM compiler, bytecode analysis, linker, and compiler test infrastructure.
-+- `evm2-jit-runtime` — runtime JIT/AOT backend, worker pool, artifact store, and revm integration.
++- `evm2-jit-runtime` — runtime JIT/AOT backend, worker pool, artifact store, and evm2 integration.
 +- `evm2-jit-backend` — abstract compiler backend trait. `evm2-jit-llvm` is the main implementation.
 +- `evm2-jit-builtins` — runtime builtins called by JIT-compiled code (host calls, gas accounting).
-+- `evm2-jit-context` — EVM execution context types bridging revm and compiled code.
++- `evm2-jit-context` — compiled-code ABI and evm2 host bridge.
 +- `evm2-jit-build` — build-script helpers for AOT compilation.
-+- `evm2-jit-cli` / `evm2-jit-cli-tests` — CLI frontend and its integration tests.
-+- `evm2-jit-statetest` — Ethereum state test runner.
- 
+
  ## CLI
- 
-@@ -60,18 +74,18 @@
- 
+
+@@ -60,18 +72,18 @@
+
  ```bash
  RUST_LOG=debug cargo r -- run usdc_proxy   # all debug logs
 -RUST_LOG=revmc=debug cargo r -- ...        # only revmc crate logs
@@ -54,22 +52,22 @@
 +RUST_LOG=evm2-jit=debug cargo r -- ...        # only evm2-jit crate logs
 +RUST_LOG=evm2-jit::bytecode=trace cargo r --  # trace a specific module
  ```
- 
+
  ## Injecting LLVM args
- 
+
 -Extra LLVM command-line arguments can be passed via the `REVMC_LLVM_ARGS`
 +Extra LLVM command-line arguments can be passed via the `EVM2_JIT_LLVM_ARGS`
  environment variable (space-separated):
- 
+
  ```bash
 -REVMC_LLVM_ARGS="-debug-only=isel" cargo r -- run usdc_proxy
 -REVMC_LLVM_ARGS="-print-after-all" cargo r -- run usdc_proxy
 +EVM2_JIT_LLVM_ARGS="-debug-only=isel" cargo r -- run usdc_proxy
 +EVM2_JIT_LLVM_ARGS="-print-after-all" cargo r -- run usdc_proxy
  ```
- 
+
  LLVM args are a one-shot global (`LLVMParseCommandLineOptions`); only the first
-@@ -118,7 +132,7 @@
+@@ -118,7 +130,7 @@
  ./scripts/bench.py /tmp/bench --diff main --codegen-lines          # codegen lines only
  ./scripts/bench.py /tmp/bench --jump-resolution                    # jump resolution stats
  ./scripts/bench.py /tmp/bench --input-stats                        # constant-input stats
@@ -77,4 +75,4 @@
 +./scripts/bench.py /tmp/bench --block-stats                        # block stats (min/max/avg/median, recursive frame opcodes)
  ./scripts/bench.py /tmp/bench --codegen-lines --jump-resolution    # combine multiple analyses
  ```
- 
+

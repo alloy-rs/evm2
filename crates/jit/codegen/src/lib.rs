@@ -20,11 +20,6 @@ pub use linker::{Linker, shared_library_path};
 
 mod spec;
 
-/// Generic `revm` JIT EVM from `evm2-jit-context`.
-pub mod simple_revm_evm {
-    pub use evm2_jit_context::JitEvm;
-}
-
 /// ABI version of compiled artifacts. Bump when the calling convention changes.
 pub const ABI_VERSION: u32 = 0;
 

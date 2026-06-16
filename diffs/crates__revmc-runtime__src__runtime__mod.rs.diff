@@ -1,6 +1,6 @@
 --- upstream/crates/revmc-runtime/src/runtime/mod.rs
 +++ evm2/crates/jit/runtime/src/runtime/mod.rs
-@@ -9,11 +9,13 @@
+@@ -9,11 +9,12 @@
      EvmCompilerFn,
      eyre::{self, WrapErr},
  };
@@ -11,19 +11,19 @@
  use crossbeam_queue::ArrayQueue;
 -use revm_primitives::{B256, hardfork::SpecId, hints_util::cold_path};
 +use evm2::SpecId;
-+use revm_primitives::hints_util::cold_path;
  use stats::RuntimeStats;
  use std::{
      ops::ControlFlow,
-@@ -38,6 +40,8 @@
- mod stats;
- pub use stats::RuntimeStatsSnapshot;
- 
-+pub(crate) mod spec;
+@@ -49,6 +50,9 @@
+
+ mod worker;
+
++#[cold]
++const fn cold_path() {}
 +
- mod storage;
- pub use storage::{
-     ArtifactKey, ArtifactManifest, ArtifactStore, BackendSelection, RuntimeArtifactStore,
+ /// Runs the out-of-process JIT helper if this process was launched as one.
+ ///
+ /// Returns [`ControlFlow::Break`] after the helper request has been handled and
 @@ -61,7 +65,7 @@
      }
      #[cfg(not(all(feature = "llvm", unix)))]

@@ -13,7 +13,6 @@ members = [
     "crates/jit/context",
     "crates/jit/llvm",
     "crates/jit/runtime",
-    "crates/jit/statetest",
 ]
 resolver = "3"
 
@@ -76,7 +75,6 @@ alloy-rpc-types-eth = { version = "2.0.4", default-features = false }
 alloy-rpc-types-trace = { version = "2.0.4", default-features = false }
 alloy-sol-types = { version = "1.5.7", default-features = false }
 alloy-trie = { version = "0.9", default-features = false }
-alloy-evm = { version = "0.37.0", default-features = false }
 
 anstyle = { version = "1.0", default-features = false }
 boa_engine = { version = "0.21", default-features = false }

@@ -31,6 +31,12 @@ pub(crate) enum Error {
     },
     #[error("fuzzer failed: {0}")]
     Fuzzer(String),
+    #[cfg(feature = "jit")]
+    #[error("failed to run JIT helper")]
+    JitHelper {
+        #[source]
+        source: evm2_jit_runtime::eyre::Report,
+    },
     #[error("could not detect EEST fixture kind in {path}")]
     UnknownFixtureKind { path: std::path::PathBuf },
 }

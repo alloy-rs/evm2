@@ -7,12 +7,12 @@
  description = "EVM bytecode compiler"
 -homepage = "https://github.com/danipopes/revmc/tree/main/crates/revmc"
 +homepage = "https://github.com/danipopes/evm2-jit/tree/main/crates/evm2-jit"
- 
+
  version.workspace = true
  authors.workspace = true
-@@ -21,12 +21,13 @@
+@@ -21,31 +21,25 @@
  workspace = true
- 
+
  [dependencies]
 -revmc-backend.workspace = true
 -revmc-builtins = { workspace = true, features = ["ir"] }
@@ -24,23 +24,24 @@
 +evm2-jit-backend.workspace = true
 +evm2-jit-builtins = { workspace = true, features = ["ir"] }
 +evm2-jit-codegen.workspace = true
-+evm2-jit-context = { workspace = true, features = ["evm", "evm2"] }
++evm2-jit-context = { workspace = true, features = ["evm2"] }
 +evm2-jit-llvm = { workspace = true, optional = true }
 +evm2-jit-runtime.workspace = true
- 
+
  revm-bytecode.workspace = true
- revm-context-interface.workspace = true
-@@ -36,16 +37,16 @@
+-revm-context-interface.workspace = true
+-revm-handler.workspace = true
+-revm-inspector.workspace = true
+ revm-interpreter.workspace = true
  revm-primitives.workspace = true
- 
+
  [build-dependencies]
 -revmc-build.workspace = true
-+evm2-jit-build.workspace = true
- 
- [dev-dependencies]
+-
+-[dev-dependencies]
 -revmc-statetest = { path = "../revmc-statetest" }
-+evm2-jit-statetest = { path = "statetest" }
- 
++evm2-jit-build.workspace = true
+
  [features]
  default = ["llvm"]
 -llvm = ["dep:revmc-llvm", "revmc-codegen/llvm", "revmc-runtime/llvm"]
@@ -52,6 +53,5 @@
 +llvm = ["dep:evm2-jit-llvm", "evm2-jit-codegen/llvm", "evm2-jit-runtime/llvm"]
 +llvm-prefer-static = ["llvm", "evm2-jit-codegen/llvm-prefer-static", "evm2-jit-runtime/llvm-prefer-static"]
 +llvm-prefer-dynamic = ["llvm", "evm2-jit-codegen/llvm-prefer-dynamic", "evm2-jit-runtime/llvm-prefer-dynamic"]
-+alloy-evm = ["evm2-jit-runtime/alloy-evm"]
 +asm-keccak = ["evm2-jit-codegen/asm-keccak", "evm2-jit-runtime/asm-keccak"]
 +__fuzzing = ["evm2-jit-codegen/__fuzzing"]

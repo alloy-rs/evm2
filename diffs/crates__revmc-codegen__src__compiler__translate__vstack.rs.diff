@@ -6,6 +6,6 @@
  //! in a logical cache. Physical stores are deferred until a "materialization"
 -//! point (builtin call, section boundary, suspend, etc.).
 +//! point (builtin call, section boundary, branch, etc.).
- 
+
  use core::ops::Range;
- 
+

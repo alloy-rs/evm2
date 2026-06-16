@@ -6,7 +6,7 @@
 #[doc(inline)]
 pub use evm2_jit_codegen::*;
 #[doc(inline)]
-pub use evm2_jit_runtime::{evm2_evm, revm_evm, runtime};
+pub use evm2_jit_runtime::{evm2_evm, runtime};
 
 #[allow(ambiguous_glob_reexports)]
 #[doc(inline)]
@@ -30,20 +30,6 @@ pub use evm2::SpecId;
 #[doc(no_inline)]
 pub use revm_bytecode;
 #[doc(no_inline)]
-pub use revm_context_interface as context_interface;
-#[doc(no_inline)]
-pub use revm_handler as handler;
-#[doc(no_inline)]
-pub use revm_inspector as inspector;
-#[doc(no_inline)]
 pub use revm_interpreter::{self as interpreter};
 #[doc(no_inline)]
 pub use revm_primitives as primitives;
-
-/// Internal tests and testing utilities. Not public API.
-#[cfg(test)]
-pub mod tests;
-
-#[cfg(feature = "alloy-evm")]
-#[doc(inline)]
-pub use evm2_jit_runtime::alloy_evm;

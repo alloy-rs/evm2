@@ -19,6 +19,7 @@ workspace = true
 
 [dependencies]
 evm2-eest = { path = "../eest", version = "0.1.0" }
+evm2-jit-runtime = { workspace = true, features = ["llvm"], optional = true }
 evm2 = { workspace = true, default-features = true, features = [
     "asm-keccak",
     "blst",
@@ -50,4 +51,4 @@ tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time"] }
 
 [features]
 default = []
-jit = ["evm2-eest/jit"]
+jit = ["evm2-eest/jit", "dep:evm2-jit-runtime"]

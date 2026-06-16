@@ -7,7 +7,7 @@
 -use revm_primitives::hardfork::SpecId;
 +use evm2::SpecId;
  use std::{fs, path::PathBuf};
- 
+
  /// Runtime cache key: the minimal identity for a compiled program at runtime.
 @@ -172,8 +172,8 @@
          RuntimeCacheKey,
@@ -17,6 +17,6 @@
 -    use revmc_backend::OptimizationLevel;
 +    use evm2::SpecId;
 +    use evm2_jit_backend::OptimizationLevel;
- 
+
      fn artifact_key(code_hash: B256) -> ArtifactKey {
          ArtifactKey {

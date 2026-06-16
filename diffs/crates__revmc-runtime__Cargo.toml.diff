@@ -8,12 +8,12 @@
 +name = "evm2-jit-runtime"
 +description = "Runtime JIT backend for evm2-jit"
 +homepage = "https://github.com/danipopes/evm2-jit/tree/main/crates/evm2-jit-runtime"
- 
+
  version.workspace = true
  authors.workspace = true
-@@ -21,11 +21,12 @@
+@@ -21,25 +21,16 @@
  workspace = true
- 
+
  [dependencies]
 -revmc-backend.workspace = true
 -revmc-codegen.workspace = true
@@ -23,31 +23,44 @@
 +evm2 = { workspace = true, features = ["std"] }
 +evm2-jit-backend.workspace = true
 +evm2-jit-codegen.workspace = true
-+evm2-jit-context = { workspace = true, features = ["evm", "evm2"] }
++evm2-jit-context = { workspace = true, features = ["evm2"] }
 +evm2-jit-llvm = { workspace = true, optional = true }
 +evm2-jit-builtins = { workspace = true, features = ["ir"] }
- 
+
  alloy-primitives = { workspace = true, features = ["std", "map-fxhash"] }
- alloy-evm = { workspace = true, optional = true }
-@@ -56,7 +57,7 @@
+-alloy-evm = { workspace = true, optional = true }
+
+-revm-bytecode.workspace = true
+ revm-context-interface.workspace = true
+-revm-context.workspace = true
+-revm-database-interface.workspace = true
+-revm-database.workspace = true
+-revm-handler.workspace = true
+-revm-inspector.workspace = true
+-revm-interpreter.workspace = true
+-revm-primitives.workspace = true
+-revm-state.workspace = true
+
+ crossbeam-channel.workspace = true
+ crossbeam-queue.workspace = true
+@@ -56,16 +47,12 @@
  wincode.workspace = true
- 
+
  [dev-dependencies]
 -revmc-statetest = { path = "../revmc-statetest" }
-+evm2-jit-statetest = { path = "../statetest" }
- alloy-evm.workspace = true
+-alloy-evm.workspace = true
  paste.workspace = true
- similar-asserts = "2.0"
-@@ -64,8 +65,8 @@
- 
+-similar-asserts = "2.0"
+ tracing-subscriber = { workspace = true, features = ["fmt"] }
+
  [features]
  default = ["llvm"]
 -llvm = ["revmc-codegen/llvm", "dep:revmc-llvm"]
 -llvm-prefer-static = ["llvm", "revmc-codegen/llvm-prefer-static", "revmc-llvm?/prefer-static"]
 -llvm-prefer-dynamic = ["llvm", "revmc-codegen/llvm-prefer-dynamic", "revmc-llvm?/prefer-dynamic"]
+-alloy-evm = ["dep:alloy-evm"]
+-asm-keccak = ["revmc-codegen/asm-keccak", "alloy-primitives/asm-keccak"]
 +llvm = ["evm2-jit-codegen/llvm", "dep:evm2-jit-llvm"]
 +llvm-prefer-static = ["llvm", "evm2-jit-codegen/llvm-prefer-static", "evm2-jit-llvm?/prefer-static"]
 +llvm-prefer-dynamic = ["llvm", "evm2-jit-codegen/llvm-prefer-dynamic", "evm2-jit-llvm?/prefer-dynamic"]
- alloy-evm = ["dep:alloy-evm"]
--asm-keccak = ["revmc-codegen/asm-keccak", "alloy-primitives/asm-keccak"]
 +asm-keccak = ["evm2-jit-codegen/asm-keccak", "alloy-primitives/asm-keccak"]
