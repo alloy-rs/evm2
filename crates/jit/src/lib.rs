@@ -27,9 +27,3 @@ pub use evm2_jit_builtins as builtins;
 
 #[doc(no_inline)]
 pub use evm2::SpecId;
-#[doc(no_inline)]
-pub use revm_bytecode;
-#[doc(no_inline)]
-pub use revm_interpreter::{self as interpreter};
-#[doc(no_inline)]
-pub use revm_primitives as primitives;

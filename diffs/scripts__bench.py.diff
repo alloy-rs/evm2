@@ -80,4 +80,3 @@
 +        help="Report IR stats (inst counts, block size distribution, recursive frame opcodes)",
      )
      args = parser.parse_args()
-

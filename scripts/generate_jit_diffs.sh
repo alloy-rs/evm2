@@ -119,6 +119,7 @@ for rel in "${files[@]}"; do
         if [[ $status -eq 1 ]]; then
             mv "$tmp_file" "$diff_file"
             sed -i 's/[[:blank:]]\+$//' "$diff_file"
+            perl -0pi -e 's/\n+\z/\n/' "$diff_file"
         else
             rm "$tmp_file"
             exit "$status"

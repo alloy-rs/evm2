@@ -9,4 +9,3 @@
 -use revmc_context::{EvmContext, EvmWord};
 
  pub type BuiltinResult = Result<(), BuiltinError>;
-

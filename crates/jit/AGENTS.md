@@ -24,9 +24,9 @@ cargo fmt --all                                               # format
 cargo docs                                                    # check docs
 
 cargo nextest run --workspace                                 # test all
-cargo nextest run --workspace "test_name"                     # test single
-cargo nextest run --workspace "statetest"                     # test statetests
-SUBDIR=stRevertTest cargo nextest run --workspace "statetest" # test single statetest
+cargo cli-jit                                                 # root CLI tests with jit feature
+cargo eest-jit                                                # EEST unit tests with jit feature
+cargo nextest run -p evm2-eest --test eest --ignore-default-filter # EEST fixtures
 ```
 
 ## Architecture
@@ -39,41 +39,13 @@ SUBDIR=stRevertTest cargo nextest run --workspace "statetest" # test single stat
 - `evm2-jit-context` — compiled-code ABI and evm2 host bridge.
 - `evm2-jit-build` — build-script helpers for AOT compilation.
 
-## CLI
-
-Do NOT use `--release` — dev profile already uses `opt-level = 3`, and release
-strips debug info and uses LTO which makes builds much slower for no benefit
-during development.
-
-```bash
-cargo r -- run --list                  # list available benchmarks
-cargo r -- run usdc_proxy              # compile and run a benchmark
-cargo r -- run usdc_proxy -o tmp/dump  # compile and run a benchmark; dump files like opt.ll, remarks.txt to tmp/dump
-cargo r -- run usdc_proxy --parse-only # parse and analyze only (no codegen)
-cargo r -- run usdc_proxy --display    # print parsed bytecode IR
-cargo r -- run usdc_proxy --dot        # render CFG as DOT/SVG
-cargo r -- run usdc_proxy --aot        # compile to shared library
-cargo r -- run 0x6001600201            # run custom bytecode (hex)
-cargo r -- run 'PUSH1 1 PUSH1 2 ADD'   # run custom bytecode (asm string)
-```
-
-`-o <dir>` writes dumps under `<dir>/<benchmark>/`. Common files:
-
-- `bytecode.bin` — raw input bytecode.
-- `bytecode.txt` — parsed bytecode IR with blocks, gas, stack info, and comments.
-- `bytecode.dbg.txt` — verbose debug dump of the parsed bytecode structure.
-- `bytecode.dot` / `bytecode.svg` — rendered CFG.
-- `unopt.ll` — LLVM IR before optimization.
-- `opt.ll` — optimized LLVM IR.
-- `opt.s` — final optimized assembly.
-- `remarks.txt` — compile timings, JIT size, and generated-file sizes.
+## Local Debugging
 
 Use `RUST_LOG` to control log output:
 
 ```bash
-RUST_LOG=debug cargo r -- run usdc_proxy   # all debug logs
-RUST_LOG=evm2-jit=debug cargo r -- ...        # only evm2-jit crate logs
-RUST_LOG=evm2-jit::bytecode=trace cargo r --  # trace a specific module
+RUST_LOG=debug cargo run -p evm2 -- replay --help
+RUST_LOG=evm2_jit=debug cargo run -p evm2-jit-examples-compiler -- --code 60425f5260205ff3
 ```
 
 ## Injecting LLVM args
@@ -82,8 +54,8 @@ Extra LLVM command-line arguments can be passed via the `EVM2_JIT_LLVM_ARGS`
 environment variable (space-separated):
 
 ```bash
-EVM2_JIT_LLVM_ARGS="-debug-only=isel" cargo r -- run usdc_proxy
-EVM2_JIT_LLVM_ARGS="-print-after-all" cargo r -- run usdc_proxy
+EVM2_JIT_LLVM_ARGS="-debug-only=isel" cargo run -p evm2-jit-examples-compiler -- --code 00
+EVM2_JIT_LLVM_ARGS="-print-after-all" cargo run -p evm2-jit-examples-compiler -- --code 00
 ```
 
 LLVM args are a one-shot global (`LLVMParseCommandLineOptions`); only the first
@@ -101,7 +73,7 @@ To get jump resolution stats across benchmarks:
 To inspect a single contract in detail:
 
 ```bash
-RUST_LOG=debug cargo r -- run usdc_proxy --display |& rg 'jump|JUMP'
+cargo test -p evm2-jit-codegen -- bytecode::passes::block_analysis --nocapture
 ```
 
 - `resolved jumps newly_resolved=N` — jumps resolved by block analysis.
@@ -109,7 +81,7 @@ RUST_LOG=debug cargo r -- run usdc_proxy --display |& rg 'jump|JUMP'
 - `JUMP bb<N>` / `JUMP bb<N>, bb<M>` — resolved (single/multi-target).
 - `JUMP               ; pc=<N>` (no `bb` target) — unresolved dynamic jump.
 
-Use `cargo r -- run --list` to see available benchmark names.
+Use `crates/jit/data/` to see the copied benchmark corpus names.
 
 ## Benchmarking against another revision
 

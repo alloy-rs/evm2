@@ -8,4 +8,3 @@
 +//! point (builtin call, section boundary, branch, etc.).
 
  use core::ops::Range;
-

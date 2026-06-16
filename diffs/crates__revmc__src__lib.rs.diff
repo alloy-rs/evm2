@@ -1,6 +1,6 @@
 --- upstream/crates/revmc/src/lib.rs
 +++ evm2/crates/jit/src/lib.rs
-@@ -4,46 +4,32 @@
+@@ -4,46 +4,26 @@
  #![cfg_attr(docsrs, feature(doc_cfg))]
 
  #[doc(inline)]
@@ -37,16 +37,14 @@
 -pub use revm_bytecode;
 -#[doc(no_inline)]
 -pub use revm_context_interface as context_interface;
-+pub use evm2::SpecId;
- #[doc(no_inline)]
+-#[doc(no_inline)]
 -pub use revm_handler as handler;
 -#[doc(no_inline)]
 -pub use revm_inspector as inspector;
-+pub use revm_bytecode;
- #[doc(no_inline)]
- pub use revm_interpreter::{self as interpreter};
- #[doc(no_inline)]
- pub use revm_primitives as primitives;
+-#[doc(no_inline)]
+-pub use revm_interpreter::{self as interpreter};
+-#[doc(no_inline)]
+-pub use revm_primitives as primitives;
 -#[doc(no_inline)]
 -pub use revm_primitives::hardfork::SpecId;
 -
@@ -57,3 +55,4 @@
 -#[cfg(feature = "alloy-evm")]
 -#[doc(inline)]
 -pub use revmc_runtime::alloy_evm;
++pub use evm2::SpecId;

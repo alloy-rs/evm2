@@ -10,7 +10,7 @@
 
  version.workspace = true
  authors.workspace = true
-@@ -21,31 +21,25 @@
+@@ -21,31 +21,21 @@
  workspace = true
 
  [dependencies]
@@ -20,6 +20,13 @@
 -revmc-context = { workspace = true, features = ["evm"] }
 -revmc-llvm = { workspace = true, optional = true }
 -revmc-runtime.workspace = true
+-
+-revm-bytecode.workspace = true
+-revm-context-interface.workspace = true
+-revm-handler.workspace = true
+-revm-inspector.workspace = true
+-revm-interpreter.workspace = true
+-revm-primitives.workspace = true
 +evm2.workspace = true
 +evm2-jit-backend.workspace = true
 +evm2-jit-builtins = { workspace = true, features = ["ir"] }
@@ -27,13 +34,6 @@
 +evm2-jit-context = { workspace = true, features = ["evm2"] }
 +evm2-jit-llvm = { workspace = true, optional = true }
 +evm2-jit-runtime.workspace = true
-
- revm-bytecode.workspace = true
--revm-context-interface.workspace = true
--revm-handler.workspace = true
--revm-inspector.workspace = true
- revm-interpreter.workspace = true
- revm-primitives.workspace = true
 
  [build-dependencies]
 -revmc-build.workspace = true

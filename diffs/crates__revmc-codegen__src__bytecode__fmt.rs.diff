@@ -107,4 +107,3 @@
 +  CALL         ; ic=16 pc=28 recursive_frame
    POP          ; ic=17 pc=29 gas=2 stack_in=1 max_growth=0
    STOP         ; ic=18 pc=30
-

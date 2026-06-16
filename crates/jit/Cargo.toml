@@ -29,10 +29,6 @@ evm2-jit-context = { workspace = true, features = ["evm2"] }
 evm2-jit-llvm = { workspace = true, optional = true }
 evm2-jit-runtime.workspace = true
 
-revm-bytecode.workspace = true
-revm-interpreter.workspace = true
-revm-primitives.workspace = true
-
 [build-dependencies]
 evm2-jit-build.workspace = true
 

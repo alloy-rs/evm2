@@ -71,4 +71,3 @@
 +        cvt(unsafe { crate::cpp::evm2_jit_llvm_lljit_enable_debug_support(self.as_inner()) })
      }
  }
-
