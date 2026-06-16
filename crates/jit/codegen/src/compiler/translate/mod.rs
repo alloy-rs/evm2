@@ -265,7 +265,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         if config.debug_assertions {
             // Assert that the runtime spec_id matches the compilation spec_id.
             let compiled_spec =
-                fx.bcx.iconst(fx.i8_type, crate::spec::to_revm_spec_id(bytecode.spec_id) as i64);
+                fx.bcx.iconst(fx.i8_type, crate::spec::to_spec_id_byte(bytecode.spec_id).into());
             let _ = fx.call_builtin(Builtin::AssertSpecId, &[ecx, compiled_spec]);
         }
 

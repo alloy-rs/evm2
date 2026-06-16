@@ -16,7 +16,7 @@ use revm_interpreter::{
     context_interface::cfg::GasParams,
     interpreter_types::{LegacyBytecode, ReturnData, RuntimeFlag},
 };
-use revm_primitives::{Address, B256, Bytes, Log, U256, hardfork::SpecId, ruint};
+use revm_primitives::{Address, B256, Bytes, Log, U256, ruint};
 
 mod arch;
 use arch::revmc_entry;
@@ -56,7 +56,7 @@ pub struct EvmContext<'a> {
     /// Whether the context is static.
     pub is_static: bool,
     /// The spec ID for the current execution.
-    pub spec_id: SpecId,
+    pub spec_id: u8,
     /// The contract bytecode, for CODECOPY at runtime.
     pub bytecode: *const [u8],
     /// Optional callback invoked by the LOG builtin after constructing the log,
@@ -130,7 +130,7 @@ impl<'a> EvmContext<'a> {
             host,
             return_data: interpreter.return_data.buffer(),
             is_static: interpreter.runtime_flag.is_static(),
-            spec_id: interpreter.runtime_flag.spec_id(),
+            spec_id: u8::from(interpreter.runtime_flag.spec_id()),
             bytecode,
             on_log: None,
             calldatasize,

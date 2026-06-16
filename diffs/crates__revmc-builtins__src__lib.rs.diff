@@ -6,7 +6,7 @@
 
 -use alloc::{boxed::Box, vec::Vec};
 +use alloc::vec::Vec;
-+use evm2::interpreter::i256;
++use evm2::{SpecId, interpreter::i256};
 +use evm2_jit_context::{EvmContext, EvmWord};
  use revm_interpreter::{
 -    CallInput, CallInputs, CallScheme, CallValue, CreateInputs, CreateScheme, FrameInput,
@@ -14,8 +14,9 @@
 +    CallInput, InstructionResult, as_u64_saturated, as_usize_saturated,
      interpreter_types::{InputsTr, MemoryTr},
  };
- use revm_primitives::{B256, Bytes, KECCAK_EMPTY, Log, LogData, U256, hardfork::SpecId};
+-use revm_primitives::{B256, Bytes, KECCAK_EMPTY, Log, LogData, U256, hardfork::SpecId};
 -use revmc_context::{EvmContext, EvmWord};
++use revm_primitives::{B256, Bytes, KECCAK_EMPTY, Log, LogData, U256};
 
  pub mod gas;
 
@@ -46,8 +47,12 @@
  }
 
  macro_rules! builtins {
-@@ -118,7 +107,7 @@
- pub unsafe extern "C" fn __revmc_builtin_assert_spec_id(ecx: &EvmContext<'_>, expected: SpecId) {
+@@ -115,13 +104,19 @@
+ }
+
+ #[unsafe(no_mangle)]
+-pub unsafe extern "C" fn __revmc_builtin_assert_spec_id(ecx: &EvmContext<'_>, expected: SpecId) {
++pub unsafe extern "C" fn __revmc_builtin_assert_spec_id(ecx: &EvmContext<'_>, expected: u8) {
      assert_eq!(
          ecx.spec_id, expected,
 -        "revmc panic: runtime spec_id does not match compilation spec_id"
@@ -55,7 +60,16 @@
      );
  }
 
-@@ -130,7 +119,7 @@
++#[inline]
++fn spec_enabled(active: u8, required: SpecId) -> bool {
++    let active = SpecId::try_from_u32(active.into()).expect("invalid evm2 spec id");
++    active.enables(required)
++}
++
+ #[unsafe(no_mangle)]
+ pub unsafe extern "C" fn __revmc_builtin_div(rev![a, b]: &mut [EvmWord; 2]) {
+     let divisor = b.to_u256();
+@@ -130,7 +125,7 @@
 
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn __revmc_builtin_sdiv(rev![a, b]: &mut [EvmWord; 2]) {
@@ -64,7 +78,7 @@
  }
 
  #[unsafe(no_mangle)]
-@@ -141,7 +130,7 @@
+@@ -141,7 +136,7 @@
 
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn __revmc_builtin_smod(rev![a, b]: &mut [EvmWord; 2]) {
@@ -73,7 +87,43 @@
  }
 
  #[unsafe(no_mangle)]
-@@ -635,66 +624,13 @@
+@@ -427,7 +422,7 @@
+
+ #[unsafe(no_mangle)]
+ pub unsafe extern "C" fn __revmc_builtin_difficulty(ecx: &EvmContext<'_>, slot: &mut EvmWord) {
+-    *slot = if ecx.spec_id.is_enabled_in(SpecId::MERGE) {
++    *slot = if spec_enabled(ecx.spec_id, SpecId::MERGE) {
+         ecx.host.prevrandao().unwrap().into()
+     } else {
+         ecx.host.difficulty().into()
+@@ -488,7 +483,7 @@
+ ) -> BuiltinResult {
+     let address = ecx.input.target_address;
+     let key = index.to_u256();
+-    if ecx.spec_id.is_enabled_in(SpecId::BERLIN) {
++    if spec_enabled(ecx.spec_id, SpecId::BERLIN) {
+         let additional_cold_cost = ecx.gas_params.cold_storage_additional_cost();
+         let skip_cold = ecx.gas.remaining() < additional_cold_cost;
+         let storage = ecx.host.sload_skip_cold_load(address, key, skip_cold)?;
+@@ -524,7 +519,7 @@
+     ensure_non_staticcall!(ecx);
+
+     let target = ecx.input.target_address;
+-    let is_istanbul = ecx.spec_id.is_enabled_in(SpecId::ISTANBUL);
++    let is_istanbul = spec_enabled(ecx.spec_id, SpecId::ISTANBUL);
+
+     // EIP-2200: If gasleft is less than or equal to gas stipend, fail with OOG.
+     if is_istanbul && ecx.gas.remaining() <= ecx.gas_params.call_stipend() {
+@@ -533,7 +528,7 @@
+
+     gas!(ecx, ecx.gas_params.sstore_static_gas());
+
+-    let state_load = if ecx.spec_id.is_enabled_in(SpecId::BERLIN) {
++    let state_load = if spec_enabled(ecx.spec_id, SpecId::BERLIN) {
+         let additional_cold_cost = ecx.gas_params.cold_storage_additional_cost();
+         let skip_cold = ecx.gas.remaining() < additional_cold_cost;
+         ecx.host.sstore_skip_cold_load(target, index.to_u256(), value.to_u256(), skip_cold)?
+@@ -635,66 +630,13 @@
      sp: *mut EvmWord,
      create_kind: CreateKind,
  ) -> BuiltinResult {
@@ -82,9 +132,7 @@
 -    let len = match create_kind {
 -        CreateKind::Create => 3,
 -        CreateKind::Create2 => 4,
-+    let Some(create) = ecx.evm2_create_builtin else {
-+        return Err(InstructionResult::FatalExternalError.into());
-     };
+-    };
 -    let mut sp = sp.add(len);
 -    pop!(sp; value, code_offset, len);
 -
@@ -104,7 +152,9 @@
 -        Bytes::copy_from_slice(&ecx.memory.slice(code_offset..code_offset + len))
 -    } else {
 -        Bytes::new()
--    };
++    let Some(create) = ecx.evm2_create_builtin else {
++        return Err(InstructionResult::FatalExternalError.into());
+     };
 -
 -    let is_create2 = create_kind == CreateKind::Create2;
 -    let gp = &ecx.gas_params;
@@ -145,7 +195,7 @@
  }
 
  #[unsafe(no_mangle)]
-@@ -703,123 +639,13 @@
+@@ -703,123 +645,13 @@
      sp: *mut EvmWord,
      call_kind: CallKind,
  ) -> BuiltinResult {
@@ -174,7 +224,9 @@
 -            value
 -        }
 -        CallKind::DelegateCall | CallKind::StaticCall => U256::ZERO,
--    };
++    let Some(call) = ecx.evm2_call_builtin else {
++        return Err(InstructionResult::FatalExternalError.into());
+     };
 -    let transfers_value = value != U256::ZERO;
 -
 -    pop!(sp; in_offset, in_len, out_offset, out_len);
@@ -197,9 +249,7 @@
 -        out_offset
 -    } else {
 -        usize::MAX // unrealistic value so we are sure it is not used
-+    let Some(call) = ecx.evm2_call_builtin else {
-+        return Err(InstructionResult::FatalExternalError.into());
-     };
+-    };
 -
 -    if transfers_value {
 -        gas!(ecx, ecx.gas_params.transfer_value_cost());
@@ -274,7 +324,7 @@
  }
 
  #[unsafe(no_mangle)]
-@@ -837,8 +663,7 @@
+@@ -837,8 +669,7 @@
      } else {
          Bytes::new()
      };
@@ -284,7 +334,7 @@
      Err(result.into())
  }
 
-@@ -857,8 +682,7 @@
+@@ -857,8 +688,7 @@
      } else {
          Bytes::new()
      };
@@ -293,3 +343,13 @@
 +    ecx.output = output;
      Err(result.into())
  }
+
+@@ -875,7 +705,7 @@
+         ecx.host.selfdestruct(ecx.input.target_address, target.to_address(), skip_cold_load)?;
+
+     // EIP-161: State trie clearing (invariant-preserving alternative)
+-    let should_charge_topup = if ecx.spec_id.is_enabled_in(SpecId::SPURIOUS_DRAGON) {
++    let should_charge_topup = if spec_enabled(ecx.spec_id, SpecId::SPURIOUS_DRAGON) {
+         res.had_value && !res.target_exists
+     } else {
+         !res.target_exists

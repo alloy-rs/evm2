@@ -1,6 +1,6 @@
 --- upstream/crates/revmc-context/src/lib.rs
 +++ evm2/crates/jit/context/src/lib.rs
-@@ -12,10 +12,9 @@
+@@ -12,67 +12,26 @@
      ptr::{self, NonNull},
  };
  use revm_interpreter::{
@@ -11,9 +11,10 @@
 -    interpreter_types::{Jumps, LegacyBytecode, ReturnData, RuntimeFlag},
 +    interpreter_types::{LegacyBytecode, ReturnData, RuntimeFlag},
  };
- use revm_primitives::{Address, B256, Bytes, Log, U256, hardfork::SpecId, ruint};
+-use revm_primitives::{Address, B256, Bytes, Log, U256, hardfork::SpecId, ruint};
++use revm_primitives::{Address, B256, Bytes, Log, U256, ruint};
 
-@@ -23,56 +22,16 @@
+ mod arch;
  use arch::revmc_entry;
  pub use arch::revmc_exit;
 
@@ -89,10 +90,11 @@
      /// Whether the context is static.
      pub is_static: bool,
      /// The spec ID for the current execution.
-     pub spec_id: SpecId,
+-    pub spec_id: SpecId,
 -    /// Index that tracks where execution should resume after a CALL/CREATE suspension.
 -    #[doc(hidden)] // Not public API.
 -    pub resume_at: ResumeAt,
++    pub spec_id: u8,
      /// The contract bytecode, for CODECOPY at runtime.
      pub bytecode: *const [u8],
      /// Optional callback invoked by the LOG builtin after constructing the log,
@@ -138,8 +140,9 @@
 -            next_action: &mut interpreter.bytecode.action,
              return_data: interpreter.return_data.buffer(),
              is_static: interpreter.runtime_flag.is_static(),
-             spec_id: interpreter.runtime_flag.spec_id(),
+-            spec_id: interpreter.runtime_flag.spec_id(),
 -            resume_at,
++            spec_id: u8::from(interpreter.runtime_flag.spec_id()),
              bytecode,
              on_log: None,
              calldatasize,

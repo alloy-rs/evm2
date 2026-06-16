@@ -11,13 +11,13 @@ extern crate alloc;
 extern crate tracing;
 
 use alloc::vec::Vec;
-use evm2::interpreter::i256;
+use evm2::{SpecId, interpreter::i256};
 use evm2_jit_context::{EvmContext, EvmWord};
 use revm_interpreter::{
     CallInput, InstructionResult, as_u64_saturated, as_usize_saturated,
     interpreter_types::{InputsTr, MemoryTr},
 };
-use revm_primitives::{B256, Bytes, KECCAK_EMPTY, Log, LogData, U256, hardfork::SpecId};
+use revm_primitives::{B256, Bytes, KECCAK_EMPTY, Log, LogData, U256};
 
 pub mod gas;
 
@@ -104,11 +104,17 @@ pub unsafe extern "C" fn __revmc_builtin_panic(data: *const u8, len: usize) -> !
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn __revmc_builtin_assert_spec_id(ecx: &EvmContext<'_>, expected: SpecId) {
+pub unsafe extern "C" fn __revmc_builtin_assert_spec_id(ecx: &EvmContext<'_>, expected: u8) {
     assert_eq!(
         ecx.spec_id, expected,
         "evm2_jit panic: runtime spec_id does not match compilation spec_id"
     );
+}
+
+#[inline]
+fn spec_enabled(active: u8, required: SpecId) -> bool {
+    let active = SpecId::try_from_u32(active.into()).expect("invalid evm2 spec id");
+    active.enables(required)
 }
 
 #[unsafe(no_mangle)]
@@ -416,7 +422,7 @@ pub unsafe extern "C" fn __revmc_builtin_number(ecx: &EvmContext<'_>, slot: &mut
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn __revmc_builtin_difficulty(ecx: &EvmContext<'_>, slot: &mut EvmWord) {
-    *slot = if ecx.spec_id.is_enabled_in(SpecId::MERGE) {
+    *slot = if spec_enabled(ecx.spec_id, SpecId::MERGE) {
         ecx.host.prevrandao().unwrap().into()
     } else {
         ecx.host.difficulty().into()
@@ -477,7 +483,7 @@ pub unsafe extern "C" fn __revmc_builtin_sload(
 ) -> BuiltinResult {
     let address = ecx.input.target_address;
     let key = index.to_u256();
-    if ecx.spec_id.is_enabled_in(SpecId::BERLIN) {
+    if spec_enabled(ecx.spec_id, SpecId::BERLIN) {
         let additional_cold_cost = ecx.gas_params.cold_storage_additional_cost();
         let skip_cold = ecx.gas.remaining() < additional_cold_cost;
         let storage = ecx.host.sload_skip_cold_load(address, key, skip_cold)?;
@@ -513,7 +519,7 @@ pub unsafe extern "C" fn __revmc_builtin_sstore(
     ensure_non_staticcall!(ecx);
 
     let target = ecx.input.target_address;
-    let is_istanbul = ecx.spec_id.is_enabled_in(SpecId::ISTANBUL);
+    let is_istanbul = spec_enabled(ecx.spec_id, SpecId::ISTANBUL);
 
     // EIP-2200: If gasleft is less than or equal to gas stipend, fail with OOG.
     if is_istanbul && ecx.gas.remaining() <= ecx.gas_params.call_stipend() {
@@ -522,7 +528,7 @@ pub unsafe extern "C" fn __revmc_builtin_sstore(
 
     gas!(ecx, ecx.gas_params.sstore_static_gas());
 
-    let state_load = if ecx.spec_id.is_enabled_in(SpecId::BERLIN) {
+    let state_load = if spec_enabled(ecx.spec_id, SpecId::BERLIN) {
         let additional_cold_cost = ecx.gas_params.cold_storage_additional_cost();
         let skip_cold = ecx.gas.remaining() < additional_cold_cost;
         ecx.host.sstore_skip_cold_load(target, index.to_u256(), value.to_u256(), skip_cold)?
@@ -699,7 +705,7 @@ pub unsafe extern "C" fn __revmc_builtin_selfdestruct(
         ecx.host.selfdestruct(ecx.input.target_address, target.to_address(), skip_cold_load)?;
 
     // EIP-161: State trie clearing (invariant-preserving alternative)
-    let should_charge_topup = if ecx.spec_id.is_enabled_in(SpecId::SPURIOUS_DRAGON) {
+    let should_charge_topup = if spec_enabled(ecx.spec_id, SpecId::SPURIOUS_DRAGON) {
         res.had_value && !res.target_exists
     } else {
         !res.target_exists

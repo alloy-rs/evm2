@@ -285,8 +285,8 @@ pub struct EvmContext<'a, T: EvmTypes = BaseEvmTypes> {
     pub return_data: &'a [u8],
     /// Whether the context is static.
     pub is_static: bool,
-    /// The revm ABI spec ID for the current execution.
-    pub spec_id: RevmSpecId,
+    /// The raw spec ID for the current execution.
+    pub spec_id: u8,
     /// The contract bytecode, for CODECOPY at runtime.
     pub bytecode: *const [u8],
     /// Optional callback invoked by the LOG builtin after constructing the log.
@@ -542,7 +542,8 @@ impl<'a, T: EvmTypes> EvmContext<'a, T> {
         let memory = memory_scratch.as_mut() as *mut SharedMemory;
         let bytecode = parts.bytecode.original_byte_slice() as *const [u8];
         let calldatasize = parts.message.input.len();
-        let spec_id = to_revm_spec_id(parts.spec);
+        let spec_id = spec_id_byte(parts.spec);
+        let revm_spec_id = to_revm_spec_id(parts.spec);
         let mut input_scratch = Box::new(InputsImpl {
             target_address: parts.message.destination,
             bytecode_address: Some(parts.message.code_address),
@@ -552,7 +553,7 @@ impl<'a, T: EvmTypes> EvmContext<'a, T> {
         });
         let input = input_scratch.as_mut() as *mut InputsImpl;
         let mut host_adapter =
-            Box::new(RevmHostAdapter::new(host, parts.tx_env, parts.version, spec_id));
+            Box::new(RevmHostAdapter::new(host, parts.tx_env, parts.version, revm_spec_id));
         let revm_host = RevmHostPtr::from_host(host_adapter.as_mut());
         let mut this = Self {
             memory,
@@ -567,7 +568,7 @@ impl<'a, T: EvmTypes> EvmContext<'a, T> {
             calldatasize,
             exit_result: InstructionResult::Stop,
             exit_sp: ptr::null_mut(),
-            gas_params: RevmGasParams::new_spec(spec_id),
+            gas_params: RevmGasParams::new_spec(revm_spec_id),
             mem_base: ptr::null_mut(),
             mem_len: 0,
             output: RevmBytes::new(),
@@ -1002,8 +1003,12 @@ fn evm2_gas_from_revm(gas: RevmGas) -> Evm2Gas {
     evm2_gas
 }
 
+fn spec_id_byte(spec_id: SpecId) -> u8 {
+    u8::try_from(u32::from(spec_id)).expect("evm2 SpecId does not fit in u8")
+}
+
 fn to_revm_spec_id(spec_id: SpecId) -> RevmSpecId {
-    let spec_id = u8::try_from(u32::from(spec_id)).expect("evm2 SpecId does not fit in u8");
+    let spec_id = spec_id_byte(spec_id);
     RevmSpecId::try_from_u8(spec_id).expect("evm2 SpecId has no revm equivalent")
 }
 
