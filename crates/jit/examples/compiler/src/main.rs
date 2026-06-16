@@ -1,17 +1,17 @@
 //! Simple JIT compiler example.
 
+use alloy_primitives::{Bytes, hex};
 use clap::Parser;
-use eyre::Context;
-use evm2_jit::{
-    EvmCompiler, SpecId as Evm2SpecId,
-    interpreter::{
-        context_interface::host::DummyHost,
-        Interpreter,
-        interpreter::{ExtBytecode, InputsImpl, SharedMemory},
-    },
-    primitives::hardfork::SpecId as RevmSpecId,
-    revm_bytecode::Bytecode,
+use evm2::{
+    BaseEvmConfigSelector, BaseEvmTypes, Evm, EvmConfigSelector, Precompiles, SpecId,
+    bytecode::Bytecode,
+    env::{BlockEnv, TxEnv},
+    ethereum::ethereum_tx_registry,
+    evm::EmptyDB,
+    interpreter::{Interpreter, Message},
 };
+use evm2_jit::{EvmCompiler, evm2_api::EvmCompilerFn};
+use eyre::Context;
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -31,24 +31,37 @@ fn main() -> eyre::Result<()> {
             .wrap_err_with(|| format!("Failed to read code from file: {path:?}"))?,
         _ => unreachable!(),
     };
-    let bytecode = evm2_jit::primitives::hex::decode(code.trim())
-        .wrap_err("Failed to decode hex-encoded code")?;
+    let bytecode = hex::decode(code.trim()).wrap_err("Failed to decode hex-encoded code")?;
 
     // Compile the code.
     let mut compiler = EvmCompiler::new_llvm(false)?;
-    let f = unsafe { compiler.jit("test", &bytecode[..], Evm2SpecId::CANCUN) }
+    let f = unsafe { compiler.jit("test", bytecode.as_slice(), SpecId::CANCUN) }
         .wrap_err("Failed to JIT-compile code")?;
+    let f = EvmCompilerFn::<BaseEvmTypes>::from_abi_compatible(f);
 
     // Set up runtime context and run the function.
-    let bytecode_obj = Bytecode::new_legacy(bytecode.into());
-    let ext_bytecode = ExtBytecode::new(bytecode_obj);
-    let input = InputsImpl::default();
-    let memory = SharedMemory::new();
-    let mut interpreter =
-        Interpreter::new(memory, ext_bytecode, input, false, RevmSpecId::CANCUN, 1_000_000);
-    let mut host = DummyHost::new(RevmSpecId::CANCUN);
+    let config = <BaseEvmConfigSelector as EvmConfigSelector<BaseEvmTypes>>::execution_config(
+        SpecId::CANCUN,
+    );
+    let tx_env = TxEnv::default();
+    let message = Message { gas_limit: 1_000_000, ..Default::default() };
+    let mut interpreter = Interpreter::<BaseEvmTypes>::new(
+        Bytecode::new_legacy(Bytes::from(bytecode)),
+        &tx_env,
+        &message,
+        false,
+    );
+    let mut host = Evm::<BaseEvmTypes>::new(
+        SpecId::CANCUN,
+        BlockEnv::default(),
+        ethereum_tx_registry(SpecId::CANCUN),
+        EmptyDB::default(),
+        Precompiles::base(SpecId::CANCUN),
+    );
+    interpreter.prepare_jit_run(&config, &mut host);
     let result = unsafe { f.call_with_interpreter(&mut interpreter, &mut host) };
-    eprintln!("{result:#?}");
+    eprintln!("stop: {result:?}");
+    eprintln!("output: 0x{}", hex::encode(interpreter.output()));
 
     Ok(())
 }

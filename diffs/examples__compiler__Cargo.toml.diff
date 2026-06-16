@@ -7,7 +7,7 @@
  publish = false
 
  version.workspace = true
-@@ -13,10 +13,10 @@
+@@ -13,10 +13,12 @@
  exclude.workspace = true
 
  [build-dependencies]
@@ -16,7 +16,9 @@
 
  [dependencies]
 -revmc = { workspace = true, features = ["llvm-prefer-dynamic"] }
++evm2 = { workspace = true, features = ["std"] }
 +evm2-jit = { workspace = true, features = ["llvm-prefer-dynamic"] }
 
++alloy-primitives = { workspace = true, features = ["std"] }
  clap = { version = "4", features = ["derive"] }
  eyre.workspace = true
