@@ -82,6 +82,12 @@ fn parse_block_range(value: &str) -> Result<RangeInclusive<u64>, String> {
 #[cfg(test)]
 mod tests {
     use super::parse_block_range;
+    #[cfg(feature = "jit")]
+    use super::{Args, Command};
+    #[cfg(feature = "jit")]
+    use clap::Parser;
+    #[cfg(feature = "jit")]
+    use std::path::PathBuf;
 
     #[test]
     fn parse_block_range_accepts_inclusive_range() {
@@ -93,5 +99,33 @@ mod tests {
     #[test]
     fn parse_block_range_rejects_reversed_range() {
         assert!(parse_block_range("12-10").unwrap_err().contains("greater"));
+    }
+
+    #[cfg(feature = "jit")]
+    #[test]
+    fn replay_accepts_jit_mode() {
+        let args = Args::try_parse_from(["evm2", "replay", "--jit", "fixture.json"]).unwrap();
+        let Command::Replay(replay) = args.command else { panic!("expected replay command") };
+        assert!(replay.jit);
+        assert!(!replay.aot);
+        assert_eq!(replay.path, PathBuf::from("fixture.json"));
+    }
+
+    #[cfg(feature = "jit")]
+    #[test]
+    fn replay_accepts_aot_mode() {
+        let args = Args::try_parse_from(["evm2", "replay", "--aot", "fixture.json"]).unwrap();
+        let Command::Replay(replay) = args.command else { panic!("expected replay command") };
+        assert!(!replay.jit);
+        assert!(replay.aot);
+        assert_eq!(replay.path, PathBuf::from("fixture.json"));
+    }
+
+    #[cfg(feature = "jit")]
+    #[test]
+    fn replay_rejects_jit_and_aot_together() {
+        let err =
+            Args::try_parse_from(["evm2", "replay", "--jit", "--aot", "fixture.json"]).unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
     }
 }
