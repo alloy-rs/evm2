@@ -1,5 +1,14 @@
 --- upstream/crates/revmc-runtime/src/runtime/worker.rs
 +++ evm2/crates/jit/runtime/src/runtime/worker.rs
+@@ -34,7 +34,7 @@
+ use crate::{
+     EvmCompiler, EvmLlvmBackend, Linker,
+     llvm::{JitDylibGuard, orc::ResourceTracker},
+-    runtime::config::JitMode,
++    runtime::{config::JitMode, spec::to_revm_spec_id},
+ };
+ 
+ #[cfg(all(feature = "llvm", unix))]
 @@ -212,7 +212,7 @@
          let pool = (worker_count > 0).then(|| {
              ThreadPoolBuilder::new()
@@ -18,7 +27,26 @@
              }
              Err(e) => {
                  error!(error = %e, "failed to recreate compiler");
-@@ -587,8 +587,10 @@
+@@ -547,7 +547,8 @@
+     job: &CompileJob,
+     compiler: &mut EvmCompiler<EvmLlvmBackend>,
+ ) -> Result<WorkerSuccess, String> {
+-    let result = unsafe { compiler.jit(&job.symbol_name, &job.bytecode[..], job.key.spec_id) };
++    let spec_id = to_revm_spec_id(job.key.spec_id);
++    let result = unsafe { compiler.jit(&job.symbol_name, &job.bytecode[..], spec_id) };
+     match result {
+         Ok(func) => {
+             let jd_guard = compiler.backend_mut().jit_dylib_guard();
+@@ -573,7 +574,7 @@
+     compiler: &mut EvmCompiler<EvmLlvmBackend>,
+ ) -> Result<WorkerSuccess, String> {
+     compiler
+-        .translate(&job.symbol_name, &job.bytecode[..], job.key.spec_id)
++        .translate(&job.symbol_name, &job.bytecode[..], to_revm_spec_id(job.key.spec_id))
+         .map_err(|e| format!("JIT object translate failed: {e}"))?;
+ 
+     let mut object_bytes = Vec::new();
+@@ -587,8 +588,10 @@
          .map(|name| name.to_string_lossy().into_owned())
          .collect();
      if builtin_symbols.is_empty() {
@@ -31,3 +59,12 @@
      }
  
      debug!(
+@@ -610,7 +613,7 @@
+     compiler: &mut EvmCompiler<EvmLlvmBackend>,
+ ) -> Result<WorkerSuccess, String> {
+     compiler
+-        .translate(&job.symbol_name, &job.bytecode[..], job.key.spec_id)
++        .translate(&job.symbol_name, &job.bytecode[..], to_revm_spec_id(job.key.spec_id))
+         .map_err(|e| format!("AOT translate failed: {e}"))?;
+ 
+     let tmp_dir = tempfile::tempdir().map_err(|e| format!("failed to create temp dir: {e}"))?;

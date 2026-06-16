@@ -21,6 +21,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 workspace = true
 
 [dependencies]
+evm2 = { workspace = true, features = ["std"] }
 evm2-jit-backend.workspace = true
 evm2-jit-codegen.workspace = true
 evm2-jit-context = { workspace = true, features = ["evm"] }

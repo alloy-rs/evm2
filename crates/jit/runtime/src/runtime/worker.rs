@@ -34,7 +34,7 @@ use std::{
 use crate::{
     EvmCompiler, EvmLlvmBackend, Linker,
     llvm::{JitDylibGuard, orc::ResourceTracker},
-    runtime::config::JitMode,
+    runtime::{config::JitMode, spec::to_revm_spec_id},
 };
 
 #[cfg(all(feature = "llvm", unix))]
@@ -547,7 +547,8 @@ fn compile_jit_artifact(
     job: &CompileJob,
     compiler: &mut EvmCompiler<EvmLlvmBackend>,
 ) -> Result<WorkerSuccess, String> {
-    let result = unsafe { compiler.jit(&job.symbol_name, &job.bytecode[..], job.key.spec_id) };
+    let spec_id = to_revm_spec_id(job.key.spec_id);
+    let result = unsafe { compiler.jit(&job.symbol_name, &job.bytecode[..], spec_id) };
     match result {
         Ok(func) => {
             let jd_guard = compiler.backend_mut().jit_dylib_guard();
@@ -573,7 +574,7 @@ pub(super) fn compile_jit_object_artifact(
     compiler: &mut EvmCompiler<EvmLlvmBackend>,
 ) -> Result<WorkerSuccess, String> {
     compiler
-        .translate(&job.symbol_name, &job.bytecode[..], job.key.spec_id)
+        .translate(&job.symbol_name, &job.bytecode[..], to_revm_spec_id(job.key.spec_id))
         .map_err(|e| format!("JIT object translate failed: {e}"))?;
 
     let mut object_bytes = Vec::new();
@@ -612,7 +613,7 @@ fn compile_aot_artifact(
     compiler: &mut EvmCompiler<EvmLlvmBackend>,
 ) -> Result<WorkerSuccess, String> {
     compiler
-        .translate(&job.symbol_name, &job.bytecode[..], job.key.spec_id)
+        .translate(&job.symbol_name, &job.bytecode[..], to_revm_spec_id(job.key.spec_id))
         .map_err(|e| format!("AOT translate failed: {e}"))?;
 
     let tmp_dir = tempfile::tempdir().map_err(|e| format!("failed to create temp dir: {e}"))?;

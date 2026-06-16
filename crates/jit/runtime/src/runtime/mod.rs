@@ -9,11 +9,13 @@ use crate::{
     EvmCompilerFn,
     eyre::{self, WrapErr},
 };
+use alloy_primitives::B256;
 use api::LoadedLibrary;
 use backend::{Command, CompileJitRequest, EventQueue, PrepareAotRequest, ResidentMap};
 use crossbeam_channel as chan;
 use crossbeam_queue::ArrayQueue;
-use revm_primitives::{B256, hardfork::SpecId, hints_util::cold_path};
+use evm2::SpecId;
+use revm_primitives::hints_util::cold_path;
 use stats::RuntimeStats;
 use std::{
     ops::ControlFlow,
@@ -37,6 +39,8 @@ mod backend;
 
 mod stats;
 pub use stats::RuntimeStatsSnapshot;
+
+pub(crate) mod spec;
 
 mod storage;
 pub use storage::{

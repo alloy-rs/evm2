@@ -2,7 +2,7 @@
 
 use super::*;
 use alloy_primitives::{B256, Bytes};
-use revm_primitives::hardfork::SpecId;
+use evm2::SpecId;
 use std::sync::{Arc, Mutex};
 
 // ---------------------------------------------------------------------------

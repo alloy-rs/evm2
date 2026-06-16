@@ -11,7 +11,7 @@
  
  version.workspace = true
  authors.workspace = true
-@@ -21,11 +21,11 @@
+@@ -21,11 +21,12 @@
  workspace = true
  
  [dependencies]
@@ -20,6 +20,7 @@
 -revmc-context = { workspace = true, features = ["evm"] }
 -revmc-llvm = { workspace = true, optional = true }
 -revmc-builtins = { workspace = true, features = ["ir"] }
++evm2 = { workspace = true, features = ["std"] }
 +evm2-jit-backend.workspace = true
 +evm2-jit-codegen.workspace = true
 +evm2-jit-context = { workspace = true, features = ["evm"] }
@@ -28,7 +29,7 @@
  
  alloy-primitives = { workspace = true, features = ["std", "map-fxhash"] }
  alloy-evm = { workspace = true, optional = true }
-@@ -56,7 +56,7 @@
+@@ -56,7 +57,7 @@
  wincode.workspace = true
  
  [dev-dependencies]
@@ -37,7 +38,7 @@
  alloy-evm.workspace = true
  paste.workspace = true
  similar-asserts = "2.0"
-@@ -64,8 +64,8 @@
+@@ -64,8 +65,8 @@
  
  [features]
  default = ["llvm"]

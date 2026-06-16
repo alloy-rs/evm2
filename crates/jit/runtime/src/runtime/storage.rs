@@ -3,7 +3,7 @@
 use crate::{OptimizationLevel, eyre};
 use alloy_primitives::B256;
 use dashmap::DashMap;
-use revm_primitives::hardfork::SpecId;
+use evm2::SpecId;
 use std::{fs, path::PathBuf};
 
 /// Runtime cache key: the minimal identity for a compiled program at runtime.
@@ -172,8 +172,8 @@ mod tests {
         RuntimeCacheKey,
     };
     use alloy_primitives::B256;
+    use evm2::SpecId;
     use evm2_jit_backend::OptimizationLevel;
-    use revm_primitives::hardfork::SpecId;
 
     fn artifact_key(code_hash: B256) -> ArtifactKey {
         ArtifactKey {

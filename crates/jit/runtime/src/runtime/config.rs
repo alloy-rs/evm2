@@ -2,8 +2,8 @@
 
 use crate::{CompileTimings, eyre, runtime::storage::ArtifactStore};
 use alloy_primitives::B256;
+use evm2::SpecId;
 use revm_context_interface::cfg::GasParams;
-use revm_primitives::hardfork::SpecId;
 use std::{path::PathBuf, str::FromStr, sync::Arc, time::Duration};
 
 const JIT_MODE_ENV: &str = "EVM2_JIT_JIT_MODE";

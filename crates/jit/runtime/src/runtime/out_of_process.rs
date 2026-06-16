@@ -14,9 +14,9 @@ use crate::{
 };
 use alloy_primitives::{B256, Bytes};
 use crossbeam_channel as chan;
+use evm2::SpecId;
 use rayon::ThreadPoolBuilder;
 use revm_context_interface::cfg::{GasParams, gas_params::GasId};
-use revm_primitives::hardfork::SpecId;
 use std::{
     cell::RefCell,
     collections::HashMap,
@@ -566,7 +566,7 @@ fn write_job<W: Write + ?Sized>(
     let req = HelperRequest::Compile(HelperCompile {
         id,
         code_hash: job.key.code_hash.0,
-        spec_id: job.key.spec_id as u8,
+        spec_id: u8::try_from(u32::from(job.key.spec_id)).expect("evm2 SpecId does not fit in u8"),
         opt_level: opt_level_to_u8(job.opt_level),
         symbol_name: job.symbol_name.clone(),
         bytecode: job.bytecode.to_vec(),
@@ -742,7 +742,8 @@ fn read_helper_request<R: Read + ?Sized>(stdin: &mut BufReader<R>) -> eyre::Resu
         HelperRequest::Resume => return Ok(HelperWork::Resume),
         HelperRequest::Init(_) => eyre::bail!("JIT helper received duplicate init"),
     };
-    let spec_id = SpecId::try_from_u8(req.spec_id).ok_or_else(|| eyre::eyre!("invalid spec id"))?;
+    let spec_id = SpecId::try_from_u32(u32::from(req.spec_id))
+        .ok_or_else(|| eyre::eyre!("invalid spec id"))?;
     let opt_level = opt_level_from_u8(req.opt_level)?;
 
     let job = CompileJob {

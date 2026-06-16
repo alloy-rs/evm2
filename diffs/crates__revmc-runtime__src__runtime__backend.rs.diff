@@ -1,6 +1,17 @@
 --- upstream/crates/revmc-runtime/src/runtime/backend.rs
 +++ evm2/crates/jit/runtime/src/runtime/backend.rs
-@@ -32,7 +32,7 @@
+@@ -21,8 +21,9 @@
+ use crossbeam_queue::ArrayQueue;
+ use dashmap::DashMap;
+ use quanta::Instant;
++#[cfg(feature = "llvm")]
++use std::ffi::CString;
+ use std::{
+-    ffi::CString,
+     mem,
+     ops::ControlFlow,
+     sync::{Arc, atomic::Ordering},
+@@ -32,7 +33,7 @@
  #[cfg(feature = "llvm")]
  use crate::llvm::jit_memory_usage;
  #[cfg(feature = "llvm")]
@@ -9,7 +20,7 @@
  
  /// The resident map type: code_hash+spec_id → compiled program.
  pub(crate) type ResidentMap = DashMap<RuntimeCacheKey, Arc<CompiledProgram>, DefaultHashBuilder>;
-@@ -87,7 +87,7 @@
+@@ -87,7 +88,7 @@
              .builtin_symbols
              .iter()
              .map(|name| {
@@ -18,3 +29,12 @@
                      .ok_or_else(|| eyre::eyre!("unknown builtin symbol: {name}"))?
                      .addr();
                  Ok((CString::new(name.as_str())?, addr))
+@@ -880,7 +881,7 @@
+     use crate::runtime::worker::{
+         CompileJob, WorkerSuccess, compile_jit_object_artifact, create_compiler,
+     };
+-    use revm_primitives::hardfork::SpecId;
++    use evm2::SpecId;
+ 
+     /// PUSH1 0x42 PUSH0 MSTORE PUSH1 0x20 PUSH0 RETURN.
+     const BYTECODE_RET42: &[u8] = &[0x60, 0x42, 0x5f, 0x52, 0x60, 0x20, 0x5f, 0xf3];

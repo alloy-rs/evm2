@@ -21,8 +21,9 @@ use crossbeam_channel as chan;
 use crossbeam_queue::ArrayQueue;
 use dashmap::DashMap;
 use quanta::Instant;
+#[cfg(feature = "llvm")]
+use std::ffi::CString;
 use std::{
-    ffi::CString,
     mem,
     ops::ControlFlow,
     sync::{Arc, atomic::Ordering},
@@ -880,7 +881,7 @@ mod tests {
     use crate::runtime::worker::{
         CompileJob, WorkerSuccess, compile_jit_object_artifact, create_compiler,
     };
-    use revm_primitives::hardfork::SpecId;
+    use evm2::SpecId;
 
     /// PUSH1 0x42 PUSH0 MSTORE PUSH1 0x20 PUSH0 RETURN.
     const BYTECODE_RET42: &[u8] = &[0x60, 0x42, 0x5f, 0x52, 0x60, 0x20, 0x5f, 0xf3];

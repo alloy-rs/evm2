@@ -1,7 +1,12 @@
 --- upstream/crates/revmc-runtime/src/runtime/config.rs
 +++ evm2/crates/jit/runtime/src/runtime/config.rs
-@@ -6,10 +6,10 @@
- use revm_primitives::hardfork::SpecId;
+@@ -2,14 +2,14 @@
+ 
+ use crate::{CompileTimings, eyre, runtime::storage::ArtifactStore};
+ use alloy_primitives::B256;
++use evm2::SpecId;
+ use revm_context_interface::cfg::GasParams;
+-use revm_primitives::hardfork::SpecId;
  use std::{path::PathBuf, str::FromStr, sync::Arc, time::Duration};
  
 -const JIT_MODE_ENV: &str = "REVMC_JIT_MODE";

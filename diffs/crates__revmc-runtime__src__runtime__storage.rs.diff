@@ -1,12 +1,22 @@
 --- upstream/crates/revmc-runtime/src/runtime/storage.rs
 +++ evm2/crates/jit/runtime/src/runtime/storage.rs
+@@ -3,7 +3,7 @@
+ use crate::{OptimizationLevel, eyre};
+ use alloy_primitives::B256;
+ use dashmap::DashMap;
+-use revm_primitives::hardfork::SpecId;
++use evm2::SpecId;
+ use std::{fs, path::PathBuf};
+ 
+ /// Runtime cache key: the minimal identity for a compiled program at runtime.
 @@ -172,8 +172,8 @@
          RuntimeCacheKey,
      };
      use alloy_primitives::B256;
-+    use evm2_jit_backend::OptimizationLevel;
-     use revm_primitives::hardfork::SpecId;
+-    use revm_primitives::hardfork::SpecId;
 -    use revmc_backend::OptimizationLevel;
++    use evm2::SpecId;
++    use evm2_jit_backend::OptimizationLevel;
  
      fn artifact_key(code_hash: B256) -> ArtifactKey {
          ArtifactKey {

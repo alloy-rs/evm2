@@ -1,0 +1,11 @@
+--- upstream/crates/revmc-runtime/src/runtime/tests.rs
++++ evm2/crates/jit/runtime/src/runtime/tests.rs
+@@ -2,7 +2,7 @@
+ 
+ use super::*;
+ use alloy_primitives::{B256, Bytes};
+-use revm_primitives::hardfork::SpecId;
++use evm2::SpecId;
+ use std::sync::{Arc, Mutex};
+ 
+ // ---------------------------------------------------------------------------
