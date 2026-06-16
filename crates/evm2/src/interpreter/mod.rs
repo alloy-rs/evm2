@@ -7,6 +7,7 @@ pub use gas::{Gas, GasTracker, MemoryGas};
 mod utils;
 
 pub(crate) mod instructions;
+pub use instructions::i256;
 
 pub(crate) mod dispatch;
 

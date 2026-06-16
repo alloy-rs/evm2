@@ -11,6 +11,7 @@ extern crate alloc;
 extern crate tracing;
 
 use alloc::vec::Vec;
+use evm2::interpreter::i256;
 use evm2_jit_context::{EvmContext, EvmWord};
 use revm_interpreter::{
     CallInput, InstructionResult, as_u64_saturated, as_usize_saturated,
@@ -118,7 +119,7 @@ pub unsafe extern "C" fn __revmc_builtin_div(rev![a, b]: &mut [EvmWord; 2]) {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn __revmc_builtin_sdiv(rev![a, b]: &mut [EvmWord; 2]) {
-    *b = revm_interpreter::instructions::i256::i256_div(a.to_u256(), b.to_u256()).into();
+    *b = i256::i256_div(a.to_u256(), b.to_u256()).into();
 }
 
 #[unsafe(no_mangle)]
@@ -129,7 +130,7 @@ pub unsafe extern "C" fn __revmc_builtin_mod(rev![a, b]: &mut [EvmWord; 2]) {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn __revmc_builtin_smod(rev![a, b]: &mut [EvmWord; 2]) {
-    *b = revm_interpreter::instructions::i256::i256_mod(a.to_u256(), b.to_u256()).into();
+    *b = i256::i256_mod(a.to_u256(), b.to_u256()).into();
 }
 
 #[unsafe(no_mangle)]

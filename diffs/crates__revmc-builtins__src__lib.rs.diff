@@ -1,11 +1,12 @@
 --- upstream/crates/revmc-builtins/src/lib.rs
 +++ evm2/crates/jit/builtins/src/lib.rs
-@@ -10,14 +10,13 @@
+@@ -10,14 +10,14 @@
  #[cfg(feature = "ir")]
  extern crate tracing;
 
 -use alloc::{boxed::Box, vec::Vec};
 +use alloc::vec::Vec;
++use evm2::interpreter::i256;
 +use evm2_jit_context::{EvmContext, EvmWord};
  use revm_interpreter::{
 -    CallInput, CallInputs, CallScheme, CallValue, CreateInputs, CreateScheme, FrameInput,
@@ -18,7 +19,7 @@
 
  pub mod gas;
 
-@@ -47,17 +46,6 @@
+@@ -47,17 +47,6 @@
      StaticCall,
  }
 
@@ -36,7 +37,7 @@
  /// The kind of a `CREATE*` instruction.
  #[derive(Clone, Copy, Debug, PartialEq, Eq)]
  #[repr(u8)]
-@@ -78,7 +66,7 @@
+@@ -78,7 +67,7 @@
  #[cold]
  fn fail(ecx: &mut EvmContext<'_>, e: BuiltinError) -> ! {
      ecx.exit_result = e.into();
@@ -45,7 +46,7 @@
  }
 
  macro_rules! builtins {
-@@ -118,7 +106,7 @@
+@@ -118,7 +107,7 @@
  pub unsafe extern "C" fn __revmc_builtin_assert_spec_id(ecx: &EvmContext<'_>, expected: SpecId) {
      assert_eq!(
          ecx.spec_id, expected,
@@ -54,7 +55,25 @@
      );
  }
 
-@@ -635,66 +623,13 @@
+@@ -130,7 +119,7 @@
+
+ #[unsafe(no_mangle)]
+ pub unsafe extern "C" fn __revmc_builtin_sdiv(rev![a, b]: &mut [EvmWord; 2]) {
+-    *b = revm_interpreter::instructions::i256::i256_div(a.to_u256(), b.to_u256()).into();
++    *b = i256::i256_div(a.to_u256(), b.to_u256()).into();
+ }
+
+ #[unsafe(no_mangle)]
+@@ -141,7 +130,7 @@
+
+ #[unsafe(no_mangle)]
+ pub unsafe extern "C" fn __revmc_builtin_smod(rev![a, b]: &mut [EvmWord; 2]) {
+-    *b = revm_interpreter::instructions::i256::i256_mod(a.to_u256(), b.to_u256()).into();
++    *b = i256::i256_mod(a.to_u256(), b.to_u256()).into();
+ }
+
+ #[unsafe(no_mangle)]
+@@ -635,66 +624,13 @@
      sp: *mut EvmWord,
      create_kind: CreateKind,
  ) -> BuiltinResult {
@@ -126,7 +145,7 @@
  }
 
  #[unsafe(no_mangle)]
-@@ -703,123 +638,13 @@
+@@ -703,123 +639,13 @@
      sp: *mut EvmWord,
      call_kind: CallKind,
  ) -> BuiltinResult {
@@ -255,7 +274,7 @@
  }
 
  #[unsafe(no_mangle)]
-@@ -837,8 +662,7 @@
+@@ -837,8 +663,7 @@
      } else {
          Bytes::new()
      };
@@ -265,7 +284,7 @@
      Err(result.into())
  }
 
-@@ -857,8 +681,7 @@
+@@ -857,8 +682,7 @@
      } else {
          Bytes::new()
      };

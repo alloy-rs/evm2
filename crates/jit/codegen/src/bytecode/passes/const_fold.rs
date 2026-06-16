@@ -6,8 +6,10 @@ use crate::{
     bytecode::{U256Imm, U256Interner},
 };
 use alloy_primitives::U256;
-use evm2::interpreter::op;
-use revm_interpreter::instructions::i256::{i256_cmp, i256_div, i256_mod};
+use evm2::interpreter::{
+    i256::{i256_cmp, i256_div, i256_mod},
+    op,
+};
 use std::cmp::Ordering;
 
 /// Returns the compiler gas cost of constant-folding the given opcode with the given inputs.
