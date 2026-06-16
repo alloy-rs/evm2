@@ -1,11 +1,12 @@
 --- upstream/crates/revmc-builtins/src/utils.rs
 +++ evm2/crates/jit/builtins/src/utils.rs
 @@ -1,8 +1,8 @@
++use alloy_primitives::Address;
  use core::{hint::cold_path, num::NonZero};
 +use evm2_jit_context::{EvmContext, EvmWord};
  use revm_context_interface::journaled_state::AccountInfoLoad;
  use revm_interpreter::{InstructionResult, as_usize_saturated, host::LoadError};
- use revm_primitives::Address;
+-use revm_primitives::Address;
 -use revmc_context::{EvmContext, EvmWord};
 
  pub type BuiltinResult = Result<(), BuiltinError>;

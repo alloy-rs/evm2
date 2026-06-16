@@ -11,13 +11,13 @@ extern crate alloc;
 extern crate tracing;
 
 use alloc::vec::Vec;
+use alloy_primitives::{B256, Bytes, KECCAK256_EMPTY, Log, LogData, U256, keccak256};
 use evm2::{SpecId, interpreter::i256};
 use evm2_jit_context::{EvmContext, EvmWord};
 use revm_interpreter::{
     CallInput, InstructionResult, as_u64_saturated, as_usize_saturated,
     interpreter_types::{InputsTr, MemoryTr},
 };
-use revm_primitives::{B256, Bytes, KECCAK_EMPTY, Log, LogData, U256};
 
 pub mod gas;
 
@@ -197,13 +197,13 @@ fn do_keccak256(
     len: usize,
 ) -> BuiltinResult {
     *out = EvmWord::from_be_bytes(if len == 0 {
-        KECCAK_EMPTY
+        KECCAK256_EMPTY
     } else {
         gas!(ecx, ecx.gas_params.keccak256_cost(len));
         let offset = try_into_usize!(offset);
         ensure_memory(ecx, offset, len)?;
         let data = ecx.memory.slice(offset..offset + len);
-        revm_primitives::keccak256(&*data)
+        keccak256(&*data)
     });
     Ok(())
 }
@@ -364,7 +364,7 @@ pub unsafe extern "C" fn __revmc_builtin_extcodehash(
 ) -> BuiltinResult {
     let addr = address.to_address();
     let account = load_account(ecx, addr, false)?;
-    let code_hash = if account.is_empty { revm_primitives::B256::ZERO } else { account.code_hash };
+    let code_hash = if account.is_empty { B256::ZERO } else { account.code_hash };
     *address = EvmWord::from_be_bytes(code_hash);
     Ok(())
 }

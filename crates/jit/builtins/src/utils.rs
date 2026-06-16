@@ -1,8 +1,8 @@
+use alloy_primitives::Address;
 use core::{hint::cold_path, num::NonZero};
 use evm2_jit_context::{EvmContext, EvmWord};
 use revm_context_interface::journaled_state::AccountInfoLoad;
 use revm_interpreter::{InstructionResult, as_usize_saturated, host::LoadError};
-use revm_primitives::Address;
 
 pub type BuiltinResult = Result<(), BuiltinError>;
 

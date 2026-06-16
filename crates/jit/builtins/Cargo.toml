@@ -20,7 +20,7 @@ workspace = true
 evm2.workspace = true
 evm2-jit-context.workspace = true
 
-revm-primitives.workspace = true
+alloy-primitives.workspace = true
 revm-interpreter.workspace = true
 revm-context-interface.workspace = true
 paste.workspace = true
@@ -30,5 +30,5 @@ tracing = { workspace = true, optional = true }
 
 [features]
 default = ["std", "ir"]
-std = ["evm2-jit-context/std", "revm-primitives/std", "revm-interpreter/std"]
+std = ["evm2-jit-context/std", "alloy-primitives/std", "revm-interpreter/std"]
 ir = ["std", "dep:tracing", "dep:evm2-jit-backend"]
