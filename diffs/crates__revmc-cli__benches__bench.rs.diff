@@ -7,7 +7,7 @@
 -use revmc::{EvmCompiler, EvmLlvmBackend, OptimizationLevel, primitives::hardfork::SpecId};
 -use revmc_cli::{PreparedBench, fixture_entry_bytecode};
 +use evm2_jit::{EvmCompiler, EvmLlvmBackend, OptimizationLevel, primitives::hardfork::SpecId};
-+use evm2_jit_cli::{PreparedBench, fixture_entry_bytecode};
++use evm2_jit_cli::{PreparedBench, fixture_entry_bytecode, to_evm2_spec_id};
  use std::time::Duration;
  
  const SPEC_ID: SpecId = SpecId::OSAKA;
@@ -29,3 +29,23 @@
      compiler: &mut EvmCompiler<EvmLlvmBackend>,
  ) {
      let name = def.name;
+@@ -60,7 +60,7 @@
+         b.iter_batched_ref(
+             || new_compiler(OptimizationLevel::Default),
+             |compiler| {
+-                compiler.translate(name, &bytecode, spec_id).unwrap();
++                compiler.translate(name, &bytecode, to_evm2_spec_id(spec_id)).unwrap();
+             },
+             BatchSize::PerIteration,
+         )
+@@ -71,7 +71,9 @@
+             b.iter_batched_ref(
+                 || {
+                     let mut compiler = new_compiler(OptimizationLevel::default());
+-                    let id = compiler.translate(name, &bytecode, spec_id).expect("translate");
++                    let id = compiler
++                        .translate(name, &bytecode, to_evm2_spec_id(spec_id))
++                        .expect("translate");
+                     (compiler, id)
+                 },
+                 |(compiler, id)| unsafe {

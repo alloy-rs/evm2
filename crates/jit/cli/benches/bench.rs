@@ -3,7 +3,7 @@
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use revm_handler::ExecuteEvm;
 use evm2_jit::{EvmCompiler, EvmLlvmBackend, OptimizationLevel, primitives::hardfork::SpecId};
-use evm2_jit_cli::{PreparedBench, fixture_entry_bytecode};
+use evm2_jit_cli::{PreparedBench, fixture_entry_bytecode, to_evm2_spec_id};
 use std::time::Duration;
 
 const SPEC_ID: SpecId = SpecId::OSAKA;
@@ -60,7 +60,7 @@ fn run_bench(
         b.iter_batched_ref(
             || new_compiler(OptimizationLevel::Default),
             |compiler| {
-                compiler.translate(name, &bytecode, spec_id).unwrap();
+                compiler.translate(name, &bytecode, to_evm2_spec_id(spec_id)).unwrap();
             },
             BatchSize::PerIteration,
         )
@@ -71,7 +71,9 @@ fn run_bench(
             b.iter_batched_ref(
                 || {
                     let mut compiler = new_compiler(OptimizationLevel::default());
-                    let id = compiler.translate(name, &bytecode, spec_id).expect("translate");
+                    let id = compiler
+                        .translate(name, &bytecode, to_evm2_spec_id(spec_id))
+                        .expect("translate");
                     (compiler, id)
                 },
                 |(compiler, id)| unsafe {

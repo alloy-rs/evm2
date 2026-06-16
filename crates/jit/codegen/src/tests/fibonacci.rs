@@ -1,5 +1,5 @@
 use super::{DEF_SPEC, with_evm_context};
-use crate::{Backend, EvmCompiler};
+use crate::{Backend, EvmCompiler, spec::from_revm_spec_id};
 use paste::paste;
 use revm_bytecode::opcode as op;
 use revm_interpreter::InstructionResult;
@@ -21,7 +21,7 @@ fn run_fibonacci_test<B: Backend>(compiler: &mut EvmCompiler<B>, input: u16, dyn
 
     unsafe { compiler.clear() }.unwrap();
     compiler.inspect_stack(true);
-    let f = unsafe { compiler.jit("fib", &code, DEF_SPEC) }.unwrap();
+    let f = unsafe { compiler.jit("fib", &code, from_revm_spec_id(DEF_SPEC)) }.unwrap();
 
     with_evm_context(&code, DEF_SPEC, |ecx, stack, stack_len| {
         if dynamic {

@@ -1,4 +1,5 @@
 use super::*;
+use crate::spec::from_revm_spec_id;
 use context_interface::{
     cfg::GasParams,
     context::{SStoreResult, SelfDestructResult, StateLoad},
@@ -472,7 +473,7 @@ pub fn run_test_case<B: Backend>(test_case: &TestCase<'_>, compiler: &mut EvmCom
     let TestCase { bytecode, spec_id, .. } = *test_case;
     compiler.inspect_stack(test_case.inspect_stack.unwrap_or(true));
     // compiler.debug_assertions(false);
-    let f = unsafe { compiler.jit("test", bytecode, spec_id) }.unwrap();
+    let f = unsafe { compiler.jit("test", bytecode, from_revm_spec_id(spec_id)) }.unwrap();
     run_compiled_test_case(test_case, f);
 }
 

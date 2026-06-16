@@ -1,6 +1,6 @@
 --- upstream/crates/revmc-cli/src/cmd/run.rs
 +++ evm2/crates/jit/cli/src/cmd/run.rs
-@@ -1,10 +1,10 @@
+@@ -1,12 +1,12 @@
  use clap::{Parser, ValueEnum};
  use color_eyre::{Result, eyre::eyre};
  use revm_primitives::{B256Map, keccak256};
@@ -11,8 +11,11 @@
 -use revmc_cli::{
 +use evm2_jit_cli::{
      PreparedBench, fixture_entry_bytecode, fixture_from_bytecode, get_benches, read_code_path,
-     read_code_string,
+-    read_code_string,
++    read_code_string, to_evm2_spec_id,
  };
+ use std::{
+     hint::black_box,
 @@ -15,7 +15,7 @@
  
  #[derive(Parser)]
@@ -49,6 +52,15 @@
              } else {
                  None
              };
+@@ -182,7 +182,7 @@
+                 compiler.frame_pointers(false);
+             }
+ 
+-            let parsed = compiler.parse(bytecode.as_slice().into(), compile_spec_id)?;
++            let parsed = compiler.parse(bytecode.as_slice().into(), to_evm2_spec_id(compile_spec_id))?;
+             if self.display || self.parse_only {
+                 println!("{name}()\n{parsed:#}");
+             }
 @@ -214,7 +214,7 @@
  
                  if !self.no_link {

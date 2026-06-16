@@ -1,5 +1,5 @@
 use super::with_evm_context;
-use crate::{Backend, EvmCompiler};
+use crate::{Backend, EvmCompiler, spec::from_revm_spec_id};
 use revm_bytecode::opcode as op;
 use revm_interpreter::InstructionResult;
 use revm_primitives::{U256, hardfork::SpecId};
@@ -10,9 +10,9 @@ matrix_tests!(
         let bytecode: &[u8] = &[];
         let spec_id = SpecId::CANCUN;
         compiler.gas_metering(false);
-        let gas_id = compiler.translate("test1", bytecode, spec_id).unwrap();
+        let gas_id = compiler.translate("test1", bytecode, from_revm_spec_id(spec_id)).unwrap();
         compiler.gas_metering(true);
-        let no_gas_id = compiler.translate("test2", bytecode, spec_id).unwrap();
+        let no_gas_id = compiler.translate("test2", bytecode, from_revm_spec_id(spec_id)).unwrap();
         let gas_fn = unsafe { compiler.jit_function(gas_id) }.unwrap();
         let no_gas_fn = unsafe { compiler.jit_function(no_gas_id) }.unwrap();
         with_evm_context(bytecode, spec_id, |ecx, stack, stack_len| {
@@ -35,7 +35,8 @@ matrix_tests!(
 
         // First function: PUSH1 42, STOP.
         let bytecode1: &[u8] = &[op::PUSH1, 42];
-        let f1 = unsafe { compiler.jit("clear_ir_1", bytecode1, spec_id) }.unwrap();
+        let f1 =
+            unsafe { compiler.jit("clear_ir_1", bytecode1, from_revm_spec_id(spec_id)) }.unwrap();
 
         compiler.clear_ir().unwrap();
 
@@ -43,7 +44,8 @@ matrix_tests!(
         // Uses MSTORE to exercise a builtin being re-declared in the new module.
         let bytecode2: &[u8] =
             &[op::PUSH1, 42, op::PUSH1, 0, op::MSTORE, op::PUSH1, 1, op::PUSH1, 2, op::ADD];
-        let f2 = unsafe { compiler.jit("clear_ir_2", bytecode2, spec_id) }.unwrap();
+        let f2 =
+            unsafe { compiler.jit("clear_ir_2", bytecode2, from_revm_spec_id(spec_id)) }.unwrap();
 
         // First function still works after clear_ir + second compilation.
         with_evm_context(bytecode1, spec_id, |ecx, stack, stack_len| {
@@ -76,7 +78,7 @@ fn jit_and_verify<B: Backend>(
     expected: U256,
 ) -> B::FuncId {
     compiler.inspect_stack(true);
-    let id = compiler.translate(name, code, super::DEF_SPEC).unwrap();
+    let id = compiler.translate(name, code, from_revm_spec_id(super::DEF_SPEC)).unwrap();
     let f = unsafe { compiler.jit_function(id) }.unwrap();
 
     with_evm_context(code, super::DEF_SPEC, |ecx, stack, stack_len| {

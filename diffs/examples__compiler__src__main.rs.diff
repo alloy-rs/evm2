@@ -1,6 +1,6 @@
 --- upstream/examples/compiler/src/main.rs
 +++ evm2/crates/jit/examples/compiler/src/main.rs
-@@ -1,10 +1,10 @@
+@@ -1,16 +1,17 @@
  //! Simple JIT compiler example.
  //!
 -//! For a more complete example, see the `revmc-cli` crate.
@@ -9,11 +9,19 @@
  use clap::Parser;
  use eyre::Context;
 -use revmc::{
+-    EvmCompiler, SpecId,
 +use evm2_jit::{
-     EvmCompiler, SpecId,
++    EvmCompiler, SpecId as Evm2SpecId,
      context_interface::host::DummyHost,
      interpreter::{
-@@ -32,7 +32,7 @@
+         Interpreter,
+         interpreter::{ExtBytecode, InputsImpl, SharedMemory},
+     },
++    primitives::hardfork::SpecId as RevmSpecId,
+     revm_bytecode::Bytecode,
+ };
+ use std::path::PathBuf;
+@@ -32,12 +33,12 @@
              .wrap_err_with(|| format!("Failed to read code from file: {path:?}"))?,
          _ => unreachable!(),
      };
@@ -22,3 +30,20 @@
          .wrap_err("Failed to decode hex-encoded code")?;
  
      // Compile the code.
+     let mut compiler = EvmCompiler::new_llvm(false)?;
+-    let f = unsafe { compiler.jit("test", &bytecode[..], SpecId::CANCUN) }
++    let f = unsafe { compiler.jit("test", &bytecode[..], Evm2SpecId::CANCUN) }
+         .wrap_err("Failed to JIT-compile code")?;
+ 
+     // Set up runtime context and run the function.
+@@ -46,8 +47,8 @@
+     let input = InputsImpl::default();
+     let memory = SharedMemory::new();
+     let mut interpreter =
+-        Interpreter::new(memory, ext_bytecode, input, false, SpecId::CANCUN, 1_000_000);
+-    let mut host = DummyHost::new(SpecId::CANCUN);
++        Interpreter::new(memory, ext_bytecode, input, false, RevmSpecId::CANCUN, 1_000_000);
++    let mut host = DummyHost::new(RevmSpecId::CANCUN);
+     let result = unsafe { f.call_with_interpreter(&mut interpreter, &mut host) };
+     eprintln!("{result:#?}");
+ 

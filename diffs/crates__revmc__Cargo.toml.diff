@@ -10,7 +10,7 @@
  
  version.workspace = true
  authors.workspace = true
-@@ -21,12 +21,12 @@
+@@ -21,12 +21,13 @@
  workspace = true
  
  [dependencies]
@@ -20,6 +20,7 @@
 -revmc-context = { workspace = true, features = ["evm"] }
 -revmc-llvm = { workspace = true, optional = true }
 -revmc-runtime.workspace = true
++evm2.workspace = true
 +evm2-jit-backend.workspace = true
 +evm2-jit-builtins = { workspace = true, features = ["ir"] }
 +evm2-jit-codegen.workspace = true
@@ -29,7 +30,7 @@
  
  revm-bytecode.workspace = true
  revm-context-interface.workspace = true
-@@ -36,16 +36,16 @@
+@@ -36,16 +37,16 @@
  revm-primitives.workspace = true
  
  [build-dependencies]

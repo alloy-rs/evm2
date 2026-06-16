@@ -2,9 +2,10 @@
 
 use libfuzzer_sys::fuzz_target;
 use evm2_jit::{
+    primitives::hardfork::SpecId,
     revm_bytecode::opcode::OPCODE_INFO,
     tests::{run_test_case, TestCase},
-    EvmCompiler, OpcodesIter, OptimizationLevel, SpecId,
+    EvmCompiler, OpcodesIter, OptimizationLevel,
 };
 use std::path::PathBuf;
 

@@ -26,6 +26,8 @@ pub use llvm::EvmLlvmBackend;
 pub use evm2_jit_builtins as builtins;
 
 #[doc(no_inline)]
+pub use evm2::SpecId;
+#[doc(no_inline)]
 pub use revm_bytecode;
 #[doc(no_inline)]
 pub use revm_context_interface as context_interface;
@@ -37,8 +39,6 @@ pub use revm_inspector as inspector;
 pub use revm_interpreter::{self as interpreter};
 #[doc(no_inline)]
 pub use revm_primitives as primitives;
-#[doc(no_inline)]
-pub use revm_primitives::hardfork::SpecId;
 
 /// Internal tests and testing utilities. Not public API.
 #[cfg(test)]

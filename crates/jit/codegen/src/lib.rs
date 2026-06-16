@@ -18,6 +18,8 @@ pub use compiler::{CompileTimings, EvmCompiler, EvmCompilerInput};
 mod linker;
 pub use linker::{Linker, shared_library_path};
 
+mod spec;
+
 /// Generic `revm` JIT EVM from `evm2-jit-context`.
 pub mod simple_revm_evm {
     pub use evm2_jit_context::JitEvm;
@@ -36,7 +38,7 @@ type FxHashMap<K, V> = alloy_primitives::map::HashMap<K, V, alloy_primitives::ma
 #[cfg(any())]
 pub fn generate_all_assembly() -> EvmCompiler<evm2_jit_llvm::EvmLlvmBackend> {
     let mut compiler = EvmCompiler::new_llvm(false).unwrap();
-    let _ = compiler.jit(None, &[], revm_primitives::hardfork::SpecId::LONDON).unwrap();
+    let _ = compiler.jit(None, &[], evm2::SpecId::LONDON).unwrap();
     unsafe { compiler.clear().unwrap() };
     compiler
 }

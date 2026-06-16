@@ -6,7 +6,7 @@ use evm2_jit::{
 };
 use evm2_jit_cli::{
     PreparedBench, fixture_entry_bytecode, fixture_from_bytecode, get_benches, read_code_path,
-    read_code_string,
+    read_code_string, to_evm2_spec_id,
 };
 use std::{
     hint::black_box,
@@ -182,7 +182,7 @@ impl RunArgs {
                 compiler.frame_pointers(false);
             }
 
-            let parsed = compiler.parse(bytecode.as_slice().into(), compile_spec_id)?;
+            let parsed = compiler.parse(bytecode.as_slice().into(), to_evm2_spec_id(compile_spec_id))?;
             if self.display || self.parse_only {
                 println!("{name}()\n{parsed:#}");
             }

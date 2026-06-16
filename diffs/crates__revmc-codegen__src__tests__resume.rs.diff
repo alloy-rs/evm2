@@ -1,0 +1,18 @@
+--- upstream/crates/revmc-codegen/src/tests/resume.rs
++++ evm2/crates/jit/codegen/src/tests/resume.rs
+@@ -1,5 +1,5 @@
+ use super::{DEF_SPEC, with_evm_context};
+-use crate::{Backend, EvmCompiler, TEST_SUSPEND};
++use crate::{Backend, EvmCompiler, TEST_SUSPEND, spec::from_revm_spec_id};
+ use revm_bytecode::opcode as op;
+ use revm_interpreter::InstructionResult;
+ use revm_primitives::{U256, hardfork::SpecId};
+@@ -25,7 +25,7 @@
+ ];
+ 
+ fn run<B: Backend>(compiler: &mut EvmCompiler<B>, code: &[u8], spec_id: SpecId) {
+-    let f = unsafe { compiler.jit("resume", code, spec_id) }.unwrap();
++    let f = unsafe { compiler.jit("resume", code, from_revm_spec_id(spec_id)) }.unwrap();
+ 
+     with_evm_context(code, spec_id, |ecx, stack, stack_len| {
+         assert_eq!(ecx.resume_at.get(), 0);

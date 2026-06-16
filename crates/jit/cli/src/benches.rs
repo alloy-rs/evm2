@@ -1,4 +1,4 @@
-use evm2_jit::SpecId;
+use evm2_jit::primitives::hardfork::SpecId;
 use std::borrow::Cow;
 
 /// Benchmark definition.

@@ -1,11 +1,16 @@
 --- upstream/fuzz/fuzz_targets/vs_interpreter.rs
 +++ evm2/crates/jit/fuzz/fuzz_targets/vs_interpreter.rs
-@@ -1,7 +1,7 @@
+@@ -1,10 +1,11 @@
  #![no_main]
  
  use libfuzzer_sys::fuzz_target;
 -use revmc::{
 +use evm2_jit::{
++    primitives::hardfork::SpecId,
      revm_bytecode::opcode::OPCODE_INFO,
      tests::{run_test_case, TestCase},
-     EvmCompiler, OpcodesIter, OptimizationLevel, SpecId,
+-    EvmCompiler, OpcodesIter, OptimizationLevel, SpecId,
++    EvmCompiler, OpcodesIter, OptimizationLevel,
+ };
+ use std::path::PathBuf;
+ 

@@ -113,6 +113,11 @@ const BENCH_CALLER: Address = Address::new([
     0x11, 0x11, 0x11, 0x11,
 ]);
 
+pub fn to_evm2_spec_id(spec_id: SpecId) -> evm2_jit::SpecId {
+    evm2_jit::SpecId::try_from_u32(u32::from(u8::from(spec_id)))
+        .expect("revm SpecId has no evm2 equivalent")
+}
+
 impl PreparedBench {
     /// Load and JIT-compile a benchmark using a fresh compiler.
     pub fn load(bench: &Bench, default_spec_id: SpecId) -> (Self, EvmCompiler<EvmLlvmBackend>) {
@@ -170,7 +175,7 @@ impl PreparedBench {
             }
             let name = format!("contract_{}", evm2_jit::primitives::hex::encode(acct.code_hash));
             let func_id = compiler
-                .translate(&name, acct.bytecode.original_byte_slice(), spec_id)
+                .translate(&name, acct.bytecode.original_byte_slice(), to_evm2_spec_id(spec_id))
                 .expect("translation failed");
             pending.push((acct.code_hash, func_id));
         }

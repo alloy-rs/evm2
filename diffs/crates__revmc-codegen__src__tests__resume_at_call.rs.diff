@@ -1,0 +1,49 @@
+--- upstream/crates/revmc-codegen/src/tests/resume_at_call.rs
++++ evm2/crates/jit/codegen/src/tests/resume_at_call.rs
+@@ -12,7 +12,7 @@
+     DEF_ADDR, DEF_CALLER, DEF_CD, DEF_GAS_LIMIT, DEF_SPEC, DEF_VALUE, TestHost,
+     insert_call_outcome_test,
+ };
+-use crate::{Backend, EvmCompiler};
++use crate::{Backend, EvmCompiler, spec::from_revm_spec_id};
+ use revm_bytecode::opcode as op;
+ use revm_interpreter::{
+     CallInput, FrameInput, Gas, InputsImpl, InstructionResult, Interpreter, InterpreterAction,
+@@ -51,7 +51,7 @@
+ 
+     unsafe { compiler.clear() }.unwrap();
+     compiler.inspect_stack(true);
+-    let f = unsafe { compiler.jit("resume_call", bytecode, DEF_SPEC) }.unwrap();
++    let f = unsafe { compiler.jit("resume_call", bytecode, from_revm_spec_id(DEF_SPEC)) }.unwrap();
+ 
+     // First call: should suspend at CALL with NewFrame
+     let mut host = TestHost::new();
+@@ -135,7 +135,8 @@
+ 
+     unsafe { compiler.clear() }.unwrap();
+     compiler.inspect_stack(true);
+-    let f = unsafe { compiler.jit("resume_return", bytecode, DEF_SPEC) }.unwrap();
++    let f =
++        unsafe { compiler.jit("resume_return", bytecode, from_revm_spec_id(DEF_SPEC)) }.unwrap();
+ 
+     let mut host = TestHost::new();
+     let input = InputsImpl {
+@@ -210,7 +211,7 @@
+ 
+     unsafe { compiler.clear() }.unwrap();
+     compiler.inspect_stack(true);
+-    let f = unsafe { compiler.jit("resume_rds", bytecode, DEF_SPEC) }.unwrap();
++    let f = unsafe { compiler.jit("resume_rds", bytecode, from_revm_spec_id(DEF_SPEC)) }.unwrap();
+ 
+     let mut host = TestHost::new();
+     let input = InputsImpl {
+@@ -326,7 +327,8 @@
+ 
+     unsafe { compiler.clear() }.unwrap();
+     compiler.inspect_stack(true);
+-    let f = unsafe { compiler.jit("pop_push_sload", bytecode, DEF_SPEC) }.unwrap();
++    let f =
++        unsafe { compiler.jit("pop_push_sload", bytecode, from_revm_spec_id(DEF_SPEC)) }.unwrap();
+ 
+     let mut host = TestHost::new();
+     let input = InputsImpl {

@@ -5,12 +5,13 @@
 use clap::Parser;
 use eyre::Context;
 use evm2_jit::{
-    EvmCompiler, SpecId,
+    EvmCompiler, SpecId as Evm2SpecId,
     context_interface::host::DummyHost,
     interpreter::{
         Interpreter,
         interpreter::{ExtBytecode, InputsImpl, SharedMemory},
     },
+    primitives::hardfork::SpecId as RevmSpecId,
     revm_bytecode::Bytecode,
 };
 use std::path::PathBuf;
@@ -37,7 +38,7 @@ fn main() -> eyre::Result<()> {
 
     // Compile the code.
     let mut compiler = EvmCompiler::new_llvm(false)?;
-    let f = unsafe { compiler.jit("test", &bytecode[..], SpecId::CANCUN) }
+    let f = unsafe { compiler.jit("test", &bytecode[..], Evm2SpecId::CANCUN) }
         .wrap_err("Failed to JIT-compile code")?;
 
     // Set up runtime context and run the function.
@@ -46,8 +47,8 @@ fn main() -> eyre::Result<()> {
     let input = InputsImpl::default();
     let memory = SharedMemory::new();
     let mut interpreter =
-        Interpreter::new(memory, ext_bytecode, input, false, SpecId::CANCUN, 1_000_000);
-    let mut host = DummyHost::new(SpecId::CANCUN);
+        Interpreter::new(memory, ext_bytecode, input, false, RevmSpecId::CANCUN, 1_000_000);
+    let mut host = DummyHost::new(RevmSpecId::CANCUN);
     let result = unsafe { f.call_with_interpreter(&mut interpreter, &mut host) };
     eprintln!("{result:#?}");
 

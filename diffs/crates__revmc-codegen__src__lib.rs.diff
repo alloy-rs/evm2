@@ -11,11 +11,13 @@
  
  mod bytecode;
  pub use bytecode::*;
-@@ -18,9 +18,9 @@
+@@ -18,9 +18,11 @@
  mod linker;
  pub use linker::{Linker, shared_library_path};
  
 -/// Generic `revm` JIT EVM from `revmc-context`.
++mod spec;
++
 +/// Generic `revm` JIT EVM from `evm2-jit-context`.
  pub mod simple_revm_evm {
 -    pub use revmc_context::JitEvm;
@@ -23,7 +25,7 @@
  }
  
  /// ABI version of compiled artifacts. Bump when the calling convention changes.
-@@ -32,9 +32,9 @@
+@@ -32,11 +34,11 @@
  
  type FxHashMap<K, V> = alloy_primitives::map::HashMap<K, V, alloy_primitives::map::FxBuildHasher>;
  
@@ -33,5 +35,8 @@
 -pub fn generate_all_assembly() -> EvmCompiler<revmc_llvm::EvmLlvmBackend> {
 +pub fn generate_all_assembly() -> EvmCompiler<evm2_jit_llvm::EvmLlvmBackend> {
      let mut compiler = EvmCompiler::new_llvm(false).unwrap();
-     let _ = compiler.jit(None, &[], revm_primitives::hardfork::SpecId::LONDON).unwrap();
+-    let _ = compiler.jit(None, &[], revm_primitives::hardfork::SpecId::LONDON).unwrap();
++    let _ = compiler.jit(None, &[], evm2::SpecId::LONDON).unwrap();
      unsafe { compiler.clear().unwrap() };
+     compiler
+ }
