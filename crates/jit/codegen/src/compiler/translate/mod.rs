@@ -1000,15 +1000,12 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
 
             op::CREATE => {
                 self.create_common(CreateKind::Create);
-                goto_return!(no_branch);
             }
             op::CALL => {
                 self.call_common(CallKind::Call);
-                goto_return!(no_branch);
             }
             op::CALLCODE => {
                 self.call_common(CallKind::CallCode);
-                goto_return!(no_branch);
             }
             op::RETURN => {
                 self.return_common(InstructionResult::Return);
@@ -1016,16 +1013,13 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             }
             op::DELEGATECALL => {
                 self.call_common(CallKind::DelegateCall);
-                goto_return!(no_branch);
             }
             op::CREATE2 => {
                 self.create_common(CreateKind::Create2);
-                goto_return!(no_branch);
             }
 
             op::STATICCALL => {
                 self.call_common(CallKind::StaticCall);
-                goto_return!(no_branch);
             }
 
             op::REVERT => {
@@ -1267,7 +1261,6 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         let sp = self.sp_after_inputs();
         let create_kind = self.bcx.iconst(self.i8_type, create_kind as i64);
         self.call_fallible_builtin(Builtin::Create, &[self.ecx, sp, create_kind]);
-        self.bcx.unreachable();
     }
 
     /// Builds `*CALL*` instructions.
@@ -1275,7 +1268,6 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         let sp = self.sp_after_inputs();
         let call_kind = self.bcx.iconst(self.i8_type, call_kind as i64);
         self.call_fallible_builtin(Builtin::Call, &[self.ecx, sp, call_kind]);
-        self.bcx.unreachable();
     }
 
     /// Loads the word at the given pointer.

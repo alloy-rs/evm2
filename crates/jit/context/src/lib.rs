@@ -25,6 +25,14 @@ pub use arch::revmc_exit;
 #[cfg(feature = "evm2")]
 pub mod evm2_api;
 
+/// Type-erased evm2 recursive frame builtin.
+///
+/// Returning [`InstructionResult::Stop`] means the opcode completed and the compiled parent frame
+/// should continue. Any other value is treated as an instruction stop for the parent frame.
+#[doc(hidden)]
+pub type Evm2FrameBuiltin =
+    unsafe extern "C" fn(&mut EvmContext<'_>, *mut EvmWord, u8) -> InstructionResult;
+
 /// The EVM bytecode compiler runtime context.
 ///
 /// This is a simple wrapper around the interpreter's resources, allowing the compiled function to
@@ -75,6 +83,12 @@ pub struct EvmContext<'a> {
     /// Output produced by RETURN or REVERT.
     #[doc(hidden)]
     pub output: Bytes,
+    /// Optional evm2-native `CREATE`/`CREATE2` implementation.
+    #[doc(hidden)]
+    pub evm2_create_builtin: Option<Evm2FrameBuiltin>,
+    /// Optional evm2-native `CALL`/`CALLCODE`/`DELEGATECALL`/`STATICCALL` implementation.
+    #[doc(hidden)]
+    pub evm2_call_builtin: Option<Evm2FrameBuiltin>,
 }
 
 // Static assertions to ensure the struct layout matches expectations.
@@ -126,6 +140,8 @@ impl<'a> EvmContext<'a> {
             mem_base: ptr::null_mut(),
             mem_len: 0,
             output: Bytes::new(),
+            evm2_create_builtin: None,
+            evm2_call_builtin: None,
         };
         this.refresh_memory_cache();
         (this, stack, stack_len)

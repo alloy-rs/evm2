@@ -2,7 +2,7 @@
 
 use crate::{CompileTimings, eyre, runtime::storage::ArtifactStore};
 use alloy_primitives::B256;
-use evm2::{SpecId, interpreter::op};
+use evm2::SpecId;
 use revm_context_interface::cfg::GasParams;
 use std::{path::PathBuf, str::FromStr, sync::Arc, time::Duration};
 
@@ -343,26 +343,8 @@ impl RuntimeTuning {
         if self.jit_max_bytecode_len > 0 && bytecode.len() > self.jit_max_bytecode_len {
             return false;
         }
-        !contains_recursive_frame_opcode(bytecode)
+        true
     }
-}
-
-fn contains_recursive_frame_opcode(bytecode: &[u8]) -> bool {
-    let mut pc = 0;
-    while let Some(&opcode) = bytecode.get(pc) {
-        if matches!(
-            opcode,
-            op::CALL | op::CALLCODE | op::DELEGATECALL | op::STATICCALL | op::CREATE | op::CREATE2
-        ) {
-            return true;
-        }
-        pc += 1 + push_imm_len(opcode);
-    }
-    false
-}
-
-const fn push_imm_len(opcode: u8) -> usize {
-    if matches!(opcode, op::PUSH1..=op::PUSH32) { (opcode - op::PUSH1 + 1) as usize } else { 0 }
 }
 
 impl Default for RuntimeTuning {

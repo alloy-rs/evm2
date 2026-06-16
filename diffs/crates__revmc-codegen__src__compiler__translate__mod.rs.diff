@@ -228,7 +228,40 @@
              // We push exactly 1 value, so consume `inp + 1 - out` to match the
              // real stack diff. For DUP (out = inp+1) this is 0; for ADD (out = 1)
              // this equals inp.
-@@ -1173,7 +1051,7 @@
+@@ -1122,15 +1000,12 @@
+
+             op::CREATE => {
+                 self.create_common(CreateKind::Create);
+-                goto_return!(no_branch);
+             }
+             op::CALL => {
+                 self.call_common(CallKind::Call);
+-                goto_return!(no_branch);
+             }
+             op::CALLCODE => {
+                 self.call_common(CallKind::CallCode);
+-                goto_return!(no_branch);
+             }
+             op::RETURN => {
+                 self.return_common(InstructionResult::Return);
+@@ -1138,16 +1013,13 @@
+             }
+             op::DELEGATECALL => {
+                 self.call_common(CallKind::DelegateCall);
+-                goto_return!(no_branch);
+             }
+             op::CREATE2 => {
+                 self.create_common(CreateKind::Create2);
+-                goto_return!(no_branch);
+             }
+
+             op::STATICCALL => {
+                 self.call_common(CallKind::StaticCall);
+-                goto_return!(no_branch);
+             }
+
+             op::REVERT => {
+@@ -1173,7 +1045,7 @@
 
      /// Syncs the virtual stack for a NOOP instruction. Unlike `sync_virtual_stack_diff`,
      /// this preserves known-constant outputs as `Virtual` values so that boundary
@@ -237,16 +270,15 @@
      /// them to physical memory. Without this, NOOP'd constants would be marked
      /// `Materialized` with no actual store, leaving garbage in memory.
      fn sync_noop_diff(&mut self, inst: Inst, diff: i32) {
-@@ -1389,7 +1267,7 @@
+@@ -1389,7 +1261,6 @@
          let sp = self.sp_after_inputs();
          let create_kind = self.bcx.iconst(self.i8_type, create_kind as i64);
          self.call_fallible_builtin(Builtin::Create, &[self.ecx, sp, create_kind]);
 -        self.suspend();
-+        self.bcx.unreachable();
      }
 
      /// Builds `*CALL*` instructions.
-@@ -1397,32 +1275,7 @@
+@@ -1397,32 +1268,6 @@
          let sp = self.sp_after_inputs();
          let call_kind = self.bcx.iconst(self.i8_type, call_kind as i64);
          self.call_fallible_builtin(Builtin::Call, &[self.ecx, sp, call_kind]);
@@ -276,11 +308,10 @@
 -    /// Adds a resume point.
 -    fn add_resume_at(&mut self, block: B::BasicBlock) {
 -        self.resume_blocks.push(block);
-+        self.bcx.unreachable();
      }
 
      /// Loads the word at the given pointer.
-@@ -1910,15 +1763,6 @@
+@@ -1910,15 +1755,6 @@
          block
      }
 
@@ -296,7 +327,7 @@
      #[allow(dead_code)]
      fn call_printf(&mut self, template: &std::ffi::CStr, values: &[B::Value]) {
          let mut args = Vec::with_capacity(values.len() + 1);
-@@ -2047,7 +1891,7 @@
+@@ -2047,7 +1883,7 @@
          // self.call_printf(format_printf!("{} - calling {name}\n", self.op_block_name("")), &[]);
 
          debug_assert_eq!(args.len(), arg_types.len());
@@ -305,7 +336,7 @@
          // SAFETY: `this` aliases `self` to work around the borrow checker: we need `self.bcx`
          // borrowed by `get_or_build_function` while also swapping `self.bcx` inside the closure.
          // The closure's `bcx` is a fresh builder (not `self.bcx`), so the swap is safe.
-@@ -2130,12 +1974,8 @@
+@@ -2130,12 +1966,8 @@
 
  /// Computes the effective stack diff for an instruction, matching the codegen semantics.
  fn effective_stack_diff(inp: u8, out: u8, data: &InstData) -> i32 {

@@ -13,7 +13,7 @@
  };
  use revm_primitives::{Address, B256, Bytes, Log, U256, hardfork::SpecId, ruint};
 
-@@ -23,56 +22,8 @@
+@@ -23,56 +22,16 @@
  use arch::revmc_entry;
  pub use arch::revmc_exit;
 
@@ -21,9 +21,12 @@
 -mod jit_evm;
 -#[cfg(feature = "evm")]
 -pub use jit_evm::JitEvm;
--
++#[cfg(feature = "evm2")]
++pub mod evm2_api;
+
 -/// Resume point for compiled EVM code after a CALL/CREATE suspension.
--///
++/// Type-erased evm2 recursive frame builtin.
+ ///
 -/// Encoded as the interpreter's bytecode PC. `0` means no resume (initial state),
 -/// values `1..=N` identify individual suspend points.
 -///
@@ -67,12 +70,15 @@
 -        self.0 == *other
 -    }
 -}
-+#[cfg(feature = "evm2")]
-+pub mod evm2_api;
++/// Returning [`InstructionResult::Stop`] means the opcode completed and the compiled parent frame
++/// should continue. Any other value is treated as an instruction stop for the parent frame.
++#[doc(hidden)]
++pub type Evm2FrameBuiltin =
++    unsafe extern "C" fn(&mut EvmContext<'_>, *mut EvmWord, u8) -> InstructionResult;
 
  /// The EVM bytecode compiler runtime context.
  ///
-@@ -92,17 +43,12 @@
+@@ -92,17 +51,12 @@
      pub gas: Gas,
      /// The host.
      pub host: &'a mut dyn Host,
@@ -90,17 +96,23 @@
      /// The contract bytecode, for CODECOPY at runtime.
      pub bytecode: *const [u8],
      /// Optional callback invoked by the LOG builtin after constructing the log,
-@@ -126,6 +72,9 @@
+@@ -126,6 +80,15 @@
      /// Cached length of the current memory context in bytes.
      /// Refreshed after any memory resize.
      pub mem_len: usize,
 +    /// Output produced by RETURN or REVERT.
 +    #[doc(hidden)]
 +    pub output: Bytes,
++    /// Optional evm2-native `CREATE`/`CREATE2` implementation.
++    #[doc(hidden)]
++    pub evm2_create_builtin: Option<Evm2FrameBuiltin>,
++    /// Optional evm2-native `CALL`/`CALLCODE`/`DELEGATECALL`/`STATICCALL` implementation.
++    #[doc(hidden)]
++    pub evm2_call_builtin: Option<Evm2FrameBuiltin>,
  }
 
  // Static assertions to ensure the struct layout matches expectations.
-@@ -135,10 +84,6 @@
+@@ -135,10 +98,6 @@
 
      // Key fields accessed by JIT code
      assert!(offset_of!(EvmContext<'_>, memory) == 0);
@@ -111,7 +123,7 @@
  };
 
  impl fmt::Debug for EvmContext<'_> {
-@@ -160,7 +105,6 @@
+@@ -160,7 +119,6 @@
          interpreter: &'a mut Interpreter,
          host: &'b mut dyn Host,
      ) -> (Self, &'a mut EvmStack, &'a mut usize) {
@@ -119,7 +131,7 @@
          let (stack, stack_len) = EvmStack::from_interpreter_stack(&mut interpreter.stack);
          let bytecode = interpreter.bytecode.bytecode_slice() as *const [u8];
          let calldatasize = interpreter.input.input.len();
-@@ -170,11 +114,9 @@
+@@ -170,11 +128,9 @@
              input: &mut interpreter.input,
              gas: interpreter.gas,
              host,
@@ -131,15 +143,17 @@
              bytecode,
              on_log: None,
              calldatasize,
-@@ -183,6 +125,7 @@
+@@ -183,6 +139,9 @@
              gas_params,
              mem_base: ptr::null_mut(),
              mem_len: 0,
 +            output: Bytes::new(),
++            evm2_create_builtin: None,
++            evm2_call_builtin: None,
          };
          this.refresh_memory_cache();
          (this, stack, stack_len)
-@@ -204,7 +147,7 @@
+@@ -204,7 +163,7 @@
  /// # Examples
  ///
  /// ```no_run
@@ -148,7 +162,7 @@
  ///
  /// extern_revmc! {
  ///    /// A simple function.
-@@ -274,8 +217,8 @@
+@@ -274,8 +233,8 @@
 
      /// Calls the function by re-using the interpreter's resources.
      ///
@@ -159,7 +173,7 @@
      ///
      /// # Safety
      ///
-@@ -284,7 +227,7 @@
+@@ -284,7 +243,7 @@
          self,
          interpreter: &mut Interpreter,
          host: &mut dyn Host,
@@ -168,7 +182,7 @@
          self.call_with_interpreter_inner(interpreter, host, |_| {})
      }
 
-@@ -303,7 +246,7 @@
+@@ -303,7 +262,7 @@
          interpreter: &mut Interpreter,
          host: &mut dyn Host,
          configure: impl FnOnce(&mut EvmContext<'_>),
@@ -177,7 +191,7 @@
          self.call_with_interpreter_inner(interpreter, host, configure)
      }
 
-@@ -312,16 +255,12 @@
+@@ -312,16 +271,12 @@
          interpreter: &mut Interpreter,
          host: &mut dyn Host,
          configure: impl FnOnce(&mut EvmContext<'_>),
@@ -195,7 +209,7 @@
          // Set the remaining gas to 0 if the result is `OutOfGas`,
          // as it might have overflown inside of the function.
          if result == InstructionResult::OutOfGas {
-@@ -329,23 +268,16 @@
+@@ -329,23 +284,16 @@
          }
 
          let return_data_is_empty = ecx.return_data.is_empty();

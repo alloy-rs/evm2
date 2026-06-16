@@ -3,23 +3,28 @@
 use crate::{EvmStack, EvmWord};
 use alloc::{borrow::Cow, boxed::Box, vec::Vec};
 use core::{
+    cmp::min,
     fmt,
     marker::PhantomData,
     mem,
+    ops::Range,
     ptr::{self, NonNull},
 };
 use evm2::{
     BaseEvmTypes, EvmFeatures, EvmTypes, SpecId, Version,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
-    interpreter::{Gas as Evm2Gas, Host as Evm2Host, InstrStop, Interpreter, Message, Word},
+    interpreter::{
+        Gas as Evm2Gas, Host as Evm2Host, InstrStop, Interpreter, Message, MessageKind, Word,
+    },
+    version::GasId,
 };
 use revm_interpreter::{
     CallInput, Gas as RevmGas, Host as RevmHost, InputsImpl, InstructionResult,
     SStoreResult as RevmSStoreResult, SelfDestructResult as RevmSelfDestructResult, SharedMemory,
     StateLoad as RevmStateLoad, bytecode::Bytecode as RevmBytecode,
     context_interface::cfg::GasParams as RevmGasParams, host::LoadError,
-    state::AccountInfo as RevmAccountInfo,
+    interpreter_types::MemoryTr, state::AccountInfo as RevmAccountInfo,
 };
 use revm_primitives::{Bytes as RevmBytes, hardfork::SpecId as RevmSpecId};
 
@@ -302,12 +307,19 @@ pub struct EvmContext<'a, T: EvmTypes = BaseEvmTypes> {
     /// Output produced by RETURN or REVERT.
     #[doc(hidden)]
     pub output: RevmBytes,
+    /// Optional evm2-native `CREATE`/`CREATE2` implementation.
+    #[doc(hidden)]
+    pub evm2_create_builtin: Option<crate::Evm2FrameBuiltin>,
+    /// Optional evm2-native `CALL`/`CALLCODE`/`DELEGATECALL`/`STATICCALL` implementation.
+    #[doc(hidden)]
+    pub evm2_call_builtin: Option<crate::Evm2FrameBuiltin>,
     /// Transaction-global environment.
     #[doc(hidden)]
     pub tx_env: &'a TxEnv<T>,
     /// Frame-local call/create message.
     #[doc(hidden)]
     pub message: &'a Message<T>,
+    return_data_scratch: RevmBytes,
     memory_scratch: Box<SharedMemory>,
     input_scratch: Box<InputsImpl>,
     _host_adapter: Box<RevmHostAdapter<'a, T>>,
@@ -378,6 +390,14 @@ const _: () = {
         offset_of!(EvmContext<'_, BaseEvmTypes>, output)
             == offset_of!(crate::EvmContext<'_>, output)
     );
+    assert!(
+        offset_of!(EvmContext<'_, BaseEvmTypes>, evm2_create_builtin)
+            == offset_of!(crate::EvmContext<'_>, evm2_create_builtin)
+    );
+    assert!(
+        offset_of!(EvmContext<'_, BaseEvmTypes>, evm2_call_builtin)
+            == offset_of!(crate::EvmContext<'_>, evm2_call_builtin)
+    );
 };
 
 /// Interpreter state copied out of a JIT context after compiled execution.
@@ -385,7 +405,7 @@ const _: () = {
 #[doc(hidden)]
 pub struct InterpreterState {
     gas: Evm2Gas,
-    clear_return_data: bool,
+    return_data: Vec<u8>,
     memory: Vec<u8>,
     output: Option<Vec<u8>>,
 }
@@ -395,9 +415,7 @@ impl InterpreterState {
     #[inline]
     pub fn store<T: EvmTypes>(self, interpreter: &mut Interpreter<'_, T>) {
         interpreter.set_gas(self.gas);
-        if self.clear_return_data {
-            interpreter.return_data_mut().clear();
-        }
+        interpreter.set_return_data(self.return_data.into());
         let parts = interpreter.jit_context_parts_mut();
         parts.memory.clear();
         parts
@@ -553,8 +571,11 @@ impl<'a, T: EvmTypes> EvmContext<'a, T> {
             mem_base: ptr::null_mut(),
             mem_len: 0,
             output: RevmBytes::new(),
+            evm2_create_builtin: Some(evm2_create_builtin::<T>),
+            evm2_call_builtin: Some(evm2_call_builtin::<T>),
             tx_env: parts.tx_env,
             message: parts.message,
+            return_data_scratch: RevmBytes::new(),
             memory_scratch,
             input_scratch,
             _host_adapter: host_adapter,
@@ -568,7 +589,7 @@ impl<'a, T: EvmTypes> EvmContext<'a, T> {
     pub fn interpreter_state(&self) -> InterpreterState {
         InterpreterState {
             gas: evm2_gas_from_revm(self.gas),
-            clear_return_data: self.return_data.is_empty(),
+            return_data: self.return_data.to_vec(),
             memory: unsafe { &*self.memory }.context_memory().to_vec(),
             output: None,
         }
@@ -593,12 +614,372 @@ impl<'a, T: EvmTypes> EvmContext<'a, T> {
     pub fn input(&self) -> &InputsImpl {
         &self.input_scratch
     }
+
+    fn set_return_data(&mut self, data: RevmBytes) {
+        self.return_data_scratch = data;
+        self.return_data = unsafe { &*(self.return_data_scratch.as_ref() as *const [u8]) };
+    }
 }
 
 /// Returns the bytecode bytes for CODECOPY-compatible runtime access.
 #[inline]
 pub fn bytecode_slice(bytecode: &Bytecode) -> &[u8] {
     bytecode.original_byte_slice()
+}
+
+unsafe extern "C" fn evm2_call_builtin<T: EvmTypes>(
+    ecx: &mut crate::EvmContext<'_>,
+    sp: *mut EvmWord,
+    call_kind: u8,
+) -> InstructionResult {
+    let ecx = unsafe { evm2_context_from_base::<T>(ecx) };
+    match call_kind_from_u8(call_kind).and_then(|kind| call_inner(ecx, sp, kind)) {
+        Ok(()) => InstructionResult::Stop,
+        Err(stop) => instruction_result_from_instr_stop(stop),
+    }
+}
+
+unsafe extern "C" fn evm2_create_builtin<T: EvmTypes>(
+    ecx: &mut crate::EvmContext<'_>,
+    sp: *mut EvmWord,
+    create_kind: u8,
+) -> InstructionResult {
+    let ecx = unsafe { evm2_context_from_base::<T>(ecx) };
+    match create_kind_from_u8(create_kind).and_then(|is_create2| create_inner(ecx, sp, is_create2))
+    {
+        Ok(()) => InstructionResult::Stop,
+        Err(stop) => instruction_result_from_instr_stop(stop),
+    }
+}
+
+unsafe fn evm2_context_from_base<'a, 'ctx, T: EvmTypes>(
+    ecx: &'a mut crate::EvmContext<'ctx>,
+) -> &'a mut EvmContext<'ctx, T> {
+    unsafe { &mut *(ptr::from_mut(ecx).cast::<EvmContext<'ctx, T>>()) }
+}
+
+fn call_kind_from_u8(kind: u8) -> Result<MessageKind, InstrStop> {
+    match kind {
+        0 => Ok(MessageKind::Call),
+        1 => Ok(MessageKind::CallCode),
+        2 => Ok(MessageKind::DelegateCall),
+        3 => Ok(MessageKind::StaticCall),
+        _ => Err(InstrStop::FatalExternalError),
+    }
+}
+
+fn create_kind_from_u8(kind: u8) -> Result<bool, InstrStop> {
+    match kind {
+        0 => Ok(false),
+        1 => Ok(true),
+        _ => Err(InstrStop::FatalExternalError),
+    }
+}
+
+fn word_to_usize(value: EvmWord) -> Result<usize, InstrStop> {
+    value.to_u256().try_into().map_err(|_| InstrStop::InvalidOperandOOG)
+}
+
+fn word_to_usize_saturated(value: EvmWord) -> usize {
+    value.to_u256().try_into().unwrap_or(usize::MAX)
+}
+
+fn ensure_memory<T: EvmTypes>(
+    ecx: &mut EvmContext<'_, T>,
+    offset: usize,
+    len: usize,
+) -> Result<(), InstrStop> {
+    revm_interpreter::interpreter::resize_memory(
+        &mut ecx.gas,
+        unsafe { &mut *ecx.memory },
+        &ecx.gas_params,
+        offset,
+        len,
+    )
+    .map_err(instr_stop_from_instruction_result)?;
+    ecx.refresh_memory_cache();
+    Ok(())
+}
+
+fn resize_memory_range<T: EvmTypes>(
+    ecx: &mut EvmContext<'_, T>,
+    offset: EvmWord,
+    len: EvmWord,
+) -> Result<Range<usize>, InstrStop> {
+    let len = word_to_usize(len)?;
+    let offset = if len != 0 {
+        let offset = word_to_usize(offset)?;
+        ensure_memory(ecx, offset, len)?;
+        offset
+    } else {
+        usize::MAX
+    };
+    Ok(offset..offset + len)
+}
+
+fn memory_range_bytes<T: EvmTypes>(ecx: &mut EvmContext<'_, T>, range: Range<usize>) -> RevmBytes {
+    if range.is_empty() {
+        return RevmBytes::new();
+    }
+    RevmBytes::copy_from_slice(&unsafe { &*ecx.memory }.slice(range))
+}
+
+fn get_memory_input_and_out_ranges<T: EvmTypes>(
+    ecx: &mut EvmContext<'_, T>,
+    input_offset: EvmWord,
+    input_len: EvmWord,
+    return_offset: EvmWord,
+    return_len: EvmWord,
+) -> Result<(Range<usize>, Range<usize>), InstrStop> {
+    let input = resize_memory_range(ecx, input_offset, input_len)?;
+    let output = resize_memory_range(ecx, return_offset, return_len)?;
+    Ok((input, output))
+}
+
+fn spend(gas: &mut RevmGas, cost: u64) -> Result<(), InstrStop> {
+    gas.record_regular_cost(cost).then_some(()).ok_or(InstrStop::OutOfGas)
+}
+
+fn should_charge_new_account_gas(
+    eip161: bool,
+    transfers_value: bool,
+    target_is_empty_for_new_account_gas: bool,
+) -> bool {
+    target_is_empty_for_new_account_gas && (!eip161 || transfers_value)
+}
+
+fn load_acc_and_calc_gas<T: EvmTypes>(
+    ecx: &mut EvmContext<'_, T>,
+    to: alloy_primitives::Address,
+    transfers_value: bool,
+    create_empty_account: bool,
+    stack_gas_limit: u64,
+) -> Result<(u64, Bytecode, alloy_primitives::Address, bool), InstrStop> {
+    if transfers_value {
+        spend(
+            &mut ecx.gas,
+            ecx._host_adapter.version.gas_params.get(GasId::TransferValueCost).into(),
+        )?;
+    }
+
+    let additional_cold_cost = ecx._host_adapter.version.gas_params.cold_account_additional_cost();
+    let remaining_gas = ecx.gas.remaining();
+    let skip_cold_load = remaining_gas < additional_cold_cost;
+    let account = ecx._host_adapter.host_mut().load_account(&to, true, skip_cold_load)?;
+
+    let mut cost = 0;
+    if account.is_cold {
+        cost += additional_cold_cost;
+    }
+    let mut code = account.code;
+    let mut code_address = to;
+    if ecx._host_adapter.version.features.contains(EvmFeatures::EIP7702)
+        && let Some(delegated_address) = code.eip7702_address()
+    {
+        cost += u64::from(ecx._host_adapter.version.gas_params.get(GasId::WarmStorageReadCost));
+        if cost > remaining_gas {
+            return Err(InstrStop::OutOfGas);
+        }
+        let skip_cold_load = remaining_gas < cost.saturating_add(additional_cold_cost);
+        let delegated_account =
+            ecx._host_adapter.host_mut().load_account(&delegated_address, true, skip_cold_load)?;
+        if delegated_account.is_cold {
+            cost += additional_cold_cost;
+        }
+        code = delegated_account.code;
+        code_address = delegated_address;
+    }
+    let features = ecx._host_adapter.version.features;
+    if create_empty_account
+        && should_charge_new_account_gas(
+            features.contains(EvmFeatures::EIP161),
+            transfers_value,
+            ecx._host_adapter.host_mut().target_is_empty_for_new_account_gas(&to, features)?,
+        )
+    {
+        cost += u64::from(ecx._host_adapter.version.gas_params.get(GasId::NewAccountCost));
+    }
+    spend(&mut ecx.gas, cost)?;
+
+    let mut gas_limit = if ecx._host_adapter.version.features.contains(EvmFeatures::EIP150) {
+        min(
+            ecx._host_adapter.version.gas_params.call_stipend_reduction(ecx.gas.remaining()),
+            stack_gas_limit,
+        )
+    } else {
+        stack_gas_limit
+    };
+    spend(&mut ecx.gas, gas_limit)?;
+
+    if transfers_value {
+        gas_limit = gas_limit
+            .saturating_add(ecx._host_adapter.version.gas_params.get(GasId::CallStipend).into());
+    }
+
+    let disable_precompiles = code_address != to;
+    Ok((gas_limit, code, code_address, disable_precompiles))
+}
+
+unsafe fn pop_word(sp: &mut *mut EvmWord) -> EvmWord {
+    *sp = unsafe { (*sp).sub(1) };
+    unsafe { **sp }
+}
+
+fn call_inner<T: EvmTypes>(
+    ecx: &mut EvmContext<'_, T>,
+    sp: *mut EvmWord,
+    kind: MessageKind,
+) -> Result<(), InstrStop> {
+    let inputs = match kind {
+        MessageKind::Call | MessageKind::CallCode => 7,
+        MessageKind::DelegateCall | MessageKind::StaticCall => 6,
+        _ => unreachable!("invalid call message kind"),
+    };
+    let mut cursor = unsafe { sp.add(inputs) };
+    let local_gas_limit = unsafe { pop_word(&mut cursor) };
+    let to = unsafe { pop_word(&mut cursor) }.to_address();
+    let value = if matches!(kind, MessageKind::Call | MessageKind::CallCode) {
+        unsafe { pop_word(&mut cursor) }.to_u256()
+    } else {
+        Word::ZERO
+    };
+    let input_offset = unsafe { pop_word(&mut cursor) };
+    let input_len = unsafe { pop_word(&mut cursor) };
+    let return_offset = unsafe { pop_word(&mut cursor) };
+    let return_len = unsafe { pop_word(&mut cursor) };
+
+    let has_transfer = !value.is_zero();
+    if ecx.is_static && kind == MessageKind::Call && has_transfer {
+        return Err(InstrStop::CallNotAllowedInsideStatic);
+    }
+
+    let local_gas_limit = word_to_usize_saturated(local_gas_limit) as u64;
+    let (input_range, return_memory_range) =
+        get_memory_input_and_out_ranges(ecx, input_offset, input_len, return_offset, return_len)?;
+    let (gas_limit, loaded_code, resolved_code_address, disable_precompiles) =
+        load_acc_and_calc_gas(ecx, to, has_transfer, kind == MessageKind::Call, local_gas_limit)?;
+    let input = memory_range_bytes(ecx, input_range);
+
+    let current = ecx.message;
+    let (destination, caller, call_value, code_address) = match kind {
+        MessageKind::Call => (to, current.destination, value, resolved_code_address),
+        MessageKind::CallCode => {
+            (current.destination, current.destination, value, resolved_code_address)
+        }
+        MessageKind::DelegateCall => {
+            (current.destination, current.caller, current.value, resolved_code_address)
+        }
+        MessageKind::StaticCall => (to, current.destination, Word::ZERO, resolved_code_address),
+        _ => unreachable!("invalid call message kind"),
+    };
+    let mut message = Message {
+        kind,
+        depth: current.depth.saturating_add(1),
+        gas_limit,
+        destination,
+        caller,
+        input,
+        value: call_value,
+        code_address,
+        disable_precompiles,
+        salt: alloy_primitives::B256::ZERO,
+        ext: T::MessageExt::default(),
+        _non_exhaustive: (),
+    };
+
+    let caller_is_static = ecx.is_static;
+    let mut result = ecx._host_adapter.host_mut().execute_message(
+        ecx.tx_env,
+        loaded_code,
+        &mut message,
+        caller_is_static,
+    );
+    ecx.gas.erase_cost(result.gas_returned_to_parent());
+    ecx.gas.record_refund(result.refund_propagated_to_parent());
+
+    let copy_len = min(return_memory_range.len(), result.output.len());
+    if copy_len != 0 {
+        unsafe { &mut *ecx.memory }.set(return_memory_range.start, &result.output[..copy_len]);
+    }
+    let success = EvmWord::from(Word::from(u8::from(result.stop.is_success())));
+    unsafe {
+        sp.write(success);
+    }
+    ecx.set_return_data(core::mem::take(&mut result.output));
+    Ok(())
+}
+
+fn create_inner<T: EvmTypes>(
+    ecx: &mut EvmContext<'_, T>,
+    sp: *mut EvmWord,
+    is_create2: bool,
+) -> Result<(), InstrStop> {
+    if ecx.is_static {
+        return Err(InstrStop::StateChangeDuringStaticCall);
+    }
+
+    let inputs = if is_create2 { 4 } else { 3 };
+    let mut cursor = unsafe { sp.add(inputs) };
+    let value = unsafe { pop_word(&mut cursor) }.to_u256();
+    let offset = unsafe { pop_word(&mut cursor) };
+    let len_word = unsafe { pop_word(&mut cursor) };
+    let salt = if is_create2 { Some(unsafe { pop_word(&mut cursor) }) } else { None };
+
+    let len = word_to_usize(len_word)?;
+    if ecx._host_adapter.version.features.contains(EvmFeatures::EIP3860) {
+        if len > ecx._host_adapter.version.max_initcode_size {
+            return Err(InstrStop::CreateInitCodeSizeLimit);
+        }
+        spend(&mut ecx.gas, ecx._host_adapter.version.gas_params.initcode_cost(len))?;
+    }
+    let code_range = resize_memory_range(ecx, offset, EvmWord::from(Word::from(len)))?;
+    let input = memory_range_bytes(ecx, code_range);
+    let create_cost = if is_create2 {
+        ecx._host_adapter.version.gas_params.create2_cost(len)
+    } else {
+        ecx._host_adapter.version.gas_params.get(GasId::Create).into()
+    };
+    spend(&mut ecx.gas, create_cost)?;
+    let gas_limit = if ecx._host_adapter.version.features.contains(EvmFeatures::EIP150) {
+        ecx._host_adapter.version.gas_params.call_stipend_reduction(ecx.gas.remaining())
+    } else {
+        ecx.gas.remaining()
+    };
+    spend(&mut ecx.gas, gas_limit)?;
+
+    let current = ecx.message;
+    let mut message = Message {
+        kind: if is_create2 { MessageKind::Create2 } else { MessageKind::Create },
+        depth: current.depth.saturating_add(1),
+        gas_limit,
+        destination: current.destination,
+        caller: current.destination,
+        input,
+        value,
+        code_address: current.destination,
+        disable_precompiles: false,
+        salt: salt.map(|salt| alloy_primitives::B256::from(salt.to_be_bytes())).unwrap_or_default(),
+        ext: T::MessageExt::default(),
+        _non_exhaustive: (),
+    };
+    let bytecode = Bytecode::new_legacy(message.input.clone());
+    let result =
+        ecx._host_adapter.host_mut().execute_message(ecx.tx_env, bytecode, &mut message, false);
+    ecx.gas.erase_cost(result.gas_returned_to_parent());
+    ecx.gas.record_refund(result.refund_propagated_to_parent());
+
+    let return_data =
+        if result.stop == InstrStop::Revert { result.output } else { RevmBytes::new() };
+    let address = result
+        .created_address
+        .filter(|_| result.stop.is_success())
+        .map(|address| EvmWord::from_be_slice(address.as_slice()))
+        .unwrap_or_default();
+    unsafe {
+        sp.write(address);
+    }
+    ecx.set_return_data(return_data);
+    Ok(())
 }
 
 fn revm_gas_from_evm2(gas: Evm2Gas) -> RevmGas {
@@ -624,6 +1005,46 @@ fn evm2_gas_from_revm(gas: RevmGas) -> Evm2Gas {
 fn to_revm_spec_id(spec_id: SpecId) -> RevmSpecId {
     let spec_id = u8::try_from(u32::from(spec_id)).expect("evm2 SpecId does not fit in u8");
     RevmSpecId::try_from_u8(spec_id).expect("evm2 SpecId has no revm equivalent")
+}
+
+/// Converts an evm2 instruction stop into a revm-style compiled-code return.
+#[inline]
+pub fn instruction_result_from_instr_stop(stop: InstrStop) -> InstructionResult {
+    match stop {
+        InstrStop::Stop => InstructionResult::Stop,
+        InstrStop::Return => InstructionResult::Return,
+        InstrStop::SelfDestruct => InstructionResult::SelfDestruct,
+        InstrStop::Revert => InstructionResult::Revert,
+        InstrStop::CallTooDeep => InstructionResult::CallTooDeep,
+        InstrStop::OutOfFunds => InstructionResult::OutOfFunds,
+        InstrStop::CreateInitCodeStartingEF00 => InstructionResult::CreateInitCodeStartingEF00,
+        InstrStop::InvalidEOFInitCode => InstructionResult::InvalidEOFInitCode,
+        InstrStop::InvalidExtDelegateCallTarget => InstructionResult::InvalidExtDelegateCallTarget,
+        InstrStop::OutOfGas => InstructionResult::OutOfGas,
+        InstrStop::MemoryOOG => InstructionResult::MemoryOOG,
+        InstrStop::MemoryLimitOOG => InstructionResult::MemoryLimitOOG,
+        InstrStop::PrecompileOOG => InstructionResult::PrecompileOOG,
+        InstrStop::InvalidOperandOOG => InstructionResult::InvalidOperandOOG,
+        InstrStop::ReentrancySentryOOG => InstructionResult::ReentrancySentryOOG,
+        InstrStop::CallNotAllowedInsideStatic => InstructionResult::CallNotAllowedInsideStatic,
+        InstrStop::StateChangeDuringStaticCall => InstructionResult::StateChangeDuringStaticCall,
+        InstrStop::InvalidOpcode => InstructionResult::OpcodeNotFound,
+        InstrStop::InvalidJump => InstructionResult::InvalidJump,
+        InstrStop::NotActivated => InstructionResult::NotActivated,
+        InstrStop::StackUnderflow => InstructionResult::StackUnderflow,
+        InstrStop::StackOverflow => InstructionResult::StackOverflow,
+        InstrStop::OutOfOffset => InstructionResult::OutOfOffset,
+        InstrStop::CreateCollision => InstructionResult::CreateCollision,
+        InstrStop::OverflowPayment => InstructionResult::OverflowPayment,
+        InstrStop::PrecompileError => InstructionResult::PrecompileError,
+        InstrStop::NonceOverflow => InstructionResult::NonceOverflow,
+        InstrStop::CreateContractSizeLimit => InstructionResult::CreateContractSizeLimit,
+        InstrStop::CreateContractStartingWithEF => InstructionResult::CreateContractStartingWithEF,
+        InstrStop::CreateInitCodeSizeLimit => InstructionResult::CreateInitCodeSizeLimit,
+        InstrStop::FatalExternalError => InstructionResult::FatalExternalError,
+        InstrStop::InvalidImmediateEncoding => InstructionResult::InvalidImmediateEncoding,
+        _ => InstructionResult::FatalExternalError,
+    }
 }
 
 /// Converts a revm-style compiled-code return into an evm2 instruction stop.
@@ -675,16 +1096,180 @@ pub fn instr_stop_from_instruction_result(result: InstructionResult) -> InstrSto
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::Address;
+    use alloy_primitives::{Address, B256, Bytes as AlloyBytes, Log};
     use core::mem::offset_of;
     use evm2::{
-        BaseEvmConfigSelector, Evm, EvmConfigSelector, Precompiles,
+        BaseEvmConfigSelector, Evm, EvmConfigSelector, EvmFeatures, EvmTypes, Precompiles,
         bytecode::Bytecode,
         env::{BlockEnv, TxEnv},
         ethereum::ethereum_tx_registry,
-        evm::EmptyDB,
-        interpreter::{Message, op},
+        evm::{AccountLoad, EmptyDB, SLoad, SStore, SelfDestructResult},
+        interpreter::{GasTracker, Host, Message, MessageKind, MessageResult, op},
     };
+
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    struct TestTypes;
+
+    impl EvmTypes for TestTypes {
+        type ConfigSelector = BaseEvmConfigSelector;
+        type SpecId = SpecId;
+        type Tx = ();
+        type MessageExt = ();
+        type MessageResultExt = ();
+        type TxEnvExt = ();
+        type TxResultExt = ();
+        type BlockEnvExt = ();
+        type Host = TestHost;
+    }
+
+    #[derive(Debug)]
+    struct TestHost {
+        block: BlockEnv<TestTypes>,
+        code: AlloyBytes,
+        execute_result: MessageResult<TestTypes>,
+        calls: Vec<Message<TestTypes>>,
+        call_static_flags: Vec<bool>,
+    }
+
+    impl Default for TestHost {
+        fn default() -> Self {
+            Self {
+                block: BlockEnv::default(),
+                code: AlloyBytes::new(),
+                execute_result: MessageResult {
+                    stop: InstrStop::Return,
+                    ..MessageResult::default()
+                },
+                calls: Vec::new(),
+                call_static_flags: Vec::new(),
+            }
+        }
+    }
+
+    impl Host<TestTypes> for TestHost {
+        fn spec_id(&self) -> SpecId {
+            SpecId::CANCUN
+        }
+
+        fn block_env(&mut self) -> &BlockEnv<TestTypes> {
+            &self.block
+        }
+
+        fn load_account(
+            &mut self,
+            address: &Address,
+            load_code: bool,
+            _skip_cold_load: bool,
+        ) -> Result<AccountLoad, InstrStop> {
+            Ok(AccountLoad {
+                balance: address.into_word().into(),
+                code_hash: B256::ZERO,
+                code: if load_code {
+                    Bytecode::new_legacy(self.code.clone())
+                } else {
+                    Bytecode::default()
+                },
+                exists: true,
+                is_empty: false,
+                is_cold: false,
+                _non_exhaustive: (),
+            })
+        }
+
+        fn target_is_empty_for_new_account_gas(
+            &mut self,
+            _address: &Address,
+            _features: EvmFeatures,
+        ) -> Result<bool, InstrStop> {
+            Ok(false)
+        }
+
+        fn block_hash(&mut self, number: &Word) -> Result<Option<B256>, InstrStop> {
+            Ok(Some(B256::with_last_byte(number.wrapping_to::<u8>())))
+        }
+
+        fn sload(
+            &mut self,
+            _address: &Address,
+            _key: &Word,
+            _skip_cold_load: bool,
+        ) -> Result<SLoad, InstrStop> {
+            Ok(SLoad { value: Word::ZERO, is_cold: false, _non_exhaustive: () })
+        }
+
+        fn sstore(
+            &mut self,
+            _address: &Address,
+            _key: &Word,
+            value: &Word,
+            _skip_cold_load: bool,
+        ) -> Result<SStore, InstrStop> {
+            Ok(SStore {
+                original_value: Word::ZERO,
+                present_value: Word::ZERO,
+                new_value: *value,
+                is_cold: false,
+                _non_exhaustive: (),
+            })
+        }
+
+        fn tload(&mut self, _address: &Address, _key: &Word) -> Word {
+            Word::ZERO
+        }
+
+        fn tstore(&mut self, _address: &Address, _key: &Word, _value: &Word) {}
+
+        fn log(&mut self, _log: Log) {}
+
+        fn execute_message(
+            &mut self,
+            _tx_env: &TxEnv<TestTypes>,
+            _bytecode: Bytecode,
+            message: &mut Message<TestTypes>,
+            caller_is_static: bool,
+        ) -> MessageResult<TestTypes> {
+            self.call_static_flags
+                .push(caller_is_static || message.kind == MessageKind::StaticCall);
+            self.calls.push(message.clone());
+            self.execute_result.clone()
+        }
+
+        fn selfdestruct(
+            &mut self,
+            _contract: &Address,
+            _target: &Address,
+            _skip_cold_load: bool,
+        ) -> Result<SelfDestructResult, InstrStop> {
+            Ok(SelfDestructResult::default())
+        }
+    }
+
+    struct PreparedJitFrame<'a> {
+        ecx: EvmContext<'a, TestTypes>,
+        stack: &'a mut EvmStack,
+    }
+
+    fn address_word(address: &Address) -> EvmWord {
+        EvmWord::from_be_slice(address.as_slice())
+    }
+
+    fn prepare_frame<'a>(
+        interpreter: &'a mut Interpreter<'_, TestTypes>,
+        host: &'a mut TestHost,
+    ) -> PreparedJitFrame<'a> {
+        let config = <BaseEvmConfigSelector as EvmConfigSelector<TestTypes>>::execution_config(
+            SpecId::CANCUN,
+        );
+        interpreter.prepare_jit_run(&config, host);
+        let (ecx, stack, _stack_len) = EvmContext::from_interpreter_with_stack(interpreter, host);
+        PreparedJitFrame { ecx, stack }
+    }
+
+    fn base_context<'a, 'ctx, T: EvmTypes>(
+        ecx: &'a mut EvmContext<'ctx, T>,
+    ) -> &'a mut crate::EvmContext<'ctx> {
+        unsafe { &mut *ptr::from_mut(ecx).cast::<crate::EvmContext<'_>>() }
+    }
 
     #[test]
     fn maps_instruction_result_to_instr_stop_by_semantics() {
@@ -820,6 +1405,105 @@ mod tests {
         state.store(&mut interpreter);
 
         assert_eq!(interpreter.memory_ref().slice(0, 3), b"azc");
+    }
+
+    #[test]
+    fn evm2_call_builtin_executes_recursive_message() {
+        let target = Address::from([0x22; 20]);
+        let caller = Address::from([0x11; 20]);
+        let child_output = AlloyBytes::from_static(&[0xaa, 0xbb, 0xcc]);
+        let mut host = TestHost {
+            execute_result: MessageResult {
+                stop: InstrStop::Return,
+                gas: GasTracker::new(37),
+                output: child_output.clone(),
+                ..MessageResult::default()
+            },
+            ..TestHost::default()
+        };
+        let tx_env = TxEnv::default();
+        let message = Message { gas_limit: 1_000_000, destination: caller, ..Message::default() };
+        let mut interpreter = Interpreter::<TestTypes>::new(
+            Bytecode::new_legacy(AlloyBytes::from_static(&[op::STOP])),
+            &tx_env,
+            &message,
+            false,
+        );
+
+        {
+            let mut frame = prepare_frame(&mut interpreter, &mut host);
+            unsafe { &mut *frame.ecx.memory }.resize(16);
+            unsafe { &mut *frame.ecx.memory }.set(4, b"in");
+            frame.stack.set(0, EvmWord::from(Word::from(2)));
+            frame.stack.set(1, EvmWord::from(Word::from(8)));
+            frame.stack.set(2, EvmWord::from(Word::from(2)));
+            frame.stack.set(3, EvmWord::from(Word::from(4)));
+            frame.stack.set(4, EvmWord::ZERO);
+            frame.stack.set(5, address_word(&target));
+            frame.stack.set(6, EvmWord::from(Word::from(50_000)));
+
+            let sp = frame.stack.as_mut_ptr();
+            let result =
+                unsafe { evm2_call_builtin::<TestTypes>(base_context(&mut frame.ecx), sp, 0) };
+
+            assert_eq!(result, InstructionResult::Stop);
+            assert_eq!(unsafe { frame.stack.get_unchecked(0) }.to_u256(), Word::from(1));
+            assert_eq!(frame.ecx.return_data, child_output.as_ref());
+            assert_eq!(&*unsafe { &*frame.ecx.memory }.slice(8..10), &[0xaa, 0xbb]);
+            frame.ecx.output = RevmBytes::copy_from_slice(b"frame-output");
+            assert_eq!(frame.ecx.return_data, child_output.as_ref());
+        }
+
+        assert_eq!(host.calls.len(), 1);
+        assert_eq!(host.calls[0].kind, MessageKind::Call);
+        assert_eq!(host.calls[0].destination, target);
+        assert_eq!(host.calls[0].caller, caller);
+        assert_eq!(host.calls[0].input.as_ref(), b"in");
+        assert!(!host.call_static_flags[0]);
+    }
+
+    #[test]
+    fn evm2_create_builtin_executes_recursive_message() {
+        let created = Address::from([0x77; 20]);
+        let initcode = [op::STOP];
+        let mut host = TestHost {
+            execute_result: MessageResult {
+                stop: InstrStop::Return,
+                gas: GasTracker::new(11),
+                created_address: Some(created),
+                ..MessageResult::default()
+            },
+            ..TestHost::default()
+        };
+        let tx_env = TxEnv::default();
+        let message = Message { gas_limit: 1_000_000, ..Message::default() };
+        let mut interpreter = Interpreter::<TestTypes>::new(
+            Bytecode::new_legacy(AlloyBytes::from_static(&[op::STOP])),
+            &tx_env,
+            &message,
+            false,
+        );
+
+        {
+            let mut frame = prepare_frame(&mut interpreter, &mut host);
+            unsafe { &mut *frame.ecx.memory }.resize(1);
+            unsafe { &mut *frame.ecx.memory }.set(0, &initcode);
+            frame.stack.set(0, EvmWord::from(Word::from(initcode.len())));
+            frame.stack.set(1, EvmWord::ZERO);
+            frame.stack.set(2, EvmWord::ZERO);
+
+            let sp = frame.stack.as_mut_ptr();
+            let result =
+                unsafe { evm2_create_builtin::<TestTypes>(base_context(&mut frame.ecx), sp, 0) };
+
+            assert_eq!(result, InstructionResult::Stop);
+            assert_eq!(unsafe { frame.stack.get_unchecked(0) }, &address_word(&created));
+            assert!(frame.ecx.return_data.is_empty());
+        }
+
+        assert_eq!(host.calls.len(), 1);
+        assert_eq!(host.calls[0].kind, MessageKind::Create);
+        assert_eq!(host.calls[0].input.as_ref(), initcode);
     }
 
     unsafe extern "C" fn evm2_return_output(

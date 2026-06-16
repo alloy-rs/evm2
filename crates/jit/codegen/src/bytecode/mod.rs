@@ -637,7 +637,8 @@ impl<'a> Bytecode<'a> {
     }
 
     /// Returns `true` if the bytecode contains `*CALL*` or `*CREATE*` instructions.
-    pub(crate) fn has_recursive_frame_opcode(&self) -> bool {
+    #[allow(dead_code)]
+    pub(crate) const fn has_recursive_frame_opcode(&self) -> bool {
         self.has_recursive_frame_opcode
     }
 

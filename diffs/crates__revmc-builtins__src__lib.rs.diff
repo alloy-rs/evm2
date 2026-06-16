@@ -54,7 +54,7 @@
      );
  }
 
-@@ -635,66 +623,8 @@
+@@ -635,66 +623,13 @@
      sp: *mut EvmWord,
      create_kind: CreateKind,
  ) -> BuiltinResult {
@@ -63,7 +63,9 @@
 -    let len = match create_kind {
 -        CreateKind::Create => 3,
 -        CreateKind::Create2 => 4,
--    };
++    let Some(create) = ecx.evm2_create_builtin else {
++        return Err(InstructionResult::FatalExternalError.into());
+     };
 -    let mut sp = sp.add(len);
 -    pop!(sp; value, code_offset, len);
 -
@@ -99,7 +101,10 @@
 -    // State gas for account creation + contract metadata (EIP-8037).
 -    if ecx.host.is_amsterdam_eip8037_enabled() {
 -        state_gas!(ecx, ecx.gas_params.create_state_gas());
--    }
++    match unsafe { create(ecx, sp, create_kind as u8) } {
++        InstructionResult::Stop => Ok(()),
++        result => Err(result.into()),
+     }
 -
 -    let mut gas_limit = ecx.gas.remaining();
 -    if ecx.spec_id.is_enabled_in(SpecId::TANGERINE) {
@@ -118,12 +123,10 @@
 -        )))));
 -
 -    Ok(())
-+    let _ = (ecx, sp, create_kind);
-+    Err(InstructionResult::FatalExternalError.into())
  }
 
  #[unsafe(no_mangle)]
-@@ -703,123 +633,8 @@
+@@ -703,123 +638,13 @@
      sp: *mut EvmWord,
      call_kind: CallKind,
  ) -> BuiltinResult {
@@ -175,11 +178,16 @@
 -        out_offset
 -    } else {
 -        usize::MAX // unrealistic value so we are sure it is not used
--    };
++    let Some(call) = ecx.evm2_call_builtin else {
++        return Err(InstructionResult::FatalExternalError.into());
+     };
 -
 -    if transfers_value {
 -        gas!(ecx, ecx.gas_params.transfer_value_cost());
--    }
++    match unsafe { call(ecx, sp, call_kind as u8) } {
++        InstructionResult::Stop => Ok(()),
++        result => Err(result.into()),
+     }
 -
 -    // Match interpreter call path: load delegated account and pass resolved bytecode/hash
 -    // through CallInputs::known_bytecode (covers EIP-7702 delegation and EOF execution).
@@ -244,12 +252,10 @@
 -    )));
 -
 -    Ok(())
-+    let _ = (ecx, sp, call_kind);
-+    Err(InstructionResult::FatalExternalError.into())
  }
 
  #[unsafe(no_mangle)]
-@@ -837,8 +652,7 @@
+@@ -837,8 +662,7 @@
      } else {
          Bytes::new()
      };
@@ -259,7 +265,7 @@
      Err(result.into())
  }
 
-@@ -857,8 +671,7 @@
+@@ -857,8 +681,7 @@
      } else {
          Bytes::new()
      };
