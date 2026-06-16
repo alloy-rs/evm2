@@ -1,20 +1,27 @@
 //! evm2-facing runtime context.
 
 use crate::{EvmStack, EvmWord, ResumeAt};
-use alloc::boxed::Box;
+use alloc::{borrow::Cow, boxed::Box};
 use core::{
-    fmt, mem,
+    fmt,
+    marker::PhantomData,
+    mem,
     ptr::{self, NonNull},
 };
 use evm2::{
-    BaseEvmTypes, EvmTypes, SpecId,
+    BaseEvmTypes, EvmFeatures, EvmTypes, SpecId, Version,
     bytecode::Bytecode,
-    env::TxEnv,
-    interpreter::{Gas as Evm2Gas, InstrStop, Interpreter, Memory, Message, Word},
+    env::{BlockEnv, TxEnv},
+    interpreter::{
+        Gas as Evm2Gas, Host as Evm2Host, InstrStop, Interpreter, Memory, Message, Word,
+    },
 };
 use revm_interpreter::{
-    CallInput, Gas as RevmGas, InputsImpl, InstructionResult,
-    context_interface::cfg::GasParams as RevmGasParams,
+    CallInput, Gas as RevmGas, Host as RevmHost, InputsImpl, InstructionResult, InterpreterAction,
+    SStoreResult as RevmSStoreResult, SelfDestructResult as RevmSelfDestructResult,
+    StateLoad as RevmStateLoad, bytecode::Bytecode as RevmBytecode,
+    context_interface::cfg::GasParams as RevmGasParams, host::LoadError,
+    state::AccountInfo as RevmAccountInfo,
 };
 use revm_primitives::{Bytes as RevmBytes, hardfork::SpecId as RevmSpecId};
 
@@ -33,7 +40,228 @@ pub struct RevmHostPtr {
 }
 
 impl RevmHostPtr {
-    const NULL: Self = Self { data: ptr::null_mut(), vtable: ptr::null_mut() };
+    fn from_host(host: &mut dyn RevmHost) -> Self {
+        unsafe { mem::transmute::<&mut dyn RevmHost, Self>(host) }
+    }
+
+    #[cfg(test)]
+    unsafe fn as_host_mut<'a>(self) -> &'a mut dyn RevmHost {
+        unsafe { mem::transmute::<Self, &'a mut dyn RevmHost>(self) }
+    }
+}
+
+struct RevmHostAdapter<'a, T: EvmTypes> {
+    host: NonNull<T::Host>,
+    block_env: BlockEnv<T>,
+    tx_env: &'a TxEnv<T>,
+    version: &'a Version,
+    gas_params: RevmGasParams,
+    _marker: PhantomData<&'a mut T::Host>,
+}
+
+impl<'a, T: EvmTypes> RevmHostAdapter<'a, T> {
+    fn new(
+        host: &'a mut T::Host,
+        tx_env: &'a TxEnv<T>,
+        version: &'a Version,
+        spec_id: RevmSpecId,
+    ) -> Self {
+        let block_env = *host.block_env();
+        Self {
+            host: NonNull::from(host),
+            block_env,
+            tx_env,
+            version,
+            gas_params: RevmGasParams::new_spec(spec_id),
+            _marker: PhantomData,
+        }
+    }
+
+    fn host_mut(&mut self) -> &mut T::Host {
+        unsafe { self.host.as_ptr().as_mut().unwrap_unchecked() }
+    }
+}
+
+impl<T: EvmTypes> RevmHost for RevmHostAdapter<'_, T> {
+    fn basefee(&self) -> revm_primitives::U256 {
+        self.block_env.basefee
+    }
+
+    fn blob_gasprice(&self) -> revm_primitives::U256 {
+        self.block_env.blob_basefee
+    }
+
+    fn gas_limit(&self) -> revm_primitives::U256 {
+        self.block_env.gas_limit
+    }
+
+    fn difficulty(&self) -> revm_primitives::U256 {
+        self.block_env.difficulty
+    }
+
+    fn prevrandao(&self) -> Option<revm_primitives::U256> {
+        Some(self.block_env.prevrandao)
+    }
+
+    fn block_number(&self) -> revm_primitives::U256 {
+        self.block_env.number
+    }
+
+    fn timestamp(&self) -> revm_primitives::U256 {
+        self.block_env.timestamp
+    }
+
+    fn beneficiary(&self) -> alloy_primitives::Address {
+        self.block_env.beneficiary
+    }
+
+    fn slot_num(&self) -> revm_primitives::U256 {
+        self.block_env.slot_num
+    }
+
+    fn chain_id(&self) -> revm_primitives::U256 {
+        self.tx_env.chain_id
+    }
+
+    fn effective_gas_price(&self) -> revm_primitives::U256 {
+        self.tx_env.gas_price
+    }
+
+    fn caller(&self) -> alloy_primitives::Address {
+        self.tx_env.origin
+    }
+
+    fn blob_hash(&self, number: usize) -> Option<revm_primitives::U256> {
+        self.tx_env.blob_hashes.get(number).copied()
+    }
+
+    fn max_initcode_size(&self) -> usize {
+        self.version.max_initcode_size
+    }
+
+    fn gas_params(&self) -> &RevmGasParams {
+        &self.gas_params
+    }
+
+    fn is_amsterdam_eip8037_enabled(&self) -> bool {
+        self.version.features.contains(EvmFeatures::EIP8037)
+    }
+
+    fn block_hash(&mut self, number: u64) -> Option<alloy_primitives::B256> {
+        self.host_mut().block_hash(&Word::from(number)).ok().flatten()
+    }
+
+    fn selfdestruct(
+        &mut self,
+        address: alloy_primitives::Address,
+        target: alloy_primitives::Address,
+        skip_cold_load: bool,
+    ) -> Result<RevmStateLoad<RevmSelfDestructResult>, LoadError> {
+        let result = self
+            .host_mut()
+            .selfdestruct(&address, &target, skip_cold_load)
+            .map_err(|stop| load_error(stop, skip_cold_load))?;
+        Ok(RevmStateLoad::new(
+            RevmSelfDestructResult {
+                had_value: result.had_value,
+                target_exists: !result.target_is_empty,
+                previously_destroyed: result.previously_destroyed,
+            },
+            result.is_cold,
+        ))
+    }
+
+    fn log(&mut self, log: alloy_primitives::Log) {
+        self.host_mut().log(log);
+    }
+
+    fn sstore_skip_cold_load(
+        &mut self,
+        address: alloy_primitives::Address,
+        key: revm_primitives::U256,
+        value: revm_primitives::U256,
+        skip_cold_load: bool,
+    ) -> Result<RevmStateLoad<RevmSStoreResult>, LoadError> {
+        let result = self
+            .host_mut()
+            .sstore(&address, &key, &value, skip_cold_load)
+            .map_err(|stop| load_error(stop, skip_cold_load))?;
+        Ok(RevmStateLoad::new(
+            RevmSStoreResult {
+                original_value: result.original_value,
+                present_value: result.present_value,
+                new_value: result.new_value,
+            },
+            result.is_cold,
+        ))
+    }
+
+    fn sload_skip_cold_load(
+        &mut self,
+        address: alloy_primitives::Address,
+        key: revm_primitives::U256,
+        skip_cold_load: bool,
+    ) -> Result<RevmStateLoad<revm_primitives::U256>, LoadError> {
+        let result = self
+            .host_mut()
+            .sload(&address, &key, skip_cold_load)
+            .map_err(|stop| load_error(stop, skip_cold_load))?;
+        Ok(RevmStateLoad::new(result.value, result.is_cold))
+    }
+
+    fn tstore(
+        &mut self,
+        address: alloy_primitives::Address,
+        key: revm_primitives::U256,
+        value: revm_primitives::U256,
+    ) {
+        self.host_mut().tstore(&address, &key, &value);
+    }
+
+    fn tload(
+        &mut self,
+        address: alloy_primitives::Address,
+        key: revm_primitives::U256,
+    ) -> revm_primitives::U256 {
+        self.host_mut().tload(&address, &key)
+    }
+
+    fn load_account_info_skip_cold_load(
+        &mut self,
+        address: alloy_primitives::Address,
+        load_code: bool,
+        skip_cold_load: bool,
+    ) -> Result<revm_interpreter::context_interface::journaled_state::AccountInfoLoad<'_>, LoadError>
+    {
+        let account = self
+            .host_mut()
+            .load_account(&address, load_code, skip_cold_load)
+            .map_err(|stop| load_error(stop, skip_cold_load))?;
+        let info = RevmAccountInfo {
+            balance: account.balance,
+            nonce: 0,
+            code_hash: account.code_hash,
+            account_id: None,
+            code: Some(revm_bytecode_from_evm2(&account.code)),
+        };
+        Ok(revm_interpreter::context_interface::journaled_state::AccountInfoLoad {
+            account: Cow::Owned(info),
+            is_cold: account.is_cold,
+            is_empty: account.is_empty,
+        })
+    }
+}
+
+fn load_error(stop: InstrStop, skip_cold_load: bool) -> LoadError {
+    if skip_cold_load && stop == InstrStop::OutOfGas {
+        LoadError::ColdLoadSkipped
+    } else {
+        LoadError::DBError
+    }
+}
+
+fn revm_bytecode_from_evm2(bytecode: &Bytecode) -> RevmBytecode {
+    RevmBytecode::new_raw(RevmBytes::copy_from_slice(bytecode.original_byte_slice()))
 }
 
 /// The evm2 bytecode compiler runtime context.
@@ -85,7 +313,8 @@ pub struct EvmContext<'a, T: EvmTypes = BaseEvmTypes> {
     #[doc(hidden)]
     pub message: &'a Message<T>,
     input_scratch: Box<InputsImpl>,
-    _host: &'a mut T::Host,
+    next_action_scratch: Box<Option<InterpreterAction>>,
+    _host_adapter: Box<RevmHostAdapter<'a, T>>,
 }
 
 const _: () = {
@@ -297,12 +526,17 @@ impl<'a, T: EvmTypes> EvmContext<'a, T> {
             call_value: parts.message.value,
         });
         let input = input_scratch.as_mut() as *mut InputsImpl;
+        let mut next_action_scratch = Box::new(None);
+        let next_action = next_action_scratch.as_mut() as *mut Option<InterpreterAction> as *mut ();
+        let mut host_adapter =
+            Box::new(RevmHostAdapter::new(host, parts.tx_env, parts.version, spec_id));
+        let revm_host = RevmHostPtr::from_host(host_adapter.as_mut());
         let mut this = Self {
             memory: parts.memory,
             input,
             gas: revm_gas_from_evm2(parts.gas),
-            host: RevmHostPtr::NULL,
-            next_action: ptr::null_mut(),
+            host: revm_host,
+            next_action,
             return_data: parts.return_data.as_ref(),
             is_static: parts.is_static,
             spec_id,
@@ -318,7 +552,8 @@ impl<'a, T: EvmTypes> EvmContext<'a, T> {
             tx_env: parts.tx_env,
             message: parts.message,
             input_scratch,
-            _host: host,
+            next_action_scratch,
+            _host_adapter: host_adapter,
         };
         this.refresh_memory_cache();
         (this, stack, parts.stack_len)
@@ -435,7 +670,16 @@ pub const fn instr_stop_from_instruction_result(result: InstructionResult) -> Op
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy_primitives::Address;
     use core::mem::offset_of;
+    use evm2::{
+        BaseEvmConfigSelector, Evm, EvmConfigSelector, Precompiles,
+        bytecode::Bytecode,
+        env::{BlockEnv, TxEnv},
+        ethereum::ethereum_tx_registry,
+        evm::EmptyDB,
+        interpreter::{Message, op},
+    };
 
     #[test]
     fn maps_instruction_result_to_instr_stop_by_semantics() {
@@ -504,5 +748,39 @@ mod tests {
         assert_eq!(gas.refunded(), 3);
         assert_eq!(gas.memory().words_num, 4);
         assert_eq!(gas.memory().expansion_cost, 12);
+    }
+
+    #[test]
+    fn evm2_context_revm_host_slot_uses_evm2_env() {
+        let tx_origin = Address::from([0x11; 20]);
+        let beneficiary = Address::from([0x22; 20]);
+        let config = <BaseEvmConfigSelector as EvmConfigSelector<BaseEvmTypes>>::execution_config(
+            SpecId::CANCUN,
+        );
+        let tx_env = TxEnv { origin: tx_origin, gas_price: Word::from(7), ..TxEnv::default() };
+        let message = Message { gas_limit: 1_000_000, ..Default::default() };
+        let mut interpreter = Interpreter::<BaseEvmTypes>::new(
+            Bytecode::new_legacy(alloy_primitives::Bytes::from_static(&[op::STOP])),
+            &tx_env,
+            &message,
+            false,
+        );
+        let mut host = Evm::<BaseEvmTypes>::new(
+            SpecId::CANCUN,
+            BlockEnv { number: Word::from(9), beneficiary, ..BlockEnv::default() },
+            ethereum_tx_registry(SpecId::CANCUN),
+            EmptyDB::default(),
+            Precompiles::base(SpecId::CANCUN),
+        );
+
+        interpreter.prepare_jit_run(&config, &mut host);
+        let ecx = EvmContext::from_interpreter(&mut interpreter, &mut host);
+        assert!(!ecx.next_action.is_null());
+
+        let revm_host = unsafe { ecx.host.as_host_mut() };
+        assert_eq!(revm_host.caller(), tx_origin);
+        assert_eq!(revm_host.effective_gas_price(), Word::from(7));
+        assert_eq!(revm_host.block_number(), Word::from(9));
+        assert_eq!(revm_host.beneficiary(), beneficiary);
     }
 }
