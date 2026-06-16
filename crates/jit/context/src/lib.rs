@@ -12,7 +12,7 @@ use core::{
     ptr::{self, NonNull},
 };
 use revm_interpreter::{
-    Gas, Host, InputsImpl, InstructionResult, Interpreter, InterpreterResult, SharedMemory,
+    Gas, Host, InputsImpl, InstructionResult, Interpreter, SharedMemory,
     context_interface::cfg::GasParams,
     interpreter_types::{LegacyBytecode, ReturnData, RuntimeFlag},
 };
@@ -229,71 +229,6 @@ impl EvmCompilerFn {
     #[inline]
     pub const fn into_inner(self) -> RawEvmCompilerFn {
         self.0
-    }
-
-    /// Calls the function by re-using the interpreter's resources.
-    ///
-    /// This behaves similarly to `Interpreter::run_plain`, returning the final
-    /// [`InterpreterResult`].
-    ///
-    /// # Safety
-    ///
-    /// The caller must ensure that the function is safe to call.
-    pub unsafe fn call_with_interpreter(
-        self,
-        interpreter: &mut Interpreter,
-        host: &mut dyn Host,
-    ) -> InterpreterResult {
-        self.call_with_interpreter_inner(interpreter, host, |_| {})
-    }
-
-    /// Like [`call_with_interpreter`](Self::call_with_interpreter), but calls `configure` on the
-    /// [`EvmContext`] before invoking the compiled function.
-    ///
-    /// This can be used to install callbacks (e.g. [`EvmContext::on_log`]) that fire during
-    /// execution.
-    ///
-    /// # Safety
-    ///
-    /// Same requirements as [`call_with_interpreter`](Self::call_with_interpreter).
-    #[doc(hidden)]
-    pub unsafe fn call_with_interpreter_with(
-        self,
-        interpreter: &mut Interpreter,
-        host: &mut dyn Host,
-        configure: impl FnOnce(&mut EvmContext<'_>),
-    ) -> InterpreterResult {
-        self.call_with_interpreter_inner(interpreter, host, configure)
-    }
-
-    unsafe fn call_with_interpreter_inner(
-        self,
-        interpreter: &mut Interpreter,
-        host: &mut dyn Host,
-        configure: impl FnOnce(&mut EvmContext<'_>),
-    ) -> InterpreterResult {
-        let (mut ecx, stack, stack_len) =
-            EvmContext::from_interpreter_with_stack(interpreter, host);
-        configure(&mut ecx);
-        let result = self.call(stack, stack_len, &mut ecx);
-
-        // Set the remaining gas to 0 if the result is `OutOfGas`,
-        // as it might have overflown inside of the function.
-        if result == InstructionResult::OutOfGas {
-            ecx.gas.spend_all();
-        }
-
-        let return_data_is_empty = ecx.return_data.is_empty();
-        let gas = ecx.gas;
-        let output = core::mem::take(&mut ecx.output);
-        drop(ecx);
-        interpreter.gas = gas;
-
-        if return_data_is_empty {
-            interpreter.return_data.0.clear();
-        }
-
-        InterpreterResult { result, output, gas: interpreter.gas }
     }
 
     /// Calls the function.
