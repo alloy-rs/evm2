@@ -2146,7 +2146,6 @@ fn convert_attribute(bcx: &EvmLlvmBuilder<'_>, attr: evm2_jit_backend::Attribute
         OurAttr::WillReturn => ("willreturn", AttrValue::Enum(0)),
         OurAttr::NoReturn => ("noreturn", AttrValue::Enum(0)),
         OurAttr::NoFree => ("nofree", AttrValue::Enum(0)),
-        OurAttr::NoRecurse => ("norecurse", AttrValue::Enum(0)),
         OurAttr::NoSync => ("nosync", AttrValue::Enum(0)),
         OurAttr::NoUnwind => ("nounwind", AttrValue::Enum(0)),
         OurAttr::NonLazyBind => ("nonlazybind", AttrValue::Enum(0)),

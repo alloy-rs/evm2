@@ -1,0 +1,10 @@
+--- upstream/crates/revmc-backend/src/traits.rs
++++ evm2/crates/jit/backend/src/traits.rs
+@@ -122,7 +122,6 @@
+     WillReturn,
+     NoReturn,
+     NoFree,
+-    NoRecurse,
+     NoSync,
+     NoUnwind,
+     NonLazyBind,

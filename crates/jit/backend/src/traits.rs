@@ -122,7 +122,6 @@ pub enum Attribute {
     WillReturn,
     NoReturn,
     NoFree,
-    NoRecurse,
     NoSync,
     NoUnwind,
     NonLazyBind,

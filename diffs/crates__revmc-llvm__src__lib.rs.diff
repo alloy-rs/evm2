@@ -174,7 +174,15 @@
 
      enum AttrValue<'a> {
          String(&'a str),
-@@ -2201,11 +2202,11 @@
+@@ -2145,7 +2146,6 @@
+         OurAttr::WillReturn => ("willreturn", AttrValue::Enum(0)),
+         OurAttr::NoReturn => ("noreturn", AttrValue::Enum(0)),
+         OurAttr::NoFree => ("nofree", AttrValue::Enum(0)),
+-        OurAttr::NoRecurse => ("norecurse", AttrValue::Enum(0)),
+         OurAttr::NoSync => ("nosync", AttrValue::Enum(0)),
+         OurAttr::NoUnwind => ("nounwind", AttrValue::Enum(0)),
+         OurAttr::NonLazyBind => ("nonlazybind", AttrValue::Enum(0)),
+@@ -2201,11 +2201,11 @@
      }
  }
 
@@ -190,7 +198,7 @@
      }
  }
 
-@@ -2229,11 +2230,11 @@
+@@ -2229,11 +2229,11 @@
      }
  }
 
@@ -206,7 +214,7 @@
      }
  }
 
-@@ -2247,8 +2248,8 @@
+@@ -2247,8 +2247,8 @@
  }
 
  // No `#[track_caller]` because `map_err` doesn't propagate it.
