@@ -3,7 +3,7 @@
 use super::{BlockStateAccumulator, DbErrorCode, Evm, StateChangeSink, StateChanges};
 use crate::{EvmTypes, interpreter::InstrStop};
 use alloc::vec::Vec;
-use alloy_primitives::{Bytes, Log};
+use alloy_primitives::{Address, Bytes, Log};
 use core::fmt;
 use derive_where::derive_where;
 
@@ -24,6 +24,8 @@ pub struct TxResult<T: EvmTypes = crate::BaseEvmTypes> {
     pub stop: InstrStop,
     /// Return or revert output.
     pub output: Bytes,
+    /// Created contract address for successful create transactions.
+    pub created_address: Option<Address>,
     /// Logs emitted by the transaction.
     pub logs: Vec<Log>,
     /// Database error handle, if execution stopped on a database error.

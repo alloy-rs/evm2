@@ -338,7 +338,7 @@ impl Bytecode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::interpreter::op as opcode;
+    use crate::interpreter::op;
     use alloy_primitives::{Address, Bytes};
 
     #[test]
@@ -351,13 +351,13 @@ mod tests {
         ] {
             assert_eq!(bytecode.kind(), BytecodeKind::Legacy);
             assert_eq!(bytecode.len(), 0);
-            assert_eq!(bytecode.bytes_slice(), [opcode::STOP]);
+            assert_eq!(bytecode.bytes_slice(), [op::STOP]);
         }
     }
 
     #[test]
     fn test_new_analyzed() {
-        let raw = Bytes::from_static(&[opcode::PUSH1, 0x01]);
+        let raw = Bytes::from_static(&[op::PUSH1, 0x01]);
         let bytecode = Bytecode::new_legacy(raw);
         let _ = unsafe {
             Bytecode::new_analyzed(
@@ -371,7 +371,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "original_len is greater than bytecode length")]
     fn test_panic_on_large_original_len() {
-        let bytecode = Bytecode::new_legacy(Bytes::from_static(&[opcode::PUSH1, 0x01]));
+        let bytecode = Bytecode::new_legacy(Bytes::from_static(&[op::PUSH1, 0x01]));
         let _ = unsafe {
             Bytecode::new_analyzed(
                 bytecode.bytes().clone(),
@@ -384,7 +384,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "jump table length is less than original length")]
     fn test_panic_on_short_jump_table() {
-        let bytecode = Bytecode::new_legacy(Bytes::from_static(&[opcode::PUSH1, 0x01]));
+        let bytecode = Bytecode::new_legacy(Bytes::from_static(&[op::PUSH1, 0x01]));
         let jump_table = JumpTable::from_slice(&[0], 1);
         let _ = unsafe { Bytecode::new_analyzed(bytecode.bytes().clone(), 2, jump_table) };
     }

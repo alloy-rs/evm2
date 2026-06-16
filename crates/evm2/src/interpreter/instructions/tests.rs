@@ -1,10 +1,11 @@
 use crate::{
     BaseEvmConfigSelector, EvmFeatures, EvmTypes, ExecutionConfig, SpecId,
     bytecode::Bytecode,
+    constants::CALL_DEPTH_LIMIT,
     env::{BlockEnv, TxEnv},
     evm::{AccountLoad, SLoad, SStore, SelfDestructResult},
     interpreter::{
-        Gas, Host, InstrStop, Interpreter, Memory, Message, MessageKind, MessageResult,
+        Gas, GasTracker, Host, InstrStop, Interpreter, Memory, Message, MessageKind, MessageResult,
         StackBacking, Word, op,
     },
     storage_key::{StorageKey, StorageKeyMap},
@@ -185,6 +186,14 @@ impl Host<TestTypes> for TestHost {
         message: &mut Message<TestTypes>,
         caller_is_static: bool,
     ) -> MessageResult<TestTypes> {
+        // Mimics the depth limit enforced by the real host.
+        if message.depth > CALL_DEPTH_LIMIT {
+            return MessageResult {
+                stop: InstrStop::CallTooDeep,
+                gas: GasTracker::new(message.gas_limit),
+                ..Default::default()
+            };
+        }
         self.call_static_flags.push(caller_is_static || message.kind == MessageKind::StaticCall);
         self.calls.push(message.clone());
         self.execute_result.clone()

@@ -17,7 +17,7 @@ use crate::{
 };
 use alloy_consensus::{
     TxEip1559, TxEip2930, TxEip7702, TxLegacy,
-    transaction::{Recovered, TxEip4844Variant},
+    transaction::{Recovered, Transaction, TxEip4844Variant},
 };
 use alloy_eips::{eip2718::Typed2718, eip2930::AccessList};
 use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, TxKind, U256};
@@ -75,6 +75,72 @@ impl RecoveredTxEnvelope {
         match self {
             Self::Eip7702(tx) => Some(tx),
             Self::Legacy(_) | Self::Eip2930(_) | Self::Eip1559(_) | Self::Eip4844(_) => None,
+        }
+    }
+
+    /// Returns the transaction signer.
+    pub const fn signer(&self) -> Address {
+        match self {
+            Self::Legacy(tx) => tx.signer(),
+            Self::Eip2930(tx) => tx.signer(),
+            Self::Eip1559(tx) => tx.signer(),
+            Self::Eip4844(tx) => tx.signer(),
+            Self::Eip7702(tx) => tx.signer(),
+        }
+    }
+
+    /// Returns the transaction gas limit.
+    pub fn gas_limit(&self) -> u64 {
+        match self {
+            Self::Legacy(tx) => tx.gas_limit(),
+            Self::Eip2930(tx) => tx.gas_limit(),
+            Self::Eip1559(tx) => tx.gas_limit(),
+            Self::Eip4844(tx) => tx.gas_limit(),
+            Self::Eip7702(tx) => tx.gas_limit(),
+        }
+    }
+
+    /// Returns the transaction target kind.
+    pub fn kind(&self) -> TxKind {
+        match self {
+            Self::Legacy(tx) => tx.kind(),
+            Self::Eip2930(tx) => tx.kind(),
+            Self::Eip1559(tx) => tx.kind(),
+            Self::Eip4844(tx) => tx.kind(),
+            Self::Eip7702(tx) => tx.kind(),
+        }
+    }
+
+    /// Returns the transaction input.
+    pub fn input(&self) -> &Bytes {
+        match self {
+            Self::Legacy(tx) => tx.input(),
+            Self::Eip2930(tx) => tx.input(),
+            Self::Eip1559(tx) => tx.input(),
+            Self::Eip4844(tx) => tx.input(),
+            Self::Eip7702(tx) => tx.input(),
+        }
+    }
+
+    /// Returns the transaction effective gas price for the block base fee.
+    pub fn effective_gas_price(&self, base_fee: Option<u64>) -> u128 {
+        match self {
+            Self::Legacy(tx) => tx.effective_gas_price(base_fee),
+            Self::Eip2930(tx) => tx.effective_gas_price(base_fee),
+            Self::Eip1559(tx) => tx.effective_gas_price(base_fee),
+            Self::Eip4844(tx) => tx.effective_gas_price(base_fee),
+            Self::Eip7702(tx) => tx.effective_gas_price(base_fee),
+        }
+    }
+
+    /// Returns the transaction value.
+    pub fn value(&self) -> U256 {
+        match self {
+            Self::Legacy(tx) => tx.value(),
+            Self::Eip2930(tx) => tx.value(),
+            Self::Eip1559(tx) => tx.value(),
+            Self::Eip4844(tx) => tx.value(),
+            Self::Eip7702(tx) => tx.value(),
         }
     }
 }
@@ -261,11 +327,11 @@ pub(super) fn validate_sender<T: EvmTypes<Host = Evm<T>>>(
 ) -> HandlerResult<AccountInfo> {
     let sender_info = host
         .state
-        .account_info(&caller)
+        .read_account_info(&caller)
         .map_err(|code| host.db_error_handler(code))?
         .unwrap_or_default();
     if host.feature(EvmFeatures::EIP3607) && sender_info.code_hash != KECCAK256_EMPTY {
-        let code = host.state.get_code(&caller).map_err(|code| host.db_error_handler(code))?;
+        let code = host.state.read_code(&caller).map_err(|code| host.db_error_handler(code))?;
         if !code.is_empty() && !code.is_eip7702() {
             return Err(HandlerError::RejectCallerWithCode);
         }
@@ -362,7 +428,7 @@ pub(crate) fn initial_message<T: EvmTypes<Host = Evm<T>>>(
                 gas_limit,
                 destination: address,
                 caller,
-                input: Bytes::new(),
+                input: input.clone(),
                 value,
                 code_address: address,
                 disable_precompiles: false,
@@ -387,15 +453,19 @@ fn initial_call_code<T: EvmTypes<Host = Evm<T>>>(
     host: &mut Evm<T>,
     to: Address,
 ) -> HandlerResult<InitialCallCode> {
-    let code = host.state.get_code(&to).map_err(|code| host.db_error_handler(code))?;
+    let code = host.state.read_code(&to).map_err(|code| host.db_error_handler(code))?;
     if host.feature(EvmFeatures::EIP7702)
         && let Some(delegated_address) = code.eip7702_address()
     {
         let _ = host.state.warm_account(&delegated_address);
+        let _ = host
+            .state
+            .load_account_info(&delegated_address)
+            .map_err(|code| host.db_error_handler(code))?;
         return Ok(InitialCallCode {
             code: host
                 .state
-                .get_code(&delegated_address)
+                .read_code(&delegated_address)
                 .map_err(|code| host.db_error_handler(code))?,
             code_address: delegated_address,
             disable_precompiles: true,
@@ -446,6 +516,7 @@ pub(super) fn settle_gas<T: EvmTypes<Host = Evm<T>>>(
         gas_used,
         stop: result.stop,
         output: result.output,
+        created_address: result.created_address,
         ext: T::TxResultExt::default(),
         ..TxResult::default()
     })
@@ -708,7 +779,7 @@ mod tests {
         );
 
         assert!(validate_sender(&mut evm, caller, 0, U256::from(100)).is_ok());
-        assert_eq!(evm.state.account_info(&caller).unwrap().unwrap().balance, U256::from(100));
+        assert_eq!(evm.state.read_account_info(&caller).unwrap().unwrap().balance, U256::from(100));
     }
 
     #[test]

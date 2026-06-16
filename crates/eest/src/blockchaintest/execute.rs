@@ -627,7 +627,7 @@ fn increment_balance(
     address: Address,
     amount: U256,
 ) -> Result<(), TestErrorKind> {
-    let original = match evm.account_info(&address) {
+    let original = match evm.read_account_info(&address) {
         Ok(info) => info,
         Err(code) => return Err(database_error(evm, code)),
     };

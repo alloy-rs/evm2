@@ -3,10 +3,9 @@
 use crate::{
     EvmFeatures, EvmTypes,
     bytecode::Bytecode,
-    constants::CALL_DEPTH_LIMIT,
     interpreter::{
-        Gas, GasTracker, Host, InstrStop, InterpreterState, Message, MessageKind, MessageResult,
-        Result, StackMut, Word, memory::resize_memory,
+        Gas, Host, InstrStop, InterpreterState, Message, MessageKind, Result, StackMut, Word,
+        memory::resize_memory,
     },
     utils::{word_to_address, word_to_usize},
     version::GasId,
@@ -30,15 +29,6 @@ const fn should_charge_new_account_gas(
     target_is_empty_for_new_account_gas: bool,
 ) -> bool {
     target_is_empty_for_new_account_gas && (!eip161 || transfers_value)
-}
-
-#[inline]
-fn call_too_deep_result<T: EvmTypes>(gas_limit: u64) -> MessageResult<T> {
-    MessageResult {
-        stop: InstrStop::CallTooDeep,
-        gas: GasTracker::new(gas_limit),
-        ..Default::default()
-    }
 }
 
 fn resize_memory_range<T: EvmTypes>(
@@ -244,15 +234,8 @@ fn call_inner<T: EvmTypes>(
         &mut return_memory_range,
     )?;
 
-    let mut result = if let Some(result) = state.inspect_call(&mut message) {
-        result
-    } else if message.depth > CALL_DEPTH_LIMIT {
-        call_too_deep_result::<T>(message.gas_limit)
-    } else {
-        let tx_env = state.tx();
-        state.host().execute_message(tx_env, code, &mut message, caller_is_static)
-    };
-    state.inspect_call_end(&message, &mut result);
+    let tx_env = state.tx();
+    let mut result = state.host().execute_message(tx_env, code, &mut message, caller_is_static);
     gas.erase_cost(result.gas_returned_to_parent());
     gas.record_refund(result.refund_propagated_to_parent());
     let copy_len = min(return_memory_range.len(), result.output.len());
@@ -338,16 +321,9 @@ fn create_inner<T: EvmTypes>(
         ext: T::MessageExt::default(),
         _non_exhaustive: (),
     };
-    let mut result = if let Some(result) = state.inspect_create(&mut message) {
-        result
-    } else if message.depth > CALL_DEPTH_LIMIT {
-        call_too_deep_result::<T>(message.gas_limit)
-    } else {
-        let bytecode = crate::bytecode::Bytecode::new_legacy(message.input.clone());
-        let tx_env = state.tx();
-        state.host().execute_message(tx_env, bytecode, &mut message, false)
-    };
-    state.inspect_create_end(&message, &mut result);
+    let bytecode = crate::bytecode::Bytecode::new_legacy(message.input.clone());
+    let tx_env = state.tx();
+    let result = state.host().execute_message(tx_env, bytecode, &mut message, false);
     gas.erase_cost(result.gas_returned_to_parent());
     gas.record_refund(result.refund_propagated_to_parent());
     // EIP-211 exposes CREATE failure data only for REVERT; other failures clear returndata.
