@@ -31,13 +31,9 @@ alloy-primitives = { workspace = true, features = ["std", "map-fxhash"] }
 
 revm-bytecode.workspace = true
 revm-context-interface.workspace = true
-revm-context.workspace = true
-revm-database-interface.workspace = true
-revm-handler.workspace = true
-revm-inspector.workspace = true
 revm-interpreter.workspace = true
 revm-primitives.workspace = true
-revm-state.workspace = true
+revm-state = { workspace = true, optional = true }
 
 bitflags = "2.5"
 derive_more = { version = "2", default-features = false, features = ["debug"] }
@@ -61,6 +57,7 @@ evm2-jit-build.workspace = true
 evm2-jit-context.workspace = true
 
 paste.workspace = true
+revm-state.workspace = true
 similar-asserts = "2.0"
 snapbox = "1.1"
 serde_json = "1.0"
@@ -75,4 +72,10 @@ llvm-prefer-dynamic = ["llvm", "evm2-jit-llvm?/prefer-dynamic"]
 asm-keccak = ["alloy-primitives/asm-keccak"]
 
 # Internal features.
-__fuzzing = ["dep:arbitrary", "dep:paste", "dep:similar-asserts", "dep:tracing-subscriber"]
+__fuzzing = [
+    "dep:arbitrary",
+    "dep:paste",
+    "dep:revm-state",
+    "dep:similar-asserts",
+    "dep:tracing-subscriber",
+]
