@@ -9,7 +9,51 @@
                  .exit_handler(|_| clear_thread_local_compilers())
                  .build()
                  .expect("failed to spawn compile workers")
-@@ -478,7 +478,7 @@
+@@ -279,16 +279,6 @@
+     pub(crate) fn cancel_in_flight(&self) {
+         cancel_out_of_process_helper(&self.out_of_process_helper);
+     }
+-
+-    /// Pauses out-of-process helper execution.
+-    pub(crate) fn pause(&self) {
+-        pause_out_of_process_helper(&self.out_of_process_helper);
+-    }
+-
+-    /// Resumes out-of-process helper execution.
+-    pub(crate) fn resume(&self) {
+-        resume_out_of_process_helper(&self.out_of_process_helper);
+-    }
+ }
+
+ impl Drop for WorkerPool {
+@@ -323,26 +313,6 @@
+ #[cfg(not(all(feature = "llvm", unix)))]
+ fn cancel_out_of_process_helper(_helper: &OutOfProcessHelper) {}
+
+-#[cfg(all(feature = "llvm", unix))]
+-fn pause_out_of_process_helper(helper: &OutOfProcessHelper) {
+-    if let Some(helper) = helper {
+-        helper.pause();
+-    }
+-}
+-
+-#[cfg(not(all(feature = "llvm", unix)))]
+-fn pause_out_of_process_helper(_helper: &OutOfProcessHelper) {}
+-
+-#[cfg(all(feature = "llvm", unix))]
+-fn resume_out_of_process_helper(helper: &OutOfProcessHelper) {
+-    if let Some(helper) = helper {
+-        helper.resume();
+-    }
+-}
+-
+-#[cfg(not(all(feature = "llvm", unix)))]
+-fn resume_out_of_process_helper(_helper: &OutOfProcessHelper) {}
+-
+ #[cfg(feature = "llvm")]
+ fn clear_thread_local_compilers() {
+     JIT_COMPILER.with_borrow_mut(Option::take);
+@@ -478,7 +448,7 @@
          match CompilerState::new(config, target) {
              Ok(new_state) => {
                  *state_slot = Some(new_state);
@@ -18,7 +62,7 @@
              }
              Err(e) => {
                  error!(error = %e, "failed to recreate compiler");
-@@ -587,8 +587,10 @@
+@@ -587,8 +557,10 @@
          .map(|name| name.to_string_lossy().into_owned())
          .collect();
      if builtin_symbols.is_empty() {
