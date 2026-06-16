@@ -8,7 +8,7 @@ Keep execution and ORC linking in the parent process. Move only translation, opt
 
 The helper process receives `CompileJob`s over IPC and returns relocatable object bytes plus timings/errors. The parent process then adds the object to its existing ORC `LLJIT`, resolves the symbol to a local `EvmCompilerFn`, and owns the `ResourceTracker`/`JitDylibGuard` exactly as it does today. This preserves the current runtime API and keeps compiled function pointers valid in the caller process.
 
-Using LLVM ORC's remote executor APIs (`ExecutorProcessControl`, `SimpleRemoteEPC`, etc.) would put the executable code in the child process. That is not transparent for the current `EvmCompilerFn` API, because callers need a local function pointer and direct calls into `revm` state.
+Using LLVM ORC's remote executor APIs (`ExecutorProcessControl`, `SimpleRemoteEPC`, etc.) would put the executable code in the child process. That is not transparent for the current `EvmCompilerFn` API, because callers need a local function pointer and direct calls into the local execution state.
 
 ## LLVM ORC support needed
 

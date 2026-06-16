@@ -2,6 +2,6 @@
 
 Runtime JIT/AOT backend for evm2-jit.
 
-This crate owns the runtime compilation infrastructure: compiled-program lookup, resident-code management, artifact storage, background worker scheduling, AOT preloading, and `revm` integration wrappers.
+This crate owns the runtime compilation infrastructure: compiled-program lookup, resident-code management, artifact storage, background worker scheduling, AOT preloading, and evm2 execution wrappers.
 
 It builds on `evm2-jit-codegen` for compilation and is re-exported by the umbrella `evm2-jit` crate.
