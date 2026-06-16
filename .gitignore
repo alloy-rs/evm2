@@ -7,3 +7,9 @@ Cargo.lock
 /tests/BlockchainTests
 /test-fixtures
 /scripts/__pycache__
+/crates/jit/test-fixtures
+/crates/jit/tests/GeneralStateTests
+/crates/jit/tests/BlockchainTests
+/crates/jit/fuzz/artifacts
+/crates/jit/fuzz/corpus
+/crates/jit/fuzz/coverage

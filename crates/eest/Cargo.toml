@@ -32,6 +32,9 @@ serde_json = { workspace = true, features = ["preserve_order", "std"] }
 thiserror = { workspace = true, features = ["std"] }
 walkdir.workspace = true
 
+[build-dependencies]
+evm2-jit-build.workspace = true
+
 [[test]]
 name = "eest"
 path = "tests/eest.rs"

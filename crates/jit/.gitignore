@@ -1,6 +1,0 @@
-/target
-/tmp
-/test-fixtures
-/tests/GeneralStateTests
-/tests/BlockchainTests
-/scripts/__pycache__

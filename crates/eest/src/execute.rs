@@ -524,6 +524,12 @@ fn access_list(
 mod tests {
     use super::*;
     use alloy_primitives::LogData;
+    #[cfg(feature = "jit")]
+    use evm2::interpreter::op;
+
+    #[cfg(feature = "jit")]
+    const BYTECODE_RET42: &[u8] =
+        &[op::PUSH1, 0x42, op::PUSH0, op::MSTORE, op::PUSH1, 0x20, op::PUSH0, op::RETURN];
 
     #[test]
     fn logs_hash_matches_empty_logs() {
@@ -622,5 +628,88 @@ mod tests {
             panic!("expected EIP-2930 transaction");
         };
         assert_eq!(tx.inner().access_list[0].address, second_address);
+    }
+
+    #[cfg(feature = "jit")]
+    fn execute_simple_call(mode: ExecutionMode) -> SpecOutcome {
+        let caller = Address::from([0x11; 20]);
+        let target = Address::from([0x22; 20]);
+        let env = Env {
+            current_chain_id: Some(U256::ONE),
+            current_coinbase: Address::ZERO,
+            current_difficulty: U256::ZERO,
+            current_gas_limit: U256::from(30_000_000),
+            current_number: U256::ZERO,
+            current_timestamp: U256::ZERO,
+            current_base_fee: Some(U256::ZERO),
+            previous_hash: None,
+            current_random: None,
+            current_beacon_root: None,
+            current_withdrawals_root: None,
+            current_excess_blob_gas: None,
+            slot_number: None,
+        };
+        let mut pre = BTreeMap::new();
+        pre.insert(
+            caller,
+            AccountInfo {
+                balance: U256::from(1_000_000_000),
+                code: Bytes::new(),
+                nonce: 0,
+                storage: BTreeMap::new(),
+            },
+        );
+        pre.insert(
+            target,
+            AccountInfo {
+                balance: U256::ZERO,
+                code: Bytes::copy_from_slice(BYTECODE_RET42),
+                nonce: 0,
+                storage: BTreeMap::new(),
+            },
+        );
+        let tx = build_tx(
+            &TransactionParts {
+                data: vec![Bytes::new()],
+                gas_limit: vec![U256::from(100_000)],
+                gas_price: Some(U256::ZERO),
+                sender: Some(caller),
+                to: Some(target),
+                value: vec![U256::ZERO],
+                ..TransactionParts::default()
+            },
+            &TxPartIndices { data: 0, gas: 0, value: 0 },
+            env.current_chain_id,
+        )
+        .unwrap();
+        let resources = ExecutionResources::new(mode).unwrap();
+        execute_spec(
+            SpecId::CANCUN,
+            parse_block(&env, SpecId::CANCUN),
+            parse_state(&pre).unwrap(),
+            &tx,
+            &env,
+            &resources,
+        )
+        .unwrap()
+    }
+
+    #[cfg(feature = "jit")]
+    #[test]
+    fn jit_and_aot_modes_match_interpreter_for_simple_call() {
+        let interpreter = execute_simple_call(ExecutionMode::Interpreter);
+        let jit = execute_simple_call(ExecutionMode::Jit);
+        let aot = execute_simple_call(ExecutionMode::Aot);
+
+        assert_eq!(jit.output, interpreter.output);
+        assert_eq!(aot.output, interpreter.output);
+        assert_eq!(jit.state_root, interpreter.state_root);
+        assert_eq!(aot.state_root, interpreter.state_root);
+        assert_eq!(jit.logs_root, interpreter.logs_root);
+        assert_eq!(aot.logs_root, interpreter.logs_root);
+        assert_eq!(jit.gas_used, interpreter.gas_used);
+        assert_eq!(aot.gas_used, interpreter.gas_used);
+        assert_eq!(interpreter.output.len(), 32);
+        assert_eq!(interpreter.output[31], 0x42);
     }
 }
