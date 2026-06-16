@@ -9,6 +9,7 @@ use evm2::{
     interpreter::{Gas, InstrStop, Interpreter, Memory, Message, Word},
     version::GasParams,
 };
+use revm_interpreter::InstructionResult;
 
 const _: () = {
     assert!(core::mem::size_of::<EvmWord>() == core::mem::size_of::<Word>());
@@ -132,4 +133,72 @@ impl<'a, T: EvmTypes> EvmContext<'a, T> {
 #[inline]
 pub fn bytecode_slice(bytecode: &Bytecode) -> &[u8] {
     bytecode.original_byte_slice()
+}
+
+/// Converts a revm-style compiled-code return into an evm2 instruction stop.
+///
+/// Compiled functions currently return revm's [`InstructionResult`] ABI. Do not cast the raw `u8`
+/// value to [`InstrStop`]: evm2 intentionally uses a different layout for some invalid-opcode
+/// variants.
+#[inline]
+pub const fn instr_stop_from_instruction_result(result: InstructionResult) -> Option<InstrStop> {
+    Some(match result {
+        InstructionResult::Stop => InstrStop::Stop,
+        InstructionResult::Return => InstrStop::Return,
+        InstructionResult::SelfDestruct => InstrStop::SelfDestruct,
+        InstructionResult::Suspend => return None,
+        InstructionResult::Revert => InstrStop::Revert,
+        InstructionResult::CallTooDeep => InstrStop::CallTooDeep,
+        InstructionResult::OutOfFunds => InstrStop::OutOfFunds,
+        InstructionResult::CreateInitCodeStartingEF00 => InstrStop::CreateInitCodeStartingEF00,
+        InstructionResult::InvalidEOFInitCode => InstrStop::InvalidEOFInitCode,
+        InstructionResult::InvalidExtDelegateCallTarget => InstrStop::InvalidExtDelegateCallTarget,
+        InstructionResult::OutOfGas => InstrStop::OutOfGas,
+        InstructionResult::MemoryOOG => InstrStop::MemoryOOG,
+        InstructionResult::MemoryLimitOOG => InstrStop::MemoryLimitOOG,
+        InstructionResult::PrecompileOOG => InstrStop::PrecompileOOG,
+        InstructionResult::InvalidOperandOOG => InstrStop::InvalidOperandOOG,
+        InstructionResult::ReentrancySentryOOG => InstrStop::ReentrancySentryOOG,
+        InstructionResult::OpcodeNotFound | InstructionResult::InvalidFEOpcode => {
+            InstrStop::InvalidOpcode
+        }
+        InstructionResult::CallNotAllowedInsideStatic => InstrStop::CallNotAllowedInsideStatic,
+        InstructionResult::StateChangeDuringStaticCall => InstrStop::StateChangeDuringStaticCall,
+        InstructionResult::InvalidJump => InstrStop::InvalidJump,
+        InstructionResult::NotActivated => InstrStop::NotActivated,
+        InstructionResult::StackUnderflow => InstrStop::StackUnderflow,
+        InstructionResult::StackOverflow => InstrStop::StackOverflow,
+        InstructionResult::OutOfOffset => InstrStop::OutOfOffset,
+        InstructionResult::CreateCollision => InstrStop::CreateCollision,
+        InstructionResult::OverflowPayment => InstrStop::OverflowPayment,
+        InstructionResult::PrecompileError => InstrStop::PrecompileError,
+        InstructionResult::NonceOverflow => InstrStop::NonceOverflow,
+        InstructionResult::CreateContractSizeLimit => InstrStop::CreateContractSizeLimit,
+        InstructionResult::CreateContractStartingWithEF => InstrStop::CreateContractStartingWithEF,
+        InstructionResult::CreateInitCodeSizeLimit => InstrStop::CreateInitCodeSizeLimit,
+        InstructionResult::FatalExternalError => InstrStop::FatalExternalError,
+        InstructionResult::InvalidImmediateEncoding => InstrStop::InvalidImmediateEncoding,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn maps_instruction_result_to_instr_stop_by_semantics() {
+        assert_eq!(
+            instr_stop_from_instruction_result(InstructionResult::Stop),
+            Some(InstrStop::Stop)
+        );
+        assert_eq!(
+            instr_stop_from_instruction_result(InstructionResult::OpcodeNotFound),
+            Some(InstrStop::InvalidOpcode)
+        );
+        assert_eq!(
+            instr_stop_from_instruction_result(InstructionResult::InvalidFEOpcode),
+            Some(InstrStop::InvalidOpcode)
+        );
+        assert_eq!(instr_stop_from_instruction_result(InstructionResult::Suspend), None);
+    }
 }
