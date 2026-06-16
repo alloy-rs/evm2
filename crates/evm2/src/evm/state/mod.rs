@@ -83,6 +83,39 @@ impl TxScratch {
 }
 
 /// Mutable EVM state with an accepted-state cache, transaction scratch, and reversible journal.
+///
+/// The state has three read layers:
+///
+/// - The initial database is the immutable backing state supplied by the caller.
+/// - The accepted overlay caches database reads and stores changes committed at transaction
+///   boundaries.
+/// - The transaction scratch stores the in-flight transaction overlay, including journaled account
+///   loads, slot loads, writes, deletes, warm accesses, logs, and transient storage.
+///
+/// Method names describe how a read interacts with those layers:
+///
+/// - `get_*` methods take `&self` and only inspect already-known in-memory state. They never load
+///   missing accounts, code, or storage from the backing database.
+/// - `read_*` methods take `&mut self` and may read through the accepted overlay and backing
+///   database, but do not record a transaction load. They may populate the accepted overlay cache.
+/// - `load_*` methods take `&mut self`, read the EVM-visible value, and record the account or slot
+///   in transaction scratch so it participates in transaction state changes.
+///
+/// Mapping from revm host and journal method names:
+///
+/// - `basic` / `basic_ref` correspond to [`DynDatabase::get_account`]. Use
+///   [`Self::read_account_info`] for a non-recording state read, or [`Self::load_account_info`] /
+///   [`Self::load_account`] for a transaction-recorded load.
+/// - `code_by_hash` / `code_by_hash_ref` correspond to [`DynDatabase::get_code_by_hash`]. Use
+///   [`Self::read_code`] when resolving account code by address.
+/// - `storage` / `storage_ref` on the database correspond to [`DynDatabase::get_storage`]. Use
+///   [`Self::read_committed_storage`] for a committed-state read, [`Self::read_storage`] for the
+///   current transaction-visible value, or [`Self::load_storage`] for a transaction-recorded load.
+/// - `load_account` corresponds to [`Self::load_account`] when the caller needs the loaded account
+///   object, or [`Self::load_account_info`] when only the account info is needed.
+/// - `sload` corresponds to [`Self::load_storage`].
+/// - Map-style state lookups correspond to [`Self::get_account`], and already-loaded slot lookups
+///   correspond to [`Self::get_storage_slot`].
 #[derive_where(Debug)]
 #[non_exhaustive]
 pub struct State {
@@ -179,13 +212,14 @@ impl State {
         self.scratch.logs.push(log);
     }
 
-    /// Returns a persistent storage value if it is known without loading the backing database.
+    /// Gets a storage value only if it is already known in memory.
     ///
-    /// This is a non-mutating overlay lookup. It checks transaction storage, accepted storage, and
-    /// accounts known to be absent. It does not load the account or slot from the backing database;
-    /// use [`Self::storage`] when database-backed loading is desired.
-    #[inline]
-    pub fn storage_cached_ref(&self, address: &Address, key: &Word) -> Option<Word> {
+    /// This is an `&self` lookup over the current transaction storage overlay and the accepted
+    /// overlay cache. It also returns zero for accounts known to be absent. It never loads an
+    /// account or slot from the backing database, so callers must handle `None` when the value is
+    /// not cached. Use [`Self::read_storage`] when a database-backed read is desired.
+    #[must_use]
+    pub fn get_storage(&self, address: &Address, key: &Word) -> Option<Word> {
         if let Some(storage) = self.scratch.storage.get(address) {
             if let Some(slot) = storage.slots.get(key) {
                 return Some(slot.current);
@@ -200,40 +234,45 @@ impl State {
         self.database.storage_ref(address, key)
     }
 
-    /// Returns a loaded persistent storage overlay slot with original and current values.
+    /// Gets a storage slot from the current transaction overlay.
     ///
-    /// This is a non-mutating transaction-layer lookup. It does not load the account or slot from
-    /// the backing database; use [`Self::storage`] when database-backed loading is desired.
-    #[inline]
-    pub fn storage_tracked_ref(&self, address: &Address, key: &Word) -> Option<&Tracked<Word>> {
+    /// The returned value includes both the original and current slot values for this transaction.
+    /// This is an `&self` lookup and only returns slots that have already been loaded or written in
+    /// the transaction scratch. It does not inspect the accepted overlay or backing database.
+    #[must_use]
+    pub fn get_storage_slot(&self, address: &Address, key: &Word) -> Option<&Tracked<Word>> {
         self.scratch.storage.get(address)?.slots.get(key)
     }
 
-    /// Returns the current transaction account overlay if present and not deleted.
+    /// Gets an account from the current transaction overlay if it is present and alive.
     ///
-    /// This is a non-mutating overlay lookup. It does not load the account from the backing
-    /// database; use [`Self::account_info`] or [`Self::find`] when database-backed loading is
-    /// desired.
-    #[inline]
+    /// This is an `&self` lookup into transaction scratch only. It returns `None` both when the
+    /// account has not been loaded in this transaction and when the transaction overlay marks the
+    /// account as deleted. Use [`Self::read_account_info`] for a database-backed read.
     #[must_use]
-    pub fn account_ref(&self, address: &Address) -> Option<&Account> {
+    pub fn get_account(&self, address: &Address) -> Option<&Account> {
         self.scratch.accounts.get(address)?.as_ref()
     }
 
-    /// Returns account info.
+    /// Reads account info without recording an account load in transaction state.
+    ///
+    /// This observes the current transaction account overlay first, including deleted accounts,
+    /// then reads through the accepted overlay and backing database. It may populate the accepted
+    /// overlay cache, but it does not insert the account into transaction scratch and therefore
+    /// does not make an unchanged account appear in [`StateChanges`].
     #[inline(never)]
-    pub fn account_info(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
+    pub fn read_account_info(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
         if let Some(account) = self.scratch.accounts.get(address) {
             return Ok(account.as_ref().map(Account::info));
         }
         self.database.get_account(address)
     }
 
-    /// Returns account info, recording the account in the transaction state.
+    /// Loads account info and records the account in transaction state.
     ///
     /// This is the EVM-semantic account load: the loaded account becomes part of the transaction
     /// state and is emitted in [`StateChanges`] even if it is never changed. Use
-    /// [`Self::account_info`] for reads that must not be recorded.
+    /// [`Self::read_account_info`] for reads that must not be recorded.
     #[inline(never)]
     pub fn load_account_info(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
         let account = Self::ensure_transaction_account(
@@ -245,12 +284,14 @@ impl State {
         Ok(account.as_ref().map(Account::info))
     }
 
-    /// Returns account code without touching the transaction scratch or journal.
+    /// Reads account code without recording an account load in transaction state.
     ///
-    /// Account info is read from the current transaction state first, and missing bytecode is
-    /// resolved through the database by hash.
-    pub fn code_untracked(&mut self, address: &Address) -> DbResult<Bytecode> {
-        let Some(info) = self.account_info(address)? else {
+    /// This observes the current transaction account overlay first, including deleted accounts,
+    /// then reads account/code data through the accepted overlay and backing database. Missing
+    /// bytecode is resolved by hash. The read may populate the accepted overlay cache, but it does
+    /// not insert the account into transaction scratch.
+    pub fn read_code(&mut self, address: &Address) -> DbResult<Bytecode> {
+        let Some(info) = self.read_account_info(address)? else {
             return Ok(Bytecode::default());
         };
         self.code_from_info(info)
@@ -275,11 +316,12 @@ impl State {
         self.database.get_code_by_hash(&code_hash)
     }
 
-    /// Returns persistent storage without touching the transaction scratch or journal.
+    /// Reads storage from committed state, ignoring the current transaction overlay.
     ///
-    /// Storage reads go directly through the database layer and do not observe the current
-    /// transaction state.
-    pub fn storage_untracked(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
+    /// This reads through the accepted overlay and backing database only. It intentionally ignores
+    /// storage writes, storage wipes, and loaded slots in transaction scratch. This is useful for
+    /// callers that need the pre-transaction or committed view rather than the current EVM view.
+    pub fn read_committed_storage(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
         self.database.get_storage(address, key)
     }
 
@@ -290,12 +332,16 @@ impl State {
         features: EvmFeatures,
     ) -> DbResult<bool> {
         if features.contains(EvmFeatures::EIP161) {
-            return Ok(self.account_info(address)?.is_none_or(|info| info.is_empty()));
+            return Ok(self.read_account_info(address)?.is_none_or(|info| info.is_empty()));
         }
-        Ok(self.account_info(address)?.is_none() && !self.scratch.touched.contains(address))
+        Ok(self.read_account_info(address)?.is_none() && !self.scratch.touched.contains(address))
     }
 
     /// Loads an account into transaction state if it exists.
+    ///
+    /// This records the account in transaction scratch and journals the insertion so rollback can
+    /// remove it again. Loading an unchanged account makes it eligible to be emitted in
+    /// [`StateChanges`], matching EVM account-load semantics.
     pub fn load_account(&mut self, address: &Address) -> DbResult<Option<&Account>> {
         let account = Self::ensure_transaction_account(
             &mut self.database,
@@ -306,23 +352,13 @@ impl State {
         Ok(account.as_ref())
     }
 
-    /// Gets account code.
-    pub fn code(&mut self, address: &Address) -> DbResult<Bytecode> {
-        if let Some(account) = self.scratch.accounts.get(address) {
-            let Some(account) = account else {
-                return Ok(Bytecode::default());
-            };
-            return self.code_from_parts(account.code_hash, account.code.clone());
-        }
-
-        let Some(info) = self.database.get_account(address)? else {
-            return Ok(Bytecode::default());
-        };
-        self.code_from_info(info)
-    }
-
-    /// Loads persistent storage.
-    pub fn storage(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
+    /// Reads storage visible to the current transaction without recording a slot load.
+    ///
+    /// This observes transaction storage writes and wipes first, then reads through the accepted
+    /// overlay and backing database. It does not insert the slot into transaction scratch, so an
+    /// unchanged slot read this way will not be emitted in [`StateChanges`]. Use
+    /// [`Self::load_storage`] for EVM `SLOAD` semantics.
+    pub fn read_storage(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
         if let Some(storage) = self.scratch.storage.get(address) {
             if let Some(slot) = storage.slots.get(key) {
                 return Ok(slot.current);
@@ -337,14 +373,14 @@ impl State {
         self.database.get_storage(address, key)
     }
 
-    /// Loads persistent storage, recording the slot in the transaction state.
+    /// Loads storage and records the slot in transaction state.
     ///
     /// This is the EVM-semantic storage load: the loaded slot becomes part of the transaction
     /// state and is emitted in [`StateChanges`] even if it is never written. The recorded slot is
-    /// intentionally not journaled so that it survives rollback. Use [`Self::storage`] for reads
-    /// that must not be recorded.
+    /// intentionally not journaled so that it survives rollback. Use [`Self::read_storage`] for
+    /// current-state reads that must not be recorded.
     pub fn load_storage(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
-        let value = self.storage(address, key)?;
+        let value = self.read_storage(address, key)?;
         self.scratch
             .storage
             .entry(*address)
@@ -646,7 +682,7 @@ impl State {
         value: &Word,
         features: EvmFeatures,
     ) -> DbResult<Result<(), InstrStop>> {
-        if let Some(info) = self.account_info(address)?
+        if let Some(info) = self.read_account_info(address)?
             && (info.nonce != 0 || info.code_hash != KECCAK256_EMPTY)
         {
             return Ok(Err(InstrStop::CreateCollision));
@@ -758,7 +794,7 @@ impl State {
     #[inline]
     #[must_use]
     pub(crate) fn is_created_in_transaction(&self, address: &Address) -> bool {
-        self.account_ref(address).is_some_and(|account| account.just_created)
+        self.get_account(address).is_some_and(|account| account.just_created)
     }
 
     /// Reverts state changes after the checkpoint.
@@ -1205,9 +1241,9 @@ mod tests {
         state.set_storage(&address, &Word::from(1), &Word::from(20)).unwrap();
         state.set_storage(&address, &Word::from(1), &Word::from(30)).unwrap();
 
-        assert_eq!(state.storage(&address, &Word::from(1)).unwrap(), Word::from(30));
+        assert_eq!(state.read_storage(&address, &Word::from(1)).unwrap(), Word::from(30));
         state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
-        assert_eq!(state.storage(&address, &Word::from(1)).unwrap(), Word::from(10));
+        assert_eq!(state.read_storage(&address, &Word::from(1)).unwrap(), Word::from(10));
     }
 
     #[test]
@@ -1313,7 +1349,7 @@ mod tests {
     }
 
     #[test]
-    fn storage_untracked_ignores_transaction_overlay() {
+    fn read_committed_storage_ignores_transaction_overlay() {
         let address = Address::with_last_byte(0x11);
         let key = Word::from(0x22);
         let mut database = CacheDB::default();
@@ -1323,8 +1359,8 @@ mod tests {
 
         let _ = state.set_storage(&address, &key, &Word::from(2)).unwrap();
 
-        assert_eq!(state.storage(&address, &key).unwrap(), Word::from(2));
-        assert_eq!(state.storage_untracked(&address, &key).unwrap(), Word::from(1));
+        assert_eq!(state.read_storage(&address, &key).unwrap(), Word::from(2));
+        assert_eq!(state.read_committed_storage(&address, &key).unwrap(), Word::from(1));
     }
 
     #[test]
@@ -1494,12 +1530,12 @@ mod tests {
         database.insert_account_info(&address, AccountInfo::default().with_code(code.clone()));
         let mut state = State::new(database);
 
-        assert_eq!(state.code(&address).unwrap(), code);
+        assert_eq!(state.read_code(&address).unwrap(), code);
         state.mark_destructed(&address);
         state.finalize_transaction_(Version::base(crate::SpecId::SPURIOUS_DRAGON));
 
-        assert_eq!(state.code(&address).unwrap(), Bytecode::default());
-        assert_eq!(state.code_untracked(&address).unwrap(), Bytecode::default());
+        assert_eq!(state.read_code(&address).unwrap(), Bytecode::default());
+        assert_eq!(state.read_code(&address).unwrap(), Bytecode::default());
     }
 
     #[test]

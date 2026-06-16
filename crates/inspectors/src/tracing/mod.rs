@@ -539,8 +539,7 @@ impl TracingInspector {
                 match journal.last() {
                     Some(JournalEntry::StorageChange { address, key, previous }) => {
                         // SAFETY: (Address,key) exists if part if StorageChange
-                        let value =
-                            host.state().storage_cached_ref(address, key).unwrap_or_default();
+                        let value = host.state().get_storage(address, key).unwrap_or_default();
                         let change =
                             StorageChange { key: *key, value, had_value: Some(*previous), reason };
                         Some(Box::new(change))
@@ -549,7 +548,7 @@ impl TracingInspector {
                         // SAFETY: (Address,key) exists if part if StorageChange
                         let slot = host
                             .state()
-                            .storage_tracked_ref(address, key)
+                            .get_storage_slot(address, key)
                             .copied()
                             .unwrap_or_default();
                         let change = StorageChange {
@@ -562,8 +561,7 @@ impl TracingInspector {
                     }
                     Some(JournalEntry::StorageWarmed { key, address }) => {
                         // SAFETY: (Address,key) exists if part if StorageChange
-                        let value =
-                            host.state().storage_cached_ref(address, key).unwrap_or_default();
+                        let value = host.state().get_storage(address, key).unwrap_or_default();
                         let change = StorageChange { key: *key, value, had_value: None, reason };
                         Some(Box::new(change))
                     }

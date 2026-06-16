@@ -362,14 +362,14 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
 
     /// Returns account information visible through the accepted state overlay.
     #[inline]
-    pub fn account_info(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
-        self.state.account_info(address)
+    pub fn read_account_info(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
+        self.state.read_account_info(address)
     }
 
     /// Returns account bytecode visible through the accepted state overlay.
     #[inline]
     pub fn account_code(&mut self, address: &Address) -> DbResult<Bytecode> {
-        self.state.code(address)
+        self.state.read_code(address)
     }
 
     /// Applies borrowed changes to the accepted state overlay.
@@ -832,7 +832,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             // Derive the destination early so that the create hook can observe it; execution
             // re-derives it together with its semantic checks.
             let nonce = if message.depth > 0 {
-                match self.state.account_info(&message.caller) {
+                match self.state.read_account_info(&message.caller) {
                     Ok(info) => info.map_or(0, |info| info.nonce),
                     Err(code) => {
                         let stop = self.db_error_stop(code);
@@ -925,7 +925,9 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         message: &mut Message<T>,
     ) -> Result<(), InstrStop> {
         let info = if message.value > 0 || message.depth > 0 {
-            self.state.account_info(&message.caller).map_err(|code| self.db_error_stop(code))?
+            self.state
+                .read_account_info(&message.caller)
+                .map_err(|code| self.db_error_stop(code))?
         } else {
             None
         };
@@ -1237,7 +1239,7 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
             balance: info.balance,
             code_hash: if exists { info.code_hash } else { B256::ZERO },
             code: if load_code {
-                self.state.code(address).map_err(|code| self.db_error_stop(code))?
+                self.state.read_code(address).map_err(|code| self.db_error_stop(code))?
             } else {
                 Bytecode::default()
             },
@@ -1346,7 +1348,7 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
         let previously_destroyed = self.state.is_selfdestructed(contract);
         let balance = self
             .state
-            .account_info(contract)
+            .read_account_info(contract)
             .map_err(|code| self.db_error_stop(code))?
             .map_or(Word::ZERO, |info| info.balance);
         let should_destroy =
@@ -2067,7 +2069,7 @@ mod tests {
         assert_eq!(outcome.gas_used(), 7);
         assert_eq!(outcome.logs.len(), 1);
         assert_eq!(
-            evm.state.storage_cached_ref(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY),
+            evm.state.get_storage(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY),
             Some(Word::from(1))
         );
     }
@@ -2090,7 +2092,7 @@ mod tests {
         assert_eq!(storage[0].1.original, Word::from(1));
         assert_eq!(storage[0].1.current, Word::from(7));
         assert_eq!(
-            evm.state.storage_cached_ref(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY),
+            evm.state.get_storage(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY),
             Some(Word::from(1))
         );
     }
@@ -2112,7 +2114,7 @@ mod tests {
         assert_eq!(slot.original, Word::from(1));
         assert_eq!(slot.current, Word::from(7));
         assert_eq!(
-            evm.state.storage_cached_ref(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY),
+            evm.state.get_storage(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY),
             Some(Word::from(1))
         );
     }
@@ -2125,13 +2127,13 @@ mod tests {
 
         assert_eq!(outcome.logs.len(), 1);
         assert_eq!(
-            evm.state.storage_cached_ref(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY),
+            evm.state.get_storage(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY),
             Some(Word::from(7))
         );
 
         let _ = evm.transact(&test_tx(9)).expect("lifecycle transaction should execute").commit();
         assert_eq!(
-            evm.state.storage_cached_ref(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY),
+            evm.state.get_storage(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY),
             Some(Word::from(9))
         );
     }
@@ -2155,7 +2157,7 @@ mod tests {
         assert_eq!(storage[0].1.original, Word::from(1));
         assert_eq!(storage[0].1.current, Word::from(9));
         assert_eq!(
-            evm.state.storage_cached_ref(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY),
+            evm.state.get_storage(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY),
             Some(Word::from(9))
         );
     }
@@ -2183,7 +2185,7 @@ mod tests {
         drop(evm.transact(&test_tx(7)).expect("lifecycle transaction should execute"));
 
         assert_eq!(
-            evm.state.storage_cached_ref(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY),
+            evm.state.get_storage(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY),
             Some(Word::from(1))
         );
     }
@@ -2458,11 +2460,11 @@ mod tests {
 
         assert!(state.transfer(&from, &to, &U256::from(7)).unwrap());
         assert_eq!(
-            state.account_info(&from).expect("sender account should exist").unwrap().balance,
+            state.read_account_info(&from).expect("sender account should exist").unwrap().balance,
             U256::from(3)
         );
         assert_eq!(
-            state.account_info(&to).expect("recipient account should exist").unwrap().balance,
+            state.read_account_info(&to).expect("recipient account should exist").unwrap().balance,
             U256::from(7)
         );
     }

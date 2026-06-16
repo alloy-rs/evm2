@@ -723,7 +723,10 @@ mod tests {
         assert_matches!(result.stop, InstrStop::Stop);
         // The redirected call transferred the value to the replacement, not the target.
         let mut balance = |address| {
-            evm.state_mut().account_info(&address).unwrap().map_or(U256::ZERO, |info| info.balance)
+            evm.state_mut()
+                .read_account_info(&address)
+                .unwrap()
+                .map_or(U256::ZERO, |info| info.balance)
         };
         assert_eq!(balance(replacement), U256::from(7));
         assert_eq!(balance(target), U256::ZERO);

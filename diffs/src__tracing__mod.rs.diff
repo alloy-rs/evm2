@@ -348,7 +348,7 @@
  
          // See comments in `start_step`.
          debug_assert!(
-@@ -541,42 +512,58 @@
+@@ -541,42 +512,56 @@
              || self.config.record_stack_snapshots.is_pushes()
          {
              let outputs = if step.op.is_valid() { step.op.outputs() as usize } else { 0 };
@@ -388,9 +388,9 @@
 -                    Some(JournalEntry::StorageChanged { address, key, had_value }) => {
 +                    Some(JournalEntry::StorageChange { address, key, previous }) => {
                          // SAFETY: (Address,key) exists if part if StorageChange
-                         let value =
+-                        let value =
 -                            context.journal_ref().evm_state()[address].storage[key].present_value();
-+                            host.state().storage_cached_ref(address, key).unwrap_or_default();
++                        let value = host.state().get_storage(address, key).unwrap_or_default();
                          let change =
 -                            StorageChange { key: *key, value, had_value: Some(*had_value), reason };
 +                            StorageChange { key: *key, value, had_value: Some(*previous), reason };
@@ -400,7 +400,7 @@
 +                        // SAFETY: (Address,key) exists if part if StorageChange
 +                        let slot = host
 +                            .state()
-+                            .storage_tracked_ref(address, key)
++                            .get_storage_slot(address, key)
 +                            .copied()
 +                            .unwrap_or_default();
 +                        let change = StorageChange {
@@ -413,13 +413,13 @@
                      }
                      Some(JournalEntry::StorageWarmed { key, address }) => {
                          // SAFETY: (Address,key) exists if part if StorageChange
-                         let value =
+-                        let value =
 -                            context.journal_ref().evm_state()[address].storage[key].present_value();
-+                            host.state().storage_cached_ref(address, key).unwrap_or_default();
++                        let value = host.state().get_storage(address, key).unwrap_or_default();
                          let change = StorageChange { key: *key, value, had_value: None, reason };
                          Some(Box::new(change))
                      }
-@@ -590,100 +577,103 @@
+@@ -590,100 +575,103 @@
          // The gas cost is the difference between the recorded gas remaining at the start of the
          // step the remaining gas here, at the end of the step.
          // TODO: Figure out why this can overflow. https://github.com/paradigmxyz/revm-inspectors/pull/38
@@ -567,7 +567,7 @@
              Some(false),
          );
          None
-@@ -691,18 +681,24 @@
+@@ -691,18 +679,24 @@
  
      fn create_end(
          &mut self,
@@ -600,7 +600,7 @@
      }
  }
  
-@@ -753,21 +749,3 @@
+@@ -753,21 +747,3 @@
          }
      }
  }

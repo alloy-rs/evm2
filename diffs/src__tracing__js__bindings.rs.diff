@@ -451,14 +451,14 @@
 -impl DBErrorMarker for StringError {}
 +impl EvmDbReader for StateDbReader<'_> {
 +    fn read_basic(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
-+        self.state.account_info(address)
++        self.state.read_account_info(address)
 +    }
  
 -impl core::fmt::Display for StringError {
 -    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
 -        write!(f, "{}", self.0)
 +    fn read_code(&mut self, address: &Address) -> DbResult<Bytecode> {
-+        self.state.code_untracked(address)
++        self.state.read_code(address)
      }
 -}
  
@@ -466,7 +466,7 @@
 -    fn from(s: String) -> Self {
 -        Self(s)
 +    fn read_state(&mut self, address: &Address, slot: &Word) -> DbResult<Word> {
-+        self.state.storage_untracked(address, slot)
++        self.state.read_committed_storage(address, slot)
      }
  }
  

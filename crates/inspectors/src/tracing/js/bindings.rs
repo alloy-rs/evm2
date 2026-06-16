@@ -1338,15 +1338,15 @@ struct StateDbReader<'a> {
 
 impl EvmDbReader for StateDbReader<'_> {
     fn read_basic(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
-        self.state.account_info(address)
+        self.state.read_account_info(address)
     }
 
     fn read_code(&mut self, address: &Address) -> DbResult<Bytecode> {
-        self.state.code_untracked(address)
+        self.state.read_code(address)
     }
 
     fn read_state(&mut self, address: &Address, slot: &Word) -> DbResult<Word> {
-        self.state.storage_untracked(address, slot)
+        self.state.read_committed_storage(address, slot)
     }
 }
 

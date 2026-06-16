@@ -13,20 +13,21 @@
  #![doc = include_str!("../README.md")]
  #![doc(
      html_logo_url = "https://raw.githubusercontent.com/paradigmxyz/reth/main/assets/reth-docs.png",
-@@ -18,10 +17,19 @@
+@@ -18,13 +17,19 @@
  
  extern crate alloc;
  
--/// An inspector implementation for an EIP2930 Accesslist
 +#[cfg(feature = "std")]
 +use anstyle as _;
 +#[cfg(feature = "js-tracer")]
 +use boa_engine as _;
-+#[cfg(feature = "js-tracer")]
+ #[cfg(feature = "js-tracer")]
+-use time as _;
 +use boa_gc as _;
 +#[cfg(feature = "serde")]
 +use serde as _;
-+
+ 
+-/// An inspector implementation for an EIP2930 Accesslist
 +/// An inspector implementation for an EIP2930 Accesslist.
  pub mod access_list;
  
