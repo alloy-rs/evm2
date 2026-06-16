@@ -11,9 +11,7 @@ use evm2_jit_builtins::gas;
 use revm_bytecode::opcode as op;
 use revm_context_interface as context_interface;
 use revm_interpreter as interpreter;
-use revm_interpreter::{
-    CreateInputs, FrameInput, Gas, InstructionResult, InterpreterAction, InterpreterResult,
-};
+use revm_interpreter::InstructionResult;
 use revm_primitives::{
     Address, B256, Bytes, KECCAK_EMPTY, Log, LogData, hardfork::SpecId, hex, keccak256,
 };
@@ -52,8 +50,6 @@ mod macros;
 mod meta;
 
 mod fibonacci;
-mod resume;
-mod resume_at_call;
 
 mod runner;
 pub use runner::*;
@@ -85,6 +81,44 @@ const I256_MAX: U256 = U256::from_limbs([
     0xFFFFFFFFFFFFFFFF,
     0x7FFFFFFFFFFFFFFF,
 ]);
+
+matrix_tests!(
+    reject_recursive_frame_opcodes = |jit| {
+        let cases: &[&[u8]] = &[
+            &[op::PUSH0, op::PUSH0, op::PUSH0, op::CREATE],
+            &[op::PUSH0, op::PUSH0, op::PUSH0, op::PUSH0, op::CREATE2],
+            &[
+                op::PUSH0,
+                op::PUSH0,
+                op::PUSH0,
+                op::PUSH0,
+                op::PUSH0,
+                op::PUSH0,
+                op::PUSH0,
+                op::CALL,
+            ],
+            &[
+                op::PUSH0,
+                op::PUSH0,
+                op::PUSH0,
+                op::PUSH0,
+                op::PUSH0,
+                op::PUSH0,
+                op::PUSH0,
+                op::CALLCODE,
+            ],
+            &[op::PUSH0, op::PUSH0, op::PUSH0, op::PUSH0, op::PUSH0, op::PUSH0, op::DELEGATECALL],
+            &[op::PUSH0, op::PUSH0, op::PUSH0, op::PUSH0, op::PUSH0, op::PUSH0, op::STATICCALL],
+        ];
+
+        for bytecode in cases {
+            let err = jit
+                .parse((*bytecode).into(), crate::spec::from_revm_spec_id(SpecId::CANCUN))
+                .unwrap_err();
+            assert!(err.to_string().contains("CALL/CREATE bytecode is disabled"));
+        }
+    }
+);
 
 tests! {
     ret {
@@ -1290,101 +1324,6 @@ tests! {
             expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
         }),
-        create(@raw {
-            bytecode: &[op::PUSH1, 0x69, op::PUSH0, op::MSTORE, op::PUSH1, 32, op::PUSH0, op::PUSH1, 0x42, op::CREATE],
-            expected_return: InstructionResult::Stop,
-            // NOTE: The address is pushed by the caller.
-            expected_stack: &[],
-            expected_memory: &0x69_U256.to_be_bytes::<32>(),
-            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
-            expected_next_action: InterpreterAction::NewFrame(FrameInput::Create(Box::new(CreateInputs::new(
-                DEF_ADDR,
-                context_interface::CreateScheme::Create,
-                0x42_U256,
-                Bytes::copy_from_slice(&0x69_U256.to_be_bytes::<32>()),
-                66917,
-                0,
-            )))),
-        }),
-        create2(@raw {
-            bytecode: &[op::PUSH1, 0x69, op::PUSH0, op::MSTORE, op::PUSH1, 100, op::PUSH1, 32, op::PUSH0, op::PUSH1, 0x42, op::CREATE2],
-            expected_return: InstructionResult::Stop,
-            // NOTE: The address is pushed by the caller.
-            expected_stack: &[],
-            expected_memory: &0x69_U256.to_be_bytes::<32>(),
-            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
-            expected_next_action: InterpreterAction::NewFrame(FrameInput::Create(Box::new(CreateInputs::new(
-                DEF_ADDR,
-                context_interface::CreateScheme::Create2 { salt: 100_U256 },
-                0x42_U256,
-                Bytes::copy_from_slice(&0x69_U256.to_be_bytes::<32>()),
-                66908,
-                0,
-            )))),
-        }),
-        call(@raw {
-            bytecode: &[
-                op::PUSH1, 1, // ret length
-                op::PUSH1, 2, // ret offset
-                op::PUSH1, 3, // args length
-                op::PUSH1, 4, // args offset
-                op::PUSH1, 5, // value
-                op::PUSH1, 6, // address
-                op::PUSH1, 7, // gas
-                op::CALL,
-            ],
-            expected_return: InstructionResult::Stop,
-            // NOTE: The return is pushed by the caller.
-            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
-            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
-            expected_next_action: ACTION_WHAT_INTERPRETER_SAYS,
-        }),
-        callcode(@raw {
-            bytecode: &[
-                op::PUSH1, 1, // ret length
-                op::PUSH1, 2, // ret offset
-                op::PUSH1, 3, // args length
-                op::PUSH1, 4, // args offset
-                op::PUSH1, 5, // value
-                op::PUSH1, 6, // address
-                op::PUSH1, 7, // gas
-                op::CALLCODE,
-            ],
-            expected_return: InstructionResult::Stop,
-            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
-            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
-            expected_next_action: ACTION_WHAT_INTERPRETER_SAYS,
-        }),
-        delegatecall(@raw {
-            bytecode: &[
-                op::PUSH1, 1, // ret length
-                op::PUSH1, 2, // ret offset
-                op::PUSH1, 3, // args length
-                op::PUSH1, 4, // args offset
-                op::PUSH1, 5, // address
-                op::PUSH1, 6, // gas
-                op::DELEGATECALL,
-            ],
-            expected_return: InstructionResult::Stop,
-            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
-            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
-            expected_next_action: ACTION_WHAT_INTERPRETER_SAYS,
-        }),
-        staticcall(@raw {
-            bytecode: &[
-                op::PUSH1, 1, // ret length
-                op::PUSH1, 2, // ret offset
-                op::PUSH1, 3, // args length
-                op::PUSH1, 4, // args offset
-                op::PUSH1, 5, // address
-                op::PUSH1, 6, // gas
-                op::STATICCALL,
-            ],
-            expected_return: InstructionResult::Stop,
-            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
-            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
-            expected_next_action: ACTION_WHAT_INTERPRETER_SAYS,
-        }),
         ret_empty_dynamic_offset(@raw {
             bytecode: &[op::PUSH0, op::ADDRESS, op::RETURN],
             expected_return: InstructionResult::Return,
@@ -1395,34 +1334,14 @@ tests! {
             expected_return: InstructionResult::Return,
             expected_memory: &0x69_U256.to_be_bytes::<32>(),
             expected_gas: 3 + 2 + (3 + memory_gas_cost(1)) + 3 + 2,
-            expected_next_action: InterpreterAction::Return(
-                InterpreterResult {
-                    result: InstructionResult::Return,
-                    output: Bytes::copy_from_slice(&0x69_U256.to_be_bytes::<32>()),
-                    gas: {
-                        let mut gas = Gas::new(DEF_GAS_LIMIT);
-                        assert!(gas.record_regular_cost(3 + 2 + (3 + memory_gas_cost(1)) + 3 + 2));
-                        gas
-                    },
-                }
-            ),
+            expected_output: Some(&0x69_U256.to_be_bytes::<32>()),
         }),
         revert(@raw {
             bytecode: &[op::PUSH1, 0x69, op::PUSH0, op::MSTORE, op::PUSH1, 32, op::PUSH0, op::REVERT],
             expected_return: InstructionResult::Revert,
             expected_memory: &0x69_U256.to_be_bytes::<32>(),
             expected_gas: 3 + 2 + (3 + memory_gas_cost(1)) + 3 + 2,
-            expected_next_action: InterpreterAction::Return(
-                InterpreterResult {
-                    result: InstructionResult::Revert,
-                    output: Bytes::copy_from_slice(&0x69_U256.to_be_bytes::<32>()),
-                    gas: {
-                        let mut gas = Gas::new(DEF_GAS_LIMIT);
-                        assert!(gas.record_regular_cost(3 + 2 + (3 + memory_gas_cost(1)) + 3 + 2));
-                        gas
-                    },
-                }
-            ),
+            expected_output: Some(&0x69_U256.to_be_bytes::<32>()),
         }),
         selfdestruct(@raw {
             bytecode: &[op::PUSH1, 0x69, op::SELFDESTRUCT, op::INVALID],
@@ -1453,277 +1372,6 @@ tests! {
             is_static: true,
             expected_return: InstructionResult::StateChangeDuringStaticCall,
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
-        }),
-    }
-
-    // Tests for CALL gas accounting fix.
-    // JIT CALL gas must match interpreter across specs and value-transfer scenarios.
-    call_gas {
-        call_value_cancun(@raw {
-            bytecode: &[
-                op::PUSH1, 1,   // ret length
-                op::PUSH1, 2,   // ret offset
-                op::PUSH1, 3,   // args length
-                op::PUSH1, 4,   // args offset
-                op::PUSH1, 5,   // value (non-zero → triggers value transfer gas)
-                op::PUSH1, 6,   // address
-                op::PUSH1, 7,   // gas
-                op::CALL,
-            ],
-            spec_id: SpecId::CANCUN,
-            expected_return: RETURN_WHAT_INTERPRETER_SAYS,
-            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
-            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
-            expected_next_action: ACTION_WHAT_INTERPRETER_SAYS,
-        }),
-        call_no_value_cancun(@raw {
-            bytecode: &[
-                op::PUSH1, 1,   // ret length
-                op::PUSH1, 2,   // ret offset
-                op::PUSH1, 3,   // args length
-                op::PUSH1, 4,   // args offset
-                op::PUSH0,      // value = 0 (no transfer)
-                op::PUSH1, 6,   // address
-                op::PUSH1, 7,   // gas
-                op::CALL,
-            ],
-            spec_id: SpecId::CANCUN,
-            expected_return: RETURN_WHAT_INTERPRETER_SAYS,
-            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
-            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
-            expected_next_action: ACTION_WHAT_INTERPRETER_SAYS,
-        }),
-        staticcall_cancun(@raw {
-            bytecode: &[
-                op::PUSH1, 1,   // ret length
-                op::PUSH1, 2,   // ret offset
-                op::PUSH1, 3,   // args length
-                op::PUSH1, 4,   // args offset
-                op::PUSH1, 5,   // address
-                op::PUSH1, 6,   // gas
-                op::STATICCALL,
-            ],
-            spec_id: SpecId::CANCUN,
-            expected_return: RETURN_WHAT_INTERPRETER_SAYS,
-            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
-            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
-            expected_next_action: ACTION_WHAT_INTERPRETER_SAYS,
-        }),
-        delegatecall_cancun(@raw {
-            bytecode: &[
-                op::PUSH1, 1,   // ret length
-                op::PUSH1, 2,   // ret offset
-                op::PUSH1, 3,   // args length
-                op::PUSH1, 4,   // args offset
-                op::PUSH1, 5,   // address
-                op::PUSH1, 6,   // gas
-                op::DELEGATECALL,
-            ],
-            spec_id: SpecId::CANCUN,
-            expected_return: RETURN_WHAT_INTERPRETER_SAYS,
-            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
-            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
-            expected_next_action: ACTION_WHAT_INTERPRETER_SAYS,
-        }),
-
-        // Pre-Berlin specs: different static gas costs for CALL (700 vs 100).
-        call_value_petersburg(@raw {
-            bytecode: &[
-                op::PUSH1, 1,   // ret length
-                op::PUSH1, 2,   // ret offset
-                op::PUSH1, 3,   // args length
-                op::PUSH1, 4,   // args offset
-                op::PUSH1, 5,   // value (non-zero)
-                op::PUSH1, 6,   // address
-                op::PUSH1, 7,   // gas
-                op::CALL,
-            ],
-            spec_id: SpecId::PETERSBURG,
-            expected_return: RETURN_WHAT_INTERPRETER_SAYS,
-            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
-            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
-            expected_next_action: ACTION_WHAT_INTERPRETER_SAYS,
-        }),
-        call_no_value_petersburg(@raw {
-            bytecode: &[
-                op::PUSH1, 1,   // ret length
-                op::PUSH1, 2,   // ret offset
-                op::PUSH1, 3,   // args length
-                op::PUSH1, 4,   // args offset
-                op::PUSH1, 0,   // value = 0
-                op::PUSH1, 6,   // address
-                op::PUSH1, 7,   // gas
-                op::CALL,
-            ],
-            spec_id: SpecId::PETERSBURG,
-            expected_return: RETURN_WHAT_INTERPRETER_SAYS,
-            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
-            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
-            expected_next_action: ACTION_WHAT_INTERPRETER_SAYS,
-        }),
-        staticcall_petersburg(@raw {
-            bytecode: &[
-                op::PUSH1, 1,   // ret length
-                op::PUSH1, 2,   // ret offset
-                op::PUSH1, 3,   // args length
-                op::PUSH1, 4,   // args offset
-                op::PUSH1, 5,   // address
-                op::PUSH1, 6,   // gas
-                op::STATICCALL,
-            ],
-            spec_id: SpecId::PETERSBURG,
-            expected_return: RETURN_WHAT_INTERPRETER_SAYS,
-            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
-            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
-            expected_next_action: ACTION_WHAT_INTERPRETER_SAYS,
-        }),
-        call_value_istanbul(@raw {
-            bytecode: &[
-                op::PUSH1, 1,   // ret length
-                op::PUSH1, 2,   // ret offset
-                op::PUSH1, 3,   // args length
-                op::PUSH1, 4,   // args offset
-                op::PUSH1, 5,   // value (non-zero)
-                op::PUSH1, 6,   // address
-                op::PUSH1, 7,   // gas
-                op::CALL,
-            ],
-            spec_id: SpecId::ISTANBUL,
-            expected_return: RETURN_WHAT_INTERPRETER_SAYS,
-            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
-            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
-            expected_next_action: ACTION_WHAT_INTERPRETER_SAYS,
-        }),
-        call_no_value_istanbul(@raw {
-            bytecode: &[
-                op::PUSH1, 1,   // ret length
-                op::PUSH1, 2,   // ret offset
-                op::PUSH1, 3,   // args length
-                op::PUSH1, 4,   // args offset
-                op::PUSH1, 0,   // value = 0
-                op::PUSH1, 6,   // address
-                op::PUSH1, 7,   // gas
-                op::CALL,
-            ],
-            spec_id: SpecId::ISTANBUL,
-            expected_return: RETURN_WHAT_INTERPRETER_SAYS,
-            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
-            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
-            expected_next_action: ACTION_WHAT_INTERPRETER_SAYS,
-        }),
-        staticcall_istanbul(@raw {
-            bytecode: &[
-                op::PUSH1, 1,   // ret length
-                op::PUSH1, 2,   // ret offset
-                op::PUSH1, 3,   // args length
-                op::PUSH1, 4,   // args offset
-                op::PUSH1, 5,   // address
-                op::PUSH1, 6,   // gas
-                op::STATICCALL,
-            ],
-            spec_id: SpecId::ISTANBUL,
-            expected_return: RETURN_WHAT_INTERPRETER_SAYS,
-            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
-            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
-            expected_next_action: ACTION_WHAT_INTERPRETER_SAYS,
-        }),
-        call_value_byzantium(@raw {
-            bytecode: &[
-                op::PUSH1, 1,   // ret length
-                op::PUSH1, 2,   // ret offset
-                op::PUSH1, 3,   // args length
-                op::PUSH1, 4,   // args offset
-                op::PUSH1, 5,   // value (non-zero)
-                op::PUSH1, 6,   // address
-                op::PUSH1, 7,   // gas
-                op::CALL,
-            ],
-            spec_id: SpecId::BYZANTIUM,
-            expected_return: RETURN_WHAT_INTERPRETER_SAYS,
-            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
-            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
-            expected_next_action: ACTION_WHAT_INTERPRETER_SAYS,
-        }),
-        call_high_gas_value_istanbul(@raw {
-            bytecode: &[
-                op::PUSH1, 32,       // ret length
-                op::PUSH1, 0,        // ret offset
-                op::PUSH1, 64,       // args length
-                op::PUSH1, 0,        // args offset
-                op::PUSH1, 100,      // value = 100
-                op::PUSH1, 0x69,     // address
-                op::PUSH2, 0xFF, 0xFF, // gas = 65535
-                op::CALL,
-            ],
-            spec_id: SpecId::ISTANBUL,
-            expected_return: RETURN_WHAT_INTERPRETER_SAYS,
-            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
-            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
-            expected_next_action: ACTION_WHAT_INTERPRETER_SAYS,
-        }),
-        // Muir Glacier uses ISTANBUL gas table.
-        call_value_muir_glacier(@raw {
-            bytecode: &[
-                op::PUSH1, 1,   // ret length
-                op::PUSH1, 2,   // ret offset
-                op::PUSH1, 3,   // args length
-                op::PUSH1, 4,   // args offset
-                op::PUSH1, 5,   // value (non-zero)
-                op::PUSH1, 6,   // address
-                op::PUSH1, 7,   // gas
-                op::CALL,
-            ],
-            spec_id: SpecId::ISTANBUL,
-            expected_return: RETURN_WHAT_INTERPRETER_SAYS,
-            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
-            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
-            expected_next_action: ACTION_WHAT_INTERPRETER_SAYS,
-        }),
-        call_high_gas_value(@raw {
-            bytecode: &[
-                op::PUSH1, 32,       // ret length
-                op::PUSH0,           // ret offset
-                op::PUSH1, 64,       // args length
-                op::PUSH0,           // args offset
-                op::PUSH1, 100,      // value = 100
-                op::PUSH1, 0x69,     // address
-                op::PUSH2, 0xFF, 0xFF, // gas = 65535
-                op::CALL,
-            ],
-            spec_id: SpecId::CANCUN,
-            expected_return: RETURN_WHAT_INTERPRETER_SAYS,
-            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
-            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
-            expected_next_action: ACTION_WHAT_INTERPRETER_SAYS,
-        }),
-        call_known_bytecode(@raw {
-            bytecode: &[
-                op::PUSH1, 0,    // ret length
-                op::PUSH1, 0,    // ret offset
-                op::PUSH1, 0,    // args length
-                op::PUSH1, 0,    // args offset
-                op::PUSH1, 0,    // value
-                op::PUSH1, 0x69, // address (OTHER_ADDR = 0x69..69, has code in TestHost)
-                op::PUSH1, 7,    // gas
-                op::CALL,
-            ],
-            spec_id: SpecId::CANCUN,
-            expected_return: RETURN_WHAT_INTERPRETER_SAYS,
-            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
-            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
-            expected_next_action: ACTION_WHAT_INTERPRETER_SAYS,
-            assert_ecx: Some(|ecx| {
-                if let Some(InterpreterAction::NewFrame(FrameInput::Call(call_inputs))) =
-                    ecx.next_action.as_ref()
-                {
-                    let (code_hash, _) = &call_inputs.known_bytecode;
-                    assert!(
-                        !code_hash.is_zero(),
-                        "CALL must populate known_bytecode via load_account_delegated; \
-                         got zero code hash (old code path that skips delegation resolution)"
-                    );
-                }
-            }),
         }),
     }
 
@@ -1984,13 +1632,7 @@ tests! {
             expected_return: InstructionResult::Return,
             expected_memory: &U256::from(0x2a).to_be_bytes::<32>(),
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
-            expected_next_action: InterpreterAction::Return(
-                InterpreterResult {
-                    result: InstructionResult::Return,
-                    output: Bytes::copy_from_slice(&U256::from(0x2a).to_be_bytes::<32>()),
-                    gas: Gas::new(GAS_WHAT_INTERPRETER_SAYS),
-                }
-            ),
+            expected_output: Some(&U256::from(0x2a).to_be_bytes::<32>()),
         }),
 
         // Same class of bug but triggered by a deduped reachable JUMPDEST block rather than
@@ -2041,13 +1683,7 @@ tests! {
             expected_return: InstructionResult::Return,
             expected_memory: &U256::from(0x2a).to_be_bytes::<32>(),
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
-            expected_next_action: InterpreterAction::Return(
-                InterpreterResult {
-                    result: InstructionResult::Return,
-                    output: Bytes::copy_from_slice(&U256::from(0x2a).to_be_bytes::<32>()),
-                    gas: Gas::new(GAS_WHAT_INTERPRETER_SAYS),
-                }
-            ),
+            expected_output: Some(&U256::from(0x2a).to_be_bytes::<32>()),
         }),
 
         dedup_false_jumpi_non_jumpdest_fallthrough(@raw {
@@ -2214,13 +1850,7 @@ tests! {
             expected_stack: STACK_WHAT_INTERPRETER_SAYS,
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
             expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
-            expected_next_action: InterpreterAction::Return(
-                InterpreterResult {
-                    result: InstructionResult::Return,
-                    output: Bytes::copy_from_slice(&1_U256.to_be_bytes::<32>()),
-                    gas: Gas::new(GAS_WHAT_INTERPRETER_SAYS),
-                }
-            ),
+            expected_output: Some(&1_U256.to_be_bytes::<32>()),
             assert_host: Some(|host| {
                 assert_eq!(host.storage.get(&0_U256), Some(&1_U256));
             }),

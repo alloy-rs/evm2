@@ -197,8 +197,9 @@ where
             LookupDecision::Compiled(program) => {
                 let (ctx, _, _, frame_stack) = self.inner.all_mut();
                 let frame = frame_stack.get();
-                let action =
+                let result =
                     unsafe { program.func.call_with_interpreter(&mut frame.interpreter, ctx) };
+                let action = InterpreterAction::Return(result);
                 frame.process_next_action::<_, ContextDbError<Self::Context>>(ctx, action).inspect(
                     |i| {
                         if i.is_result() {
@@ -390,7 +391,7 @@ where
 
         let (ctx, _, _, frame_stack) = self.inner.all_mut();
         let frame = frame_stack.get();
-        let action = unsafe {
+        let result = unsafe {
             program.func.call_with_interpreter_with(&mut frame.interpreter, ctx, |ecx| {
                 // SAFETY: `on_log` lives on the stack and outlives the JIT call.
                 // The closure captures raw pointers whose types may not be
@@ -401,6 +402,7 @@ where
                 >(&mut on_log));
             })
         };
+        let action = InterpreterAction::Return(result);
 
         // Handle selfdestruct.
         let (ctx, inspector) = self.ctx_inspector();

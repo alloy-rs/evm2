@@ -31,10 +31,6 @@ pub use info::*;
 mod opcode;
 pub use opcode::*;
 
-/// Noop opcode used to test suspend-resume.
-#[cfg(any(feature = "__fuzzing", test))]
-pub(crate) const TEST_SUSPEND: u8 = 0x25;
-
 /// Implements `Display` for a nonmax index type using a format string.
 macro_rules! impl_index_display {
     ($ty:ty, $fmt:literal) => {
@@ -171,8 +167,8 @@ pub struct Bytecode<'a> {
     pub(crate) gas_params: GasParams,
     /// Whether the bytecode contains dynamic jumps.
     has_dynamic_jumps: bool,
-    /// Whether the bytecode may suspend execution.
-    may_suspend: bool,
+    /// Whether the bytecode contains recursive frame opcodes.
+    has_recursive_frame_opcode: bool,
     /// Mapping from program counter to instruction.
     pc_to_inst: FxHashMap<u32, Inst>,
     /// Mapping from instruction index to its program counter (`code[pc]` is the opcode byte).
@@ -330,7 +326,7 @@ impl<'a> Bytecode<'a> {
             spec_id,
             gas_params,
             has_dynamic_jumps: false,
-            may_suspend: false,
+            has_recursive_frame_opcode: false,
             snapshots: Snapshots::default(),
             memory_sections: IndexVec::new(),
             u256_interner: RefCell::new(u256_interner),
@@ -439,7 +435,7 @@ impl<'a> Bytecode<'a> {
             self.dead_store_elim();
         }
 
-        self.calc_may_suspend();
+        self.calc_has_recursive_frame_opcode();
 
         self.construct_sections();
         self.construct_memory_sections();
@@ -564,13 +560,12 @@ impl<'a> Bytecode<'a> {
         marked_jump_dead
     }
 
-    /// Calculates whether the bytecode suspend suspend execution.
-    ///
-    /// This can only happen if the bytecode contains `*CALL*` or `*CREATE*` instructions.
-    #[instrument(name = "suspend", level = "debug", skip_all)]
-    fn calc_may_suspend(&mut self) {
-        let may_suspend = self.iter_insts().any(|(_, data)| data.may_suspend());
-        self.may_suspend = may_suspend;
+    /// Calculates whether the bytecode contains `*CALL*` or `*CREATE*` instructions.
+    #[instrument(name = "recursive_frame_opcode", level = "debug", skip_all)]
+    fn calc_has_recursive_frame_opcode(&mut self) {
+        let has_recursive_frame_opcode =
+            self.iter_insts().any(|(_, data)| data.is_recursive_frame_opcode());
+        self.has_recursive_frame_opcode = has_recursive_frame_opcode;
     }
 
     /// Constructs the sections in the bytecode.
@@ -641,15 +636,14 @@ impl<'a> Bytecode<'a> {
         self.has_dynamic_jumps
     }
 
-    /// Returns `true` if the bytecode may suspend execution, to be resumed later.
-    pub(crate) fn may_suspend(&self) -> bool {
-        self.may_suspend
+    /// Returns `true` if the bytecode contains `*CALL*` or `*CREATE*` instructions.
+    pub(crate) fn has_recursive_frame_opcode(&self) -> bool {
+        self.has_recursive_frame_opcode
     }
 
-    /// Returns `true` if the stack argument's contents are observed by the caller after the
-    /// function returns (either through `inspect_stack` mode or because execution may suspend).
+    /// Returns `true` if the stack argument's contents are observed by the caller.
     pub(crate) fn stack_observed(&self) -> bool {
-        self.config.contains(AnalysisConfig::INSPECT_STACK) || self.may_suspend()
+        self.config.contains(AnalysisConfig::INSPECT_STACK)
     }
 
     /// Returns `true` if the instruction is diverging.
@@ -833,7 +827,7 @@ impl<'a> Bytecode<'a> {
         let mut live = 0usize;
         let mut noops = 0usize;
         let mut dead = 0usize;
-        let mut suspends = 0usize;
+        let mut recursive_frame_opcodes = 0usize;
         for (_inst, data) in self.iter_all_insts() {
             if data.is_dead_code() {
                 dead += 1;
@@ -842,8 +836,8 @@ impl<'a> Bytecode<'a> {
                 if data.flags.contains(InstFlags::NOOP) {
                     noops += 1;
                 }
-                if data.may_suspend() {
-                    suspends += 1;
+                if data.is_recursive_frame_opcode() {
+                    recursive_frame_opcodes += 1;
                 }
             }
         }
@@ -862,7 +856,7 @@ impl<'a> Bytecode<'a> {
             live,
             dead,
             noops,
-            suspends,
+            recursive_frame_opcodes,
             blocks: n,
             block_min,
             block_max,
@@ -882,7 +876,7 @@ impl<'a> Bytecode<'a> {
             live = s.live,
             dead = s.dead,
             noops = s.noops,
-            suspends = s.suspends,
+            recursive_frame_opcodes = s.recursive_frame_opcodes,
             blocks = s.blocks,
             block_min = s.block_min,
             block_max = s.block_max,
@@ -934,7 +928,7 @@ pub(crate) struct IrStats {
     pub(crate) live: usize,
     pub(crate) dead: usize,
     pub(crate) noops: usize,
-    pub(crate) suspends: usize,
+    pub(crate) recursive_frame_opcodes: usize,
     pub(crate) blocks: usize,
     pub(crate) block_min: usize,
     pub(crate) block_max: usize,
@@ -1145,11 +1139,6 @@ impl InstData {
     /// Returns `true` if we know that this instruction will stop execution.
     #[inline]
     pub(crate) fn is_diverging(&self) -> bool {
-        #[cfg(test)]
-        if self.opcode == TEST_SUSPEND {
-            return false;
-        }
-
         (self.opcode == op::JUMP && self.flags.contains(InstFlags::INVALID_JUMP))
             || self.flags.contains(InstFlags::DISABLED)
             || self.flags.contains(InstFlags::UNKNOWN)
@@ -1159,14 +1148,9 @@ impl InstData {
             )
     }
 
-    /// Returns `true` if this instruction may suspend execution.
+    /// Returns `true` if this instruction starts a recursive EVM frame.
     #[inline]
-    pub(crate) const fn may_suspend(&self) -> bool {
-        #[cfg(test)]
-        if self.opcode == TEST_SUSPEND {
-            return true;
-        }
-
+    pub(crate) const fn is_recursive_frame_opcode(&self) -> bool {
         matches!(
             self.opcode,
             op::CALL | op::CALLCODE | op::DELEGATECALL | op::STATICCALL | op::CREATE | op::CREATE2
@@ -1218,13 +1202,6 @@ fn slice_as_bytes<T>(a: &[T]) -> &[u8] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use revm_bytecode::opcode::OPCODE_INFO;
-
-    #[test]
-    fn test_suspend_is_free() {
-        assert_eq!(OPCODE_INFO[TEST_SUSPEND as usize], None);
-    }
-
     #[test]
     fn truncated_push_imm_right_pads_with_zeros() {
         // PUSH2 followed by a single byte 0x42 — truncated at EOF.

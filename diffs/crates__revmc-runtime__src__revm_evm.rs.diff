@@ -11,7 +11,7 @@
  use alloy_primitives::{Address, Bytes};
  use revm_context::{Host, JournalEntry};
  use revm_context_interface::{
-@@ -185,7 +187,10 @@
+@@ -185,15 +187,19 @@
  
          let decision = self.lookup_cache.entry(code_hash).or_insert_with(|| {
              let code = frame.interpreter.bytecode.original_bytes();
@@ -23,7 +23,17 @@
          });
  
          Ok(match decision {
-@@ -359,7 +364,10 @@
+             LookupDecision::Compiled(program) => {
+                 let (ctx, _, _, frame_stack) = self.inner.all_mut();
+                 let frame = frame_stack.get();
+-                let action =
++                let result =
+                     unsafe { program.func.call_with_interpreter(&mut frame.interpreter, ctx) };
++                let action = InterpreterAction::Return(result);
+                 frame.process_next_action::<_, ContextDbError<Self::Context>>(ctx, action).inspect(
+                     |i| {
+                         if i.is_result() {
+@@ -359,7 +365,10 @@
  
          let decision = self.lookup_cache.entry(code_hash).or_insert_with(|| {
              let code = frame.interpreter.bytecode.original_bytes();
@@ -35,7 +45,24 @@
          });
  
          let program = match decision {
-@@ -725,7 +733,7 @@
+@@ -382,7 +391,7 @@
+ 
+         let (ctx, _, _, frame_stack) = self.inner.all_mut();
+         let frame = frame_stack.get();
+-        let action = unsafe {
++        let result = unsafe {
+             program.func.call_with_interpreter_with(&mut frame.interpreter, ctx, |ecx| {
+                 // SAFETY: `on_log` lives on the stack and outlives the JIT call.
+                 // The closure captures raw pointers whose types may not be
+@@ -393,6 +402,7 @@
+                 >(&mut on_log));
+             })
+         };
++        let action = InterpreterAction::Return(result);
+ 
+         // Handle selfdestruct.
+         let (ctx, inspector) = self.ctx_inspector();
+@@ -725,7 +735,7 @@
          let code_hash = alloy_primitives::keccak256(runtime_code);
          let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
          loop {

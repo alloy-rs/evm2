@@ -14,8 +14,6 @@ pub enum JitRunResult {
     Interpret(InterpretReason),
     /// Compiled execution finished the frame.
     Finished(InstrStop),
-    /// Compiled execution suspended for a nested CALL/CREATE frame.
-    Suspended,
 }
 
 /// Attempts to execute `interpreter` through a compiled evm2-compatible program.
@@ -42,10 +40,9 @@ pub fn run_interpreter<T: EvmTypes>(
     };
 
     interpreter.prepare_jit_run(config, host);
-    match unsafe { program.evm2_func::<T>().call_with_interpreter(interpreter, host) } {
-        Some(stop) => JitRunResult::Finished(stop),
-        None => JitRunResult::Suspended,
-    }
+    JitRunResult::Finished(unsafe {
+        program.evm2_func::<T>().call_with_interpreter(interpreter, host)
+    })
 }
 
 #[cfg(test)]

@@ -577,6 +577,10 @@ impl<B: Backend> EvmCompiler<B> {
         bytecode.config.set(AnalysisConfig::DEDUP, self.dedup);
         bytecode.config.set(AnalysisConfig::DSE, self.dse);
         bytecode.analyze()?;
+        ensure!(
+            !bytecode.has_recursive_frame_opcode(),
+            "JIT compilation for CALL/CREATE bytecode is disabled until evm2 recursive call builtins are ported"
+        );
         if let Some(dump_dir) = &self.dump_dir() {
             Self::dump_bytecode(dump_dir, &bytecode)?;
         }

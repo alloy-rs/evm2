@@ -1212,11 +1212,6 @@ impl Bytecode<'_> {
             {
                 self.snapshots.outputs[i] = stack.last().copied();
             }
-
-            #[cfg(test)]
-            if inst.opcode == crate::TEST_SUSPEND {
-                stack.fill(AbsValue::Top);
-            }
         }
 
         true

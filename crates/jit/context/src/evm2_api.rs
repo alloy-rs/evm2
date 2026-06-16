@@ -1,7 +1,7 @@
 //! evm2-facing runtime context.
 
-use crate::{EvmStack, EvmWord, ResumeAt};
-use alloc::{borrow::Cow, boxed::Box};
+use crate::{EvmStack, EvmWord};
+use alloc::{borrow::Cow, boxed::Box, vec::Vec};
 use core::{
     fmt,
     marker::PhantomData,
@@ -12,13 +12,11 @@ use evm2::{
     BaseEvmTypes, EvmFeatures, EvmTypes, SpecId, Version,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
-    interpreter::{
-        Gas as Evm2Gas, Host as Evm2Host, InstrStop, Interpreter, Memory, Message, Word,
-    },
+    interpreter::{Gas as Evm2Gas, Host as Evm2Host, InstrStop, Interpreter, Message, Word},
 };
 use revm_interpreter::{
-    CallInput, Gas as RevmGas, Host as RevmHost, InputsImpl, InstructionResult, InterpreterAction,
-    SStoreResult as RevmSStoreResult, SelfDestructResult as RevmSelfDestructResult,
+    CallInput, Gas as RevmGas, Host as RevmHost, InputsImpl, InstructionResult,
+    SStoreResult as RevmSStoreResult, SelfDestructResult as RevmSelfDestructResult, SharedMemory,
     StateLoad as RevmStateLoad, bytecode::Bytecode as RevmBytecode,
     context_interface::cfg::GasParams as RevmGasParams, host::LoadError,
     state::AccountInfo as RevmAccountInfo,
@@ -271,24 +269,19 @@ fn revm_bytecode_from_evm2(bytecode: &Bytecode) -> RevmBytecode {
 #[repr(C)]
 pub struct EvmContext<'a, T: EvmTypes = BaseEvmTypes> {
     /// The memory.
-    pub memory: *mut Memory,
+    pub memory: *mut SharedMemory,
     /// Input information (target address, caller, input data, call value).
     pub input: *mut InputsImpl,
     /// The gas.
     pub gas: RevmGas,
     /// Placeholder for the imported revm host trait object slot.
     pub host: RevmHostPtr,
-    /// Placeholder for the imported revm next-action slot.
-    pub next_action: *mut (),
     /// The return data.
     pub return_data: &'a [u8],
     /// Whether the context is static.
     pub is_static: bool,
     /// The revm ABI spec ID for the current execution.
     pub spec_id: RevmSpecId,
-    /// Index that tracks where execution should resume after a CALL/CREATE suspension.
-    #[doc(hidden)]
-    pub resume_at: ResumeAt,
     /// The contract bytecode, for CODECOPY at runtime.
     pub bytecode: *const [u8],
     /// Optional callback invoked by the LOG builtin after constructing the log.
@@ -306,14 +299,17 @@ pub struct EvmContext<'a, T: EvmTypes = BaseEvmTypes> {
     pub mem_base: *mut u8,
     /// Cached length of the current memory context in bytes.
     pub mem_len: usize,
+    /// Output produced by RETURN or REVERT.
+    #[doc(hidden)]
+    pub output: RevmBytes,
     /// Transaction-global environment.
     #[doc(hidden)]
     pub tx_env: &'a TxEnv<T>,
     /// Frame-local call/create message.
     #[doc(hidden)]
     pub message: &'a Message<T>,
+    memory_scratch: Box<SharedMemory>,
     input_scratch: Box<InputsImpl>,
-    next_action_scratch: Box<Option<InterpreterAction>>,
     _host_adapter: Box<RevmHostAdapter<'a, T>>,
 }
 
@@ -335,10 +331,6 @@ const _: () = {
         offset_of!(EvmContext<'_, BaseEvmTypes>, host) == offset_of!(crate::EvmContext<'_>, host)
     );
     assert!(
-        offset_of!(EvmContext<'_, BaseEvmTypes>, next_action)
-            == offset_of!(crate::EvmContext<'_>, next_action)
-    );
-    assert!(
         offset_of!(EvmContext<'_, BaseEvmTypes>, return_data)
             == offset_of!(crate::EvmContext<'_>, return_data)
     );
@@ -349,10 +341,6 @@ const _: () = {
     assert!(
         offset_of!(EvmContext<'_, BaseEvmTypes>, spec_id)
             == offset_of!(crate::EvmContext<'_>, spec_id)
-    );
-    assert!(
-        offset_of!(EvmContext<'_, BaseEvmTypes>, resume_at)
-            == offset_of!(crate::EvmContext<'_>, resume_at)
     );
     assert!(
         offset_of!(EvmContext<'_, BaseEvmTypes>, bytecode)
@@ -386,15 +374,20 @@ const _: () = {
         offset_of!(EvmContext<'_, BaseEvmTypes>, mem_len)
             == offset_of!(crate::EvmContext<'_>, mem_len)
     );
+    assert!(
+        offset_of!(EvmContext<'_, BaseEvmTypes>, output)
+            == offset_of!(crate::EvmContext<'_>, output)
+    );
 };
 
 /// Interpreter state copied out of a JIT context after compiled execution.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 #[doc(hidden)]
 pub struct InterpreterState {
     gas: Evm2Gas,
-    pc: usize,
     clear_return_data: bool,
+    memory: Vec<u8>,
+    output: Option<Vec<u8>>,
 }
 
 impl InterpreterState {
@@ -402,9 +395,18 @@ impl InterpreterState {
     #[inline]
     pub fn store<T: EvmTypes>(self, interpreter: &mut Interpreter<'_, T>) {
         interpreter.set_gas(self.gas);
-        interpreter.set_pc(self.pc);
         if self.clear_return_data {
             interpreter.return_data_mut().clear();
+        }
+        let parts = interpreter.jit_context_parts_mut();
+        parts.memory.clear();
+        parts
+            .memory
+            .resize(0, self.memory.len())
+            .expect("JIT memory snapshot exceeds evm2 memory limit");
+        parts.memory.set(0, &self.memory);
+        if let Some(output) = self.output {
+            interpreter.set_output_bytes_for_jit(&output);
         }
     }
 }
@@ -445,9 +447,6 @@ impl<T: EvmTypes> EvmCompilerFn<T> {
 
     /// Calls the function by re-using an evm2 interpreter's resources.
     ///
-    /// Returns `None` if the compiled function suspended for CALL/CREATE handling. That path
-    /// still needs an evm2-native action bridge.
-    ///
     /// # Safety
     ///
     /// The caller must ensure that the function is safe to call for this interpreter state.
@@ -455,7 +454,7 @@ impl<T: EvmTypes> EvmCompilerFn<T> {
         self,
         interpreter: &'a mut Interpreter<'frame, T>,
         host: &'a mut T::Host,
-    ) -> Option<InstrStop> {
+    ) -> InstrStop {
         let (mut ecx, stack, stack_len) =
             EvmContext::from_interpreter_with_stack(interpreter, host);
         let result = unsafe { self.call(stack, stack_len, &mut ecx) };
@@ -463,8 +462,11 @@ impl<T: EvmTypes> EvmCompilerFn<T> {
             ecx.gas.spend_all();
         }
 
+        let mut state = ecx.interpreter_state();
+        if matches!(result, InstructionResult::Return | InstructionResult::Revert) {
+            state.output = Some(ecx.output.to_vec());
+        }
         let stop = instr_stop_from_instruction_result(result);
-        let state = ecx.interpreter_state();
         drop(ecx);
         state.store(interpreter);
         stop
@@ -512,9 +514,14 @@ impl<'a, T: EvmTypes> EvmContext<'a, T> {
         interpreter: &'a mut Interpreter<'frame, T>,
         host: &'a mut T::Host,
     ) -> (Self, &'a mut EvmStack, &'a mut usize) {
-        let resume_at = ResumeAt::from(interpreter.pc());
         let parts = interpreter.jit_context_parts_mut();
         let stack = unsafe { EvmStack::from_mut_ptr(parts.stack.cast()) };
+        let mut memory_scratch = Box::new(SharedMemory::new());
+        memory_scratch.set_memory_limit(parts.version.memory_limit);
+        let memory_bytes = parts.memory.as_slice();
+        memory_scratch.resize(memory_bytes.len());
+        memory_scratch.set(0, memory_bytes);
+        let memory = memory_scratch.as_mut() as *mut SharedMemory;
         let bytecode = parts.bytecode.original_byte_slice() as *const [u8];
         let calldatasize = parts.message.input.len();
         let spec_id = to_revm_spec_id(parts.spec);
@@ -526,21 +533,17 @@ impl<'a, T: EvmTypes> EvmContext<'a, T> {
             call_value: parts.message.value,
         });
         let input = input_scratch.as_mut() as *mut InputsImpl;
-        let mut next_action_scratch = Box::new(None);
-        let next_action = next_action_scratch.as_mut() as *mut Option<InterpreterAction> as *mut ();
         let mut host_adapter =
             Box::new(RevmHostAdapter::new(host, parts.tx_env, parts.version, spec_id));
         let revm_host = RevmHostPtr::from_host(host_adapter.as_mut());
         let mut this = Self {
-            memory: parts.memory,
+            memory,
             input,
             gas: revm_gas_from_evm2(parts.gas),
             host: revm_host,
-            next_action,
             return_data: parts.return_data.as_ref(),
             is_static: parts.is_static,
             spec_id,
-            resume_at,
             bytecode,
             on_log: None,
             calldatasize,
@@ -549,10 +552,11 @@ impl<'a, T: EvmTypes> EvmContext<'a, T> {
             gas_params: RevmGasParams::new_spec(spec_id),
             mem_base: ptr::null_mut(),
             mem_len: 0,
+            output: RevmBytes::new(),
             tx_env: parts.tx_env,
             message: parts.message,
+            memory_scratch,
             input_scratch,
-            next_action_scratch,
             _host_adapter: host_adapter,
         };
         this.refresh_memory_cache();
@@ -564,8 +568,9 @@ impl<'a, T: EvmTypes> EvmContext<'a, T> {
     pub fn interpreter_state(&self) -> InterpreterState {
         InterpreterState {
             gas: evm2_gas_from_revm(self.gas),
-            pc: self.resume_at.get(),
             clear_return_data: self.return_data.is_empty(),
+            memory: unsafe { &*self.memory }.context_memory().to_vec(),
+            output: None,
         }
     }
 
@@ -575,10 +580,10 @@ impl<'a, T: EvmTypes> EvmContext<'a, T> {
         self.interpreter_state().store(interpreter);
     }
 
-    /// Refreshes the cached memory base pointer and length from [`Memory`].
+    /// Refreshes the cached memory base pointer and length from the evm2 memory snapshot.
     #[inline]
     pub fn refresh_memory_cache(&mut self) {
-        let slice = unsafe { &mut *self.memory }.as_mut_slice();
+        let mut slice = unsafe { &mut *self.memory }.context_memory_mut();
         self.mem_base = slice.as_mut_ptr();
         self.mem_len = slice.len();
     }
@@ -627,12 +632,12 @@ fn to_revm_spec_id(spec_id: SpecId) -> RevmSpecId {
 /// value to [`InstrStop`]: evm2 intentionally uses a different layout for some invalid-opcode
 /// variants.
 #[inline]
-pub const fn instr_stop_from_instruction_result(result: InstructionResult) -> Option<InstrStop> {
-    Some(match result {
+pub const fn instr_stop_from_instruction_result(result: InstructionResult) -> InstrStop {
+    match result {
         InstructionResult::Stop => InstrStop::Stop,
         InstructionResult::Return => InstrStop::Return,
         InstructionResult::SelfDestruct => InstrStop::SelfDestruct,
-        InstructionResult::Suspend => return None,
+        InstructionResult::Suspend => InstrStop::FatalExternalError,
         InstructionResult::Revert => InstrStop::Revert,
         InstructionResult::CallTooDeep => InstrStop::CallTooDeep,
         InstructionResult::OutOfFunds => InstrStop::OutOfFunds,
@@ -664,7 +669,7 @@ pub const fn instr_stop_from_instruction_result(result: InstructionResult) -> Op
         InstructionResult::CreateInitCodeSizeLimit => InstrStop::CreateInitCodeSizeLimit,
         InstructionResult::FatalExternalError => InstrStop::FatalExternalError,
         InstructionResult::InvalidImmediateEncoding => InstrStop::InvalidImmediateEncoding,
-    })
+    }
 }
 
 #[cfg(test)]
@@ -683,19 +688,19 @@ mod tests {
 
     #[test]
     fn maps_instruction_result_to_instr_stop_by_semantics() {
-        assert_eq!(
-            instr_stop_from_instruction_result(InstructionResult::Stop),
-            Some(InstrStop::Stop)
-        );
+        assert_eq!(instr_stop_from_instruction_result(InstructionResult::Stop), InstrStop::Stop);
         assert_eq!(
             instr_stop_from_instruction_result(InstructionResult::OpcodeNotFound),
-            Some(InstrStop::InvalidOpcode)
+            InstrStop::InvalidOpcode
         );
         assert_eq!(
             instr_stop_from_instruction_result(InstructionResult::InvalidFEOpcode),
-            Some(InstrStop::InvalidOpcode)
+            InstrStop::InvalidOpcode
         );
-        assert_eq!(instr_stop_from_instruction_result(InstructionResult::Suspend), None);
+        assert_eq!(
+            instr_stop_from_instruction_result(InstructionResult::Suspend),
+            InstrStop::FatalExternalError
+        );
     }
 
     #[test]
@@ -775,12 +780,90 @@ mod tests {
 
         interpreter.prepare_jit_run(&config, &mut host);
         let ecx = EvmContext::from_interpreter(&mut interpreter, &mut host);
-        assert!(!ecx.next_action.is_null());
 
         let revm_host = unsafe { ecx.host.as_host_mut() };
         assert_eq!(revm_host.caller(), tx_origin);
         assert_eq!(revm_host.effective_gas_price(), Word::from(7));
         assert_eq!(revm_host.block_number(), Word::from(9));
         assert_eq!(revm_host.beneficiary(), beneficiary);
+    }
+
+    #[test]
+    fn evm2_context_uses_shared_memory_scratch() {
+        let config = <BaseEvmConfigSelector as EvmConfigSelector<BaseEvmTypes>>::execution_config(
+            SpecId::CANCUN,
+        );
+        let tx_env = TxEnv::default();
+        let message = Message { gas_limit: 1_000_000, ..Default::default() };
+        let mut interpreter = Interpreter::<BaseEvmTypes>::new(
+            Bytecode::new_legacy(alloy_primitives::Bytes::from_static(&[op::STOP])),
+            &tx_env,
+            &message,
+            false,
+        );
+        let mut host = Evm::<BaseEvmTypes>::new(
+            SpecId::CANCUN,
+            BlockEnv::default(),
+            ethereum_tx_registry(SpecId::CANCUN),
+            EmptyDB::default(),
+            Precompiles::base(SpecId::CANCUN),
+        );
+
+        interpreter.prepare_jit_run(&config, &mut host);
+        {
+            let parts = interpreter.jit_context_parts_mut();
+            parts.memory.resize(0, 3).unwrap();
+            parts.memory.set(0, b"abc");
+        }
+
+        let ecx = EvmContext::from_interpreter(&mut interpreter, &mut host);
+        assert_eq!(unsafe { &*ecx.memory }.context_memory().to_vec(), b"abc");
+        unsafe { &mut *ecx.memory }.set(1, b"z");
+        let state = ecx.interpreter_state();
+        drop(ecx);
+        state.store(&mut interpreter);
+
+        assert_eq!(interpreter.memory_ref().slice(0, 3), b"azc");
+    }
+
+    unsafe extern "C" fn evm2_return_output(
+        mut ecx: NonNull<EvmContext<'_, BaseEvmTypes>>,
+        _stack: NonNull<EvmStack>,
+        _stack_len: NonNull<usize>,
+    ) -> InstructionResult {
+        let ecx = unsafe { ecx.as_mut() };
+        ecx.output = RevmBytes::copy_from_slice(b"ok");
+        InstructionResult::Return
+    }
+
+    #[test]
+    fn evm2_call_with_interpreter_maps_return_output() {
+        let config = <BaseEvmConfigSelector as EvmConfigSelector<BaseEvmTypes>>::execution_config(
+            SpecId::CANCUN,
+        );
+        let tx_env = TxEnv::default();
+        let message = Message { gas_limit: 1_000_000, ..Default::default() };
+        let mut interpreter = Interpreter::<BaseEvmTypes>::new(
+            Bytecode::new_legacy(alloy_primitives::Bytes::from_static(&[op::STOP])),
+            &tx_env,
+            &message,
+            false,
+        );
+        let mut host = Evm::<BaseEvmTypes>::new(
+            SpecId::CANCUN,
+            BlockEnv::default(),
+            ethereum_tx_registry(SpecId::CANCUN),
+            EmptyDB::default(),
+            Precompiles::base(SpecId::CANCUN),
+        );
+
+        interpreter.prepare_jit_run(&config, &mut host);
+        let stop = unsafe {
+            EvmCompilerFn::new(evm2_return_output)
+                .call_with_interpreter(&mut interpreter, &mut host)
+        };
+
+        assert_eq!(stop, InstrStop::Return);
+        assert_eq!(interpreter.output(), b"ok");
     }
 }

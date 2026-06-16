@@ -65,12 +65,8 @@ impl Bytecode<'_> {
             let max_height = entry_height + section.max_growth as i32;
 
             // If the block's terminator diverges, no successor will read the stack,
-            // so all exit positions are dead. Unless `inspect_stack` is set (the caller
-            // observes every store) or the block contains a suspending instruction
-            // (the function can be re-entered and the caller reads the stack).
-            let has_suspend = block.insts().any(|i| self.insts[i].may_suspend());
-            let term_diverges =
-                !inspect_stack && !has_suspend && self.insts[block.terminator()].is_diverging();
+            // so all exit positions are dead unless `inspect_stack` is set.
+            let term_diverges = !inspect_stack && self.insts[block.terminator()].is_diverging();
 
             live.clear();
             live.resize(exit_height.max(0) as usize, !term_diverges);
@@ -127,16 +123,6 @@ impl Bytecode<'_> {
                     &self.snapshots.inputs[inst],
                     self.snapshots.outputs.get(inst).copied().flatten(),
                 );
-
-                // Suspending instructions (CALL/CREATE*) trigger `copy_stack_to_arg()`
-                // which copies the entire live stack prefix back to the interpreter.
-                // All positions in that prefix must be physically materialized — we
-                // cannot rely on later rematerialization since the suspend path runs
-                // before any consumer.
-                if data.may_suspend() {
-                    let h_after = heights[idx + 1] as usize;
-                    live[..h_after].fill(true);
-                }
             }
         }
 
@@ -1041,37 +1027,6 @@ mod tests {
         assert!(
             bytecode.inst(Inst::from_usize(0)).flags.contains(InstFlags::NOOP),
             "PUSH 0 should be skipped (const input)"
-        );
-    }
-
-    #[test]
-    fn const_live_across_suspend_not_nooped() {
-        // PUSH1 0xaa is live across a CALL suspension: after the child returns,
-        // POP drops the success flag and MSTORE writes 0xaa. DSE must not NOOP
-        // the PUSH because copy_stack_to_arg copies the stack prefix at suspend
-        // time before any consumer rematerializes the constant.
-        let bytecode = analyze_asm(
-            "
-            PUSH1 0xaa      ; inst 0: live across CALL
-            PUSH0           ; inst 1
-            PUSH0           ; inst 2
-            PUSH0           ; inst 3
-            PUSH0           ; inst 4
-            PUSH0           ; inst 5
-            PUSH1 0x69      ; inst 6
-            GAS             ; inst 7
-            CALL            ; inst 8: suspends
-            POP             ; inst 9
-            PUSH0           ; inst 10
-            MSTORE          ; inst 11
-            PUSH1 0x20      ; inst 12
-            PUSH0           ; inst 13
-            RETURN          ; inst 14
-        ",
-        );
-        assert!(
-            !bytecode.inst(Inst::from_usize(0)).flags.contains(InstFlags::NOOP),
-            "PUSH1 0xaa must NOT be nooped — it is live across the CALL suspension"
         );
     }
 }

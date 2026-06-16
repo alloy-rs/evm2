@@ -1,6 +1,18 @@
 --- upstream/crates/revmc-codegen/src/bytecode/passes/block_analysis.rs
 +++ evm2/crates/jit/codegen/src/bytecode/passes/block_analysis.rs
-@@ -1692,7 +1692,7 @@
+@@ -1212,11 +1212,6 @@
+             {
+                 self.snapshots.outputs[i] = stack.last().copied();
+             }
+-
+-            #[cfg(test)]
+-            if inst.opcode == crate::TEST_SUSPEND {
+-                stack.fill(AbsValue::Top);
+-            }
+         }
+ 
+         true
+@@ -1692,7 +1687,7 @@
  
      #[test]
      fn hash_10k() {

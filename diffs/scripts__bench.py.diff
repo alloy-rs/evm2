@@ -18,6 +18,15 @@
  
      @staticmethod
      def _last_match(pattern: str, text: str) -> int:
+@@ -756,7 +756,7 @@
+     "live",
+     "dead",
+     "noops",
+-    "suspends",
++    "recursive_frame_opcodes",
+     "blocks",
+     "block_min",
+     "block_max",
 @@ -770,7 +770,7 @@
          return False
  
@@ -27,6 +36,24 @@
  
      @staticmethod
      def _parse(output: str) -> dict[str, float] | None:
+@@ -780,7 +780,7 @@
+             r" live=(\d+)"
+             r" dead=(\d+)"
+             r" noops=(\d+)"
+-            r" suspends=(\d+)"
++            r" recursive_frame_opcodes=(\d+)"
+             r" blocks=(\d+)"
+             r" block_min=(\d+)"
+             r" block_max=(\d+)"
+@@ -795,7 +795,7 @@
+             "live": int(m.group(2)),
+             "dead": int(m.group(3)),
+             "noops": int(m.group(4)),
+-            "suspends": int(m.group(5)),
++            "recursive_frame_opcodes": int(m.group(5)),
+             "blocks": int(m.group(6)),
+             "block_min": int(m.group(7)),
+             "block_max": int(m.group(8)),
 @@ -845,7 +845,7 @@
          return False
  
@@ -45,3 +72,12 @@
          formatter_class=argparse.RawDescriptionHelpFormatter,
          epilog=__doc__,
      )
+@@ -1050,7 +1050,7 @@
+     parser.add_argument(
+         "--block-stats",
+         action="store_true",
+-        help="Report IR stats (inst counts, block size distribution, suspends)",
++        help="Report IR stats (inst counts, block size distribution, recursive frame opcodes)",
+     )
+     args = parser.parse_args()
+ 

@@ -1,13 +1,16 @@
 --- upstream/crates/revmc-builtins/src/lib.rs
 +++ evm2/crates/jit/builtins/src/lib.rs
-@@ -11,13 +11,13 @@
+@@ -10,14 +10,13 @@
+ #[cfg(feature = "ir")]
  extern crate tracing;
  
- use alloc::{boxed::Box, vec::Vec};
+-use alloc::{boxed::Box, vec::Vec};
++use alloc::vec::Vec;
 +use evm2_jit_context::{EvmContext, EvmWord};
  use revm_interpreter::{
-     CallInput, CallInputs, CallScheme, CallValue, CreateInputs, CreateScheme, FrameInput,
-     InstructionResult, InterpreterAction, InterpreterResult, as_u64_saturated, as_usize_saturated,
+-    CallInput, CallInputs, CallScheme, CallValue, CreateInputs, CreateScheme, FrameInput,
+-    InstructionResult, InterpreterAction, InterpreterResult, as_u64_saturated, as_usize_saturated,
++    CallInput, InstructionResult, as_u64_saturated, as_usize_saturated,
      interpreter_types::{InputsTr, MemoryTr},
  };
  use revm_primitives::{B256, Bytes, KECCAK_EMPTY, Log, LogData, U256, hardfork::SpecId};
@@ -15,7 +18,25 @@
  
  pub mod gas;
  
-@@ -78,7 +78,7 @@
+@@ -47,17 +46,6 @@
+     StaticCall,
+ }
+ 
+-impl From<CallKind> for CallScheme {
+-    fn from(kind: CallKind) -> Self {
+-        match kind {
+-            CallKind::Call => Self::Call,
+-            CallKind::CallCode => Self::CallCode,
+-            CallKind::DelegateCall => Self::DelegateCall,
+-            CallKind::StaticCall => Self::StaticCall,
+-        }
+-    }
+-}
+-
+ /// The kind of a `CREATE*` instruction.
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ #[repr(u8)]
+@@ -78,7 +66,7 @@
  #[cold]
  fn fail(ecx: &mut EvmContext<'_>, e: BuiltinError) -> ! {
      ecx.exit_result = e.into();
@@ -24,12 +45,227 @@
  }
  
  macro_rules! builtins {
-@@ -118,7 +118,7 @@
+@@ -118,7 +106,7 @@
  pub unsafe extern "C" fn __revmc_builtin_assert_spec_id(ecx: &EvmContext<'_>, expected: SpecId) {
      assert_eq!(
          ecx.spec_id, expected,
 -        "revmc panic: runtime spec_id does not match compilation spec_id"
 +        "evm2_jit panic: runtime spec_id does not match compilation spec_id"
      );
+ }
+ 
+@@ -635,66 +623,8 @@
+     sp: *mut EvmWord,
+     create_kind: CreateKind,
+ ) -> BuiltinResult {
+-    ensure_non_staticcall!(ecx);
+-
+-    let len = match create_kind {
+-        CreateKind::Create => 3,
+-        CreateKind::Create2 => 4,
+-    };
+-    let mut sp = sp.add(len);
+-    pop!(sp; value, code_offset, len);
+-
+-    let len = try_into_usize!(len);
+-    let code = if len != 0 {
+-        if ecx.spec_id.is_enabled_in(SpecId::SHANGHAI) {
+-            // Limit is set as double of max contract bytecode size
+-            let max_initcode_size = ecx.host.max_initcode_size();
+-            if len > max_initcode_size {
+-                return Err(InstructionResult::CreateInitCodeSizeLimit.into());
+-            }
+-            gas!(ecx, ecx.gas_params.initcode_cost(len));
+-        }
+-
+-        let code_offset = try_into_usize!(code_offset);
+-        ensure_memory(ecx, code_offset, len)?;
+-        Bytes::copy_from_slice(&ecx.memory.slice(code_offset..code_offset + len))
+-    } else {
+-        Bytes::new()
+-    };
+-
+-    let is_create2 = create_kind == CreateKind::Create2;
+-    let gp = &ecx.gas_params;
+-    gas!(ecx, if is_create2 { gp.create2_cost(len) } else { gp.create_cost() });
+-
+-    let scheme = if is_create2 {
+-        pop!(sp; salt);
+-        CreateScheme::Create2 { salt: salt.to_u256() }
+-    } else {
+-        CreateScheme::Create
+-    };
+-
+-    // State gas for account creation + contract metadata (EIP-8037).
+-    if ecx.host.is_amsterdam_eip8037_enabled() {
+-        state_gas!(ecx, ecx.gas_params.create_state_gas());
+-    }
+-
+-    let mut gas_limit = ecx.gas.remaining();
+-    if ecx.spec_id.is_enabled_in(SpecId::TANGERINE) {
+-        gas_limit = ecx.gas_params.call_stipend_reduction(gas_limit);
+-    }
+-    gas!(ecx, gas_limit);
+-
+-    *ecx.next_action =
+-        Some(InterpreterAction::NewFrame(FrameInput::Create(Box::new(CreateInputs::new(
+-            ecx.input.target_address,
+-            scheme,
+-            value.to_u256(),
+-            code,
+-            gas_limit,
+-            ecx.gas.reservoir(),
+-        )))));
+-
+-    Ok(())
++    let _ = (ecx, sp, create_kind);
++    Err(InstructionResult::FatalExternalError.into())
+ }
+ 
+ #[unsafe(no_mangle)]
+@@ -703,123 +633,8 @@
+     sp: *mut EvmWord,
+     call_kind: CallKind,
+ ) -> BuiltinResult {
+-    let len = match call_kind {
+-        CallKind::Call | CallKind::CallCode => 7,
+-        CallKind::DelegateCall | CallKind::StaticCall => 6,
+-    };
+-    let mut sp = sp.add(len);
+-
+-    pop!(sp; local_gas_limit, to);
+-    let local_gas_limit = local_gas_limit.to_u256();
+-    let to = to.to_address();
+-
+-    // max gas limit is not possible in real ethereum situation.
+-    // But for tests we would not like to fail on this.
+-    // Gas limit for subcall is taken as min of this value and current gas limit.
+-    let local_gas_limit = as_u64_saturated!(local_gas_limit);
+-
+-    let value = match call_kind {
+-        CallKind::Call | CallKind::CallCode => {
+-            pop!(sp; value);
+-            let value = value.to_u256();
+-            if call_kind == CallKind::Call && ecx.is_static && value != U256::ZERO {
+-                return Err(InstructionResult::CallNotAllowedInsideStatic.into());
+-            }
+-            value
+-        }
+-        CallKind::DelegateCall | CallKind::StaticCall => U256::ZERO,
+-    };
+-    let transfers_value = value != U256::ZERO;
+-
+-    pop!(sp; in_offset, in_len, out_offset, out_len);
+-
+-    let in_len = try_into_usize!(in_len);
+-    let input = if in_len != 0 {
+-        let in_offset = try_into_usize!(in_offset);
+-        ensure_memory(ecx, in_offset, in_len)?;
+-        let local_offset = ecx.memory.local_memory_offset();
+-        let start = in_offset.saturating_add(local_offset);
+-        start..start.saturating_add(in_len)
+-    } else {
+-        usize::MAX..usize::MAX
+-    };
+-
+-    let out_len = try_into_usize!(out_len);
+-    let out_offset = if out_len != 0 {
+-        let out_offset = try_into_usize!(out_offset);
+-        ensure_memory(ecx, out_offset, out_len)?;
+-        out_offset
+-    } else {
+-        usize::MAX // unrealistic value so we are sure it is not used
+-    };
+-
+-    if transfers_value {
+-        gas!(ecx, ecx.gas_params.transfer_value_cost());
+-    }
+-
+-    // Match interpreter call path: load delegated account and pass resolved bytecode/hash
+-    // through CallInputs::known_bytecode (covers EIP-7702 delegation and EOF execution).
+-    let (dynamic_gas, state_gas_cost, bytecode, code_hash) =
+-        revm_interpreter::instructions::contract::load_account_delegated(
+-            ecx.host,
+-            ecx.spec_id,
+-            ecx.gas.remaining(),
+-            to,
+-            transfers_value,
+-            call_kind == CallKind::Call,
+-        )?;
+-    let charged_new_account_state_gas = state_gas_cost > 0;
+-
+-    gas!(ecx, dynamic_gas);
+-
+-    // Deduct state gas (EIP-8037) if any.
+-    state_gas!(ecx, state_gas_cost);
+-
+-    // EIP-150: Gas cost changes for IO-heavy operations
+-    let mut gas_limit = if ecx.spec_id.is_enabled_in(SpecId::TANGERINE) {
+-        let gas = ecx.gas.remaining();
+-        ecx.gas_params.call_stipend_reduction(gas).min(local_gas_limit)
+-    } else {
+-        local_gas_limit
+-    };
+-
+-    gas!(ecx, gas_limit);
+-
+-    // Add call stipend if there is value to be transferred.
+-    if matches!(call_kind, CallKind::Call | CallKind::CallCode) && transfers_value {
+-        gas_limit = gas_limit.saturating_add(ecx.gas_params.call_stipend());
+-    }
+-
+-    *ecx.next_action = Some(InterpreterAction::NewFrame(revm_interpreter::FrameInput::Call(
+-        Box::new(CallInputs {
+-            input: CallInput::SharedBuffer(input),
+-            return_memory_offset: out_offset..out_offset + out_len,
+-            gas_limit,
+-            bytecode_address: to,
+-            known_bytecode: (code_hash, bytecode),
+-            target_address: if matches!(call_kind, CallKind::DelegateCall | CallKind::CallCode) {
+-                ecx.input.target_address
+-            } else {
+-                to
+-            },
+-            caller: if call_kind == CallKind::DelegateCall {
+-                ecx.input.caller_address
+-            } else {
+-                ecx.input.target_address
+-            },
+-            value: if call_kind == CallKind::DelegateCall {
+-                CallValue::Apparent(ecx.input.call_value)
+-            } else {
+-                CallValue::Transfer(value)
+-            },
+-            scheme: call_kind.into(),
+-            is_static: ecx.is_static || call_kind == CallKind::StaticCall,
+-            reservoir: ecx.gas.reservoir(),
+-            charged_new_account_state_gas,
+-        }),
+-    )));
+-
+-    Ok(())
++    let _ = (ecx, sp, call_kind);
++    Err(InstructionResult::FatalExternalError.into())
+ }
+ 
+ #[unsafe(no_mangle)]
+@@ -837,8 +652,7 @@
+     } else {
+         Bytes::new()
+     };
+-    *ecx.next_action =
+-        Some(InterpreterAction::Return(InterpreterResult { output, gas: ecx.gas, result }));
++    ecx.output = output;
+     Err(result.into())
+ }
+ 
+@@ -857,8 +671,7 @@
+     } else {
+         Bytes::new()
+     };
+-    *ecx.next_action =
+-        Some(InterpreterAction::Return(InterpreterResult { output, gas: ecx.gas, result }));
++    ecx.output = output;
+     Err(result.into())
  }
  

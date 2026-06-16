@@ -12,10 +12,9 @@ use core::{
     ptr::{self, NonNull},
 };
 use revm_interpreter::{
-    Gas, Host, InputsImpl, InstructionResult, Interpreter, InterpreterAction, InterpreterResult,
-    SharedMemory,
+    Gas, Host, InputsImpl, InstructionResult, Interpreter, InterpreterResult, SharedMemory,
     context_interface::cfg::GasParams,
-    interpreter_types::{Jumps, LegacyBytecode, ReturnData, RuntimeFlag},
+    interpreter_types::{LegacyBytecode, ReturnData, RuntimeFlag},
 };
 use revm_primitives::{Address, B256, Bytes, Log, U256, hardfork::SpecId, ruint};
 
@@ -30,52 +29,6 @@ pub use jit_evm::JitEvm;
 
 #[cfg(feature = "evm2")]
 pub mod evm2_api;
-
-/// Resume point for compiled EVM code after a CALL/CREATE suspension.
-///
-/// Encoded as the interpreter's bytecode PC. `0` means no resume (initial state),
-/// values `1..=N` identify individual suspend points.
-///
-/// Since the number of suspend points cannot exceed the bytecode length, the stored
-/// PC always stays within the allocation.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[repr(transparent)]
-#[doc(hidden)] // Not public API.
-pub struct ResumeAt(usize);
-
-impl ResumeAt {
-    /// Loads the resume point from the interpreter's current PC.
-    #[inline]
-    pub fn load(interpreter: &Interpreter) -> Self {
-        Self(interpreter.bytecode.pc())
-    }
-
-    /// Stores the resume point back into the interpreter's bytecode PC.
-    #[inline]
-    pub fn store(self, interpreter: &mut Interpreter) {
-        interpreter.bytecode.absolute_jump(self.0);
-    }
-
-    /// Returns the raw resume index.
-    #[inline]
-    pub const fn get(self) -> usize {
-        self.0
-    }
-}
-
-impl From<usize> for ResumeAt {
-    #[inline]
-    fn from(value: usize) -> Self {
-        Self(value)
-    }
-}
-
-impl PartialEq<usize> for ResumeAt {
-    #[inline]
-    fn eq(&self, other: &usize) -> bool {
-        self.0 == *other
-    }
-}
 
 /// The EVM bytecode compiler runtime context.
 ///
@@ -95,17 +48,12 @@ pub struct EvmContext<'a> {
     pub gas: Gas,
     /// The host.
     pub host: &'a mut dyn Host,
-    /// The return action.
-    pub next_action: &'a mut Option<InterpreterAction>,
     /// The return data.
     pub return_data: &'a [u8],
     /// Whether the context is static.
     pub is_static: bool,
     /// The spec ID for the current execution.
     pub spec_id: SpecId,
-    /// Index that tracks where execution should resume after a CALL/CREATE suspension.
-    #[doc(hidden)] // Not public API.
-    pub resume_at: ResumeAt,
     /// The contract bytecode, for CODECOPY at runtime.
     pub bytecode: *const [u8],
     /// Optional callback invoked by the LOG builtin after constructing the log,
@@ -129,6 +77,9 @@ pub struct EvmContext<'a> {
     /// Cached length of the current memory context in bytes.
     /// Refreshed after any memory resize.
     pub mem_len: usize,
+    /// Output produced by RETURN or REVERT.
+    #[doc(hidden)]
+    pub output: Bytes,
 }
 
 // Static assertions to ensure the struct layout matches expectations.
@@ -138,10 +89,6 @@ const _: () = {
 
     // Key fields accessed by JIT code
     assert!(offset_of!(EvmContext<'_>, memory) == 0);
-    assert!(offset_of!(EvmContext<'_>, gas) == 16);
-    assert!(offset_of!(EvmContext<'_>, spec_id) == 113);
-    assert!(offset_of!(EvmContext<'_>, resume_at) == 120);
-    assert!(offset_of!(EvmContext<'_>, calldatasize) == 160);
 };
 
 impl fmt::Debug for EvmContext<'_> {
@@ -163,7 +110,6 @@ impl<'a> EvmContext<'a> {
         interpreter: &'a mut Interpreter,
         host: &'b mut dyn Host,
     ) -> (Self, &'a mut EvmStack, &'a mut usize) {
-        let resume_at = ResumeAt::load(interpreter);
         let (stack, stack_len) = EvmStack::from_interpreter_stack(&mut interpreter.stack);
         let bytecode = interpreter.bytecode.bytecode_slice() as *const [u8];
         let calldatasize = interpreter.input.input.len();
@@ -173,11 +119,9 @@ impl<'a> EvmContext<'a> {
             input: &mut interpreter.input,
             gas: interpreter.gas,
             host,
-            next_action: &mut interpreter.bytecode.action,
             return_data: interpreter.return_data.buffer(),
             is_static: interpreter.runtime_flag.is_static(),
             spec_id: interpreter.runtime_flag.spec_id(),
-            resume_at,
             bytecode,
             on_log: None,
             calldatasize,
@@ -186,6 +130,7 @@ impl<'a> EvmContext<'a> {
             gas_params,
             mem_base: ptr::null_mut(),
             mem_len: 0,
+            output: Bytes::new(),
         };
         this.refresh_memory_cache();
         (this, stack, stack_len)
@@ -277,8 +222,8 @@ impl EvmCompilerFn {
 
     /// Calls the function by re-using the interpreter's resources.
     ///
-    /// This behaves similarly to `Interpreter::run_plain`, returning an [`InstructionResult`]
-    /// and the next action in an [`InterpreterAction`].
+    /// This behaves similarly to `Interpreter::run_plain`, returning the final
+    /// [`InterpreterResult`].
     ///
     /// # Safety
     ///
@@ -287,7 +232,7 @@ impl EvmCompilerFn {
         self,
         interpreter: &mut Interpreter,
         host: &mut dyn Host,
-    ) -> InterpreterAction {
+    ) -> InterpreterResult {
         self.call_with_interpreter_inner(interpreter, host, |_| {})
     }
 
@@ -306,7 +251,7 @@ impl EvmCompilerFn {
         interpreter: &mut Interpreter,
         host: &mut dyn Host,
         configure: impl FnOnce(&mut EvmContext<'_>),
-    ) -> InterpreterAction {
+    ) -> InterpreterResult {
         self.call_with_interpreter_inner(interpreter, host, configure)
     }
 
@@ -315,15 +260,11 @@ impl EvmCompilerFn {
         interpreter: &mut Interpreter,
         host: &mut dyn Host,
         configure: impl FnOnce(&mut EvmContext<'_>),
-    ) -> InterpreterAction {
-        interpreter.bytecode.action = None;
-
+    ) -> InterpreterResult {
         let (mut ecx, stack, stack_len) =
             EvmContext::from_interpreter_with_stack(interpreter, host);
         configure(&mut ecx);
         let result = self.call(stack, stack_len, &mut ecx);
-
-        let resume_at = ecx.resume_at;
 
         // Set the remaining gas to 0 if the result is `OutOfGas`,
         // as it might have overflown inside of the function.
@@ -332,23 +273,16 @@ impl EvmCompilerFn {
         }
 
         let return_data_is_empty = ecx.return_data.is_empty();
-        interpreter.gas = ecx.gas;
+        let gas = ecx.gas;
+        let output = core::mem::take(&mut ecx.output);
+        drop(ecx);
+        interpreter.gas = gas;
 
         if return_data_is_empty {
             interpreter.return_data.0.clear();
         }
 
-        resume_at.store(interpreter);
-
-        if let Some(action) = interpreter.bytecode.action.take() {
-            action
-        } else {
-            InterpreterAction::Return(InterpreterResult {
-                result,
-                output: Bytes::new(),
-                gas: interpreter.gas,
-            })
-        }
+        InterpreterResult { result, output, gas: interpreter.gas }
     }
 
     /// Calls the function.

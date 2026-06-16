@@ -15,7 +15,288 @@
  use std::mem;
  
  mod peephole;
-@@ -2047,7 +2047,7 @@
+@@ -128,13 +128,6 @@
+     /// The return block that all return instructions branch to.
+     return_block: Option<B::BasicBlock>,
+ 
+-    /// `resume_block` switch values.
+-    resume_blocks: Vec<B::BasicBlock>,
+-    /// `suspend_block` incoming values.
+-    suspend_blocks: Incoming<B>,
+-    /// The suspend block that all suspend instructions branch to.
+-    suspend_block: B::BasicBlock,
+-
+     /// Builtins.
+     builtins: &'a mut Builtins<B>,
+ }
+@@ -145,8 +138,6 @@
+     /// Example pseudo-code:
+     ///
+     /// ```ignore (pseudo-code)
+-    /// // `cfg(may_suspend) = bytecode.may_suspend()`: `true` if it contains a
+-    /// // `*CALL*` or `CREATE*` instruction.
+     /// fn evm_bytecode(args: ...) {
+     ///     setup_locals();
+     ///
+@@ -155,37 +146,14 @@
+     ///
+     ///     load_arguments();
+     ///
+-    ///     #[cfg(may_suspend)]
+-    ///     resume: {
+-    ///         goto match ecx.resume_at {
+-    ///             0 => inst0,
+-    ///             1 => first_call_or_create_inst + 1, // + 1 as in the block after.
+-    ///             2 => second_call_or_create_inst + 1,
+-    ///             ... => ...,
+-    ///             _ => unreachable, // Assumed to be valid.
+-    ///         };
+-    ///     };
+-    ///
+     ///     op.inst0: { /* ... */ };
+     ///     op.inst1: { /* ... */ };
+     ///     // ...
+-    ///     #[cfg(may_suspend)]
+-    ///     first_call_or_create_inst: {
+-    ///          // ...
+-    ///          goto suspend(1);
+-    ///     };
+-    ///     // ...
+     ///     // There will always be at least one diverging instruction.
+     ///     op.stop: {
+     ///         goto return(InstructionResult::Stop);
+     ///     };
+     ///
+-    ///     #[cfg(may_suspend)]
+-    ///     suspend(resume_at: u32): {
+-    ///         ecx.resume_at = resume_at;
+-    ///         goto return(Ok(())); // Caller checks next_action
+-    ///     };
+-    ///
+     ///     // All paths lead to here.
+     ///     return(ir: InstructionResult): {
+     ///         #[cfg(inspect_stack)]
+@@ -250,7 +218,6 @@
+         assert!(!inst_entries.is_empty(), "translating empty bytecode");
+ 
+         let dynamic_jump_table = bcx.create_block("dynamic_jump_table");
+-        let suspend_block = bcx.create_block("suspend");
+         let failure_block = bcx.create_block("failure");
+         let return_block = bcx.create_block("return");
+ 
+@@ -289,10 +256,6 @@
+             incoming_returns: Vec::new(),
+             return_block: Some(return_block),
+ 
+-            resume_blocks: Vec::new(),
+-            suspend_blocks: Vec::new(),
+-            suspend_block,
+-
+             builtins,
+ 
+             vstack: VStack::default(),
+@@ -308,7 +271,6 @@
+         // The bytecode is guaranteed to have at least one instruction.
+         let first_inst_block = fx.inst_entries[Inst::from_usize(0)];
+         let post_entry_block = fx.bcx.create_block_after(entry_block, "entry.post");
+-        let resume_block = fx.bcx.create_block_after(post_entry_block, "resume");
+         fx.bcx.br(post_entry_block);
+ 
+         // Translate individual instructions into their respective blocks.
+@@ -341,94 +303,16 @@
+             fx.bcx.unreachable();
+         }
+ 
+-        // Finalize the suspend and resume blocks. Must come before the return block.
+-        // Also here is where the stack length is initialized.
+-        let load_len_at_start = |fx: &mut Self| {
+-            // Loaded from args only for the config.
+-            if config.inspect_stack {
+-                let stack_len = fx.bcx.load(fx.isize_type, stack_len_arg, "stack_len");
+-                fx.stack_len.store(&mut fx.bcx, stack_len);
+-                fx.copy_stack_from_arg(stack_len);
+-            } else {
+-                fx.stack_len.store_imm(&mut fx.bcx, 0);
+-            }
+-        };
+-        let generate_resume = bytecode.may_suspend();
+-        if generate_resume {
+-            let get_ecx_resume_at_ptr = |fx: &mut Self| {
+-                fx.get_field(
+-                    fx.ecx,
+-                    mem::offset_of!(EvmContext<'_>, resume_at),
+-                    "ecx.resume_at.addr",
+-                )
+-            };
+-
+-            let resume_ty = fx.isize_type;
+-
+-            // Resume block: load the `resume_at` value and switch to the corresponding block.
+-            // Invalid values are treated as unreachable.
+-            {
+-                // Special-case the no resume case to load 0 into the length if possible.
+-                let no_resume_block = fx.bcx.create_block_after(resume_block, "no_resume");
+-
+-                fx.bcx.switch_to_block(post_entry_block);
+-                let resume_at = get_ecx_resume_at_ptr(&mut fx);
+-                let resume_at = fx.bcx.load_aligned(resume_ty, resume_at, 1, "ecx.resume_at");
+-                let no_resume = fx.bcx.icmp_imm(IntCC::Equal, resume_at, 0);
+-                fx.bcx.brif(no_resume, no_resume_block, resume_block);
+-
+-                fx.bcx.switch_to_block(no_resume_block);
+-                load_len_at_start(&mut fx);
+-                fx.bcx.br(first_inst_block);
+-
+-                // Dispatch to the resume block.
+-                fx.bcx.switch_to_block(resume_block);
+-                let stack_len = fx.bcx.load(fx.isize_type, stack_len_arg, "stack_len");
+-                fx.stack_len.store(&mut fx.bcx, stack_len);
+-                fx.copy_stack_from_arg(stack_len);
+-                let default = fx.bcx.create_block_after(resume_block, "resume_invalid");
+-                fx.bcx.switch_to_block(default);
+-                fx.call_panic("invalid `resume_at` value");
+-
+-                fx.bcx.switch_to_block(resume_block);
+-                let targets = fx
+-                    .resume_blocks
+-                    .iter()
+-                    .enumerate()
+-                    .map(|(i, b)| (i as u64 + 1, *b))
+-                    .collect::<Vec<_>>();
+-                fx.bcx.switch(resume_at, default, &targets, true);
+-            }
+-
+-            // Suspend block: store the `resume_at` value and return `Stop`.
+-            {
+-                fx.bcx.switch_to_block(fx.suspend_block);
+-                let resume_value = fx.bcx.phi(resume_ty, &fx.suspend_blocks);
+-                let resume_at = get_ecx_resume_at_ptr(&mut fx);
+-                fx.bcx.store_aligned(resume_value, resume_at, 1);
+-
+-                // Save stack back to caller only when suspending, or always if inspecting.
+-                // This matches the inverse of the condition in the return block.
+-                if !config.inspect_stack {
+-                    fx.copy_stack_to_arg();
+-                    fx.save_stack_len();
+-                }
+-
+-                fx.build_return_imm(InstructionResult::Stop);
+-            }
++        // Initialize stack length in the entry path.
++        fx.bcx.switch_to_block(post_entry_block);
++        if config.inspect_stack {
++            let stack_len = fx.bcx.load(fx.isize_type, stack_len_arg, "stack_len");
++            fx.stack_len.store(&mut fx.bcx, stack_len);
++            fx.copy_stack_from_arg(stack_len);
+         } else {
+-            debug_assert!(fx.resume_blocks.is_empty());
+-            debug_assert!(fx.suspend_blocks.is_empty());
+-
+-            fx.bcx.switch_to_block(post_entry_block);
+-            load_len_at_start(&mut fx);
+-            fx.bcx.br(first_inst_block);
+-
+-            fx.bcx.switch_to_block(resume_block);
+-            fx.bcx.unreachable();
+-            fx.bcx.switch_to_block(fx.suspend_block);
+-            fx.bcx.unreachable();
++            fx.stack_len.store_imm(&mut fx.bcx, 0);
+         }
++        fx.bcx.br(first_inst_block);
+ 
+         // Finalize the failure block.
+         fx.bcx.switch_to_block(fx.failure_block.unwrap());
+@@ -559,12 +443,6 @@
+         // Assert that we already skipped the block.
+         debug_assert!(!data.flags.contains(InstFlags::DEAD_CODE));
+ 
+-        #[cfg(test)]
+-        if opcode == crate::TEST_SUSPEND {
+-            self.suspend();
+-            goto_return!(no_branch);
+-        }
+-
+         // Disabled instructions don't pay gas.
+         if data.flags.contains(InstFlags::DISABLED) {
+             goto_return!(fail InstructionResult::NotActivated);
+@@ -634,7 +512,7 @@
+                 out == 1 || out == inp + 1,
+                 "const_output assumes single synthesized push: inp={inp}, out={out}",
+             );
+-            debug_assert!(!data.may_suspend() && !data.is_branching());
++            debug_assert!(!data.is_recursive_frame_opcode() && !data.is_branching());
+             // We push exactly 1 value, so consume `inp + 1 - out` to match the
+             // real stack diff. For DUP (out = inp+1) this is 0; for ADD (out = 1)
+             // this equals inp.
+@@ -1173,7 +1051,7 @@
+ 
+     /// Syncs the virtual stack for a NOOP instruction. Unlike `sync_virtual_stack_diff`,
+     /// this preserves known-constant outputs as `Virtual` values so that boundary
+-    /// materialization (e.g. `materialize_live_stack` before branch/suspend) can flush
++    /// materialization (e.g. `materialize_live_stack` before a branch) can flush
+     /// them to physical memory. Without this, NOOP'd constants would be marked
+     /// `Materialized` with no actual store, leaving garbage in memory.
+     fn sync_noop_diff(&mut self, inst: Inst, diff: i32) {
+@@ -1389,7 +1267,7 @@
+         let sp = self.sp_after_inputs();
+         let create_kind = self.bcx.iconst(self.i8_type, create_kind as i64);
+         self.call_fallible_builtin(Builtin::Create, &[self.ecx, sp, create_kind]);
+-        self.suspend();
++        self.bcx.unreachable();
+     }
+ 
+     /// Builds `*CALL*` instructions.
+@@ -1397,32 +1275,7 @@
+         let sp = self.sp_after_inputs();
+         let call_kind = self.bcx.iconst(self.i8_type, call_kind as i64);
+         self.call_fallible_builtin(Builtin::Call, &[self.ecx, sp, call_kind]);
+-        self.suspend();
+-    }
+-
+-    /// Suspend execution, storing the resume point in the context.
+-    fn suspend(&mut self) {
+-        // Flush virtual stack before entering the shared suspend block.
+-        self.materialize_live_stack();
+-
+-        // Register the next instruction as the resume block.
+-        let idx = self.resume_blocks.len();
+-        let resume_at = self
+-            .effective_next_entry(self.current_inst.unwrap())
+-            .expect("suspending instruction must have a resume target");
+-        self.add_resume_at(resume_at);
+-
+-        // Register the current block as the suspend block.
+-        let value = self.bcx.iconst(self.isize_type, idx as i64 + 1);
+-        self.suspend_blocks.push((value, self.bcx.current_block().unwrap()));
+-
+-        // Branch to the suspend block.
+-        self.bcx.br(self.suspend_block);
+-    }
+-
+-    /// Adds a resume point.
+-    fn add_resume_at(&mut self, block: B::BasicBlock) {
+-        self.resume_blocks.push(block);
++        self.bcx.unreachable();
+     }
+ 
+     /// Loads the word at the given pointer.
+@@ -1910,15 +1763,6 @@
+         block
+     }
+ 
+-    /// Build a call to the panic builtin.
+-    fn call_panic(&mut self, msg: &str) {
+-        let function = self.builtin_function(Builtin::Panic);
+-        let ptr = self.bcx.str_const(msg);
+-        let len = self.bcx.iconst(self.isize_type, msg.len() as i64);
+-        let _ = self.bcx.call(function, &[ptr, len]);
+-        self.bcx.unreachable();
+-    }
+-
+     #[allow(dead_code)]
+     fn call_printf(&mut self, template: &std::ffi::CStr, values: &[B::Value]) {
+         let mut args = Vec::with_capacity(values.len() + 1);
+@@ -2047,7 +1891,7 @@
          // self.call_printf(format_printf!("{} - calling {name}\n", self.op_block_name("")), &[]);
  
          debug_assert_eq!(args.len(), arg_types.len());
@@ -24,3 +305,18 @@
          // SAFETY: `this` aliases `self` to work around the borrow checker: we need `self.bcx`
          // borrowed by `get_or_build_function` while also swapping `self.bcx` inside the closure.
          // The closure's `bcx` is a fresh builder (not `self.bcx`), so the swap is safe.
+@@ -2130,12 +1974,8 @@
+ 
+ /// Computes the effective stack diff for an instruction, matching the codegen semantics.
+ fn effective_stack_diff(inp: u8, out: u8, data: &InstData) -> i32 {
+-    let mut diff = out as i32 - inp as i32;
+-    // Suspending ops return one value pushed by the caller after resume.
+-    if data.may_suspend() {
+-        diff -= 1;
+-    }
+-    diff
++    let _ = data;
++    out as i32 - inp as i32
+ }
+ 
+ fn get_field<B: Builder>(bcx: &mut B, ptr: B::Value, offset: usize, name: &str) -> B::Value {

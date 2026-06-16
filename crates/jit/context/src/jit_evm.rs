@@ -133,7 +133,8 @@ where
         if let Some(f) = f {
             let (ctx, _, _, frame_stack) = self.inner.all_mut();
             let frame = frame_stack.get();
-            let action = unsafe { f.call_with_interpreter(&mut frame.interpreter, ctx) };
+            let result = unsafe { f.call_with_interpreter(&mut frame.interpreter, ctx) };
+            let action = InterpreterAction::Return(result);
             Ok(frame.process_next_action::<_, ContextDbError<Self::Context>>(ctx, action).inspect(
                 |i| {
                     if i.is_result() {
@@ -262,7 +263,7 @@ where
 
         let (ctx, _, _, frame_stack) = self.inner.all_mut();
         let frame = frame_stack.get();
-        let action = unsafe {
+        let result = unsafe {
             f.call_with_interpreter_with(&mut frame.interpreter, ctx, |ecx| {
                 // SAFETY: `on_log` lives on the stack and outlives the JIT call.
                 // The closure captures raw pointers whose types may not be
@@ -273,6 +274,7 @@ where
                 >(&mut on_log));
             })
         };
+        let action = InterpreterAction::Return(result);
 
         // Handle selfdestruct.
         let (ctx, inspector) = self.ctx_inspector();

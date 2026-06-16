@@ -8,7 +8,7 @@ use context_interface::{
 };
 use revm_bytecode::opcode as op;
 use revm_interpreter::{
-    CallInput, Host, InputsImpl, Interpreter, SharedMemory,
+    CallInput, Gas, Host, InputsImpl, Interpreter, InterpreterAction, SharedMemory,
     instructions::{gas_table_spec, instruction_table},
     interpreter::ExtBytecode,
 };
@@ -102,7 +102,7 @@ pub struct TestCase<'a> {
     pub expected_stack: &'a [U256],
     pub expected_memory: &'a [u8],
     pub expected_gas: u64,
-    pub expected_next_action: InterpreterAction,
+    pub expected_output: Option<&'a [u8]>,
     pub assert_host: Option<fn(&TestHost)>,
     pub assert_ecx: Option<fn(&EvmContext<'_>)>,
 }
@@ -132,7 +132,7 @@ impl Default for TestCase<'_> {
             expected_stack: &[],
             expected_memory: &[],
             expected_gas: 0,
-            expected_next_action: ACTION_WHAT_INTERPRETER_SAYS,
+            expected_output: None,
             assert_host: None,
             assert_ecx: None,
         }
@@ -150,7 +150,7 @@ impl fmt::Debug for TestCase<'_> {
             .field("expected_stack", &self.expected_stack)
             .field("expected_memory", &MemDisplay(self.expected_memory))
             .field("expected_gas", &self.expected_gas)
-            .field("expected_next_action", &self.expected_next_action)
+            .field("expected_output", &self.expected_output)
             .field("assert_host", &self.assert_host.is_some())
             .field("assert_ecx", &self.assert_ecx.is_some())
             .finish()
@@ -170,7 +170,7 @@ impl<'a> TestCase<'a> {
             expected_stack: STACK_WHAT_INTERPRETER_SAYS,
             expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
-            expected_next_action: ACTION_WHAT_INTERPRETER_SAYS,
+            expected_output: None,
             assert_host: None,
             assert_ecx: None,
         }
@@ -202,12 +202,6 @@ pub const STACK_WHAT_INTERPRETER_SAYS: &[U256] =
     &[U256::from_be_slice(&GAS_WHAT_INTERPRETER_SAYS.to_be_bytes())];
 pub const MEMORY_WHAT_INTERPRETER_SAYS: &[u8] = &GAS_WHAT_INTERPRETER_SAYS.to_be_bytes();
 pub const GAS_WHAT_INTERPRETER_SAYS: u64 = 0x4682e332d6612de1;
-pub const ACTION_WHAT_INTERPRETER_SAYS: InterpreterAction =
-    InterpreterAction::Return(InterpreterResult {
-        gas: Gas::new(GAS_WHAT_INTERPRETER_SAYS),
-        output: Bytes::from_static(MEMORY_WHAT_INTERPRETER_SAYS),
-        result: RETURN_WHAT_INTERPRETER_SAYS,
-    });
 
 pub fn def_storage() -> &'static HashMap<U256, U256> {
     DEF_STORAGE.get_or_init(|| {
@@ -489,7 +483,7 @@ fn run_compiled_test_case(test_case: &TestCase<'_>, f: EvmCompilerFn) {
         expected_stack,
         expected_memory,
         expected_gas,
-        ref expected_next_action,
+        expected_output,
         assert_host,
         assert_ecx,
     } = *test_case;
@@ -530,9 +524,9 @@ fn run_compiled_test_case(test_case: &TestCase<'_>, f: EvmCompilerFn) {
         let mut int_host = TestHost::with_spec(spec_id);
         let interpreter_action = interpreter.run_plain(&table, &gas_table, &mut int_host);
 
-        let int_result = match &interpreter_action {
-            InterpreterAction::Return(result) => result.result,
-            _ => InstructionResult::Stop,
+        let (int_result, interpreter_output) = match &interpreter_action {
+            InterpreterAction::Return(result) => (result.result, result.output.clone()),
+            _ => (InstructionResult::Stop, Bytes::new()),
         };
 
         let mut expected_return = expected_return;
@@ -587,6 +581,21 @@ fn run_compiled_test_case(test_case: &TestCase<'_>, f: EvmCompilerFn) {
             assert_eq!(interpreter.gas.total_gas_spent(), expected_gas, "interpreter gas mismatch");
         }
 
+        let expected_output = if let Some(expected_output) = expected_output {
+            if !skip_interpreter_checks {
+                assert_eq!(
+                    interpreter_output.as_ref(),
+                    expected_output,
+                    "interpreter output mismatch"
+                );
+            }
+            Some(expected_output)
+        } else if skip_interpreter_checks {
+            None
+        } else {
+            Some(interpreter_output.as_ref())
+        };
+
         // Track whether we should skip JIT stack/gas/memory comparisons
         let skip_jit_stack =
             skip_interpreter_checks && test_case.expected_stack == STACK_WHAT_INTERPRETER_SAYS;
@@ -594,22 +603,6 @@ fn run_compiled_test_case(test_case: &TestCase<'_>, f: EvmCompilerFn) {
             skip_interpreter_checks && test_case.expected_memory == MEMORY_WHAT_INTERPRETER_SAYS;
         let skip_jit_gas =
             skip_interpreter_checks && test_case.expected_gas == GAS_WHAT_INTERPRETER_SAYS;
-
-        // This is what the interpreter returns when the internal action is None in `run`.
-        let default_action = InterpreterAction::Return(InterpreterResult {
-            result: int_result,
-            output: Bytes::new(),
-            gas: interpreter.gas,
-        });
-        let mut expected_next_action = expected_next_action;
-        if *expected_next_action == ACTION_WHAT_INTERPRETER_SAYS {
-            expected_next_action = &interpreter_action;
-        } else if modify_ecx.is_none() {
-            // Only check interpreter action if modify_ecx is not set.
-            // When modify_ecx is used, it only modifies the JIT context, not the interpreter's
-            // input, so the interpreter may return a different action.
-            assert_actions(&interpreter_action, expected_next_action);
-        }
 
         if let Some(assert_host) = assert_host {
             assert_host(&int_host);
@@ -656,11 +649,9 @@ fn run_compiled_test_case(test_case: &TestCase<'_>, f: EvmCompilerFn) {
             }
         }
 
-        let actual_next_action = match ecx.next_action.as_ref() {
-            Some(action) => action,
-            None => &default_action,
-        };
-        assert_actions(actual_next_action, expected_next_action);
+        if let Some(expected_output) = expected_output {
+            assert_eq!(ecx.output.as_ref(), expected_output, "output mismatch");
+        }
 
         if let Some(_assert_host) = assert_host {
             let host = unsafe { &*(ecx.host as *mut dyn Host as *mut TestHost) };
@@ -679,107 +670,5 @@ impl fmt::Debug for MemDisplay<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let chunks = self.0.chunks(32).map(revm_primitives::hex::encode_prefixed);
         f.debug_list().entries(chunks).finish()
-    }
-}
-
-#[track_caller]
-fn assert_actions(actual: &InterpreterAction, expected: &InterpreterAction) {
-    match (actual, expected) {
-        (InterpreterAction::Return(result), InterpreterAction::Return(expected_result)) => {
-            assert_eq!(result.result, expected_result.result, "result mismatch");
-            assert_eq!(result.output, expected_result.output, "result output mismatch");
-            if expected_result.gas.limit() != GAS_WHAT_INTERPRETER_SAYS {
-                assert_eq!(
-                    result.gas.total_gas_spent(),
-                    expected_result.gas.total_gas_spent(),
-                    "result gas mismatch"
-                );
-            }
-        }
-        (
-            InterpreterAction::NewFrame(FrameInput::Call(actual_call)),
-            InterpreterAction::NewFrame(FrameInput::Call(expected_call)),
-        ) => {
-            // Compare CallInputs fields, allowing for differences in input representation
-            // and known_bytecode (JIT doesn't preload, interpreter may)
-            assert_eq!(
-                actual_call.return_memory_offset, expected_call.return_memory_offset,
-                "return_memory_offset mismatch"
-            );
-            assert_eq!(actual_call.gas_limit, expected_call.gas_limit, "gas_limit mismatch");
-            assert_eq!(
-                actual_call.bytecode_address, expected_call.bytecode_address,
-                "bytecode_address mismatch"
-            );
-            assert_eq!(
-                actual_call.target_address, expected_call.target_address,
-                "target_address mismatch"
-            );
-            assert_eq!(actual_call.caller, expected_call.caller, "caller mismatch");
-            assert_eq!(actual_call.value, expected_call.value, "value mismatch");
-            assert_eq!(actual_call.scheme, expected_call.scheme, "scheme mismatch");
-            assert_eq!(actual_call.is_static, expected_call.is_static, "is_static mismatch");
-            // Note: We don't compare `input` directly as it may use different shared-memory
-            // ranges.
-            // Note: We don't compare `known_bytecode` as JIT doesn't preload.
-        }
-        (
-            InterpreterAction::NewFrame(FrameInput::Create(actual_create)),
-            InterpreterAction::NewFrame(FrameInput::Create(expected_create)),
-        ) => {
-            // Compare CreateInputs fields
-            assert_eq!(actual_create.caller(), expected_create.caller(), "caller mismatch");
-            assert_eq!(actual_create.scheme(), expected_create.scheme(), "scheme mismatch");
-            assert_eq!(actual_create.value(), expected_create.value(), "value mismatch");
-            assert_eq!(
-                actual_create.init_code(),
-                expected_create.init_code(),
-                "init_code mismatch"
-            );
-            assert_eq!(
-                actual_create.gas_limit(),
-                expected_create.gas_limit(),
-                "gas_limit mismatch"
-            );
-        }
-        (a, b) => assert_eq!(a, b, "next action mismatch"),
-    }
-}
-
-/// Insert a call outcome into the interpreter state (for testing call_with_interpreter).
-///
-/// Mimics revm-handler's insert_call_outcome: pushes success indicator, copies return data
-/// to memory, and returns unspent gas.
-pub fn insert_call_outcome_test(
-    interpreter: &mut revm_interpreter::Interpreter,
-    outcome: InterpreterResult,
-    return_memory_offset: Option<std::ops::Range<usize>>,
-) {
-    use revm_interpreter::interpreter_types::ReturnData;
-
-    let ins_result = outcome.result;
-    let out_gas = outcome.gas;
-    let returned_len = outcome.output.len();
-
-    interpreter.return_data.set_buffer(outcome.output);
-
-    let success_indicator = if ins_result.is_ok() { U256::from(1) } else { U256::ZERO };
-    let _ = interpreter.stack.push(success_indicator);
-
-    if ins_result.is_ok_or_revert() {
-        interpreter.gas.erase_cost(out_gas.remaining());
-
-        if let Some(mem_range) = return_memory_offset {
-            let target_len = std::cmp::min(mem_range.len(), returned_len);
-            if target_len > 0 {
-                interpreter
-                    .memory
-                    .set(mem_range.start, &interpreter.return_data.buffer()[..target_len]);
-            }
-        }
-    }
-
-    if ins_result.is_ok() {
-        interpreter.gas.record_refund(out_gas.refunded());
     }
 }

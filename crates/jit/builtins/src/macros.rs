@@ -37,16 +37,6 @@ macro_rules! read_words {
 }
 
 #[collapse_debuginfo(yes)]
-macro_rules! pop {
-    ($sp:expr; $($x:ident),* $(,)?) => {
-        $(
-            $sp = $sp.sub(1);
-            let $x = &mut *$sp;
-        )*
-    };
-}
-
-#[collapse_debuginfo(yes)]
 macro_rules! try_into_usize {
     ($x:expr) => {
         match $x.to_u256().as_limbs() {
