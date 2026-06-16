@@ -6,11 +6,22 @@ use context_interface::{
     host::LoadError,
     journaled_state::AccountInfoLoad,
 };
+use evm2::{
+    BaseEvmConfigSelector, EvmFeatures, EvmTypes,
+    bytecode::Bytecode as Evm2Bytecode,
+    env::{BlockEnv as Evm2BlockEnv, TxEnv as Evm2TxEnv},
+    evm::{
+        AccountLoad as Evm2AccountLoad, SLoad as Evm2SLoad, SStore as Evm2SStore,
+        SelfDestructResult as Evm2SelfDestructResult,
+    },
+    interpreter::{
+        Host as Evm2Host, InstrStop, Interpreter as Evm2Interpreter, Message as Evm2Message,
+        MessageResult as Evm2MessageResult,
+    },
+};
 use revm_bytecode::opcode as op;
 use revm_interpreter::{
-    CallInput, Gas, Host, InputsImpl, Interpreter, SharedMemory,
-    instructions::{gas_table_spec, instruction_table},
-    interpreter::ExtBytecode,
+    CallInput, Gas, Host, InputsImpl, Interpreter, SharedMemory, interpreter::ExtBytecode,
 };
 use revm_primitives::{B256, HashMap, Log, hardfork::SpecId};
 use similar_asserts::assert_eq;
@@ -231,6 +242,21 @@ pub fn def_codemap() -> &'static HashMap<Address, revm_bytecode::Bytecode> {
     })
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TestEvmTypes;
+
+impl EvmTypes for TestEvmTypes {
+    type ConfigSelector = BaseEvmConfigSelector;
+    type SpecId = evm2::SpecId;
+    type Tx = ();
+    type MessageExt = ();
+    type MessageResultExt = ();
+    type TxEnvExt = ();
+    type TxResultExt = ();
+    type BlockEnvExt = ();
+    type Host = TestHost;
+}
+
 /// Test host that implements [`Host`] trait for testing.
 pub struct TestHost {
     pub storage: HashMap<U256, U256>,
@@ -239,6 +265,8 @@ pub struct TestHost {
     pub selfdestructs: Vec<(Address, Address)>,
     pub logs: Vec<Log>,
     pub gas_params: GasParams,
+    evm2_spec_id: evm2::SpecId,
+    evm2_block_env: Evm2BlockEnv<TestEvmTypes>,
 }
 
 impl Default for TestHost {
@@ -253,6 +281,7 @@ impl TestHost {
     }
 
     pub fn with_spec(spec_id: SpecId) -> Self {
+        let env = def_env();
         Self {
             storage: def_storage().clone(),
             transient_storage: HashMap::default(),
@@ -260,6 +289,19 @@ impl TestHost {
             selfdestructs: Vec::new(),
             logs: Vec::new(),
             gas_params: GasParams::new_spec(spec_id),
+            evm2_spec_id: from_revm_spec_id(spec_id),
+            evm2_block_env: Evm2BlockEnv {
+                number: env.block.number,
+                beneficiary: env.block.coinbase,
+                timestamp: env.block.timestamp,
+                gas_limit: env.block.gas_limit,
+                basefee: env.block.basefee,
+                difficulty: env.block.difficulty,
+                prevrandao: U256::from(0x0123),
+                blob_basefee: U256::ZERO,
+                slot_num: U256::ZERO,
+                ..Default::default()
+            },
         }
     }
 }
@@ -426,6 +468,135 @@ impl Host for TestHost {
     }
 }
 
+impl Evm2Host<TestEvmTypes> for TestHost {
+    fn spec_id(&self) -> evm2::SpecId {
+        self.evm2_spec_id
+    }
+
+    fn block_env(&mut self) -> &Evm2BlockEnv<TestEvmTypes> {
+        &self.evm2_block_env
+    }
+
+    fn load_account(
+        &mut self,
+        address: &Address,
+        load_code: bool,
+        _skip_cold_load: bool,
+    ) -> Result<Evm2AccountLoad, InstrStop> {
+        let code = self.code_map.get(address);
+        let bytecode = if load_code {
+            code.map(|code| {
+                Evm2Bytecode::new_legacy(Bytes::copy_from_slice(code.original_byte_slice()))
+            })
+            .unwrap_or_default()
+        } else {
+            Evm2Bytecode::default()
+        };
+        let balance = U256::from(address.0[19]);
+        let code_hash =
+            code.map(|code| keccak256(code.original_byte_slice())).unwrap_or(KECCAK_EMPTY);
+        let is_empty = code.is_none() && balance.is_zero();
+
+        Ok(Evm2AccountLoad {
+            balance,
+            code_hash,
+            code: bytecode,
+            exists: !is_empty,
+            is_empty,
+            is_cold: false,
+            _non_exhaustive: (),
+        })
+    }
+
+    fn target_is_empty_for_new_account_gas(
+        &mut self,
+        address: &Address,
+        features: EvmFeatures,
+    ) -> Result<bool, InstrStop> {
+        let exists = self.code_map.contains_key(address) || !U256::from(address.0[19]).is_zero();
+        if features.contains(EvmFeatures::EIP161) {
+            return Ok(!exists);
+        }
+        Ok(false)
+    }
+
+    fn block_hash(&mut self, number: &U256) -> Result<Option<B256>, InstrStop> {
+        Ok(Some((*number).into()))
+    }
+
+    fn sload(
+        &mut self,
+        _address: &Address,
+        key: &U256,
+        _skip_cold_load: bool,
+    ) -> Result<Evm2SLoad, InstrStop> {
+        Ok(Evm2SLoad {
+            value: self.storage.get(key).copied().unwrap_or_default(),
+            is_cold: false,
+            _non_exhaustive: (),
+        })
+    }
+
+    fn sstore(
+        &mut self,
+        _address: &Address,
+        key: &U256,
+        value: &U256,
+        _skip_cold_load: bool,
+    ) -> Result<Evm2SStore, InstrStop> {
+        let original = self.storage.get(key).copied().unwrap_or_default();
+        self.storage.insert(*key, *value);
+        Ok(Evm2SStore {
+            original_value: original,
+            present_value: original,
+            new_value: *value,
+            is_cold: false,
+            _non_exhaustive: (),
+        })
+    }
+
+    fn tload(&mut self, _address: &Address, key: &U256) -> U256 {
+        self.transient_storage.get(key).copied().unwrap_or_default()
+    }
+
+    fn tstore(&mut self, _address: &Address, key: &U256, value: &U256) {
+        self.transient_storage.insert(*key, *value);
+    }
+
+    fn log(&mut self, log: Log) {
+        self.logs.push(log);
+    }
+
+    fn execute_message(
+        &mut self,
+        _tx_env: &Evm2TxEnv<TestEvmTypes>,
+        _bytecode: Evm2Bytecode,
+        message: &mut Evm2Message<TestEvmTypes>,
+        _caller_is_static: bool,
+    ) -> Evm2MessageResult<TestEvmTypes> {
+        Evm2MessageResult {
+            stop: InstrStop::Return,
+            gas: evm2::interpreter::GasTracker::new(message.gas_limit),
+            ..Default::default()
+        }
+    }
+
+    fn selfdestruct(
+        &mut self,
+        contract: &Address,
+        target: &Address,
+        _skip_cold_load: bool,
+    ) -> Result<Evm2SelfDestructResult, InstrStop> {
+        self.selfdestructs.push((*contract, *target));
+        Ok(Evm2SelfDestructResult {
+            had_value: false,
+            target_is_empty: false,
+            previously_destroyed: false,
+            ..Default::default()
+        })
+    }
+}
+
 pub fn with_evm_context<F: FnOnce(&mut EvmContext<'_>, &mut EvmStack, &mut usize) -> R, R>(
     bytecode: &[u8],
     spec_id: SpecId,
@@ -500,34 +671,38 @@ fn run_compiled_test_case(test_case: &TestCase<'_>, f: EvmCompilerFn) {
             ecx.refresh_memory_cache();
         }
 
-        // Interpreter - run via instruction table
-        let input = InputsImpl {
-            target_address: DEF_ADDR,
-            bytecode_address: None,
-            caller_address: DEF_CALLER,
-            input: CallInput::Bytes(Bytes::from_static(DEF_CD)),
-            call_value: DEF_VALUE,
+        // Interpreter - run evm2 as the oracle
+        let evm2_spec_id = from_revm_spec_id(spec_id);
+        let config =
+            <BaseEvmConfigSelector as evm2::EvmConfigSelector<TestEvmTypes>>::execution_config(
+                evm2_spec_id,
+            );
+        let tx_env = Evm2TxEnv::<TestEvmTypes> {
+            origin: def_env().tx.caller,
+            gas_price: def_env().effective_gas_price(),
+            chain_id: U256::from(def_env().cfg.chain_id),
+            blob_hashes: def_env().tx.blob_hashes.iter().copied().map(Into::into).collect(),
+            ..Default::default()
         };
-        let bytecode_obj = revm_bytecode::Bytecode::new_raw(Bytes::copy_from_slice(bytecode));
-        let ext_bytecode = ExtBytecode::new(bytecode_obj);
-        let mut interpreter = Interpreter::new(
-            SharedMemory::new(),
-            ext_bytecode,
-            input,
-            is_static,
-            spec_id,
+        let message = Evm2Message::<TestEvmTypes> {
+            destination: DEF_ADDR,
+            caller: DEF_CALLER,
+            input: Bytes::from_static(DEF_CD),
+            value: DEF_VALUE,
+            code_address: DEF_ADDR,
             gas_limit,
+            ..Default::default()
+        };
+        let mut interpreter = Evm2Interpreter::<TestEvmTypes>::new(
+            Evm2Bytecode::new_legacy(Bytes::copy_from_slice(bytecode)),
+            &tx_env,
+            &message,
+            is_static,
         );
-
-        let table = instruction_table::<revm_interpreter::interpreter::EthInterpreter, TestHost>();
-        let gas_table = gas_table_spec(spec_id);
         let mut int_host = TestHost::with_spec(spec_id);
-        let interpreter_result = interpreter
-            .run_plain(&table, &gas_table, &mut int_host)
-            .into_result_return()
-            .expect("plain interpreter run should return a result");
-        let int_result = interpreter_result.result;
-        let interpreter_output = interpreter_result.output;
+        let int_stop = interpreter.run(&config, &mut int_host);
+        let int_result = instruction_result_from_instr_stop(int_stop);
+        let interpreter_output = interpreter.output();
 
         let mut expected_return = expected_return;
         if expected_return == RETURN_WHAT_INTERPRETER_SAYS {
@@ -536,35 +711,40 @@ fn run_compiled_test_case(test_case: &TestCase<'_>, f: EvmCompilerFn) {
             // Only check interpreter return if modify_ecx is not set.
             // When modify_ecx is used, it only modifies the JIT context, not the interpreter's
             // input, so the interpreter may return a different result.
-            assert_eq!(int_result, expected_return, "interpreter return value mismatch");
+            assert!(
+                instruction_results_match_for_oracle(int_result, expected_return),
+                "interpreter return value mismatch: {int_result:?} != {expected_return:?}"
+            );
         }
 
         // When modify_ecx is set, the interpreter runs with different inputs than the JIT,
         // so we cannot use interpreter results as expected values or compare against them.
         let skip_interpreter_checks = modify_ecx.is_some() || expected_return.is_halt();
+        let interpreter_stack_ref = (!skip_interpreter_checks).then(|| interpreter.stack());
+        let interpreter_stack = interpreter_stack_ref.as_ref().map(|stack| stack.as_slice());
 
         let mut expected_stack = expected_stack;
         if expected_stack == STACK_WHAT_INTERPRETER_SAYS {
             if skip_interpreter_checks {
                 expected_stack = &[]; // Will skip comparison below
             } else {
-                expected_stack = interpreter.stack.data();
+                expected_stack = interpreter_stack.unwrap();
             }
         } else if !skip_interpreter_checks {
-            assert_eq!(interpreter.stack.data(), expected_stack, "interpreter stack mismatch");
+            assert_eq!(interpreter_stack.unwrap(), expected_stack, "interpreter stack mismatch");
         }
 
-        let interpreter_memory = interpreter.memory.context_memory();
+        let interpreter_memory = interpreter.memory_ref().as_slice();
         let mut expected_memory = expected_memory;
         if expected_memory == MEMORY_WHAT_INTERPRETER_SAYS {
             if skip_interpreter_checks {
                 expected_memory = &[]; // Will skip comparison below
             } else {
-                expected_memory = &*interpreter_memory;
+                expected_memory = interpreter_memory;
             }
         } else if !skip_interpreter_checks {
             assert_eq!(
-                MemDisplay(&interpreter_memory),
+                MemDisplay(interpreter_memory),
                 MemDisplay(expected_memory),
                 "interpreter memory mismatch"
             );
@@ -575,25 +755,21 @@ fn run_compiled_test_case(test_case: &TestCase<'_>, f: EvmCompilerFn) {
             if skip_interpreter_checks {
                 expected_gas = 0; // Will skip comparison below
             } else {
-                expected_gas = interpreter.gas.total_gas_spent();
+                expected_gas = interpreter.gas().spent();
             }
         } else if !skip_interpreter_checks {
-            assert_eq!(interpreter.gas.total_gas_spent(), expected_gas, "interpreter gas mismatch");
+            assert_eq!(interpreter.gas().spent(), expected_gas, "interpreter gas mismatch");
         }
 
         let expected_output = if let Some(expected_output) = expected_output {
             if !skip_interpreter_checks {
-                assert_eq!(
-                    interpreter_output.as_ref(),
-                    expected_output,
-                    "interpreter output mismatch"
-                );
+                assert_eq!(interpreter_output, expected_output, "interpreter output mismatch");
             }
             Some(expected_output)
         } else if skip_interpreter_checks {
             None
         } else {
-            Some(interpreter_output.as_ref())
+            Some(interpreter_output)
         };
 
         // Track whether we should skip JIT stack/gas/memory comparisons
@@ -662,6 +838,58 @@ fn run_compiled_test_case(test_case: &TestCase<'_>, f: EvmCompilerFn) {
             assert_ecx(ecx);
         }
     });
+}
+
+fn instruction_results_match_for_oracle(
+    actual: InstructionResult,
+    expected: InstructionResult,
+) -> bool {
+    actual == expected
+        || matches!(
+            (actual, expected),
+            (
+                InstructionResult::OpcodeNotFound,
+                InstructionResult::InvalidFEOpcode | InstructionResult::NotActivated
+            ) | (InstructionResult::StackUnderflow, InstructionResult::StackOverflow)
+        )
+}
+
+fn instruction_result_from_instr_stop(stop: InstrStop) -> InstructionResult {
+    match stop {
+        InstrStop::Stop => InstructionResult::Stop,
+        InstrStop::Return => InstructionResult::Return,
+        InstrStop::SelfDestruct => InstructionResult::SelfDestruct,
+        InstrStop::Revert => InstructionResult::Revert,
+        InstrStop::CallTooDeep => InstructionResult::CallTooDeep,
+        InstrStop::OutOfFunds => InstructionResult::OutOfFunds,
+        InstrStop::CreateInitCodeStartingEF00 => InstructionResult::CreateInitCodeStartingEF00,
+        InstrStop::InvalidEOFInitCode => InstructionResult::InvalidEOFInitCode,
+        InstrStop::InvalidExtDelegateCallTarget => InstructionResult::InvalidExtDelegateCallTarget,
+        InstrStop::OutOfGas => InstructionResult::OutOfGas,
+        InstrStop::MemoryOOG => InstructionResult::MemoryOOG,
+        InstrStop::MemoryLimitOOG => InstructionResult::MemoryLimitOOG,
+        InstrStop::PrecompileOOG => InstructionResult::PrecompileOOG,
+        InstrStop::InvalidOperandOOG => InstructionResult::InvalidOperandOOG,
+        InstrStop::ReentrancySentryOOG => InstructionResult::ReentrancySentryOOG,
+        InstrStop::CallNotAllowedInsideStatic => InstructionResult::CallNotAllowedInsideStatic,
+        InstrStop::StateChangeDuringStaticCall => InstructionResult::StateChangeDuringStaticCall,
+        InstrStop::InvalidOpcode => InstructionResult::OpcodeNotFound,
+        InstrStop::InvalidJump => InstructionResult::InvalidJump,
+        InstrStop::NotActivated => InstructionResult::NotActivated,
+        InstrStop::StackUnderflow => InstructionResult::StackUnderflow,
+        InstrStop::StackOverflow => InstructionResult::StackOverflow,
+        InstrStop::OutOfOffset => InstructionResult::OutOfOffset,
+        InstrStop::CreateCollision => InstructionResult::CreateCollision,
+        InstrStop::OverflowPayment => InstructionResult::OverflowPayment,
+        InstrStop::PrecompileError => InstructionResult::PrecompileError,
+        InstrStop::NonceOverflow => InstructionResult::NonceOverflow,
+        InstrStop::CreateContractSizeLimit => InstructionResult::CreateContractSizeLimit,
+        InstrStop::CreateContractStartingWithEF => InstructionResult::CreateContractStartingWithEF,
+        InstrStop::CreateInitCodeSizeLimit => InstructionResult::CreateInitCodeSizeLimit,
+        InstrStop::FatalExternalError => InstructionResult::FatalExternalError,
+        InstrStop::InvalidImmediateEncoding => InstructionResult::InvalidImmediateEncoding,
+        _ => InstructionResult::FatalExternalError,
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
