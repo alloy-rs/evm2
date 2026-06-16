@@ -435,7 +435,7 @@ impl<B: Backend> EvmCompiler<B> {
     /// Overrides the default gas schedule derived from the spec_id.
     /// Useful for custom chains or hardforks with non-standard gas costs.
     ///
-    /// Defaults to `GasParams::new_spec(spec_id)`.
+    /// Defaults to the evm2 spec gas schedule.
     pub fn set_gas_params(&mut self, gas_params: GasParams) {
         self.gas_params = Some(gas_params);
     }
@@ -571,7 +571,7 @@ impl<B: Backend> EvmCompiler<B> {
         let EvmCompilerInput::Code(bytecode) = input;
         let spec_id = to_revm_spec_id(spec_id);
 
-        let mut bytecode = Bytecode::new(bytecode, spec_id, self.gas_params.clone());
+        let mut bytecode = Bytecode::new(bytecode, spec_id, self.gas_params);
         bytecode.compiler_gas_limit = self.compiler_gas_limit;
         bytecode.config.set(AnalysisConfig::INSPECT_STACK, self.config.inspect_stack);
         bytecode.config.set(AnalysisConfig::DEDUP, self.dedup);
@@ -996,7 +996,6 @@ mod default_attrs {
             Attribute::WillReturn,      // Always returns.
             Attribute::NoSync,          // No thread synchronization.
             Attribute::NativeTargetCpu, // Optimization.
-            Attribute::NoRecurse,       // Revm is not recursive.
             Attribute::NonLazyBind,     // Skip PLT indirection.
             Attribute::UWTable,         // Unwind tables for profilers/debuggers.
         ]

@@ -1,6 +1,6 @@
 --- upstream/crates/revmc-codegen/src/lib.rs
 +++ evm2/crates/jit/codegen/src/lib.rs
-@@ -6,8 +6,8 @@
+@@ -6,8 +6,10 @@
  #[macro_use]
  extern crate tracing;
 
@@ -8,10 +8,12 @@
 -use revmc_context::*;
 +use evm2_jit_backend::{eyre, *};
 +use evm2_jit_context::*;
++
++pub use evm2::version::GasParams;
 
  mod bytecode;
  pub use bytecode::*;
-@@ -18,10 +18,7 @@
+@@ -18,10 +20,7 @@
  mod linker;
  pub use linker::{Linker, shared_library_path};
 
@@ -23,7 +25,7 @@
 
  /// ABI version of compiled artifacts. Bump when the calling convention changes.
  pub const ABI_VERSION: u32 = 0;
-@@ -32,11 +29,11 @@
+@@ -32,11 +31,11 @@
 
  type FxHashMap<K, V> = alloy_primitives::map::HashMap<K, V, alloy_primitives::map::FxBuildHasher>;
 

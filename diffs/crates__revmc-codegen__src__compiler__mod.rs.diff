@@ -35,14 +35,26 @@
      }
  }
 
-@@ -568,6 +569,7 @@
+@@ -434,7 +435,7 @@
+     /// Overrides the default gas schedule derived from the spec_id.
+     /// Useful for custom chains or hardforks with non-standard gas costs.
+     ///
+-    /// Defaults to `GasParams::new_spec(spec_id)`.
++    /// Defaults to the evm2 spec gas schedule.
+     pub fn set_gas_params(&mut self, gas_params: GasParams) {
+         self.gas_params = Some(gas_params);
+     }
+@@ -568,8 +569,9 @@
      ) -> Result<Bytecode<'a>> {
          let _t = self.remarks.time(|r| &r.parse);
          let EvmCompilerInput::Code(bytecode) = input;
 +        let spec_id = to_revm_spec_id(spec_id);
 
-         let mut bytecode = Bytecode::new(bytecode, spec_id, self.gas_params.clone());
+-        let mut bytecode = Bytecode::new(bytecode, spec_id, self.gas_params.clone());
++        let mut bytecode = Bytecode::new(bytecode, spec_id, self.gas_params);
          bytecode.compiler_gas_limit = self.compiler_gas_limit;
+         bytecode.config.set(AnalysisConfig::INSPECT_STACK, self.config.inspect_stack);
+         bytecode.config.set(AnalysisConfig::DEDUP, self.dedup);
 @@ -850,7 +852,7 @@
              let file = fs::File::create(dump_dir.join("bytecode.dot"))?;
              let mut writer = io::BufWriter::new(file);
@@ -52,7 +64,7 @@
              writer.write_all(dot.as_bytes())?;
              writer.flush()?;
          }
-@@ -987,7 +989,7 @@
+@@ -987,14 +989,13 @@
 
  #[allow(dead_code)]
  mod default_attrs {
@@ -61,3 +73,10 @@
 
      pub(crate) fn for_fn() -> impl Iterator<Item = Attribute> {
          [
+             Attribute::WillReturn,      // Always returns.
+             Attribute::NoSync,          // No thread synchronization.
+             Attribute::NativeTargetCpu, // Optimization.
+-            Attribute::NoRecurse,       // Revm is not recursive.
+             Attribute::NonLazyBind,     // Skip PLT indirection.
+             Attribute::UWTable,         // Unwind tables for profilers/debuggers.
+         ]

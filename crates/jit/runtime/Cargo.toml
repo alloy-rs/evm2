@@ -30,8 +30,6 @@ evm2-jit-builtins = { workspace = true, features = ["ir"] }
 
 alloy-primitives = { workspace = true, features = ["std", "map-fxhash"] }
 
-revm-context-interface.workspace = true
-
 crossbeam-channel.workspace = true
 crossbeam-queue.workspace = true
 dashmap = "6"

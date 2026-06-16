@@ -62,6 +62,15 @@
              }
              Err(e) => {
                  error!(error = %e, "failed to recreate compiler");
+@@ -537,7 +507,7 @@
+     compiler.set_dedup(!config.no_dedup);
+     compiler.set_dse(!config.no_dse);
+     if let Some(gas_params) = &config.gas_params {
+-        compiler.set_gas_params(gas_params.clone());
++        compiler.set_gas_params(*gas_params);
+     }
+     Ok(compiler)
+ }
 @@ -587,8 +557,10 @@
          .map(|name| name.to_string_lossy().into_owned())
          .collect();

@@ -70,12 +70,7 @@ impl<B: Backend> Builtins<B> {
         let param_attrs = builtin.param_attrs();
         let mut attrs = Vec::with_capacity(16);
         attrs.extend(builtin.attrs());
-        attrs.extend([
-            Attribute::NoFree,
-            Attribute::NoRecurse,
-            Attribute::NoSync,
-            Attribute::NoUnwind,
-        ]);
+        attrs.extend([Attribute::NoFree, Attribute::NoSync, Attribute::NoUnwind]);
         // `argmem` is only valid if the function does not access memory reachable through pointers
         // *loaded* from its arguments (only memory directly derived from arguments via
         // GEP/bitcast). Builtins that take a writable `EvmContext` mutate state through

@@ -1,9 +1,10 @@
 --- upstream/crates/revmc-codegen/src/bytecode/mod.rs
 +++ evm2/crates/jit/codegen/src/bytecode/mod.rs
-@@ -2,10 +2,10 @@
+@@ -2,15 +2,14 @@
 
  use crate::FxHashMap;
  use bitvec::vec::BitVec;
++use evm2::version::GasParams;
 +use evm2_jit_backend::Result;
  use oxc_index::IndexVec;
  use revm_bytecode::opcode as op;
@@ -12,7 +13,12 @@
  use smallvec::SmallVec;
  use std::{borrow::Cow, cell::RefCell};
 
-@@ -31,10 +31,6 @@
+-pub(crate) use revm_context_interface::cfg::GasParams;
+-
+ mod passes;
+ pub(crate) use passes::{
+     Block, Cfg, GasSection, MemorySection, MemorySectionAnalysis, SectionsAnalysis, Snapshots,
+@@ -31,10 +30,6 @@
  mod opcode;
  pub use opcode::*;
 
@@ -23,7 +29,12 @@
  /// Implements `Display` for a nonmax index type using a format string.
  macro_rules! impl_index_display {
      ($ty:ty, $fmt:literal) => {
-@@ -171,8 +167,8 @@
+@@ -167,12 +162,12 @@
+     jumpdests: BitVec,
+     /// The [`SpecId`].
+     pub(crate) spec_id: SpecId,
+-    /// Gas parameters for dynamic gas folding. Defaults to `GasParams::new_spec(spec_id)`.
++    /// Gas parameters for dynamic gas folding. Defaults to the evm2 spec gas schedule.
      pub(crate) gas_params: GasParams,
      /// Whether the bytecode contains dynamic jumps.
      has_dynamic_jumps: bool,
@@ -34,6 +45,16 @@
      /// Mapping from program counter to instruction.
      pc_to_inst: FxHashMap<u32, Inst>,
      /// Mapping from instruction index to its program counter (`code[pc]` is the opcode byte).
+@@ -231,7 +226,8 @@
+
+     #[instrument(name = "Bytecode::new", level = "debug", skip_all)]
+     fn new_mono(code: Cow<'a, [u8]>, spec_id: SpecId, gas_params: Option<GasParams>) -> Self {
+-        let gas_params = gas_params.unwrap_or_else(|| GasParams::new_spec(spec_id));
++        let gas_params = gas_params
++            .unwrap_or(evm2::Version::base(crate::spec::from_revm_spec_id(spec_id)).gas_params);
+         let mut insts = IndexVec::with_capacity(code.len() + 8);
+         let mut inst_to_pc = IndexVec::with_capacity(code.len() + 8);
+         let mut jumpdests = BitVec::repeat(false, code.len());
 @@ -330,7 +326,7 @@
              spec_id,
              gas_params,

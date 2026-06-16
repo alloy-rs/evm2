@@ -507,7 +507,7 @@ pub(super) fn create_compiler(
     compiler.set_dedup(!config.no_dedup);
     compiler.set_dse(!config.no_dse);
     if let Some(gas_params) = &config.gas_params {
-        compiler.set_gas_params(gas_params.clone());
+        compiler.set_gas_params(*gas_params);
     }
     Ok(compiler)
 }

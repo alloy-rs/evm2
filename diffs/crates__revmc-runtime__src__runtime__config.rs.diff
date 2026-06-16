@@ -1,12 +1,12 @@
 --- upstream/crates/revmc-runtime/src/runtime/config.rs
 +++ evm2/crates/jit/runtime/src/runtime/config.rs
-@@ -2,14 +2,14 @@
+@@ -2,14 +2,13 @@
 
  use crate::{CompileTimings, eyre, runtime::storage::ArtifactStore};
  use alloy_primitives::B256;
-+use evm2::SpecId;
- use revm_context_interface::cfg::GasParams;
+-use revm_context_interface::cfg::GasParams;
 -use revm_primitives::hardfork::SpecId;
++use evm2::{SpecId, version::GasParams};
  use std::{path::PathBuf, str::FromStr, sync::Arc, time::Duration};
 
 -const JIT_MODE_ENV: &str = "REVMC_JIT_MODE";
@@ -20,7 +20,7 @@
  const DEFAULT_JIT_MAX_BYTECODE_LEN: usize = 24 * 1024;
 
  /// Runtime configuration.
-@@ -22,7 +22,7 @@
+@@ -22,7 +21,7 @@
 
      /// Name for the backend thread.
      ///
@@ -29,7 +29,7 @@
      pub thread_name: String,
 
      /// Artifact store for loading precompiled AOT artifacts.
-@@ -51,7 +51,7 @@
+@@ -51,7 +50,7 @@
      pub debug_assertions: bool,
 
      /// Collapse every JIT failure path to a single
@@ -38,7 +38,16 @@
      ///
      /// Failures (stack under/overflow, invalid jump, real OOG, invalid opcode, etc.) are
      /// semantically interchangeable for callers that only branch on success vs failure, so
-@@ -184,8 +184,8 @@
+@@ -85,7 +84,7 @@
+     /// bytecode. Useful for custom chains with non-standard gas costs (e.g.
+     /// modified SSTORE, CREATE, or EXP costs).
+     ///
+-    /// When `None`, the compiler uses `GasParams::new_spec(spec_id)`.
++    /// When `None`, the compiler uses the evm2 spec gas schedule.
+     ///
+     /// Defaults to `None`.
+     pub gas_params: Option<GasParams>,
+@@ -184,8 +183,8 @@
  impl RuntimeConfig {
      /// Applies runtime environment overrides.
      ///
@@ -49,7 +58,7 @@
      pub fn with_env_overrides(mut self) -> eyre::Result<Self> {
          if let Some(mode) = env_var(JIT_MODE_ENV) {
              self.jit_mode = mode.parse().map_err(|e: String| eyre::eyre!("{JIT_MODE_ENV}: {e}"))?;
-@@ -207,7 +207,7 @@
+@@ -207,7 +206,7 @@
      fn default() -> Self {
          Self {
              enabled: false,

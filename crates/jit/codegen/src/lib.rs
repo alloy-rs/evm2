@@ -9,6 +9,8 @@ extern crate tracing;
 use evm2_jit_backend::{eyre, *};
 use evm2_jit_context::*;
 
+pub use evm2::version::GasParams;
+
 mod bytecode;
 pub use bytecode::*;
 

@@ -2,8 +2,7 @@
 
 use crate::{CompileTimings, eyre, runtime::storage::ArtifactStore};
 use alloy_primitives::B256;
-use evm2::SpecId;
-use revm_context_interface::cfg::GasParams;
+use evm2::{SpecId, version::GasParams};
 use std::{path::PathBuf, str::FromStr, sync::Arc, time::Duration};
 
 const JIT_MODE_ENV: &str = "EVM2_JIT_JIT_MODE";
@@ -85,7 +84,7 @@ pub struct RuntimeConfig {
     /// bytecode. Useful for custom chains with non-standard gas costs (e.g.
     /// modified SSTORE, CREATE, or EXP costs).
     ///
-    /// When `None`, the compiler uses `GasParams::new_spec(spec_id)`.
+    /// When `None`, the compiler uses the evm2 spec gas schedule.
     ///
     /// Defaults to `None`.
     pub gas_params: Option<GasParams>,

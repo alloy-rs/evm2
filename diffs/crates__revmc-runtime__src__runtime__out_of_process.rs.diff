@@ -1,17 +1,20 @@
 --- upstream/crates/revmc-runtime/src/runtime/out_of_process.rs
 +++ evm2/crates/jit/runtime/src/runtime/out_of_process.rs
-@@ -14,9 +14,9 @@
+@@ -14,9 +14,11 @@
  };
  use alloy_primitives::{B256, Bytes};
  use crossbeam_channel as chan;
-+use evm2::SpecId;
++use evm2::{
++    SpecId, Version,
++    version::{GasId, GasParams},
++};
  use rayon::ThreadPoolBuilder;
- use revm_context_interface::cfg::{GasParams, gas_params::GasId};
+-use revm_context_interface::cfg::{GasParams, gas_params::GasId};
 -use revm_primitives::hardfork::SpecId;
  use std::{
      cell::RefCell,
      collections::HashMap,
-@@ -26,8 +26,8 @@
+@@ -26,8 +28,8 @@
      path::PathBuf,
      process::{Child, ChildStdin, Command, Stdio},
      sync::{
@@ -22,22 +25,24 @@
      },
      thread::JoinHandle,
      time::{Duration, Instant},
-@@ -35,13 +35,11 @@
+@@ -35,13 +37,11 @@
  use wait_timeout::ChildExt;
  use wincode::{SchemaRead, SchemaWrite};
 
 -const HELPER_ENV: &str = "REVMC_JIT_HELPER";
-+const HELPER_ENV: &str = "EVM2_JIT_JIT_HELPER";
- const GAS_PARAM_COUNT: usize = 256;
+-const GAS_PARAM_COUNT: usize = 256;
 -const HELPER_PAUSE_TIMEOUT: Duration = Duration::from_millis(100);
++const HELPER_ENV: &str = "EVM2_JIT_JIT_HELPER";
++const GAS_PARAM_COUNT: usize = GasId::COUNT;
 
- type GasParamPairs = Vec<(u8, u64)>;
+-type GasParamPairs = Vec<(u8, u64)>;
++type GasParamPairs = Vec<(u8, u32)>;
  type PendingResponses = Arc<Mutex<HashMap<u64, chan::Sender<Result<HelperJobResult, String>>>>>;
 -type PendingPauses = Arc<Mutex<HashMap<u64, chan::Sender<Result<(), String>>>>>;
 
  /// Runs the out-of-process JIT helper if this process was launched as one.
  pub(super) fn maybe_run_jit_helper() -> eyre::Result<ControlFlow<()>> {
-@@ -93,13 +91,12 @@
+@@ -93,13 +93,12 @@
 
  pub(super) struct HelperProcess {
      inner: Mutex<Option<Arc<HelperProcessInner>>>,
@@ -52,7 +57,7 @@
      }
 
      fn compile(&self, job: &CompileJob, config: &RuntimeConfig) -> Result<HelperJobResult, String> {
-@@ -108,11 +105,8 @@
+@@ -108,11 +107,8 @@
              if slot.as_ref().is_none_or(|helper| !helper.matches_config(config)) {
                  let restarting = slot.is_some();
                  debug!("spawning JIT helper");
@@ -65,7 +70,7 @@
                          self.stats.jit_helper_spawns.fetch_add(1, Ordering::Relaxed);
                          if restarting {
                              self.stats.jit_helper_restarts.fetch_add(1, Ordering::Relaxed);
-@@ -147,22 +141,6 @@
+@@ -147,22 +143,6 @@
              helper.kill();
          }
      }
@@ -88,7 +93,7 @@
  }
 
  struct HelperProcessInner {
-@@ -171,20 +149,14 @@
+@@ -171,20 +151,14 @@
      child: Mutex<Child>,
      io: Mutex<HelperIo>,
      pending: PendingResponses,
@@ -110,7 +115,7 @@
          let path = match &config.jit_helper_path {
              Some(path) => path.clone(),
              None => {
-@@ -206,9 +178,7 @@
+@@ -206,9 +180,7 @@
          stdin.flush().map_err(|e| format!("failed to flush helper init: {e}"))?;
          let stdout = child.stdout.take().ok_or("helper stdout unavailable")?;
          let pending = PendingResponses::default();
@@ -120,7 +125,7 @@
          let reader_stats = stats.clone();
          let reader = std::thread::spawn(move || {
              let mut stdout = BufReader::new(stdout);
-@@ -220,19 +190,11 @@
+@@ -220,19 +192,11 @@
                              let _ = tx.send(Ok(result));
                          }
                      }
@@ -140,7 +145,7 @@
                          break;
                      }
                  }
-@@ -244,12 +206,10 @@
+@@ -244,12 +208,10 @@
              child: Mutex::new(child),
              io: Mutex::new(HelperIo { stdin }),
              pending,
@@ -153,7 +158,7 @@
          })
      }
 
-@@ -280,32 +240,27 @@
+@@ -280,32 +242,27 @@
              }
          }
 
@@ -207,7 +212,7 @@
              }
          }
      }
-@@ -328,64 +283,6 @@
+@@ -328,64 +285,6 @@
              }
          }
      }
@@ -272,7 +277,7 @@
  }
 
  impl Drop for HelperProcessInner {
-@@ -439,18 +336,6 @@
+@@ -439,18 +338,6 @@
      }
  }
 
@@ -291,7 +296,7 @@
  fn set_rlimit(resource: libc::c_int, value: u64) -> std::io::Result<()> {
      let value = libc::rlim_t::try_from(value).unwrap_or(libc::rlim_t::MAX);
      let limit = libc::rlimit { rlim_cur: value, rlim_max: value };
-@@ -513,8 +398,6 @@
+@@ -513,8 +400,6 @@
  enum HelperRequest {
      Init(HelperInit),
      Compile(HelperCompile),
@@ -300,7 +305,7 @@
  }
 
  #[derive(SchemaWrite, SchemaRead)]
-@@ -541,9 +424,6 @@
+@@ -541,9 +426,6 @@
          error: String,
          timings: HelperTimings,
      },
@@ -310,7 +315,7 @@
  }
 
  #[derive(Clone, Copy, Default, SchemaWrite, SchemaRead)]
-@@ -566,7 +446,7 @@
+@@ -566,7 +448,7 @@
      let req = HelperRequest::Compile(HelperCompile {
          id,
          code_hash: job.key.code_hash.0,
@@ -319,7 +324,7 @@
          opt_level: opt_level_to_u8(job.opt_level),
          symbol_name: job.symbol_name.clone(),
          bytecode: job.bytecode.to_vec(),
-@@ -574,17 +454,8 @@
+@@ -574,17 +456,8 @@
      write_message(w, &req)
  }
 
@@ -337,7 +342,7 @@
  }
 
  fn read_helper_response<R: Read + ?Sized>(
-@@ -608,7 +479,6 @@
+@@ -608,7 +481,6 @@
              id,
              HelperJobResult { outcome: Err(error), timings: timings.into() },
          )),
@@ -345,7 +350,7 @@
      }
  }
 
-@@ -642,43 +512,18 @@
+@@ -642,43 +514,18 @@
      static HELPER_COMPILER: RefCell<Option<CompilerState>> = const { RefCell::new(None) };
  }
 
@@ -390,7 +395,7 @@
 
      loop {
          let request = match read_helper_request(&mut stdin) {
-@@ -690,12 +535,10 @@
+@@ -690,12 +537,10 @@
              HelperWork::Compile { id, job } => {
                  let config = Arc::clone(&config);
                  let stdout = Arc::clone(&stdout);
@@ -403,7 +408,7 @@
                      let mut stdout = stdout.lock().unwrap();
                      if let Err(err) = write_helper_result(&mut stdout, id, result)
                          .and_then(|()| stdout.flush().map_err(Into::into))
-@@ -705,15 +548,6 @@
+@@ -705,15 +550,6 @@
                      }
                  });
              }
@@ -419,7 +424,7 @@
          }
      }
 
-@@ -723,26 +557,21 @@
+@@ -723,26 +559,21 @@
  fn read_helper_init<R: Read + ?Sized>(stdin: &mut BufReader<R>) -> eyre::Result<RuntimeConfig> {
      match read_message(stdin)? {
          HelperRequest::Init(init) => runtime_config_from_init(init),
@@ -449,7 +454,7 @@
      let opt_level = opt_level_from_u8(req.opt_level)?;
 
      let job = CompileJob {
-@@ -778,11 +607,6 @@
+@@ -778,11 +609,6 @@
      Ok(())
  }
 
@@ -461,7 +466,45 @@
  fn write_message<T, W: Write + ?Sized>(w: &mut BufWriter<W>, message: &T) -> std::io::Result<()>
  where
      T: wincode::SchemaWrite<wincode::config::DefaultConfig, Src = T>,
-@@ -889,71 +713,3 @@
+@@ -835,7 +661,8 @@
+     (0..GAS_PARAM_COUNT)
+         .map(|i| {
+             let id = i as u8;
+-            (id, gas_params.get(GasId::new(id)))
++            let gas_id = GasId::from_usize(i).expect("gas parameter index should be valid");
++            (id, gas_params.get(gas_id))
+         })
+         .collect()
+ }
+@@ -845,21 +672,24 @@
+         eyre::bail!("invalid gas params length: {}", pairs.len());
+     }
+
+-    let mut table = [0; GAS_PARAM_COUNT];
+     let mut seen = [false; GAS_PARAM_COUNT];
++    let mut gas_params = Version::base(SpecId::default()).gas_params;
+     for (id, value) in pairs {
+         let index = usize::from(id);
++        let Some(gas_id) = GasId::from_usize(index) else {
++            eyre::bail!("invalid gas param id: {id}");
++        };
+         if seen[index] {
+             eyre::bail!("duplicate gas param id: {id}");
+         }
+         seen[index] = true;
+-        table[index] = value;
++        gas_params.set(gas_id, value);
+     }
+     if let Some((id, _)) = seen.iter().enumerate().find(|(_, seen)| !**seen) {
+         eyre::bail!("missing gas param id: {id}");
+     }
+
+-    Ok(GasParams::new(Arc::new(table)))
++    Ok(gas_params)
+ }
+
+ fn helper_init(config: &RuntimeConfig) -> HelperInit {
+@@ -889,71 +719,3 @@
      config.tuning.compiler_recycle_threshold = init.compiler_recycle_threshold;
      Ok(config)
  }

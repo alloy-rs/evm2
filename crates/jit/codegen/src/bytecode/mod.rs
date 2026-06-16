@@ -2,14 +2,13 @@
 
 use crate::FxHashMap;
 use bitvec::vec::BitVec;
+use evm2::version::GasParams;
 use evm2_jit_backend::Result;
 use oxc_index::IndexVec;
 use revm_bytecode::opcode as op;
 use revm_primitives::{U256, hardfork::SpecId};
 use smallvec::SmallVec;
 use std::{borrow::Cow, cell::RefCell};
-
-pub(crate) use revm_context_interface::cfg::GasParams;
 
 mod passes;
 pub(crate) use passes::{
@@ -163,7 +162,7 @@ pub struct Bytecode<'a> {
     jumpdests: BitVec,
     /// The [`SpecId`].
     pub(crate) spec_id: SpecId,
-    /// Gas parameters for dynamic gas folding. Defaults to `GasParams::new_spec(spec_id)`.
+    /// Gas parameters for dynamic gas folding. Defaults to the evm2 spec gas schedule.
     pub(crate) gas_params: GasParams,
     /// Whether the bytecode contains dynamic jumps.
     has_dynamic_jumps: bool,
@@ -227,7 +226,8 @@ impl<'a> Bytecode<'a> {
 
     #[instrument(name = "Bytecode::new", level = "debug", skip_all)]
     fn new_mono(code: Cow<'a, [u8]>, spec_id: SpecId, gas_params: Option<GasParams>) -> Self {
-        let gas_params = gas_params.unwrap_or_else(|| GasParams::new_spec(spec_id));
+        let gas_params = gas_params
+            .unwrap_or(evm2::Version::base(crate::spec::from_revm_spec_id(spec_id)).gas_params);
         let mut insts = IndexVec::with_capacity(code.len() + 8);
         let mut inst_to_pc = IndexVec::with_capacity(code.len() + 8);
         let mut jumpdests = BitVec::repeat(false, code.len());

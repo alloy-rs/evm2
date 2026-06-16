@@ -14,9 +14,11 @@ use crate::{
 };
 use alloy_primitives::{B256, Bytes};
 use crossbeam_channel as chan;
-use evm2::SpecId;
+use evm2::{
+    SpecId, Version,
+    version::{GasId, GasParams},
+};
 use rayon::ThreadPoolBuilder;
-use revm_context_interface::cfg::{GasParams, gas_params::GasId};
 use std::{
     cell::RefCell,
     collections::HashMap,
@@ -36,9 +38,9 @@ use wait_timeout::ChildExt;
 use wincode::{SchemaRead, SchemaWrite};
 
 const HELPER_ENV: &str = "EVM2_JIT_JIT_HELPER";
-const GAS_PARAM_COUNT: usize = 256;
+const GAS_PARAM_COUNT: usize = GasId::COUNT;
 
-type GasParamPairs = Vec<(u8, u64)>;
+type GasParamPairs = Vec<(u8, u32)>;
 type PendingResponses = Arc<Mutex<HashMap<u64, chan::Sender<Result<HelperJobResult, String>>>>>;
 
 /// Runs the out-of-process JIT helper if this process was launched as one.
@@ -659,7 +661,8 @@ fn gas_params_to_pairs(gas_params: &GasParams) -> GasParamPairs {
     (0..GAS_PARAM_COUNT)
         .map(|i| {
             let id = i as u8;
-            (id, gas_params.get(GasId::new(id)))
+            let gas_id = GasId::from_usize(i).expect("gas parameter index should be valid");
+            (id, gas_params.get(gas_id))
         })
         .collect()
 }
@@ -669,21 +672,24 @@ fn gas_params_from_pairs(pairs: GasParamPairs) -> eyre::Result<GasParams> {
         eyre::bail!("invalid gas params length: {}", pairs.len());
     }
 
-    let mut table = [0; GAS_PARAM_COUNT];
     let mut seen = [false; GAS_PARAM_COUNT];
+    let mut gas_params = Version::base(SpecId::default()).gas_params;
     for (id, value) in pairs {
         let index = usize::from(id);
+        let Some(gas_id) = GasId::from_usize(index) else {
+            eyre::bail!("invalid gas param id: {id}");
+        };
         if seen[index] {
             eyre::bail!("duplicate gas param id: {id}");
         }
         seen[index] = true;
-        table[index] = value;
+        gas_params.set(gas_id, value);
     }
     if let Some((id, _)) = seen.iter().enumerate().find(|(_, seen)| !**seen) {
         eyre::bail!("missing gas param id: {id}");
     }
 
-    Ok(GasParams::new(Arc::new(table)))
+    Ok(gas_params)
 }
 
 fn helper_init(config: &RuntimeConfig) -> HelperInit {
