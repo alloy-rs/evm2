@@ -200,6 +200,14 @@ impl<T: EvmTypes> EvmCompilerFn<T> {
         Self(f)
     }
 
+    /// Rewraps an ABI-compatible compiled function for evm2 calls.
+    #[inline]
+    pub fn from_abi_compatible(f: crate::EvmCompilerFn) -> Self {
+        Self(unsafe {
+            mem::transmute::<crate::RawEvmCompilerFn, RawEvmCompilerFn<T>>(f.into_inner())
+        })
+    }
+
     /// Unwraps the function.
     #[inline]
     pub const fn into_inner(self) -> RawEvmCompilerFn<T> {

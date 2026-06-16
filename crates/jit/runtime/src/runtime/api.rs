@@ -62,6 +62,12 @@ impl std::fmt::Debug for CompiledProgram {
 }
 
 impl CompiledProgram {
+    /// Returns this program as an evm2 callable function.
+    #[inline]
+    pub fn evm2_func<T: evm2::EvmTypes>(&self) -> evm2_jit_context::evm2_api::EvmCompilerFn<T> {
+        evm2_jit_context::evm2_api::EvmCompilerFn::from_abi_compatible(self.func)
+    }
+
     /// Creates a new compiled program backed by a loaded shared library.
     pub(crate) fn new_aot(
         key: RuntimeCacheKey,

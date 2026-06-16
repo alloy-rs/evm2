@@ -340,6 +340,18 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         )
     }
 
+    /// Prepares this interpreter for external JIT execution.
+    #[inline]
+    #[doc(hidden)]
+    pub fn prepare_jit_run(&mut self, config: &ExecutionConfig<T>, host: &mut T::Host) {
+        self.memory.set_memory_limit(config.version().memory_limit);
+        self.host = Some(NonNull::from(host));
+        self.inspector = None;
+        self.version = config.version();
+        self.spec = config.base_spec_id();
+        self.features = config.version().features;
+    }
+
     #[inline(never)]
     fn run_inner(
         &mut self,

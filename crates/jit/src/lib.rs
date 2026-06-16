@@ -6,7 +6,7 @@
 #[doc(inline)]
 pub use evm2_jit_codegen::*;
 #[doc(inline)]
-pub use evm2_jit_runtime::{revm_evm, runtime};
+pub use evm2_jit_runtime::{evm2_evm, revm_evm, runtime};
 
 #[allow(ambiguous_glob_reexports)]
 #[doc(inline)]

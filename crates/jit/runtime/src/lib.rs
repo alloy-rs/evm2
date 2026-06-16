@@ -18,6 +18,8 @@ use evm2_jit_llvm::EvmLlvmBackend;
 
 pub mod runtime;
 
+pub mod evm2_evm;
+
 pub mod revm_evm;
 
 #[cfg(feature = "alloy-evm")]
