@@ -1,8 +1,10 @@
 use super::{
     env::blockchain_test_roots,
-    execute::{ExecuteConfig, execute_test_suite},
+    execute::{ExecuteConfig, ExecutionMode, execute_test_suite},
 };
-use crate::harness::{TestSuite, run_json_harness};
+#[cfg(feature = "jit")]
+use crate::harness::TestRoot;
+use crate::harness::{TestSuite, run_json_harnesses};
 use libtest_mimic::Failed;
 use std::{
     path::{Path, PathBuf},
@@ -11,7 +13,34 @@ use std::{
 
 /// Runs the cargo-nextest blockchain test harness.
 pub fn run() -> ExitCode {
-    run_json_harness("blockchain", blockchain_test_roots(), should_descend, should_ignore, run_file)
+    run_json_harnesses(suites())
+}
+
+pub(crate) fn suites() -> Vec<TestSuite> {
+    #[cfg(feature = "jit")]
+    {
+        let mut suites = vec![suite()];
+        suites.push(TestSuite {
+            name: "blockchain-jit",
+            roots: mode_roots(blockchain_test_roots(), ModeName::Jit),
+            should_descend,
+            should_ignore,
+            run_file: run_file_jit,
+        });
+        suites.push(TestSuite {
+            name: "blockchain-aot",
+            roots: mode_roots(blockchain_test_roots(), ModeName::Aot),
+            should_descend,
+            should_ignore,
+            run_file: run_file_aot,
+        });
+        suites
+    }
+
+    #[cfg(not(feature = "jit"))]
+    {
+        vec![suite()]
+    }
 }
 
 pub(crate) fn suite() -> TestSuite {
@@ -25,9 +54,51 @@ pub(crate) fn suite() -> TestSuite {
 }
 
 fn run_file(path: PathBuf) -> Result<(), Failed> {
-    execute_test_suite(&path, ExecuteConfig::default())
+    run_file_with_mode(path, ExecutionMode::Interpreter)
+}
+
+fn run_file_with_mode(path: PathBuf, mode: ExecutionMode) -> Result<(), Failed> {
+    execute_test_suite(&path, ExecuteConfig { mode, ..Default::default() })
         .map(|_| ())
         .map_err(|err| err.to_string().into())
+}
+
+#[cfg(feature = "jit")]
+fn run_file_jit(path: PathBuf) -> Result<(), Failed> {
+    run_file_with_mode(path, ExecutionMode::Jit)
+}
+
+#[cfg(feature = "jit")]
+fn run_file_aot(path: PathBuf) -> Result<(), Failed> {
+    run_file_with_mode(path, ExecutionMode::Aot)
+}
+
+#[cfg(feature = "jit")]
+#[derive(Clone, Copy, Debug)]
+enum ModeName {
+    Jit,
+    Aot,
+}
+
+#[cfg(feature = "jit")]
+fn mode_roots(roots: Vec<TestRoot>, mode: ModeName) -> Vec<TestRoot> {
+    roots
+        .into_iter()
+        .map(|root| TestRoot { name: mode_root_name(root.name, mode), ..root })
+        .collect()
+}
+
+#[cfg(feature = "jit")]
+fn mode_root_name(name: &'static str, mode: ModeName) -> &'static str {
+    match (name, mode) {
+        ("blockchain_tests", ModeName::Jit) => "blockchain_tests::jit",
+        ("blockchain_tests", ModeName::Aot) => "blockchain_tests::aot",
+        ("blockchain_tests::custom", ModeName::Jit) => "blockchain_tests::custom::jit",
+        ("blockchain_tests::custom", ModeName::Aot) => "blockchain_tests::custom::aot",
+        ("blockchain_tests::devnet", ModeName::Jit) => "blockchain_tests::devnet::jit",
+        ("blockchain_tests::devnet", ModeName::Aot) => "blockchain_tests::devnet::aot",
+        _ => name,
+    }
 }
 
 fn should_descend(path: &Path) -> bool {

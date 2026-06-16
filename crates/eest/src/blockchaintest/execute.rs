@@ -29,22 +29,104 @@ use evm2::{
     },
     registry::HandlerError,
 };
+#[cfg(feature = "jit")]
+use evm2_jit_runtime::{
+    evm2_evm::JitInterpreterRunner,
+    runtime::{ArtifactStore, JitBackend, RuntimeArtifactStore, RuntimeConfig, RuntimeTuning},
+};
 use std::{fs, mem, path::Path};
+#[cfg(feature = "jit")]
+use std::{sync::Arc, thread};
 
 const ONE_GWEI: u64 = 1_000_000_000;
 const ONE_ETHER: u128 = 1_000_000_000_000_000_000;
+
+/// EEST execution backend.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ExecutionMode {
+    /// Run through the evm2 interpreter.
+    #[default]
+    Interpreter,
+    /// Run through the evm2 JIT runtime, falling back to the interpreter for unsupported code.
+    #[cfg(feature = "jit")]
+    Jit,
+    /// Run through the evm2 AOT runtime, falling back to the interpreter for unsupported code.
+    #[cfg(feature = "jit")]
+    Aot,
+}
 
 /// Execution options for a single suite.
 #[derive(Clone, Copy, Debug)]
 pub struct ExecuteConfig {
     /// Whether to validate final post-state when fixtures contain it.
     pub validate_post_state: bool,
+    /// Execution backend.
+    pub mode: ExecutionMode,
 }
 
 impl Default for ExecuteConfig {
     fn default() -> Self {
-        Self { validate_post_state: true }
+        Self { validate_post_state: true, mode: ExecutionMode::Interpreter }
     }
+}
+
+#[derive(Clone, Debug)]
+struct ExecutionResources {
+    #[cfg(feature = "jit")]
+    backend: Option<JitBackend>,
+}
+
+impl ExecutionResources {
+    fn new(mode: ExecutionMode) -> Result<Self, TestErrorKind> {
+        #[cfg(feature = "jit")]
+        {
+            let backend = match mode {
+                ExecutionMode::Interpreter => None,
+                ExecutionMode::Jit | ExecutionMode::Aot => Some(make_jit_backend(mode)?),
+            };
+            Ok(Self { backend })
+        }
+
+        #[cfg(not(feature = "jit"))]
+        {
+            let _ = mode;
+            Ok(Self {})
+        }
+    }
+
+    #[inline]
+    fn configure_evm(&self, _evm: &mut Evm<BaseEvmTypes>) {
+        #[cfg(feature = "jit")]
+        if let Some(backend) = &self.backend {
+            _evm.set_interpreter_runner(JitInterpreterRunner::new(backend.clone()));
+        }
+    }
+}
+
+#[cfg(feature = "jit")]
+fn make_jit_backend(mode: ExecutionMode) -> Result<JitBackend, TestErrorKind> {
+    let cpus = thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
+    let store = if mode == ExecutionMode::Aot {
+        Some(Arc::new(
+            RuntimeArtifactStore::new()
+                .map_err(|err| TestErrorKind::JitRuntime(err.to_string()))?,
+        ) as Arc<dyn ArtifactStore>)
+    } else {
+        None
+    };
+    JitBackend::new(RuntimeConfig {
+        enabled: true,
+        blocking: true,
+        aot: mode == ExecutionMode::Aot,
+        store,
+        tuning: RuntimeTuning {
+            jit_hot_threshold: 0,
+            jit_worker_count: cpus,
+            ..Default::default()
+        },
+        ..Default::default()
+    })
+    .map_err(|err| TestErrorKind::JitRuntime(err.to_string()))
 }
 
 /// Per-file execution summary.
@@ -77,6 +159,8 @@ pub fn execute_str(
 ) -> Result<ExecuteSummary, TestError> {
     let suite: BlockchainTest =
         serde_json::from_str(input).map_err(|err| TestError::unknown(path, err.into()))?;
+    let resources =
+        ExecutionResources::new(config.mode).map_err(|err| TestError::unknown(path, err))?;
     let mut summary = ExecuteSummary::default();
     for (name, test_case) in suite.0 {
         if !entrypoint.matches(&name)
@@ -86,7 +170,7 @@ pub fn execute_str(
             summary.skipped += 1;
             continue;
         }
-        execute_case(path, &name, &test_case, config, hook)?;
+        execute_case(path, &name, &test_case, config, hook, &resources)?;
         summary.executed += 1;
     }
     Ok(summary)
@@ -98,6 +182,7 @@ fn execute_case(
     test_case: &BlockchainTestCase,
     config: ExecuteConfig,
     hook: &mut dyn Hook,
+    resources: &ExecutionResources,
 ) -> Result<(), TestError> {
     let mut database =
         parse_state(&test_case.pre.0).map_err(|err| TestError::case(path, name, err))?;
@@ -138,6 +223,7 @@ fn execute_case(
             &mut parent_block_hash,
             &mut parent_excess_blob_gas,
             hook,
+            resources,
         ) {
             Ok(()) => hook.block_finished(BlockFinished {
                 block_index,
@@ -197,6 +283,7 @@ fn execute_block(
     parent_block_hash: &mut Option<B256>,
     parent_excess_blob_gas: &mut u64,
     hook: &mut dyn Hook,
+    resources: &ExecutionResources,
 ) -> Result<(), TestError> {
     let should_fail = block.expect_exception.is_some();
     let mut block_hash = None;
@@ -219,6 +306,7 @@ fn execute_block(
         initial_database,
         Precompiles::base(spec),
     );
+    resources.configure_evm(&mut evm);
     let mut block_state = BlockStateAccumulator::new();
 
     let result = (|| -> Result<BlockResolution, TestError> {

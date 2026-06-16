@@ -46,6 +46,14 @@ pub(crate) struct Replay {
     /// Logical EEST test or case name glob to run.
     #[arg(long)]
     pub(crate) entrypoint: Option<String>,
+    /// Replay through the evm2 JIT runtime.
+    #[cfg(feature = "jit")]
+    #[arg(long, conflicts_with = "aot")]
+    pub(crate) jit: bool,
+    /// Replay through the evm2 AOT runtime.
+    #[cfg(feature = "jit")]
+    #[arg(long, conflicts_with = "jit")]
+    pub(crate) aot: bool,
     /// EEST JSON fixture to replay.
     #[arg(value_name = "PATH")]
     pub(crate) path: PathBuf,

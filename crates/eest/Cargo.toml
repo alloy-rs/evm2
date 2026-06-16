@@ -16,6 +16,7 @@ workspace = true
 
 [dependencies]
 evm2 = { workspace = true, features = ["std"] }
+evm2-jit-runtime = { workspace = true, features = ["llvm"], optional = true }
 
 alloy-consensus = { workspace = true, features = ["std"] }
 alloy-eip7928 = { workspace = true, features = ["std", "serde", "rlp"] }
@@ -35,3 +36,7 @@ walkdir.workspace = true
 name = "eest"
 path = "tests/eest.rs"
 harness = false
+
+[features]
+default = []
+jit = ["dep:evm2-jit-runtime"]

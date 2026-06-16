@@ -61,6 +61,10 @@ pub(crate) enum TestErrorKind {
     /// A system call failed.
     #[error("system call failed: {0}")]
     SystemCall(&'static str),
+    /// JIT runtime initialization failed.
+    #[cfg(feature = "jit")]
+    #[error("jit runtime error: {0}")]
+    JitRuntime(String),
 }
 
 impl From<TxBuildError> for TestErrorKind {

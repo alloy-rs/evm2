@@ -3,9 +3,44 @@
 use crate::runtime::{InterpretReason, JitBackend, LookupDecision, LookupRequest, RuntimeCacheKey};
 use alloy_primitives::{Bytes, keccak256};
 use evm2::{
-    EvmTypes, ExecutionConfig,
+    EvmTypes, ExecutionConfig, InterpreterRunner,
     interpreter::{InstrStop, Interpreter},
 };
+
+/// External interpreter runner backed by [`JitBackend`].
+#[derive(Clone, Debug)]
+pub struct JitInterpreterRunner {
+    backend: JitBackend,
+}
+
+impl JitInterpreterRunner {
+    /// Creates a runner from a JIT backend.
+    #[inline]
+    pub const fn new(backend: JitBackend) -> Self {
+        Self { backend }
+    }
+
+    /// Returns the JIT backend.
+    #[inline]
+    pub const fn backend(&self) -> &JitBackend {
+        &self.backend
+    }
+}
+
+impl<T: EvmTypes> InterpreterRunner<T> for JitInterpreterRunner {
+    #[inline]
+    fn run(
+        &self,
+        config: &ExecutionConfig<T>,
+        interpreter: &mut Interpreter<'_, T>,
+        host: &mut T::Host,
+    ) -> Option<InstrStop> {
+        match run_interpreter(&self.backend, config, interpreter, host) {
+            JitRunResult::Finished(stop) => Some(stop),
+            JitRunResult::Interpret(_) => None,
+        }
+    }
+}
 
 /// Result of trying to execute an evm2 interpreter frame through JIT code.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

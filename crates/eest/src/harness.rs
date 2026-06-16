@@ -33,23 +33,6 @@ pub(crate) struct TestSuite {
     pub(crate) run_file: fn(PathBuf) -> Result<(), Failed>,
 }
 
-/// Runs a cargo-nextest JSON fixture harness.
-pub(crate) fn run_json_harness(
-    suite_name: &'static str,
-    roots: Vec<TestRoot>,
-    should_descend: fn(&Path) -> bool,
-    should_ignore: fn(&str) -> bool,
-    run_file: fn(PathBuf) -> Result<(), Failed>,
-) -> ExitCode {
-    run_json_harnesses(vec![TestSuite {
-        name: suite_name,
-        roots,
-        should_descend,
-        should_ignore,
-        run_file,
-    }])
-}
-
 /// Runs cargo-nextest JSON fixture harnesses in one test binary.
 pub(crate) fn run_json_harnesses(suites: Vec<TestSuite>) -> ExitCode {
     let mut args = Arguments::from_args();

@@ -1,17 +1,46 @@
+#[cfg(feature = "jit")]
+use crate::harness::TestRoot;
 use crate::{
     env::state_test_roots,
-    execute::{ExecuteConfig, execute_test_suite},
-    harness::{TestSuite, descend_all, run_json_harness},
+    execute::{ExecuteConfig, ExecutionMode, execute_test_suite},
+    harness::{TestSuite, descend_all, run_json_harnesses},
 };
 use libtest_mimic::Failed;
 use std::{path::PathBuf, process::ExitCode};
 
 /// Runs the cargo-nextest state test harness.
 pub fn run() -> ExitCode {
-    run_json_harness("state", state_test_roots(), descend_all, should_ignore, run_file)
+    run_json_harnesses(suites())
 }
 
-pub(crate) fn suite() -> TestSuite {
+pub(crate) fn suites() -> Vec<TestSuite> {
+    #[cfg(feature = "jit")]
+    {
+        let mut suites = vec![suite()];
+        suites.push(TestSuite {
+            name: "state-jit",
+            roots: mode_roots(state_test_roots(), ModeName::Jit),
+            should_descend: descend_all,
+            should_ignore,
+            run_file: run_file_jit,
+        });
+        suites.push(TestSuite {
+            name: "state-aot",
+            roots: mode_roots(state_test_roots(), ModeName::Aot),
+            should_descend: descend_all,
+            should_ignore,
+            run_file: run_file_aot,
+        });
+        suites
+    }
+
+    #[cfg(not(feature = "jit"))]
+    {
+        vec![suite()]
+    }
+}
+
+fn suite() -> TestSuite {
     TestSuite {
         name: "state",
         roots: state_test_roots(),
@@ -22,9 +51,57 @@ pub(crate) fn suite() -> TestSuite {
 }
 
 fn run_file(path: PathBuf) -> Result<(), Failed> {
-    execute_test_suite(&path, ExecuteConfig::default())
+    run_file_with_mode(path, ExecutionMode::Interpreter)
+}
+
+fn run_file_with_mode(path: PathBuf, mode: ExecutionMode) -> Result<(), Failed> {
+    execute_test_suite(&path, ExecuteConfig { mode, ..Default::default() })
         .map(|_| ())
         .map_err(|err| err.to_string().into())
+}
+
+#[cfg(feature = "jit")]
+fn run_file_jit(path: PathBuf) -> Result<(), Failed> {
+    run_file_with_mode(path, ExecutionMode::Jit)
+}
+
+#[cfg(feature = "jit")]
+fn run_file_aot(path: PathBuf) -> Result<(), Failed> {
+    run_file_with_mode(path, ExecutionMode::Aot)
+}
+
+#[cfg(feature = "jit")]
+#[derive(Clone, Copy, Debug)]
+enum ModeName {
+    Jit,
+    Aot,
+}
+
+#[cfg(feature = "jit")]
+fn mode_roots(roots: Vec<TestRoot>, mode: ModeName) -> Vec<TestRoot> {
+    roots
+        .into_iter()
+        .map(|root| TestRoot { name: mode_root_name(root.name, mode), ..root })
+        .collect()
+}
+
+#[cfg(feature = "jit")]
+fn mode_root_name(name: &'static str, mode: ModeName) -> &'static str {
+    match (name, mode) {
+        ("statetests", ModeName::Jit) => "statetests::jit",
+        ("statetests", ModeName::Aot) => "statetests::aot",
+        ("statetests::custom", ModeName::Jit) => "statetests::custom::jit",
+        ("statetests::custom", ModeName::Aot) => "statetests::custom::aot",
+        ("statetests::devnet", ModeName::Jit) => "statetests::devnet::jit",
+        ("statetests::devnet", ModeName::Aot) => "statetests::devnet::aot",
+        ("legacy::cancun", ModeName::Jit) => "legacy::cancun::jit",
+        ("legacy::cancun", ModeName::Aot) => "legacy::cancun::aot",
+        ("legacy::constantinople", ModeName::Jit) => "legacy::constantinople::jit",
+        ("legacy::constantinople", ModeName::Aot) => "legacy::constantinople::aot",
+        ("legacy::ethereum_tests", ModeName::Jit) => "legacy::ethereum_tests::jit",
+        ("legacy::ethereum_tests", ModeName::Aot) => "legacy::ethereum_tests::aot",
+        _ => name,
+    }
 }
 
 #[rustfmt::skip]

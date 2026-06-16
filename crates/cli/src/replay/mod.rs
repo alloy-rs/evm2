@@ -6,22 +6,24 @@ use crate::{
 use alloy_primitives::U256;
 use evm2_eest::{
     BlockchainTestBlockFailed, BlockchainTestBlockFinished, BlockchainTestBlockStarted,
-    BlockchainTestCaseStarted, BlockchainTestExecuteConfig, BlockchainTestHook,
-    BlockchainTestTransactionFailed, BlockchainTestTransactionFinished,
-    BlockchainTestTransactionStarted, EntryPoint, StateTestExecuteConfig,
+    BlockchainTestCaseStarted, BlockchainTestExecuteConfig, BlockchainTestExecutionMode,
+    BlockchainTestHook, BlockchainTestTransactionFailed, BlockchainTestTransactionFinished,
+    BlockchainTestTransactionStarted, EntryPoint, StateTestExecuteConfig, StateTestExecutionMode,
     execute_blockchain_tests_str, execute_state_tests_str_with_filter,
 };
 use std::time::Instant;
 
 pub(crate) fn run(command: Replay) -> Result<()> {
     let input = fixture::read_text(&command.path)?;
+    let state_mode = replay_state_execution_mode(&command);
+    let blockchain_mode = replay_blockchain_execution_mode(&command);
     let entrypoint = EntryPoint::new(command.entrypoint);
     match fixture::detect_str(&command.path, &input)? {
         Some(FixtureKind::StateTest) => {
             let summary = execute_state_tests_str_with_filter(
                 &command.path,
                 &input,
-                StateTestExecuteConfig::default(),
+                StateTestExecuteConfig { mode: state_mode, ..Default::default() },
                 &entrypoint,
             )
             .map_err(|source| Error::StateTest { source })?;
@@ -38,7 +40,7 @@ pub(crate) fn run(command: Replay) -> Result<()> {
             let summary = execute_blockchain_tests_str(
                 &command.path,
                 &input,
-                BlockchainTestExecuteConfig::default(),
+                BlockchainTestExecuteConfig { mode: blockchain_mode, ..Default::default() },
                 &entrypoint,
                 &mut hook,
             )
@@ -53,6 +55,32 @@ pub(crate) fn run(command: Replay) -> Result<()> {
         }
         None => Err(Error::UnknownFixtureKind { path: command.path }),
     }
+}
+
+const fn replay_state_execution_mode(_command: &Replay) -> StateTestExecutionMode {
+    #[cfg(feature = "jit")]
+    {
+        if _command.jit {
+            return StateTestExecutionMode::Jit;
+        }
+        if _command.aot {
+            return StateTestExecutionMode::Aot;
+        }
+    }
+    StateTestExecutionMode::Interpreter
+}
+
+const fn replay_blockchain_execution_mode(_command: &Replay) -> BlockchainTestExecutionMode {
+    #[cfg(feature = "jit")]
+    {
+        if _command.jit {
+            return BlockchainTestExecutionMode::Jit;
+        }
+        if _command.aot {
+            return BlockchainTestExecutionMode::Aot;
+        }
+    }
+    BlockchainTestExecutionMode::Interpreter
 }
 
 #[derive(Default)]

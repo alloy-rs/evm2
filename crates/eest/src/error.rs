@@ -88,6 +88,10 @@ pub(crate) enum TestErrorKind {
     /// EVM execution failed.
     #[error(transparent)]
     Evm(#[from] HandlerError),
+    /// JIT runtime initialization failed.
+    #[cfg(feature = "jit")]
+    #[error("jit runtime error: {0}")]
+    JitRuntime(String),
 }
 
 impl From<TxBuildError> for TestErrorKind {

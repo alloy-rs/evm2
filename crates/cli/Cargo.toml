@@ -47,3 +47,7 @@ serde = { workspace = true, features = ["derive", "std"] }
 serde_json = { workspace = true, features = ["raw_value", "std"] }
 thiserror = { workspace = true, features = ["std"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time"] }
+
+[features]
+default = []
+jit = ["evm2-eest/jit"]

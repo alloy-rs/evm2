@@ -24,8 +24,15 @@ use evm2::{
     },
     registry::HandlerError,
 };
+#[cfg(feature = "jit")]
+use evm2_jit_runtime::{
+    evm2_evm::JitInterpreterRunner,
+    runtime::{ArtifactStore, JitBackend, RuntimeArtifactStore, RuntimeConfig, RuntimeTuning},
+};
 use serde_json::json;
 use std::{collections::BTreeMap, fs, path::Path};
+#[cfg(feature = "jit")]
+use std::{sync::Arc, thread};
 
 /// Per-spec execution outcome.
 #[derive(Clone, Debug)]
@@ -42,11 +49,86 @@ pub(crate) struct SpecOutcome {
     pub(crate) evm_result: String,
 }
 
+/// EEST execution backend.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ExecutionMode {
+    /// Run through the evm2 interpreter.
+    #[default]
+    Interpreter,
+    /// Run through the evm2 JIT runtime, falling back to the interpreter for unsupported code.
+    #[cfg(feature = "jit")]
+    Jit,
+    /// Run through the evm2 AOT runtime, falling back to the interpreter for unsupported code.
+    #[cfg(feature = "jit")]
+    Aot,
+}
+
 /// Execution options for a single suite.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ExecuteConfig {
     /// Whether to print revm-style JSON outcome records.
     pub print_json_outcome: bool,
+    /// Execution backend.
+    pub mode: ExecutionMode,
+}
+
+#[derive(Clone, Debug)]
+struct ExecutionResources {
+    #[cfg(feature = "jit")]
+    backend: Option<JitBackend>,
+}
+
+impl ExecutionResources {
+    fn new(mode: ExecutionMode) -> Result<Self, TestErrorKind> {
+        #[cfg(feature = "jit")]
+        {
+            let backend = match mode {
+                ExecutionMode::Interpreter => None,
+                ExecutionMode::Jit | ExecutionMode::Aot => Some(make_jit_backend(mode)?),
+            };
+            Ok(Self { backend })
+        }
+
+        #[cfg(not(feature = "jit"))]
+        {
+            let _ = mode;
+            Ok(Self {})
+        }
+    }
+
+    #[inline]
+    fn configure_evm(&self, _evm: &mut Evm<BaseEvmTypes>) {
+        #[cfg(feature = "jit")]
+        if let Some(backend) = &self.backend {
+            _evm.set_interpreter_runner(JitInterpreterRunner::new(backend.clone()));
+        }
+    }
+}
+
+#[cfg(feature = "jit")]
+fn make_jit_backend(mode: ExecutionMode) -> Result<JitBackend, TestErrorKind> {
+    let cpus = thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
+    let store = if mode == ExecutionMode::Aot {
+        Some(Arc::new(
+            RuntimeArtifactStore::new()
+                .map_err(|err| TestErrorKind::JitRuntime(err.to_string()))?,
+        ) as Arc<dyn ArtifactStore>)
+    } else {
+        None
+    };
+    JitBackend::new(RuntimeConfig {
+        enabled: true,
+        blocking: true,
+        aot: mode == ExecutionMode::Aot,
+        store,
+        tuning: RuntimeTuning {
+            jit_hot_threshold: 0,
+            jit_worker_count: cpus,
+            ..Default::default()
+        },
+        ..Default::default()
+    })
+    .map_err(|err| TestErrorKind::JitRuntime(err.to_string()))
 }
 
 /// Per-file execution summary.
@@ -82,13 +164,15 @@ pub fn execute_str_with_filter(
 ) -> Result<ExecuteSummary, TestError> {
     let suite: TestSuite =
         serde_json::from_str(input).map_err(|err| TestError::unknown(path, err.into()))?;
+    let resources =
+        ExecutionResources::new(config.mode).map_err(|err| TestError::unknown(path, err))?;
     let mut summary = ExecuteSummary::default();
     for (name, unit) in suite.0 {
         if !entrypoint.matches(&name) {
             summary.skipped += 1;
             continue;
         }
-        execute_unit(path, &name, unit, config)?;
+        execute_unit(path, &name, unit, config, &resources)?;
         summary.executed += 1;
     }
     Ok(summary)
@@ -99,6 +183,7 @@ fn execute_unit(
     name: &str,
     unit: TestUnit,
     config: ExecuteConfig,
+    resources: &ExecutionResources,
 ) -> Result<(), TestError> {
     let state = parse_state(&unit.pre).map_err(|err| TestError::case(path, name, err))?;
     for (spec_name, posts) in &unit.post {
@@ -117,7 +202,7 @@ fn execute_unit(
                 }
                 Err(err) => return Err(TestError::case(path, name, err)),
             };
-            let result = execute_spec(spec, block, state.clone(), &tx, &unit.env);
+            let result = execute_spec(spec, block, state.clone(), &tx, &unit.env, resources);
             validate_result(path, name, &unit, post, result, spec, config)?;
         }
     }
@@ -237,6 +322,7 @@ fn execute_spec(
     database: InMemoryDB,
     tx: &RecoveredTxEnvelope,
     env: &Env,
+    resources: &ExecutionResources,
 ) -> Result<SpecOutcome, HandlerError> {
     let mut evm = Evm::<BaseEvmTypes>::new(
         spec,
@@ -245,6 +331,7 @@ fn execute_spec(
         database.clone(),
         Precompiles::base(spec),
     );
+    resources.configure_evm(&mut evm);
     let mut post = database;
     pre_block_system_calls(&mut evm, &mut post, spec, env);
     let Ok(result) = evm.transact(tx)?.commit_with(&mut post);
