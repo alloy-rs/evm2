@@ -1,5 +1,24 @@
 --- upstream/crates/revmc-codegen/src/bytecode/passes/dedup.rs
 +++ evm2/crates/jit/codegen/src/bytecode/passes/dedup.rs
+@@ -7,8 +7,8 @@
+ use super::block_analysis::{Block, BlockData, Snapshots};
+ use crate::bytecode::{Bytecode, Inst, InstData, InstFlags};
+ use alloy_primitives::map::HashMap;
++use evm2::interpreter::op;
+ use oxc_index::IndexVec;
+-use revm_bytecode::opcode as op;
+ use smallvec::SmallVec;
+
+ /// Dedup key: instruction-level structural fingerprint, CFG successor blocks, and terminator
+@@ -218,7 +218,7 @@
+     use crate::bytecode::{
+         AnalysisConfig, InstFlags, passes::block_analysis::tests::analyze_asm_with,
+     };
+-    use revm_bytecode::opcode as op;
++    use evm2::interpreter::op;
+
+     #[test]
+     fn dedup_identical_revert_blocks() {
 @@ -393,7 +393,7 @@
          // Two byte-identical non-JUMPDEST JUMP tails with different resolved static targets.
          // Must NOT be merged — the JUMP target is context-sensitive.
@@ -18,3 +37,12 @@
          let mut bytecode = crate::Bytecode::test(code);
          bytecode.config = AnalysisConfig::DEDUP;
          bytecode.analyze().unwrap();
+@@ -455,7 +455,7 @@
+         let case = v.as_object().unwrap().values().next().unwrap();
+         let to = case["transaction"][0]["to"].as_str().unwrap();
+         let code = case["pre"][to]["code"].as_str().unwrap().trim_start_matches("0x");
+-        revm_primitives::hex::decode(code).unwrap()
++        alloy_primitives::hex::decode(code).unwrap()
+     }
+
+     #[test]

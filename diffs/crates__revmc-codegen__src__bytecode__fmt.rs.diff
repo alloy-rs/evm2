@@ -1,13 +1,30 @@
 --- upstream/crates/revmc-codegen/src/bytecode/fmt.rs
 +++ evm2/crates/jit/codegen/src/bytecode/fmt.rs
-@@ -37,15 +37,15 @@
+@@ -4,9 +4,12 @@
+     bitvec_as_bytes,
+     passes::block_analysis::Block,
+ };
++use alloy_primitives::hex;
++use evm2::{
++    SpecId,
++    interpreter::{op, opcode::OpCode},
++};
+ use oxc_index::{IndexVec, index_vec};
+-use revm_bytecode::opcode as op;
+-use revm_primitives::hex;
+ use std::{borrow::Cow, fmt, fmt::Write, io::IsTerminal};
+
+ impl Bytecode<'_> {
+@@ -37,15 +40,17 @@
          lines.push((
              String::new(),
              format!(
 -                "spec_id={} has_dynamic_jumps={} may_suspend={}",
 -                self.spec_id, self.has_dynamic_jumps, self.may_suspend,
 +                "spec_id={} has_dynamic_jumps={} has_recursive_frame_opcode={}",
-+                self.spec_id, self.has_dynamic_jumps, self.has_recursive_frame_opcode,
++                spec_id_name(self.spec_id),
++                self.has_dynamic_jumps,
++                self.has_recursive_frame_opcode,
              ),
          ));
          lines.push((
@@ -20,7 +37,7 @@
              ),
          ));
          lines.push((String::new(), String::new()));
-@@ -158,8 +158,8 @@
+@@ -158,8 +163,8 @@
                  if flags.contains(InstFlags::MULTI_JUMP) {
                      comment.push_str(" multi_jump");
                  }
@@ -31,7 +48,43 @@
                  }
                  if data.is_reachable_jumpdest(self.has_dynamic_jumps) {
                      comment.push_str(" reachable");
-@@ -295,7 +295,7 @@
+@@ -212,6 +217,27 @@
+     }
+ }
+
++fn spec_id_name(spec_id: SpecId) -> &'static str {
++    match spec_id {
++        SpecId::FRONTIER => "Frontier",
++        SpecId::HOMESTEAD => "Homestead",
++        SpecId::TANGERINE => "Tangerine",
++        SpecId::SPURIOUS_DRAGON => "SpuriousDragon",
++        SpecId::BYZANTIUM => "Byzantium",
++        SpecId::PETERSBURG => "Petersburg",
++        SpecId::ISTANBUL => "Istanbul",
++        SpecId::BERLIN => "Berlin",
++        SpecId::LONDON => "London",
++        SpecId::MERGE => "Merge",
++        SpecId::SHANGHAI => "Shanghai",
++        SpecId::CANCUN => "Cancun",
++        SpecId::PRAGUE => "Prague",
++        SpecId::OSAKA => "Osaka",
++        SpecId::AMSTERDAM => "Amsterdam",
++        _ => "Unknown",
++    }
++}
++
+ // ———————————————————————————————————————————————————————————————————————
+ // Colorizer (uses asm::Tokenizer)
+ // ———————————————————————————————————————————————————————————————————————
+@@ -251,7 +277,6 @@
+
+ /// Returns the ANSI color for an opcode name based on its byte-value category.
+ fn opcode_color(name: &str) -> &'static str {
+-    use revm_bytecode::opcode::OpCode;
+     let byte = match OpCode::parse(name) {
+         Some(op) => op.get(),
+         // Bare "PUSH" without a number suffix.
+@@ -295,7 +320,7 @@
              .field("jumpdests", &hex::encode(bitvec_as_bytes(&self.jumpdests)))
              .field("spec_id", &self.spec_id)
              .field("has_dynamic_jumps", &self.has_dynamic_jumps)
@@ -40,7 +93,7 @@
              .finish()
      }
  }
-@@ -339,9 +339,9 @@
+@@ -339,9 +364,9 @@
      // Non-reverting exit blocks (STOP, RETURN).
      pub(super) const EXIT_FILL: &str = DARK_GREEN;
      pub(super) const EXIT_BORDER: &str = GREEN;
@@ -53,7 +106,7 @@
      // Branching blocks.
      pub(super) const BRANCH_FILL: &str = DARK_TEAL;
      pub(super) const BRANCH_BORDER: &str = TEAL;
-@@ -377,13 +377,14 @@
+@@ -377,13 +402,14 @@
              let first = self.inst(block.insts.start);
 
              // Color based on block behavior.
@@ -71,8 +124,13 @@
              } else if last.is_jump() {
                  (BRANCH_FILL, BRANCH_BORDER)
              } else {
-@@ -528,7 +529,7 @@
-     use revm_primitives::hardfork::SpecId;
+@@ -524,11 +550,10 @@
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+-    use revm_bytecode::opcode as op;
+-    use revm_primitives::hardfork::SpecId;
++    use evm2::SpecId;
 
      /// Test bytecode with SSTORE (splits gas but not stack), a loop (back-edge), and CALL
 -    /// (suspending instruction that splits both gas and stack sections).
@@ -80,7 +138,7 @@
      fn test_bytecode() -> Bytecode<'static> {
          #[rustfmt::skip]
          let code: &[u8] = &[
-@@ -564,8 +565,8 @@
+@@ -564,8 +589,8 @@
          snapbox::assert_data_eq!(
              actual,
              snapbox::str![[r#"
@@ -91,7 +149,7 @@
 
  bb0:           ; stack_in=0 max_growth=1 predecessors=
    PUSH1 0x03   ; ic= 0 pc= 0 gas=11 noop
-@@ -581,14 +582,14 @@
+@@ -581,14 +606,14 @@
    JUMPI %bb1   ; ic= 8 pc=12
 
  bb2:           ; stack_in=0 max_growth=7 predecessors=bb1

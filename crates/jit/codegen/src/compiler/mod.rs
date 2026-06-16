@@ -2,8 +2,9 @@
 
 use crate::{
     Backend, Builder, Bytecode, EvmCompilerFn, EvmContext, EvmStack, FxHashMap, GasParams, Result,
-    bytecode::AnalysisConfig, spec::to_revm_spec_id,
+    bytecode::AnalysisConfig,
 };
+use alloy_primitives::Bytes;
 use evm2::SpecId;
 use evm2_jit_backend::{
     Attribute, BackendConfig, FunctionAttributeLocation, Linkage, OptimizationLevel, eyre::ensure,
@@ -11,7 +12,6 @@ use evm2_jit_backend::{
 };
 use evm2_jit_builtins::Builtins;
 use evm2_jit_context::RawEvmCompilerFn;
-use revm_primitives::Bytes;
 use std::{
     cell::Cell,
     fs,
@@ -569,7 +569,6 @@ impl<B: Backend> EvmCompiler<B> {
     ) -> Result<Bytecode<'a>> {
         let _t = self.remarks.time(|r| &r.parse);
         let EvmCompilerInput::Code(bytecode) = input;
-        let spec_id = to_revm_spec_id(spec_id);
 
         let mut bytecode = Bytecode::new(bytecode, spec_id, self.gas_params);
         bytecode.compiler_gas_limit = self.compiler_gas_limit;

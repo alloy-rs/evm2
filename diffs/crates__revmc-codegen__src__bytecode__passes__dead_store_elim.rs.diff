@@ -1,5 +1,14 @@
 --- upstream/crates/revmc-codegen/src/bytecode/passes/dead_store_elim.rs
 +++ evm2/crates/jit/codegen/src/bytecode/passes/dead_store_elim.rs
+@@ -14,7 +14,7 @@
+ use super::{StackSectionAnalysis, block_analysis::AbsValue};
+ use crate::bytecode::{AnalysisConfig, Bytecode, InstFlags};
+ use bitvec::vec::BitVec;
+-use revm_bytecode::opcode as op;
++use evm2::interpreter::op;
+
+ /// Decoded immediate for liveness transfer of DUPN/SWAPN/EXCHANGE.
+ #[derive(Clone, Copy)]
 @@ -65,12 +65,8 @@
              let max_height = entry_height + section.max_growth as i32;
 
@@ -32,7 +41,17 @@
              }
          }
 
-@@ -1043,35 +1029,4 @@
+@@ -401,8 +387,7 @@
+         Inst, analyze_asm, analyze_asm_spec, analyze_code_spec,
+     };
+     use crate::bytecode::InstFlags;
+-    use revm_bytecode::opcode as op;
+-    use revm_primitives::hardfork::SpecId;
++    use evm2::{SpecId, interpreter::op};
+
+     /// Helper: generates `"PUSH0\n"` repeated `n` times.
+     fn push0s(n: usize) -> String {
+@@ -1043,35 +1028,4 @@
              "PUSH 0 should be skipped (const input)"
          );
      }

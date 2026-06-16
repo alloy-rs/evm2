@@ -4,8 +4,8 @@ use crate::{
     U256, encode_pair, encode_single,
     eyre::{self, Result},
 };
-use revm_bytecode::opcode::{self as op, OpCode};
-use revm_primitives::map::HashMap;
+use alloy_primitives::map::HashMap;
+use evm2::interpreter::{op, opcode::OpCode};
 use std::cmp::Ordering;
 
 /// Parse EVM assembly from a string into bytecode.
@@ -806,7 +806,7 @@ fn emit_inst_no_labels(inst: &Inst<'_>, code: &mut Vec<u8>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use revm_bytecode::opcode as op;
+    use evm2::interpreter::op;
 
     #[test]
     fn basic_opcodes() {

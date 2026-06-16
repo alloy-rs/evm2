@@ -7,8 +7,8 @@
 use super::block_analysis::{Block, BlockData, Snapshots};
 use crate::bytecode::{Bytecode, Inst, InstData, InstFlags};
 use alloy_primitives::map::HashMap;
+use evm2::interpreter::op;
 use oxc_index::IndexVec;
-use revm_bytecode::opcode as op;
 use smallvec::SmallVec;
 
 /// Dedup key: instruction-level structural fingerprint, CFG successor blocks, and terminator
@@ -218,7 +218,7 @@ mod tests {
     use crate::bytecode::{
         AnalysisConfig, InstFlags, passes::block_analysis::tests::analyze_asm_with,
     };
-    use revm_bytecode::opcode as op;
+    use evm2::interpreter::op;
 
     #[test]
     fn dedup_identical_revert_blocks() {
@@ -455,7 +455,7 @@ mod tests {
         let case = v.as_object().unwrap().values().next().unwrap();
         let to = case["transaction"][0]["to"].as_str().unwrap();
         let code = case["pre"][to]["code"].as_str().unwrap().trim_start_matches("0x");
-        revm_primitives::hex::decode(code).unwrap()
+        alloy_primitives::hex::decode(code).unwrap()
     }
 
     #[test]

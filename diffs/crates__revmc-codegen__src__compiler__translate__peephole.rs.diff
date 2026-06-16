@@ -4,10 +4,12 @@
 
  use super::FunctionCx;
  use crate::{Backend, Builder, InstData, IntCC};
+-use revm_bytecode::opcode as op;
++use alloy_primitives::U256;
++use evm2::interpreter::op;
 +use evm2_jit_builtins::Builtin;
- use revm_bytecode::opcode as op;
  use revm_interpreter::InstructionResult;
- use revm_primitives::U256;
+-use revm_primitives::U256;
 -use revmc_builtins::Builtin;
 
  /// i256 INT_MIN: 1 << 255.

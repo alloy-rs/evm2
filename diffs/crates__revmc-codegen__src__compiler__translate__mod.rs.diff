@@ -4,12 +4,14 @@
      Backend, Builder, Bytecode, EvmContext, Inst, InstData, InstFlags, IntCC, Result, StackSection,
      decode_pair, decode_single,
  };
++use alloy_primitives::U256;
++use evm2::interpreter::op;
 +use evm2_jit_backend::{Attribute, BackendTypes, FunctionAttributeLocation, Pointer, TypeMethods};
 +use evm2_jit_builtins::{Builtin, Builtins, CallKind, CreateKind};
  use oxc_index::IndexVec;
- use revm_bytecode::opcode as op;
+-use revm_bytecode::opcode as op;
  use revm_interpreter::{InputsImpl, InstructionResult};
- use revm_primitives::U256;
+-use revm_primitives::U256;
 -use revmc_backend::{Attribute, BackendTypes, FunctionAttributeLocation, Pointer, TypeMethods};
 -use revmc_builtins::{Builtin, Builtins, CallKind, CreateKind};
  use std::mem;
@@ -95,7 +97,16 @@
              builtins,
 
              vstack: VStack::default(),
-@@ -308,7 +271,6 @@
+@@ -301,14 +264,14 @@
+         // Add debug assertions for the parameters.
+         if config.debug_assertions {
+             // Assert that the runtime spec_id matches the compilation spec_id.
+-            let compiled_spec = fx.bcx.iconst(fx.i8_type, bytecode.spec_id as i64);
++            let compiled_spec =
++                fx.bcx.iconst(fx.i8_type, crate::spec::to_revm_spec_id(bytecode.spec_id) as i64);
+             let _ = fx.call_builtin(Builtin::AssertSpecId, &[ecx, compiled_spec]);
+         }
+
          // The bytecode is guaranteed to have at least one instruction.
          let first_inst_block = fx.inst_entries[Inst::from_usize(0)];
          let post_entry_block = fx.bcx.create_block_after(entry_block, "entry.post");
@@ -103,7 +114,7 @@
          fx.bcx.br(post_entry_block);
 
          // Translate individual instructions into their respective blocks.
-@@ -341,94 +303,16 @@
+@@ -341,94 +304,16 @@
              fx.bcx.unreachable();
          }
 
@@ -206,7 +217,7 @@
 
          // Finalize the failure block.
          fx.bcx.switch_to_block(fx.failure_block.unwrap());
-@@ -559,12 +443,6 @@
+@@ -559,12 +444,6 @@
          // Assert that we already skipped the block.
          debug_assert!(!data.flags.contains(InstFlags::DEAD_CODE));
 
@@ -219,7 +230,7 @@
          // Disabled instructions don't pay gas.
          if data.flags.contains(InstFlags::DISABLED) {
              goto_return!(fail InstructionResult::NotActivated);
-@@ -634,7 +512,7 @@
+@@ -634,7 +513,7 @@
                  out == 1 || out == inp + 1,
                  "const_output assumes single synthesized push: inp={inp}, out={out}",
              );
@@ -228,7 +239,7 @@
              // We push exactly 1 value, so consume `inp + 1 - out` to match the
              // real stack diff. For DUP (out = inp+1) this is 0; for ADD (out = 1)
              // this equals inp.
-@@ -1122,15 +1000,12 @@
+@@ -1122,15 +1001,12 @@
 
              op::CREATE => {
                  self.create_common(CreateKind::Create);
@@ -244,7 +255,7 @@
              }
              op::RETURN => {
                  self.return_common(InstructionResult::Return);
-@@ -1138,16 +1013,13 @@
+@@ -1138,16 +1014,13 @@
              }
              op::DELEGATECALL => {
                  self.call_common(CallKind::DelegateCall);
@@ -261,7 +272,7 @@
              }
 
              op::REVERT => {
-@@ -1173,7 +1045,7 @@
+@@ -1173,7 +1046,7 @@
 
      /// Syncs the virtual stack for a NOOP instruction. Unlike `sync_virtual_stack_diff`,
      /// this preserves known-constant outputs as `Virtual` values so that boundary
@@ -270,7 +281,7 @@
      /// them to physical memory. Without this, NOOP'd constants would be marked
      /// `Materialized` with no actual store, leaving garbage in memory.
      fn sync_noop_diff(&mut self, inst: Inst, diff: i32) {
-@@ -1389,7 +1261,6 @@
+@@ -1389,7 +1262,6 @@
          let sp = self.sp_after_inputs();
          let create_kind = self.bcx.iconst(self.i8_type, create_kind as i64);
          self.call_fallible_builtin(Builtin::Create, &[self.ecx, sp, create_kind]);
@@ -278,7 +289,7 @@
      }
 
      /// Builds `*CALL*` instructions.
-@@ -1397,32 +1268,6 @@
+@@ -1397,32 +1269,6 @@
          let sp = self.sp_after_inputs();
          let call_kind = self.bcx.iconst(self.i8_type, call_kind as i64);
          self.call_fallible_builtin(Builtin::Call, &[self.ecx, sp, call_kind]);
@@ -311,7 +322,7 @@
      }
 
      /// Loads the word at the given pointer.
-@@ -1910,15 +1755,6 @@
+@@ -1910,15 +1756,6 @@
          block
      }
 
@@ -327,7 +338,7 @@
      #[allow(dead_code)]
      fn call_printf(&mut self, template: &std::ffi::CStr, values: &[B::Value]) {
          let mut args = Vec::with_capacity(values.len() + 1);
-@@ -2047,7 +1883,7 @@
+@@ -2047,7 +1884,7 @@
          // self.call_printf(format_printf!("{} - calling {name}\n", self.op_block_name("")), &[]);
 
          debug_assert_eq!(args.len(), arg_types.len());
@@ -336,7 +347,7 @@
          // SAFETY: `this` aliases `self` to work around the borrow checker: we need `self.bcx`
          // borrowed by `get_or_build_function` while also swapping `self.bcx` inside the closure.
          // The closure's `bcx` is a fresh builder (not `self.bcx`), so the swap is safe.
-@@ -2130,12 +1966,8 @@
+@@ -2130,12 +1967,8 @@
 
  /// Computes the effective stack diff for an instruction, matching the codegen semantics.
  fn effective_stack_diff(inp: u8, out: u8, data: &InstData) -> i32 {

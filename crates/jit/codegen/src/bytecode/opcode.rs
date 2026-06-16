@@ -1,6 +1,8 @@
 use crate::{OpcodeInfo, op_info_map};
-use revm_bytecode::{opcode as op, opcode::OPCODE_INFO};
-use revm_primitives::hardfork::SpecId;
+use evm2::{
+    SpecId,
+    interpreter::{op, opcode::OPCODE_INFO},
+};
 use std::{fmt, slice};
 
 /// A bytecode iterator that yields opcodes and their immediate data, alongside the program counter.
@@ -177,7 +179,7 @@ impl fmt::Display for Opcode<'_> {
             None => write!(f, "UNKNOWN(0x{:02x})", self.opcode),
         }?;
         match self.immediate {
-            Some(imm) => write!(f, " {}", revm_primitives::hex::encode_prefixed(imm)),
+            Some(imm) => write!(f, " {}", alloy_primitives::hex::encode_prefixed(imm)),
             None => Ok(()),
         }
     }
@@ -285,7 +287,6 @@ pub fn format_bytecode_to<W: fmt::Write + ?Sized>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use revm_bytecode::opcode as op;
 
     const DEF_SPEC: SpecId = SpecId::LONDON;
 

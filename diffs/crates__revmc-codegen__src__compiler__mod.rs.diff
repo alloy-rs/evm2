@@ -1,14 +1,12 @@
 --- upstream/crates/revmc-codegen/src/compiler/mod.rs
 +++ evm2/crates/jit/codegen/src/compiler/mod.rs
-@@ -2,15 +2,16 @@
-
- use crate::{
+@@ -4,13 +4,14 @@
      Backend, Builder, Bytecode, EvmCompilerFn, EvmContext, EvmStack, FxHashMap, GasParams, Result,
--    bytecode::AnalysisConfig,
-+    bytecode::AnalysisConfig, spec::to_revm_spec_id,
+     bytecode::AnalysisConfig,
  };
 -use revm_primitives::{Bytes, hardfork::SpecId};
 -use revmc_backend::{
++use alloy_primitives::Bytes;
 +use evm2::SpecId;
 +use evm2_jit_backend::{
      Attribute, BackendConfig, FunctionAttributeLocation, Linkage, OptimizationLevel, eyre::ensure,
@@ -18,7 +16,6 @@
 -use revmc_context::RawEvmCompilerFn;
 +use evm2_jit_builtins::Builtins;
 +use evm2_jit_context::RawEvmCompilerFn;
-+use revm_primitives::Bytes;
  use std::{
      cell::Cell,
      fs,
@@ -44,18 +41,16 @@
      pub fn set_gas_params(&mut self, gas_params: GasParams) {
          self.gas_params = Some(gas_params);
      }
-@@ -568,8 +569,9 @@
-     ) -> Result<Bytecode<'a>> {
+@@ -569,7 +570,7 @@
          let _t = self.remarks.time(|r| &r.parse);
          let EvmCompilerInput::Code(bytecode) = input;
-+        let spec_id = to_revm_spec_id(spec_id);
 
 -        let mut bytecode = Bytecode::new(bytecode, spec_id, self.gas_params.clone());
 +        let mut bytecode = Bytecode::new(bytecode, spec_id, self.gas_params);
          bytecode.compiler_gas_limit = self.compiler_gas_limit;
          bytecode.config.set(AnalysisConfig::INSPECT_STACK, self.config.inspect_stack);
          bytecode.config.set(AnalysisConfig::DEDUP, self.dedup);
-@@ -850,7 +852,7 @@
+@@ -850,7 +851,7 @@
              let file = fs::File::create(dump_dir.join("bytecode.dot"))?;
              let mut writer = io::BufWriter::new(file);
              let mut dot = String::new();
@@ -64,7 +59,7 @@
              writer.write_all(dot.as_bytes())?;
              writer.flush()?;
          }
-@@ -987,14 +989,13 @@
+@@ -987,14 +988,13 @@
 
  #[allow(dead_code)]
  mod default_attrs {

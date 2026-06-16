@@ -32,8 +32,8 @@ use super::StackSection;
 use crate::bytecode::{Bytecode, Inst, InstFlags, Interner, U256Imm};
 use bitvec::vec::BitVec;
 use either::Either;
+use evm2::interpreter::op;
 use oxc_index::{IndexVec, index_vec};
-use revm_bytecode::opcode as op;
 use smallvec::SmallVec;
 use std::{cmp::Ordering, collections::VecDeque, ops::Range};
 
@@ -1222,7 +1222,8 @@ impl Bytecode<'_> {
 pub(crate) mod tests {
     use super::*;
     pub(crate) use crate::bytecode::Inst;
-    pub(crate) use revm_primitives::{U256, hardfork::SpecId, hex};
+    pub(crate) use alloy_primitives::{U256, hex};
+    pub(crate) use evm2::SpecId;
 
     pub(crate) fn analyze_hex(hex: &str) -> Bytecode<'static> {
         let code = hex::decode(hex.trim()).unwrap();
@@ -1698,7 +1699,7 @@ pub(crate) mod tests {
         let case = v.as_object().unwrap().values().next().unwrap();
         let to = case["transaction"][0]["to"].as_str().unwrap();
         let code = case["pre"][to]["code"].as_str().unwrap().trim_start_matches("0x");
-        revm_primitives::hex::decode(code).unwrap()
+        hex::decode(code).unwrap()
     }
 }
 

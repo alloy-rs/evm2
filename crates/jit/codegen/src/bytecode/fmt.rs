@@ -4,9 +4,12 @@ use super::{
     bitvec_as_bytes,
     passes::block_analysis::Block,
 };
+use alloy_primitives::hex;
+use evm2::{
+    SpecId,
+    interpreter::{op, opcode::OpCode},
+};
 use oxc_index::{IndexVec, index_vec};
-use revm_bytecode::opcode as op;
-use revm_primitives::hex;
 use std::{borrow::Cow, fmt, fmt::Write, io::IsTerminal};
 
 impl Bytecode<'_> {
@@ -38,7 +41,9 @@ impl Bytecode<'_> {
             String::new(),
             format!(
                 "spec_id={} has_dynamic_jumps={} has_recursive_frame_opcode={}",
-                self.spec_id, self.has_dynamic_jumps, self.has_recursive_frame_opcode,
+                spec_id_name(self.spec_id),
+                self.has_dynamic_jumps,
+                self.has_recursive_frame_opcode,
             ),
         ));
         lines.push((
@@ -212,6 +217,27 @@ impl fmt::Display for Bytecode<'_> {
     }
 }
 
+fn spec_id_name(spec_id: SpecId) -> &'static str {
+    match spec_id {
+        SpecId::FRONTIER => "Frontier",
+        SpecId::HOMESTEAD => "Homestead",
+        SpecId::TANGERINE => "Tangerine",
+        SpecId::SPURIOUS_DRAGON => "SpuriousDragon",
+        SpecId::BYZANTIUM => "Byzantium",
+        SpecId::PETERSBURG => "Petersburg",
+        SpecId::ISTANBUL => "Istanbul",
+        SpecId::BERLIN => "Berlin",
+        SpecId::LONDON => "London",
+        SpecId::MERGE => "Merge",
+        SpecId::SHANGHAI => "Shanghai",
+        SpecId::CANCUN => "Cancun",
+        SpecId::PRAGUE => "Prague",
+        SpecId::OSAKA => "Osaka",
+        SpecId::AMSTERDAM => "Amsterdam",
+        _ => "Unknown",
+    }
+}
+
 // ———————————————————————————————————————————————————————————————————————
 // Colorizer (uses asm::Tokenizer)
 // ———————————————————————————————————————————————————————————————————————
@@ -251,7 +277,6 @@ fn colorize(f: &mut fmt::Formatter<'_>, plain: &str) -> fmt::Result {
 
 /// Returns the ANSI color for an opcode name based on its byte-value category.
 fn opcode_color(name: &str) -> &'static str {
-    use revm_bytecode::opcode::OpCode;
     let byte = match OpCode::parse(name) {
         Some(op) => op.get(),
         // Bare "PUSH" without a number suffix.
@@ -525,8 +550,7 @@ fn abbreviate_hex(s: &str) -> Cow<'_, str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use revm_bytecode::opcode as op;
-    use revm_primitives::hardfork::SpecId;
+    use evm2::SpecId;
 
     /// Test bytecode with SSTORE (splits gas but not stack), a loop (back-edge), and CALL
     /// (recursive frame instruction that splits both gas and stack sections).

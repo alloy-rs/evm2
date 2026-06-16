@@ -1,14 +1,20 @@
 --- upstream/crates/revmc-codegen/src/bytecode/mod.rs
 +++ evm2/crates/jit/codegen/src/bytecode/mod.rs
-@@ -2,15 +2,14 @@
+@@ -1,16 +1,18 @@
+ //! Internal EVM bytecode and opcode representation.
 
  use crate::FxHashMap;
++use alloy_primitives::U256;
  use bitvec::vec::BitVec;
-+use evm2::version::GasParams;
++use evm2::{
++    SpecId,
++    interpreter::{op, opcode::OpCode},
++    version::GasParams,
++};
 +use evm2_jit_backend::Result;
  use oxc_index::IndexVec;
- use revm_bytecode::opcode as op;
- use revm_primitives::{U256, hardfork::SpecId};
+-use revm_bytecode::opcode as op;
+-use revm_primitives::{U256, hardfork::SpecId};
 -use revmc_backend::Result;
  use smallvec::SmallVec;
  use std::{borrow::Cow, cell::RefCell};
@@ -18,7 +24,7 @@
  mod passes;
  pub(crate) use passes::{
      Block, Cfg, GasSection, MemorySection, MemorySectionAnalysis, SectionsAnalysis, Snapshots,
-@@ -31,10 +30,6 @@
+@@ -31,10 +33,6 @@
  mod opcode;
  pub use opcode::*;
 
@@ -29,7 +35,7 @@
  /// Implements `Display` for a nonmax index type using a format string.
  macro_rules! impl_index_display {
      ($ty:ty, $fmt:literal) => {
-@@ -167,12 +162,12 @@
+@@ -167,12 +165,12 @@
      jumpdests: BitVec,
      /// The [`SpecId`].
      pub(crate) spec_id: SpecId,
@@ -45,17 +51,22 @@
      /// Mapping from program counter to instruction.
      pc_to_inst: FxHashMap<u32, Inst>,
      /// Mapping from instruction index to its program counter (`code[pc]` is the opcode byte).
-@@ -231,7 +226,8 @@
+@@ -226,12 +224,12 @@
+
+     #[cfg(test)]
+     pub(crate) fn test(code: impl Into<Cow<'a, [u8]>>) -> Self {
+-        Self::new(code, crate::tests::DEF_SPEC, None)
++        Self::new(code, crate::spec::from_revm_spec_id(crate::tests::DEF_SPEC), None)
+     }
 
      #[instrument(name = "Bytecode::new", level = "debug", skip_all)]
      fn new_mono(code: Cow<'a, [u8]>, spec_id: SpecId, gas_params: Option<GasParams>) -> Self {
 -        let gas_params = gas_params.unwrap_or_else(|| GasParams::new_spec(spec_id));
-+        let gas_params = gas_params
-+            .unwrap_or(evm2::Version::base(crate::spec::from_revm_spec_id(spec_id)).gas_params);
++        let gas_params = gas_params.unwrap_or(evm2::Version::base(spec_id).gas_params);
          let mut insts = IndexVec::with_capacity(code.len() + 8);
          let mut inst_to_pc = IndexVec::with_capacity(code.len() + 8);
          let mut jumpdests = BitVec::repeat(false, code.len());
-@@ -330,7 +326,7 @@
+@@ -330,7 +328,7 @@
              spec_id,
              gas_params,
              has_dynamic_jumps: false,
@@ -64,7 +75,7 @@
              snapshots: Snapshots::default(),
              memory_sections: IndexVec::new(),
              u256_interner: RefCell::new(u256_interner),
-@@ -439,7 +435,7 @@
+@@ -439,7 +437,7 @@
              self.dead_store_elim();
          }
 
@@ -73,7 +84,7 @@
 
          self.construct_sections();
          self.construct_memory_sections();
-@@ -564,13 +560,12 @@
+@@ -564,13 +562,12 @@
          marked_jump_dead
      }
 
@@ -93,7 +104,7 @@
      }
 
      /// Constructs the sections in the bytecode.
-@@ -641,15 +636,15 @@
+@@ -641,15 +638,15 @@
          self.has_dynamic_jumps
      }
 
@@ -115,7 +126,7 @@
      }
 
      /// Returns `true` if the instruction is diverging.
-@@ -833,7 +828,7 @@
+@@ -833,7 +830,7 @@
          let mut live = 0usize;
          let mut noops = 0usize;
          let mut dead = 0usize;
@@ -124,7 +135,7 @@
          for (_inst, data) in self.iter_all_insts() {
              if data.is_dead_code() {
                  dead += 1;
-@@ -842,8 +837,8 @@
+@@ -842,8 +839,8 @@
                  if data.flags.contains(InstFlags::NOOP) {
                      noops += 1;
                  }
@@ -135,7 +146,7 @@
                  }
              }
          }
-@@ -862,7 +857,7 @@
+@@ -862,7 +859,7 @@
              live,
              dead,
              noops,
@@ -144,7 +155,7 @@
              blocks: n,
              block_min,
              block_max,
-@@ -882,7 +877,7 @@
+@@ -882,7 +879,7 @@
              live = s.live,
              dead = s.dead,
              noops = s.noops,
@@ -153,7 +164,7 @@
              blocks = s.blocks,
              block_min = s.block_min,
              block_max = s.block_max,
-@@ -934,7 +929,7 @@
+@@ -934,7 +931,7 @@
      pub(crate) live: usize,
      pub(crate) dead: usize,
      pub(crate) noops: usize,
@@ -162,6 +173,17 @@
      pub(crate) blocks: usize,
      pub(crate) block_min: usize,
      pub(crate) block_max: usize,
+@@ -1125,9 +1122,7 @@
+     /// Note that this does not include CALL and CREATE.
+     #[inline]
+     pub(crate) fn requires_gasleft(&self, spec_id: SpecId) -> bool {
+-        // For SSTORE, see `revm_interpreter::gas::sstore_cost`.
+-        self.opcode == op::GAS
+-            || (self.opcode == op::SSTORE && spec_id.is_enabled_in(SpecId::ISTANBUL))
++        self.opcode == op::GAS || (self.opcode == op::SSTORE && spec_id.enables(SpecId::ISTANBUL))
+     }
+
+     /// Returns `true` if execution can fall through to the next sequential instruction.
 @@ -1145,11 +1140,6 @@
      /// Returns `true` if we know that this instruction will stop execution.
      #[inline]

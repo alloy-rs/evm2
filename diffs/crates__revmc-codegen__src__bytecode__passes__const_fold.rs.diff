@@ -1,0 +1,33 @@
+--- upstream/crates/revmc-codegen/src/bytecode/passes/const_fold.rs
++++ evm2/crates/jit/codegen/src/bytecode/passes/const_fold.rs
+@@ -5,9 +5,9 @@
+     InstData,
+     bytecode::{U256Imm, U256Interner},
+ };
+-use revm_bytecode::opcode as op;
++use alloy_primitives::U256;
++use evm2::interpreter::op;
+ use revm_interpreter::instructions::i256::{i256_cmp, i256_div, i256_mod};
+-use revm_primitives::U256;
+ use std::cmp::Ordering;
+
+ /// Returns the compiler gas cost of constant-folding the given opcode with the given inputs.
+@@ -203,8 +203,7 @@
+         Bytecode,
+         passes::block_analysis::tests::{Inst, analyze_asm},
+     };
+-    use revm_bytecode::opcode::OpCode;
+-    use revm_primitives::U256;
++    use evm2::interpreter::opcode::OpCode;
+     use std::{fmt::Write, time::Instant};
+
+     /// Builds bytecode that pushes operands, executes `opcode`, sinks the result
+@@ -597,7 +596,7 @@
+                 fold.is_some(),
+                 "const_fold_gas and try_const_fold disagree on opcode {opcode:#04x} ({}): \
+                  gas={gas:?}, fold={fold:?}",
+-                revm_bytecode::opcode::OpCode::new(opcode).map_or("unknown", |o| o.as_str()),
++                OpCode::new(opcode).map_or("unknown", |o| o.as_str()),
+             );
+         }
+     }

@@ -1,12 +1,15 @@
 //! Internal EVM bytecode and opcode representation.
 
 use crate::FxHashMap;
+use alloy_primitives::U256;
 use bitvec::vec::BitVec;
-use evm2::version::GasParams;
+use evm2::{
+    SpecId,
+    interpreter::{op, opcode::OpCode},
+    version::GasParams,
+};
 use evm2_jit_backend::Result;
 use oxc_index::IndexVec;
-use revm_bytecode::opcode as op;
-use revm_primitives::{U256, hardfork::SpecId};
 use smallvec::SmallVec;
 use std::{borrow::Cow, cell::RefCell};
 
@@ -221,13 +224,12 @@ impl<'a> Bytecode<'a> {
 
     #[cfg(test)]
     pub(crate) fn test(code: impl Into<Cow<'a, [u8]>>) -> Self {
-        Self::new(code, crate::tests::DEF_SPEC, None)
+        Self::new(code, crate::spec::from_revm_spec_id(crate::tests::DEF_SPEC), None)
     }
 
     #[instrument(name = "Bytecode::new", level = "debug", skip_all)]
     fn new_mono(code: Cow<'a, [u8]>, spec_id: SpecId, gas_params: Option<GasParams>) -> Self {
-        let gas_params = gas_params
-            .unwrap_or(evm2::Version::base(crate::spec::from_revm_spec_id(spec_id)).gas_params);
+        let gas_params = gas_params.unwrap_or(evm2::Version::base(spec_id).gas_params);
         let mut insts = IndexVec::with_capacity(code.len() + 8);
         let mut inst_to_pc = IndexVec::with_capacity(code.len() + 8);
         let mut jumpdests = BitVec::repeat(false, code.len());
@@ -1120,9 +1122,7 @@ impl InstData {
     /// Note that this does not include CALL and CREATE.
     #[inline]
     pub(crate) fn requires_gasleft(&self, spec_id: SpecId) -> bool {
-        // For SSTORE, see `revm_interpreter::gas::sstore_cost`.
-        self.opcode == op::GAS
-            || (self.opcode == op::SSTORE && spec_id.is_enabled_in(SpecId::ISTANBUL))
+        self.opcode == op::GAS || (self.opcode == op::SSTORE && spec_id.enables(SpecId::ISTANBUL))
     }
 
     /// Returns `true` if execution can fall through to the next sequential instruction.

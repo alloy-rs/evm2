@@ -6,10 +6,10 @@
 
 use super::FunctionCx;
 use crate::{Backend, Builder, InstData, IntCC};
+use alloy_primitives::U256;
+use evm2::interpreter::op;
 use evm2_jit_builtins::Builtin;
-use revm_bytecode::opcode as op;
 use revm_interpreter::InstructionResult;
-use revm_primitives::U256;
 
 /// i256 INT_MIN: 1 << 255.
 const INT_MIN: U256 = U256::ONE.wrapping_shl(255);

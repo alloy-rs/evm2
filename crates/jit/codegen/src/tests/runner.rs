@@ -153,7 +153,7 @@ impl Default for TestCase<'_> {
 impl fmt::Debug for TestCase<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TestCase")
-            .field("bytecode", &format_bytecode(self.bytecode, self.spec_id))
+            .field("bytecode", &format_bytecode(self.bytecode, from_revm_spec_id(self.spec_id)))
             .field("spec_id", &self.spec_id)
             .field("inspect_stack", &self.inspect_stack)
             .field("modify_ecx", &self.modify_ecx.is_some())
@@ -191,7 +191,7 @@ impl<'a> TestCase<'a> {
 // Default values.
 pub const DEF_SPEC: SpecId = SpecId::CANCUN;
 pub static DEF_OPINFOS: std::sync::LazyLock<&'static [OpcodeInfo; 256]> =
-    std::sync::LazyLock::new(|| op_info_map(DEF_SPEC));
+    std::sync::LazyLock::new(|| op_info_map(from_revm_spec_id(DEF_SPEC)));
 
 pub const DEF_GAS_LIMIT: u64 = 100_000;
 pub const DEF_GAS_LIMIT_U256: U256 = U256::from_le_slice(&DEF_GAS_LIMIT.to_le_bytes());

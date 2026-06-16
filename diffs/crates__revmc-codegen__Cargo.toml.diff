@@ -18,7 +18,7 @@
 -revmc-builtins = { workspace = true, features = ["ir"] }
 -revmc-context = { workspace = true, features = ["evm"] }
 -revmc-llvm = { workspace = true, optional = true }
-+evm2.workspace = true
++evm2 = { workspace = true, features = ["parse"] }
 +evm2-jit-backend.workspace = true
 +evm2-jit-builtins = { workspace = true, features = ["ir"] }
 +evm2-jit-context.workspace = true

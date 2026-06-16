@@ -14,7 +14,7 @@
 use super::{StackSectionAnalysis, block_analysis::AbsValue};
 use crate::bytecode::{AnalysisConfig, Bytecode, InstFlags};
 use bitvec::vec::BitVec;
-use revm_bytecode::opcode as op;
+use evm2::interpreter::op;
 
 /// Decoded immediate for liveness transfer of DUPN/SWAPN/EXCHANGE.
 #[derive(Clone, Copy)]
@@ -387,8 +387,7 @@ mod tests {
         Inst, analyze_asm, analyze_asm_spec, analyze_code_spec,
     };
     use crate::bytecode::InstFlags;
-    use revm_bytecode::opcode as op;
-    use revm_primitives::hardfork::SpecId;
+    use evm2::{SpecId, interpreter::op};
 
     /// Helper: generates `"PUSH0\n"` repeated `n` times.
     fn push0s(n: usize) -> String {

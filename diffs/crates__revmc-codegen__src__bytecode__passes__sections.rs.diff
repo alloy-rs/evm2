@@ -1,6 +1,13 @@
 --- upstream/crates/revmc-codegen/src/bytecode/passes/sections.rs
 +++ evm2/crates/jit/codegen/src/bytecode/passes/sections.rs
-@@ -6,7 +6,7 @@
+@@ -1,12 +1,12 @@
+ use crate::bytecode::{Bytecode, Inst, InstFlags};
++use alloy_primitives::U256;
+ use core::fmt;
+-use revm_bytecode::opcode as op;
+-use revm_primitives::U256;
++use evm2::interpreter::op;
+
  /// A gas section tracks the total base gas cost of a sequence of instructions.
  ///
  /// Gas sections end at instructions that require `gasleft` (e.g. `GAS`, `SSTORE`),
@@ -33,3 +40,13 @@
              self.stack.save_to_reset(bytecode, next);
              self.gas.save_to_reset(bytecode, next);
          }
+@@ -277,8 +280,7 @@
+         Inst,
+         passes::block_analysis::tests::{analyze_asm, analyze_asm_spec, analyze_code_spec},
+     };
+-    use revm_bytecode::opcode as op;
+-    use revm_primitives::hardfork::SpecId;
++    use evm2::{SpecId, interpreter::op};
+
+     /// Returns the gas section cost for the first non-dead instruction (the section head).
+     fn section_gas(src: &str) -> u32 {

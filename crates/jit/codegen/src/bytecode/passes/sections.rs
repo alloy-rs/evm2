@@ -1,7 +1,7 @@
 use crate::bytecode::{Bytecode, Inst, InstFlags};
+use alloy_primitives::U256;
 use core::fmt;
-use revm_bytecode::opcode as op;
-use revm_primitives::U256;
+use evm2::interpreter::op;
 
 /// A gas section tracks the total base gas cost of a sequence of instructions.
 ///
@@ -280,8 +280,7 @@ mod tests {
         Inst,
         passes::block_analysis::tests::{analyze_asm, analyze_asm_spec, analyze_code_spec},
     };
-    use revm_bytecode::opcode as op;
-    use revm_primitives::hardfork::SpecId;
+    use evm2::{SpecId, interpreter::op};
 
     /// Returns the gas section cost for the first non-dead instruction (the section head).
     fn section_gas(src: &str) -> u32 {

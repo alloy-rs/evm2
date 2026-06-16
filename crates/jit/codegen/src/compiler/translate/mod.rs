@@ -5,12 +5,12 @@ use crate::{
     Backend, Builder, Bytecode, EvmContext, Inst, InstData, InstFlags, IntCC, Result, StackSection,
     decode_pair, decode_single,
 };
+use alloy_primitives::U256;
+use evm2::interpreter::op;
 use evm2_jit_backend::{Attribute, BackendTypes, FunctionAttributeLocation, Pointer, TypeMethods};
 use evm2_jit_builtins::{Builtin, Builtins, CallKind, CreateKind};
 use oxc_index::IndexVec;
-use revm_bytecode::opcode as op;
 use revm_interpreter::{InputsImpl, InstructionResult};
-use revm_primitives::U256;
 use std::mem;
 
 mod peephole;
@@ -264,7 +264,8 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         // Add debug assertions for the parameters.
         if config.debug_assertions {
             // Assert that the runtime spec_id matches the compilation spec_id.
-            let compiled_spec = fx.bcx.iconst(fx.i8_type, bytecode.spec_id as i64);
+            let compiled_spec =
+                fx.bcx.iconst(fx.i8_type, crate::spec::to_revm_spec_id(bytecode.spec_id) as i64);
             let _ = fx.call_builtin(Builtin::AssertSpecId, &[ecx, compiled_spec]);
         }
 
