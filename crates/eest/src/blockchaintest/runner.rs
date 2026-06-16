@@ -199,3 +199,30 @@ const IGNORED_TESTS: &[&str] = &[
     // This fixture has a block gas limit below the transaction intrinsic gas and belongs to block validation.
     "static/state_tests/stEIP1559/lowGasLimit.json",
 ];
+
+#[cfg(all(test, feature = "jit"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mode_root_name_maps_blockchain_roots() {
+        assert_eq!(mode_root_name("blockchain_tests", ModeName::Jit), "blockchain_tests::jit");
+        assert_eq!(mode_root_name("blockchain_tests", ModeName::Aot), "blockchain_tests::aot");
+        assert_eq!(
+            mode_root_name("blockchain_tests::custom", ModeName::Jit),
+            "blockchain_tests::custom::jit"
+        );
+        assert_eq!(
+            mode_root_name("blockchain_tests::custom", ModeName::Aot),
+            "blockchain_tests::custom::aot"
+        );
+        assert_eq!(
+            mode_root_name("blockchain_tests::devnet", ModeName::Jit),
+            "blockchain_tests::devnet::jit"
+        );
+        assert_eq!(
+            mode_root_name("blockchain_tests::devnet", ModeName::Aot),
+            "blockchain_tests::devnet::aot"
+        );
+    }
+}

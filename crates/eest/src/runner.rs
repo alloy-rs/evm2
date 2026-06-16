@@ -139,3 +139,40 @@ const IGNORED_TESTS: &[&str] = &[
 fn should_ignore(name: &str) -> bool {
     IGNORED_TESTS.iter().any(|pattern| name.contains(pattern))
 }
+
+#[cfg(all(test, feature = "jit"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mode_root_name_maps_state_roots() {
+        assert_eq!(mode_root_name("statetests", ModeName::Jit), "statetests::jit");
+        assert_eq!(mode_root_name("statetests", ModeName::Aot), "statetests::aot");
+        assert_eq!(mode_root_name("statetests::custom", ModeName::Jit), "statetests::custom::jit");
+        assert_eq!(mode_root_name("statetests::custom", ModeName::Aot), "statetests::custom::aot");
+        assert_eq!(mode_root_name("statetests::devnet", ModeName::Jit), "statetests::devnet::jit");
+        assert_eq!(mode_root_name("statetests::devnet", ModeName::Aot), "statetests::devnet::aot");
+    }
+
+    #[test]
+    fn mode_root_name_maps_legacy_roots() {
+        assert_eq!(mode_root_name("legacy::cancun", ModeName::Jit), "legacy::cancun::jit");
+        assert_eq!(mode_root_name("legacy::cancun", ModeName::Aot), "legacy::cancun::aot");
+        assert_eq!(
+            mode_root_name("legacy::constantinople", ModeName::Jit),
+            "legacy::constantinople::jit"
+        );
+        assert_eq!(
+            mode_root_name("legacy::constantinople", ModeName::Aot),
+            "legacy::constantinople::aot"
+        );
+        assert_eq!(
+            mode_root_name("legacy::ethereum_tests", ModeName::Jit),
+            "legacy::ethereum_tests::jit"
+        );
+        assert_eq!(
+            mode_root_name("legacy::ethereum_tests", ModeName::Aot),
+            "legacy::ethereum_tests::aot"
+        );
+    }
+}
