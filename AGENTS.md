@@ -9,26 +9,6 @@ This is a work-in-progress repo with no public API stability guarantees. Do not 
 backwards-compatibility aliases, deprecated wrappers, compatibility shims, or similar
 transitional API layers unless explicitly requested.
 
-## Temporary Branch Context
-
-This branch is porting `paradigmxyz/revm-inspectors` into `crates/inspectors`
-while keeping the port's diff against upstream as small and intentional as possible.
-The goal is to preserve upstream source shape, behavior, tests, and comments wherever
-the evm2 API does not require a real difference.
-
-The `diffs/` directory tracks generated unified diffs between upstream
-`revm-inspectors` and the local `crates/inspectors` port. After every source change
-that affects the inspectors port, run `./scripts/generate_inspectors_diffs.sh` and
-inspect the relevant file in `diffs/`. Use those generated diffs while editing: if a
-hunk only reflects formatting, naming, import ordering, stale test code, or another
-unnecessary divergence from upstream, fix the source instead of accepting the diff.
-
-Never mention revm in code: comparisons like "like revm", "mirrors revm's X", or
-"matches upstream" are forbidden in comments, doc comments, and identifiers. Describe
-the behavior self-containedly instead. The only exceptions are comments inherited
-verbatim from upstream sources in `crates/inspectors` (kept unchanged to minimize the
-diff) and genuine uses of the `revm` crate, such as differential fuzzing.
-
 ## Commands
 
 ```bash
