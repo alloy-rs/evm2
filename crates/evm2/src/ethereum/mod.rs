@@ -560,18 +560,6 @@ pub(super) fn access_list_counts(access_list: &AccessList) -> (u64, u64) {
     (access_list.len() as u64, access_list.storage_keys_count() as u64)
 }
 
-/// Calculates EIP-7981 access-list floor tokens. Each address is 20 bytes and
-/// each storage key is 32 bytes; every byte contributes
-/// [`GasId::TxAccessListFloorByteMultiplier`] tokens (zero before Amsterdam).
-fn access_list_floor_tokens(
-    version: &Version,
-    access_list_accounts: u64,
-    access_list_storage_keys: u64,
-) -> u64 {
-    let multiplier = u64::from(version.gas_params.get(GasId::TxAccessListFloorByteMultiplier));
-    (access_list_accounts * 20 + access_list_storage_keys * 32) * multiplier
-}
-
 /// Calculates transaction calldata floor gas.
 pub(super) fn floor_gas(
     version: &Version,
@@ -588,14 +576,17 @@ pub(super) fn floor_gas(
         return 0;
     }
 
-    let non_zero_multiplier = u64::from(params.get(GasId::TxTokenNonZeroByteMultiplier));
-    let mut tokens =
-        access_list_floor_tokens(version, access_list_accounts, access_list_storage_keys);
-    for byte in input {
-        tokens += if *byte == 0 { 1 } else { non_zero_multiplier };
-    }
+    // tokens for access list
+    let al_multiplier = version.gas_params.get(GasId::TxAccessListFloorByteMultiplier) as u64;
+    let mut tokens = (access_list_accounts * 20 + access_list_storage_keys * 32) * al_multiplier;
 
-    u64::from(params.get(GasId::TxFloorCostBase)) + tokens * floor_cost_per_token
+    // tokens for input.
+    let non_zero_multiplier = u64::from(params.get(GasId::TxTokenNonZeroByteMultiplier));
+    let zero_data_len = input.iter().filter(|v| **v == 0).count() as u64;
+    let non_zero_data_len = input.len() as u64 - zero_data_len;
+    tokens += zero_data_len + non_zero_data_len * non_zero_multiplier;
+
+    params.get(GasId::TxFloorCostBase) as u64 + tokens * floor_cost_per_token
 }
 
 /// Calculates intrinsic transaction gas.
