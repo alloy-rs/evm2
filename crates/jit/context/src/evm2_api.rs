@@ -1,11 +1,11 @@
 //! evm2-facing runtime context.
 
 use crate::{
-    AccountInfoLoad, EvmStack, EvmWord, InstrStop, JitHost, LoadError, SStoreResult,
-    SelfDestructResult, StateLoad,
+    AccountInfoLoad, CallInput, EvmStack, EvmWord, Inputs, InstrStop, JitHost, LoadError,
+    SStoreResult, SelfDestructResult, StateLoad,
 };
 use alloc::{borrow::Cow, boxed::Box, vec::Vec};
-use alloy_primitives::{Bytes as RevmBytes, U256};
+use alloy_primitives::{Bytes, U256};
 use core::{
     cmp::min,
     fmt,
@@ -22,7 +22,7 @@ use evm2::{
     version::GasId,
 };
 use revm_interpreter::{
-    CallInput, Gas as RevmGas, InputsImpl, SharedMemory,
+    Gas as RevmGas, SharedMemory,
     bytecode::Bytecode as RevmBytecode,
     context_interface::{
         cfg::GasParams as RevmGasParams, primitives::hardfork::SpecId as RevmSpecId,
@@ -257,7 +257,7 @@ fn load_error(stop: InstrStop, skip_cold_load: bool) -> LoadError {
 }
 
 fn revm_bytecode_from_evm2(bytecode: &Bytecode) -> RevmBytecode {
-    RevmBytecode::new_raw(RevmBytes::copy_from_slice(bytecode.original_byte_slice()))
+    RevmBytecode::new_raw(Bytes::copy_from_slice(bytecode.original_byte_slice()))
 }
 
 /// The evm2 bytecode compiler runtime context.
@@ -266,7 +266,7 @@ pub struct EvmContext<'a, T: EvmTypes = BaseEvmTypes> {
     /// The memory.
     pub memory: *mut SharedMemory,
     /// Input information (target address, caller, input data, call value).
-    pub input: *mut InputsImpl,
+    pub input: *mut Inputs,
     /// The gas.
     pub gas: RevmGas,
     /// Host trait object slot consumed by host-touching builtins.
@@ -296,7 +296,7 @@ pub struct EvmContext<'a, T: EvmTypes = BaseEvmTypes> {
     pub mem_len: usize,
     /// Output produced by RETURN or REVERT.
     #[doc(hidden)]
-    pub output: RevmBytes,
+    pub output: Bytes,
     /// Recursive evm2 call/create dispatch used by call-like builtins.
     #[doc(hidden)]
     pub evm2_recursion: crate::Evm2Recursion,
@@ -306,9 +306,9 @@ pub struct EvmContext<'a, T: EvmTypes = BaseEvmTypes> {
     /// Frame-local call/create message.
     #[doc(hidden)]
     pub message: &'a Message<T>,
-    return_data_scratch: RevmBytes,
+    return_data_scratch: Bytes,
     memory_scratch: Box<SharedMemory>,
-    input_scratch: Box<InputsImpl>,
+    input_scratch: Box<Inputs>,
     _host_adapter: Box<Evm2JitHostAdapter<'a, T>>,
 }
 
@@ -526,14 +526,14 @@ impl<'a, T: EvmTypes> EvmContext<'a, T> {
         let calldatasize = parts.message.input.len();
         let spec_id = spec_id_byte(parts.spec);
         let revm_spec_id = to_revm_spec_id(parts.spec);
-        let mut input_scratch = Box::new(InputsImpl {
+        let mut input_scratch = Box::new(Inputs {
             target_address: parts.message.destination,
             bytecode_address: Some(parts.message.code_address),
             caller_address: parts.message.caller,
-            input: CallInput::Bytes(RevmBytes::copy_from_slice(parts.message.input.as_ref())),
+            input: CallInput::Bytes(Bytes::copy_from_slice(parts.message.input.as_ref())),
             call_value: parts.message.value,
         });
-        let input = input_scratch.as_mut() as *mut InputsImpl;
+        let input = input_scratch.as_mut() as *mut Inputs;
         let mut host_adapter =
             Box::new(Evm2JitHostAdapter::new(host, parts.tx_env, parts.version, revm_spec_id));
         let jit_host = JitHostPtr::from_host(host_adapter.as_mut());
@@ -553,14 +553,14 @@ impl<'a, T: EvmTypes> EvmContext<'a, T> {
             gas_params: RevmGasParams::new_spec(revm_spec_id),
             mem_base: ptr::null_mut(),
             mem_len: 0,
-            output: RevmBytes::new(),
+            output: Bytes::new(),
             evm2_recursion: crate::Evm2Recursion::new(
                 evm2_recursive_create::<T>,
                 evm2_recursive_call::<T>,
             ),
             tx_env: parts.tx_env,
             message: parts.message,
-            return_data_scratch: RevmBytes::new(),
+            return_data_scratch: Bytes::new(),
             memory_scratch,
             input_scratch,
             _host_adapter: host_adapter,
@@ -596,11 +596,11 @@ impl<'a, T: EvmTypes> EvmContext<'a, T> {
 
     /// Returns the input shim visible to compiled code.
     #[inline]
-    pub fn input(&self) -> &InputsImpl {
+    pub fn input(&self) -> &Inputs {
         &self.input_scratch
     }
 
-    fn set_return_data(&mut self, data: RevmBytes) {
+    fn set_return_data(&mut self, data: Bytes) {
         self.return_data_scratch = data;
         self.return_data = unsafe { &*(self.return_data_scratch.as_ref() as *const [u8]) };
     }
@@ -688,11 +688,11 @@ fn resize_memory_range<T: EvmTypes>(
     Ok(offset..offset + len)
 }
 
-fn memory_range_bytes<T: EvmTypes>(ecx: &mut EvmContext<'_, T>, range: Range<usize>) -> RevmBytes {
+fn memory_range_bytes<T: EvmTypes>(ecx: &mut EvmContext<'_, T>, range: Range<usize>) -> Bytes {
     if range.is_empty() {
-        return RevmBytes::new();
+        return Bytes::new();
     }
-    RevmBytes::copy_from_slice(&unsafe { &*ecx.memory }.slice(range))
+    Bytes::copy_from_slice(&unsafe { &*ecx.memory }.slice(range))
 }
 
 fn get_memory_input_and_out_ranges<T: EvmTypes>(
@@ -939,8 +939,7 @@ fn create_inner<T: EvmTypes>(
     ecx.gas.erase_cost(result.gas_returned_to_parent());
     ecx.gas.record_refund(result.refund_propagated_to_parent());
 
-    let return_data =
-        if result.stop == InstrStop::Revert { result.output } else { RevmBytes::new() };
+    let return_data = if result.stop == InstrStop::Revert { result.output } else { Bytes::new() };
     let address = result
         .created_address
         .filter(|_| result.stop.is_success())
@@ -1326,7 +1325,7 @@ mod tests {
             assert_eq!(unsafe { frame.stack.get_unchecked(0) }.to_u256(), Word::from(1));
             assert_eq!(frame.ecx.return_data, child_output.as_ref());
             assert_eq!(&*unsafe { &*frame.ecx.memory }.slice(8..10), &[0xaa, 0xbb]);
-            frame.ecx.output = RevmBytes::copy_from_slice(b"frame-output");
+            frame.ecx.output = AlloyBytes::copy_from_slice(b"frame-output");
             assert_eq!(frame.ecx.return_data, child_output.as_ref());
         }
 
@@ -1388,7 +1387,7 @@ mod tests {
         _stack_len: NonNull<usize>,
     ) -> InstrStop {
         let ecx = unsafe { ecx.as_mut() };
-        ecx.output = RevmBytes::copy_from_slice(b"ok");
+        ecx.output = AlloyBytes::copy_from_slice(b"ok");
         InstrStop::Return
     }
 

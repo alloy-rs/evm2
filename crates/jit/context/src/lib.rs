@@ -7,13 +7,10 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 use alloy_primitives::{Address, B256, Bytes, Log, U256, ruint};
-use core::{fmt, mem::MaybeUninit, ptr::NonNull};
+use core::{cell::Ref, fmt, mem::MaybeUninit, ops::Range, ptr::NonNull};
 pub use evm2::interpreter::InstrStop;
-pub use revm_interpreter::{
-    CallInput,
-    interpreter_types::{InputsTr, MemoryTr},
-};
-use revm_interpreter::{Gas, InputsImpl, SharedMemory, context_interface::cfg::GasParams};
+pub use revm_interpreter::interpreter_types::MemoryTr;
+use revm_interpreter::{Gas, SharedMemory, context_interface::cfg::GasParams};
 
 #[doc(hidden)]
 pub type AccountInfoLoad<'a> =
@@ -35,17 +32,87 @@ pub use arch::revmc_exit;
 pub mod evm2_api;
 
 #[doc(hidden)]
-pub mod jit_abi {
-    use super::*;
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CallInput {
+    Bytes(Bytes),
+    SharedBuffer(Range<usize>),
+}
 
-    #[derive(Debug)]
-    pub struct Inputs {
-        pub target_address: Address,
-        pub bytecode_address: Option<Address>,
-        pub caller_address: Address,
-        pub input: CallInput,
-        pub call_value: U256,
+impl CallInput {
+    #[inline]
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Bytes(bytes) => bytes.len(),
+            Self::SharedBuffer(range) => range.len(),
+        }
     }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    #[inline]
+    pub fn as_bytes_memory<'a, M: MemoryTr>(
+        &'a self,
+        memory: &'a M,
+    ) -> impl core::ops::Deref<Target = [u8]> + 'a {
+        match self {
+            Self::Bytes(bytes) => CallInputRef::Bytes(bytes.as_ref()),
+            Self::SharedBuffer(range) => {
+                CallInputRef::SharedBuffer(Some(memory.global_slice(range.clone())))
+            }
+        }
+    }
+}
+
+impl Default for CallInput {
+    #[inline]
+    fn default() -> Self {
+        Self::Bytes(Bytes::new())
+    }
+}
+
+enum CallInputRef<'a> {
+    Bytes(&'a [u8]),
+    SharedBuffer(Option<Ref<'a, [u8]>>),
+}
+
+impl core::ops::Deref for CallInputRef<'_> {
+    type Target = [u8];
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Bytes(bytes) => bytes,
+            Self::SharedBuffer(bytes) => bytes.as_deref().unwrap_or_default(),
+        }
+    }
+}
+
+#[doc(hidden)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[repr(C)]
+pub struct Inputs {
+    pub target_address: Address,
+    pub bytecode_address: Option<Address>,
+    pub caller_address: Address,
+    pub input: CallInput,
+    pub call_value: U256,
+}
+
+impl Inputs {
+    #[inline]
+    pub const fn input(&self) -> &CallInput {
+        &self.input
+    }
+}
+
+#[doc(hidden)]
+pub mod jit_abi {
+    pub type Inputs = super::Inputs;
+
+    use super::*;
 
     #[derive(Clone, Copy, Debug)]
     pub struct Gas {
@@ -72,13 +139,8 @@ pub mod jit_abi {
     const _: () = {
         use core::mem::{align_of, offset_of, size_of};
 
-        assert!(size_of::<Inputs>() == size_of::<InputsImpl>());
-        assert!(align_of::<Inputs>() == align_of::<InputsImpl>());
-        assert!(offset_of!(Inputs, target_address) == offset_of!(InputsImpl, target_address));
-        assert!(offset_of!(Inputs, bytecode_address) == offset_of!(InputsImpl, bytecode_address));
-        assert!(offset_of!(Inputs, caller_address) == offset_of!(InputsImpl, caller_address));
-        assert!(offset_of!(Inputs, input) == offset_of!(InputsImpl, input));
-        assert!(offset_of!(Inputs, call_value) == offset_of!(InputsImpl, call_value));
+        assert!(offset_of!(Inputs, target_address) == 0);
+        assert!(align_of::<Inputs>() >= align_of::<Address>());
 
         assert!(size_of::<Gas>() == size_of::<super::Gas>());
         assert!(align_of::<Gas>() == align_of::<super::Gas>());
@@ -205,7 +267,7 @@ pub struct EvmContext<'a> {
     /// The memory.
     pub memory: &'a mut SharedMemory,
     /// Input information (target address, caller, input data, call value).
-    pub input: &'a mut InputsImpl,
+    pub input: &'a mut Inputs,
     /// The gas.
     pub gas: Gas,
     /// The host.

@@ -13,7 +13,7 @@ extern crate tracing;
 use alloc::vec::Vec;
 use alloy_primitives::{B256, Bytes, KECCAK256_EMPTY, Log, LogData, U256, keccak256};
 use evm2::{SpecId, interpreter::i256};
-use evm2_jit_context::{CallInput, EvmContext, EvmWord, InputsTr, InstrStop, MemoryTr};
+use evm2_jit_context::{CallInput, EvmContext, EvmWord, InstrStop, MemoryTr};
 
 pub mod gas;
 
