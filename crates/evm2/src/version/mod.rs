@@ -735,8 +735,12 @@ evm_versions! {
             CreateState: 112 * AMSTERDAM_CPSB,
             SstoreSetRefund: 32 * AMSTERDAM_CPSB + 2800,
             TxFloorCostPerToken: TOTAL_COST_FLOOR_PER_TOKEN_AMSTERDAM,
-            TxAccessListAddressFloorTokens: EIP7981_ACCESS_LIST_ADDRESS_FLOOR_TOKENS,
-            TxAccessListStorageKeyFloorTokens: EIP7981_ACCESS_LIST_STORAGE_KEY_FLOOR_TOKENS,
+            // EIP-7981: charge access-list data at 64 gas per byte (20 bytes per
+            // address, 32 per storage key), baked into the per-item cost. Each
+            // access-list byte also contributes 4 floor tokens (16 * 4 = 64 gas).
+            TxAccessListAddressCost: EIP2930_ACCESS_LIST_ADDRESS + 20 * EIP7981_ACCESS_LIST_DATA_COST_PER_BYTE,
+            TxAccessListStorageKeyCost: EIP2930_ACCESS_LIST_STORAGE_KEY + 32 * EIP7981_ACCESS_LIST_DATA_COST_PER_BYTE,
+            TxAccessListFloorByteMultiplier: EIP7981_ACCESS_LIST_FLOOR_BYTE_MULTIPLIER,
             TxEip7702PerEmptyAccountCost: 7500 + (112 + 23) * AMSTERDAM_CPSB,
             TxEip7702AuthRefund: 112 * AMSTERDAM_CPSB,
             TxEip7702PerAuthState: (112 + 23) * AMSTERDAM_CPSB,

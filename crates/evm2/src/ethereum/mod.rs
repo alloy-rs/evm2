@@ -560,14 +560,16 @@ pub(super) fn access_list_counts(access_list: &AccessList) -> (u64, u64) {
     (access_list.len() as u64, access_list.storage_keys_count() as u64)
 }
 
+/// Calculates EIP-7981 access-list floor tokens. Each address is 20 bytes and
+/// each storage key is 32 bytes; every byte contributes
+/// [`GasId::TxAccessListFloorByteMultiplier`] tokens (zero before Amsterdam).
 fn access_list_floor_tokens(
     version: &Version,
     access_list_accounts: u64,
     access_list_storage_keys: u64,
 ) -> u64 {
-    let params = &version.gas_params;
-    access_list_accounts * u64::from(params.get(GasId::TxAccessListAddressFloorTokens))
-        + access_list_storage_keys * u64::from(params.get(GasId::TxAccessListStorageKeyFloorTokens))
+    let multiplier = u64::from(version.gas_params.get(GasId::TxAccessListFloorByteMultiplier));
+    (access_list_accounts * 20 + access_list_storage_keys * 32) * multiplier
 }
 
 /// Calculates transaction calldata floor gas.
@@ -612,8 +614,6 @@ pub(super) fn intrinsic_gas(
     }
     gas += access_list_accounts * u64::from(params.get(GasId::TxAccessListAddressCost));
     gas += access_list_storage_keys * u64::from(params.get(GasId::TxAccessListStorageKeyCost));
-    gas += access_list_floor_tokens(version, access_list_accounts, access_list_storage_keys)
-        * u64::from(params.get(GasId::TxFloorCostPerToken));
     if to.is_create() && version.feature(EvmFeatures::EIP2) {
         gas += u64::from(params.get(GasId::TxCreateCost));
     }
@@ -667,7 +667,7 @@ mod tests {
                 1,
                 1
             ),
-            21_000 + 2400 + 1900 + (80 + 128) * 16
+            21_000 + (2400 + 20 * 64) + (1900 + 32 * 64)
         );
     }
 
