@@ -1,6 +1,44 @@
 --- upstream/crates/revmc-llvm/src/orc.rs
 +++ evm2/crates/jit/llvm/src/orc.rs
-@@ -913,7 +913,7 @@
+@@ -229,7 +229,7 @@
+
+     /// Wraps a raw pointer. Must not be null.
+     pub unsafe fn from_inner_unchecked(ptr: LLVMOrcSymbolStringPoolEntryRef) -> Self {
+-        Self { ptr: NonNull::new_unchecked(ptr) }
++        Self { ptr: unsafe { NonNull::new_unchecked(ptr) } }
+     }
+
+     /// Unwraps the raw pointer.
+@@ -546,16 +546,18 @@
+         discard: LLVMOrcMaterializationUnitDiscardFunction,
+         destroy: LLVMOrcMaterializationUnitDestroyFunction,
+     ) -> Self {
+-        Self::from_inner(LLVMOrcCreateCustomMaterializationUnit(
+-            name.as_ptr(),
+-            ctx,
+-            syms,
+-            num_syms,
+-            init_sym,
+-            materialize,
+-            discard,
+-            destroy,
+-        ))
++        unsafe {
++            Self::from_inner(LLVMOrcCreateCustomMaterializationUnit(
++                name.as_ptr(),
++                ctx,
++                syms,
++                num_syms,
++                init_sym,
++                materialize,
++                discard,
++                destroy,
++            ))
++        }
+     }
+
+     /// Create a MaterializationUnit to define the given symbols as pointing to the corresponding
+@@ -913,7 +915,7 @@
      /// is dropped.
      pub fn remove_jit_dylib(&self, jd: JITDylibRef) -> Result<(), LLVMString> {
          cvt(unsafe {
@@ -9,7 +47,16 @@
                  self.as_inner(),
                  jd.as_inner(),
              )
-@@ -996,7 +996,7 @@
+@@ -959,7 +961,7 @@
+
+     /// Wraps a raw pointer. Must not be null.
+     pub unsafe fn from_inner_unchecked(dylib: LLVMOrcJITDylibRef) -> Self {
+-        Self { dylib: NonNull::new_unchecked(dylib) }
++        Self { dylib: unsafe { NonNull::new_unchecked(dylib) } }
+     }
+
+     /// Unwraps the raw pointer.
+@@ -996,7 +998,7 @@
      /// Symbols not found in this JITDylib will be searched for in `other`.
      pub fn add_to_link_order(self, other: Self) {
          unsafe {
@@ -18,7 +65,16 @@
          };
      }
 
-@@ -1120,7 +1120,7 @@
+@@ -1084,7 +1086,7 @@
+         ctx: *mut c_void,
+         dispose: LLVMOrcDisposeCAPIDefinitionGeneratorFunction,
+     ) -> Self {
+-        Self::from_inner(LLVMOrcCreateCustomCAPIDefinitionGenerator(f, ctx, dispose))
++        unsafe { Self::from_inner(LLVMOrcCreateCustomCAPIDefinitionGenerator(f, ctx, dispose)) }
+     }
+
+     /// Wraps a raw pointer.
+@@ -1120,7 +1122,7 @@
      /// LookupState will contain a pointer to an LLVMOrcLookupStateRef object. This can optionally
      /// be modified to make the definition generation process asynchronous: If the LookupStateRef
      /// value is copied, and the original LLVMOrcLookupStateRef set to null, the lookup will be
@@ -27,7 +83,7 @@
      /// LLVMOrcLookupStateContinueLookup to continue the lookup (this should be done
      /// unconditionally, even if errors have occurred in the mean time, to free the lookup state
      /// memory and notify the query object of the failures). If LookupState is captured this
-@@ -1295,7 +1295,7 @@
+@@ -1295,7 +1297,7 @@
      /// runs inline on the thread that triggers it — no background threads.
      pub fn concurrent_compiler(mut self) -> Self {
          unsafe {
@@ -36,7 +92,7 @@
          };
          self
      }
-@@ -1457,7 +1457,7 @@
+@@ -1457,7 +1459,7 @@
      pub fn lookup_in(&self, jd: JITDylibRef, name: &CStr) -> Result<usize, LLVMString> {
          let mut res = MaybeUninit::uninit();
          cvt(unsafe {
@@ -45,7 +101,7 @@
                  self.as_inner(),
                  jd.as_inner(),
                  res.as_mut_ptr(),
-@@ -1485,7 +1485,7 @@
+@@ -1485,7 +1487,7 @@
      /// can resolve JIT-compiled symbols with full debug info and unwind info.
      /// Requires `ObjectLinkingLayer` (JITLink), which is the LLJIT default.
      pub fn enable_perf_support(&self) -> Result<(), LLVMString> {
@@ -54,7 +110,7 @@
      }
 
      /// Install `SimplePerfSupportPlugin` on the LLJIT's `ObjectLinkingLayer`.
-@@ -1500,7 +1500,7 @@
+@@ -1500,7 +1502,7 @@
      /// indefinitely. Prefer [`enable_perf_support`](Self::enable_perf_support)
      /// (jitdump) for long-lived processes.
      pub fn enable_simple_perf(&self) -> Result<(), LLVMString> {
@@ -63,11 +119,20 @@
      }
 
      /// Install the plugin that submits debug objects to the executor via the
-@@ -1514,7 +1514,7 @@
+@@ -1514,7 +1516,7 @@
      /// automatically registered so that GDB, LLDB, `perf`, and other profilers
      /// can resolve JIT-compiled function names and source locations.
      pub fn enable_debug_support(&self) -> Result<(), LLVMString> {
 -        cvt(unsafe { crate::cpp::revmc_llvm_lljit_enable_debug_support(self.as_inner()) })
 +        cvt(unsafe { crate::cpp::evm2_jit_llvm_lljit_enable_debug_support(self.as_inner()) })
+     }
+ }
+
+@@ -1613,7 +1615,7 @@
+         f: extern "C" fn(ctx: *mut c_void, obj_in_out: *mut LLVMMemoryBufferRef) -> LLVMErrorRef,
+         ctx: *mut c_void,
+     ) {
+-        LLVMOrcObjectTransformLayerSetTransform(self.as_inner(), f, ctx);
++        unsafe { LLVMOrcObjectTransformLayerSetTransform(self.as_inner(), f, ctx) };
      }
  }

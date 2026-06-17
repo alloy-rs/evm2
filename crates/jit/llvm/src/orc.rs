@@ -229,7 +229,7 @@ impl SymbolStringPoolEntry {
 
     /// Wraps a raw pointer. Must not be null.
     pub unsafe fn from_inner_unchecked(ptr: LLVMOrcSymbolStringPoolEntryRef) -> Self {
-        Self { ptr: NonNull::new_unchecked(ptr) }
+        Self { ptr: unsafe { NonNull::new_unchecked(ptr) } }
     }
 
     /// Unwraps the raw pointer.
@@ -546,16 +546,18 @@ impl MaterializationUnit {
         discard: LLVMOrcMaterializationUnitDiscardFunction,
         destroy: LLVMOrcMaterializationUnitDestroyFunction,
     ) -> Self {
-        Self::from_inner(LLVMOrcCreateCustomMaterializationUnit(
-            name.as_ptr(),
-            ctx,
-            syms,
-            num_syms,
-            init_sym,
-            materialize,
-            discard,
-            destroy,
-        ))
+        unsafe {
+            Self::from_inner(LLVMOrcCreateCustomMaterializationUnit(
+                name.as_ptr(),
+                ctx,
+                syms,
+                num_syms,
+                init_sym,
+                materialize,
+                discard,
+                destroy,
+            ))
+        }
     }
 
     /// Create a MaterializationUnit to define the given symbols as pointing to the corresponding
@@ -959,7 +961,7 @@ impl JITDylibRef {
 
     /// Wraps a raw pointer. Must not be null.
     pub unsafe fn from_inner_unchecked(dylib: LLVMOrcJITDylibRef) -> Self {
-        Self { dylib: NonNull::new_unchecked(dylib) }
+        Self { dylib: unsafe { NonNull::new_unchecked(dylib) } }
     }
 
     /// Unwraps the raw pointer.
@@ -1084,7 +1086,7 @@ impl DefinitionGenerator {
         ctx: *mut c_void,
         dispose: LLVMOrcDisposeCAPIDefinitionGeneratorFunction,
     ) -> Self {
-        Self::from_inner(LLVMOrcCreateCustomCAPIDefinitionGenerator(f, ctx, dispose))
+        unsafe { Self::from_inner(LLVMOrcCreateCustomCAPIDefinitionGenerator(f, ctx, dispose)) }
     }
 
     /// Wraps a raw pointer.
@@ -1613,7 +1615,7 @@ impl ObjectTransformLayerRef {
         f: extern "C" fn(ctx: *mut c_void, obj_in_out: *mut LLVMMemoryBufferRef) -> LLVMErrorRef,
         ctx: *mut c_void,
     ) {
-        LLVMOrcObjectTransformLayerSetTransform(self.as_inner(), f, ctx);
+        unsafe { LLVMOrcObjectTransformLayerSetTransform(self.as_inner(), f, ctx) };
     }
 }
 
