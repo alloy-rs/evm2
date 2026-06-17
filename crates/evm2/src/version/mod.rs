@@ -701,7 +701,6 @@ evm_versions! {
 
     AMSTERDAM {
         features: [
-            EIP7981,
             EIP8037,
             EIP7708,
             EIP7708_DELAYED_BURN,
