@@ -626,6 +626,7 @@ impl<'a> Bytecode<'a> {
     }
 
     /// Returns `true` if the bytecode contains `*CALL*` or `*CREATE*` instructions.
+    #[cfg(any(test, feature = "__fuzzing"))]
     pub(crate) fn has_recursive_message_opcode(&self) -> bool {
         self.iter_insts().any(|(_, data)| data.is_recursive_message_opcode())
     }

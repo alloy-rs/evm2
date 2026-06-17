@@ -91,7 +91,7 @@
      /// Constructs the sections in the bytecode.
      #[instrument(name = "sections", level = "debug", skip_all)]
      #[inline(never)]
-@@ -641,15 +625,14 @@
+@@ -641,15 +625,15 @@
          self.has_dynamic_jumps
      }
 
@@ -99,6 +99,7 @@
 -    pub(crate) fn may_suspend(&self) -> bool {
 -        self.may_suspend
 +    /// Returns `true` if the bytecode contains `*CALL*` or `*CREATE*` instructions.
++    #[cfg(any(test, feature = "__fuzzing"))]
 +    pub(crate) fn has_recursive_message_opcode(&self) -> bool {
 +        self.iter_insts().any(|(_, data)| data.is_recursive_message_opcode())
      }
@@ -112,7 +113,7 @@
      }
 
      /// Returns `true` if the instruction is diverging.
-@@ -833,7 +816,7 @@
+@@ -833,7 +817,7 @@
          let mut live = 0usize;
          let mut noops = 0usize;
          let mut dead = 0usize;
@@ -121,7 +122,7 @@
          for (_inst, data) in self.iter_all_insts() {
              if data.is_dead_code() {
                  dead += 1;
-@@ -842,8 +825,8 @@
+@@ -842,8 +826,8 @@
                  if data.flags.contains(InstFlags::NOOP) {
                      noops += 1;
                  }
@@ -132,7 +133,7 @@
                  }
              }
          }
-@@ -862,7 +845,7 @@
+@@ -862,7 +846,7 @@
              live,
              dead,
              noops,
@@ -141,7 +142,7 @@
              blocks: n,
              block_min,
              block_max,
-@@ -882,7 +865,7 @@
+@@ -882,7 +866,7 @@
              live = s.live,
              dead = s.dead,
              noops = s.noops,
@@ -150,7 +151,7 @@
              blocks = s.blocks,
              block_min = s.block_min,
              block_max = s.block_max,
-@@ -934,7 +917,7 @@
+@@ -934,7 +918,7 @@
      pub(crate) live: usize,
      pub(crate) dead: usize,
      pub(crate) noops: usize,
@@ -159,7 +160,7 @@
      pub(crate) blocks: usize,
      pub(crate) block_min: usize,
      pub(crate) block_max: usize,
-@@ -1125,9 +1108,7 @@
+@@ -1125,9 +1109,7 @@
      /// Note that this does not include CALL and CREATE.
      #[inline]
      pub(crate) fn requires_gasleft(&self, spec_id: SpecId) -> bool {
@@ -170,7 +171,7 @@
      }
 
      /// Returns `true` if execution can fall through to the next sequential instruction.
-@@ -1145,11 +1126,6 @@
+@@ -1145,11 +1127,6 @@
      /// Returns `true` if we know that this instruction will stop execution.
      #[inline]
      pub(crate) fn is_diverging(&self) -> bool {
@@ -182,7 +183,7 @@
          (self.opcode == op::JUMP && self.flags.contains(InstFlags::INVALID_JUMP))
              || self.flags.contains(InstFlags::DISABLED)
              || self.flags.contains(InstFlags::UNKNOWN)
-@@ -1159,14 +1135,9 @@
+@@ -1159,14 +1136,9 @@
              )
      }
 
@@ -199,7 +200,7 @@
          matches!(
              self.opcode,
              op::CALL | op::CALLCODE | op::DELEGATECALL | op::STATICCALL | op::CREATE | op::CREATE2
-@@ -1181,7 +1152,7 @@
+@@ -1181,7 +1153,7 @@
          /// The `JUMP`/`JUMPI` target is known at compile time.
          const STATIC_JUMP = 1 << 0;
          /// The jump target is known to be invalid.
@@ -208,7 +209,7 @@
          const INVALID_JUMP = 1 << 1;
          /// The jump has multiple known targets (see `Bytecode::multi_jump_targets`).
          /// The target value is still on the stack and must be popped and switched on at runtime.
-@@ -1190,10 +1161,10 @@
+@@ -1190,10 +1162,10 @@
          const CONST_JUMP_CONDITION = 1 << 3;
 
          /// The instruction is disabled in this EVM version.
@@ -221,7 +222,7 @@
          const UNKNOWN = 1 << 5;
 
          /// Instruction is a no-op: skip generating logic, but keep the gas calculation.
-@@ -1218,13 +1189,6 @@
+@@ -1218,13 +1190,6 @@
  #[cfg(test)]
  mod tests {
      use super::*;

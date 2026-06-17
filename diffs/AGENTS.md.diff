@@ -20,7 +20,7 @@
 
  ## Commands
 
-@@ -10,68 +24,38 @@
+@@ -10,68 +24,39 @@
  cargo docs                                                    # check docs
 
  cargo nextest run --workspace                                 # test all
@@ -30,6 +30,7 @@
 +cargo cli-jit                                                 # root CLI tests with jit feature
 +cargo eest-jit                                                # EEST unit tests with jit feature
 +cargo nextest run -p evm2-eest --test eest --ignore-default-filter # EEST fixtures
++cargo st-jit                                                  # EEST fixtures with interpreter/JIT/AOT suites
  ```
 
  ## Architecture
@@ -106,7 +107,7 @@
  ```
 
  LLVM args are a one-shot global (`LLVMParseCommandLineOptions`); only the first
-@@ -89,7 +73,7 @@
+@@ -89,7 +74,7 @@
  To inspect a single contract in detail:
 
  ```bash
@@ -115,7 +116,7 @@
  ```
 
  - `resolved jumps newly_resolved=N` — jumps resolved by block analysis.
-@@ -97,7 +81,7 @@
+@@ -97,7 +82,7 @@
  - `JUMP bb<N>` / `JUMP bb<N>, bb<M>` — resolved (single/multi-target).
  - `JUMP               ; pc=<N>` (no `bb` target) — unresolved dynamic jump.
 
@@ -124,7 +125,7 @@
 
  ## Benchmarking against another revision
 
-@@ -118,7 +102,7 @@
+@@ -118,7 +103,7 @@
  ./scripts/bench.py /tmp/bench --diff main --codegen-lines          # codegen lines only
  ./scripts/bench.py /tmp/bench --jump-resolution                    # jump resolution stats
  ./scripts/bench.py /tmp/bench --input-stats                        # constant-input stats

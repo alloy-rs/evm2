@@ -27,6 +27,7 @@ cargo nextest run --workspace                                 # test all
 cargo cli-jit                                                 # root CLI tests with jit feature
 cargo eest-jit                                                # EEST unit tests with jit feature
 cargo nextest run -p evm2-eest --test eest --ignore-default-filter # EEST fixtures
+cargo st-jit                                                  # EEST fixtures with interpreter/JIT/AOT suites
 ```
 
 ## Architecture
