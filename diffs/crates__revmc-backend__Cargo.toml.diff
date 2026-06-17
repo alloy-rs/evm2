@@ -1,12 +1,18 @@
 --- upstream/crates/revmc-backend/Cargo.toml
 +++ evm2/crates/jit/backend/Cargo.toml
-@@ -1,7 +1,7 @@
+@@ -1,13 +1,13 @@
  [package]
 -name = "revmc-backend"
 +name = "evm2-jit-backend"
  description = "EVM bytecode compiler backend abstraction"
 -homepage = "https://github.com/danipopes/revmc/tree/main/crates/revmc-backend"
-+homepage = "https://github.com/danipopes/evm2-jit/tree/main/crates/evm2-jit-backend"
 
  version.workspace = true
  authors.workspace = true
+ edition.workspace = true
+ rust-version.workspace = true
+ license.workspace = true
++homepage.workspace = true
+ categories.workspace = true
+ keywords.workspace = true
+ repository.workspace = true

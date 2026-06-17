@@ -1,16 +1,22 @@
 --- upstream/crates/revmc-runtime/Cargo.toml
 +++ evm2/crates/jit/runtime/Cargo.toml
-@@ -1,7 +1,7 @@
+@@ -1,13 +1,13 @@
  [package]
 -name = "revmc-runtime"
 -description = "Runtime JIT backend for revmc"
 -homepage = "https://github.com/danipopes/revmc/tree/main/crates/revmc-runtime"
 +name = "evm2-jit-runtime"
 +description = "Runtime JIT backend for evm2-jit"
-+homepage = "https://github.com/danipopes/evm2-jit/tree/main/crates/evm2-jit-runtime"
 
  version.workspace = true
  authors.workspace = true
+ edition.workspace = true
+ rust-version.workspace = true
+ license.workspace = true
++homepage.workspace = true
+ categories.workspace = true
+ keywords.workspace = true
+ repository.workspace = true
 @@ -21,25 +21,14 @@
  workspace = true
 

@@ -1,23 +1,29 @@
 --- upstream/crates/revmc-context/Cargo.toml
 +++ evm2/crates/jit/context/Cargo.toml
-@@ -1,7 +1,7 @@
+@@ -1,13 +1,13 @@
  [package]
 -name = "revmc-context"
 +name = "evm2-jit-context"
  description = "EVM bytecode compiler runtime context"
 -homepage = "https://github.com/danipopes/revmc/tree/main/crates/revmc-context"
-+homepage = "https://github.com/danipopes/evm2-jit/tree/main/crates/evm2-jit-context"
 
  version.workspace = true
  authors.workspace = true
-@@ -17,33 +17,16 @@
+ edition.workspace = true
+ rust-version.workspace = true
+ license.workspace = true
++homepage.workspace = true
+ categories.workspace = true
+ keywords.workspace = true
+ repository.workspace = true
+@@ -17,33 +17,14 @@
  workspace = true
 
  [dependencies]
+-revm-interpreter.workspace = true
+-revm-primitives.workspace = true
 +alloy-primitives.workspace = true
 +evm2.workspace = true
- revm-interpreter.workspace = true
--revm-primitives.workspace = true
  ruint.workspace = true
 
 -revm-context = { workspace = true, optional = true }
@@ -29,9 +35,7 @@
  [features]
  default = ["std"]
  std = [
-+    "alloy-primitives/std",
-+    "evm2/std",
-     "revm-interpreter/std",
+-    "revm-interpreter/std",
 -    "revm-primitives/std",
 -    "revm-context?/std",
 -    "revm-context-interface?/std",
@@ -47,5 +51,7 @@
 -    "dep:revm-handler",
 -    "dep:revm-inspector",
 -    "dep:revm-state",
++    "alloy-primitives/std",
++    "evm2/std",
  ]
 +evm2 = []

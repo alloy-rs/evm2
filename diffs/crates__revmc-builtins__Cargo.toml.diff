@@ -1,15 +1,21 @@
 --- upstream/crates/revmc-builtins/Cargo.toml
 +++ evm2/crates/jit/builtins/Cargo.toml
-@@ -1,7 +1,7 @@
+@@ -1,13 +1,13 @@
  [package]
 -name = "revmc-builtins"
 +name = "evm2-jit-builtins"
  description = "EVM bytecode compiler builtins"
 -homepage = "https://github.com/danipopes/revmc/tree/main/crates/revmc-builtins"
-+homepage = "https://github.com/danipopes/evm2-jit/tree/main/crates/evm2-jit-builtins"
 
  version.workspace = true
  authors.workspace = true
+ edition.workspace = true
+ rust-version.workspace = true
+ license.workspace = true
++homepage.workspace = true
+ categories.workspace = true
+ keywords.workspace = true
+ repository.workspace = true
 @@ -17,18 +17,16 @@
  workspace = true
 

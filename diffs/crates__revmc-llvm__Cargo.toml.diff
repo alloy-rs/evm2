@@ -1,15 +1,21 @@
 --- upstream/crates/revmc-llvm/Cargo.toml
 +++ evm2/crates/jit/llvm/Cargo.toml
-@@ -1,7 +1,7 @@
+@@ -1,13 +1,13 @@
  [package]
 -name = "revmc-llvm"
 +name = "evm2-jit-llvm"
  description = "EVM bytecode compiler LLVM backend"
 -homepage = "https://github.com/danipopes/revmc/tree/main/crates/revmc-llvm"
-+homepage = "https://github.com/danipopes/evm2-jit/tree/main/crates/evm2-jit-llvm"
 
  version.workspace = true
  authors.workspace = true
+ edition.workspace = true
+ rust-version.workspace = true
+ license.workspace = true
++homepage.workspace = true
+ categories.workspace = true
+ keywords.workspace = true
+ repository.workspace = true
 @@ -17,7 +17,7 @@
  workspace = true
 

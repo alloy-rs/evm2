@@ -116,7 +116,6 @@ revm-database = { version = "41.0.0", default-features = false }
 revm-database-interface = { version = "41.0.0", default-features = false }
 revm-handler = { version = "41.0.0", default-features = false }
 revm-inspector = { version = "41.0.0", default-features = false }
-revm-interpreter = { version = "41.0.0", default-features = false }
 revm-primitives = { version = "41.0.0", default-features = false }
 revm-state = { version = "41.0.0", default-features = false }
 revm-statetest-types = { version = "41.0.0", default-features = false }

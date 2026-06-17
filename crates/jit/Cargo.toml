@@ -1,13 +1,13 @@
 [package]
 name = "evm2-jit"
 description = "EVM bytecode compiler"
-homepage = "https://github.com/danipopes/evm2-jit/tree/main/crates/evm2-jit"
 
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+homepage.workspace = true
 categories.workspace = true
 keywords.workspace = true
 repository.workspace = true
