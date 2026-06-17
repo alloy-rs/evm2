@@ -10,7 +10,7 @@
 
  version.workspace = true
  authors.workspace = true
-@@ -17,18 +17,18 @@
+@@ -17,18 +17,17 @@
  workspace = true
 
  [dependencies]
@@ -22,7 +22,7 @@
 +alloy-primitives.workspace = true
  revm-interpreter.workspace = true
 -revm-bytecode.workspace = true
- revm-context-interface.workspace = true
+-revm-context-interface.workspace = true
  paste.workspace = true
 
 -revmc-backend = { workspace = true, optional = true }

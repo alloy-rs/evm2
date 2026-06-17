@@ -22,7 +22,6 @@ evm2-jit-context.workspace = true
 
 alloy-primitives.workspace = true
 revm-interpreter.workspace = true
-revm-context-interface.workspace = true
 paste.workspace = true
 
 evm2-jit-backend = { workspace = true, optional = true }
