@@ -3,7 +3,7 @@ use super::{
     execute::{ExecuteConfig, ExecutionMode, execute_test_suite},
 };
 #[cfg(feature = "jit")]
-use crate::harness::TestRoot;
+use crate::harness::{COMPILED_FIXTURE_STACK_SIZE, TestRoot, run_with_stack};
 use crate::harness::{TestSuite, run_json_harnesses};
 use libtest_mimic::Failed;
 use std::{
@@ -65,12 +65,19 @@ fn run_file_with_mode(path: PathBuf, mode: ExecutionMode) -> Result<(), Failed> 
 
 #[cfg(feature = "jit")]
 fn run_file_jit(path: PathBuf) -> Result<(), Failed> {
-    run_file_with_mode(path, ExecutionMode::Jit)
+    run_compiled_file(path, ExecutionMode::Jit)
 }
 
 #[cfg(feature = "jit")]
 fn run_file_aot(path: PathBuf) -> Result<(), Failed> {
-    run_file_with_mode(path, ExecutionMode::Aot)
+    run_compiled_file(path, ExecutionMode::Aot)
+}
+
+#[cfg(feature = "jit")]
+fn run_compiled_file(path: PathBuf, mode: ExecutionMode) -> Result<(), Failed> {
+    run_with_stack("eest-blockchain-compiled", COMPILED_FIXTURE_STACK_SIZE, move || {
+        run_file_with_mode(path, mode)
+    })
 }
 
 #[cfg(feature = "jit")]
