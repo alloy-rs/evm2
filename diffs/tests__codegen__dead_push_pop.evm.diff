@@ -1,0 +1,9 @@
+--- upstream/tests/codegen/dead_push_pop.evm
++++ evm2/crates/jit/tests/codegen/dead_push_pop.evm
+@@ -5,5 +5,5 @@
+     RETURN
+
+ ; CHECK-NOT: store i256 255
+-; CHECK: @__revmc_builtin_do_return
++; CHECK: @__evm2_jit_builtin_do_return
+ ; CHECK: ret i8

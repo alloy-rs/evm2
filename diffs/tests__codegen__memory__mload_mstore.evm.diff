@@ -1,0 +1,11 @@
+--- upstream/tests/codegen/memory/mload_mstore.evm
++++ evm2/crates/jit/tests/codegen/memory/mload_mstore.evm
+@@ -13,6 +13,6 @@
+     MSTORE
+     STOP
+
+-; CHECK-COUNT-1: call {{.*}}@__revmc_builtin_mresize{{.*}}; >>
++; CHECK-COUNT-1: call {{.*}}@__evm2_jit_builtin_mresize{{.*}}; >>
+ ; CHECK-COUNT-1: ecx.mem_base = load ptr
+-; CHECK-NOT: call {{.*}}@__revmc_builtin_mresize{{.*}}; >>
++; CHECK-NOT: call {{.*}}@__evm2_jit_builtin_mresize{{.*}}; >>

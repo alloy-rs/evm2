@@ -96,8 +96,10 @@
 +}
 
  mod arch;
- use arch::revmc_entry;
- pub use arch::revmc_exit;
+-use arch::revmc_entry;
+-pub use arch::revmc_exit;
++use arch::evm2_jit_entry;
++pub use arch::evm2_jit_exit;
 
 -#[cfg(feature = "evm")]
 -mod jit_evm;
@@ -333,7 +335,7 @@
      }
  }
 
-@@ -85,28 +304,23 @@
+@@ -85,47 +304,47 @@
  #[repr(C)]
  pub struct EvmContext<'a> {
      /// The memory.
@@ -367,13 +369,15 @@
      ///
      /// Set to `None` when no inspector is active.
      #[doc(hidden)]
-@@ -114,18 +328,23 @@
+     pub on_log: Option<&'a mut (dyn FnMut(&Log) + 'a)>,
      /// The size of the call input data, cached for CALLDATASIZE.
      pub calldatasize: usize,
-     /// The result set by a builtin before exiting via [`revmc_exit`].
+-    /// The result set by a builtin before exiting via [`revmc_exit`].
 -    pub exit_result: InstructionResult,
+-    /// Saved RSP from the entry trampoline, used by [`revmc_exit`] to unwind.
++    /// The result set by a builtin before exiting via [`evm2_jit_exit`].
 +    pub exit_result: InstrStop,
-     /// Saved RSP from the entry trampoline, used by [`revmc_exit`] to unwind.
++    /// Saved RSP from the entry trampoline, used by [`evm2_jit_exit`] to unwind.
      pub exit_sp: *mut u8,
      /// Cached gas parameters from the host.
      pub gas_params: GasParams,
@@ -404,7 +408,7 @@
  };
 
  impl fmt::Debug for EvmContext<'_> {
-@@ -147,64 +362,67 @@
+@@ -147,66 +362,69 @@
      }
  }
 
@@ -512,10 +516,22 @@
  ///
  /// ```no_run
 -/// use revmc_context::{EvmCompilerFn, extern_revmc};
-+/// use evm2_jit_context::{EvmCompilerFn, extern_revmc};
++/// use evm2_jit_context::{EvmCompilerFn, extern_evm2_jit};
  ///
- /// extern_revmc! {
+-/// extern_revmc! {
++/// extern_evm2_jit! {
  ///    /// A simple function.
+ ///    pub fn test_fn;
+ /// }
+@@ -214,7 +432,7 @@
+ /// let test_fn = EvmCompilerFn::new(test_fn);
+ /// ```
+ #[macro_export]
+-macro_rules! extern_revmc {
++macro_rules! extern_evm2_jit {
+     ($( $(#[$attr:meta])* $vis:vis fn $name:ident; )+) => {
+         #[allow(improper_ctypes)]
+         unsafe extern "C" {
 @@ -224,7 +442,7 @@
                      ecx: ::core::ptr::NonNull<$crate::EvmContext<'_>>,
                      stack: ::core::ptr::NonNull<$crate::EvmStack>,
@@ -617,15 +633,17 @@
      /// Calls the function.
      ///
      /// Arguments:
-@@ -366,7 +508,7 @@
+@@ -366,8 +508,8 @@
          stack: &mut EvmStack,
          stack_len: &mut usize,
          ecx: &mut EvmContext<'_>,
 -    ) -> InstructionResult {
+-        revmc_entry(NonNull::from(ecx), NonNull::from(stack), NonNull::from(stack_len), self.0)
 +    ) -> InstrStop {
-         revmc_entry(NonNull::from(ecx), NonNull::from(stack), NonNull::from(stack_len), self.0)
++        evm2_jit_entry(NonNull::from(ecx), NonNull::from(stack), NonNull::from(stack_len), self.0)
      }
 
+     /// Same as [`call`](Self::call) but with `#[inline(never)]`.
 @@ -383,7 +525,7 @@
          stack: &mut EvmStack,
          stack_len: &mut usize,
@@ -671,6 +689,15 @@
  #[cfg(test)]
  mod tests {
      use super::*;
+@@ -841,7 +961,7 @@
+         assert_eq!(usize::try_from(&mut word), Ok(0));
+     }
+
+-    extern_revmc! {
++    extern_evm2_jit! {
+         #[link_name = "__test_fn"]
+         fn test_fn;
+     }
 @@ -851,8 +971,8 @@
          _ecx: NonNull<EvmContext<'_>>,
          _stack: NonNull<EvmStack>,

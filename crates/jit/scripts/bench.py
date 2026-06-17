@@ -220,7 +220,7 @@ def mresize_call_count(path: str) -> int:
     try:
         with open(path) as f:
             for line in f:
-                if "call" in line and "@__revmc_builtin_mresize" in line:
+                if "call" in line and "@__evm2_jit_builtin_mresize" in line:
                     calls += 1
     except FileNotFoundError:
         pass

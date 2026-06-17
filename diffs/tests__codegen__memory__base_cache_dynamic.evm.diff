@@ -1,0 +1,10 @@
+--- upstream/tests/codegen/memory/base_cache_dynamic.evm
++++ evm2/crates/jit/tests/codegen/memory/base_cache_dynamic.evm
+@@ -7,5 +7,5 @@
+     MLOAD
+     STOP
+
+-; CHECK-COUNT-2: call {{.*}}@__revmc_builtin_mresize{{.*}}; >>
+-; CHECK-NOT: call {{.*}}@__revmc_builtin_mresize{{.*}}; >>
++; CHECK-COUNT-2: call {{.*}}@__evm2_jit_builtin_mresize{{.*}}; >>
++; CHECK-NOT: call {{.*}}@__evm2_jit_builtin_mresize{{.*}}; >>

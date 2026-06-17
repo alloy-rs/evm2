@@ -6,10 +6,10 @@ use core::ptr::NonNull;
 /// `ecx.exit_sp`, and calls the JIT function.
 ///
 /// On normal return the JIT function's `InstrStop` is forwarded.
-/// On abnormal exit (builtin error), [`revmc_exit`] restores RSP and
+/// On abnormal exit (builtin error), [`evm2_jit_exit`] restores RSP and
 /// returns the `exit_result` stored in `EvmContext`.
 #[unsafe(naked)]
-pub(crate) unsafe extern "C" fn revmc_entry(
+pub(crate) unsafe extern "C" fn evm2_jit_entry(
     ecx: NonNull<EvmContext<'_>>,
     stack: NonNull<EvmStack>,
     stack_len: NonNull<usize>,
@@ -44,13 +44,13 @@ pub(crate) unsafe extern "C" fn revmc_entry(
 }
 
 /// Exit trampoline: loads `ecx.exit_result`, restores the saved RSP,
-/// pops callee-saved registers and returns to the caller of `revmc_entry`.
+/// pops callee-saved registers and returns to the caller of `evm2_jit_entry`.
 ///
 /// # Safety
 ///
-/// Must only be called from a builtin that was invoked through `revmc_entry`.
+/// Must only be called from a builtin that was invoked through `evm2_jit_entry`.
 #[unsafe(naked)]
-pub unsafe extern "C" fn revmc_exit(ecx: *const EvmContext<'_>) -> ! {
+pub unsafe extern "C" fn evm2_jit_exit(ecx: *const EvmContext<'_>) -> ! {
     core::arch::naked_asm!(
         // Load exit_result into the return register.
         "movzx eax, byte ptr [rdi + {exit_result}]",

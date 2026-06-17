@@ -1,6 +1,6 @@
 --- upstream/crates/revmc-context/src/arch/aarch64.rs
 +++ evm2/crates/jit/context/src/arch/aarch64.rs
-@@ -1,12 +1,11 @@
+@@ -1,21 +1,20 @@
  use super::{EXIT_RESULT_OFFSET, EXIT_SP_OFFSET};
 -use crate::{EvmContext, EvmStack, RawEvmCompilerFn};
 +use crate::{EvmContext, EvmStack, InstrStop, RawEvmCompilerFn};
@@ -11,11 +11,14 @@
  /// `ecx.exit_sp`, and calls the JIT function.
  ///
 -/// On normal return the JIT function's `InstructionResult` is forwarded.
+-/// On abnormal exit (builtin error), [`revmc_exit`] restores SP and
 +/// On normal return the JIT function's `InstrStop` is forwarded.
- /// On abnormal exit (builtin error), [`revmc_exit`] restores SP and
++/// On abnormal exit (builtin error), [`evm2_jit_exit`] restores SP and
  /// returns the `exit_result` stored in `EvmContext`.
  #[unsafe(naked)]
-@@ -15,7 +14,7 @@
+-pub(crate) unsafe extern "C" fn revmc_entry(
++pub(crate) unsafe extern "C" fn evm2_jit_entry(
+     ecx: NonNull<EvmContext<'_>>,
      stack: NonNull<EvmStack>,
      stack_len: NonNull<usize>,
      f: RawEvmCompilerFn,
@@ -33,3 +36,20 @@
          "ldp d14, d15, [sp, #144]",
          "ldp d12, d13, [sp, #128]",
          "ldp d10, d11, [sp, #112]",
+@@ -63,13 +62,13 @@
+ }
+
+ /// Exit trampoline: loads `ecx.exit_result`, restores the saved SP,
+-/// pops callee-saved registers and returns to the caller of `revmc_entry`.
++/// pops callee-saved registers and returns to the caller of `evm2_jit_entry`.
+ ///
+ /// # Safety
+ ///
+-/// Must only be called from a builtin that was invoked through `revmc_entry`.
++/// Must only be called from a builtin that was invoked through `evm2_jit_entry`.
+ #[unsafe(naked)]
+-pub unsafe extern "C" fn revmc_exit(ecx: *const EvmContext<'_>) -> ! {
++pub unsafe extern "C" fn evm2_jit_exit(ecx: *const EvmContext<'_>) -> ! {
+     core::arch::naked_asm!(
+         // Restore the saved SP (must read before clobbering x0).
+         "ldr x9, [x0, {exit_sp}]",

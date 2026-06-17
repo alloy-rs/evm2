@@ -87,8 +87,8 @@ impl AccountInfoLoad {
 }
 
 mod arch;
-use arch::revmc_entry;
-pub use arch::revmc_exit;
+use arch::evm2_jit_entry;
+pub use arch::evm2_jit_exit;
 
 #[cfg(feature = "evm2")]
 pub mod evm2_api;
@@ -327,9 +327,9 @@ pub struct EvmContext<'a> {
     pub on_log: Option<&'a mut (dyn FnMut(&Log) + 'a)>,
     /// The size of the call input data, cached for CALLDATASIZE.
     pub calldatasize: usize,
-    /// The result set by a builtin before exiting via [`revmc_exit`].
+    /// The result set by a builtin before exiting via [`evm2_jit_exit`].
     pub exit_result: InstrStop,
-    /// Saved RSP from the entry trampoline, used by [`revmc_exit`] to unwind.
+    /// Saved RSP from the entry trampoline, used by [`evm2_jit_exit`] to unwind.
     pub exit_sp: *mut u8,
     /// Cached gas parameters from the host.
     pub gas_params: GasParams,
@@ -422,9 +422,9 @@ fn resize_memory_cold(
 /// # Examples
 ///
 /// ```no_run
-/// use evm2_jit_context::{EvmCompilerFn, extern_revmc};
+/// use evm2_jit_context::{EvmCompilerFn, extern_evm2_jit};
 ///
-/// extern_revmc! {
+/// extern_evm2_jit! {
 ///    /// A simple function.
 ///    pub fn test_fn;
 /// }
@@ -432,7 +432,7 @@ fn resize_memory_cold(
 /// let test_fn = EvmCompilerFn::new(test_fn);
 /// ```
 #[macro_export]
-macro_rules! extern_revmc {
+macro_rules! extern_evm2_jit {
     ($( $(#[$attr:meta])* $vis:vis fn $name:ident; )+) => {
         #[allow(improper_ctypes)]
         unsafe extern "C" {
@@ -509,7 +509,7 @@ impl EvmCompilerFn {
         stack_len: &mut usize,
         ecx: &mut EvmContext<'_>,
     ) -> InstrStop {
-        revmc_entry(NonNull::from(ecx), NonNull::from(stack), NonNull::from(stack_len), self.0)
+        evm2_jit_entry(NonNull::from(ecx), NonNull::from(stack), NonNull::from(stack_len), self.0)
     }
 
     /// Same as [`call`](Self::call) but with `#[inline(never)]`.
@@ -961,7 +961,7 @@ mod tests {
         assert_eq!(usize::try_from(&mut word), Ok(0));
     }
 
-    extern_revmc! {
+    extern_evm2_jit! {
         #[link_name = "__test_fn"]
         fn test_fn;
     }

@@ -260,9 +260,9 @@ pub struct EvmContext<'a, T: EvmTypes = BaseEvmTypes> {
     pub on_log: Option<&'a mut (dyn FnMut(&alloy_primitives::Log) + 'a)>,
     /// The size of the call input data, cached for CALLDATASIZE.
     pub calldatasize: usize,
-    /// The result set by a builtin before exiting via `revmc_exit`.
+    /// The result set by a builtin before exiting via `evm2_jit_exit`.
     pub exit_result: InstrStop,
-    /// Saved RSP from the entry trampoline, used by `revmc_exit` to unwind.
+    /// Saved RSP from the entry trampoline, used by `evm2_jit_exit` to unwind.
     pub exit_sp: *mut u8,
     /// Cached gas parameters for builtin gas accounting.
     pub gas_params: GasParams,
@@ -464,7 +464,7 @@ impl<T: EvmTypes> EvmCompilerFn<T> {
             NonNull::new_unchecked((ecx as *mut EvmContext<'_, T>).cast::<crate::EvmContext<'_>>())
         };
         let f = unsafe { mem::transmute::<RawEvmCompilerFn<T>, crate::RawEvmCompilerFn>(self.0) };
-        unsafe { crate::revmc_entry(ecx, NonNull::from(stack), NonNull::from(stack_len), f) }
+        unsafe { crate::evm2_jit_entry(ecx, NonNull::from(stack), NonNull::from(stack_len), f) }
     }
 }
 

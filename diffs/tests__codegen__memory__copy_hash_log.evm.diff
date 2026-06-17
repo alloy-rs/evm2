@@ -1,0 +1,10 @@
+--- upstream/tests/codegen/memory/copy_hash_log.evm
++++ evm2/crates/jit/tests/codegen/memory/copy_hash_log.evm
+@@ -25,5 +25,5 @@
+     LOG1
+     STOP
+
+-; CHECK-COUNT-1: call {{.*}}@__revmc_builtin_mresize{{.*}}; >>
+-; CHECK-NOT: call {{.*}}@__revmc_builtin_mresize{{.*}}; >>
++; CHECK-COUNT-1: call {{.*}}@__evm2_jit_builtin_mresize{{.*}}; >>
++; CHECK-NOT: call {{.*}}@__evm2_jit_builtin_mresize{{.*}}; >>

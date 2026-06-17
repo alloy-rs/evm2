@@ -5,5 +5,5 @@
     RETURN
 
 ; CHECK-NOT: store i256 255
-; CHECK: @__revmc_builtin_do_return
+; CHECK: @__evm2_jit_builtin_do_return
 ; CHECK: ret i8

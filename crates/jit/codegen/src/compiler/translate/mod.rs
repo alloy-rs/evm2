@@ -1878,7 +1878,7 @@ impl<B: Backend> FunctionCx<'_, B> {
         ret: Option<B::Type>,
         build: impl FnOnce(&mut Self),
     ) -> Option<B::Value> {
-        let prefix = "__revmc_ir_builtin_";
+        let prefix = "__evm2_jit_ir_builtin_";
         let name = &format!("{prefix}{name}")[..];
 
         // self.call_printf(format_printf!("{} - calling {name}\n", self.op_block_name("")), &[]);
