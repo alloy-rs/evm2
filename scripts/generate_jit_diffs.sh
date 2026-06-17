@@ -153,4 +153,30 @@ if [[ "$write_todo" == true ]]; then
             printf -- '- [ ] %s\n' "$diff_file"
         done
     } > "$todo"
+elif [[ -f "$out/TODO.md" ]]; then
+    mapfile -t missing_from_todo < <(
+        comm -23 \
+            <(printf '%s\n' "${diff_files[@]}" | sort) \
+            <(sed -n 's/^- \[ \] //p' "$out/TODO.md" | sort)
+    )
+    mapfile -t stale_todo_entries < <(
+        comm -13 \
+            <(printf '%s\n' "${diff_files[@]}" | sort) \
+            <(sed -n 's/^- \[ \] //p' "$out/TODO.md" | sort)
+    )
+
+    if (( ${#missing_from_todo[@]} != 0 || ${#stale_todo_entries[@]} != 0 )); then
+        {
+            printf 'warning: diffs/TODO.md differs from the current generated JIT diff inventory.\n'
+            printf 'warning: not modifying the user-owned checklist without explicit real human consent.\n'
+            if (( ${#missing_from_todo[@]} != 0 )); then
+                printf 'warning: current diffs missing from TODO.md:\n'
+                printf '  %s\n' "${missing_from_todo[@]}"
+            fi
+            if (( ${#stale_todo_entries[@]} != 0 )); then
+                printf 'warning: TODO.md entries without a current diff:\n'
+                printf '  %s\n' "${stale_todo_entries[@]}"
+            fi
+        } >&2
+    fi
 fi
