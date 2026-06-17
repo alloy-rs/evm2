@@ -5,7 +5,7 @@ use evm2_jit_context::{AccountInfoLoad, EvmContext, EvmWord, InstrStop, LoadErro
 pub type BuiltinResult = Result<(), BuiltinError>;
 
 /// Represents an error that occurred during a builtin execution.
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 #[repr(transparent)]
 pub struct BuiltinError(NonZero<u8>);
 
@@ -51,8 +51,8 @@ impl<T> OkOrFatal<T> for Option<T> {
 /// Loads an account, handling cold load gas accounting.
 ///
 /// Pre-Berlin, `cold_account_additional_cost` is 0, so the cold load logic is a no-op.
-pub(crate) fn load_account<'a>(
-    ecx: &'a mut EvmContext<'_>,
+pub(crate) fn load_account(
+    ecx: &mut EvmContext<'_>,
     address: Address,
     load_code: bool,
 ) -> Result<AccountInfoLoad, BuiltinError> {

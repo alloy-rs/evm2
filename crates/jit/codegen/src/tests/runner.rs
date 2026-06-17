@@ -35,7 +35,7 @@ pub struct DefTx {
     pub blob_hashes: Vec<B256>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct DefBlock {
     pub coinbase: Address,
     pub timestamp: U256,
@@ -52,7 +52,7 @@ impl DefBlock {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct DefCfg {
     pub chain_id: u64,
 }

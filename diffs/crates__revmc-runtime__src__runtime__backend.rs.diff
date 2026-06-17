@@ -49,6 +49,15 @@
              Command::Shutdown => return ControlFlow::Break(()),
          }
          ControlFlow::Continue(())
+@@ -617,7 +612,7 @@
+         let content_hash = keccak256(&success.dylib_bytes).0;
+
+         let manifest = ArtifactManifest {
+-            artifact_key: artifact_key.clone(),
++            artifact_key,
+             symbol_name: success.symbol_name.clone(),
+             bytecode_len: success.bytecode_len,
+             artifact_len: success.dylib_bytes.len(),
 @@ -880,7 +875,7 @@
      use crate::runtime::worker::{
          CompileJob, WorkerSuccess, compile_jit_object_artifact, create_compiler,

@@ -130,7 +130,7 @@ pub struct RuntimeConfig {
 }
 
 /// Event emitted after a compilation attempt completes.
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct CompilationEvent {
     /// The code hash of the compiled bytecode.
     pub code_hash: B256,

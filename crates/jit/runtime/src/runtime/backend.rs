@@ -612,7 +612,7 @@ impl BackendState {
         let content_hash = keccak256(&success.dylib_bytes).0;
 
         let manifest = ArtifactManifest {
-            artifact_key: artifact_key.clone(),
+            artifact_key,
             symbol_name: success.symbol_name.clone(),
             bytecode_len: success.bytecode_len,
             artifact_len: success.dylib_bytes.len(),

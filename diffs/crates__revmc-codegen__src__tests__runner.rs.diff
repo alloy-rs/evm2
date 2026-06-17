@@ -31,6 +31,24 @@
  use similar_asserts::assert_eq;
  use std::{fmt, path::Path, sync::OnceLock};
 
+@@ -34,7 +35,7 @@
+     pub blob_hashes: Vec<B256>,
+ }
+
+-#[derive(Clone, Debug)]
++#[derive(Clone, Copy, Debug)]
+ pub struct DefBlock {
+     pub coinbase: Address,
+     pub timestamp: U256,
+@@ -51,7 +52,7 @@
+     }
+ }
+
+-#[derive(Clone, Debug)]
++#[derive(Clone, Copy, Debug)]
+ pub struct DefCfg {
+     pub chain_id: u64,
+ }
 @@ -95,22 +96,22 @@
 
      /// Override `inspect_stack` on the compiler. `None` uses the default (`true`).
@@ -212,12 +230,17 @@
 -
 -    fn gas_limit(&self) -> U256 {
 -        U256::from(0x5678)
--    }
--
++impl Evm2Host<TestEvmTypes> for TestHost {
++    fn spec_id(&self) -> evm2::SpecId {
++        self.evm2_spec_id
+     }
+
 -    fn gas_params(&self) -> &GasParams {
 -        &self.gas_params
--    }
--
++    fn block_env(&mut self) -> &Evm2BlockEnv<TestEvmTypes> {
++        &self.evm2_block_env
+     }
+
 -    fn is_amsterdam_eip8037_enabled(&self) -> bool {
 -        false
 -    }
@@ -248,21 +271,16 @@
 -
 -    fn chain_id(&self) -> U256 {
 -        U256::from(69)
-+impl Evm2Host<TestEvmTypes> for TestHost {
-+    fn spec_id(&self) -> evm2::SpecId {
-+        self.evm2_spec_id
-     }
-
+-    }
+-
 -    fn effective_gas_price(&self) -> U256 {
 -        U256::from(0x4567)
 -    }
 -
 -    fn caller(&self) -> Address {
 -        Address::repeat_byte(0xcc)
-+    fn block_env(&mut self) -> &Evm2BlockEnv<TestEvmTypes> {
-+        &self.evm2_block_env
-     }
-
+-    }
+-
 -    fn blob_hash(&self, number: usize) -> Option<U256> {
 -        let env = def_env();
 -        env.tx.blob_hashes.get(number).map(|h| (*h).into())
