@@ -1330,15 +1330,6 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
         };
         let is_cold = eip2929 && slot.warm();
         let (original_value, present_value) = slot.write(*value);
-        // Materialize and touch the account after the storage write; the two overlays are
-        // independent and both effects are journaled, so the order does not affect rollback.
-        match self.state.account(address, false) {
-            Ok(mut account) => {
-                let _ = account.get_or_insert();
-                account.touch();
-            }
-            Err(code) => return Err(self.db_error_stop(code)),
-        }
         Ok(SStore {
             original_value,
             present_value,

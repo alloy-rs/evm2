@@ -116,7 +116,7 @@ impl AccountInfo {
 /// overlay account, driving transaction-finalization and change-emission rules. They are meaningful
 /// only while `present` is `Some`.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct Account {
+pub(crate) struct Account {
     /// Account info at the start of the transaction. `None` means the account did not exist.
     pub(crate) original: Option<AccountInfo>,
     /// Present account overlay after mutations. `None` means the account is absent/deleted.
@@ -161,8 +161,6 @@ pub struct AccountHandle<'a> {
     /// Shared inner state: backing database, revert journal, and base warm set.
     #[derive_where(skip)]
     inner: &'a mut StateInner,
-    /// Whether the revert snapshot has already been recorded for this handle.
-    snapshotted: bool,
 }
 
 /// Returns a freshly materialized empty account overlay.
@@ -180,7 +178,7 @@ impl<'a> AccountHandle<'a> {
         tracked: &'a mut Account,
         inner: &'a mut StateInner,
     ) -> Self {
-        Self { address, tracked, inner, snapshotted: false }
+        Self { address, tracked, inner }
     }
 
     /// Returns the account address.
@@ -333,9 +331,7 @@ impl<'a> AccountHandle<'a> {
     #[inline]
     pub fn set_balance(&mut self, balance: Word) {
         self.touch();
-        if !self.snapshotted
-            && let Some(previous) = self.tracked.present.as_ref().map(|account| account.balance)
-        {
+        if let Some(previous) = self.tracked.present.as_ref().map(|account| account.balance) {
             self.inner
                 .journal
                 .push(JournalEntry::BalanceChanged { address: self.address, previous });
@@ -360,9 +356,7 @@ impl<'a> AccountHandle<'a> {
     #[inline]
     pub fn set_nonce(&mut self, nonce: u64) {
         self.touch();
-        if !self.snapshotted
-            && let Some(previous) = self.tracked.present.as_ref().map(|account| account.nonce)
-        {
+        if let Some(previous) = self.tracked.present.as_ref().map(|account| account.nonce) {
             self.inner.journal.push(JournalEntry::NonceChanged { address: self.address, previous });
         }
         self.present_mut().nonce = nonce;
@@ -377,9 +371,7 @@ impl<'a> AccountHandle<'a> {
         let Some(nonce) = self.nonce().checked_add(1) else {
             return false;
         };
-        if !self.snapshotted
-            && let Some(previous) = self.tracked.present.as_ref().map(|account| account.nonce)
-        {
+        if let Some(previous) = self.tracked.present.as_ref().map(|account| account.nonce) {
             self.inner.journal.push(JournalEntry::NonceChanged { address: self.address, previous });
         }
         self.present_mut().nonce = nonce;
@@ -393,9 +385,7 @@ impl<'a> AccountHandle<'a> {
     #[inline]
     pub fn set_code(&mut self, code_hash: B256, code: Bytecode) {
         self.touch();
-        if !self.snapshotted
-            && let Some(account) = self.tracked.present.as_ref()
-        {
+        if let Some(account) = self.tracked.present.as_ref() {
             let entry = JournalEntry::CodeChanged {
                 address: self.address,
                 previous_code_hash: account.code_hash,
@@ -423,18 +413,16 @@ impl<'a> AccountHandle<'a> {
     /// Used by the granular field setters, which journal their own [`JournalEntry::BalanceChanged`]
     /// / [`JournalEntry::NonceChanged`] / [`JournalEntry::CodeChanged`] for an already-present
     /// account. Materializing an absent account is instead reverted by a full
-    /// [`JournalEntry::AccountChange`] snapshot recorded here once, which also marks the handle
-    /// snapshotted so later changes through it need no further journaling.
+    /// [`JournalEntry::AccountChange`] snapshot recorded here.
     #[inline]
     fn present_mut(&mut self) -> &mut AccountInfo {
-        if !self.snapshotted && self.tracked.present.is_none() {
+        if self.tracked.present.is_none() {
             self.inner.journal.push(JournalEntry::AccountChange {
                 address: self.address,
                 previous: None,
                 previous_just_created: self.tracked.just_created,
                 previous_code_changed: self.tracked.code_changed,
             });
-            self.snapshotted = true;
         }
         self.tracked.present.get_or_insert_with(empty_account)
     }
@@ -449,21 +437,16 @@ impl<'a> AccountHandle<'a> {
         self.tracked.code_changed = true;
     }
 
-    /// Records the revert snapshot on the first mutating access and returns the live account,
-    /// materializing an empty one when it is currently absent.
-    ///
-    /// Hold the handle and call this repeatedly to make several changes under a single snapshot.
+    /// Records a revert snapshot and returns the live account, materializing an empty one when it is
+    /// currently absent.
     #[inline]
     pub fn get_or_insert(&mut self) -> &mut AccountInfo {
-        if !self.snapshotted {
-            self.inner.journal.push(JournalEntry::AccountChange {
-                address: self.address,
-                previous: self.tracked.present.clone(),
-                previous_just_created: self.tracked.just_created,
-                previous_code_changed: self.tracked.code_changed,
-            });
-            self.snapshotted = true;
-        }
+        self.inner.journal.push(JournalEntry::AccountChange {
+            address: self.address,
+            previous: self.tracked.present.clone(),
+            previous_just_created: self.tracked.just_created,
+            previous_code_changed: self.tracked.code_changed,
+        });
         self.tracked.present.get_or_insert_with(empty_account)
     }
 
@@ -471,15 +454,13 @@ impl<'a> AccountHandle<'a> {
     /// remainder of the overlay borrow, materializing an empty one when it is currently absent.
     #[inline]
     pub fn into_account_mut(self) -> &'a mut AccountInfo {
-        let Self { address, tracked, inner, snapshotted } = self;
-        if !snapshotted {
-            inner.journal.push(JournalEntry::AccountChange {
-                address,
-                previous: tracked.present.clone(),
-                previous_just_created: tracked.just_created,
-                previous_code_changed: tracked.code_changed,
-            });
-        }
+        let Self { address, tracked, inner } = self;
+        inner.journal.push(JournalEntry::AccountChange {
+            address,
+            previous: tracked.present.clone(),
+            previous_just_created: tracked.just_created,
+            previous_code_changed: tracked.code_changed,
+        });
         tracked.present.get_or_insert_with(empty_account)
     }
 }
