@@ -135,7 +135,7 @@ mod tests {
     }
 
     #[test]
-    fn compiled_call_executes_recursive_evm2_frame() {
+    fn compiled_call_executes_recursive_evm2_message() {
         let config = <BaseEvmConfigSelector as EvmConfigSelector<BaseEvmTypes>>::execution_config(
             SpecId::CANCUN,
         );
@@ -191,7 +191,7 @@ mod tests {
     }
 
     #[test]
-    fn compiled_create_executes_recursive_evm2_frame() {
+    fn compiled_create_executes_recursive_evm2_message() {
         let config = <BaseEvmConfigSelector as EvmConfigSelector<BaseEvmTypes>>::execution_config(
             SpecId::CANCUN,
         );

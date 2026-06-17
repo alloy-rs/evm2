@@ -23,7 +23,7 @@
      "dead",
      "noops",
 -    "suspends",
-+    "recursive_frame_opcodes",
++    "recursive_message_opcodes",
      "blocks",
      "block_min",
      "block_max",
@@ -41,7 +41,7 @@
              r" dead=(\d+)"
              r" noops=(\d+)"
 -            r" suspends=(\d+)"
-+            r" recursive_frame_opcodes=(\d+)"
++            r" recursive_message_opcodes=(\d+)"
              r" blocks=(\d+)"
              r" block_min=(\d+)"
              r" block_max=(\d+)"
@@ -50,7 +50,7 @@
              "dead": int(m.group(3)),
              "noops": int(m.group(4)),
 -            "suspends": int(m.group(5)),
-+            "recursive_frame_opcodes": int(m.group(5)),
++            "recursive_message_opcodes": int(m.group(5)),
              "blocks": int(m.group(6)),
              "block_min": int(m.group(7)),
              "block_max": int(m.group(8)),
@@ -77,6 +77,6 @@
          "--block-stats",
          action="store_true",
 -        help="Report IR stats (inst counts, block size distribution, suspends)",
-+        help="Report IR stats (inst counts, block size distribution, recursive frame opcodes)",
++        help="Report IR stats (inst counts, block size distribution, recursive message opcodes)",
      )
      args = parser.parse_args()

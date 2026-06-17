@@ -861,7 +861,7 @@
 -    /// CALL into another contract: JIT handles the nested call frame.
      #[test]
 -    fn jit_evm_nested_call() {
-+    fn compiled_call_executes_recursive_evm2_frame() {
++    fn compiled_call_executes_recursive_evm2_message() {
 +        let config = <BaseEvmConfigSelector as EvmConfigSelector<BaseEvmTypes>>::execution_config(
 +            SpecId::CANCUN,
 +        );
@@ -979,7 +979,7 @@
 -            op::CODECOPY,
 -            op::PUSH1,
 -            rt_len as u8,
-+    fn compiled_create_executes_recursive_evm2_frame() {
++    fn compiled_create_executes_recursive_evm2_message() {
 +        let config = <BaseEvmConfigSelector as EvmConfigSelector<BaseEvmTypes>>::execution_config(
 +            SpecId::CANCUN,
 +        );

@@ -40,17 +40,16 @@ impl Bytecode<'_> {
         lines.push((
             String::new(),
             format!(
-                "spec_id={} has_dynamic_jumps={} has_recursive_frame_opcode={}",
+                "spec_id={} has_dynamic_jumps={}",
                 spec_id_name(self.spec_id),
                 self.has_dynamic_jumps,
-                self.has_recursive_frame_opcode,
             ),
         ));
         lines.push((
             String::new(),
             format!(
-                "insts={} live={} dead={} noops={} recursive_frame_opcodes={} blocks={} block_min={} block_max={} block_avg={:.1} block_median={}",
-                s.total, s.live, s.dead, s.noops, s.recursive_frame_opcodes, s.blocks, s.block_min, s.block_max, s.block_avg, s.block_median,
+                "insts={} live={} dead={} noops={} recursive_message_opcodes={} blocks={} block_min={} block_max={} block_avg={:.1} block_median={}",
+                s.total, s.live, s.dead, s.noops, s.recursive_message_opcodes, s.blocks, s.block_min, s.block_max, s.block_avg, s.block_median,
             ),
         ));
         lines.push((String::new(), String::new()));
@@ -163,8 +162,8 @@ impl Bytecode<'_> {
                 if flags.contains(InstFlags::MULTI_JUMP) {
                     comment.push_str(" multi_jump");
                 }
-                if data.is_recursive_frame_opcode() {
-                    comment.push_str(" recursive_frame");
+                if data.is_recursive_message_opcode() {
+                    comment.push_str(" recursive_message");
                 }
                 if data.is_reachable_jumpdest(self.has_dynamic_jumps) {
                     comment.push_str(" reachable");
@@ -320,7 +319,6 @@ impl fmt::Debug for Bytecode<'_> {
             .field("jumpdests", &hex::encode(bitvec_as_bytes(&self.jumpdests)))
             .field("spec_id", &self.spec_id)
             .field("has_dynamic_jumps", &self.has_dynamic_jumps)
-            .field("has_recursive_frame_opcode", &self.has_recursive_frame_opcode)
             .finish()
     }
 }
@@ -364,9 +362,9 @@ mod dot_colors {
     // Non-reverting exit blocks (STOP, RETURN).
     pub(super) const EXIT_FILL: &str = DARK_GREEN;
     pub(super) const EXIT_BORDER: &str = GREEN;
-    // Recursive frame blocks (CALL, CREATE, ...).
-    pub(super) const RECURSIVE_FRAME_FILL: &str = DARK_ORANGE;
-    pub(super) const RECURSIVE_FRAME_BORDER: &str = ORANGE;
+    // Recursive message blocks (CALL, CREATE, ...).
+    pub(super) const RECURSIVE_MESSAGE_FILL: &str = DARK_ORANGE;
+    pub(super) const RECURSIVE_MESSAGE_BORDER: &str = ORANGE;
     // Branching blocks.
     pub(super) const BRANCH_FILL: &str = DARK_TEAL;
     pub(super) const BRANCH_BORDER: &str = TEAL;
@@ -402,14 +400,14 @@ impl<'a> Bytecode<'a> {
             let first = self.inst(block.insts.start);
 
             // Color based on block behavior.
-            let has_recursive_frame =
-                block.insts().any(|i| self.inst(i).is_recursive_frame_opcode());
+            let has_recursive_message =
+                block.insts().any(|i| self.inst(i).is_recursive_message_opcode());
             let (fill, border) = if matches!(last.opcode, op::STOP | op::RETURN) {
                 (EXIT_FILL, EXIT_BORDER)
             } else if last.is_diverging() {
                 (REVERT_FILL, REVERT_BORDER)
-            } else if has_recursive_frame {
-                (RECURSIVE_FRAME_FILL, RECURSIVE_FRAME_BORDER)
+            } else if has_recursive_message {
+                (RECURSIVE_MESSAGE_FILL, RECURSIVE_MESSAGE_BORDER)
             } else if last.is_jump() {
                 (BRANCH_FILL, BRANCH_BORDER)
             } else {
@@ -553,7 +551,7 @@ mod tests {
     use evm2::SpecId;
 
     /// Test bytecode with SSTORE (splits gas but not stack), a loop (back-edge), and CALL
-    /// (recursive frame instruction that splits both gas and stack sections).
+    /// (recursive message instruction that splits both gas and stack sections).
     fn test_bytecode() -> Bytecode<'static> {
         #[rustfmt::skip]
         let code: &[u8] = &[
@@ -589,8 +587,8 @@ mod tests {
         snapbox::assert_data_eq!(
             actual,
             snapbox::str![[r#"
-; spec_id=Osaka has_dynamic_jumps=false has_recursive_frame_opcode=true
-; insts=19 live=19 dead=0 noops=11 recursive_frame_opcodes=1 blocks=3 block_min=2 block_max=10 block_avg=6.3 block_median=7
+; spec_id=Osaka has_dynamic_jumps=false
+; insts=19 live=19 dead=0 noops=11 recursive_message_opcodes=1 blocks=3 block_min=2 block_max=10 block_avg=6.3 block_median=7
 
 bb0:           ; stack_in=0 max_growth=1 predecessors=
   PUSH1 0x03   ; ic= 0 pc= 0 gas=11 noop
@@ -613,7 +611,7 @@ bb2:           ; stack_in=0 max_growth=7 predecessors=bb1
   PUSH1 0x00   ; ic=13 pc=21 noop
   PUSH1 0x42   ; ic=14 pc=23 noop
   PUSH2 0xffff ; ic=15 pc=25 noop
-  CALL         ; ic=16 pc=28 recursive_frame
+  CALL         ; ic=16 pc=28 recursive_message
   POP          ; ic=17 pc=29 gas=2 stack_in=1 max_growth=0
   STOP         ; ic=18 pc=30
 

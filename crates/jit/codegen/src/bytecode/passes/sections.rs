@@ -6,7 +6,7 @@ use evm2::interpreter::op;
 /// A gas section tracks the total base gas cost of a sequence of instructions.
 ///
 /// Gas sections end at instructions that require `gasleft` (e.g. `GAS`, `SSTORE`),
-/// branching instructions, or recursive frame instructions.
+/// branching instructions, or recursive message instructions.
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct GasSection {
     /// The total base gas cost of all instructions in the section.
@@ -34,7 +34,7 @@ impl GasSection {
 /// A stack section tracks stack height requirements for a sequence of instructions.
 ///
 /// Stack sections end at instructions that require `gasleft`, branching instructions, or
-/// recursive frame instructions. This keeps stack failures after dynamic-gas and host-effect
+/// recursive message instructions. This keeps stack failures after dynamic-gas and host-effect
 /// instructions from being hoisted ahead of those instructions.
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct StackSection {
@@ -235,9 +235,9 @@ impl SectionsAnalysis {
             self.gas.process_extra(bytecode.gas_params.exp_cost(exponent));
         }
 
-        // Dynamic-gas, branching, and recursive-frame instructions end both sections.
+        // Dynamic-gas, branching, and recursive-message instructions end both sections.
         let next = inst + 1;
-        if data.is_recursive_frame_opcode()
+        if data.is_recursive_message_opcode()
             || data.is_branching()
             || data.requires_gasleft(bytecode.spec_id)
         {

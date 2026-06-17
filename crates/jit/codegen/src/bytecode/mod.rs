@@ -169,8 +169,6 @@ pub struct Bytecode<'a> {
     pub(crate) gas_params: GasParams,
     /// Whether the bytecode contains dynamic jumps.
     has_dynamic_jumps: bool,
-    /// Whether the bytecode contains recursive frame opcodes.
-    has_recursive_frame_opcode: bool,
     /// Mapping from program counter to instruction.
     pc_to_inst: FxHashMap<u32, Inst>,
     /// Mapping from instruction index to its program counter (`code[pc]` is the opcode byte).
@@ -328,7 +326,6 @@ impl<'a> Bytecode<'a> {
             spec_id,
             gas_params,
             has_dynamic_jumps: false,
-            has_recursive_frame_opcode: false,
             snapshots: Snapshots::default(),
             memory_sections: IndexVec::new(),
             u256_interner: RefCell::new(u256_interner),
@@ -436,8 +433,6 @@ impl<'a> Bytecode<'a> {
         if self.config.contains(AnalysisConfig::DSE) {
             self.dead_store_elim();
         }
-
-        self.calc_has_recursive_frame_opcode();
 
         self.construct_sections();
         self.construct_memory_sections();
@@ -562,14 +557,6 @@ impl<'a> Bytecode<'a> {
         marked_jump_dead
     }
 
-    /// Calculates whether the bytecode contains `*CALL*` or `*CREATE*` instructions.
-    #[instrument(name = "recursive_frame_opcode", level = "debug", skip_all)]
-    fn calc_has_recursive_frame_opcode(&mut self) {
-        let has_recursive_frame_opcode =
-            self.iter_insts().any(|(_, data)| data.is_recursive_frame_opcode());
-        self.has_recursive_frame_opcode = has_recursive_frame_opcode;
-    }
-
     /// Constructs the sections in the bytecode.
     #[instrument(name = "sections", level = "debug", skip_all)]
     #[inline(never)]
@@ -639,9 +626,8 @@ impl<'a> Bytecode<'a> {
     }
 
     /// Returns `true` if the bytecode contains `*CALL*` or `*CREATE*` instructions.
-    #[allow(dead_code)]
-    pub(crate) const fn has_recursive_frame_opcode(&self) -> bool {
-        self.has_recursive_frame_opcode
+    pub(crate) fn has_recursive_message_opcode(&self) -> bool {
+        self.iter_insts().any(|(_, data)| data.is_recursive_message_opcode())
     }
 
     /// Returns `true` if the stack argument's contents are observed by the caller.
@@ -830,7 +816,7 @@ impl<'a> Bytecode<'a> {
         let mut live = 0usize;
         let mut noops = 0usize;
         let mut dead = 0usize;
-        let mut recursive_frame_opcodes = 0usize;
+        let mut recursive_message_opcodes = 0usize;
         for (_inst, data) in self.iter_all_insts() {
             if data.is_dead_code() {
                 dead += 1;
@@ -839,8 +825,8 @@ impl<'a> Bytecode<'a> {
                 if data.flags.contains(InstFlags::NOOP) {
                     noops += 1;
                 }
-                if data.is_recursive_frame_opcode() {
-                    recursive_frame_opcodes += 1;
+                if data.is_recursive_message_opcode() {
+                    recursive_message_opcodes += 1;
                 }
             }
         }
@@ -859,7 +845,7 @@ impl<'a> Bytecode<'a> {
             live,
             dead,
             noops,
-            recursive_frame_opcodes,
+            recursive_message_opcodes,
             blocks: n,
             block_min,
             block_max,
@@ -879,7 +865,7 @@ impl<'a> Bytecode<'a> {
             live = s.live,
             dead = s.dead,
             noops = s.noops,
-            recursive_frame_opcodes = s.recursive_frame_opcodes,
+            recursive_message_opcodes = s.recursive_message_opcodes,
             blocks = s.blocks,
             block_min = s.block_min,
             block_max = s.block_max,
@@ -931,7 +917,7 @@ pub(crate) struct IrStats {
     pub(crate) live: usize,
     pub(crate) dead: usize,
     pub(crate) noops: usize,
-    pub(crate) recursive_frame_opcodes: usize,
+    pub(crate) recursive_message_opcodes: usize,
     pub(crate) blocks: usize,
     pub(crate) block_min: usize,
     pub(crate) block_max: usize,
@@ -1149,9 +1135,9 @@ impl InstData {
             )
     }
 
-    /// Returns `true` if this instruction starts a recursive EVM frame.
+    /// Returns `true` if this instruction executes a recursive EVM message.
     #[inline]
-    pub(crate) const fn is_recursive_frame_opcode(&self) -> bool {
+    pub(crate) const fn is_recursive_message_opcode(&self) -> bool {
         matches!(
             self.opcode,
             op::CALL | op::CALLCODE | op::DELEGATECALL | op::STATICCALL | op::CREATE | op::CREATE2

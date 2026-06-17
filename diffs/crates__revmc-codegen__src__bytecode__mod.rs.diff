@@ -35,7 +35,7 @@
  /// Implements `Display` for a nonmax index type using a format string.
  macro_rules! impl_index_display {
      ($ty:ty, $fmt:literal) => {
-@@ -167,12 +165,12 @@
+@@ -167,12 +165,10 @@
      jumpdests: BitVec,
      /// The [`SpecId`].
      pub(crate) spec_id: SpecId,
@@ -46,12 +46,10 @@
      has_dynamic_jumps: bool,
 -    /// Whether the bytecode may suspend execution.
 -    may_suspend: bool,
-+    /// Whether the bytecode contains recursive frame opcodes.
-+    has_recursive_frame_opcode: bool,
      /// Mapping from program counter to instruction.
      pc_to_inst: FxHashMap<u32, Inst>,
      /// Mapping from instruction index to its program counter (`code[pc]` is the opcode byte).
-@@ -231,7 +229,7 @@
+@@ -231,7 +227,7 @@
 
      #[instrument(name = "Bytecode::new", level = "debug", skip_all)]
      fn new_mono(code: Cow<'a, [u8]>, spec_id: SpecId, gas_params: Option<GasParams>) -> Self {
@@ -60,25 +58,24 @@
          let mut insts = IndexVec::with_capacity(code.len() + 8);
          let mut inst_to_pc = IndexVec::with_capacity(code.len() + 8);
          let mut jumpdests = BitVec::repeat(false, code.len());
-@@ -330,7 +328,7 @@
+@@ -330,7 +326,6 @@
              spec_id,
              gas_params,
              has_dynamic_jumps: false,
 -            may_suspend: false,
-+            has_recursive_frame_opcode: false,
              snapshots: Snapshots::default(),
              memory_sections: IndexVec::new(),
              u256_interner: RefCell::new(u256_interner),
-@@ -439,7 +437,7 @@
+@@ -439,8 +434,6 @@
              self.dead_store_elim();
          }
 
 -        self.calc_may_suspend();
-+        self.calc_has_recursive_frame_opcode();
-
+-
          self.construct_sections();
          self.construct_memory_sections();
-@@ -564,13 +562,12 @@
+
+@@ -564,15 +557,6 @@
          marked_jump_dead
      }
 
@@ -89,16 +86,12 @@
 -    fn calc_may_suspend(&mut self) {
 -        let may_suspend = self.iter_insts().any(|(_, data)| data.may_suspend());
 -        self.may_suspend = may_suspend;
-+    /// Calculates whether the bytecode contains `*CALL*` or `*CREATE*` instructions.
-+    #[instrument(name = "recursive_frame_opcode", level = "debug", skip_all)]
-+    fn calc_has_recursive_frame_opcode(&mut self) {
-+        let has_recursive_frame_opcode =
-+            self.iter_insts().any(|(_, data)| data.is_recursive_frame_opcode());
-+        self.has_recursive_frame_opcode = has_recursive_frame_opcode;
-     }
-
+-    }
+-
      /// Constructs the sections in the bytecode.
-@@ -641,15 +638,15 @@
+     #[instrument(name = "sections", level = "debug", skip_all)]
+     #[inline(never)]
+@@ -641,15 +625,14 @@
          self.has_dynamic_jumps
      }
 
@@ -106,9 +99,8 @@
 -    pub(crate) fn may_suspend(&self) -> bool {
 -        self.may_suspend
 +    /// Returns `true` if the bytecode contains `*CALL*` or `*CREATE*` instructions.
-+    #[allow(dead_code)]
-+    pub(crate) const fn has_recursive_frame_opcode(&self) -> bool {
-+        self.has_recursive_frame_opcode
++    pub(crate) fn has_recursive_message_opcode(&self) -> bool {
++        self.iter_insts().any(|(_, data)| data.is_recursive_message_opcode())
      }
 
 -    /// Returns `true` if the stack argument's contents are observed by the caller after the
@@ -120,54 +112,54 @@
      }
 
      /// Returns `true` if the instruction is diverging.
-@@ -833,7 +830,7 @@
+@@ -833,7 +816,7 @@
          let mut live = 0usize;
          let mut noops = 0usize;
          let mut dead = 0usize;
 -        let mut suspends = 0usize;
-+        let mut recursive_frame_opcodes = 0usize;
++        let mut recursive_message_opcodes = 0usize;
          for (_inst, data) in self.iter_all_insts() {
              if data.is_dead_code() {
                  dead += 1;
-@@ -842,8 +839,8 @@
+@@ -842,8 +825,8 @@
                  if data.flags.contains(InstFlags::NOOP) {
                      noops += 1;
                  }
 -                if data.may_suspend() {
 -                    suspends += 1;
-+                if data.is_recursive_frame_opcode() {
-+                    recursive_frame_opcodes += 1;
++                if data.is_recursive_message_opcode() {
++                    recursive_message_opcodes += 1;
                  }
              }
          }
-@@ -862,7 +859,7 @@
+@@ -862,7 +845,7 @@
              live,
              dead,
              noops,
 -            suspends,
-+            recursive_frame_opcodes,
++            recursive_message_opcodes,
              blocks: n,
              block_min,
              block_max,
-@@ -882,7 +879,7 @@
+@@ -882,7 +865,7 @@
              live = s.live,
              dead = s.dead,
              noops = s.noops,
 -            suspends = s.suspends,
-+            recursive_frame_opcodes = s.recursive_frame_opcodes,
++            recursive_message_opcodes = s.recursive_message_opcodes,
              blocks = s.blocks,
              block_min = s.block_min,
              block_max = s.block_max,
-@@ -934,7 +931,7 @@
+@@ -934,7 +917,7 @@
      pub(crate) live: usize,
      pub(crate) dead: usize,
      pub(crate) noops: usize,
 -    pub(crate) suspends: usize,
-+    pub(crate) recursive_frame_opcodes: usize,
++    pub(crate) recursive_message_opcodes: usize,
      pub(crate) blocks: usize,
      pub(crate) block_min: usize,
      pub(crate) block_max: usize,
-@@ -1125,9 +1122,7 @@
+@@ -1125,9 +1108,7 @@
      /// Note that this does not include CALL and CREATE.
      #[inline]
      pub(crate) fn requires_gasleft(&self, spec_id: SpecId) -> bool {
@@ -178,7 +170,7 @@
      }
 
      /// Returns `true` if execution can fall through to the next sequential instruction.
-@@ -1145,11 +1140,6 @@
+@@ -1145,11 +1126,6 @@
      /// Returns `true` if we know that this instruction will stop execution.
      #[inline]
      pub(crate) fn is_diverging(&self) -> bool {
@@ -190,12 +182,12 @@
          (self.opcode == op::JUMP && self.flags.contains(InstFlags::INVALID_JUMP))
              || self.flags.contains(InstFlags::DISABLED)
              || self.flags.contains(InstFlags::UNKNOWN)
-@@ -1159,14 +1149,9 @@
+@@ -1159,14 +1135,9 @@
              )
      }
 
 -    /// Returns `true` if this instruction may suspend execution.
-+    /// Returns `true` if this instruction starts a recursive EVM frame.
++    /// Returns `true` if this instruction executes a recursive EVM message.
      #[inline]
 -    pub(crate) const fn may_suspend(&self) -> bool {
 -        #[cfg(test)]
@@ -203,11 +195,11 @@
 -            return true;
 -        }
 -
-+    pub(crate) const fn is_recursive_frame_opcode(&self) -> bool {
++    pub(crate) const fn is_recursive_message_opcode(&self) -> bool {
          matches!(
              self.opcode,
              op::CALL | op::CALLCODE | op::DELEGATECALL | op::STATICCALL | op::CREATE | op::CREATE2
-@@ -1181,7 +1166,7 @@
+@@ -1181,7 +1152,7 @@
          /// The `JUMP`/`JUMPI` target is known at compile time.
          const STATIC_JUMP = 1 << 0;
          /// The jump target is known to be invalid.
@@ -216,7 +208,7 @@
          const INVALID_JUMP = 1 << 1;
          /// The jump has multiple known targets (see `Bytecode::multi_jump_targets`).
          /// The target value is still on the stack and must be popped and switched on at runtime.
-@@ -1190,10 +1175,10 @@
+@@ -1190,10 +1161,10 @@
          const CONST_JUMP_CONDITION = 1 << 3;
 
          /// The instruction is disabled in this EVM version.
@@ -229,7 +221,7 @@
          const UNKNOWN = 1 << 5;
 
          /// Instruction is a no-op: skip generating logic, but keep the gas calculation.
-@@ -1218,13 +1203,6 @@
+@@ -1218,13 +1189,6 @@
  #[cfg(test)]
  mod tests {
      use super::*;

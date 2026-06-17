@@ -756,7 +756,7 @@ IR_STAT_KEYS = [
     "live",
     "dead",
     "noops",
-    "recursive_frame_opcodes",
+    "recursive_message_opcodes",
     "blocks",
     "block_min",
     "block_max",
@@ -780,7 +780,7 @@ class BlockStats(Analysis):
             r" live=(\d+)"
             r" dead=(\d+)"
             r" noops=(\d+)"
-            r" recursive_frame_opcodes=(\d+)"
+            r" recursive_message_opcodes=(\d+)"
             r" blocks=(\d+)"
             r" block_min=(\d+)"
             r" block_max=(\d+)"
@@ -795,7 +795,7 @@ class BlockStats(Analysis):
             "live": int(m.group(2)),
             "dead": int(m.group(3)),
             "noops": int(m.group(4)),
-            "recursive_frame_opcodes": int(m.group(5)),
+            "recursive_message_opcodes": int(m.group(5)),
             "blocks": int(m.group(6)),
             "block_min": int(m.group(7)),
             "block_max": int(m.group(8)),
@@ -1050,7 +1050,7 @@ def main():
     parser.add_argument(
         "--block-stats",
         action="store_true",
-        help="Report IR stats (inst counts, block size distribution, recursive frame opcodes)",
+        help="Report IR stats (inst counts, block size distribution, recursive message opcodes)",
     )
     args = parser.parse_args()
 

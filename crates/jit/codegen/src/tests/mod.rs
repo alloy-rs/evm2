@@ -85,7 +85,7 @@ const I256_MAX: U256 = U256::from_limbs([
 ]);
 
 matrix_tests!(
-    accept_recursive_frame_opcodes = |jit| {
+    accept_recursive_message_opcodes = |jit| {
         let cases: &[&[u8]] = &[
             &[op::PUSH0, op::PUSH0, op::PUSH0, op::CREATE],
             &[op::PUSH0, op::PUSH0, op::PUSH0, op::PUSH0, op::CREATE2],
@@ -115,7 +115,7 @@ matrix_tests!(
 
         for bytecode in cases {
             let bytecode = jit.parse((*bytecode).into(), SpecId::CANCUN).unwrap();
-            assert!(bytecode.has_recursive_frame_opcode());
+            assert!(bytecode.has_recursive_message_opcode());
         }
     }
 );

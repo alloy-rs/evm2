@@ -102,7 +102,7 @@ show every change.
 ./scripts/bench.py /tmp/bench --diff main --codegen-lines          # codegen lines only
 ./scripts/bench.py /tmp/bench --jump-resolution                    # jump resolution stats
 ./scripts/bench.py /tmp/bench --input-stats                        # constant-input stats
-./scripts/bench.py /tmp/bench --block-stats                        # block stats (min/max/avg/median, recursive frame opcodes)
+./scripts/bench.py /tmp/bench --block-stats                        # block stats (min/max/avg/median, recursive message opcodes)
 ./scripts/bench.py /tmp/bench --codegen-lines --jump-resolution    # combine multiple analyses
 ```
 
