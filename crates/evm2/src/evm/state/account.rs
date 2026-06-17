@@ -408,6 +408,21 @@ impl<'a> AccountHandle<'a> {
         self.set_code(code_hash, code);
     }
 
+    /// Applies an [EIP-7702](https://eips.ethereum.org/EIPS/eip-7702) delegation to the account.
+    ///
+    /// Installs an EIP-7702 delegation designator pointing at `delegated_address`, or clears the
+    /// account code when `delegated_address` is zero, then bumps the account nonce.
+    #[inline]
+    pub fn set_delegation(&mut self, delegated_address: Address) {
+        let code = if delegated_address.is_zero() {
+            Bytecode::default()
+        } else {
+            Bytecode::new_eip7702(delegated_address)
+        };
+        self.set_code_slow(code);
+        self.bump_nonce();
+    }
+
     /// Returns the live account, materializing an empty one when it is currently absent.
     ///
     /// Used by the granular field setters, which journal their own [`JournalEntry::BalanceChanged`]

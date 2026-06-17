@@ -212,7 +212,7 @@ impl State {
     /// account instead. See [`PrewarmSet`].
     #[inline]
     #[must_use]
-    pub const fn prewarmset(&self) -> &PrewarmSet {
+    pub const fn prewarm_set(&self) -> &PrewarmSet {
         &self.inner.prewarm_set
     }
 
@@ -222,7 +222,7 @@ impl State {
     /// Entries added through this handle survive [`Self::rollback`] and are cleared per transaction
     /// by [`Self::clear_transaction_state`].
     #[inline]
-    pub const fn prewarmset_mut(&mut self) -> &mut PrewarmSet {
+    pub const fn prewarm_set_mut(&mut self) -> &mut PrewarmSet {
         &mut self.inner.prewarm_set
     }
 
@@ -258,7 +258,7 @@ impl State {
     /// Clears transaction-scoped substate.
     pub fn clear_transaction_state(&mut self) {
         self.accounts.clear();
-        self.prewarm_set.clear_per_transaction();
+        self.prewarm_set.clear();
         self.storage.clear();
         self.journal.clear();
         self.selfdestructs.clear();

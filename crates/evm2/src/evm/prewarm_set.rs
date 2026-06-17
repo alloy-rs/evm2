@@ -87,7 +87,7 @@ impl PrewarmSet {
     /// transaction-initial warmth established before any rollback checkpoint (sender, recipient,
     /// EIP-7702 authorities, system contracts). This warmth survives
     /// [`crate::evm::State::rollback`] and is cleared per transaction by
-    /// [`Self::clear_per_transaction`].
+    /// [`Self::clear`].
     #[inline]
     pub fn warm(&mut self, address: &Address) {
         if let Some(short_address) = short_address(address) {
@@ -121,7 +121,7 @@ impl PrewarmSet {
 
     /// Clears the per-transaction warm entries, leaving an empty set.
     #[inline]
-    pub fn clear_per_transaction(&mut self) {
+    pub fn clear(&mut self) {
         self.short_addresses.fill(false);
         self.access_list.clear();
     }
@@ -209,7 +209,7 @@ mod tests {
     }
 
     #[test]
-    fn test_clear_per_transaction() {
+    fn test_clear() {
         let mut prewarm_set = PrewarmSet::new();
         let short_addr = Address::with_last_byte(1);
         let regular_addr = address!("1234567890123456789012345678901234567890");
@@ -219,7 +219,7 @@ mod tests {
         assert!(prewarm_set.is_warm(&short_addr));
         assert!(prewarm_set.is_warm(&regular_addr));
 
-        prewarm_set.clear_per_transaction();
+        prewarm_set.clear();
         assert!(!prewarm_set.is_warm(&short_addr));
         assert!(!prewarm_set.is_warm(&regular_addr));
     }

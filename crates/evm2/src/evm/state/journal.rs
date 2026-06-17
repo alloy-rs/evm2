@@ -247,7 +247,7 @@ mod tests {
         state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
         // The load is an un-journaled read cache, so it survives rollback. Warmth comes from the
         // non-revertible base warm set, and the unchanged cached entry emits no state change.
-        assert!(state.prewarmset().is_warm(&account));
+        assert!(state.prewarm_set().is_warm(&account));
         assert!(state.account(&account, false).unwrap().is_warm());
         assert!(!state.build_state_changes().is_changed());
     }

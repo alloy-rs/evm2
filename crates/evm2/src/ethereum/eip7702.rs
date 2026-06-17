@@ -8,7 +8,6 @@ use super::{
 };
 use crate::{
     Evm, EvmTypes, TxResult,
-    bytecode::Bytecode,
     env::TxEnv,
     evm::db_error_handler,
     interpreter::Host,
@@ -16,7 +15,7 @@ use crate::{
     version::GasId,
 };
 use alloy_consensus::transaction::Recovered;
-use alloy_primitives::{Address, U256};
+use alloy_primitives::U256;
 
 pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     req: TxRequest<'_, T, Recovered<super::LazyTxEip7702>>,
@@ -109,17 +108,12 @@ fn apply_auth_list<T: EvmTypes<Host = Evm<T>>>(
         let Some(authority) = authorization.authority() else {
             continue;
         };
-        // One account handle backs the existence, nonce, and code reads, so the authority is
-        // probed in the overlay once instead of once per `account_info`/`get_code`. The handle is
-        // confined to this block; `set_delegation` reacquires the now-loaded account for the write.
-        let (existed, authority_nonce, code) = {
-            let mut account =
-                host.state.account(&authority, false).map_err(db_error_handler!(host))?;
-            // mark account as warm
-            account.warm();
-            (account.exists(), account.nonce(), account.load_code())
-        };
-        let code = code.map_err(|code| host.db_error_handler(code))?;
+        let mut account = host.state.account(&authority, false).map_err(db_error_handler!(host))?;
+        // mark account as warm
+        account.warm();
+        let existed = account.exists();
+        let authority_nonce = account.nonce();
+        let code = account.load_code().map_err(db_error_handler!(host))?;
         if !code.is_empty() && !code.is_eip7702() {
             continue;
         }
@@ -130,28 +124,9 @@ fn apply_auth_list<T: EvmTypes<Host = Evm<T>>>(
         if existed {
             refunded_accounts = refunded_accounts.saturating_add(1);
         }
-        set_delegation(host, authority, *authorization.address())?;
+        account.set_delegation(*authorization.address());
     }
 
     let refund_per_auth = u64::from(host.version().gas_params.get(GasId::TxEip7702AuthRefund));
     Ok(refunded_accounts.saturating_mul(refund_per_auth))
-}
-
-fn set_delegation<T: EvmTypes<Host = Evm<T>>>(
-    host: &mut Evm<T>,
-    authority: Address,
-    delegated_address: Address,
-) -> HandlerResult<()> {
-    let code = if delegated_address.is_zero() {
-        Bytecode::default()
-    } else {
-        Bytecode::new_eip7702(delegated_address)
-    };
-    // One handle serves both writes, so the authority is looked up once and the two mutations
-    // share a single revert snapshot. `set_code_slow` touches the account, matching the touch the
-    // former `increment_nonce` performed.
-    let mut account = host.state.account(&authority, false).map_err(db_error_handler!(host))?;
-    account.set_code_slow(code);
-    account.bump_nonce();
-    Ok(())
 }

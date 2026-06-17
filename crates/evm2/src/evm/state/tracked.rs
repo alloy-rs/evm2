@@ -2,7 +2,6 @@
 
 use super::Account;
 use alloy_primitives::map::AddressMap;
-use core::ops::{Deref, DerefMut};
 
 /// A value tracked together with the value it had at an aggregation boundary.
 ///
@@ -61,23 +60,4 @@ impl<T: PartialEq> Tracked<T> {
 ///
 /// Account overlays, touched-account state, and EIP-2929 account warmth all live in the same
 /// entry, so a warm or touched account does not have to be loaded from the database.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(crate) struct AccountMap {
-    accounts: AddressMap<Account>,
-}
-
-impl Deref for AccountMap {
-    type Target = AddressMap<Account>;
-
-    #[inline]
-    fn deref(&self) -> &Self::Target {
-        &self.accounts
-    }
-}
-
-impl DerefMut for AccountMap {
-    #[inline]
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.accounts
-    }
-}
+pub(crate) type AccountMap = AddressMap<Account>;

@@ -647,22 +647,10 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         self.features.contains(feature)
     }
 
-    /// Returns the active EVM feature set.
-    #[inline]
-    pub const fn get_features(&self) -> EvmFeatures {
-        self.features
-    }
-
     #[inline]
     const fn db_error_stop(&mut self, code: DbErrorCode) -> InstrStop {
         self.db_error_code = Some(code);
         InstrStop::FatalExternalError
-    }
-
-    #[inline]
-    pub(crate) const fn db_error_handler(&mut self, code: DbErrorCode) -> registry::HandlerError {
-        self.db_error_code = Some(code);
-        registry::HandlerError::Database(code)
     }
 
     /// Returns the active base specification ID.
@@ -1275,7 +1263,7 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
         // mark account as warm
         let is_cold = account.warm();
 
-        let exists = account.get().is_some();
+        let exists = account.exists();
         let info = account.get().cloned().unwrap_or_default();
 
         // load code
@@ -1684,6 +1672,10 @@ mod tests {
     }
 
     impl PrecompileProvider<BaseEvmTypes> for AccessingPrecompile {
+        fn addresses(&self) -> Box<dyn Iterator<Item = Address> + '_> {
+            Box::new(core::iter::once(Self::ADDRESS))
+        }
+
         fn contains(&self, address: &Address) -> bool {
             *address == Self::ADDRESS
         }
