@@ -5,11 +5,11 @@
 
  pub use ::eyre;
 -pub use revmc_codegen::*;
++pub use evm2_jit_backend::OptimizationLevel;
 +pub use evm2_jit_codegen::*;
 
 -use revmc_backend::OptimizationLevel;
 -use revmc_context::EvmCompilerFn;
-+use evm2_jit_backend::OptimizationLevel;
 +use evm2_jit_context::EvmCompilerFn;
  #[cfg(feature = "llvm")]
 -use revmc_llvm as llvm;

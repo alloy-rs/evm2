@@ -9,7 +9,16 @@
  use std::sync::Arc;
 
  /// Request to look up a compiled function.
-@@ -62,6 +62,12 @@
+@@ -37,6 +37,8 @@
+     NotReady,
+     /// JIT compilation failed for this contract.
+     JitFailed,
++    /// The current recursive message depth should run through the interpreter.
++    DepthLimit,
+ }
+
+ /// A compiled EVM program kept alive in the resident map.
+@@ -62,6 +64,12 @@
  }
 
  impl CompiledProgram {

@@ -62,6 +62,11 @@ pub fn run_interpreter<T: EvmTypes>(
     interpreter: &mut Interpreter<'_, T>,
     host: &mut T::Host,
 ) -> JitRunResult {
+    let max_depth = backend.max_compiled_message_depth();
+    if max_depth != 0 && interpreter.message().depth >= max_depth {
+        return JitRunResult::Interpret(InterpretReason::DepthLimit);
+    }
+
     let bytecode = interpreter.bytecode();
     let code = bytecode.as_slice();
     let decision = backend.lookup(LookupRequest {
@@ -83,7 +88,7 @@ pub fn run_interpreter<T: EvmTypes>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::RuntimeConfig;
+    use crate::runtime::{RuntimeConfig, RuntimeTuning};
     use alloy_primitives::Address;
     use evm2::{
         BaseEvmConfigSelector, BaseEvmTypes, Evm, EvmConfigSelector, Precompiles, SpecId,
@@ -98,8 +103,17 @@ mod tests {
         &[op::PUSH1, 0x42, op::PUSH0, op::MSTORE, op::PUSH1, 0x20, op::PUSH0, op::RETURN];
 
     fn blocking_backend() -> JitBackend {
-        JitBackend::new(RuntimeConfig { enabled: true, blocking: true, ..RuntimeConfig::default() })
-            .unwrap()
+        blocking_backend_with_tuning(RuntimeTuning::default())
+    }
+
+    fn blocking_backend_with_tuning(tuning: RuntimeTuning) -> JitBackend {
+        JitBackend::new(RuntimeConfig {
+            enabled: true,
+            blocking: true,
+            tuning,
+            ..RuntimeConfig::default()
+        })
+        .unwrap()
     }
 
     fn push20(code: &mut Vec<u8>, address: Address) {
@@ -131,6 +145,52 @@ mod tests {
         assert_eq!(
             run_interpreter(&JitBackend::disabled(), &config, &mut interpreter, &mut host),
             JitRunResult::Interpret(InterpretReason::Disabled),
+        );
+    }
+
+    #[test]
+    fn depth_limited_backend_falls_back_to_interpreter() {
+        let config = <BaseEvmConfigSelector as EvmConfigSelector<BaseEvmTypes>>::execution_config(
+            SpecId::CANCUN,
+        );
+        let tx_env = TxEnv::default();
+        let code = [op::STOP];
+        let backend = blocking_backend_with_tuning(RuntimeTuning {
+            max_compiled_message_depth: 1,
+            ..RuntimeTuning::default()
+        });
+        let mut host = Evm::<BaseEvmTypes>::new(
+            SpecId::CANCUN,
+            BlockEnv::default(),
+            ethereum_tx_registry(SpecId::CANCUN),
+            EmptyDB::default(),
+            Precompiles::base(SpecId::CANCUN),
+        );
+        let message = Message::default();
+        let mut interpreter = Interpreter::<BaseEvmTypes>::new(
+            Bytecode::new_legacy(Bytes::copy_from_slice(&code)),
+            &tx_env,
+            &message,
+            false,
+        );
+
+        assert_eq!(
+            run_interpreter(&backend, &config, &mut interpreter, &mut host),
+            JitRunResult::Finished(InstrStop::Stop),
+        );
+        assert!(backend.get_compiled(keccak256(code), SpecId::CANCUN).is_some());
+
+        let message = Message { depth: 1, ..Message::default() };
+        let mut interpreter = Interpreter::<BaseEvmTypes>::new(
+            Bytecode::new_legacy(Bytes::copy_from_slice(&code)),
+            &tx_env,
+            &message,
+            false,
+        );
+
+        assert_eq!(
+            run_interpreter(&backend, &config, &mut interpreter, &mut host),
+            JitRunResult::Interpret(InterpretReason::DepthLimit),
         );
     }
 

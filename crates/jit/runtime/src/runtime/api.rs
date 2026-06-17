@@ -37,6 +37,8 @@ pub enum InterpretReason {
     NotReady,
     /// JIT compilation failed for this contract.
     JitFailed,
+    /// The current recursive message depth should run through the interpreter.
+    DepthLimit,
 }
 
 /// A compiled EVM program kept alive in the resident map.

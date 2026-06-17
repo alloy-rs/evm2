@@ -7,9 +7,9 @@
 extern crate tracing;
 
 pub use ::eyre;
+pub use evm2_jit_backend::OptimizationLevel;
 pub use evm2_jit_codegen::*;
 
-use evm2_jit_backend::OptimizationLevel;
 use evm2_jit_context::EvmCompilerFn;
 #[cfg(feature = "llvm")]
 use evm2_jit_llvm as llvm;
