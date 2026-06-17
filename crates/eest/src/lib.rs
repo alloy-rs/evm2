@@ -11,6 +11,8 @@ mod filter;
 mod fixtures;
 mod forks;
 mod harness;
+#[cfg(feature = "jit")]
+mod jit;
 mod runner;
 mod state;
 mod tx;

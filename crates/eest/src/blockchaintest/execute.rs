@@ -30,13 +30,8 @@ use evm2::{
     registry::HandlerError,
 };
 #[cfg(feature = "jit")]
-use evm2_jit_runtime::{
-    evm2_evm::JitInterpreterRunner,
-    runtime::{ArtifactStore, JitBackend, RuntimeArtifactStore, RuntimeConfig, RuntimeTuning},
-};
+use evm2_jit_runtime::{evm2_evm::JitInterpreterRunner, runtime::JitBackend};
 use std::{fs, mem, path::Path};
-#[cfg(feature = "jit")]
-use std::{sync::Arc, thread};
 
 const ONE_GWEI: u64 = 1_000_000_000;
 const ONE_ETHER: u128 = 1_000_000_000_000_000_000;
@@ -105,28 +100,7 @@ impl ExecutionResources {
 
 #[cfg(feature = "jit")]
 fn make_jit_backend(mode: ExecutionMode) -> Result<JitBackend, TestErrorKind> {
-    let cpus = thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
-    let store = if mode == ExecutionMode::Aot {
-        Some(Arc::new(
-            RuntimeArtifactStore::new()
-                .map_err(|err| TestErrorKind::JitRuntime(err.to_string()))?,
-        ) as Arc<dyn ArtifactStore>)
-    } else {
-        None
-    };
-    JitBackend::new(RuntimeConfig {
-        enabled: true,
-        blocking: true,
-        aot: mode == ExecutionMode::Aot,
-        store,
-        tuning: RuntimeTuning {
-            jit_hot_threshold: 0,
-            jit_worker_count: cpus,
-            ..Default::default()
-        },
-        ..Default::default()
-    })
-    .map_err(|err| TestErrorKind::JitRuntime(err.to_string()))
+    crate::jit::make_backend(mode == ExecutionMode::Aot).map_err(TestErrorKind::JitRuntime)
 }
 
 /// Per-file execution summary.
