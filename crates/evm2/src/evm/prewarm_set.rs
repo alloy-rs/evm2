@@ -1,9 +1,15 @@
 //! Pre-warmed address and storage-slot set for entries warmed before EVM execution begins.
 //!
 //! [`PrewarmSet`] holds the warm entries that come from chain/transaction configuration rather
-//! than from an executing opcode: precompiles, the coinbase/beneficiary (EIP-3651), and the
-//! EIP-2930 access list (addresses and their storage slots). It is a port of revm's
+//! than from an executing opcode: precompiles, the coinbase/beneficiary (EIP-3651), the EIP-2930
+//! access list (addresses and their storage slots), and the non-revertible base warm accounts
+//! (sender, recipient, EIP-7702 authorities, system contracts). It is a port of revm's
 //! `WarmAddresses`, adapted to evm2's primitive types.
+//!
+//! Warm addresses are tracked in two places. Short addresses — 18 leading zero bytes and a
+//! last-two-byte value below [`SHORT_ADDRESS_CAP`], which is where precompiles and similar
+//! low-numbered addresses fall — live in a bit vector for fast lookups. Every other warm address,
+//! along with any address that carries warm storage slots, lives in `access_list`.
 //!
 //! Note this is *not* the complete EIP-2929 initial warm set: the sender and recipient are also
 //! warm from the start, but they are tracked per account by [`crate::evm::State`] instead — as is
@@ -13,12 +19,12 @@ use crate::interpreter::Word;
 use alloc::{vec, vec::Vec};
 use alloy_primitives::{
     Address,
-    map::{AddressMap, AddressSet, HashSet},
+    map::{AddressMap, HashSet},
 };
 
 /// Short-address optimization cap. Addresses with 18 leading zero bytes whose last two bytes are
 /// less than this value are tracked in a bit vector for fast warm lookups.
-pub const SHORT_ADDRESS_CAP: usize = 256;
+pub const SHORT_ADDRESS_CAP: usize = 32;
 
 /// Returns the short-address index for an address, if it qualifies.
 ///
@@ -35,29 +41,23 @@ fn short_address(address: &Address) -> Option<usize> {
     None
 }
 
-/// Stores addresses that are warm-loaded for the current transaction.
+/// Stores addresses (and their storage slots) that are warm-loaded for the current transaction.
 ///
-/// Contains the precompile addresses (which change infrequently), the coinbase address, and the
-/// EIP-2930 access list (which changes per transaction). Precompiles are usually very small
-/// addresses, so they are additionally stored in `precompile_short_addresses` as a bit vector for
-/// faster access.
+/// Warm addresses without warm storage are split by shape for lookup speed: short addresses (see
+/// [`SHORT_ADDRESS_CAP`]) set a bit in `short_addresses`, while everything else — and any address
+/// carrying warm storage slots — is held in `access_list`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrewarmSet {
-    /// Set of warm-loaded precompile addresses.
-    precompile_set: AddressSet,
-    /// Boolean vector of precompile short addresses. If an address is shorter than
-    /// [`SHORT_ADDRESS_CAP`] it is stored here for faster access.
-    precompile_short_addresses: Vec<bool>,
-    /// `true` if all precompiles are short addresses.
-    precompile_all_short_addresses: bool,
-    /// Coinbase address.
-    coinbase: Option<Address>,
-    /// EIP-2930 access list keyed by address, each holding its warm storage slots.
+    /// Boolean vector of warm short addresses. An address shorter than [`SHORT_ADDRESS_CAP`] sets
+    /// its bit here for faster access; precompiles and other low-numbered addresses land here.
+    short_addresses: Vec<bool>,
+    /// Warm addresses keyed by address, each holding its warm storage slots.
     ///
-    /// This also holds the non-revertible base warm entries (sender, recipient, EIP-7702
-    /// authorities, system contracts) added via [`Self::warm_account`] and [`Self::warm_storage`]:
-    /// they are warmed before or alongside execution and survive [`crate::evm::State::rollback`].
-    /// An address present with an empty slot set is warm with no warm storage slots.
+    /// This holds the EIP-2930 access list, non-short warm addresses, and the non-revertible base
+    /// warm entries (sender, recipient, EIP-7702 authorities, system contracts) added via
+    /// [`Self::warm`], [`Self::warm_storage`], and [`Self::warm_storage_slot`]: they are warmed
+    /// before or alongside execution and survive [`crate::evm::State::rollback`]. An address
+    /// present with an empty slot set is warm with no warm storage slots.
     access_list: AddressMap<HashSet<Word>>,
 }
 
@@ -72,162 +72,83 @@ impl PrewarmSet {
     #[inline]
     pub fn new() -> Self {
         Self {
-            precompile_set: AddressSet::default(),
-            precompile_short_addresses: vec![false; SHORT_ADDRESS_CAP],
-            precompile_all_short_addresses: true,
-            coinbase: None,
+            short_addresses: vec![false; SHORT_ADDRESS_CAP],
             access_list: AddressMap::default(),
         }
     }
 
-    /// Builder: sets the precompile addresses and returns the set.
-    #[inline]
-    pub fn with_precompiles(mut self, addresses: &AddressSet) -> Self {
-        self.set_precompile_addresses(addresses);
-        self
-    }
-
-    /// Builder: sets the coinbase address and returns the set.
-    #[inline]
-    pub const fn with_coinbase(mut self, address: Address) -> Self {
-        self.coinbase = Some(address);
-        self
-    }
-
-    /// Builder: merges the EIP-2930 access list and returns the set.
-    #[inline]
-    pub fn with_access_list(mut self, access_list: AddressMap<HashSet<Word>>) -> Self {
-        self.set_access_list(access_list);
-        self
-    }
-
-    /// Returns the precompile addresses.
-    #[inline]
-    pub const fn precompiles(&self) -> &AddressSet {
-        &self.precompile_set
-    }
-
-    /// Returns the coinbase address.
-    #[inline]
-    pub const fn coinbase(&self) -> Option<Address> {
-        self.coinbase
-    }
-
-    /// Sets the precompile addresses and rebuilds the short-address boolean vector.
-    pub fn set_precompile_addresses(&mut self, addresses: &AddressSet) {
-        self.precompile_short_addresses.fill(false);
-
-        let mut all_short_addresses = true;
-        for address in addresses.iter() {
-            if let Some(short_address) = short_address(address) {
-                self.precompile_short_addresses[short_address] = true;
-            } else {
-                all_short_addresses = false;
-            }
-        }
-
-        self.precompile_all_short_addresses = all_short_addresses;
-        self.precompile_set.clone_from(addresses);
-    }
-
-    /// Sets the coinbase address.
-    #[inline]
-    pub const fn set_coinbase(&mut self, address: Address) {
-        self.coinbase = Some(address);
-    }
-
-    /// Merges entries into the EIP-2930 access list, warming each address and its storage slots.
-    ///
-    /// Existing warm entries (such as the sender and recipient warmed via [`Self::warm_account`]
-    /// before the access list is applied) are preserved; storage slots are unioned per address.
-    #[inline]
-    pub fn set_access_list(&mut self, access_list: AddressMap<HashSet<Word>>) {
-        for (address, slots) in access_list {
-            self.access_list.entry(address).or_default().extend(slots);
-        }
-    }
-
-    /// Returns the access list.
+    /// Returns the access list (non-short warm addresses and all warm storage slots).
     #[inline]
     pub const fn access_list(&self) -> &AddressMap<HashSet<Word>> {
         &self.access_list
     }
 
-    /// Marks an address as warm in the non-revertible base set.
+    /// Marks an address as warm.
     ///
-    /// Used for transaction-initial warmth established before any rollback checkpoint, such as the
-    /// sender, recipient, EIP-7702 authorities, or system contracts. This warmth survives
+    /// Short addresses set a bit in `short_addresses`; all others are inserted into `access_list`
+    /// with no warm storage slots. Used for precompiles, the coinbase/beneficiary, and the
+    /// transaction-initial warmth established before any rollback checkpoint (sender, recipient,
+    /// EIP-7702 authorities, system contracts). This warmth survives
     /// [`crate::evm::State::rollback`] and is cleared per transaction by
     /// [`Self::clear_per_transaction`].
     #[inline]
-    pub fn warm_account(&mut self, address: &Address) {
-        self.access_list.entry(*address).or_default();
+    pub fn warm(&mut self, address: &Address) {
+        if let Some(short_address) = short_address(address) {
+            self.short_addresses[short_address] = true;
+        } else {
+            self.access_list.entry(*address).or_default();
+        }
     }
 
-    /// Marks a storage slot as warm in the non-revertible base set.
+    /// Marks an address and a set of storage slots as warm.
     ///
-    /// Returns whether the slot was cold before this call. See [`Self::warm_account`] for the
-    /// rollback and clearing semantics.
+    /// The slots are unioned into any slots already warm for the address. See [`Self::warm`] for
+    /// the rollback and clearing semantics.
     #[inline]
-    pub fn warm_storage(&mut self, address: &Address, key: &Word) -> bool {
+    pub fn warm_storage(&mut self, address: &Address, slots: HashSet<Word>) {
+        self.warm(address);
+        if !slots.is_empty() {
+            self.access_list.entry(*address).or_default().extend(slots);
+        }
+    }
+
+    /// Marks an address and a single storage slot as warm.
+    ///
+    /// Returns whether the slot was cold before this call. See [`Self::warm`] for the rollback and
+    /// clearing semantics.
+    #[inline]
+    pub fn warm_storage_slot(&mut self, address: &Address, key: &Word) -> bool {
+        self.warm(address);
         self.access_list.entry(*address).or_default().insert(*key)
     }
 
-    /// Clears the coinbase address.
-    #[inline]
-    pub const fn clear_coinbase(&mut self) {
-        self.coinbase = None;
-    }
-
-    /// Clears the per-transaction warm entries (coinbase plus the access list, which holds both the
-    /// EIP-2930 entries and the base warm accounts/slots), leaving precompiles intact.
+    /// Clears the per-transaction warm entries, leaving an empty set.
     #[inline]
     pub fn clear_per_transaction(&mut self) {
-        self.coinbase = None;
+        self.short_addresses.fill(false);
         self.access_list.clear();
     }
 
-    /// Returns whether the address is warm-loaded in the base set.
+    /// Returns whether the address is warm-loaded.
     pub fn is_warm(&self, address: &Address) -> bool {
-        // check if it is coinbase
-        if Some(*address) == self.coinbase {
+        // check if it is a short address
+        if let Some(short_address) = short_address(address)
+            && self.short_addresses[short_address]
+        {
             return true;
         }
 
-        // if it is part of the access list (which also holds the base warm accounts).
-        if self.access_list.contains_key(address) {
-            return true;
-        }
-
-        // if there are no precompiles, it is cold-loaded and the short-address vector is not set.
-        if self.precompile_set.is_empty() {
-            return false;
-        }
-
-        // check if it is a short precompile address
-        if let Some(short_address) = short_address(address) {
-            return self.precompile_short_addresses[short_address];
-        }
-
-        if !self.precompile_all_short_addresses {
-            // otherwise check the precompile set directly
-            return self.precompile_set.contains(address);
-        }
-
-        false
+        // otherwise check the access list (which also holds the base warm accounts)
+        self.access_list.contains_key(address)
     }
 
-    /// Returns whether the storage slot is warm-loaded by the access list.
+    /// Returns whether the storage slot is warm-loaded.
     #[inline]
     pub fn is_storage_warm(&self, address: &Address, key: &Word) -> bool {
-        if let Some(access_list) = self.access_list.get(address) {
-            return access_list.contains(key);
-        }
-
-        false
+        self.access_list.get(address).is_some_and(|slots| slots.contains(key))
     }
 
-    /// Returns whether the address is cold-loaded in the base set.
+    /// Returns whether the address is cold-loaded.
     #[inline]
     pub fn is_cold(&self, address: &Address) -> bool {
         !self.is_warm(address)
@@ -242,46 +163,27 @@ mod tests {
     #[test]
     fn test_initialization() {
         let prewarm_set = PrewarmSet::new();
-        assert!(prewarm_set.precompile_set.is_empty());
-        assert_eq!(prewarm_set.precompile_short_addresses.len(), SHORT_ADDRESS_CAP);
-        assert!(!prewarm_set.precompile_short_addresses.iter().any(|&b| b));
-        assert!(prewarm_set.coinbase.is_none());
+        assert_eq!(prewarm_set.short_addresses.len(), SHORT_ADDRESS_CAP);
+        assert!(!prewarm_set.short_addresses.iter().any(|&b| b));
+        assert!(prewarm_set.access_list.is_empty());
 
         let default_addresses = PrewarmSet::default();
         assert_eq!(prewarm_set, default_addresses);
     }
 
     #[test]
-    fn test_coinbase_management() {
-        let mut prewarm_set = PrewarmSet::new();
-        let coinbase_addr = address!("1234567890123456789012345678901234567890");
-
-        prewarm_set.set_coinbase(coinbase_addr);
-        assert_eq!(prewarm_set.coinbase, Some(coinbase_addr));
-        assert!(prewarm_set.is_warm(&coinbase_addr));
-
-        prewarm_set.clear_per_transaction();
-        assert!(prewarm_set.coinbase.is_none());
-        assert!(!prewarm_set.is_warm(&coinbase_addr));
-    }
-
-    #[test]
-    fn test_short_address_precompiles() {
+    fn test_warm_short_addresses() {
         let mut prewarm_set = PrewarmSet::new();
 
         let short_addr1 = Address::with_last_byte(1);
         let short_addr2 = Address::with_last_byte(5);
 
-        let mut precompiles = AddressSet::default();
-        precompiles.insert(short_addr1);
-        precompiles.insert(short_addr2);
+        prewarm_set.warm(&short_addr1);
+        prewarm_set.warm(&short_addr2);
 
-        prewarm_set.set_precompile_addresses(&precompiles);
-
-        assert_eq!(prewarm_set.precompile_set, precompiles);
-        assert!(prewarm_set.precompile_short_addresses[1]);
-        assert!(prewarm_set.precompile_short_addresses[5]);
-        assert!(!prewarm_set.precompile_short_addresses[0]);
+        assert!(prewarm_set.short_addresses[1]);
+        assert!(prewarm_set.short_addresses[5]);
+        assert!(!prewarm_set.short_addresses[0]);
 
         assert!(prewarm_set.is_warm(&short_addr1));
         assert!(prewarm_set.is_warm(&short_addr2));
@@ -289,7 +191,7 @@ mod tests {
     }
 
     #[test]
-    fn test_regular_address_precompiles() {
+    fn test_warm_regular_addresses() {
         let mut prewarm_set = PrewarmSet::new();
 
         let regular_addr = address!("1234567890123456789012345678901234567890");
@@ -298,14 +200,11 @@ mod tests {
         bytes[19] = 44u8; // 300
         let boundary_addr = Address::from(bytes);
 
-        let mut precompiles = AddressSet::default();
-        precompiles.insert(regular_addr);
-        precompiles.insert(boundary_addr);
+        prewarm_set.warm(&regular_addr);
+        prewarm_set.warm(&boundary_addr);
 
-        prewarm_set.set_precompile_addresses(&precompiles);
-
-        assert_eq!(prewarm_set.precompile_set, precompiles);
-        assert!(!prewarm_set.precompile_short_addresses.iter().any(|&b| b));
+        // Non-short addresses are not tracked in the short-address bit vector.
+        assert!(!prewarm_set.short_addresses.iter().any(|&b| b));
 
         assert!(prewarm_set.is_warm(&regular_addr));
         assert!(prewarm_set.is_warm(&boundary_addr));
@@ -313,19 +212,46 @@ mod tests {
     }
 
     #[test]
-    fn test_storage_warm_via_access_list() {
+    fn test_clear_per_transaction() {
+        let mut prewarm_set = PrewarmSet::new();
+        let short_addr = Address::with_last_byte(1);
+        let regular_addr = address!("1234567890123456789012345678901234567890");
+
+        prewarm_set.warm(&short_addr);
+        prewarm_set.warm(&regular_addr);
+        assert!(prewarm_set.is_warm(&short_addr));
+        assert!(prewarm_set.is_warm(&regular_addr));
+
+        prewarm_set.clear_per_transaction();
+        assert!(!prewarm_set.is_warm(&short_addr));
+        assert!(!prewarm_set.is_warm(&regular_addr));
+    }
+
+    #[test]
+    fn test_warm_storage_slots() {
         let mut prewarm_set = PrewarmSet::new();
         let addr = address!("1234567890123456789012345678901234567890");
         let key = Word::from(7);
 
         let mut slots = HashSet::default();
         slots.insert(key);
-        let mut access_list = AddressMap::default();
-        access_list.insert(addr, slots);
-        prewarm_set.set_access_list(access_list);
+        prewarm_set.warm_storage(&addr, slots);
 
         assert!(prewarm_set.is_warm(&addr));
         assert!(prewarm_set.is_storage_warm(&addr, &key));
         assert!(!prewarm_set.is_storage_warm(&addr, &Word::from(8)));
+    }
+
+    #[test]
+    fn test_warm_storage_slot_reports_coldness() {
+        let mut prewarm_set = PrewarmSet::new();
+        let addr = Address::with_last_byte(3);
+        let key = Word::from(7);
+
+        assert!(prewarm_set.warm_storage_slot(&addr, &key));
+        assert!(!prewarm_set.warm_storage_slot(&addr, &key));
+
+        assert!(prewarm_set.is_warm(&addr));
+        assert!(prewarm_set.is_storage_warm(&addr, &key));
     }
 }

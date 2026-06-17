@@ -25,7 +25,7 @@ use alloy_consensus::{
 use alloy_eips::{eip2718::Typed2718, eip2930::AccessList};
 use alloy_primitives::{
     Address, B256, Bytes, KECCAK256_EMPTY, TxKind, U256,
-    map::{AddressMap, AddressSet, HashSet},
+    map::HashSet,
 };
 
 /// Ethereum transaction envelope containing recovered transactions.
@@ -372,29 +372,27 @@ pub(super) fn warm_base_accounts<T: EvmTypes<Host = Evm<T>>>(
     caller: Address,
     to: TxKind,
 ) {
-    host.state.prewarmset_mut().warm_account(&caller);
+    host.state.prewarm(&caller);
     if host.feature(EvmFeatures::EIP3651) {
-        host.state.prewarmset_mut().set_coinbase(host.block.beneficiary);
+        host.state.prewarm(&host.block.beneficiary);
     }
     if let TxKind::Call(to) = to {
-        host.state.prewarmset_mut().warm_account(&to);
+        host.state.prewarm(&to);
     }
-    let precompiles: AddressSet = host.precompiles().addresses().into_iter().collect();
-    host.state.prewarmset_mut().set_precompile_addresses(&precompiles);
+    host.warm_precompiles();
 }
 
 pub(super) fn warm_access_list<T: EvmTypes<Host = Evm<T>>>(
     host: &mut Evm<T>,
     access_list: &AccessList,
 ) {
-    let mut warm: AddressMap<HashSet<U256>> = AddressMap::default();
     for item in access_list.iter() {
-        let slots = warm.entry(item.address).or_default();
+        let mut slots: HashSet<U256> = HashSet::default();
         for key in &item.storage_keys {
             slots.insert(U256::from_be_bytes(key.0));
         }
+        host.state.prewarm_storage(&item.address, slots);
     }
-    host.state.prewarmset_mut().set_access_list(warm);
 }
 
 pub(super) fn charge_upfront<T: EvmTypes<Host = Evm<T>>>(

@@ -7,7 +7,7 @@ use crate::{
 };
 #[cfg(feature = "std")]
 use alloc::boxed::Box;
-use alloc::{borrow::Cow, vec::Vec};
+use alloc::borrow::Cow;
 use alloy_primitives::Address;
 #[cfg(feature = "std")]
 use core::any::{Any, TypeId};
@@ -129,8 +129,8 @@ impl<T: EvmTypes> Precompiles<T> {
 
 impl<T: EvmTypes> PrecompileProvider<T> for Precompiles<T> {
     #[inline]
-    fn addresses(&self) -> Vec<Address> {
-        self.map.as_ref().addresses().collect()
+    fn addresses(&self) -> Box<dyn Iterator<Item = Address> + '_> {
+        Box::new(self.map.as_ref().addresses())
     }
 
     #[inline]

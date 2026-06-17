@@ -101,7 +101,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         system_contract_address: Address,
         data: Bytes,
     ) -> ExecutedTx<'_, T> {
-        self.state.prewarmset_mut().warm_account(&system_contract_address);
+        self.state.prewarm(&system_contract_address);
         let tx_env = TxEnv {
             origin: caller,
             gas_price: U256::ZERO,

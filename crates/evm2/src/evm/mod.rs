@@ -513,6 +513,18 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         self.precompiles.as_ref()
     }
 
+    /// Warms every precompile address in the prewarm set.
+    ///
+    /// Consumes the precompile address iterator directly into the prewarm set. This relies on
+    /// disjoint borrows of the `precompiles` and `state` fields, which a caller holding only
+    /// `&mut Evm` cannot express through [`Self::precompiles`] (it borrows all of `self`).
+    #[inline]
+    pub fn warm_precompiles(&mut self) {
+        for address in self.precompiles.addresses() {
+            self.state.prewarm(&address);
+        }
+    }
+
     /// Returns the precompile provider mutably.
     #[inline]
     pub fn precompiles_mut(&mut self) -> &mut dyn PrecompileProvider<T> {

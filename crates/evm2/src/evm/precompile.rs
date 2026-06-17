@@ -5,7 +5,7 @@ use crate::{
     EvmTypes, PrecompileError,
     interpreter::{GasTracker, Message},
 };
-use alloc::{boxed::Box, vec::Vec};
+use alloc::boxed::Box;
 use alloy_primitives::{Address, Bytes};
 use core::any::Any;
 
@@ -39,8 +39,8 @@ impl PrecompileOutput {
 /// Precompile execution hook.
 pub trait PrecompileProvider<T: EvmTypes>: Any {
     /// Returns precompile addresses.
-    fn addresses(&self) -> Vec<Address> {
-        Vec::new()
+    fn addresses(&self) -> Box<dyn Iterator<Item = Address> + '_> {
+        Box::new(core::iter::empty())
     }
 
     /// Returns whether `address` has a registered precompile.
@@ -57,7 +57,7 @@ pub trait PrecompileProvider<T: EvmTypes>: Any {
 
 impl<T: EvmTypes, P: PrecompileProvider<T> + ?Sized> PrecompileProvider<T> for Box<P> {
     #[inline]
-    fn addresses(&self) -> Vec<Address> {
+    fn addresses(&self) -> Box<dyn Iterator<Item = Address> + '_> {
         self.as_ref().addresses()
     }
 
@@ -84,8 +84,8 @@ pub struct NoPrecompiles(());
 
 impl<T: EvmTypes> PrecompileProvider<T> for NoPrecompiles {
     #[inline]
-    fn addresses(&self) -> Vec<Address> {
-        Vec::new()
+    fn addresses(&self) -> Box<dyn Iterator<Item = Address> + '_> {
+        Box::new(core::iter::empty())
     }
 
     #[inline]

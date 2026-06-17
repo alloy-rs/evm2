@@ -35,7 +35,7 @@ use crate::{
 use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::{
     Address, B256, KECCAK256_EMPTY, Log,
-    map::{AddressMap, AddressSet, U256Map, hash_map},
+    map::{AddressMap, AddressSet, HashSet, U256Map, hash_map},
 };
 use core::{
     mem,
@@ -216,19 +216,39 @@ impl State {
         &self.inner.prewarm_set
     }
 
-    /// Returns the pre-warmed set mutably so callers can install precompiles, coinbase, the
+    /// Returns the pre-warmed set mutably so callers can warm precompiles, the coinbase, the
     /// EIP-2930 access list, or non-revertible base warm accounts/slots.
     ///
     /// Entries added through this handle survive [`Self::rollback`] and are cleared per transaction
-    /// by [`Self::clear_transaction_state`] (precompiles persist across transactions).
+    /// by [`Self::clear_transaction_state`].
     #[inline]
     pub const fn prewarmset_mut(&mut self) -> &mut PrewarmSet {
         &mut self.inner.prewarm_set
     }
 
+    /// Marks an address as warm in the pre-warmed set. See [`PrewarmSet::warm`].
+    #[inline]
+    pub fn prewarm(&mut self, address: &Address) {
+        self.inner.prewarm_set.warm(address);
+    }
+
+    /// Marks an address and a set of storage slots as warm in the pre-warmed set. See
+    /// [`PrewarmSet::warm_storage`].
+    #[inline]
+    pub fn prewarm_storage(&mut self, address: &Address, slots: HashSet<Word>) {
+        self.inner.prewarm_set.warm_storage(address, slots);
+    }
+
+    /// Marks an address and a single storage slot as warm in the pre-warmed set, returning whether
+    /// the slot was cold before this call. See [`PrewarmSet::warm_storage_slot`].
+    #[inline]
+    pub fn prewarm_storage_slot(&mut self, address: &Address, key: &Word) -> bool {
+        self.inner.prewarm_set.warm_storage_slot(address, key)
+    }
+
     /// Replaces the pre-warmed set wholesale.
     ///
-    /// Use [`PrewarmSet`]'s builder methods to construct the set. The installed set survives
+    /// Use [`PrewarmSet`]'s warming methods to populate the set. The installed set survives
     /// [`Self::rollback`] and is cleared per transaction by [`Self::clear_transaction_state`].
     #[inline]
     pub fn set_prewarm_set(&mut self, prewarm_set: PrewarmSet) {

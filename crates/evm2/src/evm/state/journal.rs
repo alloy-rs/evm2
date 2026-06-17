@@ -193,8 +193,8 @@ mod tests {
         let key = Word::from(1);
         let mut state = State::new(CacheDB::default());
 
-        state.prewarmset_mut().warm_account(&base_account);
-        assert!(state.prewarmset_mut().warm_storage(&base_storage, &key));
+        state.prewarm(&base_account);
+        assert!(state.prewarm_storage_slot(&base_storage, &key));
         assert!(state.journal.is_empty());
 
         let checkpoint = state.checkpoint();
@@ -219,8 +219,8 @@ mod tests {
         let key = Word::from(1);
         let mut state = State::new(CacheDB::default());
 
-        state.prewarmset_mut().warm_account(&account);
-        assert!(state.prewarmset_mut().warm_storage(&storage_account, &key));
+        state.prewarm(&account);
+        assert!(state.prewarm_storage_slot(&storage_account, &key));
 
         let changes = state.build_state_changes();
         assert!(changes.is_empty());
@@ -239,7 +239,7 @@ mod tests {
         database.insert_account_info(&account, AccountInfo::default().with_balance(Word::from(1)));
         let mut state = State::new(database);
 
-        state.prewarmset_mut().warm_account(&account);
+        state.prewarm(&account);
         let checkpoint = state.checkpoint();
         assert!(state.account(&account, false).unwrap().exists());
         assert!(state.account(&account, false).unwrap().get().is_some());
@@ -260,7 +260,7 @@ mod tests {
         database.insert_account_info(&account, AccountInfo::default().with_balance(Word::from(1)));
         let mut state = State::new(database);
 
-        assert!(state.prewarmset_mut().warm_storage(&account, &key));
+        assert!(state.prewarm_storage_slot(&account, &key));
         let checkpoint = state.checkpoint();
         state.storage(&account).into_slot(key, false).unwrap().write(Word::from(7));
         assert_eq!(state.storage_slot(&account, key, false).unwrap().current(), Word::from(7));
