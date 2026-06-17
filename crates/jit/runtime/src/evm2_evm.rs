@@ -1,6 +1,6 @@
 //! evm2 JIT interpreter dispatch helpers.
 
-use crate::runtime::{InterpretReason, JitBackend, LookupDecision, LookupRequest, RuntimeCacheKey};
+use crate::runtime::{JitBackend, LookupDecision, LookupRequest, RuntimeCacheKey};
 use alloy_primitives::{Bytes, keccak256};
 use evm2::{
     EvmTypes, ExecutionConfig, InterpreterRunner,
@@ -35,33 +35,21 @@ impl<T: EvmTypes> InterpreterRunner<T> for JitInterpreterRunner {
         interpreter: &mut Interpreter<'_, T>,
         host: &mut T::Host,
     ) -> Option<InstrStop> {
-        match run_interpreter(&self.backend, config, interpreter, host) {
-            JitRunResult::Finished(stop) => Some(stop),
-            JitRunResult::Interpret(_) => None,
-        }
+        run_interpreter(&self.backend, config, interpreter, host)
     }
-}
-
-/// Result of trying to execute an evm2 interpreter frame through JIT code.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum JitRunResult {
-    /// No compiled program was available, so the caller should run the evm2 interpreter.
-    Interpret(InterpretReason),
-    /// Compiled execution finished the frame.
-    Finished(InstrStop),
 }
 
 /// Attempts to execute `interpreter` through a compiled evm2-compatible program.
 ///
-/// On [`JitRunResult::Interpret`], callers should fall back to
-/// [`Interpreter::run`] with the same `config` and `host`.
+/// Returns `None` when no compiled program is available, leaving the caller to
+/// run the same frame through the evm2 interpreter.
 #[inline]
 pub fn run_interpreter<T: EvmTypes>(
     backend: &JitBackend,
     config: &ExecutionConfig<T>,
     interpreter: &mut Interpreter<'_, T>,
     host: &mut T::Host,
-) -> JitRunResult {
+) -> Option<InstrStop> {
     let bytecode = interpreter.bytecode();
     let code = bytecode.as_slice();
     let decision = backend.lookup(LookupRequest {
@@ -71,13 +59,11 @@ pub fn run_interpreter<T: EvmTypes>(
 
     let program = match decision {
         LookupDecision::Compiled(program) => program,
-        LookupDecision::Interpret(reason) => return JitRunResult::Interpret(reason),
+        LookupDecision::Unavailable(_) => return None,
     };
 
     interpreter.prepare_jit_run(config, host);
-    JitRunResult::Finished(unsafe {
-        program.evm2_func::<T>().call_with_interpreter(interpreter, host)
-    })
+    Some(unsafe { program.evm2_func::<T>().call_with_interpreter(interpreter, host) })
 }
 
 #[cfg(test)]
@@ -130,7 +116,7 @@ mod tests {
 
         assert_eq!(
             run_interpreter(&JitBackend::disabled(), &config, &mut interpreter, &mut host),
-            JitRunResult::Interpret(InterpretReason::Disabled),
+            None
         );
     }
 
@@ -184,7 +170,7 @@ mod tests {
 
         assert_eq!(
             run_interpreter(&backend, &config, &mut interpreter, &mut host),
-            JitRunResult::Finished(InstrStop::Return),
+            Some(InstrStop::Return),
         );
         assert_eq!(interpreter.output().len(), 32);
         assert_eq!(interpreter.output()[31], 0x42);
@@ -247,7 +233,7 @@ mod tests {
 
         assert_eq!(
             run_interpreter(&backend, &config, &mut interpreter, &mut host),
-            JitRunResult::Finished(InstrStop::Return),
+            Some(InstrStop::Return),
         );
         assert_eq!(interpreter.output().len(), 32);
         assert_eq!(interpreter.output()[31], 1);

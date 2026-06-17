@@ -28,7 +28,7 @@ use worker::SyncNotifier;
 
 mod api;
 pub use api::{
-    AotRequest, CompiledProgram, InterpretReason, LookupDecision, LookupRequest, ProgramKind,
+    AotRequest, CompiledProgram, LookupDecision, LookupMissReason, LookupRequest, ProgramKind,
 };
 
 mod config;
@@ -149,7 +149,8 @@ pub struct JitBackend {
 impl JitBackend {
     /// Creates a disabled backend that performs no compilation and spawns no threads.
     ///
-    /// All [`lookup`](Self::lookup) calls return `LookupDecision::Interpret(Disabled)`.
+    /// All [`lookup`](Self::lookup) calls return
+    /// `LookupDecision::Unavailable(LookupMissReason::Disabled)`.
     /// Call [`set_enabled`](Self::set_enabled) to lazily spawn the backend thread with
     /// a default [`RuntimeConfig`].
     pub fn disabled() -> Self {
@@ -212,7 +213,7 @@ impl JitBackend {
 
         if !inner.enabled.load(Ordering::Relaxed) {
             cold_path();
-            return LookupDecision::Interpret(InterpretReason::Disabled);
+            return LookupDecision::Unavailable(LookupMissReason::Disabled);
         }
         if inner.blocking {
             cold_path();
@@ -220,7 +221,7 @@ impl JitBackend {
         }
         if !inner.tuning.should_compile(&req.code) {
             cold_path();
-            return LookupDecision::Interpret(InterpretReason::Ineligible);
+            return LookupDecision::Unavailable(LookupMissReason::Ineligible);
         }
 
         let decision = if let Some(program_ref) = shared.resident.try_get(&req.key).try_unwrap() {
@@ -229,7 +230,7 @@ impl JitBackend {
             req.code.clear();
             LookupDecision::Compiled(program)
         } else {
-            LookupDecision::Interpret(InterpretReason::NotReady)
+            LookupDecision::Unavailable(LookupMissReason::NotReady)
         };
 
         if let Err(_v) = shared.events.push(req) {
@@ -265,11 +266,11 @@ impl JitBackend {
     ///
     /// If the function is already compiled, returns it immediately. Otherwise, enqueues
     /// a synchronous JIT compilation request and blocks until the result is available.
-    /// Returns [`LookupDecision::Interpret`] if the bytecode is ineligible for
+    /// Returns [`LookupDecision::Unavailable`] if the bytecode is ineligible for
     /// compilation (see [`RuntimeTuning::should_compile`]) or compilation fails.
     pub fn lookup_blocking(&self, req: LookupRequest) -> LookupDecision {
         if !self.inner.tuning.should_compile(&req.code) {
-            return LookupDecision::Interpret(InterpretReason::Ineligible);
+            return LookupDecision::Unavailable(LookupMissReason::Ineligible);
         }
         let code_hash = req.key.code_hash;
         let spec_id = req.key.spec_id;
@@ -277,11 +278,11 @@ impl JitBackend {
             return LookupDecision::Compiled(program);
         }
         if self.compile_jit_sync(req).is_err() {
-            return LookupDecision::Interpret(InterpretReason::JitFailed);
+            return LookupDecision::Unavailable(LookupMissReason::JitFailed);
         }
         match self.get_compiled_tracked(code_hash, spec_id) {
             Some(program) => LookupDecision::Compiled(program),
-            None => LookupDecision::Interpret(InterpretReason::JitFailed),
+            None => LookupDecision::Unavailable(LookupMissReason::JitFailed),
         }
     }
 

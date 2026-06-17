@@ -9,10 +9,55 @@
  use std::sync::{Arc, Mutex};
 
  // ---------------------------------------------------------------------------
-@@ -284,32 +284,6 @@
- }
+@@ -237,7 +237,7 @@
+     });
 
- #[test]
+     let decision = tb.lookup(TestBackend::req_cancun(BYTECODE_RET42));
+-    assert!(matches!(decision, LookupDecision::Interpret(InterpretReason::JitFailed)));
++    assert!(matches!(decision, LookupDecision::Unavailable(LookupMissReason::JitFailed)));
+
+     let stats = tb.stats();
+     assert_eq!(stats.resident_entries, 0);
+@@ -250,7 +250,7 @@
+
+     let req = TestBackend::req_cancun(&[0x00]);
+     let decision = tb.lookup(req);
+-    assert!(matches!(decision, LookupDecision::Interpret(InterpretReason::Disabled)));
++    assert!(matches!(decision, LookupDecision::Unavailable(LookupMissReason::Disabled)));
+
+     let stats = tb.stats();
+     assert_eq!(stats.lookup_hits, 0);
+@@ -262,7 +262,7 @@
+     let tb = TestBackend::new(RuntimeConfig { enabled: true, ..Default::default() });
+
+     let decision = tb.lookup(TestBackend::req_cancun(&[0x00]));
+-    assert!(matches!(decision, LookupDecision::Interpret(InterpretReason::NotReady)));
++    assert!(matches!(decision, LookupDecision::Unavailable(LookupMissReason::NotReady)));
+
+     let stats = tb.wait_stats(|s| s.lookup_misses == 1);
+     assert_eq!(stats.lookup_misses, 1);
+@@ -274,39 +274,19 @@
+     let tb = TestBackend::new(RuntimeConfig { enabled: false, ..Default::default() });
+     let req = TestBackend::req_cancun(&[0x00]);
+
+-    assert!(matches!(tb.lookup(req.clone()), LookupDecision::Interpret(InterpretReason::Disabled)));
++    assert!(matches!(
++        tb.lookup(req.clone()),
++        LookupDecision::Unavailable(LookupMissReason::Disabled)
++    ));
+
+     tb.set_enabled(true).unwrap();
+-    assert!(matches!(tb.lookup(req.clone()), LookupDecision::Interpret(InterpretReason::NotReady)));
++    assert!(matches!(
++        tb.lookup(req.clone()),
++        LookupDecision::Unavailable(LookupMissReason::NotReady)
++    ));
+
+     tb.set_enabled(false).unwrap();
+-    assert!(matches!(tb.lookup(req), LookupDecision::Interpret(InterpretReason::Disabled)));
+-}
+-
+-#[test]
 -fn pause_processes_lookup_events() {
 -    let tb = TestBackend::with_tuning(RuntimeTuning { jit_worker_count: 0, ..Default::default() });
 -    let req = TestBackend::req_cancun(&[0x00]);
@@ -36,13 +81,20 @@
 -    let stats = tb.wait_stats(|s| s.lookup_misses == 2);
 -    assert_eq!(stats.lookup_misses, 2);
 -    assert_eq!(stats.lookup_hits, 0);
--}
--
--#[test]
- fn lookup_increments_miss_counter() {
-     let tb = TestBackend::new(RuntimeConfig { enabled: true, ..Default::default() });
++    assert!(matches!(tb.lookup(req), LookupDecision::Unavailable(LookupMissReason::Disabled)));
+ }
 
-@@ -414,53 +388,6 @@
+ #[test]
+@@ -389,7 +369,7 @@
+     tb.clear_resident();
+
+     let decision = tb.lookup(TestBackend::req_cancun(&[0x00]));
+-    assert!(matches!(decision, LookupDecision::Interpret(InterpretReason::NotReady)));
++    assert!(matches!(decision, LookupDecision::Unavailable(LookupMissReason::NotReady)));
+ }
+
+ #[test]
+@@ -414,53 +394,6 @@
      assert_eq!(stats.compilations_dispatched, 0);
  }
 
@@ -96,3 +148,65 @@
  // ===========================================================================
  // Tests: JIT compilation (require LLVM).
  // ===========================================================================
+@@ -488,7 +421,7 @@
+
+     // Empty bytecodes return Ineligible (nothing to compile).
+     let decision = tb.lookup(TestBackend::req_cancun(&[]));
+-    assert!(matches!(decision, LookupDecision::Interpret(InterpretReason::Ineligible)));
++    assert!(matches!(decision, LookupDecision::Unavailable(LookupMissReason::Ineligible)));
+ }
+
+ #[test]
+@@ -512,7 +445,10 @@
+
+     // Below threshold: should remain NotReady.
+     for _ in 0..2 {
+-        assert!(matches!(tb.lookup(req()), LookupDecision::Interpret(InterpretReason::NotReady)));
++        assert!(matches!(
++            tb.lookup(req()),
++            LookupDecision::Unavailable(LookupMissReason::NotReady)
++        ));
+     }
+
+     // Hit threshold and beyond: JIT should eventually compile.
+@@ -544,7 +480,7 @@
+     std::thread::sleep(std::time::Duration::from_millis(200));
+
+     // Should be Ineligible — bytecode length exceeds jit_max_bytecode_len.
+-    assert!(matches!(tb.lookup(req()), LookupDecision::Interpret(InterpretReason::Ineligible)));
++    assert!(matches!(tb.lookup(req()), LookupDecision::Unavailable(LookupMissReason::Ineligible)));
+ }
+
+ #[test]
+@@ -568,7 +504,7 @@
+
+     // The result from the old generation should have been discarded.
+     assert!(
+-        matches!(tb.lookup(req()), LookupDecision::Interpret(InterpretReason::NotReady)),
++        matches!(tb.lookup(req()), LookupDecision::Unavailable(LookupMissReason::NotReady)),
+         "stale JIT result should not appear after clear_resident",
+     );
+ }
+@@ -909,7 +845,7 @@
+     tb.set_enabled(false).unwrap();
+     assert!(matches!(
+         tb.lookup(TestBackend::req_cancun(BYTECODE_RET42)),
+-        LookupDecision::Interpret(InterpretReason::Disabled)
++        LookupDecision::Unavailable(LookupMissReason::Disabled)
+     ));
+
+     // Re-enable and check compilation eventually completes.
+@@ -990,11 +926,11 @@
+
+     assert!(matches!(
+         tb.lookup(TestBackend::req_cancun(BYTECODE_RET42)),
+-        LookupDecision::Interpret(_)
++        LookupDecision::Unavailable(_)
+     ));
+     assert!(matches!(
+         tb.lookup(TestBackend::req_cancun(BYTECODE_RET42)),
+-        LookupDecision::Interpret(_)
++        LookupDecision::Unavailable(_)
+     ));
+
+     let p = tb.wait_compiled(BYTECODE_RET42, SpecId::CANCUN);

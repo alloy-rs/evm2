@@ -22,13 +22,13 @@ pub struct LookupRequest {
 pub enum LookupDecision {
     /// A compiled function is available.
     Compiled(Arc<CompiledProgram>),
-    /// The caller should interpret instead.
-    Interpret(InterpretReason),
+    /// A compiled function is not available for this lookup.
+    Unavailable(LookupMissReason),
 }
 
-/// Reason why the runtime returned "interpret" instead of a compiled function.
+/// Reason why a lookup did not return a compiled function.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum InterpretReason {
+pub enum LookupMissReason {
     /// The runtime is disabled.
     Disabled,
     /// The contract is not eligible for compilation.
