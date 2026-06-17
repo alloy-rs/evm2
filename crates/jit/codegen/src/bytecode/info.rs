@@ -157,7 +157,7 @@ const SPEC_GATED_OPCODES: &[(u8, SpecId)] = &[
     (op::SLOTNUM, SpecId::AMSTERDAM),
 ];
 
-/// Opcodes present in the upstream instruction table but not supported by evm2_jit (e.g. EOF-only).
+/// Opcodes defined by the opcode table but intentionally disabled for compiled execution.
 const UNSUPPORTED_OPCODES: &[u8] = &[];
 
 const fn contains(haystack: &[u8], needle: u8) -> bool {
@@ -186,7 +186,7 @@ const fn make_map<const BASE_SPEC_ID: u32>() -> [OpcodeInfo; 256] {
             continue;
         }
 
-        // Mark opcodes not supported by evm2_jit (e.g. EOF-only) as disabled rather than
+        // Mark unsupported opcodes as disabled rather than
         // unknown, so they return `NotActivated` instead of `OpcodeNotFound` at runtime.
         if contains(UNSUPPORTED_OPCODES, op) {
             map[op as usize].set_disabled();
