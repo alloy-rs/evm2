@@ -49,7 +49,7 @@
  [dev-dependencies]
 -revmc-context.workspace = true
 -revmc-statetest = { path = "../revmc-statetest" }
-+evm2-jit-context.workspace = true
++evm2-jit-context = { workspace = true, features = ["evm2"] }
 
  paste.workspace = true
 +revm-state.workspace = true

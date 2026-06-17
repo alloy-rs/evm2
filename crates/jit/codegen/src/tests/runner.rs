@@ -19,10 +19,9 @@ use evm2::{
         MessageResult as Evm2MessageResult,
     },
 };
+use evm2_jit_context::evm2_api;
 use revm_bytecode::opcode as op;
-use revm_interpreter::{
-    CallInput, Gas, Host, InputsImpl, Interpreter, SharedMemory, interpreter::ExtBytecode,
-};
+use revm_interpreter::{Gas, Host};
 use revm_primitives::{B256, HashMap, Log, hardfork::SpecId};
 use similar_asserts::assert_eq;
 use std::{fmt, path::Path, sync::OnceLock};
@@ -107,7 +106,7 @@ pub struct TestCase<'a> {
 
     /// Override `inspect_stack` on the compiler. `None` uses the default (`true`).
     pub inspect_stack: Option<bool>,
-    pub modify_ecx: Option<fn(&mut EvmContext<'_>)>,
+    pub modify_ecx: Option<fn(&mut TestEvmContext<'_>)>,
 
     pub expected_return: InstructionResult,
     pub expected_stack: &'a [U256],
@@ -115,7 +114,7 @@ pub struct TestCase<'a> {
     pub expected_gas: u64,
     pub expected_output: Option<&'a [u8]>,
     pub assert_host: Option<fn(&TestHost)>,
-    pub assert_ecx: Option<fn(&EvmContext<'_>)>,
+    pub assert_ecx: Option<fn(&TestEvmContext<'_>)>,
 }
 
 #[cfg(feature = "__fuzzing")]
@@ -213,6 +212,13 @@ pub const STACK_WHAT_INTERPRETER_SAYS: &[U256] =
     &[U256::from_be_slice(&GAS_WHAT_INTERPRETER_SAYS.to_be_bytes())];
 pub const MEMORY_WHAT_INTERPRETER_SAYS: &[u8] = &GAS_WHAT_INTERPRETER_SAYS.to_be_bytes();
 pub const GAS_WHAT_INTERPRETER_SAYS: u64 = 0x4682e332d6612de1;
+
+pub type TestEvmContext<'a> = evm2_api::EvmContext<'a, TestEvmTypes>;
+pub type TestEvmCompilerFn = evm2_api::EvmCompilerFn<TestEvmTypes>;
+
+pub fn evm2_test_func(f: EvmCompilerFn) -> TestEvmCompilerFn {
+    TestEvmCompilerFn::from_abi_compatible(f)
+}
 
 pub fn def_storage() -> &'static HashMap<U256, U256> {
     DEF_STORAGE.get_or_init(|| {
@@ -597,30 +603,57 @@ impl Evm2Host<TestEvmTypes> for TestHost {
     }
 }
 
-pub fn with_evm_context<F: FnOnce(&mut EvmContext<'_>, &mut EvmStack, &mut usize) -> R, R>(
+pub fn with_evm_context<F: FnOnce(&mut TestEvmContext<'_>, &mut EvmStack, &mut usize) -> R, R>(
     bytecode: &[u8],
     spec_id: SpecId,
     f: F,
 ) -> R {
-    let input = InputsImpl {
-        target_address: DEF_ADDR,
-        bytecode_address: None,
-        caller_address: DEF_CALLER,
-        input: CallInput::Bytes(Bytes::from_static(DEF_CD)),
-        call_value: DEF_VALUE,
+    with_evm_context_and_host(bytecode, spec_id, f).0
+}
+
+pub fn with_evm_context_and_host<
+    F: FnOnce(&mut TestEvmContext<'_>, &mut EvmStack, &mut usize) -> R,
+    R,
+>(
+    bytecode: &[u8],
+    spec_id: SpecId,
+    f: F,
+) -> (R, TestHost) {
+    let evm2_spec_id = from_revm_spec_id(spec_id);
+    let config = <BaseEvmConfigSelector as evm2::EvmConfigSelector<TestEvmTypes>>::execution_config(
+        evm2_spec_id,
+    );
+    let tx_env = Evm2TxEnv::<TestEvmTypes> {
+        origin: def_env().tx.caller,
+        gas_price: def_env().effective_gas_price(),
+        chain_id: U256::from(def_env().cfg.chain_id),
+        blob_hashes: def_env().tx.blob_hashes.iter().copied().map(Into::into).collect(),
+        ..Default::default()
     };
-
-    let bytecode_obj = revm_bytecode::Bytecode::new_raw(Bytes::copy_from_slice(bytecode));
-    let ext_bytecode = ExtBytecode::new(bytecode_obj);
-
-    let mut interpreter =
-        Interpreter::new(SharedMemory::new(), ext_bytecode, input, false, spec_id, DEF_GAS_LIMIT);
-
+    let message = Evm2Message::<TestEvmTypes> {
+        destination: DEF_ADDR,
+        caller: DEF_CALLER,
+        input: Bytes::from_static(DEF_CD),
+        value: DEF_VALUE,
+        code_address: DEF_ADDR,
+        gas_limit: DEF_GAS_LIMIT,
+        ..Default::default()
+    };
+    let mut interpreter = Evm2Interpreter::<TestEvmTypes>::new(
+        Evm2Bytecode::new_legacy(Bytes::copy_from_slice(bytecode)),
+        &tx_env,
+        &message,
+        false,
+    );
     let mut host = TestHost::with_spec(spec_id);
+    interpreter.prepare_jit_run(&config, &mut host);
 
-    let (mut ecx, stack, stack_len) =
-        EvmContext::from_interpreter_with_stack(&mut interpreter, &mut host);
-    f(&mut ecx, stack, stack_len)
+    let result = {
+        let (mut ecx, stack, stack_len) =
+            TestEvmContext::from_interpreter_with_stack(&mut interpreter, &mut host);
+        f(&mut ecx, stack, stack_len)
+    };
+    (result, host)
 }
 
 pub fn set_test_dump<B: Backend>(compiler: &mut EvmCompiler<B>, module_path: &str) {
@@ -659,7 +692,8 @@ fn run_compiled_test_case(test_case: &TestCase<'_>, f: EvmCompilerFn) {
         assert_ecx,
     } = *test_case;
 
-    with_evm_context(bytecode, spec_id, |ecx, stack, stack_len| {
+    let f = evm2_test_func(f);
+    let (_, jit_host) = with_evm_context_and_host(bytecode, spec_id, |ecx, stack, stack_len| {
         if is_static {
             ecx.is_static = true;
         }
@@ -814,7 +848,7 @@ fn run_compiled_test_case(test_case: &TestCase<'_>, f: EvmCompilerFn) {
 
             if !skip_jit_memory {
                 assert_eq!(
-                    MemDisplay(&ecx.memory.context_memory()),
+                    MemDisplay(&unsafe { &*ecx.memory }.context_memory()),
                     MemDisplay(expected_memory),
                     "memory mismatch"
                 );
@@ -829,15 +863,14 @@ fn run_compiled_test_case(test_case: &TestCase<'_>, f: EvmCompilerFn) {
             assert_eq!(ecx.output.as_ref(), expected_output, "output mismatch");
         }
 
-        if let Some(_assert_host) = assert_host {
-            let host = unsafe { &*(ecx.host as *mut dyn Host as *mut TestHost) };
-            _assert_host(host);
-        }
-
         if let Some(assert_ecx) = assert_ecx {
             assert_ecx(ecx);
         }
     });
+
+    if let Some(assert_host) = assert_host {
+        assert_host(&jit_host);
+    }
 }
 
 fn instruction_results_match_for_oracle(

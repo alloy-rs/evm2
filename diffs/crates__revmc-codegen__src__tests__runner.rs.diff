@@ -1,6 +1,6 @@
 --- upstream/crates/revmc-codegen/src/tests/runner.rs
 +++ evm2/crates/jit/codegen/src/tests/runner.rs
-@@ -1,15 +1,27 @@
+@@ -1,16 +1,27 @@
  use super::*;
 +use crate::spec::from_revm_spec_id;
  use context_interface::{
@@ -9,6 +9,11 @@
      host::LoadError,
      journaled_state::AccountInfoLoad,
  };
+-use revm_bytecode::opcode as op;
+-use revm_interpreter::{
+-    CallInput, Host, InputsImpl, Interpreter, SharedMemory,
+-    instructions::{gas_table_spec, instruction_table},
+-    interpreter::ExtBytecode,
 +use evm2::{
 +    BaseEvmConfigSelector, EvmFeatures, EvmTypes,
 +    bytecode::Bytecode as Evm2Bytecode,
@@ -21,26 +26,33 @@
 +        Host as Evm2Host, InstrStop, Interpreter as Evm2Interpreter, Message as Evm2Message,
 +        MessageResult as Evm2MessageResult,
 +    },
-+};
- use revm_bytecode::opcode as op;
- use revm_interpreter::{
--    CallInput, Host, InputsImpl, Interpreter, SharedMemory,
--    instructions::{gas_table_spec, instruction_table},
--    interpreter::ExtBytecode,
-+    CallInput, Gas, Host, InputsImpl, Interpreter, SharedMemory, interpreter::ExtBytecode,
  };
++use evm2_jit_context::evm2_api;
++use revm_bytecode::opcode as op;
++use revm_interpreter::{Gas, Host};
  use revm_primitives::{B256, HashMap, Log, hardfork::SpecId};
  use similar_asserts::assert_eq;
-@@ -101,7 +113,7 @@
+ use std::{fmt, path::Path, sync::OnceLock};
+@@ -95,15 +106,15 @@
+
+     /// Override `inspect_stack` on the compiler. `None` uses the default (`true`).
+     pub inspect_stack: Option<bool>,
+-    pub modify_ecx: Option<fn(&mut EvmContext<'_>)>,
++    pub modify_ecx: Option<fn(&mut TestEvmContext<'_>)>,
+
+     pub expected_return: InstructionResult,
      pub expected_stack: &'a [U256],
      pub expected_memory: &'a [u8],
      pub expected_gas: u64,
 -    pub expected_next_action: InterpreterAction,
 +    pub expected_output: Option<&'a [u8]>,
      pub assert_host: Option<fn(&TestHost)>,
-     pub assert_ecx: Option<fn(&EvmContext<'_>)>,
+-    pub assert_ecx: Option<fn(&EvmContext<'_>)>,
++    pub assert_ecx: Option<fn(&TestEvmContext<'_>)>,
  }
-@@ -131,7 +143,7 @@
+
+ #[cfg(feature = "__fuzzing")]
+@@ -131,7 +142,7 @@
              expected_stack: &[],
              expected_memory: &[],
              expected_gas: 0,
@@ -49,7 +61,7 @@
              assert_host: None,
              assert_ecx: None,
          }
-@@ -141,7 +153,7 @@
+@@ -141,7 +152,7 @@
  impl fmt::Debug for TestCase<'_> {
      fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
          f.debug_struct("TestCase")
@@ -58,7 +70,7 @@
              .field("spec_id", &self.spec_id)
              .field("inspect_stack", &self.inspect_stack)
              .field("modify_ecx", &self.modify_ecx.is_some())
-@@ -149,7 +161,7 @@
+@@ -149,7 +160,7 @@
              .field("expected_stack", &self.expected_stack)
              .field("expected_memory", &MemDisplay(self.expected_memory))
              .field("expected_gas", &self.expected_gas)
@@ -67,7 +79,7 @@
              .field("assert_host", &self.assert_host.is_some())
              .field("assert_ecx", &self.assert_ecx.is_some())
              .finish()
-@@ -169,7 +181,7 @@
+@@ -169,7 +180,7 @@
              expected_stack: STACK_WHAT_INTERPRETER_SAYS,
              expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
              expected_gas: GAS_WHAT_INTERPRETER_SAYS,
@@ -76,7 +88,7 @@
              assert_host: None,
              assert_ecx: None,
          }
-@@ -179,7 +191,7 @@
+@@ -179,7 +190,7 @@
  // Default values.
  pub const DEF_SPEC: SpecId = SpecId::CANCUN;
  pub static DEF_OPINFOS: std::sync::LazyLock<&'static [OpcodeInfo; 256]> =
@@ -85,7 +97,7 @@
 
  pub const DEF_GAS_LIMIT: u64 = 100_000;
  pub const DEF_GAS_LIMIT_U256: U256 = U256::from_le_slice(&DEF_GAS_LIMIT.to_le_bytes());
-@@ -201,12 +213,6 @@
+@@ -201,12 +212,13 @@
      &[U256::from_be_slice(&GAS_WHAT_INTERPRETER_SAYS.to_be_bytes())];
  pub const MEMORY_WHAT_INTERPRETER_SAYS: &[u8] = &GAS_WHAT_INTERPRETER_SAYS.to_be_bytes();
  pub const GAS_WHAT_INTERPRETER_SAYS: u64 = 0x4682e332d6612de1;
@@ -95,10 +107,17 @@
 -        output: Bytes::from_static(MEMORY_WHAT_INTERPRETER_SAYS),
 -        result: RETURN_WHAT_INTERPRETER_SAYS,
 -    });
++
++pub type TestEvmContext<'a> = evm2_api::EvmContext<'a, TestEvmTypes>;
++pub type TestEvmCompilerFn = evm2_api::EvmCompilerFn<TestEvmTypes>;
++
++pub fn evm2_test_func(f: EvmCompilerFn) -> TestEvmCompilerFn {
++    TestEvmCompilerFn::from_abi_compatible(f)
++}
 
  pub fn def_storage() -> &'static HashMap<U256, U256> {
      DEF_STORAGE.get_or_init(|| {
-@@ -236,6 +242,21 @@
+@@ -236,6 +248,21 @@
      })
  }
 
@@ -120,7 +139,7 @@
  /// Test host that implements [`Host`] trait for testing.
  pub struct TestHost {
      pub storage: HashMap<U256, U256>,
-@@ -244,6 +265,8 @@
+@@ -244,6 +271,8 @@
      pub selfdestructs: Vec<(Address, Address)>,
      pub logs: Vec<Log>,
      pub gas_params: GasParams,
@@ -129,7 +148,7 @@
  }
 
  impl Default for TestHost {
-@@ -258,6 +281,7 @@
+@@ -258,6 +287,7 @@
      }
 
      pub fn with_spec(spec_id: SpecId) -> Self {
@@ -137,7 +156,7 @@
          Self {
              storage: def_storage().clone(),
              transient_storage: HashMap::default(),
-@@ -265,6 +289,19 @@
+@@ -265,6 +295,19 @@
              selfdestructs: Vec::new(),
              logs: Vec::new(),
              gas_params: GasParams::new_spec(spec_id),
@@ -157,10 +176,11 @@
          }
      }
  }
-@@ -431,6 +468,135 @@
+@@ -431,30 +474,186 @@
      }
  }
 
+-pub fn with_evm_context<F: FnOnce(&mut EvmContext<'_>, &mut EvmStack, &mut usize) -> R, R>(
 +impl Evm2Host<TestEvmTypes> for TestHost {
 +    fn spec_id(&self) -> evm2::SpecId {
 +        self.evm2_spec_id
@@ -290,10 +310,77 @@
 +    }
 +}
 +
- pub fn with_evm_context<F: FnOnce(&mut EvmContext<'_>, &mut EvmStack, &mut usize) -> R, R>(
++pub fn with_evm_context<F: FnOnce(&mut TestEvmContext<'_>, &mut EvmStack, &mut usize) -> R, R>(
      bytecode: &[u8],
      spec_id: SpecId,
-@@ -462,7 +628,7 @@
+     f: F,
+ ) -> R {
+-    let input = InputsImpl {
+-        target_address: DEF_ADDR,
+-        bytecode_address: None,
+-        caller_address: DEF_CALLER,
+-        input: CallInput::Bytes(Bytes::from_static(DEF_CD)),
+-        call_value: DEF_VALUE,
+-    };
+-
+-    let bytecode_obj = revm_bytecode::Bytecode::new_raw(Bytes::copy_from_slice(bytecode));
+-    let ext_bytecode = ExtBytecode::new(bytecode_obj);
+-
+-    let mut interpreter =
+-        Interpreter::new(SharedMemory::new(), ext_bytecode, input, false, spec_id, DEF_GAS_LIMIT);
++    with_evm_context_and_host(bytecode, spec_id, f).0
++}
+
++pub fn with_evm_context_and_host<
++    F: FnOnce(&mut TestEvmContext<'_>, &mut EvmStack, &mut usize) -> R,
++    R,
++>(
++    bytecode: &[u8],
++    spec_id: SpecId,
++    f: F,
++) -> (R, TestHost) {
++    let evm2_spec_id = from_revm_spec_id(spec_id);
++    let config = <BaseEvmConfigSelector as evm2::EvmConfigSelector<TestEvmTypes>>::execution_config(
++        evm2_spec_id,
++    );
++    let tx_env = Evm2TxEnv::<TestEvmTypes> {
++        origin: def_env().tx.caller,
++        gas_price: def_env().effective_gas_price(),
++        chain_id: U256::from(def_env().cfg.chain_id),
++        blob_hashes: def_env().tx.blob_hashes.iter().copied().map(Into::into).collect(),
++        ..Default::default()
++    };
++    let message = Evm2Message::<TestEvmTypes> {
++        destination: DEF_ADDR,
++        caller: DEF_CALLER,
++        input: Bytes::from_static(DEF_CD),
++        value: DEF_VALUE,
++        code_address: DEF_ADDR,
++        gas_limit: DEF_GAS_LIMIT,
++        ..Default::default()
++    };
++    let mut interpreter = Evm2Interpreter::<TestEvmTypes>::new(
++        Evm2Bytecode::new_legacy(Bytes::copy_from_slice(bytecode)),
++        &tx_env,
++        &message,
++        false,
++    );
+     let mut host = TestHost::with_spec(spec_id);
++    interpreter.prepare_jit_run(&config, &mut host);
+
+-    let (mut ecx, stack, stack_len) =
+-        EvmContext::from_interpreter_with_stack(&mut interpreter, &mut host);
+-    f(&mut ecx, stack, stack_len)
++    let result = {
++        let (mut ecx, stack, stack_len) =
++            TestEvmContext::from_interpreter_with_stack(&mut interpreter, &mut host);
++        f(&mut ecx, stack, stack_len)
++    };
++    (result, host)
+ }
+
+ pub fn set_test_dump<B: Backend>(compiler: &mut EvmCompiler<B>, module_path: &str) {
+@@ -462,7 +661,7 @@
      let mut dump_path = root.to_path_buf();
      dump_path.push("target");
      dump_path.push("tests_dump");
@@ -302,7 +389,7 @@
      dump_path.extend(module_path.split("::").skip(2));
      dump_path.push(format!("{:?}", compiler.opt_level()));
      compiler.set_dump_to(Some(dump_path));
-@@ -472,7 +638,7 @@
+@@ -472,7 +671,7 @@
      let TestCase { bytecode, spec_id, .. } = *test_case;
      compiler.inspect_stack(test_case.inspect_stack.unwrap_or(true));
      // compiler.debug_assertions(false);
@@ -311,7 +398,7 @@
      run_compiled_test_case(test_case, f);
  }
 
-@@ -488,7 +654,7 @@
+@@ -488,12 +687,13 @@
          expected_stack,
          expected_memory,
          expected_gas,
@@ -320,7 +407,14 @@
          assert_host,
          assert_ecx,
      } = *test_case;
-@@ -505,34 +671,38 @@
+
+-    with_evm_context(bytecode, spec_id, |ecx, stack, stack_len| {
++    let f = evm2_test_func(f);
++    let (_, jit_host) = with_evm_context_and_host(bytecode, spec_id, |ecx, stack, stack_len| {
+         if is_static {
+             ecx.is_static = true;
+         }
+@@ -505,34 +705,38 @@
              ecx.refresh_memory_cache();
          }
 
@@ -383,7 +477,7 @@
 
          let mut expected_return = expected_return;
          if expected_return == RETURN_WHAT_INTERPRETER_SAYS {
-@@ -541,35 +711,40 @@
+@@ -541,35 +745,40 @@
              // Only check interpreter return if modify_ecx is not set.
              // When modify_ecx is used, it only modifies the JIT context, not the interpreter's
              // input, so the interpreter may return a different result.
@@ -430,7 +524,7 @@
                  MemDisplay(expected_memory),
                  "interpreter memory mismatch"
              );
-@@ -580,12 +755,23 @@
+@@ -580,12 +789,23 @@
              if skip_interpreter_checks {
                  expected_gas = 0; // Will skip comparison below
              } else {
@@ -456,7 +550,7 @@
          // Track whether we should skip JIT stack/gas/memory comparisons
          let skip_jit_stack =
              skip_interpreter_checks && test_case.expected_stack == STACK_WHAT_INTERPRETER_SAYS;
-@@ -594,22 +780,6 @@
+@@ -594,22 +814,6 @@
          let skip_jit_gas =
              skip_interpreter_checks && test_case.expected_gas == GAS_WHAT_INTERPRETER_SAYS;
 
@@ -479,7 +573,16 @@
          if let Some(assert_host) = assert_host {
              assert_host(&int_host);
          }
-@@ -655,11 +825,9 @@
+@@ -644,7 +848,7 @@
+
+             if !skip_jit_memory {
+                 assert_eq!(
+-                    MemDisplay(&ecx.memory.context_memory()),
++                    MemDisplay(&unsafe { &*ecx.memory }.context_memory()),
+                     MemDisplay(expected_memory),
+                     "memory mismatch"
+                 );
+@@ -655,21 +859,70 @@
              }
          }
 
@@ -488,16 +591,24 @@
 -            None => &default_action,
 -        };
 -        assert_actions(actual_next_action, expected_next_action);
+-
+-        if let Some(_assert_host) = assert_host {
+-            let host = unsafe { &*(ecx.host as *mut dyn Host as *mut TestHost) };
+-            _assert_host(host);
 +        if let Some(expected_output) = expected_output {
 +            assert_eq!(ecx.output.as_ref(), expected_output, "output mismatch");
-+        }
+         }
 
-         if let Some(_assert_host) = assert_host {
-             let host = unsafe { &*(ecx.host as *mut dyn Host as *mut TestHost) };
-@@ -672,6 +840,58 @@
+         if let Some(assert_ecx) = assert_ecx {
+             assert_ecx(ecx);
+         }
      });
- }
-
++
++    if let Some(assert_host) = assert_host {
++        assert_host(&jit_host);
++    }
++}
++
 +fn instruction_results_match_for_oracle(
 +    actual: InstructionResult,
 +    expected: InstructionResult,
@@ -548,12 +659,10 @@
 +        InstrStop::InvalidImmediateEncoding => InstructionResult::InvalidImmediateEncoding,
 +        _ => InstructionResult::FatalExternalError,
 +    }
-+}
-+
+ }
+
  #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
- struct MemDisplay<'a>(&'a [u8]);
- impl fmt::Debug for MemDisplay<'_> {
-@@ -680,105 +900,3 @@
+@@ -680,105 +933,3 @@
          f.debug_list().entries(chunks).finish()
      }
  }

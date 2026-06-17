@@ -54,7 +54,7 @@ indexmap = "2.13.0"
 evm2-jit-build.workspace = true
 
 [dev-dependencies]
-evm2-jit-context.workspace = true
+evm2-jit-context = { workspace = true, features = ["evm2"] }
 
 paste.workspace = true
 revm-state.workspace = true
