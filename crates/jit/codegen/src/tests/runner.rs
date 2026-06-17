@@ -645,7 +645,10 @@ fn run_compiled_test_case(test_case: &TestCase<'_>, f: EvmCompilerFn) {
             // We can have a stack overflow/underflow before other error codes due to sections.
             |InstrStop::StackOverflow| InstrStop::StackUnderflow
             // Any OOG is equivalent. We skip `InvalidOperand` sometimes.
-            | InstrStop::OutOfGas | InstrStop::MemoryOOG | InstrStop::InvalidOperandOOG
+            | InstrStop::OutOfGas
+            | InstrStop::MemoryOOG
+            | InstrStop::MemoryLimitOOG
+            | InstrStop::InvalidOperandOOG
         ) {
             assert_eq!(
                 actual_return.is_halt(),
@@ -668,7 +671,7 @@ fn run_compiled_test_case(test_case: &TestCase<'_>, f: EvmCompilerFn) {
 
             if !skip_jit_memory {
                 assert_eq!(
-                    MemDisplay(&unsafe { &*ecx.memory }.context_memory()),
+                    MemDisplay(unsafe { &*ecx.memory }.as_slice()),
                     MemDisplay(expected_memory),
                     "memory mismatch"
                 );

@@ -15,7 +15,7 @@
 +use alloc::vec::Vec;
 +use alloy_primitives::{B256, Bytes, KECCAK256_EMPTY, Log, LogData, U256, keccak256};
 +use evm2::{SpecId, interpreter::i256, version::GasId};
-+use evm2_jit_context::{CallInput, EvmContext, EvmWord, InstrStop, MemoryTr};
++use evm2_jit_context::{EvmContext, EvmWord, InstrStop};
 
  pub mod gas;
 
@@ -86,7 +86,7 @@
  }
 
  #[unsafe(no_mangle)]
-@@ -202,13 +193,13 @@
+@@ -202,13 +193,12 @@
      len: usize,
  ) -> BuiltinResult {
      *out = EvmWord::from_be_bytes(if len == 0 {
@@ -97,13 +97,39 @@
 +        gas!(ecx, ecx.gas_params.keccak256_word_cost(len));
          let offset = try_into_usize!(offset);
          ensure_memory(ecx, offset, len)?;
-         let data = ecx.memory.slice(offset..offset + len);
+-        let data = ecx.memory.slice(offset..offset + len);
 -        revm_primitives::keccak256(&*data)
-+        keccak256(&*data)
++        keccak256(ecx.memory.slice(offset, len))
      });
      Ok(())
  }
-@@ -310,7 +301,7 @@
+@@ -252,7 +242,7 @@
+     let input_len = input.len();
+     if offset < input_len {
+         let count = 32.min(input_len - offset);
+-        let input = ecx.input.input().as_bytes_memory(ecx.memory);
++        let input = ecx.input.input().as_bytes();
+         // SAFETY: `count` is bounded by the calldata length.
+         // This is `word[..count].copy_from_slice(input[offset..offset + count])`, written using
+         // raw pointers as apparently the compiler cannot optimize the slice version, and using
+@@ -276,15 +266,7 @@
+         let memory_offset = try_into_usize!(memory_offset);
+         ensure_memory(ecx, memory_offset, len)?;
+         let data_offset = as_usize_saturated!(data_offset.to_u256());
+-
+-        match ecx.input.input() {
+-            CallInput::Bytes(bytes) => {
+-                ecx.memory.set_data(memory_offset, data_offset, len, bytes.as_ref());
+-            }
+-            CallInput::SharedBuffer(range) => {
+-                ecx.memory.set_data_from_global(memory_offset, data_offset, len, range.clone());
+-            }
+-        }
++        ecx.memory.set_data(memory_offset, data_offset, len, ecx.input.input().as_bytes());
+     }
+     Ok(())
+ }
+@@ -310,7 +292,7 @@
  ) -> BuiltinResult {
      let addr = address.to_address();
      let account = load_account(ecx, addr, true)?;
@@ -112,7 +138,7 @@
      Ok(())
  }
 
-@@ -322,7 +313,7 @@
+@@ -322,7 +304,7 @@
      let rev![address, memory_offset, code_offset, len] = sp;
      let addr = address.to_address();
      let len = try_into_usize!(len);
@@ -121,7 +147,7 @@
 
      let mut memory_offset_usize = 0;
      if len != 0 {
-@@ -331,7 +322,7 @@
+@@ -331,7 +313,7 @@
      }
 
      let account = load_account(ecx, addr, true)?;
@@ -130,7 +156,7 @@
 
      let code_offset_usize = core::cmp::min(as_usize_saturated!(code_offset.to_u256()), code.len());
      ecx.memory.set_data(memory_offset_usize, code_offset_usize, len, &code);
-@@ -350,7 +341,7 @@
+@@ -350,7 +332,7 @@
      // Bounds check BEFORE charging gas, matching revm.
      let data_end = data_offset.saturating_add(len);
      if data_end > ecx.return_data.len() {
@@ -139,7 +165,7 @@
      }
 
      gas!(ecx, ecx.gas_params.copy_cost(len));
-@@ -369,7 +360,7 @@
+@@ -369,7 +351,7 @@
  ) -> BuiltinResult {
      let addr = address.to_address();
      let account = load_account(ecx, addr, false)?;
@@ -148,7 +174,7 @@
      *address = EvmWord::from_be_bytes(code_hash);
      Ok(())
  }
-@@ -427,7 +418,7 @@
+@@ -427,7 +409,7 @@
 
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn __revmc_builtin_difficulty(ecx: &EvmContext<'_>, slot: &mut EvmWord) {
@@ -157,7 +183,7 @@
          ecx.host.prevrandao().unwrap().into()
      } else {
          ecx.host.difficulty().into()
-@@ -488,8 +479,8 @@
+@@ -488,8 +470,8 @@
  ) -> BuiltinResult {
      let address = ecx.input.target_address;
      let key = index.to_u256();
@@ -168,7 +194,7 @@
          let skip_cold = ecx.gas.remaining() < additional_cold_cost;
          let storage = ecx.host.sload_skip_cold_load(address, key, skip_cold)?;
          if storage.is_cold {
-@@ -524,17 +515,17 @@
+@@ -524,17 +506,17 @@
      ensure_non_staticcall!(ecx);
 
      let target = ecx.input.target_address;
@@ -192,7 +218,7 @@
          let skip_cold = ecx.gas.remaining() < additional_cold_cost;
          ecx.host.sstore_skip_cold_load(target, index.to_u256(), value.to_u256(), skip_cold)?
      } else {
-@@ -542,16 +533,11 @@
+@@ -542,16 +524,11 @@
      };
 
      let gp = &ecx.gas_params;
@@ -210,7 +236,7 @@
      }
 
      ecx.gas.record_refund(gp.sstore_refund(is_istanbul, &state_load.data));
-@@ -602,7 +588,7 @@
+@@ -602,11 +579,11 @@
      let sp = sp.add(n as usize);
      read_words!(sp, offset, len);
      let len = try_into_usize!(len);
@@ -219,7 +245,12 @@
      let data = if len != 0 {
          let offset = try_into_usize!(offset);
          ensure_memory(ecx, offset, len)?;
-@@ -635,65 +621,7 @@
+-        Bytes::copy_from_slice(&ecx.memory.slice(offset..offset + len))
++        Bytes::copy_from_slice(ecx.memory.slice(offset, len))
+     } else {
+         Bytes::new()
+     };
+@@ -635,65 +612,7 @@
      sp: *mut EvmWord,
      create_kind: CreateKind,
  ) -> BuiltinResult {
@@ -286,7 +317,7 @@
      Ok(())
  }
 
-@@ -703,122 +631,7 @@
+@@ -703,122 +622,7 @@
      sp: *mut EvmWord,
      call_kind: CallKind,
  ) -> BuiltinResult {
@@ -410,7 +441,7 @@
      Ok(())
  }
 
-@@ -826,7 +639,7 @@
+@@ -826,19 +630,18 @@
  pub unsafe extern "C" fn __revmc_builtin_do_return(
      ecx: &mut EvmContext<'_>,
      sp: &mut [EvmWord; 2],
@@ -419,7 +450,11 @@
  ) -> BuiltinResult {
      let rev![offset, len] = sp;
      let len = try_into_usize!(len);
-@@ -837,8 +650,7 @@
+     let output = if len != 0 {
+         let offset = try_into_usize!(offset);
+         ensure_memory(ecx, offset, len)?;
+-        ecx.memory.slice(offset..offset + len).to_vec().into()
++        ecx.memory.slice(offset, len).to_vec().into()
      } else {
          Bytes::new()
      };
@@ -429,7 +464,7 @@
      Err(result.into())
  }
 
-@@ -847,7 +659,7 @@
+@@ -847,18 +650,17 @@
      ecx: &mut EvmContext<'_>,
      offset: u64,
      len: u64,
@@ -438,7 +473,10 @@
  ) -> BuiltinResult {
      let offset = offset as usize;
      let len = len as usize;
-@@ -857,8 +669,7 @@
+     let output = if len != 0 {
+         ensure_memory(ecx, offset, len)?;
+-        ecx.memory.slice(offset..offset + len).to_vec().into()
++        ecx.memory.slice(offset, len).to_vec().into()
      } else {
          Bytes::new()
      };
@@ -448,7 +486,7 @@
      Err(result.into())
  }
 
-@@ -875,24 +686,24 @@
+@@ -875,24 +677,24 @@
          ecx.host.selfdestruct(ecx.input.target_address, target.to_address(), skip_cold_load)?;
 
      // EIP-161: State trie clearing (invariant-preserving alternative)

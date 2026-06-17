@@ -13,7 +13,7 @@ extern crate tracing;
 use alloc::vec::Vec;
 use alloy_primitives::{B256, Bytes, KECCAK256_EMPTY, Log, LogData, U256, keccak256};
 use evm2::{SpecId, interpreter::i256, version::GasId};
-use evm2_jit_context::{CallInput, EvmContext, EvmWord, InstrStop, MemoryTr};
+use evm2_jit_context::{EvmContext, EvmWord, InstrStop};
 
 pub mod gas;
 
@@ -198,8 +198,7 @@ fn do_keccak256(
         gas!(ecx, ecx.gas_params.keccak256_word_cost(len));
         let offset = try_into_usize!(offset);
         ensure_memory(ecx, offset, len)?;
-        let data = ecx.memory.slice(offset..offset + len);
-        keccak256(&*data)
+        keccak256(ecx.memory.slice(offset, len))
     });
     Ok(())
 }
@@ -243,7 +242,7 @@ fn do_calldataload(ecx: &EvmContext<'_>, out: &mut EvmWord, offset: usize) {
     let input_len = input.len();
     if offset < input_len {
         let count = 32.min(input_len - offset);
-        let input = ecx.input.input().as_bytes_memory(ecx.memory);
+        let input = ecx.input.input().as_bytes();
         // SAFETY: `count` is bounded by the calldata length.
         // This is `word[..count].copy_from_slice(input[offset..offset + count])`, written using
         // raw pointers as apparently the compiler cannot optimize the slice version, and using
@@ -267,15 +266,7 @@ pub unsafe extern "C" fn __revmc_builtin_calldatacopy(
         let memory_offset = try_into_usize!(memory_offset);
         ensure_memory(ecx, memory_offset, len)?;
         let data_offset = as_usize_saturated!(data_offset.to_u256());
-
-        match ecx.input.input() {
-            CallInput::Bytes(bytes) => {
-                ecx.memory.set_data(memory_offset, data_offset, len, bytes.as_ref());
-            }
-            CallInput::SharedBuffer(range) => {
-                ecx.memory.set_data_from_global(memory_offset, data_offset, len, range.clone());
-            }
-        }
+        ecx.memory.set_data(memory_offset, data_offset, len, ecx.input.input().as_bytes());
     }
     Ok(())
 }
@@ -592,7 +583,7 @@ pub unsafe extern "C" fn __revmc_builtin_log(
     let data = if len != 0 {
         let offset = try_into_usize!(offset);
         ensure_memory(ecx, offset, len)?;
-        Bytes::copy_from_slice(&ecx.memory.slice(offset..offset + len))
+        Bytes::copy_from_slice(ecx.memory.slice(offset, len))
     } else {
         Bytes::new()
     };
@@ -646,7 +637,7 @@ pub unsafe extern "C" fn __revmc_builtin_do_return(
     let output = if len != 0 {
         let offset = try_into_usize!(offset);
         ensure_memory(ecx, offset, len)?;
-        ecx.memory.slice(offset..offset + len).to_vec().into()
+        ecx.memory.slice(offset, len).to_vec().into()
     } else {
         Bytes::new()
     };
@@ -665,7 +656,7 @@ pub unsafe extern "C" fn __revmc_builtin_do_return_cc(
     let len = len as usize;
     let output = if len != 0 {
         ensure_memory(ecx, offset, len)?;
-        ecx.memory.slice(offset..offset + len).to_vec().into()
+        ecx.memory.slice(offset, len).to_vec().into()
     } else {
         Bytes::new()
     };

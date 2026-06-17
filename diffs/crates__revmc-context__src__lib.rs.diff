@@ -1,6 +1,6 @@
 --- upstream/crates/revmc-context/src/lib.rs
 +++ evm2/crates/jit/context/src/lib.rs
-@@ -6,71 +6,317 @@
+@@ -6,71 +6,290 @@
  extern crate alloc;
 
  use alloc::vec::Vec;
@@ -9,8 +9,8 @@
 -    mem::MaybeUninit,
 -    ptr::{self, NonNull},
 +use alloy_primitives::{Address, B256, Bytes, Log, U256, ruint};
-+use core::{cell::Ref, fmt, mem::MaybeUninit, ops::Range, ptr::NonNull};
-+pub use evm2::interpreter::{Gas, InstrStop};
++use core::{fmt, mem::MaybeUninit, ptr::NonNull};
++pub use evm2::interpreter::{Gas, InstrStop, Memory};
 +use evm2::{
 +    bytecode::Bytecode,
 +    evm::{SStore, SelfDestructResult as Evm2SelfDestructResult},
@@ -23,8 +23,6 @@
 -    interpreter_types::{Jumps, LegacyBytecode, ReturnData, RuntimeFlag},
 -};
 -use revm_primitives::{Address, B256, Bytes, Log, U256, hardfork::SpecId, ruint};
-+use revm_interpreter::SharedMemory;
-+pub use revm_interpreter::interpreter_types::MemoryTr;
 +
 +#[doc(hidden)]
 +pub type SelfDestructResult = Evm2SelfDestructResult;
@@ -123,72 +121,47 @@
 +#[derive(Clone, Debug, PartialEq, Eq)]
 +pub enum CallInput {
 +    Bytes(Bytes),
-+    SharedBuffer(Range<usize>),
 +}
-+
-+impl CallInput {
-+    #[inline]
-+    pub fn len(&self) -> usize {
-+        match self {
-+            Self::Bytes(bytes) => bytes.len(),
-+            Self::SharedBuffer(range) => range.len(),
-+        }
-+    }
 
 -impl ResumeAt {
 -    /// Loads the resume point from the interpreter's current PC.
++impl CallInput {
      #[inline]
 -    pub fn load(interpreter: &Interpreter) -> Self {
 -        Self(interpreter.bytecode.pc())
-+    pub fn is_empty(&self) -> bool {
-+        self.len() == 0
++    pub fn len(&self) -> usize {
++        match self {
++            Self::Bytes(bytes) => bytes.len(),
++        }
      }
 
 -    /// Stores the resume point back into the interpreter's bytecode PC.
      #[inline]
 -    pub fn store(self, interpreter: &mut Interpreter) {
 -        interpreter.bytecode.absolute_jump(self.0);
-+    pub fn as_bytes_memory<'a, M: MemoryTr>(
-+        &'a self,
-+        memory: &'a M,
-+    ) -> impl core::ops::Deref<Target = [u8]> + 'a {
-+        match self {
-+            Self::Bytes(bytes) => CallInputRef::Bytes(bytes.as_ref()),
-+            Self::SharedBuffer(range) => {
-+                CallInputRef::SharedBuffer(Some(memory.global_slice(range.clone())))
-+            }
-+        }
++    pub fn is_empty(&self) -> bool {
++        self.len() == 0
      }
-+}
 
 -    /// Returns the raw resume index.
-+impl Default for CallInput {
      #[inline]
 -    pub const fn get(self) -> usize {
 -        self.0
-+    fn default() -> Self {
-+        Self::Bytes(Bytes::new())
-+    }
-+}
-+
-+enum CallInputRef<'a> {
-+    Bytes(&'a [u8]),
-+    SharedBuffer(Option<Ref<'a, [u8]>>),
-+}
-+
-+impl core::ops::Deref for CallInputRef<'_> {
-+    type Target = [u8];
-+
-+    #[inline]
-+    fn deref(&self) -> &Self::Target {
++    pub fn as_bytes(&self) -> &[u8] {
 +        match self {
-+            Self::Bytes(bytes) => bytes,
-+            Self::SharedBuffer(bytes) => bytes.as_deref().unwrap_or_default(),
++            Self::Bytes(bytes) => bytes.as_ref(),
 +        }
      }
  }
 
 -impl From<usize> for ResumeAt {
++impl Default for CallInput {
++    #[inline]
++    fn default() -> Self {
++        Self::Bytes(Bytes::new())
++    }
++}
++
 +#[doc(hidden)]
 +#[derive(Clone, Debug, Default, PartialEq, Eq)]
 +#[repr(C)]
@@ -206,10 +179,9 @@
 -        Self(value)
 +    pub const fn input(&self) -> &CallInput {
 +        &self.input
-     }
- }
-
--impl PartialEq<usize> for ResumeAt {
++    }
++}
++
 +#[doc(hidden)]
 +pub mod jit_abi {
 +    pub type Inputs = super::Inputs;
@@ -238,7 +210,7 @@
 +    pub struct MemoryGas {
 +        pub words_num: usize,
 +        pub expansion_cost: u64,
-+    }
+     }
 +
 +    const _: () = {
 +        use core::mem::{align_of, offset_of, size_of};
@@ -265,8 +237,9 @@
 +    pub create: Evm2RecursiveMessageFn,
 +    /// Executes `CALL`, `CALLCODE`, `DELEGATECALL`, or `STATICCALL`.
 +    pub call: Evm2RecursiveMessageFn,
-+}
-+
+ }
+
+-impl PartialEq<usize> for ResumeAt {
 +impl Evm2Recursion {
 +    /// Returns dispatch functions that reject recursive message opcodes.
 +    #[inline]
@@ -360,9 +333,12 @@
      }
  }
 
-@@ -87,26 +333,21 @@
+@@ -85,28 +304,23 @@
+ #[repr(C)]
+ pub struct EvmContext<'a> {
      /// The memory.
-     pub memory: &'a mut SharedMemory,
+-    pub memory: &'a mut SharedMemory,
++    pub memory: &'a mut Memory,
      /// Input information (target address, caller, input data, call value).
 -    pub input: &'a mut InputsImpl,
 +    pub input: &'a mut Inputs,
@@ -391,7 +367,7 @@
      ///
      /// Set to `None` when no inspector is active.
      #[doc(hidden)]
-@@ -114,7 +355,7 @@
+@@ -114,18 +328,23 @@
      /// The size of the call input data, cached for CALLDATASIZE.
      pub calldatasize: usize,
      /// The result set by a builtin before exiting via [`revmc_exit`].
@@ -400,7 +376,11 @@
      /// Saved RSP from the entry trampoline, used by [`revmc_exit`] to unwind.
      pub exit_sp: *mut u8,
      /// Cached gas parameters from the host.
-@@ -126,6 +367,12 @@
+     pub gas_params: GasParams,
+     /// Cached base pointer for the current memory context.
+-    /// Points to `memory[checkpoint..]`, i.e. the start of the current context's memory.
+     /// Refreshed after any memory resize.
+     pub mem_base: *mut u8,
      /// Cached length of the current memory context in bytes.
      /// Refreshed after any memory resize.
      pub mem_len: usize,
@@ -413,7 +393,7 @@
  }
 
  // Static assertions to ensure the struct layout matches expectations.
-@@ -135,10 +382,6 @@
+@@ -135,10 +354,6 @@
 
      // Key fields accessed by JIT code
      assert!(offset_of!(EvmContext<'_>, memory) == 0);
@@ -424,7 +404,7 @@
  };
 
  impl fmt::Debug for EvmContext<'_> {
-@@ -147,47 +390,7 @@
+@@ -147,64 +362,67 @@
      }
  }
 
@@ -469,17 +449,23 @@
 -        (this, stack, stack_len)
 -    }
 -
+-    /// Refreshes the cached memory base pointer and length from `SharedMemory`.
 +impl EvmContext<'_> {
-     /// Refreshes the cached memory base pointer and length from `SharedMemory`.
++    /// Refreshes the cached memory base pointer and length.
      ///
      /// Must be called after any operation that may resize memory.
-@@ -199,12 +402,51 @@
+     #[inline]
+     pub fn refresh_memory_cache(&mut self) {
+-        let mut slice = self.memory.context_memory_mut();
++        let slice = self.memory.as_mut_slice();
+         self.mem_base = slice.as_mut_ptr();
+         self.mem_len = slice.len();
      }
  }
 
 +/// Performs EVM memory resize and charges memory expansion gas.
 +#[inline]
-+pub fn resize_memory<Memory: MemoryTr>(
++pub fn resize_memory(
 +    gas: &mut Gas,
 +    memory: &mut Memory,
 +    gas_params: &GasParams,
@@ -496,7 +482,7 @@
 +
 +#[cold]
 +#[inline(never)]
-+fn resize_memory_cold<Memory: MemoryTr>(
++fn resize_memory_cold(
 +    gas: &mut Gas,
 +    memory: &mut Memory,
 +    gas_params: &GasParams,
@@ -506,13 +492,17 @@
 +        return Err(InstrStop::MemoryOOG);
 +    };
 +
++    if memory.limit_reached(new_num_words) {
++        return Err(InstrStop::MemoryLimitOOG);
++    }
++
 +    let cost = gas_params.memory_cost(new_num_words);
 +    let cost = unsafe { gas.memory_mut().set_words_num(new_num_words, cost).unwrap_unchecked() };
 +
 +    if gas.spend(cost).is_err() {
 +        return Err(InstrStop::MemoryOOG);
 +    }
-+    memory.resize(new_size);
++    memory.resize(0, new_size)?;
 +    Ok(())
 +}
 +
@@ -526,7 +516,7 @@
  ///
  /// extern_revmc! {
  ///    /// A simple function.
-@@ -224,7 +466,7 @@
+@@ -224,7 +442,7 @@
                      ecx: ::core::ptr::NonNull<$crate::EvmContext<'_>>,
                      stack: ::core::ptr::NonNull<$crate::EvmStack>,
                      stack_len: ::core::ptr::NonNull<usize>,
@@ -535,7 +525,7 @@
              )+
          }
      };
-@@ -239,7 +481,7 @@
+@@ -239,7 +457,7 @@
      ecx: NonNull<EvmContext<'_>>,
      stack: NonNull<EvmStack>,
      stack_len: NonNull<usize>,
@@ -544,7 +534,7 @@
 
  /// An EVM bytecode function.
  #[derive(Clone, Copy, Debug, Hash)]
-@@ -272,82 +514,6 @@
+@@ -272,82 +490,6 @@
          self.0
      }
 
@@ -627,7 +617,7 @@
      /// Calls the function.
      ///
      /// Arguments:
-@@ -366,7 +532,7 @@
+@@ -366,7 +508,7 @@
          stack: &mut EvmStack,
          stack_len: &mut usize,
          ecx: &mut EvmContext<'_>,
@@ -636,7 +626,7 @@
          revmc_entry(NonNull::from(ecx), NonNull::from(stack), NonNull::from(stack_len), self.0)
      }
 
-@@ -383,7 +549,7 @@
+@@ -383,7 +525,7 @@
          stack: &mut EvmStack,
          stack_len: &mut usize,
          ecx: &mut EvmContext<'_>,
@@ -645,7 +635,7 @@
          self.call(stack, stack_len, ecx)
      }
  }
-@@ -415,20 +581,6 @@
+@@ -415,20 +557,6 @@
          Vec::with_capacity(1024)
      }
 
@@ -666,15 +656,22 @@
      /// Creates a stack from a vector's buffer.
      ///
      /// # Panics
-@@ -826,7 +978,6 @@
- #[doc(hidden)]
- pub mod private {
-     pub use revm_interpreter;
--    pub use revm_primitives;
+@@ -821,14 +949,6 @@
+     }
  }
 
+-// Macro re-exports.
+-// Not public API.
+-#[doc(hidden)]
+-pub mod private {
+-    pub use revm_interpreter;
+-    pub use revm_primitives;
+-}
+-
  #[cfg(test)]
-@@ -851,8 +1002,8 @@
+ mod tests {
+     use super::*;
+@@ -851,8 +971,8 @@
          _ecx: NonNull<EvmContext<'_>>,
          _stack: NonNull<EvmStack>,
          _stack_len: NonNull<usize>,

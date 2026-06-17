@@ -711,7 +711,7 @@
          if let Some(assert_host) = assert_host {
              assert_host(&int_host);
          }
-@@ -619,9 +643,9 @@
+@@ -619,9 +643,12 @@
          if matches!(
              actual_return,
              // We can have a stack overflow/underflow before other error codes due to sections.
@@ -719,16 +719,19 @@
 +            |InstrStop::StackOverflow| InstrStop::StackUnderflow
              // Any OOG is equivalent. We skip `InvalidOperand` sometimes.
 -            | InstructionResult::OutOfGas | InstructionResult::MemoryOOG | InstructionResult::InvalidOperandOOG
-+            | InstrStop::OutOfGas | InstrStop::MemoryOOG | InstrStop::InvalidOperandOOG
++            | InstrStop::OutOfGas
++            | InstrStop::MemoryOOG
++            | InstrStop::MemoryLimitOOG
++            | InstrStop::InvalidOperandOOG
          ) {
              assert_eq!(
                  actual_return.is_halt(),
-@@ -644,141 +668,45 @@
+@@ -644,141 +671,45 @@
 
              if !skip_jit_memory {
                  assert_eq!(
 -                    MemDisplay(&ecx.memory.context_memory()),
-+                    MemDisplay(&unsafe { &*ecx.memory }.context_memory()),
++                    MemDisplay(unsafe { &*ecx.memory }.as_slice()),
                      MemDisplay(expected_memory),
                      "memory mismatch"
                  );

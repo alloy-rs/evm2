@@ -7,15 +7,13 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 use alloy_primitives::{Address, B256, Bytes, Log, U256, ruint};
-use core::{cell::Ref, fmt, mem::MaybeUninit, ops::Range, ptr::NonNull};
-pub use evm2::interpreter::{Gas, InstrStop};
+use core::{fmt, mem::MaybeUninit, ptr::NonNull};
+pub use evm2::interpreter::{Gas, InstrStop, Memory};
 use evm2::{
     bytecode::Bytecode,
     evm::{SStore, SelfDestructResult as Evm2SelfDestructResult},
     version::GasParams,
 };
-use revm_interpreter::SharedMemory;
-pub use revm_interpreter::interpreter_types::MemoryTr;
 
 #[doc(hidden)]
 pub type SelfDestructResult = Evm2SelfDestructResult;
@@ -99,7 +97,6 @@ pub mod evm2_api;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CallInput {
     Bytes(Bytes),
-    SharedBuffer(Range<usize>),
 }
 
 impl CallInput {
@@ -107,7 +104,6 @@ impl CallInput {
     pub fn len(&self) -> usize {
         match self {
             Self::Bytes(bytes) => bytes.len(),
-            Self::SharedBuffer(range) => range.len(),
         }
     }
 
@@ -117,15 +113,9 @@ impl CallInput {
     }
 
     #[inline]
-    pub fn as_bytes_memory<'a, M: MemoryTr>(
-        &'a self,
-        memory: &'a M,
-    ) -> impl core::ops::Deref<Target = [u8]> + 'a {
+    pub fn as_bytes(&self) -> &[u8] {
         match self {
-            Self::Bytes(bytes) => CallInputRef::Bytes(bytes.as_ref()),
-            Self::SharedBuffer(range) => {
-                CallInputRef::SharedBuffer(Some(memory.global_slice(range.clone())))
-            }
+            Self::Bytes(bytes) => bytes.as_ref(),
         }
     }
 }
@@ -134,23 +124,6 @@ impl Default for CallInput {
     #[inline]
     fn default() -> Self {
         Self::Bytes(Bytes::new())
-    }
-}
-
-enum CallInputRef<'a> {
-    Bytes(&'a [u8]),
-    SharedBuffer(Option<Ref<'a, [u8]>>),
-}
-
-impl core::ops::Deref for CallInputRef<'_> {
-    type Target = [u8];
-
-    #[inline]
-    fn deref(&self) -> &Self::Target {
-        match self {
-            Self::Bytes(bytes) => bytes,
-            Self::SharedBuffer(bytes) => bytes.as_deref().unwrap_or_default(),
-        }
     }
 }
 
@@ -331,7 +304,7 @@ pub trait JitHost {
 #[repr(C)]
 pub struct EvmContext<'a> {
     /// The memory.
-    pub memory: &'a mut SharedMemory,
+    pub memory: &'a mut Memory,
     /// Input information (target address, caller, input data, call value).
     pub input: &'a mut Inputs,
     /// The gas.
@@ -361,7 +334,6 @@ pub struct EvmContext<'a> {
     /// Cached gas parameters from the host.
     pub gas_params: GasParams,
     /// Cached base pointer for the current memory context.
-    /// Points to `memory[checkpoint..]`, i.e. the start of the current context's memory.
     /// Refreshed after any memory resize.
     pub mem_base: *mut u8,
     /// Cached length of the current memory context in bytes.
@@ -391,12 +363,12 @@ impl fmt::Debug for EvmContext<'_> {
 }
 
 impl EvmContext<'_> {
-    /// Refreshes the cached memory base pointer and length from `SharedMemory`.
+    /// Refreshes the cached memory base pointer and length.
     ///
     /// Must be called after any operation that may resize memory.
     #[inline]
     pub fn refresh_memory_cache(&mut self) {
-        let mut slice = self.memory.context_memory_mut();
+        let slice = self.memory.as_mut_slice();
         self.mem_base = slice.as_mut_ptr();
         self.mem_len = slice.len();
     }
@@ -404,7 +376,7 @@ impl EvmContext<'_> {
 
 /// Performs EVM memory resize and charges memory expansion gas.
 #[inline]
-pub fn resize_memory<Memory: MemoryTr>(
+pub fn resize_memory(
     gas: &mut Gas,
     memory: &mut Memory,
     gas_params: &GasParams,
@@ -421,7 +393,7 @@ pub fn resize_memory<Memory: MemoryTr>(
 
 #[cold]
 #[inline(never)]
-fn resize_memory_cold<Memory: MemoryTr>(
+fn resize_memory_cold(
     gas: &mut Gas,
     memory: &mut Memory,
     gas_params: &GasParams,
@@ -431,13 +403,17 @@ fn resize_memory_cold<Memory: MemoryTr>(
         return Err(InstrStop::MemoryOOG);
     };
 
+    if memory.limit_reached(new_num_words) {
+        return Err(InstrStop::MemoryLimitOOG);
+    }
+
     let cost = gas_params.memory_cost(new_num_words);
     let cost = unsafe { gas.memory_mut().set_words_num(new_num_words, cost).unwrap_unchecked() };
 
     if gas.spend(cost).is_err() {
         return Err(InstrStop::MemoryOOG);
     }
-    memory.resize(new_size);
+    memory.resize(0, new_size)?;
     Ok(())
 }
 
@@ -971,13 +947,6 @@ impl EvmWord {
     pub fn to_address(self) -> Address {
         Address::from_word(self.to_be_bytes())
     }
-}
-
-// Macro re-exports.
-// Not public API.
-#[doc(hidden)]
-pub mod private {
-    pub use revm_interpreter;
 }
 
 #[cfg(test)]
