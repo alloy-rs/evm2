@@ -1,6 +1,9 @@
 //! evm2-facing runtime context.
 
-use crate::{AccountInfoLoad, EvmStack, EvmWord, InstrStop, JitHost, LoadError};
+use crate::{
+    AccountInfoLoad, EvmStack, EvmWord, InstrStop, JitHost, LoadError, SStoreResult,
+    SelfDestructResult, StateLoad,
+};
 use alloc::{borrow::Cow, boxed::Box, vec::Vec};
 use alloy_primitives::{Bytes as RevmBytes, U256};
 use core::{
@@ -19,8 +22,7 @@ use evm2::{
     version::GasId,
 };
 use revm_interpreter::{
-    CallInput, Gas as RevmGas, Host as RevmHost, InputsImpl, SStoreResult as RevmSStoreResult,
-    SelfDestructResult as RevmSelfDestructResult, SharedMemory, StateLoad as RevmStateLoad,
+    CallInput, Gas as RevmGas, InputsImpl, SharedMemory,
     bytecode::Bytecode as RevmBytecode,
     context_interface::{
         cfg::GasParams as RevmGasParams, primitives::hardfork::SpecId as RevmSpecId,
@@ -38,12 +40,12 @@ const _: () = {
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 #[doc(hidden)]
-pub struct RevmHostPtr {
+pub struct JitHostPtr {
     data: *mut (),
     vtable: *mut (),
 }
 
-impl RevmHostPtr {
+impl JitHostPtr {
     fn from_host(host: &mut dyn JitHost) -> Self {
         unsafe { mem::transmute::<&mut dyn JitHost, Self>(host) }
     }
@@ -54,7 +56,7 @@ impl RevmHostPtr {
     }
 }
 
-struct RevmHostAdapter<'a, T: EvmTypes> {
+struct Evm2JitHostAdapter<'a, T: EvmTypes> {
     host: NonNull<T::Host>,
     block_env: BlockEnv<T>,
     tx_env: &'a TxEnv<T>,
@@ -63,7 +65,7 @@ struct RevmHostAdapter<'a, T: EvmTypes> {
     _marker: PhantomData<&'a mut T::Host>,
 }
 
-impl<'a, T: EvmTypes> RevmHostAdapter<'a, T> {
+impl<'a, T: EvmTypes> Evm2JitHostAdapter<'a, T> {
     fn new(
         host: &'a mut T::Host,
         tx_env: &'a TxEnv<T>,
@@ -86,7 +88,7 @@ impl<'a, T: EvmTypes> RevmHostAdapter<'a, T> {
     }
 }
 
-impl<T: EvmTypes> RevmHost for RevmHostAdapter<'_, T> {
+impl<T: EvmTypes> JitHost for Evm2JitHostAdapter<'_, T> {
     fn basefee(&self) -> U256 {
         self.block_env.basefee
     }
@@ -160,13 +162,13 @@ impl<T: EvmTypes> RevmHost for RevmHostAdapter<'_, T> {
         address: alloy_primitives::Address,
         target: alloy_primitives::Address,
         skip_cold_load: bool,
-    ) -> Result<RevmStateLoad<RevmSelfDestructResult>, LoadError> {
+    ) -> Result<StateLoad<SelfDestructResult>, LoadError> {
         let result = self
             .host_mut()
             .selfdestruct(&address, &target, skip_cold_load)
             .map_err(|stop| load_error(stop, skip_cold_load))?;
-        Ok(RevmStateLoad::new(
-            RevmSelfDestructResult {
+        Ok(StateLoad::new(
+            SelfDestructResult {
                 had_value: result.had_value,
                 target_exists: !result.target_is_empty,
                 previously_destroyed: result.previously_destroyed,
@@ -185,13 +187,13 @@ impl<T: EvmTypes> RevmHost for RevmHostAdapter<'_, T> {
         key: U256,
         value: U256,
         skip_cold_load: bool,
-    ) -> Result<RevmStateLoad<RevmSStoreResult>, LoadError> {
+    ) -> Result<StateLoad<SStoreResult>, LoadError> {
         let result = self
             .host_mut()
             .sstore(&address, &key, &value, skip_cold_load)
             .map_err(|stop| load_error(stop, skip_cold_load))?;
-        Ok(RevmStateLoad::new(
-            RevmSStoreResult {
+        Ok(StateLoad::new(
+            SStoreResult {
                 original_value: result.original_value,
                 present_value: result.present_value,
                 new_value: result.new_value,
@@ -205,12 +207,12 @@ impl<T: EvmTypes> RevmHost for RevmHostAdapter<'_, T> {
         address: alloy_primitives::Address,
         key: U256,
         skip_cold_load: bool,
-    ) -> Result<RevmStateLoad<U256>, LoadError> {
+    ) -> Result<StateLoad<U256>, LoadError> {
         let result = self
             .host_mut()
             .sload(&address, &key, skip_cold_load)
             .map_err(|stop| load_error(stop, skip_cold_load))?;
-        Ok(RevmStateLoad::new(result.value, result.is_cold))
+        Ok(StateLoad::new(result.value, result.is_cold))
     }
 
     fn tstore(&mut self, address: alloy_primitives::Address, key: U256, value: U256) {
@@ -268,7 +270,7 @@ pub struct EvmContext<'a, T: EvmTypes = BaseEvmTypes> {
     /// The gas.
     pub gas: RevmGas,
     /// Host trait object slot consumed by host-touching builtins.
-    pub host: RevmHostPtr,
+    pub host: JitHostPtr,
     /// The return data.
     pub return_data: &'a [u8],
     /// Whether the context is static.
@@ -307,13 +309,13 @@ pub struct EvmContext<'a, T: EvmTypes = BaseEvmTypes> {
     return_data_scratch: RevmBytes,
     memory_scratch: Box<SharedMemory>,
     input_scratch: Box<InputsImpl>,
-    _host_adapter: Box<RevmHostAdapter<'a, T>>,
+    _host_adapter: Box<Evm2JitHostAdapter<'a, T>>,
 }
 
 const _: () = {
     use core::mem::{offset_of, size_of};
 
-    assert!(size_of::<RevmHostPtr>() == size_of::<&mut dyn crate::JitHost>());
+    assert!(size_of::<JitHostPtr>() == size_of::<&mut dyn crate::JitHost>());
     assert!(
         offset_of!(EvmContext<'_, BaseEvmTypes>, memory)
             == offset_of!(crate::EvmContext<'_>, memory)
@@ -533,8 +535,8 @@ impl<'a, T: EvmTypes> EvmContext<'a, T> {
         });
         let input = input_scratch.as_mut() as *mut InputsImpl;
         let mut host_adapter =
-            Box::new(RevmHostAdapter::new(host, parts.tx_env, parts.version, revm_spec_id));
-        let jit_host = RevmHostPtr::from_host(host_adapter.as_mut());
+            Box::new(Evm2JitHostAdapter::new(host, parts.tx_env, parts.version, revm_spec_id));
+        let jit_host = JitHostPtr::from_host(host_adapter.as_mut());
         let mut this = Self {
             memory,
             input,
@@ -1211,7 +1213,7 @@ mod tests {
     }
 
     #[test]
-    fn evm2_context_revm_host_slot_uses_evm2_env() {
+    fn evm2_context_jit_host_slot_uses_evm2_env() {
         let tx_origin = Address::from([0x11; 20]);
         let beneficiary = Address::from([0x22; 20]);
         let config = <BaseEvmConfigSelector as EvmConfigSelector<BaseEvmTypes>>::execution_config(
@@ -1236,11 +1238,11 @@ mod tests {
         interpreter.prepare_jit_run(&config, &mut host);
         let ecx = EvmContext::from_interpreter(&mut interpreter, &mut host);
 
-        let revm_host = unsafe { ecx.host.as_host_mut() };
-        assert_eq!(revm_host.caller(), tx_origin);
-        assert_eq!(revm_host.effective_gas_price(), Word::from(7));
-        assert_eq!(revm_host.block_number(), Word::from(9));
-        assert_eq!(revm_host.beneficiary(), beneficiary);
+        let jit_host = unsafe { ecx.host.as_host_mut() };
+        assert_eq!(jit_host.caller(), tx_origin);
+        assert_eq!(jit_host.effective_gas_price(), Word::from(7));
+        assert_eq!(jit_host.block_number(), Word::from(9));
+        assert_eq!(jit_host.beneficiary(), beneficiary);
     }
 
     #[test]
