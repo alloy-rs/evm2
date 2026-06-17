@@ -156,8 +156,12 @@
 
      let code_offset_usize = core::cmp::min(as_usize_saturated!(code_offset.to_u256()), code.len());
      ecx.memory.set_data(memory_offset_usize, code_offset_usize, len, &code);
-@@ -350,7 +332,7 @@
-     // Bounds check BEFORE charging gas, matching revm.
+@@ -347,10 +329,10 @@
+     let len = try_into_usize!(len);
+     let data_offset = as_usize_saturated!(offset.to_u256());
+
+-    // Bounds check BEFORE charging gas, matching revm.
++    // Bounds check before charging gas.
      let data_end = data_offset.saturating_add(len);
      if data_end > ecx.return_data.len() {
 -        return Err(InstructionResult::OutOfOffset.into());

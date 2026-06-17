@@ -329,7 +329,7 @@ pub unsafe extern "C" fn __revmc_builtin_returndatacopy(
     let len = try_into_usize!(len);
     let data_offset = as_usize_saturated!(offset.to_u256());
 
-    // Bounds check BEFORE charging gas, matching revm.
+    // Bounds check before charging gas.
     let data_end = data_offset.saturating_add(len);
     if data_end > ecx.return_data.len() {
         return Err(InstrStop::OutOfOffset.into());
