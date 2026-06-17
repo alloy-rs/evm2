@@ -740,8 +740,8 @@
 -        }
 -        (a, b) => assert_eq!(a, b, "next action mismatch"),
 -    }
-+fn revm_bytecode_from_evm2(bytecode: &Evm2Bytecode) -> revm_bytecode::Bytecode {
-+    revm_bytecode::Bytecode::new_raw(Bytes::copy_from_slice(bytecode.original_byte_slice()))
++fn revm_bytecode_from_evm2(bytecode: &Evm2Bytecode) -> revm_state::Bytecode {
++    revm_state::Bytecode::new_raw(Bytes::copy_from_slice(bytecode.original_byte_slice()))
  }
 
 -/// Insert a call outcome into the interpreter state (for testing call_with_interpreter).

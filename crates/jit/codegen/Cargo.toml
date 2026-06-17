@@ -29,9 +29,8 @@ evm2-jit-llvm = { workspace = true, optional = true }
 
 alloy-primitives = { workspace = true, features = ["std", "map-fxhash"] }
 
-revm-bytecode.workspace = true
-revm-context-interface.workspace = true
 revm-interpreter.workspace = true
+revm-context-interface = { workspace = true, optional = true }
 revm-state = { workspace = true, optional = true }
 
 bitflags = "2.5"
@@ -56,6 +55,7 @@ evm2-jit-build.workspace = true
 evm2-jit-context = { workspace = true, features = ["evm2"] }
 
 paste.workspace = true
+revm-context-interface.workspace = true
 revm-state.workspace = true
 similar-asserts = "2.0"
 snapbox = "1.1"
@@ -74,7 +74,9 @@ asm-keccak = ["alloy-primitives/asm-keccak"]
 __fuzzing = [
     "dep:arbitrary",
     "dep:paste",
+    "dep:revm-context-interface",
     "dep:revm-state",
     "dep:similar-asserts",
     "dep:tracing-subscriber",
+    "evm2-jit-context/evm2",
 ]
