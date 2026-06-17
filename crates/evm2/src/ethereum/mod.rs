@@ -560,19 +560,14 @@ pub(super) fn access_list_counts(access_list: &AccessList) -> (u64, u64) {
     (access_list.len() as u64, access_list.storage_keys_count() as u64)
 }
 
-const ACCESS_LIST_ADDRESS_FLOOR_TOKENS: u64 = 80;
-const ACCESS_LIST_STORAGE_KEY_FLOOR_TOKENS: u64 = 128;
-
-const fn access_list_floor_tokens(
+fn access_list_floor_tokens(
     version: &Version,
     access_list_accounts: u64,
     access_list_storage_keys: u64,
 ) -> u64 {
-    if !version.feature(EvmFeatures::EIP7981) {
-        return 0;
-    }
-    access_list_accounts * ACCESS_LIST_ADDRESS_FLOOR_TOKENS
-        + access_list_storage_keys * ACCESS_LIST_STORAGE_KEY_FLOOR_TOKENS
+    let params = &version.gas_params;
+    access_list_accounts * u64::from(params.get(GasId::TxAccessListAddressFloorTokens))
+        + access_list_storage_keys * u64::from(params.get(GasId::TxAccessListStorageKeyFloorTokens))
 }
 
 /// Calculates transaction calldata floor gas.

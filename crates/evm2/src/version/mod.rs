@@ -620,8 +620,8 @@ evm_versions! {
             SstoreSetWithoutLoadCost: SSTORE_SET - WARM_STORAGE_READ_COST,
             SstoreSetRefund: SSTORE_SET - WARM_STORAGE_READ_COST,
             SstoreResetRefund: WARM_SSTORE_RESET - WARM_STORAGE_READ_COST,
-            TxAccessListAddressCost: ACCESS_LIST_ADDRESS,
-            TxAccessListStorageKeyCost: ACCESS_LIST_STORAGE_KEY,
+            TxAccessListAddressCost: EIP2930_ACCESS_LIST_ADDRESS,
+            TxAccessListStorageKeyCost: EIP2930_ACCESS_LIST_STORAGE_KEY,
         ],
     }
 
@@ -639,7 +639,7 @@ evm_versions! {
             SELFDESTRUCT: 5000,
         ],
         dynamic_gas: [
-            SstoreClearingSlotRefund: WARM_SSTORE_RESET + ACCESS_LIST_STORAGE_KEY,
+            SstoreClearingSlotRefund: WARM_SSTORE_RESET + EIP2930_ACCESS_LIST_STORAGE_KEY,
             SelfdestructRefund: 0,
         ],
     }
@@ -735,6 +735,8 @@ evm_versions! {
             CreateState: 112 * AMSTERDAM_CPSB,
             SstoreSetRefund: 32 * AMSTERDAM_CPSB + 2800,
             TxFloorCostPerToken: TOTAL_COST_FLOOR_PER_TOKEN_AMSTERDAM,
+            TxAccessListAddressFloorTokens: EIP7981_ACCESS_LIST_ADDRESS_FLOOR_TOKENS,
+            TxAccessListStorageKeyFloorTokens: EIP7981_ACCESS_LIST_STORAGE_KEY_FLOOR_TOKENS,
             TxEip7702PerEmptyAccountCost: 7500 + (112 + 23) * AMSTERDAM_CPSB,
             TxEip7702AuthRefund: 112 * AMSTERDAM_CPSB,
             TxEip7702PerAuthState: (112 + 23) * AMSTERDAM_CPSB,
