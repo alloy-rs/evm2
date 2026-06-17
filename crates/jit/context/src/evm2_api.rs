@@ -1,6 +1,6 @@
 //! evm2-facing runtime context.
 
-use crate::{EvmStack, EvmWord};
+use crate::{EvmStack, EvmWord, InstrStop};
 use alloc::{borrow::Cow, boxed::Box, vec::Vec};
 use alloy_primitives::{Bytes as RevmBytes, U256};
 use core::{
@@ -15,15 +15,12 @@ use evm2::{
     BaseEvmTypes, EvmFeatures, EvmTypes, SpecId, Version,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
-    interpreter::{
-        Gas as Evm2Gas, Host as Evm2Host, InstrStop, Interpreter, Message, MessageKind, Word,
-    },
+    interpreter::{Gas as Evm2Gas, Host as Evm2Host, Interpreter, Message, MessageKind, Word},
     version::GasId,
 };
 use revm_interpreter::{
-    CallInput, Gas as RevmGas, Host as RevmHost, InputsImpl, InstructionResult,
-    SStoreResult as RevmSStoreResult, SelfDestructResult as RevmSelfDestructResult, SharedMemory,
-    StateLoad as RevmStateLoad,
+    CallInput, Gas as RevmGas, Host as RevmHost, InputsImpl, SStoreResult as RevmSStoreResult,
+    SelfDestructResult as RevmSelfDestructResult, SharedMemory, StateLoad as RevmStateLoad,
     bytecode::Bytecode as RevmBytecode,
     context_interface::{
         cfg::GasParams as RevmGasParams, primitives::hardfork::SpecId as RevmSpecId,
@@ -38,7 +35,7 @@ const _: () = {
     assert!(core::mem::align_of::<EvmWord>() == core::mem::align_of::<Word>());
 };
 
-/// Serialized revm host trait object slot used to keep the imported context layout.
+/// Serialized host trait object slot.
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 #[doc(hidden)]
@@ -264,9 +261,6 @@ fn revm_bytecode_from_evm2(bytecode: &Bytecode) -> RevmBytecode {
 }
 
 /// The evm2 bytecode compiler runtime context.
-///
-/// This mirrors the imported revmc context ABI, but sources frame state from evm2's
-/// [`Interpreter`] and [`Message`] types. Host-touching builtins still need an evm2-native port.
 #[repr(C)]
 pub struct EvmContext<'a, T: EvmTypes = BaseEvmTypes> {
     /// The memory.
@@ -275,7 +269,7 @@ pub struct EvmContext<'a, T: EvmTypes = BaseEvmTypes> {
     pub input: *mut InputsImpl,
     /// The gas.
     pub gas: RevmGas,
-    /// Placeholder for the imported revm host trait object slot.
+    /// Host trait object slot consumed by host-touching builtins.
     pub host: RevmHostPtr,
     /// The return data.
     pub return_data: &'a [u8],
@@ -291,10 +285,10 @@ pub struct EvmContext<'a, T: EvmTypes = BaseEvmTypes> {
     /// The size of the call input data, cached for CALLDATASIZE.
     pub calldatasize: usize,
     /// The result set by a builtin before exiting via `revmc_exit`.
-    pub exit_result: InstructionResult,
+    pub exit_result: InstrStop,
     /// Saved RSP from the entry trampoline, used by `revmc_exit` to unwind.
     pub exit_sp: *mut u8,
-    /// Cached gas parameters for the imported revm builtin ABI.
+    /// Cached gas parameters for builtin gas accounting.
     pub gas_params: RevmGasParams,
     /// Cached base pointer for the current memory context.
     pub mem_base: *mut u8,
@@ -425,7 +419,7 @@ pub type RawEvmCompilerFn<T = BaseEvmTypes> = unsafe extern "C" fn(
     ecx: NonNull<EvmContext<'_, T>>,
     stack: NonNull<EvmStack>,
     stack_len: NonNull<usize>,
-) -> InstructionResult;
+) -> InstrStop;
 
 /// An evm2 bytecode function.
 #[derive(Clone, Copy, Debug, Hash)]
@@ -465,18 +459,17 @@ impl<T: EvmTypes> EvmCompilerFn<T> {
         let (mut ecx, stack, stack_len) =
             EvmContext::from_interpreter_with_stack(interpreter, host);
         let result = unsafe { self.call(stack, stack_len, &mut ecx) };
-        if result == InstructionResult::OutOfGas {
+        if result == InstrStop::OutOfGas {
             ecx.gas.spend_all();
         }
 
         let mut state = ecx.interpreter_state();
-        if matches!(result, InstructionResult::Return | InstructionResult::Revert) {
+        if matches!(result, InstrStop::Return | InstrStop::Revert) {
             state.output = Some(ecx.output.to_vec());
         }
-        let stop = instr_stop_from_instruction_result(result);
         drop(ecx);
         state.store(interpreter);
-        stop
+        result
     }
 
     /// Calls the function.
@@ -490,7 +483,7 @@ impl<T: EvmTypes> EvmCompilerFn<T> {
         stack: &mut EvmStack,
         stack_len: &mut usize,
         ecx: &mut EvmContext<'_, T>,
-    ) -> InstructionResult {
+    ) -> InstrStop {
         let ecx = unsafe {
             NonNull::new_unchecked((ecx as *mut EvmContext<'_, T>).cast::<crate::EvmContext<'_>>())
         };
@@ -555,7 +548,7 @@ impl<'a, T: EvmTypes> EvmContext<'a, T> {
             bytecode,
             on_log: None,
             calldatasize,
-            exit_result: InstructionResult::Stop,
+            exit_result: InstrStop::Stop,
             exit_sp: ptr::null_mut(),
             gas_params: RevmGasParams::new_spec(revm_spec_id),
             mem_base: ptr::null_mut(),
@@ -623,11 +616,11 @@ unsafe extern "C" fn evm2_recursive_call<T: EvmTypes>(
     ecx: &mut crate::EvmContext<'_>,
     sp: *mut EvmWord,
     call_kind: u8,
-) -> InstructionResult {
+) -> InstrStop {
     let ecx = unsafe { evm2_context_from_base::<T>(ecx) };
     match call_kind_from_u8(call_kind).and_then(|kind| call_inner(ecx, sp, kind)) {
-        Ok(()) => InstructionResult::Stop,
-        Err(stop) => instruction_result_from_instr_stop(stop),
+        Ok(()) => InstrStop::Stop,
+        Err(stop) => stop,
     }
 }
 
@@ -635,12 +628,12 @@ unsafe extern "C" fn evm2_recursive_create<T: EvmTypes>(
     ecx: &mut crate::EvmContext<'_>,
     sp: *mut EvmWord,
     create_kind: u8,
-) -> InstructionResult {
+) -> InstrStop {
     let ecx = unsafe { evm2_context_from_base::<T>(ecx) };
     match create_kind_from_u8(create_kind).and_then(|is_create2| create_inner(ecx, sp, is_create2))
     {
-        Ok(()) => InstructionResult::Stop,
-        Err(stop) => instruction_result_from_instr_stop(stop),
+        Ok(()) => InstrStop::Stop,
+        Err(stop) => stop,
     }
 }
 
@@ -681,14 +674,7 @@ fn ensure_memory<T: EvmTypes>(
     offset: usize,
     len: usize,
 ) -> Result<(), InstrStop> {
-    revm_interpreter::interpreter::resize_memory(
-        &mut ecx.gas,
-        unsafe { &mut *ecx.memory },
-        &ecx.gas_params,
-        offset,
-        len,
-    )
-    .map_err(instr_stop_from_instruction_result)?;
+    crate::resize_memory(&mut ecx.gas, unsafe { &mut *ecx.memory }, &ecx.gas_params, offset, len)?;
     ecx.refresh_memory_cache();
     Ok(())
 }
@@ -1003,92 +989,6 @@ fn to_revm_spec_id(spec_id: SpecId) -> RevmSpecId {
     RevmSpecId::try_from_u8(spec_id).expect("evm2 SpecId has no revm equivalent")
 }
 
-/// Converts an evm2 instruction stop into a revm-style compiled-code return.
-#[inline]
-pub fn instruction_result_from_instr_stop(stop: InstrStop) -> InstructionResult {
-    match stop {
-        InstrStop::Stop => InstructionResult::Stop,
-        InstrStop::Return => InstructionResult::Return,
-        InstrStop::SelfDestruct => InstructionResult::SelfDestruct,
-        InstrStop::Revert => InstructionResult::Revert,
-        InstrStop::CallTooDeep => InstructionResult::CallTooDeep,
-        InstrStop::OutOfFunds => InstructionResult::OutOfFunds,
-        InstrStop::CreateInitCodeStartingEF00 => InstructionResult::CreateInitCodeStartingEF00,
-        InstrStop::InvalidEOFInitCode => InstructionResult::InvalidEOFInitCode,
-        InstrStop::InvalidExtDelegateCallTarget => InstructionResult::InvalidExtDelegateCallTarget,
-        InstrStop::OutOfGas => InstructionResult::OutOfGas,
-        InstrStop::MemoryOOG => InstructionResult::MemoryOOG,
-        InstrStop::MemoryLimitOOG => InstructionResult::MemoryLimitOOG,
-        InstrStop::PrecompileOOG => InstructionResult::PrecompileOOG,
-        InstrStop::InvalidOperandOOG => InstructionResult::InvalidOperandOOG,
-        InstrStop::ReentrancySentryOOG => InstructionResult::ReentrancySentryOOG,
-        InstrStop::CallNotAllowedInsideStatic => InstructionResult::CallNotAllowedInsideStatic,
-        InstrStop::StateChangeDuringStaticCall => InstructionResult::StateChangeDuringStaticCall,
-        InstrStop::InvalidOpcode => InstructionResult::OpcodeNotFound,
-        InstrStop::InvalidJump => InstructionResult::InvalidJump,
-        InstrStop::NotActivated => InstructionResult::NotActivated,
-        InstrStop::StackUnderflow => InstructionResult::StackUnderflow,
-        InstrStop::StackOverflow => InstructionResult::StackOverflow,
-        InstrStop::OutOfOffset => InstructionResult::OutOfOffset,
-        InstrStop::CreateCollision => InstructionResult::CreateCollision,
-        InstrStop::OverflowPayment => InstructionResult::OverflowPayment,
-        InstrStop::PrecompileError => InstructionResult::PrecompileError,
-        InstrStop::NonceOverflow => InstructionResult::NonceOverflow,
-        InstrStop::CreateContractSizeLimit => InstructionResult::CreateContractSizeLimit,
-        InstrStop::CreateContractStartingWithEF => InstructionResult::CreateContractStartingWithEF,
-        InstrStop::CreateInitCodeSizeLimit => InstructionResult::CreateInitCodeSizeLimit,
-        InstrStop::FatalExternalError => InstructionResult::FatalExternalError,
-        InstrStop::InvalidImmediateEncoding => InstructionResult::InvalidImmediateEncoding,
-        _ => InstructionResult::FatalExternalError,
-    }
-}
-
-/// Converts a revm-style compiled-code return into an evm2 instruction stop.
-///
-/// Compiled functions currently return revm's [`InstructionResult`] ABI. Do not cast the raw `u8`
-/// value to [`InstrStop`]: evm2 intentionally uses a different layout for some invalid-opcode
-/// variants.
-#[inline]
-pub fn instr_stop_from_instruction_result(result: InstructionResult) -> InstrStop {
-    match result {
-        InstructionResult::Stop => InstrStop::Stop,
-        InstructionResult::Return => InstrStop::Return,
-        InstructionResult::SelfDestruct => InstrStop::SelfDestruct,
-        InstructionResult::Revert => InstrStop::Revert,
-        InstructionResult::CallTooDeep => InstrStop::CallTooDeep,
-        InstructionResult::OutOfFunds => InstrStop::OutOfFunds,
-        InstructionResult::CreateInitCodeStartingEF00 => InstrStop::CreateInitCodeStartingEF00,
-        InstructionResult::InvalidEOFInitCode => InstrStop::InvalidEOFInitCode,
-        InstructionResult::InvalidExtDelegateCallTarget => InstrStop::InvalidExtDelegateCallTarget,
-        InstructionResult::OutOfGas => InstrStop::OutOfGas,
-        InstructionResult::MemoryOOG => InstrStop::MemoryOOG,
-        InstructionResult::MemoryLimitOOG => InstrStop::MemoryLimitOOG,
-        InstructionResult::PrecompileOOG => InstrStop::PrecompileOOG,
-        InstructionResult::InvalidOperandOOG => InstrStop::InvalidOperandOOG,
-        InstructionResult::ReentrancySentryOOG => InstrStop::ReentrancySentryOOG,
-        InstructionResult::OpcodeNotFound | InstructionResult::InvalidFEOpcode => {
-            InstrStop::InvalidOpcode
-        }
-        InstructionResult::CallNotAllowedInsideStatic => InstrStop::CallNotAllowedInsideStatic,
-        InstructionResult::StateChangeDuringStaticCall => InstrStop::StateChangeDuringStaticCall,
-        InstructionResult::InvalidJump => InstrStop::InvalidJump,
-        InstructionResult::NotActivated => InstrStop::NotActivated,
-        InstructionResult::StackUnderflow => InstrStop::StackUnderflow,
-        InstructionResult::StackOverflow => InstrStop::StackOverflow,
-        InstructionResult::OutOfOffset => InstrStop::OutOfOffset,
-        InstructionResult::CreateCollision => InstrStop::CreateCollision,
-        InstructionResult::OverflowPayment => InstrStop::OverflowPayment,
-        InstructionResult::PrecompileError => InstrStop::PrecompileError,
-        InstructionResult::NonceOverflow => InstrStop::NonceOverflow,
-        InstructionResult::CreateContractSizeLimit => InstrStop::CreateContractSizeLimit,
-        InstructionResult::CreateContractStartingWithEF => InstrStop::CreateContractStartingWithEF,
-        InstructionResult::CreateInitCodeSizeLimit => InstrStop::CreateInitCodeSizeLimit,
-        InstructionResult::FatalExternalError => InstrStop::FatalExternalError,
-        InstructionResult::InvalidImmediateEncoding => InstrStop::InvalidImmediateEncoding,
-        _ => unreachable!("compiled evm2 JIT code returned unsupported instruction result"),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1268,19 +1168,6 @@ mod tests {
     }
 
     #[test]
-    fn maps_instruction_result_to_instr_stop_by_semantics() {
-        assert_eq!(instr_stop_from_instruction_result(InstructionResult::Stop), InstrStop::Stop);
-        assert_eq!(
-            instr_stop_from_instruction_result(InstructionResult::OpcodeNotFound),
-            InstrStop::InvalidOpcode
-        );
-        assert_eq!(
-            instr_stop_from_instruction_result(InstructionResult::InvalidFEOpcode),
-            InstrStop::InvalidOpcode
-        );
-    }
-
-    #[test]
     fn evm2_context_matches_imported_context_offsets() {
         assert_eq!(
             offset_of!(EvmContext<'_, BaseEvmTypes>, input),
@@ -1442,7 +1329,7 @@ mod tests {
             let result =
                 unsafe { evm2_recursive_call::<TestTypes>(base_context(&mut frame.ecx), sp, 0) };
 
-            assert_eq!(result, InstructionResult::Stop);
+            assert_eq!(result, InstrStop::Stop);
             assert_eq!(unsafe { frame.stack.get_unchecked(0) }.to_u256(), Word::from(1));
             assert_eq!(frame.ecx.return_data, child_output.as_ref());
             assert_eq!(&*unsafe { &*frame.ecx.memory }.slice(8..10), &[0xaa, 0xbb]);
@@ -1492,7 +1379,7 @@ mod tests {
             let result =
                 unsafe { evm2_recursive_create::<TestTypes>(base_context(&mut frame.ecx), sp, 0) };
 
-            assert_eq!(result, InstructionResult::Stop);
+            assert_eq!(result, InstrStop::Stop);
             assert_eq!(unsafe { frame.stack.get_unchecked(0) }, &address_word(&created));
             assert!(frame.ecx.return_data.is_empty());
         }
@@ -1506,10 +1393,10 @@ mod tests {
         mut ecx: NonNull<EvmContext<'_, BaseEvmTypes>>,
         _stack: NonNull<EvmStack>,
         _stack_len: NonNull<usize>,
-    ) -> InstructionResult {
+    ) -> InstrStop {
         let ecx = unsafe { ecx.as_mut() };
         ecx.output = RevmBytes::copy_from_slice(b"ok");
-        InstructionResult::Return
+        InstrStop::Return
     }
 
     #[test]

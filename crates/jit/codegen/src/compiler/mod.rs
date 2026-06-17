@@ -380,8 +380,8 @@ impl<B: Backend> EvmCompiler<B> {
     /// in **undefined behavior** if the stack length overflows at runtime, rather than a
     /// [`StackUnderflow`]/[`StackOverflow`] result.
     ///
-    /// [`StackUnderflow`]: revm_interpreter::InstructionResult::StackUnderflow
-    /// [`StackOverflow`]: revm_interpreter::InstructionResult::StackOverflow
+    /// [`StackUnderflow`]: evm2::interpreter::InstrStop::StackUnderflow
+    /// [`StackOverflow`]: evm2::interpreter::InstrStop::StackOverflow
     pub unsafe fn stack_bound_checks(&mut self, yes: bool) {
         self.config.stack_bound_checks = yes;
     }
@@ -416,7 +416,7 @@ impl<B: Backend> EvmCompiler<B> {
     }
 
     /// Sets whether to collapse every JIT failure path to a single
-    /// [`OutOfGas`](revm_interpreter::InstructionResult::OutOfGas) constant.
+    /// [`OutOfGas`](evm2::interpreter::InstrStop::OutOfGas) constant.
     ///
     /// Failures (stack under/overflow, invalid jump, real OOG, invalid opcode, etc.) are
     /// semantically interchangeable for callers that only branch on success vs failure, so

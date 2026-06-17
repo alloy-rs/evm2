@@ -6,11 +6,11 @@ use crate::{
     decode_pair, decode_single,
 };
 use alloy_primitives::U256;
-use evm2::interpreter::op;
+use evm2::interpreter::{InstrStop, op};
 use evm2_jit_backend::{Attribute, BackendTypes, FunctionAttributeLocation, Pointer, TypeMethods};
 use evm2_jit_builtins::{Builtin, Builtins, CallKind, CreateKind};
 use oxc_index::IndexVec;
-use revm_interpreter::{InputsImpl, InstructionResult};
+use revm_interpreter::InputsImpl;
 use std::mem;
 
 mod peephole;
@@ -151,11 +151,11 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
     ///     // ...
     ///     // There will always be at least one diverging instruction.
     ///     op.stop: {
-    ///         goto return(InstructionResult::Stop);
+    ///         goto return(InstrStop::Stop);
     ///     };
     ///
     ///     // All paths lead to here.
-    ///     return(ir: InstructionResult): {
+    ///     return(ir: InstrStop): {
     ///         #[cfg(inspect_stack)]
     ///         *args.stack_len = stack_len;
     ///         return ir;
@@ -319,11 +319,11 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         fx.bcx.switch_to_block(fx.failure_block.unwrap());
         if !fx.incoming_failures.is_empty() {
             // Semantically, the EVM has only one halt; the distinct failure
-            // `InstructionResult` codes exist purely for debugging and error messages.
+            // `InstrStop` codes exist purely for debugging and error messages.
             // `single_error` collapses every failure path to a single placeholder
             // (OOG), letting LLVM DCE the per-site materialization and the phi.
             let failure_value = if config.single_error {
-                fx.bcx.iconst(fx.i8_type, InstructionResult::OutOfGas as i64)
+                fx.bcx.iconst(fx.i8_type, InstrStop::OutOfGas as i64)
             } else {
                 fx.bcx.phi(fx.i8_type, &fx.incoming_failures)
             };
@@ -446,10 +446,10 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
 
         // Disabled instructions don't pay gas.
         if data.flags.contains(InstFlags::DISABLED) {
-            goto_return!(fail InstructionResult::NotActivated);
+            goto_return!(fail InstrStop::NotActivated);
         }
         if data.flags.contains(InstFlags::UNKNOWN) {
-            goto_return!(fail InstructionResult::OpcodeNotFound);
+            goto_return!(fail InstrStop::InvalidOpcode);
         }
 
         // Pay static gas for the current section.
@@ -592,7 +592,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         }
 
         match data.opcode {
-            op::STOP => goto_return!(build InstructionResult::Stop),
+            op::STOP => goto_return!(build InstrStop::Stop),
 
             op::ADD => binop!(iadd),
             op::MUL => binop!(imul),
@@ -854,7 +854,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
                 if is_invalid && opcode == op::JUMP {
                     // Pop and discard the target; it's always on the stack.
                     self.pop_ignore(1);
-                    self.build_fail_imm(InstructionResult::InvalidJump);
+                    self.build_fail_imm(InstrStop::InvalidJump);
                 } else {
                     let target = if is_invalid {
                         debug_assert_eq!(*data, op::JUMPI);
@@ -978,18 +978,18 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             op::DUP1..=op::DUP16 => self.dup((opcode - op::DUP1 + 1) as usize),
             op::DUPN => match decode_single(data.imm_byte()) {
                 Some(n) => self.dup(n as usize),
-                None => goto_return!(fail InstructionResult::InvalidImmediateEncoding),
+                None => goto_return!(fail InstrStop::InvalidImmediateEncoding),
             },
 
             op::SWAP1..=op::SWAP16 => self.swap((opcode - op::SWAP1 + 1) as usize),
             op::SWAPN => match decode_single(data.imm_byte()) {
                 Some(n) => self.swap(n as usize),
-                None => goto_return!(fail InstructionResult::InvalidImmediateEncoding),
+                None => goto_return!(fail InstrStop::InvalidImmediateEncoding),
             },
 
             op::EXCHANGE => match decode_pair(data.imm_byte()) {
                 Some((n, m)) => self.exchange(n as usize, (m - n) as usize),
-                None => goto_return!(fail InstructionResult::InvalidImmediateEncoding),
+                None => goto_return!(fail InstrStop::InvalidImmediateEncoding),
             },
 
             op::LOG0..=op::LOG4 => {
@@ -1009,7 +1009,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
                 self.call_common(CallKind::CallCode);
             }
             op::RETURN => {
-                self.return_common(InstructionResult::Return);
+                self.return_common(InstrStop::Return);
                 goto_return!(no_branch);
             }
             op::DELEGATECALL => {
@@ -1024,10 +1024,10 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             }
 
             op::REVERT => {
-                self.return_common(InstructionResult::Revert);
+                self.return_common(InstrStop::Revert);
                 goto_return!(no_branch);
             }
-            op::INVALID => goto_return!(fail InstructionResult::InvalidFEOpcode),
+            op::INVALID => goto_return!(fail InstrStop::InvalidOpcode),
             op::SELFDESTRUCT => {
                 let sp = self.sp_after_inputs();
                 self.sync_diverging_stack_effect();
@@ -1237,7 +1237,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
     }
 
     /// `RETURN` or `REVERT` instruction.
-    fn return_common(&mut self, ir: InstructionResult) {
+    fn return_common(&mut self, ir: InstrStop) {
         let sp = self.sp_after_inputs();
         let ir_const = self.bcx.iconst(self.i8_type, ir as i64);
         self.sync_diverging_stack_effect();
@@ -1524,7 +1524,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         let gas_remaining = self.bcx.load(i64_type, addr, "gas.remaining");
         let (res, overflow) = self.bcx.usub_overflow(gas_remaining, cost);
         self.bcx.store(res, addr);
-        self.build_check(overflow, InstructionResult::OutOfGas);
+        self.build_check(overflow, InstrStop::OutOfGas);
     }
 
     /// Ensures the memory is large enough for `offset + len` bytes, calling the `mresize`
@@ -1602,7 +1602,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
     /// Builds a check, failing if the condition is false.
     ///
     /// `if success_cond { ... } else { return ret }`
-    fn build_failure_inv(&mut self, success_cond: B::Value, ret: InstructionResult) {
+    fn build_failure_inv(&mut self, success_cond: B::Value, ret: InstrStop) {
         self.build_failure_imm_inner(false, success_cond, ret);
     }
     */
@@ -1631,29 +1631,29 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             let overflow = overflow(self);
             let cond = self.bcx.bitor(underflow, overflow);
             let ret = {
-                let under = self.bcx.iconst(self.i8_type, InstructionResult::StackUnderflow as i64);
-                let over = self.bcx.iconst(self.i8_type, InstructionResult::StackOverflow as i64);
+                let under = self.bcx.iconst(self.i8_type, InstrStop::StackUnderflow as i64);
+                let over = self.bcx.iconst(self.i8_type, InstrStop::StackOverflow as i64);
                 self.bcx.select(underflow, under, over)
             };
             let target = self.build_check_inner(true, cond, ret);
             self.bcx.switch_to_block(target);
         } else if may_underflow {
             let cond = underflow(self);
-            self.build_check(cond, InstructionResult::StackUnderflow);
+            self.build_check(cond, InstrStop::StackUnderflow);
         } else if may_overflow {
             let cond = overflow(self);
-            self.build_check(cond, InstructionResult::StackOverflow);
+            self.build_check(cond, InstrStop::StackOverflow);
         }
     }
 
     /// Builds a check, failing if the condition is true.
     ///
     /// `if failure_cond { return ret } else { ... }`
-    fn build_check(&mut self, failure_cond: B::Value, ret: InstructionResult) {
+    fn build_check(&mut self, failure_cond: B::Value, ret: InstrStop) {
         self.build_check_imm_inner(true, failure_cond, ret);
     }
 
-    fn build_check_imm_inner(&mut self, is_failure: bool, cond: B::Value, ret: InstructionResult) {
+    fn build_check_imm_inner(&mut self, is_failure: bool, cond: B::Value, ret: InstrStop) {
         let ret_value = self.bcx.iconst(self.i8_type, ret as i64);
         let target = self.build_check_inner(is_failure, cond, ret_value);
         if self.config.comments {
@@ -1700,7 +1700,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
     }
 
     /// Builds a branch to the failure block.
-    fn build_fail_imm(&mut self, ret: InstructionResult) {
+    fn build_fail_imm(&mut self, ret: InstrStop) {
         let ret_value = self.bcx.iconst(self.i8_type, ret as i64);
         self.build_fail(ret_value);
         if self.config.comments {
@@ -1722,7 +1722,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
     }
 
     /// Builds a branch to the return block.
-    fn build_return_imm(&mut self, ret: InstructionResult) {
+    fn build_return_imm(&mut self, ret: InstrStop) {
         let ret_value = self.bcx.iconst(self.i8_type, ret as i64);
         self.build_return(ret_value);
         if self.config.comments {
@@ -1750,7 +1750,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
     fn add_invalid_jump(&mut self) -> B::BasicBlock {
         let block = self.failure_block.unwrap();
         self.incoming_failures.push((
-            self.bcx.iconst(self.i8_type, InstructionResult::InvalidJump as i64),
+            self.bcx.iconst(self.i8_type, InstrStop::InvalidJump as i64),
             self.bcx.current_block().unwrap(),
         ));
         block

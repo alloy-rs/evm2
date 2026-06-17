@@ -3,7 +3,7 @@ macro_rules! gas {
     ($ecx:expr, $gas:expr) => {
         if !$ecx.gas.record_regular_cost($gas) {
             core::hint::cold_path();
-            return Err(InstructionResult::OutOfGas.into());
+            return Err(InstrStop::OutOfGas.into());
         }
     };
 }
@@ -13,7 +13,7 @@ macro_rules! state_gas {
     ($ecx:expr, $gas:expr) => {
         if !$ecx.gas.record_state_cost($gas) {
             core::hint::cold_path();
-            return Err(InstructionResult::OutOfGas.into());
+            return Err(InstrStop::OutOfGas.into());
         }
     };
 }
@@ -23,7 +23,7 @@ macro_rules! ensure_non_staticcall {
     ($ecx:expr) => {
         if $ecx.is_static {
             core::hint::cold_path();
-            return Err(InstructionResult::StateChangeDuringStaticCall.into());
+            return Err(InstrStop::StateChangeDuringStaticCall.into());
         }
     };
 }
@@ -43,7 +43,7 @@ macro_rules! try_into_usize {
             x => {
                 if (x[0] > usize::MAX as u64) | (x[1] != 0) | (x[2] != 0) | (x[3] != 0) {
                     core::hint::cold_path();
-                    return Err(InstructionResult::InvalidOperandOOG.into());
+                    return Err(InstrStop::InvalidOperandOOG.into());
                 }
                 x[0] as usize
             }

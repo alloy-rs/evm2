@@ -1,19 +1,19 @@
 --- upstream/crates/revmc-codegen/src/tests/fibonacci.rs
 +++ evm2/crates/jit/codegen/src/tests/fibonacci.rs
-@@ -1,9 +1,9 @@
+@@ -1,9 +1,8 @@
 -use super::{DEF_SPEC, with_evm_context};
 +use super::{DEF_SPEC, evm2_test_func, with_evm_context};
  use crate::{Backend, EvmCompiler};
 +use alloy_primitives::U256;
-+use evm2::interpreter::op;
++use evm2::interpreter::{InstrStop, op};
  use paste::paste;
 -use revm_bytecode::opcode as op;
- use revm_interpreter::InstructionResult;
+-use revm_interpreter::InstructionResult;
 -use revm_primitives::U256;
 
  macro_rules! fibonacci_tests {
      ($($i:expr),* $(,)?) => {paste! {
-@@ -21,7 +21,7 @@
+@@ -21,7 +20,7 @@
 
      unsafe { compiler.clear() }.unwrap();
      compiler.inspect_stack(true);
@@ -22,7 +22,16 @@
 
      with_evm_context(&code, DEF_SPEC, |ecx, stack, stack_len| {
          if dynamic {
-@@ -104,7 +104,7 @@
+@@ -29,7 +28,7 @@
+             *stack_len = 1;
+         }
+         let r = unsafe { f.call(stack, stack_len, ecx) };
+-        assert_eq!(r, InstructionResult::Stop);
++        assert_eq!(r, InstrStop::Stop);
+         // Apparently the code does `fibonacci(input + 1)`.
+         assert_eq!(*stack_len, 1);
+         assert_eq!(unsafe { stack.as_slice(*stack_len) }[0].to_u256(), fibonacci_rust(input + 1));
+@@ -104,7 +103,7 @@
 
  #[test]
  fn test_fibonacci_rust() {

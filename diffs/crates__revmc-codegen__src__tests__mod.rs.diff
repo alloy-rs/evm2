@@ -1,6 +1,6 @@
 --- upstream/crates/revmc-codegen/src/tests/mod.rs
 +++ evm2/crates/jit/codegen/src/tests/mod.rs
-@@ -7,16 +7,14 @@
+@@ -7,16 +7,17 @@
  )]
 
  use crate::*;
@@ -9,22 +9,24 @@
 -use revm_interpreter as interpreter;
 -use revm_interpreter::{
 -    CreateInputs, FrameInput, Gas, InstructionResult, InterpreterAction, InterpreterResult,
--};
--use revm_primitives::{
--    Address, B256, Bytes, KECCAK_EMPTY, Log, LogData, hardfork::SpecId, hex, keccak256,
 +use alloy_primitives::{
 +    Address, B256, Bytes, KECCAK256_EMPTY as KECCAK_EMPTY, Log, LogData, U256, hex, keccak256,
 +    map::HashMap, uint,
  };
+-use revm_primitives::{
+-    Address, B256, Bytes, KECCAK_EMPTY, Log, LogData, hardfork::SpecId, hex, keccak256,
++use evm2::{
++    SpecId,
++    interpreter::{InstrStop, op},
+ };
 -use revmc_builtins::gas;
-+use evm2::{SpecId, interpreter::op};
 +use evm2_jit_builtins::gas;
 +use revm_interpreter as interpreter;
-+use revm_interpreter::{InstructionResult, context_interface};
++use revm_interpreter::context_interface;
 
  /// `KECCAK256` opcode gas cost (base + dynamic).
  const fn keccak256_cost(len: u64) -> Option<u64> {
-@@ -52,16 +50,14 @@
+@@ -52,16 +53,14 @@
  mod meta;
 
  mod fibonacci;
@@ -43,7 +45,7 @@
  ) -> R {
      init_tracing();
      let mut compiler = EvmCompiler::new_llvm(false).unwrap();
-@@ -86,6 +82,42 @@
+@@ -86,6 +85,42 @@
      0x7FFFFFFFFFFFFFFF,
  ]);
 
@@ -86,7 +88,343 @@
  tests! {
      ret {
          empty(@raw {}),
-@@ -1290,101 +1322,6 @@
+@@ -100,57 +135,57 @@
+         }),
+         invalid(@raw {
+             bytecode: &[op::INVALID],
+-            expected_return: InstructionResult::InvalidFEOpcode,
++            expected_return: InstrStop::InvalidOpcode,
+             expected_gas: 0,
+         }),
+         unknown(@raw {
+             bytecode: &[0x21],
+-            expected_return: InstructionResult::OpcodeNotFound,
++            expected_return: InstrStop::InvalidOpcode,
+             expected_gas: 0,
+         }),
+         underflow1(@raw {
+             bytecode: &[op::ADD],
+-            expected_return: InstructionResult::StackUnderflow,
++            expected_return: InstrStop::StackUnderflow,
+             expected_gas: 3,
+         }),
+         underflow2(@raw {
+             bytecode: &[op::PUSH0, op::ADD],
+-            expected_return: InstructionResult::StackUnderflow,
++            expected_return: InstrStop::StackUnderflow,
+             expected_stack: &[U256::ZERO],
+             expected_gas: 5,
+         }),
+         underflow3(@raw {
+             bytecode: &[op::PUSH0, op::POP, op::ADD],
+-            expected_return: InstructionResult::StackUnderflow,
++            expected_return: InstrStop::StackUnderflow,
+             expected_gas: 7,
+         }),
+         underflow4(@raw {
+             bytecode: &[op::PUSH0, op::ADD, op::POP],
+-            expected_return: InstructionResult::StackUnderflow,
++            expected_return: InstrStop::StackUnderflow,
+             expected_stack: &[U256::ZERO],
+             expected_gas: 5,
+         }),
+         overflow_not0(@raw {
+             bytecode: &[op::PUSH0; 1023],
+-            expected_return: InstructionResult::Stop,
++            expected_return: InstrStop::Stop,
+             expected_stack: &[0_U256; 1023],
+             expected_gas: 2 * 1023,
+         }),
+         overflow_not1(@raw {
+             bytecode: &[op::PUSH0; 1024],
+-            expected_return: InstructionResult::Stop,
++            expected_return: InstrStop::Stop,
+             expected_stack: &[0_U256; 1024],
+             expected_gas: 2 * 1024,
+         }),
+         overflow0(@raw {
+             bytecode: &[op::PUSH0; 1025],
+-            expected_return: InstructionResult::StackOverflow,
++            expected_return: InstrStop::StackOverflow,
+             expected_stack: &[0_U256; 1024],
+             expected_gas: 2 * 1025,
+         }),
+         overflow1(@raw {
+             bytecode: &[op::PUSH0; 1026],
+-            expected_return: InstructionResult::StackOverflow,
++            expected_return: InstrStop::StackOverflow,
+             expected_stack: &[0_U256; 1024],
+             expected_gas: 2 * 1025,
+         }),
+@@ -160,7 +195,7 @@
+         push0_merge(@raw {
+             bytecode: &[op::PUSH0],
+             spec_id: SpecId::MERGE,
+-            expected_return: InstructionResult::NotActivated,
++            expected_return: InstrStop::NotActivated,
+             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+         }),
+         push0_shanghai(@raw {
+@@ -178,14 +213,14 @@
+         clz_cancun(@raw {
+             bytecode: &[op::MSIZE, op::CLZ],
+             spec_id: SpecId::CANCUN,
+-            expected_return: InstructionResult::NotActivated,
++            expected_return: InstrStop::NotActivated,
+             expected_stack: STACK_WHAT_INTERPRETER_SAYS,
+             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+         }),
+         clz_arrow_glacier(@raw {
+             bytecode: &[op::MSIZE, op::CLZ],
+             spec_id: SpecId::LONDON,
+-            expected_return: InstructionResult::NotActivated,
++            expected_return: InstrStop::NotActivated,
+             expected_stack: STACK_WHAT_INTERPRETER_SAYS,
+             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+         }),
+@@ -193,28 +228,28 @@
+         dupn_cancun(@raw {
+             bytecode: &[op::PUSH0, op::DUPN, 0x00],
+             spec_id: SpecId::CANCUN,
+-            expected_return: InstructionResult::NotActivated,
++            expected_return: InstrStop::NotActivated,
+             expected_stack: STACK_WHAT_INTERPRETER_SAYS,
+             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+         }),
+         swapn_cancun(@raw {
+             bytecode: &[op::PUSH0, op::SWAPN, 0x00],
+             spec_id: SpecId::CANCUN,
+-            expected_return: InstructionResult::NotActivated,
++            expected_return: InstrStop::NotActivated,
+             expected_stack: STACK_WHAT_INTERPRETER_SAYS,
+             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+         }),
+         exchange_cancun(@raw {
+             bytecode: &[op::PUSH0, op::EXCHANGE, 0x01],
+             spec_id: SpecId::CANCUN,
+-            expected_return: InstructionResult::NotActivated,
++            expected_return: InstrStop::NotActivated,
+             expected_stack: STACK_WHAT_INTERPRETER_SAYS,
+             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+         }),
+         slotnum_cancun(@raw {
+             bytecode: &[op::SLOTNUM],
+             spec_id: SpecId::CANCUN,
+-            expected_return: InstructionResult::NotActivated,
++            expected_return: InstrStop::NotActivated,
+             expected_stack: STACK_WHAT_INTERPRETER_SAYS,
+             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+         }),
+@@ -365,7 +400,7 @@
+         dupn_underflow(@raw {
+             bytecode: &[op::PUSH0, op::DUPN, 0x80],
+             spec_id: SpecId::AMSTERDAM,
+-            expected_return: InstructionResult::StackOverflow,
++            expected_return: InstrStop::StackOverflow,
+             expected_stack: STACK_WHAT_INTERPRETER_SAYS,
+             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+         }),
+@@ -373,7 +408,7 @@
+         swapn_underflow(@raw {
+             bytecode: &[op::PUSH0, op::SWAPN, 0x80],
+             spec_id: SpecId::AMSTERDAM,
+-            expected_return: InstructionResult::StackUnderflow,
++            expected_return: InstrStop::StackUnderflow,
+             expected_stack: STACK_WHAT_INTERPRETER_SAYS,
+             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+         }),
+@@ -381,14 +416,14 @@
+         exchange_underflow(@raw {
+             bytecode: &[op::PUSH0, op::PUSH0, op::EXCHANGE, 0x8E],
+             spec_id: SpecId::AMSTERDAM,
+-            expected_return: InstructionResult::StackUnderflow,
++            expected_return: InstrStop::StackUnderflow,
+             expected_stack: STACK_WHAT_INTERPRETER_SAYS,
+             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+         }),
+         swap16_dup10_selfdestruct_underflow(@raw {
+             bytecode: &[op::SWAP16, op::DUP10, op::SELFDESTRUCT],
+             spec_id: SpecId::OSAKA,
+-            expected_return: InstructionResult::StackUnderflow,
++            expected_return: InstrStop::StackUnderflow,
+             expected_stack: STACK_WHAT_INTERPRETER_SAYS,
+             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+         }),
+@@ -397,14 +432,14 @@
+         dupn_invalid_imm(@raw {
+             bytecode: &[op::PUSH0, op::DUPN, 0x5B],
+             spec_id: SpecId::AMSTERDAM,
+-            expected_return: InstructionResult::InvalidImmediateEncoding,
++            expected_return: InstrStop::InvalidImmediateEncoding,
+             expected_stack: STACK_WHAT_INTERPRETER_SAYS,
+             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+         }),
+         swapn_invalid_imm(@raw {
+             bytecode: &[op::PUSH0, op::SWAPN, 0x5B],
+             spec_id: SpecId::AMSTERDAM,
+-            expected_return: InstructionResult::InvalidImmediateEncoding,
++            expected_return: InstrStop::InvalidImmediateEncoding,
+             expected_stack: STACK_WHAT_INTERPRETER_SAYS,
+             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+         }),
+@@ -412,7 +447,7 @@
+         exchange_invalid_imm(@raw {
+             bytecode: &[op::PUSH0, op::PUSH0, op::PUSH0, op::EXCHANGE, 82],
+             spec_id: SpecId::AMSTERDAM,
+-            expected_return: InstructionResult::InvalidImmediateEncoding,
++            expected_return: InstrStop::InvalidImmediateEncoding,
+             expected_stack: STACK_WHAT_INTERPRETER_SAYS,
+             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+         }),
+@@ -464,7 +499,7 @@
+                 op::PUSH1, 0x20, op::PUSH0, op::RETURN,
+             ],
+             spec_id: SpecId::AMSTERDAM,
+-            expected_return: InstructionResult::Return,
++            expected_return: InstrStop::Return,
+             expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
+             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+         }),
+@@ -477,7 +512,7 @@
+                 op::PUSH1, 0x20, op::PUSH0, op::RETURN,
+             ],
+             spec_id: SpecId::AMSTERDAM,
+-            expected_return: InstructionResult::Return,
++            expected_return: InstrStop::Return,
+             expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
+             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+         }),
+@@ -490,7 +525,7 @@
+                 op::PUSH1, 0x20, op::PUSH0, op::RETURN,
+             ],
+             spec_id: SpecId::AMSTERDAM,
+-            expected_return: InstructionResult::Return,
++            expected_return: InstrStop::Return,
+             expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
+             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+         }),
+@@ -520,7 +555,7 @@
+
+         overflow_analysis_edge_case(@raw {
+             bytecode: &[&[op::JUMPDEST][..], &[op::PUSH0; 1025][..], &[op::JUMPI][..]].concat(),
+-            expected_return: InstructionResult::StackOverflow,
++            expected_return: InstrStop::StackOverflow,
+         }),
+     }
+
+@@ -532,29 +567,29 @@
+         }),
+         unmodified_stack_after_push_jump(@raw {
+             bytecode: &[op::PUSH1, 3, op::JUMP, op::JUMPDEST, op::PUSH0, op::ADD],
+-            expected_return: InstructionResult::StackUnderflow,
++            expected_return: InstrStop::StackUnderflow,
+             expected_stack: &[U256::ZERO],
+             expected_gas: 3 + 8 + 1 + 2 + 3,
+         }),
+         bad_jump(@raw {
+             bytecode: &[op::JUMP],
+-            expected_return: InstructionResult::StackUnderflow,
++            expected_return: InstrStop::StackUnderflow,
+             expected_gas: 8,
+         }),
+         bad_jumpi1(@raw {
+             bytecode: &[op::JUMPI],
+-            expected_return: InstructionResult::StackUnderflow,
++            expected_return: InstrStop::StackUnderflow,
+             expected_gas: 10,
+         }),
+         bad_jumpi2(@raw {
+             bytecode: &[op::PUSH0, op::JUMPI],
+-            expected_return: InstructionResult::StackUnderflow,
++            expected_return: InstrStop::StackUnderflow,
+             expected_stack: &[0_U256],
+             expected_gas: 2 + 10,
+         }),
+         bad_jumpi3(@raw {
+             bytecode: &[op::JUMPDEST, op::PUSH0, op::JUMPI],
+-            expected_return: InstructionResult::StackUnderflow,
++            expected_return: InstrStop::StackUnderflow,
+             expected_stack: &[0_U256],
+             expected_gas: 1 + 2 + 10,
+         }),
+@@ -576,12 +611,12 @@
+         }),
+         basic_jumpi2_lazy_invalid_target(@raw {
+             bytecode: &[op::PUSH1, 1, op::PUSH0, op::JUMPI, op::PUSH1, 69],
+-            expected_return: InstructionResult::InvalidJump,
++            expected_return: InstrStop::InvalidJump,
+             expected_gas: 3 + 2 + 10,
+         }),
+         unmodified_stack_after_push_jumpi(@raw {
+             bytecode: &[op::PUSH1, 1, op::PUSH1, 5, op::JUMPI, op::JUMPDEST, op::PUSH0, op::ADD],
+-            expected_return: InstructionResult::StackUnderflow,
++            expected_return: InstrStop::StackUnderflow,
+             expected_stack: &[U256::ZERO],
+             expected_gas: 3 + 3 + 10 + 1 + 2 + 3,
+         }),
+@@ -916,7 +951,7 @@
+         returndatacopy(@raw {
+             // No return data exists, so copying 32 bytes from offset 0 fails with OutOfOffset
+             bytecode: &[op::PUSH1, 32, op::PUSH0, op::PUSH0, op::RETURNDATACOPY],
+-            expected_return: InstructionResult::OutOfOffset,
++            expected_return: InstrStop::OutOfOffset,
+             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+         }),
+     }
+@@ -1059,37 +1094,37 @@
+         }),
+         mload_overflow1(@raw {
+             bytecode: &[op::PUSH8, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, op::MLOAD],
+-            expected_return: InstructionResult::MemoryOOG,
++            expected_return: InstrStop::MemoryOOG,
+             expected_stack: &[U256::from(u64::MAX)],
+             expected_gas: 3 + 3,
+         }),
+         mload_overflow2(@raw {
+             bytecode: &[op::PUSH8, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff - 1, op::MLOAD],
+-            expected_return: InstructionResult::MemoryOOG,
++            expected_return: InstrStop::MemoryOOG,
+             expected_stack: &[U256::from(u64::MAX - 1)],
+             expected_gas: 3 + 3,
+         }),
+         mload_overflow3(@raw {
+             bytecode: &[op::PUSH8, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff - 31, op::MLOAD],
+-            expected_return: InstructionResult::MemoryOOG,
++            expected_return: InstrStop::MemoryOOG,
+             expected_stack: &[U256::from(u64::MAX - 31)],
+             expected_gas: 3 + 3,
+         }),
+         mload_overflow4(@raw {
+             bytecode: &[op::PUSH8, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff - 32, op::MLOAD],
+-            expected_return: InstructionResult::MemoryOOG,
++            expected_return: InstrStop::MemoryOOG,
+             expected_stack: &[U256::from(u64::MAX - 32)],
+             expected_gas: 3 + 3,
+         }),
+         mload_overflow5(@raw {
+             bytecode: &[op::PUSH8, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff - 33, op::MLOAD],
+-            expected_return: InstructionResult::MemoryOOG,
++            expected_return: InstrStop::MemoryOOG,
+             expected_stack: &[U256::from(u64::MAX - 33)],
+             expected_gas: 3 + 3,
+         }),
+         mload_overflow6(@raw {
+             bytecode: &[op::ADDRESS, op::MLOAD],
+-            expected_return: InstructionResult::InvalidOperandOOG,
++            expected_return: InstrStop::InvalidOperandOOG,
+             expected_stack: &[DEF_ADDR.into_word().into()],
+             expected_gas: 5,
+         }),
+@@ -1101,7 +1136,7 @@
+                 code.push(op::MLOAD);
+                 code
+             },
+-            expected_return: InstructionResult::InvalidOperandOOG,
++            expected_return: InstrStop::InvalidOperandOOG,
+             expected_stack: &[0x1_0000_0000_0000_0000_U256],
+             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+         }),
+@@ -1290,143 +1325,28 @@
              expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
              expected_gas: GAS_WHAT_INTERPRETER_SAYS,
          }),
@@ -187,9 +525,14 @@
 -        }),
          ret_empty_dynamic_offset(@raw {
              bytecode: &[op::PUSH0, op::ADDRESS, op::RETURN],
-             expected_return: InstructionResult::Return,
-@@ -1395,34 +1332,14 @@
-             expected_return: InstructionResult::Return,
+-            expected_return: InstructionResult::Return,
++            expected_return: InstrStop::Return,
+             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+         }),
+         ret(@raw {
+             bytecode: &[op::PUSH1, 0x69, op::PUSH0, op::MSTORE, op::PUSH1, 32, op::PUSH0, op::RETURN],
+-            expected_return: InstructionResult::Return,
++            expected_return: InstrStop::Return,
              expected_memory: &0x69_U256.to_be_bytes::<32>(),
              expected_gas: 3 + 2 + (3 + memory_gas_cost(1)) + 3 + 2,
 -            expected_next_action: InterpreterAction::Return(
@@ -207,7 +550,8 @@
          }),
          revert(@raw {
              bytecode: &[op::PUSH1, 0x69, op::PUSH0, op::MSTORE, op::PUSH1, 32, op::PUSH0, op::REVERT],
-             expected_return: InstructionResult::Revert,
+-            expected_return: InstructionResult::Revert,
++            expected_return: InstrStop::Revert,
              expected_memory: &0x69_U256.to_be_bytes::<32>(),
              expected_gas: 3 + 2 + (3 + memory_gas_cost(1)) + 3 + 2,
 -            expected_next_action: InterpreterAction::Return(
@@ -225,10 +569,37 @@
          }),
          selfdestruct(@raw {
              bytecode: &[op::PUSH1, 0x69, op::SELFDESTRUCT, op::INVALID],
-@@ -1456,277 +1373,6 @@
+-            expected_return: InstructionResult::SelfDestruct,
++            expected_return: InstrStop::SelfDestruct,
+             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+             assert_host: Some(|host| {
+                 assert_eq!(host.selfdestructs, [(DEF_ADDR, Address::with_last_byte(0x69))]);
+@@ -1435,7 +1355,7 @@
+         selfdestruct_preserves_remaining_stack(@raw {
+             bytecode: &[op::NUMBER, op::NUMBER, op::SELFDESTRUCT],
+             spec_id: SpecId::BERLIN,
+-            expected_return: InstructionResult::SelfDestruct,
++            expected_return: InstrStop::SelfDestruct,
+             expected_stack: STACK_WHAT_INTERPRETER_SAYS,
+             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
          }),
-     }
-
+@@ -1444,286 +1364,15 @@
+             bytecode: &[op::PUSH1, 0x01, op::SELFDESTRUCT],
+             is_static: true,
+             gas_limit: 4000,
+-            expected_return: InstructionResult::OutOfGas,
++            expected_return: InstrStop::OutOfGas,
+             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+         }),
+         // Static-context SELFDESTRUCT: gas >= 5000 → charges 5000, then StateChangeDuringStaticCall.
+         selfdestruct_static_enough_gas(@raw {
+             bytecode: &[op::PUSH1, 0x01, op::SELFDESTRUCT],
+             is_static: true,
+-            expected_return: InstructionResult::StateChangeDuringStaticCall,
+-            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+-        }),
+-    }
+-
 -    // Tests for CALL gas accounting fix.
 -    // JIT CALL gas must match interpreter across specs and value-transfer scenarios.
 -    call_gas {
@@ -364,7 +735,8 @@
 -            spec_id: SpecId::ISTANBUL,
 -            expected_return: RETURN_WHAT_INTERPRETER_SAYS,
 -            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
--            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
++            expected_return: InstrStop::StateChangeDuringStaticCall,
+             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
 -            expected_next_action: ACTION_WHAT_INTERPRETER_SAYS,
 -        }),
 -        call_no_value_istanbul(@raw {
@@ -497,14 +869,33 @@
 -                    );
 -                }
 -            }),
--        }),
--    }
--
-     // Tests for i256 correctness under LLVM optimization (a09436d1).
-     // These exercise full 256-bit (4 x i64 lane) arithmetic that LLVM may miscompile
-     // if i256 load/store alignment or alias attributes are incorrect.
-@@ -1984,13 +1630,7 @@
-             expected_return: InstructionResult::Return,
+         }),
+     }
+
+@@ -1812,7 +1461,7 @@
+                 static FAKE_CODE: [u8; 5] = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE];
+                 ecx.bytecode = &FAKE_CODE as *const [u8];
+             }),
+-            expected_return: InstructionResult::Stop,
++            expected_return: InstrStop::Stop,
+             expected_memory: &hex!("AABBCCDDEE000000000000000000000000000000000000000000000000000000"),
+             expected_gas: 3 + 2 + 2 + (verylowcopy_cost(32).unwrap() + memory_gas_cost(1)),
+         }),
+@@ -1935,7 +1584,7 @@
+             fn1: JUMPDEST  JUMP
+             fn2: JUMPDEST  JUMP
+             "),
+-            expected_return: InstructionResult::Stop,
++            expected_return: InstrStop::Stop,
+             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+         }),
+     }
+@@ -1981,16 +1630,10 @@
+                 RETURN
+             "),
+             inspect_stack: Some(false),
+-            expected_return: InstructionResult::Return,
++            expected_return: InstrStop::Return,
              expected_memory: &U256::from(0x2a).to_be_bytes::<32>(),
              expected_gas: GAS_WHAT_INTERPRETER_SAYS,
 -            expected_next_action: InterpreterAction::Return(
@@ -518,8 +909,12 @@
          }),
 
          // Same class of bug but triggered by a deduped reachable JUMPDEST block rather than
-@@ -2041,13 +1681,7 @@
-             expected_return: InstructionResult::Return,
+@@ -2038,16 +1681,10 @@
+                 RETURN
+             "),
+             inspect_stack: Some(false),
+-            expected_return: InstructionResult::Return,
++            expected_return: InstrStop::Return,
              expected_memory: &U256::from(0x2a).to_be_bytes::<32>(),
              expected_gas: GAS_WHAT_INTERPRETER_SAYS,
 -            expected_next_action: InterpreterAction::Return(
@@ -533,7 +928,52 @@
          }),
 
          dedup_false_jumpi_non_jumpdest_fallthrough(@raw {
-@@ -2204,8 +1838,10 @@
+@@ -2076,7 +1713,7 @@
+                 JUMPDEST
+                 STOP
+             "),
+-            expected_return: InstructionResult::Revert,
++            expected_return: InstrStop::Revert,
+             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+         }),
+
+@@ -2103,7 +1740,7 @@
+                 JUMPDEST
+                 STOP
+             "),
+-            expected_return: InstructionResult::Stop,
++            expected_return: InstrStop::Stop,
+             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+         }),
+
+@@ -2171,7 +1808,7 @@
+                 REVERT
+             "),
+             inspect_stack: Some(false),
+-            expected_return: InstructionResult::Stop,
++            expected_return: InstrStop::Stop,
+             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+         }),
+
+@@ -2186,7 +1823,7 @@
+         calldatasize_tstore_shanghai(@raw {
+             bytecode: &[op::CALLDATASIZE, op::TSTORE],
+             spec_id: SpecId::SHANGHAI,
+-            expected_return: InstructionResult::NotActivated,
++            expected_return: InstrStop::NotActivated,
+             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+         }),
+
+@@ -2194,7 +1831,7 @@
+         push0_tload_shanghai(@raw {
+             bytecode: &[op::PUSH0, op::TLOAD],
+             spec_id: SpecId::SHANGHAI,
+-            expected_return: InstructionResult::NotActivated,
++            expected_return: InstrStop::NotActivated,
+             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+         }),
+
+@@ -2204,23 +1841,19 @@
              bytecode: &hex!("7c01000000000000000000000000000000000000000000000000000000006000350463380e439681146037578063c040622614604757005b603d6084565b8060005260206000f35b604d6057565b8060005260206000f35b6000605f6084565b600060006101000a81548160ff0219169083021790555060ff60016000540416905090565b6000808160011560cd575b600a82121560a157600190910190608f565b81600a1460ac5760c9565b50600a5b60008160ff16111560c85760019182900391900360b0565b5b60d5565b6000925060ed565b8160001460e05760e8565b6001925060ed565b600092505b50509056"),
              spec_id: SpecId::ISTANBUL,
              modify_ecx: Some(|ecx| {
@@ -546,7 +986,9 @@
              }),
              // Note: Cannot use RETURN_WHAT_INTERPRETER_SAYS here because modify_ecx
              // only modifies the JIT context, not the interpreter's input. The interpreter
-@@ -2214,13 +1850,7 @@
+             // runs with default call data which doesn't match the function selector.
+-            expected_return: InstructionResult::Return,
++            expected_return: InstrStop::Return,
              expected_stack: STACK_WHAT_INTERPRETER_SAYS,
              expected_gas: GAS_WHAT_INTERPRETER_SAYS,
              expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,

@@ -1,6 +1,33 @@
 --- upstream/crates/revmc-builtins/src/macros.rs
 +++ evm2/crates/jit/builtins/src/macros.rs
-@@ -37,16 +37,6 @@
+@@ -3,7 +3,7 @@
+     ($ecx:expr, $gas:expr) => {
+         if !$ecx.gas.record_regular_cost($gas) {
+             core::hint::cold_path();
+-            return Err(InstructionResult::OutOfGas.into());
++            return Err(InstrStop::OutOfGas.into());
+         }
+     };
+ }
+@@ -13,7 +13,7 @@
+     ($ecx:expr, $gas:expr) => {
+         if !$ecx.gas.record_state_cost($gas) {
+             core::hint::cold_path();
+-            return Err(InstructionResult::OutOfGas.into());
++            return Err(InstrStop::OutOfGas.into());
+         }
+     };
+ }
+@@ -23,7 +23,7 @@
+     ($ecx:expr) => {
+         if $ecx.is_static {
+             core::hint::cold_path();
+-            return Err(InstructionResult::StateChangeDuringStaticCall.into());
++            return Err(InstrStop::StateChangeDuringStaticCall.into());
+         }
+     };
+ }
+@@ -37,23 +37,13 @@
  }
 
  #[collapse_debuginfo(yes)]
@@ -17,3 +44,11 @@
  macro_rules! try_into_usize {
      ($x:expr) => {
          match $x.to_u256().as_limbs() {
+             x => {
+                 if (x[0] > usize::MAX as u64) | (x[1] != 0) | (x[2] != 0) | (x[3] != 0) {
+                     core::hint::cold_path();
+-                    return Err(InstructionResult::InvalidOperandOOG.into());
++                    return Err(InstrStop::InvalidOperandOOG.into());
+                 }
+                 x[0] as usize
+             }

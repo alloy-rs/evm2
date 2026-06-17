@@ -8,8 +8,10 @@ extern crate alloc;
 use alloc::vec::Vec;
 use alloy_primitives::{Address, B256, Bytes, Log, U256, ruint};
 use core::{fmt, mem::MaybeUninit, ptr::NonNull};
+pub use evm2::interpreter::InstrStop;
 use revm_interpreter::{
-    Gas, Host, InputsImpl, InstructionResult, SharedMemory, context_interface::cfg::GasParams,
+    Gas, Host, InputsImpl, SharedMemory, context_interface::cfg::GasParams,
+    interpreter_types::MemoryTr,
 };
 
 mod arch;
@@ -22,7 +24,7 @@ pub mod evm2_api;
 /// Type-erased evm2 recursive message builtin.
 #[doc(hidden)]
 pub type Evm2RecursiveMessageFn =
-    unsafe extern "C" fn(&mut EvmContext<'_>, *mut EvmWord, u8) -> InstructionResult;
+    unsafe extern "C" fn(&mut EvmContext<'_>, *mut EvmWord, u8) -> InstrStop;
 
 /// Dispatches recursive evm2 call/create messages from compiled code.
 #[derive(Clone, Copy, Debug)]
@@ -56,8 +58,8 @@ unsafe extern "C" fn unsupported_evm2_recursive_message(
     _ecx: &mut EvmContext<'_>,
     _sp: *mut EvmWord,
     _kind: u8,
-) -> InstructionResult {
-    InstructionResult::FatalExternalError
+) -> InstrStop {
+    InstrStop::FatalExternalError
 }
 
 /// The EVM bytecode compiler runtime context.
@@ -95,7 +97,7 @@ pub struct EvmContext<'a> {
     /// The size of the call input data, cached for CALLDATASIZE.
     pub calldatasize: usize,
     /// The result set by a builtin before exiting via [`revmc_exit`].
-    pub exit_result: InstructionResult,
+    pub exit_result: InstrStop,
     /// Saved RSP from the entry trampoline, used by [`revmc_exit`] to unwind.
     pub exit_sp: *mut u8,
     /// Cached gas parameters from the host.
@@ -142,6 +144,45 @@ impl EvmContext<'_> {
     }
 }
 
+/// Performs EVM memory resize and charges memory expansion gas.
+#[inline]
+pub fn resize_memory<Memory: MemoryTr>(
+    gas: &mut Gas,
+    memory: &mut Memory,
+    gas_params: &GasParams,
+    offset: usize,
+    len: usize,
+) -> Result<(), InstrStop> {
+    let new_num_words = offset.saturating_add(len).div_ceil(32);
+    if new_num_words > gas.memory().words_num {
+        return resize_memory_cold(gas, memory, gas_params, new_num_words);
+    }
+
+    Ok(())
+}
+
+#[cold]
+#[inline(never)]
+fn resize_memory_cold<Memory: MemoryTr>(
+    gas: &mut Gas,
+    memory: &mut Memory,
+    gas_params: &GasParams,
+    new_num_words: usize,
+) -> Result<(), InstrStop> {
+    let Some(new_size) = new_num_words.checked_mul(32) else {
+        return Err(InstrStop::MemoryOOG);
+    };
+
+    let cost = gas_params.memory_cost(new_num_words);
+    let cost = unsafe { gas.memory_mut().set_words_num(new_num_words, cost).unwrap_unchecked() };
+
+    if !gas.record_regular_cost(cost) {
+        return Err(InstrStop::MemoryOOG);
+    }
+    memory.resize(new_size);
+    Ok(())
+}
+
 /// Declare [`RawEvmCompilerFn`] functions in an `extern "C"` block.
 ///
 /// # Examples
@@ -167,7 +208,7 @@ macro_rules! extern_revmc {
                     ecx: ::core::ptr::NonNull<$crate::EvmContext<'_>>,
                     stack: ::core::ptr::NonNull<$crate::EvmStack>,
                     stack_len: ::core::ptr::NonNull<usize>,
-                ) -> $crate::private::revm_interpreter::InstructionResult;
+                ) -> $crate::InstrStop;
             )+
         }
     };
@@ -182,7 +223,7 @@ pub type RawEvmCompilerFn = unsafe extern "C" fn(
     ecx: NonNull<EvmContext<'_>>,
     stack: NonNull<EvmStack>,
     stack_len: NonNull<usize>,
-) -> InstructionResult;
+) -> InstrStop;
 
 /// An EVM bytecode function.
 #[derive(Clone, Copy, Debug, Hash)]
@@ -233,7 +274,7 @@ impl EvmCompilerFn {
         stack: &mut EvmStack,
         stack_len: &mut usize,
         ecx: &mut EvmContext<'_>,
-    ) -> InstructionResult {
+    ) -> InstrStop {
         revmc_entry(NonNull::from(ecx), NonNull::from(stack), NonNull::from(stack_len), self.0)
     }
 
@@ -250,7 +291,7 @@ impl EvmCompilerFn {
         stack: &mut EvmStack,
         stack_len: &mut usize,
         ecx: &mut EvmContext<'_>,
-    ) -> InstructionResult {
+    ) -> InstrStop {
         self.call(stack, stack_len, ecx)
     }
 }
@@ -703,8 +744,8 @@ mod tests {
         _ecx: NonNull<EvmContext<'_>>,
         _stack: NonNull<EvmStack>,
         _stack_len: NonNull<usize>,
-    ) -> InstructionResult {
-        InstructionResult::Stop
+    ) -> InstrStop {
+        InstrStop::Stop
     }
 
     #[test]

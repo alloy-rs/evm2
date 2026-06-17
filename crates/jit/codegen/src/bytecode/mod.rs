@@ -1166,7 +1166,7 @@ bitflags::bitflags! {
         /// The `JUMP`/`JUMPI` target is known at compile time.
         const STATIC_JUMP = 1 << 0;
         /// The jump target is known to be invalid.
-        /// Always returns [`InstructionResult::InvalidJump`] at runtime.
+        /// Always returns [`InvalidJump`](evm2::interpreter::InstrStop::InvalidJump) at runtime.
         const INVALID_JUMP = 1 << 1;
         /// The jump has multiple known targets (see `Bytecode::multi_jump_targets`).
         /// The target value is still on the stack and must be popped and switched on at runtime.
@@ -1175,10 +1175,10 @@ bitflags::bitflags! {
         const CONST_JUMP_CONDITION = 1 << 3;
 
         /// The instruction is disabled in this EVM version.
-        /// Always returns [`InstructionResult::NotActivated`] at runtime.
+        /// Always returns [`NotActivated`](evm2::interpreter::InstrStop::NotActivated) at runtime.
         const DISABLED = 1 << 4;
         /// The instruction is unknown.
-        /// Always returns [`InstructionResult::NotFound`] at runtime.
+        /// Always returns [`InvalidOpcode`](evm2::interpreter::InstrStop::InvalidOpcode) at runtime.
         const UNKNOWN = 1 << 5;
 
         /// Instruction is a no-op: skip generating logic, but keep the gas calculation.

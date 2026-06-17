@@ -1,9 +1,8 @@
 use super::{DEF_SPEC, evm2_test_func, with_evm_context};
 use crate::{Backend, EvmCompiler};
 use alloy_primitives::U256;
-use evm2::interpreter::op;
+use evm2::interpreter::{InstrStop, op};
 use paste::paste;
-use revm_interpreter::InstructionResult;
 
 macro_rules! fibonacci_tests {
     ($($i:expr),* $(,)?) => {paste! {
@@ -29,7 +28,7 @@ fn run_fibonacci_test<B: Backend>(compiler: &mut EvmCompiler<B>, input: u16, dyn
             *stack_len = 1;
         }
         let r = unsafe { f.call(stack, stack_len, ecx) };
-        assert_eq!(r, InstructionResult::Stop);
+        assert_eq!(r, InstrStop::Stop);
         // Apparently the code does `fibonacci(input + 1)`.
         assert_eq!(*stack_len, 1);
         assert_eq!(unsafe { stack.as_slice(*stack_len) }[0].to_u256(), fibonacci_rust(input + 1));

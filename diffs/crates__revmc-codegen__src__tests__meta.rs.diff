@@ -1,18 +1,21 @@
 --- upstream/crates/revmc-codegen/src/tests/meta.rs
 +++ evm2/crates/jit/codegen/src/tests/meta.rs
-@@ -1,8 +1,8 @@
+@@ -1,8 +1,10 @@
 -use super::with_evm_context;
 +use super::{evm2_test_func, with_evm_context};
  use crate::{Backend, EvmCompiler};
 -use revm_bytecode::opcode as op;
-+use alloy_primitives::U256;
-+use evm2::{SpecId, interpreter::op};
- use revm_interpreter::InstructionResult;
+-use revm_interpreter::InstructionResult;
 -use revm_primitives::{U256, hardfork::SpecId};
++use alloy_primitives::U256;
++use evm2::{
++    SpecId,
++    interpreter::{InstrStop, op},
++};
 
  // Also tests multiple functions in the same module.
  matrix_tests!(
-@@ -13,8 +13,8 @@
+@@ -13,13 +15,13 @@
          let gas_id = compiler.translate("test1", bytecode, spec_id).unwrap();
          compiler.gas_metering(true);
          let no_gas_id = compiler.translate("test2", bytecode, spec_id).unwrap();
@@ -22,8 +25,15 @@
 +        let no_gas_fn = evm2_test_func(unsafe { compiler.jit_function(no_gas_id) }.unwrap());
          with_evm_context(bytecode, spec_id, |ecx, stack, stack_len| {
              let r = unsafe { gas_fn.call(stack, stack_len, ecx) };
-             assert_eq!(r, InstructionResult::Stop);
-@@ -28,14 +28,12 @@
+-            assert_eq!(r, InstructionResult::Stop);
++            assert_eq!(r, InstrStop::Stop);
+             let r = unsafe { no_gas_fn.call(stack, stack_len, ecx) };
+-            assert_eq!(r, InstructionResult::Stop);
++            assert_eq!(r, InstrStop::Stop);
+         });
+     }
+ );
+@@ -28,14 +30,12 @@
  // callable after the IR is cleared, and the second function compiles and runs correctly.
  matrix_tests!(
      clear_ir_between_compiles = |compiler| {
@@ -39,7 +49,7 @@
 
          compiler.clear_ir().unwrap();
 
-@@ -43,7 +41,7 @@
+@@ -43,12 +43,12 @@
          // Uses MSTORE to exercise a builtin being re-declared in the new module.
          let bytecode2: &[u8] =
              &[op::PUSH1, 42, op::PUSH1, 0, op::MSTORE, op::PUSH1, 1, op::PUSH1, 2, op::ADD];
@@ -48,7 +58,22 @@
 
          // First function still works after clear_ir + second compilation.
          with_evm_context(bytecode1, spec_id, |ecx, stack, stack_len| {
-@@ -77,7 +75,7 @@
+             let r = unsafe { f1.call(stack, stack_len, ecx) };
+-            assert_eq!(r, InstructionResult::Stop);
++            assert_eq!(r, InstrStop::Stop);
+             assert_eq!(*stack_len, 1);
+             assert_eq!(unsafe { stack.as_slice(*stack_len) }[0].to_u256(), U256::from(42));
+         });
+@@ -56,7 +56,7 @@
+         // Second function works.
+         with_evm_context(bytecode2, spec_id, |ecx, stack, stack_len| {
+             let r = unsafe { f2.call(stack, stack_len, ecx) };
+-            assert_eq!(r, InstructionResult::Stop);
++            assert_eq!(r, InstrStop::Stop);
+             assert_eq!(*stack_len, 1);
+             assert_eq!(unsafe { stack.as_slice(*stack_len) }[0].to_u256(), U256::from(3));
+         });
+@@ -77,11 +77,11 @@
  ) -> B::FuncId {
      compiler.inspect_stack(true);
      let id = compiler.translate(name, code, super::DEF_SPEC).unwrap();
@@ -57,7 +82,12 @@
 
      with_evm_context(code, super::DEF_SPEC, |ecx, stack, stack_len| {
          let r = unsafe { f.call(stack, stack_len, ecx) };
-@@ -181,9 +179,9 @@
+-        assert_eq!(r, InstructionResult::Stop, "{name}: unexpected return");
++        assert_eq!(r, InstrStop::Stop, "{name}: unexpected return");
+         assert_eq!(*stack_len, 1, "{name}: expected 1 stack element");
+         assert_eq!(
+             unsafe { stack.as_slice(*stack_len) }[0].to_u256(),
+@@ -181,9 +181,9 @@
  #[test]
  fn jit_memory_usage_tracking() {
      use super::with_jit_compiler;

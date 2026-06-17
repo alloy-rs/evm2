@@ -8,11 +8,11 @@
 +use alloc::vec::Vec;
 +use alloy_primitives::{B256, Bytes, KECCAK256_EMPTY, Log, LogData, U256, keccak256};
 +use evm2::{SpecId, interpreter::i256};
-+use evm2_jit_context::{EvmContext, EvmWord};
++use evm2_jit_context::{EvmContext, EvmWord, InstrStop};
  use revm_interpreter::{
 -    CallInput, CallInputs, CallScheme, CallValue, CreateInputs, CreateScheme, FrameInput,
 -    InstructionResult, InterpreterAction, InterpreterResult, as_u64_saturated, as_usize_saturated,
-+    CallInput, InstructionResult, as_u64_saturated, as_usize_saturated,
++    CallInput, as_u64_saturated, as_usize_saturated,
      interpreter_types::{InputsTr, MemoryTr},
  };
 -use revm_primitives::{B256, Bytes, KECCAK_EMPTY, Log, LogData, U256, hardfork::SpecId};
@@ -103,6 +103,15 @@
      });
      Ok(())
  }
+@@ -350,7 +345,7 @@
+     // Bounds check BEFORE charging gas, matching revm.
+     let data_end = data_offset.saturating_add(len);
+     if data_end > ecx.return_data.len() {
+-        return Err(InstructionResult::OutOfOffset.into());
++        return Err(InstrStop::OutOfOffset.into());
+     }
+
+     gas!(ecx, ecx.gas_params.copy_cost(len));
 @@ -369,7 +364,7 @@
  ) -> BuiltinResult {
      let addr = address.to_address();
@@ -130,7 +139,7 @@
          let additional_cold_cost = ecx.gas_params.cold_storage_additional_cost();
          let skip_cold = ecx.gas.remaining() < additional_cold_cost;
          let storage = ecx.host.sload_skip_cold_load(address, key, skip_cold)?;
-@@ -524,7 +519,7 @@
+@@ -524,16 +519,16 @@
      ensure_non_staticcall!(ecx);
 
      let target = ecx.input.target_address;
@@ -139,7 +148,9 @@
 
      // EIP-2200: If gasleft is less than or equal to gas stipend, fail with OOG.
      if is_istanbul && ecx.gas.remaining() <= ecx.gas_params.call_stipend() {
-@@ -533,7 +528,7 @@
+-        return Err(InstructionResult::ReentrancySentryOOG.into());
++        return Err(InstrStop::ReentrancySentryOOG.into());
+     }
 
      gas!(ecx, ecx.gas_params.sstore_static_gas());
 
@@ -194,7 +205,7 @@
 -    if ecx.host.is_amsterdam_eip8037_enabled() {
 -        state_gas!(ecx, ecx.gas_params.create_state_gas());
 +    match unsafe { (ecx.evm2_recursion.create)(ecx, sp, create_kind as u8) } {
-+        InstructionResult::Stop => Ok(()),
++        InstrStop::Stop => Ok(()),
 +        result => Err(result.into()),
      }
 -
@@ -218,7 +229,7 @@
  }
 
  #[unsafe(no_mangle)]
-@@ -703,123 +642,10 @@
+@@ -703,130 +642,17 @@
      sp: *mut EvmWord,
      call_kind: CallKind,
  ) -> BuiltinResult {
@@ -275,7 +286,7 @@
 -    if transfers_value {
 -        gas!(ecx, ecx.gas_params.transfer_value_cost());
 +    match unsafe { (ecx.evm2_recursion.call)(ecx, sp, call_kind as u8) } {
-+        InstructionResult::Stop => Ok(()),
++        InstrStop::Stop => Ok(()),
 +        result => Err(result.into()),
      }
 -
@@ -345,6 +356,14 @@
  }
 
  #[unsafe(no_mangle)]
+ pub unsafe extern "C" fn __revmc_builtin_do_return(
+     ecx: &mut EvmContext<'_>,
+     sp: &mut [EvmWord; 2],
+-    result: InstructionResult,
++    result: InstrStop,
+ ) -> BuiltinResult {
+     let rev![offset, len] = sp;
+     let len = try_into_usize!(len);
 @@ -837,8 +663,7 @@
      } else {
          Bytes::new()
@@ -355,6 +374,15 @@
      Err(result.into())
  }
 
+@@ -847,7 +672,7 @@
+     ecx: &mut EvmContext<'_>,
+     offset: u64,
+     len: u64,
+-    result: InstructionResult,
++    result: InstrStop,
+ ) -> BuiltinResult {
+     let offset = offset as usize;
+     let len = len as usize;
 @@ -857,8 +682,7 @@
      } else {
          Bytes::new()
@@ -374,3 +402,12 @@
          res.had_value && !res.target_exists
      } else {
          !res.target_exists
+@@ -892,7 +716,7 @@
+         ecx.gas.record_refund(ecx.gas_params.selfdestruct_refund());
+     }
+
+-    Err(InstructionResult::SelfDestruct.into())
++    Err(InstrStop::SelfDestruct.into())
+ }
+
+ }

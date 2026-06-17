@@ -105,7 +105,7 @@ pub struct TestCase<'a> {
     pub inspect_stack: Option<bool>,
     pub modify_ecx: Option<fn(&mut TestEvmContext<'_>)>,
 
-    pub expected_return: InstructionResult,
+    pub expected_return: InstrStop,
     pub expected_stack: &'a [U256],
     pub expected_memory: &'a [u8],
     pub expected_gas: u64,
@@ -135,7 +135,7 @@ impl Default for TestCase<'_> {
             gas_limit: DEF_GAS_LIMIT,
             inspect_stack: None,
             modify_ecx: None,
-            expected_return: InstructionResult::Stop,
+            expected_return: InstrStop::Stop,
             expected_stack: &[],
             expected_memory: &[],
             expected_gas: 0,
@@ -204,7 +204,7 @@ pub static DEF_CODEMAP: OnceLock<HashMap<Address, Evm2Bytecode>> = OnceLock::new
 pub const OTHER_ADDR: Address = Address::repeat_byte(0x69);
 pub const DEF_BN: U256 = uint!(500_U256);
 
-pub const RETURN_WHAT_INTERPRETER_SAYS: InstructionResult = InstructionResult::PrecompileError;
+pub const RETURN_WHAT_INTERPRETER_SAYS: InstrStop = InstrStop::PrecompileError;
 pub const STACK_WHAT_INTERPRETER_SAYS: &[U256] =
     &[U256::from_be_slice(&GAS_WHAT_INTERPRETER_SAYS.to_be_bytes())];
 pub const MEMORY_WHAT_INTERPRETER_SAYS: &[u8] = &GAS_WHAT_INTERPRETER_SAYS.to_be_bytes();
@@ -726,7 +726,7 @@ fn run_compiled_test_case(test_case: &TestCase<'_>, f: EvmCompilerFn) {
         );
         let mut int_host = TestHost::with_spec(spec_id);
         let int_stop = interpreter.run(&config, &mut int_host);
-        let int_result = instruction_result_from_instr_stop(int_stop);
+        let int_result = int_stop;
         let interpreter_output = interpreter.output();
 
         let mut expected_return = expected_return;
@@ -814,9 +814,9 @@ fn run_compiled_test_case(test_case: &TestCase<'_>, f: EvmCompilerFn) {
         if matches!(
             actual_return,
             // We can have a stack overflow/underflow before other error codes due to sections.
-            |InstructionResult::StackOverflow| InstructionResult::StackUnderflow
+            |InstrStop::StackOverflow| InstrStop::StackUnderflow
             // Any OOG is equivalent. We skip `InvalidOperand` sometimes.
-            | InstructionResult::OutOfGas | InstructionResult::MemoryOOG | InstructionResult::InvalidOperandOOG
+            | InstrStop::OutOfGas | InstrStop::MemoryOOG | InstrStop::InvalidOperandOOG
         ) {
             assert_eq!(
                 actual_return.is_halt(),
@@ -864,56 +864,13 @@ fn run_compiled_test_case(test_case: &TestCase<'_>, f: EvmCompilerFn) {
     }
 }
 
-fn instruction_results_match_for_oracle(
-    actual: InstructionResult,
-    expected: InstructionResult,
-) -> bool {
+fn instruction_results_match_for_oracle(actual: InstrStop, expected: InstrStop) -> bool {
     actual == expected
         || matches!(
             (actual, expected),
-            (
-                InstructionResult::OpcodeNotFound,
-                InstructionResult::InvalidFEOpcode | InstructionResult::NotActivated
-            ) | (InstructionResult::StackUnderflow, InstructionResult::StackOverflow)
+            (InstrStop::InvalidOpcode, InstrStop::NotActivated)
+                | (InstrStop::StackUnderflow, InstrStop::StackOverflow)
         )
-}
-
-fn instruction_result_from_instr_stop(stop: InstrStop) -> InstructionResult {
-    match stop {
-        InstrStop::Stop => InstructionResult::Stop,
-        InstrStop::Return => InstructionResult::Return,
-        InstrStop::SelfDestruct => InstructionResult::SelfDestruct,
-        InstrStop::Revert => InstructionResult::Revert,
-        InstrStop::CallTooDeep => InstructionResult::CallTooDeep,
-        InstrStop::OutOfFunds => InstructionResult::OutOfFunds,
-        InstrStop::CreateInitCodeStartingEF00 => InstructionResult::CreateInitCodeStartingEF00,
-        InstrStop::InvalidEOFInitCode => InstructionResult::InvalidEOFInitCode,
-        InstrStop::InvalidExtDelegateCallTarget => InstructionResult::InvalidExtDelegateCallTarget,
-        InstrStop::OutOfGas => InstructionResult::OutOfGas,
-        InstrStop::MemoryOOG => InstructionResult::MemoryOOG,
-        InstrStop::MemoryLimitOOG => InstructionResult::MemoryLimitOOG,
-        InstrStop::PrecompileOOG => InstructionResult::PrecompileOOG,
-        InstrStop::InvalidOperandOOG => InstructionResult::InvalidOperandOOG,
-        InstrStop::ReentrancySentryOOG => InstructionResult::ReentrancySentryOOG,
-        InstrStop::CallNotAllowedInsideStatic => InstructionResult::CallNotAllowedInsideStatic,
-        InstrStop::StateChangeDuringStaticCall => InstructionResult::StateChangeDuringStaticCall,
-        InstrStop::InvalidOpcode => InstructionResult::OpcodeNotFound,
-        InstrStop::InvalidJump => InstructionResult::InvalidJump,
-        InstrStop::NotActivated => InstructionResult::NotActivated,
-        InstrStop::StackUnderflow => InstructionResult::StackUnderflow,
-        InstrStop::StackOverflow => InstructionResult::StackOverflow,
-        InstrStop::OutOfOffset => InstructionResult::OutOfOffset,
-        InstrStop::CreateCollision => InstructionResult::CreateCollision,
-        InstrStop::OverflowPayment => InstructionResult::OverflowPayment,
-        InstrStop::PrecompileError => InstructionResult::PrecompileError,
-        InstrStop::NonceOverflow => InstructionResult::NonceOverflow,
-        InstrStop::CreateContractSizeLimit => InstructionResult::CreateContractSizeLimit,
-        InstrStop::CreateContractStartingWithEF => InstructionResult::CreateContractStartingWithEF,
-        InstrStop::CreateInitCodeSizeLimit => InstructionResult::CreateInitCodeSizeLimit,
-        InstrStop::FatalExternalError => InstructionResult::FatalExternalError,
-        InstrStop::InvalidImmediateEncoding => InstructionResult::InvalidImmediateEncoding,
-        _ => InstructionResult::FatalExternalError,
-    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

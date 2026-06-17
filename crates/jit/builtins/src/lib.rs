@@ -13,9 +13,9 @@ extern crate tracing;
 use alloc::vec::Vec;
 use alloy_primitives::{B256, Bytes, KECCAK256_EMPTY, Log, LogData, U256, keccak256};
 use evm2::{SpecId, interpreter::i256};
-use evm2_jit_context::{EvmContext, EvmWord};
+use evm2_jit_context::{EvmContext, EvmWord, InstrStop};
 use revm_interpreter::{
-    CallInput, InstructionResult, as_u64_saturated, as_usize_saturated,
+    CallInput, as_u64_saturated, as_usize_saturated,
     interpreter_types::{InputsTr, MemoryTr},
 };
 
@@ -345,7 +345,7 @@ pub unsafe extern "C" fn __revmc_builtin_returndatacopy(
     // Bounds check BEFORE charging gas, matching revm.
     let data_end = data_offset.saturating_add(len);
     if data_end > ecx.return_data.len() {
-        return Err(InstructionResult::OutOfOffset.into());
+        return Err(InstrStop::OutOfOffset.into());
     }
 
     gas!(ecx, ecx.gas_params.copy_cost(len));
@@ -523,7 +523,7 @@ pub unsafe extern "C" fn __revmc_builtin_sstore(
 
     // EIP-2200: If gasleft is less than or equal to gas stipend, fail with OOG.
     if is_istanbul && ecx.gas.remaining() <= ecx.gas_params.call_stipend() {
-        return Err(InstructionResult::ReentrancySentryOOG.into());
+        return Err(InstrStop::ReentrancySentryOOG.into());
     }
 
     gas!(ecx, ecx.gas_params.sstore_static_gas());
@@ -631,7 +631,7 @@ pub unsafe extern "C" fn __revmc_builtin_create(
     create_kind: CreateKind,
 ) -> BuiltinResult {
     match unsafe { (ecx.evm2_recursion.create)(ecx, sp, create_kind as u8) } {
-        InstructionResult::Stop => Ok(()),
+        InstrStop::Stop => Ok(()),
         result => Err(result.into()),
     }
 }
@@ -643,7 +643,7 @@ pub unsafe extern "C" fn __revmc_builtin_call(
     call_kind: CallKind,
 ) -> BuiltinResult {
     match unsafe { (ecx.evm2_recursion.call)(ecx, sp, call_kind as u8) } {
-        InstructionResult::Stop => Ok(()),
+        InstrStop::Stop => Ok(()),
         result => Err(result.into()),
     }
 }
@@ -652,7 +652,7 @@ pub unsafe extern "C" fn __revmc_builtin_call(
 pub unsafe extern "C" fn __revmc_builtin_do_return(
     ecx: &mut EvmContext<'_>,
     sp: &mut [EvmWord; 2],
-    result: InstructionResult,
+    result: InstrStop,
 ) -> BuiltinResult {
     let rev![offset, len] = sp;
     let len = try_into_usize!(len);
@@ -672,7 +672,7 @@ pub unsafe extern "C" fn __revmc_builtin_do_return_cc(
     ecx: &mut EvmContext<'_>,
     offset: u64,
     len: u64,
-    result: InstructionResult,
+    result: InstrStop,
 ) -> BuiltinResult {
     let offset = offset as usize;
     let len = len as usize;
@@ -716,7 +716,7 @@ pub unsafe extern "C" fn __revmc_builtin_selfdestruct(
         ecx.gas.record_refund(ecx.gas_params.selfdestruct_refund());
     }
 
-    Err(InstructionResult::SelfDestruct.into())
+    Err(InstrStop::SelfDestruct.into())
 }
 
 }

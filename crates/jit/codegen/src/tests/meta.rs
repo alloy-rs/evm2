@@ -1,8 +1,10 @@
 use super::{evm2_test_func, with_evm_context};
 use crate::{Backend, EvmCompiler};
 use alloy_primitives::U256;
-use evm2::{SpecId, interpreter::op};
-use revm_interpreter::InstructionResult;
+use evm2::{
+    SpecId,
+    interpreter::{InstrStop, op},
+};
 
 // Also tests multiple functions in the same module.
 matrix_tests!(
@@ -17,9 +19,9 @@ matrix_tests!(
         let no_gas_fn = evm2_test_func(unsafe { compiler.jit_function(no_gas_id) }.unwrap());
         with_evm_context(bytecode, spec_id, |ecx, stack, stack_len| {
             let r = unsafe { gas_fn.call(stack, stack_len, ecx) };
-            assert_eq!(r, InstructionResult::Stop);
+            assert_eq!(r, InstrStop::Stop);
             let r = unsafe { no_gas_fn.call(stack, stack_len, ecx) };
-            assert_eq!(r, InstructionResult::Stop);
+            assert_eq!(r, InstrStop::Stop);
         });
     }
 );
@@ -46,7 +48,7 @@ matrix_tests!(
         // First function still works after clear_ir + second compilation.
         with_evm_context(bytecode1, spec_id, |ecx, stack, stack_len| {
             let r = unsafe { f1.call(stack, stack_len, ecx) };
-            assert_eq!(r, InstructionResult::Stop);
+            assert_eq!(r, InstrStop::Stop);
             assert_eq!(*stack_len, 1);
             assert_eq!(unsafe { stack.as_slice(*stack_len) }[0].to_u256(), U256::from(42));
         });
@@ -54,7 +56,7 @@ matrix_tests!(
         // Second function works.
         with_evm_context(bytecode2, spec_id, |ecx, stack, stack_len| {
             let r = unsafe { f2.call(stack, stack_len, ecx) };
-            assert_eq!(r, InstructionResult::Stop);
+            assert_eq!(r, InstrStop::Stop);
             assert_eq!(*stack_len, 1);
             assert_eq!(unsafe { stack.as_slice(*stack_len) }[0].to_u256(), U256::from(3));
         });
@@ -79,7 +81,7 @@ fn jit_and_verify<B: Backend>(
 
     with_evm_context(code, super::DEF_SPEC, |ecx, stack, stack_len| {
         let r = unsafe { f.call(stack, stack_len, ecx) };
-        assert_eq!(r, InstructionResult::Stop, "{name}: unexpected return");
+        assert_eq!(r, InstrStop::Stop, "{name}: unexpected return");
         assert_eq!(*stack_len, 1, "{name}: expected 1 stack element");
         assert_eq!(
             unsafe { stack.as_slice(*stack_len) }[0].to_u256(),

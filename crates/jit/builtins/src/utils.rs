@@ -1,9 +1,8 @@
 use alloy_primitives::Address;
 use core::{hint::cold_path, num::NonZero};
-use evm2_jit_context::{EvmContext, EvmWord};
+use evm2_jit_context::{EvmContext, EvmWord, InstrStop};
 use revm_interpreter::{
-    InstructionResult, as_usize_saturated, context_interface::journaled_state::AccountInfoLoad,
-    host::LoadError,
+    as_usize_saturated, context_interface::journaled_state::AccountInfoLoad, host::LoadError,
 };
 
 pub type BuiltinResult = Result<(), BuiltinError>;
@@ -13,17 +12,17 @@ pub type BuiltinResult = Result<(), BuiltinError>;
 #[repr(transparent)]
 pub struct BuiltinError(NonZero<u8>);
 
-impl From<BuiltinError> for InstructionResult {
+impl From<BuiltinError> for InstrStop {
     #[inline]
     fn from(value: BuiltinError) -> Self {
-        // SAFETY: BuiltinError is always created from a valid InstructionResult.
+        // SAFETY: BuiltinError is always created from a valid InstrStop.
         unsafe { core::mem::transmute::<_, _>(value.0.get()) }
     }
 }
 
-impl From<InstructionResult> for BuiltinError {
+impl From<InstrStop> for BuiltinError {
     #[inline]
-    fn from(value: InstructionResult) -> Self {
+    fn from(value: InstrStop) -> Self {
         cold_path();
         Self(unsafe { NonZero::new_unchecked(value as u8) })
     }
@@ -34,8 +33,8 @@ impl From<LoadError> for BuiltinError {
     fn from(value: LoadError) -> Self {
         cold_path();
         match value {
-            LoadError::ColdLoadSkipped => InstructionResult::OutOfGas.into(),
-            LoadError::DBError => InstructionResult::FatalExternalError.into(),
+            LoadError::ColdLoadSkipped => InstrStop::OutOfGas.into(),
+            LoadError::DBError => InstrStop::FatalExternalError.into(),
         }
     }
 }
@@ -48,7 +47,7 @@ pub(crate) trait OkOrFatal<T> {
 impl<T> OkOrFatal<T> for Option<T> {
     #[inline]
     fn ok_or_fatal(self) -> Result<T, BuiltinError> {
-        self.ok_or_else(|| InstructionResult::FatalExternalError.into())
+        self.ok_or_else(|| InstrStop::FatalExternalError.into())
     }
 }
 
@@ -85,13 +84,7 @@ pub(crate) unsafe fn read_words_rev<'a, const N: usize>(sp: *mut EvmWord) -> &'a
 
 #[inline]
 pub(crate) fn ensure_memory(ecx: &mut EvmContext<'_>, offset: usize, len: usize) -> BuiltinResult {
-    revm_interpreter::interpreter::resize_memory(
-        &mut ecx.gas,
-        ecx.memory,
-        &ecx.gas_params,
-        offset,
-        len,
-    )?;
+    evm2_jit_context::resize_memory(&mut ecx.gas, ecx.memory, &ecx.gas_params, offset, len)?;
     ecx.refresh_memory_cache();
     Ok(())
 }

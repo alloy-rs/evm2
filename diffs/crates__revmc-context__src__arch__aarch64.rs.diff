@@ -1,0 +1,35 @@
+--- upstream/crates/revmc-context/src/arch/aarch64.rs
++++ evm2/crates/jit/context/src/arch/aarch64.rs
+@@ -1,12 +1,11 @@
+ use super::{EXIT_RESULT_OFFSET, EXIT_SP_OFFSET};
+-use crate::{EvmContext, EvmStack, RawEvmCompilerFn};
++use crate::{EvmContext, EvmStack, InstrStop, RawEvmCompilerFn};
+ use core::ptr::NonNull;
+-use revm_interpreter::InstructionResult;
+
+ /// Entry trampoline: saves callee-saved registers, stores SP into
+ /// `ecx.exit_sp`, and calls the JIT function.
+ ///
+-/// On normal return the JIT function's `InstructionResult` is forwarded.
++/// On normal return the JIT function's `InstrStop` is forwarded.
+ /// On abnormal exit (builtin error), [`revmc_exit`] restores SP and
+ /// returns the `exit_result` stored in `EvmContext`.
+ #[unsafe(naked)]
+@@ -15,7 +14,7 @@
+     stack: NonNull<EvmStack>,
+     stack_len: NonNull<usize>,
+     f: RawEvmCompilerFn,
+-) -> InstructionResult {
++) -> InstrStop {
+     // AAPCS64: x0=ecx, x1=stack, x2=stack_len, x3=f
+     // The JIT function takes (ecx, stack, stack_len) — already in x0, x1, x2.
+     //
+@@ -46,7 +45,7 @@
+         "mov x9, sp",
+         "str x9, [x0, {exit_sp}]",
+         "blr x3",
+-        // Normal return — w0 = InstructionResult.
++        // Normal return: w0 = InstrStop.
+         "ldp d14, d15, [sp, #144]",
+         "ldp d12, d13, [sp, #128]",
+         "ldp d10, d11, [sp, #112]",

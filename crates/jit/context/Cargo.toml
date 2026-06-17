@@ -18,7 +18,7 @@ workspace = true
 
 [dependencies]
 alloy-primitives.workspace = true
-evm2 = { workspace = true, optional = true }
+evm2.workspace = true
 revm-interpreter.workspace = true
 ruint.workspace = true
 
@@ -26,7 +26,7 @@ ruint.workspace = true
 default = ["std"]
 std = [
     "alloy-primitives/std",
-    "evm2?/std",
+    "evm2/std",
     "revm-interpreter/std",
 ]
-evm2 = ["dep:evm2"]
+evm2 = []
