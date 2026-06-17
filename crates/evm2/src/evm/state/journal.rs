@@ -201,7 +201,8 @@ mod tests {
         assert!(state.account(&frame_account, false).unwrap().warm());
         assert!(state.storage_slot(&frame_storage, key, false).unwrap().warm());
         // The load itself is an un-journaled read cache; warming the frame account records
-        // AccountWarmed and warming the slot records StorageWarmed: two revertible entries in total.
+        // AccountWarmed and warming the slot records StorageWarmed: two revertible entries in
+        // total.
         assert_eq!(state.journal.len(), 2);
 
         state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);

@@ -10,8 +10,7 @@
 //! all runtime warmth introduced while executing EVM code.
 
 use crate::interpreter::Word;
-use alloc::vec;
-use alloc::vec::Vec;
+use alloc::{vec, vec::Vec};
 use alloy_primitives::{
     Address,
     map::{AddressMap, AddressSet, HashSet},

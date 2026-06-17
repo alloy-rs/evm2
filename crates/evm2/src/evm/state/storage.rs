@@ -14,8 +14,9 @@ pub struct StorageOverlay {
     /// Whether consumers must delete all pre-existing storage for the account
     /// before applying individual slot changes.
     pub wiped: bool,
-    /// Loaded storage slots. A slot is present here only once it has been loaded or written, so its
-    /// value is always meaningful; EIP-2929 warmth is tracked per slot in [`StorageSlot::is_warm`].
+    /// Loaded storage slots. A slot is present here only once it has been loaded or written, so
+    /// its value is always meaningful; EIP-2929 warmth is tracked per slot in
+    /// [`StorageSlot::is_warm`].
     pub slots: U256Map<StorageSlot>,
     #[doc(hidden)] // Not public API. Please use an existing constructor.
     pub _non_exhaustive: (),
@@ -119,8 +120,8 @@ impl<'a> StorageHandle<'a> {
     /// When `skip_cold_load` is true and the slot is not already in the overlay, the cold database
     /// read is skipped and [`DbErrorCode::COLD_LOAD_SKIPPED`] is returned, leaving the overlay
     /// untouched. This mirrors [`State::account`](super::State::account)'s
-    /// `skip_cold_load`/`ColdLoadSkipped` so callers can detect a cold access without paying for the
-    /// load. An already-loaded slot is always returned.
+    /// `skip_cold_load`/`ColdLoadSkipped` so callers can detect a cold access without paying for
+    /// the load. An already-loaded slot is always returned.
     ///
     /// A slot is materialized in the overlay only once it is loaded, so the returned
     /// [`StorageSlotHandle`] always refers to a slot with a meaningful value. On first load the
@@ -167,8 +168,8 @@ impl<'a> StorageHandle<'a> {
     ///
     /// Loaded slot values are reset to zero so wiped slots resolve to zero on re-load, while warm
     /// slots keep their entry so EIP-2929 warmth survives the wipe; cold slots are dropped. A
-    /// [`JournalEntry::StorageWipe`] snapshot of the prior overlay is recorded so the wipe is undone
-    /// by [`State::rollback`](super::State::rollback).
+    /// [`JournalEntry::StorageWipe`] snapshot of the prior overlay is recorded so the wipe is
+    /// undone by [`State::rollback`](super::State::rollback).
     #[inline]
     pub fn wipe(&mut self) {
         let previous = self.storage.clone();
@@ -448,7 +449,8 @@ mod tests {
         database.insert_account_storage(&address, &key, &Word::from(42));
         let mut state = State::new(database);
 
-        // A cold, not-yet-loaded slot reports neither loaded nor warm without touching the database.
+        // A cold, not-yet-loaded slot reports neither loaded nor warm without touching the
+        // database.
         assert!(!state.storage(&address).is_loaded(&key));
         assert!(!state.storage(&address).is_warm(&key));
 

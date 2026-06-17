@@ -503,8 +503,7 @@ mod tests {
 
     #[test]
     fn journaled_account_mutations_journal_and_roll_back() {
-        use crate::bytecode::Bytecode;
-        use crate::{SpecId, Version};
+        use crate::{SpecId, Version, bytecode::Bytecode};
 
         let address = Address::from([0x88; 20]);
         let mut state = State::new(CacheDB::default());
@@ -540,8 +539,7 @@ mod tests {
 
     #[test]
     fn journaled_existing_account_field_changes_roll_back_granularly() {
-        use crate::bytecode::Bytecode;
-        use crate::{SpecId, Version};
+        use crate::{SpecId, Version, bytecode::Bytecode};
         use alloy_primitives::Bytes;
 
         let address = Address::from([0x8b; 20]);

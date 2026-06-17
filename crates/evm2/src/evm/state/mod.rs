@@ -37,8 +37,10 @@ use alloy_primitives::{
     Address, B256, KECCAK256_EMPTY, Log,
     map::{AddressMap, AddressSet, U256Map, hash_map},
 };
-use core::mem;
-use core::ops::{Deref, DerefMut};
+use core::{
+    mem,
+    ops::{Deref, DerefMut},
+};
 use derive_where::derive_where;
 
 /// Mutable EVM state with an accepted-state cache, transaction layer, and reversible journal.
@@ -291,16 +293,16 @@ impl State {
 
     /// Loads `address` into the transaction overlay and returns a journaled mutation handle.
     ///
-    /// Unlike [`Self::account_info_untracked`], which reads the backing database without caching, this
-    /// reads the account once and preserves it in the transaction overlay. The returned
+    /// Unlike [`Self::account_info_untracked`], which reads the backing database without caching,
+    /// this reads the account once and preserves it in the transaction overlay. The returned
     /// [`AccountHandle`] records a revert snapshot on its first mutation, so any changes made
     /// through it are undone together by [`Self::rollback`]. The account is materialized as empty
     /// only when it is first mutated while absent. This mirrors revm's `AccountHandle`.
     ///
     /// When `skip_cold_load` is true and the account has not been loaded into the overlay yet, the
-    /// cold database read is skipped and [`DbErrorCode::COLD_LOAD_SKIPPED`] is returned, leaving the
-    /// overlay untouched. Callers that cannot afford a cold access use this to detect it without
-    /// paying for the load. An already-loaded account always yields a handle.
+    /// cold database read is skipped and [`DbErrorCode::COLD_LOAD_SKIPPED`] is returned, leaving
+    /// the overlay untouched. Callers that cannot afford a cold access use this to detect it
+    /// without paying for the load. An already-loaded account always yields a handle.
     pub fn account(
         &mut self,
         address: &Address,
@@ -356,9 +358,9 @@ impl State {
     ///
     /// This is the storage-side mirror of [`Self::account_info_untracked`]: a non-loading peek that
     /// returns the overlay slot value when one has been loaded or written this transaction,
-    /// otherwise it reads the backing database directly without caching the result in the overlay. A
-    /// slot of a wiped account that has not been rewritten reads as zero. Use [`Self::storage_slot`]
-    /// when the slot should be loaded and preserved.
+    /// otherwise it reads the backing database directly without caching the result in the overlay.
+    /// A slot of a wiped account that has not been rewritten reads as zero. Use
+    /// [`Self::storage_slot`] when the slot should be loaded and preserved.
     #[inline(never)]
     pub fn storage_slot_untracked(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
         if let Some(overlay) = self.storage.get(address) {
@@ -415,7 +417,8 @@ impl State {
         value: &Word,
         features: EvmFeatures,
     ) -> DbResult<Result<(), InstrStop>> {
-        // TODO check order of operations, we could potentially simplify it and do a lot more with only one hashmap lookup.
+        // TODO check order of operations, we could potentially simplify it and do a lot more with
+        // only one hashmap lookup.
         if self
             .account(address, false)?
             .get()
