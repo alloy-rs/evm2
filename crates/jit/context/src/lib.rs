@@ -7,15 +7,9 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 use alloy_primitives::{Address, B256, Bytes, Log, U256, ruint};
-use core::{
-    fmt,
-    mem::MaybeUninit,
-    ptr::{self, NonNull},
-};
+use core::{fmt, mem::MaybeUninit, ptr::NonNull};
 use revm_interpreter::{
-    Gas, Host, InputsImpl, InstructionResult, Interpreter, SharedMemory,
-    context_interface::cfg::GasParams,
-    interpreter_types::{LegacyBytecode, ReturnData, RuntimeFlag},
+    Gas, Host, InputsImpl, InstructionResult, SharedMemory, context_interface::cfg::GasParams,
 };
 
 mod arch;
@@ -136,46 +130,7 @@ impl fmt::Debug for EvmContext<'_> {
     }
 }
 
-impl<'a> EvmContext<'a> {
-    /// Creates a new context from an interpreter.
-    #[inline]
-    pub fn from_interpreter(interpreter: &'a mut Interpreter, host: &'a mut dyn Host) -> Self {
-        Self::from_interpreter_with_stack(interpreter, host).0
-    }
-
-    /// Creates a new context from an interpreter.
-    #[inline]
-    pub fn from_interpreter_with_stack<'b: 'a>(
-        interpreter: &'a mut Interpreter,
-        host: &'b mut dyn Host,
-    ) -> (Self, &'a mut EvmStack, &'a mut usize) {
-        let (stack, stack_len) = EvmStack::from_interpreter_stack(&mut interpreter.stack);
-        let bytecode = interpreter.bytecode.bytecode_slice() as *const [u8];
-        let calldatasize = interpreter.input.input.len();
-        let gas_params = host.gas_params().clone();
-        let mut this = Self {
-            memory: &mut interpreter.memory,
-            input: &mut interpreter.input,
-            gas: interpreter.gas,
-            host,
-            return_data: interpreter.return_data.buffer(),
-            is_static: interpreter.runtime_flag.is_static(),
-            spec_id: u8::from(interpreter.runtime_flag.spec_id()),
-            bytecode,
-            on_log: None,
-            calldatasize,
-            exit_result: InstructionResult::Stop,
-            exit_sp: ptr::null_mut(),
-            gas_params,
-            mem_base: ptr::null_mut(),
-            mem_len: 0,
-            output: Bytes::new(),
-            evm2_recursion: Evm2Recursion::unsupported(),
-        };
-        this.refresh_memory_cache();
-        (this, stack, stack_len)
-    }
-
+impl EvmContext<'_> {
     /// Refreshes the cached memory base pointer and length from `SharedMemory`.
     ///
     /// Must be called after any operation that may resize memory.
@@ -325,20 +280,6 @@ impl EvmStack {
     #[inline]
     pub fn new_heap() -> Vec<EvmWord> {
         Vec::with_capacity(1024)
-    }
-
-    /// Creates a stack from the interpreter's stack. Assumes that the stack is large enough.
-    #[inline]
-    pub fn from_interpreter_stack(stack: &mut revm_interpreter::Stack) -> (&mut Self, &mut usize) {
-        debug_assert!(stack.data().capacity() >= Self::CAPACITY);
-        let expected_len = stack.len();
-        unsafe {
-            let data = Self::from_mut_ptr(stack.data_mut().as_mut_ptr().cast());
-            // Vec { data: ptr, cap: usize, len: usize }
-            let len = &mut *(stack.data_mut() as *mut Vec<_>).cast::<usize>().add(2);
-            debug_assert_eq!(expected_len, *len);
-            (data, len)
-        }
     }
 
     /// Creates a stack from a vector's buffer.

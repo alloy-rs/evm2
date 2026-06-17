@@ -1,22 +1,22 @@
 --- upstream/crates/revmc-context/src/lib.rs
 +++ evm2/crates/jit/context/src/lib.rs
-@@ -6,72 +6,64 @@
+@@ -6,72 +6,58 @@
  extern crate alloc;
 
  use alloc::vec::Vec;
+-use core::{
+-    fmt,
+-    mem::MaybeUninit,
+-    ptr::{self, NonNull},
+-};
 +use alloy_primitives::{Address, B256, Bytes, Log, U256, ruint};
- use core::{
-     fmt,
-     mem::MaybeUninit,
-     ptr::{self, NonNull},
- };
++use core::{fmt, mem::MaybeUninit, ptr::NonNull};
  use revm_interpreter::{
 -    Gas, Host, InputsImpl, InstructionResult, Interpreter, InterpreterAction, InterpreterResult,
 -    SharedMemory,
-+    Gas, Host, InputsImpl, InstructionResult, Interpreter, SharedMemory,
-     context_interface::cfg::GasParams,
+-    context_interface::cfg::GasParams,
 -    interpreter_types::{Jumps, LegacyBytecode, ReturnData, RuntimeFlag},
-+    interpreter_types::{LegacyBytecode, ReturnData, RuntimeFlag},
++    Gas, Host, InputsImpl, InstructionResult, SharedMemory, context_interface::cfg::GasParams,
  };
 -use revm_primitives::{Address, B256, Bytes, Log, U256, hardfork::SpecId, ruint};
 
@@ -28,9 +28,7 @@
 -mod jit_evm;
 -#[cfg(feature = "evm")]
 -pub use jit_evm::JitEvm;
-+#[cfg(feature = "evm2")]
-+pub mod evm2_api;
-
+-
 -/// Resume point for compiled EVM code after a CALL/CREATE suspension.
 -///
 -/// Encoded as the interpreter's bytecode PC. `0` means no resume (initial state),
@@ -42,7 +40,9 @@
 -#[repr(transparent)]
 -#[doc(hidden)] // Not public API.
 -pub struct ResumeAt(usize);
--
++#[cfg(feature = "evm2")]
++pub mod evm2_api;
+
 -impl ResumeAt {
 -    /// Loads the resume point from the interpreter's current PC.
 -    #[inline]
@@ -109,7 +109,7 @@
  }
 
  /// The EVM bytecode compiler runtime context.
-@@ -92,17 +84,12 @@
+@@ -92,17 +78,12 @@
      pub gas: Gas,
      /// The host.
      pub host: &'a mut dyn Host,
@@ -128,7 +128,7 @@
      /// The contract bytecode, for CODECOPY at runtime.
      pub bytecode: *const [u8],
      /// Optional callback invoked by the LOG builtin after constructing the log,
-@@ -126,6 +113,12 @@
+@@ -126,6 +107,12 @@
      /// Cached length of the current memory context in bytes.
      /// Refreshed after any memory resize.
      pub mem_len: usize,
@@ -141,7 +141,7 @@
  }
 
  // Static assertions to ensure the struct layout matches expectations.
-@@ -135,10 +128,6 @@
+@@ -135,10 +122,6 @@
 
      // Key fields accessed by JIT code
      assert!(offset_of!(EvmContext<'_>, memory) == 0);
@@ -152,37 +152,56 @@
  };
 
  impl fmt::Debug for EvmContext<'_> {
-@@ -160,7 +149,6 @@
-         interpreter: &'a mut Interpreter,
-         host: &'b mut dyn Host,
-     ) -> (Self, &'a mut EvmStack, &'a mut usize) {
+@@ -147,47 +130,7 @@
+     }
+ }
+
+-impl<'a> EvmContext<'a> {
+-    /// Creates a new context from an interpreter.
+-    #[inline]
+-    pub fn from_interpreter(interpreter: &'a mut Interpreter, host: &'a mut dyn Host) -> Self {
+-        Self::from_interpreter_with_stack(interpreter, host).0
+-    }
+-
+-    /// Creates a new context from an interpreter.
+-    #[inline]
+-    pub fn from_interpreter_with_stack<'b: 'a>(
+-        interpreter: &'a mut Interpreter,
+-        host: &'b mut dyn Host,
+-    ) -> (Self, &'a mut EvmStack, &'a mut usize) {
 -        let resume_at = ResumeAt::load(interpreter);
-         let (stack, stack_len) = EvmStack::from_interpreter_stack(&mut interpreter.stack);
-         let bytecode = interpreter.bytecode.bytecode_slice() as *const [u8];
-         let calldatasize = interpreter.input.input.len();
-@@ -170,11 +158,9 @@
-             input: &mut interpreter.input,
-             gas: interpreter.gas,
-             host,
+-        let (stack, stack_len) = EvmStack::from_interpreter_stack(&mut interpreter.stack);
+-        let bytecode = interpreter.bytecode.bytecode_slice() as *const [u8];
+-        let calldatasize = interpreter.input.input.len();
+-        let gas_params = host.gas_params().clone();
+-        let mut this = Self {
+-            memory: &mut interpreter.memory,
+-            input: &mut interpreter.input,
+-            gas: interpreter.gas,
+-            host,
 -            next_action: &mut interpreter.bytecode.action,
-             return_data: interpreter.return_data.buffer(),
-             is_static: interpreter.runtime_flag.is_static(),
+-            return_data: interpreter.return_data.buffer(),
+-            is_static: interpreter.runtime_flag.is_static(),
 -            spec_id: interpreter.runtime_flag.spec_id(),
 -            resume_at,
-+            spec_id: u8::from(interpreter.runtime_flag.spec_id()),
-             bytecode,
-             on_log: None,
-             calldatasize,
-@@ -183,6 +169,8 @@
-             gas_params,
-             mem_base: ptr::null_mut(),
-             mem_len: 0,
-+            output: Bytes::new(),
-+            evm2_recursion: Evm2Recursion::unsupported(),
-         };
-         this.refresh_memory_cache();
-         (this, stack, stack_len)
-@@ -204,7 +192,7 @@
+-            bytecode,
+-            on_log: None,
+-            calldatasize,
+-            exit_result: InstructionResult::Stop,
+-            exit_sp: ptr::null_mut(),
+-            gas_params,
+-            mem_base: ptr::null_mut(),
+-            mem_len: 0,
+-        };
+-        this.refresh_memory_cache();
+-        (this, stack, stack_len)
+-    }
+-
++impl EvmContext<'_> {
+     /// Refreshes the cached memory base pointer and length from `SharedMemory`.
+     ///
+     /// Must be called after any operation that may resize memory.
+@@ -204,7 +147,7 @@
  /// # Examples
  ///
  /// ```no_run
@@ -191,7 +210,7 @@
  ///
  /// extern_revmc! {
  ///    /// A simple function.
-@@ -272,82 +260,6 @@
+@@ -272,82 +215,6 @@
          self.0
      }
 
@@ -274,7 +293,28 @@
      /// Calls the function.
      ///
      /// Arguments:
-@@ -826,7 +738,6 @@
+@@ -415,20 +282,6 @@
+         Vec::with_capacity(1024)
+     }
+
+-    /// Creates a stack from the interpreter's stack. Assumes that the stack is large enough.
+-    #[inline]
+-    pub fn from_interpreter_stack(stack: &mut revm_interpreter::Stack) -> (&mut Self, &mut usize) {
+-        debug_assert!(stack.data().capacity() >= Self::CAPACITY);
+-        let expected_len = stack.len();
+-        unsafe {
+-            let data = Self::from_mut_ptr(stack.data_mut().as_mut_ptr().cast());
+-            // Vec { data: ptr, cap: usize, len: usize }
+-            let len = &mut *(stack.data_mut() as *mut Vec<_>).cast::<usize>().add(2);
+-            debug_assert_eq!(expected_len, *len);
+-            (data, len)
+-        }
+-    }
+-
+     /// Creates a stack from a vector's buffer.
+     ///
+     /// # Panics
+@@ -826,7 +679,6 @@
  #[doc(hidden)]
  pub mod private {
      pub use revm_interpreter;
