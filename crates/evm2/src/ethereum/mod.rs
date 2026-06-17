@@ -560,21 +560,6 @@ pub(super) fn access_list_counts(access_list: &AccessList) -> (u64, u64) {
     (access_list.len() as u64, access_list.storage_keys_count() as u64)
 }
 
-const ACCESS_LIST_ADDRESS_FLOOR_TOKENS: u64 = 80;
-const ACCESS_LIST_STORAGE_KEY_FLOOR_TOKENS: u64 = 128;
-
-const fn access_list_floor_tokens(
-    version: &Version,
-    access_list_accounts: u64,
-    access_list_storage_keys: u64,
-) -> u64 {
-    if !version.feature(EvmFeatures::EIP7981) {
-        return 0;
-    }
-    access_list_accounts * ACCESS_LIST_ADDRESS_FLOOR_TOKENS
-        + access_list_storage_keys * ACCESS_LIST_STORAGE_KEY_FLOOR_TOKENS
-}
-
 /// Calculates transaction calldata floor gas.
 pub(super) fn floor_gas(
     version: &Version,
@@ -591,14 +576,17 @@ pub(super) fn floor_gas(
         return 0;
     }
 
-    let non_zero_multiplier = u64::from(params.get(GasId::TxTokenNonZeroByteMultiplier));
-    let mut tokens =
-        access_list_floor_tokens(version, access_list_accounts, access_list_storage_keys);
-    for byte in input {
-        tokens += if *byte == 0 { 1 } else { non_zero_multiplier };
-    }
+    // tokens for access list
+    let al_multiplier = version.gas_params.get(GasId::TxAccessListFloorByteMultiplier) as u64;
+    let mut tokens = (access_list_accounts * 20 + access_list_storage_keys * 32) * al_multiplier;
 
-    u64::from(params.get(GasId::TxFloorCostBase)) + tokens * floor_cost_per_token
+    // tokens for input.
+    let non_zero_multiplier = u64::from(params.get(GasId::TxTokenNonZeroByteMultiplier));
+    let zero_data_len = input.iter().filter(|v| **v == 0).count() as u64;
+    let non_zero_data_len = input.len() as u64 - zero_data_len;
+    tokens += zero_data_len + non_zero_data_len * non_zero_multiplier;
+
+    params.get(GasId::TxFloorCostBase) as u64 + tokens * floor_cost_per_token
 }
 
 /// Calculates intrinsic transaction gas.
@@ -617,8 +605,6 @@ pub(super) fn intrinsic_gas(
     }
     gas += access_list_accounts * u64::from(params.get(GasId::TxAccessListAddressCost));
     gas += access_list_storage_keys * u64::from(params.get(GasId::TxAccessListStorageKeyCost));
-    gas += access_list_floor_tokens(version, access_list_accounts, access_list_storage_keys)
-        * u64::from(params.get(GasId::TxFloorCostPerToken));
     if to.is_create() && version.feature(EvmFeatures::EIP2) {
         gas += u64::from(params.get(GasId::TxCreateCost));
     }
@@ -672,7 +658,7 @@ mod tests {
                 1,
                 1
             ),
-            21_000 + 2400 + 1900 + (80 + 128) * 16
+            21_000 + (2400 + 20 * 64) + (1900 + 32 * 64)
         );
     }
 
