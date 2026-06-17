@@ -20,9 +20,7 @@ use evm2::{
     },
 };
 use evm2_jit_context::evm2_api;
-use revm_bytecode::opcode as op;
 use revm_interpreter::{Gas, Host};
-use revm_primitives::{B256, HashMap, Log, hardfork::SpecId};
 use similar_asserts::assert_eq;
 use std::{fmt, path::Path, sync::OnceLock};
 
@@ -203,7 +201,7 @@ pub static DEF_RD: &[u8] = &[0xbb; 64];
 pub static DEF_DATA: &[u8] = &[0xcc; 64];
 pub const DEF_VALUE: U256 = uint!(123_456_789_U256);
 pub static DEF_STORAGE: OnceLock<HashMap<U256, U256>> = OnceLock::new();
-pub static DEF_CODEMAP: OnceLock<HashMap<Address, revm_bytecode::Bytecode>> = OnceLock::new();
+pub static DEF_CODEMAP: OnceLock<HashMap<Address, Evm2Bytecode>> = OnceLock::new();
 pub const OTHER_ADDR: Address = Address::repeat_byte(0x69);
 pub const DEF_BN: U256 = uint!(500_U256);
 
@@ -230,12 +228,12 @@ pub fn def_storage() -> &'static HashMap<U256, U256> {
     })
 }
 
-pub fn def_codemap() -> &'static HashMap<Address, revm_bytecode::Bytecode> {
+pub fn def_codemap() -> &'static HashMap<Address, Evm2Bytecode> {
     DEF_CODEMAP.get_or_init(|| {
         let mut map = HashMap::default();
         map.insert(
             OTHER_ADDR,
-            revm_bytecode::Bytecode::new_raw(Bytes::from_static(&[
+            Evm2Bytecode::new_legacy(Bytes::from_static(&[
                 op::PUSH1,
                 0x69,
                 op::PUSH1,
@@ -267,7 +265,7 @@ impl EvmTypes for TestEvmTypes {
 pub struct TestHost {
     pub storage: HashMap<U256, U256>,
     pub transient_storage: HashMap<U256, U256>,
-    pub code_map: &'static HashMap<Address, revm_bytecode::Bytecode>,
+    pub code_map: &'static HashMap<Address, Evm2Bytecode>,
     pub selfdestructs: Vec<(Address, Address)>,
     pub logs: Vec<Log>,
     pub gas_params: GasParams,
@@ -424,7 +422,7 @@ impl Host for TestHost {
 
         let code = if load_code {
             // Return actual code if found, otherwise empty bytecode
-            Some(self.code_map.get(&address).cloned().unwrap_or_default())
+            Some(self.code_map.get(&address).map(revm_bytecode_from_evm2).unwrap_or_default())
         } else {
             None
         };
@@ -490,14 +488,8 @@ impl Evm2Host<TestEvmTypes> for TestHost {
         _skip_cold_load: bool,
     ) -> Result<Evm2AccountLoad, InstrStop> {
         let code = self.code_map.get(address);
-        let bytecode = if load_code {
-            code.map(|code| {
-                Evm2Bytecode::new_legacy(Bytes::copy_from_slice(code.original_byte_slice()))
-            })
-            .unwrap_or_default()
-        } else {
-            Evm2Bytecode::default()
-        };
+        let bytecode =
+            if load_code { code.cloned().unwrap_or_default() } else { Evm2Bytecode::default() };
         let balance = U256::from(address.0[19]);
         let code_hash =
             code.map(|code| keccak256(code.original_byte_slice())).unwrap_or(KECCAK_EMPTY);
@@ -929,7 +921,11 @@ fn instruction_result_from_instr_stop(stop: InstrStop) -> InstructionResult {
 struct MemDisplay<'a>(&'a [u8]);
 impl fmt::Debug for MemDisplay<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let chunks = self.0.chunks(32).map(revm_primitives::hex::encode_prefixed);
+        let chunks = self.0.chunks(32).map(hex::encode_prefixed);
         f.debug_list().entries(chunks).finish()
     }
+}
+
+fn revm_bytecode_from_evm2(bytecode: &Evm2Bytecode) -> revm_bytecode::Bytecode {
+    revm_bytecode::Bytecode::new_raw(Bytes::copy_from_slice(bytecode.original_byte_slice()))
 }

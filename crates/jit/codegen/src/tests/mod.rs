@@ -7,14 +7,16 @@
 )]
 
 use crate::*;
+use alloy_primitives::{
+    Address, B256, Bytes, KECCAK256_EMPTY as KECCAK_EMPTY, Log, LogData, U256, hex, keccak256,
+    map::HashMap, uint,
+};
+use evm2::interpreter::op;
 use evm2_jit_builtins::gas;
-use revm_bytecode::opcode as op;
 use revm_context_interface as context_interface;
 use revm_interpreter as interpreter;
 use revm_interpreter::InstructionResult;
-use revm_primitives::{
-    Address, B256, Bytes, KECCAK_EMPTY, Log, LogData, hardfork::SpecId, hex, keccak256,
-};
+use revm_primitives::hardfork::SpecId;
 
 /// `KECCAK256` opcode gas cost (base + dynamic).
 const fn keccak256_cost(len: u64) -> Option<u64> {

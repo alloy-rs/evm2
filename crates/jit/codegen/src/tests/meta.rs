@@ -1,8 +1,9 @@
 use super::{evm2_test_func, with_evm_context};
 use crate::{Backend, EvmCompiler, spec::from_revm_spec_id};
-use revm_bytecode::opcode as op;
+use alloy_primitives::U256;
+use evm2::interpreter::op;
 use revm_interpreter::InstructionResult;
-use revm_primitives::{U256, hardfork::SpecId};
+use revm_primitives::hardfork::SpecId;
 
 // Also tests multiple functions in the same module.
 matrix_tests!(
@@ -28,8 +29,6 @@ matrix_tests!(
 // callable after the IR is cleared, and the second function compiles and runs correctly.
 matrix_tests!(
     clear_ir_between_compiles = |compiler| {
-        use revm_bytecode::opcode as op;
-
         let spec_id = SpecId::CANCUN;
         compiler.inspect_stack(true);
 

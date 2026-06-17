@@ -1,14 +1,20 @@
 --- upstream/crates/revmc-codegen/src/tests/meta.rs
 +++ evm2/crates/jit/codegen/src/tests/meta.rs
-@@ -1,5 +1,5 @@
+@@ -1,8 +1,9 @@
 -use super::with_evm_context;
 -use crate::{Backend, EvmCompiler};
+-use revm_bytecode::opcode as op;
 +use super::{evm2_test_func, with_evm_context};
 +use crate::{Backend, EvmCompiler, spec::from_revm_spec_id};
- use revm_bytecode::opcode as op;
++use alloy_primitives::U256;
++use evm2::interpreter::op;
  use revm_interpreter::InstructionResult;
- use revm_primitives::{U256, hardfork::SpecId};
-@@ -10,11 +10,11 @@
+-use revm_primitives::{U256, hardfork::SpecId};
++use revm_primitives::hardfork::SpecId;
+
+ // Also tests multiple functions in the same module.
+ matrix_tests!(
+@@ -10,11 +11,11 @@
          let bytecode: &[u8] = &[];
          let spec_id = SpecId::CANCUN;
          compiler.gas_metering(false);
@@ -24,7 +30,14 @@
          with_evm_context(bytecode, spec_id, |ecx, stack, stack_len| {
              let r = unsafe { gas_fn.call(stack, stack_len, ecx) };
              assert_eq!(r, InstructionResult::Stop);
-@@ -35,7 +35,9 @@
+@@ -28,14 +29,14 @@
+ // callable after the IR is cleared, and the second function compiles and runs correctly.
+ matrix_tests!(
+     clear_ir_between_compiles = |compiler| {
+-        use revm_bytecode::opcode as op;
+-
+         let spec_id = SpecId::CANCUN;
+         compiler.inspect_stack(true);
 
          // First function: PUSH1 42, STOP.
          let bytecode1: &[u8] = &[op::PUSH1, 42];
@@ -35,7 +48,7 @@
 
          compiler.clear_ir().unwrap();
 
-@@ -43,7 +45,9 @@
+@@ -43,7 +44,9 @@
          // Uses MSTORE to exercise a builtin being re-declared in the new module.
          let bytecode2: &[u8] =
              &[op::PUSH1, 42, op::PUSH1, 0, op::MSTORE, op::PUSH1, 1, op::PUSH1, 2, op::ADD];
@@ -46,7 +59,7 @@
 
          // First function still works after clear_ir + second compilation.
          with_evm_context(bytecode1, spec_id, |ecx, stack, stack_len| {
-@@ -76,8 +80,8 @@
+@@ -76,8 +79,8 @@
      expected: U256,
  ) -> B::FuncId {
      compiler.inspect_stack(true);
@@ -57,7 +70,7 @@
 
      with_evm_context(code, super::DEF_SPEC, |ecx, stack, stack_len| {
          let r = unsafe { f.call(stack, stack_len, ecx) };
-@@ -181,9 +185,9 @@
+@@ -181,9 +184,9 @@
  #[test]
  fn jit_memory_usage_tracking() {
      use super::with_jit_compiler;

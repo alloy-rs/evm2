@@ -1,9 +1,9 @@
 use super::{DEF_SPEC, evm2_test_func, with_evm_context};
 use crate::{Backend, EvmCompiler, spec::from_revm_spec_id};
+use alloy_primitives::U256;
+use evm2::interpreter::op;
 use paste::paste;
-use revm_bytecode::opcode as op;
 use revm_interpreter::InstructionResult;
-use revm_primitives::U256;
 
 macro_rules! fibonacci_tests {
     ($($i:expr),* $(,)?) => {paste! {
@@ -105,7 +105,7 @@ fn fibonacci_rust(n: u16) -> U256 {
 
 #[test]
 fn test_fibonacci_rust() {
-    revm_primitives::uint! {
+    alloy_primitives::uint! {
         assert_eq!(fibonacci_rust(0), 0_U256);
         assert_eq!(fibonacci_rust(1), 1_U256);
         assert_eq!(fibonacci_rust(2), 1_U256);
