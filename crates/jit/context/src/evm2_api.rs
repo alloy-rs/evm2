@@ -19,15 +19,10 @@ use evm2::{
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
     interpreter::{Gas as Evm2Gas, Host as Evm2Host, Interpreter, Message, MessageKind, Word},
-    version::GasId,
+    version::{GasId, GasParams},
 };
 use revm_interpreter::{
-    SharedMemory,
-    bytecode::Bytecode as RevmBytecode,
-    context_interface::{
-        cfg::GasParams as RevmGasParams, primitives::hardfork::SpecId as RevmSpecId,
-    },
-    interpreter_types::MemoryTr,
+    SharedMemory, bytecode::Bytecode as RevmBytecode, interpreter_types::MemoryTr,
     state::AccountInfo as RevmAccountInfo,
 };
 
@@ -61,26 +56,13 @@ struct Evm2JitHostAdapter<'a, T: EvmTypes> {
     block_env: BlockEnv<T>,
     tx_env: &'a TxEnv<T>,
     version: &'a Version,
-    gas_params: RevmGasParams,
     _marker: PhantomData<&'a mut T::Host>,
 }
 
 impl<'a, T: EvmTypes> Evm2JitHostAdapter<'a, T> {
-    fn new(
-        host: &'a mut T::Host,
-        tx_env: &'a TxEnv<T>,
-        version: &'a Version,
-        spec_id: RevmSpecId,
-    ) -> Self {
+    fn new(host: &'a mut T::Host, tx_env: &'a TxEnv<T>, version: &'a Version) -> Self {
         let block_env = *host.block_env();
-        Self {
-            host: NonNull::from(host),
-            block_env,
-            tx_env,
-            version,
-            gas_params: RevmGasParams::new_spec(spec_id),
-            _marker: PhantomData,
-        }
+        Self { host: NonNull::from(host), block_env, tx_env, version, _marker: PhantomData }
     }
 
     fn host_mut(&mut self) -> &mut T::Host {
@@ -145,8 +127,8 @@ impl<T: EvmTypes> JitHost for Evm2JitHostAdapter<'_, T> {
         self.version.max_initcode_size
     }
 
-    fn gas_params(&self) -> &RevmGasParams {
-        &self.gas_params
+    fn gas_params(&self) -> &GasParams {
+        &self.version.gas_params
     }
 
     fn is_amsterdam_eip8037_enabled(&self) -> bool {
@@ -170,8 +152,11 @@ impl<T: EvmTypes> JitHost for Evm2JitHostAdapter<'_, T> {
         Ok(StateLoad::new(
             SelfDestructResult {
                 had_value: result.had_value,
-                target_exists: !result.target_is_empty,
+                value: result.value,
+                target_is_empty: result.target_is_empty,
+                is_cold: result.is_cold,
                 previously_destroyed: result.previously_destroyed,
+                _non_exhaustive: (),
             },
             result.is_cold,
         ))
@@ -197,6 +182,8 @@ impl<T: EvmTypes> JitHost for Evm2JitHostAdapter<'_, T> {
                 original_value: result.original_value,
                 present_value: result.present_value,
                 new_value: result.new_value,
+                is_cold: result.is_cold,
+                _non_exhaustive: (),
             },
             result.is_cold,
         ))
@@ -289,7 +276,7 @@ pub struct EvmContext<'a, T: EvmTypes = BaseEvmTypes> {
     /// Saved RSP from the entry trampoline, used by `revmc_exit` to unwind.
     pub exit_sp: *mut u8,
     /// Cached gas parameters for builtin gas accounting.
-    pub gas_params: RevmGasParams,
+    pub gas_params: GasParams,
     /// Cached base pointer for the current memory context.
     pub mem_base: *mut u8,
     /// Cached length of the current memory context in bytes.
@@ -525,7 +512,6 @@ impl<'a, T: EvmTypes> EvmContext<'a, T> {
         let bytecode = parts.bytecode.original_byte_slice() as *const [u8];
         let calldatasize = parts.message.input.len();
         let spec_id = spec_id_byte(parts.spec);
-        let revm_spec_id = to_revm_spec_id(parts.spec);
         let mut input_scratch = Box::new(Inputs {
             target_address: parts.message.destination,
             bytecode_address: Some(parts.message.code_address),
@@ -534,8 +520,7 @@ impl<'a, T: EvmTypes> EvmContext<'a, T> {
             call_value: parts.message.value,
         });
         let input = input_scratch.as_mut() as *mut Inputs;
-        let mut host_adapter =
-            Box::new(Evm2JitHostAdapter::new(host, parts.tx_env, parts.version, revm_spec_id));
+        let mut host_adapter = Box::new(Evm2JitHostAdapter::new(host, parts.tx_env, parts.version));
         let jit_host = JitHostPtr::from_host(host_adapter.as_mut());
         let mut this = Self {
             memory,
@@ -550,7 +535,7 @@ impl<'a, T: EvmTypes> EvmContext<'a, T> {
             calldatasize,
             exit_result: InstrStop::Stop,
             exit_sp: ptr::null_mut(),
-            gas_params: RevmGasParams::new_spec(revm_spec_id),
+            gas_params: parts.version.gas_params,
             mem_base: ptr::null_mut(),
             mem_len: 0,
             output: Bytes::new(),
@@ -954,11 +939,6 @@ fn create_inner<T: EvmTypes>(
 
 fn spec_id_byte(spec_id: SpecId) -> u8 {
     u8::try_from(u32::from(spec_id)).expect("evm2 SpecId does not fit in u8")
-}
-
-fn to_revm_spec_id(spec_id: SpecId) -> RevmSpecId {
-    let spec_id = spec_id_byte(spec_id);
-    RevmSpecId::try_from_u8(spec_id).expect("evm2 SpecId has no revm equivalent")
 }
 
 #[cfg(test)]

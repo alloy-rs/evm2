@@ -12,7 +12,7 @@ extern crate tracing;
 
 use alloc::vec::Vec;
 use alloy_primitives::{B256, Bytes, KECCAK256_EMPTY, Log, LogData, U256, keccak256};
-use evm2::{SpecId, interpreter::i256};
+use evm2::{SpecId, interpreter::i256, version::GasId};
 use evm2_jit_context::{CallInput, EvmContext, EvmWord, InstrStop, MemoryTr};
 
 pub mod gas;
@@ -195,7 +195,7 @@ fn do_keccak256(
     *out = EvmWord::from_be_bytes(if len == 0 {
         KECCAK256_EMPTY
     } else {
-        gas!(ecx, ecx.gas_params.keccak256_cost(len));
+        gas!(ecx, ecx.gas_params.keccak256_word_cost(len));
         let offset = try_into_usize!(offset);
         ensure_memory(ecx, offset, len)?;
         let data = ecx.memory.slice(offset..offset + len);
@@ -313,7 +313,7 @@ pub unsafe extern "C" fn __revmc_builtin_extcodecopy(
     let rev![address, memory_offset, code_offset, len] = sp;
     let addr = address.to_address();
     let len = try_into_usize!(len);
-    gas!(ecx, ecx.gas_params.extcodecopy(len));
+    gas!(ecx, ecx.gas_params.extcodecopy_cost(len));
 
     let mut memory_offset_usize = 0;
     if len != 0 {
@@ -480,7 +480,7 @@ pub unsafe extern "C" fn __revmc_builtin_sload(
     let address = ecx.input.target_address;
     let key = index.to_u256();
     if spec_enabled(ecx.spec_id, SpecId::BERLIN) {
-        let additional_cold_cost = ecx.gas_params.cold_storage_additional_cost();
+        let additional_cold_cost = u64::from(ecx.gas_params.get(GasId::ColdStorageAdditionalCost));
         let skip_cold = ecx.gas.remaining() < additional_cold_cost;
         let storage = ecx.host.sload_skip_cold_load(address, key, skip_cold)?;
         if storage.is_cold {
@@ -518,14 +518,14 @@ pub unsafe extern "C" fn __revmc_builtin_sstore(
     let is_istanbul = spec_enabled(ecx.spec_id, SpecId::ISTANBUL);
 
     // EIP-2200: If gasleft is less than or equal to gas stipend, fail with OOG.
-    if is_istanbul && ecx.gas.remaining() <= ecx.gas_params.call_stipend() {
+    if is_istanbul && ecx.gas.remaining() <= u64::from(ecx.gas_params.get(GasId::CallStipend)) {
         return Err(InstrStop::ReentrancySentryOOG.into());
     }
 
-    gas!(ecx, ecx.gas_params.sstore_static_gas());
+    gas!(ecx, u64::from(ecx.gas_params.get(GasId::SstoreStatic)));
 
     let state_load = if spec_enabled(ecx.spec_id, SpecId::BERLIN) {
-        let additional_cold_cost = ecx.gas_params.cold_storage_additional_cost();
+        let additional_cold_cost = u64::from(ecx.gas_params.get(GasId::ColdStorageAdditionalCost));
         let skip_cold = ecx.gas.remaining() < additional_cold_cost;
         ecx.host.sstore_skip_cold_load(target, index.to_u256(), value.to_u256(), skip_cold)?
     } else {
@@ -533,7 +533,7 @@ pub unsafe extern "C" fn __revmc_builtin_sstore(
     };
 
     let gp = &ecx.gas_params;
-    gas!(ecx, gp.sstore_dynamic_gas(is_istanbul, &state_load.data, state_load.is_cold));
+    gas!(ecx, gp.sstore_dynamic_gas(is_istanbul, &state_load.data));
 
     // State gas for new slot creation (EIP-8037).
     if ecx.host.is_amsterdam_eip8037_enabled() {
@@ -588,7 +588,7 @@ pub unsafe extern "C" fn __revmc_builtin_log(
     let sp = sp.add(n as usize);
     read_words!(sp, offset, len);
     let len = try_into_usize!(len);
-    gas!(ecx, ecx.gas_params.log_cost(n, len as u64));
+    gas!(ecx, ecx.gas_params.log_cost(n, len));
     let data = if len != 0 {
         let offset = try_into_usize!(offset);
         ensure_memory(ecx, offset, len)?;
@@ -687,20 +687,20 @@ pub unsafe extern "C" fn __revmc_builtin_selfdestruct(
 
     // EIP-161: State trie clearing (invariant-preserving alternative)
     let should_charge_topup = if spec_enabled(ecx.spec_id, SpecId::SPURIOUS_DRAGON) {
-        res.had_value && !res.target_exists
+        res.had_value && res.target_is_empty
     } else {
-        !res.target_exists
+        res.target_is_empty
     };
 
     gas!(ecx, ecx.gas_params.selfdestruct_cost(should_charge_topup, res.is_cold));
 
     // State gas for new account creation (EIP-8037).
     if ecx.host.is_amsterdam_eip8037_enabled() && should_charge_topup {
-        state_gas!(ecx, ecx.gas_params.new_account_state_gas());
+        state_gas!(ecx, u64::from(ecx.gas_params.get(GasId::NewAccountState)));
     }
 
     if !res.previously_destroyed {
-        ecx.gas.record_refund(ecx.gas_params.selfdestruct_refund());
+        ecx.gas.record_refund(i64::from(ecx.gas_params.get(GasId::SelfdestructRefund)));
     }
 
     Err(InstrStop::SelfDestruct.into())

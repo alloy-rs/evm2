@@ -9,8 +9,12 @@ use alloc::vec::Vec;
 use alloy_primitives::{Address, B256, Bytes, Log, U256, ruint};
 use core::{cell::Ref, fmt, mem::MaybeUninit, ops::Range, ptr::NonNull};
 pub use evm2::interpreter::{Gas, InstrStop};
+use evm2::{
+    evm::{SStore, SelfDestructResult as Evm2SelfDestructResult},
+    version::GasParams,
+};
+use revm_interpreter::SharedMemory;
 pub use revm_interpreter::interpreter_types::MemoryTr;
-use revm_interpreter::{SharedMemory, context_interface::cfg::GasParams};
 
 #[doc(hidden)]
 pub type AccountInfoLoad<'a> =
@@ -18,9 +22,9 @@ pub type AccountInfoLoad<'a> =
 #[doc(hidden)]
 pub type LoadError = revm_interpreter::host::LoadError;
 #[doc(hidden)]
-pub type SelfDestructResult = revm_interpreter::SelfDestructResult;
+pub type SelfDestructResult = Evm2SelfDestructResult;
 #[doc(hidden)]
-pub type SStoreResult = revm_interpreter::SStoreResult;
+pub type SStoreResult = SStore;
 #[doc(hidden)]
 pub type StateLoad<T> = revm_interpreter::StateLoad<T>;
 
