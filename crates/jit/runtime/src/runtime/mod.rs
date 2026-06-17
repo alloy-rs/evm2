@@ -246,12 +246,6 @@ impl JitBackend {
         self.inner.shared.resident.get(&key).map(|entry| Arc::clone(&entry))
     }
 
-    /// Returns the maximum message depth eligible for compiled execution.
-    #[inline]
-    pub fn max_compiled_message_depth(&self) -> u16 {
-        self.inner.tuning.max_compiled_message_depth
-    }
-
     /// Like [`get_compiled`](Self::get_compiled), but also records hit/miss stats.
     pub fn get_compiled_tracked(
         &self,

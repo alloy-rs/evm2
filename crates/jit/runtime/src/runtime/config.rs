@@ -257,14 +257,6 @@ pub struct RuntimeTuning {
     /// Defaults to `24 KiB`.
     pub jit_max_bytecode_len: usize,
 
-    /// Maximum message depth eligible for compiled execution. `0` = no limit.
-    ///
-    /// Deeper frames fall back to the interpreter so recursive evm2 execution can reach the EVM
-    /// call-depth limit without exhausting the native stack first.
-    ///
-    /// Defaults to `128`.
-    pub max_compiled_message_depth: u16,
-
     /// Maximum number of JIT compilation jobs in flight.
     ///
     /// Defaults to `2048`.
@@ -366,7 +358,6 @@ impl Default for RuntimeTuning {
             shutdown_timeout: Duration::from_secs(5),
             jit_hot_threshold: 8,
             jit_max_bytecode_len: DEFAULT_JIT_MAX_BYTECODE_LEN,
-            max_compiled_message_depth: 128,
             jit_max_pending_jobs: 2048,
             jit_worker_count: worker_count,
             jit_timeout: Duration::from_secs(5),
