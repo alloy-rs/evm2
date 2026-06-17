@@ -8,9 +8,9 @@ extern crate alloc;
 use alloc::vec::Vec;
 use alloy_primitives::{Address, B256, Bytes, Log, U256, ruint};
 use core::{cell::Ref, fmt, mem::MaybeUninit, ops::Range, ptr::NonNull};
-pub use evm2::interpreter::InstrStop;
+pub use evm2::interpreter::{Gas, InstrStop};
 pub use revm_interpreter::interpreter_types::MemoryTr;
-use revm_interpreter::{Gas, SharedMemory, context_interface::cfg::GasParams};
+use revm_interpreter::{SharedMemory, context_interface::cfg::GasParams};
 
 #[doc(hidden)]
 pub type AccountInfoLoad<'a> =
@@ -115,22 +115,24 @@ pub mod jit_abi {
     use super::*;
 
     #[derive(Clone, Copy, Debug)]
+    #[repr(C)]
     pub struct Gas {
         pub tracker: GasTracker,
         pub memory: MemoryGas,
     }
 
     #[derive(Clone, Copy, Debug)]
+    #[repr(C)]
     pub struct GasTracker {
-        pub limit: u64,
         pub remaining: u64,
+        pub limit: u64,
         pub reservoir: u64,
         pub state_gas_spent: u64,
         pub refunded: i64,
     }
 
-    #[repr(C)]
     #[derive(Clone, Copy, Debug)]
+    #[repr(C)]
     pub struct MemoryGas {
         pub words_num: usize,
         pub expansion_cost: u64,
@@ -368,7 +370,7 @@ fn resize_memory_cold<Memory: MemoryTr>(
     let cost = gas_params.memory_cost(new_num_words);
     let cost = unsafe { gas.memory_mut().set_words_num(new_num_words, cost).unwrap_unchecked() };
 
-    if !gas.record_regular_cost(cost) {
+    if gas.spend(cost).is_err() {
         return Err(InstrStop::MemoryOOG);
     }
     memory.resize(new_size);

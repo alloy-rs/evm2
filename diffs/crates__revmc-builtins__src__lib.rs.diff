@@ -158,7 +158,19 @@
          let additional_cold_cost = ecx.gas_params.cold_storage_additional_cost();
          let skip_cold = ecx.gas.remaining() < additional_cold_cost;
          ecx.host.sstore_skip_cold_load(target, index.to_u256(), value.to_u256(), skip_cold)?
-@@ -635,65 +626,7 @@
+@@ -547,11 +538,6 @@
+     // State gas for new slot creation (EIP-8037).
+     if ecx.host.is_amsterdam_eip8037_enabled() {
+         state_gas!(ecx, gp.sstore_state_gas(&state_load.data));
+-
+-        let refill = gp.sstore_state_gas_refill(&state_load.data);
+-        if refill > 0 {
+-            ecx.gas.refill_reservoir(refill);
+-        }
+     }
+
+     ecx.gas.record_refund(gp.sstore_refund(is_istanbul, &state_load.data));
+@@ -635,65 +621,7 @@
      sp: *mut EvmWord,
      create_kind: CreateKind,
  ) -> BuiltinResult {
@@ -225,7 +237,7 @@
      Ok(())
  }
 
-@@ -703,122 +636,7 @@
+@@ -703,122 +631,7 @@
      sp: *mut EvmWord,
      call_kind: CallKind,
  ) -> BuiltinResult {
@@ -349,7 +361,7 @@
      Ok(())
  }
 
-@@ -826,7 +644,7 @@
+@@ -826,7 +639,7 @@
  pub unsafe extern "C" fn __revmc_builtin_do_return(
      ecx: &mut EvmContext<'_>,
      sp: &mut [EvmWord; 2],
@@ -358,7 +370,7 @@
  ) -> BuiltinResult {
      let rev![offset, len] = sp;
      let len = try_into_usize!(len);
-@@ -837,8 +655,7 @@
+@@ -837,8 +650,7 @@
      } else {
          Bytes::new()
      };
@@ -368,7 +380,7 @@
      Err(result.into())
  }
 
-@@ -847,7 +664,7 @@
+@@ -847,7 +659,7 @@
      ecx: &mut EvmContext<'_>,
      offset: u64,
      len: u64,
@@ -377,7 +389,7 @@
  ) -> BuiltinResult {
      let offset = offset as usize;
      let len = len as usize;
-@@ -857,8 +674,7 @@
+@@ -857,8 +669,7 @@
      } else {
          Bytes::new()
      };
@@ -387,7 +399,7 @@
      Err(result.into())
  }
 
-@@ -875,7 +691,7 @@
+@@ -875,7 +686,7 @@
          ecx.host.selfdestruct(ecx.input.target_address, target.to_address(), skip_cold_load)?;
 
      // EIP-161: State trie clearing (invariant-preserving alternative)
@@ -396,7 +408,7 @@
          res.had_value && !res.target_exists
      } else {
          !res.target_exists
-@@ -892,7 +708,7 @@
+@@ -892,7 +703,7 @@
          ecx.gas.record_refund(ecx.gas_params.selfdestruct_refund());
      }
 

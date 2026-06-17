@@ -8,11 +8,11 @@ use evm2::{
         SelfDestructResult as Evm2SelfDestructResult,
     },
     interpreter::{
-        Host as Evm2Host, InstrStop, Interpreter as Evm2Interpreter, Message as Evm2Message,
+        Gas, Host as Evm2Host, InstrStop, Interpreter as Evm2Interpreter, Message as Evm2Message,
         MessageResult as Evm2MessageResult,
     },
 };
-use evm2_jit_context::{evm2_api, private::revm_interpreter::Gas};
+use evm2_jit_context::evm2_api;
 use similar_asserts::assert_eq;
 use std::{fmt, path::Path, sync::OnceLock};
 
@@ -675,7 +675,7 @@ fn run_compiled_test_case(test_case: &TestCase<'_>, f: EvmCompilerFn) {
             }
 
             if !skip_jit_gas {
-                assert_eq!(ecx.gas.total_gas_spent(), expected_gas, "gas mismatch");
+                assert_eq!(ecx.gas.spent(), expected_gas, "gas mismatch");
             }
         }
 

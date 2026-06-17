@@ -1,6 +1,6 @@
 --- upstream/crates/revmc-context/src/lib.rs
 +++ evm2/crates/jit/context/src/lib.rs
-@@ -6,71 +6,251 @@
+@@ -6,71 +6,253 @@
  extern crate alloc;
 
  use alloc::vec::Vec;
@@ -18,9 +18,9 @@
 -use revm_primitives::{Address, B256, Bytes, Log, U256, hardfork::SpecId, ruint};
 +use alloy_primitives::{Address, B256, Bytes, Log, U256, ruint};
 +use core::{cell::Ref, fmt, mem::MaybeUninit, ops::Range, ptr::NonNull};
-+pub use evm2::interpreter::InstrStop;
++pub use evm2::interpreter::{Gas, InstrStop};
 +pub use revm_interpreter::interpreter_types::MemoryTr;
-+use revm_interpreter::{Gas, SharedMemory, context_interface::cfg::GasParams};
++use revm_interpreter::{SharedMemory, context_interface::cfg::GasParams};
 +
 +#[doc(hidden)]
 +pub type AccountInfoLoad<'a> =
@@ -143,9 +143,10 @@
 -        Self(value)
 +    pub const fn input(&self) -> &CallInput {
 +        &self.input
-+    }
-+}
-+
+     }
+ }
+
+-impl PartialEq<usize> for ResumeAt {
 +#[doc(hidden)]
 +pub mod jit_abi {
 +    pub type Inputs = super::Inputs;
@@ -153,26 +154,28 @@
 +    use super::*;
 +
 +    #[derive(Clone, Copy, Debug)]
++    #[repr(C)]
 +    pub struct Gas {
 +        pub tracker: GasTracker,
 +        pub memory: MemoryGas,
 +    }
 +
 +    #[derive(Clone, Copy, Debug)]
++    #[repr(C)]
 +    pub struct GasTracker {
-+        pub limit: u64,
 +        pub remaining: u64,
++        pub limit: u64,
 +        pub reservoir: u64,
 +        pub state_gas_spent: u64,
 +        pub refunded: i64,
 +    }
 +
-+    #[repr(C)]
 +    #[derive(Clone, Copy, Debug)]
++    #[repr(C)]
 +    pub struct MemoryGas {
 +        pub words_num: usize,
 +        pub expansion_cost: u64,
-     }
++    }
 +
 +    const _: () = {
 +        use core::mem::{align_of, offset_of, size_of};
@@ -199,9 +202,8 @@
 +    pub create: Evm2RecursiveMessageFn,
 +    /// Executes `CALL`, `CALLCODE`, `DELEGATECALL`, or `STATICCALL`.
 +    pub call: Evm2RecursiveMessageFn,
- }
-
--impl PartialEq<usize> for ResumeAt {
++}
++
 +impl Evm2Recursion {
 +    /// Returns dispatch functions that reject recursive message opcodes.
 +    #[inline]
@@ -295,7 +297,7 @@
      }
  }
 
-@@ -87,26 +267,21 @@
+@@ -87,26 +269,21 @@
      /// The memory.
      pub memory: &'a mut SharedMemory,
      /// Input information (target address, caller, input data, call value).
@@ -326,7 +328,7 @@
      ///
      /// Set to `None` when no inspector is active.
      #[doc(hidden)]
-@@ -114,7 +289,7 @@
+@@ -114,7 +291,7 @@
      /// The size of the call input data, cached for CALLDATASIZE.
      pub calldatasize: usize,
      /// The result set by a builtin before exiting via [`revmc_exit`].
@@ -335,7 +337,7 @@
      /// Saved RSP from the entry trampoline, used by [`revmc_exit`] to unwind.
      pub exit_sp: *mut u8,
      /// Cached gas parameters from the host.
-@@ -126,6 +301,12 @@
+@@ -126,6 +303,12 @@
      /// Cached length of the current memory context in bytes.
      /// Refreshed after any memory resize.
      pub mem_len: usize,
@@ -348,7 +350,7 @@
  }
 
  // Static assertions to ensure the struct layout matches expectations.
-@@ -135,10 +316,6 @@
+@@ -135,10 +318,6 @@
 
      // Key fields accessed by JIT code
      assert!(offset_of!(EvmContext<'_>, memory) == 0);
@@ -359,7 +361,7 @@
  };
 
  impl fmt::Debug for EvmContext<'_> {
-@@ -147,47 +324,7 @@
+@@ -147,47 +326,7 @@
      }
  }
 
@@ -408,7 +410,7 @@
      /// Refreshes the cached memory base pointer and length from `SharedMemory`.
      ///
      /// Must be called after any operation that may resize memory.
-@@ -199,12 +336,51 @@
+@@ -199,12 +338,51 @@
      }
  }
 
@@ -444,7 +446,7 @@
 +    let cost = gas_params.memory_cost(new_num_words);
 +    let cost = unsafe { gas.memory_mut().set_words_num(new_num_words, cost).unwrap_unchecked() };
 +
-+    if !gas.record_regular_cost(cost) {
++    if gas.spend(cost).is_err() {
 +        return Err(InstrStop::MemoryOOG);
 +    }
 +    memory.resize(new_size);
@@ -461,7 +463,7 @@
  ///
  /// extern_revmc! {
  ///    /// A simple function.
-@@ -224,7 +400,7 @@
+@@ -224,7 +402,7 @@
                      ecx: ::core::ptr::NonNull<$crate::EvmContext<'_>>,
                      stack: ::core::ptr::NonNull<$crate::EvmStack>,
                      stack_len: ::core::ptr::NonNull<usize>,
@@ -470,7 +472,7 @@
              )+
          }
      };
-@@ -239,7 +415,7 @@
+@@ -239,7 +417,7 @@
      ecx: NonNull<EvmContext<'_>>,
      stack: NonNull<EvmStack>,
      stack_len: NonNull<usize>,
@@ -479,7 +481,7 @@
 
  /// An EVM bytecode function.
  #[derive(Clone, Copy, Debug, Hash)]
-@@ -272,82 +448,6 @@
+@@ -272,82 +450,6 @@
          self.0
      }
 
@@ -562,7 +564,7 @@
      /// Calls the function.
      ///
      /// Arguments:
-@@ -366,7 +466,7 @@
+@@ -366,7 +468,7 @@
          stack: &mut EvmStack,
          stack_len: &mut usize,
          ecx: &mut EvmContext<'_>,
@@ -571,7 +573,7 @@
          revmc_entry(NonNull::from(ecx), NonNull::from(stack), NonNull::from(stack_len), self.0)
      }
 
-@@ -383,7 +483,7 @@
+@@ -383,7 +485,7 @@
          stack: &mut EvmStack,
          stack_len: &mut usize,
          ecx: &mut EvmContext<'_>,
@@ -580,7 +582,7 @@
          self.call(stack, stack_len, ecx)
      }
  }
-@@ -415,20 +515,6 @@
+@@ -415,20 +517,6 @@
          Vec::with_capacity(1024)
      }
 
@@ -601,7 +603,7 @@
      /// Creates a stack from a vector's buffer.
      ///
      /// # Panics
-@@ -826,7 +912,6 @@
+@@ -826,7 +914,6 @@
  #[doc(hidden)]
  pub mod private {
      pub use revm_interpreter;
@@ -609,7 +611,7 @@
  }
 
  #[cfg(test)]
-@@ -851,8 +936,8 @@
+@@ -851,8 +938,8 @@
          _ecx: NonNull<EvmContext<'_>>,
          _stack: NonNull<EvmStack>,
          _stack_len: NonNull<usize>,

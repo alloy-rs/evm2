@@ -1,17 +1,23 @@
 --- upstream/crates/revmc-builtins/src/macros.rs
 +++ evm2/crates/jit/builtins/src/macros.rs
-@@ -3,7 +3,7 @@
+@@ -1,9 +1,9 @@
+ #[collapse_debuginfo(yes)]
+ macro_rules! gas {
      ($ecx:expr, $gas:expr) => {
-         if !$ecx.gas.record_regular_cost($gas) {
+-        if !$ecx.gas.record_regular_cost($gas) {
++        if $ecx.gas.spend($gas).is_err() {
              core::hint::cold_path();
 -            return Err(InstructionResult::OutOfGas.into());
 +            return Err(InstrStop::OutOfGas.into());
          }
      };
  }
-@@ -13,7 +13,7 @@
+@@ -11,9 +11,9 @@
+ #[collapse_debuginfo(yes)]
+ macro_rules! state_gas {
      ($ecx:expr, $gas:expr) => {
-         if !$ecx.gas.record_state_cost($gas) {
+-        if !$ecx.gas.record_state_cost($gas) {
++        if $ecx.gas.spend_state($gas).is_err() {
              core::hint::cold_path();
 -            return Err(InstructionResult::OutOfGas.into());
 +            return Err(InstrStop::OutOfGas.into());

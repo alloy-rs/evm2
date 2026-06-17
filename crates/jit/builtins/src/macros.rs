@@ -1,7 +1,7 @@
 #[collapse_debuginfo(yes)]
 macro_rules! gas {
     ($ecx:expr, $gas:expr) => {
-        if !$ecx.gas.record_regular_cost($gas) {
+        if $ecx.gas.spend($gas).is_err() {
             core::hint::cold_path();
             return Err(InstrStop::OutOfGas.into());
         }
@@ -11,7 +11,7 @@ macro_rules! gas {
 #[collapse_debuginfo(yes)]
 macro_rules! state_gas {
     ($ecx:expr, $gas:expr) => {
-        if !$ecx.gas.record_state_cost($gas) {
+        if $ecx.gas.spend_state($gas).is_err() {
             core::hint::cold_path();
             return Err(InstrStop::OutOfGas.into());
         }

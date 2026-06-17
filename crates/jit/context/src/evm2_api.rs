@@ -22,7 +22,7 @@ use evm2::{
     version::GasId,
 };
 use revm_interpreter::{
-    Gas as RevmGas, SharedMemory,
+    SharedMemory,
     bytecode::Bytecode as RevmBytecode,
     context_interface::{
         cfg::GasParams as RevmGasParams, primitives::hardfork::SpecId as RevmSpecId,
@@ -268,7 +268,7 @@ pub struct EvmContext<'a, T: EvmTypes = BaseEvmTypes> {
     /// Input information (target address, caller, input data, call value).
     pub input: *mut Inputs,
     /// The gas.
-    pub gas: RevmGas,
+    pub gas: Evm2Gas,
     /// Host trait object slot consumed by host-touching builtins.
     pub host: JitHostPtr,
     /// The return data.
@@ -540,7 +540,7 @@ impl<'a, T: EvmTypes> EvmContext<'a, T> {
         let mut this = Self {
             memory,
             input,
-            gas: revm_gas_from_evm2(parts.gas),
+            gas: parts.gas,
             host: jit_host,
             return_data: parts.return_data.as_ref(),
             is_static: parts.is_static,
@@ -573,7 +573,7 @@ impl<'a, T: EvmTypes> EvmContext<'a, T> {
     #[inline]
     pub fn interpreter_state(&self) -> InterpreterState {
         InterpreterState {
-            gas: evm2_gas_from_revm(self.gas),
+            gas: self.gas,
             return_data: self.return_data.to_vec(),
             memory: unsafe { &*self.memory }.context_memory().to_vec(),
             output: None,
@@ -707,8 +707,8 @@ fn get_memory_input_and_out_ranges<T: EvmTypes>(
     Ok((input, output))
 }
 
-fn spend(gas: &mut RevmGas, cost: u64) -> Result<(), InstrStop> {
-    gas.record_regular_cost(cost).then_some(()).ok_or(InstrStop::OutOfGas)
+fn spend(gas: &mut Evm2Gas, cost: u64) -> Result<(), InstrStop> {
+    gas.spend(cost)
 }
 
 fn should_charge_new_account_gas(
@@ -952,26 +952,6 @@ fn create_inner<T: EvmTypes>(
     Ok(())
 }
 
-fn revm_gas_from_evm2(gas: Evm2Gas) -> RevmGas {
-    let mut revm_gas = RevmGas::new_with_regular_gas_and_reservoir(gas.limit(), gas.reservoir());
-    revm_gas.set_remaining(gas.remaining());
-    revm_gas.set_state_gas_spent(i64::try_from(gas.state_gas_spent()).unwrap_or(i64::MAX));
-    revm_gas.set_refund(gas.refunded());
-    revm_gas.memory_mut().words_num = gas.memory().words_num;
-    revm_gas.memory_mut().expansion_cost = gas.memory().expansion_cost;
-    revm_gas
-}
-
-fn evm2_gas_from_revm(gas: RevmGas) -> Evm2Gas {
-    let mut evm2_gas = Evm2Gas::new_with_regular_gas_and_reservoir(gas.limit(), gas.reservoir());
-    evm2_gas.set_remaining(gas.remaining());
-    evm2_gas.set_state_gas_spent(u64::try_from(gas.state_gas_spent()).unwrap_or(0));
-    evm2_gas.set_refunded(gas.refunded());
-    evm2_gas.memory_mut().words_num = gas.memory().words_num;
-    evm2_gas.memory_mut().expansion_cost = gas.memory().expansion_cost;
-    evm2_gas
-}
-
 fn spec_id_byte(spec_id: SpecId) -> u8 {
     u8::try_from(u32::from(spec_id)).expect("evm2 SpecId does not fit in u8")
 }
@@ -1184,7 +1164,7 @@ mod tests {
     }
 
     #[test]
-    fn converts_gas_between_evm2_and_jit_abi() {
+    fn evm2_gas_is_used_directly() {
         let mut gas = Evm2Gas::new_with_regular_gas_and_reservoir(100, 20);
         gas.set_remaining(77);
         gas.set_state_gas_spent(11);
@@ -1192,16 +1172,6 @@ mod tests {
         gas.memory_mut().words_num = 4;
         gas.memory_mut().expansion_cost = 12;
 
-        let revm_gas = revm_gas_from_evm2(gas);
-        assert_eq!(revm_gas.limit(), 100);
-        assert_eq!(revm_gas.remaining(), 77);
-        assert_eq!(revm_gas.reservoir(), 20);
-        assert_eq!(revm_gas.state_gas_spent(), 11);
-        assert_eq!(revm_gas.refunded(), 3);
-        assert_eq!(revm_gas.memory().words_num, 4);
-        assert_eq!(revm_gas.memory().expansion_cost, 12);
-
-        let gas = evm2_gas_from_revm(revm_gas);
         assert_eq!(gas.limit(), 100);
         assert_eq!(gas.remaining(), 77);
         assert_eq!(gas.reservoir(), 20);

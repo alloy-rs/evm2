@@ -16,7 +16,7 @@
 +        SelfDestructResult as Evm2SelfDestructResult,
 +    },
 +    interpreter::{
-+        Host as Evm2Host, InstrStop, Interpreter as Evm2Interpreter, Message as Evm2Message,
++        Gas, Host as Evm2Host, InstrStop, Interpreter as Evm2Interpreter, Message as Evm2Message,
 +        MessageResult as Evm2MessageResult,
 +    },
  };
@@ -27,7 +27,7 @@
 -    interpreter::ExtBytecode,
 -};
 -use revm_primitives::{B256, HashMap, Log, hardfork::SpecId};
-+use evm2_jit_context::{evm2_api, private::revm_interpreter::Gas};
++use evm2_jit_context::evm2_api;
  use similar_asserts::assert_eq;
  use std::{fmt, path::Path, sync::OnceLock};
 
@@ -723,7 +723,7 @@
          ) {
              assert_eq!(
                  actual_return.is_halt(),
-@@ -644,7 +668,7 @@
+@@ -644,141 +668,45 @@
 
              if !skip_jit_memory {
                  assert_eq!(
@@ -732,7 +732,11 @@
                      MemDisplay(expected_memory),
                      "memory mismatch"
                  );
-@@ -655,130 +679,34 @@
+             }
+
+             if !skip_jit_gas {
+-                assert_eq!(ecx.gas.total_gas_spent(), expected_gas, "gas mismatch");
++                assert_eq!(ecx.gas.spent(), expected_gas, "gas mismatch");
              }
          }
 

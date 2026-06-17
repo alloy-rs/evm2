@@ -48,6 +48,7 @@ pub(crate) const EIP7702_PER_EMPTY_ACCOUNT_COST: u32 = 25000;
 
 /// Tracks regular, state, and refunded gas.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[repr(C)]
 pub struct GasTracker {
     remaining: u64,
     gas_limit: u64,
@@ -438,6 +439,7 @@ impl Gas {
 
 /// Memory gas accounting state.
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq, Hash)]
+#[repr(C)]
 pub struct MemoryGas {
     /// Current memory size in EVM words.
     pub words_num: usize,
