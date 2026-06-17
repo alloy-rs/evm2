@@ -17,7 +17,8 @@
 +alloy-primitives.workspace = true
 +evm2 = { workspace = true, optional = true }
  revm-interpreter.workspace = true
- revm-primitives.workspace = true
+-revm-primitives.workspace = true
++revm-primitives = { workspace = true, optional = true }
  ruint.workspace = true
 
 -revm-context = { workspace = true, optional = true }
@@ -32,7 +33,7 @@
 +    "alloy-primitives/std",
 +    "evm2?/std",
      "revm-interpreter/std",
-     "revm-primitives/std",
+-    "revm-primitives/std",
 -    "revm-context?/std",
 -    "revm-context-interface?/std",
 -    "revm-handler?/std",
@@ -47,5 +48,6 @@
 -    "dep:revm-handler",
 -    "dep:revm-inspector",
 -    "dep:revm-state",
++    "revm-primitives?/std",
  ]
-+evm2 = ["dep:evm2"]
++evm2 = ["dep:evm2", "dep:revm-primitives"]

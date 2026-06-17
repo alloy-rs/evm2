@@ -738,7 +738,6 @@ impl EvmWord {
 #[doc(hidden)]
 pub mod private {
     pub use revm_interpreter;
-    pub use revm_primitives;
 }
 
 #[cfg(test)]

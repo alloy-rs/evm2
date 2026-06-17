@@ -71,11 +71,12 @@
 +}
 
 -    /// Returns the raw resume index.
-+impl Evm2Recursion {
-+    /// Returns dispatch functions that reject recursive message opcodes.
-     #[inline]
+-    #[inline]
 -    pub const fn get(self) -> usize {
 -        self.0
++impl Evm2Recursion {
++    /// Returns dispatch functions that reject recursive message opcodes.
++    #[inline]
 +    pub const fn unsupported() -> Self {
 +        Self {
 +            create: unsupported_evm2_recursive_message,
@@ -273,3 +274,11 @@
      /// Calls the function.
      ///
      /// Arguments:
+@@ -826,7 +738,6 @@
+ #[doc(hidden)]
+ pub mod private {
+     pub use revm_interpreter;
+-    pub use revm_primitives;
+ }
+
+ #[cfg(test)]
