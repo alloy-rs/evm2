@@ -1092,6 +1092,26 @@ mod tests {
         EvmWord::from_be_slice(address.as_slice())
     }
 
+    fn write_call_stack(
+        stack: &mut EvmStack,
+        target: Address,
+        gas_limit: u64,
+        value: Option<Word>,
+    ) {
+        stack.set(0, EvmWord::ZERO);
+        stack.set(1, EvmWord::ZERO);
+        stack.set(2, EvmWord::ZERO);
+        stack.set(3, EvmWord::ZERO);
+        if let Some(value) = value {
+            stack.set(4, EvmWord::from(value));
+            stack.set(5, address_word(&target));
+            stack.set(6, EvmWord::from(Word::from(gas_limit)));
+        } else {
+            stack.set(4, address_word(&target));
+            stack.set(5, EvmWord::from(Word::from(gas_limit)));
+        }
+    }
+
     fn prepare_frame<'a>(
         interpreter: &'a mut Interpreter<'_, TestTypes>,
         host: &'a mut TestHost,
@@ -1279,6 +1299,146 @@ mod tests {
     }
 
     #[test]
+    fn evm2_recursive_callcode_maps_message_fields() {
+        let target = Address::from([0x22; 20]);
+        let destination = Address::from([0x33; 20]);
+        let caller = Address::from([0x11; 20]);
+        let stack_value = Word::from(0x12);
+        let mut host = TestHost::default();
+        let tx_env = TxEnv::default();
+        let message = Message {
+            gas_limit: 1_000_000,
+            destination,
+            caller,
+            value: Word::from(0x99),
+            ..Message::default()
+        };
+        let mut interpreter = Interpreter::<TestTypes>::new(
+            Bytecode::new_legacy(AlloyBytes::from_static(&[op::STOP])),
+            &tx_env,
+            &message,
+            false,
+        );
+
+        {
+            let mut frame = prepare_frame(&mut interpreter, &mut host);
+            write_call_stack(frame.stack, target, 50_000, Some(stack_value));
+
+            let result = unsafe {
+                evm2_recursive_call::<TestTypes>(
+                    base_context(&mut frame.ecx),
+                    frame.stack.as_mut_ptr(),
+                    1,
+                )
+            };
+
+            assert_eq!(result, Ok(()));
+            assert_eq!(unsafe { frame.stack.get_unchecked(0) }.to_u256(), Word::from(1));
+        }
+
+        assert_eq!(host.calls.len(), 1);
+        assert_eq!(host.calls[0].kind, MessageKind::CallCode);
+        assert_eq!(host.calls[0].destination, destination);
+        assert_eq!(host.calls[0].caller, destination);
+        assert_eq!(host.calls[0].value, stack_value);
+        assert_eq!(host.calls[0].code_address, target);
+        assert!(!host.call_static_flags[0]);
+    }
+
+    #[test]
+    fn evm2_recursive_delegatecall_maps_message_fields() {
+        let target = Address::from([0x22; 20]);
+        let destination = Address::from([0x33; 20]);
+        let caller = Address::from([0x11; 20]);
+        let current_value = Word::from(0x99);
+        let mut host = TestHost::default();
+        let tx_env = TxEnv::default();
+        let message = Message {
+            gas_limit: 1_000_000,
+            destination,
+            caller,
+            value: current_value,
+            ..Message::default()
+        };
+        let mut interpreter = Interpreter::<TestTypes>::new(
+            Bytecode::new_legacy(AlloyBytes::from_static(&[op::STOP])),
+            &tx_env,
+            &message,
+            false,
+        );
+
+        {
+            let mut frame = prepare_frame(&mut interpreter, &mut host);
+            write_call_stack(frame.stack, target, 50_000, None);
+
+            let result = unsafe {
+                evm2_recursive_call::<TestTypes>(
+                    base_context(&mut frame.ecx),
+                    frame.stack.as_mut_ptr(),
+                    2,
+                )
+            };
+
+            assert_eq!(result, Ok(()));
+            assert_eq!(unsafe { frame.stack.get_unchecked(0) }.to_u256(), Word::from(1));
+        }
+
+        assert_eq!(host.calls.len(), 1);
+        assert_eq!(host.calls[0].kind, MessageKind::DelegateCall);
+        assert_eq!(host.calls[0].destination, destination);
+        assert_eq!(host.calls[0].caller, caller);
+        assert_eq!(host.calls[0].value, current_value);
+        assert_eq!(host.calls[0].code_address, target);
+        assert!(!host.call_static_flags[0]);
+    }
+
+    #[test]
+    fn evm2_recursive_staticcall_maps_message_fields() {
+        let target = Address::from([0x22; 20]);
+        let destination = Address::from([0x33; 20]);
+        let caller = Address::from([0x11; 20]);
+        let mut host = TestHost::default();
+        let tx_env = TxEnv::default();
+        let message = Message {
+            gas_limit: 1_000_000,
+            destination,
+            caller,
+            value: Word::from(0x99),
+            ..Message::default()
+        };
+        let mut interpreter = Interpreter::<TestTypes>::new(
+            Bytecode::new_legacy(AlloyBytes::from_static(&[op::STOP])),
+            &tx_env,
+            &message,
+            false,
+        );
+
+        {
+            let mut frame = prepare_frame(&mut interpreter, &mut host);
+            write_call_stack(frame.stack, target, 50_000, None);
+
+            let result = unsafe {
+                evm2_recursive_call::<TestTypes>(
+                    base_context(&mut frame.ecx),
+                    frame.stack.as_mut_ptr(),
+                    3,
+                )
+            };
+
+            assert_eq!(result, Ok(()));
+            assert_eq!(unsafe { frame.stack.get_unchecked(0) }.to_u256(), Word::from(1));
+        }
+
+        assert_eq!(host.calls.len(), 1);
+        assert_eq!(host.calls[0].kind, MessageKind::StaticCall);
+        assert_eq!(host.calls[0].destination, target);
+        assert_eq!(host.calls[0].caller, destination);
+        assert_eq!(host.calls[0].value, Word::ZERO);
+        assert_eq!(host.calls[0].code_address, target);
+        assert!(host.call_static_flags[0]);
+    }
+
+    #[test]
     fn evm2_recursive_create_executes_message() {
         let created = Address::from([0x77; 20]);
         let initcode = [op::STOP];
@@ -1320,6 +1480,57 @@ mod tests {
         assert_eq!(host.calls.len(), 1);
         assert_eq!(host.calls[0].kind, MessageKind::Create);
         assert_eq!(host.calls[0].input.as_ref(), initcode);
+    }
+
+    #[test]
+    fn evm2_recursive_create2_maps_salt() {
+        let created = Address::from([0x77; 20]);
+        let initcode = [op::STOP];
+        let salt = EvmWord::from(Word::from(0xabcdu64));
+        let mut host = TestHost {
+            execute_result: MessageResult {
+                stop: InstrStop::Return,
+                gas: GasTracker::new(11),
+                created_address: Some(created),
+                ..MessageResult::default()
+            },
+            ..TestHost::default()
+        };
+        let tx_env = TxEnv::default();
+        let message = Message { gas_limit: 1_000_000, ..Message::default() };
+        let mut interpreter = Interpreter::<TestTypes>::new(
+            Bytecode::new_legacy(AlloyBytes::from_static(&[op::STOP])),
+            &tx_env,
+            &message,
+            false,
+        );
+
+        {
+            let mut frame = prepare_frame(&mut interpreter, &mut host);
+            unsafe { &mut *frame.ecx.memory }.resize(0, 1).unwrap();
+            unsafe { &mut *frame.ecx.memory }.set(0, &initcode);
+            frame.stack.set(0, salt);
+            frame.stack.set(1, EvmWord::from(Word::from(initcode.len())));
+            frame.stack.set(2, EvmWord::ZERO);
+            frame.stack.set(3, EvmWord::ZERO);
+
+            let result = unsafe {
+                evm2_recursive_create::<TestTypes>(
+                    base_context(&mut frame.ecx),
+                    frame.stack.as_mut_ptr(),
+                    1,
+                )
+            };
+
+            assert_eq!(result, Ok(()));
+            assert_eq!(unsafe { frame.stack.get_unchecked(0) }, &address_word(&created));
+            assert!(frame.ecx.return_data.is_empty());
+        }
+
+        assert_eq!(host.calls.len(), 1);
+        assert_eq!(host.calls[0].kind, MessageKind::Create2);
+        assert_eq!(host.calls[0].input.as_ref(), initcode);
+        assert_eq!(host.calls[0].salt, B256::from(salt.to_be_bytes()));
     }
 
     unsafe extern "C" fn evm2_return_output(
