@@ -1,11 +1,16 @@
 --- upstream/crates/revmc-builtins/src/ir.rs
 +++ evm2/crates/jit/builtins/src/ir.rs
-@@ -1,4 +1,4 @@
+@@ -1,8 +1,8 @@
 -use revmc_backend::{
 +use evm2_jit_backend::{
      Attribute, Backend, Builder, CallConv, FunctionAttributeLocation, TypeMethods,
  };
 
+-// Must be kept in sync with `remvc-build`.
++// Must be kept in sync with `evm2-jit-build`.
+ const MANGLE_PREFIX: &str = "__revmc_builtin_";
+
+ /// Builtin cache.
 @@ -53,7 +53,7 @@
          let ret = builtin.ret(bcx);
          let params = builtin.params(bcx);

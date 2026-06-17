@@ -1,0 +1,11 @@
+--- upstream/crates/revmc-build/src/lib.rs
++++ evm2/crates/jit/build/src/lib.rs
+@@ -2,7 +2,7 @@
+ #![cfg_attr(not(test), warn(unused_extern_crates))]
+ #![cfg_attr(docsrs, feature(doc_cfg))]
+
+-// Must be kept in sync with `remvc-builtins`.
++// Must be kept in sync with `evm2-jit-builtins`.
+ const MANGLE_PREFIX: &str = "__revmc_builtin_";
+
+ /// Emits the linker flag to export all the necessary symbols.

@@ -2,7 +2,7 @@ use evm2_jit_backend::{
     Attribute, Backend, Builder, CallConv, FunctionAttributeLocation, TypeMethods,
 };
 
-// Must be kept in sync with `remvc-build`.
+// Must be kept in sync with `evm2-jit-build`.
 const MANGLE_PREFIX: &str = "__revmc_builtin_";
 
 /// Builtin cache.
