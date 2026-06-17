@@ -65,7 +65,7 @@ pub fn maybe_run_jit_helper() -> eyre::Result<ControlFlow<()>> {
     }
     #[cfg(not(all(feature = "llvm", unix)))]
     {
-        if std::env::var_os("EVM2_JIT_JIT_HELPER").is_some() {
+        if std::env::var_os("EVM2_JIT_HELPER").is_some() {
             eyre::bail!("out-of-process JIT helper is only available on Unix with LLVM")
         }
         Ok(ControlFlow::Continue(()))

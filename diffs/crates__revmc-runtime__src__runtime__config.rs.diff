@@ -13,10 +13,10 @@
 -const JIT_HELPER_PATH_ENV: &str = "REVMC_JIT_HELPER_PATH";
 -const JIT_HELPER_MEMORY_LIMIT_ENV: &str = "REVMC_JIT_HELPER_MEMORY_LIMIT_BYTES";
 -const JIT_HELPER_CPU_COUNT_ENV: &str = "REVMC_JIT_HELPER_CPU_COUNT";
-+const JIT_MODE_ENV: &str = "EVM2_JIT_JIT_MODE";
-+const JIT_HELPER_PATH_ENV: &str = "EVM2_JIT_JIT_HELPER_PATH";
-+const JIT_HELPER_MEMORY_LIMIT_ENV: &str = "EVM2_JIT_JIT_HELPER_MEMORY_LIMIT_BYTES";
-+const JIT_HELPER_CPU_COUNT_ENV: &str = "EVM2_JIT_JIT_HELPER_CPU_COUNT";
++const JIT_MODE_ENV: &str = "EVM2_JIT_MODE";
++const JIT_HELPER_PATH_ENV: &str = "EVM2_JIT_HELPER_PATH";
++const JIT_HELPER_MEMORY_LIMIT_ENV: &str = "EVM2_JIT_HELPER_MEMORY_LIMIT_BYTES";
++const JIT_HELPER_CPU_COUNT_ENV: &str = "EVM2_JIT_HELPER_CPU_COUNT";
  const DEFAULT_JIT_MAX_BYTECODE_LEN: usize = 24 * 1024;
 
  /// Runtime configuration.
@@ -53,8 +53,8 @@
      ///
 -    /// Recognized variables are `REVMC_JIT_MODE`, `REVMC_JIT_HELPER_PATH`,
 -    /// `REVMC_JIT_HELPER_MEMORY_LIMIT_BYTES`, and `REVMC_JIT_HELPER_CPU_COUNT`.
-+    /// Recognized variables are `EVM2_JIT_JIT_MODE`, `EVM2_JIT_JIT_HELPER_PATH`,
-+    /// `EVM2_JIT_JIT_HELPER_MEMORY_LIMIT_BYTES`, and `EVM2_JIT_JIT_HELPER_CPU_COUNT`.
++    /// Recognized variables are `EVM2_JIT_MODE`, `EVM2_JIT_HELPER_PATH`,
++    /// `EVM2_JIT_HELPER_MEMORY_LIMIT_BYTES`, and `EVM2_JIT_HELPER_CPU_COUNT`.
      pub fn with_env_overrides(mut self) -> eyre::Result<Self> {
          if let Some(mode) = env_var(JIT_MODE_ENV) {
              self.jit_mode = mode.parse().map_err(|e: String| eyre::eyre!("{JIT_MODE_ENV}: {e}"))?;

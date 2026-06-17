@@ -37,7 +37,7 @@ use std::{
 use wait_timeout::ChildExt;
 use wincode::{SchemaRead, SchemaWrite};
 
-const HELPER_ENV: &str = "EVM2_JIT_JIT_HELPER";
+const HELPER_ENV: &str = "EVM2_JIT_HELPER";
 const GAS_PARAM_COUNT: usize = GasId::COUNT;
 
 type GasParamPairs = Vec<(u8, u32)>;
