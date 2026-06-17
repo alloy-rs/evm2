@@ -416,7 +416,7 @@ impl Host for TestHost {
         load_code: bool,
         _skip_cold_load: bool,
     ) -> Result<AccountInfoLoad<'_>, LoadError> {
-        use revm_state::AccountInfo;
+        use revm_interpreter::state::AccountInfo;
         use std::borrow::Cow;
 
         let code = if load_code {
@@ -925,8 +925,10 @@ impl fmt::Debug for MemDisplay<'_> {
     }
 }
 
-fn revm_bytecode_from_evm2(bytecode: &Evm2Bytecode) -> revm_state::Bytecode {
-    revm_state::Bytecode::new_raw(Bytes::copy_from_slice(bytecode.original_byte_slice()))
+fn revm_bytecode_from_evm2(bytecode: &Evm2Bytecode) -> revm_interpreter::bytecode::Bytecode {
+    revm_interpreter::bytecode::Bytecode::new_raw(Bytes::copy_from_slice(
+        bytecode.original_byte_slice(),
+    ))
 }
 
 fn revm_spec_id_from_evm2(spec_id: SpecId) -> context_interface::primitives::hardfork::SpecId {

@@ -13,9 +13,8 @@ use alloy_primitives::{
 };
 use evm2::{SpecId, interpreter::op};
 use evm2_jit_builtins::gas;
-use revm_context_interface as context_interface;
 use revm_interpreter as interpreter;
-use revm_interpreter::InstructionResult;
+use revm_interpreter::{InstructionResult, context_interface};
 
 /// `KECCAK256` opcode gas cost (base + dynamic).
 const fn keccak256_cost(len: u64) -> Option<u64> {

@@ -189,7 +189,13 @@
          }
      }
  }
-@@ -381,7 +421,7 @@
+@@ -376,12 +416,12 @@
+         load_code: bool,
+         _skip_cold_load: bool,
+     ) -> Result<AccountInfoLoad<'_>, LoadError> {
+-        use revm_state::AccountInfo;
++        use revm_interpreter::state::AccountInfo;
+         use std::borrow::Cow;
 
          let code = if load_code {
              // Return actual code if found, otherwise empty bytecode
@@ -589,7 +595,7 @@
                      MemDisplay(expected_memory),
                      "memory mismatch"
                  );
-@@ -655,130 +850,87 @@
+@@ -655,130 +850,89 @@
              }
          }
 
@@ -740,8 +746,10 @@
 -        }
 -        (a, b) => assert_eq!(a, b, "next action mismatch"),
 -    }
-+fn revm_bytecode_from_evm2(bytecode: &Evm2Bytecode) -> revm_state::Bytecode {
-+    revm_state::Bytecode::new_raw(Bytes::copy_from_slice(bytecode.original_byte_slice()))
++fn revm_bytecode_from_evm2(bytecode: &Evm2Bytecode) -> revm_interpreter::bytecode::Bytecode {
++    revm_interpreter::bytecode::Bytecode::new_raw(Bytes::copy_from_slice(
++        bytecode.original_byte_slice(),
++    ))
  }
 
 -/// Insert a call outcome into the interpreter state (for testing call_with_interpreter).
