@@ -23,10 +23,7 @@ use alloy_consensus::{
     transaction::{Recovered, Transaction, TxEip4844Variant},
 };
 use alloy_eips::{eip2718::Typed2718, eip2930::AccessList};
-use alloy_primitives::{
-    Address, B256, Bytes, KECCAK256_EMPTY, TxKind, U256,
-    map::HashSet,
-};
+use alloy_primitives::{Address, B256, Bytes, KECCAK256_EMPTY, TxKind, U256, map::HashSet};
 
 /// Ethereum transaction envelope containing recovered transactions.
 #[derive(Clone, Debug, PartialEq, Eq)]

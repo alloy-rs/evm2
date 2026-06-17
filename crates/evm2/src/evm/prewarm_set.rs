@@ -71,10 +71,7 @@ impl PrewarmSet {
     /// Creates a new, empty warm-address set.
     #[inline]
     pub fn new() -> Self {
-        Self {
-            short_addresses: vec![false; SHORT_ADDRESS_CAP],
-            access_list: AddressMap::default(),
-        }
+        Self { short_addresses: vec![false; SHORT_ADDRESS_CAP], access_list: AddressMap::default() }
     }
 
     /// Returns the access list (non-short warm addresses and all warm storage slots).
