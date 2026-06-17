@@ -249,7 +249,7 @@ mod tests {
         // non-revertible base warm set, and the unchanged cached entry emits no state change.
         assert!(state.prewarmset().is_warm(&account));
         assert!(state.account(&account, false).unwrap().is_warm());
-        assert!(state.build_state_changes().is_empty());
+        assert!(!state.build_state_changes().is_changed());
     }
 
     #[test]
@@ -267,7 +267,7 @@ mod tests {
 
         state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
         assert!(state.storage_slot(&account, key, false).unwrap().is_warm());
-        assert!(state.build_state_changes().is_empty());
+        assert!(!state.build_state_changes().is_changed());
     }
 
     #[test]
@@ -287,7 +287,7 @@ mod tests {
         state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
         assert!(!state.storage_slot(&account, key, false).unwrap().is_warm());
         assert_eq!(state.storage_slot(&account, key, false).unwrap().current(), value);
-        assert!(state.build_state_changes().is_empty());
+        assert!(!state.build_state_changes().is_changed());
 
         assert!(state.storage_slot(&account, key, false).unwrap().warm());
     }

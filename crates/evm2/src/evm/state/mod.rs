@@ -11,7 +11,7 @@ mod tracked;
 use account::Account;
 pub use account::{AccountHandle, AccountInfo};
 pub use block::BlockStateAccumulator;
-pub use changes::{StateChanges, StorageChangeSet};
+pub use changes::{AccountChange, StateChanges};
 pub use journal::{JournalEntry, StateCheckpoint};
 pub use storage::{StorageHandle, StorageOverlay, StorageSlot, StorageSlotHandle};
 pub use stream::{
@@ -703,8 +703,10 @@ impl State {
             }
         }
 
+        // Restore the selfdestruct set without clearing it: `build_state_changes` reads it to flag
+        // selfdestructed accounts, and `clear_transaction_state` clears it at the end of the
+        // transaction lifecycle.
         self.selfdestructs = selfdestructs;
-        self.selfdestructs.clear();
 
         for address in touched {
             if let Some(entry) = self.accounts.get_mut(&address) {
@@ -795,39 +797,36 @@ impl State {
         let mut changes = StateChanges::default();
 
         for (&address, entry) in self.accounts.iter() {
-            if Self::account_changed(entry.original.as_ref(), entry.present.as_ref()) {
-                changes.accounts.insert(
-                    address,
-                    Tracked::from_parts(entry.original.clone(), entry.present.clone()),
-                );
-            }
-            // Record accounts created this transaction. A created account that already held a
-            // balance keeps a `Some` original, so the delta alone cannot reveal the creation.
-            if entry.just_created && entry.present.is_some() {
-                changes.created.insert(address);
-            }
+            changes.accounts.insert(
+                address,
+                AccountChange {
+                    original: entry.original.clone(),
+                    current: entry.present.clone(),
+                    storage: U256Map::default(),
+                    wipe_storage: false,
+                    // `just_created` is preserved across selfdestruct finalization, so it also
+                    // covers accounts that were created and then destroyed in the same transaction.
+                    created: entry.just_created,
+                    selfdestructed: self.selfdestructs.contains(&address),
+                },
+            );
             if let Some(account) = entry.present.as_ref()
                 && let Some((code_hash, code)) = Self::changed_code(entry.code_changed, account)
             {
-                changes.code.insert(code_hash, code.clone());
+                changes.code.entry(code_hash).or_insert_with(|| code.clone());
             }
         }
 
+        // Fold per-account storage in, materializing an entry for any storage-only account whose
+        // info is unchanged by resolving it from the backing database.
+        let database = &self.inner.database;
         for (&address, storage) in &self.storage {
-            let mut set = StorageChangeSet {
-                wipe: storage.wiped,
-                slots: U256Map::default(),
-                _non_exhaustive: (),
-            };
-            for (&key, slot) in &storage.slots {
-                let tracked = &slot.value;
-                if Self::storage_slot_changed(set.wipe, tracked) {
-                    set.slots.insert(key, Tracked::from_parts(tracked.original, tracked.current));
-                }
-            }
-            if set.wipe || !set.slots.is_empty() {
-                changes.storage.insert(address, set);
-            }
+            let entry = changes.accounts.entry(address).or_insert_with(|| {
+                let info = database.account_info(&address).cloned();
+                AccountChange { original: info.clone(), current: info, ..AccountChange::default() }
+            });
+            entry.wipe_storage = storage.wiped;
+            entry.storage = storage.slots.iter().map(|(&key, slot)| (key, slot.value)).collect();
         }
 
         changes

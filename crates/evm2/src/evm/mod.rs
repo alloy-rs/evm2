@@ -164,9 +164,9 @@ pub use tx::{ExecutedTx, TxResult, TxResultWithState};
 
 mod state;
 pub use state::{
-    AccountChangeRef, AccountHandle, AccountInfo, AccountInfoRef, BlockStateAccumulator,
-    JournalEntry, NoopChangeSink, State, StateChangeSink, StateChangeSource, StateChanges,
-    StateCheckpoint, StateInner, StorageChange, StorageChangeSet, StorageHandle, StorageOverlay,
+    AccountChange, AccountChangeRef, AccountHandle, AccountInfo, AccountInfoRef,
+    BlockStateAccumulator, JournalEntry, NoopChangeSink, State, StateChangeSink, StateChangeSource,
+    StateChanges, StateCheckpoint, StateInner, StorageChange, StorageHandle, StorageOverlay,
     StorageSlot, StorageSlotHandle, Tee, Tracked,
 };
 
@@ -633,6 +633,12 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     #[inline]
     pub const fn feature(&self, feature: EvmFeatures) -> bool {
         self.features.contains(feature)
+    }
+
+    /// Returns the active EVM feature set.
+    #[inline]
+    pub const fn get_features(&self) -> EvmFeatures {
+        self.features
     }
 
     #[inline]
@@ -2163,13 +2169,15 @@ mod tests {
             evm.transact(&test_tx(7)).expect("lifecycle transaction should execute").detach();
 
         assert_eq!(result.result.logs.len(), 1);
-        let storage = result
+        let account_change = result
             .state_changes
-            .storage
+            .accounts
             .get(&LIFECYCLE_ACCOUNT)
             .expect("storage change should be present");
-        let slot =
-            storage.slots.get(&LIFECYCLE_STORAGE_KEY).expect("storage slot should be present");
+        let slot = account_change
+            .storage
+            .get(&LIFECYCLE_STORAGE_KEY)
+            .expect("storage slot should be present");
         assert_eq!(slot.original, Word::from(1));
         assert_eq!(slot.current, Word::from(7));
         assert_eq!(
@@ -2461,7 +2469,7 @@ mod tests {
         let account = changes.accounts.get(&target).expect("empty destination should be deleted");
         assert!(account.original.is_some());
         assert_eq!(account.current, None);
-        assert!(changes.storage.get(&target).expect("storage should be wiped").wipe);
+        assert!(account.is_storage_wiped());
     }
 
     #[test]

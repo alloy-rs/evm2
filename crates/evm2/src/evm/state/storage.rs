@@ -363,9 +363,9 @@ mod tests {
         assert_eq!(state.storage_slot(&account, cold_key, false).unwrap().current(), Word::ZERO);
 
         let changes = state.build_state_changes();
-        let storage = changes.storage.get(&account).expect("wipe must be emitted");
-        assert!(storage.wipe);
-        assert!(storage.slots.is_empty());
+        let account_change = changes.accounts.get(&account).expect("wipe must be emitted");
+        assert!(account_change.is_storage_wiped());
+        assert!(account_change.changed_storage().next().is_none());
     }
 
     #[test]
@@ -389,7 +389,7 @@ mod tests {
         state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
         assert!(!state.storage(&address).is_wiped());
         assert_eq!(state.storage_slot(&address, key, false).unwrap().current(), Word::from(7));
-        assert!(state.build_state_changes().is_empty());
+        assert!(!state.build_state_changes().is_changed());
     }
 
     #[test]
@@ -418,7 +418,7 @@ mod tests {
         state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
         assert!(!state.storage_slot(&address, key, false).unwrap().is_warm());
         assert_eq!(state.storage_slot(&address, key, false).unwrap().current(), Word::from(10));
-        assert!(state.build_state_changes().is_empty());
+        assert!(!state.build_state_changes().is_changed());
     }
 
     #[test]
@@ -437,7 +437,7 @@ mod tests {
         }
         // Loading caches the value but a read-only handle records no transition.
         state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
-        assert!(state.build_state_changes().is_empty());
+        assert!(!state.build_state_changes().is_changed());
     }
 
     #[test]

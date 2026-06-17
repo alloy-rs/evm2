@@ -116,7 +116,7 @@ impl AccountInfo {
 /// overlay account, driving transaction-finalization and change-emission rules. They are meaningful
 /// only while `present` is `Some`.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(crate) struct Account {
+pub struct Account {
     /// Account info at the start of the transaction. `None` means the account did not exist.
     pub(crate) original: Option<AccountInfo>,
     /// Present account overlay after mutations. `None` means the account is absent/deleted.
@@ -534,7 +534,7 @@ mod tests {
         state.rollback(checkpoint, Version::base(SpecId::FRONTIER).features);
         assert!(!state.account(&address, false).unwrap().is_warm());
         assert!(state.account_info_untracked(&address).unwrap().is_none());
-        assert!(state.build_state_changes().is_empty());
+        assert!(!state.build_state_changes().is_changed());
     }
 
     #[test]
@@ -576,7 +576,7 @@ mod tests {
         assert_eq!(info.balance, Word::from(10));
         assert_eq!(info.nonce, 2);
         assert_eq!(info.code_hash, original_code_hash);
-        assert!(state.build_state_changes().is_empty());
+        assert!(!state.build_state_changes().is_changed());
     }
 
     #[test]
@@ -594,7 +594,7 @@ mod tests {
         }
         // Loading preserves the account but a read-only handle records no transition.
         state.rollback(checkpoint, crate::Version::base(crate::SpecId::FRONTIER).features);
-        assert!(state.build_state_changes().is_empty());
+        assert!(!state.build_state_changes().is_changed());
     }
 
     #[test]

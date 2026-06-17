@@ -502,7 +502,7 @@ pub fn populate_state_diff(
     db: &mut dyn DynDatabase,
     state_changes: &StateChanges,
 ) -> DbResult<()> {
-    for (addr, changed_acc) in &super::account_changes(state_changes, db)? {
+    for (addr, changed_acc) in state_changes.accounts.iter() {
         // if the account was selfdestructed and created during the transaction, we can ignore it
         if changed_acc.is_selfdestructed() && changed_acc.is_created() {
             continue;
@@ -534,7 +534,7 @@ pub fn populate_state_diff(
 
             // new storage values are marked as added,
             // however we're filtering changed here to avoid adding entries for the zero value
-            for (key, slot) in changed_acc.storage().filter(|(_, slot)| slot.is_changed()) {
+            for (key, slot) in changed_acc.storage.iter().filter(|(_, slot)| slot.is_changed()) {
                 entry.storage.insert((*key).into(), Delta::Added(slot.current.into()));
             }
         } else {
@@ -547,7 +547,7 @@ pub fn populate_state_diff(
             }
 
             // update _changed_ storage values
-            for (key, slot) in changed_acc.storage().filter(|(_, slot)| slot.is_changed()) {
+            for (key, slot) in changed_acc.storage.iter().filter(|(_, slot)| slot.is_changed()) {
                 entry.storage.insert(
                     (*key).into(),
                     Delta::changed(slot.original.into(), slot.current.into()),

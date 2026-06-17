@@ -347,33 +347,24 @@ pub(super) fn validate_sender<T: EvmTypes<Host = Evm<T>>>(
     nonce: u64,
     max_upfront: U256,
 ) -> HandlerResult<AccountInfo> {
-    let sender_info = host
-        .state
-        .account_info_untracked(&caller)
-        .map_err(|code| host.db_error_handler(code))?
-        .unwrap_or_default();
-    if host.feature(EvmFeatures::EIP3607) && sender_info.code_hash != KECCAK256_EMPTY {
-        let code = host
-            .state
-            .account(&caller, false)
-            .map_err(db_error_handler!(host))?
-            .load_code()
-            .map_err(db_error_handler!(host))?;
+    let feature = host.get_features();
+    let mut sender_info = host.state.account(&caller, false).map_err(db_error_handler!(host))?;
+    if feature.contains(EvmFeatures::EIP3607) && sender_info.code_hash() != KECCAK256_EMPTY {
+        let code = sender_info.load_code().map_err(db_error_handler!(host))?;
         if !code.is_empty() && !code.is_eip7702() {
             return Err(HandlerError::RejectCallerWithCode);
         }
     }
-    if host.feature(EvmFeatures::NONCE_CHECK) && sender_info.nonce != nonce {
-        return Err(HandlerError::InvalidNonce { expected: sender_info.nonce, got: nonce });
+    if feature.contains(EvmFeatures::NONCE_CHECK) && sender_info.nonce() != nonce {
+        return Err(HandlerError::InvalidNonce { expected: sender_info.nonce(), got: nonce });
     }
-    if host.feature(EvmFeatures::BALANCE_CHECK) && sender_info.balance < max_upfront {
+    if feature.contains(EvmFeatures::BALANCE_CHECK) && sender_info.balance() < max_upfront {
         return Err(HandlerError::InsufficientFunds);
     }
-    if !host.feature(EvmFeatures::BALANCE_CHECK) && sender_info.balance < max_upfront {
-        let delta = max_upfront - sender_info.balance;
-        host.state.account(&caller, false).map_err(db_error_handler!(host))?.add_balance(delta);
+    if !feature.contains(EvmFeatures::BALANCE_CHECK) && sender_info.balance() < max_upfront {
+        sender_info.add_balance(max_upfront - sender_info.balance());
     }
-    Ok(sender_info)
+    Ok(sender_info.get().cloned().unwrap_or_default())
 }
 
 pub(super) fn warm_base_accounts<T: EvmTypes<Host = Evm<T>>>(
