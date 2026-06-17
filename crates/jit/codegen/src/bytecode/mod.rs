@@ -224,7 +224,7 @@ impl<'a> Bytecode<'a> {
 
     #[cfg(test)]
     pub(crate) fn test(code: impl Into<Cow<'a, [u8]>>) -> Self {
-        Self::new(code, crate::spec::from_revm_spec_id(crate::tests::DEF_SPEC), None)
+        Self::new(code, crate::tests::DEF_SPEC, None)
     }
 
     #[instrument(name = "Bytecode::new", level = "debug", skip_all)]

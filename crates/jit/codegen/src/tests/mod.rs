@@ -11,12 +11,11 @@ use alloy_primitives::{
     Address, B256, Bytes, KECCAK256_EMPTY as KECCAK_EMPTY, Log, LogData, U256, hex, keccak256,
     map::HashMap, uint,
 };
-use evm2::interpreter::op;
+use evm2::{SpecId, interpreter::op};
 use evm2_jit_builtins::gas;
 use revm_context_interface as context_interface;
 use revm_interpreter as interpreter;
 use revm_interpreter::InstructionResult;
-use revm_primitives::hardfork::SpecId;
 
 /// `KECCAK256` opcode gas cost (base + dynamic).
 const fn keccak256_cost(len: u64) -> Option<u64> {
@@ -114,9 +113,7 @@ matrix_tests!(
         ];
 
         for bytecode in cases {
-            let bytecode = jit
-                .parse((*bytecode).into(), crate::spec::from_revm_spec_id(SpecId::CANCUN))
-                .unwrap();
+            let bytecode = jit.parse((*bytecode).into(), SpecId::CANCUN).unwrap();
             assert!(bytecode.has_recursive_frame_opcode());
         }
     }

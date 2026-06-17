@@ -51,13 +51,7 @@
      /// Mapping from program counter to instruction.
      pc_to_inst: FxHashMap<u32, Inst>,
      /// Mapping from instruction index to its program counter (`code[pc]` is the opcode byte).
-@@ -226,12 +224,12 @@
-
-     #[cfg(test)]
-     pub(crate) fn test(code: impl Into<Cow<'a, [u8]>>) -> Self {
--        Self::new(code, crate::tests::DEF_SPEC, None)
-+        Self::new(code, crate::spec::from_revm_spec_id(crate::tests::DEF_SPEC), None)
-     }
+@@ -231,7 +229,7 @@
 
      #[instrument(name = "Bytecode::new", level = "debug", skip_all)]
      fn new_mono(code: Cow<'a, [u8]>, spec_id: SpecId, gas_params: Option<GasParams>) -> Self {

@@ -1,5 +1,5 @@
 use super::{DEF_SPEC, evm2_test_func, with_evm_context};
-use crate::{Backend, EvmCompiler, spec::from_revm_spec_id};
+use crate::{Backend, EvmCompiler};
 use alloy_primitives::U256;
 use evm2::interpreter::op;
 use paste::paste;
@@ -21,8 +21,7 @@ fn run_fibonacci_test<B: Backend>(compiler: &mut EvmCompiler<B>, input: u16, dyn
 
     unsafe { compiler.clear() }.unwrap();
     compiler.inspect_stack(true);
-    let f =
-        evm2_test_func(unsafe { compiler.jit("fib", &code, from_revm_spec_id(DEF_SPEC)) }.unwrap());
+    let f = evm2_test_func(unsafe { compiler.jit("fib", &code, DEF_SPEC) }.unwrap());
 
     with_evm_context(&code, DEF_SPEC, |ecx, stack, stack_len| {
         if dynamic {

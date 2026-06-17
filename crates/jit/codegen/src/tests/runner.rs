@@ -1,5 +1,4 @@
 use super::*;
-use crate::spec::from_revm_spec_id;
 use context_interface::{
     cfg::GasParams,
     context::{SStoreResult, SelfDestructResult, StateLoad},
@@ -118,8 +117,8 @@ pub struct TestCase<'a> {
 #[cfg(feature = "__fuzzing")]
 impl<'a> arbitrary::Arbitrary<'a> for TestCase<'a> {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
-        let spec_id_range = 0..=(SpecId::OSAKA as u8 - 1);
-        let spec_id = SpecId::try_from_u8(u.int_in_range(spec_id_range)?).unwrap_or(DEF_SPEC);
+        let spec_id_range = 0..=(SpecId::OSAKA as u32 - 1);
+        let spec_id = SpecId::try_from_u32(u.int_in_range(spec_id_range)?).unwrap_or(DEF_SPEC);
 
         let bytecode: &'a [u8] = u.arbitrary()?;
 
@@ -150,7 +149,7 @@ impl Default for TestCase<'_> {
 impl fmt::Debug for TestCase<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TestCase")
-            .field("bytecode", &format_bytecode(self.bytecode, from_revm_spec_id(self.spec_id)))
+            .field("bytecode", &format_bytecode(self.bytecode, self.spec_id))
             .field("spec_id", &self.spec_id)
             .field("inspect_stack", &self.inspect_stack)
             .field("modify_ecx", &self.modify_ecx.is_some())
@@ -188,7 +187,7 @@ impl<'a> TestCase<'a> {
 // Default values.
 pub const DEF_SPEC: SpecId = SpecId::CANCUN;
 pub static DEF_OPINFOS: std::sync::LazyLock<&'static [OpcodeInfo; 256]> =
-    std::sync::LazyLock::new(|| op_info_map(from_revm_spec_id(DEF_SPEC)));
+    std::sync::LazyLock::new(|| op_info_map(DEF_SPEC));
 
 pub const DEF_GAS_LIMIT: u64 = 100_000;
 pub const DEF_GAS_LIMIT_U256: U256 = U256::from_le_slice(&DEF_GAS_LIMIT.to_le_bytes());
@@ -292,8 +291,8 @@ impl TestHost {
             code_map: def_codemap(),
             selfdestructs: Vec::new(),
             logs: Vec::new(),
-            gas_params: GasParams::new_spec(spec_id),
-            evm2_spec_id: from_revm_spec_id(spec_id),
+            gas_params: GasParams::new_spec(revm_spec_id_from_evm2(spec_id)),
+            evm2_spec_id: spec_id,
             evm2_block_env: Evm2BlockEnv {
                 number: env.block.number,
                 beneficiary: env.block.coinbase,
@@ -611,7 +610,7 @@ pub fn with_evm_context_and_host<
     spec_id: SpecId,
     f: F,
 ) -> (R, TestHost) {
-    let evm2_spec_id = from_revm_spec_id(spec_id);
+    let evm2_spec_id = spec_id;
     let config = <BaseEvmConfigSelector as evm2::EvmConfigSelector<TestEvmTypes>>::execution_config(
         evm2_spec_id,
     );
@@ -663,7 +662,7 @@ pub fn run_test_case<B: Backend>(test_case: &TestCase<'_>, compiler: &mut EvmCom
     let TestCase { bytecode, spec_id, .. } = *test_case;
     compiler.inspect_stack(test_case.inspect_stack.unwrap_or(true));
     // compiler.debug_assertions(false);
-    let f = unsafe { compiler.jit("test", bytecode, from_revm_spec_id(spec_id)) }.unwrap();
+    let f = unsafe { compiler.jit("test", bytecode, spec_id) }.unwrap();
     run_compiled_test_case(test_case, f);
 }
 
@@ -698,7 +697,7 @@ fn run_compiled_test_case(test_case: &TestCase<'_>, f: EvmCompilerFn) {
         }
 
         // Interpreter - run evm2 as the oracle
-        let evm2_spec_id = from_revm_spec_id(spec_id);
+        let evm2_spec_id = spec_id;
         let config =
             <BaseEvmConfigSelector as evm2::EvmConfigSelector<TestEvmTypes>>::execution_config(
                 evm2_spec_id,
@@ -928,4 +927,10 @@ impl fmt::Debug for MemDisplay<'_> {
 
 fn revm_bytecode_from_evm2(bytecode: &Evm2Bytecode) -> revm_bytecode::Bytecode {
     revm_bytecode::Bytecode::new_raw(Bytes::copy_from_slice(bytecode.original_byte_slice()))
+}
+
+fn revm_spec_id_from_evm2(spec_id: SpecId) -> context_interface::primitives::hardfork::SpecId {
+    let spec_id = u8::try_from(u32::from(spec_id)).expect("evm2 SpecId does not fit in u8");
+    context_interface::primitives::hardfork::SpecId::try_from_u8(spec_id)
+        .expect("evm2 SpecId has no revm gas table equivalent")
 }
