@@ -158,12 +158,15 @@
 
 -impl From<usize> for ResumeAt {
 +impl Default for CallInput {
-+    #[inline]
+     #[inline]
+-    fn from(value: usize) -> Self {
+-        Self(value)
 +    fn default() -> Self {
 +        Self::Bytes(Bytes::new())
-+    }
-+}
-+
+     }
+ }
+
+-impl PartialEq<usize> for ResumeAt {
 +#[doc(hidden)]
 +#[derive(Clone, Debug, Default, PartialEq, Eq)]
 +#[repr(C)]
@@ -177,8 +180,8 @@
 +
 +impl Inputs {
      #[inline]
--    fn from(value: usize) -> Self {
--        Self(value)
+-    fn eq(&self, other: &usize) -> bool {
+-        self.0 == *other
 +    pub const fn input(&self) -> &CallInput {
 +        &self.input
 +    }
@@ -212,7 +215,7 @@
 +    pub struct MemoryGas {
 +        pub words_num: usize,
 +        pub expansion_cost: u64,
-     }
++    }
 +
 +    const _: () = {
 +        use core::mem::{align_of, offset_of, size_of};
@@ -239,9 +242,8 @@
 +    pub create: Evm2RecursiveMessageFn,
 +    /// Executes `CALL`, `CALLCODE`, `DELEGATECALL`, or `STATICCALL`.
 +    pub call: Evm2RecursiveMessageFn,
- }
-
--impl PartialEq<usize> for ResumeAt {
++}
++
 +impl Evm2Recursion {
 +    /// Returns dispatch functions that reject recursive message opcodes.
 +    #[inline]
@@ -253,9 +255,7 @@
 +    }
 +
 +    /// Creates a recursive message dispatch table.
-     #[inline]
--    fn eq(&self, other: &usize) -> bool {
--        self.0 == *other
++    #[inline]
 +    pub const fn new(create: Evm2RecursiveMessageFn, call: Evm2RecursiveMessageFn) -> Self {
 +        Self { create, call }
 +    }
@@ -633,27 +633,36 @@
      /// Calls the function.
      ///
      /// Arguments:
-@@ -366,8 +508,8 @@
+@@ -366,8 +508,15 @@
          stack: &mut EvmStack,
          stack_len: &mut usize,
          ecx: &mut EvmContext<'_>,
 -    ) -> InstructionResult {
 -        revmc_entry(NonNull::from(ecx), NonNull::from(stack), NonNull::from(stack_len), self.0)
 +    ) -> InstrStop {
-+        evm2_jit_entry(NonNull::from(ecx), NonNull::from(stack), NonNull::from(stack_len), self.0)
++        unsafe {
++            evm2_jit_entry(
++                NonNull::from(ecx),
++                NonNull::from(stack),
++                NonNull::from(stack_len),
++                self.0,
++            )
++        }
      }
 
      /// Same as [`call`](Self::call) but with `#[inline(never)]`.
-@@ -383,7 +525,7 @@
+@@ -383,8 +532,8 @@
          stack: &mut EvmStack,
          stack_len: &mut usize,
          ecx: &mut EvmContext<'_>,
 -    ) -> InstructionResult {
+-        self.call(stack, stack_len, ecx)
 +    ) -> InstrStop {
-         self.call(stack, stack_len, ecx)
++        unsafe { self.call(stack, stack_len, ecx) }
      }
  }
-@@ -415,20 +557,6 @@
+
+@@ -415,20 +564,6 @@
          Vec::with_capacity(1024)
      }
 
@@ -674,7 +683,79 @@
      /// Creates a stack from a vector's buffer.
      ///
      /// # Panics
-@@ -821,14 +949,6 @@
+@@ -544,7 +679,7 @@
+     /// The caller must ensure that the index is within bounds.
+     #[inline]
+     pub unsafe fn get_unchecked(&self, index: usize) -> &EvmWord {
+-        self.0.get_unchecked(index).assume_init_ref()
++        unsafe { self.0.get_unchecked(index).assume_init_ref() }
+     }
+
+     /// Returns the word at the given index as a mutable reference.
+@@ -554,7 +689,7 @@
+     /// The caller must ensure that the index is within bounds.
+     #[inline]
+     pub unsafe fn get_unchecked_mut(&mut self, index: usize) -> &mut EvmWord {
+-        self.0.get_unchecked_mut(index).assume_init_mut()
++        unsafe { self.0.get_unchecked_mut(index).assume_init_mut() }
+     }
+
+     /// Sets the value at the top of the stack to `value`, and grows the stack by 1.
+@@ -564,7 +699,7 @@
+     /// The caller must ensure that the stack is not full.
+     #[inline]
+     pub unsafe fn push(&mut self, value: EvmWord, len: &mut usize) {
+-        self.set_unchecked(*len, value);
++        unsafe { self.set_unchecked(*len, value) };
+         *len += 1;
+     }
+
+@@ -575,7 +710,7 @@
+     /// The caller must ensure that the stack is not empty.
+     #[inline]
+     pub unsafe fn top_unchecked(&self, len: usize) -> &EvmWord {
+-        self.get_unchecked(len - 1)
++        unsafe { self.get_unchecked(len - 1) }
+     }
+
+     /// Returns the value at the top of the stack as a mutable reference.
+@@ -585,7 +720,7 @@
+     /// The caller must ensure that the stack is not empty.
+     #[inline]
+     pub unsafe fn top_unchecked_mut(&mut self, len: usize) -> &mut EvmWord {
+-        self.get_unchecked_mut(len - 1)
++        unsafe { self.get_unchecked_mut(len - 1) }
+     }
+
+     /// Returns the value at the given index from the top of the stack.
+@@ -595,7 +730,7 @@
+     /// The caller must ensure that `len >= n + 1`.
+     #[inline]
+     pub unsafe fn from_top_unchecked(&self, len: usize, n: usize) -> &EvmWord {
+-        self.get_unchecked(len - n - 1)
++        unsafe { self.get_unchecked(len - n - 1) }
+     }
+
+     /// Returns the value at the given index from the top of the stack as a mutable reference.
+@@ -605,7 +740,7 @@
+     /// The caller must ensure that `len >= n + 1`.
+     #[inline]
+     pub unsafe fn from_top_unchecked_mut(&mut self, len: usize, n: usize) -> &mut EvmWord {
+-        self.get_unchecked_mut(len - n - 1)
++        unsafe { self.get_unchecked_mut(len - n - 1) }
+     }
+
+     /// Sets the value at the given index.
+@@ -615,7 +750,7 @@
+     /// The caller must ensure that the index is within bounds.
+     #[inline]
+     pub unsafe fn set_unchecked(&mut self, index: usize, value: EvmWord) {
+-        *self.0.get_unchecked_mut(index) = MaybeUninit::new(value);
++        unsafe { *self.0.get_unchecked_mut(index) = MaybeUninit::new(value) };
+     }
+ }
+
+@@ -821,14 +956,6 @@
      }
  }
 
@@ -689,7 +770,7 @@
  #[cfg(test)]
  mod tests {
      use super::*;
-@@ -841,7 +961,7 @@
+@@ -841,7 +968,7 @@
          assert_eq!(usize::try_from(&mut word), Ok(0));
      }
 
@@ -698,7 +779,7 @@
          #[link_name = "__test_fn"]
          fn test_fn;
      }
-@@ -851,8 +971,8 @@
+@@ -851,8 +978,8 @@
          _ecx: NonNull<EvmContext<'_>>,
          _stack: NonNull<EvmStack>,
          _stack_len: NonNull<usize>,

@@ -509,7 +509,14 @@ impl EvmCompilerFn {
         stack_len: &mut usize,
         ecx: &mut EvmContext<'_>,
     ) -> InstrStop {
-        evm2_jit_entry(NonNull::from(ecx), NonNull::from(stack), NonNull::from(stack_len), self.0)
+        unsafe {
+            evm2_jit_entry(
+                NonNull::from(ecx),
+                NonNull::from(stack),
+                NonNull::from(stack_len),
+                self.0,
+            )
+        }
     }
 
     /// Same as [`call`](Self::call) but with `#[inline(never)]`.
@@ -526,7 +533,7 @@ impl EvmCompilerFn {
         stack_len: &mut usize,
         ecx: &mut EvmContext<'_>,
     ) -> InstrStop {
-        self.call(stack, stack_len, ecx)
+        unsafe { self.call(stack, stack_len, ecx) }
     }
 }
 
@@ -672,7 +679,7 @@ impl EvmStack {
     /// The caller must ensure that the index is within bounds.
     #[inline]
     pub unsafe fn get_unchecked(&self, index: usize) -> &EvmWord {
-        self.0.get_unchecked(index).assume_init_ref()
+        unsafe { self.0.get_unchecked(index).assume_init_ref() }
     }
 
     /// Returns the word at the given index as a mutable reference.
@@ -682,7 +689,7 @@ impl EvmStack {
     /// The caller must ensure that the index is within bounds.
     #[inline]
     pub unsafe fn get_unchecked_mut(&mut self, index: usize) -> &mut EvmWord {
-        self.0.get_unchecked_mut(index).assume_init_mut()
+        unsafe { self.0.get_unchecked_mut(index).assume_init_mut() }
     }
 
     /// Sets the value at the top of the stack to `value`, and grows the stack by 1.
@@ -692,7 +699,7 @@ impl EvmStack {
     /// The caller must ensure that the stack is not full.
     #[inline]
     pub unsafe fn push(&mut self, value: EvmWord, len: &mut usize) {
-        self.set_unchecked(*len, value);
+        unsafe { self.set_unchecked(*len, value) };
         *len += 1;
     }
 
@@ -703,7 +710,7 @@ impl EvmStack {
     /// The caller must ensure that the stack is not empty.
     #[inline]
     pub unsafe fn top_unchecked(&self, len: usize) -> &EvmWord {
-        self.get_unchecked(len - 1)
+        unsafe { self.get_unchecked(len - 1) }
     }
 
     /// Returns the value at the top of the stack as a mutable reference.
@@ -713,7 +720,7 @@ impl EvmStack {
     /// The caller must ensure that the stack is not empty.
     #[inline]
     pub unsafe fn top_unchecked_mut(&mut self, len: usize) -> &mut EvmWord {
-        self.get_unchecked_mut(len - 1)
+        unsafe { self.get_unchecked_mut(len - 1) }
     }
 
     /// Returns the value at the given index from the top of the stack.
@@ -723,7 +730,7 @@ impl EvmStack {
     /// The caller must ensure that `len >= n + 1`.
     #[inline]
     pub unsafe fn from_top_unchecked(&self, len: usize, n: usize) -> &EvmWord {
-        self.get_unchecked(len - n - 1)
+        unsafe { self.get_unchecked(len - n - 1) }
     }
 
     /// Returns the value at the given index from the top of the stack as a mutable reference.
@@ -733,7 +740,7 @@ impl EvmStack {
     /// The caller must ensure that `len >= n + 1`.
     #[inline]
     pub unsafe fn from_top_unchecked_mut(&mut self, len: usize, n: usize) -> &mut EvmWord {
-        self.get_unchecked_mut(len - n - 1)
+        unsafe { self.get_unchecked_mut(len - n - 1) }
     }
 
     /// Sets the value at the given index.
@@ -743,7 +750,7 @@ impl EvmStack {
     /// The caller must ensure that the index is within bounds.
     #[inline]
     pub unsafe fn set_unchecked(&mut self, index: usize, value: EvmWord) {
-        *self.0.get_unchecked_mut(index) = MaybeUninit::new(value);
+        unsafe { *self.0.get_unchecked_mut(index) = MaybeUninit::new(value) };
     }
 }
 

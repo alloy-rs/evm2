@@ -211,7 +211,7 @@
      ecx: &mut EvmContext<'_>,
      sp: &mut [EvmWord; 3],
  ) -> BuiltinResult {
-@@ -276,21 +266,13 @@
+@@ -276,53 +266,45 @@
          let memory_offset = try_into_usize!(memory_offset);
          ensure_memory(ecx, memory_offset, len)?;
          let data_offset = as_usize_saturated!(data_offset.to_u256());
@@ -235,7 +235,9 @@
      ecx: &mut EvmContext<'_>,
      sp: &mut [EvmWord; 3],
  ) -> BuiltinResult {
-@@ -299,30 +281,30 @@
+     let bytecode = unsafe { &*ecx.bytecode };
+-    copy_operation(ecx, sp, bytecode)
++    unsafe { copy_operation(ecx, sp, bytecode) }
  }
 
  #[unsafe(no_mangle)]
@@ -437,7 +439,7 @@
  ) -> BuiltinResult {
      *index = U256::from(key).into();
 -    __revmc_builtin_sload(ecx, index);
-+    __evm2_jit_builtin_sload(ecx, index);
++    unsafe { __evm2_jit_builtin_sload(ecx, index) };
      Ok(())
  }
 
@@ -513,7 +515,7 @@
      ecx: &mut EvmContext<'_>,
      sp: &mut [EvmWord; 3],
  ) -> BuiltinResult {
-@@ -592,7 +569,7 @@
+@@ -592,28 +569,28 @@
  }
 
  #[unsafe(no_mangle)]
@@ -522,8 +524,11 @@
      ecx: &mut EvmContext<'_>,
      sp: *mut EvmWord,
      n: u8,
-@@ -602,11 +579,11 @@
-     let sp = sp.add(n as usize);
+ ) -> BuiltinResult {
+     ensure_non_staticcall!(ecx);
+     assume!(n <= 4, "invalid log topic count: {n}");
+-    let sp = sp.add(n as usize);
++    let sp = unsafe { sp.add(n as usize) };
      read_words!(sp, offset, len);
      let len = try_into_usize!(len);
 -    gas!(ecx, ecx.gas_params.log_cost(n, len as u64));
@@ -536,6 +541,14 @@
      } else {
          Bytes::new()
      };
+
+     let mut topics = Vec::with_capacity(n as usize);
+     for i in 1..=n {
+-        topics.push(sp.sub(i as usize).read().to_be_bytes());
++        topics.push(unsafe { sp.sub(i as usize).read() }.to_be_bytes());
+     }
+
+     let log = Log {
 @@ -630,240 +607,65 @@
  }
 

@@ -277,7 +277,7 @@ pub unsafe extern "C" fn __evm2_jit_builtin_codecopy(
     sp: &mut [EvmWord; 3],
 ) -> BuiltinResult {
     let bytecode = unsafe { &*ecx.bytecode };
-    copy_operation(ecx, sp, bytecode)
+    unsafe { copy_operation(ecx, sp, bytecode) }
 }
 
 #[unsafe(no_mangle)]
@@ -493,7 +493,7 @@ pub unsafe extern "C" fn __evm2_jit_builtin_sload_c(
     key: u64,
 ) -> BuiltinResult {
     *index = U256::from(key).into();
-    __evm2_jit_builtin_sload(ecx, index);
+    unsafe { __evm2_jit_builtin_sload(ecx, index) };
     Ok(())
 }
 
@@ -576,7 +576,7 @@ pub unsafe extern "C" fn __evm2_jit_builtin_log(
 ) -> BuiltinResult {
     ensure_non_staticcall!(ecx);
     assume!(n <= 4, "invalid log topic count: {n}");
-    let sp = sp.add(n as usize);
+    let sp = unsafe { sp.add(n as usize) };
     read_words!(sp, offset, len);
     let len = try_into_usize!(len);
     gas!(ecx, ecx.gas_params.log_cost(n, len));
@@ -590,7 +590,7 @@ pub unsafe extern "C" fn __evm2_jit_builtin_log(
 
     let mut topics = Vec::with_capacity(n as usize);
     for i in 1..=n {
-        topics.push(sp.sub(i as usize).read().to_be_bytes());
+        topics.push(unsafe { sp.sub(i as usize).read() }.to_be_bytes());
     }
 
     let log = Log {
