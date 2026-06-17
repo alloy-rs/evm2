@@ -200,6 +200,12 @@ impl<'frame, T: EvmTypes> Interpreter<'frame, T> {
         BytecodeRef::new(&self.bytecode)
     }
 
+    /// Returns the original active bytecode bytes.
+    #[inline]
+    pub fn original_bytecode(&self) -> Bytes {
+        self.bytecode.original_bytes()
+    }
+
     /// Returns the current operand stack.
     #[inline]
     pub const fn stack(&self) -> StackRef<'_> {

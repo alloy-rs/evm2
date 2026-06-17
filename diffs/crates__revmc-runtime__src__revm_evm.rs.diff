@@ -1,6 +1,6 @@
 --- upstream/crates/revmc-runtime/src/revm_evm.rs
 +++ evm2/crates/jit/runtime/src/evm2_evm.rs
-@@ -1,859 +1,222 @@
+@@ -1,859 +1,221 @@
 -//! Generic `revm` JIT EVM.
 -//!
 -//! Provides [`JitEvm`] which wraps any mainnet-shaped [`EvmTr`]-based EVM and overrides
@@ -15,7 +15,7 @@
 -    Cfg, ContextSetters, ContextTr, Database,
 -    journaled_state::JournalTr,
 -    result::{EVMError, HaltReason, InvalidTransaction, ResultAndState},
-+use alloy_primitives::{Bytes, keccak256};
++use alloy_primitives::keccak256;
 +use evm2::{
 +    EvmTypes, ExecutionConfig, InterpreterRunner,
 +    interpreter::{InstrStop, Interpreter},
@@ -507,11 +507,10 @@
 +    interpreter: &mut Interpreter<'_, T>,
 +    host: &mut T::Host,
 +) -> Option<InstrStop> {
-+    let bytecode = interpreter.bytecode();
-+    let code = bytecode.as_slice();
++    let code = interpreter.original_bytecode();
 +    let decision = backend.lookup(LookupRequest {
-+        key: RuntimeCacheKey { code_hash: keccak256(code), spec_id: config.base_spec_id() },
-+        code: Bytes::copy_from_slice(code),
++        key: RuntimeCacheKey { code_hash: keccak256(&code), spec_id: config.base_spec_id() },
++        code,
 +    });
 +
 +    let program = match decision {
@@ -633,7 +632,7 @@
 -    fn jit_evm_simple_return() {
 -        let backend = blocking_backend();
 +    use crate::runtime::RuntimeConfig;
-+    use alloy_primitives::Address;
++    use alloy_primitives::{Address, Bytes};
 +    use evm2::{
 +        BaseEvmConfigSelector, BaseEvmTypes, Evm, EvmConfigSelector, Precompiles, SpecId,
 +        bytecode::Bytecode,
@@ -1026,7 +1025,7 @@
              op::PUSH0,
              op::MSTORE,
              op::PUSH1,
-@@ -861,105 +224,18 @@
+@@ -861,105 +223,18 @@
              op::PUSH0,
              op::RETURN,
          ];

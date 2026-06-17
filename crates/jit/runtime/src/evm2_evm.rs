@@ -1,7 +1,7 @@
 //! evm2 JIT interpreter dispatch helpers.
 
 use crate::runtime::{JitBackend, LookupDecision, LookupRequest, RuntimeCacheKey};
-use alloy_primitives::{Bytes, keccak256};
+use alloy_primitives::keccak256;
 use evm2::{
     EvmTypes, ExecutionConfig, InterpreterRunner,
     interpreter::{InstrStop, Interpreter},
@@ -50,11 +50,10 @@ pub fn run_interpreter<T: EvmTypes>(
     interpreter: &mut Interpreter<'_, T>,
     host: &mut T::Host,
 ) -> Option<InstrStop> {
-    let bytecode = interpreter.bytecode();
-    let code = bytecode.as_slice();
+    let code = interpreter.original_bytecode();
     let decision = backend.lookup(LookupRequest {
-        key: RuntimeCacheKey { code_hash: keccak256(code), spec_id: config.base_spec_id() },
-        code: Bytes::copy_from_slice(code),
+        key: RuntimeCacheKey { code_hash: keccak256(&code), spec_id: config.base_spec_id() },
+        code,
     });
 
     let program = match decision {
@@ -70,7 +69,7 @@ pub fn run_interpreter<T: EvmTypes>(
 mod tests {
     use super::*;
     use crate::runtime::RuntimeConfig;
-    use alloy_primitives::Address;
+    use alloy_primitives::{Address, Bytes};
     use evm2::{
         BaseEvmConfigSelector, BaseEvmTypes, Evm, EvmConfigSelector, Precompiles, SpecId,
         bytecode::Bytecode,
