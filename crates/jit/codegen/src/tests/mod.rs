@@ -16,8 +16,7 @@ use evm2::{
     interpreter::{InstrStop, op},
 };
 use evm2_jit_builtins::gas;
-use revm_interpreter as interpreter;
-use revm_interpreter::context_interface;
+use evm2_jit_context::CallInput;
 
 /// `KECCAK256` opcode gas cost (base + dynamic).
 const fn keccak256_cost(len: u64) -> Option<u64> {
@@ -1843,7 +1842,7 @@ tests! {
             modify_ecx: Some(|ecx| {
                 let input = unsafe { &mut *ecx.input };
                 input.call_value = 1_U256;
-                input.input = interpreter::CallInput::Bytes(Bytes::from(&hex!("c0406226")));
+                input.input = CallInput::Bytes(Bytes::from(&hex!("c0406226")));
                 ecx.calldatasize = input.input.len();
             }),
             // Note: Cannot use RETURN_WHAT_INTERPRETER_SAYS here because modify_ecx

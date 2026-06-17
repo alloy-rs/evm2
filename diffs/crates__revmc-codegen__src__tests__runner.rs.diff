@@ -1,14 +1,12 @@
 --- upstream/crates/revmc-codegen/src/tests/runner.rs
 +++ evm2/crates/jit/codegen/src/tests/runner.rs
-@@ -5,13 +5,21 @@
-     host::LoadError,
-     journaled_state::AccountInfoLoad,
- };
--use revm_bytecode::opcode as op;
--use revm_interpreter::{
--    CallInput, Host, InputsImpl, Interpreter, SharedMemory,
--    instructions::{gas_table_spec, instruction_table},
--    interpreter::ExtBytecode,
+@@ -1,17 +1,18 @@
+ use super::*;
+-use context_interface::{
+-    cfg::GasParams,
+-    context::{SStoreResult, SelfDestructResult, StateLoad},
+-    host::LoadError,
+-    journaled_state::AccountInfoLoad,
 +use evm2::{
 +    BaseEvmConfigSelector, EvmFeatures, EvmTypes,
 +    bytecode::Bytecode as Evm2Bytecode,
@@ -22,13 +20,18 @@
 +        MessageResult as Evm2MessageResult,
 +    },
  };
+-use revm_bytecode::opcode as op;
+-use revm_interpreter::{
+-    CallInput, Host, InputsImpl, Interpreter, SharedMemory,
+-    instructions::{gas_table_spec, instruction_table},
+-    interpreter::ExtBytecode,
+-};
 -use revm_primitives::{B256, HashMap, Log, hardfork::SpecId};
-+use evm2_jit_context::evm2_api;
-+use revm_interpreter::{Gas, Host};
++use evm2_jit_context::{evm2_api, private::revm_interpreter::Gas};
  use similar_asserts::assert_eq;
  use std::{fmt, path::Path, sync::OnceLock};
 
-@@ -95,22 +103,22 @@
+@@ -95,22 +96,22 @@
 
      /// Override `inspect_stack` on the compiler. `None` uses the default (`true`).
      pub inspect_stack: Option<bool>,
@@ -57,7 +60,7 @@
 
          let bytecode: &'a [u8] = u.arbitrary()?;
 
-@@ -127,11 +135,11 @@
+@@ -127,11 +128,11 @@
              gas_limit: DEF_GAS_LIMIT,
              inspect_stack: None,
              modify_ecx: None,
@@ -71,7 +74,7 @@
              assert_host: None,
              assert_ecx: None,
          }
-@@ -149,7 +157,7 @@
+@@ -149,7 +150,7 @@
              .field("expected_stack", &self.expected_stack)
              .field("expected_memory", &MemDisplay(self.expected_memory))
              .field("expected_gas", &self.expected_gas)
@@ -80,7 +83,7 @@
              .field("assert_host", &self.assert_host.is_some())
              .field("assert_ecx", &self.assert_ecx.is_some())
              .finish()
-@@ -169,7 +177,7 @@
+@@ -169,7 +170,7 @@
              expected_stack: STACK_WHAT_INTERPRETER_SAYS,
              expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
              expected_gas: GAS_WHAT_INTERPRETER_SAYS,
@@ -89,7 +92,7 @@
              assert_host: None,
              assert_ecx: None,
          }
-@@ -192,21 +200,22 @@
+@@ -192,21 +193,22 @@
  pub static DEF_DATA: &[u8] = &[0xcc; 64];
  pub const DEF_VALUE: U256 = uint!(123_456_789_U256);
  pub static DEF_STORAGE: OnceLock<HashMap<U256, U256>> = OnceLock::new();
@@ -120,7 +123,7 @@
 
  pub fn def_storage() -> &'static HashMap<U256, U256> {
      DEF_STORAGE.get_or_init(|| {
-@@ -218,12 +227,12 @@
+@@ -218,12 +220,12 @@
      })
  }
 
@@ -135,10 +138,11 @@
                  op::PUSH1,
                  0x69,
                  op::PUSH1,
-@@ -236,14 +245,31 @@
+@@ -236,14 +238,30 @@
      })
  }
 
+-/// Test host that implements [`Host`] trait for testing.
 +#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 +pub struct TestEvmTypes;
 +
@@ -154,7 +158,7 @@
 +    type Host = TestHost;
 +}
 +
- /// Test host that implements [`Host`] trait for testing.
++/// Test host for codegen and runtime tests.
  pub struct TestHost {
      pub storage: HashMap<U256, U256>,
      pub transient_storage: HashMap<U256, U256>,
@@ -162,13 +166,13 @@
 +    pub code_map: &'static HashMap<Address, Evm2Bytecode>,
      pub selfdestructs: Vec<(Address, Address)>,
      pub logs: Vec<Log>,
-     pub gas_params: GasParams,
+-    pub gas_params: GasParams,
 +    evm2_spec_id: evm2::SpecId,
 +    evm2_block_env: Evm2BlockEnv<TestEvmTypes>,
  }
 
  impl Default for TestHost {
-@@ -258,13 +284,27 @@
+@@ -258,203 +276,204 @@
      }
 
      pub fn with_spec(spec_id: SpecId) -> Self {
@@ -180,7 +184,6 @@
              selfdestructs: Vec::new(),
              logs: Vec::new(),
 -            gas_params: GasParams::new_spec(spec_id),
-+            gas_params: GasParams::new_spec(revm_spec_id_from_evm2(spec_id)),
 +            evm2_spec_id: spec_id,
 +            evm2_block_env: Evm2BlockEnv {
 +                number: env.block.number,
@@ -197,35 +200,72 @@
          }
      }
  }
-@@ -376,12 +416,12 @@
-         load_code: bool,
-         _skip_cold_load: bool,
-     ) -> Result<AccountInfoLoad<'_>, LoadError> {
--        use revm_state::AccountInfo;
-+        use revm_interpreter::state::AccountInfo;
-         use std::borrow::Cow;
 
-         let code = if load_code {
-             // Return actual code if found, otherwise empty bytecode
--            Some(self.code_map.get(&address).cloned().unwrap_or_default())
-+            Some(self.code_map.get(&address).map(revm_bytecode_from_evm2).unwrap_or_default())
-         } else {
-             None
-         };
-@@ -431,30 +471,180 @@
-     }
- }
-
--pub fn with_evm_context<F: FnOnce(&mut EvmContext<'_>, &mut EvmStack, &mut usize) -> R, R>(
+-impl Host for TestHost {
+-    fn basefee(&self) -> U256 {
+-        U256::from(0x1231)
+-    }
+-
+-    fn blob_gasprice(&self) -> U256 {
+-        U256::ZERO
+-    }
+-
+-    fn gas_limit(&self) -> U256 {
+-        U256::from(0x5678)
+-    }
+-
+-    fn gas_params(&self) -> &GasParams {
+-        &self.gas_params
+-    }
+-
+-    fn is_amsterdam_eip8037_enabled(&self) -> bool {
+-        false
+-    }
+-
+-    fn difficulty(&self) -> U256 {
+-        U256::from(0xcdef)
+-    }
+-
+-    fn prevrandao(&self) -> Option<U256> {
+-        Some(U256::from(0x0123))
+-    }
+-
+-    fn block_number(&self) -> U256 {
+-        DEF_BN
+-    }
+-
+-    fn timestamp(&self) -> U256 {
+-        U256::from(0x1234)
+-    }
+-
+-    fn beneficiary(&self) -> Address {
+-        Address::repeat_byte(0xcb)
+-    }
+-
+-    fn slot_num(&self) -> U256 {
+-        U256::ZERO
+-    }
+-
+-    fn chain_id(&self) -> U256 {
+-        U256::from(69)
 +impl Evm2Host<TestEvmTypes> for TestHost {
 +    fn spec_id(&self) -> evm2::SpecId {
 +        self.evm2_spec_id
-+    }
-+
+     }
+
+-    fn effective_gas_price(&self) -> U256 {
+-        U256::from(0x4567)
+-    }
+-
+-    fn caller(&self) -> Address {
+-        Address::repeat_byte(0xcc)
 +    fn block_env(&mut self) -> &Evm2BlockEnv<TestEvmTypes> {
 +        &self.evm2_block_env
-+    }
-+
+     }
+
+-    fn blob_hash(&self, number: usize) -> Option<U256> {
+-        let env = def_env();
+-        env.tx.blob_hashes.get(number).map(|h| (*h).into())
 +    fn load_account(
 +        &mut self,
 +        address: &Address,
@@ -249,8 +289,11 @@
 +            is_cold: false,
 +            _non_exhaustive: (),
 +        })
-+    }
-+
+     }
+
+-    fn max_initcode_size(&self) -> usize {
+-        // EIP-3860: Max initcode size is 2 * MAX_CODE_SIZE = 2 * 24576 = 49152
+-        49152
 +    fn target_is_empty_for_new_account_gas(
 +        &mut self,
 +        address: &Address,
@@ -261,25 +304,43 @@
 +            return Ok(!exists);
 +        }
 +        Ok(false)
-+    }
-+
+     }
+
+-    fn block_hash(&mut self, number: u64) -> Option<B256> {
+-        Some(U256::from(number).into())
 +    fn block_hash(&mut self, number: &U256) -> Result<Option<B256>, InstrStop> {
 +        Ok(Some((*number).into()))
-+    }
-+
+     }
+
+-    fn selfdestruct(
 +    fn sload(
-+        &mut self,
+         &mut self,
+-        address: Address,
+-        target: Address,
 +        _address: &Address,
 +        key: &U256,
-+        _skip_cold_load: bool,
+         _skip_cold_load: bool,
+-    ) -> Result<StateLoad<SelfDestructResult>, LoadError> {
+-        self.selfdestructs.push((address, target));
+-
+-        Ok(StateLoad::new(
+-            SelfDestructResult {
+-                had_value: false,
+-                target_exists: true,
+-                previously_destroyed: false,
+-            },
+-            false,
+-        ))
 +    ) -> Result<Evm2SLoad, InstrStop> {
 +        Ok(Evm2SLoad {
 +            value: self.storage.get(key).copied().unwrap_or_default(),
 +            is_cold: false,
 +            _non_exhaustive: (),
 +        })
-+    }
-+
+     }
+
+-    fn log(&mut self, log: Log) {
+-        self.logs.push(log);
 +    fn sstore(
 +        &mut self,
 +        _address: &Address,
@@ -296,22 +357,71 @@
 +            is_cold: false,
 +            _non_exhaustive: (),
 +        })
-+    }
-+
+     }
+
+-    fn tstore(&mut self, _address: Address, key: U256, value: U256) {
+-        self.transient_storage.insert(key, value);
 +    fn tload(&mut self, _address: &Address, key: &U256) -> U256 {
 +        self.transient_storage.get(key).copied().unwrap_or_default()
-+    }
-+
+     }
+
+-    fn tload(&mut self, _address: Address, key: U256) -> U256 {
+-        self.transient_storage.get(&key).copied().unwrap_or(U256::ZERO)
 +    fn tstore(&mut self, _address: &Address, key: &U256, value: &U256) {
 +        self.transient_storage.insert(*key, *value);
-+    }
-+
+     }
+
+-    fn load_account_info_skip_cold_load(
+-        &mut self,
+-        address: Address,
+-        load_code: bool,
+-        _skip_cold_load: bool,
+-    ) -> Result<AccountInfoLoad<'_>, LoadError> {
+-        use revm_state::AccountInfo;
+-        use std::borrow::Cow;
+-
+-        let code = if load_code {
+-            // Return actual code if found, otherwise empty bytecode
+-            Some(self.code_map.get(&address).cloned().unwrap_or_default())
+-        } else {
+-            None
+-        };
+-
+-        // Return address byte as balance (test convention)
+-        // The balance is the last byte of the address
+-        let balance = U256::from(address.0[19]);
+-
+-        // Calculate code hash from the actual bytecode
+-        let code_hash = if let Some(bytecode) = self.code_map.get(&address) {
+-            keccak256(bytecode.original_byte_slice())
+-        } else {
+-            KECCAK_EMPTY
+-        };
+-
+-        // Create owned account info
+-        let info = AccountInfo { balance, nonce: 0, code_hash, account_id: None, code };
+-
+-        let is_empty = info.code.is_none() && info.balance.is_zero() && info.nonce == 0;
+-
+-        Ok(AccountInfoLoad { account: Cow::Owned(info), is_cold: false, is_empty })
 +    fn log(&mut self, log: Log) {
 +        self.logs.push(log);
-+    }
-+
+     }
+
+-    fn sstore_skip_cold_load(
 +    fn execute_message(
-+        &mut self,
+         &mut self,
+-        _address: Address,
+-        key: U256,
+-        value: U256,
+-        _skip_cold_load: bool,
+-    ) -> Result<StateLoad<SStoreResult>, LoadError> {
+-        let original = self.storage.get(&key).copied().unwrap_or(U256::ZERO);
+-        self.storage.insert(key, value);
+-        Ok(StateLoad::new(
+-            SStoreResult { original_value: original, present_value: original, new_value: value },
+-            false,
+-        ))
 +        _tx_env: &Evm2TxEnv<TestEvmTypes>,
 +        _bytecode: Evm2Bytecode,
 +        message: &mut Evm2Message<TestEvmTypes>,
@@ -322,13 +432,19 @@
 +            gas: evm2::interpreter::GasTracker::new(message.gas_limit),
 +            ..Default::default()
 +        }
-+    }
-+
+     }
+
+-    fn sload_skip_cold_load(
 +    fn selfdestruct(
-+        &mut self,
+         &mut self,
+-        _address: Address,
+-        key: U256,
 +        contract: &Address,
 +        target: &Address,
-+        _skip_cold_load: bool,
+         _skip_cold_load: bool,
+-    ) -> Result<StateLoad<U256>, LoadError> {
+-        let value = self.storage.get(&key).copied().unwrap_or(U256::ZERO);
+-        Ok(StateLoad::new(value, false))
 +    ) -> Result<Evm2SelfDestructResult, InstrStop> {
 +        self.selfdestructs.push((*contract, *target));
 +        Ok(Evm2SelfDestructResult {
@@ -337,9 +453,10 @@
 +            previously_destroyed: false,
 +            ..Default::default()
 +        })
-+    }
-+}
-+
+     }
+ }
+
+-pub fn with_evm_context<F: FnOnce(&mut EvmContext<'_>, &mut EvmStack, &mut usize) -> R, R>(
 +pub fn with_evm_context<F: FnOnce(&mut TestEvmContext<'_>, &mut EvmStack, &mut usize) -> R, R>(
      bytecode: &[u8],
      spec_id: SpecId,
@@ -410,7 +527,7 @@
  }
 
  pub fn set_test_dump<B: Backend>(compiler: &mut EvmCompiler<B>, module_path: &str) {
-@@ -462,7 +652,7 @@
+@@ -462,7 +481,7 @@
      let mut dump_path = root.to_path_buf();
      dump_path.push("target");
      dump_path.push("tests_dump");
@@ -419,7 +536,7 @@
      dump_path.extend(module_path.split("::").skip(2));
      dump_path.push(format!("{:?}", compiler.opt_level()));
      compiler.set_dump_to(Some(dump_path));
-@@ -488,12 +678,13 @@
+@@ -488,12 +507,13 @@
          expected_stack,
          expected_memory,
          expected_gas,
@@ -435,7 +552,7 @@
          if is_static {
              ecx.is_static = true;
          }
-@@ -505,34 +696,38 @@
+@@ -505,34 +525,38 @@
              ecx.refresh_memory_cache();
          }
 
@@ -498,7 +615,7 @@
 
          let mut expected_return = expected_return;
          if expected_return == RETURN_WHAT_INTERPRETER_SAYS {
-@@ -541,35 +736,40 @@
+@@ -541,35 +565,40 @@
              // Only check interpreter return if modify_ecx is not set.
              // When modify_ecx is used, it only modifies the JIT context, not the interpreter's
              // input, so the interpreter may return a different result.
@@ -545,7 +662,7 @@
                  MemDisplay(expected_memory),
                  "interpreter memory mismatch"
              );
-@@ -580,12 +780,23 @@
+@@ -580,12 +609,23 @@
              if skip_interpreter_checks {
                  expected_gas = 0; // Will skip comparison below
              } else {
@@ -571,7 +688,7 @@
          // Track whether we should skip JIT stack/gas/memory comparisons
          let skip_jit_stack =
              skip_interpreter_checks && test_case.expected_stack == STACK_WHAT_INTERPRETER_SAYS;
-@@ -594,22 +805,6 @@
+@@ -594,22 +634,6 @@
          let skip_jit_gas =
              skip_interpreter_checks && test_case.expected_gas == GAS_WHAT_INTERPRETER_SAYS;
 
@@ -594,7 +711,7 @@
          if let Some(assert_host) = assert_host {
              assert_host(&int_host);
          }
-@@ -619,9 +814,9 @@
+@@ -619,9 +643,9 @@
          if matches!(
              actual_return,
              // We can have a stack overflow/underflow before other error codes due to sections.
@@ -606,7 +723,7 @@
          ) {
              assert_eq!(
                  actual_return.is_halt(),
-@@ -644,7 +839,7 @@
+@@ -644,7 +668,7 @@
 
              if !skip_jit_memory {
                  assert_eq!(
@@ -615,7 +732,7 @@
                      MemDisplay(expected_memory),
                      "memory mismatch"
                  );
-@@ -655,130 +850,46 @@
+@@ -655,130 +679,34 @@
              }
          }
 
@@ -660,7 +777,7 @@
          f.debug_list().entries(chunks).finish()
      }
  }
-
+-
 -#[track_caller]
 -fn assert_actions(actual: &InterpreterAction, expected: &InterpreterAction) {
 -    match (actual, expected) {
@@ -723,12 +840,8 @@
 -        }
 -        (a, b) => assert_eq!(a, b, "next action mismatch"),
 -    }
-+fn revm_bytecode_from_evm2(bytecode: &Evm2Bytecode) -> revm_interpreter::bytecode::Bytecode {
-+    revm_interpreter::bytecode::Bytecode::new_raw(Bytes::copy_from_slice(
-+        bytecode.original_byte_slice(),
-+    ))
- }
-
+-}
+-
 -/// Insert a call outcome into the interpreter state (for testing call_with_interpreter).
 -///
 -/// Mimics revm-handler's insert_call_outcome: pushes success indicator, copies return data
@@ -765,8 +878,4 @@
 -    if ins_result.is_ok() {
 -        interpreter.gas.record_refund(out_gas.refunded());
 -    }
-+fn revm_spec_id_from_evm2(spec_id: SpecId) -> context_interface::primitives::hardfork::SpecId {
-+    let spec_id = u8::try_from(u32::from(spec_id)).expect("evm2 SpecId does not fit in u8");
-+    context_interface::primitives::hardfork::SpecId::try_from_u8(spec_id)
-+        .expect("evm2 SpecId has no revm gas table equivalent")
- }
+-}

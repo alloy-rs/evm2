@@ -1,10 +1,4 @@
 use super::*;
-use context_interface::{
-    cfg::GasParams,
-    context::{SStoreResult, SelfDestructResult, StateLoad},
-    host::LoadError,
-    journaled_state::AccountInfoLoad,
-};
 use evm2::{
     BaseEvmConfigSelector, EvmFeatures, EvmTypes,
     bytecode::Bytecode as Evm2Bytecode,
@@ -18,8 +12,7 @@ use evm2::{
         MessageResult as Evm2MessageResult,
     },
 };
-use evm2_jit_context::evm2_api;
-use revm_interpreter::{Gas, Host};
+use evm2_jit_context::{evm2_api, private::revm_interpreter::Gas};
 use similar_asserts::assert_eq;
 use std::{fmt, path::Path, sync::OnceLock};
 
@@ -260,14 +253,13 @@ impl EvmTypes for TestEvmTypes {
     type Host = TestHost;
 }
 
-/// Test host that implements [`Host`] trait for testing.
+/// Test host for codegen and runtime tests.
 pub struct TestHost {
     pub storage: HashMap<U256, U256>,
     pub transient_storage: HashMap<U256, U256>,
     pub code_map: &'static HashMap<Address, Evm2Bytecode>,
     pub selfdestructs: Vec<(Address, Address)>,
     pub logs: Vec<Log>,
-    pub gas_params: GasParams,
     evm2_spec_id: evm2::SpecId,
     evm2_block_env: Evm2BlockEnv<TestEvmTypes>,
 }
@@ -291,7 +283,6 @@ impl TestHost {
             code_map: def_codemap(),
             selfdestructs: Vec::new(),
             logs: Vec::new(),
-            gas_params: GasParams::new_spec(revm_spec_id_from_evm2(spec_id)),
             evm2_spec_id: spec_id,
             evm2_block_env: Evm2BlockEnv {
                 number: env.block.number,
@@ -306,168 +297,6 @@ impl TestHost {
                 ..Default::default()
             },
         }
-    }
-}
-
-impl Host for TestHost {
-    fn basefee(&self) -> U256 {
-        U256::from(0x1231)
-    }
-
-    fn blob_gasprice(&self) -> U256 {
-        U256::ZERO
-    }
-
-    fn gas_limit(&self) -> U256 {
-        U256::from(0x5678)
-    }
-
-    fn gas_params(&self) -> &GasParams {
-        &self.gas_params
-    }
-
-    fn is_amsterdam_eip8037_enabled(&self) -> bool {
-        false
-    }
-
-    fn difficulty(&self) -> U256 {
-        U256::from(0xcdef)
-    }
-
-    fn prevrandao(&self) -> Option<U256> {
-        Some(U256::from(0x0123))
-    }
-
-    fn block_number(&self) -> U256 {
-        DEF_BN
-    }
-
-    fn timestamp(&self) -> U256 {
-        U256::from(0x1234)
-    }
-
-    fn beneficiary(&self) -> Address {
-        Address::repeat_byte(0xcb)
-    }
-
-    fn slot_num(&self) -> U256 {
-        U256::ZERO
-    }
-
-    fn chain_id(&self) -> U256 {
-        U256::from(69)
-    }
-
-    fn effective_gas_price(&self) -> U256 {
-        U256::from(0x4567)
-    }
-
-    fn caller(&self) -> Address {
-        Address::repeat_byte(0xcc)
-    }
-
-    fn blob_hash(&self, number: usize) -> Option<U256> {
-        let env = def_env();
-        env.tx.blob_hashes.get(number).map(|h| (*h).into())
-    }
-
-    fn max_initcode_size(&self) -> usize {
-        // EIP-3860: Max initcode size is 2 * MAX_CODE_SIZE = 2 * 24576 = 49152
-        49152
-    }
-
-    fn block_hash(&mut self, number: u64) -> Option<B256> {
-        Some(U256::from(number).into())
-    }
-
-    fn selfdestruct(
-        &mut self,
-        address: Address,
-        target: Address,
-        _skip_cold_load: bool,
-    ) -> Result<StateLoad<SelfDestructResult>, LoadError> {
-        self.selfdestructs.push((address, target));
-
-        Ok(StateLoad::new(
-            SelfDestructResult {
-                had_value: false,
-                target_exists: true,
-                previously_destroyed: false,
-            },
-            false,
-        ))
-    }
-
-    fn log(&mut self, log: Log) {
-        self.logs.push(log);
-    }
-
-    fn tstore(&mut self, _address: Address, key: U256, value: U256) {
-        self.transient_storage.insert(key, value);
-    }
-
-    fn tload(&mut self, _address: Address, key: U256) -> U256 {
-        self.transient_storage.get(&key).copied().unwrap_or(U256::ZERO)
-    }
-
-    fn load_account_info_skip_cold_load(
-        &mut self,
-        address: Address,
-        load_code: bool,
-        _skip_cold_load: bool,
-    ) -> Result<AccountInfoLoad<'_>, LoadError> {
-        use revm_interpreter::state::AccountInfo;
-        use std::borrow::Cow;
-
-        let code = if load_code {
-            // Return actual code if found, otherwise empty bytecode
-            Some(self.code_map.get(&address).map(revm_bytecode_from_evm2).unwrap_or_default())
-        } else {
-            None
-        };
-
-        // Return address byte as balance (test convention)
-        // The balance is the last byte of the address
-        let balance = U256::from(address.0[19]);
-
-        // Calculate code hash from the actual bytecode
-        let code_hash = if let Some(bytecode) = self.code_map.get(&address) {
-            keccak256(bytecode.original_byte_slice())
-        } else {
-            KECCAK_EMPTY
-        };
-
-        // Create owned account info
-        let info = AccountInfo { balance, nonce: 0, code_hash, account_id: None, code };
-
-        let is_empty = info.code.is_none() && info.balance.is_zero() && info.nonce == 0;
-
-        Ok(AccountInfoLoad { account: Cow::Owned(info), is_cold: false, is_empty })
-    }
-
-    fn sstore_skip_cold_load(
-        &mut self,
-        _address: Address,
-        key: U256,
-        value: U256,
-        _skip_cold_load: bool,
-    ) -> Result<StateLoad<SStoreResult>, LoadError> {
-        let original = self.storage.get(&key).copied().unwrap_or(U256::ZERO);
-        self.storage.insert(key, value);
-        Ok(StateLoad::new(
-            SStoreResult { original_value: original, present_value: original, new_value: value },
-            false,
-        ))
-    }
-
-    fn sload_skip_cold_load(
-        &mut self,
-        _address: Address,
-        key: U256,
-        _skip_cold_load: bool,
-    ) -> Result<StateLoad<U256>, LoadError> {
-        let value = self.storage.get(&key).copied().unwrap_or(U256::ZERO);
-        Ok(StateLoad::new(value, false))
     }
 }
 
@@ -880,16 +709,4 @@ impl fmt::Debug for MemDisplay<'_> {
         let chunks = self.0.chunks(32).map(hex::encode_prefixed);
         f.debug_list().entries(chunks).finish()
     }
-}
-
-fn revm_bytecode_from_evm2(bytecode: &Evm2Bytecode) -> revm_interpreter::bytecode::Bytecode {
-    revm_interpreter::bytecode::Bytecode::new_raw(Bytes::copy_from_slice(
-        bytecode.original_byte_slice(),
-    ))
-}
-
-fn revm_spec_id_from_evm2(spec_id: SpecId) -> context_interface::primitives::hardfork::SpecId {
-    let spec_id = u8::try_from(u32::from(spec_id)).expect("evm2 SpecId does not fit in u8");
-    context_interface::primitives::hardfork::SpecId::try_from_u8(spec_id)
-        .expect("evm2 SpecId has no revm gas table equivalent")
 }

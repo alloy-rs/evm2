@@ -1,6 +1,6 @@
 --- upstream/crates/revmc-codegen/src/tests/mod.rs
 +++ evm2/crates/jit/codegen/src/tests/mod.rs
-@@ -7,16 +7,17 @@
+@@ -7,16 +7,16 @@
  )]
 
  use crate::*;
@@ -21,12 +21,11 @@
  };
 -use revmc_builtins::gas;
 +use evm2_jit_builtins::gas;
-+use revm_interpreter as interpreter;
-+use revm_interpreter::context_interface;
++use evm2_jit_context::CallInput;
 
  /// `KECCAK256` opcode gas cost (base + dynamic).
  const fn keccak256_cost(len: u64) -> Option<u64> {
-@@ -52,16 +53,14 @@
+@@ -52,16 +52,14 @@
  mod meta;
 
  mod fibonacci;
@@ -45,7 +44,7 @@
  ) -> R {
      init_tracing();
      let mut compiler = EvmCompiler::new_llvm(false).unwrap();
-@@ -86,6 +85,42 @@
+@@ -86,6 +84,42 @@
      0x7FFFFFFFFFFFFFFF,
  ]);
 
@@ -88,7 +87,7 @@
  tests! {
      ret {
          empty(@raw {}),
-@@ -100,57 +135,57 @@
+@@ -100,57 +134,57 @@
          }),
          invalid(@raw {
              bytecode: &[op::INVALID],
@@ -156,7 +155,7 @@
              expected_stack: &[0_U256; 1024],
              expected_gas: 2 * 1025,
          }),
-@@ -160,7 +195,7 @@
+@@ -160,7 +194,7 @@
          push0_merge(@raw {
              bytecode: &[op::PUSH0],
              spec_id: SpecId::MERGE,
@@ -165,7 +164,7 @@
              expected_gas: GAS_WHAT_INTERPRETER_SAYS,
          }),
          push0_shanghai(@raw {
-@@ -178,14 +213,14 @@
+@@ -178,14 +212,14 @@
          clz_cancun(@raw {
              bytecode: &[op::MSIZE, op::CLZ],
              spec_id: SpecId::CANCUN,
@@ -182,7 +181,7 @@
              expected_stack: STACK_WHAT_INTERPRETER_SAYS,
              expected_gas: GAS_WHAT_INTERPRETER_SAYS,
          }),
-@@ -193,28 +228,28 @@
+@@ -193,28 +227,28 @@
          dupn_cancun(@raw {
              bytecode: &[op::PUSH0, op::DUPN, 0x00],
              spec_id: SpecId::CANCUN,
@@ -215,7 +214,7 @@
              expected_stack: STACK_WHAT_INTERPRETER_SAYS,
              expected_gas: GAS_WHAT_INTERPRETER_SAYS,
          }),
-@@ -365,7 +400,7 @@
+@@ -365,7 +399,7 @@
          dupn_underflow(@raw {
              bytecode: &[op::PUSH0, op::DUPN, 0x80],
              spec_id: SpecId::AMSTERDAM,
@@ -224,7 +223,7 @@
              expected_stack: STACK_WHAT_INTERPRETER_SAYS,
              expected_gas: GAS_WHAT_INTERPRETER_SAYS,
          }),
-@@ -373,7 +408,7 @@
+@@ -373,7 +407,7 @@
          swapn_underflow(@raw {
              bytecode: &[op::PUSH0, op::SWAPN, 0x80],
              spec_id: SpecId::AMSTERDAM,
@@ -233,7 +232,7 @@
              expected_stack: STACK_WHAT_INTERPRETER_SAYS,
              expected_gas: GAS_WHAT_INTERPRETER_SAYS,
          }),
-@@ -381,14 +416,14 @@
+@@ -381,14 +415,14 @@
          exchange_underflow(@raw {
              bytecode: &[op::PUSH0, op::PUSH0, op::EXCHANGE, 0x8E],
              spec_id: SpecId::AMSTERDAM,
@@ -250,7 +249,7 @@
              expected_stack: STACK_WHAT_INTERPRETER_SAYS,
              expected_gas: GAS_WHAT_INTERPRETER_SAYS,
          }),
-@@ -397,14 +432,14 @@
+@@ -397,14 +431,14 @@
          dupn_invalid_imm(@raw {
              bytecode: &[op::PUSH0, op::DUPN, 0x5B],
              spec_id: SpecId::AMSTERDAM,
@@ -267,7 +266,7 @@
              expected_stack: STACK_WHAT_INTERPRETER_SAYS,
              expected_gas: GAS_WHAT_INTERPRETER_SAYS,
          }),
-@@ -412,7 +447,7 @@
+@@ -412,7 +446,7 @@
          exchange_invalid_imm(@raw {
              bytecode: &[op::PUSH0, op::PUSH0, op::PUSH0, op::EXCHANGE, 82],
              spec_id: SpecId::AMSTERDAM,
@@ -276,7 +275,7 @@
              expected_stack: STACK_WHAT_INTERPRETER_SAYS,
              expected_gas: GAS_WHAT_INTERPRETER_SAYS,
          }),
-@@ -464,7 +499,7 @@
+@@ -464,7 +498,7 @@
                  op::PUSH1, 0x20, op::PUSH0, op::RETURN,
              ],
              spec_id: SpecId::AMSTERDAM,
@@ -285,7 +284,7 @@
              expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
              expected_gas: GAS_WHAT_INTERPRETER_SAYS,
          }),
-@@ -477,7 +512,7 @@
+@@ -477,7 +511,7 @@
                  op::PUSH1, 0x20, op::PUSH0, op::RETURN,
              ],
              spec_id: SpecId::AMSTERDAM,
@@ -294,7 +293,7 @@
              expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
              expected_gas: GAS_WHAT_INTERPRETER_SAYS,
          }),
-@@ -490,7 +525,7 @@
+@@ -490,7 +524,7 @@
                  op::PUSH1, 0x20, op::PUSH0, op::RETURN,
              ],
              spec_id: SpecId::AMSTERDAM,
@@ -303,7 +302,7 @@
              expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
              expected_gas: GAS_WHAT_INTERPRETER_SAYS,
          }),
-@@ -520,7 +555,7 @@
+@@ -520,7 +554,7 @@
 
          overflow_analysis_edge_case(@raw {
              bytecode: &[&[op::JUMPDEST][..], &[op::PUSH0; 1025][..], &[op::JUMPI][..]].concat(),
@@ -312,7 +311,7 @@
          }),
      }
 
-@@ -532,29 +567,29 @@
+@@ -532,29 +566,29 @@
          }),
          unmodified_stack_after_push_jump(@raw {
              bytecode: &[op::PUSH1, 3, op::JUMP, op::JUMPDEST, op::PUSH0, op::ADD],
@@ -347,7 +346,7 @@
              expected_stack: &[0_U256],
              expected_gas: 1 + 2 + 10,
          }),
-@@ -576,12 +611,12 @@
+@@ -576,12 +610,12 @@
          }),
          basic_jumpi2_lazy_invalid_target(@raw {
              bytecode: &[op::PUSH1, 1, op::PUSH0, op::JUMPI, op::PUSH1, 69],
@@ -362,7 +361,7 @@
              expected_stack: &[U256::ZERO],
              expected_gas: 3 + 3 + 10 + 1 + 2 + 3,
          }),
-@@ -916,7 +951,7 @@
+@@ -916,7 +950,7 @@
          returndatacopy(@raw {
              // No return data exists, so copying 32 bytes from offset 0 fails with OutOfOffset
              bytecode: &[op::PUSH1, 32, op::PUSH0, op::PUSH0, op::RETURNDATACOPY],
@@ -371,7 +370,7 @@
              expected_gas: GAS_WHAT_INTERPRETER_SAYS,
          }),
      }
-@@ -1059,37 +1094,37 @@
+@@ -1059,37 +1093,37 @@
          }),
          mload_overflow1(@raw {
              bytecode: &[op::PUSH8, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, op::MLOAD],
@@ -415,7 +414,7 @@
              expected_stack: &[DEF_ADDR.into_word().into()],
              expected_gas: 5,
          }),
-@@ -1101,7 +1136,7 @@
+@@ -1101,7 +1135,7 @@
                  code.push(op::MLOAD);
                  code
              },
@@ -424,7 +423,7 @@
              expected_stack: &[0x1_0000_0000_0000_0000_U256],
              expected_gas: GAS_WHAT_INTERPRETER_SAYS,
          }),
-@@ -1290,143 +1325,28 @@
+@@ -1290,143 +1324,28 @@
              expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
              expected_gas: GAS_WHAT_INTERPRETER_SAYS,
          }),
@@ -574,7 +573,7 @@
              expected_gas: GAS_WHAT_INTERPRETER_SAYS,
              assert_host: Some(|host| {
                  assert_eq!(host.selfdestructs, [(DEF_ADDR, Address::with_last_byte(0x69))]);
-@@ -1435,7 +1355,7 @@
+@@ -1435,7 +1354,7 @@
          selfdestruct_preserves_remaining_stack(@raw {
              bytecode: &[op::NUMBER, op::NUMBER, op::SELFDESTRUCT],
              spec_id: SpecId::BERLIN,
@@ -583,7 +582,7 @@
              expected_stack: STACK_WHAT_INTERPRETER_SAYS,
              expected_gas: GAS_WHAT_INTERPRETER_SAYS,
          }),
-@@ -1444,286 +1364,15 @@
+@@ -1444,286 +1363,15 @@
              bytecode: &[op::PUSH1, 0x01, op::SELFDESTRUCT],
              is_static: true,
              gas_limit: 4000,
@@ -735,8 +734,7 @@
 -            spec_id: SpecId::ISTANBUL,
 -            expected_return: RETURN_WHAT_INTERPRETER_SAYS,
 -            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
-+            expected_return: InstrStop::StateChangeDuringStaticCall,
-             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
+-            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
 -            expected_next_action: ACTION_WHAT_INTERPRETER_SAYS,
 -        }),
 -        call_no_value_istanbul(@raw {
@@ -786,7 +784,8 @@
 -            spec_id: SpecId::BYZANTIUM,
 -            expected_return: RETURN_WHAT_INTERPRETER_SAYS,
 -            expected_memory: MEMORY_WHAT_INTERPRETER_SAYS,
--            expected_gas: GAS_WHAT_INTERPRETER_SAYS,
++            expected_return: InstrStop::StateChangeDuringStaticCall,
+             expected_gas: GAS_WHAT_INTERPRETER_SAYS,
 -            expected_next_action: ACTION_WHAT_INTERPRETER_SAYS,
 -        }),
 -        call_high_gas_value_istanbul(@raw {
@@ -872,7 +871,7 @@
          }),
      }
 
-@@ -1812,7 +1461,7 @@
+@@ -1812,7 +1460,7 @@
                  static FAKE_CODE: [u8; 5] = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE];
                  ecx.bytecode = &FAKE_CODE as *const [u8];
              }),
@@ -881,7 +880,7 @@
              expected_memory: &hex!("AABBCCDDEE000000000000000000000000000000000000000000000000000000"),
              expected_gas: 3 + 2 + 2 + (verylowcopy_cost(32).unwrap() + memory_gas_cost(1)),
          }),
-@@ -1935,7 +1584,7 @@
+@@ -1935,7 +1583,7 @@
              fn1: JUMPDEST  JUMP
              fn2: JUMPDEST  JUMP
              "),
@@ -890,7 +889,7 @@
              expected_gas: GAS_WHAT_INTERPRETER_SAYS,
          }),
      }
-@@ -1981,16 +1630,10 @@
+@@ -1981,16 +1629,10 @@
                  RETURN
              "),
              inspect_stack: Some(false),
@@ -909,7 +908,7 @@
          }),
 
          // Same class of bug but triggered by a deduped reachable JUMPDEST block rather than
-@@ -2038,16 +1681,10 @@
+@@ -2038,16 +1680,10 @@
                  RETURN
              "),
              inspect_stack: Some(false),
@@ -928,7 +927,7 @@
          }),
 
          dedup_false_jumpi_non_jumpdest_fallthrough(@raw {
-@@ -2076,7 +1713,7 @@
+@@ -2076,7 +1712,7 @@
                  JUMPDEST
                  STOP
              "),
@@ -937,7 +936,7 @@
              expected_gas: GAS_WHAT_INTERPRETER_SAYS,
          }),
 
-@@ -2103,7 +1740,7 @@
+@@ -2103,7 +1739,7 @@
                  JUMPDEST
                  STOP
              "),
@@ -946,7 +945,7 @@
              expected_gas: GAS_WHAT_INTERPRETER_SAYS,
          }),
 
-@@ -2171,7 +1808,7 @@
+@@ -2171,7 +1807,7 @@
                  REVERT
              "),
              inspect_stack: Some(false),
@@ -955,7 +954,7 @@
              expected_gas: GAS_WHAT_INTERPRETER_SAYS,
          }),
 
-@@ -2186,7 +1823,7 @@
+@@ -2186,7 +1822,7 @@
          calldatasize_tstore_shanghai(@raw {
              bytecode: &[op::CALLDATASIZE, op::TSTORE],
              spec_id: SpecId::SHANGHAI,
@@ -964,7 +963,7 @@
              expected_gas: GAS_WHAT_INTERPRETER_SAYS,
          }),
 
-@@ -2194,7 +1831,7 @@
+@@ -2194,7 +1830,7 @@
          push0_tload_shanghai(@raw {
              bytecode: &[op::PUSH0, op::TLOAD],
              spec_id: SpecId::SHANGHAI,
@@ -973,7 +972,7 @@
              expected_gas: GAS_WHAT_INTERPRETER_SAYS,
          }),
 
-@@ -2204,23 +1841,19 @@
+@@ -2204,23 +1840,19 @@
              bytecode: &hex!("7c01000000000000000000000000000000000000000000000000000000006000350463380e439681146037578063c040622614604757005b603d6084565b8060005260206000f35b604d6057565b8060005260206000f35b6000605f6084565b600060006101000a81548160ff0219169083021790555060ff60016000540416905090565b6000808160011560cd575b600a82121560a157600190910190608f565b81600a1460ac5760c9565b50600a5b60008160ff16111560c85760019182900391900360b0565b5b60d5565b6000925060ed565b8160001460e05760e8565b6001925060ed565b600092505b50509056"),
              spec_id: SpecId::ISTANBUL,
              modify_ecx: Some(|ecx| {
@@ -981,7 +980,7 @@
 -                ecx.input.input = interpreter::CallInput::Bytes(Bytes::from(&hex!("c0406226")));
 +                let input = unsafe { &mut *ecx.input };
 +                input.call_value = 1_U256;
-+                input.input = interpreter::CallInput::Bytes(Bytes::from(&hex!("c0406226")));
++                input.input = CallInput::Bytes(Bytes::from(&hex!("c0406226")));
 +                ecx.calldatasize = input.input.len();
              }),
              // Note: Cannot use RETURN_WHAT_INTERPRETER_SAYS here because modify_ecx

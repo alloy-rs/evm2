@@ -10,7 +10,7 @@
 
  version.workspace = true
  authors.workspace = true
-@@ -21,22 +21,15 @@
+@@ -21,23 +21,14 @@
  workspace = true
 
  [dependencies]
@@ -35,11 +35,11 @@
 -revm-interpreter.workspace = true
 -revm-primitives.workspace = true
 -revm-state.workspace = true
-+revm-interpreter = { workspace = true, optional = true }
-
+-
  bitflags = "2.5"
  derive_more = { version = "2", default-features = false, features = ["debug"] }
-@@ -54,13 +47,13 @@
+ bitvec = "1.0"
+@@ -54,11 +45,10 @@
  indexmap = "2.13.0"
 
  [build-dependencies]
@@ -52,11 +52,8 @@
 +evm2-jit-context = { workspace = true, features = ["evm2"] }
 
  paste.workspace = true
-+revm-interpreter.workspace = true
  similar-asserts = "2.0"
- snapbox = "1.1"
- serde_json = "1.0"
-@@ -68,11 +61,18 @@
+@@ -68,11 +58,17 @@
 
  [features]
  default = ["llvm"]
@@ -74,7 +71,6 @@
 +__fuzzing = [
 +    "dep:arbitrary",
 +    "dep:paste",
-+    "dep:revm-interpreter",
 +    "dep:similar-asserts",
 +    "dep:tracing-subscriber",
 +    "evm2-jit-context/evm2",
