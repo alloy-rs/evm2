@@ -6,9 +6,6 @@ use std::{
 /// Environment variable for the downloaded fixture root.
 pub(crate) const TEST_FIXTURES_ENV: &str = "EVM2_TEST_FIXTURES";
 
-/// revmc-compatible environment variable for the downloaded fixture root.
-pub(crate) const REVMC_TEST_FIXTURES_ENV: &str = "REVMC_TEST_FIXTURES";
-
 /// Generic EEST stable selector.
 pub(crate) const EEST_STABLE_ENV: &str = "EVM2_EEST_STABLE";
 
@@ -27,7 +24,6 @@ pub(crate) fn workspace_root() -> PathBuf {
 /// Returns the root of downloaded test fixtures.
 pub(crate) fn fixtures_root() -> PathBuf {
     env::var_os(TEST_FIXTURES_ENV)
-        .or_else(|| env::var_os(REVMC_TEST_FIXTURES_ENV))
         .map(PathBuf::from)
         .map(workspace_relative)
         .unwrap_or_else(|| workspace_root().join(DEFAULT_FIXTURES_PATH))

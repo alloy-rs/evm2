@@ -99,8 +99,7 @@ cargo nextest list -p evm2-eest --test eest --ignore-default-filter
 
 For local experiments, `EVM2_STATETEST_ROOT`, `EVM2_BLOCKCHAINTEST_ROOT`,
 `EVM2_STATETEST_STABLE`, `EVM2_BLOCKCHAINTEST_STABLE`, `EVM2_EEST_STABLE`,
-`ETHEREUM_TESTS`, `ETHTESTS`, `EVM2_TEST_FIXTURES`, `REVMC_TEST_FIXTURES`, and
-`SUBDIR` are supported as optional filters.
+`EVM2_TEST_FIXTURES`, and `SUBDIR` are supported as optional filters.
 
 Test cases for unsupported hardforks (currently Amsterdam) are skipped
 automatically. Set `EVM2_SKIP_FORKS` to a comma-separated list of hardfork

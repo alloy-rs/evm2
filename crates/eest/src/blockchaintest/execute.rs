@@ -814,9 +814,11 @@ fn fork_to_spec_id(fork: ForkSpec) -> SpecId {
 mod tests {
     #[cfg(feature = "jit")]
     use super::super::types::{SealEngine, State};
+    #[cfg(feature = "jit")]
     use super::*;
     #[cfg(feature = "jit")]
     use evm2::interpreter::op;
+    #[cfg(feature = "jit")]
     use std::collections::BTreeMap;
 
     #[cfg(feature = "jit")]
