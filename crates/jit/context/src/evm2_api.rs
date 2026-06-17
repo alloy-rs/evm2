@@ -4,7 +4,7 @@ use crate::{
     AccountInfoLoad, CallInput, EvmStack, EvmWord, Inputs, InstrStop, JitHost, LoadError,
     SStoreResult, SelfDestructResult, StateLoad,
 };
-use alloc::{borrow::Cow, boxed::Box, vec::Vec};
+use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::{Bytes, U256};
 use core::{
     cmp::min,
@@ -21,10 +21,7 @@ use evm2::{
     interpreter::{Gas as Evm2Gas, Host as Evm2Host, Interpreter, Message, MessageKind, Word},
     version::{GasId, GasParams},
 };
-use revm_interpreter::{
-    SharedMemory, bytecode::Bytecode as RevmBytecode, interpreter_types::MemoryTr,
-    state::AccountInfo as RevmAccountInfo,
-};
+use revm_interpreter::{SharedMemory, interpreter_types::MemoryTr};
 
 const _: () = {
     assert!(core::mem::size_of::<EvmWord>() == core::mem::size_of::<Word>());
@@ -215,20 +212,15 @@ impl<T: EvmTypes> JitHost for Evm2JitHostAdapter<'_, T> {
         address: alloy_primitives::Address,
         load_code: bool,
         skip_cold_load: bool,
-    ) -> Result<AccountInfoLoad<'_>, LoadError> {
+    ) -> Result<AccountInfoLoad, LoadError> {
         let account = self
             .host_mut()
             .load_account(&address, load_code, skip_cold_load)
             .map_err(|stop| load_error(stop, skip_cold_load))?;
-        let info = RevmAccountInfo {
-            balance: account.balance,
-            nonce: 0,
-            code_hash: account.code_hash,
-            account_id: None,
-            code: Some(revm_bytecode_from_evm2(&account.code)),
-        };
         Ok(AccountInfoLoad {
-            account: Cow::Owned(info),
+            balance: account.balance,
+            code_hash: account.code_hash,
+            code: account.code,
             is_cold: account.is_cold,
             is_empty: account.is_empty,
         })
@@ -241,10 +233,6 @@ fn load_error(stop: InstrStop, skip_cold_load: bool) -> LoadError {
     } else {
         LoadError::DBError
     }
-}
-
-fn revm_bytecode_from_evm2(bytecode: &Bytecode) -> RevmBytecode {
-    RevmBytecode::new_raw(Bytes::copy_from_slice(bytecode.original_byte_slice()))
 }
 
 /// The evm2 bytecode compiler runtime context.

@@ -103,6 +103,15 @@
      });
      Ok(())
  }
+@@ -310,7 +301,7 @@
+ ) -> BuiltinResult {
+     let addr = address.to_address();
+     let account = load_account(ecx, addr, true)?;
+-    *address = U256::from(account.code.as_ref().unwrap().len()).into();
++    *address = U256::from(account.code.len()).into();
+     Ok(())
+ }
+
 @@ -322,7 +313,7 @@
      let rev![address, memory_offset, code_offset, len] = sp;
      let addr = address.to_address();
@@ -112,6 +121,15 @@
 
      let mut memory_offset_usize = 0;
      if len != 0 {
+@@ -331,7 +322,7 @@
+     }
+
+     let account = load_account(ecx, addr, true)?;
+-    let code = account.code.as_ref().unwrap().original_bytes();
++    let code = account.code.original_bytes();
+
+     let code_offset_usize = core::cmp::min(as_usize_saturated!(code_offset.to_u256()), code.len());
+     ecx.memory.set_data(memory_offset_usize, code_offset_usize, len, &code);
 @@ -350,7 +341,7 @@
      // Bounds check BEFORE charging gas, matching revm.
      let data_end = data_offset.saturating_add(len);

@@ -301,7 +301,7 @@ pub unsafe extern "C" fn __revmc_builtin_extcodesize(
 ) -> BuiltinResult {
     let addr = address.to_address();
     let account = load_account(ecx, addr, true)?;
-    *address = U256::from(account.code.as_ref().unwrap().len()).into();
+    *address = U256::from(account.code.len()).into();
     Ok(())
 }
 
@@ -322,7 +322,7 @@ pub unsafe extern "C" fn __revmc_builtin_extcodecopy(
     }
 
     let account = load_account(ecx, addr, true)?;
-    let code = account.code.as_ref().unwrap().original_bytes();
+    let code = account.code.original_bytes();
 
     let code_offset_usize = core::cmp::min(as_usize_saturated!(code_offset.to_u256()), code.len());
     ecx.memory.set_data(memory_offset_usize, code_offset_usize, len, &code);

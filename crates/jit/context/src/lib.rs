@@ -10,6 +10,7 @@ use alloy_primitives::{Address, B256, Bytes, Log, U256, ruint};
 use core::{cell::Ref, fmt, mem::MaybeUninit, ops::Range, ptr::NonNull};
 pub use evm2::interpreter::{Gas, InstrStop};
 use evm2::{
+    bytecode::Bytecode,
     evm::{SStore, SelfDestructResult as Evm2SelfDestructResult},
     version::GasParams,
 };
@@ -17,16 +18,75 @@ use revm_interpreter::SharedMemory;
 pub use revm_interpreter::interpreter_types::MemoryTr;
 
 #[doc(hidden)]
-pub type AccountInfoLoad<'a> =
-    revm_interpreter::context_interface::journaled_state::AccountInfoLoad<'a>;
-#[doc(hidden)]
-pub type LoadError = revm_interpreter::host::LoadError;
-#[doc(hidden)]
 pub type SelfDestructResult = Evm2SelfDestructResult;
 #[doc(hidden)]
 pub type SStoreResult = SStore;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[doc(hidden)]
-pub type StateLoad<T> = revm_interpreter::StateLoad<T>;
+pub enum LoadError {
+    ColdLoadSkipped,
+    DBError,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[doc(hidden)]
+pub struct StateLoad<T> {
+    pub data: T,
+    pub is_cold: bool,
+}
+
+impl<T> StateLoad<T> {
+    #[inline]
+    pub const fn new(data: T, is_cold: bool) -> Self {
+        Self { data, is_cold }
+    }
+
+    #[inline]
+    pub fn map<B, F>(self, f: F) -> StateLoad<B>
+    where
+        F: FnOnce(T) -> B,
+    {
+        StateLoad::new(f(self.data), self.is_cold)
+    }
+}
+
+impl<T> core::ops::Deref for StateLoad<T> {
+    type Target = T;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &self.data
+    }
+}
+
+impl<T> core::ops::DerefMut for StateLoad<T> {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.data
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[doc(hidden)]
+pub struct AccountInfoLoad {
+    pub balance: U256,
+    pub code_hash: B256,
+    pub code: Bytecode,
+    pub is_cold: bool,
+    pub is_empty: bool,
+}
+
+impl AccountInfoLoad {
+    #[inline]
+    pub fn into_state_load<F, O>(self, f: F) -> StateLoad<O>
+    where
+        F: FnOnce(Self) -> O,
+    {
+        let is_cold = self.is_cold;
+        StateLoad::new(f(self), is_cold)
+    }
+}
 
 mod arch;
 use arch::revmc_entry;
@@ -252,7 +312,7 @@ pub trait JitHost {
         address: Address,
         load_code: bool,
         skip_cold_load: bool,
-    ) -> Result<AccountInfoLoad<'_>, LoadError>;
+    ) -> Result<AccountInfoLoad, LoadError>;
     fn balance(&mut self, address: Address) -> Option<StateLoad<U256>> {
         self.load_account_info_skip_cold_load(address, false, false)
             .ok()

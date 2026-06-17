@@ -55,7 +55,7 @@ pub(crate) fn load_account<'a>(
     ecx: &'a mut EvmContext<'_>,
     address: Address,
     load_code: bool,
-) -> Result<AccountInfoLoad<'a>, BuiltinError> {
+) -> Result<AccountInfoLoad, BuiltinError> {
     let cold_load_gas = ecx.gas_params.cold_account_additional_cost();
     let skip_cold_load = ecx.gas.remaining() < cold_load_gas;
     let account = ecx.host.load_account_info_skip_cold_load(address, load_code, skip_cold_load)?;

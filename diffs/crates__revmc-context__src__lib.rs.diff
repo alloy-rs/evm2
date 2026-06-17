@@ -1,6 +1,6 @@
 --- upstream/crates/revmc-context/src/lib.rs
 +++ evm2/crates/jit/context/src/lib.rs
-@@ -6,71 +6,257 @@
+@@ -6,71 +6,317 @@
  extern crate alloc;
 
  use alloc::vec::Vec;
@@ -12,6 +12,7 @@
 +use core::{cell::Ref, fmt, mem::MaybeUninit, ops::Range, ptr::NonNull};
 +pub use evm2::interpreter::{Gas, InstrStop};
 +use evm2::{
++    bytecode::Bytecode,
 +    evm::{SStore, SelfDestructResult as Evm2SelfDestructResult},
 +    version::GasParams,
  };
@@ -26,16 +27,75 @@
 +pub use revm_interpreter::interpreter_types::MemoryTr;
 +
 +#[doc(hidden)]
-+pub type AccountInfoLoad<'a> =
-+    revm_interpreter::context_interface::journaled_state::AccountInfoLoad<'a>;
-+#[doc(hidden)]
-+pub type LoadError = revm_interpreter::host::LoadError;
-+#[doc(hidden)]
 +pub type SelfDestructResult = Evm2SelfDestructResult;
 +#[doc(hidden)]
 +pub type SStoreResult = SStore;
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 +#[doc(hidden)]
-+pub type StateLoad<T> = revm_interpreter::StateLoad<T>;
++pub enum LoadError {
++    ColdLoadSkipped,
++    DBError,
++}
++
++#[derive(Clone, Debug, Default, PartialEq, Eq)]
++#[doc(hidden)]
++pub struct StateLoad<T> {
++    pub data: T,
++    pub is_cold: bool,
++}
++
++impl<T> StateLoad<T> {
++    #[inline]
++    pub const fn new(data: T, is_cold: bool) -> Self {
++        Self { data, is_cold }
++    }
++
++    #[inline]
++    pub fn map<B, F>(self, f: F) -> StateLoad<B>
++    where
++        F: FnOnce(T) -> B,
++    {
++        StateLoad::new(f(self.data), self.is_cold)
++    }
++}
++
++impl<T> core::ops::Deref for StateLoad<T> {
++    type Target = T;
++
++    #[inline]
++    fn deref(&self) -> &Self::Target {
++        &self.data
++    }
++}
++
++impl<T> core::ops::DerefMut for StateLoad<T> {
++    #[inline]
++    fn deref_mut(&mut self) -> &mut Self::Target {
++        &mut self.data
++    }
++}
++
++#[derive(Clone, Debug, Default, PartialEq, Eq)]
++#[doc(hidden)]
++pub struct AccountInfoLoad {
++    pub balance: U256,
++    pub code_hash: B256,
++    pub code: Bytecode,
++    pub is_cold: bool,
++    pub is_empty: bool,
++}
++
++impl AccountInfoLoad {
++    #[inline]
++    pub fn into_state_load<F, O>(self, f: F) -> StateLoad<O>
++    where
++        F: FnOnce(Self) -> O,
++    {
++        let is_cold = self.is_cold;
++        StateLoad::new(f(self), is_cold)
++    }
++}
 
  mod arch;
  use arch::revmc_entry;
@@ -292,7 +352,7 @@
 +        address: Address,
 +        load_code: bool,
 +        skip_cold_load: bool,
-+    ) -> Result<AccountInfoLoad<'_>, LoadError>;
++    ) -> Result<AccountInfoLoad, LoadError>;
 +    fn balance(&mut self, address: Address) -> Option<StateLoad<U256>> {
 +        self.load_account_info_skip_cold_load(address, false, false)
 +            .ok()
@@ -300,7 +360,7 @@
      }
  }
 
-@@ -87,26 +273,21 @@
+@@ -87,26 +333,21 @@
      /// The memory.
      pub memory: &'a mut SharedMemory,
      /// Input information (target address, caller, input data, call value).
@@ -331,7 +391,7 @@
      ///
      /// Set to `None` when no inspector is active.
      #[doc(hidden)]
-@@ -114,7 +295,7 @@
+@@ -114,7 +355,7 @@
      /// The size of the call input data, cached for CALLDATASIZE.
      pub calldatasize: usize,
      /// The result set by a builtin before exiting via [`revmc_exit`].
@@ -340,7 +400,7 @@
      /// Saved RSP from the entry trampoline, used by [`revmc_exit`] to unwind.
      pub exit_sp: *mut u8,
      /// Cached gas parameters from the host.
-@@ -126,6 +307,12 @@
+@@ -126,6 +367,12 @@
      /// Cached length of the current memory context in bytes.
      /// Refreshed after any memory resize.
      pub mem_len: usize,
@@ -353,7 +413,7 @@
  }
 
  // Static assertions to ensure the struct layout matches expectations.
-@@ -135,10 +322,6 @@
+@@ -135,10 +382,6 @@
 
      // Key fields accessed by JIT code
      assert!(offset_of!(EvmContext<'_>, memory) == 0);
@@ -364,7 +424,7 @@
  };
 
  impl fmt::Debug for EvmContext<'_> {
-@@ -147,47 +330,7 @@
+@@ -147,47 +390,7 @@
      }
  }
 
@@ -413,7 +473,7 @@
      /// Refreshes the cached memory base pointer and length from `SharedMemory`.
      ///
      /// Must be called after any operation that may resize memory.
-@@ -199,12 +342,51 @@
+@@ -199,12 +402,51 @@
      }
  }
 
@@ -466,7 +526,7 @@
  ///
  /// extern_revmc! {
  ///    /// A simple function.
-@@ -224,7 +406,7 @@
+@@ -224,7 +466,7 @@
                      ecx: ::core::ptr::NonNull<$crate::EvmContext<'_>>,
                      stack: ::core::ptr::NonNull<$crate::EvmStack>,
                      stack_len: ::core::ptr::NonNull<usize>,
@@ -475,7 +535,7 @@
              )+
          }
      };
-@@ -239,7 +421,7 @@
+@@ -239,7 +481,7 @@
      ecx: NonNull<EvmContext<'_>>,
      stack: NonNull<EvmStack>,
      stack_len: NonNull<usize>,
@@ -484,7 +544,7 @@
 
  /// An EVM bytecode function.
  #[derive(Clone, Copy, Debug, Hash)]
-@@ -272,82 +454,6 @@
+@@ -272,82 +514,6 @@
          self.0
      }
 
@@ -567,7 +627,7 @@
      /// Calls the function.
      ///
      /// Arguments:
-@@ -366,7 +472,7 @@
+@@ -366,7 +532,7 @@
          stack: &mut EvmStack,
          stack_len: &mut usize,
          ecx: &mut EvmContext<'_>,
@@ -576,7 +636,7 @@
          revmc_entry(NonNull::from(ecx), NonNull::from(stack), NonNull::from(stack_len), self.0)
      }
 
-@@ -383,7 +489,7 @@
+@@ -383,7 +549,7 @@
          stack: &mut EvmStack,
          stack_len: &mut usize,
          ecx: &mut EvmContext<'_>,
@@ -585,7 +645,7 @@
          self.call(stack, stack_len, ecx)
      }
  }
-@@ -415,20 +521,6 @@
+@@ -415,20 +581,6 @@
          Vec::with_capacity(1024)
      }
 
@@ -606,7 +666,7 @@
      /// Creates a stack from a vector's buffer.
      ///
      /// # Panics
-@@ -826,7 +918,6 @@
+@@ -826,7 +978,6 @@
  #[doc(hidden)]
  pub mod private {
      pub use revm_interpreter;
@@ -614,7 +674,7 @@
  }
 
  #[cfg(test)]
-@@ -851,8 +942,8 @@
+@@ -851,8 +1002,8 @@
          _ecx: NonNull<EvmContext<'_>>,
          _stack: NonNull<EvmStack>,
          _stack_len: NonNull<usize>,
