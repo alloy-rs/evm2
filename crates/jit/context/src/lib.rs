@@ -10,7 +10,7 @@ use alloy_primitives::{Address, B256, Bytes, Log, U256, ruint};
 use core::{fmt, mem::MaybeUninit, ptr::NonNull};
 pub use evm2::interpreter::InstrStop;
 use revm_interpreter::{
-    Gas, Host, InputsImpl, SharedMemory, context_interface::cfg::GasParams,
+    CallInput, Gas, Host, InputsImpl, SharedMemory, context_interface::cfg::GasParams,
     interpreter_types::MemoryTr,
 };
 
@@ -20,6 +20,57 @@ pub use arch::revmc_exit;
 
 #[cfg(feature = "evm2")]
 pub mod evm2_api;
+
+#[doc(hidden)]
+pub mod jit_abi {
+    use super::*;
+
+    #[derive(Debug)]
+    pub struct Inputs {
+        pub target_address: Address,
+        pub bytecode_address: Option<Address>,
+        pub caller_address: Address,
+        pub input: CallInput,
+        pub call_value: U256,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct Gas {
+        pub tracker: GasTracker,
+        pub memory: MemoryGas,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct GasTracker {
+        pub limit: u64,
+        pub remaining: u64,
+        pub reservoir: u64,
+        pub state_gas_spent: u64,
+        pub refunded: i64,
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy, Debug)]
+    pub struct MemoryGas {
+        pub words_num: usize,
+        pub expansion_cost: u64,
+    }
+
+    const _: () = {
+        use core::mem::{align_of, offset_of, size_of};
+
+        assert!(size_of::<Inputs>() == size_of::<InputsImpl>());
+        assert!(align_of::<Inputs>() == align_of::<InputsImpl>());
+        assert!(offset_of!(Inputs, target_address) == offset_of!(InputsImpl, target_address));
+        assert!(offset_of!(Inputs, bytecode_address) == offset_of!(InputsImpl, bytecode_address));
+        assert!(offset_of!(Inputs, caller_address) == offset_of!(InputsImpl, caller_address));
+        assert!(offset_of!(Inputs, input) == offset_of!(InputsImpl, input));
+        assert!(offset_of!(Inputs, call_value) == offset_of!(InputsImpl, call_value));
+
+        assert!(size_of::<Gas>() == size_of::<super::Gas>());
+        assert!(align_of::<Gas>() == align_of::<super::Gas>());
+    };
+}
 
 /// Type-erased evm2 recursive message builtin.
 #[doc(hidden)]

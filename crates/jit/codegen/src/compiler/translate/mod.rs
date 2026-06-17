@@ -9,8 +9,8 @@ use alloy_primitives::U256;
 use evm2::interpreter::{InstrStop, op};
 use evm2_jit_backend::{Attribute, BackendTypes, FunctionAttributeLocation, Pointer, TypeMethods};
 use evm2_jit_builtins::{Builtin, Builtins, CallKind, CreateKind};
+use evm2_jit_context::jit_abi::{Gas as AbiGas, Inputs as AbiInputs};
 use oxc_index::IndexVec;
-use revm_interpreter::InputsImpl;
 use std::mem;
 
 mod peephole;
@@ -706,7 +706,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
 
             op::ADDRESS => {
                 let input = self.load_input();
-                field!(@push @[endian = "big"] self.address_type, input, InputsImpl; target_address);
+                field!(@push @[endian = "big"] self.address_type, input, AbiInputs; target_address);
             }
             op::BALANCE => {
                 let sp = self.sp_after_inputs();
@@ -719,11 +719,11 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
             }
             op::CALLER => {
                 let input = self.load_input();
-                field!(@push @[endian = "big"] self.address_type, input, InputsImpl; caller_address);
+                field!(@push @[endian = "big"] self.address_type, input, AbiInputs; caller_address);
             }
             op::CALLVALUE => {
                 let input = self.load_input();
-                field!(@push self.word_type, input, InputsImpl; call_value);
+                field!(@push self.word_type, input, AbiInputs; call_value);
             }
             op::CALLDATALOAD => {
                 let sp = self.sp_after_inputs();
@@ -1308,7 +1308,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
 
     fn gas_remaining_addr(&mut self) -> B::Value {
         const OFFSET: usize =
-            mem::offset_of!(EvmContext<'_>, gas) + mem::offset_of!(pf::Gas, tracker.remaining);
+            mem::offset_of!(EvmContext<'_>, gas) + mem::offset_of!(AbiGas, tracker.remaining);
         let offset = self.bcx.iconst(self.isize_type, OFFSET as i64);
         self.bcx.gep(self.i8_type, self.ecx, &[offset], "gas.remaining.addr")
     }
@@ -1936,33 +1936,6 @@ mod pf {
         pub(super) len: usize,
     }
     const _: [(); mem::size_of::<&'static [u8]>()] = [(); mem::size_of::<Slice>()];
-
-    pub(super) struct Gas {
-        /// GasTracker fields (EIP-8037 reservoir model).
-        pub(super) tracker: GasTracker,
-        /// Memory gas tracking (words_num: usize, expansion_cost: u64).
-        pub(super) memory: MemoryGas,
-    }
-
-    pub(super) struct GasTracker {
-        /// The initial gas limit.
-        pub(super) limit: u64,
-        /// The remaining gas.
-        pub(super) remaining: u64,
-        /// State gas reservoir (EIP-8037).
-        pub(super) reservoir: u64,
-        /// Total state gas spent.
-        pub(super) state_gas_spent: u64,
-        /// Refunded gas.
-        pub(super) refunded: i64,
-    }
-
-    #[repr(C)]
-    pub(super) struct MemoryGas {
-        pub(super) words_num: usize,
-        pub(super) expansion_cost: u64,
-    }
-    const _: [(); mem::size_of::<revm_interpreter::Gas>()] = [(); mem::size_of::<Gas>()];
 }
 
 /// Computes the effective stack diff for an instruction, matching the codegen semantics.

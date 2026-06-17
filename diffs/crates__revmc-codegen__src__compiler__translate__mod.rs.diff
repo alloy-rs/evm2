@@ -8,13 +8,13 @@
 +use evm2::interpreter::{InstrStop, op};
 +use evm2_jit_backend::{Attribute, BackendTypes, FunctionAttributeLocation, Pointer, TypeMethods};
 +use evm2_jit_builtins::{Builtin, Builtins, CallKind, CreateKind};
++use evm2_jit_context::jit_abi::{Gas as AbiGas, Inputs as AbiInputs};
  use oxc_index::IndexVec;
 -use revm_bytecode::opcode as op;
 -use revm_interpreter::{InputsImpl, InstructionResult};
 -use revm_primitives::U256;
 -use revmc_backend::{Attribute, BackendTypes, FunctionAttributeLocation, Pointer, TypeMethods};
 -use revmc_builtins::{Builtin, Builtins, CallKind, CreateKind};
-+use revm_interpreter::InputsImpl;
  use std::mem;
 
  mod peephole;
@@ -273,6 +273,29 @@
 
              op::ADD => binop!(iadd),
              op::MUL => binop!(imul),
+@@ -827,7 +706,7 @@
+
+             op::ADDRESS => {
+                 let input = self.load_input();
+-                field!(@push @[endian = "big"] self.address_type, input, InputsImpl; target_address);
++                field!(@push @[endian = "big"] self.address_type, input, AbiInputs; target_address);
+             }
+             op::BALANCE => {
+                 let sp = self.sp_after_inputs();
+@@ -840,11 +719,11 @@
+             }
+             op::CALLER => {
+                 let input = self.load_input();
+-                field!(@push @[endian = "big"] self.address_type, input, InputsImpl; caller_address);
++                field!(@push @[endian = "big"] self.address_type, input, AbiInputs; caller_address);
+             }
+             op::CALLVALUE => {
+                 let input = self.load_input();
+-                field!(@push self.word_type, input, InputsImpl; call_value);
++                field!(@push self.word_type, input, AbiInputs; call_value);
+             }
+             op::CALLDATALOAD => {
+                 let sp = self.sp_after_inputs();
 @@ -975,7 +854,7 @@
                  if is_invalid && opcode == op::JUMP {
                      // Pop and discard the target; it's always on the stack.
@@ -406,6 +429,15 @@
      }
 
      /// Loads the word at the given pointer.
+@@ -1462,7 +1308,7 @@
+
+     fn gas_remaining_addr(&mut self) -> B::Value {
+         const OFFSET: usize =
+-            mem::offset_of!(EvmContext<'_>, gas) + mem::offset_of!(pf::Gas, tracker.remaining);
++            mem::offset_of!(EvmContext<'_>, gas) + mem::offset_of!(AbiGas, tracker.remaining);
+         let offset = self.bcx.iconst(self.isize_type, OFFSET as i64);
+         self.bcx.gep(self.i8_type, self.ecx, &[offset], "gas.remaining.addr")
+     }
 @@ -1678,7 +1524,7 @@
          let gas_remaining = self.bcx.load(i64_type, addr, "gas.remaining");
          let (res, overflow) = self.bcx.usub_overflow(gas_remaining, cost);
@@ -510,7 +542,38 @@
          // SAFETY: `this` aliases `self` to work around the borrow checker: we need `self.bcx`
          // borrowed by `get_or_build_function` while also swapping `self.bcx` inside the closure.
          // The closure's `bcx` is a fresh builder (not `self.bcx`), so the swap is safe.
-@@ -2130,12 +1967,8 @@
+@@ -2099,43 +1936,12 @@
+         pub(super) len: usize,
+     }
+     const _: [(); mem::size_of::<&'static [u8]>()] = [(); mem::size_of::<Slice>()];
+-
+-    pub(super) struct Gas {
+-        /// GasTracker fields (EIP-8037 reservoir model).
+-        pub(super) tracker: GasTracker,
+-        /// Memory gas tracking (words_num: usize, expansion_cost: u64).
+-        pub(super) memory: MemoryGas,
+-    }
+-
+-    pub(super) struct GasTracker {
+-        /// The initial gas limit.
+-        pub(super) limit: u64,
+-        /// The remaining gas.
+-        pub(super) remaining: u64,
+-        /// State gas reservoir (EIP-8037).
+-        pub(super) reservoir: u64,
+-        /// Total state gas spent.
+-        pub(super) state_gas_spent: u64,
+-        /// Refunded gas.
+-        pub(super) refunded: i64,
+-    }
+-
+-    #[repr(C)]
+-    pub(super) struct MemoryGas {
+-        pub(super) words_num: usize,
+-        pub(super) expansion_cost: u64,
+-    }
+-    const _: [(); mem::size_of::<revm_interpreter::Gas>()] = [(); mem::size_of::<Gas>()];
+ }
 
  /// Computes the effective stack diff for an instruction, matching the codegen semantics.
  fn effective_stack_diff(inp: u8, out: u8, data: &InstData) -> i32 {
