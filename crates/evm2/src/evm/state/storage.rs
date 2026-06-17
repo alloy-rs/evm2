@@ -72,7 +72,7 @@ impl<'a> StorageHandle<'a> {
     /// Creates a handle over an account's storage overlay and the shared inner state (backing
     /// database, revert journal, and transaction-initial base warm set).
     #[inline]
-    pub(super) const fn new(
+    pub(crate) const fn new(
         address: Address,
         storage: &'a mut StorageOverlay,
         inner: &'a mut StateInner,

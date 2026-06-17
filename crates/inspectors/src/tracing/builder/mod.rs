@@ -4,6 +4,7 @@ use alloc::vec::Vec;
 use alloy_primitives::{Address, U256, map::U256Map};
 use evm2::evm::{AccountInfo, DbResult, DynDatabase, StateChanges, Tracked};
 
+// TODO(ai): Why do we need this, if this is new struct of this PR, revert it and use previous logic.
 /// A per-account state change combining the account-info delta with its storage-slot deltas.
 ///
 /// evm2's [`StateChanges`] tracks account-info and storage changes in separate maps and omits

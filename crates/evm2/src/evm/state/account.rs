@@ -116,19 +116,19 @@ impl AccountInfo {
 /// overlay account, driving transaction-finalization and change-emission rules. They are meaningful
 /// only while `present` is `Some`.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(super) struct Account {
+pub(crate) struct Account {
     /// Account info at the start of the transaction. `None` means the account did not exist.
-    pub(super) original: Option<AccountInfo>,
+    pub(crate) original: Option<AccountInfo>,
     /// Present account overlay after mutations. `None` means the account is absent/deleted.
-    pub(super) present: Option<AccountInfo>,
+    pub(crate) present: Option<AccountInfo>,
     /// Whether this account is warm in the current transaction.
-    pub(super) is_warm: bool,
+    pub(crate) is_warm: bool,
     /// Whether this account is touched for transaction-finalization account-lifetime rules.
-    pub(super) is_touched: bool,
+    pub(crate) is_touched: bool,
     /// Whether the present overlay account was created in the current transaction.
-    pub(super) just_created: bool,
+    pub(crate) just_created: bool,
     /// Whether the present overlay account's code has been modified.
-    pub(super) code_changed: bool,
+    pub(crate) code_changed: bool,
 }
 
 /// A mutable, journaled handle to an account loaded into the transaction overlay.
@@ -175,7 +175,7 @@ impl<'a> AccountHandle<'a> {
     /// Creates a handle over a loaded account overlay slot and the shared inner state (backing
     /// database, revert journal, and transaction-initial base warm set).
     #[inline]
-    pub(super) const fn new(
+    pub(crate) const fn new(
         address: Address,
         tracked: &'a mut Account,
         inner: &'a mut StateInner,
@@ -444,7 +444,7 @@ impl<'a> AccountHandle<'a> {
     /// overlay by the [`JournalEntry::AccountChange`] snapshot recorded when the account is first
     /// materialized.
     #[inline]
-    pub(super) const fn mark_created(&mut self) {
+    pub(crate) const fn mark_created(&mut self) {
         self.tracked.just_created = true;
         self.tracked.code_changed = true;
     }

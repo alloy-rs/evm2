@@ -536,6 +536,7 @@ impl TracingInspector {
                     _ => unreachable!(),
                 };
 
+                // TODO(ai): revert this to old behaviour.
                 // Scan the journal entries recorded during this step for the storage access.
                 // The slot write/warm is not necessarily the last entry: a cold SSTORE also warms
                 // the slot and touches the account afterwards, so the storage entry can be followed

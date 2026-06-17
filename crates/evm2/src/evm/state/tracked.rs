@@ -62,7 +62,7 @@ impl<T: PartialEq> Tracked<T> {
 /// Account overlays, touched-account state, and EIP-2929 account warmth all live in the same
 /// entry, so a warm or touched account does not have to be loaded from the database.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(super) struct AccountMap {
+pub(crate) struct AccountMap {
     accounts: AddressMap<Account>,
 }
 

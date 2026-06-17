@@ -633,7 +633,7 @@ impl State {
     }
 
     #[cfg(test)]
-    pub(super) fn finalize_transaction_(&mut self, version: &Version) {
+    pub(crate) fn finalize_transaction_(&mut self, version: &Version) {
         self.finalize_transaction(version, |_| {}).unwrap();
     }
 
@@ -647,7 +647,7 @@ impl State {
     ///
     /// The callback lets the EVM inspect logs synthesized during finalization without storing
     /// inspector state in [`State`].
-    pub(super) fn finalize_transaction(
+    pub(crate) fn finalize_transaction(
         &mut self,
         version: &Version,
         mut inspect_log: impl FnMut(&Log),

@@ -9,9 +9,9 @@ use alloy_primitives::{Address, B256};
 #[derive(Debug, Eq, PartialEq)]
 pub struct StateCheckpoint {
     /// Revert journal length at the checkpoint.
-    pub(super) journal_len: usize,
+    pub(crate) journal_len: usize,
     /// Emitted log count at the checkpoint.
-    pub(super) logs_len: usize,
+    pub(crate) logs_len: usize,
 }
 
 /// Compact journal entry for reverting state changes.

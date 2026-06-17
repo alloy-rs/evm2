@@ -1,7 +1,7 @@
 use crate::interpreter::Word;
 use alloy_primitives::{
     Address, B256, FixedBytes,
-    map::{FbBuildHasher, HashMap},
+    map::{FbBuildHasher, HashMap, HashSet},
 };
 use core::{
     hash::{Hash, Hasher},
@@ -10,6 +10,9 @@ use core::{
 
 /// Hash map keyed by storage account and slot.
 pub type StorageKeyMap<V> = HashMap<StorageKey, V, FbBuildHasher<52>>;
+
+/// Hash set keyed by storage account and slot.
+pub type StorageKeySet = HashSet<StorageKey, FbBuildHasher<52>>;
 
 /// Storage key for account-address and storage-slot pairs.
 #[derive(Clone, Copy, Debug, Default, Eq)]
