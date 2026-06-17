@@ -61,7 +61,7 @@ pub enum ExecutionMode {
 /// Execution options for a single suite.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ExecuteConfig {
-    /// Whether to print revm-style JSON outcome records.
+    /// Whether to print JSON outcome records.
     pub print_json_outcome: bool,
     /// Execution backend.
     pub mode: ExecutionMode,

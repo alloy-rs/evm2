@@ -277,3 +277,43 @@ fn ggas_per_second_from_gas(gas_used: u128, elapsed: f64) -> Option<f64> {
 fn ggas(gas_used: u128) -> f64 {
     gas_used as f64 / 1_000_000_000.0
 }
+
+#[cfg(all(test, feature = "jit"))]
+mod tests {
+    use super::{
+        BlockchainTestExecutionMode, Replay, StateTestExecutionMode,
+        replay_blockchain_execution_mode, replay_state_execution_mode,
+    };
+    use std::path::PathBuf;
+
+    fn replay(jit: bool, aot: bool) -> Replay {
+        Replay { entrypoint: None, jit, aot, path: PathBuf::from("fixture.json") }
+    }
+
+    #[test]
+    fn replay_execution_mode_defaults_to_interpreter() {
+        let command = replay(false, false);
+
+        assert_eq!(replay_state_execution_mode(&command), StateTestExecutionMode::Interpreter);
+        assert_eq!(
+            replay_blockchain_execution_mode(&command),
+            BlockchainTestExecutionMode::Interpreter
+        );
+    }
+
+    #[test]
+    fn replay_execution_mode_selects_jit() {
+        let command = replay(true, false);
+
+        assert_eq!(replay_state_execution_mode(&command), StateTestExecutionMode::Jit);
+        assert_eq!(replay_blockchain_execution_mode(&command), BlockchainTestExecutionMode::Jit);
+    }
+
+    #[test]
+    fn replay_execution_mode_selects_aot() {
+        let command = replay(false, true);
+
+        assert_eq!(replay_state_execution_mode(&command), StateTestExecutionMode::Aot);
+        assert_eq!(replay_blockchain_execution_mode(&command), BlockchainTestExecutionMode::Aot);
+    }
+}
