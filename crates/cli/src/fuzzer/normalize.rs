@@ -133,7 +133,9 @@ pub(crate) fn state_from_evm2_changes(changes: &StateChanges) -> CanonicalState 
             });
             state.accounts.insert(address, account);
         }
-        for (&key, slot) in change.changed_storage() {
+    }
+    for (&address, storage_change) in &changes.storage {
+        for (&key, slot) in &storage_change.slots {
             if !slot.current.is_zero() {
                 state.storage.insert((address, key), slot.current);
             }

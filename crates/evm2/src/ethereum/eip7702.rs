@@ -10,6 +10,7 @@ use crate::{
     Evm, EvmTypes, TxResult,
     bytecode::Bytecode,
     env::TxEnv,
+    evm::db_error_handler,
     interpreter::Host,
     registry::{HandlerError, HandlerResult, TxRequest},
     version::GasId,
@@ -59,7 +60,7 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
 
     let effective_gas_cost = U256::from(tx.gas_limit) * gas_price;
     charge_upfront(req.host, caller, effective_gas_cost)?;
-    req.host.state.increment_nonce(&caller).map_err(|code| req.host.db_error_handler(code))?;
+    req.host.state.account(&caller, false).map_err(db_error_handler!(req.host))?.bump_nonce();
     let chain_id = req.host.version().chain_id;
     let eip7702_refund = apply_auth_list(req.host, chain_id, &tx.authorization_list)?;
     let execution_checkpoint = req.host.state.checkpoint();
@@ -108,16 +109,21 @@ fn apply_auth_list<T: EvmTypes<Host = Evm<T>>>(
         let Some(authority) = authorization.authority() else {
             continue;
         };
-        host.state.warm_account_non_revertible(&authority);
-        let authority_info =
-            host.state.load_account_info(&authority).map_err(|code| host.db_error_handler(code))?;
-        let existed = authority_info.is_some();
-        let authority_info = authority_info.unwrap_or_default();
-        let code = host.state.read_code(&authority).map_err(|code| host.db_error_handler(code))?;
+        // One account handle backs the existence, nonce, and code reads, so the authority is
+        // probed in the overlay once instead of once per `account_info`/`get_code`. The handle is
+        // confined to this block; `set_delegation` reacquires the now-loaded account for the write.
+        let (existed, authority_nonce, code) = {
+            let mut account =
+                host.state.account(&authority, false).map_err(db_error_handler!(host))?;
+            // mark account as warm
+            account.warm();
+            (account.exists(), account.nonce(), account.load_code())
+        };
+        let code = code.map_err(|code| host.db_error_handler(code))?;
         if !code.is_empty() && !code.is_eip7702() {
             continue;
         }
-        if authorization.nonce() != authority_info.nonce {
+        if authorization.nonce() != authority_nonce {
             continue;
         }
 
@@ -141,7 +147,11 @@ fn set_delegation<T: EvmTypes<Host = Evm<T>>>(
     } else {
         Bytecode::new_eip7702(delegated_address)
     };
-    host.state.set_code(&authority, code).map_err(|code| host.db_error_handler(code))?;
-    host.state.increment_nonce(&authority).map_err(|code| host.db_error_handler(code))?;
+    // One handle serves both writes, so the authority is looked up once and the two mutations
+    // share a single revert snapshot. `set_code_slow` touches the account, matching the touch the
+    // former `increment_nonce` performed.
+    let mut account = host.state.account(&authority, false).map_err(db_error_handler!(host))?;
+    account.set_code_slow(code);
+    account.bump_nonce();
     Ok(())
 }

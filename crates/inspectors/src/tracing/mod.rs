@@ -536,37 +536,34 @@ impl TracingInspector {
                     _ => unreachable!(),
                 };
 
-                match journal.last() {
-                    Some(JournalEntry::StorageChange { address, key, previous }) => {
-                        // SAFETY: (Address,key) exists if part if StorageChange
-                        let value = host.state().get_storage(address, key).unwrap_or_default();
-                        let change =
-                            StorageChange { key: *key, value, had_value: Some(*previous), reason };
-                        Some(Box::new(change))
-                    }
-                    Some(JournalEntry::StorageInserted { address, key }) => {
-                        // SAFETY: (Address,key) exists if part if StorageChange
-                        let slot = host
-                            .state()
-                            .get_storage_slot(address, key)
-                            .copied()
-                            .unwrap_or_default();
-                        let change = StorageChange {
-                            key: *key,
-                            value: slot.current,
-                            had_value: Some(slot.original),
-                            reason,
-                        };
-                        Some(Box::new(change))
-                    }
-                    Some(JournalEntry::StorageWarmed { key, address }) => {
-                        // SAFETY: (Address,key) exists if part if StorageChange
-                        let value = host.state().get_storage(address, key).unwrap_or_default();
-                        let change = StorageChange { key: *key, value, had_value: None, reason };
-                        Some(Box::new(change))
-                    }
-                    _ => None,
-                }
+                // Scan the journal entries recorded during this step for the storage access.
+                // The slot write/warm is not necessarily the last entry: a cold SSTORE also warms
+                // the slot and touches the account afterwards, so the storage entry can be followed
+                // by others. Searching in reverse prefers the `StorageChange` (SSTORE) over the
+                // preceding `StorageWarmed` for the same access.
+                journal.get(self.last_journal_len..).unwrap_or_default().iter().rev().find_map(
+                    |entry| match entry {
+                        JournalEntry::StorageChange { address, key, previous } => {
+                            let value = host.state().get_storage(address, key).unwrap_or_default();
+                            Some(Box::new(StorageChange {
+                                key: *key,
+                                value,
+                                had_value: Some(*previous),
+                                reason,
+                            }))
+                        }
+                        JournalEntry::StorageWarmed { key, address } => {
+                            let value = host.state().get_storage(address, key).unwrap_or_default();
+                            Some(Box::new(StorageChange {
+                                key: *key,
+                                value,
+                                had_value: None,
+                                reason,
+                            }))
+                        }
+                        _ => None,
+                    },
+                )
             } else {
                 None
             };

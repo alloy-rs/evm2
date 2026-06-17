@@ -164,10 +164,32 @@ pub use tx::{ExecutedTx, TxResult, TxResultWithState};
 
 mod state;
 pub use state::{
-    Account, AccountChange, AccountChangeRef, AccountInfo, AccountInfoRef, BlockStateAccumulator,
+    AccountChangeRef, AccountHandle, AccountInfo, AccountInfoRef, BlockStateAccumulator,
     JournalEntry, NoopChangeSink, State, StateChangeSink, StateChangeSource, StateChanges,
-    StateCheckpoint, StorageChange, StorageOverlay, Tee, Tracked,
+    StateCheckpoint, StateInner, StorageChange, StorageChangeSet, StorageHandle, StorageOverlay,
+    StorageSlot, StorageSlotHandle, Tee, Tracked,
 };
+
+mod prewarm_set;
+pub use prewarm_set::{PrewarmSet, SHORT_ADDRESS_CAP};
+
+/// Builds a `map_err` closure that records the database error code on `$host` and returns
+/// [`registry::HandlerError::Database`].
+///
+/// This inlines the body of [`Evm::db_error_handler`] rather than calling it, so Rust 2021 disjoint
+/// closure capture borrows only `$host.db_error_code`. That lets it be used in `.map_err(..)` on a
+/// `Result` that already mutably borrows another field of `$host` (such as `$host.state` through a
+/// live [`AccountHandle`]), where a closure calling the `&mut self` method `db_error_handler` would
+/// conflict on the whole `$host` borrow.
+macro_rules! db_error_handler {
+    ($host:expr) => {
+        |code| {
+            $host.db_error_code = ::core::option::Option::Some(code);
+            $crate::registry::HandlerError::Database(code)
+        }
+    };
+}
+pub(crate) use db_error_handler;
 
 /// EVM host and transaction dispatcher.
 #[derive_where(Debug)]
@@ -198,7 +220,7 @@ pub struct Evm<T: EvmTypes> {
     #[derive_where(skip)]
     async_stack: r#async::FiberStack,
     evm_send: bool,
-    db_error_code: Option<DbErrorCode>,
+    pub(crate) db_error_code: Option<DbErrorCode>,
 }
 
 impl<T: EvmTypes<Host = Self>> Evm<T> {
@@ -363,13 +385,13 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     /// Returns account information visible through the accepted state overlay.
     #[inline]
     pub fn read_account_info(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
-        self.state.read_account_info(address)
+        self.state.account_info_untracked(address)
     }
 
     /// Returns account bytecode visible through the accepted state overlay.
     #[inline]
     pub fn account_code(&mut self, address: &Address) -> DbResult<Bytecode> {
-        self.state.read_code(address)
+        self.state.account(address, false)?.load_code()
     }
 
     /// Applies borrowed changes to the accepted state overlay.
@@ -832,7 +854,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             // Derive the destination early so that the create hook can observe it; execution
             // re-derives it together with its semantic checks.
             let nonce = if message.depth > 0 {
-                match self.state.read_account_info(&message.caller) {
+                match self.state.account_info_untracked(&message.caller) {
                     Ok(info) => info.map_or(0, |info| info.nonce),
                     Err(code) => {
                         let stop = self.db_error_stop(code);
@@ -926,7 +948,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     ) -> Result<(), InstrStop> {
         let info = if message.value > 0 || message.depth > 0 {
             self.state
-                .read_account_info(&message.caller)
+                .account_info_untracked(&message.caller)
                 .map_err(|code| self.db_error_stop(code))?
         } else {
             None
@@ -949,10 +971,11 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
                 Self::derive_create_address(bytecode, message, info.map_or(0, |info| info.nonce));
         }
 
-        let _ = self.state.warm_account(&message.destination);
+        let _ = self.state.account(&message.destination, false).map(|mut a| a.warm());
 
         if message.depth > 0
-            && let Err(code) = self.state.increment_nonce(&message.caller)
+            && let Err(code) =
+                self.state.account(&message.caller, false).map(|mut a| a.bump_nonce())
         {
             return Err(self.db_error_stop(code));
         }
@@ -994,7 +1017,11 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
                 };
             }
 
-            if let Err(code) = self.state.set_code(address, Bytecode::new_legacy(output.clone())) {
+            if let Err(code) = self
+                .state
+                .account(address, false)
+                .map(|mut a| a.set_code_slow(Bytecode::new_legacy(output.clone())))
+            {
                 self.state.rollback(checkpoint, self.features);
                 return Self::error_message_result(self.db_error_stop(code), gas_limit);
             }
@@ -1222,27 +1249,27 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
         load_code: bool,
         skip_cold_load: bool,
     ) -> Result<AccountLoad, InstrStop> {
-        let is_cold = if self.feature(EvmFeatures::EIP2929) {
-            self.state.warm_account(address)
-        } else {
-            let _ = self.state.warm_account(address);
-            false
+        let mut account = match self.state.account(address, skip_cold_load) {
+            Ok(account) => account,
+            Err(DbErrorCode::COLD_LOAD_SKIPPED) => return Err(InstrStop::OutOfGas),
+            Err(code) => return Err(self.db_error_stop(code)),
         };
-        if skip_cold_load && is_cold {
-            return Err(InstrStop::OutOfGas);
-        }
-        let info =
-            self.state.load_account_info(address).map_err(|code| self.db_error_stop(code))?;
-        let exists = info.is_some();
-        let info = info.unwrap_or_default();
+        // mark account as warm
+        let is_cold = account.warm();
+
+        let exists = account.get().is_some();
+        let info = account.get().cloned().unwrap_or_default();
+
+        // load code
+        let code = if load_code {
+            account.load_code().map_err(|code| self.db_error_stop(code))?
+        } else {
+            Bytecode::default()
+        };
         Ok(AccountLoad {
             balance: info.balance,
             code_hash: if exists { info.code_hash } else { B256::ZERO },
-            code: if load_code {
-                self.state.read_code(address).map_err(|code| self.db_error_stop(code))?
-            } else {
-                Bytecode::default()
-            },
+            code,
             exists,
             is_empty: info.is_empty(),
             is_cold,
@@ -1255,9 +1282,10 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
         address: &Address,
         features: EvmFeatures,
     ) -> Result<bool, InstrStop> {
-        self.state
-            .target_is_empty_for_new_account_gas(address, features)
-            .map_err(|code| self.db_error_stop(code))
+        match self.state.account(address, false) {
+            Ok(account) => Ok(account.is_empty_for_new_account_gas(features)),
+            Err(code) => Err(self.db_error_stop(code)),
+        }
     }
 
     fn block_hash(&mut self, number: &Word) -> Result<Option<B256>, InstrStop> {
@@ -1270,18 +1298,15 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
         key: &Word,
         skip_cold_load: bool,
     ) -> Result<SLoad, InstrStop> {
-        let is_cold = self.feature(EvmFeatures::EIP2929) && self.state.warm_storage(address, key);
-        if skip_cold_load && is_cold {
-            return Err(InstrStop::OutOfGas);
-        }
-        Ok(SLoad {
-            value: self
-                .state
-                .load_storage(address, key)
-                .map_err(|code| self.db_error_stop(code))?,
-            is_cold,
-            _non_exhaustive: (),
-        })
+        let eip2929 = self.feature(EvmFeatures::EIP2929);
+        let mut slot = match self.state.storage(address).into_slot(*key, skip_cold_load) {
+            Ok(slot) => slot,
+            Err(DbErrorCode::COLD_LOAD_SKIPPED) => return Err(InstrStop::OutOfGas),
+            Err(code) => return Err(self.db_error_stop(code)),
+        };
+        let is_cold = eip2929 && slot.warm();
+        let value = slot.current();
+        Ok(SLoad { value, is_cold, _non_exhaustive: () })
     }
 
     fn sstore(
@@ -1291,22 +1316,38 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
         value: &Word,
         skip_cold_load: bool,
     ) -> Result<SStore, InstrStop> {
-        let is_cold = self.feature(EvmFeatures::EIP2929) && self.state.warm_storage(address, key);
-        if skip_cold_load && is_cold {
-            return Err(InstrStop::OutOfGas);
+        let eip2929 = self.feature(EvmFeatures::EIP2929);
+        let mut slot = match self.state.storage(address).into_slot(*key, skip_cold_load) {
+            Ok(slot) => slot,
+            Err(DbErrorCode::COLD_LOAD_SKIPPED) => return Err(InstrStop::OutOfGas),
+            Err(code) => return Err(self.db_error_stop(code)),
+        };
+        let is_cold = eip2929 && slot.warm();
+        let (original_value, present_value) = slot.write(*value);
+        // Materialize and touch the account after the storage write; the two overlays are
+        // independent and both effects are journaled, so the order does not affect rollback.
+        match self.state.account(address, false) {
+            Ok(mut account) => {
+                let _ = account.get_or_insert();
+                account.touch();
+            }
+            Err(code) => return Err(self.db_error_stop(code)),
         }
-        let mut result =
-            self.state.set_storage(address, key, value).map_err(|code| self.db_error_stop(code))?;
-        result.is_cold = is_cold;
-        Ok(result)
+        Ok(SStore {
+            original_value,
+            present_value,
+            new_value: *value,
+            is_cold,
+            _non_exhaustive: (),
+        })
     }
 
     fn tload(&mut self, address: &Address, key: &Word) -> Word {
-        self.state.transient_storage(address, key)
+        self.state.tload(address, key)
     }
 
     fn tstore(&mut self, address: &Address, key: &Word, value: &Word) {
-        self.state.set_transient_storage(address, key, value);
+        self.state.tstore(address, key, value);
     }
 
     fn log(&mut self, log: Log) {
@@ -1334,9 +1375,14 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
         skip_cold_load: bool,
     ) -> Result<SelfDestructResult, InstrStop> {
         let is_cold = if self.feature(EvmFeatures::EIP2929) {
-            self.state.warm_account(target)
+            match self.state.account(target, false).map(|mut a| a.warm()) {
+                Ok(is_cold) => is_cold,
+                Err(code) => return Err(self.db_error_stop(code)),
+            }
         } else {
-            let _ = self.state.warm_account(target);
+            if let Err(code) = self.state.account(target, false).map(|mut a| a.warm()) {
+                return Err(self.db_error_stop(code));
+            }
             false
         };
         if skip_cold_load && is_cold {
@@ -1345,14 +1391,23 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
         let features = self.features;
         let target_is_empty_for_new_account_gas =
             self.target_is_empty_for_new_account_gas(target, features)?;
-        let previously_destroyed = self.state.is_selfdestructed(contract);
+        let previously_destroyed = match self.state.account(contract, false) {
+            Ok(account) => account.is_destructed(),
+            Err(code) => return Err(self.db_error_stop(code)),
+        };
         let balance = self
             .state
-            .read_account_info(contract)
+            .account_info_untracked(contract)
             .map_err(|code| self.db_error_stop(code))?
             .map_or(Word::ZERO, |info| info.balance);
-        let should_destroy =
-            !self.feature(EvmFeatures::EIP6780) || self.state.is_created_in_transaction(contract);
+        let should_destroy = if self.feature(EvmFeatures::EIP6780) {
+            match self.state.account(contract, false) {
+                Ok(account) => account.is_created(),
+                Err(code) => return Err(self.db_error_stop(code)),
+            }
+        } else {
+            true
+        };
 
         if contract != target {
             let transferred = self
@@ -1368,12 +1423,14 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
             {
                 self.emit_log(log);
             }
-            self.state
-                .add_balance(contract, &Word::ZERO.wrapping_sub(balance))
-                .map_err(|code| self.db_error_stop(code))?;
+            let delta = Word::ZERO.wrapping_sub(balance);
+            match self.state.account(contract, false) {
+                Ok(mut account) => account.add_balance(delta),
+                Err(code) => return Err(self.db_error_stop(code)),
+            }
         }
-        if should_destroy {
-            self.state.mark_destructed(contract);
+        if should_destroy && let Ok(mut account) = self.state.account(contract, false) {
+            account.mark_destructed();
         }
         Ok(SelfDestructResult {
             had_value: !balance.is_zero(),
@@ -1570,8 +1627,10 @@ mod tests {
         let value = Word::from(req.tx.nonce);
         req.host
             .state
-            .set_storage(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY, &value)
-            .map_err(registry::HandlerError::Database)?;
+            .storage(&LIFECYCLE_ACCOUNT)
+            .into_slot(LIFECYCLE_STORAGE_KEY, false)
+            .map_err(registry::HandlerError::Database)?
+            .write(value);
         req.host.state.log(Log {
             address: LIFECYCLE_ACCOUNT,
             data: LogData::new_unchecked(vec![], Bytes::new()),
@@ -2069,8 +2128,8 @@ mod tests {
         assert_eq!(outcome.gas_used(), 7);
         assert_eq!(outcome.logs.len(), 1);
         assert_eq!(
-            evm.state.get_storage(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY),
-            Some(Word::from(1))
+            evm.state.storage_slot_untracked(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY).unwrap(),
+            Word::from(1)
         );
     }
 
@@ -2092,8 +2151,8 @@ mod tests {
         assert_eq!(storage[0].1.original, Word::from(1));
         assert_eq!(storage[0].1.current, Word::from(7));
         assert_eq!(
-            evm.state.get_storage(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY),
-            Some(Word::from(1))
+            evm.state.storage_slot_untracked(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY).unwrap(),
+            Word::from(1)
         );
     }
 
@@ -2106,16 +2165,16 @@ mod tests {
         assert_eq!(result.result.logs.len(), 1);
         let storage = result
             .state_changes
-            .accounts
+            .storage
             .get(&LIFECYCLE_ACCOUNT)
             .expect("storage change should be present");
         let slot =
-            storage.storage.get(&LIFECYCLE_STORAGE_KEY).expect("storage slot should be present");
+            storage.slots.get(&LIFECYCLE_STORAGE_KEY).expect("storage slot should be present");
         assert_eq!(slot.original, Word::from(1));
         assert_eq!(slot.current, Word::from(7));
         assert_eq!(
-            evm.state.get_storage(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY),
-            Some(Word::from(1))
+            evm.state.storage_slot_untracked(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY).unwrap(),
+            Word::from(1)
         );
     }
 
@@ -2127,14 +2186,14 @@ mod tests {
 
         assert_eq!(outcome.logs.len(), 1);
         assert_eq!(
-            evm.state.get_storage(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY),
-            Some(Word::from(7))
+            evm.state.storage_slot_untracked(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY).unwrap(),
+            Word::from(7)
         );
 
         let _ = evm.transact(&test_tx(9)).expect("lifecycle transaction should execute").commit();
         assert_eq!(
-            evm.state.get_storage(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY),
-            Some(Word::from(9))
+            evm.state.storage_slot_untracked(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY).unwrap(),
+            Word::from(9)
         );
     }
 
@@ -2157,8 +2216,8 @@ mod tests {
         assert_eq!(storage[0].1.original, Word::from(1));
         assert_eq!(storage[0].1.current, Word::from(9));
         assert_eq!(
-            evm.state.get_storage(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY),
-            Some(Word::from(9))
+            evm.state.storage_slot_untracked(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY).unwrap(),
+            Word::from(9)
         );
     }
 
@@ -2185,8 +2244,8 @@ mod tests {
         drop(evm.transact(&test_tx(7)).expect("lifecycle transaction should execute"));
 
         assert_eq!(
-            evm.state.get_storage(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY),
-            Some(Word::from(1))
+            evm.state.storage_slot_untracked(&LIFECYCLE_ACCOUNT, &LIFECYCLE_STORAGE_KEY).unwrap(),
+            Word::from(1)
         );
     }
 
@@ -2300,7 +2359,7 @@ mod tests {
             Host::execute_message(&mut evm, &TxEnv::default(), bytecode, &mut message, false);
 
         assert_eq!(result.stop, InstrStop::OutOfGas);
-        assert!(!evm.state.is_storage_warm(&contract, &key));
+        assert!(!evm.state.storage(&contract).is_warm(&key));
     }
 
     #[test]
@@ -2402,7 +2461,7 @@ mod tests {
         let account = changes.accounts.get(&target).expect("empty destination should be deleted");
         assert!(account.original.is_some());
         assert_eq!(account.current, None);
-        assert!(account.is_storage_wiped());
+        assert!(changes.storage.get(&target).expect("storage should be wiped").wipe);
     }
 
     #[test]
@@ -2456,15 +2515,23 @@ mod tests {
         let from = Address::from([0x01; 20]);
         let to = Address::from([0x02; 20]);
         let mut state = State::new(InMemoryDB::default());
-        state.add_balance(&from, &U256::from(10)).unwrap();
+        state.account(&from, false).unwrap().add_balance(U256::from(10));
 
         assert!(state.transfer(&from, &to, &U256::from(7)).unwrap());
         assert_eq!(
-            state.read_account_info(&from).expect("sender account should exist").unwrap().balance,
+            state
+                .account_info_untracked(&from)
+                .expect("sender account should exist")
+                .unwrap()
+                .balance,
             U256::from(3)
         );
         assert_eq!(
-            state.read_account_info(&to).expect("recipient account should exist").unwrap().balance,
+            state
+                .account_info_untracked(&to)
+                .expect("recipient account should exist")
+                .unwrap()
+                .balance,
             U256::from(7)
         );
     }

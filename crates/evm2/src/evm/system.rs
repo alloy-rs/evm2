@@ -101,7 +101,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         system_contract_address: Address,
         data: Bytes,
     ) -> ExecutedTx<'_, T> {
-        self.state.warm_account_non_revertible(&system_contract_address);
+        self.state.prewarmset_mut().warm_account(&system_contract_address);
         let tx_env = TxEnv {
             origin: caller,
             gas_price: U256::ZERO,
@@ -256,13 +256,10 @@ mod tests {
 
         assert!(result.result.status);
         assert!(result.result.gas_used < SYSTEM_CALL_GAS_LIMIT);
-        let unchanged = |address| {
-            result.state_changes.accounts.get(address).is_none_or(|change| !change.is_changed())
-        };
+        let unchanged = |address| !result.state_changes.accounts.contains_key(address);
         assert!(unchanged(&SYSTEM_ADDRESS));
         assert!(unchanged(&beneficiary));
-        let storage =
-            &result.state_changes.accounts.get(&contract).expect("storage changed").storage;
+        let storage = &result.state_changes.storage.get(&contract).expect("storage changed").slots;
         let system_address = U256::from_be_slice(SYSTEM_ADDRESS.as_slice());
         assert_eq!(storage.get(&U256::ZERO).map(|slot| slot.current), Some(system_address));
         assert_eq!(storage.get(&U256::ONE).map(|slot| slot.current), Some(system_address));
@@ -308,7 +305,7 @@ mod tests {
 
         assert!(result.result.status);
         assert_eq!(result.result.gas_used, 0);
-        assert!(!result.state_changes.is_changed());
+        assert!(result.state_changes.is_empty());
     }
 
     #[test]
@@ -340,6 +337,6 @@ mod tests {
 
         assert!(!result.result.status);
         assert_eq!(result.result.stop, InstrStop::Revert);
-        assert!(!result.state_changes.is_changed());
+        assert!(result.state_changes.is_empty());
     }
 }

@@ -135,7 +135,7 @@ impl<ExtDB> CacheDB<ExtDB> {
 
     /// Returns cached account info if the account exists in the cache.
     #[inline]
-    pub fn account_info(&self, address: &Address) -> Option<&AccountInfo> {
+    pub fn peek_account_info(&self, address: &Address) -> Option<&AccountInfo> {
         self.cache.accounts.get(address).and_then(Option::as_ref)
     }
 
@@ -143,14 +143,6 @@ impl<ExtDB> CacheDB<ExtDB> {
     #[inline]
     pub(crate) fn account_absent(&self, address: &Address) -> bool {
         self.cache.accounts.get(address).is_some_and(Option::is_none)
-    }
-
-    /// Returns a cached storage value if it is known without loading the wrapped database.
-    #[inline]
-    pub(crate) fn storage_ref(&self, address: &Address, key: &Word) -> Option<Word> {
-        self.cache.storage.get(address).and_then(|storage| {
-            storage.slots.get(key).copied().or_else(|| storage.wiped.then_some(Word::ZERO))
-        })
     }
 
     /// Inserts persistent storage.
