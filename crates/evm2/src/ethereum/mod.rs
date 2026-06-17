@@ -4,7 +4,10 @@ mod eip1559;
 mod eip2930;
 mod eip4844;
 mod eip7702;
+mod lazy_eip7702;
 mod legacy;
+
+pub use lazy_eip7702::{LazyAuthorization, LazyTxEip7702};
 
 use crate::{
     Evm, EvmFeatures, EvmTypes, SpecId, TxResult, Version,
@@ -34,7 +37,7 @@ pub enum RecoveredTxEnvelope {
     /// EIP-4844 blob transaction.
     Eip4844(Recovered<TxEip4844Variant>),
     /// EIP-7702 set-code transaction.
-    Eip7702(Recovered<TxEip7702>),
+    Eip7702(Recovered<LazyTxEip7702>),
 }
 
 impl RecoveredTxEnvelope {
@@ -71,7 +74,7 @@ impl RecoveredTxEnvelope {
     }
 
     /// Returns the contained EIP-7702 transaction, if this is EIP-7702.
-    pub const fn as_eip7702(&self) -> Option<&Recovered<TxEip7702>> {
+    pub const fn as_eip7702(&self) -> Option<&Recovered<LazyTxEip7702>> {
         match self {
             Self::Eip7702(tx) => Some(tx),
             Self::Legacy(_) | Self::Eip2930(_) | Self::Eip1559(_) | Self::Eip4844(_) => None,
@@ -96,7 +99,7 @@ impl RecoveredTxEnvelope {
             Self::Eip2930(tx) => tx.gas_limit(),
             Self::Eip1559(tx) => tx.gas_limit(),
             Self::Eip4844(tx) => tx.gas_limit(),
-            Self::Eip7702(tx) => tx.gas_limit(),
+            Self::Eip7702(tx) => tx.gas_limit,
         }
     }
 
@@ -107,7 +110,7 @@ impl RecoveredTxEnvelope {
             Self::Eip2930(tx) => tx.kind(),
             Self::Eip1559(tx) => tx.kind(),
             Self::Eip4844(tx) => tx.kind(),
-            Self::Eip7702(tx) => tx.kind(),
+            Self::Eip7702(tx) => tx.to.into(),
         }
     }
 
@@ -118,7 +121,7 @@ impl RecoveredTxEnvelope {
             Self::Eip2930(tx) => tx.input(),
             Self::Eip1559(tx) => tx.input(),
             Self::Eip4844(tx) => tx.input(),
-            Self::Eip7702(tx) => tx.input(),
+            Self::Eip7702(tx) => &tx.input,
         }
     }
 
@@ -129,7 +132,11 @@ impl RecoveredTxEnvelope {
             Self::Eip2930(tx) => tx.effective_gas_price(base_fee),
             Self::Eip1559(tx) => tx.effective_gas_price(base_fee),
             Self::Eip4844(tx) => tx.effective_gas_price(base_fee),
-            Self::Eip7702(tx) => tx.effective_gas_price(base_fee),
+            Self::Eip7702(tx) => alloy_eips::eip1559::calc_effective_gas_price(
+                tx.max_fee_per_gas,
+                tx.max_priority_fee_per_gas,
+                base_fee,
+            ),
         }
     }
 
@@ -140,8 +147,20 @@ impl RecoveredTxEnvelope {
             Self::Eip2930(tx) => tx.value(),
             Self::Eip1559(tx) => tx.value(),
             Self::Eip4844(tx) => tx.value(),
-            Self::Eip7702(tx) => tx.value(),
+            Self::Eip7702(tx) => tx.value,
         }
+    }
+}
+
+impl From<Recovered<TxEip7702>> for RecoveredTxEnvelope {
+    fn from(tx: Recovered<TxEip7702>) -> Self {
+        Self::Eip7702(tx.convert())
+    }
+}
+
+impl From<Recovered<LazyTxEip7702>> for RecoveredTxEnvelope {
+    fn from(tx: Recovered<LazyTxEip7702>) -> Self {
+        Self::Eip7702(tx)
     }
 }
 

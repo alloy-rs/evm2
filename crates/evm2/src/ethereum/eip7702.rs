@@ -14,12 +14,11 @@ use crate::{
     registry::{HandlerError, HandlerResult, TxRequest},
     version::GasId,
 };
-use alloy_consensus::{TxEip7702, transaction::Recovered};
-use alloy_eips::eip7702::SignedAuthorization;
+use alloy_consensus::transaction::Recovered;
 use alloy_primitives::{Address, U256};
 
 pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
-    req: TxRequest<'_, T, Recovered<TxEip7702>>,
+    req: TxRequest<'_, T, Recovered<super::LazyTxEip7702>>,
 ) -> HandlerResult<TxResult<T>> {
     let caller = req.tx.signer();
     let tx = req.tx.inner();
@@ -94,7 +93,7 @@ fn eip7702_authorization_gas<T: EvmTypes<Host = Evm<T>>>(
 fn apply_auth_list<T: EvmTypes<Host = Evm<T>>>(
     host: &mut Evm<T>,
     chain_id: u64,
-    authorizations: &[SignedAuthorization],
+    authorizations: &[super::LazyAuthorization],
 ) -> HandlerResult<u64> {
     let mut refunded_accounts = 0u64;
     for authorization in authorizations {
@@ -106,7 +105,7 @@ fn apply_auth_list<T: EvmTypes<Host = Evm<T>>>(
             continue;
         }
 
-        let Ok(authority) = authorization.recover_authority() else {
+        let Some(authority) = authorization.authority() else {
             continue;
         };
         host.state.warm_account_non_revertible(&authority);
