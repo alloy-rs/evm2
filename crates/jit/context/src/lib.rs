@@ -25,13 +25,46 @@ pub use arch::revmc_exit;
 #[cfg(feature = "evm2")]
 pub mod evm2_api;
 
-/// Type-erased evm2 recursive frame builtin.
-///
-/// Returning [`InstructionResult::Stop`] means the opcode completed and the compiled parent frame
-/// should continue. Any other value is treated as an instruction stop for the parent frame.
+/// Type-erased evm2 recursive message builtin.
 #[doc(hidden)]
-pub type Evm2FrameBuiltin =
+pub type Evm2RecursiveMessageFn =
     unsafe extern "C" fn(&mut EvmContext<'_>, *mut EvmWord, u8) -> InstructionResult;
+
+/// Dispatches recursive evm2 call/create messages from compiled code.
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+#[doc(hidden)]
+pub struct Evm2Recursion {
+    /// Executes `CREATE` or `CREATE2`.
+    pub create: Evm2RecursiveMessageFn,
+    /// Executes `CALL`, `CALLCODE`, `DELEGATECALL`, or `STATICCALL`.
+    pub call: Evm2RecursiveMessageFn,
+}
+
+impl Evm2Recursion {
+    /// Returns dispatch functions that reject recursive message opcodes.
+    #[inline]
+    pub const fn unsupported() -> Self {
+        Self {
+            create: unsupported_evm2_recursive_message,
+            call: unsupported_evm2_recursive_message,
+        }
+    }
+
+    /// Creates a recursive message dispatch table.
+    #[inline]
+    pub const fn new(create: Evm2RecursiveMessageFn, call: Evm2RecursiveMessageFn) -> Self {
+        Self { create, call }
+    }
+}
+
+unsafe extern "C" fn unsupported_evm2_recursive_message(
+    _ecx: &mut EvmContext<'_>,
+    _sp: *mut EvmWord,
+    _kind: u8,
+) -> InstructionResult {
+    InstructionResult::FatalExternalError
+}
 
 /// The EVM bytecode compiler runtime context.
 ///
@@ -83,12 +116,9 @@ pub struct EvmContext<'a> {
     /// Output produced by RETURN or REVERT.
     #[doc(hidden)]
     pub output: Bytes,
-    /// Optional evm2-native `CREATE`/`CREATE2` implementation.
+    /// Recursive evm2 call/create dispatch used by call-like builtins.
     #[doc(hidden)]
-    pub evm2_create_builtin: Option<Evm2FrameBuiltin>,
-    /// Optional evm2-native `CALL`/`CALLCODE`/`DELEGATECALL`/`STATICCALL` implementation.
-    #[doc(hidden)]
-    pub evm2_call_builtin: Option<Evm2FrameBuiltin>,
+    pub evm2_recursion: Evm2Recursion,
 }
 
 // Static assertions to ensure the struct layout matches expectations.
@@ -140,8 +170,7 @@ impl<'a> EvmContext<'a> {
             mem_base: ptr::null_mut(),
             mem_len: 0,
             output: Bytes::new(),
-            evm2_create_builtin: None,
-            evm2_call_builtin: None,
+            evm2_recursion: Evm2Recursion::unsupported(),
         };
         this.refresh_memory_cache();
         (this, stack, stack_len)

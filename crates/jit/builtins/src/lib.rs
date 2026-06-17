@@ -630,10 +630,7 @@ pub unsafe extern "C" fn __revmc_builtin_create(
     sp: *mut EvmWord,
     create_kind: CreateKind,
 ) -> BuiltinResult {
-    let Some(create) = ecx.evm2_create_builtin else {
-        return Err(InstructionResult::FatalExternalError.into());
-    };
-    match unsafe { create(ecx, sp, create_kind as u8) } {
+    match unsafe { (ecx.evm2_recursion.create)(ecx, sp, create_kind as u8) } {
         InstructionResult::Stop => Ok(()),
         result => Err(result.into()),
     }
@@ -645,10 +642,7 @@ pub unsafe extern "C" fn __revmc_builtin_call(
     sp: *mut EvmWord,
     call_kind: CallKind,
 ) -> BuiltinResult {
-    let Some(call) = ecx.evm2_call_builtin else {
-        return Err(InstructionResult::FatalExternalError.into());
-    };
-    match unsafe { call(ecx, sp, call_kind as u8) } {
+    match unsafe { (ecx.evm2_recursion.call)(ecx, sp, call_kind as u8) } {
         InstructionResult::Stop => Ok(()),
         result => Err(result.into()),
     }

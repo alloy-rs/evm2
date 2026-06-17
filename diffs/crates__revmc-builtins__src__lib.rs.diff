@@ -148,7 +148,7 @@
          let additional_cold_cost = ecx.gas_params.cold_storage_additional_cost();
          let skip_cold = ecx.gas.remaining() < additional_cold_cost;
          ecx.host.sstore_skip_cold_load(target, index.to_u256(), value.to_u256(), skip_cold)?
-@@ -635,66 +630,13 @@
+@@ -635,66 +630,10 @@
      sp: *mut EvmWord,
      create_kind: CreateKind,
  ) -> BuiltinResult {
@@ -177,9 +177,7 @@
 -        Bytes::copy_from_slice(&ecx.memory.slice(code_offset..code_offset + len))
 -    } else {
 -        Bytes::new()
-+    let Some(create) = ecx.evm2_create_builtin else {
-+        return Err(InstructionResult::FatalExternalError.into());
-     };
+-    };
 -
 -    let is_create2 = create_kind == CreateKind::Create2;
 -    let gp = &ecx.gas_params;
@@ -195,7 +193,7 @@
 -    // State gas for account creation + contract metadata (EIP-8037).
 -    if ecx.host.is_amsterdam_eip8037_enabled() {
 -        state_gas!(ecx, ecx.gas_params.create_state_gas());
-+    match unsafe { create(ecx, sp, create_kind as u8) } {
++    match unsafe { (ecx.evm2_recursion.create)(ecx, sp, create_kind as u8) } {
 +        InstructionResult::Stop => Ok(()),
 +        result => Err(result.into()),
      }
@@ -220,7 +218,7 @@
  }
 
  #[unsafe(no_mangle)]
-@@ -703,123 +645,13 @@
+@@ -703,123 +642,10 @@
      sp: *mut EvmWord,
      call_kind: CallKind,
  ) -> BuiltinResult {
@@ -249,9 +247,7 @@
 -            value
 -        }
 -        CallKind::DelegateCall | CallKind::StaticCall => U256::ZERO,
-+    let Some(call) = ecx.evm2_call_builtin else {
-+        return Err(InstructionResult::FatalExternalError.into());
-     };
+-    };
 -    let transfers_value = value != U256::ZERO;
 -
 -    pop!(sp; in_offset, in_len, out_offset, out_len);
@@ -278,7 +274,7 @@
 -
 -    if transfers_value {
 -        gas!(ecx, ecx.gas_params.transfer_value_cost());
-+    match unsafe { call(ecx, sp, call_kind as u8) } {
++    match unsafe { (ecx.evm2_recursion.call)(ecx, sp, call_kind as u8) } {
 +        InstructionResult::Stop => Ok(()),
 +        result => Err(result.into()),
      }
@@ -349,7 +345,7 @@
  }
 
  #[unsafe(no_mangle)]
-@@ -837,8 +669,7 @@
+@@ -837,8 +663,7 @@
      } else {
          Bytes::new()
      };
@@ -359,7 +355,7 @@
      Err(result.into())
  }
 
-@@ -857,8 +688,7 @@
+@@ -857,8 +682,7 @@
      } else {
          Bytes::new()
      };
@@ -369,7 +365,7 @@
      Err(result.into())
  }
 
-@@ -875,7 +705,7 @@
+@@ -875,7 +699,7 @@
          ecx.host.selfdestruct(ecx.input.target_address, target.to_address(), skip_cold_load)?;
 
      // EIP-161: State trie clearing (invariant-preserving alternative)

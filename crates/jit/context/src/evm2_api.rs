@@ -2,6 +2,7 @@
 
 use crate::{EvmStack, EvmWord};
 use alloc::{borrow::Cow, boxed::Box, vec::Vec};
+use alloy_primitives::{Bytes as RevmBytes, U256};
 use core::{
     cmp::min,
     fmt,
@@ -26,7 +27,7 @@ use revm_interpreter::{
     context_interface::cfg::GasParams as RevmGasParams, host::LoadError,
     interpreter_types::MemoryTr, state::AccountInfo as RevmAccountInfo,
 };
-use revm_primitives::{Bytes as RevmBytes, hardfork::SpecId as RevmSpecId};
+use revm_primitives::hardfork::SpecId as RevmSpecId;
 
 const _: () = {
     assert!(core::mem::size_of::<EvmWord>() == core::mem::size_of::<Word>());
@@ -86,31 +87,31 @@ impl<'a, T: EvmTypes> RevmHostAdapter<'a, T> {
 }
 
 impl<T: EvmTypes> RevmHost for RevmHostAdapter<'_, T> {
-    fn basefee(&self) -> revm_primitives::U256 {
+    fn basefee(&self) -> U256 {
         self.block_env.basefee
     }
 
-    fn blob_gasprice(&self) -> revm_primitives::U256 {
+    fn blob_gasprice(&self) -> U256 {
         self.block_env.blob_basefee
     }
 
-    fn gas_limit(&self) -> revm_primitives::U256 {
+    fn gas_limit(&self) -> U256 {
         self.block_env.gas_limit
     }
 
-    fn difficulty(&self) -> revm_primitives::U256 {
+    fn difficulty(&self) -> U256 {
         self.block_env.difficulty
     }
 
-    fn prevrandao(&self) -> Option<revm_primitives::U256> {
+    fn prevrandao(&self) -> Option<U256> {
         Some(self.block_env.prevrandao)
     }
 
-    fn block_number(&self) -> revm_primitives::U256 {
+    fn block_number(&self) -> U256 {
         self.block_env.number
     }
 
-    fn timestamp(&self) -> revm_primitives::U256 {
+    fn timestamp(&self) -> U256 {
         self.block_env.timestamp
     }
 
@@ -118,15 +119,15 @@ impl<T: EvmTypes> RevmHost for RevmHostAdapter<'_, T> {
         self.block_env.beneficiary
     }
 
-    fn slot_num(&self) -> revm_primitives::U256 {
+    fn slot_num(&self) -> U256 {
         self.block_env.slot_num
     }
 
-    fn chain_id(&self) -> revm_primitives::U256 {
+    fn chain_id(&self) -> U256 {
         self.tx_env.chain_id
     }
 
-    fn effective_gas_price(&self) -> revm_primitives::U256 {
+    fn effective_gas_price(&self) -> U256 {
         self.tx_env.gas_price
     }
 
@@ -134,7 +135,7 @@ impl<T: EvmTypes> RevmHost for RevmHostAdapter<'_, T> {
         self.tx_env.origin
     }
 
-    fn blob_hash(&self, number: usize) -> Option<revm_primitives::U256> {
+    fn blob_hash(&self, number: usize) -> Option<U256> {
         self.tx_env.blob_hashes.get(number).copied()
     }
 
@@ -181,8 +182,8 @@ impl<T: EvmTypes> RevmHost for RevmHostAdapter<'_, T> {
     fn sstore_skip_cold_load(
         &mut self,
         address: alloy_primitives::Address,
-        key: revm_primitives::U256,
-        value: revm_primitives::U256,
+        key: U256,
+        value: U256,
         skip_cold_load: bool,
     ) -> Result<RevmStateLoad<RevmSStoreResult>, LoadError> {
         let result = self
@@ -202,9 +203,9 @@ impl<T: EvmTypes> RevmHost for RevmHostAdapter<'_, T> {
     fn sload_skip_cold_load(
         &mut self,
         address: alloy_primitives::Address,
-        key: revm_primitives::U256,
+        key: U256,
         skip_cold_load: bool,
-    ) -> Result<RevmStateLoad<revm_primitives::U256>, LoadError> {
+    ) -> Result<RevmStateLoad<U256>, LoadError> {
         let result = self
             .host_mut()
             .sload(&address, &key, skip_cold_load)
@@ -212,20 +213,11 @@ impl<T: EvmTypes> RevmHost for RevmHostAdapter<'_, T> {
         Ok(RevmStateLoad::new(result.value, result.is_cold))
     }
 
-    fn tstore(
-        &mut self,
-        address: alloy_primitives::Address,
-        key: revm_primitives::U256,
-        value: revm_primitives::U256,
-    ) {
+    fn tstore(&mut self, address: alloy_primitives::Address, key: U256, value: U256) {
         self.host_mut().tstore(&address, &key, &value);
     }
 
-    fn tload(
-        &mut self,
-        address: alloy_primitives::Address,
-        key: revm_primitives::U256,
-    ) -> revm_primitives::U256 {
+    fn tload(&mut self, address: alloy_primitives::Address, key: U256) -> U256 {
         self.host_mut().tload(&address, &key)
     }
 
@@ -307,12 +299,9 @@ pub struct EvmContext<'a, T: EvmTypes = BaseEvmTypes> {
     /// Output produced by RETURN or REVERT.
     #[doc(hidden)]
     pub output: RevmBytes,
-    /// Optional evm2-native `CREATE`/`CREATE2` implementation.
+    /// Recursive evm2 call/create dispatch used by call-like builtins.
     #[doc(hidden)]
-    pub evm2_create_builtin: Option<crate::Evm2FrameBuiltin>,
-    /// Optional evm2-native `CALL`/`CALLCODE`/`DELEGATECALL`/`STATICCALL` implementation.
-    #[doc(hidden)]
-    pub evm2_call_builtin: Option<crate::Evm2FrameBuiltin>,
+    pub evm2_recursion: crate::Evm2Recursion,
     /// Transaction-global environment.
     #[doc(hidden)]
     pub tx_env: &'a TxEnv<T>,
@@ -391,12 +380,8 @@ const _: () = {
             == offset_of!(crate::EvmContext<'_>, output)
     );
     assert!(
-        offset_of!(EvmContext<'_, BaseEvmTypes>, evm2_create_builtin)
-            == offset_of!(crate::EvmContext<'_>, evm2_create_builtin)
-    );
-    assert!(
-        offset_of!(EvmContext<'_, BaseEvmTypes>, evm2_call_builtin)
-            == offset_of!(crate::EvmContext<'_>, evm2_call_builtin)
+        offset_of!(EvmContext<'_, BaseEvmTypes>, evm2_recursion)
+            == offset_of!(crate::EvmContext<'_>, evm2_recursion)
     );
 };
 
@@ -572,8 +557,10 @@ impl<'a, T: EvmTypes> EvmContext<'a, T> {
             mem_base: ptr::null_mut(),
             mem_len: 0,
             output: RevmBytes::new(),
-            evm2_create_builtin: Some(evm2_create_builtin::<T>),
-            evm2_call_builtin: Some(evm2_call_builtin::<T>),
+            evm2_recursion: crate::Evm2Recursion::new(
+                evm2_recursive_create::<T>,
+                evm2_recursive_call::<T>,
+            ),
             tx_env: parts.tx_env,
             message: parts.message,
             return_data_scratch: RevmBytes::new(),
@@ -628,7 +615,7 @@ pub fn bytecode_slice(bytecode: &Bytecode) -> &[u8] {
     bytecode.original_byte_slice()
 }
 
-unsafe extern "C" fn evm2_call_builtin<T: EvmTypes>(
+unsafe extern "C" fn evm2_recursive_call<T: EvmTypes>(
     ecx: &mut crate::EvmContext<'_>,
     sp: *mut EvmWord,
     call_kind: u8,
@@ -640,7 +627,7 @@ unsafe extern "C" fn evm2_call_builtin<T: EvmTypes>(
     }
 }
 
-unsafe extern "C" fn evm2_create_builtin<T: EvmTypes>(
+unsafe extern "C" fn evm2_recursive_create<T: EvmTypes>(
     ecx: &mut crate::EvmContext<'_>,
     sp: *mut EvmWord,
     create_kind: u8,
@@ -1413,7 +1400,7 @@ mod tests {
     }
 
     #[test]
-    fn evm2_call_builtin_executes_recursive_message() {
+    fn evm2_recursive_call_executes_message() {
         let target = Address::from([0x22; 20]);
         let caller = Address::from([0x11; 20]);
         let child_output = AlloyBytes::from_static(&[0xaa, 0xbb, 0xcc]);
@@ -1449,7 +1436,7 @@ mod tests {
 
             let sp = frame.stack.as_mut_ptr();
             let result =
-                unsafe { evm2_call_builtin::<TestTypes>(base_context(&mut frame.ecx), sp, 0) };
+                unsafe { evm2_recursive_call::<TestTypes>(base_context(&mut frame.ecx), sp, 0) };
 
             assert_eq!(result, InstructionResult::Stop);
             assert_eq!(unsafe { frame.stack.get_unchecked(0) }.to_u256(), Word::from(1));
@@ -1468,7 +1455,7 @@ mod tests {
     }
 
     #[test]
-    fn evm2_create_builtin_executes_recursive_message() {
+    fn evm2_recursive_create_executes_message() {
         let created = Address::from([0x77; 20]);
         let initcode = [op::STOP];
         let mut host = TestHost {
@@ -1499,7 +1486,7 @@ mod tests {
 
             let sp = frame.stack.as_mut_ptr();
             let result =
-                unsafe { evm2_create_builtin::<TestTypes>(base_context(&mut frame.ecx), sp, 0) };
+                unsafe { evm2_recursive_create::<TestTypes>(base_context(&mut frame.ecx), sp, 0) };
 
             assert_eq!(result, InstructionResult::Stop);
             assert_eq!(unsafe { frame.stack.get_unchecked(0) }, &address_word(&created));

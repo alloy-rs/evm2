@@ -1,6 +1,6 @@
 --- upstream/crates/revmc-context/src/lib.rs
 +++ evm2/crates/jit/context/src/lib.rs
-@@ -6,73 +6,32 @@
+@@ -6,72 +6,64 @@
  extern crate alloc;
 
  use alloc::vec::Vec;
@@ -32,8 +32,7 @@
 +pub mod evm2_api;
 
 -/// Resume point for compiled EVM code after a CALL/CREATE suspension.
-+/// Type-erased evm2 recursive frame builtin.
- ///
+-///
 -/// Encoded as the interpreter's bytecode PC. `0` means no resume (initial state),
 -/// values `1..=N` identify individual suspend points.
 -///
@@ -50,42 +49,66 @@
 -    pub fn load(interpreter: &Interpreter) -> Self {
 -        Self(interpreter.bytecode.pc())
 -    }
--
++/// Type-erased evm2 recursive message builtin.
++#[doc(hidden)]
++pub type Evm2RecursiveMessageFn =
++    unsafe extern "C" fn(&mut EvmContext<'_>, *mut EvmWord, u8) -> InstructionResult;
+
 -    /// Stores the resume point back into the interpreter's bytecode PC.
 -    #[inline]
 -    pub fn store(self, interpreter: &mut Interpreter) {
 -        interpreter.bytecode.absolute_jump(self.0);
 -    }
--
++/// Dispatches recursive evm2 call/create messages from compiled code.
++#[derive(Clone, Copy, Debug)]
++#[repr(C)]
++#[doc(hidden)]
++pub struct Evm2Recursion {
++    /// Executes `CREATE` or `CREATE2`.
++    pub create: Evm2RecursiveMessageFn,
++    /// Executes `CALL`, `CALLCODE`, `DELEGATECALL`, or `STATICCALL`.
++    pub call: Evm2RecursiveMessageFn,
++}
+
 -    /// Returns the raw resume index.
--    #[inline]
++impl Evm2Recursion {
++    /// Returns dispatch functions that reject recursive message opcodes.
+     #[inline]
 -    pub const fn get(self) -> usize {
 -        self.0
--    }
++    pub const fn unsupported() -> Self {
++        Self {
++            create: unsupported_evm2_recursive_message,
++            call: unsupported_evm2_recursive_message,
++        }
+     }
 -}
--
+
 -impl From<usize> for ResumeAt {
--    #[inline]
++    /// Creates a recursive message dispatch table.
+     #[inline]
 -    fn from(value: usize) -> Self {
 -        Self(value)
--    }
--}
--
++    pub const fn new(create: Evm2RecursiveMessageFn, call: Evm2RecursiveMessageFn) -> Self {
++        Self { create, call }
+     }
+ }
+
 -impl PartialEq<usize> for ResumeAt {
 -    #[inline]
 -    fn eq(&self, other: &usize) -> bool {
 -        self.0 == *other
 -    }
--}
-+/// Returning [`InstructionResult::Stop`] means the opcode completed and the compiled parent frame
-+/// should continue. Any other value is treated as an instruction stop for the parent frame.
-+#[doc(hidden)]
-+pub type Evm2FrameBuiltin =
-+    unsafe extern "C" fn(&mut EvmContext<'_>, *mut EvmWord, u8) -> InstructionResult;
++unsafe extern "C" fn unsupported_evm2_recursive_message(
++    _ecx: &mut EvmContext<'_>,
++    _sp: *mut EvmWord,
++    _kind: u8,
++) -> InstructionResult {
++    InstructionResult::FatalExternalError
+ }
 
  /// The EVM bytecode compiler runtime context.
- ///
-@@ -92,17 +51,12 @@
+@@ -92,17 +84,12 @@
      pub gas: Gas,
      /// The host.
      pub host: &'a mut dyn Host,
@@ -104,23 +127,20 @@
      /// The contract bytecode, for CODECOPY at runtime.
      pub bytecode: *const [u8],
      /// Optional callback invoked by the LOG builtin after constructing the log,
-@@ -126,6 +80,15 @@
+@@ -126,6 +113,12 @@
      /// Cached length of the current memory context in bytes.
      /// Refreshed after any memory resize.
      pub mem_len: usize,
 +    /// Output produced by RETURN or REVERT.
 +    #[doc(hidden)]
 +    pub output: Bytes,
-+    /// Optional evm2-native `CREATE`/`CREATE2` implementation.
++    /// Recursive evm2 call/create dispatch used by call-like builtins.
 +    #[doc(hidden)]
-+    pub evm2_create_builtin: Option<Evm2FrameBuiltin>,
-+    /// Optional evm2-native `CALL`/`CALLCODE`/`DELEGATECALL`/`STATICCALL` implementation.
-+    #[doc(hidden)]
-+    pub evm2_call_builtin: Option<Evm2FrameBuiltin>,
++    pub evm2_recursion: Evm2Recursion,
  }
 
  // Static assertions to ensure the struct layout matches expectations.
-@@ -135,10 +98,6 @@
+@@ -135,10 +128,6 @@
 
      // Key fields accessed by JIT code
      assert!(offset_of!(EvmContext<'_>, memory) == 0);
@@ -131,7 +151,7 @@
  };
 
  impl fmt::Debug for EvmContext<'_> {
-@@ -160,7 +119,6 @@
+@@ -160,7 +149,6 @@
          interpreter: &'a mut Interpreter,
          host: &'b mut dyn Host,
      ) -> (Self, &'a mut EvmStack, &'a mut usize) {
@@ -139,7 +159,7 @@
          let (stack, stack_len) = EvmStack::from_interpreter_stack(&mut interpreter.stack);
          let bytecode = interpreter.bytecode.bytecode_slice() as *const [u8];
          let calldatasize = interpreter.input.input.len();
-@@ -170,11 +128,9 @@
+@@ -170,11 +158,9 @@
              input: &mut interpreter.input,
              gas: interpreter.gas,
              host,
@@ -152,17 +172,16 @@
              bytecode,
              on_log: None,
              calldatasize,
-@@ -183,6 +139,9 @@
+@@ -183,6 +169,8 @@
              gas_params,
              mem_base: ptr::null_mut(),
              mem_len: 0,
 +            output: Bytes::new(),
-+            evm2_create_builtin: None,
-+            evm2_call_builtin: None,
++            evm2_recursion: Evm2Recursion::unsupported(),
          };
          this.refresh_memory_cache();
          (this, stack, stack_len)
-@@ -204,7 +163,7 @@
+@@ -204,7 +192,7 @@
  /// # Examples
  ///
  /// ```no_run
@@ -171,7 +190,7 @@
  ///
  /// extern_revmc! {
  ///    /// A simple function.
-@@ -272,82 +231,6 @@
+@@ -272,82 +260,6 @@
          self.0
      }
 
