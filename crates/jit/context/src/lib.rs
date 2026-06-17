@@ -6,6 +6,7 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
+use alloy_primitives::{Address, B256, Bytes, Log, U256, ruint};
 use core::{
     fmt,
     mem::MaybeUninit,
@@ -16,7 +17,6 @@ use revm_interpreter::{
     context_interface::cfg::GasParams,
     interpreter_types::{LegacyBytecode, ReturnData, RuntimeFlag},
 };
-use revm_primitives::{Address, B256, Bytes, Log, U256, ruint};
 
 mod arch;
 use arch::revmc_entry;

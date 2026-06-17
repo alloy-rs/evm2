@@ -1,6 +1,13 @@
 --- upstream/crates/revmc-context/src/lib.rs
 +++ evm2/crates/jit/context/src/lib.rs
-@@ -12,67 +12,26 @@
+@@ -6,73 +6,32 @@
+ extern crate alloc;
+
+ use alloc::vec::Vec;
++use alloy_primitives::{Address, B256, Bytes, Log, U256, ruint};
+ use core::{
+     fmt,
+     mem::MaybeUninit,
      ptr::{self, NonNull},
  };
  use revm_interpreter::{
@@ -12,7 +19,6 @@
 +    interpreter_types::{LegacyBytecode, ReturnData, RuntimeFlag},
  };
 -use revm_primitives::{Address, B256, Bytes, Log, U256, hardfork::SpecId, ruint};
-+use revm_primitives::{Address, B256, Bytes, Log, U256, ruint};
 
  mod arch;
  use arch::revmc_entry;
