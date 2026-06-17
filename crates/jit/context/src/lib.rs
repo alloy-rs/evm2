@@ -9,10 +9,25 @@ use alloc::vec::Vec;
 use alloy_primitives::{Address, B256, Bytes, Log, U256, ruint};
 use core::{fmt, mem::MaybeUninit, ptr::NonNull};
 pub use evm2::interpreter::InstrStop;
-use revm_interpreter::{
-    CallInput, Gas, Host, InputsImpl, SharedMemory, context_interface::cfg::GasParams,
-    interpreter_types::MemoryTr,
+pub use revm_interpreter::{
+    CallInput,
+    interpreter_types::{InputsTr, MemoryTr},
 };
+use revm_interpreter::{
+    Gas, Host as RevmHost, InputsImpl, SharedMemory, context_interface::cfg::GasParams,
+};
+
+#[doc(hidden)]
+pub type AccountInfoLoad<'a> =
+    revm_interpreter::context_interface::journaled_state::AccountInfoLoad<'a>;
+#[doc(hidden)]
+pub type LoadError = revm_interpreter::host::LoadError;
+#[doc(hidden)]
+pub type SelfDestructResult = revm_interpreter::SelfDestructResult;
+#[doc(hidden)]
+pub type SStoreResult = revm_interpreter::SStoreResult;
+#[doc(hidden)]
+pub type StateLoad<T> = revm_interpreter::StateLoad<T>;
 
 mod arch;
 use arch::revmc_entry;
@@ -113,6 +128,235 @@ unsafe fn unsupported_evm2_recursive_message(
     Err(InstrStop::FatalExternalError)
 }
 
+/// Host operations consumed by compiled-code builtins.
+#[doc(hidden)]
+pub trait JitHost {
+    fn basefee(&self) -> U256;
+    fn blob_gasprice(&self) -> U256;
+    fn gas_limit(&self) -> U256;
+    fn difficulty(&self) -> U256;
+    fn prevrandao(&self) -> Option<U256>;
+    fn block_number(&self) -> U256;
+    fn timestamp(&self) -> U256;
+    fn beneficiary(&self) -> Address;
+    fn slot_num(&self) -> U256;
+    fn chain_id(&self) -> U256;
+    fn effective_gas_price(&self) -> U256;
+    fn caller(&self) -> Address;
+    fn blob_hash(&self, number: usize) -> Option<U256>;
+    fn max_initcode_size(&self) -> usize;
+    fn gas_params(&self) -> &GasParams;
+    fn is_amsterdam_eip8037_enabled(&self) -> bool;
+    fn block_hash(&mut self, number: u64) -> Option<B256>;
+    fn selfdestruct(
+        &mut self,
+        address: Address,
+        target: Address,
+        skip_cold_load: bool,
+    ) -> Result<StateLoad<SelfDestructResult>, LoadError>;
+    fn log(&mut self, log: Log);
+    fn sstore_skip_cold_load(
+        &mut self,
+        address: Address,
+        key: U256,
+        value: U256,
+        skip_cold_load: bool,
+    ) -> Result<StateLoad<SStoreResult>, LoadError>;
+    fn sstore(
+        &mut self,
+        address: Address,
+        key: U256,
+        value: U256,
+    ) -> Option<StateLoad<SStoreResult>> {
+        self.sstore_skip_cold_load(address, key, value, false).ok()
+    }
+    fn sload_skip_cold_load(
+        &mut self,
+        address: Address,
+        key: U256,
+        skip_cold_load: bool,
+    ) -> Result<StateLoad<U256>, LoadError>;
+    fn sload(&mut self, address: Address, key: U256) -> Option<StateLoad<U256>> {
+        self.sload_skip_cold_load(address, key, false).ok()
+    }
+    fn tstore(&mut self, address: Address, key: U256, value: U256);
+    fn tload(&mut self, address: Address, key: U256) -> U256;
+    fn load_account_info_skip_cold_load(
+        &mut self,
+        address: Address,
+        load_code: bool,
+        skip_cold_load: bool,
+    ) -> Result<AccountInfoLoad<'_>, LoadError>;
+    fn balance(&mut self, address: Address) -> Option<StateLoad<U256>> {
+        self.load_account_info_skip_cold_load(address, false, false)
+            .ok()
+            .map(|load| load.into_state_load(|account| account.balance))
+    }
+}
+
+impl<T: RevmHost + ?Sized> JitHost for T {
+    #[inline]
+    fn basefee(&self) -> U256 {
+        RevmHost::basefee(self)
+    }
+
+    #[inline]
+    fn blob_gasprice(&self) -> U256 {
+        RevmHost::blob_gasprice(self)
+    }
+
+    #[inline]
+    fn gas_limit(&self) -> U256 {
+        RevmHost::gas_limit(self)
+    }
+
+    #[inline]
+    fn difficulty(&self) -> U256 {
+        RevmHost::difficulty(self)
+    }
+
+    #[inline]
+    fn prevrandao(&self) -> Option<U256> {
+        RevmHost::prevrandao(self)
+    }
+
+    #[inline]
+    fn block_number(&self) -> U256 {
+        RevmHost::block_number(self)
+    }
+
+    #[inline]
+    fn timestamp(&self) -> U256 {
+        RevmHost::timestamp(self)
+    }
+
+    #[inline]
+    fn beneficiary(&self) -> Address {
+        RevmHost::beneficiary(self)
+    }
+
+    #[inline]
+    fn slot_num(&self) -> U256 {
+        RevmHost::slot_num(self)
+    }
+
+    #[inline]
+    fn chain_id(&self) -> U256 {
+        RevmHost::chain_id(self)
+    }
+
+    #[inline]
+    fn effective_gas_price(&self) -> U256 {
+        RevmHost::effective_gas_price(self)
+    }
+
+    #[inline]
+    fn caller(&self) -> Address {
+        RevmHost::caller(self)
+    }
+
+    #[inline]
+    fn blob_hash(&self, number: usize) -> Option<U256> {
+        RevmHost::blob_hash(self, number)
+    }
+
+    #[inline]
+    fn max_initcode_size(&self) -> usize {
+        RevmHost::max_initcode_size(self)
+    }
+
+    #[inline]
+    fn gas_params(&self) -> &GasParams {
+        RevmHost::gas_params(self)
+    }
+
+    #[inline]
+    fn is_amsterdam_eip8037_enabled(&self) -> bool {
+        RevmHost::is_amsterdam_eip8037_enabled(self)
+    }
+
+    #[inline]
+    fn block_hash(&mut self, number: u64) -> Option<B256> {
+        RevmHost::block_hash(self, number)
+    }
+
+    #[inline]
+    fn selfdestruct(
+        &mut self,
+        address: Address,
+        target: Address,
+        skip_cold_load: bool,
+    ) -> Result<StateLoad<SelfDestructResult>, LoadError> {
+        RevmHost::selfdestruct(self, address, target, skip_cold_load)
+    }
+
+    #[inline]
+    fn log(&mut self, log: Log) {
+        RevmHost::log(self, log);
+    }
+
+    #[inline]
+    fn sstore_skip_cold_load(
+        &mut self,
+        address: Address,
+        key: U256,
+        value: U256,
+        skip_cold_load: bool,
+    ) -> Result<StateLoad<SStoreResult>, LoadError> {
+        RevmHost::sstore_skip_cold_load(self, address, key, value, skip_cold_load)
+    }
+
+    #[inline]
+    fn sstore(
+        &mut self,
+        address: Address,
+        key: U256,
+        value: U256,
+    ) -> Option<StateLoad<SStoreResult>> {
+        RevmHost::sstore(self, address, key, value)
+    }
+
+    #[inline]
+    fn sload_skip_cold_load(
+        &mut self,
+        address: Address,
+        key: U256,
+        skip_cold_load: bool,
+    ) -> Result<StateLoad<U256>, LoadError> {
+        RevmHost::sload_skip_cold_load(self, address, key, skip_cold_load)
+    }
+
+    #[inline]
+    fn sload(&mut self, address: Address, key: U256) -> Option<StateLoad<U256>> {
+        RevmHost::sload(self, address, key)
+    }
+
+    #[inline]
+    fn tstore(&mut self, address: Address, key: U256, value: U256) {
+        RevmHost::tstore(self, address, key, value);
+    }
+
+    #[inline]
+    fn tload(&mut self, address: Address, key: U256) -> U256 {
+        RevmHost::tload(self, address, key)
+    }
+
+    #[inline]
+    fn load_account_info_skip_cold_load(
+        &mut self,
+        address: Address,
+        load_code: bool,
+        skip_cold_load: bool,
+    ) -> Result<AccountInfoLoad<'_>, LoadError> {
+        RevmHost::load_account_info_skip_cold_load(self, address, load_code, skip_cold_load)
+    }
+
+    #[inline]
+    fn balance(&mut self, address: Address) -> Option<StateLoad<U256>> {
+        RevmHost::balance(self, address)
+    }
+}
+
 /// The EVM bytecode compiler runtime context.
 ///
 /// This is a simple wrapper around the interpreter's resources, allowing the compiled function to
@@ -130,7 +374,7 @@ pub struct EvmContext<'a> {
     /// The gas.
     pub gas: Gas,
     /// The host.
-    pub host: &'a mut dyn Host,
+    pub host: &'a mut dyn JitHost,
     /// The return data.
     pub return_data: &'a [u8],
     /// Whether the context is static.
@@ -140,7 +384,7 @@ pub struct EvmContext<'a> {
     /// The contract bytecode, for CODECOPY at runtime.
     pub bytecode: *const [u8],
     /// Optional callback invoked by the LOG builtin after constructing the log,
-    /// **before** it is passed to [`Host::log`].
+    /// **before** it is passed to [`JitHost::log`].
     ///
     /// Set to `None` when no inspector is active.
     #[doc(hidden)]

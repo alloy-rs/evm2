@@ -1,6 +1,6 @@
 //! evm2-facing runtime context.
 
-use crate::{EvmStack, EvmWord, InstrStop};
+use crate::{AccountInfoLoad, EvmStack, EvmWord, InstrStop, JitHost, LoadError};
 use alloc::{borrow::Cow, boxed::Box, vec::Vec};
 use alloy_primitives::{Bytes as RevmBytes, U256};
 use core::{
@@ -25,7 +25,6 @@ use revm_interpreter::{
     context_interface::{
         cfg::GasParams as RevmGasParams, primitives::hardfork::SpecId as RevmSpecId,
     },
-    host::LoadError,
     interpreter_types::MemoryTr,
     state::AccountInfo as RevmAccountInfo,
 };
@@ -45,13 +44,13 @@ pub struct RevmHostPtr {
 }
 
 impl RevmHostPtr {
-    fn from_host(host: &mut dyn RevmHost) -> Self {
-        unsafe { mem::transmute::<&mut dyn RevmHost, Self>(host) }
+    fn from_host(host: &mut dyn JitHost) -> Self {
+        unsafe { mem::transmute::<&mut dyn JitHost, Self>(host) }
     }
 
     #[cfg(test)]
-    unsafe fn as_host_mut<'a>(self) -> &'a mut dyn RevmHost {
-        unsafe { mem::transmute::<Self, &'a mut dyn RevmHost>(self) }
+    unsafe fn as_host_mut<'a>(self) -> &'a mut dyn JitHost {
+        unsafe { mem::transmute::<Self, &'a mut dyn JitHost>(self) }
     }
 }
 
@@ -227,8 +226,7 @@ impl<T: EvmTypes> RevmHost for RevmHostAdapter<'_, T> {
         address: alloy_primitives::Address,
         load_code: bool,
         skip_cold_load: bool,
-    ) -> Result<revm_interpreter::context_interface::journaled_state::AccountInfoLoad<'_>, LoadError>
-    {
+    ) -> Result<AccountInfoLoad<'_>, LoadError> {
         let account = self
             .host_mut()
             .load_account(&address, load_code, skip_cold_load)
@@ -240,7 +238,7 @@ impl<T: EvmTypes> RevmHost for RevmHostAdapter<'_, T> {
             account_id: None,
             code: Some(revm_bytecode_from_evm2(&account.code)),
         };
-        Ok(revm_interpreter::context_interface::journaled_state::AccountInfoLoad {
+        Ok(AccountInfoLoad {
             account: Cow::Owned(info),
             is_cold: account.is_cold,
             is_empty: account.is_empty,
@@ -315,7 +313,7 @@ pub struct EvmContext<'a, T: EvmTypes = BaseEvmTypes> {
 const _: () = {
     use core::mem::{offset_of, size_of};
 
-    assert!(size_of::<RevmHostPtr>() == size_of::<&mut dyn revm_interpreter::Host>());
+    assert!(size_of::<RevmHostPtr>() == size_of::<&mut dyn crate::JitHost>());
     assert!(
         offset_of!(EvmContext<'_, BaseEvmTypes>, memory)
             == offset_of!(crate::EvmContext<'_>, memory)
@@ -536,12 +534,12 @@ impl<'a, T: EvmTypes> EvmContext<'a, T> {
         let input = input_scratch.as_mut() as *mut InputsImpl;
         let mut host_adapter =
             Box::new(RevmHostAdapter::new(host, parts.tx_env, parts.version, revm_spec_id));
-        let revm_host = RevmHostPtr::from_host(host_adapter.as_mut());
+        let jit_host = RevmHostPtr::from_host(host_adapter.as_mut());
         let mut this = Self {
             memory,
             input,
             gas: revm_gas_from_evm2(parts.gas),
-            host: revm_host,
+            host: jit_host,
             return_data: parts.return_data.as_ref(),
             is_static: parts.is_static,
             spec_id,

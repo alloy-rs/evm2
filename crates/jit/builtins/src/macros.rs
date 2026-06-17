@@ -51,6 +51,20 @@ macro_rules! try_into_usize {
     };
 }
 
+#[collapse_debuginfo(yes)]
+macro_rules! as_usize_saturated {
+    ($x:expr) => {
+        usize::try_from($x).unwrap_or(usize::MAX)
+    };
+}
+
+#[collapse_debuginfo(yes)]
+macro_rules! as_u64_saturated {
+    ($x:expr) => {
+        u64::try_from($x).unwrap_or(u64::MAX)
+    };
+}
+
 // Credits: <https://github.com/AuroransSolis/rustconf-2023/blob/665a645d751dfe0e483261e3abca25ab4bb9e13a/reverse-tokens/src/main.rs>
 #[collapse_debuginfo(yes)]
 macro_rules! rev {

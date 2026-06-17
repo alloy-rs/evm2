@@ -1,6 +1,6 @@
 --- upstream/crates/revmc-context/src/lib.rs
 +++ evm2/crates/jit/context/src/lib.rs
-@@ -6,74 +6,113 @@
+@@ -6,71 +6,354 @@
  extern crate alloc;
 
  use alloc::vec::Vec;
@@ -8,19 +8,33 @@
 -    fmt,
 -    mem::MaybeUninit,
 -    ptr::{self, NonNull},
--};
 +use alloy_primitives::{Address, B256, Bytes, Log, U256, ruint};
 +use core::{fmt, mem::MaybeUninit, ptr::NonNull};
 +pub use evm2::interpreter::InstrStop;
++pub use revm_interpreter::{
++    CallInput,
++    interpreter_types::{InputsTr, MemoryTr},
+ };
  use revm_interpreter::{
 -    Gas, Host, InputsImpl, InstructionResult, Interpreter, InterpreterAction, InterpreterResult,
 -    SharedMemory,
 -    context_interface::cfg::GasParams,
 -    interpreter_types::{Jumps, LegacyBytecode, ReturnData, RuntimeFlag},
-+    CallInput, Gas, Host, InputsImpl, SharedMemory, context_interface::cfg::GasParams,
-+    interpreter_types::MemoryTr,
++    Gas, Host as RevmHost, InputsImpl, SharedMemory, context_interface::cfg::GasParams,
  };
 -use revm_primitives::{Address, B256, Bytes, Log, U256, hardfork::SpecId, ruint};
++
++#[doc(hidden)]
++pub type AccountInfoLoad<'a> =
++    revm_interpreter::context_interface::journaled_state::AccountInfoLoad<'a>;
++#[doc(hidden)]
++pub type LoadError = revm_interpreter::host::LoadError;
++#[doc(hidden)]
++pub type SelfDestructResult = revm_interpreter::SelfDestructResult;
++#[doc(hidden)]
++pub type SStoreResult = revm_interpreter::SStoreResult;
++#[doc(hidden)]
++pub type StateLoad<T> = revm_interpreter::StateLoad<T>;
 
  mod arch;
  use arch::revmc_entry;
@@ -47,13 +61,7 @@
 +#[doc(hidden)]
 +pub mod jit_abi {
 +    use super::*;
-
--impl ResumeAt {
--    /// Loads the resume point from the interpreter's current PC.
--    #[inline]
--    pub fn load(interpreter: &Interpreter) -> Self {
--        Self(interpreter.bytecode.pc())
--    }
++
 +    #[derive(Debug)]
 +    pub struct Inputs {
 +        pub target_address: Address,
@@ -95,22 +103,12 @@
 +        assert!(offset_of!(Inputs, caller_address) == offset_of!(InputsImpl, caller_address));
 +        assert!(offset_of!(Inputs, input) == offset_of!(InputsImpl, input));
 +        assert!(offset_of!(Inputs, call_value) == offset_of!(InputsImpl, call_value));
-
--    /// Stores the resume point back into the interpreter's bytecode PC.
--    #[inline]
--    pub fn store(self, interpreter: &mut Interpreter) {
--        interpreter.bytecode.absolute_jump(self.0);
--    }
++
 +        assert!(size_of::<Gas>() == size_of::<super::Gas>());
 +        assert!(align_of::<Gas>() == align_of::<super::Gas>());
 +    };
 +}
-
--    /// Returns the raw resume index.
--    #[inline]
--    pub const fn get(self) -> usize {
--        self.0
--    }
++
 +/// Type-erased evm2 recursive message builtin.
 +#[doc(hidden)]
 +pub type Evm2RecursiveMessageFn =
@@ -125,33 +123,36 @@
 +    pub create: Evm2RecursiveMessageFn,
 +    /// Executes `CALL`, `CALLCODE`, `DELEGATECALL`, or `STATICCALL`.
 +    pub call: Evm2RecursiveMessageFn,
- }
++}
 
--impl From<usize> for ResumeAt {
--    #[inline]
--    fn from(value: usize) -> Self {
--        Self(value)
+-impl ResumeAt {
+-    /// Loads the resume point from the interpreter's current PC.
 +impl Evm2Recursion {
 +    /// Returns dispatch functions that reject recursive message opcodes.
-+    #[inline]
+     #[inline]
+-    pub fn load(interpreter: &Interpreter) -> Self {
+-        Self(interpreter.bytecode.pc())
 +    pub const fn unsupported() -> Self {
 +        Self {
 +            create: unsupported_evm2_recursive_message,
 +            call: unsupported_evm2_recursive_message,
 +        }
      }
--}
 
--impl PartialEq<usize> for ResumeAt {
+-    /// Stores the resume point back into the interpreter's bytecode PC.
 +    /// Creates a recursive message dispatch table.
      #[inline]
--    fn eq(&self, other: &usize) -> bool {
--        self.0 == *other
+-    pub fn store(self, interpreter: &mut Interpreter) {
+-        interpreter.bytecode.absolute_jump(self.0);
 +    pub const fn new(create: Evm2RecursiveMessageFn, call: Evm2RecursiveMessageFn) -> Self {
 +        Self { create, call }
      }
- }
++}
 
+-    /// Returns the raw resume index.
+-    #[inline]
+-    pub const fn get(self) -> usize {
+-        self.0
 +unsafe fn unsupported_evm2_recursive_message(
 +    _ecx: &mut EvmContext<'_>,
 +    _sp: *mut EvmWord,
@@ -160,15 +161,250 @@
 +    Err(InstrStop::FatalExternalError)
 +}
 +
- /// The EVM bytecode compiler runtime context.
- ///
- /// This is a simple wrapper around the interpreter's resources, allowing the compiled function to
-@@ -92,17 +131,12 @@
++/// Host operations consumed by compiled-code builtins.
++#[doc(hidden)]
++pub trait JitHost {
++    fn basefee(&self) -> U256;
++    fn blob_gasprice(&self) -> U256;
++    fn gas_limit(&self) -> U256;
++    fn difficulty(&self) -> U256;
++    fn prevrandao(&self) -> Option<U256>;
++    fn block_number(&self) -> U256;
++    fn timestamp(&self) -> U256;
++    fn beneficiary(&self) -> Address;
++    fn slot_num(&self) -> U256;
++    fn chain_id(&self) -> U256;
++    fn effective_gas_price(&self) -> U256;
++    fn caller(&self) -> Address;
++    fn blob_hash(&self, number: usize) -> Option<U256>;
++    fn max_initcode_size(&self) -> usize;
++    fn gas_params(&self) -> &GasParams;
++    fn is_amsterdam_eip8037_enabled(&self) -> bool;
++    fn block_hash(&mut self, number: u64) -> Option<B256>;
++    fn selfdestruct(
++        &mut self,
++        address: Address,
++        target: Address,
++        skip_cold_load: bool,
++    ) -> Result<StateLoad<SelfDestructResult>, LoadError>;
++    fn log(&mut self, log: Log);
++    fn sstore_skip_cold_load(
++        &mut self,
++        address: Address,
++        key: U256,
++        value: U256,
++        skip_cold_load: bool,
++    ) -> Result<StateLoad<SStoreResult>, LoadError>;
++    fn sstore(
++        &mut self,
++        address: Address,
++        key: U256,
++        value: U256,
++    ) -> Option<StateLoad<SStoreResult>> {
++        self.sstore_skip_cold_load(address, key, value, false).ok()
++    }
++    fn sload_skip_cold_load(
++        &mut self,
++        address: Address,
++        key: U256,
++        skip_cold_load: bool,
++    ) -> Result<StateLoad<U256>, LoadError>;
++    fn sload(&mut self, address: Address, key: U256) -> Option<StateLoad<U256>> {
++        self.sload_skip_cold_load(address, key, false).ok()
++    }
++    fn tstore(&mut self, address: Address, key: U256, value: U256);
++    fn tload(&mut self, address: Address, key: U256) -> U256;
++    fn load_account_info_skip_cold_load(
++        &mut self,
++        address: Address,
++        load_code: bool,
++        skip_cold_load: bool,
++    ) -> Result<AccountInfoLoad<'_>, LoadError>;
++    fn balance(&mut self, address: Address) -> Option<StateLoad<U256>> {
++        self.load_account_info_skip_cold_load(address, false, false)
++            .ok()
++            .map(|load| load.into_state_load(|account| account.balance))
+     }
+ }
+
+-impl From<usize> for ResumeAt {
++impl<T: RevmHost + ?Sized> JitHost for T {
+     #[inline]
+-    fn from(value: usize) -> Self {
+-        Self(value)
++    fn basefee(&self) -> U256 {
++        RevmHost::basefee(self)
++    }
++
++    #[inline]
++    fn blob_gasprice(&self) -> U256 {
++        RevmHost::blob_gasprice(self)
++    }
++
++    #[inline]
++    fn gas_limit(&self) -> U256 {
++        RevmHost::gas_limit(self)
++    }
++
++    #[inline]
++    fn difficulty(&self) -> U256 {
++        RevmHost::difficulty(self)
++    }
++
++    #[inline]
++    fn prevrandao(&self) -> Option<U256> {
++        RevmHost::prevrandao(self)
++    }
++
++    #[inline]
++    fn block_number(&self) -> U256 {
++        RevmHost::block_number(self)
++    }
++
++    #[inline]
++    fn timestamp(&self) -> U256 {
++        RevmHost::timestamp(self)
++    }
++
++    #[inline]
++    fn beneficiary(&self) -> Address {
++        RevmHost::beneficiary(self)
++    }
++
++    #[inline]
++    fn slot_num(&self) -> U256 {
++        RevmHost::slot_num(self)
++    }
++
++    #[inline]
++    fn chain_id(&self) -> U256 {
++        RevmHost::chain_id(self)
++    }
++
++    #[inline]
++    fn effective_gas_price(&self) -> U256 {
++        RevmHost::effective_gas_price(self)
++    }
++
++    #[inline]
++    fn caller(&self) -> Address {
++        RevmHost::caller(self)
++    }
++
++    #[inline]
++    fn blob_hash(&self, number: usize) -> Option<U256> {
++        RevmHost::blob_hash(self, number)
++    }
++
++    #[inline]
++    fn max_initcode_size(&self) -> usize {
++        RevmHost::max_initcode_size(self)
++    }
++
++    #[inline]
++    fn gas_params(&self) -> &GasParams {
++        RevmHost::gas_params(self)
++    }
++
++    #[inline]
++    fn is_amsterdam_eip8037_enabled(&self) -> bool {
++        RevmHost::is_amsterdam_eip8037_enabled(self)
++    }
++
++    #[inline]
++    fn block_hash(&mut self, number: u64) -> Option<B256> {
++        RevmHost::block_hash(self, number)
++    }
++
++    #[inline]
++    fn selfdestruct(
++        &mut self,
++        address: Address,
++        target: Address,
++        skip_cold_load: bool,
++    ) -> Result<StateLoad<SelfDestructResult>, LoadError> {
++        RevmHost::selfdestruct(self, address, target, skip_cold_load)
++    }
++
++    #[inline]
++    fn log(&mut self, log: Log) {
++        RevmHost::log(self, log);
++    }
++
++    #[inline]
++    fn sstore_skip_cold_load(
++        &mut self,
++        address: Address,
++        key: U256,
++        value: U256,
++        skip_cold_load: bool,
++    ) -> Result<StateLoad<SStoreResult>, LoadError> {
++        RevmHost::sstore_skip_cold_load(self, address, key, value, skip_cold_load)
++    }
++
++    #[inline]
++    fn sstore(
++        &mut self,
++        address: Address,
++        key: U256,
++        value: U256,
++    ) -> Option<StateLoad<SStoreResult>> {
++        RevmHost::sstore(self, address, key, value)
++    }
++
++    #[inline]
++    fn sload_skip_cold_load(
++        &mut self,
++        address: Address,
++        key: U256,
++        skip_cold_load: bool,
++    ) -> Result<StateLoad<U256>, LoadError> {
++        RevmHost::sload_skip_cold_load(self, address, key, skip_cold_load)
++    }
++
++    #[inline]
++    fn sload(&mut self, address: Address, key: U256) -> Option<StateLoad<U256>> {
++        RevmHost::sload(self, address, key)
+     }
+-}
+
+-impl PartialEq<usize> for ResumeAt {
+     #[inline]
+-    fn eq(&self, other: &usize) -> bool {
+-        self.0 == *other
++    fn tstore(&mut self, address: Address, key: U256, value: U256) {
++        RevmHost::tstore(self, address, key, value);
++    }
++
++    #[inline]
++    fn tload(&mut self, address: Address, key: U256) -> U256 {
++        RevmHost::tload(self, address, key)
++    }
++
++    #[inline]
++    fn load_account_info_skip_cold_load(
++        &mut self,
++        address: Address,
++        load_code: bool,
++        skip_cold_load: bool,
++    ) -> Result<AccountInfoLoad<'_>, LoadError> {
++        RevmHost::load_account_info_skip_cold_load(self, address, load_code, skip_cold_load)
++    }
++
++    #[inline]
++    fn balance(&mut self, address: Address) -> Option<StateLoad<U256>> {
++        RevmHost::balance(self, address)
+     }
+ }
+
+@@ -91,22 +374,17 @@
+     /// The gas.
      pub gas: Gas,
      /// The host.
-     pub host: &'a mut dyn Host,
+-    pub host: &'a mut dyn Host,
 -    /// The return action.
 -    pub next_action: &'a mut Option<InterpreterAction>,
++    pub host: &'a mut dyn JitHost,
      /// The return data.
      pub return_data: &'a [u8],
      /// Whether the context is static.
@@ -182,7 +418,12 @@
      /// The contract bytecode, for CODECOPY at runtime.
      pub bytecode: *const [u8],
      /// Optional callback invoked by the LOG builtin after constructing the log,
-@@ -114,7 +148,7 @@
+-    /// **before** it is passed to [`Host::log`].
++    /// **before** it is passed to [`JitHost::log`].
+     ///
+     /// Set to `None` when no inspector is active.
+     #[doc(hidden)]
+@@ -114,7 +392,7 @@
      /// The size of the call input data, cached for CALLDATASIZE.
      pub calldatasize: usize,
      /// The result set by a builtin before exiting via [`revmc_exit`].
@@ -191,7 +432,7 @@
      /// Saved RSP from the entry trampoline, used by [`revmc_exit`] to unwind.
      pub exit_sp: *mut u8,
      /// Cached gas parameters from the host.
-@@ -126,6 +160,12 @@
+@@ -126,6 +404,12 @@
      /// Cached length of the current memory context in bytes.
      /// Refreshed after any memory resize.
      pub mem_len: usize,
@@ -204,7 +445,7 @@
  }
 
  // Static assertions to ensure the struct layout matches expectations.
-@@ -135,10 +175,6 @@
+@@ -135,10 +419,6 @@
 
      // Key fields accessed by JIT code
      assert!(offset_of!(EvmContext<'_>, memory) == 0);
@@ -215,7 +456,7 @@
  };
 
  impl fmt::Debug for EvmContext<'_> {
-@@ -147,47 +183,7 @@
+@@ -147,47 +427,7 @@
      }
  }
 
@@ -264,7 +505,7 @@
      /// Refreshes the cached memory base pointer and length from `SharedMemory`.
      ///
      /// Must be called after any operation that may resize memory.
-@@ -199,12 +195,51 @@
+@@ -199,12 +439,51 @@
      }
  }
 
@@ -317,7 +558,7 @@
  ///
  /// extern_revmc! {
  ///    /// A simple function.
-@@ -224,7 +259,7 @@
+@@ -224,7 +503,7 @@
                      ecx: ::core::ptr::NonNull<$crate::EvmContext<'_>>,
                      stack: ::core::ptr::NonNull<$crate::EvmStack>,
                      stack_len: ::core::ptr::NonNull<usize>,
@@ -326,7 +567,7 @@
              )+
          }
      };
-@@ -239,7 +274,7 @@
+@@ -239,7 +518,7 @@
      ecx: NonNull<EvmContext<'_>>,
      stack: NonNull<EvmStack>,
      stack_len: NonNull<usize>,
@@ -335,7 +576,7 @@
 
  /// An EVM bytecode function.
  #[derive(Clone, Copy, Debug, Hash)]
-@@ -272,82 +307,6 @@
+@@ -272,82 +551,6 @@
          self.0
      }
 
@@ -418,7 +659,7 @@
      /// Calls the function.
      ///
      /// Arguments:
-@@ -366,7 +325,7 @@
+@@ -366,7 +569,7 @@
          stack: &mut EvmStack,
          stack_len: &mut usize,
          ecx: &mut EvmContext<'_>,
@@ -427,7 +668,7 @@
          revmc_entry(NonNull::from(ecx), NonNull::from(stack), NonNull::from(stack_len), self.0)
      }
 
-@@ -383,7 +342,7 @@
+@@ -383,7 +586,7 @@
          stack: &mut EvmStack,
          stack_len: &mut usize,
          ecx: &mut EvmContext<'_>,
@@ -436,7 +677,7 @@
          self.call(stack, stack_len, ecx)
      }
  }
-@@ -415,20 +374,6 @@
+@@ -415,20 +618,6 @@
          Vec::with_capacity(1024)
      }
 
@@ -457,7 +698,7 @@
      /// Creates a stack from a vector's buffer.
      ///
      /// # Panics
-@@ -826,7 +771,6 @@
+@@ -826,7 +1015,6 @@
  #[doc(hidden)]
  pub mod private {
      pub use revm_interpreter;
@@ -465,7 +706,7 @@
  }
 
  #[cfg(test)]
-@@ -851,8 +795,8 @@
+@@ -851,8 +1039,8 @@
          _ecx: NonNull<EvmContext<'_>>,
          _stack: NonNull<EvmStack>,
          _stack_len: NonNull<usize>,

@@ -1,9 +1,6 @@
 use alloy_primitives::Address;
 use core::{hint::cold_path, num::NonZero};
-use evm2_jit_context::{EvmContext, EvmWord, InstrStop};
-use revm_interpreter::{
-    as_usize_saturated, context_interface::journaled_state::AccountInfoLoad, host::LoadError,
-};
+use evm2_jit_context::{AccountInfoLoad, EvmContext, EvmWord, InstrStop, LoadError};
 
 pub type BuiltinResult = Result<(), BuiltinError>;
 

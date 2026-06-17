@@ -10,7 +10,7 @@
 
  version.workspace = true
  authors.workspace = true
-@@ -17,18 +17,17 @@
+@@ -17,18 +17,16 @@
  workspace = true
 
  [dependencies]
@@ -19,10 +19,10 @@
 +evm2-jit-context.workspace = true
 
 -revm-primitives.workspace = true
-+alloy-primitives.workspace = true
- revm-interpreter.workspace = true
+-revm-interpreter.workspace = true
 -revm-bytecode.workspace = true
 -revm-context-interface.workspace = true
++alloy-primitives.workspace = true
  paste.workspace = true
 
 -revmc-backend = { workspace = true, optional = true }
@@ -33,5 +33,5 @@
  default = ["std", "ir"]
 -std = ["revmc-context/std", "revm-primitives/std", "revm-interpreter/std"]
 -ir = ["std", "dep:tracing", "dep:revmc-backend"]
-+std = ["evm2-jit-context/std", "alloy-primitives/std", "revm-interpreter/std"]
++std = ["evm2-jit-context/std", "alloy-primitives/std"]
 +ir = ["std", "dep:tracing", "dep:evm2-jit-backend"]

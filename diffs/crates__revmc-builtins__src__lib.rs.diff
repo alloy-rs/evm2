@@ -1,26 +1,25 @@
 --- upstream/crates/revmc-builtins/src/lib.rs
 +++ evm2/crates/jit/builtins/src/lib.rs
-@@ -10,14 +10,14 @@
+@@ -10,14 +10,10 @@
  #[cfg(feature = "ir")]
  extern crate tracing;
 
 -use alloc::{boxed::Box, vec::Vec};
+-use revm_interpreter::{
+-    CallInput, CallInputs, CallScheme, CallValue, CreateInputs, CreateScheme, FrameInput,
+-    InstructionResult, InterpreterAction, InterpreterResult, as_u64_saturated, as_usize_saturated,
+-    interpreter_types::{InputsTr, MemoryTr},
+-};
+-use revm_primitives::{B256, Bytes, KECCAK_EMPTY, Log, LogData, U256, hardfork::SpecId};
+-use revmc_context::{EvmContext, EvmWord};
 +use alloc::vec::Vec;
 +use alloy_primitives::{B256, Bytes, KECCAK256_EMPTY, Log, LogData, U256, keccak256};
 +use evm2::{SpecId, interpreter::i256};
-+use evm2_jit_context::{EvmContext, EvmWord, InstrStop};
- use revm_interpreter::{
--    CallInput, CallInputs, CallScheme, CallValue, CreateInputs, CreateScheme, FrameInput,
--    InstructionResult, InterpreterAction, InterpreterResult, as_u64_saturated, as_usize_saturated,
-+    CallInput, as_u64_saturated, as_usize_saturated,
-     interpreter_types::{InputsTr, MemoryTr},
- };
--use revm_primitives::{B256, Bytes, KECCAK_EMPTY, Log, LogData, U256, hardfork::SpecId};
--use revmc_context::{EvmContext, EvmWord};
++use evm2_jit_context::{CallInput, EvmContext, EvmWord, InputsTr, InstrStop, MemoryTr};
 
  pub mod gas;
 
-@@ -47,17 +47,6 @@
+@@ -47,17 +43,6 @@
      StaticCall,
  }
 
@@ -38,7 +37,7 @@
  /// The kind of a `CREATE*` instruction.
  #[derive(Clone, Copy, Debug, PartialEq, Eq)]
  #[repr(u8)]
-@@ -78,7 +67,7 @@
+@@ -78,7 +63,7 @@
  #[cold]
  fn fail(ecx: &mut EvmContext<'_>, e: BuiltinError) -> ! {
      ecx.exit_result = e.into();
@@ -47,7 +46,7 @@
  }
 
  macro_rules! builtins {
-@@ -115,13 +104,19 @@
+@@ -115,13 +100,19 @@
  }
 
  #[unsafe(no_mangle)]
@@ -69,7 +68,7 @@
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn __revmc_builtin_div(rev![a, b]: &mut [EvmWord; 2]) {
      let divisor = b.to_u256();
-@@ -130,7 +125,7 @@
+@@ -130,7 +121,7 @@
 
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn __revmc_builtin_sdiv(rev![a, b]: &mut [EvmWord; 2]) {
@@ -78,7 +77,7 @@
  }
 
  #[unsafe(no_mangle)]
-@@ -141,7 +136,7 @@
+@@ -141,7 +132,7 @@
 
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn __revmc_builtin_smod(rev![a, b]: &mut [EvmWord; 2]) {
@@ -87,7 +86,7 @@
  }
 
  #[unsafe(no_mangle)]
-@@ -202,13 +197,13 @@
+@@ -202,13 +193,13 @@
      len: usize,
  ) -> BuiltinResult {
      *out = EvmWord::from_be_bytes(if len == 0 {
@@ -103,7 +102,7 @@
      });
      Ok(())
  }
-@@ -350,7 +345,7 @@
+@@ -350,7 +341,7 @@
      // Bounds check BEFORE charging gas, matching revm.
      let data_end = data_offset.saturating_add(len);
      if data_end > ecx.return_data.len() {
@@ -112,7 +111,7 @@
      }
 
      gas!(ecx, ecx.gas_params.copy_cost(len));
-@@ -369,7 +364,7 @@
+@@ -369,7 +360,7 @@
  ) -> BuiltinResult {
      let addr = address.to_address();
      let account = load_account(ecx, addr, false)?;
@@ -121,7 +120,7 @@
      *address = EvmWord::from_be_bytes(code_hash);
      Ok(())
  }
-@@ -427,7 +422,7 @@
+@@ -427,7 +418,7 @@
 
  #[unsafe(no_mangle)]
  pub unsafe extern "C" fn __revmc_builtin_difficulty(ecx: &EvmContext<'_>, slot: &mut EvmWord) {
@@ -130,7 +129,7 @@
          ecx.host.prevrandao().unwrap().into()
      } else {
          ecx.host.difficulty().into()
-@@ -488,7 +483,7 @@
+@@ -488,7 +479,7 @@
  ) -> BuiltinResult {
      let address = ecx.input.target_address;
      let key = index.to_u256();
@@ -139,7 +138,7 @@
          let additional_cold_cost = ecx.gas_params.cold_storage_additional_cost();
          let skip_cold = ecx.gas.remaining() < additional_cold_cost;
          let storage = ecx.host.sload_skip_cold_load(address, key, skip_cold)?;
-@@ -524,16 +519,16 @@
+@@ -524,16 +515,16 @@
      ensure_non_staticcall!(ecx);
 
      let target = ecx.input.target_address;
@@ -159,7 +158,7 @@
          let additional_cold_cost = ecx.gas_params.cold_storage_additional_cost();
          let skip_cold = ecx.gas.remaining() < additional_cold_cost;
          ecx.host.sstore_skip_cold_load(target, index.to_u256(), value.to_u256(), skip_cold)?
-@@ -635,65 +630,7 @@
+@@ -635,65 +626,7 @@
      sp: *mut EvmWord,
      create_kind: CreateKind,
  ) -> BuiltinResult {
@@ -226,7 +225,7 @@
      Ok(())
  }
 
-@@ -703,122 +640,7 @@
+@@ -703,122 +636,7 @@
      sp: *mut EvmWord,
      call_kind: CallKind,
  ) -> BuiltinResult {
@@ -350,7 +349,7 @@
      Ok(())
  }
 
-@@ -826,7 +648,7 @@
+@@ -826,7 +644,7 @@
  pub unsafe extern "C" fn __revmc_builtin_do_return(
      ecx: &mut EvmContext<'_>,
      sp: &mut [EvmWord; 2],
@@ -359,7 +358,7 @@
  ) -> BuiltinResult {
      let rev![offset, len] = sp;
      let len = try_into_usize!(len);
-@@ -837,8 +659,7 @@
+@@ -837,8 +655,7 @@
      } else {
          Bytes::new()
      };
@@ -369,7 +368,7 @@
      Err(result.into())
  }
 
-@@ -847,7 +668,7 @@
+@@ -847,7 +664,7 @@
      ecx: &mut EvmContext<'_>,
      offset: u64,
      len: u64,
@@ -378,7 +377,7 @@
  ) -> BuiltinResult {
      let offset = offset as usize;
      let len = len as usize;
-@@ -857,8 +678,7 @@
+@@ -857,8 +674,7 @@
      } else {
          Bytes::new()
      };
@@ -388,7 +387,7 @@
      Err(result.into())
  }
 
-@@ -875,7 +695,7 @@
+@@ -875,7 +691,7 @@
          ecx.host.selfdestruct(ecx.input.target_address, target.to_address(), skip_cold_load)?;
 
      // EIP-161: State trie clearing (invariant-preserving alternative)
@@ -397,7 +396,7 @@
          res.had_value && !res.target_exists
      } else {
          !res.target_exists
-@@ -892,7 +712,7 @@
+@@ -892,7 +708,7 @@
          ecx.gas.record_refund(ecx.gas_params.selfdestruct_refund());
      }
 
