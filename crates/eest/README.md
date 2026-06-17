@@ -30,6 +30,45 @@ cargo nextest run -p evm2-eest --test eest --ignore-default-filter
 
 Discovered tests are named under `statetests`, `blockchain_tests`, and `legacy`.
 
+## JIT and AOT
+
+Enable the `jit` feature to add compiled-backend variants for every discovered
+state and blockchain fixture:
+
+```sh
+cargo st-jit
+```
+
+This is equivalent to:
+
+```sh
+cargo nextest run -p evm2-eest --features jit --test eest --ignore-default-filter
+```
+
+With `jit` enabled, the same fixture tree is discovered three ways:
+
+```text
+statetests::...
+statetests::jit::...
+statetests::aot::...
+blockchain_tests::...
+blockchain_tests::jit::...
+blockchain_tests::aot::...
+legacy::cancun::...
+legacy::cancun::jit::...
+legacy::cancun::aot::...
+```
+
+Filter those prefixes directly when checking one backend mode:
+
+```sh
+cargo nextest run -p evm2-eest --features jit --test eest \
+  --ignore-default-filter statetests::jit
+
+cargo nextest run -p evm2-eest --features jit --test eest \
+  --ignore-default-filter blockchain_tests::aot
+```
+
 ## State tests
 
 Run all discovered state tests with nextest:
