@@ -23,11 +23,15 @@ use evm2::{
 use revm_interpreter::{
     CallInput, Gas as RevmGas, Host as RevmHost, InputsImpl, InstructionResult,
     SStoreResult as RevmSStoreResult, SelfDestructResult as RevmSelfDestructResult, SharedMemory,
-    StateLoad as RevmStateLoad, bytecode::Bytecode as RevmBytecode,
-    context_interface::cfg::GasParams as RevmGasParams, host::LoadError,
-    interpreter_types::MemoryTr, state::AccountInfo as RevmAccountInfo,
+    StateLoad as RevmStateLoad,
+    bytecode::Bytecode as RevmBytecode,
+    context_interface::{
+        cfg::GasParams as RevmGasParams, primitives::hardfork::SpecId as RevmSpecId,
+    },
+    host::LoadError,
+    interpreter_types::MemoryTr,
+    state::AccountInfo as RevmAccountInfo,
 };
-use revm_primitives::hardfork::SpecId as RevmSpecId;
 
 const _: () = {
     assert!(core::mem::size_of::<EvmWord>() == core::mem::size_of::<Word>());

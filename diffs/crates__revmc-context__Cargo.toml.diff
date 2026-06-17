@@ -10,7 +10,7 @@
 
  version.workspace = true
  authors.workspace = true
-@@ -17,33 +17,18 @@
+@@ -17,33 +17,16 @@
  workspace = true
 
  [dependencies]
@@ -18,7 +18,6 @@
 +evm2 = { workspace = true, optional = true }
  revm-interpreter.workspace = true
 -revm-primitives.workspace = true
-+revm-primitives = { workspace = true, optional = true }
  ruint.workspace = true
 
 -revm-context = { workspace = true, optional = true }
@@ -48,6 +47,5 @@
 -    "dep:revm-handler",
 -    "dep:revm-inspector",
 -    "dep:revm-state",
-+    "revm-primitives?/std",
  ]
-+evm2 = ["dep:evm2", "dep:revm-primitives"]
++evm2 = ["dep:evm2"]
