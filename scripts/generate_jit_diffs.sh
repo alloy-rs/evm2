@@ -84,7 +84,14 @@ local_rel_for() {
             printf 'crates/jit/llvm/%s\n' "${rel#crates/revmc-llvm/}"
             ;;
         crates/revmc-runtime/*)
-            printf 'crates/jit/runtime/%s\n' "${rel#crates/revmc-runtime/}"
+            case "$rel" in
+                crates/revmc-runtime/src/revm_evm.rs)
+                    printf 'crates/jit/runtime/src/evm2_evm.rs\n'
+                    ;;
+                *)
+                    printf 'crates/jit/runtime/%s\n' "${rel#crates/revmc-runtime/}"
+                    ;;
+            esac
             ;;
         data/* | docs/* | examples/* | scripts/* | tests/codegen/*)
             printf 'crates/jit/%s\n' "$rel"
