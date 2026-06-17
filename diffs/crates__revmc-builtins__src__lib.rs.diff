@@ -159,7 +159,7 @@
          let additional_cold_cost = ecx.gas_params.cold_storage_additional_cost();
          let skip_cold = ecx.gas.remaining() < additional_cold_cost;
          ecx.host.sstore_skip_cold_load(target, index.to_u256(), value.to_u256(), skip_cold)?
-@@ -635,66 +630,10 @@
+@@ -635,65 +630,7 @@
      sp: *mut EvmWord,
      create_kind: CreateKind,
  ) -> BuiltinResult {
@@ -204,10 +204,7 @@
 -    // State gas for account creation + contract metadata (EIP-8037).
 -    if ecx.host.is_amsterdam_eip8037_enabled() {
 -        state_gas!(ecx, ecx.gas_params.create_state_gas());
-+    match unsafe { (ecx.evm2_recursion.create)(ecx, sp, create_kind as u8) } {
-+        InstrStop::Stop => Ok(()),
-+        result => Err(result.into()),
-     }
+-    }
 -
 -    let mut gas_limit = ecx.gas.remaining();
 -    if ecx.spec_id.is_enabled_in(SpecId::TANGERINE) {
@@ -225,11 +222,11 @@
 -            ecx.gas.reservoir(),
 -        )))));
 -
--    Ok(())
++    unsafe { (ecx.evm2_recursion.create)(ecx, sp, create_kind as u8) }?;
+     Ok(())
  }
 
- #[unsafe(no_mangle)]
-@@ -703,130 +642,17 @@
+@@ -703,122 +640,7 @@
      sp: *mut EvmWord,
      call_kind: CallKind,
  ) -> BuiltinResult {
@@ -285,10 +282,7 @@
 -
 -    if transfers_value {
 -        gas!(ecx, ecx.gas_params.transfer_value_cost());
-+    match unsafe { (ecx.evm2_recursion.call)(ecx, sp, call_kind as u8) } {
-+        InstrStop::Stop => Ok(()),
-+        result => Err(result.into()),
-     }
+-    }
 -
 -    // Match interpreter call path: load delegated account and pass resolved bytecode/hash
 -    // through CallInputs::known_bytecode (covers EIP-7702 delegation and EOF execution).
@@ -352,10 +346,11 @@
 -        }),
 -    )));
 -
--    Ok(())
++    unsafe { (ecx.evm2_recursion.call)(ecx, sp, call_kind as u8) }?;
+     Ok(())
  }
 
- #[unsafe(no_mangle)]
+@@ -826,7 +648,7 @@
  pub unsafe extern "C" fn __revmc_builtin_do_return(
      ecx: &mut EvmContext<'_>,
      sp: &mut [EvmWord; 2],
@@ -364,7 +359,7 @@
  ) -> BuiltinResult {
      let rev![offset, len] = sp;
      let len = try_into_usize!(len);
-@@ -837,8 +663,7 @@
+@@ -837,8 +659,7 @@
      } else {
          Bytes::new()
      };
@@ -374,7 +369,7 @@
      Err(result.into())
  }
 
-@@ -847,7 +672,7 @@
+@@ -847,7 +668,7 @@
      ecx: &mut EvmContext<'_>,
      offset: u64,
      len: u64,
@@ -383,7 +378,7 @@
  ) -> BuiltinResult {
      let offset = offset as usize;
      let len = len as usize;
-@@ -857,8 +682,7 @@
+@@ -857,8 +678,7 @@
      } else {
          Bytes::new()
      };
@@ -393,7 +388,7 @@
      Err(result.into())
  }
 
-@@ -875,7 +699,7 @@
+@@ -875,7 +695,7 @@
          ecx.host.selfdestruct(ecx.input.target_address, target.to_address(), skip_cold_load)?;
 
      // EIP-161: State trie clearing (invariant-preserving alternative)
@@ -402,7 +397,7 @@
          res.had_value && !res.target_exists
      } else {
          !res.target_exists
-@@ -892,7 +716,7 @@
+@@ -892,7 +712,7 @@
          ecx.gas.record_refund(ecx.gas_params.selfdestruct_refund());
      }
 

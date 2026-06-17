@@ -24,7 +24,7 @@ pub mod evm2_api;
 /// Type-erased evm2 recursive message builtin.
 #[doc(hidden)]
 pub type Evm2RecursiveMessageFn =
-    unsafe extern "C" fn(&mut EvmContext<'_>, *mut EvmWord, u8) -> InstrStop;
+    unsafe fn(&mut EvmContext<'_>, *mut EvmWord, u8) -> Result<(), InstrStop>;
 
 /// Dispatches recursive evm2 call/create messages from compiled code.
 #[derive(Clone, Copy, Debug)]
@@ -54,12 +54,12 @@ impl Evm2Recursion {
     }
 }
 
-unsafe extern "C" fn unsupported_evm2_recursive_message(
+unsafe fn unsupported_evm2_recursive_message(
     _ecx: &mut EvmContext<'_>,
     _sp: *mut EvmWord,
     _kind: u8,
-) -> InstrStop {
-    InstrStop::FatalExternalError
+) -> Result<(), InstrStop> {
+    Err(InstrStop::FatalExternalError)
 }
 
 /// The EVM bytecode compiler runtime context.

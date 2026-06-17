@@ -630,10 +630,8 @@ pub unsafe extern "C" fn __revmc_builtin_create(
     sp: *mut EvmWord,
     create_kind: CreateKind,
 ) -> BuiltinResult {
-    match unsafe { (ecx.evm2_recursion.create)(ecx, sp, create_kind as u8) } {
-        InstrStop::Stop => Ok(()),
-        result => Err(result.into()),
-    }
+    unsafe { (ecx.evm2_recursion.create)(ecx, sp, create_kind as u8) }?;
+    Ok(())
 }
 
 #[unsafe(no_mangle)]
@@ -642,10 +640,8 @@ pub unsafe extern "C" fn __revmc_builtin_call(
     sp: *mut EvmWord,
     call_kind: CallKind,
 ) -> BuiltinResult {
-    match unsafe { (ecx.evm2_recursion.call)(ecx, sp, call_kind as u8) } {
-        InstrStop::Stop => Ok(()),
-        result => Err(result.into()),
-    }
+    unsafe { (ecx.evm2_recursion.call)(ecx, sp, call_kind as u8) }?;
+    Ok(())
 }
 
 #[unsafe(no_mangle)]

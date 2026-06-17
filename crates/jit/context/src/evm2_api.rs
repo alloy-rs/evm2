@@ -612,29 +612,22 @@ pub fn bytecode_slice(bytecode: &Bytecode) -> &[u8] {
     bytecode.original_byte_slice()
 }
 
-unsafe extern "C" fn evm2_recursive_call<T: EvmTypes>(
+unsafe fn evm2_recursive_call<T: EvmTypes>(
     ecx: &mut crate::EvmContext<'_>,
     sp: *mut EvmWord,
     call_kind: u8,
-) -> InstrStop {
+) -> Result<(), InstrStop> {
     let ecx = unsafe { evm2_context_from_base::<T>(ecx) };
-    match call_kind_from_u8(call_kind).and_then(|kind| call_inner(ecx, sp, kind)) {
-        Ok(()) => InstrStop::Stop,
-        Err(stop) => stop,
-    }
+    call_kind_from_u8(call_kind).and_then(|kind| call_inner(ecx, sp, kind))
 }
 
-unsafe extern "C" fn evm2_recursive_create<T: EvmTypes>(
+unsafe fn evm2_recursive_create<T: EvmTypes>(
     ecx: &mut crate::EvmContext<'_>,
     sp: *mut EvmWord,
     create_kind: u8,
-) -> InstrStop {
+) -> Result<(), InstrStop> {
     let ecx = unsafe { evm2_context_from_base::<T>(ecx) };
-    match create_kind_from_u8(create_kind).and_then(|is_create2| create_inner(ecx, sp, is_create2))
-    {
-        Ok(()) => InstrStop::Stop,
-        Err(stop) => stop,
-    }
+    create_kind_from_u8(create_kind).and_then(|is_create2| create_inner(ecx, sp, is_create2))
 }
 
 unsafe fn evm2_context_from_base<'a, 'ctx, T: EvmTypes>(
@@ -1329,7 +1322,7 @@ mod tests {
             let result =
                 unsafe { evm2_recursive_call::<TestTypes>(base_context(&mut frame.ecx), sp, 0) };
 
-            assert_eq!(result, InstrStop::Stop);
+            assert_eq!(result, Ok(()));
             assert_eq!(unsafe { frame.stack.get_unchecked(0) }.to_u256(), Word::from(1));
             assert_eq!(frame.ecx.return_data, child_output.as_ref());
             assert_eq!(&*unsafe { &*frame.ecx.memory }.slice(8..10), &[0xaa, 0xbb]);
@@ -1379,7 +1372,7 @@ mod tests {
             let result =
                 unsafe { evm2_recursive_create::<TestTypes>(base_context(&mut frame.ecx), sp, 0) };
 
-            assert_eq!(result, InstrStop::Stop);
+            assert_eq!(result, Ok(()));
             assert_eq!(unsafe { frame.stack.get_unchecked(0) }, &address_word(&created));
             assert!(frame.ecx.return_data.is_empty());
         }
