@@ -405,8 +405,10 @@ pub(super) fn charge_upfront<T: EvmTypes<Host = Evm<T>>>(
     if !host.feature(EvmFeatures::FEE_CHARGE) {
         return Ok(());
     }
-    let delta = Word::ZERO.wrapping_sub(max_gas_cost);
-    host.state.account(&caller, false).map_err(db_error_handler!(host))?.add_balance(delta);
+    host.state
+        .account(&caller, false)
+        .map_err(db_error_handler!(host))?
+        .add_balance(Word::ZERO.wrapping_sub(max_gas_cost));
     Ok(())
 }
 
@@ -480,16 +482,10 @@ fn initial_call_code<T: EvmTypes<Host = Evm<T>>>(
     if host.feature(EvmFeatures::EIP7702)
         && let Some(delegated_address) = code.eip7702_address()
     {
-        host.state
-            .account(&delegated_address, false)
-            .map(|mut a| a.warm())
-            .map_err(db_error_handler!(host))?;
-        let delegated_code = host
-            .state
-            .account(&delegated_address, false)
-            .map_err(db_error_handler!(host))?
-            .load_code()
-            .map_err(db_error_handler!(host))?;
+        let mut account =
+            host.state.account(&delegated_address, false).map_err(db_error_handler!(host))?;
+        account.warm();
+        let delegated_code = account.load_code().map_err(db_error_handler!(host))?;
         return Ok(InitialCallCode {
             code: delegated_code,
             code_address: delegated_address,

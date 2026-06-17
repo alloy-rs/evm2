@@ -437,8 +437,8 @@ impl<'a> AccountHandle<'a> {
         self.tracked.code_changed = true;
     }
 
-    /// Records a revert snapshot and returns the live account, materializing an empty one when it is
-    /// currently absent.
+    /// Records a revert snapshot and returns the live account, materializing an empty one when it
+    /// is currently absent.
     #[inline]
     pub fn get_or_insert(&mut self) -> &mut AccountInfo {
         self.inner.journal.push(JournalEntry::AccountChange {
