@@ -153,8 +153,8 @@ pub use system::{
 
 mod db;
 pub use db::{
-    AccountStorageCache, Cache, CacheDB, Database, Db, DbErrorCode, DbResult, DynDatabase, EmptyDB,
-    InMemoryDB,
+    AccountStorageCache, Cache, CacheDB, Database, Db, DbErrorCode, DbResult, DbStats,
+    DbStatsCounts, DynDatabase, EmptyDB, InMemoryDB,
 };
 #[cfg(feature = "async")]
 pub(crate) use db::{db_error_unavailable, stored_error_code};

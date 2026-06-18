@@ -20,7 +20,8 @@ use evm2::{
     env::BlockEnv,
     ethereum::{RecoveredTxEnvelope, ethereum_tx_registry},
     evm::{
-        AccountInfo as EvmAccountInfo, BEACON_ROOTS_ADDRESS, HISTORY_STORAGE_ADDRESS, InMemoryDB,
+        AccountInfo as EvmAccountInfo, BEACON_ROOTS_ADDRESS, DbStats, DbStatsCounts,
+        HISTORY_STORAGE_ADDRESS, InMemoryDB,
     },
     registry::HandlerError,
 };
@@ -47,6 +48,8 @@ pub(crate) struct SpecOutcome {
 pub struct ExecuteConfig {
     /// Whether to print revm-style JSON outcome records.
     pub print_json_outcome: bool,
+    /// Whether to print database method call counts.
+    pub db_stats: bool,
 }
 
 /// Per-file execution summary.
@@ -117,7 +120,7 @@ fn execute_unit(
                 }
                 Err(err) => return Err(TestError::case(path, name, err)),
             };
-            let result = execute_spec(spec, block, state.clone(), &tx, &unit.env);
+            let result = execute_spec(spec, block, state.clone(), &tx, &unit.env, config.db_stats);
             validate_result(path, name, &unit, post, result, spec, config)?;
         }
     }
@@ -237,18 +240,43 @@ fn execute_spec(
     database: InMemoryDB,
     tx: &RecoveredTxEnvelope,
     env: &Env,
+    db_stats: bool,
 ) -> Result<SpecOutcome, HandlerError> {
-    let mut evm = Evm::<BaseEvmTypes>::new(
-        spec,
-        block,
-        ethereum_tx_registry(spec),
-        database.clone(),
-        Precompiles::base(spec),
-    );
+    let mut evm = if db_stats {
+        Evm::<BaseEvmTypes>::new(
+            spec,
+            block,
+            ethereum_tx_registry(spec),
+            DbStats::new(database.clone()),
+            Precompiles::base(spec),
+        )
+    } else {
+        Evm::<BaseEvmTypes>::new(
+            spec,
+            block,
+            ethereum_tx_registry(spec),
+            database.clone(),
+            Precompiles::base(spec),
+        )
+    };
     let mut post = database;
     pre_block_system_calls(&mut evm, &mut post, spec, env);
     let Ok(result) = evm.transact(tx)?.commit_with(&mut post);
+    if db_stats && let Some(stats) = evm.database_as::<DbStats<InMemoryDB>>() {
+        print_db_stats(stats.counts());
+    }
     Ok(spec_outcome(post, result))
+}
+
+fn print_db_stats(counts: DbStatsCounts) {
+    eprintln!(
+        "db stats: get_account={} get_code_by_hash={} get_storage={} get_block_hash={} error={}",
+        counts.get_account,
+        counts.get_code_by_hash,
+        counts.get_storage,
+        counts.get_block_hash,
+        counts.error
+    );
 }
 
 fn spec_outcome(post: InMemoryDB, result: TxResult) -> SpecOutcome {

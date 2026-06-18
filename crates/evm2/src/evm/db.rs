@@ -187,6 +187,101 @@ pub trait DynDatabase: Any {
     }
 }
 
+/// Counts calls made through a [`DynDatabase`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DbStatsCounts {
+    /// Number of account loads.
+    pub get_account: u64,
+    /// Number of bytecode loads by hash.
+    pub get_code_by_hash: u64,
+    /// Number of storage slot loads.
+    pub get_storage: u64,
+    /// Number of block hash loads.
+    pub get_block_hash: u64,
+    /// Number of error lookups.
+    pub error: u64,
+}
+
+/// Database wrapper that records method call counts.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DbStats<D> {
+    db: D,
+    counts: DbStatsCounts,
+}
+
+impl<D> DbStats<D> {
+    /// Creates a stats wrapper around `db`.
+    #[inline]
+    pub const fn new(db: D) -> Self {
+        Self {
+            db,
+            counts: DbStatsCounts {
+                get_account: 0,
+                get_code_by_hash: 0,
+                get_storage: 0,
+                get_block_hash: 0,
+                error: 0,
+            },
+        }
+    }
+
+    /// Returns the wrapped database.
+    #[inline]
+    pub const fn inner(&self) -> &D {
+        &self.db
+    }
+
+    /// Returns the wrapped database mutably.
+    #[inline]
+    pub const fn inner_mut(&mut self) -> &mut D {
+        &mut self.db
+    }
+
+    /// Consumes the wrapper and returns the wrapped database.
+    #[inline]
+    pub fn into_inner(self) -> D {
+        self.db
+    }
+
+    /// Returns recorded method call counts.
+    #[inline]
+    pub const fn counts(&self) -> DbStatsCounts {
+        self.counts
+    }
+}
+
+impl<D: DynDatabase> DynDatabase for DbStats<D> {
+    #[inline]
+    fn get_account(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
+        self.counts.get_account += 1;
+        self.db.get_account(address)
+    }
+
+    #[inline]
+    fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<Bytecode> {
+        self.counts.get_code_by_hash += 1;
+        self.db.get_code_by_hash(code_hash)
+    }
+
+    #[inline]
+    fn get_storage(&mut self, address: &Address, key: &Word) -> DbResult<Word> {
+        self.counts.get_storage += 1;
+        self.db.get_storage(address, key)
+    }
+
+    #[inline]
+    fn get_block_hash(&mut self, number: &Word) -> DbResult<Option<B256>> {
+        self.counts.get_block_hash += 1;
+        self.db.get_block_hash(number)
+    }
+
+    #[inline]
+    fn error(&mut self, code: DbErrorCode) -> Box<dyn Error> {
+        self.counts.error += 1;
+        self.db.error(code)
+    }
+}
+
 impl core::ops::Deref for dyn DynDatabase + '_ {
     type Target = dyn Any;
 
