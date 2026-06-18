@@ -55,11 +55,11 @@
  [dev-dependencies]
 -revmc-context.workspace = true
 -revmc-statetest = { path = "../revmc-statetest" }
-+evm2-jit-context = { workspace = true, features = ["evm2"] }
++evm2-jit-context.workspace = true
 
  paste.workspace = true
  similar-asserts = "2.0"
-@@ -68,11 +58,17 @@
+@@ -68,11 +58,16 @@
 
  [features]
  default = ["llvm"]
@@ -79,5 +79,4 @@
 +    "dep:paste",
 +    "dep:similar-asserts",
 +    "dep:tracing-subscriber",
-+    "evm2-jit-context/evm2",
 +]

@@ -611,7 +611,7 @@ pub unsafe extern "C" fn __revmc_builtin_create(
     sp: *mut EvmWord,
     create_kind: CreateKind,
 ) -> BuiltinResult {
-    unsafe { (ecx.message_dispatch.create)(ecx, sp, create_kind as u8) }?;
+    unsafe { evm2_jit_context::evm2_api::execute_create_message(ecx, sp, create_kind as u8) }?;
     Ok(())
 }
 
@@ -621,7 +621,7 @@ pub unsafe extern "C" fn __revmc_builtin_call(
     sp: *mut EvmWord,
     call_kind: CallKind,
 ) -> BuiltinResult {
-    unsafe { (ecx.message_dispatch.call)(ecx, sp, call_kind as u8) }?;
+    unsafe { evm2_jit_context::evm2_api::execute_call_message(ecx, sp, call_kind as u8) }?;
     Ok(())
 }
 

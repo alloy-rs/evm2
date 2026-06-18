@@ -502,7 +502,7 @@
 -            ecx.gas.reservoir(),
 -        )))));
 -
-+    unsafe { (ecx.message_dispatch.create)(ecx, sp, create_kind as u8) }?;
++    unsafe { evm2_jit_context::evm2_api::execute_create_message(ecx, sp, create_kind as u8) }?;
      Ok(())
  }
 
@@ -626,7 +626,7 @@
 -        }),
 -    )));
 -
-+    unsafe { (ecx.message_dispatch.call)(ecx, sp, call_kind as u8) }?;
++    unsafe { evm2_jit_context::evm2_api::execute_call_message(ecx, sp, call_kind as u8) }?;
      Ok(())
  }
 

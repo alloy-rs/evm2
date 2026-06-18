@@ -27,4 +27,3 @@ std = [
     "alloy-primitives/std",
     "evm2/std",
 ]
-evm2 = []

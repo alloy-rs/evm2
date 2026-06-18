@@ -16,7 +16,7 @@
  categories.workspace = true
  keywords.workspace = true
  repository.workspace = true
-@@ -17,33 +17,14 @@
+@@ -17,33 +17,13 @@
  workspace = true
 
  [dependencies]
@@ -54,4 +54,3 @@
 +    "alloy-primitives/std",
 +    "evm2/std",
  ]
-+evm2 = []

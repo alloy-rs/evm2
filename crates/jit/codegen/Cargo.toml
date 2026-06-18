@@ -48,7 +48,7 @@ indexmap = "2.13.0"
 evm2-jit-build.workspace = true
 
 [dev-dependencies]
-evm2-jit-context = { workspace = true, features = ["evm2"] }
+evm2-jit-context.workspace = true
 
 paste.workspace = true
 similar-asserts = "2.0"
@@ -70,5 +70,4 @@ __fuzzing = [
     "dep:paste",
     "dep:similar-asserts",
     "dep:tracing-subscriber",
-    "evm2-jit-context/evm2",
 ]

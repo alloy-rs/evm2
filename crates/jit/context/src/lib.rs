@@ -22,7 +22,6 @@ mod arch;
 use arch::evm2_jit_entry;
 pub use arch::evm2_jit_exit;
 
-#[cfg(feature = "evm2")]
 pub mod evm2_api;
 
 #[doc(hidden)]
@@ -116,44 +115,6 @@ pub mod jit_abi {
         assert!(size_of::<Gas>() == size_of::<super::Gas>());
         assert!(align_of::<Gas>() == align_of::<super::Gas>());
     };
-}
-
-/// Type-erased message dispatch builtin.
-#[doc(hidden)]
-pub type MessageDispatchFn =
-    unsafe fn(&mut EvmContext<'_>, *mut EvmWord, u8) -> Result<(), InstrStop>;
-
-/// Dispatches call/create messages from compiled code.
-#[derive(Clone, Copy, Debug)]
-#[repr(C)]
-#[doc(hidden)]
-pub struct MessageDispatch {
-    /// Executes `CREATE` or `CREATE2`.
-    pub create: MessageDispatchFn,
-    /// Executes `CALL`, `CALLCODE`, `DELEGATECALL`, or `STATICCALL`.
-    pub call: MessageDispatchFn,
-}
-
-impl MessageDispatch {
-    /// Returns dispatch functions that reject call/create opcodes.
-    #[inline]
-    pub const fn unsupported() -> Self {
-        Self { create: unsupported_message_dispatch, call: unsupported_message_dispatch }
-    }
-
-    /// Creates a message dispatch table.
-    #[inline]
-    pub const fn new(create: MessageDispatchFn, call: MessageDispatchFn) -> Self {
-        Self { create, call }
-    }
-}
-
-unsafe fn unsupported_message_dispatch(
-    _ecx: &mut EvmContext<'_>,
-    _sp: *mut EvmWord,
-    _kind: u8,
-) -> Result<(), InstrStop> {
-    Err(InstrStop::FatalExternalError)
 }
 
 /// Host state consumed by compiled-code builtins.
@@ -428,9 +389,6 @@ pub struct EvmContext<'a> {
     /// Output produced by RETURN or REVERT.
     #[doc(hidden)]
     pub output: Bytes,
-    /// Call/create message dispatch used by call-like builtins.
-    #[doc(hidden)]
-    pub message_dispatch: MessageDispatch,
 }
 
 // Static assertions to ensure the struct layout matches expectations.

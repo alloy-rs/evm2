@@ -61,9 +61,6 @@ pub struct EvmContext<'a> {
     /// Output produced by RETURN or REVERT.
     #[doc(hidden)]
     pub output: Bytes,
-    /// Call/create message dispatch used by call-like builtins.
-    #[doc(hidden)]
-    pub message_dispatch: crate::MessageDispatch,
     /// Transaction-global environment.
     #[doc(hidden)]
     pub tx_env: &'a TxEnv<BaseEvmTypes>,
@@ -102,10 +99,6 @@ const _: () = {
     assert!(offset_of!(EvmContext<'_>, mem_base) == offset_of!(crate::EvmContext<'_>, mem_base));
     assert!(offset_of!(EvmContext<'_>, mem_len) == offset_of!(crate::EvmContext<'_>, mem_len));
     assert!(offset_of!(EvmContext<'_>, output) == offset_of!(crate::EvmContext<'_>, output));
-    assert!(
-        offset_of!(EvmContext<'_>, message_dispatch)
-            == offset_of!(crate::EvmContext<'_>, message_dispatch)
-    );
 };
 
 /// Interpreter state copied out of a JIT context after compiled execution.
@@ -254,10 +247,6 @@ impl<'a> EvmContext<'a> {
             mem_base: ptr::null_mut(),
             mem_len: 0,
             output: Bytes::new(),
-            message_dispatch: crate::MessageDispatch::new(
-                execute_create_message,
-                execute_call_message,
-            ),
             tx_env: parts.tx_env,
             message: parts.message,
             return_data_scratch: Bytes::new(),
@@ -311,7 +300,8 @@ pub fn bytecode_slice(bytecode: &Bytecode) -> &[u8] {
     bytecode.original_byte_slice()
 }
 
-unsafe fn execute_call_message(
+#[doc(hidden)]
+pub unsafe fn execute_call_message(
     ecx: &mut crate::EvmContext<'_>,
     sp: *mut EvmWord,
     call_kind: u8,
@@ -320,7 +310,8 @@ unsafe fn execute_call_message(
     call_kind_from_u8(call_kind).and_then(|kind| call_inner(ecx, sp, kind))
 }
 
-unsafe fn execute_create_message(
+#[doc(hidden)]
+pub unsafe fn execute_create_message(
     ecx: &mut crate::EvmContext<'_>,
     sp: *mut EvmWord,
     create_kind: u8,
@@ -929,7 +920,7 @@ mod tests {
     }
 
     #[test]
-    fn message_dispatch_call_executes_message() {
+    fn execute_call_message_executes_message() {
         let target = Address::from([0x22; 20]);
         let caller = Address::from([0x11; 20]);
         let child_output = AlloyBytes::from_static(&[0xaa, 0xbb, 0xcc]);
@@ -983,7 +974,7 @@ mod tests {
     }
 
     #[test]
-    fn message_dispatch_callcode_maps_message_fields() {
+    fn execute_call_message_callcode_maps_message_fields() {
         let target = Address::from([0x22; 20]);
         let destination = Address::from([0x33; 20]);
         let caller = Address::from([0x11; 20]);
@@ -1026,7 +1017,7 @@ mod tests {
     }
 
     #[test]
-    fn message_dispatch_delegatecall_maps_message_fields() {
+    fn execute_call_message_delegatecall_maps_message_fields() {
         let target = Address::from([0x22; 20]);
         let destination = Address::from([0x33; 20]);
         let caller = Address::from([0x11; 20]);
@@ -1069,7 +1060,7 @@ mod tests {
     }
 
     #[test]
-    fn message_dispatch_staticcall_maps_message_fields() {
+    fn execute_call_message_staticcall_maps_message_fields() {
         let target = Address::from([0x22; 20]);
         let destination = Address::from([0x33; 20]);
         let caller = Address::from([0x11; 20]);
@@ -1111,7 +1102,7 @@ mod tests {
     }
 
     #[test]
-    fn message_dispatch_create_executes_message() {
+    fn execute_create_message_executes_message() {
         let created = Address::from([0x77; 20]);
         let initcode = [op::STOP];
         let mut host = TestHost {
@@ -1154,7 +1145,7 @@ mod tests {
     }
 
     #[test]
-    fn message_dispatch_create2_maps_salt() {
+    fn execute_create_message_create2_maps_salt() {
         let created = Address::from([0x77; 20]);
         let initcode = [op::STOP];
         let salt = EvmWord::from(Word::from(0xabcdu64));
