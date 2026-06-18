@@ -1,30 +1,26 @@
 --- upstream/crates/revmc-codegen/src/bytecode/fmt.rs
 +++ evm2/crates/jit/codegen/src/bytecode/fmt.rs
-@@ -4,9 +4,12 @@
+@@ -4,9 +4,9 @@
      bitvec_as_bytes,
      passes::block_analysis::Block,
  };
 +use alloy_primitives::hex;
-+use evm2::{
-+    SpecId,
-+    interpreter::{op, opcode::OpCode},
-+};
++use evm2::interpreter::{op, opcode::OpCode};
  use oxc_index::{IndexVec, index_vec};
 -use revm_bytecode::opcode as op;
 -use revm_primitives::hex;
  use std::{borrow::Cow, fmt, fmt::Write, io::IsTerminal};
 
  impl Bytecode<'_> {
-@@ -37,15 +40,16 @@
+@@ -36,16 +36,13 @@
+
          lines.push((
              String::new(),
-             format!(
+-            format!(
 -                "spec_id={} has_dynamic_jumps={} may_suspend={}",
 -                self.spec_id, self.has_dynamic_jumps, self.may_suspend,
-+                "spec_id={} has_dynamic_jumps={}",
-+                spec_id_name(self.spec_id),
-+                self.has_dynamic_jumps,
-             ),
+-            ),
++            format!("spec_id={:?} has_dynamic_jumps={}", self.spec_id, self.has_dynamic_jumps,),
          ));
          lines.push((
              String::new(),
@@ -36,7 +32,7 @@
              ),
          ));
          lines.push((String::new(), String::new()));
-@@ -158,8 +162,8 @@
+@@ -158,8 +155,8 @@
                  if flags.contains(InstFlags::MULTI_JUMP) {
                      comment.push_str(" multi_jump");
                  }
@@ -47,35 +43,7 @@
                  }
                  if data.is_reachable_jumpdest(self.has_dynamic_jumps) {
                      comment.push_str(" reachable");
-@@ -212,6 +216,27 @@
-     }
- }
-
-+fn spec_id_name(spec_id: SpecId) -> &'static str {
-+    match spec_id {
-+        SpecId::FRONTIER => "Frontier",
-+        SpecId::HOMESTEAD => "Homestead",
-+        SpecId::TANGERINE => "Tangerine",
-+        SpecId::SPURIOUS_DRAGON => "SpuriousDragon",
-+        SpecId::BYZANTIUM => "Byzantium",
-+        SpecId::PETERSBURG => "Petersburg",
-+        SpecId::ISTANBUL => "Istanbul",
-+        SpecId::BERLIN => "Berlin",
-+        SpecId::LONDON => "London",
-+        SpecId::MERGE => "Merge",
-+        SpecId::SHANGHAI => "Shanghai",
-+        SpecId::CANCUN => "Cancun",
-+        SpecId::PRAGUE => "Prague",
-+        SpecId::OSAKA => "Osaka",
-+        SpecId::AMSTERDAM => "Amsterdam",
-+        _ => "Unknown",
-+    }
-+}
-+
- // ———————————————————————————————————————————————————————————————————————
- // Colorizer (uses asm::Tokenizer)
- // ———————————————————————————————————————————————————————————————————————
-@@ -251,7 +276,6 @@
+@@ -251,7 +248,6 @@
 
  /// Returns the ANSI color for an opcode name based on its byte-value category.
  fn opcode_color(name: &str) -> &'static str {
@@ -83,7 +51,7 @@
      let byte = match OpCode::parse(name) {
          Some(op) => op.get(),
          // Bare "PUSH" without a number suffix.
-@@ -295,7 +319,6 @@
+@@ -295,7 +291,6 @@
              .field("jumpdests", &hex::encode(bitvec_as_bytes(&self.jumpdests)))
              .field("spec_id", &self.spec_id)
              .field("has_dynamic_jumps", &self.has_dynamic_jumps)
@@ -91,7 +59,7 @@
              .finish()
      }
  }
-@@ -339,9 +362,9 @@
+@@ -339,9 +334,9 @@
      // Non-reverting exit blocks (STOP, RETURN).
      pub(super) const EXIT_FILL: &str = DARK_GREEN;
      pub(super) const EXIT_BORDER: &str = GREEN;
@@ -104,7 +72,7 @@
      // Branching blocks.
      pub(super) const BRANCH_FILL: &str = DARK_TEAL;
      pub(super) const BRANCH_BORDER: &str = TEAL;
-@@ -377,13 +400,13 @@
+@@ -377,13 +372,13 @@
              let first = self.inst(block.insts.start);
 
              // Color based on block behavior.
@@ -121,7 +89,7 @@
              } else if last.is_jump() {
                  (BRANCH_FILL, BRANCH_BORDER)
              } else {
-@@ -524,11 +547,10 @@
+@@ -524,11 +519,10 @@
  #[cfg(test)]
  mod tests {
      use super::*;
@@ -135,18 +103,18 @@
      fn test_bytecode() -> Bytecode<'static> {
          #[rustfmt::skip]
          let code: &[u8] = &[
-@@ -564,8 +586,8 @@
+@@ -564,8 +558,8 @@
          snapbox::assert_data_eq!(
              actual,
              snapbox::str![[r#"
 -; spec_id=Osaka has_dynamic_jumps=false may_suspend=true
 -; insts=19 live=19 dead=0 noops=10 suspends=1 blocks=3 block_min=2 block_max=10 block_avg=6.3 block_median=7
-+; spec_id=Osaka has_dynamic_jumps=false
++; spec_id=OSAKA has_dynamic_jumps=false
 +; insts=19 live=19 dead=0 noops=11 message_opcodes=1 blocks=3 block_min=2 block_max=10 block_avg=6.3 block_median=7
 
  bb0:           ; stack_in=0 max_growth=1 predecessors=
    PUSH1 0x03   ; ic= 0 pc= 0 gas=11 noop
-@@ -581,14 +603,14 @@
+@@ -581,14 +575,14 @@
    JUMPI %bb1   ; ic= 8 pc=12
 
  bb2:           ; stack_in=0 max_growth=7 predecessors=bb1

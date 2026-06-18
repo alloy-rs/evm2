@@ -5,10 +5,7 @@ use super::{
     passes::block_analysis::Block,
 };
 use alloy_primitives::hex;
-use evm2::{
-    SpecId,
-    interpreter::{op, opcode::OpCode},
-};
+use evm2::interpreter::{op, opcode::OpCode};
 use oxc_index::{IndexVec, index_vec};
 use std::{borrow::Cow, fmt, fmt::Write, io::IsTerminal};
 
@@ -39,11 +36,7 @@ impl Bytecode<'_> {
 
         lines.push((
             String::new(),
-            format!(
-                "spec_id={} has_dynamic_jumps={}",
-                spec_id_name(self.spec_id),
-                self.has_dynamic_jumps,
-            ),
+            format!("spec_id={:?} has_dynamic_jumps={}", self.spec_id, self.has_dynamic_jumps,),
         ));
         lines.push((
             String::new(),
@@ -213,27 +206,6 @@ impl fmt::Display for Bytecode<'_> {
         } else {
             self.display_plain(f)
         }
-    }
-}
-
-fn spec_id_name(spec_id: SpecId) -> &'static str {
-    match spec_id {
-        SpecId::FRONTIER => "Frontier",
-        SpecId::HOMESTEAD => "Homestead",
-        SpecId::TANGERINE => "Tangerine",
-        SpecId::SPURIOUS_DRAGON => "SpuriousDragon",
-        SpecId::BYZANTIUM => "Byzantium",
-        SpecId::PETERSBURG => "Petersburg",
-        SpecId::ISTANBUL => "Istanbul",
-        SpecId::BERLIN => "Berlin",
-        SpecId::LONDON => "London",
-        SpecId::MERGE => "Merge",
-        SpecId::SHANGHAI => "Shanghai",
-        SpecId::CANCUN => "Cancun",
-        SpecId::PRAGUE => "Prague",
-        SpecId::OSAKA => "Osaka",
-        SpecId::AMSTERDAM => "Amsterdam",
-        _ => "Unknown",
     }
 }
 
@@ -586,7 +558,7 @@ mod tests {
         snapbox::assert_data_eq!(
             actual,
             snapbox::str![[r#"
-; spec_id=Osaka has_dynamic_jumps=false
+; spec_id=OSAKA has_dynamic_jumps=false
 ; insts=19 live=19 dead=0 noops=11 message_opcodes=1 blocks=3 block_min=2 block_max=10 block_avg=6.3 block_median=7
 
 bb0:           ; stack_in=0 max_growth=1 predecessors=
