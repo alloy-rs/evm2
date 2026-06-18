@@ -28,5 +28,5 @@ tracing.workspace = true
 cc = "1"
 
 [features]
-prefer-static = []
-prefer-dynamic = []
+prefer-static = ["inkwell/llvm22-1-prefer-static"]
+prefer-dynamic = ["inkwell/llvm22-1-prefer-dynamic"]
