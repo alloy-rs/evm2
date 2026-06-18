@@ -191,6 +191,18 @@ macro_rules! db_error_handler {
 }
 pub(crate) use db_error_handler;
 
+/// Inlined [`Evm::db_error_stop`] that records the error code and yields
+/// [`InstrStop::FatalExternalError`] through a disjoint borrow of `$host.db_error_code`.
+///
+/// Like [`db_error_handler!`], inlining keeps this from borrowing all of `$host`, so it composes
+/// with a live [`AccountHandle`] (or a `Result` carrying one) that already borrows `$host.state`.
+macro_rules! db_error_stop {
+    ($host:expr, $code:expr) => {{
+        $host.db_error_code = ::core::option::Option::Some($code);
+        $crate::interpreter::InstrStop::FatalExternalError
+    }};
+}
+
 /// EVM host and transaction dispatcher.
 #[derive_where(Debug)]
 pub struct Evm<T: EvmTypes> {
@@ -1258,7 +1270,7 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
         let mut account = match self.state.account(address, skip_cold_load) {
             Ok(account) => account,
             Err(DbErrorCode::COLD_LOAD_SKIPPED) => return Err(InstrStop::OutOfGas),
-            Err(code) => return Err(self.db_error_stop(code)),
+            Err(code) => return Err(db_error_stop!(self, code)),
         };
         // mark account as warm
         let is_cold = account.warm();
@@ -1268,7 +1280,7 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
 
         // load code
         let code = if load_code {
-            account.load_code().map_err(|code| self.db_error_stop(code))?
+            account.load_code().map_err(|code| db_error_stop!(self, code))?
         } else {
             Bytecode::default()
         };
@@ -1290,7 +1302,7 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
     ) -> Result<bool, InstrStop> {
         match self.state.account(address, false) {
             Ok(account) => Ok(account.is_empty_for_new_account_gas(features)),
-            Err(code) => Err(self.db_error_stop(code)),
+            Err(code) => Err(db_error_stop!(self, code)),
         }
     }
 
@@ -1390,7 +1402,7 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
             self.target_is_empty_for_new_account_gas(target, features)?;
         let previously_destroyed = match self.state.account(contract, false) {
             Ok(account) => account.is_destructed(),
-            Err(code) => return Err(self.db_error_stop(code)),
+            Err(code) => return Err(db_error_stop!(self, code)),
         };
         let balance = self
             .state
@@ -1400,7 +1412,7 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
         let should_destroy = if self.feature(EvmFeatures::EIP6780) {
             match self.state.account(contract, false) {
                 Ok(account) => account.is_created(),
-                Err(code) => return Err(self.db_error_stop(code)),
+                Err(code) => return Err(db_error_stop!(self, code)),
             }
         } else {
             true
@@ -1423,7 +1435,7 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
             let delta = Word::ZERO.wrapping_sub(balance);
             match self.state.account(contract, false) {
                 Ok(mut account) => account.add_balance(delta),
-                Err(code) => return Err(self.db_error_stop(code)),
+                Err(code) => return Err(db_error_stop!(self, code)),
             }
         }
         if should_destroy && let Ok(mut account) = self.state.account(contract, false) {

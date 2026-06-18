@@ -528,56 +528,33 @@ impl State {
                 JournalEntry::AccountChange {
                     address,
                     previous,
+                    previous_is_warm,
+                    previous_is_touched,
+                    previous_is_destroyed,
                     previous_just_created,
                     previous_code_changed,
                 } => {
+                    // Reconcile the self-destruct set with the restored destroyed flag.
+                    let was_destroyed =
+                        self.accounts.get(&address).is_some_and(|entry| entry.is_destroyed);
+                    if was_destroyed && !previous_is_destroyed {
+                        self.selfdestructs.remove(&address);
+                    } else if !was_destroyed && previous_is_destroyed {
+                        self.selfdestructs.insert(address);
+                    }
                     if let Some(entry) = self.accounts.get_mut(&address) {
                         entry.present = previous;
+                        entry.is_warm = previous_is_warm;
+                        // EIP-161 preserves the historical Yellow Paper K.1 precompile-3 touch.
+                        if !(features.contains(EvmFeatures::EIP161)
+                            && address == Address::with_last_byte(3))
+                        {
+                            entry.is_touched = previous_is_touched;
+                        }
+                        entry.is_destroyed = previous_is_destroyed;
                         entry.just_created = previous_just_created;
                         entry.code_changed = previous_code_changed;
                     }
-                }
-                JournalEntry::BalanceChanged { address, previous } => {
-                    if let Some(entry) = self.accounts.get_mut(&address)
-                        && let Some(account) = entry.present.as_mut()
-                    {
-                        account.balance = previous;
-                    }
-                }
-                JournalEntry::NonceChanged { address, previous } => {
-                    if let Some(entry) = self.accounts.get_mut(&address)
-                        && let Some(account) = entry.present.as_mut()
-                    {
-                        account.nonce = previous;
-                    }
-                }
-                JournalEntry::CodeChanged {
-                    address,
-                    previous_code_hash,
-                    previous_code,
-                    previous_code_changed,
-                } => {
-                    if let Some(entry) = self.accounts.get_mut(&address) {
-                        if let Some(account) = entry.present.as_mut() {
-                            account.code_hash = previous_code_hash;
-                            account.code = previous_code;
-                        }
-                        entry.code_changed = previous_code_changed;
-                    }
-                }
-                JournalEntry::Touch { address } => {
-                    // EIP-161 preserves the historical Yellow Paper K.1 precompile-3 touch.
-                    if features.contains(EvmFeatures::EIP161)
-                        && address == Address::with_last_byte(3)
-                    {
-                        continue;
-                    }
-                    if let Some(entry) = self.accounts.get_mut(&address) {
-                        entry.is_touched = false;
-                    }
-                }
-                JournalEntry::SelfDestruct { address } => {
-                    self.selfdestructs.remove(&address);
                 }
                 JournalEntry::StorageChange { address, key, previous } => {
                     if let Some(storage) = self.storage.get_mut(&address)
@@ -602,13 +579,6 @@ impl State {
                         self.transient_storage.remove(&StorageKey::new(address, key));
                     }
                 },
-                JournalEntry::AccountWarmed { address } => {
-                    // Clear the revertible warm flag, reverting the EIP-2929 cold/warm status. The
-                    // loaded entry stays in place as a harmless read cache.
-                    if let Some(entry) = self.accounts.get_mut(&address) {
-                        entry.is_warm = false;
-                    }
-                }
                 JournalEntry::StorageWarmed { address, key } => {
                     if let Some(storage) = self.storage.get_mut(&address)
                         && let Some(slot) = storage.slots.get_mut(&key)
@@ -622,14 +592,14 @@ impl State {
 
     fn delete_account_for_finalization(&mut self, address: &Address) -> DbResult<()> {
         let entry = Self::account_raw(&mut self.inner, &mut self.accounts, address, false)?;
-        let previous = entry.present.clone();
-        let previous_just_created = entry.just_created;
-        let previous_code_changed = entry.code_changed;
         self.inner.journal.push(JournalEntry::AccountChange {
             address: *address,
-            previous,
-            previous_just_created,
-            previous_code_changed,
+            previous: entry.present.clone(),
+            previous_is_warm: entry.is_warm,
+            previous_is_touched: entry.is_touched,
+            previous_is_destroyed: entry.is_destroyed,
+            previous_just_created: entry.just_created,
+            previous_code_changed: entry.code_changed,
         });
         entry.present = None;
         self.storage(address).wipe();
@@ -644,6 +614,9 @@ impl State {
             self.inner.journal.push(JournalEntry::AccountChange {
                 address: *address,
                 previous: None,
+                previous_is_warm: entry.is_warm,
+                previous_is_touched: entry.is_touched,
+                previous_is_destroyed: entry.is_destroyed,
                 previous_just_created: entry.just_created,
                 previous_code_changed: entry.code_changed,
             });

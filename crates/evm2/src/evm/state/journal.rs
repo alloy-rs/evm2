@@ -1,8 +1,8 @@
 //! Revert journal and checkpoint types.
 
 use super::{AccountInfo, StorageOverlay};
-use crate::{bytecode::Bytecode, interpreter::Word};
-use alloy_primitives::{Address, B256};
+use crate::interpreter::Word;
+use alloy_primitives::Address;
 
 /// State checkpoint for reverting state changes.
 #[allow(missing_copy_implementations)]
@@ -18,52 +18,24 @@ pub struct StateCheckpoint {
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum JournalEntry {
-    /// Account current value changed.
+    /// Account overlay snapshot recorded before the first mutation made through an
+    /// [`AccountHandle`](super::AccountHandle), reverting the present account value and all
+    /// per-account flags in one entry.
     AccountChange {
         /// Account address.
         address: Address,
-        /// Previous current account value.
+        /// Previous present account value.
         previous: Option<AccountInfo>,
+        /// Previous warm flag.
+        previous_is_warm: bool,
+        /// Previous touched flag.
+        previous_is_touched: bool,
+        /// Previous self-destructed flag.
+        previous_is_destroyed: bool,
         /// Previous created-in-transaction flag.
         previous_just_created: bool,
         /// Previous code-changed flag.
         previous_code_changed: bool,
-    },
-    /// Account balance changed. Reverts the balance of an already-present account.
-    BalanceChanged {
-        /// Account address.
-        address: Address,
-        /// Previous balance.
-        previous: Word,
-    },
-    /// Account nonce changed. Reverts the nonce of an already-present account.
-    NonceChanged {
-        /// Account address.
-        address: Address,
-        /// Previous nonce.
-        previous: u64,
-    },
-    /// Account code changed. Reverts the code, code hash, and code-changed flag of an
-    /// already-present account.
-    CodeChanged {
-        /// Account address.
-        address: Address,
-        /// Previous code hash.
-        previous_code_hash: B256,
-        /// Previous code.
-        previous_code: Option<Bytecode>,
-        /// Previous code-changed flag.
-        previous_code_changed: bool,
-    },
-    /// Account was touched.
-    Touch {
-        /// Account address.
-        address: Address,
-    },
-    /// Account was self-destructed.
-    SelfDestruct {
-        /// Account address.
-        address: Address,
     },
     /// Persistent storage changed.
     StorageChange {
@@ -93,11 +65,6 @@ pub enum JournalEntry {
         key: Word,
         /// Previous transient storage value.
         previous: Option<Word>,
-    },
-    /// Account was warmed by EIP-2929 access tracking.
-    AccountWarmed {
-        /// Account address.
-        address: Address,
     },
     /// Storage slot was warmed by EIP-2929 access tracking.
     StorageWarmed {
@@ -200,8 +167,8 @@ mod tests {
         let checkpoint = state.checkpoint();
         assert!(state.account(&frame_account, false).unwrap().warm());
         assert!(state.storage_slot(&frame_storage, key, false).unwrap().warm());
-        // The load itself is an un-journaled read cache; warming the frame account records
-        // AccountWarmed and warming the slot records StorageWarmed: two revertible entries in
+        // The load itself is an un-journaled read cache; warming the frame account records an
+        // AccountChange and warming the slot records StorageWarmed: two revertible entries in
         // total.
         assert_eq!(state.journal.len(), 2);
 

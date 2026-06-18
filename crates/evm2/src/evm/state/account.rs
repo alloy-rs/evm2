@@ -125,6 +125,8 @@ pub(crate) struct Account {
     pub(crate) is_warm: bool,
     /// Whether this account is touched for transaction-finalization account-lifetime rules.
     pub(crate) is_touched: bool,
+    /// Whether this account has been self-destructed in the current transaction.
+    pub(crate) is_destroyed: bool,
     /// Whether the present overlay account was created in the current transaction.
     pub(crate) just_created: bool,
     /// Whether the present overlay account's code has been modified.
@@ -138,15 +140,11 @@ pub(crate) struct Account {
 /// handle ties that overlay slot to the revert journal so a mutation and its rollback bookkeeping
 /// cannot drift apart, mirroring revm's `AccountHandle`.
 ///
-/// The granular field setters ([`Self::set_balance`], [`Self::set_nonce`], [`Self::bump_nonce`],
-/// [`Self::set_code`]) journal the specific field they change on an already-present account
-/// ([`JournalEntry::BalanceChanged`], [`JournalEntry::NonceChanged`],
-/// [`JournalEntry::CodeChanged`]), so each change is reverted independently by
-/// [`State::rollback`](super::State::rollback). The general-purpose [`Self::get_or_insert`] /
-/// [`Self::into_account_mut`] accessors instead record a single [`JournalEntry::AccountChange`]
-/// snapshot of the account as it was when the handle was created. Mutating a currently-absent
-/// account materializes an empty one, reverted by an [`JournalEntry::AccountChange`] snapshot. A
-/// handle used only for reads records nothing.
+/// The first mutation made through the handle captures a snapshot of the overlay entry (present
+/// value plus the warm/touched/destroyed/created/code-changed flags); on drop the handle flushes
+/// that snapshot as a single [`JournalEntry::AccountChange`], which
+/// [`State::rollback`](super::State::rollback) replays to restore the whole entry at once. A handle
+/// used only for reads records nothing, so it emits no journal entry.
 ///
 /// The handle also carries the shared [`StateInner`] (backing database, revert journal, and
 /// transaction-initial base warm set), so it can journal mutations, load code on demand, and answer
@@ -161,6 +159,19 @@ pub struct AccountHandle<'a> {
     /// Shared inner state: backing database, revert journal, and base warm set.
     #[derive_where(skip)]
     inner: &'a mut StateInner,
+    /// Revert entry capturing the overlay as it was before the first mutation made through this
+    /// handle. `Some` once a change has been recorded; on drop it is pushed onto the journal as a
+    /// single [`JournalEntry::AccountChange`].
+    snapshot: Option<JournalEntry>,
+}
+
+impl Drop for AccountHandle<'_> {
+    #[inline]
+    fn drop(&mut self) {
+        if let Some(entry) = self.snapshot.take() {
+            self.inner.journal.push(entry);
+        }
+    }
 }
 
 /// Returns a freshly materialized empty account overlay.
@@ -178,7 +189,25 @@ impl<'a> AccountHandle<'a> {
         tracked: &'a mut Account,
         inner: &'a mut StateInner,
     ) -> Self {
-        Self { address, tracked, inner }
+        Self { address, tracked, inner, snapshot: None }
+    }
+
+    /// Records the pre-mutation revert entry the first time a change is made through this handle.
+    /// Subsequent calls are no-ops, so the whole handle session flushes a single
+    /// [`JournalEntry::AccountChange`] on drop.
+    #[inline]
+    fn record_change(&mut self) {
+        if self.snapshot.is_none() {
+            self.snapshot = Some(JournalEntry::AccountChange {
+                address: self.address,
+                previous: self.tracked.present.clone(),
+                previous_is_warm: self.tracked.is_warm,
+                previous_is_touched: self.tracked.is_touched,
+                previous_is_destroyed: self.tracked.is_destroyed,
+                previous_just_created: self.tracked.just_created,
+                previous_code_changed: self.tracked.code_changed,
+            });
+        }
     }
 
     /// Returns the account address.
@@ -287,33 +316,35 @@ impl<'a> AccountHandle<'a> {
         self.inner.database.get_code_by_hash(&code_hash)
     }
 
-    /// Touches the account, recording a [`JournalEntry::Touch`] the first time it is touched.
+    /// Touches the account, recording a revert snapshot the first time it is mutated.
     ///
     /// Touched accounts participate in EIP-158/161 empty-account cleanup at transaction
     /// finalization even when no field changes.
     #[inline]
     pub fn touch(&mut self) {
         if !self.tracked.is_touched {
+            self.record_change();
             self.tracked.is_touched = true;
-            self.inner.journal.push(JournalEntry::Touch { address: self.address });
         }
     }
 
-    /// Marks the account self-destructed in the current transaction, recording a
-    /// [`JournalEntry::SelfDestruct`] the first time and touching the account.
+    /// Marks the account self-destructed in the current transaction, recording a revert snapshot
+    /// the first time and touching the account.
     ///
     /// Touching makes the account participate in EIP-158/161 cleanup, and the self-destruct set
     /// membership is undone by [`State::rollback`](super::State::rollback).
     #[inline]
     pub fn mark_destructed(&mut self) {
-        if self.inner.selfdestructs.insert(self.address) {
-            self.inner.journal.push(JournalEntry::SelfDestruct { address: self.address });
+        if !self.tracked.is_destroyed {
+            self.record_change();
+            self.tracked.is_destroyed = true;
+            self.inner.selfdestructs.insert(self.address);
         }
         self.touch();
     }
 
-    /// Marks the account warm for EIP-2929 gas accounting, recording a
-    /// [`JournalEntry::AccountWarmed`] when this access transitions it from cold to warm.
+    /// Marks the account warm for EIP-2929 gas accounting, recording a revert snapshot when this
+    /// access transitions it from cold to warm.
     ///
     /// Returns `true` if the account was cold before this call. Accounts already warm through the
     /// base warm set stay warm across rollback, so warming them again records nothing.
@@ -322,20 +353,15 @@ impl<'a> AccountHandle<'a> {
         if self.tracked.is_warm || self.inner.prewarm_set.is_warm(&self.address) {
             return false;
         }
+        self.record_change();
         self.tracked.is_warm = true;
-        self.inner.journal.push(JournalEntry::AccountWarmed { address: self.address });
         true
     }
 
-    /// Sets the account balance, touching the account and journaling the previous balance.
+    /// Sets the account balance, touching the account and recording a revert snapshot.
     #[inline]
     pub fn set_balance(&mut self, balance: Word) {
         self.touch();
-        if let Some(previous) = self.tracked.present.as_ref().map(|account| account.balance) {
-            self.inner
-                .journal
-                .push(JournalEntry::BalanceChanged { address: self.address, previous });
-        }
         self.present_mut().balance = balance;
     }
 
@@ -352,17 +378,14 @@ impl<'a> AccountHandle<'a> {
         self.set_balance(balance);
     }
 
-    /// Sets the account nonce, touching the account and journaling the previous nonce.
+    /// Sets the account nonce, touching the account and recording a revert snapshot.
     #[inline]
     pub fn set_nonce(&mut self, nonce: u64) {
         self.touch();
-        if let Some(previous) = self.tracked.present.as_ref().map(|account| account.nonce) {
-            self.inner.journal.push(JournalEntry::NonceChanged { address: self.address, previous });
-        }
         self.present_mut().nonce = nonce;
     }
 
-    /// Bumps the account nonce by one, touching the account and journaling the previous nonce.
+    /// Bumps the account nonce by one, touching the account and recording a revert snapshot.
     ///
     /// Returns `false` without changing the nonce when it is already at the maximum value.
     #[inline]
@@ -371,29 +394,17 @@ impl<'a> AccountHandle<'a> {
         let Some(nonce) = self.nonce().checked_add(1) else {
             return false;
         };
-        if let Some(previous) = self.tracked.present.as_ref().map(|account| account.nonce) {
-            self.inner.journal.push(JournalEntry::NonceChanged { address: self.address, previous });
-        }
         self.present_mut().nonce = nonce;
         true
     }
 
-    /// Sets the account code and its hash, touching the account and journaling the previous code.
+    /// Sets the account code and its hash, touching the account and recording a revert snapshot.
     ///
     /// The caller is responsible for `code_hash` matching `code`; use [`Self::set_code_slow`] to
     /// have the hash computed.
     #[inline]
     pub fn set_code(&mut self, code_hash: B256, code: Bytecode) {
         self.touch();
-        if let Some(account) = self.tracked.present.as_ref() {
-            let entry = JournalEntry::CodeChanged {
-                address: self.address,
-                previous_code_hash: account.code_hash,
-                previous_code: account.code.clone(),
-                previous_code_changed: self.tracked.code_changed,
-            };
-            self.inner.journal.push(entry);
-        }
         let account = self.present_mut();
         account.code_hash = code_hash;
         account.code = Some(code);
@@ -423,31 +434,20 @@ impl<'a> AccountHandle<'a> {
         self.bump_nonce();
     }
 
-    /// Returns the live account, materializing an empty one when it is currently absent.
-    ///
-    /// Used by the granular field setters, which journal their own [`JournalEntry::BalanceChanged`]
-    /// / [`JournalEntry::NonceChanged`] / [`JournalEntry::CodeChanged`] for an already-present
-    /// account. Materializing an absent account is instead reverted by a full
-    /// [`JournalEntry::AccountChange`] snapshot recorded here.
+    /// Records a revert snapshot and returns the live account, materializing an empty one when it
+    /// is currently absent.
     #[inline]
     fn present_mut(&mut self) -> &mut AccountInfo {
-        if self.tracked.present.is_none() {
-            self.inner.journal.push(JournalEntry::AccountChange {
-                address: self.address,
-                previous: None,
-                previous_just_created: self.tracked.just_created,
-                previous_code_changed: self.tracked.code_changed,
-            });
-        }
+        self.record_change();
         self.tracked.present.get_or_insert_with(empty_account)
     }
 
     /// Marks the present overlay account as created in the current transaction, also flagging its
-    /// code as changed. The creation/code-change status is reverted together with the present
-    /// overlay by the [`JournalEntry::AccountChange`] snapshot recorded when the account is first
-    /// materialized.
+    /// code as changed. The creation/code-change status is reverted together with the rest of the
+    /// overlay by the [`JournalEntry::AccountChange`] snapshot recorded for this handle.
     #[inline]
-    pub(crate) const fn mark_created(&mut self) {
+    pub(crate) fn mark_created(&mut self) {
+        self.record_change();
         self.tracked.just_created = true;
         self.tracked.code_changed = true;
     }
@@ -456,27 +456,7 @@ impl<'a> AccountHandle<'a> {
     /// is currently absent.
     #[inline]
     pub fn get_or_insert(&mut self) -> &mut AccountInfo {
-        self.inner.journal.push(JournalEntry::AccountChange {
-            address: self.address,
-            previous: self.tracked.present.clone(),
-            previous_just_created: self.tracked.just_created,
-            previous_code_changed: self.tracked.code_changed,
-        });
-        self.tracked.present.get_or_insert_with(empty_account)
-    }
-
-    /// Records the revert snapshot, consumes the handle, and returns the live account for the
-    /// remainder of the overlay borrow, materializing an empty one when it is currently absent.
-    #[inline]
-    pub fn into_account_mut(self) -> &'a mut AccountInfo {
-        let Self { address, tracked, inner } = self;
-        inner.journal.push(JournalEntry::AccountChange {
-            address,
-            previous: tracked.present.clone(),
-            previous_just_created: tracked.just_created,
-            previous_code_changed: tracked.code_changed,
-        });
-        tracked.present.get_or_insert_with(empty_account)
+        self.present_mut()
     }
 }
 
@@ -605,8 +585,7 @@ mod tests {
         // A cold, not-yet-loaded account signals the skip instead of reading the database.
         assert!(matches!(state.account(&address, true), Err(DbErrorCode::COLD_LOAD_SKIPPED)));
         // Skipping leaves the overlay untouched, so a later non-skipped load still works.
-        let account = state.account(&address, false).unwrap();
-        assert_eq!(account.balance(), Word::from(5));
+        assert_eq!(state.account(&address, false).unwrap().balance(), Word::from(5));
         // Residency alone does not make a cold access affordable: a loaded-but-cold account still
         // signals the skip, since warmth — not overlay residency — decides the cold surcharge.
         assert!(matches!(state.account(&address, true), Err(DbErrorCode::COLD_LOAD_SKIPPED)));
