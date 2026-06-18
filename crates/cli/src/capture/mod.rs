@@ -14,7 +14,11 @@ use alloy_consensus::{
 };
 use futures_util::{StreamExt, stream};
 use serde_json::{Value, value::RawValue};
-use std::{fs::File, io::BufWriter, time::Instant};
+use std::{
+    fs::File,
+    io::BufWriter,
+    time::{Duration, Instant},
+};
 
 type MainnetBlock = ConsensusBlock<EthereumTxEnvelope<TxEip4844>>;
 
@@ -76,8 +80,14 @@ async fn capture(
 
     while let Some(block) = blocks.next().await {
         let block_started_at = Instant::now();
-        let PreparedBlock { number, consensus_block, pre_traces, diff_traces, transactions } =
-            block?;
+        let PreparedBlock {
+            number,
+            consensus_block,
+            pre_traces,
+            diff_traces,
+            transactions,
+            elapsed,
+        } = block?;
 
         for (tx_index, ((pre_trace, diff_trace), tx)) in pre_traces
             .iter()
@@ -104,7 +114,7 @@ async fn capture(
         eprintln!(
             "captured block {number} ({} txs) in {:.2}s",
             block_transaction_count,
-            block_started_at.elapsed().as_secs_f64()
+            (elapsed + block_started_at.elapsed()).as_secs_f64()
         );
     }
 
@@ -144,18 +154,23 @@ struct PreparedBlock {
     pre_traces: Vec<Value>,
     diff_traces: Vec<Value>,
     transactions: Vec<model::CapturedTransaction>,
+    elapsed: Duration,
 }
 
 async fn fetch_block(
     rpc: &rpc::RpcEndpoint,
     number: u64,
 ) -> std::result::Result<PreparedBlock, CaptureError> {
+    let started_at = Instant::now();
     let (consensus_block, pre_traces, diff_traces) = tokio::try_join!(
         rpc.block(number),
         rpc.trace_block(number, rpc::TraceMode::PreState),
         rpc.trace_block(number, rpc::TraceMode::Diff),
     )?;
-    prepare_block(FetchedBlock { number, consensus_block, pre_traces, diff_traces }).await
+    let mut block =
+        prepare_block(FetchedBlock { number, consensus_block, pre_traces, diff_traces }).await?;
+    block.elapsed = started_at.elapsed();
+    Ok(block)
 }
 
 async fn prepare_block(block: FetchedBlock) -> std::result::Result<PreparedBlock, CaptureError> {
@@ -185,7 +200,14 @@ async fn prepare_block(block: FetchedBlock) -> std::result::Result<PreparedBlock
             })
             .collect::<std::result::Result<Vec<_>, CaptureError>>()?;
 
-        Ok(PreparedBlock { number, consensus_block, pre_traces, diff_traces, transactions })
+        Ok(PreparedBlock {
+            number,
+            consensus_block,
+            pre_traces,
+            diff_traces,
+            transactions,
+            elapsed: Duration::default(),
+        })
     })
     .await
     .map_err(CaptureError::JoinBlockPreparation)?
