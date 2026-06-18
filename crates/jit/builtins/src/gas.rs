@@ -1,9 +1,11 @@
 //! Gas calculation utilities.
 
-pub const VERYLOW: u64 = 3;
-pub const LOG: u64 = 375;
-pub const LOGDATA: u64 = 8;
-pub const LOGTOPIC: u64 = 375;
-pub const KECCAK256: u64 = 30;
-pub const KECCAK256WORD: u64 = 6;
-pub const COPY: u64 = 3;
+use evm2::interpreter::gas_constants;
+
+pub const VERYLOW: u64 = gas_constants::VERYLOW as u64;
+pub const LOG: u64 = gas_constants::LOG as u64;
+pub const LOGDATA: u64 = gas_constants::LOGDATA as u64;
+pub const LOGTOPIC: u64 = gas_constants::LOGTOPIC as u64;
+pub const KECCAK256: u64 = gas_constants::KECCAK256 as u64;
+pub const KECCAK256WORD: u64 = gas_constants::KECCAK256WORD as u64;
+pub const COPY: u64 = gas_constants::COPY as u64;
