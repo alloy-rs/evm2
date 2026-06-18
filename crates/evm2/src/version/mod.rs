@@ -269,7 +269,7 @@ mod tests {
         assert!(osaka.feature(EvmFeatures::PRIORITY_FEE_CHECK));
         assert!(osaka.feature(EvmFeatures::FEE_CHARGE));
         assert!(!osaka.feature(EvmFeatures::EIP7708));
-        assert!(!osaka.feature(EvmFeatures::EIP7708_DELAYED_BURN));
+        assert!(!osaka.feature(EvmFeatures::EIP8246));
         assert!(!osaka.feature(EvmFeatures::EIP8037));
         assert_eq!(osaka.chain_id, DEFAULT_CHAIN_ID);
         assert_eq!(osaka.tx_gas_limit_cap, MAX_TX_GAS_LIMIT_OSAKA);
@@ -283,7 +283,7 @@ mod tests {
         assert!(amsterdam.feature(EvmFeatures::TX_CHAIN_ID_CHECK));
         assert!(amsterdam.feature(EvmFeatures::EIP8037));
         assert!(amsterdam.feature(EvmFeatures::EIP7708));
-        assert!(amsterdam.feature(EvmFeatures::EIP7708_DELAYED_BURN));
+        assert!(amsterdam.feature(EvmFeatures::EIP8246));
         assert_eq!(amsterdam.chain_id, DEFAULT_CHAIN_ID);
         assert_eq!(amsterdam.tx_gas_limit_cap, MAX_TX_GAS_LIMIT_OSAKA);
         assert_eq!(amsterdam.memory_limit, DEFAULT_MEMORY_LIMIT);
@@ -703,7 +703,7 @@ evm_versions! {
         features: [
             EIP8037,
             EIP7708,
-            EIP7708_DELAYED_BURN,
+            EIP8246,
         ],
         ops: [
             DUPN: VERYLOW,

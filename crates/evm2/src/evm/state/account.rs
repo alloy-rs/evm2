@@ -458,6 +458,32 @@ impl<'a> AccountHandle<'a> {
     pub fn get_or_insert(&mut self) -> &mut AccountInfo {
         self.present_mut()
     }
+
+    /// Deletes the account at transaction finalization, recording a revert snapshot.
+    ///
+    /// Used for self-destructed accounts (pre-EIP-8246, and zero-balance accounts under EIP-8246)
+    /// and EIP-161 dead-account cleanup. The caller is responsible for wiping the account's
+    /// storage.
+    #[inline]
+    pub(crate) fn delete_for_finalization(&mut self) {
+        self.record_change();
+        self.tracked.present = None;
+    }
+
+    /// Resets a self-destructed account to a balance-only account for EIP-8246 finalization,
+    /// recording a revert snapshot.
+    ///
+    /// The balance is preserved while the nonce is reset to 0 and the code is cleared. The caller
+    /// is responsible for wiping the account's storage. This is only called for accounts that
+    /// still hold a balance; zero-balance self-destructed accounts are removed via
+    /// [`Self::delete_for_finalization`] instead.
+    #[inline]
+    pub(crate) fn reset_selfdestructed_for_finalization(&mut self) {
+        let balance = self.balance();
+        self.record_change();
+        self.tracked.is_destroyed = false;
+        self.tracked.present = Some(AccountInfo::default().with_balance(balance));
+    }
 }
 
 #[cfg(test)]
