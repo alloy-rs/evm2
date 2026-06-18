@@ -5,19 +5,26 @@ use core::hint::cold_path;
 
 pub(crate) const ZERO: u32 = 0;
 pub(crate) const BASE: u32 = 2;
-pub(crate) const VERYLOW: u32 = 3;
+/// Static gas charged by very-low-cost opcodes.
+pub const VERYLOW: u32 = 3;
 pub(crate) const LOW: u32 = 5;
 pub(crate) const MID: u32 = 8;
 pub(crate) const HIGH: u32 = 10;
 pub(crate) const JUMPDEST: u32 = 1;
 pub(crate) const EXP: u32 = 10;
 pub(crate) const MEMORY: u32 = 3;
-pub(crate) const LOG: u32 = 375;
-pub(crate) const LOGDATA: u32 = 8;
-pub(crate) const LOGTOPIC: u32 = 375;
-pub(crate) const KECCAK256: u32 = 30;
-pub(crate) const KECCAK256WORD: u32 = 6;
-pub(crate) const COPY: u32 = 3;
+/// Static gas charged by `LOG`.
+pub const LOG: u32 = 375;
+/// Gas charged per logged byte.
+pub const LOGDATA: u32 = 8;
+/// Gas charged per log topic.
+pub const LOGTOPIC: u32 = 375;
+/// Static gas charged by `KECCAK256`.
+pub const KECCAK256: u32 = 30;
+/// Gas charged per hashed word by `KECCAK256`.
+pub const KECCAK256WORD: u32 = 6;
+/// Gas charged per copied word.
+pub const COPY: u32 = 3;
 pub(crate) const BLOCKHASH: u32 = 20;
 pub(crate) const CREATE: u32 = 32000;
 pub(crate) const CALLVALUE: u32 = 9000;

@@ -21,18 +21,18 @@ use evm2_jit_context::CallInput;
 /// `KECCAK256` opcode gas cost (base + dynamic).
 const fn keccak256_cost(len: u64) -> Option<u64> {
     let words = len.div_ceil(32);
-    match words.checked_mul(gas::KECCAK256WORD) {
-        Some(dyn_cost) => Some(gas::KECCAK256.saturating_add(dyn_cost)),
+    match words.checked_mul(gas::KECCAK256WORD as u64) {
+        Some(dyn_cost) => Some((gas::KECCAK256 as u64).saturating_add(dyn_cost)),
         None => None,
     }
 }
 
 /// `LOG` opcode gas cost (base + topics + dynamic).
 const fn log_cost(n_topics: u8, len: u64) -> Option<u64> {
-    match gas::LOGDATA.checked_mul(len) {
-        Some(dyn_cost) => {
-            Some((gas::LOG + gas::LOGTOPIC * n_topics as u64).saturating_add(dyn_cost))
-        }
+    match (gas::LOGDATA as u64).checked_mul(len) {
+        Some(dyn_cost) => Some(
+            ((gas::LOG as u64) + (gas::LOGTOPIC as u64) * n_topics as u64).saturating_add(dyn_cost),
+        ),
         None => None,
     }
 }
@@ -40,8 +40,8 @@ const fn log_cost(n_topics: u8, len: u64) -> Option<u64> {
 /// `CALLDATACOPY`, `CODECOPY`, `RETURNDATACOPY` opcode gas cost (base + dynamic).
 const fn verylowcopy_cost(len: u64) -> Option<u64> {
     let words = len.div_ceil(32);
-    match words.checked_mul(gas::COPY) {
-        Some(dyn_cost) => Some(gas::VERYLOW.saturating_add(dyn_cost)),
+    match words.checked_mul(gas::COPY as u64) {
+        Some(dyn_cost) => Some((gas::VERYLOW as u64).saturating_add(dyn_cost)),
         None => None,
     }
 }
@@ -857,12 +857,12 @@ tests! {
         keccak256_empty1(@raw {
             bytecode: &[op::PUSH0, op::PUSH0, op::KECCAK256],
             expected_stack: &[KECCAK_EMPTY.into()],
-            expected_gas: 2 + 2 + gas::KECCAK256,
+            expected_gas: 2 + 2 + gas::KECCAK256 as u64,
         }),
         keccak256_empty2(@raw {
             bytecode: &[op::PUSH0, op::PUSH1, 32, op::KECCAK256],
             expected_stack: &[KECCAK_EMPTY.into()],
-            expected_gas: 2 + 3 + gas::KECCAK256,
+            expected_gas: 2 + 3 + gas::KECCAK256 as u64,
         }),
         keccak256_empty_dynamic_offset(@raw {
             bytecode: &[op::PUSH0, op::ADDRESS, op::KECCAK256],

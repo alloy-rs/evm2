@@ -1,25 +1,9 @@
 //! EVM interpreter.
 
 pub(crate) mod gas;
-pub use gas::{Gas, GasTracker, MemoryGas};
-
-/// EVM gas constants.
-pub mod gas_constants {
-    /// Static gas charged by very-low-cost opcodes.
-    pub const VERYLOW: u32 = super::gas::VERYLOW;
-    /// Static gas charged by a `LOG` opcode before topics and data.
-    pub const LOG: u32 = super::gas::LOG;
-    /// Gas charged per logged byte.
-    pub const LOGDATA: u32 = super::gas::LOGDATA;
-    /// Gas charged per log topic.
-    pub const LOGTOPIC: u32 = super::gas::LOGTOPIC;
-    /// Static gas charged by `KECCAK256`.
-    pub const KECCAK256: u32 = super::gas::KECCAK256;
-    /// Gas charged per hashed word by `KECCAK256`.
-    pub const KECCAK256WORD: u32 = super::gas::KECCAK256WORD;
-    /// Gas charged per copied word.
-    pub const COPY: u32 = super::gas::COPY;
-}
+pub use gas::{
+    COPY, Gas, GasTracker, KECCAK256, KECCAK256WORD, LOG, LOGDATA, LOGTOPIC, MemoryGas, VERYLOW,
+};
 
 #[macro_use]
 mod utils;
