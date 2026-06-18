@@ -1,0 +1,226 @@
+use alloy_consensus::{TxLegacy, transaction::Recovered};
+use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
+use evm2::{
+    SpecId, Version,
+    bytecode::Bytecode,
+    env::BlockEnv,
+    ethereum::RecoveredTxEnvelope,
+    evm::{AccountInfo, InMemoryDB},
+};
+use serde::{Deserialize, Deserializer, de};
+use std::{
+    collections::{BTreeMap, HashMap},
+    fs,
+    path::PathBuf,
+};
+
+#[derive(Debug)]
+pub(crate) struct Suites(HashMap<&'static str, Suite>);
+
+impl Suites {
+    pub(crate) fn load(paths: impl IntoIterator<Item = &'static str>) -> Self {
+        let mut suites = HashMap::new();
+        for path in paths {
+            suites.entry(path).or_insert_with(|| {
+                let path = workspace_path(path);
+                let input = fs::read_to_string(&path).unwrap_or_else(|e| {
+                    panic!("failed to read {}: {e}", path.display());
+                });
+                Suite::parse(&input)
+            });
+        }
+        Self(suites)
+    }
+
+    pub(crate) fn get(&self, path: &'static str) -> &Suite {
+        self.0.get(path).expect("fixture suite must be loaded")
+    }
+}
+
+fn workspace_path(path: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").join(path)
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct Suite(BTreeMap<String, Case>);
+
+impl Suite {
+    pub(crate) fn parse(input: &str) -> Self {
+        serde_json::from_str(input).expect("fixture must parse")
+    }
+
+    pub(crate) fn case(&self, name: &str) -> &Case {
+        if let Some(case) = self.0.get(name) {
+            return case;
+        }
+        if self.0.len() == 1 {
+            return self.0.values().next().expect("fixture must contain a case");
+        }
+        panic!("fixture suite does not contain benchmark case {name}");
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct Case {
+    env: Env,
+    pre: BTreeMap<Address, Account>,
+    post: BTreeMap<String, Vec<Post>>,
+    transaction: Transaction,
+}
+
+impl Case {
+    pub(crate) fn block(&self) -> BlockEnv {
+        self.env.block()
+    }
+
+    pub(crate) fn state(&self) -> InMemoryDB {
+        let mut db = InMemoryDB::default();
+        for (address, account) in &self.pre {
+            let mut info =
+                AccountInfo::default().with_code(Bytecode::new_legacy(account.code.clone()));
+            info.balance = account.balance;
+            info.nonce = u64_value(account.nonce);
+            db.insert_account_info(address, info);
+
+            for (key, value) in &account.storage {
+                db.insert_account_storage(address, key, value);
+            }
+        }
+        db
+    }
+
+    pub(crate) fn tx(&self, spec: SpecId) -> RecoveredTxEnvelope {
+        self.transaction.envelope(spec, self.post().indexes)
+    }
+
+    fn post(&self) -> &Post {
+        self.post
+            .values()
+            .next()
+            .and_then(|tests| tests.first())
+            .expect("fixture must contain a post test")
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct Post {
+    indexes: Indexes,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+struct Indexes {
+    data: usize,
+    gas: usize,
+    value: usize,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Env {
+    current_coinbase: Address,
+    #[serde(default)]
+    current_difficulty: U256,
+    current_gas_limit: U256,
+    current_number: U256,
+    current_timestamp: U256,
+    #[serde(rename = "currentBaseFee", default)]
+    current_base_fee: Option<U256>,
+    #[serde(default)]
+    current_random: Option<B256>,
+    #[serde(default)]
+    slot_number: Option<U256>,
+}
+
+impl Env {
+    fn block(&self) -> BlockEnv {
+        BlockEnv {
+            number: self.current_number,
+            beneficiary: self.current_coinbase,
+            timestamp: self.current_timestamp,
+            gas_limit: self.current_gas_limit,
+            basefee: self.current_base_fee.unwrap_or_default(),
+            difficulty: self.current_difficulty,
+            prevrandao: self.current_random.map_or(U256::ZERO, b256_to_u256),
+            slot_num: self.slot_number.unwrap_or_default(),
+            ..BlockEnv::default()
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct Account {
+    balance: U256,
+    code: Bytes,
+    nonce: U256,
+    storage: BTreeMap<U256, U256>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Transaction {
+    data: Vec<Bytes>,
+    gas_limit: Vec<U256>,
+    #[serde(default)]
+    gas_price: Option<U256>,
+    nonce: U256,
+    sender: Address,
+    #[serde(default, deserialize_with = "deserialize_maybe_empty")]
+    to: Option<Address>,
+    value: Vec<U256>,
+}
+
+impl Transaction {
+    fn envelope(&self, spec: SpecId, indexes: Indexes) -> RecoveredTxEnvelope {
+        let gas_limit = self.capped_gas_limit(spec, indexes.gas);
+        let tx = TxLegacy {
+            chain_id: None,
+            nonce: u64_value(self.nonce),
+            gas_price: u128_value(self.gas_price.unwrap_or_default()),
+            gas_limit,
+            to: self.to.map_or(TxKind::Create, TxKind::Call),
+            value: self
+                .value
+                .get(indexes.value)
+                .copied()
+                .expect("fixture transaction value index must exist"),
+            input: self
+                .data
+                .get(indexes.data)
+                .cloned()
+                .expect("fixture transaction data index must exist"),
+        };
+        RecoveredTxEnvelope::Legacy(Recovered::new_unchecked(tx, self.sender))
+    }
+
+    fn capped_gas_limit(&self, spec: SpecId, index: usize) -> u64 {
+        let version = Version::base(spec);
+        let gas_limit = self.gas_limit.get(index).copied().expect("fixture gas index must exist");
+        u64_value(gas_limit).min(version.tx_gas_limit_cap)
+    }
+}
+
+fn b256_to_u256(value: B256) -> U256 {
+    U256::from_be_bytes(value.0)
+}
+
+fn u128_value(value: U256) -> u128 {
+    value.try_into().expect("fixture u128 value must fit")
+}
+
+fn u64_value(value: U256) -> u64 {
+    value.try_into().expect("fixture u64 value must fit")
+}
+
+fn deserialize_maybe_empty<'de, D>(deserializer: D) -> Result<Option<Address>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    match value {
+        serde_json::Value::Null => Ok(None),
+        serde_json::Value::String(string) if string.is_empty() || string == "0x" => Ok(None),
+        serde_json::Value::String(string) => string.parse().map(Some).map_err(de::Error::custom),
+        _ => Err(de::Error::custom("invalid transaction to field")),
+    }
+}

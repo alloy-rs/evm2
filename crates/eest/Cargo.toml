@@ -42,5 +42,5 @@ path = "tests/eest.rs"
 harness = false
 
 [[bench]]
-name = "mainnet"
+name = "evm"
 harness = false

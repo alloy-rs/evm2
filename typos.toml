@@ -1,2 +1,2 @@
 [files]
-extend-exclude = ["data/mainnet-25346511-25346520.json.zst", "diffs"]
+extend-exclude = ["data/mainnet-25347446-25347455.bin.zst", "diffs"]
