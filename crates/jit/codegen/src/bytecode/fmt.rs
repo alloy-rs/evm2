@@ -41,8 +41,8 @@ impl Bytecode<'_> {
         lines.push((
             String::new(),
             format!(
-                "insts={} live={} dead={} noops={} message_opcodes={} blocks={} block_min={} block_max={} block_avg={:.1} block_median={}",
-                s.total, s.live, s.dead, s.noops, s.message_opcodes, s.blocks, s.block_min, s.block_max, s.block_avg, s.block_median,
+                "insts={} live={} dead={} noops={} blocks={} block_min={} block_max={} block_avg={:.1} block_median={}",
+                s.total, s.live, s.dead, s.noops, s.blocks, s.block_min, s.block_max, s.block_avg, s.block_median,
             ),
         ));
         lines.push((String::new(), String::new()));
@@ -154,9 +154,6 @@ impl Bytecode<'_> {
                 }
                 if flags.contains(InstFlags::MULTI_JUMP) {
                     comment.push_str(" multi_jump");
-                }
-                if data.is_message_opcode() {
-                    comment.push_str(" message");
                 }
                 if data.is_reachable_jumpdest(self.has_dynamic_jumps) {
                     comment.push_str(" reachable");
@@ -316,8 +313,6 @@ mod dot_colors {
     const TEAL: &str = "#53a8b6";
     const GREEN: &str = "#5cdb95";
     const DARK_GREEN: &str = "#1a2e1a";
-    const DARK_ORANGE: &str = "#2e2416";
-    const ORANGE: &str = "#e0a030";
     const DARK_RED: &str = "#2d1b2e";
     const RED: &str = "#e94560";
     const GRAY: &str = "#555577";
@@ -334,9 +329,6 @@ mod dot_colors {
     // Non-reverting exit blocks (STOP, RETURN).
     pub(super) const EXIT_FILL: &str = DARK_GREEN;
     pub(super) const EXIT_BORDER: &str = GREEN;
-    // Message blocks (CALL, CREATE, ...).
-    pub(super) const MESSAGE_FILL: &str = DARK_ORANGE;
-    pub(super) const MESSAGE_BORDER: &str = ORANGE;
     // Branching blocks.
     pub(super) const BRANCH_FILL: &str = DARK_TEAL;
     pub(super) const BRANCH_BORDER: &str = TEAL;
@@ -372,13 +364,10 @@ impl<'a> Bytecode<'a> {
             let first = self.inst(block.insts.start);
 
             // Color based on block behavior.
-            let has_message = block.insts().any(|i| self.inst(i).is_message_opcode());
             let (fill, border) = if matches!(last.opcode, op::STOP | op::RETURN) {
                 (EXIT_FILL, EXIT_BORDER)
             } else if last.is_diverging() {
                 (REVERT_FILL, REVERT_BORDER)
-            } else if has_message {
-                (MESSAGE_FILL, MESSAGE_BORDER)
             } else if last.is_jump() {
                 (BRANCH_FILL, BRANCH_BORDER)
             } else {
@@ -559,7 +548,7 @@ mod tests {
             actual,
             snapbox::str![[r#"
 ; spec_id=OSAKA has_dynamic_jumps=false
-; insts=19 live=19 dead=0 noops=11 message_opcodes=1 blocks=3 block_min=2 block_max=10 block_avg=6.3 block_median=7
+; insts=19 live=19 dead=0 noops=11 blocks=3 block_min=2 block_max=10 block_avg=6.3 block_median=7
 
 bb0:           ; stack_in=0 max_growth=1 predecessors=
   PUSH1 0x03   ; ic= 0 pc= 0 gas=11 noop
@@ -575,15 +564,15 @@ bb1:           ; stack_in=0 max_growth=2 predecessors=bb0,bb1
   JUMPI %bb1   ; ic= 8 pc=12
 
 bb2:           ; stack_in=0 max_growth=7 predecessors=bb1
-  PUSH1 0x00   ; ic= 9 pc=13 gas=121 noop
+  PUSH1 0x00   ; ic= 9 pc=13 gas=123 noop
   PUSH1 0x00   ; ic=10 pc=15 noop
   PUSH1 0x00   ; ic=11 pc=17 noop
   PUSH1 0x00   ; ic=12 pc=19 noop
   PUSH1 0x00   ; ic=13 pc=21 noop
   PUSH1 0x42   ; ic=14 pc=23 noop
   PUSH2 0xffff ; ic=15 pc=25 noop
-  CALL         ; ic=16 pc=28 message
-  POP          ; ic=17 pc=29 gas=2 stack_in=1 max_growth=0
+  CALL         ; ic=16 pc=28
+  POP          ; ic=17 pc=29
   STOP         ; ic=18 pc=30
 
 "#]]
@@ -634,7 +623,7 @@ bb2:           ; stack_in=0 max_growth=7 predecessors=bb1
         assert!(dot.contains("[g=15]"), "missing second gas section");
         // CALL present in bb2.
         assert!(dot.contains("CALL"), "missing CALL");
-        assert!(dot.contains("[g=121]"), "missing CALL gas section");
+        assert!(dot.contains("[g=123]"), "missing bb2 gas section");
         // bb0 -> bb1 (unconditional jump).
         assert!(dot.contains("bb0 -> bb1"), "missing jump edge");
         // bb1 -> bb1 (loop back-edge).

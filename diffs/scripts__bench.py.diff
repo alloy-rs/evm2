@@ -18,16 +18,15 @@
 
      @staticmethod
      def _last_match(pattern: str, text: str) -> int:
-@@ -756,7 +756,7 @@
+@@ -756,7 +756,6 @@
      "live",
      "dead",
      "noops",
 -    "suspends",
-+    "message_opcodes",
      "blocks",
      "block_min",
      "block_max",
-@@ -770,7 +770,7 @@
+@@ -770,7 +769,7 @@
          return False
 
      def rust_log(self) -> str | None:
@@ -36,25 +35,33 @@
 
      @staticmethod
      def _parse(output: str) -> dict[str, float] | None:
-@@ -780,7 +780,7 @@
+@@ -780,7 +779,6 @@
              r" live=(\d+)"
              r" dead=(\d+)"
              r" noops=(\d+)"
 -            r" suspends=(\d+)"
-+            r" message_opcodes=(\d+)"
              r" blocks=(\d+)"
              r" block_min=(\d+)"
              r" block_max=(\d+)"
-@@ -795,7 +795,7 @@
+@@ -795,12 +793,11 @@
              "live": int(m.group(2)),
              "dead": int(m.group(3)),
              "noops": int(m.group(4)),
 -            "suspends": int(m.group(5)),
-+            "message_opcodes": int(m.group(5)),
-             "blocks": int(m.group(6)),
-             "block_min": int(m.group(7)),
-             "block_max": int(m.group(8)),
-@@ -845,7 +845,7 @@
+-            "blocks": int(m.group(6)),
+-            "block_min": int(m.group(7)),
+-            "block_max": int(m.group(8)),
+-            "block_avg": float(m.group(9)),
+-            "block_median": int(m.group(10)),
++            "blocks": int(m.group(5)),
++            "block_min": int(m.group(6)),
++            "block_max": int(m.group(7)),
++            "block_avg": float(m.group(8)),
++            "block_median": int(m.group(9)),
+         }
+
+     def report(self, benches, dump_dir, outputs):
+@@ -845,7 +842,7 @@
          return False
 
      def rust_log(self) -> str | None:
@@ -63,7 +70,7 @@
 
      @staticmethod
      def _pct(a, b):
-@@ -1002,7 +1002,7 @@
+@@ -1002,7 +999,7 @@
 
  def main():
      parser = argparse.ArgumentParser(
@@ -72,7 +79,7 @@
          formatter_class=argparse.RawDescriptionHelpFormatter,
          epilog=__doc__,
      )
-@@ -1050,7 +1050,7 @@
+@@ -1050,7 +1047,7 @@
      parser.add_argument(
          "--block-stats",
          action="store_true",

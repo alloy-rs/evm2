@@ -513,7 +513,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
                 out == 1 || out == inp + 1,
                 "const_output assumes single synthesized push: inp={inp}, out={out}",
             );
-            debug_assert!(!data.is_message_opcode() && !data.is_branching());
+            debug_assert!(!data.is_branching());
             // We push exactly 1 value, so consume `inp + 1 - out` to match the
             // real stack diff. For DUP (out = inp+1) this is 0; for ADD (out = 1)
             // this equals inp.

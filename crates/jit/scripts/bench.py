@@ -756,7 +756,6 @@ IR_STAT_KEYS = [
     "live",
     "dead",
     "noops",
-    "message_opcodes",
     "blocks",
     "block_min",
     "block_max",
@@ -780,7 +779,6 @@ class BlockStats(Analysis):
             r" live=(\d+)"
             r" dead=(\d+)"
             r" noops=(\d+)"
-            r" message_opcodes=(\d+)"
             r" blocks=(\d+)"
             r" block_min=(\d+)"
             r" block_max=(\d+)"
@@ -795,12 +793,11 @@ class BlockStats(Analysis):
             "live": int(m.group(2)),
             "dead": int(m.group(3)),
             "noops": int(m.group(4)),
-            "message_opcodes": int(m.group(5)),
-            "blocks": int(m.group(6)),
-            "block_min": int(m.group(7)),
-            "block_max": int(m.group(8)),
-            "block_avg": float(m.group(9)),
-            "block_median": int(m.group(10)),
+            "blocks": int(m.group(5)),
+            "block_min": int(m.group(6)),
+            "block_max": int(m.group(7)),
+            "block_avg": float(m.group(8)),
+            "block_median": int(m.group(9)),
         }
 
     def report(self, benches, dump_dir, outputs):

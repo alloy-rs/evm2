@@ -235,12 +235,9 @@ impl SectionsAnalysis {
             self.gas.process_extra(bytecode.gas_params.exp_cost(exponent));
         }
 
-        // Dynamic-gas, branching, and message instructions end both sections.
+        // Dynamic-gas and branching instructions end both sections.
         let next = inst + 1;
-        if data.is_message_opcode()
-            || data.is_branching()
-            || data.requires_gasleft(bytecode.spec_id)
-        {
+        if data.is_branching() || data.requires_gasleft(bytecode.spec_id) {
             self.stack.save_to_reset(bytecode, next);
             self.gas.save_to_reset(bytecode, next);
         }

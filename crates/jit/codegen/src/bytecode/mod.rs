@@ -625,12 +625,6 @@ impl<'a> Bytecode<'a> {
         self.has_dynamic_jumps
     }
 
-    /// Returns `true` if the bytecode contains `*CALL*` or `*CREATE*` instructions.
-    #[cfg(any(test, feature = "__fuzzing"))]
-    pub(crate) fn has_message_opcode(&self) -> bool {
-        self.iter_insts().any(|(_, data)| data.is_message_opcode())
-    }
-
     /// Returns `true` if the stack argument's contents are observed by the caller.
     pub(crate) fn stack_observed(&self) -> bool {
         self.config.contains(AnalysisConfig::INSPECT_STACK)
@@ -817,7 +811,6 @@ impl<'a> Bytecode<'a> {
         let mut live = 0usize;
         let mut noops = 0usize;
         let mut dead = 0usize;
-        let mut message_opcodes = 0usize;
         for (_inst, data) in self.iter_all_insts() {
             if data.is_dead_code() {
                 dead += 1;
@@ -825,9 +818,6 @@ impl<'a> Bytecode<'a> {
                 live += 1;
                 if data.flags.contains(InstFlags::NOOP) {
                     noops += 1;
-                }
-                if data.is_message_opcode() {
-                    message_opcodes += 1;
                 }
             }
         }
@@ -846,7 +836,6 @@ impl<'a> Bytecode<'a> {
             live,
             dead,
             noops,
-            message_opcodes,
             blocks: n,
             block_min,
             block_max,
@@ -866,7 +855,6 @@ impl<'a> Bytecode<'a> {
             live = s.live,
             dead = s.dead,
             noops = s.noops,
-            message_opcodes = s.message_opcodes,
             blocks = s.blocks,
             block_min = s.block_min,
             block_max = s.block_max,
@@ -918,7 +906,6 @@ pub(crate) struct IrStats {
     pub(crate) live: usize,
     pub(crate) dead: usize,
     pub(crate) noops: usize,
-    pub(crate) message_opcodes: usize,
     pub(crate) blocks: usize,
     pub(crate) block_min: usize,
     pub(crate) block_max: usize,
@@ -1134,15 +1121,6 @@ impl InstData {
                 self.opcode,
                 op::STOP | op::RETURN | op::REVERT | op::INVALID | op::SELFDESTRUCT
             )
-    }
-
-    /// Returns `true` if this instruction executes an EVM message.
-    #[inline]
-    pub(crate) const fn is_message_opcode(&self) -> bool {
-        matches!(
-            self.opcode,
-            op::CALL | op::CALLCODE | op::DELEGATECALL | op::STATICCALL | op::CREATE | op::CREATE2
-        )
     }
 }
 

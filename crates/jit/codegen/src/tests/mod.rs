@@ -84,42 +84,6 @@ const I256_MAX: U256 = U256::from_limbs([
     0x7FFFFFFFFFFFFFFF,
 ]);
 
-matrix_tests!(
-    accept_message_opcodes = |jit| {
-        let cases: &[&[u8]] = &[
-            &[op::PUSH0, op::PUSH0, op::PUSH0, op::CREATE],
-            &[op::PUSH0, op::PUSH0, op::PUSH0, op::PUSH0, op::CREATE2],
-            &[
-                op::PUSH0,
-                op::PUSH0,
-                op::PUSH0,
-                op::PUSH0,
-                op::PUSH0,
-                op::PUSH0,
-                op::PUSH0,
-                op::CALL,
-            ],
-            &[
-                op::PUSH0,
-                op::PUSH0,
-                op::PUSH0,
-                op::PUSH0,
-                op::PUSH0,
-                op::PUSH0,
-                op::PUSH0,
-                op::CALLCODE,
-            ],
-            &[op::PUSH0, op::PUSH0, op::PUSH0, op::PUSH0, op::PUSH0, op::PUSH0, op::DELEGATECALL],
-            &[op::PUSH0, op::PUSH0, op::PUSH0, op::PUSH0, op::PUSH0, op::PUSH0, op::STATICCALL],
-        ];
-
-        for bytecode in cases {
-            let bytecode = jit.parse((*bytecode).into(), SpecId::CANCUN).unwrap();
-            assert!(bytecode.has_message_opcode());
-        }
-    }
-);
-
 tests! {
     ret {
         empty(@raw {}),
