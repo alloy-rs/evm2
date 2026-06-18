@@ -120,7 +120,7 @@ use self::{
 use crate::{
     EvmConfigSelector, EvmTypes, ExecutionConfig, PrecompileError, PrecompileHalt, SpecId,
     bytecode::Bytecode,
-    constants::{CALL_DEPTH_LIMIT, EIP7708_BURN_TOPIC, EIP7708_TRANSFER_TOPIC},
+    constants::{CALL_DEPTH_LIMIT, EIP7708_TRANSFER_TOPIC},
     env::{BlockEnv, TxEnv},
     interpreter::{
         Gas, GasTracker, Host, InstrStop, Interpreter, InterpreterPool, Message, MessageKind,
@@ -597,13 +597,8 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
 
     #[inline]
     fn finalize_transaction(&mut self) -> Result<(), InstrStop> {
-        let host = self as *mut Self;
         self.state
-            .finalize_transaction(self.execution_config.version(), |log| {
-                // SAFETY: `State::finalize_transaction` only invokes this hook with finalization
-                // logs and does not otherwise touch the host through it.
-                unsafe { (*host).inspect_log(log) }
-            })
+            .finalize_transaction(self.execution_config.version())
             .map_err(|code| self.db_error_stop(code))
     }
 
@@ -1426,12 +1421,10 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
             if transferred {
                 self.log_eip7708_transfer(contract, target, &balance);
             }
-        } else if should_destroy && !balance.is_zero() {
-            if self.feature(EvmFeatures::EIP7708)
-                && let Some(log) = eip7708_burn_log(contract, &balance)
-            {
-                self.emit_log(log);
-            }
+        } else if should_destroy && !balance.is_zero() && !self.feature(EvmFeatures::EIP8246) {
+            // Pre-EIP-8246: SELFDESTRUCT to self burns the contract's balance. EIP-8246 removes
+            // this burn, leaving the balance untouched; finalization resets the account
+            // to balance-only.
             let delta = Word::ZERO.wrapping_sub(balance);
             match self.state.account(contract, false) {
                 Ok(mut account) => account.add_balance(delta),
@@ -1568,17 +1561,6 @@ fn eip7708_transfer_log(from: &Address, to: &Address, value: &Word) -> Option<Lo
         B256::left_padding_from(from.as_slice()),
         B256::left_padding_from(to.as_slice()),
     ];
-    Some(Log {
-        address: SYSTEM_ADDRESS,
-        data: LogData::new_unchecked(topics, Bytes::copy_from_slice(&value.to_be_bytes::<32>())),
-    })
-}
-
-fn eip7708_burn_log(address: &Address, value: &Word) -> Option<Log> {
-    if value.is_zero() {
-        return None;
-    }
-    let topics = vec![EIP7708_BURN_TOPIC, B256::left_padding_from(address.as_slice())];
     Some(Log {
         address: SYSTEM_ADDRESS,
         data: LogData::new_unchecked(topics, Bytes::copy_from_slice(&value.to_be_bytes::<32>())),
@@ -2598,5 +2580,69 @@ mod tests {
             ]
         );
         assert_eq!(log.data.data, Bytes::copy_from_slice(&U256::from(7).to_be_bytes::<32>()));
+    }
+
+    #[test]
+    fn eip8246_selfdestruct_preserves_balance_at_finalization() {
+        let contract = Address::from([0x11; 20]);
+        let code = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(
+            &contract,
+            AccountInfo::default().with_balance(U256::from(5)).with_code(code),
+        );
+        database.insert_account_storage(&contract, &Word::ZERO, &Word::from(9));
+        let mut state = State::new(database);
+
+        state.account(&contract, false).unwrap().mark_destructed();
+        state.finalize_transaction_(Version::base(SpecId::AMSTERDAM));
+
+        // EIP-8246: the balance is preserved and the account becomes balance-only (nonce 0, no
+        // code).
+        let info = state
+            .account_info_untracked(&contract)
+            .unwrap()
+            .expect("balance-only account should remain");
+        assert_eq!(info.balance, U256::from(5));
+        assert_eq!(info.nonce, 0);
+        assert_eq!(info.code_hash, KECCAK256_EMPTY);
+
+        let changes = state.build_state_changes();
+        assert!(
+            changes.accounts.get(&contract).expect("account change recorded").is_selfdestructed()
+        );
+    }
+
+    #[test]
+    fn eip8246_selfdestruct_zero_balance_is_deleted() {
+        let contract = Address::from([0x22; 20]);
+        let code = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(&contract, AccountInfo::default().with_code(code));
+        let mut state = State::new(database);
+
+        state.account(&contract, false).unwrap().mark_destructed();
+        state.finalize_transaction_(Version::base(SpecId::AMSTERDAM));
+
+        // A zero-balance balance-only account is empty and deleted by EIP-161.
+        assert!(state.account_info_untracked(&contract).unwrap().is_none());
+    }
+
+    #[test]
+    fn pre_eip8246_selfdestruct_burns_balance_by_deleting_account() {
+        let contract = Address::from([0x33; 20]);
+        let code = Bytecode::new_legacy(Bytes::from_static(&[op::STOP]));
+        let mut database = InMemoryDB::default();
+        database.insert_account_info(
+            &contract,
+            AccountInfo::default().with_balance(U256::from(5)).with_code(code),
+        );
+        let mut state = State::new(database);
+
+        state.account(&contract, false).unwrap().mark_destructed();
+        state.finalize_transaction_(Version::base(SpecId::PRAGUE));
+
+        // Before EIP-8246 the self-destructed account (and its balance) is deleted at finalization.
+        assert!(state.account_info_untracked(&contract).unwrap().is_none());
     }
 }

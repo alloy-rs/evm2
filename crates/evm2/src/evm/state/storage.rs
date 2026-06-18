@@ -174,9 +174,8 @@ impl<'a> StorageHandle<'a> {
     pub fn wipe(&mut self) {
         let previous = self.storage.clone();
         self.storage.wiped = true;
-        self.storage.slots.retain(|_, slot| {
+        self.storage.slots.iter_mut().for_each(|(_, slot)| {
             slot.value = Tracked::new(Word::ZERO);
-            slot.is_warm
         });
         self.inner
             .journal

@@ -47,7 +47,3 @@ pub(crate) const EIP7702_BYTECODE_LEN: usize = 23;
 /// EIP-7708 ETH transfer log topic.
 pub(crate) const EIP7708_TRANSFER_TOPIC: B256 =
     b256!("ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef");
-
-/// EIP-7708 ETH burn log topic.
-pub(crate) const EIP7708_BURN_TOPIC: B256 =
-    b256!("cc16f5dbb4873280815c1ee09dbd06736cffcc184412cf7a71a0fdb75d397ca5");

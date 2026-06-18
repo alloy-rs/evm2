@@ -23,7 +23,6 @@ pub use tracked::Tracked;
 use super::{
     PrewarmSet,
     db::{CacheDB, DbErrorCode, DbResult, DynDatabase},
-    eip7708_burn_log,
 };
 use crate::{
     EvmFeatures, Version,
@@ -589,22 +588,6 @@ impl State {
         }
     }
 
-    fn delete_account_for_finalization(&mut self, address: &Address) -> DbResult<()> {
-        let entry = Self::account_raw(&mut self.inner, &mut self.accounts, address, false)?;
-        self.inner.journal.push(JournalEntry::AccountChange {
-            address: *address,
-            previous: entry.present.clone(),
-            previous_is_warm: entry.is_warm,
-            previous_is_touched: entry.is_touched,
-            previous_is_destroyed: entry.is_destroyed,
-            previous_just_created: entry.just_created,
-            previous_code_changed: entry.code_changed,
-        });
-        entry.present = None;
-        self.storage(address).wipe();
-        Ok(())
-    }
-
     fn materialize_empty_account_for_finalization(&mut self, address: &Address) -> DbResult<()> {
         // `account_raw` loads the backing-database account into `original`,
         // so its existence is read from the same source rather than via a separate database read.
@@ -626,7 +609,7 @@ impl State {
 
     #[cfg(test)]
     pub(crate) fn finalize_transaction_(&mut self, version: &Version) {
-        self.finalize_transaction(version, |_| {}).unwrap();
+        self.finalize_transaction(version).unwrap();
     }
 
     /// Applies transaction-finalization account-lifetime rules to the overlay.
@@ -634,16 +617,9 @@ impl State {
     /// This mutates the in-memory post-transaction state before it is serialized
     /// by [`Self::build_state_changes`]. Runtime records
     /// transaction substate such as touches and selfdestructs, while finalization
-    /// turns that substate into account deletions, storage wipes, or pre-EIP-161
-    /// empty-account materialization.
-    ///
-    /// The callback lets the EVM inspect logs synthesized during finalization without storing
-    /// inspector state in [`State`].
-    pub(crate) fn finalize_transaction(
-        &mut self,
-        version: &Version,
-        mut inspect_log: impl FnMut(&Log),
-    ) -> DbResult<()> {
+    /// turns that substate into account deletions, storage wipes, balance-only
+    /// selfdestruct resets (EIP-8246), or pre-EIP-161 empty-account materialization.
+    pub(crate) fn finalize_transaction(&mut self, version: &Version) -> DbResult<()> {
         let selfdestructs = mem::take(&mut self.selfdestructs);
         let touched: Vec<_> = self
             .accounts
@@ -651,39 +627,28 @@ impl State {
             .filter_map(|(&address, entry)| entry.is_touched.then_some(address))
             .collect();
 
-        let delayed_burn_logs =
-            version.feature(EvmFeatures::EIP7708 | EvmFeatures::EIP7708_DELAYED_BURN);
-        if delayed_burn_logs {
-            let mut burned = Vec::new();
-            for &address in &selfdestructs {
-                if let Some(balance) = self
-                    .accounts
-                    .get(&address)
-                    .and_then(|entry| entry.present.as_ref())
-                    .map(|account| account.balance)
-                    && !balance.is_zero()
-                {
-                    burned.push((address, balance));
-                }
-            }
-            burned.sort_by_key(|(address, _)| *address);
-            for (address, balance) in burned {
-                if let Some(log) = eip7708_burn_log(&address, &balance) {
-                    inspect_log(&log);
-                    self.log(log);
-                }
-            }
-        }
-
+        let eip8246 = version.feature(EvmFeatures::EIP8246);
         for address in &selfdestructs {
-            self.delete_account_for_finalization(address)?;
+            // EIP-8246: a self-destructed account that still holds balance is preserved as a
+            // balance-only account instead of being burned. One with no balance is removed. The
+            // handle is scoped so its `AccountChange` flushes on drop before the storage wipe.
+            {
+                let mut account = self.account(address, false)?;
+                if eip8246 && !account.balance().is_zero() {
+                    account.reset_selfdestructed_for_finalization();
+                } else {
+                    account.delete_for_finalization();
+                }
+            }
+            self.storage(address).wipe();
         }
 
         if version.feature(EvmFeatures::EIP161) {
             for address in &touched {
                 // EIP-161 deletes touched dead accounts at transaction finalization.
                 if self.account(address, false)?.is_existing_dead() {
-                    self.delete_account_for_finalization(address)?;
+                    self.account(address, false)?.delete_for_finalization();
+                    self.storage(address).wipe();
                 }
             }
         } else {
