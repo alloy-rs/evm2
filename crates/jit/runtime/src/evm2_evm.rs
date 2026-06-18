@@ -62,7 +62,7 @@ pub fn run_interpreter(
     };
 
     interpreter.prepare_jit_run(config, host);
-    Some(unsafe { program.evm2_func().call_with_interpreter(interpreter, host) })
+    Some(unsafe { program.func.call_with_interpreter(interpreter, host) })
 }
 
 #[cfg(test)]
