@@ -2,6 +2,7 @@
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
+mod binary;
 pub mod blockchaintest;
 mod discover;
 mod env;
@@ -35,7 +36,11 @@ pub use execute::{
     execute_str_with_filter as execute_state_tests_str_with_filter,
 };
 pub use filter::EntryPoint;
-pub use fixture_io::read_to_string as read_fixture_text;
+pub use fixture_io::{
+    FixtureReadError, FixtureWriteError, is_binary_path as is_binary_fixture_path,
+    read_blockchain as read_blockchain_fixture, read_to_string as read_fixture_text,
+    write_blockchain as write_blockchain_fixture,
+};
 pub use runner::run as run_statetests;
 pub use tx::{AccessListItem, TestAuthorization};
 

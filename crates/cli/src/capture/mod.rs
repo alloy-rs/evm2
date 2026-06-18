@@ -14,12 +14,9 @@ use alloy_consensus::{
 };
 use futures_util::{StreamExt, stream};
 use serde_json::{Value, value::RawValue};
-use std::{fs::File, io::BufWriter, path::Path, time::Instant};
-use zstd::stream::write::Encoder as ZstdEncoder;
+use std::time::{Duration, Instant};
 
 type MainnetBlock = ConsensusBlock<EthereumTxEnvelope<TxEip4844>>;
-
-const ZSTD_COMPRESSION_LEVEL: i32 = 19;
 
 pub(crate) struct CaptureSummary {
     pub(crate) blocks: usize,
@@ -79,8 +76,14 @@ async fn capture(
 
     while let Some(block) = blocks.next().await {
         let block_started_at = Instant::now();
-        let PreparedBlock { number, consensus_block, pre_traces, diff_traces, transactions } =
-            block?;
+        let PreparedBlock {
+            number,
+            consensus_block,
+            pre_traces,
+            diff_traces,
+            transactions,
+            elapsed,
+        } = block?;
 
         for (tx_index, ((pre_trace, diff_trace), tx)) in pre_traces
             .iter()
@@ -107,7 +110,7 @@ async fn capture(
         eprintln!(
             "captured block {number} ({} txs) in {:.2}s",
             block_transaction_count,
-            block_started_at.elapsed().as_secs_f64()
+            (elapsed + block_started_at.elapsed()).as_secs_f64()
         );
     }
 
@@ -116,7 +119,8 @@ async fn capture(
     let base_storage_slots =
         capture.pre_state.accounts.iter().map(|account| account.storage.len()).sum();
     let suite = export::suite(&capture)?;
-    write_suite(&command.output, &suite)?;
+    evm2_eest::write_blockchain_fixture(&command.output, &suite)
+        .map_err(CaptureError::EncodeFixture)?;
 
     Ok(CaptureSummary {
         blocks: match &capture.input {
@@ -128,32 +132,6 @@ async fn capture(
         base_storage_slots,
         elapsed_sec: started_at.elapsed().as_secs_f64(),
     })
-}
-
-fn write_suite(
-    path: &Path,
-    suite: &evm2_eest::blockchaintest::BlockchainTest,
-) -> std::result::Result<(), CaptureError> {
-    let file = File::create(path)
-        .map_err(|source| CaptureError::WriteOutput { path: path.display().to_string(), source })?;
-    let writer = BufWriter::new(file);
-    if is_zstd_path(path) {
-        let mut encoder = ZstdEncoder::new(writer, ZSTD_COMPRESSION_LEVEL).map_err(|source| {
-            CaptureError::WriteOutput { path: path.display().to_string(), source }
-        })?;
-        serde_json::to_writer(&mut encoder, suite).map_err(CaptureError::EncodeJson)?;
-        encoder.finish().map_err(|source| CaptureError::WriteOutput {
-            path: path.display().to_string(),
-            source,
-        })?;
-    } else {
-        serde_json::to_writer(writer, suite).map_err(CaptureError::EncodeJson)?;
-    }
-    Ok(())
-}
-
-fn is_zstd_path(path: &Path) -> bool {
-    path.extension().is_some_and(|extension| extension == "zst")
 }
 
 struct FetchedBlock {
@@ -169,18 +147,23 @@ struct PreparedBlock {
     pre_traces: Vec<Value>,
     diff_traces: Vec<Value>,
     transactions: Vec<model::CapturedTransaction>,
+    elapsed: Duration,
 }
 
 async fn fetch_block(
     rpc: &rpc::RpcEndpoint,
     number: u64,
 ) -> std::result::Result<PreparedBlock, CaptureError> {
+    let started_at = Instant::now();
     let (consensus_block, pre_traces, diff_traces) = tokio::try_join!(
         rpc.block(number),
         rpc.trace_block(number, rpc::TraceMode::PreState),
         rpc.trace_block(number, rpc::TraceMode::Diff),
     )?;
-    prepare_block(FetchedBlock { number, consensus_block, pre_traces, diff_traces }).await
+    let mut block =
+        prepare_block(FetchedBlock { number, consensus_block, pre_traces, diff_traces }).await?;
+    block.elapsed = started_at.elapsed();
+    Ok(block)
 }
 
 async fn prepare_block(block: FetchedBlock) -> std::result::Result<PreparedBlock, CaptureError> {
@@ -210,7 +193,14 @@ async fn prepare_block(block: FetchedBlock) -> std::result::Result<PreparedBlock
             })
             .collect::<std::result::Result<Vec<_>, CaptureError>>()?;
 
-        Ok(PreparedBlock { number, consensus_block, pre_traces, diff_traces, transactions })
+        Ok(PreparedBlock {
+            number,
+            consensus_block,
+            pre_traces,
+            diff_traces,
+            transactions,
+            elapsed: Duration::default(),
+        })
     })
     .await
     .map_err(CaptureError::JoinBlockPreparation)?

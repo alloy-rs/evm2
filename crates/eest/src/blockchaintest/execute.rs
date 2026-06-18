@@ -59,16 +59,16 @@ pub struct ExecuteSummary {
     pub skipped: usize,
 }
 
-/// Executes a single blockchain test JSON file using explicit execution options.
+/// Executes a single blockchain test file using explicit execution options.
 pub(crate) fn execute_test_suite(
     path: &Path,
     config: ExecuteConfig,
 ) -> Result<ExecuteSummary, TestError> {
-    let input =
-        fixture_io::read_to_string(path).map_err(|err| TestError::unknown(path, err.into()))?;
+    let suite =
+        fixture_io::read_blockchain(path).map_err(|err| TestError::unknown(path, err.into()))?;
     let entrypoint = EntryPoint::default();
     let mut hook = NoopHook;
-    execute_str(path, &input, config, &entrypoint, &mut hook)
+    execute_suite(path, &suite, config, &entrypoint, &mut hook)
 }
 
 /// Executes a loaded blockchain test JSON file.
