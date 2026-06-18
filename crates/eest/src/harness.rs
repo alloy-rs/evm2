@@ -1,4 +1,6 @@
 use crate::discover::find_json_tests;
+#[cfg(feature = "jit")]
+use crate::execution::CompiledMode;
 use libtest_mimic::{Arguments, Failed, Trial};
 #[cfg(feature = "jit")]
 use std::{any::Any, thread};
@@ -16,7 +18,7 @@ pub(crate) const COMPILED_FIXTURE_STACK_SIZE: usize = 64 * 1024 * 1024;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct TestRoot {
     /// Stable root name used by the nextest harness.
-    pub(crate) name: &'static str,
+    pub(crate) name: String,
     /// Human readable root label.
     pub(crate) label: &'static str,
     /// Directory containing JSON test files.
@@ -74,7 +76,7 @@ fn collect_trials(args: &Arguments, suites: &[TestSuite]) -> Result<Vec<Trial>, 
         for root in &suite.roots {
             let files = find_json_tests(std::slice::from_ref(&root.path), suite.should_descend)?;
             for path in files {
-                let name = test_name(root.name, &root.path, &path);
+                let name = test_name(&root.name, &root.path, &path);
                 let ignored = (suite.should_ignore)(&name);
                 let run_file = suite.run_file;
                 trials.push(Trial::test(name, move || run_file(path)).with_ignored_flag(ignored));
@@ -89,7 +91,7 @@ fn exact_trial(suites: &[TestSuite], name: &str) -> Option<Trial> {
         .iter()
         .flat_map(|suite| suite.roots.iter().map(move |root| (suite, root)))
         .filter_map(|(suite, root)| {
-            name.strip_prefix(root.name).map(|relative| (suite, root, relative))
+            name.strip_prefix(root.name.as_str()).map(|relative| (suite, root, relative))
         })
         .filter_map(|(suite, root, relative)| {
             relative.strip_prefix("::").map(|relative| (suite, root, relative))
@@ -118,6 +120,17 @@ pub(crate) const fn descend_all(_: &Path) -> bool {
 }
 
 #[cfg(feature = "jit")]
+pub(crate) fn compiled_roots(roots: Vec<TestRoot>, mode: CompiledMode) -> Vec<TestRoot> {
+    roots
+        .into_iter()
+        .map(|mut root| {
+            root.name = format!("{}::{}", root.name, mode.suffix());
+            root
+        })
+        .collect()
+}
+
+#[cfg(feature = "jit")]
 pub(crate) fn run_with_stack<F>(name: &'static str, stack_size: usize, f: F) -> Result<(), Failed>
 where
     F: FnOnce() -> Result<(), Failed> + Send + 'static,
@@ -138,5 +151,26 @@ fn panic_payload_message(payload: Box<dyn Any + Send>) -> String {
         message.clone()
     } else {
         "test thread panicked".to_string()
+    }
+}
+
+#[cfg(all(test, feature = "jit"))]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn compiled_roots_append_mode_suffix() {
+        let roots = vec![TestRoot {
+            name: "statetests::custom".to_string(),
+            label: "custom",
+            path: PathBuf::new(),
+        }];
+
+        assert_eq!(
+            compiled_roots(roots.clone(), CompiledMode::Jit)[0].name,
+            "statetests::custom::jit"
+        );
+        assert_eq!(compiled_roots(roots, CompiledMode::Aot)[0].name, "statetests::custom::aot");
     }
 }

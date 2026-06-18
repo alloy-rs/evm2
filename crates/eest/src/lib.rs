@@ -7,6 +7,7 @@ mod discover;
 mod env;
 mod error;
 mod execute;
+mod execution;
 mod filter;
 mod fixtures;
 mod forks;

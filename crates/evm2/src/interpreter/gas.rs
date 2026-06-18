@@ -1,61 +1,55 @@
 //! EVM gas calculation utilities.
 
+#![allow(missing_docs)]
+
 use super::{InstrStop, Result};
 use core::hint::cold_path;
 
-pub(crate) const ZERO: u32 = 0;
-pub(crate) const BASE: u32 = 2;
-/// Static gas charged by very-low-cost opcodes.
+pub const ZERO: u32 = 0;
+pub const BASE: u32 = 2;
 pub const VERYLOW: u32 = 3;
-pub(crate) const LOW: u32 = 5;
-pub(crate) const MID: u32 = 8;
-pub(crate) const HIGH: u32 = 10;
-pub(crate) const JUMPDEST: u32 = 1;
-pub(crate) const EXP: u32 = 10;
-pub(crate) const MEMORY: u32 = 3;
-/// Static gas charged by `LOG`.
+pub const LOW: u32 = 5;
+pub const MID: u32 = 8;
+pub const HIGH: u32 = 10;
+pub const JUMPDEST: u32 = 1;
+pub const EXP: u32 = 10;
+pub const MEMORY: u32 = 3;
 pub const LOG: u32 = 375;
-/// Gas charged per logged byte.
 pub const LOGDATA: u32 = 8;
-/// Gas charged per log topic.
 pub const LOGTOPIC: u32 = 375;
-/// Static gas charged by `KECCAK256`.
 pub const KECCAK256: u32 = 30;
-/// Gas charged per hashed word by `KECCAK256`.
 pub const KECCAK256WORD: u32 = 6;
-/// Gas charged per copied word.
 pub const COPY: u32 = 3;
-pub(crate) const BLOCKHASH: u32 = 20;
-pub(crate) const CREATE: u32 = 32000;
-pub(crate) const CALLVALUE: u32 = 9000;
-pub(crate) const NEWACCOUNT: u32 = 25000;
-pub(crate) const SELFDESTRUCT_REFUND: u32 = 24000;
-pub(crate) const CODEDEPOSIT: u32 = 200;
-pub(crate) const SSTORE_SET: u32 = 20000;
-pub(crate) const SSTORE_RESET: u32 = 5000;
-pub(crate) const REFUND_SSTORE_CLEARS: u32 = 15000;
-pub(crate) const STANDARD_TOKEN_COST: u32 = 4;
-pub(crate) const NON_ZERO_BYTE_MULTIPLIER: u32 = 17;
-pub(crate) const NON_ZERO_BYTE_MULTIPLIER_ISTANBUL: u32 = 4;
-pub(crate) const TOTAL_COST_FLOOR_PER_TOKEN: u32 = 10;
-pub(crate) const TOTAL_COST_FLOOR_PER_TOKEN_AMSTERDAM: u32 = 16;
-pub(crate) const INITCODE_WORD_COST: u32 = 2;
-pub(crate) const CALL_STIPEND: u32 = 2300;
-pub(crate) const ISTANBUL_SLOAD_GAS: u32 = 800;
-pub(crate) const ACCESS_LIST_ADDRESS: u32 = 2400;
-pub(crate) const ACCESS_LIST_STORAGE_KEY: u32 = 1900;
-pub(crate) const COLD_SLOAD_COST: u32 = 2100;
-pub(crate) const COLD_ACCOUNT_ACCESS_COST: u32 = 2600;
-pub(crate) const COLD_ACCOUNT_ACCESS_COST_ADDITIONAL: u32 =
+pub const BLOCKHASH: u32 = 20;
+pub const CREATE: u32 = 32000;
+pub const CALLVALUE: u32 = 9000;
+pub const NEWACCOUNT: u32 = 25000;
+pub const SELFDESTRUCT_REFUND: u32 = 24000;
+pub const CODEDEPOSIT: u32 = 200;
+pub const SSTORE_SET: u32 = 20000;
+pub const SSTORE_RESET: u32 = 5000;
+pub const REFUND_SSTORE_CLEARS: u32 = 15000;
+pub const STANDARD_TOKEN_COST: u32 = 4;
+pub const NON_ZERO_BYTE_MULTIPLIER: u32 = 17;
+pub const NON_ZERO_BYTE_MULTIPLIER_ISTANBUL: u32 = 4;
+pub const TOTAL_COST_FLOOR_PER_TOKEN: u32 = 10;
+pub const TOTAL_COST_FLOOR_PER_TOKEN_AMSTERDAM: u32 = 16;
+pub const INITCODE_WORD_COST: u32 = 2;
+pub const CALL_STIPEND: u32 = 2300;
+pub const ISTANBUL_SLOAD_GAS: u32 = 800;
+pub const ACCESS_LIST_ADDRESS: u32 = 2400;
+pub const ACCESS_LIST_STORAGE_KEY: u32 = 1900;
+pub const COLD_SLOAD_COST: u32 = 2100;
+pub const COLD_ACCOUNT_ACCESS_COST: u32 = 2600;
+pub const COLD_ACCOUNT_ACCESS_COST_ADDITIONAL: u32 =
     COLD_ACCOUNT_ACCESS_COST - WARM_STORAGE_READ_COST;
-pub(crate) const WARM_STORAGE_READ_COST: u32 = 100;
-pub(crate) const WARM_SSTORE_RESET: u32 = SSTORE_RESET - COLD_SLOAD_COST;
-pub(crate) const EIP7702_PER_AUTH_BASE_COST: u32 = 12500;
-pub(crate) const EIP7702_PER_EMPTY_ACCOUNT_COST: u32 = 25000;
+pub const WARM_STORAGE_READ_COST: u32 = 100;
+pub const WARM_SSTORE_RESET: u32 = SSTORE_RESET - COLD_SLOAD_COST;
+pub const EIP7702_PER_AUTH_BASE_COST: u32 = 12500;
+pub const EIP7702_PER_EMPTY_ACCOUNT_COST: u32 = 25000;
 
 /// Tracks regular, state, and refunded gas.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-#[repr(C)]
 pub struct GasTracker {
     remaining: u64,
     gas_limit: u64,
@@ -269,7 +263,6 @@ impl RemainingGas {
 
 /// Interpreter gas state.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-#[repr(C)] // Puts `tracker`, and so `.remaining`, first.
 pub struct Gas {
     tracker: GasTracker,
     memory: MemoryGas,
@@ -446,7 +439,6 @@ impl Gas {
 
 /// Memory gas accounting state.
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq, Hash)]
-#[repr(C)]
 pub struct MemoryGas {
     /// Current memory size in EVM words.
     pub words_num: usize,

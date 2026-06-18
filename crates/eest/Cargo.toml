@@ -33,7 +33,7 @@ thiserror = { workspace = true, features = ["std"] }
 walkdir.workspace = true
 
 [build-dependencies]
-evm2-jit-build.workspace = true
+evm2-jit-build = { workspace = true, optional = true }
 
 [[test]]
 name = "eest"
@@ -42,4 +42,4 @@ harness = false
 
 [features]
 default = []
-jit = ["dep:evm2-jit-runtime"]
+jit = ["dep:evm2-jit-runtime", "dep:evm2-jit-build"]

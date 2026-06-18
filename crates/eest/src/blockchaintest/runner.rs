@@ -2,9 +2,12 @@ use super::{
     env::blockchain_test_roots,
     execute::{ExecuteConfig, ExecutionMode, execute_test_suite},
 };
-#[cfg(feature = "jit")]
-use crate::harness::{COMPILED_FIXTURE_STACK_SIZE, TestRoot, run_with_stack};
 use crate::harness::{TestSuite, run_json_harnesses};
+#[cfg(feature = "jit")]
+use crate::{
+    execution::CompiledMode,
+    harness::{COMPILED_FIXTURE_STACK_SIZE, compiled_roots, run_with_stack},
+};
 use libtest_mimic::Failed;
 use std::{
     path::{Path, PathBuf},
@@ -22,14 +25,14 @@ pub(crate) fn suites() -> Vec<TestSuite> {
         let mut suites = vec![suite()];
         suites.push(TestSuite {
             name: "blockchain-jit",
-            roots: mode_roots(blockchain_test_roots(), ModeName::Jit),
+            roots: compiled_roots(blockchain_test_roots(), CompiledMode::Jit),
             should_descend,
             should_ignore,
             run_file: run_file_jit,
         });
         suites.push(TestSuite {
             name: "blockchain-aot",
-            roots: mode_roots(blockchain_test_roots(), ModeName::Aot),
+            roots: compiled_roots(blockchain_test_roots(), CompiledMode::Aot),
             should_descend,
             should_ignore,
             run_file: run_file_aot,
@@ -65,47 +68,19 @@ fn run_file_with_mode(path: PathBuf, mode: ExecutionMode) -> Result<(), Failed> 
 
 #[cfg(feature = "jit")]
 fn run_file_jit(path: PathBuf) -> Result<(), Failed> {
-    run_compiled_file(path, ExecutionMode::Jit)
+    run_compiled_file(path, CompiledMode::Jit)
 }
 
 #[cfg(feature = "jit")]
 fn run_file_aot(path: PathBuf) -> Result<(), Failed> {
-    run_compiled_file(path, ExecutionMode::Aot)
+    run_compiled_file(path, CompiledMode::Aot)
 }
 
 #[cfg(feature = "jit")]
-fn run_compiled_file(path: PathBuf, mode: ExecutionMode) -> Result<(), Failed> {
+fn run_compiled_file(path: PathBuf, mode: CompiledMode) -> Result<(), Failed> {
     run_with_stack("eest-blockchain-compiled", COMPILED_FIXTURE_STACK_SIZE, move || {
-        run_file_with_mode(path, mode)
+        run_file_with_mode(path, mode.execution_mode())
     })
-}
-
-#[cfg(feature = "jit")]
-#[derive(Clone, Copy, Debug)]
-enum ModeName {
-    Jit,
-    Aot,
-}
-
-#[cfg(feature = "jit")]
-fn mode_roots(roots: Vec<TestRoot>, mode: ModeName) -> Vec<TestRoot> {
-    roots
-        .into_iter()
-        .map(|root| TestRoot { name: mode_root_name(root.name, mode), ..root })
-        .collect()
-}
-
-#[cfg(feature = "jit")]
-fn mode_root_name(name: &'static str, mode: ModeName) -> &'static str {
-    match (name, mode) {
-        ("blockchain_tests", ModeName::Jit) => "blockchain_tests::jit",
-        ("blockchain_tests", ModeName::Aot) => "blockchain_tests::aot",
-        ("blockchain_tests::custom", ModeName::Jit) => "blockchain_tests::custom::jit",
-        ("blockchain_tests::custom", ModeName::Aot) => "blockchain_tests::custom::aot",
-        ("blockchain_tests::devnet", ModeName::Jit) => "blockchain_tests::devnet::jit",
-        ("blockchain_tests::devnet", ModeName::Aot) => "blockchain_tests::devnet::aot",
-        _ => name,
-    }
 }
 
 fn should_descend(path: &Path) -> bool {
@@ -214,28 +189,6 @@ const IGNORED_TESTS: &[&str] = &[
 #[cfg(all(test, feature = "jit"))]
 mod tests {
     use super::*;
-
-    #[test]
-    fn mode_root_name_maps_blockchain_roots() {
-        assert_eq!(mode_root_name("blockchain_tests", ModeName::Jit), "blockchain_tests::jit");
-        assert_eq!(mode_root_name("blockchain_tests", ModeName::Aot), "blockchain_tests::aot");
-        assert_eq!(
-            mode_root_name("blockchain_tests::custom", ModeName::Jit),
-            "blockchain_tests::custom::jit"
-        );
-        assert_eq!(
-            mode_root_name("blockchain_tests::custom", ModeName::Aot),
-            "blockchain_tests::custom::aot"
-        );
-        assert_eq!(
-            mode_root_name("blockchain_tests::devnet", ModeName::Jit),
-            "blockchain_tests::devnet::jit"
-        );
-        assert_eq!(
-            mode_root_name("blockchain_tests::devnet", ModeName::Aot),
-            "blockchain_tests::devnet::aot"
-        );
-    }
 
     #[test]
     fn scenarios_ignore_is_compiled_backend_only() {

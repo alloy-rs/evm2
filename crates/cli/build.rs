@@ -1,7 +1,9 @@
 #![allow(missing_docs)]
 
+#[cfg(feature = "jit")]
 fn main() {
-    if std::env::var_os("CARGO_FEATURE_JIT").is_some() {
-        evm2_jit_build::emit();
-    }
+    evm2_jit_build::emit();
 }
+
+#[cfg(not(feature = "jit"))]
+fn main() {}

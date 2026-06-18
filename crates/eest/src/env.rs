@@ -36,7 +36,7 @@ pub(crate) fn explicit_state_test_root_from_env() -> Option<PathBuf> {
 pub(crate) fn state_test_roots() -> Vec<StateTestRoot> {
     if let Some(path) = explicit_state_test_root_from_env() {
         return vec![StateTestRoot {
-            name: "statetests::custom",
+            name: "statetests::custom".to_string(),
             label: "custom state tests",
             path,
         }];
@@ -55,19 +55,23 @@ pub(crate) fn default_state_test_roots() -> Vec<StateTestRoot> {
         fixtures.join("main/develop/state_tests")
     };
     let mut roots = vec![
-        StateTestRoot { name: "statetests", label: "execution-spec-tests", path: eest_path },
         StateTestRoot {
-            name: "statetests::devnet",
+            name: "statetests".to_string(),
+            label: "execution-spec-tests",
+            path: eest_path,
+        },
+        StateTestRoot {
+            name: "statetests::devnet".to_string(),
             label: "execution-spec-tests devnet",
             path: fixtures.join("devnet/state_tests"),
         },
         StateTestRoot {
-            name: "legacy::cancun",
+            name: "legacy::cancun".to_string(),
             label: "legacy Cancun",
             path: fixtures.join("legacytests/Cancun/GeneralStateTests"),
         },
         StateTestRoot {
-            name: "legacy::constantinople",
+            name: "legacy::constantinople".to_string(),
             label: "legacy Constantinople",
             path: fixtures.join("legacytests/Constantinople/GeneralStateTests"),
         },
@@ -75,7 +79,7 @@ pub(crate) fn default_state_test_roots() -> Vec<StateTestRoot> {
 
     if let Some(path) = general_state_tests_path(&ethereum_tests) {
         roots.push(StateTestRoot {
-            name: "legacy::ethereum_tests",
+            name: "legacy::ethereum_tests".to_string(),
             label: "ethereum/tests GeneralStateTests",
             path,
         });

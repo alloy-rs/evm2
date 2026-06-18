@@ -1,5 +1,6 @@
 use crate::{
     error::{TestError, TestErrorKind},
+    execution::ExecutionResources,
     filter::EntryPoint,
     forks::is_fork_skipped,
     state::{
@@ -24,10 +25,10 @@ use evm2::{
     },
     registry::HandlerError,
 };
-#[cfg(feature = "jit")]
-use evm2_jit_runtime::{evm2_evm::JitInterpreterRunner, runtime::JitBackend};
 use serde_json::json;
 use std::{collections::BTreeMap, fs, path::Path};
+
+pub use crate::execution::ExecutionMode;
 
 /// Per-spec execution outcome.
 #[derive(Clone, Debug)]
@@ -44,20 +45,6 @@ pub(crate) struct SpecOutcome {
     pub(crate) evm_result: String,
 }
 
-/// EEST execution backend.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum ExecutionMode {
-    /// Run through the evm2 interpreter.
-    #[default]
-    Interpreter,
-    /// Run through the evm2 JIT runtime, falling back to the interpreter for unsupported code.
-    #[cfg(feature = "jit")]
-    Jit,
-    /// Run through the evm2 AOT runtime, falling back to the interpreter for unsupported code.
-    #[cfg(feature = "jit")]
-    Aot,
-}
-
 /// Execution options for a single suite.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ExecuteConfig {
@@ -65,44 +52,6 @@ pub struct ExecuteConfig {
     pub print_json_outcome: bool,
     /// Execution backend.
     pub mode: ExecutionMode,
-}
-
-#[derive(Clone, Debug)]
-struct ExecutionResources {
-    #[cfg(feature = "jit")]
-    backend: Option<JitBackend>,
-}
-
-impl ExecutionResources {
-    fn new(mode: ExecutionMode) -> Result<Self, TestErrorKind> {
-        #[cfg(feature = "jit")]
-        {
-            let backend = match mode {
-                ExecutionMode::Interpreter => None,
-                ExecutionMode::Jit | ExecutionMode::Aot => Some(make_jit_backend(mode)?),
-            };
-            Ok(Self { backend })
-        }
-
-        #[cfg(not(feature = "jit"))]
-        {
-            let _ = mode;
-            Ok(Self {})
-        }
-    }
-
-    #[inline]
-    fn configure_evm(&self, _evm: &mut Evm<BaseEvmTypes>) {
-        #[cfg(feature = "jit")]
-        if let Some(backend) = &self.backend {
-            _evm.set_interpreter_runner(JitInterpreterRunner::new(backend.clone()));
-        }
-    }
-}
-
-#[cfg(feature = "jit")]
-fn make_jit_backend(mode: ExecutionMode) -> Result<JitBackend, TestErrorKind> {
-    crate::jit::make_backend(mode == ExecutionMode::Aot).map_err(TestErrorKind::JitRuntime)
 }
 
 /// Per-file execution summary.
@@ -139,7 +88,7 @@ pub fn execute_str_with_filter(
     let suite: TestSuite =
         serde_json::from_str(input).map_err(|err| TestError::unknown(path, err.into()))?;
     let resources =
-        ExecutionResources::new(config.mode).map_err(|err| TestError::unknown(path, err))?;
+        ExecutionResources::new(config.mode).map_err(|err| TestError::unknown(path, err.into()))?;
     let mut summary = ExecuteSummary::default();
     for (name, unit) in suite.0 {
         if !entrypoint.matches(&name) {

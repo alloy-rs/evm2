@@ -10,6 +10,7 @@ use super::{
     },
 };
 use crate::{
+    execution::ExecutionResources,
     filter::EntryPoint,
     forks::is_fork_skipped,
     state::{insert_account_with_storage, parse_bytecode},
@@ -29,26 +30,12 @@ use evm2::{
     },
     registry::HandlerError,
 };
-#[cfg(feature = "jit")]
-use evm2_jit_runtime::{evm2_evm::JitInterpreterRunner, runtime::JitBackend};
 use std::{fs, mem, path::Path};
+
+pub use crate::execution::ExecutionMode;
 
 const ONE_GWEI: u64 = 1_000_000_000;
 const ONE_ETHER: u128 = 1_000_000_000_000_000_000;
-
-/// EEST execution backend.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum ExecutionMode {
-    /// Run through the evm2 interpreter.
-    #[default]
-    Interpreter,
-    /// Run through the evm2 JIT runtime, falling back to the interpreter for unsupported code.
-    #[cfg(feature = "jit")]
-    Jit,
-    /// Run through the evm2 AOT runtime, falling back to the interpreter for unsupported code.
-    #[cfg(feature = "jit")]
-    Aot,
-}
 
 /// Execution options for a single suite.
 #[derive(Clone, Copy, Debug)]
@@ -63,44 +50,6 @@ impl Default for ExecuteConfig {
     fn default() -> Self {
         Self { validate_post_state: true, mode: ExecutionMode::Interpreter }
     }
-}
-
-#[derive(Clone, Debug)]
-struct ExecutionResources {
-    #[cfg(feature = "jit")]
-    backend: Option<JitBackend>,
-}
-
-impl ExecutionResources {
-    fn new(mode: ExecutionMode) -> Result<Self, TestErrorKind> {
-        #[cfg(feature = "jit")]
-        {
-            let backend = match mode {
-                ExecutionMode::Interpreter => None,
-                ExecutionMode::Jit | ExecutionMode::Aot => Some(make_jit_backend(mode)?),
-            };
-            Ok(Self { backend })
-        }
-
-        #[cfg(not(feature = "jit"))]
-        {
-            let _ = mode;
-            Ok(Self {})
-        }
-    }
-
-    #[inline]
-    fn configure_evm(&self, _evm: &mut Evm<BaseEvmTypes>) {
-        #[cfg(feature = "jit")]
-        if let Some(backend) = &self.backend {
-            _evm.set_interpreter_runner(JitInterpreterRunner::new(backend.clone()));
-        }
-    }
-}
-
-#[cfg(feature = "jit")]
-fn make_jit_backend(mode: ExecutionMode) -> Result<JitBackend, TestErrorKind> {
-    crate::jit::make_backend(mode == ExecutionMode::Aot).map_err(TestErrorKind::JitRuntime)
 }
 
 /// Per-file execution summary.
@@ -134,7 +83,7 @@ pub fn execute_str(
     let suite: BlockchainTest =
         serde_json::from_str(input).map_err(|err| TestError::unknown(path, err.into()))?;
     let resources =
-        ExecutionResources::new(config.mode).map_err(|err| TestError::unknown(path, err))?;
+        ExecutionResources::new(config.mode).map_err(|err| TestError::unknown(path, err.into()))?;
     let mut summary = ExecuteSummary::default();
     for (name, test_case) in suite.0 {
         if !entrypoint.matches(&name)
