@@ -111,7 +111,7 @@
              assert_host: None,
              assert_ecx: None,
          }
-@@ -192,21 +194,22 @@
+@@ -192,21 +194,17 @@
  pub static DEF_DATA: &[u8] = &[0xcc; 64];
  pub const DEF_VALUE: U256 = uint!(123_456_789_U256);
  pub static DEF_STORAGE: OnceLock<HashMap<U256, U256>> = OnceLock::new();
@@ -134,15 +134,10 @@
 -    });
 +
 +pub type TestEvmContext<'a> = evm2_api::EvmContext<'a>;
-+pub type TestEvmCompilerFn = evm2_api::EvmCompilerFn;
-+
-+pub fn evm2_test_func(f: EvmCompilerFn) -> TestEvmCompilerFn {
-+    TestEvmCompilerFn::from_abi_compatible(f)
-+}
 
  pub fn def_storage() -> &'static HashMap<U256, U256> {
      DEF_STORAGE.get_or_init(|| {
-@@ -218,12 +221,12 @@
+@@ -218,12 +216,12 @@
      })
  }
 
@@ -157,7 +152,7 @@
                  op::PUSH1,
                  0x69,
                  op::PUSH1,
-@@ -236,14 +239,87 @@
+@@ -236,14 +234,87 @@
      })
  }
 
@@ -248,7 +243,7 @@
  }
 
  impl Default for TestHost {
-@@ -264,197 +340,198 @@
+@@ -264,197 +335,198 @@
              code_map: def_codemap(),
              selfdestructs: Vec::new(),
              logs: Vec::new(),
@@ -278,12 +273,17 @@
 -
 -    fn is_amsterdam_eip8037_enabled(&self) -> bool {
 -        false
--    }
--
++impl Evm2Host<BaseEvmTypes> for TestHost {
++    fn spec_id(&self) -> evm2::SpecId {
++        self.evm2_spec_id
+     }
+
 -    fn difficulty(&self) -> U256 {
 -        U256::from(0xcdef)
--    }
--
++    fn block_env(&mut self) -> &Evm2BlockEnv<BaseEvmTypes> {
++        &self.evm2_block_env
+     }
+
 -    fn prevrandao(&self) -> Option<U256> {
 -        Some(U256::from(0x0123))
 -    }
@@ -302,17 +302,12 @@
 -
 -    fn slot_num(&self) -> U256 {
 -        U256::ZERO
-+impl Evm2Host<BaseEvmTypes> for TestHost {
-+    fn spec_id(&self) -> evm2::SpecId {
-+        self.evm2_spec_id
-     }
-
+-    }
+-
 -    fn chain_id(&self) -> U256 {
 -        U256::from(69)
-+    fn block_env(&mut self) -> &Evm2BlockEnv<BaseEvmTypes> {
-+        &self.evm2_block_env
-     }
-
+-    }
+-
 -    fn effective_gas_price(&self) -> U256 {
 -        U256::from(0x4567)
 -    }
@@ -595,7 +590,7 @@
  }
 
  pub fn set_test_dump<B: Backend>(compiler: &mut EvmCompiler<B>, module_path: &str) {
-@@ -462,7 +539,7 @@
+@@ -462,7 +534,7 @@
      let mut dump_path = root.to_path_buf();
      dump_path.push("target");
      dump_path.push("tests_dump");
@@ -604,7 +599,7 @@
      dump_path.extend(module_path.split("::").skip(2));
      dump_path.push(format!("{:?}", compiler.opt_level()));
      compiler.set_dump_to(Some(dump_path));
-@@ -488,297 +565,196 @@
+@@ -488,297 +560,195 @@
          expected_stack,
          expected_memory,
          expected_gas,
@@ -675,7 +670,6 @@
 -                expected_stack = &[]; // Will skip comparison below
 -            } else {
 -                expected_stack = interpreter.stack.data();
-+    let f = evm2_test_func(f);
 +    let (_, host_after_jit) =
 +        with_evm_context_and_host(bytecode, spec_id, |ecx, stack, stack_len| {
 +            if is_static {
@@ -694,16 +688,16 @@
 -                expected_memory = &*interpreter_memory;
 +            if gas_limit != DEF_GAS_LIMIT {
 +                ecx.gas = Gas::new(gas_limit);
-+            }
-+            if let Some(modify_ecx) = modify_ecx {
-+                modify_ecx(ecx);
-+                ecx.refresh_memory_cache();
              }
 -        } else if !skip_interpreter_checks {
 -            assert_eq!(
 -                MemDisplay(&interpreter_memory),
 -                MemDisplay(expected_memory),
 -                "interpreter memory mismatch"
++            if let Some(modify_ecx) = modify_ecx {
++                modify_ecx(ecx);
++                ecx.refresh_memory_cache();
++            }
 +
 +            // Interpreter - run evm2 as the oracle
 +            let config =
@@ -844,7 +838,7 @@
 +            let skip_jit_gas =
 +                skip_interpreter_checks && test_case.expected_gas == GAS_WHAT_INTERPRETER_SAYS;
 +
-+            let actual_return = unsafe { f.call(stack, stack_len, ecx) };
++            let actual_return = unsafe { f.call_with_evm2_context(stack, stack_len, ecx) };
 +
 +            if matches!(
 +                actual_return,

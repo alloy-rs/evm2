@@ -205,11 +205,6 @@ pub const MEMORY_WHAT_INTERPRETER_SAYS: &[u8] = &GAS_WHAT_INTERPRETER_SAYS.to_be
 pub const GAS_WHAT_INTERPRETER_SAYS: u64 = 0x4682e332d6612de1;
 
 pub type TestEvmContext<'a> = evm2_api::EvmContext<'a>;
-pub type TestEvmCompilerFn = evm2_api::EvmCompilerFn;
-
-pub fn evm2_test_func(f: EvmCompilerFn) -> TestEvmCompilerFn {
-    TestEvmCompilerFn::from_abi_compatible(f)
-}
 
 pub fn def_storage() -> &'static HashMap<U256, U256> {
     DEF_STORAGE.get_or_init(|| {
@@ -570,7 +565,6 @@ fn run_compiled_test_case(test_case: &TestCase<'_>, f: EvmCompilerFn) {
         assert_ecx,
     } = *test_case;
 
-    let f = evm2_test_func(f);
     let (_, host_after_jit) =
         with_evm_context_and_host(bytecode, spec_id, |ecx, stack, stack_len| {
             if is_static {
@@ -682,7 +676,7 @@ fn run_compiled_test_case(test_case: &TestCase<'_>, f: EvmCompilerFn) {
             let skip_jit_gas =
                 skip_interpreter_checks && test_case.expected_gas == GAS_WHAT_INTERPRETER_SAYS;
 
-            let actual_return = unsafe { f.call(stack, stack_len, ecx) };
+            let actual_return = unsafe { f.call_with_evm2_context(stack, stack_len, ecx) };
 
             if matches!(
                 actual_return,

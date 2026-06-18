@@ -5,7 +5,7 @@ use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::Bytes;
 use core::{
     cmp::min,
-    fmt, mem,
+    fmt,
     ops::Range,
     ptr::{self, NonNull},
 };
@@ -137,38 +137,10 @@ impl InterpreterState {
     }
 }
 
-/// The raw function signature of an evm2 bytecode function.
-///
-/// The ABI intentionally matches [`crate::RawEvmCompilerFn`].
-pub type RawEvmCompilerFn = unsafe extern "C" fn(
-    ecx: NonNull<EvmContext<'_>>,
-    stack: NonNull<EvmStack>,
-    stack_len: NonNull<usize>,
-) -> InstrStop;
-
 /// An evm2 bytecode function.
-#[derive(Clone, Copy, Debug, Hash)]
-pub struct EvmCompilerFn(RawEvmCompilerFn);
+pub type EvmCompilerFn = crate::EvmCompilerFn;
 
-impl EvmCompilerFn {
-    /// Wraps the function.
-    #[inline]
-    pub const fn new(f: RawEvmCompilerFn) -> Self {
-        Self(f)
-    }
-
-    /// Rewraps an ABI-compatible compiled function for evm2 calls.
-    #[inline]
-    pub fn from_abi_compatible(f: crate::EvmCompilerFn) -> Self {
-        Self(unsafe { mem::transmute::<crate::RawEvmCompilerFn, RawEvmCompilerFn>(f.into_inner()) })
-    }
-
-    /// Unwraps the function.
-    #[inline]
-    pub const fn into_inner(self) -> RawEvmCompilerFn {
-        self.0
-    }
-
+impl crate::EvmCompilerFn {
     /// Calls the function by re-using an evm2 interpreter's resources.
     ///
     /// # Safety
@@ -181,7 +153,7 @@ impl EvmCompilerFn {
     ) -> InstrStop {
         let (mut ecx, stack, stack_len) =
             EvmContext::from_interpreter_with_stack(interpreter, host);
-        let result = unsafe { self.call(stack, stack_len, &mut ecx) };
+        let result = unsafe { self.call_with_evm2_context(stack, stack_len, &mut ecx) };
         if result == InstrStop::OutOfGas {
             ecx.gas.spend_all();
         }
@@ -195,13 +167,13 @@ impl EvmCompilerFn {
         result
     }
 
-    /// Calls the function.
+    /// Calls the function with an evm2-facing context.
     ///
     /// # Safety
     ///
     /// The caller must ensure that the arguments are valid and that the function is safe to call.
     #[inline]
-    pub unsafe fn call(
+    pub unsafe fn call_with_evm2_context(
         self,
         stack: &mut EvmStack,
         stack_len: &mut usize,
@@ -210,8 +182,14 @@ impl EvmCompilerFn {
         let ecx = unsafe {
             NonNull::new_unchecked((ecx as *mut EvmContext<'_>).cast::<crate::EvmContext<'_>>())
         };
-        let f = unsafe { mem::transmute::<RawEvmCompilerFn, crate::RawEvmCompilerFn>(self.0) };
-        unsafe { crate::evm2_jit_entry(ecx, NonNull::from(stack), NonNull::from(stack_len), f) }
+        unsafe {
+            crate::evm2_jit_entry(
+                ecx,
+                NonNull::from(stack),
+                NonNull::from(stack_len),
+                self.into_inner(),
+            )
+        }
     }
 }
 
@@ -1224,7 +1202,7 @@ mod tests {
     }
 
     unsafe extern "C" fn evm2_return_output(
-        mut ecx: NonNull<EvmContext<'_>>,
+        mut ecx: NonNull<crate::EvmContext<'_>>,
         _stack: NonNull<EvmStack>,
         _stack_len: NonNull<usize>,
     ) -> InstrStop {

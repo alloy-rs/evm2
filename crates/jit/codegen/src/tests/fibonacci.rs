@@ -1,4 +1,4 @@
-use super::{DEF_SPEC, evm2_test_func, with_evm_context};
+use super::{DEF_SPEC, with_evm_context};
 use crate::{Backend, EvmCompiler};
 use alloy_primitives::U256;
 use evm2::interpreter::{InstrStop, op};
@@ -20,14 +20,14 @@ fn run_fibonacci_test<B: Backend>(compiler: &mut EvmCompiler<B>, input: u16, dyn
 
     unsafe { compiler.clear() }.unwrap();
     compiler.inspect_stack(true);
-    let f = evm2_test_func(unsafe { compiler.jit("fib", &code, DEF_SPEC) }.unwrap());
+    let f = unsafe { compiler.jit("fib", &code, DEF_SPEC) }.unwrap();
 
     with_evm_context(&code, DEF_SPEC, |ecx, stack, stack_len| {
         if dynamic {
             stack.set(0, U256::from(input).into());
             *stack_len = 1;
         }
-        let r = unsafe { f.call(stack, stack_len, ecx) };
+        let r = unsafe { f.call_with_evm2_context(stack, stack_len, ecx) };
         assert_eq!(r, InstrStop::Stop);
         // Apparently the code does `fibonacci(input + 1)`.
         assert_eq!(*stack_len, 1);
