@@ -1,11 +1,11 @@
 //! EVM bytecode compiler implementation.
 
 use crate::{
-    Backend, Builder, Bytecode, EvmCompilerFn, EvmContext, EvmStack, FxHashMap, GasParams, Result,
+    Backend, Builder, Bytecode, EvmCompilerFn, EvmContext, EvmStack, FxHashMap, Result,
     bytecode::AnalysisConfig,
 };
 use alloy_primitives::Bytes;
-use evm2::SpecId;
+use evm2::{SpecId, version::GasParams};
 use evm2_jit_backend::{
     Attribute, BackendConfig, FunctionAttributeLocation, Linkage, OptimizationLevel, eyre::ensure,
     format_bytes,
