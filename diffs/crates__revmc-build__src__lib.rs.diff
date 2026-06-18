@@ -9,13 +9,12 @@
  const MANGLE_PREFIX: &str = "__revmc_builtin_";
 
  /// Emits the linker flag to export all the necessary symbols.
-@@ -13,7 +13,8 @@
+@@ -13,7 +13,7 @@
 
  fn link_arg(target_vendor: &str) -> String {
      if target_vendor == "apple" {
 -        // Mach-O C symbols have a leading `_`, so `__revmc_builtin_*` becomes `___revmc_builtin_*`.
-+        // Mach-O C symbols have a leading `_`, so `__revmc_builtin_*` becomes
-+        // `___revmc_builtin_*`.
++        // Mach-O C symbols have a leading `_`,.
          format!("-Wl,-exported_symbol,_{MANGLE_PREFIX}*")
      } else {
          format!("-Wl,--export-dynamic-symbol,{MANGLE_PREFIX}*")

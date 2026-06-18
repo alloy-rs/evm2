@@ -1,6 +1,6 @@
 --- upstream/crates/revmc-runtime/src/runtime/mod.rs
 +++ evm2/crates/jit/runtime/src/runtime/mod.rs
-@@ -9,11 +9,12 @@
+@@ -9,13 +9,15 @@
      EvmCompilerFn,
      eyre::{self, WrapErr},
  };
@@ -13,8 +13,11 @@
 +use evm2::SpecId;
  use stats::RuntimeStats;
  use std::{
++    hint::cold_path,
      ops::ControlFlow,
-@@ -27,7 +28,7 @@
+     sync::{
+         Arc,
+@@ -27,7 +29,7 @@
 
  mod api;
  pub use api::{
@@ -23,17 +26,7 @@
  };
 
  mod config;
-@@ -49,6 +50,9 @@
-
- mod worker;
-
-+#[cold]
-+const fn cold_path() {}
-+
- /// Runs the out-of-process JIT helper if this process was launched as one.
- ///
- /// Returns [`ControlFlow::Break`] after the helper request has been handled and
-@@ -61,7 +65,7 @@
+@@ -61,7 +63,7 @@
      }
      #[cfg(not(all(feature = "llvm", unix)))]
      {
@@ -42,7 +35,7 @@
              eyre::bail!("out-of-process JIT helper is only available on Unix with LLVM")
          }
          Ok(ControlFlow::Continue(()))
-@@ -147,7 +151,8 @@
+@@ -147,7 +149,8 @@
  impl JitBackend {
      /// Creates a disabled backend that performs no compilation and spawns no threads.
      ///
@@ -52,7 +45,7 @@
      /// Call [`set_enabled`](Self::set_enabled) to lazily spawn the backend thread with
      /// a default [`RuntimeConfig`].
      pub fn disabled() -> Self {
-@@ -211,7 +216,7 @@
+@@ -211,7 +214,7 @@
 
          if !inner.enabled.load(Ordering::Relaxed) {
              cold_path();
@@ -61,7 +54,7 @@
          }
          if inner.blocking {
              cold_path();
-@@ -219,7 +224,7 @@
+@@ -219,7 +222,7 @@
          }
          if !inner.tuning.should_compile(&req.code) {
              cold_path();
@@ -70,7 +63,7 @@
          }
 
          let decision = if let Some(program_ref) = shared.resident.try_get(&req.key).try_unwrap() {
-@@ -228,7 +233,7 @@
+@@ -228,7 +231,7 @@
              req.code.clear();
              LookupDecision::Compiled(program)
          } else {
@@ -79,7 +72,7 @@
          };
 
          if let Err(_v) = shared.events.push(req) {
-@@ -264,11 +269,11 @@
+@@ -264,11 +267,11 @@
      ///
      /// If the function is already compiled, returns it immediately. Otherwise, enqueues
      /// a synchronous JIT compilation request and blocks until the result is available.
@@ -93,7 +86,7 @@
          }
          let code_hash = req.key.code_hash;
          let spec_id = req.key.spec_id;
-@@ -276,11 +281,11 @@
+@@ -276,11 +279,11 @@
              return LookupDecision::Compiled(program);
          }
          if self.compile_jit_sync(req).is_err() {

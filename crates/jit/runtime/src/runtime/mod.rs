@@ -17,6 +17,7 @@ use crossbeam_queue::ArrayQueue;
 use evm2::SpecId;
 use stats::RuntimeStats;
 use std::{
+    hint::cold_path,
     ops::ControlFlow,
     sync::{
         Arc,
@@ -49,9 +50,6 @@ pub use storage::{
 mod out_of_process;
 
 mod worker;
-
-#[cold]
-const fn cold_path() {}
 
 /// Runs the out-of-process JIT helper if this process was launched as one.
 ///
