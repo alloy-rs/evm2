@@ -8,6 +8,7 @@ mod env;
 mod error;
 mod execute;
 mod filter;
+mod fixture_io;
 mod fixtures;
 mod forks;
 mod harness;
@@ -24,7 +25,8 @@ pub use blockchaintest::{
     TestError as BlockchainTestError, TransactionFailed as BlockchainTestTransactionFailed,
     TransactionFinished as BlockchainTestTransactionFinished,
     TransactionStarted as BlockchainTestTransactionStarted,
-    execute_str as execute_blockchain_tests_str, run as run_blockchaintests,
+    execute_str as execute_blockchain_tests_str, execute_suite as execute_blockchain_tests_suite,
+    run as run_blockchaintests,
 };
 pub use error::TestError as StateTestError;
 pub use execute::{
@@ -33,6 +35,7 @@ pub use execute::{
     execute_str_with_filter as execute_state_tests_str_with_filter,
 };
 pub use filter::EntryPoint;
+pub use fixture_io::read_to_string as read_fixture_text;
 pub use runner::run as run_statetests;
 pub use tx::{AccessListItem, TestAuthorization};
 

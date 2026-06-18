@@ -11,6 +11,7 @@ use super::{
 };
 use crate::{
     filter::EntryPoint,
+    fixture_io,
     forks::is_fork_skipped,
     state::{insert_account_with_storage, parse_bytecode},
     tx::{TxFields, build_recovered_tx, rpc_access_list, signed_authorizations},
@@ -29,7 +30,7 @@ use evm2::{
     },
     registry::HandlerError,
 };
-use std::{fs, mem, path::Path};
+use std::{mem, path::Path};
 
 const ONE_GWEI: u64 = 1_000_000_000;
 const ONE_ETHER: u128 = 1_000_000_000_000_000_000;
@@ -63,7 +64,8 @@ pub(crate) fn execute_test_suite(
     path: &Path,
     config: ExecuteConfig,
 ) -> Result<ExecuteSummary, TestError> {
-    let input = fs::read_to_string(path).map_err(|err| TestError::unknown(path, err.into()))?;
+    let input =
+        fixture_io::read_to_string(path).map_err(|err| TestError::unknown(path, err.into()))?;
     let entrypoint = EntryPoint::default();
     let mut hook = NoopHook;
     execute_str(path, &input, config, &entrypoint, &mut hook)
@@ -79,16 +81,27 @@ pub fn execute_str(
 ) -> Result<ExecuteSummary, TestError> {
     let suite: BlockchainTest =
         serde_json::from_str(input).map_err(|err| TestError::unknown(path, err.into()))?;
+    execute_suite(path, &suite, config, entrypoint, hook)
+}
+
+/// Executes a parsed blockchain test suite.
+pub fn execute_suite(
+    path: &Path,
+    suite: &BlockchainTest,
+    config: ExecuteConfig,
+    entrypoint: &EntryPoint,
+    hook: &mut dyn Hook,
+) -> Result<ExecuteSummary, TestError> {
     let mut summary = ExecuteSummary::default();
-    for (name, test_case) in suite.0 {
-        if !entrypoint.matches(&name)
+    for (name, test_case) in &suite.0 {
+        if !entrypoint.matches(name)
             || test_case.network.is_transition()
             || is_fork_skipped(fork_to_spec_id(test_case.network))
         {
             summary.skipped += 1;
             continue;
         }
-        execute_case(path, &name, &test_case, config, hook)?;
+        execute_case(path, name, test_case, config, hook)?;
         summary.executed += 1;
     }
     Ok(summary)

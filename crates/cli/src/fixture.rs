@@ -1,7 +1,7 @@
 use crate::error::{Error, Result};
 use serde::de::{DeserializeSeed, Deserializer, IgnoredAny, MapAccess, Visitor};
 use serde_json::Value;
-use std::{fmt, fs, path::Path};
+use std::{fmt, path::Path};
 
 pub(crate) struct FixtureInput {
     pub(crate) json: Value,
@@ -21,7 +21,8 @@ pub(crate) fn read(path: &Path) -> Result<FixtureInput> {
 }
 
 pub(crate) fn read_text(path: &Path) -> Result<String> {
-    fs::read_to_string(path).map_err(|source| Error::ReadInput { path: path.to_path_buf(), source })
+    evm2_eest::read_fixture_text(path)
+        .map_err(|source| Error::ReadInput { path: path.to_path_buf(), source })
 }
 
 pub(crate) fn detect_str(path: &Path, input: &str) -> Result<Option<FixtureKind>> {

@@ -1,6 +1,7 @@
 use crate::{
     error::{TestError, TestErrorKind},
     filter::EntryPoint,
+    fixture_io,
     forks::is_fork_skipped,
     state::{
         insert_account_with_storage, parse_bytecode, storage_for_root, system_contract_has_code,
@@ -26,7 +27,7 @@ use evm2::{
     registry::HandlerError,
 };
 use serde_json::json;
-use std::{collections::BTreeMap, fs, path::Path};
+use std::{collections::BTreeMap, path::Path};
 
 /// Per-spec execution outcome.
 #[derive(Clone, Debug)]
@@ -63,7 +64,8 @@ pub struct ExecuteSummary {
 
 /// Executes a single state test JSON file using explicit execution options.
 pub(crate) fn execute_test_suite(path: &Path, config: ExecuteConfig) -> Result<(), TestError> {
-    let input = fs::read_to_string(path).map_err(|err| TestError::unknown(path, err.into()))?;
+    let input =
+        fixture_io::read_to_string(path).map_err(|err| TestError::unknown(path, err.into()))?;
     execute_str_with_config(path, &input, config).map(|_| ())
 }
 
