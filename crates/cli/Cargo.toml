@@ -49,3 +49,12 @@ serde = { workspace = true, features = ["derive", "std"] }
 serde_json = { workspace = true, features = ["raw_value", "std"] }
 thiserror = { workspace = true, features = ["std"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time"] }
+zstd.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+revm = { workspace = true, features = ["test-types"] }
+
+[[bench]]
+name = "evm"
+harness = false

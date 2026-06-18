@@ -21,7 +21,7 @@ pub(crate) fn run(command: Replay) -> Result<()> {
         let mut hook = ReplayProgressHook::default();
         let summary = execute_blockchain_tests_suite(
             &command.path,
-            suite,
+            &suite,
             BlockchainTestExecuteConfig { db_stats: command.db_stats, ..Default::default() },
             &entrypoint,
             &mut hook,

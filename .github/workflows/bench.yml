@@ -28,10 +28,10 @@ jobs:
         with:
           tool: cargo-codspeed
       - name: Build the benchmark target
-        run: cargo codspeed build --profile profiling -p evm2 --bench evm
+        run: cargo codspeed build --profile profiling -p evm2-cli --bench evm
       - name: Run the benchmarks
         uses: CodSpeedHQ/action@v4
         with:
-          run: cargo codspeed run -p evm2 evm
+          run: cargo codspeed run -p evm2-cli evm
           mode: instrumentation
           token: ${{ secrets.CODSPEED_TOKEN }}

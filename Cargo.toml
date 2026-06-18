@@ -93,6 +93,7 @@ snapbox = "0.6"
 thiserror = { version = "2.0", default-features = false }
 tokio = { version = "1", default-features = false }
 walkdir = { version = "2.5", default-features = false }
+zstd = "0.13"
 
 # Precompiles
 ark-bls12-381 = { version = "0.6.0", default-features = false }
