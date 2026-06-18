@@ -20,16 +20,17 @@ pub struct BlockchainTestCase {
     /// Genesis block header.
     pub genesis_block_header: BlockHeader,
     /// Genesis block RLP encoding.
-    #[serde(rename = "genesisRLP")]
+    #[serde(rename = "genesisRLP", skip_serializing_if = "Option::is_none")]
     pub genesis_rlp: Option<Bytes>,
     /// Blocks in the test.
     pub blocks: Vec<Block>,
     /// Expected post-state accounts.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub post_state: Option<BTreeMap<Address, Account>>,
     /// Pre-state accounts.
     pub pre: State,
     /// Historical block hashes available to the `BLOCKHASH` opcode before the first block.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub block_hashes: Vec<BlockHash>,
     /// Last block hash.
     pub lastblockhash: B256,
@@ -114,20 +115,26 @@ pub struct Block {
     /// Block header.
     pub block_header: Option<BlockHeader>,
     /// Decoded block payload used by blockchain fixtures that primarily carry block RLP.
-    #[serde(rename = "rlp_decoded", default)]
+    #[serde(rename = "rlp_decoded")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rlp_decoded: Option<DecodedBlock>,
     /// RLP-encoded block data.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_empty_bytes")]
     pub rlp: Bytes,
     /// Expected exception for invalid blocks.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub expect_exception: Option<String>,
     /// Transactions in the block.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub transactions: Option<Vec<Transaction>>,
     /// Uncle/ommer headers.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub uncle_headers: Option<Vec<BlockHeader>>,
     /// Withdrawals in the block.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub withdrawals: Option<Vec<Withdrawal>>,
     /// Block access list.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub block_access_list: Option<BlockAccessList>,
 }
 

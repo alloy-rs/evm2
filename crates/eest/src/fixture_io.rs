@@ -1,4 +1,4 @@
-use crate::blockchaintest::BlockchainTest;
+use crate::{binary, blockchaintest::BlockchainTest};
 use std::{
     fs::{self, File},
     io::{self, BufWriter},
@@ -43,7 +43,7 @@ pub fn is_binary_path(path: &Path) -> bool {
 pub fn read_blockchain(path: &Path) -> Result<BlockchainTest, FixtureReadError> {
     if is_binary_path(path) {
         let bytes = fs::read(path)?;
-        Ok(postcard::from_bytes(&bytes)?)
+        Ok(binary::from_bytes(&bytes)?)
     } else {
         let input = fs::read_to_string(path)?;
         Ok(serde_json::from_str(&input)?)
@@ -53,7 +53,7 @@ pub fn read_blockchain(path: &Path) -> Result<BlockchainTest, FixtureReadError> 
 /// Writes a blockchain test fixture as JSON or postcard binary.
 pub fn write_blockchain(path: &Path, suite: &BlockchainTest) -> Result<(), FixtureWriteError> {
     if is_binary_path(path) {
-        fs::write(path, postcard::to_allocvec(suite)?)?;
+        fs::write(path, binary::to_vec(suite)?)?;
     } else {
         let writer = BufWriter::new(File::create(path)?);
         serde_json::to_writer(writer, suite)?;

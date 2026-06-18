@@ -2,6 +2,7 @@
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
+mod binary;
 pub mod blockchaintest;
 mod discover;
 mod env;
