@@ -526,7 +526,7 @@ pub unsafe extern "C" fn __revmc_builtin_sstore(
     ecx.gas.spend(gp.sstore_dynamic_gas(is_istanbul, &state_load))?;
 
     // State gas for new slot creation (EIP-8037).
-    if ecx.host.is_amsterdam_eip8037_enabled() {
+    if ecx.spec_id.enables(SpecId::AMSTERDAM) {
         ecx.gas.spend_state(gp.sstore_state_gas(&state_load))?;
     }
 
@@ -685,7 +685,7 @@ pub unsafe extern "C" fn __revmc_builtin_selfdestruct(
     ecx.gas.spend(ecx.gas_params.selfdestruct_cost(should_charge_topup, res.is_cold))?;
 
     // State gas for new account creation (EIP-8037).
-    if ecx.host.is_amsterdam_eip8037_enabled() && should_charge_topup {
+    if ecx.spec_id.enables(SpecId::AMSTERDAM) && should_charge_topup {
         ecx.gas.spend_state(u64::from(ecx.gas_params.get(GasId::NewAccountState)))?;
     }
 

@@ -1,6 +1,6 @@
 use super::{GasTracker, InstrStop, Message, Result, Word};
 use crate::{
-    BaseEvmTypes, EvmFeatures, EvmTypes, SpecId,
+    BaseEvmTypes, EvmTypes, SpecId,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
     evm::{AccountLoad, SLoad, SStore, SelfDestructResult},
@@ -104,7 +104,7 @@ pub trait Host<T: EvmTypes> {
     fn target_is_empty_for_new_account_gas(
         &mut self,
         address: &Address,
-        features: EvmFeatures,
+        spec_id: SpecId,
     ) -> Result<bool, InstrStop>;
 
     /// Returns a historical block hash.

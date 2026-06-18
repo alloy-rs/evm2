@@ -10,7 +10,7 @@ use alloy_primitives::{Address, B256, Bytes, Log, U256, ruint};
 use core::{fmt, marker::PhantomData, mem::MaybeUninit, ptr::NonNull};
 pub use evm2::interpreter::{Gas, InstrStop, Memory};
 use evm2::{
-    BaseEvmTypes, EvmFeatures, SpecId, Version,
+    BaseEvmTypes, SpecId, Version,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
     evm::{AccountLoad, SLoad, SStore, SelfDestructResult},
@@ -268,11 +268,6 @@ impl<'a> HostContext<'a> {
     #[inline]
     pub const fn gas_params(&self) -> &GasParams {
         &self.version.gas_params
-    }
-
-    #[inline]
-    pub const fn is_amsterdam_eip8037_enabled(&self) -> bool {
-        self.version.features.contains(EvmFeatures::EIP8037)
     }
 
     #[inline]

@@ -366,13 +366,14 @@
 +    ecx.gas.spend(gp.sstore_dynamic_gas(is_istanbul, &state_load))?;
 
      // State gas for new slot creation (EIP-8037).
-     if ecx.host.is_amsterdam_eip8037_enabled() {
+-    if ecx.host.is_amsterdam_eip8037_enabled() {
 -        state_gas!(ecx, gp.sstore_state_gas(&state_load.data));
 -
 -        let refill = gp.sstore_state_gas_refill(&state_load.data);
 -        if refill > 0 {
 -            ecx.gas.refill_reservoir(refill);
 -        }
++    if ecx.spec_id.enables(SpecId::AMSTERDAM) {
 +        ecx.gas.spend_state(gp.sstore_state_gas(&state_load))?;
      }
 
@@ -702,8 +703,9 @@
 +    ecx.gas.spend(ecx.gas_params.selfdestruct_cost(should_charge_topup, res.is_cold))?;
 
      // State gas for new account creation (EIP-8037).
-     if ecx.host.is_amsterdam_eip8037_enabled() && should_charge_topup {
+-    if ecx.host.is_amsterdam_eip8037_enabled() && should_charge_topup {
 -        state_gas!(ecx, ecx.gas_params.new_account_state_gas());
++    if ecx.spec_id.enables(SpecId::AMSTERDAM) && should_charge_topup {
 +        ecx.gas.spend_state(u64::from(ecx.gas_params.get(GasId::NewAccountState)))?;
      }
 

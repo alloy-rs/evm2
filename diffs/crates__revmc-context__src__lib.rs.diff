@@ -1,6 +1,6 @@
 --- upstream/crates/revmc-context/src/lib.rs
 +++ evm2/crates/jit/context/src/lib.rs
-@@ -6,71 +6,382 @@
+@@ -6,71 +6,377 @@
  extern crate alloc;
 
  use alloc::vec::Vec;
@@ -12,7 +12,7 @@
 +use core::{fmt, marker::PhantomData, mem::MaybeUninit, ptr::NonNull};
 +pub use evm2::interpreter::{Gas, InstrStop, Memory};
 +use evm2::{
-+    BaseEvmTypes, EvmFeatures, SpecId, Version,
++    BaseEvmTypes, SpecId, Version,
 +    bytecode::Bytecode,
 +    env::{BlockEnv, TxEnv},
 +    evm::{AccountLoad, SLoad, SStore, SelfDestructResult},
@@ -56,45 +56,49 @@
 +pub enum CallInput {
 +    Bytes(Bytes),
 +}
-+
+
+-impl ResumeAt {
+-    /// Loads the resume point from the interpreter's current PC.
 +impl CallInput {
-+    #[inline]
+     #[inline]
+-    pub fn load(interpreter: &Interpreter) -> Self {
+-        Self(interpreter.bytecode.pc())
 +    pub fn len(&self) -> usize {
 +        match self {
 +            Self::Bytes(bytes) => bytes.len(),
 +        }
-+    }
-
--impl ResumeAt {
--    /// Loads the resume point from the interpreter's current PC.
-     #[inline]
--    pub fn load(interpreter: &Interpreter) -> Self {
--        Self(interpreter.bytecode.pc())
-+    pub fn is_empty(&self) -> bool {
-+        self.len() == 0
      }
 
 -    /// Stores the resume point back into the interpreter's bytecode PC.
      #[inline]
 -    pub fn store(self, interpreter: &mut Interpreter) {
 -        interpreter.bytecode.absolute_jump(self.0);
++    pub fn is_empty(&self) -> bool {
++        self.len() == 0
+     }
+
+-    /// Returns the raw resume index.
+     #[inline]
+-    pub const fn get(self) -> usize {
+-        self.0
 +    pub fn as_bytes(&self) -> &[u8] {
 +        match self {
 +            Self::Bytes(bytes) => bytes.as_ref(),
 +        }
      }
-+}
+ }
 
--    /// Returns the raw resume index.
+-impl From<usize> for ResumeAt {
 +impl Default for CallInput {
      #[inline]
--    pub const fn get(self) -> usize {
--        self.0
+-    fn from(value: usize) -> Self {
+-        Self(value)
 +    fn default() -> Self {
 +        Self::Bytes(Bytes::new())
-+    }
-+}
-+
+     }
+ }
+
+-impl PartialEq<usize> for ResumeAt {
 +#[doc(hidden)]
 +#[derive(Clone, Debug, Default, PartialEq, Eq)]
 +#[repr(C)]
@@ -141,7 +145,7 @@
 +    pub struct MemoryGas {
 +        pub words_num: usize,
 +        pub expansion_cost: u64,
-     }
++    }
 +
 +    const _: () = {
 +        use core::mem::{align_of, offset_of, size_of};
@@ -152,9 +156,8 @@
 +        assert!(size_of::<Gas>() == size_of::<super::Gas>());
 +        assert!(align_of::<Gas>() == align_of::<super::Gas>());
 +    };
- }
-
--impl From<usize> for ResumeAt {
++}
++
 +/// Type-erased message dispatch builtin.
 +#[doc(hidden)]
 +pub type MessageDispatchFn =
@@ -179,15 +182,12 @@
 +    }
 +
 +    /// Creates a message dispatch table.
-     #[inline]
--    fn from(value: usize) -> Self {
--        Self(value)
++    #[inline]
 +    pub const fn new(create: MessageDispatchFn, call: MessageDispatchFn) -> Self {
 +        Self { create, call }
-     }
- }
-
--impl PartialEq<usize> for ResumeAt {
++    }
++}
++
 +unsafe fn unsupported_message_dispatch(
 +    _ecx: &mut EvmContext<'_>,
 +    _sp: *mut EvmWord,
@@ -310,12 +310,9 @@
 +        &self.version.gas_params
 +    }
 +
-+    #[inline]
-+    pub const fn is_amsterdam_eip8037_enabled(&self) -> bool {
-+        self.version.features.contains(EvmFeatures::EIP8037)
-+    }
-+
-+    #[inline]
+     #[inline]
+-    fn eq(&self, other: &usize) -> bool {
+-        self.0 == *other
 +    pub fn block_hash(&mut self, number: u64) -> Option<B256> {
 +        self.host_mut().block_hash(&Word::from(number)).ok().flatten()
 +    }
@@ -404,9 +401,7 @@
 +        self.load_account_info_skip_cold_load(address, false, false).map(|account| account.balance)
 +    }
 +
-     #[inline]
--    fn eq(&self, other: &usize) -> bool {
--        self.0 == *other
++    #[inline]
 +    pub fn execute_message(
 +        &mut self,
 +        tx_env: &TxEnv<BaseEvmTypes>,
@@ -427,7 +422,7 @@
      }
  }
 
-@@ -85,47 +396,46 @@
+@@ -85,47 +391,46 @@
  #[repr(C)]
  pub struct EvmContext<'a> {
      /// The memory.
@@ -488,7 +483,7 @@
  }
 
  // Static assertions to ensure the struct layout matches expectations.
-@@ -135,10 +445,6 @@
+@@ -135,10 +440,6 @@
 
      // Key fields accessed by JIT code
      assert!(offset_of!(EvmContext<'_>, memory) == 0);
@@ -499,7 +494,7 @@
  };
 
  impl fmt::Debug for EvmContext<'_> {
-@@ -147,53 +453,13 @@
+@@ -147,53 +448,13 @@
      }
  }
 
@@ -556,7 +551,7 @@
          self.mem_base = slice.as_mut_ptr();
          self.mem_len = slice.len();
      }
-@@ -204,9 +470,9 @@
+@@ -204,9 +465,9 @@
  /// # Examples
  ///
  /// ```no_run
@@ -568,7 +563,7 @@
  ///    /// A simple function.
  ///    pub fn test_fn;
  /// }
-@@ -214,7 +480,7 @@
+@@ -214,7 +475,7 @@
  /// let test_fn = EvmCompilerFn::new(test_fn);
  /// ```
  #[macro_export]
@@ -577,7 +572,7 @@
      ($( $(#[$attr:meta])* $vis:vis fn $name:ident; )+) => {
          #[allow(improper_ctypes)]
          unsafe extern "C" {
-@@ -224,7 +490,7 @@
+@@ -224,7 +485,7 @@
                      ecx: ::core::ptr::NonNull<$crate::EvmContext<'_>>,
                      stack: ::core::ptr::NonNull<$crate::EvmStack>,
                      stack_len: ::core::ptr::NonNull<usize>,
@@ -586,7 +581,7 @@
              )+
          }
      };
-@@ -239,7 +505,7 @@
+@@ -239,7 +500,7 @@
      ecx: NonNull<EvmContext<'_>>,
      stack: NonNull<EvmStack>,
      stack_len: NonNull<usize>,
@@ -595,7 +590,7 @@
 
  /// An EVM bytecode function.
  #[derive(Clone, Copy, Debug, Hash)]
-@@ -272,82 +538,6 @@
+@@ -272,82 +533,6 @@
          self.0
      }
 
@@ -678,7 +673,7 @@
      /// Calls the function.
      ///
      /// Arguments:
-@@ -366,8 +556,15 @@
+@@ -366,8 +551,15 @@
          stack: &mut EvmStack,
          stack_len: &mut usize,
          ecx: &mut EvmContext<'_>,
@@ -696,7 +691,7 @@
      }
 
      /// Same as [`call`](Self::call) but with `#[inline(never)]`.
-@@ -383,8 +580,8 @@
+@@ -383,8 +575,8 @@
          stack: &mut EvmStack,
          stack_len: &mut usize,
          ecx: &mut EvmContext<'_>,
@@ -707,7 +702,7 @@
      }
  }
 
-@@ -415,20 +612,6 @@
+@@ -415,20 +607,6 @@
          Vec::with_capacity(1024)
      }
 
@@ -728,7 +723,7 @@
      /// Creates a stack from a vector's buffer.
      ///
      /// # Panics
-@@ -544,7 +727,7 @@
+@@ -544,7 +722,7 @@
      /// The caller must ensure that the index is within bounds.
      #[inline]
      pub unsafe fn get_unchecked(&self, index: usize) -> &EvmWord {
@@ -737,7 +732,7 @@
      }
 
      /// Returns the word at the given index as a mutable reference.
-@@ -554,7 +737,7 @@
+@@ -554,7 +732,7 @@
      /// The caller must ensure that the index is within bounds.
      #[inline]
      pub unsafe fn get_unchecked_mut(&mut self, index: usize) -> &mut EvmWord {
@@ -746,7 +741,7 @@
      }
 
      /// Sets the value at the top of the stack to `value`, and grows the stack by 1.
-@@ -564,7 +747,7 @@
+@@ -564,7 +742,7 @@
      /// The caller must ensure that the stack is not full.
      #[inline]
      pub unsafe fn push(&mut self, value: EvmWord, len: &mut usize) {
@@ -755,7 +750,7 @@
          *len += 1;
      }
 
-@@ -575,7 +758,7 @@
+@@ -575,7 +753,7 @@
      /// The caller must ensure that the stack is not empty.
      #[inline]
      pub unsafe fn top_unchecked(&self, len: usize) -> &EvmWord {
@@ -764,7 +759,7 @@
      }
 
      /// Returns the value at the top of the stack as a mutable reference.
-@@ -585,7 +768,7 @@
+@@ -585,7 +763,7 @@
      /// The caller must ensure that the stack is not empty.
      #[inline]
      pub unsafe fn top_unchecked_mut(&mut self, len: usize) -> &mut EvmWord {
@@ -773,7 +768,7 @@
      }
 
      /// Returns the value at the given index from the top of the stack.
-@@ -595,7 +778,7 @@
+@@ -595,7 +773,7 @@
      /// The caller must ensure that `len >= n + 1`.
      #[inline]
      pub unsafe fn from_top_unchecked(&self, len: usize, n: usize) -> &EvmWord {
@@ -782,7 +777,7 @@
      }
 
      /// Returns the value at the given index from the top of the stack as a mutable reference.
-@@ -605,7 +788,7 @@
+@@ -605,7 +783,7 @@
      /// The caller must ensure that `len >= n + 1`.
      #[inline]
      pub unsafe fn from_top_unchecked_mut(&mut self, len: usize, n: usize) -> &mut EvmWord {
@@ -791,7 +786,7 @@
      }
 
      /// Sets the value at the given index.
-@@ -615,7 +798,7 @@
+@@ -615,7 +793,7 @@
      /// The caller must ensure that the index is within bounds.
      #[inline]
      pub unsafe fn set_unchecked(&mut self, index: usize, value: EvmWord) {
@@ -800,7 +795,7 @@
      }
  }
 
-@@ -821,14 +1004,6 @@
+@@ -821,14 +999,6 @@
      }
  }
 
@@ -815,7 +810,7 @@
  #[cfg(test)]
  mod tests {
      use super::*;
-@@ -841,7 +1016,7 @@
+@@ -841,7 +1011,7 @@
          assert_eq!(usize::try_from(&mut word), Ok(0));
      }
 
@@ -824,7 +819,7 @@
          #[link_name = "__test_fn"]
          fn test_fn;
      }
-@@ -851,8 +1026,8 @@
+@@ -851,8 +1021,8 @@
          _ecx: NonNull<EvmContext<'_>>,
          _stack: NonNull<EvmStack>,
          _stack_len: NonNull<usize>,

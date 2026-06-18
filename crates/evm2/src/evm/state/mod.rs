@@ -16,7 +16,7 @@ pub use stream::{
 };
 
 use crate::{
-    EvmFeatures, Version,
+    EvmFeatures, SpecId, Version,
     bytecode::Bytecode,
     evm::{
         SStore,
@@ -329,9 +329,9 @@ impl State {
     pub(crate) fn target_is_empty_for_new_account_gas(
         &mut self,
         address: &Address,
-        features: EvmFeatures,
+        spec_id: SpecId,
     ) -> DbResult<bool> {
-        if features.contains(EvmFeatures::EIP161) {
+        if spec_id.enables(SpecId::SPURIOUS_DRAGON) {
             return Ok(self.read_account_info(address)?.is_none_or(|info| info.is_empty()));
         }
         Ok(self.read_account_info(address)?.is_none() && !self.scratch.touched.contains(address))

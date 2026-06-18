@@ -1,7 +1,7 @@
 //! System opcode implementations.
 
 use crate::{
-    EvmFeatures, EvmTypes,
+    EvmFeatures, EvmTypes, SpecId,
     bytecode::Bytecode,
     interpreter::{
         Gas, Host, InstrStop, InterpreterState, Message, MessageKind, Result, StackMut, Word,
@@ -109,12 +109,12 @@ fn load_acc_and_calc_gas<T: EvmTypes>(
         code = delegated_account.code;
         code_address = delegated_address;
     }
-    let features = state.version().features;
+    let spec_id = state.spec();
     if create_empty_account
         && should_charge_new_account_gas(
-            features.contains(EvmFeatures::EIP161),
+            spec_id.enables(SpecId::SPURIOUS_DRAGON),
             transfers_value,
-            state.host().target_is_empty_for_new_account_gas(&to, features)?,
+            state.host().target_is_empty_for_new_account_gas(&to, spec_id)?,
         )
     {
         cost += u64::from(state.gas_params().get(GasId::NewAccountCost));

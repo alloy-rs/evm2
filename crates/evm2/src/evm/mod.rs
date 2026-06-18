@@ -1301,10 +1301,10 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
     fn target_is_empty_for_new_account_gas(
         &mut self,
         address: &Address,
-        features: EvmFeatures,
+        spec_id: SpecId,
     ) -> Result<bool, InstrStop> {
         self.state
-            .target_is_empty_for_new_account_gas(address, features)
+            .target_is_empty_for_new_account_gas(address, spec_id)
             .map_err(|code| self.db_error_stop(code))
     }
 
@@ -1390,9 +1390,8 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
         if skip_cold_load && is_cold {
             return Err(InstrStop::OutOfGas);
         }
-        let features = self.features;
         let target_is_empty_for_new_account_gas =
-            self.target_is_empty_for_new_account_gas(target, features)?;
+            self.target_is_empty_for_new_account_gas(target, self.spec_id())?;
         let previously_destroyed = self.state.is_selfdestructed(contract);
         let balance = self
             .state

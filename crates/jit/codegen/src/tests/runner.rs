@@ -1,6 +1,6 @@
 use super::*;
 use evm2::{
-    BaseEvmConfigSelector, BaseEvmTypes, Evm, EvmFeatures, Precompiles,
+    BaseEvmConfigSelector, BaseEvmTypes, Evm, Precompiles,
     bytecode::Bytecode as Evm2Bytecode,
     env::{BlockEnv as Evm2BlockEnv, TxEnv as Evm2TxEnv},
     ethereum::ethereum_tx_registry,
@@ -378,10 +378,10 @@ impl Evm2Host<BaseEvmTypes> for TestHost {
     fn target_is_empty_for_new_account_gas(
         &mut self,
         address: &Address,
-        features: EvmFeatures,
+        spec_id: SpecId,
     ) -> Result<bool, InstrStop> {
         let exists = self.code_map.contains_key(address) || !U256::from(address.0[19]).is_zero();
-        if features.contains(EvmFeatures::EIP161) {
+        if spec_id.enables(SpecId::SPURIOUS_DRAGON) {
             return Ok(!exists);
         }
         Ok(false)

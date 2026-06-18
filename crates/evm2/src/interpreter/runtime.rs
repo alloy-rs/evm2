@@ -463,6 +463,12 @@ impl<'frame, T: EvmTypes> InterpreterState<'frame, T> {
         unsafe { self.0.tx_env.unwrap_unchecked() }
     }
 
+    /// Returns the active base specification ID.
+    #[inline]
+    pub const fn spec(&self) -> SpecId {
+        self.0.spec
+    }
+
     /// Returns the active bytecode.
     #[inline]
     pub fn bytecode(&self) -> BytecodeRef<'_> {

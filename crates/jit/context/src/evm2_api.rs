@@ -10,7 +10,7 @@ use core::{
     ptr::{self, NonNull},
 };
 use evm2::{
-    BaseEvmTypes, EvmFeatures, SpecId,
+    BaseEvmTypes, SpecId,
     bytecode::Bytecode,
     env::TxEnv,
     interpreter::{
@@ -437,7 +437,7 @@ fn load_acc_and_calc_gas(
     }
     let mut code = account.code;
     let mut code_address = to;
-    if version.features.contains(EvmFeatures::EIP7702)
+    if ecx.spec_id.enables(SpecId::PRAGUE)
         && let Some(delegated_address) = code.eip7702_address()
     {
         cost += u64::from(version.gas_params.get(GasId::WarmStorageReadCost));
@@ -453,19 +453,18 @@ fn load_acc_and_calc_gas(
         code = delegated_account.code;
         code_address = delegated_address;
     }
-    let features = version.features;
     if create_empty_account
         && should_charge_new_account_gas(
-            features.contains(EvmFeatures::EIP161),
+            ecx.spec_id.enables(SpecId::SPURIOUS_DRAGON),
             transfers_value,
-            ecx.host.host_mut().target_is_empty_for_new_account_gas(&to, features)?,
+            ecx.host.host_mut().target_is_empty_for_new_account_gas(&to, ecx.spec_id)?,
         )
     {
         cost += u64::from(version.gas_params.get(GasId::NewAccountCost));
     }
     spend(&mut ecx.gas, cost)?;
 
-    let mut gas_limit = if version.features.contains(EvmFeatures::EIP150) {
+    let mut gas_limit = if ecx.spec_id.enables(SpecId::TANGERINE) {
         min(version.gas_params.call_stipend_reduction(ecx.gas.remaining()), stack_gas_limit)
     } else {
         stack_gas_limit
@@ -583,7 +582,7 @@ fn create_inner(
 
     let len = word_to_usize(len_word)?;
     let version = *ecx.host.version();
-    if version.features.contains(EvmFeatures::EIP3860) {
+    if ecx.spec_id.enables(SpecId::SHANGHAI) {
         if len > version.max_initcode_size {
             return Err(InstrStop::CreateInitCodeSizeLimit);
         }
@@ -597,7 +596,7 @@ fn create_inner(
         version.gas_params.get(GasId::Create).into()
     };
     spend(&mut ecx.gas, create_cost)?;
-    let gas_limit = if version.features.contains(EvmFeatures::EIP150) {
+    let gas_limit = if ecx.spec_id.enables(SpecId::TANGERINE) {
         version.gas_params.call_stipend_reduction(ecx.gas.remaining())
     } else {
         ecx.gas.remaining()
@@ -643,7 +642,7 @@ mod tests {
     use alloy_primitives::{Address, B256, Bytes as AlloyBytes, Log};
     use core::mem::offset_of;
     use evm2::{
-        BaseEvmConfigSelector, Evm, EvmConfigSelector, EvmFeatures, Precompiles,
+        BaseEvmConfigSelector, Evm, EvmConfigSelector, Precompiles,
         bytecode::Bytecode,
         env::{BlockEnv, TxEnv},
         ethereum::ethereum_tx_registry,
@@ -708,7 +707,7 @@ mod tests {
         fn target_is_empty_for_new_account_gas(
             &mut self,
             _address: &Address,
-            _features: EvmFeatures,
+            _spec_id: SpecId,
         ) -> Result<bool, InstrStop> {
             Ok(false)
         }
