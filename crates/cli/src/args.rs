@@ -46,6 +46,9 @@ pub(crate) struct Replay {
     /// Logical EEST test or case name glob to run.
     #[arg(long)]
     pub(crate) entrypoint: Option<String>,
+    /// Print database method call counts after execution.
+    #[arg(long)]
+    pub(crate) db_stats: bool,
     /// EEST JSON fixture to replay.
     #[arg(value_name = "PATH")]
     pub(crate) path: PathBuf,

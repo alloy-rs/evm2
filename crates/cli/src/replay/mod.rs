@@ -21,7 +21,7 @@ pub(crate) fn run(command: Replay) -> Result<()> {
             let summary = execute_state_tests_str_with_filter(
                 &command.path,
                 &input,
-                StateTestExecuteConfig::default(),
+                StateTestExecuteConfig { db_stats: command.db_stats, ..Default::default() },
                 &entrypoint,
             )
             .map_err(|source| Error::StateTest { source })?;
@@ -38,7 +38,7 @@ pub(crate) fn run(command: Replay) -> Result<()> {
             let summary = execute_blockchain_tests_str(
                 &command.path,
                 &input,
-                BlockchainTestExecuteConfig::default(),
+                BlockchainTestExecuteConfig { db_stats: command.db_stats, ..Default::default() },
                 &entrypoint,
                 &mut hook,
             )
