@@ -8,14 +8,14 @@ use super::{
 };
 use crate::{
     Evm, EvmTypes, TxResult,
-    bytecode::Bytecode,
     env::TxEnv,
+    evm::db_error_handler,
     interpreter::Host,
     registry::{HandlerError, HandlerResult, TxRequest},
     version::GasId,
 };
 use alloy_consensus::transaction::Recovered;
-use alloy_primitives::{Address, U256};
+use alloy_primitives::U256;
 
 pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     req: TxRequest<'_, T, Recovered<super::LazyTxEip7702>>,
@@ -59,7 +59,7 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
 
     let effective_gas_cost = U256::from(tx.gas_limit) * gas_price;
     charge_upfront(req.host, caller, effective_gas_cost)?;
-    req.host.state.increment_nonce(&caller).map_err(|code| req.host.db_error_handler(code))?;
+    req.host.state.account(&caller, false).map_err(db_error_handler!(req.host))?.bump_nonce();
     let chain_id = req.host.version().chain_id;
     let eip7702_refund = apply_auth_list(req.host, chain_id, &tx.authorization_list)?;
     let execution_checkpoint = req.host.state.checkpoint();
@@ -108,40 +108,24 @@ fn apply_auth_list<T: EvmTypes<Host = Evm<T>>>(
         let Some(authority) = authorization.authority() else {
             continue;
         };
-        host.state.warm_account_non_revertible(&authority);
-        let authority_info =
-            host.state.load_account_info(&authority).map_err(|code| host.db_error_handler(code))?;
-        let existed = authority_info.is_some();
-        let authority_info = authority_info.unwrap_or_default();
-        let code = host.state.read_code(&authority).map_err(|code| host.db_error_handler(code))?;
+        let mut account = host.state.account(&authority, false).map_err(db_error_handler!(host))?;
+        account.warm();
+        let existed = account.exists();
+        let authority_nonce = account.nonce();
+        let code = account.load_code().map_err(db_error_handler!(host))?;
         if !code.is_empty() && !code.is_eip7702() {
             continue;
         }
-        if authorization.nonce() != authority_info.nonce {
+        if authorization.nonce() != authority_nonce {
             continue;
         }
 
         if existed {
             refunded_accounts = refunded_accounts.saturating_add(1);
         }
-        set_delegation(host, authority, *authorization.address())?;
+        account.set_delegation(*authorization.address());
     }
 
     let refund_per_auth = u64::from(host.version().gas_params.get(GasId::TxEip7702AuthRefund));
     Ok(refunded_accounts.saturating_mul(refund_per_auth))
-}
-
-fn set_delegation<T: EvmTypes<Host = Evm<T>>>(
-    host: &mut Evm<T>,
-    authority: Address,
-    delegated_address: Address,
-) -> HandlerResult<()> {
-    let code = if delegated_address.is_zero() {
-        Bytecode::default()
-    } else {
-        Bytecode::new_eip7702(delegated_address)
-    };
-    host.state.set_code(&authority, code).map_err(|code| host.db_error_handler(code))?;
-    host.state.increment_nonce(&authority).map_err(|code| host.db_error_handler(code))?;
-    Ok(())
 }

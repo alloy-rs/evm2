@@ -13,6 +13,8 @@ repository.workspace = true
 [[bin]]
 name = "evm2"
 path = "src/main.rs"
+# Avoid a rustdoc output-filename collision with the `evm2` library crate.
+doc = false
 
 [lints]
 workspace = true

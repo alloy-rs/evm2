@@ -14,6 +14,10 @@ pub use cache::{AccountStorageCache, Cache, CacheDB, InMemoryDB};
 pub struct DbErrorCode(NonZeroUsize);
 
 impl DbErrorCode {
+    /// Reserved code signalling that a cold database load was skipped because the caller could not
+    /// afford the cold access (see `skip_cold_load`). No backing-database error occurred.
+    pub const COLD_LOAD_SKIPPED: Self = Self::new(2).unwrap();
+
     /// Creates a database error code.
     #[inline]
     pub const fn new(code: usize) -> Option<Self> {
@@ -111,11 +115,8 @@ impl<T: Database> Db<T> {
 }
 
 #[inline]
-pub(crate) fn stored_error_code() -> DbErrorCode {
-    match DbErrorCode::new(1) {
-        Some(code) => code,
-        None => unreachable!("stored database error code is non-zero"),
-    }
+pub(crate) const fn stored_error_code() -> DbErrorCode {
+    DbErrorCode::new(1).unwrap()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

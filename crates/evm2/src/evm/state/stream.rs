@@ -1,6 +1,6 @@
 //! Borrowed state-change streaming traits and adapters.
 
-use super::{Account, AccountInfo};
+use super::AccountInfo;
 use crate::{bytecode::Bytecode, interpreter::Word};
 use alloy_primitives::{Address, B256};
 use core::convert::Infallible;
@@ -19,16 +19,6 @@ pub struct AccountInfoRef<'a> {
 }
 
 impl<'a> AccountInfoRef<'a> {
-    #[inline]
-    pub(crate) const fn from_account(account: &'a Account) -> Self {
-        Self {
-            balance: account.balance,
-            nonce: account.nonce,
-            code_hash: account.code_hash,
-            code: Some(&account.code),
-        }
-    }
-
     #[inline]
     pub(crate) const fn from_info(info: &'a AccountInfo) -> Self {
         Self {

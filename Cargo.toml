@@ -60,6 +60,7 @@ alloy-sol-types = { version = "1.5.7", default-features = false }
 alloy-trie = { version = "0.9", default-features = false }
 
 anstyle = { version = "1.0", default-features = false }
+bitvec = { version = "1", default-features = false }
 boa_engine = { version = "0.21", default-features = false }
 boa_gc = { version = "0.21", default-features = false }
 cfg-if = { version = "1.0", default-features = false }

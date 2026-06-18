@@ -21,6 +21,7 @@ evm2-macros.workspace = true
 alloy-consensus.workspace = true
 alloy-eips = { workspace = true, features = ["k256"] }
 alloy-primitives.workspace = true
+bitvec = { workspace = true, features = ["alloc"] }
 derive-where.workspace = true
 thiserror.workspace = true
 cfg-if.workspace = true
@@ -116,6 +117,7 @@ std = [
     "alloy-consensus/std",
     "alloy-eips/std",
     "alloy-primitives/std",
+    "bitvec/std",
     "ark-bls12-381/std",
     "ark-bn254/std",
     "ark-ec/std",
@@ -141,6 +143,7 @@ serde = [
     "alloy-eips/serde",
     "alloy-primitives/serde",
     "ark-serialize/serde",
+    "bitvec/serde",
     "derive-where/serde",
     "k256/serde",
     "p256/serde",
