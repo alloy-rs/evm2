@@ -1,6 +1,9 @@
-use alloy_primitives::Address;
+use alloy_primitives::{Address, U256};
 use core::{hint::cold_path, num::NonZero};
-use evm2::evm::AccountLoad;
+use evm2::{
+    evm::AccountLoad,
+    utils::{word_to_usize, word_to_usize_saturated},
+};
 use evm2_jit_context::{EvmContext, EvmWord, InstrStop};
 
 pub type BuiltinResult = Result<(), BuiltinError>;
@@ -38,6 +41,19 @@ impl<T> OkOrFatal<T> for Option<T> {
     }
 }
 
+#[inline]
+pub(crate) fn require_non_staticcall(ecx: &EvmContext<'_>) -> BuiltinResult {
+    if ecx.is_static {
+        return Err(InstrStop::StateChangeDuringStaticCall.into());
+    }
+    Ok(())
+}
+
+#[inline]
+pub(crate) fn word_to_u64_saturated(value: U256) -> u64 {
+    value.try_into().unwrap_or(u64::MAX)
+}
+
 /// Loads an account, handling cold load gas accounting.
 ///
 /// Pre-Berlin, `cold_account_additional_cost` is 0, so the cold load logic is a no-op.
@@ -50,14 +66,14 @@ pub(crate) fn load_account(
     let skip_cold_load = ecx.gas.remaining() < cold_load_gas;
     let account = ecx.host.load_account_info_skip_cold_load(address, load_code, skip_cold_load)?;
     if account.is_cold {
-        gas!(ecx, cold_load_gas);
+        ecx.gas.spend(cold_load_gas)?;
     }
     Ok(account)
 }
 
 /// Splits the stack pointer into `N` elements by casting it to an array.
 ///
-/// NOTE: this returns the arguments in **reverse order**. Use [`read_words!`] to get them in order.
+/// NOTE: this returns the arguments in **reverse order**. Use `rev!` to get them in order.
 ///
 /// The returned lifetime is valid for the entire duration of the builtin.
 ///
@@ -81,13 +97,12 @@ pub(crate) unsafe fn copy_operation(
     rev![memory_offset, data_offset, len]: &mut [EvmWord; 3],
     data: &[u8],
 ) -> BuiltinResult {
-    let len = try_into_usize!(len);
+    let len = word_to_usize(len.to_u256())?;
     if len != 0 {
-        gas!(ecx, ecx.gas_params.copy_cost(len));
-        let memory_offset = try_into_usize!(memory_offset);
+        ecx.gas.spend(ecx.gas_params.copy_cost(len))?;
+        let memory_offset = word_to_usize(memory_offset.to_u256())?;
         ensure_memory(ecx, memory_offset, len)?;
-        let data_offset = data_offset.to_u256();
-        let data_offset = as_usize_saturated!(data_offset);
+        let data_offset = word_to_usize_saturated(data_offset.to_u256());
         ecx.memory.set_data(memory_offset, data_offset, len, data);
     }
     Ok(())

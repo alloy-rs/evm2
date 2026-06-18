@@ -1,42 +1,45 @@
 --- upstream/crates/revmc-builtins/src/macros.rs
 +++ evm2/crates/jit/builtins/src/macros.rs
-@@ -1,9 +1,9 @@
- #[collapse_debuginfo(yes)]
- macro_rules! gas {
-     ($ecx:expr, $gas:expr) => {
+@@ -1,66 +1,3 @@
+-#[collapse_debuginfo(yes)]
+-macro_rules! gas {
+-    ($ecx:expr, $gas:expr) => {
 -        if !$ecx.gas.record_regular_cost($gas) {
-+        if $ecx.gas.spend($gas).is_err() {
-             core::hint::cold_path();
+-            core::hint::cold_path();
 -            return Err(InstructionResult::OutOfGas.into());
-+            return Err(InstrStop::OutOfGas.into());
-         }
-     };
- }
-@@ -11,9 +11,9 @@
- #[collapse_debuginfo(yes)]
- macro_rules! state_gas {
-     ($ecx:expr, $gas:expr) => {
+-        }
+-    };
+-}
+-
+-#[collapse_debuginfo(yes)]
+-macro_rules! state_gas {
+-    ($ecx:expr, $gas:expr) => {
 -        if !$ecx.gas.record_state_cost($gas) {
-+        if $ecx.gas.spend_state($gas).is_err() {
-             core::hint::cold_path();
+-            core::hint::cold_path();
 -            return Err(InstructionResult::OutOfGas.into());
-+            return Err(InstrStop::OutOfGas.into());
-         }
-     };
- }
-@@ -23,7 +23,7 @@
-     ($ecx:expr) => {
-         if $ecx.is_static {
-             core::hint::cold_path();
+-        }
+-    };
+-}
+-
+-#[collapse_debuginfo(yes)]
+-macro_rules! ensure_non_staticcall {
+-    ($ecx:expr) => {
+-        if $ecx.is_static {
+-            core::hint::cold_path();
 -            return Err(InstructionResult::StateChangeDuringStaticCall.into());
-+            return Err(InstrStop::StateChangeDuringStaticCall.into());
-         }
-     };
- }
-@@ -37,23 +37,13 @@
- }
-
- #[collapse_debuginfo(yes)]
+-        }
+-    };
+-}
+-
+-/// Same as `read_words_rev`, but returns the arguments in the order they were passed.
+-#[collapse_debuginfo(yes)]
+-macro_rules! read_words {
+-    ($sp:expr, $($words:ident),+ $(,)?) => {
+-        let rev![$($words),+] = unsafe { read_words_rev($sp) };
+-    };
+-}
+-
+-#[collapse_debuginfo(yes)]
 -macro_rules! pop {
 -    ($sp:expr; $($x:ident),* $(,)?) => {
 -        $(
@@ -47,35 +50,20 @@
 -}
 -
 -#[collapse_debuginfo(yes)]
- macro_rules! try_into_usize {
-     ($x:expr) => {
-         match $x.to_u256().as_limbs() {
-             x => {
-                 if (x[0] > usize::MAX as u64) | (x[1] != 0) | (x[2] != 0) | (x[3] != 0) {
-                     core::hint::cold_path();
+-macro_rules! try_into_usize {
+-    ($x:expr) => {
+-        match $x.to_u256().as_limbs() {
+-            x => {
+-                if (x[0] > usize::MAX as u64) | (x[1] != 0) | (x[2] != 0) | (x[3] != 0) {
+-                    core::hint::cold_path();
 -                    return Err(InstructionResult::InvalidOperandOOG.into());
-+                    return Err(InstrStop::InvalidOperandOOG.into());
-                 }
-                 x[0] as usize
-             }
-@@ -61,6 +51,20 @@
-     };
- }
-
-+#[collapse_debuginfo(yes)]
-+macro_rules! as_usize_saturated {
-+    ($x:expr) => {
-+        usize::try_from($x).unwrap_or(usize::MAX)
-+    };
-+}
-+
-+#[collapse_debuginfo(yes)]
-+macro_rules! as_u64_saturated {
-+    ($x:expr) => {
-+        u64::try_from($x).unwrap_or(u64::MAX)
-+    };
-+}
-+
+-                }
+-                x[0] as usize
+-            }
+-        }
+-    };
+-}
+-
  // Credits: <https://github.com/AuroransSolis/rustconf-2023/blob/665a645d751dfe0e483261e3abca25ab4bb9e13a/reverse-tokens/src/main.rs>
  #[collapse_debuginfo(yes)]
  macro_rules! rev {

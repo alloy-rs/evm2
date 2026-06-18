@@ -12,7 +12,12 @@ extern crate tracing;
 
 use alloc::vec::Vec;
 use alloy_primitives::{B256, Bytes, KECCAK256_EMPTY, Log, LogData, U256, keccak256};
-use evm2::{SpecId, interpreter::i256, version::GasId};
+use evm2::{
+    SpecId,
+    interpreter::i256,
+    utils::{word_to_usize, word_to_usize_saturated},
+    version::GasId,
+};
 use evm2_jit_context::{EvmContext, EvmWord, InstrStop};
 
 pub mod gas;
@@ -146,7 +151,7 @@ pub unsafe extern "C" fn __revmc_builtin_exp(
 ) -> BuiltinResult {
     let rev![base, exponent_ptr] = sp;
     let exponent = exponent_ptr.to_u256();
-    gas!(ecx, ecx.gas_params.exp_cost(exponent));
+    ecx.gas.spend(ecx.gas_params.exp_cost(exponent))?;
     *exponent_ptr = base.to_u256().pow(exponent).into();
     Ok(())
 }
@@ -156,7 +161,7 @@ pub unsafe extern "C" fn __revmc_builtin_exp_gas(
     ecx: &mut EvmContext<'_>,
     exponent: &EvmWord,
 ) -> BuiltinResult {
-    gas!(ecx, ecx.gas_params.exp_cost(exponent.to_u256()));
+    ecx.gas.spend(ecx.gas_params.exp_cost(exponent.to_u256()))?;
     Ok(())
 }
 
@@ -166,7 +171,7 @@ pub unsafe extern "C" fn __revmc_builtin_keccak256(
     sp: &mut [EvmWord; 2],
 ) -> BuiltinResult {
     let rev![offset, len_ptr] = sp;
-    let len = try_into_usize!(len_ptr);
+    let len = word_to_usize(len_ptr.to_u256())?;
     do_keccak256(ecx, len_ptr, *offset, len)
 }
 
@@ -189,8 +194,8 @@ fn do_keccak256(
     *out = EvmWord::from_be_bytes(if len == 0 {
         KECCAK256_EMPTY
     } else {
-        gas!(ecx, ecx.gas_params.keccak256_word_cost(len));
-        let offset = try_into_usize!(offset);
+        ecx.gas.spend(ecx.gas_params.keccak256_word_cost(len))?;
+        let offset = word_to_usize(offset.to_u256())?;
         ensure_memory(ecx, offset, len)?;
         keccak256(ecx.memory.slice(offset, len))
     });
@@ -218,7 +223,7 @@ pub unsafe extern "C" fn __revmc_builtin_calldataload(
     ecx: &EvmContext<'_>,
     offset_ptr: &mut EvmWord,
 ) {
-    do_calldataload(ecx, offset_ptr, as_usize_saturated!(offset_ptr.to_u256()));
+    do_calldataload(ecx, offset_ptr, word_to_usize_saturated(offset_ptr.to_u256()));
 }
 
 #[unsafe(no_mangle)]
@@ -254,12 +259,12 @@ pub unsafe extern "C" fn __revmc_builtin_calldatacopy(
     sp: &mut [EvmWord; 3],
 ) -> BuiltinResult {
     let rev![memory_offset, data_offset, len] = sp;
-    let len = try_into_usize!(len);
+    let len = word_to_usize(len.to_u256())?;
     if len != 0 {
-        gas!(ecx, ecx.gas_params.copy_cost(len));
-        let memory_offset = try_into_usize!(memory_offset);
+        ecx.gas.spend(ecx.gas_params.copy_cost(len))?;
+        let memory_offset = word_to_usize(memory_offset.to_u256())?;
         ensure_memory(ecx, memory_offset, len)?;
-        let data_offset = as_usize_saturated!(data_offset.to_u256());
+        let data_offset = word_to_usize_saturated(data_offset.to_u256());
         ecx.memory.set_data(memory_offset, data_offset, len, ecx.input.input().as_bytes());
     }
     Ok(())
@@ -297,19 +302,19 @@ pub unsafe extern "C" fn __revmc_builtin_extcodecopy(
 ) -> BuiltinResult {
     let rev![address, memory_offset, code_offset, len] = sp;
     let addr = address.to_address();
-    let len = try_into_usize!(len);
-    gas!(ecx, ecx.gas_params.extcodecopy_cost(len));
+    let len = word_to_usize(len.to_u256())?;
+    ecx.gas.spend(ecx.gas_params.extcodecopy_cost(len))?;
 
     let mut memory_offset_usize = 0;
     if len != 0 {
-        memory_offset_usize = try_into_usize!(memory_offset);
+        memory_offset_usize = word_to_usize(memory_offset.to_u256())?;
         ensure_memory(ecx, memory_offset_usize, len)?;
     }
 
     let account = load_account(ecx, addr, true)?;
     let code = account.code.original_bytes();
 
-    let code_offset_usize = core::cmp::min(as_usize_saturated!(code_offset.to_u256()), code.len());
+    let code_offset_usize = core::cmp::min(word_to_usize_saturated(code_offset.to_u256()), code.len());
     ecx.memory.set_data(memory_offset_usize, code_offset_usize, len, &code);
     Ok(())
 }
@@ -320,8 +325,8 @@ pub unsafe extern "C" fn __revmc_builtin_returndatacopy(
     sp: &mut [EvmWord; 3],
 ) -> BuiltinResult {
     let rev![memory_offset, offset, len] = sp;
-    let len = try_into_usize!(len);
-    let data_offset = as_usize_saturated!(offset.to_u256());
+    let len = word_to_usize(len.to_u256())?;
+    let data_offset = word_to_usize_saturated(offset.to_u256());
 
     // Bounds check before charging gas.
     let data_end = data_offset.saturating_add(len);
@@ -329,9 +334,9 @@ pub unsafe extern "C" fn __revmc_builtin_returndatacopy(
         return Err(InstrStop::OutOfOffset.into());
     }
 
-    gas!(ecx, ecx.gas_params.copy_cost(len));
+    ecx.gas.spend(ecx.gas_params.copy_cost(len))?;
     if len != 0 {
-        let memory_offset = try_into_usize!(memory_offset);
+        let memory_offset = word_to_usize(memory_offset.to_u256())?;
         ensure_memory(ecx, memory_offset, len)?;
         ecx.memory.set(memory_offset, &ecx.return_data[data_offset..data_end]);
     }
@@ -364,7 +369,7 @@ pub unsafe extern "C" fn __revmc_builtin_blockhash(
         return Ok(());
     };
 
-    let diff = as_u64_saturated!(diff);
+    let diff = word_to_u64_saturated(diff);
 
     // Current block returns 0
     if diff == 0 {
@@ -376,7 +381,7 @@ pub unsafe extern "C" fn __revmc_builtin_blockhash(
     const BLOCK_HASH_HISTORY: u64 = 256;
 
     if diff <= BLOCK_HASH_HISTORY {
-        let hash = ecx.host.block_hash(as_u64_saturated!(requested_number)).ok_or_fatal()?;
+        let hash = ecx.host.block_hash(word_to_u64_saturated(requested_number)).ok_or_fatal()?;
         *number_ptr = EvmWord::from_be_bytes(hash);
     } else {
         // Too old, return 0
@@ -438,7 +443,7 @@ pub unsafe extern "C" fn __revmc_builtin_basefee(ecx: &EvmContext<'_>, slot: &mu
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn __revmc_builtin_blob_hash(ecx: &EvmContext<'_>, index_ptr: &mut EvmWord) {
     let index = index_ptr.to_u256();
-    let index_usize = as_usize_saturated!(index);
+    let index_usize = word_to_usize_saturated(index);
     *index_ptr = ecx.host.blob_hash(index_usize).unwrap_or_default().into();
 }
 
@@ -469,7 +474,7 @@ pub unsafe extern "C" fn __revmc_builtin_sload(
         let skip_cold = ecx.gas.remaining() < additional_cold_cost;
         let storage = ecx.host.sload_skip_cold_load(address, key, skip_cold)?;
         if storage.is_cold {
-            gas!(ecx, additional_cold_cost);
+            ecx.gas.spend(additional_cold_cost)?;
         }
         *index = storage.value.into();
     } else {
@@ -497,7 +502,7 @@ pub unsafe extern "C" fn __revmc_builtin_sstore(
     sp: &mut [EvmWord; 2],
 ) -> BuiltinResult {
     let rev![index, value] = sp;
-    ensure_non_staticcall!(ecx);
+    require_non_staticcall(ecx)?;
 
     let target = ecx.input.target_address;
     let is_istanbul = ecx.spec_id.enables(SpecId::ISTANBUL);
@@ -507,7 +512,7 @@ pub unsafe extern "C" fn __revmc_builtin_sstore(
         return Err(InstrStop::ReentrancySentryOOG.into());
     }
 
-    gas!(ecx, u64::from(ecx.gas_params.get(GasId::SstoreStatic)));
+    ecx.gas.spend(u64::from(ecx.gas_params.get(GasId::SstoreStatic)))?;
 
     let state_load = if ecx.spec_id.enables(SpecId::BERLIN) {
         let additional_cold_cost = u64::from(ecx.gas_params.get(GasId::ColdStorageAdditionalCost));
@@ -518,11 +523,11 @@ pub unsafe extern "C" fn __revmc_builtin_sstore(
     };
 
     let gp = &ecx.gas_params;
-    gas!(ecx, gp.sstore_dynamic_gas(is_istanbul, &state_load));
+    ecx.gas.spend(gp.sstore_dynamic_gas(is_istanbul, &state_load))?;
 
     // State gas for new slot creation (EIP-8037).
     if ecx.host.is_amsterdam_eip8037_enabled() {
-        state_gas!(ecx, gp.sstore_state_gas(&state_load));
+        ecx.gas.spend_state(gp.sstore_state_gas(&state_load))?;
     }
 
     ecx.gas.record_refund(gp.sstore_refund(is_istanbul, &state_load));
@@ -540,7 +545,7 @@ pub unsafe extern "C" fn __revmc_builtin_tstore(
     sp: &mut [EvmWord; 2],
 ) -> BuiltinResult {
     let rev![key, value] = sp;
-    ensure_non_staticcall!(ecx);
+    require_non_staticcall(ecx)?;
     ecx.host.tstore(ecx.input.target_address, key.to_u256(), value.to_u256());
     Ok(())
 }
@@ -551,11 +556,11 @@ pub unsafe extern "C" fn __revmc_builtin_mcopy(
     sp: &mut [EvmWord; 3],
 ) -> BuiltinResult {
     let rev![dst, src, len] = sp;
-    let len = try_into_usize!(len);
-    gas!(ecx, ecx.gas_params.mcopy_cost(len));
+    let len = word_to_usize(len.to_u256())?;
+    ecx.gas.spend(ecx.gas_params.mcopy_cost(len))?;
     if len != 0 {
-        let dst = try_into_usize!(dst);
-        let src = try_into_usize!(src);
+        let dst = word_to_usize(dst.to_u256())?;
+        let src = word_to_usize(src.to_u256())?;
         ensure_memory(ecx, dst.max(src), len)?;
         ecx.memory.copy(dst, src, len);
     }
@@ -568,14 +573,14 @@ pub unsafe extern "C" fn __revmc_builtin_log(
     sp: *mut EvmWord,
     n: u8,
 ) -> BuiltinResult {
-    ensure_non_staticcall!(ecx);
+    require_non_staticcall(ecx)?;
     assume!(n <= 4, "invalid log topic count: {n}");
     let sp = unsafe { sp.add(n as usize) };
-    read_words!(sp, offset, len);
-    let len = try_into_usize!(len);
-    gas!(ecx, ecx.gas_params.log_cost(n, len));
+    let rev![offset, len] = unsafe { read_words_rev(sp) };
+    let len = word_to_usize(len.to_u256())?;
+    ecx.gas.spend(ecx.gas_params.log_cost(n, len))?;
     let data = if len != 0 {
-        let offset = try_into_usize!(offset);
+        let offset = word_to_usize(offset.to_u256())?;
         ensure_memory(ecx, offset, len)?;
         Bytes::copy_from_slice(ecx.memory.slice(offset, len))
     } else {
@@ -627,9 +632,9 @@ pub unsafe extern "C" fn __revmc_builtin_do_return(
     result: InstrStop,
 ) -> BuiltinResult {
     let rev![offset, len] = sp;
-    let len = try_into_usize!(len);
+    let len = word_to_usize(len.to_u256())?;
     let output = if len != 0 {
-        let offset = try_into_usize!(offset);
+        let offset = word_to_usize(offset.to_u256())?;
         ensure_memory(ecx, offset, len)?;
         ecx.memory.slice(offset, len).to_vec().into()
     } else {
@@ -663,7 +668,7 @@ pub unsafe extern "C" fn __revmc_builtin_selfdestruct(
     ecx: &mut EvmContext<'_>,
     target: &mut EvmWord,
 ) -> BuiltinResult {
-    ensure_non_staticcall!(ecx);
+    require_non_staticcall(ecx)?;
 
     let cold_load_gas = ecx.gas_params.selfdestruct_cold_cost();
     let skip_cold_load = ecx.gas.remaining() < cold_load_gas;
@@ -677,11 +682,11 @@ pub unsafe extern "C" fn __revmc_builtin_selfdestruct(
         res.target_is_empty
     };
 
-    gas!(ecx, ecx.gas_params.selfdestruct_cost(should_charge_topup, res.is_cold));
+    ecx.gas.spend(ecx.gas_params.selfdestruct_cost(should_charge_topup, res.is_cold))?;
 
     // State gas for new account creation (EIP-8037).
     if ecx.host.is_amsterdam_eip8037_enabled() && should_charge_topup {
-        state_gas!(ecx, u64::from(ecx.gas_params.get(GasId::NewAccountState)));
+        ecx.gas.spend_state(u64::from(ecx.gas_params.get(GasId::NewAccountState)))?;
     }
 
     if !res.previously_destroyed {
