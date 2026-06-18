@@ -242,7 +242,7 @@ impl State {
     /// See [`PrewarmSet::warm_storage`].
     #[inline]
     pub fn prewarm_storage_slot(&mut self, address: &Address, key: Word) {
-        self.prewarm_storage(address, [key].into_iter());
+        self.prewarm_storage(address, [key]);
     }
 
     /// Replaces the pre-warmed set wholesale.
@@ -742,7 +742,7 @@ impl State {
         &self,
         sink: &mut S,
     ) -> Result<(), S::Error> {
-        for (_, entry) in self.accounts.iter() {
+        for entry in self.accounts.values() {
             if let Some(account) = entry.present.as_ref()
                 && let Some((code_hash, code)) = Self::changed_code(entry.code_changed, account)
             {
@@ -830,7 +830,7 @@ impl State {
     /// transaction account/storage layers. It does not materialize [`StateChanges`], take logs, or
     /// write to the wrapped backing database.
     pub(crate) fn commit_transaction(&mut self) {
-        for (_, entry) in self.accounts.iter() {
+        for entry in self.accounts.values() {
             if let Some(account) = entry.present.as_ref()
                 && let Some((code_hash, code)) = Self::changed_code(entry.code_changed, account)
             {
