@@ -5,15 +5,15 @@ use evm2_eest::{
     BlockchainTestExecuteConfig, BlockchainTestNoopHook, EntryPoint,
     blockchaintest::BlockchainTest, execute_blockchain_tests_suite,
 };
-use std::{fs, path::Path, time::Duration};
+use std::{path::Path, time::Duration};
 
-const MAINNET_100_BLOCKS: &str =
-    concat!(env!("CARGO_MANIFEST_DIR"), "/../../data/mainnet-17000000-17000099.json");
+const MAINNET_BLOCKS: &str =
+    concat!(env!("CARGO_MANIFEST_DIR"), "/../../data/mainnet-25346511-25346520.json.gz");
 
 fn mainnet(c: &mut Criterion) {
-    let path = Path::new(MAINNET_100_BLOCKS);
-    let input =
-        fs::read_to_string(path).unwrap_or_else(|err| panic!("failed to read fixture: {err}"));
+    let path = Path::new(MAINNET_BLOCKS);
+    let input = evm2_eest::read_fixture_text(path)
+        .unwrap_or_else(|err| panic!("failed to read fixture: {err}"));
     let suite: BlockchainTest =
         serde_json::from_str(&input).unwrap_or_else(|err| panic!("failed to parse fixture: {err}"));
     let entrypoint = EntryPoint::default();
@@ -35,7 +35,7 @@ fn mainnet(c: &mut Criterion) {
     group.measurement_time(Duration::from_secs(2));
     group.sample_size(10);
 
-    group.bench_function("17000000_17000099/replay", |b| {
+    group.bench_function("25346511_25346520/replay", |b| {
         b.iter(|| {
             let mut hook = BlockchainTestNoopHook;
             black_box(
