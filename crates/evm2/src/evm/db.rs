@@ -16,7 +16,7 @@ pub struct DbErrorCode(NonZeroUsize);
 impl DbErrorCode {
     /// Reserved code signalling that a cold database load was skipped because the caller could not
     /// afford the cold access (see `skip_cold_load`). No backing-database error occurred.
-    pub const COLD_LOAD_SKIPPED: Self = Self::new_const(2);
+    pub const COLD_LOAD_SKIPPED: Self = Self::new(2).unwrap();
 
     /// Creates a database error code.
     #[inline]
@@ -25,19 +25,6 @@ impl DbErrorCode {
             return None;
         };
         Some(Self(code))
-    }
-
-    /// Creates a database error code from a non-zero constant.
-    ///
-    /// # Panics
-    ///
-    /// Panics at compile time if `code` is zero.
-    #[inline]
-    pub const fn new_const(code: usize) -> Self {
-        match Self::new(code) {
-            Some(code) => code,
-            None => panic!("database error code must be non-zero"),
-        }
     }
 
     /// Returns the raw database error code.
@@ -129,7 +116,7 @@ impl<T: Database> Db<T> {
 
 #[inline]
 pub(crate) const fn stored_error_code() -> DbErrorCode {
-    DbErrorCode::new_const(1)
+    DbErrorCode::new(1).unwrap()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

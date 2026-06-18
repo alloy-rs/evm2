@@ -109,7 +109,6 @@ fn apply_auth_list<T: EvmTypes<Host = Evm<T>>>(
             continue;
         };
         let mut account = host.state.account(&authority, false).map_err(db_error_handler!(host))?;
-        // mark account as warm
         account.warm();
         let existed = account.exists();
         let authority_nonce = account.nonce();

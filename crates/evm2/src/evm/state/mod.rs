@@ -18,7 +18,6 @@ pub use stream::{
     AccountChangeRef, AccountInfoRef, NoopChangeSink, StateChangeSink, StateChangeSource,
     StorageChange, Tee,
 };
-use tracked::AccountMap;
 pub use tracked::Tracked;
 
 use super::{
@@ -48,7 +47,7 @@ use derive_where::derive_where;
 #[non_exhaustive]
 pub struct State {
     /// Account writes plus touch and warm-access metadata for the current transaction.
-    accounts: AccountMap,
+    accounts: AddressMap<Account>,
     /// Persistent storage writes plus warm slot metadata for the current transaction.
     storage: AddressMap<StorageOverlay>,
     /// Transaction-scoped EIP-1153 transient storage keyed by account address and slot.
@@ -102,7 +101,7 @@ impl State {
 
     pub(crate) fn new_mono(initial: Box<dyn DynDatabase>) -> Self {
         Self {
-            accounts: AccountMap::default(),
+            accounts: AddressMap::default(),
             storage: AddressMap::default(),
             transient_storage: StorageKeyMap::default(),
             inner: StateInner {
@@ -283,7 +282,7 @@ impl State {
     #[inline(always)]
     fn account_raw<'a>(
         inner: &mut StateInner,
-        accounts: &'a mut AccountMap,
+        accounts: &'a mut AddressMap<Account>,
         address: &Address,
         skip_cold: bool,
     ) -> DbResult<&'a mut Account> {

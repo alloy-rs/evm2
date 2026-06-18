@@ -256,7 +256,7 @@ mod tests {
 
         assert!(result.result.status);
         assert!(result.result.gas_used < SYSTEM_CALL_GAS_LIMIT);
-        let unchanged = |address: &Address| {
+        let unchanged = |address| {
             result.state_changes.accounts.get(address).is_none_or(|change| !change.is_changed())
         };
         assert!(unchanged(&SYSTEM_ADDRESS));

@@ -5,7 +5,7 @@ use crate::{
     evm::precompile::PrecompileProvider,
     interpreter::{GasTracker, Message},
 };
-use alloc::{borrow::Cow, boxed::Box};
+use alloc::{borrow::Cow, boxed::Box, vec::Vec};
 use alloy_primitives::Address;
 #[cfg(feature = "std")]
 use core::any::{Any, TypeId};
@@ -127,8 +127,8 @@ impl<T: EvmTypes> Precompiles<T> {
 
 impl<T: EvmTypes> PrecompileProvider<T> for Precompiles<T> {
     #[inline]
-    fn addresses(&self) -> Box<dyn Iterator<Item = Address> + '_> {
-        Box::new(self.map.as_ref().addresses())
+    fn addresses(&self) -> Vec<Address> {
+        self.map.as_ref().addresses().collect()
     }
 
     #[inline]

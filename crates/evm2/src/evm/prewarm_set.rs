@@ -16,26 +16,26 @@
 //! all runtime warmth introduced while executing EVM code.
 
 use crate::interpreter::Word;
-use alloc::{vec, vec::Vec};
 use alloy_primitives::{
     Address,
     map::{AddressMap, HashSet},
 };
+use bitvec::{bitvec, vec::BitVec};
 
 /// Short-address optimization cap. Addresses with 18 leading zero bytes whose last two bytes are
 /// less than this value are tracked in a bit vector for fast warm lookups.
-pub const SHORT_ADDRESS_CAP: usize = 32;
+const SHORT_ADDRESS_CAP: u8 = u8::MAX;
 
 /// Returns the short-address index for an address, if it qualifies.
 ///
 /// A short address has 18 leading zero bytes and a last-two-byte value below [`SHORT_ADDRESS_CAP`].
 #[inline]
 fn short_address(address: &Address) -> Option<usize> {
-    let (zeros, value) = address.split_at(18);
+    let (zeros, value) = address.split_at(19);
     if zeros.iter().all(|b| *b == 0) {
-        let short_address = u16::from_be_bytes([value[0], value[1]]) as usize;
+        let short_address = value[0];
         if short_address < SHORT_ADDRESS_CAP {
-            return Some(short_address);
+            return Some(short_address as usize);
         }
     }
     None
@@ -48,9 +48,9 @@ fn short_address(address: &Address) -> Option<usize> {
 /// carrying warm storage slots — is held in `access_list`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrewarmSet {
-    /// Boolean vector of warm short addresses. An address shorter than [`SHORT_ADDRESS_CAP`] sets
+    /// Bit vector of warm short addresses. An address shorter than [`SHORT_ADDRESS_CAP`] sets
     /// its bit here for faster access; precompiles and other low-numbered addresses land here.
-    short_addresses: Vec<bool>,
+    short_addresses: BitVec,
     /// Warm addresses keyed by address, each holding its warm storage slots.
     ///
     /// This holds the EIP-2930 access list, non-short warm addresses, and the non-revertible base
@@ -71,7 +71,10 @@ impl PrewarmSet {
     /// Creates a new, empty warm-address set.
     #[inline]
     pub fn new() -> Self {
-        Self { short_addresses: vec![false; SHORT_ADDRESS_CAP], access_list: AddressMap::default() }
+        Self {
+            short_addresses: bitvec![0; SHORT_ADDRESS_CAP as usize],
+            access_list: AddressMap::default(),
+        }
     }
 
     /// Returns the access list (non-short warm addresses and all warm storage slots).
@@ -91,7 +94,7 @@ impl PrewarmSet {
     #[inline]
     pub fn warm(&mut self, address: &Address) {
         if let Some(short_address) = short_address(address) {
-            self.short_addresses[short_address] = true;
+            self.short_addresses.set(short_address, true);
         } else {
             self.access_list.entry(*address).or_default();
         }
@@ -160,8 +163,8 @@ mod tests {
     #[test]
     fn test_initialization() {
         let prewarm_set = PrewarmSet::new();
-        assert_eq!(prewarm_set.short_addresses.len(), SHORT_ADDRESS_CAP);
-        assert!(!prewarm_set.short_addresses.iter().any(|&b| b));
+        assert_eq!(prewarm_set.short_addresses.len(), SHORT_ADDRESS_CAP as usize);
+        assert!(!prewarm_set.short_addresses.any());
         assert!(prewarm_set.access_list.is_empty());
 
         let default_addresses = PrewarmSet::default();
@@ -201,7 +204,7 @@ mod tests {
         prewarm_set.warm(&boundary_addr);
 
         // Non-short addresses are not tracked in the short-address bit vector.
-        assert!(!prewarm_set.short_addresses.iter().any(|&b| b));
+        assert!(!prewarm_set.short_addresses.any());
 
         assert!(prewarm_set.is_warm(&regular_addr));
         assert!(prewarm_set.is_warm(&boundary_addr));

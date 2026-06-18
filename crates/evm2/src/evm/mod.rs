@@ -171,7 +171,7 @@ pub use state::{
 };
 
 mod prewarm_set;
-pub use prewarm_set::{PrewarmSet, SHORT_ADDRESS_CAP};
+pub use prewarm_set::PrewarmSet;
 
 /// Builds a `map_err` closure that records the database error code on `$host` and returns
 /// [`registry::HandlerError::Database`].
@@ -1272,7 +1272,6 @@ impl<T: EvmTypes<Host = Self>> Host<T> for Evm<T> {
             Err(DbErrorCode::COLD_LOAD_SKIPPED) => return Err(InstrStop::OutOfGas),
             Err(code) => return Err(db_error_stop!(self, code)),
         };
-        // mark account as warm
         let is_cold = account.warm();
 
         let exists = account.exists();
@@ -1684,8 +1683,8 @@ mod tests {
     }
 
     impl PrecompileProvider<BaseEvmTypes> for AccessingPrecompile {
-        fn addresses(&self) -> Box<dyn Iterator<Item = Address> + '_> {
-            Box::new(core::iter::once(Self::ADDRESS))
+        fn addresses(&self) -> Vec<Address> {
+            vec![Self::ADDRESS]
         }
 
         fn contains(&self, address: &Address) -> bool {

@@ -1,8 +1,5 @@
 //! Tracked overlay values.
 
-use super::Account;
-use alloy_primitives::map::AddressMap;
-
 /// A value tracked together with the value it had at an aggregation boundary.
 ///
 /// `Tracked` is used by [`State`](super::State) to keep a transaction overlay over the backing
@@ -55,9 +52,3 @@ impl<T: PartialEq> Tracked<T> {
         self.original != self.current
     }
 }
-
-/// Per-transaction map of account overlays.
-///
-/// Account overlays, touched-account state, and EIP-2929 account warmth all live in the same
-/// entry, so a warm or touched account does not have to be loaded from the database.
-pub(crate) type AccountMap = AddressMap<Account>;
