@@ -1,13 +1,14 @@
 --- upstream/crates/revmc-builtins/src/utils.rs
 +++ evm2/crates/jit/builtins/src/utils.rs
-@@ -1,27 +1,25 @@
+@@ -1,43 +1,31 @@
 +use alloy_primitives::Address;
  use core::{hint::cold_path, num::NonZero};
 -use revm_context_interface::journaled_state::AccountInfoLoad;
 -use revm_interpreter::{InstructionResult, as_usize_saturated, host::LoadError};
 -use revm_primitives::Address;
 -use revmc_context::{EvmContext, EvmWord};
-+use evm2_jit_context::{AccountInfoLoad, EvmContext, EvmWord, InstrStop, LoadError};
++use evm2::evm::AccountLoad;
++use evm2_jit_context::{EvmContext, EvmWord, InstrStop};
 
  pub type BuiltinResult = Result<(), BuiltinError>;
 
@@ -35,18 +36,23 @@
          cold_path();
          Self(unsafe { NonZero::new_unchecked(value as u8) })
      }
-@@ -32,8 +30,8 @@
-     fn from(value: LoadError) -> Self {
-         cold_path();
-         match value {
+ }
+
+-impl From<LoadError> for BuiltinError {
+-    #[inline]
+-    fn from(value: LoadError) -> Self {
+-        cold_path();
+-        match value {
 -            LoadError::ColdLoadSkipped => InstructionResult::OutOfGas.into(),
 -            LoadError::DBError => InstructionResult::FatalExternalError.into(),
-+            LoadError::ColdLoadSkipped => InstrStop::OutOfGas.into(),
-+            LoadError::DBError => InstrStop::FatalExternalError.into(),
-         }
-     }
- }
-@@ -46,18 +44,18 @@
+-        }
+-    }
+-}
+-
+ /// Extension trait to convert `Option<T>` to `BuiltinResult`.
+ pub(crate) trait OkOrFatal<T> {
+     fn ok_or_fatal(self) -> Result<T, BuiltinError>;
+@@ -46,18 +34,18 @@
  impl<T> OkOrFatal<T> for Option<T> {
      #[inline]
      fn ok_or_fatal(self) -> Result<T, BuiltinError> {
@@ -65,11 +71,11 @@
      address: Address,
      load_code: bool,
 -) -> Result<AccountInfoLoad<'a>, BuiltinError> {
-+) -> Result<AccountInfoLoad, BuiltinError> {
++) -> Result<AccountLoad, BuiltinError> {
      let cold_load_gas = ecx.gas_params.cold_account_additional_cost();
      let skip_cold_load = ecx.gas.remaining() < cold_load_gas;
      let account = ecx.host.load_account_info_skip_cold_load(address, load_code, skip_cold_load)?;
-@@ -83,13 +81,7 @@
+@@ -83,13 +71,7 @@
 
  #[inline]
  pub(crate) fn ensure_memory(ecx: &mut EvmContext<'_>, offset: usize, len: usize) -> BuiltinResult {

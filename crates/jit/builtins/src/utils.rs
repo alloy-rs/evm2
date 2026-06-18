@@ -1,6 +1,7 @@
 use alloy_primitives::Address;
 use core::{hint::cold_path, num::NonZero};
-use evm2_jit_context::{AccountInfoLoad, EvmContext, EvmWord, InstrStop, LoadError};
+use evm2::evm::AccountLoad;
+use evm2_jit_context::{EvmContext, EvmWord, InstrStop};
 
 pub type BuiltinResult = Result<(), BuiltinError>;
 
@@ -25,17 +26,6 @@ impl From<InstrStop> for BuiltinError {
     }
 }
 
-impl From<LoadError> for BuiltinError {
-    #[inline]
-    fn from(value: LoadError) -> Self {
-        cold_path();
-        match value {
-            LoadError::ColdLoadSkipped => InstrStop::OutOfGas.into(),
-            LoadError::DBError => InstrStop::FatalExternalError.into(),
-        }
-    }
-}
-
 /// Extension trait to convert `Option<T>` to `BuiltinResult`.
 pub(crate) trait OkOrFatal<T> {
     fn ok_or_fatal(self) -> Result<T, BuiltinError>;
@@ -55,7 +45,7 @@ pub(crate) fn load_account(
     ecx: &mut EvmContext<'_>,
     address: Address,
     load_code: bool,
-) -> Result<AccountInfoLoad, BuiltinError> {
+) -> Result<AccountLoad, BuiltinError> {
     let cold_load_gas = ecx.gas_params.cold_account_additional_cost();
     let skip_cold_load = ecx.gas.remaining() < cold_load_gas;
     let account = ecx.host.load_account_info_skip_cold_load(address, load_code, skip_cold_load)?;

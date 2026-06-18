@@ -425,8 +425,8 @@ pub unsafe extern "C" fn __revmc_builtin_self_balance(
     ecx: &mut EvmContext<'_>,
     slot: &mut EvmWord,
 ) -> BuiltinResult {
-    let state = ecx.host.balance(ecx.input.target_address).ok_or_fatal()?;
-    *slot = state.data.into();
+    let balance = ecx.host.balance(ecx.input.target_address)?;
+    *slot = balance.into();
     Ok(())
 }
 
@@ -471,10 +471,10 @@ pub unsafe extern "C" fn __revmc_builtin_sload(
         if storage.is_cold {
             gas!(ecx, additional_cold_cost);
         }
-        *index = storage.data.into();
+        *index = storage.value.into();
     } else {
-        let storage = ecx.host.sload(address, key).ok_or_fatal()?;
-        *index = storage.data.into();
+        let storage = ecx.host.sload(address, key)?;
+        *index = storage.value.into();
     }
 
     Ok(())
@@ -514,18 +514,18 @@ pub unsafe extern "C" fn __revmc_builtin_sstore(
         let skip_cold = ecx.gas.remaining() < additional_cold_cost;
         ecx.host.sstore_skip_cold_load(target, index.to_u256(), value.to_u256(), skip_cold)?
     } else {
-        ecx.host.sstore(target, index.to_u256(), value.to_u256()).ok_or_fatal()?
+        ecx.host.sstore(target, index.to_u256(), value.to_u256())?
     };
 
     let gp = &ecx.gas_params;
-    gas!(ecx, gp.sstore_dynamic_gas(is_istanbul, &state_load.data));
+    gas!(ecx, gp.sstore_dynamic_gas(is_istanbul, &state_load));
 
     // State gas for new slot creation (EIP-8037).
     if ecx.host.is_amsterdam_eip8037_enabled() {
-        state_gas!(ecx, gp.sstore_state_gas(&state_load.data));
+        state_gas!(ecx, gp.sstore_state_gas(&state_load));
     }
 
-    ecx.gas.record_refund(gp.sstore_refund(is_istanbul, &state_load.data));
+    ecx.gas.record_refund(gp.sstore_refund(is_istanbul, &state_load));
     Ok(())
 }
 

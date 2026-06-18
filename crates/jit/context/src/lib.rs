@@ -13,81 +13,10 @@ use evm2::{
     BaseEvmTypes, EvmFeatures, SpecId, Version,
     bytecode::Bytecode,
     env::{BlockEnv, TxEnv},
-    evm::{SStore, SelfDestructResult as Evm2SelfDestructResult},
+    evm::{AccountLoad, SLoad, SStore, SelfDestructResult},
     interpreter::{Host as Evm2Host, Message, MessageResult, Word},
     version::GasParams,
 };
-
-#[doc(hidden)]
-pub type SelfDestructResult = Evm2SelfDestructResult;
-#[doc(hidden)]
-pub type SStoreResult = SStore;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[doc(hidden)]
-pub enum LoadError {
-    ColdLoadSkipped,
-    DBError,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-#[doc(hidden)]
-pub struct StateLoad<T> {
-    pub data: T,
-    pub is_cold: bool,
-}
-
-impl<T> StateLoad<T> {
-    #[inline]
-    pub const fn new(data: T, is_cold: bool) -> Self {
-        Self { data, is_cold }
-    }
-
-    #[inline]
-    pub fn map<B, F>(self, f: F) -> StateLoad<B>
-    where
-        F: FnOnce(T) -> B,
-    {
-        StateLoad::new(f(self.data), self.is_cold)
-    }
-}
-
-impl<T> core::ops::Deref for StateLoad<T> {
-    type Target = T;
-
-    #[inline]
-    fn deref(&self) -> &Self::Target {
-        &self.data
-    }
-}
-
-impl<T> core::ops::DerefMut for StateLoad<T> {
-    #[inline]
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.data
-    }
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-#[doc(hidden)]
-pub struct AccountInfoLoad {
-    pub balance: U256,
-    pub code_hash: B256,
-    pub code: Bytecode,
-    pub is_cold: bool,
-    pub is_empty: bool,
-}
-
-impl AccountInfoLoad {
-    #[inline]
-    pub fn into_state_load<F, O>(self, f: F) -> StateLoad<O>
-    where
-        F: FnOnce(Self) -> O,
-    {
-        let is_cold = self.is_cold;
-        StateLoad::new(f(self), is_cold)
-    }
-}
 
 mod arch;
 use arch::evm2_jit_entry;
@@ -357,22 +286,10 @@ impl<'a> HostContext<'a> {
         address: Address,
         target: Address,
         skip_cold_load: bool,
-    ) -> Result<StateLoad<SelfDestructResult>, LoadError> {
-        let result = self
-            .host_mut()
+    ) -> Result<SelfDestructResult, InstrStop> {
+        self.host_mut()
             .selfdestruct(&address, &target, skip_cold_load)
-            .map_err(|stop| load_error(stop, skip_cold_load))?;
-        Ok(StateLoad::new(
-            SelfDestructResult {
-                had_value: result.had_value,
-                value: result.value,
-                target_is_empty: result.target_is_empty,
-                is_cold: result.is_cold,
-                previously_destroyed: result.previously_destroyed,
-                _non_exhaustive: (),
-            },
-            result.is_cold,
-        ))
+            .map_err(|stop| host_error_stop(stop, skip_cold_load))
     }
 
     #[inline]
@@ -387,21 +304,10 @@ impl<'a> HostContext<'a> {
         key: U256,
         value: U256,
         skip_cold_load: bool,
-    ) -> Result<StateLoad<SStoreResult>, LoadError> {
-        let result = self
-            .host_mut()
+    ) -> Result<SStore, InstrStop> {
+        self.host_mut()
             .sstore(&address, &key, &value, skip_cold_load)
-            .map_err(|stop| load_error(stop, skip_cold_load))?;
-        Ok(StateLoad::new(
-            SStoreResult {
-                original_value: result.original_value,
-                present_value: result.present_value,
-                new_value: result.new_value,
-                is_cold: result.is_cold,
-                _non_exhaustive: (),
-            },
-            result.is_cold,
-        ))
+            .map_err(|stop| host_error_stop(stop, skip_cold_load))
     }
 
     #[inline]
@@ -410,8 +316,8 @@ impl<'a> HostContext<'a> {
         address: Address,
         key: U256,
         value: U256,
-    ) -> Option<StateLoad<SStoreResult>> {
-        self.sstore_skip_cold_load(address, key, value, false).ok()
+    ) -> Result<SStore, InstrStop> {
+        self.sstore_skip_cold_load(address, key, value, false)
     }
 
     #[inline]
@@ -420,17 +326,15 @@ impl<'a> HostContext<'a> {
         address: Address,
         key: U256,
         skip_cold_load: bool,
-    ) -> Result<StateLoad<U256>, LoadError> {
-        let result = self
-            .host_mut()
+    ) -> Result<SLoad, InstrStop> {
+        self.host_mut()
             .sload(&address, &key, skip_cold_load)
-            .map_err(|stop| load_error(stop, skip_cold_load))?;
-        Ok(StateLoad::new(result.value, result.is_cold))
+            .map_err(|stop| host_error_stop(stop, skip_cold_load))
     }
 
     #[inline]
-    pub fn sload(&mut self, address: Address, key: U256) -> Option<StateLoad<U256>> {
-        self.sload_skip_cold_load(address, key, false).ok()
+    pub fn sload(&mut self, address: Address, key: U256) -> Result<SLoad, InstrStop> {
+        self.sload_skip_cold_load(address, key, false)
     }
 
     #[inline]
@@ -449,25 +353,15 @@ impl<'a> HostContext<'a> {
         address: Address,
         load_code: bool,
         skip_cold_load: bool,
-    ) -> Result<AccountInfoLoad, LoadError> {
-        let account = self
-            .host_mut()
+    ) -> Result<AccountLoad, InstrStop> {
+        self.host_mut()
             .load_account(&address, load_code, skip_cold_load)
-            .map_err(|stop| load_error(stop, skip_cold_load))?;
-        Ok(AccountInfoLoad {
-            balance: account.balance,
-            code_hash: account.code_hash,
-            code: account.code,
-            is_cold: account.is_cold,
-            is_empty: account.is_empty,
-        })
+            .map_err(|stop| host_error_stop(stop, skip_cold_load))
     }
 
     #[inline]
-    pub fn balance(&mut self, address: Address) -> Option<StateLoad<U256>> {
-        self.load_account_info_skip_cold_load(address, false, false)
-            .ok()
-            .map(|load| load.into_state_load(|account| account.balance))
+    pub fn balance(&mut self, address: Address) -> Result<U256, InstrStop> {
+        self.load_account_info_skip_cold_load(address, false, false).map(|account| account.balance)
     }
 
     #[inline]
@@ -483,11 +377,11 @@ impl<'a> HostContext<'a> {
 }
 
 #[inline]
-fn load_error(stop: InstrStop, skip_cold_load: bool) -> LoadError {
+fn host_error_stop(stop: InstrStop, skip_cold_load: bool) -> InstrStop {
     if skip_cold_load && stop == InstrStop::OutOfGas {
-        LoadError::ColdLoadSkipped
+        InstrStop::OutOfGas
     } else {
-        LoadError::DBError
+        InstrStop::FatalExternalError
     }
 }
 
