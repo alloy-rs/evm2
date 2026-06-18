@@ -5,7 +5,9 @@ use crate::{
     evm::precompile::PrecompileProvider,
     interpreter::{GasTracker, Message},
 };
-use alloc::{borrow::Cow, boxed::Box, vec::Vec};
+#[cfg(feature = "std")]
+use alloc::boxed::Box;
+use alloc::{borrow::Cow, vec::Vec};
 use alloy_primitives::Address;
 #[cfg(feature = "std")]
 use core::any::{Any, TypeId};
