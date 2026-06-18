@@ -93,7 +93,10 @@ local_rel_for() {
                     ;;
             esac
             ;;
-        data/* | docs/* | examples/* | scripts/* | tests/codegen/*)
+        scripts/*)
+            printf 'scripts/jit/%s\n' "${rel#scripts/}"
+            ;;
+        data/* | docs/* | examples/* | tests/codegen/*)
             printf 'crates/jit/%s\n' "$rel"
             ;;
         *)

@@ -17,12 +17,12 @@ def strip_ansi(s: str) -> str:
 
 
 def repo_root() -> str:
-    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 def _shared_target_dir() -> str:
     """Return a shared CARGO_TARGET_DIR so worktrees reuse the same build cache."""
-    return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "target")
+    return os.path.join(repo_root(), "target")
 
 
 def cargo_env(rust_log: str | None = None) -> dict[str, str]:

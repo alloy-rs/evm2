@@ -10,22 +10,22 @@ statistics across benchmarks. Supports diffing against a base git revision.
 
 Examples:
     # Codegen + compile time diff against main (default):
-    ./scripts/bench.py /tmp/bench --diff main
+    ./scripts/jit/bench.py /tmp/bench --diff main
 
     # All analyses on current branch only:
-    ./scripts/bench.py /tmp/bench --codegen-lines --compile-times --jump-resolution --input-stats
+    ./scripts/jit/bench.py /tmp/bench --codegen-lines --compile-times --jump-resolution --input-stats
 
     # Only jump resolution for specific benchmarks:
-    ./scripts/bench.py /tmp/bench --jump-resolution seaport usdc_proxy
+    ./scripts/jit/bench.py /tmp/bench --jump-resolution seaport usdc_proxy
 
     # Include mainnet .bin files:
-    ./scripts/bench.py /tmp/bench --diff main --extra-dir tmp/mainnet
+    ./scripts/jit/bench.py /tmp/bench --diff main --extra-dir tmp/mainnet
 
     # Only compile times:
-    ./scripts/bench.py /tmp/bench --diff main --compile-times
+    ./scripts/jit/bench.py /tmp/bench --diff main --compile-times
 
     # Only codegen line counts:
-    ./scripts/bench.py /tmp/bench --diff main --codegen-lines
+    ./scripts/jit/bench.py /tmp/bench --diff main --codegen-lines
 """
 
 import argparse
