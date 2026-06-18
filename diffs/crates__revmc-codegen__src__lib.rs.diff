@@ -13,7 +13,7 @@
 
  mod bytecode;
  pub use bytecode::*;
-@@ -18,10 +20,7 @@
+@@ -18,11 +20,6 @@
  mod linker;
  pub use linker::{Linker, shared_library_path};
 
@@ -21,11 +21,11 @@
 -pub mod simple_revm_evm {
 -    pub use revmc_context::JitEvm;
 -}
-+mod spec;
-
+-
  /// ABI version of compiled artifacts. Bump when the calling convention changes.
  pub const ABI_VERSION: u32 = 0;
-@@ -32,11 +31,11 @@
+
+@@ -32,11 +29,11 @@
 
  type FxHashMap<K, V> = alloy_primitives::map::HashMap<K, V, alloy_primitives::map::FxBuildHasher>;
 

@@ -12,10 +12,10 @@
     RETURN
 
 ; CHECK-NOT: ecx.mem_len
-; CHECK-COUNT-1: call {{.*}}@__evm2_jit_builtin_mresize{{.*}}; >>
+; CHECK-COUNT-1: call {{.*}}@__revmc_builtin_mresize{{.*}}; >>
 ; CHECK-NOT: ecx.mem_len
-; CHECK-NOT: call {{.*}}@__evm2_jit_builtin_mresize{{.*}}; >>
+; CHECK-NOT: call {{.*}}@__revmc_builtin_mresize{{.*}}; >>
 ; CHECK-NOT: load i256
 ; CHECK-NOT: mul
 ; CHECK: store i256 {{-?[0-9]+}}
-; CHECK: call {{.*}}@__evm2_jit_builtin_do_return{{.*}}i64 0, i64 32
+; CHECK: call {{.*}}@__revmc_builtin_do_return{{.*}}i64 0, i64 32

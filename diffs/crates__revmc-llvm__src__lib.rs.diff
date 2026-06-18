@@ -31,17 +31,7 @@
                      jit.as_inner(),
                      &memory_counters.code_bytes,
                      &memory_counters.data_bytes,
-@@ -271,7 +271,8 @@
-             })
-             .map_err(|e| e.to_string())?;
-
--            let builtins_jd = jit.get_execution_session().create_bare_jit_dylib(c"revmc.builtins");
-+            let builtins_jd =
-+                jit.get_execution_session().create_bare_jit_dylib(c"evm2_jit.builtins");
-
-             Ok(Self {
-                 jit,
-@@ -290,7 +291,7 @@
+@@ -290,7 +290,7 @@
      /// Creates a fresh JITDylib for a compiler.
      fn create_jit_dylib(&self) -> orc::JITDylibRef {
          let id = self.next_dylib_id.fetch_add(1, Ordering::Relaxed);
@@ -50,7 +40,7 @@
          let es = self.jit.get_execution_session();
          let jd = es.create_bare_jit_dylib(&name);
          // Link against the builtins JD so compiled code can resolve builtin symbols.
-@@ -686,7 +687,7 @@
+@@ -686,7 +686,7 @@
              DWARFSourceLanguage::C,
              &filename,
              &directory,
@@ -59,7 +49,7 @@
              is_optimized,
              &flags,
              0,
-@@ -793,7 +794,7 @@
+@@ -793,7 +793,7 @@
      /// Pops and returns the [`ResourceTracker`](orc::ResourceTracker) for the last committed
      /// JIT module.
      ///
@@ -68,7 +58,7 @@
      /// with its own tracker. The caller takes ownership and is responsible for calling
      /// `tracker.remove()` to free the machine code when it is no longer needed.
      ///
-@@ -887,7 +888,7 @@
+@@ -887,7 +887,7 @@
          }
          if self.backend_config.opt_level != config.opt_level {
              unsafe {
@@ -77,7 +67,7 @@
                      self.machine.as_mut_ptr(),
                      convert_opt_level(config.opt_level).into(),
                  );
-@@ -928,7 +929,7 @@
+@@ -928,7 +928,7 @@
          ret: Option<Self::Type>,
          params: &[Self::Type],
          param_names: &[&str],
@@ -86,7 +76,7 @@
      ) -> Result<(Self::Builder<'_>, Self::FuncId)> {
          if !self.aot {
              self.ensure_orc()?;
-@@ -1014,14 +1015,14 @@
+@@ -1014,14 +1014,14 @@
          // quadratic on large functions — e.g. +430ms on snailtracer (7770 BBs) vs +0ms on
          // fibonacci (45 BBs). We skip it for functions with >4000 basic blocks.
          //
@@ -103,7 +93,7 @@
          let passes = passes.as_deref().unwrap_or_else(|| match self.backend_config.opt_level {
              OptimizationLevel::None => "default<O0>",
              OptimizationLevel::Less | OptimizationLevel::Default => {
-@@ -1849,7 +1850,7 @@
+@@ -1849,7 +1849,7 @@
          name: &str,
          params: &[Self::Type],
          ret: Option<Self::Type>,
@@ -112,7 +102,7 @@
          build: impl FnOnce(&mut Self),
      ) -> Self::Function {
          if let Some(function) = self.module().get_function(name) {
-@@ -1898,7 +1899,7 @@
+@@ -1898,7 +1898,7 @@
          params: &[Self::Type],
          ret: Option<Self::Type>,
          address: Option<usize>,
@@ -121,7 +111,7 @@
          call_conv: CallConv,
      ) -> Self::Function {
          let func_ty = self.fn_type(ret, params);
-@@ -1934,8 +1935,8 @@
+@@ -1934,8 +1934,8 @@
          cpp::set_dso_local(stub);
          self.add_function_attribute(
              Some(stub),
@@ -132,7 +122,7 @@
          );
 
          let before = self.bcx.get_insert_block();
-@@ -1965,8 +1966,8 @@
+@@ -1965,8 +1965,8 @@
      fn add_function_attribute(
          &mut self,
          function: Option<Self::Function>,
@@ -143,7 +133,7 @@
      ) {
          let func = function.unwrap_or(self.function);
          let loc = convert_attribute_loc(loc);
-@@ -2033,8 +2034,8 @@
+@@ -2033,8 +2033,8 @@
          install_fatal_error_handler(report_fatal_error);
      }
 
@@ -154,7 +144,7 @@
          .ok()
          .iter()
          .flat_map(|s| s.split_whitespace().filter_map(|s| CString::new(s).ok()).collect::<Vec<_>>())
-@@ -2045,7 +2046,7 @@
+@@ -2045,7 +2045,7 @@
 
      // The first arg is only used in `-help` output AFAICT.
      let mut args = vec![
@@ -163,7 +153,7 @@
          c"-x86-asm-syntax=intel".as_ptr(),
          // CodeGenPrepare's memory optimization has a pathological interaction with our IR shape:
          // repeated stores to the same `gas_remaining` pointer in a huge function cause
-@@ -2131,8 +2132,8 @@
+@@ -2131,8 +2131,8 @@
      }
  }
 
@@ -174,7 +164,7 @@
 
      enum AttrValue<'a> {
          String(&'a str),
-@@ -2145,7 +2146,6 @@
+@@ -2145,7 +2145,6 @@
          OurAttr::WillReturn => ("willreturn", AttrValue::Enum(0)),
          OurAttr::NoReturn => ("noreturn", AttrValue::Enum(0)),
          OurAttr::NoFree => ("nofree", AttrValue::Enum(0)),
@@ -182,7 +172,7 @@
          OurAttr::NoSync => ("nosync", AttrValue::Enum(0)),
          OurAttr::NoUnwind => ("nounwind", AttrValue::Enum(0)),
          OurAttr::NonLazyBind => ("nonlazybind", AttrValue::Enum(0)),
-@@ -2201,11 +2201,11 @@
+@@ -2201,11 +2200,11 @@
      }
  }
 
@@ -198,7 +188,7 @@
      }
  }
 
-@@ -2229,11 +2229,11 @@
+@@ -2229,11 +2228,11 @@
      }
  }
 
@@ -214,7 +204,7 @@
      }
  }
 
-@@ -2247,8 +2247,8 @@
+@@ -2247,8 +2246,8 @@
  }
 
  // No `#[track_caller]` because `map_err` doesn't propagate it.

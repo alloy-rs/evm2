@@ -1,10 +1,7 @@
 use crate::{
     EvmTypes,
     evm::AccountLoad,
-    interpreter::{
-        Gas, Host, InstrStop, Memory, Result, Word, memory::resize_memory,
-        private::GasInstructionCx,
-    },
+    interpreter::{Gas, Host, InstrStop, Memory, Result, Word, private::GasInstructionCx},
     utils::{
         address_to_word, b256_to_word, word_to_address, word_to_usize, word_to_usize_saturated,
     },
@@ -38,7 +35,7 @@ fn copy_data(
 ) -> Result {
     if len != 0 {
         let memory_offset = word_to_usize(*memory_offset)?;
-        resize_memory(gas, memory, memory_offset, len)?;
+        memory.resize_evm(gas, memory_offset, len)?;
         memory.set_data(memory_offset, word_to_usize_saturated(*data_offset), len, data);
     }
     Ok(())
@@ -129,7 +126,7 @@ pub(crate) fn extcodecopy(cx: _, [addr, memory_offset, code_offset, len]: [Word]
     cx.gas.spend(cx.state.gas_params().extcodecopy_cost(len))?;
     let memory_offset = if len != 0 {
         let memory_offset = word_to_usize(*memory_offset)?;
-        resize_memory(cx.gas, &mut cx.state.0.memory, memory_offset, len)?;
+        cx.state.0.memory.resize_evm(cx.gas, memory_offset, len)?;
         memory_offset
     } else {
         0

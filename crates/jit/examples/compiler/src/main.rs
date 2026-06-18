@@ -37,7 +37,7 @@ fn main() -> eyre::Result<()> {
     let mut compiler = EvmCompiler::new_llvm(false)?;
     let f = unsafe { compiler.jit("test", bytecode.as_slice(), SpecId::CANCUN) }
         .wrap_err("Failed to JIT-compile code")?;
-    let f = EvmCompilerFn::<BaseEvmTypes>::from_abi_compatible(f);
+    let f = EvmCompilerFn::from_abi_compatible(f);
 
     // Set up runtime context and run the function.
     let config = <BaseEvmConfigSelector as EvmConfigSelector<BaseEvmTypes>>::execution_config(

@@ -1688,7 +1688,7 @@ pub(crate) mod tests {
 
     #[test]
     fn hash_10k() {
-        let code = fixture_entry_code(include_str!("../../../../data/hash_10k.json"));
+        let code = fixture_entry_code(include_str!("../../../../../../data/hash_10k.json"));
         let mut bytecode = Bytecode::test(code);
         bytecode.analyze().unwrap();
         assert!(!bytecode.has_dynamic_jumps, "expected all jumps to be resolved");

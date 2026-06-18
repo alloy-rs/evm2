@@ -3,7 +3,7 @@
     AND
     RET_WORD
 
-; CHECK: call void @__evm2_jit_builtin_origin(
+; CHECK: call void @__revmc_builtin_origin(
 ; CHECK-NOT: and
 ; CHECK: load i160
 ; CHECK-NOT: and

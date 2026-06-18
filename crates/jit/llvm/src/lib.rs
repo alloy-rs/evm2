@@ -271,8 +271,7 @@ impl GlobalOrcJit {
             })
             .map_err(|e| e.to_string())?;
 
-            let builtins_jd =
-                jit.get_execution_session().create_bare_jit_dylib(c"evm2_jit.builtins");
+            let builtins_jd = jit.get_execution_session().create_bare_jit_dylib(c"revmc.builtins");
 
             Ok(Self {
                 jit,

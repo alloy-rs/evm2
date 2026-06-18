@@ -80,7 +80,7 @@
 -        offset,
 -        len,
 -    )?;
-+    evm2_jit_context::resize_memory(&mut ecx.gas, ecx.memory, &ecx.gas_params, offset, len)?;
++    ecx.memory.resize_evm(&mut ecx.gas, offset, len)?;
      ecx.refresh_memory_cache();
      Ok(())
  }

@@ -9,15 +9,6 @@
 
  Collects codegen stats, compile times, jump resolution, and constant-input
  statistics across benchmarks. Supports diffing against a base git revision.
-@@ -220,7 +220,7 @@
-     try:
-         with open(path) as f:
-             for line in f:
--                if "call" in line and "@__revmc_builtin_mresize" in line:
-+                if "call" in line and "@__evm2_jit_builtin_mresize" in line:
-                     calls += 1
-     except FileNotFoundError:
-         pass
 @@ -685,7 +685,7 @@
          return False
 
@@ -32,7 +23,7 @@
      "dead",
      "noops",
 -    "suspends",
-+    "recursive_message_opcodes",
++    "message_opcodes",
      "blocks",
      "block_min",
      "block_max",
@@ -50,7 +41,7 @@
              r" dead=(\d+)"
              r" noops=(\d+)"
 -            r" suspends=(\d+)"
-+            r" recursive_message_opcodes=(\d+)"
++            r" message_opcodes=(\d+)"
              r" blocks=(\d+)"
              r" block_min=(\d+)"
              r" block_max=(\d+)"
@@ -59,7 +50,7 @@
              "dead": int(m.group(3)),
              "noops": int(m.group(4)),
 -            "suspends": int(m.group(5)),
-+            "recursive_message_opcodes": int(m.group(5)),
++            "message_opcodes": int(m.group(5)),
              "blocks": int(m.group(6)),
              "block_min": int(m.group(7)),
              "block_max": int(m.group(8)),
@@ -86,6 +77,6 @@
          "--block-stats",
          action="store_true",
 -        help="Report IR stats (inst counts, block size distribution, suspends)",
-+        help="Report IR stats (inst counts, block size distribution, recursive message opcodes)",
++        help="Report IR stats (inst counts, block size distribution, message opcodes)",
      )
      args = parser.parse_args()

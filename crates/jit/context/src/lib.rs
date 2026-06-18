@@ -7,11 +7,14 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 use alloy_primitives::{Address, B256, Bytes, Log, U256, ruint};
-use core::{fmt, mem::MaybeUninit, ptr::NonNull};
+use core::{fmt, marker::PhantomData, mem::MaybeUninit, ptr::NonNull};
 pub use evm2::interpreter::{Gas, InstrStop, Memory};
 use evm2::{
+    BaseEvmTypes, EvmFeatures, SpecId, Version,
     bytecode::Bytecode,
+    env::{BlockEnv, TxEnv},
     evm::{SStore, SelfDestructResult as Evm2SelfDestructResult},
+    interpreter::{Host as Evm2Host, Message, MessageResult, Word},
     version::GasParams,
 };
 
@@ -186,40 +189,37 @@ pub mod jit_abi {
     };
 }
 
-/// Type-erased evm2 recursive message builtin.
+/// Type-erased message dispatch builtin.
 #[doc(hidden)]
-pub type Evm2RecursiveMessageFn =
+pub type MessageDispatchFn =
     unsafe fn(&mut EvmContext<'_>, *mut EvmWord, u8) -> Result<(), InstrStop>;
 
-/// Dispatches recursive evm2 call/create messages from compiled code.
+/// Dispatches call/create messages from compiled code.
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 #[doc(hidden)]
-pub struct Evm2Recursion {
+pub struct MessageDispatch {
     /// Executes `CREATE` or `CREATE2`.
-    pub create: Evm2RecursiveMessageFn,
+    pub create: MessageDispatchFn,
     /// Executes `CALL`, `CALLCODE`, `DELEGATECALL`, or `STATICCALL`.
-    pub call: Evm2RecursiveMessageFn,
+    pub call: MessageDispatchFn,
 }
 
-impl Evm2Recursion {
-    /// Returns dispatch functions that reject recursive message opcodes.
+impl MessageDispatch {
+    /// Returns dispatch functions that reject call/create opcodes.
     #[inline]
     pub const fn unsupported() -> Self {
-        Self {
-            create: unsupported_evm2_recursive_message,
-            call: unsupported_evm2_recursive_message,
-        }
+        Self { create: unsupported_message_dispatch, call: unsupported_message_dispatch }
     }
 
-    /// Creates a recursive message dispatch table.
+    /// Creates a message dispatch table.
     #[inline]
-    pub const fn new(create: Evm2RecursiveMessageFn, call: Evm2RecursiveMessageFn) -> Self {
+    pub const fn new(create: MessageDispatchFn, call: MessageDispatchFn) -> Self {
         Self { create, call }
     }
 }
 
-unsafe fn unsupported_evm2_recursive_message(
+unsafe fn unsupported_message_dispatch(
     _ecx: &mut EvmContext<'_>,
     _sp: *mut EvmWord,
     _kind: u8,
@@ -227,41 +227,185 @@ unsafe fn unsupported_evm2_recursive_message(
     Err(InstrStop::FatalExternalError)
 }
 
-/// Host operations consumed by compiled-code builtins.
+/// Host state consumed by compiled-code builtins.
 #[doc(hidden)]
-pub trait JitHost {
-    fn basefee(&self) -> U256;
-    fn blob_gasprice(&self) -> U256;
-    fn gas_limit(&self) -> U256;
-    fn difficulty(&self) -> U256;
-    fn prevrandao(&self) -> Option<U256>;
-    fn block_number(&self) -> U256;
-    fn timestamp(&self) -> U256;
-    fn beneficiary(&self) -> Address;
-    fn slot_num(&self) -> U256;
-    fn chain_id(&self) -> U256;
-    fn effective_gas_price(&self) -> U256;
-    fn caller(&self) -> Address;
-    fn blob_hash(&self, number: usize) -> Option<U256>;
-    fn max_initcode_size(&self) -> usize;
-    fn gas_params(&self) -> &GasParams;
-    fn is_amsterdam_eip8037_enabled(&self) -> bool;
-    fn block_hash(&mut self, number: u64) -> Option<B256>;
-    fn selfdestruct(
+#[derive(Debug)]
+#[repr(C)]
+pub struct HostContext<'a> {
+    host: NonNull<dyn Evm2Host<BaseEvmTypes> + 'a>,
+    block_env: BlockEnv<BaseEvmTypes>,
+    tx_env: &'a TxEnv<BaseEvmTypes>,
+    version: Version,
+    _marker: PhantomData<&'a mut (dyn Evm2Host<BaseEvmTypes> + 'a)>,
+}
+
+impl<'a> HostContext<'a> {
+    #[inline]
+    pub fn new(
+        host: &'a mut (dyn Evm2Host<BaseEvmTypes> + 'a),
+        tx_env: &'a TxEnv<BaseEvmTypes>,
+        version: &'a Version,
+    ) -> Self {
+        let block_env = *host.block_env();
+        Self {
+            host: NonNull::from(host),
+            block_env,
+            tx_env,
+            version: *version,
+            _marker: PhantomData,
+        }
+    }
+
+    #[inline]
+    pub fn host_mut(&mut self) -> &mut (dyn Evm2Host<BaseEvmTypes> + 'a) {
+        unsafe { self.host.as_mut() }
+    }
+
+    #[inline]
+    pub const fn version(&self) -> &Version {
+        &self.version
+    }
+
+    #[inline]
+    pub const fn basefee(&self) -> U256 {
+        self.block_env.basefee
+    }
+
+    #[inline]
+    pub const fn blob_gasprice(&self) -> U256 {
+        self.block_env.blob_basefee
+    }
+
+    #[inline]
+    pub const fn gas_limit(&self) -> U256 {
+        self.block_env.gas_limit
+    }
+
+    #[inline]
+    pub const fn difficulty(&self) -> U256 {
+        self.block_env.difficulty
+    }
+
+    #[inline]
+    pub const fn prevrandao(&self) -> Option<U256> {
+        Some(self.block_env.prevrandao)
+    }
+
+    #[inline]
+    pub const fn block_number(&self) -> U256 {
+        self.block_env.number
+    }
+
+    #[inline]
+    pub const fn timestamp(&self) -> U256 {
+        self.block_env.timestamp
+    }
+
+    #[inline]
+    pub const fn beneficiary(&self) -> Address {
+        self.block_env.beneficiary
+    }
+
+    #[inline]
+    pub const fn slot_num(&self) -> U256 {
+        self.block_env.slot_num
+    }
+
+    #[inline]
+    pub const fn chain_id(&self) -> U256 {
+        self.tx_env.chain_id
+    }
+
+    #[inline]
+    pub const fn effective_gas_price(&self) -> U256 {
+        self.tx_env.gas_price
+    }
+
+    #[inline]
+    pub const fn caller(&self) -> Address {
+        self.tx_env.origin
+    }
+
+    #[inline]
+    pub fn blob_hash(&self, number: usize) -> Option<U256> {
+        self.tx_env.blob_hashes.get(number).copied()
+    }
+
+    #[inline]
+    pub const fn max_initcode_size(&self) -> usize {
+        self.version.max_initcode_size
+    }
+
+    #[inline]
+    pub const fn gas_params(&self) -> &GasParams {
+        &self.version.gas_params
+    }
+
+    #[inline]
+    pub const fn is_amsterdam_eip8037_enabled(&self) -> bool {
+        self.version.features.contains(EvmFeatures::EIP8037)
+    }
+
+    #[inline]
+    pub fn block_hash(&mut self, number: u64) -> Option<B256> {
+        self.host_mut().block_hash(&Word::from(number)).ok().flatten()
+    }
+
+    #[inline]
+    pub fn selfdestruct(
         &mut self,
         address: Address,
         target: Address,
         skip_cold_load: bool,
-    ) -> Result<StateLoad<SelfDestructResult>, LoadError>;
-    fn log(&mut self, log: Log);
-    fn sstore_skip_cold_load(
+    ) -> Result<StateLoad<SelfDestructResult>, LoadError> {
+        let result = self
+            .host_mut()
+            .selfdestruct(&address, &target, skip_cold_load)
+            .map_err(|stop| load_error(stop, skip_cold_load))?;
+        Ok(StateLoad::new(
+            SelfDestructResult {
+                had_value: result.had_value,
+                value: result.value,
+                target_is_empty: result.target_is_empty,
+                is_cold: result.is_cold,
+                previously_destroyed: result.previously_destroyed,
+                _non_exhaustive: (),
+            },
+            result.is_cold,
+        ))
+    }
+
+    #[inline]
+    pub fn log(&mut self, log: Log) {
+        self.host_mut().log(log);
+    }
+
+    #[inline]
+    pub fn sstore_skip_cold_load(
         &mut self,
         address: Address,
         key: U256,
         value: U256,
         skip_cold_load: bool,
-    ) -> Result<StateLoad<SStoreResult>, LoadError>;
-    fn sstore(
+    ) -> Result<StateLoad<SStoreResult>, LoadError> {
+        let result = self
+            .host_mut()
+            .sstore(&address, &key, &value, skip_cold_load)
+            .map_err(|stop| load_error(stop, skip_cold_load))?;
+        Ok(StateLoad::new(
+            SStoreResult {
+                original_value: result.original_value,
+                present_value: result.present_value,
+                new_value: result.new_value,
+                is_cold: result.is_cold,
+                _non_exhaustive: (),
+            },
+            result.is_cold,
+        ))
+    }
+
+    #[inline]
+    pub fn sstore(
         &mut self,
         address: Address,
         key: U256,
@@ -269,27 +413,81 @@ pub trait JitHost {
     ) -> Option<StateLoad<SStoreResult>> {
         self.sstore_skip_cold_load(address, key, value, false).ok()
     }
-    fn sload_skip_cold_load(
+
+    #[inline]
+    pub fn sload_skip_cold_load(
         &mut self,
         address: Address,
         key: U256,
         skip_cold_load: bool,
-    ) -> Result<StateLoad<U256>, LoadError>;
-    fn sload(&mut self, address: Address, key: U256) -> Option<StateLoad<U256>> {
+    ) -> Result<StateLoad<U256>, LoadError> {
+        let result = self
+            .host_mut()
+            .sload(&address, &key, skip_cold_load)
+            .map_err(|stop| load_error(stop, skip_cold_load))?;
+        Ok(StateLoad::new(result.value, result.is_cold))
+    }
+
+    #[inline]
+    pub fn sload(&mut self, address: Address, key: U256) -> Option<StateLoad<U256>> {
         self.sload_skip_cold_load(address, key, false).ok()
     }
-    fn tstore(&mut self, address: Address, key: U256, value: U256);
-    fn tload(&mut self, address: Address, key: U256) -> U256;
-    fn load_account_info_skip_cold_load(
+
+    #[inline]
+    pub fn tstore(&mut self, address: Address, key: U256, value: U256) {
+        self.host_mut().tstore(&address, &key, &value);
+    }
+
+    #[inline]
+    pub fn tload(&mut self, address: Address, key: U256) -> U256 {
+        self.host_mut().tload(&address, &key)
+    }
+
+    #[inline]
+    pub fn load_account_info_skip_cold_load(
         &mut self,
         address: Address,
         load_code: bool,
         skip_cold_load: bool,
-    ) -> Result<AccountInfoLoad, LoadError>;
-    fn balance(&mut self, address: Address) -> Option<StateLoad<U256>> {
+    ) -> Result<AccountInfoLoad, LoadError> {
+        let account = self
+            .host_mut()
+            .load_account(&address, load_code, skip_cold_load)
+            .map_err(|stop| load_error(stop, skip_cold_load))?;
+        Ok(AccountInfoLoad {
+            balance: account.balance,
+            code_hash: account.code_hash,
+            code: account.code,
+            is_cold: account.is_cold,
+            is_empty: account.is_empty,
+        })
+    }
+
+    #[inline]
+    pub fn balance(&mut self, address: Address) -> Option<StateLoad<U256>> {
         self.load_account_info_skip_cold_load(address, false, false)
             .ok()
             .map(|load| load.into_state_load(|account| account.balance))
+    }
+
+    #[inline]
+    pub fn execute_message(
+        &mut self,
+        tx_env: &TxEnv<BaseEvmTypes>,
+        bytecode: Bytecode,
+        message: &mut Message<BaseEvmTypes>,
+        caller_is_static: bool,
+    ) -> MessageResult<BaseEvmTypes> {
+        self.host_mut().execute_message(tx_env, bytecode, message, caller_is_static)
+    }
+}
+
+#[inline]
+fn load_error(stop: InstrStop, skip_cold_load: bool) -> LoadError {
+    if skip_cold_load && stop == InstrStop::OutOfGas {
+        LoadError::ColdLoadSkipped
+    } else {
+        LoadError::DBError
     }
 }
 
@@ -310,17 +508,16 @@ pub struct EvmContext<'a> {
     /// The gas.
     pub gas: Gas,
     /// The host.
-    pub host: &'a mut dyn JitHost,
+    pub host: HostContext<'a>,
     /// The return data.
     pub return_data: &'a [u8],
     /// Whether the context is static.
     pub is_static: bool,
     /// The spec ID for the current execution.
-    pub spec_id: u8,
+    pub spec_id: SpecId,
     /// The contract bytecode, for CODECOPY at runtime.
     pub bytecode: *const [u8],
-    /// Optional callback invoked by the LOG builtin after constructing the log,
-    /// **before** it is passed to [`JitHost::log`].
+    /// Optional callback invoked by the LOG builtin after constructing the log.
     ///
     /// Set to `None` when no inspector is active.
     #[doc(hidden)]
@@ -342,9 +539,9 @@ pub struct EvmContext<'a> {
     /// Output produced by RETURN or REVERT.
     #[doc(hidden)]
     pub output: Bytes,
-    /// Recursive evm2 call/create dispatch used by call-like builtins.
+    /// Call/create message dispatch used by call-like builtins.
     #[doc(hidden)]
-    pub evm2_recursion: Evm2Recursion,
+    pub message_dispatch: MessageDispatch,
 }
 
 // Static assertions to ensure the struct layout matches expectations.
@@ -372,49 +569,6 @@ impl EvmContext<'_> {
         self.mem_base = slice.as_mut_ptr();
         self.mem_len = slice.len();
     }
-}
-
-/// Performs EVM memory resize and charges memory expansion gas.
-#[inline]
-pub fn resize_memory(
-    gas: &mut Gas,
-    memory: &mut Memory,
-    gas_params: &GasParams,
-    offset: usize,
-    len: usize,
-) -> Result<(), InstrStop> {
-    let new_num_words = offset.saturating_add(len).div_ceil(32);
-    if new_num_words > gas.memory().words_num {
-        return resize_memory_cold(gas, memory, gas_params, new_num_words);
-    }
-
-    Ok(())
-}
-
-#[cold]
-#[inline(never)]
-fn resize_memory_cold(
-    gas: &mut Gas,
-    memory: &mut Memory,
-    gas_params: &GasParams,
-    new_num_words: usize,
-) -> Result<(), InstrStop> {
-    let Some(new_size) = new_num_words.checked_mul(32) else {
-        return Err(InstrStop::MemoryOOG);
-    };
-
-    if memory.limit_reached(new_num_words) {
-        return Err(InstrStop::MemoryLimitOOG);
-    }
-
-    let cost = gas_params.memory_cost(new_num_words);
-    let cost = unsafe { gas.memory_mut().set_words_num(new_num_words, cost).unwrap_unchecked() };
-
-    if gas.spend(cost).is_err() {
-        return Err(InstrStop::MemoryOOG);
-    }
-    memory.resize(0, new_size)?;
-    Ok(())
 }
 
 /// Declare [`RawEvmCompilerFn`] functions in an `extern "C"` block.

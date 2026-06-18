@@ -264,8 +264,8 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         // Add debug assertions for the parameters.
         if config.debug_assertions {
             // Assert that the runtime spec_id matches the compilation spec_id.
-            let compiled_spec =
-                fx.bcx.iconst(fx.i8_type, crate::spec::to_spec_id_byte(bytecode.spec_id).into());
+            let spec_type = fx.bcx.type_int(32);
+            let compiled_spec = fx.bcx.iconst(spec_type, u32::from(bytecode.spec_id).into());
             let _ = fx.call_builtin(Builtin::AssertSpecId, &[ecx, compiled_spec]);
         }
 
@@ -513,7 +513,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
                 out == 1 || out == inp + 1,
                 "const_output assumes single synthesized push: inp={inp}, out={out}",
             );
-            debug_assert!(!data.is_recursive_message_opcode() && !data.is_branching());
+            debug_assert!(!data.is_message_opcode() && !data.is_branching());
             // We push exactly 1 value, so consume `inp + 1 - out` to match the
             // real stack diff. For DUP (out = inp+1) this is 0; for ADD (out = 1)
             // this equals inp.
@@ -1878,7 +1878,7 @@ impl<B: Backend> FunctionCx<'_, B> {
         ret: Option<B::Type>,
         build: impl FnOnce(&mut Self),
     ) -> Option<B::Value> {
-        let prefix = "__evm2_jit_ir_builtin_";
+        let prefix = "__revmc_ir_builtin_";
         let name = &format!("{prefix}{name}")[..];
 
         // self.call_printf(format_printf!("{} - calling {name}\n", self.op_block_name("")), &[]);

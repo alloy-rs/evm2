@@ -81,7 +81,7 @@ pub(crate) unsafe fn read_words_rev<'a, const N: usize>(sp: *mut EvmWord) -> &'a
 
 #[inline]
 pub(crate) fn ensure_memory(ecx: &mut EvmContext<'_>, offset: usize, len: usize) -> BuiltinResult {
-    evm2_jit_context::resize_memory(&mut ecx.gas, ecx.memory, &ecx.gas_params, offset, len)?;
+    ecx.memory.resize_evm(&mut ecx.gas, offset, len)?;
     ecx.refresh_memory_cache();
     Ok(())
 }

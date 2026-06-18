@@ -3,7 +3,7 @@
 use crate::runtime::{JitBackend, LookupDecision, LookupRequest, RuntimeCacheKey};
 use alloy_primitives::keccak256;
 use evm2::{
-    EvmTypes, ExecutionConfig, InterpreterRunner,
+    BaseEvmTypes, Evm, ExecutionConfig, InterpreterRunner,
     interpreter::{InstrStop, Interpreter},
 };
 
@@ -27,13 +27,13 @@ impl JitInterpreterRunner {
     }
 }
 
-impl<T: EvmTypes> InterpreterRunner<T> for JitInterpreterRunner {
+impl InterpreterRunner<BaseEvmTypes> for JitInterpreterRunner {
     #[inline]
     fn run(
         &self,
-        config: &ExecutionConfig<T>,
-        interpreter: &mut Interpreter<'_, T>,
-        host: &mut T::Host,
+        config: &ExecutionConfig<BaseEvmTypes>,
+        interpreter: &mut Interpreter<'_, BaseEvmTypes>,
+        host: &mut Evm<BaseEvmTypes>,
     ) -> Option<InstrStop> {
         run_interpreter(&self.backend, config, interpreter, host)
     }
@@ -44,11 +44,11 @@ impl<T: EvmTypes> InterpreterRunner<T> for JitInterpreterRunner {
 /// Returns `None` when no compiled program is available, leaving the caller to
 /// run the same frame through the evm2 interpreter.
 #[inline]
-pub fn run_interpreter<T: EvmTypes>(
+pub fn run_interpreter(
     backend: &JitBackend,
-    config: &ExecutionConfig<T>,
-    interpreter: &mut Interpreter<'_, T>,
-    host: &mut T::Host,
+    config: &ExecutionConfig<BaseEvmTypes>,
+    interpreter: &mut Interpreter<'_, BaseEvmTypes>,
+    host: &mut Evm<BaseEvmTypes>,
 ) -> Option<InstrStop> {
     let code = interpreter.original_bytecode();
     let decision = backend.lookup(LookupRequest {
@@ -62,7 +62,7 @@ pub fn run_interpreter<T: EvmTypes>(
     };
 
     interpreter.prepare_jit_run(config, host);
-    Some(unsafe { program.evm2_func::<T>().call_with_interpreter(interpreter, host) })
+    Some(unsafe { program.evm2_func().call_with_interpreter(interpreter, host) })
 }
 
 #[cfg(test)]
@@ -120,7 +120,7 @@ mod tests {
     }
 
     #[test]
-    fn compiled_call_executes_recursive_evm2_message() {
+    fn compiled_call_executes_message() {
         let config = <BaseEvmConfigSelector as EvmConfigSelector<BaseEvmTypes>>::execution_config(
             SpecId::CANCUN,
         );
@@ -176,7 +176,7 @@ mod tests {
     }
 
     #[test]
-    fn compiled_create_executes_recursive_evm2_message() {
+    fn compiled_create_executes_message() {
         let config = <BaseEvmConfigSelector as EvmConfigSelector<BaseEvmTypes>>::execution_config(
             SpecId::CANCUN,
         );

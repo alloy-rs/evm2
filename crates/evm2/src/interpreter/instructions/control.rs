@@ -2,7 +2,6 @@ use crate::{
     EvmTypes,
     interpreter::{
         InstrStop, Result, Word,
-        memory::resize_memory,
         private::{GasInstructionCx, InstructionCx},
     },
     utils::{word_to_usize, word_to_usize_saturated},
@@ -80,7 +79,7 @@ fn return_inner<T: EvmTypes>(
         if end > u32::MAX as usize {
             return Err(InstrStop::MemoryLimitOOG);
         }
-        resize_memory(cx.gas, cx.state.memory(), offset, len)?;
+        cx.state.memory().resize_evm(cx.gas, offset, len)?;
         offset as u32..end as u32
     } else {
         0..0

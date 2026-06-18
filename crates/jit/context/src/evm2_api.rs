@@ -1,23 +1,18 @@
 //! evm2-facing runtime context.
 
-use crate::{
-    AccountInfoLoad, CallInput, EvmStack, EvmWord, Inputs, InstrStop, JitHost, LoadError,
-    SStoreResult, SelfDestructResult, StateLoad,
-};
+use crate::{CallInput, EvmStack, EvmWord, HostContext, Inputs, InstrStop};
 use alloc::{boxed::Box, vec::Vec};
-use alloy_primitives::{Bytes, U256};
+use alloy_primitives::Bytes;
 use core::{
     cmp::min,
-    fmt,
-    marker::PhantomData,
-    mem,
+    fmt, mem,
     ops::Range,
     ptr::{self, NonNull},
 };
 use evm2::{
-    BaseEvmTypes, EvmFeatures, EvmTypes, SpecId, Version,
+    BaseEvmTypes, EvmFeatures, SpecId,
     bytecode::Bytecode,
-    env::{BlockEnv, TxEnv},
+    env::TxEnv,
     interpreter::{
         Gas as Evm2Gas, Host as Evm2Host, Interpreter, Memory, Message, MessageKind, Word,
     },
@@ -29,230 +24,23 @@ const _: () = {
     assert!(core::mem::align_of::<EvmWord>() == core::mem::align_of::<Word>());
 };
 
-/// Serialized host trait object slot.
-#[derive(Clone, Copy, Debug)]
-#[repr(C)]
-#[doc(hidden)]
-pub struct JitHostPtr {
-    data: *mut (),
-    vtable: *mut (),
-}
-
-impl JitHostPtr {
-    fn from_host(host: &mut dyn JitHost) -> Self {
-        unsafe { mem::transmute::<&mut dyn JitHost, Self>(host) }
-    }
-
-    #[cfg(test)]
-    unsafe fn as_host_mut<'a>(self) -> &'a mut dyn JitHost {
-        unsafe { mem::transmute::<Self, &'a mut dyn JitHost>(self) }
-    }
-}
-
-struct Evm2JitHostAdapter<'a, T: EvmTypes> {
-    host: NonNull<T::Host>,
-    block_env: BlockEnv<T>,
-    tx_env: &'a TxEnv<T>,
-    version: &'a Version,
-    _marker: PhantomData<&'a mut T::Host>,
-}
-
-impl<'a, T: EvmTypes> Evm2JitHostAdapter<'a, T> {
-    fn new(host: &'a mut T::Host, tx_env: &'a TxEnv<T>, version: &'a Version) -> Self {
-        let block_env = *host.block_env();
-        Self { host: NonNull::from(host), block_env, tx_env, version, _marker: PhantomData }
-    }
-
-    fn host_mut(&mut self) -> &mut T::Host {
-        unsafe { self.host.as_ptr().as_mut().unwrap_unchecked() }
-    }
-}
-
-impl<T: EvmTypes> JitHost for Evm2JitHostAdapter<'_, T> {
-    fn basefee(&self) -> U256 {
-        self.block_env.basefee
-    }
-
-    fn blob_gasprice(&self) -> U256 {
-        self.block_env.blob_basefee
-    }
-
-    fn gas_limit(&self) -> U256 {
-        self.block_env.gas_limit
-    }
-
-    fn difficulty(&self) -> U256 {
-        self.block_env.difficulty
-    }
-
-    fn prevrandao(&self) -> Option<U256> {
-        Some(self.block_env.prevrandao)
-    }
-
-    fn block_number(&self) -> U256 {
-        self.block_env.number
-    }
-
-    fn timestamp(&self) -> U256 {
-        self.block_env.timestamp
-    }
-
-    fn beneficiary(&self) -> alloy_primitives::Address {
-        self.block_env.beneficiary
-    }
-
-    fn slot_num(&self) -> U256 {
-        self.block_env.slot_num
-    }
-
-    fn chain_id(&self) -> U256 {
-        self.tx_env.chain_id
-    }
-
-    fn effective_gas_price(&self) -> U256 {
-        self.tx_env.gas_price
-    }
-
-    fn caller(&self) -> alloy_primitives::Address {
-        self.tx_env.origin
-    }
-
-    fn blob_hash(&self, number: usize) -> Option<U256> {
-        self.tx_env.blob_hashes.get(number).copied()
-    }
-
-    fn max_initcode_size(&self) -> usize {
-        self.version.max_initcode_size
-    }
-
-    fn gas_params(&self) -> &GasParams {
-        &self.version.gas_params
-    }
-
-    fn is_amsterdam_eip8037_enabled(&self) -> bool {
-        self.version.features.contains(EvmFeatures::EIP8037)
-    }
-
-    fn block_hash(&mut self, number: u64) -> Option<alloy_primitives::B256> {
-        self.host_mut().block_hash(&Word::from(number)).ok().flatten()
-    }
-
-    fn selfdestruct(
-        &mut self,
-        address: alloy_primitives::Address,
-        target: alloy_primitives::Address,
-        skip_cold_load: bool,
-    ) -> Result<StateLoad<SelfDestructResult>, LoadError> {
-        let result = self
-            .host_mut()
-            .selfdestruct(&address, &target, skip_cold_load)
-            .map_err(|stop| load_error(stop, skip_cold_load))?;
-        Ok(StateLoad::new(
-            SelfDestructResult {
-                had_value: result.had_value,
-                value: result.value,
-                target_is_empty: result.target_is_empty,
-                is_cold: result.is_cold,
-                previously_destroyed: result.previously_destroyed,
-                _non_exhaustive: (),
-            },
-            result.is_cold,
-        ))
-    }
-
-    fn log(&mut self, log: alloy_primitives::Log) {
-        self.host_mut().log(log);
-    }
-
-    fn sstore_skip_cold_load(
-        &mut self,
-        address: alloy_primitives::Address,
-        key: U256,
-        value: U256,
-        skip_cold_load: bool,
-    ) -> Result<StateLoad<SStoreResult>, LoadError> {
-        let result = self
-            .host_mut()
-            .sstore(&address, &key, &value, skip_cold_load)
-            .map_err(|stop| load_error(stop, skip_cold_load))?;
-        Ok(StateLoad::new(
-            SStoreResult {
-                original_value: result.original_value,
-                present_value: result.present_value,
-                new_value: result.new_value,
-                is_cold: result.is_cold,
-                _non_exhaustive: (),
-            },
-            result.is_cold,
-        ))
-    }
-
-    fn sload_skip_cold_load(
-        &mut self,
-        address: alloy_primitives::Address,
-        key: U256,
-        skip_cold_load: bool,
-    ) -> Result<StateLoad<U256>, LoadError> {
-        let result = self
-            .host_mut()
-            .sload(&address, &key, skip_cold_load)
-            .map_err(|stop| load_error(stop, skip_cold_load))?;
-        Ok(StateLoad::new(result.value, result.is_cold))
-    }
-
-    fn tstore(&mut self, address: alloy_primitives::Address, key: U256, value: U256) {
-        self.host_mut().tstore(&address, &key, &value);
-    }
-
-    fn tload(&mut self, address: alloy_primitives::Address, key: U256) -> U256 {
-        self.host_mut().tload(&address, &key)
-    }
-
-    fn load_account_info_skip_cold_load(
-        &mut self,
-        address: alloy_primitives::Address,
-        load_code: bool,
-        skip_cold_load: bool,
-    ) -> Result<AccountInfoLoad, LoadError> {
-        let account = self
-            .host_mut()
-            .load_account(&address, load_code, skip_cold_load)
-            .map_err(|stop| load_error(stop, skip_cold_load))?;
-        Ok(AccountInfoLoad {
-            balance: account.balance,
-            code_hash: account.code_hash,
-            code: account.code,
-            is_cold: account.is_cold,
-            is_empty: account.is_empty,
-        })
-    }
-}
-
-fn load_error(stop: InstrStop, skip_cold_load: bool) -> LoadError {
-    if skip_cold_load && stop == InstrStop::OutOfGas {
-        LoadError::ColdLoadSkipped
-    } else {
-        LoadError::DBError
-    }
-}
-
 /// The evm2 bytecode compiler runtime context.
 #[repr(C)]
-pub struct EvmContext<'a, T: EvmTypes = BaseEvmTypes> {
+pub struct EvmContext<'a> {
     /// The memory.
     pub memory: *mut Memory,
     /// Input information (target address, caller, input data, call value).
     pub input: *mut Inputs,
     /// The gas.
     pub gas: Evm2Gas,
-    /// Host trait object slot consumed by host-touching builtins.
-    pub host: JitHostPtr,
+    /// Host state consumed by host-touching builtins.
+    pub host: HostContext<'a>,
     /// The return data.
     pub return_data: &'a [u8],
     /// Whether the context is static.
     pub is_static: bool,
-    /// The raw spec ID for the current execution.
-    pub spec_id: u8,
+    /// The spec ID for the current execution.
+    pub spec_id: SpecId,
     /// The contract bytecode, for CODECOPY at runtime.
     pub bytecode: *const [u8],
     /// Optional callback invoked by the LOG builtin after constructing the log.
@@ -273,89 +61,50 @@ pub struct EvmContext<'a, T: EvmTypes = BaseEvmTypes> {
     /// Output produced by RETURN or REVERT.
     #[doc(hidden)]
     pub output: Bytes,
-    /// Recursive evm2 call/create dispatch used by call-like builtins.
+    /// Call/create message dispatch used by call-like builtins.
     #[doc(hidden)]
-    pub evm2_recursion: crate::Evm2Recursion,
+    pub message_dispatch: crate::MessageDispatch,
     /// Transaction-global environment.
     #[doc(hidden)]
-    pub tx_env: &'a TxEnv<T>,
+    pub tx_env: &'a TxEnv<BaseEvmTypes>,
     /// Frame-local call/create message.
     #[doc(hidden)]
-    pub message: &'a Message<T>,
+    pub message: &'a Message<BaseEvmTypes>,
     return_data_scratch: Bytes,
     memory_scratch: Box<Memory>,
     input_scratch: Box<Inputs>,
-    _host_adapter: Box<Evm2JitHostAdapter<'a, T>>,
 }
 
 const _: () = {
-    use core::mem::{offset_of, size_of};
+    use core::mem::offset_of;
 
-    assert!(size_of::<JitHostPtr>() == size_of::<&mut dyn crate::JitHost>());
+    assert!(offset_of!(EvmContext<'_>, memory) == offset_of!(crate::EvmContext<'_>, memory));
+    assert!(offset_of!(EvmContext<'_>, input) == offset_of!(crate::EvmContext<'_>, input));
+    assert!(offset_of!(EvmContext<'_>, gas) == offset_of!(crate::EvmContext<'_>, gas));
+    assert!(offset_of!(EvmContext<'_>, host) == offset_of!(crate::EvmContext<'_>, host));
     assert!(
-        offset_of!(EvmContext<'_, BaseEvmTypes>, memory)
-            == offset_of!(crate::EvmContext<'_>, memory)
+        offset_of!(EvmContext<'_>, return_data) == offset_of!(crate::EvmContext<'_>, return_data)
+    );
+    assert!(offset_of!(EvmContext<'_>, is_static) == offset_of!(crate::EvmContext<'_>, is_static));
+    assert!(offset_of!(EvmContext<'_>, spec_id) == offset_of!(crate::EvmContext<'_>, spec_id));
+    assert!(offset_of!(EvmContext<'_>, bytecode) == offset_of!(crate::EvmContext<'_>, bytecode));
+    assert!(offset_of!(EvmContext<'_>, on_log) == offset_of!(crate::EvmContext<'_>, on_log));
+    assert!(
+        offset_of!(EvmContext<'_>, calldatasize) == offset_of!(crate::EvmContext<'_>, calldatasize)
     );
     assert!(
-        offset_of!(EvmContext<'_, BaseEvmTypes>, input) == offset_of!(crate::EvmContext<'_>, input)
+        offset_of!(EvmContext<'_>, exit_result) == offset_of!(crate::EvmContext<'_>, exit_result)
     );
+    assert!(offset_of!(EvmContext<'_>, exit_sp) == offset_of!(crate::EvmContext<'_>, exit_sp));
     assert!(
-        offset_of!(EvmContext<'_, BaseEvmTypes>, gas) == offset_of!(crate::EvmContext<'_>, gas)
+        offset_of!(EvmContext<'_>, gas_params) == offset_of!(crate::EvmContext<'_>, gas_params)
     );
+    assert!(offset_of!(EvmContext<'_>, mem_base) == offset_of!(crate::EvmContext<'_>, mem_base));
+    assert!(offset_of!(EvmContext<'_>, mem_len) == offset_of!(crate::EvmContext<'_>, mem_len));
+    assert!(offset_of!(EvmContext<'_>, output) == offset_of!(crate::EvmContext<'_>, output));
     assert!(
-        offset_of!(EvmContext<'_, BaseEvmTypes>, host) == offset_of!(crate::EvmContext<'_>, host)
-    );
-    assert!(
-        offset_of!(EvmContext<'_, BaseEvmTypes>, return_data)
-            == offset_of!(crate::EvmContext<'_>, return_data)
-    );
-    assert!(
-        offset_of!(EvmContext<'_, BaseEvmTypes>, is_static)
-            == offset_of!(crate::EvmContext<'_>, is_static)
-    );
-    assert!(
-        offset_of!(EvmContext<'_, BaseEvmTypes>, spec_id)
-            == offset_of!(crate::EvmContext<'_>, spec_id)
-    );
-    assert!(
-        offset_of!(EvmContext<'_, BaseEvmTypes>, bytecode)
-            == offset_of!(crate::EvmContext<'_>, bytecode)
-    );
-    assert!(
-        offset_of!(EvmContext<'_, BaseEvmTypes>, on_log)
-            == offset_of!(crate::EvmContext<'_>, on_log)
-    );
-    assert!(
-        offset_of!(EvmContext<'_, BaseEvmTypes>, calldatasize)
-            == offset_of!(crate::EvmContext<'_>, calldatasize)
-    );
-    assert!(
-        offset_of!(EvmContext<'_, BaseEvmTypes>, exit_result)
-            == offset_of!(crate::EvmContext<'_>, exit_result)
-    );
-    assert!(
-        offset_of!(EvmContext<'_, BaseEvmTypes>, exit_sp)
-            == offset_of!(crate::EvmContext<'_>, exit_sp)
-    );
-    assert!(
-        offset_of!(EvmContext<'_, BaseEvmTypes>, gas_params)
-            == offset_of!(crate::EvmContext<'_>, gas_params)
-    );
-    assert!(
-        offset_of!(EvmContext<'_, BaseEvmTypes>, mem_base)
-            == offset_of!(crate::EvmContext<'_>, mem_base)
-    );
-    assert!(
-        offset_of!(EvmContext<'_, BaseEvmTypes>, mem_len)
-            == offset_of!(crate::EvmContext<'_>, mem_len)
-    );
-    assert!(
-        offset_of!(EvmContext<'_, BaseEvmTypes>, output)
-            == offset_of!(crate::EvmContext<'_>, output)
-    );
-    assert!(
-        offset_of!(EvmContext<'_, BaseEvmTypes>, evm2_recursion)
-            == offset_of!(crate::EvmContext<'_>, evm2_recursion)
+        offset_of!(EvmContext<'_>, message_dispatch)
+            == offset_of!(crate::EvmContext<'_>, message_dispatch)
     );
 };
 
@@ -372,7 +121,7 @@ pub struct InterpreterState {
 impl InterpreterState {
     /// Stores this state back into an evm2 interpreter.
     #[inline]
-    pub fn store<T: EvmTypes>(self, interpreter: &mut Interpreter<'_, T>) {
+    pub fn store(self, interpreter: &mut Interpreter<'_, BaseEvmTypes>) {
         interpreter.set_gas(self.gas);
         interpreter.set_return_data(self.return_data.into());
         let parts = interpreter.jit_context_parts_mut();
@@ -391,34 +140,32 @@ impl InterpreterState {
 /// The raw function signature of an evm2 bytecode function.
 ///
 /// The ABI intentionally matches [`crate::RawEvmCompilerFn`].
-pub type RawEvmCompilerFn<T = BaseEvmTypes> = unsafe extern "C" fn(
-    ecx: NonNull<EvmContext<'_, T>>,
+pub type RawEvmCompilerFn = unsafe extern "C" fn(
+    ecx: NonNull<EvmContext<'_>>,
     stack: NonNull<EvmStack>,
     stack_len: NonNull<usize>,
 ) -> InstrStop;
 
 /// An evm2 bytecode function.
 #[derive(Clone, Copy, Debug, Hash)]
-pub struct EvmCompilerFn<T: EvmTypes = BaseEvmTypes>(RawEvmCompilerFn<T>);
+pub struct EvmCompilerFn(RawEvmCompilerFn);
 
-impl<T: EvmTypes> EvmCompilerFn<T> {
+impl EvmCompilerFn {
     /// Wraps the function.
     #[inline]
-    pub const fn new(f: RawEvmCompilerFn<T>) -> Self {
+    pub const fn new(f: RawEvmCompilerFn) -> Self {
         Self(f)
     }
 
     /// Rewraps an ABI-compatible compiled function for evm2 calls.
     #[inline]
     pub fn from_abi_compatible(f: crate::EvmCompilerFn) -> Self {
-        Self(unsafe {
-            mem::transmute::<crate::RawEvmCompilerFn, RawEvmCompilerFn<T>>(f.into_inner())
-        })
+        Self(unsafe { mem::transmute::<crate::RawEvmCompilerFn, RawEvmCompilerFn>(f.into_inner()) })
     }
 
     /// Unwraps the function.
     #[inline]
-    pub const fn into_inner(self) -> RawEvmCompilerFn<T> {
+    pub const fn into_inner(self) -> RawEvmCompilerFn {
         self.0
     }
 
@@ -429,8 +176,8 @@ impl<T: EvmTypes> EvmCompilerFn<T> {
     /// The caller must ensure that the function is safe to call for this interpreter state.
     pub unsafe fn call_with_interpreter<'a, 'frame: 'a>(
         self,
-        interpreter: &'a mut Interpreter<'frame, T>,
-        host: &'a mut T::Host,
+        interpreter: &'a mut Interpreter<'frame, BaseEvmTypes>,
+        host: &'a mut (dyn Evm2Host<BaseEvmTypes> + 'a),
     ) -> InstrStop {
         let (mut ecx, stack, stack_len) =
             EvmContext::from_interpreter_with_stack(interpreter, host);
@@ -458,28 +205,28 @@ impl<T: EvmTypes> EvmCompilerFn<T> {
         self,
         stack: &mut EvmStack,
         stack_len: &mut usize,
-        ecx: &mut EvmContext<'_, T>,
+        ecx: &mut EvmContext<'_>,
     ) -> InstrStop {
         let ecx = unsafe {
-            NonNull::new_unchecked((ecx as *mut EvmContext<'_, T>).cast::<crate::EvmContext<'_>>())
+            NonNull::new_unchecked((ecx as *mut EvmContext<'_>).cast::<crate::EvmContext<'_>>())
         };
-        let f = unsafe { mem::transmute::<RawEvmCompilerFn<T>, crate::RawEvmCompilerFn>(self.0) };
+        let f = unsafe { mem::transmute::<RawEvmCompilerFn, crate::RawEvmCompilerFn>(self.0) };
         unsafe { crate::evm2_jit_entry(ecx, NonNull::from(stack), NonNull::from(stack_len), f) }
     }
 }
 
-impl<T: EvmTypes> fmt::Debug for EvmContext<'_, T> {
+impl fmt::Debug for EvmContext<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("EvmContext").field("memory", &self.memory).finish_non_exhaustive()
     }
 }
 
-impl<'a, T: EvmTypes> EvmContext<'a, T> {
+impl<'a> EvmContext<'a> {
     /// Creates a new context from an interpreter.
     #[inline]
     pub fn from_interpreter<'frame: 'a>(
-        interpreter: &'a mut Interpreter<'frame, T>,
-        host: &'a mut T::Host,
+        interpreter: &'a mut Interpreter<'frame, BaseEvmTypes>,
+        host: &'a mut (dyn Evm2Host<BaseEvmTypes> + 'a),
     ) -> Self {
         Self::from_interpreter_with_stack(interpreter, host).0
     }
@@ -487,8 +234,8 @@ impl<'a, T: EvmTypes> EvmContext<'a, T> {
     /// Creates a new context from an interpreter and returns the borrowed stack.
     #[inline]
     pub fn from_interpreter_with_stack<'frame: 'a>(
-        interpreter: &'a mut Interpreter<'frame, T>,
-        host: &'a mut T::Host,
+        interpreter: &'a mut Interpreter<'frame, BaseEvmTypes>,
+        host: &'a mut (dyn Evm2Host<BaseEvmTypes> + 'a),
     ) -> (Self, &'a mut EvmStack, &'a mut usize) {
         let parts = interpreter.jit_context_parts_mut();
         let stack = unsafe { EvmStack::from_mut_ptr(parts.stack.cast()) };
@@ -502,7 +249,7 @@ impl<'a, T: EvmTypes> EvmContext<'a, T> {
         let memory = memory_scratch.as_mut() as *mut Memory;
         let bytecode = parts.bytecode.original_byte_slice() as *const [u8];
         let calldatasize = parts.message.input.len();
-        let spec_id = spec_id_byte(parts.spec);
+        let spec_id = parts.spec;
         let mut input_scratch = Box::new(Inputs {
             target_address: parts.message.destination,
             bytecode_address: Some(parts.message.code_address),
@@ -511,13 +258,12 @@ impl<'a, T: EvmTypes> EvmContext<'a, T> {
             call_value: parts.message.value,
         });
         let input = input_scratch.as_mut() as *mut Inputs;
-        let mut host_adapter = Box::new(Evm2JitHostAdapter::new(host, parts.tx_env, parts.version));
-        let jit_host = JitHostPtr::from_host(host_adapter.as_mut());
+        let host = HostContext::new(host, parts.tx_env, parts.version);
         let mut this = Self {
             memory,
             input,
             gas: parts.gas,
-            host: jit_host,
+            host,
             return_data: parts.return_data.as_ref(),
             is_static: parts.is_static,
             spec_id,
@@ -530,16 +276,15 @@ impl<'a, T: EvmTypes> EvmContext<'a, T> {
             mem_base: ptr::null_mut(),
             mem_len: 0,
             output: Bytes::new(),
-            evm2_recursion: crate::Evm2Recursion::new(
-                evm2_recursive_create::<T>,
-                evm2_recursive_call::<T>,
+            message_dispatch: crate::MessageDispatch::new(
+                execute_create_message,
+                execute_call_message,
             ),
             tx_env: parts.tx_env,
             message: parts.message,
             return_data_scratch: Bytes::new(),
             memory_scratch,
             input_scratch,
-            _host_adapter: host_adapter,
         };
         this.refresh_memory_cache();
         (this, stack, parts.stack_len)
@@ -558,7 +303,7 @@ impl<'a, T: EvmTypes> EvmContext<'a, T> {
 
     /// Stores context state back into an interpreter after compiled execution.
     #[inline]
-    pub fn store_interpreter_state(self, interpreter: &mut Interpreter<'_, T>) {
+    pub fn store_interpreter_state(self, interpreter: &mut Interpreter<'_, BaseEvmTypes>) {
         self.interpreter_state().store(interpreter);
     }
 
@@ -588,28 +333,28 @@ pub fn bytecode_slice(bytecode: &Bytecode) -> &[u8] {
     bytecode.original_byte_slice()
 }
 
-unsafe fn evm2_recursive_call<T: EvmTypes>(
+unsafe fn execute_call_message(
     ecx: &mut crate::EvmContext<'_>,
     sp: *mut EvmWord,
     call_kind: u8,
 ) -> Result<(), InstrStop> {
-    let ecx = unsafe { evm2_context_from_base::<T>(ecx) };
+    let ecx = unsafe { evm2_context_from_base(ecx) };
     call_kind_from_u8(call_kind).and_then(|kind| call_inner(ecx, sp, kind))
 }
 
-unsafe fn evm2_recursive_create<T: EvmTypes>(
+unsafe fn execute_create_message(
     ecx: &mut crate::EvmContext<'_>,
     sp: *mut EvmWord,
     create_kind: u8,
 ) -> Result<(), InstrStop> {
-    let ecx = unsafe { evm2_context_from_base::<T>(ecx) };
+    let ecx = unsafe { evm2_context_from_base(ecx) };
     create_kind_from_u8(create_kind).and_then(|is_create2| create_inner(ecx, sp, is_create2))
 }
 
-unsafe fn evm2_context_from_base<'a, 'ctx, T: EvmTypes>(
+unsafe fn evm2_context_from_base<'a, 'ctx>(
     ecx: &'a mut crate::EvmContext<'ctx>,
-) -> &'a mut EvmContext<'ctx, T> {
-    unsafe { &mut *(ptr::from_mut(ecx).cast::<EvmContext<'ctx, T>>()) }
+) -> &'a mut EvmContext<'ctx> {
+    unsafe { &mut *(ptr::from_mut(ecx).cast::<EvmContext<'ctx>>()) }
 }
 
 fn call_kind_from_u8(kind: u8) -> Result<MessageKind, InstrStop> {
@@ -638,18 +383,14 @@ fn word_to_usize_saturated(value: EvmWord) -> usize {
     value.to_u256().try_into().unwrap_or(usize::MAX)
 }
 
-fn ensure_memory<T: EvmTypes>(
-    ecx: &mut EvmContext<'_, T>,
-    offset: usize,
-    len: usize,
-) -> Result<(), InstrStop> {
-    crate::resize_memory(&mut ecx.gas, unsafe { &mut *ecx.memory }, &ecx.gas_params, offset, len)?;
+fn ensure_memory(ecx: &mut EvmContext<'_>, offset: usize, len: usize) -> Result<(), InstrStop> {
+    unsafe { &mut *ecx.memory }.resize_evm(&mut ecx.gas, offset, len)?;
     ecx.refresh_memory_cache();
     Ok(())
 }
 
-fn resize_memory_range<T: EvmTypes>(
-    ecx: &mut EvmContext<'_, T>,
+fn resize_evm_range(
+    ecx: &mut EvmContext<'_>,
     offset: EvmWord,
     len: EvmWord,
 ) -> Result<Range<usize>, InstrStop> {
@@ -664,22 +405,22 @@ fn resize_memory_range<T: EvmTypes>(
     Ok(offset..offset + len)
 }
 
-fn memory_range_bytes<T: EvmTypes>(ecx: &mut EvmContext<'_, T>, range: Range<usize>) -> Bytes {
+fn memory_range_bytes(ecx: &mut EvmContext<'_>, range: Range<usize>) -> Bytes {
     if range.is_empty() {
         return Bytes::new();
     }
     Bytes::copy_from_slice(unsafe { &*ecx.memory }.slice(range.start, range.len()))
 }
 
-fn get_memory_input_and_out_ranges<T: EvmTypes>(
-    ecx: &mut EvmContext<'_, T>,
+fn get_memory_input_and_out_ranges(
+    ecx: &mut EvmContext<'_>,
     input_offset: EvmWord,
     input_len: EvmWord,
     return_offset: EvmWord,
     return_len: EvmWord,
 ) -> Result<(Range<usize>, Range<usize>), InstrStop> {
-    let input = resize_memory_range(ecx, input_offset, input_len)?;
-    let output = resize_memory_range(ecx, return_offset, return_len)?;
+    let input = resize_evm_range(ecx, input_offset, input_len)?;
+    let output = resize_evm_range(ecx, return_offset, return_len)?;
     Ok((input, output))
 }
 
@@ -695,24 +436,22 @@ fn should_charge_new_account_gas(
     target_is_empty_for_new_account_gas && (!eip161 || transfers_value)
 }
 
-fn load_acc_and_calc_gas<T: EvmTypes>(
-    ecx: &mut EvmContext<'_, T>,
+fn load_acc_and_calc_gas(
+    ecx: &mut EvmContext<'_>,
     to: alloy_primitives::Address,
     transfers_value: bool,
     create_empty_account: bool,
     stack_gas_limit: u64,
 ) -> Result<(u64, Bytecode, alloy_primitives::Address, bool), InstrStop> {
+    let version = *ecx.host.version();
     if transfers_value {
-        spend(
-            &mut ecx.gas,
-            ecx._host_adapter.version.gas_params.get(GasId::TransferValueCost).into(),
-        )?;
+        spend(&mut ecx.gas, version.gas_params.get(GasId::TransferValueCost).into())?;
     }
 
-    let additional_cold_cost = ecx._host_adapter.version.gas_params.cold_account_additional_cost();
+    let additional_cold_cost = version.gas_params.cold_account_additional_cost();
     let remaining_gas = ecx.gas.remaining();
     let skip_cold_load = remaining_gas < additional_cold_cost;
-    let account = ecx._host_adapter.host_mut().load_account(&to, true, skip_cold_load)?;
+    let account = ecx.host.host_mut().load_account(&to, true, skip_cold_load)?;
 
     let mut cost = 0;
     if account.is_cold {
@@ -720,47 +459,43 @@ fn load_acc_and_calc_gas<T: EvmTypes>(
     }
     let mut code = account.code;
     let mut code_address = to;
-    if ecx._host_adapter.version.features.contains(EvmFeatures::EIP7702)
+    if version.features.contains(EvmFeatures::EIP7702)
         && let Some(delegated_address) = code.eip7702_address()
     {
-        cost += u64::from(ecx._host_adapter.version.gas_params.get(GasId::WarmStorageReadCost));
+        cost += u64::from(version.gas_params.get(GasId::WarmStorageReadCost));
         if cost > remaining_gas {
             return Err(InstrStop::OutOfGas);
         }
         let skip_cold_load = remaining_gas < cost.saturating_add(additional_cold_cost);
         let delegated_account =
-            ecx._host_adapter.host_mut().load_account(&delegated_address, true, skip_cold_load)?;
+            ecx.host.host_mut().load_account(&delegated_address, true, skip_cold_load)?;
         if delegated_account.is_cold {
             cost += additional_cold_cost;
         }
         code = delegated_account.code;
         code_address = delegated_address;
     }
-    let features = ecx._host_adapter.version.features;
+    let features = version.features;
     if create_empty_account
         && should_charge_new_account_gas(
             features.contains(EvmFeatures::EIP161),
             transfers_value,
-            ecx._host_adapter.host_mut().target_is_empty_for_new_account_gas(&to, features)?,
+            ecx.host.host_mut().target_is_empty_for_new_account_gas(&to, features)?,
         )
     {
-        cost += u64::from(ecx._host_adapter.version.gas_params.get(GasId::NewAccountCost));
+        cost += u64::from(version.gas_params.get(GasId::NewAccountCost));
     }
     spend(&mut ecx.gas, cost)?;
 
-    let mut gas_limit = if ecx._host_adapter.version.features.contains(EvmFeatures::EIP150) {
-        min(
-            ecx._host_adapter.version.gas_params.call_stipend_reduction(ecx.gas.remaining()),
-            stack_gas_limit,
-        )
+    let mut gas_limit = if version.features.contains(EvmFeatures::EIP150) {
+        min(version.gas_params.call_stipend_reduction(ecx.gas.remaining()), stack_gas_limit)
     } else {
         stack_gas_limit
     };
     spend(&mut ecx.gas, gas_limit)?;
 
     if transfers_value {
-        gas_limit = gas_limit
-            .saturating_add(ecx._host_adapter.version.gas_params.get(GasId::CallStipend).into());
+        gas_limit = gas_limit.saturating_add(version.gas_params.get(GasId::CallStipend).into());
     }
 
     let disable_precompiles = code_address != to;
@@ -772,8 +507,8 @@ unsafe fn pop_word(sp: &mut *mut EvmWord) -> EvmWord {
     unsafe { **sp }
 }
 
-fn call_inner<T: EvmTypes>(
-    ecx: &mut EvmContext<'_, T>,
+fn call_inner(
+    ecx: &mut EvmContext<'_>,
     sp: *mut EvmWord,
     kind: MessageKind,
 ) -> Result<(), InstrStop> {
@@ -830,17 +565,13 @@ fn call_inner<T: EvmTypes>(
         code_address,
         disable_precompiles,
         salt: alloy_primitives::B256::ZERO,
-        ext: T::MessageExt::default(),
+        ext: (),
         _non_exhaustive: (),
     };
 
     let caller_is_static = ecx.is_static;
-    let mut result = ecx._host_adapter.host_mut().execute_message(
-        ecx.tx_env,
-        loaded_code,
-        &mut message,
-        caller_is_static,
-    );
+    let mut result =
+        ecx.host.execute_message(ecx.tx_env, loaded_code, &mut message, caller_is_static);
     ecx.gas.erase_cost(result.gas_returned_to_parent());
     ecx.gas.record_refund(result.refund_propagated_to_parent());
 
@@ -856,8 +587,8 @@ fn call_inner<T: EvmTypes>(
     Ok(())
 }
 
-fn create_inner<T: EvmTypes>(
-    ecx: &mut EvmContext<'_, T>,
+fn create_inner(
+    ecx: &mut EvmContext<'_>,
     sp: *mut EvmWord,
     is_create2: bool,
 ) -> Result<(), InstrStop> {
@@ -873,22 +604,23 @@ fn create_inner<T: EvmTypes>(
     let salt = if is_create2 { Some(unsafe { pop_word(&mut cursor) }) } else { None };
 
     let len = word_to_usize(len_word)?;
-    if ecx._host_adapter.version.features.contains(EvmFeatures::EIP3860) {
-        if len > ecx._host_adapter.version.max_initcode_size {
+    let version = *ecx.host.version();
+    if version.features.contains(EvmFeatures::EIP3860) {
+        if len > version.max_initcode_size {
             return Err(InstrStop::CreateInitCodeSizeLimit);
         }
-        spend(&mut ecx.gas, ecx._host_adapter.version.gas_params.initcode_cost(len))?;
+        spend(&mut ecx.gas, version.gas_params.initcode_cost(len))?;
     }
-    let code_range = resize_memory_range(ecx, offset, EvmWord::from(Word::from(len)))?;
+    let code_range = resize_evm_range(ecx, offset, EvmWord::from(Word::from(len)))?;
     let input = memory_range_bytes(ecx, code_range);
     let create_cost = if is_create2 {
-        ecx._host_adapter.version.gas_params.create2_cost(len)
+        version.gas_params.create2_cost(len)
     } else {
-        ecx._host_adapter.version.gas_params.get(GasId::Create).into()
+        version.gas_params.get(GasId::Create).into()
     };
     spend(&mut ecx.gas, create_cost)?;
-    let gas_limit = if ecx._host_adapter.version.features.contains(EvmFeatures::EIP150) {
-        ecx._host_adapter.version.gas_params.call_stipend_reduction(ecx.gas.remaining())
+    let gas_limit = if version.features.contains(EvmFeatures::EIP150) {
+        version.gas_params.call_stipend_reduction(ecx.gas.remaining())
     } else {
         ecx.gas.remaining()
     };
@@ -906,12 +638,11 @@ fn create_inner<T: EvmTypes>(
         code_address: current.destination,
         disable_precompiles: false,
         salt: salt.map(|salt| alloy_primitives::B256::from(salt.to_be_bytes())).unwrap_or_default(),
-        ext: T::MessageExt::default(),
+        ext: (),
         _non_exhaustive: (),
     };
     let bytecode = Bytecode::new_legacy(message.input.clone());
-    let result =
-        ecx._host_adapter.host_mut().execute_message(ecx.tx_env, bytecode, &mut message, false);
+    let result = ecx.host.execute_message(ecx.tx_env, bytecode, &mut message, false);
     ecx.gas.erase_cost(result.gas_returned_to_parent());
     ecx.gas.record_refund(result.refund_propagated_to_parent());
 
@@ -928,17 +659,13 @@ fn create_inner<T: EvmTypes>(
     Ok(())
 }
 
-fn spec_id_byte(spec_id: SpecId) -> u8 {
-    u8::try_from(u32::from(spec_id)).expect("evm2 SpecId does not fit in u8")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use alloy_primitives::{Address, B256, Bytes as AlloyBytes, Log};
     use core::mem::offset_of;
     use evm2::{
-        BaseEvmConfigSelector, Evm, EvmConfigSelector, EvmFeatures, EvmTypes, Precompiles,
+        BaseEvmConfigSelector, Evm, EvmConfigSelector, EvmFeatures, Precompiles,
         bytecode::Bytecode,
         env::{BlockEnv, TxEnv},
         ethereum::ethereum_tx_registry,
@@ -946,27 +673,12 @@ mod tests {
         interpreter::{GasTracker, Host, Message, MessageKind, MessageResult, op},
     };
 
-    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-    struct TestTypes;
-
-    impl EvmTypes for TestTypes {
-        type ConfigSelector = BaseEvmConfigSelector;
-        type SpecId = SpecId;
-        type Tx = ();
-        type MessageExt = ();
-        type MessageResultExt = ();
-        type TxEnvExt = ();
-        type TxResultExt = ();
-        type BlockEnvExt = ();
-        type Host = TestHost;
-    }
-
     #[derive(Debug)]
     struct TestHost {
-        block: BlockEnv<TestTypes>,
+        block: BlockEnv<BaseEvmTypes>,
         code: AlloyBytes,
-        execute_result: MessageResult<TestTypes>,
-        calls: Vec<Message<TestTypes>>,
+        execute_result: MessageResult<BaseEvmTypes>,
+        calls: Vec<Message<BaseEvmTypes>>,
         call_static_flags: Vec<bool>,
     }
 
@@ -985,12 +697,12 @@ mod tests {
         }
     }
 
-    impl Host<TestTypes> for TestHost {
+    impl Host<BaseEvmTypes> for TestHost {
         fn spec_id(&self) -> SpecId {
             SpecId::CANCUN
         }
 
-        fn block_env(&mut self) -> &BlockEnv<TestTypes> {
+        fn block_env(&mut self) -> &BlockEnv<BaseEvmTypes> {
             &self.block
         }
 
@@ -1062,11 +774,11 @@ mod tests {
 
         fn execute_message(
             &mut self,
-            _tx_env: &TxEnv<TestTypes>,
+            _tx_env: &TxEnv<BaseEvmTypes>,
             _bytecode: Bytecode,
-            message: &mut Message<TestTypes>,
+            message: &mut Message<BaseEvmTypes>,
             caller_is_static: bool,
-        ) -> MessageResult<TestTypes> {
+        ) -> MessageResult<BaseEvmTypes> {
             self.call_static_flags
                 .push(caller_is_static || message.kind == MessageKind::StaticCall);
             self.calls.push(message.clone());
@@ -1084,7 +796,7 @@ mod tests {
     }
 
     struct PreparedJitFrame<'a> {
-        ecx: EvmContext<'a, TestTypes>,
+        ecx: EvmContext<'a>,
         stack: &'a mut EvmStack,
     }
 
@@ -1112,46 +824,43 @@ mod tests {
         }
     }
 
+    fn base_evm(spec_id: SpecId) -> Evm<BaseEvmTypes> {
+        Evm::<BaseEvmTypes>::new(
+            spec_id,
+            BlockEnv::default(),
+            ethereum_tx_registry(spec_id),
+            EmptyDB::default(),
+            Precompiles::base(spec_id),
+        )
+    }
+
     fn prepare_frame<'a>(
-        interpreter: &'a mut Interpreter<'_, TestTypes>,
+        interpreter: &'a mut Interpreter<'_, BaseEvmTypes>,
         host: &'a mut TestHost,
     ) -> PreparedJitFrame<'a> {
-        let config = <BaseEvmConfigSelector as EvmConfigSelector<TestTypes>>::execution_config(
+        let config = <BaseEvmConfigSelector as EvmConfigSelector<BaseEvmTypes>>::execution_config(
             SpecId::CANCUN,
         );
-        interpreter.prepare_jit_run(&config, host);
+        let mut prepare_host = base_evm(SpecId::CANCUN);
+        interpreter.prepare_jit_run(&config, &mut prepare_host);
         let (ecx, stack, _stack_len) = EvmContext::from_interpreter_with_stack(interpreter, host);
         PreparedJitFrame { ecx, stack }
     }
 
-    fn base_context<'a, 'ctx, T: EvmTypes>(
-        ecx: &'a mut EvmContext<'ctx, T>,
-    ) -> &'a mut crate::EvmContext<'ctx> {
+    fn base_context<'a, 'ctx>(ecx: &'a mut EvmContext<'ctx>) -> &'a mut crate::EvmContext<'ctx> {
         unsafe { &mut *ptr::from_mut(ecx).cast::<crate::EvmContext<'_>>() }
     }
 
     #[test]
     fn evm2_context_matches_imported_context_offsets() {
+        assert_eq!(offset_of!(EvmContext<'_>, input), offset_of!(crate::EvmContext<'_>, input));
+        assert_eq!(offset_of!(EvmContext<'_>, gas), offset_of!(crate::EvmContext<'_>, gas));
+        assert_eq!(offset_of!(EvmContext<'_>, spec_id), offset_of!(crate::EvmContext<'_>, spec_id));
         assert_eq!(
-            offset_of!(EvmContext<'_, BaseEvmTypes>, input),
-            offset_of!(crate::EvmContext<'_>, input)
-        );
-        assert_eq!(
-            offset_of!(EvmContext<'_, BaseEvmTypes>, gas),
-            offset_of!(crate::EvmContext<'_>, gas)
-        );
-        assert_eq!(
-            offset_of!(EvmContext<'_, BaseEvmTypes>, spec_id),
-            offset_of!(crate::EvmContext<'_>, spec_id)
-        );
-        assert_eq!(
-            offset_of!(EvmContext<'_, BaseEvmTypes>, mem_base),
+            offset_of!(EvmContext<'_>, mem_base),
             offset_of!(crate::EvmContext<'_>, mem_base)
         );
-        assert_eq!(
-            offset_of!(EvmContext<'_, BaseEvmTypes>, mem_len),
-            offset_of!(crate::EvmContext<'_>, mem_len)
-        );
+        assert_eq!(offset_of!(EvmContext<'_>, mem_len), offset_of!(crate::EvmContext<'_>, mem_len));
     }
 
     #[test]
@@ -1173,7 +882,7 @@ mod tests {
     }
 
     #[test]
-    fn evm2_context_jit_host_slot_uses_evm2_env() {
+    fn evm2_context_host_context_uses_evm2_env() {
         let tx_origin = Address::from([0x11; 20]);
         let beneficiary = Address::from([0x22; 20]);
         let config = <BaseEvmConfigSelector as EvmConfigSelector<BaseEvmTypes>>::execution_config(
@@ -1198,11 +907,10 @@ mod tests {
         interpreter.prepare_jit_run(&config, &mut host);
         let ecx = EvmContext::from_interpreter(&mut interpreter, &mut host);
 
-        let jit_host = unsafe { ecx.host.as_host_mut() };
-        assert_eq!(jit_host.caller(), tx_origin);
-        assert_eq!(jit_host.effective_gas_price(), Word::from(7));
-        assert_eq!(jit_host.block_number(), Word::from(9));
-        assert_eq!(jit_host.beneficiary(), beneficiary);
+        assert_eq!(ecx.host.caller(), tx_origin);
+        assert_eq!(ecx.host.effective_gas_price(), Word::from(7));
+        assert_eq!(ecx.host.block_number(), Word::from(9));
+        assert_eq!(ecx.host.beneficiary(), beneficiary);
     }
 
     #[test]
@@ -1244,7 +952,7 @@ mod tests {
     }
 
     #[test]
-    fn evm2_recursive_call_executes_message() {
+    fn message_dispatch_call_executes_message() {
         let target = Address::from([0x22; 20]);
         let caller = Address::from([0x11; 20]);
         let child_output = AlloyBytes::from_static(&[0xaa, 0xbb, 0xcc]);
@@ -1259,7 +967,7 @@ mod tests {
         };
         let tx_env = TxEnv::default();
         let message = Message { gas_limit: 1_000_000, destination: caller, ..Message::default() };
-        let mut interpreter = Interpreter::<TestTypes>::new(
+        let mut interpreter = Interpreter::<BaseEvmTypes>::new(
             Bytecode::new_legacy(AlloyBytes::from_static(&[op::STOP])),
             &tx_env,
             &message,
@@ -1279,8 +987,7 @@ mod tests {
             frame.stack.set(6, EvmWord::from(Word::from(50_000)));
 
             let sp = frame.stack.as_mut_ptr();
-            let result =
-                unsafe { evm2_recursive_call::<TestTypes>(base_context(&mut frame.ecx), sp, 0) };
+            let result = unsafe { execute_call_message(base_context(&mut frame.ecx), sp, 0) };
 
             assert_eq!(result, Ok(()));
             assert_eq!(unsafe { frame.stack.get_unchecked(0) }.to_u256(), Word::from(1));
@@ -1299,7 +1006,7 @@ mod tests {
     }
 
     #[test]
-    fn evm2_recursive_callcode_maps_message_fields() {
+    fn message_dispatch_callcode_maps_message_fields() {
         let target = Address::from([0x22; 20]);
         let destination = Address::from([0x33; 20]);
         let caller = Address::from([0x11; 20]);
@@ -1313,7 +1020,7 @@ mod tests {
             value: Word::from(0x99),
             ..Message::default()
         };
-        let mut interpreter = Interpreter::<TestTypes>::new(
+        let mut interpreter = Interpreter::<BaseEvmTypes>::new(
             Bytecode::new_legacy(AlloyBytes::from_static(&[op::STOP])),
             &tx_env,
             &message,
@@ -1325,11 +1032,7 @@ mod tests {
             write_call_stack(frame.stack, target, 50_000, Some(stack_value));
 
             let result = unsafe {
-                evm2_recursive_call::<TestTypes>(
-                    base_context(&mut frame.ecx),
-                    frame.stack.as_mut_ptr(),
-                    1,
-                )
+                execute_call_message(base_context(&mut frame.ecx), frame.stack.as_mut_ptr(), 1)
             };
 
             assert_eq!(result, Ok(()));
@@ -1346,7 +1049,7 @@ mod tests {
     }
 
     #[test]
-    fn evm2_recursive_delegatecall_maps_message_fields() {
+    fn message_dispatch_delegatecall_maps_message_fields() {
         let target = Address::from([0x22; 20]);
         let destination = Address::from([0x33; 20]);
         let caller = Address::from([0x11; 20]);
@@ -1360,7 +1063,7 @@ mod tests {
             value: current_value,
             ..Message::default()
         };
-        let mut interpreter = Interpreter::<TestTypes>::new(
+        let mut interpreter = Interpreter::<BaseEvmTypes>::new(
             Bytecode::new_legacy(AlloyBytes::from_static(&[op::STOP])),
             &tx_env,
             &message,
@@ -1372,11 +1075,7 @@ mod tests {
             write_call_stack(frame.stack, target, 50_000, None);
 
             let result = unsafe {
-                evm2_recursive_call::<TestTypes>(
-                    base_context(&mut frame.ecx),
-                    frame.stack.as_mut_ptr(),
-                    2,
-                )
+                execute_call_message(base_context(&mut frame.ecx), frame.stack.as_mut_ptr(), 2)
             };
 
             assert_eq!(result, Ok(()));
@@ -1393,7 +1092,7 @@ mod tests {
     }
 
     #[test]
-    fn evm2_recursive_staticcall_maps_message_fields() {
+    fn message_dispatch_staticcall_maps_message_fields() {
         let target = Address::from([0x22; 20]);
         let destination = Address::from([0x33; 20]);
         let caller = Address::from([0x11; 20]);
@@ -1406,7 +1105,7 @@ mod tests {
             value: Word::from(0x99),
             ..Message::default()
         };
-        let mut interpreter = Interpreter::<TestTypes>::new(
+        let mut interpreter = Interpreter::<BaseEvmTypes>::new(
             Bytecode::new_legacy(AlloyBytes::from_static(&[op::STOP])),
             &tx_env,
             &message,
@@ -1418,11 +1117,7 @@ mod tests {
             write_call_stack(frame.stack, target, 50_000, None);
 
             let result = unsafe {
-                evm2_recursive_call::<TestTypes>(
-                    base_context(&mut frame.ecx),
-                    frame.stack.as_mut_ptr(),
-                    3,
-                )
+                execute_call_message(base_context(&mut frame.ecx), frame.stack.as_mut_ptr(), 3)
             };
 
             assert_eq!(result, Ok(()));
@@ -1439,7 +1134,7 @@ mod tests {
     }
 
     #[test]
-    fn evm2_recursive_create_executes_message() {
+    fn message_dispatch_create_executes_message() {
         let created = Address::from([0x77; 20]);
         let initcode = [op::STOP];
         let mut host = TestHost {
@@ -1453,7 +1148,7 @@ mod tests {
         };
         let tx_env = TxEnv::default();
         let message = Message { gas_limit: 1_000_000, ..Message::default() };
-        let mut interpreter = Interpreter::<TestTypes>::new(
+        let mut interpreter = Interpreter::<BaseEvmTypes>::new(
             Bytecode::new_legacy(AlloyBytes::from_static(&[op::STOP])),
             &tx_env,
             &message,
@@ -1469,8 +1164,7 @@ mod tests {
             frame.stack.set(2, EvmWord::ZERO);
 
             let sp = frame.stack.as_mut_ptr();
-            let result =
-                unsafe { evm2_recursive_create::<TestTypes>(base_context(&mut frame.ecx), sp, 0) };
+            let result = unsafe { execute_create_message(base_context(&mut frame.ecx), sp, 0) };
 
             assert_eq!(result, Ok(()));
             assert_eq!(unsafe { frame.stack.get_unchecked(0) }, &address_word(&created));
@@ -1483,7 +1177,7 @@ mod tests {
     }
 
     #[test]
-    fn evm2_recursive_create2_maps_salt() {
+    fn message_dispatch_create2_maps_salt() {
         let created = Address::from([0x77; 20]);
         let initcode = [op::STOP];
         let salt = EvmWord::from(Word::from(0xabcdu64));
@@ -1498,7 +1192,7 @@ mod tests {
         };
         let tx_env = TxEnv::default();
         let message = Message { gas_limit: 1_000_000, ..Message::default() };
-        let mut interpreter = Interpreter::<TestTypes>::new(
+        let mut interpreter = Interpreter::<BaseEvmTypes>::new(
             Bytecode::new_legacy(AlloyBytes::from_static(&[op::STOP])),
             &tx_env,
             &message,
@@ -1515,11 +1209,7 @@ mod tests {
             frame.stack.set(3, EvmWord::ZERO);
 
             let result = unsafe {
-                evm2_recursive_create::<TestTypes>(
-                    base_context(&mut frame.ecx),
-                    frame.stack.as_mut_ptr(),
-                    1,
-                )
+                execute_create_message(base_context(&mut frame.ecx), frame.stack.as_mut_ptr(), 1)
             };
 
             assert_eq!(result, Ok(()));
@@ -1534,7 +1224,7 @@ mod tests {
     }
 
     unsafe extern "C" fn evm2_return_output(
-        mut ecx: NonNull<EvmContext<'_, BaseEvmTypes>>,
+        mut ecx: NonNull<EvmContext<'_>>,
         _stack: NonNull<EvmStack>,
         _stack_len: NonNull<usize>,
     ) -> InstrStop {

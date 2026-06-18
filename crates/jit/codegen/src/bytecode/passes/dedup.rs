@@ -442,7 +442,7 @@ mod tests {
 
     #[test]
     fn dedup_weth() {
-        let code = fixture_entry_code(include_str!("../../../../data/weth.json"));
+        let code = fixture_entry_code(include_str!("../../../../../../data/weth.json"));
         let mut bytecode = crate::Bytecode::test(code);
         bytecode.config = AnalysisConfig::DEDUP;
         bytecode.analyze().unwrap();

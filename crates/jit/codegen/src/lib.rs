@@ -20,8 +20,6 @@ pub use compiler::{CompileTimings, EvmCompiler, EvmCompilerInput};
 mod linker;
 pub use linker::{Linker, shared_library_path};
 
-mod spec;
-
 /// ABI version of compiled artifacts. Bump when the calling convention changes.
 pub const ABI_VERSION: u32 = 0;
 

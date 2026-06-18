@@ -31,8 +31,8 @@
              format!(
 -                "insts={} live={} dead={} noops={} suspends={} blocks={} block_min={} block_max={} block_avg={:.1} block_median={}",
 -                s.total, s.live, s.dead, s.noops, s.suspends, s.blocks, s.block_min, s.block_max, s.block_avg, s.block_median,
-+                "insts={} live={} dead={} noops={} recursive_message_opcodes={} blocks={} block_min={} block_max={} block_avg={:.1} block_median={}",
-+                s.total, s.live, s.dead, s.noops, s.recursive_message_opcodes, s.blocks, s.block_min, s.block_max, s.block_avg, s.block_median,
++                "insts={} live={} dead={} noops={} message_opcodes={} blocks={} block_min={} block_max={} block_avg={:.1} block_median={}",
++                s.total, s.live, s.dead, s.noops, s.message_opcodes, s.blocks, s.block_min, s.block_max, s.block_avg, s.block_median,
              ),
          ));
          lines.push((String::new(), String::new()));
@@ -42,8 +42,8 @@
                  }
 -                if data.may_suspend() {
 -                    comment.push_str(" suspends");
-+                if data.is_recursive_message_opcode() {
-+                    comment.push_str(" recursive_message");
++                if data.is_message_opcode() {
++                    comment.push_str(" message");
                  }
                  if data.is_reachable_jumpdest(self.has_dynamic_jumps) {
                      comment.push_str(" reachable");
@@ -98,31 +98,30 @@
 -    // Suspending blocks (CALL, CREATE, ...).
 -    pub(super) const SUSPEND_FILL: &str = DARK_ORANGE;
 -    pub(super) const SUSPEND_BORDER: &str = ORANGE;
-+    // Recursive message blocks (CALL, CREATE, ...).
-+    pub(super) const RECURSIVE_MESSAGE_FILL: &str = DARK_ORANGE;
-+    pub(super) const RECURSIVE_MESSAGE_BORDER: &str = ORANGE;
++    // Message blocks (CALL, CREATE, ...).
++    pub(super) const MESSAGE_FILL: &str = DARK_ORANGE;
++    pub(super) const MESSAGE_BORDER: &str = ORANGE;
      // Branching blocks.
      pub(super) const BRANCH_FILL: &str = DARK_TEAL;
      pub(super) const BRANCH_BORDER: &str = TEAL;
-@@ -377,13 +400,14 @@
+@@ -377,13 +400,13 @@
              let first = self.inst(block.insts.start);
 
              // Color based on block behavior.
 -            let has_suspend = block.insts().any(|i| self.inst(i).may_suspend());
-+            let has_recursive_message =
-+                block.insts().any(|i| self.inst(i).is_recursive_message_opcode());
++            let has_message = block.insts().any(|i| self.inst(i).is_message_opcode());
              let (fill, border) = if matches!(last.opcode, op::STOP | op::RETURN) {
                  (EXIT_FILL, EXIT_BORDER)
              } else if last.is_diverging() {
                  (REVERT_FILL, REVERT_BORDER)
 -            } else if has_suspend {
 -                (SUSPEND_FILL, SUSPEND_BORDER)
-+            } else if has_recursive_message {
-+                (RECURSIVE_MESSAGE_FILL, RECURSIVE_MESSAGE_BORDER)
++            } else if has_message {
++                (MESSAGE_FILL, MESSAGE_BORDER)
              } else if last.is_jump() {
                  (BRANCH_FILL, BRANCH_BORDER)
              } else {
-@@ -524,11 +548,10 @@
+@@ -524,11 +547,10 @@
  #[cfg(test)]
  mod tests {
      use super::*;
@@ -132,22 +131,22 @@
 
      /// Test bytecode with SSTORE (splits gas but not stack), a loop (back-edge), and CALL
 -    /// (suspending instruction that splits both gas and stack sections).
-+    /// (recursive message instruction that splits both gas and stack sections).
++    /// (message instruction that splits both gas and stack sections).
      fn test_bytecode() -> Bytecode<'static> {
          #[rustfmt::skip]
          let code: &[u8] = &[
-@@ -564,8 +587,8 @@
+@@ -564,8 +586,8 @@
          snapbox::assert_data_eq!(
              actual,
              snapbox::str![[r#"
 -; spec_id=Osaka has_dynamic_jumps=false may_suspend=true
 -; insts=19 live=19 dead=0 noops=10 suspends=1 blocks=3 block_min=2 block_max=10 block_avg=6.3 block_median=7
 +; spec_id=Osaka has_dynamic_jumps=false
-+; insts=19 live=19 dead=0 noops=11 recursive_message_opcodes=1 blocks=3 block_min=2 block_max=10 block_avg=6.3 block_median=7
++; insts=19 live=19 dead=0 noops=11 message_opcodes=1 blocks=3 block_min=2 block_max=10 block_avg=6.3 block_median=7
 
  bb0:           ; stack_in=0 max_growth=1 predecessors=
    PUSH1 0x03   ; ic= 0 pc= 0 gas=11 noop
-@@ -581,14 +604,14 @@
+@@ -581,14 +603,14 @@
    JUMPI %bb1   ; ic= 8 pc=12
 
  bb2:           ; stack_in=0 max_growth=7 predecessors=bb1
@@ -160,6 +159,6 @@
    PUSH1 0x42   ; ic=14 pc=23 noop
    PUSH2 0xffff ; ic=15 pc=25 noop
 -  CALL         ; ic=16 pc=28 suspends
-+  CALL         ; ic=16 pc=28 recursive_message
++  CALL         ; ic=16 pc=28 message
    POP          ; ic=17 pc=29 gas=2 stack_in=1 max_growth=0
    STOP         ; ic=18 pc=30

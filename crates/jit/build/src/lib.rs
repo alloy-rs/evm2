@@ -3,7 +3,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 // Must be kept in sync with `evm2-jit-builtins`.
-const MANGLE_PREFIX: &str = "__evm2_jit_builtin_";
+const MANGLE_PREFIX: &str = "__revmc_builtin_";
 
 /// Emits the linker flag to export all the necessary symbols.
 pub fn emit() {
@@ -13,8 +13,8 @@ pub fn emit() {
 
 fn link_arg(target_vendor: &str) -> String {
     if target_vendor == "apple" {
-        // Mach-O C symbols have a leading `_`, so `__evm2_jit_builtin_*` becomes
-        // `___evm2_jit_builtin_*`.
+        // Mach-O C symbols have a leading `_`, so `__revmc_builtin_*` becomes
+        // `___revmc_builtin_*`.
         format!("-Wl,-exported_symbol,_{MANGLE_PREFIX}*")
     } else {
         format!("-Wl,--export-dynamic-symbol,{MANGLE_PREFIX}*")
@@ -34,11 +34,11 @@ mod tests {
 
     #[test]
     fn emits_macho_export_for_apple_targets() {
-        assert_eq!(link_arg("apple"), "-Wl,-exported_symbol,___evm2_jit_builtin_*");
+        assert_eq!(link_arg("apple"), "-Wl,-exported_symbol,___revmc_builtin_*");
     }
 
     #[test]
     fn emits_elf_export_for_other_targets() {
-        assert_eq!(link_arg("unknown"), "-Wl,--export-dynamic-symbol,__evm2_jit_builtin_*");
+        assert_eq!(link_arg("unknown"), "-Wl,--export-dynamic-symbol,__revmc_builtin_*");
     }
 }
