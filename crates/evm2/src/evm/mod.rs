@@ -176,11 +176,12 @@ pub use prewarm_set::PrewarmSet;
 /// Builds a `map_err` closure that records the database error code on `$host` and returns
 /// [`registry::HandlerError::Database`].
 ///
-/// This inlines the body of [`Evm::db_error_handler`] rather than calling it, so Rust 2021 disjoint
-/// closure capture borrows only `$host.db_error_code`. That lets it be used in `.map_err(..)` on a
+/// This expands to a closure that records the code through a disjoint borrow of
+/// `$host.db_error_code` rather than calling a `&mut self` method, so Rust 2021 disjoint closure
+/// capture borrows only `$host.db_error_code`. That lets it be used in `.map_err(..)` on a
 /// `Result` that already mutably borrows another field of `$host` (such as `$host.state` through a
-/// live [`AccountHandle`]), where a closure calling the `&mut self` method `db_error_handler` would
-/// conflict on the whole `$host` borrow.
+/// live [`AccountHandle`]), where a closure calling a `&mut self` method would conflict on the
+/// whole `$host` borrow.
 macro_rules! db_error_handler {
     ($host:expr) => {
         |code| {

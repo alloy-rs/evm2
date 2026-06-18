@@ -44,7 +44,7 @@ fn short_address(address: &Address) -> Option<usize> {
 /// Stores addresses (and their storage slots) that are warm-loaded for the current transaction.
 ///
 /// Warm addresses without warm storage are split by shape for lookup speed: short addresses (see
-/// [`SHORT_ADDRESS_CAP`]) set a bit in `short_addresses`, while everything else — and any address
+/// `SHORT_ADDRESS_CAP`) set a bit in `short_addresses`, while everything else — and any address
 /// carrying warm storage slots — is held in `access_list`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrewarmSet {
@@ -55,7 +55,7 @@ pub struct PrewarmSet {
     ///
     /// This holds the EIP-2930 access list, non-short warm addresses, and the non-revertible base
     /// warm entries (sender, recipient, EIP-7702 authorities, system contracts) added via
-    /// [`Self::warm`], [`Self::warm_storage`], and [`Self::warm_storage_slot`]: they are warmed
+    /// [`Self::warm`] and [`Self::warm_storage`]: they are warmed
     /// before or alongside execution and survive [`crate::evm::State::rollback`]. An address
     /// present with an empty slot set is warm with no warm storage slots.
     access_list: AddressMap<HashSet<Word>>,
@@ -93,11 +93,10 @@ impl PrewarmSet {
     /// [`Self::clear`].
     #[inline]
     pub fn warm(&mut self, address: &Address) {
-        if let Some(short_address) = short_address(address) {
-            self.short_addresses.set(short_address, true);
-        } else {
-            self.access_list.entry(*address).or_default();
+        if self.warm_short_address(address) {
+            return;
         }
+        self.access_list.entry(*address).or_default();
     }
 
     /// Marks an address and a set of storage slots as warm.
@@ -106,10 +105,26 @@ impl PrewarmSet {
     /// the rollback and clearing semantics.
     #[inline]
     pub fn warm_storage(&mut self, address: &Address, slots: impl IntoIterator<Item = Word>) {
-        self.warm(address);
         let mut slots = slots.into_iter().peekable();
-        if slots.peek().is_some() {
-            self.access_list.entry(*address).or_default().extend(slots);
+        if self.warm_short_address(address) {
+            // A short address only needs a map entry once it carries storage slots.
+            if slots.peek().is_none() {
+                return;
+            }
+        }
+        self.access_list.entry(*address).or_default().extend(slots);
+    }
+
+    /// Marks a short address as warm.
+    ///
+    /// Returns whether the address was short.
+    #[inline]
+    fn warm_short_address(&mut self, address: &Address) -> bool {
+        if let Some(short_address) = short_address(address) {
+            self.short_addresses.set(short_address, true);
+            true
+        } else {
+            false
         }
     }
 
