@@ -77,16 +77,27 @@ pub fn execute_str(
 ) -> Result<ExecuteSummary, TestError> {
     let suite: BlockchainTest =
         serde_json::from_str(input).map_err(|err| TestError::unknown(path, err.into()))?;
+    execute_suite(path, &suite, config, entrypoint, hook)
+}
+
+/// Executes a parsed blockchain test suite.
+pub fn execute_suite(
+    path: &Path,
+    suite: &BlockchainTest,
+    config: ExecuteConfig,
+    entrypoint: &EntryPoint,
+    hook: &mut dyn Hook,
+) -> Result<ExecuteSummary, TestError> {
     let mut summary = ExecuteSummary::default();
-    for (name, test_case) in suite.0 {
-        if !entrypoint.matches(&name)
+    for (name, test_case) in &suite.0 {
+        if !entrypoint.matches(name)
             || test_case.network.is_transition()
             || is_fork_skipped(fork_to_spec_id(test_case.network))
         {
             summary.skipped += 1;
             continue;
         }
-        execute_case(path, &name, &test_case, config, hook)?;
+        execute_case(path, name, test_case, config, hook)?;
         summary.executed += 1;
     }
     Ok(summary)
