@@ -459,7 +459,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
         // At section heads: load from the alloca once and reset the section offset.
         // Within a section: derive from section_start_len + compile-time offset.
         let (inp, out) = data.stack_io();
-        let diff = effective_stack_diff(inp, out, data);
+        let diff = out as i32 - inp as i32;
         self.len_offset = 0;
         if data.is_stack_section_head() {
             self.section_start_len = self.stack_len.load(&mut self.bcx, "stack_len");
@@ -1248,7 +1248,7 @@ impl<'a, B: Backend> FunctionCx<'a, B> {
     fn sync_diverging_stack_effect(&mut self) {
         let data = self.current_inst();
         let (inp, out) = data.stack_io();
-        let diff = effective_stack_diff(inp, out, data);
+        let diff = out as i32 - inp as i32;
         self.sync_virtual_stack_diff(diff);
         if self.config.inspect_stack {
             self.materialize_live_stack();
@@ -1936,12 +1936,6 @@ mod pf {
         pub(super) len: usize,
     }
     const _: [(); mem::size_of::<&'static [u8]>()] = [(); mem::size_of::<Slice>()];
-}
-
-/// Computes the effective stack diff for an instruction, matching the codegen semantics.
-fn effective_stack_diff(inp: u8, out: u8, data: &InstData) -> i32 {
-    let _ = data;
-    out as i32 - inp as i32
 }
 
 fn get_field<B: Builder>(bcx: &mut B, ptr: B::Value, offset: usize, name: &str) -> B::Value {

@@ -255,6 +255,15 @@
          }
 
          // Pay static gas for the current section.
+@@ -580,7 +459,7 @@
+         // At section heads: load from the alloca once and reset the section offset.
+         // Within a section: derive from section_start_len + compile-time offset.
+         let (inp, out) = data.stack_io();
+-        let diff = effective_stack_diff(inp, out, data);
++        let diff = out as i32 - inp as i32;
+         self.len_offset = 0;
+         if data.is_stack_section_head() {
+             self.section_start_len = self.stack_len.load(&mut self.bcx, "stack_len");
 @@ -634,7 +513,7 @@
                  out == 1 || out == inp + 1,
                  "const_output assumes single synthesized push: inp={inp}, out={out}",
@@ -388,6 +397,15 @@
          let sp = self.sp_after_inputs();
          let ir_const = self.bcx.iconst(self.i8_type, ir as i64);
          self.sync_diverging_stack_effect();
+@@ -1375,7 +1248,7 @@
+     fn sync_diverging_stack_effect(&mut self) {
+         let data = self.current_inst();
+         let (inp, out) = data.stack_io();
+-        let diff = effective_stack_diff(inp, out, data);
++        let diff = out as i32 - inp as i32;
+         self.sync_virtual_stack_diff(diff);
+         if self.config.inspect_stack {
+             self.materialize_live_stack();
 @@ -1389,7 +1262,6 @@
          let sp = self.sp_after_inputs();
          let create_kind = self.bcx.iconst(self.i8_type, create_kind as i64);
@@ -542,7 +560,7 @@
          // SAFETY: `this` aliases `self` to work around the borrow checker: we need `self.bcx`
          // borrowed by `get_or_build_function` while also swapping `self.bcx` inside the closure.
          // The closure's `bcx` is a fresh builder (not `self.bcx`), so the swap is safe.
-@@ -2099,43 +1936,12 @@
+@@ -2099,43 +1936,6 @@
          pub(super) len: usize,
      }
      const _: [(); mem::size_of::<&'static [u8]>()] = [(); mem::size_of::<Slice>()];
@@ -573,18 +591,16 @@
 -        pub(super) expansion_cost: u64,
 -    }
 -    const _: [(); mem::size_of::<revm_interpreter::Gas>()] = [(); mem::size_of::<Gas>()];
- }
-
- /// Computes the effective stack diff for an instruction, matching the codegen semantics.
- fn effective_stack_diff(inp: u8, out: u8, data: &InstData) -> i32 {
+-}
+-
+-/// Computes the effective stack diff for an instruction, matching the codegen semantics.
+-fn effective_stack_diff(inp: u8, out: u8, data: &InstData) -> i32 {
 -    let mut diff = out as i32 - inp as i32;
 -    // Suspending ops return one value pushed by the caller after resume.
 -    if data.may_suspend() {
 -        diff -= 1;
 -    }
 -    diff
-+    let _ = data;
-+    out as i32 - inp as i32
  }
 
  fn get_field<B: Builder>(bcx: &mut B, ptr: B::Value, offset: usize, name: &str) -> B::Value {
