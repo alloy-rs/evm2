@@ -54,7 +54,13 @@ pub struct GasTracker {
     remaining: u64,
     gas_limit: u64,
     reservoir: u64,
-    state_gas_spent: u64,
+    /// Net state gas spent so far (EIP-8037).
+    ///
+    /// Can be negative within a call frame when 0→x→0 storage restoration
+    /// refills more state gas than the frame itself charged (the parent
+    /// previously charged the 0→x portion). The net is reconciled on frame
+    /// return by [`handle_reservoir_remaining_gas`].
+    state_gas_spent: i64,
     refunded: i64,
 }
 
@@ -125,15 +131,15 @@ impl GasTracker {
         self.reservoir = val;
     }
 
-    /// Returns spent state gas.
+    /// Returns spent state gas. May be negative within a frame (see field docs).
     #[inline]
-    pub const fn state_gas_spent(&self) -> u64 {
+    pub const fn state_gas_spent(&self) -> i64 {
         self.state_gas_spent
     }
 
     /// Sets spent state gas.
     #[inline]
-    pub const fn set_state_gas_spent(&mut self, val: u64) {
+    pub const fn set_state_gas_spent(&mut self, val: i64) {
         self.state_gas_spent = val;
     }
 
@@ -189,7 +195,7 @@ impl GasTracker {
     #[inline]
     pub fn spend_state(&mut self, cost: u64) -> Result {
         if self.reservoir >= cost {
-            self.state_gas_spent = self.state_gas_spent.saturating_add(cost);
+            self.state_gas_spent = self.state_gas_spent.saturating_add(cost as i64);
             self.reservoir -= cost;
             return Ok(());
         }
@@ -197,9 +203,24 @@ impl GasTracker {
         let spill = cost - self.reservoir;
 
         self.spend(spill)?;
-        self.state_gas_spent = self.state_gas_spent.saturating_add(cost);
+        self.state_gas_spent = self.state_gas_spent.saturating_add(cost as i64);
         self.reservoir = 0;
         Ok(())
+    }
+
+    /// Refills the reservoir with state gas returned by 0→x→0 storage
+    /// restoration (EIP-8037).
+    ///
+    /// When a storage slot is restored to its original zero value within the
+    /// same transaction, the state gas charged for the initial 0→x transition
+    /// is restored to the reservoir directly rather than routed through the
+    /// capped refund counter. `state_gas_spent` is decremented by the same
+    /// amount and may become negative when the matching 0→x charge was made by
+    /// a parent frame; the parent's total is reconciled on frame return.
+    #[inline]
+    pub const fn refill_reservoir(&mut self, amount: u64) {
+        self.reservoir = self.reservoir.saturating_add(amount);
+        self.state_gas_spent = self.state_gas_spent.saturating_sub(amount as i64);
     }
 
     /// Adds gas refund.
@@ -354,15 +375,15 @@ impl Gas {
         self.tracker.set_reservoir(val);
     }
 
-    /// Returns spent state gas.
+    /// Returns spent state gas. May be negative within a frame (see field docs).
     #[inline]
-    pub const fn state_gas_spent(&self) -> u64 {
+    pub const fn state_gas_spent(&self) -> i64 {
         self.tracker.state_gas_spent()
     }
 
     /// Sets spent state gas.
     #[inline]
-    pub const fn set_state_gas_spent(&mut self, val: u64) {
+    pub const fn set_state_gas_spent(&mut self, val: i64) {
         self.tracker.set_state_gas_spent(val);
     }
 
@@ -417,6 +438,13 @@ impl Gas {
     #[inline]
     pub fn spend_state(&mut self, cost: u64) -> Result {
         self.tracker.spend_state(cost)
+    }
+
+    /// Refills the reservoir with state gas returned by 0→x→0 storage
+    /// restoration (EIP-8037). See [`GasTracker::refill_reservoir`].
+    #[inline]
+    pub const fn refill_reservoir(&mut self, amount: u64) {
+        self.tracker.refill_reservoir(amount);
     }
 
     /// Adds gas refund.

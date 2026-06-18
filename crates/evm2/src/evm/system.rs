@@ -118,6 +118,7 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             &data,
             U256::ZERO,
             SYSTEM_CALL_GAS_LIMIT,
+            0,
         ) else {
             self.state.clear_transaction_state();
             let stop = InstrStop::FatalExternalError;

@@ -836,7 +836,11 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
                     Ok(info) => info.map_or(0, |info| info.nonce),
                     Err(code) => {
                         let stop = self.db_error_stop(code);
-                        return Self::error_message_result(stop, message.gas_limit);
+                        return Self::error_message_result(
+                            stop,
+                            message.gas_limit,
+                            message.reservoir,
+                        );
                     }
                 }
             } else {
@@ -898,15 +902,19 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         caller_is_static: bool,
     ) -> MessageResult<T> {
         if message.depth > CALL_DEPTH_LIMIT {
-            return Self::error_message_result(InstrStop::CallTooDeep, message.gas_limit);
+            return Self::error_message_result(
+                InstrStop::CallTooDeep,
+                message.gas_limit,
+                message.reservoir,
+            );
         }
         if let Err(stop) = self.prepare_create_message(&bytecode, message) {
-            return Self::error_message_result(stop, message.gas_limit);
+            return Self::error_message_result(stop, message.gas_limit, message.reservoir);
         }
         let checkpoint = self.state.checkpoint();
         if let Err(stop) = self.create_message_account(message) {
             self.state.rollback(checkpoint, self.features);
-            return Self::error_message_result(stop, message.gas_limit);
+            return Self::error_message_result(stop, message.gas_limit, message.reservoir);
         }
         message.code_address = message.destination;
         message.disable_precompiles = false;
@@ -996,7 +1004,11 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
 
             if let Err(code) = self.state.set_code(address, Bytecode::new_legacy(output.clone())) {
                 self.state.rollback(checkpoint, self.features);
-                return Self::error_message_result(self.db_error_stop(code), gas_limit);
+                return Self::error_message_result(
+                    self.db_error_stop(code),
+                    gas_limit,
+                    gas.reservoir(),
+                );
             }
         } else {
             self.state.rollback(checkpoint, self.features);
@@ -1025,15 +1037,29 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             .len()
             .saturating_mul(self.version().gas_params.get(GasId::CodeDepositCost) as usize);
         let code_deposit_gas = u64::try_from(code_deposit_gas).unwrap_or(u64::MAX);
-        if gas.remaining() >= code_deposit_gas {
-            return gas.spend(code_deposit_gas);
+        if gas.remaining() < code_deposit_gas {
+            if self.feature(EvmFeatures::EIP2) {
+                // EIP-2 makes code-deposit OOG fail contract creation; Frontier instead
+                // creates the account with empty code.
+                return Err(InstrStop::OutOfGas);
+            }
+            *output = Bytes::new();
+            return Ok(());
         }
-        if self.feature(EvmFeatures::EIP2) {
-            // EIP-2 makes code-deposit OOG fail contract creation; Frontier instead creates the
-            // account with empty code.
-            return Err(InstrStop::OutOfGas);
+        gas.spend(code_deposit_gas)?;
+
+        // EIP-8037: hashing the deployed bytecode to compute its code_hash costs
+        // regular keccak word gas, and depositing the code costs state gas. The
+        // state-gas charge must be the last spend before the journal commit so
+        // that any 0→x→0 reservoir refills earlier in the frame are not disturbed.
+        if self.feature(EvmFeatures::EIP8037) {
+            let params = &self.version().gas_params;
+            gas.spend(params.keccak256_word_cost(output.len()))?;
+            let code_deposit_state_gas = params.code_deposit_state_gas(output.len());
+            if code_deposit_state_gas > 0 {
+                gas.spend_state(code_deposit_state_gas)?;
+            }
         }
-        *output = Bytes::new();
         Ok(())
     }
 
@@ -1056,7 +1082,11 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         caller_is_static: bool,
     ) -> MessageResult<T> {
         if message.depth > CALL_DEPTH_LIMIT {
-            return Self::error_message_result(InstrStop::CallTooDeep, message.gas_limit);
+            return Self::error_message_result(
+                InstrStop::CallTooDeep,
+                message.gas_limit,
+                message.reservoir,
+            );
         }
         let checkpoint = self.state.checkpoint();
         // EIP-161 state clearing depends on zero-value direct call targets being touched.
@@ -1068,11 +1098,19 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
             || match self.state.transfer(&message.caller, &message.destination, &message.value) {
                 Ok(result) => result,
                 Err(code) => {
-                    return Self::error_message_result(self.db_error_stop(code), message.gas_limit);
+                    return Self::error_message_result(
+                        self.db_error_stop(code),
+                        message.gas_limit,
+                        message.reservoir,
+                    );
                 }
             };
         if transfers_balance && !transfer_succeeded {
-            return Self::error_message_result(InstrStop::OutOfFunds, message.gas_limit);
+            return Self::error_message_result(
+                InstrStop::OutOfFunds,
+                message.gas_limit,
+                message.reservoir,
+            );
         }
         if transfers_balance {
             self.log_eip7708_transfer(&message.caller, &message.destination, &message.value);
@@ -1093,7 +1131,10 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
         checkpoint: StateCheckpoint,
         message: &Message<T>,
     ) -> MessageResult<T> {
-        let mut gas = GasTracker::new(message.gas_limit);
+        // Preserve the inherited reservoir so it propagates back to the parent
+        // frame unchanged (precompiles charge only regular gas).
+        let mut gas =
+            GasTracker::new_with_regular_gas_and_reservoir(message.gas_limit, message.reservoir);
         let result = self.execute_precompile(message, &mut gas);
         let (stop, output) = match result {
             Ok(output) => (InstrStop::Return, output.into_bytes()),
@@ -1142,8 +1183,16 @@ impl<T: EvmTypes<Host = Self>> Evm<T> {
     }
 
     #[inline]
-    fn error_message_result(stop: InstrStop, gas_remaining: u64) -> MessageResult<T> {
-        MessageResult { stop, gas: GasTracker::new(gas_remaining), ..MessageResult::default() }
+    fn error_message_result(
+        stop: InstrStop,
+        gas_remaining: u64,
+        reservoir: u64,
+    ) -> MessageResult<T> {
+        MessageResult {
+            stop,
+            gas: GasTracker::new_with_regular_gas_and_reservoir(gas_remaining, reservoir),
+            ..MessageResult::default()
+        }
     }
 
     #[inline]
@@ -1654,6 +1703,7 @@ mod tests {
             kind: MessageKind::Call,
             depth: 0,
             gas_limit: 30_000,
+            reservoir: 0,
             destination: AccessingPrecompile::ADDRESS,
             caller: Address::ZERO,
             input: Bytes::new(),
@@ -1702,6 +1752,7 @@ mod tests {
             kind: MessageKind::Call,
             depth: 0,
             gas_limit: 30_000,
+            reservoir: 0,
             destination: AccessingPrecompile::ADDRESS,
             caller: Address::ZERO,
             input: Bytes::new(),
@@ -1869,6 +1920,7 @@ mod tests {
             kind: MessageKind::Call,
             depth: 67,
             gas_limit: 30_000,
+            reservoir: 0,
             destination: address,
             caller: Address::with_last_byte(0x7a),
             input: Bytes::from_static(b"message input"),
@@ -1930,6 +1982,7 @@ mod tests {
                     kind: MessageKind::Call,
                     depth: 0,
                     gas_limit: 30_000,
+                    reservoir: 0,
                     destination: Self::INNER,
                     caller: Address::ZERO,
                     input: Bytes::new(),
@@ -1955,6 +2008,7 @@ mod tests {
             kind: MessageKind::Call,
             depth: 0,
             gas_limit: 30_000,
+            reservoir: 0,
             destination: NestedPrecompile::OUTER,
             caller: Address::ZERO,
             input: Bytes::new(),

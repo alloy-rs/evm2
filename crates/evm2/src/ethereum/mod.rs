@@ -411,6 +411,44 @@ pub(super) fn charge_upfront<T: EvmTypes<Host = Evm<T>>>(
     Ok(())
 }
 
+/// Computes the regular gas budget and EIP-8037 state-gas reservoir for the
+/// initial call frame.
+///
+/// Without EIP-8037 all execution gas is regular and the reservoir is zero. With
+/// EIP-8037 the execution gas above the `tx_gas_limit_cap` forms the reservoir;
+/// the initial state gas (e.g. `create_state_gas` for a top-level CREATE) is then
+/// deducted from the reservoir, spilling into the regular budget when the
+/// reservoir is insufficient.
+///
+/// Returns `(regular_gas_limit, reservoir)`.
+pub(super) fn initial_gas_and_reservoir(
+    version: &Version,
+    tx_gas_limit: u64,
+    intrinsic: u64,
+    is_create: bool,
+) -> (u64, u64) {
+    if !version.feature(EvmFeatures::EIP8037) {
+        return (tx_gas_limit - intrinsic, 0);
+    }
+
+    let initial_state_gas = if is_create { version.gas_params.create_state_gas() } else { 0 };
+
+    let cap = version.tx_gas_limit_cap;
+    let execution_gas = tx_gas_limit - intrinsic;
+    let mut regular_gas_limit = core::cmp::min(tx_gas_limit, cap).saturating_sub(intrinsic);
+    let mut reservoir = execution_gas - regular_gas_limit;
+
+    if reservoir >= initial_state_gas {
+        reservoir -= initial_state_gas;
+    } else {
+        regular_gas_limit -= initial_state_gas - reservoir;
+        reservoir = 0;
+    }
+
+    (regular_gas_limit, reservoir)
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn initial_message<T: EvmTypes<Host = Evm<T>>>(
     host: &mut Evm<T>,
     caller: Address,
@@ -419,6 +457,7 @@ pub(crate) fn initial_message<T: EvmTypes<Host = Evm<T>>>(
     input: &Bytes,
     value: U256,
     gas_limit: u64,
+    reservoir: u64,
 ) -> HandlerResult<(Bytecode, Message<T>)> {
     let r = match to {
         TxKind::Call(to) => {
@@ -427,6 +466,7 @@ pub(crate) fn initial_message<T: EvmTypes<Host = Evm<T>>>(
                 kind: MessageKind::Call,
                 depth: 0,
                 gas_limit,
+                reservoir,
                 destination: to,
                 caller,
                 input: input.clone(),
@@ -445,6 +485,7 @@ pub(crate) fn initial_message<T: EvmTypes<Host = Evm<T>>>(
                 kind: MessageKind::Create,
                 depth: 0,
                 gas_limit,
+                reservoir,
                 destination: address,
                 caller,
                 input: input.clone(),
@@ -850,6 +891,7 @@ mod tests {
             &Bytes::new(),
             U256::ZERO,
             100_000,
+            0,
         )
         .unwrap();
         assert_eq!(message.destination, target);

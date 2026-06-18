@@ -1,8 +1,8 @@
 use super::{
-    access_list_counts, charge_upfront, effective_gas_price, floor_gas, initial_message,
-    intrinsic_gas, rollback_failed_execution, settle_gas, validate_block_gas_limit,
-    validate_chain_id, validate_create_initcode, validate_floor_gas, validate_gas_price,
-    validate_intrinsic_gas, validate_nonce_not_overflow, validate_priority_fee,
+    access_list_counts, charge_upfront, effective_gas_price, floor_gas, initial_gas_and_reservoir,
+    initial_message, intrinsic_gas, rollback_failed_execution, settle_gas,
+    validate_block_gas_limit, validate_chain_id, validate_create_initcode, validate_floor_gas,
+    validate_gas_price, validate_intrinsic_gas, validate_nonce_not_overflow, validate_priority_fee,
     validate_regular_gas_limit_cap, validate_sender, validate_tx_gas_limit_cap, warm_access_list,
     warm_base_accounts,
 };
@@ -64,15 +64,25 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     let eip7702_refund = apply_auth_list(req.host, chain_id, &tx.authorization_list)?;
     let execution_checkpoint = req.host.state.checkpoint();
 
-    let gas_limit = tx.gas_limit - intrinsic;
+    // EIP-7702 transactions are always calls, never creates.
+    let (gas_limit, reservoir) =
+        initial_gas_and_reservoir(req.host.version(), tx.gas_limit, intrinsic, false);
     let tx_env = TxEnv {
         origin: caller,
         gas_price,
         chain_id: U256::from(req.host.version().chain_id),
         ..TxEnv::default()
     };
-    let (bytecode, mut message) =
-        initial_message(req.host, caller, tx.nonce, tx.to.into(), &tx.input, tx.value, gas_limit)?;
+    let (bytecode, mut message) = initial_message(
+        req.host,
+        caller,
+        tx.nonce,
+        tx.to.into(),
+        &tx.input,
+        tx.value,
+        gas_limit,
+        reservoir,
+    )?;
     let mut result = req.host.execute_message(&tx_env, bytecode, &mut message, false);
     rollback_failed_execution(req.host, execution_checkpoint, &mut result);
     result.gas.set_refunded(

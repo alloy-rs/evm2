@@ -375,6 +375,39 @@ impl GasParams {
         }
     }
 
+    /// Calculates the `SSTORE` state gas to refill into the reservoir for a
+    /// 0→x→0 storage restoration (EIP-8037).
+    ///
+    /// When a slot that began the transaction at zero is restored to zero
+    /// (`new == original == 0`) by an actual change (`new != present`), the state
+    /// gas charged for the initial 0→x transition is returned to the reservoir.
+    #[inline]
+    pub fn sstore_state_gas_refill(&self, vals: &SStore) -> u64 {
+        if !vals.is_noop() && vals.resets_original() && vals.original_is_zero() {
+            self.get(GasId::SstoreSetState) as u64
+        } else {
+            0
+        }
+    }
+
+    /// Returns the `CREATE`/`CREATE2` upfront state gas (EIP-8037).
+    #[inline]
+    pub const fn create_state_gas(&self) -> u64 {
+        self.get(GasId::CreateState) as u64
+    }
+
+    /// Returns the new-account creation state gas (EIP-8037).
+    #[inline]
+    pub const fn new_account_state_gas(&self) -> u64 {
+        self.get(GasId::NewAccountState) as u64
+    }
+
+    /// Calculates the code-deposit state gas for `len` bytes (EIP-8037).
+    #[inline]
+    pub const fn code_deposit_state_gas(&self, len: usize) -> u64 {
+        (self.get(GasId::CodeDepositState) as u64).saturating_mul(len as u64)
+    }
+
     /// Returns `SELFDESTRUCT` cold account cost.
     #[inline]
     pub const fn selfdestruct_cold_cost(&self) -> u64 {
@@ -467,8 +500,8 @@ mod tests {
 
         let amsterdam = gas_params(SpecId::AMSTERDAM);
         assert_eq!(amsterdam.get(GasId::Create), 9000);
-        assert_eq!(amsterdam.get(GasId::SstoreSetState), 37568);
-        assert_eq!(amsterdam.get(GasId::TxEip7702PerAuthState), 158490);
+        assert_eq!(amsterdam.get(GasId::SstoreSetState), 64 * 1530);
+        assert_eq!(amsterdam.get(GasId::TxEip7702PerAuthState), 23 * 1530);
         assert_eq!(amsterdam.get(GasId::TxAccessListAddressCost), 2400 + 20 * 64);
         assert_eq!(amsterdam.get(GasId::TxAccessListStorageKeyCost), 1900 + 32 * 64);
         assert_eq!(amsterdam.get(GasId::TxAccessListFloorByteMultiplier), 4);

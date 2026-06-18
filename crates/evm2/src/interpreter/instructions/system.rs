@@ -4,8 +4,8 @@ use crate::{
     EvmFeatures, EvmTypes,
     bytecode::Bytecode,
     interpreter::{
-        Gas, Host, InstrStop, InterpreterState, Message, MessageKind, Result, StackMut, Word,
-        memory::resize_memory,
+        Gas, GasTracker, Host, InstrStop, InterpreterState, Message, MessageKind, Result, StackMut,
+        Word, memory::resize_memory,
     },
     utils::{word_to_address, word_to_usize},
     version::GasId,
@@ -111,6 +111,7 @@ fn load_acc_and_calc_gas<T: EvmTypes>(
         code_address = delegated_address;
     }
     let features = state.version().features;
+    let mut new_account_state_gas = 0;
     if create_empty_account
         && should_charge_new_account_gas(
             features.contains(EvmFeatures::EIP161),
@@ -119,8 +120,16 @@ fn load_acc_and_calc_gas<T: EvmTypes>(
         )
     {
         cost += u64::from(state.gas_params().get(GasId::NewAccountCost));
+        // EIP-8037: value transfer to a new account also charges state gas from
+        // the reservoir. Charged before the 63/64 child gas split below.
+        if features.contains(EvmFeatures::EIP8037) && transfers_value {
+            new_account_state_gas = state.gas_params().new_account_state_gas();
+        }
     }
     gas.spend(cost)?;
+    if new_account_state_gas > 0 {
+        gas.spend_state(new_account_state_gas)?;
+    }
 
     let mut gas_limit = if state.feature(EvmFeatures::EIP150) {
         min(state.gas_params().call_stipend_reduction(gas.remaining()), stack_gas_limit)
@@ -197,6 +206,7 @@ fn prepare_call<T: EvmTypes>(
         kind,
         depth: current.depth.saturating_add(1),
         gas_limit,
+        reservoir: gas.reservoir(),
         destination,
         caller,
         input,
@@ -237,6 +247,7 @@ fn call_inner<T: EvmTypes>(
     let tx_env = state.tx();
     let mut result = state.host().execute_message(tx_env, code, &mut message, caller_is_static);
     gas.erase_cost(result.gas_returned_to_parent());
+    handle_reservoir_remaining_gas(result.stop, gas, &result.gas);
     gas.record_refund(result.refund_propagated_to_parent());
     let copy_len = min(return_memory_range.len(), result.output.len());
     unsafe {
@@ -299,6 +310,12 @@ fn create_inner<T: EvmTypes>(
         state.gas_params().get(GasId::Create).into()
     };
     gas.spend(create_cost)?;
+    // EIP-8037: charge the upfront CREATE state gas on this frame before the
+    // child gas/reservoir split. Refunded via `refill_reservoir` if the child
+    // fails to deploy (see the create-failure path after `execute_message`).
+    if state.feature(EvmFeatures::EIP8037) {
+        gas.spend_state(state.gas_params().create_state_gas())?;
+    }
     let gas_limit = if state.feature(EvmFeatures::EIP150) {
         state.gas_params().call_stipend_reduction(gas.remaining())
     } else {
@@ -311,6 +328,7 @@ fn create_inner<T: EvmTypes>(
         kind: if is_create2 { MessageKind::Create2 } else { MessageKind::Create },
         depth: current.depth.saturating_add(1),
         gas_limit,
+        reservoir: gas.reservoir(),
         destination: current.destination,
         caller: current.destination,
         input,
@@ -325,7 +343,19 @@ fn create_inner<T: EvmTypes>(
     let tx_env = state.tx();
     let result = state.host().execute_message(tx_env, bytecode, &mut message, false);
     gas.erase_cost(result.gas_returned_to_parent());
+    handle_reservoir_remaining_gas(result.stop, gas, &result.gas);
     gas.record_refund(result.refund_propagated_to_parent());
+
+    // EIP-8037: the CREATE/CREATE2 opcode charged `create_state_gas` upfront on
+    // this frame's tracker. When the child fails to deploy a contract (revert,
+    // halt, or early-fail paths that leave `created_address == None`), refund the
+    // upfront charge to the reservoir via `refill_reservoir`, matching 0→x→0
+    // storage restoration. Gate on the missing address rather than only the stop
+    // so early-fail paths (depth, out-of-funds, nonce overflow) are covered.
+    let create_failed = result.created_address.is_none() || !result.stop.is_success();
+    if create_failed && state.feature(EvmFeatures::EIP8037) {
+        gas.refill_reservoir(state.gas_params().create_state_gas());
+    }
     // EIP-211 exposes CREATE failure data only for REVERT; other failures clear returndata.
     if result.stop == InstrStop::Revert {
         state.set_return_data(result.output);
@@ -338,6 +368,42 @@ fn create_inner<T: EvmTypes>(
         .map(|address| Word::from_be_slice(address.as_slice()))
         .unwrap_or_default();
     stack.push(address)
+}
+
+/// Reconciles the EIP-8037 state-gas reservoir of a returning child frame back
+/// into its parent.
+///
+/// The reservoir is a shared pool: the child frame inherited the parent's
+/// reservoir at call time (see [`Message::reservoir`]) and may have spent from
+/// it or refilled it. On a no-op (non-Amsterdam) execution both the reservoir
+/// and `state_gas_spent` are zero, so this is a no-op.
+#[inline]
+pub(crate) const fn handle_reservoir_remaining_gas(
+    stop: InstrStop,
+    parent_gas: &mut Gas,
+    child_gas: &GasTracker,
+) {
+    if stop.is_success() {
+        // On success the parent takes the child's final reservoir and accumulates
+        // the child's net state gas. The parent may have charged state gas (e.g.
+        // new_account + create) before spawning the child, whose tracker started
+        // at `state_gas_spent = 0`, so we add rather than overwrite. The child's
+        // count can be negative (more 0→x→0 restorations than 0→x creations); the
+        // negative contribution flows the parent's matching charge back out.
+        parent_gas.set_reservoir(child_gas.reservoir());
+        parent_gas.set_state_gas_spent(
+            parent_gas.state_gas_spent().saturating_add(child_gas.state_gas_spent()),
+        );
+    } else {
+        // On revert/halt the child's state changes are rolled back, so any
+        // reservoir spending (and any 0→x→0 refills) must unwind. The invariant
+        // `pre_call_reservoir == child.reservoir + child.state_gas_spent` holds
+        // because every reservoir-funded charge increments `state_gas_spent` while
+        // decrementing `reservoir`, and `refill_reservoir` does the inverse.
+        parent_gas.set_reservoir(
+            child_gas.reservoir().saturating_add_signed(child_gas.state_gas_spent()),
+        );
+    }
 }
 
 #[instruction(dynamic_gas)]
@@ -355,6 +421,11 @@ pub(crate) fn selfdestruct(cx: _, [target]: [Word]) -> Result {
         res.target_is_empty,
     );
     cx.gas.spend(cx.state.gas_params().selfdestruct_cost(should_charge_topup, res.is_cold))?;
+    // EIP-8037: sending balance to a new account via SELFDESTRUCT charges the
+    // new-account state gas from the reservoir.
+    if should_charge_topup && cx.state.feature(EvmFeatures::EIP8037) {
+        cx.gas.spend_state(cx.state.gas_params().new_account_state_gas())?;
+    }
     if !res.previously_destroyed {
         cx.gas.record_refund(cx.state.gas_params().get(GasId::SelfdestructRefund) as i64);
     }

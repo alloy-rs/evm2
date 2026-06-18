@@ -332,7 +332,8 @@ mod tests {
     }
 }
 
-const AMSTERDAM_CPSB: u32 = 1174;
+/// EIP-8037 cost per state byte (CPSB) for Glamsterdam.
+const AMSTERDAM_CPSB: u32 = 1530;
 
 evm_versions! {
     FRONTIER {
@@ -728,11 +729,14 @@ evm_versions! {
             NewAccountCost: 0,
             NewAccountCostForSelfdestruct: 0,
             SstoreSetWithoutLoadCost: 2800,
-            SstoreSetState: 32 * AMSTERDAM_CPSB,
-            NewAccountState: 112 * AMSTERDAM_CPSB,
+            // EIP-8037 state-gas values: state bytes × CPSB (Glamsterdam).
+            SstoreSetState: 64 * AMSTERDAM_CPSB,
+            NewAccountState: 120 * AMSTERDAM_CPSB,
             CodeDepositState: AMSTERDAM_CPSB,
-            CreateState: 112 * AMSTERDAM_CPSB,
-            SstoreSetRefund: 32 * AMSTERDAM_CPSB + 2800,
+            CreateState: 120 * AMSTERDAM_CPSB,
+            // SSTORE 0→x→0 regular refund only; the state-gas portion is restored
+            // directly to the reservoir via `sstore_state_gas_refill`.
+            SstoreSetRefund: 2800,
             TxFloorCostPerToken: TOTAL_COST_FLOOR_PER_TOKEN_AMSTERDAM,
             // EIP-7981: charge access-list data at 64 gas per byte (20 bytes per
             // address, 32 per storage key), baked into the per-item cost. Each
@@ -740,9 +744,12 @@ evm_versions! {
             TxAccessListAddressCost: EIP2930_ACCESS_LIST_ADDRESS + 20 * EIP7981_ACCESS_LIST_DATA_COST_PER_BYTE,
             TxAccessListStorageKeyCost: EIP2930_ACCESS_LIST_STORAGE_KEY + 32 * EIP7981_ACCESS_LIST_DATA_COST_PER_BYTE,
             TxAccessListFloorByteMultiplier: EIP7981_ACCESS_LIST_FLOOR_BYTE_MULTIPLIER,
-            TxEip7702PerEmptyAccountCost: 7500 + (112 + 23) * AMSTERDAM_CPSB,
-            TxEip7702AuthRefund: 112 * AMSTERDAM_CPSB,
-            TxEip7702PerAuthState: (112 + 23) * AMSTERDAM_CPSB,
+            // EIP-7702 under EIP-8037: only the regular-gas portion lives here.
+            // The state-gas portions come from `NewAccountState` (per-account)
+            // and `TxEip7702PerAuthState` (per-bytecode, AUTH_BASE_BYTES × CPSB).
+            TxEip7702PerEmptyAccountCost: 7500,
+            TxEip7702AuthRefund: 0,
+            TxEip7702PerAuthState: 23 * AMSTERDAM_CPSB,
         ],
     }
 

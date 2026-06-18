@@ -68,6 +68,14 @@ pub(crate) fn sstore(cx: _, [key, value]: [Word]) -> Result {
     // regular gas.
     if cx.state.feature(EvmFeatures::EIP8037) {
         cx.gas.spend_state(cx.state.gas_params().sstore_state_gas(&state_load))?;
+
+        // EIP-8037: a 0→x→0 storage restoration returns the state gas charged for
+        // the initial 0→x transition directly to the reservoir, rather than
+        // routing it through the capped refund counter below.
+        let refill = cx.state.gas_params().sstore_state_gas_refill(&state_load);
+        if refill > 0 {
+            cx.gas.refill_reservoir(refill);
+        }
     }
 
     // EIP-2200 and EIP-3529 refund rules, including negative refund adjustments for
@@ -292,11 +300,13 @@ mod tests {
         let interp = run(RunConfig::new([op::PUSH1, 1, op::PUSH1, 0, op::SSTORE, op::STOP])
             .host(&mut host)
             .spec(SpecId::AMSTERDAM)
-            .gas_limit(100_000));
+            .gas_limit(200_000));
 
         assert_matches!(interp.err, InstrStop::Stop);
-        assert_eq!(interp.gas_remaining(), 59_526);
-        assert_eq!(interp.state_gas_spent(), 37_568);
+        // Regular: PUSH1(3)·2 + SSTORE warm (100 static + 2800 set) = 2906.
+        // State gas (64 × 1530 = 97_920) spills into regular gas (no reservoir).
+        assert_eq!(interp.state_gas_spent(), 97_920);
+        assert_eq!(interp.gas_remaining(), 200_000 - 2906 - 97_920);
     }
 
     #[test]
