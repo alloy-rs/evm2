@@ -14,7 +14,10 @@ use alloy_consensus::{
 };
 use futures_util::{StreamExt, stream};
 use serde_json::{Value, value::RawValue};
-use std::time::{Duration, Instant};
+use std::{
+    collections::BTreeMap,
+    time::{Duration, Instant},
+};
 
 type MainnetBlock = ConsensusBlock<EthereumTxEnvelope<TxEip4844>>;
 
@@ -72,9 +75,25 @@ async fn capture(
     builder.capture_block_hashes(&rpc, from).await?;
     let mut blocks = stream::iter(from..=to)
         .map(|number| fetch_block(&rpc, number))
-        .buffered(rpc.max_concurrent_requests());
+        .buffer_unordered(rpc.max_concurrent_requests());
+    let mut pending_blocks = BTreeMap::new();
+    let mut next_block = from;
 
-    while let Some(block) = blocks.next().await {
+    while next_block <= to {
+        let block = if let Some(block) = pending_blocks.remove(&next_block) {
+            block
+        } else {
+            loop {
+                let block = blocks
+                    .next()
+                    .await
+                    .expect("capture block stream ended before all blocks were processed")?;
+                if block.number == next_block {
+                    break block;
+                }
+                pending_blocks.insert(block.number, block);
+            }
+        };
         let block_started_at = Instant::now();
         let PreparedBlock {
             number,
@@ -83,7 +102,7 @@ async fn capture(
             diff_traces,
             transactions,
             elapsed,
-        } = block?;
+        } = block;
 
         for (tx_index, ((pre_trace, diff_trace), tx)) in pre_traces
             .iter()
@@ -112,6 +131,7 @@ async fn capture(
             block_transaction_count,
             (elapsed + block_started_at.elapsed()).as_secs_f64()
         );
+        next_block += 1;
     }
 
     let capture = builder.finish(block_inputs);

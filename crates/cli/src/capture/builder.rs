@@ -48,7 +48,7 @@ impl CaptureBuilder {
                 let hash = rpc.block_hash(number).await?;
                 Ok::<_, CaptureError>((number, hash))
             })
-            .buffered(rpc.max_concurrent_requests());
+            .buffer_unordered(rpc.max_concurrent_requests());
 
         while let Some(block_hash) = block_hashes.next().await {
             let (number, hash) = block_hash?;
