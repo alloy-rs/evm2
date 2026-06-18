@@ -24,13 +24,13 @@ alloy-primitives = { workspace = true, features = ["std", "serde", "rlp"] }
 alloy-rlp = { workspace = true, features = ["std"] }
 alloy-rpc-types-eth = { workspace = true, features = ["std"] }
 alloy-trie = { workspace = true, features = ["ethereum"] }
-flate2.workspace = true
 k256 = { workspace = true, features = ["ecdsa", "std"] }
 libtest-mimic.workspace = true
 serde = { workspace = true, features = ["derive", "std"] }
 serde_json = { workspace = true, features = ["preserve_order", "std"] }
 thiserror = { workspace = true, features = ["std"] }
 walkdir.workspace = true
+zstd.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true

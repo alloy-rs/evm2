@@ -8,7 +8,7 @@ use evm2_eest::{
 use std::{path::Path, time::Duration};
 
 const MAINNET_BLOCKS: &str =
-    concat!(env!("CARGO_MANIFEST_DIR"), "/../../data/mainnet-25346511-25346520.json.gz");
+    concat!(env!("CARGO_MANIFEST_DIR"), "/../../data/mainnet-25346511-25346520.json.zst");
 
 fn mainnet(c: &mut Criterion) {
     let path = Path::new(MAINNET_BLOCKS);

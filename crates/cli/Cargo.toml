@@ -41,7 +41,6 @@ alloy-rpc-client = { workspace = true, features = ["reqwest"] }
 alloy-rpc-types-eth = { workspace = true, features = ["serde", "std"] }
 alloy-rpc-types-trace.workspace = true
 clap.workspace = true
-flate2.workspace = true
 futures-util.workspace = true
 rand.workspace = true
 revm.workspace = true
@@ -50,3 +49,4 @@ serde = { workspace = true, features = ["derive", "std"] }
 serde_json = { workspace = true, features = ["raw_value", "std"] }
 thiserror = { workspace = true, features = ["std"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time"] }
+zstd.workspace = true

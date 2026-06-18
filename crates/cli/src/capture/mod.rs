@@ -12,12 +12,14 @@ use crate::{args::Capture, error::Result, ethereum};
 use alloy_consensus::{
     Block as ConsensusBlock, EthereumTxEnvelope, TxEip4844, transaction::SignerRecoverable,
 };
-use flate2::{Compression, write::GzEncoder};
 use futures_util::{StreamExt, stream};
 use serde_json::{Value, value::RawValue};
 use std::{fs::File, io::BufWriter, path::Path, time::Instant};
+use zstd::stream::write::Encoder as ZstdEncoder;
 
 type MainnetBlock = ConsensusBlock<EthereumTxEnvelope<TxEip4844>>;
+
+const ZSTD_COMPRESSION_LEVEL: i32 = 19;
 
 pub(crate) struct CaptureSummary {
     pub(crate) blocks: usize,
@@ -135,8 +137,10 @@ fn write_suite(
     let file = File::create(path)
         .map_err(|source| CaptureError::WriteOutput { path: path.display().to_string(), source })?;
     let writer = BufWriter::new(file);
-    if is_gzip_path(path) {
-        let mut encoder = GzEncoder::new(writer, Compression::default());
+    if is_zstd_path(path) {
+        let mut encoder = ZstdEncoder::new(writer, ZSTD_COMPRESSION_LEVEL).map_err(|source| {
+            CaptureError::WriteOutput { path: path.display().to_string(), source }
+        })?;
         serde_json::to_writer(&mut encoder, suite).map_err(CaptureError::EncodeJson)?;
         encoder.finish().map_err(|source| CaptureError::WriteOutput {
             path: path.display().to_string(),
@@ -148,8 +152,8 @@ fn write_suite(
     Ok(())
 }
 
-fn is_gzip_path(path: &Path) -> bool {
-    path.extension().is_some_and(|extension| extension == "gz")
+fn is_zstd_path(path: &Path) -> bool {
+    path.extension().is_some_and(|extension| extension == "zst")
 }
 
 struct FetchedBlock {
