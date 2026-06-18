@@ -497,14 +497,16 @@ pub fn with_evm_context<F: FnOnce(&mut TestEvmContext<'_>, &mut EvmStack, &mut u
     with_evm_context_and_host(bytecode, spec_id, f).0
 }
 
-pub fn with_evm_context_and_host<
+fn with_evm_context_and_host_mut<
+    H: Evm2Host<BaseEvmTypes>,
     F: FnOnce(&mut TestEvmContext<'_>, &mut EvmStack, &mut usize) -> R,
     R,
 >(
     bytecode: &[u8],
     spec_id: SpecId,
+    host: &mut H,
     f: F,
-) -> (R, TestHost) {
+) -> R {
     let evm2_spec_id = spec_id;
     let config = <BaseEvmConfigSelector as evm2::EvmConfigSelector<BaseEvmTypes>>::execution_config(
         evm2_spec_id,
@@ -517,15 +519,24 @@ pub fn with_evm_context_and_host<
         &message,
         false,
     );
-    let mut host = TestHost::with_spec(spec_id);
     let mut evm = prepare_host(spec_id);
     interpreter.prepare_jit_run(&config, &mut evm);
 
-    let result = {
-        let (mut ecx, stack, stack_len) =
-            TestEvmContext::from_interpreter_with_stack(&mut interpreter, &mut host);
-        f(&mut ecx, stack, stack_len)
-    };
+    let (mut ecx, stack, stack_len) =
+        TestEvmContext::from_interpreter_with_stack(&mut interpreter, host);
+    f(&mut ecx, stack, stack_len)
+}
+
+pub fn with_evm_context_and_host<
+    F: FnOnce(&mut TestEvmContext<'_>, &mut EvmStack, &mut usize) -> R,
+    R,
+>(
+    bytecode: &[u8],
+    spec_id: SpecId,
+    f: F,
+) -> (R, TestHost) {
+    let mut host = TestHost::with_spec(spec_id);
+    let result = with_evm_context_and_host_mut(bytecode, spec_id, &mut host, f);
     (result, host)
 }
 
@@ -549,6 +560,32 @@ pub fn run_test_case<B: Backend>(test_case: &TestCase<'_>, compiler: &mut EvmCom
 }
 
 fn run_compiled_test_case(test_case: &TestCase<'_>, f: EvmCompilerFn) {
+    let TestCase { bytecode, spec_id, assert_host, .. } = *test_case;
+
+    if assert_host.is_some() {
+        let (_, host_after_jit) =
+            with_evm_context_and_host(bytecode, spec_id, |ecx, stack, stack_len| {
+                run_compiled_test_case_with_context(test_case, f, ecx, stack, stack_len);
+            });
+
+        if let Some(assert_host) = assert_host {
+            assert_host(&host_after_jit);
+        }
+    } else {
+        let mut host = prepare_host(spec_id);
+        with_evm_context_and_host_mut(bytecode, spec_id, &mut host, |ecx, stack, stack_len| {
+            run_compiled_test_case_with_context(test_case, f, ecx, stack, stack_len);
+        });
+    }
+}
+
+fn run_compiled_test_case_with_context(
+    test_case: &TestCase<'_>,
+    f: EvmCompilerFn,
+    ecx: &mut TestEvmContext<'_>,
+    stack: &mut EvmStack,
+    stack_len: &mut usize,
+) {
     let TestCase {
         bytecode,
         spec_id,
@@ -561,177 +598,163 @@ fn run_compiled_test_case(test_case: &TestCase<'_>, f: EvmCompilerFn) {
         expected_memory,
         expected_gas,
         expected_output,
-        assert_host,
+        assert_host: _,
         assert_ecx,
     } = *test_case;
 
-    let (_, host_after_jit) =
-        with_evm_context_and_host(bytecode, spec_id, |ecx, stack, stack_len| {
-            if is_static {
-                ecx.is_static = true;
-            }
-            if gas_limit != DEF_GAS_LIMIT {
-                ecx.gas = Gas::new(gas_limit);
-            }
-            if let Some(modify_ecx) = modify_ecx {
-                modify_ecx(ecx);
-                ecx.refresh_memory_cache();
-            }
+    if is_static {
+        ecx.is_static = true;
+    }
+    if gas_limit != DEF_GAS_LIMIT {
+        ecx.gas = Gas::new(gas_limit);
+    }
+    if let Some(modify_ecx) = modify_ecx {
+        modify_ecx(ecx);
+        ecx.refresh_memory_cache();
+    }
 
-            // Interpreter - run evm2 as the oracle
-            let config =
-                <BaseEvmConfigSelector as evm2::EvmConfigSelector<BaseEvmTypes>>::execution_config(
-                    spec_id,
-                );
-            let tx_env = def_tx_env();
-            let message = def_message(gas_limit);
-            let mut interpreter = Evm2Interpreter::<BaseEvmTypes>::new(
-                Evm2Bytecode::new_legacy(Bytes::copy_from_slice(bytecode)),
-                &tx_env,
-                &message,
-                is_static,
-            );
-            let mut int_host = prepare_host(spec_id);
-            let int_stop = interpreter.run(&config, &mut int_host);
-            let int_result = int_stop;
-            let interpreter_output = interpreter.output();
+    // Interpreter - run evm2 as the oracle
+    let config =
+        <BaseEvmConfigSelector as evm2::EvmConfigSelector<BaseEvmTypes>>::execution_config(spec_id);
+    let tx_env = def_tx_env();
+    let message = def_message(gas_limit);
+    let mut interpreter = Evm2Interpreter::<BaseEvmTypes>::new(
+        Evm2Bytecode::new_legacy(Bytes::copy_from_slice(bytecode)),
+        &tx_env,
+        &message,
+        is_static,
+    );
+    let mut int_host = prepare_host(spec_id);
+    let int_stop = interpreter.run(&config, &mut int_host);
+    let int_result = int_stop;
+    let interpreter_output = interpreter.output();
 
-            let mut expected_return = expected_return;
-            if expected_return == RETURN_WHAT_INTERPRETER_SAYS {
-                expected_return = int_result;
-            } else if modify_ecx.is_none() {
-                // Only check interpreter return if modify_ecx is not set.
-                // When modify_ecx is used, it only modifies the JIT context, not the interpreter's
-                // input, so the interpreter may return a different result.
-                assert!(
-                    instruction_results_match_for_oracle(int_result, expected_return),
-                    "interpreter return value mismatch: {int_result:?} != {expected_return:?}"
-                );
-            }
+    let mut expected_return = expected_return;
+    if expected_return == RETURN_WHAT_INTERPRETER_SAYS {
+        expected_return = int_result;
+    } else if modify_ecx.is_none() {
+        // Only check interpreter return if modify_ecx is not set.
+        // When modify_ecx is used, it only modifies the JIT context, not the interpreter's
+        // input, so the interpreter may return a different result.
+        assert!(
+            instruction_results_match_for_oracle(int_result, expected_return),
+            "interpreter return value mismatch: {int_result:?} != {expected_return:?}"
+        );
+    }
 
-            // When modify_ecx is set, the interpreter runs with different inputs than the JIT,
-            // so we cannot use interpreter results as expected values or compare against them.
-            let skip_interpreter_checks = modify_ecx.is_some() || expected_return.is_halt();
-            let interpreter_stack_ref = (!skip_interpreter_checks).then(|| interpreter.stack());
-            let interpreter_stack = interpreter_stack_ref.as_ref().map(|stack| stack.as_slice());
+    // When modify_ecx is set, the interpreter runs with different inputs than the JIT,
+    // so we cannot use interpreter results as expected values or compare against them.
+    let skip_interpreter_checks = modify_ecx.is_some() || expected_return.is_halt();
+    let interpreter_stack_ref = (!skip_interpreter_checks).then(|| interpreter.stack());
+    let interpreter_stack = interpreter_stack_ref.as_ref().map(|stack| stack.as_slice());
 
-            let mut expected_stack = expected_stack;
-            if expected_stack == STACK_WHAT_INTERPRETER_SAYS {
-                if skip_interpreter_checks {
-                    expected_stack = &[]; // Will skip comparison below
-                } else {
-                    expected_stack = interpreter_stack.unwrap();
-                }
-            } else if !skip_interpreter_checks {
-                assert_eq!(
-                    interpreter_stack.unwrap(),
-                    expected_stack,
-                    "interpreter stack mismatch"
-                );
-            }
+    let mut expected_stack = expected_stack;
+    if expected_stack == STACK_WHAT_INTERPRETER_SAYS {
+        if skip_interpreter_checks {
+            expected_stack = &[]; // Will skip comparison below
+        } else {
+            expected_stack = interpreter_stack.unwrap();
+        }
+    } else if !skip_interpreter_checks {
+        assert_eq!(interpreter_stack.unwrap(), expected_stack, "interpreter stack mismatch");
+    }
 
-            let interpreter_memory = interpreter.memory_ref().as_slice();
-            let mut expected_memory = expected_memory;
-            if expected_memory == MEMORY_WHAT_INTERPRETER_SAYS {
-                if skip_interpreter_checks {
-                    expected_memory = &[]; // Will skip comparison below
-                } else {
-                    expected_memory = interpreter_memory;
-                }
-            } else if !skip_interpreter_checks {
-                assert_eq!(
-                    MemDisplay(interpreter_memory),
-                    MemDisplay(expected_memory),
-                    "interpreter memory mismatch"
-                );
-            }
+    let interpreter_memory = interpreter.memory_ref().as_slice();
+    let mut expected_memory = expected_memory;
+    if expected_memory == MEMORY_WHAT_INTERPRETER_SAYS {
+        if skip_interpreter_checks {
+            expected_memory = &[]; // Will skip comparison below
+        } else {
+            expected_memory = interpreter_memory;
+        }
+    } else if !skip_interpreter_checks {
+        assert_eq!(
+            MemDisplay(interpreter_memory),
+            MemDisplay(expected_memory),
+            "interpreter memory mismatch"
+        );
+    }
 
-            let mut expected_gas = expected_gas;
-            if expected_gas == GAS_WHAT_INTERPRETER_SAYS {
-                if skip_interpreter_checks {
-                    expected_gas = 0; // Will skip comparison below
-                } else {
-                    expected_gas = interpreter.gas().spent();
-                }
-            } else if !skip_interpreter_checks {
-                assert_eq!(interpreter.gas().spent(), expected_gas, "interpreter gas mismatch");
-            }
+    let mut expected_gas = expected_gas;
+    if expected_gas == GAS_WHAT_INTERPRETER_SAYS {
+        if skip_interpreter_checks {
+            expected_gas = 0; // Will skip comparison below
+        } else {
+            expected_gas = interpreter.gas().spent();
+        }
+    } else if !skip_interpreter_checks {
+        assert_eq!(interpreter.gas().spent(), expected_gas, "interpreter gas mismatch");
+    }
 
-            let expected_output = if let Some(expected_output) = expected_output {
-                if !skip_interpreter_checks {
-                    assert_eq!(interpreter_output, expected_output, "interpreter output mismatch");
-                }
-                Some(expected_output)
-            } else if skip_interpreter_checks {
-                None
-            } else {
-                Some(interpreter_output)
-            };
+    let expected_output = if let Some(expected_output) = expected_output {
+        if !skip_interpreter_checks {
+            assert_eq!(interpreter_output, expected_output, "interpreter output mismatch");
+        }
+        Some(expected_output)
+    } else if skip_interpreter_checks {
+        None
+    } else {
+        Some(interpreter_output)
+    };
 
-            // Track whether we should skip JIT stack/gas/memory comparisons
-            let skip_jit_stack =
-                skip_interpreter_checks && test_case.expected_stack == STACK_WHAT_INTERPRETER_SAYS;
-            let skip_jit_memory = skip_interpreter_checks
-                && test_case.expected_memory == MEMORY_WHAT_INTERPRETER_SAYS;
-            let skip_jit_gas =
-                skip_interpreter_checks && test_case.expected_gas == GAS_WHAT_INTERPRETER_SAYS;
+    // Track whether we should skip JIT stack/gas/memory comparisons
+    let skip_jit_stack =
+        skip_interpreter_checks && test_case.expected_stack == STACK_WHAT_INTERPRETER_SAYS;
+    let skip_jit_memory =
+        skip_interpreter_checks && test_case.expected_memory == MEMORY_WHAT_INTERPRETER_SAYS;
+    let skip_jit_gas =
+        skip_interpreter_checks && test_case.expected_gas == GAS_WHAT_INTERPRETER_SAYS;
 
-            let actual_return = unsafe { f.call_with_evm2_context(stack, stack_len, ecx) };
+    let actual_return = unsafe { f.call_with_evm2_context(stack, stack_len, ecx) };
 
-            if matches!(
-                actual_return,
-                // We can have a stack overflow/underflow before other error codes due to sections.
-                |InstrStop::StackOverflow| InstrStop::StackUnderflow
+    if matches!(
+        actual_return,
+        // We can have a stack overflow/underflow before other error codes due to sections.
+        |InstrStop::StackOverflow| InstrStop::StackUnderflow
             // Any OOG is equivalent. We skip `InvalidOperand` sometimes.
             | InstrStop::OutOfGas
             | InstrStop::MemoryOOG
             | InstrStop::MemoryLimitOOG
             | InstrStop::InvalidOperandOOG
-            ) {
-                assert_eq!(
-                    actual_return.is_halt(),
-                    expected_return.is_halt(),
-                    "return value mismatch: {actual_return:?} != {expected_return:?}"
-                );
-            } else {
-                assert_eq!(actual_return, expected_return, "return value mismatch");
-            }
+    ) {
+        assert_eq!(
+            actual_return.is_halt(),
+            expected_return.is_halt(),
+            "return value mismatch: {actual_return:?} != {expected_return:?}"
+        );
+    } else {
+        assert_eq!(actual_return, expected_return, "return value mismatch");
+    }
 
-            let actual_stack = unsafe {
-                stack.as_slice(*stack_len).iter().map(|x| x.to_u256()).collect::<Vec<_>>()
-            };
+    let actual_stack =
+        unsafe { stack.as_slice(*stack_len).iter().map(|x| x.to_u256()).collect::<Vec<_>>() };
 
-            // On EVM halt all available gas is consumed, so resulting stack, memory, and gas do not
-            // matter. We do less work than the interpreter by bailing out earlier due to sections.
-            if !actual_return.is_halt() {
-                if !skip_jit_stack {
-                    assert_eq!(actual_stack, *expected_stack, "stack mismatch");
-                }
+    // On EVM halt all available gas is consumed, so resulting stack, memory, and gas do not
+    // matter. We do less work than the interpreter by bailing out earlier due to sections.
+    if !actual_return.is_halt() {
+        if !skip_jit_stack {
+            assert_eq!(actual_stack, *expected_stack, "stack mismatch");
+        }
 
-                if !skip_jit_memory {
-                    assert_eq!(
-                        MemDisplay(unsafe { &*ecx.memory }.as_slice()),
-                        MemDisplay(expected_memory),
-                        "memory mismatch"
-                    );
-                }
+        if !skip_jit_memory {
+            assert_eq!(
+                MemDisplay(unsafe { &*ecx.memory }.as_slice()),
+                MemDisplay(expected_memory),
+                "memory mismatch"
+            );
+        }
 
-                if !skip_jit_gas {
-                    assert_eq!(ecx.gas.spent(), expected_gas, "gas mismatch");
-                }
-            }
+        if !skip_jit_gas {
+            assert_eq!(ecx.gas.spent(), expected_gas, "gas mismatch");
+        }
+    }
 
-            if let Some(expected_output) = expected_output {
-                assert_eq!(ecx.output.as_ref(), expected_output, "output mismatch");
-            }
+    if let Some(expected_output) = expected_output {
+        assert_eq!(ecx.output.as_ref(), expected_output, "output mismatch");
+    }
 
-            if let Some(assert_ecx) = assert_ecx {
-                assert_ecx(ecx);
-            }
-        });
-
-    if let Some(assert_host) = assert_host {
-        assert_host(&host_after_jit);
+    if let Some(assert_ecx) = assert_ecx {
+        assert_ecx(ecx);
     }
 }
 
