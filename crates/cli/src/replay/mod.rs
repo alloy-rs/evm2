@@ -16,7 +16,7 @@ use std::time::Instant;
 
 pub(crate) fn run(command: Replay) -> Result<()> {
     let entrypoint = EntryPoint::new(command.entrypoint);
-    if fixture::is_wincode_path(&command.path) {
+    if fixture::is_binary_path(&command.path) {
         let suite = fixture::read_blockchain(&command.path)?;
         let mut hook = ReplayProgressHook::default();
         let summary = execute_blockchain_tests_suite(

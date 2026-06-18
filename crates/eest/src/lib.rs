@@ -2,7 +2,6 @@
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
-mod binary;
 pub mod blockchaintest;
 mod discover;
 mod env;
@@ -37,7 +36,7 @@ pub use execute::{
 };
 pub use filter::EntryPoint;
 pub use fixture_io::{
-    FixtureReadError, FixtureWriteError, is_wincode_path as is_wincode_fixture_path,
+    FixtureReadError, FixtureWriteError, is_binary_path as is_binary_fixture_path,
     read_blockchain as read_blockchain_fixture, write_blockchain as write_blockchain_fixture,
 };
 pub use runner::run as run_statetests;

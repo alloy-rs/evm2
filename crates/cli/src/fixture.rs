@@ -1,5 +1,4 @@
 use crate::error::{Error, Result};
-use evm2_eest::blockchaintest::BlockchainTest;
 use serde::de::{DeserializeSeed, Deserializer, IgnoredAny, MapAccess, Visitor};
 use serde_json::Value;
 use std::{fmt, fs, path::Path};
@@ -15,18 +14,13 @@ pub(crate) enum FixtureKind {
 }
 
 pub(crate) fn read(path: &Path) -> Result<FixtureInput> {
-    if evm2_eest::is_wincode_fixture_path(path) {
-        let suite = read_blockchain(path)?;
-        return Ok(FixtureInput { json: blockchain_to_json(path, &suite)? });
-    }
-
     let text = read_text(path)?;
     let json = serde_json::from_str(&text)
         .map_err(|source| Error::DecodeJson { path: path.to_path_buf(), source })?;
     Ok(FixtureInput { json })
 }
 
-pub(crate) fn read_blockchain(path: &Path) -> Result<BlockchainTest> {
+pub(crate) fn read_blockchain(path: &Path) -> Result<evm2_eest::blockchaintest::BlockchainTest> {
     evm2_eest::read_blockchain_fixture(path)
         .map_err(|source| Error::DecodeFixture { path: path.to_path_buf(), source })
 }
@@ -35,8 +29,8 @@ pub(crate) fn read_text(path: &Path) -> Result<String> {
     fs::read_to_string(path).map_err(|source| Error::ReadInput { path: path.to_path_buf(), source })
 }
 
-pub(crate) fn is_wincode_path(path: &Path) -> bool {
-    evm2_eest::is_wincode_fixture_path(path)
+pub(crate) fn is_binary_path(path: &Path) -> bool {
+    evm2_eest::is_binary_fixture_path(path)
 }
 
 pub(crate) fn detect_str(path: &Path, input: &str) -> Result<Option<FixtureKind>> {
@@ -129,11 +123,6 @@ pub(crate) fn entrypoints(value: &Value) -> Option<Vec<&str>> {
     let mut entrypoints = value.as_object()?.keys().map(String::as_str).collect::<Vec<_>>();
     entrypoints.sort_unstable();
     Some(entrypoints)
-}
-
-fn blockchain_to_json(path: &Path, suite: &BlockchainTest) -> Result<Value> {
-    serde_json::to_value(suite)
-        .map_err(|source| Error::DecodeJson { path: path.to_path_buf(), source })
 }
 
 fn has_any(object: &serde_json::Map<String, Value>, fields: &[&str]) -> bool {

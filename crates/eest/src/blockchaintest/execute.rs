@@ -64,7 +64,7 @@ pub(crate) fn execute_test_suite(
     path: &Path,
     config: ExecuteConfig,
 ) -> Result<ExecuteSummary, TestError> {
-    let suite: BlockchainTest =
+    let suite =
         fixture_io::read_blockchain(path).map_err(|err| TestError::unknown(path, err.into()))?;
     let entrypoint = EntryPoint::default();
     let mut hook = NoopHook;
