@@ -138,6 +138,8 @@ gas_ids! {
     TxAccessListAddressCost;
     /// Transaction access-list storage-key cost.
     TxAccessListStorageKeyCost;
+    /// Floor tokens charged per access-list byte (EIP-7981).
+    TxAccessListFloorByteMultiplier;
     /// Transaction base stipend.
     TxBaseStipend;
     /// Transaction create cost.
@@ -467,6 +469,9 @@ mod tests {
         assert_eq!(amsterdam.get(GasId::Create), 9000);
         assert_eq!(amsterdam.get(GasId::SstoreSetState), 37568);
         assert_eq!(amsterdam.get(GasId::TxEip7702PerAuthState), 158490);
+        assert_eq!(amsterdam.get(GasId::TxAccessListAddressCost), 2400 + 20 * 64);
+        assert_eq!(amsterdam.get(GasId::TxAccessListStorageKeyCost), 1900 + 32 * 64);
+        assert_eq!(amsterdam.get(GasId::TxAccessListFloorByteMultiplier), 4);
     }
 
     #[test]
