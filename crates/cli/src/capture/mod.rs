@@ -12,11 +12,13 @@ use crate::{args::Capture, error::Result, ethereum};
 use alloy_consensus::{
     Block as ConsensusBlock, EthereumTxEnvelope, TxEip4844, transaction::SignerRecoverable,
 };
+use flate2::{Compression, write::GzEncoder};
 use futures_util::{StreamExt, stream};
 use serde_json::{Value, value::RawValue};
 use std::{
     fs::File,
     io::BufWriter,
+    path::Path,
     time::{Duration, Instant},
 };
 
@@ -123,11 +125,7 @@ async fn capture(
     let base_storage_slots =
         capture.pre_state.accounts.iter().map(|account| account.storage.len()).sum();
     let suite = export::suite(&capture)?;
-    let file = File::create(&command.output).map_err(|source| CaptureError::WriteOutput {
-        path: command.output.display().to_string(),
-        source,
-    })?;
-    serde_json::to_writer(BufWriter::new(file), &suite).map_err(CaptureError::EncodeJson)?;
+    write_suite(&command.output, &suite)?;
 
     Ok(CaptureSummary {
         blocks: match &capture.input {
@@ -139,6 +137,30 @@ async fn capture(
         base_storage_slots,
         elapsed_sec: started_at.elapsed().as_secs_f64(),
     })
+}
+
+fn write_suite(
+    path: &Path,
+    suite: &evm2_eest::blockchaintest::BlockchainTest,
+) -> std::result::Result<(), CaptureError> {
+    let file = File::create(path)
+        .map_err(|source| CaptureError::WriteOutput { path: path.display().to_string(), source })?;
+    let writer = BufWriter::new(file);
+    if is_gzip_path(path) {
+        let mut encoder = GzEncoder::new(writer, Compression::default());
+        serde_json::to_writer(&mut encoder, suite).map_err(CaptureError::EncodeJson)?;
+        encoder.finish().map_err(|source| CaptureError::WriteOutput {
+            path: path.display().to_string(),
+            source,
+        })?;
+    } else {
+        serde_json::to_writer(writer, suite).map_err(CaptureError::EncodeJson)?;
+    }
+    Ok(())
+}
+
+fn is_gzip_path(path: &Path) -> bool {
+    path.extension().is_some_and(|extension| extension == "gz")
 }
 
 struct FetchedBlock {
