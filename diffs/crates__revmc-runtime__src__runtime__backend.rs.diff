@@ -29,27 +29,7 @@
                      .ok_or_else(|| eyre::eyre!("unknown builtin symbol: {name}"))?
                      .addr();
                  Ok((CString::new(name.as_str())?, addr))
-@@ -136,10 +137,6 @@
-     ClearPersisted,
-     /// Clear both resident and persisted.
-     ClearAll,
--    /// Pause out-of-process helper execution.
--    Pause,
--    /// Resume out-of-process helper execution.
--    Resume,
-     /// Shut down the backend.
-     Shutdown,
- }
-@@ -232,8 +229,6 @@
-             Command::ClearResident => self.handle_clear_resident(),
-             Command::ClearPersisted => self.handle_clear_persisted(),
-             Command::ClearAll => self.handle_clear_all(),
--            Command::Pause => self.workers.pause(),
--            Command::Resume => self.workers.resume(),
-             Command::Shutdown => return ControlFlow::Break(()),
-         }
-         ControlFlow::Continue(())
-@@ -617,7 +612,7 @@
+@@ -617,7 +618,7 @@
          let content_hash = keccak256(&success.dylib_bytes).0;
 
          let manifest = ArtifactManifest {
@@ -58,7 +38,7 @@
              symbol_name: success.symbol_name.clone(),
              bytecode_len: success.bytecode_len,
              artifact_len: success.dylib_bytes.len(),
-@@ -880,7 +875,7 @@
+@@ -880,7 +881,7 @@
      use crate::runtime::worker::{
          CompileJob, WorkerSuccess, compile_jit_object_artifact, create_compiler,
      };

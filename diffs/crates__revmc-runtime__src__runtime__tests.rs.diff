@@ -36,7 +36,7 @@
 
      let stats = tb.wait_stats(|s| s.lookup_misses == 1);
      assert_eq!(stats.lookup_misses, 1);
-@@ -274,39 +274,19 @@
+@@ -274,13 +274,19 @@
      let tb = TestBackend::new(RuntimeConfig { enabled: false, ..Default::default() });
      let req = TestBackend::req_cancun(&[0x00]);
 
@@ -55,37 +55,32 @@
 
      tb.set_enabled(false).unwrap();
 -    assert!(matches!(tb.lookup(req), LookupDecision::Interpret(InterpretReason::Disabled)));
--}
--
--#[test]
--fn pause_processes_lookup_events() {
--    let tb = TestBackend::with_tuning(RuntimeTuning { jit_worker_count: 0, ..Default::default() });
--    let req = TestBackend::req_cancun(&[0x00]);
--
--    assert!(!tb.is_paused());
--    tb.pause();
--    tb.pause();
--    assert!(tb.is_paused());
--    assert!(matches!(tb.lookup(req.clone()), LookupDecision::Interpret(InterpretReason::NotReady)));
--
--    let stats = tb.wait_stats(|s| s.lookup_misses == 1);
--    assert_eq!(stats.lookup_misses, 1);
--    assert_eq!(stats.lookup_hits, 0);
--
--    tb.resume();
--    assert!(tb.is_paused());
--    tb.resume();
--    assert!(!tb.is_paused());
--    assert!(matches!(tb.lookup(req), LookupDecision::Interpret(InterpretReason::NotReady)));
--
--    let stats = tb.wait_stats(|s| s.lookup_misses == 2);
--    assert_eq!(stats.lookup_misses, 2);
--    assert_eq!(stats.lookup_hits, 0);
 +    assert!(matches!(tb.lookup(req), LookupDecision::Unavailable(LookupMissReason::Disabled)));
  }
 
  #[test]
-@@ -389,7 +369,7 @@
+@@ -292,7 +298,10 @@
+     tb.pause();
+     tb.pause();
+     assert!(tb.is_paused());
+-    assert!(matches!(tb.lookup(req.clone()), LookupDecision::Interpret(InterpretReason::NotReady)));
++    assert!(matches!(
++        tb.lookup(req.clone()),
++        LookupDecision::Unavailable(LookupMissReason::NotReady)
++    ));
+
+     let stats = tb.wait_stats(|s| s.lookup_misses == 1);
+     assert_eq!(stats.lookup_misses, 1);
+@@ -302,7 +311,7 @@
+     assert!(tb.is_paused());
+     tb.resume();
+     assert!(!tb.is_paused());
+-    assert!(matches!(tb.lookup(req), LookupDecision::Interpret(InterpretReason::NotReady)));
++    assert!(matches!(tb.lookup(req), LookupDecision::Unavailable(LookupMissReason::NotReady)));
+
+     let stats = tb.wait_stats(|s| s.lookup_misses == 2);
+     assert_eq!(stats.lookup_misses, 2);
+@@ -389,7 +398,7 @@
      tb.clear_resident();
 
      let decision = tb.lookup(TestBackend::req_cancun(&[0x00]));
@@ -94,61 +89,7 @@
  }
 
  #[test]
-@@ -414,53 +394,6 @@
-     assert_eq!(stats.compilations_dispatched, 0);
- }
-
--#[test]
--fn pause_resume_never_block_without_backend_thread() {
--    // When the runtime is constructed but compilation is never enabled, the backend thread is
--    // never spawned and nothing drains the bounded command channel. Pause/resume are issued once
--    // per validated block on the engine's critical path, so queueing them would fill the channel
--    // after `channel_capacity` sends and block the caller forever (observed in production as a
--    // consensus-engine deadlock after exactly capacity/2 blocks). They must be skipped, not
--    // queued, while the backend is not started.
--    let tb = TestBackend::new(RuntimeConfig {
--        enabled: false,
--        tuning: RuntimeTuning { channel_capacity: 2, ..Default::default() },
--        ..Default::default()
--    });
--
--    // More pause/resume cycles than the channel can hold: deadlocks without the started check.
--    for _ in 0..16 {
--        tb.pause();
--        assert!(tb.is_paused());
--        tb.resume();
--        assert!(!tb.is_paused());
--    }
--
--    // Nothing was queued or dropped: the sends were skipped entirely.
--    let stats = tb.stats();
--    assert_eq!(stats.command_queue_len, 0);
--    assert_eq!(stats.commands_dropped, 0);
--}
--
--#[test]
--fn pause_resume_depth_tracking_with_backend_thread() {
--    // With the backend running, pause/resume still track depth and deliver commands.
--    let tb = TestBackend::with_tuning_1w(RuntimeTuning::default());
--
--    tb.pause();
--    tb.pause();
--    assert!(tb.is_paused());
--    tb.resume();
--    assert!(tb.is_paused());
--    tb.resume();
--    assert!(!tb.is_paused());
--
--    // Commands are drained by the backend thread rather than accumulating.
--    let stats = tb.wait_stats(|s| s.command_queue_len == 0);
--    assert_eq!(stats.command_queue_len, 0);
--    assert_eq!(stats.commands_dropped, 0);
--}
--
- // ===========================================================================
- // Tests: JIT compilation (require LLVM).
- // ===========================================================================
-@@ -488,7 +421,7 @@
+@@ -488,7 +497,7 @@
 
      // Empty bytecodes return Ineligible (nothing to compile).
      let decision = tb.lookup(TestBackend::req_cancun(&[]));
@@ -157,7 +98,7 @@
  }
 
  #[test]
-@@ -512,7 +445,10 @@
+@@ -512,7 +521,10 @@
 
      // Below threshold: should remain NotReady.
      for _ in 0..2 {
@@ -169,7 +110,7 @@
      }
 
      // Hit threshold and beyond: JIT should eventually compile.
-@@ -544,7 +480,7 @@
+@@ -544,7 +556,7 @@
      std::thread::sleep(std::time::Duration::from_millis(200));
 
      // Should be Ineligible — bytecode length exceeds jit_max_bytecode_len.
@@ -178,7 +119,7 @@
  }
 
  #[test]
-@@ -568,7 +504,7 @@
+@@ -568,7 +580,7 @@
 
      // The result from the old generation should have been discarded.
      assert!(
@@ -187,7 +128,7 @@
          "stale JIT result should not appear after clear_resident",
      );
  }
-@@ -909,7 +845,7 @@
+@@ -909,7 +921,7 @@
      tb.set_enabled(false).unwrap();
      assert!(matches!(
          tb.lookup(TestBackend::req_cancun(BYTECODE_RET42)),
@@ -196,7 +137,7 @@
      ));
 
      // Re-enable and check compilation eventually completes.
-@@ -990,11 +926,11 @@
+@@ -990,11 +1002,11 @@
 
      assert!(matches!(
          tb.lookup(TestBackend::req_cancun(BYTECODE_RET42)),

@@ -20,7 +20,7 @@ use std::{
     ops::ControlFlow,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -91,6 +91,8 @@ pub(crate) struct BackendShared {
     /// Lock-free queue of events.
     #[debug(skip)]
     events: EventQueue,
+    /// Number of active out-of-process helper pauses.
+    pause_depth: AtomicUsize,
     /// Shared stats counters.
     #[debug(skip)]
     stats: Arc<RuntimeStats>,
@@ -184,6 +186,7 @@ impl JitBackend {
         let shared = Arc::new(BackendShared {
             resident: ResidentMap::default(),
             events,
+            pause_depth: AtomicUsize::new(0),
             stats: Arc::new(RuntimeStats::default()),
         });
         let this = Self {
@@ -362,6 +365,66 @@ impl JitBackend {
     /// Returns whether the runtime is enabled.
     pub fn enabled(&self) -> bool {
         self.inner.enabled.load(Ordering::Relaxed)
+    }
+
+    /// Pauses out-of-process helper execution.
+    ///
+    /// Resident compiled functions are still returned by [`lookup`](Self::lookup), and lookup
+    /// events are still processed for stats, hotness tracking, and compilation dispatch. In
+    /// out-of-process mode, the helper process group is stopped until the pause depth returns to
+    /// zero, so dispatched helper requests remain buffered and resume once the helper continues.
+    /// In in-process mode, pause only tracks pause depth.
+    ///
+    /// Pause delivery is best-effort and never blocks: callers pause around block validation on
+    /// the engine's critical path. If the backend thread is not running or the command channel
+    /// is full, the command is skipped or dropped instead of blocking.
+    pub fn pause(&self) {
+        if self.inner.shared.pause_depth.fetch_add(1, Ordering::Relaxed) == 0 {
+            self.try_send_control(Command::Pause);
+        }
+    }
+
+    /// Resumes out-of-process helper execution once all active pauses have been released.
+    ///
+    /// Resume delivery is best-effort and never blocks, like [`pause`](Self::pause).
+    pub fn resume(&self) {
+        if self
+            .inner
+            .shared
+            .pause_depth
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |depth| {
+                Some(depth.saturating_sub(1))
+            })
+            .is_ok_and(|depth| depth == 1)
+        {
+            self.try_send_control(Command::Resume);
+        }
+    }
+
+    /// Sends a best-effort control command without ever blocking the caller.
+    ///
+    /// The command channel is bounded, so a plain `send` can block. Pause/resume are issued on
+    /// the caller's block-validation critical path and must never block there:
+    ///
+    /// - If the backend thread has not been started (the runtime was constructed but compilation
+    ///   was never enabled), nothing drains the channel. Queued commands would only accumulate
+    ///   until the channel fills and `send` blocks the caller forever, so the send is skipped
+    ///   entirely — there is no helper to pause anyway.
+    /// - If the channel is full, the command is dropped and recorded in
+    ///   [`commands_dropped`](RuntimeStatsSnapshot::commands_dropped). Pause/resume signals are
+    ///   idempotent and re-issued on the next pause cycle, so a dropped command self-heals.
+    fn try_send_control(&self, cmd: Command) {
+        if !self.inner.started.load(Ordering::Relaxed) {
+            return;
+        }
+        if self.inner.tx.try_send(cmd).is_err() {
+            self.inner.shared.stats.commands_dropped.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Returns whether out-of-process helper execution is paused.
+    pub fn is_paused(&self) -> bool {
+        self.inner.shared.pause_depth.load(Ordering::Relaxed) != 0
     }
 
     /// Sets whether the runtime is enabled, spawning the backend thread on first enable.

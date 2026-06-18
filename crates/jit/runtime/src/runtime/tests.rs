@@ -290,6 +290,35 @@ fn set_enabled_toggle() {
 }
 
 #[test]
+fn pause_processes_lookup_events() {
+    let tb = TestBackend::with_tuning(RuntimeTuning { jit_worker_count: 0, ..Default::default() });
+    let req = TestBackend::req_cancun(&[0x00]);
+
+    assert!(!tb.is_paused());
+    tb.pause();
+    tb.pause();
+    assert!(tb.is_paused());
+    assert!(matches!(
+        tb.lookup(req.clone()),
+        LookupDecision::Unavailable(LookupMissReason::NotReady)
+    ));
+
+    let stats = tb.wait_stats(|s| s.lookup_misses == 1);
+    assert_eq!(stats.lookup_misses, 1);
+    assert_eq!(stats.lookup_hits, 0);
+
+    tb.resume();
+    assert!(tb.is_paused());
+    tb.resume();
+    assert!(!tb.is_paused());
+    assert!(matches!(tb.lookup(req), LookupDecision::Unavailable(LookupMissReason::NotReady)));
+
+    let stats = tb.wait_stats(|s| s.lookup_misses == 2);
+    assert_eq!(stats.lookup_misses, 2);
+    assert_eq!(stats.lookup_hits, 0);
+}
+
+#[test]
 fn lookup_increments_miss_counter() {
     let tb = TestBackend::new(RuntimeConfig { enabled: true, ..Default::default() });
 
@@ -392,6 +421,53 @@ fn sub_threshold_misses_do_not_dispatch() {
     let stats = tb.wait_stats(|s| s.lookup_misses + s.events_dropped == 200);
     assert_eq!(stats.lookup_misses + stats.events_dropped, 200);
     assert_eq!(stats.compilations_dispatched, 0);
+}
+
+#[test]
+fn pause_resume_never_block_without_backend_thread() {
+    // When the runtime is constructed but compilation is never enabled, the backend thread is
+    // never spawned and nothing drains the bounded command channel. Pause/resume are issued once
+    // per validated block on the engine's critical path, so queueing them would fill the channel
+    // after `channel_capacity` sends and block the caller forever (observed in production as a
+    // consensus-engine deadlock after exactly capacity/2 blocks). They must be skipped, not
+    // queued, while the backend is not started.
+    let tb = TestBackend::new(RuntimeConfig {
+        enabled: false,
+        tuning: RuntimeTuning { channel_capacity: 2, ..Default::default() },
+        ..Default::default()
+    });
+
+    // More pause/resume cycles than the channel can hold: deadlocks without the started check.
+    for _ in 0..16 {
+        tb.pause();
+        assert!(tb.is_paused());
+        tb.resume();
+        assert!(!tb.is_paused());
+    }
+
+    // Nothing was queued or dropped: the sends were skipped entirely.
+    let stats = tb.stats();
+    assert_eq!(stats.command_queue_len, 0);
+    assert_eq!(stats.commands_dropped, 0);
+}
+
+#[test]
+fn pause_resume_depth_tracking_with_backend_thread() {
+    // With the backend running, pause/resume still track depth and deliver commands.
+    let tb = TestBackend::with_tuning_1w(RuntimeTuning::default());
+
+    tb.pause();
+    tb.pause();
+    assert!(tb.is_paused());
+    tb.resume();
+    assert!(tb.is_paused());
+    tb.resume();
+    assert!(!tb.is_paused());
+
+    // Commands are drained by the backend thread rather than accumulating.
+    let stats = tb.wait_stats(|s| s.command_queue_len == 0);
+    assert_eq!(stats.command_queue_len, 0);
+    assert_eq!(stats.commands_dropped, 0);
 }
 
 // ===========================================================================
