@@ -31,7 +31,14 @@ serde_json = { workspace = true, features = ["preserve_order", "std"] }
 thiserror = { workspace = true, features = ["std"] }
 walkdir.workspace = true
 
+[dev-dependencies]
+criterion.workspace = true
+
 [[test]]
 name = "eest"
 path = "tests/eest.rs"
+harness = false
+
+[[bench]]
+name = "mainnet"
 harness = false
