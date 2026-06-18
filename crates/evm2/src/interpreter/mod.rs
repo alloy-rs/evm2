@@ -1,9 +1,7 @@
 //! EVM interpreter.
 
-pub(crate) mod gas;
-pub use gas::{
-    COPY, Gas, GasTracker, KECCAK256, KECCAK256WORD, LOG, LOGDATA, LOGTOPIC, MemoryGas, VERYLOW,
-};
+pub mod gas;
+pub use gas::{Gas, GasTracker, MemoryGas};
 
 #[macro_use]
 mod utils;
