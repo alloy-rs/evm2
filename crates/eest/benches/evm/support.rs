@@ -20,15 +20,10 @@ pub(crate) struct PreparedBench {
 
 impl PreparedBench {
     pub(crate) fn load(bench: &Bench, suites: &Suites) -> Self {
+        let spec = bench.transaction_spec().expect("transaction benchmark must have a spec");
         let suite = suites.get(bench.fixture_path);
-        let case = suite.case(bench.name, bench.spec);
-        Self {
-            name: bench.name,
-            spec: bench.spec,
-            block: case.block(),
-            db: case.state(),
-            tx: case.tx(bench.spec),
-        }
+        let case = suite.case(bench.name, spec);
+        Self { name: bench.name, spec, block: case.block(), db: case.state(), tx: case.tx(spec) }
     }
 
     pub(crate) fn sanity_check(&self) {

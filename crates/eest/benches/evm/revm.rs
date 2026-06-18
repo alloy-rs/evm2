@@ -24,10 +24,11 @@ pub(crate) struct PreparedBench {
 
 impl PreparedBench {
     pub(crate) fn load(bench: &Bench, suites: &Suites) -> Self {
+        let spec = bench.transaction_spec().expect("transaction benchmark must have a spec");
         let suite = suites.get(bench.fixture_path);
-        let (unit, test) = revm_case(suite.input(), bench.name, bench.spec);
+        let (unit, test) = revm_case(suite.input(), bench.name, spec);
         let tx = test.tx_env(&unit).expect("revm benchmark transaction must build");
-        let (cfg, block) = envs(&unit, revm_spec_id(bench.spec));
+        let (cfg, block) = envs(&unit, revm_spec_id(spec));
         let db = Arc::new(database(&unit));
         Self { name: bench.name, cfg, block, db, tx }
     }

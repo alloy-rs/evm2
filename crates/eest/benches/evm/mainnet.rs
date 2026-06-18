@@ -1,53 +1,66 @@
-use criterion::{Criterion, black_box};
+use crate::cases::Bench;
+use criterion::{BenchmarkGroup, black_box, measurement::WallTime};
 use evm2_eest::{
-    BlockchainTestExecuteConfig, BlockchainTestNoopHook, EntryPoint, execute_blockchain_tests_suite,
+    BlockchainTestExecuteConfig, BlockchainTestNoopHook, EntryPoint,
+    blockchaintest::BlockchainTest, execute_blockchain_tests_suite,
 };
-use std::{path::Path, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
-const MAINNET_BLOCKS: &str =
-    concat!(env!("CARGO_MANIFEST_DIR"), "/../../data/mainnet-25347446-25347455.bin.zst");
+#[derive(Clone)]
+pub(crate) struct PreparedBench {
+    name: &'static str,
+    path: PathBuf,
+    suite: Arc<BlockchainTest>,
+    entrypoint: EntryPoint,
+}
 
-pub(crate) fn bench(c: &mut Criterion) {
-    let path = Path::new(MAINNET_BLOCKS);
-    let suite = evm2_eest::read_blockchain_fixture(path)
-        .unwrap_or_else(|err| panic!("failed to read fixture: {err}"));
-    let entrypoint = EntryPoint::default();
+impl PreparedBench {
+    pub(crate) fn load(bench: &Bench) -> Self {
+        let path = workspace_path(bench.fixture_path);
+        let suite = evm2_eest::read_blockchain_fixture(&path)
+            .unwrap_or_else(|err| panic!("failed to read fixture {}: {err}", path.display()));
+        Self { name: bench.name, path, suite: Arc::new(suite), entrypoint: EntryPoint::default() }
+    }
 
-    let mut hook = BlockchainTestNoopHook;
-    let summary = execute_blockchain_tests_suite(
-        path,
-        &suite,
-        BlockchainTestExecuteConfig::default(),
-        &entrypoint,
-        &mut hook,
-    )
-    .unwrap_or_else(|err| panic!("mainnet fixture sanity check failed: {err}"));
-    assert_eq!(summary.executed, 1);
-    assert_eq!(summary.skipped, 0);
+    pub(crate) fn sanity_check(&self) {
+        let mut hook = BlockchainTestNoopHook;
+        let summary = execute_blockchain_tests_suite(
+            &self.path,
+            &self.suite,
+            BlockchainTestExecuteConfig::default(),
+            &self.entrypoint,
+            &mut hook,
+        )
+        .unwrap_or_else(|err| panic!("{} fixture sanity check failed: {err}", self.name));
+        assert_eq!(summary.executed, 1);
+        assert_eq!(summary.skipped, 0);
+    }
 
-    let mut group = c.benchmark_group("mainnet");
-    group.warm_up_time(Duration::from_secs(1));
-    group.measurement_time(Duration::from_secs(2));
-    group.sample_size(10);
-
-    group.bench_function("25347446_25347455/replay", |b| {
-        b.iter(|| {
-            let mut hook = BlockchainTestNoopHook;
-            black_box(
-                execute_blockchain_tests_suite(
-                    path,
-                    &suite,
-                    BlockchainTestExecuteConfig {
-                        validate_post_state: false,
-                        ..Default::default()
-                    },
-                    &entrypoint,
-                    &mut hook,
+    pub(crate) fn bench(&self, group: &mut BenchmarkGroup<'_, WallTime>) {
+        group.bench_function(format!("{}/replay", self.name), |b| {
+            b.iter(|| {
+                let mut hook = BlockchainTestNoopHook;
+                black_box(
+                    execute_blockchain_tests_suite(
+                        &self.path,
+                        &self.suite,
+                        BlockchainTestExecuteConfig {
+                            validate_post_state: false,
+                            ..Default::default()
+                        },
+                        &self.entrypoint,
+                        &mut hook,
+                    )
+                    .unwrap_or_else(|err| panic!("{} fixture replay failed: {err}", self.name)),
                 )
-                .unwrap_or_else(|err| panic!("mainnet fixture replay failed: {err}")),
-            )
+            });
         });
-    });
+    }
+}
 
-    group.finish();
+fn workspace_path(path: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").join(path)
 }
