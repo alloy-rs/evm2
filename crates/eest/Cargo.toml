@@ -35,6 +35,7 @@ zstd.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true
+revm = { workspace = true, features = ["test-types"] }
 
 [[test]]
 name = "eest"

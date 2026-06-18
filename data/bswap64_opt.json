@@ -34,7 +34,8 @@
       "to": "0xcccccccccccccccccccccccccccccccccccccccc",
       "value": [
         "0x0"
-      ]
+      ],
+      "secretKey": "0x0000000000000000000000000000000000000000000000000000000000000000"
     },
     "post": {
       "Osaka": [

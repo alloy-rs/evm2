@@ -43,6 +43,11 @@ pub use fixture_io::{
 };
 pub use runner::run as run_statetests;
 pub use tx::{AccessListItem, TestAuthorization};
+pub use types::{
+    AccountInfo as StateTestAccountInfo, Env as StateTestEnv, SpecName as StateTestSpecName,
+    Test as StateTestPost, TestSuite as StateTestSuite, TestUnit as StateTestUnit,
+    TransactionParts as StateTestTransactionParts, TxPartIndices as StateTestTxPartIndices,
+};
 
 /// Runs all EEST harnesses.
 pub fn run() -> std::process::ExitCode {

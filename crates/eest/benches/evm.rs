@@ -1,7 +1,7 @@
 #![allow(missing_docs, clippy::missing_const_for_fn)]
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use std::time::Duration;
+use std::{env, time::Duration};
 
 #[path = "evm/cases.rs"]
 mod cases;
@@ -9,6 +9,8 @@ mod cases;
 mod fixture;
 #[path = "evm/mainnet.rs"]
 mod mainnet;
+#[path = "evm/revm.rs"]
+mod revm;
 #[path = "evm/support.rs"]
 mod support;
 
@@ -18,11 +20,19 @@ fn evm(c: &mut Criterion) {
     group.measurement_time(Duration::from_secs(2));
     group.sample_size(10);
 
-    let suites = fixture::Suites::load(cases::all().iter().map(|bench| bench.fixture_path));
-    for bench in cases::all() {
+    let cases = cases::all();
+    let suites = fixture::Suites::load(cases.iter().map(|bench| bench.fixture_path));
+    let bench_revm = env::var_os("EVM2_BENCH_REVM").is_some();
+    for bench in cases {
         let prepared = support::PreparedBench::load(bench, &suites);
         prepared.sanity_check();
         prepared.bench(&mut group);
+
+        if bench_revm {
+            let prepared = revm::PreparedBench::load(bench, &suites);
+            prepared.sanity_check();
+            prepared.bench(&mut group);
+        }
     }
 
     group.finish();

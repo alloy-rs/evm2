@@ -74,7 +74,8 @@
       "to": "0xcccccccccccccccccccccccccccccccccccccccc",
       "value": [
         "0x00"
-      ]
+      ],
+      "secretKey": "0x0000000000000000000000000000000000000000000000000000000000000000"
     },
     "post": {
       "Cancun": [

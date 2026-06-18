@@ -21,7 +21,7 @@ pub(crate) struct PreparedBench {
 impl PreparedBench {
     pub(crate) fn load(bench: &Bench, suites: &Suites) -> Self {
         let suite = suites.get(bench.fixture_path);
-        let case = suite.case(bench.name);
+        let case = suite.case(bench.name, bench.spec);
         Self {
             name: bench.name,
             spec: bench.spec,
