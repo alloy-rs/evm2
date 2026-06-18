@@ -9,13 +9,34 @@ use evm2_eest::{
     BlockchainTestCaseStarted, BlockchainTestExecuteConfig, BlockchainTestHook,
     BlockchainTestTransactionFailed, BlockchainTestTransactionFinished,
     BlockchainTestTransactionStarted, EntryPoint, StateTestExecuteConfig,
-    execute_blockchain_tests_str, execute_state_tests_str_with_filter,
+    execute_blockchain_tests_str, execute_blockchain_tests_suite,
+    execute_state_tests_str_with_filter,
 };
 use std::time::Instant;
 
 pub(crate) fn run(command: Replay) -> Result<()> {
-    let input = fixture::read_text(&command.path)?;
     let entrypoint = EntryPoint::new(command.entrypoint);
+    if fixture::is_binary_path(&command.path) {
+        let suite = fixture::read_blockchain(&command.path)?;
+        let mut hook = ReplayProgressHook::default();
+        let summary = execute_blockchain_tests_suite(
+            &command.path,
+            suite,
+            BlockchainTestExecuteConfig { db_stats: command.db_stats, ..Default::default() },
+            &entrypoint,
+            &mut hook,
+        )
+        .map_err(|source| Error::BlockchainTest { source })?;
+        println!(
+            "replayed blockchain fixture {}: {} executed, {} skipped",
+            command.path.display(),
+            summary.executed,
+            summary.skipped
+        );
+        return Ok(());
+    }
+
+    let input = fixture::read_text(&command.path)?;
     match fixture::detect_str(&command.path, &input)? {
         Some(FixtureKind::StateTest) => {
             let summary = execute_state_tests_str_with_filter(

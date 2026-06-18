@@ -20,8 +20,17 @@ pub(crate) fn read(path: &Path) -> Result<FixtureInput> {
     Ok(FixtureInput { json })
 }
 
+pub(crate) fn read_blockchain(path: &Path) -> Result<evm2_eest::blockchaintest::BlockchainTest> {
+    evm2_eest::read_blockchain_fixture(path)
+        .map_err(|source| Error::DecodeFixture { path: path.to_path_buf(), source })
+}
+
 pub(crate) fn read_text(path: &Path) -> Result<String> {
     fs::read_to_string(path).map_err(|source| Error::ReadInput { path: path.to_path_buf(), source })
+}
+
+pub(crate) fn is_binary_path(path: &Path) -> bool {
+    evm2_eest::is_binary_fixture_path(path)
 }
 
 pub(crate) fn detect_str(path: &Path, input: &str) -> Result<Option<FixtureKind>> {

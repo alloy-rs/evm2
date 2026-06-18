@@ -14,11 +14,7 @@ use alloy_consensus::{
 };
 use futures_util::{StreamExt, stream};
 use serde_json::{Value, value::RawValue};
-use std::{
-    fs::File,
-    io::BufWriter,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 type MainnetBlock = ConsensusBlock<EthereumTxEnvelope<TxEip4844>>;
 
@@ -123,11 +119,8 @@ async fn capture(
     let base_storage_slots =
         capture.pre_state.accounts.iter().map(|account| account.storage.len()).sum();
     let suite = export::suite(&capture)?;
-    let file = File::create(&command.output).map_err(|source| CaptureError::WriteOutput {
-        path: command.output.display().to_string(),
-        source,
-    })?;
-    serde_json::to_writer(BufWriter::new(file), &suite).map_err(CaptureError::EncodeJson)?;
+    evm2_eest::write_blockchain_fixture(&command.output, &suite)
+        .map_err(CaptureError::EncodeFixture)?;
 
     Ok(CaptureSummary {
         blocks: match &capture.input {
