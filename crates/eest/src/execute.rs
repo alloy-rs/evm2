@@ -61,7 +61,7 @@ pub struct ExecuteSummary {
     pub skipped: usize,
 }
 
-/// Executes a single state test JSON file using explicit execution options.
+/// Executes a single state test file using explicit execution options.
 pub(crate) fn execute_test_suite(path: &Path, config: ExecuteConfig) -> Result<(), TestError> {
     let input = fs::read_to_string(path).map_err(|err| TestError::unknown(path, err.into()))?;
     execute_str_with_config(path, &input, config).map(|_| ())
@@ -85,6 +85,15 @@ pub fn execute_str_with_filter(
 ) -> Result<ExecuteSummary, TestError> {
     let suite: TestSuite =
         serde_json::from_str(input).map_err(|err| TestError::unknown(path, err.into()))?;
+    execute_suite_with_filter(path, suite, config, entrypoint)
+}
+
+fn execute_suite_with_filter(
+    path: &Path,
+    suite: TestSuite,
+    config: ExecuteConfig,
+    entrypoint: &EntryPoint,
+) -> Result<ExecuteSummary, TestError> {
     let mut summary = ExecuteSummary::default();
     for (name, unit) in suite.0 {
         if !entrypoint.matches(&name) {

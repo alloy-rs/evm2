@@ -8,14 +8,22 @@ use alloy_rpc_types_eth::{
 use evm2::ethereum::RecoveredTxEnvelope;
 use k256::ecdsa::SigningKey;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use std::mem::MaybeUninit;
+use wincode::{
+    ReadResult, SchemaRead, SchemaWrite, WriteResult,
+    config::Config,
+    io::{Reader, Writer},
+};
 
 /// Access list entry shared by EEST fixture formats.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, SchemaRead, SchemaWrite)]
 #[serde(rename_all = "camelCase")]
 pub struct AccessListItem {
     /// Accessed account.
+    #[wincode(with = "crate::binary::AddressSchema")]
     pub address: Address,
     /// Accessed storage keys.
+    #[wincode(with = "crate::binary::VecSchema<crate::binary::B256Schema>")]
     pub storage_keys: Vec<B256>,
 }
 
@@ -41,13 +49,41 @@ impl<'de> Deserialize<'de> for TestAuthorization {
         D: Deserializer<'de>,
     {
         let mut value = serde_json::Value::deserialize(deserializer)?;
-        if let Some(object) = value.as_object_mut()
-            && object.contains_key("v")
-            && object.contains_key("yParity")
-        {
-            object.remove("v");
-        }
+        normalize_authorization_value(&mut value);
         Ok(Self { value })
+    }
+}
+
+unsafe impl<C: Config> SchemaWrite<C> for TestAuthorization {
+    type Src = Self;
+
+    fn size_of(src: &Self::Src) -> WriteResult<usize> {
+        <crate::binary::JsonSchema<serde_json::Value> as SchemaWrite<C>>::size_of(&src.value)
+    }
+
+    fn write(writer: impl Writer, src: &Self::Src) -> WriteResult<()> {
+        <crate::binary::JsonSchema<serde_json::Value> as SchemaWrite<C>>::write(writer, &src.value)
+    }
+}
+
+unsafe impl<'de, C: Config> SchemaRead<'de, C> for TestAuthorization {
+    type Dst = Self;
+
+    fn read(reader: impl Reader<'de>, dst: &mut MaybeUninit<Self::Dst>) -> ReadResult<()> {
+        let mut value =
+            <crate::binary::JsonSchema<serde_json::Value> as SchemaRead<C>>::get(reader)?;
+        normalize_authorization_value(&mut value);
+        dst.write(Self { value });
+        Ok(())
+    }
+}
+
+fn normalize_authorization_value(value: &mut serde_json::Value) {
+    if let Some(object) = value.as_object_mut()
+        && object.contains_key("v")
+        && object.contains_key("yParity")
+    {
+        object.remove("v");
     }
 }
 

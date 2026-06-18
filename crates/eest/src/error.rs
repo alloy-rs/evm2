@@ -41,6 +41,9 @@ pub(crate) enum TestErrorKind {
     /// JSON decoding failed.
     #[error(transparent)]
     SerdeDeserialize(#[from] serde_json::Error),
+    /// Fixture decoding failed.
+    #[error(transparent)]
+    FixtureRead(#[from] crate::fixture_io::FixtureReadError),
     /// Logs root mismatch.
     #[error("logs root mismatch: got {got}, expected {expected}")]
     LogsRootMismatch {

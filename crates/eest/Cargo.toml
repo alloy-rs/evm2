@@ -30,6 +30,7 @@ serde = { workspace = true, features = ["derive", "std"] }
 serde_json = { workspace = true, features = ["preserve_order", "std"] }
 thiserror = { workspace = true, features = ["std"] }
 walkdir.workspace = true
+wincode = { workspace = true, features = ["derive", "std"] }
 
 [[test]]
 name = "eest"

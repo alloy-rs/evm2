@@ -2,12 +2,14 @@
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
+mod binary;
 pub mod blockchaintest;
 mod discover;
 mod env;
 mod error;
 mod execute;
 mod filter;
+mod fixture_io;
 mod fixtures;
 mod forks;
 mod harness;
@@ -24,7 +26,8 @@ pub use blockchaintest::{
     TestError as BlockchainTestError, TransactionFailed as BlockchainTestTransactionFailed,
     TransactionFinished as BlockchainTestTransactionFinished,
     TransactionStarted as BlockchainTestTransactionStarted,
-    execute_str as execute_blockchain_tests_str, run as run_blockchaintests,
+    execute_str as execute_blockchain_tests_str, execute_suite as execute_blockchain_tests_suite,
+    run as run_blockchaintests,
 };
 pub use error::TestError as StateTestError;
 pub use execute::{
@@ -33,6 +36,10 @@ pub use execute::{
     execute_str_with_filter as execute_state_tests_str_with_filter,
 };
 pub use filter::EntryPoint;
+pub use fixture_io::{
+    FixtureReadError, FixtureWriteError, is_wincode_path as is_wincode_fixture_path,
+    read_blockchain as read_blockchain_fixture, write_blockchain as write_blockchain_fixture,
+};
 pub use runner::run as run_statetests;
 pub use tx::{AccessListItem, TestAuthorization};
 
