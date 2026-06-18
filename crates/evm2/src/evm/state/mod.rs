@@ -34,7 +34,7 @@ use crate::{
 use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::{
     Address, B256, KECCAK256_EMPTY, Log,
-    map::{AddressMap, AddressSet, HashSet, U256Map, hash_map},
+    map::{AddressMap, AddressSet, U256Map, hash_map},
 };
 use core::{
     mem,
@@ -234,15 +234,15 @@ impl State {
     /// Marks an address and a set of storage slots as warm in the pre-warmed set. See
     /// [`PrewarmSet::warm_storage`].
     #[inline]
-    pub fn prewarm_storage(&mut self, address: &Address, slots: HashSet<Word>) {
+    pub fn prewarm_storage(&mut self, address: &Address, slots: impl IntoIterator<Item = Word>) {
         self.inner.prewarm_set.warm_storage(address, slots);
     }
 
-    /// Marks an address and a single storage slot as warm in the pre-warmed set, returning whether
-    /// the slot was cold before this call. See [`PrewarmSet::warm_storage_slot`].
+    /// Marks an address and a single storage slot as warm in the pre-warmed set.
+    /// See [`PrewarmSet::warm_storage`].
     #[inline]
-    pub fn prewarm_storage_slot(&mut self, address: &Address, key: &Word) -> bool {
-        self.inner.prewarm_set.warm_storage_slot(address, key)
+    pub fn prewarm_storage_slot(&mut self, address: &Address, key: Word) {
+        self.prewarm_storage(address, [key].into_iter());
     }
 
     /// Replaces the pre-warmed set wholesale.

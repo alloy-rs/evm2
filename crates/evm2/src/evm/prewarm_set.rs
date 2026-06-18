@@ -105,21 +105,12 @@ impl PrewarmSet {
     /// The slots are unioned into any slots already warm for the address. See [`Self::warm`] for
     /// the rollback and clearing semantics.
     #[inline]
-    pub fn warm_storage(&mut self, address: &Address, slots: HashSet<Word>) {
+    pub fn warm_storage(&mut self, address: &Address, slots: impl IntoIterator<Item = Word>) {
         self.warm(address);
-        if !slots.is_empty() {
+        let mut slots = slots.into_iter().peekable();
+        if slots.peek().is_some() {
             self.access_list.entry(*address).or_default().extend(slots);
         }
-    }
-
-    /// Marks an address and a single storage slot as warm.
-    ///
-    /// Returns whether the slot was cold before this call. See [`Self::warm`] for the rollback and
-    /// clearing semantics.
-    #[inline]
-    pub fn warm_storage_slot(&mut self, address: &Address, key: &Word) -> bool {
-        self.warm(address);
-        self.access_list.entry(*address).or_default().insert(*key)
     }
 
     /// Clears the per-transaction warm entries, leaving an empty set.
@@ -204,7 +195,7 @@ mod tests {
         prewarm_set.warm(&boundary_addr);
 
         // Non-short addresses are not tracked in the short-address bit vector.
-        assert!(!prewarm_set.short_addresses.any());
+        assert!(!prewarm_set.short_addresses.iter().any(|b| *b));
 
         assert!(prewarm_set.is_warm(&regular_addr));
         assert!(prewarm_set.is_warm(&boundary_addr));
@@ -233,25 +224,10 @@ mod tests {
         let addr = address!("1234567890123456789012345678901234567890");
         let key = Word::from(7);
 
-        let mut slots = HashSet::default();
-        slots.insert(key);
-        prewarm_set.warm_storage(&addr, slots);
+        prewarm_set.warm_storage(&addr, [key]);
 
         assert!(prewarm_set.is_warm(&addr));
         assert!(prewarm_set.is_storage_warm(&addr, &key));
         assert!(!prewarm_set.is_storage_warm(&addr, &Word::from(8)));
-    }
-
-    #[test]
-    fn test_warm_storage_slot_reports_coldness() {
-        let mut prewarm_set = PrewarmSet::new();
-        let addr = Address::with_last_byte(3);
-        let key = Word::from(7);
-
-        assert!(prewarm_set.warm_storage_slot(&addr, &key));
-        assert!(!prewarm_set.warm_storage_slot(&addr, &key));
-
-        assert!(prewarm_set.is_warm(&addr));
-        assert!(prewarm_set.is_storage_warm(&addr, &key));
     }
 }

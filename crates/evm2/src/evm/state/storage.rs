@@ -353,7 +353,7 @@ mod tests {
         database.insert_account_storage(&account, &cold_key, &Word::from(4));
         let mut state = State::new(database);
 
-        assert!(state.prewarm_storage_slot(&account, &warm_key));
+        state.prewarm_storage_slot(&account, warm_key);
         state.storage_slot(&account, cold_key, false).unwrap().write(Word::from(5));
 
         state.storage(&account).wipe();
