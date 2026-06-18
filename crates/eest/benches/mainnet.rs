@@ -42,7 +42,10 @@ fn mainnet(c: &mut Criterion) {
                 execute_blockchain_tests_suite(
                     path,
                     &suite,
-                    BlockchainTestExecuteConfig { validate_post_state: false },
+                    BlockchainTestExecuteConfig {
+                        validate_post_state: false,
+                        ..Default::default()
+                    },
                     &entrypoint,
                     &mut hook,
                 )

@@ -15,8 +15,7 @@ use alloy_consensus::{
 use flate2::{Compression, write::GzEncoder};
 use futures_util::{StreamExt, stream};
 use serde_json::{Value, value::RawValue};
-use std::{fs::File, io::BufWriter,
-    path::Path, time::Instant};
+use std::{fs::File, io::BufWriter, path::Path, time::Instant};
 
 type MainnetBlock = ConsensusBlock<EthereumTxEnvelope<TxEip4844>>;
 
