@@ -1,7 +1,7 @@
 [alias]
 cl = "clippy --workspace --all-features --all-targets"
 docs = "doc --workspace --all-features --no-deps --document-private-items"
-cli = "nextest run -p evm2-cli --features jit --bin evm2"
+cli = "nextest run -p evm2-cli --all-features --bin evm2"
 t = "nextest run --workspace"
-eest = "nextest run -p evm2-eest --features jit --lib --ignore-default-filter"
-st = "nextest run -p evm2-eest --features jit --test eest --ignore-default-filter"
+eest = "nextest run -p evm2-eest --all-features --lib --ignore-default-filter"
+st = "nextest run -p evm2-eest --all-features --test eest --ignore-default-filter"
