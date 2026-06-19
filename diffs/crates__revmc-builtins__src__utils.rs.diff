@@ -55,7 +55,7 @@
  /// Extension trait to convert `Option<T>` to `BuiltinResult`.
  pub(crate) trait OkOrFatal<T> {
      fn ok_or_fatal(self) -> Result<T, BuiltinError>;
-@@ -46,30 +37,43 @@
+@@ -46,30 +37,55 @@
  impl<T> OkOrFatal<T> for Option<T> {
      #[inline]
      fn ok_or_fatal(self) -> Result<T, BuiltinError> {
@@ -90,7 +90,11 @@
 +) -> Result<AccountLoad, BuiltinError> {
      let cold_load_gas = ecx.gas_params.cold_account_additional_cost();
      let skip_cold_load = ecx.gas.remaining() < cold_load_gas;
-     let account = ecx.host.load_account_info_skip_cold_load(address, load_code, skip_cold_load)?;
+-    let account = ecx.host.load_account_info_skip_cold_load(address, load_code, skip_cold_load)?;
++    let account = ecx
++        .host
++        .load_account(&address, load_code, skip_cold_load)
++        .map_err(|stop| host_error_stop(stop, skip_cold_load))?;
      if account.is_cold {
 -        gas!(ecx, cold_load_gas);
 +        ecx.gas.spend(cold_load_gas)?;
@@ -98,6 +102,15 @@
      Ok(account)
  }
 
++#[inline]
++pub(crate) fn host_error_stop(stop: InstrStop, skip_cold_load: bool) -> InstrStop {
++    if skip_cold_load && stop == InstrStop::OutOfGas {
++        InstrStop::OutOfGas
++    } else {
++        InstrStop::FatalExternalError
++    }
++}
++
  /// Splits the stack pointer into `N` elements by casting it to an array.
  ///
 -/// NOTE: this returns the arguments in **reverse order**. Use [`read_words!`] to get them in order.
@@ -105,7 +118,7 @@
  ///
  /// The returned lifetime is valid for the entire duration of the builtin.
  ///
-@@ -83,13 +87,7 @@
+@@ -83,13 +99,7 @@
 
  #[inline]
  pub(crate) fn ensure_memory(ecx: &mut EvmContext<'_>, offset: usize, len: usize) -> BuiltinResult {
@@ -120,7 +133,7 @@
      ecx.refresh_memory_cache();
      Ok(())
  }
-@@ -99,13 +97,12 @@
+@@ -99,13 +109,12 @@
      rev![memory_offset, data_offset, len]: &mut [EvmWord; 3],
      data: &[u8],
  ) -> BuiltinResult {

@@ -64,11 +64,23 @@ pub(crate) fn load_account(
 ) -> Result<AccountLoad, BuiltinError> {
     let cold_load_gas = ecx.gas_params.cold_account_additional_cost();
     let skip_cold_load = ecx.gas.remaining() < cold_load_gas;
-    let account = ecx.host.load_account_info_skip_cold_load(address, load_code, skip_cold_load)?;
+    let account = ecx
+        .host
+        .load_account(&address, load_code, skip_cold_load)
+        .map_err(|stop| host_error_stop(stop, skip_cold_load))?;
     if account.is_cold {
         ecx.gas.spend(cold_load_gas)?;
     }
     Ok(account)
+}
+
+#[inline]
+pub(crate) fn host_error_stop(stop: InstrStop, skip_cold_load: bool) -> InstrStop {
+    if skip_cold_load && stop == InstrStop::OutOfGas {
+        InstrStop::OutOfGas
+    } else {
+        InstrStop::FatalExternalError
+    }
 }
 
 /// Splits the stack pointer into `N` elements by casting it to an array.

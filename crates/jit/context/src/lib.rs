@@ -6,15 +6,13 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
-use alloy_primitives::{Address, B256, Bytes, Log, U256, ruint};
-use core::{fmt, marker::PhantomData, mem::MaybeUninit, ptr::NonNull};
+use alloy_primitives::{Address, B256, Bytes, U256, ruint};
+use core::{fmt, mem::MaybeUninit, ptr::NonNull};
 pub use evm2::interpreter::{Gas, InstrStop, Memory};
 use evm2::{
-    BaseEvmTypes, SpecId, Version,
-    bytecode::Bytecode,
+    BaseEvmTypes, SpecId,
     env::{BlockEnv, TxEnv},
-    evm::{AccountLoad, SLoad, SStore, SelfDestructResult},
-    interpreter::{Host as Evm2Host, Message, MessageResult, Word},
+    interpreter::Host as Evm2Host,
     version::GasParams,
 };
 
@@ -117,230 +115,6 @@ pub mod jit_abi {
     };
 }
 
-/// Host state consumed by compiled-code builtins.
-#[doc(hidden)]
-#[derive(Debug)]
-#[repr(C)]
-pub struct HostContext<'a> {
-    host: NonNull<dyn Evm2Host<BaseEvmTypes> + 'a>,
-    block_env: BlockEnv<BaseEvmTypes>,
-    tx_env: &'a TxEnv<BaseEvmTypes>,
-    version: Version,
-    _marker: PhantomData<&'a mut (dyn Evm2Host<BaseEvmTypes> + 'a)>,
-}
-
-impl<'a> HostContext<'a> {
-    #[inline]
-    pub fn new(
-        host: &'a mut (dyn Evm2Host<BaseEvmTypes> + 'a),
-        tx_env: &'a TxEnv<BaseEvmTypes>,
-        version: &Version,
-    ) -> Self {
-        let block_env = *host.block_env();
-        Self {
-            host: NonNull::from(host),
-            block_env,
-            tx_env,
-            version: *version,
-            _marker: PhantomData,
-        }
-    }
-
-    #[inline]
-    pub fn host_mut(&mut self) -> &mut (dyn Evm2Host<BaseEvmTypes> + 'a) {
-        unsafe { self.host.as_mut() }
-    }
-
-    #[inline]
-    pub const fn version(&self) -> &Version {
-        &self.version
-    }
-
-    #[inline]
-    pub const fn basefee(&self) -> U256 {
-        self.block_env.basefee
-    }
-
-    #[inline]
-    pub const fn blob_gasprice(&self) -> U256 {
-        self.block_env.blob_basefee
-    }
-
-    #[inline]
-    pub const fn gas_limit(&self) -> U256 {
-        self.block_env.gas_limit
-    }
-
-    #[inline]
-    pub const fn difficulty(&self) -> U256 {
-        self.block_env.difficulty
-    }
-
-    #[inline]
-    pub const fn prevrandao(&self) -> Option<U256> {
-        Some(self.block_env.prevrandao)
-    }
-
-    #[inline]
-    pub const fn block_number(&self) -> U256 {
-        self.block_env.number
-    }
-
-    #[inline]
-    pub const fn timestamp(&self) -> U256 {
-        self.block_env.timestamp
-    }
-
-    #[inline]
-    pub const fn beneficiary(&self) -> Address {
-        self.block_env.beneficiary
-    }
-
-    #[inline]
-    pub const fn slot_num(&self) -> U256 {
-        self.block_env.slot_num
-    }
-
-    #[inline]
-    pub const fn chain_id(&self) -> U256 {
-        self.tx_env.chain_id
-    }
-
-    #[inline]
-    pub const fn effective_gas_price(&self) -> U256 {
-        self.tx_env.gas_price
-    }
-
-    #[inline]
-    pub const fn caller(&self) -> Address {
-        self.tx_env.origin
-    }
-
-    #[inline]
-    pub fn blob_hash(&self, number: usize) -> Option<U256> {
-        self.tx_env.blob_hashes.get(number).copied()
-    }
-
-    #[inline]
-    pub const fn max_initcode_size(&self) -> usize {
-        self.version.max_initcode_size
-    }
-
-    #[inline]
-    pub const fn gas_params(&self) -> &GasParams {
-        &self.version.gas_params
-    }
-
-    #[inline]
-    pub fn block_hash(&mut self, number: u64) -> Option<B256> {
-        self.host_mut().block_hash(&Word::from(number)).ok().flatten()
-    }
-
-    #[inline]
-    pub fn selfdestruct(
-        &mut self,
-        address: Address,
-        target: Address,
-        skip_cold_load: bool,
-    ) -> Result<SelfDestructResult, InstrStop> {
-        self.host_mut()
-            .selfdestruct(&address, &target, skip_cold_load)
-            .map_err(|stop| host_error_stop(stop, skip_cold_load))
-    }
-
-    #[inline]
-    pub fn log(&mut self, log: Log) {
-        self.host_mut().log(log);
-    }
-
-    #[inline]
-    pub fn sstore_skip_cold_load(
-        &mut self,
-        address: Address,
-        key: U256,
-        value: U256,
-        skip_cold_load: bool,
-    ) -> Result<SStore, InstrStop> {
-        self.host_mut()
-            .sstore(&address, &key, &value, skip_cold_load)
-            .map_err(|stop| host_error_stop(stop, skip_cold_load))
-    }
-
-    #[inline]
-    pub fn sstore(
-        &mut self,
-        address: Address,
-        key: U256,
-        value: U256,
-    ) -> Result<SStore, InstrStop> {
-        self.sstore_skip_cold_load(address, key, value, false)
-    }
-
-    #[inline]
-    pub fn sload_skip_cold_load(
-        &mut self,
-        address: Address,
-        key: U256,
-        skip_cold_load: bool,
-    ) -> Result<SLoad, InstrStop> {
-        self.host_mut()
-            .sload(&address, &key, skip_cold_load)
-            .map_err(|stop| host_error_stop(stop, skip_cold_load))
-    }
-
-    #[inline]
-    pub fn sload(&mut self, address: Address, key: U256) -> Result<SLoad, InstrStop> {
-        self.sload_skip_cold_load(address, key, false)
-    }
-
-    #[inline]
-    pub fn tstore(&mut self, address: Address, key: U256, value: U256) {
-        self.host_mut().tstore(&address, &key, &value);
-    }
-
-    #[inline]
-    pub fn tload(&mut self, address: Address, key: U256) -> U256 {
-        self.host_mut().tload(&address, &key)
-    }
-
-    #[inline]
-    pub fn load_account_info_skip_cold_load(
-        &mut self,
-        address: Address,
-        load_code: bool,
-        skip_cold_load: bool,
-    ) -> Result<AccountLoad, InstrStop> {
-        self.host_mut()
-            .load_account(&address, load_code, skip_cold_load)
-            .map_err(|stop| host_error_stop(stop, skip_cold_load))
-    }
-
-    #[inline]
-    pub fn balance(&mut self, address: Address) -> Result<U256, InstrStop> {
-        self.load_account_info_skip_cold_load(address, false, false).map(|account| account.balance)
-    }
-
-    #[inline]
-    pub fn execute_message(
-        &mut self,
-        tx_env: &TxEnv<BaseEvmTypes>,
-        bytecode: Bytecode,
-        message: &mut Message<BaseEvmTypes>,
-        caller_is_static: bool,
-    ) -> MessageResult<BaseEvmTypes> {
-        self.host_mut().execute_message(tx_env, bytecode, message, caller_is_static)
-    }
-}
-
-#[inline]
-fn host_error_stop(stop: InstrStop, skip_cold_load: bool) -> InstrStop {
-    if skip_cold_load && stop == InstrStop::OutOfGas {
-        InstrStop::OutOfGas
-    } else {
-        InstrStop::FatalExternalError
-    }
-}
-
 /// The EVM bytecode compiler runtime context.
 ///
 /// This is a simple wrapper around the interpreter's resources, allowing the compiled function to
@@ -358,7 +132,13 @@ pub struct EvmContext<'a> {
     /// The gas.
     pub gas: Gas,
     /// The host.
-    pub host: HostContext<'a>,
+    pub host: &'a mut (dyn Evm2Host<BaseEvmTypes> + 'a),
+    /// Cached block environment.
+    pub block_env: BlockEnv<BaseEvmTypes>,
+    /// Transaction-global environment.
+    pub tx_env: &'a TxEnv<BaseEvmTypes>,
+    /// Active runtime version data.
+    pub version: evm2::Version,
     /// The return data.
     pub return_data: &'a [u8],
     /// Whether the context is static.

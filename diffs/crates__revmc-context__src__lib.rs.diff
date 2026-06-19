@@ -1,6 +1,6 @@
 --- upstream/crates/revmc-context/src/lib.rs
 +++ evm2/crates/jit/context/src/lib.rs
-@@ -6,71 +6,338 @@
+@@ -6,72 +6,113 @@
  extern crate alloc;
 
  use alloc::vec::Vec;
@@ -8,15 +8,13 @@
 -    fmt,
 -    mem::MaybeUninit,
 -    ptr::{self, NonNull},
-+use alloy_primitives::{Address, B256, Bytes, Log, U256, ruint};
-+use core::{fmt, marker::PhantomData, mem::MaybeUninit, ptr::NonNull};
++use alloy_primitives::{Address, B256, Bytes, U256, ruint};
++use core::{fmt, mem::MaybeUninit, ptr::NonNull};
 +pub use evm2::interpreter::{Gas, InstrStop, Memory};
 +use evm2::{
-+    BaseEvmTypes, SpecId, Version,
-+    bytecode::Bytecode,
++    BaseEvmTypes, SpecId,
 +    env::{BlockEnv, TxEnv},
-+    evm::{AccountLoad, SLoad, SStore, SelfDestructResult},
-+    interpreter::{Host as Evm2Host, Message, MessageResult, Word},
++    interpreter::Host as Evm2Host,
 +    version::GasParams,
  };
 -use revm_interpreter::{
@@ -110,7 +108,9 @@
 +}
 +
 +impl Inputs {
-+    #[inline]
+     #[inline]
+-    fn eq(&self, other: &usize) -> bool {
+-        self.0 == *other
 +    pub const fn input(&self) -> &CallInput {
 +        &self.input
 +    }
@@ -144,7 +144,7 @@
 +    pub struct MemoryGas {
 +        pub words_num: usize,
 +        pub expansion_cost: u64,
-+    }
+     }
 +
 +    const _: () = {
 +        use core::mem::{align_of, offset_of, size_of};
@@ -155,235 +155,10 @@
 +        assert!(size_of::<Gas>() == size_of::<super::Gas>());
 +        assert!(align_of::<Gas>() == align_of::<super::Gas>());
 +    };
-+}
-+
-+/// Host state consumed by compiled-code builtins.
-+#[doc(hidden)]
-+#[derive(Debug)]
-+#[repr(C)]
-+pub struct HostContext<'a> {
-+    host: NonNull<dyn Evm2Host<BaseEvmTypes> + 'a>,
-+    block_env: BlockEnv<BaseEvmTypes>,
-+    tx_env: &'a TxEnv<BaseEvmTypes>,
-+    version: Version,
-+    _marker: PhantomData<&'a mut (dyn Evm2Host<BaseEvmTypes> + 'a)>,
-+}
-+
-+impl<'a> HostContext<'a> {
-+    #[inline]
-+    pub fn new(
-+        host: &'a mut (dyn Evm2Host<BaseEvmTypes> + 'a),
-+        tx_env: &'a TxEnv<BaseEvmTypes>,
-+        version: &Version,
-+    ) -> Self {
-+        let block_env = *host.block_env();
-+        Self {
-+            host: NonNull::from(host),
-+            block_env,
-+            tx_env,
-+            version: *version,
-+            _marker: PhantomData,
-+        }
-+    }
-+
-+    #[inline]
-+    pub fn host_mut(&mut self) -> &mut (dyn Evm2Host<BaseEvmTypes> + 'a) {
-+        unsafe { self.host.as_mut() }
-+    }
-+
-+    #[inline]
-+    pub const fn version(&self) -> &Version {
-+        &self.version
-+    }
-+
-+    #[inline]
-+    pub const fn basefee(&self) -> U256 {
-+        self.block_env.basefee
-+    }
-+
-+    #[inline]
-+    pub const fn blob_gasprice(&self) -> U256 {
-+        self.block_env.blob_basefee
-+    }
-+
-+    #[inline]
-+    pub const fn gas_limit(&self) -> U256 {
-+        self.block_env.gas_limit
-+    }
-+
-+    #[inline]
-+    pub const fn difficulty(&self) -> U256 {
-+        self.block_env.difficulty
-+    }
-+
-+    #[inline]
-+    pub const fn prevrandao(&self) -> Option<U256> {
-+        Some(self.block_env.prevrandao)
-+    }
-+
-+    #[inline]
-+    pub const fn block_number(&self) -> U256 {
-+        self.block_env.number
-+    }
-+
-+    #[inline]
-+    pub const fn timestamp(&self) -> U256 {
-+        self.block_env.timestamp
-+    }
-+
-+    #[inline]
-+    pub const fn beneficiary(&self) -> Address {
-+        self.block_env.beneficiary
-+    }
-+
-+    #[inline]
-+    pub const fn slot_num(&self) -> U256 {
-+        self.block_env.slot_num
-+    }
-+
-+    #[inline]
-+    pub const fn chain_id(&self) -> U256 {
-+        self.tx_env.chain_id
-+    }
-+
-+    #[inline]
-+    pub const fn effective_gas_price(&self) -> U256 {
-+        self.tx_env.gas_price
-+    }
-+
-+    #[inline]
-+    pub const fn caller(&self) -> Address {
-+        self.tx_env.origin
-+    }
-+
-+    #[inline]
-+    pub fn blob_hash(&self, number: usize) -> Option<U256> {
-+        self.tx_env.blob_hashes.get(number).copied()
-+    }
-+
-+    #[inline]
-+    pub const fn max_initcode_size(&self) -> usize {
-+        self.version.max_initcode_size
-+    }
-+
-+    #[inline]
-+    pub const fn gas_params(&self) -> &GasParams {
-+        &self.version.gas_params
-+    }
-+
-+    #[inline]
-+    pub fn block_hash(&mut self, number: u64) -> Option<B256> {
-+        self.host_mut().block_hash(&Word::from(number)).ok().flatten()
-+    }
-+
-+    #[inline]
-+    pub fn selfdestruct(
-+        &mut self,
-+        address: Address,
-+        target: Address,
-+        skip_cold_load: bool,
-+    ) -> Result<SelfDestructResult, InstrStop> {
-+        self.host_mut()
-+            .selfdestruct(&address, &target, skip_cold_load)
-+            .map_err(|stop| host_error_stop(stop, skip_cold_load))
-+    }
-+
-+    #[inline]
-+    pub fn log(&mut self, log: Log) {
-+        self.host_mut().log(log);
-+    }
-+
-     #[inline]
--    fn eq(&self, other: &usize) -> bool {
--        self.0 == *other
-+    pub fn sstore_skip_cold_load(
-+        &mut self,
-+        address: Address,
-+        key: U256,
-+        value: U256,
-+        skip_cold_load: bool,
-+    ) -> Result<SStore, InstrStop> {
-+        self.host_mut()
-+            .sstore(&address, &key, &value, skip_cold_load)
-+            .map_err(|stop| host_error_stop(stop, skip_cold_load))
-+    }
-+
-+    #[inline]
-+    pub fn sstore(
-+        &mut self,
-+        address: Address,
-+        key: U256,
-+        value: U256,
-+    ) -> Result<SStore, InstrStop> {
-+        self.sstore_skip_cold_load(address, key, value, false)
-+    }
-+
-+    #[inline]
-+    pub fn sload_skip_cold_load(
-+        &mut self,
-+        address: Address,
-+        key: U256,
-+        skip_cold_load: bool,
-+    ) -> Result<SLoad, InstrStop> {
-+        self.host_mut()
-+            .sload(&address, &key, skip_cold_load)
-+            .map_err(|stop| host_error_stop(stop, skip_cold_load))
-+    }
-+
-+    #[inline]
-+    pub fn sload(&mut self, address: Address, key: U256) -> Result<SLoad, InstrStop> {
-+        self.sload_skip_cold_load(address, key, false)
-+    }
-+
-+    #[inline]
-+    pub fn tstore(&mut self, address: Address, key: U256, value: U256) {
-+        self.host_mut().tstore(&address, &key, &value);
-+    }
-+
-+    #[inline]
-+    pub fn tload(&mut self, address: Address, key: U256) -> U256 {
-+        self.host_mut().tload(&address, &key)
-+    }
-+
-+    #[inline]
-+    pub fn load_account_info_skip_cold_load(
-+        &mut self,
-+        address: Address,
-+        load_code: bool,
-+        skip_cold_load: bool,
-+    ) -> Result<AccountLoad, InstrStop> {
-+        self.host_mut()
-+            .load_account(&address, load_code, skip_cold_load)
-+            .map_err(|stop| host_error_stop(stop, skip_cold_load))
-+    }
-+
-+    #[inline]
-+    pub fn balance(&mut self, address: Address) -> Result<U256, InstrStop> {
-+        self.load_account_info_skip_cold_load(address, false, false).map(|account| account.balance)
-+    }
-+
-+    #[inline]
-+    pub fn execute_message(
-+        &mut self,
-+        tx_env: &TxEnv<BaseEvmTypes>,
-+        bytecode: Bytecode,
-+        message: &mut Message<BaseEvmTypes>,
-+        caller_is_static: bool,
-+    ) -> MessageResult<BaseEvmTypes> {
-+        self.host_mut().execute_message(tx_env, bytecode, message, caller_is_static)
-+    }
-+}
-+
-+#[inline]
-+fn host_error_stop(stop: InstrStop, skip_cold_load: bool) -> InstrStop {
-+    if skip_cold_load && stop == InstrStop::OutOfGas {
-+        InstrStop::OutOfGas
-+    } else {
-+        InstrStop::FatalExternalError
-     }
  }
 
-@@ -85,47 +352,38 @@
+ /// The EVM bytecode compiler runtime context.
+@@ -85,47 +126,44 @@
  #[repr(C)]
  pub struct EvmContext<'a> {
      /// The memory.
@@ -398,7 +173,13 @@
 -    pub host: &'a mut dyn Host,
 -    /// The return action.
 -    pub next_action: &'a mut Option<InterpreterAction>,
-+    pub host: HostContext<'a>,
++    pub host: &'a mut (dyn Evm2Host<BaseEvmTypes> + 'a),
++    /// Cached block environment.
++    pub block_env: BlockEnv<BaseEvmTypes>,
++    /// Transaction-global environment.
++    pub tx_env: &'a TxEnv<BaseEvmTypes>,
++    /// Active runtime version data.
++    pub version: evm2::Version,
      /// The return data.
      pub return_data: &'a [u8],
      /// Whether the context is static.
@@ -440,7 +221,7 @@
  }
 
  // Static assertions to ensure the struct layout matches expectations.
-@@ -135,10 +393,6 @@
+@@ -135,10 +173,6 @@
 
      // Key fields accessed by JIT code
      assert!(offset_of!(EvmContext<'_>, memory) == 0);
@@ -451,7 +232,7 @@
  };
 
  impl fmt::Debug for EvmContext<'_> {
-@@ -147,53 +401,13 @@
+@@ -147,53 +181,13 @@
      }
  }
 
@@ -508,7 +289,7 @@
          self.mem_base = slice.as_mut_ptr();
          self.mem_len = slice.len();
      }
-@@ -204,9 +418,9 @@
+@@ -204,9 +198,9 @@
  /// # Examples
  ///
  /// ```no_run
@@ -520,7 +301,7 @@
  ///    /// A simple function.
  ///    pub fn test_fn;
  /// }
-@@ -214,7 +428,7 @@
+@@ -214,7 +208,7 @@
  /// let test_fn = EvmCompilerFn::new(test_fn);
  /// ```
  #[macro_export]
@@ -529,7 +310,7 @@
      ($( $(#[$attr:meta])* $vis:vis fn $name:ident; )+) => {
          #[allow(improper_ctypes)]
          unsafe extern "C" {
-@@ -224,7 +438,7 @@
+@@ -224,7 +218,7 @@
                      ecx: ::core::ptr::NonNull<$crate::EvmContext<'_>>,
                      stack: ::core::ptr::NonNull<$crate::EvmStack>,
                      stack_len: ::core::ptr::NonNull<usize>,
@@ -538,7 +319,7 @@
              )+
          }
      };
-@@ -239,7 +453,7 @@
+@@ -239,7 +233,7 @@
      ecx: NonNull<EvmContext<'_>>,
      stack: NonNull<EvmStack>,
      stack_len: NonNull<usize>,
@@ -547,7 +328,7 @@
 
  /// An EVM bytecode function.
  #[derive(Clone, Copy, Debug, Hash)]
-@@ -272,82 +486,6 @@
+@@ -272,82 +266,6 @@
          self.0
      }
 
@@ -630,7 +411,7 @@
      /// Calls the function.
      ///
      /// Arguments:
-@@ -366,8 +504,15 @@
+@@ -366,8 +284,15 @@
          stack: &mut EvmStack,
          stack_len: &mut usize,
          ecx: &mut EvmContext<'_>,
@@ -648,7 +429,7 @@
      }
 
      /// Same as [`call`](Self::call) but with `#[inline(never)]`.
-@@ -383,8 +528,8 @@
+@@ -383,8 +308,8 @@
          stack: &mut EvmStack,
          stack_len: &mut usize,
          ecx: &mut EvmContext<'_>,
@@ -659,7 +440,7 @@
      }
  }
 
-@@ -415,20 +560,6 @@
+@@ -415,20 +340,6 @@
          Vec::with_capacity(1024)
      }
 
@@ -680,7 +461,7 @@
      /// Creates a stack from a vector's buffer.
      ///
      /// # Panics
-@@ -544,7 +675,7 @@
+@@ -544,7 +455,7 @@
      /// The caller must ensure that the index is within bounds.
      #[inline]
      pub unsafe fn get_unchecked(&self, index: usize) -> &EvmWord {
@@ -689,7 +470,7 @@
      }
 
      /// Returns the word at the given index as a mutable reference.
-@@ -554,7 +685,7 @@
+@@ -554,7 +465,7 @@
      /// The caller must ensure that the index is within bounds.
      #[inline]
      pub unsafe fn get_unchecked_mut(&mut self, index: usize) -> &mut EvmWord {
@@ -698,7 +479,7 @@
      }
 
      /// Sets the value at the top of the stack to `value`, and grows the stack by 1.
-@@ -564,7 +695,7 @@
+@@ -564,7 +475,7 @@
      /// The caller must ensure that the stack is not full.
      #[inline]
      pub unsafe fn push(&mut self, value: EvmWord, len: &mut usize) {
@@ -707,7 +488,7 @@
          *len += 1;
      }
 
-@@ -575,7 +706,7 @@
+@@ -575,7 +486,7 @@
      /// The caller must ensure that the stack is not empty.
      #[inline]
      pub unsafe fn top_unchecked(&self, len: usize) -> &EvmWord {
@@ -716,7 +497,7 @@
      }
 
      /// Returns the value at the top of the stack as a mutable reference.
-@@ -585,7 +716,7 @@
+@@ -585,7 +496,7 @@
      /// The caller must ensure that the stack is not empty.
      #[inline]
      pub unsafe fn top_unchecked_mut(&mut self, len: usize) -> &mut EvmWord {
@@ -725,7 +506,7 @@
      }
 
      /// Returns the value at the given index from the top of the stack.
-@@ -595,7 +726,7 @@
+@@ -595,7 +506,7 @@
      /// The caller must ensure that `len >= n + 1`.
      #[inline]
      pub unsafe fn from_top_unchecked(&self, len: usize, n: usize) -> &EvmWord {
@@ -734,7 +515,7 @@
      }
 
      /// Returns the value at the given index from the top of the stack as a mutable reference.
-@@ -605,7 +736,7 @@
+@@ -605,7 +516,7 @@
      /// The caller must ensure that `len >= n + 1`.
      #[inline]
      pub unsafe fn from_top_unchecked_mut(&mut self, len: usize, n: usize) -> &mut EvmWord {
@@ -743,7 +524,7 @@
      }
 
      /// Sets the value at the given index.
-@@ -615,7 +746,7 @@
+@@ -615,7 +526,7 @@
      /// The caller must ensure that the index is within bounds.
      #[inline]
      pub unsafe fn set_unchecked(&mut self, index: usize, value: EvmWord) {
@@ -752,7 +533,7 @@
      }
  }
 
-@@ -821,14 +952,6 @@
+@@ -821,14 +732,6 @@
      }
  }
 
@@ -767,7 +548,7 @@
  #[cfg(test)]
  mod tests {
      use super::*;
-@@ -841,7 +964,7 @@
+@@ -841,7 +744,7 @@
          assert_eq!(usize::try_from(&mut word), Ok(0));
      }
 
@@ -776,7 +557,7 @@
          #[link_name = "__test_fn"]
          fn test_fn;
      }
-@@ -851,8 +974,8 @@
+@@ -851,8 +754,8 @@
          _ecx: NonNull<EvmContext<'_>>,
          _stack: NonNull<EvmStack>,
          _stack_len: NonNull<usize>,

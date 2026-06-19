@@ -1,6 +1,6 @@
 //! evm2-facing runtime context.
 
-use crate::{CallInput, EvmStack, EvmWord, HostContext, Inputs, InstrStop};
+use crate::{CallInput, EvmStack, EvmWord, Inputs, InstrStop};
 use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::Bytes;
 use core::{
@@ -10,9 +10,9 @@ use core::{
     ptr::{self, NonNull},
 };
 use evm2::{
-    BaseEvmTypes, SpecId,
+    BaseEvmTypes, SpecId, Version,
     bytecode::Bytecode,
-    env::TxEnv,
+    env::{BlockEnv, TxEnv},
     interpreter::{
         Gas as Evm2Gas, Host as Evm2Host, Interpreter, Memory, Message, MessageKind, Word,
     },
@@ -34,7 +34,13 @@ pub struct EvmContext<'a> {
     /// The gas.
     pub gas: Evm2Gas,
     /// Host state consumed by host-touching builtins.
-    pub host: HostContext<'a>,
+    pub host: &'a mut (dyn Evm2Host<BaseEvmTypes> + 'a),
+    /// Cached block environment.
+    pub block_env: BlockEnv<BaseEvmTypes>,
+    /// Transaction-global environment.
+    pub tx_env: &'a TxEnv<BaseEvmTypes>,
+    /// Active runtime version data.
+    pub version: Version,
     /// The return data.
     pub return_data: &'a [u8],
     /// Whether the context is static.
@@ -58,9 +64,6 @@ pub struct EvmContext<'a> {
     /// Output produced by RETURN or REVERT.
     #[doc(hidden)]
     pub output: Bytes,
-    /// Transaction-global environment.
-    #[doc(hidden)]
-    pub tx_env: &'a TxEnv<BaseEvmTypes>,
     /// Frame-local call/create message.
     #[doc(hidden)]
     pub message: &'a Message<BaseEvmTypes>,
@@ -76,6 +79,9 @@ const _: () = {
     assert!(offset_of!(EvmContext<'_>, input) == offset_of!(crate::EvmContext<'_>, input));
     assert!(offset_of!(EvmContext<'_>, gas) == offset_of!(crate::EvmContext<'_>, gas));
     assert!(offset_of!(EvmContext<'_>, host) == offset_of!(crate::EvmContext<'_>, host));
+    assert!(offset_of!(EvmContext<'_>, block_env) == offset_of!(crate::EvmContext<'_>, block_env));
+    assert!(offset_of!(EvmContext<'_>, tx_env) == offset_of!(crate::EvmContext<'_>, tx_env));
+    assert!(offset_of!(EvmContext<'_>, version) == offset_of!(crate::EvmContext<'_>, version));
     assert!(
         offset_of!(EvmContext<'_>, return_data) == offset_of!(crate::EvmContext<'_>, return_data)
     );
@@ -228,13 +234,16 @@ impl<'a> EvmContext<'a> {
             call_value: message.value,
         });
         let input = input_scratch.as_mut() as *mut Inputs;
-        let host = HostContext::new(host, tx_env, &version);
+        let block_env = *host.block_env();
         let return_data = unsafe { &*(return_data_scratch.as_ref() as *const [u8]) };
         let mut this = Self {
             memory,
             input,
             gas,
             host,
+            block_env,
+            tx_env,
+            version,
             return_data,
             is_static,
             spec_id,
@@ -246,7 +255,6 @@ impl<'a> EvmContext<'a> {
             mem_base: ptr::null_mut(),
             mem_len: 0,
             output: Bytes::new(),
-            tx_env,
             message,
             return_data_scratch,
             memory_scratch,
@@ -396,6 +404,15 @@ fn spend(gas: &mut Evm2Gas, cost: u64) -> Result<(), InstrStop> {
     gas.spend(cost)
 }
 
+#[inline]
+fn host_error_stop(stop: InstrStop, skip_cold_load: bool) -> InstrStop {
+    if skip_cold_load && stop == InstrStop::OutOfGas {
+        InstrStop::OutOfGas
+    } else {
+        InstrStop::FatalExternalError
+    }
+}
+
 fn should_charge_new_account_gas(
     eip161: bool,
     transfers_value: bool,
@@ -411,7 +428,7 @@ fn load_acc_and_calc_gas(
     create_empty_account: bool,
     stack_gas_limit: u64,
 ) -> Result<(u64, Bytecode, alloy_primitives::Address, bool), InstrStop> {
-    let version = *ecx.host.version();
+    let version = ecx.version;
     if transfers_value {
         spend(&mut ecx.gas, version.gas_params.get(GasId::TransferValueCost).into())?;
     }
@@ -419,7 +436,10 @@ fn load_acc_and_calc_gas(
     let additional_cold_cost = version.gas_params.cold_account_additional_cost();
     let remaining_gas = ecx.gas.remaining();
     let skip_cold_load = remaining_gas < additional_cold_cost;
-    let account = ecx.host.host_mut().load_account(&to, true, skip_cold_load)?;
+    let account = ecx
+        .host
+        .load_account(&to, true, skip_cold_load)
+        .map_err(|stop| host_error_stop(stop, skip_cold_load))?;
 
     let mut cost = 0;
     if account.is_cold {
@@ -435,8 +455,10 @@ fn load_acc_and_calc_gas(
             return Err(InstrStop::OutOfGas);
         }
         let skip_cold_load = remaining_gas < cost.saturating_add(additional_cold_cost);
-        let delegated_account =
-            ecx.host.host_mut().load_account(&delegated_address, true, skip_cold_load)?;
+        let delegated_account = ecx
+            .host
+            .load_account(&delegated_address, true, skip_cold_load)
+            .map_err(|stop| host_error_stop(stop, skip_cold_load))?;
         if delegated_account.is_cold {
             cost += additional_cold_cost;
         }
@@ -447,7 +469,7 @@ fn load_acc_and_calc_gas(
         && should_charge_new_account_gas(
             ecx.spec_id.enables(SpecId::SPURIOUS_DRAGON),
             transfers_value,
-            ecx.host.host_mut().target_is_empty_for_new_account_gas(&to, ecx.spec_id)?,
+            ecx.host.target_is_empty_for_new_account_gas(&to, ecx.spec_id)?,
         )
     {
         cost += u64::from(version.gas_params.get(GasId::NewAccountCost));
@@ -571,7 +593,7 @@ fn create_inner(
     let salt = if is_create2 { Some(unsafe { pop_word(&mut cursor) }) } else { None };
 
     let len = word_to_usize(len_word)?;
-    let version = *ecx.host.version();
+    let version = ecx.version;
     if ecx.spec_id.enables(SpecId::SHANGHAI) {
         if len > version.max_initcode_size {
             return Err(InstrStop::CreateInitCodeSizeLimit);
@@ -874,10 +896,10 @@ mod tests {
         interpreter.prepare_jit_run(&config, &mut host);
         let ecx = EvmContext::from_interpreter(&mut interpreter, &mut host);
 
-        assert_eq!(ecx.host.caller(), tx_origin);
-        assert_eq!(ecx.host.effective_gas_price(), Word::from(7));
-        assert_eq!(ecx.host.block_number(), Word::from(9));
-        assert_eq!(ecx.host.beneficiary(), beneficiary);
+        assert_eq!(ecx.tx_env.origin, tx_origin);
+        assert_eq!(ecx.tx_env.gas_price, Word::from(7));
+        assert_eq!(ecx.block_env.number, Word::from(9));
+        assert_eq!(ecx.block_env.beneficiary, beneficiary);
     }
 
     #[test]

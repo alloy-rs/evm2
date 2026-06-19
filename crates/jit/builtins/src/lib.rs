@@ -215,7 +215,7 @@ pub unsafe extern "C" fn __revmc_builtin_balance(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn __revmc_builtin_origin(ecx: &EvmContext<'_>, slot: &mut EvmWord) {
-    *slot = EvmWord::from_be_bytes(ecx.host.caller().into_word());
+    *slot = EvmWord::from_be_bytes(ecx.tx_env.origin.into_word());
 }
 
 #[unsafe(no_mangle)]
@@ -281,7 +281,7 @@ pub unsafe extern "C" fn __revmc_builtin_codecopy(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn __revmc_builtin_gas_price(ecx: &EvmContext<'_>, slot: &mut EvmWord) {
-    *slot = ecx.host.effective_gas_price().into();
+    *slot = ecx.tx_env.gas_price.into();
 }
 
 #[unsafe(no_mangle)]
@@ -361,7 +361,7 @@ pub unsafe extern "C" fn __revmc_builtin_blockhash(
     number_ptr: &mut EvmWord,
 ) -> BuiltinResult {
     let requested_number = number_ptr.to_u256();
-    let block_number = ecx.host.block_number();
+    let block_number = ecx.block_env.number;
 
     // Check if requested block is in the future
     let Some(diff) = block_number.checked_sub(requested_number) else {
@@ -381,7 +381,8 @@ pub unsafe extern "C" fn __revmc_builtin_blockhash(
     const BLOCK_HASH_HISTORY: u64 = 256;
 
     if diff <= BLOCK_HASH_HISTORY {
-        let hash = ecx.host.block_hash(word_to_u64_saturated(requested_number)).ok_or_fatal()?;
+        let requested_number = U256::from(word_to_u64_saturated(requested_number));
+        let hash = ecx.host.block_hash(&requested_number).ok().flatten().ok_or_fatal()?;
         *number_ptr = EvmWord::from_be_bytes(hash);
     } else {
         // Too old, return 0
@@ -393,36 +394,36 @@ pub unsafe extern "C" fn __revmc_builtin_blockhash(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn __revmc_builtin_coinbase(ecx: &EvmContext<'_>, slot: &mut EvmWord) {
-    *slot = EvmWord::from_be_bytes(ecx.host.beneficiary().into_word());
+    *slot = EvmWord::from_be_bytes(ecx.block_env.beneficiary.into_word());
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn __revmc_builtin_timestamp(ecx: &EvmContext<'_>, slot: &mut EvmWord) {
-    *slot = ecx.host.timestamp().into();
+    *slot = ecx.block_env.timestamp.into();
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn __revmc_builtin_number(ecx: &EvmContext<'_>, slot: &mut EvmWord) {
-    *slot = ecx.host.block_number().into();
+    *slot = ecx.block_env.number.into();
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn __revmc_builtin_difficulty(ecx: &EvmContext<'_>, slot: &mut EvmWord) {
     *slot = if ecx.spec_id.enables(SpecId::MERGE) {
-        ecx.host.prevrandao().unwrap().into()
+        ecx.block_env.prevrandao.into()
     } else {
-        ecx.host.difficulty().into()
+        ecx.block_env.difficulty.into()
     };
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn __revmc_builtin_gaslimit(ecx: &EvmContext<'_>, slot: &mut EvmWord) {
-    *slot = ecx.host.gas_limit().into();
+    *slot = ecx.block_env.gas_limit.into();
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn __revmc_builtin_chainid(ecx: &EvmContext<'_>, slot: &mut EvmWord) {
-    *slot = ecx.host.chain_id().into();
+    *slot = ecx.tx_env.chain_id.into();
 }
 
 #[unsafe(no_mangle)]
@@ -430,26 +431,26 @@ pub unsafe extern "C" fn __revmc_builtin_self_balance(
     ecx: &mut EvmContext<'_>,
     slot: &mut EvmWord,
 ) -> BuiltinResult {
-    let balance = ecx.host.balance(ecx.input.target_address)?;
+    let balance = load_account(ecx, ecx.input.target_address, false)?.balance;
     *slot = balance.into();
     Ok(())
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn __revmc_builtin_basefee(ecx: &EvmContext<'_>, slot: &mut EvmWord) {
-    *slot = ecx.host.basefee().into();
+    *slot = ecx.block_env.basefee.into();
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn __revmc_builtin_blob_hash(ecx: &EvmContext<'_>, index_ptr: &mut EvmWord) {
     let index = index_ptr.to_u256();
     let index_usize = word_to_usize_saturated(index);
-    *index_ptr = ecx.host.blob_hash(index_usize).unwrap_or_default().into();
+    *index_ptr = ecx.tx_env.blob_hashes.get(index_usize).copied().unwrap_or_default().into();
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn __revmc_builtin_blob_base_fee(ecx: &EvmContext<'_>, slot: &mut EvmWord) {
-    *slot = ecx.host.blob_gasprice().into();
+    *slot = ecx.block_env.blob_basefee.into();
 }
 
 #[unsafe(no_mangle)]
@@ -459,7 +460,7 @@ pub unsafe extern "C" fn __revmc_builtin_mresize(ecx: &mut EvmContext<'_>, min_s
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn __revmc_builtin_slot_num(ecx: &EvmContext<'_>, slot: &mut EvmWord) {
-    *slot = ecx.host.slot_num().into();
+    *slot = ecx.block_env.slot_num.into();
 }
 
 #[unsafe(no_mangle)]
@@ -472,13 +473,15 @@ pub unsafe extern "C" fn __revmc_builtin_sload(
     if ecx.spec_id.enables(SpecId::BERLIN) {
         let additional_cold_cost = u64::from(ecx.gas_params.get(GasId::ColdStorageAdditionalCost));
         let skip_cold = ecx.gas.remaining() < additional_cold_cost;
-        let storage = ecx.host.sload_skip_cold_load(address, key, skip_cold)?;
+        let storage =
+            ecx.host.sload(&address, &key, skip_cold).map_err(|stop| host_error_stop(stop, skip_cold))?;
         if storage.is_cold {
             ecx.gas.spend(additional_cold_cost)?;
         }
         *index = storage.value.into();
     } else {
-        let storage = ecx.host.sload(address, key)?;
+        let storage =
+            ecx.host.sload(&address, &key, false).map_err(|stop| host_error_stop(stop, false))?;
         *index = storage.value.into();
     }
 
@@ -517,9 +520,17 @@ pub unsafe extern "C" fn __revmc_builtin_sstore(
     let state_load = if ecx.spec_id.enables(SpecId::BERLIN) {
         let additional_cold_cost = u64::from(ecx.gas_params.get(GasId::ColdStorageAdditionalCost));
         let skip_cold = ecx.gas.remaining() < additional_cold_cost;
-        ecx.host.sstore_skip_cold_load(target, index.to_u256(), value.to_u256(), skip_cold)?
+        let index = index.to_u256();
+        let value = value.to_u256();
+        ecx.host
+            .sstore(&target, &index, &value, skip_cold)
+            .map_err(|stop| host_error_stop(stop, skip_cold))?
     } else {
-        ecx.host.sstore(target, index.to_u256(), value.to_u256())?
+        let index = index.to_u256();
+        let value = value.to_u256();
+        ecx.host
+            .sstore(&target, &index, &value, false)
+            .map_err(|stop| host_error_stop(stop, false))?
     };
 
     let gp = &ecx.gas_params;
@@ -536,7 +547,8 @@ pub unsafe extern "C" fn __revmc_builtin_sstore(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn __revmc_builtin_tload(ecx: &mut EvmContext<'_>, key: &mut EvmWord) {
-    *key = ecx.host.tload(ecx.input.target_address, key.to_u256()).into();
+    let key_word = key.to_u256();
+    *key = ecx.host.tload(&ecx.input.target_address, &key_word).into();
 }
 
 #[unsafe(no_mangle)]
@@ -546,7 +558,7 @@ pub unsafe extern "C" fn __revmc_builtin_tstore(
 ) -> BuiltinResult {
     let rev![key, value] = sp;
     require_non_staticcall(ecx)?;
-    ecx.host.tstore(ecx.input.target_address, key.to_u256(), value.to_u256());
+    ecx.host.tstore(&ecx.input.target_address, &key.to_u256(), &value.to_u256());
     Ok(())
 }
 
@@ -667,8 +679,11 @@ pub unsafe extern "C" fn __revmc_builtin_selfdestruct(
 
     let cold_load_gas = ecx.gas_params.selfdestruct_cold_cost();
     let skip_cold_load = ecx.gas.remaining() < cold_load_gas;
-    let res =
-        ecx.host.selfdestruct(ecx.input.target_address, target.to_address(), skip_cold_load)?;
+    let target = target.to_address();
+    let res = ecx
+        .host
+        .selfdestruct(&ecx.input.target_address, &target, skip_cold_load)
+        .map_err(|stop| host_error_stop(stop, skip_cold_load))?;
 
     // EIP-161: State trie clearing (invariant-preserving alternative)
     let should_charge_topup = if ecx.spec_id.enables(SpecId::SPURIOUS_DRAGON) {
