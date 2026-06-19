@@ -599,6 +599,7 @@ pub(super) fn settle_gas<T: EvmTypes<Host = Evm<T>>>(
     floor_gas: u64,
     initial_state_gas: u64,
     state_refund: u64,
+    is_create: bool,
     result: MessageResult<T>,
 ) -> HandlerResult<TxResult<T>> {
     let is_eip3529 = host.feature(EvmFeatures::EIP3529);
@@ -607,13 +608,29 @@ pub(super) fn settle_gas<T: EvmTypes<Host = Evm<T>>>(
     // `TxResult::tx_gas_used` reproduces the local `gas_used` (used here for the beneficiary
     // reward). State gas is execution state gas plus the upfront `initial_state_gas`, less the
     // EIP-7702 per-authorization `state_refund`.
-    let total_gas_spent = tx_gas_limit
+    let mut total_gas_spent = tx_gas_limit
         .saturating_sub(result.gas.remaining())
         .saturating_sub(result.reservoir_reimbursed());
-    let refunded = result.final_refund(tx_gas_limit, is_eip3529);
-    let state_gas_spent =
-        (result.gas.state_gas_spent().saturating_add_unsigned(initial_state_gas).max(0) as u64)
-            .saturating_sub(state_refund);
+    let mut refunded = result.final_refund(tx_gas_limit, is_eip3529);
+    // EIP-7623: when the calldata floor exceeds spent-minus-refund, the floor becomes the gas used
+    // and absorbs the refund. revm folds this into `total_gas_spent` (so block-level regular gas
+    // reflects it), keeping `tx_gas_used` equal to the floor.
+    if total_gas_spent.saturating_sub(refunded) < floor_gas {
+        total_gas_spent = floor_gas;
+        refunded = 0;
+    }
+    // Execution state gas contributes only on success: a revert/halt rolls back its state changes.
+    // A failed top-level CREATE additionally unwinds its intrinsic `create_state_gas` (refunded to
+    // the reservoir by `refund_failed_create_state_gas`), so it nets out of the block state gas.
+    let exec_state_gas = if result.stop.is_success() {
+        result.gas.state_gas_spent()
+    } else if is_create {
+        -(initial_state_gas as i64)
+    } else {
+        0
+    };
+    let state_gas_spent = (exec_state_gas.saturating_add_unsigned(initial_state_gas).max(0) as u64)
+        .saturating_sub(state_refund);
     if host.feature(EvmFeatures::FEE_CHARGE) {
         let caller_refund = U256::from(gas_remaining) * gas_price;
         host.state

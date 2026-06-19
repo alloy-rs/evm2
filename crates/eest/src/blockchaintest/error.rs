@@ -64,6 +64,14 @@ pub(crate) enum TestErrorKind {
     /// A system call failed.
     #[error("system call failed: {0}")]
     SystemCall(&'static str),
+    /// Block gas used in the header does not match the executed transactions.
+    #[error("block gas used mismatch: header {expected}, computed {actual}")]
+    BlockGasUsedMismatch {
+        /// Gas used declared in the block header.
+        expected: u64,
+        /// Gas used computed from executing the block's transactions.
+        actual: u64,
+    },
 }
 
 impl From<TxBuildError> for TestErrorKind {

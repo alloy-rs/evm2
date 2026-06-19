@@ -115,6 +115,7 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
         floor_gas,
         initial_state_gas,
         state_refund,
+        false,
         result,
     )
 }

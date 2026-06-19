@@ -260,6 +260,10 @@ fn execute_block(
         .map_err(|err| TestError::case(path, name, err))?;
 
         let transactions = block_transactions(block);
+        // EIP-8037: track regular and state gas separately for the block-header gas check.
+        let mut cumulative_tx_gas_used = 0u64;
+        let mut block_regular_gas_used = 0u64;
+        let mut block_state_gas_used = 0u64;
         for (transaction_index, raw_tx) in transactions.iter().enumerate() {
             hook.transaction_started(TransactionStarted {
                 block_index,
@@ -287,7 +291,13 @@ fn execute_block(
             };
 
             match execute_tx(&mut evm, &mut block_state, &tx) {
-                Ok(_) => {
+                Ok(result) => {
+                    cumulative_tx_gas_used =
+                        cumulative_tx_gas_used.saturating_add(result.tx_gas_used());
+                    block_regular_gas_used =
+                        block_regular_gas_used.saturating_add(result.block_regular_gas_used());
+                    block_state_gas_used =
+                        block_state_gas_used.saturating_add(result.block_state_gas_used());
                     hook.transaction_finished(TransactionFinished {
                         block_index,
                         total_blocks,
@@ -317,6 +327,25 @@ fn execute_block(
         if should_fail {
             let expected = block.expect_exception.clone().unwrap_or_default();
             return Err(TestError::case(path, name, TestErrorKind::UnexpectedSuccess(expected)));
+        }
+
+        // Validate the block header's gas used against the executed transactions. Under EIP-8037
+        // (Amsterdam+) regular and state gas are tracked separately and the header records their
+        // max; earlier forks record the cumulative per-transaction gas used (refunds included).
+        if let Some(expected) = block_gas_used(block) {
+            let expected = expected.saturating_to::<u64>();
+            let actual = if spec.enables(SpecId::AMSTERDAM) {
+                block_regular_gas_used.max(block_state_gas_used)
+            } else {
+                cumulative_tx_gas_used
+            };
+            if actual != expected {
+                return Err(TestError::case(
+                    path,
+                    name,
+                    TestErrorKind::BlockGasUsedMismatch { expected, actual },
+                ));
+            }
         }
 
         post_block_transition(

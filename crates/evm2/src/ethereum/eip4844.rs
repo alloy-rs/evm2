@@ -101,7 +101,17 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     let mut result = req.host.execute_message(&tx_env, bytecode, &mut message, false);
     rollback_failed_execution(req.host, execution_checkpoint, &mut result);
 
-    settle_gas(req.host, caller, gas_price, tx.gas_limit, floor_gas, initial_state_gas, 0, result)
+    settle_gas(
+        req.host,
+        caller,
+        gas_price,
+        tx.gas_limit,
+        floor_gas,
+        initial_state_gas,
+        0,
+        false,
+        result,
+    )
 }
 
 fn validate_blob_fee(max_fee_per_blob_gas: U256, blob_basefee: U256) -> HandlerResult<()> {

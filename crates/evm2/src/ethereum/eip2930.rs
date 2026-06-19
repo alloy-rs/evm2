@@ -74,5 +74,15 @@ pub(super) fn handle<T: EvmTypes<Host = Evm<T>>>(
     rollback_failed_execution(req.host, execution_checkpoint, &mut result);
     refund_failed_create_state_gas(&mut result, initial_state_gas);
 
-    settle_gas(req.host, caller, gas_price, tx.gas_limit, floor_gas, initial_state_gas, 0, result)
+    settle_gas(
+        req.host,
+        caller,
+        gas_price,
+        tx.gas_limit,
+        floor_gas,
+        initial_state_gas,
+        0,
+        tx.to.is_create(),
+        result,
+    )
 }
