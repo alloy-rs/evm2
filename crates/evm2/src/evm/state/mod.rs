@@ -593,15 +593,8 @@ impl State {
         // so its existence is read from the same source rather than via a separate database read.
         let entry = Self::account_raw(&mut self.inner, &mut self.accounts, address, false)?;
         if entry.original.is_none() && entry.present.is_none() {
-            self.inner.journal.push(JournalEntry::AccountChange {
-                address: *address,
-                previous: None,
-                previous_is_warm: entry.is_warm,
-                previous_is_touched: entry.is_touched,
-                previous_is_destroyed: entry.is_destroyed,
-                previous_just_created: entry.just_created,
-                previous_code_changed: entry.code_changed,
-            });
+            // Finalization runs after the last revertible scope, so this is not journaled: the
+            // entry would never be replayed before `clear_transaction_state` clears it.
             entry.present = Some(AccountInfo::default());
         }
         Ok(())
@@ -646,8 +639,10 @@ impl State {
         if version.feature(EvmFeatures::EIP161) {
             for address in &touched {
                 // EIP-161 deletes touched dead accounts at transaction finalization.
-                if self.account(address, false)?.is_existing_dead() {
-                    self.account(address, false)?.delete_for_finalization();
+                let mut account = self.account(address, false)?;
+                if account.is_existing_dead() {
+                    account.delete_for_finalization();
+                    drop(account);
                     self.storage(address).wipe();
                 }
             }
@@ -795,14 +790,6 @@ impl State {
     /// transaction account/storage layers. It does not materialize [`StateChanges`], take logs, or
     /// write to the wrapped backing database.
     pub(crate) fn commit_transaction(&mut self) {
-        for entry in self.accounts.values() {
-            if let Some(account) = entry.present.as_ref()
-                && let Some((code_hash, code)) = Self::changed_code(entry.code_changed, account)
-            {
-                self.inner.database.cache.contracts.insert(code_hash, code.clone());
-            }
-        }
-
         for (&address, storage) in &self.storage {
             if storage.wiped {
                 self.inner.database.cache.storage.entry(address).or_default().wipe();
@@ -823,7 +810,15 @@ impl State {
             }
         }
 
+        // Code and account-info commits are fused into a single pass over `accounts`. They write to
+        // independent cache maps (`contracts` vs `accounts`), and the storage pass above already
+        // ran, so the delete branch's `storage` wipe still lands after any committed slots.
         for (&address, entry) in self.accounts.iter() {
+            if let Some(account) = entry.present.as_ref()
+                && let Some((code_hash, code)) = Self::changed_code(entry.code_changed, account)
+            {
+                self.inner.database.cache.contracts.insert(code_hash, code.clone());
+            }
             if !Self::account_changed(entry.original.as_ref(), entry.present.as_ref()) {
                 continue;
             }
