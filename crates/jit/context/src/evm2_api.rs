@@ -10,9 +10,9 @@ use core::{
     ptr::{self, NonNull},
 };
 use evm2::{
-    BaseEvmTypes, SpecId, Version,
+    BaseEvmTypes, SpecId,
     bytecode::Bytecode,
-    env::{BlockEnv, TxEnv},
+    env::TxEnv,
     interpreter::{
         Gas as Evm2Gas, Host as Evm2Host, Interpreter, Memory, Message, MessageKind, Word,
     },
@@ -27,20 +27,14 @@ const _: () = {
 /// The evm2 bytecode compiler runtime context.
 #[repr(C)]
 pub struct EvmContext<'a> {
-    /// The memory.
-    pub memory: *mut Memory,
+    /// Active interpreter frame.
+    pub interpreter: NonNull<Interpreter<'a, BaseEvmTypes>>,
     /// Input information (target address, caller, input data, call value).
     pub input: *mut Inputs,
     /// The gas.
     pub gas: Evm2Gas,
     /// Host state consumed by host-touching builtins.
     pub host: &'a mut (dyn Evm2Host<BaseEvmTypes> + 'a),
-    /// Block environment.
-    pub block_env: &'a BlockEnv<BaseEvmTypes>,
-    /// Transaction-global environment.
-    pub tx_env: &'a TxEnv<BaseEvmTypes>,
-    /// Active runtime version data.
-    pub version: &'a Version,
     /// The return data.
     pub return_data: &'a [u8],
     /// Whether the context is static.
@@ -64,23 +58,18 @@ pub struct EvmContext<'a> {
     /// Output produced by RETURN or REVERT.
     #[doc(hidden)]
     pub output: Bytes,
-    /// Frame-local call/create message.
-    #[doc(hidden)]
-    pub message: &'a Message<BaseEvmTypes>,
-    interpreter: NonNull<Interpreter<'a, BaseEvmTypes>>,
     input_scratch: Box<Inputs>,
 }
 
 const _: () = {
     use core::mem::offset_of;
 
-    assert!(offset_of!(EvmContext<'_>, memory) == offset_of!(crate::EvmContext<'_>, memory));
+    assert!(
+        offset_of!(EvmContext<'_>, interpreter) == offset_of!(crate::EvmContext<'_>, interpreter)
+    );
     assert!(offset_of!(EvmContext<'_>, input) == offset_of!(crate::EvmContext<'_>, input));
     assert!(offset_of!(EvmContext<'_>, gas) == offset_of!(crate::EvmContext<'_>, gas));
     assert!(offset_of!(EvmContext<'_>, host) == offset_of!(crate::EvmContext<'_>, host));
-    assert!(offset_of!(EvmContext<'_>, block_env) == offset_of!(crate::EvmContext<'_>, block_env));
-    assert!(offset_of!(EvmContext<'_>, tx_env) == offset_of!(crate::EvmContext<'_>, tx_env));
-    assert!(offset_of!(EvmContext<'_>, version) == offset_of!(crate::EvmContext<'_>, version));
     assert!(
         offset_of!(EvmContext<'_>, return_data) == offset_of!(crate::EvmContext<'_>, return_data)
     );
@@ -155,7 +144,7 @@ impl crate::EvmCompilerFn {
 
 impl fmt::Debug for EvmContext<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("EvmContext").field("memory", &self.memory).finish_non_exhaustive()
+        f.debug_struct("EvmContext").field("memory", &self.memory()).finish_non_exhaustive()
     }
 }
 
@@ -177,14 +166,12 @@ impl<'a> EvmContext<'a> {
     ) -> (Self, &'a mut EvmStack, &'a mut usize) {
         let interpreter_ptr = ptr::from_mut(interpreter).cast::<Interpreter<'a, BaseEvmTypes>>();
         let interpreter_ptr = unsafe { NonNull::new_unchecked(interpreter_ptr) };
-        let version = interpreter.version() as *const Version;
-        let tx_env = interpreter.tx_env();
         let message = interpreter.message();
         let gas = interpreter.gas();
         let bytecode = interpreter.bytecode().as_slice() as *const [u8];
         let spec_id = interpreter.spec();
         let is_static = interpreter.is_static();
-        let memory = interpreter.memory_mut() as *mut Memory;
+        let gas_params = interpreter.version().gas_params;
         let calldatasize = message.input.len();
         let mut input_scratch = Box::new(Inputs {
             target_address: message.destination,
@@ -194,20 +181,14 @@ impl<'a> EvmContext<'a> {
             call_value: message.value,
         });
         let input = input_scratch.as_mut() as *mut Inputs;
-        let block_env = host.block_env() as *const BlockEnv<BaseEvmTypes>;
-        let block_env = unsafe { &*block_env };
-        let version = unsafe { &*version };
         let return_data = unsafe { &*(interpreter.return_data().as_ref() as *const [u8]) };
         let (stack_ptr, stack_len) = interpreter.stack_mut().into_raw_parts();
         let stack = unsafe { EvmStack::from_mut_ptr(stack_ptr.cast()) };
         let mut this = Self {
-            memory,
+            interpreter: interpreter_ptr,
             input,
             gas,
             host,
-            block_env,
-            tx_env,
-            version,
             return_data,
             is_static,
             spec_id,
@@ -215,12 +196,10 @@ impl<'a> EvmContext<'a> {
             calldatasize,
             exit_result: InstrStop::Stop,
             exit_sp: ptr::null_mut(),
-            gas_params: version.gas_params,
+            gas_params,
             mem_base: ptr::null_mut(),
             mem_len: 0,
             output: Bytes::new(),
-            message,
-            interpreter: interpreter_ptr,
             input_scratch,
         };
         this.refresh_memory_cache();
@@ -243,9 +222,12 @@ impl<'a> EvmContext<'a> {
     /// Refreshes the cached memory base pointer and length from the evm2 memory snapshot.
     #[inline]
     pub fn refresh_memory_cache(&mut self) {
-        let slice = unsafe { &mut *self.memory }.as_mut_slice();
-        self.mem_base = slice.as_mut_ptr();
-        self.mem_len = slice.len();
+        let (mem_base, mem_len) = {
+            let slice = self.memory_mut().as_mut_slice();
+            (slice.as_mut_ptr(), slice.len())
+        };
+        self.mem_base = mem_base;
+        self.mem_len = mem_len;
     }
 
     /// Returns the input shim visible to compiled code.
@@ -255,8 +237,53 @@ impl<'a> EvmContext<'a> {
     }
 
     #[inline]
+    fn interpreter(&self) -> &Interpreter<'a, BaseEvmTypes> {
+        unsafe { self.interpreter.as_ref() }
+    }
+
+    #[inline]
     fn interpreter_mut(&mut self) -> &mut Interpreter<'a, BaseEvmTypes> {
         unsafe { self.interpreter.as_mut() }
+    }
+
+    #[inline]
+    fn memory(&self) -> &Memory {
+        self.interpreter().memory_ref()
+    }
+
+    #[inline]
+    fn memory_mut(&mut self) -> &mut Memory {
+        self.interpreter_mut().memory_mut()
+    }
+
+    #[inline]
+    fn resize_memory(&mut self, offset: usize, len: usize) -> Result<(), InstrStop> {
+        let memory = self.memory_mut() as *mut Memory;
+        let gas = &mut self.gas as *mut Evm2Gas;
+        unsafe { (*memory).resize_evm(&mut *gas, offset, len)? };
+        self.refresh_memory_cache();
+        Ok(())
+    }
+
+    #[inline]
+    fn tx_env(&self) -> &'a TxEnv<BaseEvmTypes> {
+        self.interpreter().tx_env()
+    }
+
+    #[inline]
+    fn version(&self) -> &evm2::Version {
+        self.interpreter().version()
+    }
+
+    #[inline]
+    fn message(&self) -> &'a Message<BaseEvmTypes> {
+        self.interpreter().message()
+    }
+
+    #[inline]
+    #[cfg(test)]
+    fn block_env(&mut self) -> &evm2::env::BlockEnv<BaseEvmTypes> {
+        self.host.block_env()
     }
 
     fn set_return_data(&mut self, data: Bytes) {
@@ -325,9 +352,7 @@ fn word_to_usize_saturated(value: EvmWord) -> usize {
 }
 
 fn ensure_memory(ecx: &mut EvmContext<'_>, offset: usize, len: usize) -> Result<(), InstrStop> {
-    unsafe { &mut *ecx.memory }.resize_evm(&mut ecx.gas, offset, len)?;
-    ecx.refresh_memory_cache();
-    Ok(())
+    ecx.resize_memory(offset, len)
 }
 
 fn resize_evm_range(
@@ -350,7 +375,7 @@ fn memory_range_bytes(ecx: &mut EvmContext<'_>, range: Range<usize>) -> Bytes {
     if range.is_empty() {
         return Bytes::new();
     }
-    Bytes::copy_from_slice(unsafe { &*ecx.memory }.slice(range.start, range.len()))
+    Bytes::copy_from_slice(ecx.memory().slice(range.start, range.len()))
 }
 
 fn get_memory_input_and_out_ranges(
@@ -393,7 +418,7 @@ fn load_acc_and_calc_gas(
     create_empty_account: bool,
     stack_gas_limit: u64,
 ) -> Result<(u64, Bytecode, alloy_primitives::Address, bool), InstrStop> {
-    let version = ecx.version;
+    let version = *ecx.version();
     if transfers_value {
         spend(&mut ecx.gas, version.gas_params.get(GasId::TransferValueCost).into())?;
     }
@@ -496,7 +521,7 @@ fn call_inner(
         load_acc_and_calc_gas(ecx, to, has_transfer, kind == MessageKind::Call, local_gas_limit)?;
     let input = memory_range_bytes(ecx, input_range);
 
-    let current = ecx.message;
+    let current = ecx.message();
     let (destination, caller, call_value, code_address) = match kind {
         MessageKind::Call => (to, current.destination, value, resolved_code_address),
         MessageKind::CallCode => {
@@ -524,14 +549,14 @@ fn call_inner(
     };
 
     let caller_is_static = ecx.is_static;
-    let mut result =
-        ecx.host.execute_message(ecx.tx_env, loaded_code, &mut message, caller_is_static);
+    let tx_env = ecx.tx_env();
+    let mut result = ecx.host.execute_message(tx_env, loaded_code, &mut message, caller_is_static);
     ecx.gas.erase_cost(result.gas_returned_to_parent());
     ecx.gas.record_refund(result.refund_propagated_to_parent());
 
     let copy_len = min(return_memory_range.len(), result.output.len());
     if copy_len != 0 {
-        unsafe { &mut *ecx.memory }.set(return_memory_range.start, &result.output[..copy_len]);
+        ecx.memory_mut().set(return_memory_range.start, &result.output[..copy_len]);
     }
     let success = EvmWord::from(Word::from(u8::from(result.stop.is_success())));
     unsafe {
@@ -558,7 +583,7 @@ fn create_inner(
     let salt = if is_create2 { Some(unsafe { pop_word(&mut cursor) }) } else { None };
 
     let len = word_to_usize(len_word)?;
-    let version = ecx.version;
+    let version = *ecx.version();
     if ecx.spec_id.enables(SpecId::SHANGHAI) {
         if len > version.max_initcode_size {
             return Err(InstrStop::CreateInitCodeSizeLimit);
@@ -580,7 +605,7 @@ fn create_inner(
     };
     spend(&mut ecx.gas, gas_limit)?;
 
-    let current = ecx.message;
+    let current = ecx.message();
     let mut message = Message {
         kind: if is_create2 { MessageKind::Create2 } else { MessageKind::Create },
         depth: current.depth.saturating_add(1),
@@ -596,7 +621,8 @@ fn create_inner(
         _non_exhaustive: (),
     };
     let bytecode = Bytecode::new_legacy(message.input.clone());
-    let result = ecx.host.execute_message(ecx.tx_env, bytecode, &mut message, false);
+    let tx_env = ecx.tx_env();
+    let result = ecx.host.execute_message(tx_env, bytecode, &mut message, false);
     ecx.gas.erase_cost(result.gas_returned_to_parent());
     ecx.gas.record_refund(result.refund_propagated_to_parent());
 
@@ -860,12 +886,12 @@ mod tests {
         );
 
         interpreter.prepare_jit_run(&config, &mut host);
-        let ecx = EvmContext::from_interpreter(&mut interpreter, &mut host);
+        let mut ecx = EvmContext::from_interpreter(&mut interpreter, &mut host);
 
-        assert_eq!(ecx.tx_env.origin, tx_origin);
-        assert_eq!(ecx.tx_env.gas_price, Word::from(7));
-        assert_eq!(ecx.block_env.number, Word::from(9));
-        assert_eq!(ecx.block_env.beneficiary, beneficiary);
+        assert_eq!(ecx.tx_env().origin, tx_origin);
+        assert_eq!(ecx.tx_env().gas_price, Word::from(7));
+        assert_eq!(ecx.block_env().number, Word::from(9));
+        assert_eq!(ecx.block_env().beneficiary, beneficiary);
     }
 
     #[test]
@@ -896,9 +922,9 @@ mod tests {
             memory.set(0, b"abc");
         }
 
-        let ecx = EvmContext::from_interpreter(&mut interpreter, &mut host);
-        assert_eq!(unsafe { &*ecx.memory }.as_slice(), b"abc");
-        unsafe { &mut *ecx.memory }.set(1, b"z");
+        let mut ecx = EvmContext::from_interpreter(&mut interpreter, &mut host);
+        assert_eq!(ecx.memory().as_slice(), b"abc");
+        ecx.memory_mut().set(1, b"z");
         drop(ecx);
 
         assert_eq!(interpreter.memory_ref().slice(0, 3), b"azc");
@@ -929,8 +955,8 @@ mod tests {
 
         {
             let mut frame = prepare_frame(&mut interpreter, &mut host);
-            unsafe { &mut *frame.ecx.memory }.resize(0, 16).unwrap();
-            unsafe { &mut *frame.ecx.memory }.set(4, b"in");
+            frame.ecx.memory_mut().resize(0, 16).unwrap();
+            frame.ecx.memory_mut().set(4, b"in");
             frame.stack.set(0, EvmWord::from(Word::from(2)));
             frame.stack.set(1, EvmWord::from(Word::from(8)));
             frame.stack.set(2, EvmWord::from(Word::from(2)));
@@ -945,7 +971,7 @@ mod tests {
             assert_eq!(result, Ok(()));
             assert_eq!(unsafe { frame.stack.get_unchecked(0) }.to_u256(), Word::from(1));
             assert_eq!(frame.ecx.return_data, child_output.as_ref());
-            assert_eq!(unsafe { &*frame.ecx.memory }.slice(8, 2), &[0xaa, 0xbb]);
+            assert_eq!(frame.ecx.memory().slice(8, 2), &[0xaa, 0xbb]);
             frame.ecx.output = AlloyBytes::copy_from_slice(b"frame-output");
             assert_eq!(frame.ecx.return_data, child_output.as_ref());
         }
@@ -1110,8 +1136,8 @@ mod tests {
 
         {
             let mut frame = prepare_frame(&mut interpreter, &mut host);
-            unsafe { &mut *frame.ecx.memory }.resize(0, 1).unwrap();
-            unsafe { &mut *frame.ecx.memory }.set(0, &initcode);
+            frame.ecx.memory_mut().resize(0, 1).unwrap();
+            frame.ecx.memory_mut().set(0, &initcode);
             frame.stack.set(0, EvmWord::from(Word::from(initcode.len())));
             frame.stack.set(1, EvmWord::ZERO);
             frame.stack.set(2, EvmWord::ZERO);
@@ -1154,8 +1180,8 @@ mod tests {
 
         {
             let mut frame = prepare_frame(&mut interpreter, &mut host);
-            unsafe { &mut *frame.ecx.memory }.resize(0, 1).unwrap();
-            unsafe { &mut *frame.ecx.memory }.set(0, &initcode);
+            frame.ecx.memory_mut().resize(0, 1).unwrap();
+            frame.ecx.memory_mut().set(0, &initcode);
             frame.stack.set(0, salt);
             frame.stack.set(1, EvmWord::from(Word::from(initcode.len())));
             frame.stack.set(2, EvmWord::ZERO);

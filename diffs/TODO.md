@@ -23,7 +23,7 @@ Generated from non-empty unified diffs in `diffs/` by `./scripts/generate_jit_di
 - [x] crates__revmc-builtins__README.md.diff
 - [x] crates__revmc-builtins__src__gas.rs.diff
   - re-use gas constants
-- [x] crates__revmc-builtins__src__ir.rs.diff
+- [ ] crates__revmc-builtins__src__ir.rs.diff
 - [ ] crates__revmc-builtins__src__lib.rs.diff
 - [x] crates__revmc-builtins__src__macros.rs.diff
 - [ ] crates__revmc-builtins__src__utils.rs.diff

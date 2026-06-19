@@ -99,8 +99,7 @@ pub(crate) unsafe fn read_words_rev<'a, const N: usize>(sp: *mut EvmWord) -> &'a
 
 #[inline]
 pub(crate) fn ensure_memory(ecx: &mut EvmContext<'_>, offset: usize, len: usize) -> BuiltinResult {
-    ecx.memory.resize_evm(&mut ecx.gas, offset, len)?;
-    ecx.refresh_memory_cache();
+    ecx.resize_memory(offset, len)?;
     Ok(())
 }
 
@@ -115,7 +114,7 @@ pub(crate) unsafe fn copy_operation(
         let memory_offset = word_to_usize(memory_offset.to_u256())?;
         ensure_memory(ecx, memory_offset, len)?;
         let data_offset = word_to_usize_saturated(data_offset.to_u256());
-        ecx.memory.set_data(memory_offset, data_offset, len, data);
+        ecx.memory_mut().set_data(memory_offset, data_offset, len, data);
     }
     Ok(())
 }

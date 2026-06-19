@@ -12,7 +12,7 @@ pub use evm2::interpreter::{Gas, InstrStop, Memory};
 use evm2::{
     BaseEvmTypes, SpecId,
     env::{BlockEnv, TxEnv},
-    interpreter::Host as Evm2Host,
+    interpreter::{Host as Evm2Host, Interpreter, Message},
     version::GasParams,
 };
 
@@ -125,20 +125,14 @@ pub mod jit_abi {
 /// generates code that accesses fields by offset using `offset_of!`.
 #[repr(C)]
 pub struct EvmContext<'a> {
-    /// The memory.
-    pub memory: &'a mut Memory,
+    /// Active interpreter frame.
+    pub interpreter: NonNull<Interpreter<'a, BaseEvmTypes>>,
     /// Input information (target address, caller, input data, call value).
     pub input: &'a mut Inputs,
     /// The gas.
     pub gas: Gas,
     /// The host.
     pub host: &'a mut (dyn Evm2Host<BaseEvmTypes> + 'a),
-    /// Block environment.
-    pub block_env: &'a BlockEnv<BaseEvmTypes>,
-    /// Transaction-global environment.
-    pub tx_env: &'a TxEnv<BaseEvmTypes>,
-    /// Active runtime version data.
-    pub version: &'a evm2::Version,
     /// The return data.
     pub return_data: &'a [u8],
     /// Whether the context is static.
@@ -172,24 +166,109 @@ const _: () = {
     use core::mem::offset_of;
 
     // Key fields accessed by JIT code
-    assert!(offset_of!(EvmContext<'_>, memory) == 0);
+    assert!(offset_of!(EvmContext<'_>, interpreter) == 0);
 };
 
 impl fmt::Debug for EvmContext<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("EvmContext").field("memory", &self.memory).finish_non_exhaustive()
+        f.debug_struct("EvmContext").field("memory", &self.memory()).finish_non_exhaustive()
     }
 }
 
-impl EvmContext<'_> {
+impl<'a> EvmContext<'a> {
+    /// Returns the active interpreter frame.
+    #[inline]
+    pub fn interpreter(&self) -> &Interpreter<'a, BaseEvmTypes> {
+        unsafe { self.interpreter.as_ref() }
+    }
+
+    /// Returns the active interpreter frame.
+    #[inline]
+    pub fn interpreter_mut(&mut self) -> &mut Interpreter<'a, BaseEvmTypes> {
+        unsafe { self.interpreter.as_mut() }
+    }
+
+    /// Returns the current linear memory.
+    #[inline]
+    pub fn memory(&self) -> &Memory {
+        self.interpreter().memory_ref()
+    }
+
+    /// Returns the current linear memory.
+    #[inline]
+    pub fn memory_mut(&mut self) -> &mut Memory {
+        self.interpreter_mut().memory_mut()
+    }
+
+    /// Resizes memory using EVM memory gas accounting.
+    #[inline]
+    pub fn resize_memory(&mut self, offset: usize, len: usize) -> Result<(), InstrStop> {
+        let memory = self.memory_mut() as *mut Memory;
+        let gas = &mut self.gas as *mut Gas;
+        unsafe { (*memory).resize_evm(&mut *gas, offset, len)? };
+        self.refresh_memory_cache();
+        Ok(())
+    }
+
+    /// Returns host state consumed by host-touching builtins.
+    #[inline]
+    pub fn host(&mut self) -> &mut (dyn Evm2Host<BaseEvmTypes> + '_) {
+        self.host
+    }
+
+    /// Returns the current block environment.
+    #[inline]
+    pub fn block_env(&mut self) -> &BlockEnv<BaseEvmTypes> {
+        self.host().block_env()
+    }
+
+    /// Returns the transaction-global environment.
+    #[inline]
+    pub fn tx_env(&self) -> &TxEnv<BaseEvmTypes> {
+        self.interpreter().tx_env()
+    }
+
+    /// Returns active runtime version data.
+    #[inline]
+    pub fn version(&self) -> &evm2::Version {
+        self.interpreter().version()
+    }
+
+    /// Returns the active base specification ID.
+    #[inline]
+    pub fn spec_id(&self) -> SpecId {
+        self.interpreter().spec()
+    }
+
+    /// Returns the active frame-local call/create message.
+    #[inline]
+    pub fn message(&self) -> &Message<BaseEvmTypes> {
+        self.interpreter().message()
+    }
+
+    /// Returns whether the active frame forbids state-changing operations.
+    #[inline]
+    pub fn is_static(&self) -> bool {
+        self.interpreter().is_static()
+    }
+
+    /// Returns active original bytecode.
+    #[inline]
+    pub fn bytecode(&self) -> &[u8] {
+        self.interpreter().bytecode().as_slice()
+    }
+
     /// Refreshes the cached memory base pointer and length.
     ///
     /// Must be called after any operation that may resize memory.
     #[inline]
     pub fn refresh_memory_cache(&mut self) {
-        let slice = self.memory.as_mut_slice();
-        self.mem_base = slice.as_mut_ptr();
-        self.mem_len = slice.len();
+        let (mem_base, mem_len) = {
+            let slice = self.memory_mut().as_mut_slice();
+            (slice.as_mut_ptr(), slice.len())
+        };
+        self.mem_base = mem_base;
+        self.mem_len = mem_len;
     }
 }
 

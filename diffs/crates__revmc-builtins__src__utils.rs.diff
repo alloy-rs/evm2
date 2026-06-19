@@ -118,7 +118,7 @@
  ///
  /// The returned lifetime is valid for the entire duration of the builtin.
  ///
-@@ -83,13 +99,7 @@
+@@ -83,14 +99,7 @@
 
  #[inline]
  pub(crate) fn ensure_memory(ecx: &mut EvmContext<'_>, offset: usize, len: usize) -> BuiltinResult {
@@ -129,11 +129,12 @@
 -        offset,
 -        len,
 -    )?;
-+    ecx.memory.resize_evm(&mut ecx.gas, offset, len)?;
-     ecx.refresh_memory_cache();
+-    ecx.refresh_memory_cache();
++    ecx.resize_memory(offset, len)?;
      Ok(())
  }
-@@ -99,13 +109,12 @@
+
+@@ -99,14 +108,13 @@
      rev![memory_offset, data_offset, len]: &mut [EvmWord; 3],
      data: &[u8],
  ) -> BuiltinResult {
@@ -147,7 +148,9 @@
          ensure_memory(ecx, memory_offset, len)?;
 -        let data_offset = data_offset.to_u256();
 -        let data_offset = as_usize_saturated!(data_offset);
+-        ecx.memory.set_data(memory_offset, data_offset, len, data);
 +        let data_offset = word_to_usize_saturated(data_offset.to_u256());
-         ecx.memory.set_data(memory_offset, data_offset, len, data);
++        ecx.memory_mut().set_data(memory_offset, data_offset, len, data);
      }
      Ok(())
+ }
